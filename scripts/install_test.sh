@@ -70,18 +70,26 @@ write_manifest() {
   [ "$FIXTURE_MODE" != badmanifestcommit ] || commit='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
   digest="$(write_asset | sha256_stream)"
   size="$(write_asset | wc -c | tr -d '[:space:]')"
-  printf 'schemaVersion marshal.release-manifest.v1\n'
+  if [ "$FIXTURE_TAG" = v1.0.0-rc1 ]; then
+    printf 'schemaVersion marshal.rc1-release-manifest.v1\n'
+  else
+    printf 'schemaVersion marshal.release-manifest.v1\n'
+  fi
   printf 'repository https://github.com/chiga0/marshal-harness.git\n'
   printf 'tag %s\n' "$FIXTURE_TAG"
   printf 'sourceHead %s\n' "$commit"
   printf 'buildDate 2026-08-28T00:00:00Z\n'
   printf 'goVersion go1.26.6\n'
   printf 'buildFlags -trimpath,-buildvcs=false,-mod=readonly,-buildid=\n'
-  for tuple in \
-    "darwin amd64 darwin-local-dogfood" \
-    "darwin arm64 darwin-local-dogfood" \
-    "linux amd64 unprofiled" \
-    "linux arm64 unprofiled"; do
+  if [ "$FIXTURE_TAG" = v1.0.0-rc1 ]; then
+    tuples="darwin arm64 darwin-local-dogfood"
+  else
+    tuples="darwin amd64 darwin-local-dogfood
+darwin arm64 darwin-local-dogfood
+linux amd64 unprofiled
+linux arm64 unprofiled"
+  fi
+  while IFS= read -r tuple; do
     set -- $tuple
     current_digest="$digest"
     if [ "$FIXTURE_MODE" = badmanifestasset ] && [ "$1/$2" = darwin/arm64 ]; then
@@ -89,7 +97,22 @@ write_manifest() {
     fi
     printf 'asset %s %s marshal_%s_%s_%s %s %s %s\n' \
       "$current_digest" "$size" "$version" "$1" "$2" "$1" "$2" "$3"
-  done
+  done <<<"$tuples"
+  case "$FIXTURE_MODE" in
+    extramanifestfield) printf 'unexpected field\n' ;;
+    extramanifestdarwinamd64)
+      printf 'asset %s %s marshal_1.0.0-rc1_darwin_amd64 darwin amd64 darwin-local-dogfood\n' "$digest" "$size"
+      ;;
+    extramanifestlinux)
+      printf 'asset %s %s marshal_1.0.0-rc1_linux_arm64 linux arm64 unprofiled\n' "$digest" "$size"
+      ;;
+    extramanifeststable)
+      printf 'asset %s %s marshal_1.0.0_darwin_arm64 darwin arm64 darwin-local-dogfood\n' "$digest" "$size"
+      ;;
+    extramanifestotherrc)
+      printf 'asset %s %s marshal_1.0.0-rc2_darwin_arm64 darwin arm64 darwin-local-dogfood\n' "$digest" "$size"
+      ;;
+  esac
 }
 write_tag_message() {
   frozen_mode="$FIXTURE_MODE"
@@ -147,24 +170,40 @@ case "$url" in
   */SHA256SUMS)
     case "$FIXTURE_MODE" in
       missing) exit 22 ;;
-      mismatch|valid|badexec|badversion|badprofile|badbinarycommit|badbuilddate|badgoversion|badmanifestcommit|badmanifestasset|badmanifestchecksum|missingmanifest|replacedrelease|extratagline|taginteriorblank|tagtrailingblank|tagnul)
+      mismatch|valid|badexec|badversion|badprofile|badbinarycommit|badbuilddate|badgoversion|badmanifestcommit|badmanifestasset|badmanifestchecksum|missingmanifest|replacedrelease|extratagline|taginteriorblank|tagtrailingblank|tagnul|extrasumdarwinamd64|extrasumlinux|extrasumstable|extrasumotherrc|sumonespace|sumtab|sumleading|sumtrailing|extramanifestfield|extramanifestdarwinamd64|extramanifestlinux|extramanifeststable|extramanifestotherrc)
         digest="$(write_asset | sha256_stream)"
         manifest_digest="$(write_manifest | sha256_stream)"
         [ "$FIXTURE_MODE" != badmanifestchecksum ] || manifest_digest='dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
-        prefix="${FIXTURE_ASSET%_darwin_arm64}"
         : >"$dest"
-        printf '%s  RELEASE-MANIFEST\n' "$manifest_digest" >>"$dest"
-        for name in \
-          "${prefix}_darwin_amd64" \
-          "${prefix}_darwin_arm64" \
-          "${prefix}_linux_amd64" \
-          "${prefix}_linux_arm64"; do
+        case "$FIXTURE_MODE" in
+          sumonespace) printf '%s RELEASE-MANIFEST\n' "$manifest_digest" >>"$dest" ;;
+          sumtab) printf '%s\tRELEASE-MANIFEST\n' "$manifest_digest" >>"$dest" ;;
+          sumleading) printf ' %s  RELEASE-MANIFEST\n' "$manifest_digest" >>"$dest" ;;
+          sumtrailing) printf '%s  RELEASE-MANIFEST \n' "$manifest_digest" >>"$dest" ;;
+          *) printf '%s  RELEASE-MANIFEST\n' "$manifest_digest" >>"$dest" ;;
+        esac
+        if [ "$FIXTURE_TAG" = v1.0.0-rc1 ]; then
+          names="$FIXTURE_ASSET"
+        else
+          prefix="${FIXTURE_ASSET%_darwin_arm64}"
+          names="${prefix}_darwin_amd64
+${prefix}_darwin_arm64
+${prefix}_linux_amd64
+${prefix}_linux_arm64"
+        fi
+        while IFS= read -r name; do
           if [ "$FIXTURE_MODE" = mismatch ] && [ "$name" = "$FIXTURE_ASSET" ]; then
             printf '%064d  %s\n' 0 "$name" >>"$dest"
           else
             printf '%s  %s\n' "$digest" "$name" >>"$dest"
           fi
-        done
+        done <<<"$names"
+        case "$FIXTURE_MODE" in
+          extrasumdarwinamd64) printf '%s  marshal_1.0.0-rc1_darwin_amd64\n' "$digest" >>"$dest" ;;
+          extrasumlinux) printf '%s  marshal_1.0.0-rc1_linux_arm64\n' "$digest" >>"$dest" ;;
+          extrasumstable) printf '%s  marshal_1.0.0_darwin_arm64\n' "$digest" >>"$dest" ;;
+          extrasumotherrc) printf '%s  marshal_1.0.0-rc2_darwin_arm64\n' "$digest" >>"$dest" ;;
+        esac
         ;;
       *) exit 2 ;;
     esac
@@ -272,6 +311,42 @@ printf '%s %s %s\n' "$owner" "$mode" "$links"
 EOF
 chmod 0755 "${MOCK_BIN}/stat"
 
+cat >"${MOCK_BIN}/sha256sum" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -x /usr/bin/sha256sum ]; then
+  output="$(/usr/bin/sha256sum "$@")"
+else
+  output="$(/usr/bin/shasum -a 256 "$@")"
+fi
+printf '%s\n' "$output"
+[ "$#" -gt 0 ] || exit 0
+path="${@: -1}"
+[ -n "${FIXTURE_DRIFT_PHASE:-}" ] && [ -n "${FIXTURE_DRIFT_STATE_DIR:-}" ] \
+  && [ -n "${FIXTURE_INSTALL_DIR:-}" ] || exit 0
+mkdir -p "$FIXTURE_DRIFT_STATE_DIR"
+case "$path" in
+  "${FIXTURE_INSTALL_DIR}/.marshal-staging/marshal.candidate")
+    count_file="${FIXTURE_DRIFT_STATE_DIR}/candidate-count"
+    count=0
+    [ ! -f "$count_file" ] || count="$(cat "$count_file")"
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$count_file"
+    if [ "$FIXTURE_DRIFT_PHASE" = download ] && [ "$count" = 2 ]; then
+      printf 'download-drift\n' >>"$path"
+    fi
+    ;;
+  "${FIXTURE_INSTALL_DIR}/.marshal-staging/marshal")
+    marker="${FIXTURE_DRIFT_STATE_DIR}/execute-mutated"
+    if [ "$FIXTURE_DRIFT_PHASE" = execute ] && [ ! -e "$marker" ]; then
+      : >"$marker"
+      printf 'execute-drift\n' >>"$path"
+    fi
+    ;;
+esac
+EOF
+chmod 0755 "${MOCK_BIN}/sha256sum"
+
 cat >"${MOCK_BIN}/ln" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -287,6 +362,19 @@ esac
 exec /bin/ln "$@"
 EOF
 chmod 0755 "${MOCK_BIN}/ln"
+
+cat >"${MOCK_BIN}/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+dest="${@: -1}"
+/bin/mv "$@"
+if [ "${FIXTURE_DRIFT_PHASE:-}" = install ] && \
+   [ -n "${FIXTURE_INSTALL_DIR:-}" ] && \
+   [ "$dest" = "${FIXTURE_INSTALL_DIR}/marshal" ]; then
+  printf 'install-drift\n' >>"$dest"
+fi
+EOF
+chmod 0755 "${MOCK_BIN}/mv"
 
 cat >"${MOCK_BIN}/go" <<'EOF'
 #!/usr/bin/env bash
@@ -537,6 +625,53 @@ run_preview_request_failure_case() {
     || fail "preview/${name} 准入拒绝前已创建 staging"
 }
 
+run_missing_curl_failure_case() {
+  local case_dir no_curl_bin output status command_name command_path
+  case_dir="${TMP_ROOT}/preview-missing-curl"
+  no_curl_bin="${case_dir}/no-curl-bin"
+  mkdir -p "${case_dir}/home" "${case_dir}/install" "$no_curl_bin"
+  for command_name in bash env id mkdir mktemp rm rmdir; do
+    command_path="$(command -v "$command_name")"
+    ln -s "$command_path" "${no_curl_bin}/${command_name}"
+  done
+  ln -s "${MOCK_BIN}/uname" "${no_curl_bin}/uname"
+  ln -s "${MOCK_BIN}/stat" "${no_curl_bin}/stat"
+  set +e
+  output="$(HOME="${case_dir}/home" PATH="$no_curl_bin" \
+    MARSHAL_INSTALL_DIR="${case_dir}/install" \
+    MARSHAL_TAG=v1.0.0-rc1 MARSHAL_LOCAL_DOGFOOD_PREVIEW=1 \
+    /bin/bash "${ROOT}/scripts/install.sh" 2>&1)"
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || fail 'preview/missing-curl 应 fail closed'
+  printf '%s\n' "$output" | grep -F 'v1.0.0-rc1 缺少 curl，禁止回退源码' >/dev/null \
+    || fail "preview/missing-curl 未返回确定性错误: ${output}"
+  [ ! -e "${case_dir}/install/marshal" ] || fail 'preview/missing-curl 仍安装 marshal'
+}
+
+run_drift_failure_case() {
+  local phase="$1" expected="$2" case_dir output status asset
+  case_dir="${TMP_ROOT}/drift-${phase}"
+  asset=marshal_1.0.0-rc1_darwin_arm64
+  mkdir -p "${case_dir}/home" "${case_dir}/install" "${case_dir}/state"
+  set +e
+  output="$(HOME="${case_dir}/home" PATH="${MOCK_BIN}:/usr/bin:/bin" \
+    MARSHAL_INSTALL_DIR="${case_dir}/install" MARSHAL_TAG=v1.0.0-rc1 \
+    MARSHAL_LOCAL_DOGFOOD_PREVIEW=1 FIXTURE_MODE=valid \
+    FIXTURE_ASSET="$asset" FIXTURE_TAG=v1.0.0-rc1 \
+    FIXTURE_PEELED_COMMIT="$FIXTURE_COMMIT" FIXTURE_DRIFT_PHASE="$phase" \
+    FIXTURE_DRIFT_STATE_DIR="${case_dir}/state" FIXTURE_INSTALL_DIR="${case_dir}/install" \
+    bash "${ROOT}/scripts/install.sh" 2>&1)"
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || fail "drift/${phase} 应 fail closed"
+  printf '%s\n' "$output" | grep -F "$expected" >/dev/null \
+    || fail "drift/${phase} 未返回预期错误 ${expected}: ${output}"
+  if printf '%s\n' "$output" | grep -F '[install] 完成' >/dev/null; then
+    fail "drift/${phase} 误报安装成功"
+  fi
+}
+
 run_repo_override_failure_case() {
   local case_dir output status
   case_dir="${TMP_ROOT}/repo-override"
@@ -701,6 +836,7 @@ run_preview_request_failure_case amd64 \
 run_preview_request_failure_case force-source \
   'v1.0.0-rc1 禁止 MARSHAL_FORCE_SOURCE 和任何源码回退' \
   MARSHAL_TAG=v1.0.0-rc1 MARSHAL_LOCAL_DOGFOOD_PREVIEW=1 MARSHAL_FORCE_SOURCE=1
+run_missing_curl_failure_case
 run_failure_case v1.0.0-rc1 missingasset '精确资产 marshal_1.0.0-rc1_darwin_arm64 缺失或下载失败'
 run_failure_case v1.0.0-rc1 downloadfailure '精确资产 marshal_1.0.0-rc1_darwin_arm64 缺失或下载失败'
 run_failure_case v1.0.0-rc1 missing '缺少或无法下载 SHA256SUMS'
@@ -711,8 +847,8 @@ run_failure_case v1.0.0-rc1 badprofile 'selfProfile=unprofiled，期望 darwin-l
 run_failure_case v1.0.0-rc1 badbinarycommit "commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa，期望 ${FIXTURE_COMMIT}"
 run_failure_case v1.0.0-rc1 badbuilddate 'buildDate=2026-08-29T00:00:00Z，期望 2026-08-28T00:00:00Z'
 run_failure_case v1.0.0-rc1 badgoversion 'goVersion=go1.26.7，期望 go1.26.6'
-run_failure_case v1.0.0-rc1 badmanifestcommit 'RELEASE-MANIFEST 非 canonical、与 tag/peeled commit/checksum 不一致或资产集合不封闭'
-run_failure_case v1.0.0-rc1 badmanifestasset 'RELEASE-MANIFEST 非 canonical、与 tag/peeled commit/checksum 不一致或资产集合不封闭'
+run_failure_case v1.0.0-rc1 badmanifestcommit 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
+run_failure_case v1.0.0-rc1 badmanifestasset 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
 run_failure_case v1.0.0-rc1 badmanifestchecksum 'RELEASE-MANIFEST sha256 校验失败'
 run_failure_case v1.0.0-rc1 missingmanifest '缺少或无法下载 RELEASE-MANIFEST'
 run_failure_case v1.0.0-rc1 lightweighttag '必须是唯一 annotated tag 且可解析唯一 peeled commit'
@@ -721,6 +857,22 @@ run_failure_case v1.0.0-rc1 extratagline 'annotated tag candidate message 必须
 run_failure_case v1.0.0-rc1 taginteriorblank 'annotated tag candidate message 必须是 exact 6-line closed 格式'
 run_failure_case v1.0.0-rc1 tagtrailingblank 'annotated tag candidate message 必须是 exact 6-line closed 格式'
 run_failure_case v1.0.0-rc1 tagnul 'annotated tag candidate message 必须是 exact 6-line closed 格式'
+run_failure_case v1.0.0-rc1 extrasumdarwinamd64 'RC1 SHA256SUMS 必须精确包含 RELEASE-MANIFEST'
+run_failure_case v1.0.0-rc1 extrasumlinux 'RC1 SHA256SUMS 必须精确包含 RELEASE-MANIFEST'
+run_failure_case v1.0.0-rc1 extrasumstable 'RC1 SHA256SUMS 必须精确包含 RELEASE-MANIFEST'
+run_failure_case v1.0.0-rc1 extrasumotherrc 'RC1 SHA256SUMS 必须精确包含 RELEASE-MANIFEST'
+run_failure_case v1.0.0-rc1 sumonespace 'RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序'
+run_failure_case v1.0.0-rc1 sumtab 'RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序'
+run_failure_case v1.0.0-rc1 sumleading 'RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序'
+run_failure_case v1.0.0-rc1 sumtrailing 'RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序'
+run_failure_case v1.0.0-rc1 extramanifestfield 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
+run_failure_case v1.0.0-rc1 extramanifestdarwinamd64 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
+run_failure_case v1.0.0-rc1 extramanifestlinux 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
+run_failure_case v1.0.0-rc1 extramanifeststable 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
+run_failure_case v1.0.0-rc1 extramanifestotherrc 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
+run_drift_failure_case download '下载后 release object sha256 漂移'
+run_drift_failure_case execute '执行前 release object sha256 漂移'
+run_drift_failure_case install '安装后 release object sha256 漂移'
 run_repo_override_failure_case
 run_layout_failure_case install-symlink '目录缺失、非目录或为符号链接'
 run_layout_failure_case target-symlink '安装目标不得是符号链接'

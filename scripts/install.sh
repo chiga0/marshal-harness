@@ -303,6 +303,10 @@ sha256_of() {
 
 verify_sha256() {
   local asset="$1" prefix line expected actual manifest_expected manifest_actual
+  if [ "$RC1_MODE" = 1 ]; then
+    verify_rc1_sha256 "$asset"
+    return 0
+  fi
   prefix="${asset%_${OS}_${ARCH}}"
   line="$(awk -v want="$asset" -v prefix="$prefix" '
     {
@@ -352,6 +356,40 @@ verify_sha256() {
   fi
   [ "$manifest_actual" = "$manifest_expected" ] \
     || fatal "RELEASE-MANIFEST sha256 校验失败"
+  info "sha256 校验通过"
+}
+
+verify_rc1_sha256() {
+  local asset="$1" manifest_line asset_line extra_line expected manifest_expected
+  local actual manifest_actual manifest_suffix asset_suffix
+  manifest_suffix="  RELEASE-MANIFEST"
+  asset_suffix="  ${asset}"
+  {
+    IFS= read -r manifest_line || fatal "RC1 SHA256SUMS 必须以换行结尾且包含精确两项"
+    IFS= read -r asset_line || fatal "RC1 SHA256SUMS 必须以换行结尾且包含精确两项"
+    if IFS= read -r extra_line || [ -n "$extra_line" ]; then
+      fatal "RC1 SHA256SUMS 必须精确包含 RELEASE-MANIFEST 与 ${asset} 两项，不得包含其它平台、stable 或其它 RC 资产"
+    fi
+  } <"${TMP_DIR}/SHA256SUMS"
+  [ "${#manifest_line}" -eq $((64 + ${#manifest_suffix})) ] \
+    && [ "${manifest_line:64}" = "$manifest_suffix" ] \
+    && [[ "${manifest_line:0:64}" =~ ^[0-9A-Fa-f]{64}$ ]] \
+    || fatal "RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序，不得有前后空白"
+  [ "${#asset_line}" -eq $((64 + ${#asset_suffix})) ] \
+    && [ "${asset_line:64}" = "$asset_suffix" ] \
+    && [[ "${asset_line:0:64}" =~ ^[0-9A-Fa-f]{64}$ ]] \
+    || fatal "RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序，不得有前后空白"
+  manifest_expected="$(printf '%s' "${manifest_line:0:64}" | tr 'A-F' 'a-f')"
+  expected="$(printf '%s' "${asset_line:0:64}" | tr 'A-F' 'a-f')"
+  actual="$(sha256_of "$CANDIDATE_OBJECT")" \
+    || fatal "缺少 sha256sum/shasum，无法完成校验"
+  [ "$actual" = "$expected" ] \
+    || fatal "sha256 校验失败: ${asset} 期望 ${expected}，实际 ${actual}"
+  manifest_actual="$(sha256_of "${TMP_DIR}/RELEASE-MANIFEST")" \
+    || fatal "缺少 sha256sum/shasum，无法校验 RELEASE-MANIFEST"
+  [ "$manifest_actual" = "$manifest_expected" ] \
+    || fatal "RELEASE-MANIFEST sha256 校验失败"
+  EXPECTED_ASSET_SHA256="$expected"
   info "sha256 校验通过"
 }
 
@@ -439,6 +477,10 @@ verify_release_tag_candidate() {
 verify_release_manifest() {
   local asset="$1" version_no_v="$2" expected_repo manifest_asset_record
   local manifest_asset_digest manifest_asset_size actual_asset_size
+  if [ "$RC1_MODE" = 1 ]; then
+    verify_rc1_release_manifest "$asset" "$version_no_v"
+    return 0
+  fi
   expected_repo="https://github.com/${REPO}.git"
   manifest_asset_record="$(awk -v want="$asset" '
     NR == FNR { sum[$2]=tolower($1); next }
@@ -479,6 +521,41 @@ verify_release_manifest() {
   EXPECTED_ASSET_SIZE="$manifest_asset_size"
   EXPECTED_BUILD_DATE="$(awk 'NR == 5 { print $2 }' "${TMP_DIR}/RELEASE-MANIFEST")"
   EXPECTED_GO_VERSION="$(awk 'NR == 6 { print $2 }' "${TMP_DIR}/RELEASE-MANIFEST")"
+}
+
+verify_rc1_release_manifest() {
+  local asset="$1" version_no_v="$2" expected_repo record
+  local manifest_asset_digest manifest_asset_size actual_asset_size
+  expected_repo="https://github.com/${REPO}.git"
+  record="$(awk -v repo="$expected_repo" -v tag="$TAG" -v commit="$EXPECTED_COMMIT" \
+    -v version="$version_no_v" -v want="$asset" -v checksum="$EXPECTED_ASSET_SHA256" '
+    NR == 1 { if ($0 != "schemaVersion marshal.rc1-release-manifest.v1") exit 1; next }
+    NR == 2 { if ($0 != "repository " repo) exit 1; next }
+    NR == 3 { if ($0 != "tag " tag) exit 1; next }
+    NR == 4 { if ($1 != "sourceHead" || NF != 2 || $2 != commit) exit 1; next }
+    NR == 5 { if ($1 != "buildDate" || NF != 2 || $2 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/) exit 1; build_date=$2; next }
+    NR == 6 { if ($1 != "goVersion" || NF != 2 || $2 !~ /^go[0-9]+\.[0-9]+\.[0-9]+$/) exit 1; go_version=$2; next }
+    NR == 7 { if ($0 != "buildFlags -trimpath,-buildvcs=false,-mod=readonly,-buildid=") exit 1; next }
+    NR == 8 {
+      if ($1 != "asset" || NF != 7 || $2 !~ /^[0-9a-f]{64}$/ || $3 !~ /^[1-9][0-9]*$/ ||
+          $4 != want || $4 != "marshal_1.0.0-rc1_darwin_arm64" || $5 != "darwin" ||
+          $6 != "arm64" || $7 != "darwin-local-dogfood" || $2 != checksum) exit 1
+      digest=$2; size=$3; next
+    }
+    { exit 1 }
+    END {
+      if (NR != 8 || digest == "" || size == "" || build_date == "" || go_version == "") exit 1
+      print digest " " size " " build_date " " go_version
+    }
+  ' "${TMP_DIR}/RELEASE-MANIFEST")" \
+    || fatal "RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行、唯一 Darwin arm64 local-dogfood asset 的封闭合同"
+  read -r manifest_asset_digest manifest_asset_size EXPECTED_BUILD_DATE EXPECTED_GO_VERSION <<<"$record"
+  actual_asset_size="$(wc -c <"$CANDIDATE_OBJECT" | tr -d '[:space:]')"
+  [ "$manifest_asset_digest" = "$EXPECTED_ASSET_SHA256" ] \
+    || fatal "RC1 RELEASE-MANIFEST 与 SHA256SUMS 的 ${asset} 摘要不一致"
+  [ "$manifest_asset_size" = "$actual_asset_size" ] \
+    || fatal "RC1 RELEASE-MANIFEST 中 ${asset} 的 size 与下载资产不一致"
+  EXPECTED_ASSET_SIZE="$manifest_asset_size"
 }
 
 try_release() {
