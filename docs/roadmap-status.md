@@ -10,7 +10,7 @@
 >
 > **2026-08-29 Run-start proof 纠偏**：[ADR 0065](adr/0065-sealed-run-start-proof-and-one-way-composition.md) 已接受，基于 `main@40fa493` 冻结 ResultIngress 的 owner/Attempt/generation 重验与 runstore 的 Run lease/head/state CAS 绝对分离，并以 shared-guard proof 和精确 composition AST gate 衔接。接受只冻结合同，S1/S2 尚未实现，不升级 R2–R5；旧实现候选不构成当前进展。
 >
-> **2026-08-29 S2 production factory 提议**：[ADR 0066](adr/0066-production-composition-owner-acquisition.md) 为 `Proposed`。当前没有 fixed `./bin/marshal` production factory，`Runtime.Status` 仍为 `production-composition-incomplete`，owner lock也存在“acquisition先于锁、successor acquisition又必须锁内产生”的构造环。提议只纠正S2为scope-only两阶段owner acquisition、确定性`StateRoot`布局、唯一Darwin arm64 factory与controller-only composition；未接受前不授权实现、不改变R2–R6状态或ADR0062信任模型。
+> **2026-08-29 S2 production factory 提议**：[ADR 0066](adr/0066-production-composition-owner-acquisition.md) 为 `Proposed`。当前没有 fixed `./bin/marshal` production factory，`Runtime.Status` 仍为 `production-composition-incomplete`，owner lock 存在“acquisition 先于锁、successor acquisition 又必须锁内产生”的构造环，任意 `MARSHAL_STATE_DIR` 还允许同 repository 两锁两 ledger。提议只纠正 S2 为 scope-only lock → one-shot provisional `AcquireOwner` → exact replay 后 current verifier、canonical repository `.marshal`、唯一 Darwin arm64 factory/controller composition，以及 fixed `cmd/marshal` application adapter/CLI mutation/`control-plane serve` 只持有 `PublicApplicationPort`；未接受前不授权实现、不改变 R2–R6 状态或 ADR 0062 信任模型。
 
 ## v1.0 生产纵切
 
@@ -20,7 +20,7 @@ Milestone 状态与能力成熟度是两个维度：
 | --- | --- |
 | `DESIGN` | ADR、Schema 或合同存在，尚无实现。 |
 | `COMPONENT` | Package、类型与测试存在，但真实 composition root 不可达。 |
-| `INTEGRATED` | `cmd/marshal` 或 `cmd/marshal-server` 可达，真实 Agent 与结果 bytes 穿过该路径。 |
+| `INTEGRATED` | fixed `cmd/marshal` 的 CLI mutation 或 `marshal control-plane serve` 经唯一 production factory/`PublicApplicationPort` 可达，真实 Agent 与结果 bytes 穿过该路径；独立 `cmd/marshal-server` 不计。 |
 | `RELEASED` | 集成路径通过 v1.0 release gate 并进入受支持产物。 |
 
 | 阶段 | 状态 | 成熟度 | 当前结论 |
