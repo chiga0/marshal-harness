@@ -2,12 +2,19 @@ package productionruntime
 
 import (
 	"context"
+	"errors"
+	"io"
+	"sync"
 
 	"github.com/chiga0/marshal-harness/internal/application"
 )
 
 type Runtime struct {
 	controller *controller
+	mu         sync.RWMutex
+	closed     bool
+	ready      bool
+	resources  []io.Closer
 }
 
 var _ application.PublicApplicationPort = (*Runtime)(nil)
@@ -16,6 +23,44 @@ var _ application.PublicApplicationPort = (*Runtime)(nil)
 // construct all mandatory components. This foundation cannot be selected by
 // CLI/server and cannot truthfully report production readiness.
 func newRuntime(controller *controller) (*Runtime, error) {
+	return newRuntimeWithReadiness(controller, false)
+}
+
+// newProductionRuntime is deliberately package-private. Only the fixed
+// production factory may call it after the complete mandatory graph has been
+// constructed and recovered. Keeping the readiness bit out of Config prevents
+// callers from turning a partially composed Runtime into an available one.
+// Ownership of every non-nil resource transfers at entry: construction
+// failure closes them in reverse order and closes the owner last.
+func newProductionRuntime(controller *controller, resources ...io.Closer) (*Runtime, error) {
+	for _, resource := range resources {
+		if resource == nil {
+			cleanupErr := closeRuntimeConstruction(controller, resources)
+			return nil, errors.Join(application.NewError("production-runtime", application.ReasonInvalidRequest), cleanupErr)
+		}
+	}
+	runtime, err := newRuntimeWithReadiness(controller, true)
+	if err != nil {
+		return nil, errors.Join(err, closeRuntimeConstruction(controller, resources))
+	}
+	runtime.resources = append([]io.Closer(nil), resources...)
+	return runtime, nil
+}
+
+func closeRuntimeConstruction(controller *controller, resources []io.Closer) error {
+	var closeErrors []error
+	for index := len(resources) - 1; index >= 0; index-- {
+		if resources[index] != nil {
+			closeErrors = append(closeErrors, resources[index].Close())
+		}
+	}
+	if controller != nil && controller.ownerLock != nil {
+		closeErrors = append(closeErrors, controller.ownerLock.Close())
+	}
+	return errors.Join(closeErrors...)
+}
+
+func newRuntimeWithReadiness(controller *controller, ready bool) (*Runtime, error) {
 	if _, err := platformProfile(); err != nil {
 		return nil, err
 	}
@@ -25,21 +70,40 @@ func newRuntime(controller *controller) (*Runtime, error) {
 	if err := controller.ownerLock.claimRuntime(); err != nil {
 		return nil, err
 	}
-	return &Runtime{controller: controller}, nil
+	return &Runtime{controller: controller, ready: ready}, nil
 }
 
 func (runtime *Runtime) Close() error {
-	if runtime == nil || runtime.controller == nil || runtime.controller.ownerLock == nil {
+	if runtime == nil {
 		return nil
 	}
-	return runtime.controller.ownerLock.Close()
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.closed {
+		return nil
+	}
+	runtime.closed = true
+	var closeErrors []error
+	for index := len(runtime.resources) - 1; index >= 0; index-- {
+		closeErrors = append(closeErrors, runtime.resources[index].Close())
+	}
+	runtime.resources = nil
+	if runtime.controller != nil && runtime.controller.ownerLock != nil {
+		closeErrors = append(closeErrors, runtime.controller.ownerLock.Close())
+	}
+	return errors.Join(closeErrors...)
 }
 
 func (runtime *Runtime) Status(ctx context.Context, _ application.StatusRequest) (application.StatusProjection, error) {
-	if runtime == nil || runtime.controller == nil || runtime.controller.profile.Validate() != nil {
+	controller, ready, release, err := runtime.beginOperation("status")
+	if err != nil {
 		return application.StatusProjection{}, application.NewError("status", application.ReasonBridgeUnavailable)
 	}
-	owner, err := runtime.controller.status(ctx)
+	defer release()
+	if controller.profile.Validate() != nil {
+		return application.StatusProjection{}, application.NewError("status", application.ReasonBridgeUnavailable)
+	}
+	owner, err := controller.status(ctx)
 	if err != nil {
 		reason := application.ReasonBridgeUnavailable
 		for _, candidate := range []application.ReasonCode{application.ReasonOwnerUnavailable, application.ReasonOwnerNotCurrent, application.ReasonAuthorityConflict} {
@@ -56,28 +120,52 @@ func (runtime *Runtime) Status(ctx context.Context, _ application.StatusRequest)
 	// The foundation deliberately remains non-ready until a later composition
 	// supplies a closed readiness projection for coordinator, allocation
 	// journal, launch bridge, ResultIngress and the remaining mandatory parts.
-	return runtime.validatedStatus(application.AvailabilityUnavailable, application.ReasonCompositionIncomplete, owner)
+	if !ready {
+		return runtime.validatedStatus(application.AvailabilityUnavailable, application.ReasonCompositionIncomplete, owner)
+	}
+	return runtime.validatedStatus(application.AvailabilityReady, "", owner)
 }
 
 func (runtime *Runtime) PrepareRunStart(ctx context.Context, request application.PrepareRunStartRequest) (application.PreparedRunStart, error) {
-	if runtime == nil || runtime.controller == nil {
-		return application.PreparedRunStart{}, application.NewError("prepare-run-start", application.ReasonBridgeUnavailable)
+	controller, _, release, err := runtime.beginOperation("prepare-run-start")
+	if err != nil {
+		return application.PreparedRunStart{}, err
 	}
-	return runtime.controller.prepareRunStart(ctx, request)
+	defer release()
+	return controller.prepareRunStart(ctx, request)
 }
 
 func (runtime *Runtime) StartPreparedRun(ctx context.Context, prepared application.PreparedRunStart) (application.RunProjection, error) {
-	if runtime == nil || runtime.controller == nil {
-		return application.RunProjection{}, application.NewError("start-prepared-run", application.ReasonBridgeUnavailable)
+	controller, _, release, err := runtime.beginOperation("start-prepared-run")
+	if err != nil {
+		return application.RunProjection{}, err
 	}
-	return runtime.controller.startPreparedRun(ctx, prepared)
+	defer release()
+	return controller.startPreparedRun(ctx, prepared)
 }
 
 func (runtime *Runtime) InspectRun(ctx context.Context, request application.InspectRunRequest) (application.RunProjection, error) {
-	if runtime == nil || runtime.controller == nil {
-		return application.RunProjection{}, application.NewError("inspect-run", application.ReasonBridgeUnavailable)
+	controller, _, release, err := runtime.beginOperation("inspect-run")
+	if err != nil {
+		return application.RunProjection{}, err
 	}
-	return runtime.controller.inspectRun(ctx, request)
+	defer release()
+	return controller.inspectRun(ctx, request)
+}
+
+// beginOperation keeps Runtime.Close behind every in-flight operation and
+// rejects operations that begin after close. The owner verifier itself remains
+// the authority gate; this lock only makes its process lifecycle deterministic.
+func (runtime *Runtime) beginOperation(operation string) (*controller, bool, func(), error) {
+	if runtime == nil {
+		return nil, false, nil, application.NewError(operation, application.ReasonBridgeUnavailable)
+	}
+	runtime.mu.RLock()
+	if runtime.closed || runtime.controller == nil {
+		runtime.mu.RUnlock()
+		return nil, false, nil, application.NewError(operation, application.ReasonBridgeUnavailable)
+	}
+	return runtime.controller, runtime.ready, runtime.mu.RUnlock, nil
 }
 
 func (runtime *Runtime) validatedStatus(availability application.Availability, reason application.ReasonCode, owner OwnerProjection) (application.StatusProjection, error) {

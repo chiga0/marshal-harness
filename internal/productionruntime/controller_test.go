@@ -20,6 +20,7 @@ type testOwnerLock struct {
 	closed     bool
 	inCritical bool
 	sections   int
+	closeOrder *[]string
 }
 
 func (lock *testOwnerLock) WithCurrentOwnerLock(_ context.Context, acquisition resultingress.ControlOwnerAcquisition, fn func() error) error {
@@ -32,7 +33,13 @@ func (lock *testOwnerLock) WithCurrentOwnerLock(_ context.Context, acquisition r
 	return fn()
 }
 
-func (lock *testOwnerLock) Close() error { lock.closed = true; return nil }
+func (lock *testOwnerLock) Close() error {
+	lock.closed = true
+	if lock.closeOrder != nil {
+		*lock.closeOrder = append(*lock.closeOrder, "owner")
+	}
+	return nil
+}
 func (lock *testOwnerLock) acquisition() resultingress.ControlOwnerAcquisition {
 	return lock.want
 }
