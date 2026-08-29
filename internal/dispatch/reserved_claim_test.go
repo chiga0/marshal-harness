@@ -174,7 +174,7 @@ func TestClaimReservedCanonicalInputConflictsFailClosedBeforeMint(t *testing.T) 
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			input := base
+			var input reservedClaimInput
 			raw, _ := json.Marshal(base)
 			if err := json.Unmarshal(raw, &input); err != nil {
 				t.Fatal(err)
