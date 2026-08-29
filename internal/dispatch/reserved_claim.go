@@ -1,7 +1,6 @@
 package dispatch
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -9,11 +8,6 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/provider"
 )
-
-// ErrReservedClaimNotFound is the only result that authorizes the fresh
-// reserved-claim path to mint a DispatchLease. Every other lookup failure is
-// structural or durable-state corruption and must fail closed.
-var ErrReservedClaimNotFound = errors.New("dispatch: reserved claim not found")
 
 // ReservedClaimRequest is the ADR 0069 dispatch admission request. The
 // reservation fact digest, RunID and reserved AttemptID form the durable
@@ -227,12 +221,11 @@ func (fact reservedClaimFact) result() ReservedClaimResult {
 	}
 }
 
-// lookupOrCreateReservedClaim is the atomic durable lookup-before-claim
-// seam. create is invoked only for deterministic not-found while l.mu is
-// held, so concurrent callers sharing the production ledger cannot mint
-// siblings. Exact input replay returns the persisted response; any key reuse
-// with different canonical bytes fails closed.
-func (l *LeaseLedger) lookupOrCreateReservedClaim(input reservedClaimInput, create func() (DispatchLease, authority.DispatchResultCapability, error)) (ReservedClaimResult, bool, error) {
+// lookupReservedClaim is the ledger-only first phase of lookup-before-claim.
+// It never invokes external code while holding l.mu. Exact replay returns the
+// persisted response, conflicts fail closed, and a false found result is the
+// only state in which the caller may build a candidate outside the lock.
+func (l *LeaseLedger) lookupReservedClaim(input reservedClaimInput) (ReservedClaimResult, bool, error) {
 	if err := l.requireBound(); err != nil {
 		return ReservedClaimResult{}, false, err
 	}
@@ -245,6 +238,13 @@ func (l *LeaseLedger) lookupOrCreateReservedClaim(input reservedClaimInput, crea
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.lookupReservedClaimLocked(input, inputDigest)
+}
+
+// lookupReservedClaimLocked performs the index-only lookup and conflict
+// checks. It must never call EdgeRuntime, provider stores, or any other
+// external component. The caller holds l.mu.
+func (l *LeaseLedger) lookupReservedClaimLocked(input reservedClaimInput, inputDigest string) (ReservedClaimResult, bool, error) {
 	key := input.key()
 	if existing, ok := l.reservedClaims[key]; ok {
 		if existing.ClaimInputDigest != inputDigest {
@@ -277,17 +277,44 @@ func (l *LeaseLedger) lookupOrCreateReservedClaim(input reservedClaimInput, crea
 			return ReservedClaimResult{}, false, fmt.Errorf("%w: Run/Attempt tuple already exists in legacy lease history and fresh reserved claim cannot adopt it", ErrLeaseConflict)
 		}
 	}
-	if create == nil {
-		return ReservedClaimResult{}, false, fmt.Errorf("%w: %s", ErrReservedClaimNotFound, key)
+	return ReservedClaimResult{}, false, nil
+}
+
+// compareAndAppendReservedClaim is the ledger-only CAS phase. The caller
+// has already built and previewed the candidate without l.mu. This method
+// reacquires l.mu, repeats the complete lookup/conflict decision and returns
+// an exact concurrent winner when present; only a still-absent key appends
+// and fsyncs the supplied candidate.
+func (l *LeaseLedger) compareAndAppendReservedClaim(input reservedClaimInput, lease DispatchLease, edge authority.DispatchResultCapability) (ReservedClaimResult, bool, error) {
+	if err := l.requireBound(); err != nil {
+		return ReservedClaimResult{}, false, err
 	}
-	lease, edge, err := create()
+	if err := input.validate(); err != nil {
+		return ReservedClaimResult{}, false, err
+	}
+	inputDigest, err := input.digest()
 	if err != nil {
 		return ReservedClaimResult{}, false, err
 	}
 	fact := reservedClaimFact{
-		FactType: leaseFactTypeReservedClaimed, Sequence: l.nextSequence,
-		Input: input, ClaimInputDigest: inputDigest, Lease: lease, ResultCapability: edge,
+		FactType: leaseFactTypeReservedClaimed,
+		Input:    input, ClaimInputDigest: inputDigest, Lease: lease, ResultCapability: edge,
 	}
+	// Sequence is deliberately zero while the candidate is outside l.mu. It
+	// is neither request identity nor candidate identity, and reading the
+	// mutable nextSequence here would race a concurrent ledger append.
+	if err := fact.validate(); err != nil {
+		return ReservedClaimResult{}, false, err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if winner, found, err := l.lookupReservedClaimLocked(input, inputDigest); err != nil || found {
+		return winner, found, err
+	}
+	fact.Sequence = l.nextSequence
+	// Revalidate the complete fact with the exact sequence that will be
+	// digested and appended. No stale lock-external sequence can reach the
+	// durable bytes.
 	if err := fact.validate(); err != nil {
 		return ReservedClaimResult{}, false, err
 	}
@@ -387,18 +414,38 @@ func (m *Matcher) ClaimReserved(request ReservedClaimRequest, now time.Time) (Re
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	result, _, err := m.leaseLedger.lookupOrCreateReservedClaim(input, func() (DispatchLease, authority.DispatchResultCapability, error) {
+	result, found, err := m.leaseLedger.lookupReservedClaim(input)
+	if err != nil {
+		return ReservedClaimResult{}, err
+	}
+	if !found {
 		if m.issuedLeases == nil {
 			m.issuedLeases = map[string]string{}
 		}
 		binding := claimBindingKey(request.RunId, request.ReservedAttemptId)
 		if existing, taken := m.issuedLeases[binding]; taken {
-			return DispatchLease{}, authority.DispatchResultCapability{}, fmt.Errorf("%w: fresh reserved claim encountered existing lease %s for the Run/Attempt binding; legacy or sibling claims are never adopted", ErrLeaseConflict, existing)
+			return ReservedClaimResult{}, fmt.Errorf("%w: fresh reserved claim encountered existing lease %s for the Run/Attempt binding; legacy or sibling claims are never adopted", ErrLeaseConflict, existing)
 		}
-		return m.buildReservedClaimCandidate(stored, request.Claim, now)
-	})
-	if err != nil {
-		return ReservedClaimResult{}, err
+		lease, edge, buildErr := m.buildReservedClaimCandidate(stored, request.Claim, now)
+		if buildErr != nil {
+			// A concurrent exact claimant can durably win and issue its edge
+			// between our first lookup and preview. Its original durable bytes,
+			// not this caller's newly derived time-sensitive candidate, own the
+			// response. A hostile preseed remains an error when no winner exists.
+			winner, won, lookupErr := m.leaseLedger.lookupReservedClaim(input)
+			if lookupErr != nil {
+				return ReservedClaimResult{}, lookupErr
+			}
+			if !won {
+				return ReservedClaimResult{}, buildErr
+			}
+			result = winner
+		} else {
+			result, _, err = m.leaseLedger.compareAndAppendReservedClaim(input, lease, edge)
+			if err != nil {
+				return ReservedClaimResult{}, err
+			}
+		}
 	}
 	if err := m.reissueReservedCapability(result, input, now); err != nil {
 		return ReservedClaimResult{}, err
@@ -477,6 +524,9 @@ func (m *Matcher) buildReservedClaimCandidate(stored provider.ProviderRegistrati
 	edge.EdgeDigest = edgeDigest
 	if err := edge.Validate(); err != nil {
 		return DispatchLease{}, authority.DispatchResultCapability{}, fmt.Errorf("dispatch: reserved claim typed-edge validation: %w", err)
+	}
+	if m.beforeReservedEdgePreview != nil {
+		m.beforeReservedEdgePreview()
 	}
 	preview, _, err := m.edgeRuntime.PreviewDispatchResultCapability(reservedDispatchResultIssuance(lease, request.TargetActor))
 	if err != nil {

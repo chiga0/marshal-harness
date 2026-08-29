@@ -180,16 +180,12 @@ func TestClaimReservedCanonicalInputConflictsFailClosedBeforeMint(t *testing.T) 
 				t.Fatal(err)
 			}
 			tc.mutate(&input)
-			called := false
-			_, _, err := ledger.lookupOrCreateReservedClaim(input, func() (DispatchLease, authority.DispatchResultCapability, error) {
-				called = true
-				return DispatchLease{}, authority.DispatchResultCapability{}, nil
-			})
+			_, found, err := ledger.lookupReservedClaim(input)
 			if !errors.Is(err, ErrLeaseConflict) {
 				t.Fatalf("conflict err=%v", err)
 			}
-			if called {
-				t.Fatal("conflicting replay invoked mint callback")
+			if found {
+				t.Fatal("conflicting replay returned an exact durable claim")
 			}
 		})
 	}
@@ -207,13 +203,9 @@ func TestClaimReservedRejectsSiblingAndLegacyWithoutFallback(t *testing.T) {
 			RunId:                 request.RunId, ReservedAttemptId: request.ReservedAttemptId,
 			Registration: registration, Claim: request.Claim,
 		}
-		called := false
-		_, _, err := ledger.lookupOrCreateReservedClaim(input, func() (DispatchLease, authority.DispatchResultCapability, error) {
-			called = true
-			return DispatchLease{}, authority.DispatchResultCapability{}, nil
-		})
-		if !errors.Is(err, ErrLeaseConflict) || called {
-			t.Fatalf("sibling err=%v callback=%v", err, called)
+		_, found, err := ledger.lookupReservedClaim(input)
+		if !errors.Is(err, ErrLeaseConflict) || found {
+			t.Fatalf("sibling err=%v found=%v", err, found)
 		}
 	})
 
@@ -312,6 +304,176 @@ func TestClaimReservedConcurrentReplayAppendsOnce(t *testing.T) {
 	}
 	if bytes.Count(raw, []byte{'\n'}) != 1 {
 		t.Fatalf("concurrent replay appended %d facts, want 1", bytes.Count(raw, []byte{'\n'}))
+	}
+}
+
+func TestClaimReservedConcurrentExactWinnerReturnsOriginalBytes(t *testing.T) {
+	root := t.TempDir()
+	firstMatcher, ledger, _, request := newReservedClaimFixture(t, root)
+	secondMatcher := NewMatcherWithReservedClaimLedger(firstMatcher.store, firstMatcher.edgeRuntime, ledger)
+
+	arrived := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseClaims := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseClaims()
+	hook := func() {
+		arrived <- struct{}{}
+		<-release
+	}
+	firstMatcher.beforeReservedEdgePreview = hook
+	secondMatcher.beforeReservedEdgePreview = hook
+
+	results := make(chan ReservedClaimResult, 2)
+	errs := make(chan error, 2)
+	for index, matcher := range []*Matcher{firstMatcher, secondMatcher} {
+		go func(offset int, current *Matcher) {
+			result, err := current.ClaimReserved(request, dispatchTestNow.Add(time.Duration(offset)*time.Minute))
+			results <- result
+			errs <- err
+		}(index, matcher)
+	}
+	for index := 0; index < 2; index++ {
+		select {
+		case <-arrived:
+		case <-time.After(2 * time.Second):
+			releaseClaims()
+			t.Fatal("concurrent exact claimant did not reach lock-external edge preview")
+		}
+	}
+	releaseClaims()
+
+	var observed []ReservedClaimResult
+	for index := 0; index < 2; index++ {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("concurrent exact claim: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("concurrent exact claim did not finish")
+		}
+		select {
+		case result := <-results:
+			observed = append(observed, result)
+		case <-time.After(2 * time.Second):
+			t.Fatal("concurrent exact claim did not return its result")
+		}
+	}
+	if !reflect.DeepEqual(observed[0], observed[1]) {
+		t.Fatal("concurrent loser did not return the winner's original durable bytes")
+	}
+	raw, err := os.ReadFile(ledger.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Count(raw, []byte{'\n'}) != 1 {
+		t.Fatalf("concurrent exact winner appended %d facts, want 1", bytes.Count(raw, []byte{'\n'}))
+	}
+}
+
+type blockingLedgerLeaseResolver struct {
+	ledger  *LeaseLedger
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (resolver *blockingLedgerLeaseResolver) LeaseActive(leaseId string, generation int64, fencingToken string) (bool, error) {
+	resolver.once.Do(func() { close(resolver.entered) })
+	<-resolver.release
+	lease, state, currentGeneration, err := resolver.ledger.Current(leaseId)
+	if err != nil {
+		return false, err
+	}
+	return state == LeaseStateClaimed && currentGeneration == generation && lease.FencingToken == fencingToken, nil
+}
+
+func TestClaimReservedAndResultRecheckShareLedgerWithoutLockInversion(t *testing.T) {
+	root := t.TempDir()
+	matcher, ledger, _, request := newReservedClaimFixture(t, root)
+	first, err := matcher.ClaimReserved(request, dispatchTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := &blockingLedgerLeaseResolver{
+		ledger: ledger, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	releaseResolver := func() { releaseOnce.Do(func() { close(resolver.release) }) }
+	defer releaseResolver()
+	matcher.edgeRuntime.BindLeaseResolver(resolver)
+	recheckDone := make(chan error, 1)
+	go func() {
+		recheckDone <- matcher.edgeRuntime.RecheckDispatchResult(
+			first.ResultCapability,
+			dispatchResultUseRequestFor(first.ResultCapability, first.Lease, "reserved-lock-order-recheck"),
+			dispatchTestNow,
+		)
+	}()
+	select {
+	case <-resolver.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("result recheck did not enter the lease resolver while holding EdgeRuntime")
+	}
+
+	second := request
+	second.ReservationFactDigest = fixedDigest("attempt-reserved-lock-order-second")
+	second.RunId = "run-reserved-lock-order-second"
+	second.ReservedAttemptId = "attempt-reserved-lock-order-second"
+	second.Claim.RunId = second.RunId
+	second.Claim.AttemptId = second.ReservedAttemptId
+	second.Claim.TaskId = "task-reserved-lock-order-second"
+	second.Claim.AllocationId = "allocation-reserved-lock-order-second"
+	atPreview := make(chan struct{})
+	var previewOnce sync.Once
+	matcher.beforeReservedEdgePreview = func() { previewOnce.Do(func() { close(atPreview) }) }
+	claimDone := make(chan error, 1)
+	go func() {
+		_, claimErr := matcher.ClaimReserved(second, dispatchTestNow.Add(time.Minute))
+		claimDone <- claimErr
+	}()
+	select {
+	case <-atPreview:
+	case <-time.After(2 * time.Second):
+		releaseResolver()
+		t.Fatal("fresh reserved claim did not reach lock-external edge preview")
+	}
+
+	// EdgeRuntime remains locked by RecheckDispatchResult. The fresh claim is
+	// now blocked immediately before Preview, but must not own LeaseLedger.mu.
+	ledgerReadDone := make(chan error, 1)
+	go func() {
+		_, _, _, currentErr := ledger.Current(first.Lease.LeaseId)
+		ledgerReadDone <- currentErr
+	}()
+	select {
+	case currentErr := <-ledgerReadDone:
+		if currentErr != nil {
+			t.Fatalf("ledger read during edge preview interleave: %v", currentErr)
+		}
+	case <-time.After(2 * time.Second):
+		releaseResolver()
+		t.Fatal("fresh reserved claim held LeaseLedger.mu while waiting for EdgeRuntime")
+	}
+	releaseResolver()
+
+	select {
+	case recheckErr := <-recheckDone:
+		if recheckErr != nil {
+			t.Fatalf("result recheck: %v", recheckErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("result recheck did not finish")
+	}
+	select {
+	case claimErr := <-claimDone:
+		if claimErr != nil {
+			t.Fatalf("fresh reserved claim: %v", claimErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fresh reserved claim did not finish")
 	}
 }
 

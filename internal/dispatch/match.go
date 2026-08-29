@@ -41,6 +41,11 @@ type Matcher struct {
 	// issuedResultCapabilities indexes the DispatchResultCapability issued
 	// with each accepted claim, keyed by leaseId.
 	issuedResultCapabilities map[string]authority.DispatchResultCapability
+	// beforeReservedEdgePreview is a package-private deterministic
+	// interleaving seam used by concurrency tests. Production leaves it nil;
+	// it is invoked only after all ledger locks have been released and before
+	// ClaimReserved acquires the EdgeRuntime lock for its pure preview.
+	beforeReservedEdgePreview func()
 }
 
 // NewMatcher binds a Matcher to store, which must already be bound to a
