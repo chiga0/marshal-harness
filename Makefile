@@ -12,6 +12,11 @@ LDFLAGS_BASE := -s -w -buildid= \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.buildDate=$(BUILD_DATE)
 LDFLAGS := $(LDFLAGS_BASE) \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=$(SELF_PROFILE)
+RC1_LDFLAGS := -w -buildid= \
+	-X github.com/chiga0/marshal-harness/internal/buildinfo.version=$(VERSION) \
+	-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(COMMIT) \
+	-X github.com/chiga0/marshal-harness/internal/buildinfo.buildDate=$(BUILD_DATE) \
+	-X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=darwin-local-dogfood
 
 .PHONY: format format-check architecture-check vet lint test build dist dist-rc1 vuln release-check check ci
 
@@ -50,10 +55,8 @@ dist:
 	[ -n "$$required" ] && [ "$$actual" = "$$required" ] || { \
 		echo "[dist] 错误: release Go toolchain 漂移：期望 $$required，实际 $$actual" >&2; exit 1; \
 	}
-	@if [ -e "$(DIST_DIR)" ] || [ -L "$(DIST_DIR)" ]; then \
-		echo "[dist-rc1] 错误: build-once 输出目录必须不存在：$(DIST_DIR)" >&2; exit 1; \
-	fi
-	@mkdir "$(DIST_DIR)"
+	@rm -rf "$(DIST_DIR)"
+	@mkdir -p "$(DIST_DIR)"
 	@set -e; for t in $(DIST_TARGETS); do \
 		os="$${t%/*}"; arch="$${t#*/}"; \
 		case "$$os" in \
@@ -97,8 +100,8 @@ dist-rc1:
 	@out="$(DIST_DIR)/marshal_$(VERSION)_darwin_arm64"; \
 	echo "[dist-rc1] darwin/arm64 (darwin-local-dogfood) -> $$out"; \
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
-		$(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS_BASE) -X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=darwin-local-dogfood" -o "$$out" ./cmd/marshal
-	@bash scripts/release-contract.sh create-rc1-manifest \
+		$(GO) build $(GO_BUILD_FLAGS) -ldflags "$(RC1_LDFLAGS)" -o "$$out" ./cmd/marshal
+	@GO_BIN="$$($(GO) env GOROOT)/bin/go" bash scripts/release-contract.sh create-rc1-manifest \
 		"$(DIST_DIR)" "v$(VERSION)" "$(COMMIT)" "$(BUILD_DATE)" "$$($(GO) env GOVERSION)"
 	@set -e; cd "$(DIST_DIR)"; \
 	files="RELEASE-MANIFEST marshal_$(VERSION)_darwin_arm64"; \
@@ -109,8 +112,9 @@ dist-rc1:
 	else \
 		echo "[dist-rc1] 错误: 缺少 sha256sum/shasum，无法生成 SHA256SUMS" >&2; exit 1; \
 	fi
-	@bash scripts/release-contract.sh verify-rc1-dist \
-		"$(DIST_DIR)" "v$(VERSION)" "$(COMMIT)" >/dev/null
+	@GO_BIN="$$($(GO) env GOROOT)/bin/go" bash scripts/release-contract.sh verify-rc1-dist \
+		"$(DIST_DIR)" "v$(VERSION)" "$(COMMIT)" "$(BUILD_DATE)" \
+		"$$($(GO) env GOVERSION)" darwin arm64 darwin-local-dogfood >/dev/null
 	@echo "[dist-rc1] 已冻结唯一 Darwin arm64 candidate"
 
 vuln:

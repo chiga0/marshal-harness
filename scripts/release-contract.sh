@@ -6,6 +6,7 @@ set -euo pipefail
 RELEASE_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 RELEASE_TEMP_MESSAGE=""
 RC1_TAG="v1.0.0-rc1"
+RC1_BINARY_CHECKER="${RELEASE_ROOT}/scripts/release-rc1-binary-check.py"
 
 cleanup_release_temp() {
   if [ -n "$RELEASE_TEMP_MESSAGE" ]; then
@@ -85,8 +86,25 @@ validate_rc1_inputs() {
   validate_go_version "$go_version"
 }
 
+validate_rc1_identity() {
+  local os="$1" arch="$2" profile="$3"
+  [ "$os" = darwin ] && [ "$arch" = arm64 ] && [ "$profile" = darwin-local-dogfood ] \
+    || release_fatal "RC1 binary identity 必须精确为 darwin/arm64 + darwin-local-dogfood"
+}
+
 rc1_asset_name() {
   printf 'marshal_1.0.0-rc1_darwin_arm64\n'
+}
+
+verify_rc1_binary() {
+  local candidate="$1" tag="$2" source_head="$3" build_date="$4" go_version="$5"
+  local os="$6" arch="$7" profile="$8" go_bin="${GO_BIN:-}"
+  validate_rc1_inputs "$tag" "$source_head" "$build_date" "$go_version"
+  validate_rc1_identity "$os" "$arch" "$profile"
+  [ -n "$go_bin" ] || release_fatal "RC1 binary inspection 缺少固定 GO_BIN"
+  python3 -I -B "$RC1_BINARY_CHECKER" "$candidate" "${tag#v}" \
+    "$source_head" "$build_date" "$go_version" "$profile" "$go_bin" >/dev/null \
+    || release_fatal "RC1 candidate 的 Mach-O/Go/build identity 不匹配"
 }
 
 canonical_build_date() {
@@ -166,6 +184,8 @@ create_rc1_manifest() {
   name="$(rc1_asset_name)"
   [ -f "${dist_dir}/${name}" ] && [ ! -L "${dist_dir}/${name}" ] && [ -x "${dist_dir}/${name}" ] \
     || release_fatal "RC1 唯一 Darwin arm64 candidate 缺失、不是普通可执行文件或为符号链接"
+  verify_rc1_binary "${dist_dir}/${name}" "$tag" "$source_head" "$build_date" \
+    "$go_version" darwin arm64 darwin-local-dogfood
   digest="$(sha256_file "${dist_dir}/${name}")"
   size="$(file_size "${dist_dir}/${name}")"
   manifest="${dist_dir}/RELEASE-MANIFEST"
@@ -189,16 +209,20 @@ create_rc1_manifest() {
 }
 
 verify_rc1_manifest() {
-  local dist_dir="$1" tag="$2" expected_source_head="$3"
+  local dist_dir="$1" tag="$2" expected_source_head="$3" expected_build_date="$4"
+  local expected_go_version="$5" expected_os="$6" expected_arch="$7" expected_profile="$8"
   local manifest name record digest size go_version actual_digest actual_size
 
-  validate_rc1_tag "$tag"
-  validate_source_head "$expected_source_head"
+  validate_rc1_inputs "$tag" "$expected_source_head" "$expected_build_date" "$expected_go_version"
+  validate_rc1_identity "$expected_os" "$expected_arch" "$expected_profile"
   manifest="${dist_dir}/RELEASE-MANIFEST"
   name="$(rc1_asset_name)"
   [ -f "$manifest" ] && [ ! -L "$manifest" ] \
     || release_fatal "RC1 RELEASE-MANIFEST 缺失、不是普通文件或为符号链接"
-  record="$(awk -v tag="$tag" -v expected_head="$expected_source_head" -v name="$name" '
+  record="$(awk -v tag="$tag" -v expected_head="$expected_source_head" \
+    -v expected_date="$expected_build_date" -v expected_go="$expected_go_version" \
+    -v expected_os="$expected_os" -v expected_arch="$expected_arch" \
+    -v expected_profile="$expected_profile" -v name="$name" '
     function die(message) { print "[release-check] 错误: " message > "/dev/stderr"; exit 1 }
     NR == 1 { if ($0 != "schemaVersion marshal.rc1-release-manifest.v1") die("RC1 manifest schemaVersion 非法"); next }
     NR == 2 { if ($0 != "repository https://github.com/chiga0/marshal-harness.git") die("RC1 manifest repository 非 canonical"); next }
@@ -208,16 +232,19 @@ verify_rc1_manifest() {
       if ($2 != expected_head) die("RC1 manifest sourceHead 与期望值不匹配")
       next
     }
-    NR == 5 { if ($1 != "buildDate" || NF != 2 || $2 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/) die("RC1 manifest buildDate 非 canonical UTC"); next }
+    NR == 5 {
+      if ($1 != "buildDate" || NF != 2 || $2 != expected_date) die("RC1 manifest buildDate 与外部期望值不匹配")
+      next
+    }
     NR == 6 {
-      if ($1 != "goVersion" || NF != 2 || $2 !~ /^go[0-9]+\.[0-9]+\.[0-9]+$/) die("RC1 manifest goVersion 非精确版本")
+      if ($1 != "goVersion" || NF != 2 || $2 != expected_go) die("RC1 manifest goVersion 与外部期望值不匹配")
       go_version=$2
       next
     }
     NR == 7 { if ($0 != "buildFlags -trimpath,-buildvcs=false,-mod=readonly,-buildid=") die("RC1 manifest buildFlags 不匹配"); next }
     NR == 8 {
       if ($1 != "asset" || NF != 7 || $2 !~ /^[0-9a-f]{64}$/ || $3 !~ /^[1-9][0-9]*$/ ||
-          $4 != name || $5 != "darwin" || $6 != "arm64" || $7 != "darwin-local-dogfood") {
+          $4 != name || $5 != expected_os || $6 != expected_arch || $7 != expected_profile) {
         die("RC1 manifest 必须只声明唯一 Darwin arm64 local-dogfood asset")
       }
       digest=$2
@@ -241,10 +268,12 @@ verify_rc1_manifest() {
 }
 
 verify_rc1_dist() {
-  local dist_dir="$1" tag="$2" expected_source_head="$3"
+  local dist_dir="$1" tag="$2" expected_source_head="$3" expected_build_date="$4"
+  local expected_go_version="$5" expected_os="$6" expected_arch="$7" expected_profile="$8"
   local name sums entry_count line_number=0 line digest file actual
 
-  validate_rc1_tag "$tag"
+  validate_rc1_inputs "$tag" "$expected_source_head" "$expected_build_date" "$expected_go_version"
+  validate_rc1_identity "$expected_os" "$expected_arch" "$expected_profile"
   [ -d "$dist_dir" ] && [ ! -L "$dist_dir" ] \
     || release_fatal "RC1 dist 目录缺失或为符号链接: ${dist_dir}"
   name="$(rc1_asset_name)"
@@ -256,14 +285,17 @@ verify_rc1_dist() {
   entry_count="$(find "$dist_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')"
   [ "$entry_count" = 3 ] \
     || release_fatal "RC1 dist 必须且只能包含 Darwin arm64 candidate、RELEASE-MANIFEST 与 SHA256SUMS（实际 ${entry_count} 项）"
-  verify_rc1_manifest "$dist_dir" "$tag" "$expected_source_head"
+  verify_rc1_manifest "$dist_dir" "$tag" "$expected_source_head" "$expected_build_date" \
+    "$expected_go_version" "$expected_os" "$expected_arch" "$expected_profile"
+  verify_rc1_binary "${dist_dir}/${name}" "$tag" "$expected_source_head" \
+    "$expected_build_date" "$expected_go_version" "$expected_os" "$expected_arch" "$expected_profile"
 
   while IFS= read -r line || [ -n "$line" ]; do
     line_number=$((line_number + 1))
-    if [[ ! "$line" =~ ^([0-9A-Fa-f]{64})[[:space:]][[:space:]]([[:alnum:]_.-]+)$ ]]; then
+    if [[ ! "$line" =~ ^([0-9a-f]{64})[\ ][\ ]([[:alnum:]_.-]+)$ ]]; then
       release_fatal "RC1 SHA256SUMS 第 ${line_number} 行格式不合法"
     fi
-    digest="$(printf '%s' "${BASH_REMATCH[1]}" | tr 'A-F' 'a-f')"
+    digest="${BASH_REMATCH[1]}"
     file="${BASH_REMATCH[2]}"
     case "$line_number:$file" in
       1:RELEASE-MANIFEST|2:"$name") ;;
@@ -479,7 +511,7 @@ usage() {
   scripts/release-contract.sh create-manifest DIST_DIR TAG SOURCE_HEAD BUILD_DATE GO_VERSION
   scripts/release-contract.sh validate-rc1-inputs TAG SOURCE_HEAD BUILD_DATE GO_VERSION
   scripts/release-contract.sh create-rc1-manifest DIST_DIR TAG SOURCE_HEAD BUILD_DATE GO_VERSION
-  scripts/release-contract.sh verify-rc1-dist DIST_DIR TAG EXPECTED_SOURCE_HEAD
+  scripts/release-contract.sh verify-rc1-dist DIST_DIR TAG EXPECTED_SOURCE_HEAD EXPECTED_BUILD_DATE EXPECTED_GO_VERSION EXPECTED_OS EXPECTED_ARCH EXPECTED_PROFILE
   scripts/release-contract.sh candidate-tag-message DIST_DIR TAG SOURCE_HEAD
   scripts/release-contract.sh verify-candidate-tag REPOSITORY DIST_DIR TAG
   scripts/release-contract.sh verify-dist DIST_DIR TAG [EXPECTED_SOURCE_HEAD]
@@ -509,8 +541,8 @@ case "${1:-}" in
     create_rc1_manifest "$2" "$3" "$4" "$5" "$6"
     ;;
   verify-rc1-dist)
-    [ "$#" = 4 ] || usage
-    verify_rc1_dist "$2" "$3" "$4"
+    [ "$#" = 9 ] || usage
+    verify_rc1_dist "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
     ;;
   candidate-tag-message)
     [ "$#" = "4" ] || usage

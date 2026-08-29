@@ -9,6 +9,7 @@ FAKE_GO="${TMP_ROOT}/fake-go"
 LOG="${TMP_ROOT}/go.log"
 DIST="${TMP_ROOT}/dist"
 RC1_DIST="${TMP_ROOT}/rc1-dist"
+ACTUAL_GO="$(go env GOROOT)/bin/go"
 
 fail() {
   printf '[dist-profile-test] FAIL: %s\n' "$*" >&2
@@ -70,6 +71,16 @@ done
 [ "$(find "$DIST" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 6 ] \
   || fail 'dist 产物集合不封闭'
 
+printf 'stale\n' >"${DIST}/stale-sentinel"
+DIST_PROFILE_TEST_LOG="$LOG" make -C "$ROOT" dist \
+  GO="$FAKE_GO" DIST_DIR="$DIST" VERSION=1.0.0-rc1 \
+  COMMIT=0123456789abcdef0123456789abcdef01234567 \
+  BUILD_DATE=2026-08-28T00:00:00Z >/dev/null
+[ ! -e "${DIST}/stale-sentinel" ] \
+  || fail 'stable dist 未保持清空并重建既有 DIST_DIR 的基础语义'
+[ "$(wc -l <"$LOG" | tr -d '[:space:]')" = 8 ] \
+  || fail 'stable dist 重建既有目录时未重新构建四个平台资产'
+
 if FAKE_GO_VERSION=go1.26.7 DIST_PROFILE_TEST_LOG="$LOG" make -C "$ROOT" dist \
   GO="$FAKE_GO" DIST_DIR="${TMP_ROOT}/wrong-toolchain" VERSION=1.0.0-rc1 \
   COMMIT=0123456789abcdef0123456789abcdef01234567 \
@@ -78,18 +89,15 @@ if FAKE_GO_VERSION=go1.26.7 DIST_PROFILE_TEST_LOG="$LOG" make -C "$ROOT" dist \
 fi
 
 # ADR 0068 专用 target 不改变上述 stable dist 四平台语义，但自身只能
-# 调用一次 Darwin arm64 build，并精确冻结四个 build metadata 输入。
-: >"$LOG"
-DIST_PROFILE_TEST_LOG="$LOG" make -C "$ROOT" dist-rc1 \
-  GO="$FAKE_GO" \
+# 调用一次真实 Darwin arm64 cross-build（只做非执行式检查），并精确冻结
+# Mach-O/Go build settings 与四个 build identity 字段。
+make -C "$ROOT" dist-rc1 \
+  GO="$ACTUAL_GO" \
   DIST_DIR="$RC1_DIST" \
   VERSION=1.0.0-rc1 \
   COMMIT=0123456789abcdef0123456789abcdef01234567 \
   BUILD_DATE=2026-08-28T00:00:00Z >/dev/null
 
-[ "$(wc -l <"$LOG" | tr -d '[:space:]')" = 1 ] || fail 'dist-rc1 未严格只构建一次'
-grep -Fx 'darwin/arm64 selfProfile=darwin-local-dogfood version=1.0.0-rc1 commit=0123456789abcdef0123456789abcdef01234567 buildDate=2026-08-28T00:00:00Z' \
-  "$LOG" >/dev/null || fail 'dist-rc1 build identity 没有精确冻结'
 [ "$(find "$RC1_DIST" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 3 ] \
   || fail 'dist-rc1 产物集必须只有 candidate/manifest/checksum'
 [ -x "${RC1_DIST}/marshal_1.0.0-rc1_darwin_arm64" ] \
