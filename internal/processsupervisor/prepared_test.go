@@ -92,3 +92,30 @@ func TestPreparedCommandRejectsMissingControlIdentityAndPreAnchorDrift(t *testin
 		t.Fatalf("drifted pre-anchor error=%v", err)
 	}
 }
+
+func TestPreparedCommandEvidenceIntegrityRejectsPostCreationMutation(t *testing.T) {
+	pre := productionTestAnchor()
+	payload := BindAuthorityPayload{SupervisorStartedFactDigest: digest("1"), OwnerEpoch: pre.OwnerEpoch, PreviousAuthorityHead: pre.CurrentAuthorityHead, AuthorityHead: digest("2")}
+	prepared, err := PrepareCommand(pre, CommandOptions{Command: CommandBindAuthority, CommandID: "bind-integrity", Sequence: 1, PreviousCommandDigest: CommandGenesisDigest, CurrentAuthorityHead: pre.CurrentAuthorityHead, Deadline: time.Date(2026, 8, 29, 3, 4, 5, 0, time.UTC)}, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, mutate := range map[string]func(*PreparedCommandEvidence){
+		"projection":  func(evidence *PreparedCommandEvidence) { evidence.Projection.AuthorityHead = digest("3") },
+		"pre-command": func(evidence *PreparedCommandEvidence) { evidence.PreCommand.ControlFiles.Journal.Inode++ },
+		"deadline":    func(evidence *PreparedCommandEvidence) { evidence.Deadline = "2026-08-29T03:04:06Z" },
+		"command-id":  func(evidence *PreparedCommandEvidence) { evidence.CommandID = "bind-integrity-forged" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			forged := prepared.Evidence()
+			mutate(&forged)
+			if err := forged.Validate(); !errors.Is(err, ErrConflict) {
+				t.Fatalf("post-creation mutation error=%v", err)
+			}
+			if _, err := RebuildPreparedCommand(forged, payload); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("rebuild accepted post-creation mutation: %v", err)
+			}
+		})
+	}
+}

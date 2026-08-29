@@ -168,7 +168,18 @@ func TestCommandBoundaryRejectsPreAndPostReceiptDriftWithoutResponse(t *testing.
 
 func commandBoundaryFixture(t *testing.T) (sessionControlBoundary, *Journal, BootstrapRequest, string) {
 	t.Helper()
-	root := t.TempDir()
+	// AF_UNIX paths on Darwin are bounded. t.TempDir includes the full test and
+	// subtest name, so use an explicit short root while retaining deterministic
+	// cleanup instead of weakening the production socket-path boundary.
+	root, err := os.MkdirTemp("/private/tmp", "marshal-ps-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove short control root: %v", err)
+		}
+	})
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}

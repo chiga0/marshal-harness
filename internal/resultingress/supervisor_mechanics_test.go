@@ -42,6 +42,11 @@ func TestSupervisorCommandIntentConsumesProducerPreparedEvidence(t *testing.T) {
 	if _, err := NewSupervisorCommandIntent(forged); err == nil {
 		t.Fatal("consumer accepted projection drift from producer evidence")
 	}
+	forged = evidence
+	forged.PreCommand.ControlFiles.Journal.Inode++
+	if _, err := NewSupervisorCommandIntent(forged); err == nil {
+		t.Fatal("consumer accepted pre-command drift from producer evidence")
+	}
 }
 
 func testCommandEvidence(t *testing.T, session string, command processsupervisor.CommandName, currentHead string, outcome SupervisorProcessOutcome) SupervisorCommandEvidence {
@@ -66,7 +71,7 @@ func testCommandEvidence(t *testing.T, session string, command processsupervisor
 		ReasonCode:           "process-supervisor-" + string(command) + "-ok",
 		Outcome:              outcome,
 	}
-	pre := SupervisorMechanicsAnchor{SessionID: session, SessionNonceDigest: attemptTestDigest("nonce-" + session), Authority: supervisorAuthorityTuple(attemptTestIdentity()), OwnerEpoch: 1, CurrentAuthorityHead: currentHead, CommandSequence: 1, CommandHead: evidence.PreviousCommandHead, JournalSequence: 3, JournalHead: attemptTestDigest("journal-before-" + string(command)), UID: 501, GID: 20, FixedBinary: attemptTestBinary(), ControlSocket: processsupervisor.ControlSocketIdentity{Device: 8, Inode: 9, FileType: "socket", UID: 501, GID: 20, Mode: 0o140000 | 0o600, LinkCount: 1}}
+	pre := SupervisorMechanicsAnchor{SessionID: session, SessionNonceDigest: attemptTestDigest("nonce-" + session), Authority: supervisorAuthorityTuple(attemptTestIdentity()), OwnerEpoch: 1, CurrentAuthorityHead: currentHead, CommandSequence: 1, CommandHead: evidence.PreviousCommandHead, JournalSequence: 3, JournalHead: attemptTestDigest("journal-before-" + string(command)), UID: 501, GID: 20, FixedBinary: attemptTestBinary(), ControlSocket: processsupervisor.ControlSocketIdentity{Device: 8, Inode: 9, FileType: "socket", UID: 501, GID: 20, Mode: 0o140000 | 0o600, LinkCount: 1}, ControlFiles: attemptTestControlFiles(8, 10)}
 	evidence.PreCommand = pre
 	observation, receipt, err := evidence.boundMechanicsDigests()
 	if err != nil {
@@ -195,9 +200,10 @@ func testStartPreparedSupervisor(t *testing.T, store *DurableStore, state Attemp
 	t.Helper()
 	prepared := state.SupervisorBootstrap
 	socket := processsupervisor.ControlSocketIdentity{Device: prepared.ControlDirectory.Device, Inode: prepared.ControlDirectory.Inode + 100, FileType: "socket", UID: 501, GID: 20, Mode: 0o140000 | 0o600, LinkCount: 1}
+	controlFiles := attemptTestControlFiles(socket.Device, socket.Inode+1)
 	supervisorProcess := processsupervisor.ProcessIdentity{PID: 9200 + int(prepared.Owner.OwnerEpoch), BirthSeconds: 1_700_000_001, BirthMicroseconds: 32, SessionID: 9200 + int(prepared.Owner.OwnerEpoch), ProcessGroupID: 9200 + int(prepared.Owner.OwnerEpoch)}
-	handshake := processsupervisor.HandshakeResponse{SchemaVersion: processsupervisor.HandshakeSchema, ProtocolRevision: processsupervisor.ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: prepared.SessionID, SessionNonceDigest: prepared.SessionNonceDigest, OwnerEpoch: prepared.Owner.OwnerEpoch, CurrentAuthorityHead: prepared.Request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: attemptTestDigest("journal-" + prepared.SessionID), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: "2026-08-28T00:00:01Z", SupervisorProcess: supervisorProcess, SupervisorBinary: prepared.SupervisorBinary, ControlSocket: socket}
-	anchor := processsupervisor.HandshakeAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, Authority: prepared.Request.Authority, OwnerEpoch: handshake.OwnerEpoch, CurrentAuthorityHead: prepared.Request.CurrentAuthorityHead, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: handshake.JournalHead, UID: 501, GID: 20, FixedBinary: prepared.SupervisorBinary, ControlSocket: socket}
+	handshake := processsupervisor.HandshakeResponse{SchemaVersion: processsupervisor.HandshakeSchema, ProtocolRevision: processsupervisor.ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: prepared.SessionID, SessionNonceDigest: prepared.SessionNonceDigest, OwnerEpoch: prepared.Owner.OwnerEpoch, CurrentAuthorityHead: prepared.Request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: attemptTestDigest("journal-" + prepared.SessionID), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: "2026-08-28T00:00:01Z", SupervisorProcess: supervisorProcess, SupervisorBinary: prepared.SupervisorBinary, ControlSocket: socket, ControlFiles: controlFiles}
+	anchor := processsupervisor.HandshakeAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, Authority: prepared.Request.Authority, OwnerEpoch: handshake.OwnerEpoch, CurrentAuthorityHead: prepared.Request.CurrentAuthorityHead, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: handshake.JournalHead, UID: 501, GID: 20, FixedBinary: prepared.SupervisorBinary, ControlSocket: socket, ControlFiles: controlFiles}
 	started, err := NewProcessSupervisorStartedFromBootstrap(state.SupervisorBootstrapDigest, prepared, handshake, anchor, processsupervisor.CoreIdentity{UID: 501, GID: 20, Process: supervisorProcess, Binary: prepared.SupervisorBinary})
 	if err != nil {
 		t.Fatal(err)
