@@ -53,7 +53,7 @@ marshal / marshal control-plane serve
 
 任何平行 memory-only authority、直接 host `Adapter.Run` bypass 或不经 ResultIngress 的结果写入都不能进入 v1.0 supported path。Local ordinary-user profile 可以受支持，但其 assurance 明确止于 trusted single-user，不宣称 hardened。
 
-`ProcessBridge` 目前仍缺一份从 durable current facts 产生、可在启动前精确重放的 authority closure。[ADR 0063](adr/0063-prepared-execution-authority-and-production-chain.md)（Proposed）提议用 creation-once、secret-safe `PreparedExecutionV1` 引用 held Attempt authority 中完整的 Attempt/Run、owner、Allocation receipt 与 `launch-authorized`/`StoredClosureV1` 原件，以静态 `Pi0843IdentityV1` 绑定安装 bytes、以独立 `agentLaunchSpecDigest` 绑定 per-Run argv/environment/cwd，并把唯一 `READY → RUNNING` 提交点收敛到 exact successful `resume(state=running)` 之后的 `CommitRunStartOutcome`。交付顺序只能是 ADR 接受 → 一个 bounded authority component → 立即相邻的 fixed Marshal composition；在相邻 composition 完成前，这只是开放接缝，不能作为 `INTEGRATED` 证据。
+`ProcessBridge` 目前仍缺一份从 durable current facts 产生、可在启动前精确重放的 authority closure。[ADR 0063](adr/0063-prepared-execution-authority-and-production-chain.md) 已接受并冻结：用 creation-once、secret-safe `PreparedExecutionV1` 引用 held Attempt authority 中完整的 Attempt/Run、owner、Allocation receipt 与 `launch-authorized`/`StoredClosureV1` 原件，以静态 `Pi0843IdentityV1` 绑定安装 bytes、以独立 `agentLaunchSpecDigest` 绑定 per-Run argv/environment/cwd，并把唯一 `READY → RUNNING` 提交点收敛到 exact successful `resume(state=running)` 之后的 `CommitRunStartOutcome`。交付顺序只能是已接受合同 → 一个 bounded authority component → 立即相邻的 fixed Marshal composition；在相邻 composition 完成前，这仍是开放接缝，不能作为 `INTEGRATED` 证据。
 
 ## 逻辑职责不等于物理服务
 
