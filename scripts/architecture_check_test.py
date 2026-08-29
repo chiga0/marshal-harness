@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
 
+from pathlib import Path
+import tempfile
 import unittest
 
-from architecture_check import DOMAIN_PACKAGE, MODULE, architecture_layer_inversions
+from architecture_check import (
+    APPLICATION_PACKAGE,
+    DOMAIN_PACKAGE,
+    INPUT_ADAPTER_PACKAGES,
+    MODULE,
+    PRODUCTION_RUNTIME_PACKAGE,
+    architecture_layer_inversions,
+    production_dependency_inversions,
+    production_source_inversions,
+)
 
 
 def package(imports: list[str], dependencies: list[str] | None = None) -> dict[str, object]:
@@ -12,6 +23,19 @@ def package(imports: list[str], dependencies: list[str] | None = None) -> dict[s
         "Imports": imports,
         "Deps": imports if dependencies is None else dependencies,
     }
+
+
+def production_graph(imports: dict[str, list[str]]) -> list[dict[str, object]]:
+    required = INPUT_ADAPTER_PACKAGES | {APPLICATION_PACKAGE, PRODUCTION_RUNTIME_PACKAGE}
+    paths = required | set(imports)
+    return [
+        {
+            "ImportPath": import_path,
+            "Module": {"Path": MODULE},
+            "Imports": imports.get(import_path, []),
+        }
+        for import_path in paths
+    ]
 
 
 class ArchitectureCheckTest(unittest.TestCase):
@@ -57,6 +81,181 @@ class ArchitectureCheckTest(unittest.TestCase):
     def test_does_not_match_external_module_prefix_lookalike(self) -> None:
         lookalike = "github.com/chiga0/marshal-harness-extra/internal/selfidentity"
         self.assertEqual(architecture_layer_inversions(package([lookalike])), [])
+
+    def test_freezes_existing_input_adapter_debt_but_rejects_new_dependency(self) -> None:
+        packages = production_graph(
+            {f"{MODULE}/internal/cli": [f"{MODULE}/internal/execution"]}
+        )
+        self.assertEqual(production_dependency_inversions(packages), [])
+        wrapper = f"{MODULE}/internal/newwrapper"
+        packages = production_graph(
+            {
+                f"{MODULE}/cmd/marshal": [wrapper],
+                wrapper: [f"{MODULE}/internal/resultingress"],
+            }
+        )
+        self.assertEqual(
+            production_dependency_inversions(packages),
+            [f"{MODULE}/cmd/marshal:{wrapper}->{MODULE}/internal/resultingress"],
+        )
+
+    def test_application_and_runtime_bridge_imports_fail_closed(self) -> None:
+        app_wrapper = f"{MODULE}/internal/appwrapper"
+        runtime_wrapper = f"{MODULE}/internal/runtimewrapper"
+        packages = production_graph(
+            {
+                APPLICATION_PACKAGE: [app_wrapper],
+                app_wrapper: [f"{MODULE}/internal/planning"],
+                PRODUCTION_RUNTIME_PACKAGE: [
+                    f"{MODULE}/internal/resultingress",
+                    runtime_wrapper,
+                ],
+                runtime_wrapper: [f"{MODULE}/internal/processsupervisor"],
+            }
+        )
+        self.assertEqual(
+            production_dependency_inversions(packages),
+            sorted(
+                [
+                    f"{APPLICATION_PACKAGE}:{app_wrapper}->{MODULE}/internal/planning",
+                    f"{PRODUCTION_RUNTIME_PACKAGE}:{runtime_wrapper}->{MODULE}/internal/processsupervisor",
+                ]
+            ),
+        )
+
+    def test_allows_the_unique_runtime_resultingress_edge_from_an_input_root(self) -> None:
+        packages = production_graph(
+            {
+                f"{MODULE}/cmd/marshal": [PRODUCTION_RUNTIME_PACKAGE],
+                PRODUCTION_RUNTIME_PACKAGE: [f"{MODULE}/internal/resultingress"],
+            }
+        )
+        self.assertEqual(production_dependency_inversions(packages), [])
+
+    def test_rejects_an_unreviewed_command_composition_root(self) -> None:
+        extra = f"{MODULE}/cmd/alternate"
+        packages = production_graph({extra: []})
+        self.assertEqual(
+            production_dependency_inversions(packages),
+            [f"unexpected-production-root:{extra}"],
+        )
+
+    def test_source_gate_freezes_selectors_and_child_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            allowed = root / "internal/app/sandbox.go"
+            allowed.parent.mkdir(parents=True)
+            allowed.write_text(
+                '// MARSHAL_PRODUCTION_GATE is documentation only.\n'
+                'const value = "MARSHAL_EMBEDDED_SANDBOX"\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(production_source_inversions(root), [])
+            forbidden = root / "internal/server/new.go"
+            forbidden.parent.mkdir(parents=True)
+            forbidden.write_text('const value = "MARSHAL_PRODUCTION_GATE"\n', encoding="utf-8")
+            self.assertEqual(
+                production_source_inversions(root),
+                ["legacy-selector:internal/server/new.go:MARSHAL_PRODUCTION_GATE"],
+            )
+
+    def test_source_gate_ignores_test_fixtures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / "internal/server/api_test.go"
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text('const value = "MARSHAL_PRODUCTION_GATE"\n', encoding="utf-8")
+            self.assertEqual(production_source_inversions(root), [])
+
+    def test_source_gate_rejects_new_server_child_task_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "internal/server/child.go"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                'var args = []string{"task", "run"}\n'
+                'func run() { exec.CommandContext(ctx, executable, args...) }\n',
+                encoding="utf-8",
+            )
+            violations = production_source_inversions(root)
+            self.assertEqual(len(violations), 1)
+            self.assertTrue(
+                violations[0].startswith(
+                    "server-process-spawn:internal/server/child.go:i:exec|p:.|i:CommandContext"
+                )
+            )
+
+    def test_source_gate_rejects_cross_file_arguments_at_a_frozen_spawn_site(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            constants = root / "cmd/marshal-server/arguments.go"
+            constants.parent.mkdir(parents=True)
+            constants.write_text(
+                'var childArgs = []string{"task", "run"}\n',
+                encoding="utf-8",
+            )
+            source = root / "cmd/marshal-server/main.go"
+            source.write_text(
+                'func executeRunThroughFixedCLI() { exec.CommandContext(ctx, executable.Path, childArgs...) }\n',
+                encoding="utf-8",
+            )
+            violations = production_source_inversions(root)
+            self.assertEqual(len(violations), 1)
+            self.assertTrue(
+                violations[0].startswith(
+                    "server-process-spawn:cmd/marshal-server/main.go:i:exec|p:.|i:CommandContext"
+                )
+            )
+
+    def test_source_gate_resolves_spawn_import_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "internal/server/alias.go"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                'package server\nimport ex "os/exec"\n'
+                'func run() { ex.Command(executable, arguments...) }\n',
+                encoding="utf-8",
+            )
+            violations = production_source_inversions(root)
+            self.assertEqual(len(violations), 1)
+            self.assertTrue(
+                violations[0].startswith(
+                    "server-process-spawn:internal/server/alias.go:i:ex|p:.|i:Command"
+                )
+            )
+
+    def test_source_gate_rejects_exported_and_private_controller_bypasses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime_source = root / "internal/productionruntime/bypass.go"
+            runtime_source.parent.mkdir(parents=True)
+            runtime_source.write_text(
+                "type Controller struct{}\n"
+                "func bypass(c *controller) { c.startPreparedRun(ctx, prepared) }\n"
+                "func (c *controller) StartPreparedRun() {}\n"
+                "type darwinRepositoryOwnerLock struct{}\n"
+                "func (l *darwinRepositoryOwnerLock) ClaimRuntime() {}\n",
+                encoding="utf-8",
+            )
+            external = root / "internal/cli/bypass.go"
+            external.parent.mkdir(parents=True)
+            external.write_text(
+                "var value pr.NewController\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                production_source_inversions(root),
+                sorted(
+                    [
+                        "production-runtime-bypass:internal/cli/bypass.go:external-bypass:NewController",
+                        "production-runtime-bypass:internal/productionruntime/bypass.go:exported-bypass:Controller",
+                        "production-runtime-bypass:internal/productionruntime/bypass.go:exported-receiver:controller.StartPreparedRun",
+                        "production-runtime-bypass:internal/productionruntime/bypass.go:exported-receiver:darwinRepositoryOwnerLock.ClaimRuntime",
+                        "production-runtime-bypass:internal/productionruntime/bypass.go:private-mutation:startPreparedRun",
+                    ]
+                ),
+            )
 
 
 if __name__ == "__main__":
