@@ -24,6 +24,7 @@ const leaseLedgerFileName = "leases.jsonl"
 // sensitive.
 const (
 	leaseFactTypeClaimed         = "lease-claimed"
+	leaseFactTypeReservedClaimed = "lease-reserved-claimed"
 	leaseFactTypeCancelled       = "lease-cancelled"
 	leaseFactTypeExpired         = "lease-expired"
 	leaseFactTypeAttemptTerminal = "lease-attempt-terminal"
@@ -66,9 +67,12 @@ type LeaseLedger struct {
 	activeBindings map[string]string
 	// closedAttemptBindings only contains new Attempt-authority projections.
 	// Legacy cancelled/expired history keeps its historical replay semantics.
-	closedAttemptBindings map[string]string
-	terminalAuthorities   map[string]string
-	nextSequence          int64
+	closedAttemptBindings   map[string]string
+	terminalAuthorities     map[string]string
+	reservedClaims          map[string]reservedClaimFact
+	reservedAttemptBindings map[string]string
+	reservationBindings     map[string]string
+	nextSequence            int64
 }
 
 // leaseClaimFact is the append-only ledger fact recording one accepted
@@ -205,12 +209,15 @@ func NewLeaseLedger(dir string) (*LeaseLedger, error) {
 		return nil, fmt.Errorf("dispatch: lease ledger path is not a directory")
 	}
 	ledger := &LeaseLedger{
-		dir:                   dir,
-		leases:                map[string]DispatchLease{},
-		activeBindings:        map[string]string{},
-		closedAttemptBindings: map[string]string{},
-		terminalAuthorities:   map[string]string{},
-		nextSequence:          1,
+		dir:                     dir,
+		leases:                  map[string]DispatchLease{},
+		activeBindings:          map[string]string{},
+		closedAttemptBindings:   map[string]string{},
+		terminalAuthorities:     map[string]string{},
+		reservedClaims:          map[string]reservedClaimFact{},
+		reservedAttemptBindings: map[string]string{},
+		reservationBindings:     map[string]string{},
+		nextSequence:            1,
 	}
 	if err := ledger.recover(); err != nil {
 		return nil, err
@@ -281,6 +288,9 @@ func (l *LeaseLedger) requireClaimable(lease DispatchLease) error {
 		return fmt.Errorf("%w: leaseId %s already exists in the lease ledger; the append-only ledger never rewrites or replaces an accepted claim", ErrLeaseConflict, lease.LeaseId)
 	}
 	binding := claimBindingKey(lease.RunId, lease.AttemptId)
+	if source, reserved := l.reservedAttemptBindings[binding]; reserved {
+		return fmt.Errorf("%w: (runId, attemptId) is owned by reserved claim %s and the legacy claim API cannot mint or resurrect a sibling", ErrLeaseConflict, source)
+	}
 	if source, closed := l.closedAttemptBindings[binding]; closed {
 		return fmt.Errorf("%w: (runId, attemptId) is terminal in Attempt authority projection %s and can never be reclaimed", ErrLeaseConflict, source)
 	}
@@ -708,6 +718,8 @@ func (l *LeaseLedger) applyLedgerLine(line []byte) error {
 	switch envelope.FactType {
 	case leaseFactTypeClaimed:
 		return l.applyClaimFact(line)
+	case leaseFactTypeReservedClaimed:
+		return l.applyReservedClaimFact(line)
 	case leaseFactTypeCancelled:
 		return l.applyCancelFact(line)
 	case leaseFactTypeExpired:
