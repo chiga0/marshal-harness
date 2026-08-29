@@ -7,6 +7,7 @@ WORKFLOW="${ROOT}/.github/workflows/release.yml"
 CI_WORKFLOW="${ROOT}/.github/workflows/ci.yml"
 MAKEFILE="${ROOT}/Makefile"
 CI_CONTRACT="${ROOT}/scripts/release-ci-contract.py"
+RELEASE_WORKFLOW_DIGEST="${ROOT}/scripts/release-workflow.sha256"
 TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 FAKE_GH="${TMP_ROOT}/gh"
@@ -59,26 +60,63 @@ done
 check_workflow() {
   local workflow="$1" build="${TMP_ROOT}/build-job" publish="${TMP_ROOT}/publish-job"
   local type_gate_line extract_line
+  python3 -I -B - "$workflow" "$RELEASE_WORKFLOW_DIGEST" <<'PY' || return 1
+import hashlib
+import pathlib
+import re
+import sys
+
+workflow, contract = map(pathlib.Path, sys.argv[1:])
+match = re.fullmatch(r"sha256:([0-9a-f]{64})\n", contract.read_text(encoding="utf-8"))
+if match is None or hashlib.sha256(workflow.read_bytes()).hexdigest() != match.group(1):
+    raise SystemExit(1)
+PY
+  # The exact-byte digest above is authoritative. These positive assertions
+  # remain only as localized diagnostics for an explicitly reviewed update.
   awk '/^  build:/{copy=1} /^  publish:/{copy=0} copy' "$workflow" >"$build"
   awk '/^  publish:/{copy=1} copy' "$workflow" >"$publish"
   grep -F 'actions: read' "$build" >/dev/null || return 1
   grep -F 'contents: read' "$build" >/dev/null || return 1
+  grep -F 'runs-on: macos-14' "$build" >/dev/null || return 1
+  grep -F 'environment: release-candidate-build' "$build" >/dev/null || return 1
   ! grep -F 'contents: write' "$build" >/dev/null || return 1
   ! grep -F 'gh release create' "$build" >/dev/null || return 1
   grep -F 'needs: build' "$publish" >/dev/null || return 1
+  grep -F 'actions: read' "$publish" >/dev/null || return 1
   grep -F 'contents: write' "$publish" >/dev/null || return 1
   grep -F 'tag-object: ${{ steps.release.outputs.tag-object }}' "$build" >/dev/null || return 1
+  grep -F 'artifact-id: ${{ steps.upload.outputs.artifact-id }}' "$build" >/dev/null || return 1
+  grep -F 'artifact-digest: ${{ steps.upload.outputs.artifact-digest }}' "$build" >/dev/null || return 1
   grep -F 'EXPECTED_TAG_OBJECT: ${{ needs.build.outputs.tag-object }}' "$publish" >/dev/null || return 1
+  grep -F 'EXPECTED_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}' "$publish" >/dev/null || return 1
+  grep -F 'EXPECTED_ARTIFACT_DIGEST: ${{ needs.build.outputs.artifact-digest }}' "$publish" >/dev/null || return 1
   grep -F 'test "$(git rev-parse --verify "refs/tags/${TAG_NAME}")" = "$EXPECTED_TAG_OBJECT"' "$publish" >/dev/null || return 1
   grep -F 'EXPECTED_PAYLOAD_SHA256' "$publish" >/dev/null || return 1
-  grep -F 'sha256sum release-artifact/release-payload.tar' "$publish" >/dev/null || return 1
-  grep -F 'tar -tf release-artifact/release-payload.tar' "$publish" >/dev/null || return 1
+  grep -F '[[ "$EXPECTED_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]' "$publish" >/dev/null || return 1
+  grep -F '[[ "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]' "$publish" >/dev/null || return 1
+  grep -F 'metadata_file="$(mktemp "${RUNNER_TEMP}/marshal-release-artifact.XXXXXX")"' "$publish" >/dev/null || return 1
+  grep -F 'archive_file="$(mktemp "${RUNNER_TEMP}/marshal-release-archive.XXXXXX")"' "$publish" >/dev/null || return 1
+  grep -F 'artifact_dir="$(mktemp -d "${RUNNER_TEMP}/marshal-release-extract.XXXXXX")"' "$publish" >/dev/null || return 1
+  grep -F '"repos/${{ github.repository }}/actions/artifacts/${EXPECTED_ARTIFACT_ID}"' "$publish" >/dev/null || return 1
+  grep -F '"repos/${{ github.repository }}/actions/artifacts/${EXPECTED_ARTIFACT_ID}/zip"' "$publish" >/dev/null || return 1
+  grep -F '> "$metadata_file"' "$publish" >/dev/null || return 1
+  grep -F '> "$archive_file"' "$publish" >/dev/null || return 1
+  grep -F 'python3 -I -B scripts/release-artifact-metadata-check.py' "$publish" >/dev/null || return 1
+  grep -F '"$metadata_file"' "$publish" >/dev/null || return 1
+  grep -F '"$archive_file"' "$publish" >/dev/null || return 1
+  grep -F '"$artifact_dir"' "$publish" >/dev/null || return 1
+  grep -F '"$EXPECTED_ARTIFACT_ID"' "$publish" >/dev/null || return 1
+  grep -F '"$EXPECTED_ARTIFACT_DIGEST"' "$publish" >/dev/null || return 1
+  grep -F '"$EXPECTED_SOURCE_HEAD"' "$publish" >/dev/null || return 1
+  grep -F '"${{ github.run_id }}"' "$publish" >/dev/null || return 1
+  grep -F 'sha256sum "${artifact_dir}/release-payload.tar"' "$publish" >/dev/null || return 1
+  grep -F 'tar -tf "${artifact_dir}/release-payload.tar"' "$publish" >/dev/null || return 1
   grep -F 'diff -u expected-tar-files actual-tar-files' "$publish" >/dev/null || return 1
   grep -F 'len(members) != 7' "$publish" >/dev/null || return 1
   grep -F 'member.mode != expected_mode' "$publish" >/dev/null || return 1
   grep -F 'member.issym() or member.islnk() or member.linkname' "$publish" >/dev/null || return 1
   type_gate_line="$(grep -nF 'len(members) != 7' "$publish" | cut -d: -f1)"
-  extract_line="$(grep -nF 'tar -xf release-artifact/release-payload.tar' "$publish" | cut -d: -f1)"
+  extract_line="$(grep -nF 'tar -xf "${artifact_dir}/release-payload.tar"' "$publish" | cut -d: -f1)"
   [ -n "$type_gate_line" ] && [ -n "$extract_line" ] && [ "$type_gate_line" -lt "$extract_line" ] || return 1
   grep -F -- "--format='%(contents)%1e'" "$publish" >/dev/null || return 1
   grep -F 'END { if (NR != 7 || !seen_marker) exit 1 }' "$publish" >/dev/null || return 1
@@ -88,19 +126,123 @@ check_workflow() {
   grep -F 'scripts/release-ci-gate.sh "${{ github.repository }}" "$RELEASE_COMMIT"' "$workflow" >/dev/null || return 1
   grep -F 'scripts/release-contract.sh verify-candidate-tag . dist "$TAG_NAME"' "$workflow" >/dev/null || return 1
   grep -F 'bash scripts/release-canary_test.sh' "$workflow" >/dev/null || return 1
+  grep -F 'payload_sha="$(shasum -a 256 release-payload.tar' "$build" >/dev/null || return 1
+  [ "$(grep -Fc 'make dist' "$workflow")" -eq 1 ] || return 1
+  grep -F 'make dist' "$build" >/dev/null || return 1
+  ! grep -E '(^|[[:space:]])(go build|make dist)([[:space:]\\]|$)' "$publish" >/dev/null || return 1
   ! grep -F 'BUILD_DATE="$(date ' "$workflow" >/dev/null || return 1
-  ! grep -F 'artifact-digest' "$workflow" >/dev/null || return 1
 }
 
 check_workflow "$WORKFLOW" || fail 'release workflow 未保持 read-only build / exact payload / write-only publish 分权合同'
+
+ARTIFACT_METADATA_CHECKER="${ROOT}/scripts/release-artifact-metadata-check.py"
+ARTIFACT_METADATA="${TMP_ROOT}/artifact-metadata.json"
+ARTIFACT_ARCHIVE="${TMP_ROOT}/artifact.zip"
+ARTIFACT_INPUT="${TMP_ROOT}/artifact-input"
+ARTIFACT_ID=123456
+ARTIFACT_SOURCE_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ARTIFACT_RUN_ID=987654
+
+mkdir "$ARTIFACT_INPUT"
+printf 'payload\n' >"${ARTIFACT_INPUT}/release-payload.tar"
+printf 'fixture checksum\n' >"${ARTIFACT_INPUT}/RELEASE-PAYLOAD.sha256"
+python3 -I -B - "$ARTIFACT_INPUT" "$ARTIFACT_ARCHIVE" <<'PY'
+import pathlib
+import sys
+import zipfile
+
+source, target = map(pathlib.Path, sys.argv[1:])
+with zipfile.ZipFile(target, mode="w", compression=zipfile.ZIP_STORED) as archive:
+    for name in ("RELEASE-PAYLOAD.sha256", "release-payload.tar"):
+        archive.write(source / name, arcname=name)
+PY
+ARTIFACT_DIGEST="$(shasum -a 256 "$ARTIFACT_ARCHIVE" | awk '{print $1}')"
+
+write_artifact_metadata() {
+  local id="${1:-$ARTIFACT_ID}" digest="${2:-sha256:$ARTIFACT_DIGEST}"
+  local name="${3:-release-payload-$ARTIFACT_SOURCE_HEAD}" expired="${4:-false}"
+  local run_id="${5:-$ARTIFACT_RUN_ID}" head="${6:-$ARTIFACT_SOURCE_HEAD}"
+  printf '{"id":%s,"name":"%s","expired":%s,"digest":"%s","workflow_run":{"id":%s,"head_sha":"%s"}}\n' \
+    "$id" "$name" "$expired" "$digest" "$run_id" "$head" >"$ARTIFACT_METADATA"
+}
+
+check_artifact() {
+  local archive="${1:-$ARTIFACT_ARCHIVE}" digest="${2:-$ARTIFACT_DIGEST}"
+  local extract
+  extract="$(mktemp -d "${TMP_ROOT}/artifact-extract.XXXXXX")"
+  python3 -I -B "$ARTIFACT_METADATA_CHECKER" \
+    "$ARTIFACT_METADATA" "$archive" "$extract" "$ARTIFACT_ID" "$digest" \
+    "$ARTIFACT_SOURCE_HEAD" "$ARTIFACT_RUN_ID" >/dev/null
+}
+
+expect_artifact_fail() {
+  local description="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    fail "$description 应 fail closed"
+  fi
+}
+
+write_artifact_metadata
+VALID_EXTRACT="$(mktemp -d "${TMP_ROOT}/artifact-valid.XXXXXX")"
+python3 -I -B "$ARTIFACT_METADATA_CHECKER" \
+  "$ARTIFACT_METADATA" "$ARTIFACT_ARCHIVE" "$VALID_EXTRACT" \
+  "$ARTIFACT_ID" "$ARTIFACT_DIGEST" "$ARTIFACT_SOURCE_HEAD" \
+  "$ARTIFACT_RUN_ID" >/dev/null \
+  || fail '合法 immutable artifact archive 未通过 digest/run/sourceHead 绑定'
+cmp "${ARTIFACT_INPUT}/release-payload.tar" "${VALID_EXTRACT}/release-payload.tar" >/dev/null \
+  || fail '合法 artifact archive 未受控解包'
+expect_artifact_fail '调用者替换 expected artifact digest' \
+  check_artifact "$ARTIFACT_ARCHIVE" \
+  cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+cp "$ARTIFACT_ARCHIVE" "${TMP_ROOT}/artifact-bytes-substituted.zip"
+printf 'substituted' >>"${TMP_ROOT}/artifact-bytes-substituted.zip"
+expect_artifact_fail '实际下载 artifact archive bytes 与 upload digest 不一致' \
+  check_artifact "${TMP_ROOT}/artifact-bytes-substituted.zip"
+write_artifact_metadata "$ARTIFACT_ID" \
+  sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+expect_artifact_fail 'GitHub metadata artifact digest 替换' check_artifact
+write_artifact_metadata "$ARTIFACT_ID" "sha256:$ARTIFACT_DIGEST" substituted-name
+expect_artifact_fail 'artifact name 替换' check_artifact
+write_artifact_metadata 123457
+expect_artifact_fail 'artifact id 替换' check_artifact
+write_artifact_metadata "$ARTIFACT_ID" "sha256:$ARTIFACT_DIGEST" \
+  "release-payload-$ARTIFACT_SOURCE_HEAD" true
+expect_artifact_fail 'expired artifact replay' check_artifact
+write_artifact_metadata "$ARTIFACT_ID" "sha256:$ARTIFACT_DIGEST" \
+  "release-payload-$ARTIFACT_SOURCE_HEAD" false 987655
+expect_artifact_fail 'cross-run artifact replay' check_artifact
+write_artifact_metadata "$ARTIFACT_ID" "sha256:$ARTIFACT_DIGEST" \
+  "release-payload-$ARTIFACT_SOURCE_HEAD" false "$ARTIFACT_RUN_ID" \
+  cccccccccccccccccccccccccccccccccccccccc
+expect_artifact_fail 'cross-source artifact replay' check_artifact
+printf '{"id":%s,"id":%s,"name":"release-payload-%s","expired":false,"digest":"sha256:%s","workflow_run":{"id":%s,"head_sha":"%s"}}\n' \
+  "$ARTIFACT_ID" "$ARTIFACT_ID" "$ARTIFACT_SOURCE_HEAD" "$ARTIFACT_DIGEST" \
+  "$ARTIFACT_RUN_ID" "$ARTIFACT_SOURCE_HEAD" >"$ARTIFACT_METADATA"
+expect_artifact_fail '重复 JSON member' check_artifact
+write_artifact_metadata
+printf 'trailing' >>"$ARTIFACT_METADATA"
+expect_artifact_fail 'metadata 尾随 bytes' check_artifact
+mv "$ARTIFACT_METADATA" "${ARTIFACT_METADATA}.real"
+ln -s "${ARTIFACT_METADATA}.real" "$ARTIFACT_METADATA"
+expect_artifact_fail 'metadata symlink' check_artifact
+rm "$ARTIFACT_METADATA"
+mv "${ARTIFACT_METADATA}.real" "$ARTIFACT_METADATA"
+ln -s "$ARTIFACT_ARCHIVE" "${TMP_ROOT}/artifact-symlink.zip"
+expect_artifact_fail 'artifact archive symlink' \
+  check_artifact "${TMP_ROOT}/artifact-symlink.zip"
 
 make_contract_fixture() {
   local name="$1" workflow="$2" makefile="$3" root
   root="${TMP_ROOT}/contract-${name}"
   mkdir -p "${root}/.github/workflows" "${root}/scripts"
   cp "$workflow" "${root}/.github/workflows/ci.yml"
+  cp "$WORKFLOW" "${root}/.github/workflows/release.yml"
   cp "$makefile" "${root}/Makefile"
   cp "$CI_CONTRACT" "${root}/scripts/release-ci-contract.py"
+  cp "${ROOT}/scripts/release-artifact-metadata-check.py" \
+    "${root}/scripts/release-artifact-metadata-check.py"
+  cp "$RELEASE_WORKFLOW_DIGEST" "${root}/scripts/release-workflow.sha256"
   for fixed_test in \
     release-contract_test.sh \
     release-ci-gate_test.sh \
@@ -113,7 +255,7 @@ make_contract_fixture() {
   git -C "$root" config core.hooksPath /dev/null
   git -C "$root" config user.name 'Release Contract Test'
   git -C "$root" config user.email 'release-contract@example.invalid'
-  git -C "$root" add .github/workflows/ci.yml Makefile scripts
+  git -C "$root" add .github/workflows Makefile scripts
   git -C "$root" commit -qm fixture
   printf '%s\n' "$root"
 }
@@ -331,7 +473,7 @@ awk '
 if check_workflow "${TMP_ROOT}/hostile-build-write.yml"; then
   fail 'build job 获得 contents:write 时 workflow contract 应失败'
 fi
-sed '/tar -tf release-artifact\/release-payload.tar/d' "$WORKFLOW" >"${TMP_ROOT}/hostile-no-tar-list.yml"
+sed '/tar -tf "${artifact_dir}\/release-payload.tar"/d' "$WORKFLOW" >"${TMP_ROOT}/hostile-no-tar-list.yml"
 if check_workflow "${TMP_ROOT}/hostile-no-tar-list.yml"; then
   fail 'publish 删除 exact tar list 时 workflow contract 应失败'
 fi
@@ -339,6 +481,58 @@ sed '/test "$(git rev-parse --verify "refs\/tags\/${TAG_NAME}")" = "$EXPECTED_TA
   "$WORKFLOW" >"${TMP_ROOT}/hostile-no-tag-object-recheck.yml"
 if check_workflow "${TMP_ROOT}/hostile-no-tag-object-recheck.yml"; then
   fail 'publish 删除 exact tag object recheck 时 workflow contract 应失败'
+fi
+sed 's/runs-on: macos-14/runs-on: ubuntu-latest/' \
+  "$WORKFLOW" >"${TMP_ROOT}/hostile-linux-candidate-build.yml"
+if check_workflow "${TMP_ROOT}/hostile-linux-candidate-build.yml"; then
+  fail 'Linux workflow 重建 Darwin candidate 应 fail closed'
+fi
+sed 's/EXPECTED_ARTIFACT_DIGEST: \${{ needs.build.outputs.artifact-digest }}/EXPECTED_ARTIFACT_DIGEST: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/' \
+  "$WORKFLOW" >"${TMP_ROOT}/hostile-artifact-digest-substitution.yml"
+if check_workflow "${TMP_ROOT}/hostile-artifact-digest-substitution.yml"; then
+  fail 'publish 替换 upload artifact digest 绑定应 fail closed'
+fi
+sed '/python3 -I -B scripts\/release-artifact-metadata-check.py/d' \
+  "$WORKFLOW" >"${TMP_ROOT}/hostile-no-observed-artifact-digest.yml"
+if check_workflow "${TMP_ROOT}/hostile-no-observed-artifact-digest.yml"; then
+  fail 'publish 删除 GitHub artifact observed digest 对账应 fail closed'
+fi
+awk '
+  { print }
+  /^  publish:/ && !added {
+    print "    # hostile rebuild"
+    print "    run: make dist"
+    added=1
+  }
+' "$WORKFLOW" >"${TMP_ROOT}/hostile-publish-rebuild.yml"
+if check_workflow "${TMP_ROOT}/hostile-publish-rebuild.yml"; then
+  fail 'publish 重新构建 candidate 应 fail closed'
+fi
+awk '
+  /^  publish:/ { publish=1 }
+  publish && /^    steps:/ && !added {
+    print
+    print "      - name: Hostile silent rebuild"
+    print "        run: make -s dist"
+    print "      # original marker retained: make dist"
+    added=1
+    next
+  }
+  { print }
+' "$WORKFLOW" >"${TMP_ROOT}/hostile-publish-silent-rebuild-with-marker.yml"
+if check_workflow "${TMP_ROOT}/hostile-publish-silent-rebuild-with-marker.yml"; then
+  fail 'publish 新增 make -s dist 并保留原 marker 应被 exact contract 拒绝'
+fi
+awk '
+  $0 == "      EXPECTED_ARTIFACT_DIGEST: ${{ needs.build.outputs.artifact-digest }}" {
+    print "      # EXPECTED_ARTIFACT_DIGEST: ${{ needs.build.outputs.artifact-digest }}"
+    print "      EXPECTED_ARTIFACT_DIGEST: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    next
+  }
+  { print }
+' "$WORKFLOW" >"${TMP_ROOT}/hostile-input-digest-substitution-with-comment.yml"
+if check_workflow "${TMP_ROOT}/hostile-input-digest-substitution-with-comment.yml"; then
+  fail '替换 input digest 并用注释保留原行应被 exact contract 拒绝'
 fi
 
 verify_archive_names() {

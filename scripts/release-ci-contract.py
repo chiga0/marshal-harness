@@ -4,9 +4,10 @@
 This is intentionally not a YAML parser. GitHub workflow YAML has aliases,
 flow collections, merge keys, duplicate keys, scalar coercions and expression
 semantics that a small parser cannot reproduce safely. The release contract
-admits one reviewed workflow byte-for-byte and rejects every other
-representation. The Make target is convenience only; CI invokes this checker
-directly, before any candidate Makefile or script is executed.
+admits the reviewed CI workflow byte-for-byte and binds the complete release
+workflow to an explicitly versioned content digest. The Make target is
+convenience only; CI invokes this checker directly, before any candidate
+Makefile or script is executed.
 """
 
 from __future__ import annotations
@@ -22,10 +23,15 @@ import sys
 
 
 CHECKER_RELATIVE_PATH = "scripts/release-ci-contract.py"
+RELEASE_WORKFLOW_RELATIVE_PATH = ".github/workflows/release.yml"
+RELEASE_WORKFLOW_DIGEST_RELATIVE_PATH = "scripts/release-workflow.sha256"
 FIXED_FILES = {
     ".github/workflows/ci.yml": "100644",
+    RELEASE_WORKFLOW_RELATIVE_PATH: "100644",
     "Makefile": "100644",
     CHECKER_RELATIVE_PATH: "100644",
+    "scripts/release-artifact-metadata-check.py": "100644",
+    RELEASE_WORKFLOW_DIGEST_RELATIVE_PATH: "100644",
     "scripts/release-contract_test.sh": "100755",
     "scripts/release-ci-gate_test.sh": "100755",
     "scripts/dist-profile_test.sh": "100755",
@@ -359,6 +365,18 @@ def check_makefile(makefile: str) -> None:
     )
 
 
+def check_release_workflow(raw_workflow: bytes, digest_contract: str) -> None:
+    match = re.fullmatch(r"sha256:([0-9a-f]{64})\n", digest_contract)
+    if match is None:
+        fail("release workflow digest contract is not one canonical sha256 line")
+    observed = hashlib.sha256(raw_workflow).hexdigest()
+    if observed != match.group(1):
+        fail(
+            "release workflow left its versioned exact-byte contract: "
+            f"expected={match.group(1)} observed={observed}"
+        )
+
+
 def require_exact(label: str, actual: str, expected: str) -> None:
     if actual == expected:
         return
@@ -383,9 +401,15 @@ def main(argv: list[str]) -> int:
     }
     check_git_bindings(root, fixed_bytes)
     workflow = decode_text(".github/workflows/ci.yml", fixed_bytes[".github/workflows/ci.yml"])
+    release_workflow = fixed_bytes[RELEASE_WORKFLOW_RELATIVE_PATH]
+    release_workflow_digest = decode_text(
+        RELEASE_WORKFLOW_DIGEST_RELATIVE_PATH,
+        fixed_bytes[RELEASE_WORKFLOW_DIGEST_RELATIVE_PATH],
+    )
     makefile = decode_text("Makefile", fixed_bytes["Makefile"])
     decode_text(CHECKER_RELATIVE_PATH, fixed_bytes[CHECKER_RELATIVE_PATH])
     require_exact("workflow", workflow, EXPECTED_WORKFLOW)
+    check_release_workflow(release_workflow, release_workflow_digest)
     check_makefile(makefile)
     print("[release-ci-contract] PASS")
     return 0
