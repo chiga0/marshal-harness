@@ -92,11 +92,11 @@ func validateExistingWorktreeDescriptorGraph(graph ExistingWorktreeDescriptorGra
 		return ErrFilesystemConflict
 	}
 	currentName, err := observeDirectoryEdge(int(graph.RepositoryParent.Fd()), int(graph.RepositoryRoot.Fd()), graph.RepositoryCurrentName.RelativeName)
-	if err != nil || !equalCanonical(currentName, graph.RepositoryCurrentName) {
+	if err != nil || !sameExistingWorktreeCurrentNameAnchor(currentName, graph.RepositoryCurrentName) {
 		return ErrFilesystemConflict
 	}
 	commonCurrent, err := observeDirectoryEdge(int(graph.RepositoryRoot.Fd()), int(graph.RepositoryCommonGitDirectory.Fd()), ".git")
-	if err != nil || !equalCanonical(commonCurrent, graph.RepositoryCommonGitCurrentName) {
+	if err != nil || !sameExistingWorktreeCurrentNameAnchor(commonCurrent, graph.RepositoryCommonGitCurrentName) {
 		return ErrFilesystemConflict
 	}
 	return nil
@@ -799,11 +799,11 @@ func observeLocatorDirectoryEdge(parentFD, childFD int, name string) (CurrentNam
 	if unix.Fstat(parentFD, &parent) != nil || unix.Fstat(childFD, &held) != nil || unix.Fstatat(parentFD, name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !sameNamedDirectoryStat(held, named) || parent.Mode&unix.S_IFMT != unix.S_IFDIR || parent.Nlink < 1 || held.Nlink < 1 {
 		return CurrentNameIdentityV1{}, ErrFilesystemConflict
 	}
-	// Ancestor directories such as /private/tmp may receive unrelated sibling
-	// churn. Bind their current-name chain to stable object identity plus inode
-	// generation, while the final target/admin edges below additionally bind
-	// mutation time to catch rename-away/back ABA of the actual authority object.
-	return CurrentNameIdentityV1{ParentIdentity: stableDirectoryIdentity(parent), ParentMutationDigest: statGenerationDigest(parent), RelativeName: name, ObjectIdentity: stableDirectoryIdentity(held), ObjectMutationDigest: statMutationDigest(held)}, nil
+	// Ancestor directories such as /private/tmp and the repository root receive
+	// legitimate sibling churn. Bind their current-name chain to stable object
+	// identity plus inode generation; the final target/admin edges below still
+	// bind mutation time to catch ABA of the actual authority object.
+	return CurrentNameIdentityV1{ParentIdentity: stableDirectoryIdentity(parent), ParentMutationDigest: statGenerationDigest(parent), RelativeName: name, ObjectIdentity: stableDirectoryIdentity(held), ObjectMutationDigest: statGenerationDigest(held)}, nil
 }
 
 func extendDirectoryLocatorDigest(parentDigest string, edge CurrentNameIdentityV1) (string, error) {
