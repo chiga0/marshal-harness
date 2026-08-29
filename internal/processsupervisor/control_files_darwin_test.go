@@ -5,7 +5,6 @@ package processsupervisor
 import (
 	"context"
 	"errors"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"golang.org/x/sys/unix"
 )
 
 type boundaryDriftMechanics struct {
@@ -194,44 +194,51 @@ func commandBoundaryFixture(t *testing.T) (sessionControlBoundary, *Journal, Boo
 	}
 	bootstrap := validBootstrap()
 	bootstrap.ControlDirectoryIdentity = directoryIdentity
-	if err := os.WriteFile(filepath.Join(root, nonceFileName), []byte(bootstrap.SessionNonce), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	journalFile, err := os.OpenFile(filepath.Join(root, JournalFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	nonceHeld, err := writeHeldOpenatExclusive(directory, nonceFileName, []byte(bootstrap.SessionNonce), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	journal, err := OpenJournal(journalFile)
+	t.Cleanup(func() { _ = nonceHeld.Close() })
+	journalFile, err := openatExclusive(directory, JournalFileName, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = journal.Close() })
-	nonceHeld, err := openControlFileAt(directory, nonceFileName)
-	if err != nil {
+	if err := directory.Sync(); err != nil {
+		_ = journalFile.Close()
 		t.Fatal(err)
 	}
 	nonceIdentity, _, err := observeControlFile(nonceHeld)
 	if err != nil {
+		_ = journalFile.Close()
 		t.Fatal(err)
 	}
-	journalHeld, err := openControlFileAt(directory, JournalFileName)
+	journalIdentity, _, err := observeControlFile(journalFile)
 	if err != nil {
-		t.Fatal(err)
-	}
-	journalIdentity, _, err := observeControlFile(journalHeld)
-	if err != nil {
+		_ = journalFile.Close()
 		t.Fatal(err)
 	}
 	controlFiles := SessionControlFiles{Nonce: nonceIdentity, Journal: journalIdentity}
-	held := &heldSessionControlFiles{nonce: nonceHeld, journal: journalHeld, identity: controlFiles}
-	t.Cleanup(held.close)
-	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: filepath.Join(root, controlSocket), Net: "unix"})
+	held := &heldSessionControlFiles{nonce: nonceHeld, journal: journalFile, identity: controlFiles}
+	if err := revalidateHeldSessionControlFiles(directory, held, controlFiles); err != nil {
+		_ = journalFile.Close()
+		t.Fatal(err)
+	}
+	journal, err := OpenJournal(journalFile)
+	if err != nil {
+		_ = journalFile.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	listener, err := listenUnixAt(directory, controlSocket)
 	if err != nil {
 		t.Fatal(err)
 	}
 	listener.SetUnlinkOnClose(false)
 	t.Cleanup(func() { _ = listener.Close() })
-	if err := os.Chmod(filepath.Join(root, controlSocket), 0o600); err != nil {
+	if err := unix.Fchmodat(int(directory.Fd()), controlSocket, 0o600, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.Sync(); err != nil {
 		t.Fatal(err)
 	}
 	socket, err := observeControlSocket(directory)

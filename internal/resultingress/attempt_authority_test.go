@@ -168,6 +168,9 @@ func appendTestSupervisorStarted(t *testing.T, store *DurableStore, state Attemp
 	if err != nil {
 		t.Fatal(err)
 	}
+	if result.State.SupervisorMechanicsAnchor.ControlFiles != handshake.ControlFiles {
+		t.Fatalf("process-supervisor-started projection dropped control-file identities: got=%+v want=%+v", result.State.SupervisorMechanicsAnchor.ControlFiles, handshake.ControlFiles)
+	}
 	return result.State
 }
 
