@@ -40,6 +40,8 @@
 
 2026-08-29，`productionruntime.ProcessBridge` 接缝审计发现：public `PreparedRunStart` 只有 ID/Run head/digest，既不能从 held Attempt authority 恢复 current owner、完整 Allocation/launch/Pi 原件，`DurableRunAuthority` 也没有显式 held current Run callback 与唯一 Run-start outcome commit；`process-started` 时 child 仍为 `exec-stopped`，不能提前提交 `RUNNING`。ADR 0063 已接受并冻结 creation-once、secret-safe `PreparedExecutionV1`、closed `Pi0843IdentityV1`、`BindOwnerToAttempt` 前序、mutation-adjacent held-object 重验、`ResolvePreparedExecution`、`WithCurrentRunAuthority`、exact successful `resume(state=running)` 后的 `CommitRunStartOutcome` 与唯一真实 producer chain。接受只冻结合同，不表示实现完成，不升级 R2–R6。
 
+2026-08-29，exact-head macOS CI发现APFS在同一held control-directory合法创建Supervisor控制/输出对象时可能改变目录`st_nlink`，既有全字段runtime equality会在首条command前误报ABA。ADR 0064（Proposed）提议冻结bootstrap initial empty完整身份、setup final observation、稳定目录对象字段、descriptor-relative phase-aware exact entry set，以及nonce/journal/socket与单次transcript read的对象/content门禁；它明确不把未持久化的输出inode夸大为跨时间authority。候选`765617c20ea3faee71af980d70a35ecd06e3462a`尚缺phase-aware exact-set gate，在ADR接受和实现补齐前保持冻结；该提案不授权Linux/hardened/stable release。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -96,3 +98,4 @@
 | [0061](0061-supervisor-close-transcript-disposition.md) | Supervisor Close 的三态 transcript disposition 与 current-authority admission/non-admission resolution fact | 已接受（Accepted，2026-08-29；候选 `742dbf0cc8c55971105710b5142f4c803e97e0f7`，同一独立 reviewer 聚合复审 P0/P1/P2=0；未实现，不升级 R2–R6） |
 | [0062](0062-fixed-marshal-production-server-mode.md) | fixed Marshal 生产 server mode、唯一 composition root与独立 `marshal-server` 非生产边界 | 已接受（Accepted，2026-08-29；候选 `742dbf0cc8c55971105710b5142f4c803e97e0f7`，同一独立 reviewer 聚合复审 P0/P1/P2=0；未实现，不构成发布授权） |
 | [0063](0063-prepared-execution-authority-and-production-chain.md) | secret-safe `PreparedExecutionV1`、`Pi0843IdentityV1`、held current Run authority、resume 后唯一 Run-start commit 与真实 producer chain | 已接受（Accepted，2026-08-29；只冻结 ProcessBridge 前后最小合同，未实现，不升级 R2–R6） |
+| [0064](0064-darwin-control-directory-phased-identity.md) | Darwin控制目录initial/final阶段身份、APFS目录`LinkCount`语义与phase-aware exact entry set | 提议（Proposed，2026-08-29；候选尚缺phase-aware exact-set gate，接受前不启用，不授权Linux/hardened/stable release） |

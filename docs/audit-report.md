@@ -28,6 +28,17 @@
 
 这些 finding 只解阻 R2/R3 的 ProcessBridge producer seam，不新增 milestone 或通用恢复框架；ADR 0063 已接受，后续顺序固定为一个 bounded authority component → 立即相邻的 fixed Marshal composition 切片。两切片之间禁止插入第二个 component 或无关工作，component 完成不升级当前成熟度。
 
+### Darwin 控制目录阶段化身份审计（2026-08-29）
+
+exact-head macOS CI 证明，APFS 在 Supervisor 合法创建 nonce、journal、socket 与输出对象时可能改变目录 `st_nlink`；既有全字段 runtime equality 因此会把同一目录对象误判为 ABA，并让本应在 receipt `fsync` 后拒绝的 post-command drift 提前停在 journal sequence `1`。这不是测试断言问题，也不能通过删除 link-count hostile gate、跳过目录枚举或放宽 control object identity解决。
+
+| Finding | 等级 | 状态 | 处置 / 关闭条件 |
+| --- | --- | --- | --- |
+| `I186-ARCH-DARWIN-CONTROL-DIRECTORY-PHASED-IDENTITY` | P1 | `PROPOSED-CONTRACT/IMPLEMENTATION-HELD` | [ADR 0064](adr/0064-darwin-control-directory-phased-identity.md) 提议冻结 initial empty完整精确身份、setup后final observation、runtime稳定对象字段比较与 descriptor-relative phase-aware exact entry set；nonce/journal/socket继续完整 exact，输出继续 `O_EXCL`与单次读取 identity/content gate。实现证据定位：候选 `765617c20ea3faee71af980d70a35ecd06e3462a`，测试 `TestCommandBoundaryRejectsPreAndPostReceiptDriftWithoutResponse`、`TestRuntimeControlBoundaryAllowsFrozenOutputsAndRejectsUnknownEntry`、`TestControlDirectoryObjectComparisonIgnoresOnlyLinkCount`；其中候选尚缺 final setup恰为三项与pre-collect输出absent的phase-aware exact-set gate，在 ADR 接受并补齐前保持冻结。关闭还须证明initial/final同一稳定对象、unknown/early entry与稳定字段漂移 fail closed、合法APFS `LinkCount`变化贯穿command/reconnect/transcript/close，且post-receipt drift保留sequence `3`、零response。 |
+| `I186-ARCH-DARWIN-TRANSCRIPT-CROSS-READ-IDENTITY` | P2 | `OPEN-INTEGRATION/DEFERRED-HARDENED` | 当前v1 protocol/authority只持久化transcript/stdout/stderr content digest、bytes与truncation，不持久化三个data object的inode identity；现有门禁只能证明每次held-FD读取事务内identity/size稳定和content exact。ADR0051 ordinary-user不覆盖fully controlled same-UID在两次读取间以同mode/同内容新inode替换。当前v1按content等价接纳，不得宣称跨时间对象连续性；未来hardened或需要object continuity时须单独升级protocol/projection或持有跨admission生命周期FD，不得借ADR0064局部修复静默扩面。 |
+
+该 finding 只修正 ADR 0059/0060 的 Darwin control-directory 局部语义，不插入第二套 authority或扩大v1范围；它不授权 Linux/hardened profile、stable release或任何 milestone升级。
+
 ## Darwin ordinary-user 进程生命周期合同审计（2026-08-28）
 
 代码审计确认：crash-atomic ResultIngress transaction 已随 `main@912f659` 合入，durable DispatchLease ledger 与 server run controller 也已存在；但 Local allocation/process projection、Core-owned launch/handle、terminalization 对同一 admission CAS 的复用、eligibility terminal 与 cleanup completion 仍未形成同一耐久纵切。[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受；实现与生产接线保持开放，R2–R5 不升级。[ADR 0057](adr/0057-durable-local-allocation-recovery-and-production-composition.md) 已于 `main@9aff8cc` 接受，但只冻结 durable allocation recovery 与唯一 production composition 合同；RB3 尚未实现该合同，本次接受不把任何能力从 `COMPONENT` 升级为 `INTEGRATED`。[ADR 0058](adr/0058-interpreted-agent-launch-identity.md) 已于 2026-08-28 接受，冻结 Pi 0.84.3 的显式 Node runtime、两个 versioned material roots、held-FD/双 barrier 和 ResultIngress 最终接纳前的 current-authority 全量重验；在实现、故障矩阵和最终 fixed-bin 真实 Pi canary 完成前，Pi 仍不是 production reachable。
