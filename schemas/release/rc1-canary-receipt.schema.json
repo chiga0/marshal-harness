@@ -1,0 +1,345 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/release/rc1-canary-receipt.schema.json",
+  "title": "Marshal RC1 Canary Receipt V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "tag",
+    "sourceHead",
+    "candidateWorkflow",
+    "payload",
+    "manifest",
+    "checksums",
+    "binary",
+    "activation",
+    "canary",
+    "authority",
+    "receiptDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "marshal.rc1-canary-receipt.v1" },
+    "tag": { "const": "v1.0.0-rc1" },
+    "sourceHead": { "$ref": "#/$defs/sourceHead" },
+    "candidateWorkflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "artifactId", "artifactDigest"],
+      "properties": {
+        "runId": { "$ref": "#/$defs/positiveInteger" },
+        "artifactId": { "$ref": "#/$defs/positiveInteger" },
+        "artifactDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "sha256", "size"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.rc1-carrier-payload.v1" },
+        "sha256": { "$ref": "#/$defs/digest" },
+        "size": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "manifest": {
+      "allOf": [
+        { "$ref": "#/$defs/fileBinding" },
+        { "properties": { "path": { "const": "RELEASE-MANIFEST" } } }
+      ]
+    },
+    "checksums": {
+      "allOf": [
+        { "$ref": "#/$defs/fileBinding" },
+        { "properties": { "path": { "const": "SHA256SUMS" } } }
+      ]
+    },
+    "binary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size", "version", "buildDate", "goVersion", "os", "arch", "profile"],
+      "properties": {
+        "path": { "const": "marshal_1.0.0-rc1_darwin_arm64" },
+        "sha256": { "$ref": "#/$defs/digest" },
+        "size": { "$ref": "#/$defs/positiveInteger" },
+        "version": { "const": "1.0.0-rc1" },
+        "buildDate": { "$ref": "#/$defs/buildDate" },
+        "goVersion": { "$ref": "#/$defs/goVersion" },
+        "os": { "const": "darwin" },
+        "arch": { "const": "arm64" },
+        "profile": { "const": "darwin-local-dogfood" }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activationDigest",
+        "identitySubjectDigest",
+        "currentObjectObservationDigest",
+        "currentCanonicalPath",
+        "currentObjectRawSHA256",
+        "currentObjectSize",
+        "sourceHead",
+        "profile",
+        "localSelfIdentityBindingDigest"
+      ],
+      "properties": {
+        "activationDigest": { "$ref": "#/$defs/digest" },
+        "identitySubjectDigest": { "$ref": "#/$defs/digest" },
+        "currentObjectObservationDigest": { "$ref": "#/$defs/digest" },
+        "currentCanonicalPath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+        "currentObjectRawSHA256": { "$ref": "#/$defs/digest" },
+        "currentObjectSize": { "$ref": "#/$defs/positiveInteger" },
+        "sourceHead": { "$ref": "#/$defs/sourceHead" },
+        "profile": { "const": "darwin-local-dogfood" },
+        "localSelfIdentityBindingDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "canary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskId",
+        "runId",
+        "attemptId",
+        "specDigest",
+        "baseSha",
+        "artifactManifestDigest",
+        "workerResultDigests",
+        "localSelfIdentityBindingDigest",
+        "agentProvider",
+        "agentVersion",
+        "invocation",
+        "workerActorId",
+        "reviewPacket",
+        "verification",
+        "evidence",
+        "reviewDecision",
+        "outcome",
+        "publication"
+      ],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/id" },
+        "runId": { "$ref": "#/$defs/id" },
+        "attemptId": { "$ref": "#/$defs/id" },
+        "specDigest": { "$ref": "#/$defs/digest" },
+        "baseSha": { "$ref": "#/$defs/sourceHead" },
+        "artifactManifestDigest": { "$ref": "#/$defs/digest" },
+        "workerResultDigests": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/digest" }
+        },
+        "localSelfIdentityBindingDigest": { "$ref": "#/$defs/digest" },
+        "agentProvider": { "const": "pi" },
+        "agentVersion": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "invocation": { "const": "real" },
+        "workerActorId": { "$ref": "#/$defs/id" },
+        "reviewPacket": { "$ref": "#/$defs/reviewPacket" },
+        "verification": { "$ref": "#/$defs/verification" },
+        "evidence": { "$ref": "#/$defs/evidence" },
+        "reviewDecision": { "$ref": "#/$defs/reviewDecision" },
+        "outcome": { "$ref": "#/$defs/outcome" },
+        "publication": { "const": "none" }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["currentHeadDigest", "revision", "outcomeDigest"],
+      "properties": {
+        "currentHeadDigest": { "$ref": "#/$defs/digest" },
+        "revision": { "$ref": "#/$defs/positiveInteger" },
+        "outcomeDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "receiptDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "buildDate": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "goVersion": {
+      "type": "string",
+      "pattern": "^go[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "fileBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+        "sha256": { "$ref": "#/$defs/digest" },
+        "size": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "oneDigest": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": { "$ref": "#/$defs/digest" }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "runId",
+        "attemptId",
+        "specDigest",
+        "baseSha",
+        "artifactManifestDigest",
+        "workerResultDigests",
+        "localSelfIdentityBindingDigest"
+      ],
+      "properties": {
+        "digest": { "$ref": "#/$defs/digest" },
+        "runId": { "$ref": "#/$defs/id" },
+        "attemptId": { "$ref": "#/$defs/id" },
+        "specDigest": { "$ref": "#/$defs/digest" },
+        "baseSha": { "$ref": "#/$defs/sourceHead" },
+        "artifactManifestDigest": { "$ref": "#/$defs/digest" },
+        "workerResultDigests": { "$ref": "#/$defs/oneDigest" },
+        "localSelfIdentityBindingDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "runId",
+        "attemptId",
+        "specDigest",
+        "artifactManifestDigest",
+        "workerResultDigests",
+        "evidenceDigest",
+        "localSelfIdentityBindingDigest",
+        "verifier",
+        "status",
+        "independent"
+      ],
+      "properties": {
+        "digest": { "$ref": "#/$defs/digest" },
+        "runId": { "$ref": "#/$defs/id" },
+        "attemptId": { "$ref": "#/$defs/id" },
+        "specDigest": { "$ref": "#/$defs/digest" },
+        "artifactManifestDigest": { "$ref": "#/$defs/digest" },
+        "workerResultDigests": { "$ref": "#/$defs/oneDigest" },
+        "evidenceDigest": { "$ref": "#/$defs/digest" },
+        "localSelfIdentityBindingDigest": { "$ref": "#/$defs/digest" },
+        "verifier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id"],
+          "properties": {
+            "type": { "const": "deterministic-verifier" },
+            "id": { "$ref": "#/$defs/id" }
+          }
+        },
+        "status": { "const": "pass" },
+        "independent": { "const": true }
+      }
+    },
+    "reviewPacket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "runId",
+        "attemptId",
+        "reviewRound",
+        "specDigest",
+        "baseSha",
+        "verificationDigest",
+        "artifactManifestDigest",
+        "workerResultDigests",
+        "evidenceDigest",
+        "localSelfIdentityBindingDigest"
+      ],
+      "properties": {
+        "digest": { "$ref": "#/$defs/digest" },
+        "runId": { "$ref": "#/$defs/id" },
+        "attemptId": { "$ref": "#/$defs/id" },
+        "reviewRound": { "$ref": "#/$defs/positiveInteger" },
+        "specDigest": { "$ref": "#/$defs/digest" },
+        "baseSha": { "$ref": "#/$defs/sourceHead" },
+        "verificationDigest": { "$ref": "#/$defs/digest" },
+        "artifactManifestDigest": { "$ref": "#/$defs/digest" },
+        "workerResultDigests": { "$ref": "#/$defs/oneDigest" },
+        "evidenceDigest": { "$ref": "#/$defs/digest" },
+        "localSelfIdentityBindingDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "reviewDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "runId",
+        "reviewRound",
+        "reviewer",
+        "independent",
+        "specDigest",
+        "reviewPacketDigest",
+        "verificationDigest",
+        "artifactManifestDigest",
+        "evidenceDigest",
+        "localSelfIdentityBindingDigest",
+        "verdict",
+        "blockingFindingCount",
+        "publicationRecommendation"
+      ],
+      "properties": {
+        "digest": { "$ref": "#/$defs/digest" },
+        "runId": { "$ref": "#/$defs/id" },
+        "reviewRound": { "$ref": "#/$defs/positiveInteger" },
+        "reviewer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id"],
+          "properties": {
+            "type": { "type": "string", "enum": ["lead-agent", "human"] },
+            "id": { "$ref": "#/$defs/id" }
+          }
+        },
+        "independent": { "const": true },
+        "specDigest": { "$ref": "#/$defs/digest" },
+        "reviewPacketDigest": { "$ref": "#/$defs/digest" },
+        "verificationDigest": { "$ref": "#/$defs/digest" },
+        "artifactManifestDigest": { "$ref": "#/$defs/digest" },
+        "evidenceDigest": { "$ref": "#/$defs/digest" },
+        "localSelfIdentityBindingDigest": { "$ref": "#/$defs/digest" },
+        "verdict": { "const": "accept" },
+        "blockingFindingCount": { "const": 0 },
+        "publicationRecommendation": { "const": "not-applicable" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "runId", "terminalState", "verdict", "finalReviewDigest", "finalEvidenceDigest", "publication"],
+      "properties": {
+        "digest": { "$ref": "#/$defs/digest" },
+        "runId": { "$ref": "#/$defs/id" },
+        "terminalState": { "const": "ACCEPTED" },
+        "verdict": { "const": "accept" },
+        "finalReviewDigest": { "$ref": "#/$defs/digest" },
+        "finalEvidenceDigest": { "$ref": "#/$defs/digest" },
+        "publication": { "const": "none" }
+      }
+    }
+  }
+}
