@@ -283,7 +283,9 @@ type Ingress struct {
 	// allocations is rebuilt exclusively from the same durable Attempt log.
 	// It is the five-fact authority source projected into allocationcontrol;
 	// the Provider journal is never allowed to populate this map.
-	allocations map[string]allocationAuthorityState
+	allocations           map[string]allocationAuthorityState
+	preparedExecutions    map[string]PreparedExecutionV1
+	preparedExecutionKeys map[string]string
 	// The three indexes are authority-namespace scoped. Command/idempotency map
 	// to an effect key; marker maps to its immutable logical Attempt key. They
 	// are rebuilt exclusively from the authority log on every transaction.
@@ -323,16 +325,18 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		return nil, fmt.Errorf("resultingress: LedgerBinding.EvidenceDigest: %v", err)
 	}
 	return &Ingress{
-		ledger:            binding,
-		admitted:          make(map[string]admittedEntry),
-		attempts:          make(map[string]AttemptAuthorityState),
-		controlOwners:     make(map[string]ControlOwnerState),
-		effects:           make(map[string]EffectAuthorityState),
-		allocations:       make(map[string]allocationAuthorityState),
-		effectCommands:    make(map[string]string),
-		effectIdempotency: make(map[string]string),
-		effectMarkers:     make(map[string]string),
-		clock:             time.Now,
+		ledger:                binding,
+		admitted:              make(map[string]admittedEntry),
+		attempts:              make(map[string]AttemptAuthorityState),
+		controlOwners:         make(map[string]ControlOwnerState),
+		effects:               make(map[string]EffectAuthorityState),
+		allocations:           make(map[string]allocationAuthorityState),
+		preparedExecutions:    make(map[string]PreparedExecutionV1),
+		preparedExecutionKeys: make(map[string]string),
+		effectCommands:        make(map[string]string),
+		effectIdempotency:     make(map[string]string),
+		effectMarkers:         make(map[string]string),
+		clock:                 time.Now,
 	}, nil
 }
 
@@ -343,16 +347,19 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 // binding 校验与 NewIngress 完全一致。
 func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingress, error) {
 	in := &Ingress{
-		ledger:            binding,
-		admitted:          make(map[string]admittedEntry),
-		attempts:          make(map[string]AttemptAuthorityState),
-		controlOwners:     make(map[string]ControlOwnerState),
-		effects:           make(map[string]EffectAuthorityState),
-		effectCommands:    make(map[string]string),
-		effectIdempotency: make(map[string]string),
-		effectMarkers:     make(map[string]string),
-		clock:             time.Now,
-		store:             store,
+		ledger:                binding,
+		admitted:              make(map[string]admittedEntry),
+		attempts:              make(map[string]AttemptAuthorityState),
+		controlOwners:         make(map[string]ControlOwnerState),
+		effects:               make(map[string]EffectAuthorityState),
+		allocations:           make(map[string]allocationAuthorityState),
+		preparedExecutions:    make(map[string]PreparedExecutionV1),
+		preparedExecutionKeys: make(map[string]string),
+		effectCommands:        make(map[string]string),
+		effectIdempotency:     make(map[string]string),
+		effectMarkers:         make(map[string]string),
+		clock:                 time.Now,
+		store:                 store,
 	}
 	if store == nil {
 		return nil, errors.New("resultingress: durable ingress requires a non-nil store")
@@ -721,6 +728,8 @@ func (i *Ingress) resetDurableReplayState() {
 	i.controlOwners = make(map[string]ControlOwnerState)
 	i.effects = make(map[string]EffectAuthorityState)
 	i.allocations = make(map[string]allocationAuthorityState)
+	i.preparedExecutions = make(map[string]PreparedExecutionV1)
+	i.preparedExecutionKeys = make(map[string]string)
 	i.effectCommands = make(map[string]string)
 	i.effectIdempotency = make(map[string]string)
 	i.effectMarkers = make(map[string]string)

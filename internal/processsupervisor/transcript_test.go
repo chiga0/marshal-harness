@@ -12,7 +12,7 @@ func TestValidateCollectedTranscriptBindsStoredBytesAndManifest(t *testing.T) {
 	stdout, stderr := []byte("bounded stdout"), []byte("bounded stderr")
 	report := ProcessReport{
 		State: "terminal", ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Date(2026, 8, 29, 3, 3, 5, 0, time.UTC).Format(time.RFC3339Nano),
-		Process: validBootstrap().Core.Process, RuntimeObjectDigest: digest("a"), WorkingObjectDigest: digest("b"),
+		Process: validBootstrap().Core.Process, RuntimeObjectDigest: digest("a"), WorkingObjectDigest: digest("b"), SourceGateRevision: SourceGateRevisionV1, ExactSetDigest: digest("set"),
 		StdoutDigest: canonical.DigestBytes(stdout), StderrDigest: canonical.DigestBytes(stderr), StdoutBytes: uint64(len(stdout)), StderrBytes: uint64(len(stderr)), TranscriptTruncated: true,
 	}
 	manifest := mustCanonical(report)

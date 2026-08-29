@@ -274,10 +274,14 @@ func testSupervisorIntent(state AttemptAuthorityState, command processsupervisor
 	sequence := state.SupervisorCommandSequence + 1
 	commandID := fmt.Sprintf("test-%s-%d", command, sequence)
 	pre := state.SupervisorMechanicsAnchor
+	currentAuthorityHead := state.HeadDigest
+	if command == processsupervisor.CommandBindAuthority || command == processsupervisor.CommandSpawn {
+		currentAuthorityHead = pre.CurrentAuthorityHead
+	}
 	return SupervisorCommandIntent{
 		ProtocolRevision: processsupervisor.ProtocolRevision,
 		SessionID:        state.SupervisorStarted.Handshake.SessionID, Command: command, CommandID: commandID,
-		Sequence: sequence, PreviousCommandHead: state.SupervisorCommandHead, CurrentAuthorityHead: pre.CurrentAuthorityHead,
+		Sequence: sequence, PreviousCommandHead: state.SupervisorCommandHead, CurrentAuthorityHead: currentAuthorityHead,
 		Deadline: "2026-08-29T00:02:00Z", RequestDigest: attemptTestDigest("request-" + commandID),
 		PayloadDigest: attemptTestDigest("payload-" + commandID), Rebuild: rebuild, PreCommand: pre,
 	}
@@ -375,6 +379,8 @@ func testSupervisorEvidence(t *testing.T, intent SupervisorCommandIntent, outcom
 	evidence.PostCommand.JournalHead = attemptTestDigest("journal-" + intent.CommandID)
 	if intent.Command == processsupervisor.CommandBindAuthority && disposition == "ok" {
 		evidence.PostCommand.CurrentAuthorityHead = evidence.BoundAuthorityHead
+	} else if intent.Command != processsupervisor.CommandBindAuthority {
+		evidence.PostCommand.CurrentAuthorityHead = intent.CurrentAuthorityHead
 	}
 	return evidence
 }

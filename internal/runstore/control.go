@@ -105,9 +105,14 @@ func (s *Store) controlDir(runID string) (string, error) {
 }
 
 func (s *Store) appendControlRecord(lease *Lease, validator ControlValidator, entry controlEntry, payload any, maxJournalBytes int64) error {
-	if lease == nil || lease.file == nil || !lease.held {
+	if !leaseHeldBySelf(lease) {
 		return errors.New("control append requires held run lease")
 	}
+	if lease.guard.preparedBorrowed.Load() {
+		return fmt.Errorf("%w: prepared Run-start authority is borrowed", ErrConflict)
+	}
+	lease.guard.mu.Lock()
+	defer lease.guard.mu.Unlock()
 	if validator == nil {
 		return errors.New("control append requires a validator")
 	}

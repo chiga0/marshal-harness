@@ -46,6 +46,129 @@ type LaunchMaterialV1 struct {
 	Object ObjectV1 `json:"object"`
 }
 
+// Pi0843IdentityV1 is the path-free, static Pi 0.84.3 identity frozen by
+// ADR 0063.  The component digests are derived from the exact closure
+// objects, while the canonical identity preimage contains no path, argv,
+// environment, stdin, secret, or per-Run agentLaunchSpecDigest.
+type Pi0843IdentityV1 struct {
+	SchemaVersion            string `json:"schemaVersion"`
+	ProtocolRevision         string `json:"protocolRevision"`
+	AgentProvider            string `json:"agentProvider"`
+	AgentVersion             string `json:"agentVersion"`
+	ClosureProfileID         string `json:"closureProfileId"`
+	NodeRuntimeObjectDigest  string `json:"nodeRuntimeObjectDigest"`
+	EntrypointMaterialDigest string `json:"entrypointMaterialDigest"`
+	MaterialRootsDigest      string `json:"materialRootsDigest"`
+	LaunchMaterialsDigest    string `json:"launchMaterialsDigest"`
+	IdentityDigest           string `json:"identityDigest"`
+}
+
+const (
+	pi0843IdentitySchema   = "Pi0843IdentityV1"
+	pi0843IdentityProtocol = "pi-0843-identity/v1"
+	pi0843IdentityProvider = "pi"
+	pi0843IdentityVersion  = "0.84.3"
+)
+
+type pi0843IdentityPreimage struct {
+	SchemaVersion            string `json:"schemaVersion"`
+	ProtocolRevision         string `json:"protocolRevision"`
+	AgentProvider            string `json:"agentProvider"`
+	AgentVersion             string `json:"agentVersion"`
+	ClosureProfileID         string `json:"closureProfileId"`
+	NodeRuntimeObjectDigest  string `json:"nodeRuntimeObjectDigest"`
+	EntrypointMaterialDigest string `json:"entrypointMaterialDigest"`
+	MaterialRootsDigest      string `json:"materialRootsDigest"`
+	LaunchMaterialsDigest    string `json:"launchMaterialsDigest"`
+}
+
+// Validate checks the closed identity envelope. It does not expose or accept
+// any locator; Pi0843IdentityFromClosure is the only builder from objects.
+func (identity Pi0843IdentityV1) Validate() error {
+	if identity.SchemaVersion != pi0843IdentitySchema || identity.ProtocolRevision != pi0843IdentityProtocol || identity.AgentProvider != pi0843IdentityProvider || identity.AgentVersion != pi0843IdentityVersion || identity.ClosureProfileID != Pi0843DarwinARM64Profile ||
+		!validDigest(identity.NodeRuntimeObjectDigest) || !validDigest(identity.EntrypointMaterialDigest) || !validDigest(identity.MaterialRootsDigest) || !validDigest(identity.LaunchMaterialsDigest) || !validDigest(identity.IdentityDigest) {
+		return ErrUnavailable
+	}
+	want, err := identity.Digest()
+	if err != nil || want != identity.IdentityDigest {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+// Digest returns the identityDigest for the closed identity. The digest
+// preimage deliberately omits IdentityDigest and agentLaunchSpecDigest.
+func (identity Pi0843IdentityV1) Digest() (string, error) {
+	if identity.SchemaVersion != pi0843IdentitySchema || identity.ProtocolRevision != pi0843IdentityProtocol || identity.AgentProvider != pi0843IdentityProvider || identity.AgentVersion != pi0843IdentityVersion || identity.ClosureProfileID != Pi0843DarwinARM64Profile ||
+		!validDigest(identity.NodeRuntimeObjectDigest) || !validDigest(identity.EntrypointMaterialDigest) || !validDigest(identity.MaterialRootsDigest) || !validDigest(identity.LaunchMaterialsDigest) {
+		return "", ErrUnavailable
+	}
+	preimage := pi0843IdentityPreimage{SchemaVersion: identity.SchemaVersion, ProtocolRevision: identity.ProtocolRevision, AgentProvider: identity.AgentProvider, AgentVersion: identity.AgentVersion, ClosureProfileID: identity.ClosureProfileID, NodeRuntimeObjectDigest: identity.NodeRuntimeObjectDigest, EntrypointMaterialDigest: identity.EntrypointMaterialDigest, MaterialRootsDigest: identity.MaterialRootsDigest, LaunchMaterialsDigest: identity.LaunchMaterialsDigest}
+	raw, err := json.Marshal(preimage)
+	if err != nil {
+		return "", ErrUnavailable
+	}
+	return canonical.DigestJSON(raw)
+}
+
+func digestCanonicalValue(value any) (string, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", ErrUnavailable
+	}
+	return canonical.DigestJSON(raw)
+}
+
+// Pi0843IdentityFromClosure derives the sole accepted Pi identity from an
+// already sealed closure. All locator-bearing values are used only as digest
+// preimages; the returned closed value contains digests only.
+func Pi0843IdentityFromClosure(closure ClosureV1) (Pi0843IdentityV1, error) {
+	if closure.Validate() != nil || closure.ClosureProfileID != Pi0843DarwinARM64Profile || len(closure.MaterialRoots) != 2 || len(closure.LaunchMaterials) != 55 {
+		return Pi0843IdentityV1{}, ErrUnavailable
+	}
+	for index := 1; index < len(closure.MaterialRoots); index++ {
+		if strings.Compare(closure.MaterialRoots[index-1].Name, closure.MaterialRoots[index].Name) >= 0 {
+			return Pi0843IdentityV1{}, ErrUnavailable
+		}
+	}
+	var entrypoint *LaunchMaterialV1
+	entrypointCount := 0
+	for index := range closure.LaunchMaterials {
+		if closure.LaunchMaterials[index].Role == "pi-bundle/cli.js" {
+			entrypoint = &closure.LaunchMaterials[index]
+			entrypointCount++
+		}
+	}
+	if entrypointCount != 1 || entrypoint == nil {
+		return Pi0843IdentityV1{}, ErrUnavailable
+	}
+	nodeDigest, err := digestCanonicalValue(closure.RuntimeExecutable)
+	if err != nil {
+		return Pi0843IdentityV1{}, ErrUnavailable
+	}
+	entrypointDigest, err := digestCanonicalValue(*entrypoint)
+	if err != nil {
+		return Pi0843IdentityV1{}, ErrUnavailable
+	}
+	roots := append([]MaterialRootV1(nil), closure.MaterialRoots...)
+	rootDigest, err := digestCanonicalValue(roots)
+	if err != nil {
+		return Pi0843IdentityV1{}, ErrUnavailable
+	}
+	identity := Pi0843IdentityV1{
+		SchemaVersion: pi0843IdentitySchema, ProtocolRevision: pi0843IdentityProtocol,
+		AgentProvider: pi0843IdentityProvider, AgentVersion: pi0843IdentityVersion,
+		ClosureProfileID: closure.ClosureProfileID, NodeRuntimeObjectDigest: nodeDigest,
+		EntrypointMaterialDigest: entrypointDigest, MaterialRootsDigest: rootDigest,
+		LaunchMaterialsDigest: closure.LaunchMaterialsDigest,
+	}
+	identity.IdentityDigest, err = identity.Digest()
+	if err != nil {
+		return Pi0843IdentityV1{}, ErrUnavailable
+	}
+	return identity, nil
+}
+
 type ClosureV1 struct {
 	RuntimeExecutable     ObjectV1           `json:"runtimeExecutableV1"`
 	ClosureProfileID      string             `json:"closureProfileId"`

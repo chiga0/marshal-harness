@@ -57,7 +57,7 @@ type transcriptCollectMechanics struct {
 func (mechanics transcriptCollectMechanics) Collect(context.Context, CollectPayload) (MechanicsResult, error) {
 	report := ProcessReport{
 		State: "terminal", ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		Process:             ProcessIdentity{PID: 200, BirthSeconds: 2, BirthMicroseconds: 3, SessionID: 99, ProcessGroupID: 99},
+		Process: ProcessIdentity{PID: 200, BirthSeconds: 2, BirthMicroseconds: 3, SessionID: 99, ProcessGroupID: 99}, SourceGateRevision: SourceGateRevisionV1, ExactSetDigest: digest("set"),
 		RuntimeObjectDigest: digest("4"), WorkingObjectDigest: digest("5"),
 		StdoutDigest: canonical.DigestBytes(mechanics.stdout), StderrDigest: canonical.DigestBytes(mechanics.stderr),
 		StdoutBytes: uint64(len(mechanics.stdout)), StderrBytes: uint64(len(mechanics.stderr)),

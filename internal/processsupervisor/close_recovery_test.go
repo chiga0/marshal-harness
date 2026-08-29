@@ -34,7 +34,7 @@ func committedCloseFixture(t *testing.T) (*Journal, string, PreparedCommand, Ver
 	}
 	report := ProcessReport{
 		State: "terminal", ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Date(2026, 8, 29, 3, 3, 5, 0, time.UTC).Format(time.RFC3339Nano),
-		Process: validBootstrap().Core.Process, RuntimeObjectDigest: digest("a"), WorkingObjectDigest: digest("b"),
+		Process: validBootstrap().Core.Process, RuntimeObjectDigest: digest("a"), WorkingObjectDigest: digest("b"), SourceGateRevision: SourceGateRevisionV1, ExactSetDigest: digest("set"),
 	}
 	result := MechanicsResult{Disposition: "ok", ReasonCode: "mechanics-closed", ObservationDigest: mustDigestValue(report), Payload: mustCanonical(report)}
 	response := responseForResult(t, prepared.request, result)

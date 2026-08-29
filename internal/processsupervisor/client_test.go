@@ -354,7 +354,7 @@ func TestCommandPostAuthorityHeadIsClosedForBindAndDurableRejection(t *testing.T
 	if got := commandPostAuthorityHead(a0, Request{Command: CommandBindAuthority}, Response{Status: "rejected"}, bindProjection); got != a0 {
 		t.Fatalf("bind rejected post=%s", got)
 	}
-	if got := commandPostAuthorityHead(a0, Request{Command: CommandResume, CurrentAuthorityHead: at}, Response{Status: "rejected"}, requestProjection{}); got != at {
+	if got := commandPostAuthorityHead(a0, Request{Command: CommandResume, CurrentAuthorityHead: at}, Response{Status: "rejected"}, requestProjection{}); got != a0 {
 		t.Fatalf("ordinary durable rejection post=%s", got)
 	}
 }
@@ -632,7 +632,7 @@ func clientResponse(t *testing.T, request Request) Response {
 			state = "terminal"
 		}
 		reason = "process-observed"
-		report := ProcessReport{State: state, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: fixtureObservedAt, Process: validBootstrap().Core.Process, RuntimeObjectDigest: digest("a"), WorkingObjectDigest: digest("b")}
+		report := ProcessReport{State: state, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: fixtureObservedAt, Process: validBootstrap().Core.Process, RuntimeObjectDigest: digest("a"), WorkingObjectDigest: digest("b"), SourceGateRevision: SourceGateRevisionV1, ExactSetDigest: digest("set")}
 		if request.Command == CommandCollect {
 			report.StdoutDigest, report.StderrDigest = digest("c"), digest("d")
 		}

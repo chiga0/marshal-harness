@@ -964,12 +964,12 @@ func validateSupervisorCommandChain(prior AttemptAuthorityState, chain []Supervi
 }
 
 func sameSupervisorChildEvidence(left, right SupervisorCommandEvidence) bool {
-	return left.Outcome.Process == right.Outcome.Process && left.Outcome.RuntimeObjectDigest == right.Outcome.RuntimeObjectDigest && left.Outcome.WorkingObjectDigest == right.Outcome.WorkingObjectDigest
+	return left.Outcome.Process == right.Outcome.Process && left.Outcome.RuntimeObjectDigest == right.Outcome.RuntimeObjectDigest && left.Outcome.WorkingObjectDigest == right.Outcome.WorkingObjectDigest && left.Outcome.SourceGateRevision == right.Outcome.SourceGateRevision && left.Outcome.ExactSetDigest == right.Outcome.ExactSetDigest
 }
 
 func terminalReportsEquivalent(terminal, closed SupervisorCommandEvidence) bool {
 	left, right := terminal.Outcome, closed.Outcome
-	return left.Process == right.Process && left.MechanicsState == right.MechanicsState && left.ObserverIdentity == right.ObserverIdentity && left.ObservedAt == right.ObservedAt && left.RuntimeObjectDigest == right.RuntimeObjectDigest && left.WorkingObjectDigest == right.WorkingObjectDigest && left.ExitCode == right.ExitCode && left.Signal == right.Signal && left.StdoutDigest == right.StdoutDigest && left.StderrDigest == right.StderrDigest && left.StdoutBytes == right.StdoutBytes && left.StderrBytes == right.StderrBytes && left.TranscriptTruncated == right.TranscriptTruncated
+	return left.Process == right.Process && left.MechanicsState == right.MechanicsState && left.ObserverIdentity == right.ObserverIdentity && left.ObservedAt == right.ObservedAt && left.RuntimeObjectDigest == right.RuntimeObjectDigest && left.WorkingObjectDigest == right.WorkingObjectDigest && left.SourceGateRevision == right.SourceGateRevision && left.ExactSetDigest == right.ExactSetDigest && left.ExitCode == right.ExitCode && left.Signal == right.Signal && left.StdoutDigest == right.StdoutDigest && left.StderrDigest == right.StderrDigest && left.StdoutBytes == right.StdoutBytes && left.StderrBytes == right.StderrBytes && left.TranscriptTruncated == right.TranscriptTruncated
 }
 
 func advanceSupervisorCommandState(state *AttemptAuthorityState, chain ...SupervisorCommandEvidence) {
@@ -1046,12 +1046,12 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 		}
 		return nil
 	}
-	if state.SupervisorBoundAuthorityHead != state.SupervisorStartedDigest || intent.CurrentAuthorityHead != state.HeadDigest || pre.CurrentAuthorityHead != state.HeadDigest {
+	if state.SupervisorBoundAuthorityHead != state.SupervisorStartedDigest || intent.CurrentAuthorityHead != state.HeadDigest || pre.CurrentAuthorityHead != state.SupervisorMechanicsAuthorityHead {
 		return ErrAttemptAuthorityOrder
 	}
 	switch intent.Command {
 	case processsupervisor.CommandSpawn:
-		if state.ProcessStartedDigest != "" || rebuild.SupervisorStartedFactDigest != state.SupervisorStartedDigest || rebuild.LaunchAuthorizedFactDigest != state.LaunchAuthorizedDigest || rebuild.LaunchMaterialsDigest != state.LaunchMaterialsDigest || rebuild.AgentLaunchSpecDigest != state.AgentLaunchSpecDigest {
+		if pre.CurrentAuthorityHead != intent.CurrentAuthorityHead || state.ProcessStartedDigest != "" || rebuild.SupervisorStartedFactDigest != state.SupervisorStartedDigest || rebuild.LaunchAuthorizedFactDigest != state.LaunchAuthorizedDigest || rebuild.LaunchMaterialsDigest != state.LaunchMaterialsDigest || rebuild.AgentLaunchSpecDigest != state.AgentLaunchSpecDigest {
 			return ErrAttemptAuthorityOrder
 		}
 	case processsupervisor.CommandResume:
@@ -1626,14 +1626,16 @@ func (s *ingressDurableStore) compareAndAppendCleanup(ctx context.Context, verif
 
 func newAuthorityProjection() *Ingress {
 	return &Ingress{
-		admitted:          make(map[string]admittedEntry),
-		attempts:          make(map[string]AttemptAuthorityState),
-		controlOwners:     make(map[string]ControlOwnerState),
-		effects:           make(map[string]EffectAuthorityState),
-		allocations:       make(map[string]allocationAuthorityState),
-		effectCommands:    make(map[string]string),
-		effectIdempotency: make(map[string]string),
-		effectMarkers:     make(map[string]string),
+		admitted:              make(map[string]admittedEntry),
+		attempts:              make(map[string]AttemptAuthorityState),
+		controlOwners:         make(map[string]ControlOwnerState),
+		effects:               make(map[string]EffectAuthorityState),
+		allocations:           make(map[string]allocationAuthorityState),
+		preparedExecutions:    make(map[string]PreparedExecutionV1),
+		preparedExecutionKeys: make(map[string]string),
+		effectCommands:        make(map[string]string),
+		effectIdempotency:     make(map[string]string),
+		effectMarkers:         make(map[string]string),
 	}
 }
 
@@ -1738,7 +1740,6 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 		state.ProcessStartedEvidence = t.SupervisorEvidence
 		if state.SupervisorBootstrapDigest != "" && t.SupervisorOutcomeFactDigest != "" {
 			state.ProcessStartedEvidence, _ = supervisorCheckpointEvidence(state, t.SupervisorOutcomeFactDigest)
-			state.SupervisorMechanicsAuthorityHead = fact.Digest
 		} else if state.SupervisorBootstrapDigest != "" {
 			advanceSupervisorCommandState(&state, t.SupervisorBindEvidence)
 			advanceSupervisorCommandState(&state, t.SupervisorPrecedingEvidence...)
@@ -1753,7 +1754,6 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 		state.CommittedResultCollect = t.SupervisorEvidence
 		if state.SupervisorBootstrapDigest != "" && t.SupervisorOutcomeFactDigest != "" {
 			state.CommittedResultCollect, _ = supervisorCheckpointEvidence(state, t.SupervisorOutcomeFactDigest)
-			state.SupervisorMechanicsAuthorityHead = fact.Digest
 		} else if state.SupervisorBootstrapDigest != "" {
 			advanceSupervisorCommandState(&state, t.SupervisorPrecedingEvidence...)
 			advanceSupervisorCommandState(&state, t.SupervisorEvidence)
@@ -1766,9 +1766,6 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 		state.AdmissionClosed = fact.AdmissionClosed
 		state.BarrierAdmissionFactDigest, state.BarrierAdmissionSequence = t.AdmissionFactDigest, t.AdmissionSequence
 		state.TerminalGeneration, state.CleanupBindingDigest = fact.TerminalGeneration, fact.CleanupBindingDigest
-		if state.SupervisorBootstrapDigest != "" {
-			state.SupervisorMechanicsAuthorityHead = fact.Digest
-		}
 	case AttemptTransitionProcessTerminal:
 		if t.TerminalizationID != state.TerminalizationID {
 			return ErrAttemptAuthorityConflict
@@ -1779,7 +1776,6 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 		state.ProcessTerminalEvidence = t.SupervisorEvidence
 		if state.SupervisorBootstrapDigest != "" && t.SupervisorOutcomeFactDigest != "" {
 			state.ProcessTerminalEvidence, _ = supervisorCheckpointEvidence(state, t.SupervisorOutcomeFactDigest)
-			state.SupervisorMechanicsAuthorityHead = fact.Digest
 		} else if state.SupervisorBootstrapDigest != "" {
 			advanceSupervisorCommandState(&state, t.SupervisorPrecedingEvidence...)
 			advanceSupervisorCommandState(&state, t.SupervisorEvidence)
@@ -1789,9 +1785,6 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 			return ErrAttemptAuthorityConflict
 		}
 		state.AllocationTerminalDigest, state.AllocationReceiptDigest = fact.Digest, t.ReceiptDigest
-		if state.SupervisorBootstrapDigest != "" {
-			state.SupervisorMechanicsAuthorityHead = fact.Digest
-		}
 	case AttemptTransitionProcessSupervisorClosed:
 		if t.TerminalizationID != state.TerminalizationID {
 			return ErrAttemptAuthorityConflict

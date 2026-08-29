@@ -327,6 +327,9 @@ func OpenRunAuthority(lease *Lease) (*os.File, error) {
 	if lease == nil || lease.runDir == nil || lease.file == nil || !lease.held {
 		return nil, errors.New("lease lacks bound authority descriptors")
 	}
+	if lease.guard != nil && lease.guard.preparedBorrowed.Load() {
+		return nil, errors.New("run authority is synchronously borrowed by prepared start")
+	}
 	rootFD, runsFD, currentRunFD, err := openRunAuthority(lease.root, lease.runID)
 	if err != nil {
 		return nil, err

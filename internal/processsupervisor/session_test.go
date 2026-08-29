@@ -113,6 +113,29 @@ func TestSessionAdvancesAuthenticatedAuthorityAnchorAndRejectsSupervisorRestart(
 	}
 }
 
+func TestLegacySpawnPayloadOnlyDecodesForCompletedReplay(t *testing.T) {
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+	bootstrap := validBootstrap()
+	journal, _ := testJournal(t)
+	session, err := NewSession(bootstrap, journal, fakeMechanics{}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	bind := BindAuthorityPayload{SupervisorStartedFactDigest: digest("c"), OwnerEpoch: bootstrap.OwnerEpoch, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, AuthorityHead: digest("b")}
+	bindRequest := commandRequest(t, bootstrap.SessionID, CommandBindAuthority, "bind-legacy", 1, CommandGenesisDigest, bootstrap.CurrentAuthorityHead, now.Add(20*time.Second), bind)
+	if response := session.Handle(mustCanonical(bindRequest)); response.Status != "ok" {
+		t.Fatalf("bind rejected: %+v", response)
+	}
+	legacy := validSpawnPayload()
+	legacy.SourceGateRevision = ""
+	legacy.AllocationLiveIdentity = nil
+	request := commandRequest(t, bootstrap.SessionID, CommandSpawn, "spawn-legacy", 2, session.commandHead, session.authorityHead, now.Add(time.Minute), legacy)
+	response := session.Handle(mustCanonical(request))
+	if response.Status != "rejected" || response.ReasonCode != ErrIntervention.ReasonCode || session.commandSequence != 1 {
+		t.Fatalf("legacy spawn was admitted live: response=%+v commandSequence=%d", response, session.commandSequence)
+	}
+}
+
 func TestReconnectRequiresAuthorityHeadAdvanceAndOwnerProof(t *testing.T) {
 	bootstrap := validBootstrap()
 	journal, _ := testJournal(t)
@@ -636,11 +659,13 @@ func validSpawnPayload() SpawnPayload {
 	if err != nil {
 		panic(err)
 	}
+	working := HeldObjectSpec{Role: "working-directory", CanonicalPath: "/secret/repository", Device: 1, Inode: 11, FileType: "directory", UID: 501, GID: 20, Mode: 0o040755, LinkCount: 2, Size: 64}
 	return SpawnPayload{
 		LaunchAuthorizedFactDigest: digest("3"), SupervisorStartedFactDigest: digest("c"),
 		Runtime:          runtime,
-		WorkingDirectory: HeldObjectSpec{Role: "working-directory", CanonicalPath: "/secret/repository", Device: 1, Inode: 11, FileType: "directory", UID: 501, GID: 20, Mode: 0o040755, LinkCount: 2, Size: 64},
-		ClosureProfileID: closure.ClosureProfileID, MaterialRoots: closure.MaterialRoots, LaunchMaterials: closure.LaunchMaterials, LaunchMaterialsDigest: closure.LaunchMaterialsDigest, AgentLaunchSpecDigest: closure.AgentLaunchSpecDigest,
+		WorkingDirectory: working, AllocationLiveIdentity: &AllocationLiveIdentity{Device: working.Device, Inode: working.Inode, FileType: working.FileType, UID: working.UID, GID: working.GID, Mode: working.Mode, LinkCount: working.LinkCount, Size: working.Size},
+		SourceGateRevision: SourceGateRevisionV1,
+		ClosureProfileID:   closure.ClosureProfileID, MaterialRoots: closure.MaterialRoots, LaunchMaterials: closure.LaunchMaterials, LaunchMaterialsDigest: closure.LaunchMaterialsDigest, AgentLaunchSpecDigest: closure.AgentLaunchSpecDigest,
 		ArgvDigest: mustDigestValue(argv), EnvironmentDigest: mustDigestValue(environment), StdinDigest: canonical.DigestBytes(stdin), EnvironmentKeys: []string{"TOKEN"}, Argv: argv, Environment: environment, Stdin: stdin,
 	}
 }
