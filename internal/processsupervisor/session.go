@@ -186,6 +186,14 @@ func (session *Session) reconcilePendingLocked(request reconnectRequest) (reconn
 	if request.PendingRequest != nil {
 		pending := *request.PendingRequest
 		pending.Payload = append([]byte(nil), request.PendingRequest.Payload...)
+		if pending.Command == CommandSpawn {
+			var spawn SpawnPayload
+			if strictCanonicalDecode(pending.Payload, &spawn) != nil || spawn.SourceGateRevision != SourceGateRevisionV1 {
+				// Historical pending spawns cannot be safely re-executed under S1;
+				// leave the journal untouched and force typed intervention.
+				return reconnectResolution{}, ErrIntervention
+			}
+		}
 		value, _, err := projectRequest(pending)
 		if err != nil || pending.SessionID != session.sessionID || pending.Sequence != request.LastCommandSequence+1 || pending.PreviousCommandDigest != request.LastCommandHead {
 			return reconnectResolution{}, ErrConflict
@@ -303,7 +311,7 @@ func (session *Session) handleLocked(raw []byte) Response {
 	} else if errors.Is(commandErr, ErrIntervention) {
 		session.state = sessionIntervention
 	}
-	if request.Command != CommandBindAuthority {
+	if request.Command != CommandBindAuthority && commandErr == nil {
 		session.authorityHead = request.CurrentAuthorityHead
 	}
 	return response
@@ -333,6 +341,11 @@ func (session *Session) admitRequest(request Request) (requestProjection, any, e
 	switch request.Command {
 	case CommandSpawn:
 		value := payload.(SpawnPayload)
+		if value.SourceGateRevision != SourceGateRevisionV1 {
+			// A legacy spawn may be decoded for completed-journal replay, but it
+			// must never be executed again as a live mechanics command.
+			return requestProjection{}, nil, ErrIntervention
+		}
 		if value.LaunchAuthorizedFactDigest != session.launchFact || value.SupervisorStartedFactDigest != session.supervisorStartedFact {
 			return requestProjection{}, nil, ErrConflict
 		}
@@ -455,6 +468,7 @@ func decodePayload(command CommandName, raw json.RawMessage, projection *request
 		}
 		projection.LaunchMaterialsDigest = value.LaunchMaterialsDigest
 		projection.AgentLaunchSpecDigest = value.AgentLaunchSpecDigest
+		projection.SourceGateRevision = value.SourceGateRevision
 		projection.ClosureProfileID = value.ClosureProfileID
 		projection.ArgvDigest = value.ArgvDigest
 		projection.EnvironmentDigest = value.EnvironmentDigest
@@ -503,6 +517,12 @@ func decodePayload(command CommandName, raw json.RawMessage, projection *request
 }
 
 func validateSpawnPayload(value SpawnPayload) error {
+	if value.SourceGateRevision != "" && value.SourceGateRevision != SourceGateRevisionV1 {
+		return ErrInvalid
+	}
+	if value.SourceGateRevision == SourceGateRevisionV1 && (value.AllocationLiveIdentity == nil || !value.AllocationLiveIdentity.matches(value.WorkingDirectory)) {
+		return ErrInvalid
+	}
 	for _, digest := range []string{value.LaunchAuthorizedFactDigest, value.SupervisorStartedFactDigest, value.LaunchMaterialsDigest, value.AgentLaunchSpecDigest, value.ArgvDigest, value.EnvironmentDigest, value.StdinDigest} {
 		if !validDigest(digest) {
 			return ErrInvalid
@@ -671,6 +691,7 @@ func ValidateProcessReport(report ProcessReport) error {
 	birth := time.Unix(report.Process.BirthSeconds, report.Process.BirthMicroseconds*int64(time.Microsecond)).UTC()
 	if err != nil || observedAt.Location() != time.UTC || observedAt.Format(time.RFC3339Nano) != report.ObservedAt || observedAt.Before(birth) ||
 		report.ObserverIdentity != "darwin-fixed-process-supervisor-v1" || report.Process.validate() != nil || !validDigest(report.RuntimeObjectDigest) || !validDigest(report.WorkingObjectDigest) ||
+		(report.SourceGateRevision != "" && report.SourceGateRevision != SourceGateRevisionV1) || (report.SourceGateRevision == SourceGateRevisionV1 && !validDigest(report.ExactSetDigest)) || (report.SourceGateRevision == "" && report.ExactSetDigest != "") ||
 		report.ExitCode < -1 || uint64(maxInt(report.ExitCode, 0)) > maxSafeJSONInteger || report.StdoutBytes > uint64(MaxStdoutBytes) || report.StderrBytes > uint64(MaxStderrBytes) || report.StdoutBytes+report.StderrBytes > uint64(MaxTranscriptBytes) {
 		return ErrInvalid
 	}
@@ -690,6 +711,17 @@ func ValidateProcessReport(report ProcessReport) error {
 		return ErrInvalid
 	}
 	return nil
+}
+
+// ValidateS1ProcessReport is the authority-bearing validator for fresh S1
+// mechanics. ValidateProcessReport intentionally remains legacy-compatible so
+// old v1 transcript/journal bytes can be replayed without being upgraded into
+// S1 evidence.
+func ValidateS1ProcessReport(report ProcessReport) error {
+	if report.SourceGateRevision != SourceGateRevisionV1 || !validDigest(report.ExactSetDigest) {
+		return ErrInvalid
+	}
+	return ValidateProcessReport(report)
 }
 
 func maxInt(value, minimum int) int {
