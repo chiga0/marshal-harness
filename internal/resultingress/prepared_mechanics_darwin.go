@@ -25,7 +25,8 @@ import (
 // ledger locks. Exact completed resume is replay-only; partial mechanics are
 // left intact for the later Attach/intervention slice and are never guessed.
 func (s *DurableStore) reconcilePreparedExecutionLocked(ctx context.Context, projection *Ingress, prepared PreparedExecutionV1, state AttemptAuthorityState) (AttemptAuthorityState, error) {
-	if s.preparedDarwin == nil || s.preparedDarwin.controlRoot == nil || ctx == nil || projection == nil {
+	profile, ok := s.preparedDarwin.(*preparedDarwinExecutionProfile)
+	if !ok || profile == nil || profile.controlRoot == nil || ctx == nil || projection == nil {
 		return AttemptAuthorityState{}, ErrPreparedExecutionUnavailable
 	}
 	if _, err := exactSuccessfulResume(state); err == nil {
@@ -114,7 +115,10 @@ func (s *DurableStore) verifyPreparedCurrentSourcesLocked(projection *Ingress, p
 }
 
 func (s *DurableStore) startPreparedSupervisorLocked(ctx context.Context, projection *Ingress, state AttemptAuthorityState) (*processsupervisor.Client, AttemptAuthorityState, error) {
-	profile := s.preparedDarwin
+	profile, ok := s.preparedDarwin.(*preparedDarwinExecutionProfile)
+	if !ok || profile == nil || profile.controlRoot == nil {
+		return nil, AttemptAuthorityState{}, ErrPreparedExecutionUnavailable
+	}
 	currentCore, err := processsupervisor.ObserveCurrentCore(profile.fixedMarshalPath)
 	if err != nil || currentCore != profile.core {
 		return nil, AttemptAuthorityState{}, ErrPreparedExecutionUnavailable
