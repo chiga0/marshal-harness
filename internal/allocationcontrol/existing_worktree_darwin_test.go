@@ -1040,6 +1040,98 @@ func TestExistingWorktreeProjectionCrashStageReconcilesAndDoesNotAccumulate(t *t
 	}
 }
 
+func TestExistingWorktreeProjectionInterruptedCleanupLeavesRecoverableStage(t *testing.T) {
+	tests := []struct {
+		name        string
+		phase       string
+		wantEntries int
+	}{
+		{name: "data-subset", phase: existingWorktreeCleanupAfterDataEntry, wantEntries: 2},
+		{name: "lock-only", phase: existingWorktreeCleanupAfterDataSync, wantEntries: 1},
+		{name: "empty", phase: existingWorktreeCleanupAfterLockSync, wantEntries: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			first := newExistingWorktreeFixture(t)
+			defer first.Close()
+			second := newDistinctExistingWorktreeFixture(t)
+			defer second.Close()
+			if _, err := first.controller.Bind(context.Background(), first.run, first.request); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := second.controller.Bind(context.Background(), second.run, second.request); err != nil {
+				t.Fatal(err)
+			}
+			snapshot := ExistingWorktreeAuthoritySnapshotV1{
+				CurrentAttemptRevision:   first.authority.attemptRevision,
+				CurrentAttemptHeadDigest: first.authority.attemptHead,
+				Facts:                    append(append([]ExistingWorktreeAttemptFactV1(nil), first.authority.facts...), second.authority.facts...),
+			}
+			if err := snapshot.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			graph, err := first.authority.DescriptorGraph()
+			if err != nil {
+				t.Fatal(err)
+			}
+			projection, err := openExistingWorktreeProjection(graph)
+			if err != nil {
+				t.Fatal(err)
+			}
+			records, err := projectionRecords(snapshot)
+			if err != nil {
+				projection.Close()
+				t.Fatal(err)
+			}
+			plans, err := projection.preflight(records)
+			if err != nil {
+				projection.Close()
+				t.Fatal(err)
+			}
+			stage, err := projection.stagePlans(plans)
+			if err != nil {
+				closeExistingWorktreeProjectionPlans(plans)
+				projection.Close()
+				t.Fatal(err)
+			}
+			if err := stage.Close(); err != nil {
+				closeExistingWorktreeProjectionPlans(plans)
+				projection.Close()
+				t.Fatal(err)
+			}
+			sentinel := errors.New("simulated cleanup interruption")
+			interrupted := false
+			projection.cleanupInterrupt = func(phase string) error {
+				if !interrupted && phase == test.phase {
+					interrupted = true
+					return sentinel
+				}
+				return nil
+			}
+			cleanupErr := projection.cleanupStage(plans)
+			closeExistingWorktreeProjectionPlans(plans)
+			projection.Close()
+			if !errors.Is(cleanupErr, sentinel) || !interrupted {
+				t.Fatalf("cleanup phase %q was not interrupted: %v", test.phase, cleanupErr)
+			}
+			stagePath := filepath.Join(first.repository, ".marshal", existingWorktreeRuntimeDirectory, existingWorktreeProjectionStage)
+			entries, err := os.ReadDir(stagePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != test.wantEntries {
+				t.Fatalf("interrupted stage entries = %d, want %d", len(entries), test.wantEntries)
+			}
+			if err := SyncExistingWorktreeProjectionFromGraph(graph, snapshot); err != nil {
+				t.Fatalf("next Sync did not reconcile %s cleanup residue: %v", test.name, err)
+			}
+			if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("next Sync left %s cleanup residue: %v", test.name, err)
+			}
+		})
+	}
+}
+
 func TestExistingWorktreeProjectionUnknownStageFailsClosedWithoutDeletion(t *testing.T) {
 	fixture := newExistingWorktreeFixture(t)
 	defer fixture.Close()

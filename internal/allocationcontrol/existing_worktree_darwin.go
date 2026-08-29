@@ -987,6 +987,7 @@ type existingWorktreeProjection struct {
 	afterPreflight       func()
 	beforeCommit         func()
 	afterCommit          func()
+	cleanupInterrupt     func(string) error
 }
 
 type existingWorktreeProjectionFileIdentity struct {
@@ -1015,6 +1016,19 @@ type existingWorktreeProjectionCleanupEntry struct {
 	name     string
 	file     *os.File
 	identity existingWorktreeProjectionFileIdentity
+}
+
+const (
+	existingWorktreeCleanupAfterDataEntry = "after-data-entry"
+	existingWorktreeCleanupAfterDataSync  = "after-data-sync"
+	existingWorktreeCleanupAfterLockSync  = "after-lock-sync"
+)
+
+func (projection *existingWorktreeProjection) interruptCleanup(phase string) error {
+	if projection != nil && projection.cleanupInterrupt != nil {
+		return projection.cleanupInterrupt(phase)
+	}
+	return nil
 }
 
 // SyncExistingWorktreeProjectionFromGraph is the reference session projection
@@ -1415,6 +1429,15 @@ func (projection *existingWorktreeProjection) cleanupCommittedOldProjection(plan
 		if err != nil || !sameExistingWorktreeProjectionFile(identity, plan.identity) || unix.Unlinkat(int(projection.directory.Fd()), plan.name, 0) != nil {
 			return ErrFilesystemConflict
 		}
+		if err := projection.interruptCleanup(existingWorktreeCleanupAfterDataEntry); err != nil {
+			return err
+		}
+	}
+	if err := projection.directory.Sync(); err != nil {
+		return ErrFilesystemConflict
+	}
+	if err := projection.interruptCleanup(existingWorktreeCleanupAfterDataSync); err != nil {
+		return err
 	}
 	lockIdentity, err = observeExistingWorktreeProjectionFile(projection.directory, existingWorktreeProjectionLock, projection.lock)
 	if err != nil || !sameExistingWorktreeProjectionFile(lockIdentity, projection.lockIdentity) || unix.Unlinkat(int(projection.directory.Fd()), existingWorktreeProjectionLock, 0) != nil {
@@ -1422,6 +1445,9 @@ func (projection *existingWorktreeProjection) cleanupCommittedOldProjection(plan
 	}
 	if err := projection.directory.Sync(); err != nil {
 		return ErrFilesystemConflict
+	}
+	if err := projection.interruptCleanup(existingWorktreeCleanupAfterLockSync); err != nil {
+		return err
 	}
 	if _, err := observePrivateDirectoryEdge(int(projection.parent.Fd()), int(projection.directory.Fd()), name); err != nil {
 		return ErrFilesystemConflict
@@ -1668,6 +1694,7 @@ func (projection *existingWorktreeProjection) cleanupStage(plans []*existingWork
 		}
 	}()
 	hasLock := false
+	lockIndex := -1
 	for _, dirEntry := range entries {
 		if dirEntry.IsDir() || !validExistingRelativeName(dirEntry.Name()) {
 			return ErrFilesystemConflict
@@ -1712,6 +1739,9 @@ func (projection *existingWorktreeProjection) cleanupStage(plans []*existingWork
 			return ErrAuthorityConflict
 		}
 		cleanup = append(cleanup, existingWorktreeProjectionCleanupEntry{name: name, file: file, identity: identity})
+		if name == existingWorktreeProjectionLock {
+			lockIndex = len(cleanup) - 1
+		}
 	}
 	if len(entries) > 0 && !hasLock {
 		return ErrAuthorityConflict
@@ -1720,8 +1750,14 @@ func (projection *existingWorktreeProjection) cleanupStage(plans []*existingWork
 	if err != nil || !equalCanonical(current, initialCurrent) {
 		return ErrFilesystemConflict
 	}
+	dataEntries := make([]*existingWorktreeProjectionCleanupEntry, 0, len(cleanup))
 	for index := range cleanup {
-		entry := &cleanup[index]
+		if index != lockIndex {
+			dataEntries = append(dataEntries, &cleanup[index])
+		}
+	}
+	sort.Slice(dataEntries, func(left, right int) bool { return dataEntries[left].name < dataEntries[right].name })
+	for _, entry := range dataEntries {
 		currentIdentity, err := observeExistingWorktreeProjectionFile(directory, entry.name, entry.file)
 		if err != nil || !sameExistingWorktreeProjectionFile(currentIdentity, entry.identity) {
 			return ErrFilesystemConflict
@@ -1729,9 +1765,31 @@ func (projection *existingWorktreeProjection) cleanupStage(plans []*existingWork
 		if err := unix.Unlinkat(fd, entry.name, 0); err != nil {
 			return ErrFilesystemConflict
 		}
+		if err := projection.interruptCleanup(existingWorktreeCleanupAfterDataEntry); err != nil {
+			return err
+		}
 	}
 	if err := directory.Sync(); err != nil {
 		return ErrFilesystemConflict
+	}
+	if err := projection.interruptCleanup(existingWorktreeCleanupAfterDataSync); err != nil {
+		return err
+	}
+	if lockIndex >= 0 {
+		lockEntry := &cleanup[lockIndex]
+		currentIdentity, err := observeExistingWorktreeProjectionFile(directory, lockEntry.name, lockEntry.file)
+		if err != nil || !sameExistingWorktreeProjectionFile(currentIdentity, lockEntry.identity) {
+			return ErrFilesystemConflict
+		}
+		if err := unix.Unlinkat(fd, lockEntry.name, 0); err != nil {
+			return ErrFilesystemConflict
+		}
+		if err := directory.Sync(); err != nil {
+			return ErrFilesystemConflict
+		}
+	}
+	if err := projection.interruptCleanup(existingWorktreeCleanupAfterLockSync); err != nil {
+		return err
 	}
 	if _, err := observePrivateDirectoryEdge(int(projection.parent.Fd()), fd, existingWorktreeProjectionStage); err != nil {
 		return ErrFilesystemConflict
