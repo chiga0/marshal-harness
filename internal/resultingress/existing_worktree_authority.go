@@ -132,6 +132,7 @@ func (authorityPort *ExistingWorktreeAuthority) WithCurrentExistingWorktreeRelea
 func withHeldExistingWorktreeVerifier(hold func(func(allocationcontrol.ExistingWorktreeCurrentAuthorityV1, allocationcontrol.ExistingWorktreeDescriptorGraphV1) error) error, operation func(allocationcontrol.ExistingWorktreeCurrentAuthorityV1, allocationcontrol.ExistingWorktreeDescriptorGraphV1) error) error {
 	var gate sync.Mutex
 	called, closed, duplicate, inFlight := false, false, false, false
+	completed := make(chan struct{})
 	var callbackErr error
 	holdErr := hold(func(current allocationcontrol.ExistingWorktreeCurrentAuthorityV1, graph allocationcontrol.ExistingWorktreeDescriptorGraphV1) error {
 		gate.Lock()
@@ -142,18 +143,27 @@ func withHeldExistingWorktreeVerifier(hold func(func(allocationcontrol.ExistingW
 		}
 		called, inFlight = true, true
 		gate.Unlock()
-		completed := operation(current, graph)
+		operationErr := operation(current, graph)
 		gate.Lock()
-		inFlight, callbackErr = false, completed
+		inFlight, callbackErr = false, operationErr
+		close(completed)
 		gate.Unlock()
-		return completed
+		return operationErr
 	})
 	gate.Lock()
-	escaped := inFlight
+	if inFlight {
+		gate.Unlock()
+		// A verifier is required to invoke the callback synchronously. If it
+		// returns while an admitted callback is still running, contain that
+		// callback before closing the session and report the contract breach.
+		<-completed
+		gate.Lock()
+		duplicate = true
+	}
 	closed = true
 	calledOnce, repeated, innerErr := called, duplicate, callbackErr
 	gate.Unlock()
-	if repeated || escaped {
+	if repeated {
 		return ErrExistingWorktreeAuthorityConflict
 	}
 	if innerErr != nil {

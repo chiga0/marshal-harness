@@ -433,8 +433,8 @@ func TestExistingWorktreeReleaseRechecksExactTerminalAuthorityBeforeWrite(t *tes
 		{"run-head", func(current *ExistingWorktreeCurrentAuthorityV1) {
 			current.RunAuthorityHeadDigest = testExistingDigest("other-run-terminal-head")
 		}},
-		{"attempt-head", func(current *ExistingWorktreeCurrentAuthorityV1) {
-			current.AttemptAuthorityHeadDigest = testExistingDigest("other-attempt-terminal-head")
+		{"terminal-attempt-head", func(current *ExistingWorktreeCurrentAuthorityV1) {
+			current.TerminalAttemptHeadDigest = testExistingDigest("other-attempt-terminal-head")
 		}},
 		{"terminalization", func(current *ExistingWorktreeCurrentAuthorityV1) { current.TerminalizationID = "other-terminalization" }},
 		{"cleanup-binding", func(current *ExistingWorktreeCurrentAuthorityV1) {
@@ -809,6 +809,7 @@ func (fixture *existingWorktreeFixture) releaseRequest(receipt ExistingWorktreeB
 	current := currentAuthorityForRequest(fixture.request, releaseRun)
 	current.AttemptAuthorityHeadDigest = request.AttemptAuthorityHeadDigest
 	current.TerminalizationID = request.TerminalizationID
+	current.TerminalAttemptHeadDigest = request.AttemptAuthorityHeadDigest
 	current.CleanupBindingDigest = request.CleanupBindingDigest
 	current.ProcessTerminalFactDigest = request.ProcessTerminalFactDigest
 	current.CleanupDisposition = request.CleanupDisposition

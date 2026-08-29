@@ -105,6 +105,7 @@ type ExistingWorktreeCurrentAuthorityV1 struct {
 	ExpectedWorktreeIdentity   ObjectIdentityV1
 	ExpectedBaseSHA            string
 	TerminalizationID          string
+	TerminalAttemptHeadDigest  string
 	CleanupBindingDigest       string
 	ProcessTerminalFactDigest  string
 	CleanupDisposition         string
@@ -118,14 +119,14 @@ func (current ExistingWorktreeCurrentAuthorityV1) validateBinding(binding Existi
 }
 
 func (current ExistingWorktreeCurrentAuthorityV1) validateBind(request ExistingWorktreeBindRequestV1, run DescriptorBoundRunV1) error {
-	if request.Validate() != nil || current.validateBinding(request.Binding, run) != nil || current.WorktreePath != request.WorktreePath || !sameDirectoryObject(current.ExpectedWorktreeIdentity, request.ExpectedWorktreeIdentity) || current.ExpectedBaseSHA != request.ExpectedBaseSHA || current.TerminalizationID != "" || current.CleanupBindingDigest != "" || current.ProcessTerminalFactDigest != "" || current.CleanupDisposition != "" {
+	if request.Validate() != nil || current.validateBinding(request.Binding, run) != nil || current.WorktreePath != request.WorktreePath || !sameDirectoryObject(current.ExpectedWorktreeIdentity, request.ExpectedWorktreeIdentity) || current.ExpectedBaseSHA != request.ExpectedBaseSHA || current.TerminalizationID != "" || current.TerminalAttemptHeadDigest != "" || current.CleanupBindingDigest != "" || current.ProcessTerminalFactDigest != "" || current.CleanupDisposition != "" {
 		return ErrAuthorityConflict
 	}
 	return nil
 }
 
 func (current ExistingWorktreeCurrentAuthorityV1) validateRelease(request ExistingWorktreeReleaseRequestV1, run DescriptorBoundRunV1) error {
-	if request.Validate() != nil || current.validateBinding(request.Binding, run) != nil || current.RunAuthorityHeadDigest != request.RunAuthorityHeadDigest || current.TerminalizationID != request.TerminalizationID || current.CleanupBindingDigest != request.CleanupBindingDigest || current.ProcessTerminalFactDigest != request.ProcessTerminalFactDigest || current.CleanupDisposition != request.CleanupDisposition {
+	if request.Validate() != nil || current.validateBinding(request.Binding, run) != nil || current.RunAuthorityHeadDigest != request.RunAuthorityHeadDigest || current.TerminalizationID != request.TerminalizationID || current.TerminalAttemptHeadDigest != request.AttemptAuthorityHeadDigest || current.CleanupBindingDigest != request.CleanupBindingDigest || current.ProcessTerminalFactDigest != request.ProcessTerminalFactDigest || current.CleanupDisposition != request.CleanupDisposition {
 		return ErrAuthorityConflict
 	}
 	return nil
