@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"bytes"
+	"embed"
 	"encoding/json"
 	"testing"
 
@@ -10,10 +11,16 @@ import (
 
 const rc1ReceiptSchemaID = "https://marshal.dev/schemas/release/rc1-canary-receipt.schema.json"
 
+// Test-only embedding compiles the release schema and its fixtures without
+// changing the bytes of the production marshal binary.
+//
+//go:embed release/rc1-canary-receipt.schema.json release/examples/valid/*.json release/examples/invalid/*.json
+var rc1ReleaseSchemaFS embed.FS
+
 func TestRC1CanaryReceiptSchemaAndFixtures(t *testing.T) {
 	t.Parallel()
 
-	schemaRaw, err := FS.ReadFile("release/rc1-canary-receipt.schema.json")
+	schemaRaw, err := rc1ReleaseSchemaFS.ReadFile("release/rc1-canary-receipt.schema.json")
 	if err != nil {
 		t.Fatalf("read RC1 receipt schema: %v", err)
 	}
@@ -58,7 +65,7 @@ func TestRC1CanaryReceiptSchemaAndFixtures(t *testing.T) {
 
 func readRC1Fixture(t *testing.T, name string) any {
 	t.Helper()
-	raw, err := FS.ReadFile(name)
+	raw, err := rc1ReleaseSchemaFS.ReadFile(name)
 	if err != nil {
 		t.Fatalf("read fixture %s: %v", name, err)
 	}

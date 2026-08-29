@@ -274,7 +274,6 @@ make_contract_fixture() {
     "${root}/scripts/rc1-carrier-check.py"
   cp "${ROOT}/scripts/rc1-carrier-check_test.py" \
     "${root}/scripts/rc1-carrier-check_test.py"
-  cp "${ROOT}/schemas/embed.go" "${root}/schemas/embed.go"
   cp "${ROOT}/schemas/release_schema_test.go" \
     "${root}/schemas/release_schema_test.go"
   cp "${ROOT}/schemas/release/rc1-canary-receipt.schema.json" \
@@ -283,6 +282,8 @@ make_contract_fixture() {
     "${root}/schemas/release/examples/valid/rc1-canary-receipt.json"
   cp "${ROOT}/schemas/release/examples/invalid/rc1-canary-receipt-missing-authority.json" \
     "${root}/schemas/release/examples/invalid/rc1-canary-receipt-missing-authority.json"
+  cp "${ROOT}/scripts/release-rc1-binary-check.py" \
+    "${root}/scripts/release-rc1-binary-check.py"
   cp "$RELEASE_WORKFLOW_DIGEST" "${root}/scripts/release-workflow.sha256"
   for fixed_test in \
     release-contract_test.sh \

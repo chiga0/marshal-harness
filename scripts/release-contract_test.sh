@@ -5,6 +5,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECKER="${ROOT}/scripts/release-contract.sh"
 TMP_ROOT="$(mktemp -d)"
+RC1_SOURCE_HEAD=0123456789abcdef0123456789abcdef01234567
+RC1_BUILD_DATE=2026-08-28T00:00:00Z
+RC1_GO_VERSION=go1.26.6
+RC1_PROFILE=darwin-local-dogfood
+RC1_GO_BIN="$(go env GOROOT)/bin/go"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 fail() {
@@ -54,6 +59,41 @@ rewrite_sums() {
     marshal_1.0.0-rc1_linux_amd64 marshal_1.0.0-rc1_linux_arm64; do
     printf '%s  %s\n' "$(sha256_fixture "${dir}/${name}")" "$name" >>"${dir}/SHA256SUMS"
   done
+}
+
+rewrite_rc1_sums() {
+  local dir="$1" name
+  : >"${dir}/SHA256SUMS"
+  for name in RELEASE-MANIFEST marshal_1.0.0-rc1_darwin_arm64; do
+    printf '%s  %s\n' "$(sha256_fixture "${dir}/${name}")" "$name" >>"${dir}/SHA256SUMS"
+  done
+}
+
+make_rc1_dist() {
+  local dir="$1" source_head="${2:-$RC1_SOURCE_HEAD}"
+  make -C "$ROOT" dist-rc1 GO="$RC1_GO_BIN" DIST_DIR="$dir" \
+    VERSION=1.0.0-rc1 COMMIT="$source_head" BUILD_DATE="$RC1_BUILD_DATE" >/dev/null
+}
+
+verify_rc1_dist() {
+  GO_BIN="$RC1_GO_BIN" bash "$CHECKER" verify-rc1-dist \
+    "$1" "${2:-v1.0.0-rc1}" "${3:-$RC1_SOURCE_HEAD}" \
+    "${4:-$RC1_BUILD_DATE}" "${5:-$RC1_GO_VERSION}" \
+    "${6:-darwin}" "${7:-arm64}" "${8:-$RC1_PROFILE}"
+}
+
+refresh_rc1_asset_identity() {
+  local dir="$1" candidate digest size temporary
+  candidate="${dir}/marshal_1.0.0-rc1_darwin_arm64"
+  digest="$(sha256_fixture "$candidate")"
+  size="$(wc -c <"$candidate" | tr -d '[:space:]')"
+  temporary="${dir}/RELEASE-MANIFEST.next"
+  awk -v digest="$digest" -v size="$size" '
+    NR == 8 { print "asset " digest " " size " marshal_1.0.0-rc1_darwin_arm64 darwin arm64 darwin-local-dogfood"; next }
+    { print }
+  ' "${dir}/RELEASE-MANIFEST" >"$temporary"
+  mv "$temporary" "${dir}/RELEASE-MANIFEST"
+  rewrite_rc1_sums "$dir"
 }
 
 [ "$(bash "$CHECKER" classify v1.0.0)" = stable ] || fail 'stable tag 分类错误'
@@ -120,6 +160,173 @@ cp -R "$GOOD" "$MANIFEST_DUPLICATE"
 sed -n '8p' "${MANIFEST_DUPLICATE}/RELEASE-MANIFEST" >>"${MANIFEST_DUPLICATE}/RELEASE-MANIFEST"
 rewrite_sums "$MANIFEST_DUPLICATE"
 expect_fail 'manifest 重复 asset' bash "$CHECKER" verify-dist "$MANIFEST_DUPLICATE" v1.0.0-rc1 0123456789abcdef0123456789abcdef01234567
+
+# ADR 0068 RC1 单资产合同与上述 stable dist 合同并存。新入口只允许
+# exact v1.0.0-rc1 + Darwin arm64，任何平台扩展或元数据漂移都 fail closed。
+RC1_GOOD="${TMP_ROOT}/rc1-good"
+make_rc1_dist "$RC1_GOOD"
+bash "$CHECKER" validate-rc1-inputs v1.0.0-rc1 \
+  "$RC1_SOURCE_HEAD" "$RC1_BUILD_DATE" "$RC1_GO_VERSION"
+verify_rc1_dist "$RC1_GOOD" >/dev/null
+[ "$(find "$RC1_GOOD" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 3 ] \
+  || fail 'RC1 dist 未精确生成三个封闭文件'
+[ "$(wc -l <"${RC1_GOOD}/RELEASE-MANIFEST" | tr -d '[:space:]')" = 8 ] \
+  || fail 'RC1 manifest 不是 exact 8-line 合同'
+[ "$(wc -l <"${RC1_GOOD}/SHA256SUMS" | tr -d '[:space:]')" = 2 ] \
+  || fail 'RC1 SHA256SUMS 不是 exact 2-line 合同'
+
+for rejected_tag in v1.0.0 v1.0.0-rc2 v1.0.1-rc1 v2.0.0-rc1; do
+  expect_fail "RC1 拒绝 tag ${rejected_tag}" bash "$CHECKER" validate-rc1-inputs \
+    "$rejected_tag" 0123456789abcdef0123456789abcdef01234567 \
+    2026-08-28T00:00:00Z go1.26.6
+  expect_fail "RC1 manifest 拒绝 tag ${rejected_tag}" bash "$CHECKER" create-rc1-manifest \
+    "$RC1_GOOD" "$rejected_tag" 0123456789abcdef0123456789abcdef01234567 \
+    2026-08-28T00:00:00Z go1.26.6
+  expect_fail "RC1 verify 拒绝 tag ${rejected_tag}" verify_rc1_dist \
+    "$RC1_GOOD" "$rejected_tag"
+done
+expect_fail 'RC1 拒绝非 canonical sourceHead' bash "$CHECKER" validate-rc1-inputs \
+  v1.0.0-rc1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 2026-08-28T00:00:00Z go1.26.6
+expect_fail 'RC1 拒绝非 canonical buildDate' bash "$CHECKER" validate-rc1-inputs \
+  v1.0.0-rc1 0123456789abcdef0123456789abcdef01234567 2026-08-28T00:00:00+00:00 go1.26.6
+expect_fail 'RC1 拒绝 Go toolchain 漂移' bash "$CHECKER" validate-rc1-inputs \
+  v1.0.0-rc1 0123456789abcdef0123456789abcdef01234567 2026-08-28T00:00:00Z go1.26.7
+
+RC1_MISSING="${TMP_ROOT}/rc1-missing"
+cp -R "$RC1_GOOD" "$RC1_MISSING"
+rm "${RC1_MISSING}/marshal_1.0.0-rc1_darwin_arm64"
+expect_fail 'RC1 缺失唯一 candidate' verify_rc1_dist "$RC1_MISSING"
+
+for extra_name in \
+  marshal_1.0.0-rc1_darwin_amd64 \
+  marshal_1.0.0-rc1_linux_arm64 \
+  marshal_1.0.0-rc1_linux_amd64 \
+  marshal_1.0.0_darwin_arm64 \
+  marshal_1.0.0-rc2_darwin_arm64; do
+  RC1_EXTRA="${TMP_ROOT}/rc1-extra-${extra_name}"
+  cp -R "$RC1_GOOD" "$RC1_EXTRA"
+  printf 'forbidden\n' >"${RC1_EXTRA}/${extra_name}"
+  expect_fail "RC1 拒绝额外资产 ${extra_name}" verify_rc1_dist "$RC1_EXTRA"
+done
+
+RC1_NONEXEC="${TMP_ROOT}/rc1-nonexec"
+cp -R "$RC1_GOOD" "$RC1_NONEXEC"
+chmod 0644 "${RC1_NONEXEC}/marshal_1.0.0-rc1_darwin_arm64"
+expect_fail 'RC1 拒绝不可执行 candidate' verify_rc1_dist "$RC1_NONEXEC"
+
+RC1_SYMLINK="${TMP_ROOT}/rc1-symlink"
+cp -R "$RC1_GOOD" "$RC1_SYMLINK"
+mv "${RC1_SYMLINK}/marshal_1.0.0-rc1_darwin_arm64" "${RC1_SYMLINK}/target"
+ln -s target "${RC1_SYMLINK}/marshal_1.0.0-rc1_darwin_arm64"
+expect_fail 'RC1 拒绝符号链接 candidate' verify_rc1_dist "$RC1_SYMLINK"
+
+RC1_DIGEST="${TMP_ROOT}/rc1-digest"
+cp -R "$RC1_GOOD" "$RC1_DIGEST"
+printf 'tampered\n' >>"${RC1_DIGEST}/marshal_1.0.0-rc1_darwin_arm64"
+expect_fail 'RC1 拒绝 candidate 摘要漂移' verify_rc1_dist "$RC1_DIGEST"
+
+RC1_SOURCE="${TMP_ROOT}/rc1-source"
+cp -R "$RC1_GOOD" "$RC1_SOURCE"
+expect_fail 'RC1 拒绝 expected sourceHead 漂移' verify_rc1_dist \
+  "$RC1_SOURCE" v1.0.0-rc1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail 'RC1 拒绝 external buildDate 漂移' verify_rc1_dist \
+  "$RC1_SOURCE" v1.0.0-rc1 "$RC1_SOURCE_HEAD" 2026-08-28T00:00:01Z
+expect_fail 'RC1 拒绝 external goVersion 漂移' verify_rc1_dist \
+  "$RC1_SOURCE" v1.0.0-rc1 "$RC1_SOURCE_HEAD" "$RC1_BUILD_DATE" go1.26.5
+expect_fail 'RC1 拒绝 external OS 漂移' verify_rc1_dist \
+  "$RC1_SOURCE" v1.0.0-rc1 "$RC1_SOURCE_HEAD" "$RC1_BUILD_DATE" \
+  "$RC1_GO_VERSION" linux
+expect_fail 'RC1 拒绝 external arch 漂移' verify_rc1_dist \
+  "$RC1_SOURCE" v1.0.0-rc1 "$RC1_SOURCE_HEAD" "$RC1_BUILD_DATE" \
+  "$RC1_GO_VERSION" darwin amd64
+expect_fail 'RC1 拒绝 external profile 漂移' verify_rc1_dist \
+  "$RC1_SOURCE" v1.0.0-rc1 "$RC1_SOURCE_HEAD" "$RC1_BUILD_DATE" \
+  "$RC1_GO_VERSION" darwin arm64 unprofiled
+
+RC1_PROFILE="${TMP_ROOT}/rc1-profile"
+cp -R "$RC1_GOOD" "$RC1_PROFILE"
+sed -i.bak '8s/darwin-local-dogfood/unprofiled/' "${RC1_PROFILE}/RELEASE-MANIFEST"
+rm "${RC1_PROFILE}/RELEASE-MANIFEST.bak"
+rewrite_rc1_sums "$RC1_PROFILE"
+expect_fail 'RC1 拒绝 profile 漂移' verify_rc1_dist "$RC1_PROFILE"
+
+RC1_GO_VERSION_DRIFT="${TMP_ROOT}/rc1-go-version"
+cp -R "$RC1_GOOD" "$RC1_GO_VERSION_DRIFT"
+sed -i.bak '6s/go1\.26\.6/go1.26.7/' "${RC1_GO_VERSION_DRIFT}/RELEASE-MANIFEST"
+rm "${RC1_GO_VERSION_DRIFT}/RELEASE-MANIFEST.bak"
+rewrite_rc1_sums "$RC1_GO_VERSION_DRIFT"
+expect_fail 'RC1 拒绝 manifest Go toolchain 漂移' verify_rc1_dist "$RC1_GO_VERSION_DRIFT"
+
+RC1_BINARY_VERSION="${TMP_ROOT}/rc1-binary-version"
+cp -R "$RC1_GOOD" "$RC1_BINARY_VERSION"
+python3 -I -B - "${RC1_BINARY_VERSION}/marshal_1.0.0-rc1_darwin_arm64" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+data = path.read_bytes()
+assert data.count(b"1.0.0-rc1") == 1
+path.write_bytes(data.replace(b"1.0.0-rc1", b"1.0.0-rc9"))
+PY
+refresh_rc1_asset_identity "$RC1_BINARY_VERSION"
+expect_fail 'RC1 拒绝 binary buildinfo version 漂移' verify_rc1_dist "$RC1_BINARY_VERSION"
+
+RC1_BINARY_ARCH="${TMP_ROOT}/rc1-binary-arch"
+cp -R "$RC1_GOOD" "$RC1_BINARY_ARCH"
+python3 -I -B - "${RC1_BINARY_ARCH}/marshal_1.0.0-rc1_darwin_arm64" <<'PY'
+import pathlib, struct, sys
+path = pathlib.Path(sys.argv[1])
+data = bytearray(path.read_bytes())
+assert struct.unpack_from("<I", data, 4)[0] == 0x0100000C
+struct.pack_into("<I", data, 4, 0x01000007)
+path.write_bytes(data)
+PY
+refresh_rc1_asset_identity "$RC1_BINARY_ARCH"
+expect_fail 'RC1 拒绝非 arm64 Mach-O header' verify_rc1_dist "$RC1_BINARY_ARCH"
+
+RC1_BINARY_SHELL="${TMP_ROOT}/rc1-binary-shell"
+cp -R "$RC1_GOOD" "$RC1_BINARY_SHELL"
+printf '#!/bin/sh\nexit 0\n' >"${RC1_BINARY_SHELL}/marshal_1.0.0-rc1_darwin_arm64"
+chmod 0755 "${RC1_BINARY_SHELL}/marshal_1.0.0-rc1_darwin_arm64"
+refresh_rc1_asset_identity "$RC1_BINARY_SHELL"
+expect_fail 'RC1 拒绝 executable shell fixture 冒充 candidate' verify_rc1_dist "$RC1_BINARY_SHELL"
+
+RC1_MANIFEST_EXTRA="${TMP_ROOT}/rc1-manifest-extra"
+cp -R "$RC1_GOOD" "$RC1_MANIFEST_EXTRA"
+printf 'asset aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 marshal_1.0.0-rc1_linux_arm64 linux arm64 unprofiled\n' \
+  >>"${RC1_MANIFEST_EXTRA}/RELEASE-MANIFEST"
+rewrite_rc1_sums "$RC1_MANIFEST_EXTRA"
+expect_fail 'RC1 拒绝 manifest 第二资产' verify_rc1_dist "$RC1_MANIFEST_EXTRA"
+
+RC1_SUMS_DUPLICATE="${TMP_ROOT}/rc1-sums-duplicate"
+cp -R "$RC1_GOOD" "$RC1_SUMS_DUPLICATE"
+sed -n '2p' "${RC1_SUMS_DUPLICATE}/SHA256SUMS" >>"${RC1_SUMS_DUPLICATE}/SHA256SUMS"
+expect_fail 'RC1 拒绝重复 checksum' verify_rc1_dist "$RC1_SUMS_DUPLICATE"
+
+RC1_SUMS_ORDER="${TMP_ROOT}/rc1-sums-order"
+cp -R "$RC1_GOOD" "$RC1_SUMS_ORDER"
+sed -n '2p' "${RC1_GOOD}/SHA256SUMS" >"${RC1_SUMS_ORDER}/SHA256SUMS"
+sed -n '1p' "${RC1_GOOD}/SHA256SUMS" >>"${RC1_SUMS_ORDER}/SHA256SUMS"
+expect_fail 'RC1 拒绝 checksum 顺序漂移' verify_rc1_dist "$RC1_SUMS_ORDER"
+
+RC1_SUMS_UPPER="${TMP_ROOT}/rc1-sums-upper"
+cp -R "$RC1_GOOD" "$RC1_SUMS_UPPER"
+awk 'NR == 1 { $1=toupper($1) } { print }' "$RC1_GOOD/SHA256SUMS" \
+  >"${RC1_SUMS_UPPER}/SHA256SUMS"
+expect_fail 'RC1 拒绝 uppercase checksum' verify_rc1_dist "$RC1_SUMS_UPPER"
+
+RC1_SUMS_TAB="${TMP_ROOT}/rc1-sums-tab"
+cp -R "$RC1_GOOD" "$RC1_SUMS_TAB"
+sed $'1s/  /\t/' "$RC1_GOOD/SHA256SUMS" >"${RC1_SUMS_TAB}/SHA256SUMS"
+expect_fail 'RC1 拒绝 tab checksum separator' verify_rc1_dist "$RC1_SUMS_TAB"
+
+RC1_SUMS_ONE_SPACE="${TMP_ROOT}/rc1-sums-one-space"
+cp -R "$RC1_GOOD" "$RC1_SUMS_ONE_SPACE"
+sed '1s/  / /' "$RC1_GOOD/SHA256SUMS" >"${RC1_SUMS_ONE_SPACE}/SHA256SUMS"
+expect_fail 'RC1 拒绝单空格 checksum separator' verify_rc1_dist "$RC1_SUMS_ONE_SPACE"
+
+RC1_SUMS_TRAILING="${TMP_ROOT}/rc1-sums-trailing"
+cp -R "$RC1_GOOD" "$RC1_SUMS_TRAILING"
+sed '1s/$/ /' "$RC1_GOOD/SHA256SUMS" >"${RC1_SUMS_TRAILING}/SHA256SUMS"
+expect_fail 'RC1 拒绝 checksum 尾随空白' verify_rc1_dist "$RC1_SUMS_TRAILING"
 
 TAG_REPO="${TMP_ROOT}/tag-repo"
 mkdir -p "$TAG_REPO"

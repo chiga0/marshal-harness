@@ -12,8 +12,13 @@ LDFLAGS_BASE := -s -w -buildid= \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.buildDate=$(BUILD_DATE)
 LDFLAGS := $(LDFLAGS_BASE) \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=$(SELF_PROFILE)
+RC1_LDFLAGS := -w -buildid= \
+	-X github.com/chiga0/marshal-harness/internal/buildinfo.version=$(VERSION) \
+	-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(COMMIT) \
+	-X github.com/chiga0/marshal-harness/internal/buildinfo.buildDate=$(BUILD_DATE) \
+	-X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=darwin-local-dogfood
 
-.PHONY: format format-check architecture-check vet lint test build dist vuln release-check check ci
+.PHONY: format format-check architecture-check vet lint test build dist dist-rc1 vuln release-check check ci
 
 format:
 	gofmt -w $(GO_FILES)
@@ -76,6 +81,41 @@ dist:
 		echo "[dist] 错误: 缺少 sha256sum/shasum，无法生成 SHA256SUMS" >&2; exit 1; \
 	fi; \
 	echo "[dist] 已生成 $(DIST_DIR)/SHA256SUMS"
+
+# ADR 0068 RC1 是与 stable dist 相互隔离的单资产合同。它只接受
+# v1.0.0-rc1 + darwin/arm64 + darwin-local-dogfood；不得借用 dist 的
+# Linux/amd64 资产集合，也不为 stable 提供任何发布权限。
+dist-rc1:
+	@required="$$(sed -n -E 's/^toolchain[[:space:]]+(go[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$$/\1/p' go.mod)"; \
+	actual="$$($(GO) env GOVERSION)"; \
+	[ -n "$$required" ] && [ "$$actual" = "$$required" ] || { \
+		echo "[dist-rc1] 错误: release Go toolchain 漂移：期望 $$required，实际 $$actual" >&2; exit 1; \
+	}; \
+	bash scripts/release-contract.sh validate-rc1-inputs \
+		"v$(VERSION)" "$(COMMIT)" "$(BUILD_DATE)" "$$actual"
+	@if [ -e "$(DIST_DIR)" ] || [ -L "$(DIST_DIR)" ]; then \
+		echo "[dist-rc1] 错误: build-once 输出目录必须不存在：$(DIST_DIR)" >&2; exit 1; \
+	fi
+	@mkdir "$(DIST_DIR)"
+	@out="$(DIST_DIR)/marshal_$(VERSION)_darwin_arm64"; \
+	echo "[dist-rc1] darwin/arm64 (darwin-local-dogfood) -> $$out"; \
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
+		$(GO) build $(GO_BUILD_FLAGS) -ldflags "$(RC1_LDFLAGS)" -o "$$out" ./cmd/marshal
+	@GO_BIN="$$($(GO) env GOROOT)/bin/go" bash scripts/release-contract.sh create-rc1-manifest \
+		"$(DIST_DIR)" "v$(VERSION)" "$(COMMIT)" "$(BUILD_DATE)" "$$($(GO) env GOVERSION)"
+	@set -e; cd "$(DIST_DIR)"; \
+	files="RELEASE-MANIFEST marshal_$(VERSION)_darwin_arm64"; \
+	if command -v sha256sum >/dev/null 2>&1; then \
+		for f in $$files; do sha256sum "$$f"; done > SHA256SUMS; \
+	elif command -v shasum >/dev/null 2>&1; then \
+		for f in $$files; do shasum -a 256 "$$f"; done > SHA256SUMS; \
+	else \
+		echo "[dist-rc1] 错误: 缺少 sha256sum/shasum，无法生成 SHA256SUMS" >&2; exit 1; \
+	fi
+	@GO_BIN="$$($(GO) env GOROOT)/bin/go" bash scripts/release-contract.sh verify-rc1-dist \
+		"$(DIST_DIR)" "v$(VERSION)" "$(COMMIT)" "$(BUILD_DATE)" \
+		"$$($(GO) env GOVERSION)" darwin arm64 darwin-local-dogfood >/dev/null
+	@echo "[dist-rc1] 已冻结唯一 Darwin arm64 candidate"
 
 vuln:
 	$(GO) tool govulncheck ./...
