@@ -57,7 +57,6 @@ func (authority *existingWorktreeTestAuthority) Close() {
 func (authority *existingWorktreeTestAuthority) WithCurrentExistingWorktreeBind(_ context.Context, run DescriptorBoundRunV1, request ExistingWorktreeBindRequestV1, callback func(ExistingWorktreeAuthoritySession) error) error {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
-	authority.current.AttemptAuthorityHeadDigest = authority.attemptHead
 	if validateDescriptorBoundRun(run) != nil || authority.rejectBind || authority.current.validateBind(request, run) != nil {
 		return ErrAuthorityConflict
 	}
@@ -67,7 +66,6 @@ func (authority *existingWorktreeTestAuthority) WithCurrentExistingWorktreeBind(
 func (authority *existingWorktreeTestAuthority) WithCurrentExistingWorktreeRelease(_ context.Context, run DescriptorBoundRunV1, request ExistingWorktreeReleaseRequestV1, callback func(ExistingWorktreeAuthoritySession) error) error {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
-	authority.current.AttemptAuthorityHeadDigest = authority.attemptHead
 	if validateDescriptorBoundRun(run) != nil || authority.rejectRelease || authority.current.validateRelease(request, run) != nil {
 		return ErrAuthorityConflict
 	}
@@ -147,6 +145,7 @@ func (authority *existingWorktreeTestAuthority) append(kind ExistingWorktreeFact
 	}
 	authority.facts = append(authority.facts, fact)
 	authority.attemptHead = factDigest
+	authority.current.AttemptAuthorityHeadDigest = factDigest
 	if authority.failAfter[kind] > 0 {
 		authority.failAfter[kind]--
 		return ExistingWorktreeAuthoritySnapshotV1{}, errors.New("simulated response loss")
