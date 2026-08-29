@@ -8,11 +8,11 @@
 
 | Finding | 严重度 | 当前状态 | 证据、影响与关闭条件 |
 | --- | --- | --- | --- |
-| `I186-RUN-ATTEMPT-RESERVATION` | P0 | `ADR-PROPOSED / AGGREGATE-REWORK` | 首版ADR0069把reservation与`attempt-opened`混同。修订提案改为RB1 `attempt-reserved` active→consumed|cancelled、按RunID+exact READY seq/head lookup-before-mint；dispatch lease/full identity与`attempt-opened`后置，budget三次读取held Run authority且只由sealed successor消费。关闭要求aggregate rework独立复审P0/P1=0、schema/protocol与并发/cancel/response-loss/legacy矩阵及fixed CLI producer通过。 |
+| `I186-RUN-ATTEMPT-RESERVATION` | P0 | `ADR-PROPOSED / TARGETED-REVIEW-CORRECTION` | 首版ADR0069把reservation与`attempt-opened`混同。修订提案改为RB1 `attempt-reserved` active→consumed|cancelled、按RunID+exact READY seq/head lookup-before-mint；dispatch claim按reservation digest+RunID+reserved AttemptID lookup-before-claim并same-bytes replay，full identity与`attempt-opened`后置，budget三次读取held Run authority且只由sealed successor消费。`1adf20c`复审只剩dispatch response-loss `P0=1`与release exact binding `P1=1`，当前已定向修订。关闭仍要求最新exact head独立复审P0/P1=0、schema/protocol与并发/cancel/response-loss/legacy矩阵及fixed CLI producer通过。 |
 | `I186-EXISTING-WORKTREE-ALLOCATION` | P0 | `ADR-PROPOSED / AGGREGATE-REWORK` | 首版把sidecar描述成独立allocation ledger，会形成第二authority。修订提案把Bind/Receipt/Release全部收回RB1 closed union；repository-global target uniqueness从held-owner下RB1 replay判定。固定sidecar仅为可重建projection，缺/落后先投影、损坏/超前fail closed，绝不能覆盖RB1。关闭要求aggregate rework独立复审、existing-only Run open、锁序/sidecar/crash/replay/ABA/secret/zero-target-mutation矩阵与真实Pi纵切。 |
 | `I186-RESULTINGRESS-HELD-DESCRIPTOR` | P0 | `CONTRACT-ACCEPTED / IMPLEMENTATION-OPEN` | 当前ResultIngress store仍可能按pathname reopen authority对象，且`ObserveCurrentCore`不能先于`OpenOwner`产生current结论。这不是ADR0069新增信任决策：[ADR0066](adr/0066-production-composition-owner-acquisition.md)已经要求canonical held-descriptor边界。S1′ rework必须改held descriptor backend、拆分正确时序并证明path漂移时不打开替代对象；完成前不得接受sealed proof实现。 |
 
-[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md)首版`ebbfd86`独立审查`REQUEST CHANGES`（`P0=3`、`P1=4`），当前为唯一aggregate rework，仍是Proposed、未复审/接受/实现。它不改变ordinary-user/non-production边界，也不提供hardened sandbox、Linux authority或release授权；R2–R5保持`COMPONENT`、R6保持`PLANNED/DESIGN`。
+[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md)首版`ebbfd86`独立审查为`P0=3/P1=4`，`1adf20c` aggregate复审只剩`P0=1/P1=1`；当前只修正这两个已知窗口，仍是Proposed、尚待复审/接受/实现。它不改变ordinary-user/non-production边界，也不提供hardened sandbox、Linux authority或release授权；R2–R5保持`COMPONENT`、R6保持`PLANNED/DESIGN`。
 
 ## v1.0 候选链审计 checkpoint（2026-08-28）
 

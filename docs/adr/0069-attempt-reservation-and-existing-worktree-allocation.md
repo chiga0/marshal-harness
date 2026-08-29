@@ -3,7 +3,7 @@
 - 状态：提议（Proposed）
 - 日期：2026-08-29
 - 提议基线：`main@e1e81f8f4fe9438b54444ade8fca039964205d89`
-- 返工基线：`ebbfd86d60fad748e180e900e835bd3361392cdd`（独立审查 `REQUEST CHANGES`：`P0=3`、`P1=4`；本版为唯一 aggregate rework）
+- 返工记录：`ebbfd86d60fad748e180e900e835bd3361392cdd` 的独立审查为 `P0=3`、`P1=4`；`1adf20c6b11a3047067a0bf574a89278c0bda700` 的 aggregate 复审只剩 `P0=1`、`P1=1`，本版仅关闭这两个已知窗口，不扩展范围
 - 影响范围：ResultIngress/RB1、Run start、Attempt budget、Local allocation、S1′/S2′ producer chain
 - 关联：[ADR 0029](0029-pre-attempt-abort.md)、[ADR 0051](0051-darwin-local-dogfood-profile.md)、[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)、[ADR 0063](0063-prepared-execution-authority-and-production-chain.md)、[ADR 0065](0065-sealed-run-start-proof-and-one-way-composition.md)、[ADR 0066](0066-production-composition-owner-acquisition.md)、[ADR 0067](0067-darwin-ordinary-user-launch-and-attach-recovery.md)、[ADR 0068](0068-mac-first-cli-only-lifecycle-preview-rc1.md)、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)
 
@@ -59,6 +59,8 @@ budget唯一来自同一held Run authority的`AttemptsUsed`与`MaxAttempts`；`A
 3. sealed `READY → RUNNING` successor提交之前。
 
 前两次只确认预算可用，不消费。只有第三次的Run successor原子写入`CurrentAttemptID`并把`AttemptsUsed`增加一次；该Run fact是消费的linearization point。其后RB1以引用exact Run successor的`consumed` resolution收敛reservation。若在两次fsync之间崩溃，Run的新head已使`active` reservation逻辑不可current，恢复只能幂等append同一`consumed` resolution，不能复用reservation或二次计数；不要求Run/RB1跨ledger原子提交。任何head/budget/ordinal漂移都禁止继续副作用并进入typed cleanup/intervention。
+
+dispatch claim 自身也必须关闭独立 ledger 的 durable-write/response-loss 窗口。在同一 held repository owner 与 held Run Lease 链内，producer 以 `(reservation fact digest, RunID, reserved AttemptID)` 先查 durable lease binding：已有 same canonical claim 时返回同一 `DispatchLease` 与同一 full `AttemptIdentity`，任一 registration/capability/generation/fencing/input bytes 冲突均 fail closed，只有确定性 `not-found` 才允许 claim 并 fsync。claim 已耐久但响应丢失或在 RB1 `attempt-opened` fsync 前崩溃时，恢复必须 lookup-before-claim 并 same-bytes replay 原 lease，然后继续幂等 append 同一 `attempt-opened`；不得 mint sibling lease、把 reservation cancel 掉或永久卡在“已有 lease 但无 opened fact”的中间态。
 
 ### 2.4 cancellation 与 ADR 0029
 
@@ -133,7 +135,7 @@ projection不是authority、receipt、锁或第二truth source；release只appen
 
 ### 3.4 release/terminate
 
-release admission必须在固定锁序内精确重验：current owner、Run/Attempt/RB1 head、terminalization fact、cleanup disposition、process-terminal fact与allocation generation/fencing。只有RB1 `release-receipt` fsync才释放逻辑binding。关闭FD不是authority；任何情况下都不得删除、reset、clean、prune或修改用户worktree与Git admin entry。
+release intent 与 receipt 必须在固定锁序内绑定并在 admission 时精确重验：current owner、Run/Attempt/RB1 head、current `terminalizationID`、`cleanupBindingDigest`、`processTerminalFactDigest`、cleanup disposition 与 allocation generation/fencing。任一字段缺失、不是 current 值或与同一 terminalization/cleanup/process-terminal 链不匹配均 fail closed。只有满足这些绑定的RB1 `release-receipt` fsync才释放逻辑binding。关闭FD不是authority；任何情况下都不得删除、reset、clean、prune或修改用户worktree与Git admin entry。
 
 ## 4. 唯一 producer 顺序
 
@@ -193,7 +195,7 @@ raw absolute `WorktreePath`只允许存在于owner-private Run frozen inputs与R
 
 | 类别 | 必须证明的拒绝/恢复行为 |
 | --- | --- |
-| reserve并发/响应丢失 | 同一RunID+exact READY seq/head只有一份active reservation；same bytes replay，任何不同ID/bytes或sibling拒绝 |
+| reserve/dispatch并发与响应丢失 | 同一RunID+exact READY seq/head只有一份active reservation；same bytes replay，任何不同ID/bytes或sibling拒绝；dispatch claim以reservation digest+RunID+reserved AttemptID lookup-before-claim，claim已fsync但响应丢失或`attempt-opened`未fsync时返回同一lease/full identity并继续收敛，冲突claim拒绝 |
 | reserve生命周期 | active只可consumed或在零下游事实时cancelled；terminal/new head后stale；历史fact不物理GC且不能恢复current |
 | budget | 三次均从held Run authority重验`AttemptsUsed/MaxAttempts`与ordinal；前两次不计数，sealed successor恰好计数一次；caller/RB1/projection mutation拒绝 |
 | cancellation/ADR0029 | opened Attempt、dispatch lease、allocation、bootstrap、child、command、publication任一存在时cancel/READY abort拒绝且转cleanup/intervention |
@@ -202,8 +204,8 @@ raw absolute `WorktreePath`只允许存在于owner-private Run frozen inputs与R
 | target唯一性 | held owner下同target跨Run/Attempt、同reservation不同target、current-name/object alias均拒绝；same request只返回同一RB1 receipt |
 | worktree/path | 不存在、非Git worktree、wrong common-dir/BaseSHA、dirty、symlink、rename-away/back、目录/Git admin替换、regular leaf hardlink异常均拒绝 |
 | stage identity | 后续阶段按canonical locator nofollow reopen并与RB1 receipt exact-match；旧FD存在、pathname相等或locator命中均不能单独授权 |
-| crash/replay | reservation、attempt-opened、bind/release intent/receipt各fsync窗口均由相应RB1 fact唯一收敛；不得由pathname/projection猜测成功 |
-| release | owner/Attempt/RB1 head、terminalization、cleanup、process-terminal、generation/fencing任一缺失或漂移均拒绝；close FD不释放authority |
+| crash/replay | reservation、dispatch claim、attempt-opened、bind/release intent/receipt各fsync窗口均由durable lookup与相应RB1 fact唯一收敛；特别覆盖lease已fsync而`attempt-opened`未fsync；不得由pathname/projection猜测成功 |
+| release | owner/Attempt/RB1 head、current terminalizationID、cleanupBindingDigest、processTerminalFactDigest、cleanup disposition、generation/fencing任一缺失、逐字段漂移或跨链拼接均拒绝；close FD不释放authority |
 | target零修改 | bind/release/terminate前后worktree、HEAD、index、untracked bytes与Git admin entry保持不变；不得调用delete/reset/clean/prune |
 | descriptor时序 | `OpenOwner`前调用`ObserveCurrentCore`拒绝；authority pathname被rename/替换/ABA时不reopen新对象，held current-name不一致拒绝proof |
 | secret/path | 仅owner-private Run/RB1可存raw path；public/prompt/transcript/review/outcome/log/error/projection filename泄漏时拒绝 |
