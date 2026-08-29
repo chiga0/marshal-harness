@@ -23,14 +23,16 @@ type heldRegularIdentity struct {
 }
 
 type heldDarwinAuthorityFiles struct {
-	mu           sync.Mutex
-	directory    *os.File
-	directoryID  processsupervisor.ControlDirectoryIdentity
-	ledger       *os.File
-	ledgerID     heldRegularIdentity
-	coordination *os.File
-	lockID       heldRegularIdentity
-	closed       bool
+	mu             sync.Mutex
+	directory      *os.File
+	directoryID    processsupervisor.ControlDirectoryIdentity
+	ledger         *os.File
+	ledgerID       heldRegularIdentity
+	coordination   *os.File
+	lockID         heldRegularIdentity
+	poisoned       bool
+	operationWrote bool
+	closed         bool
 }
 
 func openHeldDarwinAuthorityFiles(directory *os.File) (*heldDarwinAuthorityFiles, error) {
@@ -174,10 +176,19 @@ func (files *heldDarwinAuthorityFiles) lockExclusive() (func() error, error) {
 		files.mu.Unlock()
 		return nil, err
 	}
+	files.operationWrote = false
 	return func() error {
 		verifyErr := files.verifyCurrentNames()
 		unlockErr := unix.Flock(int(files.coordination.Fd()), unix.LOCK_UN)
+		wrote := files.operationWrote
+		files.operationWrote = false
+		if wrote && (verifyErr != nil || unlockErr != nil) {
+			files.poisoned = true
+		}
 		files.mu.Unlock()
+		if wrote && (verifyErr != nil || unlockErr != nil) {
+			return ErrResultIngressOutcomeUnknown
+		}
 		if verifyErr != nil {
 			return verifyErr
 		}
@@ -216,17 +227,32 @@ func (files *heldDarwinAuthorityFiles) appendLedger(line []byte) error {
 	if err := files.verifyCurrentNames(); err != nil {
 		return err
 	}
+	if files.poisoned {
+		return ErrResultIngressOutcomeUnknown
+	}
+	files.operationWrote = true
 	if n, err := files.ledger.Write(line); err != nil || n != len(line) {
-		return ErrPreparedExecutionUnavailable
+		files.poisoned = true
+		return ErrResultIngressOutcomeUnknown
 	}
 	if files.ledger.Sync() != nil || files.directory.Sync() != nil {
-		return ErrPreparedExecutionUnavailable
+		files.poisoned = true
+		return ErrResultIngressOutcomeUnknown
 	}
-	return files.verifyCurrentNames()
+	if err := files.verifyCurrentNames(); err != nil {
+		files.poisoned = true
+		return ErrResultIngressOutcomeUnknown
+	}
+	return nil
 }
 
 func (files *heldDarwinAuthorityFiles) close() error {
-	if files == nil || files.closed {
+	if files == nil {
+		return nil
+	}
+	files.mu.Lock()
+	defer files.mu.Unlock()
+	if files.closed {
 		return nil
 	}
 	files.closed = true

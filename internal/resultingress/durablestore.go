@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -33,6 +34,15 @@ var ErrMemoryOnlyResultIngress = errors.New("resultingress: memory-only result i
 // mutation API as replay-only. Production admission must flow through Ingress
 // so it is chained to an exact Attempt authority head.
 var ErrLegacyAdmissionMutationDisabled = errors.New("resultingress: legacy ungoverned result admission mutation is disabled")
+
+// ErrResultIngressClosed rejects all use after the unique owner closes a
+// descriptor-backed production store.
+var ErrResultIngressClosed = errors.New("resultingress: durable result ingress store is closed")
+
+// ErrResultIngressOutcomeUnknown means an append may already be durable. The
+// caller must replay the same held ledger and may not mint a sibling fact or
+// open a replacement authority root.
+var ErrResultIngressOutcomeUnknown = errors.New("resultingress: durable append outcome is unknown; exact held-ledger replay is required")
 
 const (
 	resultFactTypeAdmitted    = "result-admitted"
@@ -107,6 +117,7 @@ type DurableStore struct {
 	nextSequence int64
 	mu           sync.Mutex
 	clock        func() time.Time
+	closed       atomic.Bool
 	// heldFiles is non-nil only for the sealed Darwin production profile. All
 	// ledger and coordination I/O then stays descriptor-relative; dir is only
 	// a diagnostic/current-name identity and is never used to open authority
@@ -198,7 +209,10 @@ func (s *ingressDurableStore) withEffectFlight(key string, fn func() error) erro
 }
 
 func (s *ingressDurableStore) requireBound() error {
-	if s == nil || s.dir == "" && s.heldFiles == nil {
+	if s != nil && s.closed.Load() {
+		return ErrResultIngressClosed
+	}
+	if s == nil || (s.dir == "" && s.heldFiles == nil) {
 		return ErrMemoryOnlyResultIngress
 	}
 	return nil
@@ -221,15 +235,21 @@ func (s *ingressDurableStore) withExclusive(fn func() error) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.requireBound(); err != nil {
+		return err
+	}
 	if s.heldFiles != nil {
 		unlock, err := s.heldFiles.lockExclusive()
 		if err != nil {
 			return fmt.Errorf("resultingress: acquire held durable ledger lock: %w", err)
 		}
-		operationErr := fn()
-		unlockErr := unlock()
+		var operationErr, unlockErr error
+		func() {
+			defer func() { unlockErr = unlock() }()
+			operationErr = fn()
+		}()
 		if operationErr != nil {
-			return operationErr
+			return errors.Join(operationErr, unlockErr)
 		}
 		if unlockErr != nil {
 			return fmt.Errorf("resultingress: release held durable ledger lock: %w", unlockErr)
@@ -242,6 +262,29 @@ func (s *ingressDurableStore) withExclusive(fn func() error) error {
 	}
 	defer func() { _ = coordination.Unlock() }()
 	return fn()
+}
+
+// Close releases the one descriptor-backed store ownership. It is idempotent
+// and waits for an in-flight transaction before closing the prepared control
+// root, coordination file, ledger and directory in that order.
+func (s *DurableStore) Close() error {
+	if s == nil || !s.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var result error
+	if s.preparedDarwin != nil && s.preparedDarwin.controlRoot != nil {
+		result = errors.Join(result, s.preparedDarwin.controlRoot.Close())
+		s.preparedDarwin.controlRoot = nil
+	}
+	if s.heldFiles != nil {
+		result = errors.Join(result, s.heldFiles.close())
+		s.heldFiles = nil
+	}
+	s.preparedDarwin = nil
+	s.dir = ""
+	return result
 }
 
 func (s *ingressDurableStore) transact(in *Ingress, fn func() error) error {

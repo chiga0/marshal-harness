@@ -32,12 +32,28 @@ func TestPreparedFactorySeparatesLedgerOpenFromCurrentCoreObservation(t *testing
 	if countSelector(opened, "ObserveCurrentCore") != 0 || countCall(opened, "openHeldDarwinAuthorityFiles") != 1 {
 		t.Fatal("descriptor-open constructor must only bind held authority files before OpenOwner")
 	}
-	if countSelector(sealed, "ObserveCurrentCore") != 1 || countCall(sealed, "openHeldDarwinAuthorityFiles") != 0 {
-		t.Fatal("prepared seal must observe current Core once without opening a second store")
+	if countSelector(sealed, "ObserveCurrentCore") != 1 || countSelector(sealed, "WithCurrentOwner") != 1 || countCall(sealed, "openHeldDarwinAuthorityFiles") != 0 || countComposite(sealed, "DurableStore") != 0 {
+		t.Fatal("prepared seal must consume the current-owner-bound store in place, observe current Core once and never open or clone a store")
 	}
 	if countCall(opened, "OpenResultIngressStore") != 0 || countCall(sealed, "OpenResultIngressStore") != 0 {
 		t.Fatal("sealed production constructors must not reopen ResultIngress by path")
 	}
+}
+
+func countComposite(function *ast.FuncDecl, name string) int {
+	count := 0
+	ast.Inspect(function, func(node ast.Node) bool {
+		literal, ok := node.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		identifier, ok := literal.Type.(*ast.Ident)
+		if ok && identifier.Name == name {
+			count++
+		}
+		return true
+	})
+	return count
 }
 
 func countSelector(function *ast.FuncDecl, name string) int {
