@@ -1626,14 +1626,15 @@ func (s *ingressDurableStore) compareAndAppendCleanup(ctx context.Context, verif
 
 func newAuthorityProjection() *Ingress {
 	return &Ingress{
-		admitted:          make(map[string]admittedEntry),
-		attempts:          make(map[string]AttemptAuthorityState),
-		controlOwners:     make(map[string]ControlOwnerState),
-		effects:           make(map[string]EffectAuthorityState),
-		allocations:       make(map[string]allocationAuthorityState),
-		effectCommands:    make(map[string]string),
-		effectIdempotency: make(map[string]string),
-		effectMarkers:     make(map[string]string),
+		admitted:              make(map[string]admittedEntry),
+		attempts:              make(map[string]AttemptAuthorityState),
+		controlOwners:         make(map[string]ControlOwnerState),
+		effects:               make(map[string]EffectAuthorityState),
+		allocations:           make(map[string]allocationAuthorityState),
+		existingWorktreeFacts: nil,
+		effectCommands:        make(map[string]string),
+		effectIdempotency:     make(map[string]string),
+		effectMarkers:         make(map[string]string),
 	}
 }
 
