@@ -5,11 +5,242 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
+
+type runstoreTreeEntry struct {
+	Mode os.FileMode
+	Data string
+	Link string
+}
+
+func runstoreTreeSnapshot(t *testing.T, root string) map[string]runstoreTreeEntry {
+	t.Helper()
+	snapshot := make(map[string]runstoreTreeEntry)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		current := runstoreTreeEntry{Mode: info.Mode()}
+		switch {
+		case info.Mode().IsRegular():
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			current.Data = string(data)
+		case info.Mode()&os.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			current.Link = target
+		}
+		snapshot[relative] = current
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func TestAcquireExistingRejectsUnknownWithoutMutation(t *testing.T) {
+	t.Run("missing state root", func(t *testing.T) {
+		parent := t.TempDir()
+		root := filepath.Join(parent, "missing-state-root")
+		before := runstoreTreeSnapshot(t, parent)
+		if _, err := New(root).AcquireExisting("run:missing"); err == nil {
+			t.Fatal("AcquireExisting created a missing state root")
+		}
+		after := runstoreTreeSnapshot(t, parent)
+		if !reflect.DeepEqual(after, before) {
+			t.Fatalf("missing-root rejection mutated tree:\nbefore=%#v\nafter=%#v", before, after)
+		}
+	})
+
+	for _, kind := range []string{"missing run", "unknown directory", "orphan lease lock", "non-directory", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			runs := filepath.Join(root, "runs")
+			if err := os.Mkdir(runs, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			runPath := filepath.Join(runs, "run:unknown")
+			switch kind {
+			case "missing run":
+			case "unknown directory":
+				if err := os.Mkdir(runPath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(runPath, "sentinel"), []byte("unchanged\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "orphan lease lock":
+				if err := os.Mkdir(runPath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(runPath, "lease.lock"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "non-directory":
+				if err := os.WriteFile(runPath, []byte("not-a-directory\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				target := filepath.Join(root, "outside")
+				if err := os.Mkdir(target, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(target, "sentinel"), []byte("unchanged\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, runPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := runstoreTreeSnapshot(t, root)
+			if _, err := New(root).AcquireExisting("run:unknown"); err == nil {
+				t.Fatalf("AcquireExisting accepted %s", kind)
+			}
+			after := runstoreTreeSnapshot(t, root)
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("%s rejection mutated tree:\nbefore=%#v\nafter=%#v", kind, before, after)
+			}
+		})
+	}
+}
+
+func TestAcquireExistingUsesDescriptorBoundLeaseAndReleaseIsNonMutating(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	seed, err := store.Acquire("run:existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	lease, err := store.AcquireExisting("run:existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := OpenRunAuthority(lease)
+	if err != nil {
+		t.Fatalf("existing lease did not retain descriptor authority: %v", err)
+	}
+	if err := authority.Close(); err != nil {
+		t.Fatal(err)
+	}
+	beforeRelease := runstoreTreeSnapshot(t, root)
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatalf("second release was not idempotent: %v", err)
+	}
+	afterRelease := runstoreTreeSnapshot(t, root)
+	if !reflect.DeepEqual(afterRelease, beforeRelease) {
+		t.Fatalf("Release mutated existing Run bytes:\nbefore=%#v\nafter=%#v", beforeRelease, afterRelease)
+	}
+	reacquired, err := store.AcquireExisting("run:existing")
+	if err != nil {
+		t.Fatalf("released existing lease could not be reacquired: %v", err)
+	}
+	if err := reacquired.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAcquireExistingLeaseBusyDoesNotRewriteOwner(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	lease, err := store.Acquire("run:busy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	ownerPath := filepath.Join(root, "runs", "run:busy", "lease.lock.owner")
+	before, err := os.ReadFile(ownerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireExisting("run:busy"); !errors.Is(err, ErrLeaseHeld) {
+		t.Fatalf("AcquireExisting busy error = %v", err)
+	}
+	after, err := os.ReadFile(ownerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("busy existing acquisition rewrote the owner record")
+	}
+	if _, err := os.Stat(filepath.Join(root, "runs", "run:busy", "events.jsonl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("busy existing acquisition created a journal: %v", err)
+	}
+}
+
+func TestAcquireExistingRejectsRunDirectoryReplacementBeforeOwnerWrite(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	seed, err := store.Acquire("run:aba")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Release(); err != nil {
+		t.Fatal(err)
+	}
+	runPath := filepath.Join(root, "runs", "run:aba")
+	ownerBefore, err := os.ReadFile(filepath.Join(runPath, "lease.lock.owner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := runPath + ".replacement"
+	if err := os.Mkdir(replacement, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(replacement, "sentinel"), []byte("replacement\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held := runPath + ".held"
+	store.beforeAcquireExistingOwnerWrite = func() error {
+		if err := os.Rename(runPath, held); err != nil {
+			return err
+		}
+		return os.Rename(replacement, runPath)
+	}
+	if _, err := store.AcquireExisting("run:aba"); err == nil {
+		t.Fatal("AcquireExisting accepted a replaced canonical Run directory")
+	}
+	ownerAfter, err := os.ReadFile(filepath.Join(held, "lease.lock.owner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(ownerAfter) != string(ownerBefore) {
+		t.Fatal("detached Run received replacement owner bytes")
+	}
+	for _, directory := range []string{held, runPath} {
+		if _, err := os.Stat(filepath.Join(directory, "events.jsonl")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("replacement check wrote a journal under %s: %v", directory, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(runPath, "lease.lock.owner")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement Run received an owner record: %v", err)
+	}
+}
 
 func TestAppendRejectsStaleSequenceAndDuplicateEvent(t *testing.T) {
 	t.Parallel()
