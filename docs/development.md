@@ -79,15 +79,15 @@ GitHub Actions 的主线 CI 固定展开为三个 job：`Quality (ubuntu-latest)
 面向用户的两条安装路径（一行脚本与源码构建）见 [README](https://github.com/chiga0/marshal-harness#安装)，对应脚本为 [`scripts/install.sh`](https://github.com/chiga0/marshal-harness/blob/main/scripts/install.sh)：
 
 - 检测平台（`darwin|linux` × `amd64|arm64`）；
-- 存在 `v*` annotated tag 的 GitHub release 且含平台匹配资产时，用 `curl -fsSL` 下载预编译二进制；随后解析 tag 的唯一 tag object/peeled commit 与 canonical candidate trailers，下载 `RELEASE-MANIFEST` 与 `SHA256SUMS`，并要求 tag 冻结摘要、manifest/目标资产摘要、sourceHead、内嵌 version/commit/buildDate/goVersion/profile 全部精确；缺失、重复、尾随字段、资产整组替换或漂移均 fail closed；
+- 存在 `v*` annotated tag 的 GitHub release 且含平台匹配资产时，用 `curl -fsSL` 下载预编译二进制；随后解析 tag 的唯一 tag object/peeled commit 与 canonical candidate trailers，下载 `RELEASE-MANIFEST` 与 `SHA256SUMS`，并要求 tag 冻结摘要、manifest/目标资产摘要与 sourceHead 全部精确。非 RC1 安装器继续执行 build identity 自检；RC1 的 Mach-O/buildinfo 由 release admission 预先做非执行式校验，安装器只消费同一 payload，绝不执行 candidate；
 - 否则回退源码构建 `go build -trimpath ./cmd/marshal`（Go 版本须满足 `go.mod` 的 `go` 指令）；无本地 checkout 时先浅克隆 `https://github.com/chiga0/marshal-harness.git`（release tag 已知时克隆该 tag）；
 - 安装到 `~/.local/bin`（默认），全程不请求 sudo，完成后输出下一步指引（`marshal init` / `marshal doctor`）。
 
-源码回退不是弱身份旁路：源码目录必须是无未提交修改、可验证的 Git checkout；指定 `MARSHAL_TAG` 时，当前 `HEAD` 必须精确等于该 tag 的 peeled commit。构建会嵌入精确 commit，并按平台冻结 `selfProfile`（Darwin=`darwin-local-dogfood`，Linux=`unprofiled`）。暂存二进制与安装后的二进制都必须通过 `version --json` 身份自检，否则安装 fail closed。
+源码回退不是弱身份旁路：源码目录必须是无未提交修改、可验证的 Git checkout；指定 `MARSHAL_TAG` 时，当前 `HEAD` 必须精确等于该 tag 的 peeled commit。构建会嵌入精确 commit，并按平台冻结 `selfProfile`（Darwin=`darwin-local-dogfood`，Linux=`unprofiled`）。源码与非 RC1 暂存/安装对象必须通过 `version --json` 身份自检；RC1 安装器不执行 candidate。
 
-安装阶段先把 bytes 写入安装目录下固定、`0644` 且不可执行的 `.marshal-staging/marshal.candidate`；tag/manifest/checksum 闭合后才通过 no-clobber hardlink 激活固定 `.marshal-staging/marshal`，验证身份后原子替换目标并清理本次拥有的对象。路径每一段、staging 与既有 target 都必须满足 owner/mode/non-symlink/hardlink 门禁；不会在随机 `/tmp` 路径生成或执行匿名 Marshal 可执行文件。
+安装阶段先把 bytes 写入安装目录下固定、`0644` 且不可执行的 `.marshal-staging/marshal.candidate`；tag/manifest/checksum 闭合后才通过 no-clobber hardlink 激活固定 `.marshal-staging/marshal`，再原子替换目标并清理本次拥有的对象。RC1 在下载后、执行前（固定 staging 激活后）、安装后三次重验同一 SHA-256/size，并拒绝 symlink、超过 256 MiB 或漂移对象；路径每一段、staging 与既有 target 都必须满足 owner/mode/non-symlink/hardlink 门禁，不会在随机 `/tmp` 路径生成或执行匿名 Marshal 可执行文件。
 
-环境变量：`MARSHAL_INSTALL_DIR`（安装目录）、`MARSHAL_TAG`（固定 release tag，跳过 latest release 查询）、`MARSHAL_FORCE_SOURCE=1`（跳过 release 直接源码构建）、`MARSHAL_LOCAL_DOGFOOD_PREVIEW=1`（仅能与 exact `v1.0.0-rc1` 同时使用的封闭 opt-in）。RC1 禁止 `MARSHAL_FORCE_SOURCE`、latest/stable/源码/其它平台 fallback，并在执行前和安装后重验同一 SHA-256、size 和 build identity。release/source remote authority 固定为 canonical `chiga0/marshal-harness`，`MARSHAL_REPO` 覆盖被显式拒绝，fixture 只能通过测试进程中的 fake `git`/`curl` 模拟网络响应。
+环境变量：`MARSHAL_INSTALL_DIR`（安装目录）、`MARSHAL_TAG`（固定 release tag，跳过 latest release 查询）、`MARSHAL_FORCE_SOURCE=1`（跳过 release 直接源码构建）、`MARSHAL_LOCAL_DOGFOOD_PREVIEW=1`（仅能与 exact `v1.0.0-rc1` 同时使用的封闭 opt-in）。RC1 禁止 `MARSHAL_FORCE_SOURCE`、latest/stable/源码/其它平台 fallback，只接受精确 8 行单资产 manifest 与固定顺序、两个 ASCII 空格分隔、两个小写 digest 的 `SHA256SUMS`。release/source remote authority 固定为 canonical `chiga0/marshal-harness`，`MARSHAL_REPO` 覆盖被显式拒绝，fixture 只能通过测试进程中的 fake `git`/`curl` 模拟网络响应。
 
 ### Release 资产命名约定
 
@@ -112,7 +112,7 @@ release workflow 只接受精确的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH
 3. `MARSHAL_FORCE_SOURCE=1 bash scripts/install.sh` 验证强制源码构建路径；
 4. 安装后运行 `marshal version` 与 `marshal doctor --json` 确认二进制可用。
 
-RC1 另外必须运行 `bash scripts/install_test.sh`，该 fixture 覆盖无 opt-in、错值、未精确指定 tag、非 Darwin arm64、missing/download failure、manifest/SHA 漂移、禁止源码 fallback/自动 activation 与 exact positive asset。安装器只输出固定二进制的 `version --json`→`doctor --self`→操作者显式 activation 指引；不执行后两步，不修改 Gatekeeper/SIP/EDR/用户 `PATH`。
+RC1 另外必须运行 `bash scripts/install_test.sh`，该 fixture 覆盖无 opt-in、错值、未精确指定 tag、非 Darwin arm64、missing/download failure、额外平台/stable/其它 RC、非 canonical checksum 空白/大小写、manifest/SHA 漂移、symlink/oversize、三阶段 bytes/size 漂移、禁止源码 fallback/自动 activation，以及不会执行 candidate 的 exact positive asset。安装器只输出固定二进制的 `version --json`→`doctor --self`→操作者显式 activation 指引；三步均由操作者后续显式执行，安装器不修改 Gatekeeper/SIP/EDR/用户 `PATH`。
 
 ## 当前 CLI
 

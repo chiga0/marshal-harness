@@ -17,9 +17,9 @@ marshal version
 
 1. 检测平台（`darwin|linux` × `amd64|arm64`）；
 2. 查询 latest release，存在平台匹配资产（`marshal_<version>_<os>_<arch>`）时用 `curl -fsSL` 下载预编译二进制；
-3. release tag 必须是 annotated tag；脚本从 canonical Git remote 解析唯一 tag object/peeled commit 并获取 canonical tag message，再下载 `RELEASE-MANIFEST` 与 `SHA256SUMS`；tag message 冻结的 sourceHead、manifest SHA 与 Darwin arm64 candidate SHA 必须和下载内容对账，manifest 的 repository/tag/sourceHead/buildDate/toolchain/flags/四平台资产集合也必须精确；任一缺失、重复、尾随字段、资产整组替换或漂移均 **fail closed**；
+3. release tag 必须是 annotated tag；脚本从 canonical Git remote 解析唯一 tag object/peeled commit 并获取 canonical tag message，再下载 `RELEASE-MANIFEST` 与 `SHA256SUMS`；tag message 冻结的 sourceHead、manifest SHA 与 Darwin arm64 candidate SHA 必须和下载内容对账。通用 release manifest 的四平台集合，以及 RC1 的精确 8 行单资产 manifest 和固定顺序、两个空格分隔、两个小写 SHA-256 项都必须封闭；任一缺失、重复、尾随字段、非 canonical 空白、资产整组替换或漂移均 **fail closed**；
 4. 非 RC1 安装在无匹配资产或下载失败时回退源码构建（见下节）；若指定了 `MARSHAL_TAG`，源码 checkout 的 `HEAD` 必须精确等于该 tag 的 peeled commit，否则 fail closed，禁止把任意源码标记成请求版本。`v1.0.0-rc1` 不得进入这条回退路径；
-5. 安装到 `~/.local/bin`（可用 `MARSHAL_INSTALL_DIR` 覆盖）；首次写入前逐段验证安装路径、staging 和既有 target 的 owner/mode/non-symlink/hardlink 边界。下载对象保持 `0644` 且不可执行，只有 tag/manifest/checksum 全部闭合后才通过 no-clobber hardlink 激活固定 `.marshal-staging/marshal`，再运行 `marshal version --json`；release 路径精确核对 `version`、peeled `commit`、manifest `buildDate/goVersion` 与 `selfProfile`，源码路径核对自身 `HEAD`；任一执行失败、字段缺失或身份漂移都 fail closed；
+5. 安装到 `~/.local/bin`（可用 `MARSHAL_INSTALL_DIR` 覆盖）；首次写入前逐段验证安装路径、staging 和既有 target 的 owner/mode/non-symlink/hardlink 边界。下载对象保持 `0644` 且不可执行，只有 tag/manifest/checksum 全部闭合后才通过 no-clobber hardlink 激活固定 `.marshal-staging/marshal`。非 RC1 路径继续运行 `marshal version --json` 核对 build identity；RC1 的 Mach-O/buildinfo 已由 release admission 对外部 expected values 完成非执行式校验，安装器只消费其同一 payload，并且不会执行 RC1 candidate 或要求本机安装 Go toolchain；
 6. Darwin 安装资产与源码回退固定 `selfProfile=darwin-local-dogfood`，Linux 固定 `selfProfile=unprofiled`。前者只是 ADR 0051 的 Mac ordinary-user/non-production 能力，不得描述成 hardened 或正式 production authority。
 
 二进制 bytes 先写入安装目录下固定且不可执行的 `.marshal-staging/marshal.candidate`；校验通过后以 no-clobber hardlink 激活固定 `.marshal-staging/marshal`，再原子替换目标 `marshal` 并清理本次拥有的暂存对象。脚本不会在随机路径生成或执行匿名可执行文件，也不会跟随安装路径、staging 或目标 symlink；不安全 owner、group/world 可写路径、stale staging 与 hardlink target 都会被拒绝。
@@ -34,7 +34,9 @@ MARSHAL_LOCAL_DOGFOOD_PREVIEW=1 \
 bash scripts/install.sh
 ```
 
-`MARSHAL_LOCAL_DOGFOOD_PREVIEW` 只接受精确值 `1`，且只能与 `MARSHAL_TAG=v1.0.0-rc1` 同时使用。缺少 opt-in、任意其它值、未显式指定 tag、非 Darwin arm64、`MARSHAL_FORCE_SOURCE`、资产或网络失败以及 manifest/identity 漂移全部 fail closed。安装器只下载该 tag 的精确 Darwin arm64 binary、`RELEASE-MANIFEST` 和 `SHA256SUMS`，并在执行前与安装后重验同一 SHA-256、size 和 build identity。
+`MARSHAL_LOCAL_DOGFOOD_PREVIEW` 只接受精确值 `1`，且只能与 `MARSHAL_TAG=v1.0.0-rc1` 同时使用。缺少 opt-in、任意其它值、未显式指定 tag、非 Darwin arm64、`MARSHAL_FORCE_SOURCE`、资产或网络失败以及 manifest/bytes 漂移全部 fail closed。安装器只下载该 tag 的精确 Darwin arm64 binary、`RELEASE-MANIFEST` 和 `SHA256SUMS`，并在下载后、执行前（固定 staging 激活后）与安装后重验同一 SHA-256 和 size；candidate 大于 256 MiB、为 symlink 或出现任何字节漂移都会被拒绝。
+
+Mach-O、Go build settings 与内嵌 buildinfo 的非执行式解析属于候选构建/发布 admission，由固定 `GO_BIN` 和 `scripts/release-rc1-binary-check.py` 对外部 expected values 完成；安装器不下载该 checker、不把它加入三项 dist，也不执行 candidate 来重复该门禁。安装成功仅表示已安装与 annotated tag/manifest/checksum 绑定的同一 payload，操作者仍须显式执行下述 `version --json` 与 `doctor --self`。
 
 安装器不创建 activation，不修改 Gatekeeper、SIP、EDR、`PATH` 或符号链接。成功后它会输出固定绝对路径的 `version --json`、`doctor --self` 与操作者显式写入/selection activation 的指引；必须在当前受信任 canonical repository 内按顺序执行。`$PATH` 命中和 convenience symlink 都不是 trust anchor。
 

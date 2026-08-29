@@ -4,7 +4,8 @@
 # 策略：
 #   1. 存在 v* tag 的 GitHub release 且含当前平台匹配资产时，用 curl -fsSL 下载预编译二进制；
 #      必须下载 RELEASE-MANIFEST 与 SHA256SUMS，解析 annotated tag 的 peeled
-#      commit，并校验 manifest、资产 sha256 与二进制 build identity；
+#      commit，并校验 manifest 与资产 sha256；RC1 的 Mach-O/build identity 由上游
+#      release admission 校验，本安装器不得执行 candidate 或引入 Go toolchain 依赖；
 #   2. 除 v1.0.0-rc1 外，否则源码构建 go build -trimpath ./cmd/marshal（Go 版本须满足 go.mod 的 go 指令；
 #      无本地 checkout 时先浅克隆仓库）；
 #      v1.0.0-rc1 只允许精确 tag 的 Darwin arm64 release asset，不得回退源码；
@@ -34,6 +35,7 @@ PREVIEW_OPT_IN="${MARSHAL_LOCAL_DOGFOOD_PREVIEW:-}"
 PREVIEW_OPT_IN_SET="${MARSHAL_LOCAL_DOGFOOD_PREVIEW+x}"
 BUILDINFO_PKG="github.com/chiga0/marshal-harness/internal/buildinfo"
 RC1_TAG="v1.0.0-rc1"
+RC1_MAX_ASSET_BYTES=$((256 * 1024 * 1024))
 
 OS=""
 ARCH=""
@@ -373,14 +375,14 @@ verify_rc1_sha256() {
   } <"${TMP_DIR}/SHA256SUMS"
   [ "${#manifest_line}" -eq $((64 + ${#manifest_suffix})) ] \
     && [ "${manifest_line:64}" = "$manifest_suffix" ] \
-    && [[ "${manifest_line:0:64}" =~ ^[0-9A-Fa-f]{64}$ ]] \
+    && [[ "${manifest_line:0:64}" =~ ^[0-9a-f]{64}$ ]] \
     || fatal "RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序，不得有前后空白"
   [ "${#asset_line}" -eq $((64 + ${#asset_suffix})) ] \
     && [ "${asset_line:64}" = "$asset_suffix" ] \
-    && [[ "${asset_line:0:64}" =~ ^[0-9A-Fa-f]{64}$ ]] \
+    && [[ "${asset_line:0:64}" =~ ^[0-9a-f]{64}$ ]] \
     || fatal "RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序，不得有前后空白"
-  manifest_expected="$(printf '%s' "${manifest_line:0:64}" | tr 'A-F' 'a-f')"
-  expected="$(printf '%s' "${asset_line:0:64}" | tr 'A-F' 'a-f')"
+  manifest_expected="${manifest_line:0:64}"
+  expected="${asset_line:0:64}"
   actual="$(sha256_of "$CANDIDATE_OBJECT")" \
     || fatal "缺少 sha256sum/shasum，无法完成校验"
   [ "$actual" = "$expected" ] \
@@ -532,14 +534,22 @@ verify_rc1_release_manifest() {
     NR == 1 { if ($0 != "schemaVersion marshal.rc1-release-manifest.v1") exit 1; next }
     NR == 2 { if ($0 != "repository " repo) exit 1; next }
     NR == 3 { if ($0 != "tag " tag) exit 1; next }
-    NR == 4 { if ($1 != "sourceHead" || NF != 2 || $2 != commit) exit 1; next }
-    NR == 5 { if ($1 != "buildDate" || NF != 2 || $2 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/) exit 1; build_date=$2; next }
-    NR == 6 { if ($1 != "goVersion" || NF != 2 || $2 !~ /^go[0-9]+\.[0-9]+\.[0-9]+$/) exit 1; go_version=$2; next }
+    NR == 4 { if ($0 != "sourceHead " commit) exit 1; next }
+    NR == 5 {
+      if ($2 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/ ||
+          $0 != "buildDate " $2) exit 1
+      build_date=$2; next
+    }
+    NR == 6 {
+      if ($2 !~ /^go[0-9]+\.[0-9]+\.[0-9]+$/ || $0 != "goVersion " $2) exit 1
+      go_version=$2; next
+    }
     NR == 7 { if ($0 != "buildFlags -trimpath,-buildvcs=false,-mod=readonly,-buildid=") exit 1; next }
     NR == 8 {
       if ($1 != "asset" || NF != 7 || $2 !~ /^[0-9a-f]{64}$/ || $3 !~ /^[1-9][0-9]*$/ ||
           $4 != want || $4 != "marshal_1.0.0-rc1_darwin_arm64" || $5 != "darwin" ||
-          $6 != "arm64" || $7 != "darwin-local-dogfood" || $2 != checksum) exit 1
+          $6 != "arm64" || $7 != "darwin-local-dogfood" || $2 != checksum ||
+          $0 != "asset " $2 " " $3 " " $4 " " $5 " " $6 " " $7) exit 1
       digest=$2; size=$3; next
     }
     { exit 1 }
@@ -553,6 +563,8 @@ verify_rc1_release_manifest() {
   actual_asset_size="$(wc -c <"$CANDIDATE_OBJECT" | tr -d '[:space:]')"
   [ "$manifest_asset_digest" = "$EXPECTED_ASSET_SHA256" ] \
     || fatal "RC1 RELEASE-MANIFEST 与 SHA256SUMS 的 ${asset} 摘要不一致"
+  [ "$manifest_asset_size" -le "$RC1_MAX_ASSET_BYTES" ] \
+    || fatal "RC1 candidate size 超过 256 MiB 上限"
   [ "$manifest_asset_size" = "$actual_asset_size" ] \
     || fatal "RC1 RELEASE-MANIFEST 中 ${asset} 的 size 与下载资产不一致"
   EXPECTED_ASSET_SIZE="$manifest_asset_size"
@@ -770,9 +782,6 @@ print_next_steps() {
   local mode="$1" ver marshal_path marshal_cmd
   marshal_path="${INSTALL_DIR}/${BIN_NAME}"
   printf -v marshal_cmd '%q' "$marshal_path"
-  ver="$("${INSTALL_DIR}/${BIN_NAME}" version 2>/dev/null)" \
-    || fatal "安装后的 marshal 无法执行 version 自检"
-  info "版本确认: ${ver}"
   if [ "$RC1_MODE" = 1 ]; then
     cat <<EOF
 [install] 完成（unsigned ${RC1_TAG} Darwin arm64 CLI-only local-dogfood preview）
@@ -790,6 +799,9 @@ print_next_steps() {
 EOF
     return 0
   fi
+  ver="$("${INSTALL_DIR}/${BIN_NAME}" version 2>/dev/null)" \
+    || fatal "安装后的 marshal 无法执行 version 自检"
+  info "版本确认: ${ver}"
   case ":${PATH}:" in
     *":${INSTALL_DIR}:"*)
       cat <<EOF
@@ -845,12 +857,16 @@ main() {
   if [ "$mode" = release ]; then
     verify_exact_release_object "$STABLE_STAGE_BIN" "执行前"
   fi
-  verify_binary "$STABLE_STAGE_BIN" "暂存"
+  if [ "$RC1_MODE" != 1 ]; then
+    verify_binary "$STABLE_STAGE_BIN" "暂存"
+  fi
   install_binary
   if [ "$mode" = release ]; then
     verify_exact_release_object "${INSTALL_DIR}/${BIN_NAME}" "安装后"
   fi
-  verify_binary "${INSTALL_DIR}/${BIN_NAME}" "安装后"
+  if [ "$RC1_MODE" != 1 ]; then
+    verify_binary "${INSTALL_DIR}/${BIN_NAME}" "安装后"
+  fi
   print_next_steps "$mode"
 }
 

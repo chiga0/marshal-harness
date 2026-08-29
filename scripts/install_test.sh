@@ -54,6 +54,9 @@ write_asset() {
   [ "$FIXTURE_MODE" != replacedrelease ] || printf '# replacement asset set\n'
   cat <<PAYLOAD
 #!/bin/sh
+if [ -n "\${FIXTURE_EXECUTION_MARKER:-}" ]; then
+  : >"\$FIXTURE_EXECUTION_MARKER"
+fi
 printf '%s\\n' '{"version":"${version}","commit":"${commit}","buildDate":"${build_date}","goVersion":"${go_version}","os":"darwin","arch":"arm64","selfProfile":"${profile}"}'
 PAYLOAD
 }
@@ -70,6 +73,7 @@ write_manifest() {
   [ "$FIXTURE_MODE" != badmanifestcommit ] || commit='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
   digest="$(write_asset | sha256_stream)"
   size="$(write_asset | wc -c | tr -d '[:space:]')"
+  [ "$FIXTURE_MODE" != manifestoversize ] || size=268435457
   if [ "$FIXTURE_TAG" = v1.0.0-rc1 ]; then
     printf 'schemaVersion marshal.rc1-release-manifest.v1\n'
   else
@@ -77,7 +81,11 @@ write_manifest() {
   fi
   printf 'repository https://github.com/chiga0/marshal-harness.git\n'
   printf 'tag %s\n' "$FIXTURE_TAG"
-  printf 'sourceHead %s\n' "$commit"
+  if [ "$FIXTURE_MODE" = manifesttab ]; then
+    printf 'sourceHead\t%s\n' "$commit"
+  else
+    printf 'sourceHead %s\n' "$commit"
+  fi
   printf 'buildDate 2026-08-28T00:00:00Z\n'
   printf 'goVersion go1.26.6\n'
   printf 'buildFlags -trimpath,-buildvcs=false,-mod=readonly,-buildid=\n'
@@ -170,7 +178,7 @@ case "$url" in
   */SHA256SUMS)
     case "$FIXTURE_MODE" in
       missing) exit 22 ;;
-      mismatch|valid|badexec|badversion|badprofile|badbinarycommit|badbuilddate|badgoversion|badmanifestcommit|badmanifestasset|badmanifestchecksum|missingmanifest|replacedrelease|extratagline|taginteriorblank|tagtrailingblank|tagnul|extrasumdarwinamd64|extrasumlinux|extrasumstable|extrasumotherrc|sumonespace|sumtab|sumleading|sumtrailing|extramanifestfield|extramanifestdarwinamd64|extramanifestlinux|extramanifeststable|extramanifestotherrc)
+      mismatch|valid|badmanifestcommit|badmanifestasset|badmanifestchecksum|missingmanifest|replacedrelease|extratagline|taginteriorblank|tagtrailingblank|tagnul|extrasumdarwinamd64|extrasumlinux|extrasumstable|extrasumotherrc|sumuppercase|sumonespace|sumtab|sumleading|sumtrailing|manifesttab|manifestoversize|candidatesymlink|extramanifestfield|extramanifestdarwinamd64|extramanifestlinux|extramanifeststable|extramanifestotherrc)
         digest="$(write_asset | sha256_stream)"
         manifest_digest="$(write_manifest | sha256_stream)"
         [ "$FIXTURE_MODE" != badmanifestchecksum ] || manifest_digest='dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
@@ -180,6 +188,9 @@ case "$url" in
           sumtab) printf '%s\tRELEASE-MANIFEST\n' "$manifest_digest" >>"$dest" ;;
           sumleading) printf ' %s  RELEASE-MANIFEST\n' "$manifest_digest" >>"$dest" ;;
           sumtrailing) printf '%s  RELEASE-MANIFEST \n' "$manifest_digest" >>"$dest" ;;
+          sumuppercase)
+            printf '%s  RELEASE-MANIFEST\n' "$(printf '%s' "$manifest_digest" | tr 'a-f' 'A-F')" >>"$dest"
+            ;;
           *) printf '%s  RELEASE-MANIFEST\n' "$manifest_digest" >>"$dest" ;;
         esac
         if [ "$FIXTURE_TAG" = v1.0.0-rc1 ]; then
@@ -194,6 +205,8 @@ ${prefix}_linux_arm64"
         while IFS= read -r name; do
           if [ "$FIXTURE_MODE" = mismatch ] && [ "$name" = "$FIXTURE_ASSET" ]; then
             printf '%064d  %s\n' 0 "$name" >>"$dest"
+          elif [ "$FIXTURE_MODE" = sumuppercase ]; then
+            printf '%s  %s\n' "$(printf '%s' "$digest" | tr 'a-f' 'A-F')" "$name" >>"$dest"
           else
             printf '%s  %s\n' "$digest" "$name" >>"$dest"
           fi
@@ -214,6 +227,10 @@ ${prefix}_linux_arm64"
     esac
     write_asset >"$dest"
     chmod 0644 "$dest"
+    if [ "$FIXTURE_MODE" = candidatesymlink ]; then
+      rm "$dest"
+      ln -s /dev/null "$dest"
+    fi
     if [ -n "${FIXTURE_CURL_MODE_LOG:-}" ]; then
       if mode="$(/usr/bin/stat -f '%Lp' "$dest" 2>/dev/null)"; then
         :
@@ -463,10 +480,11 @@ run_failure_case() {
 }
 
 run_success_case() {
-  local tag="$1" case_dir asset output installed_mode installed_links curl_url_log
+  local tag="$1" case_dir asset output installed_mode installed_links curl_url_log execution_marker
   case_dir="${TMP_ROOT}/${tag}-valid"
   asset="marshal_${tag#v}_darwin_arm64"
   curl_url_log="${case_dir}/curl-urls"
+  execution_marker="${case_dir}/candidate-executed"
   mkdir -p "${case_dir}/home" "${case_dir}/install"
   output="$(
     HOME="${case_dir}/home" \
@@ -480,8 +498,10 @@ run_success_case() {
     FIXTURE_ASSET="$asset" \
     FIXTURE_TAG="$tag" \
     FIXTURE_PEELED_COMMIT="$FIXTURE_COMMIT" \
+    FIXTURE_EXECUTION_MARKER="$execution_marker" \
     bash "${ROOT}/scripts/install.sh" 2>&1
   )"
+  [ ! -e "$execution_marker" ] || fail "${tag}/valid installer 执行了 RC1 candidate"
   [ -x "${case_dir}/install/marshal" ] || fail "${tag}/valid 未安装可执行文件"
   [ "$(cat "${case_dir}/curl-mode")" = 644 ] \
     || fail "${tag}/valid 下载资产不是真实 curl 0644 fixture"
@@ -510,6 +530,9 @@ run_success_case() {
     || fail "${tag}/valid 未输出显式 activation 边界"
   printf '%s\n' "$output" | grep -F 'doctor --self --repository-root' >/dev/null \
     || fail "${tag}/valid 未输出 doctor --self 指引"
+  if printf '%s\n' "$output" | grep -F '版本确认:' >/dev/null; then
+    fail "${tag}/valid installer 通过执行 RC1 candidate 生成了版本确认"
+  fi
   if find "$case_dir" -name '*activation*' -print -quit | grep . >/dev/null; then
     fail "${tag}/valid 安装器自动创建了 activation"
   fi
@@ -841,12 +864,6 @@ run_failure_case v1.0.0-rc1 missingasset '精确资产 marshal_1.0.0-rc1_darwin_
 run_failure_case v1.0.0-rc1 downloadfailure '精确资产 marshal_1.0.0-rc1_darwin_arm64 缺失或下载失败'
 run_failure_case v1.0.0-rc1 missing '缺少或无法下载 SHA256SUMS'
 run_failure_case v1.0.0-rc1 mismatch 'sha256 校验失败'
-run_failure_case v1.0.0-rc1 badexec '无法通过 version --json 自检'
-run_failure_case v1.0.0-rc1 badversion 'version=9.9.9，期望 1.0.0-rc1'
-run_failure_case v1.0.0-rc1 badprofile 'selfProfile=unprofiled，期望 darwin-local-dogfood'
-run_failure_case v1.0.0-rc1 badbinarycommit "commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa，期望 ${FIXTURE_COMMIT}"
-run_failure_case v1.0.0-rc1 badbuilddate 'buildDate=2026-08-29T00:00:00Z，期望 2026-08-28T00:00:00Z'
-run_failure_case v1.0.0-rc1 badgoversion 'goVersion=go1.26.7，期望 go1.26.6'
 run_failure_case v1.0.0-rc1 badmanifestcommit 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
 run_failure_case v1.0.0-rc1 badmanifestasset 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
 run_failure_case v1.0.0-rc1 badmanifestchecksum 'RELEASE-MANIFEST sha256 校验失败'
@@ -861,10 +878,14 @@ run_failure_case v1.0.0-rc1 extrasumdarwinamd64 'RC1 SHA256SUMS 必须精确包�
 run_failure_case v1.0.0-rc1 extrasumlinux 'RC1 SHA256SUMS 必须精确包含 RELEASE-MANIFEST'
 run_failure_case v1.0.0-rc1 extrasumstable 'RC1 SHA256SUMS 必须精确包含 RELEASE-MANIFEST'
 run_failure_case v1.0.0-rc1 extrasumotherrc 'RC1 SHA256SUMS 必须精确包含 RELEASE-MANIFEST'
+run_failure_case v1.0.0-rc1 sumuppercase 'RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序'
 run_failure_case v1.0.0-rc1 sumonespace 'RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序'
 run_failure_case v1.0.0-rc1 sumtab 'RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序'
 run_failure_case v1.0.0-rc1 sumleading 'RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序'
 run_failure_case v1.0.0-rc1 sumtrailing 'RC1 SHA256SUMS 必须使用 sha256、两个空格与固定顺序'
+run_failure_case v1.0.0-rc1 manifesttab 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
+run_failure_case v1.0.0-rc1 manifestoversize 'RC1 candidate size 超过 256 MiB 上限'
+run_failure_case v1.0.0-rc1 candidatesymlink '文件缺失、非普通文件或为符号链接'
 run_failure_case v1.0.0-rc1 extramanifestfield 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
 run_failure_case v1.0.0-rc1 extramanifestdarwinamd64 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
 run_failure_case v1.0.0-rc1 extramanifestlinux 'RC1 RELEASE-MANIFEST 必须是 marshal.rc1-release-manifest.v1 精确 8 行'
