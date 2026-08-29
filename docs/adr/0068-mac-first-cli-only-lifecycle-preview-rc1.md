@@ -1,8 +1,9 @@
 # ADR 0068：Mac-first CLI-only 生命周期预览 RC1
 
-- 状态：提议（Proposed）
+- 状态：已接受（Accepted）
 - 日期：2026-08-29
 - 提议基线：`main@84d2dcd6bb78cb7fa47ed1d3040a1f3bea5a0f11`
+- 接受记录：提案 `9cfa1b65275d2e23f18b958a05d027adec6af8fd` 经唯一独立 reviewer 审查，结论 `APPROVE`，`P0=0`、`P1=0`；接受只冻结 RC1 合同，不表示 RC1 已实现、已发布或取得 production/managed/stable authority，也不升级 R2–R6。
 - 关联：[ADR 0047](0047-marshal-darwin-self-identity-and-release-signing.md)、[ADR 0048](0048-protected-build-input-and-artifact-attestation.md)、[ADR 0051](0051-darwin-local-dogfood-profile.md)、[ADR 0052](0052-v1-release-scope-and-production-reachability.md)、[ADR 0062](0062-fixed-marshal-production-server-mode.md)、[ADR 0065](0065-sealed-run-start-proof-and-one-way-composition.md)、[ADR 0066](0066-production-composition-owner-acquisition.md)、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)、[Issue #212](https://github.com/chiga0/marshal-harness/issues/212)
 
 ## 背景
@@ -126,7 +127,7 @@ RC1后的固定顺序是：
 ## 实施顺序
 
 1. 独立审查并接受本ADR；接受只冻结RC1合同，不表示实现或发布完成；
-2. 完成S1、S2与terminalization，使fixed CLI真实纵切到达`ACCEPTED`；
+2. 严格按 S1′→S2′→ADR0067 Attach/rebind→terminalization 的顺序完成 authority 与恢复链，再由 fixed CLI 运行真实 Pi，并以独立 Verification/ReviewDecision 使真实纵切到达`ACCEPTED`；
 3. 实现RC1 release-contract、build-once/dist manifest、explicit install opt-in、local activation与canary receipt；
 4. 用同一final bytes在目标Mac执行host viability、真实Pi、独立Verification/Review、crash/recovery与负向矩阵；
 5. required CI与release gate全绿后发布带固定negative claims的GitHub prerelease；

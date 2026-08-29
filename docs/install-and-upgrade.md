@@ -2,6 +2,8 @@
 
 本文覆盖 Marshal CLI 面向用户的生命周期操作：安装、升级、回滚与卸载。支持平台为 `darwin|linux` × `amd64|arm64`，全程不请求 sudo。安装脚本自身的契约与手工验证步骤（面向维护者）见 [docs/development.md「安装」](https://github.com/chiga0/marshal-harness/blob/main/docs/development.md#安装)。
 
+> **RC1 状态（2026-08-29）**：[ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受，但 `v1.0.0-rc1` 尚未实现或发布。它只允许 Darwin arm64、精确 tag、显式 local-dogfood preview opt-in；缺少精确 RC1 资产时必须 fail closed，不得回退源码、其它平台资产或 stable/latest，也不得由安装器自动生成或激活 `LocalDogfoodActivationV1`。这些是待实现合同，不是当前 `scripts/install.sh` 已具备的行为。
+
 ## 安装
 
 ### 一行安装脚本（推荐）
@@ -55,13 +57,7 @@ make build      # 输出 bin/marshal
 MARSHAL_TAG=v0.2.0 bash scripts/install.sh
 ```
 
-GitHub 的 `latest` API 不返回 prerelease；安装 unsigned RC 必须显式固定精确 tag，且仍执行同一套 fail-closed checksum 门禁：
-
-```bash
-MARSHAL_TAG=v1.0.0-rc1 bash scripts/install.sh
-```
-
-RC 是候选/预览资产，不代表已满足 Issue #212 的 macOS 签名/notarization 或 v1.0 `RELEASED` 门禁。
+GitHub 的 `latest` API 不返回 prerelease。`v1.0.0-rc1` 当前尚未发布，RC1 的显式 preview selector 也尚未实现，因此本文暂不提供可执行的 RC1 安装命令，避免把未冻结的 CLI/环境变量名称冒充现有接口。后续 guard 必须同时要求精确 tag 与显式 local-dogfood preview opt-in，并且只接受 exact Darwin arm64 RC1 asset；资产缺失、平台不符或未显式 opt-in 时 fail closed，不得进入现有源码回退，也不得自动 activation。RC 是候选/预览资产，不代表已满足 Issue #212 的 macOS 签名/notarization 或 v1.0 `RELEASED` 门禁。
 
 RC 的 annotated tag 目前是 unsigned。封闭 tag message 能在 **同一 tag object 未变化** 时发现 release assets、manifest 或候选摘要被替换，但它不是签名、透明日志或 anti-rollback authority；若 canonical remote ref 连同 tag object 被整体重指，普通安装器没有外部高水位可据此识别降级或历史替换。使用者必须显式固定期望 tag，并在需要强 anti-rollback 时等待 Issue #212 的受保护签名/发布链，不能把当前 RC 门禁表述为稳定分发保证。
 

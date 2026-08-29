@@ -59,7 +59,11 @@ Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、全部 Prov
 - ResultIngress admission→worker-result→Run journal 的 crash-atomic 持久化与恢复已于 `main@912f659` 合入。[ADR 0056](docs/adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受，但 Darwin process observation/terminalization 实现仍开放，因此 R2–R5 保持 `COMPONENT`。
 - unsigned RC 的构建和验证路径可行，但尚未发布任何 RC。稳定 `v1.*` 仍由 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 的 macOS signing/notarization 和 Linux stable release gate 阻断。
 
+[ADR 0067](docs/adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 与 [ADR 0068](docs/adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受，但只是冻结尚未实现的 Mac-first 合同：先完成 S1′→S2′→Attach/rebind→terminalization，再由 fixed CLI 运行真实 Pi 并经独立 Decision 进入 `ACCEPTED`，最后才可用同一最终 bytes 发布 unsigned Darwin arm64 CLI-only RC1。当前没有可用或已发布的 RC1，R2–R5 仍为 `COMPONENT`、R6 仍为 `PLANNED/DESIGN`；fixed server、managed signing/notarization 和 Linux stable 均属于 RC1 后继。
+
 ## 安装
+
+下面命令安装当前已发布版本，不会安装尚不存在的 `v1.0.0-rc1`。ADR 0068 的 RC1 安装合同尚待实现：届时只允许在 Darwin arm64 上显式选择精确 tag 与 local-dogfood preview；缺少精确资产时必须 fail closed，不得回退源码或其它平台资产，也不得自动生成或激活 `LocalDogfoodActivationV1`。
 
 安装脚本不会请求 sudo：
 
