@@ -173,7 +173,9 @@ func TestProductionZeroAttemptCancellationRejectsOwnerABAAndForeignStore(t *test
 		t.Fatalf("foreign ResultIngress err=%v called=%t", err, called)
 	}
 	before := resultIngressBytes(t, fixture)
-	renameAwayAndBackSameObject(t, fixture.ownerFixture.ownerPath, filepath.Join(fixture.ownerFixture.base, "owner-moved"))
+	physical := fixture.owner.(*darwinRepositoryOwnerLock).physical
+	lockPath := filepath.Join(fixture.ownerFixture.ownerPath, physical.name)
+	renameAwayAndBackSameObject(t, lockPath, lockPath+".roundtrip")
 	if _, err := fixture.store.CancelAttemptReservation(context.Background(), verifier, reservation.ReservationFactDigest); err == nil {
 		t.Fatal("owner ABA authorized cancellation")
 	}
