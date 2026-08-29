@@ -126,7 +126,7 @@ type DurableStore struct {
 	// preparedDarwin is non-nil only for the sealed Darwin arm64 factory. It
 	// contains concrete fixed identities and a retained control-root descriptor;
 	// callers cannot inject a mechanics callback or driver.
-	preparedDarwin *preparedDarwinExecutionProfile
+	preparedDarwin preparedExecutionProfile
 }
 
 // durableAuthorityFiles is deliberately private. Production may bind the
@@ -141,11 +141,8 @@ type durableAuthorityFiles interface {
 	close() error
 }
 
-type preparedDarwinExecutionProfile struct {
-	fixedMarshalPath string
-	core             processsupervisor.CoreIdentity
-	controlRoot      *os.File
-	controlIdentity  processsupervisor.ControlDirectoryIdentity
+type preparedExecutionProfile interface {
+	close() error
 }
 
 var processEffectFlights sync.Map
@@ -274,9 +271,8 @@ func (s *DurableStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var result error
-	if s.preparedDarwin != nil && s.preparedDarwin.controlRoot != nil {
-		result = errors.Join(result, s.preparedDarwin.controlRoot.Close())
-		s.preparedDarwin.controlRoot = nil
+	if s.preparedDarwin != nil {
+		result = errors.Join(result, s.preparedDarwin.close())
 	}
 	if s.heldFiles != nil {
 		result = errors.Join(result, s.heldFiles.close())
