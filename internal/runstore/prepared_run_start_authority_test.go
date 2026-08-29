@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,17 @@ func newPreparedRunStartFixture(t *testing.T) preparedRunStartFixture {
 	t.Cleanup(func() { _ = lease.Release() })
 	planned := transition("event:prepared-planned", 1, domain.StateCreated, domain.StatePlanned)
 	ready := transition("event:prepared-ready", 2, domain.StatePlanned, domain.StateReady)
+	planned.RunID = lease.runID
+	ready.RunID = lease.runID
+	specDigest := canonical.DigestBytes([]byte("prepared-spec"))
+	policyDigest := canonical.DigestBytes([]byte("prepared-policy"))
+	capabilityDigest := canonical.DigestBytes([]byte("prepared-capability"))
+	baseSHA := strings.Repeat("a", 40)
+	worktreePath := "/tmp/marshal-prepared-worktree"
+	ready.Payload = map[string]any{
+		"specDigest": specDigest, "policyDigest": policyDigest, "capabilityDigest": capabilityDigest,
+		"baseSha": baseSHA, "worktreePath": worktreePath,
+	}
 	if err := store.Append(lease, planned, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +60,11 @@ func newPreparedRunStartFixture(t *testing.T) preparedRunStartFixture {
 		t.Fatal(err)
 	}
 	state.CurrentAttemptID = "attempt:prepared-start"
+	state.SpecDigest = specDigest
+	state.PolicyDigest = policyDigest
+	state.CapabilityDigest = capabilityDigest
+	state.BaseSHA = baseSHA
+	state.WorktreePath = worktreePath
 	if err := store.WriteSnapshot(lease, state); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +100,7 @@ func appendPreparedClaim(t *testing.T, fixture preparedRunStartFixture, claim re
 func TestPreparedRunStartCommitsOnceAndReplaysFromRunJournal(t *testing.T) {
 	fixture := newPreparedRunStartFixture(t)
 	ready, err := fixture.store.ReadRunStartAuthorityUnderLease(context.Background(), fixture.lease)
-	if err != nil || ready.Run.State != domain.StateReady || ready.Run.AuthorityHead != fixture.prepared.AuthorityHead || ready.PreparationDigest != "" {
+	if err != nil || ready.Run.State != domain.StateReady || ready.Run.AuthorityHead != fixture.prepared.AuthorityHead || ready.PreparationDigest != "" || ready.SpecDigest == "" || ready.PolicyDigest == "" || ready.CapabilityDigest == "" || ready.BaseSHA == "" || ready.WorktreePath == "" {
 		t.Fatalf("READY authority=%+v err=%v", ready, err)
 	}
 	projection := appendPreparedClaim(t, fixture, fixture.claim)
@@ -103,7 +120,7 @@ func TestPreparedRunStartCommitsOnceAndReplaysFromRunJournal(t *testing.T) {
 		t.Fatalf("replay=%+v called=%v err=%v", replay, called, err)
 	}
 	running, err := fixture.store.ReadRunStartAuthorityUnderLease(context.Background(), fixture.lease)
-	if err != nil || running.Run != projection || running.PreparationDigest != fixture.prepared.PreparationDigest {
+	if err != nil || running.Run != projection || running.PreparationDigest != fixture.prepared.PreparationDigest || running.SpecDigest != ready.SpecDigest || running.PolicyDigest != ready.PolicyDigest || running.CapabilityDigest != ready.CapabilityDigest || running.BaseSHA != ready.BaseSHA || running.WorktreePath != ready.WorktreePath {
 		t.Fatalf("RUNNING authority=%+v err=%v", running, err)
 	}
 	after, _, err := fixture.store.ReadEvents(fixture.prepared.RunID)
@@ -118,6 +135,32 @@ func TestPreparedRunStartCommitsOnceAndReplaysFromRunJournal(t *testing.T) {
 	fixture.lease.guard.mu.Unlock()
 	if !errors.Is(conflictErr, ErrConflict) {
 		t.Fatalf("different provenance replay=%v", conflictErr)
+	}
+}
+
+func TestRunStartAuthorityRejectsMissingOrDriftedFrozenInputs(t *testing.T) {
+	tests := map[string]func(*domain.RunState){
+		"missing-spec":       func(state *domain.RunState) { state.SpecDigest = "" },
+		"drifted-policy":     func(state *domain.RunState) { state.PolicyDigest = canonical.DigestBytes([]byte("other-policy")) },
+		"missing-capability": func(state *domain.RunState) { state.CapabilityDigest = "" },
+		"malformed-base":     func(state *domain.RunState) { state.BaseSHA = strings.Repeat("A", 40) },
+		"unclean-worktree":   func(state *domain.RunState) { state.WorktreePath += "/.." },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			fixture := newPreparedRunStartFixture(t)
+			state, err := InspectUnderLease(fixture.lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutate(&state)
+			if err := fixture.store.WriteSnapshot(fixture.lease, state); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fixture.store.ReadRunStartAuthorityUnderLease(context.Background(), fixture.lease); !errors.Is(err, ErrConflict) {
+				t.Fatalf("hostile frozen input accepted: %v", err)
+			}
+		})
 	}
 }
 

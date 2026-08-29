@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"testing"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
 
@@ -31,7 +33,7 @@ func newPreparedExecutionFixture(t *testing.T) preparedExecutionFixture {
 	owner, verifier := supervisorTestAcquireOwner(t, store, id)
 	bound := supervisorTestBindOwner(t, store, opened, owner, verifier)
 	provisioned := appendTestAcceptedProvision(t, store, bound)
-	closure := attemptTestClosure(t)
+	closure := preparedTestPiClosure(t)
 	launch, err := appendAuthorizedAttempt(t, store, provisioned.Revision, provisioned.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "prepared-launch", LaunchClosure: closure})
 	if err != nil {
 		t.Fatal(err)
@@ -41,6 +43,56 @@ func newPreparedExecutionFixture(t *testing.T) preparedExecutionFixture {
 		t.Fatal(err)
 	}
 	return preparedExecutionFixture{store: store, owner: owner, verifier: verifier, prepared: prepared}
+}
+
+// preparedTestPiClosure is a synthetic but structurally exact Pi 0.84.3
+// closure. PreparedExecution is Pi-specific, so a native/v1 fixture would
+// compile while making every runtime creation test fail before exercising the
+// authority contract.
+func preparedTestPiClosure(t *testing.T) launchidentity.ClosureV1 {
+	t.Helper()
+	object := func(path string, inode uint64, size int64, executable bool) launchidentity.ObjectV1 {
+		mode := uint32(POSIXFileTypeRegular | 0o644)
+		if executable {
+			mode = POSIXFileTypeRegular | 0o755
+		}
+		return launchidentity.ObjectV1{CanonicalPath: path, Device: 1, Inode: inode, FileType: POSIXFileTypeRegular, Mode: mode, UID: 501, GID: 20, Size: size, LinkCount: 1, RawSHA256: attemptTestDigest(path)}
+	}
+	root := func(name, path, relative string, inode uint64) launchidentity.MaterialRootV1 {
+		return launchidentity.MaterialRootV1{Name: name, CanonicalPath: path, PackageRelative: relative, Object: launchidentity.ObjectV1{CanonicalPath: path, Device: 1, Inode: inode, FileType: POSIXFileTypeDirectory, Mode: POSIXFileTypeDirectory | 0o755, UID: 501, GID: 20, LinkCount: 2}}
+	}
+	roots := []launchidentity.MaterialRootV1{
+		root("photon-node", "/fixed/pi/photon", "node_modules/@silvia-odwyer/photon-node", 10),
+		root("pi-bundle", "/fixed/pi/bundle", "dist/bundle", 11),
+	}
+	materials := make([]launchidentity.LaunchMaterialV1, 0, 55)
+	for index := 0; index < 7; index++ {
+		size := int64(1)
+		if index == 6 {
+			size = 2_265_681
+		}
+		role := fmt.Sprintf("photon-node/file-%02d", index)
+		materials = append(materials, launchidentity.LaunchMaterialV1{Role: role, Object: object("/fixed/pi/photon/"+role[len("photon-node/"):], uint64(100+index), size, false)})
+	}
+	entrypoint := object("/fixed/pi/bundle/cli.js", 200, 629, false)
+	entrypoint.RawSHA256 = "sha256:1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a"
+	materials = append(materials, launchidentity.LaunchMaterialV1{Role: "pi-bundle/cli.js", Object: entrypoint})
+	for index := 0; index < 47; index++ {
+		size := int64(1)
+		if index == 46 {
+			size = 7_421_757
+		}
+		role := fmt.Sprintf("pi-bundle/file-%02d", index)
+		materials = append(materials, launchidentity.LaunchMaterialV1{Role: role, Object: object("/fixed/pi/bundle/"+role[len("pi-bundle/"):], uint64(201+index), size, false)})
+	}
+	closure, err := launchidentity.Seal(launchidentity.SpecInput{
+		RuntimeExecutable: object("/fixed/node", 2, 99, true), ClosureProfileID: launchidentity.Pi0843DarwinARM64Profile,
+		MaterialRoots: roots, LaunchMaterials: materials, Arguments: []string{"/fixed/node", entrypoint.CanonicalPath}, Environment: []string{}, WorkingDirectory: "/tmp/work",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return closure
 }
 
 func TestPreparedExecutionCreationOnceResolveAndSecretBoundary(t *testing.T) {

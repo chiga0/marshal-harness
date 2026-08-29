@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"sync"
 	"time"
@@ -23,7 +24,10 @@ const (
 	runStartOutcomeProtocolRevision = "run-start-outcome/v1"
 )
 
-var runStartDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var (
+	runStartDigestPattern    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	runStartGitObjectPattern = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+)
 
 type runStartOutcomePayload struct {
 	ProtocolRevision         string `json:"protocolRevision"`
@@ -54,10 +58,17 @@ type strictRunRecord struct {
 // production composition while it already holds the exact Run Lease. It does
 // not expose journal records, lease-owner material, or ResultIngress facts.
 // PreparationDigest is present only when the current RUNNING successor is the
-// sealed run.start-outcome at the journal head.
+// sealed run.start-outcome at the journal head. The five frozen launch inputs
+// are returned only after exact snapshot-to-READY-event equality and closed
+// digest/SHA/path validation.
 type RunStartAuthorityProjection struct {
 	Run               application.RunProjection
 	PreparationDigest string
+	SpecDigest        string
+	PolicyDigest      string
+	CapabilityDigest  string
+	BaseSHA           string
+	WorktreePath      string
 }
 
 // ReadRunStartAuthorityUnderLease strictly replays the descriptor-bound Run
@@ -95,6 +106,17 @@ func (s *Store) ReadRunStartAuthorityUnderLease(ctx context.Context, lease *Leas
 	if projection.Run.Validate() != nil {
 		return RunStartAuthorityProjection{}, ErrConflict
 	}
+	if state.State == domain.StateReady || state.State == domain.StateRunning {
+		frozen, err := runStartFrozenInputs(records)
+		if err != nil || frozen.SpecDigest != state.SpecDigest || frozen.PolicyDigest != state.PolicyDigest || frozen.CapabilityDigest != state.CapabilityDigest || frozen.BaseSHA != state.BaseSHA || frozen.WorktreePath != state.WorktreePath {
+			return RunStartAuthorityProjection{}, ErrConflict
+		}
+		projection.SpecDigest = frozen.SpecDigest
+		projection.PolicyDigest = frozen.PolicyDigest
+		projection.CapabilityDigest = frozen.CapabilityDigest
+		projection.BaseSHA = frozen.BaseSHA
+		projection.WorktreePath = frozen.WorktreePath
+	}
 	if state.State == domain.StateRunning {
 		if head.event.Type != runStartOutcomeEventType || head.event.StateFrom != domain.StateReady || head.event.StateTo != domain.StateRunning || head.event.AttemptID != state.CurrentAttemptID {
 			return RunStartAuthorityProjection{}, ErrConflict
@@ -106,6 +128,53 @@ func (s *Store) ReadRunStartAuthorityUnderLease(ctx context.Context, lease *Leas
 		projection.PreparationDigest = payload.PreparationDigest
 	}
 	return projection, nil
+}
+
+type runStartFrozenProjection struct {
+	SpecDigest       string
+	PolicyDigest     string
+	CapabilityDigest string
+	BaseSHA          string
+	WorktreePath     string
+}
+
+func runStartFrozenInputs(records []strictRunRecord) (runStartFrozenProjection, error) {
+	var result runStartFrozenProjection
+	found := false
+	for _, record := range records {
+		if record.event.StateTo != domain.StateReady {
+			continue
+		}
+		if found || record.event.StateFrom != domain.StatePlanned {
+			return runStartFrozenProjection{}, ErrConflict
+		}
+		found = true
+		var ok bool
+		result.SpecDigest, ok = record.event.Payload["specDigest"].(string)
+		if !ok {
+			return runStartFrozenProjection{}, ErrConflict
+		}
+		result.PolicyDigest, ok = record.event.Payload["policyDigest"].(string)
+		if !ok {
+			return runStartFrozenProjection{}, ErrConflict
+		}
+		result.CapabilityDigest, ok = record.event.Payload["capabilityDigest"].(string)
+		if !ok {
+			return runStartFrozenProjection{}, ErrConflict
+		}
+		result.BaseSHA, ok = record.event.Payload["baseSha"].(string)
+		if !ok {
+			return runStartFrozenProjection{}, ErrConflict
+		}
+		result.WorktreePath, ok = record.event.Payload["worktreePath"].(string)
+		if !ok {
+			return runStartFrozenProjection{}, ErrConflict
+		}
+	}
+	if !found || !runStartDigestPattern.MatchString(result.SpecDigest) || !runStartDigestPattern.MatchString(result.PolicyDigest) || !runStartDigestPattern.MatchString(result.CapabilityDigest) || !runStartGitObjectPattern.MatchString(result.BaseSHA) || !filepath.IsAbs(result.WorktreePath) || filepath.Clean(result.WorktreePath) != result.WorktreePath {
+		return runStartFrozenProjection{}, ErrConflict
+	}
+	return result, nil
 }
 
 func strictRunJournalAt(runFD int) ([]strictRunRecord, error) {
