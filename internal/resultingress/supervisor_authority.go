@@ -82,6 +82,21 @@ func validateControlDirectoryIdentity(identity processsupervisor.ControlDirector
 	return nil
 }
 
+// sameStableControlDirectoryIdentity implements ADR 0064's initial-to-final
+// control-directory relationship. LinkCount is a phase observation: creating
+// the nonce, journal and socket may legitimately change it on APFS. Every
+// field that identifies the held directory object and its security boundary
+// remains exact.
+func sameStableControlDirectoryIdentity(left, right processsupervisor.ControlDirectoryIdentity) bool {
+	return left.CanonicalPath == right.CanonicalPath &&
+		left.Device == right.Device &&
+		left.Inode == right.Inode &&
+		left.FileType == right.FileType &&
+		left.UID == right.UID &&
+		left.GID == right.GID &&
+		left.Mode == right.Mode
+}
+
 func validateControlSocketIdentity(identity processsupervisor.ControlSocketIdentity) error {
 	if identity.Device == 0 || identity.Inode == 0 || identity.Device > maxExactJSONInteger || identity.Inode > maxExactJSONInteger || identity.FileType != "socket" || identity.UID == 0 || identity.Mode&0o170000 != 0o140000 || identity.Mode&0o777 != 0o600 || identity.LinkCount != 1 {
 		return fmt.Errorf("%w: invalid control socket identity", ErrControlOwnerConflict)
@@ -399,15 +414,19 @@ func NewProcessSupervisorStarted(owner CurrentOwnerBinding, launchAuthorizedFact
 	return started, nil
 }
 
-// NewProcessSupervisorStartedFromBootstrap additionally binds the handshake
-// to the durable pre-launch recovery anchor. The legacy constructor remains
-// replay/source compatible for facts written before ADR 0060.
-func NewProcessSupervisorStartedFromBootstrap(preparedFactDigest string, prepared SupervisorBootstrapPrepared, response processsupervisor.HandshakeResponse, anchor processsupervisor.HandshakeAnchor, observed processsupervisor.CoreIdentity) (ProcessSupervisorStarted, error) {
+// NewProcessSupervisorStartedFromBootstrap additionally binds Start's complete
+// ConnectionEvidence to the durable pre-launch recovery anchor. ADR 0064
+// permits only LinkCount to differ between the prepared initial observation
+// and the final setup observation persisted in the started fact. The legacy
+// constructor remains replay/source compatible for facts written before ADR
+// 0060.
+func NewProcessSupervisorStartedFromBootstrap(preparedFactDigest string, prepared SupervisorBootstrapPrepared, connection processsupervisor.ConnectionEvidence, observed processsupervisor.CoreIdentity) (ProcessSupervisorStarted, error) {
 	request := prepared.Request
-	if requireDigest("bootstrapPreparedFactDigest", preparedFactDigest) != nil || prepared.Validate() != nil || processsupervisor.ValidateSessionControlFiles(response.ControlFiles) != nil || anchor.ControlFiles != response.ControlFiles || response.SessionID != prepared.SessionID || response.SessionNonceDigest != prepared.SessionNonceDigest || response.SupervisorBinary != prepared.SupervisorBinary || anchor.SessionID != request.SessionID || anchor.SessionNonceDigest != request.SessionNonceDigest || anchor.Authority != request.Authority || anchor.OwnerEpoch != request.OwnerEpoch || anchor.CurrentAuthorityHead != request.CurrentAuthorityHead || anchor.UID != request.Core.UID || anchor.GID != request.Core.GID || anchor.FixedBinary != request.Core.Binary {
+	response, anchor := connection.Handshake, connection.Anchor
+	if requireDigest("bootstrapPreparedFactDigest", preparedFactDigest) != nil || prepared.Validate() != nil || connection.ReplayedOutcome != nil || connection.Recovery != nil || processsupervisor.ValidateSessionControlFiles(response.ControlFiles) != nil || anchor.ControlFiles != response.ControlFiles || response.SessionID != prepared.SessionID || response.SessionNonceDigest != prepared.SessionNonceDigest || response.SupervisorBinary != prepared.SupervisorBinary || connection.Core != request.Core || !sameStableControlDirectoryIdentity(prepared.ControlDirectory, connection.ControlDirectory) || anchor.SessionID != request.SessionID || anchor.SessionNonceDigest != request.SessionNonceDigest || anchor.Authority != request.Authority || anchor.OwnerEpoch != request.OwnerEpoch || anchor.CurrentAuthorityHead != request.CurrentAuthorityHead || anchor.UID != request.Core.UID || anchor.GID != request.Core.GID || anchor.FixedBinary != request.Core.Binary {
 		return ProcessSupervisorStarted{}, fmt.Errorf("%w: handshake does not match prepared bootstrap", ErrAttemptAuthorityConflict)
 	}
-	started, err := NewProcessSupervisorStarted(prepared.Owner, prepared.LaunchAuthorizedFactDigest, prepared.ControlDirectory, response, anchor, observed)
+	started, err := NewProcessSupervisorStarted(prepared.Owner, prepared.LaunchAuthorizedFactDigest, connection.ControlDirectory, response, anchor, observed)
 	if err != nil {
 		return ProcessSupervisorStarted{}, err
 	}
@@ -580,7 +599,7 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 		if !exists || prior.Owner != started.Owner || prior.ControlOwnerBindingDigest == "" || transition.Identity.AuthorityNamespaceID != started.Owner.Scope.AuthorityNamespaceID || started.Handshake.CurrentAuthorityHead != expectedHandshakeHead || started.Handshake.CommandSequence != 0 || started.Handshake.CommandHead != processsupervisor.CommandGenesisDigest || started.Handshake.JournalSequence != 1 || owner.Acquisition.OwnerBinary != started.Handshake.SupervisorBinary || owner.Acquisition.OwnerUID != started.ControlDirectory.UID || owner.Acquisition.OwnerGID != started.ControlDirectory.GID || sameSupervisorProcess(owner.Acquisition.OwnerProcess, started.Handshake.SupervisorProcess) {
 			return ErrAttemptAuthorityConflict
 		}
-		if prior.SupervisorBootstrapDigest != "" && (started.BootstrapPreparedFactDigest != prior.SupervisorBootstrapDigest || started.Owner != prior.SupervisorBootstrap.Owner || started.LaunchAuthorizedFactDigest != prior.SupervisorBootstrap.LaunchAuthorizedFactDigest || started.Handshake.SessionID != prior.SupervisorBootstrap.SessionID || started.Handshake.SessionNonceDigest != prior.SupervisorBootstrap.SessionNonceDigest || started.ControlDirectory != prior.SupervisorBootstrap.ControlDirectory || started.Handshake.SupervisorBinary != prior.SupervisorBootstrap.SupervisorBinary || typedBootstrap && started.Handshake.OwnerEpoch != prior.SupervisorBootstrap.Request.OwnerEpoch) {
+		if prior.SupervisorBootstrapDigest != "" && (started.BootstrapPreparedFactDigest != prior.SupervisorBootstrapDigest || started.Owner != prior.SupervisorBootstrap.Owner || started.LaunchAuthorizedFactDigest != prior.SupervisorBootstrap.LaunchAuthorizedFactDigest || started.Handshake.SessionID != prior.SupervisorBootstrap.SessionID || started.Handshake.SessionNonceDigest != prior.SupervisorBootstrap.SessionNonceDigest || !sameStableControlDirectoryIdentity(started.ControlDirectory, prior.SupervisorBootstrap.ControlDirectory) || started.Handshake.SupervisorBinary != prior.SupervisorBootstrap.SupervisorBinary || typedBootstrap && started.Handshake.OwnerEpoch != prior.SupervisorBootstrap.Request.OwnerEpoch) {
 			return ErrAttemptAuthorityConflict
 		}
 		attemptKey, err := transition.Identity.Key()

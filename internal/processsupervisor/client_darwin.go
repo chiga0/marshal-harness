@@ -61,7 +61,7 @@ func Start(ctx context.Context, options StartOptions) (*Client, error) {
 		return nil, ErrConflict
 	}
 	directory, err := ObserveHeldControlDirectory(options.ControlDirectory)
-	if err != nil || directory != options.Bootstrap.ControlDirectoryIdentity || revalidateControlDirectory(options.ControlDirectory, directory) != nil {
+	if err != nil || directory != options.Bootstrap.ControlDirectoryIdentity || revalidateInitialControlDirectory(options.ControlDirectory, directory) != nil {
 		return nil, ErrConflict
 	}
 	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
@@ -111,6 +111,7 @@ func Start(ctx context.Context, options StartOptions) (*Client, error) {
 	var handshake HandshakeResponse
 	var anchor HandshakeAnchor
 	var peer CoreIdentity
+	var finalDirectory ControlDirectoryIdentity
 	err = runBoundedTransport(ctx, connection, time.Now().Add(handshakeTimeout), func() error {
 		if err := codec.Write(options.Bootstrap); err != nil {
 			return ErrIntervention
@@ -131,7 +132,7 @@ func Start(ctx context.Context, options StartOptions) (*Client, error) {
 			return ErrConflict
 		}
 		socket, err := ObserveHeldControlSocket(options.ControlDirectory)
-		if err != nil || revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, socket) != nil {
+		if err != nil || revalidateControlDirectoryEntries(options.ControlDirectory, directory, false, controlDirectoryRuntimeBase) != nil || observeControlSocketExact(options.ControlDirectory, socket) != nil {
 			return ErrConflict
 		}
 		peer, err = ObserveFixedMarshalPeer(connection)
@@ -151,12 +152,16 @@ func Start(ctx context.Context, options StartOptions) (*Client, error) {
 		if ValidateHandshakeBinding(handshake, anchor, peer) != nil || revalidateHeldSessionControlFiles(options.ControlDirectory, heldFiles, handshake.ControlFiles) != nil {
 			return ErrConflict
 		}
+		finalDirectory, err = ObserveHeldControlDirectory(options.ControlDirectory)
+		if err != nil || !sameControlDirectoryObject(finalDirectory, directory) || revalidateControlDirectoryEntries(options.ControlDirectory, finalDirectory, false, controlDirectoryRuntimeBase) != nil {
+			return ErrConflict
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	evidence := ConnectionEvidence{Core: core, ControlDirectory: directory, Handshake: handshake, Anchor: anchor}
+	evidence := ConnectionEvidence{Core: core, ControlDirectory: finalDirectory, Handshake: handshake, Anchor: anchor}
 	client, err := newClient(connection, evidence, peer)
 	if err != nil {
 		return nil, err
@@ -187,7 +192,7 @@ func Reconnect(ctx context.Context, options ReconnectOptions) (*Client, error) {
 		return nil, ErrConflict
 	}
 	directory, err := ObserveHeldControlDirectory(options.ControlDirectory)
-	if err != nil || directory != options.ControlDirectoryIdentity || revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, previous.ControlSocket) != nil {
+	if err != nil || !sameControlDirectoryObject(directory, options.ControlDirectoryIdentity) || observeControlSocketExact(options.ControlDirectory, previous.ControlSocket) != nil {
 		return nil, ErrConflict
 	}
 	heldFiles, err := openHeldSessionControlFiles(options.ControlDirectory, previous.ControlFiles)
@@ -195,6 +200,9 @@ func Reconnect(ctx context.Context, options ReconnectOptions) (*Client, error) {
 		return nil, ErrConflict
 	}
 	defer heldFiles.close()
+	if revalidateHeldRuntimeControlBoundary(options.ControlDirectory, directory, heldFiles, previous) != nil {
+		return nil, ErrConflict
+	}
 	nonce, err := readSessionNonce(heldFiles, previous.SessionNonceDigest)
 	if err != nil {
 		return nil, ErrConflict
@@ -235,7 +243,7 @@ func Reconnect(ctx context.Context, options ReconnectOptions) (*Client, error) {
 	var current HandshakeAnchor
 	var peer CoreIdentity
 	err = runBoundedTransport(ctx, connection, time.Now().Add(handshakeTimeout), func() error {
-		if revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, previous.ControlSocket) != nil || revalidateHeldSessionControlFiles(options.ControlDirectory, heldFiles, previous.ControlFiles) != nil {
+		if revalidateHeldRuntimeControlBoundary(options.ControlDirectory, directory, heldFiles, previous) != nil {
 			return ErrConflict
 		}
 		peer, err = ObserveFixedMarshalPeer(connection)
@@ -249,7 +257,7 @@ func Reconnect(ctx context.Context, options ReconnectOptions) (*Client, error) {
 			return ErrIntervention
 		}
 		replay, current, err = validateReconnectHandshake(handshake, wire, peer)
-		if err != nil || revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, wire.Anchor.ControlSocket) != nil || revalidateHeldSessionControlFiles(options.ControlDirectory, heldFiles, wire.Anchor.ControlFiles) != nil {
+		if err != nil || revalidateHeldRuntimeControlBoundary(options.ControlDirectory, directory, heldFiles, wire.Anchor) != nil {
 			return ErrConflict
 		}
 		return nil
@@ -289,6 +297,17 @@ func Reconnect(ctx context.Context, options ReconnectOptions) (*Client, error) {
 	}
 	succeeded = true
 	return client, nil
+}
+
+func revalidateHeldRuntimeControlBoundary(directory *os.File, identity ControlDirectoryIdentity, held *heldSessionControlFiles, anchor HandshakeAnchor) error {
+	if held == nil || revalidateHeldSessionControlFiles(directory, held, anchor.ControlFiles) != nil || observeControlSocketExact(directory, anchor.ControlSocket) != nil {
+		return ErrConflict
+	}
+	snapshot, err := readHeldJournalSnapshot(held.journal)
+	if err != nil || revalidateControlDirectoryForSnapshot(directory, identity, snapshot) != nil || revalidateHeldSessionControlFiles(directory, held, anchor.ControlFiles) != nil {
+		return ErrConflict
+	}
+	return nil
 }
 
 func pendingEvidenceForPrepared(prepared PreparedCommand) PendingReplayEvidence {

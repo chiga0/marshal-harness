@@ -52,6 +52,27 @@ func runSupervisor(ctx context.Context) error {
 	}
 	defer bootstrapFile.Close()
 	defer controlDirectory.Close()
+	return runSupervisorLoop(ctx, bootstrapFile, controlDirectory, supervisorLoopOptions{})
+}
+
+// supervisorLoopOptions is an internal fault-injection seam for exercising the
+// complete inherited bootstrap, listener, reconnect and wire loop. Production
+// always supplies the zero value and therefore constructs platform mechanics.
+// Tests may substitute mechanics or mutate a boundary only at the explicit
+// post-replay point; they do not bypass admission, replay or wire emission.
+type supervisorLoopOptions struct {
+	mechanics             Mechanics
+	configureSession      func(*Session)
+	afterReconnectAttempt func(*Session, reconnectAttemptResult, sessionControlBoundary)
+	reconnectReady        func()
+	observePeer           func(*net.UnixConn) (CoreIdentity, error)
+	observeSelf           func() (CoreIdentity, error)
+}
+
+func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.File, options supervisorLoopOptions) error {
+	if ctx == nil || bootstrapFile == nil || controlDirectory == nil {
+		return ErrInvalid
+	}
 	bootstrapConnection, err := net.FileConn(bootstrapFile)
 	if err != nil {
 		return ErrInvalid
@@ -73,7 +94,15 @@ func runSupervisor(ctx context.Context) error {
 	if strictCanonicalDecode(raw, &bootstrap) != nil || bootstrap.validate() != nil {
 		return ErrInvalid
 	}
-	observedCore, err := observePeer(unixConnection)
+	peerObserver := options.observePeer
+	if peerObserver == nil {
+		peerObserver = observePeer
+	}
+	selfObserver := options.observeSelf
+	if selfObserver == nil {
+		selfObserver = observeSelfIdentity
+	}
+	observedCore, err := peerObserver(unixConnection)
 	if err != nil || !sameCoreIdentity(bootstrap.Core, observedCore) {
 		return ErrConflict
 	}
@@ -81,8 +110,7 @@ func runSupervisor(ctx context.Context) error {
 	if err != nil || directoryIdentity != bootstrap.ControlDirectoryIdentity {
 		return ErrConflict
 	}
-	entries, err := readHeldDirectory(controlDirectory)
-	if err != nil || len(entries) != 0 || revalidateControlDirectory(controlDirectory, directoryIdentity) != nil {
+	if revalidateInitialControlDirectory(controlDirectory, directoryIdentity) != nil {
 		return ErrConflict
 	}
 	nonceFile, err := writeHeldOpenatExclusive(controlDirectory, nonceFileName, []byte(bootstrap.SessionNonce), 0o600)
@@ -120,15 +148,21 @@ func runSupervisor(ctx context.Context) error {
 		return err
 	}
 	defer journal.Close()
-	mechanics, err := NewPlatformMechanics(controlDirectory)
-	if err != nil {
-		return err
+	mechanics := options.mechanics
+	if mechanics == nil {
+		mechanics, err = NewPlatformMechanics(controlDirectory)
+		if err != nil {
+			return err
+		}
 	}
 	session, err := NewSession(bootstrap, journal, mechanics, nil)
 	if err != nil {
 		return err
 	}
-	if revalidateControlDirectory(controlDirectory, directoryIdentity) != nil {
+	if options.configureSession != nil {
+		options.configureSession(session)
+	}
+	if revalidateControlDirectoryEntries(controlDirectory, directoryIdentity, false, controlDirectorySetupFiles) != nil {
 		return ErrConflict
 	}
 	listener, err := listenUnixAt(controlDirectory, controlSocket)
@@ -144,15 +178,23 @@ func runSupervisor(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	boundary := sessionControlBoundary{directory: controlDirectory, directoryIdentity: directoryIdentity, socket: socketIdentity, heldFiles: heldFiles, controlFiles: controlFiles}
-	supervisorIdentity, err := observeSelfIdentity()
+	// The bootstrap identity is an exact observation of the initially empty
+	// directory. APFS legitimately changes a directory's link count as the
+	// supervisor creates its owned objects, so freeze a fresh post-setup
+	// snapshot for connection evidence and runtime boundary checks.
+	_, finalDirectoryIdentity, err := observeControlDirectory(controlDirectory)
+	if err != nil || !sameControlDirectoryObject(finalDirectoryIdentity, directoryIdentity) || revalidateControlDirectoryEntries(controlDirectory, finalDirectoryIdentity, false, controlDirectoryRuntimeBase) != nil {
+		return ErrConflict
+	}
+	boundary := sessionControlBoundary{directory: controlDirectory, directoryIdentity: finalDirectoryIdentity, socket: socketIdentity, heldFiles: heldFiles, controlFiles: controlFiles}
+	supervisorIdentity, err := selfObserver()
 	if err != nil {
 		return err
 	}
 	var active atomic.Bool
 	active.Store(true)
 	incoming, acceptErrors := acceptConnections(ctx, listener, &active)
-	if observeControlSocketExact(controlDirectory, socketIdentity) != nil || revalidateHeldSessionControlFiles(controlDirectory, heldFiles, controlFiles) != nil {
+	if boundary.revalidate(session.journal.Snapshot()) != nil {
 		return ErrConflict
 	}
 	if err := writeFrame(unixConnection, handshake(session, supervisorIdentity, socketIdentity, controlFiles, reconnectResolution{}), MaxWireFrameBytes); err == nil {
@@ -161,7 +203,7 @@ func runSupervisor(ctx context.Context) error {
 			return serveErr
 		}
 		if serveErr == nil && terminal {
-			if revalidateHeldSessionControlFiles(controlDirectory, heldFiles, controlFiles) != nil || observeControlSocketExact(controlDirectory, socketIdentity) != nil {
+			if boundary.revalidate(session.journal.Snapshot()) != nil {
 				return ErrConflict
 			}
 			return nil
@@ -169,7 +211,10 @@ func runSupervisor(ctx context.Context) error {
 	}
 	_ = unixConnection.Close()
 	active.Store(false)
-	if revalidateControlDirectory(controlDirectory, directoryIdentity) != nil {
+	if options.reconnectReady != nil {
+		options.reconnectReady()
+	}
+	if revalidateControlDirectoryForSnapshot(controlDirectory, finalDirectoryIdentity, session.journal.Snapshot()) != nil {
 		return ErrConflict
 	}
 	for {
@@ -192,42 +237,59 @@ func runSupervisor(ctx context.Context) error {
 			active.Store(false)
 			continue
 		}
-		observed, observeErr := observePeer(connection)
+		observed, observeErr := peerObserver(connection)
 		reconnectReader := bufio.NewReaderSize(connection, MaxWireFrameBytes+frameHeaderBytes+1)
 		reconnectRaw, readErr := readFrame(reconnectReader, MaxWireFrameBytes)
 		var reconnect reconnectRequest
 		admitErr := strictCanonicalDecode(reconnectRaw, &reconnect)
-		preconditionErr := boundary.revalidate()
-		var resolution reconnectResolution
-		var reconnectErr error
-		if observeErr == nil && readErr == nil && admitErr == nil && preconditionErr == nil {
-			resolution, reconnectErr = session.reconnect(reconnect, observed)
-		}
-		if preconditionErr != nil {
+		// A malformed peer must not mask an already-drifted control boundary.
+		// Boundary conflict always wins and is a silent terminal intervention.
+		if boundary.revalidate(session.journal.Snapshot()) != nil {
 			session.intervene()
 			_ = connection.Close()
 			active.Store(false)
 			return ErrConflict
 		}
-		if observeErr != nil || readErr != nil || admitErr != nil || reconnectErr != nil {
-			_ = writeFrame(connection, HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "rejected", ReasonCode: ErrConflict.ReasonCode}, MaxWireFrameBytes)
+		if observeErr != nil || readErr != nil || admitErr != nil {
+			_ = emitReconnectHandshake(connection, reconnectWireDecision{disposition: reconnectWireRejected}, session, supervisorIdentity, socketIdentity, controlFiles)
 			_ = connection.Close()
 			active.Store(false)
 			continue
+		}
+		attempt := session.reconnectAttempt(reconnect, observed)
+		if options.afterReconnectAttempt != nil {
+			options.afterReconnectAttempt(session, attempt, boundary)
+		}
+		decision := decideReconnectWireAfterAttempt(session, boundary, attempt)
+		if decision.disposition == reconnectWireSilentClose {
+			_ = connection.Close()
+			active.Store(false)
+			return decision.err
+		}
+		if decision.disposition == reconnectWireRejected {
+			_ = emitReconnectHandshake(connection, decision, session, supervisorIdentity, socketIdentity, controlFiles)
+			_ = connection.Close()
+			active.Store(false)
+			continue
+		}
+		if decision.disposition != reconnectWireAccepted {
+			_ = connection.Close()
+			active.Store(false)
+			return ErrIntervention
 		}
 		if connection.SetDeadline(time.Time{}) != nil {
 			_ = connection.Close()
 			active.Store(false)
 			continue
 		}
-		if err := writeFrame(connection, handshake(session, supervisorIdentity, socketIdentity, controlFiles, resolution), MaxWireFrameBytes); err != nil {
+		if err := emitReconnectHandshake(connection, decision, session, supervisorIdentity, socketIdentity, controlFiles); err != nil {
 			_ = connection.Close()
 			active.Store(false)
 			continue
 		}
 		if state := session.State(); state == string(sessionClosed) || state == string(sessionAborted) {
 			_ = connection.Close()
-			if revalidateHeldSessionControlFiles(controlDirectory, heldFiles, controlFiles) != nil || observeControlSocketExact(controlDirectory, socketIdentity) != nil {
+			if boundary.revalidate(session.journal.Snapshot()) != nil {
 				return ErrConflict
 			}
 			return nil
@@ -242,11 +304,77 @@ func runSupervisor(ctx context.Context) error {
 			continue
 		}
 		if terminal {
-			if revalidateHeldSessionControlFiles(controlDirectory, heldFiles, controlFiles) != nil || observeControlSocketExact(controlDirectory, socketIdentity) != nil {
+			if boundary.revalidate(session.journal.Snapshot()) != nil {
 				return ErrConflict
 			}
 			return nil
 		}
+	}
+}
+
+type reconnectWireDisposition uint8
+
+const (
+	reconnectWireRejected reconnectWireDisposition = iota
+	reconnectWireAccepted
+	reconnectWireSilentClose
+)
+
+type reconnectWireDecision struct {
+	disposition reconnectWireDisposition
+	resolution  reconnectResolution
+	err         error
+}
+
+// decideReconnectWire is the single point that translates the internal
+// reconnect phase into a wire disposition. Only a conflict proven to precede
+// replay mechanics may emit a rejected handshake. Once mechanics may have
+// run, every failure first rechecks the post-replay boundary and then forces a
+// silent close, preserving any durable intent/receipt without exposing a
+// response that Core could mistake for a side-effect-free admission failure.
+func decideReconnectWireAfterAttempt(session *Session, boundary sessionControlBoundary, attempt reconnectAttemptResult) reconnectWireDecision {
+	if session == nil {
+		return reconnectWireDecision{disposition: reconnectWireSilentClose, err: ErrInvalid}
+	}
+	var postconditionErr error
+	if attempt.disposition != reconnectRejectedBeforeMechanics {
+		postconditionErr = boundary.revalidate(session.journal.Snapshot())
+	}
+	switch attempt.disposition {
+	case reconnectRejectedBeforeMechanics:
+		if attempt.err == nil {
+			session.intervene()
+			return reconnectWireDecision{disposition: reconnectWireSilentClose, err: ErrIntervention}
+		}
+		return reconnectWireDecision{disposition: reconnectWireRejected, err: attempt.err}
+	case reconnectFailedAfterMechanics:
+		session.intervene()
+		return reconnectWireDecision{disposition: reconnectWireSilentClose, err: errors.Join(attempt.err, postconditionErr)}
+	case reconnectResolvedWithoutMechanics, reconnectResolvedAfterMechanics:
+		if attempt.err != nil || postconditionErr != nil {
+			session.intervene()
+			return reconnectWireDecision{disposition: reconnectWireSilentClose, err: errors.Join(attempt.err, postconditionErr)}
+		}
+		return reconnectWireDecision{disposition: reconnectWireAccepted, resolution: attempt.resolution}
+	default:
+		session.intervene()
+		return reconnectWireDecision{disposition: reconnectWireSilentClose, err: ErrIntervention}
+	}
+}
+
+func emitReconnectHandshake(connection net.Conn, decision reconnectWireDecision, session *Session, supervisor CoreIdentity, socket ControlSocketIdentity, controlFiles SessionControlFiles) error {
+	if connection == nil || session == nil {
+		return ErrInvalid
+	}
+	switch decision.disposition {
+	case reconnectWireRejected:
+		return writeFrame(connection, HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "rejected", ReasonCode: ErrConflict.ReasonCode}, MaxWireFrameBytes)
+	case reconnectWireAccepted:
+		return writeFrame(connection, handshake(session, supervisor, socket, controlFiles, decision.resolution), MaxWireFrameBytes)
+	case reconnectWireSilentClose:
+		return nil
+	default:
+		return ErrIntervention
 	}
 }
 
@@ -342,11 +470,11 @@ type sessionControlBoundary struct {
 	controlFiles      SessionControlFiles
 }
 
-func (boundary sessionControlBoundary) revalidate() error {
+func (boundary sessionControlBoundary) revalidate(snapshot JournalSnapshot) error {
 	if boundary.directory == nil || boundary.directoryIdentity.validate() != nil || boundary.socket.validate() != nil || boundary.controlFiles.validate() != nil || boundary.heldFiles == nil {
 		return ErrInvalid
 	}
-	if revalidateControlDirectory(boundary.directory, boundary.directoryIdentity) != nil || observeControlSocketExact(boundary.directory, boundary.socket) != nil || revalidateHeldSessionControlFiles(boundary.directory, boundary.heldFiles, boundary.controlFiles) != nil {
+	if revalidateControlDirectoryForSnapshot(boundary.directory, boundary.directoryIdentity, snapshot) != nil || observeControlSocketExact(boundary.directory, boundary.socket) != nil || revalidateHeldSessionControlFiles(boundary.directory, boundary.heldFiles, boundary.controlFiles) != nil {
 		return ErrConflict
 	}
 	return nil
@@ -379,7 +507,7 @@ func handleSessionCommand(session *Session, boundary sessionControlBoundary, raw
 	if session == nil {
 		return Response{}, ErrInvalid
 	}
-	if err := boundary.revalidate(); err != nil {
+	if err := boundary.revalidate(session.journal.Snapshot()); err != nil {
 		session.intervene()
 		return Response{}, ErrConflict
 	}
@@ -387,7 +515,7 @@ func handleSessionCommand(session *Session, boundary sessionControlBoundary, raw
 	// Session.Handle returns only after a command receipt is fsynced. Never let
 	// a success receipt cross the connection if any pathname/descriptor
 	// identity drifted during mechanics execution.
-	if err := boundary.revalidate(); err != nil {
+	if err := boundary.revalidate(session.journal.Snapshot()); err != nil {
 		session.intervene()
 		return Response{}, ErrConflict
 	}
@@ -563,9 +691,61 @@ func observeControlDirectory(file *os.File) (string, ControlDirectoryIdentity, e
 	return path, identity, identity.validate()
 }
 
-func revalidateControlDirectory(file *os.File, expected ControlDirectoryIdentity) error {
+type controlDirectoryEntrySet uint8
+
+const (
+	controlDirectoryNonce controlDirectoryEntrySet = 1 << iota
+	controlDirectoryJournal
+	controlDirectorySocket
+	controlDirectoryStdout
+	controlDirectoryStderr
+	controlDirectoryTranscript
+)
+
+const (
+	controlDirectoryEmpty       controlDirectoryEntrySet = 0
+	controlDirectorySetupFiles                           = controlDirectoryNonce | controlDirectoryJournal
+	controlDirectoryRuntimeBase                          = controlDirectorySetupFiles | controlDirectorySocket
+	controlDirectoryCollectOne                           = controlDirectoryRuntimeBase | controlDirectoryStdout
+	controlDirectoryCollectTwo                           = controlDirectoryCollectOne | controlDirectoryStderr
+	controlDirectoryCollected                            = controlDirectoryCollectTwo | controlDirectoryTranscript
+)
+
+// revalidateInitialControlDirectory preserves the bootstrap contract: the
+// first observation is exact, including LinkCount, and the directory is empty.
+func revalidateInitialControlDirectory(file *os.File, expected ControlDirectoryIdentity) error {
+	return revalidateControlDirectoryEntries(file, expected, true, controlDirectoryEmpty)
+}
+
+// revalidateControlDirectoryEntries compares the stable directory object and
+// requires the descriptor-relative entry scan to match one explicitly allowed
+// exact set. allowLinkCountDrift is represented by exactIdentity=false; no
+// entry is admitted merely because its name belongs to the frozen vocabulary.
+func revalidateControlDirectoryEntries(file *os.File, expected ControlDirectoryIdentity, exactIdentity bool, allowed ...controlDirectoryEntrySet) error {
 	path, observed, err := observeControlDirectory(file)
-	if err != nil || path != expected.CanonicalPath || observed != expected {
+	if err != nil || expected.validate() != nil || path != expected.CanonicalPath || exactIdentity && observed != expected || !exactIdentity && !sameControlDirectoryObject(observed, expected) || len(allowed) == 0 {
+		return ErrConflict
+	}
+	entries, err := readHeldDirectory(file)
+	if err != nil {
+		return ErrConflict
+	}
+	var observedEntries controlDirectoryEntrySet
+	for _, entry := range entries {
+		bit, ok := controlDirectoryEntry(entry)
+		if !ok || observedEntries&bit != 0 {
+			return ErrConflict
+		}
+		observedEntries |= bit
+	}
+	matched := false
+	for _, expectedEntries := range allowed {
+		if observedEntries == expectedEntries {
+			matched = true
+			break
+		}
+	}
+	if !matched {
 		return ErrConflict
 	}
 	opened, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW_ANY|unix.O_CLOEXEC, 0)
@@ -577,7 +757,111 @@ func revalidateControlDirectory(file *os.File, expected ControlDirectoryIdentity
 	if unix.Fstat(opened, &stat) != nil || uint64(stat.Dev) != expected.Device || stat.Ino != expected.Inode {
 		return ErrConflict
 	}
+	if validatePresentOutputObjects(file, observedEntries) != nil {
+		return ErrConflict
+	}
 	return nil
+}
+
+// revalidateControlDirectoryForSnapshot derives the only permitted runtime
+// entry set from the exact durable journal state. A pending collect permits
+// only the ordered O_EXCL creation prefixes. A committed successful collect
+// requires all three outputs; a rejected collect therefore falls back to the
+// pre-collect set and any partial output forces intervention.
+func revalidateControlDirectoryForSnapshot(file *os.File, expected ControlDirectoryIdentity, snapshot JournalSnapshot) error {
+	allowed, collected, err := controlDirectoryEntriesForSnapshot(snapshot)
+	if err != nil {
+		return err
+	}
+	if err := revalidateControlDirectoryEntries(file, expected, false, allowed...); err != nil {
+		return err
+	}
+	if collected != nil && validateStoredCollectedTranscript(file, *collected) != nil {
+		return ErrConflict
+	}
+	return nil
+}
+
+func controlDirectoryEntriesForSnapshot(snapshot JournalSnapshot) ([]controlDirectoryEntrySet, *replayedCommand, error) {
+	if snapshot.Sequence == 0 || !validDigest(snapshot.Head) {
+		return nil, nil, ErrConflict
+	}
+	var collected *replayedCommand
+	for _, command := range snapshot.commands {
+		if command.Projection.Command == CommandCollect && command.Response.Status == "ok" {
+			if collected != nil {
+				return nil, nil, ErrConflict
+			}
+			copy := command
+			collected = &copy
+		}
+	}
+	if collected != nil {
+		return []controlDirectoryEntrySet{controlDirectoryCollected}, collected, nil
+	}
+	if snapshot.pending != nil && snapshot.pending.Command == CommandCollect {
+		return []controlDirectoryEntrySet{controlDirectoryRuntimeBase, controlDirectoryCollectOne, controlDirectoryCollectTwo, controlDirectoryCollected}, nil, nil
+	}
+	return []controlDirectoryEntrySet{controlDirectoryRuntimeBase}, nil, nil
+}
+
+// readHeldJournalSnapshot observes one immutable read transaction over the
+// already-held journal descriptor. Unlike OpenJournal it never truncates a
+// torn tail and therefore is safe for client/recovery admission.
+func readHeldJournalSnapshot(file *os.File) (JournalSnapshot, error) {
+	if file == nil {
+		return JournalSnapshot{}, ErrInvalid
+	}
+	before, size, err := observeControlFile(file)
+	if err != nil || size <= 0 || size > MaxJournalFileBytes {
+		return JournalSnapshot{}, ErrConflict
+	}
+	data, err := io.ReadAll(io.NewSectionReader(file, 0, size))
+	if err != nil || int64(len(data)) != size {
+		return JournalSnapshot{}, ErrIntervention
+	}
+	after, afterSize, err := observeControlFile(file)
+	if err != nil || after != before || afterSize != size {
+		return JournalSnapshot{}, ErrConflict
+	}
+	records, consumed, partial, err := parseJournal(data)
+	if err != nil || partial || consumed != len(data) {
+		return JournalSnapshot{}, ErrIntervention
+	}
+	replay := &Journal{head: JournalGenesisDigest, commands: make(map[string]replayedCommand)}
+	if err := replay.applyReplay(records); err != nil {
+		return JournalSnapshot{}, err
+	}
+	return replay.Snapshot(), nil
+}
+
+// sameControlDirectoryObject compares the fields that identify the held
+// directory object and its security boundary. LinkCount is intentionally not
+// compared: supported Darwin filesystems may change it when entries are
+// created or removed. Entry names are checked descriptor-relatively by
+// revalidateControlDirectoryEntries, while the nonce, journal and socket retain their
+// own exact object-identity checks.
+func sameControlDirectoryObject(left, right ControlDirectoryIdentity) bool {
+	return left.CanonicalPath == right.CanonicalPath && left.Device == right.Device && left.Inode == right.Inode && left.FileType == right.FileType && left.UID == right.UID && left.GID == right.GID && left.Mode == right.Mode
+}
+
+func controlDirectoryEntry(name string) (controlDirectoryEntrySet, bool) {
+	switch name {
+	case nonceFileName:
+		return controlDirectoryNonce, true
+	case JournalFileName:
+		return controlDirectoryJournal, true
+	case controlSocket:
+		return controlDirectorySocket, true
+	case stdoutObjectName:
+		return controlDirectoryStdout, true
+	case stderrObjectName:
+		return controlDirectoryStderr, true
+	case transcriptObjectName:
+		return controlDirectoryTranscript, true
+	default:
+		return 0, false
+	}
 }
 
 func descriptorPath(fd int) (string, error) {

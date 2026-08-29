@@ -28,7 +28,7 @@ func RecoverCommittedClose(ctx context.Context, options CommittedCloseRecoveryOp
 		return CommittedCloseRecoveryEvidence{}, ErrConflict
 	}
 	directory, err := ObserveHeldControlDirectory(options.ControlDirectory)
-	if err != nil || directory != options.ControlDirectoryIdentity || revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, preparedEvidence.PreCommand.ControlSocket) != nil {
+	if err != nil || !sameControlDirectoryObject(directory, options.ControlDirectoryIdentity) || observeControlSocketExact(options.ControlDirectory, preparedEvidence.PreCommand.ControlSocket) != nil {
 		return CommittedCloseRecoveryEvidence{}, ErrConflict
 	}
 	held, err := openHeldSessionControlFiles(options.ControlDirectory, preparedEvidence.PreCommand.ControlFiles)
@@ -36,6 +36,9 @@ func RecoverCommittedClose(ctx context.Context, options CommittedCloseRecoveryOp
 		return CommittedCloseRecoveryEvidence{}, ErrConflict
 	}
 	defer held.close()
+	if revalidateHeldRuntimeControlBoundary(options.ControlDirectory, directory, held, preparedEvidence.PreCommand) != nil {
+		return CommittedCloseRecoveryEvidence{}, ErrConflict
+	}
 	if _, err := readSessionNonce(held, preparedEvidence.PreCommand.SessionNonceDigest); err != nil {
 		return CommittedCloseRecoveryEvidence{}, ErrConflict
 	}
@@ -48,7 +51,7 @@ func RecoverCommittedClose(ctx context.Context, options CommittedCloseRecoveryOp
 		return CommittedCloseRecoveryEvidence{}, err
 	}
 	stateAfter, replacementAfter, err := observeExpectedSupervisorAbsence(options.ExpectedSupervisor)
-	if err != nil || stateAfter != state || !sameOptionalProcess(replacementAfter, replacement) || revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, preparedEvidence.PreCommand.ControlSocket) != nil || revalidateHeldSessionControlFiles(options.ControlDirectory, held, preparedEvidence.PreCommand.ControlFiles) != nil {
+	if err != nil || stateAfter != state || !sameOptionalProcess(replacementAfter, replacement) || revalidateHeldRuntimeControlBoundary(options.ControlDirectory, directory, held, preparedEvidence.PreCommand) != nil {
 		return CommittedCloseRecoveryEvidence{}, ErrConflict
 	}
 	absence := SupervisorAbsenceEvidence{SchemaVersion: SupervisorAbsenceSchema, State: state, Expected: options.ExpectedSupervisor, Replacement: replacement, Observer: observer, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), ControlFiles: preparedEvidence.PreCommand.ControlFiles, FinalJournalSequence: outcome.Recovery.PostCommand.JournalSequence, FinalJournalHead: outcome.Recovery.PostCommand.JournalHead}

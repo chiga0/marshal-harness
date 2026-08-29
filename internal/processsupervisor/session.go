@@ -99,7 +99,31 @@ type reconnectResolution struct {
 	Response *Response
 }
 
+type reconnectAttemptDisposition uint8
+
+const (
+	reconnectRejectedBeforeMechanics reconnectAttemptDisposition = iota
+	reconnectResolvedWithoutMechanics
+	reconnectResolvedAfterMechanics
+	reconnectFailedAfterMechanics
+)
+
+// reconnectAttemptResult preserves the security-relevant point of no return.
+// A plain error cannot tell the wire server whether replay mechanics may have
+// run, so the disposition is carried independently and must be consumed before
+// deciding whether a rejected handshake is safe to emit.
+type reconnectAttemptResult struct {
+	resolution  reconnectResolution
+	disposition reconnectAttemptDisposition
+	err         error
+}
+
 func (session *Session) reconnect(request reconnectRequest, observed CoreIdentity) (reconnectResolution, error) {
+	attempt := session.reconnectAttempt(request, observed)
+	return attempt.resolution, attempt.err
+}
+
+func (session *Session) reconnectAttempt(request reconnectRequest, observed CoreIdentity) reconnectAttemptResult {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if request.SchemaVersion != ReconnectSchema || request.ProtocolRevision != ProtocolRevision || request.SessionID != session.sessionID ||
@@ -107,21 +131,26 @@ func (session *Session) reconnect(request reconnectRequest, observed CoreIdentit
 		request.PreviousAuthorityHead != session.authorityHead || !validDigest(request.PreviousAuthorityHead) || !validDigest(request.CurrentAuthorityHead) || request.CurrentAuthorityHead == request.PreviousAuthorityHead || !validDigest(request.ControlOwnerAcquired) || !sameCoreIdentity(request.Core, observed) ||
 		request.LastOwnerEpoch == 0 || request.LastOwnerEpoch > request.PreviousOwnerEpoch || !validDigest(request.LastAuthorityHead) ||
 		request.LastCommandSequence > maxSafeJSONInteger || !validDigest(request.LastCommandHead) || request.LastJournalSequence == 0 || request.LastJournalSequence > maxSafeJSONInteger || !validDigest(request.LastJournalHead) || session.state == sessionIntervention {
-		return reconnectResolution{}, ErrConflict
+		return reconnectAttemptResult{disposition: reconnectRejectedBeforeMechanics, err: ErrConflict}
 	}
 	resolution, err := session.reconcilePendingLocked(request)
 	if err != nil {
-		return reconnectResolution{}, err
+		return reconnectAttemptResult{disposition: reconnectRejectedBeforeMechanics, err: err}
 	}
+	disposition := reconnectResolvedWithoutMechanics
 	if resolution.State == ReconciliationUnchanged && request.PendingRequest != nil {
 		raw, err := CanonicalProtocolMessage(*request.PendingRequest)
 		if err != nil {
-			return reconnectResolution{}, ErrConflict
+			return reconnectAttemptResult{disposition: reconnectRejectedBeforeMechanics, err: ErrConflict}
 		}
+		// From this instruction onward Handle may append an intent, invoke
+		// mechanics, and append a receipt. Every failure must therefore be a
+		// silent wire close after the post-replay control boundary.
+		disposition = reconnectResolvedAfterMechanics
 		response := session.handleLocked(raw)
 		if ValidateResponseBinding(response, *request.PendingRequest) != nil {
 			session.state = sessionIntervention
-			return reconnectResolution{}, ErrIntervention
+			return reconnectAttemptResult{disposition: reconnectFailedAfterMechanics, err: ErrIntervention}
 		}
 		a0 := session.reconnectAnchor(request)
 		_, receiptHead, err := expectedPendingJournalHeads(a0, *request.PendingRequest, &response)
@@ -129,7 +158,10 @@ func (session *Session) reconnect(request reconnectRequest, observed CoreIdentit
 		_, _, projectErr := projectRequest(*request.PendingRequest)
 		if err != nil || projectErr != nil || commandSequence != request.PendingRequest.Sequence || commandHead != response.CommandHead || journalSequence != request.LastJournalSequence+2 || journalHead != receiptHead {
 			session.state = sessionIntervention
-			return reconnectResolution{}, ErrIntervention
+			return reconnectAttemptResult{disposition: reconnectFailedAfterMechanics, err: ErrIntervention}
+		}
+		if session.state == sessionIntervention {
+			return reconnectAttemptResult{disposition: reconnectFailedAfterMechanics, err: ErrIntervention}
 		}
 		response.Payload = append([]byte(nil), response.Payload...)
 		resolution.Response = &response
@@ -142,7 +174,7 @@ func (session *Session) reconnect(request reconnectRequest, observed CoreIdentit
 		// locked until an external intervention resolves the side effect.
 		session.state = sessionIntervention
 	}
-	return resolution, nil
+	return reconnectAttemptResult{resolution: resolution, disposition: disposition}
 }
 
 func (session *Session) reconcilePendingLocked(request reconnectRequest) (reconnectResolution, error) {

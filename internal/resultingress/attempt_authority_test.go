@@ -172,7 +172,8 @@ func appendTestSupervisorStarted(t *testing.T, store *DurableStore, state Attemp
 	}
 	handshake := processsupervisor.HandshakeResponse{SchemaVersion: processsupervisor.HandshakeSchema, ProtocolRevision: processsupervisor.ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: request.SessionID, SessionNonceDigest: prepared.SessionNonceDigest, OwnerEpoch: epoch, CurrentAuthorityHead: request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: attemptTestDigest("journal-head-" + fmt.Sprint(epoch)), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: "2026-08-28T00:00:01Z", SupervisorProcess: supervisorProcess, SupervisorBinary: binary, ControlSocket: socket, ControlFiles: controlFiles}
 	anchor := processsupervisor.HandshakeAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, Authority: request.Authority, OwnerEpoch: epoch, CurrentAuthorityHead: request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: handshake.JournalHead, UID: 501, GID: 20, FixedBinary: binary, ControlSocket: socket, ControlFiles: controlFiles}
-	started, err := NewProcessSupervisorStartedFromBootstrap(bootstrap.State.SupervisorBootstrapDigest, prepared, handshake, anchor, processsupervisor.CoreIdentity{UID: 501, GID: 20, Process: supervisorProcess, Binary: binary})
+	connection := processsupervisor.ConnectionEvidence{Core: core, ControlDirectory: controlDirectory, Handshake: handshake, Anchor: anchor}
+	started, err := NewProcessSupervisorStartedFromBootstrap(bootstrap.State.SupervisorBootstrapDigest, prepared, connection, processsupervisor.CoreIdentity{UID: 501, GID: 20, Process: supervisorProcess, Binary: binary})
 	if err != nil {
 		t.Fatal(err)
 	}
