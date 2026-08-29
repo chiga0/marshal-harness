@@ -1,9 +1,44 @@
 package launchidentity
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestPi0843IdentityDigestIsClosedAndRecomputed(t *testing.T) {
+	identity := Pi0843IdentityV1{
+		SchemaVersion: pi0843IdentitySchema, ProtocolRevision: pi0843IdentityProtocol,
+		AgentProvider: pi0843IdentityProvider, AgentVersion: pi0843IdentityVersion,
+		ClosureProfileID:        Pi0843DarwinARM64Profile,
+		NodeRuntimeObjectDigest: digestForTest("a"), EntrypointMaterialDigest: digestForTest("b"),
+		MaterialRootsDigest: digestForTest("c"), LaunchMaterialsDigest: digestForTest("d"),
+	}
+	var err error
+	identity.IdentityDigest, err = identity.Digest()
+	if err != nil || identity.Validate() != nil {
+		t.Fatalf("valid Pi identity rejected: digest=%q err=%v validate=%v", identity.IdentityDigest, err, identity.Validate())
+	}
+	raw, err := json.Marshal(identity)
+	if err != nil || strings.Contains(string(raw), "canonicalPath") || strings.Contains(string(raw), "agentLaunchSpecDigest") {
+		t.Fatalf("Pi identity is not path/spec secret-safe: %s err=%v", raw, err)
+	}
+	for name, mutate := range map[string]func(*Pi0843IdentityV1){
+		"runtime":    func(value *Pi0843IdentityV1) { value.NodeRuntimeObjectDigest = digestForTest("e") },
+		"entrypoint": func(value *Pi0843IdentityV1) { value.EntrypointMaterialDigest = digestForTest("e") },
+		"identity":   func(value *Pi0843IdentityV1) { value.IdentityDigest = digestForTest("e") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			forged := identity
+			mutate(&forged)
+			if err := forged.Validate(); err == nil {
+				t.Fatal("forged Pi identity accepted")
+			}
+		})
+	}
+}
+
+func digestForTest(character string) string { return "sha256:" + strings.Repeat(character, 64) }
 
 func TestEmptyCollectionsHaveOneCanonicalDigest(t *testing.T) {
 	wantMaterials := "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"

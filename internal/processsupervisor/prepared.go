@@ -20,6 +20,7 @@ type PreparedCommandProjection struct {
 	LaunchAuthorizedFactDigest     string `json:"launchAuthorizedFactDigest,omitempty"`
 	LaunchMaterialsDigest          string `json:"launchMaterialsDigest,omitempty"`
 	AgentLaunchSpecDigest          string `json:"agentLaunchSpecDigest,omitempty"`
+	SourceGateRevision             string `json:"sourceGateRevision,omitempty"`
 	RuntimeObjectDigest            string `json:"runtimeObjectDigest,omitempty"`
 	WorkingObjectDigest            string `json:"workingObjectDigest,omitempty"`
 	ClosureProfileID               string `json:"closureProfileId,omitempty"`
@@ -70,10 +71,14 @@ func (evidence PreparedCommandEvidence) Validate() error {
 	if !validID(pre.SessionID) || !validDigest(pre.SessionNonceDigest) || pre.Authority.validate() != nil || pre.OwnerEpoch == 0 || pre.OwnerEpoch > maxSafeJSONInteger || !validDigest(pre.CurrentAuthorityHead) || pre.CommandSequence > maxSafeJSONInteger || !validDigest(pre.CommandHead) || pre.JournalSequence == 0 || pre.JournalSequence > maxSafeJSONInteger || !validDigest(pre.JournalHead) || pre.UID == 0 || pre.FixedBinary.validate() != nil || pre.ControlSocket.validate() != nil || pre.ControlFiles.validate() != nil {
 		return ErrInvalid
 	}
-	if evidence.SessionID != pre.SessionID || evidence.Sequence != pre.CommandSequence+1 || evidence.PreviousCommandDigest != pre.CommandHead || evidence.CurrentAuthorityHead != pre.CurrentAuthorityHead {
+	if evidence.SessionID != pre.SessionID || evidence.Sequence != pre.CommandSequence+1 || evidence.PreviousCommandDigest != pre.CommandHead || commandRequiresPreAuthorityHead(evidence.Command) && evidence.CurrentAuthorityHead != pre.CurrentAuthorityHead {
 		return ErrConflict
 	}
 	return validatePreparedProjection(evidence.Command, evidence.Projection)
+}
+
+func commandRequiresPreAuthorityHead(command CommandName) bool {
+	return command == CommandBindAuthority || command == CommandAbortUnbound || command == CommandSpawn
 }
 
 // integrityDigest binds the entire creation-time evidence while excluding its
@@ -190,7 +195,7 @@ func projectPreparedPayload(command CommandName, payload any) (PreparedCommandPr
 			return projection, err
 		}
 		projection.SupervisorStartedFactDigest, projection.LaunchAuthorizedFactDigest = value.SupervisorStartedFactDigest, value.LaunchAuthorizedFactDigest
-		projection.LaunchMaterialsDigest, projection.AgentLaunchSpecDigest, projection.ClosureProfileID = value.LaunchMaterialsDigest, value.AgentLaunchSpecDigest, value.ClosureProfileID
+		projection.LaunchMaterialsDigest, projection.AgentLaunchSpecDigest, projection.SourceGateRevision, projection.ClosureProfileID = value.LaunchMaterialsDigest, value.AgentLaunchSpecDigest, value.SourceGateRevision, value.ClosureProfileID
 		projection.ArgvDigest, projection.EnvironmentDigest, projection.StdinDigest = value.ArgvDigest, value.EnvironmentDigest, value.StdinDigest
 	case ResumePayload:
 		if command != CommandResume {
@@ -243,11 +248,11 @@ func validatePreparedProjection(command CommandName, projection PreparedCommandP
 				return ErrInvalid
 			}
 		}
-		if !validID(projection.ClosureProfileID) {
+		if !validID(projection.ClosureProfileID) || projection.SourceGateRevision != "" && projection.SourceGateRevision != SourceGateRevisionV1 {
 			return ErrInvalid
 		}
 		allowed.SupervisorStartedFactDigest, allowed.LaunchAuthorizedFactDigest = projection.SupervisorStartedFactDigest, projection.LaunchAuthorizedFactDigest
-		allowed.LaunchMaterialsDigest, allowed.AgentLaunchSpecDigest, allowed.RuntimeObjectDigest, allowed.WorkingObjectDigest, allowed.ClosureProfileID = projection.LaunchMaterialsDigest, projection.AgentLaunchSpecDigest, projection.RuntimeObjectDigest, projection.WorkingObjectDigest, projection.ClosureProfileID
+		allowed.LaunchMaterialsDigest, allowed.AgentLaunchSpecDigest, allowed.SourceGateRevision, allowed.RuntimeObjectDigest, allowed.WorkingObjectDigest, allowed.ClosureProfileID = projection.LaunchMaterialsDigest, projection.AgentLaunchSpecDigest, projection.SourceGateRevision, projection.RuntimeObjectDigest, projection.WorkingObjectDigest, projection.ClosureProfileID
 		allowed.ArgvDigest, allowed.EnvironmentDigest, allowed.StdinDigest = projection.ArgvDigest, projection.EnvironmentDigest, projection.StdinDigest
 	case CommandResume:
 		if !validDigest(projection.ProcessStartedFactDigest) {

@@ -72,6 +72,22 @@ func TestPreparedCommandFreezesExactSecretSafeProjection(t *testing.T) {
 	}
 }
 
+func TestPreparedResumeAcceptsPostProcessStartedAuthorityHead(t *testing.T) {
+	pre := productionTestAnchor()
+	postProcessStartedHead := digest("d")
+	prepared, err := PrepareCommand(pre, CommandOptions{
+		Command: CommandResume, CommandID: "resume-after-process-started", Sequence: 1,
+		PreviousCommandDigest: CommandGenesisDigest, CurrentAuthorityHead: postProcessStartedHead,
+		Deadline: time.Date(2026, 8, 29, 3, 4, 5, 0, time.UTC),
+	}, ResumePayload{ProcessStartedFactDigest: digest("e")})
+	if err != nil {
+		t.Fatalf("post-process-started resume preparation failed: %v", err)
+	}
+	if evidence := prepared.Evidence(); evidence.Validate() != nil || evidence.PreCommand.CurrentAuthorityHead != pre.CurrentAuthorityHead || evidence.CurrentAuthorityHead != postProcessStartedHead {
+		t.Fatalf("resume evidence did not preserve pre/post authority heads: %+v", evidence)
+	}
+}
+
 func TestPreparedCommandRejectsMissingControlIdentityAndPreAnchorDrift(t *testing.T) {
 	pre := productionTestAnchor()
 	payload := ClosePayload{ProcessTerminalFactDigest: digest("1"), AllocationTerminatedDigest: digest("2"), CleanupBindingDigest: digest("3")}
