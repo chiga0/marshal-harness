@@ -132,7 +132,7 @@ func (authority *existingWorktreeTestAuthority) Close() {
 func (authority *existingWorktreeTestAuthority) WithCurrentExistingWorktreeBind(_ context.Context, run DescriptorBoundRunV1, request ExistingWorktreeBindRequestV1, callback func(ExistingWorktreeAuthoritySession) error) error {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
-	if validateDescriptorBoundRun(run) != nil || authority.rejectBind || authority.current.validateBind(request, run) != nil {
+	if validateDescriptorBoundRun(run) != nil || authority.rejectBind || authority.current.AttemptAuthorityHeadDigest != authority.attemptHead || authority.current.validateBind(request, run) != nil {
 		return ErrAuthorityConflict
 	}
 	return callback(authority)
@@ -141,7 +141,7 @@ func (authority *existingWorktreeTestAuthority) WithCurrentExistingWorktreeBind(
 func (authority *existingWorktreeTestAuthority) WithCurrentExistingWorktreeRelease(_ context.Context, run DescriptorBoundRunV1, request ExistingWorktreeReleaseRequestV1, callback func(ExistingWorktreeAuthoritySession) error) error {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
-	if validateDescriptorBoundRun(run) != nil || authority.rejectRelease || authority.current.validateRelease(request, run) != nil {
+	if validateDescriptorBoundRun(run) != nil || authority.rejectRelease || authority.current.AttemptAuthorityHeadDigest != authority.attemptHead || authority.current.validateRelease(request, run) != nil {
 		return ErrAuthorityConflict
 	}
 	return callback(authority)
@@ -551,6 +551,9 @@ func TestExistingWorktreeReleaseRechecksExactTerminalAuthorityBeforeWrite(t *tes
 	}{
 		{"run-head", func(current *ExistingWorktreeCurrentAuthorityV1) {
 			current.RunAuthorityHeadDigest = testExistingDigest("other-run-terminal-head")
+		}},
+		{"shape-valid-non-current-attempt-head", func(current *ExistingWorktreeCurrentAuthorityV1) {
+			current.AttemptAuthorityHeadDigest = testExistingDigest("forged-current-attempt-head")
 		}},
 		{"terminal-attempt-head", func(current *ExistingWorktreeCurrentAuthorityV1) {
 			current.TerminalAttemptHeadDigest = testExistingDigest("other-attempt-terminal-head")
