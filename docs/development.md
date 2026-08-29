@@ -74,6 +74,8 @@ GitHub Actions 的主线 CI 固定展开为三个 job：`Quality (ubuntu-latest)
 
 ## 安装
 
+> **尚未实现的 RC1 installer guard**：[ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受，但 `v1.0.0-rc1` 尚未发布。RC1 只能在 Darwin arm64 上通过精确 tag + 显式 local-dogfood preview opt-in 安装；精确资产缺失、平台不符或 opt-in 缺失时必须 fail closed，禁止进入下述通用源码回退，安装器也不得自动生成或激活 `LocalDogfoodActivationV1`。该 guard 属后续独立实现切片，当前 `scripts/install.sh` 的通用行为不能被表述成已经满足 RC1 合同。
+
 面向用户的两条安装路径（一行脚本与源码构建）见 [README](https://github.com/chiga0/marshal-harness#安装)，对应脚本为 [`scripts/install.sh`](https://github.com/chiga0/marshal-harness/blob/main/scripts/install.sh)：
 
 - 检测平台（`darwin|linux` × `amd64|arm64`）；

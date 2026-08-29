@@ -1,7 +1,8 @@
 # ADR 0067：Darwin ordinary-user 启动门禁归位与只读 Attach 恢复
 
-- 状态：提议（Proposed，2026-08-29）
+- 状态：已接受（Accepted，2026-08-29）
 - 提议基线：`main@84d2dcd6bb78cb7fa47ed1d3040a1f3bea5a0f11`
+- 接受记录：提案 `1e05fb831c04a1c87e7f4ecdc677c97beb9d88e6` 经唯一独立 reviewer 复审，`P0=0`、`P1=0`；接受只冻结本文合同，不表示 S1′/S2′、Attach/rebind、terminalization 或 RC1 已实现，也不升级 R2–R6。
 - 关联：[ADR 0051](0051-darwin-local-dogfood-profile.md)（ordinary-user 边界）、[ADR 0059](0059-fixed-darwin-process-supervisor.md)（固定 Supervisor）、[ADR 0060](0060-supervisor-mechanics-authority-binding-and-recovery.md)（command recovery 子链）、[ADR 0063](0063-prepared-execution-authority-and-production-chain.md)（PreparedExecution）、[ADR 0064](0064-darwin-control-directory-phased-identity.md)（控制目录身份）、[ADR 0065](0065-sealed-run-start-proof-and-one-way-composition.md)（密封 Run-start proof）、[ADR 0066](0066-production-composition-owner-acquisition.md)（production factory）、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)。
 
 ## 背景
@@ -101,7 +102,7 @@ Run-start response-loss继续遵守 ADR 0065：ResultIngress只查自己的 Atte
 
 ### 7. 精确取代与修订范围
 
-本 ADR 若被接受，将按以下范围生效：
+本 ADR 自接受起按以下范围生效：
 
 1. **部分取代 ADR 0059 §6**：`process-started` 前的 Core restart不再承诺自动重连并推进启动；owner变化时，只有在 intervention 前 exact 证明无 Supervisor、无 child、无 command/mechanics 副作用才可走封闭 no-effect abort/cleanup 链，否则固定 permanent intervention。`process-started` 后、无 pending command且exact session/child仍可证时保留恢复。
 2. **部分取代 ADR 0060 §3、§5**：新生产路径不写 `process-supervisor-session-reconnected`；改为持续持有 repository owner/acquisition，从 exact RB1 no-pending 开始，先追加并重放绑定 predecessor Attempt head 与 new acquisition 的 `control-owner-bound` successor，再执行只读 `Attach → bind-authority(owner-successor) intent → execute → outcome`。跨 owner pending command固定 permanent intervention；同 owner exact pending replay保留。
@@ -109,7 +110,7 @@ Run-start response-loss继续遵守 ADR 0065：ResultIngress只查自己的 Atte
 4. **澄清 ADR 0065 §9、§10**：sealed proof、单向依赖、generic Append拒绝与Run response-loss合同不变；S1不实现通用 reconnect state machine。
 5. ADR 0064、ADR 0066保持不变。ADR 0061 transcript disposition和ADR 0056 terminalization顺序保持不变，但其恢复入口使用本 ADR 的 `Attach` 分型。
 
-在本 ADR仍为 Proposed 时，上述条款只作为 implementation replan候选，不修改已接受 ADR 的现行状态。
+上述取代只适用于本文明确的 Darwin ordinary-user 边界；其余条款与更高保证 profile 继续按原 ADR 生效。
 
 ## 必须通过的负面与崩溃矩阵
 
@@ -175,14 +176,14 @@ S1′后立即完成：
 6. `Status`诚实区分available、production-composition-incomplete、recovery-required与platform-profile-unavailable；
 7. architecture/negative test 机械证明 producer 唯一 callsite、无 seed/Fake/memory-only fact 注入，且 legacy `execution.Run`、child CLI、Fake seam、第二authority root与独立`marshal-server`从S2′ production graph不可达。
 
-### S2′后、release前
+### S2′后与 RC1 后继
 
 按以下顺序单独交付，不回塞S1′/S2′：
 
 1. 本ADR的 held-owner 恢复链：exact RB1 no-pending、`control-owner-bound` successor、只读`Attach`、`bind-authority(owner-successor)`与`process-started`后无pending恢复；同切片实现 pre-start no-effect abort/cleanup 与 permanent intervention 二分；
 2. ADR 0056/0061 terminalization、transcript disposition、cleanup与successor；
-3. ADR 0062 authenticated`marshal control-plane serve` transport与durable delivery ledger；
-4. 最终fixed-bin真实Run、故障矩阵、独立Decision与RC gate。
+3. 按 [ADR 0068](0068-mac-first-cli-only-lifecycle-preview-rc1.md) 由最终 fixed CLI 运行真实 Pi，经独立 Verification/ReviewDecision 进入 `ACCEPTED`，再以同一最终 Darwin arm64 bytes 完成显式 opt-in 的 RC1 canary 与 prerelease；
+4. RC1 后再进入 stable 后继：ADR 0062 authenticated `marshal control-plane serve` 与 durable delivery ledger、managed signing/notarization，以及 Linux production/release gate。
 
 ## 后果
 

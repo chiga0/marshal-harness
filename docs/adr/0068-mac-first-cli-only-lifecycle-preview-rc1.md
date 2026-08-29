@@ -1,13 +1,14 @@
 # ADR 0068：Mac-first CLI-only 生命周期预览 RC1
 
-- 状态：提议（Proposed）
+- 状态：已接受（Accepted）
 - 日期：2026-08-29
 - 提议基线：`main@84d2dcd6bb78cb7fa47ed1d3040a1f3bea5a0f11`
+- 接受记录：提案 `9cfa1b65275d2e23f18b958a05d027adec6af8fd` 经唯一独立 reviewer 审查，结论 `APPROVE`，`P0=0`、`P1=0`；接受只冻结 RC1 合同，不表示 RC1 已实现、已发布或取得 production/managed/stable authority，也不升级 R2–R6。
 - 关联：[ADR 0047](0047-marshal-darwin-self-identity-and-release-signing.md)、[ADR 0048](0048-protected-build-input-and-artifact-attestation.md)、[ADR 0051](0051-darwin-local-dogfood-profile.md)、[ADR 0052](0052-v1-release-scope-and-production-reachability.md)、[ADR 0062](0062-fixed-marshal-production-server-mode.md)、[ADR 0065](0065-sealed-run-start-proof-and-one-way-composition.md)、[ADR 0066](0066-production-composition-owner-acquisition.md)、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)、[Issue #212](https://github.com/chiga0/marshal-harness/issues/212)
 
 ## 背景
 
-当前最短生产纵切已经收敛到 fixed `marshal`、唯一 `ProductionRuntime` factory、durable authority、真实 Agent-in-Local allocation、`ResultIngress`、独立 Verification/Review 与 Outcome。S1/S2、Attempt terminalization 和同一最终对象 canary 仍未完成；fixed `marshal control-plane serve` transport 也尚未实现。
+当前最短生产纵切已经收敛到 fixed `marshal`、唯一 `ProductionRuntime` factory、durable authority、真实 Agent-in-Local allocation、`ResultIngress`、独立 Verification/Review 与 Outcome。本文所称 S1′/S2′ 分别是 ADR 0065 的 S1 与 ADR 0066 的 S2 在 ADR 0067 减法后的实现切片；S1′/S2′、Attempt terminalization 和同一最终对象 canary 仍未完成，fixed `marshal control-plane serve` transport 也尚未实现。
 
 另一方面，ADR 0047/0048 的 managed/release 路径还要求外部 code-signing certificate、allowlist/deployment policy、protected producer、不同的 artifact/deployment signer、不可回滚 current/high-water 与 notarization。仓库可以实现这些合同的 producer、validator 和 workflow，但不能自行 provision Apple 或企业信任，也不能保证任意目标 Mac 的 EDR 接受新 bytes。若把这组外部条件继续作为首个 prerelease 的串行前置，真实 CLI 生命周期无法尽早交给操作者 dogfood；若把 unsigned/ad-hoc 产物直接描述成 production RC，则会违反既有身份与发布合同。
 
@@ -55,7 +56,7 @@ GitHub prerelease asset 的发布是仓库维护者的 distribution 操作，不
 
 RC1只有在以下门禁全部由同一 sourceHead和同一最终 bytes满足后才能发布为 GitHub prerelease：
 
-1. **调用链门禁**：ADR 0065 S1与ADR 0066 S2全部实现；fixed `./bin/marshal` CLI只经唯一production factory和`PublicApplicationPort`到达durable Run authority、Sandbox allocation、真实Agent、`ResultIngress`、Verification/Review与Outcome。legacy `execution.Run`/`Adapter.Run`、child CLI、environment selector、memory-only/Fake authority与独立server旁路计数为零。
+1. **调用链门禁**：ADR 0065 S1经ADR0067收窄后的S1′与ADR 0066 S2经同一减法约束的S2′全部实现；fixed `./bin/marshal` CLI只经唯一production factory和`PublicApplicationPort`到达durable Run authority、Sandbox allocation、真实Agent、`ResultIngress`、Verification/Review与Outcome。legacy `execution.Run`/`Adapter.Run`、child CLI、environment selector、memory-only/Fake authority与独立server旁路计数为零。
 2. **终态门禁**：真实Attempt的process observation、cancel/timeout/exit、ResultIngress admission、Run terminalization、allocation close与cleanup intent/receipt形成可恢复的唯一事实链；成功、失败、超时、取消与response loss均收敛到可判定Outcome，pending authority/effect/intervention为空。
 3. **身份门禁**：final object在目标canonical path通过`version`、bootstrap `doctor --self`、完整`doctor`与local activation/current-object recheck。任何path/object/digest/sourceHead/profile/activation漂移均在Run/Attempt/Probe/Worker副作用前fail closed。
 4. **宿主可执行性门禁**：同一最终对象在目标Mac上连续通过bootstrap与完整生命周期canary，不需要为随机新路径逐次批准。若对象被`SIGKILL`、Gatekeeper/EDR拒绝或无法执行，保留non-secret PID/CDHash/时间与安全产品观察，RC1保持blocked；不得循环重建、关闭宿主安全策略或把`spctl`/notarization缺失描述成已接受。
@@ -78,7 +79,7 @@ RC1的release title和首段说明必须逐字表达以下事实：
 2. 在写入canonical `./bin/marshal`前验证release manifest与SHA-256，写入后重新观察同一对象；
 3. 不自动生成activation，不修改Gatekeeper/SIP/EDR，不删除provenance，不请求用户批准随机helper；
 4. 引导操作者先运行`version`与`doctor --self`，再显式生成/检查activation；host viability或identity gate失败时保持blocked并给出safe reason；
-5. 不把系统级convenience symlink或`$PATH`解析对象作为S1/S2 trust anchor。
+5. 不把系统级convenience symlink或`$PATH`解析对象作为S1′/S2′ trust anchor。
 
 RC1不得修改或覆盖`v1.0.0` stable channel，不得被原地promote。稳定版必须重新从受保护source/material producer chain构建，取得Developer ID签名、notarization、artifact/install分权、外部current/high-water与deployment policy，并满足fixed server、Linux与ADR 0052/0062剩余release gate。
 
@@ -98,7 +99,7 @@ RC1后的固定顺序是：
 ### 正向
 
 - 不等待仓库无法自行provision的Apple/企业identity，即可尽早把真实fixed CLI生命周期交给当前Mac操作者dogfood；
-- 复用S1/S2、durable authority、ResultIngress和终态链，不建设第二套“简化RC”状态机；
+- 复用S1′/S2′、durable authority、ResultIngress和终态链，不建设第二套“简化RC”状态机；
 - release声明与证据适用性机械区分local preview和stable production，避免unsigned artifact冒充正式版本；
 - server、Linux与managed identity仍有明确后继门禁，而不是从路线中删除。
 
@@ -107,7 +108,7 @@ RC1后的固定顺序是：
 - `rc1`名称容易被外部理解为接近stable，因此release title、安装opt-in、doctor和文档必须重复显示non-production边界；
 - 产物只对完成本机activation与host viability的当前操作者可用，不能承诺任意Mac直接执行；
 - 同一实现需要在server、managed identity和Linux完成后再次取得stable证据；但代码调用链复用，重复的是更高保证的证据而不是平行实现；
-- 若S1/S2或terminalization未完成，本文不会把已有Local MVP/legacy path包装成RC1。
+- 若S1′/S2′或terminalization未完成，本文不会把已有Local MVP/legacy path包装成RC1。
 
 ## 拒绝的替代方案
 
@@ -126,7 +127,7 @@ RC1后的固定顺序是：
 ## 实施顺序
 
 1. 独立审查并接受本ADR；接受只冻结RC1合同，不表示实现或发布完成；
-2. 完成S1、S2与terminalization，使fixed CLI真实纵切到达`ACCEPTED`；
+2. 严格按 S1′→S2′→ADR0067 Attach/rebind→terminalization 的顺序完成 authority 与恢复链，再由 fixed CLI 运行真实 Pi，并以独立 Verification/ReviewDecision 使真实纵切到达`ACCEPTED`；
 3. 实现RC1 release-contract、build-once/dist manifest、explicit install opt-in、local activation与canary receipt；
 4. 用同一final bytes在目标Mac执行host viability、真实Pi、独立Verification/Review、crash/recovery与负向矩阵；
 5. required CI与release gate全绿后发布带固定negative claims的GitHub prerelease；
