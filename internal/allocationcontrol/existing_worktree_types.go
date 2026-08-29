@@ -153,8 +153,14 @@ type ExistingWorktreeDescriptorGraphV1 struct {
 	RepositoryParent               *os.File
 	RepositoryRoot                 *os.File
 	RepositoryCurrentName          CurrentNameIdentityV1
+	RepositoryDotGitFile           *os.File
+	RepositoryDotGitCurrentName    CurrentNameIdentityV1
+	RepositoryDotGitDigest         string
+	RepositoryCommonGitParent      *os.File
 	RepositoryCommonGitDirectory   *os.File
 	RepositoryCommonGitCurrentName CurrentNameIdentityV1
+	beforeDotGitRead               func()
+	afterDotGitRead                func()
 }
 
 func (run DescriptorBoundRunV1) validate(binding ExistingWorktreeBindingV1) error {
