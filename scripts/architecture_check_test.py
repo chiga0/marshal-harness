@@ -109,7 +109,11 @@ class ArchitectureCheckTest(unittest.TestCase):
             )
 
     def test_owner_provisional_ast_rejects_wrong_store_or_candidate(self) -> None:
-        for old, new in (("store.AcquireOwner", "other.AcquireOwner"), (", candidate)", ", sibling)")):
+        for old, new in (
+            ("store.AcquireOwner", "other.AcquireOwner"),
+            ("store.AcquireOwner", "holder.store.AcquireOwner"),
+            (", candidate)", ", sibling)"),
+        ):
             with self.subTest(replacement=new), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 self.owner_provisional_fixture(root)

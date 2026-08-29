@@ -428,9 +428,18 @@ def method_calls(
     for index in range(2, len(values) - 1):
         if values[index - 1:index + 2] != [".", method, "("]:
             continue
+        receiver_index = index - 2
+        receiver_parts = [values[receiver_index]]
+        while receiver_index >= 2 and values[receiver_index - 1] == ".":
+            receiver_index -= 2
+            receiver_parts[0:0] = [values[receiver_index], "."]
+            if tokens[receiver_index][0] != "ident":
+                receiver_parts[0] = "<complex:" + receiver_parts[0] + ">"
+                break
+        receiver = "".join(receiver_parts)
         end = matching_delimiter(tokens, index + 1, "(", ")")
         if end is None:
-            calls.append((values[index - 2], [["<unclosed>"]]))
+            calls.append((receiver, [["<unclosed>"]]))
             continue
         arguments: list[list[str]] = []
         current: list[str] = []
@@ -455,7 +464,7 @@ def method_calls(
                 current.append(value)
         if current or arguments:
             arguments.append(current)
-        calls.append((values[index - 2], arguments))
+        calls.append((receiver, arguments))
     return calls
 
 
