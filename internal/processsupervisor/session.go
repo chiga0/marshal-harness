@@ -87,15 +87,6 @@ func (session *Session) State() string {
 	return string(session.state)
 }
 
-func (session *Session) intervene() {
-	if session == nil {
-		return
-	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	session.state = sessionIntervention
-}
-
 func (session *Session) Snapshot() (uint64, string, uint64, string) {
 	session.mu.Lock()
 	defer session.mu.Unlock()
