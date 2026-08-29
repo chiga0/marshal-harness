@@ -28,6 +28,7 @@ const (
 type Matcher struct {
 	store       *provider.RegistrationStore
 	edgeRuntime *authority.EdgeRuntime
+	leaseLedger *LeaseLedger
 
 	// mu guards issuedLeases and issuedResultCapabilities.
 	mu sync.Mutex
@@ -40,6 +41,11 @@ type Matcher struct {
 	// issuedResultCapabilities indexes the DispatchResultCapability issued
 	// with each accepted claim, keyed by leaseId.
 	issuedResultCapabilities map[string]authority.DispatchResultCapability
+	// beforeReservedEdgePreview is a package-private deterministic
+	// interleaving seam used by concurrency tests. Production leaves it nil;
+	// it is invoked only after all ledger locks have been released and before
+	// ClaimReserved acquires the EdgeRuntime lock for its pure preview.
+	beforeReservedEdgePreview func()
 }
 
 // NewMatcher binds a Matcher to store, which must already be bound to a
@@ -61,6 +67,16 @@ func NewMatcher(store *provider.RegistrationStore) *Matcher {
 func NewMatcherWithEdgeRuntime(store *provider.RegistrationStore, runtime *authority.EdgeRuntime) *Matcher {
 	matcher := NewMatcher(store)
 	matcher.edgeRuntime = runtime
+	return matcher
+}
+
+// NewMatcherWithReservedClaimLedger binds the fresh ADR 0069 durable
+// lookup-before-claim path. Legacy Claim remains available with its
+// historical behavior; ClaimReserved never falls back to that path when the
+// lease ledger is absent, unknown, or conflicting.
+func NewMatcherWithReservedClaimLedger(store *provider.RegistrationStore, runtime *authority.EdgeRuntime, ledger *LeaseLedger) *Matcher {
+	matcher := NewMatcherWithEdgeRuntime(store, runtime)
+	matcher.leaseLedger = ledger
 	return matcher
 }
 

@@ -40,7 +40,7 @@ var (
 	// ErrEdgeBindingMismatch rejects a use whose operation, source/target
 	// identity, attempt/allocation, material, publication or lease binding
 	// does not exactly match the authority ledger record of the edge.
-	ErrEdgeBindingMismatch = errors.New("authority: edge use binding does not exactly match the authority ledger record")
+	ErrEdgeBindingMismatch = errors.New("authority: edge binding does not exactly match the authority ledger record")
 
 	// ErrEdgeLeaseInactive rejects a use whose bound lease is no longer
 	// active in the current dispatch ledger.
@@ -656,22 +656,14 @@ func edgeUseReplayKey(edgeDigest, requestDigest string) (string, error) {
 	return digestBytes(canonical), nil
 }
 
-// IssueDispatchResultCapability issues one DispatchResultCapability under
-// the Core issuer, sealed through the frozen record-layer Digest/Validate,
-// and records it together with the lease binding in the authority ledger.
-// Identical issuance replays coalesce idempotently and return the current
-// ledger record (which may be the revoked successor).
-func (r *EdgeRuntime) IssueDispatchResultCapability(request DispatchResultIssuance, now time.Time) (DispatchResultCapability, error) {
-	if r == nil {
-		return DispatchResultCapability{}, errors.New("authority: edge runtime is not initialized")
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	kind := EdgeKindDispatchResultCapability
+// previewDispatchResultCapabilityLocked validates and seals one issuance
+// without mutating the runtime. When the visible edge identity is already
+// recorded, replay is idempotent only if the hidden EdgeLeaseBinding also
+// matches byte-for-byte; a digest collision with a different leaseId,
+// generation or fencing token fails closed. The caller must hold r.mu.
+func (r *EdgeRuntime) previewDispatchResultCapabilityLocked(request DispatchResultIssuance) (DispatchResultCapability, bool, error) {
 	if err := request.validate(); err != nil {
-		wrapped := fmt.Errorf("authority: dispatchResultCapability: issuance rejected: %w", err)
-		r.appendAudit(EdgeAuditIssuanceRejected, kind, "", "", wrapped.Error(), now)
-		return DispatchResultCapability{}, wrapped
+		return DispatchResultCapability{}, false, err
 	}
 	edge := DispatchResultCapability{
 		Issuer:            r.issuer,
@@ -685,22 +677,60 @@ func (r *EdgeRuntime) IssueDispatchResultCapability(request DispatchResultIssuan
 	}
 	digest, err := edge.Digest()
 	if err != nil {
-		wrapped := fmt.Errorf("authority: dispatchResultCapability: issuance rejected: %w", err)
-		r.appendAudit(EdgeAuditIssuanceRejected, kind, "", "", wrapped.Error(), now)
-		return DispatchResultCapability{}, wrapped
+		return DispatchResultCapability{}, false, err
 	}
 	edge.EdgeDigest = digest
 	if err := edge.Validate(); err != nil {
-		wrapped := fmt.Errorf("authority: dispatchResultCapability: issuance rejected: %w", err)
-		r.appendAudit(EdgeAuditIssuanceRejected, kind, digest, "", wrapped.Error(), now)
-		return DispatchResultCapability{}, wrapped
+		return edge, false, err
 	}
 	if existing, recorded := r.dispatchEdges[digest]; recorded {
-		r.appendAudit(EdgeAuditIssuanceMerged, kind, digest, "", "", now)
-		return existing.Edge, nil
+		if existing.Lease != request.LeaseBinding {
+			return edge, false, fmt.Errorf("%w: dispatch result capability digest %s is already bound to a different lease identity", ErrEdgeBindingMismatch, digest)
+		}
+		return existing.Edge, true, nil
 	}
-	r.dispatchEdges[digest] = dispatchEdgeEntry{Edge: edge, Lease: request.LeaseBinding}
-	r.appendAudit(EdgeAuditIssued, kind, digest, "", "", now)
+	return edge, false, nil
+}
+
+// PreviewDispatchResultCapability performs the complete issuance validation
+// and exact existing-record/binding lookup without writing an edge or audit
+// fact. Producers use it before committing a surrounding durable claim; a
+// recorded result is returned only when both the edge record and the hidden
+// EdgeLeaseBinding are exact.
+func (r *EdgeRuntime) PreviewDispatchResultCapability(request DispatchResultIssuance) (DispatchResultCapability, bool, error) {
+	if r == nil {
+		return DispatchResultCapability{}, false, errors.New("authority: edge runtime is not initialized")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.previewDispatchResultCapabilityLocked(request)
+}
+
+// IssueDispatchResultCapability issues one DispatchResultCapability under
+// the Core issuer, sealed through the frozen record-layer Digest/Validate,
+// and records it together with the lease binding in the authority ledger.
+// Identical issuance replays coalesce idempotently only when the exact hidden
+// EdgeLeaseBinding also matches, and return the current ledger record (which
+// may be the revoked successor).
+func (r *EdgeRuntime) IssueDispatchResultCapability(request DispatchResultIssuance, now time.Time) (DispatchResultCapability, error) {
+	if r == nil {
+		return DispatchResultCapability{}, errors.New("authority: edge runtime is not initialized")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	kind := EdgeKindDispatchResultCapability
+	edge, recorded, err := r.previewDispatchResultCapabilityLocked(request)
+	if err != nil {
+		wrapped := fmt.Errorf("authority: dispatchResultCapability: issuance rejected: %w", err)
+		r.appendAudit(EdgeAuditIssuanceRejected, kind, edge.EdgeDigest, "", wrapped.Error(), now)
+		return DispatchResultCapability{}, wrapped
+	}
+	if recorded {
+		r.appendAudit(EdgeAuditIssuanceMerged, kind, edge.EdgeDigest, "", "", now)
+		return edge, nil
+	}
+	r.dispatchEdges[edge.EdgeDigest] = dispatchEdgeEntry{Edge: edge, Lease: request.LeaseBinding}
+	r.appendAudit(EdgeAuditIssued, kind, edge.EdgeDigest, "", "", now)
 	return edge, nil
 }
 

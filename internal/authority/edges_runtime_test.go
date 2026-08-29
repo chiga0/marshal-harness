@@ -2,6 +2,7 @@ package authority
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -390,6 +391,77 @@ func TestEdgeRuntimeIssuanceIsIdempotent(t *testing.T) {
 	}
 	if replayed.RevocationGeneration == 0 {
 		t.Fatal("an issuance replay after revocation must return the revoked current record")
+	}
+}
+
+// TestDispatchResultIssuanceRejectsHiddenLeaseBindingCollision freezes the
+// recovery/idempotency boundary: the visible capability digest deliberately
+// excludes its runtime lease binding, so a replay with the same edge record
+// but a different leaseId, generation or fencing token must conflict rather
+// than silently return the old edge. Preview is read-only and enforces the
+// identical rule before a surrounding producer commits durable state.
+func TestDispatchResultIssuanceRejectsHiddenLeaseBindingCollision(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*DispatchResultIssuance)
+	}{
+		{name: "leaseId", mutate: func(request *DispatchResultIssuance) {
+			request.LeaseBinding.LeaseId = "lease-preseed-conflict"
+		}},
+		{name: "generation", mutate: func(request *DispatchResultIssuance) {
+			request.LeaseBinding.Generation++
+		}},
+		{name: "fencingToken", mutate: func(request *DispatchResultIssuance) {
+			request.LeaseBinding.FencingToken = digestBytes([]byte("preseed-conflicting-fencing"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime, _, _ := newEdgeRuntimeFixture(t)
+			original := testDispatchResultIssuance("hidden-binding-" + tc.name)
+			issued, err := runtime.IssueDispatchResultCapability(original, edgeRuntimeNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforePreview := runtime.AuditTrail()
+			conflict := original
+			tc.mutate(&conflict)
+			if _, _, err := runtime.PreviewDispatchResultCapability(conflict); !errors.Is(err, ErrEdgeBindingMismatch) {
+				t.Fatalf("preview binding collision err=%v", err)
+			}
+			if !reflect.DeepEqual(beforePreview, runtime.AuditTrail()) {
+				t.Fatal("read-only preview changed the audit ledger")
+			}
+			if _, err := runtime.IssueDispatchResultCapability(conflict, edgeRuntimeNow); !errors.Is(err, ErrEdgeBindingMismatch) {
+				t.Fatalf("issuance binding collision err=%v", err)
+			}
+			replayed, recorded, err := runtime.PreviewDispatchResultCapability(original)
+			if err != nil || !recorded || replayed != issued {
+				t.Fatalf("original binding was not preserved: edge=%#v recorded=%v err=%v", replayed, recorded, err)
+			}
+		})
+	}
+}
+
+func TestDispatchResultIssuancePreviewDoesNotRecordAbsentEdge(t *testing.T) {
+	runtime, _, _ := newEdgeRuntimeFixture(t)
+	request := testDispatchResultIssuance("preview-absent")
+	before := runtime.AuditTrail()
+	preview, recorded, err := runtime.PreviewDispatchResultCapability(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded {
+		t.Fatal("absent preview reported a recorded edge")
+	}
+	if err := preview.Validate(); err != nil {
+		t.Fatalf("preview did not return the deterministic sealed edge: %v", err)
+	}
+	if !reflect.DeepEqual(before, runtime.AuditTrail()) {
+		t.Fatal("absent preview changed the audit ledger")
+	}
+	issued, err := runtime.IssueDispatchResultCapability(request, edgeRuntimeNow)
+	if err != nil || issued != preview {
+		t.Fatalf("issuance did not reproduce preview: edge=%#v err=%v", issued, err)
 	}
 }
 
