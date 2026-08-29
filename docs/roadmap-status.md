@@ -8,7 +8,7 @@
 >
 > **2026-08-28 Darwin 进程生命周期合同 checkpoint**：[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受，冻结 Core-owned launch coordinator、admission/terminalization authority CAS、立即终止 dispatch eligibility、独立 `cleanup-completed` 与 cleanup binding release，以及 cooperative/non-detaching process-group 控制边界。实现与 production 接线仍开放，因此本 checkpoint 不升级 R3–R5。
 >
-> **2026-08-29 Run-start proof 纠偏**：[ADR 0065](adr/0065-sealed-run-start-proof-and-one-way-composition.md) 为 `Proposed`，基于 `main@40fa493` 提议把 ResultIngress 的 owner/Attempt/generation 重验与 runstore 的 Run lease/head/state CAS 绝对分离，并以 shared-guard proof 和精确 composition AST gate 衔接。它未被接受、未实现，不升级 R2–R5；旧实现候选不构成当前进展。
+> **2026-08-29 Run-start proof 纠偏**：[ADR 0065](adr/0065-sealed-run-start-proof-and-one-way-composition.md) 已接受，基于 `main@40fa493` 冻结 ResultIngress 的 owner/Attempt/generation 重验与 runstore 的 Run lease/head/state CAS 绝对分离，并以 shared-guard proof 和精确 composition AST gate 衔接。接受只冻结合同，S1/S2 尚未实现，不升级 R2–R5；旧实现候选不构成当前进展。
 
 ## v1.0 生产纵切
 
@@ -25,15 +25,15 @@ Milestone 状态与能力成熟度是两个维度：
 | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 与 baseline evidence 已完成。 |
 | `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Pi `0.84.3` 在 `sourceHead=d4b9647` 的前置 canary 中由 Local allocation 承载并把真实 result bytes 送入 Core；当前主线重跑仍是发布前门禁。 |
-| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | ResultIngress admission→worker-result→Run journal crash-atomic 持久化/恢复已于 `main@912f659` 合入。ADR 0065 仍为 Proposed：Run-start proof、自身账本 replay 与 generic Append 旁路尚未实现；ADR 0056 terminalization barrier 也尚未复用同一 authority CAS。 |
-| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | production selector 已于 `main@d4b9647` fail closed；ADR 0056 已接受；ADR 0063 业务 closure 已冻结，但 ADR 0065 提出的 S1 proof 与 S2 fixed composition 尚未接受/实现，Darwin Core-owned process observation/terminalization 真实路径负测仍开放。 |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | ResultIngress admission→worker-result→Run journal crash-atomic 持久化/恢复已于 `main@912f659` 合入。ADR 0065 合同已接受，但 Run-start proof、自身账本 replay 与 generic Append 旁路仍未实现；ADR 0056 terminalization barrier 也尚未复用同一 authority CAS。 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | production selector 已于 `main@d4b9647` fail closed；ADR 0056、ADR 0063 与 ADR 0065 合同均已接受，但 S1 proof 与 S2 fixed composition 尚未实现，Darwin Core-owned process observation/terminalization 真实路径负测仍开放。 |
 | `I186-R4` | `IN_PROGRESS` | `COMPONENT` | durable server run controller 已随 `main@44ee8c9` 合入，strict E2E 候选也已通过跨进程 restore；但 controller 尚未接入 ADR 0056 的 authority CAS/cleanup transaction。退出前须证明 server crash 后从耐久观察恢复、eligibility 立即 fence、旧控制单元安全终结或 intervention、重复 start 幂等、lost/failed worker 得到唯一可回放结论。 |
 | `I186-R5` | `IN_PROGRESS` | `COMPONENT` | fixed-bin canary 已在 `sourceHead=d4b9647` 以单 Attempt/9 Gate 真实到 ReviewPacket/`REVIEW_PENDING`；但尚未导入独立 Decision 到 `ACCEPTED`，也未完成 ADR 0056 implementation 和最终主线终验。 |
 | `I186-R6` | `PLANNED` | `DESIGN` | unsigned RC 的 identity/dist/install/release-contract 路径可行，但尚未发布任何产物；稳定 `v1.*` 仍由 Issue #212 与 Linux stable gate 阻断。 |
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
-当前最短剩余路径是：以 `main@40fa493` 为权威基线审查/接受 ADR 0065 → S1 sealed proof component → 立即相邻 S2 fixed composition（两边 response-loss 只查自身 ledger，exact successful resume 后唯一 Run successor）→ 独立 ADR 0056 terminalization/cleanup 切片接入现有 server controller（R2/R3/R4）→ 当前主线 fixed-bin E2E 经独立 Decision 进入 `ACCEPTED` 并证明无 successor 双活（R5）→ 发布可验证 unsigned RC，再 provision macOS signing/notarization 并通过 Linux stable gate（R6）。任一 Proposed ADR、候选分支、单次 live pass 或 reviewer verdict 都不能单独升级阶段。
+当前最短剩余路径是：按已接受 ADR 0065 实施 S1 sealed proof component → 立即相邻 S2 fixed composition（两边 response-loss 只查自身 ledger，exact successful resume 后唯一 Run successor）→ 独立 ADR 0056 terminalization/cleanup 切片接入现有 server controller（R2/R3/R4）→ 当前主线 fixed-bin E2E 经独立 Decision 进入 `ACCEPTED` 并证明无 successor 双活（R5）→ 发布可验证 unsigned RC，再 provision macOS signing/notarization 并通过 Linux stable gate（R6）。合同接受本身、候选分支、单次 live pass 或 reviewer verdict 都不能单独升级阶段。
 
 ## 快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
 

@@ -1,6 +1,6 @@
 # ADR 0065：密封 Run-start proof 与单向生产组合
 
-- 状态：提议（Proposed，2026-08-29）。本文档基于 `main@40fa493d1955fd6d039169483a6501a787d3cc14`；只提出合同，不表示实现、集成或发布完成，不升级 I186-R2–R6。
+- 状态：已接受（Accepted，2026-08-29）。本文档基于 `main@40fa493d1955fd6d039169483a6501a787d3cc14`；接受只冻结合同，不表示实现、集成或发布完成，不升级 I186-R2–R6。
 - 关联：[ADR 0052](0052-v1-release-scope-and-production-reachability.md)（v1.0 生产可达性）、[ADR 0056](0056-darwin-process-observation-and-attempt-terminalization.md)（Attempt terminalization）、[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)（Run/Allocation authority 与唯一 composition root）、[ADR 0060](0060-supervisor-mechanics-authority-binding-and-recovery.md)（Supervisor mechanics 子链）、[ADR 0063](0063-prepared-execution-authority-and-production-chain.md)（PreparedExecution 与 Run-start）、[ADR 0064](0064-darwin-control-directory-phased-identity.md)（Darwin 控制目录身份）、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)。
 
 ## 背景
@@ -22,7 +22,7 @@ ADR 0063 正确冻结了两个业务条件：只有 current Attempt authority �
 ### 1. 适用范围与取代关系
 
 1. 本 ADR 仅覆盖 v1 Mac-first `darwin-local-dogfood` 的 `PreparedExecutionV1` 成功启动后，将 exact ResultIngress mechanics outcome 投影为唯一 `READY → RUNNING` Run journal successor 的边界。
-2. 本提案在被接受后，部分取代 ADR 0063 §5 中由通用 `WithCurrentRunAuthority` callback 暴露 authority 的接口形状、§6 中由调用者提交两个 digest 的 `CommitRunStartOutcome` 形状，以及 §7 中对应的跨包 producer chain。ADR 0063 对 `Pi0843IdentityV1`、secret-safe `PreparedExecutionV1`、held source originals、双 barrier、exact successful resume 与 raw path/argv/environment 禁止复制的其余规则保持有效。
+2. 本 ADR 部分取代 ADR 0063 §5 中由通用 `WithCurrentRunAuthority` callback 暴露 authority 的接口形状、§6 中由调用者提交两个 digest 的 `CommitRunStartOutcome` 形状，以及 §7 中对应的跨包 producer chain。ADR 0063 对 `Pi0843IdentityV1`、secret-safe `PreparedExecutionV1`、held source originals、双 barrier、exact successful resume 与 raw path/argv/environment 禁止复制的其余规则保持有效。
 3. 本 ADR 不实现 ADR 0056 terminalization、cleanup、successor Attempt、通用 recovery、Linux/hardened authority、server transport 或发布。terminalization 必须作为本 ADR 两个切片完成后的独立后续切片，不得混入 proof/composition 返工。
 4. 不新增第二 authority store，不要求 ResultIngress 与 Run journal 跨文件原子提交。两者通过 active proof 在线性化窗口内衔接，response-loss 各自只查询自己的 ledger/journal。
 
@@ -204,7 +204,7 @@ architecture gate 必须扫描所有 production Go 文件和 build tag 组合；
 
 ### 10. 两个且仅两个实现切片
 
-本 ADR 若被接受，实施只允许以下顺序：
+本 ADR 接受后的实施只允许以下顺序：
 
 1. **S1：sealed proof component**。在 `internal/resultingress` 实现 claim/proof/shared guard 与 `StartPreparedExecution`，在 `internal/runstore` 实现 `WithPreparedRunStartAuthority`、私有 borrowed projector、专用 Run-start primitive 和 generic `Append` 拒绝；完成包级 hostile/crash/replay/race 与单向依赖检查。S1 不修改 production controller，不声称 production reachable。
 2. **S2：fixed composition**。只新增 `internal/productionruntime/prepared_run_start_composition.go`、私有 composition helper 与 architecture gate，把 S1 接到 fixed `marshal` / `marshal control-plane serve` 现有 controller；完成一个真实 Pi prepared-start 纵切，证明 exact resume 后唯一 `RUNNING` projection 与 response-loss 重放。S2 不得顺带实现 terminalization、Provider 扩面、release 或第二 component。
