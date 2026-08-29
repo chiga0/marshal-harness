@@ -20,6 +20,8 @@ DOMAIN_INTERNAL_ALLOWLIST = {
 
 APPLICATION_PACKAGE = f"{MODULE}/internal/application"
 PRODUCTION_RUNTIME_PACKAGE = f"{MODULE}/internal/productionruntime"
+RUNSTORE_PACKAGE = f"{MODULE}/internal/runstore"
+RESULT_INGRESS_PACKAGE = f"{MODULE}/internal/resultingress"
 INPUT_ADAPTER_PACKAGES = {
     f"{MODULE}/cmd/marshal",
     f"{MODULE}/cmd/marshal-server",
@@ -52,6 +54,7 @@ FROZEN_REACHABLE_DEPENDENCY_DEBT = {
             ("control", "planning"),
             ("planpremortem", "planning"),
             ("resultbinding", "resultingress"),
+            ("runstore", "resultingress"),
         },
         f"{MODULE}/cmd/marshal-server": {
             ("adapter/pi", "sandboxbridge"),
@@ -59,6 +62,7 @@ FROZEN_REACHABLE_DEPENDENCY_DEBT = {
             ("app", "sandboxbridge"),
             ("control", "planning"),
             ("server", "planning"),
+            ("runstore", "resultingress"),
         },
         f"{MODULE}/internal/cli": {
             ("adapter/pi", "sandboxbridge"),
@@ -71,6 +75,7 @@ FROZEN_REACHABLE_DEPENDENCY_DEBT = {
             ("control", "planning"),
             ("planpremortem", "planning"),
             ("resultbinding", "resultingress"),
+            ("runstore", "resultingress"),
         },
         f"{MODULE}/internal/server": {
             ("adapter/pi", "sandboxbridge"),
@@ -78,6 +83,7 @@ FROZEN_REACHABLE_DEPENDENCY_DEBT = {
             ("app", "sandboxbridge"),
             ("control", "planning"),
             ("server", "planning"),
+            ("runstore", "resultingress"),
         },
     }.items()
     for source, target in edges
@@ -201,7 +207,9 @@ def production_dependency_inversions(packages: list[dict[str, object]]) -> list[
             for dependency in sorted(graph.get(source, set())):
                 if dependency in FORBIDDEN_PRODUCTION_DEPENDENCIES:
                     edge = (root, source, dependency)
-                    if source == PRODUCTION_RUNTIME_PACKAGE and dependency == f"{MODULE}/internal/resultingress":
+                    if source == PRODUCTION_RUNTIME_PACKAGE and dependency == RESULT_INGRESS_PACKAGE:
+                        pass
+                    elif root == PRODUCTION_RUNTIME_PACKAGE and source == RUNSTORE_PACKAGE and dependency == RESULT_INGRESS_PACKAGE:
                         pass
                     elif root in INPUT_ADAPTER_PACKAGES:
                         if edge not in FROZEN_REACHABLE_DEPENDENCY_DEBT:

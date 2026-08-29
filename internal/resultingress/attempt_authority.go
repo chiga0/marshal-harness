@@ -354,6 +354,10 @@ type AttemptTransition struct {
 }
 
 type AttemptAuthorityState struct {
+	ProtocolRevision                 string                        `json:"protocolRevision"`
+	OpenedSchemaRevision             string                        `json:"openedSchemaRevision,omitempty"`
+	ReservationFactDigest            string                        `json:"reservationFactDigest,omitempty"`
+	AttemptOrdinal                   uint64                        `json:"attemptOrdinal,omitempty"`
 	Identity                         AttemptIdentity               `json:"identity"`
 	Revision                         uint64                        `json:"revision"`
 	HeadDigest                       string                        `json:"headDigest"`
@@ -447,17 +451,20 @@ type AttemptAppendResult struct {
 }
 
 type attemptAuthorityFact struct {
-	ProtocolRevision     string            `json:"protocolRevision"`
-	FactType             string            `json:"factType"`
-	Sequence             int64             `json:"sequence"`
-	AttemptKey           string            `json:"attemptKey"`
-	Revision             uint64            `json:"revision"`
-	PreviousDigest       string            `json:"previousDigest,omitempty"`
-	Transition           AttemptTransition `json:"transition"`
-	AdmissionClosed      bool              `json:"admissionClosed,omitempty"`
-	TerminalGeneration   int64             `json:"terminalGeneration,omitempty"`
-	CleanupBindingDigest string            `json:"cleanupBindingDigest,omitempty"`
-	Digest               string            `json:"digest"`
+	ProtocolRevision      string            `json:"protocolRevision"`
+	SchemaRevision        string            `json:"schemaRevision,omitempty"`
+	FactType              string            `json:"factType"`
+	Sequence              int64             `json:"sequence"`
+	AttemptKey            string            `json:"attemptKey"`
+	Revision              uint64            `json:"revision"`
+	PreviousDigest        string            `json:"previousDigest,omitempty"`
+	Transition            AttemptTransition `json:"transition"`
+	ReservationFactDigest string            `json:"reservationFactDigest,omitempty"`
+	AttemptOrdinal        uint64            `json:"attemptOrdinal,omitempty"`
+	AdmissionClosed       bool              `json:"admissionClosed,omitempty"`
+	TerminalGeneration    int64             `json:"terminalGeneration,omitempty"`
+	CleanupBindingDigest  string            `json:"cleanupBindingDigest,omitempty"`
+	Digest                string            `json:"digest"`
 }
 
 // CompareAndAppend is the unprivileged mutation surface. Authority-bearing
@@ -542,8 +549,12 @@ func (s *ingressDurableStore) compareAndAppendWithOwner(expectedRevision uint64,
 		if transition.Kind == attemptTransitionResultAdmitted && !internalAdmission {
 			return ErrAttemptAuthorityConflict
 		}
+		protocolRevision := attemptAuthorityProtocolRevision
+		if exists && prior.ProtocolRevision == attemptAuthorityProtocolV2 {
+			protocolRevision = attemptAuthorityProtocolV2
+		}
 		fact := &attemptAuthorityFact{
-			ProtocolRevision: attemptAuthorityProtocolRevision,
+			ProtocolRevision: protocolRevision,
 			FactType:         string(transition.Kind),
 			Sequence:         s.nextSequence,
 			AttemptKey:       key,
@@ -964,12 +975,12 @@ func validateSupervisorCommandChain(prior AttemptAuthorityState, chain []Supervi
 }
 
 func sameSupervisorChildEvidence(left, right SupervisorCommandEvidence) bool {
-	return left.Outcome.Process == right.Outcome.Process && left.Outcome.RuntimeObjectDigest == right.Outcome.RuntimeObjectDigest && left.Outcome.WorkingObjectDigest == right.Outcome.WorkingObjectDigest
+	return left.Outcome.Process == right.Outcome.Process && left.Outcome.RuntimeObjectDigest == right.Outcome.RuntimeObjectDigest && left.Outcome.WorkingObjectDigest == right.Outcome.WorkingObjectDigest && left.Outcome.SourceGateRevision == right.Outcome.SourceGateRevision && left.Outcome.ExactSetDigest == right.Outcome.ExactSetDigest
 }
 
 func terminalReportsEquivalent(terminal, closed SupervisorCommandEvidence) bool {
 	left, right := terminal.Outcome, closed.Outcome
-	return left.Process == right.Process && left.MechanicsState == right.MechanicsState && left.ObserverIdentity == right.ObserverIdentity && left.ObservedAt == right.ObservedAt && left.RuntimeObjectDigest == right.RuntimeObjectDigest && left.WorkingObjectDigest == right.WorkingObjectDigest && left.ExitCode == right.ExitCode && left.Signal == right.Signal && left.StdoutDigest == right.StdoutDigest && left.StderrDigest == right.StderrDigest && left.StdoutBytes == right.StdoutBytes && left.StderrBytes == right.StderrBytes && left.TranscriptTruncated == right.TranscriptTruncated
+	return left.Process == right.Process && left.MechanicsState == right.MechanicsState && left.ObserverIdentity == right.ObserverIdentity && left.ObservedAt == right.ObservedAt && left.RuntimeObjectDigest == right.RuntimeObjectDigest && left.WorkingObjectDigest == right.WorkingObjectDigest && left.SourceGateRevision == right.SourceGateRevision && left.ExactSetDigest == right.ExactSetDigest && left.ExitCode == right.ExitCode && left.Signal == right.Signal && left.StdoutDigest == right.StdoutDigest && left.StderrDigest == right.StderrDigest && left.StdoutBytes == right.StdoutBytes && left.StderrBytes == right.StderrBytes && left.TranscriptTruncated == right.TranscriptTruncated
 }
 
 func advanceSupervisorCommandState(state *AttemptAuthorityState, chain ...SupervisorCommandEvidence) {
@@ -1046,12 +1057,12 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 		}
 		return nil
 	}
-	if state.SupervisorBoundAuthorityHead != state.SupervisorStartedDigest || intent.CurrentAuthorityHead != state.HeadDigest || pre.CurrentAuthorityHead != state.HeadDigest {
+	if state.SupervisorBoundAuthorityHead != state.SupervisorStartedDigest || intent.CurrentAuthorityHead != state.HeadDigest || pre.CurrentAuthorityHead != state.SupervisorMechanicsAuthorityHead {
 		return ErrAttemptAuthorityOrder
 	}
 	switch intent.Command {
 	case processsupervisor.CommandSpawn:
-		if state.ProcessStartedDigest != "" || rebuild.SupervisorStartedFactDigest != state.SupervisorStartedDigest || rebuild.LaunchAuthorizedFactDigest != state.LaunchAuthorizedDigest || rebuild.LaunchMaterialsDigest != state.LaunchMaterialsDigest || rebuild.AgentLaunchSpecDigest != state.AgentLaunchSpecDigest {
+		if pre.CurrentAuthorityHead != intent.CurrentAuthorityHead || state.ProcessStartedDigest != "" || rebuild.SupervisorStartedFactDigest != state.SupervisorStartedDigest || rebuild.LaunchAuthorizedFactDigest != state.LaunchAuthorizedDigest || rebuild.LaunchMaterialsDigest != state.LaunchMaterialsDigest || rebuild.AgentLaunchSpecDigest != state.AgentLaunchSpecDigest {
 			return ErrAttemptAuthorityOrder
 		}
 	case processsupervisor.CommandResume:
@@ -1361,6 +1372,9 @@ func (s *ingressDurableStore) CompareAndAppendAuthorized(ctx context.Context, ve
 	if err := validateTransitionShape(transition); err != nil {
 		return AttemptAppendResult{}, err
 	}
+	if transition.Kind == AttemptTransitionOpened {
+		return AttemptAppendResult{}, fmt.Errorf("%w: fresh attempt-opened requires an active reservation", ErrAttemptAuthorityConflict)
+	}
 	wantRun := runAuthorityBindingFor(request.Identity)
 	if request.CurrentRunAuthority != wantRun {
 		return AttemptAppendResult{}, ErrRunAuthorityUnauthorized
@@ -1626,15 +1640,21 @@ func (s *ingressDurableStore) compareAndAppendCleanup(ctx context.Context, verif
 
 func newAuthorityProjection() *Ingress {
 	return &Ingress{
-		admitted:              make(map[string]admittedEntry),
-		attempts:              make(map[string]AttemptAuthorityState),
-		controlOwners:         make(map[string]ControlOwnerState),
-		effects:               make(map[string]EffectAuthorityState),
-		allocations:           make(map[string]allocationAuthorityState),
-		existingWorktreeFacts: nil,
-		effectCommands:        make(map[string]string),
-		effectIdempotency:     make(map[string]string),
-		effectMarkers:         make(map[string]string),
+		admitted:                    make(map[string]admittedEntry),
+		attempts:                    make(map[string]AttemptAuthorityState),
+		reservations:                make(map[string]AttemptReservationState),
+		reservationKeys:             make(map[string]string),
+		attemptsByReservation:       make(map[string]AttemptAuthorityState),
+		controlOwners:               make(map[string]ControlOwnerState),
+		effects:                     make(map[string]EffectAuthorityState),
+		allocations:                 make(map[string]allocationAuthorityState),
+		preparedExecutions:          make(map[string]PreparedExecutionV1),
+		preparedExecutionKeys:       make(map[string]string),
+		legacyPreparedExecutionKeys: make(map[string]string),
+		existingWorktreeFacts:       nil,
+		effectCommands:              make(map[string]string),
+		effectIdempotency:           make(map[string]string),
+		effectMarkers:               make(map[string]string),
 	}
 }
 
@@ -1653,7 +1673,18 @@ func applyAttemptAuthorityLine(line []byte, in *Ingress, wantSequence int64) err
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("%w: trailing JSON value", ErrAttemptAuthorityConflict)
 	}
-	if fact.ProtocolRevision != attemptAuthorityProtocolRevision || fact.Sequence != wantSequence || fact.FactType != string(fact.Transition.Kind) {
+	if fact.ProtocolRevision != attemptAuthorityProtocolRevision && fact.ProtocolRevision != attemptAuthorityProtocolV2 || fact.Sequence != wantSequence || fact.FactType != string(fact.Transition.Kind) {
+		return ErrAttemptAuthorityConflict
+	}
+	if fact.ProtocolRevision == attemptAuthorityProtocolRevision {
+		if fact.SchemaRevision != "" || fact.ReservationFactDigest != "" || fact.AttemptOrdinal != 0 {
+			return ErrAttemptAuthorityConflict
+		}
+	} else if fact.Transition.Kind == AttemptTransitionOpened {
+		if fact.SchemaRevision != attemptOpenedSchemaV2 || requireDigest("reservationFactDigest", fact.ReservationFactDigest) != nil || fact.AttemptOrdinal == 0 {
+			return ErrAttemptAuthorityConflict
+		}
+	} else if fact.SchemaRevision != "" || fact.ReservationFactDigest != "" || fact.AttemptOrdinal != 0 {
 		return ErrAttemptAuthorityConflict
 	}
 	stored := fact.Digest
@@ -1693,12 +1724,30 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 		return ErrAttemptAuthorityConflict
 	}
 	state := prior
+	if exists && prior.ProtocolRevision != fact.ProtocolRevision {
+		return ErrAttemptAuthorityConflict
+	}
+	state.ProtocolRevision = fact.ProtocolRevision
 	state.Identity = fact.Transition.Identity
 	state.Revision = fact.Revision
 	state.HeadDigest = fact.Digest
 	t := fact.Transition
 	switch t.Kind {
 	case AttemptTransitionOpened:
+		if fact.ProtocolRevision == attemptAuthorityProtocolV2 {
+			reservation, ok := in.reservations[fact.ReservationFactDigest]
+			ready := reservation.Reservation.Ready
+			identity := fact.Transition.Identity
+			if !ok || reservation.Status != AttemptReservationActive ||
+				reservation.Reservation.AttemptID != identity.AttemptID || reservation.Reservation.AttemptOrdinal != fact.AttemptOrdinal ||
+				ready.AuthorityNamespaceID != identity.AuthorityNamespaceID || ready.TaskID != identity.TaskID || ready.RunID != identity.RunID ||
+				ready.OrchestratorID != identity.OrchestratorID || ready.ReadyAuthorityHead != identity.RunAuthorityDigest {
+				return ErrAttemptAuthorityConflict
+			}
+			state.OpenedSchemaRevision = fact.SchemaRevision
+			state.ReservationFactDigest = fact.ReservationFactDigest
+			state.AttemptOrdinal = fact.AttemptOrdinal
+		}
 		state.OpenedDigest = fact.Digest
 		state.LaunchState = LaunchNotAuthorized
 	case AttemptTransitionControlOwnerBound:
@@ -1739,7 +1788,6 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 		state.ProcessStartedEvidence = t.SupervisorEvidence
 		if state.SupervisorBootstrapDigest != "" && t.SupervisorOutcomeFactDigest != "" {
 			state.ProcessStartedEvidence, _ = supervisorCheckpointEvidence(state, t.SupervisorOutcomeFactDigest)
-			state.SupervisorMechanicsAuthorityHead = fact.Digest
 		} else if state.SupervisorBootstrapDigest != "" {
 			advanceSupervisorCommandState(&state, t.SupervisorBindEvidence)
 			advanceSupervisorCommandState(&state, t.SupervisorPrecedingEvidence...)
@@ -1754,7 +1802,6 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 		state.CommittedResultCollect = t.SupervisorEvidence
 		if state.SupervisorBootstrapDigest != "" && t.SupervisorOutcomeFactDigest != "" {
 			state.CommittedResultCollect, _ = supervisorCheckpointEvidence(state, t.SupervisorOutcomeFactDigest)
-			state.SupervisorMechanicsAuthorityHead = fact.Digest
 		} else if state.SupervisorBootstrapDigest != "" {
 			advanceSupervisorCommandState(&state, t.SupervisorPrecedingEvidence...)
 			advanceSupervisorCommandState(&state, t.SupervisorEvidence)
@@ -1767,9 +1814,6 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 		state.AdmissionClosed = fact.AdmissionClosed
 		state.BarrierAdmissionFactDigest, state.BarrierAdmissionSequence = t.AdmissionFactDigest, t.AdmissionSequence
 		state.TerminalGeneration, state.CleanupBindingDigest = fact.TerminalGeneration, fact.CleanupBindingDigest
-		if state.SupervisorBootstrapDigest != "" {
-			state.SupervisorMechanicsAuthorityHead = fact.Digest
-		}
 	case AttemptTransitionProcessTerminal:
 		if t.TerminalizationID != state.TerminalizationID {
 			return ErrAttemptAuthorityConflict
@@ -1780,7 +1824,6 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 		state.ProcessTerminalEvidence = t.SupervisorEvidence
 		if state.SupervisorBootstrapDigest != "" && t.SupervisorOutcomeFactDigest != "" {
 			state.ProcessTerminalEvidence, _ = supervisorCheckpointEvidence(state, t.SupervisorOutcomeFactDigest)
-			state.SupervisorMechanicsAuthorityHead = fact.Digest
 		} else if state.SupervisorBootstrapDigest != "" {
 			advanceSupervisorCommandState(&state, t.SupervisorPrecedingEvidence...)
 			advanceSupervisorCommandState(&state, t.SupervisorEvidence)
@@ -1790,9 +1833,6 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 			return ErrAttemptAuthorityConflict
 		}
 		state.AllocationTerminalDigest, state.AllocationReceiptDigest = fact.Digest, t.ReceiptDigest
-		if state.SupervisorBootstrapDigest != "" {
-			state.SupervisorMechanicsAuthorityHead = fact.Digest
-		}
 	case AttemptTransitionProcessSupervisorClosed:
 		if t.TerminalizationID != state.TerminalizationID {
 			return ErrAttemptAuthorityConflict
@@ -1824,6 +1864,12 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 		return ErrAttemptAuthorityConflict
 	}
 	in.attempts[key] = state
+	if state.ReservationFactDigest != "" {
+		if priorAttempt, exists := in.attemptsByReservation[state.ReservationFactDigest]; exists && priorAttempt.Identity != state.Identity {
+			return ErrAttemptAuthorityConflict
+		}
+		in.attemptsByReservation[state.ReservationFactDigest] = state
+	}
 	return nil
 }
 

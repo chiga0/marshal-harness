@@ -147,7 +147,7 @@ func testAcquisition() resultingress.ControlOwnerAcquisition {
 }
 
 func testPrepared() application.PreparedRunStart {
-	return application.PreparedRunStart{ProtocolRevision: application.ProtocolRevision, TaskID: "task-1", RunID: "run-1", AttemptID: "attempt-1", State: domain.StateReady, Sequence: 3, AuthorityHead: runtimeTestDigest, PreparationDigest: runtimeTestDigest}
+	return application.PreparedRunStart{ProtocolRevision: application.PreparedRunStartProtocolRevision, TaskID: "task-1", RunID: "run-1", AttemptID: "attempt-1", ReservationFactDigest: runtimeTestDigest, AttemptOpenedFactDigest: runtimeTestDigest, AttemptOrdinal: 1, MaxAttempts: 3, State: domain.StateReady, Sequence: 3, AuthorityHead: runtimeTestDigest, PreparationDigest: runtimeTestDigest}
 }
 
 func testSuccessor() application.RunProjection {

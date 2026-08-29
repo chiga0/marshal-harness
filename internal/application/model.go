@@ -8,6 +8,7 @@ import (
 )
 
 const ProtocolRevision = "public-application-port/v1"
+const PreparedRunStartProtocolRevision = "prepared-run-start/v2"
 
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
@@ -39,18 +40,23 @@ func (request PrepareRunStartRequest) Validate() error {
 // durable authority and consumed by the process bridge. PreparationDigest is
 // derived by that authority from all preceding fields.
 type PreparedRunStart struct {
-	ProtocolRevision  string       `json:"protocolRevision"`
-	TaskID            string       `json:"taskId"`
-	RunID             string       `json:"runId"`
-	AttemptID         string       `json:"attemptId"`
-	State             domain.State `json:"state"`
-	Sequence          uint64       `json:"sequence"`
-	AuthorityHead     string       `json:"authorityHead"`
-	PreparationDigest string       `json:"preparationDigest"`
+	ProtocolRevision        string       `json:"protocolRevision"`
+	TaskID                  string       `json:"taskId"`
+	RunID                   string       `json:"runId"`
+	AttemptID               string       `json:"attemptId"`
+	ReservationFactDigest   string       `json:"reservationFactDigest"`
+	AttemptOpenedFactDigest string       `json:"attemptOpenedFactDigest"`
+	AttemptOrdinal          uint64       `json:"attemptOrdinal"`
+	AttemptsUsedBefore      uint64       `json:"attemptsUsedBefore"`
+	MaxAttempts             uint64       `json:"maxAttempts"`
+	State                   domain.State `json:"state"`
+	Sequence                uint64       `json:"sequence"`
+	AuthorityHead           string       `json:"authorityHead"`
+	PreparationDigest       string       `json:"preparationDigest"`
 }
 
 func (prepared PreparedRunStart) Validate() error {
-	if prepared.ProtocolRevision != ProtocolRevision || !validID(prepared.TaskID) || !validID(prepared.RunID) || !validID(prepared.AttemptID) || prepared.State != domain.StateReady || !validDigest(prepared.AuthorityHead) || !validDigest(prepared.PreparationDigest) {
+	if prepared.ProtocolRevision != PreparedRunStartProtocolRevision || !validID(prepared.TaskID) || !validID(prepared.RunID) || !validID(prepared.AttemptID) || !validDigest(prepared.ReservationFactDigest) || !validDigest(prepared.AttemptOpenedFactDigest) || prepared.AttemptOrdinal != prepared.AttemptsUsedBefore+1 || prepared.MaxAttempts == 0 || prepared.AttemptOrdinal > prepared.MaxAttempts || prepared.State != domain.StateReady || prepared.Sequence == 0 || prepared.Sequence > 1<<53-1 || !validDigest(prepared.AuthorityHead) || !validDigest(prepared.PreparationDigest) {
 		return NewError("start-prepared-run", ReasonInvalidRequest)
 	}
 	return nil

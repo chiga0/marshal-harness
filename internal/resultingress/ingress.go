@@ -273,8 +273,11 @@ type Ingress struct {
 	ledger         LedgerBinding
 	ledgerSequence uint64
 	// admitted maps idempotencyKey → admittedEntry for replay detection.
-	admitted map[string]admittedEntry
-	attempts map[string]AttemptAuthorityState
+	admitted              map[string]admittedEntry
+	attempts              map[string]AttemptAuthorityState
+	reservations          map[string]AttemptReservationState
+	reservationKeys       map[string]string
+	attemptsByReservation map[string]AttemptAuthorityState
 	// controlOwners is the repository/authority-scope owner projection rebuilt
 	// from control-owner-acquired facts in this same physical ledger. It is not
 	// a second lifecycle ledger and never authorizes an Attempt without an exact
@@ -284,7 +287,10 @@ type Ingress struct {
 	// allocations is rebuilt exclusively from the same durable Attempt log.
 	// It is the five-fact authority source projected into allocationcontrol;
 	// the Provider journal is never allowed to populate this map.
-	allocations map[string]allocationAuthorityState
+	allocations                 map[string]allocationAuthorityState
+	preparedExecutions          map[string]PreparedExecutionV1
+	preparedExecutionKeys       map[string]string
+	legacyPreparedExecutionKeys map[string]string
 	// existingWorktreeFacts is a rebuild-only projection of RB1 facts from the
 	// same physical Attempt ledger. It is never populated from `.marshal`
 	// projection files and therefore cannot become a second truth source.
@@ -328,17 +334,23 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		return nil, fmt.Errorf("resultingress: LedgerBinding.EvidenceDigest: %v", err)
 	}
 	return &Ingress{
-		ledger:                binding,
-		admitted:              make(map[string]admittedEntry),
-		attempts:              make(map[string]AttemptAuthorityState),
-		controlOwners:         make(map[string]ControlOwnerState),
-		effects:               make(map[string]EffectAuthorityState),
-		allocations:           make(map[string]allocationAuthorityState),
-		existingWorktreeFacts: nil,
-		effectCommands:        make(map[string]string),
-		effectIdempotency:     make(map[string]string),
-		effectMarkers:         make(map[string]string),
-		clock:                 time.Now,
+		ledger:                      binding,
+		admitted:                    make(map[string]admittedEntry),
+		attempts:                    make(map[string]AttemptAuthorityState),
+		reservations:                make(map[string]AttemptReservationState),
+		reservationKeys:             make(map[string]string),
+		attemptsByReservation:       make(map[string]AttemptAuthorityState),
+		controlOwners:               make(map[string]ControlOwnerState),
+		effects:                     make(map[string]EffectAuthorityState),
+		allocations:                 make(map[string]allocationAuthorityState),
+		preparedExecutions:          make(map[string]PreparedExecutionV1),
+		preparedExecutionKeys:       make(map[string]string),
+		legacyPreparedExecutionKeys: make(map[string]string),
+		existingWorktreeFacts:       nil,
+		effectCommands:              make(map[string]string),
+		effectIdempotency:           make(map[string]string),
+		effectMarkers:               make(map[string]string),
+		clock:                       time.Now,
 	}, nil
 }
 
@@ -349,18 +361,24 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 // binding 校验与 NewIngress 完全一致。
 func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingress, error) {
 	in := &Ingress{
-		ledger:                binding,
-		admitted:              make(map[string]admittedEntry),
-		attempts:              make(map[string]AttemptAuthorityState),
-		controlOwners:         make(map[string]ControlOwnerState),
-		effects:               make(map[string]EffectAuthorityState),
-		allocations:           make(map[string]allocationAuthorityState),
-		existingWorktreeFacts: nil,
-		effectCommands:        make(map[string]string),
-		effectIdempotency:     make(map[string]string),
-		effectMarkers:         make(map[string]string),
-		clock:                 time.Now,
-		store:                 store,
+		ledger:                      binding,
+		admitted:                    make(map[string]admittedEntry),
+		attempts:                    make(map[string]AttemptAuthorityState),
+		reservations:                make(map[string]AttemptReservationState),
+		reservationKeys:             make(map[string]string),
+		attemptsByReservation:       make(map[string]AttemptAuthorityState),
+		controlOwners:               make(map[string]ControlOwnerState),
+		effects:                     make(map[string]EffectAuthorityState),
+		allocations:                 make(map[string]allocationAuthorityState),
+		preparedExecutions:          make(map[string]PreparedExecutionV1),
+		preparedExecutionKeys:       make(map[string]string),
+		legacyPreparedExecutionKeys: make(map[string]string),
+		existingWorktreeFacts:       nil,
+		effectCommands:              make(map[string]string),
+		effectIdempotency:           make(map[string]string),
+		effectMarkers:               make(map[string]string),
+		clock:                       time.Now,
+		store:                       store,
 	}
 	if store == nil {
 		return nil, errors.New("resultingress: durable ingress requires a non-nil store")
@@ -726,9 +744,15 @@ func (i *Ingress) resetDurableReplayState() {
 	i.ledgerSequence = 0
 	i.admitted = make(map[string]admittedEntry)
 	i.attempts = make(map[string]AttemptAuthorityState)
+	i.reservations = make(map[string]AttemptReservationState)
+	i.reservationKeys = make(map[string]string)
+	i.attemptsByReservation = make(map[string]AttemptAuthorityState)
 	i.controlOwners = make(map[string]ControlOwnerState)
 	i.effects = make(map[string]EffectAuthorityState)
 	i.allocations = make(map[string]allocationAuthorityState)
+	i.preparedExecutions = make(map[string]PreparedExecutionV1)
+	i.preparedExecutionKeys = make(map[string]string)
+	i.legacyPreparedExecutionKeys = make(map[string]string)
 	i.existingWorktreeFacts = nil
 	i.effectCommands = make(map[string]string)
 	i.effectIdempotency = make(map[string]string)

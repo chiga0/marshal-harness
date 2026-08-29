@@ -711,8 +711,12 @@ func commandPostAuthorityHead(a0 string, request Request, response Response, pro
 		}
 		return a0
 	}
-	// Every durable non-bind receipt advances mechanics to the request's At,
-	// including a mechanics rejection. Admission-only rejections never pass
-	// exact response binding and therefore cannot reach this function.
-	return request.CurrentAuthorityHead
+	// A successful non-bind receipt consumes the current external authority
+	// head (for example the Attempt head minted by process-started). A durable
+	// rejected outcome preserves the old mechanics anchor; it did not consume
+	// the requested authority state.
+	if response.Status == "ok" {
+		return request.CurrentAuthorityHead
+	}
+	return a0
 }

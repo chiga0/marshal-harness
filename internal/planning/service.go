@@ -330,6 +330,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		"branch":            worktree.Branch,
 		"fallbackAllowed":   effective.AllowFallbackWorkers,
 		"selectionAttempts": selectionAttemptPayload(selection.Attempts),
+		"maxAttempts":       task.Budgets.MaxAttempts,
 		"sandboxRequirements": map[string]any{
 			"accessMode":            string(sandboxRequirements.AccessMode),
 			"minimumAssuranceLevel": string(sandboxRequirements.MinimumAssuranceLevel),

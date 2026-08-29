@@ -18,9 +18,10 @@ import (
 // held by a Lease. Recheck proves every pathname edge still names the opened
 // directory chain; callers never reopen the Run through a string path.
 type BoundDirectory struct {
-	lease *Lease
-	files []*os.File
-	names []string
+	lease     *Lease
+	authority *RunAuthority
+	files     []*os.File
+	names     []string
 }
 
 // BoundLeaf holds the exact immutable inode first admitted under a
@@ -90,8 +91,11 @@ func (f *BoundLeaf) Recheck() error {
 }
 
 func (d *BoundDirectory) File() *os.File {
-	if d == nil || len(d.files) == 0 {
+	if d == nil || d.authority == nil || d.authority.File == nil {
 		return nil
+	}
+	if len(d.files) == 0 {
+		return d.authority.File
 	}
 	return d.files[len(d.files)-1]
 }
@@ -105,19 +109,23 @@ func (d *BoundDirectory) Close() error {
 		result = errors.Join(result, d.files[index].Close())
 	}
 	d.files = nil
+	result = errors.Join(result, d.authority.Close())
+	d.authority = nil
 	return result
 }
 
 func (d *BoundDirectory) Recheck() error {
-	if d == nil || len(d.files) == 0 || len(d.names)+1 != len(d.files) {
+	if d == nil || d.authority == nil || d.authority.File == nil || len(d.names) != len(d.files) {
 		return errors.New("run authority directory chain is incomplete")
 	}
-	currentRoot, err := OpenRunAuthority(d.lease)
+	// authority keeps guard.mu.RLock held, so this current-name recheck uses
+	// the locked helper and cannot deadlock behind a waiting writer.
+	currentRoot, err := openRunAuthorityLocked(d.lease)
 	if err != nil {
 		return err
 	}
 	var heldRoot, namedRoot unix.Stat_t
-	if err := unix.Fstat(int(d.files[0].Fd()), &heldRoot); err != nil {
+	if err := unix.Fstat(int(d.authority.Fd()), &heldRoot); err != nil {
 		currentRoot.Close()
 		return err
 	}
@@ -133,10 +141,14 @@ func (d *BoundDirectory) Recheck() error {
 	}
 	for index, name := range d.names {
 		var held, named unix.Stat_t
-		if err := unix.Fstat(int(d.files[index+1].Fd()), &held); err != nil {
+		if err := unix.Fstat(int(d.files[index].Fd()), &held); err != nil {
 			return err
 		}
-		if err := unix.Fstatat(int(d.files[index].Fd()), name, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		parent := d.authority.File
+		if index > 0 {
+			parent = d.files[index-1]
+		}
+		if err := unix.Fstatat(int(parent.Fd()), name, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			return err
 		}
 		if held.Mode&unix.S_IFMT != unix.S_IFDIR || held.Dev != named.Dev || held.Ino != named.Ino || held.Mode != named.Mode {
@@ -187,7 +199,11 @@ func openDirectoryUnderLease(lease *Lease, create bool, components ...string) (*
 	if err != nil {
 		return nil, err
 	}
-	bound := &BoundDirectory{lease: lease, files: []*os.File{root}}
+	bound := &BoundDirectory{lease: lease, authority: root}
+	if create {
+		lease.guard.mutation.Lock()
+		defer lease.guard.mutation.Unlock()
+	}
 	for _, component := range components {
 		if err := validateRelativeComponent(component); err != nil {
 			bound.Close()
@@ -296,6 +312,8 @@ func WriteFileInDirectory(directory *BoundDirectory, name string, data []byte, m
 	if directory == nil || directory.File() == nil || len(data) == 0 || mode&0o077 != 0 {
 		return errors.New("run authority directory write is invalid")
 	}
+	directory.lease.guard.mutation.Lock()
+	defer directory.lease.guard.mutation.Unlock()
 	if err := validateRelativeComponent(name); err != nil {
 		return err
 	}

@@ -124,6 +124,9 @@ func verifiedSupervisorOutcome(t *testing.T, intent SupervisorCommandIntent, rea
 	}
 	pre := supervisorHandshakeAnchor(intent.PreCommand)
 	post := pre
+	if intent.Command != processsupervisor.CommandBindAuthority {
+		post.CurrentAuthorityHead = intent.CurrentAuthorityHead
+	}
 	post.CommandSequence = intent.Sequence
 	post.CommandHead = commandHead
 	post.JournalSequence += 2

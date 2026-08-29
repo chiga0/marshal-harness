@@ -140,27 +140,29 @@ type darwinMechanics struct {
 	marshalFile      *os.File
 	marshalSpec      HeldObjectSpec
 
-	command        *exec.Cmd
-	process        ProcessIdentity
-	runtimeSpec    HeldObjectSpec
-	workingSpec    HeldObjectSpec
-	heldFiles      []*os.File
-	heldSpecs      []HeldObjectSpec
-	guard          *vnodeGuard
-	stdout         *boundedCapture
-	stderr         *boundedCapture
-	waited         chan waitOutcome
-	waitResult     *waitOutcome
-	stopped        bool
-	resumed        bool
-	terminal       bool
-	collected      bool
-	closed         bool
-	lastReport     ProcessReport
-	transcriptHash string
-	supervisorPID  int
-	expectedSID    int
-	descendants    map[int]descendantObservation
+	command            *exec.Cmd
+	process            ProcessIdentity
+	runtimeSpec        HeldObjectSpec
+	workingSpec        HeldObjectSpec
+	heldFiles          []*os.File
+	heldSpecs          []HeldObjectSpec
+	exactSetDigest     string
+	sourceGateRevision string
+	guard              *vnodeGuard
+	stdout             *boundedCapture
+	stderr             *boundedCapture
+	waited             chan waitOutcome
+	waitResult         *waitOutcome
+	stopped            bool
+	resumed            bool
+	terminal           bool
+	collected          bool
+	closed             bool
+	lastReport         ProcessReport
+	transcriptHash     string
+	supervisorPID      int
+	expectedSID        int
+	descendants        map[int]descendantObservation
 }
 
 func NewPlatformMechanics(controlDirectory *os.File) (Mechanics, error) {
@@ -184,7 +186,7 @@ func NewPlatformMechanics(controlDirectory *os.File) (Mechanics, error) {
 func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayload) (MechanicsResult, error) {
 	mechanics.mu.Lock()
 	defer mechanics.mu.Unlock()
-	if mechanics.command != nil || mechanics.closed || validateSpawnPayload(payload) != nil {
+	if mechanics.command != nil || mechanics.closed || payload.SourceGateRevision != SourceGateRevisionV1 || validateSpawnPayload(payload) != nil {
 		return MechanicsResult{}, ErrConflict
 	}
 	for _, object := range spawnObjects(payload) {
@@ -197,7 +199,7 @@ func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayloa
 	if unix.Getrlimit(unix.RLIMIT_NOFILE, &descriptorLimit) != nil || requiredHeld+32 >= descriptorLimit.Cur {
 		return MechanicsResult{}, ErrMechanicsOpen
 	}
-	held, err := openSpawnObjects(payload)
+	held, heldSpecs, exactSetDigest, err := openSpawnObjects(payload)
 	if err != nil {
 		return MechanicsResult{}, err
 	}
@@ -208,7 +210,7 @@ func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayloa
 		}
 	}()
 	allGuarded := append(append([]*os.File(nil), held...), mechanics.marshalFile)
-	allSpecs := append(spawnObjects(payload), mechanics.marshalSpec)
+	allSpecs := append(append([]HeldObjectSpec(nil), heldSpecs...), mechanics.marshalSpec)
 	guard, err := newVnodeGuard(allGuarded, allSpecs)
 	if err != nil {
 		return MechanicsResult{}, ErrConflict
@@ -274,7 +276,7 @@ func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayloa
 	for index := range rawSpec {
 		rawSpec[index] = 0
 	}
-	if err := waitReady(ctx, readyRead); err != nil || !guard.clean() || revalidateHeldSet(held, payload) != nil || verifyHeldObject(mechanics.marshalFile, mechanics.marshalSpec) != nil {
+	if err := waitReady(ctx, readyRead); err != nil || !guard.clean() || revalidateHeldSet(held, heldSpecs) != nil || verifyHeldObject(mechanics.marshalFile, mechanics.marshalSpec) != nil {
 		return MechanicsResult{}, ErrIntervention
 	}
 	if count, err := releaseWrite.Write([]byte{childReleaseByte}); err != nil || count != 1 || releaseWrite.Close() != nil {
@@ -305,7 +307,7 @@ func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayloa
 		return MechanicsResult{}, ErrConflict
 	}
 	process, err = observeProcessIdentity(command.Process.Pid)
-	if err != nil || !sameProcessBirth(process, launchedProcess) || !guard.clean() || revalidateHeldSet(held, payload) != nil {
+	if err != nil || !sameProcessBirth(process, launchedProcess) || !guard.clean() || revalidateHeldSet(held, heldSpecs) != nil {
 		return MechanicsResult{}, ErrConflict
 	}
 	mechanics.command = command
@@ -316,7 +318,9 @@ func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayloa
 	mechanics.runtimeSpec = payload.Runtime
 	mechanics.workingSpec = payload.WorkingDirectory
 	mechanics.heldFiles = held
-	mechanics.heldSpecs = spawnObjects(payload)
+	mechanics.heldSpecs = heldSpecs
+	mechanics.exactSetDigest = exactSetDigest
+	mechanics.sourceGateRevision = payload.SourceGateRevision
 	mechanics.guard = guard
 	mechanics.stdout = stdout
 	mechanics.stderr = stderr
@@ -496,6 +500,8 @@ func (mechanics *darwinMechanics) Close(ctx context.Context, payload ClosePayloa
 	closeFiles(mechanics.heldFiles...)
 	mechanics.heldFiles = nil
 	mechanics.heldSpecs = nil
+	mechanics.exactSetDigest = ""
+	mechanics.sourceGateRevision = ""
 	mechanics.guard.close()
 	_ = mechanics.marshalFile.Close()
 	mechanics.marshalFile = nil
@@ -608,7 +614,7 @@ func (mechanics *darwinMechanics) proveTerminalLocked() error {
 func (mechanics *darwinMechanics) report(state string, outcome *waitOutcome) ProcessReport {
 	runtimeDigest, _ := digestHeldSpec(mechanics.runtimeSpec)
 	workingDigest, _ := digestHeldSpec(mechanics.workingSpec)
-	report := ProcessReport{State: state, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Process: mechanics.process, RuntimeObjectDigest: runtimeDigest, WorkingObjectDigest: workingDigest}
+	report := ProcessReport{State: state, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Process: mechanics.process, RuntimeObjectDigest: runtimeDigest, WorkingObjectDigest: workingDigest, SourceGateRevision: mechanics.sourceGateRevision, ExactSetDigest: mechanics.exactSetDigest}
 	if outcome != nil {
 		report.ExitCode, report.Signal = outcome.exitCode, outcome.signal
 	}
@@ -636,22 +642,7 @@ func buildChildSpec(payload SpawnPayload, marshal HeldObjectSpec) (childSpec, er
 	return spec, spec.validate()
 }
 
-func openSpawnObjects(payload SpawnPayload) ([]*os.File, error) {
-	objects := spawnObjects(payload)
-	files := make([]*os.File, 0, len(objects))
-	for _, object := range objects {
-		file, err := openHeldObject(object)
-		if err != nil {
-			closeFiles(files...)
-			return nil, err
-		}
-		files = append(files, file)
-	}
-	return files, nil
-}
-
-func revalidateHeldSet(files []*os.File, payload SpawnPayload) error {
-	objects := spawnObjects(payload)
+func revalidateHeldSet(files []*os.File, objects []HeldObjectSpec) error {
 	if len(files) != len(objects) {
 		return ErrConflict
 	}

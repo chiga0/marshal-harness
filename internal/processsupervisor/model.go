@@ -42,6 +42,12 @@ const (
 	maxSafeJSONInteger = uint64(1<<53 - 1)
 )
 
+// SourceGateRevisionV1 marks a fresh S1 spawn whose current source and
+// allocation live identity must be admitted by the mutation-adjacent exact
+// enumeration gate. An empty revision is retained solely for historical v1
+// wire/journal replay and never qualifies as S1 authority evidence.
+const SourceGateRevisionV1 = "darwin-source-gate/v1"
+
 type ReconciliationState string
 
 const (
@@ -395,22 +401,50 @@ type AbortUnboundPayload struct {
 }
 
 type SpawnPayload struct {
-	LaunchAuthorizedFactDigest  string                            `json:"launchAuthorizedFactDigest"`
-	SupervisorStartedFactDigest string                            `json:"supervisorStartedFactDigest"`
-	Runtime                     HeldObjectSpec                    `json:"runtime"`
-	WorkingDirectory            HeldObjectSpec                    `json:"workingDirectory"`
-	ClosureProfileID            string                            `json:"closureProfileId"`
-	MaterialRoots               []launchidentity.MaterialRootV1   `json:"materialRoots"`
-	LaunchMaterials             []launchidentity.LaunchMaterialV1 `json:"launchMaterials"`
-	LaunchMaterialsDigest       string                            `json:"launchMaterialsDigest"`
-	AgentLaunchSpecDigest       string                            `json:"agentLaunchSpecDigest"`
-	ArgvDigest                  string                            `json:"argvDigest"`
-	EnvironmentDigest           string                            `json:"environmentDigest"`
-	StdinDigest                 string                            `json:"stdinDigest"`
-	EnvironmentKeys             []string                          `json:"environmentKeys"`
-	Argv                        []string                          `json:"argv"`
-	Environment                 []string                          `json:"environment"`
-	Stdin                       []byte                            `json:"stdin"`
+	LaunchAuthorizedFactDigest  string         `json:"launchAuthorizedFactDigest"`
+	SupervisorStartedFactDigest string         `json:"supervisorStartedFactDigest"`
+	Runtime                     HeldObjectSpec `json:"runtime"`
+	WorkingDirectory            HeldObjectSpec `json:"workingDirectory"`
+	// Empty is legacy replay only; fresh S1 commands must set
+	// SourceGateRevisionV1 and AllocationLiveIdentity.
+	SourceGateRevision string `json:"sourceGateRevision,omitempty"`
+	// AllocationLiveIdentity is the path-free identity copied from the durable
+	// allocation provision receipt. It is required for a fresh spawn.
+	AllocationLiveIdentity *AllocationLiveIdentity           `json:"allocationLiveIdentity,omitempty"`
+	ClosureProfileID       string                            `json:"closureProfileId"`
+	MaterialRoots          []launchidentity.MaterialRootV1   `json:"materialRoots"`
+	LaunchMaterials        []launchidentity.LaunchMaterialV1 `json:"launchMaterials"`
+	LaunchMaterialsDigest  string                            `json:"launchMaterialsDigest"`
+	AgentLaunchSpecDigest  string                            `json:"agentLaunchSpecDigest"`
+	ArgvDigest             string                            `json:"argvDigest"`
+	EnvironmentDigest      string                            `json:"environmentDigest"`
+	StdinDigest            string                            `json:"stdinDigest"`
+	EnvironmentKeys        []string                          `json:"environmentKeys"`
+	Argv                   []string                          `json:"argv"`
+	Environment            []string                          `json:"environment"`
+	Stdin                  []byte                            `json:"stdin"`
+}
+
+// AllocationLiveIdentity is the path-free current allocation directory
+// identity that closes the supervisor's cwd observation to allocation
+// authority. It is not a bearer and carries no locator.
+type AllocationLiveIdentity struct {
+	Device    uint64 `json:"device"`
+	Inode     uint64 `json:"inode"`
+	FileType  string `json:"fileType"`
+	UID       uint32 `json:"uid"`
+	GID       uint32 `json:"gid"`
+	Mode      uint32 `json:"mode"`
+	LinkCount uint64 `json:"linkCount"`
+	Size      int64  `json:"size"`
+}
+
+func (identity AllocationLiveIdentity) valid() bool {
+	return identity.Device != 0 && identity.Inode != 0 && identity.FileType == "directory" && identity.Mode&0o170000 == 0o040000 && identity.Mode&0o6000 == 0 && identity.LinkCount != 0 && identity.Size >= 0
+}
+
+func (identity AllocationLiveIdentity) matches(spec HeldObjectSpec) bool {
+	return identity.valid() && spec.Role == "working-directory" && spec.FileType == "directory" && identity.Device == spec.Device && identity.Inode == spec.Inode && identity.UID == spec.UID && identity.GID == spec.GID && identity.Mode == spec.Mode && identity.LinkCount == spec.LinkCount && identity.Size == spec.Size
 }
 
 // HeldObjectSpec is the exact nofollow identity that the supervisor must open
@@ -478,13 +512,19 @@ type ProcessReport struct {
 	Process             ProcessIdentity `json:"process"`
 	RuntimeObjectDigest string          `json:"runtimeObjectDigest"`
 	WorkingObjectDigest string          `json:"workingObjectDigest"`
-	ExitCode            int             `json:"exitCode,omitempty"`
-	Signal              string          `json:"signal,omitempty"`
-	StdoutDigest        string          `json:"stdoutDigest,omitempty"`
-	StderrDigest        string          `json:"stderrDigest,omitempty"`
-	StdoutBytes         uint64          `json:"stdoutBytes,omitempty"`
-	StderrBytes         uint64          `json:"stderrBytes,omitempty"`
-	TranscriptTruncated bool            `json:"transcriptTruncated,omitempty"`
+	// SourceGateRevision is empty only on historical reports. New S1 reports
+	// carry SourceGateRevisionV1 and a mandatory ExactSetDigest.
+	SourceGateRevision string `json:"sourceGateRevision,omitempty"`
+	// ExactSetDigest binds the role-keyed runtime/cwd/root/material table
+	// admitted by spawn. It contains no canonical paths or raw material bytes.
+	ExactSetDigest      string `json:"exactSetDigest,omitempty"`
+	ExitCode            int    `json:"exitCode,omitempty"`
+	Signal              string `json:"signal,omitempty"`
+	StdoutDigest        string `json:"stdoutDigest,omitempty"`
+	StderrDigest        string `json:"stderrDigest,omitempty"`
+	StdoutBytes         uint64 `json:"stdoutBytes,omitempty"`
+	StderrBytes         uint64 `json:"stderrBytes,omitempty"`
+	TranscriptTruncated bool   `json:"transcriptTruncated,omitempty"`
 }
 
 // Mechanics is the next-slice integration seam. Implementations must own the

@@ -10,7 +10,7 @@ import (
 const testDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func TestPreparedRunStartRequiresExactReadyHead(t *testing.T) {
-	valid := PreparedRunStart{ProtocolRevision: ProtocolRevision, TaskID: "task-1", RunID: "run-1", AttemptID: "attempt-1", State: domain.StateReady, Sequence: 3, AuthorityHead: testDigest, PreparationDigest: testDigest}
+	valid := PreparedRunStart{ProtocolRevision: PreparedRunStartProtocolRevision, TaskID: "task-1", RunID: "run-1", AttemptID: "attempt-1", ReservationFactDigest: testDigest, AttemptOpenedFactDigest: testDigest, AttemptOrdinal: 1, MaxAttempts: 3, State: domain.StateReady, Sequence: 3, AuthorityHead: testDigest, PreparationDigest: testDigest}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid prepared start: %v", err)
 	}

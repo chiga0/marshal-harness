@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"golang.org/x/sys/unix"
@@ -319,12 +320,58 @@ func readLeaseOwnerAt(runFD int) (leaseOwnerRecord, error) {
 	return owner, nil
 }
 
-// OpenRunAuthority opens the current canonical run pathname, validates that
-// exact directory descriptor against the held lease and owner records, and
-// returns it without reopening by pathname. CAS reads and mutations must use
-// this returned descriptor for the entire operation.
-func OpenRunAuthority(lease *Lease) (*os.File, error) {
-	if lease == nil || lease.runDir == nil || lease.file == nil || !lease.held {
+// RunAuthority is an RAII borrow of the exact canonical Run directory. Close
+// releases both the descriptor and the Lease read guard. Release and sealed
+// mutations take the write guard, so descriptor-relative operations cannot
+// outlive the Lease descriptors they were validated against.
+type RunAuthority struct {
+	*os.File
+	guard *leaseGuard
+	once  sync.Once
+}
+
+func (authority *RunAuthority) Close() error {
+	if authority == nil {
+		return nil
+	}
+	var err error
+	authority.once.Do(func() {
+		if authority.File != nil {
+			err = authority.File.Close()
+			authority.File = nil
+		}
+		if authority.guard != nil {
+			authority.guard.mu.RUnlock()
+			authority.guard = nil
+		}
+	})
+	return err
+}
+
+// OpenRunAuthority opens the current canonical Run while holding a read
+// borrow on the Lease for the returned handle's full lifetime. Code already
+// holding the Lease guard uses the private openRunAuthorityLocked helper.
+func OpenRunAuthority(lease *Lease) (*RunAuthority, error) {
+	if lease == nil || lease.guard == nil || lease.guard.owner != lease {
+		return nil, errors.New("lease lacks bound authority descriptors")
+	}
+	// A callback inside the exclusive prepared-start seam must fail instead of
+	// recursively waiting on the writer lock it already depends on.
+	if lease.guard.preparedBorrowed.Load() {
+		return nil, errors.New("run authority is synchronously borrowed by prepared start")
+	}
+	lease.guard.mu.RLock()
+	file, err := openRunAuthorityLocked(lease)
+	if err != nil {
+		lease.guard.mu.RUnlock()
+		return nil, err
+	}
+	return &RunAuthority{File: file, guard: lease.guard}, nil
+}
+
+// openRunAuthorityLocked requires guard.mu's read or write lock.
+func openRunAuthorityLocked(lease *Lease) (*os.File, error) {
+	if lease == nil || lease.guard == nil || lease.guard.owner != lease || lease.runDir == nil || lease.file == nil || !lease.held {
 		return nil, errors.New("lease lacks bound authority descriptors")
 	}
 	rootFD, runsFD, currentRunFD, err := openRunAuthority(lease.root, lease.runID)
@@ -382,7 +429,7 @@ func leaseDescriptorAuthoritativeAt(lease *Lease, runFD int) error {
 // DupRunDirectory returns a close-on-exec duplicate of the directory
 // descriptor bound by the held lease. Callers use it for descriptor-relative
 // attempt persistence without reopening the mutable run pathname.
-func DupRunDirectory(lease *Lease) (*os.File, error) {
+func DupRunDirectory(lease *Lease) (*RunAuthority, error) {
 	return OpenRunAuthority(lease)
 }
 

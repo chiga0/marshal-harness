@@ -216,6 +216,24 @@ class ArchitectureCheckTest(unittest.TestCase):
         )
         self.assertEqual(production_dependency_inversions(packages), [])
 
+    def test_allows_the_accepted_runtime_runstore_resultingress_edge(self) -> None:
+        packages = production_graph(
+            {
+                PRODUCTION_RUNTIME_PACKAGE: [f"{MODULE}/internal/runstore"],
+                f"{MODULE}/internal/runstore": [f"{MODULE}/internal/resultingress"],
+            }
+        )
+        self.assertEqual(production_dependency_inversions(packages), [])
+
+    def test_freezes_the_s1_input_root_runstore_resultingress_edge(self) -> None:
+        packages = production_graph(
+            {
+                f"{MODULE}/cmd/marshal": [f"{MODULE}/internal/runstore"],
+                f"{MODULE}/internal/runstore": [f"{MODULE}/internal/resultingress"],
+            }
+        )
+        self.assertEqual(production_dependency_inversions(packages), [])
+
     def test_rejects_an_unreviewed_command_composition_root(self) -> None:
         extra = f"{MODULE}/cmd/alternate"
         packages = production_graph({extra: []})
