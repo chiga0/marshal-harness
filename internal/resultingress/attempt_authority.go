@@ -1727,7 +1727,7 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 			state.SupervisorMechanicsAuthorityHead = fact.Digest
 			request := state.SupervisorBootstrap.Request
 			handshake := t.SupervisorStarted.Handshake
-			state.SupervisorMechanicsAnchor = SupervisorMechanicsAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, Authority: request.Authority, OwnerEpoch: handshake.OwnerEpoch, CurrentAuthorityHead: handshake.CurrentAuthorityHead, CommandSequence: handshake.CommandSequence, CommandHead: handshake.CommandHead, JournalSequence: handshake.JournalSequence, JournalHead: handshake.JournalHead, UID: request.Core.UID, GID: request.Core.GID, FixedBinary: handshake.SupervisorBinary, ControlSocket: handshake.ControlSocket}
+			state.SupervisorMechanicsAnchor = SupervisorMechanicsAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, Authority: request.Authority, OwnerEpoch: handshake.OwnerEpoch, CurrentAuthorityHead: handshake.CurrentAuthorityHead, CommandSequence: handshake.CommandSequence, CommandHead: handshake.CommandHead, JournalSequence: handshake.JournalSequence, JournalHead: handshake.JournalHead, UID: request.Core.UID, GID: request.Core.GID, FixedBinary: handshake.SupervisorBinary, ControlSocket: handshake.ControlSocket, ControlFiles: handshake.ControlFiles}
 		}
 	case AttemptTransitionProcessStarted:
 		state.LaunchState = LaunchStarted
