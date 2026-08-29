@@ -28,6 +28,18 @@
 
 这些 finding 只解阻 R2/R3 的 ProcessBridge producer seam，不新增 milestone 或通用恢复框架；ADR 0063 已接受，后续顺序固定为一个 bounded authority component → 立即相邻的 fixed Marshal composition 切片。两切片之间禁止插入第二个 component 或无关工作，component 完成不升级当前成熟度。
 
+### Run-start proof 职责分离纠偏（2026-08-29）
+
+对 ADR 0063 implementation seam 的进一步审计确认：generic held-authority callback 与 raw-source closure 不能仅靠 callback 纪律或返回后清空变量防止副本逃逸；让 ResultIngress 与 runstore 都携带/解释 owner epoch、dispatch generation 或对方 ledger facts，也会建立第二 current 判定者、反向 callback 和 response-loss 猜测。该问题是合同边界缺口，不应通过继续给旧 API 补零散逃逸检查解决。
+
+| Finding | 等级 | 状态 | 处置 / 关闭条件 |
+| --- | --- | --- | --- |
+| `I186-ARCH-RUN-START-PROOF-BOUNDARY` | P0 | `PROPOSED-CONTRACT/OPEN-IMPLEMENTATION` | [ADR 0065](adr/0065-sealed-run-start-proof-and-one-way-composition.md) 提议由 ResultIngress 在 current-ledger borrow 内唯一前后重验 owner/Attempt/generation 并 mint shared-guard `CommittedRunStartProof`；claim 是 non-authority，禁止 owner/generation/Run head/successor。runstore 只在自己的 outer borrow 内消费 active proof、复核自身 lease/head/state 并写唯一 successor，绝不读/镜像 ResultIngress facts。关闭需要 ADR 接受、S1 proof hostile/race 矩阵与 S2 fixed composition 真实纵切通过。 |
+| `I186-ARCH-RUN-START-LOCK-ORDER` | P0 | `PROPOSED-CONTRACT/OPEN-IMPLEMENTATION` | 锁序候选固定为 repository owner → runstore outer borrow → ResultIngress borrow → Supervisor → outcome fsync → ResultIngress final recheck/mint → runstore self-only CAS → deactivate/release；禁止 reacquire、handoff gap、reverse authority callback。关闭需要 deadlock/反序负测与 response-loss 两账本各自 replay 证据。 |
+| `I186-ARCH-RUN-START-COMPOSITION-BYPASS` | P1 | `PROPOSED-CONTRACT/OPEN-IMPLEMENTATION` | 候选 architecture gate 精确限定 `internal/productionruntime/prepared_run_start_composition.go` 中两个 exported seam 各唯一一个 typed `CallExpr`、direct `FuncLit` 与 projector 单次末参数传递；runstore 单文件四 selector/primitive 唯一 callsite；generic `Append READY→RUNNING` 必须拒绝。关闭需要全 production build-tag AST/go-types 扫描、direct append/second wrapper/存储或异步 projector 负测。 |
+
+ADR 0065 当前仅为 `Proposed`，基线为 `main@40fa493d1955fd6d039169483a6501a787d3cc14`；它不撤销 ADR 0063 已冻结的 Pi identity、held source 与 exact resume 业务条件，也不表示任何旧实现候选可合入。实施顺序只允许 S1 proof component → S2 fixed composition；ADR 0056 terminalization 是之后的独立切片。
+
 ### Darwin 控制目录阶段化身份审计（2026-08-29）
 
 exact-head macOS CI 证明，APFS 在 Supervisor 合法创建 nonce、journal、socket 与输出对象时可能改变目录 `st_nlink`；既有全字段 runtime equality 因此会把同一目录对象误判为 ABA，并让本应在 receipt `fsync` 后拒绝的 post-command drift 提前停在 journal sequence `1`。这不是测试断言问题，也不能通过删除 link-count hostile gate、跳过目录枚举或放宽 control object identity解决。
