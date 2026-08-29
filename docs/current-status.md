@@ -27,13 +27,17 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 ## v1.0 正在建设
 
-当前第一优先级不是继续扩展组件数量，而是把已有资产收敛为一条真实可达的生产链：
+2026-08-29 的 `main@6176868` checkpoint 已合入 RB1-authoritative existing-worktree Bind/Receipt/Release 与 recovery projection，以及 RC1 build-once distribution、exact opt-in installer guard 和 immutable carrier checker/receipt Schema。该 exact-head CI 的 Ubuntu quality 与 secret scan 已通过，但 macOS quality 失败，整体仍未全绿。这些仍是 component/admission 资产：完整 S1′（S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor，含 item 5 borrow seam/门禁）尚未进入 `main`，`3abed5a` 仍只是未合入候选；S2′、Attach/rebind、terminalization、最终 fixed-bin Pi→独立 Decision→`ACCEPTED`、真实 same-bytes canary/carrier、tag、GitHub prerelease 与 release asset 均未完成，不能据此宣称 RC1 或 stable 可用。
 
-- `marshal` 或 loopback `marshal-server` 进入同一个 durable Run journal；
-- Core-owned `WorkerExecutor` 把真实 Agent 放进 Local/Container allocation；
-- 真实结果只经 `ResultIngress` 接纳，并执行 Agent/Sandbox 双 binding current-ledger recheck；
-- restart、lost response、stale/replayed result、lease/binding drift 都能确定性恢复或拒绝；
-- macOS 与 Linux 产出稳定安装物，macOS 正式包通过签名与 notarization。
+当前第一优先级严格按 ADR 0068 收敛 Mac-first RC1，不再把 server 或 stable 门禁插入首发关键路径：
+
+- 完成完整 S1′：S1′-A reservation/full Attempt 与 S1′-B held descriptor/prepared proof/sealed successor，包括 item 5 borrow seam/门禁；
+- 完成 S2′ fixed CLI production composition，并让真实 producer chain 消费已合入的 RB1 existing-worktree authority；
+- 依次完成 Attach/rebind 与 terminalization；
+- 由最终 fixed CLI 运行真实 Pi，经独立 ReviewDecision 进入 `ACCEPTED`；
+- 对同一最终 Darwin arm64 bytes 产生 canary receipt/carrier，并完成 exact opt-in 安装验证、annotated tag 与 GitHub prerelease。
+
+fixed `marshal control-plane serve`、managed signing/notarization 与 Linux production/release/stable authority 明确属于 RC1 后继，不阻塞 unsigned CLI-only RC1，也不能由 RC1 的 component 证据提前宣称完成。
 
 这些能力目前处于 `COMPONENT` 或集成中，不能因为 package、测试或 API 已存在就表述为 `INTEGRATED`。
 
@@ -47,12 +51,14 @@ Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Prov
 
 ## 接下来怎么走
 
-近期建设顺序以 v1.0 生产可达性为唯一主线：
+近期建设顺序与上文 ADR 0068 关键路径完全一致：
 
-1. 接通真实 Agent-in-Local/Container walking skeleton；
-2. 收敛 command/result authority 与 durable recovery；
-3. 落地 Agent/Sandbox 双 binding 与 Core-held local process observation；
-4. 完成单一恢复模型、strangler cutover 和旧 host bypass 移除；
-5. 通过跨平台故障 conformance、签名/notarization 和 release gate。
+1. 完成尚未进入 `main` 的完整 S1′-A/S1′-B；
+2. 完成 S2′ fixed CLI production composition；
+3. 依次完成 Attach/rebind 与 terminalization；
+4. 由最终 fixed CLI 运行真实 Pi，并以独立 ReviewDecision 进入 `ACCEPTED`；
+5. 对同一最终 Darwin arm64 bytes 完成 canary/carrier、安装验证、annotated tag 与 GitHub prerelease。
+
+RC1 发布后才推进 fixed server、managed signing/notarization、Linux authority 与 stable release gate。
 
 详细范围见 GitHub 上的 [ADR 0052](https://github.com/chiga0/marshal-harness/blob/main/docs/adr/0052-v1-release-scope-and-production-reachability.md)，实时工程状态见 [Roadmap](https://github.com/chiga0/marshal-harness/blob/main/docs/roadmap-status.md)。
