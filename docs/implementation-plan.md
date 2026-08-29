@@ -49,13 +49,13 @@ Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Prov
 
 1. 锁定 `main@912f659` 的 crash-atomic ResultIngress transaction 为唯一 admission 基线，不再建立另一条 ResultIngress/worker-result 真值；
 2. 按已接受 ADR0067，从当前main重建S1′ fresh-start sealed proof：Core只做无副作用current source/cwd admission，Supervisor`spawn`做唯一mutation-adjacent exact-set gate；ResultIngress proof/shared guard与runstore private projector/self-only CAS直接建立在当前Store/Lease上，runstore只允许内部窄lease shared-guard/borrow、strict journal与read-only projection，唯一exported mutation seam为`WithPreparedRunStartAuthority`；generic`Append READY→RUNNING`拒绝，明确不引入`506a647`通用substrate；
-4. S2′必须立即相邻：按ADR0066实现两阶段owner、canonical repository`.marshal`、controller、唯一factory/composition、fixed`cmd/marshal`窄application adapter与真实Pi fresh E2E；入口只持有`PublicApplicationPort`，legacy fallback、第二authority root、独立`marshal-server`不可达；
-5. S2′ concrete authority 必须在`internal/productionruntime/authority.go`与必要窄adapter内，以现有authority API产生`attempt-opened→owner/current Attempt binding→allocation provision intent/receipt→launch-authorized/StoredClosure→PreparedExecution`；真实fixed CLI/Pi必须亲历全链，seed/Fake/memory-only/legacy `execution.Run`皆不可达；S1′后立即相邻执行S2′；
-6. S2′后先以独立切片实现ADR0067 held-owner/acquisition→RB1 no-pending→`control-owner-bound` successor→只读`Attach`→exact bind链，只支持`process-started`已耐久、无pending command的恢复；同时实现pre-start no-effect链/permanent intervention二分，跨owner pending与identity ambiguity固定permanent intervention；
-7. 随后按ADR0056/0061接入terminalization CAS、transcript disposition、allocation terminal receipt、`cleanup-completed`与successor；不得回塞S1′/S2′；
-8. 由 fixed CLI 运行当前主线真实 Pi，独立 reviewer 为 current Evidence 生成ReviewDecision，通过现有`task review --decision`从`REVIEW_PENDING`到`ACCEPTED`，并证明旧cooperative process group已安全退出或被fence、不会与successor双活；
-9. build-once 后以同一最终 Darwin arm64 bytes 完成 exact opt-in、host viability、canary、checksum/install/recovery负测并发布 unsigned CLI-only RC1；缺资产不得fallback，安装器不得自动activation；
-10. RC1 后再接入 ADR0062 authenticated fixed`marshal control-plane serve`/durable delivery ledger，完成Issue #212 managed signing/notarization与Linux production/release gate，最后以新的受保护bytes发布stable。
+3. S2′必须立即相邻：按ADR0066实现两阶段owner、canonical repository`.marshal`、controller、唯一factory/composition、fixed`cmd/marshal`窄application adapter与真实Pi fresh E2E；入口只持有`PublicApplicationPort`，legacy fallback、第二authority root、独立`marshal-server`不可达；
+4. S2′ concrete authority 必须在`internal/productionruntime/authority.go`与必要窄adapter内，以现有authority API产生`attempt-opened→owner/current Attempt binding→allocation provision intent/receipt→launch-authorized/StoredClosure→PreparedExecution`；真实fixed CLI/Pi必须亲历全链，seed/Fake/memory-only/legacy `execution.Run`皆不可达；S1′后立即相邻执行S2′；
+5. S2′后先以独立切片实现ADR0067 held-owner/acquisition→RB1 no-pending→`control-owner-bound` successor→只读`Attach`→exact bind链，只支持`process-started`已耐久、无pending command的恢复；同时实现pre-start no-effect链/permanent intervention二分，跨owner pending与identity ambiguity固定permanent intervention；
+6. 随后按ADR0056/0061接入terminalization CAS、transcript disposition、allocation terminal receipt、`cleanup-completed`与successor；不得回塞S1′/S2′；
+7. 由 fixed CLI 运行当前主线真实 Pi，独立 reviewer 为 current Evidence 生成ReviewDecision，通过现有`task review --decision`从`REVIEW_PENDING`到`ACCEPTED`，并证明旧cooperative process group已安全退出或被fence、不会与successor双活；
+8. build-once 后以同一最终 Darwin arm64 bytes 完成 exact opt-in、host viability、canary、checksum/install/recovery负测并发布 unsigned CLI-only RC1；缺资产不得fallback，安装器不得自动activation；
+9. RC1 后再接入 ADR0062 authenticated fixed`marshal control-plane serve`/durable delivery ledger，完成Issue #212 managed signing/notarization与Linux production/release gate，最后以新的受保护bytes发布stable。
 
 ### Darwin ordinary-user 进程生命周期实现顺序
 
