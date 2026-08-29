@@ -48,6 +48,8 @@
 
 2026-08-29，维护者在提案 `9cfa1b65275d2e23f18b958a05d027adec6af8fd` 经唯一独立 reviewer `APPROVE`（`P0=0`、`P1=0`）后接受 ADR 0068：`v1.0.0-rc1` 精确收敛为 unsigned、Darwin arm64、CLI-only、`darwin-local-dogfood`、显式 opt-in、`publication:none` 的 non-production 生命周期预览。RC1 必须依次完成 S1′→S2′→Attach/rebind→terminalization→fixed CLI 真实 Pi + 独立 Decision `ACCEPTED`→同一最终 bytes canary/release；fixed server、managed signing/notarization与Linux stable均转为RC1后的stable后继。接受只冻结合同，RC1尚未实现或发布，R2–R5仍为`COMPONENT`、R6仍为`PLANNED/DESIGN`。
 
+2026-08-29，S1′/S2′ producer预审新增[ADR 0069](0069-attempt-reservation-and-existing-worktree-allocation.md)提案：当前`READY`没有durable `AttemptID`，existing Git worktree也不能诚实复用“创建新空目录”receipt。提案由ResultIngress creation-once、response-loss-safe的`attempt-opened/v2`在任何allocation/bootstrap/child副作用前预留Attempt；Run仍READY且不消费预算，只有绑定同一reservation与exact READY head的sealed successor才写入Attempt并消费一次预算。同时新增`bind-existing-worktree/v1` sidecar ledger，只绑定/释放既有worktree，禁止创建、替换、清理或删除。ResultIngress pathname reopen和`OpenOwner`后才可`ObserveCurrentCore`登记为ADR0066既有实施P0。ADR0069仍为`Proposed`，未独立审查、未接受、未实现，不升级R2–R6。
+
 2026-08-29，exact-head macOS CI发现APFS在同一held control-directory合法创建Supervisor控制/输出对象时可能改变目录`st_nlink`，既有全字段runtime equality会在首条command前误报ABA。维护者在提案 `7d91e9704c69dcbde987d64d6fa93e0a06d7f32a` 经独立 reviewer 聚合复审确认 P0/P1/P2 均为 0 后接受 ADR 0064：冻结bootstrap initial empty完整身份、setup final observation、稳定目录对象字段、descriptor-relative phase-aware exact entry set，以及nonce/journal/socket与单次transcript read的对象/content门禁；它明确不把未持久化的输出inode夸大为跨时间authority。候选`765617c20ea3faee71af980d70a35ecd06e3462a`尚缺phase-aware exact-set gate，在实现补齐前保持冻结；接受不授权Linux/hardened/stable release。
 
 | ADR | 决策 | 状态 |
@@ -111,3 +113,4 @@
 | [0066](0066-production-composition-owner-acquisition.md) | scope-only 两阶段 repository owner acquisition、provisional→current verifier、canonical `.marshal`、唯一 fixed Marshal factory/application Port 与 ADR 0065 S2 文件边界纠正 | 已接受（Accepted，2026-08-29；提案 `6957453` 独立复审 P0/P1=0；只冻结合同，不表示 S2 已实现或升级 R2–R6） |
 | [0067](0067-darwin-ordinary-user-launch-and-attach-recovery.md) | Darwin ordinary-user source gate归位、held-owner successor→只读`Attach`、pre-start no-effect/permanent-intervention二分与窄S1/S2 producer chain | 已接受（Accepted，2026-08-29；提案 `1e05fb8` 独立复审 P0/P1=0；冻结旧候选，只冻结合同，不表示实现或成熟度升级） |
 | [0068](0068-mac-first-cli-only-lifecycle-preview-rc1.md) | Mac-first CLI-only `v1.0.0-rc1` 的 Darwin arm64 exact opt-in、同一最终 bytes canary 与 non-production 发布边界 | 已接受（Accepted，2026-08-29；提案 `9cfa1b6` 独立审查 `APPROVE`、P0/P1=0；RC1 尚未实现或发布，不升级 R2–R6） |
+| [0069](0069-attempt-reservation-and-existing-worktree-allocation.md) | ResultIngress creation-once Attempt reservation、sealed successor预算单次消费与Mac ordinary-user existing-worktree逻辑allocation binding | 提议（Proposed，2026-08-29；未审查、未接受、未实现，不升级R2–R6） |

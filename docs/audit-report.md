@@ -2,6 +2,18 @@
 
 - 审计日期：2026-08-04（2026-08-10 增补 Runtime 架构重置记录、首次 Sandbox SPI dogfood reject 增补记录与 Round 2 关闭记录；2026-08-11 增补 Control Plane 与 Provider Port 边界冻结记录，含 Round 4 独立评审八项 P1 关闭记录、Round 5 复核四项残留关闭记录、Round 6 复核两项残留——Control Plane authority namespace 与 Provider actor 域分离、typed cross-domain edge——关闭记录与 Round 7 复核三项残留——双键空间残留清除（权威对象 authorityNamespaceId 独占拥有、registration/snapshot/evidence authority ledger 事实、接纳关系归 authority ledger、controlPlaneId 逻辑权威身份）、Core-only typed edge 生命周期细化（issuer/source/target/operation/expiry/digest/revocation/replay/current-ledger recheck，issuer 恒为 Core 且不等于业务流 sourceActor、sourceActor/targetActor 按 edge 类型绑定，派生 token/handle 不得成为第二权威）、Public API 幂等/SSE/对象 key 修正为 authorityNamespaceId——关闭记录与 Round 8 复核一项残留——typed edge 跨域例外与适用范围（三类 typed edge 明确为 Provider actor 跨信任域访问默认拒绝的唯一 allowlist 例外，Public API/SSE 与 Core 内部权威引用无需 Provider typed edge）——与 Round 9 复核两项残留——跨域 fail closed 表述精确化（删除会无条件拒绝 MaterialAccessGrant 等合法 typed edge 的宽泛表述）、非 edge Port 与同域不自动授权（provider-registration/control 经 transport identity/该 Port AuthN/AuthZ/registration protocol 由 Core 写 authority ledger；securityDomainId 相同只是 provenance/partition 条件，不构成授权）——关闭记录；2026-08-12 增补 Issue #25 发布合并后 head reconcile 审计记录；2026-08-13 该 finding 随 typed reconciliation 实现合入关闭；2026-08-14 增补 Issue #53 CI 失败 rework 注入设计缺口审计记录，目标契约由 [ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)（Proposed，草案已提出/待接受）给出（接受后方冻结），实现待后续 implementation successor）
 
+## 2026-08-29：S1′/S2′ producer chain 的 Attempt 与 existing-worktree P0
+
+对accepted S1′ mechanics与S2′ production composition做真实producer预审后，发现两项不能由fixture绕过的P0：
+
+| Finding | 严重度 | 当前状态 | 证据、影响与关闭条件 |
+| --- | --- | --- | --- |
+| `I186-RUN-ATTEMPT-RESERVATION` | P0 | `ADR-PROPOSED / IMPLEMENTATION-OPEN` | 当前`READY`没有durable `AttemptID`。ADR0069提议由ResultIngress `attempt-opened/v2`对同一exact READY head creation-once预留Attempt；Run保持READY且预算未消费，只有绑定exact reservation/head的sealed successor才写入Attempt并消费一次预算。关闭要求ADR接受、schema/protocol迁移、并发/响应丢失/预算/legacy拒绝矩阵与fixed CLI真实producer通过。 |
+| `I186-EXISTING-WORKTREE-ALLOCATION` | P0 | `ADR-PROPOSED / IMPLEMENTATION-OPEN` | Mac ordinary-user workspace-write使用已经存在的Git worktree，现有create-empty Local receipt既不诚实，也可能错误授权Terminate删除用户对象。ADR0069提议`bind-existing-worktree/v1`：held identity + owner-private sidecar ledger只做逻辑bind/release，跨Run/Attempt重复绑定fail closed，不创建/替换/reset/clean/delete目标。关闭要求ADR接受、existing-only Run open、sidecar crash/replay/ABA/symlink/hardlink/rename/secret/zero-target-mutation矩阵与真实Pi纵切。 |
+| `I186-RESULTINGRESS-HELD-DESCRIPTOR` | P0 | `CONTRACT-ACCEPTED / IMPLEMENTATION-OPEN` | 当前ResultIngress store仍可能按pathname reopen authority对象，且`ObserveCurrentCore`不能先于`OpenOwner`产生current结论。这不是ADR0069新增信任决策：[ADR0066](adr/0066-production-composition-owner-acquisition.md)已经要求canonical held-descriptor边界。S1′ rework必须改held descriptor backend、拆分正确时序并证明path漂移时不打开替代对象；完成前不得接受sealed proof实现。 |
+
+[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md)当前仅为Proposed，未审查、未接受、未实现。它不改变ordinary-user/non-production边界，也不提供hardened sandbox、Linux authority或release授权；R2–R5保持`COMPONENT`、R6保持`PLANNED/DESIGN`。
+
 ## v1.0 候选链审计 checkpoint（2026-08-28）
 
 本 checkpoint 取代本文较早章节对“当前状态”的描述；旧记录保留用于解释偏航与修复历史，不得用其中曾经的 `DONE` 结论升级现行 Roadmap。
