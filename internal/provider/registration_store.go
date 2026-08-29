@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -27,6 +28,11 @@ const (
 // to a durable ledger directory is asked to read or write registrations:
 // ADR 0018 §5 forbids memory-only registrations fail closed.
 var ErrMemoryOnlyRegistration = errors.New("provider: memory-only registration not allowed: the registration store is not bound to a durable ledger directory")
+
+// ErrHeldRegistrationUnavailable is the fail-closed result when the
+// production descriptor-bound registration ledger cannot prove its exact
+// owner-only current-name graph.
+var ErrHeldRegistrationUnavailable = errors.New("provider: held registration authority unavailable")
 
 // ErrRegistrationConflict is the fail-closed rejection of any registration
 // that collides with an existing ledger record without being identical: the
@@ -48,8 +54,10 @@ var ErrUnknownRegistration = errors.New("provider: unknown registrationId")
 // their current lifecycle state and the replay protection.
 type RegistrationStore struct {
 	dir                 string
+	held                *heldRegistrationFiles
 	byRegistrationId    map[string]ProviderRegistration
 	byIdempotencyDigest map[string]string
+	mu                  sync.Mutex
 }
 
 // registrationFact is the append-only ledger fact recording one accepted
@@ -114,6 +122,11 @@ func (s *RegistrationStore) Put(reg ProviderRegistration) (ProviderRegistration,
 	if err := s.requireBound(); err != nil {
 		return ProviderRegistration{}, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.refreshHeldLocked(); err != nil {
+		return ProviderRegistration{}, err
+	}
 	if err := reg.Validate(); err != nil {
 		return ProviderRegistration{}, err
 	}
@@ -142,6 +155,18 @@ func (s *RegistrationStore) Put(reg ProviderRegistration) (ProviderRegistration,
 		Registration: reg,
 	}
 	if err := s.appendFact(fact); err != nil {
+		if s.held != nil {
+			appendErr := err
+			if recoveryErr := s.refreshHeldLocked(); recoveryErr != nil {
+				return ProviderRegistration{}, errors.Join(appendErr, recoveryErr)
+			}
+			if existingId, ok := s.byIdempotencyDigest[idempotencyDigest]; ok {
+				existing := s.byRegistrationId[existingId]
+				if existing.RegistrationDigest == reg.RegistrationDigest && existing.ValidateReplay(reg) == nil {
+					return existing, nil
+				}
+			}
+		}
 		return ProviderRegistration{}, err
 	}
 	if err := s.indexRegistration(reg); err != nil {
@@ -155,6 +180,11 @@ func (s *RegistrationStore) Put(reg ProviderRegistration) (ProviderRegistration,
 // fail closed.
 func (s *RegistrationStore) Get(registrationId string) (ProviderRegistration, error) {
 	if err := s.requireBound(); err != nil {
+		return ProviderRegistration{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.refreshHeldLocked(); err != nil {
 		return ProviderRegistration{}, err
 	}
 	registration, ok := s.byRegistrationId[registrationId]
@@ -182,10 +212,24 @@ func (s *RegistrationStore) Expire(registrationId string) error {
 // ledger directory, including the zero value and nil receivers: memory-only
 // registrations are never accepted (ADR 0018 §5).
 func (s *RegistrationStore) requireBound() error {
-	if s == nil || s.dir == "" {
+	if s == nil || s.dir == "" && s.held == nil {
 		return ErrMemoryOnlyRegistration
 	}
 	return nil
+}
+
+// Close releases descriptors retained by the production held-directory
+// backend. The legacy path backend owns no persistent descriptors.
+func (s *RegistrationStore) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.held == nil {
+		return nil
+	}
+	return s.held.close()
 }
 
 // ledgerPath returns the path of the append-only ledger file.
@@ -197,6 +241,9 @@ func (s *RegistrationStore) ledgerPath() string {
 // indexes. Any malformed, non canonical, conflicting or orphan line fails
 // closed.
 func (s *RegistrationStore) recover() error {
+	if s.held != nil {
+		return s.held.recover(s)
+	}
 	file, err := os.Open(s.ledgerPath())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -222,6 +269,15 @@ func (s *RegistrationStore) recover() error {
 		return fmt.Errorf("provider: read registration ledger: %w", err)
 	}
 	return nil
+}
+
+func (s *RegistrationStore) refreshHeldLocked() error {
+	if s.held == nil {
+		return nil
+	}
+	s.byRegistrationId = map[string]ProviderRegistration{}
+	s.byIdempotencyDigest = map[string]string{}
+	return s.held.recover(s)
 }
 
 // applyLedgerLine validates one ledger line as canonical JSON and applies
@@ -344,6 +400,11 @@ func (s *RegistrationStore) transition(registrationId string, to LifecycleState)
 	if err := s.requireBound(); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.refreshHeldLocked(); err != nil {
+		return err
+	}
 	registration, ok := s.byRegistrationId[registrationId]
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrUnknownRegistration, registrationId)
@@ -359,6 +420,15 @@ func (s *RegistrationStore) transition(registrationId string, to LifecycleState)
 		TransitionedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := s.appendFact(fact); err != nil {
+		if s.held != nil {
+			appendErr := err
+			if recoveryErr := s.refreshHeldLocked(); recoveryErr != nil {
+				return errors.Join(appendErr, recoveryErr)
+			}
+			if current, ok := s.byRegistrationId[registrationId]; ok && current.LifecycleState == to {
+				return nil
+			}
+		}
 		return err
 	}
 	registration.LifecycleState = to
@@ -379,6 +449,9 @@ func (s *RegistrationStore) appendFact(fact any) error {
 		return fmt.Errorf("provider: canonicalize ledger fact: %w", err)
 	}
 	line := append(canonicalized, '\n')
+	if s.held != nil {
+		return s.held.append(line)
+	}
 	file, err := os.OpenFile(s.ledgerPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("provider: open registration ledger: %w", err)
