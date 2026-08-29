@@ -1,6 +1,6 @@
 # 整体架构
 
-> 规范状态：Marshal 终态整体架构，更新于 2026-08-27；依据已接受的 [ADR 0016–0019](adr/README.md)、[ADR 0043–0045](adr/README.md) 与 [ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md)。标注 **Proposed** 的组件尚无 ADR 出处，不构成合同，也不进入 required path。当前实现与计划状态以 [Roadmap](roadmap-status.md) 为准。
+> 规范状态：Marshal 终态整体架构，更新于 2026-08-29；依据已接受的 [ADR 0016–0019](adr/README.md)、[ADR 0043–0045](adr/README.md) 与 [ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md)。标注 **Proposed** 的组件或接缝尚未被接受，不构成合同，也不进入 required path。当前实现与计划状态以 [Roadmap](roadmap-status.md) 为准。
 
 本文定义 Marshal 的整体产品架构：系统由哪些部分组成、权威在哪里、Executor 如何协作，以及 embedded/local 与 C/S 如何共享同一业务语义。Local MVP 仅在“当前交付映射”中说明，不定义系统边界。字段级契约与故障语义见 [Runtime 架构](runtime-architecture.md)。
 
@@ -22,8 +22,8 @@ Marshal 的目标不是让一个 Agent 或进程连续运行数月，而是提�
 | --- | --- | --- |
 | Local MVP（M0–M6） | `USABLE` | CLI-first 模块化单体、独立 worktree、Worker Adapter、Verification、Review/Rework、GitHub Draft Publisher、恢复与审计 |
 | Runtime 设计（M7） | `PASSED` | C/S、SandboxProvider、Provider Port、权威/actor 分离、Typed Execution 与 Goal admission 已冻结 |
-| Runtime 组件资产（历史 M8/M9） | `PASSED` / `COMPONENT` | 保留当时退出证据；Sandbox SPI、`marshal-server`、lease、transport 与 ResultIngress 相关组件尚未共同进入真实 Agent 生产链 |
-| v1.0 生产纵切（I186-R0→R6） | `IN_PROGRESS` | R0 `PASSED`；R1 `IN_PROGRESS`；R2–R6 `PLANNED`。目标是一条单节点、单用户、可信仓库的可恢复真实执行链 |
+| Runtime 组件资产（历史 M8/M9） | `PASSED` / `COMPONENT` | 保留当时退出证据；Sandbox SPI、legacy `marshal-server`、lease、transport 与 ResultIngress 相关组件尚未共同进入真实 Agent 生产链；独立 server executable 不属于当前 production topology |
+| v1.0 生产纵切（I186-R0→R6） | `IN_PROGRESS` | R0 `PASSED`；R1 `IN_PROGRESS / INTEGRATED`；R2–R5 `IN_PROGRESS / COMPONENT`；R6 `PLANNED / DESIGN`。目标是一条单节点、单用户、可信仓库的可恢复真实执行链 |
 | 1.x 平台扩展（原 M10–M13） | `PLANNED` | Cloudflare 完整生产拓扑、HA、多用户、SDK 与 Goal DAG 在 v1.0 后重排 |
 
 上表只把已交付代码映射到终态架构，不以当前实现反向定义产品。本文不会把 `PLANNED` 能力描述成已交付；实时状态以 [Roadmap](roadmap-status.md) 为准。
@@ -34,16 +34,17 @@ Milestone 状态描述阶段是否通过；能力成熟度描述代码是否真�
 
 - `DESIGN`：只有合同；
 - `COMPONENT`：实现和测试存在，但真实 composition root 不可达；
-- `INTEGRATED`：`cmd/marshal` 或 `cmd/marshal-server` 可达，真实 Agent 与结果 bytes 穿过该路径；
+- `INTEGRATED`：fixed `cmd/marshal` 的 CLI 或 `marshal control-plane serve` 可达，真实 Agent 与结果 bytes 穿过该路径；
 - `RELEASED`：该集成路径通过 release gate 并进入受支持产物。
 
 v1.0 的唯一支持链为：
 
 ```text
-marshal / loopback marshal-server
+marshal / marshal control-plane serve
   → durable Run journal
   → Core-owned WorkerExecutor
   → Local/Container Sandbox allocation
+  → Core launch authorization / fixed Process Supervisor
   → real AgentRuntime
   → ResultIngress
   → independent Verification / Review
@@ -51,6 +52,8 @@ marshal / loopback marshal-server
 ```
 
 任何平行 memory-only authority、直接 host `Adapter.Run` bypass 或不经 ResultIngress 的结果写入都不能进入 v1.0 supported path。Local ordinary-user profile 可以受支持，但其 assurance 明确止于 trusted single-user，不宣称 hardened。
+
+`ProcessBridge` 目前仍缺一份从 durable current facts 产生、可在启动前精确重放的 authority closure。[ADR 0063](adr/0063-prepared-execution-authority-and-production-chain.md)（Proposed）提议用 creation-once、secret-safe `PreparedExecutionV1` 引用 held Attempt authority 中完整的 Attempt/Run、owner、Allocation receipt 与 `launch-authorized`/`StoredClosureV1` 原件，以静态 `Pi0843IdentityV1` 绑定安装 bytes、以独立 `agentLaunchSpecDigest` 绑定 per-Run argv/environment/cwd，并把唯一 `READY → RUNNING` 提交点收敛到 exact successful `resume(state=running)` 之后的 `CommitRunStartOutcome`。交付顺序只能是 ADR 接受 → 一个 bounded authority component → 立即相邻的 fixed Marshal composition；在相邻 composition 完成前，这只是开放接缝，不能作为 `INTEGRATED` 证据。
 
 ## 逻辑职责不等于物理服务
 
@@ -93,7 +96,7 @@ v1.0 默认只形成三类运行单元，而不是按上图拆成微服务：
 
 ```mermaid
 flowchart TB
-    Client["CLI / loopback client"] --> Marshal["marshal / marshal-server<br/>single Control Plane process"]
+    Client["CLI / loopback client"] --> Marshal["marshal / marshal control-plane serve<br/>single Control Plane process"]
     Marshal --> Ledger[("file-backed authority ledger")]
     Marshal --> Objects[("local content-addressed objects")]
     Marshal --> Workers["N bounded Worker / Verifier runtimes"]
@@ -104,7 +107,7 @@ flowchart TB
 
 默认部署规则：
 
-1. 使用一个固定、可发布和可签名的 `marshal`/`marshal-server` binary；Control Plane 模块进程内调用，不为模块边界引入网络协议；
+1. 使用一个固定、可发布和可签名的 `marshal` binary；生产 server 由 `marshal control-plane serve` 承载。Control Plane 模块进程内调用，不为模块边界引入网络协议；
 2. authority ledger 保持唯一，内存结构、queue、registry、SSE 与状态页都只是可重建 projection/cache；
 3. Worker 与 Verifier 可以是多个受控子进程或远程 runtime，但只通过冻结 command 和 ResultIngress 与 Core 交互；
 4. Provider-specific 行为留在 Adapter/Provider 实现内，不能让 Core 按 Qoder、Qwen、Codex 或 Pi 名称分叉；
@@ -194,7 +197,7 @@ flowchart TB
     Publisher -->|"Receipt / remote observation"| Core
 ```
 
-Local MVP 中，Public application Port、Core 和多数 Adapter 编译在同一 `marshal` 进程；Worker 与验证命令是受控子进程。目标 C/S 中，同一 Core 常驻于 `marshal-server`，CLI、Web、CI 或 GitHub App 只是客户端，Execution Plane 和 Provider 可以远程运行。
+Local MVP 中，Public application Port、Core 和多数 Adapter 编译在同一 `marshal` 进程；Worker 与验证命令是受控子进程。当前 C/S 投影中，同一 Core 由固定 `marshal control-plane serve` 常驻承载，CLI、Web、CI 或 GitHub App 只是客户端，Execution Plane 和 Provider 可以远程运行；独立 `marshal-server` executable 只保留历史/测试兼容，不是 production composition root。
 
 两种部署形态共享同一生命周期、Policy、Evidence 和 SideEffect 接纳规则，不允许出现第二条写路径。
 
