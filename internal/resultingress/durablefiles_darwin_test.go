@@ -216,6 +216,7 @@ func TestPreparedDarwinSealIsOwnerBoundSingleUseAndCloseIsIdempotent(t *testing.
 	if err != nil || sealed != store {
 		t.Fatalf("SealPi0843DarwinPreparedExecutionStore store=%p sealed=%p err=%v", store, sealed, err)
 	}
+	identityDir, identityFiles := store.dir, store.heldFiles
 	if _, err := SealPi0843DarwinPreparedExecutionStore(context.Background(), store, verifier, binding, fixed, control); !errors.Is(err, ErrPreparedExecutionUnavailable) {
 		t.Fatalf("second Seal err=%v, want single-use rejection", err)
 	}
@@ -224,6 +225,12 @@ func TestPreparedDarwinSealIsOwnerBoundSingleUseAndCloseIsIdempotent(t *testing.
 	}
 	if err := store.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+	if store.dir != identityDir || store.heldFiles != identityFiles {
+		t.Fatal("Close rewrote immutable store identity fields")
+	}
+	if err := store.withEffectFlight("closed", store.requireBound); !errors.Is(err, ErrResultIngressClosed) {
+		t.Fatalf("effect flight after Close err=%v, want ErrResultIngressClosed", err)
 	}
 	if err := store.RecordQuarantined(ReasonMalformed, canonical.DigestBytes([]byte("closed-drc")), canonical.DigestBytes([]byte("closed-envelope")), time.Unix(3, 0)); !errors.Is(err, ErrResultIngressClosed) {
 		t.Fatalf("closed store err=%v, want ErrResultIngressClosed", err)

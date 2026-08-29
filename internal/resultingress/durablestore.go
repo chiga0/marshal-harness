@@ -280,10 +280,11 @@ func (s *DurableStore) Close() error {
 	}
 	if s.heldFiles != nil {
 		result = errors.Join(result, s.heldFiles.close())
-		s.heldFiles = nil
 	}
 	s.preparedDarwin = nil
-	s.dir = ""
+	// dir and heldFiles are immutable identity inputs read before some callers
+	// enter s.mu. Keep their values after Close; the atomic closed bit rejects
+	// all new operations while avoiding a concurrent nil/empty-field rewrite.
 	return result
 }
 
