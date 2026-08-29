@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ func superviseFixtureBinary(t *testing.T, argvFile string) string {
 		"run_id=''\n" +
 		"previous=''\n" +
 		"for argument in \"$@\"; do if [ \"$previous\" = '--run' ]; then run_id=\"$argument\"; break; fi; previous=\"$argument\"; done\n" +
-		"MARSHAL_CLI_HELPER_STATE_ROOT=\"$PWD/.marshal\" MARSHAL_CLI_HELPER_RUN_ID=\"$run_id\" exec \"" + os.Args[0] + "\" -test.run '^TestCLISuperviseLeaseHelper$'\n"
+		"MARSHAL_CLI_HELPER_STATE_ROOT=\"$PWD/.marshal\" MARSHAL_CLI_HELPER_RUN_ID=\"$run_id\" MARSHAL_CLI_HELPER_RELEASE=\"$PWD/.marshal/.supervise-fixture-release-$run_id\" exec \"" + os.Args[0] + "\" -test.run '^TestCLISuperviseLeaseHelper$'\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -38,8 +39,8 @@ func superviseFixtureBinary(t *testing.T, argvFile string) string {
 }
 
 func TestCLISuperviseLeaseHelper(t *testing.T) {
-	root, runID := os.Getenv("MARSHAL_CLI_HELPER_STATE_ROOT"), os.Getenv("MARSHAL_CLI_HELPER_RUN_ID")
-	if root == "" || runID == "" {
+	root, runID, release := os.Getenv("MARSHAL_CLI_HELPER_STATE_ROOT"), os.Getenv("MARSHAL_CLI_HELPER_RUN_ID"), os.Getenv("MARSHAL_CLI_HELPER_RELEASE")
+	if root == "" || runID == "" || release == "" {
 		return
 	}
 	lease, err := runstore.New(root).Acquire(runID)
@@ -47,7 +48,16 @@ func TestCLISuperviseLeaseHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lease.Release()
-	time.Sleep(500 * time.Millisecond)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(release); err == nil {
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("probe supervise fixture release: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("supervise fixture release was not acknowledged")
 }
 
 // newSuperviseRepository prepares a hermetic git repository with initialised
@@ -183,6 +193,11 @@ func waitForLeaseReleased(t *testing.T, stateRoot, runID string) {
 	if !held {
 		t.Fatalf("lease for %s was not held after detached driver readiness", runID)
 	}
+	release := filepath.Join(stateRoot, ".supervise-fixture-release-"+runID)
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatalf("release supervise fixture for %s: %v", runID, err)
+	}
+	t.Cleanup(func() { _ = os.Remove(release) })
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		held, err = store.LeaseHeld(runID)

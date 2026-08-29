@@ -183,6 +183,13 @@ func commandBoundaryFixture(t *testing.T) (sessionControlBoundary, *Journal, Boo
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// Darwin inherits the parent directory group. /private/tmp is commonly
+	// group wheel even for an ordinary user, while the production control root
+	// is owned by the effective user/group and the strict held-file identity
+	// gate requires that exact group.
+	if err := os.Chown(root, -1, os.Getegid()); err != nil {
+		t.Fatalf("set short control root group: %v", err)
+	}
 	directory, err := os.Open(root)
 	if err != nil {
 		t.Fatal(err)
