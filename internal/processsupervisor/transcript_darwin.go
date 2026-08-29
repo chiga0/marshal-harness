@@ -23,18 +23,32 @@ func ReadCollectedTranscript(options CollectedTranscriptReadOptions) (CollectedT
 		return CollectedTranscript{}, ErrConflict
 	}
 	directory, err := ObserveHeldControlDirectory(options.ControlDirectory)
-	if err != nil || directory != options.ControlDirectoryIdentity || revalidateTranscriptBoundary(options.ControlDirectory, directory, outcome.Recovery.PostCommand) != nil {
+	if err != nil || !sameControlDirectoryObject(directory, options.ControlDirectoryIdentity) || revalidateTranscriptBoundary(options.ControlDirectory, directory, outcome.Recovery.PostCommand) != nil {
 		return CollectedTranscript{}, ErrConflict
 	}
-	stdout, stdoutIdentity, err := readTranscriptObject(options.ControlDirectory, stdoutObjectName, MaxStdoutBytes)
+	transcript, err := readAndValidateCollectedTranscript(options.ControlDirectory, outcome)
 	if err != nil {
 		return CollectedTranscript{}, err
 	}
-	stderr, stderrIdentity, err := readTranscriptObject(options.ControlDirectory, stderrObjectName, MaxStderrBytes)
+	if revalidateTranscriptBoundary(options.ControlDirectory, directory, outcome.Recovery.PostCommand) != nil {
+		return CollectedTranscript{}, ErrConflict
+	}
+	return transcript, nil
+}
+
+// readAndValidateCollectedTranscript is the single Darwin implementation for
+// closing output object identity/size and stored content semantics. Runtime
+// phase checks and the public transcript reader both use this path.
+func readAndValidateCollectedTranscript(directory *os.File, outcome VerifiedCommandOutcome) (CollectedTranscript, error) {
+	stdout, _, err := readTranscriptObject(directory, stdoutObjectName, MaxStdoutBytes)
 	if err != nil {
 		return CollectedTranscript{}, err
 	}
-	manifest, manifestIdentity, err := readTranscriptObject(options.ControlDirectory, transcriptObjectName, MaxDiagnosticBytes)
+	stderr, _, err := readTranscriptObject(directory, stderrObjectName, MaxStderrBytes)
+	if err != nil {
+		return CollectedTranscript{}, err
+	}
+	manifest, _, err := readTranscriptObject(directory, transcriptObjectName, MaxDiagnosticBytes)
 	if err != nil {
 		return CollectedTranscript{}, err
 	}
@@ -42,16 +56,50 @@ func ReadCollectedTranscript(options CollectedTranscriptReadOptions) (CollectedT
 	if err != nil {
 		return CollectedTranscript{}, err
 	}
-	for name, expected := range map[string]ControlFileIdentity{stdoutObjectName: stdoutIdentity, stderrObjectName: stderrIdentity, transcriptObjectName: manifestIdentity} {
-		observed, _, observeErr := observeControlFileAt(options.ControlDirectory, name)
-		if observeErr != nil || observed != expected {
-			return CollectedTranscript{}, ErrConflict
+	return transcript, nil
+}
+
+func validatePresentOutputObjects(directory *os.File, entries controlDirectoryEntrySet) error {
+	for _, object := range []struct {
+		bit   controlDirectoryEntrySet
+		name  string
+		limit int
+	}{
+		{bit: controlDirectoryStdout, name: stdoutObjectName, limit: MaxStdoutBytes},
+		{bit: controlDirectoryStderr, name: stderrObjectName, limit: MaxStderrBytes},
+		{bit: controlDirectoryTranscript, name: transcriptObjectName, limit: MaxDiagnosticBytes},
+	} {
+		if entries&object.bit == 0 {
+			continue
+		}
+		if _, _, err := readTranscriptObject(directory, object.name, object.limit); err != nil {
+			return ErrConflict
 		}
 	}
-	if revalidateTranscriptBoundary(options.ControlDirectory, directory, outcome.Recovery.PostCommand) != nil {
-		return CollectedTranscript{}, ErrConflict
+	return nil
+}
+
+func validateStoredCollectedTranscript(directory *os.File, command replayedCommand) error {
+	projection, response := command.Projection, command.Response
+	if projection.Command != CommandCollect || response.Status != "ok" || response.ReasonCode != "transcript-collected" || validateStoredResponse(response, projection) != nil {
+		return ErrConflict
 	}
-	return transcript, nil
+	var result MechanicsResult
+	var report ProcessReport
+	if strictCanonicalDecode(response.Payload, &result) != nil || validateMechanicsResult(result) != nil || result.Disposition != "ok" || result.ReasonCode != response.ReasonCode || strictCanonicalDecode(result.Payload, &report) != nil || ValidateProcessReport(report) != nil {
+		return ErrConflict
+	}
+	digest, err := digestValue(report)
+	if err != nil || result.ObservationDigest != digest || result.TranscriptDigest != digest || result.StdoutBytes != report.StdoutBytes || result.StderrBytes != report.StderrBytes || result.Truncated != report.TranscriptTruncated {
+		return ErrConflict
+	}
+	outcome := VerifiedCommandOutcome{
+		Command: CommandCollect, CommandID: projection.CommandID, Sequence: projection.Sequence, Status: response.Status, Disposition: result.Disposition, ReasonCode: response.ReasonCode,
+		RequestDigest: projection.RequestDigest, ReceiptDigest: response.ReceiptDigest, ObservationDigest: response.ObservationDigest, CommandHead: response.CommandHead,
+		TranscriptDigest: result.TranscriptDigest, StdoutBytes: result.StdoutBytes, StderrBytes: result.StderrBytes, Truncated: result.Truncated, ProcessReport: &report,
+	}
+	_, err = readAndValidateCollectedTranscript(directory, outcome)
+	return err
 }
 
 func readTranscriptObject(directory *os.File, name string, limit int) ([]byte, ControlFileIdentity, error) {
@@ -72,11 +120,15 @@ func readTranscriptObject(directory *os.File, name string, limit int) ([]byte, C
 	if err != nil || after != identity || afterSize != size {
 		return nil, ControlFileIdentity{}, ErrConflict
 	}
+	current, currentSize, err := observeControlFileAt(directory, name)
+	if err != nil || current != identity || currentSize != size {
+		return nil, ControlFileIdentity{}, ErrConflict
+	}
 	return data, identity, nil
 }
 
 func revalidateTranscriptBoundary(directory *os.File, identity ControlDirectoryIdentity, anchor HandshakeAnchor) error {
-	if revalidateControlDirectory(directory, identity) != nil || observeControlSocketExact(directory, anchor.ControlSocket) != nil {
+	if revalidateControlDirectoryEntries(directory, identity, false, controlDirectoryCollected) != nil || observeControlSocketExact(directory, anchor.ControlSocket) != nil {
 		return ErrConflict
 	}
 	held, err := openHeldSessionControlFiles(directory, anchor.ControlFiles)
