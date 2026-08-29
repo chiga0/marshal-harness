@@ -1,149 +1,223 @@
-# ADR 0069：Attempt 预留与 existing-worktree allocation
+# ADR 0069：Attempt reservation 与 existing-worktree allocation
 
 - 状态：提议（Proposed）
 - 日期：2026-08-29
 - 提议基线：`main@e1e81f8f4fe9438b54444ade8fca039964205d89`
-- 影响范围：Run journal、Attempt budget、Local allocation、ResultIngress/Run-start producer chain
-- 关联：[ADR 0051](0051-darwin-local-dogfood-profile.md)、[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)、[ADR 0063](0063-prepared-execution-authority-and-production-chain.md)、[ADR 0065](0065-sealed-run-start-proof-and-one-way-composition.md)、[ADR 0066](0066-production-composition-owner-acquisition.md)、[ADR 0067](0067-darwin-ordinary-user-launch-and-attach-recovery.md)、[ADR 0068](0068-mac-first-cli-only-lifecycle-preview-rc1.md)、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)
+- 返工基线：`ebbfd86d60fad748e180e900e835bd3361392cdd`（独立审查 `REQUEST CHANGES`：`P0=3`、`P1=4`；本版为唯一 aggregate rework）
+- 影响范围：ResultIngress/RB1、Run start、Attempt budget、Local allocation、S1′/S2′ producer chain
+- 关联：[ADR 0029](0029-pre-attempt-abort.md)、[ADR 0051](0051-darwin-local-dogfood-profile.md)、[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)、[ADR 0063](0063-prepared-execution-authority-and-production-chain.md)、[ADR 0065](0065-sealed-run-start-proof-and-one-way-composition.md)、[ADR 0066](0066-production-composition-owner-acquisition.md)、[ADR 0067](0067-darwin-ordinary-user-launch-and-attach-recovery.md)、[ADR 0068](0068-mac-first-cli-only-lifecycle-preview-rc1.md)、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)
 
-## 1. 背景
+## 1. 背景与边界
 
-S1′/S2′ 的真实 producer 预审发现两个会令 fresh production chain 不可达的 P0：
+S1′/S2′ 的真实 producer 预审发现两个 P0：
 
-1. 当前 `READY` Run 没有耐久 `AttemptID`。若在 allocation、Supervisor bootstrap 或 child side effect 之后才创建 reservation，崩溃重放可能产生第二个候选 Attempt；若提前把 Attempt 写入 Run self-loop，又会形成第二份 Attempt authority并提前/重复消费 Run budget。
-2. `darwin-local-dogfood` 的 workspace-write 场景使用已经存在的 Git worktree。现有 Local allocation 的“创建新空目录”receipt 不能诚实描述该对象，也不能授权 Marshal 替换、清理或删除用户 worktree。
+1. `READY` Run 没有 `CurrentAttemptID`。allocation、Supervisor bootstrap 或 child side effect 之前必须有一个可重放的候选 Attempt，但不能用 Run `READY → READY` self-loop提前建立完整 Attempt authority或消费预算，否则会出现第二份 Attempt authority和第二个counter。
+2. `darwin-local-dogfood` workspace-write使用已经存在的Git worktree。现有“创建新空目录”的Local receipt不能诚实描述该对象，也不能授权Marshal替换、清理或删除用户worktree。
 
-另有一个已确认的实现P0：当前ResultIngress store仍可能按pathname重新打开authority对象，且`ObserveCurrentCore`不能先于`OpenOwner`产生current结论。该问题已经由[ADR 0066](0066-production-composition-owner-acquisition.md)的canonical held-descriptor与两阶段owner边界决定；本ADR不建立新的信任决策，只要求S1′ rework改为held descriptor backend、把观察放在owner打开之后，并补齐rename/ABA负测。
+另有一个已由[ADR 0066](0066-production-composition-owner-acquisition.md)决定的实施P0：ResultIngress不得按pathname重新打开authority对象，`ObserveCurrentCore`也不能先于`OpenOwner`产生current结论。S1′必须改为held descriptor backend并把观察放在owner打开之后；这不是本ADR新增的信任决策。
 
-本 ADR 只收敛 Mac ordinary-user、trusted single-user、workspace-write、`publication:none` 的 CLI-only RC1 路径；不提供 hardened sandbox、恶意仓库隔离、Linux authority 或 stable 发布授权。
+本ADR只收敛Mac ordinary-user、trusted single-user、workspace-write、`publication:none`的CLI-only RC1路径；不提供hardened sandbox、恶意仓库隔离、Linux authority或stable发布授权。
 
-## 2. 决策一：ResultIngress `attempt-opened` 是 fresh Attempt 的唯一预留
+## 2. 决策一：reservation 不是完整 Attempt authority
 
-### 2.1 Run 在 sealed successor 前保持 READY
+### 2.1 `attempt-reserved` closed union
 
-不新增 Run `READY → READY` self-loop。ResultIngress 在自己的 append-only ledger 中 creation-once 写入 `attempt-opened/v2` reservation；Run 在此后仍保持 `READY`、`CurrentAttemptID=""`、attempt counter不变。reservation只有在以下条件全部成立时才能提交：
+ResultIngress/RB1把physical ledger升级为`protocolRevision="attempt-authority/v2"`，新增以下稳定FactType；revision不拼进FactType：
 
-- held Run projection为current `READY`且`CurrentAttemptID=""`，ResultIngress ledger不存在该READY head的current reservation；
-- exact READY Run sequence/head与frozen Run inputs精确匹配；
-- attempt budget尚有一个可用额度，但此时不得消费；
-- 尚无 allocation binding、Supervisor bootstrap、child、command 或 publication side effect；
-- `AttemptID`、ordinal 与 reservation canonical bytes 尚未被其他事实占用。
+- `attempt-reserved`：`schemaRevision="attempt-reservation/v1"`，表示`active`；仅预留候选`AttemptID`，不建立完整`AttemptIdentity`、不签发dispatch lease、不改变Run、不消费预算；
+- `attempt-reservation-consumed`：引用exact reservation与sealed Run successor，表示`consumed`；
+- `attempt-reservation-cancelled`：引用exact reservation与零副作用证明，表示`cancelled`。
 
-`AttemptOpenedReservationV2`至少绑定：`TaskID`、`RunID`、reserved `AttemptID`、expected ordinal、exact READY Run sequence/head、`SpecDigest`、`PolicyDigest`、`CapabilityDigest`、`BaseSHA`、`WorktreePath`与protocol revision。reservation digest由完整canonical payload确定性重算，不接受caller提供的digest-only echo。
+三种FactType构成append-only closed union `active → consumed|cancelled`；同一reservation最多一个resolution，不更新旧fact。
 
-### 2.2 creation-once、预算与 response loss
+所有历史事实append-only保留，不做物理GC。Run已经离开exact READY head、进入terminal state或产生新head后，旧reservation只能用于历史explain，逻辑上不得再current。
 
-- ResultIngress `attempt-opened/v2` append+fsync是reservation creation-once的linearization point；它不改变Run，也不消费attempt budget。
-- 相同 request canonical bytes 的响应丢失通过 current journal exact replay 返回同一 reservation；不重复 append、不重复计数。
-- 相同 `AttemptID`/ordinal 但不同 bytes、相同 Run 的第二个 current reservation、或不同 Run/Attempt 对同一 reservation 的借用均 fail closed。
-- 后续唯一sealed `READY → RUNNING` 的 `run.start-outcome/v2` 必须同时引用exact reservation、exact READY head与同一`AttemptID`；只有该successor原子写入Run `CurrentAttemptID`并恰好消费一次attempt budget。
-- 旧 journal 中没有 reservation 的 `READY → RUNNING` 继续按旧协议逐字节重放和旧计数语义解释，但只用于历史 inspection/explain，不能 mint 新 S1′ proof、不能授权新的 child 或 RC1 canary。
+### 2.2 creation-once 与 replay key
 
-对同一exact READY head，两个并发Prepare只能产生一份reservation；相同bytes响应丢失时replay同一fact，任何不同AttemptID/bytes均拒绝。崩溃发生在reservation fsync前时没有reservation、预算消费或下游副作用；发生在fsync后时只能恢复同一reservation。Run-start successor fsync前Run仍为READY且预算未消费；fsync后Run唯一进入RUNNING并只计数一次。不得用“响应未知”创建sibling reservation或Attempt。
+Prepare的唯一replay key固定为：
 
-## 3. 决策二：bind-existing-worktree 是独立 allocation profile
+```text
+(RunID, exact READY RunSequence, exact READY RunAuthorityHead)
+```
 
-### 3.1 受绑定 live object，而非新建资源
+在同一held repository owner、held Run Lease与RB1 transaction内，producer必须先lookup该key：
 
-新增 `bind-existing-worktree/v1` profile。目标必须是已经由 Git 登记的 existing worktree；Marshal 将其作为受绑定 live object 使用：
+1. 找到canonical bytes相同的reservation：返回同一fact、同一reserved `AttemptID`与current resolution；`active`可继续，`consumed`只返回already-consumed inspect结果，`cancelled`只返回typed cancelled，后二者均不得继续或mint sibling；
+2. 找到不同bytes、不同`AttemptID`、双resolution或冲突记录：fail closed；
+3. 只有确定性`not-found`才允许mint新`AttemptID`并append+fsync一条`active` reservation。
 
-- 不创建、替换、移动、reset、clean、prune 或删除目标 worktree；
-- 不伪造“新建空目录”或 provider-owned directory receipt；
-- bind 前通过 held descriptors 观察 target current-name、目录 object identity、Git common-dir/worktree admin object、HEAD/base 与 frozen Run inputs；
-- fresh bind 要求 exact `BaseSHA`、干净的受支持 worktree 状态、absolute clean `WorktreePath`，并拒绝 symlink traversal、对象类型/owner/mode/identity 漂移；
-- launch 与 ResultIngress current-source 检查继续复用同一 held object lineage，不按 pathname 重新获得权威。
+两个并发Prepare对同一key只能得到一份reservation；response loss只能exact replay，禁止sibling。reservation至少绑定`TaskID`、`RunID`、reserved `AttemptID`、`AttemptOrdinal`、exact READY sequence/head、frozen input digests、`BaseSHA`、`WorktreePath`和protocol revision。digest由完整canonical payload重算，不接受caller的digest-only echo。
 
-ordinary-user profile 只保证对可信用户工作区的确定性绑定与漂移拒绝，不声称能够阻止同 UID 外部进程修改 worktree。
+### 2.3 budget 的唯一权威与三次重验
 
-### 3.2 sidecar append-only binding ledger
+budget唯一来自同一held Run authority的`AttemptsUsed`与`MaxAttempts`；`AttemptOrdinal = AttemptsUsed + 1`。caller、RB1、projection与sidecar均不得维护或自增第二个counter。
 
-canonical repository `.marshal` 下新增 owner-private、descriptor-bound 的 allocation binding sidecar ledger。它以 intent/outcome/release 链记录：
+同一exact READY sequence/head、`AttemptsUsed`、`MaxAttempts`与expected ordinal必须在三个位置重验：
 
-- provider/profile revision、AllocationID/generation/fencing token；
-- exact reservation fact/digest、Task/Run/Attempt 与 frozen input digests；
-- target current-name observation、directory object identity、Git administrative identity 与 base HEAD；
-- bind intent/outcome receipt、release intent/outcome 及各自 predecessor head。
+1. reservation lookup-before-mint/append之前；
+2. 生成dispatch lease、完整`AttemptIdentity`并append `attempt-opened`之前；
+3. sealed `READY → RUNNING` successor提交之前。
 
-`ExistingWorktreeBindingReceiptV1` 是逻辑绑定 receipt，不得与“目录创建成功”的 legacy provision receipt互换。一个 target current-name/object identity 同时最多有一个 active binding；一个 reservation 也只能绑定一个 target。跨 Run/Attempt 的重复绑定一律 fail closed；同一 canonical request 的 lost response 只 exact replay 同一 outcome。
+前两次只确认预算可用，不消费。只有第三次的Run successor原子写入`CurrentAttemptID`并把`AttemptsUsed`增加一次；该Run fact是消费的linearization point。其后RB1以引用exact Run successor的`consumed` resolution收敛reservation。若在两次fsync之间崩溃，Run的新head已使`active` reservation逻辑不可current，恢复只能幂等append同一`consumed` resolution，不能复用reservation或二次计数；不要求Run/RB1跨ledger原子提交。任何head/budget/ordinal漂移都禁止继续副作用并进入typed cleanup/intervention。
 
-`Terminate` 只 append 逻辑 release 并释放 Marshal 持有的 descriptor/sidecar binding；不得删除、重置或清理用户 worktree与Git admin entry。intent-only 或 outcome response loss 只能由同一 sidecar ledger reconcile，不能通过检查“目录是否存在”推断成功。
+### 2.4 cancellation 与 ADR 0029
 
-## 4. 持久化与协议迁移
+`active → cancelled`只允许same repository owner在held Run Lease与RB1 transaction内，对exact READY sequence/head证明以下全部为零：
+
+- 没有`attempt-opened`或完整`AttemptIdentity`/dispatch lease；
+- 没有allocation bind intent/receipt/effect；
+- 没有Supervisor bootstrap、child或command；
+- 没有publication或其它外部side effect。
+
+cancel fact fsync后，才允许[ADR 0029](0029-pre-attempt-abort.md)的READY pre-attempt abort。只要任一下游fact存在，就永久禁止cancel/READY abort；系统只能在同一reservation上完成所需cleanup并进入typed intervention。关闭FD、删除projection或响应未知都不构成cancel authority。
+
+### 2.5 完整 Attempt authority
+
+reservation成功后，producer必须在同一current chain中生成完整`AttemptIdentity`与dispatch lease，再append FactType=`attempt-opened`、`protocolRevision="attempt-authority/v2"`、`schemaRevision="attempt-opened/v2"`。该fact精确引用reservation fact/digest、dispatch lease、full Attempt identity、exact READY head与frozen inputs。reservation本身不能授权allocation、launch、child、ResultIngress admission或Run successor。
+
+legacy无reservation的`attempt-opened`/Run-start记录继续按原revision逐字节历史replay，但不得为fresh S1′ mint proof、启动child或进入RC1 canary。
+
+## 3. 决策二：RB1/ResultIngress 是唯一 allocation authority
+
+### 3.1 `bind-existing-worktree` profile
+
+新增`bind-existing-worktree` allocation profile，protocol revision为`existing-worktree-binding/v1`。目标是Git已经登记的existing worktree，是受绑定live object而不是provider-created resource：
+
+- Marshal不创建、替换、移动、reset、clean、prune或删除目标worktree；
+- 不得伪造“新建空目录”receipt；
+- bind前通过canonical locator逐段nofollow打开并观察target current-name、directory object identity、Git common-dir/worktree admin object、HEAD/base、clean state与frozen Run inputs；
+- 任一路径段symlink、wrong BaseSHA、dirty/unsupported state、owner/mode/type/link/identity漂移均fail closed；
+- ordinary-user只保证确定性观察与漂移拒绝，不声称阻止同UID外部进程修改worktree。
+
+同一identity lineage不表示跨阶段永久持有同一FD。Supervisor mutation-adjacent source gate仍按ADR0067从canonical locator逐段nofollow reopen，并与RB1 receipt中的exact identity/current-name/material observations逐字段匹配；不得把旧FD存在性或pathname相等当成current证明。
+
+### 3.2 RB1 closed-union facts
+
+Existing-worktree的Bind/Receipt/Release全部是RB1 authority facts，形成closed union：
+
+```text
+bind-intent → bind-receipt → release-intent → release-receipt
+```
+
+每个fact绑定exact owner、Run、reserved/full Attempt、reservation、allocation/generation/fencing、frozen inputs、target current-name/object/Git identity及predecessor RB1 head。repository-global target uniqueness必须在held repository owner下从RB1 replay判定：
+
+- 一个target current-name/object identity同时最多一个active binding；
+- 一个reservation/Attempt只能绑定一个target；
+- 跨Run/Attempt重复绑定fail closed；
+- lost response先replay RB1：same canonical request返回同一receipt，不同bytes冲突。
+
+不得增加第二个allocation ledger，也不得要求Run journal、RB1与projection跨ledger原子提交。
+
+### 3.3 sidecar 只是可重建 projection
+
+唯一layout冻结为：
+
+```text
+.marshal/runtime-v1/existing-worktree-bindings/
+```
+
+它是append-only recovery projection，位于canonical repository `.marshal`、owner-private、descriptor-bound，scope只覆盖该repository。entry以path-free target identity digest命名；locator只用于找到对象，不能授权currentness。held descriptor graph固定为repository scope→`.marshal`→`runtime-v1`→`existing-worktree-bindings`，锁序固定为：
+
+```text
+repository owner → Run Lease → RB1 transaction → projection
+```
+
+projection必须能从RB1完整重建：
+
+- 缺失或落后：先从current RB1投影，再继续；
+- 损坏、超前、内容与RB1冲突：fail closed，绝不能覆盖或修写RB1；
+- lost response：先replay RB1，再幂等刷新projection；
+- restart：current identity只能由RB1 current receipt加重新观察得到，不能信任projection缓存。
+
+projection不是authority、receipt、锁或第二truth source；release只append projection frame，不物理删除历史entry，删除projection也不能释放binding。
+
+### 3.4 release/terminate
+
+release admission必须在固定锁序内精确重验：current owner、Run/Attempt/RB1 head、terminalization fact、cleanup disposition、process-terminal fact与allocation generation/fencing。只有RB1 `release-receipt` fsync才释放逻辑binding。关闭FD不是authority；任何情况下都不得删除、reset、clean、prune或修改用户worktree与Git admin entry。
+
+## 4. 唯一 producer 顺序
+
+fresh S1′/S2′顺序固定为：
+
+```text
+held repository owner + existing-only Run open/Lease（未知Run不得mkdir）
+  → RB1 attempt-reserved active（lookup-before-mint；Run仍READY，预算未消费）
+  → dispatch lease + full AttemptIdentity
+  → RB1 attempt-opened（引用reservation）
+  → BindOwnerToAttempt
+  → RB1 existing-worktree bind-intent
+  → descriptor-bound projection/effect + target re-observation
+  → RB1 bind-receipt
+  → launch-authorized / StoredClosure
+  → PreparedExecution / PreparedRunStart
+  → S1 Supervisor bootstrap/spawn/resume + sealed proof
+  → sealed Run start successor（同reservation；唯一写Attempt/消费预算）
+  → RB1 reservation consumed
+```
+
+在`BindOwnerToAttempt`之前禁止allocation binding；在reservation前禁止dispatch/allocation/bootstrap/child副作用。reservation后、`attempt-opened`前失败只有满足第2.4节才可cancel；任一下游fact出现后只能cleanup/intervention。S2′不得对不可信或未知Run调用会`MkdirAll`的普通`Acquire`。
+
+## 5. 持久化与 protocol migration
 
 不得原地重解释或重写旧记录：
 
-1. ResultIngress schema新增`attempt-opened/v2` reservation及其exact READY head/frozen-input projection；Run schema在READY时仍无Attempt，只由sealed `run-start-outcome/v2` successor原子写入`CurrentAttemptID`与budget counter。
-2. fresh Run-start 使用 `run-start-outcome/v2`，精确引用 reservation；相应 `PreparedExecutionV2`、`PreparedRunStartV2` 与 sealed claim/proof 绑定 reservation fact/digest及 existing-worktree binding receipt。V1 仅供历史 replay。
-3. allocation schema 增加 `bind-existing-worktree/v1` 的 intent/outcome/release closed union；legacy create-empty receipt 不能迁移或转换成该 receipt。
-4. decoder 必须按 protocol revision 选择旧/新语义；未知 revision、字段缺失、optional-field laundering 与新旧 union 混用均 fail closed。
-5. ResultIngress read-only projection携带reservation及其exact READY head；runstore read-only closed projection只携带current READY head与frozen inputs。两者不得镜像对方ledger，也不得暴露raw journal、owner、generation或可写callback。
+1. 新FactType固定为`attempt-reserved`、`attempt-reservation-consumed`、`attempt-reservation-cancelled`；均使用`protocolRevision="attempt-authority/v2"`和reservation payload的`schemaRevision="attempt-reservation/v1"`，不得把revision拼进event/fact名称。
+2. 既有FactType=`attempt-opened`保留，fresh producer使用`protocolRevision="attempt-authority/v2"`、`schemaRevision="attempt-opened/v2"`并增加reservation、dispatch lease/full Attempt identity与exact READY head binding。
+3. 既有Run-start FactType保留；fresh schema revision绑定reservation、`attempt-opened`、exact READY head和budget transition。`PreparedExecution`、`PreparedRunStart`与sealed proof的新版schema同样绑定这些对象；旧revision仅历史replay。
+4. allocation FactType保留稳定名称，profile/protocol revision区分`existing-worktree-binding/v1`的intent/receipt/release closed union；legacy create-empty receipt不能转换为existing-worktree receipt。
+5. ResultIngress read-only projection携带reservation与exact READY head；runstore read-only projection只携带current Run head、state、budget与frozen inputs。两者不得镜像对方ledger或暴露raw records/可写callback。
+6. unknown revision、字段缺失、optional-field laundering、新旧union混用、旧fact授权fresh路径均fail closed。
 
-协议接受后需同步 schema、fixture、canonical digest 与 replay migration 测试；在此之前不得把实现状态升级为 `INTEGRATED`。
+raw absolute `WorktreePath`只允许存在于owner-private Run frozen inputs与RB1 authority fact；这是唯一例外。public API、Worker prompt、transcript、ReviewPacket、Outcome、日志、错误与projection entry name全部path-free，只携带opaque locator或digest。locator不构成identity或authorization。
 
-## 5. 固定 producer 顺序
+## 6. 对既有 ADR 的部分取代与保留
 
-fresh S1′/S2′ 的最短顺序冻结为：
+- **ADR 0029**：部分取代其READY abort前置；存在active reservation时，必须先按第2.4节fsync `cancelled`，才仍算pre-attempt。其零Attempt/零side-effect原则保留。
+- **ADR 0057**：对Mac ordinary-user workspace-write部分取代“allocation一定创建新空目录”的解释；existing worktree使用RB1 logical binding。provider-owned新建allocation合同、terminate幂等与descriptor-relative原则保留。
+- **ADR 0063**：部分取代Prepared chain对Attempt来源不明确的部分；Prepared对象必须引用full `attempt-opened` authority和其reservation。Pi/launch held-originals与exact resume合同保留。
+- **ADR 0065**：部分取代proof输入与Run successor；proof绑定reservation、full Attempt、exact READY head，Run successor才写Attempt/消费预算。ResultIngress/runstore单向边界、shared guard、自有ledger replay保留。
+- **ADR 0067**：部分取代S1′/S2′ producer顺序和allocation receipt类型；source gate、Attach/rebind、no-effect/permanent-intervention二分与ordinary-user边界保留。
+- **ADR 0066**：不取代。held descriptor backend、两阶段owner acquisition及`OpenOwner`后才可`ObserveCurrentCore`是S1′既有实施P0。
+- **ADR 0051/0068**：不取代。ordinary-user、explicit opt-in、`publication:none`、unsigned Darwin arm64 CLI-only RC1边界保持不变。
 
-```text
-existing-only open Run/held Lease（未知 Run 不得 mkdir）
-  → ResultIngress append+fsync attempt-opened/v2 reservation（Run仍READY，预算未消费）
-  → bind-existing-worktree intent/outcome（目标零创建/替换）
-  → owner / reserved-Attempt binding
-  → allocation binding receipt admission
-  → launch-authorized / StoredClosure
-  → PreparedExecutionV2
-  → Supervisor bootstrap/spawn/resume
-  → sealed proof
-  → run-start-outcome/v2（同一reservation，唯一写Attempt并消费预算）
-```
+## 7. 最短实施切片
 
-reservation之前禁止allocation/bootstrap/child副作用。reservation之后若bind validation拒绝，唯一耐久变化是ResultIngress reservation；Run仍为READY、预算未消费，目标worktree保持逐字节不变，不创建sibling reservation。S2′不得对不可信/未知Run调用会`MkdirAll`的普通`Acquire`，必须使用existing-only open/acquire语义。
+1. **S1′-A（reservation/Attempt）**：实现RB1 `attempt-reserved` closed union、lookup-before-mint、三次budget重验、full Attempt/dispatch lease与`attempt-opened`新revision；Run保持READY直到sealed successor。
+2. **S1′-B（held authority/Run start）**：ResultIngress改held descriptor backend，`ObserveCurrentCore`移到`OpenOwner`后；Prepared/proof/Run successor绑定reservation与exact READY head，successor唯一写Attempt/计数。
+3. **S2′-A（existing-worktree binding）**：existing-only Run open、RB1 bind/release closed union、repository-global uniqueness、固定projection layout/锁序、held re-observation和release-only terminate。
+4. **S2′-B（production composition）**：严格按第4节接fixed CLI/Pi；Fake seed、legacy `execution.Run`、create-empty receipt、第二authority root与sidecar-authoritative shortcut不可达。
 
-## 6. S1′/S2′ 最短实施切片
+四项完成后才恢复ADR0067 Attach/rebind、terminalization与RC1 E2E；本ADR提议本身不升级R2–R6。
 
-1. **S1′-A（ResultIngress reservation）**：实现`attempt-opened/v2` creation-once、同READY head唯一性与response-loss replay；Run READY projection保持空Attempt/不计预算。
-2. **S1′-B（held authority + successor）**：把path reopen改为ADR0066已要求的held descriptor backend，并把`ObserveCurrentCore`拆到`OpenOwner`之后、由同一held owner/current-name检查驱动；`PreparedExecutionV2`绑定reservation、exact READY head、binding receipt与held originals；`run-start-outcome/v2`才唯一写Attempt/消费预算。
-3. **S2′-A（allocation）**：实现 existing-only Run open/acquire和 `bind-existing-worktree/v1` sidecar ledger、held target observation、唯一 active binding及 release-only terminate。
-4. **S2′-B（production composition）**：严格按第5节 producer顺序接入 fixed CLI/Pi；不得使用 Fake seed、legacy `execution.Run`、create-empty receipt或第二 authority root。
-
-四项完成后才恢复 ADR0067 Attach/rebind、terminalization与RC1 E2E；本 ADR 提议本身不升级 R2–R6。
-
-## 7. 必须通过的负面与恢复矩阵
+## 8. 必须通过的负面与恢复矩阵
 
 | 类别 | 必须证明的拒绝/恢复行为 |
 | --- | --- |
-| reservation 并发 | 同一exact READY head的两个并发Prepare只有一个reservation成功；另一个exact replay或conflict；Run仍READY且预算为零消费 |
-| reservation 响应丢失 | outcome丢失后同 bytes返回同 fact；不同 bytes、ID、ordinal、frozen input均拒绝 |
-| budget | reserve admission先证明预算可用但不消费；budget在sealed READY→RUNNING successor恰好消费一次；successor响应丢失replay不二次计数 |
-| legacy | 无 reservation 的旧记录只能历史 replay；不能 mint proof、启动 child或进入新 RC1 |
-| producer 顺序 | reservation缺失/不current、binding receipt缺失/跨Attempt、PreparedExecution reservation不一致时所有下游调用数为零 |
-| worktree 类型 | 不存在、非Git worktree、wrong common-dir、wrong BaseSHA、dirty、非目录、任一路径段symlink均在bind前拒绝 |
-| identity/ABA | current-name rename、rename-away/back、目录替换、inode/device/owner/mode变化、Git admin object替换均拒绝；受保护regular leaf hardlink数异常拒绝 |
-| 重复绑定 | 同一target跨Run/Attempt或同一reservation绑定另一target拒绝；同一请求响应丢失只重放一份receipt |
-| crash/replay | bind/release intent前后、outcome fsync前后分别崩溃时，reconcile只查sidecar并得到唯一结论；不得由pathname存在性猜测 |
-| terminate | release成功后worktree、HEAD、index、untracked bytes与Git admin entry保持不变；不得调用delete/reset/clean/prune |
-| sidecar | 缺失、截断、乱序、伪造receipt、generation/fencing漂移、跨repository复制均fail closed |
-| ResultIngress descriptor | `OpenOwner`前不得`ObserveCurrentCore`；owner打开后只在同held descriptor lineage观察。authority root/ledger pathname被rename/替换/ABA时不reopen新对象；held object与current-name不一致时拒绝proof |
-| secret/path | raw绝对路径仅保存在owner-private本地Run/sidecar；不得进入Worker prompt、transcript、ReviewPacket、Outcome、日志或错误文本 |
-| 零副作用 | reserve前拒绝为零预算/零side effect；reserve后bind validation拒绝只保留ResultIngress reservation，Run仍READY/预算未消费，目标零修改、零bootstrap/child；不确定intent只reconcile同一reservation |
-
-## 8. 被取代与保留范围
-
-- 对 fresh `darwin-local-dogfood` workspace-write 路径，本 ADR提议以 reservation + `bind-existing-worktree/v1` 取代 ADR0057 中“Local allocation 必须创建新空目录”的冲突解释；ADR0057 对新建 provider-owned allocation 的原合同仍保留。
-- 本 ADR细化 ADR0063/0065/0067 的 producer chain与sealed proof输入，不改变 Worker不自证、ResultIngress current-ledger recheck、Worker/Publisher分权或independent Decision。
-- ADR0066 的canonical held-descriptor与两阶段owner acquisition保持不变；ResultIngress path reopen和`OpenOwner`后才可`ObserveCurrentCore`的时序修复是其既有实施P0，不是本ADR新增authority。
-- ADR0068 的 unsigned Darwin arm64 CLI-only、explicit opt-in、non-production边界保持不变。
+| reserve并发/响应丢失 | 同一RunID+exact READY seq/head只有一份active reservation；same bytes replay，任何不同ID/bytes或sibling拒绝 |
+| reserve生命周期 | active只可consumed或在零下游事实时cancelled；terminal/new head后stale；历史fact不物理GC且不能恢复current |
+| budget | 三次均从held Run authority重验`AttemptsUsed/MaxAttempts`与ordinal；前两次不计数，sealed successor恰好计数一次；caller/RB1/projection mutation拒绝 |
+| cancellation/ADR0029 | opened Attempt、dispatch lease、allocation、bootstrap、child、command、publication任一存在时cancel/READY abort拒绝且转cleanup/intervention |
+| producer顺序 | full Attempt/dispatch缺失、owner未绑定、reservation/head不一致时allocation/launch/child调用数为零；owner绑定前bind拒绝 |
+| RB1唯一authority | projection缺失/落后从RB1重建；损坏/超前fail closed；projection不能覆盖RB1或释放binding；lost response先replay RB1 |
+| target唯一性 | held owner下同target跨Run/Attempt、同reservation不同target、current-name/object alias均拒绝；same request只返回同一RB1 receipt |
+| worktree/path | 不存在、非Git worktree、wrong common-dir/BaseSHA、dirty、symlink、rename-away/back、目录/Git admin替换、regular leaf hardlink异常均拒绝 |
+| stage identity | 后续阶段按canonical locator nofollow reopen并与RB1 receipt exact-match；旧FD存在、pathname相等或locator命中均不能单独授权 |
+| crash/replay | reservation、attempt-opened、bind/release intent/receipt各fsync窗口均由相应RB1 fact唯一收敛；不得由pathname/projection猜测成功 |
+| release | owner/Attempt/RB1 head、terminalization、cleanup、process-terminal、generation/fencing任一缺失或漂移均拒绝；close FD不释放authority |
+| target零修改 | bind/release/terminate前后worktree、HEAD、index、untracked bytes与Git admin entry保持不变；不得调用delete/reset/clean/prune |
+| descriptor时序 | `OpenOwner`前调用`ObserveCurrentCore`拒绝；authority pathname被rename/替换/ABA时不reopen新对象，held current-name不一致拒绝proof |
+| secret/path | 仅owner-private Run/RB1可存raw path；public/prompt/transcript/review/outcome/log/error/projection filename泄漏时拒绝 |
+| legacy/migration | 旧revision只能历史replay；不能mint reservation/proof、启动child、绑定existing worktree或进入RC1 |
 
 ## 9. 未选择方案
 
-- **在 allocation 后补写 Attempt**：崩溃窗口会产生无主副作用或 sibling Attempt，拒绝。
-- **用 Run READY self-loop预写Attempt**：会形成第二份Attempt authority并把预算消费拆成两个ledger，拒绝。
-- **让 caller 提供临时 AttemptID**：不能证明 current、budget与response-loss唯一性，拒绝。
-- **把 existing worktree冒充新建目录**：receipt不诚实且可能授权误删，拒绝。
-- **复制/移动现有worktree到 Marshal目录**：改变用户对象且扩大RC1范围，拒绝。
-- **按 pathname existence恢复**：不能关闭rename/ABA/symlink，拒绝。
-- **为此重写通用 allocation/runtime substrate**：不符合v1最短纵切，拒绝。
+- Run `READY → READY` self-loop预写Attempt：形成第二份Attempt authority与第二counter，拒绝。
+- reservation直接等于`attempt-opened`：在full identity/dispatch lease前扩大authority，拒绝。
+- sidecar作为allocation ledger或与RB1双写原子事务：形成第二truth source和跨ledger恢复环，拒绝。
+- allocation后补Attempt、caller临时AttemptID、pathname existence恢复：不能关闭crash/replay/currentness，拒绝。
+- 把existing worktree冒充新建目录或在Terminate删除/clean：receipt不诚实且可能破坏用户数据，拒绝。
+- 为此重写通用runtime/allocation substrate：不符合v1最短纵切，拒绝。
 
 ## 10. 接受条件
 
-本 ADR 当前仅为 Proposed。只有唯一独立 reviewer 对 exact sourceHead 确认 `P0=0`、`P1=0`，维护者完成接受同步后才能标记 Accepted。接受仍只冻结合同；上述 schema、implementation、hostile matrix、fixed CLI真实Pi与独立Decision证据完成前，不得宣称S1′/S2′已实现、RC1可发布或Marshal具备hardened/Linux authority。
+本ADR保持Proposed。只有独立reviewer对本次aggregate rework的exact sourceHead确认`P0=0`、`P1=0`，维护者完成接受同步后才能标记Accepted。接受也只冻结合同；schema、实现、hostile matrix、fixed CLI真实Pi与独立Decision完成前，不得宣称S1′/S2′、RC1、hardened或Linux authority已完成。

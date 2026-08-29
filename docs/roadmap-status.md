@@ -14,7 +14,7 @@
 >
 > **2026-08-29 Mac-first 合同接受**：[ADR 0067](adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 与 [ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受；提案 sourceHead 分别为 `1e05fb831c04a1c87e7f4ecdc677c97beb9d88e6`、`9cfa1b65275d2e23f18b958a05d027adec6af8fd`，唯一独立 reviewer 均确认 `P0=0`、`P1=0`。旧候选`a6a0d63`/`506a647`/`6298eae`继续冻结、不直接合入；权威顺序固定为S1′→S2′→Attach/rebind→terminalization→fixed CLI真实Pi+独立Decision `ACCEPTED`→same-bytes RC1。RC1仍是尚未实现、尚未发布的unsigned Darwin arm64 CLI-only local-dogfood preview；server、managed signing/notarization与Linux stable转为RC1后继。接受不改变当前R2–R6成熟度。
 
-> **2026-08-29 producer P0 提案**：[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md)仍为Proposed。S1′预审确认`READY`没有durable `AttemptID`；提案由ResultIngress `attempt-opened/v2`对同一exact READY head creation-once预留Attempt，Run保持READY且预算未消费，只有sealed successor才写入Attempt并计数。Mac ordinary-user新增`bind-existing-worktree/v1` sidecar ledger，只绑定/释放且跨Run/Attempt重复绑定fail closed。ResultIngress pathname reopen和`OpenOwner`后才可`ObserveCurrentCore`同时登记为ADR0066既有实施P0。提案尚未审查、接受或实现，不升级任何阶段。
+> **2026-08-29 producer P0 提案**：[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md)保持Proposed；首版`ebbfd86`独立审查`REQUEST CHANGES`的`P0=3/P1=4`已聚合返工。修订后`attempt-reserved`只是RB1 creation-once reservation，full Attempt/dispatch与`attempt-opened`随后产生，sealed Run successor才写Attempt/计budget。Existing-worktree Bind/Receipt/Release的唯一authority同样是RB1；固定sidecar仅为可重建projection，锁序owner→Run→RB1→projection。ResultIngress pathname reopen和`OpenOwner`后才可`ObserveCurrentCore`仍是ADR0066实施P0。提案尚未复审、接受或实现，不升级阶段。
 
 ## v1.0 生产纵切
 
@@ -32,14 +32,14 @@ Milestone 状态与能力成熟度是两个维度：
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 与 baseline evidence 已完成。 |
 | `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Pi `0.84.3` 在 `sourceHead=d4b9647` 的前置 canary 中由 Local allocation 承载并把真实 result bytes 送入 Core；当前主线重跑仍是发布前门禁。 |
 | `I186-R2` | `IN_PROGRESS` | `COMPONENT` | ResultIngress admission→worker-result→Run journal crash-atomic持久化/恢复已于`main@912f659`合入。ADR0065/0067 proof合同已接受；ADR0069 Proposed登记ResultIngress reservation、sealed successor预算单计数与held-descriptor P0。S1′仍须重建，旧候选不计进展。 |
-| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | production selector已于`main@d4b9647` fail closed；ADR0056/0063/0065/0067合同已接受。ADR0069接受前，existing-only Run open与`bind-existing-worktree/v1`新持久化合同不得实施；S2′真实producer/fixed composition、Attach与terminalization负测均未完成。 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | production selector已于`main@d4b9647` fail closed；ADR0056/0063/0065/0067合同已接受。ADR0069接受前，existing-only Run open与`bind-existing-worktree` profile新持久化合同不得实施；S2′真实producer/fixed composition、Attach与terminalization负测均未完成。 |
 | `I186-R4` | `IN_PROGRESS` | `COMPONENT` | durable server run controller 已随 `main@44ee8c9` 合入，strict E2E 候选也已通过跨进程 restore；但 controller 尚未接入 ADR 0056 的 authority CAS/cleanup transaction。退出前须证明 server crash 后从耐久观察恢复、eligibility 立即 fence、旧控制单元安全终结或 intervention、重复 start 幂等、lost/failed worker 得到唯一可回放结论。 |
 | `I186-R5` | `IN_PROGRESS` | `COMPONENT` | fixed-bin canary 已在 `sourceHead=d4b9647` 以单 Attempt/9 Gate 真实到 ReviewPacket/`REVIEW_PENDING`；但尚未导入独立 Decision 到 `ACCEPTED`，也未完成 ADR 0056 implementation 和最终主线终验。 |
 | `I186-R6` | `PLANNED` | `DESIGN` | ADR0068已接受unsigned Darwin arm64 CLI-only RC1合同，但installer guard、same-bytes canary与产物均未实现；stable server、Issue #212 managed signing/notarization与Linux gate仍开放。 |
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
-当前最短剩余路径是：先独立审查并接受ADR0069→由ResultIngress `attempt-opened/v2`在副作用前对exact READY head唯一预留Attempt（Run仍READY/预算未消费），同时把authority改为ADR0066 held descriptor backend且`ObserveCurrentCore`只能发生在`OpenOwner`后→以同一reservation完成fresh-start sealed proof→立即相邻S2′，用existing-only Run open与`bind-existing-worktree/v1`诚实绑定既有Git worktree，再真实产生owner/reserved Attempt binding→allocation binding receipt→launch-authorized/StoredClosure→PreparedExecutionV2→sealed READY→RUNNING（此时才写Attempt/消费预算）并从fixed CLI接入唯一composition→Attach/rebind→terminalization/cleanup→fixed CLI真实Pi经独立Decision进入`ACCEPTED`→同一最终Darwin arm64 bytes发布unsigned CLI-only RC1。RC1后再接server、managed signing/notarization与Linux stable gate。ADR0069当前仍为Proposed；合同提案、候选分支、单次live pass或reviewer verdict都不能单独升级阶段。
+当前最短剩余路径是：复审并接受ADR0069 aggregate rework→RB1 `attempt-reserved` lookup-before-mint→dispatch lease/full AttemptIdentity→`attempt-opened`→BindOwnerToAttempt→RB1 existing-worktree bind intent→projection/effect→RB1 receipt→launch/Prepared→S1 sealed start（此时才写Attempt/计budget），同时修复ADR0066 held descriptor与`OpenOwner`后观察→Attach/rebind→terminalization/cleanup（RB1 release唯一释放binding，永不删除用户worktree）→fixed CLI真实Pi经独立Decision进入`ACCEPTED`→同一最终Darwin arm64 bytes发布unsigned CLI-only RC1。sidecar不是authority；ADR0069仍为Proposed，不能升级阶段。
 
 ## 快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
 
