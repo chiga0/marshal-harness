@@ -9,6 +9,8 @@
 > **2026-08-28 Darwin 进程生命周期合同 checkpoint**：[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受，冻结 Core-owned launch coordinator、admission/terminalization authority CAS、立即终止 dispatch eligibility、独立 `cleanup-completed` 与 cleanup binding release，以及 cooperative/non-detaching process-group 控制边界。实现与 production 接线仍开放，因此本 checkpoint 不升级 R3–R5。
 >
 > **2026-08-29 Run-start proof 纠偏**：[ADR 0065](adr/0065-sealed-run-start-proof-and-one-way-composition.md) 已接受，基于 `main@40fa493` 冻结 ResultIngress 的 owner/Attempt/generation 重验与 runstore 的 Run lease/head/state CAS 绝对分离，并以 shared-guard proof 和精确 composition AST gate 衔接。接受只冻结合同，S1/S2 尚未实现，不升级 R2–R5；旧实现候选不构成当前进展。
+>
+> **2026-08-29 S2 production factory 提议**：[ADR 0066](adr/0066-production-composition-owner-acquisition.md) 为 `Proposed`。当前没有 fixed `./bin/marshal` production factory，`Runtime.Status` 仍为 `production-composition-incomplete`，owner lock也存在“acquisition先于锁、successor acquisition又必须锁内产生”的构造环。提议只纠正S2为scope-only两阶段owner acquisition、确定性`StateRoot`布局、唯一Darwin arm64 factory与controller-only composition；未接受前不授权实现、不改变R2–R6状态或ADR0062信任模型。
 
 ## v1.0 生产纵切
 
@@ -33,7 +35,7 @@ Milestone 状态与能力成熟度是两个维度：
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
-当前最短剩余路径是：按已接受 ADR 0065 实施 S1 sealed proof component → 立即相邻 S2 fixed composition（两边 response-loss 只查自身 ledger，exact successful resume 后唯一 Run successor）→ 独立 ADR 0056 terminalization/cleanup 切片接入现有 server controller（R2/R3/R4）→ 当前主线 fixed-bin E2E 经独立 Decision 进入 `ACCEPTED` 并证明无 successor 双活（R5）→ 发布可验证 unsigned RC，再 provision macOS signing/notarization 并通过 Linux stable gate（R6）。合同接受本身、候选分支、单次 live pass 或 reviewer verdict 都不能单独升级阶段。
+当前最短剩余路径是：按已接受 ADR 0065 实施 S1 sealed proof component，同时完成 ADR 0066 独立审查/维护者接受 → 立即相邻 S2 fixed composition（两边 response-loss 只查自身 ledger，exact successful resume 后唯一 Run successor；不得用未接受提议扩面）→ 独立 ADR 0056 terminalization/cleanup 切片接入现有 server controller（R2/R3/R4）→ 当前主线 fixed-bin E2E 经独立 Decision 进入 `ACCEPTED` 并证明无 successor 双活（R5）→ 发布可验证 unsigned RC，再 provision macOS signing/notarization 并通过 Linux stable gate（R6）。合同接受本身、候选分支、单次 live pass 或 reviewer verdict 都不能单独升级阶段。
 
 ## 快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
 

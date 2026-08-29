@@ -40,6 +40,18 @@
 
 ADR 0065 已于 2026-08-29 接受，提案基线为 `main@40fa493d1955fd6d039169483a6501a787d3cc14`；接受只冻结合同，不撤销 ADR 0063 已冻结的 Pi identity、held source 与 exact resume 业务条件，也不表示任何旧实现候选可合入。S1/S2 实现仍未开始，实施顺序只允许 S1 proof component → S2 fixed composition；ADR 0056 terminalization 是之后的独立切片。
 
+### S2 production composition 构造环审计（2026-08-29）
+
+对 `main@7de2a70cec112df5fbf2b36f85ce5878f227c40c` 的构造审计确认：`internal/productionruntime` 只有 package-private `newController`/`newRuntime`，没有 fixed `./bin/marshal` 可调用的 production factory；`Runtime.Status` 固定返回 `production-composition-incomplete`；CLI/server 仍保留 legacy `execution.Run`/child CLI 路径。更直接的机械阻塞是 `openRepositoryOwnerLock` 在加锁前要求完整 `ControlOwnerAcquisition`，而下一 owner epoch、前驱 fact与 current Core observation只能在锁内打开 ResultIngress并 `OpenOwner` 后安全产生，形成构造环。因此 ADR 0065 §10 的“只新增 composition 文件”边界不能原样实施。
+
+| Finding | 等级 | 状态 | 处置 / 关闭条件 |
+| --- | --- | --- | --- |
+| `I186-ARCH-PRODUCTION-FACTORY-MISSING` | P0 | `CONTRACT-PROPOSED/IMPLEMENTATION-BLOCKED` | [ADR 0066](adr/0066-production-composition-owner-acquisition.md) 提议唯一 Darwin arm64 fixed `./bin/marshal` production factory、确定性 `StateRoot` 子目录与完整 component graph fail-closed 构造。关闭需要 ADR 接受、factory 从 fixed binary真实可达、legacy/fake/第二 store不可达、`Status` 对完整/不完整/recovery真实分型及真实 Pi E2E。 |
+| `I186-ARCH-OWNER-ACQUISITION-CONSTRUCTION-CYCLE` | P0 | `CONTRACT-PROPOSED/IMPLEMENTATION-BLOCKED` | ADR 0066 提议按 canonical `ControlOwnerScope` 先取得 descriptor-bound物理锁，再在锁内 `OpenResultIngress → OpenOwner → ObserveCurrentCore → construct/append/fsync next acquisition → bind verifier`。关闭需要并发单赢家、append前后crash/response-loss、epoch/head/entry ABA和root漂移矩阵，且不允许在锁前猜测acquisition。 |
+| `I186-ARCH-S2-FILE-BOUNDARY-INFEASIBLE` | P1 | `CONTRACT-PROPOSED` | ADR 0066作为ADR 0065的S2 implementation successor，提议仅把允许修改面扩到owner lock、controller、单一factory、composition、architecture tests和真实Pi E2E；proof方向、S1→S2 adjacency和terminalization/provider/release排除保持不变。ADR未接受前不得按该扩展面实施，也不得以提案升级R2–R5。 |
+
+本节登记的是当前主线的治理 blocker，不表示引入新milestone或暂停S1 component本身；S1后仍须立即进入经维护者接受的S2边界。ADR 0066不改变ADR 0062的fixed binary、loopback authentication或禁止child CLI信任模型。
+
 ### Darwin 控制目录阶段化身份审计（2026-08-29）
 
 exact-head macOS CI 证明，APFS 在 Supervisor 合法创建 nonce、journal、socket 与输出对象时可能改变目录 `st_nlink`；既有全字段 runtime equality 因此会把同一目录对象误判为 ABA，并让本应在 receipt `fsync` 后拒绝的 post-command drift 提前停在 journal sequence `1`。这不是测试断言问题，也不能通过删除 link-count hostile gate、跳过目录枚举或放宽 control object identity解决。

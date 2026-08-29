@@ -11,6 +11,8 @@
 > **2026-08-29 ProcessBridge authority checkpoint**：[ADR 0063](adr/0063-prepared-execution-authority-and-production-chain.md) 已接受，冻结当前最小阻塞的解法：现有 `PreparedRunStart` 必须能从 held Attempt authority 恢复完整 owner/Attempt/Allocation/launch/Pi 原件，并在 held current Run authority 内于 exact successful `resume(state=running)` 后提交唯一 Run-start outcome。后续交付顺序固定为：只落一个 secret-safe `PreparedExecutionV1` bounded authority component → 立即以相邻下一切片接入 fixed `marshal` composition root；不得在两切片之间插入第二个 component 或扩大到通用恢复策略。
 >
 > **2026-08-29 proof boundary 纠偏**：[ADR 0065](adr/0065-sealed-run-start-proof-and-one-way-composition.md) 已接受，基于 `main@40fa493` 冻结用 ResultIngress-owned shared-guard proof 取代可逃逸的 raw authority/closure callback：ResultIngress 唯一前后重验 owner/Attempt/generation，runstore 只做自身 Run CAS，两边 response-loss 只查自身 ledger。接受只冻结合同，S1/S2 实现仍未开始；ADR 0056 terminalization 另行后续实施。
+>
+> **2026-08-29 S2 构造边界提议**：[ADR 0066](adr/0066-production-composition-owner-acquisition.md) 为 `Proposed`。代码审计确认没有 production factory、`Runtime.Status` 仍为 `production-composition-incomplete`，且现有 owner lock 要求预制完整 acquisition，与锁内读取 current owner 并 fsync successor 形成构造环；因此 ADR 0065 §10 的单文件 S2 边界暂不可实施。提议以 scope-only descriptor lock → 锁内产生并绑定 acquisition、确定性 `StateRoot` 布局、唯一 Darwin arm64 fixed `./bin/marshal` factory纠正必要范围。它未接受、不授权实现、不改变 R2–R6 状态；S1→S2 adjacency 与 proof方向保持不变。
 
 ## v1.0 权威实施表
 
@@ -46,7 +48,7 @@ Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Prov
 1. 锁定 `main@912f659` 的 crash-atomic ResultIngress transaction 为唯一 admission 基线，不再建立另一条 ResultIngress/worker-result 真值；
 2. ADR 0063 与 ADR 0065 均已接受；下一步按 ADR 0065 实施 S1 sealed proof component，不得改写已冻结的跨包 authority API；
 3. S1 只实现 sealed proof component：ResultIngress claim/proof/shared guard 与 `StartPreparedExecution`，runstore `WithPreparedRunStartAuthority`/private projector/self-only CAS、generic `Append` 旁路拒绝及 hostile/race 矩阵，成熟度保持 `COMPONENT`；
-4. S2 必须立即相邻，只在 `internal/productionruntime/prepared_run_start_composition.go` 接通 fixed `marshal` / `marshal control-plane serve`，以 architecture gate 锁死两个 exported seam、direct `FuncLit` 和 projector 单次末参数传递；S1/S2 之间禁止第二 component、Provider 扩面或无关工作；
+4. S2 必须立即相邻；accepted ADR 0065 当前仍冻结单一 composition helper 与 architecture gate，但构造审计已证明其单文件实现边界不可落地。[ADR 0066](adr/0066-production-composition-owner-acquisition.md) 提议在不改变 proof方向的前提下，仅增加两阶段 owner lock、controller、唯一 factory、composition、architecture test与真实Pi E2E修改面；该ADR经独立审查和维护者接受前不得按扩展边界实施，也不得用legacy/fallback绕过；
 5. S2 完成后再以独立切片按 ADR 0056 接入 terminalization CAS、eligibility terminal、allocation terminal receipt 与 `cleanup-completed`；不得把 terminalization 塞入 S1/S2；
 6. 由独立 reviewer 为当前主线 live canary 生成 ReviewDecision，通过现有 `task review --decision` 从 `REVIEW_PENDING` 到 `ACCEPTED`，并证明旧 cooperative process group 已安全退出或被 fence、不会与 successor 双活；
 7. 发布 unsigned RC 收集安装/升级证据；stable release 仅在 Issue #212 signing/notarization 和 Linux stable gate 全绿后执行。
