@@ -107,10 +107,27 @@ type DurableStore struct {
 	nextSequence int64
 	mu           sync.Mutex
 	clock        func() time.Time
+	// heldFiles is non-nil only for the sealed Darwin production profile. All
+	// ledger and coordination I/O then stays descriptor-relative; dir is only
+	// a diagnostic/current-name identity and is never used to open authority
+	// objects.
+	heldFiles durableAuthorityFiles
 	// preparedDarwin is non-nil only for the sealed Darwin arm64 factory. It
 	// contains concrete fixed identities and a retained control-root descriptor;
 	// callers cannot inject a mechanics callback or driver.
 	preparedDarwin *preparedDarwinExecutionProfile
+}
+
+// durableAuthorityFiles is deliberately private. Production may bind the
+// store to already-held authority objects, while legacy/test constructors keep
+// their existing path-backed behavior. Implementations must recheck their
+// current-name identities before every operation and fail closed on drift.
+type durableAuthorityFiles interface {
+	identityKey() string
+	lockExclusive() (func() error, error)
+	readLedger() ([]byte, error)
+	appendLedger([]byte) error
+	close() error
 }
 
 type preparedDarwinExecutionProfile struct {
@@ -160,6 +177,14 @@ func (s *ingressDurableStore) authorityNow() time.Time {
 }
 
 func (s *ingressDurableStore) withEffectFlight(key string, fn func() error) error {
+	if s != nil && s.heldFiles != nil {
+		flightKey := s.heldFiles.identityKey() + "\x00" + key
+		value, _ := processEffectFlights.LoadOrStore(flightKey, &sync.Mutex{})
+		flight := value.(*sync.Mutex)
+		flight.Lock()
+		defer flight.Unlock()
+		return fn()
+	}
 	root, err := filepath.Abs(s.dir)
 	if err != nil {
 		return fmt.Errorf("resultingress: resolve effect authority root: %w", err)
@@ -173,7 +198,7 @@ func (s *ingressDurableStore) withEffectFlight(key string, fn func() error) erro
 }
 
 func (s *ingressDurableStore) requireBound() error {
-	if s == nil || s.dir == "" {
+	if s == nil || s.dir == "" && s.heldFiles == nil {
 		return ErrMemoryOnlyResultIngress
 	}
 	return nil
@@ -196,6 +221,21 @@ func (s *ingressDurableStore) withExclusive(fn func() error) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.heldFiles != nil {
+		unlock, err := s.heldFiles.lockExclusive()
+		if err != nil {
+			return fmt.Errorf("resultingress: acquire held durable ledger lock: %w", err)
+		}
+		operationErr := fn()
+		unlockErr := unlock()
+		if operationErr != nil {
+			return operationErr
+		}
+		if unlockErr != nil {
+			return fmt.Errorf("resultingress: release held durable ledger lock: %w", unlockErr)
+		}
+		return nil
+	}
 	coordination := flock.New(s.lockPath())
 	if err := coordination.Lock(); err != nil {
 		return fmt.Errorf("resultingress: acquire durable ledger lock: %w", err)
@@ -241,6 +281,12 @@ func (s *ingressDurableStore) appendLine(fact any, getDigest func() string, setD
 		return fmt.Errorf("resultingress: canonicalize fact: %w", err)
 	}
 	line := append(raw, '\n')
+	if s.heldFiles != nil {
+		if err := s.heldFiles.appendLedger(line); err != nil {
+			return fmt.Errorf("resultingress: append held ledger: %w", err)
+		}
+		return nil
+	}
 	f, err := os.OpenFile(s.ledgerPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("resultingress: open ledger: %w", err)
@@ -354,7 +400,13 @@ func (s *ingressDurableStore) recoverInto(in *Ingress) error {
 }
 
 func (s *ingressDurableStore) recoverIntoLocked(in *Ingress) error {
-	data, err := os.ReadFile(s.ledgerPath())
+	var data []byte
+	var err error
+	if s.heldFiles != nil {
+		data, err = s.heldFiles.readLedger()
+	} else {
+		data, err = os.ReadFile(s.ledgerPath())
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

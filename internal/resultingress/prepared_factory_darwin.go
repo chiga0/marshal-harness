@@ -5,15 +5,33 @@ package resultingress
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"golang.org/x/sys/unix"
 )
 
-// OpenPi0843DarwinResultIngressStore is the sole S1 fresh-start composition.
-// It retains one exact owner-private control-root descriptor and one current
-// fixed Marshal image; no mechanics interface or callback is configurable.
-func OpenPi0843DarwinResultIngressStore(ledgerDir, fixedMarshalPath string, ownerPrivateControlRoot *os.File) (*DurableStore, error) {
+// OpenDarwinResultIngressStore binds the RB1 ledger and its coordination file
+// to one already-held directory. It performs no Core observation and exposes
+// no prepared-execution mechanics, so ADR 0066 Phase B can OpenOwner first.
+func OpenDarwinResultIngressStore(ledgerDir *os.File) (*DurableStore, error) {
+	files, err := openHeldDarwinAuthorityFiles(ledgerDir)
+	if err != nil {
+		return nil, err
+	}
+	return &DurableStore{dir: files.directoryID.CanonicalPath, nextSequence: 1, clock: time.Now, heldFiles: files}, nil
+}
+
+// SealPi0843DarwinPreparedExecutionStore is the sole S1 fresh-start
+// composition. The production factory calls it only after OpenOwner, then this
+// constructor observes the current fixed Marshal image and retains the exact
+// owner-private control root. It returns a new prepared-capable view over the
+// same held ledger backend; no mechanics callback or caller-supplied Core
+// observation is accepted.
+func SealPi0843DarwinPreparedExecutionStore(store *DurableStore, fixedMarshalPath string, ownerPrivateControlRoot *os.File) (*DurableStore, error) {
+	if store == nil || store.heldFiles == nil || store.preparedDarwin != nil {
+		return nil, ErrPreparedExecutionUnavailable
+	}
 	if ownerPrivateControlRoot == nil || !filepath.IsAbs(fixedMarshalPath) || filepath.Clean(fixedMarshalPath) != fixedMarshalPath {
 		return nil, ErrPreparedExecutionUnavailable
 	}
@@ -40,11 +58,17 @@ func OpenPi0843DarwinResultIngressStore(ledgerDir, fixedMarshalPath string, owne
 		_ = retained.Close()
 		return nil, ErrPreparedExecutionUnavailable
 	}
-	store, err := OpenResultIngressStore(ledgerDir)
-	if err != nil {
-		_ = retained.Close()
-		return nil, err
+	sealed := &DurableStore{
+		dir:          store.dir,
+		nextSequence: 1,
+		clock:        store.clock,
+		heldFiles:    store.heldFiles,
+		preparedDarwin: &preparedDarwinExecutionProfile{
+			fixedMarshalPath: fixedMarshalPath,
+			core:             core,
+			controlRoot:      retained,
+			controlIdentity:  rootIdentity,
+		},
 	}
-	store.preparedDarwin = &preparedDarwinExecutionProfile{fixedMarshalPath: fixedMarshalPath, core: core, controlRoot: retained, controlIdentity: rootIdentity}
-	return store, nil
+	return sealed, nil
 }

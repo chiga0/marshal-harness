@@ -4,8 +4,14 @@ package resultingress
 
 import "os"
 
-// OpenPi0843DarwinResultIngressStore never silently degrades outside the
+// OpenDarwinResultIngressStore never silently degrades outside the accepted
+// Darwin arm64 ordinary-user profile.
+func OpenDarwinResultIngressStore(_ *os.File) (*DurableStore, error) {
+	return nil, ErrPreparedExecutionUnavailable
+}
+
+// SealPi0843DarwinPreparedExecutionStore never silently degrades outside the
 // accepted Darwin arm64 ordinary-user profile.
-func OpenPi0843DarwinResultIngressStore(_ string, _ string, _ *os.File) (*DurableStore, error) {
+func SealPi0843DarwinPreparedExecutionStore(_ *DurableStore, _ string, _ *os.File) (*DurableStore, error) {
 	return nil, ErrPreparedExecutionUnavailable
 }
