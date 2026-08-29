@@ -268,6 +268,8 @@ make_contract_fixture() {
   cp "$CI_CONTRACT" "${root}/scripts/release-ci-contract.py"
   cp "${ROOT}/scripts/release-artifact-metadata-check.py" \
     "${root}/scripts/release-artifact-metadata-check.py"
+  cp "${ROOT}/scripts/release-rc1-binary-check.py" \
+    "${root}/scripts/release-rc1-binary-check.py"
   cp "$RELEASE_WORKFLOW_DIGEST" "${root}/scripts/release-workflow.sha256"
   for fixed_test in \
     release-contract_test.sh \
