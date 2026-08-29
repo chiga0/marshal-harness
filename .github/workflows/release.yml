@@ -19,8 +19,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  publication_guard:
+    name: Block v1 publication pending ADR 0068 RC1 evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions: {}
+    env:
+      TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      # This source guard only governs workflow bytes that contain it. Historical
+      # tags/runs pinned to an earlier commit are not retroactively changed and
+      # must remain protected by GitHub-side immutable-tag and rerun controls.
+      - name: Block every v1 tag before candidate execution
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          case "$TAG_NAME" in
+            v1.*)
+              echo "::error::v1 publication is disabled until the ADR 0068 live canary receipt, same-bytes release, and install verification slice is implemented and reviewed." >&2
+              exit 1
+              ;;
+          esac
+
   build:
     name: Build & freeze immutable release candidate
+    needs: publication_guard
     runs-on: macos-14
     environment: release-candidate-build
     timeout-minutes: 30
