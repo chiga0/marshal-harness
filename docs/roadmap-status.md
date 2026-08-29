@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-更新时间：2026-08-29（ADR 0069 S1′/S2′ producer P0 提案 checkpoint）
+更新时间：2026-08-29（`main@6176868` implementation checkpoint）
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
@@ -15,6 +15,8 @@
 > **2026-08-29 Mac-first 合同接受**：[ADR 0067](adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 与 [ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受；提案 sourceHead 分别为 `1e05fb831c04a1c87e7f4ecdc677c97beb9d88e6`、`9cfa1b65275d2e23f18b958a05d027adec6af8fd`，唯一独立 reviewer 均确认 `P0=0`、`P1=0`。旧候选`a6a0d63`/`506a647`/`6298eae`继续冻结、不直接合入；权威顺序固定为S1′→S2′→Attach/rebind→terminalization→fixed CLI真实Pi+独立Decision `ACCEPTED`→same-bytes RC1。RC1仍是尚未实现、尚未发布的unsigned Darwin arm64 CLI-only local-dogfood preview；server、managed signing/notarization与Linux stable转为RC1后继。接受不改变当前R2–R6成熟度。
 
 > **2026-08-29 producer P0 合同**：[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md)已在定向修订 sourceHead `e2af179` 经独立 reviewer `APPROVE`（`P0=0/P1=0`）后由维护者接受。`attempt-reserved`只是RB1 creation-once reservation；dispatch lookup-before-claim、full Attempt与`attempt-opened`随后产生，sealed Run successor才写Attempt/计budget。Existing-worktree Bind/Receipt/Release的唯一authority同样是RB1；固定sidecar仅为可重建projection，锁序owner→Run→RB1→projection，release绑定current terminalization/cleanup/process-terminal链。ResultIngress pathname reopen和`OpenOwner`后才可`ObserveCurrentCore`仍是ADR0066实施P0。接受只冻结合同，实现尚未完成，不升级阶段。
+
+> **2026-08-29 implementation checkpoint**：RB1-authoritative existing-worktree Bind/Receipt/Release 与 descriptor-bound recovery projection 已于 `main@259edd3` 实现，Linux staticcheck U1000 修复已于 `main@6176868` 推送。该 exact-head CI 的 Ubuntu quality 与 secret scan 已通过，但 macOS quality 失败，整体仍未全绿。RC1 build-once distribution contract（`main@2d7da6a`）、installer exact opt-in/fail-closed guard（`main@e6a78a3`）以及 immutable carrier checker/receipt Schema/hostile matrix（`main@66523d9`）均已实现并独立审查。这些都是 component/admission 资产：完整 S1′（S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor，含 item 5 borrow seam/门禁）尚未进入 `main`，`3abed5a` 仍只是未合入候选；S2′、Attach/rebind、terminalization、最终 fixed-bin Pi→独立 Decision→`ACCEPTED`、真实 same-bytes canary/carrier、tag、GitHub prerelease 与 release asset 仍未完成，因此 R2–R6 状态不变。
 
 ## v1.0 生产纵切
 
@@ -31,15 +33,15 @@ Milestone 状态与能力成熟度是两个维度：
 | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 与 baseline evidence 已完成。 |
 | `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Pi `0.84.3` 在 `sourceHead=d4b9647` 的前置 canary 中由 Local allocation 承载并把真实 result bytes 送入 Core；当前主线重跑仍是发布前门禁。 |
-| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | ResultIngress admission→worker-result→Run journal crash-atomic持久化/恢复已于`main@912f659`合入。ADR0065/0067 proof合同已接受；ADR0069 Proposed登记ResultIngress reservation、sealed successor预算单计数与held-descriptor P0。S1′仍须重建，旧候选不计进展。 |
-| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | production selector已于`main@d4b9647` fail closed；ADR0056/0063/0065/0067合同已接受。ADR0069接受前，existing-only Run open与`bind-existing-worktree` profile新持久化合同不得实施；S2′真实producer/fixed composition、Attach与terminalization负测均未完成。 |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | ResultIngress admission→worker-result→Run journal crash-atomic持久化/恢复已于`main@912f659`合入；ADR0069 已接受。完整S1′仍开放：S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor（含item 5 borrow seam/门禁）；`3abed5a`仅为未合入候选，不计当前进展。 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | production selector已于`main@d4b9647` fail closed；RB1-authoritative existing-worktree Bind/Receipt/Release 与 projection 已于`main@259edd3`实现，Linux U1000修复位于`main@6176868`；其Ubuntu quality已通过但macOS quality失败。S2′真实producer/fixed composition、Attach与terminalization负测均未完成。 |
 | `I186-R4` | `IN_PROGRESS` | `COMPONENT` | durable server run controller 已随 `main@44ee8c9` 合入，strict E2E 候选也已通过跨进程 restore；但 controller 尚未接入 ADR 0056 的 authority CAS/cleanup transaction。退出前须证明 server crash 后从耐久观察恢复、eligibility 立即 fence、旧控制单元安全终结或 intervention、重复 start 幂等、lost/failed worker 得到唯一可回放结论。 |
 | `I186-R5` | `IN_PROGRESS` | `COMPONENT` | fixed-bin canary 已在 `sourceHead=d4b9647` 以单 Attempt/9 Gate 真实到 ReviewPacket/`REVIEW_PENDING`；但尚未导入独立 Decision 到 `ACCEPTED`，也未完成 ADR 0056 implementation 和最终主线终验。 |
-| `I186-R6` | `PLANNED` | `DESIGN` | ADR0068已接受unsigned Darwin arm64 CLI-only RC1合同，但installer guard、same-bytes canary与产物均未实现；stable server、Issue #212 managed signing/notarization与Linux gate仍开放。 |
+| `I186-R6` | `PLANNED` | `DESIGN` | build-once dist contract、installer guard 与 immutable carrier checker/Schema 已实现并独立审查；真实 same-bytes canary receipt/carrier、tag、GitHub prerelease与产物均未产生。stable server、Issue #212 managed signing/notarization与Linux gate仍开放。 |
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
-当前最短剩余路径是：按已接受ADR0069实现RB1 `attempt-reserved` lookup-before-mint→dispatch lookup-before-claim + lease/full AttemptIdentity→`attempt-opened`→BindOwnerToAttempt→RB1 existing-worktree bind intent→projection/effect→RB1 receipt→launch/Prepared→S1 sealed start（此时才写Attempt/计budget），同时修复ADR0066 held descriptor与`OpenOwner`后观察→Attach/rebind→terminalization/cleanup（RB1 release唯一释放binding，永不删除用户worktree）→fixed CLI真实Pi经独立Decision进入`ACCEPTED`→同一最终Darwin arm64 bytes发布unsigned CLI-only RC1。sidecar不是authority；合同接受不等于实现完成，不能升级阶段。
+当前最短剩余路径是：完整S1′（S1′-A reservation/full Attempt→S1′-B held descriptor/prepared proof/sealed successor，含item 5 borrow seam/门禁；`3abed5a`不计已完成）→S2′消费已实现的RB1 existing-worktree authority/projection并产生完整`PrepareRunStart`→ADR0066 held descriptor与`OpenOwner`后观察→Attach/rebind→terminalization/cleanup（RB1 release唯一释放binding，永不删除用户worktree）→fixed CLI真实Pi经独立Decision进入`ACCEPTED`→用已实现的dist/installer/carrier validator对同一最终Darwin arm64 bytes产生真实canary receipt、carrier、tag、GitHub prerelease与asset。component checker或合同接受不等于实现完成，不能升级阶段。
 
 ## 快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
 
