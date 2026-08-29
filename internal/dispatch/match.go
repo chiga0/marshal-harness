@@ -28,6 +28,7 @@ const (
 type Matcher struct {
 	store       *provider.RegistrationStore
 	edgeRuntime *authority.EdgeRuntime
+	leaseLedger *LeaseLedger
 
 	// mu guards issuedLeases and issuedResultCapabilities.
 	mu sync.Mutex
@@ -61,6 +62,16 @@ func NewMatcher(store *provider.RegistrationStore) *Matcher {
 func NewMatcherWithEdgeRuntime(store *provider.RegistrationStore, runtime *authority.EdgeRuntime) *Matcher {
 	matcher := NewMatcher(store)
 	matcher.edgeRuntime = runtime
+	return matcher
+}
+
+// NewMatcherWithReservedClaimLedger binds the fresh ADR 0069 durable
+// lookup-before-claim path. Legacy Claim remains available with its
+// historical behavior; ClaimReserved never falls back to that path when the
+// lease ledger is absent, unknown, or conflicting.
+func NewMatcherWithReservedClaimLedger(store *provider.RegistrationStore, runtime *authority.EdgeRuntime, ledger *LeaseLedger) *Matcher {
+	matcher := NewMatcherWithEdgeRuntime(store, runtime)
+	matcher.leaseLedger = ledger
 	return matcher
 }
 
