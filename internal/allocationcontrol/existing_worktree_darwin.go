@@ -68,11 +68,67 @@ func NewExistingWorktreeDescriptorGraph(filesystemRoot, repositoryParent, reposi
 	if err != nil {
 		return ExistingWorktreeDescriptorGraphV1{}, err
 	}
-	graph := ExistingWorktreeDescriptorGraphV1{FilesystemRoot: filesystemRoot, FilesystemRootIdentity: objectIdentity(rootStat), RepositoryParent: repositoryParent, RepositoryRoot: repositoryRoot, RepositoryCurrentName: current, RepositoryCommonGitDirectory: repositoryCommonGitDirectory, RepositoryCommonGitCurrentName: commonCurrent}
+	graph := ExistingWorktreeDescriptorGraphV1{FilesystemRoot: filesystemRoot, FilesystemRootIdentity: objectIdentity(rootStat), RepositoryParent: repositoryParent, RepositoryRoot: repositoryRoot, RepositoryCurrentName: current, RepositoryCommonGitParent: repositoryRoot, RepositoryCommonGitDirectory: repositoryCommonGitDirectory, RepositoryCommonGitCurrentName: commonCurrent}
 	if validateExistingWorktreeDescriptorGraph(graph) != nil {
 		return ExistingWorktreeDescriptorGraphV1{}, ErrFilesystemConflict
 	}
 	return graph, nil
+}
+
+// NewLinkedExistingWorktreeDescriptorGraph binds the repository `.git` file
+// and its resolved common Git directory as independent current-name edges.
+// The caller retains ownership of every supplied descriptor.
+func NewLinkedExistingWorktreeDescriptorGraph(filesystemRoot, repositoryParent, repositoryRoot, repositoryDotGitFile, commonGitParent, commonGitDirectory *os.File, repositoryName, commonGitName string) (ExistingWorktreeDescriptorGraphV1, error) {
+	if filesystemRoot == nil || repositoryParent == nil || repositoryRoot == nil || repositoryDotGitFile == nil || commonGitParent == nil || commonGitDirectory == nil || !validExistingRelativeName(repositoryName) || !validExistingRelativeName(commonGitName) {
+		return ExistingWorktreeDescriptorGraphV1{}, ErrInvalid
+	}
+	var rootStat unix.Stat_t
+	if unix.Fstat(int(filesystemRoot.Fd()), &rootStat) != nil {
+		return ExistingWorktreeDescriptorGraphV1{}, ErrFilesystemConflict
+	}
+	repositoryCurrent, err := observeDirectoryEdge(int(repositoryParent.Fd()), int(repositoryRoot.Fd()), repositoryName)
+	if err != nil {
+		return ExistingWorktreeDescriptorGraphV1{}, err
+	}
+	dotGitCurrent, err := observeRegularEdge(int(repositoryRoot.Fd()), int(repositoryDotGitFile.Fd()), ".git")
+	if err != nil {
+		return ExistingWorktreeDescriptorGraphV1{}, err
+	}
+	dotGitRaw, err := readHeldGraphDotGit(repositoryRoot, repositoryDotGitFile, dotGitCurrent)
+	if err != nil {
+		return ExistingWorktreeDescriptorGraphV1{}, err
+	}
+	commonCurrent, err := observeDirectoryEdge(int(commonGitParent.Fd()), int(commonGitDirectory.Fd()), commonGitName)
+	if err != nil {
+		return ExistingWorktreeDescriptorGraphV1{}, err
+	}
+	graph := ExistingWorktreeDescriptorGraphV1{
+		FilesystemRoot: filesystemRoot, FilesystemRootIdentity: objectIdentity(rootStat),
+		RepositoryParent: repositoryParent, RepositoryRoot: repositoryRoot, RepositoryCurrentName: repositoryCurrent,
+		RepositoryDotGitFile: repositoryDotGitFile, RepositoryDotGitCurrentName: dotGitCurrent, RepositoryDotGitDigest: digestBytes(dotGitRaw),
+		RepositoryCommonGitParent: commonGitParent, RepositoryCommonGitDirectory: commonGitDirectory, RepositoryCommonGitCurrentName: commonCurrent,
+	}
+	if validateExistingWorktreeDescriptorGraph(graph) != nil {
+		return ExistingWorktreeDescriptorGraphV1{}, ErrFilesystemConflict
+	}
+	return graph, nil
+}
+
+// ObserveHeldDirectoryIdentity returns the exact descriptor identity used by
+// an existing-worktree bind request without opening a pathname.
+func ObserveHeldDirectoryIdentity(directory *os.File) (ObjectIdentityV1, error) {
+	if directory == nil {
+		return ObjectIdentityV1{}, ErrInvalid
+	}
+	var stat unix.Stat_t
+	if unix.Fstat(int(directory.Fd()), &stat) != nil {
+		return ObjectIdentityV1{}, ErrFilesystemConflict
+	}
+	identity := objectIdentity(stat)
+	if identity.Validate(ObjectTypeDirectory) != nil {
+		return ObjectIdentityV1{}, ErrFilesystemConflict
+	}
+	return identity, nil
 }
 
 func validateDescriptorBoundRun(run DescriptorBoundRunV1) error {
@@ -87,6 +143,10 @@ func validateExistingWorktreeDescriptorGraph(graph ExistingWorktreeDescriptorGra
 	if graph.FilesystemRoot == nil || graph.RepositoryParent == nil || graph.RepositoryRoot == nil || graph.RepositoryCommonGitDirectory == nil || graph.FilesystemRootIdentity.Validate(ObjectTypeDirectory) != nil || graph.RepositoryCurrentName.Validate(ObjectTypeDirectory) != nil || graph.RepositoryCommonGitCurrentName.Validate(ObjectTypeDirectory) != nil {
 		return ErrInvalid
 	}
+	linked := graph.RepositoryDotGitFile != nil || graph.RepositoryDotGitCurrentName != (CurrentNameIdentityV1{}) || graph.RepositoryDotGitDigest != ""
+	if linked && (graph.RepositoryDotGitFile == nil || graph.RepositoryDotGitCurrentName.Validate(ObjectTypeRegular) != nil || !validDigest(graph.RepositoryDotGitDigest)) {
+		return ErrInvalid
+	}
 	var filesystemRoot unix.Stat_t
 	if unix.Fstat(int(graph.FilesystemRoot.Fd()), &filesystemRoot) != nil || !sameDirectoryObject(objectIdentity(filesystemRoot), graph.FilesystemRootIdentity) || filesystemRoot.Mode&unix.S_IFMT != unix.S_IFDIR || filesystemRoot.Nlink < 1 {
 		return ErrFilesystemConflict
@@ -95,7 +155,17 @@ func validateExistingWorktreeDescriptorGraph(graph ExistingWorktreeDescriptorGra
 	if err != nil || !sameExistingWorktreeCurrentNameAnchor(currentName, graph.RepositoryCurrentName) {
 		return ErrFilesystemConflict
 	}
-	commonCurrent, err := observeDirectoryEdge(int(graph.RepositoryRoot.Fd()), int(graph.RepositoryCommonGitDirectory.Fd()), ".git")
+	if linked {
+		dotGitRaw, err := readHeldGraphDotGit(graph.RepositoryRoot, graph.RepositoryDotGitFile, graph.RepositoryDotGitCurrentName)
+		if err != nil || digestBytes(dotGitRaw) != graph.RepositoryDotGitDigest {
+			return ErrFilesystemConflict
+		}
+	}
+	commonParent := graph.RepositoryCommonGitParent
+	if commonParent == nil {
+		commonParent = graph.RepositoryRoot
+	}
+	commonCurrent, err := observeDirectoryEdge(int(commonParent.Fd()), int(graph.RepositoryCommonGitDirectory.Fd()), graph.RepositoryCommonGitCurrentName.RelativeName)
 	if err != nil || !sameExistingWorktreeCurrentNameAnchor(commonCurrent, graph.RepositoryCommonGitCurrentName) {
 		return ErrFilesystemConflict
 	}
@@ -245,7 +315,7 @@ func openExistingWorktreeTargetGuard(ctx context.Context, graph ExistingWorktree
 	if !sameDirectoryObject(target.edges[len(target.edges)-1].ObjectIdentity, request.ExpectedWorktreeIdentity) {
 		return nil, ErrFilesystemConflict
 	}
-	dotGit, _, _, err := readObservedRegularAt(target.FD(), ".git", 16<<10)
+	dotGit, _, _, err := readGraphDotGitAt(graph, target.FD())
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +433,7 @@ func (guard *existingWorktreeTargetGuard) observeMaterial(ctx context.Context, q
 	if err != nil {
 		return ExistingWorktreeObservationV1{}, err
 	}
-	dotGit, dotGitIdentity, dotGitMutation, err := readObservedRegularAt(guard.target.FD(), ".git", 16<<10)
+	dotGit, dotGitIdentity, dotGitMutation, err := readGraphDotGitAt(guard.graph, guard.target.FD())
 	if err != nil {
 		return ExistingWorktreeObservationV1{}, err
 	}
@@ -525,6 +595,10 @@ func sameExistingWorktreeCurrentNameAnchor(current, expected CurrentNameIdentity
 	return current.ParentIdentity == expected.ParentIdentity && current.RelativeName == expected.RelativeName && sameDirectoryObject(current.ObjectIdentity, expected.ObjectIdentity)
 }
 
+func sameExistingWorktreeRegularCurrentNameAnchor(current, expected CurrentNameIdentityV1) bool {
+	return current.ParentIdentity == expected.ParentIdentity && current.RelativeName == expected.RelativeName && current.ObjectIdentity == expected.ObjectIdentity && current.ObjectMutationDigest == expected.ObjectMutationDigest
+}
+
 type existingWorktreeBindingAnchors struct {
 	TargetCurrentName            CurrentNameIdentityV1
 	DotGitIdentity               ObjectIdentityV1
@@ -557,7 +631,7 @@ func observeExistingWorktreeBindingAnchors(graph ExistingWorktreeDescriptorGraph
 	if err != nil || !sameDirectoryObject(targetCurrentName.ObjectIdentity, request.ExpectedWorktreeIdentity) {
 		return existingWorktreeBindingAnchors{}, ErrFilesystemConflict
 	}
-	dotGit, dotGitIdentity, dotGitMutation, err := readObservedRegularAt(targetFD, ".git", 16<<10)
+	dotGit, dotGitIdentity, dotGitMutation, err := readGraphDotGitAt(graph, targetFD)
 	if err != nil {
 		return existingWorktreeBindingAnchors{}, err
 	}
@@ -643,7 +717,7 @@ func observeExistingWorktreeMaterial(graph ExistingWorktreeDescriptorGraphV1, re
 		return ExistingWorktreeObservationV1{}, err
 	}
 
-	dotGit, dotGitIdentity, dotGitMutation, err := readObservedRegularAt(targetFD, ".git", 16<<10)
+	dotGit, dotGitIdentity, dotGitMutation, err := readGraphDotGitAt(graph, targetFD)
 	if err != nil {
 		return ExistingWorktreeObservationV1{}, err
 	}
@@ -824,6 +898,14 @@ func observeDirectoryEdge(parentFD, childFD int, name string) (CurrentNameIdenti
 	return CurrentNameIdentityV1{ParentIdentity: stableDirectoryIdentity(parent), ParentMutationDigest: statGenerationDigest(parent), RelativeName: name, ObjectIdentity: objectIdentity(held), ObjectMutationDigest: statMutationDigest(held)}, nil
 }
 
+func observeRegularEdge(parentFD, childFD int, name string) (CurrentNameIdentityV1, error) {
+	var parent, held, named unix.Stat_t
+	if unix.Fstat(parentFD, &parent) != nil || unix.Fstat(childFD, &held) != nil || unix.Fstatat(parentFD, name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !sameStat(held, named) || parent.Mode&unix.S_IFMT != unix.S_IFDIR || parent.Nlink < 1 || held.Mode&unix.S_IFMT != unix.S_IFREG || held.Nlink != 1 || held.Uid != uint32(unix.Geteuid()) || held.Mode&0o022 != 0 {
+		return CurrentNameIdentityV1{}, ErrFilesystemConflict
+	}
+	return CurrentNameIdentityV1{ParentIdentity: stableDirectoryIdentity(parent), ParentMutationDigest: statGenerationDigest(parent), RelativeName: name, ObjectIdentity: objectIdentity(held), ObjectMutationDigest: statMutationDigest(held)}, nil
+}
+
 func observePrivateDirectoryEdge(parentFD, childFD int, name string) (CurrentNameIdentityV1, error) {
 	edge, err := observeDirectoryEdge(parentFD, childFD, name)
 	if err != nil || verifyPrivateDirectory(childFD, uint32(unix.Geteuid())) != nil {
@@ -891,6 +973,54 @@ func readObservedRegularAt(parentFD int, name string, limit int64) ([]byte, Obje
 		return nil, ObjectIdentityV1{}, "", ErrFilesystemConflict
 	}
 	return raw, objectIdentity(after), statMutationDigest(after), nil
+}
+
+func readHeldGraphDotGit(repositoryRoot, dotGitFile *os.File, expected CurrentNameIdentityV1) ([]byte, error) {
+	if repositoryRoot == nil || dotGitFile == nil || expected.Validate(ObjectTypeRegular) != nil {
+		return nil, ErrInvalid
+	}
+	before, err := observeRegularEdge(int(repositoryRoot.Fd()), int(dotGitFile.Fd()), ".git")
+	if err != nil || !sameExistingWorktreeRegularCurrentNameAnchor(before, expected) {
+		return nil, ErrFilesystemConflict
+	}
+	var statBefore, statAfter unix.Stat_t
+	if unix.Fstat(int(dotGitFile.Fd()), &statBefore) != nil || statBefore.Size < 0 || statBefore.Size > 16<<10 {
+		return nil, ErrFilesystemConflict
+	}
+	raw, err := io.ReadAll(io.NewSectionReader(dotGitFile, 0, (16<<10)+1))
+	if err != nil || len(raw) > 16<<10 || int64(len(raw)) != statBefore.Size || unix.Fstat(int(dotGitFile.Fd()), &statAfter) != nil || !sameStat(statBefore, statAfter) {
+		return nil, ErrFilesystemConflict
+	}
+	after, err := observeRegularEdge(int(repositoryRoot.Fd()), int(dotGitFile.Fd()), ".git")
+	if err != nil || !sameExistingWorktreeRegularCurrentNameAnchor(after, expected) {
+		return nil, ErrFilesystemConflict
+	}
+	return raw, nil
+}
+
+func readGraphDotGitAt(graph ExistingWorktreeDescriptorGraphV1, targetFD int) ([]byte, ObjectIdentityV1, string, error) {
+	if graph.RepositoryDotGitFile == nil {
+		return readObservedRegularAt(targetFD, ".git", 16<<10)
+	}
+	heldRaw, err := readHeldGraphDotGit(graph.RepositoryRoot, graph.RepositoryDotGitFile, graph.RepositoryDotGitCurrentName)
+	if err != nil || digestBytes(heldRaw) != graph.RepositoryDotGitDigest {
+		return nil, ObjectIdentityV1{}, "", ErrFilesystemConflict
+	}
+	if graph.beforeDotGitRead != nil {
+		graph.beforeDotGitRead()
+	}
+	raw, identity, mutation, readErr := readObservedRegularAt(targetFD, ".git", 16<<10)
+	if graph.afterDotGitRead != nil {
+		graph.afterDotGitRead()
+	}
+	if readErr != nil || identity != graph.RepositoryDotGitCurrentName.ObjectIdentity || mutation != graph.RepositoryDotGitCurrentName.ObjectMutationDigest || digestBytes(raw) != graph.RepositoryDotGitDigest {
+		return nil, ObjectIdentityV1{}, "", ErrFilesystemConflict
+	}
+	heldRaw, err = readHeldGraphDotGit(graph.RepositoryRoot, graph.RepositoryDotGitFile, graph.RepositoryDotGitCurrentName)
+	if err != nil || digestBytes(heldRaw) != graph.RepositoryDotGitDigest || !bytes.Equal(raw, heldRaw) {
+		return nil, ObjectIdentityV1{}, "", ErrFilesystemConflict
+	}
+	return raw, identity, mutation, nil
 }
 
 func parseGitdir(raw []byte, worktree string) (string, error) {

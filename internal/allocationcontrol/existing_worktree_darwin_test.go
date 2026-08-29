@@ -47,6 +47,81 @@ type existingWorktreeTestAuthority struct {
 	beforeTarget     func()
 }
 
+func TestLinkedExistingWorktreeDescriptorGraphBindsDotGitAndCommonDirectoryEdges(t *testing.T) {
+	rootPath := t.TempDir()
+	repositoryPath := filepath.Join(rootPath, "repository")
+	commonParentPath := filepath.Join(rootPath, "common-parent")
+	commonPath := filepath.Join(commonParentPath, "admin")
+	for _, directory := range []string{repositoryPath, commonParentPath, commonPath} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dotGitPath := filepath.Join(repositoryPath, ".git")
+	if err := os.WriteFile(dotGitPath, []byte("gitdir: ../common-parent/admin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	openDirectory := func(path string) *os.File {
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = file.Close() })
+		return file
+	}
+	root := openDirectory(rootPath)
+	repository := openDirectory(repositoryPath)
+	commonParent := openDirectory(commonParentPath)
+	common := openDirectory(commonPath)
+	dotGit, err := os.Open(dotGitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dotGit.Close() })
+
+	graph, err := NewLinkedExistingWorktreeDescriptorGraph(root, root, repository, dotGit, commonParent, common, "repository", "admin")
+	if err != nil {
+		t.Fatalf("construct linked graph: %v", err)
+	}
+	if graph.RepositoryDotGitCurrentName.RelativeName != ".git" || graph.RepositoryCommonGitCurrentName.RelativeName != "admin" {
+		t.Fatal("linked graph did not freeze both current-name edges")
+	}
+	if graph.RepositoryDotGitDigest != digestBytes([]byte("gitdir: ../common-parent/admin\n")) {
+		t.Fatal("linked graph did not freeze held .git bytes")
+	}
+	detachedPath := dotGitPath + ".detached"
+	graph.beforeDotGitRead = func() {
+		if err := os.Rename(dotGitPath, detachedPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dotGitPath, []byte("gitdir: ../attacker/admin\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	graph.afterDotGitRead = func() {
+		if err := os.Remove(dotGitPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(detachedPath, dotGitPath); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, _, err := readGraphDotGitAt(graph, int(repository.Fd())); !errors.Is(err, ErrFilesystemConflict) {
+		t.Fatalf("validate-read-restore .git ABA must fail closed, got %v", err)
+	}
+	graph.beforeDotGitRead = nil
+	graph.afterDotGitRead = nil
+	if err := os.Rename(dotGitPath, dotGitPath+".detached"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dotGitPath, []byte("gitdir: ../common-parent/admin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateExistingWorktreeDescriptorGraph(graph); !errors.Is(err, ErrFilesystemConflict) {
+		t.Fatalf("replacement .git file must fail closed, got %v", err)
+	}
+}
+
 func (authority *existingWorktreeTestAuthority) Close() {
 	authority.filesystemRoot.Close()
 	authority.repositoryParent.Close()
