@@ -973,6 +973,8 @@ func applySupervisorCommandFactValue(fact supervisorCommandFact, in *Ingress) er
 		if fact.Outcome.Command == processsupervisor.CommandBindAuthority && fact.Outcome.Disposition == "ok" {
 			state.SupervisorBoundAuthorityHead = fact.Outcome.BoundAuthorityHead
 			state.SupervisorMechanicsAuthorityHead = fact.Outcome.BoundAuthorityHead
+		} else if fact.Outcome.Disposition == "ok" {
+			state.SupervisorMechanicsAuthorityHead = fact.Outcome.PostCommand.CurrentAuthorityHead
 		}
 		state.SupervisorPendingIntent = SupervisorCommandIntent{}
 		state.SupervisorPendingIntentDigest = ""

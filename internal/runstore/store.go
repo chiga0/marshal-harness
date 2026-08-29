@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -32,10 +34,17 @@ var (
 
 type Store struct{ root string }
 
+type leaseGuard struct {
+	mu               sync.RWMutex
+	owner            *Lease
+	preparedBorrowed atomic.Bool
+}
+
 type Lease struct {
 	file   *os.File
 	runDir *os.File
 	held   bool
+	guard  *leaseGuard
 	root   string
 	dev    uint64
 	inode  uint64
@@ -112,7 +121,9 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 		_ = runDirectory.Close()
 		return nil, fmt.Errorf("write lease owner: %w", err)
 	}
-	return &Lease{file: leaseFile, runDir: runDirectory, held: true, root: s.root, dev: device, inode: inode, runID: runID}, nil
+	lease := &Lease{file: leaseFile, runDir: runDirectory, held: true, root: s.root, dev: device, inode: inode, runID: runID}
+	lease.guard = &leaseGuard{owner: lease}
+	return lease, nil
 }
 
 // LeaseHeld reports whether the operating system lock for runID is
@@ -141,7 +152,12 @@ func (s *Store) LeaseOwnerProcessAlive(runID string) (bool, error) {
 }
 
 func (l *Lease) Release() error {
-	if l == nil || l.file == nil || !l.held {
+	if l == nil || l.guard == nil || l.guard.owner != l || l.guard.preparedBorrowed.Load() {
+		return errors.New("release requires the original run lease")
+	}
+	l.guard.mu.Lock()
+	defer l.guard.mu.Unlock()
+	if l.file == nil || !l.held {
 		return nil
 	}
 	err := releaseLeaseFile(l.file)
@@ -153,9 +169,14 @@ func (l *Lease) Release() error {
 }
 
 func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uint64) error {
-	if lease == nil || lease.file == nil || !lease.held {
+	if !leaseHeldBySelf(lease) {
 		return errors.New("append requires held run lease")
 	}
+	if lease.guard.preparedBorrowed.Load() {
+		return fmt.Errorf("%w: prepared Run-start authority is borrowed", ErrConflict)
+	}
+	lease.guard.mu.Lock()
+	defer lease.guard.mu.Unlock()
 	if lease.runID != event.RunID {
 		return fmt.Errorf("%w: lease belongs to run %s", ErrConflict, lease.runID)
 	}
@@ -170,6 +191,9 @@ func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uin
 	}
 	if !eventTypePattern.MatchString(event.Type) {
 		return fmt.Errorf("%w: invalid event type %q", ErrConflict, event.Type)
+	}
+	if event.Type == runStartOutcomeEventType {
+		return fmt.Errorf("%w: %s is reserved for the sealed Run-start projector", ErrConflict, runStartOutcomeEventType)
 	}
 	if event.AttemptID != "" {
 		if err := domain.ValidateID(event.AttemptID); err != nil {
@@ -206,6 +230,9 @@ func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uin
 	currentState := domain.StateCreated
 	if len(events) > 0 {
 		currentState = events[len(events)-1].StateTo
+	}
+	if currentState == domain.StateReady && event.StateTo == domain.StateRunning {
+		return fmt.Errorf("%w: READY to RUNNING requires sealed Run-start proof", ErrConflict)
 	}
 	if err := lifecycle.ValidateTransition(currentState, event.RunID, expectedSequence, event); err != nil {
 		return err
@@ -281,6 +308,14 @@ func (s *Store) ReadEventsUnderLease(lease *Lease) ([]domain.RunEvent, bool, err
 }
 
 func ReadEventsUnderLease(lease *Lease) ([]domain.RunEvent, bool, error) {
+	if !leaseHeldBySelf(lease) {
+		return nil, false, errors.New("read requires held run lease")
+	}
+	if lease.guard.preparedBorrowed.Load() {
+		return nil, false, fmt.Errorf("%w: prepared Run-start authority is borrowed", ErrConflict)
+	}
+	lease.guard.mu.RLock()
+	defer lease.guard.mu.RUnlock()
 	authority, err := OpenRunAuthority(lease)
 	if err != nil {
 		return nil, false, err
@@ -322,9 +357,14 @@ func decodeEvents(data []byte) ([]domain.RunEvent, bool, error) {
 }
 
 func (s *Store) WriteSnapshot(lease *Lease, state domain.RunState) error {
-	if lease == nil || lease.file == nil || !lease.held {
+	if !leaseHeldBySelf(lease) {
 		return errors.New("snapshot write requires held run lease")
 	}
+	if lease.guard.preparedBorrowed.Load() {
+		return fmt.Errorf("%w: prepared Run-start authority is borrowed", ErrConflict)
+	}
+	lease.guard.mu.Lock()
+	defer lease.guard.mu.Unlock()
 	if lease.runID != state.RunID {
 		return fmt.Errorf("%w: lease belongs to run %s", ErrConflict, lease.runID)
 	}
@@ -419,12 +459,24 @@ func (s *Store) Inspect(runID string) (domain.RunState, error) {
 // authority already held by the caller. It is the mutation-entry equivalent
 // of Inspect and never reopens the Run by pathname.
 func InspectUnderLease(lease *Lease) (domain.RunState, error) {
+	if !leaseHeldBySelf(lease) {
+		return domain.RunState{}, errors.New("inspect requires held run lease")
+	}
+	if lease.guard.preparedBorrowed.Load() {
+		return domain.RunState{}, fmt.Errorf("%w: prepared Run-start authority is borrowed", ErrConflict)
+	}
+	lease.guard.mu.RLock()
+	defer lease.guard.mu.RUnlock()
 	authority, err := OpenRunAuthority(lease)
 	if err != nil {
 		return domain.RunState{}, err
 	}
 	defer authority.Close()
 	return inspectAt(int(authority.Fd()))
+}
+
+func leaseHeldBySelf(lease *Lease) bool {
+	return lease != nil && lease.guard != nil && lease.guard.owner == lease && lease.file != nil && lease.runDir != nil && lease.held
 }
 
 func inspectAt(runFD int) (domain.RunState, error) {

@@ -107,6 +107,17 @@ type DurableStore struct {
 	nextSequence int64
 	mu           sync.Mutex
 	clock        func() time.Time
+	// preparedDarwin is non-nil only for the sealed Darwin arm64 factory. It
+	// contains concrete fixed identities and a retained control-root descriptor;
+	// callers cannot inject a mechanics callback or driver.
+	preparedDarwin *preparedDarwinExecutionProfile
+}
+
+type preparedDarwinExecutionProfile struct {
+	fixedMarshalPath string
+	core             processsupervisor.CoreIdentity
+	controlRoot      *os.File
+	controlIdentity  processsupervisor.ControlDirectoryIdentity
 }
 
 var processEffectFlights sync.Map
@@ -379,6 +390,10 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		return err
 	}
 	switch head.FactType {
+	case preparedExecutionCreatedFactType:
+		if err := applyPreparedExecutionLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
 	case controlOwnerFactType:
 		if err := applyControlOwnerLine(line, in, s.nextSequence); err != nil {
 			return err
@@ -485,7 +500,6 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 				state.CommittedResultCollect = fact.SupervisorCollect
 				if fact.SupervisorOutcomeFactDigest != "" {
 					state.CommittedResultCollect, _ = supervisorCheckpointEvidence(state, fact.SupervisorOutcomeFactDigest)
-					state.SupervisorMechanicsAuthorityHead = storeddigest
 				}
 			}
 			in.attempts[fact.AttemptKey] = state

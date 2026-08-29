@@ -146,6 +146,8 @@ type SupervisorProcessOutcome struct {
 	ObservedAt          string                            `json:"observedAt,omitempty"`
 	RuntimeObjectDigest string                            `json:"runtimeObjectDigest,omitempty"`
 	WorkingObjectDigest string                            `json:"workingObjectDigest,omitempty"`
+	SourceGateRevision  string                            `json:"sourceGateRevision,omitempty"`
+	ExactSetDigest      string                            `json:"exactSetDigest,omitempty"`
 	ExitCode            int                               `json:"exitCode,omitempty"`
 	Signal              string                            `json:"signal,omitempty"`
 	StdoutDigest        string                            `json:"stdoutDigest,omitempty"`
@@ -167,6 +169,8 @@ type supervisorMechanicsReport struct {
 	Process             processsupervisor.ProcessIdentity `json:"process"`
 	RuntimeObjectDigest string                            `json:"runtimeObjectDigest"`
 	WorkingObjectDigest string                            `json:"workingObjectDigest"`
+	SourceGateRevision  string                            `json:"sourceGateRevision,omitempty"`
+	ExactSetDigest      string                            `json:"exactSetDigest,omitempty"`
 	ExitCode            int                               `json:"exitCode,omitempty"`
 	Signal              string                            `json:"signal,omitempty"`
 	StdoutDigest        string                            `json:"stdoutDigest,omitempty"`
@@ -214,7 +218,7 @@ func (e SupervisorCommandEvidence) Validate() error {
 		}
 	}
 	anchorsOmitted := e.PreCommand == (SupervisorMechanicsAnchor{}) && e.PostCommand == (SupervisorMechanicsAnchor{})
-	if !anchorsOmitted && (e.PreCommand.Validate() != nil || e.PostCommand.Validate() != nil || e.PreCommand.SessionID != e.SessionID || e.PostCommand.SessionID != e.SessionID || e.PreCommand.Authority != e.PostCommand.Authority || e.PreCommand.SessionNonceDigest != e.PostCommand.SessionNonceDigest || e.PreCommand.OwnerEpoch != e.PostCommand.OwnerEpoch || e.PreCommand.UID != e.PostCommand.UID || e.PreCommand.GID != e.PostCommand.GID || e.PreCommand.FixedBinary != e.PostCommand.FixedBinary || e.PreCommand.ControlSocket != e.PostCommand.ControlSocket || e.PreCommand.ControlFiles != e.PostCommand.ControlFiles || e.PreCommand.CommandSequence+1 != e.Sequence || e.PreCommand.CommandHead != e.PreviousCommandHead || e.PreCommand.CurrentAuthorityHead != e.CurrentAuthorityHead || e.PostCommand.CommandSequence != e.Sequence || e.PostCommand.CommandHead != e.CommandHead || e.PostCommand.JournalSequence != e.PreCommand.JournalSequence+2 || e.PostCommand.JournalHead == e.PreCommand.JournalHead) {
+	if !anchorsOmitted && (e.PreCommand.Validate() != nil || e.PostCommand.Validate() != nil || e.PreCommand.SessionID != e.SessionID || e.PostCommand.SessionID != e.SessionID || e.PreCommand.Authority != e.PostCommand.Authority || e.PreCommand.SessionNonceDigest != e.PostCommand.SessionNonceDigest || e.PreCommand.OwnerEpoch != e.PostCommand.OwnerEpoch || e.PreCommand.UID != e.PostCommand.UID || e.PreCommand.GID != e.PostCommand.GID || e.PreCommand.FixedBinary != e.PostCommand.FixedBinary || e.PreCommand.ControlSocket != e.PostCommand.ControlSocket || e.PreCommand.ControlFiles != e.PostCommand.ControlFiles || e.PreCommand.CommandSequence+1 != e.Sequence || e.PreCommand.CommandHead != e.PreviousCommandHead || e.PostCommand.CommandSequence != e.Sequence || e.PostCommand.CommandHead != e.CommandHead || e.PostCommand.JournalSequence != e.PreCommand.JournalSequence+2 || e.PostCommand.JournalHead == e.PreCommand.JournalHead) {
 		return fmt.Errorf("%w: supervisor mechanics anchors are not continuous", ErrAttemptAuthorityConflict)
 	}
 	if (e.PreCommand == (SupervisorMechanicsAnchor{})) != (e.PostCommand == (SupervisorMechanicsAnchor{})) {
@@ -232,6 +236,8 @@ func (e SupervisorCommandEvidence) Validate() error {
 		return fmt.Errorf("%w: bound authority on unrelated command", ErrAttemptAuthorityConflict)
 	} else if !anchorsOmitted && e.PostCommand.CurrentAuthorityHead != e.CurrentAuthorityHead {
 		return fmt.Errorf("%w: non-bind authority anchor changed", ErrAttemptAuthorityConflict)
+	} else if !anchorsOmitted && e.Command == processsupervisor.CommandSpawn && e.PreCommand.CurrentAuthorityHead != e.CurrentAuthorityHead {
+		return fmt.Errorf("%w: spawn authority was not pre-anchored", ErrAttemptAuthorityConflict)
 	}
 	wantObservation, wantReceipt, err := e.boundMechanicsDigests()
 	if err != nil || wantObservation != e.ObservationDigest || wantReceipt != e.ReceiptDigest {
@@ -267,6 +273,7 @@ func (e SupervisorCommandEvidence) boundMechanicsDigests() (string, string, erro
 	report := supervisorMechanicsReport{
 		State: e.Outcome.MechanicsState, ObserverIdentity: e.Outcome.ObserverIdentity, ObservedAt: e.Outcome.ObservedAt,
 		Process: e.Outcome.Process, RuntimeObjectDigest: e.Outcome.RuntimeObjectDigest, WorkingObjectDigest: e.Outcome.WorkingObjectDigest,
+		SourceGateRevision: e.Outcome.SourceGateRevision, ExactSetDigest: e.Outcome.ExactSetDigest,
 		ExitCode: e.Outcome.ExitCode, Signal: e.Outcome.Signal, StdoutDigest: e.Outcome.StdoutDigest, StderrDigest: e.Outcome.StderrDigest,
 		StdoutBytes: e.Outcome.StdoutBytes, StderrBytes: e.Outcome.StderrBytes, TranscriptTruncated: e.Outcome.TranscriptTruncated,
 	}
@@ -330,6 +337,7 @@ func (outcome SupervisorProcessOutcome) Validate() error {
 		"stdoutDigest":        outcome.StdoutDigest,
 		"stderrDigest":        outcome.StderrDigest,
 		"transcriptDigest":    outcome.TranscriptDigest,
+		"exactSetDigest":      outcome.ExactSetDigest,
 	} {
 		if digest != "" && requireDigest(name, digest) != nil {
 			return fmt.Errorf("%w: invalid %s", ErrAttemptAuthorityConflict, name)
@@ -337,6 +345,9 @@ func (outcome SupervisorProcessOutcome) Validate() error {
 	}
 	if outcome.RuntimeObjectDigest == "" || outcome.WorkingObjectDigest == "" {
 		return fmt.Errorf("%w: supervisor child object identity is incomplete", ErrAttemptAuthorityConflict)
+	}
+	if outcome.SourceGateRevision == "" && outcome.ExactSetDigest != "" || outcome.SourceGateRevision != "" && (outcome.SourceGateRevision != processsupervisor.SourceGateRevisionV1 || requireDigest("exactSetDigest", outcome.ExactSetDigest) != nil) {
+		return fmt.Errorf("%w: invalid source-gate projection", ErrAttemptAuthorityConflict)
 	}
 	if outcome.State == SupervisorProcessExecStopped && (outcome.RuntimeObjectDigest == "" || outcome.WorkingObjectDigest == "" || outcome.ExitCode != 0 || outcome.Signal != "" || outcome.StdoutDigest != "" || outcome.StderrDigest != "" || outcome.TranscriptDigest != "") {
 		return fmt.Errorf("%w: invalid exec-stopped outcome", ErrAttemptAuthorityConflict)
@@ -370,15 +381,14 @@ func NewSupervisorCommandEvidence(outcome processsupervisor.VerifiedCommandOutco
 	if pre.SessionID == "" || pre.SessionID != post.SessionID || pre.CommandSequence+1 != outcome.Sequence || post.CommandSequence != outcome.Sequence || post.CommandHead != outcome.CommandHead || outcome.Status != outcome.Disposition {
 		return SupervisorCommandEvidence{}, fmt.Errorf("%w: invalid verified command recovery anchors", ErrAttemptAuthorityConflict)
 	}
-	currentAuthorityHead := pre.CurrentAuthorityHead
+	currentAuthorityHead := post.CurrentAuthorityHead
 	boundAuthorityHead := ""
 	if outcome.Command == processsupervisor.CommandBindAuthority && outcome.Disposition == "ok" {
+		currentAuthorityHead = pre.CurrentAuthorityHead
 		boundAuthorityHead = post.CurrentAuthorityHead
-	} else if post.CurrentAuthorityHead != pre.CurrentAuthorityHead {
-		// Non-bind commands may only be projected after composition has
-		// reconnected/anchored the Client to the exact current RB1 head. This
-		// prevents the post-command authority update from being mistaken for
-		// the request's pre-command authority.
+	} else if outcome.Command == processsupervisor.CommandBindAuthority {
+		currentAuthorityHead = pre.CurrentAuthorityHead
+	} else if outcome.Command == processsupervisor.CommandSpawn && post.CurrentAuthorityHead != pre.CurrentAuthorityHead {
 		return SupervisorCommandEvidence{}, fmt.Errorf("%w: command authority was not pre-anchored", ErrAttemptAuthorityConflict)
 	}
 	evidence := SupervisorCommandEvidence{
@@ -413,7 +423,7 @@ func NewSupervisorCommandEvidence(outcome processsupervisor.VerifiedCommandOutco
 // command and reason are part of the closed semantic union.
 func projectVerifiedSupervisorProcessOutcome(outcome processsupervisor.VerifiedCommandOutcome) (SupervisorProcessOutcome, error) {
 	report := *outcome.ProcessReport
-	projected := SupervisorProcessOutcome{MechanicsState: report.State, Process: report.Process, ObserverIdentity: report.ObserverIdentity, ObservedAt: report.ObservedAt, RuntimeObjectDigest: report.RuntimeObjectDigest, WorkingObjectDigest: report.WorkingObjectDigest, ExitCode: report.ExitCode, Signal: report.Signal, StdoutDigest: report.StdoutDigest, StderrDigest: report.StderrDigest, StdoutBytes: report.StdoutBytes, StderrBytes: report.StderrBytes, TranscriptTruncated: report.TranscriptTruncated, TranscriptDigest: outcome.TranscriptDigest}
+	projected := SupervisorProcessOutcome{MechanicsState: report.State, Process: report.Process, ObserverIdentity: report.ObserverIdentity, ObservedAt: report.ObservedAt, RuntimeObjectDigest: report.RuntimeObjectDigest, WorkingObjectDigest: report.WorkingObjectDigest, SourceGateRevision: report.SourceGateRevision, ExactSetDigest: report.ExactSetDigest, ExitCode: report.ExitCode, Signal: report.Signal, StdoutDigest: report.StdoutDigest, StderrDigest: report.StderrDigest, StdoutBytes: report.StdoutBytes, StderrBytes: report.StderrBytes, TranscriptTruncated: report.TranscriptTruncated, TranscriptDigest: outcome.TranscriptDigest}
 	switch outcome.Command {
 	case processsupervisor.CommandSpawn:
 		if outcome.ReasonCode != "process-exec-stopped" || report.State != "exec-stopped" {
@@ -577,8 +587,11 @@ func (intent SupervisorCommandIntent) Validate() error {
 			return fmt.Errorf("%w: invalid supervisor command intent %s", ErrAttemptAuthorityConflict, name)
 		}
 	}
-	if intent.PreCommand.Validate() != nil || intent.PreCommand.SessionID != intent.SessionID || intent.PreCommand.CommandSequence+1 != intent.Sequence || intent.PreCommand.CommandHead != intent.PreviousCommandHead || intent.PreCommand.CurrentAuthorityHead != intent.CurrentAuthorityHead {
+	if intent.PreCommand.Validate() != nil || intent.PreCommand.SessionID != intent.SessionID || intent.PreCommand.CommandSequence+1 != intent.Sequence || intent.PreCommand.CommandHead != intent.PreviousCommandHead {
 		return fmt.Errorf("%w: supervisor intent pre-command anchor mismatch", ErrAttemptAuthorityConflict)
+	}
+	if (intent.Command == processsupervisor.CommandBindAuthority || intent.Command == processsupervisor.CommandSpawn) && intent.PreCommand.CurrentAuthorityHead != intent.CurrentAuthorityHead {
+		return fmt.Errorf("%w: supervisor intent requires a pre-anchored command", ErrAttemptAuthorityConflict)
 	}
 	return validateSupervisorRebuildProjection(intent.Command, intent.Rebuild)
 }
