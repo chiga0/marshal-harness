@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -340,7 +341,7 @@ type ZeroAttemptSideEffectVerifier interface {
 	// The verifier holds repository owner + Run Lease while checking dispatch,
 	// allocation, bootstrap, child, command and publication are all absent. The
 	// proof is produced by that verifier, not accepted from the caller.
-	WithZeroAttemptSideEffects(context.Context, AttemptReservationState, func(ZeroSideEffectProof) error) error
+	WithZeroAttemptSideEffects(context.Context, *DurableStore, AttemptReservationState, func(ZeroSideEffectProof) error) error
 }
 
 func (s *DurableStore) ConsumeAttemptReservation(ctx context.Context, verifier CurrentSealedRunSuccessorVerifier, sealed SealedRunSuccessorAuthority) (AttemptReservationState, error) {
@@ -377,18 +378,124 @@ func (s *DurableStore) CancelAttemptReservation(ctx context.Context, verifier Ze
 		return AttemptReservationState{}, err
 	}
 	return s.resolveAttemptReservation(ctx, func(fn func(attemptResolutionEvidence) error) error {
-		return verifier.WithZeroAttemptSideEffects(ctx, state, func(derived ZeroSideEffectProof) error {
+		return verifier.WithZeroAttemptSideEffects(ctx, s, state, func(derived ZeroSideEffectProof) error {
 			if derived.Validate() != nil || derived.ReservationFactDigest != reservationFactDigest || derived.ReadyAuthorityHead != state.Reservation.Ready.ReadyAuthorityHead {
 				return ErrAttemptReservationConflict
 			}
 			return fn(attemptResolutionEvidence{bindingDigest: canonicalDigestOrEmpty(derived), zeroProof: &derived})
 		})
-	}, reservationFactDigest, attemptReservationCancelledType, 0, "", func(projection *Ingress, _ AttemptReservationState) error {
-		if _, exists := projection.attemptsByReservation[reservationFactDigest]; exists {
+	}, reservationFactDigest, attemptReservationCancelledType, 0, "", func(projection *Ingress, current AttemptReservationState) error {
+		return requireZeroAttemptProjection(projection, current)
+	})
+}
+
+// requireZeroAttemptProjection runs only inside the cold replay transaction
+// that will append the cancellation fact. attemptsByReservation is the
+// authoritative opened-attempt index; the remaining scans make the no-
+// downstream-facts invariant explicit and fail closed if a future replay path
+// ever admits an orphan allocation/effect/result/preparation/RB1 fact.
+func requireZeroAttemptProjection(projection *Ingress, state AttemptReservationState) error {
+	if projection == nil || state.Validate() != nil || state.Status != AttemptReservationActive && state.Status != AttemptReservationCancelled {
+		return ErrAttemptReservationConflict
+	}
+	if _, exists := projection.attemptsByReservation[state.ReservationFactDigest]; exists {
+		return ErrAttemptReservationConflict
+	}
+	ready := state.Reservation.Ready
+	attemptID := state.Reservation.AttemptID
+	matches := func(identity AttemptIdentity) bool {
+		return identity.AuthorityNamespaceID == ready.AuthorityNamespaceID && identity.TaskID == ready.TaskID && identity.RunID == ready.RunID && identity.AttemptID == attemptID
+	}
+	for _, attempt := range projection.attempts {
+		if attempt.ReservationFactDigest == state.ReservationFactDigest || matches(attempt.Identity) {
 			return ErrAttemptReservationConflict
 		}
-		return nil
-	})
+	}
+	for _, effect := range projection.effects {
+		if matches(effect.Binding.Identity) {
+			return ErrAttemptReservationConflict
+		}
+	}
+	for _, prepared := range projection.preparedExecutions {
+		if prepared.ReservationFactDigest == state.ReservationFactDigest || matches(prepared.AttemptIdentity) {
+			return ErrAttemptReservationConflict
+		}
+	}
+	namespaceDigest, err := ready.AuthorityNamespaceID.Digest()
+	if err != nil {
+		return ErrAttemptReservationConflict
+	}
+	for _, fact := range projection.existingWorktreeFacts {
+		binding, err := existingWorktreeFactBinding(fact)
+		if err != nil {
+			return ErrAttemptReservationConflict
+		}
+		if binding.ReservationFactDigest == state.ReservationFactDigest || binding.AuthorityNamespaceID == namespaceDigest && binding.TaskID == ready.TaskID && binding.RunID == ready.RunID && binding.AttemptID == attemptID {
+			return ErrAttemptReservationConflict
+		}
+	}
+	logicalKey, err := reservationLogicalAttemptKey(ready, attemptID)
+	if err != nil {
+		return ErrAttemptReservationConflict
+	}
+	if _, exists := projection.allocations[logicalKey]; exists {
+		return ErrAttemptReservationConflict
+	}
+	for _, admitted := range projection.admitted {
+		if admitted.attemptKey == logicalKey {
+			return ErrAttemptReservationConflict
+		}
+	}
+	return nil
+}
+
+func reservationLogicalAttemptKey(ready ReadyRunAuthority, attemptID string) (string, error) {
+	logical := struct {
+		AuthorityNamespaceID authority.AuthorityNamespaceId `json:"authorityNamespaceId"`
+		TaskID               string                         `json:"taskId"`
+		RunID                string                         `json:"runId"`
+		AttemptID            string                         `json:"attemptId"`
+	}{ready.AuthorityNamespaceID, ready.TaskID, ready.RunID, attemptID}
+	raw, err := json.Marshal(logical)
+	if err != nil {
+		return "", err
+	}
+	canonicalRaw, err := canonical.JSON(raw)
+	if err != nil {
+		return "", err
+	}
+	return canonical.DigestBytes(canonicalRaw), nil
+}
+
+func existingWorktreeFactBinding(fact allocationcontrol.ExistingWorktreeAttemptFactV1) (allocationcontrol.ExistingWorktreeBindingV1, error) {
+	switch fact.Kind {
+	case allocationcontrol.ExistingWorktreeFactBindIntent:
+		var value allocationcontrol.ExistingWorktreeBindIntentV1
+		if err := json.Unmarshal(fact.Payload, &value); err != nil {
+			return allocationcontrol.ExistingWorktreeBindingV1{}, err
+		}
+		return value.Request.Binding, nil
+	case allocationcontrol.ExistingWorktreeFactBindReceipt:
+		var value allocationcontrol.ExistingWorktreeBindReceiptV1
+		if err := json.Unmarshal(fact.Payload, &value); err != nil {
+			return allocationcontrol.ExistingWorktreeBindingV1{}, err
+		}
+		return value.Binding, nil
+	case allocationcontrol.ExistingWorktreeFactReleaseIntent:
+		var value allocationcontrol.ExistingWorktreeReleaseIntentV1
+		if err := json.Unmarshal(fact.Payload, &value); err != nil {
+			return allocationcontrol.ExistingWorktreeBindingV1{}, err
+		}
+		return value.Request.Binding, nil
+	case allocationcontrol.ExistingWorktreeFactReleaseReceipt:
+		var value allocationcontrol.ExistingWorktreeReleaseReceiptV1
+		if err := json.Unmarshal(fact.Payload, &value); err != nil {
+			return allocationcontrol.ExistingWorktreeBindingV1{}, err
+		}
+		return value.Binding, nil
+	default:
+		return allocationcontrol.ExistingWorktreeBindingV1{}, ErrAttemptReservationConflict
+	}
 }
 
 func canonicalDigestOrEmpty(value any) string {

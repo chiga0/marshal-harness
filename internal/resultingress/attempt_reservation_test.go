@@ -3,11 +3,13 @@ package resultingress
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"reflect"
 	"testing"
 
+	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 )
 
@@ -90,7 +92,7 @@ func (verifier sealedResponseLossVerifier) WithCurrentSealedRunSuccessor(_ conte
 	return verifier.err
 }
 
-func (verifier zeroSideEffectVerifier) WithZeroAttemptSideEffects(_ context.Context, got AttemptReservationState, fn func(ZeroSideEffectProof) error) error {
+func (verifier zeroSideEffectVerifier) WithZeroAttemptSideEffects(_ context.Context, _ *DurableStore, got AttemptReservationState, fn func(ZeroSideEffectProof) error) error {
 	if got != verifier.want || fn == nil {
 		return ErrAttemptReservationConflict
 	}
@@ -300,6 +302,58 @@ func TestAttemptReservationCannotCancelAfterOpened(t *testing.T) {
 	}
 	if !bytes.Equal(before, reservationLedgerBytes(t, store)) {
 		t.Fatal("cancel after opened changed ledger")
+	}
+}
+
+func TestZeroAttemptProjectionRejectsEveryDownstreamFactFamily(t *testing.T) {
+	identity := attemptTestIdentity()
+	ready := reservationReady(identity)
+	reservation := AttemptReservationV1{SchemaRevision: attemptReservationSchemaV1, Ready: ready, AttemptID: identity.AttemptID, AttemptOrdinal: 1, ReservationKeyDigest: reservationKey(ready)}
+	state := AttemptReservationState{Reservation: reservation, ReservationFactDigest: attemptTestDigest("zero-projection-reservation"), Status: AttemptReservationActive}
+	key, err := identity.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := requireZeroAttemptProjection(newAuthorityProjection(), state); err != nil {
+		t.Fatalf("empty projection rejected: %v", err)
+	}
+	namespaceDigest, err := identity.AuthorityNamespaceID.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := allocationcontrol.ExistingWorktreeBindingV1{AuthorityNamespaceID: namespaceDigest, TaskID: identity.TaskID, RunID: identity.RunID, AttemptID: identity.AttemptID, ReservationFactDigest: state.ReservationFactDigest}
+	payload, err := json.Marshal(allocationcontrol.ExistingWorktreeBindReceiptV1{Binding: binding})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Ingress)
+	}{
+		{"opened-by-reservation", func(projection *Ingress) {
+			projection.attemptsByReservation[state.ReservationFactDigest] = AttemptAuthorityState{}
+		}},
+		{"attempt", func(projection *Ingress) { projection.attempts[key] = AttemptAuthorityState{Identity: identity} }},
+		{"effect", func(projection *Ingress) {
+			projection.effects["effect"] = EffectAuthorityState{Binding: EffectBinding{Identity: identity}}
+		}},
+		{"allocation", func(projection *Ingress) { projection.allocations[key] = allocationAuthorityState{} }},
+		{"prepared", func(projection *Ingress) {
+			projection.preparedExecutions["prepared"] = PreparedExecutionV1{AttemptIdentity: identity, ReservationFactDigest: state.ReservationFactDigest}
+		}},
+		{"admitted", func(projection *Ingress) { projection.admitted["admitted"] = admittedEntry{attemptKey: key} }},
+		{"existing-worktree", func(projection *Ingress) {
+			projection.existingWorktreeFacts = []allocationcontrol.ExistingWorktreeAttemptFactV1{{Kind: allocationcontrol.ExistingWorktreeFactBindReceipt, Payload: payload}}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			projection := newAuthorityProjection()
+			test.mutate(projection)
+			if err := requireZeroAttemptProjection(projection, state); !errors.Is(err, ErrAttemptReservationConflict) {
+				t.Fatalf("downstream projection err=%v", err)
+			}
+		})
 	}
 }
 
