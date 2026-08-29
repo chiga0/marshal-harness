@@ -84,14 +84,14 @@ StateRoot/runtime-v1/control/           # Supervisor/control objects 的固定 p
 1. 只在 `darwin/arm64` 构建；其他平台的同名入口在任何 StateRoot、Run、Probe、Provision 或 process 副作用前返回 `platform-profile-unavailable`；factory 参数只含 canonical repository 与必要的非 authority 依赖，绝不接受任意 `StateRoot`/authority root；
 2. 证明当前进程执行对象就是可信 repository 中 canonical `./bin/marshal` 的 exact current object，并复用 ADR 0051/0062 的 identity/profile 门禁；替代 path、PATH 命中、symlink、匿名/临时 Mach-O 或另一份相同内容 binary 均不得进入 production factory；
 3. 按第 2、3 节取得 owner、打开 ResultIngress 与既有 runstore，构造 S1 所需的 concrete authority/projector、Pi profile/ProcessBridge、controller 和 `Runtime`；缺任一 mandatory dependency 就关闭已打开对象并 fail closed，不得返回部分 Runtime；
-4. factory 是 production component graph 的唯一创建者。fixed `cmd/marshal` 的 production application adapter、CLI mutation 与 `marshal control-plane serve` handler 只能持有它返回的 `application.PublicApplicationPort`；不得直接 new controller/store/bridge、取得 concrete `Runtime` 或 authority root，factory 失败时不得 fallback 到 `execution.Run`、child CLI、memory-only store 或 Fake seam；
+4. factory 是 production component graph 的唯一创建者。S2 的 production reach 只允许 fixed `cmd/marshal` 的本地 CLI mutation/inspect application adapter 持有它返回的 `application.PublicApplicationPort`；该入口不得直接 new controller/store/bridge、取得 concrete `Runtime` 或 authority root，factory 失败时不得 fallback 到 `execution.Run`、child CLI、memory-only store 或 Fake seam；
 5. `Runtime.Status` 只有在 factory 已完成两阶段 owner bind、全部 mandatory store/recovery/profile 检查且无 pending recovery 时才可报告 available；继续缺失 composition 时必须保留 `production-composition-incomplete`，不得把对象构造成功误写成端到端可用。
 
 ### 5. controller 与 sealed proof 的唯一组合点
 
 1. `controller.startPreparedRun` 是 production 中 `composePreparedRunStart` 的唯一调用者；它不得再调用旧 `ProcessBridge.StartPreparedRun` 后猜测 `RehydrateRunStartOutcome`。
 2. `composePreparedRunStart` 必须继续满足 ADR 0065 §7 的 typed AST 形状：一次 `WithPreparedRunStartAuthority`，其 direct `FuncLit` 内一次 `StartPreparedExecution`，borrowed projector 只作为最后一个实参出现一次。
-3. factory、`Runtime`、CLI/server adapter、ProcessBridge 和其他 production 文件对两个 S1 exported seam 均为零调用。ResultIngress 仍 mint proof，runstore 仍只做 self-only CAS；本 ADR 不改变 proof 方向、claim 字段或 response-loss 规则。
+3. factory、`Runtime`、CLI application adapter、ProcessBridge 和其他 production 文件对两个 S1 exported seam 均为零调用。ResultIngress 仍 mint proof，runstore 仍只做 self-only CAS；本 ADR 不改变 proof 方向、claim 字段或 response-loss 规则。
 4. controller 只能在 factory 已绑定的 repository owner临界区内调用 helper。helper 不 acquire owner、不重新打开 runstore、不创建 store，也不把 projector/proof/claim 保存到 controller 或 Runtime。
 
 ### 6. S2 允许修改面与验证
@@ -102,17 +102,19 @@ StateRoot/runtime-v1/control/           # Supervisor/control objects 的固定 p
 - controller：让 `startPreparedRun` 成为 `composePreparedRunStart` 的唯一调用者；
 - 单一 Darwin arm64 production factory及其 non-Darwin fail-closed stub；
 - `prepared_run_start_composition.go`；
-- fixed `cmd/marshal` 的 production application adapter、必要的 CLI mutation routing 与 `marshal control-plane serve` 入口：仅用于从唯一 factory 取得并持有 `application.PublicApplicationPort`，不得扩成通用 server/CLI 重写；
+- fixed `cmd/marshal` 的 production application adapter，以及必要的本地 CLI mutation/inspect routing：仅用于从唯一 factory 取得并持有 `application.PublicApplicationPort`，不得扩成通用 CLI 重写；
 - repository architecture tests；
 - 一个通过 fixed `./bin/marshal` 和同一 production factory 的真实 Pi prepared-start E2E。
 
-S2 不得修改 S1 的 proof/claim 语义，不得顺带实现 terminalization、cleanup、Provider 扩面、server transport、Linux/hardened authority、签名/notarization或 release。若以上封闭文件类别不足以从 fixed `./bin/marshal` 到达同一 factory，S2 必须停止并回到治理审查；不得静默扩大为通用 CLI/server 重写。
+S2 不得修改 S1 的 proof/claim 语义，不得顺带实现 terminalization、cleanup、Provider 扩面、server transport、Linux/hardened authority、签名/notarization或 release。若以上封闭文件类别不足以从 fixed `./bin/marshal` 本地 CLI 到达同一 factory，S2 必须停止并回到治理审查；不得静默扩大为通用 CLI/server 重写。
+
+fixed `marshal control-plane serve` 明确不属于 S2。它必须在 S2 之后、release 之前作为 ADR 0062 的独立 transport slice 实施，并提供 authenticated `PublicApplicationPort` adapter 与 durable delivery ledger；legacy `cmd/marshal-server` 或只暴露空壳命令的 `control-plane serve` 均不能计作 production reach。
 
 验证至少证明：
 
 1. 两个并发 factory 只有一个 scope lock/owner acquisition winner；owner fact append 前后 crash、response loss、旧 epoch、scope/root 漂移与 owner lock entry ABA 全部 fail closed 或产生唯一 successor；provisional verifier 只能出现在一次 direct `AcquireOwner` callsite，不能逃逸或用于任何 Attempt/operation，exact replay 前没有 current verifier；
 2. canonical repository `.marshal` 目录 symlink/type/owner/mode/current-name 漂移、非空 `MARSHAL_STATE_DIR`、factory authority-root 参数、替代 ResultIngress root、第二 runstore/ledger 与环境 path override 均在副作用前拒绝；
-3. architecture test 机械证明唯一 factory 只能由 fixed `cmd/marshal` production application adapter、CLI mutation routing 与 `marshal control-plane serve` 入口到达；这些入口只持有 `application.PublicApplicationPort`。还必须证明 controller/helper 和两个 S1 seam 的唯一 production call graph，以及 legacy `execution.Run`、child CLI、独立 `cmd/marshal-server`、Fake seam 与任意 authority-root factory 从该 profile 不可达；
+3. architecture test 机械证明唯一 factory 只能由 fixed `cmd/marshal` 的本地 CLI mutation/inspect application adapter 到达，且该入口只持有 `application.PublicApplicationPort`。还必须证明 controller/helper 和两个 S1 seam 的唯一 production call graph，以及 legacy `execution.Run`、child CLI、`marshal control-plane serve`、独立 `cmd/marshal-server`、Fake seam 与任意 authority-root factory 从 S2 profile 不可达；
 4. fixed `./bin/marshal` 的真实 Pi E2E只能在 exact successful resume后追加一个 `RUNNING` successor；Run append后 response loss只从runstore replay，不重发Supervisor command；
 5. `Status` 在 composition未完整、pending recovery、owner漂移和完整可用四种情况下返回封闭、真实结论；
 6. 定向测试、相关 race、`go vet`、staticcheck、architecture/diff/secret/mergeability门禁通过，且独立 reviewer对 exact sourceHead 的 P0/P1为0。
