@@ -55,6 +55,41 @@ type zeroSideEffectVerifier struct {
 	proof ZeroSideEffectProof
 }
 
+type readyCallbackErrorVerifier struct {
+	callbackErr error
+	verifierErr error
+	double      bool
+}
+
+func (verifier readyCallbackErrorVerifier) WithCurrentReadyRunAuthority(_ context.Context, _ ReadyRunAuthority, fn func() error) error {
+	first := fn()
+	if verifier.double {
+		_ = fn()
+	}
+	if verifier.verifierErr != nil {
+		return verifier.verifierErr
+	}
+	if verifier.callbackErr != nil {
+		return verifier.callbackErr
+	}
+	return first
+}
+
+type sealedResponseLossVerifier struct {
+	want SealedRunSuccessorAuthority
+	err  error
+}
+
+func (verifier sealedResponseLossVerifier) WithCurrentSealedRunSuccessor(_ context.Context, got SealedRunSuccessorAuthority, fn func() error) error {
+	if got != verifier.want || fn == nil {
+		return ErrAttemptReservationConflict
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	return verifier.err
+}
+
 func (verifier zeroSideEffectVerifier) WithZeroAttemptSideEffects(_ context.Context, got AttemptReservationState, fn func(ZeroSideEffectProof) error) error {
 	if got != verifier.want || fn == nil {
 		return ErrAttemptReservationConflict
@@ -157,6 +192,43 @@ func TestAttemptReservationConsumesExactSealedSuccessorOnce(t *testing.T) {
 	replay, err := store.ConsumeAttemptReservation(context.Background(), sealedSuccessorVerifier{want: sealed}, sealed)
 	if err != nil || replay != consumed || !bytes.Equal(before, reservationLedgerBytes(t, store)) {
 		t.Fatalf("consume replay=%+v err=%v", replay, err)
+	}
+}
+
+func TestAttemptReservationCallbackErrorPrecedesVerifierClassification(t *testing.T) {
+	ready := reservationReady(attemptTestIdentity())
+	callbackErr := errors.New("injected durable outcome unknown")
+	verifierErr := errors.New("verifier returned after callback")
+	err := withCurrentReadyRunAuthority(context.Background(), readyCallbackErrorVerifier{callbackErr: callbackErr, verifierErr: verifierErr}, ready, func() error { return callbackErr })
+	if err != callbackErr {
+		t.Fatalf("callback error=%v, want exact %v", err, callbackErr)
+	}
+	err = withCurrentReadyRunAuthority(context.Background(), readyCallbackErrorVerifier{double: true}, ready, func() error { return callbackErr })
+	if !errors.Is(err, ErrRunAuthorityUnauthorized) || err == callbackErr {
+		t.Fatalf("duplicate callback precedence=%v", err)
+	}
+}
+
+func TestAttemptReservationResponseLossReplaysExactResolution(t *testing.T) {
+	store, err := OpenResultIngressStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, opened, ready := reserveAndOpen(t, store)
+	sealed := SealedRunSuccessorAuthority{
+		ReservationFactDigest: reservation.ReservationFactDigest, Ready: ready,
+		AttemptID: opened.Identity.AttemptID, AttemptOpenedFactDigest: opened.OpenedDigest,
+		AttemptOrdinal: 1, AttemptsUsedAfter: 1, RunSuccessorSequence: ready.ReadySequence + 1,
+		RunSuccessorHead: attemptTestDigest("response-loss-successor"),
+	}
+	lost := errors.New("injected verifier response loss")
+	if _, err := store.ConsumeAttemptReservation(context.Background(), sealedResponseLossVerifier{want: sealed, err: lost}, sealed); !errors.Is(err, ErrAttemptReservationConflict) {
+		t.Fatalf("response-loss classification=%v", err)
+	}
+	afterLoss := reservationLedgerBytes(t, store)
+	replay, err := store.ConsumeAttemptReservation(context.Background(), sealedSuccessorVerifier{want: sealed}, sealed)
+	if err != nil || replay.Status != AttemptReservationConsumed || replay.RunSuccessorHead != sealed.RunSuccessorHead || !bytes.Equal(afterLoss, reservationLedgerBytes(t, store)) {
+		t.Fatalf("response-loss replay=%+v err=%v", replay, err)
 	}
 }
 

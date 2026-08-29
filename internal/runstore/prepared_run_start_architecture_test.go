@@ -38,14 +38,62 @@ func TestPreparedRunStartHasOneExportedMutationSeam(t *testing.T) {
 	if selectors["WithClaim"] != 1 || selectors["appendPreparedRunStartClaim"] != 1 {
 		t.Fatalf("proof/projector producer count changed: calls=%v", selectors)
 	}
-	if selectors["OpenRunAuthority"] != 0 {
-		t.Fatalf("sealed Run-start authority reopens its borrowed descriptor: calls=%v", selectors)
+	for _, forbidden := range []string{"OpenRunAuthority", "DupRunDirectory", "File", "Close"} {
+		if selectors[forbidden] != 0 {
+			t.Fatalf("sealed Run-start authority uses forbidden descriptor ownership seam %s: calls=%v", forbidden, selectors)
+		}
 	}
 	for name := range methods {
 		if ast.IsExported(name) && name != "WithPreparedRunStartAuthority" && name != "ReadRunStartAuthorityUnderLease" && name != "ProjectCommittedRunStart" {
 			t.Fatalf("unexpected exported prepared Run-start method %s", name)
 		}
 	}
+}
+
+func TestPreparedRunStartExportedAPINeverExposesRawFile(t *testing.T) {
+	file := parseArchitectureFile(t, "prepared_run_start_authority.go")
+	for _, declaration := range file.Decls {
+		switch value := declaration.(type) {
+		case *ast.FuncDecl:
+			if !ast.IsExported(value.Name.Name) {
+				continue
+			}
+			if containsRawOSFile(value.Type) {
+				t.Fatalf("exported S1 Run-start function %s exposes *os.File", value.Name.Name)
+			}
+		case *ast.GenDecl:
+			for _, specification := range value.Specs {
+				typeSpec, ok := specification.(*ast.TypeSpec)
+				if !ok || !ast.IsExported(typeSpec.Name.Name) {
+					continue
+				}
+				if containsRawOSFile(typeSpec.Type) {
+					t.Fatalf("exported S1 Run-start type %s exposes *os.File", typeSpec.Name.Name)
+				}
+			}
+		}
+	}
+}
+
+func containsRawOSFile(node ast.Node) bool {
+	found := false
+	ast.Inspect(node, func(candidate ast.Node) bool {
+		pointer, ok := candidate.(*ast.StarExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := pointer.X.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "File" {
+			return true
+		}
+		identifier, ok := selector.X.(*ast.Ident)
+		if ok && identifier.Name == "os" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func TestResultIngressPreparedExecutionDoesNotDependOnRunStoreOrMechanics(t *testing.T) {

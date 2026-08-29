@@ -213,7 +213,7 @@ func (s *DurableStore) executePreparedCommandLocked(ctx context.Context, project
 }
 
 func (s *DurableStore) appendPreparedAttemptTransitionLocked(projection *Ingress, state AttemptAuthorityState, transition AttemptTransition) (AttemptAuthorityState, string, error) {
-	if projection == nil || transition.Identity != state.Identity || validateTransitionShape(transition) != nil {
+	if projection == nil || state.ProtocolRevision != attemptAuthorityProtocolV2 || state.OpenedSchemaRevision != attemptOpenedSchemaV2 || transition.Identity != state.Identity || validateTransitionShape(transition) != nil {
 		return AttemptAuthorityState{}, "", ErrPreparedExecutionConflict
 	}
 	key, err := state.Identity.Key()
@@ -224,17 +224,30 @@ func (s *DurableStore) appendPreparedAttemptTransitionLocked(projection *Ingress
 	if err := validateSupervisorTransitionAgainstProjection(projection, state, true, transition, false); err != nil {
 		return AttemptAuthorityState{}, "", err
 	}
-	fact := &attemptAuthorityFact{ProtocolRevision: attemptAuthorityProtocolRevision, FactType: string(transition.Kind), Sequence: s.nextSequence, AttemptKey: key, Revision: state.Revision + 1, PreviousDigest: state.HeadDigest, Transition: transition}
+	fact := &attemptAuthorityFact{ProtocolRevision: state.ProtocolRevision, FactType: string(transition.Kind), Sequence: s.nextSequence, AttemptKey: key, Revision: state.Revision + 1, PreviousDigest: state.HeadDigest, Transition: transition}
 	if err := prepareAttemptFact(state, true, fact, false); err != nil {
 		return AttemptAuthorityState{}, "", err
 	}
+	// Fresh prepared mechanics must prove that the exact bytes about to be
+	// appended are accepted by the same projector used during cold replay.
+	// Run this before append/fsync so a schema/protocol/cross-fact mismatch can
+	// never leave an unreplayable durable prefix.
+	preflightDigest, err := canonicalDigest(fact)
+	if err != nil {
+		return AttemptAuthorityState{}, "", err
+	}
+	fact.Digest = preflightDigest
+	if err := applyAttemptAuthorityFactValue(*fact, projection, false); err != nil {
+		return AttemptAuthorityState{}, "", err
+	}
+	fact.Digest = ""
 	if err := s.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
 		return AttemptAuthorityState{}, "", err
 	}
-	s.nextSequence++
-	if err := applyAttemptAuthorityFactValue(*fact, projection, false); err != nil {
-		return AttemptAuthorityState{}, "", fmt.Errorf("resultingress: appended prepared Attempt fact failed projection: %w", err)
+	if fact.Digest != preflightDigest {
+		return AttemptAuthorityState{}, "", fmt.Errorf("%w: prepared Attempt preflight digest drift", ErrPreparedExecutionConflict)
 	}
+	s.nextSequence++
 	return projection.attempts[key], fact.Digest, nil
 }
 

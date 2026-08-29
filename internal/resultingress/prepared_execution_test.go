@@ -239,6 +239,99 @@ func TestLegacyPreparedExecutionReplaysWithoutEnteringFreshAuthority(t *testing.
 	}
 }
 
+func TestFreshPreparedExecutionRejectsLegacyMixedHistoryWithoutWrite(t *testing.T) {
+	store, err := OpenResultIngressStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := attemptTestIdentity()
+	opened := appendFreshReservedAttempt(t, store, id)
+	owner, verifier := supervisorTestAcquireOwner(t, store, id)
+	bound := supervisorTestBindOwner(t, store, opened, owner, verifier)
+	provisioned := appendTestAcceptedProvision(t, store, bound)
+	closure := preparedTestPiClosure(t)
+	launch, err := appendAuthorizedAttempt(t, store, provisioned.Revision, provisioned.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "legacy-mixed-launch", LaunchClosure: closure})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creation := PreparedExecutionCreation{Identity: launch.State.Identity, ExpectedRunSequence: 2, ExpectedRunAuthorityHead: id.RunAuthorityDigest}
+
+	projection := newAuthorityProjection()
+	err = store.transact(projection, func() error {
+		key, keyErr := id.Key()
+		state, found := projection.attempts[key]
+		if keyErr != nil || !found {
+			return ErrPreparedExecutionConflict
+		}
+		fresh, deriveErr := derivePreparedExecution(projection, state, creation)
+		if deriveErr != nil {
+			return deriveErr
+		}
+		legacy := legacyPreparedExecutionV1{
+			SchemaVersion: legacyPreparedExecutionSchema, ProtocolRevision: legacyPreparedExecutionProtocol,
+			AttemptIdentity: fresh.AttemptIdentity, RunAuthorityBinding: fresh.RunAuthorityBinding,
+			ExpectedRunSequence: fresh.ExpectedRunSequence, ExpectedRunAuthorityHead: fresh.ExpectedRunAuthorityHead,
+			CurrentOwnerBinding: fresh.CurrentOwnerBinding, ControlOwnerBoundFactDigest: fresh.ControlOwnerBoundFactDigest,
+			AttemptAuthorityHeadAtPreparation:    fresh.AttemptAuthorityHeadAtPreparation,
+			AllocationProvisionReceiptFactDigest: fresh.AllocationProvisionReceiptFactDigest,
+			AllocationProvisionReceiptDigest:     fresh.AllocationProvisionReceiptDigest,
+			LaunchAuthorizationID:                fresh.LaunchAuthorizationID, LaunchAuthorizedFactDigest: fresh.LaunchAuthorizedFactDigest,
+			StoredClosureDigest: fresh.StoredClosureDigest, LaunchMaterialsDigest: fresh.LaunchMaterialsDigest,
+			AgentLaunchSpecDigest: fresh.AgentLaunchSpecDigest, Pi0843IdentityDigest: fresh.Pi0843IdentityDigest,
+		}
+		legacy.PreparationDigest, deriveErr = canonicalDigest(legacy)
+		if deriveErr != nil || legacy.validate() != nil {
+			return ErrPreparedExecutionConflict
+		}
+		fact := &legacyPreparedExecutionFact{ProtocolRevision: legacyPreparedAuthorityProtocol, FactType: preparedExecutionCreatedFactType, Sequence: store.nextSequence, Prepared: legacy}
+		fact.Digest, deriveErr = canonicalDigest(fact)
+		if deriveErr != nil {
+			return deriveErr
+		}
+		raw, marshalErr := json.Marshal(fact)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		raw, marshalErr = canonical.JSON(raw)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if replayErr := applyPreparedExecutionLine(raw, projection, store.nextSequence); replayErr != nil {
+			return replayErr
+		}
+		fact.Digest = ""
+		if appendErr := store.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); appendErr != nil {
+			return appendErr
+		}
+		store.nextSequence++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(store.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreatePreparedExecution(context.Background(), verifier, owner.Acquisition, creation); !errors.Is(err, ErrPreparedExecutionConflict) {
+		t.Fatalf("fresh v2 creation accepted replay-only v1 history: %v", err)
+	}
+	after, err := os.ReadFile(store.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("mixed-history rejection changed durable ledger bytes")
+	}
+	reopened, err := OpenResultIngressStore(store.dir)
+	if err != nil {
+		t.Fatalf("cold replay rejected valid legacy history: %v", err)
+	}
+	if _, err := reopened.CreatePreparedExecution(context.Background(), verifier, owner.Acquisition, creation); !errors.Is(err, ErrPreparedExecutionConflict) {
+		t.Fatalf("cold replay admitted fresh v2 over legacy history: %v", err)
+	}
+}
+
 type claimCaptureProjector struct {
 	called int
 	claim  CommittedRunStartClaim

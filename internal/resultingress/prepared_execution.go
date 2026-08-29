@@ -305,6 +305,12 @@ func (s *DurableStore) CreatePreparedExecution(ctx context.Context, verifier Cur
 			if err != nil {
 				return ErrPreparedExecutionConflict
 			}
+			// A replay-only v1 preparation permanently occupies this Attempt key.
+			// Fresh v2 creation must reject mixed history before constructing or
+			// appending any candidate bytes.
+			if _, legacy := projection.legacyPreparedExecutionKeys[key]; legacy {
+				return ErrPreparedExecutionConflict
+			}
 			if digest, ok := projection.preparedExecutionKeys[key]; ok {
 				existing, found := projection.preparedExecutions[digest]
 				if !found || !preparedCreationMatches(existing, creation) {
@@ -322,8 +328,23 @@ func (s *DurableStore) CreatePreparedExecution(ctx context.Context, verifier Cur
 				return err
 			}
 			fact := &preparedExecutionFact{ProtocolRevision: preparedExecutionAuthorityProtocol, FactType: preparedExecutionCreatedFactType, Sequence: s.nextSequence, Prepared: prepared}
+			preflightDigest, err := canonicalDigest(fact)
+			if err != nil {
+				return err
+			}
+			fact.Digest = preflightDigest
+			// Use the cold-replay projector as the final write admission gate.
+			// This includes mixed-history, producer-chain and derived-content
+			// checks that structure-only validation cannot cover.
+			if err := applyPreparedExecutionFactValue(*fact, projection); err != nil {
+				return err
+			}
+			fact.Digest = ""
 			if err := s.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
 				return err
+			}
+			if fact.Digest != preflightDigest {
+				return fmt.Errorf("%w: prepared execution preflight digest drift", ErrPreparedExecutionConflict)
 			}
 			s.nextSequence++
 			result = prepared

@@ -89,27 +89,44 @@ func withCurrentReadyRunAuthority(ctx context.Context, verifier CurrentReadyRunA
 		return ErrRunAuthorityUnauthorized
 	}
 	var gate sync.Mutex
-	called, closed, duplicate := false, false, false
+	called, closed, duplicate, inFlight := false, false, false, false
 	var callbackErr error
 	err := verifier.WithCurrentReadyRunAuthority(ctx, ready, func() error {
 		gate.Lock()
-		defer gate.Unlock()
 		if closed || called {
 			duplicate = true
+			gate.Unlock()
 			return ErrRunAuthorityUnauthorized
 		}
 		called = true
-		callbackErr = fn()
-		return callbackErr
+		inFlight = true
+		gate.Unlock()
+		completedErr := fn()
+		gate.Lock()
+		inFlight = false
+		callbackErr = completedErr
+		gate.Unlock()
+		return completedErr
 	})
 	gate.Lock()
+	escaped := inFlight
 	closed = true
 	calledOnce, invokedTwice, heldErr := called, duplicate, callbackErr
 	gate.Unlock()
-	if invokedTwice || !calledOnce || err != nil {
+	// Error precedence is deliberate: verifier misuse wins first; once the
+	// callback ran, its exact durable/outcome-unknown error must survive instead
+	// of being rewritten as an authorization error. Only a verifier failure or
+	// missing callback is classified as unauthorized.
+	if invokedTwice || escaped {
+		return fmt.Errorf("%w: READY verifier callback was repeated or escaped", ErrRunAuthorityUnauthorized)
+	}
+	if heldErr != nil {
+		return heldErr
+	}
+	if !calledOnce || err != nil {
 		return fmt.Errorf("%w: READY verifier rejected or misused callback: %v", ErrRunAuthorityUnauthorized, err)
 	}
-	return heldErr
+	return nil
 }
 
 type AttemptReservationV1 struct {
@@ -390,18 +407,20 @@ type attemptResolutionEvidence struct {
 func (s *DurableStore) resolveAttemptReservation(ctx context.Context, hold func(func(attemptResolutionEvidence) error) error, reservationFactDigest, factType string, successorSequence uint64, successorHead string, validate func(*Ingress, AttemptReservationState) error) (AttemptReservationState, error) {
 	var result AttemptReservationState
 	var gate sync.Mutex
-	called, closed, duplicate := false, false, false
+	called, closed, duplicate, inFlight := false, false, false, false
 	var callbackErr error
 	holdErr := hold(func(evidence attemptResolutionEvidence) error {
 		gate.Lock()
-		defer gate.Unlock()
 		if closed || called {
 			duplicate = true
+			gate.Unlock()
 			return ErrAttemptReservationConflict
 		}
 		called = true
+		inFlight = true
+		gate.Unlock()
 		projection := newAuthorityProjection()
-		callbackErr = s.transact(projection, func() error {
+		completedErr := s.transact(projection, func() error {
 			state, found := projection.reservations[reservationFactDigest]
 			if !found {
 				return ErrAttemptReservationConflict
@@ -451,16 +470,27 @@ func (s *DurableStore) resolveAttemptReservation(ctx context.Context, hold func(
 			result = projection.reservations[reservationFactDigest]
 			return nil
 		})
-		return callbackErr
+		gate.Lock()
+		inFlight = false
+		callbackErr = completedErr
+		gate.Unlock()
+		return completedErr
 	})
 	gate.Lock()
+	escaped := inFlight
 	closed = true
 	calledOnce, invokedTwice, heldErr := called, duplicate, callbackErr
 	gate.Unlock()
-	if invokedTwice || !calledOnce || holdErr != nil {
+	if invokedTwice || escaped {
+		return AttemptReservationState{}, fmt.Errorf("%w: resolution verifier callback was repeated or escaped", ErrAttemptReservationConflict)
+	}
+	if heldErr != nil {
+		return AttemptReservationState{}, heldErr
+	}
+	if !calledOnce || holdErr != nil {
 		return AttemptReservationState{}, fmt.Errorf("%w: resolution verifier rejected or misused callback: %v", ErrAttemptReservationConflict, holdErr)
 	}
-	return result, heldErr
+	return result, nil
 }
 
 func applyAttemptReservationLine(line []byte, in *Ingress, wantSequence int64) error {
