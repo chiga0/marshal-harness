@@ -814,19 +814,41 @@ func TestExistingWorktreeProjectionHeldDirectoryAndLockRejectRenameBackABA(t *te
 	})
 }
 
-func TestExistingWorktreeProjectionDetectsSameFileMutationAfterPreflight(t *testing.T) {
-	fixture := newExistingWorktreeFixture(t)
-	defer fixture.Close()
-	receipt, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request)
+func TestExistingWorktreeProjectionDetectsLaterSameFileMutationAfterPreflightBeforeAnyLiveWrite(t *testing.T) {
+	first := newExistingWorktreeFixture(t)
+	defer first.Close()
+	second := newDistinctExistingWorktreeFixture(t)
+	defer second.Close()
+	firstReceipt, err := first.controller.Bind(context.Background(), first.run, first.request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := fixture.authority.Snapshot()
+	secondReceipt, err := second.controller.Bind(context.Background(), second.run, second.request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	graph, err := fixture.authority.DescriptorGraph()
-	if err != nil {
+	combined := ExistingWorktreeAuthoritySnapshotV1{
+		CurrentAttemptRevision:   first.authority.attemptRevision,
+		CurrentAttemptHeadDigest: first.authority.attemptHead,
+		Facts:                    append(append([]ExistingWorktreeAttemptFactV1(nil), first.authority.facts...), second.authority.facts...),
+	}
+	if err := combined.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	graph, err := first.authority.DescriptorGraph()
+	if err != nil || SyncExistingWorktreeProjectionFromGraph(graph, combined) != nil {
+		t.Fatalf("seed combined projection: %v", err)
+	}
+	paths := []string{first.projectionPath(firstReceipt.Observation.TargetIdentityDigest), first.projectionPath(secondReceipt.Observation.TargetIdentityDigest)}
+	sort.Strings(paths)
+	complete := mustReadFile(t, paths[0])
+	withoutFinalNewline := complete[:len(complete)-1]
+	lastRecord := bytes.LastIndexByte(withoutFinalNewline, '\n')
+	if lastRecord < 0 {
+		t.Fatal("projection did not contain two records")
+	}
+	behind := append([]byte(nil), complete[:lastRecord+1]...)
+	if err := os.WriteFile(paths[0], behind, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	projection, err := openExistingWorktreeProjection(graph)
@@ -834,25 +856,21 @@ func TestExistingWorktreeProjectionDetectsSameFileMutationAfterPreflight(t *test
 		t.Fatal(err)
 	}
 	defer projection.Close()
-	expected, err := projectionRecords(snapshot)
-	if err != nil {
-		t.Fatal(err)
+	var mutated []byte
+	projection.afterPreflight = func() {
+		mutated = append(mustReadFile(t, paths[1]), []byte("concurrent-forgery\n")...)
+		if err := os.WriteFile(paths[1], mutated, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	plans, err := projection.preflight(expected)
-	if err != nil || len(plans) != 1 || plans[0].missing {
-		t.Fatalf("preflight plans=%d err=%v", len(plans), err)
+	if err := projection.Sync(combined); err == nil {
+		t.Fatal("later same-file mutation after preflight was accepted")
 	}
-	defer closeExistingWorktreeProjectionPlans(plans)
-	path := fixture.projectionPath(receipt.Observation.TargetIdentityDigest)
-	mutated := append(mustReadFile(t, path), []byte("concurrent-forgery\n")...)
-	if err := os.WriteFile(path, mutated, 0o600); err != nil {
-		t.Fatal(err)
+	if after := mustReadFile(t, paths[0]); !bytes.Equal(after, behind) {
+		t.Fatal("earlier behind entry changed before later plan conflict")
 	}
-	if err := projection.apply(plans[0]); err == nil {
-		t.Fatal("same projection file mutation after preflight was accepted")
-	}
-	if after := mustReadFile(t, path); !bytes.Equal(after, mutated) {
-		t.Fatal("RB1 wrote after detecting same-file concurrent mutation")
+	if after := mustReadFile(t, paths[1]); !bytes.Equal(after, mutated) {
+		t.Fatal("RB1 changed the concurrently-mutated later entry")
 	}
 }
 

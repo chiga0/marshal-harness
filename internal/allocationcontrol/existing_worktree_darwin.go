@@ -5,6 +5,8 @@ package allocationcontrol
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -982,6 +984,7 @@ type existingWorktreeProjection struct {
 	directoryCurrentName CurrentNameIdentityV1
 	lock                 *os.File
 	lockIdentity         existingWorktreeProjectionFileIdentity
+	afterPreflight       func()
 }
 
 type existingWorktreeProjectionFileIdentity struct {
@@ -996,6 +999,14 @@ type existingWorktreeProjectionPlan struct {
 	identity  existingWorktreeProjectionFileIdentity
 	preflight *os.File
 	missing   bool
+}
+
+type existingWorktreeProjectionStage struct {
+	name                 string
+	directory            *os.File
+	directoryCurrentName CurrentNameIdentityV1
+	lock                 *os.File
+	lockIdentity         existingWorktreeProjectionFileIdentity
 }
 
 // SyncExistingWorktreeProjectionFromGraph is the reference session projection
@@ -1172,15 +1183,20 @@ func (projection *existingWorktreeProjection) Sync(snapshot ExistingWorktreeAuth
 		return err
 	}
 	defer closeExistingWorktreeProjectionPlans(plans)
-	for _, plan := range plans {
-		if err := projection.apply(plan); err != nil {
-			return err
-		}
+	if projection.afterPreflight != nil {
+		hook := projection.afterPreflight
+		projection.afterPreflight = nil
+		hook()
 	}
-	if err := projection.directory.Sync(); err != nil {
+	if err := projection.revalidatePlans(plans); err != nil {
 		return err
 	}
-	return projection.revalidateAuthority()
+	for _, plan := range plans {
+		if plan.missing || !bytes.Equal(plan.observed, plan.expected) {
+			return projection.commitPlans(plans)
+		}
+	}
+	return nil
 }
 
 // preflight is deliberately all-read-before-any-write. It holds every
@@ -1252,56 +1268,293 @@ func (projection *existingWorktreeProjection) preflight(expected map[string][]Ex
 	return plans, nil
 }
 
-func (projection *existingWorktreeProjection) apply(plan *existingWorktreeProjectionPlan) error {
-	if plan == nil || !validExistingRelativeName(plan.name) || !validExistingWorktreeProjectionPrefix(plan.observed, plan.expected) || projection.revalidateAuthority() != nil {
+// revalidatePlans is the last read-only gate before a projection transaction
+// is staged. Every held entry, every expected absence and both the directory
+// and lock current-name identities are checked as one set. A conflict here
+// therefore cannot follow an earlier live-entry write.
+func (projection *existingWorktreeProjection) revalidatePlans(plans []*existingWorktreeProjectionPlan) error {
+	if projection.revalidateAuthority() != nil {
 		return ErrFilesystemConflict
 	}
-	var file *os.File
-	var err error
-	if plan.missing {
-		file, err = createExistingWorktreeProjectionFile(projection.directory, plan.name)
-	} else {
-		file, err = openExistingWorktreeProjectionFile(projection.directory, plan.name, unix.O_RDWR|unix.O_APPEND)
+	for _, plan := range plans {
+		if plan == nil || !validExistingRelativeName(plan.name) || !validExistingWorktreeProjectionPrefix(plan.observed, plan.expected) {
+			return ErrFilesystemConflict
+		}
+		if plan.missing {
+			var stat unix.Stat_t
+			if err := unix.Fstatat(int(projection.directory.Fd()), plan.name, &stat, unix.AT_SYMLINK_NOFOLLOW); !errors.Is(err, unix.ENOENT) {
+				return ErrFilesystemConflict
+			}
+			continue
+		}
+		identity, err := observeExistingWorktreeProjectionFile(projection.directory, plan.name, plan.preflight)
+		if err != nil || !sameExistingWorktreeProjectionFile(identity, plan.identity) {
+			return ErrFilesystemConflict
+		}
+		raw, err := readExistingWorktreeProjectionFile(plan.preflight)
+		if err != nil || !bytes.Equal(raw, plan.observed) {
+			return ErrAuthorityConflict
+		}
 	}
+	return projection.revalidateAuthority()
+}
+
+// commitPlans materializes a complete derived projection in a private sibling
+// and exposes every entry with one Darwin RENAME_SWAP. The prior append-only
+// prefix remains at the staging name; no live entry is modified in place.
+func (projection *existingWorktreeProjection) commitPlans(plans []*existingWorktreeProjectionPlan) error {
+	stage, err := projection.stagePlans(plans)
 	if err != nil {
+		return err
+	}
+	defer stage.Close()
+	// Staging may take time. Recheck the complete live set immediately before
+	// the single commit operation, still without changing a live entry.
+	if err := projection.revalidatePlans(plans); err != nil {
+		return err
+	}
+	stageCurrent, stageCurrentErr := observeDirectoryEdge(int(projection.parent.Fd()), int(stage.directory.Fd()), stage.name)
+	stageLockIdentity, stageLockErr := observeExistingWorktreeProjectionFile(stage.directory, existingWorktreeProjectionLock, stage.lock)
+	if stageCurrentErr != nil || !equalCanonical(stageCurrent, stage.directoryCurrentName) || stageLockErr != nil || !sameExistingWorktreeProjectionFile(stageLockIdentity, stage.lockIdentity) || verifyExistingWorktreeProjectionDirectory(stage.directory, plans) != nil {
 		return ErrFilesystemConflict
 	}
-	defer file.Close()
-	if plan.missing {
-		// Only this O_EXCL creation is an authorized directory mutation.
-		projection.directoryCurrentName, err = observeDirectoryEdge(int(projection.parent.Fd()), int(projection.directory.Fd()), ExistingWorktreeProjectionDirectory)
+	parentFD := int(projection.parent.Fd())
+	if err := unix.RenameatxNp(parentFD, stage.name, parentFD, ExistingWorktreeProjectionDirectory, unix.RENAME_SWAP); err != nil {
+		return ErrFilesystemConflict
+	}
+	swapped := true
+	rollback := func() error {
+		if !swapped {
+			return nil
+		}
+		if err := unix.RenameatxNp(parentFD, stage.name, parentFD, ExistingWorktreeProjectionDirectory, unix.RENAME_SWAP); err != nil {
+			return ErrFilesystemConflict
+		}
+		swapped = false
+		if err := projection.parent.Sync(); err != nil {
+			return ErrFilesystemConflict
+		}
+		return nil
+	}
+	if err := projection.parent.Sync(); err != nil {
+		_ = rollback()
+		return ErrFilesystemConflict
+	}
+	// The swapped-out directory must still be the exact preflight set. This
+	// catches a same-UID mutation in the final recheck-to-swap window; the
+	// atomic swap is reversed before the conflict is returned.
+	oldCurrent, oldCurrentErr := observeDirectoryEdge(parentFD, int(projection.directory.Fd()), stage.name)
+	oldLockIdentity, oldLockErr := observeExistingWorktreeProjectionFile(projection.directory, existingWorktreeProjectionLock, projection.lock)
+	if oldCurrentErr != nil || oldCurrent.RelativeName != stage.name || oldLockErr != nil || !sameExistingWorktreeProjectionFile(oldLockIdentity, projection.lockIdentity) || revalidateExistingWorktreeProjectionPlansInDirectory(projection.directory, plans) != nil {
+		_ = rollback()
+		return ErrFilesystemConflict
+	}
+	newCurrent, err := observeDirectoryEdge(parentFD, int(stage.directory.Fd()), ExistingWorktreeProjectionDirectory)
+	if err != nil || verifyExistingWorktreeProjectionDirectory(stage.directory, plans) != nil {
+		_ = rollback()
+		return ErrFilesystemConflict
+	}
+	newLockIdentity, err := observeExistingWorktreeProjectionFile(stage.directory, existingWorktreeProjectionLock, stage.lock)
+	if err != nil || newLockIdentity.Object.Size != 0 {
+		_ = rollback()
+		return ErrFilesystemConflict
+	}
+	oldDirectory, oldLock := projection.directory, projection.lock
+	projection.directory = stage.directory
+	projection.directoryCurrentName = newCurrent
+	projection.lock = stage.lock
+	projection.lockIdentity = newLockIdentity
+	stage.directory, stage.lock = nil, nil
+	swapped = false
+	return errors.Join(oldLock.Close(), oldDirectory.Close(), projection.revalidateAuthority())
+}
+
+func (projection *existingWorktreeProjection) stagePlans(plans []*existingWorktreeProjectionPlan) (*existingWorktreeProjectionStage, error) {
+	name, directory, err := createExistingWorktreeProjectionStageDirectory(projection.parent)
+	if err != nil {
+		return nil, err
+	}
+	stage := &existingWorktreeProjectionStage{name: name, directory: directory}
+	closeOnError := true
+	defer func() {
+		if closeOnError {
+			_ = stage.Close()
+		}
+	}()
+	stage.lock, err = createExistingWorktreeProjectionFile(directory, existingWorktreeProjectionLock)
+	if err != nil || unix.Flock(int(stage.lock.Fd()), unix.LOCK_EX|unix.LOCK_NB) != nil {
+		return nil, ErrFilesystemConflict
+	}
+	stage.lockIdentity, err = observeExistingWorktreeProjectionFile(directory, existingWorktreeProjectionLock, stage.lock)
+	if err != nil || stage.lockIdentity.Object.Size != 0 {
+		return nil, ErrFilesystemConflict
+	}
+	for _, plan := range plans {
+		file, createErr := createExistingWorktreeProjectionFile(directory, plan.name)
+		if createErr != nil {
+			return nil, createErr
+		}
+		if writeErr := writeAll(file, plan.expected); writeErr != nil {
+			file.Close()
+			return nil, writeErr
+		}
+		if syncErr := file.Sync(); syncErr != nil {
+			file.Close()
+			return nil, syncErr
+		}
+		raw, readErr := readExistingWorktreeProjectionFile(file)
+		identity, identityErr := observeExistingWorktreeProjectionFile(directory, plan.name, file)
+		file.Close()
+		if readErr != nil || identityErr != nil || !bytes.Equal(raw, plan.expected) || identity.Object.Size != int64(len(plan.expected)) {
+			return nil, ErrFilesystemConflict
+		}
+	}
+	if err := directory.Sync(); err != nil {
+		return nil, err
+	}
+	if err := verifyExistingWorktreeProjectionDirectory(directory, plans); err != nil {
+		return nil, err
+	}
+	stage.directoryCurrentName, err = observeDirectoryEdge(int(projection.parent.Fd()), int(directory.Fd()), name)
+	if err != nil {
+		return nil, ErrFilesystemConflict
+	}
+	closeOnError = false
+	return stage, nil
+}
+
+func (stage *existingWorktreeProjectionStage) Close() error {
+	if stage == nil {
+		return nil
+	}
+	var result error
+	if stage.lock != nil {
+		result = errors.Join(result, stage.lock.Close())
+		stage.lock = nil
+	}
+	if stage.directory != nil {
+		result = errors.Join(result, stage.directory.Close())
+		stage.directory = nil
+	}
+	return result
+}
+
+func createExistingWorktreeProjectionStageDirectory(parent *os.File) (string, *os.File, error) {
+	if parent == nil {
+		return "", nil, ErrInvalid
+	}
+	for attempt := 0; attempt < 8; attempt++ {
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return "", nil, ErrFilesystemConflict
+		}
+		name := ".projection-stage-" + hex.EncodeToString(random[:])
+		if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); errors.Is(err, unix.EEXIST) {
+			continue
+		} else if err != nil {
+			return "", nil, ErrFilesystemConflict
+		}
+		fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 		if err != nil {
+			return "", nil, ErrFilesystemConflict
+		}
+		directory := os.NewFile(uintptr(fd), name)
+		if _, err := observePrivateDirectoryEdge(int(parent.Fd()), fd, name); err != nil {
+			directory.Close()
+			return "", nil, ErrFilesystemConflict
+		}
+		if err := directory.Sync(); err != nil {
+			directory.Close()
+			return "", nil, err
+		}
+		if err := parent.Sync(); err != nil {
+			directory.Close()
+			return "", nil, err
+		}
+		return name, directory, nil
+	}
+	return "", nil, ErrFilesystemConflict
+}
+
+func revalidateExistingWorktreeProjectionPlansInDirectory(directory *os.File, plans []*existingWorktreeProjectionPlan) error {
+	if directory == nil {
+		return ErrFilesystemConflict
+	}
+	expectedNames := map[string]bool{existingWorktreeProjectionLock: true}
+	for _, plan := range plans {
+		if plan == nil {
+			return ErrFilesystemConflict
+		}
+		if !plan.missing {
+			expectedNames[plan.name] = true
+		}
+	}
+	if err := verifyExistingWorktreeProjectionEntryNames(directory, expectedNames); err != nil {
+		return err
+	}
+	for _, plan := range plans {
+		if plan.missing {
+			var stat unix.Stat_t
+			if err := unix.Fstatat(int(directory.Fd()), plan.name, &stat, unix.AT_SYMLINK_NOFOLLOW); !errors.Is(err, unix.ENOENT) {
+				return ErrFilesystemConflict
+			}
+			continue
+		}
+		identity, err := observeExistingWorktreeProjectionFile(directory, plan.name, plan.preflight)
+		if err != nil || !sameExistingWorktreeProjectionFile(identity, plan.identity) {
+			return ErrFilesystemConflict
+		}
+		raw, err := readExistingWorktreeProjectionFile(plan.preflight)
+		if err != nil || !bytes.Equal(raw, plan.observed) {
+			return ErrAuthorityConflict
+		}
+	}
+	return nil
+}
+
+func verifyExistingWorktreeProjectionDirectory(directory *os.File, plans []*existingWorktreeProjectionPlan) error {
+	if directory == nil {
+		return ErrFilesystemConflict
+	}
+	expectedNames := map[string]bool{existingWorktreeProjectionLock: true}
+	for _, plan := range plans {
+		if plan == nil {
+			return ErrFilesystemConflict
+		}
+		expectedNames[plan.name] = true
+	}
+	if err := verifyExistingWorktreeProjectionEntryNames(directory, expectedNames); err != nil {
+		return err
+	}
+	for _, plan := range plans {
+		file, err := openExistingWorktreeProjectionFile(directory, plan.name, unix.O_RDONLY)
+		if err != nil {
+			return err
+		}
+		raw, readErr := readExistingWorktreeProjectionFile(file)
+		identity, identityErr := observeExistingWorktreeProjectionFile(directory, plan.name, file)
+		file.Close()
+		if readErr != nil || identityErr != nil || !bytes.Equal(raw, plan.expected) || identity.Object.Size != int64(len(plan.expected)) {
 			return ErrFilesystemConflict
 		}
 	}
-	currentIdentity, err := observeExistingWorktreeProjectionFile(projection.directory, plan.name, file)
-	if err != nil {
-		return err
-	}
-	if !plan.missing && (!sameExistingWorktreeProjectionFile(plan.identity, currentIdentity) || !sameHeldProjectionFile(plan.preflight, file)) {
+	return nil
+}
+
+func verifyExistingWorktreeProjectionEntryNames(directory *os.File, expected map[string]bool) error {
+	if _, err := directory.Seek(0, 0); err != nil {
 		return ErrFilesystemConflict
 	}
-	currentRaw, err := readExistingWorktreeProjectionFile(file)
-	if err != nil || !bytes.Equal(currentRaw, plan.observed) {
-		return ErrAuthorityConflict
+	entries, err := directory.ReadDir(-1)
+	if err != nil || len(entries) != len(expected) {
+		return ErrFilesystemConflict
 	}
-	if suffix := plan.expected[len(plan.observed):]; len(suffix) > 0 {
-		if err := writeAll(file, suffix); err != nil {
-			return err
+	for _, entry := range entries {
+		if entry.IsDir() || !expected[entry.Name()] {
+			return ErrFilesystemConflict
 		}
 	}
-	if err := file.Sync(); err != nil {
-		return err
-	}
-	finalRaw, err := readExistingWorktreeProjectionFile(file)
-	if err != nil || !bytes.Equal(finalRaw, plan.expected) {
-		return ErrAuthorityConflict
-	}
-	finalIdentity, err := observeExistingWorktreeProjectionFile(projection.directory, plan.name, file)
-	if err != nil || !sameExistingWorktreeProjectionObject(currentIdentity.Object, finalIdentity.Object) {
-		return ErrFilesystemConflict
-	}
-	return projection.revalidateAuthority()
+	return nil
 }
 
 func projectionRecords(snapshot ExistingWorktreeAuthoritySnapshotV1) (map[string][]ExistingWorktreeProjectionRecordV1, error) {
@@ -1424,20 +1677,8 @@ func observeExistingWorktreeProjectionFile(parent *os.File, name string, file *o
 	return existingWorktreeProjectionFileIdentity{Object: objectIdentity(held), MutationDigest: statMutationDigest(held)}, nil
 }
 
-func sameExistingWorktreeProjectionObject(left, right ObjectIdentityV1) bool {
-	return left.Device == right.Device && left.Inode == right.Inode && left.Mode == right.Mode && left.UID == right.UID && left.GID == right.GID && left.Nlink == right.Nlink && left.Type == ObjectTypeRegular && right.Type == ObjectTypeRegular
-}
-
 func sameExistingWorktreeProjectionFile(left, right existingWorktreeProjectionFileIdentity) bool {
 	return left.MutationDigest == right.MutationDigest && left.Object == right.Object
-}
-
-func sameHeldProjectionFile(left, right *os.File) bool {
-	if left == nil || right == nil {
-		return false
-	}
-	var a, b unix.Stat_t
-	return unix.Fstat(int(left.Fd()), &a) == nil && unix.Fstat(int(right.Fd()), &b) == nil && sameStat(a, b)
 }
 
 func readExistingWorktreeProjectionFile(file *os.File) ([]byte, error) {
