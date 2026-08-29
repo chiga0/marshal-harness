@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
@@ -290,6 +291,10 @@ type Ingress struct {
 	preparedExecutions          map[string]PreparedExecutionV1
 	preparedExecutionKeys       map[string]string
 	legacyPreparedExecutionKeys map[string]string
+	// existingWorktreeFacts is a rebuild-only projection of RB1 facts from the
+	// same physical Attempt ledger. It is never populated from `.marshal`
+	// projection files and therefore cannot become a second truth source.
+	existingWorktreeFacts []allocationcontrol.ExistingWorktreeAttemptFactV1
 	// The three indexes are authority-namespace scoped. Command/idempotency map
 	// to an effect key; marker maps to its immutable logical Attempt key. They
 	// are rebuilt exclusively from the authority log on every transaction.
@@ -341,6 +346,7 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		preparedExecutions:          make(map[string]PreparedExecutionV1),
 		preparedExecutionKeys:       make(map[string]string),
 		legacyPreparedExecutionKeys: make(map[string]string),
+		existingWorktreeFacts:       nil,
 		effectCommands:              make(map[string]string),
 		effectIdempotency:           make(map[string]string),
 		effectMarkers:               make(map[string]string),
@@ -367,6 +373,7 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 		preparedExecutions:          make(map[string]PreparedExecutionV1),
 		preparedExecutionKeys:       make(map[string]string),
 		legacyPreparedExecutionKeys: make(map[string]string),
+		existingWorktreeFacts:       nil,
 		effectCommands:              make(map[string]string),
 		effectIdempotency:           make(map[string]string),
 		effectMarkers:               make(map[string]string),
@@ -746,6 +753,7 @@ func (i *Ingress) resetDurableReplayState() {
 	i.preparedExecutions = make(map[string]PreparedExecutionV1)
 	i.preparedExecutionKeys = make(map[string]string)
 	i.legacyPreparedExecutionKeys = make(map[string]string)
+	i.existingWorktreeFacts = nil
 	i.effectCommands = make(map[string]string)
 	i.effectIdempotency = make(map[string]string)
 	i.effectMarkers = make(map[string]string)

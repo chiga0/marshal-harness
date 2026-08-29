@@ -5,6 +5,8 @@ set -euo pipefail
 
 RELEASE_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 RELEASE_TEMP_MESSAGE=""
+RC1_TAG="v1.0.0-rc1"
+RC1_BINARY_CHECKER="${RELEASE_ROOT}/scripts/release-rc1-binary-check.py"
 
 cleanup_release_temp() {
   if [ -n "$RELEASE_TEMP_MESSAGE" ]; then
@@ -68,6 +70,41 @@ validate_go_version() {
   required="$(sed -n -E 's/^toolchain[[:space:]]+(go[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' "${RELEASE_ROOT}/go.mod")"
   [ -n "$required" ] && [ "$1" = "$required" ] \
     || release_fatal "goVersion 与 go.mod toolchain 不一致：期望 ${required:-missing}，实际 $1"
+}
+
+validate_rc1_tag() {
+  local tag="$1"
+  [ "$tag" = "$RC1_TAG" ] \
+    || release_fatal "RC1 单资产合同只允许 ${RC1_TAG}，拒绝 ${tag:-empty}"
+}
+
+validate_rc1_inputs() {
+  local tag="$1" source_head="$2" build_date="$3" go_version="$4"
+  validate_rc1_tag "$tag"
+  validate_source_head "$source_head"
+  validate_build_date "$build_date"
+  validate_go_version "$go_version"
+}
+
+validate_rc1_identity() {
+  local os="$1" arch="$2" profile="$3"
+  [ "$os" = darwin ] && [ "$arch" = arm64 ] && [ "$profile" = darwin-local-dogfood ] \
+    || release_fatal "RC1 binary identity 必须精确为 darwin/arm64 + darwin-local-dogfood"
+}
+
+rc1_asset_name() {
+  printf 'marshal_1.0.0-rc1_darwin_arm64\n'
+}
+
+verify_rc1_binary() {
+  local candidate="$1" tag="$2" source_head="$3" build_date="$4" go_version="$5"
+  local os="$6" arch="$7" profile="$8" go_bin="${GO_BIN:-}"
+  validate_rc1_inputs "$tag" "$source_head" "$build_date" "$go_version"
+  validate_rc1_identity "$os" "$arch" "$profile"
+  [ -n "$go_bin" ] || release_fatal "RC1 binary inspection 缺少固定 GO_BIN"
+  python3 -I -B "$RC1_BINARY_CHECKER" "$candidate" "${tag#v}" \
+    "$source_head" "$build_date" "$go_version" "$profile" "$go_bin" >/dev/null \
+    || release_fatal "RC1 candidate 的 Mach-O/Go/build identity 不匹配"
 }
 
 canonical_build_date() {
@@ -135,6 +172,142 @@ create_manifest() {
   chmod 0644 "$temporary"
   mv "$temporary" "$manifest"
   trap - RETURN
+}
+
+create_rc1_manifest() {
+  local dist_dir="$1" tag="$2" source_head="$3" build_date="$4" go_version="$5"
+  local manifest temporary name digest size
+
+  validate_rc1_inputs "$tag" "$source_head" "$build_date" "$go_version"
+  [ -d "$dist_dir" ] && [ ! -L "$dist_dir" ] \
+    || release_fatal "RC1 dist 目录缺失或为符号链接: ${dist_dir}"
+  name="$(rc1_asset_name)"
+  [ -f "${dist_dir}/${name}" ] && [ ! -L "${dist_dir}/${name}" ] && [ -x "${dist_dir}/${name}" ] \
+    || release_fatal "RC1 唯一 Darwin arm64 candidate 缺失、不是普通可执行文件或为符号链接"
+  verify_rc1_binary "${dist_dir}/${name}" "$tag" "$source_head" "$build_date" \
+    "$go_version" darwin arm64 darwin-local-dogfood
+  digest="$(sha256_file "${dist_dir}/${name}")"
+  size="$(file_size "${dist_dir}/${name}")"
+  manifest="${dist_dir}/RELEASE-MANIFEST"
+  [ ! -e "$manifest" ] || [ -f "$manifest" ] && [ ! -L "$manifest" ] \
+    || release_fatal "RC1 RELEASE-MANIFEST 目标不是普通文件"
+  temporary="${manifest}.tmp.$$"
+  trap 'rm -f "$temporary"' RETURN
+  {
+    printf 'schemaVersion marshal.rc1-release-manifest.v1\n'
+    printf 'repository https://github.com/chiga0/marshal-harness.git\n'
+    printf 'tag %s\n' "$tag"
+    printf 'sourceHead %s\n' "$source_head"
+    printf 'buildDate %s\n' "$build_date"
+    printf 'goVersion %s\n' "$go_version"
+    printf 'buildFlags -trimpath,-buildvcs=false,-mod=readonly,-buildid=\n'
+    printf 'asset %s %s %s darwin arm64 darwin-local-dogfood\n' "$digest" "$size" "$name"
+  } >"$temporary"
+  chmod 0644 "$temporary"
+  mv "$temporary" "$manifest"
+  trap - RETURN
+}
+
+verify_rc1_manifest() {
+  local dist_dir="$1" tag="$2" expected_source_head="$3" expected_build_date="$4"
+  local expected_go_version="$5" expected_os="$6" expected_arch="$7" expected_profile="$8"
+  local manifest name record digest size go_version actual_digest actual_size
+
+  validate_rc1_inputs "$tag" "$expected_source_head" "$expected_build_date" "$expected_go_version"
+  validate_rc1_identity "$expected_os" "$expected_arch" "$expected_profile"
+  manifest="${dist_dir}/RELEASE-MANIFEST"
+  name="$(rc1_asset_name)"
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] \
+    || release_fatal "RC1 RELEASE-MANIFEST 缺失、不是普通文件或为符号链接"
+  record="$(awk -v tag="$tag" -v expected_head="$expected_source_head" \
+    -v expected_date="$expected_build_date" -v expected_go="$expected_go_version" \
+    -v expected_os="$expected_os" -v expected_arch="$expected_arch" \
+    -v expected_profile="$expected_profile" -v name="$name" '
+    function die(message) { print "[release-check] 错误: " message > "/dev/stderr"; exit 1 }
+    NR == 1 { if ($0 != "schemaVersion marshal.rc1-release-manifest.v1") die("RC1 manifest schemaVersion 非法"); next }
+    NR == 2 { if ($0 != "repository https://github.com/chiga0/marshal-harness.git") die("RC1 manifest repository 非 canonical"); next }
+    NR == 3 { if ($0 != "tag " tag) die("RC1 manifest tag 不匹配"); next }
+    NR == 4 {
+      if ($1 != "sourceHead" || NF != 2 || $2 !~ /^[0-9a-f]{40}$/) die("RC1 manifest sourceHead 非法")
+      if ($2 != expected_head) die("RC1 manifest sourceHead 与期望值不匹配")
+      next
+    }
+    NR == 5 {
+      if ($1 != "buildDate" || NF != 2 || $2 != expected_date) die("RC1 manifest buildDate 与外部期望值不匹配")
+      next
+    }
+    NR == 6 {
+      if ($1 != "goVersion" || NF != 2 || $2 != expected_go) die("RC1 manifest goVersion 与外部期望值不匹配")
+      go_version=$2
+      next
+    }
+    NR == 7 { if ($0 != "buildFlags -trimpath,-buildvcs=false,-mod=readonly,-buildid=") die("RC1 manifest buildFlags 不匹配"); next }
+    NR == 8 {
+      if ($1 != "asset" || NF != 7 || $2 !~ /^[0-9a-f]{64}$/ || $3 !~ /^[1-9][0-9]*$/ ||
+          $4 != name || $5 != expected_os || $6 != expected_arch || $7 != expected_profile) {
+        die("RC1 manifest 必须只声明唯一 Darwin arm64 local-dogfood asset")
+      }
+      digest=$2
+      size=$3
+      next
+    }
+    { die("RC1 manifest 包含尾随或额外字段") }
+    END {
+      if (NR != 8) die("RC1 manifest 必须精确包含 8 行")
+      print digest " " size " " go_version
+    }
+  ' "$manifest")" || release_fatal "RC1 RELEASE-MANIFEST 不满足封闭合同"
+  read -r digest size go_version <<<"$record"
+  validate_go_version "$go_version"
+  actual_digest="$(sha256_file "${dist_dir}/${name}")"
+  actual_size="$(file_size "${dist_dir}/${name}")"
+  [ "$digest" = "$actual_digest" ] \
+    || release_fatal "RC1 manifest candidate SHA256 不匹配"
+  [ "$size" = "$actual_size" ] \
+    || release_fatal "RC1 manifest candidate size 不匹配"
+}
+
+verify_rc1_dist() {
+  local dist_dir="$1" tag="$2" expected_source_head="$3" expected_build_date="$4"
+  local expected_go_version="$5" expected_os="$6" expected_arch="$7" expected_profile="$8"
+  local name sums entry_count line_number=0 line digest file actual
+
+  validate_rc1_inputs "$tag" "$expected_source_head" "$expected_build_date" "$expected_go_version"
+  validate_rc1_identity "$expected_os" "$expected_arch" "$expected_profile"
+  [ -d "$dist_dir" ] && [ ! -L "$dist_dir" ] \
+    || release_fatal "RC1 dist 目录缺失或为符号链接: ${dist_dir}"
+  name="$(rc1_asset_name)"
+  [ -f "${dist_dir}/${name}" ] && [ ! -L "${dist_dir}/${name}" ] && [ -x "${dist_dir}/${name}" ] \
+    || release_fatal "RC1 唯一 Darwin arm64 candidate 缺失、不是普通可执行文件或为符号链接"
+  sums="${dist_dir}/SHA256SUMS"
+  [ -f "$sums" ] && [ ! -L "$sums" ] \
+    || release_fatal "RC1 SHA256SUMS 缺失、不是普通文件或为符号链接"
+  entry_count="$(find "$dist_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')"
+  [ "$entry_count" = 3 ] \
+    || release_fatal "RC1 dist 必须且只能包含 Darwin arm64 candidate、RELEASE-MANIFEST 与 SHA256SUMS（实际 ${entry_count} 项）"
+  verify_rc1_manifest "$dist_dir" "$tag" "$expected_source_head" "$expected_build_date" \
+    "$expected_go_version" "$expected_os" "$expected_arch" "$expected_profile"
+  verify_rc1_binary "${dist_dir}/${name}" "$tag" "$expected_source_head" \
+    "$expected_build_date" "$expected_go_version" "$expected_os" "$expected_arch" "$expected_profile"
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    line_number=$((line_number + 1))
+    if [[ ! "$line" =~ ^([0-9a-f]{64})[\ ][\ ]([[:alnum:]_.-]+)$ ]]; then
+      release_fatal "RC1 SHA256SUMS 第 ${line_number} 行格式不合法"
+    fi
+    digest="${BASH_REMATCH[1]}"
+    file="${BASH_REMATCH[2]}"
+    case "$line_number:$file" in
+      1:RELEASE-MANIFEST|2:"$name") ;;
+      *) release_fatal "RC1 SHA256SUMS 顺序、资产名或闭集不匹配: ${file}" ;;
+    esac
+    actual="$(sha256_file "${dist_dir}/${file}")"
+    [ "$actual" = "$digest" ] \
+      || release_fatal "RC1 SHA256 不匹配: ${file}"
+  done <"$sums"
+  [ "$line_number" = 2 ] \
+    || release_fatal "RC1 SHA256SUMS 必须且只能包含两行"
+  printf '[release-check] %s 唯一 Darwin arm64 candidate 合同校验通过\n' "$tag"
 }
 
 candidate_tag_message() {
@@ -336,6 +509,9 @@ usage() {
   scripts/release-contract.sh classify TAG
   scripts/release-contract.sh build-date REPOSITORY SOURCE_HEAD
   scripts/release-contract.sh create-manifest DIST_DIR TAG SOURCE_HEAD BUILD_DATE GO_VERSION
+  scripts/release-contract.sh validate-rc1-inputs TAG SOURCE_HEAD BUILD_DATE GO_VERSION
+  scripts/release-contract.sh create-rc1-manifest DIST_DIR TAG SOURCE_HEAD BUILD_DATE GO_VERSION
+  scripts/release-contract.sh verify-rc1-dist DIST_DIR TAG EXPECTED_SOURCE_HEAD EXPECTED_BUILD_DATE EXPECTED_GO_VERSION EXPECTED_OS EXPECTED_ARCH EXPECTED_PROFILE
   scripts/release-contract.sh candidate-tag-message DIST_DIR TAG SOURCE_HEAD
   scripts/release-contract.sh verify-candidate-tag REPOSITORY DIST_DIR TAG
   scripts/release-contract.sh verify-dist DIST_DIR TAG [EXPECTED_SOURCE_HEAD]
@@ -355,6 +531,18 @@ case "${1:-}" in
   create-manifest)
     [ "$#" = "6" ] || usage
     create_manifest "$2" "$3" "$4" "$5" "$6"
+    ;;
+  validate-rc1-inputs)
+    [ "$#" = 5 ] || usage
+    validate_rc1_inputs "$2" "$3" "$4" "$5"
+    ;;
+  create-rc1-manifest)
+    [ "$#" = 6 ] || usage
+    create_rc1_manifest "$2" "$3" "$4" "$5" "$6"
+    ;;
+  verify-rc1-dist)
+    [ "$#" = 9 ] || usage
+    verify_rc1_dist "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
     ;;
   candidate-tag-message)
     [ "$#" = "4" ] || usage

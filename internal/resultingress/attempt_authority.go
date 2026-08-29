@@ -1651,6 +1651,7 @@ func newAuthorityProjection() *Ingress {
 		preparedExecutions:          make(map[string]PreparedExecutionV1),
 		preparedExecutionKeys:       make(map[string]string),
 		legacyPreparedExecutionKeys: make(map[string]string),
+		existingWorktreeFacts:       nil,
 		effectCommands:              make(map[string]string),
 		effectIdempotency:           make(map[string]string),
 		effectMarkers:               make(map[string]string),
