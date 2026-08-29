@@ -18,9 +18,6 @@ func WithExistingWorktreeTargetFromGraph(context.Context, ExistingWorktreeDescri
 }
 
 func validateDescriptorBoundRun(DescriptorBoundRunV1) error { return ErrPlatformUnavailable }
-func validateExistingWorktreeDescriptorGraph(ExistingWorktreeDescriptorGraphV1) error {
-	return ErrPlatformUnavailable
-}
 func ObserveExistingWorktreeFromGraph(context.Context, ExistingWorktreeDescriptorGraphV1, ExistingWorktreeBindRequestV1) (ExistingWorktreeObservationV1, error) {
 	return ExistingWorktreeObservationV1{}, ErrPlatformUnavailable
 }
@@ -28,15 +25,5 @@ func VerifyExistingWorktreeTargetFromGraph(ExistingWorktreeDescriptorGraphV1, Ex
 	return ErrPlatformUnavailable
 }
 func SyncExistingWorktreeProjectionFromGraph(ExistingWorktreeDescriptorGraphV1, ExistingWorktreeAuthoritySnapshotV1) error {
-	return ErrPlatformUnavailable
-}
-
-type existingWorktreeProjection struct{}
-
-func openExistingWorktreeProjection(ExistingWorktreeDescriptorGraphV1) (*existingWorktreeProjection, error) {
-	return nil, ErrPlatformUnavailable
-}
-func (*existingWorktreeProjection) Close() error { return nil }
-func (*existingWorktreeProjection) Sync(ExistingWorktreeAuthoritySnapshotV1) error {
 	return ErrPlatformUnavailable
 }

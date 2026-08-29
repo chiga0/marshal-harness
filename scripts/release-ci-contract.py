@@ -31,6 +31,8 @@ FIXED_FILES = {
     "Makefile": "100644",
     CHECKER_RELATIVE_PATH: "100644",
     "scripts/release-artifact-metadata-check.py": "100644",
+    "scripts/rc1-carrier-check.py": "100755",
+    "scripts/rc1-carrier-check_test.py": "100755",
     "scripts/release-rc1-binary-check.py": "100755",
     RELEASE_WORKFLOW_DIGEST_RELATIVE_PATH: "100644",
     "scripts/release-contract_test.sh": "100755",
@@ -38,6 +40,10 @@ FIXED_FILES = {
     "scripts/dist-profile_test.sh": "100755",
     "scripts/install_test.sh": "100755",
     "scripts/release-canary_test.sh": "100755",
+    "schemas/release_schema_test.go": "100644",
+    "schemas/release/rc1-canary-receipt.schema.json": "100644",
+    "schemas/release/examples/valid/rc1-canary-receipt.json": "100644",
+    "schemas/release/examples/invalid/rc1-canary-receipt-missing-authority.json": "100644",
 }
 MAX_FILE_BYTES = 1 << 20
 
@@ -100,6 +106,12 @@ jobs:
               PATH=/usr/bin:/bin \\
               /bin/bash --noprofile --norc "$GITHUB_WORKSPACE/$test_path"
           done
+          run_checker
+          /usr/bin/env -i \\
+            LC_ALL=C \\
+            PATH=/usr/bin:/bin \\
+            /usr/bin/python3 -I -B \\
+            "$GITHUB_WORKSPACE/scripts/rc1-carrier-check_test.py"
           run_checker
 
       - name: Set up Go
@@ -165,6 +177,7 @@ EXPECTED_RELEASE_TARGET = """release-check:
 \tbash scripts/dist-profile_test.sh
 \tbash scripts/install_test.sh
 \tbash scripts/release-canary_test.sh
+\t/usr/bin/python3 -I -B scripts/rc1-carrier-check_test.py
 
 """
 

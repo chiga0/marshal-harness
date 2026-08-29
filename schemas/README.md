@@ -22,6 +22,7 @@
 - [`approval-record.schema.json`](approval-record.schema.json)
 - [`intervention-record.schema.json`](intervention-record.schema.json)
 - [`sandbox-requirements.schema.json`](sandbox-requirements.schema.json)
+- [`release/rc1-canary-receipt.schema.json`](release/rc1-canary-receipt.schema.json)：精确 `v1.0.0-rc1` 的 out-of-band same-bytes canary binding；它不是 publication authority。
 
 Schema Validation 是必要条件，但还不充分。Implementation 必须增加以下 Semantic Validation：
 
