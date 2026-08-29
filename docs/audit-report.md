@@ -40,6 +40,19 @@
 
 ADR 0065 已于 2026-08-29 接受，提案基线为 `main@40fa493d1955fd6d039169483a6501a787d3cc14`；接受只冻结合同，不撤销 ADR 0063 已冻结的 Pi identity、held source 与 exact resume 业务条件，也不表示任何旧实现候选可合入。S1/S2 实现仍未开始，实施顺序只允许 S1 proof component → S2 fixed composition；ADR 0056 terminalization 是之后的独立切片。
 
+### S2 production composition 构造环审计（2026-08-29）
+
+对 `main@7de2a70cec112df5fbf2b36f85ce5878f227c40c` 的构造审计确认：`internal/productionruntime` 只有 package-private `newController`/`newRuntime`，没有 fixed `./bin/marshal` 可调用的 production factory；`Runtime.Status` 固定返回 `production-composition-incomplete`；CLI/server 仍保留 legacy `execution.Run`/child CLI 路径。更直接的机械阻塞是 `openRepositoryOwnerLock` 在加锁前要求完整 `ControlOwnerAcquisition`，而下一 owner epoch、前驱 fact 与 current Core observation 只能在锁内打开 ResultIngress 并 `OpenOwner` 后安全产生，形成构造环；此外 production 若接受 `MARSHAL_STATE_DIR`，同一 repository 可形成两锁两 ledger。因此 ADR 0065 §10 的“只新增 composition 文件”边界不能原样实施。
+
+| Finding | 等级 | 状态 | 处置 / 关闭条件 |
+| --- | --- | --- | --- |
+| `I186-ARCH-PRODUCTION-FACTORY-MISSING` | P0 | `CONTRACT-PROPOSED/IMPLEMENTATION-BLOCKED` | [ADR 0066](adr/0066-production-composition-owner-acquisition.md) 提议唯一 Darwin arm64 fixed `./bin/marshal` production factory、canonical repository `.marshal` 与完整 component graph fail-closed 构造。关闭 S2 需要 ADR 接受、factory 只从 fixed `cmd/marshal` 本地 CLI mutation/inspect application adapter 可达且入口只持有 `PublicApplicationPort`，legacy/fake/第二 store/`marshal control-plane serve`/独立 `cmd/marshal-server` 不可达，`Status` 对完整/不完整/recovery 真实分型及真实 Pi E2E。fixed `marshal control-plane serve` 是其后独立 ADR 0062 transport slice，必须另证 authenticated Port adapter 与 durable delivery ledger。 |
+| `I186-ARCH-OWNER-ACQUISITION-CONSTRUCTION-CYCLE` | P0 | `CONTRACT-PROPOSED/IMPLEMENTATION-BLOCKED` | ADR 0066 提议按 canonical `ControlOwnerScope` 先取得 descriptor-bound 物理锁，再在锁内 `OpenResultIngress → OpenOwner → ObserveCurrentCore → construct candidate → one-shot provisional verifier + AcquireOwner/fsync → exact replay → current verifier`。关闭需要 provisional verifier 不逃逸且不能用于 Attempt/operation，并通过并发单赢家、append 前后 crash/response-loss、epoch/head/entry ABA 和 root 漂移矩阵；不允许在锁前猜测 acquisition。 |
+| `I186-ARCH-PRODUCTION-STATE-ROOT-SPLIT-BRAIN` | P0 | `CONTRACT-PROPOSED/IMPLEMENTATION-BLOCKED` | production factory 不接受任意 authority root，固定从 held canonical repository 派生 `<repository>/.marshal`；非空 `MARSHAL_STATE_DIR` 在 owner/ledger 前拒绝。关闭需要同一 repository 的外部 root、环境 override、symlink/rename 与第二 ledger fixture 全部 fail closed；legacy/test 外部 root 不得成为 production 证据。 |
+| `I186-ARCH-S2-FILE-BOUNDARY-INFEASIBLE` | P1 | `CONTRACT-PROPOSED` | ADR 0066 作为 ADR 0065 的 S2 implementation successor，提议仅把允许修改面扩到 owner lock、controller、单一 factory/composition、fixed `cmd/marshal` 的窄 application adapter/本地 CLI mutation/inspect、architecture tests 和真实 Pi E2E；proof 方向、S1→S2 adjacency 与 terminalization/provider/server transport/release 排除保持不变。ADR 未接受前不得按该扩展面实施，也不得以提案升级 R2–R5。 |
+
+本节登记的是当前主线的治理 blocker，不表示引入新 milestone 或暂停 S1 component 本身；S1 后仍须立即进入经维护者接受的 S2 边界。ADR 0066 不改变 ADR 0062 的 fixed binary、loopback authentication 或禁止 child CLI 信任模型。
+
 ### Darwin 控制目录阶段化身份审计（2026-08-29）
 
 exact-head macOS CI 证明，APFS 在 Supervisor 合法创建 nonce、journal、socket 与输出对象时可能改变目录 `st_nlink`；既有全字段 runtime equality 因此会把同一目录对象误判为 ABA，并让本应在 receipt `fsync` 后拒绝的 post-command drift 提前停在 journal sequence `1`。这不是测试断言问题，也不能通过删除 link-count hostile gate、跳过目录枚举或放宽 control object identity解决。
