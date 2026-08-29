@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -361,6 +362,7 @@ func TestExistingWorktreeHostileInputsFailBeforeAuthorityWrite(t *testing.T) {
 		gitOutput(t, foreignRepository, "commit", "-q", "-m", "foreign base")
 		base := strings.TrimSpace(string(gitOutput(t, foreignRepository, "rev-parse", "HEAD")))
 		gitOutput(t, foreignRepository, "worktree", "add", "-q", "--detach", foreignWorktree, base)
+		makeExistingWorktreePrivate(t, foreignWorktree)
 		fixture.request.WorktreePath = foreignWorktree
 		fixture.request.ExpectedWorktreeIdentity = identityForPath(t, foreignWorktree)
 		fixture.request.ExpectedBaseSHA = base
@@ -373,6 +375,49 @@ func TestExistingWorktreeHostileInputsFailBeforeAuthorityWrite(t *testing.T) {
 			t.Fatal("worktree backed by another repository common-dir reached RB1")
 		}
 	})
+}
+
+func TestExistingWorktreeFinalTargetAndAdminRequireStablePrivateOwnership(t *testing.T) {
+	tests := []struct {
+		name string
+		path func(*existingWorktreeFixture) string
+	}{
+		{name: "target-initial-unsafe-mode", path: func(fixture *existingWorktreeFixture) string { return fixture.worktree }},
+		{name: "admin-initial-unsafe-mode", path: func(fixture *existingWorktreeFixture) string {
+			return mustExistingWorktreeAdminPath(t, fixture.worktree)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newExistingWorktreeFixture(t)
+			defer fixture.Close()
+			if err := os.Chmod(test.path(fixture), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request); err == nil || len(fixture.authority.facts) != 0 {
+				t.Fatal("unsafe final target/admin mode reached RB1")
+			}
+		})
+	}
+
+	for _, test := range tests {
+		t.Run(strings.Replace(test.name, "initial-unsafe-mode", "mode-drift-restore", 1), func(t *testing.T) {
+			fixture := newExistingWorktreeFixture(t)
+			defer fixture.Close()
+			fixture.authority.beforeTarget = func() {
+				path := test.path(fixture)
+				if err := os.Chmod(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request); err == nil || len(fixture.authority.facts) != 0 {
+				t.Fatal("final target/admin mode drift-and-restore reached RB1")
+			}
+		})
+	}
 }
 
 func TestExistingWorktreeHeldTargetRejectsRenameAwayAndSameObjectBackBeforeAppend(t *testing.T) {
@@ -661,6 +706,156 @@ func TestExistingWorktreePartialProjectionTailFailsClosedWithoutRepair(t *testin
 	}
 }
 
+func TestExistingWorktreeProjectionPreflightIsGlobalBeforeAnyWrite(t *testing.T) {
+	first := newExistingWorktreeFixture(t)
+	defer first.Close()
+	second := newDistinctExistingWorktreeFixture(t)
+	defer second.Close()
+	firstReceipt, err := first.controller.Bind(context.Background(), first.run, first.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondReceipt, err := second.controller.Bind(context.Background(), second.run, second.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := ExistingWorktreeAuthoritySnapshotV1{
+		CurrentAttemptRevision:   first.authority.attemptRevision,
+		CurrentAttemptHeadDigest: first.authority.attemptHead,
+		Facts:                    append(append([]ExistingWorktreeAttemptFactV1(nil), first.authority.facts...), second.authority.facts...),
+	}
+	if err := combined.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	graph, err := first.authority.DescriptorGraph()
+	if err != nil || SyncExistingWorktreeProjectionFromGraph(graph, combined) != nil {
+		t.Fatalf("seed combined projection: %v", err)
+	}
+	paths := []string{first.projectionPath(firstReceipt.Observation.TargetIdentityDigest), first.projectionPath(secondReceipt.Observation.TargetIdentityDigest)}
+	sort.Strings(paths)
+	behindSource := mustReadFile(t, paths[0])
+	withoutFinalNewline := behindSource[:len(behindSource)-1]
+	lastRecord := bytes.LastIndexByte(withoutFinalNewline, '\n')
+	if lastRecord < 0 {
+		t.Fatal("projection did not contain two records")
+	}
+	behind := append([]byte(nil), behindSource[:lastRecord+1]...)
+	if err := os.WriteFile(paths[0], behind, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corruptFile, err := os.OpenFile(paths[1], os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := corruptFile.WriteString("forged\n"); err != nil {
+		corruptFile.Close()
+		t.Fatal(err)
+	}
+	corruptFile.Close()
+	if err := SyncExistingWorktreeProjectionFromGraph(graph, combined); err == nil {
+		t.Fatal("later corrupt entry did not fail global projection preflight")
+	}
+	if after := mustReadFile(t, paths[0]); !bytes.Equal(after, behind) {
+		t.Fatal("earlier behind entry was extended before later corruption was discovered")
+	}
+}
+
+func TestExistingWorktreeProjectionHeldDirectoryAndLockRejectRenameBackABA(t *testing.T) {
+	fixture := newExistingWorktreeFixture(t)
+	defer fixture.Close()
+	if _, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := fixture.authority.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := fixture.authority.DescriptorGraph()
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectionDirectory := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory)
+
+	t.Run("directory", func(t *testing.T) {
+		projection, err := openExistingWorktreeProjection(graph)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer projection.Close()
+		moved := projectionDirectory + "-moved"
+		if err := os.Rename(projectionDirectory, moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(moved, projectionDirectory); err != nil {
+			t.Fatal(err)
+		}
+		if err := projection.Sync(snapshot); err == nil {
+			t.Fatal("projection directory rename-away/back passed held current-name check")
+		}
+	})
+
+	t.Run("lock", func(t *testing.T) {
+		projection, err := openExistingWorktreeProjection(graph)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer projection.Close()
+		lockPath := filepath.Join(projectionDirectory, existingWorktreeProjectionLock)
+		moved := lockPath + "-moved"
+		if err := os.Rename(lockPath, moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(moved, lockPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := projection.Sync(snapshot); err == nil {
+			t.Fatal("projection lock rename-away/back passed held current-name check")
+		}
+	})
+}
+
+func TestExistingWorktreeProjectionDetectsSameFileMutationAfterPreflight(t *testing.T) {
+	fixture := newExistingWorktreeFixture(t)
+	defer fixture.Close()
+	receipt, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := fixture.authority.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := fixture.authority.DescriptorGraph()
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := openExistingWorktreeProjection(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer projection.Close()
+	expected, err := projectionRecords(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans, err := projection.preflight(expected)
+	if err != nil || len(plans) != 1 || plans[0].missing {
+		t.Fatalf("preflight plans=%d err=%v", len(plans), err)
+	}
+	defer closeExistingWorktreeProjectionPlans(plans)
+	path := fixture.projectionPath(receipt.Observation.TargetIdentityDigest)
+	mutated := append(mustReadFile(t, path), []byte("concurrent-forgery\n")...)
+	if err := os.WriteFile(path, mutated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := projection.apply(plans[0]); err == nil {
+		t.Fatal("same projection file mutation after preflight was accepted")
+	}
+	if after := mustReadFile(t, path); !bytes.Equal(after, mutated) {
+		t.Fatal("RB1 wrote after detecting same-file concurrent mutation")
+	}
+}
+
 type filesystemSnapshotEntry struct {
 	Mode       fs.FileMode
 	Size       int64
@@ -729,6 +924,16 @@ func mustExistingWorktreeAdminPath(t *testing.T, worktree string) string {
 	return path
 }
 
+func makeExistingWorktreePrivate(t *testing.T, worktree string) {
+	t.Helper()
+	if err := os.Chmod(worktree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(mustExistingWorktreeAdminPath(t, worktree), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newExistingWorktreeFixture(t *testing.T) *existingWorktreeFixture {
 	t.Helper()
 	root := canonicalTempDir(t)
@@ -747,6 +952,7 @@ func newExistingWorktreeFixture(t *testing.T) *existingWorktreeFixture {
 	gitOutput(t, repository, "commit", "-q", "-m", "base")
 	baseSHA := strings.TrimSpace(string(gitOutput(t, repository, "rev-parse", "HEAD")))
 	gitOutput(t, repository, "worktree", "add", "-q", "--detach", worktree, baseSHA)
+	makeExistingWorktreePrivate(t, worktree)
 
 	filesystemRoot, err := os.Open("/")
 	if err != nil {
@@ -789,6 +995,33 @@ func newExistingWorktreeFixture(t *testing.T) *existingWorktreeFixture {
 		t.Fatal(err)
 	}
 	return &existingWorktreeFixture{t: t, repository: repository, worktree: worktree, baseSHA: baseSHA, authority: authority, controller: controller, run: run, request: request}
+}
+
+func newDistinctExistingWorktreeFixture(t *testing.T) *existingWorktreeFixture {
+	t.Helper()
+	fixture := newExistingWorktreeFixture(t)
+	fixture.run.RunID = "run-2"
+	fixture.run.AuthorityHeadDigest = testExistingDigest("run-2-ready-head")
+	fixture.request.Binding.RunID = fixture.run.RunID
+	fixture.request.Binding.AttemptID = "attempt-2"
+	fixture.request.Binding.ReservationFactDigest = testExistingDigest("reservation-fact-2")
+	fixture.request.Binding.AttemptOpenedFactDigest = testExistingDigest("attempt-opened-2")
+	fixture.request.Binding.AllocationID = "allocation-2"
+	fixture.request.Binding.LeaseID = "lease-2"
+	fixture.request.Binding.Generation = 2
+	fixture.request.Binding.FencingTokenDigest = testExistingDigest("fencing-2")
+	fixture.request.Binding.FrozenInputsDigest = testExistingDigest("frozen-inputs-2")
+	fixture.request.Binding.ExpectedAttemptSequence = 11
+	fixture.request.RunAuthorityHeadDigest = fixture.run.AuthorityHeadDigest
+	fixture.request.RequestDigest = ""
+	if err := fixture.request.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	fixture.authority.current = currentAuthorityForRequest(fixture.request, fixture.run)
+	fixture.authority.attemptRevision = fixture.request.Binding.ExpectedAttemptSequence
+	fixture.authority.attemptHead = fixture.request.Binding.AttemptOpenedFactDigest
+	fixture.authority.facts = nil
+	return fixture
 }
 
 func (fixture *existingWorktreeFixture) Close() {

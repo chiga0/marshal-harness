@@ -217,6 +217,12 @@ func (controller *ExistingWorktreeController) Bind(ctx context.Context, run Desc
 			if err != nil || snapshot.Validate() != nil {
 				return ErrAuthorityConflict
 			}
+			// Reconcile the complete current prefix before adding a new RB1
+			// fact. This closes intent/receipt response-loss windows without
+			// allowing a later corrupt entry to be discovered after a write.
+			if err := session.SyncExistingWorktreeProjection(ctx, snapshot); err != nil || target.Revalidate() != nil {
+				return ErrFilesystemConflict
+			}
 			chain, exists, err := snapshot.chainFor(request.Binding)
 			if err != nil {
 				return err
@@ -245,6 +251,9 @@ func (controller *ExistingWorktreeController) Bind(ctx context.Context, run Desc
 				snapshot, err = session.AppendBindIntent(ctx, intent)
 				if err != nil || snapshot.Validate() != nil || target.Revalidate() != nil {
 					return ErrAuthorityConflict
+				}
+				if err := session.SyncExistingWorktreeProjection(ctx, snapshot); err != nil || target.Revalidate() != nil {
+					return ErrFilesystemConflict
 				}
 				chain, exists, err = snapshot.chainFor(request.Binding)
 				if err != nil || !exists || chain.BindIntent == nil || !equalCanonical(*chain.BindIntent, intent) {
@@ -299,6 +308,9 @@ func (controller *ExistingWorktreeController) Release(ctx context.Context, run D
 		if err != nil || snapshot.Validate() != nil {
 			return ErrAuthorityConflict
 		}
+		if err := session.SyncExistingWorktreeProjection(ctx, snapshot); err != nil {
+			return ErrFilesystemConflict
+		}
 		chain, exists, err := snapshot.chainFor(request.Binding)
 		if err != nil || !exists || chain.BindIntent == nil || chain.BindReceipt == nil || chain.BindReceipt.ReceiptDigest != request.BindingReceiptDigest {
 			return ErrAuthorityConflict
@@ -329,6 +341,9 @@ func (controller *ExistingWorktreeController) Release(ctx context.Context, run D
 				snapshot, err = session.AppendReleaseIntent(ctx, intent)
 				if err != nil || snapshot.Validate() != nil || target.Revalidate() != nil {
 					return ErrAuthorityConflict
+				}
+				if err := session.SyncExistingWorktreeProjection(ctx, snapshot); err != nil || target.Revalidate() != nil {
+					return ErrFilesystemConflict
 				}
 				chain, exists, err = snapshot.chainFor(request.Binding)
 				if err != nil || !exists || chain.ReleaseIntent == nil || !equalCanonical(*chain.ReleaseIntent, intent) {
