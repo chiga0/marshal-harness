@@ -8,7 +8,7 @@
 >
 > **2026-08-28 生命周期合同 checkpoint**：[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受，冻结 Darwin ordinary-user 的 Core-owned launch coordinator、admission/terminalization authority CAS、dispatch eligibility 与 `cleanup-completed` 正交、cleanup binding release 及 cooperative/non-detaching process-group 边界；实现仍待沿现有 Local/sandbox bridge/`execution.Service`/server controller composition root 接线，R3–R5 不升级。
 >
-> **2026-08-29 ProcessBridge authority checkpoint**：[ADR 0063](adr/0063-prepared-execution-authority-and-production-chain.md)（Proposed）登记了当前最小阻塞：现有 `PreparedRunStart` 无法从 held Attempt authority 恢复完整 owner/Attempt/Allocation/launch/Pi 原件，且没有 held current Run authority 与 exact successful `resume(state=running)` 后的唯一 Run-start outcome commit。交付顺序固定为：ADR 0063 先被接受 → 只落一个 secret-safe `PreparedExecutionV1` bounded authority component → 立即以相邻下一切片接入 fixed `marshal` composition root；不得在两切片之间插入第二个 component 或扩大到通用恢复策略。
+> **2026-08-29 ProcessBridge authority checkpoint**：[ADR 0063](adr/0063-prepared-execution-authority-and-production-chain.md) 已接受，冻结当前最小阻塞的解法：现有 `PreparedRunStart` 必须能从 held Attempt authority 恢复完整 owner/Attempt/Allocation/launch/Pi 原件，并在 held current Run authority 内于 exact successful `resume(state=running)` 后提交唯一 Run-start outcome。后续交付顺序固定为：只落一个 secret-safe `PreparedExecutionV1` bounded authority component → 立即以相邻下一切片接入 fixed `marshal` composition root；不得在两切片之间插入第二个 component 或扩大到通用恢复策略。
 
 ## v1.0 权威实施表
 
@@ -18,8 +18,8 @@
 | --- | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 0043–0045、baseline report 与 golden trace | 历史证据保留，不重复实施 |
 | `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 在现有 `execution.Service` 唯一 seam 接通真实 Agent-in-Local/Container allocation | `cmd/marshal` 或 loopback server 可达；Agent 实际在 allocation；真实 result bytes 返回 Core |
-| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | command/result authority 收敛到现有 durable journal；ResultIngress 事务化接纳；补齐 Proposed ADR 0063 的 creation-once Run-start preparation 合同 | `main@912f659` 已合入 crash-atomic admission/worker-result/Run journal；继续让 ADR 0056 terminalization barrier 复用同一 authority CAS，并在 ADR 0063 接受后证明 prepared/outcome response-loss 重放无第二真值 |
-| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | `main@d4b9647` 已将 production selector 收紧到 `LaunchCapable`；`main@ecee8d4` 已接受 ADR 0056 的 Core-owned Darwin launch/process-group observation合同；ProcessBridge 前完整 authority closure 仍由 Proposed ADR 0063 阻塞 | hardened evidence 独立产生；ordinary-user 明确 N/A；任一 binding/进程 identity/PreparedExecution 漂移与 detach 均拒绝；真实路径负测通过 |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | command/result authority 收敛到现有 durable journal；ResultIngress 事务化接纳；ADR 0063 已接受 creation-once Run-start preparation 合同，bounded component 尚未实现 | `main@912f659` 已合入 crash-atomic admission/worker-result/Run journal；继续让 ADR 0056 terminalization barrier 复用同一 authority CAS，并证明 prepared/outcome response-loss 重放无第二真值 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | `main@d4b9647` 已将 production selector 收紧到 `LaunchCapable`；`main@ecee8d4` 已接受 ADR 0056 的 Core-owned Darwin launch/process-group observation合同；ADR 0063 已冻结 ProcessBridge 前完整 authority closure，implementation 仍开放 | hardened evidence 独立产生；ordinary-user 明确 N/A；任一 binding/进程 identity/PreparedExecution 漂移与 detach 均拒绝；真实路径负测通过 |
 | `I186-R4` | `IN_PROGRESS` | `COMPONENT` | 单一 recovery decision 与 `marshal explain`；已合入的 loopback server controller 复用固定 CLI authority；admission/terminalization authority CAS | `main@44ee8c9` controller 接入 cleanup transaction；kill/restart/cancel/timeout/retry 和重复 start 只有一个可回放结论；未知进程 identity 零 kill 并 fence |
 | `I186-R5` | `IN_PROGRESS` | `COMPONENT` | `sourceHead=d4b9647` 的前置 canary 已单 Attempt/9 Gate 到 `REVIEW_PENDING`；继续接入独立 ReviewDecision、eligibility terminal、allocation terminal receipt 与 `cleanup-completed` | 在最终 `main` 将同一 fixed-bin E2E 推进到 `ACCEPTED`；cleanup-before-unlock/successor；无重复副作用；旧 bypass 机械拒绝 |
 | `I186-R6` | `PLANNED` | `DESIGN` | failure conformance、稳定安装、签名/notarization、升级/回滚、release | 先发布身份可验证的 unsigned RC；再关闭 Issue #212 并通过 macOS/Linux stable gate，能力成熟度才升级为 `RELEASED` |
@@ -42,8 +42,8 @@ Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Prov
 当前交付顺序固定如下，禁止再横向铺组件：
 
 1. 锁定 `main@912f659` 的 crash-atomic ResultIngress transaction 为唯一 admission 基线，不再建立另一条 ResultIngress/worker-result 真值；
-2. 完成 ADR 0063 独立审查并先接受合同；未接受时不得实现该持久化格式；
-3. 接受后只落一个 ADR 0063 bounded authority component，严格限于 codec/creation-once/held resolver/outcome commit 与 hostile component matrix，成熟度保持 `COMPONENT`；
+2. ADR 0063 已完成独立审查并接受；实现必须遵守该持久化与生命周期合同；
+3. 当前只落一个 ADR 0063 bounded authority component，严格限于 codec/creation-once/held resolver/outcome commit 与 hostile component matrix，成熟度保持 `COMPONENT`；
 4. **立即相邻**的下一切片把该 component 接到 fixed `marshal` / `marshal control-plane serve` composition root，并同时按 ADR 0056 在唯一 transaction 上接入 Core-owned Darwin launch、terminalization CAS、eligibility terminal 与 `cleanup-completed`；第 3、4 步之间禁止第二个 component、Provider 扩面或无关 Harness 工作；
 5. 由独立 reviewer 为当前主线 live canary 生成 ReviewDecision，通过现有 `task review --decision` 从 `REVIEW_PENDING` 到 `ACCEPTED`，并证明旧 cooperative process group 已安全退出或被 fence、不会与 successor 双活；
 6. 发布 unsigned RC 收集安装/升级证据；stable release 仅在 Issue #212 signing/notarization 和 Linux stable gate 全绿后执行。
