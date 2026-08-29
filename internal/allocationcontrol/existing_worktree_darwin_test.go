@@ -872,6 +872,203 @@ func TestExistingWorktreeProjectionDetectsLaterSameFileMutationAfterPreflightBef
 	if after := mustReadFile(t, paths[1]); !bytes.Equal(after, mutated) {
 		t.Fatal("RB1 changed the concurrently-mutated later entry")
 	}
+	stagePath := filepath.Join(first.repository, ".marshal", existingWorktreeRuntimeDirectory, existingWorktreeProjectionStage)
+	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pre-commit conflict left projection stage: %v", err)
+	}
+}
+
+func TestExistingWorktreeProjectionPreCommitFailureCleansStageWithoutLiveWrite(t *testing.T) {
+	fixture := newExistingWorktreeFixture(t)
+	defer fixture.Close()
+	receipt, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := fixture.authority.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := fixture.authority.DescriptorGraph()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := fixture.projectionPath(receipt.Observation.TargetIdentityDigest)
+	complete := mustReadFile(t, path)
+	withoutFinalNewline := complete[:len(complete)-1]
+	lastRecord := bytes.LastIndexByte(withoutFinalNewline, '\n')
+	if lastRecord < 0 {
+		t.Fatal("projection did not contain two records")
+	}
+	behind := append([]byte(nil), complete[:lastRecord+1]...)
+	if err := os.WriteFile(path, behind, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projection, err := openExistingWorktreeProjection(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer projection.Close()
+	projectionDirectory := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory)
+	lockPath := filepath.Join(projectionDirectory, existingWorktreeProjectionLock)
+	projection.beforeCommit = func() {
+		moved := lockPath + "-aba"
+		if err := os.Rename(lockPath, moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(moved, lockPath); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := projection.Sync(snapshot); err == nil {
+		t.Fatal("pre-commit lock ABA was accepted")
+	}
+	if after := mustReadFile(t, path); !bytes.Equal(after, behind) {
+		t.Fatal("pre-commit failure changed live projection bytes")
+	}
+	stagePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, existingWorktreeProjectionStage)
+	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pre-commit failure left projection stage: %v", err)
+	}
+}
+
+func TestExistingWorktreeProjectionPostCommitLostStageIsSuccess(t *testing.T) {
+	fixture := newExistingWorktreeFixture(t)
+	defer fixture.Close()
+	receipt, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := fixture.authority.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := fixture.authority.DescriptorGraph()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := fixture.projectionPath(receipt.Observation.TargetIdentityDigest)
+	complete := mustReadFile(t, path)
+	withoutFinalNewline := complete[:len(complete)-1]
+	lastRecord := bytes.LastIndexByte(withoutFinalNewline, '\n')
+	if lastRecord < 0 {
+		t.Fatal("projection did not contain two records")
+	}
+	behind := append([]byte(nil), complete[:lastRecord+1]...)
+	if err := os.WriteFile(path, behind, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projection, err := openExistingWorktreeProjection(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer projection.Close()
+	runtimePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory)
+	stagePath := filepath.Join(runtimePath, existingWorktreeProjectionStage)
+	lostPath := filepath.Join(runtimePath, ".projection-stage-lost")
+	projection.afterCommit = func() {
+		if err := os.Rename(stagePath, lostPath); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := projection.Sync(snapshot); err != nil {
+		t.Fatalf("post-commit stage loss returned ordinary conflict: %v", err)
+	}
+	if after := mustReadFile(t, path); !bytes.Equal(after, complete) {
+		t.Fatal("committed live projection is not the exact RB1 snapshot")
+	}
+	if _, err := os.Lstat(lostPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("renamed committed-old stage was not cleaned: %v", err)
+	}
+	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("post-commit cleanup left fixed stage: %v", err)
+	}
+}
+
+func TestExistingWorktreeProjectionCrashStageReconcilesAndDoesNotAccumulate(t *testing.T) {
+	fixture := newExistingWorktreeFixture(t)
+	defer fixture.Close()
+	receipt, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := fixture.authority.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := fixture.authority.DescriptorGraph()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := fixture.projectionPath(receipt.Observation.TargetIdentityDigest)
+	expected := mustReadFile(t, path)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	projection, err := openExistingWorktreeProjection(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := projectionRecords(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans, err := projection.preflight(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage, err := projection.stagePlans(plans)
+	closeExistingWorktreeProjectionPlans(plans)
+	if err != nil {
+		projection.Close()
+		t.Fatal(err)
+	}
+	stage.Close() // simulated crash after a complete stage, before the swap
+	projection.Close()
+	stagePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, existingWorktreeProjectionStage)
+	if _, err := os.Lstat(stagePath); err != nil {
+		t.Fatalf("simulated crash stage missing: %v", err)
+	}
+	if err := SyncExistingWorktreeProjectionFromGraph(graph, snapshot); err != nil {
+		t.Fatalf("next Sync did not reconcile crash stage: %v", err)
+	}
+	if after := mustReadFile(t, path); !bytes.Equal(after, expected) {
+		t.Fatal("crash reconcile did not rebuild exact live projection")
+	}
+	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful reconcile left a stale stage: %v", err)
+	}
+}
+
+func TestExistingWorktreeProjectionUnknownStageFailsClosedWithoutDeletion(t *testing.T) {
+	fixture := newExistingWorktreeFixture(t)
+	defer fixture.Close()
+	if _, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := fixture.authority.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := fixture.authority.DescriptorGraph()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, existingWorktreeProjectionStage)
+	if err := os.Mkdir(stagePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unknownPath := filepath.Join(stagePath, "user-data")
+	unknown := []byte("must-not-delete\n")
+	if err := os.WriteFile(unknownPath, unknown, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SyncExistingWorktreeProjectionFromGraph(graph, snapshot); err == nil {
+		t.Fatal("unknown projection stage was accepted")
+	}
+	if after := mustReadFile(t, unknownPath); !bytes.Equal(after, unknown) {
+		t.Fatal("unknown projection stage data was deleted or changed")
+	}
 }
 
 type filesystemSnapshotEntry struct {
