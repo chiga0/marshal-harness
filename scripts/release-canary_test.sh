@@ -14,6 +14,7 @@ FAKE_STATE="${FIXTURE_ROOT}/.marshal/fake-state"
 FAKE_LOG="${FIXTURE_ROOT}/.marshal/fake-marshal.log"
 PI_ROOT="${TMP_ROOT}/pi"
 PI_BIN="${PI_ROOT}/bin/pi"
+PI_NODE="${PI_ROOT}/bin/node"
 PI_BUNDLE="${PI_ROOT}/lib/node_modules/pi/dist/bundle/cli.js"
 VERSION="1.0.0-rc1"
 
@@ -62,6 +63,17 @@ EOF
 chmod 0755 "$PI_BUNDLE"
 ln -s ../lib/node_modules/pi/dist/bundle/cli.js "$PI_BIN"
 PI_SHA256="$(sha256_file "$PI_BUNDLE")"
+cat >"$PI_NODE" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf 'v24.15.0\n'
+  exit 0
+fi
+printf 'fake Node must never be launched without --version by the contract test\n' >&2
+exit 99
+EOF
+chmod 0755 "$PI_NODE"
+PI_NODE_SHA256="$(sha256_file "$PI_NODE")"
 
 cat >"${FIXTURE_ROOT}/bin/marshal" <<'EOF'
 #!/usr/bin/env bash
@@ -69,6 +81,10 @@ set -euo pipefail
 
 mkdir -p "$MARSHAL_RELEASE_CANARY_FAKE_STATE"
 printf '%s\n' "$*" >>"$MARSHAL_RELEASE_CANARY_FAKE_LOG"
+[ "${MARSHAL_PI_NODE_PATH:-}" = "$MARSHAL_RELEASE_CANARY_PI_NODE" ] || {
+  printf 'fixed Node runtime was not exported to Marshal\n' >&2
+  exit 91
+}
 
 unexpected() {
   printf 'unexpected fake Marshal argv:' >&2
@@ -264,6 +280,8 @@ bash "${FIXTURE_ROOT}/scripts/release-contract.sh" create-manifest \
 run_driver() {
   MARSHAL_RELEASE_CANARY_TEST_MODE=1 \
   MARSHAL_RELEASE_CANARY_PI_BIN="$PI_BIN" \
+  MARSHAL_RELEASE_CANARY_PI_NODE="$PI_NODE" \
+  MARSHAL_RELEASE_CANARY_PI_NODE_SHA256="$PI_NODE_SHA256" \
   MARSHAL_RELEASE_CANARY_PI_BUNDLE="$PI_BUNDLE" \
   MARSHAL_RELEASE_CANARY_PI_BUNDLE_SHA256="$PI_SHA256" \
   MARSHAL_RELEASE_CANARY_FAKE_STATE="$FAKE_STATE" \
@@ -424,6 +442,16 @@ printf '# drift\n' >>"$PI_BUNDLE"
 expect_fail 'Pi bundle 漂移' run_driver finalize --run-id "$PI_DRIFT_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --decision "$PI_DRIFT_DECISION"
 [ "$(cat "${FAKE_STATE}/${PI_DRIFT_RUN}.state")" = REVIEW_PENDING ] || fail 'Pi 漂移产生了状态副作用'
 cp "${TMP_ROOT}/pi-bundle.saved" "$PI_BUNDLE"
+
+NODE_DRIFT_RUN="rc1-node-drift"
+run_driver run --run-id "$NODE_DRIFT_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" >/dev/null
+NODE_DRIFT_DECISION="$(make_accept_decision "$NODE_DRIFT_RUN")"
+cp "$PI_NODE" "${TMP_ROOT}/pi-node.saved"
+printf '# drift\n' >>"$PI_NODE"
+expect_fail 'Node runtime 漂移' run_driver finalize --run-id "$NODE_DRIFT_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --decision "$NODE_DRIFT_DECISION"
+[ "$(cat "${FAKE_STATE}/${NODE_DRIFT_RUN}.state")" = REVIEW_PENDING ] || fail 'Node 漂移产生了状态副作用'
+cp "${TMP_ROOT}/pi-node.saved" "$PI_NODE"
+chmod 0755 "$PI_NODE"
 
 STATE_DRIFT_RUN="rc1-state-drift"
 run_driver run --run-id "$STATE_DRIFT_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" >/dev/null
