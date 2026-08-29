@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-更新时间：2026-08-29（ADR 0066 接受 checkpoint）
+更新时间：2026-08-29（ADR 0067 Mac-first 减法提案 checkpoint）
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
@@ -11,6 +11,8 @@
 > **2026-08-29 Run-start proof 纠偏**：[ADR 0065](adr/0065-sealed-run-start-proof-and-one-way-composition.md) 已接受，基于 `main@40fa493` 冻结 ResultIngress 的 owner/Attempt/generation 重验与 runstore 的 Run lease/head/state CAS 绝对分离，并以 shared-guard proof 和精确 composition AST gate 衔接。接受只冻结合同，S1/S2 尚未实现，不升级 R2–R5；旧实现候选不构成当前进展。
 >
 > **2026-08-29 S2 production factory 合同**：[ADR 0066](adr/0066-production-composition-owner-acquisition.md) 已接受。当前没有 fixed `./bin/marshal` production factory，`Runtime.Status` 仍为 `production-composition-incomplete`，owner lock 存在“acquisition 先于锁、successor acquisition 又必须锁内产生”的构造环，任意 `MARSHAL_STATE_DIR` 还允许同 repository 两锁两 ledger。接受合同只纠正 S2 为 scope-only lock → one-shot provisional `AcquireOwner` → exact replay 后 current verifier、canonical repository `.marshal`、唯一 Darwin arm64 factory/controller composition，以及 fixed `cmd/marshal` 本地 CLI mutation/inspect 只持有 `PublicApplicationPort`；`marshal control-plane serve` 后移为 S2 之后、release 之前的独立 ADR 0062 transport slice。接受不表示实现完成，不改变 R2–R6 状态或 ADR 0062 信任模型。
+>
+> **2026-08-29 S1 mechanics 减法提案**：[ADR 0067](adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 已提出、尚未接受。第二轮候选`a6a0d63`仍重复Core/Supervisor source currentness与reconnect authority，`6298eae`又堆叠在跨24文件的`506a647` typed mutation substrate上；三份候选冻结、不直接合入。提案保留current-ledger recheck、exact successful resume、ADR0065 sealed proof、唯一Run successor与fixed Supervisor，把Core收窄为pre-bootstrap无副作用source admission、Supervisor收窄为唯一mutation-adjacent exact-set gate。跨owner恢复顺序固定为持续held owner/acquisition→RB1 no-pending→`control-owner-bound` successor→只读`Attach`→exact bind；pre-`process-started`只在intervention前exact证明零Supervisor/child/command副作用时可走no-effect abort/cleanup链，否则永久intervention且禁止cleanup/release/successor。它不宣称hardened/Linux authority，也不改变当前R2–R6成熟度。
 
 ## v1.0 生产纵切
 
@@ -27,15 +29,15 @@ Milestone 状态与能力成熟度是两个维度：
 | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 与 baseline evidence 已完成。 |
 | `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Pi `0.84.3` 在 `sourceHead=d4b9647` 的前置 canary 中由 Local allocation 承载并把真实 result bytes 送入 Core；当前主线重跑仍是发布前门禁。 |
-| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | ResultIngress admission→worker-result→Run journal crash-atomic 持久化/恢复已于 `main@912f659` 合入。ADR 0065 合同已接受，但 Run-start proof、自身账本 replay 与 generic Append 旁路仍未实现；ADR 0056 terminalization barrier 也尚未复用同一 authority CAS。 |
-| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | production selector 已于 `main@d4b9647` fail closed；ADR 0056、ADR 0063 与 ADR 0065 合同均已接受，但 S1 proof 与 S2 fixed composition 尚未实现，Darwin Core-owned process observation/terminalization 真实路径负测仍开放。 |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | ResultIngress admission→worker-result→Run journal crash-atomic持久化/恢复已于`main@912f659`合入。ADR0065 proof合同保留；ADR0067提议从当前Store/Lease重建S1′，`506a647`/`6298eae`不计进展。Run-start proof、自身账本replay、generic Append拒绝与ADR0056 terminalization CAS仍开放。 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | production selector已于`main@d4b9647` fail closed；ADR0056/0063/0065合同已接受，ADR0067正在提议Mac ordinary-user减法。S1′窄shared-guard/proof、S2′真实`PrepareRunStart` producer/fixed composition、held-owner successor→只读Attach与Darwin process/terminalization真实负测均未完成。 |
 | `I186-R4` | `IN_PROGRESS` | `COMPONENT` | durable server run controller 已随 `main@44ee8c9` 合入，strict E2E 候选也已通过跨进程 restore；但 controller 尚未接入 ADR 0056 的 authority CAS/cleanup transaction。退出前须证明 server crash 后从耐久观察恢复、eligibility 立即 fence、旧控制单元安全终结或 intervention、重复 start 幂等、lost/failed worker 得到唯一可回放结论。 |
 | `I186-R5` | `IN_PROGRESS` | `COMPONENT` | fixed-bin canary 已在 `sourceHead=d4b9647` 以单 Attempt/9 Gate 真实到 ReviewPacket/`REVIEW_PENDING`；但尚未导入独立 Decision 到 `ACCEPTED`，也未完成 ADR 0056 implementation 和最终主线终验。 |
 | `I186-R6` | `PLANNED` | `DESIGN` | unsigned RC 的 identity/dist/install/release-contract 路径可行，但尚未发布任何产物；稳定 `v1.*` 仍由 Issue #212 与 Linux stable gate 阻断。 |
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
-当前最短剩余路径是：按已接受 ADR 0065/0066 实施 S1 sealed proof component → 立即相邻 S2 fixed `cmd/marshal` 本地 CLI composition（两边 response-loss 只查自身 ledger，exact successful resume 后唯一 Run successor）→ 独立 ADR 0056 terminalization/cleanup 切片接入现有 controller（R2/R3/R4）→ 在 release 前以独立 ADR 0062 transport slice 接入 authenticated `marshal control-plane serve` 与 durable delivery ledger → 当前主线 fixed-bin E2E 经独立 Decision 进入 `ACCEPTED` 并证明无 successor 双活（R5）→ 发布可验证 unsigned RC，再 provision macOS signing/notarization 并通过 Linux stable gate（R6）。合同接受本身、候选分支、单次 live pass 或 reviewer verdict 都不能单独升级阶段。
+当前最短剩余路径是：审查并决定ADR0067；若接受，从当前main重建S1′ fresh-start sealed proof（只允许runstore内部窄shared-guard/borrow与read-only projection，不合入`a6a0d63`/`506a647`/`6298eae`）→立即相邻S2′，用现有authority API真实产生`attempt-opened→owner/current Attempt binding→allocation provision intent/receipt→launch-authorized/StoredClosure→PreparedExecution`并从fixed CLI接入唯一composition，证明exact resume后唯一`RUNNING`与两边response-loss只查自身ledger→单独实现held owner/acquisition→RB1 no-pending→`control-owner-bound` successor→只读`Attach`→exact bind，只恢复`process-started`已耐久且无pending的同一Supervisor，并实现pre-start no-effect/permanent-intervention二分→按ADR0056/0061接入terminalization/transcript/cleanup（R2/R3/R4）→按ADR0062接入authenticated`marshal control-plane serve`与durable delivery ledger→当前主线fixed-bin E2E经独立Decision进入`ACCEPTED`并证明无successor双活（R5）→发布可验证unsigned RC，再provision macOS signing/notarization并通过Linux stable gate（R6）。跨owner pending/identity ambiguity固定permanent intervention；合同接受本身、候选分支、单次live pass或reviewer verdict都不能单独升级阶段。
 
 ## 快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
 

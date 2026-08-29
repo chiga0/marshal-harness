@@ -13,6 +13,8 @@
 > **2026-08-29 proof boundary 纠偏**：[ADR 0065](adr/0065-sealed-run-start-proof-and-one-way-composition.md) 已接受，基于 `main@40fa493` 冻结用 ResultIngress-owned shared-guard proof 取代可逃逸的 raw authority/closure callback：ResultIngress 唯一前后重验 owner/Attempt/generation，runstore 只做自身 Run CAS，两边 response-loss 只查自身 ledger。接受只冻结合同，S1/S2 实现仍未开始；ADR 0056 terminalization 另行后续实施。
 >
 > **2026-08-29 S2 构造边界接受**：[ADR 0066](adr/0066-production-composition-owner-acquisition.md) 已接受。代码审计确认没有 production factory、`Runtime.Status` 仍为 `production-composition-incomplete`，且现有 owner lock 要求预制完整 acquisition，与锁内读取 current owner 并 fsync successor 形成构造环；任意 `MARSHAL_STATE_DIR` 还允许同 repository 两锁两 ledger。因此 ADR 0065 §10 的单文件 S2 边界不可实施。接受合同冻结 scope-only descriptor lock → one-shot provisional verifier 仅执行 `AcquireOwner` → exact replay 后 current verifier、canonical repository `.marshal`，以及唯一 Darwin arm64 fixed `./bin/marshal` factory与窄 application adapter/本地 CLI mutation/inspect routing。`marshal control-plane serve` 不属于 S2，须在其后以 ADR 0062 独立 transport slice 实施。接受不表示实现完成或 R2–R6 状态升级；S1→S2 adjacency 与 proof 方向保持不变。
+>
+> **2026-08-29 Mac-first 减法提案**：[ADR 0067](adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 已提出，尚未接受。S1候选`a6a0d63`第二轮仍重复current-source/reconnect authority P1，runstore候选`6298eae`又堆叠在跨24文件的`506a647` substrate上；三份候选均冻结、不直接合入。提案保留current-ledger recheck、exact resume、ADR0065 proof、唯一Run successor和fixed Supervisor，把Core收窄为pre-bootstrap无副作用source admission、Supervisor收窄为唯一mutation-adjacent exact-set gate。跨owner恢复必须持续held owner/acquisition，先耐久`control-owner-bound` successor再只读`Attach`和exact bind；pre-`process-started`只在intervention前exact证明零Supervisor/child/command副作用时可走no-effect abort/cleanup链，否则永久intervention且禁止cleanup/release/successor。接受前现行ADR不变；若接受，S1′只允许runstore内部窄shared-guard/borrow与read-only projection seam，S2′必须立即用现有authority API产生真实`PrepareRunStart`链，不得在旧候选上进入第三轮同类rework。
 
 ## v1.0 权威实施表
 
@@ -22,8 +24,8 @@
 | --- | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 0043–0045、baseline report 与 golden trace | 历史证据保留，不重复实施 |
 | `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 在现有 `execution.Service` 唯一 seam 接通真实 Agent-in-Local/Container allocation | fixed `cmd/marshal` CLI mutation 或 `marshal control-plane serve` 可达；独立 `cmd/marshal-server` 不计；Agent 实际在 allocation；真实 result bytes 返回 Core |
-| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | command/result authority 收敛到现有 durable journal；ResultIngress 事务化接纳；ADR 0063 已接受 creation-once Run-start preparation 合同；ADR 0065 已接受 proof 边界合同，implementation 尚未开始 | `main@912f659` 已合入 crash-atomic admission/worker-result/Run journal；完成 S1/S2 各自账本幂等重放后，再让 ADR 0056 terminalization barrier 复用同一 authority CAS |
-| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | `main@d4b9647` 已将 production selector 收紧到 `LaunchCapable`；`main@ecee8d4` 已接受 ADR 0056；ADR 0063 已冻结 ProcessBridge 业务 closure，ADR 0065 已冻结 ResultIngress proof 与 runstore self-only CAS 的职责分离 | hardened evidence 独立产生；ordinary-user 明确 N/A；任一 binding/进程 identity/PreparedExecution 漂移与 detach 均拒绝；S2 fixed composition 真实路径负测通过 |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | command/result authority收敛到现有durable journal；ResultIngress事务化接纳；ADR0063/0065合同已接受，ADR0067正在提议把S1重建为fresh-start sealed proof | `main@912f659`已合入crash-atomic admission/worker-result/Run journal；S1′/S2′各自账本幂等重放后，再让ADR0056 terminalization barrier复用同一authority CAS；`506a647`/`6298eae`不计进展 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | production selector已收紧到`LaunchCapable`；保留PreparedExecution、exact resume、sealed proof与fixed Supervisor；ADR0067提议由Supervisor唯一承担mutation-adjacent source gate | ordinary-user明确N/A hardened；任一binding/process/source/cwd漂移拒绝；pre-start只允许pre-intervention exact no-effect链或permanent intervention；S2′必须由fixed CLI真实产生全`PrepareRunStart`链 |
 | `I186-R4` | `IN_PROGRESS` | `COMPONENT` | 单一 recovery decision 与 `marshal explain`；已合入的 loopback server controller 复用固定 CLI authority；admission/terminalization authority CAS | `main@44ee8c9` controller 接入 cleanup transaction；kill/restart/cancel/timeout/retry 和重复 start 只有一个可回放结论；未知进程 identity 零 kill 并 fence |
 | `I186-R5` | `IN_PROGRESS` | `COMPONENT` | `sourceHead=d4b9647` 的前置 canary 已单 Attempt/9 Gate 到 `REVIEW_PENDING`；继续接入独立 ReviewDecision、eligibility terminal、allocation terminal receipt 与 `cleanup-completed` | 在最终 `main` 将同一 fixed-bin E2E 推进到 `ACCEPTED`；cleanup-before-unlock/successor；无重复副作用；旧 bypass 机械拒绝 |
 | `I186-R6` | `PLANNED` | `DESIGN` | failure conformance、稳定安装、签名/notarization、升级/回滚、release | 先发布身份可验证的 unsigned RC；再关闭 Issue #212 并通过 macOS/Linux stable gate，能力成熟度才升级为 `RELEASED` |
@@ -46,13 +48,15 @@ Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Prov
 当前交付顺序固定如下，禁止再横向铺组件：
 
 1. 锁定 `main@912f659` 的 crash-atomic ResultIngress transaction 为唯一 admission 基线，不再建立另一条 ResultIngress/worker-result 真值；
-2. ADR 0063 与 ADR 0065 均已接受；下一步按 ADR 0065 实施 S1 sealed proof component，不得改写已冻结的跨包 authority API；
-3. S1 只实现 sealed proof component：ResultIngress claim/proof/shared guard 与 `StartPreparedExecution`，runstore `WithPreparedRunStartAuthority`/private projector/self-only CAS、generic `Append` 旁路拒绝及 hostile/race 矩阵，成熟度保持 `COMPONENT`；
-4. S2 必须立即相邻；accepted ADR 0065 当前仍冻结单一 composition helper 与 architecture gate，但构造审计已证明其单文件实现边界不可落地。[ADR 0066](adr/0066-production-composition-owner-acquisition.md) 已接受，在不改变 proof 方向的前提下仅增加两阶段 owner lock（provisional verifier 只能一次 direct `AcquireOwner`，exact replay 后才有 current verifier）、canonical repository `.marshal`、controller、唯一 factory/composition、fixed `cmd/marshal` 的窄 application adapter/本地 CLI mutation/inspect、architecture tests 与真实 Pi E2E 修改面；入口只能持有 `PublicApplicationPort`，`marshal control-plane serve`、独立 `cmd/marshal-server` 和 legacy fallback 从 S2 profile 不可达；
-5. S2 后、release 前，以独立 ADR 0062 transport slice 把 authenticated `PublicApplicationPort` adapter 与 durable delivery ledger 接入 fixed `marshal control-plane serve`；legacy `cmd/marshal-server` 或空壳 `serve` 不得计作 production reach；
-6. S2 完成后再以独立切片按 ADR 0056 接入 terminalization CAS、eligibility terminal、allocation terminal receipt 与 `cleanup-completed`；不得把 terminalization 塞入 S1/S2；
-7. 由独立 reviewer 为当前主线 live canary 生成 ReviewDecision，通过现有 `task review --decision` 从 `REVIEW_PENDING` 到 `ACCEPTED`，并证明旧 cooperative process group 已安全退出或被 fence、不会与 successor 双活；
-8. 发布 unsigned RC 收集安装/升级证据；stable release 仅在 Issue #212 signing/notarization 和 Linux stable gate 全绿后执行。
+2. 先完成ADR0067提案审查；接受前不得用它放宽0059/0060/0063，拒绝时回到已接受合同重新plan，不在冻结候选上继续逐项补丁；
+3. ADR0067若接受，S1′从当前main重建fresh-start sealed proof：Core只做无副作用current source/cwd admission，Supervisor`spawn`做唯一mutation-adjacent exact-set gate；ResultIngress proof/shared guard与runstore private projector/self-only CAS直接建立在当前Store/Lease上，runstore只允许内部窄lease shared-guard/borrow、strict journal与read-only projection，唯一exported mutation seam为`WithPreparedRunStartAuthority`；generic`Append READY→RUNNING`拒绝，明确不引入`506a647`通用substrate；
+4. S2′必须立即相邻：按ADR0066实现两阶段owner、canonical repository`.marshal`、controller、唯一factory/composition、fixed`cmd/marshal`窄application adapter与真实Pi fresh E2E；入口只持有`PublicApplicationPort`，legacy fallback、第二authority root、独立`marshal-server`不可达；
+5. S2′ concrete authority 必须在`internal/productionruntime/authority.go`与必要窄adapter内，以现有authority API产生`attempt-opened→owner/current Attempt binding→allocation provision intent/receipt→launch-authorized/StoredClosure→PreparedExecution`；真实fixed CLI/Pi必须亲历全链，seed/Fake/memory-only/legacy `execution.Run`皆不可达；S1′后立即相邻执行S2′；
+6. S2′后先以独立切片实现ADR0067 held-owner/acquisition→RB1 no-pending→`control-owner-bound` successor→只读`Attach`→exact bind链，只支持`process-started`已耐久、无pending command的恢复；同时实现pre-start no-effect链/permanent intervention二分，跨owner pending与identity ambiguity固定permanent intervention；
+7. 随后按ADR0056/0061接入terminalization CAS、transcript disposition、allocation terminal receipt、`cleanup-completed`与successor；不得回塞S1′/S2′；
+8. release前按ADR0062把authenticated`PublicApplicationPort` adapter与durable delivery ledger接入fixed`marshal control-plane serve`；legacy`cmd/marshal-server`或空壳`serve`不得计作production reach；
+9. 由独立reviewer为当前主线live canary生成ReviewDecision，通过现有`task review --decision`从`REVIEW_PENDING`到`ACCEPTED`，并证明旧cooperative process group已安全退出或被fence、不会与successor双活；
+10. 发布unsigned RC收集安装/升级证据；stable release仅在Issue #212 signing/notarization和Linux stable gate全绿后执行。
 
 ### Darwin ordinary-user 进程生命周期实现顺序
 
