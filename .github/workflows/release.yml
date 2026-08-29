@@ -20,8 +20,9 @@ concurrency:
 
 jobs:
   build:
-    name: Build & verify release candidate
-    runs-on: ubuntu-latest
+    name: Build & freeze immutable release candidate
+    runs-on: macos-14
+    environment: release-candidate-build
     timeout-minutes: 30
     permissions:
       actions: read
@@ -31,6 +32,8 @@ jobs:
       tag-object: ${{ steps.release.outputs.tag-object }}
       prerelease: ${{ steps.release.outputs.prerelease }}
       payload-sha256: ${{ steps.payload.outputs.sha256 }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
     env:
       TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
@@ -121,7 +124,7 @@ jobs:
         id: payload
         run: |
           tar -cf release-payload.tar dist
-          payload_sha="$(sha256sum release-payload.tar | awk '{print $1}')"
+          payload_sha="$(shasum -a 256 release-payload.tar | awk '{print tolower($1)}')"
           printf '%s  release-payload.tar\n' "$payload_sha" > RELEASE-PAYLOAD.sha256
           echo "sha256=$payload_sha" >> "$GITHUB_OUTPUT"
 
@@ -143,12 +146,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      actions: read
       contents: write
     env:
       TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
       EXPECTED_SOURCE_HEAD: ${{ needs.build.outputs.source-head }}
       EXPECTED_TAG_OBJECT: ${{ needs.build.outputs.tag-object }}
       EXPECTED_PAYLOAD_SHA256: ${{ needs.build.outputs.payload-sha256 }}
+      EXPECTED_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
+      EXPECTED_ARTIFACT_DIGEST: ${{ needs.build.outputs.artifact-digest }}
       IS_PRERELEASE: ${{ needs.build.outputs.prerelease }}
     steps:
       - name: Checkout exact release tag without persisted credentials
@@ -158,25 +164,41 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Download verified build artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-payload-${{ needs.build.outputs.source-head }}
-          path: release-artifact
-
-      - name: Recheck tag and exact payload
+      - name: Download, bind, and recheck exact candidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           test "${{ github.repository }}" = "chiga0/marshal-harness"
           [[ "$EXPECTED_SOURCE_HEAD" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EXPECTED_TAG_OBJECT" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EXPECTED_PAYLOAD_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          metadata_file="$(mktemp "${RUNNER_TEMP}/marshal-release-artifact.XXXXXX")"
+          archive_file="$(mktemp "${RUNNER_TEMP}/marshal-release-archive.XXXXXX")"
+          artifact_dir="$(mktemp -d "${RUNNER_TEMP}/marshal-release-extract.XXXXXX")"
+          trap 'rm -f "$metadata_file" "$archive_file"; rm -rf "$artifact_dir"' EXIT
+          gh api \
+            "repos/${{ github.repository }}/actions/artifacts/${EXPECTED_ARTIFACT_ID}" \
+            > "$metadata_file"
+          gh api \
+            "repos/${{ github.repository }}/actions/artifacts/${EXPECTED_ARTIFACT_ID}/zip" \
+            > "$archive_file"
+          python3 -I -B scripts/release-artifact-metadata-check.py \
+            "$metadata_file" \
+            "$archive_file" \
+            "$artifact_dir" \
+            "$EXPECTED_ARTIFACT_ID" \
+            "$EXPECTED_ARTIFACT_DIGEST" \
+            "$EXPECTED_SOURCE_HEAD" \
+            "${{ github.run_id }}"
           test "$(git cat-file -t "refs/tags/${TAG_NAME}")" = tag
           test "$(git rev-parse --verify "refs/tags/${TAG_NAME}")" = "$EXPECTED_TAG_OBJECT"
           test "$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")" = "$EXPECTED_SOURCE_HEAD"
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_HEAD"
-          test "$(sha256sum release-artifact/release-payload.tar | awk '{print $1}')" = "$EXPECTED_PAYLOAD_SHA256"
-          (cd release-artifact && sha256sum -c RELEASE-PAYLOAD.sha256)
+          test "$(sha256sum "${artifact_dir}/release-payload.tar" | awk '{print $1}')" = "$EXPECTED_PAYLOAD_SHA256"
+          (cd "$artifact_dir" && sha256sum -c RELEASE-PAYLOAD.sha256)
           cat > expected-tar-files <<EOF
           dist/
           dist/RELEASE-MANIFEST
@@ -186,10 +208,10 @@ jobs:
           dist/marshal_${TAG_NAME#v}_linux_amd64
           dist/marshal_${TAG_NAME#v}_linux_arm64
           EOF
-          tar -tf release-artifact/release-payload.tar | LC_ALL=C sort > actual-tar-files
+          tar -tf "${artifact_dir}/release-payload.tar" | LC_ALL=C sort > actual-tar-files
           LC_ALL=C sort expected-tar-files -o expected-tar-files
           diff -u expected-tar-files actual-tar-files
-          python3 -I -B - release-artifact/release-payload.tar "$TAG_NAME" <<'PY'
+          python3 -I -B - "${artifact_dir}/release-payload.tar" "$TAG_NAME" <<'PY'
           import sys
           import tarfile
 
@@ -219,7 +241,7 @@ jobs:
                   raise SystemExit(f"linked payload member rejected: {member.name}")
           PY
           mkdir release-payload
-          tar -xf release-artifact/release-payload.tar -C release-payload
+          tar -xf "${artifact_dir}/release-payload.tar" -C release-payload
           (cd release-payload/dist && sha256sum -c SHA256SUMS)
           manifest_sha="$(sha256sum release-payload/dist/RELEASE-MANIFEST | awk '{print $1}')"
           candidate_sha="$(sha256sum "release-payload/dist/marshal_${TAG_NAME#v}_darwin_arm64" | awk '{print $1}')"
