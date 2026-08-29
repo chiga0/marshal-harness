@@ -31,6 +31,7 @@ FIXED_FILES = {
     "Makefile": "100644",
     CHECKER_RELATIVE_PATH: "100644",
     "scripts/release-artifact-metadata-check.py": "100644",
+    "scripts/release-rc1-binary-check.py": "100755",
     RELEASE_WORKFLOW_DIGEST_RELATIVE_PATH: "100644",
     "scripts/release-contract_test.sh": "100755",
     "scripts/release-ci-gate_test.sh": "100755",
