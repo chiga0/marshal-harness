@@ -1,0 +1,143 @@
+{
+  "schemaVersion": "marshal.rc1-canary-receipt.v1",
+  "tag": "v1.0.0-rc1",
+  "sourceHead": "1111111111111111111111111111111111111111",
+  "candidateWorkflow": {
+    "runId": 123456,
+    "artifactId": 654321,
+    "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "payload": {
+    "schemaVersion": "marshal.rc1-carrier-payload.v1",
+    "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "size": 4096
+  },
+  "manifest": {
+    "path": "RELEASE-MANIFEST",
+    "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "size": 512
+  },
+  "checksums": {
+    "path": "SHA256SUMS",
+    "sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "size": 128
+  },
+  "binary": {
+    "path": "marshal_1.0.0-rc1_darwin_arm64",
+    "sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "size": 3456,
+    "version": "1.0.0-rc1",
+    "buildDate": "2026-08-29T00:00:00Z",
+    "goVersion": "go1.26.6",
+    "os": "darwin",
+    "arch": "arm64",
+    "profile": "darwin-local-dogfood"
+  },
+  "activation": {
+    "activationDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "identitySubjectDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "currentObjectObservationDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "currentCanonicalPath": "/opt/marshal/repository/bin/marshal",
+    "currentObjectRawSHA256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "currentObjectSize": 3456,
+    "sourceHead": "1111111111111111111111111111111111111111",
+    "profile": "darwin-local-dogfood",
+    "localSelfIdentityBindingDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+  },
+  "canary": {
+    "taskId": "RC1-CANARY",
+    "runId": "rc1-live-run",
+    "attemptId": "attempt-1",
+    "specDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "baseSha": "2222222222222222222222222222222222222222",
+    "artifactManifestDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "workerResultDigests": [
+      "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    ],
+    "localSelfIdentityBindingDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "agentProvider": "pi",
+    "agentVersion": "0.84.3",
+    "invocation": "real",
+    "workerActorId": "worker:pi-0.84.3",
+    "reviewPacket": {
+      "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "runId": "rc1-live-run",
+      "attemptId": "attempt-1",
+      "reviewRound": 1,
+      "specDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "baseSha": "2222222222222222222222222222222222222222",
+      "verificationDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "artifactManifestDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "workerResultDigests": [
+        "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      ],
+      "evidenceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "localSelfIdentityBindingDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "verification": {
+      "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "runId": "rc1-live-run",
+      "attemptId": "attempt-1",
+      "specDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "artifactManifestDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "workerResultDigests": [
+        "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      ],
+      "evidenceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "localSelfIdentityBindingDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "verifier": {
+        "type": "deterministic-verifier",
+        "id": "verifier:independent"
+      },
+      "status": "pass",
+      "independent": true
+    },
+    "evidence": {
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "runId": "rc1-live-run",
+      "attemptId": "attempt-1",
+      "specDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "baseSha": "2222222222222222222222222222222222222222",
+      "artifactManifestDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "workerResultDigests": [
+        "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      ],
+      "localSelfIdentityBindingDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "reviewDecision": {
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "runId": "rc1-live-run",
+      "reviewRound": 1,
+      "reviewer": {
+        "type": "lead-agent",
+        "id": "reviewer:independent"
+      },
+      "independent": true,
+      "specDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "reviewPacketDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "verificationDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "artifactManifestDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "evidenceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "localSelfIdentityBindingDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "verdict": "accept",
+      "blockingFindingCount": 0,
+      "publicationRecommendation": "not-applicable"
+    },
+    "outcome": {
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "runId": "rc1-live-run",
+      "terminalState": "ACCEPTED",
+      "verdict": "accept",
+      "finalReviewDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "finalEvidenceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "publication": "none"
+    },
+    "publication": "none"
+  },
+  "authority": {
+    "currentHeadDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "revision": 42,
+    "outcomeDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "receiptDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+}

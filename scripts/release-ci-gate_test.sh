@@ -261,13 +261,27 @@ expect_artifact_fail 'artifact archive symlink' \
 make_contract_fixture() {
   local name="$1" workflow="$2" makefile="$3" root
   root="${TMP_ROOT}/contract-${name}"
-  mkdir -p "${root}/.github/workflows" "${root}/scripts"
+  mkdir -p "${root}/.github/workflows" "${root}/scripts" \
+    "${root}/schemas/release/examples/valid" \
+    "${root}/schemas/release/examples/invalid"
   cp "$workflow" "${root}/.github/workflows/ci.yml"
   cp "$WORKFLOW" "${root}/.github/workflows/release.yml"
   cp "$makefile" "${root}/Makefile"
   cp "$CI_CONTRACT" "${root}/scripts/release-ci-contract.py"
   cp "${ROOT}/scripts/release-artifact-metadata-check.py" \
     "${root}/scripts/release-artifact-metadata-check.py"
+  cp "${ROOT}/scripts/rc1-carrier-check.py" \
+    "${root}/scripts/rc1-carrier-check.py"
+  cp "${ROOT}/scripts/rc1-carrier-check_test.py" \
+    "${root}/scripts/rc1-carrier-check_test.py"
+  cp "${ROOT}/schemas/release_schema_test.go" \
+    "${root}/schemas/release_schema_test.go"
+  cp "${ROOT}/schemas/release/rc1-canary-receipt.schema.json" \
+    "${root}/schemas/release/rc1-canary-receipt.schema.json"
+  cp "${ROOT}/schemas/release/examples/valid/rc1-canary-receipt.json" \
+    "${root}/schemas/release/examples/valid/rc1-canary-receipt.json"
+  cp "${ROOT}/schemas/release/examples/invalid/rc1-canary-receipt-missing-authority.json" \
+    "${root}/schemas/release/examples/invalid/rc1-canary-receipt-missing-authority.json"
   cp "${ROOT}/scripts/release-rc1-binary-check.py" \
     "${root}/scripts/release-rc1-binary-check.py"
   cp "$RELEASE_WORKFLOW_DIGEST" "${root}/scripts/release-workflow.sha256"
@@ -283,7 +297,7 @@ make_contract_fixture() {
   git -C "$root" config core.hooksPath /dev/null
   git -C "$root" config user.name 'Release Contract Test'
   git -C "$root" config user.email 'release-contract@example.invalid'
-  git -C "$root" add .github/workflows Makefile scripts
+  git -C "$root" add .github/workflows Makefile scripts schemas
   git -C "$root" commit -qm fixture
   printf '%s\n' "$root"
 }
@@ -309,7 +323,7 @@ VALID_CONTRACT_ROOT="$(make_contract_fixture valid "$CI_WORKFLOW" "$MAKEFILE")"
 BASH_ENV="${TMP_ROOT}/poison-bash-env" PATH=/nonexistent MAKEFLAGS='--silent --ignore-errors' \
   PYTHONHOME=/nonexistent PYTHONPATH=/nonexistent \
   check_main_ci_contract "$VALID_CONTRACT_ROOT" \
-  || fail 'main/PR CI 未保持三个 job、Ubuntu-only release-check 与五 recipe 封闭合同'
+  || fail 'main/PR CI 未保持三个 job、Ubuntu-only release-check 与 RC1 carrier 封闭合同'
 
 awk '
   /^      - name: Run release contract gate$/ { skip=1; next }

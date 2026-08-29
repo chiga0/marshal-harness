@@ -58,6 +58,12 @@ jobs:
               /bin/bash --noprofile --norc "$GITHUB_WORKSPACE/$test_path"
           done
           run_checker
+          /usr/bin/env -i \
+            LC_ALL=C \
+            PATH=/usr/bin:/bin \
+            /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/rc1-carrier-check_test.py"
+          run_checker
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
