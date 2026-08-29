@@ -51,11 +51,16 @@ type PreparedCommandEvidence struct {
 	Deadline              string                    `json:"deadline"`
 	Projection            PreparedCommandProjection `json:"projection"`
 	PreCommand            HandshakeAnchor           `json:"preCommand"`
+	EvidenceDigest        string                    `json:"evidenceDigest"`
 }
 
 func (evidence PreparedCommandEvidence) Validate() error {
-	if evidence.ProtocolRevision != ProtocolRevision || !validID(evidence.SessionID) || !validCommand(evidence.Command) || !validID(evidence.CommandID) || evidence.Sequence == 0 || evidence.Sequence > maxSafeJSONInteger || !validDigest(evidence.PreviousCommandDigest) || !validDigest(evidence.CurrentAuthorityHead) || !validDigest(evidence.RequestDigest) || !validDigest(evidence.PayloadDigest) {
+	if evidence.ProtocolRevision != ProtocolRevision || !validID(evidence.SessionID) || !validCommand(evidence.Command) || !validID(evidence.CommandID) || evidence.Sequence == 0 || evidence.Sequence > maxSafeJSONInteger || !validDigest(evidence.PreviousCommandDigest) || !validDigest(evidence.CurrentAuthorityHead) || !validDigest(evidence.RequestDigest) || !validDigest(evidence.PayloadDigest) || !validDigest(evidence.EvidenceDigest) {
 		return ErrInvalid
+	}
+	wantDigest, err := evidence.integrityDigest()
+	if err != nil || evidence.EvidenceDigest != wantDigest {
+		return ErrConflict
 	}
 	deadline, err := parseDeadline(evidence.Deadline)
 	if err != nil || deadline.Format(time.RFC3339Nano) != evidence.Deadline {
@@ -69,6 +74,15 @@ func (evidence PreparedCommandEvidence) Validate() error {
 		return ErrConflict
 	}
 	return validatePreparedProjection(evidence.Command, evidence.Projection)
+}
+
+// integrityDigest binds the entire creation-time evidence while excluding its
+// own digest field from the preimage. This closes the gap where a consumer
+// could otherwise accept a separately valid projection or pre-command anchor
+// that no longer belonged to the producer-created request.
+func (evidence PreparedCommandEvidence) integrityDigest() (string, error) {
+	evidence.EvidenceDigest = ""
+	return digestValue(evidence)
 }
 
 // PreparedCommand owns the private canonical Request. Callers can persist only
@@ -137,6 +151,10 @@ func prepareCommand(pre HandshakeAnchor, options CommandOptions, payload any, re
 		return PreparedCommand{}, err
 	}
 	evidence := PreparedCommandEvidence{ProtocolRevision: request.ProtocolRevision, SessionID: request.SessionID, Command: request.Command, CommandID: request.CommandID, Sequence: request.Sequence, PreviousCommandDigest: request.PreviousCommandDigest, CurrentAuthorityHead: request.CurrentAuthorityHead, RequestDigest: request.RequestDigest, PayloadDigest: canonical.DigestBytes(rawPayload), Deadline: request.Deadline, Projection: projection, PreCommand: pre}
+	evidence.EvidenceDigest, err = evidence.integrityDigest()
+	if err != nil {
+		return PreparedCommand{}, ErrInvalid
+	}
 	if requireControlFiles && evidence.Validate() != nil {
 		return PreparedCommand{}, ErrInvalid
 	}

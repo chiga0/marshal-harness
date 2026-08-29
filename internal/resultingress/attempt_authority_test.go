@@ -108,6 +108,13 @@ func attemptTestBinary() processsupervisor.BinaryIdentity {
 	return processsupervisor.BinaryIdentity{CanonicalPath: "/fixed/marshal", Device: 1, Inode: 41, FileType: "regular", UID: 501, GID: 20, Mode: POSIXFileTypeRegular | 0o755, LinkCount: 1, Size: 4096, RawSHA256: attemptTestDigest("fixed-marshal"), CDHash: strings.Repeat("a", 40), SourceHead: strings.Repeat("b", 40), SelfProfile: "darwin-local-dogfood"}
 }
 
+func attemptTestControlFiles(device, firstInode uint64) processsupervisor.SessionControlFiles {
+	return processsupervisor.SessionControlFiles{
+		Nonce:   processsupervisor.ControlFileIdentity{Device: device, Inode: firstInode, FileType: "regular", UID: 501, GID: 20, Mode: 0o100600, LinkCount: 1},
+		Journal: processsupervisor.ControlFileIdentity{Device: device, Inode: firstInode + 1, FileType: "regular", UID: 501, GID: 20, Mode: 0o100600, LinkCount: 1},
+	}
+}
+
 func appendTestSupervisorStarted(t *testing.T, store *DurableStore, state AttemptAuthorityState) AttemptAuthorityState {
 	t.Helper()
 	scope := attemptTestOwnerScope(state.Identity)
@@ -134,6 +141,7 @@ func appendTestSupervisorStarted(t *testing.T, store *DurableStore, state Attemp
 	}
 	controlDirectory := processsupervisor.ControlDirectoryIdentity{CanonicalPath: "/tmp/marshal-control-" + state.Identity.AttemptID, Device: 2, Inode: 100 + epoch, FileType: "directory", UID: 501, GID: 20, Mode: POSIXFileTypeDirectory | 0o700, LinkCount: 2}
 	socket := processsupervisor.ControlSocketIdentity{Device: 2, Inode: 200 + epoch, FileType: "socket", UID: 501, GID: 20, Mode: 0o140000 | 0o600, LinkCount: 1}
+	controlFiles := attemptTestControlFiles(socket.Device, socket.Inode+1)
 	supervisorProcess := processsupervisor.ProcessIdentity{PID: 9001 + int(epoch), BirthSeconds: 1_700_000_001, BirthMicroseconds: 12, SessionID: 9001 + int(epoch), ProcessGroupID: 9001 + int(epoch)}
 	core := processsupervisor.CoreIdentity{UID: 501, GID: 20, Process: ownerProcess, Binary: binary}
 	request := processsupervisor.BootstrapRequest{
@@ -150,8 +158,8 @@ func appendTestSupervisorStarted(t *testing.T, store *DurableStore, state Attemp
 	if err != nil {
 		t.Fatal(err)
 	}
-	handshake := processsupervisor.HandshakeResponse{SchemaVersion: processsupervisor.HandshakeSchema, ProtocolRevision: processsupervisor.ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: request.SessionID, SessionNonceDigest: prepared.SessionNonceDigest, OwnerEpoch: epoch, CurrentAuthorityHead: request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: attemptTestDigest("journal-head-" + fmt.Sprint(epoch)), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: "2026-08-28T00:00:01Z", SupervisorProcess: supervisorProcess, SupervisorBinary: binary, ControlSocket: socket}
-	anchor := processsupervisor.HandshakeAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, Authority: request.Authority, OwnerEpoch: epoch, CurrentAuthorityHead: request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: handshake.JournalHead, UID: 501, GID: 20, FixedBinary: binary, ControlSocket: socket}
+	handshake := processsupervisor.HandshakeResponse{SchemaVersion: processsupervisor.HandshakeSchema, ProtocolRevision: processsupervisor.ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: request.SessionID, SessionNonceDigest: prepared.SessionNonceDigest, OwnerEpoch: epoch, CurrentAuthorityHead: request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: attemptTestDigest("journal-head-" + fmt.Sprint(epoch)), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: "2026-08-28T00:00:01Z", SupervisorProcess: supervisorProcess, SupervisorBinary: binary, ControlSocket: socket, ControlFiles: controlFiles}
+	anchor := processsupervisor.HandshakeAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, Authority: request.Authority, OwnerEpoch: epoch, CurrentAuthorityHead: request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: handshake.JournalHead, UID: 501, GID: 20, FixedBinary: binary, ControlSocket: socket, ControlFiles: controlFiles}
 	started, err := NewProcessSupervisorStartedFromBootstrap(bootstrap.State.SupervisorBootstrapDigest, prepared, handshake, anchor, processsupervisor.CoreIdentity{UID: 501, GID: 20, Process: supervisorProcess, Binary: binary})
 	if err != nil {
 		t.Fatal(err)
