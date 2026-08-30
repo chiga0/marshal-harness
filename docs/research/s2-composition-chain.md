@@ -33,6 +33,10 @@
 
 ## 已知开放问题
 
+0. **4b-2 当前边界（实测，a106de1）**：真实 0.84.4 镜像经 `OpenPi0844` 密封成功（SHAPE 全过）、`PrepareRunStart` 全链通过、`StartPreparedRun` 进入 sealed reconcile（preparedDarwin 确认）。reconcile 的 `verifyPreparedCurrentSourcesLocked → VerifyCurrentClosure(closure, allocationLive)` 要求 closure 的 WorkingDirectory 的 live 身份 == allocation receipt 的 live 身份；staging provision 的 live 目录是 allocation store 下新建目录，与 closure 冻结的 worktree 不同。**修复方向（ADR 0069 existing-worktree 绑定）**：provisionAllocation 改用 `ExistingWorktreeController.Bind`（resultingress.NewExistingWorktreeAuthority + allocationcontrol 控制器），使 bind receipt 的 live 身份 = Run worktree；同时 `derivePreparedExecution/currentPreparedProvisionReceipt` 需接受 existing-worktree bind receipt 作为 provision 证据（或按 ADR 0069 定义等价投影）。这是 S1 冻结校验的扩展，实施前须对照 ADR 0069 文本确认投影形态。
+1. lease 铸造路径（上文第 3 点）——已由 `dispatch.MintClaimedLease` + CompositionLedger.ensureAttemptLease 实现并验证。
+2. 旧测试迁移在 4b-2 完成后按 compatibility profile 口径一次性执行。
+
 1. lease 铸造路径（上文第 3 点）——唯一阻塞 PrepareRunStart 落地的缺口。
 2. `Digest`/`FencingToken` 的具体铸造约定需对齐 ADR 0069 的 sealed-successor 单次预算消费语义。
 3. 旧测试迁移（internal/cli 18 项 + internal/execution 约 20 项）在组合根合入后按 compatibility profile 口径一次性完成。
