@@ -1,15 +1,15 @@
 # v1.0 Release Readiness 判定表
 
-更新日期：2026-08-30（`main@60291e8` implementation checkpoint）
+更新日期：2026-08-30（`main@04c8fa9` implementation checkpoint）
 
 判定基准：[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md)、[ADR 0067](adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 与 [ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md)。只记录已进入 `main` 或绑定精确 sourceHead 的证据；候选分支、单次 live pass、reviewer verdict 或 Accepted ADR 都不会自动升级成熟度。
 
 ## 当前权威 checkpoint
 
-1. `main@44ee8c9` 的 durable server controller、`main@d4b9647` 的 production selector，以及 `main@912f659` 的 ResultIngress admission→worker-result→Run journal crash-atomic 持久化/恢复均是已合入 component 资产；它们不等于 fixed CLI production composition，也不把 server 变成 RC1 前置。
+1. `main@44ee8c9` 的 durable server controller、`main@d4b9647` 的 production selector，以及 `main@912f659` 的 ResultIngress admission→worker-result→Run journal crash-atomic 持久化/恢复均是已合入 component 资产；`main@04c8fa9` 仅补强 ResultIngress 缺失 verifier 与 stale-owner 的 fail-closed 顺序；它们不等于 fixed CLI production composition，也不把 server 变成 RC1 前置。
 2. 前置 Pi `0.84.3` canary 绑定 `sourceHead=d4b9647`，单 Attempt 通过 9 项 Gate 到 `REVIEW_PENDING`；它没有独立 ReviewDecision、没有进入 `ACCEPTED`，也不是当前 `main` 或最终 bytes 的 RC1 证据。
 3. ADR 0056、0059–0066 的 process、terminalization、Supervisor、PreparedExecution、sealed proof 与 production factory 合同继续有效；[ADR 0067](adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 已接受其 Mac ordinary-user 减法与精确取代范围。旧候选 `a6a0d63`、`506a647`、`6298eae` 冻结且不合入。RB1-authoritative existing-worktree Bind/Receipt/Release 与可重建 projection 已于 `main@259edd3` 实现；Linux staticcheck 的 U1000 跨平台 build-graph 修复已于 `main@60291e8` 推送。该 exact-head CI 的 secret scan 已通过，Ubuntu/macOS quality 仍在运行，整体尚未宣称全绿。完整 S1′（S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor，含 item 5 borrow seam/门禁）尚未进入 `main`，`3abed5a` 仍只是未合入候选；S2′ production composition、Attach/rebind 与 terminalization 同样未完成。
-4. [ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受 unsigned Darwin arm64 CLI-only local-dogfood RC1 合同。build-once Darwin arm64 distribution contract 已于 `main@2d7da6a` 实现，installer exact opt-in/fail-closed guard 已于 `main@e6a78a3` 实现，immutable carrier checker、receipt Schema 与 hostile matrix 已于 `main@66523d9` 实现；三项均已完成独立审查。但最终 sourceHead 的真实 canary receipt、组装后的同一 bytes carrier、tag、GitHub prerelease 与 release asset 均未产生，当前没有已发布或可执行安装的 `v1.0.0-rc1`。
+4. [ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受 unsigned Darwin arm64 CLI-only local-dogfood RC1 合同。build-once Darwin arm64 distribution contract 已于 `main@2d7da6a` 实现，installer exact opt-in/fail-closed guard 已于 `main@e6a78a3` 实现，immutable carrier checker、receipt Schema 与 hostile matrix 已于 `main@66523d9` 实现；三项均已完成独立审查。基于当前最终 bytes 的真实 canary 已推进到 `task plan`，但 production selector 因 CLI 未装配 per-Attempt `ExactProcessRuntime`/`ExactAllocationRuntime` 而确定性拒绝 `launch identity unavailable`；因此最终 sourceHead 的真实 canary receipt、组装后的同一 bytes carrier、tag、GitHub prerelease 与 release asset 均未产生，当前没有已发布或可执行安装的 `v1.0.0-rc1`。
 5. 当前权威状态保持：`I186-R0: PASSED/DESIGN`、`I186-R1: IN_PROGRESS/INTEGRATED`、`I186-R2–R5: IN_PROGRESS/COMPONENT`、`I186-R6: PLANNED/DESIGN`。component 合入与 checker 就绪不构成成熟度升级。
 
 ## ADR 0052 §1 对照
