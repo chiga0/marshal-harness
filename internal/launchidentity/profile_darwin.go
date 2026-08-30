@@ -102,6 +102,7 @@ func OpenPi0844(runtimePath, entrypointPath string, arguments, environment []str
 			return fail(fmt.Errorf("root %s bytes", declaration.name))
 		}
 	}
+	sort.Slice(rootRecords, func(i, j int) bool { return rootRecords[i].Name < rootRecords[j].Name })
 	sort.Slice(materials, func(i, j int) bool { return materials[i].Role < materials[j].Role })
 	held.Materials = held.Materials[:0]
 	for _, material := range materials {
@@ -266,13 +267,22 @@ func openObject(path string, kind uint32, executable bool) (*os.File, ObjectV1, 
 		}
 		if statErr != nil || after == (unix.Stat_t{}) || beforeRead != afterRead {
 			// Terminal security software can transiently zero or fail a stat
-			// on a freshly seen binary. Reopen the exact path once and compare
-			// identities there before failing closed.
-			reopenFile, reopenObject, reopenErr := openObject(real, kind, executable)
+			// on a freshly seen binary. Reopen the exact path once and stat
+			// that fresh descriptor (never recursively: every nested open of
+			// the same image hits the same interception) before failing
+			// closed; the returned object keeps the digest computed over the
+			// actually read bytes.
+			reopenFD, reopenErr := unix.Open(real, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 			if reopenErr == nil {
-				_ = reopenFile.Close()
-				if reopenObject == object {
-					return reopenFile, reopenObject, nil
+				var fresh unix.Stat_t
+				freshErr := unix.Fstat(reopenFD, &fresh)
+				unix.Close(reopenFD)
+				if freshErr == nil && fresh != (unix.Stat_t{}) {
+					freshRead := fresh
+					freshRead.Atim, freshRead.Ctim = unix.Timespec{}, unix.Timespec{}
+					if beforeRead == freshRead {
+						return file, object, nil
+					}
 				}
 			}
 		}

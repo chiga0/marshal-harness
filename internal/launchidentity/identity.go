@@ -405,7 +405,6 @@ func validPi0844Shape(closure ClosureV1) bool {
 		}
 	}
 	for name, declaration := range want {
-		fmt.Fprintf(os.Stderr, "SHAPE-DEBUG %s count=%d/%d bytes=%d/%d entry=%v\n", name, counts[name], declaration.count, totals[name], declaration.bytes, entry)
 		if counts[name] != declaration.count || totals[name] != declaration.bytes {
 			return false
 		}

@@ -46,6 +46,7 @@ func ObserveHeldControlSocket(directory *os.File) (ControlSocketIdentity, error)
 // Start launches only the current fixed Marshal image with inherited bootstrap
 // and control-directory descriptors and an empty environment. The returned
 // handshake is fully bound before any caller may persist supervisor authority.
+
 func Start(ctx context.Context, options StartOptions) (*Client, error) {
 	if ctx == nil {
 		return nil, ErrInvalid
@@ -113,12 +114,17 @@ func Start(ctx context.Context, options StartOptions) (*Client, error) {
 	var peer CoreIdentity
 	var finalDirectory ControlDirectoryIdentity
 	err = runBoundedTransport(ctx, connection, time.Now().Add(handshakeTimeout), func() error {
+		handshakeDebug("start: writing bootstrap")
 		if err := codec.Write(options.Bootstrap); err != nil {
+			handshakeDebug("start: bootstrap write failed: %v", err)
 			return ErrIntervention
 		}
+		handshakeDebug("start: reading handshake")
 		if err := codec.Read(&handshake); err != nil {
+			handshakeDebug("start: handshake read failed: %v", err)
 			return ErrIntervention
 		}
+		handshakeDebug("start: handshake read ok")
 		if handshake.ControlFiles.validate() != nil {
 			return ErrConflict
 		}

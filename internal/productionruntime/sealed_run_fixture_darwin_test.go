@@ -58,14 +58,47 @@ func TestSealedChainReachesRunningWithRealPi(t *testing.T) {
 	defer heldClosure.Close()
 	inputs.LaunchClosure = heldClosure.Closure
 	inputs.WorkDirAllowlist = []string{workDir}
-
-	identity, err := launchidentity.Pi0844IdentityFromClosure(heldClosure.Closure)
+	// The sealed fresh-start mechanics require the descriptor-backed ingress
+	// sealed in place for the exact fixed marshal image.
+	heldDir := t.TempDir()
+	if err := os.Chmod(heldDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	heldIngress, err := os.Open(heldDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := NewPi0844Profile(heldClosure.Closure.RuntimeExecutable.CanonicalPath, fixturePiRuntime, identity.IdentityDigest)
+	t.Cleanup(func() { _ = heldIngress.Close() })
+	controlRoot := t.TempDir()
+	if err := os.Chmod(controlRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.Open(controlRoot)
 	if err != nil {
 		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	fixedMarshal, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(fixedMarshal); resolveErr != nil {
+		t.Fatal(resolveErr)
+	} else {
+		fixedMarshal = resolved
+	}
+	inputs.Ingress = nil
+	inputs.HeldIngressDir = heldIngress
+	inputs.FixedMarshalPath = fixedMarshal
+	inputs.OwnerPrivateControlRoot = root
+
+	identity, err := launchidentity.Pi0844IdentityFromClosure(heldClosure.Closure)
+	if err != nil {
+		t.Fatalf("identity-from-closure: %v", err)
+	}
+	profile, err := NewPi0844Profile(heldClosure.Closure.RuntimeExecutable.CanonicalPath, fixturePiRuntime, identity.IdentityDigest)
+	if err != nil {
+		t.Fatalf("profile: %v", err)
 	}
 	composed, err := ComposeRuntime(context.Background(), inputs, profile)
 	if err != nil {
