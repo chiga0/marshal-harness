@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-更新时间：2026-08-30（`main@a73c82b` implementation checkpoint）
+更新时间：2026-08-30（`main@a7e9f93` implementation checkpoint）
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
@@ -17,6 +17,8 @@
 > **2026-08-29 producer P0 合同**：[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md)已在定向修订 sourceHead `e2af179` 经独立 reviewer `APPROVE`（`P0=0/P1=0`）后由维护者接受。`attempt-reserved`只是RB1 creation-once reservation；dispatch lookup-before-claim、full Attempt与`attempt-opened`随后产生，sealed Run successor才写Attempt/计budget。Existing-worktree Bind/Receipt/Release的唯一authority同样是RB1；固定sidecar仅为可重建projection，锁序owner→Run→RB1→projection，release绑定current terminalization/cleanup/process-terminal链。ResultIngress pathname reopen和`OpenOwner`后才可`ObserveCurrentCore`仍是ADR0066实施P0。接受只冻结合同，实现尚未完成，不升级阶段。
 
 > **2026-08-30 implementation checkpoint**：RB1-authoritative existing-worktree Bind/Receipt/Release 与 descriptor-bound recovery projection 已于 `main@259edd3` 实现；Linux staticcheck U1000 的跨平台 build-graph 修复已于 `main@60291e8` 推送，ResultIngress 缺失 verifier/stale-owner 顺序修复已于 `main@04c8fa9` 推送。该 exact-head CI 的 secret scan 已通过，Ubuntu/macOS quality 仍在运行，整体尚未宣称全绿。RC1 build-once distribution contract（`main@2d7da6a`）、installer exact opt-in/fail-closed guard（`main@e6a78a3`）以及 immutable carrier checker/receipt Schema/hostile matrix（`main@66523d9`）均已实现并独立审查。这些都是 component/admission 资产：真实 RC1 canary 在 `task plan` 阶段确定性暴露 CLI production selector 未装配 per-Attempt `ExactProcessRuntime`/`ExactAllocationRuntime`（`launch identity unavailable`）；完整 S1′（S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor，含 item 5 borrow seam/门禁）尚未进入 `main`，`3abed5a` 仍只是未合入候选；S2′、Attach/rebind、terminalization、最终 fixed-bin Pi→独立 Decision→`ACCEPTED`、真实 same-bytes canary/carrier、tag、GitHub prerelease 与 release asset 仍未完成，因此 R2–R6 状态不变。
+
+补充：`ceb8b39` 修复 runstore canonical journal 写入，`822dcd3` 对齐 sealed Run-start 测试 fixture，`a7e9f93` 增加带 authoritative time 与 lease expiry/ack-deadline 校验的 `CurrentByAttempt` dispatch lookup。上述提交均已同步 `origin/main`，只补强组件门禁，不改变 R2–R5 的 `COMPONENT` 状态。
 
 ## v1.0 生产纵切
 
