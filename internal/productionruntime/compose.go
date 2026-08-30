@@ -79,7 +79,7 @@ func ComposeRuntime(ctx context.Context, inputs CompositionInputs, profile PiPro
 	if profile.Validate() != nil || inputs.OwnerDirectory == nil {
 		return nil, application.NewError("compose-runtime", application.ReasonInvalidRequest)
 	}
-	ledger, err := NewCompositionLedger(inputs)
+	ledger, err := NewCompositionLedger(ctx, inputs)
 	if err != nil {
 		return nil, err
 	}

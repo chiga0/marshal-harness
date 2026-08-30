@@ -81,7 +81,7 @@ func compositionTestClosure(t *testing.T) launchidentity.ClosureV1 {
 func newCompositionFixture(t *testing.T) compositionFixture {
 	t.Helper()
 	inputs, runID := newCompositionInputs(t)
-	ledger, err := NewCompositionLedger(inputs)
+	ledger, err := NewCompositionLedger(context.Background(), inputs)
 	if err != nil {
 		t.Fatal(err)
 	}

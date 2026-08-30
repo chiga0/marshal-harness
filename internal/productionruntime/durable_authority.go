@@ -50,32 +50,49 @@ type CompositionLedger struct {
 // decisions. Nothing here is derivable from the durable ledger; everything is
 // validated before the first authority call.
 type CompositionInputs struct {
-	Ingress              *resultingress.DurableStore
-	Runs                 *runstore.Store
-	RunLease             *runstore.Lease
-	LeaseLedger          *dispatch.LeaseLedger
-	OwnerDirectory       *os.File
-	Acquisition          resultingress.ControlOwnerAcquisition
-	RunID                string
-	Namespace            authority.AuthorityNamespaceId
-	OrchestratorID       string
-	ProvisionDomain      authority.SecurityDomainId
-	CleanupDomain        authority.SecurityDomainId
-	RegistrationID       string
-	CapabilitySnapshot   string
-	ConformanceEvidence  []string
-	Attestation          provider.Attestation
-	AllocationRoot       string
-	LaunchClosure        launchidentity.ClosureV1
-	Requirements         allocationcontrol.SandboxRequirementsV1
-	WorkDirAllowlist     []string
-	EnvironmentAllowlist []string
+	Ingress        *resultingress.DurableStore
+	Runs           *runstore.Store
+	RunLease       *runstore.Lease
+	LeaseLedger    *dispatch.LeaseLedger
+	OwnerDirectory *os.File
+	Acquisition    resultingress.ControlOwnerAcquisition
+	RunID          string
+	// HeldIngressDir, FixedMarshalPath and OwnerPrivateControlRoot select the
+	// sealed Darwin fresh-start composition: the ingress is opened from the
+	// held descriptor and sealed in place for the exact fixed marshal image.
+	// When nil, the composition falls back to the generic store input.
+	HeldIngressDir          *os.File
+	FixedMarshalPath        string
+	OwnerPrivateControlRoot *os.File
+	Namespace               authority.AuthorityNamespaceId
+	OrchestratorID          string
+	ProvisionDomain         authority.SecurityDomainId
+	CleanupDomain           authority.SecurityDomainId
+	RegistrationID          string
+	CapabilitySnapshot      string
+	ConformanceEvidence     []string
+	Attestation             provider.Attestation
+	AllocationRoot          string
+	LaunchClosure           launchidentity.ClosureV1
+	Requirements            allocationcontrol.SandboxRequirementsV1
+	WorkDirAllowlist        []string
+	EnvironmentAllowlist    []string
 }
 
 // NewCompositionLedger is the only constructor. It validates every input and
 // wires the Core provision/cleanup verifiers, which authorize the composition
 // itself as the local SandboxProvider authority.
-func NewCompositionLedger(inputs CompositionInputs) (*CompositionLedger, error) {
+func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*CompositionLedger, error) {
+	if inputs.HeldIngressDir != nil {
+		if inputs.FixedMarshalPath == "" || inputs.OwnerPrivateControlRoot == nil {
+			return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
+		}
+		held, err := resultingress.OpenDarwinResultIngressStore(inputs.HeldIngressDir)
+		if err != nil {
+			return nil, err
+		}
+		inputs.Ingress = held
+	}
 	if inputs.Ingress == nil || inputs.Runs == nil || inputs.RunLease == nil || inputs.LeaseLedger == nil {
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 	}
@@ -117,7 +134,8 @@ func NewCompositionLedger(inputs CompositionInputs) (*CompositionLedger, error) 
 	if err != nil {
 		return nil, err
 	}
-	if _, err := acquireOwner(inputs.Ingress, phase, inputs.Acquisition); err != nil {
+	ownerState, err := acquireOwner(inputs.Ingress, phase, inputs.Acquisition)
+	if err != nil {
 		_ = phase.Close()
 		return nil, err
 	}
@@ -133,6 +151,19 @@ func NewCompositionLedger(inputs CompositionInputs) (*CompositionLedger, error) 
 	// The runtime claim belongs to newProductionRuntime; the ledger only
 	// carries the bound phase-B lock.
 	ledger.owner = owner
+	// The seal consumes the held store in place behind the current owner and
+	// observes the exact fixed marshal image inside that authority window.
+	if inputs.HeldIngressDir != nil {
+		// The physical phase-B lock is held by this call stack; the borrowed
+		// verifier carries that fact without requiring the runtime claim that
+		// newProductionRuntime performs later.
+		borrowed := &borrowedOwnerVerifier{acquisition: inputs.Acquisition, active: true}
+		if _, err := resultingress.SealPi0843DarwinPreparedExecutionStore(ctx, inputs.Ingress, borrowed, resultingress.CurrentOwnerBinding{Scope: inputs.Acquisition.Scope, OwnerEpoch: inputs.Acquisition.OwnerEpoch, ControlOwnerAcquiredFactDigest: ownerState.FactDigest}, inputs.FixedMarshalPath, inputs.OwnerPrivateControlRoot); err != nil {
+			_ = owner.Close()
+			return nil, err
+		}
+		borrowed.close()
+	}
 	return ledger, nil
 }
 
