@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -85,6 +86,11 @@ func OpenDarwinRegistrationStore(directory *os.File) (*RegistrationStore, error)
 }
 
 func openHeldRegistrationFiles(input *os.File) (*heldRegistrationFiles, error) {
+	// Keep the caller-held descriptor alive until every duplicate/derived
+	// descriptor has been validated; finalizer-driven close during this
+	// multi-step authority graph construction would otherwise fail closed
+	// nondeterministically on Darwin.
+	defer runtime.KeepAlive(input)
 	if input == nil {
 		return nil, ErrHeldRegistrationUnavailable
 	}
@@ -98,6 +104,7 @@ func openHeldRegistrationFiles(input *os.File) (*heldRegistrationFiles, error) {
 		_ = unix.Close(directoryFD)
 		return nil, ErrHeldRegistrationUnavailable
 	}
+	defer runtime.KeepAlive(directory)
 	fail := func(err error) (*heldRegistrationFiles, error) {
 		_ = directory.Close()
 		return nil, err
@@ -115,6 +122,7 @@ func openHeldRegistrationFiles(input *os.File) (*heldRegistrationFiles, error) {
 		_ = unix.Close(parentFD)
 		return fail(ErrHeldRegistrationUnavailable)
 	}
+	defer runtime.KeepAlive(parent)
 	files := &heldRegistrationFiles{parent: parent, directory: directory}
 	failFiles := func(err error) (*heldRegistrationFiles, error) {
 		_ = files.close()
@@ -130,6 +138,7 @@ func openHeldRegistrationFiles(input *os.File) (*heldRegistrationFiles, error) {
 		return failFiles(err)
 	}
 	files.ledger = ledger
+	defer runtime.KeepAlive(ledger)
 	if created {
 		if err := ledger.Sync(); err != nil {
 			return failFiles(fmt.Errorf("%w: sync new registration ledger: %v", ErrHeldRegistrationUnavailable, err))
