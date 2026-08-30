@@ -239,7 +239,7 @@ func newWorkerRuntime(getenv func(string) string, qwenConstructor workerConstruc
 	}
 	productionAdmission := func(worker port.WorkerAdapter) error {
 		capable, ok := worker.(sandboxbridge.ProductionLaunchCapable)
-		if !ok || capable.ProductionLaunchProfileID() != launchidentity.Pi0843DarwinARM64Profile {
+		if !ok || capable.ProductionLaunchProfileID() != launchidentity.Pi0844DarwinARM64Profile {
 			return launchidentity.ErrUnavailable
 		}
 		// RB2 deliberately does not compose the per-Attempt supervisor here.

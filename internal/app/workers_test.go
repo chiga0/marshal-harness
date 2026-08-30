@@ -466,7 +466,7 @@ func TestProductionCapabilityRequiresExactPiRuntimeProfile(t *testing.T) {
 		}
 		return
 	}
-	if profile != launchidentity.Pi0843DarwinARM64Profile {
+	if profile != launchidentity.Pi0844DarwinARM64Profile {
 		t.Fatalf("production profile = %q", profile)
 	}
 }

@@ -176,8 +176,8 @@ func TestPreparedDarwinSealRequiresDescriptorBackedStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SealPi0843DarwinPreparedExecutionStore(context.Background(), pathStore, nil, CurrentOwnerBinding{}, "/does/not/matter", nil); !errors.Is(err, ErrPreparedExecutionUnavailable) {
-		t.Fatalf("SealPi0843DarwinPreparedExecutionStore err = %v, want unavailable", err)
+	if _, err := SealPi0844DarwinPreparedExecutionStore(context.Background(), pathStore, nil, CurrentOwnerBinding{}, "/does/not/matter", nil); !errors.Is(err, ErrPreparedExecutionUnavailable) {
+		t.Fatalf("SealPi0844DarwinPreparedExecutionStore err = %v, want unavailable", err)
 	}
 }
 
@@ -223,12 +223,12 @@ func TestPreparedDarwinSealIsOwnerBoundSingleUseAndCloseIsIdempotent(t *testing.
 		t.Fatal(err)
 	}
 	defer control.Close()
-	sealed, err := SealPi0843DarwinPreparedExecutionStore(context.Background(), store, verifier, binding, fixed, control)
+	sealed, err := SealPi0844DarwinPreparedExecutionStore(context.Background(), store, verifier, binding, fixed, control)
 	if err != nil || sealed != store {
-		t.Fatalf("SealPi0843DarwinPreparedExecutionStore store=%p sealed=%p err=%v", store, sealed, err)
+		t.Fatalf("SealPi0844DarwinPreparedExecutionStore store=%p sealed=%p err=%v", store, sealed, err)
 	}
 	identityDir, identityFiles := store.dir, store.heldFiles
-	if _, err := SealPi0843DarwinPreparedExecutionStore(context.Background(), store, verifier, binding, fixed, control); !errors.Is(err, ErrPreparedExecutionUnavailable) {
+	if _, err := SealPi0844DarwinPreparedExecutionStore(context.Background(), store, verifier, binding, fixed, control); !errors.Is(err, ErrPreparedExecutionUnavailable) {
 		t.Fatalf("second Seal err=%v, want single-use rejection", err)
 	}
 	if err := store.Close(); err != nil {

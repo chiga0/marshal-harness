@@ -23,13 +23,13 @@ func OpenDarwinResultIngressStore(ledgerDir *os.File) (*DurableStore, error) {
 	return &DurableStore{dir: files.directoryID.CanonicalPath, nextSequence: 1, clock: time.Now, heldFiles: files}, nil
 }
 
-// SealPi0843DarwinPreparedExecutionStore is the sole S1 fresh-start
+// SealPi0844DarwinPreparedExecutionStore is the sole S1 fresh-start
 // composition. It consumes the same descriptor-backed store in place while an
 // exact current-owner verifier is held, observes the current fixed Marshal
 // image inside that authority window, and retains the owner-private control
 // root. No second writable view, mechanics callback or caller-supplied Core
 // observation is accepted.
-func SealPi0843DarwinPreparedExecutionStore(ctx context.Context, store *DurableStore, verifier CurrentOwnerLockVerifier, binding CurrentOwnerBinding, fixedMarshalPath string, ownerPrivateControlRoot *os.File) (*DurableStore, error) {
+func SealPi0844DarwinPreparedExecutionStore(ctx context.Context, store *DurableStore, verifier CurrentOwnerLockVerifier, binding CurrentOwnerBinding, fixedMarshalPath string, ownerPrivateControlRoot *os.File) (*DurableStore, error) {
 	if ctx == nil || store == nil || store.heldFiles == nil || store.closed.Load() || binding.Validate() != nil {
 		return nil, ErrPreparedExecutionUnavailable
 	}

@@ -520,7 +520,7 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
 			return AdmissionFact{}, fmt.Errorf("%w: launch closure/process authority mismatch", ErrStaleLease)
 		}
-		if closure.ClosureProfileID == launchidentity.Pi0843DarwinARM64Profile {
+		if closure.ClosureProfileID == launchidentity.Pi0844DarwinARM64Profile {
 			held, reopenErr := launchidentity.Reopen(closure)
 			if reopenErr != nil {
 				i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)

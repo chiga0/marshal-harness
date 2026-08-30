@@ -313,7 +313,7 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 			return domain.Record{}, fmt.Errorf("sandboxbridge: incomplete production runtime: %w", launchidentity.ErrUnavailable)
 		}
 		capable, ok := adapter.(ProductionLaunchCapable)
-		if !ok || capable.ProductionLaunchProfileID() != launchidentity.Pi0843DarwinARM64Profile {
+		if !ok || capable.ProductionLaunchProfileID() != launchidentity.Pi0844DarwinARM64Profile {
 			return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q lacks the exact production launch profile: %w", adapter.ID(), launchidentity.ErrUnavailable)
 		}
 		exactAdmission, err = b.resolveProductionAttempt(ctx, view)

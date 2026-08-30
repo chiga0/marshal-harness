@@ -23,7 +23,7 @@ var _ ProcessBridge = (*piBridge)(nil)
 
 func (bridge *piBridge) VerifyAgentProfile(ctx context.Context, verifier resultingress.CurrentOwnerLockVerifier, acquisition resultingress.ControlOwnerAcquisition, owner OwnerProjection, profile PiProfile) error {
 	closure := bridge.ledger.closure
-	identity, err := launchidentity.Pi0843IdentityFromClosure(closure)
+	identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
 	if err != nil || identity.IdentityDigest != profile.IdentityDigest() {
 		return application.NewError("verify-agent-profile", application.ReasonBridgeUnavailable)
 	}

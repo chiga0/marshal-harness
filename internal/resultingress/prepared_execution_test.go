@@ -46,7 +46,7 @@ func newPreparedExecutionFixture(t *testing.T) preparedExecutionFixture {
 	return preparedExecutionFixture{store: store, owner: owner, verifier: verifier, prepared: prepared}
 }
 
-// preparedTestPiClosure is a synthetic but structurally exact Pi 0.84.3
+// preparedTestPiClosure is a synthetic but structurally exact Pi 0.84.4
 // closure. PreparedExecution is Pi-specific, so a native/v1 fixture would
 // compile while making every runtime creation test fail before exercising the
 // authority contract.
@@ -75,19 +75,19 @@ func preparedTestPiClosure(t *testing.T) launchidentity.ClosureV1 {
 		role := fmt.Sprintf("photon-node/file-%02d", index)
 		materials = append(materials, launchidentity.LaunchMaterialV1{Role: role, Object: object("/fixed/pi/photon/"+role[len("photon-node/"):], uint64(100+index), size, false)})
 	}
-	entrypoint := object("/fixed/pi/bundle/cli.js", 200, 629, false)
-	entrypoint.RawSHA256 = "sha256:1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a"
+	entrypoint := object("/fixed/pi/bundle/cli.js", 200, 710, false)
+	entrypoint.RawSHA256 = "sha256:840d1e8e689ed9e4937bcb00b9a810e02a8567d9afb10a47097f11ca93ea1521"
 	materials = append(materials, launchidentity.LaunchMaterialV1{Role: "pi-bundle/cli.js", Object: entrypoint})
 	for index := 0; index < 47; index++ {
 		size := int64(1)
 		if index == 46 {
-			size = 7_421_757
+			size = 7_439_052
 		}
 		role := fmt.Sprintf("pi-bundle/file-%02d", index)
 		materials = append(materials, launchidentity.LaunchMaterialV1{Role: role, Object: object("/fixed/pi/bundle/"+role[len("pi-bundle/"):], uint64(201+index), size, false)})
 	}
 	closure, err := launchidentity.Seal(launchidentity.SpecInput{
-		RuntimeExecutable: object("/fixed/node", 2, 99, true), ClosureProfileID: launchidentity.Pi0843DarwinARM64Profile,
+		RuntimeExecutable: object("/fixed/node", 2, 99, true), ClosureProfileID: launchidentity.Pi0844DarwinARM64Profile,
 		MaterialRoots: roots, LaunchMaterials: materials, Arguments: []string{"/fixed/node", entrypoint.CanonicalPath}, Environment: []string{}, WorkingDirectory: "/tmp/work",
 	})
 	if err != nil {
@@ -131,7 +131,7 @@ func TestPreparedExecutionCreationOnceResolveAndSecretBoundary(t *testing.T) {
 	// The sealed PreparationDigest covers the Pi identity: any caller-chosen
 	// identity breaks the seal and is rejected at the closed wire form.
 	tampered := fixture.prepared
-	tampered.Pi0843IdentityDigest = attemptTestDigest("caller-chosen-pi-identity")
+	tampered.Pi0844IdentityDigest = attemptTestDigest("caller-chosen-pi-identity")
 	tamperedRaw, _ := json.Marshal(tampered)
 	tamperedRaw, _ = canonical.JSON(tamperedRaw)
 	if _, err := DecodePreparedExecution(tamperedRaw); !errors.Is(err, ErrPreparedExecutionConflict) {
@@ -147,7 +147,7 @@ func TestPreparedExecutionCreationOnceResolveAndSecretBoundary(t *testing.T) {
 	resealedRaw, _ := json.Marshal(resealed)
 	resealedRaw, _ = canonical.JSON(resealedRaw)
 	decoded, err := DecodePreparedExecution(resealedRaw)
-	if err != nil || decoded.Pi0843IdentityDigest != resealed.Pi0843IdentityDigest {
+	if err != nil || decoded.Pi0844IdentityDigest != resealed.Pi0844IdentityDigest {
 		t.Fatalf("self-consistent closed wire form rejected: %+v err=%v", decoded, err)
 	}
 	if _, err := fixture.store.ResolvePreparedExecution(context.Background(), fixture.verifier, fixture.owner.Acquisition, resealed.PreparationDigest); !errors.Is(err, ErrPreparedExecutionUnavailable) {
@@ -242,7 +242,7 @@ func TestLegacyPreparedExecutionReplaysWithoutEnteringFreshAuthority(t *testing.
 		AllocationProvisionReceiptDigest:     current.AllocationProvisionReceiptDigest,
 		LaunchAuthorizationID:                current.LaunchAuthorizationID, LaunchAuthorizedFactDigest: current.LaunchAuthorizedFactDigest,
 		StoredClosureDigest: current.StoredClosureDigest, LaunchMaterialsDigest: current.LaunchMaterialsDigest,
-		AgentLaunchSpecDigest: current.AgentLaunchSpecDigest, Pi0843IdentityDigest: current.Pi0843IdentityDigest,
+		AgentLaunchSpecDigest: current.AgentLaunchSpecDigest, Pi0844IdentityDigest: current.Pi0844IdentityDigest,
 	}
 	legacy.PreparationDigest, _ = canonicalDigest(legacy)
 	if legacy.validate() != nil {
@@ -308,7 +308,7 @@ func TestFreshPreparedExecutionRejectsLegacyMixedHistoryWithoutWrite(t *testing.
 			AllocationProvisionReceiptDigest:     fresh.AllocationProvisionReceiptDigest,
 			LaunchAuthorizationID:                fresh.LaunchAuthorizationID, LaunchAuthorizedFactDigest: fresh.LaunchAuthorizedFactDigest,
 			StoredClosureDigest: fresh.StoredClosureDigest, LaunchMaterialsDigest: fresh.LaunchMaterialsDigest,
-			AgentLaunchSpecDigest: fresh.AgentLaunchSpecDigest, Pi0843IdentityDigest: fresh.Pi0843IdentityDigest,
+			AgentLaunchSpecDigest: fresh.AgentLaunchSpecDigest, Pi0844IdentityDigest: fresh.Pi0844IdentityDigest,
 		}
 		legacy.PreparationDigest, deriveErr = canonicalDigest(legacy)
 		if deriveErr != nil || legacy.validate() != nil {

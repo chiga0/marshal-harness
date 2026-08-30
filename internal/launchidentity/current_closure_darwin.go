@@ -65,11 +65,11 @@ type CurrentClosureObservation struct {
 	LaunchMaterials       []LaunchMaterialV1
 	LaunchMaterialsDigest string
 	AgentLaunchSpecDigest string
-	// Pi0843IdentityDigest is the path-free static identity derived from the
+	// Pi0844IdentityDigest is the path-free static identity derived from the
 	// observed runtime, entrypoint, roots, and complete material manifest. It
 	// is empty only for the Native profile; it never includes the per-Run
 	// AgentLaunchSpecDigest.
-	Pi0843IdentityDigest string
+	Pi0844IdentityDigest string
 }
 
 // VerifyCurrentClosure is the Core-side, read-only source admission gate.
@@ -157,12 +157,12 @@ func VerifyCurrentClosure(closure ClosureV1, allocationLive LiveIdentity) (Curre
 		return CurrentClosureObservation{}, ErrUnavailable
 	}
 	piIdentityDigest := ""
-	if closure.ClosureProfileID == Pi0843DarwinARM64Profile {
+	if closure.ClosureProfileID == Pi0844DarwinARM64Profile {
 		observedClosure := closure
 		observedClosure.RuntimeExecutable = runtime
 		observedClosure.MaterialRoots = append([]MaterialRootV1(nil), roots...)
 		observedClosure.LaunchMaterials = append([]LaunchMaterialV1(nil), materials...)
-		identity, identityErr := Pi0843IdentityFromClosure(observedClosure)
+		identity, identityErr := Pi0844IdentityFromClosure(observedClosure)
 		if identityErr != nil {
 			return CurrentClosureObservation{}, ErrUnavailable
 		}
@@ -171,7 +171,7 @@ func VerifyCurrentClosure(closure ClosureV1, allocationLive LiveIdentity) (Curre
 	return CurrentClosureObservation{
 		Runtime: runtime, WorkingDirectory: working, MaterialRoots: roots,
 		LaunchMaterials: materials, LaunchMaterialsDigest: materialsDigest,
-		AgentLaunchSpecDigest: specDigest, Pi0843IdentityDigest: piIdentityDigest,
+		AgentLaunchSpecDigest: specDigest, Pi0844IdentityDigest: piIdentityDigest,
 	}, nil
 }
 

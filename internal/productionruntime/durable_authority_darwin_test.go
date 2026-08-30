@@ -59,19 +59,19 @@ func compositionTestClosure(t *testing.T) launchidentity.ClosureV1 {
 		role := fmt.Sprintf("photon-node/file-%02d", index)
 		materials = append(materials, launchidentity.LaunchMaterialV1{Role: role, Object: object("/fixed/pi/photon/file-"+fmt.Sprintf("%02d", index), uint64(100+index), size, false)})
 	}
-	entrypoint := object("/fixed/pi/bundle/cli.js", 200, 629, false)
-	entrypoint.RawSHA256 = "sha256:1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a"
+	entrypoint := object("/fixed/pi/bundle/cli.js", 200, 710, false)
+	entrypoint.RawSHA256 = "sha256:840d1e8e689ed9e4937bcb00b9a810e02a8567d9afb10a47097f11ca93ea1521"
 	materials = append(materials, launchidentity.LaunchMaterialV1{Role: "pi-bundle/cli.js", Object: entrypoint})
 	for index := 0; index < 47; index++ {
 		size := int64(1)
 		if index == 46 {
-			size = 7_421_757
+			size = 7_439_052
 		}
 		role := fmt.Sprintf("pi-bundle/file-%02d", index)
 		materials = append(materials, launchidentity.LaunchMaterialV1{Role: role, Object: object("/fixed/pi/bundle/file-"+fmt.Sprintf("%02d", index), uint64(201+index), size, false)})
 	}
 	closure, err := launchidentity.Seal(launchidentity.SpecInput{
-		RuntimeExecutable: object("/fixed/node", 2, 99, true), ClosureProfileID: launchidentity.Pi0843DarwinARM64Profile,
+		RuntimeExecutable: object("/fixed/node", 2, 99, true), ClosureProfileID: launchidentity.Pi0844DarwinARM64Profile,
 		MaterialRoots: roots, LaunchMaterials: materials, Arguments: []string{"/fixed/node", entrypoint.CanonicalPath}, Environment: []string{}, WorkingDirectory: "/tmp/work",
 	})
 	if err != nil {
@@ -223,11 +223,11 @@ func TestCompositionLedgerCurrentOwnerAndPrepareRunStart(t *testing.T) {
 func TestComposeRuntimeReadyAndFailsClosedWithoutFixedMarshal(t *testing.T) {
 	inputs, runID := newCompositionInputs(t)
 	closure := inputs.LaunchClosure
-	identity, err := launchidentity.Pi0843IdentityFromClosure(closure)
+	identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := NewPi0843Profile(closure.RuntimeExecutable.CanonicalPath, "/fixed/node-runtime", identity.IdentityDigest)
+	profile, err := NewPi0844Profile(closure.RuntimeExecutable.CanonicalPath, "/fixed/node-runtime", identity.IdentityDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestComposeRuntimeReadyAndFailsClosedWithoutFixedMarshal(t *testing.T) {
 		t.Fatalf("run state after failed start=%+v err=%v", after.Run, err)
 	}
 	// A profile that does not match the held closure must fail closed.
-	foreign, err := NewPi0843Profile("/fixed/other", "/fixed/node-runtime", identity.IdentityDigest)
+	foreign, err := NewPi0844Profile("/fixed/other", "/fixed/node-runtime", identity.IdentityDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,11 +314,11 @@ func TestComposeSealedRuntimeReadyAndPrepares(t *testing.T) {
 	inputs.FixedMarshalPath = fixed
 	inputs.OwnerPrivateControlRoot = root
 	closure := inputs.LaunchClosure
-	identity, err := launchidentity.Pi0843IdentityFromClosure(closure)
+	identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := NewPi0843Profile(closure.RuntimeExecutable.CanonicalPath, "/fixed/node-runtime", identity.IdentityDigest)
+	profile, err := NewPi0844Profile(closure.RuntimeExecutable.CanonicalPath, "/fixed/node-runtime", identity.IdentityDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

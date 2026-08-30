@@ -158,7 +158,7 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		// verifier carries that fact without requiring the runtime claim that
 		// newProductionRuntime performs later.
 		borrowed := &borrowedOwnerVerifier{acquisition: inputs.Acquisition, active: true}
-		if _, err := resultingress.SealPi0843DarwinPreparedExecutionStore(ctx, inputs.Ingress, borrowed, resultingress.CurrentOwnerBinding{Scope: inputs.Acquisition.Scope, OwnerEpoch: inputs.Acquisition.OwnerEpoch, ControlOwnerAcquiredFactDigest: ownerState.FactDigest}, inputs.FixedMarshalPath, inputs.OwnerPrivateControlRoot); err != nil {
+		if _, err := resultingress.SealPi0844DarwinPreparedExecutionStore(ctx, inputs.Ingress, borrowed, resultingress.CurrentOwnerBinding{Scope: inputs.Acquisition.Scope, OwnerEpoch: inputs.Acquisition.OwnerEpoch, ControlOwnerAcquiredFactDigest: ownerState.FactDigest}, inputs.FixedMarshalPath, inputs.OwnerPrivateControlRoot); err != nil {
 			_ = owner.Close()
 			return nil, err
 		}

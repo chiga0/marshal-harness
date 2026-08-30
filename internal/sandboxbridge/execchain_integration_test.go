@@ -74,9 +74,9 @@ func newBridgePiFixture(t *testing.T) bridgePiFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapterExe := fakePiScript(t, "0.84.3", resultDeclaredPath, sessionID, "T1", "R1", "A1", "placeholder")
+	adapterExe := fakePiScript(t, "0.84.4", resultDeclaredPath, sessionID, "T1", "R1", "A1", "placeholder")
 	// 重写脚本以携带真实 adapterExe（identity 由 pi inspect 取得）——重新生成一次。
-	adapterExe = fakePiScript(t, "0.84.3", resultDeclaredPath, sessionID, "T1", "R1", "A1", adapterExe)
+	adapterExe = fakePiScript(t, "0.84.4", resultDeclaredPath, sessionID, "T1", "R1", "A1", adapterExe)
 	adapter, err := pi.New(adapterExe, validator)
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestRunWorkerExecChainCarriesAgentInAllocation(t *testing.T) {
 	if declared.TaskID != "T1" || declared.RunID != "R1" || declared.AttemptID != "A1" {
 		t.Errorf("identity mismatch: %+v", declared)
 	}
-	if declared.Adapter.ID != "pi" || declared.Adapter.Version != "0.84.3" {
+	if declared.Adapter.ID != "pi" || declared.Adapter.Version != "0.84.4" {
 		t.Errorf("adapter identity = %+v", declared.Adapter)
 	}
 	if declared.Session.ID != f.sessionID {
@@ -294,14 +294,14 @@ func (f *fakeDurableAuthority) AgentAuthority(registrationID string) (agentregis
 	reg := agentregistry.AgentRegistration{
 		RegistrationID: registrationID, AuthorityNamespaceID: "authority:marshal-local",
 		SecurityDomainID: "default/execution/test", Principal: "principal:agent:test",
-		ProviderType: agentregistry.ProviderTypeAgent, ProviderName: "pi", ProviderVersion: "0.84.3",
+		ProviderType: agentregistry.ProviderTypeAgent, ProviderName: "pi", ProviderVersion: "0.84.4",
 		ProtocolVersion: "marshal-worker/v1alpha1", Scope: "worker",
 		IdempotencyKey: "cap:" + canonical.DigestBytes([]byte("cap")), RequestDigest: canonical.DigestBytes([]byte("cap")),
 		LifecycleState: state, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
 	}
 	snap := agentregistry.AgentCapabilitySnapshot{
 		SnapshotDigest: canonical.DigestBytes([]byte("cap")), RegistrationID: registrationID,
-		ProtocolVersion: "marshal-worker/v1alpha1", ProviderName: "pi", ProviderVersion: "0.84.3",
+		ProtocolVersion: "marshal-worker/v1alpha1", ProviderName: "pi", ProviderVersion: "0.84.4",
 		Capabilities:               []agentregistry.Capability{agentregistry.CapabilityExecutionProfileWorkspaceWrite},
 		ConformanceEvidenceDigests: []string{canonical.DigestBytes([]byte("cap"))},
 		SnapshotState:              agentregistry.SnapshotStateActive,

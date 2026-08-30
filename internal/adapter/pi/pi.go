@@ -34,7 +34,7 @@ const (
 	adapterID          = "pi"
 	adapterVersion     = "0.4.0"
 	supportedBinary    = "0.84.1"
-	supportedBinary843 = "0.84.3"
+	supportedBinary843 = "0.84.4"
 	// supportedSessionVersion is the exact pi session event protocol version
 	// Marshal accepts. Any other header version is a protocol violation.
 	supportedSessionVersion = 3
@@ -136,7 +136,7 @@ type Adapter struct {
 	executable  string
 	nodeRuntime string
 	// frozenVersion is configuration authority, not provider output. The
-	// production Pi profile is closed over 0.84.3 and PrepareLaunch must not
+	// production Pi profile is closed over 0.84.4 and PrepareLaunch must not
 	// execute the provider merely to rediscover that fact before Core has
 	// appended launch-authorized.
 	frozenVersion string
@@ -169,7 +169,7 @@ func (a *Adapter) ProductionLaunchProfileID() string {
 	if a == nil || a.nodeRuntime == "" || a.frozenVersion != supportedBinary843 || runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
 		return ""
 	}
-	return launchidentity.Pi0843DarwinARM64Profile
+	return launchidentity.Pi0844DarwinARM64Profile
 }
 
 // New requires an exact absolute executable path. Marshal never resolves a
@@ -178,7 +178,7 @@ func New(executable string, validator *contract.Validator) (*Adapter, error) {
 	return newAdapter(executable, "", validator)
 }
 
-// NewWithRuntime freezes the explicit Node runtime required by the Pi 0.84.3
+// NewWithRuntime freezes the explicit Node runtime required by the Pi 0.84.4
 // production closure. The configured Pi entrypoint remains provider material;
 // it is never used as the kernel executable.
 func NewWithRuntime(executable, nodeRuntime string, validator *contract.Validator) (*Adapter, error) {
@@ -579,10 +579,10 @@ func (a *Adapter) prepareLaunch(ctx context.Context, record domain.Record) (sand
 		}, nil
 	}
 	if identity.version != supportedBinary843 {
-		return nil, fmt.Errorf("%w: Pi production launch requires 0.84.3 and an explicit canonical Node runtime", launchidentity.ErrUnavailable)
+		return nil, fmt.Errorf("%w: Pi production launch requires 0.84.4 and an explicit canonical Node runtime", launchidentity.ErrUnavailable)
 	}
 	argv := append([]string{a.nodeRuntime, identity.path}, args...)
-	heldClosure, err := launchidentity.OpenPi0843(a.nodeRuntime, identity.path, argv, environment, worktree)
+	heldClosure, err := launchidentity.OpenPi0844(a.nodeRuntime, identity.path, argv, environment, worktree)
 	if err != nil {
 		return nil, err
 	}

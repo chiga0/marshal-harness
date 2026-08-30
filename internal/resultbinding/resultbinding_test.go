@@ -19,7 +19,7 @@ func testFacts(t *testing.T) Facts {
 		AttemptID:                     "A1",
 		AgentAdapterID:                "pi",
 		AgentExecutable:               "/opt/pi/cli.js",
-		AgentProviderVersion:          "0.84.3",
+		AgentProviderVersion:          "0.84.4",
 		CapabilityDigest:              canonical.DigestBytes([]byte("capability-snapshot")),
 		ExecutionProfile:              "workspace-write",
 		SandboxProviderRegistrationID: "registration:local-runner",
@@ -131,8 +131,8 @@ func TestAdmitWorkerResultMalformedFacts(t *testing.T) {
 // 的 AgentRegistrationID 跨「注册期 probe」与「冻结期快照」严格一致，无需
 // 任何降级匹配。
 func TestStableCapabilityDigestIgnoresVolatileFields(t *testing.T) {
-	base := `{"apiVersion":"marshal.dev/v1alpha1","kind":"CapabilitySnapshot","adapterId":"pi","adapterVersion":"1.2.3","executable":"/opt/pi","executableDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","binaryVersion":"0.84.3","probeStatus":"supported","probedAt":"2026-08-28T00:00:00Z"}`
-	onlyProbedAtDiffers := `{"apiVersion":"marshal.dev/v1alpha1","kind":"CapabilitySnapshot","adapterId":"pi","adapterVersion":"1.2.3","executable":"/opt/pi","executableDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","binaryVersion":"0.84.3","probeStatus":"supported","probedAt":"2026-08-28T23:59:59Z"}`
+	base := `{"apiVersion":"marshal.dev/v1alpha1","kind":"CapabilitySnapshot","adapterId":"pi","adapterVersion":"1.2.3","executable":"/opt/pi","executableDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","binaryVersion":"0.84.4","probeStatus":"supported","probedAt":"2026-08-28T00:00:00Z"}`
+	onlyProbedAtDiffers := `{"apiVersion":"marshal.dev/v1alpha1","kind":"CapabilitySnapshot","adapterId":"pi","adapterVersion":"1.2.3","executable":"/opt/pi","executableDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","binaryVersion":"0.84.4","probeStatus":"supported","probedAt":"2026-08-28T23:59:59Z"}`
 	differentBinary := `{"apiVersion":"marshal.dev/v1alpha1","kind":"CapabilitySnapshot","adapterId":"pi","adapterVersion":"1.2.3","executable":"/opt/pi","executableDigest":"sha256:2222222222222222222222222222222222222222222222222222222222222222","binaryVersion":"0.84.4","probeStatus":"supported","probedAt":"2026-08-28T00:00:00Z"}`
 
 	d1, err := StableCapabilityDigest([]byte(base))
@@ -167,7 +167,7 @@ func TestStableCapabilityDigestRejectsMissingAdapterID(t *testing.T) {
 }
 
 func TestStableCapabilitySnapshotDigestExcludesOnlyProbeTime(t *testing.T) {
-	base := `{"apiVersion":"marshal.dev/v1alpha1","kind":"CapabilitySnapshot","adapterId":"pi","adapterVersion":"1.2.3","executable":"/opt/pi","executableDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","binaryVersion":"0.84.3","probeStatus":"supported","capabilities":{"executionProfiles":["workspace-write"]},"probedAt":"2026-08-28T00:00:00Z"}`
+	base := `{"apiVersion":"marshal.dev/v1alpha1","kind":"CapabilitySnapshot","adapterId":"pi","adapterVersion":"1.2.3","executable":"/opt/pi","executableDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","binaryVersion":"0.84.4","probeStatus":"supported","capabilities":{"executionProfiles":["workspace-write"]},"probedAt":"2026-08-28T00:00:00Z"}`
 	later := strings.Replace(base, "2026-08-28T00:00:00Z", "2026-08-28T23:59:59Z", 1)
 	changedCapabilities := strings.Replace(base, `["workspace-write"]`, `["read-only"]`, 1)
 

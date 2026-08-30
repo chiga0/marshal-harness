@@ -166,7 +166,7 @@ func testComponents(t *testing.T) (*controller, *testOwnerLock, *testAuthority, 
 	t.Helper()
 	acquisition := testAcquisition()
 	lock := &testOwnerLock{want: acquisition}
-	profile, err := NewPi0843Profile("/fixed/bin/pi", "/fixed/bin/node", runtimeTestDigest)
+	profile, err := NewPi0844Profile("/fixed/bin/pi", "/fixed/bin/node", runtimeTestDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestStartUsesOneCriticalSectionAndRejectsPreparedForgery(t *testing.T) {
 func TestStartReplayReturnsDurableSuccessWithoutRespawn(t *testing.T) {
 	controller, lock, authority, bridge, _ := testComponents(t)
 	authority.outcome, authority.outcomeFound = testSuccessor(), true
-	bridge.configured, _ = NewPi0843Profile("/fixed/bin/replaced-pi", "/fixed/bin/node", runtimeTestDigest)
+	bridge.configured, _ = NewPi0844Profile("/fixed/bin/replaced-pi", "/fixed/bin/node", runtimeTestDigest)
 	runtime := claimTestRuntime(t, controller)
 	defer runtime.Close()
 	got, err := runtime.StartPreparedRun(context.Background(), testPrepared())
@@ -237,7 +237,7 @@ func TestLostBridgeResponseReturnsNewDurableOutcome(t *testing.T) {
 
 func TestConfiguredProfileDriftFailsInsideCriticalSection(t *testing.T) {
 	controller, lock, _, bridge, _ := testComponents(t)
-	bridge.configured, _ = NewPi0843Profile("/fixed/bin/other-pi", "/fixed/bin/node", runtimeTestDigest)
+	bridge.configured, _ = NewPi0844Profile("/fixed/bin/other-pi", "/fixed/bin/node", runtimeTestDigest)
 	runtime := claimTestRuntime(t, controller)
 	defer runtime.Close()
 	_, err := runtime.StartPreparedRun(context.Background(), testPrepared())
@@ -276,10 +276,10 @@ func TestRuntimeRejectsSecondCompositionForSameOwnerLock(t *testing.T) {
 }
 
 func TestPiProfileRejectsAnythingExceptExactClosedInputs(t *testing.T) {
-	if _, err := NewPi0843Profile("pi", "/fixed/bin/node", runtimeTestDigest); !application.HasReason(err, application.ReasonInvalidRequest) {
+	if _, err := NewPi0844Profile("pi", "/fixed/bin/node", runtimeTestDigest); !application.HasReason(err, application.ReasonInvalidRequest) {
 		t.Fatalf("relative executable err=%v", err)
 	}
-	if _, err := NewPi0843Profile("/fixed/bin/pi", "/fixed/bin/node", "sha256:not-a-digest"); !application.HasReason(err, application.ReasonInvalidRequest) {
+	if _, err := NewPi0844Profile("/fixed/bin/pi", "/fixed/bin/node", "sha256:not-a-digest"); !application.HasReason(err, application.ReasonInvalidRequest) {
 		t.Fatalf("forged digest err=%v", err)
 	}
 }

@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const piEntrypointDigest = "sha256:1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a"
+const piEntrypointDigest = "sha256:840d1e8e689ed9e4937bcb00b9a810e02a8567d9afb10a47097f11ca93ea1521"
 
 type HeldClosure struct {
 	Closure   ClosureV1
@@ -39,9 +39,9 @@ func (held *HeldClosure) Close() {
 	held.Runtime, held.Roots, held.Materials = nil, nil, nil
 }
 
-// OpenPi0843 builds the Core-owned two-root closure. It never follows a
+// OpenPi0844 builds the Core-owned two-root closure. It never follows a
 // symlink and keeps every runtime/root/material descriptor live.
-func OpenPi0843(runtimePath, entrypointPath string, arguments, environment []string, workingDirectory string) (*HeldClosure, error) {
+func OpenPi0844(runtimePath, entrypointPath string, arguments, environment []string, workingDirectory string) (*HeldClosure, error) {
 	entrypointPath, err := filepath.Abs(entrypointPath)
 	if err != nil {
 		return nil, ErrUnavailable
@@ -52,7 +52,7 @@ func OpenPi0843(runtimePath, entrypointPath string, arguments, environment []str
 		count     int
 		bytes     int64
 	}{
-		{"pi-bundle", "dist/bundle", 48, 7422432},
+		{"pi-bundle", "dist/bundle", 48, 7439808},
 		{"photon-node", "node_modules/@silvia-odwyer/photon-node", 7, 2265687},
 	}
 	held := &HeldClosure{}
@@ -109,7 +109,7 @@ func OpenPi0843(runtimePath, entrypointPath string, arguments, environment []str
 		return fail(errorsNew("material count"))
 	}
 	for _, material := range materials {
-		if material.Role == "pi-bundle/cli.js" && (material.Object.Size != 629 || material.Object.RawSHA256 != piEntrypointDigest) {
+		if material.Role == "pi-bundle/cli.js" && (material.Object.Size != 710 || material.Object.RawSHA256 != piEntrypointDigest) {
 			return fail(errorsNew("entrypoint identity"))
 		}
 	}
@@ -117,7 +117,7 @@ func OpenPi0843(runtimePath, entrypointPath string, arguments, environment []str
 	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &limit); err != nil || uint64(1+len(rootRecords)+len(materials)+CoreFDReserve) >= limit.Cur {
 		return fail(errorsNew("fd budget"))
 	}
-	input := SpecInput{RuntimeExecutable: runtime, ClosureProfileID: Pi0843DarwinARM64Profile, MaterialRoots: rootRecords, LaunchMaterials: materials, Arguments: append([]string(nil), arguments...), Environment: append([]string(nil), environment...), WorkingDirectory: workingDirectory}
+	input := SpecInput{RuntimeExecutable: runtime, ClosureProfileID: Pi0844DarwinARM64Profile, MaterialRoots: rootRecords, LaunchMaterials: materials, Arguments: append([]string(nil), arguments...), Environment: append([]string(nil), environment...), WorkingDirectory: workingDirectory}
 	closure, err := Seal(input)
 	if err != nil {
 		return fail(err)
@@ -130,14 +130,14 @@ func Reopen(closure ClosureV1) (*HeldClosure, error) {
 	if err := closure.Validate(); err != nil {
 		return nil, err
 	}
-	if closure.ClosureProfileID == Pi0843DarwinARM64Profile {
+	if closure.ClosureProfileID == Pi0844DarwinARM64Profile {
 		entrypoint := ""
 		for _, material := range closure.LaunchMaterials {
 			if material.Role == "pi-bundle/cli.js" {
 				entrypoint = material.Object.CanonicalPath
 			}
 		}
-		rebuilt, err := OpenPi0843(closure.RuntimeExecutable.CanonicalPath, entrypoint, closure.Arguments, closure.Environment, closure.WorkingDirectory)
+		rebuilt, err := OpenPi0844(closure.RuntimeExecutable.CanonicalPath, entrypoint, closure.Arguments, closure.Environment, closure.WorkingDirectory)
 		if err != nil || !reflect.DeepEqual(rebuilt.Closure, closure) {
 			if rebuilt != nil {
 				rebuilt.Close()

@@ -22,12 +22,12 @@ import (
 // runSealedReadyBranch drives one READY run through the sealed production
 // composition. The Pi runtime and entrypoint come from MARSHAL_PI_RUNTIME and
 // MARSHAL_PI_ENTRYPOINT; both are mandatory and the launchidentity seal fails
-// closed unless the bytes match the frozen Pi 0.84.3 identity.
+// closed unless the bytes match the frozen Pi 0.84.4 identity.
 func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID, runID string, stdout, stderr io.Writer) int {
 	piRuntime := os.Getenv("MARSHAL_PI_RUNTIME")
 	piEntrypoint := os.Getenv("MARSHAL_PI_ENTRYPOINT")
 	if piRuntime == "" || piEntrypoint == "" {
-		fmt.Fprintln(stderr, "运行失败：sealed 组合需要 MARSHAL_PI_RUNTIME 与 MARSHAL_PI_ENTRYPOINT 指向冻结的 Pi 0.84.3 镜像。")
+		fmt.Fprintln(stderr, "运行失败：sealed 组合需要 MARSHAL_PI_RUNTIME 与 MARSHAL_PI_ENTRYPOINT 指向冻结的 Pi 0.84.4 镜像。")
 		return ExitUnavailable
 	}
 	ingressDir, ledgerDir, allocationRoot, ownerDir := productionruntime.CompositionPaths(stateRoot)
@@ -99,24 +99,24 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		fmt.Fprintf(stderr, "运行失败：task spec 无法解析：%v\n", taskErr)
 		return ExitFailure
 	}
-	requirements, err := productionruntime.Pi0843Requirements(task.Worker.ExecutionProfile)
+	requirements, err := productionruntime.Pi0844Requirements(task.Worker.ExecutionProfile)
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：执行 profile 不被 sealed 组合接受：%v\n", err)
 		return ExitFailure
 	}
-	heldClosure, err := launchidentity.OpenPi0843(piRuntime, piEntrypoint, []string{piRuntime, piEntrypoint}, []string{}, projection.WorktreePath)
+	heldClosure, err := launchidentity.OpenPi0844(piRuntime, piEntrypoint, []string{piRuntime, piEntrypoint}, []string{}, projection.WorktreePath)
 	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：Pi 镜像身份与冻结的 0.84.3 合同不一致，sealed 组合拒绝启动：%v\n", err)
+		fmt.Fprintf(stderr, "运行失败：Pi 镜像身份与冻结的 0.84.4 合同不一致，sealed 组合拒绝启动：%v\n", err)
 		return ExitUnavailable
 	}
 	defer heldClosure.Close()
 	closure := heldClosure.Closure
-	identity, err := launchidentity.Pi0843IdentityFromClosure(closure)
+	identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：Pi 身份派生失败：%v\n", err)
 		return ExitFailure
 	}
-	profile, err := productionruntime.NewPi0843Profile(closure.RuntimeExecutable.CanonicalPath, piRuntime, identity.IdentityDigest)
+	profile, err := productionruntime.NewPi0844Profile(closure.RuntimeExecutable.CanonicalPath, piRuntime, identity.IdentityDigest)
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：Pi profile 无效：%v\n", err)
 		return ExitFailure

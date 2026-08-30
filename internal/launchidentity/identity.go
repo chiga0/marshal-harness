@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	Pi0843DarwinARM64Profile = "pi/0.84.3/darwin-arm64/v1"
+	Pi0844DarwinARM64Profile = "pi/0.84.4/darwin-arm64/v1"
 	NativeProfile            = "native/v1"
 	CoreFDReserve            = 32
 )
@@ -46,11 +46,11 @@ type LaunchMaterialV1 struct {
 	Object ObjectV1 `json:"object"`
 }
 
-// Pi0843IdentityV1 is the path-free, static Pi 0.84.3 identity frozen by
+// Pi0844IdentityV1 is the path-free, static Pi 0.84.4 identity frozen by
 // ADR 0063.  The component digests are derived from the exact closure
 // objects, while the canonical identity preimage contains no path, argv,
 // environment, stdin, secret, or per-Run agentLaunchSpecDigest.
-type Pi0843IdentityV1 struct {
+type Pi0844IdentityV1 struct {
 	SchemaVersion            string `json:"schemaVersion"`
 	ProtocolRevision         string `json:"protocolRevision"`
 	AgentProvider            string `json:"agentProvider"`
@@ -64,13 +64,13 @@ type Pi0843IdentityV1 struct {
 }
 
 const (
-	pi0843IdentitySchema   = "Pi0843IdentityV1"
-	pi0843IdentityProtocol = "pi-0843-identity/v1"
-	pi0843IdentityProvider = "pi"
-	pi0843IdentityVersion  = "0.84.3"
+	pi0844IdentitySchema   = "Pi0844IdentityV1"
+	pi0844IdentityProtocol = "pi-0843-identity/v1"
+	pi0844IdentityProvider = "pi"
+	pi0844IdentityVersion  = "0.84.4"
 )
 
-type pi0843IdentityPreimage struct {
+type pi0844IdentityPreimage struct {
 	SchemaVersion            string `json:"schemaVersion"`
 	ProtocolRevision         string `json:"protocolRevision"`
 	AgentProvider            string `json:"agentProvider"`
@@ -83,9 +83,9 @@ type pi0843IdentityPreimage struct {
 }
 
 // Validate checks the closed identity envelope. It does not expose or accept
-// any locator; Pi0843IdentityFromClosure is the only builder from objects.
-func (identity Pi0843IdentityV1) Validate() error {
-	if identity.SchemaVersion != pi0843IdentitySchema || identity.ProtocolRevision != pi0843IdentityProtocol || identity.AgentProvider != pi0843IdentityProvider || identity.AgentVersion != pi0843IdentityVersion || identity.ClosureProfileID != Pi0843DarwinARM64Profile ||
+// any locator; Pi0844IdentityFromClosure is the only builder from objects.
+func (identity Pi0844IdentityV1) Validate() error {
+	if identity.SchemaVersion != pi0844IdentitySchema || identity.ProtocolRevision != pi0844IdentityProtocol || identity.AgentProvider != pi0844IdentityProvider || identity.AgentVersion != pi0844IdentityVersion || identity.ClosureProfileID != Pi0844DarwinARM64Profile ||
 		!validDigest(identity.NodeRuntimeObjectDigest) || !validDigest(identity.EntrypointMaterialDigest) || !validDigest(identity.MaterialRootsDigest) || !validDigest(identity.LaunchMaterialsDigest) || !validDigest(identity.IdentityDigest) {
 		return ErrUnavailable
 	}
@@ -98,12 +98,12 @@ func (identity Pi0843IdentityV1) Validate() error {
 
 // Digest returns the identityDigest for the closed identity. The digest
 // preimage deliberately omits IdentityDigest and agentLaunchSpecDigest.
-func (identity Pi0843IdentityV1) Digest() (string, error) {
-	if identity.SchemaVersion != pi0843IdentitySchema || identity.ProtocolRevision != pi0843IdentityProtocol || identity.AgentProvider != pi0843IdentityProvider || identity.AgentVersion != pi0843IdentityVersion || identity.ClosureProfileID != Pi0843DarwinARM64Profile ||
+func (identity Pi0844IdentityV1) Digest() (string, error) {
+	if identity.SchemaVersion != pi0844IdentitySchema || identity.ProtocolRevision != pi0844IdentityProtocol || identity.AgentProvider != pi0844IdentityProvider || identity.AgentVersion != pi0844IdentityVersion || identity.ClosureProfileID != Pi0844DarwinARM64Profile ||
 		!validDigest(identity.NodeRuntimeObjectDigest) || !validDigest(identity.EntrypointMaterialDigest) || !validDigest(identity.MaterialRootsDigest) || !validDigest(identity.LaunchMaterialsDigest) {
 		return "", ErrUnavailable
 	}
-	preimage := pi0843IdentityPreimage{SchemaVersion: identity.SchemaVersion, ProtocolRevision: identity.ProtocolRevision, AgentProvider: identity.AgentProvider, AgentVersion: identity.AgentVersion, ClosureProfileID: identity.ClosureProfileID, NodeRuntimeObjectDigest: identity.NodeRuntimeObjectDigest, EntrypointMaterialDigest: identity.EntrypointMaterialDigest, MaterialRootsDigest: identity.MaterialRootsDigest, LaunchMaterialsDigest: identity.LaunchMaterialsDigest}
+	preimage := pi0844IdentityPreimage{SchemaVersion: identity.SchemaVersion, ProtocolRevision: identity.ProtocolRevision, AgentProvider: identity.AgentProvider, AgentVersion: identity.AgentVersion, ClosureProfileID: identity.ClosureProfileID, NodeRuntimeObjectDigest: identity.NodeRuntimeObjectDigest, EntrypointMaterialDigest: identity.EntrypointMaterialDigest, MaterialRootsDigest: identity.MaterialRootsDigest, LaunchMaterialsDigest: identity.LaunchMaterialsDigest}
 	raw, err := json.Marshal(preimage)
 	if err != nil {
 		return "", ErrUnavailable
@@ -119,16 +119,16 @@ func digestCanonicalValue(value any) (string, error) {
 	return canonical.DigestJSON(raw)
 }
 
-// Pi0843IdentityFromClosure derives the sole accepted Pi identity from an
+// Pi0844IdentityFromClosure derives the sole accepted Pi identity from an
 // already sealed closure. All locator-bearing values are used only as digest
 // preimages; the returned closed value contains digests only.
-func Pi0843IdentityFromClosure(closure ClosureV1) (Pi0843IdentityV1, error) {
-	if closure.Validate() != nil || closure.ClosureProfileID != Pi0843DarwinARM64Profile || len(closure.MaterialRoots) != 2 || len(closure.LaunchMaterials) != 55 {
-		return Pi0843IdentityV1{}, ErrUnavailable
+func Pi0844IdentityFromClosure(closure ClosureV1) (Pi0844IdentityV1, error) {
+	if closure.Validate() != nil || closure.ClosureProfileID != Pi0844DarwinARM64Profile || len(closure.MaterialRoots) != 2 || len(closure.LaunchMaterials) != 55 {
+		return Pi0844IdentityV1{}, ErrUnavailable
 	}
 	for index := 1; index < len(closure.MaterialRoots); index++ {
 		if strings.Compare(closure.MaterialRoots[index-1].Name, closure.MaterialRoots[index].Name) >= 0 {
-			return Pi0843IdentityV1{}, ErrUnavailable
+			return Pi0844IdentityV1{}, ErrUnavailable
 		}
 	}
 	var entrypoint *LaunchMaterialV1
@@ -140,31 +140,31 @@ func Pi0843IdentityFromClosure(closure ClosureV1) (Pi0843IdentityV1, error) {
 		}
 	}
 	if entrypointCount != 1 || entrypoint == nil {
-		return Pi0843IdentityV1{}, ErrUnavailable
+		return Pi0844IdentityV1{}, ErrUnavailable
 	}
 	nodeDigest, err := digestCanonicalValue(closure.RuntimeExecutable)
 	if err != nil {
-		return Pi0843IdentityV1{}, ErrUnavailable
+		return Pi0844IdentityV1{}, ErrUnavailable
 	}
 	entrypointDigest, err := digestCanonicalValue(*entrypoint)
 	if err != nil {
-		return Pi0843IdentityV1{}, ErrUnavailable
+		return Pi0844IdentityV1{}, ErrUnavailable
 	}
 	roots := append([]MaterialRootV1(nil), closure.MaterialRoots...)
 	rootDigest, err := digestCanonicalValue(roots)
 	if err != nil {
-		return Pi0843IdentityV1{}, ErrUnavailable
+		return Pi0844IdentityV1{}, ErrUnavailable
 	}
-	identity := Pi0843IdentityV1{
-		SchemaVersion: pi0843IdentitySchema, ProtocolRevision: pi0843IdentityProtocol,
-		AgentProvider: pi0843IdentityProvider, AgentVersion: pi0843IdentityVersion,
+	identity := Pi0844IdentityV1{
+		SchemaVersion: pi0844IdentitySchema, ProtocolRevision: pi0844IdentityProtocol,
+		AgentProvider: pi0844IdentityProvider, AgentVersion: pi0844IdentityVersion,
 		ClosureProfileID: closure.ClosureProfileID, NodeRuntimeObjectDigest: nodeDigest,
 		EntrypointMaterialDigest: entrypointDigest, MaterialRootsDigest: rootDigest,
 		LaunchMaterialsDigest: closure.LaunchMaterialsDigest,
 	}
 	identity.IdentityDigest, err = identity.Digest()
 	if err != nil {
-		return Pi0843IdentityV1{}, ErrUnavailable
+		return Pi0844IdentityV1{}, ErrUnavailable
 	}
 	return identity, nil
 }
@@ -358,8 +358,8 @@ func (closure ClosureV1) Validate() error {
 		return ErrUnavailable
 	}
 	switch closure.ClosureProfileID {
-	case Pi0843DarwinARM64Profile:
-		if !validPi0843Shape(closure) {
+	case Pi0844DarwinARM64Profile:
+		if !validPi0844Shape(closure) {
 			return ErrUnavailable
 		}
 	case NativeProfile:
@@ -372,7 +372,7 @@ func (closure ClosureV1) Validate() error {
 	return nil
 }
 
-func validPi0843Shape(closure ClosureV1) bool {
+func validPi0844Shape(closure ClosureV1) bool {
 	if len(closure.MaterialRoots) != 2 || len(closure.LaunchMaterials) != 55 || len(closure.Arguments) < 2 {
 		return false
 	}
@@ -380,7 +380,7 @@ func validPi0843Shape(closure ClosureV1) bool {
 		rel   string
 		count int
 		bytes int64
-	}{"pi-bundle": {"dist/bundle", 48, 7422432}, "photon-node": {"node_modules/@silvia-odwyer/photon-node", 7, 2265687}}
+	}{"pi-bundle": {"dist/bundle", 48, 7439808}, "photon-node": {"node_modules/@silvia-odwyer/photon-node", 7, 2265687}}
 	counts := map[string]int{}
 	totals := map[string]int64{}
 	for _, root := range closure.MaterialRoots {
@@ -395,7 +395,7 @@ func validPi0843Shape(closure ClosureV1) bool {
 		counts[root]++
 		totals[root] += material.Object.Size
 		if material.Role == "pi-bundle/cli.js" {
-			entry = material.Object.Size == 629 && material.Object.RawSHA256 == "sha256:1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a" && closure.Arguments[1] == material.Object.CanonicalPath
+			entry = material.Object.Size == 710 && material.Object.RawSHA256 == "sha256:840d1e8e689ed9e4937bcb00b9a810e02a8567d9afb10a47097f11ca93ea1521" && closure.Arguments[1] == material.Object.CanonicalPath
 		}
 	}
 	for name, declaration := range want {

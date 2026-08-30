@@ -475,7 +475,7 @@ func TestSpawnRejectsClosureDigestMismatchBeforeMechanics(t *testing.T) {
 		t.Fatalf("closure digest mismatch error=%v", err)
 	}
 	payload = validSpawnPayload()
-	payload.ClosureProfileID = launchidentity.Pi0843DarwinARM64Profile
+	payload.ClosureProfileID = launchidentity.Pi0844DarwinARM64Profile
 	if err := validateSpawnPayload(payload); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("closure profile mismatch error=%v", err)
 	}

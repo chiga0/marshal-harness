@@ -46,7 +46,7 @@ type legacyPreparedExecutionV1 struct {
 	StoredClosureDigest                  string              `json:"storedClosureDigest"`
 	LaunchMaterialsDigest                string              `json:"launchMaterialsDigest"`
 	AgentLaunchSpecDigest                string              `json:"agentLaunchSpecDigest"`
-	Pi0843IdentityDigest                 string              `json:"pi0843IdentityDigest"`
+	Pi0844IdentityDigest                 string              `json:"pi0844IdentityDigest"`
 	PreparationDigest                    string              `json:"preparationDigest"`
 }
 
@@ -54,7 +54,7 @@ func (prepared legacyPreparedExecutionV1) validate() error {
 	if prepared.SchemaVersion != legacyPreparedExecutionSchema || prepared.ProtocolRevision != legacyPreparedExecutionProtocol || prepared.AttemptIdentity.Validate() != nil || prepared.RunAuthorityBinding != runAuthorityBindingFor(prepared.AttemptIdentity) || prepared.ExpectedRunSequence == 0 || prepared.ExpectedRunSequence > maxExactJSONInteger || prepared.CurrentOwnerBinding.Validate() != nil || strings.TrimSpace(prepared.LaunchAuthorizationID) == "" || prepared.AttemptAuthorityHeadAtPreparation != prepared.LaunchAuthorizedFactDigest {
 		return ErrPreparedExecutionConflict
 	}
-	for _, digest := range []string{prepared.ExpectedRunAuthorityHead, prepared.ControlOwnerBoundFactDigest, prepared.AttemptAuthorityHeadAtPreparation, prepared.AllocationProvisionReceiptFactDigest, prepared.AllocationProvisionReceiptDigest, prepared.LaunchAuthorizedFactDigest, prepared.StoredClosureDigest, prepared.LaunchMaterialsDigest, prepared.AgentLaunchSpecDigest, prepared.Pi0843IdentityDigest, prepared.PreparationDigest} {
+	for _, digest := range []string{prepared.ExpectedRunAuthorityHead, prepared.ControlOwnerBoundFactDigest, prepared.AttemptAuthorityHeadAtPreparation, prepared.AllocationProvisionReceiptFactDigest, prepared.AllocationProvisionReceiptDigest, prepared.LaunchAuthorizedFactDigest, prepared.StoredClosureDigest, prepared.LaunchMaterialsDigest, prepared.AgentLaunchSpecDigest, prepared.Pi0844IdentityDigest, prepared.PreparationDigest} {
 		if requireDigest("legacyPreparedDigest", digest) != nil {
 			return ErrPreparedExecutionConflict
 		}
@@ -107,7 +107,7 @@ type PreparedExecutionV1 struct {
 	StoredClosureDigest                  string              `json:"storedClosureDigest"`
 	LaunchMaterialsDigest                string              `json:"launchMaterialsDigest"`
 	AgentLaunchSpecDigest                string              `json:"agentLaunchSpecDigest"`
-	Pi0843IdentityDigest                 string              `json:"pi0843IdentityDigest"`
+	Pi0844IdentityDigest                 string              `json:"pi0844IdentityDigest"`
 	PreparationDigest                    string              `json:"preparationDigest"`
 }
 
@@ -126,7 +126,7 @@ func (prepared PreparedExecutionV1) Validate() error {
 		prepared.AttemptAuthorityHeadAtPreparation, prepared.AllocationProvisionReceiptFactDigest,
 		prepared.AllocationProvisionReceiptDigest, prepared.LaunchAuthorizedFactDigest,
 		prepared.StoredClosureDigest, prepared.LaunchMaterialsDigest,
-		prepared.AgentLaunchSpecDigest, prepared.Pi0843IdentityDigest, prepared.PreparationDigest,
+		prepared.AgentLaunchSpecDigest, prepared.Pi0844IdentityDigest, prepared.PreparationDigest,
 	} {
 		if requireDigest("preparedExecutionDigest", digest) != nil {
 			return ErrPreparedExecutionConflict
@@ -472,7 +472,7 @@ func derivePreparedExecution(projection *Ingress, state AttemptAuthorityState, c
 	if err != nil {
 		return PreparedExecutionV1{}, ErrPreparedExecutionConflict
 	}
-	piIdentity, err := launchidentity.Pi0843IdentityFromClosure(closure)
+	piIdentity, err := launchidentity.Pi0844IdentityFromClosure(closure)
 	if err != nil || piIdentity.Validate() != nil {
 		return PreparedExecutionV1{}, ErrPreparedExecutionConflict
 	}
@@ -488,7 +488,7 @@ func derivePreparedExecution(projection *Ingress, state AttemptAuthorityState, c
 		AllocationProvisionReceiptDigest:     receipt.ReceiptDigest,
 		LaunchAuthorizationID:                state.LaunchAuthorizationID, LaunchAuthorizedFactDigest: state.LaunchAuthorizedDigest,
 		StoredClosureDigest: closureDigest, LaunchMaterialsDigest: state.LaunchMaterialsDigest,
-		AgentLaunchSpecDigest: state.AgentLaunchSpecDigest, Pi0843IdentityDigest: piIdentity.IdentityDigest,
+		AgentLaunchSpecDigest: state.AgentLaunchSpecDigest, Pi0844IdentityDigest: piIdentity.IdentityDigest,
 	})
 }
 

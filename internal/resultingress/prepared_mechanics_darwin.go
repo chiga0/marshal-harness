@@ -104,11 +104,11 @@ func (s *DurableStore) verifyPreparedCurrentSourcesLocked(projection *Ingress, p
 		return launchidentity.ClosureV1{}, allocationcontrol.AllocationProvisionReceiptV1{}, err
 	}
 	observed, err := launchidentity.VerifyCurrentClosure(closure, live)
-	if err != nil || observed.LaunchMaterialsDigest != prepared.LaunchMaterialsDigest || observed.AgentLaunchSpecDigest != prepared.AgentLaunchSpecDigest || observed.Pi0843IdentityDigest != prepared.Pi0843IdentityDigest || observed.WorkingDirectory.CanonicalPath != closure.WorkingDirectory {
+	if err != nil || observed.LaunchMaterialsDigest != prepared.LaunchMaterialsDigest || observed.AgentLaunchSpecDigest != prepared.AgentLaunchSpecDigest || observed.Pi0844IdentityDigest != prepared.Pi0844IdentityDigest || observed.WorkingDirectory.CanonicalPath != closure.WorkingDirectory {
 		return launchidentity.ClosureV1{}, allocationcontrol.AllocationProvisionReceiptV1{}, ErrPreparedExecutionUnavailable
 	}
-	identity, err := launchidentity.Pi0843IdentityFromClosure(closure)
-	if err != nil || identity.IdentityDigest != prepared.Pi0843IdentityDigest {
+	identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
+	if err != nil || identity.IdentityDigest != prepared.Pi0844IdentityDigest {
 		return launchidentity.ClosureV1{}, allocationcontrol.AllocationProvisionReceiptV1{}, ErrPreparedExecutionConflict
 	}
 	return closure, receipt, nil
