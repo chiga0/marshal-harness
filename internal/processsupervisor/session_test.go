@@ -675,4 +675,7 @@ func mustDigestValue(value any) string {
 	return digest
 }
 
-func digest(character string) string { return "sha256:" + strings.Repeat(character, 64) }
+// digest builds a syntactically valid 64-hex digest label. The label is
+// hashed so every value stays inside the closed digest pattern while equal
+// labels keep equal digests and distinct labels stay distinct.
+func digest(label string) string { return canonical.DigestBytes([]byte("label:" + label)) }
