@@ -5,6 +5,7 @@ package productionruntime
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
@@ -98,6 +100,27 @@ func newCompositionInputs(t *testing.T) (CompositionInputs, string) {
 	ownerFixture := newOwnerLockFixture(t)
 	store := openOwnerStore(t, ownerFixture)
 	acquisition := acquisitionAtEpoch(1)
+	// The seal binds the acquisition to the exact observed core (binary and
+	// process birth), so the fixture observes the real test binary the same
+	// way the production composition does.
+	fixed, fixedErr := os.Executable()
+	if fixedErr != nil {
+		t.Fatal(fixedErr)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(fixed); resolveErr != nil {
+		t.Fatal(resolveErr)
+	} else {
+		fixed = resolved
+	}
+	core, coreErr := processsupervisor.ObserveCurrentCore(fixed)
+	if coreErr != nil {
+		t.Fatalf("observe core: %v", coreErr)
+	}
+	acquisition.OwnerUID = core.UID
+	acquisition.OwnerGID = core.GID
+	acquisition.OwnerProcess = core.Process
+	acquisition.OwnerBinary = core.Binary
+	acquisition.ObservedAt = time.Unix(core.Process.BirthSeconds, core.Process.BirthMicroseconds*int64(time.Microsecond)).UTC().Add(time.Second).Format(time.RFC3339Nano)
 
 	runStore := runstore.New(filepath.Join(ownerFixture.base, "run-store"))
 	runID := "run:composition"
@@ -254,5 +277,68 @@ func TestComposeRuntimeReadyAndFailsClosedWithoutFixedMarshal(t *testing.T) {
 	}
 	if _, err := composedForeign.Runtime.PrepareRunStart(context.Background(), application.PrepareRunStartRequest{RunID: foreignRunID, ExpectedSequence: foreignProjection.Run.Sequence, ExpectedAuthorityHead: foreignProjection.Run.AuthorityHead}); err == nil {
 		t.Fatal("mismatched agent profile admitted by prepare")
+	}
+}
+
+func TestComposeSealedRuntimeReadyAndPrepares(t *testing.T) {
+	inputs, runID := newCompositionInputs(t)
+	heldDir := t.TempDir()
+	if err := os.Chmod(heldDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(heldDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	controlRoot := t.TempDir()
+	if err := os.Chmod(controlRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.Open(controlRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	fixed, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(fixed); resolveErr != nil {
+		t.Fatal(resolveErr)
+	} else {
+		fixed = resolved
+	}
+	inputs.Ingress = nil
+	inputs.HeldIngressDir = held
+	inputs.FixedMarshalPath = fixed
+	inputs.OwnerPrivateControlRoot = root
+	closure := inputs.LaunchClosure
+	identity, err := launchidentity.Pi0843IdentityFromClosure(closure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := NewPi0843Profile(closure.RuntimeExecutable.CanonicalPath, "/fixed/node-runtime", identity.IdentityDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composed, err := ComposeRuntime(context.Background(), inputs, profile)
+	if err != nil {
+		t.Fatalf("compose sealed: %v", err)
+	}
+	defer func() { _ = composed.Runtime.Close() }()
+	status, err := composed.Runtime.Status(context.Background(), application.StatusRequest{})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.Availability != application.AvailabilityReady {
+		t.Fatalf("sealed status=%+v", status)
+	}
+	projection, err := inputs.Runs.ReadRunStartAuthorityUnderLease(context.Background(), inputs.RunLease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := composed.Runtime.PrepareRunStart(context.Background(), application.PrepareRunStartRequest{RunID: runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead}); err != nil {
+		t.Fatalf("sealed prepare: %v", err)
 	}
 }
