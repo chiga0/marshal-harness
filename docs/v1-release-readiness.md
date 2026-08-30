@@ -1,6 +1,6 @@
 # v1.0 Release Readiness 判定表
 
-更新日期：2026-08-30（`main@04c8fa9` implementation checkpoint；发布脚本校正待合入）
+更新日期：2026-08-30（`main@a8a3522` implementation checkpoint；RC1 canary 已切换到闭集校验与固定 Go toolchain）
 
 判定基准：[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md)、[ADR 0067](adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 与 [ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md)。只记录已进入 `main` 或绑定精确 sourceHead 的证据；候选分支、单次 live pass、reviewer verdict 或 Accepted ADR 都不会自动升级成熟度。
 
