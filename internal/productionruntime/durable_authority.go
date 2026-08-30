@@ -37,6 +37,7 @@ type CompositionLedger struct {
 	conformance     []string
 	attestation     provider.Attestation
 	allocationDir   string
+	owner           repositoryOwnerLock
 	closure         launchidentity.ClosureV1
 	requirements    allocationcontrol.SandboxRequirementsV1
 	workDirs        []string
@@ -53,6 +54,9 @@ type CompositionInputs struct {
 	Runs                 *runstore.Store
 	RunLease             *runstore.Lease
 	LeaseLedger          *dispatch.LeaseLedger
+	OwnerDirectory       *os.File
+	Acquisition          resultingress.ControlOwnerAcquisition
+	RunID                string
 	Namespace            authority.AuthorityNamespaceId
 	OrchestratorID       string
 	ProvisionDomain      authority.SecurityDomainId
@@ -77,6 +81,7 @@ func NewCompositionLedger(inputs CompositionInputs) (*CompositionLedger, error) 
 	}
 	if inputs.Namespace.Validate() != nil || inputs.ProvisionDomain.Validate() != nil || inputs.CleanupDomain.Validate() != nil ||
 		inputs.ProvisionDomain == inputs.CleanupDomain ||
+		inputs.OwnerDirectory == nil || inputs.Acquisition.Validate() != nil || inputs.RunID == "" ||
 		inputs.OrchestratorID == "" || inputs.RegistrationID == "" || inputs.AllocationRoot == "" ||
 		inputs.CapabilitySnapshot == "" || inputs.LaunchClosure.Validate() != nil {
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
@@ -105,8 +110,65 @@ func NewCompositionLedger(inputs CompositionInputs) (*CompositionLedger, error) 
 		return nil, err
 	}
 	ledger.allocation = allocation
+	// Two-phase repository owner acquisition: the phase-A scope lock admits
+	// exactly one owner append, the bound phase-B lock carries the runtime
+	// claim, and closing the spent phase-A handle never releases phase B.
+	phase, err := openRepositoryOwnerScopeLock(inputs.OwnerDirectory, inputs.Acquisition.Scope)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := acquireOwner(inputs.Ingress, phase, inputs.Acquisition); err != nil {
+		_ = phase.Close()
+		return nil, err
+	}
+	owner, err := phase.bindAcquisition(inputs.Ingress)
+	if err != nil {
+		_ = phase.Close()
+		return nil, err
+	}
+	if err := phase.Close(); err != nil {
+		_ = owner.Close()
+		return nil, err
+	}
+	// The runtime claim belongs to newProductionRuntime; the ledger only
+	// carries the bound phase-B lock.
+	ledger.owner = owner
 	return ledger, nil
 }
+
+func acquireOwner(ingress *resultingress.DurableStore, phase repositoryOwnerScopeLock, acquisition resultingress.ControlOwnerAcquisition) (resultingress.ControlOwnerState, error) {
+	prior, found, err := ingress.OpenOwner(acquisition.Scope)
+	if err != nil {
+		return resultingress.ControlOwnerState{}, err
+	}
+	epoch, previousDigest := uint64(0), ""
+	if found {
+		epoch, previousDigest = prior.Acquisition.OwnerEpoch, prior.FactDigest
+		if epoch+1 != acquisition.OwnerEpoch {
+			return resultingress.ControlOwnerState{}, application.NewError("composition-owner", application.ReasonOwnerNotCurrent)
+		}
+	} else if acquisition.OwnerEpoch != 1 {
+		return resultingress.ControlOwnerState{}, application.NewError("composition-owner", application.ReasonOwnerNotCurrent)
+	}
+	if _, err := phase.acquireOwner(context.Background(), ingress, epoch, previousDigest, acquisition); err != nil {
+		return resultingress.ControlOwnerState{}, err
+	}
+	state, found, err := ingress.OpenOwner(acquisition.Scope)
+	if err != nil || !found {
+		return resultingress.ControlOwnerState{}, fmt.Errorf("composition: owner replay after acquire: found=%t err=%v", found, err)
+	}
+	return state, nil
+}
+
+// Close releases the runtime claim and the bound owner lock.
+func (l *CompositionLedger) Close() error {
+	if l == nil || l.owner == nil {
+		return nil
+	}
+	return l.owner.Close()
+}
+
+func (l *CompositionLedger) ownerLock() repositoryOwnerLock { return l.owner }
 
 // CurrentOwner resolves the exact current owner and derives PendingRecovery
 // from the RB1 Run journal: a RUNNING run means an attempt is in flight

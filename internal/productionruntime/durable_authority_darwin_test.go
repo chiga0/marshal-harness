@@ -30,7 +30,6 @@ const (
 
 type compositionFixture struct {
 	inputs      CompositionInputs
-	owner       repositoryOwnerLock
 	acquisition resultingress.ControlOwnerAcquisition
 	ledger      *CompositionLedger
 	runID       string
@@ -81,25 +80,24 @@ func compositionTestClosure(t *testing.T) launchidentity.ClosureV1 {
 
 func newCompositionFixture(t *testing.T) compositionFixture {
 	t.Helper()
+	inputs, runID := newCompositionInputs(t)
+	ledger, err := NewCompositionLedger(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Direct ledger calls take the runtime claim themselves; the composition
+	// entry defers it to newProductionRuntime.
+	if err := ledger.owner.claimRuntime(); err != nil {
+		t.Fatal(err)
+	}
+	return compositionFixture{inputs: inputs, acquisition: inputs.Acquisition, ledger: ledger, runID: runID}
+}
+
+func newCompositionInputs(t *testing.T) (CompositionInputs, string) {
+	t.Helper()
 	ownerFixture := newOwnerLockFixture(t)
 	store := openOwnerStore(t, ownerFixture)
 	acquisition := acquisitionAtEpoch(1)
-	phase, err := openRepositoryOwnerScopeLock(ownerFixture.directory, acquisition.Scope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = acquireAndReplay(t, phase, store, 0, "", acquisition)
-	owner, err := phase.bindAcquisition(store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := phase.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := owner.claimRuntime(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = owner.Close() })
 
 	runStore := runstore.New(filepath.Join(ownerFixture.base, "run-store"))
 	runID := "run:composition"
@@ -142,9 +140,9 @@ func newCompositionFixture(t *testing.T) compositionFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = leaseLedger
 	inputs := CompositionInputs{
 		Ingress: store, Runs: runStore, RunLease: runLease, LeaseLedger: leaseLedger,
+		OwnerDirectory: ownerFixture.directory, Acquisition: acquisition, RunID: runID,
 		Namespace: acquisition.Scope.AuthorityNamespaceID, OrchestratorID: "orchestrator:composition",
 		ProvisionDomain: authority.SecurityDomainId{TenantNamespace: "tenant", TrustDomainKind: authority.TrustDomainKindExecution, IsolationDomainId: "host-process"},
 		CleanupDomain:   authority.SecurityDomainId{TenantNamespace: "tenant", TrustDomainKind: authority.TrustDomainKindExecution, IsolationDomainId: "host-process-cleanup"},
@@ -154,23 +152,19 @@ func newCompositionFixture(t *testing.T) compositionFixture {
 		Requirements:     allocationcontrol.SandboxRequirementsV1{AccessMode: "workspace-write", MinimumAssuranceLevel: "workspace-write"},
 		WorkDirAllowlist: []string{"/tmp/work"}, EnvironmentAllowlist: []string{"PATH"},
 	}
-	ledger, err := NewCompositionLedger(inputs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return compositionFixture{inputs: inputs, owner: owner, acquisition: acquisition, ledger: ledger, runID: runID}
+	return inputs, runID
 }
 
 func TestCompositionLedgerCurrentOwnerAndPrepareRunStart(t *testing.T) {
 	fixture := newCompositionFixture(t)
-	owner, err := fixture.ledger.CurrentOwner(context.Background(), fixture.owner, fixture.acquisition)
+	owner, err := fixture.ledger.CurrentOwner(context.Background(), fixture.ledger.owner, fixture.acquisition)
 	if err != nil {
 		t.Fatalf("current owner: %v", err)
 	}
 	if owner.OwnerEpoch != fixture.acquisition.OwnerEpoch || owner.OwnerFactDigest == "" || owner.PendingRecovery != 0 {
 		t.Fatalf("owner projection=%+v", owner)
 	}
-	start, err := fixture.ledger.PrepareRunStart(context.Background(), fixture.owner, fixture.acquisition, application.PrepareRunStartRequest{RunID: fixture.runID, ExpectedSequence: 2, ExpectedAuthorityHead: "sha256:" + strings.Repeat("0", 64)})
+	start, err := fixture.ledger.PrepareRunStart(context.Background(), fixture.ledger.owner, fixture.acquisition, application.PrepareRunStartRequest{RunID: fixture.runID, ExpectedSequence: 2, ExpectedAuthorityHead: "sha256:" + strings.Repeat("0", 64)})
 	if err == nil {
 		t.Fatalf("stale authority head accepted: %+v", start)
 	}
@@ -178,27 +172,87 @@ func TestCompositionLedgerCurrentOwnerAndPrepareRunStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	start, err = fixture.ledger.PrepareRunStart(context.Background(), fixture.owner, fixture.acquisition, application.PrepareRunStartRequest{RunID: fixture.runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
+	start, err = fixture.ledger.PrepareRunStart(context.Background(), fixture.ledger.owner, fixture.acquisition, application.PrepareRunStartRequest{RunID: fixture.runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
 	if err != nil {
 		t.Fatalf("prepare run start: %v", err)
 	}
 	if start.Validate() != nil || start.RunID != fixture.runID || start.Sequence != 2 || start.State != domain.StateReady {
 		t.Fatalf("prepared run start=%+v", start)
 	}
-	rehydrated, err := fixture.ledger.RehydratePreparedRunStart(context.Background(), fixture.owner, fixture.acquisition, start.PreparationDigest)
+	rehydrated, err := fixture.ledger.RehydratePreparedRunStart(context.Background(), fixture.ledger.owner, fixture.acquisition, start.PreparationDigest)
 	if err != nil || rehydrated != start {
 		t.Fatalf("rehydrate=%+v err=%v", rehydrated, err)
 	}
-	if _, found, err := fixture.ledger.RehydrateRunStartOutcome(context.Background(), fixture.owner, fixture.acquisition, start.PreparationDigest); err != nil || found {
+	if _, found, err := fixture.ledger.RehydrateRunStartOutcome(context.Background(), fixture.ledger.owner, fixture.acquisition, start.PreparationDigest); err != nil || found {
 		t.Fatalf("run start outcome before commit found=%t err=%v", found, err)
 	}
-	inspected, err := fixture.ledger.InspectRun(context.Background(), fixture.owner, fixture.acquisition, application.InspectRunRequest{RunID: fixture.runID})
+	inspected, err := fixture.ledger.InspectRun(context.Background(), fixture.ledger.owner, fixture.acquisition, application.InspectRunRequest{RunID: fixture.runID})
 	if err != nil || inspected.RunID != fixture.runID || inspected.State != domain.StateReady {
 		t.Fatalf("inspect=%+v err=%v", inspected, err)
 	}
 	// Replay must be byte-identical: the whole chain is creation-once.
-	replay, err := fixture.ledger.PrepareRunStart(context.Background(), fixture.owner, fixture.acquisition, application.PrepareRunStartRequest{RunID: fixture.runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
+	replay, err := fixture.ledger.PrepareRunStart(context.Background(), fixture.ledger.owner, fixture.acquisition, application.PrepareRunStartRequest{RunID: fixture.runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
 	if err != nil || replay != start {
 		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+}
+
+func TestComposeRuntimeReadyAndFailsClosedWithoutFixedMarshal(t *testing.T) {
+	inputs, runID := newCompositionInputs(t)
+	closure := inputs.LaunchClosure
+	identity, err := launchidentity.Pi0843IdentityFromClosure(closure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := NewPi0843Profile(closure.RuntimeExecutable.CanonicalPath, "/fixed/node-runtime", identity.IdentityDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composed, err := ComposeRuntime(context.Background(), inputs, profile)
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	defer func() { _ = composed.Runtime.Close() }()
+	status, err := composed.Runtime.Status(context.Background(), application.StatusRequest{})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.Availability != application.AvailabilityReady || status.OwnerEpoch != inputs.Acquisition.OwnerEpoch {
+		t.Fatalf("status=%+v", status)
+	}
+	projection, err := inputs.Runs.ReadRunStartAuthorityUnderLease(context.Background(), inputs.RunLease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := composed.Runtime.PrepareRunStart(context.Background(), application.PrepareRunStartRequest{RunID: runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
+	if err != nil {
+		t.Fatalf("prepare through runtime: %v", err)
+	}
+	// Without the real fixed marshal supervisor image the sealed mechanics
+	// fail closed before any process side effect; the run stays READY.
+	if _, err := composed.Runtime.StartPreparedRun(context.Background(), prepared); err == nil {
+		t.Fatal("start without the fixed marshal image succeeded")
+	}
+	after, err := inputs.Runs.ReadRunStartAuthorityUnderLease(context.Background(), inputs.RunLease)
+	if err != nil || after.Run.State != domain.StateReady {
+		t.Fatalf("run state after failed start=%+v err=%v", after.Run, err)
+	}
+	// A profile that does not match the held closure must fail closed.
+	foreign, err := NewPi0843Profile("/fixed/other", "/fixed/node-runtime", identity.IdentityDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignInputs, foreignRunID := newCompositionInputs(t)
+	composedForeign, err := ComposeRuntime(context.Background(), foreignInputs, foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = composedForeign.Runtime.Close() }()
+	foreignProjection, err := foreignInputs.Runs.ReadRunStartAuthorityUnderLease(context.Background(), foreignInputs.RunLease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := composedForeign.Runtime.PrepareRunStart(context.Background(), application.PrepareRunStartRequest{RunID: foreignRunID, ExpectedSequence: foreignProjection.Run.Sequence, ExpectedAuthorityHead: foreignProjection.Run.AuthorityHead}); err == nil {
+		t.Fatal("mismatched agent profile admitted by prepare")
 	}
 }
