@@ -16,6 +16,18 @@
 
 **后续切片 2 收口（`3cc88ab`）**：processsupervisor 的 8 项失败全部由测试 fixture 缺陷造成，实现未放宽任何门禁——`digest()` helper 对多字符 label 产出超长非法 digest（7 项失败 + 2 项负向测试因错误原因通过），改为按 label 哈希生成合法 64-hex；spawn source gate fixture 未解析 `/var → /private/var` symlink 祖先即以 `O_NOFOLLOW_ANY` 打开，改为先 `EvalSymlinks`。该包现含 `-race` 全绿。productionruntime 2 项 ABA 全包 flaky 与 resultingress race flake 维持环境类判定不变。S2′ 组合根的架构落点已核实：`architecture_check.py` 对 `productionruntime → resultingress` 无条件放行，组合根 authority 实现必须置于 `internal/productionruntime`；`internal/cli` 的冻结债务允许其直接 import `execution/planning/processsupervisor/sandboxbridge`，supervisor 链的 ResultIngress 追加须经理 productionruntime 暴露的窄方法，不得新增冻结债务条目。
 
+## 2026-08-30：切片 4b 迁移的单一前置——Pi 0.84.3 字节身份（fixture 可行性结论）
+
+组合根工程（`97e07d0`…`dcdc494`，15 提交）已使 sealed 链在 darwin/arm64 端到端可用：CLI `executeRun` READY 分支（`e408d3b`）经 `ComposeRuntime` 驱动 `PrepareRunStart` 全链与 `StartPreparedRun` 的密封机制；TestMain 继承探测（`dcdc494`）使重入的测试二进制运行真实 supervisor 循环。
+
+切片 4b 的 RUNNING 起点 fixture 经逐层核实被确认**与 canary 同源阻塞于 Pi 0.84.3**，不是缺失代码：
+
+1. `derivePreparedExecution` 经 `Pi0843IdentityFromClosure` 强制 closure 为结构精确的 Pi 0.84.3（55 材料、每根精确字节数、entrypoint digest 固定为 `piEntrypointDigest`）；
+2. `verifyPreparedCurrentSourcesLocked` 经 `VerifyCurrentClosure` 观察真实文件——合成/临时路径必然 fail-closed；
+3. `OpenPi0843` 对本机 `/opt/homebrew/bin/pi`（0.83.0）按同合同拒绝。
+
+因此 38 项旧测试（internal/cli 18 + internal/execution 约 20）的 READY→RUNNING 段迁移到 `ComposeRuntime → PrepareRunStart → StartPreparedRun` 的执行，在维护者升级 Pi 至 0.84.3 之前无法在本机验证；迁移模板（fixture 输入、TestMain 继承探测、其余 verify/review/publish 断言原样保留）已就绪。升级完成后，执行顺序为：sealed fixture helper 落地 → 38 项迁移 → 远端 CI 绿 → 真实 Pi canary → 独立 ReviewDecision ACCEPTED → same-bytes canary/carrier/tag → v1.0.0-rc1。R2–R5 成熟度不变，仍为 COMPONENT。
+
 ## 2026-08-30：READY→RUNNING 回归证据
 
 在 `main@2fb2d58` 上运行完整 `go test ./internal/cli -count=1` 时，多个既有 CLI E2E 在 Attempt 创建前统一失败于 `READY to RUNNING requires sealed Run-start proof`。这确认当前 sealed Run-start 门禁已正确阻止未接线的 production composition，但也暴露出旧 Local MVP 测试仍假定可直接追加 `worker.started`；`runstore.Store.Append` 已明确拒绝该路径。该结果不能通过放宽门禁或伪造 `PreparedRunStart` 修复。
