@@ -17,17 +17,18 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 这套本地能力已经通过真实 Agent、真实 GitHub Draft PR、Linux 与 macOS CI 验证，可以作为早期可用版本试用。
 
-## Mac-first Adapter 现状（2026-08-21）
+## Mac-first Adapter 现状（2026-08-30）
 
-- Qoder CLI `1.1.27` 已在固定路径完成 registry/doctor 身份探测，并报告 macOS `ordinary-user`、`supported`；这不是 hardened authority，也不是 production conformance 的替代品。首次使用该版本仍需 fresh live Worker smoke、transcript attestation 与独立 conformance。
-- Codex `0.145.0` 已完成两次独立 Mac ordinary-user smoke 审查并进入 `ACCEPTED`。这些 smoke 验证了 Worker、transcript、WorkerResult、路径身份和产物绑定，但没有产品代码变更，也没有远端发布或合并。
+- Qoder 的路线要求固定 `/Users/gawain/.qoder/bin/qodercli/qodercli-1.1.23`。当前开发机虽存在该文件，但 `MARSHAL_QODER_PATH` 尚未绑定，且 PATH 中的 `1.1.27` 是不同 identity；当前没有可复用的最终 sourceHead live evidence。
+- Codex 的路线要求 `0.145.0`。当前开发机实际探测到的是 `0.149.1`，不能把历史 `0.145.0` smoke 记录当作当前最终 bytes 的生产证据。
+- 上述版本/路径问题与 fixed CLI production composition 是独立门禁；在 composition 闭合前，Qoder/Codex 均不得宣称为 Marshal production Worker。
 - Qwen Code `0.21.11` 的本地命令可执行，但当前 Marshal admission 仍为 `unsupported/unprobed`。在 doctor 取得新鲜 `supported` 证据前，Marshal 不会直接调度它。
 
 因此，“本地 CLI 能运行”与“Marshal 可安全调度该 Adapter”是两个不同结论；文档只采用后者作为生产可用依据。
 
 ## v1.0 正在建设
 
-2026-08-29 的 `main@6176868` checkpoint 已合入 RB1-authoritative existing-worktree Bind/Receipt/Release 与 recovery projection，以及 RC1 build-once distribution、exact opt-in installer guard 和 immutable carrier checker/receipt Schema。该 exact-head CI 的 Ubuntu quality 与 secret scan 已通过，但 macOS quality 失败，整体仍未全绿。这些仍是 component/admission 资产：完整 S1′（S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor，含 item 5 borrow seam/门禁）尚未进入 `main`，`3abed5a` 仍只是未合入候选；S2′、Attach/rebind、terminalization、最终 fixed-bin Pi→独立 Decision→`ACCEPTED`、真实 same-bytes canary/carrier、tag、GitHub prerelease 与 release asset 均未完成，不能据此宣称 RC1 或 stable 可用。
+2026-08-30 的 `main@c6debd4` checkpoint 保持 RB1-authoritative existing-worktree Bind/Receipt/Release、recovery projection、RC1 build-once distribution、exact opt-in installer guard 与 immutable carrier checker/receipt Schema；本次提交仅校正文档与当前权威 HEAD，不改变运行时语义。该 exact-head CI 的 Ubuntu/macOS quality 尚在运行，secret scan 已通过，整体仍未全绿。这些仍是 component/admission 资产：完整 S1′（S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor，含 item 5 borrow seam/门禁）尚未进入 `main`，`3abed5a` 仍只是未合入候选；S2′、Attach/rebind、terminalization、最终 fixed-bin Pi→独立 Decision→`ACCEPTED`、真实 same-bytes canary/carrier、tag、GitHub prerelease 与 release asset 均未完成，不能据此宣称 RC1 或 stable 可用。
 
 当前第一优先级严格按 ADR 0068 收敛 Mac-first RC1，不再把 server 或 stable 门禁插入首发关键路径：
 
