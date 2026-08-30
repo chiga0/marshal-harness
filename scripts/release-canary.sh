@@ -160,11 +160,11 @@ if [ "$TEST_MODE" = 0 ]; then
     [ -z "${GOTOOLCHAIN+x}" ] || die "生产 canary 禁止继承 GOPATH/GOMODCACHE/GOENV/GOTOOLCHAIN"
   go_user_home="${SOURCE_ROOT%%/Documents/*}"
   [[ "$go_user_home" = /Users/* ]] || die "无法从 canonical source root 推导固定用户 Home"
-  required_go_version="$(sed -n -E 's/^toolchain[[:space:]]+(go[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' "${SOURCE_ROOT}/go.mod")"
+  required_go_version="$(/usr/bin/sed -n -E 's/^toolchain[[:space:]]+(go[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' "${SOURCE_ROOT}/go.mod")"
   [ -n "$required_go_version" ] || die "go.mod 缺少精确 toolchain 版本"
   for go_launcher in /opt/homebrew/bin/go /usr/local/bin/go /usr/local/go/bin/go; do
     [ -x "$go_launcher" ] || continue
-    go_path="$(env -i HOME="$go_user_home" PATH="$(dirname "$go_launcher"):/usr/bin:/bin:/usr/sbin:/sbin" GOTOOLCHAIN=local "$go_launcher" env GOPATH 2>/dev/null || true)"
+    go_path="$(/usr/bin/env -i HOME="$go_user_home" PATH="$(/usr/bin/dirname "$go_launcher"):/usr/bin:/bin:/usr/sbin:/sbin" GOTOOLCHAIN=local "$go_launcher" env GOPATH 2>/dev/null || true)"
     [ -n "$go_path" ] || continue
     # 只接受 GOPATH 中已经存在、且名称精确匹配 go.mod 的 direct
     # toolchain；不会让 go 自动下载或通过 PATH 选择临时版本。
