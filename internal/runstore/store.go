@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 )
@@ -254,6 +255,14 @@ func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uin
 	data, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("encode event: %w", err)
+	}
+	// The Run journal is an authority ledger.  Persist the same RFC 8785
+	// representation that strict readers hash and replay; encoding/json's
+	// struct/map representation is valid JSON but is not a canonical ledger
+	// record when payload object keys are emitted in insertion order.
+	data, err = canonical.JSON(data)
+	if err != nil {
+		return fmt.Errorf("canonicalize event: %w", err)
 	}
 	if lease.beforeMutation != nil {
 		if err := lease.beforeMutation(); err != nil {
