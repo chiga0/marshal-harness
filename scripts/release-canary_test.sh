@@ -51,6 +51,15 @@ cp "${SCRIPT_DIR}/../schemas/examples/happy-path/policy-snapshot.json" \
   "${FIXTURE_ROOT}/schemas/examples/happy-path/policy-snapshot.json"
 chmod 0755 "${FIXTURE_ROOT}/scripts/release-canary.sh" "${FIXTURE_ROOT}/scripts/release-contract.sh"
 
+# 回归保护：生产路径必须调用 RC1 三项闭集校验，不能退回四平台
+# verify-dist；测试夹具本身仍走 verify-dist 以避免伪造 Mach-O。
+grep -Fq 'GO_BIN="$GO_BIN" "$RELEASE_CHECKER" verify-rc1-dist' \
+  "${FIXTURE_ROOT}/scripts/release-canary.sh" \
+  || fail 'release canary production path 未绑定 verify-rc1-dist'
+grep -Fq 'toolchain@v0.0.1-${required_go_version}.darwin-arm64/bin/go' \
+  "${FIXTURE_ROOT}/scripts/release-canary.sh" \
+  || fail 'release canary 未按 go.mod 精确绑定 direct toolchain'
+
 cat >"$PI_BUNDLE" <<'EOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then

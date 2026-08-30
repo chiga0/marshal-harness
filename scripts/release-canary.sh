@@ -149,6 +149,29 @@ else
   PI_BUNDLE_SHA256="$PI_BUNDLE_SHA256_DEFAULT"
 fi
 
+# release-contract 的 RC1 Mach-O/Go 检查必须使用启动前冻结的固定
+# toolchain 路径。set_runtime_environment 会故意收缩 PATH，不能在其后
+# 通过 command -v 发现可执行文件，也不能允许 Go 自动下载新 toolchain。
+GO_BIN=""
+if [ "$TEST_MODE" = 0 ]; then
+  required_go_version="$(sed -n -E 's/^toolchain[[:space:]]+(go[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' "${SOURCE_ROOT}/go.mod")"
+  [ -n "$required_go_version" ] || die "go.mod 缺少精确 toolchain 版本"
+  for go_launcher in /opt/homebrew/bin/go /usr/local/bin/go /usr/local/go/bin/go; do
+    [ -x "$go_launcher" ] || continue
+    go_path="$(GOTOOLCHAIN=local "$go_launcher" env GOPATH 2>/dev/null || true)"
+    [ -n "$go_path" ] || continue
+    # 只接受 GOPATH 中已经存在、且名称精确匹配 go.mod 的 direct
+    # toolchain；不会让 go 自动下载或通过 PATH 选择临时版本。
+    candidate_go="${go_path}/pkg/mod/golang.org/toolchain@v0.0.1-${required_go_version}.darwin-arm64/bin/go"
+    [ -f "$candidate_go" ] && [ -x "$candidate_go" ] && [ ! -L "$candidate_go" ] || continue
+    GO_BIN="$($PYTHON_BIN -I -B -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$candidate_go")"
+    [ "$GO_BIN" = "$candidate_go" ] || continue
+    [ "$(GOTOOLCHAIN=local "$GO_BIN" env GOVERSION 2>/dev/null)" = "$required_go_version" ] || { GO_BIN=""; continue; }
+    break
+  done
+  [ -n "$GO_BIN" ] || die "缺少与 go.mod 精确匹配且已安装的固定 Go toolchain：$required_go_version"
+fi
+
 CANARY_ROOT="${SOURCE_ROOT}/.marshal/release-canary/${RUN_ID}"
 CONTROL_ROOT="${CANARY_ROOT}/control"
 REPOSITORY_ROOT="${CANARY_ROOT}/repository"
@@ -197,7 +220,7 @@ PY
 }
 
 assert_source_identity() {
-  local root head branch remote remote_head version_json marshal_sha candidate_asset candidate_sha manifest_sha
+  local root head branch remote remote_head version_json marshal_sha candidate_asset candidate_sha manifest_sha build_date go_version
   root="$($GIT_BIN -C "$SOURCE_ROOT" rev-parse --show-toplevel 2>/dev/null)" || die "脚本不在 Git 仓库内"
   [ "$(canonical_path "$root")" = "$SOURCE_ROOT" ] || die "源仓库根身份漂移"
   head="$($GIT_BIN -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -215,8 +238,23 @@ assert_source_identity() {
   [ "$(canonical_path "$MARSHAL_BIN")" = "$MARSHAL_BIN" ] || die "Marshal 路径不是固定 canonical path"
   [ -f "$RELEASE_CHECKER" ] && [ ! -L "$RELEASE_CHECKER" ] \
     || die "缺少固定 release contract checker"
-  "$RELEASE_CHECKER" verify-dist "$RELEASE_DIST_ROOT" "v${EXPECTED_VERSION}" "$EXPECTED_HEAD" >/dev/null \
-    || die "待发布 dist/RELEASE-MANIFEST 不满足当前 sourceHead 合同"
+  # RC1 产物是单一 Darwin/arm64 闭集，不得用要求四平台资产的
+  # verify-dist。buildDate/goVersion 从固定 candidate 的 manifest 读取，
+  # 但 verify-rc1-dist 仍会对二者执行 canonical 格式与二进制 identity
+  # 校验；sourceHead/tag/profile 则由本函数的冻结输入绑定。
+  build_date="$(awk '$1 == "buildDate" && NF == 2 { print $2 }' "${RELEASE_DIST_ROOT}/RELEASE-MANIFEST")"
+  go_version="$(awk '$1 == "goVersion" && NF == 2 { print $2 }' "${RELEASE_DIST_ROOT}/RELEASE-MANIFEST")"
+  [ -n "$build_date" ] && [ -n "$go_version" ] || die "RC1 RELEASE-MANIFEST 缺少 buildDate/goVersion"
+  if [ "$TEST_MODE" = 1 ]; then
+    # 测试夹具使用 shell fake Marshal，无法通过真实 Mach-O/Go identity
+    # 检查；二进制身份由 release-contract_test.sh 独立覆盖。
+    "$RELEASE_CHECKER" verify-dist "$RELEASE_DIST_ROOT" "v${EXPECTED_VERSION}" "$EXPECTED_HEAD" >/dev/null \
+      || die "测试夹具 dist/RELEASE-MANIFEST 不满足 sourceHead 合同"
+  else
+    GOTOOLCHAIN=local GO_BIN="$GO_BIN" "$RELEASE_CHECKER" verify-rc1-dist "$RELEASE_DIST_ROOT" "v${EXPECTED_VERSION}" "$EXPECTED_HEAD" \
+      "$build_date" "$go_version" darwin arm64 darwin-local-dogfood >/dev/null \
+      || die "待发布 RC1 dist/RELEASE-MANIFEST 不满足当前 sourceHead 合同"
+  fi
   candidate_asset="${RELEASE_DIST_ROOT}/marshal_${EXPECTED_VERSION}_darwin_arm64"
   candidate_sha="$(sha256_file "$candidate_asset")"
   marshal_sha="$(sha256_file "$MARSHAL_BIN")"
