@@ -822,7 +822,16 @@ func processExecutablePath(pid int) (string, error) {
 	if !absoluteClean(path) {
 		return "", ErrConflict
 	}
-	return path, nil
+	// kern.procargs2 reports the exec path as invoked, which is not
+	// necessarily canonical (macOS /var is a symlink to /private/var). The
+	// binary identity binds the real on-disk location and every later open
+	// uses O_NOFOLLOW_ANY, so resolve the path once and require the result to
+	// stay clean and absolute.
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || !absoluteClean(resolved) {
+		return "", ErrConflict
+	}
+	return resolved, nil
 }
 
 func waitReady(ctx context.Context, file *os.File) error {

@@ -1070,7 +1070,10 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 			return ErrAttemptAuthorityOrder
 		}
 	case processsupervisor.CommandCollect:
-		if state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.CommittedResultFactDigest != "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest || rebuild.LastObservationDigest != supervisorLastObservation(state) {
+		// A collect Rebuild reanchors the business projection. The supervisor
+		// reconnect fact is the only admitted session-continuity proof, so the
+		// first collect of every attempt must follow it.
+		if state.SupervisorReconnectFactDigest == "" || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.CommittedResultFactDigest != "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest || rebuild.LastObservationDigest != supervisorLastObservation(state) {
 			return ErrAttemptAuthorityOrder
 		}
 	case processsupervisor.CommandInspect, processsupervisor.CommandTerminate:

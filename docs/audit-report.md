@@ -1,5 +1,19 @@
 # 设计审计报告
 
+## 2026-08-30：S1′ ResultIngress Darwin 全绿切片（基线 11 失败 → 0）
+
+在 `main@054789c` 基线上，`go test ./internal/resultingress -count=1` 于本开发机（Darwin 25/arm64）确定性失败 11 项。本切片逐项定位并修复，现该包非 race 全绿；判定依据与修复如下，未放宽任何强制门禁：
+
+1. `TestPreparedExecutionCreationOnceResolveAndSecretBoundary`：落地即坏的断言——`DecodePreparedExecution` 是纯闭合 wire-form 校验，无法拒绝"重算过 `PreparationDigest` 的任意 Pi 身份"（文档自洽时结构校验必然通过）。改为验证 seal 覆盖 Pi 身份（篡改不重算 digest 即拒）+ 自洽文档只是纯 wire form + ungrounded digest 经 `ResolvePreparedExecution` 必返回 `ErrPreparedExecutionUnavailable`。原测试自 `6e558d7` 创建起从未通过过。
+2. `TestCommittedRunStartProofIsNarrowSharedAndSynchronous`：测试竞态——`deactivateAndWait` 是否观察到 in-flight 回调取决于调度。以 `guard.active == false`（escaped 已计算后的确定性锚点）作为入场 barrier 修复。
+3. `TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor`：实现缺口——caller-authored Collect（rebuild 重锚业务头）在无 reconnect 事实时被允许追加。在 `validateSupervisorCommandIntentAgainstState` 的 Collect 分支补上 `SupervisorReconnectFactDigest == "" → ErrAttemptAuthorityOrder` 门禁；全部现存通过用例均已有 reconnect 在先，无行为回退。
+4. `openHeldDarwinAuthorityFiles`（6 项 HeldDarwin + Seal）：Darwin 25 APFS 的目录 `st_nlink` 计入常规条目，先冻结目录身份再创建 ledger/coordination 文件导致 `verifyCurrentNames` 的 Nlink 相等性永远失败，`OpenDarwinResultIngressStore` 在本机 OS 上不可达。修复沿用 owner-lock 既有"entry stable 后再冻结"模式：创建条目并 fsync 后对同一 directory object 重冻结身份。
+5. `processExecutablePath`：`kern.procargs2` 返回未解析 exec 路径（macOS `/var` → `/private/var`），而后续 `openObservedSpec` 以 `O_NOFOLLOW_ANY` 打开必然失败。自观察现以 `filepath.EvalSymlinks` 解析为规范路径——`BinaryIdentity.CanonicalPath` 语义收紧为真实磁盘位置，调用方必须传规范路径（`ObserveCurrentCore` 比较因此更严格，非放宽）。
+6. 测试 fixture 修正：`TestPreparedDarwinSeal` 的 `ObservedAt` 改为从真实进程生日派生（原硬编码 `2026-08-29T00:00:00Z` 是时间炸弹，晚于该日的任何运行必失败于 "precedes process birth"）；`advancePreparedAttemptToStarted` 的进程观察从 prepared Pi closure 的 `RuntimeExecutable` 派生（`AppendProcessStarted` 的 `processMatchesRuntime` 要求绑定该精确 runtime object）；`testPreparedSupervisor` 优先复用已绑定 owner（supervisor bootstrap 属于已绑定 owner 的主流程，epoch 轮换只属于显式 reconnect 恢复场景，此前无条件轮换使 prepared 文档 owner 绑定失效）。
+7. Makefile `test` 目标注入真实 git head ldflags：`BinaryIdentity.SourceHead` 的 hex40 合同使未注入 commit 的 test binary（`commit="unknown"`）无法通过自身份校验——这是本机与 CI macOS quality 失败的直接原因之一。`make test` 现与 release 构建绑定同一 source head。
+
+残留（均经 stash 验证为 `main@054789c` 既有，非本切片引入）：`internal/processsupervisor` 8 项 Darwin mechanics 失败（`process-supervisor-intervention-required` 等，HEAD 复现）；`internal/productionruntime` 2 项 owner-lock ABA 在全包上下文 flaky（单跑 10/10 + `-race` 单跑通过，结合《v1.0 Release Readiness》"Mac 本地质量门禁边界"所述企业终端按新 Mach-O/CDHash 拦截 test binary 的策略，本地结果不作为证据层级）；`TestHeldDarwinResultIngressUnlocksAfterPanic` 在 `-race` 下 flaky（HEAD 同样复现）。`R2–R5` 成熟度不变，仍为 `COMPONENT`；组合根接线（`owner → Attempt/ResultIngress → allocation → exact runtime → PreparedRunStart/Commit → execution.Run`）与旧 CLI/execution 测试迁移仍是下一切片。
+
 ## 2026-08-30：READY→RUNNING 回归证据
 
 在 `main@2fb2d58` 上运行完整 `go test ./internal/cli -count=1` 时，多个既有 CLI E2E 在 Attempt 创建前统一失败于 `READY to RUNNING requires sealed Run-start proof`。这确认当前 sealed Run-start 门禁已正确阻止未接线的 production composition，但也暴露出旧 Local MVP 测试仍假定可直接追加 `worker.started`；`runstore.Store.Append` 已明确拒绝该路径。该结果不能通过放宽门禁或伪造 `PreparedRunStart` 修复。

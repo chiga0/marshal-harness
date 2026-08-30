@@ -72,6 +72,16 @@ func openHeldDarwinAuthorityFiles(directory *os.File) (*heldDarwinAuthorityFiles
 			_ = files.close()
 			return nil, ErrPreparedExecutionUnavailable
 		}
+		// Creating the authority entries legitimately changes the directory
+		// identity: Darwin 25 reports the directory link count including its
+		// regular entries. Freeze the directory evidence only after the entries
+		// are stable, and only for the exact same directory object.
+		frozen, err := processsupervisor.ObserveHeldControlDirectory(retained)
+		if err != nil || frozen.CanonicalPath != identity.CanonicalPath || frozen.Device != identity.Device || frozen.Inode != identity.Inode || frozen.Mode != identity.Mode || frozen.UID != identity.UID || frozen.GID != identity.GID {
+			_ = files.close()
+			return nil, ErrPreparedExecutionUnavailable
+		}
+		files.directoryID = frozen
 	}
 	if err := files.verifyCurrentNames(); err != nil {
 		_ = files.close()

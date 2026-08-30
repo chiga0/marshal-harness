@@ -36,8 +36,13 @@ vet:
 lint:
 	$(GO) tool staticcheck ./...
 
+# Test binaries must carry the same bound source head as release builds: the
+# Darwin supervisor identity contract rejects a binary whose commit is not the
+# exact 40-hex source head.
+GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+
 test:
-	$(GO) test -race -p 2 ./...
+	$(GO) test -race -p 2 -ldflags "$(LDFLAGS_BASE) -X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(GIT_COMMIT)" ./...
 
 build:
 	$(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/marshal

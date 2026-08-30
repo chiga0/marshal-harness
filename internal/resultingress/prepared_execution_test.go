@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -127,13 +128,30 @@ func TestPreparedExecutionCreationOnceResolveAndSecretBoundary(t *testing.T) {
 	if _, err := DecodePreparedExecution(append([]byte(" "), raw...)); !errors.Is(err, ErrPreparedExecutionConflict) {
 		t.Fatalf("non-canonical document accepted: %v", err)
 	}
+	// The sealed PreparationDigest covers the Pi identity: any caller-chosen
+	// identity breaks the seal and is rejected at the closed wire form.
 	tampered := fixture.prepared
 	tampered.Pi0843IdentityDigest = attemptTestDigest("caller-chosen-pi-identity")
-	tampered.PreparationDigest, _ = preparedExecutionDigest(tampered)
 	tamperedRaw, _ := json.Marshal(tampered)
 	tamperedRaw, _ = canonical.JSON(tamperedRaw)
 	if _, err := DecodePreparedExecution(tamperedRaw); !errors.Is(err, ErrPreparedExecutionConflict) {
 		t.Fatalf("caller-chosen Pi identity accepted: %v", err)
+	}
+	// DecodePreparedExecution is a pure closed-form check. A document sealed by
+	// the same digest function stays structurally valid; it cannot enter
+	// authority because ResultIngress derives the Pi identity exclusively from
+	// its own ledger closure and every consumer resolves the preparation by
+	// digest against the current ledger.
+	resealed := tampered
+	resealed.PreparationDigest, _ = preparedExecutionDigest(resealed)
+	resealedRaw, _ := json.Marshal(resealed)
+	resealedRaw, _ = canonical.JSON(resealedRaw)
+	decoded, err := DecodePreparedExecution(resealedRaw)
+	if err != nil || decoded.Pi0843IdentityDigest != resealed.Pi0843IdentityDigest {
+		t.Fatalf("self-consistent closed wire form rejected: %+v err=%v", decoded, err)
+	}
+	if _, err := fixture.store.ResolvePreparedExecution(context.Background(), fixture.verifier, fixture.owner.Acquisition, resealed.PreparationDigest); !errors.Is(err, ErrPreparedExecutionUnavailable) {
+		t.Fatalf("ungrounded preparation resolved from ledger: %v", err)
 	}
 	zeroSequence := creation
 	zeroSequence.ExpectedRunSequence = 0
@@ -189,6 +207,19 @@ func TestCommittedRunStartProofIsNarrowSharedAndSynchronous(t *testing.T) {
 	<-entered
 	deactivated := make(chan error, 1)
 	go func() { deactivated <- async.guard.deactivateAndWait() }()
+	// The in-flight callback must still be inside WithClaim when
+	// deactivateAndWait reads inFlight, otherwise the escape is not observable.
+	// active flips false only after that read, so it is the deterministic entry
+	// barrier; the callback stays blocked until release below.
+	for {
+		async.guard.mu.Lock()
+		observed := !async.guard.active
+		async.guard.mu.Unlock()
+		if observed {
+			break
+		}
+		runtime.Gosched()
+	}
 	close(release)
 	if err := <-finished; err != nil {
 		t.Fatal(err)
@@ -374,12 +405,30 @@ func (fixture preparedExecutionFixture) storeStateAfterPrepared(t *testing.T, _ 
 	return state
 }
 
+// advancePreparedAttemptToStarted drives the supervisor bootstrap, start and
+// command checkpoint chain for the prepared execution's attempt. The observed
+// child process is derived from the prepared Pi closure's runtime executable,
+// because AppendProcessStarted binds the process observation to that exact
+// runtime object.
 func advancePreparedAttemptToStarted(t *testing.T, fixture preparedExecutionFixture, state AttemptAuthorityState) AttemptAuthorityState {
 	t.Helper()
 	control := processsupervisor.ControlDirectoryIdentity{CanonicalPath: "/tmp/prepared-supervisor", Device: 31, Inode: 41, FileType: "directory", UID: 501, GID: 20, Mode: POSIXFileTypeDirectory | 0o700, LinkCount: 2}
 	prepared, acquisition := testPreparedSupervisor(t, fixture.store, state, "prepared-session", control)
 	state = testStartPreparedSupervisor(t, fixture.store, prepared, acquisition)
-	transition := AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: state.Identity, CommandID: "prepared-child", ObservedAt: "2026-08-29T00:00:02Z", Process: attemptTestProcess(t), LaunchMaterialsDigest: state.LaunchMaterialsDigest, AgentLaunchSpecDigest: state.AgentLaunchSpecDigest}
+	runtimeExecutable := state.LaunchClosure.RuntimeExecutable
+	process, err := SealProcessObservation(ProcessObservation{
+		PID: 4321, PGID: 4321, BirthSeconds: 100, BirthMicroseconds: 33,
+		WorkingDirectory: state.LaunchClosure.WorkingDirectory, WorkingDirectoryDevice: 1, WorkingDirectoryInode: 2,
+		WorkingDirectoryType: POSIXFileTypeDirectory, WorkingDirectoryOwner: 501, WorkingDirectoryMode: POSIXFileTypeDirectory | 0755,
+		ExecutablePath: runtimeExecutable.CanonicalPath, ExecutableDevice: runtimeExecutable.Device, ExecutableInode: runtimeExecutable.Inode,
+		ExecutableSize: runtimeExecutable.Size, ExecutableType: runtimeExecutable.FileType, ExecutableOwner: runtimeExecutable.UID,
+		ExecutableGroup: runtimeExecutable.GID, ExecutableMode: runtimeExecutable.Mode, ExecutableLinkCount: runtimeExecutable.LinkCount,
+		ExecutableSHA256: runtimeExecutable.RawSHA256, ObserverIdentity: "core-darwin-observer/v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition := AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: state.Identity, CommandID: "prepared-child", ObservedAt: "2026-08-29T00:00:02Z", Process: process, LaunchMaterialsDigest: state.LaunchMaterialsDigest, AgentLaunchSpecDigest: state.AgentLaunchSpecDigest}
 	state = appendTestProcessStartedCheckpoints(t, fixture.store, state, &transition)
 	run := attemptTestRunAuthority(state.Identity)
 	result, err := fixture.store.AppendProcessStarted(context.Background(), fixture.verifier, attemptRunVerifier{want: run}, state.Revision, state.HeadDigest, AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}, state.Owner, transition)
