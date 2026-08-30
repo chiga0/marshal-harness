@@ -639,6 +639,54 @@ func (l *LeaseLedger) Current(leaseId string) (DispatchLease, LeaseState, int64,
 	return lease, lease.LeaseState, lease.Generation, nil
 }
 
+// CurrentByAttempt returns the current, not-yet-expired lease for the exact
+// (runId, attemptId) binding at the caller-supplied authoritative time. The
+// binding is resolved only from the replayed active index; it never scans or
+// adopts a historical lease. A missing, expired, or inconsistent index entry
+// fails closed, because a producer must not infer a dispatch lease from
+// partial or stale state.
+func (l *LeaseLedger) CurrentByAttempt(runId, attemptId string, now time.Time) (DispatchLease, LeaseState, int64, error) {
+	if err := l.requireBound(); err != nil {
+		return DispatchLease{}, "", 0, err
+	}
+	if err := requireText("runId", runId); err != nil {
+		return DispatchLease{}, "", 0, err
+	}
+	if err := requireText("attemptId", attemptId); err != nil {
+		return DispatchLease{}, "", 0, err
+	}
+	if now.IsZero() {
+		return DispatchLease{}, "", 0, fmt.Errorf("%w: authoritative time is required", ErrLeaseConflict)
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	binding := claimBindingKey(runId, attemptId)
+	leaseId, ok := l.activeBindings[binding]
+	if !ok {
+		return DispatchLease{}, "", 0, fmt.Errorf("%w: runId=%s attemptId=%s", ErrUnknownLease, runId, attemptId)
+	}
+	lease, ok := l.leases[leaseId]
+	if !ok {
+		return DispatchLease{}, "", 0, fmt.Errorf("%w: active binding runId=%s attemptId=%s references missing leaseId %s", ErrLeaseConflict, runId, attemptId, leaseId)
+	}
+	if lease.RunId != runId || lease.AttemptId != attemptId {
+		return DispatchLease{}, "", 0, fmt.Errorf("%w: active binding runId=%s attemptId=%s references lease %s with a different tuple", ErrLeaseConflict, runId, attemptId, leaseId)
+	}
+	if lease.LeaseState.IsTerminal() {
+		return DispatchLease{}, "", 0, fmt.Errorf("%w: active binding runId=%s attemptId=%s references terminal lease %s", ErrLeaseConflict, runId, attemptId, leaseId)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, lease.ExpiresAt)
+	if err != nil || !now.Before(expiresAt) {
+		return DispatchLease{}, "", 0, fmt.Errorf("%w: lease %s expired at %q", ErrLeaseConflict, leaseId, lease.ExpiresAt)
+	}
+	ackDeadlineAt, err := time.Parse(time.RFC3339, lease.AckDeadlineAt)
+	if err != nil || !now.Before(ackDeadlineAt) {
+		return DispatchLease{}, "", 0, fmt.Errorf("%w: lease %s ack deadline passed at %q", ErrLeaseConflict, leaseId, lease.AckDeadlineAt)
+	}
+	return lease, lease.LeaseState, lease.Generation, nil
+}
+
 // ActiveLeases returns a snapshot of every currently non-terminal lease,
 // keyed by its (runId, attemptId) binding. The embedded runtime recomposes
 // its scope → lease index from this on construction (crash recovery): an

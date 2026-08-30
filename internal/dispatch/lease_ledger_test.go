@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/provider"
 )
@@ -796,6 +797,92 @@ func TestLeaseLedgerReplayDeterminism(t *testing.T) {
 		if !reflect.DeepEqual(firstLease, secondLease) {
 			t.Fatalf("replaying the identical ledger bytes must rebuild field-identical lease snapshots for %s", leaseId)
 		}
+	}
+}
+
+// TestLeaseLedgerCurrentByAttemptUsesDurableActiveBinding verifies that the
+// producer lookup is keyed by the exact (runId, attemptId) tuple and survives
+// append-only replay, while terminal and inconsistent bindings fail closed.
+func TestLeaseLedgerCurrentByAttemptUsesDurableActiveBinding(t *testing.T) {
+	dir := t.TempDir()
+	ledger, err := NewLeaseLedger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := ledgerLease("current-by-attempt")
+	if err := ledger.AppendClaim(lease); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)
+	current, state, generation, err := ledger.CurrentByAttempt(lease.RunId, lease.AttemptId, now)
+	if err != nil {
+		t.Fatalf("CurrentByAttempt failed: %v", err)
+	}
+	if !reflect.DeepEqual(current, lease) || state != lease.LeaseState || generation != lease.Generation {
+		t.Fatalf("CurrentByAttempt=(%#v, %q, %d), want=(%#v, %q, %d)", current, state, generation, lease, lease.LeaseState, lease.Generation)
+	}
+
+	recovered, err := NewLeaseLedger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredLease, recoveredState, recoveredGeneration, err := recovered.CurrentByAttempt(lease.RunId, lease.AttemptId, now)
+	if err != nil {
+		t.Fatalf("replayed CurrentByAttempt failed: %v", err)
+	}
+	if !reflect.DeepEqual(recoveredLease, lease) || recoveredState != lease.LeaseState || recoveredGeneration != lease.Generation {
+		t.Fatalf("replayed CurrentByAttempt=(%#v, %q, %d), want=(%#v, %q, %d)", recoveredLease, recoveredState, recoveredGeneration, lease, lease.LeaseState, lease.Generation)
+	}
+
+	if _, _, _, err := recovered.CurrentByAttempt(lease.RunId, "missing-attempt", now); !errors.Is(err, ErrUnknownLease) {
+		t.Fatalf("missing attempt must fail with ErrUnknownLease, got %v", err)
+	}
+	if _, _, _, err := recovered.CurrentByAttempt("missing-run", lease.AttemptId, now); !errors.Is(err, ErrUnknownLease) {
+		t.Fatalf("missing run must fail with ErrUnknownLease, got %v", err)
+	}
+
+	if err := recovered.AppendCancel(lease.LeaseId, CancelReasonDeadlineExceeded, lease.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := recovered.CurrentByAttempt(lease.RunId, lease.AttemptId, now); !errors.Is(err, ErrUnknownLease) {
+		t.Fatalf("terminal binding must not be returned as current, got %v", err)
+	}
+}
+
+func TestLeaseLedgerCurrentByAttemptRejectsInvalidOrInconsistentBinding(t *testing.T) {
+	ledger := newTestLeaseLedger(t)
+	lease := ledgerLease("current-by-attempt-invalid")
+	if err := ledger.AppendClaim(lease); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, binding := range map[string][2]string{
+		"empty run":     {"", lease.AttemptId},
+		"empty attempt": {lease.RunId, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, _, err := ledger.CurrentByAttempt(binding[0], binding[1], time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)); err == nil {
+				t.Fatal("CurrentByAttempt unexpectedly accepted an empty binding component")
+			}
+		})
+	}
+
+	binding := claimBindingKey(lease.RunId, lease.AttemptId)
+	ledger.activeBindings[binding] = fixedDigest("missing-lease")
+	if _, _, _, err := ledger.CurrentByAttempt(lease.RunId, lease.AttemptId, time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("inconsistent active index must fail with ErrLeaseConflict, got %v", err)
+	}
+}
+
+func TestLeaseLedgerCurrentByAttemptRejectsExpiredLease(t *testing.T) {
+	ledger := newTestLeaseLedger(t)
+	lease := ledgerLease("current-by-attempt-expired")
+	if err := ledger.AppendClaim(lease); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := ledger.CurrentByAttempt(lease.RunId, lease.AttemptId, time.Date(2026, 1, 1, 2, 0, 1, 0, time.UTC)); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("expired lease must fail closed, got %v", err)
 	}
 }
 
