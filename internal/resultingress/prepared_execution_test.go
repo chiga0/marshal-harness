@@ -75,13 +75,13 @@ func preparedTestPiClosure(t *testing.T) launchidentity.ClosureV1 {
 		role := fmt.Sprintf("photon-node/file-%02d", index)
 		materials = append(materials, launchidentity.LaunchMaterialV1{Role: role, Object: object("/fixed/pi/photon/"+role[len("photon-node/"):], uint64(100+index), size, false)})
 	}
-	entrypoint := object("/fixed/pi/bundle/cli.js", 200, 710, false)
-	entrypoint.RawSHA256 = "sha256:840d1e8e689ed9e4937bcb00b9a810e02a8567d9afb10a47097f11ca93ea1521"
+	entrypoint := object("/fixed/pi/bundle/cli.js", 200, 629, false)
+	entrypoint.RawSHA256 = "sha256:5406c369954516fb56879d685e082ff9095cd6e06e41af406f394942377fd4bf"
 	materials = append(materials, launchidentity.LaunchMaterialV1{Role: "pi-bundle/cli.js", Object: entrypoint})
 	for index := 0; index < 47; index++ {
 		size := int64(1)
 		if index == 46 {
-			size = 7_439_052
+			size = 7_439_133
 		}
 		role := fmt.Sprintf("pi-bundle/file-%02d", index)
 		materials = append(materials, launchidentity.LaunchMaterialV1{Role: role, Object: object("/fixed/pi/bundle/"+role[len("pi-bundle/"):], uint64(201+index), size, false)})

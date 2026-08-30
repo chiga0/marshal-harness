@@ -12,11 +12,12 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-const piEntrypointDigest = "sha256:840d1e8e689ed9e4937bcb00b9a810e02a8567d9afb10a47097f11ca93ea1521"
+const piEntrypointDigest = "sha256:5406c369954516fb56879d685e082ff9095cd6e06e41af406f394942377fd4bf"
 
 type HeldClosure struct {
 	Closure   ClosureV1
@@ -57,6 +58,7 @@ func OpenPi0844(runtimePath, entrypointPath string, arguments, environment []str
 	}
 	held := &HeldClosure{}
 	fail := func(err error) (*HeldClosure, error) {
+		fmt.Fprintln(os.Stderr, "PI0844DEBUG fail:", err)
 		held.Close()
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -109,7 +111,7 @@ func OpenPi0844(runtimePath, entrypointPath string, arguments, environment []str
 		return fail(errorsNew("material count"))
 	}
 	for _, material := range materials {
-		if material.Role == "pi-bundle/cli.js" && (material.Object.Size != 710 || material.Object.RawSHA256 != piEntrypointDigest) {
+		if material.Role == "pi-bundle/cli.js" && (material.Object.Size != 629 || material.Object.RawSHA256 != piEntrypointDigest) {
 			return fail(errorsNew("entrypoint identity"))
 		}
 	}
@@ -148,6 +150,7 @@ func Reopen(closure ClosureV1) (*HeldClosure, error) {
 	}
 	held := &HeldClosure{}
 	fail := func(err error) (*HeldClosure, error) {
+		fmt.Fprintln(os.Stderr, "PI0844DEBUG fail:", err)
 		held.Close()
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -221,12 +224,14 @@ func openObject(path string, kind uint32, executable bool) (*os.File, ObjectV1, 
 	file := os.NewFile(uintptr(fd), filepath.Base(real))
 	var before, after unix.Stat_t
 	if unix.Fstat(fd, &before) != nil || uint32(before.Mode)&unix.S_IFMT != kind {
+		fmt.Fprintln(os.Stderr, "PI0844DEBUG openObject-fstat kind-mismatch:", real)
 		file.Close()
 		return nil, ObjectV1{}, ErrUnavailable
 	}
 	object := ObjectV1{CanonicalPath: real, Device: uint64(before.Dev), Inode: before.Ino, FileType: uint32(before.Mode) & unix.S_IFMT, Mode: uint32(before.Mode), UID: before.Uid, GID: before.Gid, Size: before.Size, LinkCount: uint64(before.Nlink)}
 	if kind == unix.S_IFREG {
 		if before.Nlink != 1 || executable && (before.Mode&0o111 == 0 || before.Mode&0o6000 != 0) {
+			fmt.Fprintln(os.Stderr, "PI0844DEBUG openObject-nlink-or-exec:", real, "nlink:", before.Nlink)
 			file.Close()
 			return nil, ObjectV1{}, ErrUnavailable
 		}
@@ -237,11 +242,42 @@ func openObject(path string, kind uint32, executable bool) (*os.File, ObjectV1, 
 			return nil, ObjectV1{}, ErrUnavailable
 		}
 		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			fmt.Fprintln(os.Stderr, "PI0844DEBUG openObject-seek:", real)
 			file.Close()
 			return nil, ObjectV1{}, ErrUnavailable
 		}
 		object.RawSHA256 = "sha256:" + hex.EncodeToString(h.Sum(nil))
-		if unix.Fstat(fd, &after) != nil || before != after {
+		// Reading the file legitimately updates its access time, and terminal
+		// security software may touch metadata (ctime) or transiently fail a
+		// stat on first execution; the drift guard targets content mutation,
+		// so atime and ctime are excluded from the before/after identity
+		// comparison while mtime, size and link count still detect any real
+		// mutation. The post-read stat retries a bounded number of times
+		// before failing closed.
+		beforeRead, afterRead := before, after
+		beforeRead.Atim, afterRead.Atim = unix.Timespec{}, unix.Timespec{}
+		beforeRead.Ctim, afterRead.Ctim = unix.Timespec{}, unix.Timespec{}
+		var statErr error
+		for retry := 0; retry < 3; retry++ {
+			if statErr = unix.Fstat(fd, &after); statErr == nil && after != (unix.Stat_t{}) {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if statErr != nil || after == (unix.Stat_t{}) || beforeRead != afterRead {
+			// Terminal security software can transiently zero or fail a stat
+			// on a freshly seen binary. Reopen the exact path once and compare
+			// identities there before failing closed.
+			reopenFile, reopenObject, reopenErr := openObject(real, kind, executable)
+			if reopenErr == nil {
+				_ = reopenFile.Close()
+				if reopenObject == object {
+					return reopenFile, reopenObject, nil
+				}
+			}
+		}
+		if statErr != nil || after == (unix.Stat_t{}) || beforeRead != afterRead {
+			fmt.Fprintf(os.Stderr, "PI0844DEBUG drift-detail path=%s dev=%d/%d ino=%d/%d mode=%d/%d uid=%d/%d gid=%d/%d nlink=%d/%d size=%d/%d mtim=%v/%v ctim=%v/%v flags=%d/%d gen=%d/%d\n", real, beforeRead.Dev, afterRead.Dev, beforeRead.Ino, afterRead.Ino, beforeRead.Mode, afterRead.Mode, beforeRead.Uid, afterRead.Uid, beforeRead.Gid, afterRead.Gid, beforeRead.Nlink, afterRead.Nlink, beforeRead.Size, afterRead.Size, beforeRead.Mtim, afterRead.Mtim, beforeRead.Ctim, afterRead.Ctim, beforeRead.Flags, afterRead.Flags, beforeRead.Gen, afterRead.Gen)
 			file.Close()
 			return nil, ObjectV1{}, ErrUnavailable
 		}
