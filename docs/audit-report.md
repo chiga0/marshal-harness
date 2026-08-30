@@ -982,4 +982,4 @@ R2（#189）已关闭，不得把上表中原先口头指派给 R2 的 finding �
 
 `main@46e0054` 是当前本地权威基线（父提交 `054789c`，`origin/main` 尚未同步）。本次以维护者指示直接合入 `ac5fd20`，新增 `NewFromStateRootDescriptor`/`NewAt`，让 existing-only acquisition 沿 held StateRoot descriptor 打开 `runs/<runID>`，并将描述符保留到 Lease 生命周期结束。该切片通过 `go test -race ./internal/runstore`、`go vet ./internal/runstore`、`git diff --check` 与 architecture check。
 
-本次未等待独立 reviewer，故记录为审计风险而非“已独立验收”。此外，descriptor-bound Store 保留的兼容字段（如 `Store.root`）仍需在后续 production composition 接线前完成全调用链审计；不得把该 component 合入解释为 S2′ 完成。ResultIngress/Execution/App 现有 sealed Run-start fixture 仍失败，CI 质量门禁不绿；Qoder/Codex 生产配置、真实 Pi→独立 Decision→`ACCEPTED`、RC1 同字节 canary、签名/公证和远端发布均未完成。
+独立 reviewer 随后发现 descriptor Store 的 pathname API 空根路径风险与 Close/acquisition 竞态；`main@109f35d` 已增加哨兵根路径、descriptor-only `Acquire` 拒绝和互斥保护，并通过 runstore race/vet/diff 定向门禁。本次仍未等待独立 reviewer，故记录为审计风险而非“已独立验收”；Store.root 等兼容字段仍需在 production composition 接线前完成全调用链审计，不得把该 component 合入解释为 S2′ 完成。ResultIngress/Execution/App 现有 sealed Run-start fixture 仍失败，CI 质量门禁不绿；Qoder/Codex 生产配置、真实 Pi→独立 Decision→`ACCEPTED`、RC1 同字节 canary、签名/公证和远端发布均未完成。
