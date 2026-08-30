@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-08-30：READY→RUNNING 回归证据
+
+在 `main@2fb2d58` 上运行完整 `go test ./internal/cli -count=1` 时，多个既有 CLI E2E 在 Attempt 创建前统一失败于 `READY to RUNNING requires sealed Run-start proof`。这确认当前 sealed Run-start 门禁已正确阻止未接线的 production composition，但也暴露出旧 Local MVP 测试仍假定可直接追加 `worker.started`；`runstore.Store.Append` 已明确拒绝该路径。该结果不能通过放宽门禁或伪造 `PreparedRunStart` 修复。
+
+处置：保留该失败作为 `I186-ARCH-PREPARED-EXECUTION-AUTHORITY` 的实现证据；下一切片必须一次性完成真实 `owner → Attempt/ResultIngress → allocation → exact process/allocation runtime → PreparedRunStart/Commit → execution.Run` 组合根，并同步迁移仅覆盖 compatibility profile 的旧测试。当前 `R2–R5` 仍为 `COMPONENT`，不产生 RC1 或 stable 发布资格。
+
 ## 2026-08-30：Run-start producer seam 架构复核
 
 `main@a6482db` 合入了 `resultingress.PrepareMacRunStart`/`CommitMacRunStart`。该 seam 仅在当前 owner lock 下重解析 durable `PreparedExecutionV1`，逐字段校验后委托既有 proof-producing `StartPreparedExecution`；它不创建 Attempt、owner、allocation 或 process facts，也不改变 `R2–R5: COMPONENT` 判定。同期删除了未接线且违反 architecture layer gate 的 `internal/productionruntime/factory.go` 与测试，避免无效 factory 形成第二 authority 入口。定向测试、architecture check 与 vet 已通过；全包 ResultIngress Darwin owner-lock fixture 的既有失败仍保持独立 blocker，fixed CLI production composition 与真实 Pi→独立 `ReviewDecision/ACCEPTED` 尚未形成。
