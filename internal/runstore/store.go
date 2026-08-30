@@ -23,9 +23,10 @@ import (
 )
 
 var (
-	ErrConflict      = errors.New("run store conflict")
-	ErrLeaseHeld     = errors.New("run lease already held")
-	ErrTruncatedTail = errors.New("journal has a truncated final record")
+	ErrConflict               = errors.New("run store conflict")
+	ErrLeaseHeld              = errors.New("run lease already held")
+	ErrTruncatedTail          = errors.New("journal has a truncated final record")
+	ErrDescriptorBoundPathAPI = errors.New("descriptor-bound run store requires a held lease")
 	// errLegacyLeaseOwner marks the pre-descriptor lease owner format. It is
 	// recoverable only after acquireLeaseFile has obtained the OS flock; the
 	// next Acquire rewrites the owner record with the current descriptor
@@ -34,6 +35,7 @@ var (
 )
 
 type Store struct {
+	mu   sync.RWMutex
 	root string
 	// rootDirectory is an optional duplicate of a caller-held StateRoot
 	// descriptor. Production composition uses it for existing-only leases so
@@ -44,6 +46,8 @@ type Store struct {
 	// installs its owner record. Production stores leave it nil.
 	beforeAcquireExistingOwnerWrite func() error
 }
+
+const descriptorBoundRoot = "\x00marshal-descriptor-bound\x00"
 
 type leaseGuard struct {
 	mu               sync.RWMutex
@@ -103,7 +107,12 @@ func NewAt(stateRoot *os.File) (*Store, error) {
 // Close releases the descriptor retained by NewFromStateRootDescriptor. A
 // Store created by New has no owned descriptor and Close is a no-op.
 func (s *Store) Close() error {
-	if s == nil || s.rootDirectory == nil {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rootDirectory == nil {
 		return nil
 	}
 	err := s.rootDirectory.Close()
@@ -115,10 +124,22 @@ func (s *Store) runDir(runID string) (string, error) {
 	if err := domain.ValidateID(runID); err != nil {
 		return "", err
 	}
+	s.mu.RLock()
+	descriptorBound := s.rootDirectory != nil
+	s.mu.RUnlock()
+	if descriptorBound {
+		return "", ErrDescriptorBoundPathAPI
+	}
 	return filepath.Join(s.root, "runs", runID), nil
 }
 
 func (s *Store) Acquire(runID string) (*Lease, error) {
+	s.mu.RLock()
+	descriptorBound := s.rootDirectory != nil
+	s.mu.RUnlock()
+	if descriptorBound {
+		return nil, ErrDescriptorBoundPathAPI
+	}
 	directory, err := s.runDir(runID)
 	if err != nil {
 		return nil, err
@@ -144,22 +165,36 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 // so descriptor-relative readers and mutations retain their existing
 // semantics. The ordinary Acquire creation path remains unchanged.
 func (s *Store) AcquireExisting(runID string) (*Lease, error) {
-	if _, err := s.runDir(runID); err != nil {
+	if err := domain.ValidateID(runID); err != nil {
 		return nil, err
+	}
+	s.mu.RLock()
+	var stateRoot *os.File
+	if s.rootDirectory != nil {
+		var err error
+		stateRoot, err = duplicateDirectory(s.rootDirectory)
+		if err != nil {
+			s.mu.RUnlock()
+			return nil, fmt.Errorf("duplicate state root descriptor: %w", err)
+		}
+	}
+	s.mu.RUnlock()
+	if stateRoot != nil {
+		defer stateRoot.Close()
 	}
 	var leaseFile, runDirectory *os.File
 	var device, inode uint64
 	var locked bool
 	var err error
-	if s.rootDirectory != nil {
-		leaseFile, runDirectory, device, inode, locked, err = acquireExistingLeaseFileAt(s.rootDirectory, runID)
+	if stateRoot != nil {
+		leaseFile, runDirectory, device, inode, locked, err = acquireExistingLeaseFileAt(stateRoot, runID)
 	} else {
 		leaseFile, runDirectory, device, inode, locked, err = acquireExistingLeaseFile(s.root, runID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("acquire existing run lease: %w", err)
 	}
-	return s.finishAcquire(runID, leaseFile, runDirectory, device, inode, locked, true, s.rootDirectory)
+	return s.finishAcquire(runID, leaseFile, runDirectory, device, inode, locked, true, stateRoot)
 }
 
 func (s *Store) finishAcquire(runID string, leaseFile, runDirectory *os.File, device, inode uint64, locked, existingOnly bool, stateRoot *os.File) (*Lease, error) {
@@ -295,7 +330,7 @@ func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uin
 	if lease.runID != event.RunID {
 		return fmt.Errorf("%w: lease belongs to run %s", ErrConflict, lease.runID)
 	}
-	if _, err := s.runDir(event.RunID); err != nil {
+	if err := domain.ValidateID(event.RunID); err != nil {
 		return err
 	}
 	if event.EventID == "" || event.Payload == nil || event.Kind != domain.KindRunEvent || event.APIVersion != domain.APIVersionV1Alpha1 {

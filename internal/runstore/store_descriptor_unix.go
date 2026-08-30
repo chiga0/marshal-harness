@@ -24,7 +24,7 @@ func newFromStateRootDescriptor(stateRoot *os.File) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{rootDirectory: root}, nil
+	return &Store{root: descriptorBoundRoot, rootDirectory: root}, nil
 }
 
 func duplicateDirectory(file *os.File) (*os.File, error) {
