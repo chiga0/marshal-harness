@@ -14,6 +14,8 @@
 
 残留（均经 stash 验证为 `main@054789c` 既有，非本切片引入）：`internal/processsupervisor` 8 项 Darwin mechanics 失败（`process-supervisor-intervention-required` 等，HEAD 复现）；`internal/productionruntime` 2 项 owner-lock ABA 在全包上下文 flaky（单跑 10/10 + `-race` 单跑通过，结合《v1.0 Release Readiness》"Mac 本地质量门禁边界"所述企业终端按新 Mach-O/CDHash 拦截 test binary 的策略，本地结果不作为证据层级）；`TestHeldDarwinResultIngressUnlocksAfterPanic` 在 `-race` 下 flaky（HEAD 同样复现）。`R2–R5` 成熟度不变，仍为 `COMPONENT`；组合根接线（`owner → Attempt/ResultIngress → allocation → exact runtime → PreparedRunStart/Commit → execution.Run`）与旧 CLI/execution 测试迁移仍是下一切片。
 
+**后续切片 2 收口（`3cc88ab`）**：processsupervisor 的 8 项失败全部由测试 fixture 缺陷造成，实现未放宽任何门禁——`digest()` helper 对多字符 label 产出超长非法 digest（7 项失败 + 2 项负向测试因错误原因通过），改为按 label 哈希生成合法 64-hex；spawn source gate fixture 未解析 `/var → /private/var` symlink 祖先即以 `O_NOFOLLOW_ANY` 打开，改为先 `EvalSymlinks`。该包现含 `-race` 全绿。productionruntime 2 项 ABA 全包 flaky 与 resultingress race flake 维持环境类判定不变。S2′ 组合根的架构落点已核实：`architecture_check.py` 对 `productionruntime → resultingress` 无条件放行，组合根 authority 实现必须置于 `internal/productionruntime`；`internal/cli` 的冻结债务允许其直接 import `execution/planning/processsupervisor/sandboxbridge`，supervisor 链的 ResultIngress 追加须经理 productionruntime 暴露的窄方法，不得新增冻结债务条目。
+
 ## 2026-08-30：READY→RUNNING 回归证据
 
 在 `main@2fb2d58` 上运行完整 `go test ./internal/cli -count=1` 时，多个既有 CLI E2E 在 Attempt 创建前统一失败于 `READY to RUNNING requires sealed Run-start proof`。这确认当前 sealed Run-start 门禁已正确阻止未接线的 production composition，但也暴露出旧 Local MVP 测试仍假定可直接追加 `worker.started`；`runstore.Store.Append` 已明确拒绝该路径。该结果不能通过放宽门禁或伪造 `PreparedRunStart` 修复。
