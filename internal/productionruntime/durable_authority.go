@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -362,14 +364,15 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 			return err
 		}
 		attemptID := reservation.Reservation.AttemptID
-		lease, err := l.ensureAttemptLease(read.Run.TaskID, read.Run.RunID, attemptID)
+		allocationID := l.allocationIDFor(attemptID)
+		lease, err := l.ensureAttemptLease(read.Run.TaskID, read.Run.RunID, attemptID, allocationID)
 		if err != nil {
 			return err
 		}
 		identity := resultingress.AttemptIdentity{
 			AuthorityNamespaceID: l.namespace, AuthorityNamespaceRef: l.namespaceRef(),
 			TaskID: read.Run.TaskID, RunID: read.Run.RunID, AttemptID: attemptID,
-			AllocationID: lease.AllocationId, LeaseID: lease.LeaseId, LeaseDigest: lease.LeaseDigest,
+			AllocationID: allocationID, LeaseID: lease.LeaseId, LeaseDigest: lease.LeaseDigest,
 			DispatchGeneration: lease.Generation, FencingTokenDigest: lease.FencingToken,
 			OrchestratorID: l.orchestrator, RunAuthorityDigest: ready.ReadyAuthorityHead,
 		}
@@ -409,6 +412,25 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 			if err != nil || !found {
 				return fmt.Errorf("composition: attempt state after provision: found=%t err=%v", found, err)
 			}
+			// The agent's working directory is the allocation live directory
+			// (staging==live for the local host-process provider), derived
+			// deterministically from the allocation id; re-seal the frozen
+			// closure so its observed working directory matches the provision
+			// receipt exactly.
+			staging, _, _, _, stagingErr := allocationcontrol.DeriveRelativeNames(allocationID)
+			if stagingErr != nil {
+				return stagingErr
+			}
+			stagingPath := filepath.Join(l.allocationDir, staging)
+			reSealed, sealErr := launchidentity.Seal(launchidentity.SpecInput{
+				RuntimeExecutable: l.closure.RuntimeExecutable, ClosureProfileID: l.closure.ClosureProfileID,
+				MaterialRoots: l.closure.MaterialRoots, LaunchMaterials: l.closure.LaunchMaterials,
+				Arguments: l.closure.Arguments, Environment: l.closure.Environment, WorkingDirectory: stagingPath,
+			})
+			if sealErr != nil {
+				return sealErr
+			}
+			l.closure = reSealed
 			if err := l.authorizeLaunch(ctx, identity, authorized); err != nil {
 				return err
 			}
@@ -426,10 +448,16 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 	return prepared, nil
 }
 
+// allocationIDFor derives the durable allocation id from the attempt id so
+// the allocation live directory is known before the lease is minted.
+func (l *CompositionLedger) allocationIDFor(attemptID string) string {
+	return "allocation-" + attemptID[strings.LastIndexByte(attemptID, ':')+1:]
+}
+
 // ensureAttemptLease reuses the attempt's current live lease on replay and
 // mints exactly one claimed lease otherwise. The allocation id is derived
 // from the attempt id so replays resolve to the same durable allocation.
-func (l *CompositionLedger) ensureAttemptLease(taskID, runID, attemptID string) (dispatch.DispatchLease, error) {
+func (l *CompositionLedger) ensureAttemptLease(taskID, runID, attemptID, allocationID string) (dispatch.DispatchLease, error) {
 	now := l.now()
 	if lease, state, _, err := l.leaseLedger.CurrentByAttempt(runID, attemptID, now); err == nil {
 		if state != dispatch.LeaseStateClaimed && state != dispatch.LeaseStateActive {
@@ -443,7 +471,7 @@ func (l *CompositionLedger) ensureAttemptLease(taskID, runID, attemptID string) 
 		RegistrationId: l.registration, ProviderCapabilitySnapshotDigest: l.snapshot,
 		ConformanceEvidenceDigests: l.conformance, Attestation: l.attestation,
 		TaskId: taskID, RunId: runID, AttemptId: attemptID,
-		AllocationId: "allocation-" + attemptID[strings.LastIndexByte(attemptID, ':')+1:],
+		AllocationId: allocationID,
 		Generation:   1, Now: now, AckDelay: 15 * time.Minute, Lifetime: 2 * time.Hour,
 	})
 	if err != nil {
@@ -461,6 +489,22 @@ func (l *CompositionLedger) namespaceRef() string {
 		return ""
 	}
 	return digest
+}
+
+// mergeWorkDirs unions the composition working directory with the caller
+// extras into one sorted, duplicate-free allowlist.
+func mergeWorkDirs(primary string, extras []string) []string {
+	seen := map[string]struct{}{primary: {}}
+	merged := []string{primary}
+	for _, extra := range extras {
+		if _, ok := seen[extra]; ok || extra == "" {
+			continue
+		}
+		seen[extra] = struct{}{}
+		merged = append(merged, extra)
+	}
+	sort.Strings(merged)
+	return merged
 }
 
 // provisionAllocation drives the durable local allocation: intent CAS,
@@ -490,7 +534,7 @@ func (l *CompositionLedger) provisionAllocation(ctx context.Context, identity re
 			CommandID: derived.CommandID, IdempotencyKey: derived.IdempotencyKey,
 		},
 		Requirements: l.requirements, AllowedStoreIDs: []string{},
-		WorkDirAllowlist: l.workDirs, EnvironmentAllowlist: l.environment,
+		WorkDirAllowlist: mergeWorkDirs(l.closure.WorkingDirectory, l.workDirs), EnvironmentAllowlist: l.environment,
 		ExpectedOwnerUID: uint32(os.Geteuid()), ExpectedDirectoryMode: 0o700, ExpectedMarkerMode: 0o600,
 		StagingRelativeName: staging, LiveRelativeName: live, MarkerRelativeName: markerName,
 		MarkerNonceDigest: derived.MarkerNonceDigest, ExpectedAttemptSequence: state.Revision + 1, AttemptAuthorityFactDigest: state.HeadDigest,

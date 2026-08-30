@@ -5,6 +5,7 @@ package launchidentity
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -79,7 +80,13 @@ type CurrentClosureObservation struct {
 // temporary descriptors before returning. It never creates, renames, writes,
 // launches, or retains a descriptor for a later phase.
 func VerifyCurrentClosure(closure ClosureV1, allocationLive LiveIdentity) (CurrentClosureObservation, error) {
+	debugVerify := func(step string, err error) {
+		if os.Getenv("MARSHAL_LOCK_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "VC-DEBUG %s: %v\n", step, err)
+		}
+	}
 	if closure.Validate() != nil || allocationLive.Validate() != nil {
+		debugVerify("entry", fmt.Errorf("closure=%v live=%v", closure.Validate(), allocationLive.Validate()))
 		return CurrentClosureObservation{}, ErrUnavailable
 	}
 	runtimeFile, runtime, err := openObject(closure.RuntimeExecutable.CanonicalPath, unix.S_IFREG, true)
