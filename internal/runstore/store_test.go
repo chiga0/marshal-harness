@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/lifecycle"
 )
 
 type runstoreTreeEntry struct {
@@ -688,31 +689,34 @@ func TestInspectReplaysJournalAheadOfSnapshot(t *testing.T) {
 
 func TestInspectReplaysPublicationIdentityAfterSnapshotCrash(t *testing.T) {
 	t.Parallel()
-	store := New(t.TempDir())
-	lease, err := store.Acquire("run:1")
+	fixture := newPreparedRunStartFixture(t)
+	appendPreparedClaim(t, fixture, fixture.claim)
+	state, err := InspectUnderLease(fixture.lease)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Release()
-	state := domain.NewRunState("task:1", "run:1", time.Unix(1, 0))
-	steps := []domain.State{domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing}
-	for index, next := range steps {
-		event := transition("event:"+string(rune('1'+index)), uint64(index+1), state.State, next)
-		if err := store.Append(lease, event, state.Sequence); err != nil {
+	for index, next := range []domain.State{domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing} {
+		event := transition("event:publication-"+string(rune('4'+index)), state.Sequence+1, state.State, next)
+		event.RunID = state.RunID
+		if err := fixture.store.Append(fixture.lease, event, state.Sequence); err != nil {
 			t.Fatal(err)
 		}
-		state.State, state.Sequence = next, uint64(index+1)
+		state, err = lifecycle.Replay(state, event)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := store.WriteSnapshot(lease, state); err != nil {
+	if err := fixture.store.WriteSnapshot(fixture.lease, state); err != nil {
 		t.Fatal(err)
 	}
-	event := transition("event:7", 7, domain.StatePublishing, domain.StatePublished)
+	event := transition("event:publication-completed", state.Sequence+1, domain.StatePublishing, domain.StatePublished)
+	event.RunID = state.RunID
 	event.Type = "publication.completed"
 	event.Payload = map[string]any{"provider": "github", "repository": "example/repo", "headBranch": "marshal/task-1234", "baseBranch": "main", "externalId": "PR_1", "uri": "https://github.com/example/repo/pull/1", "headSha": "0123456789abcdef0123456789abcdef01234567"}
-	if err := store.Append(lease, event, state.Sequence); err != nil {
+	if err := fixture.store.Append(fixture.lease, event, state.Sequence); err != nil {
 		t.Fatal(err)
 	}
-	recovered, err := store.Inspect("run:1")
+	recovered, err := fixture.store.Inspect(fixture.prepared.RunID)
 	if err != nil || recovered.State != domain.StatePublished || recovered.Publication == nil || recovered.Publication.ExternalID != "PR_1" {
 		t.Fatalf("recovered publication = %+v, error=%v", recovered, err)
 	}
