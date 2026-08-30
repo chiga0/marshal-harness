@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/agentregistry"
@@ -66,6 +67,7 @@ type Outcome struct {
 // authority 非空时，admission 从真实 durable ledger 读取 registration/
 // snapshot/lease/expiry，而非以结果携带 Facts 临时构造（R2/R3 纠偏）。
 type Bridge struct {
+	exactMu          sync.Mutex
 	provider         sandbox.SandboxProvider
 	registry         *allocRegistry
 	now              func() time.Time
@@ -74,6 +76,7 @@ type Bridge struct {
 	productionGate   bool
 	exactProcess     *ExactProcessRuntime
 	exactAllocation  *ExactAllocationRuntime
+	exactBound       bool
 }
 
 // ExactProcessRuntime is the only interpreted-agent execution route admitted
@@ -131,7 +134,42 @@ type ExactAllocationRuntime struct {
 	Resolve func(context.Context, ExactProcessAttempt) (ExactAllocationResolution, error)
 }
 
+// ExactRuntimeBinder is a package-owned capability for the production
+// composition root. The unexported marker prevents an unrelated ProcessBridge
+// from claiming that exact runtimes were installed. Binding is deliberately
+// atomic: callers cannot observe a process-only or allocation-only production
+// configuration.
+type ExactRuntimeBinder interface {
+	exactRuntimeBinder()
+	BindExactRuntimes(ExactProcessRuntime, ExactAllocationRuntime) error
+}
+
+func (*Bridge) exactRuntimeBinder() {}
+
+// BindExactRuntimes installs both exact runtime objects once. It validates all
+// inputs and the existing state before changing either field, so every error
+// path is side-effect free.
+func (b *Bridge) BindExactRuntimes(processRuntime ExactProcessRuntime, allocationRuntime ExactAllocationRuntime) error {
+	if b == nil || processRuntime.Resolve == nil || processRuntime.Retain == nil || allocationRuntime.Resolve == nil {
+		return fmt.Errorf("sandboxbridge: exact runtime pair is incomplete: %w", launchidentity.ErrUnavailable)
+	}
+	b.exactMu.Lock()
+	defer b.exactMu.Unlock()
+	if b.exactProcess != nil || b.exactAllocation != nil {
+		return fmt.Errorf("sandboxbridge: exact runtime pair already bound: %w", launchidentity.ErrUnavailable)
+	}
+	b.exactProcess = &processRuntime
+	b.exactAllocation = &allocationRuntime
+	b.exactBound = true
+	return nil
+}
+
 func (b *Bridge) WithExactProcessRuntime(runtime ExactProcessRuntime) *Bridge {
+	if b == nil {
+		return nil
+	}
+	b.exactMu.Lock()
+	defer b.exactMu.Unlock()
 	if runtime.Resolve != nil && runtime.Retain != nil {
 		b.exactProcess = &runtime
 	}
@@ -143,10 +181,56 @@ func (b *Bridge) WithExactProcessRuntime(runtime ExactProcessRuntime) *Bridge {
 // productionGate still requires all exact authorities and the current CLI
 // intentionally does not compose it.
 func (b *Bridge) WithExactAllocationRuntime(runtime ExactAllocationRuntime) *Bridge {
+	if b == nil {
+		return nil
+	}
+	b.exactMu.Lock()
+	defer b.exactMu.Unlock()
 	if runtime.Resolve != nil {
 		b.exactAllocation = &runtime
 	}
 	return b
+}
+
+// BindExactProcessRuntime installs the exact process runtime once. It is the
+// composition-root seam used by productionruntime; unlike the historical
+// WithExactProcessRuntime test/configuration helper, it never overwrites an
+// existing binding and rejects incomplete values.
+func (b *Bridge) BindExactProcessRuntime(runtime ExactProcessRuntime) error {
+	if b == nil || runtime.Resolve == nil || runtime.Retain == nil {
+		return fmt.Errorf("sandboxbridge: exact process runtime is incomplete: %w", launchidentity.ErrUnavailable)
+	}
+	b.exactMu.Lock()
+	defer b.exactMu.Unlock()
+	if b.exactProcess != nil {
+		return fmt.Errorf("sandboxbridge: exact process runtime already bound: %w", launchidentity.ErrUnavailable)
+	}
+	b.exactProcess = &runtime
+	return nil
+}
+
+// BindExactAllocationRuntime installs the exact allocation runtime once. It
+// rejects incomplete values and never overwrites a prior binding.
+func (b *Bridge) BindExactAllocationRuntime(runtime ExactAllocationRuntime) error {
+	if b == nil || runtime.Resolve == nil {
+		return fmt.Errorf("sandboxbridge: exact allocation runtime is incomplete: %w", launchidentity.ErrUnavailable)
+	}
+	b.exactMu.Lock()
+	defer b.exactMu.Unlock()
+	if b.exactAllocation != nil {
+		return fmt.Errorf("sandboxbridge: exact allocation runtime already bound: %w", launchidentity.ErrUnavailable)
+	}
+	b.exactAllocation = &runtime
+	return nil
+}
+
+func (b *Bridge) exactRuntimeReady() bool {
+	if b == nil {
+		return false
+	}
+	b.exactMu.Lock()
+	defer b.exactMu.Unlock()
+	return b.exactBound && b.exactProcess != nil && b.exactProcess.Resolve != nil && b.exactProcess.Retain != nil && b.exactAllocation != nil && b.exactAllocation.Resolve != nil
 }
 
 // DurableAuthority 是 Bridge 在 admission 时读取真实 durable authority 的
@@ -225,7 +309,7 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 	}
 	var exactAdmission *exactProcessAdmission
 	if b.productionGate {
-		if b.authority == nil || b.exactProcess == nil || b.exactProcess.Resolve == nil || b.exactProcess.Retain == nil || b.exactAllocation == nil || b.exactAllocation.Resolve == nil {
+		if b.authority == nil || !b.exactRuntimeReady() {
 			return domain.Record{}, fmt.Errorf("sandboxbridge: incomplete production runtime: %w", launchidentity.ErrUnavailable)
 		}
 		capable, ok := adapter.(ProductionLaunchCapable)

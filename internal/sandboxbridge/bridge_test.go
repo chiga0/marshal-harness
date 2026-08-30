@@ -555,15 +555,72 @@ func TestRunWorker_AdapterMismatch(t *testing.T) {
 	}
 }
 
-func TestRunWorker_ProductionGateRejectsLegacyBeforeAllocationOrRun(t *testing.T) {
-	provider := sandbox.NewFakeProvider(sandbox.FakeConfig{})
-	bridge, err := NewBridge(provider)
+func TestBindExactRuntimesIsOneShotAndFailClosed(t *testing.T) {
+	bridge, err := NewBridge(sandbox.NewFakeProvider(sandbox.FakeConfig{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	processRuntime := ExactProcessRuntime{
+		Resolve: func(context.Context, ExactProcessAttempt) (*processcontrol.Coordinator, DurableProcessAuthority, error) {
+			return nil, DurableProcessAuthority{}, launchidentity.ErrUnavailable
+		},
+		Retain: func(ExactProcessAttempt, *processcontrol.Process, error) {},
+	}
+	allocationRuntime := ExactAllocationRuntime{
+		Resolve: func(context.Context, ExactProcessAttempt) (ExactAllocationResolution, error) {
+			return ExactAllocationResolution{}, launchidentity.ErrUnavailable
+		},
+	}
+	if err := bridge.BindExactProcessRuntime(processRuntime); err != nil {
+		t.Fatalf("first process bind: %v", err)
+	}
+	if err := bridge.BindExactProcessRuntime(processRuntime); !errors.Is(err, launchidentity.ErrUnavailable) {
+		t.Fatalf("duplicate process bind err=%v, want unavailable", err)
+	}
+	if err := bridge.BindExactProcessRuntime(ExactProcessRuntime{}); !errors.Is(err, launchidentity.ErrUnavailable) {
+		t.Fatalf("incomplete process bind err=%v, want unavailable", err)
+	}
+	if err := bridge.BindExactAllocationRuntime(allocationRuntime); err != nil {
+		t.Fatalf("first allocation bind: %v", err)
+	}
+	if err := bridge.BindExactAllocationRuntime(allocationRuntime); !errors.Is(err, launchidentity.ErrUnavailable) {
+		t.Fatalf("duplicate allocation bind err=%v, want unavailable", err)
+	}
+	if err := bridge.BindExactAllocationRuntime(ExactAllocationRuntime{}); !errors.Is(err, launchidentity.ErrUnavailable) {
+		t.Fatalf("incomplete allocation bind err=%v, want unavailable", err)
+	}
+	var nilBridge *Bridge
+	if err := nilBridge.BindExactProcessRuntime(processRuntime); !errors.Is(err, launchidentity.ErrUnavailable) {
+		t.Fatalf("nil process receiver err=%v, want unavailable", err)
+	}
+}
+
+func TestBindExactRuntimesIsAtomicOnInvalidPair(t *testing.T) {
+	bridge, err := NewBridge(sandbox.NewFakeProvider(sandbox.FakeConfig{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	processRuntime := ExactProcessRuntime{
+		Resolve: func(context.Context, ExactProcessAttempt) (*processcontrol.Coordinator, DurableProcessAuthority, error) {
+			return nil, DurableProcessAuthority{}, launchidentity.ErrUnavailable
+		},
+		Retain: func(ExactProcessAttempt, *processcontrol.Process, error) {},
+	}
+	if err := bridge.BindExactRuntimes(processRuntime, ExactAllocationRuntime{}); !errors.Is(err, launchidentity.ErrUnavailable) {
+		t.Fatalf("invalid pair err=%v, want unavailable", err)
+	}
+	if bridge.exactProcess != nil || bridge.exactAllocation != nil {
+		t.Fatalf("invalid pair left partial binding: process=%v allocation=%v", bridge.exactProcess != nil, bridge.exactAllocation != nil)
+	}
+}
+
+func TestProductionGateRejectsLegacyExactSetters(t *testing.T) {
+	bridge, err := NewBridge(sandbox.NewFakeProvider(sandbox.FakeConfig{}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	bridge.WithProductionGate()
 	bridge.authority = &exactLeaseAuthority{}
-	bridge.WithTranscriptSource(func(string, string) ([]byte, error) { return nil, nil })
 	bridge.WithExactProcessRuntime(ExactProcessRuntime{
 		Resolve: func(context.Context, ExactProcessAttempt) (*processcontrol.Coordinator, DurableProcessAuthority, error) {
 			return nil, DurableProcessAuthority{}, launchidentity.ErrUnavailable
@@ -573,6 +630,36 @@ func TestRunWorker_ProductionGateRejectsLegacyBeforeAllocationOrRun(t *testing.T
 	bridge.WithExactAllocationRuntime(ExactAllocationRuntime{Resolve: func(context.Context, ExactProcessAttempt) (ExactAllocationResolution, error) {
 		return ExactAllocationResolution{}, launchidentity.ErrUnavailable
 	}})
+	worker := &fakeAdapter{id: "fake"}
+	if _, err := bridge.RunWorker(context.Background(), worker, validRequest(t)); !errors.Is(err, launchidentity.ErrUnavailable) {
+		t.Fatalf("legacy setter gate err=%v, want unavailable", err)
+	}
+	if worker.calls != 0 {
+		t.Fatalf("legacy setter path ran worker %d times", worker.calls)
+	}
+}
+
+func TestRunWorker_ProductionGateRejectsLegacyBeforeAllocationOrRun(t *testing.T) {
+	provider := sandbox.NewFakeProvider(sandbox.FakeConfig{})
+	bridge, err := NewBridge(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge.WithProductionGate()
+	bridge.authority = &exactLeaseAuthority{}
+	bridge.WithTranscriptSource(func(string, string) ([]byte, error) { return nil, nil })
+	processRuntime := ExactProcessRuntime{
+		Resolve: func(context.Context, ExactProcessAttempt) (*processcontrol.Coordinator, DurableProcessAuthority, error) {
+			return nil, DurableProcessAuthority{}, launchidentity.ErrUnavailable
+		},
+		Retain: func(ExactProcessAttempt, *processcontrol.Process, error) {},
+	}
+	allocationRuntime := ExactAllocationRuntime{Resolve: func(context.Context, ExactProcessAttempt) (ExactAllocationResolution, error) {
+		return ExactAllocationResolution{}, launchidentity.ErrUnavailable
+	}}
+	if err := bridge.BindExactRuntimes(processRuntime, allocationRuntime); err != nil {
+		t.Fatal(err)
+	}
 	worker := &fakeAdapter{id: "fake"}
 	_, err = bridge.RunWorker(context.Background(), worker, validRequest(t))
 	if err == nil || !strings.Contains(err.Error(), "exact production launch profile") {
@@ -605,12 +692,18 @@ func TestProductionGateRejectsBeforeProviderSideEffects(t *testing.T) {
 			}
 			bridge.WithProductionGate().WithTranscriptSource(func(string, string) ([]byte, error) { return nil, nil })
 			if test.withRuntime {
-				bridge.WithExactProcessRuntime(ExactProcessRuntime{
+				processRuntime := ExactProcessRuntime{
 					Resolve: func(context.Context, ExactProcessAttempt) (*processcontrol.Coordinator, DurableProcessAuthority, error) {
 						return nil, DurableProcessAuthority{}, launchidentity.ErrUnavailable
 					},
 					Retain: func(ExactProcessAttempt, *processcontrol.Process, error) {},
-				})
+				}
+				allocationRuntime := ExactAllocationRuntime{Resolve: func(context.Context, ExactProcessAttempt) (ExactAllocationResolution, error) {
+					return ExactAllocationResolution{}, launchidentity.ErrUnavailable
+				}}
+				if err := bridge.BindExactRuntimes(processRuntime, allocationRuntime); err != nil {
+					t.Fatal(err)
+				}
 			}
 			// The resolver must reject before Adapter preflight, so the plan is
 			// deliberately nil; constructing a closure here would test the wrong

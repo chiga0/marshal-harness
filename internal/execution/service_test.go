@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/agentregistry"
+	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
@@ -27,6 +28,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/provider"
 	marshalrepo "github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/resultbinding"
+	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
@@ -117,6 +119,53 @@ func TestRunPersistsAttemptAndRequiresIndependentVerification(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(fixture.repository, "change.txt")); !os.IsNotExist(err) {
 		t.Fatalf("worker edit leaked into main checkout: %v", err)
+	}
+}
+
+func TestRunRejectsUnsealedReadyStartBeforeAdapter(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	adapter := &countingAdapter{delegate: fixture.input.Adapter.(*fixtureAdapter)}
+	fixture.input.Adapter = adapter
+
+	result, err := Run(context.Background(), fixture.input)
+	if err == nil || !strings.Contains(err.Error(), "sealed Run-start authority") {
+		t.Fatalf("unsealed READY start result = %+v err = %v", result, err)
+	}
+	if adapter.probes != 0 || adapter.runs != 0 {
+		t.Fatalf("unsealed READY start crossed Adapter boundary: probes=%d runs=%d", adapter.probes, adapter.runs)
+	}
+	events, _, readErr := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(events) != 2 || events[len(events)-1].StateTo != domain.StateReady {
+		t.Fatalf("unsealed READY start changed authority journal: %+v", events)
+	}
+}
+
+func TestRunRejectsInvalidPreparedRunStartBeforeSideEffects(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	adapter := &countingAdapter{delegate: fixture.input.Adapter.(*fixtureAdapter)}
+	fixture.input.Adapter = adapter
+	fixture.input.PreparedRunStart = &application.PreparedRunStart{AttemptID: "../escape"}
+	fixture.input.CommitPreparedRunStart = func(context.Context, resultingress.RunStartProjector) error { return nil }
+
+	result, err := Run(context.Background(), fixture.input)
+	if err == nil || !strings.Contains(err.Error(), "invalid prepared Run-start") {
+		t.Fatalf("invalid prepared Run-start result = %+v err = %v", result, err)
+	}
+	if adapter.probes != 0 || adapter.runs != 0 {
+		t.Fatalf("invalid prepared Run-start crossed Adapter boundary: probes=%d runs=%d", adapter.probes, adapter.runs)
+	}
+	events, _, readErr := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(events) != 2 || events[len(events)-1].StateTo != domain.StateReady {
+		t.Fatalf("invalid prepared Run-start changed authority journal: %+v", events)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.runDir, "attempts")); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid prepared Run-start created attempt directory: %v", statErr)
 	}
 }
 

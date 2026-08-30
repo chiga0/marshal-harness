@@ -24,6 +24,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/chiga0/marshal-harness/internal/adapter"
+	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
@@ -34,6 +35,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/resultbinding"
+	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
@@ -55,6 +57,14 @@ type Input struct {
 	// identical on both paths. A nil WorkerRunner keeps the legacy host
 	// path (explicit local-nonproduction compatibility profile).
 	WorkerRunner func(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error)
+	// PreparedRunStart and CommitPreparedRunStart are the production Run-start
+	// authority seam. A READY run must provide both values: the prepared
+	// authority is validated against the current leased journal and the
+	// borrower must synchronously project the ResultIngress-backed proof. The
+	// execution package deliberately cannot manufacture this proof or fall
+	// back to a direct READY->RUNNING append.
+	PreparedRunStart       *application.PreparedRunStart
+	CommitPreparedRunStart func(context.Context, resultingress.RunStartProjector) error
 	// OrphanStalenessThreshold bounds how recent the current attempt's last
 	// journal event must be for a RUNNING run to count as driver-live. Zero
 	// selects defaultOrphanStalenessThreshold.
@@ -545,9 +555,68 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if err := assertProfileNotEscalated(lease, task.Worker.ExecutionProfile); err != nil {
 		return Result{}, err
 	}
-	attemptID, err := domain.NewID("attempt")
-	if err != nil {
-		return Result{}, err
+	var next domain.RunState
+	// READY is a durable authority boundary. The attempt identity and the
+	// ResultIngress-backed Run-start proof must have been prepared by the
+	// caller before this function starts any attempt side effect. In
+	// particular, do not generate an identity here and then try to append a
+	// synthetic worker.started event: runstore intentionally rejects that
+	// producer path.
+	sealedRunStart := state.State == domain.StateReady
+	var preparedRunStart application.PreparedRunStart
+	if sealedRunStart {
+		if input.PreparedRunStart == nil || input.CommitPreparedRunStart == nil {
+			return Result{}, errors.New("execution: READY to RUNNING requires sealed Run-start authority")
+		}
+		// Copy the caller's value before validation and retain the copy for the
+		// authority call; a mutable Input must not be able to change the
+		// identity between validation and commit.
+		preparedRunStart = *input.PreparedRunStart
+		if err := preparedRunStart.Validate(); err != nil {
+			return Result{}, fmt.Errorf("execution: invalid prepared Run-start: %w", err)
+		}
+		if preparedRunStart.RunID != state.RunID || preparedRunStart.TaskID != state.TaskID || preparedRunStart.Sequence != state.Sequence {
+			return Result{}, errors.New("execution: prepared Run-start does not match the current READY run")
+		}
+		if preparedRunStart.AttemptOrdinal != uint64(state.AttemptsUsed)+1 || preparedRunStart.MaxAttempts != uint64(task.Budgets.MaxAttempts) {
+			return Result{}, errors.New("execution: prepared Run-start budget does not match the current READY run")
+		}
+	} else if input.PreparedRunStart != nil || input.CommitPreparedRunStart != nil {
+		return Result{}, errors.New("execution: prepared Run-start is only valid for a READY run")
+	}
+	attemptID := ""
+	if sealedRunStart {
+		attemptID = preparedRunStart.AttemptID
+	} else {
+		attemptID, err = domain.NewID("attempt")
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	if filepath.IsAbs(attemptID) || filepath.Clean(attemptID) != attemptID || strings.ContainsRune(attemptID, filepath.Separator) {
+		return Result{}, errors.New("execution: prepared attempt ID is not a safe relative path")
+	}
+	if sealedRunStart {
+		// Commit before creating the attempt directory or acquiring any other
+		// resource. This keeps the durable READY admission atomic with the
+		// prepared authority and prevents an invalid/stale proof from leaving
+		// attempt, dispatch, worktree, or adapter side effects behind.
+		projection, err := store.WithPreparedRunStartAuthority(ctx, lease, preparedRunStart, func(projector resultingress.RunStartProjector) error {
+			return input.CommitPreparedRunStart(ctx, projector)
+		})
+		if err != nil {
+			return Result{}, err
+		}
+		if projection.TaskID != state.TaskID || projection.RunID != state.RunID || projection.AttemptID != attemptID || projection.State != domain.StateRunning || projection.Sequence != state.Sequence+1 {
+			return Result{}, errors.New("execution: sealed Run-start returned an invalid RUNNING projection")
+		}
+		next, err = runstore.InspectUnderLease(lease)
+		if err != nil {
+			return Result{}, err
+		}
+		if next.State != domain.StateRunning || next.CurrentAttemptID != attemptID || next.Sequence != projection.Sequence {
+			return Result{}, errors.New("execution: sealed Run-start projection is not current")
+		}
 	}
 	attemptDir := filepath.Join(runDir, "attempts", attemptID)
 	var localAttemptAuthority *runstore.BoundDirectory
@@ -705,24 +774,27 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		return Result{}, err
 	}
 
-	started := time.Now().UTC()
-	startPayload := map[string]any{"adapterId": selectedAdapterID, "fencingGeneration": attemptNumber}
-	if dispatchObservation != nil {
-		startPayload["dispatchObservationDigest"] = dispatchObservation.ObservationDigest
-	}
-	if supersededAttemptID != "" {
-		startPayload["orphanRecovery"] = true
-		startPayload["supersedesAttempt"] = supersededAttemptID
-	}
-	startEvent, next, err := transition(state, attemptID, "worker.started", domain.StateRunning, started, startPayload, lifecycle.Guard{LeaseHeld: true, BudgetAvailable: true})
-	if err != nil {
-		return Result{}, err
-	}
-	if err := store.Append(lease, startEvent, state.Sequence); err != nil {
-		return Result{}, err
-	}
-	if err := store.WriteSnapshot(lease, next); err != nil {
-		return Result{}, err
+	if !sealedRunStart {
+		started := time.Now().UTC()
+		startPayload := map[string]any{"adapterId": selectedAdapterID, "fencingGeneration": attemptNumber}
+		if dispatchObservation != nil {
+			startPayload["dispatchObservationDigest"] = dispatchObservation.ObservationDigest
+		}
+		if supersededAttemptID != "" {
+			startPayload["orphanRecovery"] = true
+			startPayload["supersedesAttempt"] = supersededAttemptID
+		}
+		startEvent, transitioned, err := transition(state, attemptID, "worker.started", domain.StateRunning, started, startPayload, lifecycle.Guard{LeaseHeld: true, BudgetAvailable: true})
+		if err != nil {
+			return Result{}, err
+		}
+		if err := store.Append(lease, startEvent, state.Sequence); err != nil {
+			return Result{}, err
+		}
+		if err := store.WriteSnapshot(lease, transitioned); err != nil {
+			return Result{}, err
+		}
+		next = transitioned
 	}
 	workerRecord := domain.Record{Kind: domain.KindWorkerRequest, Data: requestData}
 	var workerResult domain.Record
