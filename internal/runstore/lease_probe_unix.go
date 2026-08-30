@@ -144,12 +144,33 @@ func acquireExistingLeaseFile(root, runID string) (*os.File, *os.File, uint64, u
 	return acquireLeaseFileMode(root, runID, false)
 }
 
+// acquireExistingLeaseFileAt opens runs and the named Run relative to a
+// caller-held StateRoot descriptor. It never resolves the StateRoot through
+// its pathname, so replacement/ABA of the canonical .marshal entry cannot
+// redirect this acquisition.
+func acquireExistingLeaseFileAt(root *os.File, runID string) (*os.File, *os.File, uint64, uint64, bool, error) {
+	return acquireLeaseFileModeAt(root, runID, false)
+}
+
 func acquireLeaseFileMode(root, runID string, createLock bool) (*os.File, *os.File, uint64, uint64, bool, error) {
 	rootFD, runsFD, runFD, err := openRunAuthority(root, runID)
 	if err != nil {
 		return nil, nil, 0, 0, false, err
 	}
 	defer unix.Close(rootFD)
+	return acquireLeaseFileModeFD(rootFD, runsFD, runFD, runID, createLock)
+}
+
+func acquireLeaseFileModeAt(root *os.File, runID string, createLock bool) (*os.File, *os.File, uint64, uint64, bool, error) {
+	rootFD, runsFD, runFD, err := openRunAuthorityAt(root, runID)
+	if err != nil {
+		return nil, nil, 0, 0, false, err
+	}
+	defer unix.Close(rootFD)
+	return acquireLeaseFileModeFD(rootFD, runsFD, runFD, runID, createLock)
+}
+
+func acquireLeaseFileModeFD(rootFD, runsFD, runFD int, runID string, createLock bool) (*os.File, *os.File, uint64, uint64, bool, error) {
 	defer unix.Close(runsFD)
 	defer unix.Close(runFD)
 	created := false
@@ -227,6 +248,55 @@ func validateAcquiredLeaseCurrent(root, runID string, boundRun, heldLease *os.Fi
 		return errors.New("run authority pathname no longer binds the acquired directory")
 	}
 
+	currentLeaseFD, err := unix.Openat(currentRunFD, "lease.lock", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(currentLeaseFD)
+	var currentLeaseStat, heldLeaseStat unix.Stat_t
+	if err := unix.Fstat(currentLeaseFD, &currentLeaseStat); err != nil {
+		return err
+	}
+	if err := unix.Fstat(int(heldLease.Fd()), &heldLeaseStat); err != nil {
+		return err
+	}
+	if currentLeaseStat.Mode&unix.S_IFMT != unix.S_IFREG || currentLeaseStat.Nlink != 1 {
+		return errors.New("canonical lease is not a single-link regular file")
+	}
+	if uint64(currentLeaseStat.Dev) != device || uint64(currentLeaseStat.Ino) != inode || uint64(heldLeaseStat.Dev) != device || uint64(heldLeaseStat.Ino) != inode {
+		return errors.New("lease pathname no longer binds the acquired descriptor")
+	}
+	owner, err := readLeaseOwnerAt(currentRunFD)
+	if err != nil && !errors.Is(err, errLegacyLeaseOwner) {
+		return fmt.Errorf("validate existing lease owner: %w", err)
+	}
+	if err == nil && (owner.Device != device || owner.Inode != inode) {
+		return errors.New("existing lease owner no longer binds the acquired descriptor")
+	}
+	return nil
+}
+
+func validateAcquiredLeaseCurrentAt(root *os.File, runID string, boundRun, heldLease *os.File, device, inode uint64) error {
+	if root == nil || boundRun == nil || heldLease == nil {
+		return errors.New("existing Run acquisition lacks bound descriptors")
+	}
+	rootFD, runsFD, currentRunFD, err := openRunAuthorityAt(root, runID)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(rootFD)
+	defer unix.Close(runsFD)
+	defer unix.Close(currentRunFD)
+	var boundRunStat, currentRunStat unix.Stat_t
+	if err := unix.Fstat(int(boundRun.Fd()), &boundRunStat); err != nil {
+		return err
+	}
+	if err := unix.Fstat(currentRunFD, &currentRunStat); err != nil {
+		return err
+	}
+	if boundRunStat.Dev != currentRunStat.Dev || boundRunStat.Ino != currentRunStat.Ino {
+		return errors.New("run authority pathname no longer binds the acquired directory")
+	}
 	currentLeaseFD, err := unix.Openat(currentRunFD, "lease.lock", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
@@ -374,7 +444,13 @@ func openRunAuthorityLocked(lease *Lease) (*os.File, error) {
 	if lease == nil || lease.guard == nil || lease.guard.owner != lease || lease.runDir == nil || lease.file == nil || !lease.held {
 		return nil, errors.New("lease lacks bound authority descriptors")
 	}
-	rootFD, runsFD, currentRunFD, err := openRunAuthority(lease.root, lease.runID)
+	var rootFD, runsFD, currentRunFD int
+	var err error
+	if lease.rootDirectory != nil {
+		rootFD, runsFD, currentRunFD, err = openRunAuthorityAt(lease.rootDirectory, lease.runID)
+	} else {
+		rootFD, runsFD, currentRunFD, err = openRunAuthority(lease.root, lease.runID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -438,7 +514,7 @@ func openRunAuthority(root, runID string) (int, int, int, error) {
 	if err != nil {
 		return -1, -1, -1, fmt.Errorf("inspect state root: %w", err)
 	}
-	runsFD, err := unix.Openat(rootFD, "runs", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	runsFD, err := openRunAuthorityRuns(rootFD)
 	if err != nil {
 		unix.Close(rootFD)
 		return -1, -1, -1, fmt.Errorf("inspect runs directory: %w", err)
@@ -450,6 +526,33 @@ func openRunAuthority(root, runID string) (int, int, int, error) {
 		return -1, -1, -1, fmt.Errorf("inspect run directory: %w", err)
 	}
 	return rootFD, runsFD, runFD, nil
+}
+
+func openRunAuthorityAt(root *os.File, runID string) (int, int, int, error) {
+	if root == nil {
+		return -1, -1, -1, errors.New("inspect state root descriptor is nil")
+	}
+	rootFD, err := unix.Dup(int(root.Fd()))
+	if err != nil {
+		return -1, -1, -1, err
+	}
+	unix.CloseOnExec(rootFD)
+	runsFD, err := openRunAuthorityRuns(rootFD)
+	if err != nil {
+		unix.Close(rootFD)
+		return -1, -1, -1, fmt.Errorf("inspect runs directory: %w", err)
+	}
+	runFD, err := unix.Openat(runsFD, runID, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		unix.Close(runsFD)
+		unix.Close(rootFD)
+		return -1, -1, -1, fmt.Errorf("inspect run directory: %w", err)
+	}
+	return rootFD, runsFD, runFD, nil
+}
+
+func openRunAuthorityRuns(rootFD int) (int, error) {
+	return unix.Openat(rootFD, "runs", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 }
 
 // probeLeaseHeld walks the authority directory through no-follow directory
