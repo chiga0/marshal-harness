@@ -1369,15 +1369,22 @@ func (s *ingressDurableStore) CompareAndAppendAuthorized(ctx context.Context, ve
 	if !isRunAuthorizedTransition(transition.Kind) || transition.Identity != request.Identity {
 		return AttemptAppendResult{}, ErrRunAuthorityUnauthorized
 	}
+	// Check the authority capability before transition-specific admission. A
+	// caller that supplies no verifier has no right to learn or exercise any
+	// transition path; in particular, fresh AttemptOpened remains reservation-
+	// only, but the missing capability is the primary fail-closed result.
+	if verifier == nil {
+		return AttemptAppendResult{}, ErrRunAuthorityUnauthorized
+	}
 	if err := validateTransitionShape(transition); err != nil {
 		return AttemptAppendResult{}, err
-	}
-	if transition.Kind == AttemptTransitionOpened {
-		return AttemptAppendResult{}, fmt.Errorf("%w: fresh attempt-opened requires an active reservation", ErrAttemptAuthorityConflict)
 	}
 	wantRun := runAuthorityBindingFor(request.Identity)
 	if request.CurrentRunAuthority != wantRun {
 		return AttemptAppendResult{}, ErrRunAuthorityUnauthorized
+	}
+	if transition.Kind == AttemptTransitionOpened {
+		return AttemptAppendResult{}, fmt.Errorf("%w: fresh attempt-opened requires an active reservation", ErrAttemptAuthorityConflict)
 	}
 	var result AttemptAppendResult
 	err := withCurrentRunAuthority(ctx, verifier, request.CurrentRunAuthority, func() error {
