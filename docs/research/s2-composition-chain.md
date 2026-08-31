@@ -33,16 +33,13 @@
 
 ## 已知开放问题
 
-0. **4b-2 实施配方（已调研 API，a106de1 之后）**：existing-worktree 绑定的确切调用序列——
+0. **4b-2 实施配方（已落地，`feat/pi-s2-production-composition@d65785d` 之后）**：existing-worktree 绑定的确切调用序列已实施于 `internal/productionruntime/existing_worktree_bind.go`——
    - `resultingress.NewExistingWorktreeAuthority(store, verifier)` + `allocationcontrol.NewExistingWorktreeController(authority)` → `controller.Bind(ctx, run DescriptorBoundRunV1, request ExistingWorktreeBindRequestV1) (ExistingWorktreeBindReceiptV1, error)`（session 内部完成 bind-intent/target 重观察/bind-receipt 的追加与 fsync）；
-   - `DescriptorBoundRunV1{RunID, Directory *os.File（Run 目录持有描述符）, DirectoryIdentity, AuthorityHeadDigest}`；request 字段：Binding（含 ReservationFactDigest/AttemptOpenedFactDigest/AllocationID/LeaseID/Generation/FencingTokenDigest/FrozenInputsDigest/ExpectedAttemptSequence）、WorktreePath、ExpectedWorktreeIdentity、ExpectedBaseSHA、RunDirectoryIdentity、RunAuthorityHeadDigest、RequestDigest（`request.Seal()`）；
-   - Core 侧验证器：实现 `resultingress.CurrentExistingWorktreeAuthorityVerifier`（WithCurrentExistingWorktreeBind/Release，回调提供 `ExistingWorktreeCurrentAuthorityV1` + `ExistingWorktreeDescriptorGraphV1`——repository scope → .marshal → runtime-v1 → existing-worktree-bindings 的持有描述符链，ADR §3.1 锁序）；
-   - **S1 校验扩展**（唯一需要改 resultingress 冻结校验的点）：`derivePreparedExecution`/`resolvePreparedCurrent`/`verifyPreparedCurrentSourcesLocked` 当前只接受 staging provision receipt（`currentPreparedProvisionReceipt` 读 `projection.allocations`）；existing-worktree 模式下改从 `projection.existingWorktreeFacts` 的 BindReceipt 派生 provision 证据（receipt.LiveIdentity = worktree 观察身份），staging 路径保持不变（严格追加分支）。
-   - bind receipt 的 worktree 观察身份即 closure WorkingDirectory → `VerifyCurrentClosure` 通过 → reconcile 继续 supervisor spawn。
-0a. **4b-2 当前边界（实测，a106de1）**：真实 0.84.4 镜像经 `OpenPi0844` 密封成功（SHAPE 全过）、`PrepareRunStart` 全链通过、`StartPreparedRun` 进入 sealed reconcile（preparedDarwin 确认）。reconcile 的 `verifyPreparedCurrentSourcesLocked → VerifyCurrentClosure(closure, allocationLive)` 要求 closure 的 WorkingDirectory 的 live 身份 == allocation receipt 的 live 身份；staging provision 的 live 目录是 allocation store 下新建目录，与 closure 冻结的 worktree 不同。**修复方向（ADR 0069 existing-worktree 绑定）**：provisionAllocation 改用 `ExistingWorktreeController.Bind`（resultingress.NewExistingWorktreeAuthority + allocationcontrol 控制器），使 bind receipt 的 live 身份 = Run worktree；同时 `derivePreparedExecution/currentPreparedProvisionReceipt` 需接受 existing-worktree bind receipt 作为 provision 证据（或按 ADR 0069 定义等价投影）。这是 S1 冻结校验的扩展，实施前须对照 ADR 0069 文本确认投影形态。
-1. lease 铸造路径（上文第 3 点）——已由 `dispatch.MintClaimedLease` + CompositionLedger.ensureAttemptLease 实现并验证。
-2. 旧测试迁移在 4b-2 完成后按 compatibility profile 口径一次性执行。
-
-1. lease 铸造路径（上文第 3 点）——唯一阻塞 PrepareRunStart 落地的缺口。
-2. `Digest`/`FencingToken` 的具体铸造约定需对齐 ADR 0069 的 sealed-successor 单次预算消费语义。
+   - `DescriptorBoundRunV1` 由 `runstore.DupRunDirectory(runLease)` + `allocationcontrol.NewDescriptorBoundRunV1` 构造；`ExistingWorktreeBindRequestV1` 字段与调研一致；
+   - Core 侧验证器 `existingWorktreeCurrentVerifier` 实现 `resultingress.CurrentExistingWorktreeAuthorityVerifier`：在打开 `RunAuthority` 前从 durable READY 投影与当前 owner/Attempt 派生 immutable expected current，在 verifier callback 内重验 exact current owner 与 Attempt head/revision，不再在持有 `RunAuthority` RLock 时 `ReadRunStartAuthorityUnderLease`，再回调 held descriptor graph；
+   - S1 校验扩展已在 `internal/resultingress` 落地：`derivePreparedExecution`/`resolvePreparedCurrent`/`verifyPreparedCurrentSourcesLocked` 接受 existing-worktree bind receipt 作为 path B provision 证据（`currentPreparedExistingWorktreeBindReceipt`），staging path A 保持不变（严格互斥分支）。
+   - bind receipt 的 worktree 观察身份即 closure WorkingDirectory → `VerifyCurrentClosure` 通过 → reconcile 继续 supervisor spawn。path B 不把 closure 重封到 staging。
+0a. **4b-2 当前边界（已收敛）**：原 staging provision 的 live 目录与 closure 冻结的 worktree 不同的问题已由 path B 修复——`bindExistingWorktree` 使 bind receipt 的 live 身份 = Run worktree，且 closure 不重封。ADR 0070 冻结了 `FrozenInputsDigest`/`RepositoryOwnerDigest`/`ExpectedAttemptSequence` 的派生口径。
+1. lease 铸造路径——已由 `dispatch.MintClaimedLease` + CompositionLedger.ensureAttemptLease 实现并验证。
+2. `FrozenInputsDigest` 铸造约定已由 ADR 0070 冻结为 canonical JSON closed struct {specDigest, policyDigest, capabilityDigest} 的 sha256；`RepositoryOwnerDigest`=exact current `ControlOwnerState.FactDigest`；`ExpectedAttemptSequence`=bind admission 前当前 `AttemptAuthorityState.Revision`。不使用 `ReservationKeyDigest`。
 3. 旧测试迁移（internal/cli 18 项 + internal/execution 约 20 项）在组合根合入后按 compatibility profile 口径一次性完成。

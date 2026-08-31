@@ -2,6 +2,7 @@ package productionruntime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,8 +27,10 @@ import (
 // inputs frozen by the fixed CLI at construction.
 type CompositionLedger struct {
 	ingress         *resultingress.DurableStore
+	ownsIngress     bool
 	runs            *runstore.Store
 	runLease        *runstore.Lease
+	ownsRunLease    bool
 	leaseLedger     *dispatch.LeaseLedger
 	runReady        *runstore.AttemptRunAuthorityVerifier
 	namespace       authority.AuthorityNamespaceId
@@ -45,7 +48,13 @@ type CompositionLedger struct {
 	workDirs        []string
 	environment     []string
 	allocation      *resultingress.AllocationAuthority
-	now             func() time.Time
+	// existingWorktreeGraph/existingWorktreeTarget are borrowed from the
+	// fixed CLI for the duration of ComposeRuntime; they are never reopened
+	// by pathname and never persist into authority facts.
+	existingWorktreeGraph   allocationcontrol.ExistingWorktreeDescriptorGraphV1
+	existingWorktreeTarget  *os.File
+	existingWorktreeEnabled bool
+	now                     func() time.Time
 }
 
 // CompositionInputs freezes the composition-time identity and location
@@ -79,11 +88,24 @@ type CompositionInputs struct {
 	Requirements            allocationcontrol.SandboxRequirementsV1
 	WorkDirAllowlist        []string
 	EnvironmentAllowlist    []string
+	// ExistingWorktreeDescriptorGraph and ExistingWorktreeTargetWorktree
+	// select path B (existing-worktree binding, ADR 0069/0070). Both must be
+	// non-zero to enable path B; supplying only one fails closed. The graph
+	// and target descriptor are held by the fixed CLI for the full
+	// ComposeRuntime/Prepare/Start lifetime and only borrowed here.
+	ExistingWorktreeDescriptorGraph allocationcontrol.ExistingWorktreeDescriptorGraphV1
+	ExistingWorktreeTargetWorktree  *os.File
 }
 
 // NewCompositionLedger is the only constructor. It validates every input and
 // wires the Core provision/cleanup verifiers, which authorize the composition
 // itself as the local SandboxProvider authority.
+//
+// Lock order (ADR 0069 §3.3/§4): repository owner → Run Lease → RB1. Path B
+// (existing-worktree binding) acquires the Run Lease inside this constructor,
+// after the two-phase repository owner acquisition, and rejects a caller-
+// supplied lease so the order cannot be re-violated. Path A (staging
+// provision) keeps accepting the caller-supplied lease for tests/compat.
 func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*CompositionLedger, error) {
 	if inputs.HeldIngressDir != nil {
 		if inputs.FixedMarshalPath == "" || inputs.OwnerPrivateControlRoot == nil {
@@ -95,7 +117,8 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		}
 		inputs.Ingress = held
 	}
-	if inputs.Ingress == nil || inputs.Runs == nil || inputs.RunLease == nil || inputs.LeaseLedger == nil {
+	ownsIngress := inputs.HeldIngressDir != nil
+	if inputs.Ingress == nil || inputs.Runs == nil || inputs.LeaseLedger == nil {
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 	}
 	if inputs.Namespace.Validate() != nil || inputs.ProvisionDomain.Validate() != nil || inputs.CleanupDomain.Validate() != nil ||
@@ -105,33 +128,35 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		inputs.CapabilitySnapshot == "" || inputs.LaunchClosure.Validate() != nil {
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 	}
+	// Path B (existing-worktree binding) requires both the held descriptor
+	// graph and the held target worktree descriptor. A single-side config
+	// fails closed: it must not silently fall back to staging provision.
+	graphSupplied := inputs.ExistingWorktreeDescriptorGraph.FilesystemRoot != nil
+	targetSupplied := inputs.ExistingWorktreeTargetWorktree != nil
+	if graphSupplied != targetSupplied {
+		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
+	}
+	existingWorktreeEnabled := graphSupplied && targetSupplied
+	// ADR 0069 lock order: path B must acquire the Run Lease inside this
+	// constructor, after repository owner acquisition. A caller-supplied lease
+	// would re-violate the order (the CLI used to hold it across ComposeRuntime)
+	// and is rejected. Path A keeps accepting the caller-supplied lease.
+	if existingWorktreeEnabled {
+		if inputs.RunLease != nil {
+			return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
+		}
+	} else if inputs.RunLease == nil {
+		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
+	}
 	// The allocation root is composition-owned infrastructure: create it
 	// eagerly so the per-attempt staging store can open inside it.
 	if err := os.MkdirAll(inputs.AllocationRoot, 0o700); err != nil {
 		return nil, err
 	}
-	runReady, err := runstore.NewAttemptRunAuthorityVerifier(inputs.Runs, inputs.RunLease, inputs.Namespace, inputs.OrchestratorID)
-	if err != nil {
-		return nil, err
-	}
-	ledger := &CompositionLedger{
-		ingress: inputs.Ingress, runs: inputs.Runs, runLease: inputs.RunLease, leaseLedger: inputs.LeaseLedger,
-		runReady: runReady, namespace: inputs.Namespace, orchestrator: inputs.OrchestratorID,
-		provisionDomain: inputs.ProvisionDomain, cleanupDomain: inputs.CleanupDomain,
-		registration: inputs.RegistrationID, snapshot: inputs.CapabilitySnapshot,
-		conformance: append([]string(nil), inputs.ConformanceEvidence...), attestation: inputs.Attestation,
-		allocationDir: inputs.AllocationRoot, closure: inputs.LaunchClosure,
-		requirements: inputs.Requirements, workDirs: append([]string(nil), inputs.WorkDirAllowlist...),
-		environment: append([]string(nil), inputs.EnvironmentAllowlist...), now: time.Now,
-	}
-	allocation, err := resultingress.NewAllocationAuthority(inputs.Ingress, compositionAllocationAuthority{ledger: ledger, domain: inputs.ProvisionDomain, phase: resultingress.EffectPhaseAllocationProvision}, compositionAllocationAuthority{ledger: ledger, domain: inputs.CleanupDomain, phase: resultingress.EffectPhaseAllocationTerminate})
-	if err != nil {
-		return nil, err
-	}
-	ledger.allocation = allocation
-	// Two-phase repository owner acquisition: the phase-A scope lock admits
-	// exactly one owner append, the bound phase-B lock carries the runtime
-	// claim, and closing the spent phase-A handle never releases phase B.
+	// Two-phase repository owner acquisition FIRST (path B lock order). The
+	// phase-A scope lock admits exactly one owner append, the bound phase-B
+	// lock carries the runtime claim, and closing the spent phase-A handle
+	// never releases phase B.
 	phase, err := openRepositoryOwnerScopeLock(inputs.OwnerDirectory, inputs.Acquisition.Scope)
 	if err != nil {
 		return nil, err
@@ -150,22 +175,72 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		_ = owner.Close()
 		return nil, err
 	}
-	// The runtime claim belongs to newProductionRuntime; the ledger only
-	// carries the bound phase-B lock.
-	ledger.owner = owner
+	// releaseConstruction reverses the acquisition order (Run Lease → owner →
+	// result-ingress) for any failure after this point. It only releases Run
+	// Lease / result-ingress the ledger owns; a caller-supplied lease or store
+	// (path A) stays with the caller.
+	var runLease *runstore.Lease
+	ownsRunLease := false
+	releaseConstruction := func() {
+		if ownsRunLease && runLease != nil {
+			_ = runLease.Release()
+		}
+		_ = owner.Close()
+		if ownsIngress {
+			_ = inputs.Ingress.Close()
+		}
+	}
 	// The seal consumes the held store in place behind the current owner and
-	// observes the exact fixed marshal image inside that authority window.
+	// observes the exact fixed marshal image inside that authority window. It
+	// runs before the Run Lease is acquired, under the owner lock only.
 	if inputs.HeldIngressDir != nil {
 		// The physical phase-B lock is held by this call stack; the borrowed
 		// verifier carries that fact without requiring the runtime claim that
 		// newProductionRuntime performs later.
 		borrowed := &borrowedOwnerVerifier{acquisition: inputs.Acquisition, active: true}
 		if _, err := resultingress.SealPi0844DarwinPreparedExecutionStore(ctx, inputs.Ingress, borrowed, resultingress.CurrentOwnerBinding{Scope: inputs.Acquisition.Scope, OwnerEpoch: inputs.Acquisition.OwnerEpoch, ControlOwnerAcquiredFactDigest: ownerState.FactDigest}, inputs.FixedMarshalPath, inputs.OwnerPrivateControlRoot); err != nil {
-			_ = owner.Close()
+			releaseConstruction()
 			return nil, err
 		}
 		borrowed.close()
 	}
+	// Run Lease: path B acquires it here, after repository owner acquisition
+	// (ADR 0069). Path A borrows the caller-supplied lease. Any failure
+	// releases the newly-acquired lease and the owner in reverse order.
+	if existingWorktreeEnabled {
+		runLease, err = inputs.Runs.AcquireExisting(inputs.RunID)
+		if err != nil {
+			releaseConstruction()
+			return nil, err
+		}
+		ownsRunLease = true
+	} else {
+		runLease = inputs.RunLease
+	}
+	runReady, err := runstore.NewAttemptRunAuthorityVerifier(inputs.Runs, runLease, inputs.Namespace, inputs.OrchestratorID)
+	if err != nil {
+		releaseConstruction()
+		return nil, err
+	}
+	ledger := &CompositionLedger{
+		ingress: inputs.Ingress, ownsIngress: ownsIngress, runs: inputs.Runs, runLease: runLease, ownsRunLease: ownsRunLease,
+		leaseLedger: inputs.LeaseLedger, runReady: runReady, namespace: inputs.Namespace, orchestrator: inputs.OrchestratorID,
+		provisionDomain: inputs.ProvisionDomain, cleanupDomain: inputs.CleanupDomain,
+		registration: inputs.RegistrationID, snapshot: inputs.CapabilitySnapshot,
+		conformance: append([]string(nil), inputs.ConformanceEvidence...), attestation: inputs.Attestation,
+		allocationDir: inputs.AllocationRoot, closure: inputs.LaunchClosure,
+		requirements: inputs.Requirements, workDirs: append([]string(nil), inputs.WorkDirAllowlist...),
+		environment:           append([]string(nil), inputs.EnvironmentAllowlist...),
+		existingWorktreeGraph: inputs.ExistingWorktreeDescriptorGraph, existingWorktreeTarget: inputs.ExistingWorktreeTargetWorktree,
+		existingWorktreeEnabled: existingWorktreeEnabled, now: time.Now,
+	}
+	allocation, err := resultingress.NewAllocationAuthority(inputs.Ingress, compositionAllocationAuthority{ledger: ledger, domain: inputs.ProvisionDomain, phase: resultingress.EffectPhaseAllocationProvision}, compositionAllocationAuthority{ledger: ledger, domain: inputs.CleanupDomain, phase: resultingress.EffectPhaseAllocationTerminate})
+	if err != nil {
+		releaseConstruction()
+		return nil, err
+	}
+	ledger.allocation = allocation
+	ledger.owner = owner
 	return ledger, nil
 }
 
@@ -193,12 +268,27 @@ func acquireOwner(ingress *resultingress.DurableStore, phase repositoryOwnerScop
 	return state, nil
 }
 
-// Close releases the runtime claim and the bound owner lock.
+// Close releases the resources the ledger owns in reverse acquisition order
+// (Run Lease → result-ingress → owner, ADR 0069). Path A borrows the Run Lease
+// and result-ingress from the caller, so only the bound owner lock is released
+// here; the Runtime closes the borrowed resources itself. Path B acquires the
+// Run Lease (and, for the held ingress, the result-ingress) inside the
+// constructor, so Close releases them.
 func (l *CompositionLedger) Close() error {
-	if l == nil || l.owner == nil {
+	if l == nil {
 		return nil
 	}
-	return l.owner.Close()
+	var errs []error
+	if l.ownsRunLease && l.runLease != nil {
+		errs = append(errs, l.runLease.Release())
+	}
+	if l.ownsIngress && l.ingress != nil {
+		errs = append(errs, l.ingress.Close())
+	}
+	if l.owner != nil {
+		errs = append(errs, l.owner.Close())
+	}
+	return errors.Join(errs...)
 }
 
 func (l *CompositionLedger) ownerLock() repositoryOwnerLock { return l.owner }
@@ -334,6 +424,27 @@ func (l *CompositionLedger) verifyAllocationCheck(ctx context.Context, check res
 	return l.WithCurrentRunAuthority(ctx, binding, func() error { return nil })
 }
 
+// replayGateAccepts is the pure closed-XOR decision for the PrepareRunStart
+// replay gate (ADR 0069/0070). It performs no ledger mutation. Path A requires
+// the staging provision effect+receipt complete and every existing-worktree
+// bind/release field empty. Path B requires the bind intent fact, bind receipt
+// fact and bind receipt digest complete, no release intent/receipt, a present
+// reservation, and every allocation provision effect/receipt field empty.
+// Exactly one path may be complete. Both require launch authorized at the
+// current head with no pending effect intent.
+func replayGateAccepts(current resultingress.AttemptAuthorityState) bool {
+	pathAComplete := current.AllocationProvisionEffectDigest != "" && current.AllocationProvisionReceiptDigest != "" &&
+		current.ExistingWorktreeBindIntentFactDigest == "" && current.ExistingWorktreeBindReceiptFactDigest == "" && current.ExistingWorktreeBindReceiptDigest == "" &&
+		current.ExistingWorktreeReleaseIntentFactDigest == "" && current.ExistingWorktreeReleaseReceiptFactDigest == ""
+	pathBComplete := current.ExistingWorktreeBindIntentFactDigest != "" && current.ExistingWorktreeBindReceiptFactDigest != "" && current.ExistingWorktreeBindReceiptDigest != "" &&
+		current.ExistingWorktreeReleaseIntentFactDigest == "" && current.ExistingWorktreeReleaseReceiptFactDigest == "" &&
+		current.ReservationFactDigest != "" &&
+		current.AllocationProvisionEffectDigest == "" && current.AllocationProvisionReceiptDigest == ""
+	exactlyOne := pathAComplete != pathBComplete
+	common := current.LaunchAuthorizedDigest != "" && current.HeadDigest == current.LaunchAuthorizedDigest && current.PendingEffectIntentFactDigest == ""
+	return exactlyOne && common
+}
+
 // PrepareRunStart drives the complete S2 producer chain under the current
 // owner lock: READY read-back, creation-once reservation, attempt lease
 // minting, fresh v2 open, durable local allocation provision, launch
@@ -384,7 +495,15 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 			return err
 		}
 		if attemptExists {
-			if current.AllocationProvisionReceiptDigest == "" || current.LaunchAuthorizedDigest == "" || current.HeadDigest != current.LaunchAuthorizedDigest || current.PendingEffectIntentFactDigest != "" {
+			// Replay gate is a strict closed XOR (ADR 0069/0070): exactly one
+			// of path A (staging provision effect+receipt, no worktree fields)
+			// or path B (existing-worktree bind intent+receipt+digest, no
+			// release, reservation present, no provision fields) is complete.
+			// Both require launch authorized at the current head with no
+			// pending effect intent. Mixed/partial/released states fail closed
+			// for recovery; the gate is evaluated before ReserveAttempt's mint
+			// branch, so a failure appends no sibling facts.
+			if !replayGateAccepts(current) {
 				return application.NewError("prepare-run-start", application.ReasonRecoveryRequired)
 			}
 		} else {
@@ -403,45 +522,65 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 			if err != nil {
 				return err
 			}
-			if err := l.provisionAllocation(ctx, identity, bound.State, read.PolicyDigest, lease.ExpiresAt); err != nil {
-				return err
-			}
-			// The provision facts advance the attempt chain; re-resolve the exact
-			// revision/head before the launch-authorization CAS.
-			authorized, found, err := l.ingress.AttemptState(identity)
-			if err != nil || !found {
-				return fmt.Errorf("composition: attempt state after provision: found=%t err=%v", found, err)
-			}
-			// The agent's working directory is the allocation live directory
-			// (staging==live for the local host-process provider), derived
-			// deterministically from the allocation id; re-seal the frozen
-			// closure so its observed working directory matches the provision
-			// receipt exactly.
-			_, live, _, _, stagingErr := allocationcontrol.DeriveRelativeNames(allocationID)
-			if stagingErr != nil {
-				return stagingErr
-			}
-			namespaceDigest, digestErr := l.namespace.Digest()
-			if digestErr != nil {
-				return digestErr
-			}
-			scope := allocationcontrol.AllocationStoreScopeV1{AuthorityNamespaceID: namespaceDigest, TaskID: identity.TaskID, RunID: identity.RunID, AttemptID: identity.AttemptID, AllocationID: identity.AllocationID}
-			objectsRoot, rootErr := allocationcontrol.ObjectsRootPath(l.allocationDir, scope)
-			if rootErr != nil {
-				return rootErr
-			}
-			livePath := filepath.Join(objectsRoot, live)
-			reSealed, sealErr := launchidentity.Seal(launchidentity.SpecInput{
-				RuntimeExecutable: l.closure.RuntimeExecutable, ClosureProfileID: l.closure.ClosureProfileID,
-				MaterialRoots: l.closure.MaterialRoots, LaunchMaterials: l.closure.LaunchMaterials,
-				Arguments: l.closure.Arguments, Environment: l.closure.Environment, WorkingDirectory: livePath,
-			})
-			if sealErr != nil {
-				return sealErr
-			}
-			l.closure = reSealed
-			if err := l.authorizeLaunch(ctx, identity, authorized); err != nil {
-				return err
+			if l.existingWorktreeEnabled {
+				// Path B: bind the already-held existing worktree through the
+				// RB1 closed union (bind-intent → bind-receipt). The closure
+				// is not re-sealed to a staging directory; the target worktree
+				// remains the agent working directory. ADR 0069/0070.
+				if err := l.bindExistingWorktree(ctx, acquisition, ready, reservation, identity, bound.State); err != nil {
+					return err
+				}
+				authorized, found, err := l.ingress.AttemptState(identity)
+				if err != nil || !found {
+					return fmt.Errorf("composition: attempt state after bind: found=%t err=%v", found, err)
+				}
+				if err := l.authorizeLaunch(ctx, identity, authorized); err != nil {
+					return err
+				}
+			} else {
+				// Path A: durable local staging allocation provision. The
+				// closure is re-sealed so its observed working directory
+				// matches the provision receipt's live directory.
+				if err := l.provisionAllocation(ctx, identity, bound.State, read.PolicyDigest, lease.ExpiresAt); err != nil {
+					return err
+				}
+				// The provision facts advance the attempt chain; re-resolve the exact
+				// revision/head before the launch-authorization CAS.
+				authorized, found, err := l.ingress.AttemptState(identity)
+				if err != nil || !found {
+					return fmt.Errorf("composition: attempt state after provision: found=%t err=%v", found, err)
+				}
+				// The agent's working directory is the allocation live directory
+				// (staging==live for the local host-process provider), derived
+				// deterministically from the allocation id; re-seal the frozen
+				// closure so its observed working directory matches the provision
+				// receipt exactly.
+				_, live, _, _, stagingErr := allocationcontrol.DeriveRelativeNames(allocationID)
+				if stagingErr != nil {
+					return stagingErr
+				}
+				namespaceDigest, digestErr := l.namespace.Digest()
+				if digestErr != nil {
+					return digestErr
+				}
+				scope := allocationcontrol.AllocationStoreScopeV1{AuthorityNamespaceID: namespaceDigest, TaskID: identity.TaskID, RunID: identity.RunID, AttemptID: identity.AttemptID, AllocationID: identity.AllocationID}
+				objectsRoot, rootErr := allocationcontrol.ObjectsRootPath(l.allocationDir, scope)
+				if rootErr != nil {
+					return rootErr
+				}
+				livePath := filepath.Join(objectsRoot, live)
+				reSealed, sealErr := launchidentity.Seal(launchidentity.SpecInput{
+					RuntimeExecutable: l.closure.RuntimeExecutable, ClosureProfileID: l.closure.ClosureProfileID,
+					MaterialRoots: l.closure.MaterialRoots, LaunchMaterials: l.closure.LaunchMaterials,
+					Arguments: l.closure.Arguments, Environment: l.closure.Environment, WorkingDirectory: livePath,
+				})
+				if sealErr != nil {
+					return sealErr
+				}
+				l.closure = reSealed
+				if err := l.authorizeLaunch(ctx, identity, authorized); err != nil {
+					return err
+				}
 			}
 		}
 		created, err := l.ingress.CreatePreparedExecution(ctx, borrowed, acquisition, resultingress.PreparedExecutionCreation{Identity: identity, ExpectedRunSequence: ready.ReadySequence, ExpectedRunAuthorityHead: ready.ReadyAuthorityHead})

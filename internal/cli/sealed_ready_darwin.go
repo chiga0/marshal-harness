@@ -85,22 +85,50 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 	}
 
 	runStore := runstore.New(stateRoot)
-	runLease, err := runStore.Acquire(runID)
+	// Transient existing-only lease for input pre-read (READY projection +
+	// task-spec). It is released BEFORE any repository owner acquisition so it
+	// never enters the RB1 lock order (ADR 0069 §3.3/§4); ComposeRuntime
+	// acquires the real Run Lease inside NewCompositionLedger after the owner.
+	preReadLease, err := runStore.AcquireExisting(runID)
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：无法获取 Run 租约：%v\n", err)
 		return ExitFailure
 	}
-	defer func() { _ = runLease.Release() }()
-	projection, err := runStore.ReadRunStartAuthorityUnderLease(ctx, runLease)
+	preReadReleased := false
+	defer func() {
+		if !preReadReleased {
+			_ = preReadLease.Release()
+		}
+	}()
+	projection, err := runStore.ReadRunStartAuthorityUnderLease(ctx, preReadLease)
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：READY 权威投影不可读：%v\n", err)
 		return ExitFailure
 	}
-	taskData, err := runstore.ReadFileUnderLease(runLease, 2<<20, "task-spec.json")
+	// Path B (ADR 0069/0070): build and hold the repository descriptor graph
+	// plus the exact projection.WorktreePath target descriptor. The handles
+	// cover ComposeRuntime/Prepare/Start and close on exit. The fixed
+	// /usr/bin/git is used only as a locator; the descriptor-graph
+	// constructors validate the held descriptors.
+	worktreeHandles, err := openExistingWorktreeComposition(repositoryRoot, projection.WorktreePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "运行失败：无法构建 existing-worktree 描述符图：%v\n", err)
+		return ExitFailure
+	}
+	defer func() { _ = worktreeHandles.Close() }()
+	taskData, err := runstore.ReadFileUnderLease(preReadLease, 2<<20, "task-spec.json")
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：无法读取 task spec：%v\n", err)
 		return ExitFailure
 	}
+	// Release the transient pre-read lease now; the real Run Lease is acquired
+	// inside NewCompositionLedger after repository owner acquisition. The
+	// formal Runtime.Close releases that internal lease exactly once.
+	if err := preReadLease.Release(); err != nil {
+		fmt.Fprintf(stderr, "运行失败：预读租约释放失败：%v\n", err)
+		return ExitFailure
+	}
+	preReadReleased = true
 	appInstance, appErr := app.New()
 	if appErr != nil {
 		fmt.Fprintf(stderr, "运行失败：application 初始化失败：%v\n", appErr)
@@ -150,7 +178,7 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		return ExitFailure
 	}
 	inputs := productionruntime.CompositionInputs{
-		Ingress: nil, Runs: runStore, RunLease: runLease, LeaseLedger: leaseLedger,
+		Ingress: nil, Runs: runStore, RunLease: nil, LeaseLedger: leaseLedger,
 		OwnerDirectory: ownerDirHandle, Acquisition: acquisition, RunID: runID,
 		HeldIngressDir: heldIngress, FixedMarshalPath: fixedMarshal, OwnerPrivateControlRoot: controlRoot,
 		Namespace: namespace, OrchestratorID: "orchestrator:" + taskID,
@@ -159,6 +187,8 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		Attestation: attestation, AllocationRoot: allocationRoot,
 		LaunchClosure: closure, Requirements: requirements,
 		WorkDirAllowlist: []string{projection.WorktreePath}, EnvironmentAllowlist: []string{"PATH"},
+		ExistingWorktreeDescriptorGraph: worktreeHandles.graph,
+		ExistingWorktreeTargetWorktree:  worktreeHandles.target,
 	}
 	composed, err := productionruntime.ComposeRuntime(ctx, inputs, profile)
 	if err != nil {

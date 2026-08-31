@@ -1,5 +1,16 @@
 # 设计审计报告
 
+## 2026-08-31：S2′ path B existing-worktree production-composition 切片
+
+在 `feat/pi-s2-production-composition@d65785d` 基线上，[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md) 冻结的 S2′-B（existing-worktree 绑定）此前只有 resultingress 层的 RB1 closed-union 与 PreparedExecution path B 投影，productionruntime 组合根与 fixed CLI 仍走 path A（staging provision），导致 closure WorkingDirectory 与 allocation receipt live 身份不匹配。本切片落地真实 path B 生产纵切，不放宽任何强制门禁：
+
+1. 新增 [ADR 0070](adr/0070-existing-worktree-frozen-inputs-digest.md)（Accepted），冻结 `existing-worktree-binding/v1` 的 `FrozenInputsDigest`（canonical JSON closed struct {specDigest, policyDigest, capabilityDigest} 的 sha256）、`RepositoryOwnerDigest`（exact current `ControlOwnerState.FactDigest`）、`ExpectedAttemptSequence`（bind admission 前当前 `AttemptAuthorityState.Revision`）派生口径；明确 `BaseSHA`/`WorktreePath` 已在 `ExistingWorktreeBindRequestV1` 绑定不重复入 digest，且不使用 `ReservationKeyDigest`。不扩大协议。
+2. `internal/productionruntime/existing_worktree_bind.go`：`CompositionInputs`/`CompositionLedger` 接收 held `ExistingWorktreeDescriptorGraphV1` + 目标 worktree `*os.File`，单边配置 fail closed；`bindExistingWorktree` 在 `BindOwnerToAttempt` 后用 `resultingress.NewExistingWorktreeAuthority` + `allocationcontrol.NewExistingWorktreeController` 完成 Bind，Run descriptor 用 `runstore.DupRunDirectory` + `allocationcontrol.NewDescriptorBoundRunV1`；binding 使用 ownerState.FactDigest、reservation.ReservationFactDigest、bound.OpenedDigest、identity lease/allocation/fencing、冻结输入 digest、bound.Revision。Core 侧 `existingWorktreeCurrentVerifier` 在打开 `RunAuthority` 前从 durable READY 投影与当前 owner/Attempt 派生 immutable expected current，在 callback 内重验 exact current owner 与 Attempt head/revision，不再在持有 `RunAuthority` RLock 时 `ReadRunStartAuthorityUnderLease`。replay gate 接受 staging provision receipt 与 existing-worktree bind receipt 的严格 closed union；path B 不把 closure 重封到 staging。
+3. `internal/cli/existing_worktree_graph_darwin.go` + `sealed_ready_darwin.go`：fixed CLI 构建并持有 repository descriptor graph + exact `projection.WorktreePath` target，支持 `.git` 为目录或 linked-worktree `.git` 文件；固定 `/usr/bin/git --git-common-dir` 仅作 locator，最终由 `NewExistingWorktreeDescriptorGraph`/`NewLinkedExistingWorktreeDescriptorGraph` 与 held descriptors 校验；所有句柄生命周期覆盖 ComposeRuntime/Prepare/Start，退出关闭；改用 `AcquireExisting`（ADR 0069 §4 existing-only）。不生成或执行临时二进制。
+4. 定向测试：`FrozenInputsDigest` 字段漂移、path B bind receipt 到 PreparedExecution、replay 无 sibling、held target identity drift 拒绝且无新增 bind authority、单边 inputs 拒绝、path A staging 回归不变，以及 fixed CLI 对 linked repository graph 与 Darwin symlinked target path 的覆盖。真实 Pi canary 必须等待 attempt-aware argv 与 exact-owned terminalization 接线，禁止用宽泛 `pkill -f` 代替生命周期控制。
+
+本切片不改变信任边界（仅 ADR 0070 澄清字段口径），不暴露 raw path 到 prompt/transcript/public schema，不引入 `productionruntime → adapter/pi` 或 `processsupervisor` 新依赖，不使用 `ReservationKeyDigest` 作为 `FrozenInputsDigest`。`architecture_check.py` 通过。`I186-R2–R5` 仍为 `COMPONENT`，不据此宣称 RC1、stable 或 production 已完成；real Pi canary、terminalization、独立 Decision ACCEPTED 与 same-bytes RC1 仍是后继。
+
 ## 2026-08-30：S1′ ResultIngress Darwin 全绿切片（基线 11 失败 → 0）
 
 在 `main@054789c` 基线上，`go test ./internal/resultingress -count=1` 于本开发机（Darwin 25/arm64）确定性失败 11 项。本切片逐项定位并修复，现该包非 race 全绿；判定依据与修复如下，未放宽任何强制门禁：

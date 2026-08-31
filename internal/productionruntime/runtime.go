@@ -58,12 +58,20 @@ func newComposedProductionRuntime(ledger *CompositionLedger, profile PiProfile, 
 	}
 	controller, err := newController(ledger, &piBridge{ledger: ledger}, ledger.owner, inputs.Acquisition, profile)
 	if err != nil {
+		// Release every resource the ledger owns (Run Lease for path B, the
+		// held result-ingress, and the bound owner) in reverse acquisition
+		// order. Runtime.Close is not yet wired, so construction failure must
+		// release everything by hand.
 		_ = ledger.Close()
 		return nil, fmt.Errorf("compose: controller: %v", err)
 	}
+	// The Runtime owns the result-ingress and the Run Lease for its lifetime.
+	// Use the ledger's final ingress/runLease (path B acquires the Run Lease
+	// inside NewCompositionLedger; the held ingress may differ from the
+	// original inputs.Ingress, which is nil for the HeldIngressDir path).
 	return newProductionRuntime(controller,
-		&resourceCloser{name: "result-ingress", close: inputs.Ingress.Close},
-		&resourceCloser{name: "run-lease", close: func() error { return inputs.RunLease.Release() }},
+		&resourceCloser{name: "result-ingress", close: ledger.ingress.Close},
+		&resourceCloser{name: "run-lease", close: func() error { return ledger.runLease.Release() }},
 	)
 }
 
