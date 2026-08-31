@@ -35,7 +35,7 @@ func (s *DurableStore) reconcilePreparedExecutionLocked(ctx context.Context, pro
 	if state.HeadDigest != prepared.LaunchAuthorizedFactDigest || state.SupervisorBootstrapDigest != "" || state.SupervisorStartedDigest != "" || state.SupervisorPendingIntentDigest != "" || len(state.SupervisorCommandCheckpoints) != 0 || state.ProcessStartedDigest != "" {
 		return AttemptAuthorityState{}, ErrPreparedExecutionUnavailable
 	}
-	closure, receipt, err := s.verifyPreparedCurrentSourcesLocked(projection, prepared, state)
+	closure, source, err := s.verifyPreparedCurrentSourcesLocked(projection, prepared, state)
 	if err != nil {
 		return AttemptAuthorityState{}, err
 	}
@@ -54,7 +54,7 @@ func (s *DurableStore) reconcilePreparedExecutionLocked(ctx context.Context, pro
 	if err != nil {
 		return AttemptAuthorityState{}, err
 	}
-	spawnPayload, err := preparedSpawnPayload(state, closure, receipt)
+	spawnPayload, err := preparedSpawnPayload(state, closure, source)
 	if err != nil {
 		return AttemptAuthorityState{}, err
 	}
@@ -66,7 +66,7 @@ func (s *DurableStore) reconcilePreparedExecutionLocked(ctx context.Context, pro
 	if !found || spawnEvidence.Command != processsupervisor.CommandSpawn || spawnEvidence.Disposition != "ok" || spawnEvidence.ReasonCode != "process-exec-stopped" || spawnEvidence.Outcome.State != SupervisorProcessExecStopped || spawnEvidence.Outcome.SourceGateRevision != processsupervisor.SourceGateRevisionV1 || requireDigest("exactSetDigest", spawnEvidence.Outcome.ExactSetDigest) != nil {
 		return AttemptAuthorityState{}, ErrPreparedExecutionConflict
 	}
-	observation, err := preparedProcessObservation(closure, receipt, spawnEvidence.Outcome)
+	observation, err := preparedProcessObservation(closure, source, spawnEvidence.Outcome)
 	if err != nil {
 		return AttemptAuthorityState{}, err
 	}
@@ -90,28 +90,62 @@ func (s *DurableStore) reconcilePreparedExecutionLocked(ctx context.Context, pro
 	return state, nil
 }
 
-func (s *DurableStore) verifyPreparedCurrentSourcesLocked(projection *Ingress, prepared PreparedExecutionV1, state AttemptAuthorityState) (launchidentity.ClosureV1, allocationcontrol.AllocationProvisionReceiptV1, error) {
-	_, receipt, err := currentPreparedProvisionReceipt(projection, state)
-	if err != nil {
-		return launchidentity.ClosureV1{}, allocationcontrol.AllocationProvisionReceiptV1{}, err
+// preparedAllocationSource is the private, non-persistent normalization of
+// the durable allocation authority that satisfies Darwin prepared source
+// verification and spawn construction. It carries only the exact directory
+// ObjectIdentityV1 that the current closure must still be reachable through:
+// path A copies it from AllocationProvisionReceiptV1.LiveIdentity; path B
+// copies it from
+// ExistingWorktreeBindReceiptV1.Observation.TargetCurrentName.ObjectIdentity.
+// It is never persisted, carries no bearer token, and exposes no path beyond
+// the closure's own working directory. Both paths converge on this single
+// value so source verification, spawn construction and process observation
+// treat allocation authority uniformly without fabricating a provision
+// receipt for path B.
+type preparedAllocationSource struct {
+	directoryIdentity allocationcontrol.ObjectIdentityV1
+}
+
+func (s *DurableStore) verifyPreparedCurrentSourcesLocked(projection *Ingress, prepared PreparedExecutionV1, state AttemptAuthorityState) (launchidentity.ClosureV1, preparedAllocationSource, error) {
+	var directoryIdentity allocationcontrol.ObjectIdentityV1
+	if prepared.AllocationProvisionReceiptFactDigest != "" {
+		// Path A: recheck the durable AllocationProvision applied receipt and
+		// copy its live directory identity. No existing-worktree receipt is
+		// consulted.
+		_, receipt, err := currentPreparedProvisionReceipt(projection, state)
+		if err != nil {
+			return launchidentity.ClosureV1{}, preparedAllocationSource{}, err
+		}
+		directoryIdentity = receipt.LiveIdentity
+	} else {
+		// Path B: recheck the durable existing-worktree bind receipt and copy
+		// the exact directory identity observed at admission. No provision
+		// receipt is fabricated; the current ledger bind receipt is the only
+		// allocation authority and its fact/receipt digests were already
+		// rechecked against the prepared execution by resolvePreparedCurrent.
+		worktree, err := currentPreparedExistingWorktreeBindReceipt(projection, state)
+		if err != nil {
+			return launchidentity.ClosureV1{}, preparedAllocationSource{}, err
+		}
+		directoryIdentity = worktree.receipt.Observation.TargetCurrentName.ObjectIdentity
 	}
 	closure, err := state.LaunchClosure.Closure()
 	if err != nil {
-		return launchidentity.ClosureV1{}, allocationcontrol.AllocationProvisionReceiptV1{}, ErrPreparedExecutionConflict
+		return launchidentity.ClosureV1{}, preparedAllocationSource{}, ErrPreparedExecutionConflict
 	}
-	live, err := preparedAllocationLiveIdentity(receipt.LiveIdentity)
+	live, err := preparedAllocationLiveIdentity(directoryIdentity)
 	if err != nil {
-		return launchidentity.ClosureV1{}, allocationcontrol.AllocationProvisionReceiptV1{}, err
+		return launchidentity.ClosureV1{}, preparedAllocationSource{}, err
 	}
 	observed, err := launchidentity.VerifyCurrentClosure(closure, live)
 	if err != nil || observed.LaunchMaterialsDigest != prepared.LaunchMaterialsDigest || observed.AgentLaunchSpecDigest != prepared.AgentLaunchSpecDigest || observed.Pi0844IdentityDigest != prepared.Pi0844IdentityDigest || observed.WorkingDirectory.CanonicalPath != closure.WorkingDirectory {
-		return launchidentity.ClosureV1{}, allocationcontrol.AllocationProvisionReceiptV1{}, ErrPreparedExecutionUnavailable
+		return launchidentity.ClosureV1{}, preparedAllocationSource{}, ErrPreparedExecutionUnavailable
 	}
 	identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
 	if err != nil || identity.IdentityDigest != prepared.Pi0844IdentityDigest {
-		return launchidentity.ClosureV1{}, allocationcontrol.AllocationProvisionReceiptV1{}, ErrPreparedExecutionConflict
+		return launchidentity.ClosureV1{}, preparedAllocationSource{}, ErrPreparedExecutionConflict
 	}
-	return closure, receipt, nil
+	return closure, preparedAllocationSource{directoryIdentity: directoryIdentity}, nil
 }
 
 func (s *DurableStore) startPreparedSupervisorLocked(ctx context.Context, projection *Ingress, state AttemptAuthorityState) (*processsupervisor.Client, AttemptAuthorityState, error) {
@@ -289,8 +323,8 @@ func (s *DurableStore) appendPreparedSupervisorOutcomeLocked(projection *Ingress
 	return projection.attempts[key], fact.Digest, nil
 }
 
-func preparedSpawnPayload(state AttemptAuthorityState, closure launchidentity.ClosureV1, receipt allocationcontrol.AllocationProvisionReceiptV1) (processsupervisor.SpawnPayload, error) {
-	live, err := preparedSupervisorAllocationLiveIdentity(receipt.LiveIdentity)
+func preparedSpawnPayload(state AttemptAuthorityState, closure launchidentity.ClosureV1, source preparedAllocationSource) (processsupervisor.SpawnPayload, error) {
+	live, err := preparedSupervisorAllocationLiveIdentity(source.directoryIdentity)
 	if err != nil {
 		return processsupervisor.SpawnPayload{}, err
 	}
@@ -327,8 +361,8 @@ func preparedHeldObjectSpec(role string, object launchidentity.ObjectV1, kind st
 	return processsupervisor.HeldObjectSpec{Role: role, CanonicalPath: object.CanonicalPath, Device: object.Device, Inode: object.Inode, FileType: kind, UID: object.UID, GID: object.GID, Mode: object.Mode, LinkCount: object.LinkCount, Size: object.Size, RawSHA256: object.RawSHA256}
 }
 
-func preparedProcessObservation(closure launchidentity.ClosureV1, receipt allocationcontrol.AllocationProvisionReceiptV1, outcome SupervisorProcessOutcome) (ProcessObservation, error) {
-	working, err := preparedAllocationLiveIdentity(receipt.LiveIdentity)
+func preparedProcessObservation(closure launchidentity.ClosureV1, source preparedAllocationSource, outcome SupervisorProcessOutcome) (ProcessObservation, error) {
+	working, err := preparedAllocationLiveIdentity(source.directoryIdentity)
 	if err != nil {
 		return ProcessObservation{}, err
 	}

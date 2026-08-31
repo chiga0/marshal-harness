@@ -568,10 +568,16 @@ func currentPreparedProvisionReceipt(projection *Ingress, state AttemptAuthority
 }
 
 // preparedExistingWorktreeReceipt carries the exact existing-worktree bind
-// receipt fact/record digests that satisfy allocation authority for path B.
+// receipt fact/record digests that satisfy allocation authority for path B,
+// plus the validated bind receipt itself so the Darwin prepared mechanics can
+// copy the exact directory ObjectIdentityV1 bound at admission. The receipt
+// value is private and non-persistent: only the fact/receipt digests above
+// are sealed into authority; the receipt is re-derived from the durable ledger
+// on every recheck and never stored on the prepared source value.
 type preparedExistingWorktreeReceipt struct {
 	factDigest    string
 	receiptDigest string
+	receipt       allocationcontrol.ExistingWorktreeBindReceiptV1
 }
 
 // currentPreparedExistingWorktreeBindReceipt revalidates the exact
@@ -622,7 +628,7 @@ func currentPreparedExistingWorktreeBindReceipt(projection *Ingress, state Attem
 	if !foundReceipt || bindReceipt.Validate(bindIntent) != nil {
 		return preparedExistingWorktreeReceipt{}, ErrPreparedExecutionConflict
 	}
-	return preparedExistingWorktreeReceipt{factDigest: state.ExistingWorktreeBindReceiptFactDigest, receiptDigest: state.ExistingWorktreeBindReceiptDigest}, nil
+	return preparedExistingWorktreeReceipt{factDigest: state.ExistingWorktreeBindReceiptFactDigest, receiptDigest: state.ExistingWorktreeBindReceiptDigest, receipt: bindReceipt}, nil
 }
 
 func resolvePreparedCurrent(projection *Ingress, acquisition ControlOwnerAcquisition, digest string) (PreparedExecutionV1, AttemptAuthorityState, error) {
