@@ -290,6 +290,13 @@ func openAttachedControlDirectory(profile *preparedDarwinExecutionProfile, state
 	if err != nil || currentCore != profile.core {
 		return nil, ErrPreparedExecutionUnavailable
 	}
+	return openAttachedControlDirectoryAfterCoreValidation(profile, state)
+}
+
+// openAttachedControlDirectoryAfterCoreValidation isolates the descriptor and
+// directory-object checks that follow the fixed Marshal Core observation. The
+// production entry point above is the only non-test caller.
+func openAttachedControlDirectoryAfterCoreValidation(profile *preparedDarwinExecutionProfile, state AttemptAuthorityState) (*os.File, error) {
 	root, err := processsupervisor.ObserveHeldControlDirectory(profile.controlRoot)
 	if err != nil || root != profile.controlIdentity {
 		return nil, ErrPreparedExecutionUnavailable
@@ -305,7 +312,10 @@ func openAttachedControlDirectory(profile *preparedDarwinExecutionProfile, state
 		return nil, ErrPreparedExecutionUnavailable
 	}
 	observed, err := processsupervisor.ObserveHeldControlDirectory(directory)
-	if err != nil || observed != state.SupervisorStarted.ControlDirectory {
+	// Collect creates stdout, stderr and transcript entries in this already-held
+	// session directory. APFS may reflect that permitted growth in LinkCount;
+	// the stable object and security-boundary fields must remain exact.
+	if err != nil || !sameStableControlDirectoryIdentity(observed, state.SupervisorStarted.ControlDirectory) {
 		_ = directory.Close()
 		return nil, ErrPreparedExecutionUnavailable
 	}

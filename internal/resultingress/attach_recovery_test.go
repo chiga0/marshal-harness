@@ -7,12 +7,65 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
+
+func TestOpenAttachedControlDirectoryAllowsPostCollectLinkCountGrowth(t *testing.T) {
+	rootPath := t.TempDir()
+	if err := os.Chmod(rootPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "session-post-collect-link-growth"
+	sessionPath := filepath.Join(rootPath, sessionID)
+	if err := os.Mkdir(sessionPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.Open(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	session, err := os.Open(sessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := processsupervisor.ObserveHeldControlDirectory(session)
+	_ = session.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model the durable process-supervisor-started snapshot preceding the
+	// three bounded Collect entries. Exact equality would reject this reopen.
+	frozen.LinkCount += 3
+	rootIdentity, err := processsupervisor.ObserveHeldControlDirectory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := &preparedDarwinExecutionProfile{controlRoot: root, controlIdentity: rootIdentity}
+	state := AttemptAuthorityState{SupervisorStarted: ProcessSupervisorStarted{
+		ControlDirectory: frozen,
+		Handshake:        processsupervisor.HandshakeResponse{SessionID: sessionID},
+	}}
+
+	opened, err := openAttachedControlDirectoryAfterCoreValidation(profile, state)
+	if err != nil {
+		t.Fatalf("link-count-only growth rejected: %v", err)
+	}
+	_ = opened.Close()
+
+	state.SupervisorStarted.ControlDirectory.Inode++
+	if opened, err := openAttachedControlDirectoryAfterCoreValidation(profile, state); !errors.Is(err, ErrPreparedExecutionUnavailable) {
+		if opened != nil {
+			_ = opened.Close()
+		}
+		t.Fatalf("stable directory-object drift err=%v, want unavailable", err)
+	}
+}
 
 type fakeRebindSession struct {
 	authority  processsupervisor.AttachAuthority
