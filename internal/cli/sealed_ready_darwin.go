@@ -118,7 +118,7 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		fmt.Fprintf(stderr, "运行失败：Pi 身份派生失败：%v\n", err)
 		return ExitFailure
 	}
-	profile, err := productionruntime.NewPi0844Profile(closure.RuntimeExecutable.CanonicalPath, piRuntime, identity.IdentityDigest)
+	profile, err := productionruntime.NewPi0844Profile(closure.RuntimeExecutable.CanonicalPath, piEntrypoint, identity.IdentityDigest)
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：Pi profile 无效：%v\n", err)
 		return ExitFailure

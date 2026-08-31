@@ -417,15 +417,15 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 			// deterministically from the allocation id; re-seal the frozen
 			// closure so its observed working directory matches the provision
 			// receipt exactly.
-			staging, _, _, _, stagingErr := allocationcontrol.DeriveRelativeNames(allocationID)
+			_, live, _, _, stagingErr := allocationcontrol.DeriveRelativeNames(allocationID)
 			if stagingErr != nil {
 				return stagingErr
 			}
-			stagingPath := filepath.Join(l.allocationDir, staging)
+			livePath := filepath.Join(l.allocationDir, live)
 			reSealed, sealErr := launchidentity.Seal(launchidentity.SpecInput{
 				RuntimeExecutable: l.closure.RuntimeExecutable, ClosureProfileID: l.closure.ClosureProfileID,
 				MaterialRoots: l.closure.MaterialRoots, LaunchMaterials: l.closure.LaunchMaterials,
-				Arguments: l.closure.Arguments, Environment: l.closure.Environment, WorkingDirectory: stagingPath,
+				Arguments: l.closure.Arguments, Environment: l.closure.Environment, WorkingDirectory: livePath,
 			})
 			if sealErr != nil {
 				return sealErr

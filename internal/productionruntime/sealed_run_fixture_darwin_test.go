@@ -104,7 +104,7 @@ func TestSealedChainReachesRunningWithRealPi(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity-from-closure: %v", err)
 	}
-	profile, err := NewPi0844Profile(heldClosure.Closure.RuntimeExecutable.CanonicalPath, fixturePiRuntime, identity.IdentityDigest)
+	profile, err := NewPi0844Profile(heldClosure.Closure.RuntimeExecutable.CanonicalPath, entrypointPath, identity.IdentityDigest)
 	if err != nil {
 		t.Fatalf("profile: %v", err)
 	}
