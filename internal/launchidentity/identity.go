@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -318,9 +317,7 @@ func normalizeSpecInput(input SpecInput) SpecInput {
 }
 
 func (closure ClosureV1) Validate() error {
-	dbg := func(step string) { fmt.Fprintln(os.Stderr, "VALIDATE-DEBUG "+step) }
 	if closure.ClosureProfileID == "" || validateObject(closure.RuntimeExecutable, true) != nil || validateSpecPayload(closure) != nil {
-		dbg("runtime-or-spec")
 		return ErrUnavailable
 	}
 	seenRoots := map[string]bool{}
@@ -328,7 +325,6 @@ func (closure ClosureV1) Validate() error {
 	for _, root := range closure.MaterialRoots {
 		key := [2]uint64{root.Object.Device, root.Object.Inode}
 		if !safeToken(root.Name) || !safeRelative(root.PackageRelative) || !filepath.IsAbs(root.CanonicalPath) || root.CanonicalPath != filepath.Clean(root.CanonicalPath) || root.Object.CanonicalPath != root.CanonicalPath || root.Object.Device == 0 || root.Object.Inode == 0 || root.Object.FileType != 0o040000 || root.Object.Mode&0o170000 != 0o040000 || root.Object.LinkCount == 0 || root.Object.Size < 0 || root.Object.RawSHA256 != "" || seenRoots[root.Name] || seenObjects[key] {
-			dbg("root-" + root.Name)
 			return ErrUnavailable
 		}
 		seenRoots[root.Name] = true
@@ -338,7 +334,6 @@ func (closure ClosureV1) Validate() error {
 	for _, material := range closure.LaunchMaterials {
 		key := [2]uint64{material.Object.Device, material.Object.Inode}
 		if !safeRole(material.Role) || material.Role <= last || validateObject(material.Object, false) != nil || seenObjects[key] {
-			dbg("material-" + material.Role)
 			return ErrUnavailable
 		}
 		root, _, ok := strings.Cut(material.Role, "/")
@@ -349,7 +344,6 @@ func (closure ClosureV1) Validate() error {
 			}
 		}
 		if !ok || !seenRoots[root] || !withinRoot(rootPath, material.Object.CanonicalPath) {
-			dbg("withinRoot-" + material.Role)
 			return ErrUnavailable
 		}
 		seenObjects[key] = true

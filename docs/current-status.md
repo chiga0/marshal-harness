@@ -34,6 +34,10 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 当前结论：Pi 已具备可复现的真实 sealed-launch provider 证据，但尚不能宣称 v1.0 worker lifecycle 或 RC1 已发布。Codex 本轮未启用。
 
+### 2026-08-31 固定 CLI 复测结果
+
+同一候选分支继续修复了固定 `./bin/marshal` 的 Darwin 进程识别：普通 Go 进程的 `signal.NotifyContext` 会占用 FD3/4，旧逻辑仅凭 FD3 类型会把普通 CLI 误判为 inherited child，导致命令静默退出；现在要求 supervisor/child 各自完整的伴随 descriptor 形状，且已移除临时 stderr/`/tmp` 调试输出。固定 CLI 严格 E2E 已能完成 `plan→approve→run.start-outcome`，但尚未产生 `worker.completed`：当前 sealed READY 分支只完成 Run-start/supervisor 启动，尚未把带真实 WorkerRequest 的 Pi 执行、结果接纳和独立 Verification 串入同一次 `task run`。因此该结果是新的、可定位的生产接线缺口，不是成功闭环；Pi 仍不得宣称为 v1.0 `RELEASED` Worker。
+
 ## v1.0 正在建设
 
 2026-08-30 的 `main@c6debd4` checkpoint 保持 RB1-authoritative existing-worktree Bind/Receipt/Release、recovery projection、RC1 build-once distribution、exact opt-in installer guard 与 immutable carrier checker/receipt Schema；本次提交仅校正文档与当前权威 HEAD，不改变运行时语义。该 exact-head CI 的 Ubuntu/macOS quality 尚在运行，secret scan 已通过，整体仍未全绿。这些仍是 component/admission 资产：完整 S1′（S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor，含 item 5 borrow seam/门禁）尚未进入 `main`，`3abed5a` 仍只是未合入候选；S2′、Attach/rebind、terminalization、最终 fixed-bin Pi→独立 Decision→`ACCEPTED`、真实 same-bytes canary/carrier、tag、GitHub prerelease 与 release asset 均未完成，不能据此宣称 RC1 或 stable 可用。

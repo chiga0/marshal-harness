@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -31,24 +30,11 @@ const (
 // Core-created supervisor bootstrap socket from the fixed-image launch child;
 // no mode, path, nonce, authority, or credential is accepted through argv or
 // environment.
-func handshakeDebug(format string, args ...any) {
-	if _, err := os.Stat("/tmp/marshal-handshake-debug.log"); err != nil {
-		return
-	}
-	f, err := os.OpenFile("/tmp/marshal-handshake-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	fmt.Fprintf(f, "pid=%d "+format+"\n", append([]any{os.Getpid()}, args...)...)
-}
-
 func RunInherited(ctx context.Context) error {
 	if len(os.Environ()) != 0 {
 		return ErrInvalid
 	}
 	kind, err := inheritedInvocationKind()
-	handshakeDebug("inherited kind=%q err=%v", kind, err)
 	if err != nil {
 		return err
 	}

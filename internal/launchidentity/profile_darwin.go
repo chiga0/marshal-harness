@@ -58,7 +58,6 @@ func OpenPi0844(runtimePath, entrypointPath string, arguments, environment []str
 	}
 	held := &HeldClosure{}
 	fail := func(err error) (*HeldClosure, error) {
-		fmt.Fprintln(os.Stderr, "PI0844DEBUG fail:", err)
 		held.Close()
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -151,7 +150,6 @@ func Reopen(closure ClosureV1) (*HeldClosure, error) {
 	}
 	held := &HeldClosure{}
 	fail := func(err error) (*HeldClosure, error) {
-		fmt.Fprintln(os.Stderr, "PI0844DEBUG fail:", err)
 		held.Close()
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -225,14 +223,12 @@ func openObject(path string, kind uint32, executable bool) (*os.File, ObjectV1, 
 	file := os.NewFile(uintptr(fd), filepath.Base(real))
 	var before, after unix.Stat_t
 	if unix.Fstat(fd, &before) != nil || uint32(before.Mode)&unix.S_IFMT != kind {
-		fmt.Fprintln(os.Stderr, "PI0844DEBUG openObject-fstat kind-mismatch:", real)
 		file.Close()
 		return nil, ObjectV1{}, ErrUnavailable
 	}
 	object := ObjectV1{CanonicalPath: real, Device: uint64(before.Dev), Inode: before.Ino, FileType: uint32(before.Mode) & unix.S_IFMT, Mode: uint32(before.Mode), UID: before.Uid, GID: before.Gid, Size: before.Size, LinkCount: uint64(before.Nlink)}
 	if kind == unix.S_IFREG {
 		if before.Nlink != 1 || executable && (before.Mode&0o111 == 0 || before.Mode&0o6000 != 0) {
-			fmt.Fprintln(os.Stderr, "PI0844DEBUG openObject-nlink-or-exec:", real, "nlink:", before.Nlink)
 			file.Close()
 			return nil, ObjectV1{}, ErrUnavailable
 		}
@@ -243,7 +239,6 @@ func openObject(path string, kind uint32, executable bool) (*os.File, ObjectV1, 
 			return nil, ObjectV1{}, ErrUnavailable
 		}
 		if _, err := file.Seek(0, io.SeekStart); err != nil {
-			fmt.Fprintln(os.Stderr, "PI0844DEBUG openObject-seek:", real)
 			file.Close()
 			return nil, ObjectV1{}, ErrUnavailable
 		}
@@ -287,7 +282,6 @@ func openObject(path string, kind uint32, executable bool) (*os.File, ObjectV1, 
 			}
 		}
 		if statErr != nil || after == (unix.Stat_t{}) || beforeRead != afterRead {
-			fmt.Fprintf(os.Stderr, "PI0844DEBUG drift-detail path=%s dev=%d/%d ino=%d/%d mode=%d/%d uid=%d/%d gid=%d/%d nlink=%d/%d size=%d/%d mtim=%v/%v ctim=%v/%v flags=%d/%d gen=%d/%d\n", real, beforeRead.Dev, afterRead.Dev, beforeRead.Ino, afterRead.Ino, beforeRead.Mode, afterRead.Mode, beforeRead.Uid, afterRead.Uid, beforeRead.Gid, afterRead.Gid, beforeRead.Nlink, afterRead.Nlink, beforeRead.Size, afterRead.Size, beforeRead.Mtim, afterRead.Mtim, beforeRead.Ctim, afterRead.Ctim, beforeRead.Flags, afterRead.Flags, beforeRead.Gen, afterRead.Gen)
 			file.Close()
 			return nil, ObjectV1{}, ErrUnavailable
 		}

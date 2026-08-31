@@ -32,6 +32,16 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		fmt.Fprintln(stderr, "运行失败：sealed 组合需要 MARSHAL_PI_RUNTIME 与 MARSHAL_PI_ENTRYPOINT 指向冻结的 Pi 0.84.4 镜像。")
 		return ExitUnavailable
 	}
+	piRuntime, err := filepath.EvalSymlinks(piRuntime)
+	if err != nil {
+		fmt.Fprintln(stderr, "运行失败：Pi Node runtime 路径无法解析。")
+		return ExitUnavailable
+	}
+	piEntrypoint, err = filepath.EvalSymlinks(piEntrypoint)
+	if err != nil {
+		fmt.Fprintln(stderr, "运行失败：Pi entrypoint 路径无法解析。")
+		return ExitUnavailable
+	}
 	ingressDir, ledgerDir, allocationRoot, ownerDir := productionruntime.CompositionPaths(stateRoot)
 	for _, dir := range []string{ingressDir, ledgerDir, allocationRoot, ownerDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -129,7 +139,7 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		return ExitFailure
 	}
 	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: repositoryRoot}
-	acquisition, err := observeCompositionAcquisition(fixedMarshal)
+	acquisition, err := observeCompositionAcquisition(fixedMarshal, namespace)
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：fixed marshal core 身份观察失败：%v\n", err)
 		return ExitFailure
@@ -176,13 +186,19 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 
 // observeCompositionAcquisition binds acquisition evidence to the exact fixed
 // marshal core already resolved by the CLI composition root.
-func observeCompositionAcquisition(fixedMarshal string) (productionruntime.ControlOwnerAcquisition, error) {
+func observeCompositionAcquisition(fixedMarshal string, namespace authority.AuthorityNamespaceId) (productionruntime.ControlOwnerAcquisition, error) {
 	core, err := processsupervisor.ObserveCurrentCore(fixedMarshal)
 	if err != nil {
 		return productionruntime.ControlOwnerAcquisition{}, err
 	}
+	repositoryIdentityDigest, err := namespace.Digest()
+	if err != nil {
+		return productionruntime.ControlOwnerAcquisition{}, err
+	}
 	return productionruntime.ControlOwnerAcquisition{
-		OwnerUID: core.UID, OwnerGID: core.GID, OwnerProcess: core.Process, OwnerBinary: core.Binary,
+		Scope:      productionruntime.ControlOwnerScope{AuthorityNamespaceID: namespace, RepositoryIdentityDigest: repositoryIdentityDigest},
+		OwnerEpoch: 1,
+		OwnerUID:   core.UID, OwnerGID: core.GID, OwnerProcess: core.Process, OwnerBinary: core.Binary,
 		ObserverIdentity: "darwin-owner-observer/v1",
 		ObservedAt:       time.Unix(core.Process.BirthSeconds, core.Process.BirthMicroseconds*int64(time.Microsecond)).UTC().Add(time.Second).Format(time.RFC3339Nano),
 	}, nil

@@ -15,10 +15,32 @@ func inheritedInvocationKind() (string, error) {
 	if err := unix.Fstat(int(SupervisorBootstrapFD), &stat); err != nil {
 		return "", ErrInvalid
 	}
+	// A normal Go process may open signal.NotifyContext's wakeup pipe on
+	// descriptors 3 and 4 after startup. Descriptor type alone would then
+	// falsely classify the process as an inherited launch child. Supervisors
+	// carry a directory at FD 4; launch children carry a complete descriptor
+	// set (spec/ready/release/cwd/runtime/marshal) at FDs 3..8. Require those
+	// stable companions before treating FD 3 as protocol input.
+	var controlStat unix.Stat_t
+	controlErr := unix.Fstat(int(SupervisorControlDirFD), &controlStat)
 	switch uint32(stat.Mode) & unix.S_IFMT {
 	case unix.S_IFSOCK:
+		if controlErr != nil || uint32(controlStat.Mode)&unix.S_IFMT != unix.S_IFDIR {
+			return "", ErrInvalid
+		}
 		return "supervisor", nil
 	case unix.S_IFIFO:
+		if controlErr != nil || uint32(controlStat.Mode)&unix.S_IFMT != unix.S_IFIFO {
+			return "", ErrInvalid
+		}
+		for fd, kind := range map[uintptr]uint32{
+			5: unix.S_IFIFO, 6: unix.S_IFDIR, 7: unix.S_IFREG, 8: unix.S_IFREG,
+		} {
+			var childStat unix.Stat_t
+			if unix.Fstat(int(fd), &childStat) != nil || uint32(childStat.Mode)&unix.S_IFMT != kind {
+				return "", ErrInvalid
+			}
+		}
 		return "child", nil
 	default:
 		return "", ErrInvalid
