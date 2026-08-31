@@ -54,6 +54,7 @@ type CompositionLedger struct {
 	existingWorktreeGraph   allocationcontrol.ExistingWorktreeDescriptorGraphV1
 	existingWorktreeTarget  *os.File
 	existingWorktreeEnabled bool
+	launchArgvBuilder       AttemptLaunchArgvBuilder
 	now                     func() time.Time
 }
 
@@ -95,6 +96,15 @@ type CompositionInputs struct {
 	// ComposeRuntime/Prepare/Start lifetime and only borrowed here.
 	ExistingWorktreeDescriptorGraph allocationcontrol.ExistingWorktreeDescriptorGraphV1
 	ExistingWorktreeTargetWorktree  *os.File
+	// LaunchArgvBuilder is the injected, pure constructor for the deterministic
+	// noninteractive production argv. It is the only seam that may bridge to
+	// the pi adapter; productionruntime calls it after ReserveAttempt and
+	// ensureAttemptLease have fixed the precise TaskID/RunID/AttemptID, then
+	// re-seals the launch closure before launch-authorized/PreparedExecution.
+	// Path B requires a non-nil builder and fails closed without one; path A
+	// tolerates nil for backward compatibility (the composition-time argv is
+	// kept and only the working directory is re-sealed).
+	LaunchArgvBuilder AttemptLaunchArgvBuilder
 }
 
 // NewCompositionLedger is the only constructor. It validates every input and
@@ -137,6 +147,14 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 	}
 	existingWorktreeEnabled := graphSupplied && targetSupplied
+	// Path B requires the injected production argv builder: the launch closure
+	// must be re-sealed with the deterministic noninteractive argv after the
+	// precise attempt identity is reserved, and productionruntime cannot import
+	// adapter/pi. A nil builder fails closed so path B never launches with the
+	// bare composition-time kernel argv. Path A keeps nil compatibility.
+	if existingWorktreeEnabled && inputs.LaunchArgvBuilder == nil {
+		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
+	}
 	// ADR 0069 lock order: path B must acquire the Run Lease inside this
 	// constructor, after repository owner acquisition. A caller-supplied lease
 	// would re-violate the order (the CLI used to hold it across ComposeRuntime)
@@ -232,7 +250,7 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		requirements: inputs.Requirements, workDirs: append([]string(nil), inputs.WorkDirAllowlist...),
 		environment:           append([]string(nil), inputs.EnvironmentAllowlist...),
 		existingWorktreeGraph: inputs.ExistingWorktreeDescriptorGraph, existingWorktreeTarget: inputs.ExistingWorktreeTargetWorktree,
-		existingWorktreeEnabled: existingWorktreeEnabled, now: time.Now,
+		existingWorktreeEnabled: existingWorktreeEnabled, launchArgvBuilder: inputs.LaunchArgvBuilder, now: time.Now,
 	}
 	allocation, err := resultingress.NewAllocationAuthority(inputs.Ingress, compositionAllocationAuthority{ledger: ledger, domain: inputs.ProvisionDomain, phase: resultingress.EffectPhaseAllocationProvision}, compositionAllocationAuthority{ledger: ledger, domain: inputs.CleanupDomain, phase: resultingress.EffectPhaseAllocationTerminate})
 	if err != nil {
@@ -522,15 +540,20 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 			}
 			if l.existingWorktreeEnabled {
 				// Path B: bind the already-held existing worktree through the
-				// RB1 closed union (bind-intent → bind-receipt). The closure
-				// is not re-sealed to a staging directory; the target worktree
-				// remains the agent working directory. ADR 0069/0070.
+				// RB1 closed union (bind-intent → bind-receipt). ADR 0069/0070.
 				if err := l.bindExistingWorktree(ctx, acquisition, ready, reservation, identity, bound.State); err != nil {
 					return err
 				}
 				authorized, found, err := l.ingress.AttemptState(identity)
 				if err != nil || !found {
 					return fmt.Errorf("composition: attempt state after bind: found=%t err=%v", found, err)
+				}
+				// Re-seal the closure with the deterministic production argv
+				// (built from the precise reserved identity) and the target
+				// worktree working directory before launch-authorized. Path B
+				// never has a nil builder: NewCompositionLedger rejects it.
+				if err := l.resealLaunchClosure(identity, ready.WorktreePath); err != nil {
+					return err
 				}
 				if err := l.authorizeLaunch(ctx, identity, authorized); err != nil {
 					return err
@@ -552,7 +575,8 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 				// (staging==live for the local host-process provider), derived
 				// deterministically from the allocation id; re-seal the frozen
 				// closure so its observed working directory matches the provision
-				// receipt exactly.
+				// receipt exactly, and so its argv is the deterministic
+				// production argv built from the precise reserved identity.
 				_, live, _, _, stagingErr := allocationcontrol.DeriveRelativeNames(allocationID)
 				if stagingErr != nil {
 					return stagingErr
@@ -567,15 +591,9 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 					return rootErr
 				}
 				livePath := filepath.Join(objectsRoot, live)
-				reSealed, sealErr := launchidentity.Seal(launchidentity.SpecInput{
-					RuntimeExecutable: l.closure.RuntimeExecutable, ClosureProfileID: l.closure.ClosureProfileID,
-					MaterialRoots: l.closure.MaterialRoots, LaunchMaterials: l.closure.LaunchMaterials,
-					Arguments: l.closure.Arguments, Environment: l.closure.Environment, WorkingDirectory: livePath,
-				})
-				if sealErr != nil {
-					return sealErr
+				if err := l.resealLaunchClosure(identity, livePath); err != nil {
+					return err
 				}
-				l.closure = reSealed
 				if err := l.authorizeLaunch(ctx, identity, authorized); err != nil {
 					return err
 				}
@@ -715,6 +733,35 @@ func (l *CompositionLedger) provisionAllocation(ctx context.Context, identity re
 	if _, err := controller.RecoverProvision(ctx, appended.EffectKey); err != nil {
 		return err
 	}
+	return nil
+}
+
+// resealLaunchClosure rebuilds the frozen launch closure with the
+// deterministic production argv (from the injected builder) and the given
+// working directory, then stores it on the ledger so authorizeLaunch appends
+// the exact sealed closure. The builder receives the precise reserved
+// identity; a builder error fails closed before launch-authorized and
+// PreparedExecution. On path A a nil builder preserves the legacy
+// composition-time argv (only the working directory is re-sealed); path B
+// never has a nil builder because NewCompositionLedger rejects it.
+func (l *CompositionLedger) resealLaunchClosure(identity resultingress.AttemptIdentity, workingDirectory string) error {
+	argv := l.closure.Arguments
+	if l.launchArgvBuilder != nil {
+		built, err := l.launchArgvBuilder(AttemptLaunchIdentity{TaskID: identity.TaskID, RunID: identity.RunID, AttemptID: identity.AttemptID})
+		if err != nil {
+			return err
+		}
+		argv = built.Argv
+	}
+	reSealed, err := launchidentity.Seal(launchidentity.SpecInput{
+		RuntimeExecutable: l.closure.RuntimeExecutable, ClosureProfileID: l.closure.ClosureProfileID,
+		MaterialRoots: l.closure.MaterialRoots, LaunchMaterials: l.closure.LaunchMaterials,
+		Arguments: argv, Environment: l.closure.Environment, WorkingDirectory: workingDirectory,
+	})
+	if err != nil {
+		return err
+	}
+	l.closure = reSealed
 	return nil
 }
 

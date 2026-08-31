@@ -97,11 +97,13 @@ func pathBDescriptorGraph(t *testing.T, repository, worktreePath string) (alloca
 	return graph, target
 }
 
-// pathBCompositionInputs builds a full CompositionInputs wired for path B:
-// a READY Run whose WorktreePath is a real linked git worktree, plus the held
-// descriptor graph and target. The closure's working directory is the target
-// worktree (path B does not re-seal it to staging).
-func pathBCompositionInputs(t *testing.T) (CompositionInputs, string, string, string) {
+// pathBCompositionInputsForLaunch builds a full CompositionInputs wired for
+// path B: a READY Run whose WorktreePath is a real linked git worktree, plus
+// the held descriptor graph and target. The closure's working directory is
+// the target worktree (path B does not re-seal it to staging). It returns the
+// inspectable argv builder so tests can assert the precise reserved identity
+// and the sealed production argv.
+func pathBCompositionInputsForLaunch(t *testing.T) (CompositionInputs, string, string, string, *testLaunchArgvBuilder) {
 	t.Helper()
 	ownerFixture := newOwnerLockFixture(t)
 	store := openOwnerStore(t, ownerFixture)
@@ -181,7 +183,21 @@ func pathBCompositionInputs(t *testing.T) (CompositionInputs, string, string, st
 		ExistingWorktreeDescriptorGraph: graph,
 		ExistingWorktreeTargetWorktree:  target,
 	}
-	return inputs, runID, worktreePath, ownerFixture.base
+	// The injected production argv builder mirrors adapter/pi's
+	// BuildProductionLaunch shape without importing adapter/pi; path B
+	// requires a non-nil builder.
+	builder := &testLaunchArgvBuilder{node: reSealed.RuntimeExecutable.CanonicalPath, entrypoint: reSealed.Arguments[1], profile: "workspace-write"}
+	inputs.LaunchArgvBuilder = builder.build()
+	return inputs, runID, worktreePath, ownerFixture.base, builder
+}
+
+// pathBCompositionInputs builds a full CompositionInputs wired for path B
+// with a default (non-inspectable) argv builder. Tests that need to inspect
+// builder calls use pathBCompositionInputsForLaunch directly.
+func pathBCompositionInputs(t *testing.T) (CompositionInputs, string, string, string) {
+	t.Helper()
+	inputs, runID, worktreePath, base, _ := pathBCompositionInputsForLaunch(t)
+	return inputs, runID, worktreePath, base
 }
 
 func pathBProjection(t *testing.T, ledger *CompositionLedger) runstore.RunStartAuthorityProjection {

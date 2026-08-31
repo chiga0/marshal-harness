@@ -189,6 +189,7 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		WorkDirAllowlist: []string{projection.WorktreePath}, EnvironmentAllowlist: []string{"PATH"},
 		ExistingWorktreeDescriptorGraph: worktreeHandles.graph,
 		ExistingWorktreeTargetWorktree:  worktreeHandles.target,
+		LaunchArgvBuilder:               piProductionLaunchBuilder(piRuntime, piEntrypoint, task),
 	}
 	composed, err := productionruntime.ComposeRuntime(ctx, inputs, profile)
 	if err != nil {
