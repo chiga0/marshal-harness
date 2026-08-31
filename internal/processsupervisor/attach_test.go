@@ -174,7 +174,7 @@ func TestAttachedSessionIsSingleUseAndCallbackScoped(t *testing.T) {
 
 func TestAttachedSessionExposesOnlyReadOnlyObservation(t *testing.T) {
 	typeOf := reflect.TypeOf((*AttachedSession)(nil))
-	if typeOf.NumMethod() != 1 || typeOf.Method(0).Name != "Observation" {
+	if typeOf.NumMethod() != 2 || typeOf.Method(0).Name != "ExecutePreparedBindAuthority" || typeOf.Method(1).Name != "Observation" {
 		t.Fatalf("AttachedSession exported methods = %v", typeOf.NumMethod())
 	}
 }

@@ -72,9 +72,10 @@ func TestAttachExportedAPIIsBorrowedCallbackOnly(t *testing.T) {
 }
 
 // TestAttachedSessionHasNoCommandOrTransportMethod scans attach.go for methods
-// on *AttachedSession and requires Observation to be the only one, so a future
-// change cannot silently add a command, mutation, or transport escape valve to
-// the borrowed session.
+// on *AttachedSession and requires Observation plus the single ADR 0067 §4.6
+// bind-authority(owner-successor) execute to be the only exported methods, so a
+// future change cannot silently add a generic command, mutation, or transport
+// escape valve to the borrowed session.
 func TestAttachedSessionHasNoCommandOrTransportMethod(t *testing.T) {
 	file := parseAttachArchitectureFile(t, "attach.go")
 	methods := map[string]bool{}
@@ -95,8 +96,8 @@ func TestAttachedSessionHasNoCommandOrTransportMethod(t *testing.T) {
 			methods[function.Name.Name] = true
 		}
 	}
-	if len(methods) != 1 || !methods["Observation"] {
-		t.Fatalf("AttachedSession exported methods = %v, want only Observation", methods)
+	if len(methods) != 2 || !methods["Observation"] || !methods["ExecutePreparedBindAuthority"] {
+		t.Fatalf("AttachedSession exported methods = %v, want only Observation and ExecutePreparedBindAuthority", methods)
 	}
 }
 
@@ -118,13 +119,22 @@ func TestAttachFileHasNoInternalPackageImports(t *testing.T) {
 }
 
 // TestWithAttachedHasNoProductionCallsiteOutsideProcessSupervisor enforces that
-// the read-only Attach primitive is not wired into any production caller until
-// the ADR 0067 §4 owner-rebind/terminalization slice explicitly adds the single
-// intended callsite. For this slice the production callsite count outside this
-// package must be zero.
+// the read-only Attach primitive has exactly one production callsite outside
+// internal/processsupervisor: the ADR 0067 §4 owner-rebind transport adapter
+// (productionRebindTransport) in resultingress. Any additional callsite is a
+// forbidden escape. The rebind orchestration itself
+// (RebindOwnerSuccessorForAttachedRecovery) is a COMPONENT seam: it is NOT yet
+// wired into any cmd/marshal or productionruntime caller, and must not be
+// claimed as INTEGRATED until a real caller is added.
+// StartIntegrationTestRebind is test-only support that currently must live in
+// a non-_test file for cross-package integration coverage; production callers
+// are mechanically forbidden until that support can be moved behind a test
+// target.
 func TestWithAttachedHasNoProductionCallsiteOutsideProcessSupervisor(t *testing.T) {
-	roots := []string{filepath.Join(".."), filepath.Join("..", "..", "cmd")}
-	callsites := 0
+	roots := []string{filepath.Join(".."), filepath.Join("..", "..", "cmd"), filepath.Join("..", "..", "internal", "productionruntime")}
+	withAttachedCallsites := 0
+	rebindCallsites := 0
+	integrationTestRebindCallsites := 0
 	for _, root := range roots {
 		filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
@@ -143,16 +153,31 @@ func TestWithAttachedHasNoProductionCallsiteOutsideProcessSupervisor(t *testing.
 					return true
 				}
 				selector, ok := call.Fun.(*ast.SelectorExpr)
-				if ok && selector.Sel.Name == "WithAttached" {
-					callsites++
+				if !ok {
+					return true
+				}
+				if selector.Sel.Name == "WithAttached" {
+					withAttachedCallsites++
+				}
+				if selector.Sel.Name == "RebindOwnerSuccessorForAttachedRecovery" {
+					rebindCallsites++
+				}
+				if selector.Sel.Name == "StartIntegrationTestRebind" {
+					integrationTestRebindCallsites++
 				}
 				return true
 			})
 			return nil
 		})
 	}
-	if callsites != 0 {
-		t.Fatalf("WithAttached has %d production callsite(s) outside internal/processsupervisor; the owner-rebind wiring is a later slice", callsites)
+	if withAttachedCallsites != 1 {
+		t.Fatalf("WithAttached has %d production callsite(s) outside internal/processsupervisor; want exactly 1 (the rebind transport adapter)", withAttachedCallsites)
+	}
+	if rebindCallsites != 0 {
+		t.Fatalf("RebindOwnerSuccessorForAttachedRecovery has %d production callsite(s); it is a COMPONENT seam not yet wired into cmd/productionruntime. Do not claim INTEGRATED.", rebindCallsites)
+	}
+	if integrationTestRebindCallsites != 0 {
+		t.Fatalf("StartIntegrationTestRebind has %d production callsite(s); test support must never be reachable from production code", integrationTestRebindCallsites)
 	}
 }
 

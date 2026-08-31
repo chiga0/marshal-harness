@@ -1132,7 +1132,7 @@ func validateSupervisorCommandOutcomeAgainstIntent(state AttemptAuthorityState, 
 	}
 	switch intent.Command {
 	case processsupervisor.CommandBindAuthority:
-		if evidence.BoundAuthorityHead != intent.Rebuild.AuthorityHead {
+		if evidence.BoundAuthorityHead != intent.Rebuild.AuthorityHead || evidence.ObservationDigest != intent.Rebuild.SupervisorStartedFactDigest {
 			return ErrAttemptAuthorityConflict
 		}
 	case processsupervisor.CommandSpawn:

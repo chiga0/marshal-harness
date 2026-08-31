@@ -406,10 +406,31 @@ func WithAttached(ctx context.Context, options AttachOptions, fn func(*AttachedS
 		if observation.validate() != nil {
 			return ErrConflict
 		}
-		borrowErr := callAttachedBorrower(newAttachedSession(observation), fn)
+		session := newRebindAttachedSession(observation, connection, codec, options.Authority.PreviousSupervisor)
+		borrowErr := callAttachedBorrower(session, fn)
 		afterCallback, callbackJournal, snapshotErr := captureAttachControlSnapshot(options.ControlDirectory, directory, held)
-		if snapshotErr != nil || afterCallback != before || validateAttachJournalAnchor(callbackJournal, options.Authority.PreviousSupervisor) != nil {
+		if snapshotErr != nil {
 			return ErrConflict
+		}
+		session.guard.mu.Lock()
+		commandExecuted := session.guard.commandExecuted
+		postCommand := session.guard.postCommand
+		session.guard.mu.Unlock()
+		if commandExecuted {
+			// One bind-authority(owner-successor) rebind advanced the mechanics
+			// journal by exactly one intent + one receipt and moved the session
+			// authority head. The control directory, socket, nonce and held files
+			// must be unchanged; the journal must now match the post-command anchor.
+			if validateAttachJournalAnchor(callbackJournal, postCommand) != nil {
+				return ErrConflict
+			}
+			if afterCallback.Directory != before.Directory || afterCallback.Socket != before.Socket || afterCallback.NonceSize != before.NonceSize || afterCallback.NonceDigest != before.NonceDigest || afterCallback.Files != before.Files {
+				return ErrConflict
+			}
+		} else {
+			if afterCallback != before || validateAttachJournalAnchor(callbackJournal, options.Authority.PreviousSupervisor) != nil {
+				return ErrConflict
+			}
 		}
 		if borrowErr != nil {
 			return borrowErr
@@ -418,9 +439,9 @@ func WithAttached(ctx context.Context, options AttachOptions, fn func(*AttachedS
 			return ErrIntervention
 		}
 		// Half-close the write side and require the server to close without any
-		// command-loop frame. This keeps the narrow transport available for a
-		// future exact bind-authority extension while making any current mutation
-		// attempt fail closed.
+		// further frame. After a rebind the server has already consumed its one
+		// bind-authority command and is waiting for this EOF; after a read-only
+		// Attach EOF is the only accepted follow-up.
 		if err := connection.SetDeadline(deadline); err != nil || connection.CloseWrite() != nil {
 			return ErrIntervention
 		}

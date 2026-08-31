@@ -3,6 +3,7 @@ package processsupervisor
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"runtime"
 	"sync"
@@ -200,12 +201,34 @@ type attachedSessionGuard struct {
 	violated          bool
 	borrowerGoroutine uint64
 	observation       AttachObservation
+	// rebind transport, set by WithAttached before the borrower runs. The
+	// connection and codec are the same ones that carried the Attach exchange;
+	// ExecutePreparedBindAuthority never reopens a second connection.
+	connection       *net.UnixConn
+	codec            *ProtocolCodec
+	anchor           HandshakeAnchor
+	commandAttempted bool
+	commandExecuted  bool
+	postCommand      HandshakeAnchor
 }
 
 func newAttachedSession(observation AttachObservation) *AttachedSession {
 	guard := &attachedSessionGuard{active: true, observation: observation}
 	guard.cond = sync.NewCond(&guard.mu)
 	return &AttachedSession{guard: guard}
+}
+
+// newRebindAttachedSession equips the borrowed session with the same
+// connection, codec and anchor that carried the Attach exchange, so one
+// already-persisted bind-authority(owner-successor) PreparedCommand can be
+// executed on that transport inside the callback. The anchor is the exact
+// previous Supervisor anchor re-derived from durable authority.
+func newRebindAttachedSession(observation AttachObservation, connection *net.UnixConn, codec *ProtocolCodec, anchor HandshakeAnchor) *AttachedSession {
+	session := newAttachedSession(observation)
+	session.guard.connection = connection
+	session.guard.codec = codec
+	session.guard.anchor = anchor
+	return session
 }
 
 // Observation returns the authenticated, secret-free observation exactly once
@@ -235,6 +258,71 @@ func (session *AttachedSession) Observation() (AttachObservation, error) {
 		guard.mu.Unlock()
 	}()
 	return observation, nil
+}
+
+// ExecutePreparedBindAuthority runs exactly one already-persisted
+// bind-authority(owner-successor) PreparedCommand on the same authenticated
+// Attach transport, within the same borrowed callback and goroutine (ADR 0067
+// §4.6). It accepts only bind-authority, only a PreparedCommand whose
+// PreCommand is the exact Attach anchor, and only after Observation has been
+// consumed. A second call, a cross-goroutine call, a non-bind-authority
+// command, or any anchor drift fails closed and poisons the session. The
+// connection is never reopened; on transport failure the caller's
+// post-callback snapshot check fails closed rather than guessing an outcome.
+func (session *AttachedSession) ExecutePreparedBindAuthority(ctx context.Context, prepared PreparedCommand) (VerifiedCommandOutcome, error) {
+	if session == nil || session.guard == nil || ctx == nil {
+		return VerifiedCommandOutcome{}, ErrConflict
+	}
+	guard := session.guard
+	guard.mu.Lock()
+	if !guard.active || !guard.observed || guard.commandAttempted || currentGoroutineID() != guard.borrowerGoroutine ||
+		guard.connection == nil || guard.codec == nil || guard.anchor.SessionID == "" {
+		guard.violated = true
+		guard.mu.Unlock()
+		return VerifiedCommandOutcome{}, ErrConflict
+	}
+	if err := prepared.evidence.Validate(); err != nil || prepared.evidence.Command != CommandBindAuthority || prepared.evidence.PreCommand != guard.anchor {
+		guard.violated = true
+		guard.mu.Unlock()
+		return VerifiedCommandOutcome{}, ErrConflict
+	}
+	guard.commandAttempted = true
+	connection, codec, anchor := guard.connection, guard.codec, guard.anchor
+	guard.mu.Unlock()
+	request := prepared.request
+	deadline, err := parseDeadline(request.Deadline)
+	if err != nil {
+		return VerifiedCommandOutcome{}, ErrInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return VerifiedCommandOutcome{}, ErrIntervention
+	}
+	if err := connection.SetDeadline(deadline); err != nil {
+		return VerifiedCommandOutcome{}, ErrIntervention
+	}
+	var response Response
+	if err := codec.Write(request); err != nil {
+		return VerifiedCommandOutcome{}, ErrIntervention
+	}
+	if err := codec.Read(&response); err != nil {
+		return VerifiedCommandOutcome{}, ErrIntervention
+	}
+	if err := ValidateResponseBinding(response, request); err != nil {
+		return VerifiedCommandOutcome{}, ErrConflict
+	}
+	post, err := commandPostAnchor(anchor, request, response)
+	if err != nil {
+		return VerifiedCommandOutcome{}, ErrConflict
+	}
+	outcome, err := verifiedCommandOutcome(request, response, CommandRecoveryEvidence{PreCommand: anchor, PostCommand: post})
+	if err != nil {
+		return VerifiedCommandOutcome{}, ErrConflict
+	}
+	guard.mu.Lock()
+	guard.commandExecuted = true
+	guard.postCommand = post
+	guard.mu.Unlock()
+	return outcome, nil
 }
 
 // deactivateAndWait is called exactly once by callAttachedBorrower after fn

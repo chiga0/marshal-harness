@@ -395,6 +395,7 @@ func testSupervisorEvidence(t *testing.T, intent SupervisorCommandIntent, outcom
 	}
 	if intent.Command == processsupervisor.CommandBindAuthority && disposition == "ok" {
 		evidence.BoundAuthorityHead = intent.Rebuild.AuthorityHead
+		evidence.ObservationDigest = intent.Rebuild.SupervisorStartedFactDigest
 	}
 	observationDigest, receiptDigest, err := evidence.boundMechanicsDigests()
 	if err != nil {

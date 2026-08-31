@@ -957,7 +957,14 @@ func applySupervisorCommandFactValue(fact supervisorCommandFact, in *Ingress) er
 	}
 	switch fact.FactType {
 	case supervisorCommandIntentFactType:
-		if fact.Outcome != (SupervisorCommandEvidence{}) || fact.Reconnect != (SupervisorReconnectEvidence{}) || state.SupervisorPendingIntentDigest != "" || fact.PreviousRecoveryFactDigest != state.SupervisorCommandRecoveryHead || validateSupervisorCommandIntentAgainstState(state, fact.Intent) != nil {
+		if fact.Outcome != (SupervisorCommandEvidence{}) || fact.Reconnect != (SupervisorReconnectEvidence{}) || state.SupervisorPendingIntentDigest != "" || fact.PreviousRecoveryFactDigest != state.SupervisorCommandRecoveryHead {
+			return ErrAttemptAuthorityConflict
+		}
+		if fact.Intent.Command == processsupervisor.CommandBindAuthority && state.SupervisorBoundAuthorityHead != "" {
+			if validateRebindSupervisorIntentAgainstState(state, fact.Intent) != nil {
+				return ErrAttemptAuthorityConflict
+			}
+		} else if validateSupervisorCommandIntentAgainstState(state, fact.Intent) != nil {
 			return ErrAttemptAuthorityConflict
 		}
 		state.SupervisorPendingIntent = fact.Intent

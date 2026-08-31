@@ -263,9 +263,9 @@ func (e SupervisorCommandEvidence) boundMechanicsDigests() (string, string, erro
 	}
 	if e.Command == processsupervisor.CommandBindAuthority {
 		payload := json.RawMessage("{}")
-		result := processsupervisor.MechanicsResult{Disposition: e.Disposition, ReasonCode: e.ReasonCode, ObservationDigest: e.BoundAuthorityHead, Payload: payload}
+		result := processsupervisor.MechanicsResult{Disposition: e.Disposition, ReasonCode: e.ReasonCode, ObservationDigest: e.ObservationDigest, Payload: payload}
 		receipt, err := canonicalDigest(result)
-		return e.BoundAuthorityHead, receipt, err
+		return e.ObservationDigest, receipt, err
 	}
 	if err := e.Outcome.Validate(); err != nil {
 		return "", "", err
