@@ -227,8 +227,10 @@ func observeCompositionAcquisition(fixedMarshal string, namespace authority.Auth
 		return productionruntime.ControlOwnerAcquisition{}, err
 	}
 	return productionruntime.ControlOwnerAcquisition{
-		Scope:      productionruntime.ControlOwnerScope{AuthorityNamespaceID: namespace, RepositoryIdentityDigest: repositoryIdentityDigest},
-		OwnerEpoch: 1,
+		Scope: productionruntime.ControlOwnerScope{AuthorityNamespaceID: namespace, RepositoryIdentityDigest: repositoryIdentityDigest},
+		// Phase A derives the exact next durable epoch while holding the
+		// repository scope lock. The CLI must not guess or pre-read it.
+		OwnerEpoch: 0,
 		OwnerUID:   core.UID, OwnerGID: core.GID, OwnerProcess: core.Process, OwnerBinary: core.Binary,
 		ObserverIdentity: "darwin-owner-observer/v1",
 		ObservedAt:       time.Unix(core.Process.BirthSeconds, core.Process.BirthMicroseconds*int64(time.Microsecond)).UTC().Add(time.Second).Format(time.RFC3339Nano),

@@ -133,7 +133,7 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 	}
 	if inputs.Namespace.Validate() != nil || inputs.ProvisionDomain.Validate() != nil || inputs.CleanupDomain.Validate() != nil ||
 		inputs.ProvisionDomain == inputs.CleanupDomain ||
-		inputs.OwnerDirectory == nil || inputs.Acquisition.Validate() != nil || inputs.RunID == "" ||
+		inputs.OwnerDirectory == nil || validateCompositionAcquisitionCandidate(inputs.Acquisition) != nil || inputs.RunID == "" ||
 		inputs.OrchestratorID == "" || inputs.RegistrationID == "" || inputs.AllocationRoot == "" ||
 		inputs.CapabilitySnapshot == "" || inputs.LaunchClosure.Validate() != nil {
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
@@ -179,11 +179,12 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 	if err != nil {
 		return nil, err
 	}
-	ownerState, err := acquireOwner(inputs.Ingress, phase, inputs.Acquisition)
+	ownerState, acquisition, err := acquireOwner(inputs.Ingress, phase, inputs.Acquisition)
 	if err != nil {
 		_ = phase.Close()
 		return nil, err
 	}
+	inputs.Acquisition = acquisition
 	owner, err := phase.bindAcquisition(inputs.Ingress)
 	if err != nil {
 		_ = phase.Close()
@@ -272,28 +273,38 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 	return ledger, nil
 }
 
-func acquireOwner(ingress *resultingress.DurableStore, phase repositoryOwnerScopeLock, acquisition resultingress.ControlOwnerAcquisition) (resultingress.ControlOwnerState, error) {
+// validateCompositionAcquisitionCandidate admits OwnerEpoch=0 only at the
+// fixed composition boundary. Phase A replaces it with the exact next durable
+// epoch before any authority append; ResultIngress never accepts zero.
+func validateCompositionAcquisitionCandidate(acquisition resultingress.ControlOwnerAcquisition) error {
+	if acquisition.OwnerEpoch == 0 {
+		acquisition.OwnerEpoch = 1
+	}
+	return acquisition.Validate()
+}
+
+func acquireOwner(ingress *resultingress.DurableStore, phase repositoryOwnerScopeLock, acquisition resultingress.ControlOwnerAcquisition) (resultingress.ControlOwnerState, resultingress.ControlOwnerAcquisition, error) {
 	prior, found, err := ingress.OpenOwner(acquisition.Scope)
 	if err != nil {
-		return resultingress.ControlOwnerState{}, err
+		return resultingress.ControlOwnerState{}, resultingress.ControlOwnerAcquisition{}, err
 	}
 	epoch, previousDigest := uint64(0), ""
 	if found {
 		epoch, previousDigest = prior.Acquisition.OwnerEpoch, prior.FactDigest
-		if epoch+1 != acquisition.OwnerEpoch {
-			return resultingress.ControlOwnerState{}, application.NewError("composition-owner", application.ReasonOwnerNotCurrent)
-		}
-	} else if acquisition.OwnerEpoch != 1 {
-		return resultingress.ControlOwnerState{}, application.NewError("composition-owner", application.ReasonOwnerNotCurrent)
 	}
+	nextEpoch := epoch + 1
+	if acquisition.OwnerEpoch != 0 && acquisition.OwnerEpoch != nextEpoch {
+		return resultingress.ControlOwnerState{}, resultingress.ControlOwnerAcquisition{}, application.NewError("composition-owner", application.ReasonOwnerNotCurrent)
+	}
+	acquisition.OwnerEpoch = nextEpoch
 	if _, err := phase.acquireOwner(context.Background(), ingress, epoch, previousDigest, acquisition); err != nil {
-		return resultingress.ControlOwnerState{}, err
+		return resultingress.ControlOwnerState{}, resultingress.ControlOwnerAcquisition{}, err
 	}
 	state, found, err := ingress.OpenOwner(acquisition.Scope)
-	if err != nil || !found {
-		return resultingress.ControlOwnerState{}, fmt.Errorf("composition: owner replay after acquire: found=%t err=%v", found, err)
+	if err != nil || !found || state.Acquisition != acquisition {
+		return resultingress.ControlOwnerState{}, resultingress.ControlOwnerAcquisition{}, fmt.Errorf("composition: owner replay after acquire: found=%t err=%v", found, err)
 	}
-	return state, nil
+	return state, acquisition, nil
 }
 
 // Close releases the resources the ledger owns in reverse acquisition order
