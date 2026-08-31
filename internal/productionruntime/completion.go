@@ -165,6 +165,17 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 	if err != nil || !found || currentAttempt.CommittedResultFactDigest != admission.FactDigest {
 		return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 	}
+	// BoundDirectory keeps the Run lease guard read-borrowed for descriptor
+	// safety. Terminalization takes the same guard exclusively while it seals
+	// the current Run authority, so carrying this borrow into
+	// beginCompletedTerminalization would make the collecting goroutine wait on
+	// its own RLock forever. All attempt-directory reads and writes are complete
+	// once the result and observation are durably admitted; release that borrow
+	// before entering the terminalization authority transaction. Close is
+	// idempotent, so the deferred cleanup remains the failure-path backstop.
+	if err := attemptDirectory.Close(); err != nil {
+		return CollectedRunResult{}, err
+	}
 	terminal, err := l.terminalizeCompletedAttempt(ctx, verifier, acquisition, read, currentAttempt)
 	if err != nil {
 		return CollectedRunResult{}, err
