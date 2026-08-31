@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"unsafe"
 
 	"github.com/chiga0/marshal-harness/internal/buildinfo"
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"golang.org/x/sys/unix"
 )
 
@@ -240,6 +242,22 @@ func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.
 		observed, observeErr := peerObserver(connection)
 		reconnectReader := bufio.NewReaderSize(connection, MaxWireFrameBytes+frameHeaderBytes+1)
 		reconnectRaw, readErr := readFrame(reconnectReader, MaxWireFrameBytes)
+		// Attach is a read-only probe. It must be dispatched before the reconnect
+		// boundary check so that an Attach identity conflict never triggers
+		// session.intervene and never mutates mechanics state. Attach never sends
+		// a command, rebuilds the child, or reopens a pipe.
+		if readErr == nil && wireSchema(reconnectRaw) == AttachSchema {
+			attachErr := serveAttach(connection, session, boundary, supervisorIdentity, observed, reconnectRaw)
+			_ = connection.Close()
+			active.Store(false)
+			if attachErr != nil {
+				if errors.Is(attachErr, ErrConflict) {
+					continue
+				}
+				return attachErr
+			}
+			continue
+		}
 		var reconnect reconnectRequest
 		admitErr := strictCanonicalDecode(reconnectRaw, &reconnect)
 		// A malformed peer must not mask an already-drifted control boundary.
@@ -360,6 +378,126 @@ func decideReconnectWireAfterAttempt(session *Session, boundary sessionControlBo
 		session.intervene()
 		return reconnectWireDecision{disposition: reconnectWireSilentClose, err: ErrIntervention}
 	}
+}
+
+// wireSchema peeks the schemaVersion envelope of one frame without strict
+// canonical decoding, so an Attach frame can be routed before the reconnect
+// decoder would reject it as an unknown shape.
+func wireSchema(raw []byte) string {
+	var envelope struct {
+		SchemaVersion string `json:"schemaVersion"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return ""
+	}
+	return envelope.SchemaVersion
+}
+
+// attachChildObserver is the narrow read-only capability serveAttach uses to
+// authenticate the live child identity. It is intentionally separate from the
+// Mechanics interface so Attach cannot be confused with a command path; only
+// darwinMechanics (and test fixtures) implement it.
+type attachChildObserver interface {
+	attachChildIdentity() (ProcessIdentity, error)
+}
+
+func (mechanics *darwinMechanics) attachChildIdentity() (ProcessIdentity, error) {
+	if mechanics == nil {
+		return ProcessIdentity{}, ErrConflict
+	}
+	mechanics.mu.Lock()
+	defer mechanics.mu.Unlock()
+	if mechanics.command == nil || mechanics.process.validate() != nil || mechanics.closed {
+		return ProcessIdentity{}, ErrConflict
+	}
+	return mechanics.process, nil
+}
+
+// serveAttach handles one read-only Attach frame on an accepted reconnect
+// socket. It never sends a command, never enters the generic command loop, and
+// never mutates session/mechanics state: it only authenticates the live
+// Supervisor against the request authority, emits one observation response,
+// then requires the peer to half-close without sending any command frame. Any
+// identity drift or authenticated-peer transport failure (SetDeadline,
+// writeFrame, SetReadDeadline, EOF) returns ErrConflict so the loop continues
+// without intervening, consistent with reconnect/serveConnection; only
+// control/journal integrity drift returns ErrIntervention to terminate.
+func serveAttach(connection *net.UnixConn, session *Session, boundary sessionControlBoundary, supervisor, observed CoreIdentity, raw []byte) error {
+	if connection == nil || session == nil {
+		return ErrInvalid
+	}
+	var request attachRequest
+	if strictCanonicalDecode(raw, &request) != nil || request.validate() != nil || !sameCoreIdentity(request.Core, observed) {
+		return ErrConflict
+	}
+	before, journalBefore, err := captureAttachControlSnapshot(boundary.directory, boundary.directoryIdentity, boundary.heldFiles)
+	if err != nil || boundary.revalidate(journalBefore) != nil {
+		return ErrIntervention
+	}
+	if validateAttachServerState(session, boundary, supervisor, request, journalBefore) != nil {
+		return ErrConflict
+	}
+	response := attachResponse{
+		SchemaVersion: AttachObservationSchema, ProtocolRevision: ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-attached", RequestDigest: request.RequestDigest,
+		Handshake: handshake(session, supervisor, boundary.socket, boundary.controlFiles, reconnectResolution{}), CurrentAcquisition: request.Authority.CurrentAcquisition,
+		CurrentOwnerBoundFact: request.Authority.CurrentOwnerBoundFact, Child: request.Authority.Child, ChildObservationDigest: request.Authority.ChildObservationDigest,
+		ObserverIdentity: attachObserverIdentityV1, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	response.ResponseDigest, err = response.detachedDigest()
+	if err != nil || response.validate(request, supervisor) != nil {
+		return ErrConflict
+	}
+	if connection.SetDeadline(time.Now().Add(handshakeTimeout)) != nil || writeFrame(connection, response, MaxWireFrameBytes) != nil {
+		return ErrConflict
+	}
+	// Attach owns a deliberately narrow borrowed transport. Until the Core
+	// callback ends, EOF is the only accepted follow-up; entering the generic
+	// command loop here would let a read-only primitive mutate mechanics before
+	// the exact owner/head rebind contract exists.
+	if connection.SetReadDeadline(time.Now().Add(handshakeTimeout)) != nil {
+		return ErrConflict
+	}
+	var unexpected [1]byte
+	if count, readErr := connection.Read(unexpected[:]); count != 0 || !errors.Is(readErr, io.EOF) {
+		return ErrConflict
+	}
+	final, journalFinal, err := captureAttachControlSnapshot(boundary.directory, boundary.directoryIdentity, boundary.heldFiles)
+	if err != nil || final != before {
+		return ErrIntervention
+	}
+	if validateAttachServerState(session, boundary, supervisor, request, journalFinal) != nil {
+		return ErrConflict
+	}
+	return nil
+}
+
+// validateAttachServerState authenticates the live Supervisor session,
+// boundary, peer, and child against the exact previous anchor carried by the
+// request. Every field is re-derived from held state; the request grants none.
+func validateAttachServerState(session *Session, boundary sessionControlBoundary, supervisor CoreIdentity, request attachRequest, journal JournalSnapshot) error {
+	anchor := request.Authority.PreviousSupervisor
+	if session == nil || request.SessionNonce == "" || canonical.DigestBytes([]byte(request.SessionNonce)) != session.nonceDigest ||
+		!sameControlDirectoryObject(request.ControlDirectoryIdentity, boundary.directoryIdentity) || anchor.ControlSocket != boundary.socket || anchor.ControlFiles != boundary.controlFiles ||
+		request.Authority.Supervisor != supervisor.Process || !sameBinaryObject(anchor.FixedBinary, supervisor.Binary) ||
+		request.Core.UID != supervisor.UID || request.Core.GID != supervisor.GID || validateAttachJournalAnchor(journal, anchor) != nil {
+		return ErrConflict
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.state != sessionBound || session.sessionID != anchor.SessionID || session.nonceDigest != anchor.SessionNonceDigest || session.authority != anchor.Authority ||
+		session.ownerEpoch != anchor.OwnerEpoch || session.authorityHead != anchor.CurrentAuthorityHead || session.commandSequence != anchor.CommandSequence ||
+		session.commandHead != anchor.CommandHead || session.lastObservation != request.Authority.ChildObservationDigest {
+		return ErrConflict
+	}
+	observer, ok := session.mechanics.(attachChildObserver)
+	if !ok {
+		return ErrConflict
+	}
+	child, err := observer.attachChildIdentity()
+	if err != nil || child != request.Authority.Child {
+		return ErrConflict
+	}
+	return nil
 }
 
 func emitReconnectHandshake(connection net.Conn, decision reconnectWireDecision, session *Session, supervisor CoreIdentity, socket ControlSocketIdentity, controlFiles SessionControlFiles) error {

@@ -4,6 +4,8 @@ package processsupervisor
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -298,6 +300,182 @@ func Reconnect(ctx context.Context, options ReconnectOptions) (*Client, error) {
 	}
 	succeeded = true
 	return client, nil
+}
+
+type attachControlSnapshot struct {
+	Directory     ControlDirectoryIdentity
+	Socket        ControlSocketIdentity
+	Files         SessionControlFiles
+	NonceSize     int64
+	NonceDigest   string
+	JournalSize   int64
+	JournalDigest string
+}
+
+// WithAttached authenticates an already-live Supervisor without invoking
+// reconnect reconciliation, reissuing authority, rebuilding the child/pipe, or
+// resending any command. The connection and the borrowed AttachedSession
+// exist only inside fn, while OwnerVerifier keeps the exact repository owner
+// acquisition and owner-bound Attempt successor held and current. Attach
+// appends no mechanics journal and changes no owner epoch, authority head,
+// command head, pending request, nonce, socket, or control entry; on failure
+// every control object is byte-for-byte unchanged. Non-Darwin builds fail
+// closed via client_other.go.
+func WithAttached(ctx context.Context, options AttachOptions, fn func(*AttachedSession) error) error {
+	if ctx == nil || options.ControlDirectory == nil || !absoluteClean(options.FixedMarshalPath) ||
+		options.ControlDirectoryIdentity.validate() != nil || options.Authority.validate() != nil || options.OwnerVerifier == nil || fn == nil {
+		return ErrInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return ErrIntervention
+	}
+	deadline := time.Now().Add(handshakeTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	return withAttachOwner(ctx, options.OwnerVerifier, options.Authority, func() error {
+		core, err := ObserveCurrentCore(options.FixedMarshalPath)
+		if err != nil || core.UID != options.Authority.CurrentAcquisition.OwnerUID || core.GID != options.Authority.CurrentAcquisition.OwnerGID ||
+			core.Process != options.Authority.CurrentAcquisition.OwnerProcess || core.Binary != options.Authority.CurrentAcquisition.OwnerBinary ||
+			!sameBinaryObject(core.Binary, options.Authority.PreviousSupervisor.FixedBinary) {
+			return ErrConflict
+		}
+		directory, err := ObserveHeldControlDirectory(options.ControlDirectory)
+		if err != nil || !sameControlDirectoryObject(directory, options.ControlDirectoryIdentity) {
+			return ErrConflict
+		}
+		held, err := openHeldSessionControlFiles(options.ControlDirectory, options.Authority.PreviousSupervisor.ControlFiles)
+		if err != nil {
+			return ErrConflict
+		}
+		defer held.close()
+		before, journal, err := captureAttachControlSnapshot(options.ControlDirectory, directory, held)
+		if err != nil || validateAttachJournalAnchor(journal, options.Authority.PreviousSupervisor) != nil {
+			return ErrConflict
+		}
+		nonce, err := readSessionNonce(held, options.Authority.PreviousSupervisor.SessionNonceDigest)
+		if err != nil {
+			return ErrConflict
+		}
+		request := attachRequest{SchemaVersion: AttachSchema, ProtocolRevision: ProtocolRevision, SessionNonce: nonce, Core: core, ControlDirectoryIdentity: directory, Authority: options.Authority}
+		request.RequestDigest, err = request.detachedDigest()
+		if err != nil || request.validate() != nil {
+			return ErrConflict
+		}
+		address := filepath.Join(directory.CanonicalPath, controlSocket)
+		connection, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: address, Net: "unix"})
+		if err != nil {
+			return ErrIntervention
+		}
+		defer connection.Close()
+		codec, err := NewProtocolCodec(connection)
+		if err != nil {
+			return err
+		}
+		var response attachResponse
+		var peer CoreIdentity
+		err = runBoundedTransport(ctx, connection, deadline, func() error {
+			current, currentJournal, err := captureAttachControlSnapshot(options.ControlDirectory, directory, held)
+			if err != nil || current != before || validateAttachJournalAnchor(currentJournal, options.Authority.PreviousSupervisor) != nil {
+				return ErrConflict
+			}
+			peer, err = ObserveFixedMarshalPeer(connection)
+			if err != nil || !sameBinaryObject(peer.Binary, options.Authority.PreviousSupervisor.FixedBinary) {
+				return ErrConflict
+			}
+			if err := codec.Write(request); err != nil {
+				return ErrIntervention
+			}
+			if err := codec.Read(&response); err != nil || response.validate(request, peer) != nil {
+				return ErrConflict
+			}
+			after, afterJournal, err := captureAttachControlSnapshot(options.ControlDirectory, directory, held)
+			if err != nil || after != before || validateAttachJournalAnchor(afterJournal, options.Authority.PreviousSupervisor) != nil {
+				return ErrConflict
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		observation := AttachObservation{
+			SchemaVersion: AttachObservationSchema, ProtocolRevision: ProtocolRevision, RequestDigest: request.RequestDigest, ResponseDigest: response.ResponseDigest,
+			PreviousSupervisor: options.Authority.PreviousSupervisor, Handshake: response.Handshake, Supervisor: options.Authority.Supervisor, CurrentAcquisition: options.Authority.CurrentAcquisition, CurrentOwnerBoundFact: options.Authority.CurrentOwnerBoundFact,
+			Child: options.Authority.Child, ChildObservationDigest: options.Authority.ChildObservationDigest, ControlDirectory: directory, Peer: peer, ObservedAt: response.ObservedAt,
+		}
+		if observation.validate() != nil {
+			return ErrConflict
+		}
+		borrowErr := callAttachedBorrower(newAttachedSession(observation), fn)
+		afterCallback, callbackJournal, snapshotErr := captureAttachControlSnapshot(options.ControlDirectory, directory, held)
+		if snapshotErr != nil || afterCallback != before || validateAttachJournalAnchor(callbackJournal, options.Authority.PreviousSupervisor) != nil {
+			return ErrConflict
+		}
+		if borrowErr != nil {
+			return borrowErr
+		}
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			return ErrIntervention
+		}
+		// Half-close the write side and require the server to close without any
+		// command-loop frame. This keeps the narrow transport available for a
+		// future exact bind-authority extension while making any current mutation
+		// attempt fail closed.
+		if err := connection.SetDeadline(deadline); err != nil || connection.CloseWrite() != nil {
+			return ErrIntervention
+		}
+		var unexpected [1]byte
+		if count, readErr := connection.Read(unexpected[:]); count != 0 || !errors.Is(readErr, io.EOF) {
+			return ErrConflict
+		}
+		return nil
+	})
+}
+
+func captureAttachControlSnapshot(directory *os.File, identity ControlDirectoryIdentity, held *heldSessionControlFiles) (attachControlSnapshot, JournalSnapshot, error) {
+	if directory == nil || held == nil || identity.validate() != nil {
+		return attachControlSnapshot{}, JournalSnapshot{}, ErrInvalid
+	}
+	observed, err := ObserveHeldControlDirectory(directory)
+	if err != nil || !sameControlDirectoryObject(observed, identity) || revalidateHeldSessionControlFiles(directory, held, held.identity) != nil {
+		return attachControlSnapshot{}, JournalSnapshot{}, ErrConflict
+	}
+	socket, err := ObserveHeldControlSocket(directory)
+	if err != nil {
+		return attachControlSnapshot{}, JournalSnapshot{}, ErrConflict
+	}
+	nonceIdentity, nonceSize, nonceDigest, err := digestHeldControlFile(held.nonce, nonceBytes)
+	if err != nil {
+		return attachControlSnapshot{}, JournalSnapshot{}, err
+	}
+	journalIdentity, journalSize, journalDigest, err := digestHeldControlFile(held.journal, MaxJournalFileBytes)
+	if err != nil {
+		return attachControlSnapshot{}, JournalSnapshot{}, err
+	}
+	if nonceIdentity != held.identity.Nonce || journalIdentity != held.identity.Journal {
+		return attachControlSnapshot{}, JournalSnapshot{}, ErrConflict
+	}
+	journal, err := readHeldJournalSnapshot(held.journal)
+	if err != nil || revalidateControlDirectoryForSnapshot(directory, identity, journal) != nil {
+		return attachControlSnapshot{}, JournalSnapshot{}, ErrConflict
+	}
+	return attachControlSnapshot{Directory: observed, Socket: socket, Files: held.identity, NonceSize: nonceSize, NonceDigest: nonceDigest, JournalSize: journalSize, JournalDigest: journalDigest}, journal, nil
+}
+
+func digestHeldControlFile(file *os.File, limit int) (ControlFileIdentity, int64, string, error) {
+	identity, size, err := observeControlFile(file)
+	if err != nil || size <= 0 || size > int64(limit) {
+		return ControlFileIdentity{}, 0, "", ErrConflict
+	}
+	data, err := io.ReadAll(io.NewSectionReader(file, 0, size))
+	if err != nil || int64(len(data)) != size {
+		return ControlFileIdentity{}, 0, "", ErrIntervention
+	}
+	after, afterSize, err := observeControlFile(file)
+	if err != nil || after != identity || afterSize != size {
+		return ControlFileIdentity{}, 0, "", ErrConflict
+	}
+	return identity, size, canonical.DigestBytes(data), nil
 }
 
 func revalidateHeldRuntimeControlBoundary(directory *os.File, identity ControlDirectoryIdentity, held *heldSessionControlFiles, anchor HandshakeAnchor) error {

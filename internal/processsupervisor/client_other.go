@@ -26,3 +26,10 @@ func Start(context.Context, StartOptions) (*Client, error) {
 func Reconnect(context.Context, ReconnectOptions) (*Client, error) {
 	return nil, ErrUnavailable
 }
+
+// WithAttached fails closed on non-Darwin: the read-only Attach primitive is a
+// Darwin ordinary-user contract only and must never provide authority on
+// another platform or hardened profile.
+func WithAttached(context.Context, AttachOptions, func(*AttachedSession) error) error {
+	return ErrUnavailable
+}
