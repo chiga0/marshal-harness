@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -91,9 +92,7 @@ func Start(ctx context.Context, options StartOptions) (*Client, error) {
 		_ = childFile.Close()
 		return nil, ErrUnavailable
 	}
-	command := exec.Command(options.FixedMarshalPath, "internal", "process-supervisor")
-	command.Env = []string{}
-	command.ExtraFiles = []*os.File{childFile, options.ControlDirectory}
+	command := newSupervisorCommand(options.FixedMarshalPath, childFile, options.ControlDirectory)
 	if err := command.Start(); err != nil {
 		_ = connection.Close()
 		_ = childFile.Close()
@@ -174,6 +173,19 @@ func Start(ctx context.Context, options StartOptions) (*Client, error) {
 	// connection. Disconnect closes only connection; this goroutine never kills.
 	go func() { _ = command.Wait() }()
 	return client, nil
+}
+
+// newSupervisorCommand detaches the long-lived fixed-image Supervisor from
+// the invoking CLI's terminal session. Without a new session, closing a PTY
+// after `task run` can deliver SIGHUP to both Supervisor and Worker, making
+// the next fixed CLI unable to attach even though RUNNING was committed.
+// Empty env and inherited descriptor positions remain unchanged.
+func newSupervisorCommand(fixedMarshalPath string, bootstrap, controlDirectory *os.File) *exec.Cmd {
+	command := exec.Command(fixedMarshalPath, "internal", "process-supervisor")
+	command.Env = []string{}
+	command.ExtraFiles = []*os.File{bootstrap, controlDirectory}
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return command
 }
 
 // Reconnect uses only caller-supplied durable anchors and the held directory.
