@@ -105,7 +105,12 @@ dist-rc1:
 	@out="$(DIST_DIR)/marshal_$(VERSION)_darwin_arm64"; \
 	echo "[dist-rc1] darwin/arm64 (darwin-local-dogfood) -> $$out"; \
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
-		$(GO) build $(GO_BUILD_FLAGS) -ldflags "$(RC1_LDFLAGS)" -o "$$out" ./cmd/marshal
+		$(GO) build $(GO_BUILD_FLAGS) -ldflags "$(RC1_LDFLAGS)" -o "$$out" ./cmd/marshal; \
+	[ -x /usr/bin/codesign ] || { \
+		echo "[dist-rc1] 错误: 缺少固定 /usr/bin/codesign，无法冻结 Darwin candidate 身份" >&2; exit 1; \
+	}; \
+	/usr/bin/codesign --force --sign - --identifier dev.marshal.cli --timestamp=none "$$out"; \
+	/usr/bin/codesign --verify --strict --verbose=2 "$$out"
 	@GO_BIN="$$($(GO) env GOROOT)/bin/go" bash scripts/release-contract.sh create-rc1-manifest \
 		"$(DIST_DIR)" "v$(VERSION)" "$(COMMIT)" "$(BUILD_DATE)" "$$($(GO) env GOVERSION)"
 	@set -e; cd "$(DIST_DIR)"; \
