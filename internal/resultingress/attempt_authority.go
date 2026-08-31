@@ -424,19 +424,28 @@ type AttemptAuthorityState struct {
 	// PendingEffect* is the durable exclusion barrier established by an
 	// effect-intent fact. It is cleared only by the matching reconcile fact;
 	// receipt alone remains an observation and cannot unlock the Attempt.
-	PendingEffectID                  string                         `json:"pendingEffectId,omitempty"`
-	PendingEffectIntentFactDigest    string                         `json:"pendingEffectIntentFactDigest,omitempty"`
-	PendingEffectRecordDigest        string                         `json:"pendingEffectRecordDigest,omitempty"`
-	PendingEffectMarkerDigest        string                         `json:"pendingEffectMarkerDigest,omitempty"`
-	PendingEffectPhase               EffectPhase                    `json:"pendingEffectPhase,omitempty"`
-	AllocationProvisionEffectDigest  string                         `json:"allocationProvisionEffectDigest,omitempty"`
-	AllocationProvisionReceiptDigest string                         `json:"allocationProvisionReceiptDigest,omitempty"`
-	AllocationTerminateEffectDigest  string                         `json:"allocationTerminateEffectDigest,omitempty"`
-	AllocationTerminateReceiptDigest string                         `json:"allocationTerminateReceiptDigest,omitempty"`
-	EffectInterventionDigest         string                         `json:"effectInterventionDigest,omitempty"`
-	LaunchClosure                    launchidentity.StoredClosureV1 `json:"launchClosure,omitempty"`
-	LaunchMaterialsDigest            string                         `json:"launchMaterialsDigest,omitempty"`
-	AgentLaunchSpecDigest            string                         `json:"agentLaunchSpecDigest,omitempty"`
+	PendingEffectID                  string      `json:"pendingEffectId,omitempty"`
+	PendingEffectIntentFactDigest    string      `json:"pendingEffectIntentFactDigest,omitempty"`
+	PendingEffectRecordDigest        string      `json:"pendingEffectRecordDigest,omitempty"`
+	PendingEffectMarkerDigest        string      `json:"pendingEffectMarkerDigest,omitempty"`
+	PendingEffectPhase               EffectPhase `json:"pendingEffectPhase,omitempty"`
+	AllocationProvisionEffectDigest  string      `json:"allocationProvisionEffectDigest,omitempty"`
+	AllocationProvisionReceiptDigest string      `json:"allocationProvisionReceiptDigest,omitempty"`
+	// ExistingWorktreeBindReceiptFactDigest/ReceiptDigest record the exact
+	// existing-worktree-binding/v1 bind receipt that satisfies allocation
+	// authority for path B. They are mutually exclusive with the AllocationProvision
+	// pair above and are cleared only by a release-intent/release-receipt chain.
+	ExistingWorktreeBindIntentFactDigest     string                         `json:"existingWorktreeBindIntentFactDigest,omitempty"`
+	ExistingWorktreeBindReceiptFactDigest    string                         `json:"existingWorktreeBindReceiptFactDigest,omitempty"`
+	ExistingWorktreeBindReceiptDigest        string                         `json:"existingWorktreeBindReceiptDigest,omitempty"`
+	ExistingWorktreeReleaseIntentFactDigest  string                         `json:"existingWorktreeReleaseIntentFactDigest,omitempty"`
+	ExistingWorktreeReleaseReceiptFactDigest string                         `json:"existingWorktreeReleaseReceiptFactDigest,omitempty"`
+	AllocationTerminateEffectDigest          string                         `json:"allocationTerminateEffectDigest,omitempty"`
+	AllocationTerminateReceiptDigest         string                         `json:"allocationTerminateReceiptDigest,omitempty"`
+	EffectInterventionDigest                 string                         `json:"effectInterventionDigest,omitempty"`
+	LaunchClosure                            launchidentity.StoredClosureV1 `json:"launchClosure,omitempty"`
+	LaunchMaterialsDigest                    string                         `json:"launchMaterialsDigest,omitempty"`
+	AgentLaunchSpecDigest                    string                         `json:"agentLaunchSpecDigest,omitempty"`
 }
 
 // AttemptAppendResult distinguishes a fresh authority append from an exact
@@ -635,7 +644,25 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionLaunchAuthorized:
-		if prior.LaunchState != LaunchNotAuthorized || prior.BarrierDigest != "" || prior.AllocationProvisionEffectDigest == "" || prior.AllocationProvisionReceiptDigest == "" {
+		if prior.LaunchState != LaunchNotAuthorized || prior.BarrierDigest != "" {
+			return ErrAttemptAuthorityOrder
+		}
+		// Allocation authority is satisfied by exactly one of:
+		// A) legacy/provider AllocationProvision applied receipt (effect
+		//    reconcile accepted), or
+		// B) existing-worktree-binding/v1 bind receipt (current, same
+		//    Attempt/reservation, unreleased).
+		// Never both; never neither. Unknown/mixed/incomplete/released/ABA
+		// chains fail closed.
+		provisionComplete := prior.AllocationProvisionEffectDigest != "" && prior.AllocationProvisionReceiptDigest != ""
+		provisionEmpty := prior.AllocationProvisionEffectDigest == "" && prior.AllocationProvisionReceiptDigest == ""
+		worktreeComplete := prior.ExistingWorktreeBindIntentFactDigest != "" && prior.ExistingWorktreeBindReceiptFactDigest != "" && prior.ExistingWorktreeBindReceiptDigest != ""
+		worktreeEmpty := prior.ExistingWorktreeBindIntentFactDigest == "" && prior.ExistingWorktreeBindReceiptFactDigest == "" && prior.ExistingWorktreeBindReceiptDigest == ""
+		worktreeReleased := prior.ExistingWorktreeReleaseIntentFactDigest != "" || prior.ExistingWorktreeReleaseReceiptFactDigest != ""
+		if !(provisionComplete && worktreeEmpty) && !(worktreeComplete && provisionEmpty) {
+			return ErrAttemptAuthorityOrder
+		}
+		if worktreeComplete && (worktreeReleased || prior.ReservationFactDigest == "") {
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionSupervisorBootstrap:

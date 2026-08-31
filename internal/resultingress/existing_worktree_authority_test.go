@@ -17,21 +17,18 @@ func TestExistingWorktreeFactsAdvanceSameAttemptLedgerAndRecoverSameBytes(t *tes
 		t.Fatal(err)
 	}
 	id := attemptTestIdentity()
-	opened, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
-	if err != nil {
-		t.Fatal(err)
-	}
-	request, observation := existingWorktreeAuthorityTestBind(t, id, opened.State)
+	_, _, opened := existingWorktreeBridgeFixture(t, store, id)
+	request, observation := existingWorktreeAuthorityTestBind(t, id, opened)
 	bindingDigest, err := request.Binding.Digest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	intent := allocationcontrol.ExistingWorktreeBindIntentV1{Request: request, Observation: observation, BindingDigest: bindingDigest, PredecessorRB1HeadDigest: opened.State.HeadDigest}
+	intent := allocationcontrol.ExistingWorktreeBindIntentV1{Request: request, Observation: observation, BindingDigest: bindingDigest, PredecessorRB1HeadDigest: opened.HeadDigest}
 	if err := intent.Seal(); err != nil {
 		t.Fatal(err)
 	}
 	intentSnapshot, err := store.appendExistingWorktreeFact(id, allocationcontrol.ExistingWorktreeFactBindIntent, intent)
-	if err != nil || intentSnapshot.CurrentAttemptRevision != opened.State.Revision+1 || intentSnapshot.CurrentAttemptHeadDigest == opened.State.HeadDigest || len(intentSnapshot.Facts) != 1 {
+	if err != nil || intentSnapshot.CurrentAttemptRevision != opened.Revision+1 || intentSnapshot.CurrentAttemptHeadDigest == opened.HeadDigest || len(intentSnapshot.Facts) != 1 {
 		t.Fatalf("bind intent snapshot=%+v err=%v", intentSnapshot, err)
 	}
 	receipt := allocationcontrol.ExistingWorktreeBindReceiptV1{
@@ -45,11 +42,11 @@ func TestExistingWorktreeFactsAdvanceSameAttemptLedgerAndRecoverSameBytes(t *tes
 		t.Fatalf("seal receipt: %v", err)
 	}
 	receiptSnapshot, err := store.appendExistingWorktreeFact(id, allocationcontrol.ExistingWorktreeFactBindReceipt, receipt)
-	if err != nil || receiptSnapshot.CurrentAttemptRevision != opened.State.Revision+2 || len(receiptSnapshot.Facts) != 2 {
+	if err != nil || receiptSnapshot.CurrentAttemptRevision != opened.Revision+2 || len(receiptSnapshot.Facts) != 2 {
 		t.Fatalf("bind receipt snapshot=%+v err=%v", receiptSnapshot, err)
 	}
 	current, found, err := store.AttemptState(id)
-	if err != nil || !found || current.Revision != receiptSnapshot.CurrentAttemptRevision || current.HeadDigest != receiptSnapshot.CurrentAttemptHeadDigest || current.OpenedDigest != opened.State.OpenedDigest {
+	if err != nil || !found || current.Revision != receiptSnapshot.CurrentAttemptRevision || current.HeadDigest != receiptSnapshot.CurrentAttemptHeadDigest || current.OpenedDigest != opened.OpenedDigest {
 		t.Fatalf("shared attempt current=%+v found=%v err=%v", current, found, err)
 	}
 	ledgerBefore, err := os.ReadFile(store.ledgerPath())
@@ -121,7 +118,7 @@ func existingWorktreeAuthorityTestBind(t *testing.T, id AttemptIdentity, opened 
 	}
 	binding := allocationcontrol.ExistingWorktreeBindingV1{
 		AuthorityNamespaceID: namespace, RepositoryOwnerDigest: attemptTestDigest("repository-owner"), TaskID: id.TaskID, RunID: id.RunID, AttemptID: id.AttemptID,
-		ReservationFactDigest: attemptTestDigest("reservation"), AttemptOpenedFactDigest: opened.OpenedDigest, AllocationID: id.AllocationID, LeaseID: id.LeaseID,
+		ReservationFactDigest: opened.ReservationFactDigest, AttemptOpenedFactDigest: opened.OpenedDigest, AllocationID: id.AllocationID, LeaseID: id.LeaseID,
 		Generation: id.DispatchGeneration, FencingTokenDigest: id.FencingTokenDigest, FrozenInputsDigest: attemptTestDigest("frozen-inputs"), ExpectedAttemptSequence: opened.Revision,
 	}
 	request := allocationcontrol.ExistingWorktreeBindRequestV1{Binding: binding, WorktreePath: "/private/tmp/marshal-existing-worktree-test", ExpectedWorktreeIdentity: directory, ExpectedBaseSHA: observation.Git.HeadSHA, RunDirectoryIdentity: existingWorktreeAuthorityTestObject("30", allocationcontrol.ObjectTypeDirectory, 0o040700, 2, 0), RunAuthorityHeadDigest: id.RunAuthorityDigest}

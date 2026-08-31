@@ -278,7 +278,16 @@ func (s *DurableStore) findExistingWorktreeAttempt(binding allocationcontrol.Exi
 
 func existingWorktreeBindingMatchesAttempt(binding allocationcontrol.ExistingWorktreeBindingV1, attempt AttemptAuthorityState) bool {
 	namespaceDigest, err := attempt.Identity.AuthorityNamespaceID.Digest()
-	return err == nil && binding.Validate() == nil && binding.AuthorityNamespaceID == namespaceDigest && binding.TaskID == attempt.Identity.TaskID && binding.RunID == attempt.Identity.RunID && binding.AttemptID == attempt.Identity.AttemptID && binding.AllocationID == attempt.Identity.AllocationID && binding.LeaseID == attempt.Identity.LeaseID && binding.Generation == attempt.Identity.DispatchGeneration && binding.FencingTokenDigest == attempt.Identity.FencingTokenDigest && binding.AttemptOpenedFactDigest == attempt.OpenedDigest
+	if err != nil || binding.Validate() != nil || binding.AuthorityNamespaceID != namespaceDigest || binding.TaskID != attempt.Identity.TaskID || binding.RunID != attempt.Identity.RunID || binding.AttemptID != attempt.Identity.AttemptID || binding.AllocationID != attempt.Identity.AllocationID || binding.LeaseID != attempt.Identity.LeaseID || binding.Generation != attempt.Identity.DispatchGeneration || binding.FencingTokenDigest != attempt.Identity.FencingTokenDigest || binding.AttemptOpenedFactDigest != attempt.OpenedDigest {
+		return false
+	}
+	// Fresh existing-worktree authority is defined only for the v2
+	// reservation-bound producer. Legacy v1 Attempt facts remain replay-only;
+	// no new bind/release fact may be appended to them.
+	if attempt.ReservationFactDigest == "" || binding.ReservationFactDigest != attempt.ReservationFactDigest {
+		return false
+	}
+	return true
 }
 
 func (s *DurableStore) loadExistingWorktreeSnapshot(identity AttemptIdentity) (allocationcontrol.ExistingWorktreeAuthoritySnapshotV1, error) {
@@ -320,14 +329,34 @@ func (s *DurableStore) appendExistingWorktreeFact(identity AttemptIdentity, kind
 			return ErrAttemptAuthorityUnknown
 		}
 		predecessor, binding, err := existingWorktreePayloadAuthority(kind, raw)
-		if err != nil || predecessor != attempt.HeadDigest || !existingWorktreeBindingMatchesAttempt(binding, attempt) {
+		if err != nil {
+			return ErrExistingWorktreeAuthorityConflict
+		}
+		// Exact replay: if the current Attempt head is already an existing-
+		// worktree fact with the same kind and canonical payload, the same
+		// canonical request was already durable. Return the existing snapshot
+		// without appending a duplicate line. This closes the response-loss
+		// window for RB1 bind/release facts (same canonical request returns the
+		// same receipt; different bytes conflict below).
+		payloadDigest := canonical.DigestBytes(raw)
+		for _, existing := range projection.existingWorktreeFacts {
+			if existing.AttemptKey != key || existing.AttemptFactDigest != attempt.HeadDigest {
+				continue
+			}
+			if existing.Kind == kind && existing.PayloadDigest == payloadDigest {
+				snapshot = existingWorktreeSnapshot(projection, attempt)
+				return snapshot.Validate()
+			}
+			break
+		}
+		if predecessor != attempt.HeadDigest || !existingWorktreeBindingMatchesAttempt(binding, attempt) {
 			return ErrExistingWorktreeAuthorityConflict
 		}
 		factType, err := existingWorktreeFactType(kind)
 		if err != nil {
 			return err
 		}
-		fact := &existingWorktreeAuthorityFact{ProtocolRevision: existingWorktreeAuthorityProtocolRevision, FactType: factType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: attempt.Revision + 1, PreviousAttemptHead: attempt.HeadDigest, Kind: kind, Payload: raw, PayloadDigest: canonical.DigestBytes(raw)}
+		fact := &existingWorktreeAuthorityFact{ProtocolRevision: existingWorktreeAuthorityProtocolRevision, FactType: factType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: attempt.Revision + 1, PreviousAttemptHead: attempt.HeadDigest, Kind: kind, Payload: raw, PayloadDigest: payloadDigest}
 		preflight, err := canonicalDigest(fact)
 		if err != nil {
 			return err
@@ -463,6 +492,25 @@ func applyExistingWorktreeFactValue(fact existingWorktreeAuthorityFact, in *Ingr
 	}
 	attempt := in.attempts[fact.AttemptKey]
 	in.existingWorktreeFacts = append(in.existingWorktreeFacts, allocationcontrol.ExistingWorktreeAttemptFactV1{AttemptKey: fact.AttemptKey, AttemptRevision: fact.AttemptRevision, Kind: fact.Kind, PreviousAttemptHeadDigest: fact.PreviousAttemptHead, Payload: append(json.RawMessage(nil), fact.Payload...), PayloadDigest: fact.PayloadDigest, AttemptFactDigest: fact.Digest})
+	// Project the exact bind/release receipt fact/digest onto the shared
+	// Attempt authority so launch-authorized and PreparedExecution can bind and
+	// revalidate the exact existing-worktree receipt without requiring an
+	// AllocationProvision effect reconcile.
+	switch fact.Kind {
+	case allocationcontrol.ExistingWorktreeFactBindIntent:
+		attempt.ExistingWorktreeBindIntentFactDigest = fact.Digest
+	case allocationcontrol.ExistingWorktreeFactBindReceipt:
+		var receipt allocationcontrol.ExistingWorktreeBindReceiptV1
+		if strictExistingWorktreeDecode(fact.Payload, &receipt) != nil {
+			return ErrExistingWorktreeAuthorityConflict
+		}
+		attempt.ExistingWorktreeBindReceiptFactDigest = fact.Digest
+		attempt.ExistingWorktreeBindReceiptDigest = receipt.ReceiptDigest
+	case allocationcontrol.ExistingWorktreeFactReleaseIntent:
+		attempt.ExistingWorktreeReleaseIntentFactDigest = fact.Digest
+	case allocationcontrol.ExistingWorktreeFactReleaseReceipt:
+		attempt.ExistingWorktreeReleaseReceiptFactDigest = fact.Digest
+	}
 	attempt.Revision, attempt.HeadDigest = fact.AttemptRevision, fact.Digest
 	in.attempts[fact.AttemptKey] = attempt
 	return nil
@@ -480,6 +528,18 @@ func validateExistingWorktreeFact(fact existingWorktreeAuthorityFact, in *Ingres
 	predecessor, binding, err := existingWorktreePayloadAuthority(fact.Kind, fact.Payload)
 	if err != nil || predecessor != fact.PreviousAttemptHead || !existingWorktreeBindingMatchesAttempt(binding, attempt) {
 		return ErrExistingWorktreeAuthorityConflict
+	}
+	// Path B (existing-worktree bind) is mutually exclusive with path A
+	// (legacy/provider AllocationProvision). A bind-intent or bind-receipt may
+	// not be admitted to an Attempt that already carries an AllocationProvision
+	// applied receipt; the reverse guard lives in validateIntentPhase.
+	if fact.Kind == allocationcontrol.ExistingWorktreeFactBindIntent || fact.Kind == allocationcontrol.ExistingWorktreeFactBindReceipt {
+		if attempt.AllocationProvisionEffectDigest != "" || attempt.AllocationProvisionReceiptDigest != "" {
+			return ErrExistingWorktreeAuthorityConflict
+		}
+		if fact.Kind == allocationcontrol.ExistingWorktreeFactBindReceipt && attempt.ExistingWorktreeBindIntentFactDigest == "" {
+			return ErrExistingWorktreeAuthorityConflict
+		}
 	}
 	projected := allocationcontrol.ExistingWorktreeAttemptFactV1{AttemptKey: fact.AttemptKey, AttemptRevision: fact.AttemptRevision, Kind: fact.Kind, PreviousAttemptHeadDigest: fact.PreviousAttemptHead, Payload: fact.Payload, PayloadDigest: fact.PayloadDigest, AttemptFactDigest: fact.Digest}
 	candidate := allocationcontrol.ExistingWorktreeAuthoritySnapshotV1{CurrentAttemptRevision: fact.AttemptRevision, CurrentAttemptHeadDigest: fact.Digest, Facts: append(append([]allocationcontrol.ExistingWorktreeAttemptFactV1(nil), in.existingWorktreeFacts...), projected)}
