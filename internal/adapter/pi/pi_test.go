@@ -97,7 +97,6 @@ func TestPrepareTerminalVersionMatrix(t *testing.T) {
 		{version: "0.84.1", supported: true},
 		{version: "0.84.4", supported: true},
 		{version: "0.84.2", supported: false},
-		{version: "0.84.4", supported: false},
 	} {
 		t.Run(test.version, func(t *testing.T) {
 			marker := filepath.Join(t.TempDir(), "worker-launched")
@@ -141,7 +140,6 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 		{"0.83.0", "unsupported"},
 		{"0.84.0", "unsupported"},
 		{"0.84.2", "unsupported"},
-		{"0.84.4", "unsupported"},
 		{"0.85.0", "unsupported"},
 		{"unknown", "unsupported"},
 	} {
@@ -748,7 +746,7 @@ func TestRunRejectsPersistAndResumeBeforeWorkerLaunch(t *testing.T) {
 }
 
 func TestRunRejectsUnsupportedVersionBeforeWorkerLaunch(t *testing.T) {
-	for _, version := range []string{"0.83.0", "0.84.0", "0.84.2", "0.84.4", "0.85.0", "unknown"} {
+	for _, version := range []string{"0.83.0", "0.84.0", "0.84.2", "0.85.0", "unknown"} {
 		t.Run(version, func(t *testing.T) {
 			marker := filepath.Join(t.TempDir(), "launched")
 			fixture := newRunFixture(t, version, "touch "+shellQuote(marker))
