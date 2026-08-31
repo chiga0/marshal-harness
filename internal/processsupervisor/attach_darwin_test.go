@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -32,6 +33,14 @@ func (mechanics *attachFixtureMechanics) attachChildIdentity() (ProcessIdentity,
 		return ProcessIdentity{}, ErrConflict
 	}
 	return mechanics.child, nil
+}
+
+type rejectingInspectAttachMechanics struct {
+	attachFixtureMechanics
+}
+
+func (*rejectingInspectAttachMechanics) Inspect(context.Context, CleanupPayload) (MechanicsResult, error) {
+	return MechanicsResult{}, ErrConflict
 }
 
 // TestWithAttachedRejectsInvalidOptions covers the client entry-point
@@ -497,4 +506,146 @@ func TestDarwinAttachSurvivesPeerEarlyCloseAndAcceptsNextConnection(t *testing.T
 	// fresh successful Attach probes.
 	attachWithRetry(t, harness, request, harness.bootstrap.Core, 4*time.Second)
 	attachWithRetry(t, harness, request, harness.bootstrap.Core, 4*time.Second)
+}
+
+// TestDarwinAttachInspectAuthorityAdvanceKeepsSupervisorServing reproduces the
+// production terminalization boundary: an authenticated Inspect can carry a
+// newer durable Attempt head than the owner-bound mechanics anchor. The
+// Supervisor must commit that exact head and remain available for the following
+// Close Attach instead of treating the legitimate advance as intervention.
+func TestDarwinAttachInspectAuthorityAdvanceKeepsSupervisorServing(t *testing.T) {
+	child := ProcessIdentity{PID: 300, BirthSeconds: 3, BirthMicroseconds: 4, SessionID: 299, ProcessGroupID: 299}
+	startedFact := digest("started")
+	lastObservation := digest("last-observation")
+	harness := newSupervisorLoopHarness(t, supervisorLoopOptions{
+		mechanics: &attachFixtureMechanics{child: child},
+		configureSession: func(session *Session) {
+			session.state = sessionBound
+			session.startedFact = startedFact
+			session.lastObservation = lastObservation
+		},
+	})
+	request := newAttachRequest(t, harness, child, lastObservation)
+	connection := harness.beginReconnect(t)
+	if err := connection.SetDeadline(time.Now().Add(4 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	codec, err := NewProtocolCodec(connection)
+	if err != nil || codec.Write(request) != nil {
+		t.Fatalf("attach write: %v", err)
+	}
+	var observation attachResponse
+	if err := codec.Read(&observation); err != nil || observation.validate(request, harness.bootstrap.Core) != nil {
+		t.Fatalf("attach response=%+v err=%v", observation, err)
+	}
+
+	inspectAuthorityHead := digest("terminalization-barrier")
+	cleanup := CleanupPayload{
+		TerminalizationBarrierDigest: inspectAuthorityHead,
+		TerminalizationID:            "terminalization-1",
+		TerminalGeneration:           2,
+		CleanupBindingDigest:         digest("cleanup-binding"),
+		ProcessStartedFactDigest:     startedFact,
+		LastObservationDigest:        lastObservation,
+	}
+	inspect := commandRequest(t, harness.bootstrap.SessionID, CommandInspect, "inspect-authority-advance", 1, CommandGenesisDigest, inspectAuthorityHead, time.Now().Add(20*time.Second), cleanup)
+	if err := codec.Write(inspect); err != nil {
+		t.Fatal(err)
+	}
+	var inspected Response
+	if err := codec.Read(&inspected); err != nil || inspected.Status != "ok" || inspected.Command != CommandInspect {
+		t.Fatalf("inspect response=%+v err=%v", inspected, err)
+	}
+	if err := connection.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if unexpected, err := io.ReadAll(connection); err != nil || len(unexpected) != 0 {
+		t.Fatalf("inspect attach close: bytes=%x err=%v", unexpected, err)
+	}
+	_ = connection.Close()
+
+	// Rebuild the exact live anchor after Inspect and prove a second Attach is
+	// accepted. Before the regression fix, serveAttach returned ErrIntervention
+	// after the successful Inspect response and this retry could never connect.
+	commandSequence, commandHead, journalSequence, journalHead := harness.session.Snapshot()
+	next := request
+	next.Authority.PreviousSupervisor.CurrentAuthorityHead = inspectAuthorityHead
+	next.Authority.PreviousSupervisor.CommandSequence = commandSequence
+	next.Authority.PreviousSupervisor.CommandHead = commandHead
+	next.Authority.PreviousSupervisor.JournalSequence = journalSequence
+	next.Authority.PreviousSupervisor.JournalHead = journalHead
+	next.Authority.ChildObservationDigest = inspected.ObservationDigest
+	next.RequestDigest, err = next.detachedDigest()
+	if err != nil || next.validate() != nil {
+		t.Fatalf("next attach request: %v", err)
+	}
+	attachWithRetry(t, harness, next, harness.bootstrap.Core, 4*time.Second)
+}
+
+// TestDarwinAttachRejectedInspectRetainsAuthorityAndKeepsSupervisorServing
+// proves a mechanics-level rejection still commits its durable receipt without
+// advancing authority, and remains a recoverable command outcome rather than a
+// terminal Supervisor intervention.
+func TestDarwinAttachRejectedInspectRetainsAuthorityAndKeepsSupervisorServing(t *testing.T) {
+	child := ProcessIdentity{PID: 300, BirthSeconds: 3, BirthMicroseconds: 4, SessionID: 299, ProcessGroupID: 299}
+	startedFact := digest("started")
+	lastObservation := digest("last-observation")
+	mechanics := &rejectingInspectAttachMechanics{attachFixtureMechanics: attachFixtureMechanics{child: child}}
+	harness := newSupervisorLoopHarness(t, supervisorLoopOptions{
+		mechanics: mechanics,
+		configureSession: func(session *Session) {
+			session.state = sessionBound
+			session.startedFact = startedFact
+			session.lastObservation = lastObservation
+		},
+	})
+	request := newAttachRequest(t, harness, child, lastObservation)
+	connection := harness.beginReconnect(t)
+	if err := connection.SetDeadline(time.Now().Add(4 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	codec, err := NewProtocolCodec(connection)
+	if err != nil || codec.Write(request) != nil {
+		t.Fatalf("attach write: %v", err)
+	}
+	var observation attachResponse
+	if err := codec.Read(&observation); err != nil || observation.validate(request, harness.bootstrap.Core) != nil {
+		t.Fatalf("attach response=%+v err=%v", observation, err)
+	}
+
+	cleanup := CleanupPayload{
+		TerminalizationBarrierDigest: digest("terminalization-barrier"),
+		TerminalizationID:            "terminalization-1",
+		TerminalGeneration:           2,
+		CleanupBindingDigest:         digest("cleanup-binding"),
+		ProcessStartedFactDigest:     startedFact,
+		LastObservationDigest:        lastObservation,
+	}
+	inspect := commandRequest(t, harness.bootstrap.SessionID, CommandInspect, "inspect-rejected", 1, CommandGenesisDigest, digest("new-attempt-head"), time.Now().Add(20*time.Second), cleanup)
+	if err := codec.Write(inspect); err != nil {
+		t.Fatal(err)
+	}
+	var inspected Response
+	if err := codec.Read(&inspected); err != nil || inspected.Status != "rejected" || inspected.Command != CommandInspect {
+		t.Fatalf("inspect response=%+v err=%v", inspected, err)
+	}
+	if err := connection.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if unexpected, err := io.ReadAll(connection); err != nil || len(unexpected) != 0 {
+		t.Fatalf("rejected inspect attach close: bytes=%x err=%v", unexpected, err)
+	}
+	_ = connection.Close()
+
+	commandSequence, commandHead, journalSequence, journalHead := harness.session.Snapshot()
+	next := request
+	next.Authority.PreviousSupervisor.CommandSequence = commandSequence
+	next.Authority.PreviousSupervisor.CommandHead = commandHead
+	next.Authority.PreviousSupervisor.JournalSequence = journalSequence
+	next.Authority.PreviousSupervisor.JournalHead = journalHead
+	next.RequestDigest, err = next.detachedDigest()
+	if err != nil || next.validate() != nil {
+		t.Fatalf("next attach request: %v", err)
+	}
+	attachWithRetry(t, harness, next, harness.bootstrap.Core, 4*time.Second)
 }

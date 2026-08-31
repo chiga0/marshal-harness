@@ -501,17 +501,32 @@ func serveAttach(connection *net.UnixConn, reader *bufio.Reader, session *Sessio
 	if journalFinal.pending != nil || journalFinal.Sequence != journalBefore.Sequence+2 {
 		return ErrIntervention
 	}
-	switch continuation.Command {
-	case CommandBindAuthority:
-		if journalFinal.currentAuthorityHead == journalBefore.currentAuthorityHead {
-			return ErrIntervention
+	expectedAuthorityHead := journalBefore.currentAuthorityHead
+	if continuationResponse.Status == "ok" {
+		switch continuation.Command {
+		case CommandBindAuthority:
+			var payload BindAuthorityPayload
+			if strictCanonicalDecode(continuation.Payload, &payload) != nil {
+				return ErrIntervention
+			}
+			expectedAuthorityHead = payload.AuthorityHead
+		case CommandCollect, CommandInspect, CommandClose:
+			// Every successful non-bind command advances the live mechanics
+			// authority to the exact current Attempt head carried by that
+			// command. Collect often reuses the already-bound head, while
+			// terminal Inspect and Close deliberately carry later durable
+			// lifecycle heads.
+			expectedAuthorityHead = continuation.CurrentAuthorityHead
+		default:
+			return ErrConflict
 		}
-	case CommandCollect, CommandInspect, CommandClose:
-		if journalFinal.currentAuthorityHead != journalBefore.currentAuthorityHead {
-			return ErrIntervention
-		}
-	default:
-		return ErrConflict
+	}
+	// A durable rejected command retains the prior mechanics authority. A
+	// successful command must match its exact authenticated successor; either
+	// mismatch means the receipt and live session disagree and requires
+	// intervention.
+	if journalFinal.currentAuthorityHead != expectedAuthorityHead {
+		return ErrIntervention
 	}
 	return nil
 }
