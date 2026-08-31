@@ -31,6 +31,15 @@ expect_fail() {
   fi
 }
 
+expect_gate_fail() {
+  local description="$1"
+  shift
+  expect_fail "$description" "$@"
+  if grep -Fq 'unbound variable' "${TMP_ROOT}/last.err"; then
+    fail "${description}：失败路径触发了 shell 未绑定变量，而不是预期门禁"
+  fi
+}
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -485,7 +494,7 @@ run_driver run --run-id "$REMOTE_REF_DRIFT_RUN" --expected-head "$EXPECTED_HEAD"
 REMOTE_REF_DRIFT_DECISION="$(make_accept_decision "$REMOTE_REF_DRIFT_RUN")"
 REMOTE_REF_DRIFT_COMMIT="$(printf 'fixture remote ref drift\n' | "/usr/bin/git" -C "$FIXTURE_ROOT" commit-tree "${EXPECTED_HEAD}^{tree}" -p "$EXPECTED_HEAD")"
 "/usr/bin/git" -C "$FIXTURE_ROOT" update-ref refs/remotes/origin/main "$REMOTE_REF_DRIFT_COMMIT"
-expect_fail 'origin/main ref 漂移' run_driver finalize --run-id "$REMOTE_REF_DRIFT_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --decision "$REMOTE_REF_DRIFT_DECISION"
+expect_gate_fail 'origin/main ref 漂移' run_driver finalize --run-id "$REMOTE_REF_DRIFT_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --decision "$REMOTE_REF_DRIFT_DECISION"
 [ "$(cat "${FAKE_STATE}/${REMOTE_REF_DRIFT_RUN}.state")" = REVIEW_PENDING ] || fail 'origin/main 漂移产生了状态副作用'
 "/usr/bin/git" -C "$FIXTURE_ROOT" update-ref refs/remotes/origin/main "$EXPECTED_HEAD"
 
