@@ -23,9 +23,10 @@ import (
 )
 
 var (
-	ErrConflict      = errors.New("run store conflict")
-	ErrLeaseHeld     = errors.New("run lease already held")
-	ErrTruncatedTail = errors.New("journal has a truncated final record")
+	ErrConflict               = errors.New("run store conflict")
+	ErrLeaseHeld              = errors.New("run lease already held")
+	ErrTruncatedTail          = errors.New("journal has a truncated final record")
+	ErrDescriptorBoundPathAPI = errors.New("descriptor-bound run store requires a held lease")
 	// errLegacyLeaseOwner marks the pre-descriptor lease owner format. It is
 	// recoverable only after acquireLeaseFile has obtained the OS flock; the
 	// next Acquire rewrites the owner record with the current descriptor
@@ -34,12 +35,19 @@ var (
 )
 
 type Store struct {
+	mu   sync.RWMutex
 	root string
+	// rootDirectory is an optional duplicate of a caller-held StateRoot
+	// descriptor. Production composition uses it for existing-only leases so
+	// opening runs never re-resolves the mutable StateRoot pathname.
+	rootDirectory *os.File
 	// beforeAcquireExistingOwnerWrite is a deterministic test seam for the
 	// current-name check immediately before an existing-only acquisition
 	// installs its owner record. Production stores leave it nil.
 	beforeAcquireExistingOwnerWrite func() error
 }
+
+const descriptorBoundRoot = "\x00marshal-descriptor-bound\x00"
 
 type leaseGuard struct {
 	mu               sync.RWMutex
@@ -49,14 +57,15 @@ type leaseGuard struct {
 }
 
 type Lease struct {
-	file   *os.File
-	runDir *os.File
-	held   bool
-	guard  *leaseGuard
-	root   string
-	dev    uint64
-	inode  uint64
-	runID  string
+	file          *os.File
+	runDir        *os.File
+	rootDirectory *os.File
+	held          bool
+	guard         *leaseGuard
+	root          string
+	dev           uint64
+	inode         uint64
+	runID         string
 	// beforeMutation is a deterministic test seam. Production leases leave it
 	// nil. The mutation still uses the already-bound run directory descriptor.
 	beforeMutation func() error
@@ -81,14 +90,56 @@ const notifyCommandEnv = "MARSHAL_NOTIFY_CMD"
 
 func New(root string) *Store { return &Store{root: root} }
 
+// NewFromStateRootDescriptor creates a RunStore bound to the exact StateRoot
+// directory represented by stateRoot. The descriptor is duplicated and may be
+// closed by the caller immediately after this function returns. This
+// constructor is intended for production composition; New remains the
+// pathname-based legacy/test constructor.
+func NewFromStateRootDescriptor(stateRoot *os.File) (*Store, error) {
+	return newFromStateRootDescriptor(stateRoot)
+}
+
+// NewAt is a short compatibility spelling for NewFromStateRootDescriptor.
+func NewAt(stateRoot *os.File) (*Store, error) {
+	return NewFromStateRootDescriptor(stateRoot)
+}
+
+// Close releases the descriptor retained by NewFromStateRootDescriptor. A
+// Store created by New has no owned descriptor and Close is a no-op.
+func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rootDirectory == nil {
+		return nil
+	}
+	err := s.rootDirectory.Close()
+	s.rootDirectory = nil
+	return err
+}
+
 func (s *Store) runDir(runID string) (string, error) {
 	if err := domain.ValidateID(runID); err != nil {
 		return "", err
+	}
+	s.mu.RLock()
+	descriptorBound := s.rootDirectory != nil
+	s.mu.RUnlock()
+	if descriptorBound {
+		return "", ErrDescriptorBoundPathAPI
 	}
 	return filepath.Join(s.root, "runs", runID), nil
 }
 
 func (s *Store) Acquire(runID string) (*Lease, error) {
+	s.mu.RLock()
+	descriptorBound := s.rootDirectory != nil
+	s.mu.RUnlock()
+	if descriptorBound {
+		return nil, ErrDescriptorBoundPathAPI
+	}
 	directory, err := s.runDir(runID)
 	if err != nil {
 		return nil, err
@@ -100,7 +151,7 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 	if err != nil {
 		return nil, fmt.Errorf("acquire run lease: %w", err)
 	}
-	return s.finishAcquire(runID, leaseFile, runDirectory, device, inode, locked, false)
+	return s.finishAcquire(runID, leaseFile, runDirectory, device, inode, locked, false, nil)
 }
 
 // AcquireExisting acquires the descriptor-bound lease for an already
@@ -114,17 +165,39 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 // so descriptor-relative readers and mutations retain their existing
 // semantics. The ordinary Acquire creation path remains unchanged.
 func (s *Store) AcquireExisting(runID string) (*Lease, error) {
-	if _, err := s.runDir(runID); err != nil {
+	if err := domain.ValidateID(runID); err != nil {
 		return nil, err
 	}
-	leaseFile, runDirectory, device, inode, locked, err := acquireExistingLeaseFile(s.root, runID)
+	s.mu.RLock()
+	var stateRoot *os.File
+	if s.rootDirectory != nil {
+		var err error
+		stateRoot, err = duplicateDirectory(s.rootDirectory)
+		if err != nil {
+			s.mu.RUnlock()
+			return nil, fmt.Errorf("duplicate state root descriptor: %w", err)
+		}
+	}
+	s.mu.RUnlock()
+	if stateRoot != nil {
+		defer stateRoot.Close()
+	}
+	var leaseFile, runDirectory *os.File
+	var device, inode uint64
+	var locked bool
+	var err error
+	if stateRoot != nil {
+		leaseFile, runDirectory, device, inode, locked, err = acquireExistingLeaseFileAt(stateRoot, runID)
+	} else {
+		leaseFile, runDirectory, device, inode, locked, err = acquireExistingLeaseFile(s.root, runID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("acquire existing run lease: %w", err)
 	}
-	return s.finishAcquire(runID, leaseFile, runDirectory, device, inode, locked, true)
+	return s.finishAcquire(runID, leaseFile, runDirectory, device, inode, locked, true, stateRoot)
 }
 
-func (s *Store) finishAcquire(runID string, leaseFile, runDirectory *os.File, device, inode uint64, locked, existingOnly bool) (*Lease, error) {
+func (s *Store) finishAcquire(runID string, leaseFile, runDirectory *os.File, device, inode uint64, locked, existingOnly bool, stateRoot *os.File) (*Lease, error) {
 	if !locked {
 		return nil, ErrLeaseHeld
 	}
@@ -132,6 +205,20 @@ func (s *Store) finishAcquire(runID string, leaseFile, runDirectory *os.File, de
 		_ = releaseLeaseFile(leaseFile)
 		if runDirectory != nil {
 			_ = runDirectory.Close()
+		}
+	}
+	var rootDirectory *os.File
+	if stateRoot != nil {
+		var err error
+		rootDirectory, err = duplicateDirectory(stateRoot)
+		if err != nil {
+			release()
+			return nil, fmt.Errorf("retain state root descriptor: %w", err)
+		}
+		releaseRoot := release
+		release = func() {
+			releaseRoot()
+			_ = rootDirectory.Close()
 		}
 	}
 	var tokenBytes [16]byte
@@ -156,7 +243,13 @@ func (s *Store) finishAcquire(runID string, leaseFile, runDirectory *os.File, de
 				return nil, fmt.Errorf("acquire existing run lease check: %w", err)
 			}
 		}
-		if err := validateAcquiredLeaseCurrent(s.root, runID, runDirectory, leaseFile, device, inode); err != nil {
+		var err error
+		if stateRoot != nil {
+			err = validateAcquiredLeaseCurrentAt(stateRoot, runID, runDirectory, leaseFile, device, inode)
+		} else {
+			err = validateAcquiredLeaseCurrent(s.root, runID, runDirectory, leaseFile, device, inode)
+		}
+		if err != nil {
 			release()
 			return nil, fmt.Errorf("acquire existing run lease authority: %w", err)
 		}
@@ -165,7 +258,7 @@ func (s *Store) finishAcquire(runID string, leaseFile, runDirectory *os.File, de
 		release()
 		return nil, fmt.Errorf("write lease owner: %w", err)
 	}
-	lease := &Lease{file: leaseFile, runDir: runDirectory, held: true, root: s.root, dev: device, inode: inode, runID: runID}
+	lease := &Lease{file: leaseFile, runDir: runDirectory, rootDirectory: rootDirectory, held: true, root: s.root, dev: device, inode: inode, runID: runID}
 	lease.guard = &leaseGuard{owner: lease}
 	return lease, nil
 }
@@ -209,10 +302,15 @@ func (l *Lease) Release() error {
 	}
 	err := releaseLeaseFile(l.file)
 	directoryErr := l.runDir.Close()
+	rootErr := error(nil)
+	if l.rootDirectory != nil {
+		rootErr = l.rootDirectory.Close()
+	}
 	l.file = nil
 	l.runDir = nil
+	l.rootDirectory = nil
 	l.held = false
-	return errors.Join(err, directoryErr)
+	return errors.Join(err, directoryErr, rootErr)
 }
 
 func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uint64) error {
@@ -232,7 +330,7 @@ func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uin
 	if lease.runID != event.RunID {
 		return fmt.Errorf("%w: lease belongs to run %s", ErrConflict, lease.runID)
 	}
-	if _, err := s.runDir(event.RunID); err != nil {
+	if err := domain.ValidateID(event.RunID); err != nil {
 		return err
 	}
 	if event.EventID == "" || event.Payload == nil || event.Kind != domain.KindRunEvent || event.APIVersion != domain.APIVersionV1Alpha1 {

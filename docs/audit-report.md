@@ -1019,3 +1019,9 @@ R2（#189）已关闭，不得把上表中原先口头指派给 R2 的 finding �
 ## 2026-08-31：Result observation release-gap 修复
 
 RC1 completion 复审发现：`result-admitted` 已提交后，terminalization 会先释放 path-B worktree，再追加 runstore `worker.completed`；若在两者之间崩溃，恢复时重新观察已归还用户的 live worktree 会因合法修改永久阻塞仍为 `RUNNING` 的 Run。该问题登记为 release-critical P1，并由 [ADR 0072](adr/0072-result-observation-binding-before-worktree-release.md) 关闭合同缺口：首次 admission 同一 authority fact 绑定规范 snapshot bytes、`snapshotDigest` 与 `diffDigest`，release 后恢复只校验 descriptor-held snapshot 对该 binding，不再读取 live worktree。实现与定向冷重放测试已落地；RC1 仍须真实 Pi 纵切与 same-bytes release canary，不因本项关闭而升级。
+
+## 2026-08-30：RunStore 描述符补强与合入审计
+
+`main@46e0054` 是当前本地权威基线（父提交 `054789c`，`origin/main` 尚未同步）。本次以维护者指示直接合入 `ac5fd20`，新增 `NewFromStateRootDescriptor`/`NewAt`，让 existing-only acquisition 沿 held StateRoot descriptor 打开 `runs/<runID>`，并将描述符保留到 Lease 生命周期结束。该切片通过 `go test -race ./internal/runstore`、`go vet ./internal/runstore`、`git diff --check` 与 architecture check。
+
+独立 reviewer 随后发现 descriptor Store 的 pathname API 空根路径风险与 Close/acquisition 竞态；`main@109f35d` 已增加哨兵根路径、descriptor-only `Acquire` 拒绝和互斥保护，并通过 runstore race/vet/diff 定向门禁。本次仍未等待独立 reviewer，故记录为审计风险而非“已独立验收”；Store.root 等兼容字段仍需在 production composition 接线前完成全调用链审计，不得把该 component 合入解释为 S2′ 完成。ResultIngress/Execution/App 现有 sealed Run-start fixture 仍失败，CI 质量门禁不绿；Qoder/Codex 生产配置、真实 Pi→独立 Decision→`ACCEPTED`、RC1 同字节 canary、签名/公证和远端发布均未完成。

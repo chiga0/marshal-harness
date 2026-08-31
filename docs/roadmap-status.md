@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-更新时间：2026-08-30（`main@b0067df` implementation checkpoint）
+更新时间：2026-08-30（`main@96efc55` implementation checkpoint）
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
@@ -19,6 +19,8 @@
 > **2026-08-30 implementation checkpoint**：RB1-authoritative existing-worktree Bind/Receipt/Release 与 descriptor-bound recovery projection 已于 `main@259edd3` 实现；Linux staticcheck U1000 的跨平台 build-graph 修复已于 `main@60291e8` 推送，ResultIngress 缺失 verifier/stale-owner 顺序修复已于 `main@04c8fa9` 推送。该 exact-head CI 的 secret scan 已通过，Ubuntu/macOS quality 仍在运行，整体尚未宣称全绿。RC1 build-once distribution contract（`main@2d7da6a`）、installer exact opt-in/fail-closed guard（`main@e6a78a3`）以及 immutable carrier checker/receipt Schema/hostile matrix（`main@66523d9`）均已实现并独立审查。这些都是 component/admission 资产：真实 RC1 canary 在 `task plan` 阶段确定性暴露 CLI production selector 未装配 per-Attempt `ExactProcessRuntime`/`ExactAllocationRuntime`（`launch identity unavailable`）；完整 S1′（S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor，含 item 5 borrow seam/门禁）尚未进入 `main`，`3abed5a` 仍只是未合入候选；S2′、Attach/rebind、terminalization、最终 fixed-bin Pi→独立 Decision→`ACCEPTED`、真实 same-bytes canary/carrier、tag、GitHub prerelease 与 release asset 仍未完成，因此 R2–R6 状态不变。
 >
 > **2026-08-30 producer seam checkpoint**：`main@a6482db` 合入了 ResultIngress 当前账本重解析的 `PrepareMacRunStart`/`CommitMacRunStart` seam，并删除了未接线且违反 architecture gate 的 `productionruntime` factory。定向测试、architecture check 与 vet 通过；该 seam 只投影并提交已存在的 durable PreparedExecution，不产生 owner/allocation/launch/process facts，因此不升级 R2–R5。全包 ResultIngress Darwin owner-lock fixture 仍有既有失败，fixed CLI 真实生产接线、Pi→独立 Decision→`ACCEPTED` 与 RC1 发布仍未完成。
+
+> **2026-08-30 RunStore descriptor checkpoint**：`main@46e0054` 以 `--no-ff` 合入 `ac5fd20`，新增 `NewFromStateRootDescriptor`/`NewAt`，使 existing-only RunStore acquisition 可以沿 held StateRoot descriptor 打开 `runs/<runID>`，并保留 Lease 的描述符，降低 StateRoot pathname TOCTOU/ABA 风险。随后 `main@109f35d` 对 descriptor-bound Store 的 pathname API 增加 fail-closed 哨兵根路径、禁止误用 `Acquire`，并以 Store mutex 保护 descriptor close/acquisition。两次切片均通过 `go test -race ./internal/runstore`、`go vet ./internal/runstore` 与 `git diff --check`；ResultIngress/Execution/App 的既有 sealed Run-start fixture 仍失败，故仅为 component 补强，不升级 R2–R5，也不代表 production composition 已接通。第二次切片按维护者指示未等待独立 reviewer，需在后续 production 接线前补充审计。
 
 补充：`ceb8b39` 修复 runstore canonical journal 写入，`822dcd3` 对齐 sealed Run-start 测试 fixture，`a7e9f93` 增加带 authoritative time 与 lease expiry/ack-deadline 校验的 `CurrentByAttempt` dispatch lookup。上述提交均已同步 `origin/main`，只补强组件门禁，不改变 R2–R5 的 `COMPONENT` 状态。
 
