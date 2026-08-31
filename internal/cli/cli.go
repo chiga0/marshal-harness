@@ -2409,6 +2409,10 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "运行失败：无法恢复 Run journal/snapshot。")
 		return ExitFailure
 	}
+	if entryObservation != nil && validateFrozenLocalDogfoodBinding(location.StateRoot, *runID, runtime.Validator(), entryObservation) != nil {
+		fmt.Fprintln(stderr, "运行失败：本地 Run 身份绑定无效。")
+		return ExitFailure
+	}
 	if sealedAuthorityInvalid {
 		fmt.Fprintln(stderr, "运行失败：sealed Pi Run 的耐久启动权威无效；禁止回退到其他执行路径。")
 		return ExitFailure

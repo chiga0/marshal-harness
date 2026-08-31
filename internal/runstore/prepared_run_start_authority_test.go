@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
 type preparedRunStartFixture struct {
@@ -113,7 +116,7 @@ func TestPreparedRunStartCommitsOnceAndReplaysFromRunJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	replay, err := fixture.store.WithPreparedRunStartAuthority(context.Background(), fixture.lease, fixture.prepared, func(resultingress.RunStartProjector) error {
+	replay, err := fixture.store.WithPreparedRunStartAuthority(context.Background(), fixture.lease, fixture.prepared, "", func(resultingress.RunStartProjector) error {
 		called = true
 		return errors.New("must not be called")
 	})
@@ -136,6 +139,53 @@ func TestPreparedRunStartCommitsOnceAndReplaysFromRunJournal(t *testing.T) {
 	fixture.lease.guard.mu.Unlock()
 	if !errors.Is(conflictErr, ErrConflict) {
 		t.Fatalf("different provenance replay=%v", conflictErr)
+	}
+}
+
+func TestPreparedRunStartBindsDescriptorLocalDispatchAndRejectsEvidenceDrift(t *testing.T) {
+	fixture := newPreparedRunStartFixture(t)
+	dispatch := preparedLocalObservation(t, time.Unix(1_800_000_010, 0).UTC())
+	attempt, err := OpenOrCreateDirectoryUnderLease(fixture.lease, "attempts", fixture.prepared.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selfidentity.PersistPhaseObservationIn(attempt, "local-self-identity-dispatch.json", dispatch); err != nil {
+		attempt.Close()
+		t.Fatal(err)
+	}
+	if err := attempt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fixture.lease.guard.mu.Lock()
+	guard := newBorrowedRunStartProjector(int(fixture.lease.runDir.Fd()), fixture.prepared).guard
+	guard.dispatchObservationDigest = dispatch.ObservationDigest
+	projection, err := appendPreparedRunStartClaim(guard, fixture.claim)
+	fixture.lease.guard.mu.Unlock()
+	if err != nil || projection.State != domain.StateRunning {
+		t.Fatalf("local Run-start projection=%+v err=%v", projection, err)
+	}
+	events, _, err := fixture.store.ReadEvents(fixture.prepared.RunID)
+	if err != nil || len(events) != 3 || events[2].Payload["dispatchObservationDigest"] != dispatch.ObservationDigest {
+		t.Fatalf("local Run-start event=%+v err=%v", events, err)
+	}
+	called := false
+	replay, err := fixture.store.WithPreparedRunStartAuthority(context.Background(), fixture.lease, fixture.prepared, dispatch.ObservationDigest, func(resultingress.RunStartProjector) error {
+		called = true
+		return errors.New("replay callback must not run")
+	})
+	if err != nil || called || replay != projection {
+		t.Fatalf("bound replay=%+v called=%t err=%v", replay, called, err)
+	}
+	path := filepath.Join(fixture.store.root, "runs", fixture.prepared.RunID, "attempts", fixture.prepared.AttemptID, "local-self-identity-dispatch.json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	called = false
+	if _, err := fixture.store.WithPreparedRunStartAuthority(context.Background(), fixture.lease, fixture.prepared, dispatch.ObservationDigest, func(resultingress.RunStartProjector) error {
+		called = true
+		return nil
+	}); !errors.Is(err, ErrConflict) || called {
+		t.Fatalf("deleted local dispatch accepted: called=%t err=%v", called, err)
 	}
 }
 
@@ -198,7 +248,7 @@ func TestPreparedRunStartRejectsZeroProofAndLeavesJournalUntouched(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = fixture.store.WithPreparedRunStartAuthority(context.Background(), fixture.lease, fixture.prepared, func(projector resultingress.RunStartProjector) error {
+	_, err = fixture.store.WithPreparedRunStartAuthority(context.Background(), fixture.lease, fixture.prepared, "", func(projector resultingress.RunStartProjector) error {
 		bypass := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event:nested-bypass", RunID: fixture.prepared.RunID, AttemptID: fixture.prepared.AttemptID, Sequence: 3, Type: "worker.started", StateFrom: domain.StateReady, StateTo: domain.StateRunning, Timestamp: time.Now().UTC(), Payload: map[string]any{}}
 		if appendErr := fixture.store.Append(fixture.lease, bypass, 2); !errors.Is(appendErr, ErrConflict) {
 			t.Fatalf("nested append did not fail before blocking: %v", appendErr)
@@ -239,7 +289,7 @@ func TestPreparedRunStartGuardSerializesReleaseBeforeLeaseFieldRead(t *testing.T
 	unblock := make(chan struct{})
 	completed := make(chan error, 1)
 	go func() {
-		_, err := fixture.store.WithPreparedRunStartAuthority(context.Background(), fixture.lease, fixture.prepared, func(resultingress.RunStartProjector) error {
+		_, err := fixture.store.WithPreparedRunStartAuthority(context.Background(), fixture.lease, fixture.prepared, "", func(resultingress.RunStartProjector) error {
 			close(entered)
 			<-unblock
 			return errors.New("stop before projection")
@@ -289,4 +339,37 @@ func mustMarshal(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func preparedLocalObservation(t *testing.T, observedAt time.Time) selfidentity.LocalSelfIdentityObservationV1 {
+	t.Helper()
+	observation := selfidentity.LocalSelfIdentityObservationV1{
+		SchemaVersion: selfidentity.ObservationSchema, ActivationDigest: canonical.DigestBytes([]byte("activation")),
+		ProcessID: 42, ProcessExecutablePath: "/fixed/bin/marshal",
+		RepositoryIdentity: canonical.DigestBytes([]byte("repository")), CanonicalRepositoryRoot: "/fixed/repository",
+		CurrentPathObject: selfidentity.CurrentPathObjectV1{
+			CanonicalPath: "/fixed/bin/marshal", Device: "1", Inode: "2", Size: 3,
+			RawSHA256: canonical.DigestBytes([]byte("marshal")), PathRechecked: true, ObservationKind: "darwin-current-path-fd-object",
+		},
+		SourceHead: strings.Repeat("a", 40), SelfProfile: selfidentity.LocalProfile,
+		ObservedAt: observedAt.Format(time.RFC3339), Status: "pass", ReasonCode: selfidentity.ReasonObserved,
+	}
+	observation.IdentitySubjectDigest, _ = canonical.DigestJSON(mustJSON(t, map[string]any{
+		"activationDigest": observation.ActivationDigest, "repositoryIdentity": observation.RepositoryIdentity,
+		"canonicalRepositoryRoot": observation.CanonicalRepositoryRoot, "canonicalExecutablePath": observation.CurrentPathObject.CanonicalPath,
+		"device": observation.CurrentPathObject.Device, "inode": observation.CurrentPathObject.Inode, "size": observation.CurrentPathObject.Size,
+		"rawSHA256": observation.CurrentPathObject.RawSHA256, "sourceHead": observation.SourceHead, "selfProfile": observation.SelfProfile,
+	}))
+	observation.ObservationDigest, _ = canonical.DigestJSON(mustJSON(t, map[string]any{
+		"schemaVersion": observation.SchemaVersion, "activationDigest": observation.ActivationDigest,
+		"processId": observation.ProcessID, "processExecutablePath": observation.ProcessExecutablePath,
+		"repositoryIdentity": observation.RepositoryIdentity, "canonicalRepositoryRoot": observation.CanonicalRepositoryRoot,
+		"currentPathObject": observation.CurrentPathObject, "sourceHead": observation.SourceHead, "selfProfile": observation.SelfProfile,
+		"observedAt": observation.ObservedAt, "status": observation.Status, "reasonCode": observation.ReasonCode,
+		"identitySubjectDigest": observation.IdentitySubjectDigest,
+	}))
+	if err := selfidentity.ValidateObservation(observation); err != nil {
+		t.Fatal(err)
+	}
+	return observation
 }

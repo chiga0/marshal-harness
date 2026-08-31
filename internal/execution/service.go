@@ -601,7 +601,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		// resource. This keeps the durable READY admission atomic with the
 		// prepared authority and prevents an invalid/stale proof from leaving
 		// attempt, dispatch, worktree, or adapter side effects behind.
-		projection, err := store.WithPreparedRunStartAuthority(ctx, lease, preparedRunStart, func(projector resultingress.RunStartProjector) error {
+		projection, err := store.WithPreparedRunStartAuthority(ctx, lease, preparedRunStart, "", func(projector resultingress.RunStartProjector) error {
 			return input.CommitPreparedRunStart(ctx, projector)
 		})
 		if err != nil {

@@ -22,6 +22,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
 // runSealedReadyBranch drives one READY run through the sealed production
@@ -29,6 +30,14 @@ import (
 // MARSHAL_PI_ENTRYPOINT; both are mandatory and the launchidentity seal fails
 // closed unless the bytes match the frozen Pi 0.84.4 identity.
 func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID, runID string, stdout, stderr io.Writer) int {
+	entryLocalSelfIdentity := localDogfoodObservation(ctx)
+	if entryLocalSelfIdentity == nil {
+		fmt.Fprintln(stderr, "运行失败：sealed local-dogfood 组合缺少命令入口身份观察。")
+		return ExitUnavailable
+	}
+	observeLocalSelfIdentity := func() (selfidentity.LocalSelfIdentityObservationV1, error) {
+		return freshLocalDogfoodObservation(selfidentity.CommandTaskRun)
+	}
 	piRuntime := os.Getenv("MARSHAL_PI_RUNTIME")
 	piEntrypoint := os.Getenv("MARSHAL_PI_ENTRYPOINT")
 	if piRuntime == "" || piEntrypoint == "" {
@@ -228,6 +237,7 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 				MaxOutputBytes: input.MaxOutputBytes,
 			})
 		},
+		EntryLocalSelfIdentity: entryLocalSelfIdentity, ObserveLocalSelfIdentity: observeLocalSelfIdentity,
 	}
 	composed, err := productionruntime.ComposeRuntime(ctx, inputs, profile)
 	if err != nil {

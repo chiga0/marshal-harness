@@ -79,6 +79,20 @@ func prepareLocalVerificationBinding(_ context.Context, lease *runstore.Lease, s
 }
 
 func validateLocalAttemptLineage(lease *runstore.Lease, attemptID string, attempt *runstore.BoundDirectory, validator *contract.Validator, dispatch, ingress selfidentity.LocalSelfIdentityObservationV1) error {
+	events, truncated, err := runstore.ReadEventsUnderLease(lease)
+	if err != nil || truncated {
+		return errors.New("local Attempt journal is invalid")
+	}
+	sealedLineage, err := validateLocalAttemptEvents(events, attemptID, dispatch.ObservationDigest, ingress.ObservationDigest)
+	if err != nil {
+		return err
+	}
+	if sealedLineage {
+		if _, requestErr := runstore.ReadFileInDirectory(attempt, "worker-request.json", 2<<20); !errors.Is(requestErr, unix.ENOENT) {
+			return errors.New("local sealed lineage carries a legacy WorkerRequest")
+		}
+		return attempt.Recheck()
+	}
 	requestData, err := runstore.ReadFileInDirectory(attempt, "worker-request.json", 2<<20)
 	if err != nil || validator.Validate(domain.KindWorkerRequest, requestData) != nil {
 		return errors.New("local WorkerRequest is invalid")
@@ -89,33 +103,66 @@ func validateLocalAttemptLineage(lease *runstore.Lease, attemptID string, attemp
 	if json.Unmarshal(requestData, &request) != nil || request.Binding == nil || selfidentity.ValidateBinding(*request.Binding, dispatch) != nil {
 		return errors.New("local WorkerRequest binding is invalid")
 	}
-	events, truncated, err := runstore.ReadEventsUnderLease(lease)
-	if err != nil || truncated {
-		return errors.New("local Attempt journal is invalid")
-	}
-	startedIndex, completedIndex := -1, -1
+	return attempt.Recheck()
+}
+
+func validateLocalAttemptEvents(events []domain.RunEvent, attemptID, dispatchDigest, ingressDigest string) (bool, error) {
+	legacyStartedIndex, legacyCompletedIndex := -1, -1
+	sealedStartedIndex, sealedCompletedIndex := -1, -1
 	for index := range events {
 		event := events[index]
 		if event.AttemptID != attemptID {
 			continue
 		}
 		switch event.Type {
+		case "run.start-outcome":
+			if sealedStartedIndex >= 0 || event.Actor == nil || event.Actor.Type != "system" || event.Actor.ID != "marshal-run-start-projector" ||
+				event.StateFrom != domain.StateReady || event.StateTo != domain.StateRunning ||
+				localPayloadString(event.Payload, "protocolRevision") != "run-start-outcome/v2" ||
+				localPayloadString(event.Payload, "dispatchObservationDigest") != dispatchDigest {
+				return false, errors.New("local sealed run.start-outcome binding is invalid")
+			}
+			sealedStartedIndex = index
 		case "worker.started":
-			if startedIndex >= 0 || event.Actor == nil || event.Actor.Type != "system" || event.Actor.ID != "marshal-worker-runner" || localPayloadString(event.Payload, "dispatchObservationDigest") != dispatch.ObservationDigest {
-				return errors.New("local worker.started binding is invalid")
+			if legacyStartedIndex >= 0 || event.Actor == nil || event.Actor.Type != "system" || event.Actor.ID != "marshal-worker-runner" || localPayloadString(event.Payload, "dispatchObservationDigest") != dispatchDigest {
+				return false, errors.New("local worker.started binding is invalid")
 			}
-			startedIndex = index
+			legacyStartedIndex = index
 		case "worker.completed":
-			if completedIndex >= 0 || event.Actor == nil || event.Actor.Type != "system" || event.Actor.ID != "marshal-worker-runner" || localPayloadString(event.Payload, "dispatchObservationDigest") != dispatch.ObservationDigest || localPayloadString(event.Payload, "ingressObservationDigest") != ingress.ObservationDigest {
-				return errors.New("local worker.completed binding is invalid")
+			if event.Actor == nil || event.Actor.Type != "system" {
+				return false, errors.New("local worker.completed actor is invalid")
 			}
-			completedIndex = index
+			switch event.Actor.ID {
+			case "marshal-worker-runner":
+				if legacyCompletedIndex >= 0 || localPayloadString(event.Payload, "dispatchObservationDigest") != dispatchDigest || localPayloadString(event.Payload, "ingressObservationDigest") != ingressDigest {
+					return false, errors.New("local worker.completed binding is invalid")
+				}
+				legacyCompletedIndex = index
+			case "marshal-production-runtime":
+				if sealedCompletedIndex >= 0 || event.StateFrom != domain.StateRunning || event.StateTo != domain.StateVerifying || localPayloadString(event.Payload, "dispatchObservationDigest") != dispatchDigest || localPayloadString(event.Payload, "ingressObservationDigest") != ingressDigest {
+					return false, errors.New("local sealed worker.completed binding is invalid")
+				}
+				sealedCompletedIndex = index
+			default:
+				return false, errors.New("local worker.completed producer is invalid")
+			}
 		}
 	}
-	if startedIndex < 0 || completedIndex != startedIndex+1 {
-		return errors.New("local worker event lineage is not adjacent")
+	legacyLineage := legacyStartedIndex >= 0 || legacyCompletedIndex >= 0
+	sealedLineage := sealedStartedIndex >= 0 || sealedCompletedIndex >= 0
+	if legacyLineage == sealedLineage {
+		return false, errors.New("local Attempt lineage is mixed or missing")
 	}
-	return attempt.Recheck()
+	if sealedLineage {
+		if sealedStartedIndex < 0 || sealedCompletedIndex != sealedStartedIndex+1 {
+			return false, errors.New("local sealed event lineage is not adjacent")
+		}
+		return true, nil
+	}
+	if legacyStartedIndex < 0 || legacyCompletedIndex != legacyStartedIndex+1 {
+		return false, errors.New("local worker event lineage is not adjacent")
+	}
+	return false, nil
 }
 
 func prepareLocalReviewBinding(_ context.Context, lease *runstore.Lease, state domain.RunState, entry *selfidentity.LocalSelfIdentityObservationV1, validator *contract.Validator, report verification.Report, manifest verification.ArtifactManifest, create bool) (*selfidentity.LocalReviewBindingV1, error) {

@@ -33,18 +33,19 @@ var (
 )
 
 type runStartOutcomePayload struct {
-	ProtocolRevision         string `json:"protocolRevision"`
-	TaskID                   string `json:"taskId"`
-	PreparationDigest        string `json:"preparationDigest"`
-	ProcessStartedFactDigest string `json:"processStartedFactDigest"`
-	ResumeOutcomeFactDigest  string `json:"resumeOutcomeFactDigest"`
-	ReservationFactDigest    string `json:"reservationFactDigest,omitempty"`
-	AttemptOpenedFactDigest  string `json:"attemptOpenedFactDigest,omitempty"`
-	AttemptOrdinal           uint64 `json:"attemptOrdinal,omitempty"`
-	AttemptsUsedBefore       uint64 `json:"attemptsUsedBefore,omitempty"`
-	MaxAttempts              uint64 `json:"maxAttempts,omitempty"`
-	ReadySequence            uint64 `json:"readySequence,omitempty"`
-	ReadyAuthorityHead       string `json:"readyAuthorityHead,omitempty"`
+	ProtocolRevision          string `json:"protocolRevision"`
+	TaskID                    string `json:"taskId"`
+	PreparationDigest         string `json:"preparationDigest"`
+	ProcessStartedFactDigest  string `json:"processStartedFactDigest"`
+	ResumeOutcomeFactDigest   string `json:"resumeOutcomeFactDigest"`
+	ReservationFactDigest     string `json:"reservationFactDigest,omitempty"`
+	AttemptOpenedFactDigest   string `json:"attemptOpenedFactDigest,omitempty"`
+	AttemptOrdinal            uint64 `json:"attemptOrdinal,omitempty"`
+	AttemptsUsedBefore        uint64 `json:"attemptsUsedBefore,omitempty"`
+	MaxAttempts               uint64 `json:"maxAttempts,omitempty"`
+	ReadySequence             uint64 `json:"readySequence,omitempty"`
+	ReadyAuthorityHead        string `json:"readyAuthorityHead,omitempty"`
+	DispatchObservationDigest string `json:"dispatchObservationDigest,omitempty"`
 }
 
 func (payload runStartOutcomePayload) validate() error {
@@ -57,7 +58,7 @@ func (payload runStartOutcomePayload) validate() error {
 		}
 	}
 	if payload.ProtocolRevision == runStartOutcomeProtocolV1 {
-		if payload.ReservationFactDigest != "" || payload.AttemptOpenedFactDigest != "" || payload.AttemptOrdinal != 0 || payload.AttemptsUsedBefore != 0 || payload.MaxAttempts != 0 || payload.ReadySequence != 0 || payload.ReadyAuthorityHead != "" {
+		if payload.ReservationFactDigest != "" || payload.AttemptOpenedFactDigest != "" || payload.AttemptOrdinal != 0 || payload.AttemptsUsedBefore != 0 || payload.MaxAttempts != 0 || payload.ReadySequence != 0 || payload.ReadyAuthorityHead != "" || payload.DispatchObservationDigest != "" {
 			return ErrConflict
 		}
 	} else {
@@ -67,6 +68,9 @@ func (payload runStartOutcomePayload) validate() error {
 			}
 		}
 		if payload.AttemptOrdinal != payload.AttemptsUsedBefore+1 || payload.MaxAttempts == 0 || payload.AttemptOrdinal > payload.MaxAttempts || payload.ReadySequence == 0 {
+			return ErrConflict
+		}
+		if payload.DispatchObservationDigest != "" && !runStartDigestPattern.MatchString(payload.DispatchObservationDigest) {
 			return ErrConflict
 		}
 	}
@@ -441,16 +445,17 @@ func runStartPayload(event domain.RunEvent) (runStartOutcomePayload, error) {
 }
 
 type borrowedRunStartGuard struct {
-	mu       sync.Mutex
-	cond     *sync.Cond
-	active   bool
-	called   bool
-	inFlight int
-	escaped  bool
-	violated bool
-	runFD    int
-	prepared application.PreparedRunStart
-	result   application.RunProjection
+	mu                        sync.Mutex
+	cond                      *sync.Cond
+	active                    bool
+	called                    bool
+	inFlight                  int
+	escaped                   bool
+	violated                  bool
+	runFD                     int
+	prepared                  application.PreparedRunStart
+	dispatchObservationDigest string
+	result                    application.RunProjection
 }
 
 type borrowedRunStartProjector struct{ guard *borrowedRunStartGuard }
@@ -524,7 +529,13 @@ func (guard *borrowedRunStartGuard) deactivateAndWait() (application.RunProjecti
 // WithPreparedRunStartAuthority is the only exported Run-start mutation seam.
 // It borrows the exact lease descriptor and holds its mutation guard through
 // the ResultIngress continuation, append/fsync and post-CAS projection.
-func (s *Store) WithPreparedRunStartAuthority(ctx context.Context, lease *Lease, prepared application.PreparedRunStart, fn func(resultingress.RunStartProjector) error) (application.RunProjection, error) {
+// dispatchObservationDigest is empty for generic/legacy execution and the
+// exact descriptor-bound digest for local-dogfood. A non-empty value is
+// re-read under the exclusive guard to prevent evidence-removal downgrade.
+func (s *Store) WithPreparedRunStartAuthority(ctx context.Context, lease *Lease, prepared application.PreparedRunStart, dispatchObservationDigest string, fn func(resultingress.RunStartProjector) error) (application.RunProjection, error) {
+	if dispatchObservationDigest != "" && !runStartDigestPattern.MatchString(dispatchObservationDigest) {
+		return application.RunProjection{}, ErrConflict
+	}
 	if s == nil || ctx == nil || fn == nil || prepared.Validate() != nil || !leaseOwnerMatches(lease) {
 		return application.RunProjection{}, ErrConflict
 	}
@@ -543,9 +554,16 @@ func (s *Store) WithPreparedRunStartAuthority(ctx context.Context, lease *Lease,
 	if err != nil {
 		return application.RunProjection{}, err
 	}
-	if replay, _, found, err := findPreparedRunStartOutcome(prepared, records); err != nil {
+	actualDispatchDigest, foundDispatchObservation, err := localDispatchObservationDigestAt(runFD, prepared.AttemptID)
+	if err != nil || foundDispatchObservation != (dispatchObservationDigest != "") || actualDispatchDigest != dispatchObservationDigest {
+		return application.RunProjection{}, fmt.Errorf("%w: local dispatch observation mismatch", ErrConflict)
+	}
+	if replay, payload, found, err := findPreparedRunStartOutcome(prepared, records); err != nil {
 		return application.RunProjection{}, err
 	} else if found {
+		if payload.DispatchObservationDigest != actualDispatchDigest {
+			return application.RunProjection{}, fmt.Errorf("%w: Run-start local dispatch binding mismatch", ErrConflict)
+		}
 		return replay, nil
 	}
 	if err := validatePreparedRunStartCurrentAt(runFD, prepared, records); err != nil {
@@ -556,6 +574,7 @@ func (s *Store) WithPreparedRunStartAuthority(ctx context.Context, lease *Lease,
 	}
 	defer lease.guard.preparedBorrowed.Store(false)
 	projector := newBorrowedRunStartProjector(runFD, prepared)
+	projector.guard.dispatchObservationDigest = dispatchObservationDigest
 	callErr := callPreparedRunStartBorrower(fn, projector)
 	projection, guardErr := projector.guard.deactivateAndWait()
 	if callErr != nil {
@@ -599,10 +618,14 @@ func appendPreparedRunStartClaim(guard *borrowedRunStartGuard, claim resultingre
 	if err != nil {
 		return application.RunProjection{}, err
 	}
+	dispatchObservationDigest, foundDispatchObservation, err := localDispatchObservationDigestAt(guard.runFD, claim.AttemptID)
+	if err != nil || foundDispatchObservation != (guard.dispatchObservationDigest != "") || dispatchObservationDigest != guard.dispatchObservationDigest {
+		return application.RunProjection{}, fmt.Errorf("%w: local dispatch observation mismatch", ErrConflict)
+	}
 	if replay, payload, found, err := findPreparedRunStartOutcome(guard.prepared, records); err != nil {
 		return application.RunProjection{}, err
 	} else if found {
-		if payload.ProcessStartedFactDigest != claim.ProcessStartedFactDigest || payload.ResumeOutcomeFactDigest != claim.ResumeOutcomeFactDigest {
+		if payload.ProcessStartedFactDigest != claim.ProcessStartedFactDigest || payload.ResumeOutcomeFactDigest != claim.ResumeOutcomeFactDigest || payload.DispatchObservationDigest != dispatchObservationDigest {
 			return application.RunProjection{}, fmt.Errorf("%w: preparation binds different provenance", ErrConflict)
 		}
 		return replay, nil
@@ -610,7 +633,7 @@ func appendPreparedRunStartClaim(guard *borrowedRunStartGuard, claim resultingre
 	if err := validatePreparedRunStartCurrentAt(guard.runFD, guard.prepared, records); err != nil {
 		return application.RunProjection{}, err
 	}
-	payload := runStartOutcomePayload{ProtocolRevision: runStartOutcomeProtocolV2, TaskID: claim.TaskID, PreparationDigest: claim.PreparationDigest, ProcessStartedFactDigest: claim.ProcessStartedFactDigest, ResumeOutcomeFactDigest: claim.ResumeOutcomeFactDigest, ReservationFactDigest: claim.ReservationFactDigest, AttemptOpenedFactDigest: claim.AttemptOpenedFactDigest, AttemptOrdinal: claim.AttemptOrdinal, AttemptsUsedBefore: claim.AttemptsUsedBefore, MaxAttempts: claim.MaxAttempts, ReadySequence: claim.ReadySequence, ReadyAuthorityHead: claim.ReadyAuthorityHead}
+	payload := runStartOutcomePayload{ProtocolRevision: runStartOutcomeProtocolV2, TaskID: claim.TaskID, PreparationDigest: claim.PreparationDigest, ProcessStartedFactDigest: claim.ProcessStartedFactDigest, ResumeOutcomeFactDigest: claim.ResumeOutcomeFactDigest, ReservationFactDigest: claim.ReservationFactDigest, AttemptOpenedFactDigest: claim.AttemptOpenedFactDigest, AttemptOrdinal: claim.AttemptOrdinal, AttemptsUsedBefore: claim.AttemptsUsedBefore, MaxAttempts: claim.MaxAttempts, ReadySequence: claim.ReadySequence, ReadyAuthorityHead: claim.ReadyAuthorityHead, DispatchObservationDigest: dispatchObservationDigest}
 	eventID, err := domain.NewID("event")
 	if err != nil {
 		return application.RunProjection{}, err
@@ -634,6 +657,9 @@ func appendPreparedRunStartClaim(guard *borrowedRunStartGuard, claim resultingre
 			"readySequence":            payload.ReadySequence,
 			"readyAuthorityHead":       payload.ReadyAuthorityHead,
 		},
+	}
+	if dispatchObservationDigest != "" {
+		event.Payload["dispatchObservationDigest"] = dispatchObservationDigest
 	}
 	if err := lifecycle.ValidateTransition(domain.StateReady, event.RunID, guard.prepared.Sequence, event); err != nil {
 		return application.RunProjection{}, err

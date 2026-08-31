@@ -21,6 +21,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
 // CompositionLedger implements DurableRunAuthority over the RB1 Run store and
@@ -60,13 +61,21 @@ type CompositionLedger struct {
 	// existingWorktreeGraph/existingWorktreeTarget are borrowed from the
 	// fixed CLI for the duration of ComposeRuntime; they are never reopened
 	// by pathname and never persist into authority facts.
-	existingWorktreeGraph   allocationcontrol.ExistingWorktreeDescriptorGraphV1
-	existingWorktreeTarget  *os.File
-	existingWorktreeEnabled bool
-	launchArgvBuilder       AttemptLaunchArgvBuilder
-	resultParser            AttemptResultParser
-	now                     func() time.Time
+	existingWorktreeGraph    allocationcontrol.ExistingWorktreeDescriptorGraphV1
+	existingWorktreeTarget   *os.File
+	existingWorktreeEnabled  bool
+	launchArgvBuilder        AttemptLaunchArgvBuilder
+	resultParser             AttemptResultParser
+	entryLocalSelfIdentity   *selfidentity.LocalSelfIdentityObservationV1
+	observeLocalSelfIdentity LocalSelfIdentityObserver
+	now                      func() time.Time
 }
+
+// LocalSelfIdentityObserver is the Core-owned fresh observation seam used by
+// the Darwin local-dogfood production composition. It deliberately returns a
+// typed observation rather than raw evidence so the runtime can compare and
+// persist one closed identity subject at dispatch and result ingress.
+type LocalSelfIdentityObserver func() (selfidentity.LocalSelfIdentityObservationV1, error)
 
 // CompositionInputs freezes the composition-time identity and location
 // decisions. Nothing here is derivable from the durable ledger; everything is
@@ -127,6 +136,12 @@ type CompositionInputs struct {
 	// ResultParser is the adapter-owned strict transcript parser used only
 	// after descriptor-validated supervisor collection.
 	ResultParser AttemptResultParser
+	// EntryLocalSelfIdentity and ObserveLocalSelfIdentity are a closed pair.
+	// Both are nil outside darwin-local-dogfood. When present, PrepareRunStart
+	// persists a fresh dispatch observation before StartPreparedRun and result
+	// collection persists a fresh ingress observation before ResultIngress.
+	EntryLocalSelfIdentity   *selfidentity.LocalSelfIdentityObservationV1
+	ObserveLocalSelfIdentity LocalSelfIdentityObserver
 }
 
 // NewCompositionLedger is the only constructor. It validates every input and
@@ -151,6 +166,10 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 	}
 	ownsIngress := inputs.HeldIngressDir != nil
 	if inputs.Ingress == nil || inputs.Runs == nil || inputs.LeaseLedger == nil {
+		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
+	}
+	localIdentityConfigured := inputs.EntryLocalSelfIdentity != nil || inputs.ObserveLocalSelfIdentity != nil
+	if localIdentityConfigured && (inputs.EntryLocalSelfIdentity == nil || inputs.ObserveLocalSelfIdentity == nil || selfidentity.ValidateObservation(*inputs.EntryLocalSelfIdentity) != nil) {
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 	}
 	if inputs.Namespace.Validate() != nil || inputs.ProvisionDomain.Validate() != nil || inputs.CleanupDomain.Validate() != nil ||
@@ -276,6 +295,11 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		releaseConstruction()
 		return nil, err
 	}
+	var entryLocalSelfIdentity *selfidentity.LocalSelfIdentityObservationV1
+	if inputs.EntryLocalSelfIdentity != nil {
+		entry := *inputs.EntryLocalSelfIdentity
+		entryLocalSelfIdentity = &entry
+	}
 	ledger := &CompositionLedger{
 		ingress: inputs.Ingress, ownsIngress: ownsIngress, runs: inputs.Runs, runLease: runLease, ownsRunLease: ownsRunLease,
 		leaseLedger: inputs.LeaseLedger, runReady: runReady, namespace: inputs.Namespace, orchestrator: inputs.OrchestratorID,
@@ -290,7 +314,8 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		environment:           append([]string(nil), inputs.EnvironmentAllowlist...),
 		existingWorktreeGraph: inputs.ExistingWorktreeDescriptorGraph, existingWorktreeTarget: inputs.ExistingWorktreeTargetWorktree,
 		existingWorktreeEnabled: existingWorktreeEnabled, launchArgvBuilder: inputs.LaunchArgvBuilder, now: time.Now,
-		resultParser: inputs.ResultParser,
+		resultParser: inputs.ResultParser, entryLocalSelfIdentity: entryLocalSelfIdentity,
+		observeLocalSelfIdentity: inputs.ObserveLocalSelfIdentity,
 	}
 	if existingWorktreeEnabled {
 		edges, edgeErr := authority.NewEdgeRuntime(inputs.Namespace)
@@ -717,7 +742,10 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 			return err
 		}
 		prepared, err = l.ingress.PrepareMacRunStart(ctx, borrowed, acquisition, created.PreparationDigest)
-		return err
+		if err != nil {
+			return err
+		}
+		return l.persistLocalDispatchObservation(prepared.AttemptID)
 	})
 	if err != nil {
 		return application.PreparedRunStart{}, err

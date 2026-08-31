@@ -130,6 +130,10 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 	if err != nil {
 		return CollectedRunResult{}, err
 	}
+	localDispatchDigest, localIngressDigest, err := l.localIngressObservationDigests(attemptDirectory, attempt.CommittedResultFactDigest != "")
+	if err != nil {
+		return CollectedRunResult{}, err
+	}
 
 	envelopeDigest := canonical.DigestBytes(result.Data)
 	drc, binding, err := l.resultAdmissionAuthority(attempt, lease, capability, envelopeDigest)
@@ -193,16 +197,24 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		return CollectedRunResult{}, err
 	}
 	completedAt := l.now().UTC()
+	payload := map[string]any{"snapshotDigest": observation.SnapshotDigest, "diffDigest": observation.DiffDigest,
+		"resultAdmissionFactDigest": admission.FactDigest, "resultDRCDigest": drcDigest, "resultEnvelopeDigest": envelopeDigest,
+		"terminalizationBarrierFactDigest": terminal.BarrierDigest, "processTerminalFactDigest": terminal.ProcessTerminalDigest,
+		"allocationTerminatedFactDigest": terminal.AllocationTerminalDigest, "supervisorClosedFactDigest": terminal.SupervisorClosedDigest,
+		"cleanupReleasedFactDigest": terminal.CleanupReleasedDigest}
+	if localDispatchDigest != "" || localIngressDigest != "" {
+		if localDispatchDigest == "" || localIngressDigest == "" {
+			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
+		}
+		payload["dispatchObservationDigest"] = localDispatchDigest
+		payload["ingressObservationDigest"] = localIngressDigest
+	}
 	event := domain.RunEvent{
 		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: eventID, RunID: state.RunID,
 		AttemptID: attempt.Identity.AttemptID, Sequence: state.Sequence + 1, Type: "worker.completed",
 		StateFrom: domain.StateRunning, StateTo: domain.StateVerifying, Timestamp: completedAt,
-		Actor: &domain.Actor{Type: "system", ID: "marshal-production-runtime"},
-		Payload: map[string]any{"snapshotDigest": observation.SnapshotDigest, "diffDigest": observation.DiffDigest,
-			"resultAdmissionFactDigest": admission.FactDigest, "resultDRCDigest": drcDigest, "resultEnvelopeDigest": envelopeDigest,
-			"terminalizationBarrierFactDigest": terminal.BarrierDigest, "processTerminalFactDigest": terminal.ProcessTerminalDigest,
-			"allocationTerminatedFactDigest": terminal.AllocationTerminalDigest, "supervisorClosedFactDigest": terminal.SupervisorClosedDigest,
-			"cleanupReleasedFactDigest": terminal.CleanupReleasedDigest},
+		Actor:   &domain.Actor{Type: "system", ID: "marshal-production-runtime"},
+		Payload: payload,
 	}
 	next, err := lifecycle.Reduce(state, event, lifecycle.Guard{LeaseHeld: true, WorkerProtocolComplete: true, SnapshotRecorded: true})
 	if err != nil {

@@ -37,7 +37,11 @@ func (bridge *piBridge) StartPreparedRun(ctx context.Context, verifier resulting
 	if err := bridge.VerifyAgentProfile(ctx, verifier, acquisition, owner, profile); err != nil {
 		return err
 	}
-	projection, err := bridge.ledger.runs.WithPreparedRunStartAuthority(ctx, bridge.ledger.runLease, prepared, func(projector resultingress.RunStartProjector) error {
+	dispatchObservationDigest, err := bridge.ledger.localDispatchObservationDigest(prepared.AttemptID)
+	if err != nil {
+		return err
+	}
+	projection, err := bridge.ledger.runs.WithPreparedRunStartAuthority(ctx, bridge.ledger.runLease, prepared, dispatchObservationDigest, func(projector resultingress.RunStartProjector) error {
 		return bridge.ledger.ingress.CommitMacRunStart(ctx, verifier, acquisition, prepared, projector)
 	})
 	if err != nil {
