@@ -123,15 +123,14 @@ func TestAttachFileHasNoInternalPackageImports(t *testing.T) {
 // internal/processsupervisor: the ADR 0067 §4 owner-rebind transport adapter
 // (productionRebindTransport) in resultingress. Any additional callsite is a
 // forbidden escape. The rebind orchestration itself
-// (RebindOwnerSuccessorForAttachedRecovery) is a COMPONENT seam: it is NOT yet
-// wired into any cmd/marshal or productionruntime caller, and must not be
-// claimed as INTEGRATED until a real caller is added.
+// (RebindOwnerSuccessorForAttachedRecovery) has exactly one production caller:
+// productionruntime construction recovery while the phase-B owner stays held.
 // StartIntegrationTestRebind is test-only support that currently must live in
 // a non-_test file for cross-package integration coverage; production callers
 // are mechanically forbidden until that support can be moved behind a test
 // target.
 func TestWithAttachedHasNoProductionCallsiteOutsideProcessSupervisor(t *testing.T) {
-	roots := []string{filepath.Join(".."), filepath.Join("..", "..", "cmd"), filepath.Join("..", "..", "internal", "productionruntime")}
+	roots := []string{filepath.Join(".."), filepath.Join("..", "..", "cmd")}
 	withAttachedCallsites := 0
 	rebindCallsites := 0
 	integrationTestRebindCallsites := 0
@@ -173,8 +172,8 @@ func TestWithAttachedHasNoProductionCallsiteOutsideProcessSupervisor(t *testing.
 	if withAttachedCallsites != 1 {
 		t.Fatalf("WithAttached has %d production callsite(s) outside internal/processsupervisor; want exactly 1 (the rebind transport adapter)", withAttachedCallsites)
 	}
-	if rebindCallsites != 0 {
-		t.Fatalf("RebindOwnerSuccessorForAttachedRecovery has %d production callsite(s); it is a COMPONENT seam not yet wired into cmd/productionruntime. Do not claim INTEGRATED.", rebindCallsites)
+	if rebindCallsites != 1 {
+		t.Fatalf("RebindOwnerSuccessorForAttachedRecovery has %d production callsite(s); want exactly 1 in productionruntime construction recovery", rebindCallsites)
 	}
 	if integrationTestRebindCallsites != 0 {
 		t.Fatalf("StartIntegrationTestRebind has %d production callsite(s); test support must never be reachable from production code", integrationTestRebindCallsites)

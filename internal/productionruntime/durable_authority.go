@@ -259,6 +259,16 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 	}
 	ledger.allocation = allocation
 	ledger.owner = owner
+	// A newly acquired owner must reconcile an already-RUNNING attempt before
+	// the Runtime becomes visible. This is the single production caller for
+	// ADR 0067 Attach/rebind; Status remains a read-only projection.
+	recoveryVerifier := &borrowedOwnerVerifier{acquisition: inputs.Acquisition, active: true}
+	if err := ledger.recoverRunningAttempt(ctx, recoveryVerifier, inputs.Acquisition, ownerState); err != nil {
+		recoveryVerifier.close()
+		releaseConstruction()
+		return nil, err
+	}
+	recoveryVerifier.close()
 	return ledger, nil
 }
 
@@ -322,7 +332,7 @@ func (l *CompositionLedger) CurrentOwner(ctx context.Context, verifier resulting
 		if !found || state.Acquisition != acquisition {
 			return application.NewError("current-owner", application.ReasonOwnerNotCurrent)
 		}
-		pending, err := l.pendingRecovery()
+		pending, err := l.pendingRecovery(state)
 		if err != nil {
 			return err
 		}
@@ -335,15 +345,52 @@ func (l *CompositionLedger) CurrentOwner(ctx context.Context, verifier resulting
 	return projection, nil
 }
 
-func (l *CompositionLedger) pendingRecovery() (uint64, error) {
-	read, err := l.runs.ReadRunStartAuthorityUnderLease(context.Background(), l.runLease)
+func (l *CompositionLedger) pendingRecovery(owner resultingress.ControlOwnerState) (uint64, error) {
+	_, attempt, running, err := l.currentRunningAttempt(context.Background())
 	if err != nil {
 		return 0, err
 	}
-	if read.Run.State == domain.StateRunning {
+	if running && !runningAttemptBoundToOwner(attempt, owner) {
 		return 1, nil
 	}
 	return 0, nil
+}
+
+// currentRunningAttempt joins the RB1 Run projection to exactly one
+// non-terminal ResultIngress Attempt. It never reconstructs an AttemptIdentity
+// from partial caller data and fails closed on zero or ambiguous matches.
+func (l *CompositionLedger) currentRunningAttempt(ctx context.Context) (runstore.RunStartAuthorityProjection, resultingress.AttemptAuthorityState, bool, error) {
+	read, err := l.runs.ReadRunStartAuthorityUnderLease(ctx, l.runLease)
+	if err != nil {
+		return runstore.RunStartAuthorityProjection{}, resultingress.AttemptAuthorityState{}, false, err
+	}
+	if read.Run.State != domain.StateRunning {
+		return read, resultingress.AttemptAuthorityState{}, false, nil
+	}
+	states, err := l.ingress.PendingAttemptStates()
+	if err != nil {
+		return runstore.RunStartAuthorityProjection{}, resultingress.AttemptAuthorityState{}, false, err
+	}
+	var match resultingress.AttemptAuthorityState
+	matches := 0
+	for _, state := range states {
+		identity := state.Identity
+		if identity.AuthorityNamespaceID == l.namespace && identity.OrchestratorID == l.orchestrator && identity.TaskID == read.Run.TaskID && identity.RunID == read.Run.RunID && identity.AttemptID == read.Run.AttemptID {
+			match = state
+			matches++
+		}
+	}
+	if matches != 1 {
+		return runstore.RunStartAuthorityProjection{}, resultingress.AttemptAuthorityState{}, false, application.NewError("recover-running-attempt", application.ReasonAuthorityConflict)
+	}
+	return read, match, true, nil
+}
+
+func runningAttemptBoundToOwner(attempt resultingress.AttemptAuthorityState, owner resultingress.ControlOwnerState) bool {
+	return attempt.ProcessStartedDigest != "" && attempt.SupervisorStartedDigest != "" &&
+		attempt.SupervisorPendingIntentDigest == "" && attempt.SupervisorInterventionDigest == "" && attempt.SupervisorClosedDigest == "" &&
+		attempt.Owner.OwnerEpoch == owner.Acquisition.OwnerEpoch && attempt.Owner.ControlOwnerAcquiredFactDigest == owner.FactDigest &&
+		attempt.SupervisorBoundAuthorityHead == attempt.HeadDigest
 }
 
 // RehydratePreparedRunStart re-projects a durable preparation by digest under

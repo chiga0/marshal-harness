@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
+	"golang.org/x/sys/unix"
 )
 
 // heldAttachOwnerVerifier is the acquisition-bound pass-through that lets the
@@ -17,7 +18,9 @@ import (
 // the lock; it only proves the Attach authority still binds the exact held
 // acquisition and invokes the borrowed callback exactly once (the once-only
 // contract is enforced by processsupervisor.withAttachOwner).
-type heldAttachOwnerVerifier struct{ acquisition processsupervisor.AttachOwnerAcquisition }
+type heldAttachOwnerVerifier struct {
+	acquisition processsupervisor.AttachOwnerAcquisition
+}
 
 func (verifier heldAttachOwnerVerifier) WithCurrentAttachOwner(_ context.Context, authority processsupervisor.AttachAuthority, fn func() error) error {
 	if fn == nil || authority.CurrentAcquisition != verifier.acquisition {
@@ -42,12 +45,16 @@ func productionRebindTransport(ctx context.Context, options processsupervisor.At
 // processsupervisor.WithAttached. Test injection is via the unexported
 // rebindOwnerSuccessorForAttachedRecoveryWithTransport seam.
 //
-// PRODUCTION REACHABILITY: this method is a COMPONENT seam. It is not yet
-// wired into any cmd/marshal or productionruntime caller. The architecture test
-// mechanically verifies zero production callsites; do not claim INTEGRATED or
-// production reachability until a real caller is added.
-func (s *DurableStore) RebindOwnerSuccessorForAttachedRecovery(ctx context.Context, verifier CurrentOwnerLockVerifier, acquisition ControlOwnerAcquisition, identity AttemptIdentity, controlDirectory *os.File, fixedMarshalPath string) (AttemptAuthorityState, error) {
-	return s.rebindOwnerSuccessorForAttachedRecoveryWithTransport(ctx, verifier, acquisition, identity, controlDirectory, fixedMarshalPath, productionRebindTransport)
+// PRODUCTION REACHABILITY: productionruntime construction is the sole caller.
+// It invokes this method while the exact phase-B repository owner remains held
+// and before the Runtime becomes visible. The architecture test mechanically
+// enforces that no second production callsite appears.
+func (s *DurableStore) RebindOwnerSuccessorForAttachedRecovery(ctx context.Context, verifier CurrentOwnerLockVerifier, acquisition ControlOwnerAcquisition, identity AttemptIdentity) (AttemptAuthorityState, error) {
+	profile, ok := s.preparedDarwin.(*preparedDarwinExecutionProfile)
+	if !ok || profile == nil || profile.controlRoot == nil {
+		return AttemptAuthorityState{}, ErrPreparedExecutionUnavailable
+	}
+	return s.rebindOwnerSuccessorForAttachedRecoveryWithTransport(ctx, verifier, acquisition, identity, nil, profile.fixedMarshalPath, productionRebindTransport)
 }
 
 // rebindOwnerSuccessorForAttachedRecoveryWithTransport is the unexported test
@@ -89,6 +96,18 @@ func (s *DurableStore) rebindOwnerSuccessorForAttachedRecoveryWithTransport(ctx 
 			if state.ProcessStartedDigest == "" || state.SupervisorStartedDigest == "" || state.SupervisorInterventionDigest != "" || state.SupervisorClosedDigest != "" {
 				return ErrPreparedExecutionConflict
 			}
+			if controlDirectory == nil {
+				profile, ok := s.preparedDarwin.(*preparedDarwinExecutionProfile)
+				if !ok || profile == nil || profile.controlRoot == nil || fixedMarshalPath != profile.fixedMarshalPath {
+					return ErrPreparedExecutionUnavailable
+				}
+				var openErr error
+				controlDirectory, openErr = openAttachedControlDirectory(profile, state)
+				if openErr != nil {
+					return openErr
+				}
+				defer controlDirectory.Close()
+			}
 			if state.SupervisorBoundAuthorityHead != "" && state.SupervisorBoundAuthorityHead == state.HeadDigest {
 				result = state
 				return nil
@@ -127,6 +146,37 @@ func (s *DurableStore) rebindOwnerSuccessorForAttachedRecoveryWithTransport(ctx 
 		})
 	})
 	return result, err
+}
+
+// openAttachedControlDirectory resolves the exact durable Supervisor session
+// below the already-held private control root. Production recovery never
+// reopens a caller-supplied absolute path: both the root and child object are
+// re-observed and matched to the identities frozen by ResultIngress.
+func openAttachedControlDirectory(profile *preparedDarwinExecutionProfile, state AttemptAuthorityState) (*os.File, error) {
+	currentCore, err := processsupervisor.ObserveCurrentCore(profile.fixedMarshalPath)
+	if err != nil || currentCore != profile.core {
+		return nil, ErrPreparedExecutionUnavailable
+	}
+	root, err := processsupervisor.ObserveHeldControlDirectory(profile.controlRoot)
+	if err != nil || root != profile.controlIdentity {
+		return nil, ErrPreparedExecutionUnavailable
+	}
+	sessionID := state.SupervisorStarted.Handshake.SessionID
+	fd, err := unix.Openat(int(profile.controlRoot.Fd()), sessionID, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW_ANY|unix.O_DIRECTORY, 0)
+	if err != nil {
+		return nil, ErrPreparedExecutionUnavailable
+	}
+	directory := os.NewFile(uintptr(fd), "marshal-attached-control-directory")
+	if directory == nil {
+		_ = unix.Close(fd)
+		return nil, ErrPreparedExecutionUnavailable
+	}
+	observed, err := processsupervisor.ObserveHeldControlDirectory(directory)
+	if err != nil || observed != state.SupervisorStarted.ControlDirectory {
+		_ = directory.Close()
+		return nil, ErrPreparedExecutionUnavailable
+	}
+	return directory, nil
 }
 
 func (s *DurableStore) executeFreshRebindLocked(ctx context.Context, projection *Ingress, state AttemptAuthorityState, ownerState ControlOwnerState, identity AttemptIdentity, controlDirectory *os.File, fixedMarshalPath string, transport rebindTransport, preAnchor processsupervisor.HandshakeAnchor, predecessorRevision uint64, predecessorHead string) (AttemptAuthorityState, error) {
