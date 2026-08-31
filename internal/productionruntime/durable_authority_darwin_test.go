@@ -222,6 +222,9 @@ func TestCompositionLedgerCurrentOwnerAndPrepareRunStart(t *testing.T) {
 
 func TestComposeRuntimeReadyAndFailsClosedWithoutFixedMarshal(t *testing.T) {
 	inputs, runID := newCompositionInputs(t)
+	// Production observes an unbound owner candidate at the fixed CLI boundary;
+	// phase A assigns the first durable epoch during composition.
+	inputs.Acquisition.OwnerEpoch = 0
 	closure := inputs.LaunchClosure
 	identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
 	if err != nil {
@@ -240,7 +243,7 @@ func TestComposeRuntimeReadyAndFailsClosedWithoutFixedMarshal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	if status.Availability != application.AvailabilityReady || status.OwnerEpoch != inputs.Acquisition.OwnerEpoch {
+	if status.Availability != application.AvailabilityReady || status.OwnerEpoch != 1 {
 		t.Fatalf("status=%+v", status)
 	}
 	projection, err := inputs.Runs.ReadRunStartAuthorityUnderLease(context.Background(), inputs.RunLease)

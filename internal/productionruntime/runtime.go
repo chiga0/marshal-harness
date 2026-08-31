@@ -56,7 +56,12 @@ func newComposedProductionRuntime(ledger *CompositionLedger, profile PiProfile, 
 	if ledger == nil || ledger.owner == nil {
 		return nil, application.NewError("production-runtime", application.ReasonOwnerUnavailable)
 	}
-	controller, err := newController(ledger, &piBridge{ledger: ledger}, ledger.owner, inputs.Acquisition, profile)
+	// NewCompositionLedger accepts OwnerEpoch=0 as the composition-boundary
+	// request for "acquire the next durable epoch" and replaces it with the
+	// exact acquisition bound to the phase-B owner lock.  Never keep using the
+	// caller candidate here: doing so makes the first real composition fail
+	// newController even though the durable owner was acquired successfully.
+	controller, err := newController(ledger, &piBridge{ledger: ledger}, ledger.owner, ledger.owner.acquisition(), profile)
 	if err != nil {
 		// Release every resource the ledger owns (Run Lease for path B, the
 		// held result-ingress, and the bound owner) in reverse acquisition
