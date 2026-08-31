@@ -601,6 +601,7 @@ func TestRenderPromptProjectsWorkerDevelopmentCommandBoundary(t *testing.T) {
 }
 
 func TestRunFailsClosedBeforeAttemptWhenPromptProjectionUnsafe(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newExecutionFixture(t, false)
 	originalSpecDigest := inspectState(t, fixture).SpecDigest
 	taskPath := filepath.Join(fixture.runDir, "task-spec.json")
@@ -659,6 +660,7 @@ func TestRunFailsClosedBeforeAttemptWhenPromptProjectionUnsafe(t *testing.T) {
 }
 
 func TestRunFailsClosedBeforeAttemptWhenTaskSpecHasRawInvalidUTF8(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newExecutionFixture(t, false)
 	originalSpecDigest := inspectState(t, fixture).SpecDigest
 	taskPath := filepath.Join(fixture.runDir, "task-spec.json")

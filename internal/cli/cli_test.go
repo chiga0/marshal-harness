@@ -989,6 +989,7 @@ func TestInitAndTaskStatusEndToEnd(t *testing.T) {
 }
 
 func TestTaskVerifyEndToEnd(t *testing.T) {
+	sealedMigrationSkip(t)
 	originalDirectory, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)

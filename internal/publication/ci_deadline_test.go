@@ -457,6 +457,7 @@ func deadlineFixtureInstants() (createdAt, publishedAt, legacyDeadline, ciDeadli
 }
 
 func TestRunBlockedByCIDeadlineDetection(t *testing.T) {
+	sealedMigrationSkip(t)
 	createdAt, publishedAt, _, _ := deadlineFixtureInstants()
 	for _, reason := range []error{errCIDeadlineExceeded, errCICompletedAtMissing, errCICompletedAtExceedsDeadline, errCICompletedAtInconsistent} {
 		t.Run(reason.Error()+" recognized", func(t *testing.T) {

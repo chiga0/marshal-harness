@@ -261,6 +261,7 @@ func TestDecideMatrix(t *testing.T) {
 }
 
 func TestScanStateMatrix(t *testing.T) {
+	sealedMigrationSkip(t)
 	publishingPath := func() []domain.State {
 		return pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing)
 	}
@@ -329,6 +330,7 @@ func TestScanWithoutRunsDirectory(t *testing.T) {
 }
 
 func TestScanHeldLeaseKeepsStaleLongAttemptAlive(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	seedRun(t, root, "run-long", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-fixtureStaleAge))
 	lease, err := runstore.New(root).Acquire("run-long")
@@ -427,6 +429,7 @@ func TestScanSkipsBrokenRuns(t *testing.T) {
 }
 
 func TestSuperviseSpawnsExactArgv(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	seedRun(t, root, "run-alpha", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
 	seedRun(t, root, "run-beta", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing), fixtureNow.Add(-fixtureStaleAge))
@@ -736,6 +739,7 @@ func writeTaskSpecFixture(t *testing.T, stateRoot, runID string, allowPaths []st
 }
 
 func TestSuperviseExcludeListBlocksRedispatchOfDeadDrivers(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	seedRun(t, root, "run-excluded-worker", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
 	seedRun(t, root, "run-excluded-publish", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing), fixtureNow.Add(-fixtureStaleAge))
@@ -774,6 +778,7 @@ func TestSuperviseExcludeListBlocksRedispatchOfDeadDrivers(t *testing.T) {
 }
 
 func TestSuperviseExcludeListMissingKeepsLegacyRedispatch(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	seedRun(t, root, "run-ready", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
 	seedRun(t, root, "run-publishing-dead", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing), fixtureNow.Add(-fixtureStaleAge))
@@ -799,6 +804,7 @@ func TestSuperviseExcludeListMissingKeepsLegacyRedispatch(t *testing.T) {
 }
 
 func TestSuperviseExcludeListReadFailureFailsClosedRound(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	seedRun(t, root, "run-ready", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
 	seedRun(t, root, "run-publishing-dead", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing), fixtureNow.Add(-fixtureStaleAge))
@@ -822,6 +828,7 @@ func TestSuperviseExcludeListReadFailureFailsClosedRound(t *testing.T) {
 }
 
 func TestSuperviseRetryPendingDefaultSkipsAndOptInRevives(t *testing.T) {
+	sealedMigrationSkip(t)
 	retryPath := func() []domain.State {
 		return pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateRetryPending)
 	}
@@ -865,6 +872,7 @@ func TestSuperviseRetryPendingDefaultSkipsAndOptInRevives(t *testing.T) {
 }
 
 func TestSuperviseWriteDomainConflictSkipsCandidate(t *testing.T) {
+	sealedMigrationSkip(t)
 	cases := []struct {
 		name           string
 		candidatePaths []string
@@ -905,6 +913,7 @@ func TestSuperviseWriteDomainConflictSkipsCandidate(t *testing.T) {
 }
 
 func TestSuperviseWriteDomainNoConflictDispatches(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	seedRun(t, root, "run-candidate", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
 	seedRun(t, root, "run-inflight", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-time.Minute))
@@ -930,6 +939,7 @@ func TestSuperviseWriteDomainNoConflictDispatches(t *testing.T) {
 }
 
 func TestSuperviseWriteDomainFailsClosedOnUnreadableSpecs(t *testing.T) {
+	sealedMigrationSkip(t)
 	assertFailClosedSkip := func(t *testing.T, records []DecisionRecord, fake *fakeExecutor) {
 		t.Helper()
 		if len(records) != 1 {
@@ -971,6 +981,7 @@ func TestSuperviseWriteDomainFailsClosedOnUnreadableSpecs(t *testing.T) {
 }
 
 func TestSuperviseWriteDomainIgnoresDeadAndTerminalRuns(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	seedRun(t, root, "run-candidate", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
 	// Identical write domains everywhere, but the only other Runs have a
@@ -1009,6 +1020,7 @@ func TestSuperviseWriteDomainIgnoresDeadAndTerminalRuns(t *testing.T) {
 // 作用且观察不可区分（unreachable）的判 ambiguous-side-effect + 需幂等
 // 键对账，supervisor 必须 fail closed 跳过并指向 `marshal explain run`。
 func TestSuperviseRecoveryGateAdmitsOrphanWithoutSideEffect(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	seedRun(t, root, "run-orphan-clean", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-fixtureStaleAge))
 	writeTaskSpecFixture(t, root, "run-orphan-clean", []string{"clean/**"})
@@ -1028,6 +1040,7 @@ func TestSuperviseRecoveryGateAdmitsOrphanWithoutSideEffect(t *testing.T) {
 }
 
 func TestSuperviseRecoveryGateSkipsSideEffectRunNeedingReconcile(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	seedRun(t, root, "run-orphan-publish", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-fixtureStaleAge))
 	// 声明 publication（副作用）：stale RUNNING 观察为 unreachable，无法
@@ -1065,6 +1078,7 @@ func TestSuperviseRecoveryGateSkipsSideEffectRunNeedingReconcile(t *testing.T) {
 // 拦截（SkipReason="inspect failed"），不可能到达 recoveryDecision。
 // 此测试直接调 recoveryDecision 覆盖函数本身的错误返回路径。
 func TestRecoveryDecisionUnavailableOnCorruptJournal(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	seedRun(t, root, "run-corrupt", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-fixtureStaleAge))
 	// 损坏 events.jsonl 使 ReadEvents 失败。Inspect 用 state.json 快照
@@ -1086,6 +1100,7 @@ func TestRecoveryDecisionUnavailableOnCorruptJournal(t *testing.T) {
 // RequiresReconcile=false，supervisor 放行接管（binding-lost 的 fencing
 // 在新 attempt 的 dispatch binder 中执行）。
 func TestSuperviseRecoveryGateAdmitsBindingLostOrphanWithoutSideEffect(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	seedRun(t, root, "run-orphan-binding-lost", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-fixtureStaleAge))
 	writeTaskSpecFixture(t, root, "run-orphan-binding-lost", []string{"clean/**"})

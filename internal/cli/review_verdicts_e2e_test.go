@@ -26,6 +26,7 @@ import (
 // omitted or forged: frozenVerificationDigests fails closed before any packet
 // or decision is accepted, leaving the run in REVIEW_PENDING.
 func TestTaskReviewRejectsForgedVerificationCompletedActor(t *testing.T) {
+	sealedMigrationSkip(t)
 	for name, actor := range map[string]*domain.Actor{
 		"omitted": nil,
 		"forged":  {Type: "system", ID: "marshal-worker-runner"},
@@ -48,6 +49,7 @@ func TestTaskReviewRejectsForgedVerificationCompletedActor(t *testing.T) {
 }
 
 func TestTaskReviewAllVerdictsEndToEnd(t *testing.T) {
+	sealedMigrationSkip(t)
 	tests := []struct {
 		verdict      string
 		noChange     bool

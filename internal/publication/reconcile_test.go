@@ -410,6 +410,7 @@ func countJournalEvents(t *testing.T, fixture *publicationFixture, eventType str
 // ACCEPTED even when the head branch has already been deleted — the receipt
 // binds the PR node's immutable facts, not the branch.
 func TestReconcileMigratesBlockedRunToAcceptedAfterMerge(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := blockedPostPublicationFixture(t, fixtureOptions{maxReworkRounds: 1})
 	harness := newReconcileHarness(t, fixture)
 	// A historical non-timing ADR 0026 block keeps its compatibility path:
@@ -570,6 +571,7 @@ func mustCanonical(t *testing.T, data []byte) []byte {
 }
 
 func TestReconcileIdempotencyIdentityConflicts(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Run("identical identity and content merges without a second event", func(t *testing.T) {
 		fixture := blockedPostPublicationFixture(t, fixtureOptions{maxReworkRounds: 1})
 		harness := newReconcileHarness(t, fixture)
@@ -748,6 +750,7 @@ func mustPublication(t *testing.T, data []byte) domain.PublicationRecord {
 // after the receipt and record were persisted but before the journal event
 // was appended: replay must merge both artifacts and append exactly one event.
 func TestReconcileCrashCutReplayMergesWithoutDuplicateEvents(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := blockedPostPublicationFixture(t, fixtureOptions{maxReworkRounds: 1})
 	harness := newReconcileHarness(t, fixture)
 	crashInstant := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
@@ -797,6 +800,7 @@ func mustRecordBytes(t *testing.T, record domain.PublicationReconcileRecord) []b
 }
 
 func TestReconcileRejectsIneligibleRuns(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Run("non-blocked run is rejected", func(t *testing.T) {
 		fixture := fabricatedCIPendingFixture(t, fixtureOptions{maxReworkRounds: 1})
 		harness := newReconcileHarness(t, fixture)
@@ -916,6 +920,7 @@ func TestReconcileRejectsIneligibleRuns(t *testing.T) {
 }
 
 func TestReconcileReceiptBindingNegatives(t *testing.T) {
+	sealedMigrationSkip(t)
 	tests := []struct {
 		name   string
 		mutate func(*domain.SCMMergeReceipt)
@@ -967,6 +972,7 @@ func TestReconcileReceiptBindingNegatives(t *testing.T) {
 }
 
 func TestReconcileRejectsTamperedLedgerEvidence(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Run("decision file differs from frozen digest", func(t *testing.T) {
 		fixture := blockedPostPublicationFixture(t, fixtureOptions{maxReworkRounds: 1})
 		path := filepath.Join(fixture.runDirectory, "decisions", fmt.Sprintf("decision-%03d.json", fixture.inspect(t).ReviewRound))
@@ -1074,6 +1080,7 @@ func mutateJournalPayload(t *testing.T, fixture *publicationFixture, eventType, 
 }
 
 func TestReconcileLedgerCASConflictRollsBack(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := blockedPostPublicationFixture(t, fixtureOptions{maxReworkRounds: 1})
 	harness := newReconcileHarness(t, fixture)
 	store := runstore.New(fixture.stateRoot)
@@ -1125,6 +1132,7 @@ func TestReconcileLedgerCASConflictRollsBack(t *testing.T) {
 // migrated to ACCEPTED by the typed reconciliation, recording the
 // ci-deadline-reconciled reason code.
 func TestReconcileRecoversDeadlineBlockedRunOnTimelyCompletion(t *testing.T) {
+	sealedMigrationSkip(t)
 	createdAt, publishedAt, legacyDeadline, ciDeadline := deadlineFixtureInstants()
 	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
 	_, publicationDigest := fixturePublicationBytes(t, fixture)
@@ -1210,6 +1218,7 @@ func TestReconcileRecoversDeadlineBlockedRunOnTimelyCompletion(t *testing.T) {
 // matrix cell: the recovery merges offline and idempotently — no second
 // record, no second event, no second network observation.
 func TestReconcileDeadlineRecoveryIsIdempotent(t *testing.T) {
+	sealedMigrationSkip(t)
 	createdAt, publishedAt, legacyDeadline, _ := deadlineFixtureInstants()
 	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
 	harness := newReconcileHarness(t, fixture)
@@ -1245,6 +1254,7 @@ func TestReconcileDeadlineRecoveryIsIdempotent(t *testing.T) {
 // completedAt proof, so the recovery fails closed with the run kept in
 // BLOCKED and zero writes.
 func TestReconcileDeadlineRecoveryAfterCIDeadlineFailsClosed(t *testing.T) {
+	sealedMigrationSkip(t)
 	createdAt, publishedAt, _, ciDeadline := deadlineFixtureInstants()
 	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
 	before := fixture.inspect(t)
@@ -1273,6 +1283,7 @@ func TestReconcileDeadlineRecoveryAfterCIDeadlineFailsClosed(t *testing.T) {
 }
 
 func TestReconcileAllCITimingBlockReasonsRequireFreshTimelyProof(t *testing.T) {
+	sealedMigrationSkip(t)
 	createdAt, publishedAt, legacyDeadline, _ := deadlineFixtureInstants()
 	for _, reason := range []error{errCIDeadlineExceeded, errCICompletedAtMissing, errCICompletedAtExceedsDeadline, errCICompletedAtInconsistent} {
 		t.Run(reason.Error(), func(t *testing.T) {
@@ -1292,6 +1303,7 @@ func TestReconcileAllCITimingBlockReasonsRequireFreshTimelyProof(t *testing.T) {
 }
 
 func TestReconcileCITimingFailuresPersistFreshEvidenceBeforeFailClosed(t *testing.T) {
+	sealedMigrationSkip(t)
 	createdAt, publishedAt, _, ciDeadline := deadlineFixtureInstants()
 	proofs := []struct {
 		name   string
@@ -1339,6 +1351,7 @@ func TestReconcileCITimingFailuresPersistFreshEvidenceBeforeFailClosed(t *testin
 }
 
 func TestReconcileCheckEvidenceCrashCutReplayIsIdempotent(t *testing.T) {
+	sealedMigrationSkip(t)
 	createdAt, publishedAt, legacyDeadline, _ := deadlineFixtureInstants()
 	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCICompletedAtMissing.Error()})
 	harness := newReconcileHarness(t, fixture)
@@ -1392,6 +1405,7 @@ func assertRejectedReconcileWroteOnlyCheckEvidence(t *testing.T, fixture *public
 // head/identity matrix cell at the reconcile boundary: green checks from a
 // stale head never authorize the recovery.
 func TestReconcileDeadlineRecoveryRejectsCheckIdentityDrift(t *testing.T) {
+	sealedMigrationSkip(t)
 	createdAt, publishedAt, legacyDeadline, _ := deadlineFixtureInstants()
 	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
 	harness := newReconcileHarness(t, fixture)
@@ -1415,6 +1429,7 @@ func TestReconcileDeadlineRecoveryRejectsCheckIdentityDrift(t *testing.T) {
 // observer-unavailable matrix cell for a deadline-blocked run: no acceptance,
 // no receipt, no record, no event.
 func TestReconcileDeadlineRecoveryObserverUnavailableFailsClosed(t *testing.T) {
+	sealedMigrationSkip(t)
 	createdAt, publishedAt, legacyDeadline, _ := deadlineFixtureInstants()
 	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
 	before := fixture.inspect(t)

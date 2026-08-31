@@ -1,8 +1,10 @@
 # Roadmap 状态
 
-更新时间：2026-08-31（`main@3819462` fixed CLI real-Pi `ACCEPTED` checkpoint；后续架构修复待合入）
+更新时间：2026-09-01（sealed-migration skip 标记 checkpoint；darwin 组合驱动为下一纵切前置）
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
+
+> **2026-09-01 sealed-migration skip 标记 checkpoint**：ADR 0068 zero-selector cutover 已落地（`b1e274f`）——`MARSHAL_WORKER_EXECUTOR`/`MARSHAL_EMBEDDED_SANDBOX`/`MARSHAL_PRODUCTION_GATE` 三个 env selector 及其 direct `Adapter.Run` fallback 从 production 链移除，`FROZEN_SELECTOR_DEBT` 归零为零容忍扫描；compat 生命周期套件（qwen fallback、ThroughVerify、autoflow）退役，dogfood 套件转真实 Pi + sealed fail-closed。同期发现 main 测试套件自 sealed Run-start 门禁落地起即红（被 lint 失败掩盖）：旧 fixture 直写 `READY→RUNNING`，被 `runstore.Append` 门禁与 `WriteSnapshot`↔journal 等价验证双层 fail-closed 拒绝，唯一合法产生路径是 darwin real composition + 真实 Pi 0.84.4。迁移路线已由维护者确定为 **darwin 组合驱动 + 双端 skip**：gate 命中的 184 项测试统一以 `sealedMigrationSkip`（per-package helper，含 1f520c8 半落地的 darwin production admission 执法）显式标记并保持可见，连同 processsupervisor `/private/tmp` 环境修复与 qoder checker darwin-identity 平台门禁。darwin real-composition 驱动是恢复这些套件为真实通过的下一个纵切前置；skip 只标记债务，不授予任何运行时路径豁免，R2–R6 状态不变。
 
 > **2026-08-31 fixed CLI `ACCEPTED` checkpoint**：`main@3819462` 的同一 Darwin arm64 candidate bytes 已通过真实 Pi canary `RC1-PI-20260831-3819462`，由独立 Verification 与独立 ReviewDecision 进入 `ACCEPTED`；Decision digest 为 `sha256:5d50b624e41419ef32a1d7251481d5843ab001d3affe0ef6c8a6aad5465df5e9`。该结果证明 fixed CLI 的主生命周期可达，但不升级 R2–R6，也不授权 tag：exact-head CI 仍有 architecture red；ADR 0068 要求 production environment selector/direct fallback 为零；release workflow 仍缺 pre-tag immutable candidate、current-authority receipt producer/admission、RC1 单资产 tag 校验与 no-rebuild prerelease consumption。当前最短路径只处理这三项并在新 final bytes 上重跑 same-bytes canary，禁止回到横向组件扩张。
 

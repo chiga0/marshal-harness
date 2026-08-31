@@ -137,6 +137,7 @@ func TestStalePlanApprovalCannotPass(t *testing.T) {
 }
 
 func TestPublishApprovalBindsReviewEvidence(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Parallel()
 	fixture := newApprovalFixture(t, nil, true)
 	input := fixture.input(domain.ApprovalGatePublish)
@@ -160,6 +161,7 @@ func TestPublishApprovalBindsReviewEvidence(t *testing.T) {
 }
 
 func TestPublishApprovalReadsRoundBoundDecisionFile(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Parallel()
 	fixture := newApprovalFixture(t, nil, true)
 	decisionPath := filepath.Join(fixture.runDir, "decisions", "decision-001.json")

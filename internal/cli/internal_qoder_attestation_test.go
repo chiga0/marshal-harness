@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,9 @@ func TestInternalQoderTranscriptCheckBoundsInputAndArguments(t *testing.T) {
 }
 
 func TestInternalQoderTranscriptCheckStableHandshake(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("qoder transcript build-identity checks follow the Darwin signed-binary identity contract")
+	}
 	for _, test := range []struct {
 		name       string
 		input      string
@@ -95,6 +99,9 @@ func TestInternalQoderTranscriptCheckStableHandshake(t *testing.T) {
 }
 
 func TestInternalQoderTranscriptCheckRejectsUnknownBuildIdentity(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("qoder transcript build-identity checks follow the Darwin signed-binary identity contract")
+	}
 	input := `{"subject":{},"transcript":"","transcriptMeta":"","workerRequest":"","workerResult":"","taskSpec":"","capabilitySnapshot":"","profile":""}`
 	var stdout, stderr bytes.Buffer
 	if exit := Run([]string{"internal", "qoder-transcript-check"}, strings.NewReader(input), &stdout, &stderr); exit != ExitFailure {

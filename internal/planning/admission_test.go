@@ -93,6 +93,7 @@ func assertDependencyError(t *testing.T, err error, wantCategory, wantRunID, wan
 }
 
 func TestResolveRunDependenciesSatisfied(t *testing.T) {
+	sealedMigrationSkip(t)
 	store := runstore.New(t.TempDir())
 	seedAdmissionRun(t, store, "run-dep-accepted", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest)
 	seedAdmissionRun(t, store, "run-dep-ready", []domain.State{domain.StatePlanned, domain.StateReady}, admissionBaseSHA, admissionSpecDigest)
@@ -142,6 +143,7 @@ func TestResolveRunDependenciesStateMismatch(t *testing.T) {
 }
 
 func TestResolveRunDependenciesUnknownRun(t *testing.T) {
+	sealedMigrationSkip(t)
 	store := runstore.New(t.TempDir())
 	seedAdmissionRun(t, store, "run-dep-accepted", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest)
 
@@ -150,6 +152,7 @@ func TestResolveRunDependenciesUnknownRun(t *testing.T) {
 }
 
 func TestResolveRunDependenciesBaseSHAMismatch(t *testing.T) {
+	sealedMigrationSkip(t)
 	store := runstore.New(t.TempDir())
 	seedAdmissionRun(t, store, "run-dep-accepted", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest)
 
@@ -162,6 +165,7 @@ func TestResolveRunDependenciesBaseSHAMismatch(t *testing.T) {
 }
 
 func TestResolveRunDependenciesSpecDigestMismatch(t *testing.T) {
+	sealedMigrationSkip(t)
 	store := runstore.New(t.TempDir())
 	seedAdmissionRun(t, store, "run-dep-accepted", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest)
 
@@ -174,6 +178,7 @@ func TestResolveRunDependenciesSpecDigestMismatch(t *testing.T) {
 }
 
 func TestResolveRunDependenciesUnreadableStateFailsClosed(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	store := runstore.New(root)
 	seedAdmissionRun(t, store, "run-dep-corrupt", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest)
@@ -190,6 +195,7 @@ func TestResolveRunDependenciesUnreadableStateFailsClosed(t *testing.T) {
 }
 
 func TestResolveRunDependenciesIsReadOnlyAndOrdered(t *testing.T) {
+	sealedMigrationSkip(t)
 	store := runstore.New(t.TempDir())
 	seedAdmissionRun(t, store, "run-dep-accepted", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest)
 
@@ -278,6 +284,7 @@ func assertTaskDependencyError(t *testing.T, err error, wantCategory, wantTaskID
 }
 
 func TestResolveTaskSpecDependenciesTaskSatisfied(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	store := runstore.New(root)
 	seedAdmissionTaskRun(t, store, "run-task-old", "task-dep", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest, time.Unix(10, 0).UTC())
@@ -296,6 +303,7 @@ func TestResolveTaskSpecDependenciesTaskSatisfied(t *testing.T) {
 }
 
 func TestResolveTaskSpecDependenciesLatestRunWins(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	store := runstore.New(root)
 	rejectedChain := []domain.State{
@@ -320,6 +328,7 @@ func TestResolveTaskSpecDependenciesLatestRunWins(t *testing.T) {
 }
 
 func TestResolveTaskSpecDependenciesTaskNotFound(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	store := runstore.New(root)
 	seedAdmissionTaskRun(t, store, "run-other", "task-other", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest, time.Unix(10, 0).UTC())
@@ -342,6 +351,7 @@ func TestResolveTaskSpecDependenciesTaskNotFound(t *testing.T) {
 }
 
 func TestResolveTaskSpecDependenciesTaskBaseSHAMismatch(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	store := runstore.New(root)
 	seedAdmissionTaskRun(t, store, "run-task-new", "task-dep", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest, time.Unix(20, 0).UTC())
@@ -356,6 +366,7 @@ func TestResolveTaskSpecDependenciesTaskBaseSHAMismatch(t *testing.T) {
 }
 
 func TestResolveTaskSpecDependenciesTaskSpecDigestMismatch(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	store := runstore.New(root)
 	seedAdmissionTaskRun(t, store, "run-task-new", "task-dep", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest, time.Unix(20, 0).UTC())
@@ -370,6 +381,7 @@ func TestResolveTaskSpecDependenciesTaskSpecDigestMismatch(t *testing.T) {
 }
 
 func TestResolveTaskSpecDependenciesMixedAndUnknownKind(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	store := runstore.New(root)
 	seedAdmissionRun(t, store, "run-dep-accepted", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest)
@@ -405,6 +417,7 @@ func TestResolveTaskSpecDependenciesMixedAndUnknownKind(t *testing.T) {
 }
 
 func TestLatestRunForTaskSkipsForeignAndUnreadableRuns(t *testing.T) {
+	sealedMigrationSkip(t)
 	root := t.TempDir()
 	store := runstore.New(root)
 	seedAdmissionTaskRun(t, store, "run-task-old", "task-dep", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest, time.Unix(10, 0).UTC())

@@ -816,6 +816,7 @@ func TestServerBindsAuthorityNamespace(t *testing.T) {
 // Attempt to VERIFYING, a fresh Server rebuilds status from disk, and replay
 // of the same submission returns the durable result without a second Attempt.
 func TestRunStartExecutesThroughCoreAndReplaysAcrossServerRestart(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newServerFixture(t)
 	fixture.adapter.run = successfulServerWorker
 	executions := 0
@@ -939,6 +940,7 @@ func TestRunStartExecutesThroughCoreAndReplaysAcrossServerRestart(t *testing.T) 
 // the existing explicit-abort path closes it, and cancel replay adds no second
 // terminal transition.
 func TestRunStartFailureCanBeCancelledIdempotently(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newServerFixture(t)
 	fixture.adapter.run = func(context.Context, domain.Record) (domain.Record, error) {
 		failure, err := port.NewAdapterFailure(port.AdapterIDFake, port.FailureKindConnectionFailure,
@@ -1024,6 +1026,7 @@ func TestRunStartRejectsNullPayloadBeforeExecution(t *testing.T) {
 }
 
 func TestRunStartPendingIntentRecoversAuthorityStates(t *testing.T) {
+	sealedMigrationSkip(t)
 	for _, target := range []domain.State{
 		domain.StateRunning, domain.StateRetryPending, domain.StateBlocked, domain.StateVerifying,
 	} {

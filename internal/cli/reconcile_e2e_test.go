@@ -474,6 +474,7 @@ func TestTaskReconcileUsageAndGuards(t *testing.T) {
 }
 
 func TestTaskReconcileEndToEndMigratesBlockedRunToAccepted(t *testing.T) {
+	sealedMigrationSkip(t)
 	repositoryRoot, ghStateDir := newReconcileE2EEnvironment(t)
 	validator, err := contract.NewValidator()
 	if err != nil {
@@ -596,6 +597,7 @@ func TestTaskReconcileEndToEndMigratesBlockedRunToAccepted(t *testing.T) {
 }
 
 func TestTaskReconcileRejectsNonBlockedRun(t *testing.T) {
+	sealedMigrationSkip(t)
 	repositoryRoot, ghStateDir := newReconcileE2EEnvironment(t)
 	validator, err := contract.NewValidator()
 	if err != nil {

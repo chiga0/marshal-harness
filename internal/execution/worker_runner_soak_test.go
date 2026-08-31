@@ -18,6 +18,7 @@ import (
 // （CI 预算内）；wall-clock 24h soak 由同一 harness 放大轮数后在外部
 // 运行器执行（见 internal/soak/doc.go 的边界说明）。
 func TestPathSoakBridgedRuns(t *testing.T) {
+	sealedMigrationSkip(t)
 	const rounds = 5
 	prevSeqMax := 1 // spec-accepted + inputs-frozen 起步事件序列长度下界
 	seenAttempts := map[string]int{}

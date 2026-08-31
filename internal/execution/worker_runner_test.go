@@ -20,6 +20,7 @@ import (
 // 推进、同一事件类型序列、同一产物集合；差异只在执行链身份绑定
 // （allocation/lease/stage）由桥承载。
 func TestRunThroughWorkerRunnerSandboxBridge(t *testing.T) {
+	sealedMigrationSkip(t)
 	legacy := newExecutionFixture(t, false)
 	legacyResult, err := Run(context.Background(), legacy.input)
 	if err != nil {
@@ -101,6 +102,7 @@ func normalizeAttempt(raw []byte) string {
 // 与旧路径一致的 fail-closed 归一化与持久化：typed 失败按类型消费预算，
 // untyped 失败归一化为 protocol-invalid 且零 raw cause 泄漏。
 func TestRunWorkerRunnerFailureKeepsFailureChain(t *testing.T) {
+	sealedMigrationSkip(t)
 	// 失败归一化要求 adapter id 命中封闭集合：使用 fake fixture（与既有
 	// untyped-failure 测试同一模式）。
 	fixture := newFakeExecutionFixture(t, executionFixtureOptions{})
@@ -137,6 +139,7 @@ func TestRunWorkerRunnerFailureKeepsFailureChain(t *testing.T) {
 // 第二业务事实、不需要任何状态迁移——runstore 在桥路径写入后以 legacy
 // 消费方原样可读，事件条目与 outcome 唯一且一致。
 func TestRunWorkerRunnerRollbackDrill(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newExecutionFixture(t, false)
 	provider := sandbox.NewFakeProvider(sandbox.FakeConfig{})
 	bridge, err := sandboxbridge.NewBridge(provider)

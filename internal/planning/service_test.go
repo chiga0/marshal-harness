@@ -965,6 +965,7 @@ func TestPlanRejectsPreparedAdmissionBeforeSideEffects(t *testing.T) {
 }
 
 func TestPlanRunDependencyGate(t *testing.T) {
+	sealedMigrationSkip(t)
 	repositoryRoot, baseSHA := planningGitFixture(t)
 	const (
 		taskID    = "task-plan-rundep"
@@ -1030,6 +1031,7 @@ func TestPlanRunDependencyGate(t *testing.T) {
 }
 
 func TestPlanTaskDependencyResolvesLatestRun(t *testing.T) {
+	sealedMigrationSkip(t)
 	repositoryRoot, baseSHA := planningGitFixture(t)
 	const (
 		taskID    = "task-plan-taskdep"

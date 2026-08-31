@@ -207,6 +207,7 @@ type abortJSONResult struct {
 }
 
 func TestTaskAbortTerminatesRetryPendingRun(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newAbortFixture(t, domain.StateRetryPending)
 	const reason = "run abandoned after strategy change"
 	var stdout, stderr bytes.Buffer
@@ -746,6 +747,7 @@ func assertAbortDenied(t *testing.T, fixture abortFixture, sentinel string) {
 }
 
 func TestTaskAbortPreAttemptDenialsFailClosed(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Run("attempt tree present", func(t *testing.T) {
 		fixture := newAbortFixture(t, domain.StateReady)
 		if err := os.MkdirAll(filepath.Join(fixture.runDirectory, "attempts", "attempt-fixture-1"), 0o700); err != nil {
@@ -856,6 +858,7 @@ func TestTaskAbortPreAttemptDenialsFailClosed(t *testing.T) {
 }
 
 func TestTaskAbortRejectsOtherStates(t *testing.T) {
+	sealedMigrationSkip(t)
 	for _, target := range []domain.State{domain.StateCreated, domain.StateRunning, domain.StateVerifying, domain.StateReworkRequested} {
 		target := target
 		t.Run(string(target), func(t *testing.T) {

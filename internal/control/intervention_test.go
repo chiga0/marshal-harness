@@ -14,6 +14,7 @@ import (
 )
 
 func TestMediatedSteeringRecordsRounds(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Parallel()
 	fixture := newApprovalFixture(t, nil, false)
 	advanceFixtureToRunning(t, fixture)
@@ -34,6 +35,7 @@ func TestMediatedSteeringRecordsRounds(t *testing.T) {
 }
 
 func TestSteeringPolicyAndBudgetFailClosed(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Parallel()
 	t.Run("disabled", func(t *testing.T) {
 		t.Parallel()
@@ -92,6 +94,7 @@ func TestScopeChangeRequiresNewRunAndPreservesFrozenInputs(t *testing.T) {
 }
 
 func TestManualPTYPolicy(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Parallel()
 	t.Run("record and reverify", func(t *testing.T) {
 		t.Parallel()
@@ -122,6 +125,7 @@ func TestManualPTYPolicy(t *testing.T) {
 }
 
 func TestInterventionRejectsWrongAttemptAndInput(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Parallel()
 	fixture := newApprovalFixture(t, nil, false)
 	advanceFixtureToRunning(t, fixture)

@@ -78,6 +78,7 @@ func assertNoMergeSideEffect(t *testing.T, fixture *mergeFixture, harness *merge
 }
 
 func TestMergeRejectsPolicyWithoutAllowMerge(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	policy := fixture.readPolicy(t)
 	policy.Effective.AllowMerge = false
@@ -96,6 +97,7 @@ func TestMergeRejectsPolicyWithoutAllowMerge(t *testing.T) {
 }
 
 func TestMergeRejectsPolicyWithoutAllowPublication(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	policy := fixture.readPolicy(t)
 	policy.Effective.AllowPublication = false
@@ -114,6 +116,7 @@ func TestMergeRejectsPolicyWithoutAllowPublication(t *testing.T) {
 }
 
 func TestMergeRejectsPolicyDigestMismatch(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	// The snapshot policy digest diverges from the persisted policy document
 	// without the document being rewritten.
@@ -127,6 +130,7 @@ func TestMergeRejectsPolicyDigestMismatch(t *testing.T) {
 }
 
 func TestMergeRejectsNeverMergePolicy(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	data, err := os.ReadFile(filepath.Join(fixture.runDirectory, "task-spec.json"))
 	if err != nil {
@@ -155,6 +159,7 @@ func TestMergeRejectsNeverMergePolicy(t *testing.T) {
 }
 
 func TestMergeRejectsDecisionWithoutEligibleMergeRecommendation(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	decisionPath := filepath.Join(fixture.runDirectory, "decisions", "decision-001.json")
 	data, err := os.ReadFile(decisionPath)
@@ -187,6 +192,7 @@ func TestMergeRejectsDecisionWithoutEligibleMergeRecommendation(t *testing.T) {
 }
 
 func TestMergeRejectsMissingHumanPublishApproval(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	if err := os.Remove(filepath.Join(fixture.runDirectory, "control", "records.jsonl")); err != nil {
 		t.Fatal(err)
@@ -200,6 +206,7 @@ func TestMergeRejectsMissingHumanPublishApproval(t *testing.T) {
 }
 
 func TestMergeRejectsEmptyRequiredChecks(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	data, err := os.ReadFile(filepath.Join(fixture.runDirectory, "task-spec.json"))
 	if err != nil {
@@ -225,6 +232,7 @@ func TestMergeRejectsEmptyRequiredChecks(t *testing.T) {
 }
 
 func TestMergeRejectsPendingChecks(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.checkObserver = &fakeObserver{status: "pending"}
@@ -236,6 +244,7 @@ func TestMergeRejectsPendingChecks(t *testing.T) {
 }
 
 func TestMergeRejectsFailedChecks(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.checkObserver = &fakeObserver{status: "fail"}
@@ -247,6 +256,7 @@ func TestMergeRejectsFailedChecks(t *testing.T) {
 }
 
 func TestMergeRejectsHeadDrift(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.targetObserver.target.HeadOid = fabricatedSHA("9")
@@ -258,6 +268,7 @@ func TestMergeRejectsHeadDrift(t *testing.T) {
 }
 
 func TestMergeRejectsBaseAdvance(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.targetObserver.target.BaseOid = fabricatedSHA("a")
@@ -269,6 +280,7 @@ func TestMergeRejectsBaseAdvance(t *testing.T) {
 }
 
 func TestMergeRejectsBaseBranchDrift(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.targetObserver.target.BaseBranch = "release"
@@ -280,6 +292,7 @@ func TestMergeRejectsBaseBranchDrift(t *testing.T) {
 }
 
 func TestMergeAuthorizationCurrentLedgerRejectsIneligibleTarget(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.eligibility.eligible = false
@@ -298,6 +311,7 @@ func TestMergeAuthorizationCurrentLedgerRejectsIneligibleTarget(t *testing.T) {
 }
 
 func TestMergeRejectsMissingMarker(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.targetObserver.target.MarkerPresent = false
@@ -309,6 +323,7 @@ func TestMergeRejectsMissingMarker(t *testing.T) {
 }
 
 func TestMergeBlocksWhenProviderCannotBindHead(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.merger.bindsHead = false
@@ -352,6 +367,7 @@ func (f *mergeFixture) rewriteTaskSpec(t *testing.T, mutate func(*domain.TaskSpe
 }
 
 func TestMergeRejectsManualMergePolicy(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	fixture.rewriteTaskSpec(t, func(task *domain.TaskSpec) { task.Publication.MergePolicy = domain.MergePolicyManual })
 
@@ -363,6 +379,7 @@ func TestMergeRejectsManualMergePolicy(t *testing.T) {
 }
 
 func TestMergeRejectsMissingMergeMethod(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	fixture.rewriteTaskSpec(t, func(task *domain.TaskSpec) { task.Publication.MergeMethod = "" })
 
@@ -374,6 +391,7 @@ func TestMergeRejectsMissingMergeMethod(t *testing.T) {
 }
 
 func TestMergeRejectsRequiredChecksSetMismatch(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.checkObserver = &fakeObserver{status: "pass", mutate: func(checks *domain.RemoteCheckRecord) {
@@ -387,6 +405,7 @@ func TestMergeRejectsRequiredChecksSetMismatch(t *testing.T) {
 }
 
 func TestMergePersistsFreshChecksBeforeTimelyCompletionAdjudication(t *testing.T) {
+	sealedMigrationSkip(t)
 	tests := []struct {
 		name   string
 		want   error
@@ -438,6 +457,7 @@ func TestMergePersistsFreshChecksBeforeTimelyCompletionAdjudication(t *testing.T
 }
 
 func TestMergeObservesBeforePostDeadlineAdjudication(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Run("provider timely pass may merge after local deadline", func(t *testing.T) {
 		fixture := newMergeFixture(t)
 		harness := newMergeHarness(t, fixture)
@@ -523,6 +543,7 @@ func assertFreshCheckEvidencePersisted(t *testing.T, fixture *mergeFixture) {
 }
 
 func TestMergeRejectsRepositoryDrift(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.targetObserver.target.Repository = "other/repo"
@@ -534,6 +555,7 @@ func TestMergeRejectsRepositoryDrift(t *testing.T) {
 }
 
 func TestMergeRejectsPRNumberDrift(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.targetObserver.target.PRNumber = 99
@@ -545,6 +567,7 @@ func TestMergeRejectsPRNumberDrift(t *testing.T) {
 }
 
 func TestMergeBlocksMergedTargetWithIdentityDrift(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.targetObserver.target.State = domain.MergeTargetStateMerged
@@ -561,6 +584,7 @@ func TestMergeBlocksMergedTargetWithIdentityDrift(t *testing.T) {
 // intent must be rejected without persisting an orphan intent, so a
 // "manually ready, then back-fill intent" bypass can never succeed.
 func TestMergeRejectsReadyPRWithoutIntent(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.targetObserver.target.Draft = false

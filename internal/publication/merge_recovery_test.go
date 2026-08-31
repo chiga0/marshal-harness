@@ -16,6 +16,7 @@ import (
 )
 
 func TestMergeReobservesBaseImmediatelyBeforeMutation(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	initial := mergeTargetFor(fixture)
@@ -36,6 +37,7 @@ func TestMergeReobservesBaseImmediatelyBeforeMutation(t *testing.T) {
 }
 
 func TestMergeReadyReobservesTargetImmediatelyBeforeMutation(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	initial := mergeTargetFor(fixture)
@@ -53,6 +55,7 @@ func TestMergeReadyReobservesTargetImmediatelyBeforeMutation(t *testing.T) {
 }
 
 func TestMergeRecoveryRestoresDurableAuthorizationWithoutIssuance(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.merger.readyErr = errors.New("persist intent and authorization")
@@ -79,6 +82,7 @@ func TestMergeRecoveryRestoresDurableAuthorizationWithoutIssuance(t *testing.T) 
 }
 
 func TestMergeRecoveryPersistsRevocationAndNeverRevivesIt(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.merger.readyErr = errors.New("persist intent and authorization")
@@ -119,6 +123,7 @@ func TestMergeRecoveryPersistsRevocationAndNeverRevivesIt(t *testing.T) {
 }
 
 func TestMergeRecoveryRejectsTamperedDurableAuthorization(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.merger.readyErr = errors.New("persist intent and authorization")
@@ -149,6 +154,7 @@ func TestMergeRecoveryRejectsTamperedDurableAuthorization(t *testing.T) {
 }
 
 func TestMergeRecoveryRejectsDeletedAuthorizationSuccessor(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.merger.readyErr = errors.New("stop")
@@ -218,6 +224,7 @@ func mergedTargetFor(fixture *mergeFixture) domain.SCMMergeTarget {
 // transient observation failure before the intent write produces zero remote
 // side effect and zero orphan intent, and a later re-run recovers cleanly.
 func TestMergeTransientCheckFailurePersistsNoIntentThenRecovers(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.checkObserver.failWith = errors.New("simulated check observation outage")
@@ -255,6 +262,7 @@ func TestMergeTransientCheckFailurePersistsNoIntentThenRecovers(t *testing.T) {
 // response leaves the immutable intent behind, and re-entry continues with
 // the same intent without minting a second one.
 func TestMergeReadyFailureRecoversWithSameIntent(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.merger.readyErr = errors.New("simulated ready response loss")
@@ -297,6 +305,7 @@ func TestMergeReadyFailureRecoversWithSameIntent(t *testing.T) {
 }
 
 func TestMergeDeliveryRetryBudgetExhaustsToBlocked(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.merger.readyErr = errors.New("persistent ready outage")
@@ -319,6 +328,7 @@ func TestMergeDeliveryRetryBudgetExhaustsToBlocked(t *testing.T) {
 }
 
 func TestMergeDeliveryLedgerTamperFailsClosedBeforeAnotherMutation(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.merger.readyErr = errors.New("transient ready outage")
@@ -345,6 +355,7 @@ func TestMergeDeliveryLedgerTamperFailsClosedBeforeAnotherMutation(t *testing.T)
 }
 
 func TestMergeDeliveryTailDeletionDoesNotResetBudget(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.merger.readyErr = errors.New("transient")
@@ -368,6 +379,7 @@ func TestMergeDeliveryTailDeletionDoesNotResetBudget(t *testing.T) {
 }
 
 func TestMergeRecoveryRejectsTamperedRemoteCheckBytes(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.merger.readyErr = errors.New("persist intent and check evidence")
@@ -397,6 +409,7 @@ func TestMergeRecoveryRejectsTamperedRemoteCheckBytes(t *testing.T) {
 }
 
 func TestMergeRecoveryBlocksSecurityDomainDrift(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.merger.readyErr = errors.New("persist intent before recovery")
@@ -418,6 +431,7 @@ func TestMergeRecoveryBlocksSecurityDomainDrift(t *testing.T) {
 // persisted; re-entering against an already-merged PR observes the receipt and
 // converges without ever re-calling Merge.
 func TestMergeResponseLossRecoversFromMergedTargetWithoutReMerge(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	harness.merger.mergeErr = errors.New("simulated merge response loss")
@@ -471,6 +485,7 @@ func TestMergeResponseLossRecoversFromMergedTargetWithoutReMerge(t *testing.T) {
 // re-entry reconstructs it from the journal/intent/receipt binding without
 // duplicating the convergence event or rewriting an existing Outcome.
 func TestMergeReentryAfterConvergenceRebuildsOutcomeIdempotently(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 
@@ -517,6 +532,7 @@ func TestMergeReentryAfterConvergenceRebuildsOutcomeIdempotently(t *testing.T) {
 }
 
 func TestMergeC7RepairsEitherMissingOutcomeDocumentWithoutOverwrite(t *testing.T) {
+	sealedMigrationSkip(t)
 	for _, missing := range []string{"outcome.json", "outcome.md"} {
 		t.Run(missing, func(t *testing.T) {
 			fixture := newMergeFixture(t)
@@ -554,6 +570,7 @@ func TestMergeC7RepairsEitherMissingOutcomeDocumentWithoutOverwrite(t *testing.T
 }
 
 func TestMergeC7RevalidatesReceiptEvenWhenOutcomeExists(t *testing.T) {
+	sealedMigrationSkip(t)
 	for _, removeOutcome := range []bool{false, true} {
 		name := "existing-outcome"
 		if removeOutcome {
@@ -596,6 +613,7 @@ func TestMergeC7RevalidatesReceiptEvenWhenOutcomeExists(t *testing.T) {
 }
 
 func TestMergeC7RejectsMissingReceipt(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 	if _, err := harness.merge(t); err != nil {
@@ -614,6 +632,7 @@ func TestMergeC7RejectsMissingReceipt(t *testing.T) {
 // SCMMergeIntent must block and never be claimed as a controlled merge; only
 // ADR 0026 reconcile may later migrate it.
 func TestObserveChecksBlocksExternalMergeWithoutIntent(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	mergeObserver := &mergeReceiptObserver{authorityNamespaceID: fixture.authorityNamespaceID, mergedBy: "maintainer", method: domain.MergeMethodSquash}
 

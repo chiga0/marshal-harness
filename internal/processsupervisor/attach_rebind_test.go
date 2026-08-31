@@ -277,7 +277,7 @@ func TestAttachedSessionExecutePreparedBindAuthorityDirect(t *testing.T) {
 // session's SetDeadline/CloseWrite path is exercised for real.
 func rebindSocketPair(t *testing.T) (client, server *net.UnixConn) {
 	t.Helper()
-	root, err := os.MkdirTemp("/private/tmp", "rebind-pair-")
+	root, err := os.MkdirTemp("", "rebind-pair-")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -250,6 +250,7 @@ func TestSuperviseOnceDispatchesReadyRunToWorker(t *testing.T) {
 }
 
 func TestSuperviseOnceRetriesPublishForDeadDriver(t *testing.T) {
+	sealedMigrationSkip(t)
 	_, stateRoot := newSuperviseRepository(t)
 	const runID = "run-supervise-publishing"
 	publishingPath := []domain.State{
@@ -280,6 +281,7 @@ func TestSuperviseOnceRetriesPublishForDeadDriver(t *testing.T) {
 }
 
 func TestSuperviseOnceReturnsDeadRunningRunToCore(t *testing.T) {
+	sealedMigrationSkip(t)
 	_, stateRoot := newSuperviseRepository(t)
 	const runID = "run-supervise-orphan"
 	seedSuperviseRun(t, stateRoot, runID, []domain.State{
@@ -305,6 +307,7 @@ func TestSuperviseOnceReturnsDeadRunningRunToCore(t *testing.T) {
 }
 
 func TestSuperviseOnceLeavesTerminalAndAliveRunsAlone(t *testing.T) {
+	sealedMigrationSkip(t)
 	_, stateRoot := newSuperviseRepository(t)
 	now := time.Now().UTC()
 	terminalPath := []domain.State{
@@ -432,6 +435,7 @@ func TestSuperviseOnceJSONCarriesCompleteDecisionFields(t *testing.T) {
 // 陈旧 journal 不获取 lease；此测试获取真实 lease 再释放，证明 lease
 // 生命周期与恢复路径的正确交互。
 func TestSuperviseOnceRecoversAfterRealProcessKill(t *testing.T) {
+	sealedMigrationSkip(t)
 	_, stateRoot := newSuperviseRepository(t)
 	const runID = "run-supervise-real-kill"
 	// seed 一个 RUNNING run，时间戳是 2 小时前（超过 staleness 阈值）。

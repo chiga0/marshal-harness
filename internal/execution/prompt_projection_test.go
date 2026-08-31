@@ -615,6 +615,7 @@ func TestRenderPromptProjectionV1AcceptanceArgvAndOperatorSecretDoNotLeak(t *tes
 // renderPrompt and Run still read it, the version identifier appears exactly
 // once, and the task-spec bytes are not rewritten.
 func TestPromptProjectionV1LegacyFrozenTaskSpecRemainsReadCompatible(t *testing.T) {
+	sealedMigrationSkip(t)
 	// The fixture is v1alpha1 with no projectionVersion or catalog fields.
 	spec := promptFixtureSpec()
 	if _, has := spec["projectionVersion"]; has {

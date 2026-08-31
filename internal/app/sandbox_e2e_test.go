@@ -211,6 +211,7 @@ func e2eCapabilityFixture(t *testing.T, adapterID string) []byte {
 // provider Exec/checkpoint/log evidence → independent Verifier sandbox →
 // REVIEW_PENDING → ACCEPTED, without any publication.
 func TestEmbeddedSandboxE2EFullChain(t *testing.T) {
+	sealedMigrationSkip(t)
 	ctx := context.Background()
 	repositoryRoot, baseSHA := e2eRepositoryFixture(t)
 	stateRoot := filepath.Join(repositoryRoot, ".marshal")

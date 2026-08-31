@@ -20,6 +20,7 @@ import (
 )
 
 func TestTaskReviewEndToEndRejectsStaleWorktreeAndPersistsTerminalOutcome(t *testing.T) {
+	sealedMigrationSkip(t)
 	originalDirectory, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)

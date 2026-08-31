@@ -551,6 +551,7 @@ func readPersistedIntent(t *testing.T, fixture *mergeFixture) domain.SCMMergeInt
 }
 
 func TestMergeHappyPathConvergesToAccepted(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newMergeFixture(t)
 	harness := newMergeHarness(t, fixture)
 

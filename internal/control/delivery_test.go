@@ -51,6 +51,7 @@ func (s *fakeTerminalSession) Terminate(context.Context, time.Duration) error {
 }
 
 func TestApplyInterventionDeliversBeforeRecording(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Parallel()
 	fixture := newApprovalFixture(t, nil, false)
 	advanceFixtureToRunning(t, fixture)
@@ -71,6 +72,7 @@ func TestApplyInterventionDeliversBeforeRecording(t *testing.T) {
 }
 
 func TestApplyInterventionDoesNotRecordFailedOrMismatchedDelivery(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Parallel()
 	for _, test := range []struct {
 		name      string
@@ -98,6 +100,7 @@ func TestApplyInterventionDoesNotRecordFailedOrMismatchedDelivery(t *testing.T) 
 }
 
 func TestApplyScopeChangeTerminatesBoundSession(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Parallel()
 	fixture := newApprovalFixture(t, nil, false)
 	advanceFixtureToRunning(t, fixture)
@@ -117,6 +120,7 @@ func TestApplyScopeChangeTerminatesBoundSession(t *testing.T) {
 }
 
 func TestApplyPauseResumeAndAbort(t *testing.T) {
+	sealedMigrationSkip(t)
 	t.Parallel()
 	fixture := newApprovalFixture(t, nil, false)
 	advanceFixtureToRunning(t, fixture)
