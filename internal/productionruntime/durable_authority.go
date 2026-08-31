@@ -421,7 +421,16 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 			if stagingErr != nil {
 				return stagingErr
 			}
-			livePath := filepath.Join(l.allocationDir, live)
+			namespaceDigest, digestErr := l.namespace.Digest()
+			if digestErr != nil {
+				return digestErr
+			}
+			scope := allocationcontrol.AllocationStoreScopeV1{AuthorityNamespaceID: namespaceDigest, TaskID: identity.TaskID, RunID: identity.RunID, AttemptID: identity.AttemptID, AllocationID: identity.AllocationID}
+			objectsRoot, rootErr := allocationcontrol.ObjectsRootPath(l.allocationDir, scope)
+			if rootErr != nil {
+				return rootErr
+			}
+			livePath := filepath.Join(objectsRoot, live)
 			reSealed, sealErr := launchidentity.Seal(launchidentity.SpecInput{
 				RuntimeExecutable: l.closure.RuntimeExecutable, ClosureProfileID: l.closure.ClosureProfileID,
 				MaterialRoots: l.closure.MaterialRoots, LaunchMaterials: l.closure.LaunchMaterials,

@@ -100,7 +100,11 @@ func newVnodeGuard(files []*os.File, specs []HeldObjectSpec) (*vnodeGuard, error
 			_ = unix.Close(queue)
 			return nil, ErrInvalid
 		}
-		flags := uint32(unix.NOTE_DELETE | unix.NOTE_ATTRIB | unix.NOTE_RENAME | unix.NOTE_REVOKE)
+		// Accessing a held file or directory may update its atime and emit
+		// NOTE_ATTRIB on Darwin. Metadata is still checked by the descriptor/path
+		// revalidation below, so treating that access-time noise as tampering
+		// would reject otherwise valid launches (notably Node-based Pi).
+		flags := uint32(unix.NOTE_DELETE | unix.NOTE_RENAME | unix.NOTE_REVOKE)
 		if specs[index].Role != "working-directory" {
 			flags |= unix.NOTE_WRITE | unix.NOTE_EXTEND | unix.NOTE_LINK
 		}

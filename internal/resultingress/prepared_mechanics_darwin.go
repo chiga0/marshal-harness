@@ -319,7 +319,7 @@ func preparedSpawnPayload(state AttemptAuthorityState, closure launchidentity.Cl
 		ClosureProfileID: closure.ClosureProfileID, MaterialRoots: append([]launchidentity.MaterialRootV1(nil), closure.MaterialRoots...), LaunchMaterials: append([]launchidentity.LaunchMaterialV1(nil), closure.LaunchMaterials...),
 		LaunchMaterialsDigest: closure.LaunchMaterialsDigest, AgentLaunchSpecDigest: closure.AgentLaunchSpecDigest,
 		ArgvDigest: argvDigest, EnvironmentDigest: environmentDigest, StdinDigest: canonical.DigestBytes(nil),
-		EnvironmentKeys: keys, Argv: append([]string(nil), closure.Arguments...), Environment: append([]string(nil), closure.Environment...), Stdin: []byte{},
+		EnvironmentKeys: keys, Argv: append([]string{}, closure.Arguments...), Environment: append([]string{}, closure.Environment...), Stdin: []byte{},
 	}, nil
 }
 

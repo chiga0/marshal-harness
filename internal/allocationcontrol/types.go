@@ -516,6 +516,23 @@ func DeriveRelativeNames(allocationID string) (staging, live, tombstone, marker 
 	return "staging-" + digest, "allocation-" + digest, "tombstone-" + digest, ".marshal-allocation-identity.json", nil
 }
 
+// ObjectsRootPath returns the canonical filesystem locator for the held
+// allocation objects directory.  It is a locator only: every use-time
+// authority check still reopens the descriptor-backed store and verifies the
+// current root identity.  Keeping this derivation here prevents composition
+// code from guessing the private recovery layout.
+func ObjectsRootPath(root string, scope AllocationStoreScopeV1) (string, error) {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || scope.Validate() != nil {
+		return "", ErrInvalid
+	}
+	scopeDigest, err := digestValue(scope)
+	if err != nil {
+		return "", err
+	}
+	scopeName := "scope-" + strings.TrimPrefix(scopeDigest, "sha256:")
+	return filepath.Join(root, "allocation-recovery-v1", scopeName, "objects"), nil
+}
+
 func canonicalValue(value any) ([]byte, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
