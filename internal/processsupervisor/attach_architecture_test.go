@@ -72,10 +72,9 @@ func TestAttachExportedAPIIsBorrowedCallbackOnly(t *testing.T) {
 }
 
 // TestAttachedSessionHasNoCommandOrTransportMethod scans attach.go for methods
-// on *AttachedSession and requires Observation plus the single ADR 0067 §4.6
-// bind-authority(owner-successor) execute to be the only exported methods, so a
-// future change cannot silently add a generic command, mutation, or transport
-// escape valve to the borrowed session.
+// on *AttachedSession and requires Observation plus the ADR 0067 rebind and
+// ADR 0071 Collect continuations to be the only exported methods, so a future
+// change cannot silently add a generic command or transport escape valve.
 func TestAttachedSessionHasNoCommandOrTransportMethod(t *testing.T) {
 	file := parseAttachArchitectureFile(t, "attach.go")
 	methods := map[string]bool{}
@@ -96,8 +95,8 @@ func TestAttachedSessionHasNoCommandOrTransportMethod(t *testing.T) {
 			methods[function.Name.Name] = true
 		}
 	}
-	if len(methods) != 2 || !methods["Observation"] || !methods["ExecutePreparedBindAuthority"] {
-		t.Fatalf("AttachedSession exported methods = %v, want only Observation and ExecutePreparedBindAuthority", methods)
+	if len(methods) != 3 || !methods["Observation"] || !methods["ExecutePreparedBindAuthority"] || !methods["ExecutePreparedCollect"] {
+		t.Fatalf("AttachedSession exported methods = %v, want only Observation, ExecutePreparedBindAuthority and ExecutePreparedCollect", methods)
 	}
 }
 

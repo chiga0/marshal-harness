@@ -270,6 +270,19 @@ func (session *AttachedSession) Observation() (AttachObservation, error) {
 // connection is never reopened; on transport failure the caller's
 // post-callback snapshot check fails closed rather than guessing an outcome.
 func (session *AttachedSession) ExecutePreparedBindAuthority(ctx context.Context, prepared PreparedCommand) (VerifiedCommandOutcome, error) {
+	return session.executePreparedContinuation(ctx, prepared, CommandBindAuthority)
+}
+
+// ExecutePreparedCollect runs exactly one already-persisted Collect
+// PreparedCommand on the same authenticated Attach transport. It is the
+// path-free production result continuation frozen by ADR 0071: callers must
+// consume Observation first, may execute no second command in the callback,
+// and receive only the verified secret-free outcome.
+func (session *AttachedSession) ExecutePreparedCollect(ctx context.Context, prepared PreparedCommand) (VerifiedCommandOutcome, error) {
+	return session.executePreparedContinuation(ctx, prepared, CommandCollect)
+}
+
+func (session *AttachedSession) executePreparedContinuation(ctx context.Context, prepared PreparedCommand, allowed CommandName) (VerifiedCommandOutcome, error) {
 	if session == nil || session.guard == nil || ctx == nil {
 		return VerifiedCommandOutcome{}, ErrConflict
 	}
@@ -281,7 +294,7 @@ func (session *AttachedSession) ExecutePreparedBindAuthority(ctx context.Context
 		guard.mu.Unlock()
 		return VerifiedCommandOutcome{}, ErrConflict
 	}
-	if err := prepared.evidence.Validate(); err != nil || prepared.evidence.Command != CommandBindAuthority || prepared.evidence.PreCommand != guard.anchor {
+	if err := prepared.evidence.Validate(); err != nil || prepared.evidence.Command != allowed || prepared.evidence.PreCommand != guard.anchor {
 		guard.violated = true
 		guard.mu.Unlock()
 		return VerifiedCommandOutcome{}, ErrConflict

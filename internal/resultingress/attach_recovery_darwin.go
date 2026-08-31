@@ -61,7 +61,7 @@ func (s *DurableStore) RebindOwnerSuccessorForAttachedRecovery(ctx context.Conte
 // seam that accepts a transport injection. Production calls
 // RebindOwnerSuccessorForAttachedRecovery which wires productionRebindTransport.
 func (s *DurableStore) rebindOwnerSuccessorForAttachedRecoveryWithTransport(ctx context.Context, verifier CurrentOwnerLockVerifier, acquisition ControlOwnerAcquisition, identity AttemptIdentity, controlDirectory *os.File, fixedMarshalPath string, transport rebindTransport) (AttemptAuthorityState, error) {
-	if s == nil || ctx == nil || verifier == nil || transport == nil || controlDirectory == nil {
+	if s == nil || ctx == nil || verifier == nil || transport == nil {
 		return AttemptAuthorityState{}, ErrPreparedExecutionConflict
 	}
 	if err := acquisition.Validate(); err != nil {

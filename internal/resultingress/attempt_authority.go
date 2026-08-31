@@ -1041,7 +1041,10 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 		return ErrAttemptAuthorityOrder
 	}
 	pre, prior := intent.PreCommand, state.SupervisorMechanicsAnchor
-	if prior.Validate() != nil || pre != prior || pre.OwnerEpoch != state.Owner.OwnerEpoch {
+	boundToInitialHead := state.SupervisorBoundAuthorityHead == state.SupervisorStartedDigest
+	boundToCurrentRecoveryHead := state.SupervisorBoundAuthorityHead == state.HeadDigest && state.HeadDigest == state.ControlOwnerBindingDigest
+	ownerContinuity := pre.OwnerEpoch == state.Owner.OwnerEpoch || boundToCurrentRecoveryHead
+	if prior.Validate() != nil || pre != prior || !ownerContinuity {
 		return ErrAttemptAuthorityOrder
 	}
 	for _, commandID := range state.SupervisorCommandIDs {
@@ -1084,7 +1087,7 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 		}
 		return nil
 	}
-	if state.SupervisorBoundAuthorityHead != state.SupervisorStartedDigest || intent.CurrentAuthorityHead != state.HeadDigest || pre.CurrentAuthorityHead != state.SupervisorMechanicsAuthorityHead {
+	if !boundToInitialHead && !boundToCurrentRecoveryHead || intent.CurrentAuthorityHead != state.HeadDigest || pre.CurrentAuthorityHead != state.SupervisorMechanicsAuthorityHead {
 		return ErrAttemptAuthorityOrder
 	}
 	switch intent.Command {
@@ -1100,7 +1103,8 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 		// A collect Rebuild reanchors the business projection. The supervisor
 		// reconnect fact is the only admitted session-continuity proof, so the
 		// first collect of every attempt must follow it.
-		if state.SupervisorReconnectFactDigest == "" || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.CommittedResultFactDigest != "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest || rebuild.LastObservationDigest != supervisorLastObservation(state) {
+		continuityReanchored := state.SupervisorReconnectFactDigest != "" || boundToCurrentRecoveryHead
+		if !continuityReanchored || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.CommittedResultFactDigest != "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest || rebuild.LastObservationDigest != supervisorLastObservation(state) {
 			return ErrAttemptAuthorityOrder
 		}
 	case processsupervisor.CommandInspect, processsupervisor.CommandTerminate:

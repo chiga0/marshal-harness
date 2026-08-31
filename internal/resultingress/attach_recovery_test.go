@@ -17,6 +17,7 @@ import (
 type fakeRebindSession struct {
 	authority  processsupervisor.AttachAuthority
 	executeErr error
+	collect    func(processsupervisor.PreparedCommand) processsupervisor.VerifiedCommandOutcome
 	observed   bool
 	executed   bool
 }
@@ -43,6 +44,14 @@ func (session *fakeRebindSession) ExecutePreparedBindAuthority(_ context.Context
 		return processsupervisor.VerifiedCommandOutcome{}, session.executeErr
 	}
 	return fakeBindOutcome(prepared), nil
+}
+
+func (session *fakeRebindSession) ExecutePreparedCollect(_ context.Context, prepared processsupervisor.PreparedCommand) (processsupervisor.VerifiedCommandOutcome, error) {
+	if session.executed || session.collect == nil {
+		return processsupervisor.VerifiedCommandOutcome{}, processsupervisor.ErrConflict
+	}
+	session.executed = true
+	return session.collect(prepared), nil
 }
 
 func fakeBindOutcome(prepared processsupervisor.PreparedCommand) processsupervisor.VerifiedCommandOutcome {
@@ -132,6 +141,79 @@ func TestRebindOwnerSuccessorForAttachedRecoveryHappyPath(t *testing.T) {
 	}
 	if state.SupervisorPendingIntentDigest != "" {
 		t.Fatal("rebind left a pending intent")
+	}
+}
+
+func TestCollectPreparedExecutionPersistsOutcomeAndReturnsDescriptorValidatedTranscript(t *testing.T) {
+	store, _, acquisition, identity, verifier, dir := rebindRecoveryStore(t)
+	var rebindCalls int32
+	state, err := doRebind(t, store, verifier, acquisition, identity, dir, nil, &rebindCalls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var collectCalls int32
+	transport := func(_ context.Context, options processsupervisor.AttachOptions, callback func(AttachedRebindSession) error) error {
+		atomic.AddInt32(&collectCalls, 1)
+		return callback(&fakeRebindSession{authority: options.Authority, collect: func(prepared processsupervisor.PreparedCommand) processsupervisor.VerifiedCommandOutcome {
+			return fakeCollectOutcome(prepared, state)
+		}})
+	}
+	reader := func(options processsupervisor.CollectedTranscriptReadOptions) (processsupervisor.CollectedTranscript, error) {
+		if options.Outcome.Command != processsupervisor.CommandCollect || options.Outcome.ReasonCode != "transcript-collected" {
+			t.Fatalf("reader received wrong outcome: %+v", options.Outcome)
+		}
+		return processsupervisor.CollectedTranscript{Stdout: []byte(`{"ok":true}`), Report: *options.Outcome.ProcessReport, TranscriptDigest: options.Outcome.TranscriptDigest}, nil
+	}
+	collected, err := store.collectPreparedExecutionWithTransport(context.Background(), verifier, acquisition, identity, dir, "/fixed/marshal", transport, reader)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if collected.Identity != identity || collected.OutcomeFactDigest == "" || string(collected.Transcript.Stdout) != `{"ok":true}` || atomic.LoadInt32(&collectCalls) != 1 {
+		t.Fatalf("collected=%+v calls=%d", collected, collectCalls)
+	}
+	after, found, err := store.AttemptState(identity)
+	if err != nil || !found || after.SupervisorPendingIntentDigest != "" {
+		t.Fatalf("after found=%v err=%v state=%+v", found, err, after)
+	}
+	checkpoint, ok := latestSuccessfulCollect(after)
+	if !ok || checkpoint.FactDigest != collected.OutcomeFactDigest {
+		t.Fatalf("collect outcome not durable: %+v", after.SupervisorCommandCheckpoints)
+	}
+
+	// Lost return transport is replayed by descriptor read only. No second
+	// command may be sent once the successful outcome is durable.
+	replayed, err := store.collectPreparedExecutionWithTransport(context.Background(), verifier, acquisition, identity, dir, "/fixed/marshal", transport, reader)
+	if err != nil || replayed.OutcomeFactDigest != collected.OutcomeFactDigest || atomic.LoadInt32(&collectCalls) != 1 {
+		t.Fatalf("replay=%+v err=%v calls=%d", replayed, err, collectCalls)
+	}
+}
+
+func fakeCollectOutcome(prepared processsupervisor.PreparedCommand, state AttemptAuthorityState) processsupervisor.VerifiedCommandOutcome {
+	evidence := prepared.Evidence()
+	started := state.ProcessStartedEvidence.Outcome
+	report := processsupervisor.ProcessReport{
+		State: "terminal", ObserverIdentity: started.ObserverIdentity, ObservedAt: "2026-08-29T00:01:00Z", Process: started.Process,
+		RuntimeObjectDigest: started.RuntimeObjectDigest, WorkingObjectDigest: started.WorkingObjectDigest,
+		SourceGateRevision: started.SourceGateRevision, ExactSetDigest: started.ExactSetDigest,
+		ExitCode: 0, StdoutDigest: attemptTestDigest("collect-stdout"), StderrDigest: attemptTestDigest("collect-stderr"), StdoutBytes: 11,
+	}
+	payload, _ := processsupervisor.CanonicalProtocolMessage(report)
+	observation := canonical.DigestBytes(payload)
+	result := processsupervisor.MechanicsResult{Disposition: "ok", ReasonCode: "transcript-collected", ObservationDigest: observation, TranscriptDigest: observation, StdoutBytes: report.StdoutBytes, Payload: payload}
+	receipt, _ := canonicalDigest(result)
+	commandHead, _ := canonicalDigest(struct {
+		Previous string `json:"previousCommandDigest"`
+		Request  string `json:"requestDigest"`
+		Receipt  string `json:"receiptDigest"`
+	}{evidence.PreviousCommandDigest, evidence.RequestDigest, receipt})
+	post := evidence.PreCommand
+	post.CommandSequence, post.CommandHead = evidence.Sequence, commandHead
+	post.JournalSequence += 2
+	post.JournalHead = receipt
+	return processsupervisor.VerifiedCommandOutcome{
+		Command: processsupervisor.CommandCollect, CommandID: evidence.CommandID, Sequence: evidence.Sequence, Status: "ok", Disposition: "ok", ReasonCode: "transcript-collected",
+		RequestDigest: evidence.RequestDigest, ReceiptDigest: receipt, ObservationDigest: observation, CommandHead: commandHead, TranscriptDigest: observation,
+		StdoutBytes: report.StdoutBytes, ProcessReport: &report, Recovery: processsupervisor.CommandRecoveryEvidence{PreCommand: evidence.PreCommand, PostCommand: post},
 	}
 }
 
