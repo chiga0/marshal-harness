@@ -169,14 +169,31 @@ func pathBCompositionInputsForLaunch(t *testing.T) (CompositionInputs, string, s
 	if sealErr != nil {
 		t.Fatal(sealErr)
 	}
+	providerStore, err := provider.NewRegistrationStore(filepath.Join(ownerFixture.base, "provider-ledger"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = providerStore.Close() })
+	providerDomain := authority.SecurityDomainId{TenantNamespace: "tenant", TrustDomainKind: authority.TrustDomainKindExecution, IsolationDomainId: "host-process"}
+	attestation := provider.Attestation{ProviderInstanceId: "provider-instance-pathb", ConfigDigest: canonical.DigestBytes([]byte("config")), TrustRootKeyId: "trust-root-1", TrustRootAlgorithm: "ed25519"}
+	registration, snapshot, err := LocalProviderAuthority(acquisition.Scope.AuthorityNamespaceID, providerDomain, attestation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration, err = providerStore.Put(registration)
+	if err != nil {
+		t.Fatal(err)
+	}
 	inputs := CompositionInputs{
 		Ingress: store, Runs: runStore, RunLease: nil, LeaseLedger: leaseLedger,
 		OwnerDirectory: ownerFixture.directory, Acquisition: acquisition, RunID: runID,
 		Namespace: acquisition.Scope.AuthorityNamespaceID, OrchestratorID: "orchestrator:composition-pathb",
-		ProvisionDomain: authority.SecurityDomainId{TenantNamespace: "tenant", TrustDomainKind: authority.TrustDomainKindExecution, IsolationDomainId: "host-process"},
+		ProvisionDomain: providerDomain,
 		CleanupDomain:   authority.SecurityDomainId{TenantNamespace: "tenant", TrustDomainKind: authority.TrustDomainKindExecution, IsolationDomainId: "host-process-cleanup"},
-		RegistrationID:  "registration-composition-pathb", CapabilitySnapshot: canonical.DigestBytes([]byte("pathb-snapshot")),
-		ConformanceEvidence: []string{}, Attestation: provider.Attestation{ProviderInstanceId: "provider-instance-pathb", ConfigDigest: canonical.DigestBytes([]byte("config")), TrustRootKeyId: "trust-root-1", TrustRootAlgorithm: "ed25519"},
+		RegistrationID:  registration.RegistrationId, CapabilitySnapshot: snapshot.ProviderCapabilitySnapshotDigest,
+		ConformanceEvidence: []string{}, Attestation: attestation,
+		ProviderStore: providerStore, ProviderRegistration: registration, ProviderSnapshot: snapshot,
+		ProviderEvidence: []provider.ConformanceEvidence{}, ResultIngressDomain: LocalResultIngressDomain(acquisition.Scope.AuthorityNamespaceID),
 		AllocationRoot: filepath.Join(ownerFixture.base, "allocations"), LaunchClosure: reSealed,
 		Requirements:     allocationcontrol.SandboxRequirementsV1{AccessMode: "workspace-write", MinimumAssuranceLevel: "workspace-write"},
 		WorkDirAllowlist: []string{worktreePath}, EnvironmentAllowlist: []string{"PATH"},
@@ -302,6 +319,9 @@ func TestPathBBindReceiptReachesPreparedExecution(t *testing.T) {
 	}
 	if current.ExistingWorktreeBindReceiptFactDigest == "" || current.ExistingWorktreeBindReceiptDigest == "" {
 		t.Fatalf("attempt authority missing bind receipt projection: %+v", current)
+	}
+	if capability, ok := ledger.resultCapabilities[resolved.AttemptIdentity.LeaseID]; !ok || capability.Validate() != nil || capability.BoundAttemptId != resolved.AttemptIdentity.AttemptID {
+		t.Fatalf("path B did not retain durable reserved result capability: ok=%t capability=%+v", ok, capability)
 	}
 	if current.AllocationProvisionReceiptDigest != "" {
 		t.Fatalf("path B attempt synthesized a provision receipt: %+v", current)

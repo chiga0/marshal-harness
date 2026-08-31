@@ -26,28 +26,35 @@ import (
 // owner lock; the ledger itself holds no identity beyond the composition
 // inputs frozen by the fixed CLI at construction.
 type CompositionLedger struct {
-	ingress         *resultingress.DurableStore
-	ownsIngress     bool
-	runs            *runstore.Store
-	runLease        *runstore.Lease
-	ownsRunLease    bool
-	leaseLedger     *dispatch.LeaseLedger
-	runReady        *runstore.AttemptRunAuthorityVerifier
-	namespace       authority.AuthorityNamespaceId
-	orchestrator    string
-	provisionDomain authority.SecurityDomainId
-	cleanupDomain   authority.SecurityDomainId
-	registration    string
-	snapshot        string
-	conformance     []string
-	attestation     provider.Attestation
-	allocationDir   string
-	owner           repositoryOwnerLock
-	closure         launchidentity.ClosureV1
-	requirements    allocationcontrol.SandboxRequirementsV1
-	workDirs        []string
-	environment     []string
-	allocation      *resultingress.AllocationAuthority
+	ingress            *resultingress.DurableStore
+	ownsIngress        bool
+	runs               *runstore.Store
+	runLease           *runstore.Lease
+	ownsRunLease       bool
+	leaseLedger        *dispatch.LeaseLedger
+	providerStore      *provider.RegistrationStore
+	providerRecord     provider.ProviderRegistration
+	providerSnapshot   provider.ProviderCapabilitySnapshot
+	providerEvidence   []provider.ConformanceEvidence
+	resultTarget       authority.SecurityDomainId
+	matcher            *dispatch.Matcher
+	resultCapabilities map[string]authority.DispatchResultCapability
+	runReady           *runstore.AttemptRunAuthorityVerifier
+	namespace          authority.AuthorityNamespaceId
+	orchestrator       string
+	provisionDomain    authority.SecurityDomainId
+	cleanupDomain      authority.SecurityDomainId
+	registration       string
+	snapshot           string
+	conformance        []string
+	attestation        provider.Attestation
+	allocationDir      string
+	owner              repositoryOwnerLock
+	closure            launchidentity.ClosureV1
+	requirements       allocationcontrol.SandboxRequirementsV1
+	workDirs           []string
+	environment        []string
+	allocation         *resultingress.AllocationAuthority
 	// existingWorktreeGraph/existingWorktreeTarget are borrowed from the
 	// fixed CLI for the duration of ComposeRuntime; they are never reopened
 	// by pathname and never persist into authority facts.
@@ -84,11 +91,20 @@ type CompositionInputs struct {
 	CapabilitySnapshot      string
 	ConformanceEvidence     []string
 	Attestation             provider.Attestation
-	AllocationRoot          string
-	LaunchClosure           launchidentity.ClosureV1
-	Requirements            allocationcontrol.SandboxRequirementsV1
-	WorkDirAllowlist        []string
-	EnvironmentAllowlist    []string
+	// ProviderStore and the typed provider records are mandatory for the
+	// existing-worktree production path. They drive ClaimReserved against the
+	// durable registration ledger; digest-only compatibility fields above are
+	// retained solely for the legacy staging test path.
+	ProviderStore        *provider.RegistrationStore
+	ProviderRegistration provider.ProviderRegistration
+	ProviderSnapshot     provider.ProviderCapabilitySnapshot
+	ProviderEvidence     []provider.ConformanceEvidence
+	ResultIngressDomain  authority.SecurityDomainId
+	AllocationRoot       string
+	LaunchClosure        launchidentity.ClosureV1
+	Requirements         allocationcontrol.SandboxRequirementsV1
+	WorkDirAllowlist     []string
+	EnvironmentAllowlist []string
 	// ExistingWorktreeDescriptorGraph and ExistingWorktreeTargetWorktree
 	// select path B (existing-worktree binding, ADR 0069/0070). Both must be
 	// non-zero to enable path B; supplying only one fails closed. The graph
@@ -154,6 +170,19 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 	// bare composition-time kernel argv. Path A keeps nil compatibility.
 	if existingWorktreeEnabled && inputs.LaunchArgvBuilder == nil {
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
+	}
+	if existingWorktreeEnabled {
+		if inputs.ProviderStore == nil || inputs.ProviderRegistration.Validate() != nil ||
+			inputs.ProviderSnapshot.ValidateAgainstRegistration(inputs.ProviderRegistration) != nil ||
+			inputs.ResultIngressDomain.Validate() != nil ||
+			inputs.ProviderRegistration.RegistrationId != inputs.RegistrationID ||
+			inputs.ProviderSnapshot.ProviderCapabilitySnapshotDigest != inputs.CapabilitySnapshot {
+			return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
+		}
+		stored, err := inputs.ProviderStore.Get(inputs.ProviderRegistration.RegistrationId)
+		if err != nil || stored != inputs.ProviderRegistration {
+			return nil, application.NewError("composition-ledger", application.ReasonAuthorityConflict)
+		}
 	}
 	// ADR 0069 lock order: path B must acquire the Run Lease inside this
 	// constructor, after repository owner acquisition. A caller-supplied lease
@@ -247,11 +276,24 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		provisionDomain: inputs.ProvisionDomain, cleanupDomain: inputs.CleanupDomain,
 		registration: inputs.RegistrationID, snapshot: inputs.CapabilitySnapshot,
 		conformance: append([]string(nil), inputs.ConformanceEvidence...), attestation: inputs.Attestation,
+		providerStore: inputs.ProviderStore, providerRecord: inputs.ProviderRegistration,
+		providerSnapshot: inputs.ProviderSnapshot, providerEvidence: append([]provider.ConformanceEvidence(nil), inputs.ProviderEvidence...),
+		resultTarget: inputs.ResultIngressDomain, resultCapabilities: map[string]authority.DispatchResultCapability{},
 		allocationDir: inputs.AllocationRoot, closure: inputs.LaunchClosure,
 		requirements: inputs.Requirements, workDirs: append([]string(nil), inputs.WorkDirAllowlist...),
 		environment:           append([]string(nil), inputs.EnvironmentAllowlist...),
 		existingWorktreeGraph: inputs.ExistingWorktreeDescriptorGraph, existingWorktreeTarget: inputs.ExistingWorktreeTargetWorktree,
 		existingWorktreeEnabled: existingWorktreeEnabled, launchArgvBuilder: inputs.LaunchArgvBuilder, now: time.Now,
+	}
+	if existingWorktreeEnabled {
+		edges, edgeErr := authority.NewEdgeRuntime(inputs.Namespace)
+		if edgeErr != nil {
+			releaseConstruction()
+			return nil, edgeErr
+		}
+		edges.BindLeaseResolver(compositionLeaseResolver{ledger: inputs.LeaseLedger})
+		edges.BindTargetEligibilityResolver(compositionTargetResolver{store: inputs.ProviderStore, registrationID: inputs.ProviderRegistration.RegistrationId, target: inputs.ResultIngressDomain})
+		ledger.matcher = dispatch.NewMatcherWithReservedClaimLedger(inputs.ProviderStore, edges, inputs.LeaseLedger)
 	}
 	allocation, err := resultingress.NewAllocationAuthority(inputs.Ingress, compositionAllocationAuthority{ledger: ledger, domain: inputs.ProvisionDomain, phase: resultingress.EffectPhaseAllocationProvision}, compositionAllocationAuthority{ledger: ledger, domain: inputs.CleanupDomain, phase: resultingress.EffectPhaseAllocationTerminate})
 	if err != nil {
@@ -550,7 +592,7 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 		}
 		attemptID := reservation.Reservation.AttemptID
 		allocationID := l.allocationIDFor(attemptID)
-		lease, err := l.ensureAttemptLease(read.Run.TaskID, read.Run.RunID, attemptID, allocationID)
+		lease, err := l.ensureAttemptLease(reservation.ReservationFactDigest, read.Run.TaskID, read.Run.RunID, attemptID, allocationID)
 		if err != nil {
 			return err
 		}
@@ -679,13 +721,46 @@ func (l *CompositionLedger) allocationIDFor(attemptID string) string {
 // ensureAttemptLease reuses the attempt's current live lease on replay and
 // mints exactly one claimed lease otherwise. The allocation id is derived
 // from the attempt id so replays resolve to the same durable allocation.
-func (l *CompositionLedger) ensureAttemptLease(taskID, runID, attemptID, allocationID string) (dispatch.DispatchLease, error) {
+func (l *CompositionLedger) ensureAttemptLease(reservationFactDigest, taskID, runID, attemptID, allocationID string) (dispatch.DispatchLease, error) {
 	now := l.now()
+	var replay *dispatch.DispatchLease
 	if lease, state, _, err := l.leaseLedger.CurrentByAttempt(runID, attemptID, now); err == nil {
 		if state != dispatch.LeaseStateClaimed && state != dispatch.LeaseStateActive {
 			return dispatch.DispatchLease{}, fmt.Errorf("dispatch: attempt lease %s is %s", lease.LeaseId, state)
 		}
-		return lease, nil
+		replay = &lease
+	}
+	if l.existingWorktreeEnabled {
+		if l.matcher == nil {
+			return dispatch.DispatchLease{}, fmt.Errorf("dispatch: reserved matcher is unavailable")
+		}
+		ackDeadline := now.Add(15 * time.Minute).UTC().Format(time.RFC3339)
+		expiresAt := now.Add(2 * time.Hour).UTC().Format(time.RFC3339)
+		if replay != nil {
+			ackDeadline, expiresAt = replay.AckDeadlineAt, replay.ExpiresAt
+		}
+		requirements, err := domain.NewSandboxRequirements(domain.AccessMode(l.requirements.AccessMode), domain.AssuranceLevel(l.requirements.MinimumAssuranceLevel))
+		if err != nil {
+			return dispatch.DispatchLease{}, err
+		}
+		claimed, err := l.matcher.ClaimReserved(dispatch.ReservedClaimRequest{
+			ReservationFactDigest: reservationFactDigest, RunId: runID, ReservedAttemptId: attemptID,
+			Claim: dispatch.ClaimRequest{
+				AuthorityNamespaceId: l.namespace, RegistrationId: l.providerRecord.RegistrationId,
+				Snapshot: l.providerSnapshot, Evidences: append([]provider.ConformanceEvidence(nil), l.providerEvidence...),
+				Requirements: requirements, TargetActor: l.resultTarget,
+				TaskId: taskID, RunId: runID, AttemptId: attemptID, AllocationId: allocationID,
+				AckDeadlineAt: ackDeadline, ExpiresAt: expiresAt,
+			},
+		}, now)
+		if err != nil {
+			return dispatch.DispatchLease{}, err
+		}
+		l.resultCapabilities[claimed.Lease.LeaseId] = claimed.ResultCapability
+		return claimed.Lease, nil
+	}
+	if replay != nil {
+		return *replay, nil
 	}
 	minted, err := dispatch.MintClaimedLease(dispatch.MintLeaseInput{
 		LeaseId:              "lease-" + attemptID[strings.LastIndexByte(attemptID, ':')+1:],
@@ -703,6 +778,46 @@ func (l *CompositionLedger) ensureAttemptLease(taskID, runID, attemptID, allocat
 		return dispatch.DispatchLease{}, err
 	}
 	return minted, nil
+}
+
+// compositionLeaseResolver rechecks an issued result capability against the
+// append-only lease ledger. In-memory matcher bookkeeping is never accepted
+// as current authority.
+type compositionLeaseResolver struct {
+	ledger *dispatch.LeaseLedger
+}
+
+func (resolver compositionLeaseResolver) LeaseActive(leaseID string, generation int64, fencingToken string) (bool, error) {
+	if resolver.ledger == nil {
+		return false, nil
+	}
+	lease, state, currentGeneration, err := resolver.ledger.Current(leaseID)
+	if err != nil {
+		return false, nil
+	}
+	if state != dispatch.LeaseStateClaimed && state != dispatch.LeaseStateActive {
+		return false, nil
+	}
+	return currentGeneration == generation && lease.Generation == generation && lease.FencingToken == fencingToken, nil
+}
+
+// compositionTargetResolver requires both the exact result-ingress actor and
+// the still-active canonical provider registration on every edge recheck.
+type compositionTargetResolver struct {
+	store          *provider.RegistrationStore
+	registrationID string
+	target         authority.SecurityDomainId
+}
+
+func (resolver compositionTargetResolver) TargetEligible(target authority.SecurityDomainId) (bool, error) {
+	if resolver.store == nil || !target.Equal(resolver.target) {
+		return false, nil
+	}
+	registration, err := resolver.store.Get(resolver.registrationID)
+	if err != nil {
+		return false, nil
+	}
+	return registration.LifecycleState == provider.LifecycleStateActive, nil
 }
 
 func (l *CompositionLedger) namespaceRef() string {

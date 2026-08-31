@@ -17,7 +17,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
-	"github.com/chiga0/marshal-harness/internal/resultbinding"
+	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
@@ -43,7 +43,8 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		return ExitUnavailable
 	}
 	ingressDir, ledgerDir, allocationRoot, ownerDir := productionruntime.CompositionPaths(stateRoot)
-	for _, dir := range []string{ingressDir, ledgerDir, allocationRoot, ownerDir} {
+	providerDir := filepath.Join(stateRoot, "provider-authority")
+	for _, dir := range []string{ingressDir, ledgerDir, allocationRoot, ownerDir, providerDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			fmt.Fprintf(stderr, "运行失败：无法准备 sealed 组合目录：%v\n", err)
 			return ExitFailure
@@ -177,14 +178,39 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		fmt.Fprintf(stderr, "运行失败：attestation 观察失败：%v\n", err)
 		return ExitFailure
 	}
+	providerDirHandle, err := os.Open(providerDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "运行失败：无法打开 provider authority 目录：%v\n", err)
+		return ExitFailure
+	}
+	defer providerDirHandle.Close()
+	providerStore, err := provider.OpenDarwinRegistrationStore(providerDirHandle)
+	if err != nil {
+		fmt.Fprintf(stderr, "运行失败：provider authority 初始化失败：%v\n", err)
+		return ExitFailure
+	}
+	defer providerStore.Close()
+	providerDomain := productionruntime.LocalProvisionDomain(namespace)
+	registration, providerSnapshot, err := productionruntime.LocalProviderAuthority(namespace, providerDomain, attestation)
+	if err != nil {
+		fmt.Fprintf(stderr, "运行失败：provider authority 构造失败：%v\n", err)
+		return ExitFailure
+	}
+	registration, err = providerStore.Put(registration)
+	if err != nil {
+		fmt.Fprintf(stderr, "运行失败：provider registration 持久化失败：%v\n", err)
+		return ExitFailure
+	}
 	inputs := productionruntime.CompositionInputs{
 		Ingress: nil, Runs: runStore, RunLease: nil, LeaseLedger: leaseLedger,
 		OwnerDirectory: ownerDirHandle, Acquisition: acquisition, RunID: runID,
 		HeldIngressDir: heldIngress, FixedMarshalPath: fixedMarshal, OwnerPrivateControlRoot: controlRoot,
 		Namespace: namespace, OrchestratorID: "orchestrator:" + taskID,
-		ProvisionDomain: productionruntime.LocalProvisionDomain(namespace), CleanupDomain: productionruntime.LocalCleanupDomain(namespace),
-		RegistrationID: resultbinding.AgentRegistrationID(projection.CapabilityDigest), CapabilitySnapshot: projection.CapabilityDigest, ConformanceEvidence: []string{},
+		ProvisionDomain: providerDomain, CleanupDomain: productionruntime.LocalCleanupDomain(namespace),
+		RegistrationID: registration.RegistrationId, CapabilitySnapshot: providerSnapshot.ProviderCapabilitySnapshotDigest, ConformanceEvidence: []string{},
 		Attestation: attestation, AllocationRoot: allocationRoot,
+		ProviderStore: providerStore, ProviderRegistration: registration, ProviderSnapshot: providerSnapshot,
+		ProviderEvidence: []provider.ConformanceEvidence{}, ResultIngressDomain: productionruntime.LocalResultIngressDomain(namespace),
 		LaunchClosure: closure, Requirements: requirements,
 		WorkDirAllowlist: []string{projection.WorktreePath}, EnvironmentAllowlist: []string{"PATH"},
 		ExistingWorktreeDescriptorGraph: worktreeHandles.graph,
