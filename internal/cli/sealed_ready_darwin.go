@@ -232,7 +232,7 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 			return piadapter.ParseProductionWorkerResult(parserCtx, piadapter.ProductionResultInput{
 				Transcript: input.Transcript, Worktree: input.Worktree,
 				TaskID: input.TaskID, RunID: input.RunID, AttemptID: input.AttemptID,
-				Executable: input.Executable, Version: input.Version,
+				Executable: input.Executable, Version: input.Version, Model: task.Worker.Model,
 				StartedAt: input.StartedAt, CompletedAt: input.CompletedAt,
 				MaxOutputBytes: input.MaxOutputBytes,
 			})
