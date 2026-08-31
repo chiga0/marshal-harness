@@ -605,6 +605,7 @@ func validateSupervisorRebuildProjection(command processsupervisor.CommandName, 
 
 type SupervisorCommandCheckpoint struct {
 	FactDigest string                    `json:"factDigest"`
+	Intent     SupervisorCommandIntent   `json:"intent,omitempty,omitzero"`
 	Evidence   SupervisorCommandEvidence `json:"evidence"`
 }
 

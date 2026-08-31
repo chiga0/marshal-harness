@@ -15,6 +15,8 @@ type AttachedRebindSession interface {
 	Observation() (processsupervisor.AttachObservation, error)
 	ExecutePreparedBindAuthority(ctx context.Context, prepared processsupervisor.PreparedCommand) (processsupervisor.VerifiedCommandOutcome, error)
 	ExecutePreparedCollect(ctx context.Context, prepared processsupervisor.PreparedCommand) (processsupervisor.VerifiedCommandOutcome, error)
+	ExecutePreparedInspect(ctx context.Context, prepared processsupervisor.PreparedCommand) (processsupervisor.VerifiedCommandOutcome, error)
+	ExecutePreparedClose(ctx context.Context, prepared processsupervisor.PreparedCommand) (processsupervisor.VerifiedCommandOutcome, error)
 }
 
 // rebindTransport performs the read-only Attach and, within the same borrowed

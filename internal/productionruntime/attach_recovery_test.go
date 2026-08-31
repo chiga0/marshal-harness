@@ -3,6 +3,7 @@ package productionruntime
 import (
 	"testing"
 
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 )
 
@@ -48,5 +49,29 @@ func TestRunningAttemptBoundToExactCurrentOwner(t *testing.T) {
 				t.Fatal("drifted RUNNING attempt reported current")
 			}
 		})
+	}
+}
+
+func TestRunningAttemptReadyForCloseRecovery(t *testing.T) {
+	owner := resultingress.ControlOwnerState{Acquisition: resultingress.ControlOwnerAcquisition{OwnerEpoch: 3}, FactDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	attempt := resultingress.AttemptAuthorityState{
+		HeadDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ControlOwnerBindingDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ProcessTerminalDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", AllocationTerminalDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		Owner:                         resultingress.CurrentOwnerBinding{OwnerEpoch: 3, ControlOwnerAcquiredFactDigest: owner.FactDigest},
+		SupervisorPendingIntentDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		SupervisorPendingIntent:       resultingress.SupervisorCommandIntent{Command: processsupervisor.CommandClose},
+	}
+	if !runningAttemptReadyForCloseRecovery(attempt, owner) {
+		t.Fatal("pending Close was not admitted as explicit recovery state")
+	}
+	attempt.SupervisorPendingIntentDigest = ""
+	attempt.SupervisorPendingIntent = resultingress.SupervisorCommandIntent{}
+	attempt.SupervisorCommandCheckpoints = []resultingress.SupervisorCommandCheckpoint{{Evidence: resultingress.SupervisorCommandEvidence{Command: processsupervisor.CommandClose, Disposition: "ok", Outcome: resultingress.SupervisorProcessOutcome{State: resultingress.SupervisorSessionClosed}}}}
+	if !runningAttemptReadyForCloseRecovery(attempt, owner) {
+		t.Fatal("committed Close outcome was not admitted as explicit recovery state")
+	}
+	attempt.SupervisorClosedDigest = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	if runningAttemptReadyForCloseRecovery(attempt, owner) {
+		t.Fatal("already closed supervisor remained in Close recovery")
 	}
 }

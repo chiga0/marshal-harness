@@ -509,11 +509,111 @@ func applyExistingWorktreeFactValue(fact existingWorktreeAuthorityFact, in *Ingr
 	case allocationcontrol.ExistingWorktreeFactReleaseIntent:
 		attempt.ExistingWorktreeReleaseIntentFactDigest = fact.Digest
 	case allocationcontrol.ExistingWorktreeFactReleaseReceipt:
+		var receipt allocationcontrol.ExistingWorktreeReleaseReceiptV1
+		if strictExistingWorktreeDecode(fact.Payload, &receipt) != nil {
+			return ErrExistingWorktreeAuthorityConflict
+		}
 		attempt.ExistingWorktreeReleaseReceiptFactDigest = fact.Digest
+		attempt.ExistingWorktreeReleaseReceiptDigest = receipt.ReceiptDigest
 	}
 	attempt.Revision, attempt.HeadDigest = fact.AttemptRevision, fact.Digest
 	in.attempts[fact.AttemptKey] = attempt
 	return nil
+}
+
+// CurrentExistingWorktreeBindReceipt returns the exact unreleased RB1 bind
+// receipt after replaying the same durable Attempt ledger used by launch. It
+// is a read-only composition helper; callers still need the held owner, Run
+// descriptor and release authority before they may mutate the RB1 chain.
+func (s *DurableStore) CurrentExistingWorktreeBindReceipt(identity AttemptIdentity) (allocationcontrol.ExistingWorktreeBindReceiptV1, error) {
+	projection := newAuthorityProjection()
+	var receipt allocationcontrol.ExistingWorktreeBindReceiptV1
+	err := s.transact(projection, func() error {
+		key, err := identity.Key()
+		if err != nil {
+			return err
+		}
+		state, found := projection.attempts[key]
+		if !found || state.Identity != identity {
+			return ErrAttemptAuthorityUnknown
+		}
+		snapshot := existingWorktreeSnapshot(projection, state)
+		if err := snapshot.Validate(); err != nil {
+			return ErrExistingWorktreeAuthorityConflict
+		}
+		var intent allocationcontrol.ExistingWorktreeBindIntentV1
+		foundIntent, foundReceipt := false, false
+		for _, fact := range snapshot.Facts {
+			if fact.AttemptKey != key {
+				continue
+			}
+			switch fact.Kind {
+			case allocationcontrol.ExistingWorktreeFactBindIntent:
+				if foundIntent || strictExistingWorktreeDecode(fact.Payload, &intent) != nil || intent.Validate() != nil {
+					return ErrExistingWorktreeAuthorityConflict
+				}
+				foundIntent = true
+			case allocationcontrol.ExistingWorktreeFactBindReceipt:
+				if foundReceipt || strictExistingWorktreeDecode(fact.Payload, &receipt) != nil {
+					return ErrExistingWorktreeAuthorityConflict
+				}
+				foundReceipt = true
+			}
+		}
+		if !foundIntent || !foundReceipt || receipt.Validate(intent) != nil || receipt.ReceiptDigest != state.ExistingWorktreeBindReceiptDigest {
+			return ErrExistingWorktreeAuthorityConflict
+		}
+		return nil
+	})
+	return receipt, err
+}
+
+// CurrentExistingWorktreeRelease projects an already-created release union.
+// A pending intent returns its exact sealed request so recovery cannot create
+// a sibling request from the later Attempt head; a committed receipt is
+// returned byte-for-byte and needs no new authority mutation.
+func (s *DurableStore) CurrentExistingWorktreeRelease(identity AttemptIdentity) (allocationcontrol.ExistingWorktreeReleaseRequestV1, allocationcontrol.ExistingWorktreeReleaseReceiptV1, bool, bool, error) {
+	projection := newAuthorityProjection()
+	var request allocationcontrol.ExistingWorktreeReleaseRequestV1
+	var receipt allocationcontrol.ExistingWorktreeReleaseReceiptV1
+	found, complete := false, false
+	err := s.transact(projection, func() error {
+		key, err := identity.Key()
+		if err != nil {
+			return err
+		}
+		state, ok := projection.attempts[key]
+		if !ok || state.Identity != identity {
+			return ErrAttemptAuthorityUnknown
+		}
+		snapshot := existingWorktreeSnapshot(projection, state)
+		if err := snapshot.Validate(); err != nil {
+			return ErrExistingWorktreeAuthorityConflict
+		}
+		var intent allocationcontrol.ExistingWorktreeReleaseIntentV1
+		for _, fact := range snapshot.Facts {
+			if fact.AttemptKey != key {
+				continue
+			}
+			switch fact.Kind {
+			case allocationcontrol.ExistingWorktreeFactReleaseIntent:
+				if found || strictExistingWorktreeDecode(fact.Payload, &intent) != nil || intent.Validate() != nil {
+					return ErrExistingWorktreeAuthorityConflict
+				}
+				request, found = intent.Request, true
+			case allocationcontrol.ExistingWorktreeFactReleaseReceipt:
+				if complete || strictExistingWorktreeDecode(fact.Payload, &receipt) != nil {
+					return ErrExistingWorktreeAuthorityConflict
+				}
+				complete = true
+			}
+		}
+		if complete && (!found || receipt.Validate(intent) != nil || receipt.ReceiptDigest != state.ExistingWorktreeReleaseReceiptDigest) {
+			return ErrExistingWorktreeAuthorityConflict
+		}
+		return nil
+	})
+	return request, receipt, found, complete, err
 }
 
 func validateExistingWorktreeFact(fact existingWorktreeAuthorityFact, in *Ingress) error {

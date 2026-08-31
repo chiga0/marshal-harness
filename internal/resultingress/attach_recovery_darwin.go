@@ -108,19 +108,78 @@ func (s *DurableStore) rebindOwnerSuccessorForAttachedRecoveryWithTransport(ctx 
 				}
 				defer controlDirectory.Close()
 			}
-			if state.SupervisorBoundAuthorityHead != "" && state.SupervisorBoundAuthorityHead == state.HeadDigest {
+			if state.SupervisorBoundAuthorityHead != "" && state.SupervisorBoundAuthorityHead == state.HeadDigest && state.Owner.OwnerEpoch == acquisition.OwnerEpoch && state.Owner.ControlOwnerAcquiredFactDigest == ownerState.FactDigest {
+				result = state
+				return nil
+			}
+			if _, closeCommitted := latestSuccessfulClose(state); closeCommitted && state.SupervisorClosedDigest == "" {
+				if state.Owner.OwnerEpoch < acquisition.OwnerEpoch {
+					owner := CurrentOwnerBinding{Scope: acquisition.Scope, OwnerEpoch: acquisition.OwnerEpoch, ControlOwnerAcquiredFactDigest: ownerState.FactDigest}
+					state, _, err = s.appendPreparedAttemptTransitionLocked(projection, state, AttemptTransition{Kind: AttemptTransitionControlOwnerBound, Identity: identity, Owner: owner})
+					if err != nil {
+						return fmt.Errorf("closed recovery successor append: %w", err)
+					}
+				} else if state.Owner.OwnerEpoch != acquisition.OwnerEpoch || state.Owner.ControlOwnerAcquiredFactDigest != ownerState.FactDigest {
+					return ErrPreparedExecutionConflict
+				}
 				result = state
 				return nil
 			}
 			preAnchor := supervisorHandshakeAnchor(state.SupervisorMechanicsAnchor)
 			if state.SupervisorPendingIntentDigest != "" {
-				if validateRebindPendingIntentForReplay(state, acquisition, preAnchor) != nil {
+				sameOwner := state.Owner.OwnerEpoch == acquisition.OwnerEpoch && state.Owner.ControlOwnerAcquiredFactDigest == ownerState.FactDigest
+				if sameOwner && state.SupervisorPendingIntent.Command == processsupervisor.CommandBindAuthority {
+					if state.HeadDigest != state.ControlOwnerBindingDigest || state.ControlOwnerBindingRevision != state.Revision || state.ControlOwnerBindingRevision < 2 || requireDigest("controlOwnerBindingPreviousHead", state.ControlOwnerBindingPreviousHead) != nil || validateRebindPendingIntentForReplay(state, acquisition, preAnchor) != nil {
+						return ErrPreparedExecutionConflict
+					}
+					result, err = s.replayPendingRebindLocked(ctx, projection, state, ownerState, identity, controlDirectory, fixedMarshalPath, transport)
+					return err
+				}
+				if sameOwner && state.SupervisorPendingIntent.Command == processsupervisor.CommandClose {
+					result = state
+					return nil
+				}
+				if sameOwner {
 					return ErrPreparedExecutionConflict
 				}
-				result, err = s.replayPendingRebindLocked(ctx, projection, state, ownerState, identity, controlDirectory, fixedMarshalPath, transport)
-				return err
+				var predecessorRevision uint64
+				var predecessorHead string
+				if state.Owner.OwnerEpoch >= acquisition.OwnerEpoch {
+					return ErrPreparedExecutionConflict
+				}
+				owner := CurrentOwnerBinding{Scope: acquisition.Scope, OwnerEpoch: acquisition.OwnerEpoch, ControlOwnerAcquiredFactDigest: ownerState.FactDigest}
+				predecessorRevision, predecessorHead = state.Revision, state.HeadDigest
+				state, _, err = s.appendPreparedAttemptTransitionLocked(projection, state, AttemptTransition{Kind: AttemptTransitionControlOwnerBound, Identity: identity, Owner: owner})
+				if err != nil {
+					return fmt.Errorf("pending recovery successor append: %w", err)
+				}
+				switch state.SupervisorPendingIntent.Command {
+				case processsupervisor.CommandBindAuthority:
+					state, err = s.replayPendingRebindLocked(ctx, projection, state, ownerState, identity, controlDirectory, fixedMarshalPath, transport)
+					if err != nil {
+						return err
+					}
+					result, err = s.executeFreshRebindLocked(ctx, projection, state, ownerState, identity, controlDirectory, fixedMarshalPath, transport, supervisorHandshakeAnchor(state.SupervisorMechanicsAnchor), predecessorRevision, predecessorHead)
+					return err
+				case processsupervisor.CommandCollect, processsupervisor.CommandInspect:
+					state, err = s.replayPendingTerminalCommandLocked(ctx, projection, state, ownerState, identity, controlDirectory, fixedMarshalPath, transport)
+					if err != nil {
+						return err
+					}
+					result, err = s.executeFreshRebindLocked(ctx, projection, state, ownerState, identity, controlDirectory, fixedMarshalPath, transport, supervisorHandshakeAnchor(state.SupervisorMechanicsAnchor), predecessorRevision, predecessorHead)
+					return err
+				case processsupervisor.CommandClose:
+					// Close has a dedicated descriptor-bound recovery path because
+					// the physical Supervisor may already be absent. Persisting the
+					// owner successor is sufficient for ClosePreparedExecution to
+					// recover the exact committed receipt without transport.
+					result = state
+					return nil
+				default:
+					return ErrPreparedExecutionConflict
+				}
 			}
-			successorAlreadyHeld := state.HeadDigest != state.ProcessStartedDigest &&
+			successorAlreadyHeld := state.HeadDigest == state.ControlOwnerBindingDigest &&
 				state.Owner.OwnerEpoch == acquisition.OwnerEpoch &&
 				state.Owner.ControlOwnerAcquiredFactDigest == ownerState.FactDigest &&
 				state.SupervisorBoundAuthorityHead != "" &&
@@ -128,10 +187,18 @@ func (s *DurableStore) rebindOwnerSuccessorForAttachedRecoveryWithTransport(ctx 
 			var predecessorRevision uint64
 			var predecessorHead string
 			if successorAlreadyHeld {
-				predecessorRevision = state.Revision - 1
-				predecessorHead = state.ProcessStartedDigest
+				if state.ControlOwnerBindingRevision != state.Revision || state.ControlOwnerBindingRevision < 2 || requireDigest("controlOwnerBindingPreviousHead", state.ControlOwnerBindingPreviousHead) != nil {
+					return ErrPreparedExecutionConflict
+				}
+				predecessorRevision = state.ControlOwnerBindingRevision - 1
+				predecessorHead = state.ControlOwnerBindingPreviousHead
 			} else {
-				if state.HeadDigest != state.ProcessStartedDigest {
+				// A fresh CLI owner succeeds the current durable Attempt head, not
+				// only ProcessStarted. Result admission is fsynced before later
+				// completion/recovery, so its admission fact is the head that the
+				// new owner must extend. prepareAttemptFact remains the fail-closed
+				// epoch/order authority for this append.
+				if state.Owner.OwnerEpoch >= acquisition.OwnerEpoch {
 					return ErrPreparedExecutionConflict
 				}
 				owner := CurrentOwnerBinding{Scope: acquisition.Scope, OwnerEpoch: acquisition.OwnerEpoch, ControlOwnerAcquiredFactDigest: ownerState.FactDigest}
@@ -146,6 +213,72 @@ func (s *DurableStore) rebindOwnerSuccessorForAttachedRecoveryWithTransport(ctx 
 		})
 	})
 	return result, err
+}
+
+func (s *DurableStore) replayPendingTerminalCommandLocked(ctx context.Context, projection *Ingress, state AttemptAuthorityState, ownerState ControlOwnerState, identity AttemptIdentity, controlDirectory *os.File, fixedMarshalPath string, transport rebindTransport) (AttemptAuthorityState, error) {
+	prepared, err := preparedTerminalCommandFromIntent(state.SupervisorPendingIntent)
+	if err != nil {
+		return AttemptAuthorityState{}, fmt.Errorf("terminal replay prepare: %w", err)
+	}
+	authority, options, err := pendingTerminalAttachOptions(state, ownerState, identity, controlDirectory, fixedMarshalPath)
+	if err != nil {
+		return AttemptAuthorityState{}, err
+	}
+	var outcome processsupervisor.VerifiedCommandOutcome
+	if err := transport(ctx, options, func(session AttachedRebindSession) error {
+		observation, observeErr := session.Observation()
+		if observeErr != nil || validateRebindObservation(observation, authority) != nil {
+			return ErrPreparedExecutionConflict
+		}
+		switch prepared.Evidence().Command {
+		case processsupervisor.CommandCollect:
+			outcome, observeErr = session.ExecutePreparedCollect(ctx, prepared)
+		case processsupervisor.CommandInspect:
+			outcome, observeErr = session.ExecutePreparedInspect(ctx, prepared)
+		default:
+			return ErrPreparedExecutionConflict
+		}
+		return observeErr
+	}); err != nil {
+		return AttemptAuthorityState{}, fmt.Errorf("terminal replay transport: %w", err)
+	}
+	evidence, err := NewSupervisorCommandEvidence(outcome)
+	if err != nil {
+		return AttemptAuthorityState{}, fmt.Errorf("terminal replay evidence: %w", err)
+	}
+	state, _, err = s.appendPreparedSupervisorOutcomeLocked(projection, state, evidence)
+	if err != nil {
+		return AttemptAuthorityState{}, fmt.Errorf("terminal replay outcome append: %w", err)
+	}
+	return state, nil
+}
+
+func pendingTerminalAttachOptions(state AttemptAuthorityState, ownerState ControlOwnerState, identity AttemptIdentity, controlDirectory *os.File, fixedMarshalPath string) (processsupervisor.AttachAuthority, processsupervisor.AttachOptions, error) {
+	if state.SupervisorPendingIntentDigest == "" || state.ControlOwnerBindingRevision < 2 || state.ControlOwnerBindingRevision > state.Revision || state.Owner.OwnerEpoch != ownerState.Acquisition.OwnerEpoch || state.Owner.ControlOwnerAcquiredFactDigest != ownerState.FactDigest {
+		return processsupervisor.AttachAuthority{}, processsupervisor.AttachOptions{}, ErrPreparedExecutionConflict
+	}
+	acquisition := processsupervisor.AttachOwnerAcquisition{
+		AuthorityNamespaceID: identity.AuthorityNamespaceRef, RepositoryIdentityDigest: ownerState.Acquisition.Scope.RepositoryIdentityDigest,
+		OwnerEpoch: ownerState.Acquisition.OwnerEpoch, OwnerUID: ownerState.Acquisition.OwnerUID, OwnerGID: ownerState.Acquisition.OwnerGID,
+		OwnerProcess: ownerState.Acquisition.OwnerProcess, OwnerBinary: ownerState.Acquisition.OwnerBinary,
+		ObserverIdentity: ownerState.Acquisition.ObserverIdentity, ObservedAt: ownerState.Acquisition.ObservedAt,
+		PreviousFactDigest: ownerState.PreviousFactDigest, FactDigest: ownerState.FactDigest,
+	}
+	bound := processsupervisor.AttachOwnerBoundFact{
+		Authority: supervisorAuthorityTuple(identity), PreviousAttemptRevision: state.ControlOwnerBindingRevision - 1, PreviousAttemptHead: state.ControlOwnerBindingPreviousHead,
+		AttemptRevision: state.ControlOwnerBindingRevision, AttemptHead: state.ControlOwnerBindingDigest, ControlOwnerAcquiredFactDigest: ownerState.FactDigest,
+		OwnerEpoch: ownerState.Acquisition.OwnerEpoch, FactDigest: state.ControlOwnerBindingDigest,
+	}
+	authority := processsupervisor.AttachAuthority{
+		PreviousSupervisor: supervisorHandshakeAnchor(state.SupervisorPendingIntent.PreCommand), Supervisor: state.SupervisorStarted.Handshake.SupervisorProcess,
+		CurrentAcquisition: acquisition, CurrentOwnerBoundFact: bound,
+		Child: state.ProcessStartedEvidence.Outcome.Process, ChildObservationDigest: supervisorLastObservation(state),
+	}
+	options := processsupervisor.AttachOptions{
+		FixedMarshalPath: fixedMarshalPath, ControlDirectory: controlDirectory, ControlDirectoryIdentity: state.SupervisorStarted.ControlDirectory,
+		Authority: authority, OwnerVerifier: heldAttachOwnerVerifier{acquisition: acquisition},
+	}
+	return authority, options, nil
 }
 
 // openAttachedControlDirectory resolves the exact durable Supervisor session
@@ -282,7 +415,7 @@ func (s *DurableStore) replayPendingRebindLocked(ctx context.Context, projection
 		PreviousFactDigest: ownerState.PreviousFactDigest, FactDigest: ownerState.FactDigest,
 	}
 	attachBoundFact := processsupervisor.AttachOwnerBoundFact{
-		Authority: supervisorAuthorityTuple(identity), PreviousAttemptRevision: state.Revision - 1, PreviousAttemptHead: state.ProcessStartedDigest,
+		Authority: supervisorAuthorityTuple(identity), PreviousAttemptRevision: state.ControlOwnerBindingRevision - 1, PreviousAttemptHead: state.ControlOwnerBindingPreviousHead,
 		AttemptRevision: state.Revision, AttemptHead: state.HeadDigest, ControlOwnerAcquiredFactDigest: ownerState.FactDigest,
 		OwnerEpoch: ownerState.Acquisition.OwnerEpoch, FactDigest: state.ControlOwnerBindingDigest,
 	}

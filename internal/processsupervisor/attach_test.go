@@ -174,7 +174,7 @@ func TestAttachedSessionIsSingleUseAndCallbackScoped(t *testing.T) {
 
 func TestAttachedSessionExposesOnlyReadOnlyObservation(t *testing.T) {
 	typeOf := reflect.TypeOf((*AttachedSession)(nil))
-	if typeOf.NumMethod() != 3 || typeOf.Method(0).Name != "ExecutePreparedBindAuthority" || typeOf.Method(1).Name != "ExecutePreparedCollect" || typeOf.Method(2).Name != "Observation" {
+	if typeOf.NumMethod() != 5 || typeOf.Method(0).Name != "ExecutePreparedBindAuthority" || typeOf.Method(1).Name != "ExecutePreparedClose" || typeOf.Method(2).Name != "ExecutePreparedCollect" || typeOf.Method(3).Name != "ExecutePreparedInspect" || typeOf.Method(4).Name != "Observation" {
 		t.Fatalf("AttachedSession exported methods = %v", typeOf.NumMethod())
 	}
 }

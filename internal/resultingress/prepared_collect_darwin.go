@@ -52,7 +52,7 @@ func (s *DurableStore) collectPreparedExecutionWithTransport(ctx context.Context
 				return err
 			}
 			state, found := projection.attempts[key]
-			if !found || state.Identity != identity || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.CommittedResultFactDigest != "" || state.SupervisorInterventionDigest != "" || state.SupervisorClosedDigest != "" || state.SupervisorPendingIntentDigest != "" || state.SupervisorBoundAuthorityHead != state.HeadDigest || state.HeadDigest != state.ControlOwnerBindingDigest {
+			if !found || state.Identity != identity || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.CommittedResultFactDigest != "" || state.SupervisorInterventionDigest != "" || state.SupervisorClosedDigest != "" || state.SupervisorPendingIntentDigest != "" && state.SupervisorPendingIntent.Command != processsupervisor.CommandCollect || state.SupervisorBoundAuthorityHead != state.HeadDigest || state.HeadDigest != state.ControlOwnerBindingDigest {
 				return ErrPreparedExecutionConflict
 			}
 			scopeKey, err := acquisition.Scope.key()
@@ -87,18 +87,20 @@ func (s *DurableStore) collectPreparedExecutionWithTransport(ctx context.Context
 				return nil
 			}
 
-			pre := supervisorHandshakeAnchor(state.SupervisorMechanicsAnchor)
-			prepared, err := processsupervisor.PrepareCommand(pre, processsupervisor.CommandOptions{
-				Command: processsupervisor.CommandCollect, CommandID: fmt.Sprintf("collect-result-%d", state.SupervisorCommandSequence+1),
-				Sequence: state.SupervisorCommandSequence + 1, PreviousCommandDigest: state.SupervisorCommandHead,
-				CurrentAuthorityHead: state.HeadDigest, Deadline: s.authorityNow().Add(20 * time.Second),
-			}, processsupervisor.CollectPayload{ProcessStartedFactDigest: state.ProcessStartedDigest, LastObservationDigest: supervisorLastObservation(state)})
+			pending := state.SupervisorPendingIntentDigest != ""
+			var prepared processsupervisor.PreparedCommand
+			if pending {
+				prepared, err = preparedTerminalCommandFromIntent(state.SupervisorPendingIntent)
+			} else {
+				pre := supervisorHandshakeAnchor(state.SupervisorMechanicsAnchor)
+				prepared, err = processsupervisor.PrepareCommand(pre, processsupervisor.CommandOptions{
+					Command: processsupervisor.CommandCollect, CommandID: fmt.Sprintf("collect-result-%d", state.SupervisorCommandSequence+1),
+					Sequence: state.SupervisorCommandSequence + 1, PreviousCommandDigest: state.SupervisorCommandHead,
+					CurrentAuthorityHead: state.HeadDigest, Deadline: s.authorityNow().Add(20 * time.Second),
+				}, processsupervisor.CollectPayload{ProcessStartedFactDigest: state.ProcessStartedDigest, LastObservationDigest: supervisorLastObservation(state)})
+			}
 			if err != nil {
 				return fmt.Errorf("collect prepare: %w", err)
-			}
-			intent, err := NewSupervisorCommandIntent(prepared.Evidence())
-			if err != nil {
-				return fmt.Errorf("collect intent: %w", err)
 			}
 			authority, options, err := currentAttachOptions(state, ownerState, identity, controlDirectory, fixedMarshalPath)
 			if err != nil {
@@ -113,9 +115,15 @@ func (s *DurableStore) collectPreparedExecutionWithTransport(ctx context.Context
 				if validateRebindObservation(observation, authority) != nil {
 					return fmt.Errorf("collect observation mismatch: %w", ErrPreparedExecutionConflict)
 				}
-				state, _, observeErr = s.appendPreparedSupervisorIntentLocked(projection, state, intent)
-				if observeErr != nil {
-					return fmt.Errorf("collect intent append: %w", observeErr)
+				if !pending {
+					intent, intentErr := NewSupervisorCommandIntent(prepared.Evidence())
+					if intentErr != nil {
+						return fmt.Errorf("collect intent: %w", intentErr)
+					}
+					state, _, observeErr = s.appendPreparedSupervisorIntentLocked(projection, state, intent)
+					if observeErr != nil {
+						return fmt.Errorf("collect intent append: %w", observeErr)
+					}
 				}
 				outcome, observeErr = session.ExecutePreparedCollect(ctx, prepared)
 				if observeErr != nil {
@@ -149,7 +157,8 @@ func (s *DurableStore) collectPreparedExecutionWithTransport(ctx context.Context
 }
 
 func currentAttachOptions(state AttemptAuthorityState, ownerState ControlOwnerState, identity AttemptIdentity, controlDirectory *os.File, fixedMarshalPath string) (processsupervisor.AttachAuthority, processsupervisor.AttachOptions, error) {
-	if state.Revision < 2 || state.HeadDigest != state.ControlOwnerBindingDigest || state.SupervisorBoundAuthorityHead != state.HeadDigest {
+	if state.Revision < 2 || state.ControlOwnerBindingRevision < 2 || state.ControlOwnerBindingRevision > state.Revision ||
+		state.SupervisorBoundAuthorityHead != state.ControlOwnerBindingDigest || requireDigest("controlOwnerBindingPreviousHead", state.ControlOwnerBindingPreviousHead) != nil {
 		return processsupervisor.AttachAuthority{}, processsupervisor.AttachOptions{}, ErrPreparedExecutionConflict
 	}
 	acquisition := processsupervisor.AttachOwnerAcquisition{
@@ -160,8 +169,8 @@ func currentAttachOptions(state AttemptAuthorityState, ownerState ControlOwnerSt
 		PreviousFactDigest: ownerState.PreviousFactDigest, FactDigest: ownerState.FactDigest,
 	}
 	bound := processsupervisor.AttachOwnerBoundFact{
-		Authority: supervisorAuthorityTuple(identity), PreviousAttemptRevision: state.Revision - 1, PreviousAttemptHead: state.ProcessStartedDigest,
-		AttemptRevision: state.Revision, AttemptHead: state.HeadDigest, ControlOwnerAcquiredFactDigest: ownerState.FactDigest,
+		Authority: supervisorAuthorityTuple(identity), PreviousAttemptRevision: state.ControlOwnerBindingRevision - 1, PreviousAttemptHead: state.ControlOwnerBindingPreviousHead,
+		AttemptRevision: state.ControlOwnerBindingRevision, AttemptHead: state.ControlOwnerBindingDigest, ControlOwnerAcquiredFactDigest: ownerState.FactDigest,
 		OwnerEpoch: ownerState.Acquisition.OwnerEpoch, FactDigest: state.ControlOwnerBindingDigest,
 	}
 	authority := processsupervisor.AttachAuthority{

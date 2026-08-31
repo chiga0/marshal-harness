@@ -17,6 +17,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
@@ -409,7 +410,7 @@ func (l *CompositionLedger) pendingRecovery(owner resultingress.ControlOwnerStat
 	if err != nil {
 		return 0, err
 	}
-	if running && !runningAttemptBoundToOwner(attempt, owner) {
+	if running && !runningAttemptBoundToOwner(attempt, owner) && !runningAttemptReadyForCloseRecovery(attempt, owner) {
 		return 1, nil
 	}
 	return 0, nil
@@ -426,7 +427,10 @@ func (l *CompositionLedger) currentRunningAttempt(ctx context.Context) (runstore
 	if read.Run.State != domain.StateRunning {
 		return read, resultingress.AttemptAuthorityState{}, false, nil
 	}
-	states, err := l.ingress.PendingAttemptStates()
+	// Include a cleanup-released Attempt until the Run journal records
+	// worker.completed. A crash at that final boundary must replay the exact
+	// terminal Attempt instead of making the still-RUNNING Run unjoinable.
+	states, err := l.ingress.AttemptStates()
 	if err != nil {
 		return runstore.RunStartAuthorityProjection{}, resultingress.AttemptAuthorityState{}, false, err
 	}
@@ -450,6 +454,20 @@ func runningAttemptBoundToOwner(attempt resultingress.AttemptAuthorityState, own
 		attempt.SupervisorPendingIntentDigest == "" && attempt.SupervisorInterventionDigest == "" && attempt.SupervisorClosedDigest == "" &&
 		attempt.Owner.OwnerEpoch == owner.Acquisition.OwnerEpoch && attempt.Owner.ControlOwnerAcquiredFactDigest == owner.FactDigest &&
 		attempt.SupervisorBoundAuthorityHead == attempt.HeadDigest
+}
+
+func runningAttemptReadyForCloseRecovery(attempt resultingress.AttemptAuthorityState, owner resultingress.ControlOwnerState) bool {
+	if attempt.ProcessTerminalDigest == "" || attempt.AllocationTerminalDigest == "" || attempt.SupervisorClosedDigest != "" || attempt.SupervisorInterventionDigest != "" || attempt.Owner.OwnerEpoch != owner.Acquisition.OwnerEpoch || attempt.Owner.ControlOwnerAcquiredFactDigest != owner.FactDigest || attempt.HeadDigest != attempt.ControlOwnerBindingDigest {
+		return false
+	}
+	if attempt.SupervisorPendingIntentDigest != "" {
+		return attempt.SupervisorPendingIntent.Command == processsupervisor.CommandClose
+	}
+	if len(attempt.SupervisorCommandCheckpoints) == 0 {
+		return false
+	}
+	latest := attempt.SupervisorCommandCheckpoints[len(attempt.SupervisorCommandCheckpoints)-1].Evidence
+	return latest.Command == processsupervisor.CommandClose && latest.Disposition == "ok" && latest.Outcome.State == resultingress.SupervisorSessionClosed
 }
 
 // RehydratePreparedRunStart re-projects a durable preparation by digest under
@@ -498,18 +516,7 @@ func (l *CompositionLedger) WithCurrentRunAuthority(ctx context.Context, binding
 	if binding.AuthorityNamespaceID != l.namespace || binding.OrchestratorID != l.orchestrator {
 		return resultingress.ErrAttemptAuthorityConflict
 	}
-	read, err := l.runs.ReadRunStartAuthorityUnderLease(ctx, l.runLease)
-	if err != nil {
-		return err
-	}
-	current := resultingress.RunAuthorityBinding{AuthorityNamespaceID: l.namespace, RunID: read.Run.RunID, OrchestratorID: l.orchestrator, RunAuthorityDigest: read.Run.AuthorityHead}
-	if current != binding {
-		return resultingress.ErrAttemptAuthorityConflict
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return fn()
+	return l.runReady.WithCurrentRunAuthority(ctx, binding, fn)
 }
 
 // compositionAllocationAuthority is one Core-side allocation authority. The
@@ -731,10 +738,18 @@ func (l *CompositionLedger) ensureAttemptLease(reservationFactDigest, taskID, ru
 	now := l.now()
 	var replay *dispatch.DispatchLease
 	if lease, state, _, err := l.leaseLedger.CurrentByAttempt(runID, attemptID, now); err == nil {
-		if state != dispatch.LeaseStateClaimed && state != dispatch.LeaseStateActive {
+		if state != dispatch.LeaseStateClaimed && state != dispatch.LeaseStateActive && state != dispatch.LeaseStateCompleted {
 			return dispatch.DispatchLease{}, fmt.Errorf("dispatch: attempt lease %s is %s", lease.LeaseId, state)
 		}
 		replay = &lease
+		if state == dispatch.LeaseStateCompleted {
+			return lease, nil
+		}
+		if l.matcher != nil {
+			if capability, ok := l.matcher.IssuedResultCapability(lease.LeaseId); ok && capability.Validate() == nil {
+				l.resultCapabilities[lease.LeaseId] = capability
+			}
+		}
 	}
 	if l.existingWorktreeEnabled {
 		if l.matcher == nil {
@@ -745,20 +760,11 @@ func (l *CompositionLedger) ensureAttemptLease(reservationFactDigest, taskID, ru
 		if replay != nil {
 			ackDeadline, expiresAt = replay.AckDeadlineAt, replay.ExpiresAt
 		}
-		requirements, err := domain.NewSandboxRequirements(domain.AccessMode(l.requirements.AccessMode), domain.AssuranceLevel(l.requirements.MinimumAssuranceLevel))
+		request, err := l.reservedClaimRequest(reservationFactDigest, taskID, runID, attemptID, allocationID, ackDeadline, expiresAt)
 		if err != nil {
 			return dispatch.DispatchLease{}, err
 		}
-		claimed, err := l.matcher.ClaimReserved(dispatch.ReservedClaimRequest{
-			ReservationFactDigest: reservationFactDigest, RunId: runID, ReservedAttemptId: attemptID,
-			Claim: dispatch.ClaimRequest{
-				AuthorityNamespaceId: l.namespace, RegistrationId: l.providerRecord.RegistrationId,
-				Snapshot: l.providerSnapshot, Evidences: append([]provider.ConformanceEvidence(nil), l.providerEvidence...),
-				Requirements: requirements, TargetActor: l.resultTarget,
-				TaskId: taskID, RunId: runID, AttemptId: attemptID, AllocationId: allocationID,
-				AckDeadlineAt: ackDeadline, ExpiresAt: expiresAt,
-			},
-		}, now)
+		claimed, err := l.matcher.ClaimReserved(request, now)
 		if err != nil {
 			return dispatch.DispatchLease{}, err
 		}
@@ -784,6 +790,32 @@ func (l *CompositionLedger) ensureAttemptLease(reservationFactDigest, taskID, ru
 		return dispatch.DispatchLease{}, err
 	}
 	return minted, nil
+}
+
+func (l *CompositionLedger) reservedClaimRequest(reservationFactDigest, taskID, runID, attemptID, allocationID, ackDeadlineAt, expiresAt string) (dispatch.ReservedClaimRequest, error) {
+	requirements, err := domain.NewSandboxRequirements(domain.AccessMode(l.requirements.AccessMode), domain.AssuranceLevel(l.requirements.MinimumAssuranceLevel))
+	if err != nil {
+		return dispatch.ReservedClaimRequest{}, err
+	}
+	return dispatch.ReservedClaimRequest{
+		ReservationFactDigest: reservationFactDigest,
+		RunId:                 runID,
+		ReservedAttemptId:     attemptID,
+		Claim: dispatch.ClaimRequest{
+			AuthorityNamespaceId: l.namespace,
+			RegistrationId:       l.providerRecord.RegistrationId,
+			Snapshot:             l.providerSnapshot,
+			Evidences:            append([]provider.ConformanceEvidence(nil), l.providerEvidence...),
+			Requirements:         requirements,
+			TargetActor:          l.resultTarget,
+			TaskId:               taskID,
+			RunId:                runID,
+			AttemptId:            attemptID,
+			AllocationId:         allocationID,
+			AckDeadlineAt:        ackDeadlineAt,
+			ExpiresAt:            expiresAt,
+		},
+	}, nil
 }
 
 // compositionLeaseResolver rechecks an issued result capability against the

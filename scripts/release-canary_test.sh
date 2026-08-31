@@ -63,7 +63,7 @@ grep -Fq 'toolchain@v0.0.1-${required_go_version}.darwin-arm64/bin/go' \
 cat >"$PI_BUNDLE" <<'EOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '0.84.3\n'
+  printf '0.84.4\n'
   exit 0
 fi
 printf 'fake Pi must never be launched by the contract test\n' >&2
@@ -93,6 +93,14 @@ printf '%s\n' "$*" >>"$MARSHAL_RELEASE_CANARY_FAKE_LOG"
 [ "${MARSHAL_PI_NODE_PATH:-}" = "$MARSHAL_RELEASE_CANARY_PI_NODE" ] || {
   printf 'fixed Node runtime was not exported to Marshal\n' >&2
   exit 91
+}
+[ "${MARSHAL_PI_RUNTIME:-}" = "$MARSHAL_RELEASE_CANARY_PI_NODE" ] || {
+  printf 'sealed Pi runtime was not exported to Marshal\n' >&2
+  exit 92
+}
+[ "${MARSHAL_PI_ENTRYPOINT:-}" = "$MARSHAL_RELEASE_CANARY_PI_BUNDLE" ] || {
+  printf 'sealed Pi entrypoint was not exported to Marshal\n' >&2
+  exit 93
 }
 
 unexpected() {
@@ -138,7 +146,7 @@ case "${1:-} ${2:-}" in
     ;;
   "doctor --json")
     [ "$#" -eq 2 ] || unexpected "$@"
-    printf '{"status":"ok","policyEnvironmentBinding":{"schemaVersion":"marshal.local-dogfood-environment-binding.v1","selfProfile":"darwin-local-dogfood","activationDigest":"%s","identitySubjectDigest":"%s","assurance":"ordinary-user","execution":"workspace-write","production":false,"publication":"none"},"workers":[{"adapterId":"pi","outcome":"registered","compatibility":"supported","binaryVersion":"0.84.3","authorityMode":"ordinary-user"}]}\n' "$digest1" "$digest2"
+    printf '{"status":"ok","policyEnvironmentBinding":{"schemaVersion":"marshal.local-dogfood-environment-binding.v1","selfProfile":"darwin-local-dogfood","activationDigest":"%s","identitySubjectDigest":"%s","assurance":"ordinary-user","execution":"workspace-write","production":false,"publication":"none"},"workers":[{"adapterId":"pi","outcome":"registered","compatibility":"supported","binaryVersion":"0.84.4","authorityMode":"ordinary-user"}]}\n' "$digest1" "$digest2"
     ;;
   "task scaffold")
     [ "$#" -eq 6 ] && [ "$3" = --draft ] && [ "$4" = "$control_root/task-draft.json" ] && \
@@ -167,7 +175,7 @@ assert task.get("apiVersion") == "marshal.dev/v1alpha1"
 assert task.get("kind") == "Task"
 assert task["worker"].get("preferredAdapter") == "pi"
 assert task["worker"].get("fallbackAdapters") == []
-assert task["worker"].get("model") == "qwen-token-plan-cn/qwen3.6-flash"
+assert task["worker"].get("model") == "pai-eas/qwen3.7-plus"
 assert policy.get("apiVersion") == "marshal.dev/v1alpha1"
 assert policy.get("kind") == "PolicySnapshot"
 assert policy.get("runId") == sys.argv[3]
@@ -189,8 +197,13 @@ PY
     ;;
   "task run")
     [ "$#" -eq 5 ] && [ "$3" = --run ] && [ "$4" = "$run_id" ] && [ "$5" = --json ] || unexpected "$@"
+    if [ "$(cat "$state_path")" != RUNNING ]; then
+      printf 'RUNNING\n' >"$state_path"
+      printf '{"status":"worker-started"}\n'
+      exit 0
+    fi
     mkdir -p "$PWD/.marshal/runs/$run_id/attempts/attempt-1"
-    printf '{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"%s","runId":"%s","attemptId":"attempt-1","adapter":{"id":"pi","executable":"%s","version":"0.84.3","model":"qwen-token-plan-cn/qwen3.6-flash"},"status":"completed","summary":"fixture","declaredChangedFiles":["release-canary.txt"],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"startedAt":"2026-08-28T00:00:00Z","completedAt":"2026-08-28T00:00:01Z"}\n' \
+    printf '{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"%s","runId":"%s","attemptId":"attempt-1","adapter":{"id":"pi","executable":"%s","version":"0.84.4","model":"pai-eas/qwen3.7-plus"},"status":"completed","summary":"fixture","declaredChangedFiles":["release-canary.txt"],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"startedAt":"2026-08-28T00:00:00Z","completedAt":"2026-08-28T00:00:01Z"}\n' \
       "$task_id" "$run_id" "$MARSHAL_RELEASE_CANARY_PI_BUNDLE" \
       >"$PWD/.marshal/runs/$run_id/attempts/attempt-1/worker-result.json"
     printf 'VERIFYING\n' >"$state_path"

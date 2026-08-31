@@ -364,6 +364,8 @@ type AttemptAuthorityState struct {
 	OpenedDigest                     string                        `json:"openedDigest"`
 	Owner                            CurrentOwnerBinding           `json:"owner,omitempty,omitzero"`
 	ControlOwnerBindingDigest        string                        `json:"controlOwnerBindingDigest,omitempty"`
+	ControlOwnerBindingRevision      uint64                        `json:"controlOwnerBindingRevision,omitempty"`
+	ControlOwnerBindingPreviousHead  string                        `json:"controlOwnerBindingPreviousHead,omitempty"`
 	LaunchState                      LaunchState                   `json:"launchState"`
 	LaunchAuthorizationID            string                        `json:"launchAuthorizationId,omitempty"`
 	LaunchAuthorizedDigest           string                        `json:"launchAuthorizedDigest,omitempty"`
@@ -397,6 +399,7 @@ type AttemptAuthorityState struct {
 	CommittedResultPreceding         []SupervisorCommandEvidence   `json:"committedResultPreceding,omitempty"`
 	CommittedResultCollect           SupervisorCommandEvidence     `json:"committedResultCollect,omitempty,omitzero"`
 	CommittedResultOutcomeDigest     string                        `json:"committedResultOutcomeDigest,omitempty"`
+	CommittedResultObservation       ResultObservationBinding      `json:"committedResultObservation,omitempty,omitzero"`
 	BarrierDigest                    string                        `json:"barrierDigest,omitempty"`
 	TerminalizationID                string                        `json:"terminalizationId,omitempty"`
 	EligibilityTerminal              EligibilityTerminal           `json:"eligibilityTerminal,omitempty"`
@@ -440,6 +443,7 @@ type AttemptAuthorityState struct {
 	ExistingWorktreeBindReceiptDigest        string                         `json:"existingWorktreeBindReceiptDigest,omitempty"`
 	ExistingWorktreeReleaseIntentFactDigest  string                         `json:"existingWorktreeReleaseIntentFactDigest,omitempty"`
 	ExistingWorktreeReleaseReceiptFactDigest string                         `json:"existingWorktreeReleaseReceiptFactDigest,omitempty"`
+	ExistingWorktreeReleaseReceiptDigest     string                         `json:"existingWorktreeReleaseReceiptDigest,omitempty"`
 	AllocationTerminateEffectDigest          string                         `json:"allocationTerminateEffectDigest,omitempty"`
 	AllocationTerminateReceiptDigest         string                         `json:"allocationTerminateReceiptDigest,omitempty"`
 	EffectInterventionDigest                 string                         `json:"effectInterventionDigest,omitempty"`
@@ -750,7 +754,9 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionAllocationTerminated:
-		if prior.ProcessTerminalKind != ProcessAbsent && prior.ProcessTerminalKind != ProcessTerminated || prior.AllocationTerminalDigest != "" || prior.AllocationTerminateEffectDigest == "" || prior.AllocationTerminateReceiptDigest == "" || t.ReceiptDigest != prior.AllocationTerminateReceiptDigest {
+		pathA := prior.AllocationTerminateEffectDigest != "" && prior.AllocationTerminateReceiptDigest != "" && t.ReceiptDigest == prior.AllocationTerminateReceiptDigest
+		pathB := prior.ExistingWorktreeReleaseIntentFactDigest != "" && prior.ExistingWorktreeReleaseReceiptFactDigest != "" && prior.ExistingWorktreeReleaseReceiptDigest != "" && t.ReceiptDigest == prior.ExistingWorktreeReleaseReceiptDigest
+		if prior.ProcessTerminalKind != ProcessAbsent && prior.ProcessTerminalKind != ProcessTerminated || prior.AllocationTerminalDigest != "" || pathA == pathB {
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionProcessSupervisorClosed:
@@ -1042,7 +1048,7 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 	}
 	pre, prior := intent.PreCommand, state.SupervisorMechanicsAnchor
 	boundToInitialHead := state.SupervisorBoundAuthorityHead == state.SupervisorStartedDigest
-	boundToCurrentRecoveryHead := state.SupervisorBoundAuthorityHead == state.HeadDigest && state.HeadDigest == state.ControlOwnerBindingDigest
+	boundToCurrentRecoveryHead := state.SupervisorBoundAuthorityHead == state.ControlOwnerBindingDigest
 	ownerContinuity := pre.OwnerEpoch == state.Owner.OwnerEpoch || boundToCurrentRecoveryHead
 	if prior.Validate() != nil || pre != prior || !ownerContinuity {
 		return ErrAttemptAuthorityOrder
@@ -1794,6 +1800,8 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 	case AttemptTransitionControlOwnerBound:
 		state.Owner = t.Owner
 		state.ControlOwnerBindingDigest = fact.Digest
+		state.ControlOwnerBindingRevision = fact.Revision
+		state.ControlOwnerBindingPreviousHead = fact.PreviousDigest
 	case AttemptTransitionLaunchAuthorized:
 		state.LaunchState = LaunchUncertain
 		state.LaunchAuthorizationID = t.LaunchAuthorizationID

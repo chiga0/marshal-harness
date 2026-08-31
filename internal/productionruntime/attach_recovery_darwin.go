@@ -17,6 +17,12 @@ func (l *CompositionLedger) recoverRunningAttempt(ctx context.Context, verifier 
 	if err != nil || !running {
 		return err
 	}
+	// Once the supervisor is durably closed no further Attach/rebind is legal
+	// or necessary. Cleanup successors and the Run successor are pure ledger
+	// replays under current Run authority.
+	if attempt.SupervisorClosedDigest != "" || attempt.CleanupReleasedDigest != "" {
+		return nil
+	}
 	if runningAttemptBoundToOwner(attempt, owner) {
 		return nil
 	}
@@ -24,7 +30,7 @@ func (l *CompositionLedger) recoverRunningAttempt(ctx context.Context, verifier 
 	if err != nil {
 		return application.NewError("recover-running-attempt", application.ReasonRecoveryRequired)
 	}
-	if !runningAttemptBoundToOwner(rebound, owner) {
+	if !runningAttemptBoundToOwner(rebound, owner) && !runningAttemptReadyForCloseRecovery(rebound, owner) {
 		return application.NewError("recover-running-attempt", application.ReasonAuthorityConflict)
 	}
 	return nil

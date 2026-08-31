@@ -2389,10 +2389,40 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "运行失败：冻结 Worker Adapter 当前未配置或不可用。")
 		return ExitUnavailable
 	}
-	state, err := runstore.New(location.StateRoot).Inspect(*runID)
+	runStore := runstore.New(location.StateRoot)
+	reconcileLease, err := runStore.AcquireExisting(*runID)
 	if err != nil {
-		fmt.Fprintln(stderr, "运行失败：无法核验当前 Run 状态。")
+		fmt.Fprintln(stderr, "运行失败：无法获取 Run 恢复租约。")
 		return ExitFailure
+	}
+	state, reconcileErr := runStore.ReconcileSnapshotUnderLease(ctx, reconcileLease)
+	sealedConfigured := sealedPiConfigured(frozenAdapter.AdapterID, entryObservation != nil, os.Getenv("MARSHAL_PI_RUNTIME"), os.Getenv("MARSHAL_PI_ENTRYPOINT"), os.Getenv("MARSHAL_WORKER_EXECUTOR"))
+	sealedRun := isSealedPiRun(frozenAdapter.AdapterID, state.State, "", true)
+	sealedAuthorityInvalid := false
+	if reconcileErr == nil && state.State == domain.StateRunning {
+		sealedProjection, sealedErr := runStore.ReadRunStartAuthorityUnderLease(ctx, reconcileLease)
+		sealedRun = isSealedPiRun(frozenAdapter.AdapterID, sealedProjection.Run.State, sealedProjection.PreparationDigest, sealedErr == nil)
+		sealedAuthorityInvalid = frozenAdapter.AdapterID == "pi" && !sealedRun
+	}
+	releaseErr := reconcileLease.Release()
+	if reconcileErr != nil || releaseErr != nil {
+		fmt.Fprintln(stderr, "运行失败：无法恢复 Run journal/snapshot。")
+		return ExitFailure
+	}
+	if sealedAuthorityInvalid {
+		fmt.Fprintln(stderr, "运行失败：sealed Pi Run 的耐久启动权威无效；禁止回退到其他执行路径。")
+		return ExitFailure
+	}
+	if state.State == domain.StateVerifying {
+		if *jsonOutput {
+			if err := writeRedactedJSON(stdout, map[string]any{"status": "worker-completed", "run": state}, location.RepositoryRoot, location.StateRoot); err != nil {
+				fmt.Fprintln(stderr, "运行失败：无法输出已完成 Worker 状态。")
+				return ExitFailure
+			}
+		} else {
+			fmt.Fprintf(stdout, "Run：%s\nAttempt：%s\n状态：%s\n", state.RunID, state.CurrentAttemptID, state.State)
+		}
+		return ExitOK
 	}
 	if state.State == domain.StateReady {
 		if err := controlplane.Require(controlplane.ApprovalInput{
@@ -2403,7 +2433,11 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return ExitFailure
 		}
 	}
-	if state.State == domain.StateReady || state.State == domain.StateRunning {
+	if sealedRun && !sealedConfigured {
+		fmt.Fprintln(stderr, "运行失败：sealed Pi Runtime 当前配置不可用；禁止回退到其他执行路径。")
+		return ExitUnavailable
+	}
+	if sealedRun && (state.State == domain.StateReady || state.State == domain.StateRunning) {
 		// ADR 0068 sealed 组合是 READY→RUNNING 以及 terminal
 		// RUNNING→VERIFYING 的唯一生产入口。
 		return runSealedReadyBranch(ctx, location.StateRoot, location.RepositoryRoot, state.TaskID, *runID, stdout, stderr)
@@ -2656,6 +2690,17 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stdout, "Run：%s\nAttempt：%s\n状态：%s\n", *runID, result.AttemptID, result.State.State)
 	}
 	return ExitOK
+}
+
+func sealedPiConfigured(adapterID string, fixedSelfAdmitted bool, runtimePath, entrypointPath, executor string) bool {
+	return adapterID == "pi" && fixedSelfAdmitted && runtimePath != "" && entrypointPath != "" && executor != "legacy"
+}
+
+func isSealedPiRun(adapterID string, state domain.State, preparationDigest string, authorityValid bool) bool {
+	if adapterID != "pi" || !authorityValid {
+		return false
+	}
+	return state == domain.StateReady || state == domain.StateRunning && preparationDigest != ""
 }
 
 func runThroughVerify(ctx context.Context, stateRoot, runID string, jsonOutput bool, result execution.Result, stdout, stderr io.Writer) int {

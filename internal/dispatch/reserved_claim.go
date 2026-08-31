@@ -461,6 +461,63 @@ func (m *Matcher) ClaimReserved(request ReservedClaimRequest, now time.Time) (Re
 	return result, nil
 }
 
+// LookupReservedClaim returns the exact originally persisted reserved-claim
+// response without reissuing its typed edge or mutating any active Matcher
+// projection. It is intentionally limited to recovery of an already
+// committed result, whose admission replay still needs the immutable DRC
+// bytes after the lease has become terminal.
+func (m *Matcher) LookupReservedClaim(request ReservedClaimRequest) (ReservedClaimResult, bool, error) {
+	if m == nil || m.store == nil {
+		return ReservedClaimResult{}, false, fmt.Errorf("dispatch: reserved claim lookup precondition: the registration store is not bound to a durable ledger directory: %w", provider.ErrMemoryOnlyRegistration)
+	}
+	if m.leaseLedger == nil {
+		return ReservedClaimResult{}, false, fmt.Errorf("dispatch: reserved claim lookup precondition: the durable lease ledger is not bound")
+	}
+	stored, err := m.store.Get(request.Claim.RegistrationId)
+	if err != nil {
+		return ReservedClaimResult{}, false, fmt.Errorf("dispatch: reserved claim lookup registration: %w", err)
+	}
+	input := reservedClaimInput{
+		ReservationFactDigest: request.ReservationFactDigest,
+		RunId:                 request.RunId,
+		ReservedAttemptId:     request.ReservedAttemptId,
+		Registration:          stored,
+		Claim:                 request.Claim,
+	}
+	if err := input.validate(); err != nil {
+		return ReservedClaimResult{}, false, fmt.Errorf("dispatch: reserved claim lookup input rejected: %w", err)
+	}
+	return m.leaseLedger.lookupReservedClaimHistory(input)
+}
+
+// lookupReservedClaimHistory reads the immutable original response even when
+// the current lease projection is terminal. Unlike lookupReservedClaim it is
+// not an admission lookup: it cannot authorize a fresh claim and therefore
+// deliberately does not require the current lease state to equal the
+// originally claimed state.
+func (l *LeaseLedger) lookupReservedClaimHistory(input reservedClaimInput) (ReservedClaimResult, bool, error) {
+	if err := l.requireBound(); err != nil {
+		return ReservedClaimResult{}, false, err
+	}
+	if err := input.validate(); err != nil {
+		return ReservedClaimResult{}, false, err
+	}
+	inputDigest, err := input.digest()
+	if err != nil {
+		return ReservedClaimResult{}, false, err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	fact, found := l.reservedClaims[input.key()]
+	if !found {
+		return ReservedClaimResult{}, false, nil
+	}
+	if fact.ClaimInputDigest != inputDigest {
+		return ReservedClaimResult{}, false, fmt.Errorf("%w: reserved claim history key was replayed with different canonical input bytes", ErrLeaseConflict)
+	}
+	return fact.result(), true, nil
+}
+
 // buildReservedClaimCandidate is the side-effect-free form of Claim. It
 // deterministically seals both response records but does not issue the edge
 // into the runtime. ClaimReserved first fsyncs those exact bytes and only

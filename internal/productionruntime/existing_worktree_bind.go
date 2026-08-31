@@ -79,10 +79,36 @@ func (verifier *existingWorktreeCurrentVerifier) WithCurrentExistingWorktreeBind
 	return callback(verifier.expected, verifier.graph)
 }
 
-func (verifier *existingWorktreeCurrentVerifier) WithCurrentExistingWorktreeRelease(context.Context, resultingress.ExistingWorktreeReleaseAuthorityCheck, func(allocationcontrol.ExistingWorktreeCurrentAuthorityV1, allocationcontrol.ExistingWorktreeDescriptorGraphV1) error) error {
-	// Release/terminate is a later slice (ADR 0069 §7); path B production
-	// composition only binds in this slice.
-	return resultingress.ErrExistingWorktreeAuthorityConflict
+func (verifier *existingWorktreeCurrentVerifier) WithCurrentExistingWorktreeRelease(ctx context.Context, check resultingress.ExistingWorktreeReleaseAuthorityCheck, callback func(allocationcontrol.ExistingWorktreeCurrentAuthorityV1, allocationcontrol.ExistingWorktreeDescriptorGraphV1) error) error {
+	if verifier == nil || verifier.ledger == nil || callback == nil || verifier.scope.Validate() != nil || check.Request.Validate() != nil {
+		return resultingress.ErrExistingWorktreeAuthorityConflict
+	}
+	owner, found, err := verifier.ledger.ingress.OpenOwner(verifier.scope)
+	if err != nil || !found {
+		return resultingress.ErrExistingWorktreeAuthorityConflict
+	}
+	attempt, found, err := verifier.ledger.ingress.AttemptState(check.Identity)
+	if err != nil || !found || attempt.Identity != check.Identity || attempt.Owner.OwnerEpoch != owner.Acquisition.OwnerEpoch || attempt.Owner.ControlOwnerAcquiredFactDigest != owner.FactDigest || attempt.ProcessTerminalDigest != check.Request.ProcessTerminalFactDigest || attempt.TerminalizationID != check.Request.TerminalizationID || attempt.CleanupBindingDigest != check.Request.CleanupBindingDigest || attempt.AllocationTerminalDigest != "" || attempt.ExistingWorktreeReleaseReceiptFactDigest != "" {
+		return resultingress.ErrExistingWorktreeAuthorityConflict
+	}
+	replayRequest, _, replayFound, replayComplete, err := verifier.ledger.ingress.CurrentExistingWorktreeRelease(check.Identity)
+	if err != nil || replayComplete || replayFound && replayRequest != check.Request || !replayFound && attempt.HeadDigest != check.Request.AttemptAuthorityHeadDigest {
+		return resultingress.ErrExistingWorktreeAuthorityConflict
+	}
+	binding := check.Request.Binding
+	current := allocationcontrol.ExistingWorktreeCurrentAuthorityV1{
+		AuthorityNamespaceID: binding.AuthorityNamespaceID, RepositoryOwnerDigest: binding.RepositoryOwnerDigest,
+		TaskID: binding.TaskID, RunID: binding.RunID, RunAuthorityHeadDigest: check.Request.RunAuthorityHeadDigest,
+		AttemptID: binding.AttemptID, AttemptAuthorityHeadDigest: attempt.HeadDigest,
+		ReservationFactDigest: binding.ReservationFactDigest, AttemptOpenedFactDigest: binding.AttemptOpenedFactDigest,
+		AllocationID: binding.AllocationID, LeaseID: binding.LeaseID, Generation: binding.Generation,
+		FencingTokenDigest: binding.FencingTokenDigest, FrozenInputsDigest: binding.FrozenInputsDigest,
+		ExpectedAttemptSequence: binding.ExpectedAttemptSequence,
+		TerminalizationID:       attempt.TerminalizationID, TerminalAttemptHeadDigest: check.Request.AttemptAuthorityHeadDigest,
+		CleanupBindingDigest: attempt.CleanupBindingDigest, ProcessTerminalFactDigest: attempt.ProcessTerminalDigest,
+		CleanupDisposition: check.Request.CleanupDisposition,
+	}
+	return callback(current, verifier.graph)
 }
 
 // bindExistingWorktree drives the RB1 existing-worktree bind closed-union

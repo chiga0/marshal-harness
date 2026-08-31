@@ -151,6 +151,10 @@ func appendExistingWorktreeReleaseChain(t *testing.T, store *DurableStore, id At
 	if err != nil {
 		t.Fatalf("append release-intent: %v", err)
 	}
+	pendingRequest, pendingReceipt, found, complete, err := store.CurrentExistingWorktreeRelease(id)
+	if err != nil || !found || complete || pendingRequest != releaseRequest || pendingReceipt != (allocationcontrol.ExistingWorktreeReleaseReceiptV1{}) {
+		t.Fatalf("pending release replay request=%+v receipt=%+v found=%t complete=%t err=%v", pendingRequest, pendingReceipt, found, complete, err)
+	}
 	releaseIntentFactDigest := intentSnapshot.Facts[len(intentSnapshot.Facts)-1].AttemptFactDigest
 	releaseReceipt := allocationcontrol.ExistingWorktreeReleaseReceiptV1{
 		Binding: chain.binding, RequestDigest: releaseRequest.RequestDigest,
@@ -172,6 +176,13 @@ func appendExistingWorktreeReleaseChain(t *testing.T, store *DurableStore, id At
 	current, _, err := store.AttemptState(id)
 	if err != nil {
 		t.Fatal(err)
+	}
+	replayedRequest, replayedReceipt, found, complete, err := store.CurrentExistingWorktreeRelease(id)
+	if err != nil || !found || !complete || replayedRequest != releaseRequest || replayedReceipt != releaseReceipt {
+		t.Fatalf("release replay request=%+v receipt=%+v found=%t complete=%t err=%v", replayedRequest, replayedReceipt, found, complete, err)
+	}
+	if current.ExistingWorktreeReleaseReceiptDigest != releaseReceipt.ReceiptDigest {
+		t.Fatalf("release receipt projection=%q want=%q", current.ExistingWorktreeReleaseReceiptDigest, releaseReceipt.ReceiptDigest)
 	}
 	return current
 }

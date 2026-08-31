@@ -1,6 +1,7 @@
 package productionruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,12 +27,42 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 	if err != nil || !found || read.Run.RunID != runID {
 		return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 	}
-	lease, err := l.ensureAttemptLease(attempt.ReservationFactDigest, attempt.Identity.TaskID, attempt.Identity.RunID, attempt.Identity.AttemptID, attempt.Identity.AllocationID)
-	if err != nil {
-		return CollectedRunResult{}, err
+	var lease dispatch.DispatchLease
+	var capability authority.DispatchResultCapability
+	if attempt.CommittedResultFactDigest != "" {
+		// Terminal eligibility revokes the active capability. Recovery of an
+		// already committed admission therefore reads the immutable original
+		// claim response without reissuing or reactivating that capability.
+		current, state, _, currentErr := l.leaseLedger.Current(attempt.Identity.LeaseID)
+		exactTuple := currentErr == nil && current.RunId == attempt.Identity.RunID && current.AttemptId == attempt.Identity.AttemptID && current.AllocationId == attempt.Identity.AllocationID
+		activeAdmissionGap := (state == dispatch.LeaseStateClaimed || state == dispatch.LeaseStateActive) && current.Generation == attempt.Identity.DispatchGeneration
+		completedTerminal := state == dispatch.LeaseStateCompleted && current.Generation == attempt.Identity.DispatchGeneration+1 && current.CompletionReason == dispatch.CompletionReasonAttemptCompleted
+		if !exactTuple || !activeAdmissionGap && !completedTerminal {
+			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
+		}
+		request, requestErr := l.reservedClaimRequest(attempt.ReservationFactDigest, attempt.Identity.TaskID, attempt.Identity.RunID, attempt.Identity.AttemptID, attempt.Identity.AllocationID, current.AckDeadlineAt, current.ExpiresAt)
+		if requestErr != nil {
+			return CollectedRunResult{}, requestErr
+		}
+		claimed, found, lookupErr := l.matcher.LookupReservedClaim(request)
+		if lookupErr != nil || !found || claimed.Lease.LeaseId != attempt.Identity.LeaseID || claimed.Lease.Generation != attempt.Identity.DispatchGeneration {
+			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
+		}
+		lease = claimed.Lease
+		capability = claimed.ResultCapability
+	} else {
+		var err error
+		lease, err = l.ensureAttemptLease(attempt.ReservationFactDigest, attempt.Identity.TaskID, attempt.Identity.RunID, attempt.Identity.AttemptID, attempt.Identity.AllocationID)
+		if err != nil {
+			return CollectedRunResult{}, err
+		}
+		var ok bool
+		capability, ok = l.resultCapabilities[lease.LeaseId]
+		if !ok {
+			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
+		}
 	}
-	capability, ok := l.resultCapabilities[lease.LeaseId]
-	if !ok || capability.Validate() != nil {
+	if capability.Validate() != nil {
 		return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 	}
 
@@ -95,15 +126,8 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		result = domain.Record{Kind: domain.KindWorkerResult, Data: data}
 	}
 
-	observation, err := verification.ObserveContext(ctx, read.WorktreePath, read.BaseSHA, 64<<20)
+	observation, observationBinding, err := l.resultObservation(ctx, attemptDirectory, read, attempt.CommittedResultFactDigest != "", attempt.CommittedResultObservation)
 	if err != nil {
-		return CollectedRunResult{}, err
-	}
-	observationData, err := json.MarshalIndent(observation, "", "  ")
-	if err != nil {
-		return CollectedRunResult{}, err
-	}
-	if err := runstore.WriteFileInDirectory(attemptDirectory, "worktree-snapshot.json", append(observationData, '\n'), 0o600); err != nil {
 		return CollectedRunResult{}, err
 	}
 
@@ -122,7 +146,7 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		if collectOutcomeDigest == "" {
 			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 		}
-		admission, err = ingress.AdmitWithSupervisorCollectOutcome(ctx, drc, envelope, collectOutcomeDigest)
+		admission, err = ingress.AdmitWithSupervisorCollectOutcomeAndObservation(ctx, drc, envelope, collectOutcomeDigest, observationBinding)
 	} else {
 		var replayed bool
 		admission, replayed, err = ingress.ReplayCommitted(drc, envelope)
@@ -136,6 +160,17 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 	drcDigest, err := drc.Digest()
 	if err != nil {
 		return CollectedRunResult{}, err
+	}
+	currentAttempt, found, err := l.ingress.AttemptState(attempt.Identity)
+	if err != nil || !found || currentAttempt.CommittedResultFactDigest != admission.FactDigest {
+		return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
+	}
+	terminal, err := l.terminalizeCompletedAttempt(ctx, verifier, acquisition, read, currentAttempt)
+	if err != nil {
+		return CollectedRunResult{}, err
+	}
+	if terminal.CleanupReleasedDigest == "" {
+		return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonRecoveryRequired)
 	}
 
 	state, err := runstore.InspectUnderLease(l.runLease)
@@ -153,7 +188,10 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		StateFrom: domain.StateRunning, StateTo: domain.StateVerifying, Timestamp: completedAt,
 		Actor: &domain.Actor{Type: "system", ID: "marshal-production-runtime"},
 		Payload: map[string]any{"snapshotDigest": observation.SnapshotDigest, "diffDigest": observation.DiffDigest,
-			"resultAdmissionFactDigest": admission.FactDigest, "resultDRCDigest": drcDigest, "resultEnvelopeDigest": envelopeDigest},
+			"resultAdmissionFactDigest": admission.FactDigest, "resultDRCDigest": drcDigest, "resultEnvelopeDigest": envelopeDigest,
+			"terminalizationBarrierFactDigest": terminal.BarrierDigest, "processTerminalFactDigest": terminal.ProcessTerminalDigest,
+			"allocationTerminatedFactDigest": terminal.AllocationTerminalDigest, "supervisorClosedFactDigest": terminal.SupervisorClosedDigest,
+			"cleanupReleasedFactDigest": terminal.CleanupReleasedDigest},
 	}
 	next, err := lifecycle.Reduce(state, event, lifecycle.Guard{LeaseHeld: true, WorkerProtocolComplete: true, SnapshotRecorded: true})
 	if err != nil {
@@ -170,6 +208,60 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		return CollectedRunResult{}, err
 	}
 	return CollectedRunResult{Run: projection, WorkerResult: result, AdmissionFactDigest: admission.FactDigest, DRCDigest: drcDigest, EnvelopeDigest: envelopeDigest}, nil
+}
+
+// resultObservation freezes the candidate observation before result admission
+// and reuses those exact bytes after a crash. A committed result must never be
+// rebound to recovery-time worktree contents: the stored observation is
+// canonical-shape checked and then treated as immutable recovery evidence.
+func (l *CompositionLedger) resultObservation(ctx context.Context, attemptDirectory *runstore.BoundDirectory, read runstore.RunStartAuthorityProjection, committed bool, expected resultingress.ResultObservationBinding) (verification.Observation, resultingress.ResultObservationBinding, error) {
+	const snapshotName = "worktree-snapshot.json"
+	if !committed {
+		observation, err := verification.ObserveContext(ctx, read.WorktreePath, read.BaseSHA, 64<<20)
+		if err != nil {
+			return verification.Observation{}, resultingress.ResultObservationBinding{}, err
+		}
+		data, err := json.MarshalIndent(observation, "", "  ")
+		if err != nil {
+			return verification.Observation{}, resultingress.ResultObservationBinding{}, err
+		}
+		stored := append(data, '\n')
+		if err := runstore.WriteFileInDirectory(attemptDirectory, snapshotName, stored, 0o600); err != nil {
+			return verification.Observation{}, resultingress.ResultObservationBinding{}, err
+		}
+		binding := resultingress.ResultObservationBinding{ObservationDigest: canonical.DigestBytes(stored), SnapshotDigest: observation.SnapshotDigest, DiffDigest: observation.DiffDigest}
+		return observation, binding, nil
+	}
+
+	stored, err := runstore.ReadFileInDirectory(attemptDirectory, snapshotName, 4<<20)
+	if err != nil {
+		return verification.Observation{}, resultingress.ResultObservationBinding{}, err
+	}
+	var observation verification.Observation
+	if expected.Validate() != nil || len(stored) < 2 || stored[len(stored)-1] != '\n' || json.Unmarshal(stored, &observation) != nil || !validStoredObservation(observation) {
+		return verification.Observation{}, resultingress.ResultObservationBinding{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
+	}
+	canonicalShape, err := json.MarshalIndent(observation, "", "  ")
+	if err != nil || !bytes.Equal(stored, append(canonicalShape, '\n')) {
+		return verification.Observation{}, resultingress.ResultObservationBinding{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
+	}
+	actual := resultingress.ResultObservationBinding{ObservationDigest: canonical.DigestBytes(stored), SnapshotDigest: observation.SnapshotDigest, DiffDigest: observation.DiffDigest}
+	if actual != expected {
+		return verification.Observation{}, resultingress.ResultObservationBinding{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
+	}
+	return observation, actual, nil
+}
+
+func validStoredObservation(observation verification.Observation) bool {
+	if !profileDigestPattern.MatchString(observation.SnapshotDigest) || !profileDigestPattern.MatchString(observation.DiffDigest) || observation.ChangedFileCount != len(observation.ChangedFiles) || observation.DiffBytes < 0 {
+		return false
+	}
+	for index, path := range observation.ChangedFiles {
+		if path == "" || index > 0 && observation.ChangedFiles[index-1] >= path {
+			return false
+		}
+	}
+	return true
 }
 
 func (l *CompositionLedger) resultAdmissionAuthority(attempt resultingress.AttemptAuthorityState, lease dispatch.DispatchLease, capability authority.DispatchResultCapability, resultDigest string) (resultingress.DRC, resultingress.LedgerBinding, error) {

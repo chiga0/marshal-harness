@@ -136,6 +136,36 @@ func TestClaimReservedRestartRecoveryReturnsExactDurableIdentity(t *testing.T) {
 	}
 }
 
+func TestLookupReservedClaimAfterLeaseCompletedDoesNotRestoreCapability(t *testing.T) {
+	root := t.TempDir()
+	matcher, ledger, _, request := newReservedClaimFixture(t, root)
+	first, err := matcher.ClaimReserved(request, dispatchTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := AttemptEligibilityProjection{
+		LeaseId: first.Lease.LeaseId, RunId: first.Lease.RunId, AttemptId: first.Lease.AttemptId, AllocationId: first.Lease.AllocationId,
+		FromGeneration: first.Lease.Generation, TerminalGeneration: first.Lease.Generation + 1,
+		TerminalState: LeaseStateCompleted, CompletionReason: CompletionReasonAttemptCompleted,
+		AttemptAuthorityHeadDigest: fixedDigest("completed-before-worker-successor"),
+	}
+	if err := ledger.ProjectAttemptEligibility(testAttemptEligibilityAuthority{want: projection}, projection); err != nil {
+		t.Fatal(err)
+	}
+	restarted, recoveredLedger := reopenReservedClaimFixture(t, root)
+	replayed, found, err := restarted.LookupReservedClaim(request)
+	if err != nil || !found || !reflect.DeepEqual(replayed, first) {
+		t.Fatalf("completed-lease replay=%#v err=%v", replayed, err)
+	}
+	if _, ok := restarted.IssuedResultCapability(first.Lease.LeaseId); ok {
+		t.Fatal("lookup-only completed-lease replay restored an active result capability")
+	}
+	_, state, generation, err := recoveredLedger.Current(first.Lease.LeaseId)
+	if err != nil || state != LeaseStateCompleted || generation != projection.TerminalGeneration {
+		t.Fatalf("completed lease was mutated: state=%q generation=%d err=%v", state, generation, err)
+	}
+}
+
 func TestClaimReservedCanonicalInputConflictsFailClosedBeforeMint(t *testing.T) {
 	root := t.TempDir()
 	matcher, ledger, registration, request := newReservedClaimFixture(t, root)

@@ -282,6 +282,22 @@ func (session *AttachedSession) ExecutePreparedCollect(ctx context.Context, prep
 	return session.executePreparedContinuation(ctx, prepared, CommandCollect)
 }
 
+// ExecutePreparedInspect runs exactly one already-persisted Inspect
+// PreparedCommand on the same authenticated Attach transport. Keeping this
+// operation in the explicit AttachedSession closed set prevents terminal
+// continuation callers from obtaining a generic command channel.
+func (session *AttachedSession) ExecutePreparedInspect(ctx context.Context, prepared PreparedCommand) (VerifiedCommandOutcome, error) {
+	return session.executePreparedContinuation(ctx, prepared, CommandInspect)
+}
+
+// ExecutePreparedClose runs exactly one already-persisted Close
+// PreparedCommand on the same authenticated Attach transport. The caller must
+// separately recover the committed Close receipt and authenticate supervisor
+// absence before recording the business lifecycle transition.
+func (session *AttachedSession) ExecutePreparedClose(ctx context.Context, prepared PreparedCommand) (VerifiedCommandOutcome, error) {
+	return session.executePreparedContinuation(ctx, prepared, CommandClose)
+}
+
 func (session *AttachedSession) executePreparedContinuation(ctx context.Context, prepared PreparedCommand, allowed CommandName) (VerifiedCommandOutcome, error) {
 	if session == nil || session.guard == nil || ctx == nil {
 		return VerifiedCommandOutcome{}, ErrConflict

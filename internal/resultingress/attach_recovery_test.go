@@ -51,6 +51,31 @@ func (session *fakeRebindSession) ExecutePreparedCollect(_ context.Context, prep
 		return processsupervisor.VerifiedCommandOutcome{}, processsupervisor.ErrConflict
 	}
 	session.executed = true
+	if session.executeErr != nil {
+		return processsupervisor.VerifiedCommandOutcome{}, session.executeErr
+	}
+	return session.collect(prepared), nil
+}
+
+func (session *fakeRebindSession) ExecutePreparedInspect(_ context.Context, prepared processsupervisor.PreparedCommand) (processsupervisor.VerifiedCommandOutcome, error) {
+	if session.executed || session.collect == nil {
+		return processsupervisor.VerifiedCommandOutcome{}, processsupervisor.ErrConflict
+	}
+	session.executed = true
+	if session.executeErr != nil {
+		return processsupervisor.VerifiedCommandOutcome{}, session.executeErr
+	}
+	return session.collect(prepared), nil
+}
+
+func (session *fakeRebindSession) ExecutePreparedClose(_ context.Context, prepared processsupervisor.PreparedCommand) (processsupervisor.VerifiedCommandOutcome, error) {
+	if session.executed || session.collect == nil {
+		return processsupervisor.VerifiedCommandOutcome{}, processsupervisor.ErrConflict
+	}
+	session.executed = true
+	if session.executeErr != nil {
+		return processsupervisor.VerifiedCommandOutcome{}, session.executeErr
+	}
 	return session.collect(prepared), nil
 }
 
@@ -70,7 +95,11 @@ func fakeBindOutcome(prepared processsupervisor.PreparedCommand) processsupervis
 	post.CommandSequence = evidence.Sequence
 	post.CommandHead = commandHead
 	post.JournalSequence = pre.JournalSequence + 2
-	post.JournalHead = receipt
+	// The mechanics journal head binds the command-specific intent/receipt
+	// records, not the response payload digest alone. Consecutive successful
+	// bind responses can carry the same payload but must still advance to a
+	// distinct journal head.
+	post.JournalHead = canonical.DigestBytes([]byte(pre.JournalHead + evidence.RequestDigest + receipt))
 	return processsupervisor.VerifiedCommandOutcome{
 		Command: evidence.Command, CommandID: evidence.CommandID, Sequence: evidence.Sequence,
 		Status: "ok", Disposition: "ok", ReasonCode: result.ReasonCode,
@@ -188,6 +217,156 @@ func TestCollectPreparedExecutionPersistsOutcomeAndReturnsDescriptorValidatedTra
 	}
 }
 
+func TestCollectPreparedExecutionReplaysExactPendingIntentAfterResponseLoss(t *testing.T) {
+	store, _, acquisition, identity, verifier, dir := rebindRecoveryStore(t)
+	var rebindCalls int32
+	state, err := doRebind(t, store, verifier, acquisition, identity, dir, nil, &rebindCalls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls int32
+	transport := func(_ context.Context, options processsupervisor.AttachOptions, callback func(AttachedRebindSession) error) error {
+		call := atomic.AddInt32(&calls, 1)
+		session := &fakeRebindSession{authority: options.Authority, collect: func(prepared processsupervisor.PreparedCommand) processsupervisor.VerifiedCommandOutcome {
+			return fakeCollectOutcome(prepared, state)
+		}}
+		if call == 1 {
+			session.executeErr = errors.New("response lost")
+		}
+		return callback(session)
+	}
+	reader := func(options processsupervisor.CollectedTranscriptReadOptions) (processsupervisor.CollectedTranscript, error) {
+		return processsupervisor.CollectedTranscript{Stdout: []byte(`{"ok":true}`), Report: *options.Outcome.ProcessReport, TranscriptDigest: options.Outcome.TranscriptDigest}, nil
+	}
+	if _, err := store.collectPreparedExecutionWithTransport(context.Background(), verifier, acquisition, identity, dir, "/fixed/marshal", transport, reader); err == nil {
+		t.Fatal("first collect unexpectedly succeeded")
+	}
+	pending, found, err := store.AttemptState(identity)
+	if err != nil || !found || pending.SupervisorPendingIntent.Command != processsupervisor.CommandCollect {
+		t.Fatalf("pending collect not preserved: found=%v err=%v state=%+v", found, err, pending)
+	}
+	result, err := store.collectPreparedExecutionWithTransport(context.Background(), verifier, acquisition, identity, dir, "/fixed/marshal", transport, reader)
+	if err != nil || result.OutcomeFactDigest == "" || atomic.LoadInt32(&calls) != 2 {
+		t.Fatalf("pending collect replay failed: result=%+v err=%v calls=%d", result, err, calls)
+	}
+}
+
+// TestRebindOwnerSuccessorAfterCommittedResultColdReplay proves that a fresh
+// CLI owner can recover an attached Supervisor after WorkerResult admission
+// has been fsynced and the durable ledger has been reopened. The owner
+// successor must extend the admission head; falling back to ProcessStarted
+// would fork the Attempt authority chain and is rejected.
+func TestRebindOwnerSuccessorAfterCommittedResultColdReplay(t *testing.T) {
+	store, _, acquisition, identity, verifier, dir := rebindRecoveryStore(t)
+	var initialRebindCalls int32
+	bound, err := doRebind(t, store, verifier, acquisition, identity, dir, nil, &initialRebindCalls)
+	if err != nil {
+		t.Fatalf("initial rebind: %v", err)
+	}
+	if atomic.LoadInt32(&initialRebindCalls) != 1 {
+		t.Fatalf("initial rebind calls=%d want 1", initialRebindCalls)
+	}
+
+	var collectCalls int32
+	collectTransport := func(_ context.Context, options processsupervisor.AttachOptions, callback func(AttachedRebindSession) error) error {
+		atomic.AddInt32(&collectCalls, 1)
+		return callback(&fakeRebindSession{authority: options.Authority, collect: func(prepared processsupervisor.PreparedCommand) processsupervisor.VerifiedCommandOutcome {
+			return fakeCollectOutcome(prepared, bound)
+		}})
+	}
+	reader := func(options processsupervisor.CollectedTranscriptReadOptions) (processsupervisor.CollectedTranscript, error) {
+		return processsupervisor.CollectedTranscript{Stdout: []byte(`{"ok":true}`), Report: *options.Outcome.ProcessReport, TranscriptDigest: options.Outcome.TranscriptDigest}, nil
+	}
+	collected, err := store.collectPreparedExecutionWithTransport(context.Background(), verifier, acquisition, identity, dir, "/fixed/marshal", collectTransport, reader)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if atomic.LoadInt32(&collectCalls) != 1 {
+		t.Fatalf("collect calls=%d want 1", collectCalls)
+	}
+	drc, envelope := attemptTestDRCForState(bound, KindWorkerResult, 1)
+	drcDigest, err := drc.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Commit through the same fsyncing durable seam used by governed admission.
+	// The synthetic Pi fixture intentionally has no host files to Reopen, so the
+	// public capability preflight is covered elsewhere; this test isolates the
+	// crash boundary after its already-validated admission decision.
+	var admission AdmissionFact
+	var admittedAuthorityHead string
+	projection := newAuthorityProjection()
+	err = store.transact(projection, func() error {
+		key, err := identity.Key()
+		if err != nil {
+			return err
+		}
+		governed, found := projection.attempts[key]
+		if !found {
+			return ErrAttemptAuthorityUnknown
+		}
+		ledgerSequence := projection.ledgerSequence + 1
+		factInput, err := json.Marshal(struct {
+			DRCDigest        string       `json:"drcDigest"`
+			EnvelopeKind     EnvelopeKind `json:"envelopeKind"`
+			EnvelopeSequence uint64       `json:"envelopeSequence"`
+			EnvelopeDigest   string       `json:"envelopeDigest"`
+			LedgerSequence   uint64       `json:"ledgerSequence"`
+		}{drcDigest, envelope.Kind, envelope.Sequence, envelope.ResultDigest, ledgerSequence})
+		if err != nil {
+			return err
+		}
+		admission = AdmissionFact{FactDigest: canonical.DigestBytes(factInput), LedgerSequence: ledgerSequence}
+		admittedAuthorityHead, err = store.recordAdmittedLocked(drc.IdempotencyKey, &governed, drcDigest, envelope, admission.FactDigest, ledgerSequence, SupervisorCommandEvidence{}, collected.OutcomeFactDigest, ResultObservationBinding{})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("fsync committed result: %v", err)
+	}
+	admitted, found, err := store.AttemptState(identity)
+	if err != nil || !found {
+		t.Fatalf("admitted state found=%v err=%v", found, err)
+	}
+	if admitted.HeadDigest != admittedAuthorityHead || admitted.CommittedResultFactDigest != admission.FactDigest || admitted.HeadDigest == admitted.ProcessStartedDigest {
+		t.Fatalf("result admission did not become current head: state=%+v admission=%+v", admitted, admission)
+	}
+
+	// Reopen after the admission append to exercise cold projection replay, as
+	// a new fixed-CLI process would do before acquiring its successor epoch.
+	reopened, err := OpenResultIngressStore(store.dir)
+	if err != nil {
+		t.Fatalf("reopen after admission: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	priorOwner, found, err := reopened.OpenOwner(acquisition.Scope)
+	if err != nil || !found {
+		t.Fatalf("current owner found=%v err=%v", found, err)
+	}
+	successor := priorOwner.Acquisition
+	successor.OwnerEpoch++
+	successor.OwnerProcess = processsupervisor.ProcessIdentity{PID: 16000 + int(successor.OwnerEpoch), BirthSeconds: 1_700_000_040, BirthMicroseconds: int64(successor.OwnerEpoch), SessionID: 16000 + int(successor.OwnerEpoch), ProcessGroupID: 16000 + int(successor.OwnerEpoch)}
+	successor.ObservedAt = "2026-08-29T00:00:40Z"
+	successorVerifier := attemptOwnerVerifier{want: successor}
+	if _, err := reopened.AcquireOwner(context.Background(), successorVerifier, priorOwner.Acquisition.OwnerEpoch, priorOwner.FactDigest, successor); err != nil {
+		t.Fatalf("fresh owner acquire: %v", err)
+	}
+
+	var recoveryCalls int32
+	recovered, err := doRebind(t, reopened, successorVerifier, successor, identity, dir, nil, &recoveryCalls)
+	if err != nil {
+		t.Fatalf("fresh owner rebind after admission: %v", err)
+	}
+	if atomic.LoadInt32(&recoveryCalls) != 1 {
+		t.Fatalf("recovery calls=%d want 1", recoveryCalls)
+	}
+	if recovered.Revision != admitted.Revision+1 || recovered.ControlOwnerBindingRevision != recovered.Revision || recovered.ControlOwnerBindingPreviousHead != admitted.HeadDigest {
+		t.Fatalf("owner successor did not extend admitted head: admitted revision/head=%d/%s recovered binding revision/previous=%d/%s", admitted.Revision, admitted.HeadDigest, recovered.ControlOwnerBindingRevision, recovered.ControlOwnerBindingPreviousHead)
+	}
+	if recovered.CommittedResultFactDigest != admission.FactDigest || recovered.SupervisorBoundAuthorityHead != recovered.HeadDigest {
+		t.Fatalf("recovery lost result/bind authority: %+v", recovered)
+	}
+}
+
 func fakeCollectOutcome(prepared processsupervisor.PreparedCommand, state AttemptAuthorityState) processsupervisor.VerifiedCommandOutcome {
 	evidence := prepared.Evidence()
 	started := state.ProcessStartedEvidence.Outcome
@@ -234,6 +413,45 @@ func TestRebindOwnerSuccessorForAttachedRecoveryExactReplayIdempotent(t *testing
 	}
 	if second.Revision != first.Revision || second.HeadDigest != first.HeadDigest || second.SupervisorBoundAuthorityHead != first.SupervisorBoundAuthorityHead || len(second.SupervisorCommandCheckpoints) != checkpoints {
 		t.Fatal("replay did not return the exact durable state")
+	}
+}
+
+func TestRebindOwnerSuccessorForAttachedRecoveryAcrossThreeColdOwnerEpochs(t *testing.T) {
+	store, _, acquisition, identity, verifier, dir := rebindRecoveryStore(t)
+	var calls int32
+	current, err := doRebind(t, store, verifier, acquisition, identity, dir, nil, &calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for generation := 0; generation < 2; generation++ {
+		reopened, err := OpenResultIngressStore(store.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = reopened.Close() })
+		prior, found, err := reopened.OpenOwner(acquisition.Scope)
+		if err != nil || !found {
+			t.Fatalf("owner found=%v err=%v", found, err)
+		}
+		next := prior.Acquisition
+		next.OwnerEpoch++
+		next.OwnerProcess = processsupervisor.ProcessIdentity{PID: 17000 + int(next.OwnerEpoch), BirthSeconds: 1_700_000_050, BirthMicroseconds: int64(next.OwnerEpoch), SessionID: 17000 + int(next.OwnerEpoch), ProcessGroupID: 17000 + int(next.OwnerEpoch)}
+		next.ObservedAt = "2026-08-29T00:00:50Z"
+		nextVerifier := attemptOwnerVerifier{want: next}
+		if _, err := reopened.AcquireOwner(context.Background(), nextVerifier, prior.Acquisition.OwnerEpoch, prior.FactDigest, next); err != nil {
+			t.Fatal(err)
+		}
+		recovered, err := doRebind(t, reopened, nextVerifier, next, identity, dir, nil, &calls)
+		if err != nil {
+			t.Fatalf("cold owner generation %d: %v", generation+2, err)
+		}
+		if recovered.Revision != current.Revision+1 || recovered.ControlOwnerBindingPreviousHead != current.HeadDigest || recovered.SupervisorBoundAuthorityHead != recovered.HeadDigest {
+			t.Fatalf("cold owner did not extend exact predecessor: before=%+v after=%+v", current, recovered)
+		}
+		store, acquisition, verifier, current = reopened, next, nextVerifier, recovered
+	}
+	if atomic.LoadInt32(&calls) != 3 {
+		t.Fatalf("transport calls=%d want 3", calls)
 	}
 }
 

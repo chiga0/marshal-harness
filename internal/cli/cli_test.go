@@ -753,6 +753,29 @@ func TestTaskRunUsesFrozenFallbackAdapter(t *testing.T) {
 	}
 }
 
+func TestSealedPiConfiguredRejectsOtherFrozenAdapters(t *testing.T) {
+	for _, adapterID := range []string{"qwen", "qoder", "codex"} {
+		if sealedPiConfigured(adapterID, true, "/fixed/node", "/fixed/pi.js", "") {
+			t.Fatalf("adapter %q was routed into the Pi-only sealed runtime", adapterID)
+		}
+	}
+	if !sealedPiConfigured("pi", true, "/fixed/node", "/fixed/pi.js", "") {
+		t.Fatal("exact frozen Pi adapter was not admitted")
+	}
+	if sealedPiConfigured("pi", false, "/fixed/node", "/fixed/pi.js", "") || sealedPiConfigured("pi", true, "", "/fixed/pi.js", "") || sealedPiConfigured("pi", true, "/fixed/node", "", "") || sealedPiConfigured("pi", true, "/fixed/node", "/fixed/pi.js", "legacy") {
+		t.Fatal("incomplete or legacy Pi configuration was admitted")
+	}
+}
+
+func TestSealedPiRunIdentityIsIndependentOfCurrentConfiguration(t *testing.T) {
+	if !isSealedPiRun("pi", domain.StateReady, "", true) || !isSealedPiRun("pi", domain.StateRunning, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true) {
+		t.Fatal("durable Pi run identity was not recognized")
+	}
+	if isSealedPiRun("qwen", domain.StateReady, "", true) || isSealedPiRun("pi", domain.StateRunning, "", true) || isSealedPiRun("pi", domain.StateRunning, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false) {
+		t.Fatal("non-Pi or invalid durable authority was recognized as sealed Pi")
+	}
+}
+
 // TestTaskPlanProductionRequiresComposedRuntime pins the v1 production
 // fail-closed boundary. Scaffolding still freezes the requested order, but
 // planning cannot Probe even Pi until the exact per-Attempt runtime exists.

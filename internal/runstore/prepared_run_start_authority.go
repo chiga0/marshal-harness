@@ -246,6 +246,79 @@ func (verifier *AttemptRunAuthorityVerifier) WithCurrentSealedRunSuccessor(ctx c
 	return fn()
 }
 
+// WithCurrentRunningRunAuthority verifies the durable READY authority carried
+// by an Attempt against the exact sealed RUNNING successor while keeping the
+// Run lease guard held across fn. Cleanup and result ingress use the READY
+// digest as their immutable RunAuthorityBinding; the current Run journal head
+// is the later run.start-outcome and must therefore be joined, not compared as
+// if both digests named the same fact.
+func (verifier *AttemptRunAuthorityVerifier) WithCurrentRunningRunAuthority(ctx context.Context, want resultingress.RunAuthorityBinding, attemptID string, fn func() error) error {
+	if verifier == nil || ctx == nil || fn == nil || want.AuthorityNamespaceID != verifier.namespace || want.OrchestratorID != verifier.orchestratorID || strings.TrimSpace(attemptID) == "" || !leaseOwnerMatches(verifier.lease) {
+		return ErrConflict
+	}
+	verifier.lease.guard.mu.Lock()
+	defer verifier.lease.guard.mu.Unlock()
+	if !leaseHeldBySelfLocked(verifier.lease) || verifier.lease.guard.preparedBorrowed.Load() || verifier.lease.root != verifier.store.root || ctx.Err() != nil {
+		return ErrConflict
+	}
+	records, err := strictRunJournalAt(int(verifier.lease.runDir.Fd()))
+	if err != nil || len(records) < 2 {
+		return ErrConflict
+	}
+	state, err := inspectAt(int(verifier.lease.runDir.Fd()))
+	if err != nil || state.State != domain.StateRunning || state.RunID != want.RunID || state.CurrentAttemptID != attemptID || state.Sequence != uint64(len(records)) {
+		return ErrConflict
+	}
+	head := records[len(records)-1]
+	payload, err := runStartPayload(head.event)
+	if err != nil || head.event.Type != runStartOutcomeEventType || head.event.AttemptID != attemptID || payload.ReadyAuthorityHead != want.RunAuthorityDigest || records[len(records)-2].digest != want.RunAuthorityDigest {
+		return ErrConflict
+	}
+	return fn()
+}
+
+// WithCurrentRunAuthority verifies the immutable READY authority carried by
+// an Attempt against either the exact current READY head or its unique sealed
+// RUNNING successor. The lease guard remains held across fn, so callers use
+// one verifier for both pre-start mutations and post-start terminalization
+// without a check-then-append window.
+func (verifier *AttemptRunAuthorityVerifier) WithCurrentRunAuthority(ctx context.Context, want resultingress.RunAuthorityBinding, fn func() error) error {
+	if verifier == nil || ctx == nil || fn == nil || want.AuthorityNamespaceID != verifier.namespace || want.OrchestratorID != verifier.orchestratorID || !leaseOwnerMatches(verifier.lease) {
+		return ErrConflict
+	}
+	verifier.lease.guard.mu.Lock()
+	defer verifier.lease.guard.mu.Unlock()
+	if !leaseHeldBySelfLocked(verifier.lease) || verifier.lease.guard.preparedBorrowed.Load() || verifier.lease.root != verifier.store.root || ctx.Err() != nil {
+		return ErrConflict
+	}
+	records, err := strictRunJournalAt(int(verifier.lease.runDir.Fd()))
+	if err != nil || len(records) == 0 {
+		return ErrConflict
+	}
+	state, err := inspectAt(int(verifier.lease.runDir.Fd()))
+	if err != nil || state.RunID != want.RunID || state.Sequence != uint64(len(records)) {
+		return ErrConflict
+	}
+	switch state.State {
+	case domain.StateReady:
+		if state.CurrentAttemptID != "" || records[len(records)-1].digest != want.RunAuthorityDigest {
+			return ErrConflict
+		}
+	case domain.StateRunning:
+		if state.CurrentAttemptID == "" || len(records) < 2 {
+			return ErrConflict
+		}
+		head := records[len(records)-1]
+		payload, err := runStartPayload(head.event)
+		if err != nil || head.event.Type != runStartOutcomeEventType || head.event.AttemptID != state.CurrentAttemptID || payload.ReadyAuthorityHead != want.RunAuthorityDigest || records[len(records)-2].digest != want.RunAuthorityDigest {
+			return ErrConflict
+		}
+	default:
+		return ErrConflict
+	}
+	return fn()
+}
+
 type runStartFrozenProjection struct {
 	SpecDigest       string
 	PolicyDigest     string
