@@ -22,7 +22,7 @@
 
 补充：`ceb8b39` 修复 runstore canonical journal 写入，`822dcd3` 对齐 sealed Run-start 测试 fixture，`a7e9f93` 增加带 authoritative time 与 lease expiry/ack-deadline 校验的 `CurrentByAttempt` dispatch lookup。上述提交均已同步 `origin/main`，只补强组件门禁，不改变 R2–R5 的 `COMPONENT` 状态。
 
-> **2026-08-31 Pi-first Darwin checkpoint**：候选分支 `feat/pi-first-architecture-fix@5b95ed1` 已用固定 Node/Pi bundle 和空环境通过真实 `TestSealedChainReachesRunningWithRealPi`。该候选修复 live allocation 重封装、空环境 spawn payload 与 Darwin 工作目录 `NOTE_ATTRIB` 误报，证明 sealed launch chain 可达；尚未接入最终 fixed `./bin/marshal` 的完整 Run→worker.completed→独立 Decision→`ACCEPTED`，不升级 `I186-R2–R5`，不宣称 RC1/stable。`go vet`、architecture-check、diff-check 通过；`staticcheck` 未安装，productionruntime 的 3 个既有 owner-lock fixture 失败及 CLI canary init 失败仍待单独收敛。Codex 本轮未启用。
+> **2026-08-31 Pi-first Darwin checkpoint**：候选分支 `feat/pi-first-architecture-fix@d630aa2`（基于 `5b95ed1`）已用固定 Node/Pi bundle 和空环境通过真实 `TestSealedChainReachesRunningWithRealPi`。该候选修复 live allocation 重封装、空环境 spawn payload、Darwin 工作目录 `NOTE_ATTRIB` 误报、普通 Go 进程 FD3/4 误判，并移除临时调试输出；证明 sealed launch chain 可达；尚未接入最终 fixed `./bin/marshal` 的完整 Run→worker.completed→独立 Decision→`ACCEPTED`，不升级 `I186-R2–R5`，不宣称 RC1/stable。`go vet`、architecture-check、diff-check 通过；`staticcheck` 未安装，productionruntime 的 3 个既有 owner-lock fixture 失败及严格 CLI E2E 的 `worker.completed` 接线仍待单独收敛。Codex 本轮未启用。
 
 > **2026-08-31 固定 CLI 复测**：候选分支在 `5b95ed1` 之后修复了 Darwin 普通进程 FD3/4 误判 inherited child 的问题，并删除了临时调试输出；严格 fixed `./bin/marshal` E2E 已通过 `plan→approve→run.start-outcome`，但 `worker.completed` 尚未出现。原因已收敛为 sealed READY 分支当前只启动 Run-start/supervisor，尚未把带真实 WorkerRequest 的 Pi 执行、结果接纳和独立 Verification 接入同一次 `task run`。该候选仍不升级 `I186-R2–R5`，不宣称 RC1/stable；Codex 未启用。
 

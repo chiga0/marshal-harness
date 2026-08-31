@@ -14,7 +14,7 @@
 
 补充：`main@ceb8b39`、`main@822dcd3`、`main@a7e9f93` 已分别修复 canonical journal、sealed Run-start 测试 fixture 与带 authoritative-time/expiry 校验的 dispatch lease lookup；runstore 定向 test、race、vet 已通过。`main@a6482db` 的 producer seam 定向测试、架构检查与 vet 已通过，但不创建上游 owner/allocation/launch/process facts，仍不能替代 fixed CLI execution producer chain；ResultIngress 全包 Darwin owner-lock fixture 失败仍为独立既有阻塞。上述均为组件门禁修复，不改变 `COMPONENT` 成熟度。
 
-补充（2026-08-31，候选分支）：固定 CLI 的 Pi 复测已越过初始化与 `plan→approve`，产生 `run.start-outcome`，但尚未产生 `worker.completed`。sealed READY 分支当前只完成 Run-start/supervisor 启动，真实 WorkerRequest→Pi 执行→结果接纳→独立 Verification 仍未接线；FD3/4 误判与临时匿名调试输出已修复。该证据只说明阻塞已从“固定 CLI 无法启动”收敛为“生产执行链未接入”，不改变任何 RC1 或 `I186-R2–R5` 成熟度。
+补充（2026-08-31，候选分支 `d630aa2`）：固定 CLI 的 Pi 复测已越过初始化与 `plan→approve`，产生 `run.start-outcome`，但尚未产生 `worker.completed`。sealed READY 分支当前只完成 Run-start/supervisor 启动，真实 WorkerRequest→Pi 执行→结果接纳→独立 Verification 仍未接线；FD3/4 误判与临时匿名调试输出已修复。该证据只说明阻塞已从“固定 CLI 无法启动”收敛为“生产执行链未接入”，不改变任何 RC1 或 `I186-R2–R5` 成熟度。
 
 ## ADR 0052 §1 对照
 
