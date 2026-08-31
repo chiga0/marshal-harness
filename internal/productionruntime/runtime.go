@@ -3,6 +3,7 @@ package productionruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 
@@ -45,6 +46,25 @@ func newProductionRuntime(controller *controller, resources ...io.Closer) (*Runt
 	}
 	runtime.resources = append([]io.Closer(nil), resources...)
 	return runtime, nil
+}
+
+// newComposedProductionRuntime is the only composition-local constructor for
+// the private controller and production Runtime. Keeping this mutation in the
+// runtime construction file preserves the architecture gate while leaving
+// ComposeRuntime as the public, validated composition entry point.
+func newComposedProductionRuntime(ledger *CompositionLedger, profile PiProfile, inputs CompositionInputs) (*Runtime, error) {
+	if ledger == nil || ledger.owner == nil {
+		return nil, application.NewError("production-runtime", application.ReasonOwnerUnavailable)
+	}
+	controller, err := newController(ledger, &piBridge{ledger: ledger}, ledger.owner, inputs.Acquisition, profile)
+	if err != nil {
+		_ = ledger.Close()
+		return nil, fmt.Errorf("compose: controller: %v", err)
+	}
+	return newProductionRuntime(controller,
+		&resourceCloser{name: "result-ingress", close: inputs.Ingress.Close},
+		&resourceCloser{name: "run-lease", close: func() error { return inputs.RunLease.Release() }},
+	)
 }
 
 func closeRuntimeConstruction(controller *controller, resources []io.Closer) error {

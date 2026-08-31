@@ -6,40 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
-	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/provider"
-	"github.com/chiga0/marshal-harness/internal/resultingress"
 )
-
-// ObserveCompositionAcquisition binds the composition owner acquisition to
-// the exact observed fixed marshal core. The returned acquisition has
-// OwnerEpoch 1; ComposeRuntime derives the next epoch from the durable owner
-// ledger, so callers never choose the epoch themselves.
-func ObserveCompositionAcquisition() (resultingress.ControlOwnerAcquisition, error) {
-	fixed, err := os.Executable()
-	if err != nil {
-		return resultingress.ControlOwnerAcquisition{}, err
-	}
-	if resolved, resolveErr := filepath.EvalSymlinks(fixed); resolveErr != nil {
-		return resultingress.ControlOwnerAcquisition{}, resolveErr
-	} else {
-		fixed = resolved
-	}
-	core, err := processsupervisor.ObserveCurrentCore(fixed)
-	if err != nil {
-		return resultingress.ControlOwnerAcquisition{}, err
-	}
-	acquisition := resultingress.ControlOwnerAcquisition{
-		OwnerUID: core.UID, OwnerGID: core.GID, OwnerProcess: core.Process, OwnerBinary: core.Binary,
-		ObserverIdentity: "darwin-owner-observer/v1",
-		ObservedAt:       time.Unix(core.Process.BirthSeconds, core.Process.BirthMicroseconds*int64(time.Microsecond)).UTC().Add(time.Second).Format(time.RFC3339Nano),
-	}
-	return acquisition, nil
-}
 
 // LocalProvisionDomain derives the Core-side provision security domain: the
 // tenant follows the authority namespace, the trust kind is execution and the

@@ -8,12 +8,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/app"
 	application "github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
 	"github.com/chiga0/marshal-harness/internal/resultbinding"
 	"github.com/chiga0/marshal-harness/internal/runstore"
@@ -127,7 +129,7 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		return ExitFailure
 	}
 	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: repositoryRoot}
-	acquisition, err := productionruntime.ObserveCompositionAcquisition()
+	acquisition, err := observeCompositionAcquisition(fixedMarshal)
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：fixed marshal core 身份观察失败：%v\n", err)
 		return ExitFailure
@@ -170,4 +172,18 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 	}
 	fmt.Fprintf(stdout, "Run：%s\nAttempt：%s\n状态：%s\n", runID, after.AttemptID, after.State)
 	return ExitOK
+}
+
+// observeCompositionAcquisition binds acquisition evidence to the exact fixed
+// marshal core already resolved by the CLI composition root.
+func observeCompositionAcquisition(fixedMarshal string) (productionruntime.ControlOwnerAcquisition, error) {
+	core, err := processsupervisor.ObserveCurrentCore(fixedMarshal)
+	if err != nil {
+		return productionruntime.ControlOwnerAcquisition{}, err
+	}
+	return productionruntime.ControlOwnerAcquisition{
+		OwnerUID: core.UID, OwnerGID: core.GID, OwnerProcess: core.Process, OwnerBinary: core.Binary,
+		ObserverIdentity: "darwin-owner-observer/v1",
+		ObservedAt:       time.Unix(core.Process.BirthSeconds, core.Process.BirthMicroseconds*int64(time.Microsecond)).UTC().Add(time.Second).Format(time.RFC3339Nano),
+	}, nil
 }

@@ -97,6 +97,15 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // RunContext executes one CLI invocation and propagates cancellation into
 // verifier process groups.
 func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// Inherited fixed-image invocations (supervisor / launch child) are
+	// dispatched before ordinary CLI parsing. The role is proven by the
+	// inherited bootstrap descriptor, never by argv or environment.
+	if _, kindErr := processsupervisor.InheritedInvocationKind(); kindErr == nil {
+		if runErr := processsupervisor.RunInheritedMain(ctx); runErr != nil {
+			return ExitFailure
+		}
+		return ExitOK
+	}
 	if len(args) == 0 {
 		writeUsage(stderr)
 		return ExitUsage

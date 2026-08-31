@@ -86,17 +86,7 @@ func ComposeRuntime(ctx context.Context, inputs CompositionInputs, profile PiPro
 	if ledger.owner == nil {
 		return nil, application.NewError("compose-runtime", application.ReasonOwnerUnavailable)
 	}
-	controller, err := newController(ledger, &piBridge{ledger: ledger}, ledger.owner, inputs.Acquisition, profile)
-	if err != nil {
-		_ = ledger.Close()
-		return nil, fmt.Errorf("compose: controller: %v", err)
-	}
-	// The lease ledger keeps no persistent descriptor; the result-ingress
-	// store and the run lease are the runtime-owned resources.
-	runtime, err := newProductionRuntime(controller,
-		&resourceCloser{name: "result-ingress", close: inputs.Ingress.Close},
-		&resourceCloser{name: "run-lease", close: func() error { return inputs.RunLease.Release() }},
-	)
+	runtime, err := newComposedProductionRuntime(ledger, profile, inputs)
 	if err != nil {
 		return nil, fmt.Errorf("compose: runtime: %v", err)
 	}

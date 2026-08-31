@@ -28,16 +28,24 @@ const (
 // owner acquisition, seal, supervisor spawn of the real image and the sealed
 // run-start commit. The run journal must end RUNNING with the exact attempt.
 func TestSealedChainReachesRunningWithRealPi(t *testing.T) {
-	if _, err := os.Stat(fixturePiEntrypoint); err != nil {
+	runtimeFixture := os.Getenv("MARSHAL_PI_RUNTIME")
+	if runtimeFixture == "" {
+		runtimeFixture = fixturePiRuntime
+	}
+	entrypointFixture := os.Getenv("MARSHAL_PI_ENTRYPOINT")
+	if entrypointFixture == "" {
+		entrypointFixture = fixturePiEntrypoint
+	}
+	if _, err := os.Stat(entrypointFixture); err != nil {
 		t.Skipf("real Pi image not present: %v", err)
 	}
 	// Homebrew installs binaries as symlinks into Cellar; the held-object
 	// opens use O_NOFOLLOW_ANY, so every fixture path must be canonical.
-	runtimePath, err := filepath.EvalSymlinks(fixturePiRuntime)
+	runtimePath, err := filepath.EvalSymlinks(runtimeFixture)
 	if err != nil {
 		t.Fatal(err)
 	}
-	entrypointPath, err := filepath.EvalSymlinks(fixturePiEntrypoint)
+	entrypointPath, err := filepath.EvalSymlinks(entrypointFixture)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +117,7 @@ func TestSealedChainReachesRunningWithRealPi(t *testing.T) {
 	// commit by design (production terminalization owns it); the fixture kills
 	// only processes whose command line names this exact image entrypoint.
 	t.Cleanup(func() {
-		cmd := exec.Command("pkill", "-f", fixturePiEntrypoint)
+		cmd := exec.Command("pkill", "-f", entrypointPath)
 		_ = cmd.Run()
 	})
 
