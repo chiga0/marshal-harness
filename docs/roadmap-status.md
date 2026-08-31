@@ -22,6 +22,8 @@
 
 补充：`ceb8b39` 修复 runstore canonical journal 写入，`822dcd3` 对齐 sealed Run-start 测试 fixture，`a7e9f93` 增加带 authoritative time 与 lease expiry/ack-deadline 校验的 `CurrentByAttempt` dispatch lookup。上述提交均已同步 `origin/main`，只补强组件门禁，不改变 R2–R5 的 `COMPONENT` 状态。
 
+> **2026-08-31 Pi-first Darwin checkpoint**：候选分支 `feat/pi-first-architecture-fix@5b95ed1` 已用固定 Node/Pi bundle 和空环境通过真实 `TestSealedChainReachesRunningWithRealPi`。该候选修复 live allocation 重封装、空环境 spawn payload 与 Darwin 工作目录 `NOTE_ATTRIB` 误报，证明 sealed launch chain 可达；尚未接入最终 fixed `./bin/marshal` 的完整 Run→worker.completed→独立 Decision→`ACCEPTED`，不升级 `I186-R2–R5`，不宣称 RC1/stable。`go vet`、architecture-check、diff-check 通过；`staticcheck` 未安装，productionruntime 的 3 个既有 owner-lock fixture 失败及 CLI canary init 失败仍待单独收敛。Codex 本轮未启用。
+
 ## v1.0 生产纵切
 
 Milestone 状态与能力成熟度是两个维度：

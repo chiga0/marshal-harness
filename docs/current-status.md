@@ -26,6 +26,14 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 因此，“本地 CLI 能运行”与“Marshal 可安全调度该 Adapter”是两个不同结论；文档只采用后者作为生产可用依据。
 
+## Pi-first Darwin 闭环检查点（2026-08-31）
+
+在候选分支 `feat/pi-first-architecture-fix`（`5b95ed1`）上，已用固定 Node 路径、固定 Pi bundle 路径和空环境运行真实 `TestSealedChainReachesRunningWithRealPi`，sealed launch chain 两次通过。该证据证明 Pi 可以穿过当前 Darwin ordinary-user 的启动、工作区 descriptor 绑定和 process-supervisor 路径；它仍不是 `fixed ./bin/marshal` 完整 Run→worker.completed→独立 Decision→`ACCEPTED` 的发布证据。
+
+本检查点修复了 live allocation 重封装路径、空环境 spawn payload，以及 Darwin 工作目录访问产生的 `NOTE_ATTRIB` 元数据噪声误报；descriptor/stat/path 重验仍保留。`go vet`、`make architecture-check` 与 `git diff --check` 通过；本机未安装 `staticcheck`，没有把它记作通过。完整 `productionruntime` 包仍有 3 个既有 owner-lock fixture 在本机环境失败，CLI canary 仍在 init 阶段失败，需在最终 fixed CLI composition 上继续收敛。
+
+当前结论：Pi 已具备可复现的真实 sealed-launch provider 证据，但尚不能宣称 v1.0 worker lifecycle 或 RC1 已发布。Codex 本轮未启用。
+
 ## v1.0 正在建设
 
 2026-08-30 的 `main@c6debd4` checkpoint 保持 RB1-authoritative existing-worktree Bind/Receipt/Release、recovery projection、RC1 build-once distribution、exact opt-in installer guard 与 immutable carrier checker/receipt Schema；本次提交仅校正文档与当前权威 HEAD，不改变运行时语义。该 exact-head CI 的 Ubuntu/macOS quality 尚在运行，secret scan 已通过，整体仍未全绿。这些仍是 component/admission 资产：完整 S1′（S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor，含 item 5 borrow seam/门禁）尚未进入 `main`，`3abed5a` 仍只是未合入候选；S2′、Attach/rebind、terminalization、最终 fixed-bin Pi→独立 Decision→`ACCEPTED`、真实 same-bytes canary/carrier、tag、GitHub prerelease 与 release asset 均未完成，不能据此宣称 RC1 或 stable 可用。
