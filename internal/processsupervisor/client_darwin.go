@@ -433,17 +433,18 @@ func WithAttached(ctx context.Context, options AttachOptions, fn func(*AttachedS
 		}
 		session.guard.mu.Lock()
 		commandExecuted := session.guard.commandExecuted
+		executedCommand := session.guard.executedCommand
 		postCommand := session.guard.postCommand
 		session.guard.mu.Unlock()
 		if commandExecuted {
-			// One bind-authority(owner-successor) rebind advanced the mechanics
-			// journal by exactly one intent + one receipt and moved the session
-			// authority head. The control directory, socket, nonce and held files
-			// must be unchanged; the journal must now match the post-command anchor.
+			// One admitted continuation advanced the mechanics journal by exactly
+			// one intent + one receipt. Collect may create its bounded transcript
+			// entries and therefore monotonically grow the APFS directory LinkCount;
+			// every other control object and every other command remain exact.
 			if validateAttachJournalAnchor(callbackJournal, postCommand) != nil {
 				return ErrConflict
 			}
-			if afterCallback.Directory != before.Directory || afterCallback.Socket != before.Socket || afterCallback.NonceSize != before.NonceSize || afterCallback.NonceDigest != before.NonceDigest || afterCallback.Files != before.Files {
+			if !sameAttachPostCommandBoundary(executedCommand, afterCallback, before) {
 				return ErrConflict
 			}
 		} else {

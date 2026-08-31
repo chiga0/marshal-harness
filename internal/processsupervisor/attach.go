@@ -209,6 +209,7 @@ type attachedSessionGuard struct {
 	anchor           HandshakeAnchor
 	commandAttempted bool
 	commandExecuted  bool
+	executedCommand  CommandName
 	postCommand      HandshakeAnchor
 }
 
@@ -349,6 +350,7 @@ func (session *AttachedSession) executePreparedContinuation(ctx context.Context,
 	}
 	guard.mu.Lock()
 	guard.commandExecuted = true
+	guard.executedCommand = allowed
 	guard.postCommand = post
 	guard.mu.Unlock()
 	return outcome, nil

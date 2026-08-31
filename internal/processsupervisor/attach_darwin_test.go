@@ -362,6 +362,44 @@ func TestDarwinAttachSucceedsAfterControlEntryGrowth(t *testing.T) {
 	}
 }
 
+func TestAttachPostCommandBoundaryAllowsOnlyCollectLinkCountGrowth(t *testing.T) {
+	before := attachControlSnapshot{
+		Directory:   ControlDirectoryIdentity{CanonicalPath: "/control", Device: 1, Inode: 2, FileType: "directory", UID: 501, GID: 20, Mode: 040700, LinkCount: 2},
+		Socket:      ControlSocketIdentity{Device: 1, Inode: 3, FileType: "socket", UID: 501, GID: 20, Mode: 0140600, LinkCount: 1},
+		NonceSize:   32,
+		NonceDigest: digest("nonce"),
+	}
+	after := before
+	after.Directory.LinkCount = 5
+
+	if !sameAttachPostCommandBoundary(CommandCollect, after, before) {
+		t.Fatal("Collect rejected monotonic directory LinkCount growth")
+	}
+	for _, command := range []CommandName{CommandBindAuthority, CommandInspect, CommandClose} {
+		if sameAttachPostCommandBoundary(command, after, before) {
+			t.Fatalf("%s admitted Collect-only directory LinkCount growth", command)
+		}
+	}
+
+	decreased := before
+	decreased.Directory.LinkCount--
+	if sameAttachPostCommandBoundary(CommandCollect, decreased, before) {
+		t.Fatal("Collect admitted a decreasing directory LinkCount")
+	}
+
+	drifted := after
+	drifted.Directory.Inode++
+	if sameAttachPostCommandBoundary(CommandCollect, drifted, before) {
+		t.Fatal("Collect admitted directory object drift")
+	}
+
+	drifted = after
+	drifted.Socket.Inode++
+	if sameAttachPostCommandBoundary(CommandCollect, drifted, before) {
+		t.Fatal("Collect admitted socket drift")
+	}
+}
+
 func newAttachRequest(t *testing.T, harness *supervisorLoopHarness, child ProcessIdentity, observationDigest string) attachRequest {
 	t.Helper()
 	directory, err := ObserveHeldControlDirectory(harness.directory)

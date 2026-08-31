@@ -495,7 +495,7 @@ func serveAttach(connection *net.UnixConn, reader *bufio.Reader, session *Sessio
 		return ErrConflict
 	}
 	final, journalFinal, err := captureAttachControlSnapshot(boundary.directory, boundary.directoryIdentity, boundary.heldFiles)
-	if err != nil || !sameAttachControlBoundary(final, before) {
+	if err != nil || !sameAttachPostCommandBoundary(continuation.Command, final, before) {
 		return ErrIntervention
 	}
 	if journalFinal.pending != nil || journalFinal.Sequence != journalBefore.Sequence+2 {
@@ -522,6 +522,26 @@ func serveAttach(connection *net.UnixConn, reader *bufio.Reader, session *Sessio
 // one receipt.
 func sameAttachControlBoundary(left, right attachControlSnapshot) bool {
 	return left.Directory == right.Directory && left.Socket == right.Socket && left.Files == right.Files && left.NonceSize == right.NonceSize && left.NonceDigest == right.NonceDigest
+}
+
+// sameAttachPostCommandBoundary retains the exact Attach boundary for every
+// continuation except Collect. A successful Collect creates the bounded
+// stdout.bin, stderr.bin and transcript.jcs entries, which makes APFS increase
+// the directory LinkCount. Only that monotonic LinkCount change is admitted:
+// the directory object and all other security-relevant control objects remain
+// byte-for-byte equal. Transcript identities are validated separately before
+// ResultIngress accepts the collected result.
+func sameAttachPostCommandBoundary(command CommandName, after, before attachControlSnapshot) bool {
+	if command != CommandCollect {
+		return sameAttachControlBoundary(after, before)
+	}
+	if after.Directory.LinkCount < before.Directory.LinkCount {
+		return false
+	}
+	afterDirectory := after.Directory
+	afterDirectory.LinkCount = before.Directory.LinkCount
+	after.Directory = afterDirectory
+	return sameAttachControlBoundary(after, before)
 }
 
 // validateAttachServerState authenticates the live Supervisor session,
