@@ -315,9 +315,14 @@ func openAttachedControlDirectory(profile *preparedDarwinExecutionProfile, state
 func (s *DurableStore) executeFreshRebindLocked(ctx context.Context, projection *Ingress, state AttemptAuthorityState, ownerState ControlOwnerState, identity AttemptIdentity, controlDirectory *os.File, fixedMarshalPath string, transport rebindTransport, preAnchor processsupervisor.HandshakeAnchor, predecessorRevision uint64, predecessorHead string) (AttemptAuthorityState, error) {
 	bindPayload := processsupervisor.BindAuthorityPayload{
 		SupervisorStartedFactDigest: state.SupervisorStartedDigest,
-		OwnerEpoch:                  ownerState.Acquisition.OwnerEpoch,
-		PreviousAuthorityHead:       preAnchor.CurrentAuthorityHead,
-		AuthorityHead:               state.HeadDigest,
+		// Attach authenticates the fresh repository owner separately, while the
+		// borrowed bind-authority command continues the already-live Supervisor
+		// mechanics session. Its owner epoch therefore remains the exact epoch
+		// frozen in the predecessor mechanics anchor; using the fresh repository
+		// owner epoch here makes Session.admitRebind correctly reject the command.
+		OwnerEpoch:            preAnchor.OwnerEpoch,
+		PreviousAuthorityHead: preAnchor.CurrentAuthorityHead,
+		AuthorityHead:         state.HeadDigest,
 	}
 	prepared, prepareErr := processsupervisor.PrepareCommand(preAnchor, processsupervisor.CommandOptions{
 		Command: processsupervisor.CommandBindAuthority, CommandID: fmt.Sprintf("rebind-owner-successor-%d", state.SupervisorCommandSequence+1),

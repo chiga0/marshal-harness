@@ -65,7 +65,7 @@ func validateRebindSupervisorIntentAgainstState(state AttemptAuthorityState, int
 		return ErrAttemptAuthorityConflict
 	}
 	rebuild := intent.Rebuild
-	if rebuild.OwnerEpoch != state.Owner.OwnerEpoch || rebuild.PreviousAuthorityHead != pre.CurrentAuthorityHead ||
+	if rebuild.OwnerEpoch != pre.OwnerEpoch || rebuild.PreviousAuthorityHead != pre.CurrentAuthorityHead ||
 		rebuild.AuthorityHead != state.HeadDigest || rebuild.AuthorityHead == pre.CurrentAuthorityHead ||
 		rebuild.SupervisorStartedFactDigest != state.SupervisorStartedDigest {
 		return ErrAttemptAuthorityConflict
@@ -85,11 +85,11 @@ func validateRebindSupervisorIntentAgainstState(state AttemptAuthorityState, int
 // command and append the outcome. A pending intent from a different owner,
 // different pre-anchor, different command ID, or different request digest is a
 // conflict, not a replay.
-func validateRebindPendingIntentForReplay(state AttemptAuthorityState, acquisition ControlOwnerAcquisition, _ processsupervisor.HandshakeAnchor) error {
+func validateRebindPendingIntentForReplay(state AttemptAuthorityState, acquisition ControlOwnerAcquisition, preAnchor processsupervisor.HandshakeAnchor) error {
 	intent := state.SupervisorPendingIntent
 	if intent.Command != processsupervisor.CommandBindAuthority || intent.SessionID != state.SupervisorStarted.Handshake.SessionID ||
-		intent.PreCommand != state.SupervisorMechanicsAnchor ||
-		intent.Rebuild.OwnerEpoch != acquisition.OwnerEpoch || intent.Rebuild.OwnerEpoch != state.Owner.OwnerEpoch ||
+		intent.PreCommand != state.SupervisorMechanicsAnchor || supervisorHandshakeAnchor(intent.PreCommand) != preAnchor ||
+		acquisition.OwnerEpoch != state.Owner.OwnerEpoch || intent.Rebuild.OwnerEpoch != intent.PreCommand.OwnerEpoch ||
 		intent.Rebuild.AuthorityHead != state.HeadDigest || intent.Rebuild.AuthorityHead == intent.PreCommand.CurrentAuthorityHead {
 		return ErrAttemptAuthorityConflict
 	}

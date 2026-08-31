@@ -17,6 +17,7 @@ import (
 type fakeRebindSession struct {
 	authority  processsupervisor.AttachAuthority
 	executeErr error
+	bind       func(processsupervisor.PreparedCommand)
 	collect    func(processsupervisor.PreparedCommand) processsupervisor.VerifiedCommandOutcome
 	observed   bool
 	executed   bool
@@ -42,6 +43,9 @@ func (session *fakeRebindSession) ExecutePreparedBindAuthority(_ context.Context
 	session.executed = true
 	if session.executeErr != nil {
 		return processsupervisor.VerifiedCommandOutcome{}, session.executeErr
+	}
+	if session.bind != nil {
+		session.bind(prepared)
 	}
 	return fakeBindOutcome(prepared), nil
 }
@@ -155,7 +159,14 @@ func doRebind(t *testing.T, store *DurableStore, verifier attemptOwnerVerifier, 
 func TestRebindOwnerSuccessorForAttachedRecoveryHappyPath(t *testing.T) {
 	store, started, acquisition, identity, verifier, dir := rebindRecoveryStore(t)
 	var calls int32
-	state, err := doRebind(t, store, verifier, acquisition, identity, dir, nil, &calls)
+	var preparedOwnerEpoch uint64
+	transport := func(_ context.Context, options processsupervisor.AttachOptions, rebind func(AttachedRebindSession) error) error {
+		atomic.AddInt32(&calls, 1)
+		return rebind(&fakeRebindSession{authority: options.Authority, bind: func(prepared processsupervisor.PreparedCommand) {
+			preparedOwnerEpoch = prepared.Evidence().Projection.OwnerEpoch
+		}})
+	}
+	state, err := store.rebindOwnerSuccessorForAttachedRecoveryWithTransport(context.Background(), verifier, acquisition, identity, dir, "/fixed/marshal", transport)
 	if err != nil {
 		t.Fatalf("rebind: %v", err)
 	}
@@ -170,6 +181,12 @@ func TestRebindOwnerSuccessorForAttachedRecoveryHappyPath(t *testing.T) {
 	}
 	if state.SupervisorPendingIntentDigest != "" {
 		t.Fatal("rebind left a pending intent")
+	}
+	if preparedOwnerEpoch != started.SupervisorMechanicsAnchor.OwnerEpoch {
+		t.Fatalf("rebind mechanics owner epoch=%d want predecessor=%d", preparedOwnerEpoch, started.SupervisorMechanicsAnchor.OwnerEpoch)
+	}
+	if preparedOwnerEpoch == acquisition.OwnerEpoch {
+		t.Fatalf("rebind incorrectly used fresh repository owner epoch=%d", acquisition.OwnerEpoch)
 	}
 }
 

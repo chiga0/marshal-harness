@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -238,7 +239,10 @@ func Reconnect(ctx context.Context, options ReconnectOptions) (*Client, error) {
 	if err := validateReconnectWireOptions(wire); err != nil {
 		return nil, err
 	}
-	address := filepath.Join(directory.CanonicalPath, controlSocket)
+	address, err := controlSocketAddress(directory)
+	if err != nil {
+		return nil, err
+	}
 	connection, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: address, Net: "unix"})
 	if err != nil {
 		return nil, ErrIntervention
@@ -374,7 +378,10 @@ func WithAttached(ctx context.Context, options AttachOptions, fn func(*AttachedS
 		if err != nil || request.validate() != nil {
 			return ErrConflict
 		}
-		address := filepath.Join(directory.CanonicalPath, controlSocket)
+		address, err := controlSocketAddress(directory)
+		if err != nil {
+			return err
+		}
 		connection, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: address, Net: "unix"})
 		if err != nil {
 			return ErrIntervention
@@ -463,6 +470,39 @@ func WithAttached(ctx context.Context, options AttachOptions, fn func(*AttachedS
 		}
 		return nil
 	})
+}
+
+// controlSocketAddress keeps Darwin AF_UNIX rendezvous addresses below the
+// kernel sockaddr limit without changing the process working directory. The
+// fixed CLI is composed from the repository root and owner-control lives below
+// that root, so a clean descendant-relative locator is both shorter and more
+// precise than the potentially very long canonical pathname. Authority still
+// comes from the held directory/socket identities and the fixed-binary peer
+// check before and after connect; this relative pathname grants none.
+func controlSocketAddress(directory ControlDirectoryIdentity) (string, error) {
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return "", ErrConflict
+	}
+	return controlSocketAddressFromWorkingDirectory(directory, workingDirectory)
+}
+
+func controlSocketAddressFromWorkingDirectory(directory ControlDirectoryIdentity, workingDirectory string) (string, error) {
+	if directory.validate() != nil || !absoluteClean(workingDirectory) {
+		return "", ErrInvalid
+	}
+	relative, err := filepath.Rel(workingDirectory, directory.CanonicalPath)
+	if err != nil || relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", ErrConflict
+	}
+	address := filepath.Join(relative, controlSocket)
+	// RawSockaddrUnix.Path reserves one byte for the trailing NUL used by
+	// pathname sockets. Reject deterministically instead of surfacing an opaque
+	// net.DialUnix "path too long" after durable owner succession.
+	if len(address) >= len(unix.RawSockaddrUnix{}.Path) {
+		return "", ErrConflict
+	}
+	return address, nil
 }
 
 func captureAttachControlSnapshot(directory *os.File, identity ControlDirectoryIdentity, held *heldSessionControlFiles) (attachControlSnapshot, JournalSnapshot, error) {
