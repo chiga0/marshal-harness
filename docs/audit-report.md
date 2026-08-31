@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-08-31：生产级 Agent Team 架构终审
+
+新增 [《Marshal 生产级 Agent Team 架构终审》](production-agent-team-architecture-audit.md)，以 `main@10f743d93cdaa71a2a3b181da3134f4a2c5dbe87` 为代码快照，交叉复核 production import graph、491 个本机 dogfood Run、Git/CI/Issue 历史，以及 Anthropic、OpenAI、Temporal、Kubernetes 与 GitHub 的一手生产资料。
+
+终审结论：Marshal 的确定性 Kernel、唯一 authority ledger、ResultIngress、独立 Verification/Review 与 effect reconcile 方向成立，不应重写；当前欠缺的是 `Intent → Discovery → DeliveryProposal → UserApproval → WorkGraph → Integration → Outcome` 的真实产品闭环，而不是更多横向 Provider 或更细的底层合同。当前 fixed CLI real-Pi `ACCEPTED` 证据只证明 single-task kernel，不构成生产 Agent Team。路线保持先完成 ADR 0068 RC1；RC1 后第一条纵切应是 simple prompt → approved proposal → one real Task 的 GoalLite walking skeleton，随后才用最多 3 个并行节点和一个 Integration Node 证明真实加速。
+
+审计快照的 required CI 仍为失败：Ubuntu 有一项 server recovery 测试 600 秒超时，supervisor 旧 fixture 仍绕过 sealed Run-start proof，macOS quality 因矩阵失败取消；因此该快照明确不具备 release candidate 资格。RC1 后应把既有 stable hardening 合同与 Agent Team 产品纵切拆成两个独立验收轨道，避免任一方向再次以组件数量遮蔽真实出口。
+
+该终审同时记录了本机 Run 的效率基线：`ACCEPTED=117/491`、`BLOCKED+REJECTED=291/491`、非终态 `68/491`、多 Attempt `162/491`、`review.rework=211`，且历史 `worker.failed` 只有 `19/211` 具备可用于自动止损的 typed 信息。上述数据来自单机自举，不能外推为行业成功率，但足以说明下一阶段应把 plan/spec/environment 缺陷前移到 Worker 启动前，并用真实 outcome、first-pass、successor amplification 和并发 wall-clock speedup 取代 PR/ADR/组件数量作为进展指标。
+
 ## 2026-08-31：S2′ path B existing-worktree production-composition 切片
 
 在 `feat/pi-s2-production-composition@d65785d` 基线上，[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md) 冻结的 S2′-B（existing-worktree 绑定）此前只有 resultingress 层的 RB1 closed-union 与 PreparedExecution path B 投影，productionruntime 组合根与 fixed CLI 仍走 path A（staging provision），导致 closure WorkingDirectory 与 allocation receipt live 身份不匹配。本切片落地真实 path B 生产纵切，不放宽任何强制门禁：

@@ -2,6 +2,8 @@
 
 > 规范状态：Marshal 终态整体架构，更新于 2026-08-29；依据已接受的 [ADR 0016–0019](adr/README.md)、[ADR 0043–0045](adr/README.md) 与 [ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md)。标注 **Proposed** 的组件或接缝尚未被接受，不构成合同，也不进入 required path。当前实现与计划状态以 [Roadmap](roadmap-status.md) 为准。
 
+> 2026-08-31 的产品可行性、真实 dogfood 效率、多 Agent 并发边界和 GoalLite 建议见 [《Marshal 生产级 Agent Team 架构终审》](production-agent-team-architecture-audit.md)。该审计不修改本文合同；它明确区分当前 single-task kernel、RC1 发布链与 RC1 后的 Agent Team 产品纵切。
+
 本文定义 Marshal 的整体产品架构：系统由哪些部分组成、权威在哪里、Executor 如何协作，以及 embedded/local 与 C/S 如何共享同一业务语义。Local MVP 仅在“当前交付映射”中说明，不定义系统边界。字段级契约与故障语义见 [Runtime 架构](runtime-architecture.md)。
 
 ## 架构目标
