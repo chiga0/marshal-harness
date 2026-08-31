@@ -518,7 +518,7 @@ func TestRebindOwnerSuccessorForAttachedRecoveryAcrossThreeColdOwnerEpochs(t *te
 		if recovered.Revision != current.Revision+1 || recovered.ControlOwnerBindingPreviousHead != current.HeadDigest || recovered.SupervisorBoundAuthorityHead != recovered.HeadDigest {
 			t.Fatalf("cold owner did not extend exact predecessor: before=%+v after=%+v", current, recovered)
 		}
-		store, acquisition, verifier, current = reopened, next, nextVerifier, recovered
+		store, acquisition, current = reopened, next, recovered
 	}
 	if atomic.LoadInt32(&calls) != 3 {
 		t.Fatalf("transport calls=%d want 3", calls)
