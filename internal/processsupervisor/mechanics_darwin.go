@@ -100,7 +100,11 @@ func newVnodeGuard(files []*os.File, specs []HeldObjectSpec) (*vnodeGuard, error
 			_ = unix.Close(queue)
 			return nil, ErrInvalid
 		}
-		flags := uint32(unix.NOTE_DELETE | unix.NOTE_ATTRIB | unix.NOTE_RENAME | unix.NOTE_REVOKE)
+		// Accessing a held file or directory may update its atime and emit
+		// NOTE_ATTRIB on Darwin. Metadata is still checked by the descriptor/path
+		// revalidation below, so treating that access-time noise as tampering
+		// would reject otherwise valid launches (notably Node-based Pi).
+		flags := uint32(unix.NOTE_DELETE | unix.NOTE_RENAME | unix.NOTE_REVOKE)
 		if specs[index].Role != "working-directory" {
 			flags |= unix.NOTE_WRITE | unix.NOTE_EXTEND | unix.NOTE_LINK
 		}
@@ -822,7 +826,16 @@ func processExecutablePath(pid int) (string, error) {
 	if !absoluteClean(path) {
 		return "", ErrConflict
 	}
-	return path, nil
+	// kern.procargs2 reports the exec path as invoked, which is not
+	// necessarily canonical (macOS /var is a symlink to /private/var). The
+	// binary identity binds the real on-disk location and every later open
+	// uses O_NOFOLLOW_ANY, so resolve the path once and require the result to
+	// stay clean and absolute.
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || !absoluteClean(resolved) {
+		return "", ErrConflict
+	}
+	return resolved, nil
 }
 
 func waitReady(ctx context.Context, file *os.File) error {

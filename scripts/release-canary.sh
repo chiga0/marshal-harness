@@ -11,14 +11,14 @@ RELEASE_CHECKER="${SOURCE_ROOT}/scripts/release-contract.sh"
 RELEASE_DIST_ROOT="${SOURCE_ROOT}/dist"
 CANONICAL_REMOTE="https://github.com/chiga0/marshal-harness.git"
 CANARY_REMOTE="https://example.invalid/marshal-release-canary.git"
-PI_VERSION="0.84.3"
+PI_VERSION="0.84.4"
 PI_NODE_VERSION="v24.15.0"
-PI_MODEL="qwen-token-plan-cn/qwen3.6-flash"
+PI_MODEL="pai-eas/qwen3.7-plus"
 PI_BIN_DEFAULT="/Users/gawain/.local/share/fnm/node-versions/v24.15.0/installation/bin/pi"
 PI_NODE_DEFAULT="/Users/gawain/.local/share/fnm/node-versions/v24.15.0/installation/bin/node"
 PI_NODE_SHA256_DEFAULT="3200fbd9f7fd4410426dd541e10d1ab829d3472f270d743c7fabd1696c03fe32"
 PI_BUNDLE_DEFAULT="/Users/gawain/.local/share/fnm/node-versions/v24.15.0/installation/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
-PI_BUNDLE_SHA256_DEFAULT="1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a"
+PI_BUNDLE_SHA256_DEFAULT="5406c369954516fb56879d685e082ff9095cd6e06e41af406f394942377fd4bf"
 PYTHON_BIN="/usr/bin/python3"
 GIT_BIN="/usr/bin/git"
 
@@ -294,6 +294,8 @@ set_runtime_environment() {
   export LANG="en_US.UTF-8"
   export MARSHAL_PI_PATH="$PI_BIN"
   export MARSHAL_PI_NODE_PATH="$PI_NODE"
+  export MARSHAL_PI_RUNTIME="$PI_NODE"
+  export MARSHAL_PI_ENTRYPOINT="$PI_BUNDLE"
   export MARSHAL_EMBEDDED_SANDBOX=1
   export MARSHAL_OPENCODE_PATH=""
   export MARSHAL_QWEN_PATH=""
@@ -329,7 +331,7 @@ assert_pi_identity() {
 }
 
 assert_doctor() {
-  "$PYTHON_BIN" -I -B - "$DOCTOR_PATH" <<'PY' || die "doctor 未放行精确 Pi 0.84.3 ordinary-user profile"
+  "$PYTHON_BIN" -I -B - "$DOCTOR_PATH" <<'PY' || die "doctor 未放行精确 Pi 0.84.4 ordinary-user profile"
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     value = json.load(handle)
@@ -339,7 +341,7 @@ matches = [worker for worker in value.get("workers", [])
            if worker.get("adapterId") == "pi"
            and worker.get("outcome") == "registered"
            and worker.get("compatibility") == "supported"
-           and worker.get("binaryVersion") == "0.84.3"
+           and worker.get("binaryVersion") == "0.84.4"
            and worker.get("authorityMode") == "ordinary-user"]
 assert len(matches) == 1
 PY
@@ -447,10 +449,10 @@ task.update({
     "repository": {"path": repository_root, "remote": "origin", "baseRef": base_sha,
                    "expectedRemoteUrl": remote_url},
     "work": {
-        "objective": f"创建 {marker_path}，内容恰好为单行 {marker} 加结尾换行；随后写入 WorkerResult JSON。",
+        "objective": f"创建 {marker_path}，内容恰好为单行 {marker} 加结尾换行；最终回复必须仅包含一个 WorkerResult JSON 对象。",
         "constraints": [
             f"只创建 {marker_path}；不得修改其他文件；不得提交、推送或访问网络。",
-            "必须把 WorkerResult JSON 写到 WorkerRequest 指定的固定输出路径。",
+            "最终 assistant 输出必须恰好是一个 WorkerResult JSON 对象，不得添加 Markdown 或解释。",
         ],
         "context": [f"唯一允许的文件内容是 {marker} 加一个结尾换行。"],
         "nonGoals": ["不修改 Marshal 源仓库", "不自行验证或评审产物"],
@@ -467,8 +469,8 @@ task.update({
     }]},
     "deliverables": [{"id": "release-canary-marker", "kind": "diagnostic",
                       "pathGlob": marker_path, "minimumCount": 1, "required": True}],
-    # 复用 d4b9647 fixed-bin strict canary 已完成 WorkerResult 的精确模型。
-    "worker": {"model": "qwen-token-plan-cn/qwen3.6-flash",
+    # RC1 只冻结当前已验证可用的 Pi 0.84.4 provider/model tuple。
+    "worker": {"model": "pai-eas/qwen3.7-plus",
                "sessionPolicy": "ephemeral", "executionProfile": "workspace-write"},
     "budgets": {"attemptTimeoutSeconds": 900, "runTimeoutSeconds": 1800,
                 "maxAttempts": 1, "maxOperationalRetries": 0,
@@ -594,7 +596,24 @@ PY
     >"$CONTROL_ROOT/plan.json"
   run_fixed_marshal task approve --run "$RUN_ID" --gate plan --actor release-canary --json \
     >"$CONTROL_ROOT/approval.json"
-  run_fixed_marshal task run --run "$RUN_ID" --json >"$CONTROL_ROOT/run.json"
+  # READY 调用只启动 sealed Attempt；后续 RUNNING 调用在精确 PID 终态后
+  # 收集 descriptor-bound transcript 并原子推进到 VERIFYING。
+  run_fixed_marshal task run --run "$RUN_ID" --json >"$CONTROL_ROOT/run-start.json"
+  local collect_attempt=0 run_state
+  while :; do
+    run_fixed_marshal task status --run "$RUN_ID" --json >"$CONTROL_ROOT/run-status.json"
+    run_state="$(json_field "$CONTROL_ROOT/run-status.json" state)"
+    case "$run_state" in
+      VERIFYING) break ;;
+      RUNNING)
+        collect_attempt=$((collect_attempt + 1))
+        [ "$collect_attempt" -le 900 ] || die "Pi Attempt 在 900 次有界收集内未到达 VERIFYING"
+        run_fixed_marshal task run --run "$RUN_ID" --json >"$CONTROL_ROOT/run-collect.json"
+        [ "$TEST_MODE" = 1 ] || /bin/sleep 1
+        ;;
+      *) die "Pi Attempt 进入非预期状态：$run_state" ;;
+    esac
+  done
   run_fixed_marshal task verify --run "$RUN_ID" --json >"$CONTROL_ROOT/verification.json"
   run_fixed_marshal task review --run "$RUN_ID" --json >"$REVIEW_OUTPUT_PATH"
 

@@ -475,7 +475,7 @@ func TestSpawnRejectsClosureDigestMismatchBeforeMechanics(t *testing.T) {
 		t.Fatalf("closure digest mismatch error=%v", err)
 	}
 	payload = validSpawnPayload()
-	payload.ClosureProfileID = launchidentity.Pi0843DarwinARM64Profile
+	payload.ClosureProfileID = launchidentity.Pi0844DarwinARM64Profile
 	if err := validateSpawnPayload(payload); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("closure profile mismatch error=%v", err)
 	}
@@ -675,4 +675,7 @@ func mustDigestValue(value any) string {
 	return digest
 }
 
-func digest(character string) string { return "sha256:" + strings.Repeat(character, 64) }
+// digest builds a syntactically valid 64-hex digest label. The label is
+// hashed so every value stays inside the closed digest pattern while equal
+// labels keep equal digests and distinct labels stay distinct.
+func digest(label string) string { return canonical.DigestBytes([]byte("label:" + label)) }

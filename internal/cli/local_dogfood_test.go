@@ -24,6 +24,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if inheritedTestEntry() {
+		os.Exit(0)
+	}
 	localDogfoodGateTestBypass = func(info buildinfo.Info) bool {
 		return info.Commit == "unknown" && info.SelfProfile == "unprofiled"
 	}

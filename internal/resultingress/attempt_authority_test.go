@@ -395,6 +395,7 @@ func testSupervisorEvidence(t *testing.T, intent SupervisorCommandIntent, outcom
 	}
 	if intent.Command == processsupervisor.CommandBindAuthority && disposition == "ok" {
 		evidence.BoundAuthorityHead = intent.Rebuild.AuthorityHead
+		evidence.ObservationDigest = intent.Rebuild.SupervisorStartedFactDigest
 	}
 	observationDigest, receiptDigest, err := evidence.boundMechanicsDigests()
 	if err != nil {
@@ -845,6 +846,38 @@ func TestAdmissionAndBarrierShareCASAndAllKindsClose(t *testing.T) {
 	quarantine := ingress.Quarantine()
 	if len(quarantine) < 8 {
 		t.Fatalf("quarantine len=%d, want >=8", len(quarantine))
+	}
+}
+
+func TestWorkerResultAdmissionDurablyBindsObservationBeforeRelease(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := OpenResultIngressStore(dir)
+	started := openStartedAttempt(t, store)
+	ingress, err := NewDurableIngress(attemptTestBinding(), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drc, envelope := attemptTestDRCForState(started, KindWorkerResult, 1)
+	binding := ResultObservationBinding{
+		ObservationDigest: attemptTestDigest("observation-bytes"),
+		SnapshotDigest:    attemptTestDigest("snapshot"),
+		DiffDigest:        attemptTestDigest("diff"),
+	}
+	fact, err := ingress.AdmitWithSupervisorCollectOutcomeAndObservation(context.Background(), drc, envelope, "", binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenResultIngressStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	state, found, err := reopened.AttemptState(started.Identity)
+	if err != nil || !found || state.CommittedResultFactDigest != fact.FactDigest || state.CommittedResultObservation != binding {
+		t.Fatalf("recovered observation binding=%+v found=%v err=%v", state.CommittedResultObservation, found, err)
 	}
 }
 

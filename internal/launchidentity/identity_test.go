@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-func TestPi0843IdentityDigestIsClosedAndRecomputed(t *testing.T) {
-	identity := Pi0843IdentityV1{
-		SchemaVersion: pi0843IdentitySchema, ProtocolRevision: pi0843IdentityProtocol,
-		AgentProvider: pi0843IdentityProvider, AgentVersion: pi0843IdentityVersion,
-		ClosureProfileID:        Pi0843DarwinARM64Profile,
+func TestPi0844IdentityDigestIsClosedAndRecomputed(t *testing.T) {
+	identity := Pi0844IdentityV1{
+		SchemaVersion: pi0844IdentitySchema, ProtocolRevision: pi0844IdentityProtocol,
+		AgentProvider: pi0844IdentityProvider, AgentVersion: pi0844IdentityVersion,
+		ClosureProfileID:        Pi0844DarwinARM64Profile,
 		NodeRuntimeObjectDigest: digestForTest("a"), EntrypointMaterialDigest: digestForTest("b"),
 		MaterialRootsDigest: digestForTest("c"), LaunchMaterialsDigest: digestForTest("d"),
 	}
@@ -23,10 +23,10 @@ func TestPi0843IdentityDigestIsClosedAndRecomputed(t *testing.T) {
 	if err != nil || strings.Contains(string(raw), "canonicalPath") || strings.Contains(string(raw), "agentLaunchSpecDigest") {
 		t.Fatalf("Pi identity is not path/spec secret-safe: %s err=%v", raw, err)
 	}
-	for name, mutate := range map[string]func(*Pi0843IdentityV1){
-		"runtime":    func(value *Pi0843IdentityV1) { value.NodeRuntimeObjectDigest = digestForTest("e") },
-		"entrypoint": func(value *Pi0843IdentityV1) { value.EntrypointMaterialDigest = digestForTest("e") },
-		"identity":   func(value *Pi0843IdentityV1) { value.IdentityDigest = digestForTest("e") },
+	for name, mutate := range map[string]func(*Pi0844IdentityV1){
+		"runtime":    func(value *Pi0844IdentityV1) { value.NodeRuntimeObjectDigest = digestForTest("e") },
+		"entrypoint": func(value *Pi0844IdentityV1) { value.EntrypointMaterialDigest = digestForTest("e") },
+		"identity":   func(value *Pi0844IdentityV1) { value.IdentityDigest = digestForTest("e") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			forged := identity

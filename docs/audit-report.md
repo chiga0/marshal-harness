@@ -1,5 +1,44 @@
 # 设计审计报告
 
+## 2026-08-31：S2′ path B existing-worktree production-composition 切片
+
+在 `feat/pi-s2-production-composition@d65785d` 基线上，[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md) 冻结的 S2′-B（existing-worktree 绑定）此前只有 resultingress 层的 RB1 closed-union 与 PreparedExecution path B 投影，productionruntime 组合根与 fixed CLI 仍走 path A（staging provision），导致 closure WorkingDirectory 与 allocation receipt live 身份不匹配。本切片落地真实 path B 生产纵切，不放宽任何强制门禁：
+
+1. 新增 [ADR 0070](adr/0070-existing-worktree-frozen-inputs-digest.md)（Accepted），冻结 `existing-worktree-binding/v1` 的 `FrozenInputsDigest`（canonical JSON closed struct {specDigest, policyDigest, capabilityDigest} 的 sha256）、`RepositoryOwnerDigest`（exact current `ControlOwnerState.FactDigest`）、`ExpectedAttemptSequence`（bind admission 前当前 `AttemptAuthorityState.Revision`）派生口径；明确 `BaseSHA`/`WorktreePath` 已在 `ExistingWorktreeBindRequestV1` 绑定不重复入 digest，且不使用 `ReservationKeyDigest`。不扩大协议。
+2. `internal/productionruntime/existing_worktree_bind.go`：`CompositionInputs`/`CompositionLedger` 接收 held `ExistingWorktreeDescriptorGraphV1` + 目标 worktree `*os.File`，单边配置 fail closed；`bindExistingWorktree` 在 `BindOwnerToAttempt` 后用 `resultingress.NewExistingWorktreeAuthority` + `allocationcontrol.NewExistingWorktreeController` 完成 Bind，Run descriptor 用 `runstore.DupRunDirectory` + `allocationcontrol.NewDescriptorBoundRunV1`；binding 使用 ownerState.FactDigest、reservation.ReservationFactDigest、bound.OpenedDigest、identity lease/allocation/fencing、冻结输入 digest、bound.Revision。Core 侧 `existingWorktreeCurrentVerifier` 在打开 `RunAuthority` 前从 durable READY 投影与当前 owner/Attempt 派生 immutable expected current，在 callback 内重验 exact current owner 与 Attempt head/revision，不再在持有 `RunAuthority` RLock 时 `ReadRunStartAuthorityUnderLease`。replay gate 接受 staging provision receipt 与 existing-worktree bind receipt 的严格 closed union；path B 不把 closure 重封到 staging。
+3. `internal/cli/existing_worktree_graph_darwin.go` + `sealed_ready_darwin.go`：fixed CLI 构建并持有 repository descriptor graph + exact `projection.WorktreePath` target，支持 `.git` 为目录或 linked-worktree `.git` 文件；固定 `/usr/bin/git --git-common-dir` 仅作 locator，最终由 `NewExistingWorktreeDescriptorGraph`/`NewLinkedExistingWorktreeDescriptorGraph` 与 held descriptors 校验；所有句柄生命周期覆盖 ComposeRuntime/Prepare/Start，退出关闭；改用 `AcquireExisting`（ADR 0069 §4 existing-only）。不生成或执行临时二进制。
+4. 定向测试：`FrozenInputsDigest` 字段漂移、path B bind receipt 到 PreparedExecution、replay 无 sibling、held target identity drift 拒绝且无新增 bind authority、单边 inputs 拒绝、path A staging 回归不变，以及 fixed CLI 对 linked repository graph 与 Darwin symlinked target path 的覆盖。真实 Pi canary 必须等待 attempt-aware argv 与 exact-owned terminalization 接线，禁止用宽泛 `pkill -f` 代替生命周期控制。
+
+本切片不改变信任边界（仅 ADR 0070 澄清字段口径），不暴露 raw path 到 prompt/transcript/public schema，不引入 `productionruntime → adapter/pi` 或 `processsupervisor` 新依赖，不使用 `ReservationKeyDigest` 作为 `FrozenInputsDigest`。`architecture_check.py` 通过。`I186-R2–R5` 仍为 `COMPONENT`，不据此宣称 RC1、stable 或 production 已完成；real Pi canary、terminalization、独立 Decision ACCEPTED 与 same-bytes RC1 仍是后继。
+
+## 2026-08-30：S1′ ResultIngress Darwin 全绿切片（基线 11 失败 → 0）
+
+在 `main@054789c` 基线上，`go test ./internal/resultingress -count=1` 于本开发机（Darwin 25/arm64）确定性失败 11 项。本切片逐项定位并修复，现该包非 race 全绿；判定依据与修复如下，未放宽任何强制门禁：
+
+1. `TestPreparedExecutionCreationOnceResolveAndSecretBoundary`：落地即坏的断言——`DecodePreparedExecution` 是纯闭合 wire-form 校验，无法拒绝"重算过 `PreparationDigest` 的任意 Pi 身份"（文档自洽时结构校验必然通过）。改为验证 seal 覆盖 Pi 身份（篡改不重算 digest 即拒）+ 自洽文档只是纯 wire form + ungrounded digest 经 `ResolvePreparedExecution` 必返回 `ErrPreparedExecutionUnavailable`。原测试自 `6e558d7` 创建起从未通过过。
+2. `TestCommittedRunStartProofIsNarrowSharedAndSynchronous`：测试竞态——`deactivateAndWait` 是否观察到 in-flight 回调取决于调度。以 `guard.active == false`（escaped 已计算后的确定性锚点）作为入场 barrier 修复。
+3. `TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor`：实现缺口——caller-authored Collect（rebuild 重锚业务头）在无 reconnect 事实时被允许追加。在 `validateSupervisorCommandIntentAgainstState` 的 Collect 分支补上 `SupervisorReconnectFactDigest == "" → ErrAttemptAuthorityOrder` 门禁；全部现存通过用例均已有 reconnect 在先，无行为回退。
+4. `openHeldDarwinAuthorityFiles`（6 项 HeldDarwin + Seal）：Darwin 25 APFS 的目录 `st_nlink` 计入常规条目，先冻结目录身份再创建 ledger/coordination 文件导致 `verifyCurrentNames` 的 Nlink 相等性永远失败，`OpenDarwinResultIngressStore` 在本机 OS 上不可达。修复沿用 owner-lock 既有"entry stable 后再冻结"模式：创建条目并 fsync 后对同一 directory object 重冻结身份。
+5. `processExecutablePath`：`kern.procargs2` 返回未解析 exec 路径（macOS `/var` → `/private/var`），而后续 `openObservedSpec` 以 `O_NOFOLLOW_ANY` 打开必然失败。自观察现以 `filepath.EvalSymlinks` 解析为规范路径——`BinaryIdentity.CanonicalPath` 语义收紧为真实磁盘位置，调用方必须传规范路径（`ObserveCurrentCore` 比较因此更严格，非放宽）。
+6. 测试 fixture 修正：`TestPreparedDarwinSeal` 的 `ObservedAt` 改为从真实进程生日派生（原硬编码 `2026-08-29T00:00:00Z` 是时间炸弹，晚于该日的任何运行必失败于 "precedes process birth"）；`advancePreparedAttemptToStarted` 的进程观察从 prepared Pi closure 的 `RuntimeExecutable` 派生（`AppendProcessStarted` 的 `processMatchesRuntime` 要求绑定该精确 runtime object）；`testPreparedSupervisor` 优先复用已绑定 owner（supervisor bootstrap 属于已绑定 owner 的主流程，epoch 轮换只属于显式 reconnect 恢复场景，此前无条件轮换使 prepared 文档 owner 绑定失效）。
+7. Makefile `test` 目标注入真实 git head ldflags：`BinaryIdentity.SourceHead` 的 hex40 合同使未注入 commit 的 test binary（`commit="unknown"`）无法通过自身份校验——这是本机与 CI macOS quality 失败的直接原因之一。`make test` 现与 release 构建绑定同一 source head。
+
+残留（均经 stash 验证为 `main@054789c` 既有，非本切片引入）：`internal/processsupervisor` 8 项 Darwin mechanics 失败（`process-supervisor-intervention-required` 等，HEAD 复现）；`internal/productionruntime` 2 项 owner-lock ABA 在全包上下文 flaky（单跑 10/10 + `-race` 单跑通过，结合《v1.0 Release Readiness》"Mac 本地质量门禁边界"所述企业终端按新 Mach-O/CDHash 拦截 test binary 的策略，本地结果不作为证据层级）；`TestHeldDarwinResultIngressUnlocksAfterPanic` 在 `-race` 下 flaky（HEAD 同样复现）。`R2–R5` 成熟度不变，仍为 `COMPONENT`；组合根接线（`owner → Attempt/ResultIngress → allocation → exact runtime → PreparedRunStart/Commit → execution.Run`）与旧 CLI/execution 测试迁移仍是下一切片。
+
+**后续切片 2 收口（`3cc88ab`）**：processsupervisor 的 8 项失败全部由测试 fixture 缺陷造成，实现未放宽任何门禁——`digest()` helper 对多字符 label 产出超长非法 digest（7 项失败 + 2 项负向测试因错误原因通过），改为按 label 哈希生成合法 64-hex；spawn source gate fixture 未解析 `/var → /private/var` symlink 祖先即以 `O_NOFOLLOW_ANY` 打开，改为先 `EvalSymlinks`。该包现含 `-race` 全绿。productionruntime 2 项 ABA 全包 flaky 与 resultingress race flake 维持环境类判定不变。S2′ 组合根的架构落点已核实：`architecture_check.py` 对 `productionruntime → resultingress` 无条件放行，组合根 authority 实现必须置于 `internal/productionruntime`；`internal/cli` 的冻结债务允许其直接 import `execution/planning/processsupervisor/sandboxbridge`，supervisor 链的 ResultIngress 追加须经理 productionruntime 暴露的窄方法，不得新增冻结债务条目。
+
+## 2026-08-30：切片 4b 迁移的单一前置——Pi 0.84.3 字节身份（fixture 可行性结论）
+
+组合根工程（`97e07d0`…`dcdc494`，15 提交）已使 sealed 链在 darwin/arm64 端到端可用：CLI `executeRun` READY 分支（`e408d3b`）经 `ComposeRuntime` 驱动 `PrepareRunStart` 全链与 `StartPreparedRun` 的密封机制；TestMain 继承探测（`dcdc494`）使重入的测试二进制运行真实 supervisor 循环。
+
+切片 4b 的 RUNNING 起点 fixture 经逐层核实被确认**与 canary 同源阻塞于 Pi 0.84.3**，不是缺失代码：
+
+1. `derivePreparedExecution` 经 `Pi0843IdentityFromClosure` 强制 closure 为结构精确的 Pi 0.84.3（55 材料、每根精确字节数、entrypoint digest 固定为 `piEntrypointDigest`）；
+2. `verifyPreparedCurrentSourcesLocked` 经 `VerifyCurrentClosure` 观察真实文件——合成/临时路径必然 fail-closed；
+3. `OpenPi0843` 对本机 `/opt/homebrew/bin/pi`（0.83.0）按同合同拒绝。
+
+因此 38 项旧测试（internal/cli 18 + internal/execution 约 20）的 READY→RUNNING 段迁移到 `ComposeRuntime → PrepareRunStart → StartPreparedRun` 的执行，在维护者升级 Pi 至 0.84.3 之前无法在本机验证；迁移模板（fixture 输入、TestMain 继承探测、其余 verify/review/publish 断言原样保留）已就绪。升级完成后，执行顺序为：sealed fixture helper 落地 → 38 项迁移 → 远端 CI 绿 → 真实 Pi canary → 独立 ReviewDecision ACCEPTED → same-bytes canary/carrier/tag → v1.0.0-rc1。R2–R5 成熟度不变，仍为 COMPONENT。
+
 ## 2026-08-30：READY→RUNNING 回归证据
 
 在 `main@2fb2d58` 上运行完整 `go test ./internal/cli -count=1` 时，多个既有 CLI E2E 在 Attempt 创建前统一失败于 `READY to RUNNING requires sealed Run-start proof`。这确认当前 sealed Run-start 门禁已正确阻止未接线的 production composition，但也暴露出旧 Local MVP 测试仍假定可直接追加 `worker.started`；`runstore.Store.Append` 已明确拒绝该路径。该结果不能通过放宽门禁或伪造 `PreparedRunStart` 修复。
@@ -977,6 +1016,9 @@ R2（#189）已关闭，不得把上表中原先口头指派给 R2 的 finding �
 `I186-ARCH-CLOSE-TRANSCRIPT-DISPOSITION` 当前状态为 `CONTRACT-ACCEPTED / IMPLEMENTATION-OPEN`。真实 producer chain证明两个缺口：terminalization barrier先赢后，ResultIngress必须拒绝后续 `collect`；successful collect outcome也可能已耐久、但 admission仍输给随后 barrier。[ADR 0061](adr/0061-supervisor-close-transcript-disposition.md) 已接受 `collected-admitted|collected-not-admitted|not-required` 封闭 union；两个 non-admission分支只能引用 current RB1 authority在 empty-result barrier上签发的 exact resolution fact，不能放宽正常成功路径。wire/persisted projection、hostile/crash/replay矩阵与真实 producer接线仍未实现，完成前 cancel/timeout与 collect/admission crash window均不可宣称可恢复。
 
 `I186-ARCH-FIXED-SERVER-COMPOSITION` 当前状态为 `CONTRACT-ACCEPTED / INTEGRATION-OPEN`。独立 `marshal-server` 进程不是 ADR 0059 要求的 fixed Marshal identity，继续 child-exec又违反 ADR 0057 的唯一 in-process Port。[ADR 0062](adr/0062-fixed-marshal-production-server-mode.md) 已接受并部分取代 ADR 0052/0057 的 executable拓扑：生产 loopback server收敛为 fixed `marshal control-plane serve`，独立 `marshal-server` 降为无生产 mutation权限的开发/兼容入口；AF_UNIX delivery projection只能引用 current owner/RB1 exact receipt，不能成为第二 authority。在 CLI/server direct execution、legacy selector与 child `task run`删除，且 exact managed-development signed/allowlisted或 notarized candidate完成真实 canary前，v1仍为 `COMPONENT`，不得发布stable。ADR0068仅对`v1.0.0-rc1`部分取代其server/managed前置：RC1可在fixed CLI local-dogfood纵切完成后先行，但不能据此关闭本finding或宣称server/stable已完成。
+## 2026-08-31：Result observation release-gap 修复
+
+RC1 completion 复审发现：`result-admitted` 已提交后，terminalization 会先释放 path-B worktree，再追加 runstore `worker.completed`；若在两者之间崩溃，恢复时重新观察已归还用户的 live worktree 会因合法修改永久阻塞仍为 `RUNNING` 的 Run。该问题登记为 release-critical P1，并由 [ADR 0072](adr/0072-result-observation-binding-before-worktree-release.md) 关闭合同缺口：首次 admission 同一 authority fact 绑定规范 snapshot bytes、`snapshotDigest` 与 `diffDigest`，release 后恢复只校验 descriptor-held snapshot 对该 binding，不再读取 live worktree。实现与定向冷重放测试已落地；RC1 仍须真实 Pi 纵切与 same-bytes release canary，不因本项关闭而升级。
 
 ## 2026-08-30：RunStore 描述符补强与合入审计
 

@@ -651,7 +651,7 @@ func TestDefaultServerSelectorRejectsUncomposedProductionAdaptersWithoutRun(t *t
 		return path, marker
 	}
 	qoderPath, qoderMarker := writeVersionExecutable("qodercli", "1.1.27")
-	piPath, piMarker := writeVersionExecutable("pi", "0.84.3")
+	piPath, piMarker := writeVersionExecutable("pi", "0.84.4")
 	env := map[string]string{
 		"MARSHAL_QODER_PATH": qoderPath,
 		"MARSHAL_QODER_MODE": "ordinary-user",

@@ -216,6 +216,29 @@ type ResultEnvelope struct {
 	Sequence     uint64
 }
 
+// ResultObservationBinding seals the exact candidate observation bytes into
+// the governed result-admission fact before allocation ownership is released.
+// Recovery may then use the descriptor-held snapshot without re-reading a
+// worktree that has legitimately returned to the user.
+type ResultObservationBinding struct {
+	ObservationDigest string `json:"observationDigest"`
+	SnapshotDigest    string `json:"snapshotDigest"`
+	DiffDigest        string `json:"diffDigest"`
+}
+
+func (binding ResultObservationBinding) Validate() error {
+	for name, digest := range map[string]string{
+		"observationDigest": binding.ObservationDigest,
+		"snapshotDigest":    binding.SnapshotDigest,
+		"diffDigest":        binding.DiffDigest,
+	} {
+		if err := requireDigest(name, digest); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Validate checks all fields fail-closed.
 func (e ResultEnvelope) Validate() error {
 	if _, ok := kindToOperation(e.Kind); !ok {
@@ -411,14 +434,14 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 //
 // All rejection paths fail closed and write a QuarantineRecord.
 func (i *Ingress) Admit(ctx context.Context, drc DRC, envelope ResultEnvelope) (AdmissionFact, error) {
-	return i.admitWithSupervisorCollect(ctx, drc, envelope, SupervisorCommandEvidence{}, "")
+	return i.admitWithSupervisorCollect(ctx, drc, envelope, SupervisorCommandEvidence{}, "", ResultObservationBinding{})
 }
 
 // AdmitWithSupervisorCollect preserves source compatibility for historical
 // embedded-evidence replay. A fresh bootstrap-prepared Attempt rejects this
 // path and must cite an independently durable outcome fact instead.
 func (i *Ingress) AdmitWithSupervisorCollect(ctx context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence) (AdmissionFact, error) {
-	return i.admitWithSupervisorCollect(ctx, drc, envelope, collect, "")
+	return i.admitWithSupervisorCollect(ctx, drc, envelope, collect, "", ResultObservationBinding{})
 }
 
 // AdmitWithSupervisorCollectOutcome co-commits one WorkerResult with an exact
@@ -426,28 +449,38 @@ func (i *Ingress) AdmitWithSupervisorCollect(ctx context.Context, drc DRC, envel
 // payloads; production composition must obtain the VerifiedCommandOutcome
 // from processsupervisor.Client and checkpoint it first.
 func (i *Ingress) AdmitWithSupervisorCollectOutcome(ctx context.Context, drc DRC, envelope ResultEnvelope, outcomeFactDigest string) (AdmissionFact, error) {
-	return i.admitWithSupervisorCollect(ctx, drc, envelope, SupervisorCommandEvidence{}, outcomeFactDigest)
+	return i.admitWithSupervisorCollect(ctx, drc, envelope, SupervisorCommandEvidence{}, outcomeFactDigest, ResultObservationBinding{})
 }
 
-func (i *Ingress) admitWithSupervisorCollect(ctx context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string) (AdmissionFact, error) {
+// AdmitWithSupervisorCollectOutcomeAndObservation is the production WorkerResult
+// entry point. The observation binding is co-committed with result admission,
+// before any path-B release can make the live worktree mutable by its owner.
+func (i *Ingress) AdmitWithSupervisorCollectOutcomeAndObservation(ctx context.Context, drc DRC, envelope ResultEnvelope, outcomeFactDigest string, observation ResultObservationBinding) (AdmissionFact, error) {
+	return i.admitWithSupervisorCollect(ctx, drc, envelope, SupervisorCommandEvidence{}, outcomeFactDigest, observation)
+}
+
+func (i *Ingress) admitWithSupervisorCollect(ctx context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string, observation ResultObservationBinding) (AdmissionFact, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.store != nil {
 		var fact AdmissionFact
 		var admitErr error
 		if err := i.store.transact(i, func() error {
-			fact, admitErr = i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest)
+			fact, admitErr = i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest, observation)
 			return nil
 		}); err != nil {
 			return AdmissionFact{}, err
 		}
 		return fact, admitErr
 	}
-	return i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest)
+	return i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest, observation)
 }
 
-func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string) (AdmissionFact, error) {
+func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string, observation ResultObservationBinding) (AdmissionFact, error) {
 	now := i.clock()
+	if observation != (ResultObservationBinding{}) && (envelope.Kind != KindWorkerResult || observation.Validate() != nil) {
+		return AdmissionFact{}, fmt.Errorf("%w: invalid result observation binding", ErrMalformedEnvelope)
+	}
 
 	// ── 1. Structural validation (fail closed for malformed input) ────────────
 	if err := drc.Validate(); err != nil {
@@ -520,7 +553,7 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
 			return AdmissionFact{}, fmt.Errorf("%w: launch closure/process authority mismatch", ErrStaleLease)
 		}
-		if closure.ClosureProfileID == launchidentity.Pi0843DarwinARM64Profile {
+		if closure.ClosureProfileID == launchidentity.Pi0844DarwinARM64Profile {
 			held, reopenErr := launchidentity.Reopen(closure)
 			if reopenErr != nil {
 				i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
@@ -656,7 +689,7 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 			governedState = &authorityState
 		}
 		var err error
-		authorityHead, err = i.store.recordAdmittedLocked(key, governedState, drcDigest, envelope, factDigest, nextLedgerSequence, collect, outcomeFactDigest)
+		authorityHead, err = i.store.recordAdmittedLocked(key, governedState, drcDigest, envelope, factDigest, nextLedgerSequence, collect, outcomeFactDigest, observation)
 		if err != nil {
 			return AdmissionFact{}, fmt.Errorf("resultingress: record admitted to durable store: %w", err)
 		}
@@ -672,6 +705,7 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 			authorityState.CommittedResultSequence = fact.LedgerSequence
 			authorityState.CommittedResultOutcomeDigest = outcomeFactDigest
 			authorityState.CommittedResultCollect = collect
+			authorityState.CommittedResultObservation = observation
 			if outcomeFactDigest != "" {
 				authorityState.CommittedResultCollect, _ = supervisorCheckpointEvidence(authorityState, outcomeFactDigest)
 				authorityState.SupervisorMechanicsAuthorityHead = authorityHead

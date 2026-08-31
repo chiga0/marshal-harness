@@ -256,20 +256,66 @@ func (session *Session) handleLocked(raw []byte) Response {
 	if err := strictCanonicalDecode(raw, &request); err != nil {
 		return rejectedResponse(Request{}, ReasonCode(err))
 	}
-	if prior, ok := session.journal.Snapshot().commands[request.CommandID]; ok {
-		projection, _, err := projectRequest(request)
-		if err == nil && prior.Projection.RequestDigest == request.RequestDigest && equalProjection(prior.Projection, projection) {
-			response := prior.Response
-			response.Payload = append([]byte(nil), response.Payload...)
-			return response
-		}
-		return rejectedResponse(request, ErrConflict.ReasonCode)
+	if response, handled := session.replayCommandLocked(request); handled {
+		return response
 	}
 	projection, payload, err := session.admitRequest(request)
 	if err != nil {
 		return rejectedResponse(request, ReasonCode(err))
 	}
+	return session.commitCommandLocked(request, projection, payload)
+}
 
+// HandleAttachRebind executes exactly one bind-authority(owner-successor)
+// rebind on an already-bound session, reached only from the read-only Attach
+// transport (ADR 0067 §4.6). It never accepts any other command and never
+// relaxes the generic admitRequest gate that keeps bind-authority illegal in
+// the bound state on the command loop. Journal replay for an exact same-ID
+// request is honored so a same-owner response-loss re-send reproduces the
+// already-fsynced receipt instead of a second side effect.
+func (session *Session) HandleAttachRebind(raw []byte) Response {
+	if session == nil {
+		return rejectedResponse(Request{}, ErrInvalid.ReasonCode)
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	var request Request
+	if err := strictCanonicalDecode(raw, &request); err != nil {
+		return rejectedResponse(Request{}, ReasonCode(err))
+	}
+	if response, handled := session.replayCommandLocked(request); handled {
+		return response
+	}
+	projection, payload, err := session.admitRebind(request)
+	if err != nil {
+		return rejectedResponse(request, ReasonCode(err))
+	}
+	return session.commitCommandLocked(request, projection, payload)
+}
+
+// replayCommandLocked returns the stored response for an already-committed
+// command ID when the request projection is byte-identical, or a conflict if
+// the same ID carries a different request. The bool is false when no stored
+// command matches, leaving admission to the caller.
+func (session *Session) replayCommandLocked(request Request) (Response, bool) {
+	prior, ok := session.journal.Snapshot().commands[request.CommandID]
+	if !ok {
+		return Response{}, false
+	}
+	projection, _, err := projectRequest(request)
+	if err == nil && prior.Projection.RequestDigest == request.RequestDigest && equalProjection(prior.Projection, projection) {
+		response := prior.Response
+		response.Payload = append([]byte(nil), response.Payload...)
+		return response, true
+	}
+	return rejectedResponse(request, ErrConflict.ReasonCode), true
+}
+
+// commitCommandLocked appends the intent, executes mechanics, appends the
+// receipt and advances session state. It is shared by the generic command
+// loop and the Attach rebind path; the caller has already admitted the request
+// and holds the session lock.
+func (session *Session) commitCommandLocked(request Request, projection requestProjection, payload any) Response {
 	base := session.journalBase()
 	if err := session.journal.AppendIntent(base, projection); err != nil {
 		session.state = sessionIntervention
@@ -366,6 +412,42 @@ func (session *Session) admitRequest(request Request) (requestProjection, any, e
 		if session.cleanupBinding == "" || payload.(ClosePayload).CleanupBindingDigest != session.cleanupBinding {
 			return requestProjection{}, nil, ErrConflict
 		}
+	}
+	return projection, payload, nil
+}
+
+// admitRebind is the strictly narrower admission gate for the Attach-borrowed
+// bind-authority(owner-successor) rebind (ADR 0067 §4.6). Unlike admitRequest,
+// it admits bind-authority in the already-bound state, but only when every
+// field ties the rebind to the exact live session: the predecessor authority
+// head is the current session authority head, the successor authority head
+// advances it, the owner epoch is unchanged, and the supervisor-started fact
+// is the one frozen at the initial bind. No other command is admitted, so the
+// generic command loop cannot reach this path.
+func (session *Session) admitRebind(request Request) (requestProjection, any, error) {
+	if request.ProtocolRevision != ProtocolRevision || request.SessionID != session.sessionID || request.Command != CommandBindAuthority || !validID(request.CommandID) ||
+		request.Sequence != session.commandSequence+1 || request.Sequence > maxSafeJSONInteger || request.PreviousCommandDigest != session.commandHead || !validDigest(request.CurrentAuthorityHead) || !validDigest(request.RequestDigest) {
+		return requestProjection{}, nil, ErrConflict
+	}
+	if session.state != sessionBound {
+		return requestProjection{}, nil, ErrConflict
+	}
+	deadline, err := parseDeadline(request.Deadline)
+	limit, ok := commandDeadlineLimit(request.Command)
+	now := session.now().UTC()
+	if err != nil || !ok || !deadline.After(now) || deadline.Sub(now) > limit {
+		return requestProjection{}, nil, reject("process-supervisor-deadline-invalid")
+	}
+	projection, payload, err := projectRequest(request)
+	if err != nil {
+		return requestProjection{}, nil, err
+	}
+	if request.CurrentAuthorityHead != session.authorityHead {
+		return requestProjection{}, nil, ErrConflict
+	}
+	value := payload.(BindAuthorityPayload)
+	if value.OwnerEpoch != session.ownerEpoch || value.PreviousAuthorityHead != session.authorityHead || value.AuthorityHead == session.authorityHead || !validDigest(value.AuthorityHead) || value.SupervisorStartedFactDigest != session.supervisorStartedFact {
+		return requestProjection{}, nil, ErrConflict
 	}
 	return projection, payload, nil
 }

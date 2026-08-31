@@ -422,7 +422,7 @@ func validateIntentPhase(prior AttemptAuthorityState, binding EffectBinding) err
 	}
 	switch binding.Phase {
 	case EffectPhaseAllocationProvision:
-		if prior.LaunchState != LaunchNotAuthorized || prior.LaunchAuthorizedDigest != "" || prior.ProcessStartedDigest != "" || prior.BarrierDigest != "" || prior.AllocationProvisionEffectDigest != "" {
+		if prior.LaunchState != LaunchNotAuthorized || prior.LaunchAuthorizedDigest != "" || prior.ProcessStartedDigest != "" || prior.BarrierDigest != "" || prior.AllocationProvisionEffectDigest != "" || prior.AllocationProvisionReceiptDigest != "" || prior.ExistingWorktreeBindIntentFactDigest != "" || prior.ExistingWorktreeBindReceiptFactDigest != "" || prior.ExistingWorktreeBindReceiptDigest != "" {
 			return ErrEffectAuthorityOrder
 		}
 	case EffectPhaseAllocationTerminate:

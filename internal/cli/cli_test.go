@@ -199,8 +199,8 @@ func TestDoctorReportsCodex01491OrdinaryUserPlatformCompatibility(t *testing.T) 
 	}
 }
 
-func TestDoctorReportsPi0843Compatibility(t *testing.T) {
-	executable := writeVersionExecutableForCLI(t, "pi", "0.84.3")
+func TestDoctorReportsPi0844Compatibility(t *testing.T) {
+	executable := writeVersionExecutableForCLI(t, "pi", "0.84.4")
 	t.Setenv("MARSHAL_OPENCODE_PATH", "")
 	t.Setenv("MARSHAL_QWEN_PATH", "")
 	t.Setenv("MARSHAL_QODER_PATH", "")
@@ -224,8 +224,8 @@ func TestDoctorReportsPi0843Compatibility(t *testing.T) {
 			break
 		}
 	}
-	if found == nil || !found.Registered || found.Outcome != app.WorkerOutcomeRegistered || found.Compatibility != "supported" || found.AdapterVersion != "0.4.0" || found.BinaryVersion != "0.84.3" || found.AuthorityMode != "ordinary-user" {
-		t.Fatalf("doctor pi 0.84.3 = %+v", found)
+	if found == nil || !found.Registered || found.Outcome != app.WorkerOutcomeRegistered || found.Compatibility != "supported" || found.AdapterVersion != "0.4.0" || found.BinaryVersion != "0.84.4" || found.AuthorityMode != "ordinary-user" {
+		t.Fatalf("doctor pi 0.84.4 = %+v", found)
 	}
 	if strings.Contains(stdout.String()+stderr.String(), executable) {
 		t.Fatalf("doctor leaked configured executable path: %s", stdout.String()+stderr.String())
@@ -750,6 +750,29 @@ func TestTaskRunUsesFrozenFallbackAdapter(t *testing.T) {
 	}
 	if err := json.Unmarshal(capability, &identity); err != nil || identity.AdapterID != "pi" {
 		t.Fatalf("frozen capability adapter = %q, err = %v", identity.AdapterID, err)
+	}
+}
+
+func TestSealedPiConfiguredRejectsOtherFrozenAdapters(t *testing.T) {
+	for _, adapterID := range []string{"qwen", "qoder", "codex"} {
+		if sealedPiConfigured(adapterID, true, "/fixed/node", "/fixed/pi.js", "") {
+			t.Fatalf("adapter %q was routed into the Pi-only sealed runtime", adapterID)
+		}
+	}
+	if !sealedPiConfigured("pi", true, "/fixed/node", "/fixed/pi.js", "") {
+		t.Fatal("exact frozen Pi adapter was not admitted")
+	}
+	if sealedPiConfigured("pi", false, "/fixed/node", "/fixed/pi.js", "") || sealedPiConfigured("pi", true, "", "/fixed/pi.js", "") || sealedPiConfigured("pi", true, "/fixed/node", "", "") || sealedPiConfigured("pi", true, "/fixed/node", "/fixed/pi.js", "legacy") {
+		t.Fatal("incomplete or legacy Pi configuration was admitted")
+	}
+}
+
+func TestSealedPiRunIdentityIsIndependentOfCurrentConfiguration(t *testing.T) {
+	if !isSealedPiRun("pi", domain.StateReady, "", true) || !isSealedPiRun("pi", domain.StateRunning, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true) {
+		t.Fatal("durable Pi run identity was not recognized")
+	}
+	if isSealedPiRun("qwen", domain.StateReady, "", true) || isSealedPiRun("pi", domain.StateRunning, "", true) || isSealedPiRun("pi", domain.StateRunning, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false) {
+		t.Fatal("non-Pi or invalid durable authority was recognized as sealed Pi")
 	}
 }
 

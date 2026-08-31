@@ -3,6 +3,7 @@ package productionruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 
@@ -45,6 +46,33 @@ func newProductionRuntime(controller *controller, resources ...io.Closer) (*Runt
 	}
 	runtime.resources = append([]io.Closer(nil), resources...)
 	return runtime, nil
+}
+
+// newComposedProductionRuntime is the only composition-local constructor for
+// the private controller and production Runtime. Keeping this mutation in the
+// runtime construction file preserves the architecture gate while leaving
+// ComposeRuntime as the public, validated composition entry point.
+func newComposedProductionRuntime(ledger *CompositionLedger, profile PiProfile, inputs CompositionInputs) (*Runtime, error) {
+	if ledger == nil || ledger.owner == nil {
+		return nil, application.NewError("production-runtime", application.ReasonOwnerUnavailable)
+	}
+	controller, err := newController(ledger, &piBridge{ledger: ledger}, ledger.owner, inputs.Acquisition, profile)
+	if err != nil {
+		// Release every resource the ledger owns (Run Lease for path B, the
+		// held result-ingress, and the bound owner) in reverse acquisition
+		// order. Runtime.Close is not yet wired, so construction failure must
+		// release everything by hand.
+		_ = ledger.Close()
+		return nil, fmt.Errorf("compose: controller: %v", err)
+	}
+	// The Runtime owns the result-ingress and the Run Lease for its lifetime.
+	// Use the ledger's final ingress/runLease (path B acquires the Run Lease
+	// inside NewCompositionLedger; the held ingress may differ from the
+	// original inputs.Ingress, which is nil for the HeldIngressDir path).
+	return newProductionRuntime(controller,
+		&resourceCloser{name: "result-ingress", close: ledger.ingress.Close},
+		&resourceCloser{name: "run-lease", close: func() error { return ledger.runLease.Release() }},
+	)
 }
 
 func closeRuntimeConstruction(controller *controller, resources []io.Closer) error {
@@ -151,6 +179,18 @@ func (runtime *Runtime) InspectRun(ctx context.Context, request application.Insp
 	}
 	defer release()
 	return controller.inspectRun(ctx, request)
+}
+
+// CollectRunResult advances an exact terminal production attempt from
+// RUNNING to VERIFYING after descriptor-bound transcript collection and
+// durable ResultIngress admission.
+func (runtime *Runtime) CollectRunResult(ctx context.Context, runID string) (CollectedRunResult, error) {
+	controller, _, release, err := runtime.beginOperation("collect-run-result")
+	if err != nil {
+		return CollectedRunResult{}, err
+	}
+	defer release()
+	return controller.collectRunResult(ctx, runID)
 }
 
 // beginOperation keeps Runtime.Close behind every in-flight operation and

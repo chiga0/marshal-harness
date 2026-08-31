@@ -12,11 +12,12 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-const piEntrypointDigest = "sha256:1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a"
+const piEntrypointDigest = "sha256:5406c369954516fb56879d685e082ff9095cd6e06e41af406f394942377fd4bf"
 
 type HeldClosure struct {
 	Closure   ClosureV1
@@ -39,9 +40,9 @@ func (held *HeldClosure) Close() {
 	held.Runtime, held.Roots, held.Materials = nil, nil, nil
 }
 
-// OpenPi0843 builds the Core-owned two-root closure. It never follows a
+// OpenPi0844 builds the Core-owned two-root closure. It never follows a
 // symlink and keeps every runtime/root/material descriptor live.
-func OpenPi0843(runtimePath, entrypointPath string, arguments, environment []string, workingDirectory string) (*HeldClosure, error) {
+func OpenPi0844(runtimePath, entrypointPath string, arguments, environment []string, workingDirectory string) (*HeldClosure, error) {
 	entrypointPath, err := filepath.Abs(entrypointPath)
 	if err != nil {
 		return nil, ErrUnavailable
@@ -52,7 +53,7 @@ func OpenPi0843(runtimePath, entrypointPath string, arguments, environment []str
 		count     int
 		bytes     int64
 	}{
-		{"pi-bundle", "dist/bundle", 48, 7422432},
+		{"pi-bundle", "dist/bundle", 48, 7439808},
 		{"photon-node", "node_modules/@silvia-odwyer/photon-node", 7, 2265687},
 	}
 	held := &HeldClosure{}
@@ -100,6 +101,7 @@ func OpenPi0843(runtimePath, entrypointPath string, arguments, environment []str
 			return fail(fmt.Errorf("root %s bytes", declaration.name))
 		}
 	}
+	sort.Slice(rootRecords, func(i, j int) bool { return rootRecords[i].Name < rootRecords[j].Name })
 	sort.Slice(materials, func(i, j int) bool { return materials[i].Role < materials[j].Role })
 	held.Materials = held.Materials[:0]
 	for _, material := range materials {
@@ -117,7 +119,7 @@ func OpenPi0843(runtimePath, entrypointPath string, arguments, environment []str
 	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &limit); err != nil || uint64(1+len(rootRecords)+len(materials)+CoreFDReserve) >= limit.Cur {
 		return fail(errorsNew("fd budget"))
 	}
-	input := SpecInput{RuntimeExecutable: runtime, ClosureProfileID: Pi0843DarwinARM64Profile, MaterialRoots: rootRecords, LaunchMaterials: materials, Arguments: append([]string(nil), arguments...), Environment: append([]string(nil), environment...), WorkingDirectory: workingDirectory}
+	input := SpecInput{RuntimeExecutable: runtime, ClosureProfileID: Pi0844DarwinARM64Profile, MaterialRoots: rootRecords, LaunchMaterials: materials, Arguments: append([]string(nil), arguments...), Environment: append([]string(nil), environment...), WorkingDirectory: workingDirectory}
 	closure, err := Seal(input)
 	if err != nil {
 		return fail(err)
@@ -130,14 +132,14 @@ func Reopen(closure ClosureV1) (*HeldClosure, error) {
 	if err := closure.Validate(); err != nil {
 		return nil, err
 	}
-	if closure.ClosureProfileID == Pi0843DarwinARM64Profile {
+	if closure.ClosureProfileID == Pi0844DarwinARM64Profile {
 		entrypoint := ""
 		for _, material := range closure.LaunchMaterials {
 			if material.Role == "pi-bundle/cli.js" {
 				entrypoint = material.Object.CanonicalPath
 			}
 		}
-		rebuilt, err := OpenPi0843(closure.RuntimeExecutable.CanonicalPath, entrypoint, closure.Arguments, closure.Environment, closure.WorkingDirectory)
+		rebuilt, err := OpenPi0844(closure.RuntimeExecutable.CanonicalPath, entrypoint, closure.Arguments, closure.Environment, closure.WorkingDirectory)
 		if err != nil || !reflect.DeepEqual(rebuilt.Closure, closure) {
 			if rebuilt != nil {
 				rebuilt.Close()
@@ -241,7 +243,45 @@ func openObject(path string, kind uint32, executable bool) (*os.File, ObjectV1, 
 			return nil, ObjectV1{}, ErrUnavailable
 		}
 		object.RawSHA256 = "sha256:" + hex.EncodeToString(h.Sum(nil))
-		if unix.Fstat(fd, &after) != nil || before != after {
+		// Reading the file legitimately updates its access time, and terminal
+		// security software may touch metadata (ctime) or transiently fail a
+		// stat on first execution; the drift guard targets content mutation,
+		// so atime and ctime are excluded from the before/after identity
+		// comparison while mtime, size and link count still detect any real
+		// mutation. The post-read stat retries a bounded number of times
+		// before failing closed.
+		beforeRead, afterRead := before, after
+		beforeRead.Atim, afterRead.Atim = unix.Timespec{}, unix.Timespec{}
+		beforeRead.Ctim, afterRead.Ctim = unix.Timespec{}, unix.Timespec{}
+		var statErr error
+		for retry := 0; retry < 3; retry++ {
+			if statErr = unix.Fstat(fd, &after); statErr == nil && after != (unix.Stat_t{}) {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if statErr != nil || after == (unix.Stat_t{}) || beforeRead != afterRead {
+			// Terminal security software can transiently zero or fail a stat
+			// on a freshly seen binary. Reopen the exact path once and stat
+			// that fresh descriptor (never recursively: every nested open of
+			// the same image hits the same interception) before failing
+			// closed; the returned object keeps the digest computed over the
+			// actually read bytes.
+			reopenFD, reopenErr := unix.Open(real, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+			if reopenErr == nil {
+				var fresh unix.Stat_t
+				freshErr := unix.Fstat(reopenFD, &fresh)
+				unix.Close(reopenFD)
+				if freshErr == nil && fresh != (unix.Stat_t{}) {
+					freshRead := fresh
+					freshRead.Atim, freshRead.Ctim = unix.Timespec{}, unix.Timespec{}
+					if beforeRead == freshRead {
+						return file, object, nil
+					}
+				}
+			}
+		}
+		if statErr != nil || after == (unix.Stat_t{}) || beforeRead != afterRead {
 			file.Close()
 			return nil, ObjectV1{}, ErrUnavailable
 		}

@@ -170,29 +170,50 @@ func testPreparedSupervisor(t *testing.T, store *DurableStore, state AttemptAuth
 	if err != nil {
 		t.Fatal(err)
 	}
-	epoch, previousDigest := uint64(1), ""
-	if found {
-		epoch, previousDigest = prior.Acquisition.OwnerEpoch+1, prior.FactDigest
+	// The supervisor bootstrap belongs to the owner already bound to the
+	// attempt. Only a recovery flow without that binding acquires a new epoch;
+	// deliberate epoch rotations for reconnect scenarios rotate explicitly.
+	reuse := found && state.Owner.OwnerEpoch == prior.Acquisition.OwnerEpoch && state.Owner.ControlOwnerAcquiredFactDigest == prior.FactDigest
+	var acquisition ControlOwnerAcquisition
+	var owner CurrentOwnerBinding
+	var launchAuthorizedFact, authorityHead string
+	var revision uint64
+	if reuse {
+		acquisition = prior.Acquisition
+		owner = state.Owner
+		launchAuthorizedFact = state.LaunchAuthorizedDigest
+		authorityHead = state.HeadDigest
+		revision = state.Revision
+	} else {
+		epoch, previousDigest := uint64(1), ""
+		if found {
+			epoch, previousDigest = prior.Acquisition.OwnerEpoch+1, prior.FactDigest
+		}
+		binary := attemptTestBinary()
+		ownerProcess := processsupervisor.ProcessIdentity{PID: 8100 + int(epoch), BirthSeconds: 1_700_000_000, BirthMicroseconds: 31, SessionID: 8100 + int(epoch), ProcessGroupID: 8100 + int(epoch)}
+		acquisition = ControlOwnerAcquisition{Scope: scope, OwnerEpoch: epoch, OwnerUID: 501, OwnerGID: 20, OwnerProcess: ownerProcess, OwnerBinary: binary, ObserverIdentity: "darwin-owner-observer/v1", ObservedAt: "2026-08-28T00:00:00Z"}
+		ownerResult, err := store.AcquireOwner(context.Background(), attemptOwnerVerifier{want: acquisition}, epoch-1, previousDigest, acquisition)
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner = CurrentOwnerBinding{Scope: scope, OwnerEpoch: epoch, ControlOwnerAcquiredFactDigest: ownerResult.State.FactDigest}
+		run := attemptTestRunAuthority(state.Identity)
+		bound, err := store.BindOwnerToAttempt(context.Background(), attemptOwnerVerifier{want: acquisition}, attemptRunVerifier{want: run}, state.Revision, state.HeadDigest, AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}, owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state = bound.State
+		launchAuthorizedFact = state.LaunchAuthorizedDigest
+		authorityHead = state.HeadDigest
+		revision = state.Revision
 	}
-	binary := attemptTestBinary()
-	ownerProcess := processsupervisor.ProcessIdentity{PID: 8100 + int(epoch), BirthSeconds: 1_700_000_000, BirthMicroseconds: 31, SessionID: 8100 + int(epoch), ProcessGroupID: 8100 + int(epoch)}
-	acquisition := ControlOwnerAcquisition{Scope: scope, OwnerEpoch: epoch, OwnerUID: 501, OwnerGID: 20, OwnerProcess: ownerProcess, OwnerBinary: binary, ObserverIdentity: "darwin-owner-observer/v1", ObservedAt: "2026-08-28T00:00:00Z"}
-	ownerResult, err := store.AcquireOwner(context.Background(), attemptOwnerVerifier{want: acquisition}, epoch-1, previousDigest, acquisition)
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner := CurrentOwnerBinding{Scope: scope, OwnerEpoch: epoch, ControlOwnerAcquiredFactDigest: ownerResult.State.FactDigest}
 	run := attemptTestRunAuthority(state.Identity)
-	bound, err := store.BindOwnerToAttempt(context.Background(), attemptOwnerVerifier{want: acquisition}, attemptRunVerifier{want: run}, state.Revision, state.HeadDigest, AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}, owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := processsupervisor.BootstrapRequest{SchemaVersion: processsupervisor.BootstrapSchema, ProtocolRevision: processsupervisor.ProtocolRevision, SessionID: session, SessionNonce: strings.Repeat("2", 64), OwnerEpoch: owner.OwnerEpoch, Authority: supervisorAuthorityTuple(state.Identity), LaunchAuthorizedFact: bound.State.LaunchAuthorizedDigest, CurrentAuthorityHead: bound.State.HeadDigest, ControlDirectoryIdentity: directory, Core: processsupervisor.CoreIdentity{UID: acquisition.OwnerUID, GID: acquisition.OwnerGID, Process: acquisition.OwnerProcess, Binary: acquisition.OwnerBinary}}
+	request := processsupervisor.BootstrapRequest{SchemaVersion: processsupervisor.BootstrapSchema, ProtocolRevision: processsupervisor.ProtocolRevision, SessionID: session, SessionNonce: strings.Repeat("2", 64), OwnerEpoch: owner.OwnerEpoch, Authority: supervisorAuthorityTuple(state.Identity), LaunchAuthorizedFact: launchAuthorizedFact, CurrentAuthorityHead: authorityHead, ControlDirectoryIdentity: directory, Core: processsupervisor.CoreIdentity{UID: acquisition.OwnerUID, GID: acquisition.OwnerGID, Process: acquisition.OwnerProcess, Binary: acquisition.OwnerBinary}}
 	prepared, err := NewSupervisorBootstrapPrepared(owner, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := store.AppendSupervisorBootstrap(context.Background(), attemptOwnerVerifier{want: acquisition}, attemptRunVerifier{want: run}, bound.State.Revision, bound.State.HeadDigest, AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}, prepared)
+	result, err := store.AppendSupervisorBootstrap(context.Background(), attemptOwnerVerifier{want: acquisition}, attemptRunVerifier{want: run}, revision, authorityHead, AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}, prepared)
 	if err != nil {
 		t.Fatal(err)
 	}

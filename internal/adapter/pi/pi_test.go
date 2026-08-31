@@ -95,9 +95,8 @@ func TestPrepareTerminalVersionMatrix(t *testing.T) {
 		supported bool
 	}{
 		{version: "0.84.1", supported: true},
-		{version: "0.84.3", supported: true},
+		{version: "0.84.4", supported: true},
 		{version: "0.84.2", supported: false},
-		{version: "0.84.4", supported: false},
 	} {
 		t.Run(test.version, func(t *testing.T) {
 			marker := filepath.Join(t.TempDir(), "worker-launched")
@@ -137,11 +136,10 @@ func containsArgument(arguments []string, target string) bool {
 func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 	for _, test := range []struct{ version, status string }{
 		{"0.84.1", "supported"},
-		{"0.84.3", "supported"},
+		{"0.84.4", "supported"},
 		{"0.83.0", "unsupported"},
 		{"0.84.0", "unsupported"},
 		{"0.84.2", "unsupported"},
-		{"0.84.4", "unsupported"},
 		{"0.85.0", "unsupported"},
 		{"unknown", "unsupported"},
 	} {
@@ -174,10 +172,10 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 	}
 }
 
-func TestRunAcceptsPi0843ObservedSessionV3(t *testing.T) {
-	// This sequence is reduced from the real Pi 0.84.3 Mac non-interactive
+func TestRunAcceptsPi0844ObservedSessionV3(t *testing.T) {
+	// This sequence is reduced from the real Pi 0.84.4 Mac non-interactive
 	// canary whose executable digest was
-	// sha256:1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a.
+	// sha256:840d1e8e689ed9e4937bcb00b9a810e02a8567d9afb10a47097f11ca93ea1521.
 	// It pins the compatibility-relevant wire facts: session v3,
 	// normalized message updates, structured usage/cost, terminal agent_end,
 	// and the single optional agent_settled closure.
@@ -200,14 +198,14 @@ func TestRunAcceptsPi0843ObservedSessionV3(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.Adapter.Version != supportedBinary843 || result.Session == nil || result.Session.ID != "session-0843" {
-		t.Fatalf("0.84.3 normalized result = %+v", result)
+		t.Fatalf("0.84.4 normalized result = %+v", result)
 	}
 	var usage map[string]any
 	if err := json.Unmarshal(result.Usage, &usage); err != nil {
 		t.Fatal(err)
 	}
 	if usage["inputTokens"] != float64(1266) || usage["outputTokens"] != float64(48) {
-		t.Fatalf("0.84.3 normalized usage = %v", usage)
+		t.Fatalf("0.84.4 normalized usage = %v", usage)
 	}
 }
 
@@ -748,7 +746,7 @@ func TestRunRejectsPersistAndResumeBeforeWorkerLaunch(t *testing.T) {
 }
 
 func TestRunRejectsUnsupportedVersionBeforeWorkerLaunch(t *testing.T) {
-	for _, version := range []string{"0.83.0", "0.84.0", "0.84.2", "0.84.4", "0.85.0", "unknown"} {
+	for _, version := range []string{"0.83.0", "0.84.0", "0.84.2", "0.85.0", "unknown"} {
 		t.Run(version, func(t *testing.T) {
 			marker := filepath.Join(t.TempDir(), "launched")
 			fixture := newRunFixture(t, version, "touch "+shellQuote(marker))

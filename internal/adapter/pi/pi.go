@@ -34,7 +34,7 @@ const (
 	adapterID          = "pi"
 	adapterVersion     = "0.4.0"
 	supportedBinary    = "0.84.1"
-	supportedBinary843 = "0.84.3"
+	supportedBinary843 = "0.84.4"
 	// supportedSessionVersion is the exact pi session event protocol version
 	// Marshal accepts. Any other header version is a protocol violation.
 	supportedSessionVersion = 3
@@ -136,7 +136,7 @@ type Adapter struct {
 	executable  string
 	nodeRuntime string
 	// frozenVersion is configuration authority, not provider output. The
-	// production Pi profile is closed over 0.84.3 and PrepareLaunch must not
+	// production Pi profile is closed over 0.84.4 and PrepareLaunch must not
 	// execute the provider merely to rediscover that fact before Core has
 	// appended launch-authorized.
 	frozenVersion string
@@ -169,7 +169,7 @@ func (a *Adapter) ProductionLaunchProfileID() string {
 	if a == nil || a.nodeRuntime == "" || a.frozenVersion != supportedBinary843 || runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
 		return ""
 	}
-	return launchidentity.Pi0843DarwinARM64Profile
+	return launchidentity.Pi0844DarwinARM64Profile
 }
 
 // New requires an exact absolute executable path. Marshal never resolves a
@@ -178,7 +178,7 @@ func New(executable string, validator *contract.Validator) (*Adapter, error) {
 	return newAdapter(executable, "", validator)
 }
 
-// NewWithRuntime freezes the explicit Node runtime required by the Pi 0.84.3
+// NewWithRuntime freezes the explicit Node runtime required by the Pi 0.84.4
 // production closure. The configured Pi entrypoint remains provider material;
 // it is never used as the kernel executable.
 func NewWithRuntime(executable, nodeRuntime string, validator *contract.Validator) (*Adapter, error) {
@@ -579,10 +579,10 @@ func (a *Adapter) prepareLaunch(ctx context.Context, record domain.Record) (sand
 		}, nil
 	}
 	if identity.version != supportedBinary843 {
-		return nil, fmt.Errorf("%w: Pi production launch requires 0.84.3 and an explicit canonical Node runtime", launchidentity.ErrUnavailable)
+		return nil, fmt.Errorf("%w: Pi production launch requires 0.84.4 and an explicit canonical Node runtime", launchidentity.ErrUnavailable)
 	}
 	argv := append([]string{a.nodeRuntime, identity.path}, args...)
-	heldClosure, err := launchidentity.OpenPi0843(a.nodeRuntime, identity.path, argv, environment, worktree)
+	heldClosure, err := launchidentity.OpenPi0844(a.nodeRuntime, identity.path, argv, environment, worktree)
 	if err != nil {
 		return nil, err
 	}
@@ -2029,6 +2029,238 @@ func buildTerminalArgsWithTools(profile, model string, tools []string) ([]string
 		args = append(args, "--model", model)
 	}
 	return args, nil
+}
+
+// ── Pi 0.84.4 production launch argv/prompt builder ──────────────────────────
+//
+// BuildProductionLaunch is the path-free, side-effect-free constructor for
+// one Pi 0.84.4 production attempt's argv and prompt. It does not read
+// Marshal state, does not spawn, does not open a launch closure, and does not
+// change legacy Run/PrepareLaunch behavior: every input is caller authority
+// and the only outputs are the deterministic argv and the prompt. No state,
+// control, worktree, result, or transcript path is ever accepted or emitted.
+
+const (
+	// productionArgvElementLimit bounds a single argv element emitted by
+	// BuildProductionLaunch. It matches the per-argument ceiling enforced by
+	// the sealed launchidentity ClosureV1 spec payload, so a builder argv and
+	// a sealed closure argv obey the same element-size contract.
+	productionArgvElementLimit = 16 << 10
+	// productionArgvAggregateLimit bounds the total argv byte length emitted
+	// by BuildProductionLaunch, matching the sealed-closure aggregate ceiling.
+	productionArgvAggregateLimit = 48 << 10
+)
+
+var (
+	// ErrProductionArgvElementTooLarge is returned when BuildProductionLaunch
+	// would emit an argv element longer than 16KiB.
+	ErrProductionArgvElementTooLarge = errors.New("pi production launch argv element exceeds 16KiB")
+	// ErrProductionArgvAggregateTooLarge is returned when BuildProductionLaunch
+	// would emit an argv whose total byte length exceeds 48KiB.
+	ErrProductionArgvAggregateTooLarge = errors.New("pi production launch argv exceeds 48KiB aggregate")
+)
+
+// ProductionLaunchInput is the path-free input to the Pi 0.84.4 production
+// launch argv/prompt builder. NodeRuntime and Entrypoint are the exact
+// absolute canonical paths of the frozen Node runtime and Pi entrypoint;
+// Profile is "workspace-write" or "read-only"; Model is an optional frozen
+// model (empty means unset); TaskID/RunID/AttemptID are the exact attempt
+// identity; Objective and Constraints are the work content. No Marshal state,
+// control, worktree, result, or transcript path belongs in any field.
+type ProductionLaunchInput struct {
+	NodeRuntime string
+	Entrypoint  string
+	Profile     string
+	Model       string
+	TaskID      string
+	RunID       string
+	AttemptID   string
+	Objective   string
+	Constraints []string
+}
+
+// ProductionLaunchOutput is the deterministic argv and prompt for one Pi
+// 0.84.4 production attempt. Argv is [node, entrypoint, ...hardened flags,
+// ...optional model, prompt]; Prompt is the single trailing prompt argument.
+type ProductionLaunchOutput struct {
+	Argv   []string
+	Prompt string
+}
+
+// BuildProductionLaunch constructs the deterministic Pi 0.84.4 production
+// launch argv and prompt without spawning and without touching Marshal state.
+// Every field is validated fail-closed before any output is produced: paths
+// must be absolute and clean, the profile must be one of the two frozen
+// execution profiles, IDs must be non-empty and free of newline/control
+// characters, and the objective and each constraint must be non-empty and
+// contain no absolute POSIX path token. The prompt includes only the provided
+// IDs/objective/constraints and never a state, control, worktree, result, or
+// transcript path. Each argv element is bounded to 16KiB and the aggregate
+// argv to 48KiB; violations return stable exported errors.
+func BuildProductionLaunch(in ProductionLaunchInput) (ProductionLaunchOutput, error) {
+	if err := validateProductionLaunchInput(in); err != nil {
+		return ProductionLaunchOutput{}, err
+	}
+	prompt := buildProductionPrompt(in)
+	argv, err := productionLaunchArgv(in, prompt)
+	if err != nil {
+		return ProductionLaunchOutput{}, err
+	}
+	return ProductionLaunchOutput{Argv: argv, Prompt: prompt}, nil
+}
+
+// validateProductionLaunchInput enforces the fail-closed input contract: the
+// frozen paths must be absolute and clean, the profile must be one of the two
+// closed execution profiles, the attempt IDs must be non-empty and free of
+// newline/control characters, and the objective and each constraint must be
+// non-empty and contain no absolute POSIX path token.
+func validateProductionLaunchInput(in ProductionLaunchInput) error {
+	if !filepath.IsAbs(in.NodeRuntime) || filepath.Clean(in.NodeRuntime) != in.NodeRuntime {
+		return errors.New("pi production launch Node runtime must be an absolute clean path")
+	}
+	if !filepath.IsAbs(in.Entrypoint) || filepath.Clean(in.Entrypoint) != in.Entrypoint {
+		return errors.New("pi production launch entrypoint must be an absolute clean path")
+	}
+	if in.Profile != "workspace-write" && in.Profile != "read-only" {
+		return errors.New("pi production launch execution profile must be workspace-write or read-only")
+	}
+	if containsControlChar(in.Model) {
+		return errors.New("pi production launch model must not contain control characters")
+	}
+	for _, id := range [...]string{in.TaskID, in.RunID, in.AttemptID} {
+		if id == "" {
+			return errors.New("pi production launch task/run/attempt IDs must be non-empty")
+		}
+		if containsControlChar(id) {
+			return errors.New("pi production launch task/run/attempt IDs must not contain newline or control characters")
+		}
+	}
+	if in.Objective == "" {
+		return errors.New("pi production launch objective must be non-empty")
+	}
+	if strings.ContainsRune(in.Objective, 0) {
+		return errors.New("pi production launch objective must not contain NUL")
+	}
+	if containsAbsolutePOSIXPathToken(in.Objective) {
+		return errors.New("pi production launch objective must not contain an absolute POSIX path token")
+	}
+	if containsReservedControlPath(in.Objective) {
+		return errors.New("pi production launch objective must not contain a Marshal control path")
+	}
+	for _, constraint := range in.Constraints {
+		if constraint == "" {
+			return errors.New("pi production launch constraints must be non-empty")
+		}
+		if strings.ContainsRune(constraint, 0) {
+			return errors.New("pi production launch constraints must not contain NUL")
+		}
+		if containsAbsolutePOSIXPathToken(constraint) {
+			return errors.New("pi production launch constraints must not contain an absolute POSIX path token")
+		}
+		if containsReservedControlPath(constraint) {
+			return errors.New("pi production launch constraints must not contain a Marshal control path")
+		}
+	}
+	return nil
+}
+
+// productionLaunchArgv assembles [node, entrypoint, ...hardened flags, ...optional
+// model, prompt] and enforces the per-element and aggregate argv byte ceilings.
+// The flag set is the deterministic noninteractive Pi 0.84.4 production
+// surface: JSON/print output, every extension/context/session hardening flag,
+// and the closed no-bash tool allowlist selected by the existing profile
+// logic. --no-approve remains part of the frozen hardening surface so project
+// local resources cannot alter noninteractive production behavior.
+func productionLaunchArgv(in ProductionLaunchInput, prompt string) ([]string, error) {
+	argv := []string{in.NodeRuntime, in.Entrypoint}
+	// Reuse the already-frozen hardening surface so the production path cannot
+	// accidentally admit project-local resources that the legacy adapter
+	// rejects. In particular, --no-approve is required for deterministic
+	// noninteractive execution.
+	argv = append(argv, hardeningFlags(toolsForProfile(in.Profile))...)
+	if in.Model != "" {
+		argv = append(argv, "--model", in.Model)
+	}
+	argv = append(argv, prompt)
+	total := 0
+	for _, element := range argv {
+		if len(element) > productionArgvElementLimit {
+			return nil, fmt.Errorf("%w: %d-byte element", ErrProductionArgvElementTooLarge, len(element))
+		}
+		total += len(element)
+	}
+	if total > productionArgvAggregateLimit {
+		return nil, fmt.Errorf("%w: %d-byte aggregate", ErrProductionArgvAggregateTooLarge, total)
+	}
+	return argv, nil
+}
+
+// buildProductionPrompt emits the single deterministic prompt argument. The
+// prompt requires the final assistant output to be exactly one WorkerResult
+// JSON object and includes only the provided IDs, objective, and constraints;
+// it never carries a state, control, worktree, result, or transcript path.
+func buildProductionPrompt(in ProductionLaunchInput) string {
+	var b strings.Builder
+	b.WriteString("The final assistant output must be exactly one WorkerResult JSON object.\n\n")
+	b.WriteString("taskId: ")
+	b.WriteString(in.TaskID)
+	b.WriteByte('\n')
+	b.WriteString("runId: ")
+	b.WriteString(in.RunID)
+	b.WriteByte('\n')
+	b.WriteString("attemptId: ")
+	b.WriteString(in.AttemptID)
+	b.WriteByte('\n')
+	b.WriteString("\nObjective:\n")
+	b.WriteString(in.Objective)
+	b.WriteByte('\n')
+	if len(in.Constraints) > 0 {
+		b.WriteString("\nConstraints:\n")
+		for _, constraint := range in.Constraints {
+			b.WriteString("- ")
+			b.WriteString(constraint)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// containsControlChar reports whether s contains an ASCII control character,
+// including newline (0x0a) and DEL (0x7f).
+func containsControlChar(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAbsolutePOSIXPathToken reports whether any whitespace-delimited
+// token of s is an absolute POSIX path (begins with '/'). It fails closed on
+// path tokens so an objective or constraint can never smuggle a state,
+// control, worktree, result, or transcript path into the prompt.
+func containsAbsolutePOSIXPathToken(s string) bool {
+	for index, r := range s {
+		if r != '/' {
+			continue
+		}
+		if index == 0 {
+			return true
+		}
+		previous := rune(s[index-1])
+		// A slash after an identifier/path character is a relative component
+		// (for example src/file.go). A slash after whitespace or punctuation is
+		// an absolute path boundary, including quoted and parenthesized paths.
+		if !((previous >= 'a' && previous <= 'z') || (previous >= 'A' && previous <= 'Z') || (previous >= '0' && previous <= '9') || previous == '_' || previous == '-' || previous == '.') {
+			return true
+		}
+	}
+	return false
+}
+
+func containsReservedControlPath(s string) bool {
+	return strings.Contains(s, ".marshal") || strings.Contains(s, "worker-result.json")
 }
 
 // processFailureError reports a failed pi process using only fixed

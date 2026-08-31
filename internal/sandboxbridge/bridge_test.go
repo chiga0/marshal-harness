@@ -36,7 +36,7 @@ type fakeProductionAdapter struct {
 }
 
 func (a *fakeProductionAdapter) ProductionLaunchProfileID() string {
-	return launchidentity.Pi0843DarwinARM64Profile
+	return launchidentity.Pi0844DarwinARM64Profile
 }
 func (a *fakeProductionAdapter) PrepareLaunch(context.Context, domain.Record) (LaunchPlan, error) {
 	a.prepares++

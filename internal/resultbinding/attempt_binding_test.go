@@ -21,7 +21,7 @@ func testBindingFacts() Facts {
 		AttemptID:                     "attempt-bind",
 		AgentAdapterID:                "pi",
 		AgentExecutable:               "/usr/local/bin/pi",
-		AgentProviderVersion:          "0.84.3",
+		AgentProviderVersion:          "0.84.4",
 		CapabilityDigest:              "sha256:" + "a1b2c3d4" + "00000000000000000000000000000000000000000000000000000000",
 		AgentRegistrationID:           "registration:" + "a1b2c3d4" + "000000000000000000000000",
 		AgentCapabilitySnapshotDigest: "sha256:" + strings.Repeat("b", 64),
@@ -69,7 +69,7 @@ func TestReadAttemptBindingRejectsTampered(t *testing.T) {
 		t.Fatal(err)
 	}
 	tampered := string(raw)
-	tampered = replaceFirst(tampered, "0.84.3", "9.99.9")
+	tampered = replaceFirst(tampered, "0.84.4", "9.99.9")
 	if err := os.WriteFile(path, []byte(tampered), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -123,6 +123,14 @@ func TestLegacySpawnWireReplaysButCannotEnterFreshMechanics(t *testing.T) {
 func sourceGatePayload(t *testing.T) (SpawnPayload, string, string) {
 	t.Helper()
 	base := t.TempDir()
+	// Held-object opens use O_NOFOLLOW_ANY, so the fixture must observe and
+	// reopen one canonical base path (macOS temp dirs sit under /var ->
+	// /private/var).
+	if resolved, err := filepath.EvalSymlinks(base); err != nil {
+		t.Fatal(err)
+	} else {
+		base = resolved
+	}
 	runtimePath := filepath.Join(base, "runtime")
 	workingPath := filepath.Join(base, "work")
 	rootPath := filepath.Join(base, "bundle")

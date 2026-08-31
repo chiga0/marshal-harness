@@ -629,7 +629,7 @@ func TestEmbeddedAgentRegistrationPersistsAcrossRestart(t *testing.T) {
 		Principal:            "principal:agent:pi",
 		ProviderType:         agentregistry.ProviderTypeAgent,
 		ProviderName:         "pi",
-		ProviderVersion:      "0.84.3",
+		ProviderVersion:      "0.84.4",
 		ProtocolVersion:      "marshal-worker/v1alpha1",
 		Scope:                "worker",
 		IdempotencyKey:       "cap:sha256:" + strings.Repeat("a", 64),

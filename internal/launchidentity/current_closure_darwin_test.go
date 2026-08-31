@@ -17,7 +17,7 @@ func TestVerifyCurrentClosureIsReadOnlyAndClosesTemporaryDescriptors(t *testing.
 	if err != nil {
 		t.Fatalf("verify current closure: %v", err)
 	}
-	if observed.Runtime.CanonicalPath != runtimePath || observed.WorkingDirectory.CanonicalPath != workingPath || len(observed.LaunchMaterials) != 0 || len(observed.MaterialRoots) != 0 || observed.Pi0843IdentityDigest != "" {
+	if observed.Runtime.CanonicalPath != runtimePath || observed.WorkingDirectory.CanonicalPath != workingPath || len(observed.LaunchMaterials) != 0 || len(observed.MaterialRoots) != 0 || observed.Pi0844IdentityDigest != "" {
 		t.Fatalf("unexpected closed observation: %+v", observed)
 	}
 	if _, err := os.Stat(runtimePath); err != nil {
@@ -46,6 +46,11 @@ func TestVerifyCurrentClosureRejectsAllocationLiveAndCWDDrift(t *testing.T) {
 
 func TestEnumerateCurrentRootRejectsSymlinkAndReturnsExactRoleRecords(t *testing.T) {
 	root := t.TempDir()
+	if resolved, resolveErr := filepath.EvalSymlinks(root); resolveErr != nil {
+		t.Fatal(resolveErr)
+	} else {
+		root = resolved
+	}
 	materialPath := filepath.Join(root, "entry")
 	if err := os.WriteFile(materialPath, []byte("material"), 0o600); err != nil {
 		t.Fatal(err)
@@ -76,6 +81,11 @@ func TestEnumerateCurrentRootRejectsSymlinkAndReturnsExactRoleRecords(t *testing
 func currentNativeFixture(t *testing.T) (ClosureV1, LiveIdentity, string, string) {
 	t.Helper()
 	base := t.TempDir()
+	if resolved, resolveErr := filepath.EvalSymlinks(base); resolveErr != nil {
+		t.Fatal(resolveErr)
+	} else {
+		base = resolved
+	}
 	runtimePath := filepath.Join(base, "runtime")
 	workingPath := filepath.Join(base, "work")
 	if err := os.WriteFile(runtimePath, []byte("runtime"), 0o700); err != nil {

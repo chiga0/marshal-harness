@@ -22,7 +22,7 @@ func TestPreparedRunStartRequiresExactReadyHead(t *testing.T) {
 }
 
 func TestStatusRejectsReadyWithoutCurrentOwner(t *testing.T) {
-	status := StatusProjection{ProtocolRevision: ProtocolRevision, Availability: AvailabilityReady, PlatformProfileID: "darwin-local-dogfood", AgentProvider: "pi", AgentVersion: "0.84.3", AgentClosureProfile: "pi/0.84.3/darwin-arm64/v1", AgentIdentityDigest: testDigest}
+	status := StatusProjection{ProtocolRevision: ProtocolRevision, Availability: AvailabilityReady, PlatformProfileID: "darwin-local-dogfood", AgentProvider: "pi", AgentVersion: "0.84.4", AgentClosureProfile: "pi/0.84.4/darwin-arm64/v1", AgentIdentityDigest: testDigest}
 	if err := status.Validate(); !HasReason(err, ReasonAuthorityConflict) {
 		t.Fatalf("missing owner reason = %v", err)
 	}

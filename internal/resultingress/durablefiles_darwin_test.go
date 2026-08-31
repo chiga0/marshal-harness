@@ -176,8 +176,8 @@ func TestPreparedDarwinSealRequiresDescriptorBackedStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SealPi0843DarwinPreparedExecutionStore(context.Background(), pathStore, nil, CurrentOwnerBinding{}, "/does/not/matter", nil); !errors.Is(err, ErrPreparedExecutionUnavailable) {
-		t.Fatalf("SealPi0843DarwinPreparedExecutionStore err = %v, want unavailable", err)
+	if _, err := SealPi0844DarwinPreparedExecutionStore(context.Background(), pathStore, nil, CurrentOwnerBinding{}, "/does/not/matter", nil); !errors.Is(err, ErrPreparedExecutionUnavailable) {
+		t.Fatalf("SealPi0844DarwinPreparedExecutionStore err = %v, want unavailable", err)
 	}
 }
 
@@ -187,15 +187,26 @@ func TestPreparedDarwinSealIsOwnerBoundSingleUseAndCloseIsIdempotent(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The binary identity binds the canonical on-disk location, so the fixed
+	// path must be resolved the same way (macOS temp dirs sit under /var ->
+	// /private/var).
+	if resolved, resolveErr := filepath.EvalSymlinks(fixed); resolveErr != nil {
+		t.Fatal(resolveErr)
+	} else {
+		fixed = resolved
+	}
 	core, err := processsupervisor.ObserveCurrentCore(fixed)
 	if err != nil {
 		t.Fatalf("ObserveCurrentCore: %v", err)
 	}
 	id := attemptTestIdentity()
+	// The observed acquisition instant must follow the real process birth, so
+	// derive it instead of a hardcoded date that would precede any later run.
+	observedAt := time.Unix(core.Process.BirthSeconds, core.Process.BirthMicroseconds*int64(time.Microsecond)).UTC().Add(time.Second).Format(time.RFC3339Nano)
 	acquisition := ControlOwnerAcquisition{
 		Scope: attemptTestOwnerScope(id), OwnerEpoch: 1,
 		OwnerUID: core.UID, OwnerGID: core.GID, OwnerProcess: core.Process, OwnerBinary: core.Binary,
-		ObserverIdentity: "darwin-owner-observer/v1", ObservedAt: "2026-08-29T00:00:00Z",
+		ObserverIdentity: "darwin-owner-observer/v1", ObservedAt: observedAt,
 	}
 	verifier := attemptOwnerVerifier{want: acquisition}
 	owner, err := store.AcquireOwner(context.Background(), verifier, 0, "", acquisition)
@@ -212,12 +223,12 @@ func TestPreparedDarwinSealIsOwnerBoundSingleUseAndCloseIsIdempotent(t *testing.
 		t.Fatal(err)
 	}
 	defer control.Close()
-	sealed, err := SealPi0843DarwinPreparedExecutionStore(context.Background(), store, verifier, binding, fixed, control)
+	sealed, err := SealPi0844DarwinPreparedExecutionStore(context.Background(), store, verifier, binding, fixed, control)
 	if err != nil || sealed != store {
-		t.Fatalf("SealPi0843DarwinPreparedExecutionStore store=%p sealed=%p err=%v", store, sealed, err)
+		t.Fatalf("SealPi0844DarwinPreparedExecutionStore store=%p sealed=%p err=%v", store, sealed, err)
 	}
 	identityDir, identityFiles := store.dir, store.heldFiles
-	if _, err := SealPi0843DarwinPreparedExecutionStore(context.Background(), store, verifier, binding, fixed, control); !errors.Is(err, ErrPreparedExecutionUnavailable) {
+	if _, err := SealPi0844DarwinPreparedExecutionStore(context.Background(), store, verifier, binding, fixed, control); !errors.Is(err, ErrPreparedExecutionUnavailable) {
 		t.Fatalf("second Seal err=%v, want single-use rejection", err)
 	}
 	if err := store.Close(); err != nil {

@@ -46,7 +46,7 @@ type legacyPreparedExecutionV1 struct {
 	StoredClosureDigest                  string              `json:"storedClosureDigest"`
 	LaunchMaterialsDigest                string              `json:"launchMaterialsDigest"`
 	AgentLaunchSpecDigest                string              `json:"agentLaunchSpecDigest"`
-	Pi0843IdentityDigest                 string              `json:"pi0843IdentityDigest"`
+	Pi0844IdentityDigest                 string              `json:"pi0844IdentityDigest"`
 	PreparationDigest                    string              `json:"preparationDigest"`
 }
 
@@ -54,7 +54,7 @@ func (prepared legacyPreparedExecutionV1) validate() error {
 	if prepared.SchemaVersion != legacyPreparedExecutionSchema || prepared.ProtocolRevision != legacyPreparedExecutionProtocol || prepared.AttemptIdentity.Validate() != nil || prepared.RunAuthorityBinding != runAuthorityBindingFor(prepared.AttemptIdentity) || prepared.ExpectedRunSequence == 0 || prepared.ExpectedRunSequence > maxExactJSONInteger || prepared.CurrentOwnerBinding.Validate() != nil || strings.TrimSpace(prepared.LaunchAuthorizationID) == "" || prepared.AttemptAuthorityHeadAtPreparation != prepared.LaunchAuthorizedFactDigest {
 		return ErrPreparedExecutionConflict
 	}
-	for _, digest := range []string{prepared.ExpectedRunAuthorityHead, prepared.ControlOwnerBoundFactDigest, prepared.AttemptAuthorityHeadAtPreparation, prepared.AllocationProvisionReceiptFactDigest, prepared.AllocationProvisionReceiptDigest, prepared.LaunchAuthorizedFactDigest, prepared.StoredClosureDigest, prepared.LaunchMaterialsDigest, prepared.AgentLaunchSpecDigest, prepared.Pi0843IdentityDigest, prepared.PreparationDigest} {
+	for _, digest := range []string{prepared.ExpectedRunAuthorityHead, prepared.ControlOwnerBoundFactDigest, prepared.AttemptAuthorityHeadAtPreparation, prepared.AllocationProvisionReceiptFactDigest, prepared.AllocationProvisionReceiptDigest, prepared.LaunchAuthorizedFactDigest, prepared.StoredClosureDigest, prepared.LaunchMaterialsDigest, prepared.AgentLaunchSpecDigest, prepared.Pi0844IdentityDigest, prepared.PreparationDigest} {
 		if requireDigest("legacyPreparedDigest", digest) != nil {
 			return ErrPreparedExecutionConflict
 		}
@@ -100,15 +100,21 @@ type PreparedExecutionV1 struct {
 	CurrentOwnerBinding                  CurrentOwnerBinding `json:"currentOwnerBinding"`
 	ControlOwnerBoundFactDigest          string              `json:"controlOwnerBoundFactDigest"`
 	AttemptAuthorityHeadAtPreparation    string              `json:"attemptAuthorityHeadAtPreparation"`
-	AllocationProvisionReceiptFactDigest string              `json:"allocationProvisionReceiptFactDigest"`
-	AllocationProvisionReceiptDigest     string              `json:"allocationProvisionReceiptDigest"`
-	LaunchAuthorizationID                string              `json:"launchAuthorizationId"`
-	LaunchAuthorizedFactDigest           string              `json:"launchAuthorizedFactDigest"`
-	StoredClosureDigest                  string              `json:"storedClosureDigest"`
-	LaunchMaterialsDigest                string              `json:"launchMaterialsDigest"`
-	AgentLaunchSpecDigest                string              `json:"agentLaunchSpecDigest"`
-	Pi0843IdentityDigest                 string              `json:"pi0843IdentityDigest"`
-	PreparationDigest                    string              `json:"preparationDigest"`
+	AllocationProvisionReceiptFactDigest string              `json:"allocationProvisionReceiptFactDigest,omitempty"`
+	AllocationProvisionReceiptDigest     string              `json:"allocationProvisionReceiptDigest,omitempty"`
+	// ExistingWorktreeBindReceiptFactDigest/ReceiptDigest bind the exact
+	// existing-worktree-binding/v1 bind receipt for path B. They are mutually
+	// exclusive with the AllocationProvision pair above; exactly one pair is
+	// populated and revalidated on every current source recheck.
+	ExistingWorktreeBindReceiptFactDigest string `json:"existingWorktreeBindReceiptFactDigest,omitempty"`
+	ExistingWorktreeBindReceiptDigest     string `json:"existingWorktreeBindReceiptDigest,omitempty"`
+	LaunchAuthorizationID                 string `json:"launchAuthorizationId"`
+	LaunchAuthorizedFactDigest            string `json:"launchAuthorizedFactDigest"`
+	StoredClosureDigest                   string `json:"storedClosureDigest"`
+	LaunchMaterialsDigest                 string `json:"launchMaterialsDigest"`
+	AgentLaunchSpecDigest                 string `json:"agentLaunchSpecDigest"`
+	Pi0844IdentityDigest                  string `json:"pi0844IdentityDigest"`
+	PreparationDigest                     string `json:"preparationDigest"`
 }
 
 func (prepared PreparedExecutionV1) Validate() error {
@@ -123,12 +129,28 @@ func (prepared PreparedExecutionV1) Validate() error {
 	}
 	for _, digest := range []string{
 		prepared.ReservationFactDigest, prepared.AttemptOpenedFactDigest, prepared.ExpectedRunAuthorityHead, prepared.ControlOwnerBoundFactDigest,
-		prepared.AttemptAuthorityHeadAtPreparation, prepared.AllocationProvisionReceiptFactDigest,
-		prepared.AllocationProvisionReceiptDigest, prepared.LaunchAuthorizedFactDigest,
+		prepared.AttemptAuthorityHeadAtPreparation, prepared.LaunchAuthorizedFactDigest,
 		prepared.StoredClosureDigest, prepared.LaunchMaterialsDigest,
-		prepared.AgentLaunchSpecDigest, prepared.Pi0843IdentityDigest, prepared.PreparationDigest,
+		prepared.AgentLaunchSpecDigest, prepared.Pi0844IdentityDigest, prepared.PreparationDigest,
 	} {
 		if requireDigest("preparedExecutionDigest", digest) != nil {
+			return ErrPreparedExecutionConflict
+		}
+	}
+	// Allocation authority is satisfied by exactly one of:
+	// A) legacy/provider AllocationProvision applied receipt, or
+	// B) existing-worktree-binding/v1 bind receipt. Never both; never neither.
+	provisionFields := []string{prepared.AllocationProvisionReceiptFactDigest, prepared.AllocationProvisionReceiptDigest}
+	worktreeFields := []string{prepared.ExistingWorktreeBindReceiptFactDigest, prepared.ExistingWorktreeBindReceiptDigest}
+	provisionComplete := provisionFields[0] != "" && provisionFields[1] != ""
+	worktreeComplete := worktreeFields[0] != "" && worktreeFields[1] != ""
+	provisionEmpty := provisionFields[0] == "" && provisionFields[1] == ""
+	worktreeEmpty := worktreeFields[0] == "" && worktreeFields[1] == ""
+	if !(provisionComplete && worktreeEmpty) && !(worktreeComplete && provisionEmpty) {
+		return ErrPreparedExecutionConflict
+	}
+	for _, digest := range append(append([]string{}, provisionFields...), worktreeFields...) {
+		if digest != "" && requireDigest("preparedExecutionDigest", digest) != nil {
 			return ErrPreparedExecutionConflict
 		}
 	}
@@ -460,9 +482,36 @@ func derivePreparedExecution(projection *Ingress, state AttemptAuthorityState, c
 	if !ok || !currentOwnerMatches(owner, state.Owner) {
 		return PreparedExecutionV1{}, ErrPreparedExecutionConflict
 	}
-	allocation, receipt, err := currentPreparedProvisionReceipt(projection, state)
-	if err != nil {
-		return PreparedExecutionV1{}, err
+	// Allocation authority is satisfied by exactly one of:
+	// A) legacy/provider AllocationProvision applied receipt, or
+	// B) existing-worktree-binding/v1 bind receipt (current, same
+	//    Attempt/reservation, unreleased). Never both; never neither.
+	provisionComplete := state.AllocationProvisionEffectDigest != "" && state.AllocationProvisionReceiptDigest != ""
+	provisionEmpty := state.AllocationProvisionEffectDigest == "" && state.AllocationProvisionReceiptDigest == ""
+	worktreeComplete := state.ExistingWorktreeBindIntentFactDigest != "" && state.ExistingWorktreeBindReceiptFactDigest != "" && state.ExistingWorktreeBindReceiptDigest != ""
+	worktreeEmpty := state.ExistingWorktreeBindIntentFactDigest == "" && state.ExistingWorktreeBindReceiptFactDigest == "" && state.ExistingWorktreeBindReceiptDigest == ""
+	worktreeReleased := state.ExistingWorktreeReleaseIntentFactDigest != "" || state.ExistingWorktreeReleaseReceiptFactDigest != ""
+	if !(provisionComplete && worktreeEmpty) && !(worktreeComplete && provisionEmpty) {
+		return PreparedExecutionV1{}, ErrPreparedExecutionConflict
+	}
+	if worktreeComplete && (worktreeReleased || state.ReservationFactDigest == "") {
+		return PreparedExecutionV1{}, ErrPreparedExecutionConflict
+	}
+	var provisionFactDigest, provisionReceiptDigest, worktreeFactDigest, worktreeReceiptDigest string
+	if provisionComplete {
+		allocation, receipt, err := currentPreparedProvisionReceipt(projection, state)
+		if err != nil {
+			return PreparedExecutionV1{}, err
+		}
+		provisionFactDigest = allocation.Snapshot.ProvisionReceiptFactDigest
+		provisionReceiptDigest = receipt.ReceiptDigest
+	} else {
+		worktree, err := currentPreparedExistingWorktreeBindReceipt(projection, state)
+		if err != nil {
+			return PreparedExecutionV1{}, err
+		}
+		worktreeFactDigest = worktree.factDigest
+		worktreeReceiptDigest = worktree.receiptDigest
 	}
 	closure, err := state.LaunchClosure.Closure()
 	if err != nil || closure.LaunchMaterialsDigest != state.LaunchMaterialsDigest || closure.AgentLaunchSpecDigest != state.AgentLaunchSpecDigest {
@@ -472,7 +521,7 @@ func derivePreparedExecution(projection *Ingress, state AttemptAuthorityState, c
 	if err != nil {
 		return PreparedExecutionV1{}, ErrPreparedExecutionConflict
 	}
-	piIdentity, err := launchidentity.Pi0843IdentityFromClosure(closure)
+	piIdentity, err := launchidentity.Pi0844IdentityFromClosure(closure)
 	if err != nil || piIdentity.Validate() != nil {
 		return PreparedExecutionV1{}, ErrPreparedExecutionConflict
 	}
@@ -483,12 +532,14 @@ func derivePreparedExecution(projection *Ingress, state AttemptAuthorityState, c
 		AttemptOrdinal: state.AttemptOrdinal, AttemptsUsedBefore: reservation.Reservation.Ready.AttemptsUsed, MaxAttempts: reservation.Reservation.Ready.MaxAttempts,
 		ExpectedRunSequence: creation.ExpectedRunSequence, ExpectedRunAuthorityHead: creation.ExpectedRunAuthorityHead,
 		CurrentOwnerBinding: state.Owner, ControlOwnerBoundFactDigest: state.ControlOwnerBindingDigest,
-		AttemptAuthorityHeadAtPreparation:    state.HeadDigest,
-		AllocationProvisionReceiptFactDigest: allocation.Snapshot.ProvisionReceiptFactDigest,
-		AllocationProvisionReceiptDigest:     receipt.ReceiptDigest,
-		LaunchAuthorizationID:                state.LaunchAuthorizationID, LaunchAuthorizedFactDigest: state.LaunchAuthorizedDigest,
+		AttemptAuthorityHeadAtPreparation:     state.HeadDigest,
+		AllocationProvisionReceiptFactDigest:  provisionFactDigest,
+		AllocationProvisionReceiptDigest:      provisionReceiptDigest,
+		ExistingWorktreeBindReceiptFactDigest: worktreeFactDigest,
+		ExistingWorktreeBindReceiptDigest:     worktreeReceiptDigest,
+		LaunchAuthorizationID:                 state.LaunchAuthorizationID, LaunchAuthorizedFactDigest: state.LaunchAuthorizedDigest,
 		StoredClosureDigest: closureDigest, LaunchMaterialsDigest: state.LaunchMaterialsDigest,
-		AgentLaunchSpecDigest: state.AgentLaunchSpecDigest, Pi0843IdentityDigest: piIdentity.IdentityDigest,
+		AgentLaunchSpecDigest: state.AgentLaunchSpecDigest, Pi0844IdentityDigest: piIdentity.IdentityDigest,
 	})
 }
 
@@ -516,6 +567,70 @@ func currentPreparedProvisionReceipt(projection *Ingress, state AttemptAuthority
 	return allocation, receipt, nil
 }
 
+// preparedExistingWorktreeReceipt carries the exact existing-worktree bind
+// receipt fact/record digests that satisfy allocation authority for path B,
+// plus the validated bind receipt itself so the Darwin prepared mechanics can
+// copy the exact directory ObjectIdentityV1 bound at admission. The receipt
+// value is private and non-persistent: only the fact/receipt digests above
+// are sealed into authority; the receipt is re-derived from the durable ledger
+// on every recheck and never stored on the prepared source value.
+type preparedExistingWorktreeReceipt struct {
+	factDigest    string
+	receiptDigest string
+	receipt       allocationcontrol.ExistingWorktreeBindReceiptV1
+}
+
+// currentPreparedExistingWorktreeBindReceipt revalidates the exact
+// existing-worktree-binding/v1 bind receipt from the durable ledger. It binds
+// the same Attempt/reservation, requires the intent+receipt chain to be
+// current and valid, and rejects any released/incomplete/ABA chain. It does
+// not require an AllocationProvision effect reconcile.
+func currentPreparedExistingWorktreeBindReceipt(projection *Ingress, state AttemptAuthorityState) (preparedExistingWorktreeReceipt, error) {
+	key, err := state.Identity.Key()
+	if err != nil {
+		return preparedExistingWorktreeReceipt{}, ErrPreparedExecutionConflict
+	}
+	if state.ExistingWorktreeBindIntentFactDigest == "" || state.ExistingWorktreeBindReceiptFactDigest == "" || state.ExistingWorktreeBindReceiptDigest == "" || state.ExistingWorktreeReleaseIntentFactDigest != "" || state.ExistingWorktreeReleaseReceiptFactDigest != "" || state.ReservationFactDigest == "" {
+		return preparedExistingWorktreeReceipt{}, ErrPreparedExecutionConflict
+	}
+	// Revalidate the full RB1 closed-union chain from the durable ledger.
+	snapshot := existingWorktreeSnapshot(projection, state)
+	if err := snapshot.Validate(); err != nil {
+		return preparedExistingWorktreeReceipt{}, ErrPreparedExecutionConflict
+	}
+	var bindIntent allocationcontrol.ExistingWorktreeBindIntentV1
+	var bindReceipt allocationcontrol.ExistingWorktreeBindReceiptV1
+	foundReceipt := false
+	for _, fact := range snapshot.Facts {
+		if fact.AttemptKey != key {
+			continue
+		}
+		switch fact.Kind {
+		case allocationcontrol.ExistingWorktreeFactBindIntent:
+			if fact.AttemptFactDigest != state.ExistingWorktreeBindIntentFactDigest || strictExistingWorktreeDecode(fact.Payload, &bindIntent) != nil || bindIntent.Validate() != nil {
+				return preparedExistingWorktreeReceipt{}, ErrPreparedExecutionConflict
+			}
+		case allocationcontrol.ExistingWorktreeFactBindReceipt:
+			if foundReceipt {
+				return preparedExistingWorktreeReceipt{}, ErrPreparedExecutionConflict
+			}
+			if strictExistingWorktreeDecode(fact.Payload, &bindReceipt) != nil {
+				return preparedExistingWorktreeReceipt{}, ErrPreparedExecutionConflict
+			}
+			if fact.AttemptFactDigest != state.ExistingWorktreeBindReceiptFactDigest || bindReceipt.ReceiptDigest != state.ExistingWorktreeBindReceiptDigest || !existingWorktreeBindingMatchesAttempt(bindReceipt.Binding, state) {
+				return preparedExistingWorktreeReceipt{}, ErrPreparedExecutionConflict
+			}
+			foundReceipt = true
+		case allocationcontrol.ExistingWorktreeFactReleaseIntent, allocationcontrol.ExistingWorktreeFactReleaseReceipt:
+			return preparedExistingWorktreeReceipt{}, ErrPreparedExecutionConflict
+		}
+	}
+	if !foundReceipt || bindReceipt.Validate(bindIntent) != nil {
+		return preparedExistingWorktreeReceipt{}, ErrPreparedExecutionConflict
+	}
+	return preparedExistingWorktreeReceipt{factDigest: state.ExistingWorktreeBindReceiptFactDigest, receiptDigest: state.ExistingWorktreeBindReceiptDigest, receipt: bindReceipt}, nil
+}
+
 func resolvePreparedCurrent(projection *Ingress, acquisition ControlOwnerAcquisition, digest string) (PreparedExecutionV1, AttemptAuthorityState, error) {
 	prepared, ok := projection.preparedExecutions[digest]
 	if !ok || prepared.Validate() != nil {
@@ -541,9 +656,19 @@ func resolvePreparedCurrent(projection *Ingress, acquisition ControlOwnerAcquisi
 	if err != nil || closureDigest != prepared.StoredClosureDigest {
 		return PreparedExecutionV1{}, AttemptAuthorityState{}, ErrPreparedExecutionConflict
 	}
-	allocation, receipt, err := currentPreparedProvisionReceipt(projection, state)
-	if err != nil || receipt.ReceiptDigest != prepared.AllocationProvisionReceiptDigest || allocation.Snapshot.ProvisionReceiptFactDigest != prepared.AllocationProvisionReceiptFactDigest {
-		return PreparedExecutionV1{}, AttemptAuthorityState{}, ErrPreparedExecutionConflict
+	// Revalidate the exact allocation authority bound at preparation time.
+	// Path A rechecks the AllocationProvision effect reconcile; path B rechecks
+	// the existing-worktree bind receipt fact/digest. Exactly one applies.
+	if prepared.AllocationProvisionReceiptFactDigest != "" {
+		allocation, receipt, err := currentPreparedProvisionReceipt(projection, state)
+		if err != nil || receipt.ReceiptDigest != prepared.AllocationProvisionReceiptDigest || allocation.Snapshot.ProvisionReceiptFactDigest != prepared.AllocationProvisionReceiptFactDigest {
+			return PreparedExecutionV1{}, AttemptAuthorityState{}, ErrPreparedExecutionConflict
+		}
+	} else {
+		worktree, err := currentPreparedExistingWorktreeBindReceipt(projection, state)
+		if err != nil || worktree.factDigest != prepared.ExistingWorktreeBindReceiptFactDigest || worktree.receiptDigest != prepared.ExistingWorktreeBindReceiptDigest {
+			return PreparedExecutionV1{}, AttemptAuthorityState{}, ErrPreparedExecutionConflict
+		}
 	}
 	return prepared, state, nil
 }

@@ -364,6 +364,8 @@ type AttemptAuthorityState struct {
 	OpenedDigest                     string                        `json:"openedDigest"`
 	Owner                            CurrentOwnerBinding           `json:"owner,omitempty,omitzero"`
 	ControlOwnerBindingDigest        string                        `json:"controlOwnerBindingDigest,omitempty"`
+	ControlOwnerBindingRevision      uint64                        `json:"controlOwnerBindingRevision,omitempty"`
+	ControlOwnerBindingPreviousHead  string                        `json:"controlOwnerBindingPreviousHead,omitempty"`
 	LaunchState                      LaunchState                   `json:"launchState"`
 	LaunchAuthorizationID            string                        `json:"launchAuthorizationId,omitempty"`
 	LaunchAuthorizedDigest           string                        `json:"launchAuthorizedDigest,omitempty"`
@@ -397,6 +399,7 @@ type AttemptAuthorityState struct {
 	CommittedResultPreceding         []SupervisorCommandEvidence   `json:"committedResultPreceding,omitempty"`
 	CommittedResultCollect           SupervisorCommandEvidence     `json:"committedResultCollect,omitempty,omitzero"`
 	CommittedResultOutcomeDigest     string                        `json:"committedResultOutcomeDigest,omitempty"`
+	CommittedResultObservation       ResultObservationBinding      `json:"committedResultObservation,omitempty,omitzero"`
 	BarrierDigest                    string                        `json:"barrierDigest,omitempty"`
 	TerminalizationID                string                        `json:"terminalizationId,omitempty"`
 	EligibilityTerminal              EligibilityTerminal           `json:"eligibilityTerminal,omitempty"`
@@ -424,19 +427,29 @@ type AttemptAuthorityState struct {
 	// PendingEffect* is the durable exclusion barrier established by an
 	// effect-intent fact. It is cleared only by the matching reconcile fact;
 	// receipt alone remains an observation and cannot unlock the Attempt.
-	PendingEffectID                  string                         `json:"pendingEffectId,omitempty"`
-	PendingEffectIntentFactDigest    string                         `json:"pendingEffectIntentFactDigest,omitempty"`
-	PendingEffectRecordDigest        string                         `json:"pendingEffectRecordDigest,omitempty"`
-	PendingEffectMarkerDigest        string                         `json:"pendingEffectMarkerDigest,omitempty"`
-	PendingEffectPhase               EffectPhase                    `json:"pendingEffectPhase,omitempty"`
-	AllocationProvisionEffectDigest  string                         `json:"allocationProvisionEffectDigest,omitempty"`
-	AllocationProvisionReceiptDigest string                         `json:"allocationProvisionReceiptDigest,omitempty"`
-	AllocationTerminateEffectDigest  string                         `json:"allocationTerminateEffectDigest,omitempty"`
-	AllocationTerminateReceiptDigest string                         `json:"allocationTerminateReceiptDigest,omitempty"`
-	EffectInterventionDigest         string                         `json:"effectInterventionDigest,omitempty"`
-	LaunchClosure                    launchidentity.StoredClosureV1 `json:"launchClosure,omitempty"`
-	LaunchMaterialsDigest            string                         `json:"launchMaterialsDigest,omitempty"`
-	AgentLaunchSpecDigest            string                         `json:"agentLaunchSpecDigest,omitempty"`
+	PendingEffectID                  string      `json:"pendingEffectId,omitempty"`
+	PendingEffectIntentFactDigest    string      `json:"pendingEffectIntentFactDigest,omitempty"`
+	PendingEffectRecordDigest        string      `json:"pendingEffectRecordDigest,omitempty"`
+	PendingEffectMarkerDigest        string      `json:"pendingEffectMarkerDigest,omitempty"`
+	PendingEffectPhase               EffectPhase `json:"pendingEffectPhase,omitempty"`
+	AllocationProvisionEffectDigest  string      `json:"allocationProvisionEffectDigest,omitempty"`
+	AllocationProvisionReceiptDigest string      `json:"allocationProvisionReceiptDigest,omitempty"`
+	// ExistingWorktreeBindReceiptFactDigest/ReceiptDigest record the exact
+	// existing-worktree-binding/v1 bind receipt that satisfies allocation
+	// authority for path B. They are mutually exclusive with the AllocationProvision
+	// pair above and are cleared only by a release-intent/release-receipt chain.
+	ExistingWorktreeBindIntentFactDigest     string                         `json:"existingWorktreeBindIntentFactDigest,omitempty"`
+	ExistingWorktreeBindReceiptFactDigest    string                         `json:"existingWorktreeBindReceiptFactDigest,omitempty"`
+	ExistingWorktreeBindReceiptDigest        string                         `json:"existingWorktreeBindReceiptDigest,omitempty"`
+	ExistingWorktreeReleaseIntentFactDigest  string                         `json:"existingWorktreeReleaseIntentFactDigest,omitempty"`
+	ExistingWorktreeReleaseReceiptFactDigest string                         `json:"existingWorktreeReleaseReceiptFactDigest,omitempty"`
+	ExistingWorktreeReleaseReceiptDigest     string                         `json:"existingWorktreeReleaseReceiptDigest,omitempty"`
+	AllocationTerminateEffectDigest          string                         `json:"allocationTerminateEffectDigest,omitempty"`
+	AllocationTerminateReceiptDigest         string                         `json:"allocationTerminateReceiptDigest,omitempty"`
+	EffectInterventionDigest                 string                         `json:"effectInterventionDigest,omitempty"`
+	LaunchClosure                            launchidentity.StoredClosureV1 `json:"launchClosure,omitempty"`
+	LaunchMaterialsDigest                    string                         `json:"launchMaterialsDigest,omitempty"`
+	AgentLaunchSpecDigest                    string                         `json:"agentLaunchSpecDigest,omitempty"`
 }
 
 // AttemptAppendResult distinguishes a fresh authority append from an exact
@@ -635,7 +648,25 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionLaunchAuthorized:
-		if prior.LaunchState != LaunchNotAuthorized || prior.BarrierDigest != "" || prior.AllocationProvisionEffectDigest == "" || prior.AllocationProvisionReceiptDigest == "" {
+		if prior.LaunchState != LaunchNotAuthorized || prior.BarrierDigest != "" {
+			return ErrAttemptAuthorityOrder
+		}
+		// Allocation authority is satisfied by exactly one of:
+		// A) legacy/provider AllocationProvision applied receipt (effect
+		//    reconcile accepted), or
+		// B) existing-worktree-binding/v1 bind receipt (current, same
+		//    Attempt/reservation, unreleased).
+		// Never both; never neither. Unknown/mixed/incomplete/released/ABA
+		// chains fail closed.
+		provisionComplete := prior.AllocationProvisionEffectDigest != "" && prior.AllocationProvisionReceiptDigest != ""
+		provisionEmpty := prior.AllocationProvisionEffectDigest == "" && prior.AllocationProvisionReceiptDigest == ""
+		worktreeComplete := prior.ExistingWorktreeBindIntentFactDigest != "" && prior.ExistingWorktreeBindReceiptFactDigest != "" && prior.ExistingWorktreeBindReceiptDigest != ""
+		worktreeEmpty := prior.ExistingWorktreeBindIntentFactDigest == "" && prior.ExistingWorktreeBindReceiptFactDigest == "" && prior.ExistingWorktreeBindReceiptDigest == ""
+		worktreeReleased := prior.ExistingWorktreeReleaseIntentFactDigest != "" || prior.ExistingWorktreeReleaseReceiptFactDigest != ""
+		if !(provisionComplete && worktreeEmpty) && !(worktreeComplete && provisionEmpty) {
+			return ErrAttemptAuthorityOrder
+		}
+		if worktreeComplete && (worktreeReleased || prior.ReservationFactDigest == "") {
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionSupervisorBootstrap:
@@ -723,7 +754,9 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionAllocationTerminated:
-		if prior.ProcessTerminalKind != ProcessAbsent && prior.ProcessTerminalKind != ProcessTerminated || prior.AllocationTerminalDigest != "" || prior.AllocationTerminateEffectDigest == "" || prior.AllocationTerminateReceiptDigest == "" || t.ReceiptDigest != prior.AllocationTerminateReceiptDigest {
+		pathA := prior.AllocationTerminateEffectDigest != "" && prior.AllocationTerminateReceiptDigest != "" && t.ReceiptDigest == prior.AllocationTerminateReceiptDigest
+		pathB := prior.ExistingWorktreeReleaseIntentFactDigest != "" && prior.ExistingWorktreeReleaseReceiptFactDigest != "" && prior.ExistingWorktreeReleaseReceiptDigest != "" && t.ReceiptDigest == prior.ExistingWorktreeReleaseReceiptDigest
+		if prior.ProcessTerminalKind != ProcessAbsent && prior.ProcessTerminalKind != ProcessTerminated || prior.AllocationTerminalDigest != "" || pathA == pathB {
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionProcessSupervisorClosed:
@@ -1014,7 +1047,10 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 		return ErrAttemptAuthorityOrder
 	}
 	pre, prior := intent.PreCommand, state.SupervisorMechanicsAnchor
-	if prior.Validate() != nil || pre != prior || pre.OwnerEpoch != state.Owner.OwnerEpoch {
+	boundToInitialHead := state.SupervisorBoundAuthorityHead == state.SupervisorStartedDigest
+	boundToCurrentRecoveryHead := state.SupervisorBoundAuthorityHead == state.ControlOwnerBindingDigest
+	ownerContinuity := pre.OwnerEpoch == state.Owner.OwnerEpoch || boundToCurrentRecoveryHead
+	if prior.Validate() != nil || pre != prior || !ownerContinuity {
 		return ErrAttemptAuthorityOrder
 	}
 	for _, commandID := range state.SupervisorCommandIDs {
@@ -1057,7 +1093,7 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 		}
 		return nil
 	}
-	if state.SupervisorBoundAuthorityHead != state.SupervisorStartedDigest || intent.CurrentAuthorityHead != state.HeadDigest || pre.CurrentAuthorityHead != state.SupervisorMechanicsAuthorityHead {
+	if !boundToInitialHead && !boundToCurrentRecoveryHead || intent.CurrentAuthorityHead != state.HeadDigest || pre.CurrentAuthorityHead != state.SupervisorMechanicsAuthorityHead {
 		return ErrAttemptAuthorityOrder
 	}
 	switch intent.Command {
@@ -1070,7 +1106,11 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 			return ErrAttemptAuthorityOrder
 		}
 	case processsupervisor.CommandCollect:
-		if state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.CommittedResultFactDigest != "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest || rebuild.LastObservationDigest != supervisorLastObservation(state) {
+		// A collect Rebuild reanchors the business projection. The supervisor
+		// reconnect fact is the only admitted session-continuity proof, so the
+		// first collect of every attempt must follow it.
+		continuityReanchored := state.SupervisorReconnectFactDigest != "" || boundToCurrentRecoveryHead
+		if !continuityReanchored || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.CommittedResultFactDigest != "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest || rebuild.LastObservationDigest != supervisorLastObservation(state) {
 			return ErrAttemptAuthorityOrder
 		}
 	case processsupervisor.CommandInspect, processsupervisor.CommandTerminate:
@@ -1102,7 +1142,7 @@ func validateSupervisorCommandOutcomeAgainstIntent(state AttemptAuthorityState, 
 	}
 	switch intent.Command {
 	case processsupervisor.CommandBindAuthority:
-		if evidence.BoundAuthorityHead != intent.Rebuild.AuthorityHead {
+		if evidence.BoundAuthorityHead != intent.Rebuild.AuthorityHead || evidence.ObservationDigest != intent.Rebuild.SupervisorStartedFactDigest {
 			return ErrAttemptAuthorityConflict
 		}
 	case processsupervisor.CommandSpawn:
@@ -1760,6 +1800,8 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 	case AttemptTransitionControlOwnerBound:
 		state.Owner = t.Owner
 		state.ControlOwnerBindingDigest = fact.Digest
+		state.ControlOwnerBindingRevision = fact.Revision
+		state.ControlOwnerBindingPreviousHead = fact.PreviousDigest
 	case AttemptTransitionLaunchAuthorized:
 		state.LaunchState = LaunchUncertain
 		state.LaunchAuthorizationID = t.LaunchAuthorizationID

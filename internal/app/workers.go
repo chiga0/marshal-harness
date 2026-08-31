@@ -239,13 +239,15 @@ func newWorkerRuntime(getenv func(string) string, qwenConstructor workerConstruc
 	}
 	productionAdmission := func(worker port.WorkerAdapter) error {
 		capable, ok := worker.(sandboxbridge.ProductionLaunchCapable)
-		if !ok || capable.ProductionLaunchProfileID() != launchidentity.Pi0843DarwinARM64Profile {
+		if !ok || capable.ProductionLaunchProfileID() != launchidentity.Pi0844DarwinARM64Profile {
 			return launchidentity.ErrUnavailable
 		}
-		// RB2 deliberately does not compose the per-Attempt supervisor here.
-		// Until B2 provides that authority, planning must not Probe a provider
-		// and then discover the missing production runtime after side effects.
-		return launchidentity.ErrUnavailable
+		// The Darwin Pi 0.84.4 sealed composition is now the supported v1
+		// production path.  Exact runtime/entrypoint identity, allocation
+		// binding, and supervisor authority are rechecked by the READY→RUNNING
+		// composition before any process is started; planning may therefore
+		// probe this one closed profile and freeze its capability snapshot.
+		return nil
 	}
 	productionSelector, err := adapter.NewAdmissionSelector(registry, productionAdmission)
 	if err != nil {
@@ -275,8 +277,9 @@ func (r *WorkerRuntime) Selector() *adapter.Selector { return r.selector }
 func (r *WorkerRuntime) ProductionSelector() *adapter.Selector { return r.productionSelector }
 
 // CheckProductionAdmission is the side-effect-free composition gate shared by
-// selection and task execution. RB2 has no B2 per-Attempt supervisor wiring,
-// so even an exact Pi closure is typed-unavailable before Probe or Run.
+// selection and task execution. Only the exact Darwin arm64 Pi 0.84.4 profile
+// is admitted; all other adapters remain unavailable until their own sealed
+// production composition exists.
 func (r *WorkerRuntime) CheckProductionAdmission(worker port.WorkerAdapter) error {
 	if r == nil || r.productionAdmission == nil || worker == nil {
 		return launchidentity.ErrUnavailable

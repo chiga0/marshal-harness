@@ -957,7 +957,14 @@ func applySupervisorCommandFactValue(fact supervisorCommandFact, in *Ingress) er
 	}
 	switch fact.FactType {
 	case supervisorCommandIntentFactType:
-		if fact.Outcome != (SupervisorCommandEvidence{}) || fact.Reconnect != (SupervisorReconnectEvidence{}) || state.SupervisorPendingIntentDigest != "" || fact.PreviousRecoveryFactDigest != state.SupervisorCommandRecoveryHead || validateSupervisorCommandIntentAgainstState(state, fact.Intent) != nil {
+		if fact.Outcome != (SupervisorCommandEvidence{}) || fact.Reconnect != (SupervisorReconnectEvidence{}) || state.SupervisorPendingIntentDigest != "" || fact.PreviousRecoveryFactDigest != state.SupervisorCommandRecoveryHead {
+			return ErrAttemptAuthorityConflict
+		}
+		if fact.Intent.Command == processsupervisor.CommandBindAuthority && state.SupervisorBoundAuthorityHead != "" {
+			if validateRebindSupervisorIntentAgainstState(state, fact.Intent) != nil {
+				return ErrAttemptAuthorityConflict
+			}
+		} else if validateSupervisorCommandIntentAgainstState(state, fact.Intent) != nil {
 			return ErrAttemptAuthorityConflict
 		}
 		state.SupervisorPendingIntent = fact.Intent
@@ -967,7 +974,7 @@ func applySupervisorCommandFactValue(fact supervisorCommandFact, in *Ingress) er
 		if fact.Intent != (SupervisorCommandIntent{}) || fact.Reconnect != (SupervisorReconnectEvidence{}) || state.SupervisorPendingIntentDigest == "" || fact.PreviousRecoveryFactDigest != state.SupervisorCommandRecoveryHead || validateSupervisorCommandOutcomeAgainstIntent(state, fact.Outcome) != nil {
 			return ErrAttemptAuthorityConflict
 		}
-		state.SupervisorCommandCheckpoints = append(state.SupervisorCommandCheckpoints, SupervisorCommandCheckpoint{FactDigest: fact.Digest, Evidence: fact.Outcome})
+		state.SupervisorCommandCheckpoints = append(state.SupervisorCommandCheckpoints, SupervisorCommandCheckpoint{FactDigest: fact.Digest, Intent: state.SupervisorPendingIntent, Evidence: fact.Outcome})
 		advanceSupervisorCommandState(&state, fact.Outcome)
 		state.SupervisorMechanicsAnchor = fact.Outcome.PostCommand
 		if fact.Outcome.Command == processsupervisor.CommandBindAuthority && fact.Outcome.Disposition == "ok" {

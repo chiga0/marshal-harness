@@ -307,7 +307,7 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	exitCode := 0
 	signal := ""
 	var execErr error
-	if plan.LaunchClosure().ClosureProfileID == launchidentity.Pi0843DarwinARM64Profile {
+	if plan.LaunchClosure().ClosureProfileID == launchidentity.Pi0844DarwinARM64Profile {
 		if _, err := b.requireExactLease(view, exactAdmission); err != nil {
 			return domain.Record{}, err
 		}
@@ -458,7 +458,7 @@ func (b *Bridge) validateProductionLaunch(plan LaunchPlan) error {
 		return launchidentity.ErrUnavailable
 	}
 	closure := plan.LaunchClosure()
-	if closure.ClosureProfileID != launchidentity.Pi0843DarwinARM64Profile {
+	if closure.ClosureProfileID != launchidentity.Pi0844DarwinARM64Profile {
 		return launchidentity.ErrUnavailable
 	}
 	held, err := launchidentity.Reopen(closure)
@@ -477,7 +477,7 @@ func (b *Bridge) runExactProcess(ctx context.Context, plan LaunchPlan, view work
 		return nil, nil, false, 0, "", nil, launchidentity.ErrUnavailable
 	}
 	closure := plan.LaunchClosure()
-	if closure.ClosureProfileID != launchidentity.Pi0843DarwinARM64Profile {
+	if closure.ClosureProfileID != launchidentity.Pi0844DarwinARM64Profile {
 		return nil, nil, false, 0, "", nil, launchidentity.ErrUnavailable
 	}
 	attempt := ExactProcessAttempt{TaskID: view.TaskID, RunID: view.RunID, AttemptID: view.AttemptID, AllocationID: allocationID, Generation: generation, FencingTokenDigest: canonical.DigestBytes([]byte(fencingToken))}

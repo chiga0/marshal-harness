@@ -11,7 +11,7 @@ import (
 const (
 	DarwinLocalDogfoodProfile = "darwin-local-dogfood"
 	PiProviderName            = "pi"
-	PiProviderVersion         = "0.84.3"
+	PiProviderVersion         = "0.84.4"
 )
 
 var profileDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -28,7 +28,7 @@ type PiProfile struct {
 	identityDigest string
 }
 
-func NewPi0843Profile(executablePath, runtimePath, identityDigest string) (PiProfile, error) {
+func NewPi0844Profile(executablePath, runtimePath, identityDigest string) (PiProfile, error) {
 	if !cleanAbsolutePath(executablePath) || !cleanAbsolutePath(runtimePath) || executablePath == runtimePath || !profileDigestPattern.MatchString(identityDigest) {
 		return PiProfile{}, application.NewError("pi-profile", application.ReasonInvalidRequest)
 	}
@@ -36,7 +36,7 @@ func NewPi0843Profile(executablePath, runtimePath, identityDigest string) (PiPro
 }
 
 func (profile PiProfile) Validate() error {
-	_, err := NewPi0843Profile(profile.executablePath, profile.runtimePath, profile.identityDigest)
+	_, err := NewPi0844Profile(profile.executablePath, profile.runtimePath, profile.identityDigest)
 	return err
 }
 
@@ -44,7 +44,7 @@ func (profile PiProfile) ExecutablePath() string { return profile.executablePath
 func (profile PiProfile) RuntimePath() string    { return profile.runtimePath }
 func (profile PiProfile) IdentityDigest() string { return profile.identityDigest }
 func (profile PiProfile) ClosureProfileID() string {
-	return launchidentity.Pi0843DarwinARM64Profile
+	return launchidentity.Pi0844DarwinARM64Profile
 }
 
 func cleanAbsolutePath(path string) bool {

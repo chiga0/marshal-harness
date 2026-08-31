@@ -1,6 +1,7 @@
 package runstore
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -719,6 +720,39 @@ func TestInspectReplaysPublicationIdentityAfterSnapshotCrash(t *testing.T) {
 	recovered, err := fixture.store.Inspect(fixture.prepared.RunID)
 	if err != nil || recovered.State != domain.StatePublished || recovered.Publication == nil || recovered.Publication.ExternalID != "PR_1" {
 		t.Fatalf("recovered publication = %+v, error=%v", recovered, err)
+	}
+}
+
+func TestReconcileSnapshotUnderLeaseRepairsJournalTailIdempotently(t *testing.T) {
+	t.Parallel()
+	store := New(t.TempDir())
+	lease, err := store.Acquire("run:reconcile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	state := domain.NewRunState("task:reconcile", "run:reconcile", time.Unix(1, 0).UTC())
+	if err := store.WriteSnapshot(lease, state); err != nil {
+		t.Fatal(err)
+	}
+	event := transition("event:reconcile", 1, domain.StateCreated, domain.StatePlanned)
+	event.RunID = state.RunID
+	if err := store.Append(lease, event, 0); err != nil {
+		t.Fatal(err)
+	}
+	for invocation := 0; invocation < 2; invocation++ {
+		reconciled, err := store.ReconcileSnapshotUnderLease(context.Background(), lease)
+		if err != nil || reconciled.State != domain.StatePlanned || reconciled.Sequence != 1 {
+			t.Fatalf("invocation %d reconciled=%+v err=%v", invocation, reconciled, err)
+		}
+		persisted, err := store.ReadSnapshot(state.RunID)
+		if err != nil || persisted.State != domain.StatePlanned || persisted.Sequence != 1 {
+			t.Fatalf("invocation %d persisted=%+v err=%v", invocation, persisted, err)
+		}
+		events, _, err := store.ReadEvents(state.RunID)
+		if err != nil || len(events) != 1 {
+			t.Fatalf("invocation %d events=%d err=%v", invocation, len(events), err)
+		}
 	}
 }
 

@@ -68,6 +68,7 @@ type resultAdmittedFact struct {
 	LedgerSequence              uint64                    `json:"ledgerSequence"`
 	SupervisorCollect           SupervisorCommandEvidence `json:"supervisorCollect,omitempty,omitzero"`
 	SupervisorOutcomeFactDigest string                    `json:"supervisorOutcomeFactDigest,omitempty"`
+	ResultObservation           ResultObservationBinding  `json:"resultObservation,omitempty,omitzero"`
 	Digest                      string                    `json:"digest"`
 }
 
@@ -350,7 +351,7 @@ func (s *ingressDurableStore) appendLine(fact any, getDigest func() string, setD
 
 // recordAdmittedLocked persists admission only for the governed Ingress path;
 // it is never a public authority bypass.
-func (s *ingressDurableStore) recordAdmittedLocked(idempotencyKey string, governed *AttemptAuthorityState, drcDigest string, envelope ResultEnvelope, factDigest string, ledgerSequence uint64, collect SupervisorCommandEvidence, outcomeFactDigest string) (string, error) {
+func (s *ingressDurableStore) recordAdmittedLocked(idempotencyKey string, governed *AttemptAuthorityState, drcDigest string, envelope ResultEnvelope, factDigest string, ledgerSequence uint64, collect SupervisorCommandEvidence, outcomeFactDigest string, observation ResultObservationBinding) (string, error) {
 	fact := &resultAdmittedFact{
 		ProtocolRevision:            resultIngressProtocolRevision,
 		FactType:                    resultFactTypeAdmitted,
@@ -364,6 +365,7 @@ func (s *ingressDurableStore) recordAdmittedLocked(idempotencyKey string, govern
 		LedgerSequence:              ledgerSequence,
 		SupervisorCollect:           collect,
 		SupervisorOutcomeFactDigest: outcomeFactDigest,
+		ResultObservation:           observation,
 	}
 	if governed != nil {
 		key, err := governed.Identity.Key()
@@ -548,6 +550,9 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		if fact.SupervisorOutcomeFactDigest != "" && requireDigest("supervisorOutcomeFactDigest", fact.SupervisorOutcomeFactDigest) != nil {
 			return ErrAttemptAuthorityConflict
 		}
+		if fact.ResultObservation != (ResultObservationBinding{}) && (fact.EnvelopeKind != KindWorkerResult || fact.ResultObservation.Validate() != nil) {
+			return ErrAttemptAuthorityConflict
+		}
 		storeddigest := fact.Digest
 		fact.Digest = ""
 		rawJSON, _ := json.Marshal(&fact)
@@ -598,6 +603,7 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 				state.CommittedResultSequence = fact.LedgerSequence
 				state.CommittedResultOutcomeDigest = fact.SupervisorOutcomeFactDigest
 				state.CommittedResultCollect = fact.SupervisorCollect
+				state.CommittedResultObservation = fact.ResultObservation
 				if fact.SupervisorOutcomeFactDigest != "" {
 					state.CommittedResultCollect, _ = supervisorCheckpointEvidence(state, fact.SupervisorOutcomeFactDigest)
 				}

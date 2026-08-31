@@ -2,6 +2,7 @@ package productionruntime
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/chiga0/marshal-harness/internal/application"
@@ -64,6 +65,9 @@ type testAuthority struct {
 	projection   application.RunProjection
 	err          error
 	prepareCalls int
+	collectCalls int
+	collected    CollectedRunResult
+	collectErr   error
 }
 
 func (authority *testAuthority) requireLock() error {
@@ -107,6 +111,14 @@ func (authority *testAuthority) InspectRun(context.Context, resultingress.Curren
 		return application.RunProjection{}, err
 	}
 	return authority.projection, authority.err
+}
+
+func (authority *testAuthority) CollectRunResult(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, string) (CollectedRunResult, error) {
+	if err := authority.requireLock(); err != nil {
+		return CollectedRunResult{}, err
+	}
+	authority.collectCalls++
+	return authority.collected, authority.collectErr
 }
 
 type testBridge struct {
@@ -166,7 +178,7 @@ func testComponents(t *testing.T) (*controller, *testOwnerLock, *testAuthority, 
 	t.Helper()
 	acquisition := testAcquisition()
 	lock := &testOwnerLock{want: acquisition}
-	profile, err := NewPi0843Profile("/fixed/bin/pi", "/fixed/bin/node", runtimeTestDigest)
+	profile, err := NewPi0844Profile("/fixed/bin/pi", "/fixed/bin/node", runtimeTestDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +211,29 @@ func TestControllerCannotMutateBeforeRuntimeClaim(t *testing.T) {
 	}
 }
 
+func TestCollectRunResultUsesOneOwnerCriticalSection(t *testing.T) {
+	controller, lock, authority, _, _ := testComponents(t)
+	runtime := claimTestRuntime(t, controller)
+	defer runtime.Close()
+	want := CollectedRunResult{Run: testSuccessor(), AdmissionFactDigest: runtimeTestDigest, DRCDigest: runtimeTestDigest, EnvelopeDigest: runtimeSuccessDigest}
+	authority.collected = want
+	got, err := runtime.CollectRunResult(context.Background(), "run-1")
+	if err != nil || got.Run != want.Run || got.AdmissionFactDigest != want.AdmissionFactDigest || got.DRCDigest != want.DRCDigest || got.EnvelopeDigest != want.EnvelopeDigest || authority.collectCalls != 1 || lock.sections != 1 {
+		t.Fatalf("got=%#v err=%v collects=%d sections=%d", got, err, authority.collectCalls, lock.sections)
+	}
+}
+
+func TestCollectRunResultPreservesAttemptStillRunning(t *testing.T) {
+	controller, lock, authority, _, _ := testComponents(t)
+	runtime := claimTestRuntime(t, controller)
+	defer runtime.Close()
+	authority.collectErr = ErrAttemptStillRunning
+	_, err := runtime.CollectRunResult(context.Background(), "run-1")
+	if !errors.Is(err, ErrAttemptStillRunning) || authority.collectCalls != 1 || lock.sections != 1 {
+		t.Fatalf("err=%v collects=%d sections=%d", err, authority.collectCalls, lock.sections)
+	}
+}
+
 func TestStartUsesOneCriticalSectionAndRejectsPreparedForgery(t *testing.T) {
 	controller, lock, _, bridge, _ := testComponents(t)
 	runtime := claimTestRuntime(t, controller)
@@ -214,7 +249,7 @@ func TestStartUsesOneCriticalSectionAndRejectsPreparedForgery(t *testing.T) {
 func TestStartReplayReturnsDurableSuccessWithoutRespawn(t *testing.T) {
 	controller, lock, authority, bridge, _ := testComponents(t)
 	authority.outcome, authority.outcomeFound = testSuccessor(), true
-	bridge.configured, _ = NewPi0843Profile("/fixed/bin/replaced-pi", "/fixed/bin/node", runtimeTestDigest)
+	bridge.configured, _ = NewPi0844Profile("/fixed/bin/replaced-pi", "/fixed/bin/node", runtimeTestDigest)
 	runtime := claimTestRuntime(t, controller)
 	defer runtime.Close()
 	got, err := runtime.StartPreparedRun(context.Background(), testPrepared())
@@ -237,7 +272,7 @@ func TestLostBridgeResponseReturnsNewDurableOutcome(t *testing.T) {
 
 func TestConfiguredProfileDriftFailsInsideCriticalSection(t *testing.T) {
 	controller, lock, _, bridge, _ := testComponents(t)
-	bridge.configured, _ = NewPi0843Profile("/fixed/bin/other-pi", "/fixed/bin/node", runtimeTestDigest)
+	bridge.configured, _ = NewPi0844Profile("/fixed/bin/other-pi", "/fixed/bin/node", runtimeTestDigest)
 	runtime := claimTestRuntime(t, controller)
 	defer runtime.Close()
 	_, err := runtime.StartPreparedRun(context.Background(), testPrepared())
@@ -276,10 +311,10 @@ func TestRuntimeRejectsSecondCompositionForSameOwnerLock(t *testing.T) {
 }
 
 func TestPiProfileRejectsAnythingExceptExactClosedInputs(t *testing.T) {
-	if _, err := NewPi0843Profile("pi", "/fixed/bin/node", runtimeTestDigest); !application.HasReason(err, application.ReasonInvalidRequest) {
+	if _, err := NewPi0844Profile("pi", "/fixed/bin/node", runtimeTestDigest); !application.HasReason(err, application.ReasonInvalidRequest) {
 		t.Fatalf("relative executable err=%v", err)
 	}
-	if _, err := NewPi0843Profile("/fixed/bin/pi", "/fixed/bin/node", "sha256:not-a-digest"); !application.HasReason(err, application.ReasonInvalidRequest) {
+	if _, err := NewPi0844Profile("/fixed/bin/pi", "/fixed/bin/node", "sha256:not-a-digest"); !application.HasReason(err, application.ReasonInvalidRequest) {
 		t.Fatalf("forged digest err=%v", err)
 	}
 }

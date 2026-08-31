@@ -25,7 +25,7 @@ func TestPreparedFactorySeparatesLedgerOpenFromCurrentCoreObservation(t *testing
 		}
 	}
 	opened := functions["OpenDarwinResultIngressStore"]
-	sealed := functions["SealPi0843DarwinPreparedExecutionStore"]
+	sealed := functions["SealPi0844DarwinPreparedExecutionStore"]
 	if opened == nil || sealed == nil {
 		t.Fatal("descriptor-open and prepared-seal constructors must both exist")
 	}
