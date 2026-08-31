@@ -2,6 +2,7 @@ package productionruntime
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/chiga0/marshal-harness/internal/application"
@@ -64,6 +65,9 @@ type testAuthority struct {
 	projection   application.RunProjection
 	err          error
 	prepareCalls int
+	collectCalls int
+	collected    CollectedRunResult
+	collectErr   error
 }
 
 func (authority *testAuthority) requireLock() error {
@@ -107,6 +111,14 @@ func (authority *testAuthority) InspectRun(context.Context, resultingress.Curren
 		return application.RunProjection{}, err
 	}
 	return authority.projection, authority.err
+}
+
+func (authority *testAuthority) CollectRunResult(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, string) (CollectedRunResult, error) {
+	if err := authority.requireLock(); err != nil {
+		return CollectedRunResult{}, err
+	}
+	authority.collectCalls++
+	return authority.collected, authority.collectErr
 }
 
 type testBridge struct {
@@ -196,6 +208,29 @@ func TestControllerCannotMutateBeforeRuntimeClaim(t *testing.T) {
 	_, err := controller.prepareRunStart(context.Background(), application.PrepareRunStartRequest{RunID: "run-1", ExpectedSequence: 3, ExpectedAuthorityHead: runtimeTestDigest})
 	if !application.HasReason(err, application.ReasonOwnerUnavailable) || lock.sections != 0 || authority.prepareCalls != 0 || bridge.verifyCalls != 0 {
 		t.Fatalf("unclaimed err=%v sections=%d prepares=%d verifies=%d", err, lock.sections, authority.prepareCalls, bridge.verifyCalls)
+	}
+}
+
+func TestCollectRunResultUsesOneOwnerCriticalSection(t *testing.T) {
+	controller, lock, authority, _, _ := testComponents(t)
+	runtime := claimTestRuntime(t, controller)
+	defer runtime.Close()
+	want := CollectedRunResult{Run: testSuccessor(), AdmissionFactDigest: runtimeTestDigest, DRCDigest: runtimeTestDigest, EnvelopeDigest: runtimeSuccessDigest}
+	authority.collected = want
+	got, err := runtime.CollectRunResult(context.Background(), "run-1")
+	if err != nil || got.Run != want.Run || got.AdmissionFactDigest != want.AdmissionFactDigest || got.DRCDigest != want.DRCDigest || got.EnvelopeDigest != want.EnvelopeDigest || authority.collectCalls != 1 || lock.sections != 1 {
+		t.Fatalf("got=%#v err=%v collects=%d sections=%d", got, err, authority.collectCalls, lock.sections)
+	}
+}
+
+func TestCollectRunResultPreservesAttemptStillRunning(t *testing.T) {
+	controller, lock, authority, _, _ := testComponents(t)
+	runtime := claimTestRuntime(t, controller)
+	defer runtime.Close()
+	authority.collectErr = ErrAttemptStillRunning
+	_, err := runtime.CollectRunResult(context.Background(), "run-1")
+	if !errors.Is(err, ErrAttemptStillRunning) || authority.collectCalls != 1 || lock.sections != 1 {
+		t.Fatalf("err=%v collects=%d sections=%d", err, authority.collectCalls, lock.sections)
 	}
 }
 

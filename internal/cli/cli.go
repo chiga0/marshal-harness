@@ -2402,8 +2402,10 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 			fmt.Fprintln(stderr, "运行失败：缺少当前有效的 plan 审批。")
 			return ExitFailure
 		}
-		// ADR 0068 READY 分支：sealed 生产组合是唯一合法的 READY→RUNNING
-		// 生产者；compatibility profile 的 execution.Run 不再接受 READY run。
+	}
+	if state.State == domain.StateReady || state.State == domain.StateRunning {
+		// ADR 0068 sealed 组合是 READY→RUNNING 以及 terminal
+		// RUNNING→VERIFYING 的唯一生产入口。
 		return runSealedReadyBranch(ctx, location.StateRoot, location.RepositoryRoot, state.TaskID, *runID, stdout, stderr)
 	}
 	if os.Getenv("MARSHAL_WORKER_EXECUTOR") != "legacy" {

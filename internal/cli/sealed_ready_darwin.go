@@ -4,16 +4,19 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"time"
 
+	piadapter "github.com/chiga0/marshal-harness/internal/adapter/pi"
 	"github.com/chiga0/marshal-harness/internal/app"
 	application "github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
@@ -216,6 +219,15 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		ExistingWorktreeDescriptorGraph: worktreeHandles.graph,
 		ExistingWorktreeTargetWorktree:  worktreeHandles.target,
 		LaunchArgvBuilder:               piProductionLaunchBuilder(piRuntime, piEntrypoint, task),
+		ResultParser: func(parserCtx context.Context, input productionruntime.AttemptResultInput) (domain.Record, error) {
+			return piadapter.ParseProductionWorkerResult(parserCtx, piadapter.ProductionResultInput{
+				Transcript: input.Transcript, Worktree: input.Worktree,
+				TaskID: input.TaskID, RunID: input.RunID, AttemptID: input.AttemptID,
+				Executable: input.Executable, Version: input.Version,
+				StartedAt: input.StartedAt, CompletedAt: input.CompletedAt,
+				MaxOutputBytes: input.MaxOutputBytes,
+			})
+		},
 	}
 	composed, err := productionruntime.ComposeRuntime(ctx, inputs, profile)
 	if err != nil {
@@ -223,14 +235,23 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		return ExitFailure
 	}
 	defer func() { _ = composed.Runtime.Close() }()
-	prepared, err := composed.Runtime.PrepareRunStart(ctx, application.PrepareRunStartRequest{RunID: runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：sealed PrepareRunStart 失败：%v\n", err)
-		return ExitFailure
-	}
-	if _, err := composed.Runtime.StartPreparedRun(ctx, prepared); err != nil {
-		fmt.Fprintf(stderr, "运行失败：sealed StartPreparedRun 失败：%v\n", err)
-		return ExitFailure
+	if projection.Run.State == domain.StateReady {
+		prepared, prepareErr := composed.Runtime.PrepareRunStart(ctx, application.PrepareRunStartRequest{RunID: runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
+		if prepareErr != nil {
+			fmt.Fprintf(stderr, "运行失败：sealed PrepareRunStart 失败：%v\n", prepareErr)
+			return ExitFailure
+		}
+		if _, startErr := composed.Runtime.StartPreparedRun(ctx, prepared); startErr != nil {
+			fmt.Fprintf(stderr, "运行失败：sealed StartPreparedRun 失败：%v\n", startErr)
+			return ExitFailure
+		}
+	} else if projection.Run.State == domain.StateRunning {
+		if _, collectErr := composed.Runtime.CollectRunResult(ctx, runID); collectErr != nil {
+			if !errors.Is(collectErr, productionruntime.ErrAttemptStillRunning) {
+				fmt.Fprintf(stderr, "运行失败：sealed CollectRunResult 失败：%v\n", collectErr)
+				return ExitFailure
+			}
+		}
 	}
 	after, err := composed.Runtime.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
 	if err != nil {

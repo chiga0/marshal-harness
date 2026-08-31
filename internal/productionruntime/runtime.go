@@ -181,6 +181,18 @@ func (runtime *Runtime) InspectRun(ctx context.Context, request application.Insp
 	return controller.inspectRun(ctx, request)
 }
 
+// CollectRunResult advances an exact terminal production attempt from
+// RUNNING to VERIFYING after descriptor-bound transcript collection and
+// durable ResultIngress admission.
+func (runtime *Runtime) CollectRunResult(ctx context.Context, runID string) (CollectedRunResult, error) {
+	controller, _, release, err := runtime.beginOperation("collect-run-result")
+	if err != nil {
+		return CollectedRunResult{}, err
+	}
+	defer release()
+	return controller.collectRunResult(ctx, runID)
+}
+
 // beginOperation keeps Runtime.Close behind every in-flight operation and
 // rejects operations that begin after close. The owner verifier itself remains
 // the authority gate; this lock only makes its process lifecycle deterministic.

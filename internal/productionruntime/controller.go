@@ -2,6 +2,7 @@ package productionruntime
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/chiga0/marshal-harness/internal/application"
@@ -36,6 +37,10 @@ type DurableRunAuthority interface {
 type ProcessBridge interface {
 	VerifyAgentProfile(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, OwnerProjection, PiProfile) error
 	StartPreparedRun(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, OwnerProjection, PiProfile, application.PreparedRunStart) error
+}
+
+type runCompletionAuthority interface {
+	CollectRunResult(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, string) (CollectedRunResult, error)
 }
 
 // controller is deliberately package-private. Only Runtime can reach mutation
@@ -160,6 +165,32 @@ func (controller *controller) inspectRun(ctx context.Context, request applicatio
 		return application.RunProjection{}, err
 	}
 	return projection, nil
+}
+
+func (controller *controller) collectRunResult(ctx context.Context, runID string) (CollectedRunResult, error) {
+	if runID == "" {
+		return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonInvalidRequest)
+	}
+	authority, ok := controller.authority.(runCompletionAuthority)
+	if !ok {
+		return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonCompositionIncomplete)
+	}
+	var collected CollectedRunResult
+	err := controller.withOwner(ctx, true, func(verifier resultingress.CurrentOwnerLockVerifier, _ OwnerProjection) error {
+		var err error
+		collected, err = authority.CollectRunResult(ctx, verifier, controller.acquisition, runID)
+		if errors.Is(err, ErrAttemptStillRunning) {
+			return err
+		}
+		if err != nil {
+			return mapAuthorityError("collect-run-result", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return CollectedRunResult{}, err
+	}
+	return collected, nil
 }
 
 func (controller *controller) status(ctx context.Context) (OwnerProjection, error) {

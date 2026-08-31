@@ -13,6 +13,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/authority"
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
@@ -62,6 +63,7 @@ type CompositionLedger struct {
 	existingWorktreeTarget  *os.File
 	existingWorktreeEnabled bool
 	launchArgvBuilder       AttemptLaunchArgvBuilder
+	resultParser            AttemptResultParser
 	now                     func() time.Time
 }
 
@@ -121,6 +123,9 @@ type CompositionInputs struct {
 	// tolerates nil for backward compatibility (the composition-time argv is
 	// kept and only the working directory is re-sealed).
 	LaunchArgvBuilder AttemptLaunchArgvBuilder
+	// ResultParser is the adapter-owned strict transcript parser used only
+	// after descriptor-validated supervisor collection.
+	ResultParser AttemptResultParser
 }
 
 // NewCompositionLedger is the only constructor. It validates every input and
@@ -284,6 +289,7 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		environment:           append([]string(nil), inputs.EnvironmentAllowlist...),
 		existingWorktreeGraph: inputs.ExistingWorktreeDescriptorGraph, existingWorktreeTarget: inputs.ExistingWorktreeTargetWorktree,
 		existingWorktreeEnabled: existingWorktreeEnabled, launchArgvBuilder: inputs.LaunchArgvBuilder, now: time.Now,
+		resultParser: inputs.ResultParser,
 	}
 	if existingWorktreeEnabled {
 		edges, edgeErr := authority.NewEdgeRuntime(inputs.Namespace)
@@ -600,7 +606,7 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 			AuthorityNamespaceID: l.namespace, AuthorityNamespaceRef: l.namespaceRef(),
 			TaskID: read.Run.TaskID, RunID: read.Run.RunID, AttemptID: attemptID,
 			AllocationID: allocationID, LeaseID: lease.LeaseId, LeaseDigest: lease.LeaseDigest,
-			DispatchGeneration: lease.Generation, FencingTokenDigest: lease.FencingToken,
+			DispatchGeneration: lease.Generation, FencingTokenDigest: canonical.DigestBytes([]byte(lease.FencingToken)),
 			OrchestratorID: l.orchestrator, RunAuthorityDigest: ready.ReadyAuthorityHead,
 		}
 		// Replay discipline: a fully completed attempt chain skips straight to
