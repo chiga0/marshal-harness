@@ -72,7 +72,11 @@ func testProductionPrompt(taskID, runID, attemptID string) string {
 		"- Do not add a result wrapper or any key not shown in the object, except blocker as described below.\n" +
 		"- Set status truthfully to completed, blocked, failed, or cancelled. Use completed only when the objective and every constraint are fully satisfied.\n" +
 		"- For any non-completed status, add a top-level blocker string explaining why.\n" +
-		"- Replace summary and the declared arrays with truthful values; paths must be relative. Use [] when an array is empty, and set outputTruncated truthfully.\n" +
+		"- Replace summary truthfully and set outputTruncated truthfully.\n" +
+		"- declaredChangedFiles is a unique array of relative-path strings for files actually changed.\n" +
+		"- declaredArtifacts is [] unless the objective explicitly requests a named artifact; each artifact must be an object with id, kind, and exactly one relative path or URI. An ordinary changed file is not automatically an artifact.\n" +
+		"- declaredCommands is [] or an array of objects with commandId, status (passed, failed, not-run, or unknown), and optional summary.\n" +
+		"- declaredRisks is [] or an array of non-empty strings.\n" +
 		"- Keep the placeholder adapter executable/version and timestamps; Marshal replaces them with observed authority.\n" +
 		`{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"` + taskID + `","runId":"` + runID + `","attemptId":"` + attemptID + `","adapter":{"id":"pi","executable":"marshal-observed","version":"marshal-observed"},"status":"completed","summary":"Describe the outcome","declaredChangedFiles":[],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"outputTruncated":false,"startedAt":"1970-01-01T00:00:00Z","completedAt":"1970-01-01T00:00:01Z"}` + "\n"
 }
