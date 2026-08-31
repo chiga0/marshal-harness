@@ -291,8 +291,6 @@ func (l *CompositionLedger) Close() error {
 	return errors.Join(errs...)
 }
 
-func (l *CompositionLedger) ownerLock() repositoryOwnerLock { return l.owner }
-
 // CurrentOwner resolves the exact current owner and derives PendingRecovery
 // from the RB1 Run journal: a RUNNING run means an attempt is in flight
 // without a terminal fact, which is exactly ADR 0056's recovery condition.

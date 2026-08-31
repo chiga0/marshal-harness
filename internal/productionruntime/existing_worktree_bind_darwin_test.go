@@ -106,15 +106,6 @@ func pathBCompositionInputs(t *testing.T) (CompositionInputs, string, string, st
 	ownerFixture := newOwnerLockFixture(t)
 	store := openOwnerStore(t, ownerFixture)
 	acquisition := acquisitionAtEpoch(1)
-	fixed, fixedErr := os.Executable()
-	if fixedErr != nil {
-		t.Fatal(fixedErr)
-	}
-	if resolved, resolveErr := filepath.EvalSymlinks(fixed); resolveErr != nil {
-		t.Fatal(resolveErr)
-	} else {
-		fixed = resolved
-	}
 	repository := filepath.Join(ownerFixture.base, "repository")
 	worktreePath := filepath.Join(ownerFixture.base, "worktree")
 	baseSHA := pathBTestRepo(t, repository, worktreePath)
