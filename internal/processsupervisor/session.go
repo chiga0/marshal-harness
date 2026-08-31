@@ -266,14 +266,12 @@ func (session *Session) handleLocked(raw []byte) Response {
 	return session.commitCommandLocked(request, projection, payload)
 }
 
-// HandleAttachRebind executes exactly one bind-authority(owner-successor)
-// rebind on an already-bound session, reached only from the read-only Attach
-// transport (ADR 0067 §4.6). It never accepts any other command and never
-// relaxes the generic admitRequest gate that keeps bind-authority illegal in
-// the bound state on the command loop. Journal replay for an exact same-ID
-// request is honored so a same-owner response-loss re-send reproduces the
-// already-fsynced receipt instead of a second side effect.
-func (session *Session) HandleAttachRebind(raw []byte) Response {
+// HandleAttachContinuation executes the closed command set admitted on one
+// authenticated Attach transport. bind-authority uses the owner-successor
+// gate; Collect/Inspect/Close retain the ordinary bound-session admission
+// checks. Spawn, Resume, Terminate and every unknown command fail closed.
+// Exact replay remains idempotent for response-loss recovery.
+func (session *Session) HandleAttachContinuation(raw []byte) Response {
 	if session == nil {
 		return rejectedResponse(Request{}, ErrInvalid.ReasonCode)
 	}
@@ -286,11 +284,27 @@ func (session *Session) HandleAttachRebind(raw []byte) Response {
 	if response, handled := session.replayCommandLocked(request); handled {
 		return response
 	}
-	projection, payload, err := session.admitRebind(request)
+	var projection requestProjection
+	var payload any
+	var err error
+	switch request.Command {
+	case CommandBindAuthority:
+		projection, payload, err = session.admitRebind(request)
+	case CommandCollect, CommandInspect, CommandClose:
+		projection, payload, err = session.admitRequest(request)
+	default:
+		err = ErrConflict
+	}
 	if err != nil {
 		return rejectedResponse(request, ReasonCode(err))
 	}
 	return session.commitCommandLocked(request, projection, payload)
+}
+
+// HandleAttachRebind is kept as the narrow compatibility entry point used by
+// existing rebind tests and callers. The closed-set dispatcher still applies.
+func (session *Session) HandleAttachRebind(raw []byte) Response {
+	return session.HandleAttachContinuation(raw)
 }
 
 // replayCommandLocked returns the stored response for an already-committed

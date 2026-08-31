@@ -275,6 +275,36 @@ func TestCollectAdvancesObservationForNextCleanupAndDurableCoreRestart(t *testin
 	}
 }
 
+func TestAttachContinuationAdmitsTerminalClosedSet(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	bootstrap := validBootstrap()
+	journal, _ := testJournal(t)
+	session, err := NewSession(bootstrap, journal, fakeMechanics{}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.state = sessionBound
+	session.startedFact = digest("attach-started")
+	session.lastObservation = digest("attach-observation")
+
+	collect := commandRequest(t, bootstrap.SessionID, CommandCollect, "attach-collect", 1, CommandGenesisDigest, bootstrap.CurrentAuthorityHead, now.Add(20*time.Second), CollectPayload{
+		ProcessStartedFactDigest: session.startedFact,
+		LastObservationDigest:    session.lastObservation,
+	})
+	before := journal.Snapshot().Sequence
+	response := session.HandleAttachContinuation(mustCanonical(collect))
+	if response.Status != "ok" || response.Command != CommandCollect || journal.Snapshot().Sequence != before+2 {
+		t.Fatalf("collect response=%+v journal=%d", response, journal.Snapshot().Sequence)
+	}
+
+	spawn := commandRequest(t, bootstrap.SessionID, CommandSpawn, "attach-spawn", 2, response.CommandHead, bootstrap.CurrentAuthorityHead, now.Add(time.Minute), validSpawnPayload())
+	before = journal.Snapshot().Sequence
+	response = session.HandleAttachContinuation(mustCanonical(spawn))
+	if response.Status != "rejected" || response.ReasonCode != ErrConflict.ReasonCode || journal.Snapshot().Sequence != before {
+		t.Fatalf("spawn response=%+v journal=%d", response, journal.Snapshot().Sequence)
+	}
+}
+
 func TestReconnectRecoversAfterInstalledOwnerHandshakeIsLost(t *testing.T) {
 	for _, withPendingReceipt := range []bool{false, true} {
 		name := "no-pending"

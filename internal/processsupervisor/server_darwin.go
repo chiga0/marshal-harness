@@ -242,10 +242,9 @@ func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.
 		observed, observeErr := peerObserver(connection)
 		reconnectReader := bufio.NewReaderSize(connection, MaxWireFrameBytes+frameHeaderBytes+1)
 		reconnectRaw, readErr := readFrame(reconnectReader, MaxWireFrameBytes)
-		// Attach is a read-only probe. It must be dispatched before the reconnect
-		// boundary check so that an Attach identity conflict never triggers
-		// session.intervene and never mutates mechanics state. Attach never sends
-		// a command, rebuilds the child, or reopens a pipe.
+		// Attach is dispatched before reconnect admission so an Attach identity
+		// conflict never mutates mechanics state. Its authenticated borrowed
+		// transport may carry exactly one command from the closed continuation set.
 		if readErr == nil && wireSchema(reconnectRaw) == AttachSchema {
 			attachErr := serveAttach(connection, reconnectReader, session, boundary, supervisorIdentity, observed, reconnectRaw)
 			_ = connection.Close()
@@ -255,6 +254,9 @@ func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.
 					continue
 				}
 				return attachErr
+			}
+			if state := session.State(); state == string(sessionClosed) || state == string(sessionAborted) {
+				return nil
 			}
 			continue
 		}
@@ -451,11 +453,9 @@ func serveAttach(connection *net.UnixConn, reader *bufio.Reader, session *Sessio
 		return ErrConflict
 	}
 	// Attach owns a deliberately narrow borrowed transport. After the
-	// observation it accepts at most one bind-authority(owner-successor) rebind
-	// frame on this same connection (ADR 0067 §4.6); EOF alone is the read-only
-	// Attach. The generic command loop is never entered, so bind-authority
-	// remains illegal in the bound state except through this exact path, and any
-	// admission mismatch drops the connection without mutating mechanics state.
+	// observation it accepts at most one command from the explicit continuation
+	// set: bind-authority(owner-successor), Collect, Inspect, or Close. EOF alone
+	// is the read-only Attach. The generic command loop is never entered.
 	if connection.SetReadDeadline(time.Now().Add(handshakeTimeout)) != nil {
 		return ErrConflict
 	}
@@ -473,13 +473,21 @@ func serveAttach(connection *net.UnixConn, reader *bufio.Reader, session *Sessio
 	if frameErr != nil {
 		return ErrConflict
 	}
-	rebindResponse := session.HandleAttachRebind(frame)
-	if rebindResponse.Status != "ok" {
-		// Admission or decode failure never appended to the journal; drop without
-		// echoing a rejected receipt so no peer can mistake it for a checkpoint.
+	var continuation Request
+	if strictCanonicalDecode(frame, &continuation) != nil {
 		return ErrConflict
 	}
-	if writeFrame(connection, rebindResponse, MaxWireFrameBytes) != nil {
+	continuationResponse := session.HandleAttachContinuation(frame)
+	commandJournal := session.journal.Snapshot()
+	if commandJournal.Sequence == journalBefore.Sequence {
+		// Admission/decode failure appended nothing. Drop without a response so a
+		// peer cannot mistake a rejection for a committed mechanics checkpoint.
+		return ErrConflict
+	}
+	if commandJournal.pending != nil || commandJournal.Sequence != journalBefore.Sequence+2 {
+		return ErrIntervention
+	}
+	if writeFrame(connection, continuationResponse, MaxWireFrameBytes) != nil {
 		return ErrConflict
 	}
 	var unexpected [1]byte
@@ -490,8 +498,20 @@ func serveAttach(connection *net.UnixConn, reader *bufio.Reader, session *Sessio
 	if err != nil || !sameAttachControlBoundary(final, before) {
 		return ErrIntervention
 	}
-	if journalFinal.pending != nil || journalFinal.Sequence != journalBefore.Sequence+2 || journalFinal.currentAuthorityHead == journalBefore.currentAuthorityHead {
+	if journalFinal.pending != nil || journalFinal.Sequence != journalBefore.Sequence+2 {
 		return ErrIntervention
+	}
+	switch continuation.Command {
+	case CommandBindAuthority:
+		if journalFinal.currentAuthorityHead == journalBefore.currentAuthorityHead {
+			return ErrIntervention
+		}
+	case CommandCollect, CommandInspect, CommandClose:
+		if journalFinal.currentAuthorityHead != journalBefore.currentAuthorityHead {
+			return ErrIntervention
+		}
+	default:
+		return ErrConflict
 	}
 	return nil
 }
