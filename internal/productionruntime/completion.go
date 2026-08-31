@@ -13,7 +13,6 @@ import (
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
-	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/verification"
@@ -75,7 +74,7 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 	var result domain.Record
 	var collectOutcomeDigest string
 	if attempt.CommittedResultFactDigest == "" {
-		terminal, probeErr := processsupervisor.ExpectedProcessTerminal(attempt.ProcessStartedEvidence.Outcome.Process)
+		terminal, probeErr := resultingress.ExpectedAttemptProcessTerminal(attempt)
 		if probeErr != nil {
 			return CollectedRunResult{}, probeErr
 		}

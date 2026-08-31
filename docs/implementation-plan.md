@@ -2,6 +2,8 @@
 
 本计划用于把当前 embedded/local 先行实现逐步收敛到[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Milestone 是交付顺序，不是产品定位。
 
+> **2026-08-31 release checkpoint**：`main@3819462` 的固定 Marshal Darwin arm64 candidate 已以真实 Pi 完成 `RC1-PI-20260831-3819462`，并由独立 Verification/ReviewDecision 进入 `ACCEPTED`。该结果证明主生命周期可达，但尚未满足 ADR 0068 的 zero environment selector/direct fallback 与 same-bytes publication chain。exact-head CI 的剩余 architecture failure 已由后续本地切片修复并通过定向 test/race、vet、staticcheck、diff-check；该切片合入后必须在新 final bytes 上重跑 canary。接下来只允许按以下顺序推进：删除 production selector/direct fallback → pre-tag immutable candidate/receipt/carrier → fresh same-bytes `ACCEPTED` 与恢复/负向门禁 → required CI 全绿 → annotated `v1.0.0-rc1` GitHub prerelease。server、managed signing/notarization 与 Linux stable 继续后置。
+
 > **当前权威路线（2026-08-28）**：实施顺序以仓库根目录 `AGENTS.md`、[Roadmap 状态](roadmap-status.md)、[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md) 与 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 为准，按纵切优先的 `I186-R0→R6` 收敛。Milestone 0–9 的历史结论与代码资产保留，但历史 `PASSED` 不自动等于 v1.0 production integration。当前 `I186-R0: PASSED`、`I186-R1: IN_PROGRESS（INTEGRATED）`、`I186-R2–R5: IN_PROGRESS（COMPONENT，production 语义未收敛）`、`I186-R6: PLANNED（DESIGN）`。M10–M13 不再阻塞 v1.0，作为 1.x 候选在 R6 后重新排期。本文后续 M0–M13 章节保留历史目标，不得据此提前升级实现状态。
 
 > **2026-08-28 执行 checkpoint**：durable server run controller 已于 `main@44ee8c9` 合入；受支持的 production selector 已于 `main@d4b9647` 收紧；ResultIngress admission→worker-result→Run journal crash-atomic 持久化/恢复已于 `main@912f659` 合入。前置 Pi `0.84.3` fixed-bin canary 绑定 `sourceHead=d4b9647`，单 Attempt 通过 9 项 Gate 到 ReviewPacket/`REVIEW_PENDING`；它尚未导入独立 ReviewDecision、未进入 `ACCEPTED`。unsigned RC 路径可行但产物尚未发布。上述事实不升级 R2–R6。
@@ -27,12 +29,12 @@
 | 阶段 | 状态 | 当前成熟度 | 必须交付的最短纵切 | 退出条件 |
 | --- | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 0043–0045、baseline report 与 golden trace | 历史证据保留，不重复实施 |
-| `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 在现有 `execution.Service` 唯一 seam 接通真实 Agent-in-Local/Container allocation | fixed `cmd/marshal` CLI mutation 或 `marshal control-plane serve` 可达；独立 `cmd/marshal-server` 不计；Agent 实际在 allocation；真实 result bytes 返回 Core |
-| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | command/result authority收敛到现有durable journal；ResultIngress事务化接纳；ADR0063/0065/0067/0069合同已接受 | `main@912f659`已合入crash-atomic admission/worker-result/Run journal；完整S1′仍开放：S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor（含item 5 borrow seam/门禁）。`3abed5a`仅为未合入候选，旧候选均不计进展 |
-| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | production selector已收紧到`LaunchCapable`；RB1 existing-worktree authority/projection已于`main@259edd3`实现；保留PreparedExecution、exact resume、sealed proof与fixed Supervisor | ordinary-user明确N/A hardened；任一binding/process/source/cwd漂移拒绝；S2′必须消费RB1事实并以existing-only Run open、同一reservation和`bind-existing-worktree` profile真实产生全`PrepareRunStart`链 |
-| `I186-R4` | `IN_PROGRESS` | `COMPONENT` | 单一 recovery decision 与 `marshal explain`；已合入的 loopback server controller 复用固定 CLI authority；admission/terminalization authority CAS | `main@44ee8c9` controller 接入 cleanup transaction；kill/restart/cancel/timeout/retry 和重复 start 只有一个可回放结论；未知进程 identity 零 kill 并 fence |
-| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | `sourceHead=d4b9647` 的前置 canary 已单 Attempt/9 Gate 到 `REVIEW_PENDING`；继续接入独立 ReviewDecision、eligibility terminal、allocation terminal receipt 与 `cleanup-completed` | 在最终 `main` 将同一 fixed-bin E2E 推进到 `ACCEPTED`；cleanup-before-unlock/successor；无重复副作用；旧 bypass 机械拒绝 |
-| `I186-R6` | `PLANNED` | `DESIGN` | build-once dist contract、精确opt-in installer guard与immutable carrier checker/Schema已实现；真实same-bytes canary/carrier、tag、GitHub prerelease、签名/notarization、升级/回滚与stable release仍未完成 | 先用最终fixed-bin证据与同一bytes发布Darwin arm64 unsigned RC1；其后接server、Issue #212 managed signing/notarization与Linux stable gate，能力成熟度才可升级为`RELEASED` |
+| `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 在现有 `execution.Service` 唯一 seam 接通真实 Agent-in-Local/Container allocation | `main@3819462` 已由 fixed CLI 运行真实 Pi-in-Local allocation 并返回真实 result bytes；新 final bytes 仍须重跑 |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | command/result authority收敛到现有durable journal；ResultIngress事务化接纳；ADR0063/0065/0067/0069合同已接受 | `main@3819462` 的真实 fixed-CLI 纵切已穿过 reservation/full Attempt、sealed successor 与 current ResultIngress，并在 fresh process 中重读为 `ACCEPTED`；新 final bytes 仍须完成 crash/response-loss/ABA/forgery/replay 负向矩阵 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | RB1 existing-worktree authority/projection、PreparedExecution、exact resume、fixed Supervisor、Attach/rebind 与 terminalization 已进入真实纵切 | `main@3819462` 已真实穿过该链；发布前必须把 production environment selector 与 direct `Adapter.Run` fallback 归零，并补齐 source/cwd/process/binding drift 矩阵；ordinary-user 仍不得描述为 hardened |
+| `I186-R4` | `IN_PROGRESS` | `COMPONENT` | 单一 recovery decision、admission/terminalization authority CAS 与 fresh-process reread 已进入真实成功路径 | success path 已由 `main@3819462` 证明；退出前仍须覆盖 kill/restart/cancel/timeout/response-loss/retry、重复 start、未知或复用 PID 的唯一可回放结论；fixed server 属于 RC1 后继 |
+| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | `main@3819462` 已由 fixed CLI real-Pi + 独立 Verification/ReviewDecision 进入 `ACCEPTED` | 最终发布 sourceHead 将 environment selector/direct fallback 归零，并重跑同一 bytes 的恢复/负向门禁；无重复副作用 |
+| `I186-R6` | `PLANNED` | `DESIGN` | build-once dist contract、精确opt-in installer guard与immutable carrier checker/Schema已实现；`main@3819462` same-bytes canary 已 `ACCEPTED` | 新 final bytes 生成 current-authority receipt/carrier，经 required CI、annotated tag 与 no-rebuild workflow 发布 Darwin arm64 unsigned RC1；其后接 stable gates |
 
 v1.0 的唯一支持链是：
 
@@ -49,30 +51,16 @@ marshal / marshal control-plane serve
 
 Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Provider/SDK 矩阵、Web UI 与复杂 Goal DAG 均延期到 1.x。
 
-当前交付顺序固定如下，禁止再横向铺组件：
+当前剩余交付顺序固定如下，禁止把已经由真实 canary 穿过的 S1′/S2′/Attach/terminalization 重新实现一遍：
 
-1. 锁定 `main@912f659` 的 crash-atomic ResultIngress transaction 为唯一 admission 基线，不再建立另一条 ResultIngress/worker-result 真值；
-2. 从当前 `main` 实现完整 S1′-A：按已接受ADR0069由ResultIngress/RB1实现`attempt-reserved` active→consumed|cancelled closed union，对同一RunID+exact READY seq/head lookup-before-mint；dispatch authority对reservation digest+RunID+reserved AttemptID lookup-before-claim并same-bytes replay；budget从held Run authority三次重验，只有sealed successor写Attempt并恰好计数一次；`3abed5a`只作为未合入候选审查，不计已完成；
-3. 紧接着完成 S1′-B fresh-start sealed proof：Core只做无副作用current source/cwd admission，Supervisor`spawn`做唯一mutation-adjacent exact-set gate；ResultIngress proof/shared guard与runstore private projector/self-only CAS直接建立在当前Store/Lease上；ResultIngress authority改用ADR0066 held descriptor backend，禁止pathname reopen；item 5 borrow seam/门禁与sealed successor必须在同一完整S1′候选中闭合；generic`Append READY→RUNNING`拒绝，明确不引入`506a647`通用substrate；
-4. S2′必须立即相邻：消费`main@259edd3`已实现的RB1-authoritative existing-worktree Bind/Receipt/Release与descriptor-bound recovery projection，并补齐existing-only Run open/acquire（未知Run不得`MkdirAll`）；固定`.marshal/runtime-v1/existing-worktree-bindings/`仅为可重建projection，目标只bind/release，不创建、替换、clean、reset或删除；
-5. S2′ concrete authority必须按`reservation→dispatch lease/full AttemptIdentity→attempt-opened→BindOwnerToAttempt→RB1 bind-intent→projection/effect→RB1 bind-receipt→launch-authorized/StoredClosure→Prepared→S1 start`产生真实链；锁序固定owner→Run→RB1→projection。fixed CLI/Pi必须亲历全链，seed/Fake/memory-only/legacy `execution.Run`/create-empty receipt/sidecar authority皆不可达；
-6. S2′后先以独立切片实现ADR0067 held-owner/acquisition→RB1 no-pending→`control-owner-bound` successor→只读`Attach`→exact bind链，只支持`process-started`已耐久、无pending command的恢复；同时实现pre-start no-effect链/permanent intervention二分，跨owner pending与identity ambiguity固定permanent intervention；
-7. 随后按ADR0056/0061接入terminalization CAS、transcript disposition、allocation terminal receipt、`cleanup-completed`与successor；不得回塞S1′/S2′；existing-worktree terminate只释放逻辑binding，禁止删除用户worktree；
-8. 由 fixed CLI 运行当前主线真实 Pi，独立 reviewer 为 current Evidence 生成ReviewDecision，通过现有`task review --decision`从`REVIEW_PENDING`到`ACCEPTED`，并证明旧cooperative process group已安全退出或被fence、不会与successor双活；
-9. 使用已实现并独立审查的build-once dist contract、exact opt-in installer guard与immutable carrier validator，在最终 Darwin arm64 bytes 上完成host viability、真实canary receipt/carrier assembly、checksum/install/recovery负测、annotated tag与GitHub prerelease；缺资产不得fallback，安装器不得自动activation；
-10. RC1 后再接入 ADR0062 authenticated fixed`marshal control-plane serve`/durable delivery ledger，完成Issue #212 managed signing/notarization与Linux production/release gate，最后以新的受保护bytes发布stable。
+1. 合入 exact-head architecture CI 修复，保持 `productionruntime` 不直接越层读取 Supervisor mechanics，并把 `MARSHAL_WORKER_EXECUTOR` 读取收敛为单点；
+2. 删除 fixed production path 的 environment selector 与 direct `Adapter.Run` fallback，把 ADR 0068 的 selector debt 归零；unsupported ordinary-user Adapter 必须 fail closed，不得静默回退；
+3. 在 tag 前构建一次 immutable Darwin arm64 candidate，生成并冻结 sourceHead、binary digest 与 current-authority receipt/carrier 输入；
+4. 在该最终 bytes 上重跑 fixed CLI 真实 Pi→current ResultIngress→独立 Verification/ReviewDecision→fresh-process `ACCEPTED`，并一次覆盖 crash/response-loss/ABA/forgery/replay/process-reuse/cancel/timeout、source/cwd/process/binding drift 负向矩阵；
+5. 完成 RC1 单资产 checksum/install、CI/tag admission 与 consume-existing-artifact/no-rebuild GitHub prerelease；缺资产或 identity 漂移必须 fail closed，安装器不得自动 activation；
+6. RC1 后再接入 ADR 0062 authenticated fixed `marshal control-plane serve`/durable delivery ledger，完成 Issue #212 managed signing/notarization 与 Linux production/release gate，最后发布 stable。
 
-### Darwin ordinary-user 进程生命周期实现顺序
-
-[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 的实现必须作为一个 production vertical slice，不拆成不可达的孤立 package：
-
-1. 在现有 authority storage 中 append-only 持久化 `process-started`、terminalization barrier 与 cleanup facts；ResultIngress admission 和 barrier 使用同一 transaction/CAS；
-2. Core-owned launch coordinator 在 barrier 下完成 spawn/process-group、PID birth、cwd/executable held-FD 与 live handle 观察，Provider 只返回 claim；内存 handle/map 仅作 projection；
-3. eligibility 正常/异常终止时立即 generation bump/fence；仅保留 cleanup-only binding。Sandbox bridge 与 Provider `Terminate` receipt 接入同一 transaction，在安全 process-group 终点后写 `allocation-terminated`、`cleanup-completed`，最后释放 cleanup binding；
-4. 已合入的 server controller 与 execution recovery 先以同一 barrier 固定 ResultIngress 结论，再清理旧控制单元，只有 `cleanup-completed` 后才 unlock/retry/successor；
-5. 一次完成 crash/CAS-race/ABA/forgery/replay/process-reuse/detach 矩阵和真实 Darwin fixed-bin E2E。禁止用匿名临时 executable、全机 `ps` 匹配或 PID-only kill 代替权威观察。
-
-该顺序不新建服务、queue 或状态库，也不接受 ADR 0035 的 Run owner V2；缺少当前合法 Run authority 时，清理方只能 fence/intervention，不能跨编排 kill。
+ADR 0056/0061 的进程与恢复合同现在是最终 bytes 的验收标准，而不是再次铺设一套平行实现。不得新建服务、queue 或状态库；缺少当前合法 Run authority 时，清理方只能 fence/intervention，不能跨编排 kill，也不得用匿名临时 executable、全机 `ps` 匹配或 PID-only kill 代替权威观察。
 
 ### v1.0 复杂度预算
 
@@ -81,7 +69,7 @@ I186-R1→R6 按[整体架构的 v1.0 物理投影](architecture.md#v10-物理�
 - Control Plane 默认保持一个固定 `marshal` binary（CLI 或 `marshal control-plane serve` 进程）和一条 authority write path；独立 `marshal-server` executable 仅是历史/测试兼容，不得进入 production topology；Kernel、admission、schedule/allocation、ResultIngress、Decision 与 effect reconcile 优先实现为进程内模块；
 - v1.0 不新建通用 `WorkflowTemplate` DSL、Goal DAG runtime、跨节点 scheduler、独立 GC service、第二 queue 或第二状态库；
 - 新增 seam 必须直接关闭当前 R1–R6 exit criterion，或关闭已经在同一生产链复现的确定性故障；仅有未来复用价值不足以插入主线；
-- 默认每个切片必须在同一变更中接到 `cmd/marshal` 或 `marshal control-plane serve` 的真实 composition root 并取得真实路径证据，禁止无界铺 package/schema 后延期集成。唯一窄例外由 ADR 0063 与 ADR 0065 的已接受合同共同约束：**S1 sealed proof component → 立即相邻 S2 fixed composition**；S1 不得升级成熟度，不得插入第二 component、Provider 扩面、terminalization 或无关工作，S2 未完成就不得继续横向扩展；
+- 默认每个切片必须在同一变更中接到 `cmd/marshal` 的真实 composition root 并取得真实路径证据，禁止无界铺 package/schema 后延期集成；ADR 0063/0065 曾允许的 **S1 sealed proof component → 立即相邻 S2 fixed composition** 窄例外已由 `main@3819462` 的真实链闭合，不得再作为新增 component 的依据；`marshal control-plane serve` 属于 RC1 后继；
 - Provider 扩面必须晚于至少一条真实 Agent-in-Sandbox 纵切闭环；新增 Agent 复用既有 Sandbox，新增 Sandbox 复用既有 Agent，不复制 Core 生命周期；
 - 只有独立 trust boundary、durable lifecycle、已测量的扩缩容/故障隔离需要，才能把模块拆成独立进程；拆分不得产生第二业务权威。
 

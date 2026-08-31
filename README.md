@@ -44,7 +44,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 - 使用独立凭据创建 GitHub Draft PR；
 - 中断后的检查、恢复和安全清理。
 
-`marshal-server`、Sandbox SPI、ResultIngress 和恢复组件已经存在。2026-08-28 的前置 Pi `0.84.3` canary 在锁定 sourceHead `d4b9647` 上以单 Attempt 通过 9 项 Gate，到达正式 ReviewPacket/`REVIEW_PENDING`；它没有导入独立 ReviewDecision，也没有进入 `ACCEPTED`。因此这是发布前证据，不是 v1.0 集成或发布完成。详细状态见[当前可用能力](https://chiga0.github.io/marshal-harness/current-status/)。
+`marshal-server`、Sandbox SPI、ResultIngress 和恢复组件已经存在。2026-08-31，固定 Marshal 候选 `main@3819462` 已用真实 Pi 完成单 Run/单 Attempt、ResultIngress、独立 Verification 与独立 ReviewDecision，并进入 `ACCEPTED`；这是当前最强的 Mac-first 生命周期证据。它仍不是已发布 RC1：该 canary 之后还需合入架构门禁修复、移除 production environment selector/direct fallback，并在新的最终 bytes 上重跑 same-bytes canary 与 release carrier。详细状态见[当前可用能力](https://chiga0.github.io/marshal-harness/current-status/)。
 
 ## v1.0 发布目标
 
@@ -52,16 +52,16 @@ v1.0 只承诺单节点、单用户、可信仓库：至少一个真实 AgentPro
 
 Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、全部 Provider hardened 矩阵、Web UI 与复杂 Goal DAG 延期到 1.x，不阻塞首个正式版本。完整范围见 [ADR 0052](docs/adr/0052-v1-release-scope-and-production-reachability.md) 与 [Roadmap](docs/roadmap-status.md)。
 
-### 2026-08-29 发布检查点
+### 2026-08-31 发布检查点
 
-- Pi `0.84.3` fixed-bin canary 绑定 `sourceHead=d4b9647`，单 Attempt 通过 9 项 Gate 到 `REVIEW_PENDING`。该前置 canary 不是当前 `main` 终验，也不是 `ACCEPTED`。
-- durable server run controller 已于 `main@44ee8c9` 合入；受支持的 production selector 已于 `main@d4b9647` 收紧，production profile 只放行 `LaunchCapable` Provider，ordinary workspace Adapter 不再静默降级。
-- ResultIngress admission→worker-result→Run journal 的 crash-atomic 持久化与恢复已于 `main@912f659` 合入。[ADR 0056](docs/adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受，但 Darwin process observation/terminalization 实现仍开放，因此 R2–R5 保持 `COMPONENT`。
-- RB1-authoritative existing-worktree Bind/Receipt/Release 与 recovery projection 已于 `main@259edd3` 合入；Linux staticcheck U1000 修复位于 `main@6176868`。该 exact-head CI 的 Ubuntu quality 与 secret scan 已通过，但 macOS quality 失败，整体仍未全绿。完整 S1′（S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor，含 item 5 borrow seam/门禁）尚未进入 `main`；`3abed5a` 仍只是未合入候选。S2′、Attach/rebind 与 terminalization 同样未完成。
-- RC1 build-once distribution contract、installer exact opt-in guard 与 immutable carrier checker/receipt Schema 已合入并完成独立审查；真实 same-bytes canary/carrier、tag、GitHub prerelease 与 release asset 仍未产生。
+- 固定候选 `main@3819462` 的真实 Pi canary `RC1-PI-20260831-3819462` 已由独立 reviewer 接受并进入 `ACCEPTED`，Decision digest 为 `sha256:5d50b624e41419ef32a1d7251481d5843ab001d3affe0ef6c8a6aad5465df5e9`。
+- 该 canary 证明固定 CLI、durable Attempt/owner/allocation/process authority、真实 Agent 结果接纳、独立 Verification/Review 与终态读取可以形成同一纵切；R2–R5 暂不升级，直到最终发布 sourceHead 的 bypass 归零和恢复/负向门禁闭合。
+- RC1 build-once distribution contract、installer exact opt-in guard 与 immutable carrier checker/receipt Schema 已合入并完成独立审查；当前发布链仍缺 pre-tag immutable candidate producer、current-authority receipt producer/admission、RC1 单资产 tag 校验，以及只消费既有 candidate 而不重建的 prerelease workflow。
+- `main@3819462` 的 required CI 已把剩余红灯收敛到 architecture check；本地修复已让 architecture check、定向 test/race、vet、staticcheck 与 diff-check 通过。合入后仍必须在新 final sourceHead/bytes 上重跑 canary，不能复用旧 digest 冒充同一最终产物。
+- ADR 0068 要求发布调用链中的 environment selector 与 direct `Adapter.Run` fallback 为零；这是新 final candidate 前的最后一个生产调用链切片。
 - unsigned RC 的构建和验证路径可行，但尚未发布任何 RC。稳定 `v1.*` 仍由 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 的 macOS signing/notarization 和 Linux stable release gate 阻断。
 
-[ADR 0067](docs/adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 与 [ADR 0068](docs/adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受；其中 RB1 existing-worktree 与 RC1 distribution/installer/carrier validation 已有 component 实现，但完整 Mac-first 纵切仍须完成 S1′→S2′→Attach/rebind→terminalization，再由 fixed CLI 运行真实 Pi 并经独立 Decision 进入 `ACCEPTED`，最后才可用同一最终 bytes 发布 unsigned Darwin arm64 CLI-only RC1。当前没有可用或已发布的 RC1，R2–R5 仍为 `COMPONENT`、R6 仍为 `PLANNED/DESIGN`；fixed server、managed signing/notarization 和 Linux stable 均属于 RC1 后继。
+[ADR 0067](docs/adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 与 [ADR 0068](docs/adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受。真实 fixed CLI→Pi→独立 Decision→`ACCEPTED` 已在 `main@3819462` 证明，但 ADR 0068 要求最终发布 sourceHead 的 production selector/direct fallback 计数为零，并要求 release workflow 消费同一 immutable candidate bytes；因此当前仍没有可用或已发布的 RC1。R2–R5 暂不升级，R6 仍为 `PLANNED/DESIGN`；fixed server、managed signing/notarization 和 Linux stable 均属于 RC1 后继。
 
 ## 安装
 

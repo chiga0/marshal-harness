@@ -2396,7 +2396,8 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return ExitFailure
 	}
 	state, reconcileErr := runStore.ReconcileSnapshotUnderLease(ctx, reconcileLease)
-	sealedConfigured := sealedPiConfigured(frozenAdapter.AdapterID, entryObservation != nil, os.Getenv("MARSHAL_PI_RUNTIME"), os.Getenv("MARSHAL_PI_ENTRYPOINT"), os.Getenv("MARSHAL_WORKER_EXECUTOR"))
+	legacyWorkerExecutor := os.Getenv("MARSHAL_WORKER_EXECUTOR") == "legacy"
+	sealedConfigured := sealedPiConfigured(frozenAdapter.AdapterID, entryObservation != nil, os.Getenv("MARSHAL_PI_RUNTIME"), os.Getenv("MARSHAL_PI_ENTRYPOINT"), legacyWorkerExecutor)
 	sealedRun := isSealedPiRun(frozenAdapter.AdapterID, state.State, "", true)
 	sealedAuthorityInvalid := false
 	if reconcileErr == nil && state.State == domain.StateRunning {
@@ -2446,7 +2447,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		// RUNNING→VERIFYING 的唯一生产入口。
 		return runSealedReadyBranch(ctx, location.StateRoot, location.RepositoryRoot, state.TaskID, *runID, stdout, stderr)
 	}
-	if os.Getenv("MARSHAL_WORKER_EXECUTOR") != "legacy" {
+	if !legacyWorkerExecutor {
 		if err := runtime.CheckProductionAdmission(worker); err != nil {
 			fmt.Fprintln(stderr, "运行失败：精确 production runtime 当前不可用。")
 			return ExitUnavailable
@@ -2515,7 +2516,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// publication 语义经端到端等价测试证明相同。
 	var workerRunner func(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error)
 	var resultAdmissionReconciler execution.ResultAdmissionReconciler
-	if os.Getenv("MARSHAL_WORKER_EXECUTOR") != "legacy" {
+	if !legacyWorkerExecutor {
 		if sharedRuntime == nil {
 			// embedded sandbox 未启用时仍需一个 runtime 实例承载 bridge。
 			embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now, app.WithLocalRunnerOptions(local.WithExecTimeout(4*time.Hour)))
@@ -2696,8 +2697,8 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return ExitOK
 }
 
-func sealedPiConfigured(adapterID string, fixedSelfAdmitted bool, runtimePath, entrypointPath, executor string) bool {
-	return adapterID == "pi" && fixedSelfAdmitted && runtimePath != "" && entrypointPath != "" && executor != "legacy"
+func sealedPiConfigured(adapterID string, fixedSelfAdmitted bool, runtimePath, entrypointPath string, legacyExecutor bool) bool {
+	return adapterID == "pi" && fixedSelfAdmitted && runtimePath != "" && entrypointPath != "" && !legacyExecutor
 }
 
 func isSealedPiRun(adapterID string, state domain.State, preparationDigest string, authorityValid bool) bool {

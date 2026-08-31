@@ -755,14 +755,14 @@ func TestTaskRunUsesFrozenFallbackAdapter(t *testing.T) {
 
 func TestSealedPiConfiguredRejectsOtherFrozenAdapters(t *testing.T) {
 	for _, adapterID := range []string{"qwen", "qoder", "codex"} {
-		if sealedPiConfigured(adapterID, true, "/fixed/node", "/fixed/pi.js", "") {
+		if sealedPiConfigured(adapterID, true, "/fixed/node", "/fixed/pi.js", false) {
 			t.Fatalf("adapter %q was routed into the Pi-only sealed runtime", adapterID)
 		}
 	}
-	if !sealedPiConfigured("pi", true, "/fixed/node", "/fixed/pi.js", "") {
+	if !sealedPiConfigured("pi", true, "/fixed/node", "/fixed/pi.js", false) {
 		t.Fatal("exact frozen Pi adapter was not admitted")
 	}
-	if sealedPiConfigured("pi", false, "/fixed/node", "/fixed/pi.js", "") || sealedPiConfigured("pi", true, "", "/fixed/pi.js", "") || sealedPiConfigured("pi", true, "/fixed/node", "", "") || sealedPiConfigured("pi", true, "/fixed/node", "/fixed/pi.js", "legacy") {
+	if sealedPiConfigured("pi", false, "/fixed/node", "/fixed/pi.js", false) || sealedPiConfigured("pi", true, "", "/fixed/pi.js", false) || sealedPiConfigured("pi", true, "/fixed/node", "", false) || sealedPiConfigured("pi", true, "/fixed/node", "/fixed/pi.js", true) {
 		t.Fatal("incomplete or legacy Pi configuration was admitted")
 	}
 }

@@ -13,6 +13,33 @@ import (
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
 
+func TestAttemptCloseRecoveryRecordedRequiresExactCloseState(t *testing.T) {
+	closeOutcome := SupervisorProcessOutcome{State: SupervisorSessionClosed}
+	tests := []struct {
+		name  string
+		state AttemptAuthorityState
+		want  bool
+	}{
+		{name: "empty"},
+		{name: "pending-close", state: AttemptAuthorityState{SupervisorPendingIntentDigest: attemptTestDigest("pending-close"), SupervisorPendingIntent: SupervisorCommandIntent{Command: processsupervisor.CommandClose}}, want: true},
+		{name: "pending-inspect", state: AttemptAuthorityState{SupervisorPendingIntentDigest: attemptTestDigest("pending-inspect"), SupervisorPendingIntent: SupervisorCommandIntent{Command: processsupervisor.CommandInspect}}},
+		{name: "committed-close", state: AttemptAuthorityState{SupervisorCommandCheckpoints: []SupervisorCommandCheckpoint{{Evidence: SupervisorCommandEvidence{Command: processsupervisor.CommandClose, Disposition: "ok", Outcome: closeOutcome}}}}, want: true},
+		{name: "rejected-close", state: AttemptAuthorityState{SupervisorCommandCheckpoints: []SupervisorCommandCheckpoint{{Evidence: SupervisorCommandEvidence{Command: processsupervisor.CommandClose, Disposition: "rejected", Outcome: closeOutcome}}}}},
+		{name: "nonterminal-close", state: AttemptAuthorityState{SupervisorCommandCheckpoints: []SupervisorCommandCheckpoint{{Evidence: SupervisorCommandEvidence{Command: processsupervisor.CommandClose, Disposition: "ok", Outcome: SupervisorProcessOutcome{State: SupervisorProcessExited}}}}}},
+		{name: "latest-wins", state: AttemptAuthorityState{SupervisorCommandCheckpoints: []SupervisorCommandCheckpoint{
+			{Evidence: SupervisorCommandEvidence{Command: processsupervisor.CommandClose, Disposition: "ok", Outcome: closeOutcome}},
+			{Evidence: SupervisorCommandEvidence{Command: processsupervisor.CommandInspect, Disposition: "ok", Outcome: SupervisorProcessOutcome{State: SupervisorProcessExited}}},
+		}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := AttemptCloseRecoveryRecorded(test.state); got != test.want {
+				t.Fatalf("AttemptCloseRecoveryRecorded()=%v want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestSupervisorCommandIntentConsumesProducerPreparedEvidence(t *testing.T) {
 	pre := processsupervisor.HandshakeAnchor{
 		SessionID: "prepared-session", SessionNonceDigest: attemptTestDigest("prepared-nonce"), Authority: supervisorAuthorityTuple(attemptTestIdentity()),

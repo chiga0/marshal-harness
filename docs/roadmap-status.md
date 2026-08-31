@@ -1,8 +1,10 @@
 # Roadmap 状态
 
-更新时间：2026-08-30（`main@96efc55` implementation checkpoint）
+更新时间：2026-08-31（`main@3819462` fixed CLI real-Pi `ACCEPTED` checkpoint；后续架构修复待合入）
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
+
+> **2026-08-31 fixed CLI `ACCEPTED` checkpoint**：`main@3819462` 的同一 Darwin arm64 candidate bytes 已通过真实 Pi canary `RC1-PI-20260831-3819462`，由独立 Verification 与独立 ReviewDecision 进入 `ACCEPTED`；Decision digest 为 `sha256:5d50b624e41419ef32a1d7251481d5843ab001d3affe0ef6c8a6aad5465df5e9`。该结果证明 fixed CLI 的主生命周期可达，但不升级 R2–R6，也不授权 tag：exact-head CI 仍有 architecture red；ADR 0068 要求 production environment selector/direct fallback 为零；release workflow 仍缺 pre-tag immutable candidate、current-authority receipt producer/admission、RC1 单资产 tag 校验与 no-rebuild prerelease consumption。当前最短路径只处理这三项并在新 final bytes 上重跑 same-bytes canary，禁止回到横向组件扩张。
 
 > **2026-08-28 当前权威 checkpoint**：`main@44ee8c9` 已合入 durable server run controller；`main@d4b9647` 已收紧受支持的 production selector；`main@912f659` 已合入 ResultIngress admission→worker-result→Run journal crash-atomic 持久化/恢复。前置 Pi `0.84.3` canary 绑定 `sourceHead=d4b9647`，单 Attempt 通过 9 项 Gate 到 ReviewPacket/`REVIEW_PENDING`，但尚未导入独立 ReviewDecision、未进入 `ACCEPTED`，不是当前 `main` 终验。unsigned RC 路径可行但尚未发布；stable `v1.*` 仍被 Issue #212 与 Linux stable gate 阻断。R1 保持 `INTEGRATED`，R2–R5 保持 `COMPONENT`，R6 保持 `PLANNED/DESIGN`。
 >
@@ -42,16 +44,16 @@ Milestone 状态与能力成熟度是两个维度：
 | 阶段 | 状态 | 成熟度 | 当前结论 |
 | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 与 baseline evidence 已完成。 |
-| `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Pi `0.84.3` 在 `sourceHead=d4b9647` 的前置 canary 中由 Local allocation 承载并把真实 result bytes 送入 Core；当前主线重跑仍是发布前门禁。 |
-| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | ResultIngress admission→worker-result→Run journal crash-atomic持久化/恢复已于`main@912f659`合入；ADR0069 已接受。完整S1′仍开放：S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor（含item 5 borrow seam/门禁）；`3abed5a`仅为未合入候选，不计当前进展。 |
-| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | production selector已于`main@d4b9647` fail closed；RB1-authoritative existing-worktree Bind/Receipt/Release 与 projection 已于`main@259edd3`实现，Linux U1000修复位于`main@6176868`；其Ubuntu quality已通过但macOS quality失败。S2′真实producer/fixed composition、Attach与terminalization负测均未完成。 |
-| `I186-R4` | `IN_PROGRESS` | `COMPONENT` | durable server run controller 已随 `main@44ee8c9` 合入，strict E2E 候选也已通过跨进程 restore；但 controller 尚未接入 ADR 0056 的 authority CAS/cleanup transaction。退出前须证明 server crash 后从耐久观察恢复、eligibility 立即 fence、旧控制单元安全终结或 intervention、重复 start 幂等、lost/failed worker 得到唯一可回放结论。 |
-| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | fixed-bin canary 已在 `sourceHead=d4b9647` 以单 Attempt/9 Gate 真实到 ReviewPacket/`REVIEW_PENDING`；但尚未导入独立 Decision 到 `ACCEPTED`，也未完成 ADR 0056 implementation 和最终主线终验。 |
-| `I186-R6` | `PLANNED` | `DESIGN` | build-once dist contract、installer guard 与 immutable carrier checker/Schema 已实现并独立审查；真实 same-bytes canary receipt/carrier、tag、GitHub prerelease与产物均未产生。stable server、Issue #212 managed signing/notarization与Linux gate仍开放。 |
+| `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | `main@3819462` 的真实 Pi 已由 fixed CLI 在 Local allocation 中执行并把真实 result bytes 送入 ResultIngress；新 final bytes 仍须重跑。 |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | `main@3819462` 的真实 fixed-CLI 纵切已穿过 reservation/full Attempt、sealed successor、current ResultIngress，并在 fresh process 中重读为 `ACCEPTED`。新 final bytes 仍须通过 crash/response-loss/ABA/forgery/replay 负向矩阵，因此暂不升级。 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | RB1-authoritative existing-worktree、PreparedExecution、exact resume、fixed Supervisor、Attach/rebind 与 terminalization 已由 `main@3819462` 的真实链穿过。剩余阻塞是 production environment selector/direct `Adapter.Run` fallback 归零，以及 source/cwd/process/binding drift 矩阵；ordinary-user 不得描述为 hardened。 |
+| `I186-R4` | `IN_PROGRESS` | `COMPONENT` | success path 的 authority CAS、terminalization 与 fresh-process reread 已由 `main@3819462` 证明。退出前仍须覆盖 kill/restart/cancel/timeout/response-loss/retry、重复 start、未知或复用 PID 的唯一可回放结论；fixed server 属于 RC1 后继。 |
+| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | `main@3819462` 的 fixed-bin real-Pi canary 已由独立 Verification/ReviewDecision 进入 `ACCEPTED`；发布 sourceHead 仍须把 environment selector/direct fallback 归零并重跑恢复/负向门禁，因此暂不升级。 |
+| `I186-R6` | `PLANNED` | `DESIGN` | build-once dist contract、installer guard 与 immutable carrier checker/Schema 已实现并独立审查；`main@3819462` same-bytes canary 已 `ACCEPTED`，但新 final bytes、current-authority receipt/carrier、tag、GitHub prerelease与产物均未产生。stable server、Issue #212 managed signing/notarization与Linux gate仍开放。 |
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
-当前最短剩余路径是：完整S1′（S1′-A reservation/full Attempt→S1′-B held descriptor/prepared proof/sealed successor，含item 5 borrow seam/门禁；`3abed5a`不计已完成）→S2′消费已实现的RB1 existing-worktree authority/projection并产生完整`PrepareRunStart`→ADR0066 held descriptor与`OpenOwner`后观察→Attach/rebind→terminalization/cleanup（RB1 release唯一释放binding，永不删除用户worktree）→fixed CLI真实Pi经独立Decision进入`ACCEPTED`→用已实现的dist/installer/carrier validator对同一最终Darwin arm64 bytes产生真实canary receipt、carrier、tag、GitHub prerelease与asset。component checker或合同接受不等于实现完成，不能升级阶段。
+当前最短剩余路径是：合入 architecture CI 修复→删除 production environment selector/direct `Adapter.Run` fallback→pre-tag build-once immutable candidate→在新 final bytes 上重跑真实 Pi/独立 Decision `ACCEPTED`、恢复与负向矩阵→由 current authority 产生 receipt/carrier→required CI 全绿→annotated tag 与 consume-existing-artifact GitHub prerelease。component checker或历史 canary 不等于当前 final bytes publication authority，不能提前升级阶段。
 
 ## 快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
 

@@ -17,7 +17,6 @@ import (
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
-	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
@@ -485,14 +484,7 @@ func runningAttemptReadyForCloseRecovery(attempt resultingress.AttemptAuthorityS
 	if attempt.ProcessTerminalDigest == "" || attempt.AllocationTerminalDigest == "" || attempt.SupervisorClosedDigest != "" || attempt.SupervisorInterventionDigest != "" || attempt.Owner.OwnerEpoch != owner.Acquisition.OwnerEpoch || attempt.Owner.ControlOwnerAcquiredFactDigest != owner.FactDigest || attempt.HeadDigest != attempt.ControlOwnerBindingDigest {
 		return false
 	}
-	if attempt.SupervisorPendingIntentDigest != "" {
-		return attempt.SupervisorPendingIntent.Command == processsupervisor.CommandClose
-	}
-	if len(attempt.SupervisorCommandCheckpoints) == 0 {
-		return false
-	}
-	latest := attempt.SupervisorCommandCheckpoints[len(attempt.SupervisorCommandCheckpoints)-1].Evidence
-	return latest.Command == processsupervisor.CommandClose && latest.Disposition == "ok" && latest.Outcome.State == resultingress.SupervisorSessionClosed
+	return resultingress.AttemptCloseRecoveryRecorded(attempt)
 }
 
 // RehydratePreparedRunStart re-projects a durable preparation by digest under

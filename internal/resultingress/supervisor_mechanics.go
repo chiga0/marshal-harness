@@ -192,6 +192,28 @@ const (
 	SupervisorSessionClosed           SupervisorProcessState = "supervisor-closed"
 )
 
+// ExpectedAttemptProcessTerminal performs the read-only exact-birth probe for
+// the process identity already admitted by ResultIngress. Production
+// composition consumes this semantic query instead of reaching through the
+// ingress boundary into process-supervisor mechanics.
+func ExpectedAttemptProcessTerminal(state AttemptAuthorityState) (bool, error) {
+	return processsupervisor.ExpectedProcessTerminal(state.ProcessStartedEvidence.Outcome.Process)
+}
+
+// AttemptCloseRecoveryRecorded reports whether the durable authority contains
+// the exact pending or committed Close state that may be reconciled after a
+// controller restart. It does not decide owner or Run eligibility.
+func AttemptCloseRecoveryRecorded(state AttemptAuthorityState) bool {
+	if state.SupervisorPendingIntentDigest != "" {
+		return state.SupervisorPendingIntent.Command == processsupervisor.CommandClose
+	}
+	if len(state.SupervisorCommandCheckpoints) == 0 {
+		return false
+	}
+	latest := state.SupervisorCommandCheckpoints[len(state.SupervisorCommandCheckpoints)-1].Evidence
+	return latest.Command == processsupervisor.CommandClose && latest.Disposition == "ok" && latest.Outcome.State == SupervisorSessionClosed
+}
+
 func validSupervisorCommand(command processsupervisor.CommandName) bool {
 	switch command {
 	case processsupervisor.CommandBindAuthority, processsupervisor.CommandAbortUnbound, processsupervisor.CommandSpawn, processsupervisor.CommandResume, processsupervisor.CommandInspect, processsupervisor.CommandTerminate, processsupervisor.CommandCollect, processsupervisor.CommandClose:
