@@ -405,10 +405,10 @@ func marshalChildEnvironment(environ []string) []string {
 			result = append(result, entry)
 		}
 	}
-	// marshal-server owns the production execution composition. Parent values
-	// cannot select the legacy Worker executor or disable the embedded Sandbox
-	// and production gates for the child CLI.
-	result = append(result, "MARSHAL_EMBEDDED_SANDBOX=1", "MARSHAL_PRODUCTION_GATE=1")
+	// marshal-server owns the production execution composition. After the
+	// zero-selector cutover the child CLI no longer reads legacy selector
+	// variables, so no production pins are appended here; the allowlist above
+	// already drops any parent-provided selector values.
 	return result
 }
 

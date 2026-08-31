@@ -222,7 +222,7 @@ func TestFixedMarshalIdentityRechecksObjectAndFiltersEnvironment(t *testing.T) {
 	if strings.Contains(string(data), "leaked") || strings.Contains(string(data), "must-not-cross") {
 		t.Fatalf("unrelated environment crossed the fixed CLI boundary: %q", data)
 	}
-	if !strings.Contains(string(data), "embedded=1\n") || !strings.Contains(string(data), "production=1\n") ||
+	if !strings.Contains(string(data), "embedded=\n") || !strings.Contains(string(data), "production=\n") ||
 		!strings.Contains(string(data), "worker=absent\n") {
 		t.Fatalf("fixed CLI did not observe the locked production composition: %q", data)
 	}
@@ -276,7 +276,7 @@ func TestMarshalChildEnvironmentLocksProductionComposition(t *testing.T) {
 				t.Fatal(err)
 			}
 			observed := string(data)
-			if !strings.Contains(observed, "embedded=1\n") || !strings.Contains(observed, "production=1\n") ||
+			if !strings.Contains(observed, "embedded=\n") || !strings.Contains(observed, "production=\n") ||
 				!strings.Contains(observed, "worker=absent\n") || strings.Contains(observed, "legacy") || strings.Contains(observed, "/tmp/evil") {
 				t.Fatalf("parent execution environment crossed the server lock: %q", observed)
 			}
@@ -365,7 +365,7 @@ func TestLoopbackRunStartReachesFixedCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "task\nrun\n--run\n" + runID + "\n--json\nembedded=1\nproduction=1\nworker=absent\n"
+	want := "task\nrun\n--run\n" + runID + "\n--json\nembedded=\nproduction=\nworker=absent\n"
 	if string(invocation) != want {
 		t.Fatalf("fixed CLI invocation = %q, want %q", invocation, want)
 	}

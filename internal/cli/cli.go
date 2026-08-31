@@ -35,7 +35,6 @@ import (
 	"github.com/chiga0/marshal-harness/internal/launcher"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/planning"
-	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/publication"
 	githubpublisher "github.com/chiga0/marshal-harness/internal/publisher/github"
@@ -2049,13 +2048,10 @@ func runTaskPlan(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		fmt.Fprintln(stderr, "规划失败：Worker Runtime 初始化失败。")
 		return ExitFailure
 	}
+	// v1 production planning admits LaunchCapable adapters only. There is no
+	// environment-selected fallback to the host Adapter.Run compatibility
+	// matrix; unsupported ordinary-user adapters fail closed here.
 	selector := runtime.ProductionSelector()
-	// The host Adapter.Run path is compatibility-only and must be selected
-	// explicitly. It retains the complete adapter matrix for diagnostics and
-	// migration, while the default v1 path admits LaunchCapable adapters only.
-	if os.Getenv("MARSHAL_WORKER_EXECUTOR") == "legacy" {
-		selector = runtime.Selector()
-	}
 	result, err := planning.Plan(ctx, planning.Input{
 		StateRoot:         location.StateRoot,
 		RepositoryRoot:    location.RepositoryRoot,
@@ -2396,8 +2392,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return ExitFailure
 	}
 	state, reconcileErr := runStore.ReconcileSnapshotUnderLease(ctx, reconcileLease)
-	legacyWorkerExecutor := os.Getenv("MARSHAL_WORKER_EXECUTOR") == "legacy"
-	sealedConfigured := sealedPiConfigured(frozenAdapter.AdapterID, entryObservation != nil, os.Getenv("MARSHAL_PI_RUNTIME"), os.Getenv("MARSHAL_PI_ENTRYPOINT"), legacyWorkerExecutor)
+	sealedConfigured := sealedPiConfigured(frozenAdapter.AdapterID, entryObservation != nil, os.Getenv("MARSHAL_PI_RUNTIME"), os.Getenv("MARSHAL_PI_ENTRYPOINT"))
 	sealedRun := isSealedPiRun(frozenAdapter.AdapterID, state.State, "", true)
 	sealedAuthorityInvalid := false
 	if reconcileErr == nil && state.State == domain.StateRunning {
@@ -2447,11 +2442,11 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		// RUNNING→VERIFYING 的唯一生产入口。
 		return runSealedReadyBranch(ctx, location.StateRoot, location.RepositoryRoot, state.TaskID, *runID, stdout, stderr)
 	}
-	if !legacyWorkerExecutor {
-		if err := runtime.CheckProductionAdmission(worker); err != nil {
-			fmt.Fprintln(stderr, "运行失败：精确 production runtime 当前不可用。")
-			return ExitUnavailable
-		}
+	// v1 production admission is unconditional: non-LaunchCapable adapters
+	// can never reach the executor through an environment selector.
+	if err := runtime.CheckProductionAdmission(worker); err != nil {
+		fmt.Fprintln(stderr, "运行失败：精确 production runtime 当前不可用。")
+		return ExitUnavailable
 	}
 	// This escape hatch is only valid when the durable lease owner record
 	// proves that its recorded process has exited. The supervisor supplies it
@@ -2483,194 +2478,156 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		}
 		orphanStalenessThreshold = time.Nanosecond
 	}
-	// Embedded sandbox runtime (M8 vertical slice): strictly opt-in via
-	// MARSHAL_EMBEDDED_SANDBOX=1. The default (unset or any other value)
-	// keeps the Local MVP behavior of `task run` completely unchanged and no
-	// other subcommand is affected. Push/Pull transport, heartbeat, the
-	// dispatcher and the durable lease ledger are M9 scope and intentionally
-	// not wired here.
-	//
 	// R2/R3 纠偏（composition root 修复）：只构造一个 EmbeddedSandboxRuntime
 	// 实例——同一个实例同时承担 DispatchBinder、SandboxProvider、Authority
 	// 和 ResultIngressStore。此前构造了两个独立实例，导致第二个 runtime 读
 	// 不到第一个签发的 lease，退回虚构的 now+24h；agent registry 也是空的，
 	// admission 必然拒绝。单实例确保 lease、registration 和 capability
-	// snapshot 在同一 in-memory state 中可查。
-	var dispatchBinder execution.DispatchBinder
-	var sharedRuntime *app.EmbeddedSandboxRuntime
-	if app.EmbeddedSandboxEnabled(os.Getenv) {
-		embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now, app.WithLocalRunnerOptions(local.WithExecTimeout(4*time.Hour)))
-		if embeddedErr != nil {
-			fmt.Fprintln(stderr, "运行失败：embedded sandbox runtime 初始化失败。")
-			return ExitFailure
-		}
-		sharedRuntime = embeddedRuntime
-		dispatchBinder = sharedRuntime
+	// snapshot 在同一 in-memory state 中可查。zero-selector cutover 后同一
+	// durable-authority seam 是唯一 executor 组合：legacy host 直跑
+	// compatibility profile 与环境开关已从 production 链移除。
+	embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now, app.WithLocalRunnerOptions(local.WithExecTimeout(4*time.Hour)))
+	if embeddedErr != nil {
+		fmt.Fprintln(stderr, "运行失败：sandbox executor runtime 初始化失败。")
+		return ExitFailure
 	}
-	// I186-R5 strangler cutover：新路径默认启用。Worker 经 sandboxbridge 在
-	// 绑定 allocation/lease 身份的执行链中运行（Provision→Stage→Adapter.Run
-	// →Inspect→Terminate）；`MARSHAL_WORKER_EXECUTOR=legacy` 显式回到
-	// legacy `Adapter.Run(host)` compatibility profile（ADR 0043 决策 7 的
-	// explicit local-nonproduction）。rollback 即设置该环境变量为 legacy，
-	// 只涉 gate 方向，无状态迁移；两条路径的 journal/verification/review/
-	// publication 语义经端到端等价测试证明相同。
-	var workerRunner func(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error)
+	sharedRuntime := embeddedRuntime
+	dispatchBinder := sharedRuntime
+	bridge, bridgeErr := sandboxbridge.NewBridge(sharedRuntime.Provider())
+	if bridgeErr != nil {
+		fmt.Fprintln(stderr, "运行失败：sandbox executor bridge 初始化失败。")
+		return ExitFailure
+	}
+	// ADR 0052 §1.2 + ADR 0055：当 provider 是 Local runner 时注入
+	// staged transcript artifact 回读面，使实现 LaunchCapable 的 Adapter
+	// （当前为 pi）在 allocation 中被承载执行。
+	if runner, ok := sharedRuntime.Provider().(*local.LocalRunner); ok {
+		bridge.WithTranscriptSource(func(allocationID, artifactID string) ([]byte, error) {
+			dir, err := runner.AllocationDirectory(allocationID)
+			if err != nil {
+				return nil, err
+			}
+			return os.ReadFile(filepath.Join(dir, filepath.FromSlash(artifactID)))
+		})
+	}
+	// R2/R3 纠偏：注入真实 durable authority，使 admission 从文件 ledger
+	// 读取 registration/snapshot、从 DispatchLease 读取 dispatch 时冻结
+	// 的 lease expiry，而非以结果携带 Facts 临时构造。
+	bridge.WithDurableAuthority(sharedRuntime)
 	var resultAdmissionReconciler execution.ResultAdmissionReconciler
-	if !legacyWorkerExecutor {
-		if sharedRuntime == nil {
-			// embedded sandbox 未启用时仍需一个 runtime 实例承载 bridge。
-			embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now, app.WithLocalRunnerOptions(local.WithExecTimeout(4*time.Hour)))
-			if embeddedErr != nil {
-				fmt.Fprintln(stderr, "运行失败：sandbox executor runtime 初始化失败。")
-				return ExitFailure
-			}
-			sharedRuntime = embeddedRuntime
-		}
-		bridge, bridgeErr := sandboxbridge.NewBridge(sharedRuntime.Provider())
-		if bridgeErr != nil {
-			fmt.Fprintln(stderr, "运行失败：sandbox executor bridge 初始化失败。")
-			return ExitFailure
-		}
-		// ADR 0052 §1.2 + ADR 0055：当 provider 是 Local runner 时注入
-		// staged transcript artifact 回读面，使实现 LaunchCapable 的 Adapter
-		// （当前为 pi）在 allocation 中被承载执行。
-		if runner, ok := sharedRuntime.Provider().(*local.LocalRunner); ok {
-			bridge.WithTranscriptSource(func(allocationID, artifactID string) ([]byte, error) {
-				dir, err := runner.AllocationDirectory(allocationID)
-				if err != nil {
-					return nil, err
-				}
-				return os.ReadFile(filepath.Join(dir, filepath.FromSlash(artifactID)))
-			})
-		}
-		// R2/R3 纠偏：注入真实 durable authority，使 admission 从文件 ledger
-		// 读取 registration/snapshot、从 DispatchLease 读取 dispatch 时冻结
-		// 的 lease expiry，而非以结果携带 Facts 临时构造。
-		// 仅在 dispatchBinder 也使用同一 runtime 时注入——否则 LeaseFor
-		// 找不到 dispatch 时签发的 lease（dispatch 未走 BindDispatch 路径），
-		// execchain.go 的 fail-closed 会正确拒绝执行。
-		if dispatchBinder != nil {
-			bridge.WithDurableAuthority(sharedRuntime)
-			if _, launchCapable := worker.(sandboxbridge.LaunchCapable); launchCapable {
-				resultAdmissionReconciler = bridge
-			}
-		}
-		// v1.0 supported production path is fail closed by construction:
-		// non-LaunchCapable adapters can never silently fall back to Adapter.Run.
-		// The only compatibility path is the explicit executor=legacy branch
-		// above, which does not construct this bridge.
-		bridge.WithProductionGate()
-		workerRunner = bridge.RunWorker
+	if _, launchCapable := worker.(sandboxbridge.LaunchCapable); launchCapable {
+		resultAdmissionReconciler = bridge
 	}
+	// v1.0 supported production path is fail closed by construction:
+	// non-LaunchCapable adapters can never silently fall back to Adapter.Run.
+	bridge.WithProductionGate()
+	workerRunner := bridge.RunWorker
 	// R2/R3 纠偏：在 execution.Run 之前 probe adapter 并注册 agent 到
 	// sharedRuntime 的 agentRegistry。此前 agentRegistry 在生产路径始终
 	// 为空，admission 的 AgentAuthority exact lookup 总是失败，导致
 	// 真实 agent 产出的结果在 admission 阶段被拒绝。
-	// 仅在 dispatchBinder 可用时执行——否则 lease 不会签发，admission
-	// 不会触发，注册 agent 无意义。
-	if sharedRuntime != nil && workerRunner != nil && dispatchBinder != nil {
-		probeRecord, probeErr := worker.Probe(ctx)
-		if probeErr != nil {
-			fmt.Fprintf(stderr, "运行失败：adapter probe 失败：%v\n", probeErr)
-			return ExitFailure
+	// zero-selector 后 dispatchBinder/bridge seam 恒定存在，注册无条件执行。
+	probeRecord, probeErr := worker.Probe(ctx)
+	if probeErr != nil {
+		fmt.Fprintf(stderr, "运行失败：adapter probe 失败：%v\n", probeErr)
+		return ExitFailure
+	}
+	// 稳定 capability identity digest（排除 probedAt 等易变诊断字段）：
+	// registrationID、IdempotencyKey、RequestDigest 全部由它派生，保证同一
+	// 二进制的多次 probe 注册幂等，且与 execution.Run 冻结进 AttemptBinding
+	// 的 AgentRegistrationID 严格一致（接纳端只对它做 exact lookup，不存在
+	// 任意-active 降级）。
+	stableCapDigest, stableErr := resultbinding.StableCapabilityDigest(probeRecord.Data)
+	if stableErr != nil {
+		fmt.Fprintf(stderr, "运行失败：稳定 capability digest 派生失败：%v\n", stableErr)
+		return ExitFailure
+	}
+	frozenStableCapDigest, frozenStableErr := resultbinding.StableCapabilityDigest(snapshotData)
+	if frozenStableErr != nil || frozenStableCapDigest != stableCapDigest {
+		fmt.Fprintln(stderr, "运行失败：当前 adapter 身份与冻结 CapabilitySnapshot 不一致。")
+		return ExitFailure
+	}
+	stableSnapshotDigest, stableSnapshotErr := resultbinding.StableCapabilitySnapshotDigest(snapshotData)
+	if stableSnapshotErr != nil {
+		fmt.Fprintf(stderr, "运行失败：稳定 capability snapshot digest 派生失败：%v\n", stableSnapshotErr)
+		return ExitFailure
+	}
+	liveSnapshotDigest, liveSnapshotErr := resultbinding.StableCapabilitySnapshotDigest(probeRecord.Data)
+	if liveSnapshotErr != nil || liveSnapshotDigest != stableSnapshotDigest {
+		fmt.Fprintln(stderr, "运行失败：当前 adapter 能力/权威快照与冻结 CapabilitySnapshot 不一致。")
+		return ExitFailure
+	}
+	registrationID := resultbinding.AgentRegistrationID(stableCapDigest)
+	// 从冻结 snapshot 提取版本与 closed capability vocabulary；current probe
+	// 已在上面与它做稳定内容逐项摘要核对。
+	var capSnap struct {
+		AdapterID      string `json:"adapterId"`
+		AdapterVersion string `json:"adapterVersion"`
+		BinaryVersion  string `json:"binaryVersion"`
+		Capabilities   struct {
+			ExecutionProfiles []string `json:"executionProfiles"`
+			SessionPolicies   []string `json:"sessionPolicies"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(snapshotData, &capSnap); err != nil || capSnap.AdapterID == "" {
+		fmt.Fprintln(stderr, "运行失败：冻结 CapabilitySnapshot 无法投影到 agent authority。")
+		return ExitFailure
+	}
+	agentVersion := capSnap.BinaryVersion
+	if agentVersion == "" {
+		agentVersion = capSnap.AdapterVersion
+	}
+	now := time.Now().UTC()
+	agentReg := agentregistry.AgentRegistration{
+		RegistrationID:       registrationID,
+		AuthorityNamespaceID: resultbinding.AuthorityNamespaceID,
+		SecurityDomainID:     "default/execution/embedded-" + worker.ID(),
+		Principal:            "principal:agent:" + worker.ID(),
+		ProviderType:         agentregistry.ProviderTypeAgent,
+		ProviderName:         worker.ID(),
+		ProviderVersion:      agentVersion,
+		ProtocolVersion:      resultbinding.ProtocolVersion,
+		Scope:                "worker",
+		IdempotencyKey:       "cap:" + stableCapDigest,
+		RequestDigest:        stableCapDigest,
+		LifecycleState:       agentregistry.LifecycleStateActive,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	if regErr := sharedRuntime.RegisterAgent(agentReg); regErr != nil {
+		fmt.Fprintf(stderr, "运行失败：agent registration 失败：%v\n", regErr)
+		return ExitFailure
+	}
+	registryCaps := make([]agentregistry.Capability, 0, len(capSnap.Capabilities.ExecutionProfiles)+len(capSnap.Capabilities.SessionPolicies))
+	for _, profile := range capSnap.Capabilities.ExecutionProfiles {
+		switch profile {
+		case "read-only":
+			registryCaps = append(registryCaps, agentregistry.CapabilityExecutionProfileReadOnly)
+		case "workspace-write":
+			registryCaps = append(registryCaps, agentregistry.CapabilityExecutionProfileWorkspaceWrite)
 		}
-		// 稳定 capability identity digest（排除 probedAt 等易变诊断字段）：
-		// registrationID、IdempotencyKey、RequestDigest 全部由它派生，保证同一
-		// 二进制的多次 probe 注册幂等，且与 execution.Run 冻结进 AttemptBinding
-		// 的 AgentRegistrationID 严格一致（接纳端只对它做 exact lookup，不存在
-		// 任意-active 降级）。
-		stableCapDigest, stableErr := resultbinding.StableCapabilityDigest(probeRecord.Data)
-		if stableErr != nil {
-			fmt.Fprintf(stderr, "运行失败：稳定 capability digest 派生失败：%v\n", stableErr)
-			return ExitFailure
+	}
+	for _, policy := range capSnap.Capabilities.SessionPolicies {
+		if policy == "ephemeral" {
+			registryCaps = append(registryCaps, agentregistry.CapabilitySessionPolicyEphemeral)
 		}
-		frozenStableCapDigest, frozenStableErr := resultbinding.StableCapabilityDigest(snapshotData)
-		if frozenStableErr != nil || frozenStableCapDigest != stableCapDigest {
-			fmt.Fprintln(stderr, "运行失败：当前 adapter 身份与冻结 CapabilitySnapshot 不一致。")
-			return ExitFailure
-		}
-		stableSnapshotDigest, stableSnapshotErr := resultbinding.StableCapabilitySnapshotDigest(snapshotData)
-		if stableSnapshotErr != nil {
-			fmt.Fprintf(stderr, "运行失败：稳定 capability snapshot digest 派生失败：%v\n", stableSnapshotErr)
-			return ExitFailure
-		}
-		liveSnapshotDigest, liveSnapshotErr := resultbinding.StableCapabilitySnapshotDigest(probeRecord.Data)
-		if liveSnapshotErr != nil || liveSnapshotDigest != stableSnapshotDigest {
-			fmt.Fprintln(stderr, "运行失败：当前 adapter 能力/权威快照与冻结 CapabilitySnapshot 不一致。")
-			return ExitFailure
-		}
-		registrationID := resultbinding.AgentRegistrationID(stableCapDigest)
-		// 从冻结 snapshot 提取版本与 closed capability vocabulary；current probe
-		// 已在上面与它做稳定内容逐项摘要核对。
-		var capSnap struct {
-			AdapterID      string `json:"adapterId"`
-			AdapterVersion string `json:"adapterVersion"`
-			BinaryVersion  string `json:"binaryVersion"`
-			Capabilities   struct {
-				ExecutionProfiles []string `json:"executionProfiles"`
-				SessionPolicies   []string `json:"sessionPolicies"`
-			} `json:"capabilities"`
-		}
-		if err := json.Unmarshal(snapshotData, &capSnap); err != nil || capSnap.AdapterID == "" {
-			fmt.Fprintln(stderr, "运行失败：冻结 CapabilitySnapshot 无法投影到 agent authority。")
-			return ExitFailure
-		}
-		agentVersion := capSnap.BinaryVersion
-		if agentVersion == "" {
-			agentVersion = capSnap.AdapterVersion
-		}
-		now := time.Now().UTC()
-		agentReg := agentregistry.AgentRegistration{
-			RegistrationID:       registrationID,
-			AuthorityNamespaceID: resultbinding.AuthorityNamespaceID,
-			SecurityDomainID:     "default/execution/embedded-" + worker.ID(),
-			Principal:            "principal:agent:" + worker.ID(),
-			ProviderType:         agentregistry.ProviderTypeAgent,
-			ProviderName:         worker.ID(),
-			ProviderVersion:      agentVersion,
-			ProtocolVersion:      resultbinding.ProtocolVersion,
-			Scope:                "worker",
-			IdempotencyKey:       "cap:" + stableCapDigest,
-			RequestDigest:        stableCapDigest,
-			LifecycleState:       agentregistry.LifecycleStateActive,
-			CreatedAt:            now,
-			UpdatedAt:            now,
-		}
-		if regErr := sharedRuntime.RegisterAgent(agentReg); regErr != nil {
-			fmt.Fprintf(stderr, "运行失败：agent registration 失败：%v\n", regErr)
-			return ExitFailure
-		}
-		registryCaps := make([]agentregistry.Capability, 0, len(capSnap.Capabilities.ExecutionProfiles)+len(capSnap.Capabilities.SessionPolicies))
-		for _, profile := range capSnap.Capabilities.ExecutionProfiles {
-			switch profile {
-			case "read-only":
-				registryCaps = append(registryCaps, agentregistry.CapabilityExecutionProfileReadOnly)
-			case "workspace-write":
-				registryCaps = append(registryCaps, agentregistry.CapabilityExecutionProfileWorkspaceWrite)
-			}
-		}
-		for _, policy := range capSnap.Capabilities.SessionPolicies {
-			if policy == "ephemeral" {
-				registryCaps = append(registryCaps, agentregistry.CapabilitySessionPolicyEphemeral)
-			}
-		}
-		agentSnap := agentregistry.AgentCapabilitySnapshot{
-			SnapshotDigest:  stableSnapshotDigest,
-			RegistrationID:  registrationID,
-			ProtocolVersion: resultbinding.ProtocolVersion,
-			ProviderName:    capSnap.AdapterID,
-			ProviderVersion: agentVersion,
-			Capabilities:    registryCaps,
-			// Adapter Probe/CapabilitySnapshot 不是独立 evidence authority。
-			// 在 ConformanceEvidence ledger producer 接线前保持空集合；hardened
-			// admission 因而 fail closed，ordinary-user 明确标记 evidence N/A。
-			ConformanceEvidenceDigests: []string{},
-			SnapshotState:              agentregistry.SnapshotStateActive,
-		}
-		if snapErr := sharedRuntime.RegisterAgentSnapshot(agentSnap); snapErr != nil {
-			fmt.Fprintf(stderr, "运行失败：agent capability snapshot 落账失败：%v\n", snapErr)
-			return ExitFailure
-		}
+	}
+	agentSnap := agentregistry.AgentCapabilitySnapshot{
+		SnapshotDigest:  stableSnapshotDigest,
+		RegistrationID:  registrationID,
+		ProtocolVersion: resultbinding.ProtocolVersion,
+		ProviderName:    capSnap.AdapterID,
+		ProviderVersion: agentVersion,
+		Capabilities:    registryCaps,
+		// Adapter Probe/CapabilitySnapshot 不是独立 evidence authority。
+		// 在 ConformanceEvidence ledger producer 接线前保持空集合；hardened
+		// admission 因而 fail closed，ordinary-user 明确标记 evidence N/A。
+		ConformanceEvidenceDigests: []string{},
+		SnapshotState:              agentregistry.SnapshotStateActive,
+	}
+	if snapErr := sharedRuntime.RegisterAgentSnapshot(agentSnap); snapErr != nil {
+		fmt.Fprintf(stderr, "运行失败：agent capability snapshot 落账失败：%v\n", snapErr)
+		return ExitFailure
 	}
 	result, err := execution.Run(ctx, execution.Input{
 		StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID,
@@ -2697,8 +2654,8 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return ExitOK
 }
 
-func sealedPiConfigured(adapterID string, fixedSelfAdmitted bool, runtimePath, entrypointPath string, legacyExecutor bool) bool {
-	return adapterID == "pi" && fixedSelfAdmitted && runtimePath != "" && entrypointPath != "" && !legacyExecutor
+func sealedPiConfigured(adapterID string, fixedSelfAdmitted bool, runtimePath, entrypointPath string) bool {
+	return adapterID == "pi" && fixedSelfAdmitted && runtimePath != "" && entrypointPath != ""
 }
 
 func isSealedPiRun(adapterID string, state domain.State, preparationDigest string, authorityValid bool) bool {

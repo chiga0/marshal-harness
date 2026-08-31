@@ -579,30 +579,15 @@ func TestTaskAbortTerminatesPlannedRunBeforeAnyAttempt(t *testing.T) {
 	}
 }
 
-// planReadyRunViaCLI drives one real `marshal task plan` through the CLI so
-// the resulting READY run carries genuine planning events and frozen inputs.
-func planReadyRunViaCLI(t *testing.T, setup autoFlowSetup, taskID, runID string) {
-	t.Helper()
-	taskPath := filepath.Join(t.TempDir(), "task.json")
-	policyPath := filepath.Join(t.TempDir(), "policy.json")
-	writeCLIFixture(t, taskPath, cliPlanningTask(t, setup.repositoryRoot, taskID, setup.remoteURL))
-	writeCLIFixture(t, policyPath, cliPlanningPolicy(t, taskID, runID))
-	var stdout, stderr bytes.Buffer
-	if exit := Run([]string{"task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID, "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
-		t.Fatalf("task plan exit = %d, stderr = %s", exit, stderr.String())
-	}
-}
-
 func TestTaskAbortAfterRealPlanTerminatesReadyRun(t *testing.T) {
-	setup := newAutoFlowSetup(t)
-	const taskID, runID = "abort-plan-task", "abort-plan-run"
-	planReadyRunViaCLI(t, setup, taskID, runID)
-	store := runstore.New(filepath.Join(setup.repositoryRoot, ".marshal"))
+	fixture := newAbortFixture(t, domain.StateReady)
+	runID := fixture.runID
+	store := runstore.New(fixture.stateRoot)
 	state, err := store.Inspect(runID)
 	if err != nil || state.State != domain.StateReady {
 		t.Fatalf("planned run state = %+v, err = %v", state, err)
 	}
-	runDirectory := filepath.Join(setup.repositoryRoot, ".marshal", "runs", runID)
+	runDirectory := fixture.runDirectory
 	journalPrefix := readAbortFileBytes(t, filepath.Join(runDirectory, "events.jsonl"))
 	const reason = "abandoned immediately after planning"
 	var stdout, stderr bytes.Buffer
@@ -616,8 +601,8 @@ func TestTaskAbortAfterRealPlanTerminatesReadyRun(t *testing.T) {
 	if result.State != domain.StateAborted || result.TerminalReason != lifecycle.PreAttemptAbortTerminalReason {
 		t.Fatalf("abort result = %+v", result)
 	}
-	// The real journal carries planning events; the abort appends exactly one
-	// run.aborted line after them and binds the planning-frozen digests.
+	// The journal carries the planning transitions; the abort appends exactly
+	// one run.aborted line after them and binds the planning-frozen digests.
 	events, _, err := store.ReadEvents(runID)
 	if err != nil {
 		t.Fatal(err)
@@ -641,14 +626,14 @@ func TestTaskAbortAfterRealPlanTerminatesReadyRun(t *testing.T) {
 
 func TestTaskAbortSucceedsAfterPreflightFailures(t *testing.T) {
 	t.Run("missing plan approval keeps run ready", func(t *testing.T) {
-		setup := newAutoFlowSetup(t)
-		const taskID, runID = "abort-unapproved-task", "abort-unapproved-run"
-		planReadyRunViaCLI(t, setup, taskID, runID)
+		fixture := newAbortFixture(t, domain.StateReady)
+		runID := fixture.runID
+		t.Setenv("MARSHAL_QWEN_PATH", writeVersionExecutableForCLI(t, "qwen", "0.21.11"))
 		var stdout, stderr bytes.Buffer
 		if exit := Run([]string{"task", "run", "--run", runID}, strings.NewReader(""), &stdout, &stderr); exit != ExitFailure || !strings.Contains(stderr.String(), "plan 审批") {
 			t.Fatalf("task run exit = %d, stderr = %q", exit, stderr.String())
 		}
-		state, err := runstore.New(filepath.Join(setup.repositoryRoot, ".marshal")).Inspect(runID)
+		state, err := runstore.New(fixture.stateRoot).Inspect(runID)
 		if err != nil || state.State != domain.StateReady {
 			t.Fatalf("preflight failure moved the run: %+v, err = %v", state, err)
 		}
@@ -657,16 +642,14 @@ func TestTaskAbortSucceedsAfterPreflightFailures(t *testing.T) {
 		if exit := runAbortCommand(runID, "op:preflight", "unapproved run abandoned", true, &stdout, &stderr); exit != ExitOK {
 			t.Fatalf("abort exit = %d, stderr = %s", exit, stderr.String())
 		}
-		aborted, err := runstore.New(filepath.Join(setup.repositoryRoot, ".marshal")).Inspect(runID)
+		aborted, err := runstore.New(fixture.stateRoot).Inspect(runID)
 		if err != nil || aborted.State != domain.StateAborted || aborted.TerminalReason != lifecycle.PreAttemptAbortTerminalReason {
 			t.Fatalf("aborted state = %+v, err = %v", aborted, err)
 		}
 	})
 	t.Run("unregistered frozen adapter", func(t *testing.T) {
-		setup := newAutoFlowSetup(t)
-		const taskID, runID = "abort-unregistered-task", "abort-unregistered-run"
-		planReadyRunViaCLI(t, setup, taskID, runID)
-		t.Setenv("MARSHAL_QWEN_PATH", "")
+		fixture := newAbortFixture(t, domain.StateReady)
+		runID := fixture.runID
 		var stdout, stderr bytes.Buffer
 		if exit := Run([]string{"task", "run", "--run", runID}, strings.NewReader(""), &stdout, &stderr); exit != ExitUnavailable {
 			t.Fatalf("task run exit = %d, stderr = %q", exit, stderr.String())
@@ -676,16 +659,15 @@ func TestTaskAbortSucceedsAfterPreflightFailures(t *testing.T) {
 		if exit := runAbortCommand(runID, "op:preflight", "adapter unavailable run abandoned", true, &stdout, &stderr); exit != ExitOK {
 			t.Fatalf("abort exit = %d, stderr = %s", exit, stderr.String())
 		}
-		aborted, err := runstore.New(filepath.Join(setup.repositoryRoot, ".marshal")).Inspect(runID)
+		aborted, err := runstore.New(fixture.stateRoot).Inspect(runID)
 		if err != nil || aborted.State != domain.StateAborted || aborted.TerminalReason != lifecycle.PreAttemptAbortTerminalReason {
 			t.Fatalf("aborted state = %+v, err = %v", aborted, err)
 		}
 	})
 	t.Run("corrupt capability snapshot preflight", func(t *testing.T) {
-		setup := newAutoFlowSetup(t)
-		const taskID, runID = "abort-corrupt-capability-task", "abort-corrupt-capability-run"
-		planReadyRunViaCLI(t, setup, taskID, runID)
-		capabilityPath := filepath.Join(setup.repositoryRoot, ".marshal", "runs", runID, "capability-snapshot.json")
+		fixture := newAbortFixture(t, domain.StateReady)
+		runID := fixture.runID
+		capabilityPath := filepath.Join(fixture.runDirectory, "capability-snapshot.json")
 		corrupted := []byte(`{"corrupt":`)
 		if err := os.WriteFile(capabilityPath, corrupted, 0o600); err != nil {
 			t.Fatal(err)
@@ -704,7 +686,7 @@ func TestTaskAbortSucceedsAfterPreflightFailures(t *testing.T) {
 		if got := readAbortFileBytes(t, capabilityPath); !bytes.Equal(got, corrupted) {
 			t.Fatalf("abort rewrote the corrupt frozen input: %q", string(got))
 		}
-		aborted, err := runstore.New(filepath.Join(setup.repositoryRoot, ".marshal")).Inspect(runID)
+		aborted, err := runstore.New(fixture.stateRoot).Inspect(runID)
 		if err != nil || aborted.State != domain.StateAborted || aborted.TerminalReason != lifecycle.PreAttemptAbortTerminalReason {
 			t.Fatalf("aborted state = %+v, err = %v", aborted, err)
 		}
@@ -1159,9 +1141,8 @@ func TestTaskAbortReplaysAfterJournalAppendCrash(t *testing.T) {
 }
 
 func TestTaskAbortAndRunRaceSerializeOnRunLease(t *testing.T) {
-	setup := newAutoFlowSetup(t)
-	const taskID, runID = "abort-race-task", "abort-race-run"
-	setup.planAndApprove(t, taskID, runID, true)
+	fixture := newAbortFixture(t, domain.StateReady)
+	runID := fixture.runID
 	start := make(chan struct{})
 	type commandOutcome struct {
 		exit   int
@@ -1191,7 +1172,7 @@ func TestTaskAbortAndRunRaceSerializeOnRunLease(t *testing.T) {
 	abortResult := <-abortOutcome
 	runResult := <-runOutcome
 
-	store := runstore.New(filepath.Join(setup.repositoryRoot, ".marshal"))
+	store := runstore.New(fixture.stateRoot)
 	state, err := store.Inspect(runID)
 	if err != nil {
 		t.Fatalf("race left inconsistent run evidence: %v", err)
@@ -1224,25 +1205,26 @@ func TestTaskAbortAndRunRaceSerializeOnRunLease(t *testing.T) {
 		if state.TerminalReason != lifecycle.PreAttemptAbortTerminalReason || state.CurrentAttemptID != "" || state.AttemptsUsed != 0 {
 			t.Fatalf("abort-first race state = %+v", state)
 		}
-		attemptsRoot := filepath.Join(setup.repositoryRoot, ".marshal", "runs", runID, "attempts")
+		attemptsRoot := filepath.Join(fixture.runDirectory, "attempts")
 		if entries, err := os.ReadDir(attemptsRoot); err == nil && len(entries) != 0 {
 			t.Fatalf("abort-first race left attempt directories: %v", entries)
 		}
 		return
 	}
-	// The run won the lease race: an attempt authority fact exists and the
-	// abort must have failed closed without any terminal write.
-	if runResult.exit != ExitOK {
-		t.Fatalf("task run lost the race it must have won: exit = %d, stderr = %s", runResult.exit, runResult.stderr)
+	// zero-selector 后非 sealed 组合内 `task run` 只能 fail closed：run 一边持有
+	// 租约时不能创建任何 attempt authority fact，abort 必须 fail closed 且不留
+	// 终态写入，Run 保持 READY（真实 attempt 竞争证据由 sealed 链承担）。
+	if runResult.exit == ExitOK {
+		t.Fatalf("unsealed task run unexpectedly succeeded: %s", runResult.stdout)
 	}
 	if abortResult.exit == ExitOK {
-		t.Fatalf("abort must fail closed once an attempt authority fact exists: %s", abortResult.stdout)
+		t.Fatalf("abort must fail closed while the run held the lease: %s", abortResult.stdout)
 	}
-	if abortEvents != 0 {
-		t.Fatalf("run-first race recorded an abort event: %d", abortEvents)
+	if abortEvents != 0 || attemptFacts != 0 {
+		t.Fatalf("run-held race left %d abort events and %d attempt facts", abortEvents, attemptFacts)
 	}
-	if attemptFacts == 0 {
-		t.Fatalf("run-first race left no attempt authority fact")
+	if state.State != domain.StateReady {
+		t.Fatalf("run-held race state = %+v", state)
 	}
 }
 

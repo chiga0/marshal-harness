@@ -4,10 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -20,7 +19,6 @@ import (
 	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
-	"github.com/chiga0/marshal-harness/internal/verification"
 )
 
 func TestMain(m *testing.M) {
@@ -221,12 +219,13 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	if exit != ExitOK {
 		t.Fatalf("local init exit=%d stderr=%s", exit, initError.String())
 	}
-	configureQwenAuthFixture(t)
-	trackedQwen, qwenInvocations := trackedLocalDogfoodWorkerExecutable(t)
-	t.Setenv("MARSHAL_QWEN_PATH", trackedQwen)
+	t.Setenv("MARSHAL_QWEN_PATH", "")
 	t.Setenv("MARSHAL_QODER_PATH", "")
 	t.Setenv("MARSHAL_CODEX_PATH", "")
-	t.Setenv("MARSHAL_PI_PATH", "")
+	t.Setenv("MARSHAL_OPENCODE_PATH", "")
+	// zero-selector 后 `task plan` 只有 LaunchCapable 的真实 Pi 0.84.4 才能产生
+	// READY Run；没有真实 runtime 的宿主打卡跳过计划阶段（门禁阶段不受影响）。
+	requireProductionPiForPlan(t)
 
 	var doctorOutput, doctorError bytes.Buffer
 	exit = RunContext(context.Background(), []string{"doctor", "--json"}, strings.NewReader(""), &doctorOutput, &doctorError)
@@ -244,10 +243,10 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	const taskID, runID = "local-dogfood-task", "local-dogfood-run"
 	taskPath := filepath.Join(root, "task.json")
 	policyPath := filepath.Join(root, "policy.json")
-	writeCLIFixture(t, taskPath, cliPlanningTask(t, root, taskID, remoteURL))
+	writeCLIFixture(t, taskPath, cliPlanningTaskWithWorkers(t, root, taskID, remoteURL, "pi", []any{}))
 	unboundRunID := "local-dogfood-unbound-run"
 	unboundPolicyPath := filepath.Join(root, "unbound-policy.json")
-	unboundPolicy := cliPlanningPolicy(t, taskID, unboundRunID)
+	unboundPolicy := cliPlanningPolicyWithWorkers(t, taskID, unboundRunID, false, []any{"pi"})
 	writeCLIFixture(t, unboundPolicyPath, unboundPolicy)
 	var unboundOutput, unboundError bytes.Buffer
 	exit = RunContext(context.Background(), []string{"task", "plan", "--task", taskPath, "--policy", unboundPolicyPath, "--run", unboundRunID, "--json"}, strings.NewReader(""), &unboundOutput, &unboundError)
@@ -257,7 +256,7 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".marshal", "runs", unboundRunID)); !os.IsNotExist(err) {
 		t.Fatalf("unbound local plan left side effects: %v", err)
 	}
-	policy := cliPlanningPolicy(t, taskID, runID)
+	policy := cliPlanningPolicyWithWorkers(t, taskID, runID, false, []any{"pi"})
 	policy["control"].(map[string]any)["requiredApprovals"] = []any{"plan"}
 	policy["environmentBinding"] = doctor.PolicyEnvironmentBinding
 	cliStampPolicyDigest(t, policy)
@@ -316,13 +315,14 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		t.Fatalf("replacement activation approve exit=%d stdout=%s stderr=%s", exit, approveOutput.String(), approveError.String())
 	}
 
-	// Restore the exact frozen activation and cross the real foreground
-	// production entry with the existing deterministic ordinary-user qwen
-	// producer. This exercises CLI discovery, approval, Adapter protocol and
-	// the complete dispatch/result ingress lineage through VERIFYING.
+	// zero-selector cutover 后，普通测试进程内的 `task run` 不再退回 compat
+	// executor：frozen pi 进入 sealed 生产分支，而 sealed 组合缺少
+	// MARSHAL_PI_RUNTIME/MARSHAL_PI_ENTRYPOINT 即 fail closed。该 Run 的
+	// authority 不因此被消耗，attempts 不得创建；真实执行链证据由 strict E2E
+	// 与 RC1 canary（固定 bin/marshal + 真实 Pi 0.84.4）承担。
 	t.Setenv(selfidentity.ActivationEnv, activationPath)
 	const executionRunID = "local-dogfood-execution-run"
-	executionPolicy := cliPlanningPolicy(t, taskID, executionRunID)
+	executionPolicy := cliPlanningPolicyWithWorkers(t, taskID, executionRunID, false, []any{"pi"})
 	executionPolicy["control"].(map[string]any)["requiredApprovals"] = []any{"plan"}
 	executionPolicy["environmentBinding"] = doctor.PolicyEnvironmentBinding
 	cliStampPolicyDigest(t, executionPolicy)
@@ -336,379 +336,23 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	if got := RunContext(context.Background(), []string{"task", "approve", "--run", executionRunID, "--gate", "plan", "--json"}, strings.NewReader(""), &executionApproveOutput, &executionApproveError); got != ExitOK {
 		t.Fatalf("execution approval exit=%d stderr=%s", got, executionApproveError.String())
 	}
+	beforeRun, err := runstore.New(filepath.Join(root, ".marshal")).Inspect(executionRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var runOutput, runError bytes.Buffer
 	runContext, cancelRun := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelRun()
 	exit = RunContext(runContext, []string{"task", "run", "--run", executionRunID, "--json"}, strings.NewReader(""), &runOutput, &runError)
-	if exit != ExitOK {
-		t.Fatalf("foreground task run exit=%d stdout=%s stderr=%s", exit, runOutput.String(), runError.String())
+	if exit != ExitUnavailable || !strings.Contains(runError.String(), "sealed Pi Runtime 当前配置不可用") {
+		t.Fatalf("post-cutover foreground task run exit=%d stdout=%s stderr=%s", exit, runOutput.String(), runError.String())
 	}
-	var executionResult struct {
-		State domain.RunState `json:"state"`
+	if _, statErr := os.Stat(filepath.Join(root, ".marshal", "runs", executionRunID, "attempts")); !os.IsNotExist(statErr) {
+		t.Fatalf("fail-closed run created attempts: %v", statErr)
 	}
-	if err := json.Unmarshal(runOutput.Bytes(), &executionResult); err != nil || executionResult.State.State != domain.StateVerifying {
-		t.Fatalf("foreground task run did not reach VERIFYING: result=%+v err=%v", executionResult, err)
-	}
-	attemptsRoot := filepath.Join(root, ".marshal", "runs", executionRunID, "attempts")
-	attempts, err := os.ReadDir(attemptsRoot)
-	if err != nil || len(attempts) != 1 {
-		t.Fatalf("foreground task run exit=%d attempts=%d err=%v stdout=%s stderr=%s", exit, len(attempts), err, runOutput.String(), runError.String())
-	}
-	attemptDir := filepath.Join(attemptsRoot, attempts[0].Name())
-	dispatchRaw, err := os.ReadFile(filepath.Join(attemptDir, "local-self-identity-dispatch.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	dispatchObservation, err := selfidentity.DecodeObservation(dispatchRaw)
-	if err != nil {
-		t.Fatalf("production dispatch observation: %v", err)
-	}
-	ingressRaw, err := os.ReadFile(filepath.Join(attemptDir, "local-self-identity-ingress.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ingressObservation, err := selfidentity.DecodeObservation(ingressRaw)
-	if err != nil {
-		t.Fatalf("production ingress observation: %v", err)
-	}
-	requestRaw, err := os.ReadFile(filepath.Join(attemptDir, "worker-request.json"))
-	var request struct {
-		Binding *selfidentity.LocalSelfIdentityBindingV1 `json:"localSelfIdentityBinding"`
-	}
-	if err != nil || json.Unmarshal(requestRaw, &request) != nil || request.Binding == nil ||
-		request.Binding.DispatchObservationDigest != dispatchObservation.ObservationDigest {
-		t.Fatalf("production WorkerRequest lacks exact local binding: err=%v data=%s", err, requestRaw)
-	}
-	events, _, err := runstore.New(filepath.Join(root, ".marshal")).ReadEvents(executionRunID)
-	if err != nil || len(events) < 2 {
-		t.Fatalf("read production task run events: count=%d err=%v", len(events), err)
-	}
-	started, completed := events[len(events)-2], events[len(events)-1]
-	if started.Type != "worker.started" || completed.Type != "worker.completed" ||
-		started.Payload["dispatchObservationDigest"] != dispatchObservation.ObservationDigest ||
-		completed.Payload["dispatchObservationDigest"] != dispatchObservation.ObservationDigest ||
-		completed.Payload["ingressObservationDigest"] != ingressObservation.ObservationDigest {
-		t.Fatalf("production task run lineage: started=%+v completed=%+v", started.Payload, completed.Payload)
-	}
-
-	// LD-3B must be reachable through the same production entry rather than
-	// through verifier/review helpers. A no-change ordinary-user result leaves
-	// a deterministic diagnostic artifact for the final NO_CHANGE decision.
-	const reviewTaskID, reviewRunID = "local-dogfood-review-task", "local-dogfood-review-run"
-	reviewTask := cliPlanningTask(t, root, reviewTaskID, remoteURL)
-	reviewTask["scope"] = map[string]any{"allowPaths": []any{"README.md"}, "denyPaths": []any{}, "allowSubmodules": false, "maxChangedFiles": float64(2), "maxDiffBytes": float64(4096)}
-	reviewTask["acceptance"] = map[string]any{"allowNoChange": true, "commands": []any{map[string]any{"id": "no-change-check", "argv": []any{"sh", "-c", "true"}, "cwd": ".", "timeoutSeconds": float64(5), "required": true, "baselinePolicy": "none", "maxLogBytes": float64(4096)}}}
-	reviewTask["deliverables"] = []any{map[string]any{"id": "diagnostic", "kind": "diagnostic", "required": true, "pathGlob": "README.md", "minimumCount": float64(1)}}
-	reviewTaskPath := filepath.Join(root, "review-task.json")
-	writeCLIFixture(t, reviewTaskPath, reviewTask)
-	reviewPolicy := cliPlanningPolicy(t, reviewTaskID, reviewRunID)
-	reviewPolicy["control"].(map[string]any)["requiredApprovals"] = []any{"plan"}
-	reviewPolicy["environmentBinding"] = doctor.PolicyEnvironmentBinding
-	cliStampPolicyDigest(t, reviewPolicy)
-	reviewPolicyPath := filepath.Join(root, "review-policy.json")
-	writeCLIFixture(t, reviewPolicyPath, reviewPolicy)
-	noChangeQwen := localDogfoodNoChangeWorkerExecutable(t)
-	t.Setenv("MARSHAL_QWEN_PATH", noChangeQwen)
-	var reviewStdout, reviewStderr bytes.Buffer
-	if got := RunContext(context.Background(), []string{"task", "plan", "--task", reviewTaskPath, "--policy", reviewPolicyPath, "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
-		t.Fatalf("review fixture plan exit=%d stderr=%s", got, reviewStderr.String())
-	}
-	reviewStdout.Reset()
-	reviewStderr.Reset()
-	if got := RunContext(context.Background(), []string{"task", "approve", "--run", reviewRunID, "--gate", "plan", "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
-		t.Fatalf("review fixture approval exit=%d stderr=%s", got, reviewStderr.String())
-	}
-	reviewStdout.Reset()
-	reviewStderr.Reset()
-	if got := RunContext(context.Background(), []string{"task", "run", "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
-		t.Fatalf("review fixture run exit=%d stderr=%s", got, reviewStderr.String())
-	}
-	preVerifyState, err := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	preVerifyAttemptDir := filepath.Join(root, ".marshal", "runs", reviewRunID, "attempts", preVerifyState.CurrentAttemptID)
-	dispatchPath := filepath.Join(preVerifyAttemptDir, "local-self-identity-dispatch.json")
-	ingressPath := filepath.Join(preVerifyAttemptDir, "local-self-identity-ingress.json")
-	dispatchFixture, err := os.ReadFile(dispatchPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ingressFixture, err := os.ReadFile(ingressPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, hostile := range []struct {
-		name string
-		path string
-		raw  []byte
-	}{
-		{name: "missing dispatch", path: dispatchPath, raw: nil},
-		{name: "tampered ingress", path: ingressPath, raw: []byte("{}")},
-	} {
-		t.Run(hostile.name, func(t *testing.T) {
-			original := dispatchFixture
-			if hostile.path == ingressPath {
-				original = ingressFixture
-			}
-			replaceImmutableFixture(t, hostile.path, hostile.raw)
-			defer replaceImmutableFixture(t, hostile.path, original)
-			var deniedOut, deniedErr bytes.Buffer
-			got := RunContext(context.Background(), []string{"task", "verify", "--run", reviewRunID, "--json"}, strings.NewReader(""), &deniedOut, &deniedErr)
-			assertLocalPhaseDenied(t, got, deniedOut.String(), deniedErr.String(), root)
-			unchanged, inspectErr := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID)
-			if inspectErr != nil || !reflect.DeepEqual(unchanged, preVerifyState) {
-				t.Fatalf("identity rejection consumed verify state: before=%+v after=%+v err=%v", preVerifyState, unchanged, inspectErr)
-			}
-			if _, statErr := os.Stat(filepath.Join(root, ".marshal", "runs", reviewRunID, "verification-report.json")); !os.IsNotExist(statErr) {
-				t.Fatalf("identity rejection reached verifier persistence: %v", statErr)
-			}
-		})
-	}
-	reviewStdout.Reset()
-	reviewStderr.Reset()
-	now = now.Add(time.Second)
-	if got := RunContext(context.Background(), []string{"task", "verify", "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
-		t.Fatalf("local task verify exit=%d stdout=%s stderr=%s", got, reviewStdout.String(), reviewStderr.String())
-	}
-	if state, err := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID); err != nil || state.State != domain.StateReviewPending {
-		t.Fatalf("local task verify state=%+v err=%v", state, err)
-	}
-	reviewState, err := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reviewAttemptDir := filepath.Join(root, ".marshal", "runs", reviewRunID, "attempts", reviewState.CurrentAttemptID)
-	var report verification.Report
-	reportRaw, err := os.ReadFile(filepath.Join(root, ".marshal", "runs", reviewRunID, "verification-report.json"))
-	if err != nil || json.Unmarshal(reportRaw, &report) != nil || report.LocalSelfIdentityBinding == nil ||
-		report.LocalSelfIdentityBinding.VerificationObservationDigest == "" {
-		t.Fatalf("verification report lacks local binding: err=%v report=%s", err, reportRaw)
-	}
-	verificationName, err := selfidentity.VersionedPhaseObservationName("verification", report.LocalSelfIdentityBinding.VerificationObservationDigest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	verificationPath := filepath.Join(reviewAttemptDir, verificationName)
-	verificationObservation, err := selfidentity.ReadPhaseObservation(verificationPath)
-	if err != nil || report.LocalSelfIdentityBinding.VerificationObservationDigest != verificationObservation.ObservationDigest {
-		t.Fatalf("read production verification observation: observation=%+v err=%v", verificationObservation, err)
-	}
-	var manifest verification.ArtifactManifest
-	manifestRaw, err := os.ReadFile(filepath.Join(root, ".marshal", "runs", reviewRunID, "artifact-manifest.json"))
-	if err != nil || json.Unmarshal(manifestRaw, &manifest) != nil || !reflect.DeepEqual(report.LocalSelfIdentityBinding, manifest.LocalSelfIdentityBinding) {
-		t.Fatalf("artifact manifest lacks exact local binding: err=%v manifest=%s", err, manifestRaw)
-	}
-	verificationFixture, err := os.ReadFile(verificationPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reviewPendingBefore, err := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv(selfidentity.ActivationEnv, replacementPath)
-	var deniedReviewOut, deniedReviewErr bytes.Buffer
-	crossGot := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &deniedReviewOut, &deniedReviewErr)
-	assertLocalPhaseDenied(t, crossGot, deniedReviewOut.String(), deniedReviewErr.String(), root)
-	t.Setenv(selfidentity.ActivationEnv, activationPath)
-	if _, err := os.Stat(filepath.Join(root, ".marshal", "runs", reviewRunID, "review-packet.json")); !os.IsNotExist(err) {
-		t.Fatalf("cross-generation review reached packet persistence: %v", err)
-	}
-	replaceImmutableFixture(t, verificationPath, []byte("{}"))
-	deniedReviewOut.Reset()
-	deniedReviewErr.Reset()
-	crossGot = RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &deniedReviewOut, &deniedReviewErr)
-	assertLocalPhaseDenied(t, crossGot, deniedReviewOut.String(), deniedReviewErr.String(), root)
-	replaceImmutableFixture(t, verificationPath, verificationFixture)
-	if unchanged, inspectErr := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID); inspectErr != nil || !reflect.DeepEqual(unchanged, reviewPendingBefore) {
-		t.Fatalf("review identity rejection consumed state: before=%+v after=%+v err=%v", reviewPendingBefore, unchanged, inspectErr)
-	}
-	malformedPacketPath := filepath.Join(root, ".marshal", "runs", reviewRunID, "review-packet.json")
-	if err := os.WriteFile(malformedPacketPath, []byte("{malformed\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	beforeReviewRecords, err := filepath.Glob(filepath.Join(reviewAttemptDir, "local-self-identity-review-*.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	deniedReviewOut.Reset()
-	deniedReviewErr.Reset()
-	malformedGot := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &deniedReviewOut, &deniedReviewErr)
-	assertLocalPhaseDenied(t, malformedGot, deniedReviewOut.String(), deniedReviewErr.String(), root)
-	afterReviewRecords, err := filepath.Glob(filepath.Join(reviewAttemptDir, "local-self-identity-review-*.json"))
-	if err != nil || !reflect.DeepEqual(beforeReviewRecords, afterReviewRecords) {
-		t.Fatalf("malformed existing packet created review observation: before=%v after=%v err=%v", beforeReviewRecords, afterReviewRecords, err)
-	}
-	if err := os.Remove(malformedPacketPath); err != nil {
-		t.Fatal(err)
-	}
-	reviewStdout.Reset()
-	reviewStderr.Reset()
-	now = now.Add(time.Second)
-	if got := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
-		t.Fatalf("local task review packet exit=%d stdout=%s stderr=%s", got, reviewStdout.String(), reviewStderr.String())
-	}
-	var packetResult struct {
-		PacketDigest string               `json:"packetDigest"`
-		Packet       *domain.ReviewPacket `json:"packet"`
-	}
-	if err := json.Unmarshal(reviewStdout.Bytes(), &packetResult); err != nil || packetResult.Packet == nil || packetResult.Packet.LocalSelfIdentityBinding == nil {
-		t.Fatalf("local review packet missing binding: err=%v output=%s", err, reviewStdout.String())
-	}
-	firstPacketDigest := packetResult.PacketDigest
-	canonicalPacket, err := os.ReadFile(malformedPacketPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, canonicalPacket); err != nil {
-		t.Fatal(err)
-	}
-	replaceImmutableFixture(t, malformedPacketPath, compact.Bytes())
-	beforeReviewRecords, _ = filepath.Glob(filepath.Join(reviewAttemptDir, "local-self-identity-review-*.json"))
-	deniedReviewOut.Reset()
-	deniedReviewErr.Reset()
-	noncanonicalGot := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &deniedReviewOut, &deniedReviewErr)
-	assertLocalPhaseDenied(t, noncanonicalGot, deniedReviewOut.String(), deniedReviewErr.String(), root)
-	afterReviewRecords, _ = filepath.Glob(filepath.Join(reviewAttemptDir, "local-self-identity-review-*.json"))
-	if !reflect.DeepEqual(beforeReviewRecords, afterReviewRecords) {
-		t.Fatalf("noncanonical existing packet created review observation: before=%v after=%v", beforeReviewRecords, afterReviewRecords)
-	}
-	replaceImmutableFixture(t, malformedPacketPath, canonicalPacket)
-	reviewStdout.Reset()
-	reviewStderr.Reset()
-	now = now.Add(time.Second)
-	if got := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
-		t.Fatalf("local review packet replay exit=%d stdout=%s stderr=%s", got, reviewStdout.String(), reviewStderr.String())
-	}
-	if err := json.Unmarshal(reviewStdout.Bytes(), &packetResult); err != nil || packetResult.PacketDigest != firstPacketDigest {
-		t.Fatalf("local review packet replay drift: first=%s next=%s err=%v", firstPacketDigest, packetResult.PacketDigest, err)
-	}
-	reviewName, err := selfidentity.VersionedPhaseObservationName("review-1", packetResult.Packet.LocalSelfIdentityBinding.ReviewObservationDigest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reviewObservationPath := filepath.Join(reviewAttemptDir, reviewName)
-	reviewObservation, err := selfidentity.ReadPhaseObservation(reviewObservationPath)
-	if err != nil || packetResult.Packet.LocalSelfIdentityBinding.ReviewObservationDigest != reviewObservation.ObservationDigest {
-		t.Fatalf("local review observation binding mismatch: err=%v packet=%+v", err, packetResult.Packet.LocalSelfIdentityBinding)
-	}
-	bindingDigest, err := selfidentity.DigestReviewBinding(*packetResult.Packet.LocalSelfIdentityBinding)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decision := domain.ReviewDecision{
-		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindReviewDecision,
-		TaskID: reviewTaskID, RunID: reviewRunID, ReviewRound: 1,
-		Reviewer:   domain.Reviewer{Type: "lead-agent", ID: "local-dogfood-reviewer"},
-		SpecDigest: packetResult.Packet.SpecDigest, ReviewPacketDigest: packetResult.PacketDigest,
-		VerificationDigest: packetResult.Packet.VerificationDigest, ArtifactManifestDigest: packetResult.Packet.ArtifactManifestDigest,
-		EvidenceDigest: packetResult.Packet.EvidenceDigest, LocalSelfIdentityBindingDigest: bindingDigest,
-		Verdict: "no_change", Summary: "本地 no-change 诊断已独立验证。",
-		BlockingFindings: []domain.Finding{}, NonBlockingFindings: []domain.Finding{},
-		PublicationRecommendation: "not-applicable", MergeRecommendation: "do-not-merge", DecidedAt: now,
-	}
-	decisionPath := filepath.Join(root, "review-decision.json")
-	reviewObservationFixture, err := os.ReadFile(reviewObservationPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeCLIFixture(t, decisionPath, decision)
-	replaceImmutableFixture(t, reviewObservationPath, []byte("{}"))
-	var deniedDecisionOut, deniedDecisionErr bytes.Buffer
-	decisionGot := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--decision", decisionPath, "--json"}, strings.NewReader(""), &deniedDecisionOut, &deniedDecisionErr)
-	assertLocalPhaseDenied(t, decisionGot, deniedDecisionOut.String(), deniedDecisionErr.String(), root)
-	replaceImmutableFixture(t, reviewObservationPath, reviewObservationFixture)
-	for _, hostileDigest := range []string{"", canonical.DigestBytes([]byte("cross-generation"))} {
-		hostileDecision := decision
-		hostileDecision.LocalSelfIdentityBindingDigest = hostileDigest
-		writeCLIFixture(t, decisionPath, hostileDecision)
-		deniedDecisionOut.Reset()
-		deniedDecisionErr.Reset()
-		decisionGot = RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--decision", decisionPath, "--json"}, strings.NewReader(""), &deniedDecisionOut, &deniedDecisionErr)
-		assertLocalPhaseDenied(t, decisionGot, deniedDecisionOut.String(), deniedDecisionErr.String(), root)
-	}
-	if unchanged, inspectErr := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID); inspectErr != nil || !reflect.DeepEqual(unchanged, reviewPendingBefore) {
-		t.Fatalf("decision identity rejection consumed state: before=%+v after=%+v err=%v", reviewPendingBefore, unchanged, inspectErr)
-	}
-	if _, err := os.Stat(filepath.Join(root, ".marshal", "runs", reviewRunID, "outcome.json")); !os.IsNotExist(err) {
-		t.Fatalf("decision identity rejection reached Outcome persistence: %v", err)
-	}
-	writeCLIFixture(t, decisionPath, decision)
-	reviewStdout.Reset()
-	reviewStderr.Reset()
-	if got := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--decision", decisionPath, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
-		t.Fatalf("local task review decision exit=%d stdout=%s stderr=%s", got, reviewStdout.String(), reviewStderr.String())
-	}
-	terminal, err := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID)
-	if err != nil || terminal.State != domain.StateNoChange {
-		t.Fatalf("local review terminal state=%+v err=%v", terminal, err)
-	}
-	var outcome domain.OutcomeBundle
-	outcomeRaw, err := os.ReadFile(filepath.Join(root, ".marshal", "runs", reviewRunID, "outcome.json"))
-	if err != nil || json.Unmarshal(outcomeRaw, &outcome) != nil || outcome.LocalSelfIdentityBindingDigest != bindingDigest ||
-		outcome.Applicability == nil || !reflect.DeepEqual(*outcome.Applicability, packetResult.Packet.LocalSelfIdentityBinding.Applicability) {
-		t.Fatalf("local Outcome lacks review binding: err=%v outcome=%s", err, outcomeRaw)
-	}
-
-	// A fresh local Run whose Attempt root cannot become a directory must be
-	// rejected before Adapter Probe/Run without projecting the absolute state
-	// path or the underlying OS cause through the real CLI boundary.
-	const rejectedRunID = "local-dogfood-dispatch-persist-rejected"
-	rejectedPolicy := cliPlanningPolicy(t, taskID, rejectedRunID)
-	rejectedPolicy["control"].(map[string]any)["requiredApprovals"] = []any{"plan"}
-	rejectedPolicy["environmentBinding"] = doctor.PolicyEnvironmentBinding
-	cliStampPolicyDigest(t, rejectedPolicy)
-	rejectedPolicyPath := filepath.Join(root, "rejected-policy.json")
-	writeCLIFixture(t, rejectedPolicyPath, rejectedPolicy)
-	var rejectedPlanOutput, rejectedPlanError bytes.Buffer
-	if got := RunContext(context.Background(), []string{"task", "plan", "--task", taskPath, "--policy", rejectedPolicyPath, "--run", rejectedRunID, "--json"}, strings.NewReader(""), &rejectedPlanOutput, &rejectedPlanError); got != ExitOK {
-		t.Fatalf("rejected fixture plan exit=%d stderr=%s", got, rejectedPlanError.String())
-	}
-	var rejectedApproveOutput, rejectedApproveError bytes.Buffer
-	if got := RunContext(context.Background(), []string{"task", "approve", "--run", rejectedRunID, "--gate", "plan", "--json"}, strings.NewReader(""), &rejectedApproveOutput, &rejectedApproveError); got != ExitOK {
-		t.Fatalf("rejected fixture approval exit=%d stderr=%s", got, rejectedApproveError.String())
-	}
-	stateRoot := filepath.Join(root, ".marshal")
-	rejectedBefore, err := runstore.New(stateRoot).Inspect(rejectedRunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	invocationsBefore, err := os.ReadFile(qwenInvocations)
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
-	attemptsPath := filepath.Join(stateRoot, "runs", rejectedRunID, "attempts")
-	if err := os.Mkdir(attemptsPath, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(attemptsPath, 0o700) })
-	var rejectedRunOutput, rejectedRunError bytes.Buffer
-	got := RunContext(context.Background(), []string{"task", "run", "--run", rejectedRunID, "--json"}, strings.NewReader(""), &rejectedRunOutput, &rejectedRunError)
-	if got != ExitFailure || rejectedRunOutput.Len() != 0 || !strings.Contains(rejectedRunError.String(), selfidentity.ReasonObjectMismatch) {
-		t.Fatalf("dispatch persistence rejection exit=%d stdout=%q stderr=%q", got, rejectedRunOutput.String(), rejectedRunError.String())
-	}
-	for _, forbidden := range []string{root, attemptsPath, "cause-sentinel-do-not-leak", "not a directory"} {
-		if strings.Contains(rejectedRunError.String(), forbidden) || strings.Contains(rejectedRunOutput.String(), forbidden) {
-			t.Fatalf("dispatch persistence rejection leaked %q: stdout=%q stderr=%q", forbidden, rejectedRunOutput.String(), rejectedRunError.String())
-		}
-	}
-	invocationsAfter, err := os.ReadFile(qwenInvocations)
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(invocationsBefore, invocationsAfter) {
-		t.Fatalf("dispatch persistence rejection reached Adapter: before=%q after=%q", invocationsBefore, invocationsAfter)
-	}
-	rejectedAfter, err := runstore.New(stateRoot).Inspect(rejectedRunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rejectedAfter.State != rejectedBefore.State || rejectedAfter.Sequence != rejectedBefore.Sequence ||
-		rejectedAfter.AttemptsUsed != rejectedBefore.AttemptsUsed || rejectedAfter.OperationalRetriesUsed != rejectedBefore.OperationalRetriesUsed ||
-		rejectedAfter.ReviewRound != rejectedBefore.ReviewRound {
-		t.Fatalf("dispatch persistence rejection consumed Run authority: before=%+v after=%+v", rejectedBefore, rejectedAfter)
+	afterRun, err := runstore.New(filepath.Join(root, ".marshal")).Inspect(executionRunID)
+	if err != nil || afterRun.State != beforeRun.State || afterRun.Sequence != beforeRun.Sequence {
+		t.Fatalf("fail-closed run consumed Run authority: before=%+v after=%+v err=%v", beforeRun, afterRun, err)
 	}
 
 	t.Setenv(selfidentity.ActivationEnv, filepath.Join(root, "missing.json"))
@@ -716,67 +360,6 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	if got := RunContext(context.Background(), []string{"task", "scaffold", "--draft", draftPath}, strings.NewReader(""), &stdout, &missing); got != ExitUnavailable ||
 		!strings.Contains(missing.String(), selfidentity.ReasonOptInMissing) {
 		t.Fatalf("missing activation exit=%d stderr=%q", got, missing.String())
-	}
-}
-
-func trackedLocalDogfoodWorkerExecutable(t *testing.T) (string, string) {
-	t.Helper()
-	delegate := autoFlowWorkerExecutable(t)
-	directory := t.TempDir()
-	path := filepath.Join(directory, "qwen")
-	invocations := filepath.Join(directory, "invocations.log")
-	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" >> %q\nexec %q \"$@\"\n", invocations, delegate)
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	return path, invocations
-}
-
-func localDogfoodNoChangeWorkerExecutable(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "qwen")
-	script := `#!/bin/sh
-if [ "$1" = "--version" ]; then printf '0.21.11\n'; exit 0; fi
-for last; do :; done
-result_path=$(printf '%s\n' "$last" | sed -n 's/.*写入：\([^[:space:]]*\).*/\1/p')
-task_id=$(printf '%s\n' "$last" | sed -n 's/.*taskId=\(.*\)、runId=.*/\1/p')
-run_id=$(printf '%s\n' "$last" | sed -n 's/.*runId=\(.*\)、attemptId=.*/\1/p')
-attempt_id=$(printf '%s\n' "$last" | sed -n 's/.*attemptId=\(.*\)、adapter\.id=.*/\1/p')
-cat > "$result_path" <<EOF
-{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"$task_id","runId":"$run_id","attemptId":"$attempt_id","adapter":{"id":"qwen","executable":"/fixture/qwen","version":"fixture"},"status":"completed","summary":"no change","declaredChangedFiles":[],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"outputTruncated":false,"startedAt":"2026-08-27T09:00:00Z","completedAt":"2026-08-27T09:00:01Z"}
-EOF
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"session-local-no-change","cwd":"'"$PWD"'","qwen_code_version":"0.21.11"}'
-printf '%s\n' '{"type":"result","subtype":"success","usage":{"input_tokens":1,"output_tokens":1}}'
-exit 0
-`
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func replaceImmutableFixture(t *testing.T, path string, raw []byte) {
-	t.Helper()
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
-	if raw == nil {
-		return
-	}
-	if err := os.WriteFile(path, raw, 0o400); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func assertLocalPhaseDenied(t *testing.T, exit int, stdout, stderr, secretPath string) {
-	t.Helper()
-	if exit != ExitFailure || stdout != "" || !strings.Contains(stderr, selfidentity.ReasonCrossProfileEvidence) {
-		t.Fatalf("local phase rejection exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
-	}
-	for _, forbidden := range []string{secretPath, "permission denied", "no such file", "invalid character", "cause-sentinel"} {
-		if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
-			t.Fatalf("local phase rejection leaked %q: stdout=%q stderr=%q", forbidden, stdout, stderr)
-		}
 	}
 }
 
@@ -808,4 +391,30 @@ func TestVersionJSONReportsExplicitDefaultSelfProfile(t *testing.T) {
 	if info.SelfProfile != "unprofiled" {
 		t.Fatalf("selfProfile=%q, want unprofiled", info.SelfProfile)
 	}
+}
+
+// requireProductionPiForPlan wires the test to the host's real Pi 0.84.4
+// executable and exact Node runtime, which is the only LaunchCapable worker
+// after the zero-selector cutover. Hosts without the real runtime skip the
+// plan-dependent phases instead of falling back to script workers.
+func requireProductionPiForPlan(t *testing.T) {
+	t.Helper()
+	piCandidate, err := exec.LookPath("pi")
+	if err != nil {
+		t.Skipf("real Pi executable unavailable, skipping plan-dependent phases: %v", err)
+	}
+	resolvedPi, err := filepath.EvalSymlinks(piCandidate)
+	if err != nil {
+		t.Skipf("real Pi path cannot be resolved: %v", err)
+	}
+	nodeCandidate, err := exec.LookPath("node")
+	if err != nil {
+		t.Skipf("exact Node runtime unavailable, skipping plan-dependent phases: %v", err)
+	}
+	resolvedNode, err := filepath.EvalSymlinks(nodeCandidate)
+	if err != nil {
+		t.Skipf("exact Node runtime cannot be resolved: %v", err)
+	}
+	t.Setenv("MARSHAL_PI_PATH", resolvedPi)
+	t.Setenv("MARSHAL_PI_NODE_PATH", resolvedNode)
 }

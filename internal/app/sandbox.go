@@ -22,22 +22,6 @@ import (
 	"github.com/chiga0/marshal-harness/internal/sandbox/local"
 )
 
-// EmbeddedSandboxEnvironmentVariable is the opt-in switch of the M8 embedded
-// sandbox runtime: exactly the value "1" enables the embedded dispatch-bound
-// flow of `task run`; unset or any other value keeps the Local MVP behavior
-// completely unchanged.
-const EmbeddedSandboxEnvironmentVariable = "MARSHAL_EMBEDDED_SANDBOX"
-
-// EmbeddedSandboxEnabled reports whether the embedded sandbox runtime is
-// opted in. A nil lookup, an unset variable or any value other than "1"
-// (after trimming) keeps the Local MVP behavior unchanged.
-func EmbeddedSandboxEnabled(getenv func(string) string) bool {
-	if getenv == nil {
-		return false
-	}
-	return strings.TrimSpace(getenv(EmbeddedSandboxEnvironmentVariable)) == "1"
-}
-
 // Frozen identity constants of the embedded Local provider (ADR 0018 §10
 // local derivation). The authority key space is tenantNamespace=local,
 // controlPlaneId=default with the repository identity as authorityScopeId;

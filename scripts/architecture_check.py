@@ -92,14 +92,10 @@ FROZEN_REACHABLE_DEPENDENCY_DEBT = {
     }
 }
 
-# These maxima only preserve already-shipped selector debt while the next
-# vertical slice removes it. Occurrences cannot move files or increase.
-FROZEN_SELECTOR_DEBT = {
-    ("internal/app/sandbox.go", "MARSHAL_EMBEDDED_SANDBOX"): 1,
-    ("internal/cli/cli.go", "MARSHAL_WORKER_EXECUTOR"): 3,
-    ("cmd/marshal-server/main.go", "MARSHAL_EMBEDDED_SANDBOX"): 1,
-    ("cmd/marshal-server/main.go", "MARSHAL_PRODUCTION_GATE"): 1,
-}
+# Selector debt has been removed by the zero-selector cutover (ADR 0068):
+# legacy environment selectors are now zero-toleranced everywhere — any
+# occurrence in production sources is a violation via the default maximum 0.
+FROZEN_SELECTOR_DEBT: dict[tuple[str, str], int] = {}
 
 LEGACY_SELECTORS = {
     "MARSHAL_EMBEDDED_SANDBOX",

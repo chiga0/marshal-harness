@@ -26,7 +26,7 @@ import (
 //
 // 启用方式（默认跳过）：
 //
-//	MARSHAL_RUN_PI_CANARY=1 MARSHAL_EMBEDDED_SANDBOX=1 \
+//	MARSHAL_RUN_PI_CANARY=1 \
 //	MARSHAL_E2E_BINARY=<固定 bin/marshal> MARSHAL_E2E_EXPECTED_SOURCE_HEAD=<40hex> \
 //	MARSHAL_PI_PATH=<pi cli 真实路径> MARSHAL_E2E_PI_VERSION=<固定版本> \
 //	MARSHAL_E2E_PI_MODEL=<固定 provider/model> \
@@ -34,13 +34,6 @@ import (
 func TestRealPiStrictE2E(t *testing.T) {
 	if os.Getenv("MARSHAL_RUN_PI_CANARY") == "" {
 		t.Skip("set MARSHAL_RUN_PI_CANARY=1 to enable the strict E2E test")
-	}
-	// 生产权威路径 fail-closed：本测试只断言 embedded/durable authority 闭环
-	// （AttemptBinding + exact lookup + admission）。不在 embedded 模式就跳过
-	// 而不是退回非生产的 seed 路径——非 embedded 缺 AttemptBinding 是门禁
-	// 降级，不得作为「成功」证据。
-	if os.Getenv("MARSHAL_EMBEDDED_SANDBOX") != "1" {
-		t.Fatal("strict E2E requires MARSHAL_EMBEDDED_SANDBOX=1 (production durable-authority path)")
 	}
 	piPath := os.Getenv("MARSHAL_PI_PATH")
 	if piPath == "" {
@@ -108,7 +101,6 @@ func TestRealPiStrictE2E(t *testing.T) {
 	}
 	runner := strictE2ERunner{binary: marshalPath, directory: repositoryRoot, environment: strictE2EEnvironment(map[string]string{
 		"MARSHAL_LOCAL_DOGFOOD_ACTIVATION": activationPath,
-		"MARSHAL_EMBEDDED_SANDBOX":         "1",
 		"MARSHAL_PI_PATH":                  piPath,
 		"MARSHAL_OPENCODE_PATH":            "",
 		"MARSHAL_QWEN_PATH":                "",

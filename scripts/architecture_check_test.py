@@ -242,23 +242,25 @@ class ArchitectureCheckTest(unittest.TestCase):
             [f"unexpected-production-root:{extra}"],
         )
 
-    def test_source_gate_freezes_selectors_and_child_cli(self) -> None:
+    def test_source_gate_rejects_legacy_selectors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            allowed = root / "internal/app/sandbox.go"
-            allowed.parent.mkdir(parents=True)
-            allowed.write_text(
+            debt = root / "internal/app/sandbox.go"
+            debt.parent.mkdir(parents=True)
+            debt.write_text(
                 '// MARSHAL_PRODUCTION_GATE is documentation only.\n'
                 'const value = "MARSHAL_EMBEDDED_SANDBOX"\n',
                 encoding="utf-8",
             )
-            self.assertEqual(production_source_inversions(root), [])
             forbidden = root / "internal/server/new.go"
             forbidden.parent.mkdir(parents=True)
             forbidden.write_text('const value = "MARSHAL_PRODUCTION_GATE"\n', encoding="utf-8")
             self.assertEqual(
                 production_source_inversions(root),
-                ["legacy-selector:internal/server/new.go:MARSHAL_PRODUCTION_GATE"],
+                [
+                    "legacy-selector:internal/app/sandbox.go:MARSHAL_EMBEDDED_SANDBOX",
+                    "legacy-selector:internal/server/new.go:MARSHAL_PRODUCTION_GATE",
+                ],
             )
 
     def test_source_gate_ignores_test_fixtures(self) -> None:

@@ -150,8 +150,8 @@ func TestRunWorkerRunnerRollbackDrill(t *testing.T) {
 		t.Fatalf("bridged Run: %v", err)
 	}
 
-	// rollback：消费方回到 legacy 方向（等价于移除 MARSHAL_WORKER_EXECUTOR
-	// 环境变量后的下一次读取），直接以 runstore 检查同一状态根。
+	// 消费方在不携带 executor seam 的方向直接以 runstore 检查同一状态根：
+	// seam 的取舍不涉任何状态迁移。
 	rollbackInput := fixture.input
 	rollbackInput.WorkerRunner = nil
 	if rollbackInput.WorkerRunner != nil {

@@ -104,36 +104,6 @@ func embeddedLedgerLines(t *testing.T, stateRoot string) int {
 	return len(strings.Split(strings.TrimRight(string(data), "\n"), "\n"))
 }
 
-// TestEmbeddedSandboxEnabledPredicate freezes the opt-in gate: exactly "1"
-// enables the embedded runtime, any other value — including a nil lookup —
-// keeps the Local MVP behavior completely unchanged (negative fixture 9).
-func TestEmbeddedSandboxEnabledPredicate(t *testing.T) {
-	cases := []struct {
-		name   string
-		lookup func(string) string
-		want   bool
-	}{
-		{name: "nil lookup keeps Local MVP", lookup: nil, want: false},
-		{name: "unset keeps Local MVP", lookup: func(string) string { return "" }, want: false},
-		{name: "zero keeps Local MVP", lookup: func(string) string { return "0" }, want: false},
-		{name: "true literal keeps Local MVP", lookup: func(string) string { return "true" }, want: false},
-		{name: "exactly 1 enables embedded", lookup: func(key string) string {
-			if key == EmbeddedSandboxEnvironmentVariable {
-				return "1"
-			}
-			return ""
-		}, want: true},
-		{name: "padded 1 enables embedded", lookup: func(string) string { return " 1 " }, want: true},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			if got := EmbeddedSandboxEnabled(testCase.lookup); got != testCase.want {
-				t.Fatalf("EmbeddedSandboxEnabled = %v, want %v", got, testCase.want)
-			}
-		})
-	}
-}
-
 func TestNewEmbeddedSandboxRuntimeValidatesInputs(t *testing.T) {
 	clock := &embeddedTestClock{current: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)}
 	if _, err := NewEmbeddedSandboxRuntime("", clock.Now); err == nil {
