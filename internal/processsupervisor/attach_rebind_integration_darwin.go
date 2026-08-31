@@ -262,13 +262,15 @@ func integrationTestBootstrap(directoryIdentity ControlDirectoryIdentity) Bootst
 		Authority:            AuthorityTuple{AuthorityNamespaceID: "rebind-int-ns", TaskID: "task-1", RunID: "run-1", AttemptID: "attempt-1", AllocationID: "allocation-1", LeaseID: "lease-1", LeaseDigest: integrationDigest("lease"), Generation: 1, FencingTokenDigest: integrationDigest("fencing"), OrchestratorID: "orchestrator-1"},
 		LaunchAuthorizedFact: integrationDigest("launch"), CurrentAuthorityHead: integrationDigest("initial"),
 		ControlDirectoryIdentity: directoryIdentity,
-		Core: CoreIdentity{UID: 501, GID: 20, Process: ProcessIdentity{PID: 200, BirthSeconds: 1_700_000_000, BirthMicroseconds: 1, SessionID: 199, ProcessGroupID: 199}, Binary: BinaryIdentity{CanonicalPath: "/fixed/bin/marshal", Device: 1, Inode: 3, FileType: "regular", UID: 501, GID: 20, Mode: 0o100755, LinkCount: 1, Size: 100, RawSHA256: integrationDigest("sha"), CDHash: strings.Repeat("5", 40), SourceHead: strings.Repeat("6", 40), SelfProfile: "darwin-local-dogfood"}},
+		Core:                     CoreIdentity{UID: 501, GID: 20, Process: ProcessIdentity{PID: 200, BirthSeconds: 1_700_000_000, BirthMicroseconds: 1, SessionID: 199, ProcessGroupID: 199}, Binary: BinaryIdentity{CanonicalPath: "/fixed/bin/marshal", Device: 1, Inode: 3, FileType: "regular", UID: 501, GID: 20, Mode: 0o100755, LinkCount: 1, Size: 100, RawSHA256: integrationDigest("sha"), CDHash: strings.Repeat("5", 40), SourceHead: strings.Repeat("6", 40), SelfProfile: "darwin-local-dogfood"}},
 	}
 }
 
 type integrationTestMechanics struct{ child ProcessIdentity }
 
-func (m *integrationTestMechanics) attachChildIdentity() (ProcessIdentity, error) { return m.child, nil }
+func (m *integrationTestMechanics) attachChildIdentity() (ProcessIdentity, error) {
+	return m.child, nil
+}
 func (m *integrationTestMechanics) Spawn(context.Context, SpawnPayload) (MechanicsResult, error) {
 	return rejectedResult()
 }

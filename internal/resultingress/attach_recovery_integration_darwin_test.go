@@ -10,7 +10,9 @@ import (
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
 
-func integrationRebindDigest(label string) string { return canonical.DigestBytes([]byte("label:" + label)) }
+func integrationRebindDigest(label string) string {
+	return canonical.DigestBytes([]byte("label:" + label))
+}
 
 // TestRebindRealSupervisorProducesDurableResultIngressOutcome is the real
 // Darwin integration test: it starts a real in-process supervisor loop in bound

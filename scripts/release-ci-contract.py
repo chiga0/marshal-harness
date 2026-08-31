@@ -126,12 +126,13 @@ jobs:
       - name: Verify modules
         run: go mod verify
 
-      # This test cross-compiles the real Darwin/arm64 RC1 candidate and then
-      # inspects it without executing it. It must run only after setup-go has
-      # installed the exact go.mod toolchain; the pre-toolchain gate above is
-      # deliberately limited to checked-in source and deterministic fixtures.
+      # RC1 distribution validation builds and ad-hoc signs the real
+      # Darwin/arm64 candidate with the fixed /usr/bin/codesign required by
+      # the release contract. It therefore runs on macOS after setup-go has
+      # installed the exact go.mod toolchain; Linux still runs the complete
+      # source quality gate below.
       - name: Run distribution contracts
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'macos-latest'
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           checker="$GITHUB_WORKSPACE/scripts/release-ci-contract.py"
