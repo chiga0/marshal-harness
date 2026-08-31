@@ -176,7 +176,12 @@ func (controller *controller) collectRunResult(ctx context.Context, runID string
 		return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonCompositionIncomplete)
 	}
 	var collected CollectedRunResult
-	err := controller.withOwner(ctx, true, func(verifier resultingress.CurrentOwnerLockVerifier, _ OwnerProjection) error {
+	// A RUNNING attempt is deliberately projected as PendingRecovery so a
+	// fresh fixed CLI knows it must attach/rebind. Collection is the operation
+	// that resolves that condition; applying the generic mutation barrier here
+	// would make every cross-process collection deterministically impossible.
+	// The exact owner lock and the completion authority still gate all writes.
+	err := controller.withOwner(ctx, false, func(verifier resultingress.CurrentOwnerLockVerifier, _ OwnerProjection) error {
 		var err error
 		collected, err = authority.CollectRunResult(ctx, verifier, controller.acquisition, runID)
 		if errors.Is(err, ErrAttemptStillRunning) {

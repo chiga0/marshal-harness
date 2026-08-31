@@ -215,6 +215,9 @@ func TestCollectRunResultUsesOneOwnerCriticalSection(t *testing.T) {
 	controller, lock, authority, _, _ := testComponents(t)
 	runtime := claimTestRuntime(t, controller)
 	defer runtime.Close()
+	// RUNNING is a recovery signal for ordinary mutations, but collection is
+	// the recovery operation and must be admitted under the exact owner lock.
+	authority.owner.PendingRecovery = 1
 	want := CollectedRunResult{Run: testSuccessor(), AdmissionFactDigest: runtimeTestDigest, DRCDigest: runtimeTestDigest, EnvelopeDigest: runtimeSuccessDigest}
 	authority.collected = want
 	got, err := runtime.CollectRunResult(context.Background(), "run-1")
