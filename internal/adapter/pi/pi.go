@@ -2134,6 +2134,9 @@ func validateProductionLaunchInput(in ProductionLaunchInput) error {
 		if containsControlChar(id) {
 			return errors.New("pi production launch task/run/attempt IDs must not contain newline or control characters")
 		}
+		if !validProductionWorkerResultID(id) {
+			return errors.New("pi production launch task/run/attempt IDs must satisfy the WorkerResult ID schema")
+		}
 	}
 	if in.Objective == "" {
 		return errors.New("pi production launch objective must be non-empty")
@@ -2197,8 +2200,12 @@ func productionLaunchArgv(in ProductionLaunchInput, prompt string) ([]string, er
 
 // buildProductionPrompt emits the single deterministic prompt argument. The
 // prompt requires the final assistant output to be exactly one WorkerResult
-// JSON object and includes only the provided IDs, objective, and constraints;
-// it never carries a state, control, worktree, result, or transcript path.
+// JSON object and includes the complete minimal declaration shape. Without the
+// shape, a provider has to guess Marshal's schema and can complete the
+// filesystem task successfully while emitting an unusable result. Marshal
+// still overwrites adapter/session/timing authority from the transcript; the
+// template is a syntax contract, not worker-supplied authority. It never
+// carries a state, control, worktree, result, or transcript path.
 func buildProductionPrompt(in ProductionLaunchInput) string {
 	var b strings.Builder
 	b.WriteString("The final assistant output must be exactly one WorkerResult JSON object.\n\n")
@@ -2222,6 +2229,21 @@ func buildProductionPrompt(in ProductionLaunchInput) string {
 			b.WriteByte('\n')
 		}
 	}
+	b.WriteString("\nWorkerResult contract:\n")
+	b.WriteString("- Keep apiVersion, kind, taskId, runId, attemptId, and adapter.id exactly as shown.\n")
+	b.WriteString("- Do not add a result wrapper or any key not shown in the object, except blocker as described below.\n")
+	b.WriteString("- Set status truthfully to completed, blocked, failed, or cancelled. Use completed only when the objective and every constraint are fully satisfied.\n")
+	b.WriteString("- For any non-completed status, add a top-level blocker string explaining why.\n")
+	b.WriteString("- Replace summary and the declared arrays with truthful values; paths must be relative. Use [] when an array is empty, and set outputTruncated truthfully.\n")
+	b.WriteString("- Keep the placeholder adapter executable/version and timestamps; Marshal replaces them with observed authority.\n")
+	b.WriteString(`{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"`)
+	b.WriteString(in.TaskID)
+	b.WriteString(`","runId":"`)
+	b.WriteString(in.RunID)
+	b.WriteString(`","attemptId":"`)
+	b.WriteString(in.AttemptID)
+	b.WriteString(`","adapter":{"id":"pi","executable":"marshal-observed","version":"marshal-observed"},"status":"completed","summary":"Describe the outcome","declaredChangedFiles":[],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"outputTruncated":false,"startedAt":"1970-01-01T00:00:00Z","completedAt":"1970-01-01T00:00:01Z"}`)
+	b.WriteByte('\n')
 	return b.String()
 }
 
@@ -2234,6 +2256,23 @@ func containsControlChar(s string) bool {
 		}
 	}
 	return false
+}
+
+// validProductionWorkerResultID mirrors worker-result.schema.json $defs.id so
+// interpolating authority IDs can never make the deterministic JSON template
+// invalid or inject a provider instruction.
+func validProductionWorkerResultID(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		char := value[index]
+		alphanumeric := char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || char >= '0' && char <= '9'
+		if !alphanumeric && (index == 0 || char != '.' && char != '_' && char != ':' && char != '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // containsAbsolutePOSIXPathToken reports whether any whitespace-delimited

@@ -5,6 +5,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/chiga0/marshal-harness/internal/contract"
+	"github.com/chiga0/marshal-harness/internal/domain"
 )
 
 // validProductionInput is the canonical valid input for the Pi 0.84.4
@@ -48,6 +51,21 @@ func expectedProductionPrompt(taskID, runID, attemptID, objective string, constr
 			b.WriteByte('\n')
 		}
 	}
+	b.WriteString("\nWorkerResult contract:\n")
+	b.WriteString("- Keep apiVersion, kind, taskId, runId, attemptId, and adapter.id exactly as shown.\n")
+	b.WriteString("- Do not add a result wrapper or any key not shown in the object, except blocker as described below.\n")
+	b.WriteString("- Set status truthfully to completed, blocked, failed, or cancelled. Use completed only when the objective and every constraint are fully satisfied.\n")
+	b.WriteString("- For any non-completed status, add a top-level blocker string explaining why.\n")
+	b.WriteString("- Replace summary and the declared arrays with truthful values; paths must be relative. Use [] when an array is empty, and set outputTruncated truthfully.\n")
+	b.WriteString("- Keep the placeholder adapter executable/version and timestamps; Marshal replaces them with observed authority.\n")
+	b.WriteString(`{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"`)
+	b.WriteString(taskID)
+	b.WriteString(`","runId":"`)
+	b.WriteString(runID)
+	b.WriteString(`","attemptId":"`)
+	b.WriteString(attemptID)
+	b.WriteString(`","adapter":{"id":"pi","executable":"marshal-observed","version":"marshal-observed"},"status":"completed","summary":"Describe the outcome","declaredChangedFiles":[],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"outputTruncated":false,"startedAt":"1970-01-01T00:00:00Z","completedAt":"1970-01-01T00:00:01Z"}`)
+	b.WriteByte('\n')
 	return b.String()
 }
 
@@ -109,6 +127,47 @@ func TestBuildProductionLaunchExactArgv(t *testing.T) {
 			// bash is never granted by either profile's closed allowlist.
 			if slices.Contains(strings.Split(out.Argv[flagsToolsIndex(t, out.Argv)], ","), "bash") {
 				t.Fatalf("tools allowlist grants bash: %q", out.Argv)
+			}
+		})
+	}
+}
+
+func TestProductionPromptEmbedsValidWorkerResultContract(t *testing.T) {
+	prompt := buildProductionPrompt(validProductionInput())
+	for _, required := range []string{"Use completed only when the objective and every constraint are fully satisfied", "For any non-completed status, add a top-level blocker", "set outputTruncated truthfully", "Do not add a result wrapper"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("production prompt lacks terminal-result rule %q", required)
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(prompt), "\n")
+	template := []byte(lines[len(lines)-1])
+	validator, err := contract.NewValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validator.Validate(domain.KindWorkerResult, template); err != nil {
+		t.Fatalf("embedded WorkerResult contract is invalid: %v\n%s", err, template)
+	}
+}
+
+func TestBuildProductionLaunchRejectsWorkerResultInvalidIDs(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ProductionLaunchInput)
+	}{
+		{name: "quote", mutate: func(in *ProductionLaunchInput) { in.TaskID = `TASK"1` }},
+		{name: "slash", mutate: func(in *ProductionLaunchInput) { in.RunID = "run/1" }},
+		{name: "backslash", mutate: func(in *ProductionLaunchInput) { in.AttemptID = `attempt\1` }},
+		{name: "unicode", mutate: func(in *ProductionLaunchInput) { in.TaskID = "任务-1" }},
+		{name: "leading-punctuation", mutate: func(in *ProductionLaunchInput) { in.RunID = "-run-1" }},
+		{name: "too-long", mutate: func(in *ProductionLaunchInput) { in.AttemptID = strings.Repeat("a", 129) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := validProductionInput()
+			test.mutate(&input)
+			if _, err := BuildProductionLaunch(input); err == nil || !strings.Contains(err.Error(), "WorkerResult ID schema") {
+				t.Fatalf("error = %v, want WorkerResult ID schema rejection", err)
 			}
 		})
 	}
@@ -312,10 +371,18 @@ func TestBuildProductionLaunchArgvElementLimit(t *testing.T) {
 	if !errors.Is(err, ErrProductionArgvElementTooLarge) {
 		t.Fatalf("error = %v, want ErrProductionArgvElementTooLarge (out=%+v)", err, out)
 	}
-	// Exactly at the 16KiB element ceiling is permitted for a clean argv.
-	in.Objective = strings.Repeat("o", productionArgvElementLimit-200)
-	if _, err := BuildProductionLaunch(in); err != nil {
+	// Exactly at the 16KiB element ceiling is permitted for a clean argv. Derive
+	// the fixed prompt overhead so this remains true when the deterministic
+	// WorkerResult contract evolves.
+	in.Objective = "o"
+	fixedPromptBytes := len(buildProductionPrompt(in)) - len(in.Objective)
+	in.Objective = strings.Repeat("o", productionArgvElementLimit-fixedPromptBytes)
+	atLimit, err := BuildProductionLaunch(in)
+	if err != nil {
 		t.Fatalf("BuildProductionLaunch rejected an at-limit element: %v", err)
+	}
+	if len(atLimit.Prompt) != productionArgvElementLimit {
+		t.Fatalf("at-limit prompt bytes = %d, want %d", len(atLimit.Prompt), productionArgvElementLimit)
 	}
 }
 

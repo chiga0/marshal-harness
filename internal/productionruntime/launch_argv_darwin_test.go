@@ -66,7 +66,15 @@ func testProductionPrompt(taskID, runID, attemptID string) string {
 		"taskId: " + taskID + "\n" +
 		"runId: " + runID + "\n" +
 		"attemptId: " + attemptID + "\n" +
-		"\nObjective:\nTest objective\n"
+		"\nObjective:\nTest objective\n" +
+		"\nWorkerResult contract:\n" +
+		"- Keep apiVersion, kind, taskId, runId, attemptId, and adapter.id exactly as shown.\n" +
+		"- Do not add a result wrapper or any key not shown in the object, except blocker as described below.\n" +
+		"- Set status truthfully to completed, blocked, failed, or cancelled. Use completed only when the objective and every constraint are fully satisfied.\n" +
+		"- For any non-completed status, add a top-level blocker string explaining why.\n" +
+		"- Replace summary and the declared arrays with truthful values; paths must be relative. Use [] when an array is empty, and set outputTruncated truthfully.\n" +
+		"- Keep the placeholder adapter executable/version and timestamps; Marshal replaces them with observed authority.\n" +
+		`{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"` + taskID + `","runId":"` + runID + `","attemptId":"` + attemptID + `","adapter":{"id":"pi","executable":"marshal-observed","version":"marshal-observed"},"status":"completed","summary":"Describe the outcome","declaredChangedFiles":[],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"outputTruncated":false,"startedAt":"1970-01-01T00:00:00Z","completedAt":"1970-01-01T00:00:01Z"}` + "\n"
 }
 
 // authorizedClosure reads the launch-authorized closure sealed for one attempt

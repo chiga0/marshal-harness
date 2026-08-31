@@ -102,6 +102,27 @@ func TestExtractFinalWorkerResultFailsClosed(t *testing.T) {
 	}
 }
 
+func TestParseProductionWorkerResultRejectsGuessedResultWrapper(t *testing.T) {
+	guessed := `{"status":"completed","taskId":"TASK-1","runId":"run-1","attemptId":"attempt-1","result":{"action":"create_file","path":"file.txt"}}`
+	end, err := json.Marshal(map[string]any{
+		"type": "agent_end", "messages": []any{map[string]any{
+			"role": "assistant", "stopReason": "stop", "content": []any{map[string]any{"type": "text", "text": guessed}},
+		}}, "willRetry": false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC()
+	_, err = ParseProductionWorkerResult(context.Background(), ProductionResultInput{
+		Transcript: []byte(jsonLines(captureSessionHeader("session-1"), `{"type":"agent_start"}`, string(end))), Worktree: "/worktree",
+		TaskID: "TASK-1", RunID: "run-1", AttemptID: "attempt-1", Executable: "/usr/local/bin/pi", Version: "0.84.4",
+		StartedAt: started, CompletedAt: started.Add(time.Second), MaxOutputBytes: 1 << 20,
+	})
+	if err == nil || !strings.Contains(err.Error(), "validate declared production WorkerResult") {
+		t.Fatalf("error = %v, want schema rejection for guessed result wrapper", err)
+	}
+}
+
 func TestParseProductionWorkerResultRejectsIdentityMismatch(t *testing.T) {
 	declaredBytes, err := json.Marshal(validDeclaredResult("worker-claim"))
 	if err != nil {
