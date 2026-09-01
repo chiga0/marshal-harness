@@ -77,6 +77,74 @@ func TestProductionRuntimeReportsReadyAndClosesResourcesInReverse(t *testing.T) 
 	}
 }
 
+func TestBorrowedOwnerRuntimeClosesRunResourcesWithoutClosingOwner(t *testing.T) {
+	controller, lock, _, _, _ := testComponents(t)
+	lock.isClaimed = true
+	var order []string
+	runtime, err := newBorrowedOwnerProductionRuntime(controller,
+		orderedRuntimeCloser{name: "session-borrow", order: &order},
+		orderedRuntimeCloser{name: "run-lease", order: &order},
+	)
+	if application.HasReason(err, application.ReasonPlatformProfileUnavailable) {
+		t.Skip("darwin/arm64-only runtime")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(order, []string{"run-lease", "session-borrow"}) {
+		t.Fatalf("close order=%v", order)
+	}
+	if lock.closed || !lock.claimed() {
+		t.Fatalf("borrowed runtime changed repository owner: closed=%t claimed=%t", lock.closed, lock.claimed())
+	}
+}
+
+func TestRepositorySessionCloseWaitsForBorrowAndRejectsNewBorrow(t *testing.T) {
+	lock := &testOwnerLock{want: testAcquisition(), isClaimed: true}
+	session := &RepositorySession{
+		ingress:     &resultingress.DurableStore{},
+		owner:       lock,
+		ownerState:  resultingress.ControlOwnerState{Acquisition: lock.want, FactDigest: runtimeTestDigest},
+		acquisition: lock.want,
+	}
+	borrow, err := session.borrow()
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- session.Close() }()
+
+	writerPending := false
+	for attempts := 0; attempts < 10_000; attempts++ {
+		if !session.mu.TryRLock() {
+			writerPending = true
+			break
+		}
+		session.mu.RUnlock()
+		goruntime.Gosched()
+	}
+	if !writerPending {
+		_ = borrow.Close()
+		<-closed
+		t.Fatal("RepositorySession.Close never waited for the active borrow")
+	}
+	if err := borrow.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	if !session.closed || !lock.closed {
+		t.Fatalf("session closed=%t owner closed=%t", session.closed, lock.closed)
+	}
+	if _, err := session.borrow(); !application.HasReason(err, application.ReasonOwnerUnavailable) {
+		t.Fatalf("borrow after close err=%v", err)
+	}
+}
+
 func TestProductionRuntimeConstructionFailureClosesTransferredResourcesAndOwner(t *testing.T) {
 	controller, lock, _, _, _ := testComponents(t)
 	var order []string

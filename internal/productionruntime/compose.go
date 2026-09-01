@@ -80,7 +80,7 @@ type ComposeResult struct {
 // acquisition and returns a ready Runtime. Construction failure closes every
 // transferred resource in reverse order; Runtime.Close closes the owner last.
 func ComposeRuntime(ctx context.Context, inputs CompositionInputs, profile PiProfile) (*ComposeResult, error) {
-	if profile.Validate() != nil || inputs.OwnerDirectory == nil {
+	if profile.Validate() != nil || (inputs.RepositorySession == nil && inputs.OwnerDirectory == nil) {
 		return nil, application.NewError("compose-runtime", application.ReasonInvalidRequest)
 	}
 	ledger, err := NewCompositionLedger(ctx, inputs)
