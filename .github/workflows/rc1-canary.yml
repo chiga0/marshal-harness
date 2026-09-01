@@ -80,6 +80,7 @@ jobs:
           git remote set-url origin https://github.com/chiga0/marshal-harness.git
           head="$(git rev-parse HEAD)"
           test "$head" = "$EXPECTED_HEAD" || { echo "::error::checkout head 漂移 $head" >&2; exit 1; }
+          git checkout -q -B main "$EXPECTED_HEAD"
           bash scripts/release-ci-gate.sh "${{ github.repository }}" "$EXPECTED_HEAD"
 
       - name: Provision Go 1.26.6 from the official tarball
