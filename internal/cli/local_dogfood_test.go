@@ -25,8 +25,12 @@ func TestMain(m *testing.M) {
 	if inheritedTestEntry() {
 		os.Exit(0)
 	}
+	// CI `make test` 注入真实 git head 后，dogfood gate 只应区分「in-process
+	// unprofiled 测试 fixture」与「构建产物」。commit 全由 ldflags 决定，不能
+	// 参与该区分；产生断言失败的 TestDarwinUnprofiled* 在测试体内临时关闭
+	// bypass 以保持 fail-closed 覆盖。
 	localDogfoodGateTestBypass = func(info buildinfo.Info) bool {
-		return info.Commit == "unknown" && info.SelfProfile == "unprofiled"
+		return info.SelfProfile == "unprofiled"
 	}
 	os.Exit(m.Run())
 }
@@ -368,7 +372,14 @@ func TestDarwinUnprofiledBuildFailsClosedAtProductionEntry(t *testing.T) {
 		t.Skip("Darwin profile gate")
 	}
 	original := localBuildInfo
-	t.Cleanup(func() { localBuildInfo = original })
+	// 本测试必须证明未命中 production profile 的 built binary 被 fail closed：
+	// TestMain 的 unprofiled bypass 不能放行这里，测试体内关闭它。
+	originalBypass := localDogfoodGateTestBypass
+	localDogfoodGateTestBypass = func(buildinfo.Info) bool { return false }
+	t.Cleanup(func() {
+		localBuildInfo = original
+		localDogfoodGateTestBypass = originalBypass
+	})
 	localBuildInfo = func() buildinfo.Info {
 		return buildinfo.Info{Commit: strings.Repeat("a", 40), SelfProfile: "unprofiled"}
 	}
