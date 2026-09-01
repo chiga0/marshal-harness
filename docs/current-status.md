@@ -18,6 +18,10 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 这关闭了“独立二进制仍可成为第二 authority root”的旧实现风险，但没有完成 stable server。下一相邻切片仍须在 fixed `marshal` 内实现 `marshal control-plane serve`，复用同一个 in-process `PublicApplicationPort`、`ProductionRuntime` owner 与恢复控制器，并通过 authenticated loopback、并发 owner、response-loss 和 restart recovery 矩阵。因此 fixed server finding 继续为 `INTEGRATION-OPEN`，R2–R6 成熟度不升级。
 
+第二段相邻 cutover 已把 `internal/server` 的 Run start 从 `RunExecutor func` 旁路改为唯一注入的 `PublicApplicationPort`：transport 先以 `InspectRun` 冻结 exact sequence、Attempt 与 `authorityHead`，调用 `PrepareRunStart` 后把 exact prepared Attempt 与 `preparationDigest` 一同写入 pending intent，再调用 `StartPreparedRun`；返回值改为 path-free `RunProjection`，正常成功停在权威 `RUNNING`，不会把结果收集或 Verification 冒充为 start 的一部分。响应丢失恢复只接受同一 prepared Attempt 且 current authority 上 sequence/head 均已前进的 receipt；定向测试覆盖不重复 Prepare/Start 与“其它 Attempt 不得被旧 intent 认领”的负向场景。
+
+该段消除了 Run start 的 direct execution seam，但 server 仍保留旧 Task create/cancel、approval、query/event 资产，fixed `marshal control-plane serve` 及 repo-wide owner/session runtime 尚未实现；因此仍不得把 `internal/server` 视为完整 ADR 0062 adapter，也不得升级 stable/R2–R6 状态。下一切片必须先给 `ProductionRuntime` 建立可服务多个 Run 的 owner-scoped session/factory，再由 fixed CLI 注入，而不是在 HTTP 包内重新装配 per-Run authority。
+
 ## 2026-08-31 fixed CLI 生命周期检查点
 
 固定候选 `main@3819462` 已构建为 `v1.0.0-rc1` Darwin arm64 local-dogfood bytes，并以真实 Pi 执行 canary `RC1-PI-20260831-3819462`。该 Run 只经 ResultIngress 接纳结果，由独立 Verification 生成 current Evidence，再由独立 reviewer 生成精确绑定 Evidence 的 accept Decision，最终由新的 Marshal 进程重读为 `ACCEPTED`。Decision digest 为 `sha256:5d50b624e41419ef32a1d7251481d5843ab001d3affe0ef6c8a6aad5465df5e9`。

@@ -146,7 +146,7 @@
       "post": {
         "operationId": "startRun",
         "summary": "Start or resume one existing durable Run",
-        "description": "Idempotent submission into the single production task-run composition root. Runtime profile, adapter, budgets and verification boundaries remain frozen by the TaskSpec, PolicySnapshot and CapabilitySnapshot; the payload accepts no caller-selected execution knobs. Before execution, marshal-server durably records an operation/run-bound pending command intent carrying the initial Run sequence and Attempt. Success, RETRY_PENDING/BLOCKED failure, and response-loss recovery from RUNNING/VERIFYING become a completed RunExecution receipt; replay never consumes a second Attempt. Worker success stops at VERIFYING; this endpoint never fabricates independent verification or ReviewDecision evidence.",
+        "description": "Idempotent submission through the injected in-process PublicApplicationPort. Runtime profile, adapter, budgets and verification boundaries remain frozen by durable authority; the payload accepts no caller-selected execution knobs. The server inspects the exact Run sequence and authority head, calls PrepareRunStart, then durably records an operation/run-bound pending command intent carrying that exact prepared Attempt and preparationDigest before StartPreparedRun. Response-loss recovery accepts only the same prepared Attempt at a successor authority head, so replay never consumes or misattributes a second Attempt. Normal success returns the authoritative RUNNING projection; result collection, verification and ReviewDecision remain separate application operations.",
         "parameters": [
           {"$ref": "#/components/parameters/RequestId"},
           {"$ref": "#/components/parameters/ProtocolVersion"},
@@ -171,7 +171,7 @@
         },
         "responses": {
           "202": {
-            "description": "The production executor completed one bounded attempt and durable Run progress was observed.",
+            "description": "The application Port committed one prepared Attempt start and returned its authoritative projection.",
             "content": {
               "application/json": {
                 "schema": {"$ref": "#/components/schemas/RunExecution"}
@@ -669,7 +669,21 @@
           "taskId": {"type": "string"},
           "runId": {"type": "string"},
           "attemptId": {"type": "string"},
-          "state": {"$ref": "#/components/schemas/RunState"}
+          "state": {"$ref": "#/components/schemas/ApplicationRunProjection"}
+        }
+      },
+      "ApplicationRunProjection": {
+        "type": "object",
+        "description": "Path-free current-ledger projection returned by PublicApplicationPort. It is not a Worker-authored result or a transport-owned business state.",
+        "additionalProperties": false,
+        "required": ["taskId", "runId", "state", "sequence", "authorityHead"],
+        "properties": {
+          "taskId": {"$ref": "#/components/schemas/MarshalId"},
+          "runId": {"$ref": "#/components/schemas/MarshalId"},
+          "attemptId": {"$ref": "#/components/schemas/MarshalId"},
+          "state": {"$ref": "#/components/schemas/RunLifecycleState"},
+          "sequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "authorityHead": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
         }
       },
       "RunApprovalRequest": {
@@ -877,7 +891,7 @@
     "NOT_FOUND": {"status": 404, "reasons": ["unknown-route", "task-not-found", "run-not-found"]},
     "IDEMPOTENCY_CONFLICT": {"status": 409, "reasons": ["idempotency-key-conflict"]},
     "INVALID_STATE": {"status": 409, "reasons": ["run-lease-held", "run-already-exists", "invalid-lifecycle-transition", "run-terminal", "run-start-progress-conflict", "no-cancelable-run", "journal-conflict", "approval-gate-unavailable", "approval-stale"]},
-    "REJECTED": {"status": 422, "reasons": ["task-spec-invalid", "policy-snapshot-invalid", "planning-rejected", "approval-not-required", "control-input-invalid", "approval-rejected", "journal-truncated", "run-inspect-failed", "run-state-conflict", "run-start-intent-invalid", "run-start-intent-drift", "run-executor-unavailable", "run-execution-failed", "run-execution-not-observed", "mutation-authority-unavailable", "ambiguous-run", "outcome-unavailable", "abort-staging-failed", "journal-append-failed", "abort-commit-failed", "outcome-commit-failed", "snapshot-write-failed", "run-lease-unavailable", "request-cancelled"]},
+    "REJECTED": {"status": 422, "reasons": ["task-spec-invalid", "policy-snapshot-invalid", "planning-rejected", "approval-not-required", "control-input-invalid", "approval-rejected", "journal-truncated", "run-inspect-failed", "run-state-conflict", "run-start-intent-invalid", "run-start-intent-drift", "application-port-unavailable", "run-prepare-failed", "run-execution-failed", "run-execution-not-observed", "run-start-recovery-required", "mutation-authority-unavailable", "ambiguous-run", "outcome-unavailable", "abort-staging-failed", "journal-append-failed", "abort-commit-failed", "outcome-commit-failed", "snapshot-write-failed", "run-lease-unavailable", "request-cancelled"]},
     "INTERNAL": {"status": 500, "reasons": ["internal"]}
   }
 }
