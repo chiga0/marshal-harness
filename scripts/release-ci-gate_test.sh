@@ -191,8 +191,8 @@ PY
   grep -F 'EXPECTED_RECEIPT_DIGEST: ${{ inputs.receipt-digest }}' "$admit" >/dev/null || return 1
   grep -F 'scripts/rc1-release-carrier-artifact.py' "$admit" >/dev/null || return 1
   grep -F 'scripts/rc1-carrier-check.py' "$admit" >/dev/null || return 1
-  grep -F 'scripts/release-contract.sh verify-rc1-dist' "$admit" >/dev/null || return 1
-  grep -F 'scripts/release-contract.sh verify-candidate-tag' "$admit" >/dev/null || return 1
+  ! grep -F 'scripts/release-contract.sh verify-rc1-dist' "$admit" >/dev/null || return 1
+  grep -F 'GO_BIN="$(go env GOROOT)/bin/go" bash scripts/release-contract.sh verify-candidate-tag' "$admit" >/dev/null || return 1
   grep -F 'scripts/release-ci-gate.sh "${{ github.repository }}" "$RELEASE_HEAD"' "$admit" >/dev/null || return 1
   grep -F 'without rebuilding candidate bytes' "$admit" >/dev/null || return 1
   grep -F 'name: release-payload-${{ steps.release.outputs.source-head }}' "$admit" >/dev/null || return 1
