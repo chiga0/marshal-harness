@@ -345,3 +345,119 @@ func TestComposeSealedRuntimeReadyAndPrepares(t *testing.T) {
 		t.Fatalf("sealed prepare: %v", err)
 	}
 }
+
+func TestRepositorySessionReusesOneOwnerAcrossSequentialRunRuntimes(t *testing.T) {
+	inputs, runID := newCompositionInputs(t)
+	heldDir := t.TempDir()
+	if err := os.Chmod(heldDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(heldDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	controlDir := t.TempDir()
+	if err := os.Chmod(controlDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	control, err := os.Open(controlDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	fixed, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixed, err = filepath.EvalSymlinks(fixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionInputs := RepositorySessionInputs{
+		HeldIngressDir: held, OwnerDirectory: inputs.OwnerDirectory,
+		Acquisition: inputs.Acquisition, FixedMarshalPath: fixed, OwnerPrivateControlRoot: control,
+	}
+	session, err := OpenRepositorySession(context.Background(), sessionInputs)
+	if err != nil {
+		t.Fatalf("open repository session: %v", err)
+	}
+	closure := inputs.LaunchClosure
+	identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := NewPi0844Profile(closure.RuntimeExecutable.CanonicalPath, "/fixed/node-runtime", identity.IdentityDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composeInputs := inputs
+	composeInputs.RepositorySession = session
+	composeInputs.Ingress = nil
+	composeInputs.OwnerDirectory = nil
+	composeInputs.Acquisition = resultingress.ControlOwnerAcquisition{}
+
+	first, err := ComposeRuntime(context.Background(), composeInputs, profile)
+	if err != nil {
+		t.Fatalf("compose first Run runtime: %v", err)
+	}
+	status, err := first.Runtime.Status(context.Background(), application.StatusRequest{})
+	if err != nil || status.Availability != application.AvailabilityReady || status.OwnerEpoch != 1 {
+		t.Fatalf("first status=%+v err=%v", status, err)
+	}
+	if err := first.Runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if session.closed || !session.owner.claimed() {
+		t.Fatalf("first Run closed repository session: closed=%t claimed=%t", session.closed, session.owner.claimed())
+	}
+	mixed := composeInputs
+	mixed.OwnerDirectory = inputs.OwnerDirectory
+	if _, err := ComposeRuntime(context.Background(), mixed, profile); !application.HasReason(err, application.ReasonInvalidRequest) {
+		t.Fatalf("mixed standalone/session owner inputs err=%v", err)
+	}
+	drifted := composeInputs
+	drifted.Namespace.AuthorityScopeId += "-foreign"
+	if _, err := ComposeRuntime(context.Background(), drifted, profile); !application.HasReason(err, application.ReasonInvalidRequest) {
+		t.Fatalf("session namespace drift err=%v", err)
+	}
+
+	secondLease, err := inputs.Runs.AcquireExisting(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composeInputs.RunLease = secondLease
+	second, err := ComposeRuntime(context.Background(), composeInputs, profile)
+	if err != nil {
+		t.Fatalf("compose second Run runtime: %v", err)
+	}
+	status, err = second.Runtime.Status(context.Background(), application.StatusRequest{})
+	if err != nil || status.Availability != application.AvailabilityReady || status.OwnerEpoch != 1 {
+		t.Fatalf("second status=%+v err=%v", status, err)
+	}
+	if err := second.Runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if competing, err := OpenRepositorySession(context.Background(), sessionInputs); competing != nil || !application.HasReason(err, application.ReasonOwnerUnavailable) {
+		t.Fatalf("competing session=%v err=%v", competing, err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ComposeRuntime(context.Background(), composeInputs, profile); !application.HasReason(err, application.ReasonOwnerUnavailable) {
+		t.Fatalf("compose after session close err=%v", err)
+	}
+
+	sessionInputs.Acquisition.OwnerEpoch = 0
+	successor, err := OpenRepositorySession(context.Background(), sessionInputs)
+	if err != nil {
+		t.Fatalf("open successor session: %v", err)
+	}
+	if successor.acquisition.OwnerEpoch != 2 {
+		t.Fatalf("successor owner epoch=%d", successor.acquisition.OwnerEpoch)
+	}
+	if err := successor.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

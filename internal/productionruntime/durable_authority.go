@@ -52,6 +52,8 @@ type CompositionLedger struct {
 	attestation        provider.Attestation
 	allocationDir      string
 	owner              repositoryOwnerLock
+	ownsOwner          bool
+	sessionBorrow      *repositorySessionBorrow
 	closure            launchidentity.ClosureV1
 	requirements       allocationcontrol.SandboxRequirementsV1
 	workDirs           []string
@@ -80,13 +82,18 @@ type LocalSelfIdentityObserver func() (selfidentity.LocalSelfIdentityObservation
 // decisions. Nothing here is derivable from the durable ledger; everything is
 // validated before the first authority call.
 type CompositionInputs struct {
-	Ingress        *resultingress.DurableStore
-	Runs           *runstore.Store
-	RunLease       *runstore.Lease
-	LeaseLedger    *dispatch.LeaseLedger
-	OwnerDirectory *os.File
-	Acquisition    resultingress.ControlOwnerAcquisition
-	RunID          string
+	// RepositorySession selects long-lived fixed-server composition. The
+	// session owns the repository owner and sealed ingress; this Run only
+	// borrows them and owns its Run-scoped resources. Repository-wide inputs
+	// below must be omitted when a session is supplied.
+	RepositorySession *RepositorySession
+	Ingress           *resultingress.DurableStore
+	Runs              *runstore.Store
+	RunLease          *runstore.Lease
+	LeaseLedger       *dispatch.LeaseLedger
+	OwnerDirectory    *os.File
+	Acquisition       resultingress.ControlOwnerAcquisition
+	RunID             string
 	// HeldIngressDir, FixedMarshalPath and OwnerPrivateControlRoot select the
 	// sealed Darwin fresh-start composition: the ingress is opened from the
 	// held descriptor and sealed in place for the exact fixed marshal image.
@@ -153,7 +160,26 @@ type CompositionInputs struct {
 // supplied lease so the order cannot be re-violated. Path A (staging
 // provision) keeps accepting the caller-supplied lease for tests/compat.
 func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*CompositionLedger, error) {
-	if inputs.HeldIngressDir != nil {
+	var sessionBorrow *repositorySessionBorrow
+	var owner repositoryOwnerLock
+	var ownerState resultingress.ControlOwnerState
+	var ownsOwner bool
+	if inputs.RepositorySession != nil {
+		if inputs.Ingress != nil || inputs.HeldIngressDir != nil || inputs.OwnerDirectory != nil ||
+			inputs.FixedMarshalPath != "" || inputs.OwnerPrivateControlRoot != nil ||
+			inputs.Acquisition != (resultingress.ControlOwnerAcquisition{}) {
+			return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
+		}
+		borrow, err := inputs.RepositorySession.borrow()
+		if err != nil {
+			return nil, err
+		}
+		sessionBorrow = borrow
+		inputs.Ingress = borrow.session.ingress
+		inputs.Acquisition = borrow.session.acquisition
+		owner = borrow.session.owner
+		ownerState = borrow.session.ownerState
+	} else if inputs.HeldIngressDir != nil {
 		if inputs.FixedMarshalPath == "" || inputs.OwnerPrivateControlRoot == nil {
 			return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 		}
@@ -163,19 +189,34 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		}
 		inputs.Ingress = held
 	}
-	ownsIngress := inputs.HeldIngressDir != nil
+	releaseSessionBorrow := func() {
+		if sessionBorrow != nil {
+			_ = sessionBorrow.Close()
+		}
+	}
+	ownsIngress := inputs.RepositorySession == nil && inputs.HeldIngressDir != nil
+	releasePreOwner := func() {
+		if ownsIngress && inputs.Ingress != nil {
+			_ = inputs.Ingress.Close()
+		}
+		releaseSessionBorrow()
+	}
 	if inputs.Ingress == nil || inputs.Runs == nil || inputs.LeaseLedger == nil {
+		releasePreOwner()
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 	}
 	localIdentityConfigured := inputs.EntryLocalSelfIdentity != nil || inputs.ObserveLocalSelfIdentity != nil
 	if localIdentityConfigured && (inputs.EntryLocalSelfIdentity == nil || inputs.ObserveLocalSelfIdentity == nil || selfidentity.ValidateObservation(*inputs.EntryLocalSelfIdentity) != nil) {
+		releasePreOwner()
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 	}
 	if inputs.Namespace.Validate() != nil || inputs.ProvisionDomain.Validate() != nil || inputs.CleanupDomain.Validate() != nil ||
 		inputs.ProvisionDomain == inputs.CleanupDomain ||
-		inputs.OwnerDirectory == nil || validateCompositionAcquisitionCandidate(inputs.Acquisition) != nil || inputs.RunID == "" ||
+		(inputs.RepositorySession == nil && inputs.OwnerDirectory == nil) || validateCompositionAcquisitionCandidate(inputs.Acquisition) != nil ||
+		inputs.Namespace != inputs.Acquisition.Scope.AuthorityNamespaceID || inputs.RunID == "" ||
 		inputs.OrchestratorID == "" || inputs.RegistrationID == "" || inputs.AllocationRoot == "" ||
 		inputs.CapabilitySnapshot == "" || inputs.LaunchClosure.Validate() != nil {
+		releasePreOwner()
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 	}
 	// Path B (existing-worktree binding) requires both the held descriptor
@@ -184,6 +225,7 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 	graphSupplied := inputs.ExistingWorktreeDescriptorGraph.FilesystemRoot != nil
 	targetSupplied := inputs.ExistingWorktreeTargetWorktree != nil
 	if graphSupplied != targetSupplied {
+		releasePreOwner()
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 	}
 	existingWorktreeEnabled := graphSupplied && targetSupplied
@@ -193,6 +235,7 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 	// adapter/pi. A nil builder fails closed so path B never launches with the
 	// bare composition-time kernel argv. Path A keeps nil compatibility.
 	if existingWorktreeEnabled && inputs.LaunchArgvBuilder == nil {
+		releasePreOwner()
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 	}
 	if existingWorktreeEnabled {
@@ -201,10 +244,12 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 			inputs.ResultIngressDomain.Validate() != nil ||
 			inputs.ProviderRegistration.RegistrationId != inputs.RegistrationID ||
 			inputs.ProviderSnapshot.ProviderCapabilitySnapshotDigest != inputs.CapabilitySnapshot {
+			releasePreOwner()
 			return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 		}
 		stored, err := inputs.ProviderStore.Get(inputs.ProviderRegistration.RegistrationId)
 		if err != nil || stored != inputs.ProviderRegistration {
+			releasePreOwner()
 			return nil, application.NewError("composition-ledger", application.ReasonAuthorityConflict)
 		}
 	}
@@ -214,38 +259,49 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 	// and is rejected. Path A keeps accepting the caller-supplied lease.
 	if existingWorktreeEnabled {
 		if inputs.RunLease != nil {
+			releasePreOwner()
 			return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 		}
 	} else if inputs.RunLease == nil {
+		releasePreOwner()
 		return nil, application.NewError("composition-ledger", application.ReasonInvalidRequest)
 	}
 	// The allocation root is composition-owned infrastructure: create it
 	// eagerly so the per-attempt staging store can open inside it.
 	if err := os.MkdirAll(inputs.AllocationRoot, 0o700); err != nil {
+		releasePreOwner()
 		return nil, err
 	}
 	// Two-phase repository owner acquisition FIRST (path B lock order). The
 	// phase-A scope lock admits exactly one owner append, the bound phase-B
 	// lock carries the runtime claim, and closing the spent phase-A handle
 	// never releases phase B.
-	phase, err := openRepositoryOwnerScopeLock(inputs.OwnerDirectory, inputs.Acquisition.Scope)
-	if err != nil {
-		return nil, err
-	}
-	ownerState, acquisition, err := acquireOwner(inputs.Ingress, phase, inputs.Acquisition)
-	if err != nil {
-		_ = phase.Close()
-		return nil, err
-	}
-	inputs.Acquisition = acquisition
-	owner, err := phase.bindAcquisition(inputs.Ingress)
-	if err != nil {
-		_ = phase.Close()
-		return nil, err
-	}
-	if err := phase.Close(); err != nil {
-		_ = owner.Close()
-		return nil, err
+	if inputs.RepositorySession == nil {
+		phase, err := openRepositoryOwnerScopeLock(inputs.OwnerDirectory, inputs.Acquisition.Scope)
+		if err != nil {
+			releasePreOwner()
+			return nil, err
+		}
+		var acquisition resultingress.ControlOwnerAcquisition
+		ownerState, acquisition, err = acquireOwner(inputs.Ingress, phase, inputs.Acquisition)
+		if err != nil {
+			_ = phase.Close()
+			releasePreOwner()
+			return nil, err
+		}
+		inputs.Acquisition = acquisition
+		owner, err = phase.bindAcquisition(inputs.Ingress)
+		if err != nil {
+			_ = phase.Close()
+			releasePreOwner()
+			return nil, err
+		}
+		if err := phase.Close(); err != nil {
+			_ = owner.Close()
+			releasePreOwner()
+			return nil, err
+		}
+		ownsOwner = true
 	}
 	// releaseConstruction reverses the acquisition order (Run Lease → owner →
 	// result-ingress) for any failure after this point. It only releases Run
@@ -257,15 +313,18 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		if ownsRunLease && runLease != nil {
 			_ = runLease.Release()
 		}
-		_ = owner.Close()
+		if ownsOwner {
+			_ = owner.Close()
+		}
 		if ownsIngress {
 			_ = inputs.Ingress.Close()
 		}
+		releaseSessionBorrow()
 	}
 	// The seal consumes the held store in place behind the current owner and
 	// observes the exact fixed marshal image inside that authority window. It
 	// runs before the Run Lease is acquired, under the owner lock only.
-	if inputs.HeldIngressDir != nil {
+	if inputs.RepositorySession == nil && inputs.HeldIngressDir != nil {
 		// The physical phase-B lock is held by this call stack; the borrowed
 		// verifier carries that fact without requiring the runtime claim that
 		// newProductionRuntime performs later.
@@ -280,6 +339,7 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 	// (ADR 0069). Path A borrows the caller-supplied lease. Any failure
 	// releases the newly-acquired lease and the owner in reverse order.
 	if existingWorktreeEnabled {
+		var err error
 		runLease, err = inputs.Runs.AcquireExisting(inputs.RunID)
 		if err != nil {
 			releaseConstruction()
@@ -333,6 +393,8 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 	}
 	ledger.allocation = allocation
 	ledger.owner = owner
+	ledger.ownsOwner = ownsOwner
+	ledger.sessionBorrow = sessionBorrow
 	// A newly acquired owner must reconcile an already-RUNNING attempt before
 	// the Runtime becomes visible. This is the single production caller for
 	// ADR 0067 Attach/rebind; Status remains a read-only projection.
@@ -380,12 +442,10 @@ func acquireOwner(ingress *resultingress.DurableStore, phase repositoryOwnerScop
 	return state, acquisition, nil
 }
 
-// Close releases the resources the ledger owns in reverse acquisition order
-// (Run Lease → result-ingress → owner, ADR 0069). Path A borrows the Run Lease
-// and result-ingress from the caller, so only the bound owner lock is released
-// here; the Runtime closes the borrowed resources itself. Path B acquires the
-// Run Lease (and, for the held ingress, the result-ingress) inside the
-// constructor, so Close releases them.
+// Close releases construction-owned resources. Standalone composition closes
+// its Run Lease/ingress/owner as applicable; session composition closes only
+// its Run-scoped lease and returns the session borrow. The RepositorySession
+// remains the sole owner of its ingress and repository lock.
 func (l *CompositionLedger) Close() error {
 	if l == nil {
 		return nil
@@ -397,8 +457,11 @@ func (l *CompositionLedger) Close() error {
 	if l.ownsIngress && l.ingress != nil {
 		errs = append(errs, l.ingress.Close())
 	}
-	if l.owner != nil {
+	if l.ownsOwner && l.owner != nil {
 		errs = append(errs, l.owner.Close())
+	}
+	if l.sessionBorrow != nil {
+		errs = append(errs, l.sessionBorrow.Close())
 	}
 	return errors.Join(errs...)
 }

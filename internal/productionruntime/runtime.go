@@ -16,6 +16,7 @@ type Runtime struct {
 	closed     bool
 	ready      bool
 	resources  []io.Closer
+	closeOwner bool
 }
 
 var _ application.PublicApplicationPort = (*Runtime)(nil)
@@ -34,15 +35,36 @@ func newRuntime(controller *controller) (*Runtime, error) {
 // Ownership of every non-nil resource transfers at entry: construction
 // failure closes them in reverse order and closes the owner last.
 func newProductionRuntime(controller *controller, resources ...io.Closer) (*Runtime, error) {
+	return newProductionRuntimeWithOwnerMode(controller, true, resources...)
+}
+
+// newBorrowedOwnerProductionRuntime builds one Run-scoped Runtime under an
+// already claimed RepositorySession owner. Closing it releases only the Run
+// resources and the session borrow, never the repository owner itself.
+func newBorrowedOwnerProductionRuntime(controller *controller, resources ...io.Closer) (*Runtime, error) {
+	return newProductionRuntimeWithOwnerMode(controller, false, resources...)
+}
+
+// claimRepositorySessionOwner keeps the one runtime-claim mutation inside the
+// established Runtime construction boundary while allowing a fixed process to
+// claim it once before composing Run-scoped runtimes.
+func claimRepositorySessionOwner(owner repositoryOwnerLock) error {
+	if owner == nil {
+		return application.NewError("production-runtime", application.ReasonOwnerUnavailable)
+	}
+	return owner.claimRuntime()
+}
+
+func newProductionRuntimeWithOwnerMode(controller *controller, ownsOwner bool, resources ...io.Closer) (*Runtime, error) {
 	for _, resource := range resources {
 		if resource == nil {
-			cleanupErr := closeRuntimeConstruction(controller, resources)
+			cleanupErr := closeRuntimeConstruction(controller, ownsOwner, resources)
 			return nil, errors.Join(application.NewError("production-runtime", application.ReasonInvalidRequest), cleanupErr)
 		}
 	}
-	runtime, err := newRuntimeWithReadiness(controller, true)
+	runtime, err := newRuntimeWithOwnerMode(controller, true, ownsOwner)
 	if err != nil {
-		return nil, errors.Join(err, closeRuntimeConstruction(controller, resources))
+		return nil, errors.Join(err, closeRuntimeConstruction(controller, ownsOwner, resources))
 	}
 	runtime.resources = append([]io.Closer(nil), resources...)
 	return runtime, nil
@@ -70,40 +92,53 @@ func newComposedProductionRuntime(ledger *CompositionLedger, profile PiProfile, 
 		_ = ledger.Close()
 		return nil, fmt.Errorf("compose: controller: %v", err)
 	}
-	// The Runtime owns the result-ingress and the Run Lease for its lifetime.
-	// Use the ledger's final ingress/runLease (path B acquires the Run Lease
-	// inside NewCompositionLedger; the held ingress may differ from the
-	// original inputs.Ingress, which is nil for the HeldIngressDir path).
+	// A standalone Runtime owns result-ingress, Run Lease and owner. A
+	// session-backed Runtime owns only its Run Lease and session borrow; the
+	// fixed process keeps result-ingress and owner alive across Runs.
+	if ledger.sessionBorrow != nil {
+		return newBorrowedOwnerProductionRuntime(controller,
+			ledger.sessionBorrow,
+			&resourceCloser{name: "run-lease", close: func() error { return ledger.runLease.Release() }},
+		)
+	}
 	return newProductionRuntime(controller,
 		&resourceCloser{name: "result-ingress", close: ledger.ingress.Close},
 		&resourceCloser{name: "run-lease", close: func() error { return ledger.runLease.Release() }},
 	)
 }
 
-func closeRuntimeConstruction(controller *controller, resources []io.Closer) error {
+func closeRuntimeConstruction(controller *controller, closeOwner bool, resources []io.Closer) error {
 	var closeErrors []error
 	for index := len(resources) - 1; index >= 0; index-- {
 		if resources[index] != nil {
 			closeErrors = append(closeErrors, resources[index].Close())
 		}
 	}
-	if controller != nil && controller.ownerLock != nil {
+	if closeOwner && controller != nil && controller.ownerLock != nil {
 		closeErrors = append(closeErrors, controller.ownerLock.Close())
 	}
 	return errors.Join(closeErrors...)
 }
 
 func newRuntimeWithReadiness(controller *controller, ready bool) (*Runtime, error) {
+	return newRuntimeWithOwnerMode(controller, ready, true)
+}
+
+func newRuntimeWithOwnerMode(controller *controller, ready, claimOwner bool) (*Runtime, error) {
 	if _, err := platformProfile(); err != nil {
 		return nil, err
 	}
 	if controller == nil || controller.profile.Validate() != nil || controller.ownerLock == nil {
 		return nil, application.NewError("production-runtime", application.ReasonInvalidRequest)
 	}
-	if err := controller.ownerLock.claimRuntime(); err != nil {
-		return nil, err
+	if claimOwner {
+		if err := controller.ownerLock.claimRuntime(); err != nil {
+			return nil, err
+		}
+	} else if !controller.ownerLock.claimed() {
+		return nil, application.NewError("production-runtime", application.ReasonOwnerUnavailable)
 	}
-	return &Runtime{controller: controller, ready: ready}, nil
+	return &Runtime{controller: controller, ready: ready, closeOwner: claimOwner}, nil
 }
 
 func (runtime *Runtime) Close() error {
@@ -121,7 +156,7 @@ func (runtime *Runtime) Close() error {
 		closeErrors = append(closeErrors, runtime.resources[index].Close())
 	}
 	runtime.resources = nil
-	if runtime.controller != nil && runtime.controller.ownerLock != nil {
+	if runtime.closeOwner && runtime.controller != nil && runtime.controller.ownerLock != nil {
 		closeErrors = append(closeErrors, runtime.controller.ownerLock.Close())
 	}
 	return errors.Join(closeErrors...)

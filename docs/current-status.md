@@ -22,6 +22,10 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 该段消除了 Run start 的 direct execution seam，但 server 仍保留旧 Task create/cancel、approval、query/event 资产，fixed `marshal control-plane serve` 及 repo-wide owner/session runtime 尚未实现；因此仍不得把 `internal/server` 视为完整 ADR 0062 adapter，也不得升级 stable/R2–R6 状态。下一切片必须先给 `ProductionRuntime` 建立可服务多个 Run 的 owner-scoped session/factory，再由 fixed CLI 注入，而不是在 HTTP 包内重新装配 per-Run authority。
 
+第三段相邻 cutover 已新增 `RepositorySession`：fixed Marshal 进程只执行一次 Phase-A scope lock、durable owner append/replay、Phase-B bind、sealed ResultIngress 与 runtime claim；后续 Run-scoped `ComposeRuntime` 只借用同一 current owner/ingress，并各自持有和释放 Run lease。Session 关闭会等待在途 Run runtime，随后关闭 ingress 并最后释放 owner；关闭单个 Run 不再释放仓库 owner，已关闭 Session 也不能继续组合新 Run。定向测试覆盖同一 owner epoch 下连续组合两个 Run runtime、并发第二 Session fail closed、关闭等待、关闭后拒绝借用以及释放后严格 successor epoch。
+
+本段没有新增 authority fact、Schema、状态转换或发布权限，因此沿用 ADR 0062/0066/0069 的既有合同；它只是 fixed server 的资源生命周期基础，尚未把 run resolver、完整 `PublicApplicationPort` 或 AF_UNIX transport 接入 `cmd/marshal`。因此 fixed server finding 仍为 `INTEGRATION-OPEN`，下一步是把 Run-specific composition assembler 收敛为 Session 之上的应用 Port，再实现 `marshal control-plane serve`。
+
 ## 2026-08-31 fixed CLI 生命周期检查点
 
 固定候选 `main@3819462` 已构建为 `v1.0.0-rc1` Darwin arm64 local-dogfood bytes，并以真实 Pi 执行 canary `RC1-PI-20260831-3819462`。该 Run 只经 ResultIngress 接纳结果，由独立 Verification 生成 current Evidence，再由独立 reviewer 生成精确绑定 Evidence 的 accept Decision，最终由新的 Marshal 进程重读为 `ACCEPTED`。Decision digest 为 `sha256:5d50b624e41419ef32a1d7251481d5843ab001d3affe0ef6c8a6aad5465df5e9`。
