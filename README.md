@@ -44,7 +44,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 - 使用独立凭据创建 GitHub Draft PR；
 - 中断后的检查、恢复和安全清理。
 
-`marshal-server`、Sandbox SPI、ResultIngress 和恢复组件已经存在。2026-08-31，固定 Marshal 候选 `main@3819462` 已用真实 Pi 完成单 Run/单 Attempt、ResultIngress、独立 Verification 与独立 ReviewDecision，并进入 `ACCEPTED`；这是当前最强的 Mac-first 生命周期证据。它仍不是已发布 RC1：该 canary 之后还需合入架构门禁修复、移除 production environment selector/direct fallback，并在新的最终 bytes 上重跑 same-bytes canary 与 release carrier。详细状态见[当前可用能力](https://chiga0.github.io/marshal-harness/current-status/)。
+`v1.0.0-rc1` 已于 2026-09-01 发布为 unsigned、Mac-first、Darwin arm64、CLI-only 的 `darwin-local-dogfood` 预览。固定 candidate `c1407bd` 已由真实 Pi 完成单 Run/单 Attempt、ResultIngress、独立 Verification/ReviewDecision 并进入 `ACCEPTED`；GitHub prerelease、canary 与安装后二进制是同一 SHA-256。它不是 production、managed、notarized、hardened、server、Linux 或 stable release。详细状态见[当前可用能力](https://chiga0.github.io/marshal-harness/current-status/)。
 
 ## v1.0 发布目标
 
@@ -52,27 +52,30 @@ v1.0 只承诺单节点、单用户、可信仓库：至少一个真实 AgentPro
 
 Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、全部 Provider hardened 矩阵、Web UI 与复杂 Goal DAG 延期到 1.x，不阻塞首个正式版本。完整范围见 [ADR 0052](docs/adr/0052-v1-release-scope-and-production-reachability.md) 与 [Roadmap](docs/roadmap-status.md)。
 
-### 2026-08-31 发布检查点
+### 2026-09-01 RC1 发布检查点
 
-- 固定候选 `main@3819462` 的真实 Pi canary `RC1-PI-20260831-3819462` 已由独立 reviewer 接受并进入 `ACCEPTED`，Decision digest 为 `sha256:5d50b624e41419ef32a1d7251481d5843ab001d3affe0ef6c8a6aad5465df5e9`。
-- 该 canary 证明固定 CLI、durable Attempt/owner/allocation/process authority、真实 Agent 结果接纳、独立 Verification/Review 与终态读取可以形成同一纵切；R2–R5 暂不升级，直到最终发布 sourceHead 的 bypass 归零和恢复/负向门禁闭合。
-- RC1 build-once distribution contract、installer exact opt-in guard 与 immutable carrier checker/receipt Schema 已合入并完成独立审查；当前发布链仍缺 pre-tag immutable candidate producer、current-authority receipt producer/admission、RC1 单资产 tag 校验，以及只消费既有 candidate 而不重建的 prerelease workflow。
-- `main@3819462` 的 required CI 已把剩余红灯收敛到 architecture check；本地修复已让 architecture check、定向 test/race、vet、staticcheck 与 diff-check 通过。合入后仍必须在新 final sourceHead/bytes 上重跑 canary，不能复用旧 digest 冒充同一最终产物。
-- ADR 0068 要求发布调用链中的 environment selector 与 direct `Adapter.Run` fallback 为零；这是新 final candidate 前的最后一个生产调用链切片。
-- unsigned RC 的构建和验证路径可行，但尚未发布任何 RC。稳定 `v1.*` 仍由 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 的 macOS signing/notarization 和 Linux stable release gate 阻断。
+- annotated tag `v1.0.0-rc1`（tag object `e99326f`）精确指向 sourceHead `c1407bd`；candidate SHA-256 为 `f9ed7fa59d05f5e71fef7164b8015240497e1d18e25ef1d3f8e199c1378a3774`。
+- 真实 Pi `0.84.4` canary run `33504020360` 与 finalize `33504247271` 完成单 Attempt、9 项 Gate、独立 Verification/ReviewDecision，并进入 `ACCEPTED`；receipt digest 为 `sha256:7bd5b500bbaff5c5b008922b713d9844b792a3e82ece4e4a46ccd837496b4525`。
+- candidate exact-head CI run `33502847249` 的 Ubuntu、macOS 与 secret scan 全绿；release workflow run `33506656403` 只消费已冻结 carrier，不重建 candidate，并创建 GitHub prerelease。
+- 从 GitHub release 外部下载后，二进制 SHA-256 仍与 canary 相同；在独立临时安装目录运行 `marshal version --json` 精确返回 `1.0.0-rc1`、commit `c1407bd`、Go `1.26.6`、`darwin/arm64` 与 `darwin-local-dogfood`。
+- R2–R5 仍保持 `COMPONENT`；R6 进入 `IN_PROGRESS/COMPONENT`。本次发布只关闭 ADR 0068 的 local-dogfood prerelease distribution exit，不满足 ADR 0052 的 `RELEASED`、production 或 stable 门禁。
+- stable `v1.0.0` 仍由 fixed server、[Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 的 macOS signing/notarization、Linux stable release 与完整恢复/故障矩阵阻断。
 
-[ADR 0067](docs/adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 与 [ADR 0068](docs/adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受。真实 fixed CLI→Pi→独立 Decision→`ACCEPTED` 已在 `main@3819462` 证明，但 ADR 0068 要求最终发布 sourceHead 的 production selector/direct fallback 计数为零，并要求 release workflow 消费同一 immutable candidate bytes；因此当前仍没有可用或已发布的 RC1。R2–R5 暂不升级，R6 仍为 `PLANNED/DESIGN`；fixed server、managed signing/notarization 和 Linux stable 均属于 RC1 后继。
+[ADR 0067](docs/adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 与 [ADR 0068](docs/adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 定义的 Mac-first same-bytes RC1 路径已经走通并发布。RC1 的 tag 名不等于 stable v1.0：fixed server、managed signing/notarization、Linux stable 和 ADR 0052 的 `RELEASED` 门禁仍属于后继。
 
 ## 安装
 
-下面命令安装当前已发布版本，不会安装尚不存在的 `v1.0.0-rc1`。ADR 0068 的 RC1 installer guard 已实现，但只有 release 真实存在后精确安装命令才能成功：它只允许在 Darwin arm64 上显式选择精确 tag 与 local-dogfood preview；缺少精确资产时必须 fail closed，不得回退源码或其它平台资产，也不得自动生成或激活 `LocalDogfoodActivationV2`。
+Darwin arm64 用户可以显式安装已发布的 RC1；安装器不会请求 sudo、不会自动生成 activation，也不会修改 Gatekeeper、SIP 或 EDR。非 Darwin arm64、缺少精确资产、manifest/checksum/tag 漂移或缺少 preview opt-in 均 fail closed，不会回退源码或其它平台资产：
 
 安装脚本不会请求 sudo：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chiga0/marshal-harness/main/scripts/install.sh | bash
-marshal version
+curl -fsSL https://raw.githubusercontent.com/chiga0/marshal-harness/main/scripts/install.sh \
+  | MARSHAL_TAG=v1.0.0-rc1 MARSHAL_LOCAL_DOGFOOD_PREVIEW=1 bash
+marshal version --json
 ```
+
+[查看 v1.0.0-rc1 prerelease](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0-rc1)。通用 latest/stable 安装不会自动选择 prerelease。
 
 也可以从源码构建：
 
