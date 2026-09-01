@@ -7,7 +7,10 @@ import sys
 with open(sys.argv[1], "rb") as handle:
     lines = handle.read().rstrip(b"\n").split(b"\n")
 last = json.loads(lines[-1].decode("utf-8"))
-digest = last.get("recordDigest", "")
+digest = last.get("digest", "")
 if not isinstance(digest, str) or not digest.startswith("sha256:") or len(digest) != 71:
-    raise SystemExit("[rc1-canary-authority-head] journal tail recordDigest 非法")
+    raise SystemExit("[rc1-canary-authority-head] journal tail digest 非法")
+revision = last.get("revision")
+if type(revision) is not int or revision < 1:
+    raise SystemExit("[rc1-canary-authority-head] journal tail revision 非法")
 print(digest)

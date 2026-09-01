@@ -88,7 +88,10 @@ class CarrierFixture:
             f"asset {raw_sha(self.binary)} {len(self.binary)} {BINARY_NAME} "
             "darwin arm64 darwin-local-dogfood\n"
         ).encode("utf-8")
-        sums = f"{raw_sha(self.binary)}  {BINARY_NAME}\n".encode("ascii")
+        sums = (
+            f"{raw_sha(manifest)}  RELEASE-MANIFEST\n"
+            f"{raw_sha(self.binary)}  {BINARY_NAME}\n"
+        ).encode("ascii")
         self.contents = {
             BINARY_NAME: self.binary,
             "RELEASE-MANIFEST": manifest,

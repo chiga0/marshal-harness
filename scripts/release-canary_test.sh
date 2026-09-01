@@ -7,6 +7,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 DRIVER_SOURCE="${SCRIPT_DIR}/release-canary.sh"
 WORKFLOW_SOURCE="${SCRIPT_DIR}/../.github/workflows/rc1-canary.yml"
+RECEIPT_SOURCE="${SCRIPT_DIR}/rc1-canary-receipt.sh"
+AUTHORITY_HEAD_SOURCE="${SCRIPT_DIR}/rc1-canary-authority-head.py"
 TMP_RAW="$(mktemp -d "${TMPDIR:-/tmp}/release-canary-test.XXXXXX")"
 TMP_ROOT="$(cd "$TMP_RAW" && pwd -P)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -76,6 +78,17 @@ grep -Fq 'd.get("schemaVersion") == "marshal.local-dogfood-activation.v2"' "$WOR
 if grep -Fq 'ACTIVATION_PATH.new' "$WORKFLOW_SOURCE"; then
   fail 'RC1 finalize 仍在跨 runner 重签发 activation'
 fi
+# Receipt producer 必须读取当前 Core 的扁平 Decision、WorkerResult 与
+# ResultIngress 字段；旧草案字段会让真实 finalize 在 carrier 阶段必败。
+for forbidden in 'reviewer, "actorId"' 'decision, "independent"' '"adapterId"' '"binaryVersion"' '"recordDigest"' '"previousRecordDigest"'; do
+  if grep -Fq "$forbidden" "$RECEIPT_SOURCE" "$AUTHORITY_HEAD_SOURCE"; then
+    fail "RC1 carrier producer 仍引用旧草案字段：$forbidden"
+  fi
+done
+grep -Fq 'require_field(packet, "evidenceDigest", "packet")' "$RECEIPT_SOURCE" \
+  || fail 'RC1 receipt 未从 ReviewPacket 读取 evidenceDigest'
+grep -Fq 'payload_hasher.update(b"marshal.rc1-carrier-payload.v1\n")' "$RECEIPT_SOURCE" \
+  || fail 'RC1 receipt payload identity 未与 carrier checker 对齐'
 
 cat >"$PI_BUNDLE" <<'EOF'
 #!/usr/bin/env bash

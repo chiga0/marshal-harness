@@ -431,9 +431,12 @@ def validate_receipt(
     ):
         fail("manifest and binary receipt identity disagree")
 
-    expected_sums = f"{raw_sha(contents[BINARY_NAME])}  {BINARY_NAME}\n".encode("ascii")
+    expected_sums = (
+        f"{raw_sha(contents[MANIFEST_NAME])}  {MANIFEST_NAME}\n"
+        f"{raw_sha(contents[BINARY_NAME])}  {BINARY_NAME}\n"
+    ).encode("ascii")
     if contents[SUMS_NAME] != expected_sums:
-        fail("SHA256SUMS must bind exactly the single Darwin arm64 binary")
+        fail("SHA256SUMS must bind exactly the RC1 manifest and Darwin arm64 binary")
 
     activation = exact_object(receipt["activation"], "activation", (
         "activationDigest", "identitySubjectDigest", "currentObjectObservationDigest",
