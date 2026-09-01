@@ -1,48 +1,39 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: 已存在的 v* tag（留空则取触发 ref）
-        required: false
+        description: 精确 annotated RC1 tag（只接受 v1.0.0-rc1）
+        required: true
+        type: string
+      carrier-run-id:
+        description: exact-head 成功 RC1 finalize workflow run_id
+        required: true
+        type: string
+      carrier-artifact-id:
+        description: finalize run 上传的 immutable carrier artifact id
+        required: true
+        type: string
+      carrier-artifact-digest:
+        description: carrier artifact 的 raw lowercase SHA-256
+        required: true
+        type: string
+      receipt-digest:
+        description: 独立记录的 RC1 canary receipt raw lowercase SHA-256
+        required: true
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
-  publication_guard:
-    name: Block v1 publication pending ADR 0068 RC1 evidence
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    permissions: {}
-    env:
-      TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
-    steps:
-      # This source guard only governs workflow bytes that contain it. Historical
-      # tags/runs pinned to an earlier commit are not retroactively changed and
-      # must remain protected by GitHub-side immutable-tag and rerun controls.
-      - name: Block every v1 tag before candidate execution
-        shell: /bin/bash --noprofile --norc -euo pipefail {0}
-        run: |
-          case "$TAG_NAME" in
-            v1.*)
-              echo "::error::v1 publication is disabled until the ADR 0068 live canary receipt, same-bytes release, and install verification slice is implemented and reviewed." >&2
-              exit 1
-              ;;
-          esac
-
-  build:
-    name: Build & freeze immutable release candidate
-    needs: publication_guard
+  admit:
+    name: Admit exact same-bytes RC1 carrier
     runs-on: macos-14
     environment: release-candidate-build
     timeout-minutes: 30
@@ -52,105 +43,98 @@ jobs:
     outputs:
       source-head: ${{ steps.release.outputs.source-head }}
       tag-object: ${{ steps.release.outputs.tag-object }}
-      prerelease: ${{ steps.release.outputs.prerelease }}
       payload-sha256: ${{ steps.payload.outputs.sha256 }}
-      artifact-id: ${{ steps.upload.outputs.artifact-id }}
-      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+      payload-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      payload-artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
     env:
-      TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+      TAG_NAME: ${{ inputs.tag }}
+      CARRIER_RUN_ID: ${{ inputs.carrier-run-id }}
+      CARRIER_ARTIFACT_ID: ${{ inputs.carrier-artifact-id }}
+      CARRIER_ARTIFACT_DIGEST: ${{ inputs.carrier-artifact-digest }}
+      EXPECTED_RECEIPT_DIGEST: ${{ inputs.receipt-digest }}
     steps:
-      - name: Checkout
+      - name: Checkout exact annotated RC1 tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Go
+      - name: Set up exact Go toolchain for binary inspection only
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26.6'
           cache: true
 
-      - name: Test release and installer contracts
-        run: |
-          bash scripts/release-contract_test.sh
-          bash scripts/release-ci-gate_test.sh
-          bash scripts/dist-profile_test.sh
-          bash scripts/install_test.sh
-          bash scripts/release-canary_test.sh
-
-      - name: Validate release source
+      - name: Validate release identity and immutable inputs
         id: release
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          test "${{ github.repository }}" = "chiga0/marshal-harness" || {
-            echo "::error::release workflow 只允许 canonical chiga0/marshal-harness" >&2
-            exit 1
-          }
-          kind="$(bash scripts/release-contract.sh classify "$TAG_NAME")"
-          test "$(git cat-file -t "refs/tags/${TAG_NAME}")" = tag || {
-            echo "::error::release tag ${TAG_NAME} 必须是 annotated tag" >&2
-            exit 1
-          }
-          release_tag_object="$(git rev-parse --verify "refs/tags/${TAG_NAME}")" \
-            || { echo "::error::release tag ${TAG_NAME} 缺少 tag object" >&2; exit 1; }
-          [[ "$release_tag_object" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "::error::release tag object ${release_tag_object} 非 canonical SHA" >&2
-            exit 1
-          }
-          release_commit="$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")" \
-            || { echo "::error::release tag ${TAG_NAME} 不存在或不指向 commit" >&2; exit 1; }
-          checkout_commit="$(git rev-parse HEAD)"
-          test "$checkout_commit" = "$release_commit" || {
-            echo "::error::checkout ${checkout_commit} 与 tag ${TAG_NAME} 指向 ${release_commit} 不一致" >&2
-            exit 1
-          }
-          echo "kind=$kind" >> "$GITHUB_OUTPUT"
-          if [ "$kind" = "prerelease" ]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "source-head=$release_commit" >> "$GITHUB_OUTPUT"
-          echo "tag-object=$release_tag_object" >> "$GITHUB_OUTPUT"
-          echo "RELEASE_COMMIT=$release_commit" >> "$GITHUB_ENV"
-          build_date="$(bash scripts/release-contract.sh build-date . "$release_commit")"
-          echo "RELEASE_BUILD_DATE=$build_date" >> "$GITHUB_ENV"
+          test "${{ github.repository }}" = "chiga0/marshal-harness" || { echo "::error::仅允许 canonical 仓库" >&2; exit 1; }
+          [ "$TAG_NAME" = v1.0.0-rc1 ] || { echo "::error::当前 workflow 只允许 v1.0.0-rc1" >&2; exit 1; }
+          [[ "$CARRIER_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::carrier-run-id 非 canonical 正整数" >&2; exit 1; }
+          [[ "$CARRIER_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::carrier-artifact-id 非 canonical 正整数" >&2; exit 1; }
+          [[ "$CARRIER_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::carrier artifact digest 非 raw lowercase SHA-256" >&2; exit 1; }
+          [[ "$EXPECTED_RECEIPT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::receipt digest 非 raw lowercase SHA-256" >&2; exit 1; }
+          [ "$(bash scripts/release-contract.sh classify "$TAG_NAME")" = prerelease ]
+          test "$(git cat-file -t "refs/tags/${TAG_NAME}")" = tag || { echo "::error::RC1 必须使用 annotated tag" >&2; exit 1; }
+          tag_object="$(git rev-parse --verify "refs/tags/${TAG_NAME}")"
+          release_head="$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")"
+          [ "$(git rev-parse HEAD)" = "$release_head" ] || { echo "::error::checkout 与 peeled tag commit 漂移" >&2; exit 1; }
+          [[ "$tag_object" =~ ^[0-9a-f]{40}$ ]] && [[ "$release_head" =~ ^[0-9a-f]{40}$ ]]
+          echo "source-head=$release_head" >> "$GITHUB_OUTPUT"
+          echo "tag-object=$tag_object" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_HEAD=$release_head" >> "$GITHUB_ENV"
 
       - name: Require exact-head CI success
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash scripts/release-ci-gate.sh "${{ github.repository }}" "$RELEASE_COMMIT"
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: bash scripts/release-ci-gate.sh "${{ github.repository }}" "$RELEASE_HEAD"
 
-      - name: Build dist assets
+      - name: Download and safely restore exact canary carrier
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          make dist \
-            VERSION="${TAG_NAME#v}" \
-            COMMIT="${RELEASE_COMMIT}" \
-            BUILD_DATE="${RELEASE_BUILD_DATE}"
+          run_meta="$RUNNER_TEMP/rc1-finalize-run.json"
+          artifact_meta="$RUNNER_TEMP/rc1-carrier-artifact.json"
+          archive="$RUNNER_TEMP/rc1-carrier.zip"
+          carrier_dir="$RUNNER_TEMP/rc1-release-carrier"
+          gh api "repos/${{ github.repository }}/actions/runs/${CARRIER_RUN_ID}" > "$run_meta"
+          gh api "repos/${{ github.repository }}/actions/artifacts/${CARRIER_ARTIFACT_ID}" > "$artifact_meta"
+          gh api "repos/${{ github.repository }}/actions/artifacts/${CARRIER_ARTIFACT_ID}/zip" > "$archive"
+          evidence_run_id="$(python3 -I -B scripts/rc1-release-carrier-artifact.py \
+            "$run_meta" "$artifact_meta" "$archive" "$carrier_dir" \
+            "$CARRIER_RUN_ID" "$CARRIER_ARTIFACT_ID" "$CARRIER_ARTIFACT_DIGEST" "$RELEASE_HEAD")"
+          [[ "$evidence_run_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::candidate evidence run id 非 canonical" >&2; exit 1; }
+          receipt="$carrier_dir/RC1-CANARY-RECEIPT.json"
+          candidate_artifact_id="$(jq -r '.candidateWorkflow.artifactId' "$receipt")"
+          candidate_artifact_digest="$(jq -r '.candidateWorkflow.artifactDigest' "$receipt" | sed 's/^sha256://')"
+          authority_head="$(jq -r '.authority.currentHeadDigest' "$receipt")"
+          python3 -I -B scripts/rc1-carrier-check.py \
+            "$carrier_dir" "$RELEASE_HEAD" "$evidence_run_id" \
+            "$candidate_artifact_id" "$candidate_artifact_digest" \
+            "$authority_head" "$EXPECTED_RECEIPT_DIGEST"
+          build_date="$(jq -r '.binary.buildDate' "$receipt")"
+          go_version="$(jq -r '.binary.goVersion' "$receipt")"
+          GO_BIN="$(go env GOROOT)/bin/go" bash scripts/release-contract.sh verify-rc1-dist \
+            "$carrier_dir" "$TAG_NAME" "$RELEASE_HEAD" "$build_date" "$go_version" \
+            darwin arm64 darwin-local-dogfood
+          bash scripts/release-contract.sh verify-candidate-tag . "$carrier_dir" "$TAG_NAME"
+          echo "CARRIER_DIR=$carrier_dir" >> "$GITHUB_ENV"
 
-      - name: Verify release asset contract
-        run: |
-          bash scripts/release-contract.sh verify-dist dist "$TAG_NAME" "$RELEASE_COMMIT"
-          bash scripts/release-contract.sh verify-candidate-tag . dist "$TAG_NAME"
-
-      # Issue #212 未关闭前，stable 一律 fail closed；build job 不读取任何
-      # signing/publish secret，仅允许 unsigned RC 进入跨 job artifact。
-      - name: Block stable release until real signing is implemented
-        if: steps.release.outputs.prerelease != 'true'
-        run: |
-          echo "::error::稳定 release $TAG_NAME 要求真实 codesign + notarization + spctl 验证（Issue #212）。请使用 prerelease tag。" >&2
-          exit 1
-
-      - name: Freeze verified release payload
+      - name: Freeze the admitted carrier without rebuilding candidate bytes
         id: payload
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          tar -cf release-payload.tar dist
+          COPYFILE_DISABLE=1 /usr/bin/tar -cf release-payload.tar -C "$CARRIER_DIR" \
+            RC1-CANARY-RECEIPT.json RELEASE-MANIFEST SHA256SUMS marshal_1.0.0-rc1_darwin_arm64
           payload_sha="$(shasum -a 256 release-payload.tar | awk '{print tolower($1)}')"
           printf '%s  release-payload.tar\n' "$payload_sha" > RELEASE-PAYLOAD.sha256
           echo "sha256=$payload_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Upload digest-bound release payload
+      - name: Upload digest-bound admitted RC1 payload
         id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -163,150 +147,94 @@ jobs:
           compression-level: 0
 
   publish:
-    name: Publish verified release candidate
-    needs: build
+    name: Publish admitted unsigned RC1 prerelease
+    needs: admit
     runs-on: ubuntu-latest
+    environment: release-publication
     timeout-minutes: 15
     permissions:
       actions: read
       contents: write
     env:
-      TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
-      EXPECTED_SOURCE_HEAD: ${{ needs.build.outputs.source-head }}
-      EXPECTED_TAG_OBJECT: ${{ needs.build.outputs.tag-object }}
-      EXPECTED_PAYLOAD_SHA256: ${{ needs.build.outputs.payload-sha256 }}
-      EXPECTED_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
-      EXPECTED_ARTIFACT_DIGEST: ${{ needs.build.outputs.artifact-digest }}
-      IS_PRERELEASE: ${{ needs.build.outputs.prerelease }}
+      TAG_NAME: ${{ inputs.tag }}
+      EXPECTED_RECEIPT_DIGEST: ${{ inputs.receipt-digest }}
+      EXPECTED_SOURCE_HEAD: ${{ needs.admit.outputs.source-head }}
+      EXPECTED_TAG_OBJECT: ${{ needs.admit.outputs.tag-object }}
+      EXPECTED_PAYLOAD_SHA256: ${{ needs.admit.outputs.payload-sha256 }}
+      EXPECTED_PAYLOAD_ARTIFACT_ID: ${{ needs.admit.outputs.payload-artifact-id }}
+      EXPECTED_PAYLOAD_ARTIFACT_DIGEST: ${{ needs.admit.outputs.payload-artifact-digest }}
     steps:
       - name: Checkout exact release tag without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Download, bind, and recheck exact candidate
+      - name: Download, bind, and recheck admitted same-bytes payload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          set -euo pipefail
           test "${{ github.repository }}" = "chiga0/marshal-harness"
           [[ "$EXPECTED_SOURCE_HEAD" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EXPECTED_TAG_OBJECT" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EXPECTED_PAYLOAD_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$EXPECTED_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$EXPECTED_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_PAYLOAD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$EXPECTED_PAYLOAD_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           metadata_file="$(mktemp "${RUNNER_TEMP}/marshal-release-artifact.XXXXXX")"
           archive_file="$(mktemp "${RUNNER_TEMP}/marshal-release-archive.XXXXXX")"
           artifact_dir="$(mktemp -d "${RUNNER_TEMP}/marshal-release-extract.XXXXXX")"
+          release_dir="$(mktemp -d "${RUNNER_TEMP}/marshal-release-carrier.XXXXXX")"
           trap 'rm -f "$metadata_file" "$archive_file"; rm -rf "$artifact_dir"' EXIT
-          gh api \
-            "repos/${{ github.repository }}/actions/artifacts/${EXPECTED_ARTIFACT_ID}" \
-            > "$metadata_file"
-          gh api \
-            "repos/${{ github.repository }}/actions/artifacts/${EXPECTED_ARTIFACT_ID}/zip" \
-            > "$archive_file"
+          gh api "repos/${{ github.repository }}/actions/artifacts/${EXPECTED_PAYLOAD_ARTIFACT_ID}" > "$metadata_file"
+          gh api "repos/${{ github.repository }}/actions/artifacts/${EXPECTED_PAYLOAD_ARTIFACT_ID}/zip" > "$archive_file"
           python3 -I -B scripts/release-artifact-metadata-check.py \
-            "$metadata_file" \
-            "$archive_file" \
-            "$artifact_dir" \
-            "$EXPECTED_ARTIFACT_ID" \
-            "$EXPECTED_ARTIFACT_DIGEST" \
-            "$EXPECTED_SOURCE_HEAD" \
-            "${{ github.run_id }}"
+            "$metadata_file" "$archive_file" "$artifact_dir" \
+            "$EXPECTED_PAYLOAD_ARTIFACT_ID" "$EXPECTED_PAYLOAD_ARTIFACT_DIGEST" \
+            "$EXPECTED_SOURCE_HEAD" "${{ github.run_id }}"
+          test "$(sha256sum "${artifact_dir}/release-payload.tar" | awk '{print $1}')" = "$EXPECTED_PAYLOAD_SHA256"
+          (cd "$artifact_dir" && sha256sum -c RELEASE-PAYLOAD.sha256)
+          python3 -I -B scripts/rc1-release-payload-extract.py \
+            "${artifact_dir}/release-payload.tar" "$release_dir"
+          receipt="$release_dir/RC1-CANARY-RECEIPT.json"
+          evidence_run_id="$(jq -r '.candidateWorkflow.runId' "$receipt")"
+          candidate_artifact_id="$(jq -r '.candidateWorkflow.artifactId' "$receipt")"
+          candidate_artifact_digest="$(jq -r '.candidateWorkflow.artifactDigest' "$receipt" | sed 's/^sha256://')"
+          authority_head="$(jq -r '.authority.currentHeadDigest' "$receipt")"
+          python3 -I -B scripts/rc1-carrier-check.py \
+            "$release_dir" "$EXPECTED_SOURCE_HEAD" "$evidence_run_id" \
+            "$candidate_artifact_id" "$candidate_artifact_digest" \
+            "$authority_head" "$EXPECTED_RECEIPT_DIGEST"
           test "$(git cat-file -t "refs/tags/${TAG_NAME}")" = tag
           test "$(git rev-parse --verify "refs/tags/${TAG_NAME}")" = "$EXPECTED_TAG_OBJECT"
           test "$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")" = "$EXPECTED_SOURCE_HEAD"
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_HEAD"
-          test "$(sha256sum "${artifact_dir}/release-payload.tar" | awk '{print $1}')" = "$EXPECTED_PAYLOAD_SHA256"
-          (cd "$artifact_dir" && sha256sum -c RELEASE-PAYLOAD.sha256)
-          cat > expected-tar-files <<EOF
-          dist/
-          dist/RELEASE-MANIFEST
-          dist/SHA256SUMS
-          dist/marshal_${TAG_NAME#v}_darwin_amd64
-          dist/marshal_${TAG_NAME#v}_darwin_arm64
-          dist/marshal_${TAG_NAME#v}_linux_amd64
-          dist/marshal_${TAG_NAME#v}_linux_arm64
-          EOF
-          tar -tf "${artifact_dir}/release-payload.tar" | LC_ALL=C sort > actual-tar-files
-          LC_ALL=C sort expected-tar-files -o expected-tar-files
-          diff -u expected-tar-files actual-tar-files
-          python3 -I -B - "${artifact_dir}/release-payload.tar" "$TAG_NAME" <<'PY'
-          import sys
-          import tarfile
+          bash scripts/release-contract.sh verify-candidate-tag . "$release_dir" "$TAG_NAME"
+          echo "RELEASE_DIR=$release_dir" >> "$GITHUB_ENV"
 
-          archive, tag = sys.argv[1:]
-          version = tag.removeprefix("v")
-          expected = {
-              "dist": ("directory", 0o755),
-              "dist/RELEASE-MANIFEST": ("regular", 0o644),
-              "dist/SHA256SUMS": ("regular", 0o644),
-              f"dist/marshal_{version}_darwin_amd64": ("regular", 0o755),
-              f"dist/marshal_{version}_darwin_arm64": ("regular", 0o755),
-              f"dist/marshal_{version}_linux_amd64": ("regular", 0o755),
-              f"dist/marshal_{version}_linux_arm64": ("regular", 0o755),
-          }
-          with tarfile.open(archive, mode="r:") as payload:
-              members = payload.getmembers()
-          if len(members) != 7 or {member.name for member in members} != set(expected):
-              raise SystemExit("release payload must contain exactly seven canonical members")
-          for member in members:
-              expected_type, expected_mode = expected[member.name]
-              actual_type = "directory" if member.isdir() else "regular" if member.isfile() else "other"
-              if actual_type != expected_type or member.mode != expected_mode:
-                  raise SystemExit(
-                      f"unsafe payload member {member.name}: type={actual_type} mode={member.mode:o}"
-                  )
-              if expected_type == "regular" and (member.issym() or member.islnk() or member.linkname):
-                  raise SystemExit(f"linked payload member rejected: {member.name}")
-          PY
-          mkdir release-payload
-          tar -xf "${artifact_dir}/release-payload.tar" -C release-payload
-          (cd release-payload/dist && sha256sum -c SHA256SUMS)
-          manifest_sha="$(sha256sum release-payload/dist/RELEASE-MANIFEST | awk '{print $1}')"
-          candidate_sha="$(sha256sum "release-payload/dist/marshal_${TAG_NAME#v}_darwin_arm64" | awk '{print $1}')"
-          git for-each-ref --format='%(contents)%1e' "refs/tags/${TAG_NAME}" > candidate-tag-message.raw
-          test "$(wc -c < candidate-tag-message.raw | tr -d '[:space:]')" -le 65538
-          marker="$(printf '\036')"
-          awk -v tag="$TAG_NAME" -v commit="$EXPECTED_SOURCE_HEAD" -v manifest="$manifest_sha" -v candidate="$candidate_sha" -v marker="$marker" '
-            NR == 1 { if ($0 != "Marshal " tag " candidate") exit 1; next }
-            NR == 2 { if ($0 != "") exit 1; next }
-            NR == 3 { if ($0 != "marshal-candidate-schema: v1") exit 1; next }
-            NR == 4 { if ($0 != "marshal-candidate-source-head: " commit) exit 1; next }
-            NR == 5 { if ($0 != "marshal-candidate-manifest-sha256: " manifest) exit 1; next }
-            NR == 6 { if ($0 != "marshal-candidate-darwin-arm64-sha256: " candidate) exit 1; next }
-            NR == 7 { if ($0 != marker) exit 1; seen_marker=1; next }
-            { exit 1 }
-            END { if (NR != 7 || !seen_marker) exit 1 }
-          ' candidate-tag-message.raw
-          awk -v tag="$TAG_NAME" -v commit="$EXPECTED_SOURCE_HEAD" '
-            NR == 3 { if ($0 != "tag " tag) exit 1 }
-            NR == 4 { if ($0 != "sourceHead " commit) exit 1 }
-            END { if (NR != 11) exit 1 }
-          ' release-payload/dist/RELEASE-MANIFEST
-
-      - name: Generate release notes
+      - name: Generate mandatory negative-claim release notes
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          {
-            printf 'Marshal %s\n\n' "$TAG_NAME"
-            printf '预编译资产（darwin/linux × amd64/arm64，CGO_ENABLED=0）。\n\n'
-            printf -- '- **unsigned prerelease（Issue #212）**：macOS 签名/notarization 尚未落地，本资产不是稳定 v1 发布。\n'
-            printf -- '- 安装脚本会对账 annotated tag、`RELEASE-MANIFEST`、`SHA256SUMS` 与二进制内嵌身份。\n'
-          } > release-notes.md
+          cat > release-notes.md <<'EOF'
+          `v1.0.0-rc1` 是 unsigned、Mac-first、Darwin arm64、CLI-only 的 `darwin-local-dogfood` 生命周期预览，仅支持当前可信用户与可信仓库中的 `publication:none` 本地运行；它不是 production、managed、notarized、hardened、server 或 Linux release。
 
-      - name: Create GitHub Release
+          安装必须显式设置 `MARSHAL_TAG=v1.0.0-rc1` 与 `MARSHAL_LOCAL_DOGFOOD_PREVIEW=1`。安装器会校验 annotated tag、`RELEASE-MANIFEST`、`SHA256SUMS` 和 candidate bytes；不会关闭 Gatekeeper/SIP/EDR，不会自动创建 activation，也不会回退源码构建。
+
+          本 prerelease 的 candidate 已由真实 Pi 0.84.4 经 fixed Marshal CLI、Local allocation、ResultIngress、独立 Verification 与独立 ReviewDecision 到达 `ACCEPTED`。随 release 发布的 `RC1-CANARY-RECEIPT.json` 提供 sourceHead、candidate、Evidence、Decision、Outcome 和原 canary artifact 的 digest 绑定。
+          EOF
+
+      - name: Create GitHub prerelease from exact admitted carrier
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          args=()
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            args+=(--prerelease)
-          fi
           gh release create "$TAG_NAME" \
             --verify-tag \
-            --title "Marshal $TAG_NAME" \
+            --prerelease \
+            --title "Marshal $TAG_NAME — unsigned Mac-first CLI-only preview" \
             --notes-file release-notes.md \
-            "${args[@]}" \
-            release-payload/dist/*
+            "$RELEASE_DIR/RELEASE-MANIFEST" \
+            "$RELEASE_DIR/SHA256SUMS" \
+            "$RELEASE_DIR/marshal_1.0.0-rc1_darwin_arm64" \
+            "$RELEASE_DIR/RC1-CANARY-RECEIPT.json"

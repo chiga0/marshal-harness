@@ -33,6 +33,9 @@ FIXED_FILES = {
     "scripts/release-artifact-metadata-check.py": "100644",
     "scripts/rc1-carrier-check.py": "100755",
     "scripts/rc1-carrier-check_test.py": "100755",
+    "scripts/rc1-release-carrier-artifact.py": "100755",
+    "scripts/rc1-release-carrier-artifact_test.py": "100755",
+    "scripts/rc1-release-payload-extract.py": "100755",
     "scripts/release-rc1-binary-check.py": "100755",
     RELEASE_WORKFLOW_DIGEST_RELATIVE_PATH: "100644",
     "scripts/release-contract_test.sh": "100755",
@@ -113,6 +116,12 @@ jobs:
             /usr/bin/python3 -I -B \\
             "$GITHUB_WORKSPACE/scripts/rc1-carrier-check_test.py"
           run_checker
+          /usr/bin/env -i \\
+            LC_ALL=C \\
+            PATH=/usr/bin:/bin \\
+            /usr/bin/python3 -I -B \\
+            "$GITHUB_WORKSPACE/scripts/rc1-release-carrier-artifact_test.py"
+          run_checker
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -179,6 +188,7 @@ EXPECTED_RELEASE_TARGET = """release-check:
 \tbash scripts/install_test.sh
 \tbash scripts/release-canary_test.sh
 \t/usr/bin/python3 -I -B scripts/rc1-carrier-check_test.py
+\t/usr/bin/python3 -I -B scripts/rc1-release-carrier-artifact_test.py
 
 """
 
