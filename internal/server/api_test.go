@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/adapter"
+	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -43,6 +44,110 @@ type fixtureAdapter struct {
 	id         string
 	capability []byte
 	run        func(context.Context, domain.Record) (domain.Record, error)
+}
+
+type fixtureApplicationPort struct {
+	projection   application.RunProjection
+	prepared     application.PreparedRunStart
+	successor    application.RunProjection
+	inspectCalls int
+	prepareCalls int
+	startCalls   int
+}
+
+func (port *fixtureApplicationPort) Status(context.Context, application.StatusRequest) (application.StatusProjection, error) {
+	return application.StatusProjection{}, application.NewError("status", application.ReasonCompositionIncomplete)
+}
+
+func (port *fixtureApplicationPort) InspectRun(context.Context, application.InspectRunRequest) (application.RunProjection, error) {
+	port.inspectCalls++
+	return port.projection, nil
+}
+
+func (port *fixtureApplicationPort) PrepareRunStart(_ context.Context, request application.PrepareRunStartRequest) (application.PreparedRunStart, error) {
+	port.prepareCalls++
+	if request.RunID != port.projection.RunID || request.ExpectedSequence != port.projection.Sequence ||
+		request.ExpectedAuthorityHead != port.projection.AuthorityHead {
+		return application.PreparedRunStart{}, application.NewError("prepare-run-start", application.ReasonAuthorityConflict)
+	}
+	return port.prepared, nil
+}
+
+func (port *fixtureApplicationPort) StartPreparedRun(_ context.Context, prepared application.PreparedRunStart) (application.RunProjection, error) {
+	port.startCalls++
+	if prepared != port.prepared {
+		return application.RunProjection{}, application.NewError("start-prepared-run", application.ReasonAuthorityConflict)
+	}
+	port.projection = port.successor
+	return port.successor, nil
+}
+
+func readyFixtureApplicationPort() *fixtureApplicationPort {
+	digest := func(character string) string { return "sha256:" + strings.Repeat(character, 64) }
+	ready := application.RunProjection{
+		TaskID: fixtureTaskID, RunID: fixtureRunID, State: domain.StateReady,
+		Sequence: 3, AuthorityHead: digest("1"),
+	}
+	prepared := application.PreparedRunStart{
+		ProtocolRevision: application.PreparedRunStartProtocolRevision,
+		TaskID:           fixtureTaskID, RunID: fixtureRunID, AttemptID: "attempt-server-port-1",
+		ReservationFactDigest: digest("2"), AttemptOpenedFactDigest: digest("3"),
+		AttemptOrdinal: 1, AttemptsUsedBefore: 0, MaxAttempts: 3,
+		State: domain.StateReady, Sequence: ready.Sequence, AuthorityHead: ready.AuthorityHead,
+		PreparationDigest: digest("4"),
+	}
+	return &fixtureApplicationPort{
+		projection: ready,
+		prepared:   prepared,
+		successor: application.RunProjection{
+			TaskID: fixtureTaskID, RunID: fixtureRunID, AttemptID: prepared.AttemptID,
+			State: domain.StateRunning, Sequence: ready.Sequence + 1, AuthorityHead: digest("5"),
+		},
+	}
+}
+
+type legacyFixtureApplicationPort struct {
+	stateRoot string
+	execute   func(context.Context, string) error
+}
+
+func (port *legacyFixtureApplicationPort) Status(context.Context, application.StatusRequest) (application.StatusProjection, error) {
+	return application.StatusProjection{}, application.NewError("status", application.ReasonCompositionIncomplete)
+}
+
+func (port *legacyFixtureApplicationPort) InspectRun(_ context.Context, request application.InspectRunRequest) (application.RunProjection, error) {
+	state, err := runstore.New(port.stateRoot).Inspect(request.RunID)
+	if err != nil {
+		return application.RunProjection{}, err
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return application.RunProjection{}, err
+	}
+	return application.RunProjection{TaskID: state.TaskID, RunID: state.RunID, AttemptID: state.CurrentAttemptID,
+		State: state.State, Sequence: state.Sequence, AuthorityHead: canonical.DigestBytes(data)}, nil
+}
+
+func (port *legacyFixtureApplicationPort) PrepareRunStart(ctx context.Context, request application.PrepareRunStartRequest) (application.PreparedRunStart, error) {
+	projection, err := port.InspectRun(ctx, application.InspectRunRequest{RunID: request.RunID})
+	if err != nil || projection.Sequence != request.ExpectedSequence || projection.AuthorityHead != request.ExpectedAuthorityHead {
+		return application.PreparedRunStart{}, application.NewError("prepare-run-start", application.ReasonAuthorityConflict)
+	}
+	digest := "sha256:" + strings.Repeat("6", 64)
+	return application.PreparedRunStart{ProtocolRevision: application.PreparedRunStartProtocolRevision,
+		TaskID: projection.TaskID, RunID: projection.RunID, AttemptID: "attempt-legacy-fixture",
+		ReservationFactDigest: digest, AttemptOpenedFactDigest: digest, AttemptOrdinal: 1, MaxAttempts: 3,
+		State: domain.StateReady, Sequence: projection.Sequence, AuthorityHead: projection.AuthorityHead,
+		PreparationDigest: digest}, nil
+}
+
+func (port *legacyFixtureApplicationPort) StartPreparedRun(ctx context.Context, prepared application.PreparedRunStart) (application.RunProjection, error) {
+	err := port.execute(ctx, prepared.RunID)
+	projection, inspectErr := port.InspectRun(ctx, application.InspectRunRequest{RunID: prepared.RunID})
+	if inspectErr != nil {
+		return application.RunProjection{}, inspectErr
+	}
+	return projection, err
 }
 
 func (a *fixtureAdapter) ID() string { return a.id }
@@ -831,7 +936,7 @@ func TestRunStartExecutesThroughCoreAndReplaysAcrossServerRestart(t *testing.T) 
 		})
 		return err
 	}
-	fixture.server.runExecutor = runExecutor
+	fixture.server.applicationPort = &legacyFixtureApplicationPort{stateRoot: fixture.stateRoot, execute: runExecutor}
 
 	createAndApproveServerRun(t, fixture)
 	startBody := mutationBody(t, "key-start-real", map[string]any{})
@@ -855,11 +960,11 @@ func TestRunStartExecutesThroughCoreAndReplaysAcrossServerRestart(t *testing.T) 
 	// Rebuild the entire HTTP adapter over the same durable state root. The
 	// status projection and idempotency result must survive the restart.
 	restarted, err := New(Config{
-		StateRoot:      fixture.stateRoot,
-		RepositoryRoot: fixture.repositoryRoot,
-		Selector:       fixture.selector,
-		Now:            func() time.Time { return fixtureClock },
-		RunExecutor:    runExecutor,
+		StateRoot:       fixture.stateRoot,
+		RepositoryRoot:  fixture.repositoryRoot,
+		Selector:        fixture.selector,
+		Now:             func() time.Time { return fixtureClock },
+		ApplicationPort: &legacyFixtureApplicationPort{stateRoot: fixture.stateRoot, execute: runExecutor},
 	})
 	if err != nil {
 		t.Fatalf("restart server: %v", err)
@@ -935,6 +1040,61 @@ func TestRunStartExecutesThroughCoreAndReplaysAcrossServerRestart(t *testing.T) 
 	}
 }
 
+func TestRunStartUsesPublicApplicationPortAndRecoversLostResponse(t *testing.T) {
+	fixture := newServerFixture(t)
+	createAndApproveServerRun(t, fixture)
+	port := readyFixtureApplicationPort()
+	fixture.server.applicationPort = port
+	body := mutationBody(t, "key-start-application-port", map[string]any{})
+
+	first := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
+		withContentType(fixture.identityHeaders("req-start-application-port")), body)
+	if first.status != http.StatusAccepted {
+		t.Fatalf("start status=%d body=%s", first.status, first.body)
+	}
+	var receipt RunExecution
+	if err := json.Unmarshal(first.body, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.State != port.successor || receipt.AttemptID != port.prepared.AttemptID ||
+		port.prepareCalls != 1 || port.startCalls != 1 {
+		t.Fatalf("receipt=%+v prepare=%d start=%d", receipt, port.prepareCalls, port.startCalls)
+	}
+
+	replay := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
+		withContentType(fixture.identityHeaders("req-start-application-port-replay")), body)
+	if replay.status != http.StatusOK || port.prepareCalls != 1 || port.startCalls != 1 {
+		t.Fatalf("replay status=%d prepare=%d start=%d body=%s", replay.status, port.prepareCalls, port.startCalls, replay.body)
+	}
+
+	identity := Identity{Namespace: fixture.server.namespace, Scope: fixture.server.namespace.AuthorityScopeId,
+		Operation: "run.start", Resource: fixtureRunID, Key: "key-start-application-port"}
+	record, found, err := fixture.server.idempotency.Get(identity)
+	if err != nil || !found {
+		t.Fatalf("read completed command: found=%t err=%v", found, err)
+	}
+	record.Phase, record.Result, record.Status, record.CompletedAt = idempotencyPhasePending, nil, 0, nil
+	recordPath, _ := fixture.server.idempotency.recordPaths(identity)
+	if err := fixture.server.idempotency.writeRecord(recordPath, record); err != nil {
+		t.Fatal(err)
+	}
+	committed := port.projection
+	port.projection.AttemptID = "attempt-from-another-start"
+	wrongAttempt := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
+		withContentType(fixture.identityHeaders("req-start-wrong-attempt")), body)
+	if wrongAttempt.status != http.StatusConflict || wrongAttempt.decodeError(t).Reason != "run-start-progress-conflict" ||
+		port.prepareCalls != 1 || port.startCalls != 1 {
+		t.Fatalf("wrong-attempt recovery status=%d prepare=%d start=%d body=%s",
+			wrongAttempt.status, port.prepareCalls, port.startCalls, wrongAttempt.body)
+	}
+	port.projection = committed
+	recovered := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
+		withContentType(fixture.identityHeaders("req-start-application-port-recovery")), body)
+	if recovered.status != http.StatusAccepted || port.prepareCalls != 1 || port.startCalls != 1 {
+		t.Fatalf("recovery status=%d prepare=%d start=%d body=%s", recovered.status, port.prepareCalls, port.startCalls, recovered.body)
+	}
+}
+
 // TestRunStartFailureCanBeCancelledIdempotently proves controller failure does
 // not hide Core progress: an actual failed execution reaches RETRY_PENDING,
 // the existing explicit-abort path closes it, and cancel replay adds no second
@@ -951,7 +1111,7 @@ func TestRunStartFailureCanBeCancelledIdempotently(t *testing.T) {
 		return domain.Record{}, failure
 	}
 	executions := 0
-	fixture.server.runExecutor = func(ctx context.Context, runID string) error {
+	fixture.server.applicationPort = &legacyFixtureApplicationPort{stateRoot: fixture.stateRoot, execute: func(ctx context.Context, runID string) error {
 		executions++
 		_, err := execution.Run(ctx, execution.Input{
 			StateRoot:      fixture.stateRoot,
@@ -961,7 +1121,7 @@ func TestRunStartFailureCanBeCancelledIdempotently(t *testing.T) {
 			Validator:      fixture.server.validator,
 		})
 		return err
-	}
+	}}
 	createAndApproveServerRun(t, fixture)
 
 	start := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
@@ -1006,10 +1166,10 @@ func TestRunStartFailureCanBeCancelledIdempotently(t *testing.T) {
 func TestRunStartRejectsNullPayloadBeforeExecution(t *testing.T) {
 	fixture := newServerFixture(t)
 	executions := 0
-	fixture.server.runExecutor = func(context.Context, string) error {
+	fixture.server.applicationPort = &legacyFixtureApplicationPort{stateRoot: fixture.stateRoot, execute: func(context.Context, string) error {
 		executions++
 		return nil
-	}
+	}}
 	createAndApproveServerRun(t, fixture)
 
 	response := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
@@ -1058,7 +1218,7 @@ func TestRunStartPendingIntentRecoversAuthorityStates(t *testing.T) {
 				}
 			}
 			executions := 0
-			fixture.server.runExecutor = func(ctx context.Context, runID string) error {
+			runExecutor := func(ctx context.Context, runID string) error {
 				executions++
 				_, err := execution.Run(ctx, execution.Input{
 					StateRoot: fixture.stateRoot, RepositoryRoot: fixture.repositoryRoot,
@@ -1066,16 +1226,17 @@ func TestRunStartPendingIntentRecoversAuthorityStates(t *testing.T) {
 				})
 				return err
 			}
+			fixture.server.applicationPort = &legacyFixtureApplicationPort{stateRoot: fixture.stateRoot, execute: runExecutor}
 			createAndApproveServerRun(t, fixture)
 			body := mutationBody(t, "key-start-recovery", map[string]any{})
 			persistPendingRunStart(t, fixture, "key-start-recovery", body)
 
 			executionDone := make(chan error, 1)
 			if target == domain.StateRunning {
-				go func() { executionDone <- fixture.server.runExecutor(context.Background(), fixtureRunID) }()
+				go func() { executionDone <- runExecutor(context.Background(), fixtureRunID) }()
 				<-workerStarted
 			} else {
-				err := fixture.server.runExecutor(context.Background(), fixtureRunID)
+				err := runExecutor(context.Background(), fixtureRunID)
 				if target == domain.StateVerifying && err != nil {
 					t.Fatalf("successful execution: %v", err)
 				}
@@ -1121,7 +1282,7 @@ func persistPendingRunStart(t *testing.T, fixture *serverFixture, key string, bo
 	if err := json.Unmarshal(body, &env); err != nil {
 		t.Fatal(err)
 	}
-	intent, err := fixture.server.prepareRunStartIntent(fixtureRunID)
+	intent, err := fixture.server.prepareRunStartIntent(context.Background(), fixtureRunID)
 	if err != nil {
 		t.Fatalf("prepare pending Run start: %v", err)
 	}
