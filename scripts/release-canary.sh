@@ -142,10 +142,24 @@ else
     [ -z "${MARSHAL_RELEASE_CANARY_PI_BUNDLE_SHA256+x}" ] || \
     die "生产 canary 禁止覆盖冻结的 Pi 路径或摘要"
   [ "$(uname -s)" = Darwin ] || die "该 release canary 仅允许在 macOS 运行"
-  PI_BIN="$PI_BIN_DEFAULT"
-  PI_NODE="$PI_NODE_DEFAULT"
+  case "${MARSHAL_CANARY_PI_IDENTITY:-pinned}" in
+    pinned)
+      PI_BIN="$PI_BIN_DEFAULT"
+      PI_NODE="$PI_NODE_DEFAULT"
+      PI_BUNDLE="$PI_BUNDLE_DEFAULT"
+      ;;
+    custom)
+      # Pi 路径与 model 由供给环境带入（GH runner 等无固定用户布局的宿主）。
+      # 字节身份仍由冻结的 SHA-256 常数锚定：供给路径必须解析到同 digest
+      # 的对象上，任何漂移都会在 assert_pi_identity 处 fail closed。
+      PI_NODE="${MARSHAL_CANARY_PI_NODE:?custom Pi identity 缺少 MARSHAL_CANARY_PI_NODE}"
+      PI_BIN="${MARSHAL_CANARY_PI_BIN:?custom Pi identity 缺少 MARSHAL_CANARY_PI_BIN}"
+      PI_BUNDLE="${MARSHAL_CANARY_PI_BUNDLE:?custom Pi identity 缺少 MARSHAL_CANARY_PI_BUNDLE}"
+      PI_MODEL="${MARSHAL_CANARY_PI_MODEL:?custom Pi identity 缺少 MARSHAL_CANARY_PI_MODEL}"
+      ;;
+    *) die "MARSHAL_CANARY_PI_IDENTITY 只允许 pinned|custom" ;;
+  esac
   PI_NODE_SHA256="$PI_NODE_SHA256_DEFAULT"
-  PI_BUNDLE="$PI_BUNDLE_DEFAULT"
   PI_BUNDLE_SHA256="$PI_BUNDLE_SHA256_DEFAULT"
 fi
 
@@ -437,10 +451,10 @@ PY
 
 write_task_draft_and_policy() {
   local canary_base="$1" task_id="$2" marker="$3"
-  "$PYTHON_BIN" -I -B - "$TASK_DRAFT_PATH" "$POLICY_PATH" "$DOCTOR_PATH" "$REPOSITORY_ROOT" "$CANARY_REMOTE" "$canary_base" "$task_id" "$RUN_ID" "$marker" "$SOURCE_ROOT/schemas/examples/happy-path/task-spec.json" "$SOURCE_ROOT/schemas/examples/happy-path/policy-snapshot.json" <<'PY'
+  "$PYTHON_BIN" -I -B - "$TASK_DRAFT_PATH" "$POLICY_PATH" "$DOCTOR_PATH" "$REPOSITORY_ROOT" "$CANARY_REMOTE" "$canary_base" "$task_id" "$RUN_ID" "$marker" "$PI_MODEL" "$SOURCE_ROOT/schemas/examples/happy-path/task-spec.json" "$SOURCE_ROOT/schemas/examples/happy-path/policy-snapshot.json" <<'PY'
 import datetime, hashlib, json, sys
 
-task_path, policy_path, doctor_path, repository_root, remote_url, base_sha, task_id, run_id, marker, task_example_path, policy_example_path = sys.argv[1:]
+task_path, policy_path, doctor_path, repository_root, remote_url, base_sha, task_id, run_id, marker, pi_model, task_example_path, policy_example_path = sys.argv[1:]
 marker_path = "release-canary.txt"
 with open(task_example_path, encoding="utf-8") as handle:
     task = json.load(handle)
@@ -469,8 +483,9 @@ task.update({
     }]},
     "deliverables": [{"id": "release-canary-marker", "kind": "diagnostic",
                       "pathGlob": marker_path, "minimumCount": 1, "required": True}],
-    # RC1 只冻结当前已验证可用的 Pi 0.84.4 provider/model tuple。
-    "worker": {"model": "pai-eas/qwen3.7-plus",
+    # Pi 0.84.4 provider/model tuple 由 --expected-version 绑定的当次
+    # identity 决定：pinned 走冻结 pai-eas tuple，custom 由供给环境注入。
+    "worker": {"model": pi_model,
                "sessionPolicy": "ephemeral", "executionProfile": "workspace-write"},
     "budgets": {"attemptTimeoutSeconds": 900, "runTimeoutSeconds": 1800,
                 "maxAttempts": 1, "maxOperationalRetries": 0,

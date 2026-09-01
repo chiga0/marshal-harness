@@ -1,0 +1,264 @@
+name: RC1 release canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected-head:
+        description: 40 位小写 sourceHead（candidate 精确 commit）
+        required: true
+        type: string
+      pi-model:
+        description: 冻结进证据的 model 标识（provider/model，如 openai/qwen3-max）
+        required: true
+        type: string
+      phase:
+        description: run=构建 candidate 并跑 canary 到 REVIEW_PENDING；finalize=上传的独立 ReviewDecision 后 finalize 到 ACCEPTED 并产出 receipt/carrier
+        required: true
+        default: run
+        type: choice
+        options: [run, finalize]
+      decision:
+        description: 仅 finalize 阶段使用：独立 reviewer 的 ReviewDecision JSON 原文
+        required: false
+        type: string
+      evidence-run-id:
+        description: 仅 finalize 阶段使用：run 阶段所在 workflow 的 run_id（artifact 定位与身份绑定）
+        required: false
+        type: string
+      expected-canary-run-id:
+        description: 仅 finalize 阶段使用：run 阶段决定的 canary Run ID（RC1-PI-...）
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rc1-canary-${{ inputs.expected-head }}-${{ inputs.phase }}
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    name: RC1 canary (${{ inputs.phase }})
+    runs-on: macos-14
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+    env:
+      EXPECTED_HEAD: ${{ inputs.expected-head }}
+      PI_MODEL: ${{ inputs.pi-model }}
+      PHY_PI_VERSION: "0.84.4"
+      PHY_NODE_VERSION: "v24.15.0"
+      PHY_NODE_SHA256: "3200fbd9f7fd4410426dd541e10d1ab829d3472f270d743c7fabd1696c03fe32"
+      PHY_PI_BUNDLE_SHA256: "5406c369954516fb56879d685e082ff9095cd6e06e41af406f394942377fd4bf"
+    steps:
+      - name: Validate phase inputs
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::expected-head 必须是 40 位小写 sha" >&2; exit 1; }
+          [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || { echo "::error::pi-model 必须是 provider/model 形状" >&2; exit 1; }
+          if [ "${{ inputs.phase }}" = finalize ]; then
+            [ -n "${{ inputs.decision }}" ] || { echo "::error::finalize 缺少 decision" >&2; exit 1; }
+            [[ "${{ inputs.evidence-run-id }}" =~ ^[1-9][0-9]*$ ]] || { echo "::error::finalize 缺 evidence-run-id" >&2; exit 1; }
+            [ -n "${{ inputs.expected-canary-run-id }}" ] || { echo "::error::finalize 缺 expected-canary-run-id" >&2; exit 1; }
+          fi
+
+      - name: Checkout exact expected-head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.expected-head }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Pre-gate (repository, remote, cleanliness and required CI)
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test "${{ github.repository }}" = "chiga0/marshal-harness" || { echo "::error::仅允许 canonical 仓库" >&2; exit 1; }
+          git remote set-url origin https://github.com/chiga0/marshal-harness.git
+          head="$(git rev-parse HEAD)"
+          test "$head" = "$EXPECTED_HEAD" || { echo "::error::checkout head 漂移 $head" >&2; exit 1; }
+          bash scripts/release-ci-gate.sh "${{ github.repository }}" "$EXPECTED_HEAD"
+
+      - name: Provision pinned Go toolchain (go1.26.6) into module cache
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: GOTOOLCHAIN=go1.26.6 go version
+
+      - name: Provision pinned Node v24.15.0 + Pi 0.84.4 with digest assertions
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_WORKSPACE/pi-provision"
+          rm -rf "$root" && mkdir -p "$root"
+          curl -fsSLo "$root/node.tar.gz" "https://nodejs.org/dist/${PHY_NODE_VERSION}/node-${PHY_NODE_VERSION}-darwin-arm64.tar.gz"
+          /usr/bin/tar -xzf "$root/node.tar.gz" -C "$root"
+          node_root="$root/node-${PHY_NODE_VERSION}-darwin-arm64"
+          node_sha="$(shasum -a 256 "$node_root/bin/node" | awk '{print tolower($1)}')"
+          [ "$node_sha" = "${PHY_NODE_SHA256}" ] || { echo "::error::provisioned node digest 漂移 $node_sha" >&2; exit 1; }
+          [ "$("$node_root/bin/node" --version)" = "${PHY_NODE_VERSION}" ] || { echo "::error::provisioned node 版本漂移" >&2; exit 1; }
+          export PATH="$node_root/bin:$PATH"
+          npm install --global --no-fund --no-audit @earendil-works/pi-coding-agent@${PHY_PI_VERSION}
+          pi_wrapper="$(command -v pi)"
+          [ -L "$pi_wrapper" ] || { echo "::error::pi 入口不是符号链接：$pi_wrapper" >&2; exit 1; }
+          bundle="$(/usr/bin/readlink "$pi_wrapper")"
+          case "$bundle" in /*) ;; *) bundle="$(dirname "$pi_wrapper")/$bundle" ;; esac
+          bundle="$(/usr/bin/python3 -I -B -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$bundle")"
+          case "$bundle" in */@earendil-works/pi-coding-agent/dist/bundle/cli.js) ;; *) echo "::error::bundle 路径形态漂移 $bundle" >&2; exit 1 ;; esac
+          bundle_sha="$(shasum -a 256 "$bundle" | awk '{print tolower($1)}')"
+          [ "$bundle_sha" = "${PHY_PI_BUNDLE_SHA256}" ] || { echo "::error::provisioned bundle digest 漂移 $bundle_sha" >&2; exit 1; }
+          [ "$(env -i HOME="$HOME" "$node_root/bin/node" "$bundle" --version)" = "${PHY_PI_VERSION}" ] || { echo "::error::pi --version 失败或漂移" >&2; exit 1; }
+          printf 'PI_NODE=%s\n' "$node_root/bin/node" >> "$GITHUB_ENV"
+          printf 'PI_BIN=%s\n' "$pi_wrapper" >> "$GITHUB_ENV"
+          printf 'PI_BUNDLE=%s\n' "$bundle" >> "$GITHUB_ENV"
+          printf 'NODE_ROOT_BIN=%s\n' "$node_root/bin" >> "$GITHUB_ENV"
+
+      - name: Provision Pi provider config from OpenAI-compatible identity (no value echoed)
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODELS: ${{ secrets.OPENAI_MODELS }}
+        run: |
+          [ -n "$OPENAI_BASE_URL" ] && [ -n "$OPENAI_API_KEY" ] && [ -n "$OPENAI_MODELS" ] || {
+            echo "::error::缺少 OPENAI_BASE_URL/OPENAI_API_KEY/OPENAI_MODELS secrets" >&2; exit 1; }
+          mkdir -p "$HOME/.pi/agent"
+          chmod 700 "$HOME/.pi" "$HOME/.pi/agent"
+          python3 -I -B scripts/rc1-canary-provider-config.py \
+            "$HOME/.pi/agent/models.json" "$OPENAI_BASE_URL" "${PI_MODEL%%/*}"
+
+      - name: Build once the immutable RC1 candidate
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          gopath_bin="$(/usr/bin/find "$(go env GOPATH)/pkg/mod/golang.org" -maxdepth 1 -type d -name 'toolchain@v0.0.1-go1.26.6.darwin-arm64' | head -1)/bin/go"
+          [ -x "$gopath_bin" ] || { echo "::error::缺少固定 go1.26.6 toolchain" >&2; exit 1; }
+          build_date="$(bash scripts/release-contract.sh build-date . "$EXPECTED_HEAD")"
+          make dist-rc1 GO="$gopath_bin" VERSION=1.0.0-rc1 COMMIT="$EXPECTED_HEAD" BUILD_DATE="$build_date"
+          cp dist/marshal_1.0.0-rc1_darwin_arm64 bin/marshal
+          dist_sha="$(shasum -a 256 dist/marshal_1.0.0-rc1_darwin_arm64 | awk '{print tolower($1)}')"
+          bin_sha="$(shasum -a 256 bin/marshal | awk '{print tolower($1)}')"
+          [ "$dist_sha" = "$bin_sha" ] || { echo "::error::bin/marshal 与 candidate bytes 不一致" >&2; exit 1; }
+
+      - name: Run RC1 real-Pi canary to REVIEW_PENDING
+        if: inputs.phase == 'run'
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          run_id="RC1-PI-${EXPECTED_HEAD:0:12}-$(date +%Y%m%d)"
+          export MARSHAL_CANARY_PI_IDENTITY=custom
+          export MARSHAL_CANARY_PI_NODE="$PI_NODE"
+          export MARSHAL_CANARY_PI_BIN="$PI_BIN"
+          export MARSHAL_CANARY_PI_BUNDLE="$PI_BUNDLE"
+          export MARSHAL_CANARY_PI_MODEL="$PI_MODEL"
+          export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+          scripts/release-canary.sh run --run-id "$run_id" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1
+          scripts/release-canary.sh status --run-id "$run_id" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --expect REVIEW_PENDING
+          echo "CANARY_RUN_ID=$run_id" >> "$GITHUB_ENV"
+
+      - name: Upload canary run evidence
+        if: inputs.phase == 'run'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rc1-canary-run-${{ github.run_id }}
+          path: |
+            dist/
+            .marshal/release-canary/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Restore run-phase canary evidence
+        if: inputs.phase == 'finalize'
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVIDENCE_RUN_ID: ${{ inputs.evidence-run-id }}
+          EXPECTED_CANARY_RUN_ID: ${{ inputs.expected-canary-run-id }}
+        run: |
+          [ -n "$EXPECTED_CANARY_RUN_ID" ]
+          artifact_meta_tmp="$RUNNER_TEMP/artifacts.json"
+          gh api "repos/${{ github.repository }}/actions/runs/${EVIDENCE_RUN_ID}/artifacts" > "$artifact_meta_tmp"
+          artifact_payload="$(python3 -I -B scripts/rc1-canary-artifact-meta.py "$artifact_meta_tmp")"
+          aid="${artifact_payload%% *}"
+          exp_name="rc1-canary-run-${EVIDENCE_RUN_ID}"
+          actual_name="$(gh api "repos/${{ github.repository }}/actions/artifacts/${aid}" --jq .name)"
+          [ "$actual_name" = "$exp_name" ] || { echo "::error::artifact 名称漂移 $actual_name != $exp_name" >&2; exit 1; }
+          archive="$RUNNER_TEMP/rc1-canary-run.zip"
+          gh api "repos/${{ github.repository }}/actions/artifacts/${aid}/zip" > "$archive"
+          python3 -I -B scripts/rc1-canary-restore-evidence.py "$archive"
+          [ -d ".marshal/release-canary/${EXPECTED_CANARY_RUN_ID}" ] || { echo "::error::evidence artifact 缺少 canary 门目 ${EXPECTED_CANARY_RUN_ID}" >&2; exit 1; }
+          [ -f "dist/marshal_1.0.0-rc1_darwin_arm64" ] || { echo "::error::evidence artifact 缺少 candidate dist" >&2; exit 1; }
+          cp dist/marshal_1.0.0-rc1_darwin_arm64 bin/marshal
+
+      - name: Finalize canary with independent ReviewDecision -> ACCEPTED
+        if: inputs.phase == 'finalize'
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          DECISION_JSON: ${{ inputs.decision }}
+          EXPECTED_CANARY_RUN_ID: ${{ inputs.expected-canary-run-id }}
+        run: |
+          decision_path="$RUNNER_TEMP/review-decision.json"
+          python3 -I -B scripts/rc1-canary-decision-parse.py "$decision_path"
+          export MARSHAL_CANARY_PI_IDENTITY=custom
+          export MARSHAL_CANARY_PI_NODE="$PI_NODE"
+          export MARSHAL_CANARY_PI_BIN="$PI_BIN"
+          export MARSHAL_CANARY_PI_BUNDLE="$PI_BUNDLE"
+          export MARSHAL_CANARY_PI_MODEL="$PI_MODEL"
+          export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+          scripts/release-canary.sh status --run-id "$EXPECTED_CANARY_RUN_ID" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --expect REVIEW_PENDING
+          scripts/release-canary.sh finalize --run-id "$EXPECTED_CANARY_RUN_ID" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --decision "$decision_path"
+          scripts/release-canary.sh status --run-id "$EXPECTED_CANARY_RUN_ID" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --expect ACCEPTED
+
+      - name: Assemble and validate RC1 canary receipt + immutable carrier
+        if: inputs.phase == 'finalize'
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_CANARY_RUN_ID: ${{ inputs.expected-canary-run-id }}
+          EVIDENCE_RUN_ID: ${{ inputs.evidence-run-id }}
+          WORKER_ACTOR_ID: release-canary
+          VERIFIER_ACTOR_ID: marshal-deterministic-verifier
+        run: |
+          artifact_meta_tmp="$RUNNER_TEMP/artifacts.json"
+          gh api "repos/${{ github.repository }}/actions/runs/${EVIDENCE_RUN_ID}/artifacts" > "$artifact_meta_tmp"
+          artifact_payload="$(python3 -I -B scripts/rc1-canary-artifact-meta.py "$artifact_meta_tmp")"
+          artifact_id="${artifact_payload%% *}"
+          artifact_digest="${artifact_payload##* }"
+          [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] && [[ "$artifact_digest" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::artifact id/digest 解析失败：$artifact_payload" >&2; exit 1; }
+          authority_head="$(python3 -I -B scripts/rc1-canary-authority-head.py ".marshal/release-canary/${EXPECTED_CANARY_RUN_ID}/repository/.marshal/result-ingress/result-ingress.jsonl")"
+          agent_version="$(env -i HOME="$HOME" "$PI_NODE" "$PI_BUNDLE" --version)"
+          decision_path="$RUNNER_TEMP/review-decision.json"
+          carrier_dir="rc1-carrier"
+          rm -rf "$carrier_dir" && mkdir -p "$carrier_dir"
+          receipt_digest="$(
+            bash scripts/rc1-canary-receipt.sh \
+              --canary-root ".marshal/release-canary/${EXPECTED_CANARY_RUN_ID}" \
+              --dist-root dist \
+              --out-dir "$carrier_dir" \
+              --expected-head "$EXPECTED_HEAD" \
+              --workflow-run-id "$EVIDENCE_RUN_ID" \
+              --artifact-id "$artifact_id" \
+              --artifact-digest "$artifact_digest" \
+              --authority-head "$authority_head" \
+              --agent-version "$agent_version" \
+              --worker-actor-id "$WORKER_ACTOR_ID" \
+              --verifier-actor-id "$VERIFIER_ACTOR_ID" \
+              --decision "$decision_path"
+          )"
+          [[ "$receipt_digest" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::receipt digest 漂移：$receipt_digest" >&2; exit 1; }
+          python3 -I -B scripts/rc1-carrier-check.py \
+            "$carrier_dir" "$EXPECTED_HEAD" "$EVIDENCE_RUN_ID" \
+            "$artifact_id" "$artifact_digest" "$authority_head" "$receipt_digest"
+
+      - name: Upload final canary carrier
+        if: inputs.phase == 'finalize'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rc1-carrier-${{ inputs.evidence-run-id }}
+          path: |
+            dist/
+            rc1-carrier/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
