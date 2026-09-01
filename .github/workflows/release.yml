@@ -159,6 +159,7 @@ jobs:
       EXPECTED_PAYLOAD_SHA256: ${{ needs.admit.outputs.payload-sha256 }}
       EXPECTED_PAYLOAD_ARTIFACT_ID: ${{ needs.admit.outputs.payload-artifact-id }}
       EXPECTED_PAYLOAD_ARTIFACT_DIGEST: ${{ needs.admit.outputs.payload-artifact-digest }}
+      EXPECTED_WORKFLOW_HEAD: ${{ github.sha }}
     steps:
       - name: Checkout exact release tag without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -178,6 +179,7 @@ jobs:
           [[ "$EXPECTED_PAYLOAD_SHA256" =~ ^[0-9a-f]{64}$ ]]
           [[ "$EXPECTED_PAYLOAD_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$EXPECTED_PAYLOAD_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_WORKFLOW_HEAD" =~ ^[0-9a-f]{40}$ ]]
           metadata_file="$(mktemp "${RUNNER_TEMP}/marshal-release-artifact.XXXXXX")"
           archive_file="$(mktemp "${RUNNER_TEMP}/marshal-release-archive.XXXXXX")"
           artifact_dir="$(mktemp -d "${RUNNER_TEMP}/marshal-release-extract.XXXXXX")"
@@ -188,7 +190,7 @@ jobs:
           python3 -I -B scripts/release-artifact-metadata-check.py \
             "$metadata_file" "$archive_file" "$artifact_dir" \
             "$EXPECTED_PAYLOAD_ARTIFACT_ID" "$EXPECTED_PAYLOAD_ARTIFACT_DIGEST" \
-            "$EXPECTED_SOURCE_HEAD" "${{ github.run_id }}"
+            "$EXPECTED_SOURCE_HEAD" "$EXPECTED_WORKFLOW_HEAD" "${{ github.run_id }}"
           test "$(sha256sum "${artifact_dir}/release-payload.tar" | awk '{print $1}')" = "$EXPECTED_PAYLOAD_SHA256"
           (cd "$artifact_dir" && sha256sum -c RELEASE-PAYLOAD.sha256)
           python3 -I -B scripts/rc1-release-payload-extract.py \

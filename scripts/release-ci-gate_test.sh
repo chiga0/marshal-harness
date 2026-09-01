@@ -200,6 +200,8 @@ PY
   grep -F 'environment: release-publication' "$publish" >/dev/null || return 1
   grep -F 'contents: write' "$publish" >/dev/null || return 1
   grep -F 'scripts/release-artifact-metadata-check.py' "$publish" >/dev/null || return 1
+  grep -F 'EXPECTED_WORKFLOW_HEAD: ${{ github.sha }}' "$publish" >/dev/null || return 1
+  grep -F '"$EXPECTED_SOURCE_HEAD" "$EXPECTED_WORKFLOW_HEAD" "${{ github.run_id }}"' "$publish" >/dev/null || return 1
   grep -F 'scripts/rc1-release-payload-extract.py' "$publish" >/dev/null || return 1
   grep -F 'scripts/rc1-carrier-check.py' "$publish" >/dev/null || return 1
   ! grep -F 'rm -rf "$artifact_dir" "$release_dir"' "$publish" >/dev/null || return 1
@@ -220,6 +222,7 @@ ARTIFACT_ARCHIVE="${TMP_ROOT}/artifact.zip"
 ARTIFACT_INPUT="${TMP_ROOT}/artifact-input"
 ARTIFACT_ID=123456
 ARTIFACT_SOURCE_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ARTIFACT_WORKFLOW_HEAD=cccccccccccccccccccccccccccccccccccccccc
 ARTIFACT_RUN_ID=987654
 
 mkdir "$ARTIFACT_INPUT"
@@ -240,7 +243,7 @@ ARTIFACT_DIGEST="$(shasum -a 256 "$ARTIFACT_ARCHIVE" | awk '{print $1}')"
 write_artifact_metadata() {
   local id="${1:-$ARTIFACT_ID}" digest="${2:-sha256:$ARTIFACT_DIGEST}"
   local name="${3:-release-payload-$ARTIFACT_SOURCE_HEAD}" expired="${4:-false}"
-  local run_id="${5:-$ARTIFACT_RUN_ID}" head="${6:-$ARTIFACT_SOURCE_HEAD}"
+  local run_id="${5:-$ARTIFACT_RUN_ID}" head="${6:-$ARTIFACT_WORKFLOW_HEAD}"
   printf '{"id":%s,"name":"%s","expired":%s,"digest":"%s","workflow_run":{"id":%s,"head_sha":"%s"}}\n' \
     "$id" "$name" "$expired" "$digest" "$run_id" "$head" >"$ARTIFACT_METADATA"
 }
@@ -251,7 +254,7 @@ check_artifact() {
   extract="$(mktemp -d "${TMP_ROOT}/artifact-extract.XXXXXX")"
   python3 -I -B "$ARTIFACT_METADATA_CHECKER" \
     "$ARTIFACT_METADATA" "$archive" "$extract" "$ARTIFACT_ID" "$digest" \
-    "$ARTIFACT_SOURCE_HEAD" "$ARTIFACT_RUN_ID" >/dev/null
+    "$ARTIFACT_SOURCE_HEAD" "$ARTIFACT_WORKFLOW_HEAD" "$ARTIFACT_RUN_ID" >/dev/null
 }
 
 expect_artifact_fail() {
@@ -267,8 +270,8 @@ VALID_EXTRACT="$(mktemp -d "${TMP_ROOT}/artifact-valid.XXXXXX")"
 python3 -I -B "$ARTIFACT_METADATA_CHECKER" \
   "$ARTIFACT_METADATA" "$ARTIFACT_ARCHIVE" "$VALID_EXTRACT" \
   "$ARTIFACT_ID" "$ARTIFACT_DIGEST" "$ARTIFACT_SOURCE_HEAD" \
-  "$ARTIFACT_RUN_ID" >/dev/null \
-  || fail '合法 immutable artifact archive 未通过 digest/run/sourceHead 绑定'
+  "$ARTIFACT_WORKFLOW_HEAD" "$ARTIFACT_RUN_ID" >/dev/null \
+  || fail '合法 immutable artifact archive 未通过 digest/run/candidate/workflow sourceHead 绑定'
 cmp "${ARTIFACT_INPUT}/release-payload.tar" "${VALID_EXTRACT}/release-payload.tar" >/dev/null \
   || fail '合法 artifact archive 未受控解包'
 expect_artifact_fail '调用者替换 expected artifact digest' \
@@ -293,11 +296,11 @@ write_artifact_metadata "$ARTIFACT_ID" "sha256:$ARTIFACT_DIGEST" \
 expect_artifact_fail 'cross-run artifact replay' check_artifact
 write_artifact_metadata "$ARTIFACT_ID" "sha256:$ARTIFACT_DIGEST" \
   "release-payload-$ARTIFACT_SOURCE_HEAD" false "$ARTIFACT_RUN_ID" \
-  cccccccccccccccccccccccccccccccccccccccc
-expect_artifact_fail 'cross-source artifact replay' check_artifact
+  dddddddddddddddddddddddddddddddddddddddd
+expect_artifact_fail 'cross-workflow revision artifact replay' check_artifact
 printf '{"id":%s,"id":%s,"name":"release-payload-%s","expired":false,"digest":"sha256:%s","workflow_run":{"id":%s,"head_sha":"%s"}}\n' \
   "$ARTIFACT_ID" "$ARTIFACT_ID" "$ARTIFACT_SOURCE_HEAD" "$ARTIFACT_DIGEST" \
-  "$ARTIFACT_RUN_ID" "$ARTIFACT_SOURCE_HEAD" >"$ARTIFACT_METADATA"
+  "$ARTIFACT_RUN_ID" "$ARTIFACT_WORKFLOW_HEAD" >"$ARTIFACT_METADATA"
 expect_artifact_fail '重复 JSON member' check_artifact
 write_artifact_metadata
 printf 'trailing' >>"$ARTIFACT_METADATA"
