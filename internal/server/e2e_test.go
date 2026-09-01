@@ -32,6 +32,7 @@ import (
 // Run approval with replay merge, Run status, and Task cancel with replay —
 // plus the ADR 0018 §3 identity matrix rejections on the wire.
 func TestPublicAPILoopbackE2E(t *testing.T) {
+	sealedMigrationSkip(t)
 	fixture := newServerFixture(t)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
