@@ -319,7 +319,7 @@ func openObjectAt(parent *os.File, relative, canonicalPath string, kind uint32, 
 			return nil, ObjectV1{}, ErrUnavailable
 		}
 		digest, digestErr := hashObject(file)
-		if digestErr != nil || unix.Fstat(fd, &after) != nil || before != after {
+		if digestErr != nil || unix.Fstat(fd, &after) != nil || !sameStatForContentStability(before, after) {
 			_ = file.Close()
 			return nil, ObjectV1{}, ErrUnavailable
 		}
@@ -346,4 +346,14 @@ func hashObject(file *os.File) (string, error) {
 		return "", err
 	}
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// sameStatForContentStability compares two Stat_t snapshots taken around a
+// hash read. The digest read itself legitimately mutates only Access time
+// (APFS relatime), which carries no mutation signal; everything else must
+// stay byte-stable or the object was tampered with mid-read.
+func sameStatForContentStability(before, after unix.Stat_t) bool {
+	before.Atim = unix.Timespec{}
+	after.Atim = unix.Timespec{}
+	return before == after
 }
