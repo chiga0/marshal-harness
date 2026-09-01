@@ -139,6 +139,7 @@ release-check:
 	bash scripts/install_test.sh
 	bash scripts/release-canary_test.sh
 	/usr/bin/python3 -I -B scripts/rc1-carrier-check_test.py
+	/usr/bin/python3 -I -B scripts/rc1-release-carrier-artifact_test.py
 
 check: format-check architecture-check vet lint test build
 

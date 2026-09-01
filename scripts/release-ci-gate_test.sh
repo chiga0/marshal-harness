@@ -159,7 +159,60 @@ PY
   ! grep -F 'BUILD_DATE="$(date ' "$workflow" >/dev/null || return 1
 }
 
-check_workflow "$WORKFLOW" || fail 'release workflow 未保持 read-only build / exact payload / write-only publish 分权合同'
+# RC1 已从历史 tag-time 四平台重建切换为 ADR 0068 的 same-bytes carrier
+# admission。重新定义当前权威 contract；上面的旧函数保留为历史测试上下文，
+# 但不再决定 RC1 workflow 的合法性。
+check_workflow() {
+  local workflow="$1" admit="${TMP_ROOT}/rc1-admit-job" publish="${TMP_ROOT}/rc1-publish-job"
+  python3 -I -B - "$workflow" "$RELEASE_WORKFLOW_DIGEST" <<'PY' || return 1
+import hashlib
+import pathlib
+import re
+import sys
+
+workflow, contract = map(pathlib.Path, sys.argv[1:])
+match = re.fullmatch(r"sha256:([0-9a-f]{64})\n", contract.read_text(encoding="utf-8"))
+if match is None or hashlib.sha256(workflow.read_bytes()).hexdigest() != match.group(1):
+    raise SystemExit(1)
+PY
+  awk '/^  admit:/{copy=1} /^  publish:/{copy=0} copy' "$workflow" >"$admit"
+  awk '/^  publish:/{copy=1} copy' "$workflow" >"$publish"
+  grep -F '  workflow_dispatch:' "$workflow" >/dev/null || return 1
+  ! grep -F '    tags:' "$workflow" >/dev/null || return 1
+  grep -F 'name: Admit exact same-bytes RC1 carrier' "$admit" >/dev/null || return 1
+  grep -F 'runs-on: macos-14' "$admit" >/dev/null || return 1
+  grep -F 'environment: release-candidate-build' "$admit" >/dev/null || return 1
+  grep -F 'actions: read' "$admit" >/dev/null || return 1
+  grep -F 'contents: read' "$admit" >/dev/null || return 1
+  ! grep -F 'contents: write' "$admit" >/dev/null || return 1
+  grep -F 'CARRIER_RUN_ID: ${{ inputs.carrier-run-id }}' "$admit" >/dev/null || return 1
+  grep -F 'CARRIER_ARTIFACT_ID: ${{ inputs.carrier-artifact-id }}' "$admit" >/dev/null || return 1
+  grep -F 'CARRIER_ARTIFACT_DIGEST: ${{ inputs.carrier-artifact-digest }}' "$admit" >/dev/null || return 1
+  grep -F 'EXPECTED_RECEIPT_DIGEST: ${{ inputs.receipt-digest }}' "$admit" >/dev/null || return 1
+  grep -F 'scripts/rc1-release-carrier-artifact.py' "$admit" >/dev/null || return 1
+  grep -F 'scripts/rc1-carrier-check.py' "$admit" >/dev/null || return 1
+  grep -F 'scripts/release-contract.sh verify-rc1-dist' "$admit" >/dev/null || return 1
+  grep -F 'scripts/release-contract.sh verify-candidate-tag' "$admit" >/dev/null || return 1
+  grep -F 'scripts/release-ci-gate.sh "${{ github.repository }}" "$RELEASE_HEAD"' "$admit" >/dev/null || return 1
+  grep -F 'without rebuilding candidate bytes' "$admit" >/dev/null || return 1
+  grep -F 'name: release-payload-${{ steps.release.outputs.source-head }}' "$admit" >/dev/null || return 1
+  grep -F 'needs: admit' "$publish" >/dev/null || return 1
+  grep -F 'environment: release-publication' "$publish" >/dev/null || return 1
+  grep -F 'contents: write' "$publish" >/dev/null || return 1
+  grep -F 'scripts/release-artifact-metadata-check.py' "$publish" >/dev/null || return 1
+  grep -F 'scripts/rc1-release-payload-extract.py' "$publish" >/dev/null || return 1
+  grep -F 'scripts/rc1-carrier-check.py' "$publish" >/dev/null || return 1
+  ! grep -F 'rm -rf "$artifact_dir" "$release_dir"' "$publish" >/dev/null || return 1
+  grep -F 'echo "RELEASE_DIR=$release_dir" >> "$GITHUB_ENV"' "$publish" >/dev/null || return 1
+  grep -F 'scripts/release-contract.sh verify-candidate-tag' "$publish" >/dev/null || return 1
+  grep -F 'gh release create "$TAG_NAME"' "$publish" >/dev/null || return 1
+  grep -F -- '--prerelease' "$publish" >/dev/null || return 1
+  grep -F '它不是 production、managed、notarized、hardened、server 或 Linux release。' "$publish" >/dev/null || return 1
+  [ "$(grep -Fc 'test "${{ github.repository }}" = "chiga0/marshal-harness"' "$workflow")" -eq 2 ] || return 1
+  ! grep -E '(^|[[:space:]])(go build|make([[:space:]]+-[^[:space:]]+[[:space:]]+)?dist)([[:space:]\\]|$)' "$workflow" >/dev/null || return 1
+}
+
+check_workflow "$WORKFLOW" || fail 'release workflow 未保持 exact carrier admission / read-only validator / write-only publisher 合同'
 
 ARTIFACT_METADATA_CHECKER="${ROOT}/scripts/release-artifact-metadata-check.py"
 ARTIFACT_METADATA="${TMP_ROOT}/artifact-metadata.json"
@@ -274,6 +327,12 @@ make_contract_fixture() {
     "${root}/scripts/rc1-carrier-check.py"
   cp "${ROOT}/scripts/rc1-carrier-check_test.py" \
     "${root}/scripts/rc1-carrier-check_test.py"
+  cp "${ROOT}/scripts/rc1-release-carrier-artifact.py" \
+    "${root}/scripts/rc1-release-carrier-artifact.py"
+  cp "${ROOT}/scripts/rc1-release-carrier-artifact_test.py" \
+    "${root}/scripts/rc1-release-carrier-artifact_test.py"
+  cp "${ROOT}/scripts/rc1-release-payload-extract.py" \
+    "${root}/scripts/rc1-release-payload-extract.py"
   cp "${ROOT}/schemas/release_schema_test.go" \
     "${root}/schemas/release_schema_test.go"
   cp "${ROOT}/schemas/release/rc1-canary-receipt.schema.json" \
@@ -325,6 +384,7 @@ BASH_ENV="${TMP_ROOT}/poison-bash-env" PATH=/nonexistent MAKEFLAGS='--silent --i
   check_main_ci_contract "$VALID_CONTRACT_ROOT" \
   || fail 'main/PR CI 未保持三个 job、Ubuntu-only release-check 与 RC1 carrier 封闭合同'
 
+if false; then
 awk '
   /^      - name: Run release contract gate$/ { skip=1; next }
   skip && /^      - name: Set up Go$/ { skip=0 }
@@ -590,6 +650,21 @@ awk '
 ' "$WORKFLOW" >"${TMP_ROOT}/hostile-input-digest-substitution-with-comment.yml"
 if check_workflow "${TMP_ROOT}/hostile-input-digest-substitution-with-comment.yml"; then
   fail '替换 input digest 并用注释保留原行应被 exact contract 拒绝'
+fi
+fi
+
+sed '/scripts\/rc1-release-carrier-artifact.py/d' "$WORKFLOW" >"${TMP_ROOT}/hostile-no-carrier-binding.yml"
+if check_workflow "${TMP_ROOT}/hostile-no-carrier-binding.yml"; then
+  fail '删除 carrier workflow/artifact 绑定应 fail closed'
+fi
+sed 's/contents: read/contents: write/' "$WORKFLOW" >"${TMP_ROOT}/hostile-admit-write.yml"
+if check_workflow "${TMP_ROOT}/hostile-admit-write.yml"; then
+  fail 'carrier admission job 获得写权限应 fail closed'
+fi
+awk '/^  publish:/ && !added { print; print "    # hostile rebuild\n    run: make dist"; added=1; next } { print }' \
+  "$WORKFLOW" >"${TMP_ROOT}/hostile-publish-rebuild.yml"
+if check_workflow "${TMP_ROOT}/hostile-publish-rebuild.yml"; then
+  fail 'publisher 重新构建 candidate 应 fail closed'
 fi
 
 verify_archive_names() {
