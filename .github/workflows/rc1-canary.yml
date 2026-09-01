@@ -214,6 +214,7 @@ jobs:
           python3 -I -B scripts/rc1-canary-restore-evidence.py "$archive"
           if [ ! -d .marshal/release-canary ] && [ -f canary-evidence.tar.gz ]; then
             mkdir -p .marshal && /usr/bin/tar -xzf canary-evidence.tar.gz -C .marshal
+            rm -f canary-evidence.tar.gz
           fi
           [ -d ".marshal/release-canary/${EXPECTED_CANARY_RUN_ID}" ] || { echo "::error::evidence artifact 缺少 canary 门目 ${EXPECTED_CANARY_RUN_ID}" >&2; exit 1; }
           [ -f "dist/marshal_1.0.0-rc1_darwin_arm64" ] || { echo "::error::evidence artifact 缺少 candidate dist" >&2; exit 1; }
