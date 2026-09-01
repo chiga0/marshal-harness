@@ -119,7 +119,7 @@
         "publication"
       ],
       "properties": {
-        "schemaVersion": { "const": "marshal.local-dogfood-environment-binding.v1" },
+        "schemaVersion": { "const": "marshal.local-dogfood-environment-binding.v2" },
         "selfProfile": { "const": "darwin-local-dogfood" },
         "activationDigest": { "$ref": "#/$defs/digest" },
         "identitySubjectDigest": { "$ref": "#/$defs/digest" },

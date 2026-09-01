@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	ActivationSchema     = "marshal.local-dogfood-activation.v1"
-	ObservationSchema    = "marshal.local-self-identity-observation.v1"
-	AttemptBindingSchema = "marshal.local-self-identity-binding.v1"
+	ActivationSchema     = "marshal.local-dogfood-activation.v2"
+	ObservationSchema    = "marshal.local-self-identity-observation.v2"
+	AttemptBindingSchema = "marshal.local-self-identity-binding.v2"
 	LocalProfile         = "darwin-local-dogfood"
 	ActivationEnv        = "MARSHAL_LOCAL_DOGFOOD_ACTIVATION"
 
@@ -69,19 +69,19 @@ type BuildIdentity struct {
 	SelfProfile string
 }
 
-// LocalDogfoodScopeV1 is deliberately closed to the currently admitted local
+// LocalDogfoodScopeV2 is deliberately closed to the currently admitted local
 // dogfood surfaces; later phases must extend it explicitly rather than infer
 // authority from a profile name.
-type LocalDogfoodScopeV1 struct {
+type LocalDogfoodScopeV2 struct {
 	Network                 string   `json:"network"`
 	Publication             string   `json:"publication"`
 	AdapterAuthority        string   `json:"adapterAuthority"`
 	LifecycleCommandClasses []string `json:"lifecycleCommandClasses"`
 }
 
-// LocalDogfoodActivationV1 is operator-owned opt-in. Marshal may render its
+// LocalDogfoodActivationV2 is operator-owned opt-in. Marshal may render its
 // canonical bytes, but never writes the activation file.
-type LocalDogfoodActivationV1 struct {
+type LocalDogfoodActivationV2 struct {
 	SchemaVersion           string              `json:"schemaVersion"`
 	ActivationID            string              `json:"activationId"`
 	IssuedAt                string              `json:"issuedAt"`
@@ -89,17 +89,15 @@ type LocalDogfoodActivationV1 struct {
 	RepositoryIdentity      string              `json:"repositoryIdentity"`
 	CanonicalRepositoryRoot string              `json:"canonicalRepositoryRoot"`
 	CanonicalExecutablePath string              `json:"canonicalExecutablePath"`
-	ExpectedDevice          string              `json:"expectedDevice"`
-	ExpectedInode           string              `json:"expectedInode"`
 	ExpectedSize            int64               `json:"expectedSize"`
 	ExpectedRawSHA256       string              `json:"expectedRawSHA256"`
 	ExpectedSourceHead      string              `json:"expectedSourceHead"`
 	ExpectedSelfProfile     string              `json:"expectedSelfProfile"`
-	Scope                   LocalDogfoodScopeV1 `json:"scope"`
+	Scope                   LocalDogfoodScopeV2 `json:"scope"`
 	ActivationDigest        string              `json:"activationDigest"`
 }
 
-type CurrentPathObjectV1 struct {
+type CurrentPathObjectV2 struct {
 	CanonicalPath   string `json:"canonicalPath"`
 	Device          string `json:"device"`
 	Inode           string `json:"inode"`
@@ -109,16 +107,16 @@ type CurrentPathObjectV1 struct {
 	ObservationKind string `json:"observationKind"`
 }
 
-// LocalSelfIdentityObservationV1 is a Core-owned, process-local fact. Its
+// LocalSelfIdentityObservationV2 is a Core-owned, process-local fact. Its
 // name and fields intentionally avoid install-receipt/current/held authority.
-type LocalSelfIdentityObservationV1 struct {
+type LocalSelfIdentityObservationV2 struct {
 	SchemaVersion           string              `json:"schemaVersion"`
 	ActivationDigest        string              `json:"activationDigest"`
 	ProcessID               int                 `json:"processId"`
 	ProcessExecutablePath   string              `json:"processExecutablePath"`
 	RepositoryIdentity      string              `json:"repositoryIdentity"`
 	CanonicalRepositoryRoot string              `json:"canonicalRepositoryRoot"`
-	CurrentPathObject       CurrentPathObjectV1 `json:"currentPathObject"`
+	CurrentPathObject       CurrentPathObjectV2 `json:"currentPathObject"`
 	SourceHead              string              `json:"sourceHead"`
 	SelfProfile             string              `json:"selfProfile"`
 	ObservedAt              string              `json:"observedAt"`
@@ -128,10 +126,10 @@ type LocalSelfIdentityObservationV1 struct {
 	ObservationDigest       string              `json:"observationDigest"`
 }
 
-// LocalSelfIdentityBindingV1 is the closed projection copied into a local
+// LocalSelfIdentityBindingV2 is the closed projection copied into a local
 // WorkerRequest. It points at Core's persisted dispatch observation; an
 // Adapter cannot mint or refresh any of these fields.
-type LocalSelfIdentityBindingV1 struct {
+type LocalSelfIdentityBindingV2 struct {
 	SchemaVersion             string `json:"schemaVersion"`
 	SelfProfile               string `json:"selfProfile"`
 	ActivationDigest          string `json:"activationDigest"`
@@ -139,7 +137,7 @@ type LocalSelfIdentityBindingV1 struct {
 	DispatchObservationDigest string `json:"dispatchObservationDigest"`
 }
 
-func (a LocalDogfoodActivationV1) permits(commandClass string) bool {
+func (a LocalDogfoodActivationV2) permits(commandClass string) bool {
 	for _, candidate := range a.Scope.LifecycleCommandClasses {
 		if candidate == commandClass {
 			return true

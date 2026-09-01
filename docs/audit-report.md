@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-01：ADR 0073 activation V2 跨 runner 证据模型审计
+
+GitHub RC1 canary 已把当前发布阻塞收敛为一个可复现的证据模型缺口：run phase `33477653933` 用 build-once candidate 和真实 Pi 到达 `REVIEW_PENDING`，finalize `33477984364` 在另一台 macOS runner 上失败于本地身份 binding。根因不是 Agent、ResultIngress 或 ReviewDecision，而是 V1 同时把临时文件系统的 `device/inode` 当作跨阶段稳定主体；以相同 `activationId` 重签发只能产生新的 activation digest，不能建立权威连续性。
+
+审计后接受 [ADR 0073](adr/0073-dogfood-activation-v2-host-portability.md)，并把实现边界收窄为同 canonical 布局的 ephemeral runner：activation 与 portable `identitySubjectDigest` 绑定 repository/root/path/size/hash/sourceHead/profile，但不绑定 PID/device/inode/time；每台宿主的新 observation 仍必须以 held fd 和 pathname recheck 强制验证 device/inode、size/hash 与 ABA。activation→observation→attempt/applicability→verification→review 整条 lineage 同步升级 V2，V1/V2 混用 fail closed；RC1 finalize 必须原样消费 run artifact 的 activation，禁止以相同 ID 重签发或延长。
+
+本地证据包括 selfidentity 正向/负向与跨 host-object subject 测试、CLI/execution/runstore/productionruntime/planning/control/verification 定向测试、Schema tests、RC1 shell contract、architecture check、`go vet`、staticcheck 与 diff-check。全仓本地 `go test ./internal/...` 仍会在本机企业终端策略下卡住 Codex/OpenCode/Pi 临时 Go 测试二进制并产生 context deadline，不能冒充全绿；双平台全仓结果必须由 exact-head required CI 提供。finding 状态为 `CONTRACT-AND-IMPLEMENTATION-CLOSED / REMOTE-CANARY-OPEN`：只有新的 V2 run/finalize 达到 `ACCEPTED` 并产出 receipt/carrier 后，才能进入 RC1 publication workflow 收口；R1–R6 暂不升级。
+
 ## 2026-08-31：生产级 Agent Team 架构终审
 
 新增 [《Marshal 生产级 Agent Team 架构终审》](production-agent-team-architecture-audit.md)，以 `main@10f743d93cdaa71a2a3b181da3134f4a2c5dbe87` 为代码快照，交叉复核 production import graph、491 个本机 dogfood Run、Git/CI/Issue 历史，以及 Anthropic、OpenAI、Temporal、Kubernetes 与 GitHub 的一手生产资料。

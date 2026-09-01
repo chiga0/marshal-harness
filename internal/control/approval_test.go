@@ -50,7 +50,7 @@ func TestPlanApprovalLifecycle(t *testing.T) {
 
 func TestLocalDogfoodPlanApprovalRechecksCurrentIdentity(t *testing.T) {
 	t.Parallel()
-	observation := selfidentity.LocalSelfIdentityObservationV1{
+	observation := selfidentity.LocalSelfIdentityObservationV2{
 		SchemaVersion: selfidentity.ObservationSchema, SelfProfile: selfidentity.LocalProfile,
 		ActivationDigest:      "sha256:" + strings.Repeat("a", 64),
 		IdentitySubjectDigest: "sha256:" + strings.Repeat("b", 64),

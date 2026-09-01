@@ -21,7 +21,7 @@ type OutcomeData struct {
 	Summary                        string
 	FindingCount                   uint
 	LocalSelfIdentityBindingDigest string
-	Applicability                  *evidencebinding.ExecutionApplicabilityV1
+	Applicability                  *evidencebinding.ExecutionApplicabilityV2
 	GeneratedAt                    time.Time
 }
 

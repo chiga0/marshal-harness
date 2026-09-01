@@ -162,15 +162,15 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 
 type localDogfoodObservationContextKey struct{}
 
-func localDogfoodObservation(ctx context.Context) *selfidentity.LocalSelfIdentityObservationV1 {
-	observation, ok := ctx.Value(localDogfoodObservationContextKey{}).(selfidentity.LocalSelfIdentityObservationV1)
+func localDogfoodObservation(ctx context.Context) *selfidentity.LocalSelfIdentityObservationV2 {
+	observation, ok := ctx.Value(localDogfoodObservationContextKey{}).(selfidentity.LocalSelfIdentityObservationV2)
 	if !ok {
 		return nil
 	}
 	return &observation
 }
 
-func applyLocalDogfoodGate(args []string, doctor *doctorOptions, stderr io.Writer) (*selfidentity.LocalSelfIdentityObservationV1, int, bool) {
+func applyLocalDogfoodGate(args []string, doctor *doctorOptions, stderr io.Writer) (*selfidentity.LocalSelfIdentityObservationV2, int, bool) {
 	build := localBuildInfo()
 	if localDogfoodBootstrapCommand(args, doctor) || runtime.GOOS != "darwin" {
 		return nil, ExitOK, false
@@ -465,7 +465,7 @@ type doctorReport struct {
 	TimeoutCandidates        []lifecycle.TimeoutCandidate                 `json:"timeoutCandidates"`
 	Run                      *reconciliation.Report                       `json:"run,omitempty"`
 	Repair                   *reconciliation.RepairResult                 `json:"repair,omitempty"`
-	SelfIdentity             *selfidentity.LocalSelfIdentityObservationV1 `json:"selfIdentity,omitempty"`
+	SelfIdentity             *selfidentity.LocalSelfIdentityObservationV2 `json:"selfIdentity,omitempty"`
 	PolicyEnvironmentBinding *planning.LocalDogfoodEnvironmentBinding     `json:"policyEnvironmentBinding,omitempty"`
 }
 
@@ -515,7 +515,7 @@ func parseDoctorOptions(args []string, stderr io.Writer) (doctorOptions, bool) {
 	flags.BoolVar(&options.repair, "repair", false, "显式修复可证明的本地 Snapshot")
 	flags.BoolVar(&options.printEnv, "print-env", false, "仅打印建议式发现的 export 行，供用户粘贴")
 	var self singleBoolFlag
-	flags.Var(&self, "self", "只输出 canonical LocalDogfoodActivationV1")
+	flags.Var(&self, "self", "只输出 canonical LocalDogfoodActivationV2")
 	flags.StringVar(&options.repositoryRoot, "repository-root", ".", "本地 dogfood activation 的 canonical 仓库根")
 	flags.StringVar(&options.activationID, "activation-id", "", "可选 activation ID；缺失时随机生成")
 	flags.StringVar(&options.issuedAtText, "issued-at", "", "可选 RFC3339 UTC 签发时间")
@@ -2354,7 +2354,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 			fmt.Fprintf(stderr, "运行失败：local dogfood identity 无法重新观察；%s。\n", selfidentity.ReasonObjectMismatch)
 			return ExitUnavailable
 		}
-		observeLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV1, error) {
+		observeLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV2, error) {
 			return selfidentity.Admit(activationPath, selfidentity.CommandTaskRun, workingDirectory,
 				selfidentity.BuildIdentity{SourceHead: build.Commit, SelfProfile: build.SelfProfile}, localNow())
 		}
@@ -3196,7 +3196,7 @@ func runTaskStatus(ctx context.Context, args []string, stdout, stderr io.Writer)
 		if observation != nil {
 			output = struct {
 				domain.RunState
-				SelfIdentity *selfidentity.LocalSelfIdentityObservationV1 `json:"selfIdentity"`
+				SelfIdentity *selfidentity.LocalSelfIdentityObservationV2 `json:"selfIdentity"`
 				Assurance    string                                       `json:"assurance"`
 				Execution    string                                       `json:"execution"`
 				Production   bool                                         `json:"production"`
@@ -3217,7 +3217,7 @@ func runTaskStatus(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return ExitOK
 }
 
-func validateFrozenLocalDogfoodBinding(stateRoot, runID string, validator *contract.Validator, observation *selfidentity.LocalSelfIdentityObservationV1) error {
+func validateFrozenLocalDogfoodBinding(stateRoot, runID string, validator *contract.Validator, observation *selfidentity.LocalSelfIdentityObservationV2) error {
 	if err := domain.ValidateID(runID); err != nil {
 		return err
 	}

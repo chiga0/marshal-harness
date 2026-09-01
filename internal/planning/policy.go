@@ -107,12 +107,12 @@ const LocalDogfoodEnvironmentBindingSchema = selfidentity.LocalApplicabilitySche
 // LocalDogfoodEnvironmentBinding is the closed, policy-owned applicability
 // binding for ADR 0051. RunState and ApprovalRecord keep referring to it only
 // through PolicyDigest, so this remains the single durable source of truth.
-type LocalDogfoodEnvironmentBinding = selfidentity.LocalApplicabilityV1
+type LocalDogfoodEnvironmentBinding = selfidentity.LocalApplicabilityV2
 
 // LocalDogfoodEnvironmentBindingForObservation projects one admitted
 // Core-owned observation into the closed fields a policy issuer must copy and
 // reseal. It does not issue or mutate a PolicySnapshot.
-func LocalDogfoodEnvironmentBindingForObservation(observation selfidentity.LocalSelfIdentityObservationV1) LocalDogfoodEnvironmentBinding {
+func LocalDogfoodEnvironmentBindingForObservation(observation selfidentity.LocalSelfIdentityObservationV2) LocalDogfoodEnvironmentBinding {
 	binding, _ := selfidentity.ApplicabilityForObservation(observation)
 	return binding
 }
@@ -382,7 +382,7 @@ func ValidatePolicy(data []byte, task domain.TaskSpec, runID string, validator *
 // with a fresh Core observation. A nil observation denotes a non-local caller:
 // in that profile the mere presence of a local binding is contamination and
 // fails closed. It performs no writes and emits only stable reason strings.
-func ValidateLocalDogfoodEnvironmentBinding(data []byte, validator *contract.Validator, observation *selfidentity.LocalSelfIdentityObservationV1) error {
+func ValidateLocalDogfoodEnvironmentBinding(data []byte, validator *contract.Validator, observation *selfidentity.LocalSelfIdentityObservationV2) error {
 	_, err := LocalDogfoodApplicability(data, validator, observation)
 	return err
 }
@@ -390,7 +390,7 @@ func ValidateLocalDogfoodEnvironmentBinding(data []byte, validator *contract.Val
 // LocalDogfoodApplicability returns the exact closed projection produced by
 // the frozen Policy after validating it against the current Core observation.
 // Downstream Run/evidence producers must copy this value, never reconstruct it.
-func LocalDogfoodApplicability(data []byte, validator *contract.Validator, observation *selfidentity.LocalSelfIdentityObservationV1) (*LocalDogfoodEnvironmentBinding, error) {
+func LocalDogfoodApplicability(data []byte, validator *contract.Validator, observation *selfidentity.LocalSelfIdentityObservationV2) (*LocalDogfoodEnvironmentBinding, error) {
 	if validator == nil || validator.Validate(domain.KindPolicySnapshot, data) != nil {
 		return nil, port.Permanentf("%s", ErrPolicySchemaInvalid)
 	}
@@ -408,7 +408,7 @@ func LocalDogfoodApplicability(data []byte, validator *contract.Validator, obser
 	return &copy, nil
 }
 
-func validateLocalDogfoodBinding(binding *LocalDogfoodEnvironmentBinding, observation *selfidentity.LocalSelfIdentityObservationV1) error {
+func validateLocalDogfoodBinding(binding *LocalDogfoodEnvironmentBinding, observation *selfidentity.LocalSelfIdentityObservationV2) error {
 	if observation == nil {
 		if binding != nil {
 			return port.Permanentf("%s", ErrPolicyLocalBindingCrossProfile)
@@ -429,7 +429,7 @@ func validateLocalDogfoodBinding(binding *LocalDogfoodEnvironmentBinding, observ
 	return nil
 }
 
-func validateLocalDogfoodSurface(effective EffectivePolicy, task domain.TaskSpec, observation *selfidentity.LocalSelfIdentityObservationV1) error {
+func validateLocalDogfoodSurface(effective EffectivePolicy, task domain.TaskSpec, observation *selfidentity.LocalSelfIdentityObservationV2) error {
 	if observation == nil {
 		return nil
 	}

@@ -40,17 +40,15 @@
     "activation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "activationId", "issuedAt", "validUntil", "repositoryIdentity", "canonicalRepositoryRoot", "canonicalExecutablePath", "expectedDevice", "expectedInode", "expectedSize", "expectedRawSHA256", "expectedSourceHead", "expectedSelfProfile", "scope", "activationDigest"],
+      "required": ["schemaVersion", "activationId", "issuedAt", "validUntil", "repositoryIdentity", "canonicalRepositoryRoot", "canonicalExecutablePath", "expectedSize", "expectedRawSHA256", "expectedSourceHead", "expectedSelfProfile", "scope", "activationDigest"],
       "properties": {
-        "schemaVersion": { "const": "marshal.local-dogfood-activation.v1" },
+        "schemaVersion": { "const": "marshal.local-dogfood-activation.v2" },
         "activationId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
         "issuedAt": { "type": "string", "format": "date-time" },
         "validUntil": { "type": "string", "format": "date-time" },
         "repositoryIdentity": { "$ref": "#/$defs/digest" },
         "canonicalRepositoryRoot": { "type": "string", "pattern": "^/", "maxLength": 4096 },
         "canonicalExecutablePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
-        "expectedDevice": { "$ref": "#/$defs/decimal" },
-        "expectedInode": { "$ref": "#/$defs/decimal" },
         "expectedSize": { "type": "integer", "minimum": 1, "maximum": 268435456 },
         "expectedRawSHA256": { "$ref": "#/$defs/digest" },
         "expectedSourceHead": { "$ref": "#/$defs/sourceHead" },
@@ -64,7 +62,7 @@
       "additionalProperties": false,
       "required": ["schemaVersion", "activationDigest", "processId", "processExecutablePath", "repositoryIdentity", "canonicalRepositoryRoot", "currentPathObject", "sourceHead", "selfProfile", "observedAt", "status", "reasonCode", "identitySubjectDigest", "observationDigest"],
       "properties": {
-        "schemaVersion": { "const": "marshal.local-self-identity-observation.v1" },
+        "schemaVersion": { "const": "marshal.local-self-identity-observation.v2" },
         "activationDigest": { "$ref": "#/$defs/digest" },
         "processId": { "type": "integer", "minimum": 1 },
         "processExecutablePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },

@@ -221,23 +221,9 @@ jobs:
           cp dist/marshal_1.0.0-rc1_darwin_arm64 bin/marshal
           CROOT="$(pwd)/.marshal/release-canary/${EXPECTED_CANARY_RUN_ID}"
           ACTIVATION_PATH="$CROOT/control/local-dogfood-activation.json"
-          EX_AID="$(/usr/bin/python3 -I -B -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("activationId", ""))' "$ACTIVATION_PATH")"
-          [ -n "$EX_AID" ] || { echo "::error::evidence activation 缺 activationId" >&2; exit 1; }
-          export MARSHAL_LOCAL_DOGFOOD_ACTIVATION=""
-          # 跨 runner 恢复时按同一 activationId 重签发 activation：activation
-          # 绑 binary 的 device/inode，这与 bytes 身份无关但必须来自当槽 runner 的实际上位组件。
-          /usr/bin/env -u GOPATH -u GOMODCACHE -u GOENV -u GOTOOLCHAIN \
-            bash -c 'cd "'"$CROOT"'/repository" && exec "'"$PWD"'/bin/marshal" doctor --self \
-              --repository-root "'"$CROOT"'/repository" \
-              --activation-id "'"$EX_AID"'" \
-              --valid-for 4h' >"$ACTIVATION_PATH.new"
-          if ! /usr/bin/python3 -I -B -m json.tool "$ACTIVATION_PATH.new" >/dev/null 2>&1; then
-            echo "::error::签署的新 activation 不是合法 JSON" >&2
-            rm -rf "$ACTIVATION_PATH.new"
-            exit 1
-          fi
-          rm -f "$ACTIVATION_PATH"
-          mv "$ACTIVATION_PATH.new" "$ACTIVATION_PATH"
+          [ -f "$ACTIVATION_PATH" ] || { echo "::error::evidence artifact 缺少原始 activation" >&2; exit 1; }
+          /usr/bin/python3 -I -B -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("schemaVersion") == "marshal.local-dogfood-activation.v2"; assert d.get("activationId")' "$ACTIVATION_PATH" \
+            || { echo "::error::原始 activation 不是可迁移的 V2 证据" >&2; exit 1; }
 
       - name: Finalize canary with independent ReviewDecision -> ACCEPTED
         if: inputs.phase == 'finalize'

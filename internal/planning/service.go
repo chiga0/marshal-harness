@@ -50,7 +50,7 @@ type Input struct {
 	Validator           *contract.Validator
 	Now                 time.Time
 	PythonSyntaxChecker PythonSyntaxChecker
-	LocalSelfIdentity   *selfidentity.LocalSelfIdentityObservationV1
+	LocalSelfIdentity   *selfidentity.LocalSelfIdentityObservationV2
 }
 
 // Result reports the final RunState, the adapter actually selected, and the

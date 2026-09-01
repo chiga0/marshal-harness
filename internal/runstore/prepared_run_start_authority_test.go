@@ -341,13 +341,13 @@ func mustMarshal(t *testing.T, value any) []byte {
 	return raw
 }
 
-func preparedLocalObservation(t *testing.T, observedAt time.Time) selfidentity.LocalSelfIdentityObservationV1 {
+func preparedLocalObservation(t *testing.T, observedAt time.Time) selfidentity.LocalSelfIdentityObservationV2 {
 	t.Helper()
-	observation := selfidentity.LocalSelfIdentityObservationV1{
+	observation := selfidentity.LocalSelfIdentityObservationV2{
 		SchemaVersion: selfidentity.ObservationSchema, ActivationDigest: canonical.DigestBytes([]byte("activation")),
 		ProcessID: 42, ProcessExecutablePath: "/fixed/bin/marshal",
 		RepositoryIdentity: canonical.DigestBytes([]byte("repository")), CanonicalRepositoryRoot: "/fixed/repository",
-		CurrentPathObject: selfidentity.CurrentPathObjectV1{
+		CurrentPathObject: selfidentity.CurrentPathObjectV2{
 			CanonicalPath: "/fixed/bin/marshal", Device: "1", Inode: "2", Size: 3,
 			RawSHA256: canonical.DigestBytes([]byte("marshal")), PathRechecked: true, ObservationKind: "darwin-current-path-fd-object",
 		},
@@ -357,7 +357,7 @@ func preparedLocalObservation(t *testing.T, observedAt time.Time) selfidentity.L
 	observation.IdentitySubjectDigest, _ = canonical.DigestJSON(mustJSON(t, map[string]any{
 		"activationDigest": observation.ActivationDigest, "repositoryIdentity": observation.RepositoryIdentity,
 		"canonicalRepositoryRoot": observation.CanonicalRepositoryRoot, "canonicalExecutablePath": observation.CurrentPathObject.CanonicalPath,
-		"device": observation.CurrentPathObject.Device, "inode": observation.CurrentPathObject.Inode, "size": observation.CurrentPathObject.Size,
+		"size":      observation.CurrentPathObject.Size,
 		"rawSHA256": observation.CurrentPathObject.RawSHA256, "sourceHead": observation.SourceHead, "selfProfile": observation.SelfProfile,
 	}))
 	observation.ObservationDigest, _ = canonical.DigestJSON(mustJSON(t, map[string]any{

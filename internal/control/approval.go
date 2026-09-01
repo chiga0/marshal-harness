@@ -39,7 +39,7 @@ type ApprovalInput struct {
 	SourceID          string
 	Now               time.Time
 	Validator         *contract.Validator
-	LocalSelfIdentity *selfidentity.LocalSelfIdentityObservationV1
+	LocalSelfIdentity *selfidentity.LocalSelfIdentityObservationV2
 }
 
 // Approve creates one immutable human ApprovalRecord bound to the current

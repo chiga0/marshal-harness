@@ -35,7 +35,7 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID
 		fmt.Fprintln(stderr, "运行失败：sealed local-dogfood 组合缺少命令入口身份观察。")
 		return ExitUnavailable
 	}
-	observeLocalSelfIdentity := func() (selfidentity.LocalSelfIdentityObservationV1, error) {
+	observeLocalSelfIdentity := func() (selfidentity.LocalSelfIdentityObservationV2, error) {
 		return freshLocalDogfoodObservation(selfidentity.CommandTaskRun)
 	}
 	piRuntime := os.Getenv("MARSHAL_PI_RUNTIME")

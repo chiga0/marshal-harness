@@ -72,7 +72,7 @@ type Report struct {
 	CandidateDigest string `json:"candidateDigest,omitempty"`
 	// LocalSelfIdentityBinding is Core-owned ADR 0051 applicability lineage.
 	// Legacy/non-local reports omit it byte-for-byte.
-	LocalSelfIdentityBinding *evidencebinding.VerificationIdentityBindingV1 `json:"localSelfIdentityBinding,omitempty"`
+	LocalSelfIdentityBinding *evidencebinding.VerificationIdentityBindingV2 `json:"localSelfIdentityBinding,omitempty"`
 	Status                   string                                         `json:"status"`
 	Gates                    []Gate                                         `json:"gates"`
 	Summary                  string                                         `json:"summary,omitempty"`
@@ -85,7 +85,7 @@ type ArtifactManifest struct {
 	Kind                     domain.Kind                                    `json:"kind"`
 	TaskID                   string                                         `json:"taskId"`
 	RunID                    string                                         `json:"runId"`
-	LocalSelfIdentityBinding *evidencebinding.VerificationIdentityBindingV1 `json:"localSelfIdentityBinding,omitempty"`
+	LocalSelfIdentityBinding *evidencebinding.VerificationIdentityBindingV2 `json:"localSelfIdentityBinding,omitempty"`
 	Artifacts                []Artifact                                     `json:"artifacts"`
 	GeneratedAt              time.Time                                      `json:"generatedAt"`
 }

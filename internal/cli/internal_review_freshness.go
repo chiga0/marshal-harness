@@ -73,9 +73,9 @@ type reviewFreshnessResponse struct {
 type localReviewIdentityChain struct {
 	CurrentAttemptID    string                                      `json:"currentAttemptId"`
 	ReviewRound         uint                                        `json:"reviewRound"`
-	ReviewBinding       selfidentity.LocalReviewBindingV1           `json:"reviewBinding"`
-	VerificationBinding selfidentity.LocalVerificationBindingV1     `json:"verificationBinding"`
-	ReviewObservation   selfidentity.LocalSelfIdentityObservationV1 `json:"reviewObservation"`
+	ReviewBinding       selfidentity.LocalReviewBindingV2           `json:"reviewBinding"`
+	VerificationBinding selfidentity.LocalVerificationBindingV2     `json:"verificationBinding"`
+	ReviewObservation   selfidentity.LocalSelfIdentityObservationV2 `json:"reviewObservation"`
 }
 
 func processReviewFreshness(input reviewFreshnessRequest, validator *contract.Validator, schemas map[string]*jsonschema.Schema) (string, error) {

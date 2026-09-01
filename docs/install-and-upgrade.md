@@ -2,7 +2,7 @@
 
 本文覆盖 Marshal CLI 面向用户的生命周期操作：安装、升级、回滚与卸载。支持平台为 `darwin|linux` × `amd64|arm64`，全程不请求 sudo。安装脚本自身的契约与手工验证步骤（面向维护者）见 [docs/development.md「安装」](https://github.com/chiga0/marshal-harness/blob/main/docs/development.md#安装)。
 
-> **RC1 状态（2026-08-29）**：[ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 的 installer guard 已实现，但 `v1.0.0-rc1` 仍尚未发布。它只允许 Darwin arm64、精确 tag 和显式 `MARSHAL_LOCAL_DOGFOOD_PREVIEW=1`；缺少精确 RC1 资产时必须 fail closed，不得回退源码、其它平台资产或 stable/latest，也不得由安装器自动生成或激活 `LocalDogfoodActivationV1`。安装命令只在 release 真实存在后才能成功。
+> **RC1 状态（2026-09-01）**：[ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 的 installer guard 已实现，[ADR 0073](adr/0073-dogfood-activation-v2-host-portability.md) 已把 canary 的 opt-in 迁移为同布局 runner 可复用的 `LocalDogfoodActivationV2`，但 `v1.0.0-rc1` 仍尚未发布。它只允许 Darwin arm64、精确 tag 和显式 `MARSHAL_LOCAL_DOGFOOD_PREVIEW=1`；缺少精确 RC1 资产时必须 fail closed，不得回退源码、其它平台资产或 stable/latest，也不得由安装器自动生成、重签发或激活 activation。安装命令只在 release 真实存在后才能成功。
 
 ## 安装
 

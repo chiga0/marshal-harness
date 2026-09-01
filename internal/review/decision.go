@@ -30,7 +30,7 @@ type DecisionInput struct {
 	ReworkRoundsUsed         uint
 	Report                   verification.Report
 	Manifest                 verification.ArtifactManifest
-	LocalSelfIdentityBinding *selfidentity.LocalReviewBindingV1
+	LocalSelfIdentityBinding *selfidentity.LocalReviewBindingV2
 }
 
 type DecisionResult struct {
