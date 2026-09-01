@@ -78,6 +78,13 @@ grep -Fq 'd.get("schemaVersion") == "marshal.local-dogfood-activation.v2"' "$WOR
 if grep -Fq 'ACTIVATION_PATH.new' "$WORKFLOW_SOURCE"; then
   fail 'RC1 finalize 仍在跨 runner 重签发 activation'
 fi
+# workflow_dispatch 的自由文本 input 只能通过 step env 进入 shell；直接插值
+# 会让 JSON 内部引号改写 Bash 源码，并导致真实 finalize 在输入校验阶段失败。
+grep -Fq 'DECISION_JSON: ${{ inputs.decision }}' "$WORKFLOW_SOURCE" \
+  || fail 'RC1 workflow 未通过 env 传递 Decision JSON'
+if grep -Fq '[ -n "${{ inputs.decision }}" ]' "$WORKFLOW_SOURCE"; then
+  fail 'RC1 workflow 仍把 Decision JSON 直接插值进 Bash 源码'
+fi
 # Receipt producer 必须读取当前 Core 的扁平 Decision、WorkerResult 与
 # ResultIngress 字段；旧草案字段会让真实 finalize 在 carrier 阶段必败。
 for forbidden in 'reviewer, "actorId"' 'decision, "independent"' '"adapterId"' '"binaryVersion"' '"recordDigest"' '"previousRecordDigest"'; do
