@@ -15,13 +15,16 @@ except json.JSONDecodeError as error:
     raise SystemExit(f"[rc1-canary-decision-parse] JSON 解析失败：{error}")
 if not isinstance(value, dict):
     raise SystemExit("[rc1-canary-decision-parse] decision 不是对象")
-for key in ("kind", "decision", "verdict", "reviewer", "independent"):
-    if key not in value:
-        raise SystemExit(f"[rc1-canary-decision-parse] 缺字段：{key}")
-if value["kind"] != "ReviewDecision":
+if value.get("kind") != "ReviewDecision":
     raise SystemExit("[rc1-canary-decision-parse] kind 必须为 ReviewDecision")
-if value["independent"] is not True:
-    raise SystemExit("[rc1-canary-decision-parse] independent 必须为 true")
+decision_block = value.get("decision")
+if not isinstance(decision_block, dict):
+    raise SystemExit("[rc1-canary-decision-parse] 缺 decision 对象")
+for key in ("verdict", "reviewer", "independent", "runId", "reviewRound", "reviewPacketDigest", "specDigest", "verificationDigest", "artifactManifestDigest", "workerResultDigests", "evidenceDigest", "localSelfIdentityBindingDigest"):
+    if key not in decision_block:
+        raise SystemExit(f"[rc1-canary-decision-parse] decision.{key} 缺失")
+if decision_block["independent"] is not True:
+    raise SystemExit("[rc1-canary-decision-parse] decision.independent 必须为 true")
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     json.dump(value, handle, ensure_ascii=False)
 print("[rc1-canary-decision-parse] decision parsed and written")
