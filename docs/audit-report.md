@@ -16,6 +16,14 @@ release workflow run `33506656403` 的 Admit 和 Publish 全绿，只消费 fina
 
 本终验不改变 ADR 0068 的负向声明：RC1 不是 ADR 0052 的 `RELEASED`，也不是 production、managed、notarized、hardened、server、Linux 或 stable release。`I186-R2–R5` 保持 `IN_PROGRESS/COMPONENT`；`I186-R6` 更新为 `IN_PROGRESS/COMPONENT`，下一主线是 fixed server/recovery fault matrix、Issue #212 signing/notarization、Linux stable 与受保护 stable candidate。
 
+## 2026-09-01：fixed server application assembly 审计
+
+对 owner-scoped `RepositorySession` 的后继调用链复核发现，旧 `task run` 仍内联打开 owner/ingress/provider/dispatch/Run/worktree/Pi closure 并直接组合 Runtime；若直接实现 server 命令，势必复制第二套生产装配。同时 `internal/server` 的默认 authority scope 为 `repo:<root>`，真实 fixed CLI owner scope 为 canonical `<root>`，二者即使共用同一进程也无法共享 current owner/receipt。
+
+本切片把 Run-specific producer chain提取为唯一 `sealedRepositoryApplication`，以 held StateRoot 的 descriptor-bound Run store枚举和解析 Run；repository session只打开一次，每个 application operation组合短寿命 Run runtime。启动 readiness 前先扫描全部 Run并对`RUNNING`项调用既有 `NewCompositionLedger` attach/rebind recovery，避免 resident process在未恢复旧 Attempt时对外宣称ready。worktree descriptor graph仍在pre-read Run lease持有期间冻结，防止释放lease后按字符串重开形成TOCTOU。server新增显式 namespace注入，仅接受local/default/exact repository root，compatibility默认保持不变。
+
+该实现没有改变authority fact、持久化Schema、生命周期转换或发布权限，沿用ADR 0062/0066/0067/0069；审计结论为`APPLICATION-ASSEMBLY-CLOSED / TRANSPORT-OPEN`。剩余最短路径是fixed `marshal control-plane serve`命令、descriptor-relative AF_UNIX、peer/current-owner/fixed-binary handshake、delivery ledger及restart/response-loss真实canary。未完成这些之前不得把本切片表述为stable server或提升R2–R6成熟度。
+
 ## 2026-09-01：ADR 0073 activation V2 跨 runner 证据模型审计
 
 GitHub RC1 canary 已把当前发布阻塞收敛为一个可复现的证据模型缺口：run phase `33477653933` 用 build-once candidate 和真实 Pi 到达 `REVIEW_PENDING`，finalize `33477984364` 在另一台 macOS runner 上失败于本地身份 binding。根因不是 Agent、ResultIngress 或 ReviewDecision，而是 V1 同时把临时文件系统的 `device/inode` 当作跨阶段稳定主体；以相同 `activationId` 重签发只能产生新的 activation digest，不能建立权威连续性。

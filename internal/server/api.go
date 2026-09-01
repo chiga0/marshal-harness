@@ -191,6 +191,11 @@ type requestIdentity struct {
 type Config struct {
 	StateRoot      string
 	RepositoryRoot string
+	// AuthorityNamespace lets the fixed marshal composition inject the exact
+	// namespace already bound to its repository owner session. The independent
+	// compatibility server leaves this zero and retains the historical local
+	// derivation. A supplied namespace must bind this repository root exactly.
+	AuthorityNamespace authority.AuthorityNamespaceId
 	// DisableMutations turns the Public API into a query/event-only
 	// compatibility surface. It is set unconditionally by the independent
 	// marshal-server binary after ADR 0062 removed that executable from the
@@ -292,10 +297,16 @@ func New(config Config) (*Server, error) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	namespace := authority.AuthorityNamespaceId{
-		TenantNamespace:  localTenantNamespace,
-		ControlPlaneId:   localControlPlaneID,
-		AuthorityScopeId: "repo:" + filepath.ToSlash(filepath.Clean(config.RepositoryRoot)),
+	namespace := config.AuthorityNamespace
+	if namespace == (authority.AuthorityNamespaceId{}) {
+		namespace = authority.AuthorityNamespaceId{
+			TenantNamespace:  localTenantNamespace,
+			ControlPlaneId:   localControlPlaneID,
+			AuthorityScopeId: "repo:" + filepath.ToSlash(filepath.Clean(config.RepositoryRoot)),
+		}
+	} else if namespace.TenantNamespace != localTenantNamespace || namespace.ControlPlaneId != localControlPlaneID ||
+		namespace.AuthorityScopeId != config.RepositoryRoot {
+		return nil, fmt.Errorf("server: authority namespace does not bind repository root")
 	}
 	if err := namespace.Validate(); err != nil {
 		return nil, fmt.Errorf("server: authority namespace: %w", err)

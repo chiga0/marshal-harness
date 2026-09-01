@@ -110,6 +110,31 @@ func (session *RepositorySession) borrow() (*repositorySessionBorrow, error) {
 	return &repositorySessionBorrow{session: session}, nil
 }
 
+// OwnerProjection rechecks and returns the current repository owner bound to
+// this live session. Repository-wide Run recovery belongs to the application
+// assembler; this method only projects the owner fact and never infers Run
+// state from the authority ledger.
+func (session *RepositorySession) OwnerProjection(ctx context.Context) (OwnerProjection, error) {
+	borrow, err := session.borrow()
+	if err != nil {
+		return OwnerProjection{}, err
+	}
+	defer borrow.Close()
+	var projection OwnerProjection
+	err = session.owner.WithCurrentOwnerLock(ctx, session.acquisition, func() error {
+		state, found, openErr := session.ingress.OpenOwner(session.acquisition.Scope)
+		if openErr != nil {
+			return openErr
+		}
+		if !found || state.Acquisition != session.acquisition || state.FactDigest != session.ownerState.FactDigest {
+			return application.NewError("repository-session-owner", application.ReasonOwnerNotCurrent)
+		}
+		projection = OwnerProjection{OwnerEpoch: state.Acquisition.OwnerEpoch, OwnerFactDigest: state.FactDigest}
+		return nil
+	})
+	return projection, err
+}
+
 func (borrow *repositorySessionBorrow) Close() error {
 	if borrow == nil || borrow.session == nil {
 		return nil

@@ -915,6 +915,42 @@ func TestServerBindsAuthorityNamespace(t *testing.T) {
 	}
 }
 
+func TestServerAcceptsOnlyExactFixedCompositionNamespace(t *testing.T) {
+	root := fixtureRepository(t)
+	stateRoot := filepath.Join(root, ".marshal")
+	if err := (repository.State{RepositoryRoot: root, StateRoot: stateRoot}).Init(); err != nil {
+		t.Fatalf("bind identity: %v", err)
+	}
+	exact := authority.AuthorityNamespaceId{
+		TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: root,
+	}
+	server, err := New(Config{
+		StateRoot: stateRoot, RepositoryRoot: root, AuthorityNamespace: exact,
+		DisableMutations: true,
+	})
+	if err != nil {
+		t.Fatalf("New rejected exact fixed composition namespace: %v", err)
+	}
+	if !server.Namespace().Equal(exact) {
+		t.Fatalf("server namespace = %+v, want %+v", server.Namespace(), exact)
+	}
+
+	for name, drift := range map[string]authority.AuthorityNamespaceId{
+		"tenant":  {TenantNamespace: "other", ControlPlaneId: "default", AuthorityScopeId: root},
+		"control": {TenantNamespace: "local", ControlPlaneId: "other", AuthorityScopeId: root},
+		"scope":   {TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: "repo:" + root},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := New(Config{
+				StateRoot: stateRoot, RepositoryRoot: root, AuthorityNamespace: drift,
+				DisableMutations: true,
+			}); err == nil {
+				t.Fatal("New accepted drifted fixed composition namespace")
+			}
+		})
+	}
+}
+
 // TestRunStartExecutesThroughCoreAndReplaysAcrossServerRestart proves the
 // missing ADR 0052 server vertical slice without manufacturing a second state
 // machine: the injected composition invokes execution.Run, Core journals the

@@ -8,262 +8,67 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
-	piadapter "github.com/chiga0/marshal-harness/internal/adapter/pi"
-	"github.com/chiga0/marshal-harness/internal/app"
-	application "github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/authority"
-	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
-	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
-	"github.com/chiga0/marshal-harness/internal/provider"
-	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
-// runSealedReadyBranch drives one READY run through the sealed production
-// composition. The Pi runtime and entrypoint come from MARSHAL_PI_RUNTIME and
-// MARSHAL_PI_ENTRYPOINT; both are mandatory and the launchidentity seal fails
-// closed unless the bytes match the frozen Pi 0.84.4 identity.
-func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, taskID, runID string, stdout, stderr io.Writer) int {
+// runSealedReadyBranch drives one READY/RUNNING Run through the same
+// repository application adapter used by fixed server mode. Direct CLI use
+// keeps the application lifetime bounded to this operation.
+func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, _, runID string, stdout, stderr io.Writer) int {
 	entryLocalSelfIdentity := localDogfoodObservation(ctx)
 	if entryLocalSelfIdentity == nil {
 		fmt.Fprintln(stderr, "运行失败：sealed local-dogfood 组合缺少命令入口身份观察。")
 		return ExitUnavailable
 	}
-	observeLocalSelfIdentity := func() (selfidentity.LocalSelfIdentityObservationV2, error) {
-		return freshLocalDogfoodObservation(selfidentity.CommandTaskRun)
-	}
-	piRuntime := os.Getenv("MARSHAL_PI_RUNTIME")
-	piEntrypoint := os.Getenv("MARSHAL_PI_ENTRYPOINT")
+	piRuntime, piEntrypoint := os.Getenv("MARSHAL_PI_RUNTIME"), os.Getenv("MARSHAL_PI_ENTRYPOINT")
 	if piRuntime == "" || piEntrypoint == "" {
 		fmt.Fprintln(stderr, "运行失败：sealed 组合需要 MARSHAL_PI_RUNTIME 与 MARSHAL_PI_ENTRYPOINT 指向冻结的 Pi 0.84.4 镜像。")
 		return ExitUnavailable
 	}
-	piRuntime, err := filepath.EvalSymlinks(piRuntime)
+	applicationAdapter, err := openSealedRepositoryApplication(ctx, sealedRepositoryApplicationConfig{
+		StateRoot: stateRoot, RepositoryRoot: repositoryRoot, PiRuntime: piRuntime, PiEntrypoint: piEntrypoint,
+		EntryIdentity: entryLocalSelfIdentity,
+		ObserveIdentity: func() (selfidentity.LocalSelfIdentityObservationV2, error) {
+			return freshLocalDogfoodObservation(selfidentity.CommandTaskRun)
+		},
+	})
 	if err != nil {
-		fmt.Fprintln(stderr, "运行失败：Pi Node runtime 路径无法解析。")
-		return ExitUnavailable
-	}
-	piEntrypoint, err = filepath.EvalSymlinks(piEntrypoint)
-	if err != nil {
-		fmt.Fprintln(stderr, "运行失败：Pi entrypoint 路径无法解析。")
-		return ExitUnavailable
-	}
-	ingressDir, ledgerDir, allocationRoot, ownerDir := productionruntime.CompositionPaths(stateRoot)
-	providerDir := filepath.Join(stateRoot, "provider-authority")
-	for _, dir := range []string{ingressDir, ledgerDir, allocationRoot, ownerDir, providerDir} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			fmt.Fprintf(stderr, "运行失败：无法准备 sealed 组合目录：%v\n", err)
-			return ExitFailure
-		}
-	}
-	ownerDirHandle, err := os.Open(ownerDir)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：无法打开持有 owner 目录：%v\n", err)
+		fmt.Fprintf(stderr, "运行失败：sealed repository application 组装失败：%v\n", err)
 		return ExitFailure
 	}
-	defer ownerDirHandle.Close()
-	heldIngress, err := os.Open(ingressDir)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：无法打开持有 result-ingress 目录：%v\n", err)
-		return ExitFailure
-	}
-	defer heldIngress.Close()
-	controlRootPath := filepath.Join(stateRoot, "owner-control")
-	if err := os.MkdirAll(controlRootPath, 0o700); err != nil {
-		fmt.Fprintf(stderr, "运行失败：无法准备 owner-private control root：%v\n", err)
-		return ExitFailure
-	}
-	controlRoot, err := os.Open(controlRootPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：无法打开 owner-private control root：%v\n", err)
-		return ExitFailure
-	}
-	defer controlRoot.Close()
-	fixedMarshal, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：无法定位 fixed marshal 镜像：%v\n", err)
-		return ExitFailure
-	}
-	if resolved, resolveErr := filepath.EvalSymlinks(fixedMarshal); resolveErr != nil {
-		fmt.Fprintf(stderr, "运行失败：fixed marshal 镜像路径无法解析：%v\n", resolveErr)
-		return ExitFailure
-	} else {
-		fixedMarshal = resolved
-	}
+	defer applicationAdapter.Close()
 
-	runStore := runstore.New(stateRoot)
-	// Transient existing-only lease for input pre-read (READY projection +
-	// task-spec). It is released BEFORE any repository owner acquisition so it
-	// never enters the RB1 lock order (ADR 0069 §3.3/§4); ComposeRuntime
-	// acquires the real Run Lease inside NewCompositionLedger after the owner.
-	preReadLease, err := runStore.AcquireExisting(runID)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：无法获取 Run 租约：%v\n", err)
-		return ExitFailure
-	}
-	preReadReleased := false
-	defer func() {
-		if !preReadReleased {
-			_ = preReadLease.Release()
-		}
-	}()
-	projection, err := runStore.ReadRunStartAuthorityUnderLease(ctx, preReadLease)
+	before, err := applicationAdapter.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：READY 权威投影不可读：%v\n", err)
 		return ExitFailure
 	}
-	// Path B (ADR 0069/0070): build and hold the repository descriptor graph
-	// plus the exact projection.WorktreePath target descriptor. The handles
-	// cover ComposeRuntime/Prepare/Start and close on exit. The fixed
-	// /usr/bin/git is used only as a locator; the descriptor-graph
-	// constructors validate the held descriptors.
-	worktreeHandles, err := openExistingWorktreeComposition(repositoryRoot, projection.WorktreePath)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：无法构建 existing-worktree 描述符图：%v\n", err)
-		return ExitFailure
-	}
-	defer func() { _ = worktreeHandles.Close() }()
-	taskData, err := runstore.ReadFileUnderLease(preReadLease, 2<<20, "task-spec.json")
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：无法读取 task spec：%v\n", err)
-		return ExitFailure
-	}
-	// Release the transient pre-read lease now; the real Run Lease is acquired
-	// inside NewCompositionLedger after repository owner acquisition. The
-	// formal Runtime.Close releases that internal lease exactly once.
-	if err := preReadLease.Release(); err != nil {
-		fmt.Fprintf(stderr, "运行失败：预读租约释放失败：%v\n", err)
-		return ExitFailure
-	}
-	preReadReleased = true
-	appInstance, appErr := app.New()
-	if appErr != nil {
-		fmt.Fprintf(stderr, "运行失败：application 初始化失败：%v\n", appErr)
-		return ExitFailure
-	}
-	task, taskErr := appInstance.ParseTaskSpec(taskData)
-	if taskErr != nil {
-		fmt.Fprintf(stderr, "运行失败：task spec 无法解析：%v\n", taskErr)
-		return ExitFailure
-	}
-	requirements, err := productionruntime.Pi0844Requirements(task.Worker.ExecutionProfile)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：执行 profile 不被 sealed 组合接受：%v\n", err)
-		return ExitFailure
-	}
-	heldClosure, err := launchidentity.OpenPi0844(piRuntime, piEntrypoint, []string{piRuntime, piEntrypoint}, []string{}, projection.WorktreePath)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：Pi 镜像身份与冻结的 0.84.4 合同不一致，sealed 组合拒绝启动：%v\n", err)
-		return ExitUnavailable
-	}
-	defer heldClosure.Close()
-	closure := heldClosure.Closure
-	identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：Pi 身份派生失败：%v\n", err)
-		return ExitFailure
-	}
-	profile, err := productionruntime.NewPi0844Profile(closure.RuntimeExecutable.CanonicalPath, piEntrypoint, identity.IdentityDigest)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：Pi profile 无效：%v\n", err)
-		return ExitFailure
-	}
-	leaseLedger, err := dispatch.NewLeaseLedger(ledgerDir)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：dispatch ledger 初始化失败：%v\n", err)
-		return ExitFailure
-	}
-	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: repositoryRoot}
-	acquisition, err := observeCompositionAcquisition(fixedMarshal, namespace)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：fixed marshal core 身份观察失败：%v\n", err)
-		return ExitFailure
-	}
-	attestation, err := productionruntime.LocalAttestation(fixedMarshal)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：attestation 观察失败：%v\n", err)
-		return ExitFailure
-	}
-	providerDirHandle, err := os.Open(providerDir)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：无法打开 provider authority 目录：%v\n", err)
-		return ExitFailure
-	}
-	defer providerDirHandle.Close()
-	providerStore, err := provider.OpenDarwinRegistrationStore(providerDirHandle)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：provider authority 初始化失败：%v\n", err)
-		return ExitFailure
-	}
-	defer providerStore.Close()
-	providerDomain := productionruntime.LocalProvisionDomain(namespace)
-	registration, providerSnapshot, err := productionruntime.LocalProviderAuthority(namespace, providerDomain, attestation)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：provider authority 构造失败：%v\n", err)
-		return ExitFailure
-	}
-	registration, err = providerStore.Put(registration)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：provider registration 持久化失败：%v\n", err)
-		return ExitFailure
-	}
-	inputs := productionruntime.CompositionInputs{
-		Ingress: nil, Runs: runStore, RunLease: nil, LeaseLedger: leaseLedger,
-		OwnerDirectory: ownerDirHandle, Acquisition: acquisition, RunID: runID,
-		HeldIngressDir: heldIngress, FixedMarshalPath: fixedMarshal, OwnerPrivateControlRoot: controlRoot,
-		Namespace: namespace, OrchestratorID: "orchestrator:" + taskID,
-		ProvisionDomain: providerDomain, CleanupDomain: productionruntime.LocalCleanupDomain(namespace),
-		RegistrationID: registration.RegistrationId, CapabilitySnapshot: providerSnapshot.ProviderCapabilitySnapshotDigest, ConformanceEvidence: []string{},
-		Attestation: attestation, AllocationRoot: allocationRoot,
-		ProviderStore: providerStore, ProviderRegistration: registration, ProviderSnapshot: providerSnapshot,
-		ProviderEvidence: []provider.ConformanceEvidence{}, ResultIngressDomain: productionruntime.LocalResultIngressDomain(namespace),
-		LaunchClosure: closure, Requirements: requirements,
-		WorkDirAllowlist: []string{projection.WorktreePath}, EnvironmentAllowlist: []string{"PATH"},
-		ExistingWorktreeDescriptorGraph: worktreeHandles.graph,
-		ExistingWorktreeTargetWorktree:  worktreeHandles.target,
-		LaunchArgvBuilder:               piProductionLaunchBuilder(piRuntime, piEntrypoint, task),
-		ResultParser: func(parserCtx context.Context, input productionruntime.AttemptResultInput) (domain.Record, error) {
-			return piadapter.ParseProductionWorkerResult(parserCtx, piadapter.ProductionResultInput{
-				Transcript: input.Transcript, Worktree: input.Worktree,
-				TaskID: input.TaskID, RunID: input.RunID, AttemptID: input.AttemptID,
-				Executable: input.Executable, Version: input.Version, Model: task.Worker.Model,
-				StartedAt: input.StartedAt, CompletedAt: input.CompletedAt,
-				MaxOutputBytes: input.MaxOutputBytes,
-			})
-		},
-		EntryLocalSelfIdentity: entryLocalSelfIdentity, ObserveLocalSelfIdentity: observeLocalSelfIdentity,
-	}
-	composed, err := productionruntime.ComposeRuntime(ctx, inputs, profile)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：sealed 组合失败：%v\n", err)
-		return ExitFailure
-	}
-	defer func() { _ = composed.Runtime.Close() }()
-	if projection.Run.State == domain.StateReady {
-		prepared, prepareErr := composed.Runtime.PrepareRunStart(ctx, application.PrepareRunStartRequest{RunID: runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
+	if before.State == domain.StateReady {
+		prepared, prepareErr := applicationAdapter.PrepareRunStart(ctx, application.PrepareRunStartRequest{
+			RunID: runID, ExpectedSequence: before.Sequence, ExpectedAuthorityHead: before.AuthorityHead,
+		})
 		if prepareErr != nil {
 			fmt.Fprintf(stderr, "运行失败：sealed PrepareRunStart 失败：%v\n", prepareErr)
 			return ExitFailure
 		}
-		if _, startErr := composed.Runtime.StartPreparedRun(ctx, prepared); startErr != nil {
+		if _, startErr := applicationAdapter.StartPreparedRun(ctx, prepared); startErr != nil {
 			fmt.Fprintf(stderr, "运行失败：sealed StartPreparedRun 失败：%v\n", startErr)
 			return ExitFailure
 		}
-	} else if projection.Run.State == domain.StateRunning {
-		if _, collectErr := composed.Runtime.CollectRunResult(ctx, runID); collectErr != nil {
-			if !errors.Is(collectErr, productionruntime.ErrAttemptStillRunning) {
-				fmt.Fprintf(stderr, "运行失败：sealed CollectRunResult 失败：%v\n", collectErr)
-				return ExitFailure
-			}
+	} else if before.State == domain.StateRunning {
+		if _, collectErr := applicationAdapter.collectRunResult(ctx, runID); collectErr != nil && !errors.Is(collectErr, productionruntime.ErrAttemptStillRunning) {
+			fmt.Fprintf(stderr, "运行失败：sealed CollectRunResult 失败：%v\n", collectErr)
+			return ExitFailure
 		}
 	}
-	after, err := composed.Runtime.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
+	after, err := applicationAdapter.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：sealed 启动后状态不可读：%v\n", err)
 		return ExitFailure
@@ -284,9 +89,7 @@ func observeCompositionAcquisition(fixedMarshal string, namespace authority.Auth
 		return productionruntime.ControlOwnerAcquisition{}, err
 	}
 	return productionruntime.ControlOwnerAcquisition{
-		Scope: productionruntime.ControlOwnerScope{AuthorityNamespaceID: namespace, RepositoryIdentityDigest: repositoryIdentityDigest},
-		// Phase A derives the exact next durable epoch while holding the
-		// repository scope lock. The CLI must not guess or pre-read it.
+		Scope:      productionruntime.ControlOwnerScope{AuthorityNamespaceID: namespace, RepositoryIdentityDigest: repositoryIdentityDigest},
 		OwnerEpoch: 0,
 		OwnerUID:   core.UID, OwnerGID: core.GID, OwnerProcess: core.Process, OwnerBinary: core.Binary,
 		ObserverIdentity: "darwin-owner-observer/v1",

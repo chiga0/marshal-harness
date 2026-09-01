@@ -26,6 +26,10 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 本段没有新增 authority fact、Schema、状态转换或发布权限，因此沿用 ADR 0062/0066/0069 的既有合同；它只是 fixed server 的资源生命周期基础，尚未把 run resolver、完整 `PublicApplicationPort` 或 AF_UNIX transport 接入 `cmd/marshal`。因此 fixed server finding 仍为 `INTEGRATION-OPEN`，下一步是把 Run-specific composition assembler 收敛为 Session 之上的应用 Port，再实现 `marshal control-plane serve`。
 
+第四段相邻 cutover 已把 fixed CLI 原先内联在 `task run` 中的 Run-specific composition 提取为 `sealedRepositoryApplication`。该 adapter 在一个 `RepositorySession` 下复用 held owner、ResultIngress、descriptor-bound Run store、dispatch ledger 与 Provider authority；每次 `InspectRun` / `PrepareRunStart` / `StartPreparedRun` 只短暂组合并关闭精确 Run runtime。启动时它通过 held StateRoot 枚举全部 Run，先对每个 `RUNNING` Run 执行既有 attach/rebind recovery，全部成功后才让 `Status` 返回 `ready`。CLI `task run` 已改为消费这同一个 application Port，而不是保留第二套装配流程。
+
+本段同时关闭了一个提前发现的 namespace 漂移：现有 server compatibility 默认使用 `repo:<root>`，而真实 production owner 使用 canonical `<root>`。`server.Config` 现在允许 fixed composition 显式注入 exact `AuthorityNamespaceId`，并拒绝 tenant/control-plane/root 任一漂移；独立 compatibility server 的历史默认保持不变。该 checkpoint 仍未实现 `marshal control-plane serve` 命令、descriptor-relative authenticated AF_UNIX、peer/current-owner handshake 或 transport delivery ledger，因此 stable server 仍为 `INTEGRATION-OPEN`，不得升级 R2–R6。
+
 ## 2026-08-31 fixed CLI 生命周期检查点
 
 固定候选 `main@3819462` 已构建为 `v1.0.0-rc1` Darwin arm64 local-dogfood bytes，并以真实 Pi 执行 canary `RC1-PI-20260831-3819462`。该 Run 只经 ResultIngress 接纳结果，由独立 Verification 生成 current Evidence，再由独立 reviewer 生成精确绑定 Evidence 的 accept Decision，最终由新的 Marshal 进程重读为 `ACCEPTED`。Decision digest 为 `sha256:5d50b624e41419ef32a1d7251481d5843ab001d3affe0ef6c8a6aad5465df5e9`。
