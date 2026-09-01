@@ -106,6 +106,8 @@ grep -Fq 'require_field(packet, "evidenceDigest", "packet")' "$RECEIPT_SOURCE" \
   || fail 'RC1 receipt 未从 ReviewPacket 读取 evidenceDigest'
 grep -Fq 'payload_hasher.update(b"marshal.rc1-carrier-payload.v1\n")' "$RECEIPT_SOURCE" \
   || fail 'RC1 receipt payload identity 未与 carrier checker 对齐'
+grep -Fq 'carrier_dir="$(pwd)/rc1-carrier"' "$WORKFLOW_SOURCE" \
+  || fail 'RC1 workflow 未向 carrier producer/checker 传递规范化绝对目录'
 
 cat >"$PI_BUNDLE" <<'EOF'
 #!/usr/bin/env bash

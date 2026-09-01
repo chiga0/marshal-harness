@@ -280,7 +280,7 @@ jobs:
           authority_head="$(python3 -I -B scripts/rc1-canary-authority-head.py ".marshal/release-canary/${EXPECTED_CANARY_RUN_ID}/repository/.marshal/result-ingress/result-ingress.jsonl")"
           agent_version="$(env -i HOME="$HOME" "$PI_NODE" "$PI_BUNDLE" --version)"
           decision_path="$RUNNER_TEMP/review-decision.json"
-          carrier_dir="rc1-carrier"
+          carrier_dir="$(pwd)/rc1-carrier"
           rm -rf "$carrier_dir" && mkdir -p "$carrier_dir"
           receipt_digest="$(
             bash scripts/rc1-canary-receipt.sh \
