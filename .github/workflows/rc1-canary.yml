@@ -141,6 +141,7 @@ jobs:
           [ -x "$gopath_bin" ] || { echo "::error::缺少固定 go1.26.6 toolchain" >&2; exit 1; }
           build_date="$(bash scripts/release-contract.sh build-date . "$EXPECTED_HEAD")"
           make dist-rc1 GO="$gopath_bin" VERSION=1.0.0-rc1 COMMIT="$EXPECTED_HEAD" BUILD_DATE="$build_date"
+          mkdir -p bin
           cp dist/marshal_1.0.0-rc1_darwin_arm64 bin/marshal
           dist_sha="$(shasum -a 256 dist/marshal_1.0.0-rc1_darwin_arm64 | awk '{print tolower($1)}')"
           bin_sha="$(shasum -a 256 bin/marshal | awk '{print tolower($1)}')"
