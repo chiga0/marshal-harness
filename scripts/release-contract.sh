@@ -270,7 +270,8 @@ verify_rc1_manifest() {
 verify_rc1_dist() {
   local dist_dir="$1" tag="$2" expected_source_head="$3" expected_build_date="$4"
   local expected_go_version="$5" expected_os="$6" expected_arch="$7" expected_profile="$8"
-  local name sums entry_count line_number=0 line digest file actual
+  local allow_carrier_receipt="${9:-false}"
+  local name sums entry_count expected_entry_count=3 line_number=0 line digest file actual
 
   validate_rc1_inputs "$tag" "$expected_source_head" "$expected_build_date" "$expected_go_version"
   validate_rc1_identity "$expected_os" "$expected_arch" "$expected_profile"
@@ -282,9 +283,16 @@ verify_rc1_dist() {
   sums="${dist_dir}/SHA256SUMS"
   [ -f "$sums" ] && [ ! -L "$sums" ] \
     || release_fatal "RC1 SHA256SUMS 缺失、不是普通文件或为符号链接"
+  if [ "$allow_carrier_receipt" = true ]; then
+    expected_entry_count=4
+    [ -f "${dist_dir}/RC1-CANARY-RECEIPT.json" ] && [ ! -L "${dist_dir}/RC1-CANARY-RECEIPT.json" ] \
+      || release_fatal "RC1 carrier 缺少普通文件 RC1-CANARY-RECEIPT.json"
+  elif [ "$allow_carrier_receipt" != false ]; then
+    release_fatal "RC1 dist internal receipt policy 非法"
+  fi
   entry_count="$(find "$dist_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')"
-  [ "$entry_count" = 3 ] \
-    || release_fatal "RC1 dist 必须且只能包含 Darwin arm64 candidate、RELEASE-MANIFEST 与 SHA256SUMS（实际 ${entry_count} 项）"
+  [ "$entry_count" = "$expected_entry_count" ] \
+    || release_fatal "RC1 dist/carrier 成员闭集不匹配（期望 ${expected_entry_count} 项，实际 ${entry_count} 项）"
   verify_rc1_manifest "$dist_dir" "$tag" "$expected_source_head" "$expected_build_date" \
     "$expected_go_version" "$expected_os" "$expected_arch" "$expected_profile"
   verify_rc1_binary "${dist_dir}/${name}" "$tag" "$expected_source_head" \
@@ -310,9 +318,35 @@ verify_rc1_dist() {
   printf '[release-check] %s 唯一 Darwin arm64 candidate 合同校验通过\n' "$tag"
 }
 
+verify_candidate_dist() {
+  local dist_dir="$1" tag="$2" source_head="$3"
+  local manifest build_date go_version go_bin allow_carrier_receipt=false
+  if [ "$tag" != "$RC1_TAG" ]; then
+    verify_dist "$dist_dir" "$tag" "$source_head"
+    return
+  fi
+
+  manifest="${dist_dir}/RELEASE-MANIFEST"
+  [ -f "$manifest" ] && [ ! -L "$manifest" ] \
+    || release_fatal "RC1 RELEASE-MANIFEST 缺失、不是普通文件或为符号链接"
+  build_date="$(awk 'NR == 5 && $1 == "buildDate" && NF == 2 { print $2 }' "$manifest")"
+  go_version="$(awk 'NR == 6 && $1 == "goVersion" && NF == 2 { print $2 }' "$manifest")"
+  if [ -f "${dist_dir}/RC1-CANARY-RECEIPT.json" ] && [ ! -L "${dist_dir}/RC1-CANARY-RECEIPT.json" ]; then
+    allow_carrier_receipt=true
+  fi
+  go_bin="${GO_BIN:-}"
+  if [ -z "$go_bin" ] && command -v go >/dev/null 2>&1; then
+    go_bin="$(go env GOROOT)/bin/go"
+  fi
+  [ -n "$go_bin" ] && [ -x "$go_bin" ] \
+    || release_fatal "RC1 candidate tag 校验缺少可执行 GO_BIN"
+  GO_BIN="$go_bin" verify_rc1_dist "$dist_dir" "$tag" "$source_head" \
+    "$build_date" "$go_version" darwin arm64 darwin-local-dogfood "$allow_carrier_receipt"
+}
+
 candidate_tag_message() {
   local dist_dir="$1" tag="$2" source_head="$3" manifest_digest candidate_digest version
-  verify_dist "$dist_dir" "$tag" "$source_head" >/dev/null
+  verify_candidate_dist "$dist_dir" "$tag" "$source_head" >/dev/null
   version="${tag#v}"
   manifest_digest="$(sha256_file "${dist_dir}/RELEASE-MANIFEST")"
   candidate_digest="$(sha256_file "${dist_dir}/marshal_${version}_darwin_arm64")"
@@ -372,7 +406,7 @@ verify_candidate_tag() {
   rm -f "$RELEASE_TEMP_MESSAGE"
   RELEASE_TEMP_MESSAGE=""
   read -r declared_manifest declared_candidate <<<"$metadata"
-  verify_dist "$dist_dir" "$tag" "$source_head"
+  verify_candidate_dist "$dist_dir" "$tag" "$source_head"
   version="${tag#v}"
   actual_manifest="$(sha256_file "${dist_dir}/RELEASE-MANIFEST")"
   actual_candidate="$(sha256_file "${dist_dir}/marshal_${version}_darwin_arm64")"

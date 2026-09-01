@@ -338,13 +338,27 @@ git -C "$TAG_REPO" add candidate.txt
 GIT_AUTHOR_DATE=2026-08-28T01:02:03Z GIT_COMMITTER_DATE=2026-08-28T01:02:03Z \
   git -C "$TAG_REPO" commit -qm candidate
 TAG_HEAD="$(git -C "$TAG_REPO" rev-parse HEAD)"
-[ "$(bash "$CHECKER" build-date "$TAG_REPO" "$TAG_HEAD")" = 2026-08-28T01:02:03Z ] \
+TAG_BUILD_DATE="$(bash "$CHECKER" build-date "$TAG_REPO" "$TAG_HEAD")"
+[ "$TAG_BUILD_DATE" = 2026-08-28T01:02:03Z ] \
   || fail 'commit canonical UTC buildDate 推导错误'
 TAG_DIST="${TMP_ROOT}/tag-dist"
-make_dist "$TAG_DIST" v1.0.0-rc1 "$TAG_HEAD"
+make -C "$ROOT" dist-rc1 GO="$RC1_GO_BIN" DIST_DIR="$TAG_DIST" \
+  VERSION=1.0.0-rc1 COMMIT="$TAG_HEAD" BUILD_DATE="$TAG_BUILD_DATE" >/dev/null
 bash "$CHECKER" candidate-tag-message "$TAG_DIST" v1.0.0-rc1 "$TAG_HEAD" >"${TMP_ROOT}/tag-message"
 git -C "$TAG_REPO" tag -a v1.0.0-rc1 -F "${TMP_ROOT}/tag-message"
 bash "$CHECKER" verify-candidate-tag "$TAG_REPO" "$TAG_DIST" v1.0.0-rc1
+
+TAG_CARRIER="${TMP_ROOT}/tag-carrier"
+cp -R "$TAG_DIST" "$TAG_CARRIER"
+printf '{}\n' >"${TAG_CARRIER}/RC1-CANARY-RECEIPT.json"
+bash "$CHECKER" candidate-tag-message "$TAG_CARRIER" v1.0.0-rc1 "$TAG_HEAD" \
+  >"${TMP_ROOT}/carrier-tag-message"
+cmp "${TMP_ROOT}/tag-message" "${TMP_ROOT}/carrier-tag-message" \
+  || fail 'RC1 carrier 与单资产 dist 生成了不同 tag message'
+bash "$CHECKER" verify-candidate-tag "$TAG_REPO" "$TAG_CARRIER" v1.0.0-rc1
+printf 'unexpected\n' >"${TAG_CARRIER}/unexpected.txt"
+expect_fail 'RC1 carrier 拒绝未知第五成员' \
+  bash "$CHECKER" verify-candidate-tag "$TAG_REPO" "$TAG_CARRIER" v1.0.0-rc1
 
 replace_candidate_tag_with_raw_message() {
   local message_file="$1" tag_object
@@ -392,8 +406,9 @@ expect_fail 'candidate tag NUL byte' bash "$CHECKER" verify-candidate-tag "$TAG_
 git -C "$TAG_REPO" update-ref -d refs/tags/v1.0.0-rc1
 git -C "$TAG_REPO" tag -a v1.0.0-rc1 -F "${TMP_ROOT}/tag-message"
 printf 'cross-host drift\n' >>"${TAG_DIST}/marshal_1.0.0-rc1_darwin_arm64"
-bash "$CHECKER" create-manifest "$TAG_DIST" v1.0.0-rc1 "$TAG_HEAD" 2026-08-28T00:00:00Z go1.26.6
-rewrite_sums "$TAG_DIST"
+GO_BIN="$RC1_GO_BIN" bash "$CHECKER" create-rc1-manifest \
+  "$TAG_DIST" v1.0.0-rc1 "$TAG_HEAD" "$TAG_BUILD_DATE" go1.26.6
+rewrite_rc1_sums "$TAG_DIST"
 expect_fail '跨主机 candidate bytes 漂移' bash "$CHECKER" verify-candidate-tag "$TAG_REPO" "$TAG_DIST" v1.0.0-rc1
 
 printf '[release-contract-test] PASS\n'
