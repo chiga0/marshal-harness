@@ -39,8 +39,8 @@ type fixtureSnapshot struct {
 	GeneratedAt        string                          `json:"generatedAt"`
 }
 
-func localDogfoodObservationFixture() selfidentity.LocalSelfIdentityObservationV1 {
-	return selfidentity.LocalSelfIdentityObservationV1{
+func localDogfoodObservationFixture() selfidentity.LocalSelfIdentityObservationV2 {
+	return selfidentity.LocalSelfIdentityObservationV2{
 		SchemaVersion:         selfidentity.ObservationSchema,
 		ActivationDigest:      "sha256:" + strings.Repeat("a", 64),
 		IdentitySubjectDigest: "sha256:" + strings.Repeat("b", 64),

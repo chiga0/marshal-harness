@@ -2,11 +2,19 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
-## 2026-08-31 最新 RC1 检查点
+## 2026-09-01 最新 RC1 检查点
+
+`main@4fa1343` 的 required CI 已全绿，ADR 0068 的 production environment selector/direct `Adapter.Run` fallback 也已归零。GitHub RC1 run phase `33477653933` 使用 build-once Darwin arm64 candidate 与真实 Pi 到达 `REVIEW_PENDING`；finalize `33477984364` 在另一台 runner 上因 V1 activation 把临时 `device/inode` 纳入跨 runner identity subject 而被 Core 正确拒绝。
+
+[ADR 0073](adr/0073-dogfood-activation-v2-host-portability.md) 已接受，本切片把 activation 的 portable subject 与每台宿主的 current-path object observation 分离：activation 不再携带 device/inode，但每次本机 observation 仍强制验证 device/inode、size/hash、fd/path recheck 与 ABA；activation→observation→attempt/applicability→verification→review 同步升级为 V2，finalize 不再以同一 `activationId` 重签发。下一步是 exact-head CI 后从新的 run phase 重跑 V2 canary，不能复用 V1 `REVIEW_PENDING`。
+
+这仍不是已发布 RC1。V2 canary 必须进入 `ACCEPTED` 并产出 current receipt/carrier；随后 release workflow 还要从无条件拒绝 `v1.*`/通用四平台重建改为验证 carrier、消费同一 Darwin arm64 candidate，最后才可创建 annotated tag 与 GitHub prerelease。
+
+## 2026-08-31 fixed CLI 生命周期检查点
 
 固定候选 `main@3819462` 已构建为 `v1.0.0-rc1` Darwin arm64 local-dogfood bytes，并以真实 Pi 执行 canary `RC1-PI-20260831-3819462`。该 Run 只经 ResultIngress 接纳结果，由独立 Verification 生成 current Evidence，再由独立 reviewer 生成精确绑定 Evidence 的 accept Decision，最终由新的 Marshal 进程重读为 `ACCEPTED`。Decision digest 为 `sha256:5d50b624e41419ef32a1d7251481d5843ab001d3affe0ef6c8a6aad5465df5e9`。
 
-该证据已经关闭“真实 Pi 是否能穿过 fixed CLI 完整生命周期”的核心不确定性，但尚未授权发布：
+该证据已经关闭“真实 Pi 是否能穿过 fixed CLI 完整生命周期”的核心不确定性，但尚未授权发布。以下列表记录的是 2026-08-31 当日遗留状态；architecture CI 与 selector 两项后来已经关闭，当前剩余路径以上方 2026-09-01 checkpoint 为准：
 
 - `main@3819462` 的 required CI 只剩 architecture check 红灯；其根因是 `productionruntime` 越层读取 `processsupervisor` mechanics，以及同一 invocation 重复读取 legacy executor selector。本地修复保持 fail-closed 语义，并已通过 architecture check、定向 test/race、vet、staticcheck 与 diff-check；全包 Darwin test 仍受本机匿名 Go test Mach-O 身份策略和既有 owner fixture 影响，不能冒充通过。
 - ADR 0068 要求 RC1 调用链中的 environment selector、legacy/direct `Adapter.Run` fallback 计数为零。本次 selector snapshot 只修复 CI 的冻结债务和同 invocation TOCTOU，不等于完成 RC1 cutover；下一切片必须删除 production selector 与 direct fallback。
@@ -46,14 +54,15 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 ## v1.0 正在建设
 
-`main@3819462` 已把 RB1 existing-worktree、sealed start、Attach/terminalization、ResultIngress 与 fixed CLI real-Pi `ACCEPTED` 串成真实纵切。它仍不是已发布 RC1，因为后续架构修复会改变 bytes，且 ADR 0068 的 zero-selector/direct-fallback 与 release carrier/workflow 尚未闭合。
+`main@3819462` 已把 RB1 existing-worktree、sealed start、Attach/terminalization、ResultIngress 与 fixed CLI real-Pi `ACCEPTED` 串成真实纵切。该历史 bytes 已被后续主线取代，不能作为当前 RC1 publication authority。
 
 当前第一优先级严格按 ADR 0068 收敛 Mac-first RC1，不再把 server 或 stable 门禁插入首发关键路径：
 
-- 合入 architecture CI 修复，保持 fail-closed mechanics 边界；
-- 删除 production environment selector 与 direct `Adapter.Run` fallback；
-- 构建一次新的 immutable Darwin arm64 candidate，在同一 bytes 上重跑真实 Pi `ACCEPTED`、恢复与负向门禁；
-- 由 current authority 生成 canary receipt/carrier，完成 required CI、exact opt-in 安装、annotated tag 与 no-rebuild GitHub prerelease。
+- 合入 activation/observation/binding V2 并通过 exact-head required CI；
+- 从新 run phase 构建 immutable Darwin arm64 candidate 和原始 V2 activation；
+- 在 finalize runner 原样消费 activation，以同一 bytes 完成真实 Pi `ACCEPTED`、恢复与负向门禁；
+- 由 current authority 生成 canary receipt/carrier；
+- 收敛 release workflow，验证 carrier、消费同一 candidate，再完成 exact opt-in 安装、annotated tag 与 GitHub prerelease。
 
 fixed `marshal control-plane serve`、managed signing/notarization 与 Linux production/release/stable authority 明确属于 RC1 后继，不阻塞 unsigned CLI-only RC1，也不能由 RC1 的 component 证据提前宣称完成。
 
@@ -69,7 +78,7 @@ Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Prov
 
 ## 接下来怎么走
 
-近期建设顺序与上方最新 RC1 检查点一致：architecture CI 修复 → selector/direct fallback 归零 → 新 final bytes canary/恢复/负向 → receipt/carrier → required CI → annotated tag/GitHub prerelease。
+近期建设顺序与上方最新 RC1 检查点一致：V2 合入/CI → 全新 V2 run/finalize `ACCEPTED` → receipt/carrier → release workflow no-rebuild admission → annotated tag/GitHub prerelease。
 
 RC1 发布后才推进 fixed server、managed signing/notarization、Linux authority 与 stable release gate。
 

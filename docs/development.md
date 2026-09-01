@@ -74,7 +74,7 @@ GitHub Actions 的主线 CI 固定展开为三个 job：`Quality (ubuntu-latest)
 
 ## 安装
 
-> **RC1 installer guard**：[ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 的 guard 已实现，但 `v1.0.0-rc1` 尚未发布。RC1 只能在 Darwin arm64 上通过 `MARSHAL_TAG=v1.0.0-rc1` + `MARSHAL_LOCAL_DOGFOOD_PREVIEW=1` 安装；精确资产缺失、网络失败、平台不符或 opt-in 缺失时 fail closed，禁止进入下述通用源码回退，安装器也不得自动生成或激活 `LocalDogfoodActivationV1`。
+> **RC1 installer guard**：[ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 的 guard 已实现，[ADR 0073](adr/0073-dogfood-activation-v2-host-portability.md) 已把 canary 的 opt-in 迁移为同布局 runner 可复用的 `LocalDogfoodActivationV2`，但 `v1.0.0-rc1` 尚未发布。RC1 只能在 Darwin arm64 上通过 `MARSHAL_TAG=v1.0.0-rc1` + `MARSHAL_LOCAL_DOGFOOD_PREVIEW=1` 安装；精确资产缺失、网络失败、平台不符或 opt-in 缺失时 fail closed，禁止进入下述通用源码回退，安装器也不得自动生成、重签发或激活 activation。
 
 面向用户的两条安装路径（一行脚本与源码构建）见 [README](https://github.com/chiga0/marshal-harness#安装)，对应脚本为 [`scripts/install.sh`](https://github.com/chiga0/marshal-harness/blob/main/scripts/install.sh)：
 

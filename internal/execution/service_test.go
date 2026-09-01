@@ -193,7 +193,7 @@ func TestLocalSelfIdentityAttemptLineagePositive(t *testing.T) {
 		t.Fatal(err)
 	}
 	var request struct {
-		Binding *selfidentity.LocalSelfIdentityBindingV1 `json:"localSelfIdentityBinding"`
+		Binding *selfidentity.LocalSelfIdentityBindingV2 `json:"localSelfIdentityBinding"`
 	}
 	if err := json.Unmarshal(requestRaw, &request); err != nil || request.Binding == nil || request.Binding.DispatchObservationDigest != observations[2].ObservationDigest {
 		t.Fatalf("request binding = %+v err=%v", request.Binding, err)
@@ -214,7 +214,7 @@ func TestLocalSelfIdentityFailsBeforeProbeWithoutFrozenPolicyBinding(t *testing.
 	fixture := newExecutionFixture(t, false)
 	entry := localTestObservation(t, "activation-a", time.Unix(10, 0).UTC())
 	fixture.input.EntryLocalSelfIdentity = &entry
-	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV1, error) { return entry, nil }
+	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV2, error) { return entry, nil }
 	requireFailsBeforeProbe(t, fixture, selfidentity.ReasonObjectMismatch)
 }
 
@@ -223,7 +223,7 @@ func TestLocalSelfIdentityIngressDriftIsCoreEvidenceFailure(t *testing.T) {
 	fixture := newExecutionFixture(t, false)
 	bindLocalSelfIdentityFixture(t, &fixture, "activation-a")
 	calls := 0
-	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV1, error) {
+	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV2, error) {
 		calls++
 		activation := "activation-a"
 		if calls == 3 {
@@ -432,7 +432,7 @@ func TestLocalSelfIdentityDriftOutranksRetryableAdapterFailure(t *testing.T) {
 	fixture := newTypedTransientFailureFixture(t, executionFixtureOptions{maxAttempts: 3, maxOperationalRetries: 2})
 	observations := bindLocalSelfIdentityFixture(t, &fixture, "activation-a")
 	calls := 0
-	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV1, error) {
+	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV2, error) {
 		calls++
 		if calls == 3 {
 			return localTestObservation(t, "activation-drift", time.Unix(13, 0).UTC()), nil
@@ -1483,13 +1483,13 @@ type executionFixtureOptions struct {
 	maxReworkRounds       int
 }
 
-func localTestObservation(t *testing.T, activation string, observedAt time.Time) selfidentity.LocalSelfIdentityObservationV1 {
+func localTestObservation(t *testing.T, activation string, observedAt time.Time) selfidentity.LocalSelfIdentityObservationV2 {
 	t.Helper()
-	observation := selfidentity.LocalSelfIdentityObservationV1{
+	observation := selfidentity.LocalSelfIdentityObservationV2{
 		SchemaVersion: selfidentity.ObservationSchema, ActivationDigest: digestLiteral(t, activation),
 		ProcessID: 42, ProcessExecutablePath: "/stable/marshal",
 		RepositoryIdentity: digestLiteral(t, "repository"), CanonicalRepositoryRoot: "/repository",
-		CurrentPathObject: selfidentity.CurrentPathObjectV1{
+		CurrentPathObject: selfidentity.CurrentPathObjectV2{
 			CanonicalPath: "/stable/marshal", Device: "1", Inode: "2", Size: 3,
 			RawSHA256: digestLiteral(t, "executable"), PathRechecked: true, ObservationKind: "darwin-current-path-fd-object",
 		},
@@ -1499,7 +1499,6 @@ func localTestObservation(t *testing.T, activation string, observedAt time.Time)
 	subjectRaw := mustJSON(t, map[string]any{
 		"activationDigest": observation.ActivationDigest, "repositoryIdentity": observation.RepositoryIdentity,
 		"canonicalRepositoryRoot": observation.CanonicalRepositoryRoot, "canonicalExecutablePath": observation.CurrentPathObject.CanonicalPath,
-		"device": observation.CurrentPathObject.Device, "inode": observation.CurrentPathObject.Inode,
 		"size": observation.CurrentPathObject.Size, "rawSHA256": observation.CurrentPathObject.RawSHA256,
 		"sourceHead": observation.SourceHead, "selfProfile": observation.SelfProfile,
 	})
@@ -1529,9 +1528,9 @@ func digestLiteral(t *testing.T, value string) string {
 	return digest
 }
 
-func bindLocalSelfIdentityFixture(t *testing.T, fixture *executionFixture, activation string) []selfidentity.LocalSelfIdentityObservationV1 {
+func bindLocalSelfIdentityFixture(t *testing.T, fixture *executionFixture, activation string) []selfidentity.LocalSelfIdentityObservationV2 {
 	t.Helper()
-	observations := []selfidentity.LocalSelfIdentityObservationV1{
+	observations := []selfidentity.LocalSelfIdentityObservationV2{
 		localTestObservation(t, activation, time.Unix(10, 0).UTC()),
 		localTestObservation(t, activation, time.Unix(11, 0).UTC()),
 		localTestObservation(t, activation, time.Unix(12, 0).UTC()),
@@ -1547,7 +1546,7 @@ func bindLocalSelfIdentityFixture(t *testing.T, fixture *executionFixture, activ
 		t.Fatal(err)
 	}
 	policy["environmentBinding"] = map[string]any{
-		"schemaVersion": "marshal.local-dogfood-environment-binding.v1", "selfProfile": selfidentity.LocalProfile,
+		"schemaVersion": "marshal.local-dogfood-environment-binding.v2", "selfProfile": selfidentity.LocalProfile,
 		"activationDigest": observations[0].ActivationDigest, "identitySubjectDigest": observations[0].IdentitySubjectDigest,
 		"assurance": "ordinary-user", "execution": "workspace-write", "production": false, "publication": "none",
 	}
@@ -1589,7 +1588,7 @@ func bindLocalSelfIdentityFixture(t *testing.T, fixture *executionFixture, activ
 	})
 	fixture.input.EntryLocalSelfIdentity = &observations[0]
 	next := 1
-	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV1, error) {
+	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV2, error) {
 		if next >= len(observations) {
 			return observations[len(observations)-1], nil
 		}

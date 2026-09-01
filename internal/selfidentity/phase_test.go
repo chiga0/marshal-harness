@@ -192,11 +192,11 @@ func TestClosedVerificationAndReviewBindingsRejectTampering(t *testing.T) {
 	if err := ValidateReviewBindingProjection(reviewBinding, "attempt-1", 1, binding); err != nil {
 		t.Fatal(err)
 	}
-	for name, mutate := range map[string]func(*LocalReviewBindingV1){
-		"attempt":       func(value *LocalReviewBindingV1) { value.AttemptID = "attempt-2" },
-		"round":         func(value *LocalReviewBindingV1) { value.ReviewRound = 2 },
-		"profile":       func(value *LocalReviewBindingV1) { value.SelfProfile = "managed" },
-		"applicability": func(value *LocalReviewBindingV1) { value.Applicability.Publication = "remote" },
+	for name, mutate := range map[string]func(*LocalReviewBindingV2){
+		"attempt":       func(value *LocalReviewBindingV2) { value.AttemptID = "attempt-2" },
+		"round":         func(value *LocalReviewBindingV2) { value.ReviewRound = 2 },
+		"profile":       func(value *LocalReviewBindingV2) { value.SelfProfile = "managed" },
+		"applicability": func(value *LocalReviewBindingV2) { value.Applicability.Publication = "remote" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			forged := reviewBinding
@@ -208,14 +208,61 @@ func TestClosedVerificationAndReviewBindingsRejectTampering(t *testing.T) {
 	}
 }
 
-func phaseTestObservation(t *testing.T, observedAt string) LocalSelfIdentityObservationV1 {
+func TestPortableSubjectAllowsFreshHostObjectObservation(t *testing.T) {
+	first := phaseTestObservation(t, "2026-08-27T10:00:00Z")
+	second := first
+	second.ProcessID = 456
+	second.CurrentPathObject.Device = "91"
+	second.CurrentPathObject.Inode = "92"
+	second.ObservedAt = "2026-08-27T10:00:01Z"
+	var err error
+	second.IdentitySubjectDigest, err = digestIdentitySubject(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.ObservationDigest, err = digestObservation(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.IdentitySubjectDigest != second.IdentitySubjectDigest {
+		t.Fatalf("host-local object numbers changed portable subject: first=%s second=%s", first.IdentitySubjectDigest, second.IdentitySubjectDigest)
+	}
+	if first.ObservationDigest == second.ObservationDigest {
+		t.Fatal("fresh host-local observation did not receive a distinct observation digest")
+	}
+	if err := SameSubject(first, second); err != nil {
+		t.Fatalf("same portable subject was rejected across host-local observations: %v", err)
+	}
+}
+
+func TestObservationV2RejectsHostLocalShapeForgery(t *testing.T) {
+	base := phaseTestObservation(t, "2026-08-27T10:00:00Z")
+	tests := map[string]func(*LocalSelfIdentityObservationV2){
+		"process path":      func(value *LocalSelfIdentityObservationV2) { value.ProcessExecutablePath = "/other/marshal" },
+		"repository digest": func(value *LocalSelfIdentityObservationV2) { value.RepositoryIdentity = "repository" },
+		"observation kind":  func(value *LocalSelfIdentityObservationV2) { value.CurrentPathObject.ObservationKind = "portable" },
+		"source head":       func(value *LocalSelfIdentityObservationV2) { value.SourceHead = "head" },
+		"timestamp":         func(value *LocalSelfIdentityObservationV2) { value.ObservedAt = "2026-08-27T10:00:00+00:00" },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			forged := base
+			mutate(&forged)
+			if err := ValidateObservation(forged); err == nil {
+				t.Fatal("forged host-local observation was accepted")
+			}
+		})
+	}
+}
+
+func phaseTestObservation(t *testing.T, observedAt string) LocalSelfIdentityObservationV2 {
 	t.Helper()
 	digest := canonical.DigestBytes([]byte("object"))
-	observation := LocalSelfIdentityObservationV1{
+	observation := LocalSelfIdentityObservationV2{
 		SchemaVersion: ObservationSchema, ActivationDigest: canonical.DigestBytes([]byte("activation")),
 		ProcessID: 123, ProcessExecutablePath: "/fixed/marshal",
 		RepositoryIdentity: canonical.DigestBytes([]byte("repository")), CanonicalRepositoryRoot: "/repository",
-		CurrentPathObject: CurrentPathObjectV1{CanonicalPath: "/fixed/marshal", Device: "1", Inode: "2", Size: 6, RawSHA256: digest, PathRechecked: true, ObservationKind: "darwin-current-path-fd-object"},
+		CurrentPathObject: CurrentPathObjectV2{CanonicalPath: "/fixed/marshal", Device: "1", Inode: "2", Size: 6, RawSHA256: digest, PathRechecked: true, ObservationKind: "darwin-current-path-fd-object"},
 		SourceHead:        testSourceHead, SelfProfile: LocalProfile, ObservedAt: observedAt,
 		Status: "pass", ReasonCode: ReasonObserved,
 	}

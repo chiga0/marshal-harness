@@ -65,7 +65,7 @@ type CompositionLedger struct {
 	existingWorktreeEnabled  bool
 	launchArgvBuilder        AttemptLaunchArgvBuilder
 	resultParser             AttemptResultParser
-	entryLocalSelfIdentity   *selfidentity.LocalSelfIdentityObservationV1
+	entryLocalSelfIdentity   *selfidentity.LocalSelfIdentityObservationV2
 	observeLocalSelfIdentity LocalSelfIdentityObserver
 	now                      func() time.Time
 }
@@ -74,7 +74,7 @@ type CompositionLedger struct {
 // the Darwin local-dogfood production composition. It deliberately returns a
 // typed observation rather than raw evidence so the runtime can compare and
 // persist one closed identity subject at dispatch and result ingress.
-type LocalSelfIdentityObserver func() (selfidentity.LocalSelfIdentityObservationV1, error)
+type LocalSelfIdentityObserver func() (selfidentity.LocalSelfIdentityObservationV2, error)
 
 // CompositionInputs freezes the composition-time identity and location
 // decisions. Nothing here is derivable from the durable ledger; everything is
@@ -139,7 +139,7 @@ type CompositionInputs struct {
 	// Both are nil outside darwin-local-dogfood. When present, PrepareRunStart
 	// persists a fresh dispatch observation before StartPreparedRun and result
 	// collection persists a fresh ingress observation before ResultIngress.
-	EntryLocalSelfIdentity   *selfidentity.LocalSelfIdentityObservationV1
+	EntryLocalSelfIdentity   *selfidentity.LocalSelfIdentityObservationV2
 	ObserveLocalSelfIdentity LocalSelfIdentityObserver
 }
 
@@ -294,7 +294,7 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 		releaseConstruction()
 		return nil, err
 	}
-	var entryLocalSelfIdentity *selfidentity.LocalSelfIdentityObservationV1
+	var entryLocalSelfIdentity *selfidentity.LocalSelfIdentityObservationV2
 	if inputs.EntryLocalSelfIdentity != nil {
 		entry := *inputs.EntryLocalSelfIdentity
 		entryLocalSelfIdentity = &entry

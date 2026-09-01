@@ -14,45 +14,45 @@ const (
 	localIngressObservationName  = "local-self-identity-ingress.json"
 )
 
-func (l *CompositionLedger) freshLocalSelfIdentity() (selfidentity.LocalSelfIdentityObservationV1, bool, error) {
+func (l *CompositionLedger) freshLocalSelfIdentity() (selfidentity.LocalSelfIdentityObservationV2, bool, error) {
 	if l.entryLocalSelfIdentity == nil && l.observeLocalSelfIdentity == nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, false, nil
+		return selfidentity.LocalSelfIdentityObservationV2{}, false, nil
 	}
 	if l.entryLocalSelfIdentity == nil || l.observeLocalSelfIdentity == nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, false, application.NewError("local-self-identity", application.ReasonAuthorityConflict)
+		return selfidentity.LocalSelfIdentityObservationV2{}, false, application.NewError("local-self-identity", application.ReasonAuthorityConflict)
 	}
 	fresh, err := l.observeLocalSelfIdentity()
 	if err != nil || selfidentity.SameSubject(*l.entryLocalSelfIdentity, fresh) != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, false, application.NewError("local-self-identity", application.ReasonAuthorityConflict)
+		return selfidentity.LocalSelfIdentityObservationV2{}, false, application.NewError("local-self-identity", application.ReasonAuthorityConflict)
 	}
 	return fresh, true, nil
 }
 
-func readOptionalLocalObservation(directory *runstore.BoundDirectory, name string) (selfidentity.LocalSelfIdentityObservationV1, bool, error) {
+func readOptionalLocalObservation(directory *runstore.BoundDirectory, name string) (selfidentity.LocalSelfIdentityObservationV2, bool, error) {
 	observation, err := selfidentity.ReadPhaseObservationIn(directory, name)
 	if err == nil {
 		return observation, true, nil
 	}
 	if errors.Is(err, os.ErrNotExist) || os.IsNotExist(err) {
-		return selfidentity.LocalSelfIdentityObservationV1{}, false, nil
+		return selfidentity.LocalSelfIdentityObservationV2{}, false, nil
 	}
-	return selfidentity.LocalSelfIdentityObservationV1{}, false, err
+	return selfidentity.LocalSelfIdentityObservationV2{}, false, err
 }
 
-func persistOrReuseLocalObservation(directory *runstore.BoundDirectory, name string, fresh selfidentity.LocalSelfIdentityObservationV1) (selfidentity.LocalSelfIdentityObservationV1, error) {
+func persistOrReuseLocalObservation(directory *runstore.BoundDirectory, name string, fresh selfidentity.LocalSelfIdentityObservationV2) (selfidentity.LocalSelfIdentityObservationV2, error) {
 	stored, found, err := readOptionalLocalObservation(directory, name)
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, err
+		return selfidentity.LocalSelfIdentityObservationV2{}, err
 	}
 	if found {
 		if selfidentity.SameSubject(stored, fresh) != nil {
-			return selfidentity.LocalSelfIdentityObservationV1{}, application.NewError("local-self-identity", application.ReasonAuthorityConflict)
+			return selfidentity.LocalSelfIdentityObservationV2{}, application.NewError("local-self-identity", application.ReasonAuthorityConflict)
 		}
 		return stored, nil
 	}
 	persisted, err := selfidentity.PersistPhaseObservationIn(directory, name, fresh)
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, err
+		return selfidentity.LocalSelfIdentityObservationV2{}, err
 	}
 	return persisted, nil
 }

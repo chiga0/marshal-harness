@@ -22,7 +22,7 @@ func TestProductionLocalIdentityPersistsDispatchAndReusesIngress(t *testing.T) {
 	fresh := productionLocalObservation(t, "activation-a", time.Unix(11, 0).UTC())
 	ledger := &CompositionLedger{
 		runLease: lease, entryLocalSelfIdentity: &entry,
-		observeLocalSelfIdentity: func() (selfidentity.LocalSelfIdentityObservationV1, error) { return fresh, nil },
+		observeLocalSelfIdentity: func() (selfidentity.LocalSelfIdentityObservationV2, error) { return fresh, nil },
 	}
 	attemptID := "attempt:production-local-identity"
 	if err := ledger.persistLocalDispatchObservation(attemptID); err != nil {
@@ -55,13 +55,13 @@ func TestProductionLocalIdentityPersistsDispatchAndReusesIngress(t *testing.T) {
 	}
 }
 
-func productionLocalObservation(t *testing.T, activation string, observedAt time.Time) selfidentity.LocalSelfIdentityObservationV1 {
+func productionLocalObservation(t *testing.T, activation string, observedAt time.Time) selfidentity.LocalSelfIdentityObservationV2 {
 	t.Helper()
-	observation := selfidentity.LocalSelfIdentityObservationV1{
+	observation := selfidentity.LocalSelfIdentityObservationV2{
 		SchemaVersion: selfidentity.ObservationSchema, ActivationDigest: canonical.DigestBytes([]byte(activation)),
 		ProcessID: 42, ProcessExecutablePath: "/fixed/bin/marshal",
 		RepositoryIdentity: canonical.DigestBytes([]byte("repository")), CanonicalRepositoryRoot: "/fixed/repository",
-		CurrentPathObject: selfidentity.CurrentPathObjectV1{
+		CurrentPathObject: selfidentity.CurrentPathObjectV2{
 			CanonicalPath: "/fixed/bin/marshal", Device: "1", Inode: "2", Size: 3,
 			RawSHA256: canonical.DigestBytes([]byte("marshal")), PathRechecked: true, ObservationKind: "darwin-current-path-fd-object",
 		},
@@ -71,7 +71,7 @@ func productionLocalObservation(t *testing.T, activation string, observedAt time
 	observation.IdentitySubjectDigest = productionLocalJSONDigest(t, map[string]any{
 		"activationDigest": observation.ActivationDigest, "repositoryIdentity": observation.RepositoryIdentity,
 		"canonicalRepositoryRoot": observation.CanonicalRepositoryRoot, "canonicalExecutablePath": observation.CurrentPathObject.CanonicalPath,
-		"device": observation.CurrentPathObject.Device, "inode": observation.CurrentPathObject.Inode, "size": observation.CurrentPathObject.Size,
+		"size":      observation.CurrentPathObject.Size,
 		"rawSHA256": observation.CurrentPathObject.RawSHA256, "sourceHead": observation.SourceHead, "selfProfile": observation.SelfProfile,
 	})
 	observation.ObservationDigest = productionLocalJSONDigest(t, map[string]any{

@@ -35,7 +35,7 @@ type PacketBuildInput struct {
 	BaseSHA                  string
 	ReviewRound              uint
 	AttemptsUsed             uint
-	LocalSelfIdentityBinding *selfidentity.LocalReviewBindingV1
+	LocalSelfIdentityBinding *selfidentity.LocalReviewBindingV2
 }
 
 const (

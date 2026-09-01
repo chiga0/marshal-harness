@@ -65,7 +65,7 @@ Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、全部 Prov
 
 ## 安装
 
-下面命令安装当前已发布版本，不会安装尚不存在的 `v1.0.0-rc1`。ADR 0068 的 RC1 installer guard 已实现，但只有 release 真实存在后精确安装命令才能成功：它只允许在 Darwin arm64 上显式选择精确 tag 与 local-dogfood preview；缺少精确资产时必须 fail closed，不得回退源码或其它平台资产，也不得自动生成或激活 `LocalDogfoodActivationV1`。
+下面命令安装当前已发布版本，不会安装尚不存在的 `v1.0.0-rc1`。ADR 0068 的 RC1 installer guard 已实现，但只有 release 真实存在后精确安装命令才能成功：它只允许在 Darwin arm64 上显式选择精确 tag 与 local-dogfood preview；缺少精确资产时必须 fail closed，不得回退源码或其它平台资产，也不得自动生成或激活 `LocalDogfoodActivationV2`。
 
 安装脚本不会请求 sudo：
 

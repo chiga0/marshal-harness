@@ -6,6 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 DRIVER_SOURCE="${SCRIPT_DIR}/release-canary.sh"
+WORKFLOW_SOURCE="${SCRIPT_DIR}/../.github/workflows/rc1-canary.yml"
 TMP_RAW="$(mktemp -d "${TMPDIR:-/tmp}/release-canary-test.XXXXXX")"
 TMP_ROOT="$(cd "$TMP_RAW" && pwd -P)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -68,6 +69,13 @@ grep -Fq 'GO_BIN="$GO_BIN" "$RELEASE_CHECKER" verify-rc1-dist' \
 grep -Fq 'toolchain@v0.0.1-${required_go_version}.darwin-arm64/bin/go' \
   "${FIXTURE_ROOT}/scripts/release-canary.sh" \
   || fail 'release canary 未按 go.mod 精确绑定 direct toolchain'
+# finalize 必须恢复并消费 run phase 的同一份 V2 activation。跨 runner
+# 重签发会把连续性降级为相同 activationId 的新声明，必须静态拒绝。
+grep -Fq 'd.get("schemaVersion") == "marshal.local-dogfood-activation.v2"' "$WORKFLOW_SOURCE" \
+  || fail 'RC1 finalize 未显式要求原始 V2 activation'
+if grep -Fq 'ACTIVATION_PATH.new' "$WORKFLOW_SOURCE"; then
+  fail 'RC1 finalize 仍在跨 runner 重签发 activation'
+fi
 
 cat >"$PI_BUNDLE" <<'EOF'
 #!/usr/bin/env bash
@@ -151,11 +159,11 @@ case "${1:-} ${2:-}" in
     [ "$#" -eq 8 ] && [ "$3" = --repository-root ] && [ "$4" = "$PWD" ] && \
       [ "$5" = --activation-id ] && [ "$6" = "$(basename "$(dirname "$PWD")")" ] && \
       [ "$7" = --valid-for ] && [ "$8" = 4h ] || unexpected "$@"
-    printf '{"schemaVersion":"marshal.local-dogfood-activation.v1","activationId":"fixture"}\n'
+    printf '{"schemaVersion":"marshal.local-dogfood-activation.v2","activationId":"fixture"}\n'
     ;;
   "doctor --json")
     [ "$#" -eq 2 ] || unexpected "$@"
-    printf '{"status":"ok","policyEnvironmentBinding":{"schemaVersion":"marshal.local-dogfood-environment-binding.v1","selfProfile":"darwin-local-dogfood","activationDigest":"%s","identitySubjectDigest":"%s","assurance":"ordinary-user","execution":"workspace-write","production":false,"publication":"none"},"workers":[{"adapterId":"pi","outcome":"registered","compatibility":"supported","binaryVersion":"0.84.4","authorityMode":"ordinary-user"}]}\n' "$digest1" "$digest2"
+    printf '{"status":"ok","policyEnvironmentBinding":{"schemaVersion":"marshal.local-dogfood-environment-binding.v2","selfProfile":"darwin-local-dogfood","activationDigest":"%s","identitySubjectDigest":"%s","assurance":"ordinary-user","execution":"workspace-write","production":false,"publication":"none"},"workers":[{"adapterId":"pi","outcome":"registered","compatibility":"supported","binaryVersion":"0.84.4","authorityMode":"ordinary-user"}]}\n' "$digest1" "$digest2"
     ;;
   "task scaffold")
     [ "$#" -eq 6 ] && [ "$3" = --draft ] && [ "$4" = "$control_root/task-draft.json" ] && \
@@ -254,7 +262,7 @@ PY
       printf 'ACCEPTED\n' >"$state_path"
       printf '{"status":"applied","verdict":"accept","targetState":"ACCEPTED","decisionDigest":"%s"}\n' "$digest8"
     elif [ "$#" -eq 5 ] && [ "$3" = --run ] && [ "$4" = "$run_id" ] && [ "$5" = --json ]; then
-      printf '{"status":"generated","packetDigest":"%s","promptVersion":"fixture","packet":{"apiVersion":"marshal.dev/v1alpha1","kind":"ReviewPacket","taskId":"%s","runId":"%s","reviewRound":1,"specDigest":"%s","baseSha":"%s","snapshotDigest":"%s","diffDigest":"%s","verificationDigest":"%s","artifactManifestDigest":"%s","workerResultDigests":["%s"],"evidenceDigest":"%s","localSelfIdentityBinding":{"schemaVersion":"marshal.local-self-identity-review-binding.v1","selfProfile":"darwin-local-dogfood","activationDigest":"%s","identitySubjectDigest":"%s","attemptId":"attempt-1","reviewRound":1,"verificationBindingDigest":"%s","verificationObservationDigest":"%s","reviewObservationDigest":"%s","applicability":{"schemaVersion":"marshal.local-dogfood-environment-binding.v1","selfProfile":"darwin-local-dogfood","activationDigest":"%s","identitySubjectDigest":"%s","assurance":"ordinary-user","execution":"workspace-write","production":false,"publication":"none"}},"inputs":{"taskSpec":"task-spec.json","patch":"observed.patch","verificationReport":"verification-report.json","artifactManifest":"artifact-manifest.json"},"previousBlockingFindings":[],"generatedAt":"2026-08-28T00:00:00Z"}}\n' \
+      printf '{"status":"generated","packetDigest":"%s","promptVersion":"fixture","packet":{"apiVersion":"marshal.dev/v1alpha1","kind":"ReviewPacket","taskId":"%s","runId":"%s","reviewRound":1,"specDigest":"%s","baseSha":"%s","snapshotDigest":"%s","diffDigest":"%s","verificationDigest":"%s","artifactManifestDigest":"%s","workerResultDigests":["%s"],"evidenceDigest":"%s","localSelfIdentityBinding":{"schemaVersion":"marshal.local-self-identity-review-binding.v2","selfProfile":"darwin-local-dogfood","activationDigest":"%s","identitySubjectDigest":"%s","attemptId":"attempt-1","reviewRound":1,"verificationBindingDigest":"%s","verificationObservationDigest":"%s","reviewObservationDigest":"%s","applicability":{"schemaVersion":"marshal.local-dogfood-environment-binding.v2","selfProfile":"darwin-local-dogfood","activationDigest":"%s","identitySubjectDigest":"%s","assurance":"ordinary-user","execution":"workspace-write","production":false,"publication":"none"}},"inputs":{"taskSpec":"task-spec.json","patch":"observed.patch","verificationReport":"verification-report.json","artifactManifest":"artifact-manifest.json"},"previousBlockingFindings":[],"generatedAt":"2026-08-28T00:00:00Z"}}\n' \
         "$digest9" "$task_id" "$run_id" "$digest1" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "$digest2" "$digest3" "$digest4" "$digest5" "$digest6" "$digest7" "$digest1" "$digest2" "$digest3" "$digest4" "$digest5" "$digest1" "$digest2"
     else
       unexpected "$@"

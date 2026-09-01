@@ -39,7 +39,7 @@ func TestReviewFreshnessLocalReviewChainUsesCoreProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	verification := selfidentity.LocalVerificationBindingV1{
+	verification := selfidentity.LocalVerificationBindingV2{
 		SchemaVersion:                 selfidentity.VerificationBindingSchema,
 		SelfProfile:                   selfidentity.LocalProfile,
 		ActivationDigest:              observation.ActivationDigest,
@@ -84,16 +84,16 @@ func TestReviewFreshnessLocalReviewChainUsesCoreProjection(t *testing.T) {
 	}
 }
 
-func phaseTestObservationForStableChecker(t *testing.T) selfidentity.LocalSelfIdentityObservationV1 {
+func phaseTestObservationForStableChecker(t *testing.T) selfidentity.LocalSelfIdentityObservationV2 {
 	t.Helper()
-	observation := selfidentity.LocalSelfIdentityObservationV1{
+	observation := selfidentity.LocalSelfIdentityObservationV2{
 		SchemaVersion:           selfidentity.ObservationSchema,
 		ActivationDigest:        "sha256:" + strings.Repeat("1", 64),
 		ProcessID:               42,
 		ProcessExecutablePath:   "/fixed/bin/marshal",
-		RepositoryIdentity:      "fixture-repository",
+		RepositoryIdentity:      canonical.DigestBytes([]byte("fixture-repository")),
 		CanonicalRepositoryRoot: "/fixed/repository",
-		CurrentPathObject: selfidentity.CurrentPathObjectV1{
+		CurrentPathObject: selfidentity.CurrentPathObjectV2{
 			CanonicalPath: "/fixed/bin/marshal", Device: "1", Inode: "2", Size: 3,
 			RawSHA256: "sha256:" + strings.Repeat("2", 64), PathRechecked: true,
 			ObservationKind: "darwin-current-path-fd-object",
@@ -107,8 +107,6 @@ func phaseTestObservationForStableChecker(t *testing.T) selfidentity.LocalSelfId
 		"repositoryIdentity":      observation.RepositoryIdentity,
 		"canonicalRepositoryRoot": observation.CanonicalRepositoryRoot,
 		"canonicalExecutablePath": observation.CurrentPathObject.CanonicalPath,
-		"device":                  observation.CurrentPathObject.Device,
-		"inode":                   observation.CurrentPathObject.Inode,
 		"size":                    observation.CurrentPathObject.Size,
 		"rawSHA256":               observation.CurrentPathObject.RawSHA256,
 		"sourceHead":              observation.SourceHead,

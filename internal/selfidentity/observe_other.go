@@ -4,8 +4,8 @@ package selfidentity
 
 import "os"
 
-func observeCurrentPath(string, func()) (CurrentPathObjectV1, error) {
-	return CurrentPathObjectV1{}, reject(ReasonProfileMismatch)
+func observeCurrentPath(string, func()) (CurrentPathObjectV2, error) {
+	return CurrentPathObjectV2{}, reject(ReasonProfileMismatch)
 }
 
 func openActivationFile(string) (*os.File, error) { return nil, reject(ReasonProfileMismatch) }

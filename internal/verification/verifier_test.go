@@ -29,7 +29,7 @@ func TestVerifierRecomputesLocalBindingBeforeSideEffects(t *testing.T) {
 	_, err := New().Verify(context.Background(), Input{
 		AttemptID: "attempt-1", RunDirectory: runDirectory,
 		LocalSelfIdentity: &LocalSelfIdentityInput{
-			Applicability: selfidentity.LocalApplicabilityV1{SchemaVersion: selfidentity.LocalApplicabilitySchema},
+			Applicability: selfidentity.LocalApplicabilityV2{SchemaVersion: selfidentity.LocalApplicabilitySchema},
 		},
 	})
 	if err == nil || err.Error() != selfidentity.ReasonCrossProfileEvidence {

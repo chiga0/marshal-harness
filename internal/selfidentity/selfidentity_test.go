@@ -42,6 +42,9 @@ func TestDarwinActivationAndObservationPositivePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := renderTestActivation(t, root, executable)
+	if bytes.Contains(raw, []byte(`"expectedDevice"`)) || bytes.Contains(raw, []byte(`"expectedInode"`)) {
+		t.Fatalf("portable V2 activation leaked host-local object numbers: %s", raw)
+	}
 	if canonicalRaw, err := canonical.JSON(raw); err != nil || !bytes.Equal(raw, canonicalRaw) {
 		t.Fatalf("bootstrap output is not exact JCS: err=%v", err)
 	}
@@ -111,7 +114,7 @@ func TestDarwinActivationStrictAndIdentityNegativeMatrix(t *testing.T) {
 		assertReason(t, err, ReasonOptInMissing)
 	})
 	t.Run("duplicate member", func(t *testing.T) {
-		duplicate := append([]byte(`{"schemaVersion":"marshal.local-dogfood-activation.v1",`), raw[1:]...)
+		duplicate := append([]byte(`{"schemaVersion":"marshal.local-dogfood-activation.v2",`), raw[1:]...)
 		_, err := DecodeActivation(duplicate, testNow)
 		assertReason(t, err, ReasonOptInMissing)
 	})
@@ -119,6 +122,13 @@ func TestDarwinActivationStrictAndIdentityNegativeMatrix(t *testing.T) {
 		unknown := append(append([]byte(nil), raw[:len(raw)-1]...), []byte(`,"unknown":true}`)...)
 		unknown, _ = canonical.JSON(unknown)
 		_, err := DecodeActivation(unknown, testNow)
+		assertReason(t, err, ReasonOptInMissing)
+	})
+	t.Run("v1 activation", func(t *testing.T) {
+		legacy := bytes.Replace(raw,
+			[]byte(`marshal.local-dogfood-activation.v2`),
+			[]byte(`marshal.local-dogfood-activation.v1`), 1)
+		_, err := DecodeActivation(legacy, testNow)
 		assertReason(t, err, ReasonOptInMissing)
 	})
 	t.Run("expired", func(t *testing.T) {
@@ -238,7 +248,7 @@ func TestDarwinRejectionsReturnOnlyTypedError(t *testing.T) {
 		name       string
 		path       string
 		build      BuildIdentity
-		activation *LocalDogfoodActivationV1
+		activation *LocalDogfoodActivationV2
 		wantReason string
 	}{
 		{name: "opt-in missing", path: filepath.Join(root, "missing.json"), build: BuildIdentity{SourceHead: testSourceHead, SelfProfile: LocalProfile}, wantReason: ReasonOptInMissing},
@@ -255,7 +265,7 @@ func TestDarwinRejectionsReturnOnlyTypedError(t *testing.T) {
 			}
 			observation, err := admit(path, CommandDoctor, root, executable, test.build, testNow, nil)
 			assertReason(t, err, test.wantReason)
-			if observation != (LocalSelfIdentityObservationV1{}) {
+			if observation != (LocalSelfIdentityObservationV2{}) {
 				t.Fatalf("rejection returned a versioned observation: %+v", observation)
 			}
 		})
@@ -275,7 +285,7 @@ func renderTestActivation(t *testing.T, root, executable string) []byte {
 	return raw
 }
 
-func marshalActivation(t *testing.T, activation LocalDogfoodActivationV1) []byte {
+func marshalActivation(t *testing.T, activation LocalDogfoodActivationV2) []byte {
 	t.Helper()
 	var err error
 	activation.ActivationDigest, err = digestActivation(activation)

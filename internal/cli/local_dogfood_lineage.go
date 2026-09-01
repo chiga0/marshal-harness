@@ -18,16 +18,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func freshLocalDogfoodObservation(commandClass string) (selfidentity.LocalSelfIdentityObservationV1, error) {
+func freshLocalDogfoodObservation(commandClass string) (selfidentity.LocalSelfIdentityObservationV2, error) {
 	workingDirectory, err := os.Getwd()
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, localPhaseRejected()
+		return selfidentity.LocalSelfIdentityObservationV2{}, localPhaseRejected()
 	}
 	build := localBuildInfo()
 	observation, err := selfidentity.Admit(os.Getenv(selfidentity.ActivationEnv), commandClass, workingDirectory,
 		selfidentity.BuildIdentity{SourceHead: build.Commit, SelfProfile: build.SelfProfile}, localNow())
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, localPhaseRejected()
+		return selfidentity.LocalSelfIdentityObservationV2{}, localPhaseRejected()
 	}
 	return observation, nil
 }
@@ -36,7 +36,7 @@ func localPhaseRejected() error {
 	return &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
 }
 
-func prepareLocalVerificationBinding(_ context.Context, lease *runstore.Lease, state domain.RunState, entry *selfidentity.LocalSelfIdentityObservationV1, validator *contract.Validator) (*verification.LocalSelfIdentityInput, error) {
+func prepareLocalVerificationBinding(_ context.Context, lease *runstore.Lease, state domain.RunState, entry *selfidentity.LocalSelfIdentityObservationV2, validator *contract.Validator) (*verification.LocalSelfIdentityInput, error) {
 	if entry == nil {
 		return nil, nil
 	}
@@ -78,7 +78,7 @@ func prepareLocalVerificationBinding(_ context.Context, lease *runstore.Lease, s
 	return &verification.LocalSelfIdentityInput{Applicability: *applicability, Dispatch: dispatch, Ingress: ingress, Verification: stored}, nil
 }
 
-func validateLocalAttemptLineage(lease *runstore.Lease, attemptID string, attempt *runstore.BoundDirectory, validator *contract.Validator, dispatch, ingress selfidentity.LocalSelfIdentityObservationV1) error {
+func validateLocalAttemptLineage(lease *runstore.Lease, attemptID string, attempt *runstore.BoundDirectory, validator *contract.Validator, dispatch, ingress selfidentity.LocalSelfIdentityObservationV2) error {
 	events, truncated, err := runstore.ReadEventsUnderLease(lease)
 	if err != nil || truncated {
 		return errors.New("local Attempt journal is invalid")
@@ -98,7 +98,7 @@ func validateLocalAttemptLineage(lease *runstore.Lease, attemptID string, attemp
 		return errors.New("local WorkerRequest is invalid")
 	}
 	var request struct {
-		Binding *selfidentity.LocalSelfIdentityBindingV1 `json:"localSelfIdentityBinding"`
+		Binding *selfidentity.LocalSelfIdentityBindingV2 `json:"localSelfIdentityBinding"`
 	}
 	if json.Unmarshal(requestData, &request) != nil || request.Binding == nil || selfidentity.ValidateBinding(*request.Binding, dispatch) != nil {
 		return errors.New("local WorkerRequest binding is invalid")
@@ -165,7 +165,7 @@ func validateLocalAttemptEvents(events []domain.RunEvent, attemptID, dispatchDig
 	return false, nil
 }
 
-func prepareLocalReviewBinding(_ context.Context, lease *runstore.Lease, state domain.RunState, entry *selfidentity.LocalSelfIdentityObservationV1, validator *contract.Validator, report verification.Report, manifest verification.ArtifactManifest, create bool) (*selfidentity.LocalReviewBindingV1, error) {
+func prepareLocalReviewBinding(_ context.Context, lease *runstore.Lease, state domain.RunState, entry *selfidentity.LocalSelfIdentityObservationV2, validator *contract.Validator, report verification.Report, manifest verification.ArtifactManifest, create bool) (*selfidentity.LocalReviewBindingV2, error) {
 	if entry == nil {
 		if report.LocalSelfIdentityBinding != nil || manifest.LocalSelfIdentityBinding != nil {
 			return nil, localPhaseRejected()

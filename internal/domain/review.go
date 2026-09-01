@@ -37,7 +37,7 @@ type ReviewPacket struct {
 	// Attempt. It is optional so non-Codex and archived packets preserve their
 	// exact historical wire representation.
 	CodexEligibilityBinding  *CodexEligibilityBindingV1               `json:"codexEligibilityBinding,omitempty"`
-	LocalSelfIdentityBinding *evidencebinding.ReviewIdentityBindingV1 `json:"localSelfIdentityBinding,omitempty"`
+	LocalSelfIdentityBinding *evidencebinding.ReviewIdentityBindingV2 `json:"localSelfIdentityBinding,omitempty"`
 	Inputs                   PacketInputs                             `json:"inputs"`
 	PreviousBlockingFindings []PreviousFinding                        `json:"previousBlockingFindings"`
 	GeneratedAt              time.Time                                `json:"generatedAt"`
@@ -153,5 +153,5 @@ type OutcomeBundle struct {
 	IntentDigest                   string                                    `json:"intentDigest,omitempty"`
 	ReceiptDigest                  string                                    `json:"receiptDigest,omitempty"`
 	LocalSelfIdentityBindingDigest string                                    `json:"localSelfIdentityBindingDigest,omitempty"`
-	Applicability                  *evidencebinding.ExecutionApplicabilityV1 `json:"applicability,omitempty"`
+	Applicability                  *evidencebinding.ExecutionApplicabilityV2 `json:"applicability,omitempty"`
 }

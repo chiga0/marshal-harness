@@ -32,13 +32,11 @@ type activationDigestInput struct {
 	RepositoryIdentity      string              `json:"repositoryIdentity"`
 	CanonicalRepositoryRoot string              `json:"canonicalRepositoryRoot"`
 	CanonicalExecutablePath string              `json:"canonicalExecutablePath"`
-	ExpectedDevice          string              `json:"expectedDevice"`
-	ExpectedInode           string              `json:"expectedInode"`
 	ExpectedSize            int64               `json:"expectedSize"`
 	ExpectedRawSHA256       string              `json:"expectedRawSHA256"`
 	ExpectedSourceHead      string              `json:"expectedSourceHead"`
 	ExpectedSelfProfile     string              `json:"expectedSelfProfile"`
-	Scope                   LocalDogfoodScopeV1 `json:"scope"`
+	Scope                   LocalDogfoodScopeV2 `json:"scope"`
 }
 
 // BootstrapOptions controls canonical activation rendering. Marshal returns
@@ -99,7 +97,7 @@ func RenderActivation(options BootstrapOptions) ([]byte, error) {
 	if err != nil {
 		return nil, reject(ReasonObjectMismatch)
 	}
-	activation := LocalDogfoodActivationV1{
+	activation := LocalDogfoodActivationV2{
 		SchemaVersion:           ActivationSchema,
 		ActivationID:            activationID,
 		IssuedAt:                issuedAt.Format(time.RFC3339),
@@ -107,13 +105,11 @@ func RenderActivation(options BootstrapOptions) ([]byte, error) {
 		RepositoryIdentity:      repositoryIdentity,
 		CanonicalRepositoryRoot: root,
 		CanonicalExecutablePath: executablePath,
-		ExpectedDevice:          object.Device,
-		ExpectedInode:           object.Inode,
 		ExpectedSize:            object.Size,
 		ExpectedRawSHA256:       object.RawSHA256,
 		ExpectedSourceHead:      options.Build.SourceHead,
 		ExpectedSelfProfile:     LocalProfile,
-		Scope: LocalDogfoodScopeV1{
+		Scope: LocalDogfoodScopeV2{
 			Network:                 "local-loopback",
 			Publication:             "none",
 			AdapterAuthority:        "ordinary-user",
@@ -159,22 +155,22 @@ func RepositoryIdentity(root string) (string, error) {
 // DecodeActivation admits exact JCS bytes and applies all closed semantic
 // checks. Any malformed, duplicate, unknown, trailing, stale or non-canonical
 // input is reduced to one stable opt-in rejection.
-func DecodeActivation(raw []byte, now time.Time) (LocalDogfoodActivationV1, error) {
+func DecodeActivation(raw []byte, now time.Time) (LocalDogfoodActivationV2, error) {
 	if len(raw) == 0 || len(raw) > maxActivationBytes {
-		return LocalDogfoodActivationV1{}, reject(ReasonOptInMissing)
+		return LocalDogfoodActivationV2{}, reject(ReasonOptInMissing)
 	}
 	canonicalRaw, err := canonical.JSON(raw)
 	if err != nil || !bytes.Equal(raw, canonicalRaw) {
-		return LocalDogfoodActivationV1{}, reject(ReasonOptInMissing)
+		return LocalDogfoodActivationV2{}, reject(ReasonOptInMissing)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	var activation LocalDogfoodActivationV1
+	var activation LocalDogfoodActivationV2
 	if err := decoder.Decode(&activation); err != nil {
-		return LocalDogfoodActivationV1{}, reject(ReasonOptInMissing)
+		return LocalDogfoodActivationV2{}, reject(ReasonOptInMissing)
 	}
 	if err := requireJSONEOF(decoder); err != nil {
-		return LocalDogfoodActivationV1{}, reject(ReasonOptInMissing)
+		return LocalDogfoodActivationV2{}, reject(ReasonOptInMissing)
 	}
 	if activation.SchemaVersion != ActivationSchema || !idPattern.MatchString(activation.ActivationID) ||
 		activation.ExpectedSelfProfile != LocalProfile || activation.Scope.Network != "local-loopback" ||
@@ -182,31 +178,31 @@ func DecodeActivation(raw []byte, now time.Time) (LocalDogfoodActivationV1, erro
 		!slices.Equal(activation.Scope.LifecycleCommandClasses, localDogfoodLifecycleCommands()) ||
 		!sourceHeadPattern.MatchString(activation.ExpectedSourceHead) || activation.ExpectedSize <= 0 ||
 		activation.ExpectedSize > maxExecutableBytes || !validDigest(activation.ExpectedRawSHA256) ||
-		!validDigest(activation.RepositoryIdentity) || activation.ExpectedDevice == "" || activation.ExpectedInode == "" {
-		return LocalDogfoodActivationV1{}, reject(ReasonOptInMissing)
+		!validDigest(activation.RepositoryIdentity) {
+		return LocalDogfoodActivationV2{}, reject(ReasonOptInMissing)
 	}
 	issuedAt, issuedOK := canonicalTimestamp(activation.IssuedAt)
 	validUntil, validOK := canonicalTimestamp(activation.ValidUntil)
 	now = now.UTC()
 	if !issuedOK || !validOK || validUntil.Sub(issuedAt) > maxActivationFreshness || !validUntil.After(issuedAt) ||
 		now.Before(issuedAt) || !now.Before(validUntil) {
-		return LocalDogfoodActivationV1{}, reject(ReasonOptInMissing)
+		return LocalDogfoodActivationV2{}, reject(ReasonOptInMissing)
 	}
 	root, err := canonicalDirectory(activation.CanonicalRepositoryRoot)
 	if err != nil || root != activation.CanonicalRepositoryRoot {
-		return LocalDogfoodActivationV1{}, reject(ReasonObjectMismatch)
+		return LocalDogfoodActivationV2{}, reject(ReasonObjectMismatch)
 	}
 	executable, err := canonicalRegularPath(activation.CanonicalExecutablePath)
 	if err != nil || executable != activation.CanonicalExecutablePath {
-		return LocalDogfoodActivationV1{}, reject(ReasonObjectMismatch)
+		return LocalDogfoodActivationV2{}, reject(ReasonObjectMismatch)
 	}
 	repositoryIdentity, err := RepositoryIdentity(root)
 	if err != nil || repositoryIdentity != activation.RepositoryIdentity {
-		return LocalDogfoodActivationV1{}, reject(ReasonObjectMismatch)
+		return LocalDogfoodActivationV2{}, reject(ReasonObjectMismatch)
 	}
 	digest, err := digestActivation(activation)
 	if err != nil || digest != activation.ActivationDigest {
-		return LocalDogfoodActivationV1{}, reject(ReasonOptInMissing)
+		return LocalDogfoodActivationV2{}, reject(ReasonOptInMissing)
 	}
 	return activation, nil
 }
@@ -215,13 +211,12 @@ func localDogfoodLifecycleCommands() []string {
 	return []string{CommandDoctor, CommandInit, CommandTaskScaffold, CommandTaskPlan, CommandTaskStatus, CommandTaskApprovePlan, CommandTaskRun, CommandTaskVerify, CommandTaskReview}
 }
 
-func digestActivation(activation LocalDogfoodActivationV1) (string, error) {
+func digestActivation(activation LocalDogfoodActivationV2) (string, error) {
 	input := activationDigestInput{
 		SchemaVersion: activation.SchemaVersion, ActivationID: activation.ActivationID,
 		IssuedAt: activation.IssuedAt, ValidUntil: activation.ValidUntil,
 		RepositoryIdentity: activation.RepositoryIdentity, CanonicalRepositoryRoot: activation.CanonicalRepositoryRoot,
-		CanonicalExecutablePath: activation.CanonicalExecutablePath, ExpectedDevice: activation.ExpectedDevice,
-		ExpectedInode: activation.ExpectedInode, ExpectedSize: activation.ExpectedSize,
+		CanonicalExecutablePath: activation.CanonicalExecutablePath, ExpectedSize: activation.ExpectedSize,
 		ExpectedRawSHA256: activation.ExpectedRawSHA256, ExpectedSourceHead: activation.ExpectedSourceHead,
 		ExpectedSelfProfile: activation.ExpectedSelfProfile, Scope: activation.Scope,
 	}

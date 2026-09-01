@@ -107,7 +107,7 @@ type Input struct {
 	// EntryLocalSelfIdentity is the successful command-entry observation. A
 	// local caller must also provide ObserveLocalSelfIdentity; non-local legacy
 	// callers leave both nil and retain the original WorkerRequest bytes.
-	EntryLocalSelfIdentity   *selfidentity.LocalSelfIdentityObservationV1
+	EntryLocalSelfIdentity   *selfidentity.LocalSelfIdentityObservationV2
 	ObserveLocalSelfIdentity LocalSelfIdentityObserver
 	// AfterLocalDispatchObservation is a deterministic crash/tamper seam after
 	// the immutable dispatch observation is written and before any Adapter
@@ -139,7 +139,7 @@ type ResultAdmissionReconciler interface {
 	ReconcileAdmittedWorkerResult(ctx context.Context, attemptDir string) ([]byte, *resultbinding.Admission, error)
 }
 
-type LocalSelfIdentityObserver func() (selfidentity.LocalSelfIdentityObservationV1, error)
+type LocalSelfIdentityObserver func() (selfidentity.LocalSelfIdentityObservationV2, error)
 
 // localSelfIdentityDispatchError is the sole operator-facing failure shape
 // for local-profile dispatch observation admission. Error deliberately emits
@@ -234,7 +234,7 @@ type Result struct {
 	WorkerResult json.RawMessage `json:"workerResult,omitempty"`
 }
 
-func admitLocalSelfIdentityDispatch(policyData []byte, input Input) (*selfidentity.LocalSelfIdentityObservationV1, *selfidentity.LocalSelfIdentityBindingV1, error) {
+func admitLocalSelfIdentityDispatch(policyData []byte, input Input) (*selfidentity.LocalSelfIdentityObservationV2, *selfidentity.LocalSelfIdentityBindingV2, error) {
 	entry, observer := input.EntryLocalSelfIdentity, input.ObserveLocalSelfIdentity
 	if entry == nil && observer == nil {
 		if err := planning.ValidateLocalDogfoodEnvironmentBinding(policyData, input.Validator, nil); err != nil {
@@ -262,75 +262,75 @@ func admitLocalSelfIdentityDispatch(policyData []byte, input Input) (*selfidenti
 	return &fresh, &binding, nil
 }
 
-func refreshLocalSelfIdentityDispatch(policyData []byte, input Input, admitted selfidentity.LocalSelfIdentityObservationV1) (selfidentity.LocalSelfIdentityObservationV1, selfidentity.LocalSelfIdentityBindingV1, error) {
+func refreshLocalSelfIdentityDispatch(policyData []byte, input Input, admitted selfidentity.LocalSelfIdentityObservationV2) (selfidentity.LocalSelfIdentityObservationV2, selfidentity.LocalSelfIdentityBindingV2, error) {
 	fresh, err := input.ObserveLocalSelfIdentity()
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: fresh attempt dispatch observation: %w", err))
+		return selfidentity.LocalSelfIdentityObservationV2{}, selfidentity.LocalSelfIdentityBindingV2{}, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: fresh attempt dispatch observation: %w", err))
 	}
 	if err := selfidentity.SameSubject(admitted, fresh); err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: pre-attempt identity drift: %w", err))
+		return selfidentity.LocalSelfIdentityObservationV2{}, selfidentity.LocalSelfIdentityBindingV2{}, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: pre-attempt identity drift: %w", err))
 	}
 	if err := planning.ValidateLocalDogfoodEnvironmentBinding(policyData, input.Validator, &fresh); err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: pre-attempt policy identity drift: %w", err))
+		return selfidentity.LocalSelfIdentityObservationV2{}, selfidentity.LocalSelfIdentityBindingV2{}, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: pre-attempt policy identity drift: %w", err))
 	}
 	binding, err := selfidentity.BindingForObservation(fresh)
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, closeLocalSelfIdentityDispatchError(err)
+		return selfidentity.LocalSelfIdentityObservationV2{}, selfidentity.LocalSelfIdentityBindingV2{}, closeLocalSelfIdentityDispatchError(err)
 	}
 	return fresh, binding, nil
 }
 
-func admitLocalSelfIdentityIngress(store *runstore.Store, lease *runstore.Lease, attemptAuthority *runstore.BoundDirectory, dispatchLeaf, ingressLeaf *runstore.BoundLeaf, attemptID string, policyData, requestData []byte, validator *contract.Validator, dispatch, ingress selfidentity.LocalSelfIdentityObservationV1) (selfidentity.LocalSelfIdentityObservationV1, error) {
+func admitLocalSelfIdentityIngress(store *runstore.Store, lease *runstore.Lease, attemptAuthority *runstore.BoundDirectory, dispatchLeaf, ingressLeaf *runstore.BoundLeaf, attemptID string, policyData, requestData []byte, validator *contract.Validator, dispatch, ingress selfidentity.LocalSelfIdentityObservationV2) (selfidentity.LocalSelfIdentityObservationV2, error) {
 	if dispatchLeaf == nil || ingressLeaf == nil || dispatchLeaf.Recheck() != nil || ingressLeaf.Recheck() != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, errors.New("persisted local observation object changed before admission")
+		return selfidentity.LocalSelfIdentityObservationV2{}, errors.New("persisted local observation object changed before admission")
 	}
 	reboundIngress, err := selfidentity.ReadPhaseObservationIn(attemptAuthority, "local-self-identity-ingress.json")
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, errors.New("persisted ingress observation object changed before admission")
+		return selfidentity.LocalSelfIdentityObservationV2{}, errors.New("persisted ingress observation object changed before admission")
 	}
 	if !reflect.DeepEqual(reboundIngress, ingress) {
-		return selfidentity.LocalSelfIdentityObservationV1{}, errors.New("persisted ingress observation does not match the current observation")
+		return selfidentity.LocalSelfIdentityObservationV2{}, errors.New("persisted ingress observation does not match the current observation")
 	}
 	if err := planning.ValidateLocalDogfoodEnvironmentBinding(policyData, validator, &reboundIngress); err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, fmt.Errorf("policy/current observation mismatch: %w", err)
+		return selfidentity.LocalSelfIdentityObservationV2{}, fmt.Errorf("policy/current observation mismatch: %w", err)
 	}
 	if err := selfidentity.SameSubject(dispatch, reboundIngress); err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, fmt.Errorf("dispatch/ingress identity drift: %w", err)
+		return selfidentity.LocalSelfIdentityObservationV2{}, fmt.Errorf("dispatch/ingress identity drift: %w", err)
 	}
 	persisted, err := selfidentity.ReadPhaseObservationIn(attemptAuthority, "local-self-identity-dispatch.json")
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, fmt.Errorf("read persisted dispatch observation: %w", err)
+		return selfidentity.LocalSelfIdentityObservationV2{}, fmt.Errorf("read persisted dispatch observation: %w", err)
 	}
 	if !reflect.DeepEqual(persisted, dispatch) {
-		return selfidentity.LocalSelfIdentityObservationV1{}, errors.New("persisted dispatch observation does not match the admitted dispatch")
+		return selfidentity.LocalSelfIdentityObservationV2{}, errors.New("persisted dispatch observation does not match the admitted dispatch")
 	}
 	storedRequest, err := runstore.ReadFileInDirectory(attemptAuthority, "worker-request.json", 2<<20)
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, fmt.Errorf("read persisted WorkerRequest: %w", err)
+		return selfidentity.LocalSelfIdentityObservationV2{}, fmt.Errorf("read persisted WorkerRequest: %w", err)
 	}
 	storedRequest = bytes.TrimSuffix(storedRequest, []byte{'\n'})
 	if !bytes.Equal(storedRequest, requestData) || validator.Validate(domain.KindWorkerRequest, storedRequest) != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, errors.New("persisted WorkerRequest does not match the dispatched request")
+		return selfidentity.LocalSelfIdentityObservationV2{}, errors.New("persisted WorkerRequest does not match the dispatched request")
 	}
 	var request struct {
-		Binding *selfidentity.LocalSelfIdentityBindingV1 `json:"localSelfIdentityBinding"`
+		Binding *selfidentity.LocalSelfIdentityBindingV2 `json:"localSelfIdentityBinding"`
 	}
 	// The complete WorkerRequest has intentionally more fields than this
 	// projection, so strict shape is already enforced by its JSON Schema.
 	if err := json.Unmarshal(storedRequest, &request); err != nil || request.Binding == nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, errors.New("WorkerRequest lacks the local self-identity binding")
+		return selfidentity.LocalSelfIdentityObservationV2{}, errors.New("WorkerRequest lacks the local self-identity binding")
 	}
 	if err := selfidentity.ValidateBinding(*request.Binding, persisted); err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, fmt.Errorf("WorkerRequest local self-identity binding mismatch: %w", err)
+		return selfidentity.LocalSelfIdentityObservationV2{}, fmt.Errorf("WorkerRequest local self-identity binding mismatch: %w", err)
 	}
 	events, truncated, err := store.ReadEventsUnderLease(lease)
 	if err != nil || truncated || len(events) == 0 {
-		return selfidentity.LocalSelfIdentityObservationV1{}, errors.New("worker.started authority is unreadable")
+		return selfidentity.LocalSelfIdentityObservationV2{}, errors.New("worker.started authority is unreadable")
 	}
 	started := events[len(events)-1]
 	if started.Type != "worker.started" || started.AttemptID == "" || started.AttemptID != attemptID ||
 		payloadString(started.Payload, "dispatchObservationDigest") != persisted.ObservationDigest {
-		return selfidentity.LocalSelfIdentityObservationV1{}, errors.New("worker.started does not bind the persisted dispatch observation")
+		return selfidentity.LocalSelfIdentityObservationV2{}, errors.New("worker.started does not bind the persisted dispatch observation")
 	}
 	return reboundIngress, nil
 }
@@ -804,7 +804,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	} else {
 		workerResult, runErr = input.Adapter.Run(ctx, workerRecord)
 	}
-	var ingressObservation *selfidentity.LocalSelfIdentityObservationV1
+	var ingressObservation *selfidentity.LocalSelfIdentityObservationV2
 	if dispatchObservation != nil {
 		if input.BeforeLocalResultIngress != nil {
 			if err := input.BeforeLocalResultIngress(attemptDir); err != nil {
@@ -827,7 +827,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 				err = input.AfterLocalIngressObservation(attemptDir)
 			}
 		}
-		var rebound selfidentity.LocalSelfIdentityObservationV1
+		var rebound selfidentity.LocalSelfIdentityObservationV2
 		if err == nil {
 			rebound, err = admitLocalSelfIdentityIngress(store, lease, localAttemptAuthority, localDispatchLeaf, localIngressLeaf, attemptID, policyData, requestData, input.Validator, *dispatchObservation, observed)
 		}
@@ -986,7 +986,7 @@ func bindAdmissionPayload(payload map[string]any, admission *resultbinding.Admis
 	return nil
 }
 
-func recoverAdmittedWorkerResult(ctx context.Context, store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, selectedAdapterID string, input Input, currentIdentity *selfidentity.LocalSelfIdentityObservationV1) (Result, bool, error) {
+func recoverAdmittedWorkerResult(ctx context.Context, store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, selectedAdapterID string, input Input, currentIdentity *selfidentity.LocalSelfIdentityObservationV2) (Result, bool, error) {
 	attemptID := state.CurrentAttemptID
 	attemptDir := filepath.Join(runDir, "attempts", attemptID)
 	staged, err := os.ReadFile(filepath.Join(attemptDir, "worker-result.json"))
@@ -1018,7 +1018,7 @@ func recoverAdmittedWorkerResult(ctx context.Context, store *runstore.Store, lea
 		return Result{State: state, AttemptID: attemptID}, false, errors.New("execution: reconciled WorkerResult differs from staged result")
 	}
 
-	var ingressObservation *selfidentity.LocalSelfIdentityObservationV1
+	var ingressObservation *selfidentity.LocalSelfIdentityObservationV2
 	var dispatchObservationDigest string
 	if currentIdentity != nil {
 		authorityDir, openErr := runstore.OpenOrCreateDirectoryUnderLease(lease, "attempts", attemptID)

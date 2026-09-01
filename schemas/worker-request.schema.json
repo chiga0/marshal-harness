@@ -86,7 +86,7 @@
       "additionalProperties": false,
       "required": ["schemaVersion", "selfProfile", "activationDigest", "identitySubjectDigest", "dispatchObservationDigest"],
       "properties": {
-        "schemaVersion": { "const": "marshal.local-self-identity-binding.v1" },
+        "schemaVersion": { "const": "marshal.local-self-identity-binding.v2" },
         "selfProfile": { "const": "darwin-local-dogfood" },
         "activationDigest": { "$ref": "#/$defs/digest" },
         "identitySubjectDigest": { "$ref": "#/$defs/digest" },

@@ -3,7 +3,7 @@
 // construct these values, but generic domain records do not import them.
 package evidencebinding
 
-type ExecutionApplicabilityV1 struct {
+type ExecutionApplicabilityV2 struct {
 	SchemaVersion         string `json:"schemaVersion"`
 	SelfProfile           string `json:"selfProfile"`
 	ActivationDigest      string `json:"activationDigest"`
@@ -14,7 +14,7 @@ type ExecutionApplicabilityV1 struct {
 	Publication           string `json:"publication"`
 }
 
-type VerificationIdentityBindingV1 struct {
+type VerificationIdentityBindingV2 struct {
 	SchemaVersion                 string                   `json:"schemaVersion"`
 	SelfProfile                   string                   `json:"selfProfile"`
 	ActivationDigest              string                   `json:"activationDigest"`
@@ -23,10 +23,10 @@ type VerificationIdentityBindingV1 struct {
 	DispatchObservationDigest     string                   `json:"dispatchObservationDigest"`
 	IngressObservationDigest      string                   `json:"ingressObservationDigest"`
 	VerificationObservationDigest string                   `json:"verificationObservationDigest"`
-	Applicability                 ExecutionApplicabilityV1 `json:"applicability"`
+	Applicability                 ExecutionApplicabilityV2 `json:"applicability"`
 }
 
-type ReviewIdentityBindingV1 struct {
+type ReviewIdentityBindingV2 struct {
 	SchemaVersion                 string                   `json:"schemaVersion"`
 	SelfProfile                   string                   `json:"selfProfile"`
 	ActivationDigest              string                   `json:"activationDigest"`
@@ -36,5 +36,5 @@ type ReviewIdentityBindingV1 struct {
 	VerificationBindingDigest     string                   `json:"verificationBindingDigest"`
 	VerificationObservationDigest string                   `json:"verificationObservationDigest"`
 	ReviewObservationDigest       string                   `json:"reviewObservationDigest"`
-	Applicability                 ExecutionApplicabilityV1 `json:"applicability"`
+	Applicability                 ExecutionApplicabilityV2 `json:"applicability"`
 }

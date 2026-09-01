@@ -10,7 +10,7 @@
   "finalEvidenceDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
   "localSelfIdentityBindingDigest": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
   "applicability": {
-    "schemaVersion": "marshal.local-dogfood-environment-binding.v1",
+    "schemaVersion": "marshal.local-dogfood-environment-binding.v2",
     "selfProfile": "darwin-local-dogfood",
     "activationDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "identitySubjectDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

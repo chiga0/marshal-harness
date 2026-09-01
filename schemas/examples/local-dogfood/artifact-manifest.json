@@ -4,7 +4,7 @@
   "taskId": "LD-3B",
   "runId": "local-run-1",
   "localSelfIdentityBinding": {
-    "schemaVersion": "marshal.local-self-identity-verification-binding.v1",
+    "schemaVersion": "marshal.local-self-identity-verification-binding.v2",
     "selfProfile": "darwin-local-dogfood",
     "activationDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "identitySubjectDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -13,7 +13,7 @@
     "ingressObservationDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
     "verificationObservationDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
     "applicability": {
-      "schemaVersion": "marshal.local-dogfood-environment-binding.v1", "selfProfile": "darwin-local-dogfood",
+      "schemaVersion": "marshal.local-dogfood-environment-binding.v2", "selfProfile": "darwin-local-dogfood",
       "activationDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "identitySubjectDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "assurance": "ordinary-user", "execution": "workspace-write", "production": false, "publication": "none"
     }

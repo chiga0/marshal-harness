@@ -47,10 +47,10 @@ type Input struct {
 }
 
 type LocalSelfIdentityInput struct {
-	Applicability selfidentity.LocalApplicabilityV1
-	Dispatch      selfidentity.LocalSelfIdentityObservationV1
-	Ingress       selfidentity.LocalSelfIdentityObservationV1
-	Verification  selfidentity.LocalSelfIdentityObservationV1
+	Applicability selfidentity.LocalApplicabilityV2
+	Dispatch      selfidentity.LocalSelfIdentityObservationV2
+	Ingress       selfidentity.LocalSelfIdentityObservationV2
+	Verification  selfidentity.LocalSelfIdentityObservationV2
 }
 
 type Result struct {
@@ -69,7 +69,7 @@ type Verifier struct {
 func New() *Verifier { return &Verifier{now: time.Now} }
 
 func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
-	var localBinding *selfidentity.LocalVerificationBindingV1
+	var localBinding *selfidentity.LocalVerificationBindingV2
 	if input.LocalSelfIdentity != nil {
 		binding, err := selfidentity.BuildVerificationBinding(input.AttemptID, input.LocalSelfIdentity.Applicability, input.LocalSelfIdentity.Dispatch, input.LocalSelfIdentity.Ingress, input.LocalSelfIdentity.Verification)
 		if err != nil {
