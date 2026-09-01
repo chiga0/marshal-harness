@@ -82,6 +82,12 @@ jobs:
           test "$head" = "$EXPECTED_HEAD" || { echo "::error::checkout head 漂移 $head" >&2; exit 1; }
           bash scripts/release-ci-gate.sh "${{ github.repository }}" "$EXPECTED_HEAD"
 
+      - name: Set up base Go (1.26.5) for toolchain download
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.5'
+          cache: false
+
       - name: Provision pinned Go toolchain (go1.26.6) into module cache
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: GOTOOLCHAIN=go1.26.6 go version
