@@ -116,12 +116,8 @@ jobs:
             "$carrier_dir" "$RELEASE_HEAD" "$evidence_run_id" \
             "$candidate_artifact_id" "$candidate_artifact_digest" \
             "$authority_head" "$EXPECTED_RECEIPT_DIGEST"
-          build_date="$(jq -r '.binary.buildDate' "$receipt")"
-          go_version="$(jq -r '.binary.goVersion' "$receipt")"
-          GO_BIN="$(go env GOROOT)/bin/go" bash scripts/release-contract.sh verify-rc1-dist \
-            "$carrier_dir" "$TAG_NAME" "$RELEASE_HEAD" "$build_date" "$go_version" \
-            darwin arm64 darwin-local-dogfood
-          bash scripts/release-contract.sh verify-candidate-tag . "$carrier_dir" "$TAG_NAME"
+          GO_BIN="$(go env GOROOT)/bin/go" bash scripts/release-contract.sh verify-candidate-tag \
+            . "$carrier_dir" "$TAG_NAME"
           echo "CARRIER_DIR=$carrier_dir" >> "$GITHUB_ENV"
 
       - name: Freeze the admitted carrier without rebuilding candidate bytes
