@@ -2,13 +2,15 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
-## 2026-09-01 最新 RC1 检查点
+## 2026-09-01 `v1.0.0-rc1` 已发布
 
-`main@4fa1343` 的 required CI 已全绿，ADR 0068 的 production environment selector/direct `Adapter.Run` fallback 也已归零。GitHub RC1 run phase `33477653933` 使用 build-once Darwin arm64 candidate 与真实 Pi 到达 `REVIEW_PENDING`；finalize `33477984364` 在另一台 runner 上因 V1 activation 把临时 `device/inode` 纳入跨 runner identity subject 而被 Core 正确拒绝。
+[`v1.0.0-rc1`](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0-rc1) 已发布为 unsigned、Mac-first、Darwin arm64、CLI-only 的 `darwin-local-dogfood` 生命周期预览。annotated tag object `e99326fa6b6e57a19db8d6404c56b3dcf396fdc7` 精确指向 sourceHead `c1407bd77924c97dc6784f4d81938a3f0bfa75f6`，candidate SHA-256 为 `f9ed7fa59d05f5e71fef7164b8015240497e1d18e25ef1d3f8e199c1378a3774`。
 
-[ADR 0073](adr/0073-dogfood-activation-v2-host-portability.md) 已接受，本切片把 activation 的 portable subject 与每台宿主的 current-path object observation 分离：activation 不再携带 device/inode，但每次本机 observation 仍强制验证 device/inode、size/hash、fd/path recheck 与 ABA；activation→observation→attempt/applicability→verification→review 同步升级为 V2，finalize 不再以同一 `activationId` 重签发。下一步是 exact-head CI 后从新的 run phase 重跑 V2 canary，不能复用 V1 `REVIEW_PENDING`。
+真实 Pi `0.84.4` canary run `33504020360` 与 finalize `33504247271` 已通过 fixed CLI、Local allocation、ResultIngress、独立 Verification/ReviewDecision 到达 `ACCEPTED`，receipt digest 为 `sha256:7bd5b500bbaff5c5b008922b713d9844b792a3e82ece4e4a46ccd837496b4525`。candidate exact-head CI run `33502847249` 的 Ubuntu、macOS、secret scan 全绿；release workflow run `33506656403` 只消费同一 carrier，不重建 candidate。
 
-这仍不是已发布 RC1。V2 canary 必须进入 `ACCEPTED` 并产出 current receipt/carrier；随后 release workflow 还要从无条件拒绝 `v1.*`/通用四平台重建改为验证 carrier、消费同一 Darwin arm64 candidate，最后才可创建 annotated tag 与 GitHub prerelease。
+外部下载 release 后，二进制 SHA-256 与 canary 完全相同；临时目录安装成功，`marshal version --json` 精确返回 `1.0.0-rc1`、commit `c1407bd`、Go `1.26.6`、`darwin/arm64` 与 `darwin-local-dogfood`。安装必须显式指定 exact tag 和 `MARSHAL_LOCAL_DOGFOOD_PREVIEW=1`，安装器不会自动生成 activation，也不会修改 Gatekeeper、SIP 或 EDR。
+
+本次结果只关闭 [ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 的 local-dogfood prerelease distribution exit。它不满足 ADR 0052 的 `RELEASED` 成熟度，也不是 production、managed、notarized、hardened、server、Linux 或 stable release。R2–R5 继续为 `COMPONENT`，R6 为 `IN_PROGRESS/COMPONENT`。
 
 ## 2026-08-31 fixed CLI 生命周期检查点
 
@@ -24,7 +26,7 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 ## 现在可以使用
 
-当前版本适合在 macOS 或 Linux 上，由单个用户把本地 Git 仓库任务交给 Coding Agent：
+当前源码版适合在 macOS 或 Linux 上，由单个用户把本地 Git 仓库任务交给 Coding Agent；已发布 RC1 的封闭支持面仅为 Darwin arm64、可信用户、可信仓库和 `publication:none`：
 
 - 初始化独立的 Marshal 工作目录，不污染主 checkout；
 - 使用 OpenCode 或 Pi 执行编码任务；Qwen Code 是否可调度以当前 `marshal doctor` 的 `supported` admission 为准；
@@ -35,7 +37,7 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 - 在任务失败、中止或无需改动时保存结果记录；
 - 对中断任务进行状态检查、恢复和安全清理。
 
-这套本地能力已经通过真实 Agent、真实 GitHub Draft PR、Linux 与 macOS CI 验证，可以作为早期可用版本试用。
+这套本地能力已经通过真实 Agent、真实 GitHub Draft PR、Linux 与 macOS CI 验证。Darwin arm64 用户现在可以显式安装 `v1.0.0-rc1` 试用 fixed CLI local-dogfood 纵切；其它平台继续使用源码/既有 release 路径，不能把 RC1 资产外推为 Linux 或 stable 支持。
 
 ## Mac-first Adapter 现状（2026-08-30）
 
@@ -52,19 +54,17 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 该历史检查点修复了 live allocation 重封装、空环境 spawn payload、Darwin 工作目录 `NOTE_ATTRIB` 噪声，以及普通 CLI 的 FD3/4 inherited-child 误判。后续提交已经接通 WorkerRequest、Pi 执行、结果接纳和独立 Verification；这些旧的“尚未接线”结论不再适用于当前主线。
 
-## v1.0 正在建设
+## v1.0 stable 正在建设
 
-`main@3819462` 已把 RB1 existing-worktree、sealed start、Attach/terminalization、ResultIngress 与 fixed CLI real-Pi `ACCEPTED` 串成真实纵切。该历史 bytes 已被后续主线取代，不能作为当前 RC1 publication authority。
+RC1 已把 RB1 existing-worktree、sealed start、Attach/terminalization、ResultIngress、fixed CLI real-Pi `ACCEPTED` 和 same-bytes distribution 串成真实纵切。下一阶段不再重复构建 RC1，而是按 ADR 0052 收敛 stable v1.0：
 
-当前第一优先级严格按 ADR 0068 收敛 Mac-first RC1，不再把 server 或 stable 门禁插入首发关键路径：
+- 实现并验证 fixed `marshal control-plane serve` 的唯一 composition 与 loopback authenticated transport；
+- 关闭 kill/restart/cancel/timeout/response-loss/retry、重复 start、stale/replayed result 与 binding drift 的完整恢复/故障矩阵；
+- provision 并验证 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 的 macOS managed signing/notarization、protected producer 和 anti-rollback authority；
+- 完成 Linux stable 产物、安装、升级/回滚和同路径 conformance；
+- 从受保护输入重新构建 stable candidate，不能把 unsigned RC1 原地补签或 promote。
 
-- 合入 activation/observation/binding V2 并通过 exact-head required CI；
-- 从新 run phase 构建 immutable Darwin arm64 candidate 和原始 V2 activation；
-- 在 finalize runner 原样消费 activation，以同一 bytes 完成真实 Pi `ACCEPTED`、恢复与负向门禁；
-- 由 current authority 生成 canary receipt/carrier；
-- 收敛 release workflow，验证 carrier、消费同一 candidate，再完成 exact opt-in 安装、annotated tag 与 GitHub prerelease。
-
-fixed `marshal control-plane serve`、managed signing/notarization 与 Linux production/release/stable authority 明确属于 RC1 后继，不阻塞 unsigned CLI-only RC1，也不能由 RC1 的 component 证据提前宣称完成。
+RC1 后可以并行推进 GoalLite/Agent Team 的最薄产品纵切，但不得让横向 Provider、Cloudflare、HA、多租户或复杂 Goal DAG 抢占 stable 主链。
 
 这些能力目前处于 `COMPONENT` 或集成中，不能因为 package、测试或 API 已存在就表述为 `INTEGRATED`。
 
@@ -78,8 +78,6 @@ Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Prov
 
 ## 接下来怎么走
 
-近期建设顺序与上方最新 RC1 检查点一致：V2 合入/CI → 全新 V2 run/finalize `ACCEPTED` → receipt/carrier → release workflow no-rebuild admission → annotated tag/GitHub prerelease。
-
-RC1 发布后才推进 fixed server、managed signing/notarization、Linux authority 与 stable release gate。
+近期建设顺序为：冻结 RC1 发布证据与复盘 → fixed server/recovery fault matrix → managed signing/notarization 与 Linux stable gate → 受保护 stable candidate → `v1.0.0`。GoalLite 只以不冲突的独立纵切并行推进。
 
 详细范围见 GitHub 上的 [ADR 0052](https://github.com/chiga0/marshal-harness/blob/main/docs/adr/0052-v1-release-scope-and-production-reachability.md)，实时工程状态见 [Roadmap](https://github.com/chiga0/marshal-harness/blob/main/docs/roadmap-status.md)。

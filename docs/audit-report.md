@@ -1,5 +1,21 @@
 # 设计审计报告
 
+## 2026-09-01：`v1.0.0-rc1` same-bytes 发布终验与失败复盘
+
+[`v1.0.0-rc1`](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0-rc1) 已完成 ADR 0068 的 local-dogfood prerelease distribution exit。annotated tag object `e99326fa6b6e57a19db8d6404c56b3dcf396fdc7` 精确指向 sourceHead `c1407bd77924c97dc6784f4d81938a3f0bfa75f6`；candidate SHA-256 为 `f9ed7fa59d05f5e71fef7164b8015240497e1d18e25ef1d3f8e199c1378a3774`。真实 Pi `0.84.4` canary run `33504020360` 与 finalize run `33504247271` 形成单 Run/单 Attempt、9 项 Gate、独立 Verification/ReviewDecision、`ACCEPTED`、current receipt/carrier；receipt digest 为 `sha256:7bd5b500bbaff5c5b008922b713d9844b792a3e82ece4e4a46ccd837496b4525`。candidate exact-head CI run `33502847249` 的 Ubuntu、macOS 与 secret scan 全绿。
+
+release workflow run `33506656403` 的 Admit 和 Publish 全绿，只消费 finalize carrier，不重建、重签、strip 或改写 candidate。GitHub release 外部下载的 candidate SHA-256 仍为 `f9ed7fa5…a3774`；在独立临时目录通过 exact tag + preview opt-in 安装后，`marshal version --json` 精确返回 version `1.0.0-rc1`、commit `c1407bd`、build date `2026-09-01T11:30:25Z`、Go `1.26.6`、`darwin/arm64` 与 `darwin-local-dogfood`。tag ruleset 只在创建该 exact tag 时加入临时精确 exclusion，推送后立即恢复为 active、零 exclusion；未覆盖或改写远端历史。
+
+发布前发生三次确定性失败，candidate/tag/carrier bytes 始终未变：
+
+1. run `33504766816`：Admit 在 carrier checker 通过后，又把四成员 carrier 交给只接受三成员 dist 的 `verify-rc1-dist`。修复为单一 `verify-candidate-tag` RC1 路由，删除重复且语义冲突的门禁。
+2. run `33505577882`：Publish 把 candidate sourceHead 与 GitHub artifact workflow revision 错误地当成同一 SHA。修复为分别绑定 artifact name/candidate SHA 和 `workflow_run.head_sha`/workflow SHA，并补 cross-workflow replay 负测。
+3. run `33506131715`：workflow 来自新 main，但 Publish checkout 到 RC1 tag 后实际执行了 tag 内旧 validator。修复为候选源码与 validator 双 checkout；validator 精确绑定 `${{ github.sha }}`，candidate contract 仍从 exact tag 执行。随后使用该失败 run 的真实 artifact 在本地完整预演 metadata→archive→payload→receipt→carrier→tag/binary 全链，才进行最终发布。
+
+复盘结论：这三次往返不是 Agent 或 candidate 质量问题，而是发布测试只覆盖 helper 单体，没有在“workflow source revision 与 checked-out candidate revision 不同”的真实 GitHub workspace 语义下执行全链。后续 release 变更必须在 dispatch 前使用一个真实历史 artifact 或等价 closed fixture 完成端到端 Publish preflight，并显式列出 candidate identity、transport workflow identity、validator identity 三个不同主体；禁止重复校验器、隐式 checkout 版本和同名 `sourceHead` 混用。该学习已固化为 fixed workflow digest、双身份 hostile/replay 测试和 exact validator checkout。
+
+本终验不改变 ADR 0068 的负向声明：RC1 不是 ADR 0052 的 `RELEASED`，也不是 production、managed、notarized、hardened、server、Linux 或 stable release。`I186-R2–R5` 保持 `IN_PROGRESS/COMPONENT`；`I186-R6` 更新为 `IN_PROGRESS/COMPONENT`，下一主线是 fixed server/recovery fault matrix、Issue #212 signing/notarization、Linux stable 与受保护 stable candidate。
+
 ## 2026-09-01：ADR 0073 activation V2 跨 runner 证据模型审计
 
 GitHub RC1 canary 已把当前发布阻塞收敛为一个可复现的证据模型缺口：run phase `33477653933` 用 build-once candidate 和真实 Pi 到达 `REVIEW_PENDING`，finalize `33477984364` 在另一台 macOS runner 上失败于本地身份 binding。根因不是 Agent、ResultIngress 或 ReviewDecision，而是 V1 同时把临时文件系统的 `device/inode` 当作跨阶段稳定主体；以相同 `activationId` 重签发只能产生新的 activation digest，不能建立权威连续性。
@@ -79,7 +95,7 @@ GitHub RC1 canary 已把当前发布阻塞收敛为一个可复现的证据模�
 | `I186-EXISTING-WORKTREE-ALLOCATION` | P0 | `ADR-PROPOSED / AGGREGATE-REWORK` | 首版把sidecar描述成独立allocation ledger，会形成第二authority。修订提案把Bind/Receipt/Release全部收回RB1 closed union；repository-global target uniqueness从held-owner下RB1 replay判定。固定sidecar仅为可重建projection，缺/落后先投影、损坏/超前fail closed，绝不能覆盖RB1。关闭要求aggregate rework独立复审、existing-only Run open、锁序/sidecar/crash/replay/ABA/secret/zero-target-mutation矩阵与真实Pi纵切。 |
 | `I186-RESULTINGRESS-HELD-DESCRIPTOR` | P0 | `CONTRACT-ACCEPTED / IMPLEMENTATION-OPEN` | 当前ResultIngress store仍可能按pathname reopen authority对象，且`ObserveCurrentCore`不能先于`OpenOwner`产生current结论。这不是ADR0069新增信任决策：[ADR0066](adr/0066-production-composition-owner-acquisition.md)已经要求canonical held-descriptor边界。S1′ rework必须改held descriptor backend、拆分正确时序并证明path漂移时不打开替代对象；完成前不得接受sealed proof实现。 |
 
-[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md)首版`ebbfd86`独立审查为`P0=3/P1=4`，`1adf20c` aggregate复审只剩`P0=1/P1=1`；定向修订 sourceHead `e2af179` 已独立 `APPROVE`（`P0=0/P1=0`）并由维护者接受。接受只冻结合同，仍未实现；它不改变ordinary-user/non-production边界，也不提供hardened sandbox、Linux authority或release授权；R2–R5保持`COMPONENT`、R6保持`PLANNED/DESIGN`。
+[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md)首版`ebbfd86`独立审查为`P0=3/P1=4`，`1adf20c` aggregate复审只剩`P0=1/P1=1`；定向修订 sourceHead `e2af179` 已独立 `APPROVE`（`P0=0/P1=0`）并由维护者接受。以下结论仅记录 2026-08-29 当时状态：接受只冻结合同，尚未实现；R2–R5当时保持`COMPONENT`、R6当时保持`PLANNED/DESIGN`。当前成熟度以上方 2026-09-01 RC1 终验为准。
 
 ## v1.0 候选链审计 checkpoint（2026-08-28）
 
@@ -144,7 +160,7 @@ ADR 0066 提案 `69574533fd7c7e0e91b4ef45a2c902885c2eeb4c` 经独立 reviewer �
 
 ADR0067保留的硬门禁是current-ledger recheck、exact successful resume、ADR0065 sealed proof、唯一Run successor、fixed Supervisor mechanics、ADR0064 control-directory identity、ADR0066 canonical factory。S1′只允许runstore内部窄lease shared-guard/borrow、descriptor-bound strict journal与read-only projection，唯一exported mutation seam仍为`WithPreparedRunStartAuthority`；它原冻结的S2′ producer简写已被ADR0069预审证明缺少reservation/full Attempt与诚实existing-worktree binding，因此在ADR0069复审接受前不得按旧简写实施。候选修订顺序为`reservation→dispatch/full identity→attempt-opened→owner binding→RB1 allocation facts→Prepared→S1 start`，不允许seed/Fake/legacy`execution.Run`或sidecar authority。ADR0067的Mac ordinary-user no-effect/permanent-intervention二分保持不变；其提案`1e05fb831c04a1c87e7f4ecdc677c97beb9d88e6`已接受，但不关闭ADR0069新增P0或升级R2–R6。
 
-ADR0068提案 `9cfa1b65275d2e23f18b958a05d027adec6af8fd` 经唯一独立 reviewer `APPROVE`（`P0=0`、`P1=0`）后接受。它仅为 `v1.0.0-rc1` 部分取代0051/0052/0062的首发前置，冻结unsigned Darwin arm64 CLI-only local-dogfood preview；真实顺序是S1′→S2′→Attach/rebind→terminalization→fixed CLI真实Pi+独立Decision `ACCEPTED`→same-bytes RC1。server、managed signing/notarization和Linux stable转为RC1后继；RC1 installer guard、canary和产物均未实现，R2–R5继续为`COMPONENT`、R6继续为`PLANNED/DESIGN`。
+ADR0068提案 `9cfa1b65275d2e23f18b958a05d027adec6af8fd` 经唯一独立 reviewer `APPROVE`（`P0=0`、`P1=0`）后接受。它仅为 `v1.0.0-rc1` 部分取代0051/0052/0062的首发前置，冻结unsigned Darwin arm64 CLI-only local-dogfood preview；真实顺序是S1′→S2′→Attach/rebind→terminalization→fixed CLI真实Pi+独立Decision `ACCEPTED`→same-bytes RC1。server、managed signing/notarization和Linux stable转为RC1后继。该段“尚未实现”的判断是 2026-08-29 历史状态，已被上方 2026-09-01 RC1 终验取代；R2–R5继续为`COMPONENT`，R6现为`IN_PROGRESS/COMPONENT`。
 
 ### Darwin 控制目录阶段化身份审计（2026-08-29）
 
@@ -198,7 +214,7 @@ cleanup 使用时必须同时经过外部 current Run authority verifier、精�
 | `V1-CUTOVER-NONDETERMINISM` | P1 | `CLOSED-CONTRACT` | ADR 0052 部分取代 ADR 0045 §1 第 1 项：Fake 比较 exact digest，真实 Agent 比较 authority invariants，内容仍逐次独立验证。 |
 | `V1-SCOPE-UNBOUNDED` | P1 | `CLOSED-CONTRACT` | ADR 0052 把 Cloudflare 完整生产拓扑、HA、多用户、完整 Provider/SDK 矩阵与 Goal DAG 延期到 1.x。 |
 
-该 2026-08-27 重置仅作历史纠偏记录。当前权威状态为：R0 `PASSED/DESIGN`；R1 `IN_PROGRESS/INTEGRATED`；R2–R5 `IN_PROGRESS/COMPONENT`；R6 `PLANNED/DESIGN`。M10–M13 作为 1.x 候选池，不再阻塞首个正式版本。
+该 2026-08-27 重置仅作历史纠偏记录。当时权威状态为：R0 `PASSED/DESIGN`；R1 `IN_PROGRESS/INTEGRATED`；R2–R5 `IN_PROGRESS/COMPONENT`；R6 `PLANNED/DESIGN`。当前 R6 已随 RC1 发布进入 `IN_PROGRESS/COMPONENT`；M10–M13 仍作为 1.x 候选池，不阻塞 stable v1.0。
 
 本修订不降低任何 universal 不变量；Local ordinary-user 的 Core-held process observation 只支持 trusted single-user v1 profile，不能关闭 cloud/hardened 的 location attestation finding。生产 cutover、故障 conformance、签名/notarization 与 release identity 仍必须在 R5/R6 完成。
 
@@ -243,7 +259,7 @@ cleanup 使用时必须同时经过外部 current Run authority verifier、精�
 | `V1-SANDBOX-REG-CONSUMER-PREFIX` | P1 | `CLOSED-FIX` | sandbox registrationId 曾只在消费端临时补 `registration:` 前缀，接纳不验证 binding 与真实 ledger 精确相等。已从源头统一 canonical ID（`embeddedRegistrationID` 带前缀），删除消费端 hack，并在 `AdmitWithDurableAuthority` 机械断言 `AttemptBinding.SandboxProviderRegistrationID == 当前 ledger ProviderRegistrationID`，不等即 fail closed（`0ae6640`）。 |
 | `V1-STRICT-E2E-FALSE-POSITIVE` | P1 | `CLOSED-FIX/TERMINAL-PENDING` | 前置 fixed-bin canary 已绑定 `sourceHead=d4b9647`，单 Attempt 通过 9 项 Gate，到达 ReviewPacket/`REVIEW_PENDING`。最终主线尚未重跑，也未导入独立 ReviewDecision 到 `ACCEPTED`，因此不能关闭 R5。 |
 | `V1-R5-INTEGRATED-PREMATURE` | P1 | `CLOSED-DOCS` | R5 曾被标 `INTEGRATED` 但同时承认 cutover 未开始；且 `MARSHAL_WORKER_EXECUTOR=legacy` 仍在、production gate 需额外环境变量、默认非 embedded 走 seed admission。已撤回为 `COMPONENT`（`82e0c9f`）。 |
-| `V1-DOCS-STATE-CONFLICT` | P1 | `CLOSED-DOCS` | AGENTS/Roadmap/Readiness/Implementation Plan 的 R2–R6 状态互相冲突（R6 一处 IN_PROGRESS 多处 PLANNED、R1 成熟度不一致、R2–R5 状态不一）。已统一为权威口径：R0 PASSED、R1 IN_PROGRESS/INTEGRATED、R2–R5 IN_PROGRESS/COMPONENT、R6 PLANNED/DESIGN（`82e0c9f` + 本次）。 |
+| `V1-DOCS-STATE-CONFLICT` | P1 | `CLOSED-DOCS` | AGENTS/Roadmap/Readiness/Implementation Plan 的 R2–R6 状态曾互相冲突。2026-08-28 当时统一为 R0 PASSED、R1 IN_PROGRESS/INTEGRATED、R2–R5 IN_PROGRESS/COMPONENT、R6 PLANNED/DESIGN；2026-09-01 RC1 发布后又统一更新为 R6 IN_PROGRESS/COMPONENT。 |
 
 纠正后真实进展以本报告顶部 2026-08-28 checkpoint 为准：ResultIngress crash-atomic transaction 已随 `main@912f659` 合入，durable server run controller 已随 `main@44ee8c9` 合入，production selector 已随 `main@d4b9647` 收紧，Pi canary 在 `sourceHead=d4b9647` 以单 Attempt/9 Gate 到达 `REVIEW_PENDING`；但 `main@ecee8d4` 只接受 ADR 0056 合同，实现、cleanup 矩阵和独立 Decision/`ACCEPTED` canary 尚未闭环，因此 R2–R5 继续为 `COMPONENT`。
 
