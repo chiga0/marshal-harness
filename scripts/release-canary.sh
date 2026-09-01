@@ -201,9 +201,20 @@ if [ "$TEST_MODE" = 0 ]; then
       break
     fi
   done
-  # 同级 fallback：固定用户 Home 的默认 GOPATH 布局（如 Actions runner 上
-  # 由 setup-go 预置缓存后、launcher 不在脚本环境 PATH 的情况）。
-  [ -n "$GO_BIN" ] || accept_go_toolchain "${MARSHAL_RELEASE_CANARY_GOPATH:-$go_user_home/go}"
+  if [ -n "$GO_BIN" ]; then :; elif [ -n "${MARSHAL_RELEASE_CANARY_GO_BIN:-}" ]; then
+    # 供给环境已把精确 go 二进制放在固定路径（如 GH runner 上的官方 tarball
+    # 下载）。不能再经 launcher/GOPATH 推断换身份：同一 binary 必须满足
+    # canonical 已解析、常规文件、版本精确三项。
+    [ -n "$MARSHAL_RELEASE_CANARY_GO_BIN" ] && [ -x "$MARSHAL_RELEASE_CANARY_GO_BIN" ] && [ ! -L "$MARSHAL_RELEASE_CANARY_GO_BIN" ] || die "MARSHAL_RELEASE_CANARY_GO_BIN 不存在、不可执行或是符号链接"
+    resolved_bin="$($PYTHON_BIN -I -B -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$MARSHAL_RELEASE_CANARY_GO_BIN")"
+    [ "$resolved_bin" = "$MARSHAL_RELEASE_CANARY_GO_BIN" ] || die "MARSHAL_RELEASE_CANARY_GO_BIN 不是 canonical path"
+    [ "$(GOTOOLCHAIN=local "$resolved_bin" env GOVERSION 2>/dev/null)" = "$required_go_version" ] || die "MARSHAL_RELEASE_CANARY_GO_BIN 版本漂移"
+    GO_BIN="$resolved_bin"
+  else
+    # 同级 fallback：固定用户 Home 的默认 GOPATH 布局（如 Actions runner 上
+    # 由 setup-go 预置缓存后、launcher 不在脚本环境 PATH 的情况）。
+    accept_go_toolchain "${MARSHAL_RELEASE_CANARY_GOPATH:-$go_user_home/go}"
+  fi
   [ -n "$GO_BIN" ] || die "缺少与 go.mod 精确匹配且已安装的固定 Go toolchain：$required_go_version"
 fi
 

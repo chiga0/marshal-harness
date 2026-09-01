@@ -82,25 +82,22 @@ jobs:
           test "$head" = "$EXPECTED_HEAD" || { echo "::error::checkout head 漂移 $head" >&2; exit 1; }
           bash scripts/release-ci-gate.sh "${{ github.repository }}" "$EXPECTED_HEAD"
 
-      - name: Set up base Go (1.26.5) for toolchain download
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.26.5'
-          cache: false
-
-      - name: Provision pinned Go toolchain (go1.26.6) into module cache
-        shell: /bin/bash --noprofile --norc -euo pipefail {0}
-        run: GOTOOLCHAIN=go1.26.6 go version
-
-      # TEMP-DIAG: 诊断 GH runner 上 toolchain 模块缓存落点（定位 canary 脚本固定 toolchain 发现失败）
-      - name: DIAG toolchain cache landing
+      - name: Provision Go 1.26.6 from the official tarball
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          echo "GOPATH: $(GOTOOLCHAIN=local go env GOPATH)"
-          echo "GOMODCACHE: $(GOTOOLCHAIN=local go env GOMODCACHE)"
-          ls -la "$HOME" || true
-          ls -la "${HOME}/go/pkg/mod/golang.org/" 2>/dev/null || echo "missing-mod-golang-org"
-          /usr/bin/find "$HOME/go/pkg/mod/golang.org" -maxdepth 2 -name 'toolchain@v0.0.1-go1.26.6.darwin-arm64' 2>/dev/null | head -3 || true
+          root="$RUNNER_WORKSPACE/go-toolchain"
+          rm -rf "$root" && mkdir -p "$root"
+          tarball="$root/go1.26.6.darwin-arm64.tar.gz"
+          curl -fsSLo "$tarball" "https://dl.google.com/go/go1.26.6.darwin-arm64.tar.gz"
+          sha="$(shasum -a 256 "$tarball" | awk '{print tolower($1)}')"
+          echo "go1.26.6.darwin-arm64.tar.gz sha256=$sha"
+          [ -n "$sha" ]
+          /usr/bin/tar -xzf "$tarball" -C "$root"
+          go_bin="$(/usr/bin/python3 -I -B -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$root/go/bin/go")"
+          [ -x "$go_bin" ] && [ ! -L "$go_bin" ] || { echo "::error::go binary 不存在或为符号链接" >&2; exit 1; }
+          [ "$(GOTOOLCHAIN=local "$go_bin" env GOVERSION)" = "go1.26.6" ] || { echo "::error::go1.26.6 版本不一致：$(GOTOOLCHAIN=local "$go_bin" env GOVERSION)" >&2; exit 1; }
+          printf 'MARSHAL_RELEASE_CANARY_GO_BIN=%s\n' "$go_bin" >> "$GITHUB_ENV"
+          printf 'MARSHAL_RELEASE_CANARY_GO_TARBALL_SHA256=%s\n' "$sha" >> "$GITHUB_ENV"
 
       - name: Provision pinned Node v24.15.0 + Pi 0.84.4 with digest assertions
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
@@ -147,10 +144,9 @@ jobs:
       - name: Build once the immutable RC1 candidate
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          gopath_bin="$(/usr/bin/find "$(go env GOPATH)/pkg/mod/golang.org" -maxdepth 1 -type d -name 'toolchain@v0.0.1-go1.26.6.darwin-arm64' | head -1)/bin/go"
-          [ -x "$gopath_bin" ] || { echo "::error::缺少固定 go1.26.6 toolchain" >&2; exit 1; }
+          [ -n "$MARSHAL_RELEASE_CANARY_GO_BIN" ] && [ -x "$MARSHAL_RELEASE_CANARY_GO_BIN" ] || { echo "::error::缺少固定 go1.26.6 binary" >&2; exit 1; }
           build_date="$(bash scripts/release-contract.sh build-date . "$EXPECTED_HEAD")"
-          make dist-rc1 GO="$gopath_bin" VERSION=1.0.0-rc1 COMMIT="$EXPECTED_HEAD" BUILD_DATE="$build_date"
+          make dist-rc1 GO="$MARSHAL_RELEASE_CANARY_GO_BIN" VERSION=1.0.0-rc1 COMMIT="$EXPECTED_HEAD" BUILD_DATE="$build_date"
           mkdir -p bin
           cp dist/marshal_1.0.0-rc1_darwin_arm64 bin/marshal
           dist_sha="$(shasum -a 256 dist/marshal_1.0.0-rc1_darwin_arm64 | awk '{print tolower($1)}')"
