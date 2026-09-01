@@ -180,7 +180,10 @@ jobs:
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           if [ -d .marshal/release-canary ]; then
-            /usr/bin/tar -czf canary-evidence.tar.gz -C .marshal release-canary
+            /usr/bin/tar \
+              --exclude 'release-canary/*/repository/.marshal/runs/*/lease.lock' \
+              --exclude 'release-canary/*/repository/.marshal/runs/*/lease.lock.owner' \
+              -czf canary-evidence.tar.gz -C .marshal release-canary
           else
             echo 'canary evidence directory missing' >&2
           fi
@@ -218,10 +221,17 @@ jobs:
           gh api "repos/${{ github.repository }}/actions/artifacts/${aid}/zip" > "$archive"
           python3 -I -B scripts/rc1-canary-restore-evidence.py "$archive"
           if [ ! -d .marshal/release-canary ] && [ -f canary-evidence.tar.gz ]; then
-            mkdir -p .marshal && /usr/bin/tar -xzf canary-evidence.tar.gz -C .marshal
+            mkdir -p .marshal
+            /usr/bin/tar \
+              --exclude 'release-canary/*/repository/.marshal/runs/*/lease.lock' \
+              --exclude 'release-canary/*/repository/.marshal/runs/*/lease.lock.owner' \
+              -xzf canary-evidence.tar.gz -C .marshal
             rm -f canary-evidence.tar.gz
           fi
           [ -d ".marshal/release-canary/${EXPECTED_CANARY_RUN_ID}" ] || { echo "::error::evidence artifact 缺少 canary 门目 ${EXPECTED_CANARY_RUN_ID}" >&2; exit 1; }
+          run_authority=".marshal/release-canary/${EXPECTED_CANARY_RUN_ID}/repository/.marshal/runs/${EXPECTED_CANARY_RUN_ID}"
+          [ ! -e "$run_authority/lease.lock" ] || { echo "::error::恢复后的 authority 含宿主本地 lease.lock" >&2; exit 1; }
+          [ ! -e "$run_authority/lease.lock.owner" ] || { echo "::error::恢复后的 authority 含宿主本地 lease.lock.owner" >&2; exit 1; }
           [ -f "dist/marshal_1.0.0-rc1_darwin_arm64" ] || { echo "::error::evidence artifact 缺少 candidate dist" >&2; exit 1; }
           cp dist/marshal_1.0.0-rc1_darwin_arm64 bin/marshal
           CROOT="$(pwd)/.marshal/release-canary/${EXPECTED_CANARY_RUN_ID}"
@@ -270,7 +280,7 @@ jobs:
           authority_head="$(python3 -I -B scripts/rc1-canary-authority-head.py ".marshal/release-canary/${EXPECTED_CANARY_RUN_ID}/repository/.marshal/result-ingress/result-ingress.jsonl")"
           agent_version="$(env -i HOME="$HOME" "$PI_NODE" "$PI_BUNDLE" --version)"
           decision_path="$RUNNER_TEMP/review-decision.json"
-          carrier_dir="rc1-carrier"
+          carrier_dir="$(pwd)/rc1-carrier"
           rm -rf "$carrier_dir" && mkdir -p "$carrier_dir"
           receipt_digest="$(
             bash scripts/rc1-canary-receipt.sh \

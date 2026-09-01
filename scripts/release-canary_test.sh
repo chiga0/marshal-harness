@@ -78,6 +78,16 @@ grep -Fq 'd.get("schemaVersion") == "marshal.local-dogfood-activation.v2"' "$WOR
 if grep -Fq 'ACTIVATION_PATH.new' "$WORKFLOW_SOURCE"; then
   fail 'RC1 finalize 仍在跨 runner 重签发 activation'
 fi
+# Run lease 与 owner probe 只证明当前宿主上被 flock 打开的对象，不能随
+# authority artifact 迁移。run/finalize 两端都必须排除精确闭集，恢复后
+# 还要显式证明二者不存在，再由固定 Marshal CLI 在首次 mutation 时重建。
+for lease_name in lease.lock lease.lock.owner; do
+  exclude="--exclude 'release-canary/*/repository/.marshal/runs/*/${lease_name}'"
+  [ "$(grep -Fc -- "$exclude" "$WORKFLOW_SOURCE")" -eq 2 ] \
+    || fail "RC1 workflow 未在 pack/restore 两端精确排除 ${lease_name}"
+  grep -Fq "[ ! -e \"\$run_authority/${lease_name}\" ]" "$WORKFLOW_SOURCE" \
+    || fail "RC1 finalize 未断言恢复后的 ${lease_name} 不存在"
+done
 # workflow_dispatch 的自由文本 input 只能通过 step env 进入 shell；直接插值
 # 会让 JSON 内部引号改写 Bash 源码，并导致真实 finalize 在输入校验阶段失败。
 grep -Fq 'DECISION_JSON: ${{ inputs.decision }}' "$WORKFLOW_SOURCE" \
@@ -96,6 +106,8 @@ grep -Fq 'require_field(packet, "evidenceDigest", "packet")' "$RECEIPT_SOURCE" \
   || fail 'RC1 receipt 未从 ReviewPacket 读取 evidenceDigest'
 grep -Fq 'payload_hasher.update(b"marshal.rc1-carrier-payload.v1\n")' "$RECEIPT_SOURCE" \
   || fail 'RC1 receipt payload identity 未与 carrier checker 对齐'
+grep -Fq 'carrier_dir="$(pwd)/rc1-carrier"' "$WORKFLOW_SOURCE" \
+  || fail 'RC1 workflow 未向 carrier producer/checker 传递规范化绝对目录'
 
 cat >"$PI_BUNDLE" <<'EOF'
 #!/usr/bin/env bash
