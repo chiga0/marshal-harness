@@ -129,12 +129,13 @@ def validate_metadata(
     metadata: dict[str, object],
     artifact_id: int,
     digest: str,
-    source_head: str,
+    candidate_source_head: str,
+    workflow_source_head: str,
     run_id: int,
 ) -> None:
     expected = {
         "id": artifact_id,
-        "name": f"release-payload-{source_head}",
+        "name": f"release-payload-{candidate_source_head}",
         "expired": False,
         "digest": f"sha256:{digest}",
     }
@@ -153,7 +154,7 @@ def validate_metadata(
     observed_run_id = workflow_run.get("id")
     if type(observed_run_id) is not int or observed_run_id != run_id:
         fail("artifact workflow run mismatch")
-    if workflow_run.get("head_sha") != source_head:
+    if workflow_run.get("head_sha") != workflow_source_head:
         fail("artifact workflow sourceHead mismatch")
 
 
@@ -271,10 +272,11 @@ def extract_archive(descriptor: int, held: os.stat_result, destination: str) -> 
 
 
 def main(arguments: list[str]) -> int:
-    if len(arguments) != 8:
+    if len(arguments) != 9:
         fail(
             "usage: release-artifact-metadata-check.py ABS_METADATA ABS_ARCHIVE "
-            "ABS_EXTRACT_DIR ARTIFACT_ID ARTIFACT_DIGEST SOURCE_HEAD RUN_ID"
+            "ABS_EXTRACT_DIR ARTIFACT_ID ARTIFACT_DIGEST CANDIDATE_SOURCE_HEAD "
+            "WORKFLOW_SOURCE_HEAD RUN_ID"
         )
     (
         _,
@@ -283,21 +285,25 @@ def main(arguments: list[str]) -> int:
         extract_directory,
         artifact_id_text,
         digest,
-        source_head,
+        candidate_source_head,
+        workflow_source_head,
         run_id_text,
     ) = arguments
     artifact_id = positive_decimal("artifact id", artifact_id_text)
     run_id = positive_decimal("workflow run id", run_id_text)
     if not SHA256.fullmatch(digest):
         fail("artifact digest must be a lowercase SHA-256")
-    if not SOURCE_HEAD.fullmatch(source_head):
-        fail("sourceHead must be a lowercase SHA-1 commit")
+    if not SOURCE_HEAD.fullmatch(candidate_source_head):
+        fail("candidate sourceHead must be a lowercase SHA-1 commit")
+    if not SOURCE_HEAD.fullmatch(workflow_source_head):
+        fail("workflow sourceHead must be a lowercase SHA-1 commit")
 
     validate_metadata(
         parse_metadata(read_metadata(metadata_path)),
         artifact_id,
         digest,
-        source_head,
+        candidate_source_head,
+        workflow_source_head,
         run_id,
     )
     archive_descriptor, held_archive = open_held_regular(
