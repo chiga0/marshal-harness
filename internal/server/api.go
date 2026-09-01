@@ -190,6 +190,12 @@ type requestIdentity struct {
 type Config struct {
 	StateRoot      string
 	RepositoryRoot string
+	// DisableMutations turns the Public API into a query/event-only
+	// compatibility surface. It is set unconditionally by the independent
+	// marshal-server binary after ADR 0062 removed that executable from the
+	// trusted production set. Fixed marshal control-plane serve must leave it
+	// false and supply the in-process production application boundary.
+	DisableMutations bool
 	// Selector overrides the Worker adapter selector. When nil the server
 	// builds app.NewWorkerRuntime(Getenv) and uses its fail-closed production
 	// selector. Compatibility selectors remain an explicit injection seam.
@@ -231,15 +237,16 @@ type Config struct {
 
 // Server is the resident Public API surface. It is safe for concurrent use.
 type Server struct {
-	namespace      authority.AuthorityNamespaceId
-	stateRoot      string
-	repositoryRoot string
-	now            func() time.Time
-	validator      *contract.Validator
-	selector       *adapter.Selector
-	runExecutor    func(context.Context, string) error
-	store          *runstore.Store
-	idempotency    *Store
+	namespace        authority.AuthorityNamespaceId
+	stateRoot        string
+	repositoryRoot   string
+	now              func() time.Time
+	validator        *contract.Validator
+	selector         *adapter.Selector
+	runExecutor      func(context.Context, string) error
+	disableMutations bool
+	store            *runstore.Store
+	idempotency      *Store
 
 	events               *Projection
 	sseBufferLimit       int
@@ -271,7 +278,7 @@ func New(config Config) (*Server, error) {
 		validator = created
 	}
 	selector := config.Selector
-	if selector == nil {
+	if selector == nil && !config.DisableMutations {
 		getenv := config.Getenv
 		if getenv == nil {
 			getenv = os.Getenv
@@ -323,6 +330,7 @@ func New(config Config) (*Server, error) {
 		validator:            validator,
 		selector:             selector,
 		runExecutor:          config.RunExecutor,
+		disableMutations:     config.DisableMutations,
 		store:                store,
 		idempotency:          NewIdempotencyStore(filepath.Join(config.StateRoot, "idempotency"), now),
 		events:               newProjection(config.StateRoot, namespace, store, watchInterval),
@@ -369,6 +377,9 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			methodNotAllowed(writer, identity.RequestID, http.MethodPost)
 			return
 		}
+		if s.rejectDisabledMutation(writer, identity.RequestID) {
+			return
+		}
 		s.handleTaskCreate(writer, request, identity)
 	case len(segments) == 2 && segments[0] == "tasks":
 		if request.Method != http.MethodGet {
@@ -381,16 +392,25 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			methodNotAllowed(writer, identity.RequestID, http.MethodPost)
 			return
 		}
+		if s.rejectDisabledMutation(writer, identity.RequestID) {
+			return
+		}
 		s.handleTaskCancel(writer, request, identity, segments[1])
 	case len(segments) == 3 && segments[0] == "runs" && segments[2] == "approval":
 		if request.Method != http.MethodPost {
 			methodNotAllowed(writer, identity.RequestID, http.MethodPost)
 			return
 		}
+		if s.rejectDisabledMutation(writer, identity.RequestID) {
+			return
+		}
 		s.handleRunApproval(writer, request, identity, segments[1])
 	case len(segments) == 3 && segments[0] == "runs" && segments[2] == "start":
 		if request.Method != http.MethodPost {
 			methodNotAllowed(writer, identity.RequestID, http.MethodPost)
+			return
+		}
+		if s.rejectDisabledMutation(writer, identity.RequestID) {
 			return
 		}
 		s.handleRunStart(writer, request, identity, segments[1])
@@ -415,6 +435,18 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	default:
 		writeError(writer, identity.RequestID, apiError(CodeNotFound, "unknown-route", "unknown route"))
 	}
+}
+
+// rejectDisabledMutation is the common fail-closed gate for a compatibility
+// server that has no production mutation authority. It runs after route and
+// method validation but before request-body parsing or any durable write.
+func (s *Server) rejectDisabledMutation(writer http.ResponseWriter, requestID string) bool {
+	if !s.disableMutations {
+		return false
+	}
+	writeError(writer, requestID, apiError(CodeRejected, "mutation-authority-unavailable",
+		"this compatibility server has no production mutation authority; use fixed marshal control-plane serve"))
+	return true
 }
 
 func routeSegments(path string) ([]string, *APIError) {

@@ -12,6 +12,12 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 本次结果只关闭 [ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 的 local-dogfood prerelease distribution exit。它不满足 ADR 0052 的 `RELEASED` 成熟度，也不是 production、managed、notarized、hardened、server、Linux 或 stable release。R2–R5 继续为 `COMPONENT`，R6 为 `IN_PROGRESS/COMPONENT`。
 
+## 2026-09-01 stable server cutover 开始
+
+独立 `cmd/marshal-server` 已按 [ADR 0062](adr/0062-fixed-marshal-production-server-mode.md) 从生产权威路径降权：删除 `--marshal-executable`、child `marshal task run`、Provider registration 写入口和相关环境转发；兼容进程只提供既有 Run/Task 查询与事件投影，所有 Task create/cancel、Run approval/start 在读取请求体或写入幂等账本前统一返回 `mutation-authority-unavailable`。启动 banner 明示 `mutationMode=disabled`，不存在通过 flag 或环境变量重新开启 mutation 的路径。
+
+这关闭了“独立二进制仍可成为第二 authority root”的旧实现风险，但没有完成 stable server。下一相邻切片仍须在 fixed `marshal` 内实现 `marshal control-plane serve`，复用同一个 in-process `PublicApplicationPort`、`ProductionRuntime` owner 与恢复控制器，并通过 authenticated loopback、并发 owner、response-loss 和 restart recovery 矩阵。因此 fixed server finding 继续为 `INTEGRATION-OPEN`，R2–R6 成熟度不升级。
+
 ## 2026-08-31 fixed CLI 生命周期检查点
 
 固定候选 `main@3819462` 已构建为 `v1.0.0-rc1` Darwin arm64 local-dogfood bytes，并以真实 Pi 执行 canary `RC1-PI-20260831-3819462`。该 Run 只经 ResultIngress 接纳结果，由独立 Verification 生成 current Evidence，再由独立 reviewer 生成精确绑定 Evidence 的 accept Decision，最终由新的 Marshal 进程重读为 `ACCEPTED`。Decision digest 为 `sha256:5d50b624e41419ef32a1d7251481d5843ab001d3affe0ef6c8a6aad5465df5e9`。

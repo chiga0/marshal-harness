@@ -877,7 +877,7 @@
     "NOT_FOUND": {"status": 404, "reasons": ["unknown-route", "task-not-found", "run-not-found"]},
     "IDEMPOTENCY_CONFLICT": {"status": 409, "reasons": ["idempotency-key-conflict"]},
     "INVALID_STATE": {"status": 409, "reasons": ["run-lease-held", "run-already-exists", "invalid-lifecycle-transition", "run-terminal", "run-start-progress-conflict", "no-cancelable-run", "journal-conflict", "approval-gate-unavailable", "approval-stale"]},
-    "REJECTED": {"status": 422, "reasons": ["task-spec-invalid", "policy-snapshot-invalid", "planning-rejected", "approval-not-required", "control-input-invalid", "approval-rejected", "journal-truncated", "run-inspect-failed", "run-state-conflict", "run-start-intent-invalid", "run-start-intent-drift", "run-executor-unavailable", "run-execution-failed", "run-execution-not-observed", "ambiguous-run", "outcome-unavailable", "abort-staging-failed", "journal-append-failed", "abort-commit-failed", "outcome-commit-failed", "snapshot-write-failed", "run-lease-unavailable", "request-cancelled"]},
+    "REJECTED": {"status": 422, "reasons": ["task-spec-invalid", "policy-snapshot-invalid", "planning-rejected", "approval-not-required", "control-input-invalid", "approval-rejected", "journal-truncated", "run-inspect-failed", "run-state-conflict", "run-start-intent-invalid", "run-start-intent-drift", "run-executor-unavailable", "run-execution-failed", "run-execution-not-observed", "mutation-authority-unavailable", "ambiguous-run", "outcome-unavailable", "abort-staging-failed", "journal-append-failed", "abort-commit-failed", "outcome-commit-failed", "snapshot-write-failed", "run-lease-unavailable", "request-cancelled"]},
     "INTERNAL": {"status": 500, "reasons": ["internal"]}
   }
 }
