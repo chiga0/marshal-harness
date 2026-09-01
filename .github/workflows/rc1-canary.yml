@@ -181,6 +181,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           compression-level: 0
+          include-hidden-files: true
 
       - name: Restore run-phase canary evidence
         if: inputs.phase == 'finalize'
