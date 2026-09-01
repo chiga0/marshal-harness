@@ -171,14 +171,14 @@ jobs:
           echo "CANARY_RUN_ID=$run_id" >> "$GITHUB_ENV"
 
       - name: Upload canary run evidence
-        if: inputs.phase == 'run'
+        if: inputs.phase == 'run' && always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rc1-canary-run-${{ github.run_id }}
           path: |
             dist/
             .marshal/release-canary/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
           compression-level: 0
 
