@@ -399,6 +399,11 @@ run_driver run --run-id "$MAIN_RUN" --expected-head "$EXPECTED_HEAD" --expected-
 [ "$(cat "${FAKE_STATE}/${MAIN_RUN}.state")" = REVIEW_PENDING ] || fail 'run 子命令没有停在 REVIEW_PENDING'
 run_driver status --run-id "$MAIN_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --expect REVIEW_PENDING >/dev/null
 MAIN_DECISION="$(make_accept_decision "$MAIN_RUN")"
+PARSED_MAIN_DECISION="${TMP_ROOT}/parsed-main-review-decision.json"
+DECISION_JSON="$(<"$MAIN_DECISION")" \
+  /usr/bin/python3 -I -B "${SCRIPT_DIR}/rc1-canary-decision-parse.py" "$PARSED_MAIN_DECISION" >/dev/null
+cmp -s "$MAIN_DECISION" "$PARSED_MAIN_DECISION" \
+  || fail 'workflow Decision parser 改变了 Core 所需的扁平 ReviewDecision'
 run_driver finalize --run-id "$MAIN_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --decision "$MAIN_DECISION" >/dev/null
 [ "$(cat "${FAKE_STATE}/${MAIN_RUN}.state")" = ACCEPTED ] || fail 'finalize 没有到达 ACCEPTED'
 run_driver status --run-id "$MAIN_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --expect ACCEPTED >/dev/null
