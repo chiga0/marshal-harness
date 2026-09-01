@@ -55,13 +55,18 @@ jobs:
     steps:
       - name: Validate phase inputs
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          DECISION_JSON: ${{ inputs.decision }}
+          EVIDENCE_RUN_ID: ${{ inputs.evidence-run-id }}
+          EXPECTED_CANARY_RUN_ID: ${{ inputs.expected-canary-run-id }}
+          PHASE: ${{ inputs.phase }}
         run: |
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::expected-head 必须是 40 位小写 sha" >&2; exit 1; }
           [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || { echo "::error::pi-model 必须是 provider/model 形状" >&2; exit 1; }
-          if [ "${{ inputs.phase }}" = finalize ]; then
-            [ -n "${{ inputs.decision }}" ] || { echo "::error::finalize 缺少 decision" >&2; exit 1; }
-            [[ "${{ inputs.evidence-run-id }}" =~ ^[1-9][0-9]*$ ]] || { echo "::error::finalize 缺 evidence-run-id" >&2; exit 1; }
-            [ -n "${{ inputs.expected-canary-run-id }}" ] || { echo "::error::finalize 缺 expected-canary-run-id" >&2; exit 1; }
+          if [ "$PHASE" = finalize ]; then
+            [ -n "$DECISION_JSON" ] || { echo "::error::finalize 缺少 decision" >&2; exit 1; }
+            [[ "$EVIDENCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::finalize 缺 evidence-run-id" >&2; exit 1; }
+            [ -n "$EXPECTED_CANARY_RUN_ID" ] || { echo "::error::finalize 缺 expected-canary-run-id" >&2; exit 1; }
           fi
 
       - name: Checkout exact expected-head
