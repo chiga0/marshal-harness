@@ -170,6 +170,16 @@ jobs:
           env -u GOPATH -u GOMODCACHE -u GOENV -u GOTOOLCHAIN scripts/release-canary.sh status --run-id "$run_id" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --expect REVIEW_PENDING
           echo "CANARY_RUN_ID=$run_id" >> "$GITHUB_ENV"
 
+      - name: Pack canary evidence into a tarball (attempt-dir names contain colons)
+        if: inputs.phase == 'run' && always()
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          if [ -d .marshal/release-canary ]; then
+            /usr/bin/tar -czf canary-evidence.tar.gz -C .marshal release-canary
+          else
+            echo 'canary evidence directory missing' >&2
+          fi
+
       - name: Upload canary run evidence
         if: inputs.phase == 'run' && always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -177,7 +187,7 @@ jobs:
           name: rc1-canary-run-${{ github.run_id }}
           path: |
             dist/
-            .marshal/release-canary/
+            canary-evidence.tar.gz
           if-no-files-found: warn
           retention-days: 30
           compression-level: 0
@@ -202,6 +212,9 @@ jobs:
           archive="$RUNNER_TEMP/rc1-canary-run.zip"
           gh api "repos/${{ github.repository }}/actions/artifacts/${aid}/zip" > "$archive"
           python3 -I -B scripts/rc1-canary-restore-evidence.py "$archive"
+          if [ ! -d .marshal/release-canary ] && [ -f canary-evidence.tar.gz ]; then
+            mkdir -p .marshal && /usr/bin/tar -xzf canary-evidence.tar.gz -C .marshal
+          fi
           [ -d ".marshal/release-canary/${EXPECTED_CANARY_RUN_ID}" ] || { echo "::error::evidence artifact 缺少 canary 门目 ${EXPECTED_CANARY_RUN_ID}" >&2; exit 1; }
           [ -f "dist/marshal_1.0.0-rc1_darwin_arm64" ] || { echo "::error::evidence artifact 缺少 candidate dist" >&2; exit 1; }
           cp dist/marshal_1.0.0-rc1_darwin_arm64 bin/marshal
