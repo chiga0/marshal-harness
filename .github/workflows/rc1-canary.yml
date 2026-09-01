@@ -158,8 +158,9 @@ jobs:
           export MARSHAL_CANARY_PI_BUNDLE="$PI_BUNDLE"
           export MARSHAL_CANARY_PI_MODEL="$PI_MODEL"
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
-          scripts/release-canary.sh run --run-id "$run_id" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1
-          scripts/release-canary.sh status --run-id "$run_id" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --expect REVIEW_PENDING
+          export MARSHAL_RELEASE_CANARY_GO_USER_HOME="$HOME"
+          env -u GOPATH -u GOMODCACHE -u GOENV -u GOTOOLCHAIN scripts/release-canary.sh run --run-id "$run_id" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1
+          env -u GOPATH -u GOMODCACHE -u GOENV -u GOTOOLCHAIN scripts/release-canary.sh status --run-id "$run_id" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --expect REVIEW_PENDING
           echo "CANARY_RUN_ID=$run_id" >> "$GITHUB_ENV"
 
       - name: Upload canary run evidence
@@ -212,9 +213,10 @@ jobs:
           export MARSHAL_CANARY_PI_BUNDLE="$PI_BUNDLE"
           export MARSHAL_CANARY_PI_MODEL="$PI_MODEL"
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
-          scripts/release-canary.sh status --run-id "$EXPECTED_CANARY_RUN_ID" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --expect REVIEW_PENDING
-          scripts/release-canary.sh finalize --run-id "$EXPECTED_CANARY_RUN_ID" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --decision "$decision_path"
-          scripts/release-canary.sh status --run-id "$EXPECTED_CANARY_RUN_ID" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --expect ACCEPTED
+          export MARSHAL_RELEASE_CANARY_GO_USER_HOME="$HOME"
+          env -u GOPATH -u GOMODCACHE -u GOENV -u GOTOOLCHAIN scripts/release-canary.sh status --run-id "$EXPECTED_CANARY_RUN_ID" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --expect REVIEW_PENDING
+          env -u GOPATH -u GOMODCACHE -u GOENV -u GOTOOLCHAIN scripts/release-canary.sh finalize --run-id "$EXPECTED_CANARY_RUN_ID" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --decision "$decision_path"
+          env -u GOPATH -u GOMODCACHE -u GOENV -u GOTOOLCHAIN scripts/release-canary.sh status --run-id "$EXPECTED_CANARY_RUN_ID" --expected-head "$EXPECTED_HEAD" --expected-version 1.0.0-rc1 --expect ACCEPTED
 
       - name: Assemble and validate RC1 canary receipt + immutable carrier
         if: inputs.phase == 'finalize'
