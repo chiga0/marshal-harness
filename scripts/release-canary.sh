@@ -176,7 +176,12 @@ if [ "$TEST_MODE" = 0 ]; then
   [[ "$go_user_home" = /Users/* ]] || die "无法从 canonical source root 推导固定用户 Home"
   required_go_version="$(/usr/bin/sed -n -E 's/^toolchain[[:space:]]+(go[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' "${SOURCE_ROOT}/go.mod")"
   [ -n "$required_go_version" ] || die "go.mod 缺少精确 toolchain 版本"
-  for go_launcher in /opt/homebrew/bin/go /usr/local/bin/go /usr/local/go/bin/go; do
+  go_launchers=()
+  if self_go="$(command -v go 2>/dev/null)" && [ -n "$self_go" ]; then
+    go_launchers+=("$self_go")
+  fi
+  go_launchers+=(/opt/homebrew/bin/go /usr/local/bin/go /usr/local/go/bin/go)
+  for go_launcher in "${go_launchers[@]}"; do
     [ -x "$go_launcher" ] || continue
     go_path="$(/usr/bin/env -i HOME="$go_user_home" PATH="$(/usr/bin/dirname "$go_launcher"):/usr/bin:/bin:/usr/sbin:/sbin" GOTOOLCHAIN=local "$go_launcher" env GOPATH 2>/dev/null || true)"
     [ -n "$go_path" ] || continue
