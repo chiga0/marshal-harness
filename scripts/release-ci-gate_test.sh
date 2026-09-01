@@ -199,7 +199,11 @@ PY
   grep -F 'needs: admit' "$publish" >/dev/null || return 1
   grep -F 'environment: release-publication' "$publish" >/dev/null || return 1
   grep -F 'contents: write' "$publish" >/dev/null || return 1
-  grep -F 'scripts/release-artifact-metadata-check.py' "$publish" >/dev/null || return 1
+  grep -F 'name: Checkout validators from the exact workflow revision' "$publish" >/dev/null || return 1
+  grep -F 'ref: ${{ github.sha }}' "$publish" >/dev/null || return 1
+  grep -F 'path: .release-validator' "$publish" >/dev/null || return 1
+  grep -F '.release-validator/scripts/release-artifact-metadata-check.py' "$publish" >/dev/null || return 1
+  ! grep -F 'python3 -I -B scripts/release-artifact-metadata-check.py' "$publish" >/dev/null || return 1
   grep -F 'EXPECTED_WORKFLOW_HEAD: ${{ github.sha }}' "$publish" >/dev/null || return 1
   grep -F '"$EXPECTED_SOURCE_HEAD" "$EXPECTED_WORKFLOW_HEAD" "${{ github.run_id }}"' "$publish" >/dev/null || return 1
   grep -F 'scripts/rc1-release-payload-extract.py' "$publish" >/dev/null || return 1

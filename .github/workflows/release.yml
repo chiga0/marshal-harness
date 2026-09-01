@@ -168,6 +168,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Checkout validators from the exact workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .release-validator
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Download, bind, and recheck admitted same-bytes payload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -187,7 +195,7 @@ jobs:
           trap 'rm -f "$metadata_file" "$archive_file"; rm -rf "$artifact_dir"' EXIT
           gh api "repos/${{ github.repository }}/actions/artifacts/${EXPECTED_PAYLOAD_ARTIFACT_ID}" > "$metadata_file"
           gh api "repos/${{ github.repository }}/actions/artifacts/${EXPECTED_PAYLOAD_ARTIFACT_ID}/zip" > "$archive_file"
-          python3 -I -B scripts/release-artifact-metadata-check.py \
+          python3 -I -B .release-validator/scripts/release-artifact-metadata-check.py \
             "$metadata_file" "$archive_file" "$artifact_dir" \
             "$EXPECTED_PAYLOAD_ARTIFACT_ID" "$EXPECTED_PAYLOAD_ARTIFACT_DIGEST" \
             "$EXPECTED_SOURCE_HEAD" "$EXPECTED_WORKFLOW_HEAD" "${{ github.run_id }}"
