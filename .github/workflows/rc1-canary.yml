@@ -92,6 +92,16 @@ jobs:
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: GOTOOLCHAIN=go1.26.6 go version
 
+      # TEMP-DIAG: 诊断 GH runner 上 toolchain 模块缓存落点（定位 canary 脚本固定 toolchain 发现失败）
+      - name: DIAG toolchain cache landing
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          echo "GOPATH: $(GOTOOLCHAIN=local go env GOPATH)"
+          echo "GOMODCACHE: $(GOTOOLCHAIN=local go env GOMODCACHE)"
+          ls -la "$HOME" || true
+          ls -la "${HOME}/go/pkg/mod/golang.org/" 2>/dev/null || echo "missing-mod-golang-org"
+          /usr/bin/find "$HOME/go/pkg/mod/golang.org" -maxdepth 2 -name 'toolchain@v0.0.1-go1.26.6.darwin-arm64' 2>/dev/null | head -3 || true
+
       - name: Provision pinned Node v24.15.0 + Pi 0.84.4 with digest assertions
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
