@@ -135,7 +135,7 @@ jobs:
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           umask 077
-          rm -rf dist && mkdir -p dist bin
+          rm -rf dist && mkdir -p bin
           "$MARSHAL_RELEASE_CANARY_GO_BIN" version
           make dist-rc1 GO="$MARSHAL_RELEASE_CANARY_GO_BIN" VERSION="1.0.0-rc1" \
             COMMIT="$MAIN_HEAD" BUILD_DATE="$(bash scripts/release-contract.sh build-date . "$MAIN_HEAD")"
