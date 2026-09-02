@@ -226,3 +226,121 @@ func TestRepro226SealedComposeBase(t *testing.T) {
 		t.Logf("step6 classification (not #226): %v", startErr)
 	})
 }
+
+// TestRepro226SequentialSessionStart matches the fixed CLI operation shape:
+// one repository-wide owner session, a short-lived runtime for Prepare, then
+// a fresh short-lived runtime for Start. Keeping both calls in one runtime
+// does not exercise the production boundary that regressed in #226.
+func TestRepro226SequentialSessionStart(t *testing.T) {
+	inputs, runID, _, base, _ := pathBCompositionInputsForLaunch(t)
+	if err := inputs.Ingress.Close(); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(filepath.Join(base, "result-ingress"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	controlPath := filepath.Join(base, "owner-control")
+	if err := os.Mkdir(controlPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	control, err := os.Open(controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	fixed, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixed, err = filepath.EvalSymlinks(fixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core, err := processsupervisor.ObserveCurrentCore(fixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquisition := inputs.Acquisition
+	acquisition.OwnerUID = core.UID
+	acquisition.OwnerGID = core.GID
+	acquisition.OwnerProcess = core.Process
+	acquisition.OwnerBinary = core.Binary
+	acquisition.ObservedAt = time.Unix(core.Process.BirthSeconds, core.Process.BirthMicroseconds*int64(time.Microsecond)).UTC().Add(time.Second).Format(time.RFC3339Nano)
+	session, err := OpenRepositorySession(context.Background(), RepositorySessionInputs{
+		HeldIngressDir: held, OwnerDirectory: inputs.OwnerDirectory,
+		Acquisition: acquisition, FixedMarshalPath: fixed,
+		OwnerPrivateControlRoot: control,
+	})
+	if err != nil {
+		t.Fatalf("open repository session: %v", err)
+	}
+	defer session.Close()
+
+	composeInputs := inputs
+	composeInputs.Ingress = nil
+	composeInputs.OwnerDirectory = nil
+	composeInputs.Acquisition = resultingress.ControlOwnerAcquisition{}
+	composeInputs.RepositorySession = session
+	identity, err := launchidentity.Pi0844IdentityFromClosure(composeInputs.LaunchClosure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := NewPi0844Profile(composeInputs.LaunchClosure.RuntimeExecutable.CanonicalPath, "/fixed/node-runtime", identity.IdentityDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := ComposeRuntime(context.Background(), composeInputs, profile)
+	if err != nil {
+		t.Fatalf("compose prepare runtime: %v", err)
+	}
+	projection, err := first.Runtime.InspectRun(context.Background(), application.InspectRunRequest{RunID: runID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := first.Runtime.PrepareRunStart(context.Background(), application.PrepareRunStartRequest{
+		RunID: runID, ExpectedSequence: projection.Sequence, ExpectedAuthorityHead: projection.AuthorityHead,
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := first.Runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := ComposeRuntime(context.Background(), composeInputs, profile)
+	if err != nil {
+		t.Fatalf("compose start runtime: %v", err)
+	}
+	defer second.Runtime.Close()
+	ctrl := second.Runtime.controller
+	if ctrl == nil {
+		t.Fatal("start runtime controller missing")
+	}
+	err = ctrl.withOwner(context.Background(), true, func(verifier resultingress.CurrentOwnerLockVerifier, owner OwnerProjection) error {
+		durable, err := ctrl.authority.RehydratePreparedRunStart(context.Background(), verifier, ctrl.acquisition, prepared.PreparationDigest)
+		if err != nil {
+			t.Fatalf("stage rehydrate-prepared: %v", err)
+		}
+		if durable != prepared {
+			t.Fatalf("stage compare-prepared mismatch:\ndurable=%+v\nsupplied=%+v", durable, prepared)
+		}
+		if replay, found, err := ctrl.authority.RehydrateRunStartOutcome(context.Background(), verifier, ctrl.acquisition, prepared.PreparationDigest); err != nil {
+			t.Fatalf("stage rehydrate-outcome: %v", err)
+		} else if found {
+			t.Fatalf("stage rehydrate-outcome unexpectedly found before start: %+v", replay)
+		}
+		if err := ctrl.bridge.VerifyAgentProfile(context.Background(), verifier, ctrl.acquisition, owner, ctrl.profile); err != nil {
+			t.Fatalf("stage verify-profile: %v", err)
+		}
+		if err := ctrl.bridge.StartPreparedRun(context.Background(), verifier, ctrl.acquisition, owner, ctrl.profile, prepared); err != nil {
+			t.Fatalf("stage bridge-start raw leaf: %T: %v", err, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stage owner-window: %v", err)
+	}
+}
