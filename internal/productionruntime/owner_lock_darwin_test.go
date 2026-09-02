@@ -75,6 +75,11 @@ func openOwnerStore(t *testing.T, fixture ownerLockFixture) *resultingress.Durab
 
 func openHeldOwnerStore(t *testing.T, fixture ownerLockFixture) (*resultingress.DurableStore, string) {
 	t.Helper()
+	return openHeldOwnerStoreWithInitialLedger(t, fixture, nil)
+}
+
+func openHeldOwnerStoreWithInitialLedger(t *testing.T, fixture ownerLockFixture, initialLedger []byte) (*resultingress.DurableStore, string) {
+	t.Helper()
 	path := filepath.Join(fixture.base, "held-result-ingress")
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
@@ -84,6 +89,13 @@ func openHeldOwnerStore(t *testing.T, fixture ownerLockFixture) (*resultingress.
 	}
 	if err := os.Chown(path, -1, os.Getgid()); err != nil {
 		t.Fatalf("set held ingress directory group: %v", err)
+	}
+	ledgerPath := filepath.Join(path, "result-ingress.jsonl")
+	if err := os.WriteFile(ledgerPath, initialLedger, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(ledgerPath, -1, os.Getgid()); err != nil {
+		t.Fatal(err)
 	}
 	directory, err := os.Open(path)
 	if err != nil {
@@ -510,7 +522,8 @@ func TestRepositoryOwnerAtomicTransitionClassifiesIngressIdentityAndReplayFailur
 
 	t.Run("owner-ledger-corruption", func(t *testing.T) {
 		fixture := newOwnerLockFixture(t)
-		store, ingressPath := openHeldOwnerStore(t, fixture)
+		corrupt := []byte("{}\n")
+		store, ingressPath := openHeldOwnerStoreWithInitialLedger(t, fixture, corrupt)
 		acquisition := acquisitionAtEpoch(1)
 		phase, err := openRepositoryOwnerScopeLock(fixture.directory, acquisition.Scope)
 		if err != nil {
@@ -519,10 +532,6 @@ func TestRepositoryOwnerAtomicTransitionClassifiesIngressIdentityAndReplayFailur
 		defer phase.Close()
 
 		ledgerPath := filepath.Join(ingressPath, "result-ingress.jsonl")
-		corrupt := []byte("{}\n")
-		if err := os.WriteFile(ledgerPath, corrupt, 0o600); err != nil {
-			t.Fatal(err)
-		}
 		_, _, _, transitionErr := phase.acquireAndBind(context.Background(), store, acquisition)
 		requireOwnerTransitionFailure(t, transitionErr, repositoryOwnerFailureReplayConflict)
 		after, readErr := os.ReadFile(ledgerPath)
