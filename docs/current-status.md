@@ -2,6 +2,12 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
+## 2026-09-02 ADR 0075 修复已上 main，#226 仍阻塞 sealed StartPreparedRun
+
+[ADR 0075](adr/0075-rc1-dogfood-usability-barriers.md) 已接受并在 main 上全部落地（`516e6a3`、`9029619`、candidate-mode `0a192ec`、workflow 链 `be3183b`/`0de20c5`），三组定向回归测试（0700 worktree 不变量、launch 输入 token 契约、终态单 JSON 提取）覆盖三种原文 dogfood 确定性屏障（#224、#225）。相关 exact-head CI 已全绿。build-from-head dogfood 实证：PrepareRunStart 全路径通过（ingress 八条事实完整晋级至 `prepared-execution-created`）。
+
+当前阻塞已定位为 [#226](https://github.com/chiga0/marshal-harness/issues/226)：main-line composition session 重构（`e691aea`、`636c80d`）在 CLI-driven existing-worktree path-B 下的 sealed `StartPreparedRun` 确定性返回 `application: authority-conflict`（承袭内层映射），supervisor 从未 spawn；RC1 sourceHead `c1407bd` 在同一条链下可过，HEAD 不可过。本方向锁定 ADR 0075 域之外（独立回归），已按门禁单独归档，需要在 composition 层 review `RehydratePreparedRunStart` 与 adapter-supplied Prepare 的字段等价性。此前一个 path-B 诊断探针因未到达对比阶段即在 ComposeRuntime 失败，已按止损恢复（`be52850`），其同源 exact-head CI 已重绿。按最新审计，v1.0 stable 的 direct 顺序仍要求：先修复 #226 并重新跑通真实 dogfood 至 VERIFYING/REVIEW_PENDING/ACCEPTED，再恢复 fixed `marshal control-plane serve`、recovery/fault matrix、managed signing/notarization（Issue #212）、Linux stable gate 与 protected stable candidate。
+
 ## 2026-09-02 M13 GoalLite 真实任务 dogfood：worker 交付完成，collect finalize 暴露第三道 RC1 缺陷
 
 以已发布 `v1.0.0-rc1`（digest 钉死、外部下载安装、无重建）执行首个真实相对复杂任务 `m13-goal-lite-walking-skeleton-20260902`：产出 GoalLite walking skeleton 的中文设计文档与两份 schema 样例（allowPaths 限定 3 文件，3 文件均真实写出）。GH macos-14 runner（workflow `m13-e2e-dogfood`，run [33578572483](https://github.com/chiga0/marshal-harness/actions/runs/33578572483)）上真实 Pi `0.84.4`（`pai-eas/qwen3.8-max`）通过 activation v2 → render → plan → approve → sealed run.start → spawn+resume → 完整执行 ~11.5 → terminal。
