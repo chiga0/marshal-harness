@@ -13,7 +13,7 @@ import (
 )
 
 func TestReviewedEventContractReferenceMatchesCurrentTransportIdentity(t *testing.T) {
-	path := filepath.Join("..", "..", "..", ".agents", "skills", "marshal", "references", "qoder-1.1.23-event-contract.json")
+	path := filepath.Join("testdata", "qoder-1.1.23-event-contract.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

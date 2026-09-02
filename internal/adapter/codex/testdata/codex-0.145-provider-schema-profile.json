@@ -1,0 +1,18 @@
+{
+  "profileVersion": "marshal-operator-codex-provider-schema-profile/v1",
+  "adapterId": "codex",
+  "cliCompatibilityLine": "0.145.x",
+  "authorityScope": "mac-ordinary-user-operator-local",
+  "authorityClaim": "none",
+  "maxSchemaBytes": 4194304,
+  "allowedTypes": ["array", "boolean", "integer", "null", "number", "object", "string"],
+  "allowedKeywords": ["additionalProperties", "anyOf", "default", "enum", "items", "minimum", "properties", "required", "type"],
+  "unsupportedKeywords": ["$defs", "$id", "$ref", "$schema", "allOf", "const", "format", "maxLength", "minLength", "not", "oneOf", "pattern", "title", "uniqueItems"],
+  "objectPolicy": {"additionalProperties": false, "requiredMustEqualSortedPropertyNames": true},
+  "arrayPolicy": {"itemsSchemaRequired": true},
+  "evidence": [
+    {"source": "internal/adapter/codex/execution.go:providerSchemaDocument", "observation": "当前 provider 投影展开 $ref，删除 provider 已拒绝的关键字，把 const 投影为 type+enum，并把全部 object properties 排序后写入 required。"},
+    {"source": "mac-codex-ordinary-smoke-r1-r10-20260819", "observation": "真实 Codex CLI 0.145 普通用户链路依次暴露缺 type、not、required、oneOf、format=uri 与 uniqueItems；本 profile 用单次离线遍历聚合这些结构。"},
+    {"source": "mac-codex-ordinary-smoke-r16-20260819", "observation": "真实成功投影只使用本 profile 的封闭关键字子集；该证据不构成 Codex 官方 JSON Schema 契约。"}
+  ]
+}
