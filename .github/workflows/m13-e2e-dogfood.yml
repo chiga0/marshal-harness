@@ -199,19 +199,22 @@ jobs:
           "$MARSHAL_BIN" task run --run "$RUN_ID" --json > "$CONTROL_ROOT/run-start.json" 2>&1 || {
             cat "$CONTROL_ROOT/run-start.json" >&2; exit 1; }
           cat "$CONTROL_ROOT/run-start.json"
-          for attempt in $(seq 1 6); do
-            state="$("$MARSHAL_BIN" task status --run "$RUN_ID" --json | /usr/bin/python3 -I -B -c 'import json,sys; print(json.load(sys.stdin).get("state", ""))')"
-            echo "drive status ($attempt): $state"
+          # READY 只启动 sealed Attempt；后续 RUNNING 调用等价于一次有界 collect：
+          # attempt 未终态时立即返回，需要与 release-canary.sh 相同的轮询节奏。
+          collect_attempt=0
+          while :; do
+            state="$("$MARSHAL_BIN" task status --run "$RUN_ID" --json 2>/dev/null | /usr/bin/python3 -I -B -c 'import json,sys; print(json.load(sys.stdin).get("state", ""))' 2>/dev/null)"
             case "$state" in
-              VERIFYING) exit 0 ;;
-              READY|RUNNING|"")
-                "$MARSHAL_BIN" task run --run "$RUN_ID" --json >> "$CONTROL_ROOT/run-drive.log" 2>&1 || { tail -30 "$CONTROL_ROOT/run-drive.log" >&2; exit 1; }
+              VERIFYING) echo "run reached VERIFYING after $collect_attempt collect rounds"; break ;;
+              READY|RUNNING)
+                collect_attempt=$((collect_attempt + 1))
+                [ "$collect_attempt" -le 1000 ] || { echo "::error::Attempt 在 1000 次有界收集内未到达 VERIFYING" >&2; tail -40 "$CONTROL_ROOT/run-drive.log" 2>/dev/null >&2; exit 1; }
+                "$MARSHAL_BIN" task run --run "$RUN_ID" --json >> "$CONTROL_ROOT/run-drive.log" 2>&1 || { echo "::error::collect 调用失败（第 $collect_attempt 轮）" >&2; tail -40 "$CONTROL_ROOT/run-drive.log" 2>/dev/null >&2; exit 1; }
+                sleep 1
                 ;;
               *) echo "::error::run 进入意外状态：$state" >&2; exit 1 ;;
             esac
           done
-          echo "::error::run 未在 6 次驱动内到达 VERIFYING" >&2
-          exit 1
 
       - name: Run independent verification
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
