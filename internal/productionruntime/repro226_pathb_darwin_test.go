@@ -113,7 +113,8 @@ func TestRepro226SealedComposeBase(t *testing.T) {
 	})
 	t.Run("step3-compose-with-graph", func(t *testing.T) {
 		inputs, runID, _, _, _ := pathBCompositionInputsForLaunch(t)
-		inputs, held, controlRoot := repro226SealedInputs(t, inputs)
+		inputs, held, _ := repro226SealedInputs(t, inputs)
+		_ = held
 		closure := inputs.LaunchClosure
 		identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
 		if err != nil {
@@ -125,35 +126,60 @@ func TestRepro226SealedComposeBase(t *testing.T) {
 		}
 		composed, err := ComposeRuntime(context.Background(), inputs, profile)
 		if err != nil {
-			t.Logf("compose step3 err (isolating SealPi next): %v", err)
-			// Isolation: run the exact SealPi call with the same acquisition
-			// binding NewCompositionLedger uses, and dump its result.
-			innerHeld, innerErr := resultingress.OpenDarwinResultIngressStore(held)
-			if innerErr != nil {
-				t.Fatalf("sealed store reopen failed: %v", innerErr)
-			}
-			phase, phaseErr := openRepositoryOwnerScopeLock(inputs.OwnerDirectory, inputs.Acquisition.Scope)
-			if phaseErr != nil {
-				t.Fatalf("owner phase lock: %v", phaseErr)
-			}
-			ownerState, _, acquireErr := acquireOwner(innerHeld, phase, inputs.Acquisition)
-			if acquireErr != nil {
-				_ = phase.Close()
-				t.Fatalf("acquire owner: %v", acquireErr)
-			}
-			_ = phase.Close()
-			binding := resultingress.CurrentOwnerBinding{
-				Scope:                          inputs.Acquisition.Scope,
-				OwnerEpoch:                     inputs.Acquisition.OwnerEpoch,
-				ControlOwnerAcquiredFactDigest: ownerState.FactDigest,
-			}
-			sealErr := func() error {
-				_, err := resultingress.SealPi0844DarwinPreparedExecutionStore(context.Background(), innerHeld, &borrowedOwnerVerifier{acquisition: inputs.Acquisition, active: true}, binding, inputs.FixedMarshalPath, controlRoot)
-				return err
-			}()
-			t.Fatalf("compose error=%v seal-isolate error=%v", err, sealErr)
+			t.Fatalf("compose path-B inputs with graph: %v", err)
 		}
 		defer func() { _ = composed.Runtime.Close() }()
 		_ = runID
+	})
+	// step4/step5：compose 后实际驱动 PrepareRunStart，并对被 CLI
+	// sealed StartPreparedRun 失败点（application: authority-conflict）所
+	// 影响的 Replay identity 进行比较（RehydratePreparedRunStart vs 直接
+	// Runtime.PrepareRunStart 结果）：
+	t.Run("step4-pathb-prepare-and-rehydrate-identity", func(t *testing.T) {
+		inputs, runID, _, _, _ := pathBCompositionInputsForLaunch(t)
+		inputs, held, _ := repro226SealedInputs(t, inputs)
+		_ = held
+		closure := inputs.LaunchClosure
+		identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
+		if err != nil {
+			t.Fatal(err)
+		}
+		profile, err := NewPi0844Profile(closure.RuntimeExecutable.CanonicalPath, "/fixed/node-runtime", identity.IdentityDigest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		composed, err := ComposeRuntime(context.Background(), inputs, profile)
+		if err != nil {
+			t.Fatalf("compose: %v", err)
+		}
+		defer func() { _ = composed.Runtime.Close() }()
+		readLease, err := inputs.Runs.Acquire(runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = readLease.Release() }()
+		projection, err := inputs.Runs.ReadRunStartAuthorityUnderLease(context.Background(), readLease)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := composed.Runtime.PrepareRunStart(context.Background(), application.PrepareRunStartRequest{RunID: runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
+		if err != nil {
+			t.Fatalf("sealed path-B prepare: %v", err)
+		}
+		ctrl := composed.Runtime.controller
+		if ctrl == nil {
+			t.Fatal("runtime controller missing")
+		}
+		var durable application.PreparedRunStart
+		if err := ctrl.withOwner(context.Background(), true, func(verifier resultingress.CurrentOwnerLockVerifier, _ OwnerProjection) error {
+			var herr error
+			durable, herr = ctrl.authority.RehydratePreparedRunStart(context.Background(), verifier, ctrl.acquisition, prepared.PreparationDigest)
+			return herr
+		}); err != nil {
+			t.Fatalf("rehydrate leaf: %v", err)
+		}
+		if durable != prepared {
+			t.Fatalf("path-B durable-projection mismatch:\ndurable=%+v\nsupplied=%+v", durable, prepared)
+		}
 	})
 }
