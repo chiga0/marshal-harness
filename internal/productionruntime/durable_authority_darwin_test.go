@@ -346,6 +346,85 @@ func TestComposeSealedRuntimeReadyAndPrepares(t *testing.T) {
 	}
 }
 
+// TestRehydratePreparedRunStartMatchesAdapterSupplied asserts the
+// PrepareRunStart durable replay contract that sealed StartPreparedRun
+// depends on: the projection rehydrated from the durable authority
+// (RehydratePreparedRunStart) must be byte-identical to the value the
+// Runtime just handed to its caller. A mismatch is what sealed CLI dogfood
+// currently fails closed as `application: authority-conflict`. First it
+// also surfaces the raw leaf error if the replay itself rejects.
+func TestRehydratePreparedRunStartMatchesAdapterSupplied(t *testing.T) {
+	inputs, runID := newCompositionInputs(t)
+	heldDir := t.TempDir()
+	if err := os.Chmod(heldDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(heldDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	controlRoot := t.TempDir()
+	if err := os.Chmod(controlRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.Open(controlRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	fixed, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(fixed); resolveErr != nil {
+		t.Fatal(resolveErr)
+	} else {
+		fixed = resolved
+	}
+	inputs.Ingress = nil
+	inputs.HeldIngressDir = held
+	inputs.FixedMarshalPath = fixed
+	inputs.OwnerPrivateControlRoot = root
+	closure := inputs.LaunchClosure
+	identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := NewPi0844Profile(closure.RuntimeExecutable.CanonicalPath, "/fixed/node-runtime", identity.IdentityDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composed, err := ComposeRuntime(context.Background(), inputs, profile)
+	if err != nil {
+		t.Fatalf("compose sealed: %v", err)
+	}
+	defer func() { _ = composed.Runtime.Close() }()
+	projection, err := inputs.Runs.ReadRunStartAuthorityUnderLease(context.Background(), inputs.RunLease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := composed.Runtime.PrepareRunStart(context.Background(), application.PrepareRunStartRequest{RunID: runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
+	if err != nil {
+		t.Fatalf("sealed prepare: %v", err)
+	}
+	ctrl := composed.Runtime.controller
+	if ctrl == nil {
+		t.Fatal("runtime controller missing after compose")
+	}
+	var durable application.PreparedRunStart
+	if err := ctrl.withOwner(context.Background(), true, func(verifier resultingress.CurrentOwnerLockVerifier, _ OwnerProjection) error {
+		var herr error
+		durable, herr = ctrl.authority.RehydratePreparedRunStart(context.Background(), verifier, ctrl.acquisition, prepared.PreparationDigest)
+		return herr
+	}); err != nil {
+		t.Fatalf("rehydrate replay leaf error: %v", err)
+	}
+	if durable != prepared {
+		t.Fatalf("REPRODUCED durable-projection mismatch:\ndurable=%+v\nsupplied=%+v", durable, prepared)
+	}
+}
+
 func TestRepositorySessionReusesOneOwnerAcrossSequentialRunRuntimes(t *testing.T) {
 	inputs, runID := newCompositionInputs(t)
 	heldDir := t.TempDir()
