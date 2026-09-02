@@ -2,6 +2,16 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
+## 2026-09-02 M13 GoalLite 真实任务 dogfood：worker 交付完成，collect finalize 暴露第三道 RC1 缺陷
+
+以已发布 `v1.0.0-rc1`（digest 钉死、外部下载安装、无重建）执行首个真实相对复杂任务 `m13-goal-lite-walking-skeleton-20260902`：产出 GoalLite walking skeleton 的中文设计文档与两份 schema 样例（allowPaths 限定 3 文件，3 文件均真实写出）。GH macos-14 runner（workflow `m13-e2e-dogfood`，run [33578572483](https://github.com/chiga0/marshal-harness/actions/runs/33578572483)）上真实 Pi `0.84.4`（`pai-eas/qwen3.8-max`）通过 activation v2 → render → plan → approve → sealed run.start → spawn+resume → 完整执行 ~11.5 → terminal。
+
+**度量**：worker 会话 API usage 汇总 `input=296,176 / output=82,326 / cacheRead=4,561,792 / cacheWrite=0 / reasoning=58,735`（token）；worker 执行 11.5 分钟；run 墙钟约 12.9 分钟；collect 轮询 196 轮期间 attach 健康。
+
+**结论**：真实复杂任务的 supply→spawn→harvest 在发布二进制上可行且效率可度量；但首个 process-terminal collect 以 `application: authority-conflict` 确定性 fail closed（[Issue #225](https://github.com/chiga0/marshal-harness/issues/225)，result-ingress 事实链落在 collect command-outcome 后的组合层），生命周期未能到达 VERIFYING/REVIEW_PENDING。另已归档 [Issue #224](https://github.com/chiga0/marshal-harness/issues/224)（0700 worktree admission 与 CJK/空白后 `/` 的 launch 输入闸门，两道 PrepareRunStart 确定性屏障）。本机 macOS 26.6.2 上 pi 子进程另被宿主策略以 trace/BPT 杀死（属 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 签名/宿主策略族）。
+
+上述结果不改变发布基线与成熟度：RC1 仍为 unsigned local-dogfood prerelease；#224、#225 两道确定性体验缺陷与 #212 的 signing/notarization 均为 v1.0 stable 的硬门禁，不得伪称 stable。
+
 ## 2026-09-01 `v1.0.0-rc1` 已发布
 
 [`v1.0.0-rc1`](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0-rc1) 已发布为 unsigned、Mac-first、Darwin arm64、CLI-only 的 `darwin-local-dogfood` 生命周期预览。annotated tag object `e99326fa6b6e57a19db8d6404c56b3dcf396fdc7` 精确指向 sourceHead `c1407bd77924c97dc6784f4d81938a3f0bfa75f6`，candidate SHA-256 为 `f9ed7fa59d05f5e71fef7164b8015240497e1d18e25ef1d3f8e199c1378a3774`。
