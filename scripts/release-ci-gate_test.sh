@@ -30,13 +30,16 @@ case "$url" in
     esac
     ;;
   */actions/runs/9/jobs*)
+    arm='{"name":"Linux candidate conformance (arm64)","head_sha":"'"$FIXTURE_HEAD"'","status":"completed","conclusion":"success"}'
     third='{"name":"Secret scan","head_sha":"'"$FIXTURE_HEAD"'","status":"completed","conclusion":"success"}'
     case "${FIXTURE_MODE:?}" in
       failed-job) third='{"name":"Secret scan","head_sha":"'"$FIXTURE_HEAD"'","status":"completed","conclusion":"failure"}' ;;
+      failed-arm) arm='{"name":"Linux candidate conformance (arm64)","head_sha":"'"$FIXTURE_HEAD"'","status":"completed","conclusion":"failure"}' ;;
+      missing-arm) arm='{"name":"Linux candidate conformance (ppc64)","head_sha":"'"$FIXTURE_HEAD"'","status":"completed","conclusion":"success"}' ;;
       duplicate-job) third='{"name":"Quality (macos-latest)","head_sha":"'"$FIXTURE_HEAD"'","status":"completed","conclusion":"success"}' ;;
       wrong-job-head) third='{"name":"Secret scan","head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success"}' ;;
     esac
-    printf '{"total_count":3,"jobs":[{"name":"Quality (ubuntu-latest)","head_sha":"%s","status":"completed","conclusion":"success"},{"name":"Quality (macos-latest)","head_sha":"%s","status":"completed","conclusion":"success"},%s]}' "$FIXTURE_HEAD" "$FIXTURE_HEAD" "$third"
+    printf '{"total_count":5,"jobs":[{"name":"Quality (ubuntu-latest)","head_sha":"%s","status":"completed","conclusion":"success"},{"name":"Quality (macos-latest)","head_sha":"%s","status":"completed","conclusion":"success"},{"name":"Linux candidate conformance (amd64)","head_sha":"%s","status":"completed","conclusion":"success"},%s,%s]}' "$FIXTURE_HEAD" "$FIXTURE_HEAD" "$FIXTURE_HEAD" "$arm" "$third"
     ;;
   *) exit 2 ;;
 esac
@@ -53,7 +56,7 @@ expect_fail() {
 
 GH_BIN="$FAKE_GH" FIXTURE_MODE=valid FIXTURE_HEAD="$HEAD_SHA" \
   bash "${ROOT}/scripts/release-ci-gate.sh" fixture/repo "$HEAD_SHA" >/dev/null
-for mode in no-run wrong-head failed-run failed-job duplicate-job wrong-job-head; do
+for mode in no-run wrong-head failed-run failed-job failed-arm missing-arm duplicate-job wrong-job-head; do
   expect_fail "$mode"
 done
 
@@ -356,6 +359,7 @@ make_contract_fixture() {
     release-ci-gate_test.sh \
     dist-profile_test.sh \
     install_test.sh \
+    linux-candidate-conformance.sh \
     release-canary_test.sh \
     m13-e2e-dogfood-workflow_test.sh; do
     cp "${ROOT}/scripts/${fixed_test}" "${root}/scripts/${fixed_test}"
@@ -390,7 +394,7 @@ VALID_CONTRACT_ROOT="$(make_contract_fixture valid "$CI_WORKFLOW" "$MAKEFILE")"
 BASH_ENV="${TMP_ROOT}/poison-bash-env" PATH=/nonexistent MAKEFLAGS='--silent --ignore-errors' \
   PYTHONHOME=/nonexistent PYTHONPATH=/nonexistent \
   check_main_ci_contract "$VALID_CONTRACT_ROOT" \
-  || fail 'main/PR CI 未保持三个 job、Ubuntu-only release-check 与 RC1 carrier 封闭合同'
+  || fail 'main/PR CI 未保持五个 job、两个原生 Linux candidate gate 与 RC1 carrier 封闭合同'
 
 if false; then
 awk '

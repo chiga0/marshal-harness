@@ -42,6 +42,7 @@ FIXED_FILES = {
     "scripts/release-ci-gate_test.sh": "100755",
     "scripts/dist-profile_test.sh": "100755",
     "scripts/install_test.sh": "100755",
+    "scripts/linux-candidate-conformance.sh": "100755",
     "scripts/release-canary_test.sh": "100755",
     "scripts/m13-e2e-dogfood-workflow_test.sh": "100644",
     "schemas/release_schema_test.go": "100644",
@@ -166,6 +167,60 @@ jobs:
 
       - name: Run vulnerability scan
         run: make vuln
+
+  linux-candidate:
+    name: Linux candidate conformance (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Bind this independently scheduled native runner to the exact reviewed
+      # CI contract before setup-go or any candidate-producing command.
+      - name: Run release contract gate
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          MAKEFLAGS: ''
+          PATH: /usr/bin:/bin
+          PYTHONHOME: ''
+          PYTHONPATH: ''
+        run: |
+          /usr/bin/env -i \\
+            LC_ALL=C \\
+            PATH=/usr/bin:/bin \\
+            /usr/bin/python3 -I -B \\
+            "$GITHUB_WORKSPACE/scripts/release-ci-contract.py" \\
+            "$GITHUB_WORKSPACE"
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Verify modules
+        run: go mod verify
+
+      # This gate proves only release-shaped Linux artifact mechanics. Both
+      # native binaries remain selfProfile=unprofiled and carry no stable
+      # runtime, rollback/high-water, signing, or publication authority.
+      - name: Run native Linux candidate artifact conformance
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: bash scripts/linux-candidate-conformance.sh
 
   secrets:
     name: Secret scan

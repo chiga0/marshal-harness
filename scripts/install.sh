@@ -402,8 +402,9 @@ resolve_release_tag_commit() {
     "refs/tags/${TAG}" "refs/tags/${TAG}^{}")" \
     || fatal "无法解析 release tag ${TAG} 的远端对象"
   record="$(printf '%s\n' "$output" | awk -v tag="$TAG" '
-    $2 == "refs/tags/" tag { direct++; object=$1; if ($1 !~ /^[0-9a-f]{40}$/) bad=1 }
-    $2 == "refs/tags/" tag "^{}" { peeled++; value=$1; if ($1 !~ /^[0-9a-f]{40}$/) bad=1 }
+    function is_lower_hex(value, size) { return length(value) == size && value ~ /^[0-9a-f]+$/ }
+    $2 == "refs/tags/" tag { direct++; object=$1; if (!is_lower_hex($1, 40)) bad=1 }
+    $2 == "refs/tags/" tag "^{}" { peeled++; value=$1; if (!is_lower_hex($1, 40)) bad=1 }
     $2 != "refs/tags/" tag && $2 != "refs/tags/" tag "^{}" { bad=1 }
     END {
       if (bad || direct != 1 || peeled != 1) exit 1
@@ -441,18 +442,19 @@ verify_release_tag_candidate() {
   [ "$message_size" -le 65538 ] || fatal "annotated tag message 超过 64 KiB"
   marker="$(printf '\036')"
   metadata="$(awk -v tag="$TAG" -v commit="$EXPECTED_COMMIT" -v marker="$marker" '
+    function is_lower_hex(value, size) { return length(value) == size && value ~ /^[0-9a-f]+$/ }
     NR == 1 { if ($0 != "Marshal " tag " candidate") exit 1; next }
     NR == 2 { if ($0 != "") exit 1; next }
     NR == 3 { if ($0 != "marshal-candidate-schema: v1") exit 1; next }
     NR == 4 { if ($0 != "marshal-candidate-source-head: " commit) exit 1; next }
     NR == 5 {
-      if ($0 !~ /^marshal-candidate-manifest-sha256: [0-9a-f]{64}$/) exit 1
       manifest=substr($0, length("marshal-candidate-manifest-sha256: ")+1)
+      if ($0 != "marshal-candidate-manifest-sha256: " manifest || !is_lower_hex(manifest, 64)) exit 1
       next
     }
     NR == 6 {
-      if ($0 !~ /^marshal-candidate-darwin-arm64-sha256: [0-9a-f]{64}$/) exit 1
       candidate=substr($0, length("marshal-candidate-darwin-arm64-sha256: ")+1)
+      if ($0 != "marshal-candidate-darwin-arm64-sha256: " candidate || !is_lower_hex(candidate, 64)) exit 1
       next
     }
     NR == 7 { if ($0 != marker) exit 1; seen_marker=1; next }
@@ -485,12 +487,16 @@ verify_release_manifest() {
   fi
   expected_repo="https://github.com/${REPO}.git"
   manifest_asset_record="$(awk -v want="$asset" '
+    function is_lower_hex(value, size) { return length(value) == size && value ~ /^[0-9a-f]+$/ }
+    function is_utc(value) {
+      return length(value) == 20 && value ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/
+    }
     NR == FNR { sum[$2]=tolower($1); next }
     FNR == 1 { if ($0 != "schemaVersion marshal.release-manifest.v1") exit 1; next }
     FNR == 2 { if ($0 != "repository " repo) exit 1; next }
     FNR == 3 { if ($0 != "tag " tag) exit 1; next }
     FNR == 4 { if ($1 != "sourceHead" || NF != 2 || $2 != commit) exit 1; next }
-    FNR == 5 { if ($1 != "buildDate" || NF != 2 || $2 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/) exit 1; next }
+    FNR == 5 { if ($1 != "buildDate" || NF != 2 || !is_utc($2)) exit 1; next }
     FNR == 6 { if ($1 != "goVersion" || NF != 2 || $2 !~ /^go[0-9]+\.[0-9]+\.[0-9]+$/) exit 1; next }
     FNR == 7 { if ($0 != "buildFlags -trimpath,-buildvcs=false,-mod=readonly,-buildid=") exit 1; next }
     FNR >= 8 && FNR <= 11 {
@@ -502,7 +508,7 @@ verify_release_manifest() {
       oses[1]=oses[2]="darwin"; oses[3]=oses[4]="linux"
       arches[1]=arches[3]="amd64"; arches[2]=arches[4]="arm64"
       profiles[1]=profiles[2]="darwin-local-dogfood"; profiles[3]=profiles[4]="unprofiled"
-      if ($1 != "asset" || NF != 7 || $2 !~ /^[0-9a-f]{64}$/ || $3 !~ /^[1-9][0-9]*$/ ||
+      if ($1 != "asset" || NF != 7 || !is_lower_hex($2, 64) || $3 !~ /^[1-9][0-9]*$/ ||
           $4 != names[idx] || $5 != oses[idx] || $6 != arches[idx] || $7 != profiles[idx] ||
           sum[$4] != $2) exit 1
       if ($4 == want) { wanted=$2; wanted_size=$3 }
@@ -531,12 +537,16 @@ verify_rc1_release_manifest() {
   expected_repo="https://github.com/${REPO}.git"
   record="$(awk -v repo="$expected_repo" -v tag="$TAG" -v commit="$EXPECTED_COMMIT" \
     -v version="$version_no_v" -v want="$asset" -v checksum="$EXPECTED_ASSET_SHA256" '
+    function is_lower_hex(value, size) { return length(value) == size && value ~ /^[0-9a-f]+$/ }
+    function is_utc(value) {
+      return length(value) == 20 && value ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/
+    }
     NR == 1 { if ($0 != "schemaVersion marshal.rc1-release-manifest.v1") exit 1; next }
     NR == 2 { if ($0 != "repository " repo) exit 1; next }
     NR == 3 { if ($0 != "tag " tag) exit 1; next }
     NR == 4 { if ($0 != "sourceHead " commit) exit 1; next }
     NR == 5 {
-      if ($2 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/ ||
+      if (!is_utc($2) ||
           $0 != "buildDate " $2) exit 1
       build_date=$2; next
     }
@@ -546,7 +556,7 @@ verify_rc1_release_manifest() {
     }
     NR == 7 { if ($0 != "buildFlags -trimpath,-buildvcs=false,-mod=readonly,-buildid=") exit 1; next }
     NR == 8 {
-      if ($1 != "asset" || NF != 7 || $2 !~ /^[0-9a-f]{64}$/ || $3 !~ /^[1-9][0-9]*$/ ||
+      if ($1 != "asset" || NF != 7 || !is_lower_hex($2, 64) || $3 !~ /^[1-9][0-9]*$/ ||
           $4 != want || $4 != "marshal_1.0.0-rc1_darwin_arm64" || $5 != "darwin" ||
           $6 != "arm64" || $7 != "darwin-local-dogfood" || $2 != checksum ||
           $0 != "asset " $2 " " $3 " " $4 " " $5 " " $6 " " $7) exit 1
