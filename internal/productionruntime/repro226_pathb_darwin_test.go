@@ -269,13 +269,13 @@ func TestRepro226SealedComposeBase(t *testing.T) {
 			t.Fatalf("sealed path-B prepare: %v", err)
 		}
 		successor, startErr := composed.Runtime.StartPreparedRun(context.Background(), prepared)
-		if startErr != nil {
-			if application.HasReason(startErr, application.ReasonAuthorityConflict) {
-				t.Fatalf("REPRODUCED #226: StartPreparedRun authority conflict: %v", startErr)
-			}
-			t.Logf("StartPreparedRun failed without authority conflict (acceptable if spawn unavailable in test): %v", startErr)
-			return
+		_ = successor
+		if startErr == nil {
+			t.Fatalf("step6 UNEXPECTED success for test bridge substrate (no #226 reproduction)")
 		}
-		t.Logf("StartPreparedRun succeeded: run=%s state=%s sequence=%d", successor.RunID, successor.State, successor.Sequence)
+		if application.HasReason(startErr, application.ReasonAuthorityConflict) {
+			t.Fatalf("step6 REPRODUCED #226 directly on controller.startPreparedRun: %v", startErr)
+		}
+		t.Fatalf("step6 classification (not #226): %v", startErr)
 	})
 }
