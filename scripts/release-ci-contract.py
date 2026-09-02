@@ -42,6 +42,7 @@ FIXED_FILES = {
     "scripts/release-ci-gate_test.sh": "100755",
     "scripts/dist-profile_test.sh": "100755",
     "scripts/install_test.sh": "100755",
+    "scripts/linux-candidate-conformance.sh": "100755",
     "scripts/release-canary_test.sh": "100755",
     "scripts/m13-e2e-dogfood-workflow_test.sh": "100644",
     "schemas/release_schema_test.go": "100644",
@@ -160,6 +161,14 @@ jobs:
             /bin/bash --noprofile --norc "$GITHUB_WORKSPACE/$test_path"
           done
           run_checker
+
+      # This gate proves only release-shaped Linux artifact mechanics. The
+      # binaries remain selfProfile=unprofiled and carry no stable/runtime
+      # authority, signing identity, or publication permission.
+      - name: Run Linux candidate artifact conformance
+        if: matrix.os == 'ubuntu-latest'
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: bash scripts/linux-candidate-conformance.sh
 
       - name: Run quality gate
         run: make check
