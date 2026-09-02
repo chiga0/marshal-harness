@@ -1,0 +1,290 @@
+name: M13 e2e dogfood (published RC1)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pi-model:
+        description: provider/model（缺省取 vars.OPENAI_MODELS 第一项）
+        required: false
+        type: string
+      task-run-id:
+        description: Marshall Run ID（缺省 m13-goal-lite-walking-skeleton-<yyyymmdd>）
+        required: false
+        type: string
+      reviewer-id:
+        description: 独立 ReviewDecision 的 reviewer id
+        required: false
+        default: e2e-operator-runner
+        type: string
+      expected-candidate-sha256:
+        description: 已发布 RC1 candidate 的精确 sha256（防漂移）
+        required: true
+        default: f9ed7fa59d05f5e71fef7164b8015240497e1d18e25ef1d3f8e199c1378a3774
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m13-e2e-dogfood-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  dogfood:
+    name: M13 GoalLite dogfood on published RC1
+    runs-on: macos-14
+    timeout-minutes: 80
+    permissions:
+      contents: read
+    env:
+      PI_MODEL: ${{ inputs.pi-model }}
+      PHY_PI_VERSION: "0.84.4"
+      PHY_NODE_VERSION: "v24.15.0"
+      PHY_NODE_SHA256: "3200fbd9f7fd4410426dd541e10d1ab829d3472f270d743c7fabd1696c03fe32"
+      PHY_PI_BUNDLE_SHA256: "5406c369954516fb56879d685e082ff9095cd6e06e41af406f394942377fd4bf"
+      TASK_ID: "m13-goal-lite-walking-skeleton-20260901"
+      EXPECTED_CANDIDATE_SHA256: ${{ inputs.expected-candidate-sha256 }}
+    steps:
+      - name: Validate inputs and resolve identities
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          REVIEWER_ID: ${{ inputs.reviewer-id }}
+          INPUT_RUN_ID: ${{ inputs.task-run-id }}
+          VARS_MODELS: ${{ vars.OPENAI_MODELS }}
+        run: |
+          test "${{ github.repository }}" = "chiga0/marshal-harness" || { echo "::error::仅允许 canonical 仓库" >&2; exit 1; }
+          model="$PI_MODEL"
+          if [ -z "$model" ]; then
+            model="$(/usr/bin/python3 -I -B -c 'import os,sys; print([m for m in os.environ["VARS_MODELS"].split(",") if m.strip()][0].strip())')"
+          fi
+          [[ "$model" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || { echo "::error::pi-model 必须是 provider/model 形状：$model" >&2; exit 1; }
+          [[ "$EXPECTED_CANDIDATE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::candidate sha256 形态非法" >&2; exit 1; }
+          [[ "$REVIEWER_ID" =~ ^[A-Za-z0-9._-]{2,64}$ ]] || { echo "::error::reviewer-id 形态非法" >&2; exit 1; }
+          run_id="$INPUT_RUN_ID"
+          [ -n "$run_id" ] || run_id="m13-goal-lite-walking-skeleton-$(date -u +%Y%m%d)"
+          [[ "$run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{2,120}$ ]] || { echo "::error::task-run-id 形态非法：$run_id" >&2; exit 1; }
+          printf 'PI_MODEL=%s\n' "$model" >> "$GITHUB_ENV"
+          printf 'RUN_ID=%s\n' "$run_id" >> "$GITHUB_ENV"
+          printf 'REVIEWER_ID=%s\n' "$REVIEWER_ID" >> "$GITHUB_ENV"
+
+      - name: Checkout main with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Repository and CI pre-gate
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git remote set-url origin https://github.com/chiga0/marshal-harness.git
+          head="$(git rev-parse HEAD)"
+          bash scripts/release-ci-gate.sh "${{ github.repository }}" "$head"
+          printf 'MAIN_HEAD=%s\n' "$head" >> "$GITHUB_ENV"
+
+      - name: Download and verify the published RC1 candidate (no rebuild)
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rm -rf dist && mkdir -p dist bin
+          gh release download v1.0.0-rc1 --repo "${{ github.repository }}" \
+            --pattern 'marshal_1.0.0-rc1_darwin_arm64' --dir dist --clobber
+          gh release download v1.0.0-rc1 --repo "${{ github.repository }}" \
+            --pattern 'RELEASE-MANIFEST' --dir dist --clobber
+          asset_sha="$(shasum -a 256 dist/marshal_1.0.0-rc1_darwin_arm64 | awk '{print tolower($1)}')"
+          [ "$asset_sha" = "$EXPECTED_CANDIDATE_SHA256" ] || { echo "::error::已发布 candidate digest 漂移：$asset_sha" >&2; exit 1; }
+          cp dist/marshal_1.0.0-rc1_darwin_arm64 bin/marshal
+          chmod 755 bin/marshal
+          [ ! -L bin/marshal ]
+          version_json="$(bin/marshal version --json)"
+          VERSION_JSON="$version_json" /usr/bin/python3 -I -B -c 'import json, os; v = json.loads(os.environ["VERSION_JSON"]); assert v.get("commit") == "c1407bd77924c97dc6784f4d81938a3f0bfa75f6", v; assert v.get("version") == "1.0.0-rc1", v; assert v.get("selfProfile") == "darwin-local-dogfood", v; assert v.get("os") == "darwin", v; print("published candidate identity verified")'
+          printf 'MARSHAL_BIN=%s\n' "$(pwd)/bin/marshal" >> "$GITHUB_ENV"
+
+      - name: Provision pinned Node v24.15.0 + Pi 0.84.4 with digest assertions
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_WORKSPACE/pi-provision"
+          rm -rf "$root" && mkdir -p "$root"
+          curl -fsSLo "$root/node.tar.gz" "https://nodejs.org/dist/${PHY_NODE_VERSION}/node-${PHY_NODE_VERSION}-darwin-arm64.tar.gz"
+          /usr/bin/tar -xzf "$root/node.tar.gz" -C "$root"
+          node_root="$root/node-${PHY_NODE_VERSION}-darwin-arm64"
+          node_sha="$(shasum -a 256 "$node_root/bin/node" | awk '{print tolower($1)}')"
+          [ "$node_sha" = "${PHY_NODE_SHA256}" ] || { echo "::error::provisioned node digest 漂移 $node_sha" >&2; exit 1; }
+          [ "$("$node_root/bin/node" --version)" = "${PHY_NODE_VERSION}" ] || { echo "::error::provisioned node 版本漂移" >&2; exit 1; }
+          export PATH="$node_root/bin:$PATH"
+          npm install --global --no-fund --no-audit @earendil-works/pi-coding-agent@${PHY_PI_VERSION}
+          pi_wrapper="$(command -v pi)"
+          [ -L "$pi_wrapper" ] || { echo "::error::pi 入口不是符号链接：$pi_wrapper" >&2; exit 1; }
+          bundle="$(/usr/bin/readlink "$pi_wrapper")"
+          case "$bundle" in /*) ;; *) bundle="$(dirname "$pi_wrapper")/$bundle" ;; esac
+          bundle="$(/usr/bin/python3 -I -B -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$bundle")"
+          case "$bundle" in */@earendil-works/pi-coding-agent/dist/bundle/cli.js) ;; *) echo "::error::bundle 路径形态漂移 $bundle" >&2; exit 1 ;; esac
+          bundle_sha="$(shasum -a 256 "$bundle" | awk '{print tolower($1)}')"
+          [ "$bundle_sha" = "${PHY_PI_BUNDLE_SHA256}" ] || { echo "::error::provisioned bundle digest 漂移 $bundle_sha" >&2; exit 1; }
+          [ "$(env -i HOME="$HOME" "$node_root/bin/node" "$bundle" --version)" = "${PHY_PI_VERSION}" ] || { echo "::error::pi --version 失败或漂移" >&2; exit 1; }
+          printf 'PI_NODE=%s\n' "$node_root/bin/node" >> "$GITHUB_ENV"
+          printf 'PI_BIN=%s\n' "$pi_wrapper" >> "$GITHUB_ENV"
+          printf 'PI_BUNDLE=%s\n' "$bundle" >> "$GITHUB_ENV"
+          printf 'NODE_ROOT_BIN=%s\n' "$node_root/bin" >> "$GITHUB_ENV"
+
+      - name: Provision Pi provider config (no secret echoed)
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODELS: ${{ vars.OPENAI_MODELS }}
+        run: |
+          [ -n "$OPENAI_BASE_URL" ] && [ -n "$OPENAI_API_KEY" ] && [ -n "$OPENAI_MODELS" ] || {
+            echo "::error::缺少 OPENAI_BASE_URL/OPENAI_API_KEY/OPENAI_MODELS secrets" >&2; exit 1; }
+          mkdir -p "$HOME/.pi/agent"
+          chmod 700 "$HOME/.pi" "$HOME/.pi/agent"
+          python3 -I -B scripts/rc1-canary-provider-config.py \
+            "$HOME/.pi/agent/models.json" "$OPENAI_BASE_URL" "${PI_MODEL%%/*}"
+
+      - name: Issue dogfood activation and initialize control state
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          [ -n "$MARSHAL_BIN" ] && [ -x "$MARSHAL_BIN" ]
+          control_root="$(pwd)/.m13-e2e"
+          rm -rf "$control_root" && mkdir -p "$control_root"
+          "$MARSHAL_BIN" doctor --self --repository-root "$(pwd)" \
+            --activation-id "m13-e2e-${{ github.run_id }}" > "$control_root/activation.json"
+          /usr/bin/python3 -I -B -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("schemaVersion") == "marshal.local-dogfood-activation.v2"; assert d.get("expectedRawSHA256") == sys.argv[2], d.get("expectedRawSHA256")' \
+            "$control_root/activation.json" "sha256:${EXPECTED_CANDIDATE_SHA256}"
+          export MARSHAL_LOCAL_DOGFOOD_ACTIVATION="$control_root/activation.json"
+          printf 'MARSHAL_LOCAL_DOGFOOD_ACTIVATION=%s\n' "$MARSHAL_LOCAL_DOGFOOD_ACTIVATION" >> "$GITHUB_ENV"
+          "$MARSHAL_BIN" init --json > "$control_root/init.json"
+          "$MARSHAL_BIN" doctor --json > "$control_root/doctor.json"
+          printf 'CONTROL_ROOT=%s\n' "$control_root" >> "$GITHUB_ENV"
+
+      - name: Render M13 TaskSpec and PolicySnapshot
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          base_ref="ff8cc3bbebf27ab435eadd2ad0372b050b35fda2"
+          git cat-file -e "${base_ref}^{commit}" || { echo "::error::base ref 不在 clone 中" >&2; exit 1; }
+          python3 -I -B scripts/e2e-m13-dogfood.py render-task \
+            --doctor "$CONTROL_ROOT/doctor.json" \
+            --repo-root "$(pwd)" \
+            --base-ref "$base_ref" \
+            --task-id "$TASK_ID" --run-id "$RUN_ID" \
+            --model "$PI_MODEL" --marshal-bin "$MARSHAL_BIN" \
+            --task-out "$CONTROL_ROOT/task.json" --policy-out "$CONTROL_ROOT/policy.json"
+
+      - name: Plan and approve the M13 run
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+          export MARSHAL_PI_PATH="$PI_BIN" MARSHAL_PI_NODE_PATH="$PI_NODE"
+          export MARSHAL_PI_RUNTIME="$PI_NODE" MARSHAL_PI_ENTRYPOINT="$PI_BUNDLE"
+          printf 'WALL_START=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          "$MARSHAL_BIN" task plan --task "$CONTROL_ROOT/task.json" --policy "$CONTROL_ROOT/policy.json" \
+            --run "$RUN_ID" --json > "$CONTROL_ROOT/plan.json"
+          "$MARSHAL_BIN" task approve --run "$RUN_ID" --gate plan --actor "github-actions[e2e-operator]" \
+            --json > "$CONTROL_ROOT/approve.json"
+
+      - name: Drive the sealed run to worker completion
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+          export MARSHAL_PI_PATH="$PI_BIN" MARSHAL_PI_NODE_PATH="$PI_NODE"
+          export MARSHAL_PI_RUNTIME="$PI_NODE" MARSHAL_PI_ENTRYPOINT="$PI_BUNDLE"
+          "$MARSHAL_BIN" task run --run "$RUN_ID" --json > "$CONTROL_ROOT/run-start.json" 2>&1 || {
+            cat "$CONTROL_ROOT/run-start.json" >&2; exit 1; }
+          cat "$CONTROL_ROOT/run-start.json"
+          for attempt in $(seq 1 6); do
+            state="$("$MARSHAL_BIN" task status --run "$RUN_ID" --json | /usr/bin/python3 -I -B -c 'import json,sys; print(json.load(sys.stdin).get("state", ""))')"
+            echo "drive status ($attempt): $state"
+            case "$state" in
+              VERIFYING) exit 0 ;;
+              READY|RUNNING|"")
+                "$MARSHAL_BIN" task run --run "$RUN_ID" --json >> "$CONTROL_ROOT/run-drive.log" 2>&1 || { tail -30 "$CONTROL_ROOT/run-drive.log" >&2; exit 1; }
+                ;;
+              *) echo "::error::run 进入意外状态：$state" >&2; exit 1 ;;
+            esac
+          done
+          echo "::error::run 未在 6 次驱动内到达 VERIFYING" >&2
+          exit 1
+
+      - name: Run independent verification
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+          "$MARSHAL_BIN" task verify --run "$RUN_ID" --json > "$CONTROL_ROOT/verify.json"
+          "$MARSHAL_BIN" task status --run "$RUN_ID" --json > "$CONTROL_ROOT/status-review-pending.json"
+          /usr/bin/python3 -I -B -c 'import json,sys; assert json.load(open(sys.argv[1])).get("state") == "REVIEW_PENDING"' "$CONTROL_ROOT/status-review-pending.json"
+
+      - name: Build independent ReviewDecision from the generated packet
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+          "$MARSHAL_BIN" task review --run "$RUN_ID" --json > "$CONTROL_ROOT/review-packet-step.json"
+          /usr/bin/python3 -I -B -c 'import json,sys; assert json.load(open(sys.argv[1])).get("status") == "generated"' "$CONTROL_ROOT/review-packet-step.json"
+          packet_file=".marshal/runs/${RUN_ID}/review-packet.json"
+          [ -f "$packet_file" ] || { echo "::error::缺少 review-packet.json" >&2; exit 1; }
+          python3 -I -B scripts/e2e-m13-dogfood.py render-decision \
+            --packet "$packet_file" --task-id "$TASK_ID" --run-id "$RUN_ID" \
+            --reviewer-id "$REVIEWER_ID" \
+            --summary "M13 GoalLite walking skeleton 文档与样例满足 scope/acceptance 全部证据面，独立核验通过，接受本 reworkRound 的产物。" \
+            --out "$CONTROL_ROOT/decision.json"
+
+      - name: Apply decision and expect ACCEPTED
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+          "$MARSHAL_BIN" task review --run "$RUN_ID" --decision "$CONTROL_ROOT/decision.json" --json \
+            > "$CONTROL_ROOT/review.json"
+          "$MARSHAL_BIN" task status --run "$RUN_ID" --json > "$CONTROL_ROOT/status-accepted.json"
+          /usr/bin/python3 -I -B -c 'import json,sys; assert json.load(open(sys.argv[1])).get("state") == "ACCEPTED"' "$CONTROL_ROOT/status-accepted.json"
+
+      - name: Extract token and time metrics
+        if: always()
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          python3 -I -B scripts/e2e-m13-dogfood.py metrics \
+            --state-root .marshal --run-id "$RUN_ID" --wall-start "${WALL_START:-}" \
+            --out "$CONTROL_ROOT/metrics.json"
+
+      - name: Pack dogfood evidence tarball
+        if: always()
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          /usr/bin/tar \
+            --exclude 'runs/*/lease.lock' \
+            --exclude 'runs/*/lease.lock.owner' \
+            -czf m13-dogfood-evidence.tar.gz .marshal .m13-e2e 2>/dev/null || \
+          /usr/bin/tar \
+            --exclude 'runs/*/lease.lock' \
+            --exclude 'runs/*/lease.lock.owner' \
+            -czf m13-dogfood-evidence.tar.gz .marshal
+          ls -la m13-dogfood-evidence.tar.gz
+
+      - name: Upload dogfood evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: m13-dogfood-${{ github.run_id }}
+          path: |
+            m13-dogfood-evidence.tar.gz
+            dist/
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
+          include-hidden-files: true
+
+      - name: Write metrics summary
+        if: always() && hashFiles('.m13-e2e/metrics.json') != ''
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          {
+            echo "# M13 GoalLite dogfood 指标（published RC1）"
+            echo
+            echo "- run id: \`$RUN_ID\`"
+            echo "- model: \`$PI_MODEL\`"
+            echo
+            echo '```json'
+            cat "$CONTROL_ROOT/metrics.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
