@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -124,6 +125,130 @@ func TestDarwinAttachRebindExecutesBindAuthorityAndAdvancesJournal(t *testing.T)
 	snapshot := harness.session.journal.Snapshot()
 	if snapshot.Sequence != 3 || snapshot.pending != nil || snapshot.currentAuthorityHead != successorHead {
 		t.Fatalf("journal snapshot after rebind=%+v", snapshot)
+	}
+}
+
+// TestDarwinAttachRebindThenImmediateCollect proves that the EOF which closes
+// an Attach+bind connection is also the readiness boundary for the next
+// Attach. The production client opens that second connection immediately when
+// cold recovery is followed by Collect. If the accept-loop active flag is
+// released after Close, the peer can observe EOF first and the valid Collect
+// Attach is spuriously rejected as already connected.
+func TestDarwinAttachRebindThenImmediateCollect(t *testing.T) {
+	startedFact, observationDigest, successorHead := digest("started"), digest("obs"), digest("successor-head")
+	child := ProcessIdentity{PID: 200, BirthSeconds: 2, BirthMicroseconds: 3, SessionID: 99, ProcessGroupID: 99}
+	mechanics := &collectingAttachMechanics{
+		transcriptCollectMechanics: transcriptCollectMechanics{stdout: []byte("collected-stdout"), stderr: []byte("collected-stderr")},
+		child:                      child,
+	}
+	harness := newSupervisorLoopHarness(t, supervisorLoopOptions{
+		mechanics: mechanics,
+		configureSession: func(session *Session) {
+			session.state = sessionBound
+			session.supervisorStartedFact = startedFact
+			session.startedFact = startedFact
+			session.lastObservation = observationDigest
+		},
+	})
+	mechanics.directory = harness.directory
+
+	authority := rebindAttachAuthority(harness, observationDigest)
+	codec, _, _ := doRebindAttach(t, harness, authority)
+	preparedRebind := rebindPreparedCommand(t, authority, startedFact, successorHead)
+	if err := codec.Write(preparedRebind.request); err != nil {
+		t.Fatalf("rebind write: %v", err)
+	}
+	var rebindResponse Response
+	if err := codec.Read(&rebindResponse); err != nil || ValidateResponseBinding(rebindResponse, preparedRebind.request) != nil {
+		t.Fatalf("rebind response=%+v err=%v", rebindResponse, err)
+	}
+	postRebind, err := commandPostAnchor(authority.PreviousSupervisor, preparedRebind.request, rebindResponse)
+	if err != nil {
+		t.Fatalf("rebind post anchor: %v", err)
+	}
+	first := codec.stream.(*net.UnixConn)
+	if err := first.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	var trailing [1]byte
+	if count, readErr := first.Read(trailing[:]); count != 0 || !errors.Is(readErr, io.EOF) {
+		t.Fatalf("post-rebind read count=%d err=%v", count, readErr)
+	}
+	_ = first.Close()
+
+	// Open the successor immediately after EOF, with no scheduling delay or
+	// retry. This is the exact cold CLI recovery -> Collect transition.
+	second, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: filepath.Join(harness.root, controlSocket), Net: "unix"})
+	if err != nil {
+		t.Fatalf("immediate Collect Attach dial: %v", err)
+	}
+	defer second.Close()
+	directory, err := ObserveHeldControlDirectory(harness.directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collectAuthority := authority
+	collectAuthority.PreviousSupervisor = postRebind
+	collectRequest := attachRequest{SchemaVersion: AttachSchema, ProtocolRevision: ProtocolRevision, SessionNonce: harness.bootstrap.SessionNonce, Core: harness.bootstrap.Core, ControlDirectoryIdentity: directory, Authority: collectAuthority}
+	collectRequest.RequestDigest, err = collectRequest.detachedDigest()
+	if err != nil || collectRequest.validate() != nil {
+		t.Fatalf("Collect Attach request: %v", err)
+	}
+	collectCodec, err := NewProtocolCodec(second)
+	if err != nil || collectCodec.Write(collectRequest) != nil {
+		t.Fatalf("Collect Attach write: %v", err)
+	}
+	var collectAttachResponse attachResponse
+	if err := collectCodec.Read(&collectAttachResponse); err != nil || collectAttachResponse.validate(collectRequest, harness.bootstrap.Core) != nil {
+		t.Fatalf("Collect Attach response=%+v err=%v", collectAttachResponse, err)
+	}
+	preparedCollect, err := PrepareCommand(postRebind, CommandOptions{
+		Command: CommandCollect, CommandID: "collect-after-rebind", Sequence: postRebind.CommandSequence + 1,
+		PreviousCommandDigest: postRebind.CommandHead, CurrentAuthorityHead: successorHead, Deadline: time.Now().Add(20 * time.Second),
+	}, CollectPayload{ProcessStartedFactDigest: startedFact, LastObservationDigest: observationDigest})
+	if err != nil {
+		t.Fatalf("prepare Collect: %v", err)
+	}
+	if err := collectCodec.Write(preparedCollect.request); err != nil {
+		t.Fatalf("Collect write: %v", err)
+	}
+	var collectResponse Response
+	if err := collectCodec.Read(&collectResponse); err != nil || ValidateResponseBinding(collectResponse, preparedCollect.request) != nil {
+		t.Fatalf("Collect response=%+v err=%v", collectResponse, err)
+	}
+	if collectResponse.Status != "ok" || collectResponse.Command != CommandCollect {
+		t.Fatalf("Collect response=%+v", collectResponse)
+	}
+	if err := second.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if count, readErr := second.Read(trailing[:]); count != 0 || !errors.Is(readErr, io.EOF) {
+		t.Fatalf("post-Collect read count=%d err=%v", count, readErr)
+	}
+	if snapshot := harness.session.journal.Snapshot(); snapshot.Sequence != 5 || snapshot.pending != nil {
+		t.Fatalf("journal after rebind+Collect=%+v", snapshot)
+	}
+}
+
+type activeReleaseOrderProbe struct {
+	active         *atomic.Bool
+	activeAtClose  bool
+	closeCallCount int
+}
+
+func (probe *activeReleaseOrderProbe) Close() error {
+	probe.activeAtClose = probe.active.Load()
+	probe.closeCallCount++
+	return nil
+}
+
+func TestReleaseActiveConnectionPublishesAvailabilityBeforeClose(t *testing.T) {
+	var active atomic.Bool
+	active.Store(true)
+	probe := &activeReleaseOrderProbe{active: &active}
+	releaseActiveConnection(&active, probe)
+	if probe.closeCallCount != 1 || probe.activeAtClose || active.Load() {
+		t.Fatalf("release order activeAtClose=%t closeCalls=%d activeAfter=%t", probe.activeAtClose, probe.closeCallCount, active.Load())
 	}
 }
 

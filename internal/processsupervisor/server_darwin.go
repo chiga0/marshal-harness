@@ -211,8 +211,7 @@ func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.
 			return nil
 		}
 	}
-	_ = unixConnection.Close()
-	active.Store(false)
+	releaseActiveConnection(&active, unixConnection)
 	if options.reconnectReady != nil {
 		options.reconnectReady()
 	}
@@ -235,8 +234,7 @@ func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.
 			}
 		}
 		if connection.SetDeadline(time.Now().Add(30*time.Second)) != nil {
-			_ = connection.Close()
-			active.Store(false)
+			releaseActiveConnection(&active, connection)
 			continue
 		}
 		observed, observeErr := peerObserver(connection)
@@ -247,8 +245,7 @@ func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.
 		// transport may carry exactly one command from the closed continuation set.
 		if readErr == nil && wireSchema(reconnectRaw) == AttachSchema {
 			attachErr := serveAttach(connection, reconnectReader, session, boundary, supervisorIdentity, observed, reconnectRaw)
-			_ = connection.Close()
-			active.Store(false)
+			releaseActiveConnection(&active, connection)
 			if attachErr != nil {
 				if errors.Is(attachErr, ErrConflict) {
 					continue
@@ -266,14 +263,12 @@ func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.
 		// Boundary conflict always wins and is a silent terminal intervention.
 		if boundary.revalidate(session.journal.Snapshot()) != nil {
 			session.intervene()
-			_ = connection.Close()
-			active.Store(false)
+			releaseActiveConnection(&active, connection)
 			return ErrConflict
 		}
 		if observeErr != nil || readErr != nil || admitErr != nil {
 			_ = emitReconnectHandshake(connection, reconnectWireDecision{disposition: reconnectWireRejected}, session, supervisorIdentity, socketIdentity, controlFiles)
-			_ = connection.Close()
-			active.Store(false)
+			releaseActiveConnection(&active, connection)
 			continue
 		}
 		attempt := session.reconnectAttempt(reconnect, observed)
@@ -282,41 +277,35 @@ func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.
 		}
 		decision := decideReconnectWireAfterAttempt(session, boundary, attempt)
 		if decision.disposition == reconnectWireSilentClose {
-			_ = connection.Close()
-			active.Store(false)
+			releaseActiveConnection(&active, connection)
 			return decision.err
 		}
 		if decision.disposition == reconnectWireRejected {
 			_ = emitReconnectHandshake(connection, decision, session, supervisorIdentity, socketIdentity, controlFiles)
-			_ = connection.Close()
-			active.Store(false)
+			releaseActiveConnection(&active, connection)
 			continue
 		}
 		if decision.disposition != reconnectWireAccepted {
-			_ = connection.Close()
-			active.Store(false)
+			releaseActiveConnection(&active, connection)
 			return ErrIntervention
 		}
 		if connection.SetDeadline(time.Time{}) != nil {
-			_ = connection.Close()
-			active.Store(false)
+			releaseActiveConnection(&active, connection)
 			continue
 		}
 		if err := emitReconnectHandshake(connection, decision, session, supervisorIdentity, socketIdentity, controlFiles); err != nil {
-			_ = connection.Close()
-			active.Store(false)
+			releaseActiveConnection(&active, connection)
 			continue
 		}
 		if state := session.State(); state == string(sessionClosed) || state == string(sessionAborted) {
-			_ = connection.Close()
+			releaseActiveConnection(&active, connection)
 			if boundary.revalidate(session.journal.Snapshot()) != nil {
 				return ErrConflict
 			}
 			return nil
 		}
 		terminal, serveErr := serveConnection(connection, reconnectReader, session, boundary)
-		_ = connection.Close()
-		active.Store(false)
+		releaseActiveConnection(&active, connection)
 		if serveErr != nil {
 			if errors.Is(serveErr, ErrConflict) {
 				return serveErr
@@ -330,6 +319,17 @@ func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.
 			return nil
 		}
 	}
+}
+
+// releaseActiveConnection publishes availability before closing the current
+// connection. Close makes EOF visible to the peer, which may immediately open
+// the next Attach; publishing after Close creates a window where that valid
+// successor is rejected as already connected. The supervisor loop remains the
+// sole consumer of the one-entry incoming queue, so this ordering does not run
+// two sessions concurrently.
+func releaseActiveConnection(active *atomic.Bool, connection io.Closer) {
+	active.Store(false)
+	_ = connection.Close()
 }
 
 type reconnectWireDisposition uint8
