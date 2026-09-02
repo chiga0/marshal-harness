@@ -1,4 +1,0 @@
-interface:
-  display_name: "Marshal Harness"
-  short_description: "编排本地 Coding Agent 并执行证据门禁审查"
-  default_prompt: "使用 $marshal 完成当前开发任务，并以 Marshal Core 的证据与状态为准。"

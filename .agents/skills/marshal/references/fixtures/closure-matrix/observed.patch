@@ -1,7 +1,0 @@
-diff --git a/internal/example.go b/internal/example.go
-index 1111111..2222222 100644
---- a/internal/example.go
-+++ b/internal/example.go
-@@ -1 +1 @@
--const valid = false
-+const valid = true
