@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
+	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
