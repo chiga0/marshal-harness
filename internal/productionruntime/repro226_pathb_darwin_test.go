@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 )
 
@@ -51,6 +53,18 @@ func repro226SealedInputs(t *testing.T, inputs CompositionInputs) (CompositionIn
 	inputs.HeldIngressDir = held
 	inputs.FixedMarshalPath = fixed
 	inputs.OwnerPrivateControlRoot = controlRoot
+	// sealed 合同把 acquisition 绑定到当前精确观察的核心（binary + process
+	// birth + observedAt）；fixture 的 acquisitionAtEpoch 只近似观察 birth，
+	// ObservedAt 不在当前精确回放窗内 → 与 newCompositionInputs 一致补齐。
+	core, coreErr := processsupervisor.ObserveCurrentCore(fixed)
+	if coreErr != nil {
+		t.Fatalf("observe current core: %v", coreErr)
+	}
+	inputs.Acquisition.OwnerUID = core.UID
+	inputs.Acquisition.OwnerGID = core.GID
+	inputs.Acquisition.OwnerProcess = core.Process
+	inputs.Acquisition.OwnerBinary = core.Binary
+	inputs.Acquisition.ObservedAt = time.Unix(core.Process.BirthSeconds, core.Process.BirthMicroseconds*int64(time.Microsecond)).UTC().Add(time.Second).Format(time.RFC3339Nano)
 	return inputs, held, controlRoot
 }
 
