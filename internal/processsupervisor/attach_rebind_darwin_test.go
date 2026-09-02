@@ -28,8 +28,12 @@ func rebindBoundSession(startedFact, observationDigest string) func(*Session) {
 	}
 }
 
+func rebindChildIdentity() ProcessIdentity {
+	return ProcessIdentity{PID: 300, BirthSeconds: 3, BirthMicroseconds: 4, SessionID: 299, ProcessGroupID: 299}
+}
+
 func rebindAttachAuthority(harness *supervisorLoopHarness, observationDigest string) AttachAuthority {
-	return attachAuthorityFromHarness(harness, ProcessIdentity{PID: 300, BirthSeconds: 3, BirthMicroseconds: 4, SessionID: 299, ProcessGroupID: 299}, observationDigest)
+	return attachAuthorityFromHarness(harness, rebindChildIdentity(), observationDigest)
 }
 
 func rebindPreparedCommand(t *testing.T, authority AttachAuthority, startedFact, successorHead string) PreparedCommand {
@@ -44,7 +48,7 @@ func rebindPreparedCommand(t *testing.T, authority AttachAuthority, startedFact,
 
 func rebindHarness(t *testing.T, startedFact, observationDigest string) *supervisorLoopHarness {
 	return newSupervisorLoopHarness(t, supervisorLoopOptions{
-		mechanics:        &attachFixtureMechanics{child: ProcessIdentity{PID: 300, BirthSeconds: 3, BirthMicroseconds: 4, SessionID: 299, ProcessGroupID: 299}},
+		mechanics:        &attachFixtureMechanics{child: rebindChildIdentity()},
 		configureSession: rebindBoundSession(startedFact, observationDigest),
 	})
 }
@@ -136,7 +140,7 @@ func TestDarwinAttachRebindExecutesBindAuthorityAndAdvancesJournal(t *testing.T)
 // Attach is spuriously rejected as already connected.
 func TestDarwinAttachRebindThenImmediateCollect(t *testing.T) {
 	startedFact, observationDigest, successorHead := digest("started"), digest("obs"), digest("successor-head")
-	child := ProcessIdentity{PID: 200, BirthSeconds: 2, BirthMicroseconds: 3, SessionID: 99, ProcessGroupID: 99}
+	child := rebindChildIdentity()
 	mechanics := &collectingAttachMechanics{
 		transcriptCollectMechanics: transcriptCollectMechanics{stdout: []byte("collected-stdout"), stderr: []byte("collected-stderr")},
 		child:                      child,
