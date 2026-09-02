@@ -43,6 +43,7 @@ FIXED_FILES = {
     "scripts/dist-profile_test.sh": "100755",
     "scripts/install_test.sh": "100755",
     "scripts/release-canary_test.sh": "100755",
+    "scripts/m13-e2e-dogfood-workflow_test.sh": "100644",
     "schemas/release_schema_test.go": "100644",
     "schemas/release/rc1-canary-receipt.schema.json": "100644",
     "schemas/release/examples/valid/rc1-canary-receipt.json": "100644",
@@ -102,7 +103,8 @@ jobs:
           for test_path in \\
             scripts/release-ci-gate_test.sh \\
             scripts/install_test.sh \\
-            scripts/release-canary_test.sh; do
+            scripts/release-canary_test.sh \\
+            scripts/m13-e2e-dogfood-workflow_test.sh; do
             run_checker
             /usr/bin/env -i \\
               LC_ALL=C \\

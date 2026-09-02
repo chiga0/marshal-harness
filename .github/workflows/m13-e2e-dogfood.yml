@@ -12,7 +12,7 @@ on:
           - published-rc1
           - build-from-head
       pi-model:
-        description: provider/model（缺省取 vars.OPENAI_MODELS 第一项）
+        description: provider/model（缺省以 pai-eas 结合 vars.OPENAI_MODELS 第一项）
         required: false
         type: string
       task-run-id:
@@ -46,6 +46,7 @@ jobs:
       contents: read
     env:
       PI_MODEL: ${{ inputs.pi-model }}
+      PI_DEFAULT_PROVIDER: "pai-eas"
       PHY_PI_VERSION: "0.84.4"
       PHY_NODE_VERSION: "v24.15.0"
       PHY_NODE_SHA256: "3200fbd9f7fd4410426dd541e10d1ab829d3472f270d743c7fabd1696c03fe32"
@@ -61,11 +62,15 @@ jobs:
           VARS_MODELS: ${{ vars.OPENAI_MODELS }}
         run: |
           test "${{ github.repository }}" = "chiga0/marshal-harness" || { echo "::error::仅允许 canonical 仓库" >&2; exit 1; }
+          first_model="$(/usr/bin/python3 -I -B -c 'import os,re,sys; items=[m.strip() for m in os.environ.get("VARS_MODELS", "").split(",") if m.strip()]; (items and all(re.fullmatch(r"[A-Za-z0-9._:-]+", m) for m in items)) or sys.exit("OPENAI_MODELS 必须是逗号分隔的裸 model id"); print(items[0])' 2>&1)" || { echo "::error::$first_model" >&2; exit 1; }
           model="$PI_MODEL"
           if [ -z "$model" ]; then
-            model="$(/usr/bin/python3 -I -B -c 'import os,sys; print([m for m in os.environ["VARS_MODELS"].split(",") if m.strip()][0].strip())')"
+            [[ "$PI_DEFAULT_PROVIDER" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "::error::默认 Pi provider identity 形态非法" >&2; exit 1; }
+            model="$PI_DEFAULT_PROVIDER/$first_model"
           fi
           [[ "$model" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || { echo "::error::pi-model 必须是 provider/model 形状：$model" >&2; exit 1; }
+          model_id="${model#*/}"
+          VARS_MODELS="$VARS_MODELS" MODEL_ID="$model_id" /usr/bin/python3 -I -B -c 'import os,sys; items=[m.strip() for m in os.environ["VARS_MODELS"].split(",") if m.strip()]; os.environ["MODEL_ID"] in items or sys.exit("pi-model 的 model 段不在 OPENAI_MODELS 中")'
           [[ "$EXPECTED_CANDIDATE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::candidate sha256 形态非法" >&2; exit 1; }
           [[ "$REVIEWER_ID" =~ ^[A-Za-z0-9._-]{2,64}$ ]] || { echo "::error::reviewer-id 形态非法" >&2; exit 1; }
           run_id="$INPUT_RUN_ID"
@@ -301,12 +306,13 @@ jobs:
         if: always()
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          CONTROL_ROOT="${CONTROL_ROOT:-$(pwd)/.m13-e2e}"
-          mkdir -p "$CONTROL_ROOT"
-          if [ -f ".marshal/runs/${RUN_ID}/state.json" ]; then
+          control_root="${CONTROL_ROOT:-$(pwd)/.m13-e2e}"
+          run_id="${RUN_ID:-}"
+          mkdir -p "$control_root"
+          if [ -n "$run_id" ] && [ -f ".marshal/runs/${run_id}/state.json" ]; then
             python3 -I -B scripts/e2e-m13-dogfood.py metrics \
-              --state-root .marshal --run-id "$RUN_ID" --wall-start "${WALL_START:-}" \
-              --out "$CONTROL_ROOT/metrics.json"
+              --state-root .marshal --run-id "$run_id" --wall-start "${WALL_START:-}" \
+              --out "$control_root/metrics.json"
           else
             echo '[e2e-m13] run state 未生成，跳过指标提取（链路未到达 run 阶段）'
           fi
@@ -345,13 +351,16 @@ jobs:
         if: always() && hashFiles('.m13-e2e/metrics.json') != ''
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
+          control_root="${CONTROL_ROOT:-$(pwd)/.m13-e2e}"
+          run_id="${RUN_ID:-unresolved}"
+          pi_model="${PI_MODEL:-unresolved}"
           {
             echo "# M13 GoalLite dogfood 指标（published RC1）"
             echo
-            echo "- run id: \`$RUN_ID\`"
-            echo "- model: \`$PI_MODEL\`"
+            echo "- run id: \`$run_id\`"
+            echo "- model: \`$pi_model\`"
             echo
             echo '```json'
-            cat "$CONTROL_ROOT/metrics.json"
+            cat "$control_root/metrics.json"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

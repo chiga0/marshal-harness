@@ -50,7 +50,8 @@ jobs:
           for test_path in \
             scripts/release-ci-gate_test.sh \
             scripts/install_test.sh \
-            scripts/release-canary_test.sh; do
+            scripts/release-canary_test.sh \
+            scripts/m13-e2e-dogfood-workflow_test.sh; do
             run_checker
             /usr/bin/env -i \
               LC_ALL=C \
