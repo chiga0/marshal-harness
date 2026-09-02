@@ -4,15 +4,12 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"time"
 
-	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/authority"
-	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
@@ -45,32 +42,9 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, _, run
 	}
 	defer applicationAdapter.Close()
 
-	before, err := applicationAdapter.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
+	after, stage, err := applicationAdapter.advanceRun(ctx, runID)
 	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：READY 权威投影不可读：%v\n", err)
-		return ExitFailure
-	}
-	if before.State == domain.StateReady {
-		prepared, prepareErr := applicationAdapter.PrepareRunStart(ctx, application.PrepareRunStartRequest{
-			RunID: runID, ExpectedSequence: before.Sequence, ExpectedAuthorityHead: before.AuthorityHead,
-		})
-		if prepareErr != nil {
-			fmt.Fprintf(stderr, "运行失败：sealed PrepareRunStart 失败：%v\n", prepareErr)
-			return ExitFailure
-		}
-		if _, startErr := applicationAdapter.StartPreparedRun(ctx, prepared); startErr != nil {
-			fmt.Fprintf(stderr, "运行失败：sealed StartPreparedRun 失败：%v\n", startErr)
-			return ExitFailure
-		}
-	} else if before.State == domain.StateRunning {
-		if _, collectErr := applicationAdapter.collectRunResult(ctx, runID); collectErr != nil && !errors.Is(collectErr, productionruntime.ErrAttemptStillRunning) {
-			fmt.Fprintf(stderr, "运行失败：sealed CollectRunResult 失败：%v\n", collectErr)
-			return ExitFailure
-		}
-	}
-	after, err := applicationAdapter.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：sealed 启动后状态不可读：%v\n", err)
+		fmt.Fprintf(stderr, "运行失败：%s：%v\n", stage, err)
 		return ExitFailure
 	}
 	fmt.Fprintf(stdout, "Run：%s\nAttempt：%s\n状态：%s\n", runID, after.AttemptID, after.State)
