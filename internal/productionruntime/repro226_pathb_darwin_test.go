@@ -233,9 +233,11 @@ func TestRepro226SealedComposeBase(t *testing.T) {
 // does not exercise the production boundary that regressed in #226.
 func TestRepro226SequentialSessionStart(t *testing.T) {
 	inputs, runID, _, base, _ := pathBCompositionInputsForLaunch(t)
-	if err := inputs.Ingress.Close(); err != nil {
-		t.Fatal(err)
-	}
+	// Keep the generic fixture view open while the held Darwin view is sealed,
+	// matching TestRepositorySessionReusesOneOwnerAcrossSequentialRunRuntimes.
+	// Closing the fixture store first changes the test-only store lifecycle and
+	// fails before the production cross-call boundary under examination.
+	t.Cleanup(func() { _ = inputs.Ingress.Close() })
 	held, err := os.Open(filepath.Join(base, "result-ingress"))
 	if err != nil {
 		t.Fatal(err)
