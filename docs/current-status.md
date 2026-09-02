@@ -2,6 +2,20 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
+## 2026-09-02 #226 叶因已锁定 CLI adapter 层（转交状态）
+
+分层探针 PR #227（squash 合入 [b522008](https://github.com/chiga0/marshal-harness/commit/b522008)）给出证据化分层：
+
+- sealed composition staging、ExistingWorktree path-B、`PrepareRunStart → RehydratePreparedRunStart` 的 durable 身份契约全部通过（step2/3/4 绿）；
+- `controller.startPreparedRun` 直接驱动（step6）在测试宿主下分类为 `application: production-bridge-unavailable`（spawn 相关生产门禁，**不是** dogfood 的 `application: authority-conflict`）——durable/resultingress/productionruntime 排除作为叶因；
+- **#226 叶因锁定 CLI 扩展层 `internal/cli/sealed_application_darwin.go`（636c80d 的 435 行 adapter）**。
+
+当前由新 agent 接手继续实施（交接说明见 `docs/handoff-226-cli-adapter.md`）：
+
+- 第一步：review `sealed_repository_application` 的 `openRun` 调用链与 durable replay 字段等价性，定位确切 leaf；
+- 修复后按 ADR 0068 路径以 `m13-e2e-dogfood`（`candidate-mode=build-from-head`）重跑到 `ACCEPTED`；
+- 关闭 #224/#225/#226 与 #212 的 stable 门禁再修复它。
+
 ## 2026-09-02 ADR 0075 修复已上 main，#226 仍阻塞 sealed StartPreparedRun
 
 [ADR 0075](adr/0075-rc1-dogfood-usability-barriers.md) 已接受并在 main 上全部落地（`516e6a3`、`9029619`、candidate-mode `0a192ec`、workflow 链 `be3183b`/`0de20c5`），三组定向回归测试（0700 worktree 不变量、launch 输入 token 契约、终态单 JSON 提取）覆盖三种原文 dogfood 确定性屏障（#224、#225）。相关 exact-head CI 已全绿。build-from-head dogfood 实证：PrepareRunStart 全路径通过（ingress 八条事实完整晋级至 `prepared-execution-created`）。
