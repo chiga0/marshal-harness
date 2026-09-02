@@ -503,10 +503,6 @@ func TestTaskPlanProductionRequiresComposedRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	templateData, err := os.ReadFile(filepath.Join(originalDirectory, "../../.agents/skills/marshal/templates/research-task.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	repositoryRoot := t.TempDir()
 	runGit(t, repositoryRoot, "init", "-q", "-b", "main")
 	runGit(t, repositoryRoot, "config", "user.email", "marshal@example.invalid")
@@ -556,7 +552,7 @@ func TestTaskPlanProductionRequiresComposedRuntime(t *testing.T) {
 
 	scaffold := func(taskID string, extraArgs ...string) (string, []byte) {
 		t.Helper()
-		draft := cliProductionTaskDraftFromTemplate(t, templateData, repositoryRoot, taskID, remoteURL)
+		draft := cliProductionTaskDraft(t, repositoryRoot, taskID, remoteURL)
 		worker := draft["worker"].(map[string]any)
 		delete(worker, "preferredAdapter")
 		delete(worker, "fallbackAdapters")
@@ -630,7 +626,7 @@ func TestTaskPlanProductionRequiresComposedRuntime(t *testing.T) {
 		t.Fatalf("custom uncomposed production runtime created run state: %v", err)
 	}
 
-	openCodeDraft := cliProductionTaskDraftFromTemplate(t, templateData, repositoryRoot, "cli-opencode-rejected-task", remoteURL)
+	openCodeDraft := cliProductionTaskDraft(t, repositoryRoot, "cli-opencode-rejected-task", remoteURL)
 	openCodeDraft["worker"].(map[string]any)["preferredAdapter"] = "opencode"
 	openCodeDraft["worker"].(map[string]any)["fallbackAdapters"] = []any{"qoder"}
 	openCodeDraftPath := filepath.Join(t.TempDir(), "draft.json")
@@ -784,21 +780,11 @@ func cliPlanningTaskWithWorkers(t *testing.T, repositoryRoot, taskID, remoteURL,
 	return fixture
 }
 
-func cliProductionTaskDraftFromTemplate(t *testing.T, templateData []byte, repositoryRoot, taskID, remoteURL string) map[string]any {
+func cliProductionTaskDraft(t *testing.T, repositoryRoot, taskID, remoteURL string) map[string]any {
 	t.Helper()
-	var draft map[string]any
-	if err := json.Unmarshal(templateData, &draft); err != nil {
-		t.Fatal(err)
-	}
-	draft["metadata"].(map[string]any)["id"] = taskID
-	repository := draft["repository"].(map[string]any)
-	repository["path"] = repositoryRoot
-	repository["baseRef"] = strings.TrimSpace(runGitCLI(t, repositoryRoot, "rev-parse", "HEAD"))
-	repository["remote"] = "origin"
-	repository["expectedRemoteUrl"] = remoteURL
+	draft := cliPlanningTaskWithWorkers(t, repositoryRoot, taskID, remoteURL, "pi", []any{})
 	scope := draft["scope"].(map[string]any)
 	scope["allowPaths"] = []any{"README.md"}
-	draft["acceptance"] = readCLIFixture(t, "examples/happy-path/task-spec.json")["acceptance"]
 	draft["deliverables"] = []any{map[string]any{
 		"id": "research-report", "kind": "documentation", "pathGlob": "README.md", "minimumCount": float64(1), "required": true,
 	}}

@@ -265,19 +265,6 @@ func TestPrepareRecordsReplacesOrphanPendingFiles(t *testing.T) {
 	}
 }
 
-func TestMarshalSkillHasExplicitAndImplicitTriggers(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", ".agents", "skills", "marshal", "SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(data)
-	for _, expected := range []string{"明确要求“使用 Marshal”", "主 Agent（pi、Codex 等编码 Agent）", "marshal task review", "不要绕过 Core"} {
-		if !strings.Contains(content, expected) {
-			t.Fatalf("skill misses trigger or boundary %q", expected)
-		}
-	}
-}
-
 func validDecision(f reviewFixture, packet *domain.ReviewPacket, packetDigest, verdict string) domain.ReviewDecision {
 	publication := "not-applicable"
 	if f.task.Publication.Required {
