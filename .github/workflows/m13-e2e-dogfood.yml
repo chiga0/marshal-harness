@@ -3,6 +3,14 @@ name: M13 e2e dogfood (published RC1)
 on:
   workflow_dispatch:
     inputs:
+      candidate-mode:
+        description: candidate 获得方式：published-rc1=下载已发布资产（钉死 digest）；build-from-head=按 main HEAD 现场构建（用于验证修复）
+        required: true
+        default: published-rc1
+        type: choice
+        options:
+          - published-rc1
+          - build-from-head
       pi-model:
         description: provider/model（缺省取 vars.OPENAI_MODELS 第一项）
         required: false
@@ -17,7 +25,7 @@ on:
         default: e2e-operator-runner
         type: string
       expected-candidate-sha256:
-        description: 已发布 RC1 candidate 的精确 sha256（防漂移）
+        description: published-rc1 模式下已发布 candidate 的精确 sha256（防漂移）
         required: true
         default: f9ed7fa59d05f5e71fef7164b8015240497e1d18e25ef1d3f8e199c1378a3774
         type: string
@@ -83,7 +91,8 @@ jobs:
           bash scripts/release-ci-gate.sh "${{ github.repository }}" "$head"
           printf 'MAIN_HEAD=%s\n' "$head" >> "$GITHUB_ENV"
 
-      - name: Download and verify the published RC1 candidate (no rebuild)
+      - name: Download and verify the published RC1 candidate (published-rc1 mode)
+        if: inputs.candidate-mode == 'published-rc1'
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -100,6 +109,44 @@ jobs:
           [ ! -L bin/marshal ]
           version_json="$(bin/marshal version --json)"
           VERSION_JSON="$version_json" /usr/bin/python3 -I -B -c 'import json, os; v = json.loads(os.environ["VERSION_JSON"]); assert v.get("commit") == "c1407bd77924c97dc6784f4d81938a3f0bfa75f6", v; assert v.get("version") == "1.0.0-rc1", v; assert v.get("selfProfile") == "darwin-local-dogfood", v; assert v.get("os") == "darwin", v; print("published candidate identity verified")'
+          printf 'MARSHAL_BIN=%s\n' "$(pwd)/bin/marshal" >> "$GITHUB_ENV"
+
+      - name: Provision pinned Go 1.26.6 toolchain (build-from-head mode)
+        if: inputs.candidate-mode == 'build-from-head'
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          GO_TARBALL_URL: https://go.dev/dl/go1.26.6.darwin-arm64.tar.gz
+          GO_TARBALL_NAME: go1.26.6.darwin-arm64.tar.gz
+          GO_TARBALL_SHA256: 1e0b775a0a6084f37a1a1a64287f1f7a7a8440ade006eb8f154a1f85840e67ff
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          curl -fsSLo "$root/go.tar.gz" "$GO_TARBALL_URL"
+          dl_sha="$(shasum -a 256 "$root/go.tar.gz" | awk '{print tolower($1)}')"
+          [ "$dl_sha" = "$GO_TARBALL_SHA256" ] || { echo "::error::go tarball digest 漂移：$dl_sha" >&2; exit 1; }
+          /usr/bin/tar -xzf "$root/go.tar.gz" -C "$root"
+          go_bin="$root/go/bin/go"
+          got_version="$("$go_bin" version | awk '{print $3}')"
+          [ "$got_version" = "go1.26.6" ] || { echo "::error::go toolchain 版本漂移：$got_version" >&2; exit 1; }
+          printf 'MARSHAL_RELEASE_CANARY_GO_BIN=%s\n' "$go_bin" >> "$GITHUB_ENV"
+
+      - name: Build candidate from main head (build-from-head mode)
+        if: inputs.candidate-mode == 'build-from-head'
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          umask 077
+          rm -rf dist && mkdir -p dist bin
+          "$MARSHAL_RELEASE_CANARY_GO_BIN" version
+          make dist-rc1 GO="$MARSHAL_RELEASE_CANARY_GO_BIN" VERSION="1.0.0-rc2+dogfood" \
+            COMMIT="$MAIN_HEAD" BUILD_DATE="$(bash scripts/release-contract.sh build-date . "$MAIN_HEAD")"
+          ls -la dist/
+          candidate="$(ls dist/marshal_*_darwin_arm64 2>/dev/null | head -1)"
+          [ -n "$candidate" ] || { echo "::error::dist 无 darwin_arm64 candidate" >&2; exit 1; }
+          cp "$candidate" bin/marshal
+          chmod 755 bin/marshal
+          [ ! -L bin/marshal ]
+          version_json="$(bin/marshal version --json)"
+          VERSION_JSON="$version_json" EXPECTED_HEAD="$MAIN_HEAD" /usr/bin/python3 -I -B -c 'import json, os; v = json.loads(os.environ["VERSION_JSON"]); assert v.get("commit") == os.environ["EXPECTED_HEAD"], (v, os.environ["EXPECTED_HEAD"]); assert v.get("selfProfile") == "darwin-local-dogfood", v; assert v.get("os") == "darwin", v; print("head-built candidate identity verified:", v.get("version"))'
           printf 'MARSHAL_BIN=%s\n' "$(pwd)/bin/marshal" >> "$GITHUB_ENV"
 
       - name: Provision pinned Node v24.15.0 + Pi 0.84.4 with digest assertions
