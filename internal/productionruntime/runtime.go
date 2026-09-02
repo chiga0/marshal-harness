@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/domain"
 )
 
 type Runtime struct {
@@ -210,6 +211,50 @@ func (runtime *Runtime) StartPreparedRun(ctx context.Context, prepared applicati
 	}
 	defer release()
 	return controller.startPreparedRun(ctx, prepared)
+}
+
+func (runtime *Runtime) StartRun(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, error) {
+	controller, _, release, err := runtime.beginOperation("start-run")
+	if err != nil {
+		return application.RunStartProjection{}, err
+	}
+	defer release()
+	if err := request.Validate(); err != nil {
+		return application.RunStartProjection{}, err
+	}
+	before, err := controller.inspectRun(ctx, application.InspectRunRequest{RunID: request.RunID})
+	if err != nil {
+		return application.RunStartProjection{}, err
+	}
+	if before.Sequence == request.ExpectedSequence && before.AuthorityHead == request.ExpectedAuthorityHead {
+		if before.State != domain.StateReady || before.AttemptID != "" {
+			return application.RunStartProjection{}, application.NewError("start-run", application.ReasonAuthorityConflict)
+		}
+		prepared, err := controller.prepareRunStart(ctx, application.PrepareRunStartRequest(request))
+		if err != nil {
+			return application.RunStartProjection{}, err
+		}
+		after, err := controller.startPreparedRun(ctx, prepared)
+		if err != nil {
+			return application.RunStartProjection{}, err
+		}
+		result := application.RunStartProjection{Prepared: prepared, Run: after}
+		if result.Validate() != nil || !validStartSuccessor(prepared, after) {
+			return application.RunStartProjection{}, application.NewError("start-run", application.ReasonAuthorityConflict)
+		}
+		return result, nil
+	}
+	if before.Sequence <= request.ExpectedSequence {
+		return application.RunStartProjection{}, application.NewError("start-run", application.ReasonAuthorityConflict)
+	}
+	replayed, found, err := controller.rehydrateRunStart(ctx, request)
+	if err != nil {
+		return application.RunStartProjection{}, err
+	}
+	if !found || before != replayed.Run {
+		return application.RunStartProjection{}, application.NewError("start-run", application.ReasonAuthorityConflict)
+	}
+	return replayed, nil
 }
 
 func (runtime *Runtime) InspectRun(ctx context.Context, request application.InspectRunRequest) (application.RunProjection, error) {

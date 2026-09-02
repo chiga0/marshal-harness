@@ -272,34 +272,24 @@ func (adapter *sealedRepositoryApplication) recoverRepositoryRuns(ctx context.Co
 	return nil
 }
 
-func (adapter *sealedRepositoryApplication) PrepareRunStart(ctx context.Context, request application.PrepareRunStartRequest) (application.PreparedRunStart, error) {
+// StartRun is the shared bounded start operation used by direct CLI and fixed
+// server mode. One openRun owns the path-B descriptor graph from preparation
+// through execution or durable response-loss reconciliation.
+func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
 	run, err := adapter.openRun(ctx, request.RunID)
 	if err != nil {
-		return application.PreparedRunStart{}, err
+		return application.RunStartProjection{}, err
 	}
 	defer run.Close()
-	return run.runtime.PrepareRunStart(ctx, request)
-}
-
-func (adapter *sealedRepositoryApplication) StartPreparedRun(ctx context.Context, prepared application.PreparedRunStart) (application.RunProjection, error) {
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	run, err := adapter.openRun(ctx, prepared.RunID)
-	if err != nil {
-		return application.RunProjection{}, err
-	}
-	defer run.Close()
-	return run.runtime.StartPreparedRun(ctx, prepared)
+	return run.runtime.StartRun(ctx, request)
 }
 
 // advanceRun keeps the exact path-B launch closure and existing-worktree
-// descriptor graph alive across Inspect → PrepareRunStart → StartPreparedRun.
-// These three steps form one fixed-CLI transaction even though the public
-// application port remains split at its durable PreparedRunStart boundary.
-// Reopening a second Run runtime between Prepare and Start would close the
-// held source objects that the prepared execution is required to recheck.
+// descriptor graph alive while the shared StartRun application operation
+// prepares and starts the Run. Reopening a second Run runtime between those
+// phases would close the source objects that execution must recheck.
 func (adapter *sealedRepositoryApplication) advanceRun(ctx context.Context, runID string) (application.RunProjection, string, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
@@ -315,15 +305,13 @@ func (adapter *sealedRepositoryApplication) advanceRun(ctx context.Context, runI
 	}
 	switch before.State {
 	case domain.StateReady:
-		prepared, err := run.runtime.PrepareRunStart(ctx, application.PrepareRunStartRequest{
+		started, err := run.runtime.StartRun(ctx, application.StartRunRequest{
 			RunID: runID, ExpectedSequence: before.Sequence, ExpectedAuthorityHead: before.AuthorityHead,
 		})
 		if err != nil {
-			return application.RunProjection{}, "sealed PrepareRunStart 失败", err
+			return application.RunProjection{}, "sealed StartRun 失败", err
 		}
-		if _, err := run.runtime.StartPreparedRun(ctx, prepared); err != nil {
-			return application.RunProjection{}, "sealed StartPreparedRun 失败", err
-		}
+		return started.Run, "", nil
 	case domain.StateRunning:
 		if _, err := run.runtime.CollectRunResult(ctx, runID); err != nil && !errors.Is(err, productionruntime.ErrAttemptStillRunning) {
 			return application.RunProjection{}, "sealed CollectRunResult 失败", err

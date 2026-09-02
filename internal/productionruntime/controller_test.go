@@ -57,17 +57,18 @@ func (lock *testOwnerLock) claimRuntime() error {
 func (lock *testOwnerLock) claimed() bool { return lock.isClaimed && !lock.closed }
 
 type testAuthority struct {
-	lock         *testOwnerLock
-	owner        OwnerProjection
-	prepared     application.PreparedRunStart
-	outcome      application.RunProjection
-	outcomeFound bool
-	projection   application.RunProjection
-	err          error
-	prepareCalls int
-	collectCalls int
-	collected    CollectedRunResult
-	collectErr   error
+	lock           *testOwnerLock
+	owner          OwnerProjection
+	prepared       application.PreparedRunStart
+	outcome        application.RunProjection
+	outcomeFound   bool
+	projection     application.RunProjection
+	err            error
+	prepareCalls   int
+	rehydrateCalls int
+	collectCalls   int
+	collected      CollectedRunResult
+	collectErr     error
 }
 
 func (authority *testAuthority) requireLock() error {
@@ -104,6 +105,15 @@ func (authority *testAuthority) RehydrateRunStartOutcome(_ context.Context, _ re
 		return application.RunProjection{}, false, application.NewError("test-authority", application.ReasonAuthorityConflict)
 	}
 	return authority.outcome, authority.outcomeFound, authority.err
+}
+
+func (authority *testAuthority) RehydrateRunStart(_ context.Context, _ resultingress.CurrentOwnerLockVerifier, _ resultingress.ControlOwnerAcquisition, request application.StartRunRequest) (application.PreparedRunStart, application.RunProjection, bool, error) {
+	if err := authority.requireLock(); err != nil || request.RunID != authority.prepared.RunID ||
+		request.ExpectedSequence != authority.prepared.Sequence || request.ExpectedAuthorityHead != authority.prepared.AuthorityHead {
+		return application.PreparedRunStart{}, application.RunProjection{}, false, application.NewError("test-authority", application.ReasonAuthorityConflict)
+	}
+	authority.rehydrateCalls++
+	return authority.prepared, authority.outcome, authority.outcomeFound, authority.err
 }
 
 func (authority *testAuthority) InspectRun(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, application.InspectRunRequest) (application.RunProjection, error) {
@@ -182,7 +192,7 @@ func testComponents(t *testing.T) (*controller, *testOwnerLock, *testAuthority, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority := &testAuthority{lock: lock, owner: OwnerProjection{OwnerEpoch: 1, OwnerFactDigest: runtimeTestDigest}, prepared: testPrepared(), projection: application.RunProjection{TaskID: "task-1", RunID: "run-1", AttemptID: "attempt-1", State: domain.StateReady, Sequence: 3, AuthorityHead: runtimeTestDigest}}
+	authority := &testAuthority{lock: lock, owner: OwnerProjection{OwnerEpoch: 1, OwnerFactDigest: runtimeTestDigest}, prepared: testPrepared(), projection: application.RunProjection{TaskID: "task-1", RunID: "run-1", State: domain.StateReady, Sequence: 3, AuthorityHead: runtimeTestDigest}}
 	bridge := &testBridge{lock: lock, configured: profile}
 	controller, err := newController(authority, bridge, lock, acquisition, profile)
 	if err != nil {
@@ -258,6 +268,36 @@ func TestStartReplayReturnsDurableSuccessWithoutRespawn(t *testing.T) {
 	got, err := runtime.StartPreparedRun(context.Background(), testPrepared())
 	if err != nil || got != testSuccessor() || bridge.verifyCalls != 0 || bridge.startCalls != 0 || lock.sections != 1 {
 		t.Fatalf("got=%#v err=%v verifies=%d starts=%d sections=%d", got, err, bridge.verifyCalls, bridge.startCalls, lock.sections)
+	}
+}
+
+func TestStartRunClosesPrepareAndStartInOneRuntimeOperation(t *testing.T) {
+	controller, lock, authority, bridge, _ := testComponents(t)
+	bridge.afterStart = func() {
+		authority.outcome, authority.outcomeFound = testSuccessor(), true
+		authority.projection = testSuccessor()
+	}
+	runtime := claimTestRuntime(t, controller)
+	defer runtime.Close()
+	got, err := runtime.StartRun(context.Background(), application.StartRunRequest{
+		RunID: "run-1", ExpectedSequence: 3, ExpectedAuthorityHead: runtimeTestDigest,
+	})
+	if err != nil || got.Prepared != testPrepared() || got.Run != testSuccessor() || authority.prepareCalls != 1 || bridge.startCalls != 1 {
+		t.Fatalf("got=%#v err=%v prepares=%d starts=%d sections=%d", got, err, authority.prepareCalls, bridge.startCalls, lock.sections)
+	}
+}
+
+func TestStartRunLostResponseRehydratesExactPredecessorWithoutRespawn(t *testing.T) {
+	controller, lock, authority, bridge, _ := testComponents(t)
+	authority.projection, authority.outcome, authority.outcomeFound = testSuccessor(), testSuccessor(), true
+	runtime := claimTestRuntime(t, controller)
+	defer runtime.Close()
+	got, err := runtime.StartRun(context.Background(), application.StartRunRequest{
+		RunID: "run-1", ExpectedSequence: 3, ExpectedAuthorityHead: runtimeTestDigest,
+	})
+	if err != nil || got.Prepared != testPrepared() || got.Run != testSuccessor() || authority.prepareCalls != 0 ||
+		authority.rehydrateCalls != 1 || bridge.startCalls != 0 || lock.sections != 2 {
+		t.Fatalf("got=%#v err=%v prepares=%d rehydrates=%d starts=%d sections=%d", got, err, authority.prepareCalls, authority.rehydrateCalls, bridge.startCalls, lock.sections)
 	}
 }
 

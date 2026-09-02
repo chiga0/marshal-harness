@@ -164,6 +164,33 @@ func TestPreparedExecutionCreationOnceResolveAndSecretBoundary(t *testing.T) {
 	}
 }
 
+func TestResolvePreparedRunStartUsesExactReadyHeadWithoutMutation(t *testing.T) {
+	fixture := newPreparedExecutionFixture(t)
+	before, err := os.ReadFile(fixture.store.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := PreparedRunStartKey{
+		RunID: fixture.prepared.AttemptIdentity.RunID, ReadySequence: fixture.prepared.ExpectedRunSequence,
+		ReadyAuthorityHead: fixture.prepared.ExpectedRunAuthorityHead,
+	}
+	resolved, err := fixture.store.ResolvePreparedRunStart(context.Background(), fixture.verifier, fixture.owner.Acquisition, key)
+	if err != nil || resolved != fixture.prepared {
+		t.Fatalf("resolve by READY head=%+v err=%v", resolved, err)
+	}
+	after, err := os.ReadFile(fixture.store.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("READY-head lookup mutated the authority ledger")
+	}
+	key.ReadyAuthorityHead = attemptTestDigest("other-ready-head")
+	if _, err := fixture.store.ResolvePreparedRunStart(context.Background(), fixture.verifier, fixture.owner.Acquisition, key); !errors.Is(err, ErrPreparedExecutionUnavailable) {
+		t.Fatalf("wrong READY head resolved: %v", err)
+	}
+}
+
 func TestCommittedRunStartProofIsNarrowSharedAndSynchronous(t *testing.T) {
 	typeOfClaim := reflect.TypeOf(CommittedRunStartClaim{})
 	want := []string{"TaskID", "RunID", "AttemptID", "ReservationFactDigest", "AttemptOpenedFactDigest", "AttemptOrdinal", "AttemptsUsedBefore", "MaxAttempts", "ReadySequence", "ReadyAuthorityHead", "PreparationDigest", "ProcessStartedFactDigest", "ResumeOutcomeFactDigest"}

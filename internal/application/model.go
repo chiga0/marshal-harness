@@ -29,6 +29,23 @@ type PrepareRunStartRequest struct {
 	ExpectedAuthorityHead string `json:"expectedAuthorityHead"`
 }
 
+// StartRunRequest binds one bounded Run-start operation to the exact durable
+// head observed by the input adapter. The application implementation owns
+// preparation, execution and response-loss reconciliation; callers never
+// carry a PreparedRunStart across Runtime lifetimes.
+type StartRunRequest struct {
+	RunID                 string `json:"runId"`
+	ExpectedSequence      uint64 `json:"expectedSequence"`
+	ExpectedAuthorityHead string `json:"expectedAuthorityHead"`
+}
+
+func (request StartRunRequest) Validate() error {
+	if !validID(request.RunID) || request.ExpectedSequence == 0 || request.ExpectedSequence > 1<<53-1 || !validDigest(request.ExpectedAuthorityHead) {
+		return NewError("start-run", ReasonInvalidRequest)
+	}
+	return nil
+}
+
 func (request PrepareRunStartRequest) Validate() error {
 	if !validID(request.RunID) || !validDigest(request.ExpectedAuthorityHead) {
 		return NewError("prepare-run-start", ReasonInvalidRequest)
@@ -82,6 +99,24 @@ type RunProjection struct {
 	State         domain.State `json:"state"`
 	Sequence      uint64       `json:"sequence"`
 	AuthorityHead string       `json:"authorityHead"`
+}
+
+// RunStartProjection binds the exact durable preparation to its authoritative
+// successor. It is returned both for a fresh start and for an exact replay
+// after response loss.
+type RunStartProjection struct {
+	Prepared PreparedRunStart `json:"prepared"`
+	Run      RunProjection    `json:"run"`
+}
+
+func (projection RunStartProjection) Validate() error {
+	if projection.Prepared.Validate() != nil || projection.Run.Validate() != nil ||
+		projection.Run.TaskID != projection.Prepared.TaskID || projection.Run.RunID != projection.Prepared.RunID ||
+		projection.Run.AttemptID != projection.Prepared.AttemptID || projection.Run.Sequence <= projection.Prepared.Sequence ||
+		projection.Run.AuthorityHead == projection.Prepared.AuthorityHead {
+		return NewError("run-start-projection", ReasonAuthorityConflict)
+	}
+	return nil
 }
 
 func (projection RunProjection) Validate() error {

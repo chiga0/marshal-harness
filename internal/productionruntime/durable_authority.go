@@ -569,6 +569,30 @@ func (l *CompositionLedger) RehydrateRunStartOutcome(ctx context.Context, verifi
 	return application.RunProjection{}, false, nil
 }
 
+// RehydrateRunStart resolves the unique preparation derived from an exact
+// READY head and returns its committed successor when present. It is the
+// durable response-loss path for the bounded public StartRun operation.
+func (l *CompositionLedger) RehydrateRunStart(ctx context.Context, verifier resultingress.CurrentOwnerLockVerifier, acquisition resultingress.ControlOwnerAcquisition, request application.StartRunRequest) (application.PreparedRunStart, application.RunProjection, bool, error) {
+	if err := request.Validate(); err != nil {
+		return application.PreparedRunStart{}, application.RunProjection{}, false, err
+	}
+	resolved, err := l.ingress.ResolvePreparedRunStart(ctx, verifier, acquisition, resultingress.PreparedRunStartKey{
+		RunID: request.RunID, ReadySequence: request.ExpectedSequence, ReadyAuthorityHead: request.ExpectedAuthorityHead,
+	})
+	if err != nil {
+		return application.PreparedRunStart{}, application.RunProjection{}, false, err
+	}
+	prepared, err := l.ingress.PrepareMacRunStart(ctx, verifier, acquisition, resolved.PreparationDigest)
+	if err != nil {
+		return application.PreparedRunStart{}, application.RunProjection{}, false, err
+	}
+	if prepared.RunID != request.RunID || prepared.Sequence != request.ExpectedSequence || prepared.AuthorityHead != request.ExpectedAuthorityHead {
+		return application.PreparedRunStart{}, application.RunProjection{}, false, application.NewError("start-run", application.ReasonAuthorityConflict)
+	}
+	after, found, err := l.RehydrateRunStartOutcome(ctx, verifier, acquisition, prepared.PreparationDigest)
+	return prepared, after, found, err
+}
+
 // InspectRun projects the current Run state under the held lease.
 func (l *CompositionLedger) InspectRun(ctx context.Context, verifier resultingress.CurrentOwnerLockVerifier, acquisition resultingress.ControlOwnerAcquisition, request application.InspectRunRequest) (application.RunProjection, error) {
 	var projection application.RunProjection
