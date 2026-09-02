@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 在发布 tag 上传任何资产前，验证同一 peeled commit 的主分支 CI 三项全部成功。
+# 在发布 tag 上传任何资产前，验证同一 peeled commit 的主分支 CI 五项全部成功。
 
 set -euo pipefail
 
@@ -53,14 +53,20 @@ PY
 [ "$(wc -c <"$JOBS_PATH" | tr -d '[:space:]')" -le 1048576 ] || fail 'CI jobs 响应超过 1 MiB'
 
 "$PYTHON_COMMAND" -I -B - "$JOBS_PATH" "$SOURCE_HEAD" <<'PY' \
-  || fail 'CI 必须且只能包含成功的 Quality Linux、Quality macOS 与 Secret scan'
+  || fail 'CI 必须且只能包含成功的 Quality Linux/macOS、Linux candidate amd64/arm64 与 Secret scan'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     value = json.load(handle)
 jobs = value.get("jobs")
 assert isinstance(jobs, list)
-assert value.get("total_count") == 3 and len(jobs) == 3
-expected = {"Quality (ubuntu-latest)", "Quality (macos-latest)", "Secret scan"}
+assert value.get("total_count") == 5 and len(jobs) == 5
+expected = {
+    "Quality (ubuntu-latest)",
+    "Quality (macos-latest)",
+    "Linux candidate conformance (amd64)",
+    "Linux candidate conformance (arm64)",
+    "Secret scan",
+}
 assert {job.get("name") for job in jobs} == expected
 for job in jobs:
     assert job.get("head_sha") == sys.argv[2]

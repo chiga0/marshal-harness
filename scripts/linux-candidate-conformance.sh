@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build and exercise Linux release-shaped artifacts without granting Linux
-# runtime, stable-release, signing, or publication authority.
+# runtime, stable-release, signing, rollback/high-water, or publication
+# authority. CI runs this script independently on native amd64 and arm64.
 
 set -euo pipefail
 
@@ -25,8 +26,9 @@ fail() {
 
 [ "$(uname -s)" = Linux ] || fail '本门禁只允许在 Linux runner 执行'
 case "$(uname -m)" in
-  x86_64|amd64) ;;
-  *) fail '本门禁要求原生 Linux amd64 runner' ;;
+  x86_64|amd64) NATIVE_ARCH=amd64 ;;
+  aarch64|arm64) NATIVE_ARCH=arm64 ;;
+  *) fail '本门禁要求原生 Linux amd64 或 arm64 runner' ;;
 esac
 
 SOURCE_HEAD="$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')"
@@ -49,6 +51,7 @@ bash "$ROOT/scripts/release-contract.sh" verify-dist "$DIST" "$TAG" "$SOURCE_HEA
 
 AMD64="${DIST}/marshal_${VERSION}_linux_amd64"
 ARM64="${DIST}/marshal_${VERSION}_linux_arm64"
+NATIVE="${DIST}/marshal_${VERSION}_linux_${NATIVE_ARCH}"
 mkdir -p "$HOME_DIR"
 
 python3 -I -B - "$GO_BIN" "$GO_VERSION" "$AMD64" amd64 "$ARM64" arm64 <<'PY'
@@ -121,8 +124,8 @@ for index in range(0, len(candidate_args), 2):
         raise SystemExit(f"unexpected embedded VCS settings for {arch}")
 PY
 
-VERSION_JSON="$(env -i HOME="$HOME_DIR" LC_ALL=C PATH=/usr/bin:/bin "$AMD64" version --json)"
-python3 -I -B - "$VERSION_JSON" "$VERSION" "$SOURCE_HEAD" "$BUILD_DATE" "$GO_VERSION" <<'PY'
+VERSION_JSON="$(env -i HOME="$HOME_DIR" LC_ALL=C PATH=/usr/bin:/bin "$NATIVE" version --json)"
+python3 -I -B - "$VERSION_JSON" "$VERSION" "$SOURCE_HEAD" "$BUILD_DATE" "$GO_VERSION" "$NATIVE_ARCH" <<'PY'
 import json
 import sys
 
@@ -133,19 +136,19 @@ expected = {
     "buildDate": sys.argv[4],
     "goVersion": sys.argv[5],
     "os": "linux",
-    "arch": "amd64",
+    "arch": sys.argv[6],
     "selfProfile": "unprofiled",
 }
 if payload != expected:
     raise SystemExit(f"native version identity mismatch: got={payload!r} want={expected!r}")
 PY
 
-HELP_OUTPUT="$(env -i HOME="$HOME_DIR" LC_ALL=C PATH=/usr/bin:/bin "$AMD64" help)"
+HELP_OUTPUT="$(env -i HOME="$HOME_DIR" LC_ALL=C PATH=/usr/bin:/bin "$NATIVE" help)"
 printf '%s\n' "$HELP_OUTPUT" | grep -F 'marshal doctor' >/dev/null \
   || fail 'native help 未包含 doctor command'
 
-DOCTOR_JSON="$(env -i HOME="$HOME_DIR" LC_ALL=C PATH=/usr/bin:/bin "$AMD64" doctor --json)"
-python3 -I -B - "$DOCTOR_JSON" "$SOURCE_HEAD" <<'PY'
+DOCTOR_JSON="$(env -i HOME="$HOME_DIR" LC_ALL=C PATH=/usr/bin:/bin "$NATIVE" doctor --json)"
+python3 -I -B - "$DOCTOR_JSON" "$SOURCE_HEAD" "$NATIVE_ARCH" <<'PY'
 import json
 import sys
 
@@ -153,7 +156,7 @@ payload = json.loads(sys.argv[1])
 build = payload.get("build", {})
 if payload.get("status") != "ok" or build.get("commit") != sys.argv[2]:
     raise SystemExit("native doctor did not report ok with exact sourceHead")
-if build.get("os") != "linux" or build.get("arch") != "amd64" or build.get("selfProfile") != "unprofiled":
+if build.get("os") != "linux" or build.get("arch") != sys.argv[2] or build.get("selfProfile") != "unprofiled":
     raise SystemExit("native doctor overstated Linux profile")
 if payload.get("selfIdentity") is not None:
     raise SystemExit("unprofiled Linux doctor unexpectedly reported self authority")
@@ -161,7 +164,7 @@ PY
 
 set +e
 env -i HOME="$HOME_DIR" LC_ALL=C PATH=/usr/bin:/bin \
-  "$AMD64" doctor --self --repository-root "$ROOT" \
+  "$NATIVE" doctor --self --repository-root "$ROOT" \
   >"${TMP_ROOT}/doctor-self.stdout" 2>"${TMP_ROOT}/doctor-self.stderr"
 doctor_self_status=$?
 set -e
@@ -192,7 +195,7 @@ if [ "${FIXTURE_MODE:-valid}" = missing-manifest ] && [ "$name" = RELEASE-MANIFE
   exit 22
 fi
 cp "${FIXTURE_DIST}/${name}" "$destination"
-if [ "${FIXTURE_MODE:-valid}" = tampered-asset ] && [ "$name" = "marshal_${FIXTURE_TAG#v}_linux_amd64" ]; then
+if [ "${FIXTURE_MODE:-valid}" = tampered-asset ] && [ "$name" = "marshal_${FIXTURE_TAG#v}_linux_${FIXTURE_ARCH}" ]; then
   printf 'tampered\n' >>"$destination"
 fi
 EOF
@@ -251,13 +254,14 @@ run_installer() {
     FIXTURE_TAG_OBJECT="$TAG_OBJECT" \
     FIXTURE_PEELED_COMMIT="$peeled_commit" \
     FIXTURE_TAG_MESSAGE="$TAG_MESSAGE" \
+    FIXTURE_ARCH="$NATIVE_ARCH" \
     GO_FALLBACK_MARKER="$GO_FALLBACK_MARKER" \
     /bin/bash --noprofile --norc "$ROOT/scripts/install.sh"
 }
 
 run_installer valid "$SOURCE_HEAD" >/dev/null
 [ -x "${INSTALL_DIR}/marshal" ] || fail 'installer 未产出 Linux amd64 executable'
-[ "$(sha256sum "$AMD64" | awk '{print $1}')" = "$(sha256sum "${INSTALL_DIR}/marshal" | awk '{print $1}')" ] \
+[ "$(sha256sum "$NATIVE" | awk '{print $1}')" = "$(sha256sum "${INSTALL_DIR}/marshal" | awk '{print $1}')" ] \
   || fail '临时安装后的 bytes/digest 与 candidate 不一致'
 [ ! -e "$GO_FALLBACK_MARKER" ] || fail '成功安装触发了源码回退'
 INSTALLED_SHA="$(sha256sum "${INSTALL_DIR}/marshal" | awk '{print $1}')"
@@ -281,7 +285,7 @@ expect_install_failure_preserves_current \
 expect_install_failure_preserves_current \
   incomplete-release missing-manifest "$SOURCE_HEAD" '缺少或无法下载 RELEASE-MANIFEST'
 expect_install_failure_preserves_current \
-  rollback-head valid 2222222222222222222222222222222222222222 \
+  cross-head-mismatch valid 2222222222222222222222222222222222222222 \
   'RELEASE-MANIFEST 非 canonical、与 tag/peeled commit/checksum 不一致或资产集合不封闭'
 
-printf '[linux-candidate-conformance] PASS (artifact-only, selfProfile=unprofiled)\n'
+printf '[linux-candidate-conformance] PASS (native=%s, artifact-only, selfProfile=unprofiled; stable rollback/high-water not closed)\n' "$NATIVE_ARCH"
