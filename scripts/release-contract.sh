@@ -224,11 +224,12 @@ verify_rc1_manifest() {
     -v expected_os="$expected_os" -v expected_arch="$expected_arch" \
     -v expected_profile="$expected_profile" -v name="$name" '
     function die(message) { print "[release-check] 错误: " message > "/dev/stderr"; exit 1 }
+    function is_lower_hex(value, size) { return length(value) == size && value ~ /^[0-9a-f]+$/ }
     NR == 1 { if ($0 != "schemaVersion marshal.rc1-release-manifest.v1") die("RC1 manifest schemaVersion 非法"); next }
     NR == 2 { if ($0 != "repository https://github.com/chiga0/marshal-harness.git") die("RC1 manifest repository 非 canonical"); next }
     NR == 3 { if ($0 != "tag " tag) die("RC1 manifest tag 不匹配"); next }
     NR == 4 {
-      if ($1 != "sourceHead" || NF != 2 || $2 !~ /^[0-9a-f]{40}$/) die("RC1 manifest sourceHead 非法")
+      if ($1 != "sourceHead" || NF != 2 || !is_lower_hex($2, 40)) die("RC1 manifest sourceHead 非法")
       if ($2 != expected_head) die("RC1 manifest sourceHead 与期望值不匹配")
       next
     }
@@ -243,7 +244,7 @@ verify_rc1_manifest() {
     }
     NR == 7 { if ($0 != "buildFlags -trimpath,-buildvcs=false,-mod=readonly,-buildid=") die("RC1 manifest buildFlags 不匹配"); next }
     NR == 8 {
-      if ($1 != "asset" || NF != 7 || $2 !~ /^[0-9a-f]{64}$/ || $3 !~ /^[1-9][0-9]*$/ ||
+      if ($1 != "asset" || NF != 7 || !is_lower_hex($2, 64) || $3 !~ /^[1-9][0-9]*$/ ||
           $4 != name || $5 != expected_os || $6 != expected_arch || $7 != expected_profile) {
         die("RC1 manifest 必须只声明唯一 Darwin arm64 local-dogfood asset")
       }
@@ -364,18 +365,19 @@ parse_candidate_message() {
   local message_file="$1" tag="$2" source_head="$3" marker
   marker="$(printf '\036')"
   awk -v tag="$tag" -v commit="$source_head" -v marker="$marker" '
+    function is_lower_hex(value, size) { return length(value) == size && value ~ /^[0-9a-f]+$/ }
     NR == 1 { if ($0 != "Marshal " tag " candidate") exit 1; next }
     NR == 2 { if ($0 != "") exit 1; next }
     NR == 3 { if ($0 != "marshal-candidate-schema: v1") exit 1; next }
     NR == 4 { if ($0 != "marshal-candidate-source-head: " commit) exit 1; next }
     NR == 5 {
-      if ($0 !~ /^marshal-candidate-manifest-sha256: [0-9a-f]{64}$/) exit 1
       manifest=substr($0, length("marshal-candidate-manifest-sha256: ")+1)
+      if ($0 != "marshal-candidate-manifest-sha256: " manifest || !is_lower_hex(manifest, 64)) exit 1
       next
     }
     NR == 6 {
-      if ($0 !~ /^marshal-candidate-darwin-arm64-sha256: [0-9a-f]{64}$/) exit 1
       candidate=substr($0, length("marshal-candidate-darwin-arm64-sha256: ")+1)
+      if ($0 != "marshal-candidate-darwin-arm64-sha256: " candidate || !is_lower_hex(candidate, 64)) exit 1
       next
     }
     NR == 7 { if ($0 != marker) exit 1; seen_marker=1; next }
@@ -430,15 +432,19 @@ verify_release_manifest() {
 
   awk -v tag="$tag" -v version="$version" -v expected_head="$expected_source_head" '
     function die(message) { print "[release-check] 错误: " message > "/dev/stderr"; exit 1 }
+    function is_lower_hex(value, size) { return length(value) == size && value ~ /^[0-9a-f]+$/ }
+    function is_utc(value) {
+      return length(value) == 20 && value ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/
+    }
     NR == 1 { if ($0 != "schemaVersion marshal.release-manifest.v1") die("manifest schemaVersion 非法"); next }
     NR == 2 { if ($0 != "repository https://github.com/chiga0/marshal-harness.git") die("manifest repository 非 canonical"); next }
     NR == 3 { if ($0 != "tag " tag) die("manifest tag 不匹配"); next }
     NR == 4 {
-      if ($1 != "sourceHead" || NF != 2 || $2 !~ /^[0-9a-f]{40}$/) die("manifest sourceHead 非法")
+      if ($1 != "sourceHead" || NF != 2 || !is_lower_hex($2, 40)) die("manifest sourceHead 非法")
       if (expected_head != "" && $2 != expected_head) die("manifest sourceHead 与 peeled tag commit 不匹配")
       next
     }
-    NR == 5 { if ($1 != "buildDate" || NF != 2 || $2 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/) die("manifest buildDate 非 canonical UTC"); next }
+    NR == 5 { if ($1 != "buildDate" || NF != 2 || !is_utc($2)) die("manifest buildDate 非 canonical UTC"); next }
     NR == 6 { if ($1 != "goVersion" || NF != 2 || $2 !~ /^go[0-9]+\.[0-9]+\.[0-9]+$/) die("manifest goVersion 非精确版本"); next }
     NR == 7 { if ($0 != "buildFlags -trimpath,-buildvcs=false,-mod=readonly,-buildid=") die("manifest buildFlags 不匹配"); next }
     NR >= 8 && NR <= 11 {
@@ -450,7 +456,7 @@ verify_release_manifest() {
       oses[1] = oses[2] = "darwin"; oses[3] = oses[4] = "linux"
       arches[1] = arches[3] = "amd64"; arches[2] = arches[4] = "arm64"
       profiles[1] = profiles[2] = "darwin-local-dogfood"; profiles[3] = profiles[4] = "unprofiled"
-      if ($1 != "asset" || NF != 7 || $2 !~ /^[0-9a-f]{64}$/ || $3 !~ /^[1-9][0-9]*$/ ||
+      if ($1 != "asset" || NF != 7 || !is_lower_hex($2, 64) || $3 !~ /^[1-9][0-9]*$/ ||
           $4 != names[idx] || $5 != oses[idx] || $6 != arches[idx] || $7 != profiles[idx]) {
         die("manifest asset 第 " idx " 项非法")
       }
