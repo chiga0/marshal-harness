@@ -26,9 +26,9 @@ import (
 
 // sealedRepositoryApplication is the fixed-binary application adapter shared
 // by direct CLI mutation and the forthcoming control-plane server mode. It
-// owns repository-wide authority once and composes a short-lived Run runtime
-// for each application operation. The mutex intentionally serializes the
-// first Mac implementation; Run leases remain the durable concurrency fence.
+// owns repository-wide authority once and composes one short-lived Run runtime
+// for each bounded transaction. The mutex intentionally serializes the first
+// Mac implementation; Run leases remain the durable concurrency fence.
 type sealedRepositoryApplication struct {
 	mu sync.Mutex
 
@@ -294,6 +294,48 @@ func (adapter *sealedRepositoryApplication) StartPreparedRun(ctx context.Context
 	return run.runtime.StartPreparedRun(ctx, prepared)
 }
 
+// advanceRun keeps the exact path-B launch closure and existing-worktree
+// descriptor graph alive across Inspect → PrepareRunStart → StartPreparedRun.
+// These three steps form one fixed-CLI transaction even though the public
+// application port remains split at its durable PreparedRunStart boundary.
+// Reopening a second Run runtime between Prepare and Start would close the
+// held source objects that the prepared execution is required to recheck.
+func (adapter *sealedRepositoryApplication) advanceRun(ctx context.Context, runID string) (application.RunProjection, string, error) {
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	run, err := adapter.openRun(ctx, runID)
+	if err != nil {
+		return application.RunProjection{}, "sealed Run 组装失败", err
+	}
+	defer run.Close()
+
+	before, err := run.runtime.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
+	if err != nil {
+		return application.RunProjection{}, "READY 权威投影不可读", err
+	}
+	switch before.State {
+	case domain.StateReady:
+		prepared, err := run.runtime.PrepareRunStart(ctx, application.PrepareRunStartRequest{
+			RunID: runID, ExpectedSequence: before.Sequence, ExpectedAuthorityHead: before.AuthorityHead,
+		})
+		if err != nil {
+			return application.RunProjection{}, "sealed PrepareRunStart 失败", err
+		}
+		if _, err := run.runtime.StartPreparedRun(ctx, prepared); err != nil {
+			return application.RunProjection{}, "sealed StartPreparedRun 失败", err
+		}
+	case domain.StateRunning:
+		if _, err := run.runtime.CollectRunResult(ctx, runID); err != nil && !errors.Is(err, productionruntime.ErrAttemptStillRunning) {
+			return application.RunProjection{}, "sealed CollectRunResult 失败", err
+		}
+	}
+	after, err := run.runtime.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
+	if err != nil {
+		return application.RunProjection{}, "sealed 推进后状态不可读", err
+	}
+	return after, "", nil
+}
+
 func (adapter *sealedRepositoryApplication) InspectRun(ctx context.Context, request application.InspectRunRequest) (application.RunProjection, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
@@ -303,17 +345,6 @@ func (adapter *sealedRepositoryApplication) InspectRun(ctx context.Context, requ
 	}
 	defer run.Close()
 	return run.runtime.InspectRun(ctx, request)
-}
-
-func (adapter *sealedRepositoryApplication) collectRunResult(ctx context.Context, runID string) (productionruntime.CollectedRunResult, error) {
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	run, err := adapter.openRun(ctx, runID)
-	if err != nil {
-		return productionruntime.CollectedRunResult{}, err
-	}
-	defer run.Close()
-	return run.runtime.CollectRunResult(ctx, runID)
 }
 
 type sealedComposedRun struct {
