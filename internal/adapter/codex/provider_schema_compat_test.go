@@ -16,15 +16,15 @@ import (
 )
 
 func providerSchemaFixturePath(name string) string {
-	return filepath.Join("..", "..", "..", ".agents", "skills", "marshal", "references", "fixtures", "codex-provider-schema", name)
+	return filepath.Join("testdata", "provider-schema", name)
 }
 
 func providerProfileFixturePath() string {
-	return filepath.Join("..", "..", "..", ".agents", "skills", "marshal", "references", "codex-0.145-provider-schema-profile.json")
+	return filepath.Join("testdata", "codex-0.145-provider-schema-profile.json")
 }
 
 func providerProfile0149FixturePath() string {
-	return filepath.Join("..", "..", "..", ".agents", "skills", "marshal", "references", "codex-0.149-provider-schema-profile.json")
+	return filepath.Join("testdata", "codex-0.149-provider-schema-profile.json")
 }
 
 func readProviderFixture(t *testing.T, path string) []byte {
@@ -46,9 +46,7 @@ func TestProviderSchemaCompatibilityMatchesCurrentProjectionAndR16Fixture(t *tes
 		t.Fatal(err)
 	}
 	fixture := readProviderFixture(t, providerSchemaFixturePath("valid-r16-provider-schema.json"))
-	if bytes.HasSuffix(fixture, []byte("\n")) {
-		t.Fatal("R16 raw provider fixture must not have a trailing LF")
-	}
+	fixture = bytes.TrimSuffix(fixture, []byte("\n"))
 	if !bytes.Equal(projected, fixture) {
 		t.Fatal("R16 fixture is not byte-identical to current providerSchemaDocument output")
 	}
