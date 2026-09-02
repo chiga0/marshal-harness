@@ -156,7 +156,7 @@ def render_decision(args):
         "summary": args.summary,
         "blockingFindings": [],
         "nonBlockingFindings": [],
-        "publicationRecommendation": "do-not-publish",
+        "publicationRecommendation": "not-applicable",
         "mergeRecommendation": "do-not-merge",
         "decidedAt": iso_now(),
     }

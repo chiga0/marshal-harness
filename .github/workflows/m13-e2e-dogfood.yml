@@ -147,6 +147,7 @@ jobs:
       - name: Issue dogfood activation and initialize control state
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
+          umask 077
           [ -n "$MARSHAL_BIN" ] && [ -x "$MARSHAL_BIN" ]
           control_root="$(pwd)/.m13-e2e"
           rm -rf "$control_root" && mkdir -p "$control_root"
@@ -176,6 +177,9 @@ jobs:
       - name: Plan and approve the M13 run
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
+          # RB1 existing-worktree bind admission 要求 worktree 根恰好 0700：
+          # 与 release-canary.sh 一致，整个 dogfood 链一律在 umask 077 下运行。
+          umask 077
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
           export MARSHAL_PI_PATH="$PI_BIN" MARSHAL_PI_NODE_PATH="$PI_NODE"
           export MARSHAL_PI_RUNTIME="$PI_NODE" MARSHAL_PI_ENTRYPOINT="$PI_BUNDLE"
@@ -188,6 +192,7 @@ jobs:
       - name: Drive the sealed run to worker completion
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
+          umask 077
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
           export MARSHAL_PI_PATH="$PI_BIN" MARSHAL_PI_NODE_PATH="$PI_NODE"
           export MARSHAL_PI_RUNTIME="$PI_NODE" MARSHAL_PI_ENTRYPOINT="$PI_BUNDLE"
@@ -211,6 +216,7 @@ jobs:
       - name: Run independent verification
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
+          umask 077
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
           "$MARSHAL_BIN" task verify --run "$RUN_ID" --json > "$CONTROL_ROOT/verify.json"
           "$MARSHAL_BIN" task status --run "$RUN_ID" --json > "$CONTROL_ROOT/status-review-pending.json"
@@ -219,6 +225,7 @@ jobs:
       - name: Build independent ReviewDecision from the generated packet
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
+          umask 077
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
           "$MARSHAL_BIN" task review --run "$RUN_ID" --json > "$CONTROL_ROOT/review-packet-step.json"
           /usr/bin/python3 -I -B -c 'import json,sys; assert json.load(open(sys.argv[1])).get("status") == "generated"' "$CONTROL_ROOT/review-packet-step.json"
@@ -233,6 +240,7 @@ jobs:
       - name: Apply decision and expect ACCEPTED
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
+          umask 077
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
           "$MARSHAL_BIN" task review --run "$RUN_ID" --decision "$CONTROL_ROOT/decision.json" --json \
             > "$CONTROL_ROOT/review.json"
