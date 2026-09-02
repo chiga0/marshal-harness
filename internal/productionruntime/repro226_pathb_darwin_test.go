@@ -178,4 +178,63 @@ func TestRepro226SealedComposeBase(t *testing.T) {
 			t.Fatalf("path-B durable-projection mismatch:\ndurable=%+v\nsupplied=%+v", durable, prepared)
 		}
 	})
+
+	// step5：同一 durable underling 上串两个 CompositionLedger——CLI
+	// `openRun` per-call 的等价形状：runtime#1 完成 PrepareRunStart 后 close，
+	// 在新的 CompositionLedger（runtime#2）上 Rehydrate同一 durable 准备投影。
+	t.Run("step5-cross-ledger-rehydrate-after-prepare", func(t *testing.T) {
+		inputs, runID, _, _, _ := pathBCompositionInputsForLaunch(t)
+		inputs, held, controlRoot := repro226SealedInputs(t, inputs)
+		closure := inputs.LaunchClosure
+		identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
+		if err != nil {
+			t.Fatal(err)
+		}
+		profile, err := NewPi0844Profile(closure.RuntimeExecutable.CanonicalPath, "/fixed/node-runtime", identity.IdentityDigest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// runtime #1：PrepareRunStart。
+		composed1, err := ComposeRuntime(context.Background(), inputs, profile)
+		if err != nil {
+			t.Fatalf("compose #1: %v", err)
+		}
+		projection1, err := composed1.Runtime.InspectRun(context.Background(), application.InspectRunRequest{RunID: runID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := composed1.Runtime.PrepareRunStart(context.Background(), application.PrepareRunStartRequest{RunID: runID, ExpectedSequence: projection1.Sequence, ExpectedAuthorityHead: projection1.AuthorityHead})
+		if err != nil {
+			t.Fatalf("prepare via runtime #1: %v", err)
+		}
+		if err := composed1.Runtime.Close(); err != nil {
+			t.Fatalf("close runtime #1: %v", err)
+		}
+		// runtime #2：同一 fixture；将 sealed composition inputs 重新闬。
+		inputs2 := inputs
+		inputs2.Ingress = nil
+		inputs2.HeldIngressDir = held
+		inputs2.FixedMarshalPath = inputs.FixedMarshalPath
+		inputs2.OwnerPrivateControlRoot = controlRoot
+		composed2, err := ComposeRuntime(context.Background(), inputs2, profile)
+		if err != nil {
+			t.Fatalf("compose #2: %v", err)
+		}
+		defer func() { _ = composed2.Runtime.Close() }()
+		ctrl2 := composed2.Runtime.controller
+		if ctrl2 == nil {
+			t.Fatal("runtime #2 controller missing")
+		}
+		var durable application.PreparedRunStart
+		if err := ctrl2.withOwner(context.Background(), true, func(verifier resultingress.CurrentOwnerLockVerifier, _ OwnerProjection) error {
+			var herr error
+			durable, herr = ctrl2.authority.RehydratePreparedRunStart(context.Background(), verifier, ctrl2.acquisition, prepared.PreparationDigest)
+			return herr
+		}); err != nil {
+			t.Fatalf("Rehydrate from runtime #2 (CLI openRun #2 equivalent): %v", err)
+		}
+		if durable != prepared {
+			t.Fatalf("CROSS-LEDGER REPRODUCED #226 mismatch:\nruntime#1 supplied=%+v\nruntime#2 rehydrated=%+v", prepared, durable)
+		}
+	})
 }
