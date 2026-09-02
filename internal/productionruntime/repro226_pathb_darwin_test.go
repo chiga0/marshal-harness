@@ -70,9 +70,16 @@ func TestRepro226SealedComposeBase(t *testing.T) {
 		}
 	})
 	t.Run("step2-compose-no-graph", func(t *testing.T) {
-		inputs, _, _, _, _ := pathBCompositionInputsForLaunch(t)
+		inputs, runID, _, _, _ := pathBCompositionInputsForLaunch(t)
 		inputs.ExistingWorktreeDescriptorGraph = allocationcontrol.ExistingWorktreeDescriptorGraphV1{}
 		inputs.ExistingWorktreeTargetWorktree = nil
+		// Staging composition requires a caller-held Run Lease (path A contract).
+		lease, err := inputs.Runs.Acquire(runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inputs.RunLease = lease
+		t.Cleanup(func() { _ = lease.Release() })
 		inputs, held, _ := repro226SealedInputs(t, inputs)
 		_ = held
 		closure := inputs.LaunchClosure
@@ -92,8 +99,7 @@ func TestRepro226SealedComposeBase(t *testing.T) {
 	})
 	t.Run("step3-compose-with-graph", func(t *testing.T) {
 		inputs, runID, _, _, _ := pathBCompositionInputsForLaunch(t)
-		inputs, held, _ := repro226SealedInputs(t, inputs)
-		_ = held
+		inputs, held, controlRoot := repro226SealedInputs(t, inputs)
 		closure := inputs.LaunchClosure
 		identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
 		if err != nil {
@@ -105,7 +111,33 @@ func TestRepro226SealedComposeBase(t *testing.T) {
 		}
 		composed, err := ComposeRuntime(context.Background(), inputs, profile)
 		if err != nil {
-			t.Fatalf("compose path-B inputs with graph: %v", err)
+			t.Logf("compose step3 err (isolating SealPi next): %v", err)
+			// Isolation: run the exact SealPi call with the same acquisition
+			// binding NewCompositionLedger uses, and dump its result.
+			innerHeld, innerErr := resultingress.OpenDarwinResultIngressStore(held)
+			if innerErr != nil {
+				t.Fatalf("sealed store reopen failed: %v", innerErr)
+			}
+			phase, phaseErr := openRepositoryOwnerScopeLock(inputs.OwnerDirectory, inputs.Acquisition.Scope)
+			if phaseErr != nil {
+				t.Fatalf("owner phase lock: %v", phaseErr)
+			}
+			ownerState, _, acquireErr := acquireOwner(innerHeld, phase, inputs.Acquisition)
+			if acquireErr != nil {
+				_ = phase.Close()
+				t.Fatalf("acquire owner: %v", acquireErr)
+			}
+			_ = phase.Close()
+			binding := resultingress.CurrentOwnerBinding{
+				Scope:                          inputs.Acquisition.Scope,
+				OwnerEpoch:                     inputs.Acquisition.OwnerEpoch,
+				ControlOwnerAcquiredFactDigest: ownerState.FactDigest,
+			}
+			sealErr := func() error {
+				_, err := resultingress.SealPi0844DarwinPreparedExecutionStore(context.Background(), innerHeld, &borrowedOwnerVerifier{acquisition: inputs.Acquisition, active: true}, binding, inputs.FixedMarshalPath, controlRoot)
+				return err
+			}()
+			t.Fatalf("compose error=%v seal-isolate error=%v", err, sealErr)
 		}
 		defer func() { _ = composed.Runtime.Close() }()
 		_ = runID
