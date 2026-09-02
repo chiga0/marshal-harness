@@ -491,7 +491,7 @@ def provisional_owner_ast_inversions(root: Path) -> list[str]:
     acquire = [
         node for node in functions
         if node["receiver"] == "darwinRepositoryOwnerScopeLock"
-        and node["name"] == "acquireOwner"
+        and node["name"] == "acquireAndBind"
     ]
     verifier_method = [
         node for node in functions

@@ -40,11 +40,7 @@ func newZeroAttemptProductionFixture(t *testing.T) zeroAttemptProductionFixture 
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = acquireAndReplay(t, phase, store, 0, "", acquisition)
-	owner, err := phase.bindAcquisition(store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	owner, _, acquisition := acquireAndBindOwner(t, phase, store, acquisition)
 	if err := phase.Close(); err != nil {
 		t.Fatal(err)
 	}

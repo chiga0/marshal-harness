@@ -47,7 +47,7 @@ class ArchitectureCheckTest(unittest.TestCase):
         body = (
             "package productionruntime\n"
             "type darwinProvisionalOwnerVerifier struct{}\n"
-            "func (lock *darwinRepositoryOwnerScopeLock) acquireOwner() {\n"
+            "func (lock *darwinRepositoryOwnerScopeLock) acquireAndBind() {\n"
             "  physical.withHeld(ctx, false, func() error {\n"
             "    verifier := &darwinProvisionalOwnerVerifier{candidate: candidate}\n"
             "    " + mutation + "\n"
