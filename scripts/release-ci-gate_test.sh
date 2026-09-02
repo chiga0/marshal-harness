@@ -356,7 +356,8 @@ make_contract_fixture() {
     release-ci-gate_test.sh \
     dist-profile_test.sh \
     install_test.sh \
-    release-canary_test.sh; do
+    release-canary_test.sh \
+    m13-e2e-dogfood-workflow_test.sh; do
     cp "${ROOT}/scripts/${fixed_test}" "${root}/scripts/${fixed_test}"
   done
   git init -q "$root"
