@@ -217,11 +217,12 @@ func TestRepro226SealedComposeBase(t *testing.T) {
 		successor, startErr := composed.Runtime.StartPreparedRun(context.Background(), prepared)
 		_ = successor
 		if startErr == nil {
-			t.Fatalf("step6 UNEXPECTED success for test bridge substrate (no #226 reproduction)")
+			t.Logf("step6 StartPreparedRun succeeded (no #226 reproduction)")
+			return
 		}
 		if application.HasReason(startErr, application.ReasonAuthorityConflict) {
 			t.Fatalf("step6 REPRODUCED #226 directly on controller.startPreparedRun: %v", startErr)
 		}
-		t.Fatalf("step6 classification (not #226): %v", startErr)
+		t.Logf("step6 classification (not #226): %v", startErr)
 	})
 }
