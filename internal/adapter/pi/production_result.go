@@ -215,9 +215,10 @@ func extractSingleWorkerResultObject(text string) ([]byte, error) {
 		matched    map[string]json.RawMessage
 		matchedEnd int
 		candidates int
+		skipUntil  int
 	)
 	for index := 0; index < len(text); index++ {
-		if text[index] != '{' {
+		if text[index] != '{' || index < skipUntil {
 			continue
 		}
 		decoder := json.NewDecoder(strings.NewReader(text[index:]))
@@ -225,12 +226,19 @@ func extractSingleWorkerResultObject(text string) ([]byte, error) {
 		if err := decoder.Decode(&object); err != nil || object == nil {
 			continue
 		}
+		// Nested `{"...": {...}}` braces belong to the outer object: skip every
+		// later '{' that falls inside the span just decoded so one complete
+		// top-level object is counted exactly once.
+		end := index + int(decoder.InputOffset())
+		if end > skipUntil {
+			skipUntil = end
+		}
 		candidates++
 		if candidates > 1 {
 			return nil, fmt.Errorf("%w: final production assistant text must contain exactly one complete JSON object", ErrProtocol)
 		}
 		matched = object
-		matchedEnd = index + int(decoder.InputOffset())
+		matchedEnd = end
 	}
 	if candidates != 1 {
 		return nil, fmt.Errorf("%w: final production assistant text is not one JSON object", ErrProtocol)
