@@ -156,7 +156,7 @@ payload = json.loads(sys.argv[1])
 build = payload.get("build", {})
 if payload.get("status") != "ok" or build.get("commit") != sys.argv[2]:
     raise SystemExit("native doctor did not report ok with exact sourceHead")
-if build.get("os") != "linux" or build.get("arch") != sys.argv[2] or build.get("selfProfile") != "unprofiled":
+if build.get("os") != "linux" or build.get("arch") != sys.argv[3] or build.get("selfProfile") != "unprofiled":
     raise SystemExit("native doctor overstated Linux profile")
 if payload.get("selfIdentity") is not None:
     raise SystemExit("unprofiled Linux doctor unexpectedly reported self authority")

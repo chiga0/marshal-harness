@@ -155,6 +155,12 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Download modules
+        run: go mod download
+
+      - name: Verify modules
+        run: go mod verify
+
       # This gate proves only release-shaped Linux artifact mechanics. Both
       # native binaries remain selfProfile=unprofiled and carry no stable
       # runtime, rollback/high-water, signing, or publication authority.
