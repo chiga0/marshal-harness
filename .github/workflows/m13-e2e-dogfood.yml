@@ -243,23 +243,32 @@ jobs:
         if: always()
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          python3 -I -B scripts/e2e-m13-dogfood.py metrics \
-            --state-root .marshal --run-id "$RUN_ID" --wall-start "${WALL_START:-}" \
-            --out "$CONTROL_ROOT/metrics.json"
+          CONTROL_ROOT="${CONTROL_ROOT:-$(pwd)/.m13-e2e}"
+          mkdir -p "$CONTROL_ROOT"
+          if [ -f ".marshal/runs/${RUN_ID}/state.json" ]; then
+            python3 -I -B scripts/e2e-m13-dogfood.py metrics \
+              --state-root .marshal --run-id "$RUN_ID" --wall-start "${WALL_START:-}" \
+              --out "$CONTROL_ROOT/metrics.json"
+          else
+            echo '[e2e-m13] run state 未生成，跳过指标提取（链路未到达 run 阶段）'
+          fi
 
       - name: Pack dogfood evidence tarball
         if: always()
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          /usr/bin/tar \
-            --exclude 'runs/*/lease.lock' \
-            --exclude 'runs/*/lease.lock.owner' \
-            -czf m13-dogfood-evidence.tar.gz .marshal .m13-e2e 2>/dev/null || \
-          /usr/bin/tar \
-            --exclude 'runs/*/lease.lock' \
-            --exclude 'runs/*/lease.lock.owner' \
-            -czf m13-dogfood-evidence.tar.gz .marshal
-          ls -la m13-dogfood-evidence.tar.gz
+          members=""
+          if [ -d .marshal ]; then members=".marshal"; fi
+          if [ -d .m13-e2e ]; then members="$members .m13-e2e"; fi
+          if [ -n "$members" ]; then
+            /usr/bin/tar \
+              --exclude 'runs/*/lease.lock' \
+              --exclude 'runs/*/lease.lock.owner' \
+              -czf m13-dogfood-evidence.tar.gz $members
+          else
+            echo 'no dogfood evidence to pack'
+          fi
+          ls -la m13-dogfood-evidence.tar.gz 2>/dev/null || true
 
       - name: Upload dogfood evidence
         if: always()
