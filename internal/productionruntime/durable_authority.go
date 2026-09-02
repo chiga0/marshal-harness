@@ -283,19 +283,13 @@ func NewCompositionLedger(ctx context.Context, inputs CompositionInputs) (*Compo
 			return nil, err
 		}
 		var acquisition resultingress.ControlOwnerAcquisition
-		ownerState, acquisition, err = acquireOwner(inputs.Ingress, phase, inputs.Acquisition)
+		owner, ownerState, acquisition, err = phase.acquireAndBind(ctx, inputs.Ingress, inputs.Acquisition)
 		if err != nil {
 			_ = phase.Close()
 			releasePreOwner()
 			return nil, err
 		}
 		inputs.Acquisition = acquisition
-		owner, err = phase.bindAcquisition(inputs.Ingress)
-		if err != nil {
-			_ = phase.Close()
-			releasePreOwner()
-			return nil, err
-		}
 		if err := phase.Close(); err != nil {
 			_ = owner.Close()
 			releasePreOwner()
@@ -416,30 +410,6 @@ func validateCompositionAcquisitionCandidate(acquisition resultingress.ControlOw
 		acquisition.OwnerEpoch = 1
 	}
 	return acquisition.Validate()
-}
-
-func acquireOwner(ingress *resultingress.DurableStore, phase repositoryOwnerScopeLock, acquisition resultingress.ControlOwnerAcquisition) (resultingress.ControlOwnerState, resultingress.ControlOwnerAcquisition, error) {
-	prior, found, err := ingress.OpenOwner(acquisition.Scope)
-	if err != nil {
-		return resultingress.ControlOwnerState{}, resultingress.ControlOwnerAcquisition{}, err
-	}
-	epoch, previousDigest := uint64(0), ""
-	if found {
-		epoch, previousDigest = prior.Acquisition.OwnerEpoch, prior.FactDigest
-	}
-	nextEpoch := epoch + 1
-	if acquisition.OwnerEpoch != 0 && acquisition.OwnerEpoch != nextEpoch {
-		return resultingress.ControlOwnerState{}, resultingress.ControlOwnerAcquisition{}, application.NewError("composition-owner", application.ReasonOwnerNotCurrent)
-	}
-	acquisition.OwnerEpoch = nextEpoch
-	if _, err := phase.acquireOwner(context.Background(), ingress, epoch, previousDigest, acquisition); err != nil {
-		return resultingress.ControlOwnerState{}, resultingress.ControlOwnerAcquisition{}, err
-	}
-	state, found, err := ingress.OpenOwner(acquisition.Scope)
-	if err != nil || !found || state.Acquisition != acquisition {
-		return resultingress.ControlOwnerState{}, resultingress.ControlOwnerAcquisition{}, fmt.Errorf("composition: owner replay after acquire: found=%t err=%v", found, err)
-	}
-	return state, acquisition, nil
 }
 
 // Close releases construction-owned resources. Standalone composition closes

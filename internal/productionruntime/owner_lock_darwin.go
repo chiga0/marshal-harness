@@ -82,16 +82,11 @@ type darwinRepositoryOwnerPhysicalLock struct {
 // from darwinRepositoryOwnerLock makes it impossible to pass a scope-only
 // lock to an API requiring CurrentOwnerLockVerifier.
 type darwinRepositoryOwnerScopeLock struct {
-	mu               sync.Mutex
-	physical         *darwinRepositoryOwnerPhysicalLock
-	ownerScope       resultingress.ControlOwnerScope
-	acquireIssued    bool
-	acquireSucceeded bool
-	ownerAcquisition resultingress.ControlOwnerAcquisition
-	ownerStore       *resultingress.DurableStore
-	appendedState    resultingress.ControlOwnerState
-	bindIssued       bool
-	closed           bool
+	mu             sync.Mutex
+	physical       *darwinRepositoryOwnerPhysicalLock
+	ownerScope     resultingress.ControlOwnerScope
+	transitionUsed bool
+	closed         bool
 }
 
 type darwinProvisionalOwnerVerifier struct {
@@ -103,6 +98,49 @@ type darwinProvisionalOwnerVerifier struct {
 type darwinRepositoryOwnerLock struct {
 	physical         *darwinRepositoryOwnerPhysicalLock
 	ownerAcquisition resultingress.ControlOwnerAcquisition
+}
+
+// repositoryOwnerTransitionFailureKind is an internal, closed diagnostic
+// vocabulary. Public callers still receive only ReasonOwnerNotCurrent; tests
+// and internal diagnostics can distinguish the failed trust boundary without
+// exposing a pathname, inode or raw I/O error.
+type repositoryOwnerTransitionFailureKind string
+
+const (
+	repositoryOwnerFailureOwnerIdentityDrift repositoryOwnerTransitionFailureKind = "owner-identity-drift"
+	repositoryOwnerFailureIngressIdentityIO  repositoryOwnerTransitionFailureKind = "ingress-identity-or-io"
+	repositoryOwnerFailureReplayConflict     repositoryOwnerTransitionFailureKind = "owner-replay-conflict"
+)
+
+type repositoryOwnerTransitionError struct {
+	kind repositoryOwnerTransitionFailureKind
+}
+
+func (err *repositoryOwnerTransitionError) Error() string {
+	return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent).Error()
+}
+
+func (err *repositoryOwnerTransitionError) Unwrap() error {
+	return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
+}
+
+func newRepositoryOwnerTransitionError(kind repositoryOwnerTransitionFailureKind) error {
+	return &repositoryOwnerTransitionError{kind: kind}
+}
+
+func repositoryOwnerTransitionKind(err error) (repositoryOwnerTransitionFailureKind, bool) {
+	var transition *repositoryOwnerTransitionError
+	if !errors.As(err, &transition) || transition == nil {
+		return "", false
+	}
+	return transition.kind, true
+}
+
+func ownerReplayFailure(err error) error {
+	if errors.Is(err, resultingress.ErrControlOwnerConflict) || errors.Is(err, resultingress.ErrControlOwnerUnknown) || errors.Is(err, resultingress.ErrControlOwnerNotCurrent) {
+		return newRepositoryOwnerTransitionError(repositoryOwnerFailureReplayConflict)
+	}
+	return newRepositoryOwnerTransitionError(repositoryOwnerFailureIngressIdentityIO)
 }
 
 func (lock *darwinRepositoryOwnerLock) claimRuntime() error {
@@ -322,75 +360,84 @@ func (lock *darwinRepositoryOwnerScopeLock) identity() ownerLockIdentity {
 	return lock.physical.lockIdentity.Object
 }
 
-func (lock *darwinRepositoryOwnerScopeLock) acquireOwner(ctx context.Context, store *resultingress.DurableStore, expectedEpoch uint64, expectedFactDigest string, candidate resultingress.ControlOwnerAcquisition) (resultingress.ControlOwnerAppendResult, error) {
-	if lock == nil || ctx == nil || store == nil || candidate.Validate() != nil || candidate.Scope != lock.ownerScope || candidate.OwnerUID != uint32(os.Getuid()) || candidate.OwnerGID != uint32(os.Getgid()) || candidate.OwnerProcess.PID != os.Getpid() {
-		return resultingress.ControlOwnerAppendResult{}, application.NewError("repository-owner-lock", application.ReasonInvalidRequest)
+func (lock *darwinRepositoryOwnerScopeLock) acquireAndBind(ctx context.Context, store *resultingress.DurableStore, candidate resultingress.ControlOwnerAcquisition) (repositoryOwnerLock, resultingress.ControlOwnerState, resultingress.ControlOwnerAcquisition, error) {
+	if lock == nil || ctx == nil || store == nil || validateCompositionAcquisitionCandidate(candidate) != nil || candidate.Scope != lock.ownerScope || candidate.OwnerUID != uint32(os.Getuid()) || candidate.OwnerGID != uint32(os.Getgid()) || candidate.OwnerProcess.PID != os.Getpid() {
+		return nil, resultingress.ControlOwnerState{}, resultingress.ControlOwnerAcquisition{}, application.NewError("repository-owner-lock", application.ReasonInvalidRequest)
 	}
 	lock.mu.Lock()
-	if lock.closed || lock.physical == nil || lock.acquireIssued || lock.bindIssued {
-		lock.mu.Unlock()
-		return resultingress.ControlOwnerAppendResult{}, application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
+	defer lock.mu.Unlock()
+	if lock.closed || lock.physical == nil || lock.transitionUsed {
+		return nil, resultingress.ControlOwnerState{}, resultingress.ControlOwnerAcquisition{}, application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
 	}
-	lock.acquireIssued = true
+	// The transition is creation-once even on a response-loss or replay
+	// failure. A caller must close Phase A and let a fresh owner observe the
+	// durable ledger; retrying here could mint a sibling acquisition.
+	lock.transitionUsed = true
 	physical := lock.physical
-	lock.mu.Unlock()
-
-	var result resultingress.ControlOwnerAppendResult
+	callbackEntered := false
+	var bound repositoryOwnerLock
+	var replayed resultingress.ControlOwnerState
 	err := physical.withHeld(ctx, false, func() error {
+		callbackEntered = true
+		prior, found, replayErr := store.OpenOwner(candidate.Scope)
+		if replayErr != nil {
+			return ownerReplayFailure(replayErr)
+		}
+		expectedEpoch, expectedFactDigest := uint64(0), ""
+		if found {
+			expectedEpoch, expectedFactDigest = prior.Acquisition.OwnerEpoch, prior.FactDigest
+		}
+		nextEpoch := expectedEpoch + 1
+		if candidate.OwnerEpoch != 0 && candidate.OwnerEpoch != nextEpoch {
+			return newRepositoryOwnerTransitionError(repositoryOwnerFailureReplayConflict)
+		}
+		candidate.OwnerEpoch = nextEpoch
+
 		// The provisional verifier never leaves this stack frame and can
 		// authorize exactly this direct AcquireOwner call for exactly this
 		// candidate. The physical owner lock is already outermost, so ledger
 		// acquisition cannot invert owner→ledger lock ordering.
 		verifier := &darwinProvisionalOwnerVerifier{candidate: candidate}
-		var acquireErr error
-		result, acquireErr = store.AcquireOwner(ctx, verifier, expectedEpoch, expectedFactDigest, candidate)
-		return acquireErr
-	})
-	if err == nil && (!result.Appended || result.State.Acquisition != candidate) {
-		err = application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
-	}
-	lock.mu.Lock()
-	defer lock.mu.Unlock()
-	if err == nil && result.Appended && result.State.Acquisition == candidate && !lock.closed && lock.physical == physical {
-		lock.acquireSucceeded = true
-		lock.ownerAcquisition = candidate
-		lock.ownerStore = store
-		lock.appendedState = result.State
-	}
-	return result, err
-}
-
-func (lock *darwinRepositoryOwnerScopeLock) bindAcquisition(store *resultingress.DurableStore) (repositoryOwnerLock, error) {
-	if lock == nil {
-		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
-	}
-	lock.mu.Lock()
-	defer lock.mu.Unlock()
-	if lock.closed || lock.physical == nil || lock.bindIssued || !lock.acquireIssued || !lock.acquireSucceeded {
-		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
-	}
-	// A bind attempt is creation-once even when a foreign store is supplied;
-	// retrying a different object would turn Phase B into a setter.
-	lock.bindIssued = true
-	if store == nil || store != lock.ownerStore {
-		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
-	}
-	var replayed resultingress.ControlOwnerState
-	err := lock.physical.withHeld(context.Background(), false, func() error {
-		var found bool
-		var replayErr error
-		replayed, found, replayErr = store.OpenOwner(lock.ownerScope)
-		if replayErr != nil || !found || replayed != lock.appendedState || !validCurrentOwnerReplay(replayed, lock.ownerAcquisition) {
-			return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
+		result, acquireErr := store.AcquireOwner(ctx, verifier, expectedEpoch, expectedFactDigest, candidate)
+		if acquireErr != nil {
+			if ctx.Err() != nil {
+				return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
+			}
+			return ownerReplayFailure(acquireErr)
 		}
+		if !result.Appended || result.State.Acquisition != candidate || result.State.PreviousFactDigest != expectedFactDigest || !validCurrentOwnerReplay(result.State, candidate) {
+			return newRepositoryOwnerTransitionError(repositoryOwnerFailureReplayConflict)
+		}
+		replayed, found, replayErr = store.OpenOwner(lock.ownerScope)
+		if replayErr != nil {
+			return ownerReplayFailure(replayErr)
+		}
+		if !found || replayed != result.State || replayed.PreviousFactDigest != expectedFactDigest || !validCurrentOwnerReplay(replayed, candidate) {
+			return newRepositoryOwnerTransitionError(repositoryOwnerFailureReplayConflict)
+		}
+		// An external pathname actor is not serialized by physical.mu. Recheck
+		// once more after ledger replay and before transferring Phase A into the
+		// acquisition-bound verifier.
+		if err := physical.revalidateLocked(); err != nil {
+			return newRepositoryOwnerTransitionError(repositoryOwnerFailureOwnerIdentityDrift)
+		}
+		lock.physical = nil
+		bound = &darwinRepositoryOwnerLock{physical: physical, ownerAcquisition: candidate}
 		return nil
 	})
 	if err != nil {
-		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
+		if !callbackEntered {
+			if ctx.Err() != nil {
+				err = application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
+			} else {
+				err = newRepositoryOwnerTransitionError(repositoryOwnerFailureOwnerIdentityDrift)
+			}
+		} else if _, typed := repositoryOwnerTransitionKind(err); !typed && ctx.Err() == nil {
+			err = newRepositoryOwnerTransitionError(repositoryOwnerFailureIngressIdentityIO)
+		}
+		return nil, resultingress.ControlOwnerState{}, resultingress.ControlOwnerAcquisition{}, err
 	}
-	physical := lock.physical
-	lock.physical = nil
-	return &darwinRepositoryOwnerLock{physical: physical, ownerAcquisition: lock.ownerAcquisition}, nil
+	return bound, replayed, candidate, nil
 }
 
 func (verifier *darwinProvisionalOwnerVerifier) WithCurrentOwnerLock(ctx context.Context, acquisition resultingress.ControlOwnerAcquisition, fn func() error) error {

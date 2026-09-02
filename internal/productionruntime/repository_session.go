@@ -61,13 +61,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		_ = phase.Close()
 		return nil, err
 	}
-	ownerState, acquisition, err := acquireOwner(ingress, phase, inputs.Acquisition)
-	if err != nil {
-		_ = ingress.Close()
-		_ = phase.Close()
-		return nil, err
-	}
-	owner, err := phase.bindAcquisition(ingress)
+	owner, ownerState, acquisition, err := phase.acquireAndBind(ctx, ingress, inputs.Acquisition)
 	if err != nil {
 		_ = ingress.Close()
 		_ = phase.Close()

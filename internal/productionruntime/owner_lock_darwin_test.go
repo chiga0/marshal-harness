@@ -73,6 +73,31 @@ func openOwnerStore(t *testing.T, fixture ownerLockFixture) *resultingress.Durab
 	return store
 }
 
+func openHeldOwnerStore(t *testing.T, fixture ownerLockFixture) (*resultingress.DurableStore, string) {
+	t.Helper()
+	path := filepath.Join(fixture.base, "held-result-ingress")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(path, -1, os.Getgid()); err != nil {
+		t.Fatalf("set held ingress directory group: %v", err)
+	}
+	directory, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	store, err := resultingress.OpenDarwinResultIngressStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store, path
+}
+
 func ownerLedgerBytes(t *testing.T, fixture ownerLockFixture) []byte {
 	t.Helper()
 	value, err := os.ReadFile(filepath.Join(fixture.base, "result-ingress", "result-ingress.jsonl"))
@@ -119,29 +144,53 @@ func requirePhysicalRecheckBeforeCallback(t *testing.T, phase repositoryOwnerSco
 	}
 }
 
+func requireOwnerTransitionFailure(t *testing.T, err error, kind repositoryOwnerTransitionFailureKind) {
+	t.Helper()
+	actual, ok := repositoryOwnerTransitionKind(err)
+	if !ok || actual != kind || !application.HasReason(err, application.ReasonOwnerNotCurrent) || err.Error() != "application: production-owner-not-current" {
+		t.Fatalf("owner transition err=%v kind=%q found=%t, want kind=%q", err, actual, ok, kind)
+	}
+}
+
 func acquisitionAtEpoch(epoch uint64) resultingress.ControlOwnerAcquisition {
 	value := currentProcessAcquisition()
 	value.OwnerEpoch = epoch
 	return value
 }
 
-func acquireAndReplay(t *testing.T, phase repositoryOwnerScopeLock, store *resultingress.DurableStore, expectedEpoch uint64, expectedDigest string, acquisition resultingress.ControlOwnerAcquisition) resultingress.ControlOwnerState {
+func acquireAndBindOwner(t *testing.T, phase repositoryOwnerScopeLock, store *resultingress.DurableStore, acquisition resultingress.ControlOwnerAcquisition) (repositoryOwnerLock, resultingress.ControlOwnerState, resultingress.ControlOwnerAcquisition) {
 	t.Helper()
-	result, err := phase.acquireOwner(context.Background(), store, expectedEpoch, expectedDigest, acquisition)
+	bound, state, acquired, err := phase.acquireAndBind(context.Background(), store, acquisition)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Appended || result.State.Acquisition != acquisition {
-		t.Fatalf("unexpected append result: %#v", result)
+	if acquired.OwnerEpoch == 0 || state.Acquisition != acquired || !validCurrentOwnerReplay(state, acquired) {
+		t.Fatalf("unexpected atomic owner transition: state=%#v acquisition=%#v", state, acquired)
 	}
-	replayed, found, err := store.OpenOwner(acquisition.Scope)
-	if err != nil || !found || replayed != result.State {
+	replayed, found, err := store.OpenOwner(acquired.Scope)
+	if err != nil || !found || replayed != state {
 		t.Fatalf("exact owner replay failed: found=%t state=%#v err=%v", found, replayed, err)
 	}
-	return replayed
+	return bound, state, acquired
 }
 
-func TestRepositoryOwnerLockRequiresTwoPhaseExactReplay(t *testing.T) {
+func appendOwnerWithoutBinding(t *testing.T, phase repositoryOwnerScopeLock, store *resultingress.DurableStore, expectedEpoch uint64, expectedDigest string, acquisition resultingress.ControlOwnerAcquisition) resultingress.ControlOwnerState {
+	t.Helper()
+	concrete := phase.(*darwinRepositoryOwnerScopeLock)
+	var result resultingress.ControlOwnerAppendResult
+	err := concrete.physical.withHeld(context.Background(), false, func() error {
+		verifier := &darwinProvisionalOwnerVerifier{candidate: acquisition}
+		var appendErr error
+		result, appendErr = store.AcquireOwner(context.Background(), verifier, expectedEpoch, expectedDigest, acquisition)
+		return appendErr
+	})
+	if err != nil || !result.Appended || result.State.Acquisition != acquisition {
+		t.Fatalf("append without bind: result=%#v err=%v", result, err)
+	}
+	return result.State
+}
+
+func TestRepositoryOwnerLockAtomicallyAcquiresReplaysAndBinds(t *testing.T) {
 	fixture := newOwnerLockFixture(t)
 	acquisition := acquisitionAtEpoch(1)
 	phase, err := openRepositoryOwnerScopeLock(fixture.directory, acquisition.Scope)
@@ -160,13 +209,12 @@ func TestRepositoryOwnerLockRequiresTwoPhaseExactReplay(t *testing.T) {
 	}
 
 	store := openOwnerStore(t, fixture)
-	_ = acquireAndReplay(t, phase, store, 0, "", acquisition)
-	bound, err := phase.bindAcquisition(store)
-	if err != nil {
-		t.Fatal(err)
+	bound, state, acquired := acquireAndBindOwner(t, phase, store, acquisition)
+	if acquired != acquisition || state.Acquisition != acquisition {
+		t.Fatalf("bound acquisition mismatch: state=%#v acquisition=%#v", state, acquired)
 	}
-	if _, err := phase.bindAcquisition(store); !application.HasReason(err, application.ReasonOwnerNotCurrent) {
-		t.Fatalf("repeated bind err=%v", err)
+	if _, _, _, err := phase.acquireAndBind(context.Background(), store, acquisition); !application.HasReason(err, application.ReasonOwnerNotCurrent) {
+		t.Fatalf("repeated transition err=%v", err)
 	}
 	// Ownership was transferred; closing the spent Phase A handle must not
 	// release the Phase B lock.
@@ -205,7 +253,7 @@ func TestRepositoryOwnerLockRequiresTwoPhaseExactReplay(t *testing.T) {
 	}
 }
 
-func TestRepositoryOwnerLockBindIsCreationOnceOnForeignStore(t *testing.T) {
+func TestRepositoryOwnerLockTransitionIsCreationOnce(t *testing.T) {
 	fixture := newOwnerLockFixture(t)
 	acquisition := acquisitionAtEpoch(1)
 	phase, err := openRepositoryOwnerScopeLock(fixture.directory, acquisition.Scope)
@@ -214,16 +262,15 @@ func TestRepositoryOwnerLockBindIsCreationOnceOnForeignStore(t *testing.T) {
 	}
 	defer phase.Close()
 	store := openOwnerStore(t, fixture)
-	_ = acquireAndReplay(t, phase, store, 0, "", acquisition)
+	bound, _, _ := acquireAndBindOwner(t, phase, store, acquisition)
+	defer bound.Close()
 	foreign, err := resultingress.OpenResultIngressStore(filepath.Join(fixture.base, "foreign-result-ingress"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := phase.bindAcquisition(foreign); !application.HasReason(err, application.ReasonOwnerNotCurrent) {
-		t.Fatalf("foreign replay store bind err=%v", err)
-	}
-	if _, err := phase.bindAcquisition(store); !application.HasReason(err, application.ReasonOwnerNotCurrent) {
-		t.Fatalf("bind retry after foreign store err=%v", err)
+	defer foreign.Close()
+	if _, _, _, err := phase.acquireAndBind(context.Background(), foreign, acquisition); !application.HasReason(err, application.ReasonOwnerNotCurrent) {
+		t.Fatalf("second transition with foreign store err=%v", err)
 	}
 }
 
@@ -241,11 +288,8 @@ func TestRepositoryOwnerScopeLockCloseIsTerminalAndIdempotent(t *testing.T) {
 		t.Fatalf("repeated close err=%v", err)
 	}
 	store := openOwnerStore(t, fixture)
-	if _, err := phase.acquireOwner(context.Background(), store, 0, "", acquisition); !application.HasReason(err, application.ReasonOwnerNotCurrent) {
-		t.Fatalf("closed Phase A acquire err=%v", err)
-	}
-	if _, err := phase.bindAcquisition(store); !application.HasReason(err, application.ReasonOwnerNotCurrent) {
-		t.Fatalf("closed Phase A bind err=%v", err)
+	if _, _, _, err := phase.acquireAndBind(context.Background(), store, acquisition); !application.HasReason(err, application.ReasonOwnerNotCurrent) {
+		t.Fatalf("closed Phase A transition err=%v", err)
 	}
 	reopened, err := openRepositoryOwnerScopeLock(fixture.directory, acquisition.Scope)
 	if err != nil {
@@ -258,13 +302,13 @@ func TestRepositoryOwnerScopeLockCloseIsTerminalAndIdempotent(t *testing.T) {
 
 func TestRepositoryOwnerLockResponseLossCreatesStrictSuccessor(t *testing.T) {
 	fixture := newOwnerLockFixture(t)
-	store := openOwnerStore(t, fixture)
+	store, _ := openHeldOwnerStore(t, fixture)
 	firstAcquisition := acquisitionAtEpoch(1)
 	first, err := openRepositoryOwnerScopeLock(fixture.directory, firstAcquisition.Scope)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstState := acquireAndReplay(t, first, store, 0, "", firstAcquisition)
+	firstState := appendOwnerWithoutBinding(t, first, store, 0, "", firstAcquisition)
 	// Simulate loss of the successful append response before Phase B bind.
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
@@ -275,12 +319,8 @@ func TestRepositoryOwnerLockResponseLossCreatesStrictSuccessor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer second.Close()
-	secondAcquisition := acquisitionAtEpoch(2)
-	secondState := acquireAndReplay(t, second, store, 1, firstState.FactDigest, secondAcquisition)
-	bound, err := second.bindAcquisition(store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	secondCandidate := acquisitionAtEpoch(0)
+	bound, secondState, secondAcquisition := acquireAndBindOwner(t, second, store, secondCandidate)
 	defer bound.Close()
 	if bound.acquisition() != secondAcquisition || secondState.PreviousFactDigest != firstState.FactDigest {
 		t.Fatalf("successor did not bind exact predecessor: %#v", secondState)
@@ -297,8 +337,9 @@ func TestRepositoryOwnerScopeLockRejectsConcurrentAcquire(t *testing.T) {
 	}
 	defer phase.Close()
 	type outcome struct {
-		result resultingress.ControlOwnerAppendResult
-		err    error
+		owner repositoryOwnerLock
+		state resultingress.ControlOwnerState
+		err   error
 	}
 	start := make(chan struct{})
 	outcomes := make(chan outcome, 2)
@@ -308,8 +349,8 @@ func TestRepositoryOwnerScopeLockRejectsConcurrentAcquire(t *testing.T) {
 		go func() {
 			defer workers.Done()
 			<-start
-			result, err := phase.acquireOwner(context.Background(), store, 0, "", acquisition)
-			outcomes <- outcome{result: result, err: err}
+			owner, state, _, err := phase.acquireAndBind(context.Background(), store, acquisition)
+			outcomes <- outcome{owner: owner, state: state, err: err}
 		}()
 	}
 	close(start)
@@ -317,8 +358,9 @@ func TestRepositoryOwnerScopeLockRejectsConcurrentAcquire(t *testing.T) {
 	close(outcomes)
 	var successes, rejections int
 	for outcome := range outcomes {
-		if outcome.err == nil && outcome.result.Appended {
+		if outcome.err == nil && outcome.owner != nil && outcome.state.Acquisition == acquisition {
 			successes++
+			_ = outcome.owner.Close()
 		} else if application.HasReason(outcome.err, application.ReasonOwnerNotCurrent) {
 			rejections++
 		} else {
@@ -344,9 +386,8 @@ func TestRepositoryOwnerScopeLockRejectsDirectoryAndEntryABA(t *testing.T) {
 		moved := fixture.ownerPath + "-roundtrip"
 		renameAwayAndBackSameObject(t, fixture.ownerPath, moved)
 		requirePhysicalRecheckBeforeCallback(t, phase)
-		if _, err := phase.acquireOwner(context.Background(), store, 0, "", acquisition); err == nil {
-			t.Fatal("same owner directory rename roundtrip admitted owner append")
-		}
+		_, _, _, transitionErr := phase.acquireAndBind(context.Background(), store, acquisition)
+		requireOwnerTransitionFailure(t, transitionErr, repositoryOwnerFailureOwnerIdentityDrift)
 		if after := ownerLedgerBytes(t, fixture); !bytes.Equal(before, after) {
 			t.Fatalf("directory rename roundtrip wrote ledger: before=%q after=%q", before, after)
 		}
@@ -370,9 +411,8 @@ func TestRepositoryOwnerScopeLockRejectsDirectoryAndEntryABA(t *testing.T) {
 		before := ownerLedgerBytes(t, fixture)
 		renameAwayAndBackSameObject(t, path, moved)
 		requirePhysicalRecheckBeforeCallback(t, phase)
-		if _, err := phase.acquireOwner(context.Background(), store, 0, "", acquisition); err == nil {
-			t.Fatal("same lock entry rename roundtrip admitted owner append")
-		}
+		_, _, _, transitionErr := phase.acquireAndBind(context.Background(), store, acquisition)
+		requireOwnerTransitionFailure(t, transitionErr, repositoryOwnerFailureOwnerIdentityDrift)
 		if after := ownerLedgerBytes(t, fixture); !bytes.Equal(before, after) {
 			t.Fatalf("entry rename roundtrip wrote ledger: before=%q after=%q", before, after)
 		}
@@ -403,9 +443,8 @@ func TestRepositoryOwnerScopeLockRejectsDirectoryAndEntryABA(t *testing.T) {
 		if err := os.Chown(fixture.ownerPath, -1, os.Getgid()); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := phase.acquireOwner(context.Background(), store, 0, "", acquisition); err == nil {
-			t.Fatal("directory current-name ABA admitted owner append")
-		}
+		_, _, _, transitionErr := phase.acquireAndBind(context.Background(), store, acquisition)
+		requireOwnerTransitionFailure(t, transitionErr, repositoryOwnerFailureOwnerIdentityDrift)
 		if _, found, err := store.OpenOwner(acquisition.Scope); err != nil || found {
 			t.Fatalf("directory ABA mutated owner authority: found=%t err=%v", found, err)
 		}
@@ -431,17 +470,70 @@ func TestRepositoryOwnerScopeLockRejectsDirectoryAndEntryABA(t *testing.T) {
 		if err := os.Chown(filepath.Join(fixture.ownerPath, name), -1, os.Getgid()); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := phase.acquireOwner(context.Background(), store, 0, "", acquisition); err == nil {
-			t.Fatal("lock entry ABA admitted owner append")
-		}
+		_, _, _, transitionErr := phase.acquireAndBind(context.Background(), store, acquisition)
+		requireOwnerTransitionFailure(t, transitionErr, repositoryOwnerFailureOwnerIdentityDrift)
 		if _, found, err := store.OpenOwner(acquisition.Scope); err != nil || found {
 			t.Fatalf("entry ABA mutated owner authority: found=%t err=%v", found, err)
 		}
 	})
 }
 
-func TestRepositoryOwnerLockRejectsRoundtripDuringBindAndBoundCallback(t *testing.T) {
-	t.Run("directory-before-bind", func(t *testing.T) {
+func TestRepositoryOwnerAtomicTransitionClassifiesIngressIdentityAndReplayFailure(t *testing.T) {
+	t.Run("ingress-current-name-aba", func(t *testing.T) {
+		fixture := newOwnerLockFixture(t)
+		store, ingressPath := openHeldOwnerStore(t, fixture)
+		acquisition := acquisitionAtEpoch(1)
+		phase, err := openRepositoryOwnerScopeLock(fixture.directory, acquisition.Scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer phase.Close()
+
+		ledgerPath := filepath.Join(ingressPath, "result-ingress.jsonl")
+		movedPath := ledgerPath + ".replaced"
+		if err := os.Rename(ledgerPath, movedPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(ledgerPath, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chown(ledgerPath, -1, os.Getgid()); err != nil {
+			t.Fatal(err)
+		}
+		_, _, _, transitionErr := phase.acquireAndBind(context.Background(), store, acquisition)
+		requireOwnerTransitionFailure(t, transitionErr, repositoryOwnerFailureIngressIdentityIO)
+		moved, readErr := os.ReadFile(movedPath)
+		if readErr != nil || len(moved) != 0 {
+			t.Fatalf("ingress ABA mutated held authority: bytes=%q err=%v", moved, readErr)
+		}
+	})
+
+	t.Run("owner-ledger-corruption", func(t *testing.T) {
+		fixture := newOwnerLockFixture(t)
+		store, ingressPath := openHeldOwnerStore(t, fixture)
+		acquisition := acquisitionAtEpoch(1)
+		phase, err := openRepositoryOwnerScopeLock(fixture.directory, acquisition.Scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer phase.Close()
+
+		ledgerPath := filepath.Join(ingressPath, "result-ingress.jsonl")
+		corrupt := []byte("{}\n")
+		if err := os.WriteFile(ledgerPath, corrupt, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _, _, transitionErr := phase.acquireAndBind(context.Background(), store, acquisition)
+		requireOwnerTransitionFailure(t, transitionErr, repositoryOwnerFailureReplayConflict)
+		after, readErr := os.ReadFile(ledgerPath)
+		if readErr != nil || !bytes.Equal(after, corrupt) {
+			t.Fatalf("corrupt replay failure appended authority: bytes=%q err=%v", after, readErr)
+		}
+	})
+}
+
+func TestRepositoryOwnerLockRejectsRoundtripDuringAtomicTransitionAndBoundCallback(t *testing.T) {
+	t.Run("directory-before-transition", func(t *testing.T) {
 		fixture := newOwnerLockFixture(t)
 		store := openOwnerStore(t, fixture)
 		acquisition := acquisitionAtEpoch(1)
@@ -450,15 +542,13 @@ func TestRepositoryOwnerLockRejectsRoundtripDuringBindAndBoundCallback(t *testin
 			t.Fatal(err)
 		}
 		defer phase.Close()
-		_ = acquireAndReplay(t, phase, store, 0, "", acquisition)
 		before := ownerLedgerBytes(t, fixture)
-		moved := fixture.ownerPath + "-before-bind"
+		moved := fixture.ownerPath + "-before-transition"
 		renameAwayAndBackSameObject(t, fixture.ownerPath, moved)
-		if _, err := phase.bindAcquisition(store); !application.HasReason(err, application.ReasonOwnerNotCurrent) {
-			t.Fatalf("directory roundtrip bind err=%v", err)
-		}
+		_, _, _, transitionErr := phase.acquireAndBind(context.Background(), store, acquisition)
+		requireOwnerTransitionFailure(t, transitionErr, repositoryOwnerFailureOwnerIdentityDrift)
 		if after := ownerLedgerBytes(t, fixture); !bytes.Equal(before, after) {
-			t.Fatalf("failed bind wrote ledger: before=%q after=%q", before, after)
+			t.Fatalf("failed transition wrote ledger: before=%q after=%q", before, after)
 		}
 	})
 
@@ -470,11 +560,7 @@ func TestRepositoryOwnerLockRejectsRoundtripDuringBindAndBoundCallback(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		_ = acquireAndReplay(t, phase, store, 0, "", acquisition)
-		bound, err := phase.bindAcquisition(store)
-		if err != nil {
-			t.Fatal(err)
-		}
+		bound, _, _ := acquireAndBindOwner(t, phase, store, acquisition)
 		defer bound.Close()
 		if err := bound.claimRuntime(); err != nil {
 			t.Fatal(err)
@@ -499,11 +585,7 @@ func TestRepositoryOwnerLockRejectsPostBindReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = acquireAndReplay(t, phase, store, 0, "", acquisition)
-	bound, err := phase.bindAcquisition(store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bound, _, _ := acquireAndBindOwner(t, phase, store, acquisition)
 	defer bound.Close()
 	if err := bound.claimRuntime(); err != nil {
 		t.Fatal(err)
