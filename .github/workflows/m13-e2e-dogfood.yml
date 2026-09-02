@@ -115,7 +115,7 @@ jobs:
         if: inputs.candidate-mode == 'build-from-head'
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         env:
-          GO_TARBALL_URL: https://go.dev/dl/go1.26.6.darwin-arm64.tar.gz
+          GO_TARBALL_URL: https://mirror.nju.edu.cn/golang/go1.26.6.darwin-arm64.tar.gz
           GO_TARBALL_NAME: go1.26.6.darwin-arm64.tar.gz
           GO_TARBALL_SHA256: 1e0b775a0a6084f37a1a1a64287f1f7a7a8440ade006eb8f154a1f85840e67ff
         run: |
