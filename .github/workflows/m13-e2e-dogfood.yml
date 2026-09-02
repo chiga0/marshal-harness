@@ -117,7 +117,7 @@ jobs:
         env:
           GO_TARBALL_URL: https://mirror.nju.edu.cn/golang/go1.26.6.darwin-arm64.tar.gz
           GO_TARBALL_NAME: go1.26.6.darwin-arm64.tar.gz
-          GO_TARBALL_SHA256: 1e0b775a0a6084f37a1a1a64287f1f7a7a8440ade006eb8f154a1f85840e67ff
+          GO_TARBALL_SHA256: 2dc95ce4675829f2df0e86b28bcef3283635902062a5f0580ca659bf570f3204
         run: |
           set -euo pipefail
           root="$(mktemp -d)"
