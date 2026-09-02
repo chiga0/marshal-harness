@@ -237,4 +237,45 @@ func TestRepro226SealedComposeBase(t *testing.T) {
 			t.Fatalf("CROSS-LEDGER REPRODUCED #226 mismatch:\nruntime#1 supplied=%+v\nruntime#2 rehydrated=%+v", prepared, durable)
 		}
 	})
+	// step6：依样判冷冻重点主漏——直接对 sealed composition drive 收成后 runtime
+	// 调用 StartPreparedRun；真实 CLI dogfood 的 StartPreparedRun-阶段被拒
+	// （application: authority-conflict）。若在 runtime 层被同样的错误打到解决
+	// （vs spawn/launch 预咬生错），则在 controller.startPreparedRun 有其针对 sealed
+	// CLI 形状的重现之点。
+	t.Run("step6-startpreparedrun-pathb", func(t *testing.T) {
+		inputs, runID, _, _, _ := pathBCompositionInputsForLaunch(t)
+		inputs, held, _ := repro226SealedInputs(t, inputs)
+		_ = held
+		closure := inputs.LaunchClosure
+		identity, err := launchidentity.Pi0844IdentityFromClosure(closure)
+		if err != nil {
+			t.Fatal(err)
+		}
+		profile, err := NewPi0844Profile(closure.RuntimeExecutable.CanonicalPath, "/fixed/node-runtime", identity.IdentityDigest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		composed, err := ComposeRuntime(context.Background(), inputs, profile)
+		if err != nil {
+			t.Fatalf("compose: %v", err)
+		}
+		defer func() { _ = composed.Runtime.Close() }()
+		projection, err := composed.Runtime.InspectRun(context.Background(), application.InspectRunRequest{RunID: runID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := composed.Runtime.PrepareRunStart(context.Background(), application.PrepareRunStartRequest{RunID: runID, ExpectedSequence: projection.Sequence, ExpectedAuthorityHead: projection.AuthorityHead})
+		if err != nil {
+			t.Fatalf("sealed path-B prepare: %v", err)
+		}
+		successor, startErr := composed.Runtime.StartPreparedRun(context.Background(), prepared)
+		if startErr != nil {
+			if application.HasReason(startErr, application.ReasonAuthorityConflict) {
+				t.Fatalf("REPRODUCED #226: StartPreparedRun authority conflict: %v", startErr)
+			}
+			t.Logf("StartPreparedRun failed without authority conflict (acceptable if spawn unavailable in test): %v", startErr)
+			return
+		}
+		t.Logf("StartPreparedRun succeeded: run=%s state=%s sequence=%d", successor.RunID, successor.State, successor.Sequence)
+	})
 }
