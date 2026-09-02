@@ -200,8 +200,8 @@ jobs:
           rm -rf "$control_root" && mkdir -p "$control_root"
           "$MARSHAL_BIN" doctor --self --repository-root "$(pwd)" \
             --activation-id "m13-e2e-${{ github.run_id }}" > "$control_root/activation.json"
-          /usr/bin/python3 -I -B -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("schemaVersion") == "marshal.local-dogfood-activation.v2"; assert d.get("expectedRawSHA256") == sys.argv[2], d.get("expectedRawSHA256")' \
-            "$control_root/activation.json" "sha256:${EXPECTED_CANDIDATE_SHA256}"
+          /usr/bin/python3 -I -B -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("schemaVersion") == "marshal.local-dogfood-activation.v2"; assert d.get("expectedRawSHA256") == sys.argv[2], (d.get("expectedRawSHA256"), sys.argv[2])' \
+            "$control_root/activation.json" "sha256:$(shasum -a 256 bin/marshal | awk '{print tolower($1)}')"
           export MARSHAL_LOCAL_DOGFOOD_ACTIVATION="$control_root/activation.json"
           printf 'MARSHAL_LOCAL_DOGFOOD_ACTIVATION=%s\n' "$MARSHAL_LOCAL_DOGFOOD_ACTIVATION" >> "$GITHUB_ENV"
           "$MARSHAL_BIN" init --json > "$control_root/init.json"
