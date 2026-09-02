@@ -82,6 +82,24 @@ func (port *fixtureApplicationPort) StartPreparedRun(_ context.Context, prepared
 	return port.successor, nil
 }
 
+func (port *fixtureApplicationPort) StartRun(_ context.Context, request application.StartRunRequest) (application.RunStartProjection, error) {
+	port.startCalls++
+	if request.RunID != port.prepared.RunID || request.ExpectedSequence != port.prepared.Sequence ||
+		request.ExpectedAuthorityHead != port.prepared.AuthorityHead {
+		return application.RunStartProjection{}, application.NewError("start-run", application.ReasonAuthorityConflict)
+	}
+	if port.projection == port.successor {
+		return application.RunStartProjection{Prepared: port.prepared, Run: port.successor}, nil
+	}
+	if port.projection.TaskID != port.prepared.TaskID || port.projection.RunID != port.prepared.RunID ||
+		port.projection.Sequence != port.prepared.Sequence || port.projection.AuthorityHead != port.prepared.AuthorityHead {
+		return application.RunStartProjection{}, application.NewError("start-run", application.ReasonAuthorityConflict)
+	}
+	port.prepareCalls++
+	port.projection = port.successor
+	return application.RunStartProjection{Prepared: port.prepared, Run: port.successor}, nil
+}
+
 func readyFixtureApplicationPort() *fixtureApplicationPort {
 	digest := func(character string) string { return "sha256:" + strings.Repeat(character, 64) }
 	ready := application.RunProjection{
@@ -148,6 +166,21 @@ func (port *legacyFixtureApplicationPort) StartPreparedRun(ctx context.Context, 
 		return application.RunProjection{}, inspectErr
 	}
 	return projection, err
+}
+
+func (port *legacyFixtureApplicationPort) StartRun(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, error) {
+	prepared, err := port.PrepareRunStart(ctx, application.PrepareRunStartRequest(request))
+	if err != nil {
+		return application.RunStartProjection{}, err
+	}
+	after, err := port.StartPreparedRun(ctx, prepared)
+	if err != nil {
+		return application.RunStartProjection{}, err
+	}
+	// This compatibility fixture emulates the legacy executor, whose AttemptID
+	// is minted by execution.Run rather than by the fixture preparation.
+	prepared.AttemptID = after.AttemptID
+	return application.RunStartProjection{Prepared: prepared, Run: after}, nil
 }
 
 func (a *fixtureAdapter) ID() string { return a.id }
@@ -1109,6 +1142,9 @@ func TestRunStartUsesPublicApplicationPortAndRecoversLostResponse(t *testing.T) 
 	if err != nil || !found {
 		t.Fatalf("read completed command: found=%t err=%v", found, err)
 	}
+	if bytes.Contains(record.Intent, []byte(`"prepared"`)) || !bytes.Contains(record.Intent, []byte(port.prepared.AuthorityHead)) {
+		t.Fatalf("transport intent must bind the predecessor head without carrying PreparedRunStart: %s", record.Intent)
+	}
 	record.Phase, record.Result, record.Status, record.CompletedAt = idempotencyPhasePending, nil, 0, nil
 	recordPath, _ := fixture.server.idempotency.recordPaths(identity)
 	if err := fixture.server.idempotency.writeRecord(recordPath, record); err != nil {
@@ -1119,14 +1155,14 @@ func TestRunStartUsesPublicApplicationPortAndRecoversLostResponse(t *testing.T) 
 	wrongAttempt := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
 		withContentType(fixture.identityHeaders("req-start-wrong-attempt")), body)
 	if wrongAttempt.status != http.StatusConflict || wrongAttempt.decodeError(t).Reason != "run-start-progress-conflict" ||
-		port.prepareCalls != 1 || port.startCalls != 1 {
+		port.prepareCalls != 1 || port.startCalls != 2 {
 		t.Fatalf("wrong-attempt recovery status=%d prepare=%d start=%d body=%s",
 			wrongAttempt.status, port.prepareCalls, port.startCalls, wrongAttempt.body)
 	}
 	port.projection = committed
 	recovered := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
 		withContentType(fixture.identityHeaders("req-start-application-port-recovery")), body)
-	if recovered.status != http.StatusAccepted || port.prepareCalls != 1 || port.startCalls != 1 {
+	if recovered.status != http.StatusAccepted || port.prepareCalls != 1 || port.startCalls != 3 {
 		t.Fatalf("recovery status=%d prepare=%d start=%d body=%s", recovered.status, port.prepareCalls, port.startCalls, recovered.body)
 	}
 }

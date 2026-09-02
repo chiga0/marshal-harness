@@ -13,6 +13,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
@@ -206,6 +207,22 @@ type PreparedExecutionCreation struct {
 	ExpectedRunAuthorityHead string
 }
 
+// PreparedRunStartKey identifies the one durable preparation created from an
+// exact READY Run head. It is used only for response-loss reconciliation; the
+// key cannot create an Attempt or authorize execution.
+type PreparedRunStartKey struct {
+	RunID              string
+	ReadySequence      uint64
+	ReadyAuthorityHead string
+}
+
+func (key PreparedRunStartKey) validate() error {
+	if domain.ValidateID(key.RunID) != nil || key.ReadySequence == 0 || key.ReadySequence > maxExactJSONInteger || requireDigest("readyAuthorityHead", key.ReadyAuthorityHead) != nil {
+		return ErrPreparedExecutionConflict
+	}
+	return nil
+}
+
 func (creation PreparedExecutionCreation) validate() error {
 	if creation.Identity.Validate() != nil || creation.ExpectedRunSequence == 0 || creation.ExpectedRunSequence > maxExactJSONInteger ||
 		requireDigest("expectedRunAuthorityHead", creation.ExpectedRunAuthorityHead) != nil {
@@ -384,6 +401,44 @@ func (s *DurableStore) ResolvePreparedExecution(ctx context.Context, verifier Cu
 	err := withCurrentOwnerLock(ctx, verifier, acquisition, func() error {
 		projection := newAuthorityProjection()
 		return s.transact(projection, func() error {
+			prepared, _, err := resolvePreparedCurrent(projection, acquisition, digest)
+			if err == nil {
+				result = prepared
+			}
+			return err
+		})
+	})
+	return result, err
+}
+
+// ResolvePreparedRunStart returns the unique current preparation derived from
+// an exact READY Run head. It cold-replays the ledger under the current owner
+// and then applies the same currentness checks as digest-based resolution.
+// Absence and ambiguity both fail closed.
+func (s *DurableStore) ResolvePreparedRunStart(ctx context.Context, verifier CurrentOwnerLockVerifier, acquisition ControlOwnerAcquisition, key PreparedRunStartKey) (PreparedExecutionV1, error) {
+	if s == nil || ctx == nil || acquisition.Validate() != nil || key.validate() != nil {
+		return PreparedExecutionV1{}, ErrPreparedExecutionConflict
+	}
+	var result PreparedExecutionV1
+	err := withCurrentOwnerLock(ctx, verifier, acquisition, func() error {
+		projection := newAuthorityProjection()
+		return s.transact(projection, func() error {
+			var digest string
+			matches := 0
+			for candidateDigest, prepared := range projection.preparedExecutions {
+				if prepared.AttemptIdentity.AuthorityNamespaceID == acquisition.Scope.AuthorityNamespaceID &&
+					prepared.AttemptIdentity.RunID == key.RunID && prepared.ExpectedRunSequence == key.ReadySequence &&
+					prepared.ExpectedRunAuthorityHead == key.ReadyAuthorityHead {
+					digest = candidateDigest
+					matches++
+				}
+			}
+			if matches == 0 {
+				return ErrPreparedExecutionUnavailable
+			}
+			if matches != 1 {
+				return ErrPreparedExecutionConflict
+			}
 			prepared, _, err := resolvePreparedCurrent(projection, acquisition, digest)
 			if err == nil {
 				result = prepared

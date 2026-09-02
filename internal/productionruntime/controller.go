@@ -26,6 +26,7 @@ type DurableRunAuthority interface {
 	PrepareRunStart(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, application.PrepareRunStartRequest) (application.PreparedRunStart, error)
 	RehydratePreparedRunStart(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, string) (application.PreparedRunStart, error)
 	RehydrateRunStartOutcome(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, string) (application.RunProjection, bool, error)
+	RehydrateRunStart(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, application.StartRunRequest) (application.PreparedRunStart, application.RunProjection, bool, error)
 	InspectRun(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, application.InspectRunRequest) (application.RunProjection, error)
 }
 
@@ -139,6 +140,33 @@ func (controller *controller) startPreparedRun(ctx context.Context, supplied app
 		return application.RunProjection{}, err
 	}
 	return successor, nil
+}
+
+// rehydrateRunStart resolves the exact preparation and successor created from
+// a predecessor head without authorizing a new mutation.
+func (controller *controller) rehydrateRunStart(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, bool, error) {
+	var prepared application.PreparedRunStart
+	var after application.RunProjection
+	var found bool
+	err := controller.withOwner(ctx, false, func(verifier resultingress.CurrentOwnerLockVerifier, _ OwnerProjection) error {
+		var resolveErr error
+		prepared, after, found, resolveErr = controller.authority.RehydrateRunStart(ctx, verifier, controller.acquisition, request)
+		if resolveErr != nil {
+			return mapAuthorityError("start-run", resolveErr)
+		}
+		return nil
+	})
+	if err != nil {
+		return application.RunStartProjection{}, false, err
+	}
+	if !found {
+		return application.RunStartProjection{}, false, nil
+	}
+	result := application.RunStartProjection{Prepared: prepared, Run: after}
+	if result.Validate() != nil || !validStartSuccessor(prepared, after) {
+		return application.RunStartProjection{}, false, application.NewError("start-run", application.ReasonAuthorityConflict)
+	}
+	return result, true, nil
 }
 
 func validStartSuccessor(prepared application.PreparedRunStart, successor application.RunProjection) bool {
