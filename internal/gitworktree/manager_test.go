@@ -55,6 +55,54 @@ func TestNestedLinkedWorktreeDoesNotModifyMainCheckout(t *testing.T) {
 	}
 }
 
+// ADR 0075 F1：无论 operator umask，managed worktree 根目录与其 admin
+// gitdir（.git/worktrees/<name>）必须恰好 0700，否则 RB1 bind admission
+// 必然 fail closed。
+func TestCreateForRunAppliesPrivateModeInvariant(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	manager, err := Open(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree, err := manager.CreateForRun(stateRoot, "task:private-mode", "run-private-mode", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = worktree.Release()
+		_ = gitCommand(t, repository, "worktree", "remove", "--force", worktree.Path)
+		_ = gitCommand(t, repository, "branch", "-D", worktree.Branch)
+	}()
+	info, err := os.Stat(worktree.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("worktree root mode = %v, want directory with exactly 0700", info.Mode().Perm())
+	}
+	content, err := os.ReadFile(filepath.Join(worktree.Path, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := strings.TrimSpace(string(content))
+	if !strings.HasPrefix(line, "gitdir:") {
+		t.Fatalf("unexpected worktree .git content: %q", line)
+	}
+	adminDir := strings.TrimSpace(strings.TrimPrefix(line, "gitdir:"))
+	if !filepath.IsAbs(adminDir) {
+		adminDir = filepath.Join(worktree.Path, adminDir)
+	}
+	adminInfo, err := os.Stat(adminDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !adminInfo.IsDir() || adminInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("admin gitdir mode = %v, want directory with exactly 0700", adminInfo.Mode().Perm())
+	}
+}
+
 func TestTaskLockIsExclusive(t *testing.T) {
 	repository, base := fixtureRepository(t)
 	initializeMarshalState(t, repository)

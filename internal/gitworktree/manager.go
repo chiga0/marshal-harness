@@ -156,6 +156,15 @@ func (r Repository) CreateForRun(stateRoot, taskID, runID, baseSHA string) (*Wor
 		_ = repositoryLock.Unlock()
 		return nil, err
 	}
+	// ADR 0075 F1：RB1 existing-worktree bind admission 要求目标 worktree 根
+	// 与 admin gitdir 恰好 0700。git worktree add 跟随 operator umask
+	// （umask 022 → 0755），创建时必须显式收敛到已冻结的不变量。
+	if err := setPrivateModeOnWorktreeTargets(worktreePath); err != nil {
+		_ = gitRun(r.Root, "worktree", "remove", "--force", worktreePath)
+		_ = taskLock.Unlock()
+		_ = repositoryLock.Unlock()
+		return nil, fmt.Errorf("set private mode on worktree targets: %w", err)
+	}
 	if err := gitRun(r.Root, "worktree", "lock", "--reason", "managed by Marshal", worktreePath); err != nil {
 		_ = gitRun(r.Root, "worktree", "remove", "--force", worktreePath)
 		_ = taskLock.Unlock()
@@ -491,6 +500,34 @@ func (r Repository) CleanSnapshot(path string) (bool, error) {
 		return false, err
 	}
 	return output == "", nil
+}
+
+// setPrivateModeOnWorktreeTargets forces the exact private-mode invariant the
+// RB1 existing-worktree bind admission requires (ADR 0075): the worktree root
+// and its admin gitdir (.git/worktrees/<name>, read from the worktree's .git
+// file) must both be exactly 0700 regardless of operator umask.
+func setPrivateModeOnWorktreeTargets(worktreePath string) error {
+	if err := os.Chmod(worktreePath, 0o700); err != nil {
+		return err
+	}
+	content, err := os.ReadFile(filepath.Join(worktreePath, ".git"))
+	if err != nil {
+		return fmt.Errorf("read worktree gitdir pointer: %w", err)
+	}
+	line := strings.TrimSpace(string(content))
+	const prefix = "gitdir:"
+	if !strings.HasPrefix(line, prefix) {
+		return fmt.Errorf("unexpected worktree .git content: %q", line)
+	}
+	adminDir := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	if !filepath.IsAbs(adminDir) {
+		adminDir = filepath.Join(worktreePath, adminDir)
+	}
+	adminDir = filepath.Clean(adminDir)
+	if err := os.Chmod(adminDir, 0o700); err != nil {
+		return fmt.Errorf("chmod worktree admin directory %q: %w", adminDir, err)
+	}
+	return nil
 }
 
 // managedName composes the managed worktree name for a task: the legacy

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"path/filepath"
 	"strings"
 	"time"
@@ -204,16 +203,40 @@ func extractFinalWorkerResult(transcript []byte) ([]byte, error) {
 	if textItems != 1 || strings.TrimSpace(text) == "" {
 		return nil, fmt.Errorf("%w: final production assistant must contain exactly one non-empty text item", ErrProtocol)
 	}
-	decoder := json.NewDecoder(strings.NewReader(text))
-	var object map[string]json.RawMessage
-	if err := decoder.Decode(&object); err != nil || object == nil {
+	return extractSingleWorkerResultObject(text)
+}
+
+// extractSingleWorkerResultObject implements the ADR 0075 final-message
+// contract: plain prose is tolerated, but the text must contain exactly one
+// complete JSON object and everything after that object must be whitespace.
+// Zero or two-or-more decodable objects fail closed.
+func extractSingleWorkerResultObject(text string) ([]byte, error) {
+	var (
+		matched    map[string]json.RawMessage
+		matchedEnd int
+		candidates int
+	)
+	for index := 0; index < len(text); index++ {
+		if text[index] != '{' {
+			continue
+		}
+		decoder := json.NewDecoder(strings.NewReader(text[index:]))
+		var object map[string]json.RawMessage
+		if err := decoder.Decode(&object); err != nil || object == nil {
+			continue
+		}
+		candidates++
+		if candidates > 1 {
+			return nil, fmt.Errorf("%w: final production assistant text must contain exactly one complete JSON object", ErrProtocol)
+		}
+		matched = object
+		matchedEnd = index + int(decoder.InputOffset())
+	}
+	if candidates != 1 {
 		return nil, fmt.Errorf("%w: final production assistant text is not one JSON object", ErrProtocol)
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err == nil {
-		return nil, fmt.Errorf("%w: final production assistant text contains trailing JSON", ErrProtocol)
-	} else if !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("%w: decode final production assistant trailer: %v", ErrProtocol, err)
+	if strings.TrimSpace(text[matchedEnd:]) != "" {
+		return nil, fmt.Errorf("%w: final production assistant text contains trailing non-whitespace after the result object", ErrProtocol)
 	}
-	return json.Marshal(object)
+	return json.Marshal(matched)
 }

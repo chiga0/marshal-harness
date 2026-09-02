@@ -102,6 +102,44 @@ func TestExtractFinalWorkerResultFailsClosed(t *testing.T) {
 	}
 }
 
+// ADR 0075 F3：终态 assistant 文本容忍散文，但全文必须恰好有一个完整
+// JSON 对象且其后只含空白；0 个或多个完整对象、截断与尾随非空白一律
+// fail closed。
+func TestExtractSingleWorkerResultObjectContract(t *testing.T) {
+	valid := `{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult"}`
+	cases := []struct {
+		name    string
+		text    string
+		wantErr bool
+	}{
+		{name: "bare-object", text: valid, wantErr: false},
+		{name: "prose-then-single-object", text: "已完成三项交付，证据简述如下。\n" + valid + "\n", wantErr: false},
+		{name: "object-then-trailing-prose", text: valid + "\n以上即最终结果。", wantErr: true},
+		{name: "prose-with-two-objects", text: "先比较样例 {\"a\":1} 的形状，然后给出结果：\n" + valid, wantErr: true},
+		{name: "no-object", text: "只写了总结，没有结果对象。", wantErr: true},
+		{name: "truncated-object", text: `说明 {"apiVersion":"marshal.dev/v1alpha1","kind":`, wantErr: true},
+		{name: "empty", text: "", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractSingleWorkerResultObject(tc.text)
+			if tc.wantErr {
+				if !errors.Is(err, ErrProtocol) {
+					t.Fatalf("error = %v, want ErrProtocol", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("extractSingleWorkerResultObject() = %v", err)
+			}
+			var object map[string]any
+			if err := json.Unmarshal(got, &object); err != nil || object["kind"] != "WorkerResult" {
+				t.Fatalf("extracted object = %s", got)
+			}
+		})
+	}
+}
+
 func TestParseProductionWorkerResultRejectsGuessedResultWrapper(t *testing.T) {
 	guessed := `{"status":"completed","taskId":"TASK-1","runId":"run-1","attemptId":"attempt-1","result":{"action":"create_file","path":"file.txt"}}`
 	end, err := json.Marshal(map[string]any{

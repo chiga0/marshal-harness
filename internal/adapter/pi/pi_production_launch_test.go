@@ -287,6 +287,40 @@ func TestBuildProductionLaunchAbsolutePOSIXPathRejection(t *testing.T) {
 	}
 }
 
+// ADR 0075 F2：闸门按"空白切词 + token 前缀 '/' 判定"实现——CJK 紧邻的
+// 斜杠对与相对路径一律放行；token 前缀位置的宿主绝对路径（含引号/括号
+// 包裹）仍然 fail closed。
+func TestContainsAbsolutePOSIXPathTokenContract(t *testing.T) {
+	reject := []string{
+		"/etc/passwd",
+		"/",
+		"do not touch /private/tmp",
+		"ignore /.marshal/state",
+		`inspect "/private/tmp/work"`,
+		"inspect (/tmp/work)",
+		"run /usr/bin/python3 to check",
+		"//srv/share",
+	}
+	for _, text := range reject {
+		if !containsAbsolutePOSIXPathToken(text) {
+			t.Errorf("containsAbsolutePOSIXPathToken(%q) = false, want rejection", text)
+		}
+	}
+	accept := []string{
+		"行尾/行首常见 ASCII 标点",
+		"非法/重复 flag 非零退出",
+		"edit the relative/path/file module",
+		"使用 pai-eas/qwen3.7-plus 与 schemas/examples 约定",
+		"plan admission、deterministic admission、revision",
+		"",
+	}
+	for _, text := range accept {
+		if containsAbsolutePOSIXPathToken(text) {
+			t.Errorf("containsAbsolutePOSIXPathToken(%q) = true, want acceptance", text)
+		}
+	}
+}
+
 func TestBuildProductionLaunchReservedControlPathAndModelRejection(t *testing.T) {
 	tests := []struct {
 		name   string

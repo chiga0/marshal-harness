@@ -2280,22 +2280,15 @@ func validProductionWorkerResultID(value string) bool {
 }
 
 // containsAbsolutePOSIXPathToken reports whether any whitespace-delimited
-// token of s is an absolute POSIX path (begins with '/'). It fails closed on
-// path tokens so an objective or constraint can never smuggle a state,
-// control, worktree, result, or transcript path into the prompt.
+// token of s is an absolute POSIX path: a token beginning with '/' once
+// leading ASCII delimiter characters (quotes and open brackets) are stripped
+// (ADR 0075: relative components and CJK-adjacent slash pairs such as
+// 行尾/行首 or 非法/重复 are not paths; a host absolute path may only enter
+// argv from engine code, never from prompt text).
 func containsAbsolutePOSIXPathToken(s string) bool {
-	for index, r := range s {
-		if r != '/' {
-			continue
-		}
-		if index == 0 {
-			return true
-		}
-		previous := rune(s[index-1])
-		// A slash after an identifier/path character is a relative component
-		// (for example src/file.go). A slash after whitespace or punctuation is
-		// an absolute path boundary, including quoted and parenthesized paths.
-		if !((previous >= 'a' && previous <= 'z') || (previous >= 'A' && previous <= 'Z') || (previous >= '0' && previous <= '9') || previous == '_' || previous == '-' || previous == '.') {
+	for _, token := range strings.Fields(s) {
+		token = strings.TrimLeft(token, "\"'(<{[")
+		if strings.HasPrefix(token, "/") {
 			return true
 		}
 	}
