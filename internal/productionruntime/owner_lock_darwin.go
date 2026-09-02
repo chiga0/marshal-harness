@@ -137,7 +137,7 @@ func repositoryOwnerTransitionKind(err error) (repositoryOwnerTransitionFailureK
 }
 
 func ownerReplayFailure(err error) error {
-	if errors.Is(err, resultingress.ErrControlOwnerConflict) || errors.Is(err, resultingress.ErrControlOwnerUnknown) || errors.Is(err, resultingress.ErrControlOwnerNotCurrent) {
+	if errors.Is(err, resultingress.ErrDurableReplayConflict) || errors.Is(err, resultingress.ErrControlOwnerConflict) || errors.Is(err, resultingress.ErrControlOwnerUnknown) || errors.Is(err, resultingress.ErrControlOwnerNotCurrent) {
 		return newRepositoryOwnerTransitionError(repositoryOwnerFailureReplayConflict)
 	}
 	return newRepositoryOwnerTransitionError(repositoryOwnerFailureIngressIdentityIO)

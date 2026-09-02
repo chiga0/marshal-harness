@@ -98,6 +98,44 @@ func TestDurableIngressAppendFailureDoesNotAdvanceMemorySequence(t *testing.T) {
 	}
 }
 
+func TestDurableStoreSeparatesSemanticReplayConflictFromPhysicalReadFailure(t *testing.T) {
+	scope := attemptTestOwnerScope(attemptTestIdentity())
+	for name, ledger := range map[string][]byte{
+		"unknown-fact":   []byte("{}\n"),
+		"truncated-tail": []byte("{}"),
+		"non-canonical":  []byte("{ }\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, resultIngressStoreFileName), ledger, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := OpenResultIngressStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.OpenOwner(scope); !errors.Is(err, ErrDurableReplayConflict) {
+				t.Fatalf("semantic replay error = %v, want ErrDurableReplayConflict", err)
+			}
+		})
+	}
+
+	t.Run("physical-read", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, resultIngressStoreFileName), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		store, err := OpenResultIngressStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, err = store.OpenOwner(scope)
+		if err == nil || errors.Is(err, ErrDurableReplayConflict) {
+			t.Fatalf("physical read error = %v, must not be a semantic replay conflict", err)
+		}
+	})
+}
+
 func TestDurableIngressReplayBindsEnvelopeKindAndSequence(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := OpenResultIngressStore(dir)

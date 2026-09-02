@@ -44,6 +44,11 @@ var ErrResultIngressClosed = errors.New("resultingress: durable result ingress s
 // open a replacement authority root.
 var ErrResultIngressOutcomeUnknown = errors.New("resultingress: durable append outcome is unknown; exact held-ledger replay is required")
 
+// ErrDurableReplayConflict marks bytes that were read from the durable ledger
+// but cannot be replayed as one valid append-only authority history. Physical
+// open/read/current-name failures deliberately do not wrap this sentinel.
+var ErrDurableReplayConflict = errors.New("resultingress: durable ledger replay conflict")
+
 const (
 	resultFactTypeAdmitted    = "result-admitted"
 	resultFactTypeQuarantined = "result-quarantined"
@@ -456,14 +461,14 @@ func (s *ingressDurableStore) recoverIntoLocked(in *Ingress) error {
 		return fmt.Errorf("resultingress: read store: %w", err)
 	}
 	if len(data) > 0 && data[len(data)-1] != '\n' {
-		return errors.New("resultingress: truncated ledger tail without newline")
+		return fmt.Errorf("%w: truncated ledger tail without newline", ErrDurableReplayConflict)
 	}
 	for i, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		if err := s.applyLine([]byte(line), in); err != nil {
-			return fmt.Errorf("resultingress: apply ledger line %d: %w", i+1, err)
+			return fmt.Errorf("%w: apply ledger line %d: %w", ErrDurableReplayConflict, i+1, err)
 		}
 	}
 	return nil

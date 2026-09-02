@@ -539,6 +539,38 @@ func TestRepositoryOwnerAtomicTransitionClassifiesIngressIdentityAndReplayFailur
 			t.Fatalf("corrupt replay failure appended authority: bytes=%q err=%v", after, readErr)
 		}
 	})
+
+	t.Run("owner-epoch-replay-conflict", func(t *testing.T) {
+		fixture := newOwnerLockFixture(t)
+		store, ingressPath := openHeldOwnerStore(t, fixture)
+		firstCandidate := acquisitionAtEpoch(1)
+		firstPhase, err := openRepositoryOwnerScopeLock(fixture.directory, firstCandidate.Scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer firstPhase.Close()
+		firstOwner, _, _ := acquireAndBindOwner(t, firstPhase, store, firstCandidate)
+		if err := firstOwner.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		ledgerPath := filepath.Join(ingressPath, "result-ingress.jsonl")
+		before, err := os.ReadFile(ledgerPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondPhase, err := openRepositoryOwnerScopeLock(fixture.directory, firstCandidate.Scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer secondPhase.Close()
+		_, _, _, transitionErr := secondPhase.acquireAndBind(context.Background(), store, acquisitionAtEpoch(3))
+		requireOwnerTransitionFailure(t, transitionErr, repositoryOwnerFailureReplayConflict)
+		after, readErr := os.ReadFile(ledgerPath)
+		if readErr != nil || !bytes.Equal(after, before) {
+			t.Fatalf("owner epoch replay conflict appended authority: before=%q after=%q err=%v", before, after, readErr)
+		}
+	})
 }
 
 func TestRepositoryOwnerLockRejectsRoundtripDuringAtomicTransitionAndBoundCallback(t *testing.T) {
