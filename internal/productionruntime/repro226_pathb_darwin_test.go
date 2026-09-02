@@ -154,16 +154,11 @@ func TestRepro226SealedComposeBase(t *testing.T) {
 			t.Fatalf("compose: %v", err)
 		}
 		defer func() { _ = composed.Runtime.Close() }()
-		readLease, err := inputs.Runs.Acquire(runID)
+		projection, err := composed.Runtime.InspectRun(context.Background(), application.InspectRunRequest{RunID: runID})
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("inspect: %v", err)
 		}
-		defer func() { _ = readLease.Release() }()
-		projection, err := inputs.Runs.ReadRunStartAuthorityUnderLease(context.Background(), readLease)
-		if err != nil {
-			t.Fatal(err)
-		}
-		prepared, err := composed.Runtime.PrepareRunStart(context.Background(), application.PrepareRunStartRequest{RunID: runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
+		prepared, err := composed.Runtime.PrepareRunStart(context.Background(), application.PrepareRunStartRequest{RunID: runID, ExpectedSequence: projection.Sequence, ExpectedAuthorityHead: projection.AuthorityHead})
 		if err != nil {
 			t.Fatalf("sealed path-B prepare: %v", err)
 		}
