@@ -38,22 +38,23 @@ type objectIdentity struct {
 }
 
 type Endpoint struct {
-	mu             sync.RWMutex
-	authority      *productionruntime.FixedEndpointAuthority
-	listener       *net.UnixListener
-	tokenFile      *os.File
-	token          [32]byte
-	snapshot       productionruntime.FixedEndpointSnapshot
-	server         processsupervisor.CoreIdentity
-	socketName     string
-	tokenName      string
-	locator        string
-	socket         objectIdentity
-	tokenObject    objectIdentity
-	slots          chan struct{}
-	acceptStopped  bool
-	closed         bool
-	acceptPrepared func()
+	mu              sync.RWMutex
+	authority       *productionruntime.FixedEndpointAuthority
+	listener        *net.UnixListener
+	tokenFile       *os.File
+	token           [32]byte
+	snapshot        productionruntime.FixedEndpointSnapshot
+	server          processsupervisor.CoreIdentity
+	socketName      string
+	tokenName       string
+	locator         string
+	socket          objectIdentity
+	tokenObject     objectIdentity
+	slots           chan struct{}
+	acceptStopped   bool
+	closed          bool
+	acceptPrepared  func()
+	acceptedWritten func()
 }
 
 type AuthenticatedConnection struct {
@@ -281,8 +282,15 @@ func (endpoint *Endpoint) authenticate(ctx context.Context, connection *net.Unix
 	}
 	accepted := acceptedFrame{SchemaVersion: "fixed-control-accepted/v1", ProtocolRevision: ProtocolRevision, ChallengeDigest: challengeDigest, ProofDigest: canonical.DigestBytes(proofRaw)}
 	acceptedRaw, err := canonicalBytes(accepted)
-	if err != nil || writeFrame(connection, acceptedRaw) != nil || endpoint.recheck(ctx) != nil {
+	if err != nil || writeFrame(connection, acceptedRaw) != nil {
 		return nil, ErrConflict
+	}
+	// A complete accepted frame is the handshake commit point. Authority was
+	// rechecked immediately before this write; later drift is rejected by the
+	// authenticated connection's mandatory application-boundary rechecks. Do
+	// not retract a success that the peer has already observed.
+	if endpoint.acceptedWritten != nil {
+		endpoint.acceptedWritten()
 	}
 	_ = connection.SetDeadline(time.Time{})
 	return &AuthenticatedConnection{UnixConn: connection, Binding: proof.Binding, Peer: peer, recheck: authenticatedPeerRecheck(connection, peer, endpoint.recheck), release: release}, nil
