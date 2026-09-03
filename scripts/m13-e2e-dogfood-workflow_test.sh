@@ -484,6 +484,8 @@ printf '{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccc
 chmod 600 "$FAILURE_CONTROL/stdout.bin" "$FAILURE_CONTROL/transcript.jcs"
 printf '{"sequence":1,"type":"worker.started","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt-failure"}\n' \
   >"$FAILURE_STATE/runs/failure-run/events.jsonl"
+printf '{"sequence":2,"type":"secret-bearing-unknown-event","stateFrom":"PRIVATE","stateTo":"PRIVATE","attemptId":"do-not-export"}\n' \
+  >>"$FAILURE_STATE/runs/failure-run/events.jsonl"
 /usr/bin/python3 -I -B "$DRIVER" failure-diagnostic --state-root "$FAILURE_STATE" \
   --run-id failure-run --out "$FAILURE_STATE/failure.json" >/dev/null \
   || fail 'failure diagnostic 未生成'
@@ -499,6 +501,9 @@ assert d["resultIngressTransitions"][-1]["kind"] == "cleanup-released"
 assert d["supervisor"]["finalAssistant"]["status"] == "valid-single-object"
 assert d["supervisor"]["finalAssistant"]["identityExact"] is True
 assert d["workerResult"]["present"] is False
+assert d["runEvents"][0] == {"attemptMatchesSelected":True,"sequence":1,"stateFrom":"READY","stateTo":"RUNNING","type":"worker.started"}
+assert d["runEvents"][1] == {"attemptMatchesSelected":False,"sequence":2,"stateFrom":None,"stateTo":None,"type":"unsupported"}
+assert "secret-bearing-unknown-event" not in raw and "do-not-export" not in raw and "PRIVATE" not in raw
 PY
 
 grep -A2 -F '      - name: Pack dogfood evidence tarball' "$WORKFLOW" | grep -Fq 'if: always()' \

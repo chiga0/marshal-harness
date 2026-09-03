@@ -848,6 +848,19 @@ def failure_diagnostic(args):
         selection = "unavailable-or-ambiguous"
 
     events = []
+    known_run_event_types = frozenset({
+        "run.transition", "state.transitioned", "planning.inputs-frozen",
+        "planning.spec-accepted", "worker.started", "worker.progress",
+        "worker.completed", "verification.completed", "review.accept",
+        "publication.reconciled", "publication.merged", "run.aborted",
+        "reconciliation.snapshot-repaired",
+    })
+    known_run_states = frozenset({
+        "CREATED", "PLANNED", "READY", "RUNNING", "RETRY_PENDING",
+        "VERIFYING", "REVIEW_PENDING", "REWORK_REQUESTED", "PUBLISHING",
+        "PUBLISHED", "CI_PENDING", "ACCEPTED", "REJECTED", "BLOCKED",
+        "ABORTED", "NO_CHANGE",
+    })
     events_path = os.path.join(run_root, "events.jsonl")
     if os.path.exists(events_path):
         require_regular_evidence_source(events_path, "Run events", 64 << 20)
@@ -856,8 +869,16 @@ def failure_diagnostic(args):
                 if not line.strip():
                     continue
                 event = json.loads(line)
-                events.append({key: event.get(key) for key in
-                               ("sequence", "type", "stateFrom", "stateTo", "attemptId")})
+                event_type = event.get("type")
+                state_from = event.get("stateFrom")
+                state_to = event.get("stateTo")
+                events.append({
+                    "sequence": event.get("sequence") if isinstance(event.get("sequence"), int) else None,
+                    "type": event_type if event_type in known_run_event_types else "unsupported",
+                    "stateFrom": state_from if state_from in known_run_states else None,
+                    "stateTo": state_to if state_to in known_run_states else None,
+                    "attemptMatchesSelected": bool(selected_attempt) and event.get("attemptId") == selected_attempt,
+                })
 
     diagnostic = {
         "schemaVersion": "marshal.m13-failure-diagnostic.v1",
