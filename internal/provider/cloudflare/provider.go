@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
@@ -50,6 +51,16 @@ type ProviderConfig struct {
 	// It is the provider's window onto the ArtifactStore; nil means locator
 	// staging is refused with ErrLocatorUnresolved.
 	LocatorResolver func(sandbox.Locator) ([]byte, error)
+	// EffectContextResolver is the Core-injected resolver of the frozen
+	// effect binding (runId/attemptId/effectId/authorityNamespaceId/
+	// securityDomainId/policyDigest/authorizationDigest). Provision and
+	// Terminate require it: nil fails closed at construction.
+	EffectContextResolver EffectContextResolver
+	// EffectAuthoritySink is the Core-owned durable side-effect authority
+	// sink. Provision and Terminate require it: nil fails closed at
+	// construction. The provider's local map is a cache only; the sink is
+	// the authority for what was intended and observed.
+	EffectAuthoritySink EffectAuthoritySink
 }
 
 // Diagnostic is one fail-closed observation recorded by the provider.
@@ -89,6 +100,8 @@ type Provider struct {
 	evidenceRef     string
 	store           *FileStateStore
 	locatorResolver func(sandbox.Locator) ([]byte, error)
+	effectResolver  EffectContextResolver
+	effectSink      EffectAuthoritySink
 
 	mu          sync.Mutex
 	allocations map[string]*allocationEntry
@@ -126,11 +139,19 @@ func NewProvider(config ProviderConfig) (*Provider, error) {
 	if store == nil {
 		store = newMemoryStateStore()
 	}
+	if config.EffectContextResolver == nil {
+		return nil, ErrEffectContextRequired
+	}
+	if config.EffectAuthoritySink == nil {
+		return nil, ErrEffectSinkRequired
+	}
 	provider := &Provider{
 		client:          client,
 		evidenceRef:     config.ConformanceEvidenceRef,
 		store:           store,
 		locatorResolver: config.LocatorResolver,
+		effectResolver:  config.EffectContextResolver,
+		effectSink:      config.EffectAuthoritySink,
 		allocations:     map[string]*allocationEntry{},
 	}
 	for _, record := range store.Allocations() {
@@ -229,6 +250,19 @@ func (p *Provider) Provision(ctx context.Context, request sandbox.ProvisionReque
 	if err != nil {
 		return nil, err
 	}
+	effectCtx, err := p.resolveEffectContext(ctx, sandbox.OperationProvision, request.Identity, candidate.AllocationId)
+	if err != nil {
+		return nil, err
+	}
+	effectIntent, err := buildEffectIntent(effectCtx, request.Identity, EffectOperationProvision, candidate.AllocationId, replayKey)
+	if err != nil {
+		return nil, err
+	}
+	// The Bridge mutation is never issued before the durable effect intent is
+	// acknowledged (put-if-absent).
+	if err := p.effectSink.PutIntent(effectIntent); err != nil {
+		return nil, err
+	}
 	intent := CreateIntent{
 		ReplayKey:    replayKey,
 		AllocationId: candidate.AllocationId,
@@ -237,16 +271,24 @@ func (p *Provider) Provision(ctx context.Context, request sandbox.ProvisionReque
 		Generation:   candidate.Generation,
 	}
 	if err := p.store.RecordIntent(intent); err != nil {
+		if clearErr := p.effectSink.ClearIntent(effectIntent.EffectId); clearErr != nil {
+			p.recordDiagnostic(sandbox.OperationProvision, candidate.AllocationId, "clearing the effect intent after the create intent write failed: "+clearErr.Error())
+		}
 		return nil, err
 	}
 	bridgeLocator, err := p.client.CreateSandbox(ctx, replayKey)
 	if err != nil {
 		// A definitive refusal (conflict, capacity, credential, semantic
-		// 4xx) clears the intent; an exhausted retry budget is ambiguous —
-		// the create may have happened — so the intent stays and reconcile
+		// 4xx) clears both intents; an exhausted retry budget is ambiguous —
+		// the create may have happened — so the intents stay and reconcile
 		// reports the ambiguity, never clean.
 		if !ambiguousCreateError(err) {
-			_ = p.store.ClearIntent(replayKey)
+			if clearErr := p.store.ClearIntent(replayKey); clearErr != nil {
+				p.recordDiagnostic(sandbox.OperationProvision, candidate.AllocationId, "clearing the create intent after a refused create failed: "+clearErr.Error())
+			}
+			if clearErr := p.effectSink.ClearIntent(effectIntent.EffectId); clearErr != nil {
+				p.recordDiagnostic(sandbox.OperationProvision, candidate.AllocationId, "clearing the effect intent after a refused create failed: "+clearErr.Error())
+			}
 		}
 		if errors.Is(err, ErrBridgeConflict) {
 			err = fmt.Errorf("%w: the bridge observed a conflicting sandbox for %q", sandbox.ErrDuplicateActiveAllocation, candidate.AllocationId)
@@ -255,6 +297,9 @@ func (p *Provider) Provision(ctx context.Context, request sandbox.ProvisionReque
 		return nil, err
 	}
 	if err := p.store.RecordBridgeLocator(candidate.AllocationId, bridgeLocator); err != nil {
+		return nil, err
+	}
+	if err := p.resolveProvisionEffect(effectIntent, effectCtx); err != nil {
 		return nil, err
 	}
 	if err := p.store.CommitCreateOutcome(CreateOutcome{
@@ -743,23 +788,99 @@ func (p *Provider) Terminate(ctx context.Context, request sandbox.TerminateReque
 	if err != nil {
 		return nil, err
 	}
+	effectCtx, err := p.resolveEffectContext(ctx, sandbox.OperationTerminate, request.Identity, request.AllocationId)
+	if err != nil {
+		return nil, err
+	}
+	effectIntent, err := buildEffectIntent(effectCtx, request.Identity, EffectOperationTerminate, request.AllocationId, replayKey)
+	if err != nil {
+		return nil, err
+	}
+
+	// Reconcile against the durable effect authority before any Bridge call:
+	// a resolved or pending terminate for this exact target must never be
+	// re-issued, so a crash at any write point after a successful destroy
+	// never produces a second destroy on replay. The effect target is the
+	// Marshal allocation id, never the Bridge locator, so the Core-owned
+	// authority records never carry a Cloudflare-internal identity.
+	record, lookupErr := p.effectSink.LookupByTarget(request.AllocationId, EffectOperationTerminate)
+	switch {
+	case lookupErr == nil:
+		if record.Receipt != nil {
+			// The destroy already resolved durably: converge to terminal
+			// without touching the Bridge.
+			return p.commitTerminateOutcome(entry)
+		}
+		// A pending intent without a receipt is the durable trace of a
+		// destroy whose outcome is unknown. Fail closed: never re-issue the
+		// mutation and never self-sign a verdict.
+		return nil, fmt.Errorf("%w: a terminate intent for allocation %q is pending and its remote outcome is unknown", ErrEffectAmbiguous, request.AllocationId)
+	case errors.Is(lookupErr, ErrEffectNotFound):
+		// No prior effect for this target: proceed to record the intent and
+		// destroy exactly once.
+	default:
+		return nil, lookupErr
+	}
+
+	if err := p.effectSink.PutIntent(effectIntent); err != nil {
+		return nil, err
+	}
 	if err := p.client.Destroy(ctx, entry.bridgeLocator, replayKey); err != nil {
 		switch {
 		case errors.Is(err, ErrSandboxNotFound):
 			p.recordDiagnostic(sandbox.OperationTerminate, request.AllocationId, "the bridge no longer knew the sandbox; the platform reclaimed it silently")
 		case errors.Is(err, ErrContainerLost):
 			p.recordDiagnostic(sandbox.OperationTerminate, request.AllocationId, "destroy observed the terminal transition of a lost container")
+		case errors.Is(err, ErrBridgeUnavailable):
+			// Ambiguous: the destroy may have happened, so the intent stays
+			// pending and replay reports the ambiguity, never a second destroy.
+			return nil, err
 		default:
+			// Definitive refusal: the destroy did not happen, so the intent
+			// is cleared and a later attempt may record a fresh intent.
+			if clearErr := p.effectSink.ClearIntent(effectIntent.EffectId); clearErr != nil {
+				return nil, clearErr
+			}
 			return nil, err
 		}
 	}
-	entry.meta.State = sandbox.AllocationTerminated
-	entry.sessionId = ""
-	_ = p.store.UpdateAllocation(AllocationRecord{
-		Meta:          entry.meta,
+	return p.resolveTerminateEffect(entry, effectIntent, effectCtx)
+}
+
+// resolveTerminateEffect durably resolves the terminate effect — the sink
+// receipt and observation first, then the allocation terminal state — and
+// only then mutates the in-memory cache. A failed sink write leaves the
+// intent pending (the recoverable fact); a failed allocation write leaves the
+// resolved receipt as the recoverable fact. Neither path re-issues a destroy.
+func (p *Provider) resolveTerminateEffect(entry *allocationEntry, intent authority.SideEffectIntent, effectCtx EffectContext) (*sandbox.TerminateReceipt, error) {
+	receipt, err := buildEffectReceipt(intent, effectCtx, authority.DispositionApplied, intent.TargetRef, intent.TargetDigest, effectCtx.RunId+"/"+effectCtx.AttemptId)
+	if err != nil {
+		return nil, err
+	}
+	observation, err := buildEffectObservation(intent, receipt, authority.ObservationApplied)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.effectSink.ResolveIntent(receipt, observation); err != nil {
+		return nil, err
+	}
+	return p.commitTerminateOutcome(entry)
+}
+
+// commitTerminateOutcome durably marks the allocation terminal and only then
+// updates the in-memory cache. Callers must hold p.mu.
+func (p *Provider) commitTerminateOutcome(entry *allocationEntry) (*sandbox.TerminateReceipt, error) {
+	terminal := entry.meta
+	terminal.State = sandbox.AllocationTerminated
+	if err := p.store.UpdateAllocation(AllocationRecord{
+		Meta:          terminal,
 		Role:          entry.role,
 		BridgeLocator: entry.bridgeLocator,
-	})
+	}); err != nil {
+		return nil, err
+	}
+	entry.meta = terminal
+	entry.sessionId = ""
 	return &sandbox.TerminateReceipt{State: entry.meta.State}, nil
 }
 
@@ -852,6 +973,38 @@ func (p *Provider) enterOperation(operation string, identity sandbox.OperationId
 		return err
 	}
 	return nil
+}
+
+// resolveEffectContext resolves and validates the frozen effect binding and
+// enforces its exact run/attempt binding to the operation identity.
+func (p *Provider) resolveEffectContext(ctx context.Context, operation string, identity sandbox.OperationIdentity, allocationId string) (EffectContext, error) {
+	effectCtx, err := p.effectResolver.ResolveEffectContext(ctx, operation, identity, allocationId)
+	if err != nil {
+		return EffectContext{}, err
+	}
+	if err := effectCtx.Validate(); err != nil {
+		return EffectContext{}, err
+	}
+	if err := effectCtx.bindTo(identity); err != nil {
+		return EffectContext{}, err
+	}
+	return effectCtx, nil
+}
+
+// resolveProvisionEffect durably records the applied receipt and observation
+// of a successful provision. The receipt's provider resource identity and
+// observed digest bind to the intent's Marshal-side target, never to the
+// Bridge locator.
+func (p *Provider) resolveProvisionEffect(intent authority.SideEffectIntent, effectCtx EffectContext) error {
+	receipt, err := buildEffectReceipt(intent, effectCtx, authority.DispositionApplied, intent.TargetRef, intent.TargetDigest, effectCtx.RunId+"/"+effectCtx.AttemptId)
+	if err != nil {
+		return err
+	}
+	observation, err := buildEffectObservation(intent, receipt, authority.ObservationApplied)
+	if err != nil {
+		return err
+	}
+	return p.effectSink.ResolveIntent(receipt, observation)
 }
 
 // resolveActive enforces the dispatch-bound bindings fail closed. Callers
