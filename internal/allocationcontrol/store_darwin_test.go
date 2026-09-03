@@ -32,6 +32,33 @@ func TestSameStatTreatsAPFSDirectoryAccountingAsNonAuthoritative(t *testing.T) {
 	}
 }
 
+func TestSameNamedDirectoryStatTreatsAPFSLinkAccountingAsNonAuthoritative(t *testing.T) {
+	held := unix.Stat_t{Dev: 1, Ino: 2, Mode: unix.S_IFDIR | 0o700, Uid: 501, Gid: 20, Size: 64, Nlink: 2}
+	named := held
+	named.Size = 160
+	named.Nlink = 1
+	if !sameNamedDirectoryStat(held, named) {
+		t.Fatal("directory accounting drift broke a stable held current-name edge")
+	}
+
+	for name, mutate := range map[string]func(*unix.Stat_t, *unix.Stat_t){
+		"device":      func(_ *unix.Stat_t, value *unix.Stat_t) { value.Dev++ },
+		"inode":       func(_ *unix.Stat_t, value *unix.Stat_t) { value.Ino++ },
+		"mode":        func(_ *unix.Stat_t, value *unix.Stat_t) { value.Mode ^= 0o100 },
+		"owner":       func(_ *unix.Stat_t, value *unix.Stat_t) { value.Uid++ },
+		"held-unlink": func(value *unix.Stat_t, _ *unix.Stat_t) { value.Nlink = 0 },
+		"name-unlink": func(_ *unix.Stat_t, value *unix.Stat_t) { value.Nlink = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			currentHeld, currentNamed := held, named
+			mutate(&currentHeld, &currentNamed)
+			if sameNamedDirectoryStat(currentHeld, currentNamed) {
+				t.Fatalf("%s retained a held current-name edge", name)
+			}
+		})
+	}
+}
+
 func TestSameStatKeepsRegularFileSizeAndLinkCountAuthoritative(t *testing.T) {
 	regular := unix.Stat_t{Dev: 1, Ino: 2, Mode: unix.S_IFREG | 0o600, Uid: 501, Gid: 20, Size: 64, Nlink: 1}
 	sizeDrift := regular

@@ -723,14 +723,17 @@ func sameStat(left, right unix.Stat_t) bool {
 }
 
 // sameNamedDirectoryStat is used only for a held descriptor versus its
-// immediately re-read parent entry. Unlike the durable receipt identity, this
-// same-time comparison includes link count so an unlinked/detached directory
-// cannot pass the final staging/readback lineage proof. Directory size remains
-// excluded because APFS may update it independently of entry replacement.
+// immediately re-read parent entry. APFS may report different directory link
+// counts across the two syscalls even though device+inode still identify the
+// same live named object. Require both observations to remain linked, but do
+// not make the volatile count itself authority. Directory size is excluded for
+// the same reason. Replacement still changes device/inode; an unlinked held
+// directory has a zero link count; rename-away/back ABA is caught by the
+// current-name mutation digest at the guarded edge.
 func sameNamedDirectoryStat(left, right unix.Stat_t) bool {
 	return left.Mode&unix.S_IFMT == unix.S_IFDIR && right.Mode&unix.S_IFMT == unix.S_IFDIR &&
 		left.Dev == right.Dev && left.Ino == right.Ino && left.Mode == right.Mode && left.Uid == right.Uid && left.Gid == right.Gid &&
-		left.Nlink > 0 && left.Nlink == right.Nlink
+		left.Nlink > 0 && right.Nlink > 0
 }
 
 func verifyPrivateDirectory(fd int, uid uint32) error {
