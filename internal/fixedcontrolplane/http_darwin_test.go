@@ -288,6 +288,31 @@ func TestFixedClientViewCallsResidentStatus(t *testing.T) {
 	}
 }
 
+func TestFixedClientStartRunBindingMatchesDurableDeliveryBinding(t *testing.T) {
+	port, _ := testHTTPApplication()
+	request := application.StartRunRequest{RunID: port.run.RunID, ExpectedSequence: port.started.Prepared.Sequence, ExpectedAuthorityHead: port.started.Prepared.AuthorityHead}
+	body := canonicalBody(t, request)
+	deadline := time.Now().UTC().Add(time.Minute)
+	got, err := clientRequestBinding("request:start-client", body, "start-run", request, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := productionruntime.NewFixedStartRunDeliveryBinding("request:start-client", request, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := RequestBinding{RequestKeyDigest: delivery.RequestKeyDigest, RequestDigest: delivery.RequestDigest, IntentDigest: delivery.ApplicationIntentDigest, Deadline: delivery.Deadline}
+	if got != want {
+		t.Fatalf("client binding=%+v want durable delivery binding=%+v", got, want)
+	}
+	if got == readBinding("request:start-client", body, "start-run", request, deadline) {
+		t.Fatal("start-run silently fell back to the incompatible HTTP intent binding")
+	}
+	if _, err := clientRequestBinding("request:start-client", body, "start-run", application.StatusRequest{}, deadline); err == nil {
+		t.Fatal("start-run accepted a non-StartRunRequest value")
+	}
+}
+
 func TestHTTPRouterStatusUsesBoundCanonicalRequest(t *testing.T) {
 	port, delivery := testHTTPApplication()
 	router, err := NewHTTPRouter(port, delivery)
