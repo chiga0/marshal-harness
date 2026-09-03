@@ -269,12 +269,78 @@ jobs:
           done
 
       - name: Run independent verification
+        id: independent_verification
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           umask 077
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
-          "$MARSHAL_BIN" task verify --run "$RUN_ID" --json > "$CONTROL_ROOT/verify.json"
-          "$MARSHAL_BIN" task status --run "$RUN_ID" --json > "$CONTROL_ROOT/status-review-pending.json"
+          verify_stderr="${RUNNER_TEMP:?}/m13-verify.stderr"
+          verify_rc=0
+          "$MARSHAL_BIN" task verify --run "$RUN_ID" --json \
+            > "$CONTROL_ROOT/verify.json" 2> "$verify_stderr" || verify_rc=$?
+          status_rc=0
+          "$MARSHAL_BIN" task status --run "$RUN_ID" --json \
+            > "$CONTROL_ROOT/status-review-pending.json" 2>/dev/null || status_rc=$?
+          VERIFY_REPORT="$CONTROL_ROOT/verify.json" /usr/bin/python3 -I -B <<'PY'
+          import json
+          import os
+
+          REPORT_STATUSES = frozenset(("pass", "fail", "error", "cancelled"))
+          GATE_CATEGORIES = frozenset(("repository", "scope", "diff", "artifact", "command", "policy", "other"))
+          MAX_COUNT = 1_000_000
+          MAX_DIFF_BYTES = 1 << 40
+
+          def bounded_count(value, ceiling):
+              if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                  return 0
+              return min(value, ceiling)
+
+          report = {}
+          try:
+              with open(os.environ["VERIFY_REPORT"], encoding="utf-8") as handle:
+                  loaded = json.load(handle)
+              if isinstance(loaded, dict):
+                  report = loaded
+          except (OSError, UnicodeError, json.JSONDecodeError):
+              pass
+          observed = report.get("observed") if isinstance(report.get("observed"), dict) else {}
+          failed = []
+          gates = report.get("gates") if isinstance(report.get("gates"), list) else []
+          failed_count = 0
+          for ordinal, gate in enumerate(gates, start=1):
+              if not isinstance(gate, dict):
+                  continue
+              raw_status = gate.get("status")
+              if raw_status in ("pass", "skipped", "cancelled"):
+                  continue
+              failed_count += 1
+              if len(failed) == 20:
+                  continue
+              category = gate.get("category")
+              failed.append({
+                  "ordinal": bounded_count(ordinal, MAX_COUNT),
+                  "category": category if isinstance(category, str) and category in GATE_CATEGORIES else "other",
+                  "status": raw_status if raw_status in ("fail", "error") else "error",
+              })
+          report_status = report.get("status")
+          summary = {
+              "reportStatus": report_status if isinstance(report_status, str) and report_status in REPORT_STATUSES else "unavailable",
+              "observed": {
+                  "changedFileCount": bounded_count(observed.get("changedFileCount"), MAX_COUNT),
+                  "diffBytes": bounded_count(observed.get("diffBytes"), MAX_DIFF_BYTES),
+              },
+              "failedGates": failed,
+              "failedGateCount": bounded_count(failed_count, MAX_COUNT),
+              "failedGatesTruncated": len(failed) < failed_count,
+          }
+          print(json.dumps(summary, ensure_ascii=True, separators=(",", ":")))
+          PY
+          if [ "$verify_rc" -ne 0 ]; then
+            exit "$verify_rc"
+          fi
+          if [ "$status_rc" -ne 0 ]; then
+            exit "$status_rc"
+          fi
           /usr/bin/python3 -I -B -c 'import json,sys; assert json.load(open(sys.argv[1])).get("state") == "REVIEW_PENDING"' "$CONTROL_ROOT/status-review-pending.json"
 
       - name: Build independent ReviewDecision from the generated packet
@@ -336,6 +402,7 @@ jobs:
 
       - name: Upload dogfood evidence
         if: always()
+        continue-on-error: ${{ steps.independent_verification.outcome == 'failure' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: m13-dogfood-${{ github.run_id }}
