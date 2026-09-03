@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	fixedDeliverySchema    = "fixed-delivery-record/v1"
-	fixedDeliveryProtocol  = "darwin-fixed-delivery/v1"
+	fixedDeliverySchema    = "fixed-delivery-record/v2"
+	fixedDeliveryProtocol  = "darwin-fixed-delivery/v2"
 	fixedDeliveryPending   = "pending"
 	fixedDeliveryReceipt   = "receipt-ref"
 	fixedDeliveryStartRun  = "start-run"
@@ -44,8 +44,8 @@ type FixedDeliveryPending struct {
 	OwnerFactDigest        string `json:"ownerFactDigest"`
 	RepositoryDigest       string `json:"repositoryDigest"`
 	NamespaceDigest        string `json:"namespaceDigest"`
-	// AuthorityRootDigest is an S1.1 current-session mutation observation. It
-	// must not be reused as the stable S1.3 identity across owner lifetimes.
+	// AuthorityRootDigest binds the stable held object/name graph and is
+	// re-derived by strict successors; mutable directory timestamps are absent.
 	AuthorityRootDigest     string `json:"authorityRootDigest"`
 	RequestKeyDigest        string `json:"requestKeyDigest"`
 	RequestDigest           string `json:"requestDigest"`
@@ -140,8 +140,14 @@ func controlOwnerDigest(session *RepositorySession) (string, error) {
 	return resultingress.ControlOwnerAcquisitionDigest(session.acquisition)
 }
 
-// BeginStartRun follows the only S1.1 lock order: existing Run lease, current
-// owner lock, exact READY recheck, then immutable pending publish.
+func (store *FixedDeliveryStore) ownerReference(pending FixedDeliveryPending) resultingress.ControlOwnerLineageReference {
+	return resultingress.ControlOwnerLineageReference{Scope: store.session.acquisition.Scope, OwnerFactDigest: pending.OwnerFactDigest, OwnerAcquisitionDigest: pending.OwnerAcquisitionDigest}
+}
+
+// BeginStartRun follows the only S1 lock order: existing Run lease, current
+// owner lock plus exact lineage proof, exact READY recheck for a new request,
+// then immutable pending publish. A strict successor may only replay the exact
+// old pending; it never rewrites that record under the new owner identity.
 func (store *FixedDeliveryStore) BeginStartRun(ctx context.Context, idempotencyKey string, request application.StartRunRequest, deadline time.Time) (result FixedDeliveryPending, replay bool, resultErr error) {
 	if store == nil {
 		return FixedDeliveryPending{}, false, ErrFixedDeliveryConflict
@@ -171,15 +177,25 @@ func (store *FixedDeliveryStore) BeginStartRun(ctx context.Context, idempotencyK
 	if err != nil {
 		return FixedDeliveryPending{}, false, err
 	}
-	err = store.withCurrentOwner(ctx, func() error {
-		leaf := fixedDeliveryPendingLeaf(keyDigest)
+	leaf := fixedDeliveryPendingLeaf(keyDigest)
+	observedRaw, observed, err := readFixedDeliveryRecord(store.session.fixedRoot, leaf, fixedDeliveryMaxRecord)
+	if err != nil {
+		return FixedDeliveryPending{}, false, err
+	}
+	lineage := FixedDeliveryPending{OwnerAcquisitionDigest: store.ownerDigest, OwnerFactDigest: store.session.ownerState.FactDigest}
+	if observed {
+		if decodeFixedDeliveryRecord(observedRaw, &lineage) != nil || validateFixedDeliveryPending(lineage) != nil || !store.pendingMatchesRequest(lineage, request) || lineage.RequestKeyDigest != keyDigest || lineage.Deadline != deadline.Format(time.RFC3339Nano) {
+			return FixedDeliveryPending{}, false, ErrFixedDeliveryConflict
+		}
+	}
+	err = store.withOwnerLineage(ctx, lineage, func() error {
 		raw, found, readErr := readFixedDeliveryRecord(store.session.fixedRoot, leaf, fixedDeliveryMaxRecord)
-		if readErr != nil {
-			return readErr
+		if readErr != nil || found != observed || found && !bytes.Equal(raw, observedRaw) {
+			return ErrFixedDeliveryConflict
 		}
 		if found {
 			var existing FixedDeliveryPending
-			if decodeFixedDeliveryRecord(raw, &existing) != nil || validateFixedDeliveryPending(existing) != nil || existing.RequestKeyDigest != keyDigest || existing.RequestDigest != requestDigest || existing.ApplicationIntentDigest != intentDigest || existing.Deadline != deadline.Format(time.RFC3339Nano) || existing.OwnerAcquisitionDigest != store.ownerDigest || existing.OwnerFactDigest != store.session.ownerState.FactDigest || existing.RepositoryDigest != store.session.acquisition.Scope.RepositoryIdentityDigest || existing.NamespaceDigest != store.namespaceDigest || existing.AuthorityRootDigest != store.authorityRootDigest {
+			if decodeFixedDeliveryRecord(raw, &existing) != nil || validateFixedDeliveryPending(existing) != nil || existing != lineage || existing.RequestKeyDigest != keyDigest || existing.RequestDigest != requestDigest || existing.ApplicationIntentDigest != intentDigest || existing.Deadline != deadline.Format(time.RFC3339Nano) || !store.pendingMatchesRequest(existing, request) {
 				return ErrFixedDeliveryConflict
 			}
 			if adoptErr := adoptFixedDeliveryRecord(store.session.fixedRoot, leaf, raw, store.publishHook); adoptErr != nil {
@@ -224,8 +240,8 @@ func (store *FixedDeliveryStore) ReconcileStartRunDelivery(ctx context.Context, 
 	if store.closed || store.session == nil {
 		return FixedDeliveryReceipt{}, false, ErrFixedDeliveryConflict
 	}
-	err = store.withCurrentOwner(ctx, func() error {
-		if !store.pendingMatchesCurrentRequest(pending, request) {
+	err = store.withOwnerLineage(ctx, pending, func() error {
+		if !store.pendingMatchesRequest(pending, request) {
 			return ErrFixedDeliveryConflict
 		}
 		pendingRaw, err := json.Marshal(pending)
@@ -280,9 +296,9 @@ func (store *FixedDeliveryStore) ReconcileStartRunDelivery(ctx context.Context, 
 	return result, applied, nil
 }
 
-func (store *FixedDeliveryStore) pendingMatchesCurrentRequest(pending FixedDeliveryPending, request application.StartRunRequest) bool {
+func (store *FixedDeliveryStore) pendingMatchesRequest(pending FixedDeliveryPending, request application.StartRunRequest) bool {
 	requestDigest, intentDigest, err := fixedStartRunDigests(request)
-	return err == nil && pending.OwnerAcquisitionDigest == store.ownerDigest && pending.OwnerFactDigest == store.session.ownerState.FactDigest && pending.RepositoryDigest == store.session.acquisition.Scope.RepositoryIdentityDigest && pending.NamespaceDigest == store.namespaceDigest && pending.AuthorityRootDigest == store.authorityRootDigest && pending.RequestDigest == requestDigest && pending.ApplicationIntentDigest == intentDigest
+	return err == nil && pending.RepositoryDigest == store.session.acquisition.Scope.RepositoryIdentityDigest && pending.NamespaceDigest == store.namespaceDigest && pending.AuthorityRootDigest == store.authorityRootDigest && pending.RequestDigest == requestDigest && pending.ApplicationIntentDigest == intentDigest
 }
 
 func fixedDeliveryStartMatches(pending FixedDeliveryPending, request application.StartRunRequest, started application.RunStartProjection) bool {
@@ -316,6 +332,34 @@ func (store *FixedDeliveryStore) withCurrentOwner(ctx context.Context, fn func()
 		}
 		current, found, err = store.session.ingress.OpenOwner(store.session.acquisition.Scope)
 		if err != nil || !found || current.Acquisition != store.session.acquisition || current.FactDigest != store.session.ownerState.FactDigest {
+			return ErrFixedDeliveryConflict
+		}
+		return nil
+	})
+}
+
+func (store *FixedDeliveryStore) withOwnerLineage(ctx context.Context, pending FixedDeliveryPending, fn func() error) error {
+	if store == nil || store.session == nil || ctx == nil {
+		return ErrFixedDeliveryConflict
+	}
+	return store.session.ingress.WithCurrentOwnerLineage(ctx, store.session.owner, store.session.acquisition, store.ownerReference(pending), func(current resultingress.ControlOwnerState) error {
+		if current.Acquisition != store.session.acquisition || current.FactDigest != store.session.ownerState.FactDigest {
+			return ErrFixedDeliveryConflict
+		}
+		digest, err := controlOwnerDigest(store.session)
+		if err != nil || digest != store.ownerDigest || validateFixedServerRoot(store.session.fixedRoot, 5) != nil {
+			return ErrFixedDeliveryConflict
+		}
+		if fn != nil {
+			if err := fn(); err != nil {
+				return err
+			}
+		}
+		if validateFixedServerRoot(store.session.fixedRoot, 5) != nil {
+			return ErrFixedDeliveryConflict
+		}
+		after, found, err := store.session.ingress.OpenOwner(store.session.acquisition.Scope)
+		if err != nil || !found || after != current {
 			return ErrFixedDeliveryConflict
 		}
 		return nil

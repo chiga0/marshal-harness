@@ -341,6 +341,51 @@ func TestFixedDeliveryProductionWiringUsesPublicRepositorySession(t *testing.T) 
 	// that AuthorityRootDigest is a stable S1.3 or successor identity.
 }
 
+func TestFixedDeliveryStrictSuccessorReplaysOldPendingAndClosesReceipt(t *testing.T) {
+	fixture := newPublicFixedDeliveryInputs(t)
+	session1, err := OpenRepositorySession(context.Background(), fixture.inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store1, err := session1.OpenFixedDeliveryStore(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, replay, err := store1.BeginStartRun(context.Background(), "successor-replay", fixture.request, time.Date(2030, 1, 2, 3, 4, 5, 6, time.UTC))
+	if err != nil || replay {
+		t.Fatalf("pending=%+v replay=%t err=%v", pending, replay, err)
+	}
+	root1 := store1.authorityRootDigest
+	if err := store1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := session1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	session2, err := OpenRepositorySession(context.Background(), fixture.inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session2.Close() })
+	store2, err := session2.OpenFixedDeliveryStore(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store2.Close() })
+	if session2.acquisition.OwnerEpoch <= session1.acquisition.OwnerEpoch || store2.authorityRootDigest != root1 {
+		t.Fatalf("successor/root identity mismatch: oldEpoch=%d newEpoch=%d oldRoot=%s newRoot=%s", session1.acquisition.OwnerEpoch, session2.acquisition.OwnerEpoch, root1, store2.authorityRootDigest)
+	}
+	replayed, replay, err := store2.BeginStartRun(context.Background(), "successor-replay", fixture.request, time.Date(2030, 1, 2, 3, 4, 5, 6, time.UTC))
+	if err != nil || !replay || replayed != pending {
+		t.Fatalf("successor pending=%+v replay=%t err=%v", replayed, replay, err)
+	}
+	receipt, applied, err := store2.ReconcileStartRunDelivery(context.Background(), pending, fixture.request, fixedStartRunReconcilerStub{started: fixedDeliveryStarted(fixture.request), found: true})
+	if err != nil || !applied || validateFixedDeliveryReceipt(receipt) != nil {
+		t.Fatalf("successor receipt=%+v applied=%t err=%v", receipt, applied, err)
+	}
+}
+
 func TestOpenRepositorySessionRootFailureReleasesOwnerForFreshSuccessor(t *testing.T) {
 	for _, mutation := range []string{"replacement", "invalid-mode"} {
 		t.Run(mutation, func(t *testing.T) {

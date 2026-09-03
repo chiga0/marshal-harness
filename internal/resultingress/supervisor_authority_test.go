@@ -71,6 +71,46 @@ func supervisorTestBindOwner(t *testing.T, store *DurableStore, state AttemptAut
 	return result.State
 }
 
+func TestCurrentOwnerLineageAcceptsExactPredecessorAndRejectsForgery(t *testing.T) {
+	store, err := OpenResultIngressStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := attemptTestIdentity()
+	owner1, _ := supervisorTestAcquireOwner(t, store, id)
+	owner2, verifier2 := supervisorTestAcquireOwner(t, store, id)
+	digest1, err := ControlOwnerAcquisitionDigest(owner1.Acquisition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := ControlOwnerLineageReference{Scope: owner1.Acquisition.Scope, OwnerFactDigest: owner1.FactDigest, OwnerAcquisitionDigest: digest1}
+	called := false
+	if err := store.WithCurrentOwnerLineage(context.Background(), verifier2, owner2.Acquisition, reference, func(current ControlOwnerState) error {
+		called = true
+		if current != owner2 {
+			t.Fatalf("current=%+v want=%+v", current, owner2)
+		}
+		return nil
+	}); err != nil || !called {
+		t.Fatalf("exact predecessor called=%t err=%v", called, err)
+	}
+	for name, mutate := range map[string]func(*ControlOwnerLineageReference){
+		"fact": func(value *ControlOwnerLineageReference) { value.OwnerFactDigest = attemptTestDigest("foreign-owner") },
+		"acquisition": func(value *ControlOwnerLineageReference) {
+			value.OwnerAcquisitionDigest = attemptTestDigest("foreign-acquisition")
+		},
+		"epoch": func(value *ControlOwnerLineageReference) { value.OwnerEpoch = owner2.Acquisition.OwnerEpoch + 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			forged := reference
+			mutate(&forged)
+			if err := store.WithCurrentOwnerLineage(context.Background(), verifier2, owner2.Acquisition, forged, func(ControlOwnerState) error { return nil }); !errors.Is(err, ErrControlOwnerConflict) {
+				t.Fatalf("forged lineage err=%v", err)
+			}
+		})
+	}
+}
+
 func supervisorTestOpened(t *testing.T, store *DurableStore, id AttemptIdentity) AttemptAuthorityState {
 	t.Helper()
 	result, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})

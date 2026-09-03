@@ -148,6 +148,23 @@ type ControlOwnerState struct {
 	FactDigest         string                  `json:"factDigest"`
 }
 
+// ControlOwnerLineageReference identifies one exact durable owner fact in the
+// same RB1 scope. It is evidence to be replayed under the current physical
+// owner lock, never a bearer capability.
+type ControlOwnerLineageReference struct {
+	Scope                  ControlOwnerScope `json:"scope"`
+	OwnerEpoch             uint64            `json:"ownerEpoch"`
+	OwnerFactDigest        string            `json:"ownerFactDigest"`
+	OwnerAcquisitionDigest string            `json:"ownerAcquisitionDigest"`
+}
+
+func (reference ControlOwnerLineageReference) Validate() error {
+	if reference.Scope.Validate() != nil || reference.OwnerEpoch > maxExactJSONInteger || requireDigest("ownerFactDigest", reference.OwnerFactDigest) != nil || requireDigest("ownerAcquisitionDigest", reference.OwnerAcquisitionDigest) != nil {
+		return ErrControlOwnerConflict
+	}
+	return nil
+}
+
 type controlOwnerFact struct {
 	ProtocolRevision    string                  `json:"protocolRevision"`
 	FactType            string                  `json:"factType"`
@@ -270,6 +287,69 @@ func (s *ingressDurableStore) OpenOwner(scope ControlOwnerScope) (ControlOwnerSt
 	return state, found, err
 }
 
+// WithCurrentOwnerLineage proves that reference is the current owner or one
+// of its strict, unbroken predecessors in the same physical RB1 ledger. The
+// ledger mutex is released before fn while the external owner lock remains
+// held, so callers may reconcile immutable side projections without nesting
+// an RB1 transaction.
+func (s *ingressDurableStore) WithCurrentOwnerLineage(ctx context.Context, verifier CurrentOwnerLockVerifier, current ControlOwnerAcquisition, reference ControlOwnerLineageReference, fn func(ControlOwnerState) error) error {
+	if s == nil || ctx == nil || current.Validate() != nil || reference.Validate() != nil || reference.Scope != current.Scope || fn == nil {
+		return ErrControlOwnerConflict
+	}
+	return withCurrentOwnerLock(ctx, verifier, current, func() error {
+		projection := newAuthorityProjection()
+		var currentState ControlOwnerState
+		if err := s.transact(projection, func() error {
+			key, err := current.Scope.key()
+			if err != nil {
+				return err
+			}
+			state, ownerFound := projection.controlOwners[key]
+			if !ownerFound || state.Acquisition != current || state.FactDigest == "" {
+				return ErrControlOwnerNotCurrent
+			}
+			history := projection.controlOwnerHistory[key]
+			var predecessor ControlOwnerState
+			var found bool
+			if reference.OwnerEpoch != 0 {
+				predecessor, found = history[reference.OwnerEpoch]
+			} else {
+				for _, candidate := range history {
+					if candidate.FactDigest == reference.OwnerFactDigest {
+						if found {
+							return ErrControlOwnerConflict
+						}
+						predecessor, found = candidate, true
+					}
+				}
+			}
+			if !found || predecessor.FactDigest != reference.OwnerFactDigest {
+				return ErrControlOwnerConflict
+			}
+			digest, err := ControlOwnerAcquisitionDigest(predecessor.Acquisition)
+			if err != nil || digest != reference.OwnerAcquisitionDigest || predecessor.Acquisition.Scope != current.Scope || (reference.OwnerEpoch != 0 && predecessor.Acquisition.OwnerEpoch != reference.OwnerEpoch) || predecessor.Acquisition.OwnerEpoch > current.OwnerEpoch {
+				return ErrControlOwnerConflict
+			}
+			cursor := state
+			for cursor.Acquisition.OwnerEpoch > predecessor.Acquisition.OwnerEpoch {
+				prior, ok := history[cursor.Acquisition.OwnerEpoch-1]
+				if !ok || cursor.PreviousFactDigest != prior.FactDigest || prior.Acquisition.OwnerEpoch+1 != cursor.Acquisition.OwnerEpoch {
+					return ErrControlOwnerConflict
+				}
+				cursor = prior
+			}
+			if cursor.FactDigest != reference.OwnerFactDigest {
+				return ErrControlOwnerConflict
+			}
+			currentState = state
+			return nil
+		}); err != nil {
+			return err
+		}
+		return fn(currentState)
+	})
+}
+
 type CurrentOwnerBinding struct {
 	Scope                          ControlOwnerScope `json:"scope"`
 	OwnerEpoch                     uint64            `json:"ownerEpoch"`
@@ -369,7 +449,20 @@ func applyControlOwnerFactValue(fact controlOwnerFact, in *Ingress) error {
 	} else if prior.Acquisition.OwnerEpoch != fact.PreviousOwnerEpoch || prior.FactDigest != fact.PreviousOwnerDigest || fact.Acquisition.OwnerEpoch != prior.Acquisition.OwnerEpoch+1 {
 		return ErrControlOwnerConflict
 	}
-	in.controlOwners[key] = ControlOwnerState{Acquisition: fact.Acquisition, PreviousFactDigest: fact.PreviousOwnerDigest, FactDigest: fact.Digest}
+	state := ControlOwnerState{Acquisition: fact.Acquisition, PreviousFactDigest: fact.PreviousOwnerDigest, FactDigest: fact.Digest}
+	if in.controlOwnerHistory == nil {
+		in.controlOwnerHistory = make(map[string]map[uint64]ControlOwnerState)
+	}
+	history := in.controlOwnerHistory[key]
+	if history == nil {
+		history = make(map[uint64]ControlOwnerState)
+		in.controlOwnerHistory[key] = history
+	}
+	if _, exists := history[fact.Acquisition.OwnerEpoch]; exists {
+		return ErrControlOwnerConflict
+	}
+	history[fact.Acquisition.OwnerEpoch] = state
+	in.controlOwners[key] = state
 	return nil
 }
 
