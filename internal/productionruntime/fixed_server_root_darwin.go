@@ -290,15 +290,26 @@ func (root fixedServerRoot) digest() (string, error) {
 	if err := validateFixedServerRoot(root, len(root.nodes)); err != nil {
 		return "", err
 	}
-	// This digest intentionally includes current mutation observations. It is
-	// an S1.1 same-session recheck value, not a stable successor/S1.3 identity.
+	// The authority identity binds stable held objects and their closed names,
+	// but deliberately excludes ctime/birthtime observations. Immutable
+	// delivery appends change those observations without changing the root;
+	// strict successors must be able to re-derive the same identity.
+	type stableDirectoryIdentity struct {
+		Device   uint64 `json:"device"`
+		Inode    uint64 `json:"inode"`
+		FileType uint32 `json:"fileType"`
+		UID      uint32 `json:"uid"`
+		GID      uint32 `json:"gid"`
+		Mode     uint32 `json:"mode"`
+	}
 	value := struct {
-		RepositoryPath string                          `json:"repositoryPath"`
-		Objects        [5]fixedServerDirectoryIdentity `json:"objects"`
-		Names          [4]string                       `json:"names"`
+		RepositoryPath string                     `json:"repositoryPath"`
+		Objects        [5]stableDirectoryIdentity `json:"objects"`
+		Names          [4]string                  `json:"names"`
 	}{RepositoryPath: root.repositoryPath, Names: fixedServerRootComponents}
 	for index := range root.nodes {
-		value.Objects[index] = root.nodes[index].identity
+		identity := root.nodes[index].identity
+		value.Objects[index] = stableDirectoryIdentity{Device: identity.Device, Inode: identity.Inode, FileType: identity.FileType, UID: identity.UID, GID: identity.GID, Mode: identity.Mode}
 	}
 	raw, err := json.Marshal(value)
 	if err != nil {

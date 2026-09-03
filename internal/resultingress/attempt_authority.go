@@ -1693,6 +1693,7 @@ func newAuthorityProjection() *Ingress {
 		reservationKeys:             make(map[string]string),
 		attemptsByReservation:       make(map[string]AttemptAuthorityState),
 		controlOwners:               make(map[string]ControlOwnerState),
+		controlOwnerHistory:         make(map[string]map[uint64]ControlOwnerState),
 		effects:                     make(map[string]EffectAuthorityState),
 		allocations:                 make(map[string]allocationAuthorityState),
 		preparedExecutions:          make(map[string]PreparedExecutionV1),

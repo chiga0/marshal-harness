@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-03：fixed server S1.3 strict successor 审计
+
+对代码候选 `62c1aed` 的审计确认，跨 owner 恢复没有把旧 token、pending digest 或路径当成 authority。ResultIngress 从同一 held RB1 ledger 重建每个 owner epoch 的历史投影；调用方必须先持有 current physical owner lock，随后同时精确命中 old owner fact digest 与完整 `ControlOwnerAcquisition` digest，并逐 epoch 验证 `PreviousFactDigest` 连续到 current owner。ledger 截断、重复 epoch、scope 漂移、fact/acquisition 伪造或 future epoch 均在 delivery 回调前 fail closed。
+
+原 S1.1 的 session-local mutation observation 已替换为可由 cold successor 重算的 stable authority-root digest。该 digest仍绑定 canonical repository path、5 个 held directory object 的 device/inode/type/uid/gid/mode 与 4 个 closed name；每次使用前后仍执行包含 current-name、nofollow、owner-only 与 mutation/ABA 检查的完整 root validation。只从持久 identity 中排除合法 immutable append 会改变的 ctime/birthtime，未降低运行时 name/object 门禁。delivery schema/protocol 升至 v2，使旧 v1 记录不能被静默采用。
+
+该候选关闭的是 ADR 0076 的 S1 durable delivery，不是 server integration。AF_UNIX locator、peer/fixed-binary/token/nonce/HMAC、bounded HTTP、resident `control-plane serve`、真实 Pi restart replay 和 T2 `ACCEPTED` 均仍开放；在 S4 前 fixed transport 继续标记 `COMPONENT`。本地只运行 compile-only、vet、staticcheck 与 diff-check，动态 hostile/restart 测试和 secret scan 必须由最终 exact-head required CI 通过后才允许合入。
+
 ## 2026-09-03：fixed server S1.2 receipt 对账审计
 
 对 `a9ef62b` 的实现审计确认，S1.2 没有把 transport response、HTTP status 或当前 Run 快照冒充 application authority。新增的 `ReconcileStartRun` 是 current-owner 下的只读 RB1 查询：它重建 exact `PreparedRunStart`，并只接受同一 preparation 所产生、位于 journal head 的 sealed `run.start-outcome` successor。delivery store 随后重验同一 owner/session、held root、immutable pending、request 与 intent digest，才以 digest-derived leaf 追加或 exact-adopt `receipt-ref`。测试覆盖成功闭合、exact replay、结果漂移拒绝、RB1 未命中保持 pending，以及 Run 已从 READY 前进到 RUNNING 后仍可重放原 pending；另有 controller 测试证明 reconcile 不调用 Prepare/bridge 且只进入一次 owner authority section。

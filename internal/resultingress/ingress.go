@@ -305,8 +305,9 @@ type Ingress struct {
 	// from control-owner-acquired facts in this same physical ledger. It is not
 	// a second lifecycle ledger and never authorizes an Attempt without an exact
 	// per-Attempt owner binding fact.
-	controlOwners map[string]ControlOwnerState
-	effects       map[string]EffectAuthorityState
+	controlOwners       map[string]ControlOwnerState
+	controlOwnerHistory map[string]map[uint64]ControlOwnerState
+	effects             map[string]EffectAuthorityState
 	// allocations is rebuilt exclusively from the same durable Attempt log.
 	// It is the five-fact authority source projected into allocationcontrol;
 	// the Provider journal is never allowed to populate this map.
@@ -364,6 +365,7 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		reservationKeys:             make(map[string]string),
 		attemptsByReservation:       make(map[string]AttemptAuthorityState),
 		controlOwners:               make(map[string]ControlOwnerState),
+		controlOwnerHistory:         make(map[string]map[uint64]ControlOwnerState),
 		effects:                     make(map[string]EffectAuthorityState),
 		allocations:                 make(map[string]allocationAuthorityState),
 		preparedExecutions:          make(map[string]PreparedExecutionV1),
@@ -391,6 +393,7 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 		reservationKeys:             make(map[string]string),
 		attemptsByReservation:       make(map[string]AttemptAuthorityState),
 		controlOwners:               make(map[string]ControlOwnerState),
+		controlOwnerHistory:         make(map[string]map[uint64]ControlOwnerState),
 		effects:                     make(map[string]EffectAuthorityState),
 		allocations:                 make(map[string]allocationAuthorityState),
 		preparedExecutions:          make(map[string]PreparedExecutionV1),
@@ -782,6 +785,7 @@ func (i *Ingress) resetDurableReplayState() {
 	i.reservationKeys = make(map[string]string)
 	i.attemptsByReservation = make(map[string]AttemptAuthorityState)
 	i.controlOwners = make(map[string]ControlOwnerState)
+	i.controlOwnerHistory = make(map[string]map[uint64]ControlOwnerState)
 	i.effects = make(map[string]EffectAuthorityState)
 	i.allocations = make(map[string]allocationAuthorityState)
 	i.preparedExecutions = make(map[string]PreparedExecutionV1)
