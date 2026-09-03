@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-03：fixed server S3 bounded delivery 候选审计
+
+S2 已以 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 合入 `main@0a0c73e`。S3 候选没有新增 executable 或 authority root，而是在既有 authenticated connection 上提供 closed、单 request 的 HTTP/1.1 adapter。请求只允许 `Status`、`StartRun`、`InspectRun`，并在 Port 之前完成 canonical JSON、closed header、request/intention/deadline binding、current endpoint/owner/fixed-binary recheck、repository inflight/queue admission；header、body、application、write 使用分阶段 deadline与固定内存上限。unsupported、overload、非 canonical/未知字段、过期或未授权 deadline 均保持零 application/delivery 副作用。
+
+`StartRun` 的业务成功只来自 S1 delivery store 对 current RB1 的 exact reconcile：pending 必须先 durable，Port handoff 前后均重读 current ledger，receipt-ref 与 current projection 再次吻合后才返回 success。Port error、disconnect 或 response loss 不能被解释为 not-applied；RB1 未命中时保留 pending，已有 exact receipt 的 replay 不调用第二次 StartRun。该语义避免了随机 helper Mach-O、CLI fallback、HTTP status 冒充 authority和重复 Attempt/Supervisor command。
+
+独立首审聚合发现两项 P1：application 前后 recheck 未重新观察握手冻结的 peer process/binary，以及 HTTP success 未完整验证 sealed receipt 并绑定本次 pending。一次 aggregate rework 已同时关闭：server/client 每次 recheck 都重新取得并 exact compare `CoreIdentity`；delivery 导出唯一 sealed pending/receipt 校验，router 还逐项核对 authenticated request key/request/intent/deadline。same reviewer 复审结果为 `P0/P1=0`，没有进入第二轮滚动返工。
+
+本审计不关闭 integration：当前 router 仍只由测试注入 fake `PublicApplicationPort`，没有 resident `marshal control-plane serve`、startup recovery ordering 或真实 Pi canary。S3 通过 exact-head required CI 后只可标记 `COMPONENT`；S4 必须用同一固定 candidate bytes 证明 ready-before-recovery、真实 AF_UNIX 到 `RUNNING`、restart/response-loss strict-successor exact replay，T2 再以独立 Decision 到 `ACCEPTED`，否则 `INTEGRATION-OPEN` 保持不变。
+
 ## 2026-09-03：fixed server S2 endpoint authentication 审计
 
 对 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 的 `7ee24cc` 候选复核确认，ADR 0076 的 S2 已落在固定 `marshal` 进程内，而不是另建匿名 helper executable。endpoint 只能由 canonical repository 的 held `.marshal/runtime-v1/control` authority graph 和 current owner epoch 派生；socket/token均以owner-only、nofollow、creation-once语义建立，运行期持续重验name/object、owner acquisition/fact、peer process与fixed binary。握手采用server nonce与HMAC-SHA-256，并把proof绑定request key、request/intent digest和冻结deadline；nonce首次尝试即消费。oversize、伪造proof、replay、token ABA、short write与root/owner漂移均在application dispatch前fail closed。client不再接收裸control FD和可自洽snapshot，而是从current `FixedEndpointAuthority`原子取得close-on-exec duplicate descriptor，并在握手前后重验owner。
