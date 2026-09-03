@@ -28,7 +28,6 @@ const (
 	readHeaderTimeout     = 5 * time.Second
 	readBodyTimeout       = 15 * time.Second
 	writeTimeout          = 15 * time.Second
-	defaultAppTimeout     = 5 * time.Minute
 	maxRepositoryInflight = 32
 	maxRepositoryQueue    = 32
 )
@@ -102,7 +101,7 @@ func (router *HTTPRouter) ServeAuthenticated(ctx context.Context, connection *Au
 	}
 	deadline, err := time.Parse(time.RFC3339Nano, connection.Binding.Deadline)
 	requestNow := time.Now().UTC()
-	if err != nil || deadline.Location() != time.UTC || !deadline.After(requestNow) || deadline.After(requestNow.Add(defaultAppTimeout)) {
+	if err != nil || deadline.Location() != time.UTC || !deadline.After(requestNow) || deadline.After(requestNow.Add(maxApplicationTime)) {
 		_ = writeHTTPResponse(connection, 409, errorHTTPResponse(request.operation, ErrConflict))
 		return ErrConflict
 	}
@@ -484,18 +483,9 @@ func writeHTTPResponse(connection *AuthenticatedConnection, statusCode int, resp
 	if err != nil || len(body) == 0 || len(body) > maxHTTPResponseBytes {
 		return ErrUnavailable
 	}
-	reason := "Service Unavailable"
-	switch statusCode {
-	case 200:
-		reason = "OK"
-	case 202:
-		reason = "Accepted"
-	case 400:
-		reason = "Bad Request"
-	case 404:
-		reason = "Not Found"
-	case 409:
-		reason = "Conflict"
+	reason := responseReason(statusCode)
+	if reason == "" {
+		return ErrUnavailable
 	}
 	header := "HTTP/1.1 " + strconv.Itoa(statusCode) + " " + reason + "\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\nConnection: close\r\n\r\n"
 	if err := connection.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {

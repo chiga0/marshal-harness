@@ -8,7 +8,7 @@ S2 已由 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 合入 `
 
 `StartRun` 先写 immutable pending，再查 current RB1；只有 exact application receipt 已闭合为 receipt-ref 且 current projection 再次吻合时才返回 `success`。Port 返回错误、客户端断开或 response loss 都不能证明 mutation 未发生：RB1 未命中时只返回 `delivery-pending`，重放已有 receipt 时不产生第二次 mutation。实现仍运行于现有固定 `marshal` 进程，没有 `/tmp`、随机 helper Mach-O、TCP、CLI fallback 或第二 authority root。
 
-S3 仍是 `COMPONENT`，尚未提供用户可调用的 server 命令。下一步是 S4：把 router 接入 resident `marshal control-plane serve` 与同进程 `PublicApplicationPort`，完成 ready-before-recovery、固定 candidate bytes 的真实 Pi `RUNNING`、server restart/response-loss strict-successor replay；随后 T2 才扩展到 collect/verify/review/Decision 和 `ACCEPTED`。在这些动态证据完成前不得宣称 fixed server 可用或 v1.0 stable 已满足。
+S3 仍是 `COMPONENT`，尚未提供用户可调用的 server 命令。下一步是 S4：把 router 接入 resident `marshal control-plane serve` 与同进程 `PublicApplicationPort`，完成 recovery-before-ready、固定 candidate bytes 的真实 Pi `RUNNING`、server restart/response-loss strict-successor replay；随后 T2 才扩展到 collect/verify/review/Decision 和 `ACCEPTED`。在这些动态证据完成前不得宣称 fixed server 可用或 v1.0 stable 已满足。
 
 ## 2026-09-03 fixed server S2：固定二进制的认证 AF_UNIX 端点
 

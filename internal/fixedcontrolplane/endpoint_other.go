@@ -19,6 +19,8 @@ func (endpoint *Endpoint) Accept(context.Context) (*AuthenticatedConnection, err
 	return nil, ErrUnavailable
 }
 
+func (endpoint *Endpoint) StopAccept() error { return nil }
+
 func (endpoint *Endpoint) Close() error { return nil }
 
 func Dial(context.Context, *productionruntime.FixedEndpointAuthority, RequestBinding) (*AuthenticatedConnection, error) {

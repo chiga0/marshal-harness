@@ -29,6 +29,7 @@ type FixedEndpointSnapshot struct {
 type FixedEndpointAuthority struct {
 	mu       sync.RWMutex
 	borrow   *repositorySessionBorrow
+	client   *fixedEndpointClientState
 	control  *os.File
 	snapshot FixedEndpointSnapshot
 	closed   bool
@@ -121,6 +122,10 @@ func (authority *FixedEndpointAuthority) Close() error {
 			result = err
 		}
 		authority.borrow = nil
+	}
+	if authority.client != nil {
+		result = errors.Join(result, authority.client.close())
+		authority.client = nil
 	}
 	return result
 }

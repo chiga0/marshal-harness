@@ -16,6 +16,8 @@ import (
 	"github.com/chiga0/marshal-harness/internal/app"
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/authority"
+	"github.com/chiga0/marshal-harness/internal/contract"
+	controlplane "github.com/chiga0/marshal-harness/internal/control"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
@@ -34,6 +36,7 @@ type sealedRepositoryApplication struct {
 	mu sync.Mutex
 
 	repositoryRoot  string
+	stateRoot       string
 	piRuntime       string
 	piEntrypoint    string
 	namespace       authority.AuthorityNamespaceId
@@ -53,6 +56,7 @@ type sealedRepositoryApplication struct {
 	resources     []io.Closer
 	closed        bool
 	statusProfile productionruntime.PiProfile
+	validator     *contract.Validator
 }
 
 var _ application.PublicApplicationPort = (*sealedRepositoryApplication)(nil)
@@ -110,10 +114,14 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	}
 
 	applicationAdapter := &sealedRepositoryApplication{
-		repositoryRoot: config.RepositoryRoot,
-		piRuntime:      piRuntime, piEntrypoint: piEntrypoint,
+		repositoryRoot: config.RepositoryRoot, stateRoot: config.StateRoot,
+		piRuntime: piRuntime, piEntrypoint: piEntrypoint,
 		entryIdentity: config.EntryIdentity, observeIdentity: config.ObserveIdentity,
 		allocationRoot: allocationRoot,
+	}
+	applicationAdapter.validator, err = contract.NewValidator()
+	if err != nil {
+		return nil, fmt.Errorf("sealed repository application: compile contracts: %w", err)
 	}
 	defer func() {
 		if err != nil {
@@ -317,6 +325,21 @@ func (adapter *sealedRepositoryApplication) recoverRepositoryRuns(ctx context.Co
 func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
+	if adapter.closed || adapter.validator == nil || adapter.entryIdentity == nil {
+		return application.RunStartProjection{}, application.NewError("start-run", application.ReasonBridgeUnavailable)
+	}
+	state, err := adapter.runs.Inspect(request.RunID)
+	if err != nil || validateFrozenLocalDogfoodBinding(adapter.stateRoot, request.RunID, adapter.validator, adapter.entryIdentity) != nil {
+		return application.RunStartProjection{}, application.NewError("start-run", application.ReasonAuthorityConflict)
+	}
+	if state.State == domain.StateReady {
+		if err := controlplane.Require(controlplane.ApprovalInput{
+			StateRoot: adapter.stateRoot, RunID: request.RunID, Gate: domain.ApprovalGatePlan,
+			Validator: adapter.validator, LocalSelfIdentity: adapter.entryIdentity,
+		}); err != nil {
+			return application.RunStartProjection{}, application.NewError("start-run", application.ReasonAuthorityConflict)
+		}
+	}
 	run, err := adapter.openRun(ctx, request.RunID)
 	if err != nil {
 		return application.RunStartProjection{}, err
@@ -326,6 +349,11 @@ func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, reques
 }
 
 func (adapter *sealedRepositoryApplication) ReconcileStartRun(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, bool, error) {
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if adapter.closed {
+		return application.RunStartProjection{}, false, application.NewError("reconcile-start-run", application.ReasonBridgeUnavailable)
+	}
 	run, err := adapter.openRun(ctx, request.RunID)
 	if err != nil {
 		return application.RunStartProjection{}, false, err

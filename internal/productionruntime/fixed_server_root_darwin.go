@@ -246,6 +246,49 @@ func openFixedServerRoot(repository *CanonicalRepositoryRoot) (fixedServerRoot, 
 	return root, nil
 }
 
+// openExistingFixedServerRoot opens the already-published fixed-server
+// hierarchy without creating any directory. It is the read-only locator root
+// used by a separate fixed Marshal client while the resident server owns the
+// repository session.
+func openExistingFixedServerRoot(repository *CanonicalRepositoryRoot) (fixedServerRoot, error) {
+	if repository == nil {
+		return fixedServerRoot{}, ErrFixedDeliveryConflict
+	}
+	reopened, err := repository.validateAndReopen()
+	if err != nil {
+		return fixedServerRoot{}, err
+	}
+	root := fixedServerRoot{repositoryPath: repository.path}
+	root.nodes[0] = fixedServerDirectoryNode{file: reopened, identity: repository.identity}
+	cleanup := func(cause error) (fixedServerRoot, error) {
+		_ = root.close()
+		return fixedServerRoot{}, cause
+	}
+	for index, component := range fixedServerRootComponents {
+		parent := root.nodes[index].file
+		fd, err := unix.Openat(int(parent.Fd()), component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW_ANY, 0)
+		if err != nil {
+			return cleanup(ErrFixedDeliveryConflict)
+		}
+		child := os.NewFile(uintptr(fd), "marshal-fixed-server-client-"+component)
+		if child == nil {
+			_ = unix.Close(fd)
+			return cleanup(ErrFixedDeliveryConflict)
+		}
+		identity, identityErr := observeFixedServerDirectory(fd, true)
+		named, namedErr := observeFixedServerDirectoryAt(int(parent.Fd()), component, true)
+		if identityErr != nil || namedErr != nil || !sameFixedServerDirectory(identity, named, true) {
+			_ = child.Close()
+			return cleanup(ErrFixedDeliveryConflict)
+		}
+		root.nodes[index+1] = fixedServerDirectoryNode{file: child, identity: identity, name: component}
+	}
+	if err := validateFixedServerRoot(root, len(root.nodes)); err != nil {
+		return cleanup(err)
+	}
+	return root, nil
+}
+
 func validateFixedServerRoot(root fixedServerRoot, count int) error {
 	if count < 1 || count > len(root.nodes) || root.nodes[0].file == nil {
 		return ErrFixedDeliveryConflict

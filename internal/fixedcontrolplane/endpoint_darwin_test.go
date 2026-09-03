@@ -21,8 +21,9 @@ import (
 )
 
 type endpointFixture struct {
-	session   *productionruntime.RepositorySession
-	authority *productionruntime.FixedEndpointAuthority
+	repository string
+	session    *productionruntime.RepositorySession
+	authority  *productionruntime.FixedEndpointAuthority
 }
 
 func newEndpointFixture(t *testing.T) endpointFixture {
@@ -44,8 +45,7 @@ func newEndpointFixture(t *testing.T) endpointFixture {
 			t.Errorf("remove fixture: %v", err)
 		}
 	})
-	openDirectory := func(name string) *os.File {
-		path := filepath.Join(root, name)
+	openDirectory := func(path string) *os.File {
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -80,17 +80,26 @@ func newEndpointFixture(t *testing.T) endpointFixture {
 	if err != nil {
 		t.Fatalf("observe current fixed binary: %v", err)
 	}
+	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: repositoryPath}
+	repositoryDigest, err := namespace.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateRoot := filepath.Join(repositoryPath, ".marshal")
+	if err := os.Mkdir(stateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	acquisition := resultingress.ControlOwnerAcquisition{
 		Scope: resultingress.ControlOwnerScope{
-			AuthorityNamespaceID:     authority.AuthorityNamespaceId{TenantNamespace: "test", ControlPlaneId: "fixed-server", AuthorityScopeId: "repository"},
-			RepositoryIdentityDigest: canonical.DigestBytes([]byte(repositoryPath)),
+			AuthorityNamespaceID:     namespace,
+			RepositoryIdentityDigest: repositoryDigest,
 		},
 		OwnerUID: core.UID, OwnerGID: core.GID, OwnerProcess: core.Process, OwnerBinary: core.Binary,
 		ObserverIdentity: "fixed-endpoint-test/v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	session, err := productionruntime.OpenRepositorySession(context.Background(), productionruntime.RepositorySessionInputs{
-		HeldIngressDir: openDirectory("ingress"), HeldRepositoryRoot: repository, OwnerDirectory: openDirectory("owner"),
-		Acquisition: acquisition, FixedMarshalPath: fixed, OwnerPrivateControlRoot: openDirectory("private-control"),
+		HeldIngressDir: openDirectory(filepath.Join(stateRoot, productionruntime.ResultIngressDirName)), HeldRepositoryRoot: repository, OwnerDirectory: openDirectory(filepath.Join(stateRoot, productionruntime.OwnerDirName)),
+		Acquisition: acquisition, FixedMarshalPath: fixed, OwnerPrivateControlRoot: openDirectory(filepath.Join(stateRoot, "owner-control")),
 	})
 	if err != nil {
 		t.Fatalf("open repository session: %v", err)
@@ -101,7 +110,7 @@ func newEndpointFixture(t *testing.T) endpointFixture {
 		t.Fatalf("open endpoint authority: %v", err)
 	}
 	t.Cleanup(func() { _ = endpointAuthority.Close() })
-	return endpointFixture{session: session, authority: endpointAuthority}
+	return endpointFixture{repository: repositoryPath, session: session, authority: endpointAuthority}
 }
 
 func testBinding() RequestBinding {
@@ -129,7 +138,12 @@ func TestEndpointAuthenticatesAndCarriesBoundApplicationBytes(t *testing.T) {
 		}
 		accepted <- connection
 	}()
-	client, err := Dial(context.Background(), fixture.authority, binding)
+	clientAuthority, err := productionruntime.OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+	if err != nil {
+		t.Fatalf("open independent client authority: %v", err)
+	}
+	defer clientAuthority.Close()
+	client, err := Dial(context.Background(), clientAuthority, binding)
 	if err != nil {
 		t.Fatalf("dial endpoint: %v", err)
 	}
@@ -161,6 +175,18 @@ func TestEndpointAuthenticatesAndCarriesBoundApplicationBytes(t *testing.T) {
 	var payload [4]byte
 	if _, err := io.ReadFull(server, payload[:]); err != nil || string(payload[:]) != "ping" {
 		t.Fatalf("payload=%q err=%v", payload, err)
+	}
+	if err := endpoint.StopAccept(); err != nil {
+		t.Fatalf("stop accept: %v", err)
+	}
+	if _, err := endpoint.Accept(context.Background()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("accept after stop err=%v", err)
+	}
+	if err := server.Recheck(context.Background()); err != nil {
+		t.Fatalf("accepted request authority during drain: %v", err)
+	}
+	if err := client.Recheck(context.Background()); err != nil {
+		t.Fatalf("client authority during drain: %v", err)
 	}
 	_ = client.Close()
 	_ = server.Close()
@@ -346,6 +372,41 @@ func TestEndpointRejectsTokenABA(t *testing.T) {
 	}
 	if err := endpoint.Close(); err == nil {
 		t.Fatal("close unexpectedly removed a replaced token")
+	}
+}
+
+func TestStopAcceptCannotLoseWakeupAfterAcceptPreparesListener(t *testing.T) {
+	fixture := newEndpointFixture(t)
+	endpoint, err := OpenEndpoint(context.Background(), fixture.authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = endpoint.Close() })
+	prepared := make(chan struct{})
+	endpoint.acceptPrepared = func() { close(prepared) }
+	accepted := make(chan error, 1)
+	go func() {
+		connection, acceptErr := endpoint.Accept(context.Background())
+		if connection != nil {
+			_ = connection.Close()
+		}
+		accepted <- acceptErr
+	}()
+	select {
+	case <-prepared:
+	case <-time.After(10 * time.Second):
+		t.Fatal("accept did not prepare listener")
+	}
+	if err := endpoint.StopAccept(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-accepted:
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("accept err=%v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("StopAccept wakeup was lost")
 	}
 }
 

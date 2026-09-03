@@ -38,20 +38,22 @@ type objectIdentity struct {
 }
 
 type Endpoint struct {
-	mu          sync.RWMutex
-	authority   *productionruntime.FixedEndpointAuthority
-	listener    *net.UnixListener
-	tokenFile   *os.File
-	token       [32]byte
-	snapshot    productionruntime.FixedEndpointSnapshot
-	server      processsupervisor.CoreIdentity
-	socketName  string
-	tokenName   string
-	locator     string
-	socket      objectIdentity
-	tokenObject objectIdentity
-	slots       chan struct{}
-	closed      bool
+	mu             sync.RWMutex
+	authority      *productionruntime.FixedEndpointAuthority
+	listener       *net.UnixListener
+	tokenFile      *os.File
+	token          [32]byte
+	snapshot       productionruntime.FixedEndpointSnapshot
+	server         processsupervisor.CoreIdentity
+	socketName     string
+	tokenName      string
+	locator        string
+	socket         objectIdentity
+	tokenObject    objectIdentity
+	slots          chan struct{}
+	acceptStopped  bool
+	closed         bool
+	acceptPrepared func()
 }
 
 type AuthenticatedConnection struct {
@@ -173,18 +175,21 @@ func (endpoint *Endpoint) Accept(ctx context.Context) (*AuthenticatedConnection,
 	if endpoint == nil || ctx == nil {
 		return nil, ErrInvalid
 	}
-	endpoint.mu.RLock()
-	if endpoint.closed || endpoint.listener == nil {
-		endpoint.mu.RUnlock()
+	endpoint.mu.Lock()
+	if endpoint.closed || endpoint.acceptStopped || endpoint.listener == nil {
+		endpoint.mu.Unlock()
 		return nil, ErrUnavailable
 	}
 	listener := endpoint.listener
-	endpoint.mu.RUnlock()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = listener.SetDeadline(deadline)
 	} else {
 		_ = listener.SetDeadline(time.Time{})
 	}
+	if endpoint.acceptPrepared != nil {
+		endpoint.acceptPrepared()
+	}
+	endpoint.mu.Unlock()
 	connection, err := listener.AcceptUnix()
 	if err != nil {
 		return nil, ErrUnavailable
@@ -209,6 +214,26 @@ func (endpoint *Endpoint) Accept(ctx context.Context) (*AuthenticatedConnection,
 		return nil, err
 	}
 	return authenticated, nil
+}
+
+// StopAccept stops the accept loop without closing or unlinking the listener.
+// A deadline wakes a blocked Accept while the authenticated endpoint objects
+// stay published for already accepted requests to complete their authority
+// rechecks during bounded drain.
+func (endpoint *Endpoint) StopAccept() error {
+	if endpoint == nil {
+		return nil
+	}
+	endpoint.mu.Lock()
+	defer endpoint.mu.Unlock()
+	if endpoint.closed || endpoint.acceptStopped {
+		return nil
+	}
+	endpoint.acceptStopped = true
+	if endpoint.listener == nil {
+		return nil
+	}
+	return endpoint.listener.SetDeadline(time.Now())
 }
 
 func (endpoint *Endpoint) authenticate(ctx context.Context, connection *net.UnixConn, peer processsupervisor.CoreIdentity, release func()) (*AuthenticatedConnection, error) {

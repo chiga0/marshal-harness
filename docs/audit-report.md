@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-03：fixed server S4 resident integration 候选审计
+
+S1–S3 已合入 `main@0761ad3`。S4 候选把生产入口收敛为同一个固定 `marshal` 的 `control-plane serve|status|inspect|start`，没有新增 `marshal-server`、临时 Go helper、`/tmp` executable、第二状态根或 CLI fallback。server 在 endpoint ready 前以 resident `RepositorySession` 完成全仓恢复；独立 client 只以 `O_RDONLY` held descriptor 和共享锁重放 current owner，不获取 owner 写锁、不创建缺失文件，也不借用 server 进程内 FD。AF_UNIX pathname 仍只负责定位，授权继续绑定 current owner、完整 acquisition、held root、fixed binary、peer、nonce/token proof 与 application intent。
+
+实现自审发现并在进入独立 reviewer 前关闭两项主链缺口。第一，原 `sealedRepositoryApplication.StartRun` 依赖 CLI 外层执行 frozen local-dogfood binding 与 plan approval；直接接入 server 会绕过批准。候选已把二者下沉到共享 Application Adapter，并保留 expected sequence/head CAS，transport 不复制或降低业务门禁。第二，shutdown 最初会在 request drain 前调用 endpoint `Close`，使在途请求的收尾 authority recheck 被本进程提前删除的 socket/token 破坏；现改为 accept-stop 仅设置 listener deadline，取消并有界 drain 后才关闭 listener、精确 unlink 当前对象并最后释放 application/session。client 还在响应后重新验证 server/owner，并对 status line、closed header、canonical body 与 operation 做完整校验。
+
+当前证据只到候选级：Darwin/Linux 定向 compile-only、`go vet`、staticcheck、architecture check 与 `git diff --check` 已通过；本机没有执行随机临时测试 Mach-O。S4 仍须经过一次独立代码审查、exact-head GitHub macOS 动态门禁，以及同一固定 candidate bytes + 真实 Pi `0.84.4` 的跨进程 `StartRun→RUNNING→InspectRun`、server restart、response-loss/same-key replay canary。完成前 `fixed transport/T1 capability` 继续标记 `COMPONENT`，不得宣称 fixed server 已生产可用；T2 到独立 Decision/`ACCEPTED` 仍是后继。
+
 ## 2026-09-03：fixed server S3 bounded delivery 候选审计
 
 S2 已以 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 合入 `main@0a0c73e`。S3 候选没有新增 executable 或 authority root，而是在既有 authenticated connection 上提供 closed、单 request 的 HTTP/1.1 adapter。请求只允许 `Status`、`StartRun`、`InspectRun`，并在 Port 之前完成 canonical JSON、closed header、request/intention/deadline binding、current endpoint/owner/fixed-binary recheck、repository inflight/queue admission；header、body、application、write 使用分阶段 deadline与固定内存上限。unsupported、overload、非 canonical/未知字段、过期或未授权 deadline 均保持零 application/delivery 副作用。
@@ -8,7 +16,7 @@ S2 已以 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 合入 `
 
 独立首审聚合发现两项 P1：application 前后 recheck 未重新观察握手冻结的 peer process/binary，以及 HTTP success 未完整验证 sealed receipt 并绑定本次 pending。一次 aggregate rework 已同时关闭：server/client 每次 recheck 都重新取得并 exact compare `CoreIdentity`；delivery 导出唯一 sealed pending/receipt 校验，router 还逐项核对 authenticated request key/request/intent/deadline。same reviewer 复审结果为 `P0/P1=0`，没有进入第二轮滚动返工。
 
-本审计不关闭 integration：当前 router 仍只由测试注入 fake `PublicApplicationPort`，没有 resident `marshal control-plane serve`、startup recovery ordering 或真实 Pi canary。S3 通过 exact-head required CI 后只可标记 `COMPONENT`；S4 必须用同一固定 candidate bytes 证明 ready-before-recovery、真实 AF_UNIX 到 `RUNNING`、restart/response-loss strict-successor exact replay，T2 再以独立 Decision 到 `ACCEPTED`，否则 `INTEGRATION-OPEN` 保持不变。
+本审计不关闭 integration：当前 router 仍只由测试注入 fake `PublicApplicationPort`，没有 resident `marshal control-plane serve`、startup recovery ordering 或真实 Pi canary。S3 通过 exact-head required CI 后只可标记 `COMPONENT`；S4 必须用同一固定 candidate bytes 证明 recovery-before-ready、真实 AF_UNIX 到 `RUNNING`、restart/response-loss strict-successor exact replay，T2 再以独立 Decision 到 `ACCEPTED`，否则 `INTEGRATION-OPEN` 保持不变。
 
 ## 2026-09-03：fixed server S2 endpoint authentication 审计
 
@@ -16,7 +24,7 @@ S2 已以 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 合入 `
 
 实现过程中两项首轮CI问题已作为跨平台门禁修正，而未降低合同：一是 `productionruntime` 错误反向依赖 `processsupervisor`，已把fixed-binary observation下沉到transport拥有者并恢复层次边界；二是Darwin私有protocol helper留在common build graph导致Linux staticcheck unused，已拆为`protocol_darwin.go`。同时修正共享token descriptor offset竞态为`Pread`、frame short write为完整循环、authority mutation/close锁递归风险为descriptor显式传递。上述问题说明S3开始前必须继续做Darwin/Linux compile+staticcheck，但不需要回退为临时二进制或扩大架构。
 
-本切片关闭的是`S2-ENDPOINT-AUTH-COMPONENT`，不是fixed server integration。S3必须把有界parse/queue/application deadline与S1 immutable delivery接到同一认证连接；S4必须由fixed candidate bytes运行resident `marshal control-plane serve`，完成ready-before-recovery与真实Pi restart/response-loss strict-successor replay。T2独立Verification/Decision到`ACCEPTED`前，ADR 0062 full fixed-server lifecycle仍不可标记`INTEGRATED`。#226只影响CLI-only adapter，保留为并行债务，不再作为server串行前置；任何server→CLI fallback仍属P0。
+本切片关闭的是`S2-ENDPOINT-AUTH-COMPONENT`，不是fixed server integration。S3必须把有界parse/queue/application deadline与S1 immutable delivery接到同一认证连接；S4必须由fixed candidate bytes运行resident `marshal control-plane serve`，完成recovery-before-ready与真实Pi restart/response-loss strict-successor replay。T2独立Verification/Decision到`ACCEPTED`前，ADR 0062 full fixed-server lifecycle仍不可标记`INTEGRATED`。#226只影响CLI-only adapter，保留为并行债务，不再作为server串行前置；任何server→CLI fallback仍属P0。
 
 ## 2026-09-03：fixed server S1.3 strict successor 审计
 
@@ -48,7 +56,7 @@ ADR 0077 现仅保留为问题与被拒方案的历史记录；其 `contract.val
 
 [ADR 0076](adr/0076-darwin-fixed-server-pathname-locator.md)现于`main@d9cd001`接受并精确冻结修正后的合同：durable owner authority对完整`ControlOwnerAcquisition`产生唯一canonical digest，delivery `pending`必须同时持久化该digest与owner fact；socket object digest仅为host-local endpoint证据，不能替代durable acquisition；read-header、read-body、application与write deadline必须分别在各自phase启动。实施固定拆为`S1 durable delivery → S2 endpoint auth → S3 bounded HTTP delivery → S4 resident production integration`，禁止整体cherry-pick旧候选或再次合成大分支。
 
-成熟度主体保持诚实：S1–S3期间`fixed transport/T1 capability`最多为`COMPONENT`；只有exact-head macOS使用固定candidate bytes、resident recovery和真实配置Pi，证明ready-before-recovery、RUNNING、response-loss/restart strict successor exact receipt replay且零CLI fallback/重复Run/Attempt/Supervisor command，`fixed transport/T1 capability`才能标记`INTEGRATED`。`ADR 0062 full fixed-server lifecycle capability`仍必须等待T2真实Pi与外部独立Decision到`ACCEPTED`的canary后才能标记`INTEGRATED`。本次只关闭治理合同，不实现fixed server、不升级I186成熟度，也不改变managed signing/notarization、Linux stable或受保护stable candidate门禁。
+成熟度主体保持诚实：S1–S3期间`fixed transport/T1 capability`最多为`COMPONENT`；只有exact-head macOS使用固定candidate bytes、resident recovery和真实配置Pi，证明recovery-before-ready、RUNNING、response-loss/restart strict successor exact receipt replay且零CLI fallback/重复Run/Attempt/Supervisor command，`fixed transport/T1 capability`才能标记`INTEGRATED`。`ADR 0062 full fixed-server lifecycle capability`仍必须等待T2真实Pi与外部独立Decision到`ACCEPTED`的canary后才能标记`INTEGRATED`。本次只关闭治理合同，不实现fixed server、不升级I186成熟度，也不改变managed signing/notarization、Linux stable或受保护stable candidate门禁。
 
 ## 2026-09-01：`v1.0.0-rc1` same-bytes 发布终验与失败复盘
 

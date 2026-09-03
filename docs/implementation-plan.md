@@ -1,5 +1,7 @@
 # 实施计划
 
+> **2026-09-03 fixed server S4 candidate checkpoint**：`main@0761ad3` 已包含 ADR 0076 的 S1–S3。当前 S4 候选新增固定 `marshal control-plane serve|status|inspect|start`、recovery-before-ready 的 resident production composition、独立只读 current-owner client view，以及有界 accept-stop/drain/cancel/exact-unlink shutdown；没有临时 executable、第二 writer/root 或 CLI fallback。mutation client 必须显式携带并在 response-loss/restart 时原样复用 canonical UTC deadline，server 不重新起算。候选已通过 Darwin/Linux 定向 compile-only、vet、staticcheck 与 architecture/diff 门禁，但独立 reviewer、exact-head macOS 动态 CI 和同一 fixed bytes + 真实 Pi 的 RUNNING/restart/response-loss replay canary 尚未完成。因此 fixed transport/T1 仍为 `COMPONENT`，不得提前升级为 `INTEGRATED`；详细审计见 [设计审计报告](audit-report.md)。
+
 > **2026-09-01 RC1 publication checkpoint**：[`v1.0.0-rc1`](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0-rc1) 已按 ADR 0068 发布。final sourceHead `c1407bd`、candidate SHA-256 `f9ed7fa59d05f5e71fef7164b8015240497e1d18e25ef1d3f8e199c1378a3774`、真实 Pi `0.84.4` canary/finalize、current receipt/carrier、exact-head required CI、annotated tag、no-rebuild release workflow、外部下载与临时安装 bytes 全部闭合。该结果只关闭 local-dogfood prerelease distribution exit：`I186-R2–R5` 保持 `IN_PROGRESS/COMPONENT`，`I186-R6` 更新为 `IN_PROGRESS/COMPONENT`，不得写成 ADR 0052 的 `RELEASED`、production 或 stable。后续主线为 fixed server/recovery fault matrix → managed signing/notarization → Linux stable gate → 受保护 stable candidate；GoalLite 可作为不冲突的独立产品纵切并行。
 
 本计划用于把当前 embedded/local 先行实现逐步收敛到[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Milestone 是交付顺序，不是产品定位。

@@ -7,7 +7,15 @@ import (
 	"os"
 )
 
+type fixedEndpointClientState struct{}
+
+func (*fixedEndpointClientState) close() error { return nil }
+
 func (session *RepositorySession) OpenFixedEndpointAuthority(context.Context) (*FixedEndpointAuthority, error) {
+	return nil, ErrFixedDeliveryConflict
+}
+
+func OpenFixedEndpointClientAuthority(context.Context, string) (*FixedEndpointAuthority, error) {
 	return nil, ErrFixedDeliveryConflict
 }
 
