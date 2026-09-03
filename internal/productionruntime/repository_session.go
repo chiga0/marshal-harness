@@ -99,7 +99,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		_ = owner.Close()
 		return nil, err
 	}
-	runs, err := runstore.NewFromStateRootDescriptor(fixedRoot.runtimeRoot())
+	runs, err := runstore.NewFromStateRootDescriptor(fixedRoot.stateRoot())
 	if err != nil {
 		_ = fixedRoot.close()
 		_ = ingress.Close()

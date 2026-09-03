@@ -62,11 +62,12 @@ func TestRepositorySessionReopensThroughFourColdOwnerProcesses(t *testing.T) {
 			t.Errorf("remove cold owner fixture: %v", err)
 		}
 	})
-	stateRoot := filepath.Join(root, ".marshal", "runtime-v1")
-	if err := os.MkdirAll(stateRoot, 0o700); err != nil {
+	stateRoot := filepath.Join(root, ".marshal")
+	runtimeRoot := filepath.Join(stateRoot, "runtime-v1")
+	if err := os.MkdirAll(runtimeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{root, filepath.Join(root, ".marshal"), stateRoot} {
+	for _, path := range []string{root, stateRoot, runtimeRoot} {
 		if err := os.Chmod(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -74,8 +75,8 @@ func TestRepositorySessionReopensThroughFourColdOwnerProcesses(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{OwnerDirName, ResultIngressDirName, "owner-control"} {
-		createOwnerOnlyDirectory(t, filepath.Join(stateRoot, name))
+	for _, name := range []string{OwnerDirName, ResultIngressDirName, "control"} {
+		createOwnerOnlyDirectory(t, filepath.Join(runtimeRoot, name))
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -102,7 +103,7 @@ func TestRepositorySessionReopensThroughFourColdOwnerProcesses(t *testing.T) {
 			t.Fatalf("cold owner epoch %d: %v\n%s", expectedEpoch, runErr, output)
 		}
 
-		store, openErr := resultingress.OpenResultIngressStore(filepath.Join(stateRoot, ResultIngressDirName))
+		store, openErr := resultingress.OpenResultIngressStore(filepath.Join(runtimeRoot, ResultIngressDirName))
 		if openErr != nil {
 			t.Fatal(openErr)
 		}
@@ -124,7 +125,8 @@ func TestRepositorySessionColdOwnerProcessHelper(t *testing.T) {
 		t.Skip("cold owner subprocess helper")
 	}
 	root := os.Getenv(coldOwnerRootEnv)
-	stateRoot := filepath.Join(root, ".marshal", "runtime-v1")
+	stateRoot := filepath.Join(root, ".marshal")
+	runtimeRoot := filepath.Join(stateRoot, "runtime-v1")
 	expectedEpoch, err := strconv.Atoi(os.Getenv(coldOwnerEpochEnv))
 	if err != nil || expectedEpoch < 1 {
 		t.Fatalf("invalid expected epoch")
@@ -137,17 +139,17 @@ func TestRepositorySessionColdOwnerProcessHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownerDirectory, err := os.Open(filepath.Join(stateRoot, OwnerDirName))
+	ownerDirectory, err := os.Open(filepath.Join(runtimeRoot, OwnerDirName))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ownerDirectory.Close()
-	ingressDirectory, err := os.Open(filepath.Join(stateRoot, ResultIngressDirName))
+	ingressDirectory, err := os.Open(filepath.Join(runtimeRoot, ResultIngressDirName))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ingressDirectory.Close()
-	controlDirectory, err := os.Open(filepath.Join(stateRoot, "owner-control"))
+	controlDirectory, err := os.Open(filepath.Join(runtimeRoot, "control"))
 	if err != nil {
 		t.Fatal(err)
 	}

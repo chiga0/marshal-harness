@@ -277,7 +277,13 @@ func validateFixedServerRoot(root fixedServerRoot, count int) error {
 	return nil
 }
 
-func (root fixedServerRoot) runtimeRoot() *os.File  { return root.nodes[2].file }
+// stateRoot returns the held canonical RepositoryRoot/.marshal directory.
+//
+// runtime-v1 is the private namespace for owner, ingress, control and other
+// runtime projections. Run journals intentionally remain at StateRoot/runs;
+// opening the RunStore on runtime-v1 would create a second, empty authority
+// root and make every CLI-created Run appear unknown to the fixed session.
+func (root fixedServerRoot) stateRoot() *os.File    { return root.nodes[1].file }
 func (root fixedServerRoot) deliveryRoot() *os.File { return root.nodes[4].file }
 
 func (root fixedServerRoot) digest() (string, error) {

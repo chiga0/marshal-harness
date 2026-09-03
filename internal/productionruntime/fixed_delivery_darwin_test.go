@@ -52,7 +52,7 @@ func newPublicFixedDeliveryInputs(t *testing.T) publicFixedDeliveryInputs {
 	t.Cleanup(func() { _ = ingress.Close() })
 	repository := filepath.Join(ownerFixture.base, "repository")
 	createOwnerOnlyDirectory(t, repository)
-	request := seedFixedDeliveryReadyRun(t, filepath.Join(repository, ".marshal", "runtime-v1"), "run:public-fixed-delivery")
+	request := seedFixedDeliveryReadyRun(t, filepath.Join(repository, ".marshal"), "run:public-fixed-delivery")
 	heldRepository, err := OpenCanonicalRepositoryRoot(repository)
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func newFixedDeliveryFixture(t *testing.T) fixedDeliveryFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateRoot := filepath.Join(repository, ".marshal", "runtime-v1")
+	stateRoot := filepath.Join(repository, ".marshal")
 	if err := os.MkdirAll(stateRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func newFixedDeliveryFixture(t *testing.T) fixedDeliveryFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runs, err := runstore.NewFromStateRootDescriptor(fixedRoot.runtimeRoot())
+	runs, err := runstore.NewFromStateRootDescriptor(fixedRoot.stateRoot())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,7 +529,7 @@ func TestFixedDeliveryRejectsTruncatedHardlinkedAndForgedRecord(t *testing.T) {
 
 func TestFixedDeliveryRunningSnapshotWithoutPendingIsRejected(t *testing.T) {
 	fixture := newFixedDeliveryFixture(t)
-	statePath := filepath.Join(fixture.repository, ".marshal", "runtime-v1", "runs", fixture.request.RunID, "state.json")
+	statePath := filepath.Join(fixture.repository, ".marshal", "runs", fixture.request.RunID, "state.json")
 	raw, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
