@@ -32,7 +32,47 @@ type heldDarwinAuthorityFiles struct {
 	lockID         heldRegularIdentity
 	poisoned       bool
 	operationWrote bool
+	readOnly       bool
 	closed         bool
+}
+
+func openHeldDarwinCurrentOwnerReadFiles(directory *os.File) (*heldDarwinAuthorityFiles, error) {
+	identity, err := processsupervisor.ObserveHeldControlDirectory(directory)
+	if err != nil || identity.Mode&0o777 != 0o700 || identity.UID != uint32(os.Geteuid()) || identity.GID != uint32(os.Getegid()) {
+		return nil, ErrPreparedExecutionUnavailable
+	}
+	directoryFD, err := unix.Dup(int(directory.Fd()))
+	if err != nil {
+		return nil, ErrPreparedExecutionUnavailable
+	}
+	unix.CloseOnExec(directoryFD)
+	retained := os.NewFile(uintptr(directoryFD), "marshal-result-ingress-read-directory")
+	if retained == nil {
+		_ = unix.Close(directoryFD)
+		return nil, ErrPreparedExecutionUnavailable
+	}
+	retainedID, err := processsupervisor.ObserveHeldControlDirectory(retained)
+	if err != nil || retainedID != identity {
+		_ = retained.Close()
+		return nil, ErrPreparedExecutionUnavailable
+	}
+	ledger, ledgerID, err := openExistingHeldAuthorityFile(retained, resultIngressStoreFileName, false)
+	if err != nil {
+		_ = retained.Close()
+		return nil, err
+	}
+	coordination, lockID, err := openExistingHeldAuthorityFile(retained, resultIngressStoreLockName, true)
+	if err != nil {
+		_ = ledger.Close()
+		_ = retained.Close()
+		return nil, err
+	}
+	files := &heldDarwinAuthorityFiles{directory: retained, directoryID: identity, ledger: ledger, ledgerID: ledgerID, coordination: coordination, lockID: lockID, readOnly: true}
+	if err := files.verifyCurrentNames(); err != nil {
+		_ = files.close()
+		return nil, err
+	}
+	return files, nil
 }
 
 func openHeldDarwinAuthorityFiles(directory *os.File) (*heldDarwinAuthorityFiles, error) {
@@ -118,6 +158,24 @@ func openHeldAuthorityFile(directory *os.File, name string, requireEmpty bool) (
 	return file, identity, created, nil
 }
 
+func openExistingHeldAuthorityFile(directory *os.File, name string, requireEmpty bool) (*os.File, heldRegularIdentity, error) {
+	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, heldRegularIdentity{}, ErrPreparedExecutionUnavailable
+	}
+	file := os.NewFile(uintptr(fd), "marshal-result-ingress-read-"+name)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, heldRegularIdentity{}, ErrPreparedExecutionUnavailable
+	}
+	identity, err := observeHeldRegular(directory, name, file, requireEmpty)
+	if err != nil {
+		_ = file.Close()
+		return nil, heldRegularIdentity{}, err
+	}
+	return file, identity, nil
+}
+
 func observeHeldRegular(directory *os.File, name string, file *os.File, requireEmpty bool) (heldRegularIdentity, error) {
 	if directory == nil || file == nil {
 		return heldRegularIdentity{}, ErrPreparedExecutionUnavailable
@@ -177,7 +235,11 @@ func (files *heldDarwinAuthorityFiles) lockExclusive() (func() error, error) {
 		files.mu.Unlock()
 		return nil, err
 	}
-	if err := unix.Flock(int(files.coordination.Fd()), unix.LOCK_EX); err != nil {
+	lockMode := unix.LOCK_EX
+	if files.readOnly {
+		lockMode = unix.LOCK_SH
+	}
+	if err := unix.Flock(int(files.coordination.Fd()), lockMode); err != nil {
 		files.mu.Unlock()
 		return nil, ErrPreparedExecutionUnavailable
 	}
@@ -231,7 +293,7 @@ func (files *heldDarwinAuthorityFiles) readLedger() ([]byte, error) {
 }
 
 func (files *heldDarwinAuthorityFiles) appendLedger(line []byte) error {
-	if len(line) == 0 || line[len(line)-1] != '\n' || files == nil {
+	if len(line) == 0 || line[len(line)-1] != '\n' || files == nil || files.readOnly {
 		return ErrPreparedExecutionUnavailable
 	}
 	if err := files.verifyCurrentNames(); err != nil {

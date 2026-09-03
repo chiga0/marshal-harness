@@ -8,9 +8,111 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"golang.org/x/sys/unix"
 )
+
+type fixedEndpointClientState struct {
+	root    fixedServerRoot
+	ingress *resultingress.CurrentOwnerReadView
+	scope   resultingress.ControlOwnerScope
+}
+
+func (state *fixedEndpointClientState) close() error {
+	if state == nil {
+		return nil
+	}
+	var result error
+	if state.ingress != nil {
+		result = state.ingress.Close()
+		state.ingress = nil
+	}
+	result = errors.Join(result, state.root.close())
+	return result
+}
+
+// OpenFixedEndpointClientAuthority opens a read-only view of the current
+// resident owner and fixed endpoint. It never acquires the repository owner
+// lock and never creates missing state, so a separate fixed Marshal client can
+// authenticate to the one server without becoming a second writer.
+func OpenFixedEndpointClientAuthority(ctx context.Context, repositoryPath string) (_ *FixedEndpointAuthority, err error) {
+	if ctx == nil {
+		return nil, ErrFixedDeliveryConflict
+	}
+	repository, err := OpenCanonicalRepositoryRoot(repositoryPath)
+	if err != nil {
+		return nil, err
+	}
+	defer repository.Close()
+	root, err := openExistingFixedServerRoot(repository)
+	if err != nil {
+		return nil, err
+	}
+	client := &fixedEndpointClientState{root: root}
+	fail := func(cause error) (*FixedEndpointAuthority, error) {
+		_ = client.close()
+		return nil, cause
+	}
+	ingressFD, err := unix.Openat(int(root.nodes[1].file.Fd()), ResultIngressDirName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW_ANY, 0)
+	if err != nil {
+		return fail(ErrFixedDeliveryConflict)
+	}
+	ingressDirectory := os.NewFile(uintptr(ingressFD), "marshal-fixed-endpoint-client-ingress")
+	if ingressDirectory == nil {
+		_ = unix.Close(ingressFD)
+		return fail(ErrFixedDeliveryConflict)
+	}
+	client.ingress, err = resultingress.OpenDarwinCurrentOwnerReadView(ingressDirectory)
+	_ = ingressDirectory.Close()
+	if err != nil {
+		return fail(err)
+	}
+	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: repositoryPath}
+	repositoryDigest, err := namespace.Digest()
+	if err != nil {
+		return fail(err)
+	}
+	client.scope = resultingress.ControlOwnerScope{AuthorityNamespaceID: namespace, RepositoryIdentityDigest: repositoryDigest}
+	current, found, err := client.ingress.OpenOwner(client.scope)
+	if err != nil || !found || current.Acquisition.Validate() != nil {
+		return fail(ErrFixedDeliveryConflict)
+	}
+	ownerDigest, err := resultingress.ControlOwnerAcquisitionDigest(current.Acquisition)
+	if err != nil {
+		return fail(err)
+	}
+	rootDigest, err := root.digest()
+	if err != nil {
+		return fail(err)
+	}
+	controlFD, err := unix.Dup(int(root.nodes[3].file.Fd()))
+	if err != nil {
+		return fail(ErrFixedDeliveryConflict)
+	}
+	unix.CloseOnExec(controlFD)
+	control := os.NewFile(uintptr(controlFD), "marshal-fixed-endpoint-client-control")
+	if control == nil {
+		_ = unix.Close(controlFD)
+		return fail(ErrFixedDeliveryConflict)
+	}
+	controlPath, err := descriptorPath(controlFD)
+	if err != nil || controlPath != filepath.Join(repositoryPath, fixedServerRootComponents[0], fixedServerRootComponents[1], fixedServerRootComponents[2]) {
+		_ = control.Close()
+		return fail(ErrFixedDeliveryConflict)
+	}
+	endpointAuthority := &FixedEndpointAuthority{client: client, control: control, snapshot: FixedEndpointSnapshot{
+		Acquisition: current.Acquisition, OwnerFactDigest: current.FactDigest,
+		OwnerAcquisitionDigest: ownerDigest, RepositoryDigest: repositoryDigest,
+		AuthorityRootDigest: rootDigest, ControlPath: controlPath,
+		FixedMarshalPath: current.Acquisition.OwnerBinary.CanonicalPath,
+	}}
+	if err := endpointAuthority.Recheck(ctx); err != nil {
+		_ = endpointAuthority.Close()
+		return nil, err
+	}
+	return endpointAuthority, nil
+}
 
 func (session *RepositorySession) OpenFixedEndpointAuthority(ctx context.Context) (*FixedEndpointAuthority, error) {
 	borrow, err := session.borrow()
@@ -74,7 +176,32 @@ func (authority *FixedEndpointAuthority) withCurrent(ctx context.Context, mutate
 	}
 	authority.mu.RLock()
 	defer authority.mu.RUnlock()
-	if authority.closed || authority.borrow == nil || authority.borrow.session == nil || authority.control == nil {
+	if authority.closed || authority.control == nil {
+		return ErrFixedDeliveryConflict
+	}
+	if authority.client != nil {
+		if mutate || fn != nil || authority.client.ingress == nil {
+			return ErrFixedDeliveryConflict
+		}
+		client := authority.client
+		if validateFixedServerRoot(client.root, len(client.root.nodes)) != nil {
+			return ErrFixedDeliveryConflict
+		}
+		current, found, err := client.ingress.OpenOwner(client.scope)
+		if err != nil || !found || current.Acquisition != authority.snapshot.Acquisition || current.FactDigest != authority.snapshot.OwnerFactDigest {
+			return ErrFixedDeliveryConflict
+		}
+		rootDigest, err := client.root.digest()
+		if err != nil || rootDigest != authority.snapshot.AuthorityRootDigest {
+			return ErrFixedDeliveryConflict
+		}
+		current, found, err = client.ingress.OpenOwner(client.scope)
+		if err != nil || !found || current.Acquisition != authority.snapshot.Acquisition || current.FactDigest != authority.snapshot.OwnerFactDigest {
+			return ErrFixedDeliveryConflict
+		}
+		return nil
+	}
+	if authority.borrow == nil || authority.borrow.session == nil {
 		return ErrFixedDeliveryConflict
 	}
 	session := authority.borrow.session

@@ -232,12 +232,59 @@ func callHTTPRouter(t *testing.T, router *HTTPRouter, binding RequestBinding, pa
 	if decodeHTTPBody(responseBody, &decoded) != nil {
 		t.Fatalf("invalid response: %s", responseBody)
 	}
+	if err := client.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case serveErr := <-served:
 		return response.StatusCode, decoded, serveErr
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve timeout")
 		return 0, httpResponse{}, nil
+	}
+}
+
+func TestFixedClientViewCallsResidentStatus(t *testing.T) {
+	fixture := newEndpointFixture(t)
+	endpoint, err := OpenEndpoint(context.Background(), fixture.authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = endpoint.Close() })
+	port, delivery := testHTTPApplication()
+	router, err := NewHTTPRouter(port, delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() {
+		connection, acceptErr := endpoint.Accept(context.Background())
+		if acceptErr != nil {
+			served <- acceptErr
+			return
+		}
+		defer connection.Close()
+		served <- router.ServeAuthenticated(context.Background(), connection)
+	}()
+	clientAuthority, err := productionruntime.OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientAuthority.Close()
+	projection, err := CallStatus(context.Background(), clientAuthority, "status:independent-client", time.Now().UTC().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("CallStatus: %v", err)
+	}
+	if projection != port.status {
+		t.Fatalf("projection=%+v want=%+v", projection, port.status)
+	}
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve timeout")
 	}
 }
 
@@ -393,7 +440,7 @@ func TestHTTPRouterRejectsNonCanonicalUnknownBodyAndDeadlineBeforePort(t *testin
 	}
 
 	body := canonicalBody(t, application.StatusRequest{})
-	deadline = time.Now().UTC().Add(defaultAppTimeout + time.Minute)
+	deadline = time.Now().UTC().Add(maxApplicationTime + time.Minute)
 	binding = readBinding("request:long-deadline", body, "status", application.StatusRequest{}, deadline)
 	code, response, serveErr = callHTTPRouter(t, router, binding, "/v1/status", "request:long-deadline", body)
 	if !errors.Is(serveErr, ErrConflict) || code != 409 || response.ReasonCode != "authority-conflict" || port.statusCalls != 0 || delivery.beginCalls != 0 {

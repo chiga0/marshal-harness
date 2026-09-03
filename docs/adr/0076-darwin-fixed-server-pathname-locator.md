@@ -150,7 +150,7 @@ v1 Darwin single-user profile冻结以下硬上限；签名安装policy或reques
 
 T1最终必须完整交付第2–8节的locator/auth/bounded transport、context取消及immutable/no-clobber delivery projection，并只路由当前`PublicApplicationPort`已有的`Status`、`StartRun`、`InspectRun`三个typed method；这些能力按S1–S4分别合入和验收，不能以任一中间切片替代T1整体出口。T2 operation在T1必须以unsupported且零pending/零Port fail closed。T1真实canary固定使用同一fixed `marshal`与真实Pi：经server `StartRun`取得exact `RUNNING` projection，再由重新认证client以`InspectRun`读到同一Run/Attempt/head，并覆盖server restart与exact pending/receipt-ref replay；不得通过CLI本地fallback补做后续阶段。
 
-S1–S3完成时`fixed transport/T1 capability`只能标记`COMPONENT`。只有S4在exact-head macOS gate中使用固定candidate `marshal`、resident production composition与真实配置Pi，证明ready-before-recovery、真实AF_UNIX调用、同一Run到`RUNNING`、response-loss/restart后strict successor只补同一exact receipt，且没有CLI fallback、第二Run、第二Attempt或第二Supervisor command，`fixed transport/T1 capability`才可标记`INTEGRATED`。该结论不升级`ADR 0062 full fixed-server lifecycle capability`：Run到`RUNNING`仍不证明result collect、terminalization、verification、independent review、Decision或`ACCEPTED`可经server到达，也不满足ADR 0062完整T2 canary。
+S1–S3完成时`fixed transport/T1 capability`只能标记`COMPONENT`。只有S4在exact-head macOS gate中使用固定candidate `marshal`、resident production composition与真实配置Pi，证明recovery-before-ready、真实AF_UNIX调用、同一Run到`RUNNING`、response-loss/restart后strict successor只补同一exact receipt，且没有CLI fallback、第二Run、第二Attempt或第二Supervisor command，`fixed transport/T1 capability`才可标记`INTEGRATED`。该结论不升级`ADR 0062 full fixed-server lifecycle capability`：Run到`RUNNING`仍不证明result collect、terminalization、verification、independent review、Decision或`ACCEPTED`可经server到达，也不满足ADR 0062完整T2 canary。
 
 #### T2：PublicApplicationPort终态纵切与ACCEPTED
 
@@ -179,7 +179,7 @@ T2真实canary固定使用真实Pi与外部独立Decision，经fixed server完�
 8. context取消可达Port；stuck application触发有界shutdown后的whole-process fail-stop，不能先释放owner或伪造success，strict successor只从pending/RB1恢复；
 9. concurrent server启动只有owner winner可bind；current server持有owner时CLI不得装配第二writer；server restart/response loss只reconcile同一application intent与exact receipt；
 10. shutdown只在exact current-name验证后删除current socket与token leaf；swap或unknown object不被删除，owner释放前parent已同步；
-11. T1 exact-head Darwin测试、相关race、`go vet`、staticcheck、architecture/diff/secret/mergeability通过；S1–S3期间`fixed transport/T1 capability`保持`COMPONENT`，只有S4真实Pi canary证明同一`PublicApplicationPort`/authority chain到`RUNNING`、ready-before-recovery与restart exact replay后，`fixed transport/T1 capability`才标记`INTEGRATED`，且不得据此升级`ADR 0062 full fixed-server lifecycle capability`；
+11. T1 exact-head Darwin测试、相关race、`go vet`、staticcheck、architecture/diff/secret/mergeability通过；S1–S3期间`fixed transport/T1 capability`保持`COMPONENT`，只有S4真实Pi canary证明同一`PublicApplicationPort`/authority chain到`RUNNING`、recovery-before-ready与restart exact replay后，`fixed transport/T1 capability`才标记`INTEGRATED`，且不得据此升级`ADR 0062 full fixed-server lifecycle capability`；
 12. T2逐项证明collect/terminalization/verify/review/independent Decision的Port与delivery routing，真实Pi经fixed server到`ACCEPTED`且无CLI fallback；只有T2全绿才把`ADR 0062 full fixed-server lifecycle capability`标记为`INTEGRATED`并宣称满足ADR 0062。
 
 ## 后果

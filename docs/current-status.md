@@ -2,13 +2,13 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
-## 2026-09-03 fixed server S3 候选：认证连接上的有界 application delivery
+## 2026-09-03 fixed server S4 候选：resident production composition
 
 S2 已由 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 合入 `main@0a0c73e`。S3 候选在同一认证 AF_UNIX connection 上增加仅包含 `Status`、`StartRun`、`InspectRun` 的 closed HTTP/1.1 路由：header/body/response、阶段 deadline、repository inflight/queue 均有固定上限，canonical JSON、unknown/duplicate field、unsupported operation、过期或超界 deadline、binding 漂移均在 application/delivery 前拒绝。每条 connection 当前只接受一次 request，严于协议上限并消除 keep-alive/pipelining 歧义。
 
 `StartRun` 先写 immutable pending，再查 current RB1；只有 exact application receipt 已闭合为 receipt-ref 且 current projection 再次吻合时才返回 `success`。Port 返回错误、客户端断开或 response loss 都不能证明 mutation 未发生：RB1 未命中时只返回 `delivery-pending`，重放已有 receipt 时不产生第二次 mutation。实现仍运行于现有固定 `marshal` 进程，没有 `/tmp`、随机 helper Mach-O、TCP、CLI fallback 或第二 authority root。
 
-S3 仍是 `COMPONENT`，尚未提供用户可调用的 server 命令。下一步是 S4：把 router 接入 resident `marshal control-plane serve` 与同进程 `PublicApplicationPort`，完成 ready-before-recovery、固定 candidate bytes 的真实 Pi `RUNNING`、server restart/response-loss strict-successor replay；随后 T2 才扩展到 collect/verify/review/Decision 和 `ACCEPTED`。在这些动态证据完成前不得宣称 fixed server 可用或 v1.0 stable 已满足。
+S4 候选已提供固定 `marshal control-plane serve|status|inspect|start` 入口：server 在对外报告 ready 前完成 resident recovery，独立只读 client 经认证 socket 调用同进程 `PublicApplicationPort`，mutation 的 request key、canonical request 与显式 UTC deadline 可在 response-loss/restart 后原样重放。代码已通过独立审查（`P0=0`、`P1=0`），但 fixed candidate bytes 的真实 Pi `RUNNING`、server restart/response-loss strict-successor replay 和 exact-head 动态 CI 尚未完成，因此仍是 `COMPONENT`，不是已生产可用的 server。随后 T2 才扩展到 collect/verify/review/Decision 和 `ACCEPTED`；这些动态证据完成前不得宣称 v1.0 stable 已满足。
 
 ## 2026-09-03 fixed server S2：固定二进制的认证 AF_UNIX 端点
 

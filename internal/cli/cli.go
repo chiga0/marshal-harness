@@ -137,6 +137,8 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return runInit(args[1:], stdout, stderr)
 	case "contract":
 		return runContract(args[1:], stdin, stdout, stderr)
+	case "control-plane":
+		return runControlPlane(ctx, args[1:], stdout, stderr)
 	case "serve", "web":
 		return runServe(args[1:], stdout, stderr)
 	case "task":
@@ -289,6 +291,28 @@ func localDogfoodCommandClass(args []string, doctor *doctorOptions) (string, str
 		return "", selfidentity.ReasonCommandDenied
 	case "serve", "web":
 		return "", selfidentity.ReasonRemoteSurfaceDenied
+	case "control-plane":
+		if len(args) < 2 {
+			return "", selfidentity.ReasonCommandDenied
+		}
+		switch args[1] {
+		case "serve":
+			if len(args) != 2 {
+				return "", selfidentity.ReasonCommandDenied
+			}
+			return selfidentity.CommandControlPlaneServe, ""
+		case "status":
+			if len(args) != 2 {
+				return "", selfidentity.ReasonCommandDenied
+			}
+			return selfidentity.CommandControlPlaneStatus, ""
+		case "inspect":
+			return selfidentity.CommandControlPlaneInspect, ""
+		case "start":
+			return selfidentity.CommandControlPlaneStart, ""
+		default:
+			return "", selfidentity.ReasonCommandDenied
+		}
 	case "internal", "__launch", "__detach":
 		return "", selfidentity.ReasonCredentialedEffectDenied
 	default:
@@ -3315,6 +3339,10 @@ func writeUsage(output io.Writer) {
   marshal supervise [--once] [--interval DURATION] [--marshal-binary PATH] [--revive-retry-pending] [--json]
   marshal contract validate [--schema NAME] <PATH|->
   marshal contract schema [--all [--out DIR]] [--schema NAME] [--json]
+  marshal control-plane serve
+  marshal control-plane status
+  marshal control-plane inspect --run RUN_ID
+  marshal control-plane start --run RUN_ID --expected-sequence N --expected-authority-head DIGEST --request-key KEY --deadline UTC_RFC3339NANO
   marshal task scaffold --draft PATH|- [--preferred-adapter ID --fallback-adapter ID ...]
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
   marshal task approve --run RUN_ID --gate plan|publish [--actor ID] [--json]

@@ -28,7 +28,6 @@ const (
 	readHeaderTimeout     = 5 * time.Second
 	readBodyTimeout       = 15 * time.Second
 	writeTimeout          = 15 * time.Second
-	defaultAppTimeout     = 5 * time.Minute
 	maxRepositoryInflight = 32
 	maxRepositoryQueue    = 32
 )
@@ -102,40 +101,27 @@ func (router *HTTPRouter) ServeAuthenticated(ctx context.Context, connection *Au
 	}
 	deadline, err := time.Parse(time.RFC3339Nano, connection.Binding.Deadline)
 	requestNow := time.Now().UTC()
-	if err != nil || deadline.Location() != time.UTC || !deadline.After(requestNow) || deadline.After(requestNow.Add(defaultAppTimeout)) {
-		_ = writeHTTPResponse(connection, 409, errorHTTPResponse(request.operation, ErrConflict))
-		return ErrConflict
+	if err != nil || deadline.Location() != time.UTC || !deadline.After(requestNow) || deadline.After(requestNow.Add(maxApplicationTime)) {
+		disconnected := watchClientDisconnect(connection, func() {})
+		return errors.Join(ErrConflict, writeHTTPResponseAndAwaitClient(connection, 409, errorHTTPResponse(request.operation, ErrConflict), disconnected))
 	}
 	applicationContext, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
+	disconnected := watchClientDisconnect(connection, cancel)
 	if err := router.admit(applicationContext); err != nil {
-		_ = writeHTTPResponse(connection, 503, errorHTTPResponse(request.operation, err))
-		return err
+		return errors.Join(err, writeHTTPResponseAndAwaitClient(connection, 503, errorHTTPResponse(request.operation, err), disconnected))
 	}
 	defer router.release()
 	if err := connection.Recheck(applicationContext); err != nil {
-		_ = writeHTTPResponse(connection, 409, errorHTTPResponse(request.operation, err))
-		return err
+		return errors.Join(err, writeHTTPResponseAndAwaitClient(connection, 409, errorHTTPResponse(request.operation, err), disconnected))
 	}
 
-	// A client close cancels a running application operation. CloseRead below
-	// ends the watcher when application work completes without affecting the
-	// bounded response write half of the Unix connection.
-	disconnected := make(chan struct{})
-	go func() {
-		var extra [1]byte
-		_, _ = connection.Read(extra[:])
-		cancel()
-		close(disconnected)
-	}()
-
+	// A client close cancels a running application operation. After reading the
+	// complete response, a conforming client half-closes its write side only
+	// after its post-response authority/peer recheck. Keeping this watcher alive
+	// through the response therefore prevents the server from racing that
+	// required recheck by closing its end first.
 	response, statusCode, operationErr := router.dispatch(applicationContext, connection.Binding, request, deadline)
-	_ = connection.CloseRead()
-	select {
-	case <-disconnected:
-	case <-time.After(time.Second):
-		operationErr = errors.Join(operationErr, ErrUnavailable)
-	}
 	recheckContext, recheckCancel := context.WithTimeout(context.Background(), handshakeTimeout)
 	recheckErr := connection.Recheck(recheckContext)
 	recheckCancel()
@@ -147,10 +133,32 @@ func (router *HTTPRouter) ServeAuthenticated(ctx context.Context, connection *Au
 	if operationErr != nil && response.Disposition == "" {
 		response = errorHTTPResponse(request.operation, operationErr)
 	}
-	if writeErr := writeHTTPResponse(connection, statusCode, response); writeErr != nil {
-		return errors.Join(operationErr, writeErr)
+	return errors.Join(operationErr, writeHTTPResponseAndAwaitClient(connection, statusCode, response, disconnected))
+}
+
+func watchClientDisconnect(connection *AuthenticatedConnection, cancel context.CancelFunc) <-chan struct{} {
+	disconnected := make(chan struct{})
+	go func() {
+		var extra [1]byte
+		_, _ = connection.Read(extra[:])
+		cancel()
+		close(disconnected)
+	}()
+	return disconnected
+}
+
+func writeHTTPResponseAndAwaitClient(connection *AuthenticatedConnection, statusCode int, response httpResponse, disconnected <-chan struct{}) error {
+	if err := writeHTTPResponse(connection, statusCode, response); err != nil {
+		_ = connection.CloseRead()
+		return err
 	}
-	return operationErr
+	select {
+	case <-disconnected:
+		return nil
+	case <-time.After(time.Second):
+		_ = connection.CloseRead()
+		return ErrUnavailable
+	}
 }
 
 func (router *HTTPRouter) admit(ctx context.Context) error {
@@ -295,7 +303,10 @@ func readHTTPRequest(connection *AuthenticatedConnection) (httpRequest, error) {
 	case "/v1/runs/start":
 		operation = "start-run"
 	default:
-		return httpRequest{}, errHTTPUnsupported
+		// Consume and validate the complete request before returning an
+		// unsupported-operation response. This lets the authenticated peer use
+		// the same post-response half-close protocol as every other request.
+		operation = "unsupported"
 	}
 	headers := make(map[string]string)
 	total := len(requestLine) + 2
@@ -484,18 +495,9 @@ func writeHTTPResponse(connection *AuthenticatedConnection, statusCode int, resp
 	if err != nil || len(body) == 0 || len(body) > maxHTTPResponseBytes {
 		return ErrUnavailable
 	}
-	reason := "Service Unavailable"
-	switch statusCode {
-	case 200:
-		reason = "OK"
-	case 202:
-		reason = "Accepted"
-	case 400:
-		reason = "Bad Request"
-	case 404:
-		reason = "Not Found"
-	case 409:
-		reason = "Conflict"
+	reason := responseReason(statusCode)
+	if reason == "" {
+		return ErrUnavailable
 	}
 	header := "HTTP/1.1 " + strconv.Itoa(statusCode) + " " + reason + "\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\nConnection: close\r\n\r\n"
 	if err := connection.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
