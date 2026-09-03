@@ -1,12 +1,14 @@
 # 设计审计报告
 
-## 2026-09-03：ADR 0077 local dogfood 只读 TaskSpec 验证权限
+## 2026-09-03：ADR 0078 取代 ADR 0077 的 TaskSpec 验证决定
 
 M13 walking-skeleton dogfood Run `33709488741` 已由真实 Worker 完成交付并通过 Drive，Verification 中 8 项通过、2 项跳过，唯一 required command failure 为 `taskspec-validate`：同一 fixed candidate 执行 `contract validate` 时被 local-profile self gate 以 `self-local-command-denied` 拒绝。审计确认这不是 TaskSpec、Agent 或网络失败，而是[开发文档](development.md)已经承诺 `contract validate` 为只读命令，local dogfood closed command classes却没有对应入口。
 
-删除 gate、手写 Python schema 子集、清空 activation 或构建临时 checker都会分别造成验证降级、语义漂移、无效绕过或匿名 Mach-O；因此维护者接受[ADR 0077](adr/0077-local-dogfood-read-only-task-spec-validation.md)，仅新增 `contract.validate-task-spec-file-readonly`。它只允许 exact `contract validate --schema task-spec <repository-relative-path>`，由现有 activation继续绑定 fixed executable、`sourceHead`与canonical repository；输入必须经held-root逐段nofollow打开为root内regular non-symlink file，并沿用`32 MiB`上限。stdin、auto-detect、flag permutation、absolute/escape/symlink/FIFO、其它schema与所有其它`contract`子命令继续fail closed。
+删除 gate、手写 Python schema 子集、清空 activation 或构建临时 checker都会分别造成验证降级、语义漂移、无效绕过或匿名 Mach-O。ADR 0077 曾据此把解法定义为 public `contract validate --schema task-spec <repository-relative-path>` 与 local-profile self-admission 权限；后续设计复审确认该方案把独立 Verification 已拥有的 candidate-isolate authority 错误绕回 public CLI，使用户控制路径进入 argv、`CommandRecord` 与日志，并产生第二条 executable admission 路径。
 
-该权限只执行现有Draft 2020-12+semantic validator，无网络、持久化、生命周期、publication或child-process effect；result/evidence/diagnostic必须白名单化、有界且不泄露path、argv、env、activation、输入值或secret。接受只冻结合同，尚未实现，不表示M13完成或任何I186成熟度升级；后继实现必须以direct argv替换`sh|cat`验收命令并通过完整argv/path/object/identity/schema/semantic/zero-effect/secret负向矩阵。
+维护者因此接受[ADR 0078](adr/0078-verifier-builtin-task-spec-contract-gate.md)并完整取代[ADR 0077](adr/0077-local-dogfood-read-only-task-spec-validation.md)。现行唯一设计是 pathless exact argv `marshal-builtin:contract-task-spec:v1 + deliverable:<id>`：它只在 current Candidate 的既有 command-isolation 闭包内解析 exact required artifact，以 held nofollow、有界读取取得 bytes，调用 Core 唯一 Draft 2020-12+semantic validator，并生成 closed、pathless evidence。reserved namespace永不回退到 PATH；失败不得泄露path、argv原文、底层错误或输入值。
+
+ADR 0077 现仅保留为问题与被拒方案的历史记录；其 `contract.validate-task-spec-file-readonly`、public CLI 与 self-admission 决定**不再授权任何实现或激活**。ADR 0078 不新增 public contract、自身份权限、生命周期、publication或child-process effect，也不表示M13完成或任何I186成熟度升级；状态只记录替代后的现行设计与实现边界。
 
 ## 2026-09-03：ADR 0076 fixed server 合同接受与大爆炸实施纠偏
 
