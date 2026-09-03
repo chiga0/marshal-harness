@@ -27,13 +27,17 @@ type endpointFixture struct {
 
 func newEndpointFixture(t *testing.T) endpointFixture {
 	t.Helper()
-	root, err := os.MkdirTemp("/private/tmp", "marshal-fixed-endpoint-")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve fixture home: %v", err)
+	}
+	home, err = filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatalf("canonicalize fixture home: %v", err)
+	}
+	root, err := os.MkdirTemp(home, ".mfe-")
 	if err != nil {
 		t.Fatalf("create short fixture root: %v", err)
-	}
-	root, err = filepath.EvalSymlinks(root)
-	if err != nil {
-		t.Fatalf("canonicalize short fixture root: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := os.RemoveAll(root); err != nil {
