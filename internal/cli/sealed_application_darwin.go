@@ -171,6 +171,18 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	if err != nil {
 		return nil, fmt.Errorf("sealed repository application: observe attestation: %w", err)
 	}
+	// OpenRepositorySession materializes the fixed runtime-v1 hierarchy below
+	// StateRoot. Do that before binding the held provider store: the provider
+	// authority deliberately freezes its parent directory mutation identity,
+	// so creating a later StateRoot sibling would correctly look like an
+	// authority-graph drift on the first ComposeRuntime read-back.
+	applicationAdapter.session, err = productionruntime.OpenRepositorySession(ctx, productionruntime.RepositorySessionInputs{
+		HeldIngressDir: heldIngress, HeldRepositoryRoot: repositoryDirectory, OwnerDirectory: ownerDirectory, Acquisition: acquisition,
+		FixedMarshalPath: fixedMarshal, OwnerPrivateControlRoot: controlRoot,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sealed repository application: open repository session: %w", err)
+	}
 	applicationAdapter.providerStore, err = provider.OpenDarwinRegistrationStore(providerDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("sealed repository application: open provider authority: %w", err)
@@ -184,13 +196,6 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	applicationAdapter.registration, err = applicationAdapter.providerStore.Put(applicationAdapter.registration)
 	if err != nil {
 		return nil, fmt.Errorf("sealed repository application: persist provider authority: %w", err)
-	}
-	applicationAdapter.session, err = productionruntime.OpenRepositorySession(ctx, productionruntime.RepositorySessionInputs{
-		HeldIngressDir: heldIngress, HeldRepositoryRoot: repositoryDirectory, OwnerDirectory: ownerDirectory, Acquisition: acquisition,
-		FixedMarshalPath: fixedMarshal, OwnerPrivateControlRoot: controlRoot,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("sealed repository application: open repository session: %w", err)
 	}
 
 	statusClosure, err := launchidentity.OpenPi0844(piRuntime, piEntrypoint, []string{piRuntime, piEntrypoint}, nil, config.RepositoryRoot)
