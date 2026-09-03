@@ -31,7 +31,7 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, _, run
 	}
 	applicationAdapter, err := openSealedRepositoryApplication(ctx, sealedRepositoryApplicationConfig{
 		StateRoot: stateRoot, RepositoryRoot: repositoryRoot, PiRuntime: piRuntime, PiEntrypoint: piEntrypoint,
-		EntryIdentity: entryLocalSelfIdentity,
+		EntryIdentity: entryLocalSelfIdentity, RecoveryMode: sealedRepositoryRecoveryOneShot,
 		ObserveIdentity: func() (selfidentity.LocalSelfIdentityObservationV2, error) {
 			return freshLocalDogfoodObservation(selfidentity.CommandTaskRun)
 		},

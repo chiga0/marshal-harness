@@ -18,6 +18,61 @@ type sealedRunAdvancerStub struct {
 	collectErr   error
 }
 
+func TestRecoverSealedRepositoryOnOpenSeparatesOneShotAndResidentModes(t *testing.T) {
+	recoverCalls := 0
+	recoverRuns := func(context.Context) error {
+		recoverCalls++
+		return nil
+	}
+	if err := recoverSealedRepositoryOnOpen(context.Background(), sealedRepositoryRecoveryOneShot, recoverRuns); err != nil {
+		t.Fatalf("one-shot recovery policy error = %v", err)
+	}
+	if recoverCalls != 0 {
+		t.Fatalf("one-shot recovery calls = %d, want 0", recoverCalls)
+	}
+	if err := recoverSealedRepositoryOnOpen(context.Background(), sealedRepositoryRecoveryResident, recoverRuns); err != nil {
+		t.Fatalf("resident recovery policy error = %v", err)
+	}
+	if recoverCalls != 1 {
+		t.Fatalf("resident recovery calls = %d, want 1", recoverCalls)
+	}
+}
+
+func TestAdvanceSealedRunWithOpenComposesTargetOnce(t *testing.T) {
+	running := sealedRunProjection(domain.StateRunning, 52)
+	stub := &sealedRunAdvancerStub{
+		projections: []application.RunProjection{running},
+		collectErr:  productionruntime.ErrAttemptStillRunning,
+	}
+	openCalls := 0
+	closeCalls := 0
+	got, stage, err := advanceSealedRunWithOpen(context.Background(), running.RunID, func(_ context.Context, runID string) (sealedRunAdvancer, func() error, error) {
+		openCalls++
+		if runID != running.RunID {
+			t.Fatalf("open runID = %q, want %q", runID, running.RunID)
+		}
+		return stub, func() error { closeCalls++; return nil }, nil
+	})
+	if err != nil {
+		t.Fatalf("advanceSealedRunWithOpen() error = %v", err)
+	}
+	if stage != "" {
+		t.Fatalf("stage = %q, want empty", stage)
+	}
+	if got != running {
+		t.Fatalf("projection = %#v, want %#v", got, running)
+	}
+	if openCalls != 1 {
+		t.Fatalf("open calls = %d, want 1", openCalls)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("close calls = %d, want 1", closeCalls)
+	}
+	if stub.inspectCalls != 1 || stub.collectCalls != 1 {
+		t.Fatalf("InspectRun calls = %d, CollectRunResult calls = %d, want 1 each", stub.inspectCalls, stub.collectCalls)
+	}
+}
+
 func (stub *sealedRunAdvancerStub) InspectRun(context.Context, application.InspectRunRequest) (application.RunProjection, error) {
 	projection := stub.projections[stub.inspectCalls]
 	stub.inspectCalls++
