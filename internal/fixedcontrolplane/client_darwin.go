@@ -65,7 +65,10 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	if err != nil || len(body) == 0 || len(body) > maxHTTPBodyBytes {
 		return httpResponse{}, ErrInvalid
 	}
-	binding := readBinding(requestKey, body, operation, request, deadline.UTC())
+	binding, err := clientRequestBinding(requestKey, body, operation, request, deadline.UTC())
+	if err != nil {
+		return httpResponse{}, ErrInvalid
+	}
 	if binding.Validate(time.Now().UTC()) != nil {
 		return httpResponse{}, ErrInvalid
 	}
@@ -89,6 +92,30 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 		return httpResponse{}, ErrUnavailable
 	}
 	return response, nil
+}
+
+// clientRequestBinding keeps the authenticated transport binding identical to
+// the durable delivery binding for start-run. Read-only requests retain the
+// HTTP protocol intent; start-run deliberately uses the delivery protocol
+// intent because BeginStartRunBound rejects any independently derived digest.
+func clientRequestBinding(requestKey string, body []byte, operation string, request any, deadline time.Time) (RequestBinding, error) {
+	if operation != "start-run" {
+		return readBinding(requestKey, body, operation, request, deadline), nil
+	}
+	input, ok := request.(application.StartRunRequest)
+	if !ok {
+		return RequestBinding{}, ErrInvalid
+	}
+	binding, err := productionruntime.NewFixedStartRunDeliveryBinding(requestKey, input, deadline)
+	if err != nil {
+		return RequestBinding{}, ErrInvalid
+	}
+	return RequestBinding{
+		RequestKeyDigest: binding.RequestKeyDigest,
+		RequestDigest:    binding.RequestDigest,
+		IntentDigest:     binding.ApplicationIntentDigest,
+		Deadline:         binding.Deadline,
+	}, nil
 }
 
 func readClientHTTPResponse(connection *AuthenticatedConnection) (httpResponse, error) {

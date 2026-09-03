@@ -288,6 +288,51 @@ func TestFixedClientViewCallsResidentStatus(t *testing.T) {
 	}
 }
 
+func TestFixedClientStartRunUsesDurableDeliveryBinding(t *testing.T) {
+	fixture := newEndpointFixture(t)
+	endpoint, err := OpenEndpoint(context.Background(), fixture.authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = endpoint.Close() })
+	port, delivery := testHTTPApplication()
+	router, err := NewHTTPRouter(port, delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() {
+		connection, acceptErr := endpoint.Accept(context.Background())
+		if acceptErr != nil {
+			served <- acceptErr
+			return
+		}
+		defer connection.Close()
+		served <- router.ServeAuthenticated(context.Background(), connection)
+	}()
+	clientAuthority, err := productionruntime.OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientAuthority.Close()
+	request := application.StartRunRequest{RunID: port.run.RunID, ExpectedSequence: port.started.Prepared.Sequence, ExpectedAuthorityHead: port.started.Prepared.AuthorityHead}
+	result, err := CallStartRun(context.Background(), clientAuthority, "start:independent-client", request, time.Now().UTC().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("CallStartRun: %v", err)
+	}
+	if result.Projection != port.started || result.Receipt != delivery.receipt || delivery.beginCalls != 1 || port.startCalls != 1 {
+		t.Fatalf("result=%+v begin=%d start=%d", result, delivery.beginCalls, port.startCalls)
+	}
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve timeout")
+	}
+}
+
 func TestHTTPRouterStatusUsesBoundCanonicalRequest(t *testing.T) {
 	port, delivery := testHTTPApplication()
 	router, err := NewHTTPRouter(port, delivery)
