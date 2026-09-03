@@ -46,7 +46,7 @@ func TestValidReservedBuiltinRequiresCandidateAuthorityBeforeVerifierSideEffects
 func TestBuiltinInventoryFailureUsesClosedPathlessRecordAndLogs(t *testing.T) {
 	fixture := newVerificationFixture(t)
 	input := fixture.candidateInput()
-	input.Deliverables = []Deliverable{{ID: "task-spec", Required: true, PathGlob: "missing/task.json", MinimumCount: 1}}
+	input.Deliverables = []Deliverable{{ID: "task-spec", Kind: "documentation", Required: true, PathGlob: "missing/task.json", MinimumCount: 1}}
 	input.Commands = []CommandSpec{{ID: "validate", Argv: []string{verificationbuiltin.TaskSpecV1, "deliverable:task-spec"}, CWD: ".", Timeout: time.Second, Required: true, BaselinePolicy: "none"}}
 	result, err := New().Verify(context.Background(), input)
 	if err != nil {
