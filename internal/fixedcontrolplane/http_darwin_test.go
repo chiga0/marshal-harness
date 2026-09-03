@@ -288,48 +288,28 @@ func TestFixedClientViewCallsResidentStatus(t *testing.T) {
 	}
 }
 
-func TestFixedClientStartRunUsesDurableDeliveryBinding(t *testing.T) {
-	fixture := newEndpointFixture(t)
-	endpoint, err := OpenEndpoint(context.Background(), fixture.authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = endpoint.Close() })
-	port, delivery := testHTTPApplication()
-	router, err := NewHTTPRouter(port, delivery)
-	if err != nil {
-		t.Fatal(err)
-	}
-	served := make(chan error, 1)
-	go func() {
-		connection, acceptErr := endpoint.Accept(context.Background())
-		if acceptErr != nil {
-			served <- acceptErr
-			return
-		}
-		defer connection.Close()
-		served <- router.ServeAuthenticated(context.Background(), connection)
-	}()
-	clientAuthority, err := productionruntime.OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer clientAuthority.Close()
+func TestFixedClientStartRunBindingMatchesDurableDeliveryBinding(t *testing.T) {
+	port, _ := testHTTPApplication()
 	request := application.StartRunRequest{RunID: port.run.RunID, ExpectedSequence: port.started.Prepared.Sequence, ExpectedAuthorityHead: port.started.Prepared.AuthorityHead}
-	result, err := CallStartRun(context.Background(), clientAuthority, "start:independent-client", request, time.Now().UTC().Add(time.Minute))
+	body := canonicalBody(t, request)
+	deadline := time.Now().UTC().Add(time.Minute)
+	got, err := clientRequestBinding("request:start-client", body, "start-run", request, deadline)
 	if err != nil {
-		t.Fatalf("CallStartRun: %v", err)
+		t.Fatal(err)
 	}
-	if result.Projection != port.started || result.Receipt != delivery.receipt || delivery.beginCalls != 1 || port.startCalls != 1 {
-		t.Fatalf("result=%+v begin=%d start=%d", result, delivery.beginCalls, port.startCalls)
+	delivery, err := productionruntime.NewFixedStartRunDeliveryBinding("request:start-client", request, deadline)
+	if err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case err := <-served:
-		if err != nil {
-			t.Fatalf("serve: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("serve timeout")
+	want := RequestBinding{RequestKeyDigest: delivery.RequestKeyDigest, RequestDigest: delivery.RequestDigest, IntentDigest: delivery.ApplicationIntentDigest, Deadline: delivery.Deadline}
+	if got != want {
+		t.Fatalf("client binding=%+v want durable delivery binding=%+v", got, want)
+	}
+	if got == readBinding("request:start-client", body, "start-run", request, deadline) {
+		t.Fatal("start-run silently fell back to the incompatible HTTP intent binding")
+	}
+	if _, err := clientRequestBinding("request:start-client", body, "start-run", application.StatusRequest{}, deadline); err == nil {
+		t.Fatal("start-run accepted a non-StartRunRequest value")
 	}
 }
 
