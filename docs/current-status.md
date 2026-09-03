@@ -2,6 +2,12 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
+## 2026-09-03 fixed server S1.2：同 owner 的 response-loss receipt 已闭合
+
+fixed `marshal control-plane serve` 的 S1 durable delivery 已按 [ADR 0076](adr/0076-darwin-fixed-server-pathname-locator.md) 推进到 S1.2。S1.1 已把完整 `ControlOwnerAcquisition` digest、owner fact、repository/namespace/root、request/idempotency key、application intent 与冻结 deadline 写入同一 held `control` authority root 下的 immutable `pending`；S1.2 新增只读 `PublicApplicationPort.ReconcileStartRun`，只从 current RB1 重读 exact preparation 与 sealed `run.start-outcome` successor，随后才以 `O_EXCL`/nofollow 追加 exact `receipt-ref`。响应丢失后的同请求重放不会再次 Prepare、再次启动 Attempt 或生成第二条 Supervisor command；RB1 尚无结果时保持 `pending/unknown`，伪造或漂移的 durable result 固定 conflict。
+
+本切片 sourceHead 为 `a9ef62b9409d5b53d2ddfc90e01ab6aad638facc`；Linux amd64/arm64 candidate conformance 与 secret scan 已通过，macOS/Ubuntu quality 仍由 exact-head workflow [33737760555](https://github.com/chiga0/marshal-harness/actions/runs/33737760555) 验证。它只关闭同一 live owner/session 内的 receipt 对账，不解决跨 owner restart：当前 `AuthorityRootDigest` 仍是 session-local mutation observation，S1.3 必须改为可由 strict successor 重证的稳定 authority identity 与 owner lineage。S2 AF_UNIX 认证、S3 bounded HTTP、S4 真实 Pi restart canary 和 T2 到 `ACCEPTED` 均未完成，因此 fixed server 仍为 `COMPONENT/INTEGRATION-OPEN`，还不能作为正式用户入口。
+
 ## 2026-09-02 #226 叶因已锁定 CLI adapter 层（转交状态）
 
 分层探针 PR #227（squash 合入 [b522008](https://github.com/chiga0/marshal-harness/commit/b522008)）给出证据化分层：

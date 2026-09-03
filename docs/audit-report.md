@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-03：fixed server S1.2 receipt 对账审计
+
+对 `a9ef62b` 的实现审计确认，S1.2 没有把 transport response、HTTP status 或当前 Run 快照冒充 application authority。新增的 `ReconcileStartRun` 是 current-owner 下的只读 RB1 查询：它重建 exact `PreparedRunStart`，并只接受同一 preparation 所产生、位于 journal head 的 sealed `run.start-outcome` successor。delivery store 随后重验同一 owner/session、held root、immutable pending、request 与 intent digest，才以 digest-derived leaf 追加或 exact-adopt `receipt-ref`。测试覆盖成功闭合、exact replay、结果漂移拒绝、RB1 未命中保持 pending，以及 Run 已从 READY 前进到 RUNNING 后仍可重放原 pending；另有 controller 测试证明 reconcile 不调用 Prepare/bridge 且只进入一次 owner authority section。
+
+本切片没有完成 ADR 0076 S1 的跨重启部分。S1.1 的 `AuthorityRootDigest` 仍绑定一次 session 打开时观察到的 mutation/root state；strict successor 即使持有同一 physical root，也不能据此证明 old pending 到 current owner 的完整 lineage。因而 S1.2 只能判定为 `SAME-OWNER-RECEIPT-CLOSED / SUCCESSOR-OPEN`，不得开始对外宣称 server 可用，也不得以本 checkpoint 替代 S2 endpoint auth、S3 bounded HTTP、S4 exact-head real-Pi restart canary 或 T2 `ACCEPTED`。下一切片必须先让稳定 authority identity 与 owner successor lineage 可重放，并补 old-owner pending 的正负恢复矩阵；不能通过放宽 digest、adopt 未知记录或重新生成 deadline 解决。
+
 ## 2026-09-03：ADR 0078 取代 ADR 0077 的 TaskSpec 验证决定
 
 M13 walking-skeleton dogfood Run `33709488741` 已由真实 Worker 完成交付并通过 Drive，Verification 中 8 项通过、2 项跳过，唯一 required command failure 为 `taskspec-validate`：同一 fixed candidate 执行 `contract validate` 时被 local-profile self gate 以 `self-local-command-denied` 拒绝。审计确认这不是 TaskSpec、Agent 或网络失败，而是[开发文档](development.md)已经承诺 `contract validate` 为只读命令，local dogfood closed command classes却没有对应入口。
