@@ -300,9 +300,16 @@ end = {"type":"agent_end","willRetry":False,"messages":[{"role":"assistant","con
 stdout_path = os.path.join(control, "stdout.bin")
 with open(stdout_path, "w", encoding="utf-8") as f: f.write(json.dumps(end, ensure_ascii=False)+"\n")
 os.chmod(stdout_path, 0o600)
+with open(os.path.join(control, "transcript.jcs"), "w", encoding="utf-8") as f: json.dump({"stdoutBytes":os.path.getsize(stdout_path),"transcriptDigest":"sha256:"+"f"*64}, f)
+os.chmod(os.path.join(control, "transcript.jcs"), 0o600)
+with open(os.path.join(control, "session.nonce"), "w", encoding="utf-8") as f: f.write("RAW-AUTH-MUST-NOT-ARCHIVE")
+os.chmod(os.path.join(control, "session.nonce"), 0o600)
+with open(os.path.join(control, "process-supervisor.sock"), "w", encoding="utf-8") as f: f.write("SOCKET-MUST-NOT-ARCHIVE")
+os.chmod(os.path.join(control, "process-supervisor.sock"), 0o600)
 os.makedirs(os.path.join(state, "result-ingress"), exist_ok=True)
 ledger = {"transition":{"identity":{"taskId":task,"runId":run,"attemptId":attempt},"supervisorStarted":{"controlDirectory":{"canonicalPath":control}}}}
 with open(os.path.join(state, "result-ingress", "result-ingress.jsonl"), "w") as f: f.write(json.dumps(ledger)+"\n")
+with open(os.path.join(run_root, "events.jsonl"), "w") as f: f.write(json.dumps({"sequence":1,"type":"worker.completed"})+"\n")
 d = "sha256:" + "e"*64
 packet = {"apiVersion":"marshal.dev/v1alpha1","kind":"ReviewPacket","taskId":task,"runId":run,"reviewRound":1,"specDigest":spec,"baseSha":base,"snapshotDigest":d,"diffDigest":d,"verificationDigest":d,"artifactManifestDigest":d,"evidenceDigest":d,"workerResultDigests":[result_digest],"inputs":{"workerResults":[f"attempts/{attempt}/worker-result.json"]}}
 with open(os.path.join(state, "packet.json"), "w") as f: json.dump(packet, f)
@@ -315,6 +322,24 @@ PY
   --candidate-mode build-from-head --source-head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
   --out "$EVIDENCE_STATE/evidence-check.json" >/dev/null \
   || fail '合法的三文件/ReviewPacket/raw transcript 证据未通过'
+/usr/bin/python3 -I -B - "$EVIDENCE_STATE/evidence-check.json" <<'PY' \
+  || fail 'evidence-check 未绑定 current Attempt normalized WorkerResult 正 token'
+import json, sys
+e=json.load(open(sys.argv[1])); u=e["workerResultUsage"]; assert u == {"attemptId":"attempt-1","authority":"attempt-root-normalized-worker-result","inputTokens":12,"outputTokens":7}
+PY
+cp "$EVIDENCE_STATE/runs/m13-run/attempts/attempt-1/worker-result.json" "$EVIDENCE_STATE/original-worker-result.json"
+/usr/bin/python3 -I -B - "$EVIDENCE_STATE/runs/m13-run/attempts/attempt-1/worker-result.json" <<'PY'
+import json, sys
+p=sys.argv[1]; result=json.load(open(p)); result["usage"]["outputTokens"]=0; json.dump(result, open(p,"w"))
+PY
+if /usr/bin/python3 -I -B "$DRIVER" validate-evidence \
+    --state-root "$EVIDENCE_STATE" --task-id m13-task --run-id m13-run \
+    --packet "$EVIDENCE_STATE/packet.json" --candidate-evidence "$EVIDENCE_STATE/candidate.json" \
+    --candidate-mode build-from-head --source-head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --out "$EVIDENCE_STATE/zero-token-evidence-check.json" >/dev/null 2>&1; then
+  fail 'Decision 前 current Attempt outputTokens=0 未 fail closed'
+fi
+cp "$EVIDENCE_STATE/original-worker-result.json" "$EVIDENCE_STATE/runs/m13-run/attempts/attempt-1/worker-result.json"
 /usr/bin/python3 -I -B "$DRIVER" render-decision \
   --packet "$EVIDENCE_STATE/packet.json" --task-id m13-task --run-id m13-run \
   --reviewer-id independent-reviewer --summary '独立检查通过' \
@@ -334,6 +359,49 @@ if /usr/bin/python3 -I -B "$DRIVER" validate-evidence \
   fail '最后 agent_end 含第二 JSON object 未 fail closed'
 fi
 cp "$EVIDENCE_STATE/original-stdout.bin" "$EVIDENCE_STATE/owner-control/session-1/stdout.bin"
+EVIDENCE_CONTROL="${TMP_ROOT}/evidence-control"
+mkdir -p "$EVIDENCE_CONTROL"
+cp "$EVIDENCE_STATE/candidate.json" "$EVIDENCE_CONTROL/candidate-evidence.json"
+cp "$EVIDENCE_STATE/evidence-check.json" "$EVIDENCE_CONTROL/evidence-check.json"
+cp "$EVIDENCE_STATE/packet.json" "$EVIDENCE_STATE/runs/m13-run/review-packet.json"
+/usr/bin/python3 -I -B "$DRIVER" stage-evidence \
+  --state-root "$EVIDENCE_STATE" --control-root "$EVIDENCE_CONTROL" --run-id m13-run \
+  --out-dir "$EVIDENCE_STATE/staged" >/dev/null \
+  || fail 'allowlisted evidence staging 失败'
+/usr/bin/python3 -I -B "$DRIVER" archive-evidence \
+  --stage-dir "$EVIDENCE_STATE/staged" --out "$EVIDENCE_STATE/evidence.tar.gz" >/dev/null \
+  || fail 'allowlisted evidence archive 生成失败'
+/usr/bin/python3 -I -B "$DRIVER" verify-evidence-archive \
+  --archive "$EVIDENCE_STATE/evidence.tar.gz" >"$EVIDENCE_STATE/archive-check.json" \
+  || fail 'allowlisted evidence archive 后置校验失败'
+/usr/bin/python3 -I -B - "$EVIDENCE_STATE/evidence.tar.gz" <<'PY' \
+  || fail 'archive 泄漏 nonce/socket/auth material 或非 allowlist path'
+import tarfile, sys
+with tarfile.open(sys.argv[1], "r:gz") as archive:
+    names=[m.name for m in archive.getmembers()]
+    payload=b"".join(archive.extractfile(m).read() for m in archive.getmembers() if m.isfile())
+assert all(".marshal" not in n and "owner-control" not in n and "nonce" not in n and "sock" not in n for n in names), names
+assert b"RAW-AUTH-MUST-NOT-ARCHIVE" not in payload
+assert b"SOCKET-MUST-NOT-ARCHIVE" not in payload
+assert "supervisor/stdout.bin" in names and "supervisor/transcript.jcs" in names and "journal/digests.json" in names
+assert "run/events.jsonl" not in names
+PY
+mkdir -p "$EVIDENCE_STATE/staged/owner-control/session-1"
+printf 'RAW-AUTH-MUST-NOT-ARCHIVE' >"$EVIDENCE_STATE/staged/owner-control/session-1/session.nonce"
+chmod 0600 "$EVIDENCE_STATE/staged/owner-control/session-1/session.nonce"
+if /usr/bin/python3 -I -B "$DRIVER" archive-evidence \
+    --stage-dir "$EVIDENCE_STATE/staged" --out "$EVIDENCE_STATE/precheck-bypass.tar.gz" >/dev/null 2>&1; then
+  fail 'archive precheck 未拒绝 staged owner-control/session.nonce'
+fi
+/usr/bin/python3 -I -B - "$EVIDENCE_STATE/malicious.tar.gz" <<'PY'
+import io, tarfile, sys
+with tarfile.open(sys.argv[1], "w:gz") as archive:
+    data=b"RAW-AUTH-MUST-NOT-ARCHIVE"; info=tarfile.TarInfo(".marshal/owner-control/session-1/session.nonce"); info.size=len(data); archive.addfile(info, io.BytesIO(data))
+PY
+if /usr/bin/python3 -I -B "$DRIVER" verify-evidence-archive \
+    --archive "$EVIDENCE_STATE/malicious.tar.gz" >/dev/null 2>&1; then
+  fail 'archive verifier 未拒绝 owner-control/session.nonce 非 allowlist path'
+fi
 printf ' \n' >>"$EVIDENCE_STATE/packet.json"
 # canonical digest 对空白不敏感；改变语义才必须触发漂移。
 /usr/bin/python3 -I -B "$DRIVER" render-decision \
@@ -357,29 +425,30 @@ fi
 # metrics 只读 Attempt 根 worker-result.json 的 inputTokens/outputTokens，
 # 且 ACCEPTED、正 token 与 wallClockSeconds 任一缺失都 fail closed。
 METRIC_STATE="${TMP_ROOT}/metric-state"
-mkdir -p "$METRIC_STATE/runs/metric-run/attempts/attempt-1"
-printf '{"taskId":"metric-task","state":"ACCEPTED","attemptsUsed":1}\n' >"$METRIC_STATE/runs/metric-run/state.json"
-printf '{"usage":{"inputTokens":11,"outputTokens":5}}\n' >"$METRIC_STATE/runs/metric-run/attempts/attempt-1/worker-result.json"
+mkdir -p "$METRIC_STATE/runs/metric-run/attempts/attempt-1" "$METRIC_STATE/runs/metric-run/attempts/attempt-old"
+printf '{"taskId":"metric-task","runId":"metric-run","state":"ACCEPTED","currentAttemptId":"attempt-1","attemptsUsed":2}\n' >"$METRIC_STATE/runs/metric-run/state.json"
+printf '{"taskId":"metric-task","runId":"metric-run","attemptId":"attempt-1","usage":{"inputTokens":11,"outputTokens":5}}\n' >"$METRIC_STATE/runs/metric-run/attempts/attempt-1/worker-result.json"
+printf '{"taskId":"metric-task","runId":"metric-run","attemptId":"attempt-old","usage":{"inputTokens":999,"outputTokens":999}}\n' >"$METRIC_STATE/runs/metric-run/attempts/attempt-old/worker-result.json"
 /usr/bin/python3 -I -B "$DRIVER" metrics --state-root "$METRIC_STATE" --run-id metric-run \
   --wall-start 2000-01-01T00:00:00Z --out "$METRIC_STATE/metrics.json" >/dev/null \
   || fail 'Attempt-root token metrics 未被提取'
 /usr/bin/python3 -I -B - "$METRIC_STATE/metrics.json" <<'PY' \
   || fail 'metrics 未冻结 ACCEPTED/正 token/wall clock'
 import json, sys
-m=json.load(open(sys.argv[1])); assert m["finalState"] == "ACCEPTED"; assert m["inputTokens"] == 11; assert m["outputTokens"] == 5; assert m["wallClockSeconds"] > 0
+m=json.load(open(sys.argv[1])); assert m["finalState"] == "ACCEPTED"; assert m["attemptId"] == "attempt-1"; assert m["inputTokens"] == 11; assert m["outputTokens"] == 5; assert m["wallClockSeconds"] > 0
 PY
-printf '{"usage":{"inputTokens":11,"outputTokens":0}}\n' >"$METRIC_STATE/runs/metric-run/attempts/attempt-1/worker-result.json"
+printf '{"taskId":"metric-task","runId":"metric-run","attemptId":"attempt-1","usage":{"inputTokens":11,"outputTokens":0}}\n' >"$METRIC_STATE/runs/metric-run/attempts/attempt-1/worker-result.json"
 if /usr/bin/python3 -I -B "$DRIVER" metrics --state-root "$METRIC_STATE" --run-id metric-run \
     --wall-start 2000-01-01T00:00:00Z --out "$METRIC_STATE/zero.json" >/dev/null 2>&1; then
   fail 'outputTokens=0 未 fail closed'
 fi
-printf '{"usage":{"inputTokens":11,"outputTokens":5}}\n' >"$METRIC_STATE/runs/metric-run/attempts/attempt-1/worker-result.json"
-printf '{"taskId":"metric-task","state":"REVIEW_PENDING","attemptsUsed":1}\n' >"$METRIC_STATE/runs/metric-run/state.json"
+printf '{"taskId":"metric-task","runId":"metric-run","attemptId":"attempt-1","usage":{"inputTokens":11,"outputTokens":5}}\n' >"$METRIC_STATE/runs/metric-run/attempts/attempt-1/worker-result.json"
+printf '{"taskId":"metric-task","runId":"metric-run","state":"REVIEW_PENDING","currentAttemptId":"attempt-1","attemptsUsed":2}\n' >"$METRIC_STATE/runs/metric-run/state.json"
 if /usr/bin/python3 -I -B "$DRIVER" metrics --state-root "$METRIC_STATE" --run-id metric-run \
     --wall-start 2000-01-01T00:00:00Z --out "$METRIC_STATE/nonterminal.json" >/dev/null 2>&1; then
   fail 'finalState 非 ACCEPTED 未 fail closed'
 fi
-printf '{"taskId":"metric-task","state":"ACCEPTED","attemptsUsed":1}\n' >"$METRIC_STATE/runs/metric-run/state.json"
+printf '{"taskId":"metric-task","runId":"metric-run","state":"ACCEPTED","currentAttemptId":"attempt-1","attemptsUsed":2}\n' >"$METRIC_STATE/runs/metric-run/state.json"
 if /usr/bin/python3 -I -B "$DRIVER" metrics --state-root "$METRIC_STATE" --run-id metric-run \
     --out "$METRIC_STATE/no-wall.json" >/dev/null 2>&1; then
   fail '缺少 wallClockSeconds 未 fail closed'
@@ -395,6 +464,11 @@ grep -A4 -F '      - name: Run independent verification' "$WORKFLOW" \
 grep -A3 -F '      - name: Upload dogfood evidence' "$WORKFLOW" \
   | grep -Fq "continue-on-error: \${{ steps.independent_verification.outcome == 'failure' }}" \
   || fail 'artifact upload 未仅在 verification failure 时降级网络失败'
+grep -Fq 'stage-evidence' "$PACK_SCRIPT" || fail 'pack step 未从显式 allowlist staging 开始'
+grep -Fq 'archive-evidence' "$PACK_SCRIPT" || fail 'pack step 未使用 allowlist archive builder'
+grep -Fq 'verify-evidence-archive' "$PACK_SCRIPT" || fail 'pack step 未后置复核 archive allowlist'
+! grep -Fq 'members=".marshal"' "$PACK_SCRIPT" || fail 'pack step 仍整包 .marshal'
+! grep -Fq -- '-czf m13-dogfood-evidence.tar.gz' "$PACK_SCRIPT" || fail 'pack step 仍直接 tar 整体状态目录'
 
 grep -Fxq 'umask 022' "$PLAN_SCRIPT" || fail 'Plan 没有显式使用 umask 022'
 grep -Fxq 'umask 022' "$DRIVE_SCRIPT" || fail 'Drive 没有显式使用 umask 022'

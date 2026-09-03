@@ -9,19 +9,25 @@
   validate-evidence 在 Decision 前独立核对交付物、ReviewPacket 与 raw transcript。
   render-decision 从 review-packet.json 提取全部绑定摘要，渲染独立
                   ReviewDecision（verdict=accept）。
-  metrics         汇总 run 证据中的 token 用量与时间线。
+  stage-evidence  仅暂存显式 allowlist 中的关闭证据并生成摘要 manifest。
+  archive-evidence 从已校验 staging tree 生成不含 owner-control auth material 的归档。
+  verify-evidence-archive 独立复核归档 member allowlist、摘要与大小。
+  metrics         摘要 current Attempt 的 token 用量与时间线。
 
 只读取显式传入的文件；不回显任何 secret 值。
 """
 import argparse
 import datetime
 import hashlib
+import io
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 
 M13_FINAL_PREFIX = "交付已完成，以下为唯一 WorkerResult：\n"
 M13_OBJECTIVE = "产出 M13（Goal orchestration）首个工程纵切的完整落地材料（walking skeleton：simple prompt → approved proposal → one real Task）。只允许创建以下三个文件，不允许创建、修改或删除任何其它文件：\n1) `docs/m13-goal-lite-walking-skeleton.md`【中文】：描述在已确定的 Deterministic Control Plane 与 Goal admission 约束下首个产品纵切的设计。内容必须包含：walking skeleton 的目标与 Actor Flow（UserPrompt → Goal admission → DeliveryProposal → UserApproval → WorkGraph → one real Task → Integration → Outcome）、首期只允许 ONE Goal + ONE real Task 的领域范围声明、与 ADR 0019 的 plan admission、deterministic admission、revision 语义对应关系表、首批 Outcome 必须捕捉的证据面（independent Verification、reviewDigest、attemptAuthority 形成的路径）、以及下一切片序（不超过 3 个并发节点 + Integration Node）。\n2) `schemas/examples/goal-lite/approved-proposal.example.json`：一份与文档语义对应的 DeliveryProposal 样例。严格使用封闭字段集，禁止增删字段：{\"apiVersion\":\"marshal.dev/v1alpha1\",\"kind\":\"DeliveryProposal\",\"metadata\":{\"id\":\"goal-lite-approved-001\",\"title\":\"...\"},\"goal\":{\"prompt\":\"...\",\"objective\":\"...\",\"budgets\":{\"maxAttempts\":2,\"maxReworkRounds\":1,\"maxOutputBytes\":8388608}},\"userApproval\":{\"round\":1,\"actor\":\"operator:demo\",\"decision\":\"accept\",\"at\":\"<RFC3339 UTC>\"},\"workGraph\":{\"nodes\":[{\"id\":\"task-only-1\",\"kind\":\"task\",\"taskSpecDigest\":\"sha256:<64hex>\",\"dependencies\":[]}],\"integration\":{\"type\":\"collect\"}},\"outcome\":{\"state\":\"proposed\"}}。\n3) `schemas/examples/goal-lite/walking-skeleton.tasks.json`：一份与样例 proposal 对应、与现行 task-spec.schema.json 契约一致的 walking skeleton TaskSpec 实例，以该 proposal 下单一真实 Task 的完全相同语义填写（work.objective 与合作者出面背景也参考 walking skeleton 首期语气），work/worker/scope/acceptance/deliverables/budgets 均须可直接被 `marshal contract validate --stdin` 通过。\n要求：\n- 全部面向人的文字一律用中文；协议字段、CLI 命令、schema key、标识符保留英文；\n- 术语、状态名、Allowed milestone 词汇必须与 docs/roadmap-status.md 一致；\n- 不得宣称 M13 production 完成、不得宣称 v1 stable 支持；\n- 最终 assistant 的最终回复必须逐字以固定中文前缀“交付已完成，以下为唯一 WorkerResult：”加换行开始，紧接恰好一个完整 WorkerResult JSON 对象；该对象之后到回复结尾只能有空白，不得有 Markdown fence、解释或第二个 JSON 对象。"
@@ -41,6 +47,35 @@ ALLOW_PATHS = [
 
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 SOURCE_HEAD_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+
+EVIDENCE_MEMBERS = frozenset({
+    "control/candidate-evidence.json",
+    "control/worktree-private-check.json",
+    "control/evidence-check.json",
+    "control/decision.json",
+    "control/metrics.json",
+    "run/state.json",
+    "run/verification-report.json",
+    "run/artifact-manifest.json",
+    "run/review-packet.json",
+    "attempt/worker-result.json",
+    "supervisor/stdout.bin",
+    "supervisor/transcript.jcs",
+    "journal/digests.json",
+    "manifest.json",
+})
+REQUIRED_EVIDENCE_MEMBERS = frozenset({
+    "control/candidate-evidence.json",
+    "control/evidence-check.json",
+    "run/state.json",
+    "run/review-packet.json",
+    "attempt/worker-result.json",
+    "supervisor/stdout.bin",
+    "supervisor/transcript.jcs",
+    "journal/digests.json",
+    "manifest.json",
+})
+EVIDENCE_MEMBER_LIMIT = 32 << 20
 
 JSON_SYNTAX_CHECK = (
     "import json,sys\n"
@@ -70,6 +105,18 @@ def load_object(path, label):
     if not isinstance(value, dict):
         raise ValueError(f"{label} 必须是 JSON object")
     return value
+
+
+def positive_worker_usage(worker_result, label):
+    usage = worker_result.get("usage")
+    if not isinstance(usage, dict):
+        raise ValueError(f"{label} 缺少 usage")
+    input_tokens = usage.get("inputTokens")
+    output_tokens = usage.get("outputTokens")
+    if (isinstance(input_tokens, bool) or not isinstance(input_tokens, int) or input_tokens <= 0 or
+            isinstance(output_tokens, bool) or not isinstance(output_tokens, int) or output_tokens <= 0):
+        raise ValueError(f"{label} 要求 usage.inputTokens/outputTokens 均大于 0")
+    return input_tokens, output_tokens
 
 
 def sha256_file(path):
@@ -414,6 +461,7 @@ def validate_evidence(args):
     normalized = load_object(worker_result_path, "attempt WorkerResult")
     if (normalized.get("taskId"), normalized.get("runId"), normalized.get("attemptId")) != (args.task_id, args.run_id, attempt_id):
         raise ValueError("attempt root WorkerResult identity 非法")
+    input_tokens, output_tokens = positive_worker_usage(normalized, "current Attempt normalized WorkerResult")
     if result_digests[0] != canonical_file_digest(worker_result_path):
         raise ValueError("ReviewPacket WorkerResult digest 与 Attempt 根结果不一致")
     candidate = load_object(args.candidate_evidence, "candidate evidence")
@@ -437,6 +485,12 @@ def validate_evidence(args):
         "closureEligible": closure_eligible,
         "rawTranscriptSHA256": "sha256:" + sha256_file(stdout_path),
         "workerResultSHA256": "sha256:" + sha256_file(worker_result_path),
+        "workerResultUsage": {
+            "attemptId": attempt_id,
+            "authority": "attempt-root-normalized-worker-result",
+            "inputTokens": input_tokens,
+            "outputTokens": output_tokens,
+        },
         "declaredWorkerResultDigest": "sha256:" + hashlib.sha256(canonical_bytes(declared)).hexdigest(),
         "deliverables": deliverables,
         "finalAssistantPrefix": M13_FINAL_PREFIX,
@@ -447,6 +501,205 @@ def validate_evidence(args):
         json.dump(receipt, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         handle.write("\n")
     print(f"[e2e-m13] independent evidence check -> {args.out} packetDigest={receipt['reviewPacketDigest']}")
+
+
+def require_regular_evidence_source(path, label, limit=EVIDENCE_MEMBER_LIMIT):
+    info = os.lstat(path)
+    if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid() or
+            info.st_size < 0 or info.st_size > limit):
+        raise ValueError(f"{label} 不是当前 euid 持有的有界普通文件")
+    return info
+
+
+def copy_evidence_member(source, stage_root, member):
+    if member not in EVIDENCE_MEMBERS or member == "manifest.json":
+        raise ValueError(f"evidence member 不在 allowlist：{member}")
+    require_regular_evidence_source(source, member)
+    target = os.path.join(stage_root, *member.split("/"))
+    os.makedirs(os.path.dirname(target), mode=0o700, exist_ok=True)
+    shutil.copyfile(source, target)
+    os.chmod(target, 0o600)
+
+
+def manifest_file_records(files):
+    return [
+        {"path": path, "sha256": sha256_file_from_bytes(files[path]), "bytes": len(files[path])}
+        for path in sorted(files)
+    ]
+
+
+def sha256_file_from_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def validate_manifest_members(files):
+    if "manifest.json" not in files:
+        raise ValueError("evidence archive 缺少 manifest.json")
+    manifest = json.loads(files["manifest.json"])
+    if not isinstance(manifest, dict) or manifest.get("schemaVersion") != "marshal.m13-evidence-archive.v1":
+        raise ValueError("evidence manifest schemaVersion 非法")
+    records = manifest.get("files")
+    if not isinstance(records, list):
+        raise ValueError("evidence manifest.files 非法")
+    described = {}
+    for record in records:
+        if not isinstance(record, dict) or set(record) != {"path", "sha256", "bytes"}:
+            raise ValueError("evidence manifest file record 非法")
+        path = record.get("path")
+        if path in described or path not in EVIDENCE_MEMBERS or path == "manifest.json":
+            raise ValueError("evidence manifest 包含重复或非 allowlist path")
+        data = files.get(path)
+        if (data is None or record.get("sha256") != sha256_file_from_bytes(data) or
+                record.get("bytes") != len(data)):
+            raise ValueError(f"evidence member digest/size 漂移：{path}")
+        described[path] = record
+    actual = set(files) - {"manifest.json"}
+    if set(described) != actual or not REQUIRED_EVIDENCE_MEMBERS.issubset(set(files)):
+        raise ValueError("evidence manifest 未精确覆盖 allowlisted members")
+    return manifest
+
+
+def tree_evidence_files(stage_root):
+    stage_root = os.path.realpath(stage_root)
+    if not os.path.isdir(stage_root):
+        raise ValueError("evidence staging root 不存在")
+    files = {}
+    for current, directories, names in os.walk(stage_root, topdown=True, followlinks=False):
+        for directory in directories:
+            path = os.path.join(current, directory)
+            if os.path.islink(path):
+                raise ValueError("evidence staging 不允许 symlink directory")
+        for name in names:
+            path = os.path.join(current, name)
+            relative = os.path.relpath(path, stage_root).replace(os.sep, "/")
+            if relative not in EVIDENCE_MEMBERS:
+                raise ValueError(f"evidence staging 出现非 allowlist member：{relative}")
+            info = require_regular_evidence_source(path, relative)
+            if stat.S_IMODE(info.st_mode) != 0o600:
+                raise ValueError(f"evidence staging member mode 必须恰好为 0600：{relative}")
+            with open(path, "rb") as handle:
+                files[relative] = handle.read(EVIDENCE_MEMBER_LIMIT + 1)
+            if len(files[relative]) > EVIDENCE_MEMBER_LIMIT:
+                raise ValueError(f"evidence staging member 超界：{relative}")
+    validate_manifest_members(files)
+    return files
+
+
+def stage_evidence(args):
+    state_root = os.path.realpath(args.state_root)
+    control_root = os.path.realpath(args.control_root)
+    run_root = os.path.join(state_root, "runs", args.run_id)
+    state = load_object(os.path.join(run_root, "state.json"), "RunState")
+    attempt_id = state.get("currentAttemptId")
+    if state.get("runId") != args.run_id or not isinstance(attempt_id, str) or not attempt_id:
+        raise ValueError("evidence staging 缺少 current Run/Attempt identity")
+    if os.path.lexists(args.out_dir):
+        raise ValueError("evidence staging output 必须不存在")
+    os.mkdir(args.out_dir, 0o700)
+    stage_root = os.path.realpath(args.out_dir)
+
+    required_sources = {
+        "control/candidate-evidence.json": os.path.join(control_root, "candidate-evidence.json"),
+        "control/evidence-check.json": os.path.join(control_root, "evidence-check.json"),
+        "run/state.json": os.path.join(run_root, "state.json"),
+        "run/review-packet.json": os.path.join(run_root, "review-packet.json"),
+        "attempt/worker-result.json": os.path.join(run_root, "attempts", attempt_id, "worker-result.json"),
+    }
+    optional_sources = {
+        "control/worktree-private-check.json": os.path.join(control_root, "worktree-private-check.json"),
+        "control/decision.json": os.path.join(control_root, "decision.json"),
+        "control/metrics.json": os.path.join(control_root, "metrics.json"),
+        "run/verification-report.json": os.path.join(run_root, "verification-report.json"),
+        "run/artifact-manifest.json": os.path.join(run_root, "artifact-manifest.json"),
+    }
+    stdout_path = control_stdout_path(state_root, state.get("taskId"), args.run_id, attempt_id)
+    supervisor_root = os.path.dirname(stdout_path)
+    required_sources["supervisor/stdout.bin"] = stdout_path
+    required_sources["supervisor/transcript.jcs"] = os.path.join(supervisor_root, "transcript.jcs")
+    for member, source in required_sources.items():
+        copy_evidence_member(source, stage_root, member)
+    for member, source in optional_sources.items():
+        if os.path.exists(source):
+            copy_evidence_member(source, stage_root, member)
+
+    ledger_path = os.path.join(state_root, "result-ingress", "result-ingress.jsonl")
+    events_path = os.path.join(run_root, "events.jsonl")
+    require_regular_evidence_source(ledger_path, "ResultIngress ledger", 64 << 20)
+    journal_digests = {
+        "schemaVersion": "marshal.m13-journal-digests.v1",
+        "resultIngress": {"sha256": sha256_file(ledger_path), "bytes": os.path.getsize(ledger_path)},
+    }
+    if os.path.exists(events_path):
+        require_regular_evidence_source(events_path, "Run events", 64 << 20)
+        journal_digests["runEvents"] = {"sha256": sha256_file(events_path), "bytes": os.path.getsize(events_path)}
+    digest_path = os.path.join(stage_root, "journal", "digests.json")
+    os.makedirs(os.path.dirname(digest_path), mode=0o700, exist_ok=True)
+    with open(digest_path, "w", encoding="utf-8") as handle:
+        json.dump(journal_digests, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+    os.chmod(digest_path, 0o600)
+
+    staged = {}
+    for member in sorted(EVIDENCE_MEMBERS - {"manifest.json"}):
+        path = os.path.join(stage_root, *member.split("/"))
+        if os.path.isfile(path) and not os.path.islink(path):
+            with open(path, "rb") as handle:
+                staged[member] = handle.read(EVIDENCE_MEMBER_LIMIT + 1)
+    manifest = {
+        "schemaVersion": "marshal.m13-evidence-archive.v1",
+        "runId": args.run_id,
+        "attemptId": attempt_id,
+        "files": manifest_file_records(staged),
+    }
+    manifest_path = os.path.join(stage_root, "manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+    os.chmod(manifest_path, 0o600)
+    tree_evidence_files(stage_root)
+    print(f"[e2e-m13] staged allowlisted evidence -> {stage_root}")
+
+
+def archive_evidence(args):
+    files = tree_evidence_files(args.stage_dir)
+    if os.path.lexists(args.out):
+        raise ValueError("evidence archive output 必须不存在")
+    with tarfile.open(args.out, "w:gz", format=tarfile.PAX_FORMAT) as archive:
+        for member in sorted(files):
+            data = files[member]
+            info = tarfile.TarInfo(member)
+            info.size = len(data)
+            info.mode = 0o600
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            info.mtime = 0
+            archive.addfile(info, io.BytesIO(data))
+    os.chmod(args.out, 0o600)
+    verify_evidence_archive_path(args.out)
+    print(f"[e2e-m13] evidence archive -> {args.out}")
+
+
+def verify_evidence_archive_path(path):
+    require_regular_evidence_source(path, "evidence archive", 128 << 20)
+    files = {}
+    with tarfile.open(path, "r:gz") as archive:
+        for member in archive.getmembers():
+            if member.name in files or member.name not in EVIDENCE_MEMBERS or not member.isfile():
+                raise ValueError(f"evidence archive 包含重复、非 regular 或非 allowlist member：{member.name}")
+            if member.size < 0 or member.size > EVIDENCE_MEMBER_LIMIT:
+                raise ValueError(f"evidence archive member 超界：{member.name}")
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise ValueError(f"evidence archive member 不可读：{member.name}")
+            files[member.name] = extracted.read(EVIDENCE_MEMBER_LIMIT + 1)
+    validate_manifest_members(files)
+    return files
+
+
+def verify_evidence_archive(args):
+    files = verify_evidence_archive_path(args.archive)
+    print(json.dumps({"status": "ok", "memberCount": len(files), "members": sorted(files)},
+                     ensure_ascii=False, sort_keys=True))
 
 
 def metrics(args):
@@ -461,35 +714,20 @@ def metrics(args):
             timeline.append({"sequence": record.get("sequence"), "type": record.get("type"),
                              "from": record.get("stateFrom"), "to": record.get("stateTo"),
                              "at": record.get("timestamp")})
-    input_tokens = output_tokens = 0
-    attempts_root = os.path.join(runs_root, "attempts")
-    attempt_names = []
-    if os.path.isdir(attempts_root):
-        attempt_names = sorted(name for name in os.listdir(attempts_root)
-                               if os.path.isdir(os.path.join(attempts_root, name)))
-    for name in attempt_names:
-        worker_result = os.path.join(attempts_root, name, "worker-result.json")
-        if not os.path.exists(worker_result):
-            continue
-        parsed = load_object(worker_result, f"{name} WorkerResult")
-        usage = parsed.get("usage")
-        if not isinstance(usage, dict):
-            raise ValueError(f"{name} WorkerResult 缺少 usage")
-        observed_input = usage.get("inputTokens")
-        observed_output = usage.get("outputTokens")
-        if (isinstance(observed_input, bool) or not isinstance(observed_input, int) or observed_input < 0 or
-                isinstance(observed_output, bool) or not isinstance(observed_output, int) or observed_output < 0):
-            raise ValueError(f"{name} WorkerResult usage token 字段非法")
-        input_tokens += observed_input
-        output_tokens += observed_output
+    attempt_id = state.get("currentAttemptId")
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise ValueError("metrics 缺少 currentAttemptId")
+    worker_result = os.path.join(runs_root, "attempts", attempt_id, "worker-result.json")
+    parsed = load_object(worker_result, "current Attempt WorkerResult")
+    if (parsed.get("taskId"), parsed.get("runId"), parsed.get("attemptId")) != (state.get("taskId"), args.run_id, attempt_id):
+        raise ValueError("metrics current Attempt WorkerResult identity 漂移")
+    input_tokens, output_tokens = positive_worker_usage(parsed, "current Attempt WorkerResult")
     wall_clock_seconds = None
     if args.wall_start:
         start = datetime.datetime.strptime(args.wall_start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
         wall_clock_seconds = round((datetime.datetime.now(datetime.timezone.utc) - start).total_seconds(), 1)
     if state.get("state") != "ACCEPTED":
         raise ValueError(f"metrics 只接受 ACCEPTED 终态，实际 {state.get('state')}")
-    if input_tokens <= 0 or output_tokens <= 0:
-        raise ValueError("metrics 要求 inputTokens/outputTokens 均大于 0")
     if wall_clock_seconds is None or wall_clock_seconds <= 0:
         raise ValueError("metrics 要求正值 wallClockSeconds")
     result = {
@@ -497,7 +735,7 @@ def metrics(args):
         "taskId": state.get("taskId"),
         "finalState": state.get("state"),
         "attemptsUsed": state.get("attemptsUsed"),
-        "attemptDirs": attempt_names,
+        "attemptId": attempt_id,
         "inputTokens": input_tokens,
         "outputTokens": output_tokens,
         "wallClockSeconds": wall_clock_seconds,
@@ -558,6 +796,22 @@ def main():
     evidence.add_argument("--source-head", required=True)
     evidence.add_argument("--out", required=True)
     evidence.set_defaults(handler=validate_evidence)
+
+    stage = sub.add_parser("stage-evidence")
+    stage.add_argument("--state-root", required=True)
+    stage.add_argument("--control-root", required=True)
+    stage.add_argument("--run-id", required=True)
+    stage.add_argument("--out-dir", required=True)
+    stage.set_defaults(handler=stage_evidence)
+
+    archive = sub.add_parser("archive-evidence")
+    archive.add_argument("--stage-dir", required=True)
+    archive.add_argument("--out", required=True)
+    archive.set_defaults(handler=archive_evidence)
+
+    verify_archive = sub.add_parser("verify-evidence-archive")
+    verify_archive.add_argument("--archive", required=True)
+    verify_archive.set_defaults(handler=verify_evidence_archive)
 
     metric = sub.add_parser("metrics")
     metric.add_argument("--state-root", required=True)

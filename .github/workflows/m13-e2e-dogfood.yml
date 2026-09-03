@@ -422,16 +422,20 @@ jobs:
         if: always()
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          members=""
-          if [ -d .marshal ]; then members=".marshal"; fi
-          if [ -d .m13-e2e ]; then members="$members .m13-e2e"; fi
-          if [ -n "$members" ]; then
-            /usr/bin/tar \
-              --exclude 'runs/*/lease.lock' \
-              --exclude 'runs/*/lease.lock.owner' \
-              -czf m13-dogfood-evidence.tar.gz $members
+          control_root="${CONTROL_ROOT:-$(pwd)/.m13-e2e}"
+          run_id="${RUN_ID:-}"
+          if [ -n "$run_id" ] && [ -f ".marshal/runs/${run_id}/state.json" ] && [ -f "$control_root/evidence-check.json" ]; then
+            stage_parent="$(mktemp -d "${RUNNER_TEMP:?}/m13-evidence.XXXXXX")"
+            python3 -I -B scripts/e2e-m13-dogfood.py stage-evidence \
+              --state-root .marshal --control-root "$control_root" --run-id "$run_id" \
+              --out-dir "$stage_parent/evidence"
+            python3 -I -B scripts/e2e-m13-dogfood.py archive-evidence \
+              --stage-dir "$stage_parent/evidence" --out m13-dogfood-evidence.tar.gz
+            python3 -I -B scripts/e2e-m13-dogfood.py verify-evidence-archive \
+              --archive m13-dogfood-evidence.tar.gz \
+              > "$control_root/evidence-archive-check.json"
           else
-            echo 'no dogfood evidence to pack'
+            echo 'no checked closure evidence to pack'
           fi
           ls -la m13-dogfood-evidence.tar.gz 2>/dev/null || true
 
