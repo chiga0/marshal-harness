@@ -2,7 +2,7 @@
 
 ## 2026-09-03：fixed server S2 endpoint authentication 审计
 
-对 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 的 `027d356` 候选复核确认，ADR 0076 的 S2 已落在固定 `marshal` 进程内，而不是另建匿名 helper executable。endpoint 只能由 canonical repository 的 held `.marshal/runtime-v1/control` authority graph 和 current owner epoch 派生；socket/token均以owner-only、nofollow、creation-once语义建立，运行期持续重验name/object、owner acquisition/fact、peer process与fixed binary。握手采用server nonce与HMAC-SHA-256，并把proof绑定request key、request/intent digest和冻结deadline；nonce首次尝试即消费。oversize、伪造proof、replay、token ABA、short write与root/owner漂移均在application dispatch前fail closed。
+对 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 的 `7ee24cc` 候选复核确认，ADR 0076 的 S2 已落在固定 `marshal` 进程内，而不是另建匿名 helper executable。endpoint 只能由 canonical repository 的 held `.marshal/runtime-v1/control` authority graph 和 current owner epoch 派生；socket/token均以owner-only、nofollow、creation-once语义建立，运行期持续重验name/object、owner acquisition/fact、peer process与fixed binary。握手采用server nonce与HMAC-SHA-256，并把proof绑定request key、request/intent digest和冻结deadline；nonce首次尝试即消费。oversize、伪造proof、replay、token ABA、short write与root/owner漂移均在application dispatch前fail closed。client不再接收裸control FD和可自洽snapshot，而是从current `FixedEndpointAuthority`原子取得close-on-exec duplicate descriptor，并在握手前后重验owner。
 
 实现过程中两项首轮CI问题已作为跨平台门禁修正，而未降低合同：一是 `productionruntime` 错误反向依赖 `processsupervisor`，已把fixed-binary observation下沉到transport拥有者并恢复层次边界；二是Darwin私有protocol helper留在common build graph导致Linux staticcheck unused，已拆为`protocol_darwin.go`。同时修正共享token descriptor offset竞态为`Pread`、frame short write为完整循环、authority mutation/close锁递归风险为descriptor显式传递。上述问题说明S3开始前必须继续做Darwin/Linux compile+staticcheck，但不需要回退为临时二进制或扩大架构。
 
