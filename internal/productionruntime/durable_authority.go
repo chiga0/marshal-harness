@@ -814,7 +814,11 @@ func (l *CompositionLedger) allocationIDFor(attemptID string) string {
 func (l *CompositionLedger) ensureAttemptLease(reservationFactDigest, taskID, runID, attemptID, allocationID string) (dispatch.DispatchLease, error) {
 	now := l.now()
 	var replay *dispatch.DispatchLease
-	if lease, state, _, err := l.leaseLedger.CurrentByAttempt(runID, attemptID, now); err == nil {
+	lease, state, _, currentErr := l.leaseLedger.CurrentByAttempt(runID, attemptID, now)
+	if currentErr != nil && !errors.Is(currentErr, dispatch.ErrUnknownLease) {
+		return dispatch.DispatchLease{}, currentErr
+	}
+	if currentErr == nil {
 		if state != dispatch.LeaseStateClaimed && state != dispatch.LeaseStateActive && state != dispatch.LeaseStateCompleted {
 			return dispatch.DispatchLease{}, fmt.Errorf("dispatch: attempt lease %s is %s", lease.LeaseId, state)
 		}
