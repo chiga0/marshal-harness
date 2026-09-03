@@ -2,6 +2,14 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
+## 2026-09-03 fixed server S2 候选：固定二进制的认证 AF_UNIX 端点
+
+fixed server 主线已从 CLI-only 回归切换到 [ADR 0076](adr/0076-darwin-fixed-server-pathname-locator.md) 的相邻纵切。S2 候选把 endpoint 放在 canonical repository 的 held `.marshal/runtime-v1/control` 下，按 current owner epoch 确定性派生 socket/token leaf；server 与 client 在 handshake 前后联合重验 held root、current owner、peer process、fixed `marshal` binary、socket object 和 token identity，并用单次 nonce + HMAC-SHA-256 绑定 request key、request/intent digest 与冻结 deadline。生产实现不生成或执行 `/tmp`/随机目录 Mach-O，也不允许 endpoint override、TCP、cwd/Fchdir 或第二 authority root。
+
+实现 sourceHead 为 `7ee24cc8b4f2e47146410ab69e041038d6f318c6`，PR 为 [#230](https://github.com/chiga0/marshal-harness/pull/230)。本地 Darwin/Linux compile-only、`go vet`、双平台 staticcheck、architecture check、diff-check 与 source scan 已通过；动态 hostile matrix 和 secret scan以 exact-head required CI 为准。测试覆盖有效认证与应用字节往返、exact cleanup、oversize、伪造 HMAC、proof replay、token ABA 和 short write；client dialing只接受current `FixedEndpointAuthority`，使用close-on-exec duplicate control descriptor并在握手前后重验owner，避免裸FD复用与snapshot自洽。
+
+本候选仍只把 authenticated transport 建成 `COMPONENT`：尚无 bounded HTTP/application routing、resident `marshal control-plane serve` 命令、真实 Pi 或 restart/response-loss canary。下一顺序固定为 S3 bounded request + immutable delivery reconcile → S4 resident composition/recovery → 固定 candidate bytes 的真实 Pi `RUNNING`/strict-successor replay → T2 独立 Verification/Decision 到 `ACCEPTED`。[#226](https://github.com/chiga0/marshal-harness/issues/226) 保留为 CLI-only adapter 回归债务，但不再阻塞 fixed server 纵切；server 不得回退到该 CLI mutation path。
+
 ## 2026-09-03 fixed server S1.3 候选：strict successor 可恢复旧 pending
 
 fixed `marshal control-plane serve` 的 S1 durable delivery 已按 [ADR 0076](adr/0076-darwin-fixed-server-pathname-locator.md) 形成完整候选。S1.1/S1.2 已建立 immutable `pending → current RB1 read-only reconcile → receipt-ref`；S1.3 把 `AuthorityRootDigest` 收敛为 canonical repository、held directory object 与 closed-name graph 的稳定身份，并从同一 physical RB1 ledger 重放完整 owner history。旧 owner 的 pending 不是 handoff capability：只有持有 current physical owner lock 的 strict successor，证明 old owner fact/acquisition 到 current acquisition 之间同 scope、epoch 严格递增、digest 连续且无分叉，并重新核对 root/request/intent 后，才可 exact replay 或补同一 receipt。
@@ -26,7 +34,7 @@ S1.3 代码 sourceHead 为 `62c1aed5fa80017a609fe87d2a6c92696f55f66b`；本地 D
 
 [ADR 0075](adr/0075-rc1-dogfood-usability-barriers.md) 已接受并在 main 上全部落地（`516e6a3`、`9029619`、candidate-mode `0a192ec`、workflow 链 `be3183b`/`0de20c5`），三组定向回归测试（0700 worktree 不变量、launch 输入 token 契约、终态单 JSON 提取）覆盖三种原文 dogfood 确定性屏障（#224、#225）。相关 exact-head CI 已全绿。build-from-head dogfood 实证：PrepareRunStart 全路径通过（ingress 八条事实完整晋级至 `prepared-execution-created`）。
 
-当前阻塞已定位为 [#226](https://github.com/chiga0/marshal-harness/issues/226)：main-line composition session 重构（`e691aea`、`636c80d`）在 CLI-driven existing-worktree path-B 下的 sealed `StartPreparedRun` 确定性返回 `application: authority-conflict`（承袭内层映射），supervisor 从未 spawn；RC1 sourceHead `c1407bd` 在同一条链下可过，HEAD 不可过。本方向锁定 ADR 0075 域之外（独立回归），已按门禁单独归档，需要在 composition 层 review `RehydratePreparedRunStart` 与 adapter-supplied Prepare 的字段等价性。此前一个 path-B 诊断探针因未到达对比阶段即在 ComposeRuntime 失败，已按止损恢复（`be52850`），其同源 exact-head CI 已重绿。按最新审计，v1.0 stable 的 direct 顺序仍要求：先修复 #226 并重新跑通真实 dogfood 至 VERIFYING/REVIEW_PENDING/ACCEPTED，再恢复 fixed `marshal control-plane serve`、recovery/fault matrix、managed signing/notarization（Issue #212）、Linux stable gate 与 protected stable candidate。
+当前阻塞已定位为 [#226](https://github.com/chiga0/marshal-harness/issues/226)：main-line composition session 重构（`e691aea`、`636c80d`）在 CLI-driven existing-worktree path-B 下的 sealed `StartPreparedRun` 确定性返回 `application: authority-conflict`（承袭内层映射），supervisor 从未 spawn；RC1 sourceHead `c1407bd` 在同一条链下可过，HEAD 不可过。本方向锁定 ADR 0075 域之外（独立回归），已按门禁单独归档。2026-09-03 路线调整后，#226 不再作为 fixed server 的串行前置：server 必须直接复用 `RepositorySession`/`PublicApplicationPort`，且不得以 CLI mutation fallback 绕过 transport。stable 的当前顺序改为 S2→S3→S4→真实 server Pi/T2 `ACCEPTED`→recovery/fault matrix→managed signing/notarization（Issue #212）→Linux stable gate→protected stable candidate；#226 在不阻断该链时并行或随后修复。
 
 ## 2026-09-02 M13 GoalLite 真实任务 dogfood：worker 交付完成，collect finalize 暴露第三道 RC1 缺陷
 

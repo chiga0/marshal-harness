@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-03：fixed server S2 endpoint authentication 审计
+
+对 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 的 `7ee24cc` 候选复核确认，ADR 0076 的 S2 已落在固定 `marshal` 进程内，而不是另建匿名 helper executable。endpoint 只能由 canonical repository 的 held `.marshal/runtime-v1/control` authority graph 和 current owner epoch 派生；socket/token均以owner-only、nofollow、creation-once语义建立，运行期持续重验name/object、owner acquisition/fact、peer process与fixed binary。握手采用server nonce与HMAC-SHA-256，并把proof绑定request key、request/intent digest和冻结deadline；nonce首次尝试即消费。oversize、伪造proof、replay、token ABA、short write与root/owner漂移均在application dispatch前fail closed。client不再接收裸control FD和可自洽snapshot，而是从current `FixedEndpointAuthority`原子取得close-on-exec duplicate descriptor，并在握手前后重验owner。
+
+实现过程中两项首轮CI问题已作为跨平台门禁修正，而未降低合同：一是 `productionruntime` 错误反向依赖 `processsupervisor`，已把fixed-binary observation下沉到transport拥有者并恢复层次边界；二是Darwin私有protocol helper留在common build graph导致Linux staticcheck unused，已拆为`protocol_darwin.go`。同时修正共享token descriptor offset竞态为`Pread`、frame short write为完整循环、authority mutation/close锁递归风险为descriptor显式传递。上述问题说明S3开始前必须继续做Darwin/Linux compile+staticcheck，但不需要回退为临时二进制或扩大架构。
+
+本切片关闭的是`S2-ENDPOINT-AUTH-COMPONENT`，不是fixed server integration。S3必须把有界parse/queue/application deadline与S1 immutable delivery接到同一认证连接；S4必须由fixed candidate bytes运行resident `marshal control-plane serve`，完成ready-before-recovery与真实Pi restart/response-loss strict-successor replay。T2独立Verification/Decision到`ACCEPTED`前，ADR 0062 full fixed-server lifecycle仍不可标记`INTEGRATED`。#226只影响CLI-only adapter，保留为并行债务，不再作为server串行前置；任何server→CLI fallback仍属P0。
+
 ## 2026-09-03：fixed server S1.3 strict successor 审计
 
 对代码候选 `62c1aed` 的审计确认，跨 owner 恢复没有把旧 token、pending digest 或路径当成 authority。ResultIngress 从同一 held RB1 ledger 重建每个 owner epoch 的历史投影；调用方必须先持有 current physical owner lock，随后同时精确命中 old owner fact digest 与完整 `ControlOwnerAcquisition` digest，并逐 epoch 验证 `PreviousFactDigest` 连续到 current owner。ledger 截断、重复 epoch、scope 漂移、fact/acquisition 伪造或 future epoch 均在 delivery 回调前 fail closed。
