@@ -257,6 +257,22 @@ func (runtime *Runtime) StartRun(ctx context.Context, request application.StartR
 	return replayed, nil
 }
 
+// ReconcileStartRun reads the exact durable preparation/successor pair for a
+// prior StartRun intent. It is intentionally mutation-free and exists so a
+// transport can turn response loss into an exact receipt reference instead of
+// guessing from the current Run state.
+func (runtime *Runtime) ReconcileStartRun(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, bool, error) {
+	controller, _, release, err := runtime.beginOperation("reconcile-start-run")
+	if err != nil {
+		return application.RunStartProjection{}, false, err
+	}
+	defer release()
+	if err := request.Validate(); err != nil {
+		return application.RunStartProjection{}, false, err
+	}
+	return controller.rehydrateRunStart(ctx, request)
+}
+
 func (runtime *Runtime) InspectRun(ctx context.Context, request application.InspectRunRequest) (application.RunProjection, error) {
 	controller, _, release, err := runtime.beginOperation("inspect-run")
 	if err != nil {

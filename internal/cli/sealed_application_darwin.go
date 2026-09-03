@@ -325,6 +325,15 @@ func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, reques
 	return run.runtime.StartRun(ctx, request)
 }
 
+func (adapter *sealedRepositoryApplication) ReconcileStartRun(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, bool, error) {
+	run, err := adapter.openRun(ctx, request.RunID)
+	if err != nil {
+		return application.RunStartProjection{}, false, err
+	}
+	defer run.Close()
+	return run.runtime.ReconcileStartRun(ctx, request)
+}
+
 type sealedRunAdvancer interface {
 	InspectRun(context.Context, application.InspectRunRequest) (application.RunProjection, error)
 	StartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, error)

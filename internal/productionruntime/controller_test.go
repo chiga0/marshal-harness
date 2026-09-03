@@ -301,6 +301,19 @@ func TestStartRunLostResponseRehydratesExactPredecessorWithoutRespawn(t *testing
 	}
 }
 
+func TestReconcileStartRunReadsExactOutcomeWithoutPrepareOrRespawn(t *testing.T) {
+	controller, lock, authority, bridge, _ := testComponents(t)
+	authority.outcome, authority.outcomeFound = testSuccessor(), true
+	runtime := claimTestRuntime(t, controller)
+	defer runtime.Close()
+	got, found, err := runtime.ReconcileStartRun(context.Background(), application.StartRunRequest{
+		RunID: "run-1", ExpectedSequence: 3, ExpectedAuthorityHead: runtimeTestDigest,
+	})
+	if err != nil || !found || got.Prepared != testPrepared() || got.Run != testSuccessor() || authority.prepareCalls != 0 || authority.rehydrateCalls != 1 || bridge.startCalls != 0 || lock.sections != 1 {
+		t.Fatalf("got=%#v found=%t err=%v prepares=%d rehydrates=%d starts=%d sections=%d", got, found, err, authority.prepareCalls, authority.rehydrateCalls, bridge.startCalls, lock.sections)
+	}
+}
+
 func TestLostBridgeResponseReturnsNewDurableOutcome(t *testing.T) {
 	controller, lock, authority, bridge, _ := testComponents(t)
 	bridge.startErr = application.NewError("test-bridge", application.ReasonBridgeUnavailable)

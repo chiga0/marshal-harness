@@ -31,6 +31,16 @@ type fixedDeliveryFixture struct {
 	deadline   time.Time
 }
 
+type fixedStartRunReconcilerStub struct {
+	started application.RunStartProjection
+	found   bool
+	err     error
+}
+
+func (stub fixedStartRunReconcilerStub) ReconcileStartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, bool, error) {
+	return stub.started, stub.found, stub.err
+}
+
 type publicFixedDeliveryInputs struct {
 	repository string
 	request    application.StartRunRequest
@@ -210,6 +220,22 @@ func pendingFiles(t *testing.T, repository string) []string {
 	return result
 }
 
+func fixedDeliveryStarted(request application.StartRunRequest) application.RunStartProjection {
+	digest := func(value string) string { return canonical.DigestBytes([]byte(value)) }
+	prepared := application.PreparedRunStart{
+		ProtocolRevision: application.PreparedRunStartProtocolRevision,
+		TaskID:           "task:fixed-delivery", RunID: request.RunID, AttemptID: "attempt:fixed-delivery-1",
+		ReservationFactDigest: digest("reservation"), AttemptOpenedFactDigest: digest("attempt-opened"),
+		AttemptOrdinal: 1, AttemptsUsedBefore: 0, MaxAttempts: 3, State: domain.StateReady,
+		Sequence: request.ExpectedSequence, AuthorityHead: request.ExpectedAuthorityHead,
+		PreparationDigest: digest("preparation"),
+	}
+	return application.RunStartProjection{Prepared: prepared, Run: application.RunProjection{
+		TaskID: prepared.TaskID, RunID: prepared.RunID, AttemptID: prepared.AttemptID,
+		State: domain.StateRunning, Sequence: prepared.Sequence + 1, AuthorityHead: digest("running"),
+	}}
+}
+
 func TestFixedDeliveryBeginPublishesAndExactlyReplaysPending(t *testing.T) {
 	fixture := newFixedDeliveryFixture(t)
 	first, replay, err := fixture.store.BeginStartRun(context.Background(), "request-1", fixture.request, fixture.deadline)
@@ -227,6 +253,67 @@ func TestFixedDeliveryBeginPublishesAndExactlyReplaysPending(t *testing.T) {
 	}
 	if got := pendingFiles(t, fixture.repository); len(got) != 1 {
 		t.Fatalf("pending=%v", got)
+	}
+}
+
+func TestFixedDeliveryReceiptClosesOnlyExactReconciledStart(t *testing.T) {
+	fixture := newFixedDeliveryFixture(t)
+	pending, _, err := fixture.store.BeginStartRun(context.Background(), "receipt", fixture.request, fixture.deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := fixedDeliveryStarted(fixture.request)
+	reconciler := fixedStartRunReconcilerStub{started: started, found: true}
+	receipt, applied, err := fixture.store.ReconcileStartRunDelivery(context.Background(), pending, fixture.request, reconciler)
+	if err != nil || !applied || validateFixedDeliveryReceipt(receipt) != nil {
+		t.Fatalf("receipt=%+v applied=%t err=%v", receipt, applied, err)
+	}
+	if receipt.PendingDigest != pending.Digest || receipt.PreparationDigest != started.Prepared.PreparationDigest || receipt.ApplicationReceiptFactDigest != started.Run.AuthorityHead || receipt.PostRevision != started.Run.Sequence || receipt.PostAuthorityHead != started.Run.AuthorityHead {
+		t.Fatalf("receipt binding mismatch: %+v", receipt)
+	}
+	replayed, applied, err := fixture.store.ReconcileStartRunDelivery(context.Background(), pending, fixture.request, reconciler)
+	if err != nil || !applied || replayed != receipt {
+		t.Fatalf("replay=%+v applied=%t err=%v", replayed, applied, err)
+	}
+
+	drifted := started
+	drifted.Run.AuthorityHead = canonical.DigestBytes([]byte("foreign-running"))
+	if _, _, err := fixture.store.ReconcileStartRunDelivery(context.Background(), pending, fixture.request, fixedStartRunReconcilerStub{started: drifted, found: true}); !errors.Is(err, ErrFixedDeliveryConflict) {
+		t.Fatalf("drifted durable result err=%v", err)
+	}
+}
+
+func TestFixedDeliveryMissingOutcomeRemainsPendingAndRunningReplayFindsPending(t *testing.T) {
+	fixture := newFixedDeliveryFixture(t)
+	pending, _, err := fixture.store.BeginStartRun(context.Background(), "response-loss", fixture.request, fixture.deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt, applied, err := fixture.store.ReconcileStartRunDelivery(context.Background(), pending, fixture.request, fixedStartRunReconcilerStub{}); err != nil || applied || receipt != (FixedDeliveryReceipt{}) {
+		t.Fatalf("missing outcome receipt=%+v applied=%t err=%v", receipt, applied, err)
+	}
+
+	statePath := filepath.Join(fixture.repository, ".marshal", "runs", fixture.request.RunID, "state.json")
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state domain.RunState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatal(err)
+	}
+	state.State = domain.StateRunning
+	state.CurrentAttemptID = "attempt:fixed-delivery-1"
+	raw, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replayed, replay, err := fixture.store.BeginStartRun(context.Background(), "response-loss", fixture.request, fixture.deadline)
+	if err != nil || !replay || replayed != pending {
+		t.Fatalf("running response-loss replay=%+v replay=%t err=%v", replayed, replay, err)
 	}
 }
 

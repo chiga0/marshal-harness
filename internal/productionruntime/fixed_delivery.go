@@ -21,6 +21,7 @@ const (
 	fixedDeliverySchema    = "fixed-delivery-record/v1"
 	fixedDeliveryProtocol  = "darwin-fixed-delivery/v1"
 	fixedDeliveryPending   = "pending"
+	fixedDeliveryReceipt   = "receipt-ref"
 	fixedDeliveryStartRun  = "start-run"
 	fixedDeliveryMaxRecord = 64 << 10
 )
@@ -51,6 +52,30 @@ type FixedDeliveryPending struct {
 	ApplicationIntentDigest string `json:"applicationIntentDigest"`
 	Deadline                string `json:"deadline"`
 	Digest                  string `json:"digest"`
+}
+
+// FixedDeliveryReceipt is a secret-free reference to the exact durable
+// StartRun preparation and successor. It never treats a transport response or
+// the current Run snapshot as application authority.
+type FixedDeliveryReceipt struct {
+	SchemaVersion                string `json:"schemaVersion"`
+	ProtocolRevision             string `json:"protocolRevision"`
+	RecordType                   string `json:"recordType"`
+	Operation                    string `json:"operation"`
+	PendingDigest                string `json:"pendingDigest"`
+	PreparationDigest            string `json:"preparationDigest"`
+	ApplicationReceiptFactDigest string `json:"applicationReceiptFactDigest"`
+	RunID                        string `json:"runId"`
+	AttemptID                    string `json:"attemptId"`
+	PostRevision                 uint64 `json:"postRevision"`
+	PostAuthorityHead            string `json:"postAuthorityHead"`
+	Digest                       string `json:"digest"`
+}
+
+// FixedStartRunReconciler is the narrow, read-only application capability
+// required to close a pending delivery after response loss.
+type FixedStartRunReconciler interface {
+	ReconcileStartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, bool, error)
 }
 
 // FixedDeliveryStore is minted only by a live RepositorySession. It retains a
@@ -147,10 +172,6 @@ func (store *FixedDeliveryStore) BeginStartRun(ctx context.Context, idempotencyK
 		return FixedDeliveryPending{}, false, err
 	}
 	err = store.withCurrentOwner(ctx, func() error {
-		projection, readErr := store.session.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
-		if readErr != nil || projection.Run.State != domain.StateReady || projection.Run.AttemptID != "" || projection.Run.RunID != request.RunID || projection.Run.Sequence != request.ExpectedSequence || projection.Run.AuthorityHead != request.ExpectedAuthorityHead {
-			return ErrFixedDeliveryConflict
-		}
 		leaf := fixedDeliveryPendingLeaf(keyDigest)
 		raw, found, readErr := readFixedDeliveryRecord(store.session.fixedRoot, leaf, fixedDeliveryMaxRecord)
 		if readErr != nil {
@@ -167,6 +188,10 @@ func (store *FixedDeliveryStore) BeginStartRun(ctx context.Context, idempotencyK
 			result, replay = existing, true
 			return nil
 		}
+		projection, readErr := store.session.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
+		if readErr != nil || projection.Run.State != domain.StateReady || projection.Run.AttemptID != "" || projection.Run.RunID != request.RunID || projection.Run.Sequence != request.ExpectedSequence || projection.Run.AuthorityHead != request.ExpectedAuthorityHead {
+			return ErrFixedDeliveryConflict
+		}
 		result = FixedDeliveryPending{SchemaVersion: fixedDeliverySchema, ProtocolRevision: fixedDeliveryProtocol, RecordType: fixedDeliveryPending, Operation: fixedDeliveryStartRun, OwnerAcquisitionDigest: store.ownerDigest, OwnerFactDigest: store.session.ownerState.FactDigest, RepositoryDigest: store.session.acquisition.Scope.RepositoryIdentityDigest, NamespaceDigest: store.namespaceDigest, AuthorityRootDigest: store.authorityRootDigest, RequestKeyDigest: keyDigest, RequestDigest: requestDigest, ApplicationIntentDigest: intentDigest, Deadline: deadline.Format(time.RFC3339Nano)}
 		sealed, sealErr := sealFixedDeliveryRecord(&result.Digest, &result)
 		if sealErr != nil {
@@ -178,6 +203,94 @@ func (store *FixedDeliveryStore) BeginStartRun(ctx context.Context, idempotencyK
 		return FixedDeliveryPending{}, false, err
 	}
 	return result, replay, nil
+}
+
+// ReconcileStartRunDelivery closes an immutable pending record only after the
+// injected application port has re-read the exact durable preparation and
+// successor. A missing RB1 outcome remains pending and never becomes success.
+func (store *FixedDeliveryStore) ReconcileStartRunDelivery(ctx context.Context, pending FixedDeliveryPending, request application.StartRunRequest, reconciler FixedStartRunReconciler) (result FixedDeliveryReceipt, applied bool, resultErr error) {
+	if store == nil || ctx == nil || reconciler == nil || request.Validate() != nil || validateFixedDeliveryPending(pending) != nil {
+		return FixedDeliveryReceipt{}, false, ErrFixedDeliveryConflict
+	}
+	started, found, err := reconciler.ReconcileStartRun(ctx, request)
+	if err != nil {
+		return FixedDeliveryReceipt{}, false, err
+	}
+	if found && !fixedDeliveryStartMatches(pending, request, started) {
+		return FixedDeliveryReceipt{}, false, ErrFixedDeliveryConflict
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed || store.session == nil {
+		return FixedDeliveryReceipt{}, false, ErrFixedDeliveryConflict
+	}
+	err = store.withCurrentOwner(ctx, func() error {
+		if !store.pendingMatchesCurrentRequest(pending, request) {
+			return ErrFixedDeliveryConflict
+		}
+		pendingRaw, err := json.Marshal(pending)
+		if err != nil {
+			return ErrFixedDeliveryConflict
+		}
+		pendingRaw, err = canonical.JSON(pendingRaw)
+		if err != nil {
+			return ErrFixedDeliveryConflict
+		}
+		if err := adoptFixedDeliveryRecord(store.session.fixedRoot, fixedDeliveryPendingLeaf(pending.RequestKeyDigest), pendingRaw, store.publishHook); err != nil {
+			return err
+		}
+		leaf := fixedDeliveryReceiptLeaf(pending.Digest)
+		if !found {
+			if _, receiptFound, err := readFixedDeliveryRecord(store.session.fixedRoot, leaf, fixedDeliveryMaxRecord); err != nil {
+				return err
+			} else if receiptFound {
+				return ErrFixedDeliveryConflict
+			}
+			return nil
+		}
+		candidate := FixedDeliveryReceipt{SchemaVersion: fixedDeliverySchema, ProtocolRevision: fixedDeliveryProtocol, RecordType: fixedDeliveryReceipt, Operation: fixedDeliveryStartRun, PendingDigest: pending.Digest, PreparationDigest: started.Prepared.PreparationDigest, ApplicationReceiptFactDigest: started.Run.AuthorityHead, RunID: started.Run.RunID, AttemptID: started.Run.AttemptID, PostRevision: started.Run.Sequence, PostAuthorityHead: started.Run.AuthorityHead}
+		sealed, err := sealFixedDeliveryRecord(&candidate.Digest, &candidate)
+		if err != nil {
+			return err
+		}
+		raw, receiptFound, err := readFixedDeliveryRecord(store.session.fixedRoot, leaf, fixedDeliveryMaxRecord)
+		if err != nil {
+			return err
+		}
+		if receiptFound {
+			var existing FixedDeliveryReceipt
+			if decodeFixedDeliveryRecord(raw, &existing) != nil || validateFixedDeliveryReceipt(existing) != nil || existing != candidate {
+				return ErrFixedDeliveryConflict
+			}
+			if err := adoptFixedDeliveryRecord(store.session.fixedRoot, leaf, raw, store.publishHook); err != nil {
+				return err
+			}
+			result, applied = existing, true
+			return nil
+		}
+		if err := publishFixedDeliveryRecord(store.session.fixedRoot, leaf, sealed, store.publishHook); err != nil {
+			return err
+		}
+		result, applied = candidate, true
+		return nil
+	})
+	if err != nil {
+		return FixedDeliveryReceipt{}, false, err
+	}
+	return result, applied, nil
+}
+
+func (store *FixedDeliveryStore) pendingMatchesCurrentRequest(pending FixedDeliveryPending, request application.StartRunRequest) bool {
+	requestDigest, intentDigest, err := fixedStartRunDigests(request)
+	return err == nil && pending.OwnerAcquisitionDigest == store.ownerDigest && pending.OwnerFactDigest == store.session.ownerState.FactDigest && pending.RepositoryDigest == store.session.acquisition.Scope.RepositoryIdentityDigest && pending.NamespaceDigest == store.namespaceDigest && pending.AuthorityRootDigest == store.authorityRootDigest && pending.RequestDigest == requestDigest && pending.ApplicationIntentDigest == intentDigest
+}
+
+func fixedDeliveryStartMatches(pending FixedDeliveryPending, request application.StartRunRequest, started application.RunStartProjection) bool {
+	if started.Validate() != nil || started.Prepared.RunID != request.RunID || started.Prepared.Sequence != request.ExpectedSequence || started.Prepared.AuthorityHead != request.ExpectedAuthorityHead {
+		return false
+	}
+	requestDigest, intentDigest, err := fixedStartRunDigests(request)
+	return err == nil && pending.RequestDigest == requestDigest && pending.ApplicationIntentDigest == intentDigest
 }
 
 func (store *FixedDeliveryStore) withCurrentOwner(ctx context.Context, fn func() error) error {
@@ -305,8 +418,34 @@ func validateFixedDeliveryPending(pending FixedDeliveryPending) error {
 	return nil
 }
 
+func validateFixedDeliveryReceipt(receipt FixedDeliveryReceipt) error {
+	for _, digest := range []string{receipt.PendingDigest, receipt.PreparationDigest, receipt.ApplicationReceiptFactDigest, receipt.PostAuthorityHead, receipt.Digest} {
+		if !fixedDeliveryDigestPattern.MatchString(digest) {
+			return ErrFixedDeliveryConflict
+		}
+	}
+	if receipt.SchemaVersion != fixedDeliverySchema || receipt.ProtocolRevision != fixedDeliveryProtocol || receipt.RecordType != fixedDeliveryReceipt || receipt.Operation != fixedDeliveryStartRun || domain.ValidateID(receipt.RunID) != nil || domain.ValidateID(receipt.AttemptID) != nil || receipt.PostRevision == 0 || receipt.ApplicationReceiptFactDigest != receipt.PostAuthorityHead {
+		return ErrFixedDeliveryConflict
+	}
+	stored := receipt.Digest
+	receipt.Digest = ""
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		return ErrFixedDeliveryConflict
+	}
+	digest, err := canonical.DigestJSON(raw)
+	if err != nil || digest != stored {
+		return ErrFixedDeliveryConflict
+	}
+	return nil
+}
+
 func fixedDeliveryPendingLeaf(keyDigest string) string {
 	return "p-" + strings.TrimPrefix(keyDigest, "sha256:") + ".json"
+}
+
+func fixedDeliveryReceiptLeaf(pendingDigest string) string {
+	return "r-" + strings.TrimPrefix(pendingDigest, "sha256:") + ".json"
 }
 
 var _ io.Closer = (*FixedDeliveryStore)(nil)
