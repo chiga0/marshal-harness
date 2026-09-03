@@ -102,6 +102,9 @@ make -C "$ROOT" dist-rc1 \
   || fail 'dist-rc1 产物集必须只有 candidate/manifest/checksum'
 [ -x "${RC1_DIST}/marshal_1.0.0-rc1_darwin_arm64" ] \
   || fail 'dist-rc1 缺少唯一 Darwin arm64 candidate'
+/usr/bin/codesign -dv --verbose=4 "${RC1_DIST}/marshal_1.0.0-rc1_darwin_arm64" 2>&1 | \
+  grep -Fx 'Identifier=com.github.chiga0.marshal' >/dev/null \
+  || fail 'dist-rc1 未冻结 ADR 0047 Marshal binary identifier'
 find "$RC1_DIST" -mindepth 1 -maxdepth 1 -print | \
   grep -E '(linux|amd64|marshal_1\.0\.0_)' >/dev/null && fail 'dist-rc1 混入 Linux/amd64/stable 资产'
 

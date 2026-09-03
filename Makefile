@@ -109,7 +109,7 @@ dist-rc1:
 	[ -x /usr/bin/codesign ] || { \
 		echo "[dist-rc1] 错误: 缺少固定 /usr/bin/codesign，无法冻结 Darwin candidate 身份" >&2; exit 1; \
 	}; \
-	/usr/bin/codesign --force --sign - --identifier dev.marshal.cli --timestamp=none "$$out"; \
+	/usr/bin/codesign --force --sign - --identifier com.github.chiga0.marshal --timestamp=none "$$out"; \
 	/usr/bin/codesign --verify --strict --verbose=2 "$$out"
 	@GO_BIN="$$($(GO) env GOROOT)/bin/go" bash scripts/release-contract.sh create-rc1-manifest \
 		"$(DIST_DIR)" "v$(VERSION)" "$(COMMIT)" "$(BUILD_DATE)" "$$($(GO) env GOVERSION)"
