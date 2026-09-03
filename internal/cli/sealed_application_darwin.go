@@ -286,6 +286,12 @@ func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, reques
 	return run.runtime.StartRun(ctx, request)
 }
 
+type sealedRunAdvancer interface {
+	InspectRun(context.Context, application.InspectRunRequest) (application.RunProjection, error)
+	StartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, error)
+	CollectRunResult(context.Context, string) (productionruntime.CollectedRunResult, error)
+}
+
 // advanceRun keeps the exact path-B launch closure and existing-worktree
 // descriptor graph alive while the shared StartRun application operation
 // prepares and starts the Run. Reopening a second Run runtime between those
@@ -298,14 +304,17 @@ func (adapter *sealedRepositoryApplication) advanceRun(ctx context.Context, runI
 		return application.RunProjection{}, "sealed Run 组装失败", err
 	}
 	defer run.Close()
+	return advanceSealedRun(ctx, run.runtime, runID)
+}
 
-	before, err := run.runtime.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
+func advanceSealedRun(ctx context.Context, runtime sealedRunAdvancer, runID string) (application.RunProjection, string, error) {
+	before, err := runtime.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
 	if err != nil {
 		return application.RunProjection{}, "READY 权威投影不可读", err
 	}
 	switch before.State {
 	case domain.StateReady:
-		started, err := run.runtime.StartRun(ctx, application.StartRunRequest{
+		started, err := runtime.StartRun(ctx, application.StartRunRequest{
 			RunID: runID, ExpectedSequence: before.Sequence, ExpectedAuthorityHead: before.AuthorityHead,
 		})
 		if err != nil {
@@ -313,11 +322,18 @@ func (adapter *sealedRepositoryApplication) advanceRun(ctx context.Context, runI
 		}
 		return started.Run, "", nil
 	case domain.StateRunning:
-		if _, err := run.runtime.CollectRunResult(ctx, runID); err != nil && !errors.Is(err, productionruntime.ErrAttemptStillRunning) {
+		if _, err := runtime.CollectRunResult(ctx, runID); errors.Is(err, productionruntime.ErrAttemptStillRunning) {
+			// The RUNNING projection was already verified by InspectRun. Do not
+			// inspect again after the terminal probe: the worker may exit between
+			// those operations, making a second composition observe a new owner
+			// epoch before CollectRunResult has durably admitted the terminal
+			// result. The next bounded advance will collect from fresh authority.
+			return before, "", nil
+		} else if err != nil {
 			return application.RunProjection{}, "sealed CollectRunResult 失败", err
 		}
 	}
-	after, err := run.runtime.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
+	after, err := runtime.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
 	if err != nil {
 		return application.RunProjection{}, "sealed 推进后状态不可读", err
 	}
