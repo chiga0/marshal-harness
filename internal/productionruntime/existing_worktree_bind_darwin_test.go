@@ -4,6 +4,7 @@ package productionruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -21,6 +22,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
@@ -412,6 +414,161 @@ func dispatchLedgerBytes(t *testing.T, base string) []byte {
 	return raw
 }
 
+func terminalTestDigest(t *testing.T, value any) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := canonical.DigestJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
+func terminalSupervisorAnchor(anchor resultingress.SupervisorMechanicsAnchor) processsupervisor.HandshakeAnchor {
+	return processsupervisor.HandshakeAnchor{
+		SessionID: anchor.SessionID, SessionNonceDigest: anchor.SessionNonceDigest, Authority: anchor.Authority,
+		OwnerEpoch: anchor.OwnerEpoch, CurrentAuthorityHead: anchor.CurrentAuthorityHead,
+		CommandSequence: anchor.CommandSequence, CommandHead: anchor.CommandHead,
+		JournalSequence: anchor.JournalSequence, JournalHead: anchor.JournalHead,
+		UID: anchor.UID, GID: anchor.GID, FixedBinary: anchor.FixedBinary,
+		ControlSocket: anchor.ControlSocket, ControlFiles: anchor.ControlFiles,
+	}
+}
+
+func terminalVerifiedOutcome(t *testing.T, intent resultingress.SupervisorCommandIntent, reason string, report *processsupervisor.ProcessReport, boundHead string) processsupervisor.VerifiedCommandOutcome {
+	t.Helper()
+	pre := terminalSupervisorAnchor(intent.PreCommand)
+	post := pre
+	post.CommandSequence = intent.Sequence
+	post.JournalSequence += 2
+	post.JournalHead = canonical.DigestBytes([]byte("terminal-journal-" + intent.CommandID))
+	var payload []byte
+	if report == nil {
+		payload = []byte("{}")
+	} else {
+		var err error
+		payload, err = processsupervisor.CanonicalProtocolMessage(*report)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	observation := canonical.DigestBytes(payload)
+	if intent.Command == processsupervisor.CommandBindAuthority {
+		observation = intent.Rebuild.SupervisorStartedFactDigest
+	}
+	result := processsupervisor.MechanicsResult{Disposition: "ok", ReasonCode: reason, ObservationDigest: observation, Payload: payload}
+	receipt := terminalTestDigest(t, result)
+	commandHead := terminalTestDigest(t, struct {
+		Previous string `json:"previousCommandDigest"`
+		Request  string `json:"requestDigest"`
+		Receipt  string `json:"receiptDigest"`
+	}{intent.PreviousCommandHead, intent.RequestDigest, receipt})
+	post.CommandHead = commandHead
+	if intent.Command == processsupervisor.CommandBindAuthority {
+		post.CurrentAuthorityHead = boundHead
+	}
+	return processsupervisor.VerifiedCommandOutcome{
+		Command: intent.Command, CommandID: intent.CommandID, Sequence: intent.Sequence,
+		Status: "ok", Disposition: "ok", ReasonCode: reason, RequestDigest: intent.RequestDigest,
+		ReceiptDigest: receipt, ObservationDigest: observation, CommandHead: commandHead, ProcessReport: report,
+		Recovery: processsupervisor.CommandRecoveryEvidence{PreCommand: pre, PostCommand: post},
+	}
+}
+
+func terminalAppendCommand(t *testing.T, fixture terminalLeaseRecoveryFixture, state resultingress.AttemptAuthorityState, intent resultingress.SupervisorCommandIntent, outcome processsupervisor.VerifiedCommandOutcome) (resultingress.AttemptAuthorityState, string) {
+	t.Helper()
+	run := resultingress.RunAuthorityBinding{AuthorityNamespaceID: state.Identity.AuthorityNamespaceID, RunID: state.Identity.RunID, OrchestratorID: state.Identity.OrchestratorID, RunAuthorityDigest: state.Identity.RunAuthorityDigest}
+	request := resultingress.AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}
+	intended, err := fixture.ledger.ingress.AppendSupervisorCommandIntent(context.Background(), fixture.ledger.owner, fixture.ledger, state.Revision, state.HeadDigest, request, state.Owner, intent)
+	if err != nil {
+		t.Fatalf("append %s intent: %v", intent.Command, err)
+	}
+	evidence, err := resultingress.NewSupervisorCommandEvidence(outcome)
+	if err != nil {
+		t.Fatalf("project %s outcome: %v", intent.Command, err)
+	}
+	closed, err := fixture.ledger.ingress.AppendSupervisorCommandOutcome(context.Background(), fixture.ledger.owner, fixture.ledger, intended.State.Revision, intended.State.HeadDigest, request, state.Owner, evidence)
+	if err != nil {
+		t.Fatalf("append %s outcome: %v", intent.Command, err)
+	}
+	return closed.State, closed.TransitionDigest
+}
+
+// appendDurableTerminalStartedAttempt reaches ProcessStarted only through the
+// public ResultIngress producer chain. It intentionally models mechanics
+// evidence without executing a temporary test binary.
+func appendDurableTerminalStartedAttempt(t *testing.T, fixture terminalLeaseRecoveryFixture) resultingress.AttemptAuthorityState {
+	t.Helper()
+	state := fixture.attempt
+	owner, found, err := fixture.ledger.ingress.OpenOwner(state.Owner.Scope)
+	if err != nil || !found {
+		t.Fatalf("open owner: found=%t err=%v", found, err)
+	}
+	run := resultingress.RunAuthorityBinding{AuthorityNamespaceID: state.Identity.AuthorityNamespaceID, RunID: state.Identity.RunID, OrchestratorID: state.Identity.OrchestratorID, RunAuthorityDigest: state.Identity.RunAuthorityDigest}
+	request := resultingress.AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}
+	tuple := processsupervisor.AuthorityTuple{AuthorityNamespaceID: state.Identity.AuthorityNamespaceRef, TaskID: state.Identity.TaskID, RunID: state.Identity.RunID, AttemptID: state.Identity.AttemptID, AllocationID: state.Identity.AllocationID, LeaseID: state.Identity.LeaseID, LeaseDigest: state.Identity.LeaseDigest, Generation: uint64(state.Identity.DispatchGeneration), FencingTokenDigest: state.Identity.FencingTokenDigest, OrchestratorID: state.Identity.OrchestratorID}
+	directory := processsupervisor.ControlDirectoryIdentity{CanonicalPath: filepath.Join(fixture.base, "terminal-control"), Device: 71, Inode: 81, FileType: "directory", UID: owner.Acquisition.OwnerUID, GID: owner.Acquisition.OwnerGID, Mode: resultingress.POSIXFileTypeDirectory | 0o700, LinkCount: 2}
+	bootstrapRequest := processsupervisor.BootstrapRequest{SchemaVersion: processsupervisor.BootstrapSchema, ProtocolRevision: processsupervisor.ProtocolRevision, SessionID: "terminal-lease-recovery", SessionNonce: strings.Repeat("7", 64), OwnerEpoch: state.Owner.OwnerEpoch, Authority: tuple, LaunchAuthorizedFact: state.LaunchAuthorizedDigest, CurrentAuthorityHead: state.HeadDigest, ControlDirectoryIdentity: directory, Core: processsupervisor.CoreIdentity{UID: owner.Acquisition.OwnerUID, GID: owner.Acquisition.OwnerGID, Process: owner.Acquisition.OwnerProcess, Binary: owner.Acquisition.OwnerBinary}}
+	prepared, err := resultingress.NewSupervisorBootstrapPrepared(state.Owner, bootstrapRequest)
+	if err != nil {
+		t.Fatalf("prepare supervisor: %v", err)
+	}
+	bootstrapped, err := fixture.ledger.ingress.AppendSupervisorBootstrap(context.Background(), fixture.ledger.owner, fixture.ledger, state.Revision, state.HeadDigest, request, prepared)
+	if err != nil {
+		t.Fatalf("append supervisor bootstrap: %v", err)
+	}
+	state = bootstrapped.State
+	socket := processsupervisor.ControlSocketIdentity{Device: 71, Inode: 82, FileType: "socket", UID: owner.Acquisition.OwnerUID, GID: owner.Acquisition.OwnerGID, Mode: 0o140600, LinkCount: 1}
+	files := processsupervisor.SessionControlFiles{Nonce: processsupervisor.ControlFileIdentity{Device: 71, Inode: 83, FileType: "regular", UID: owner.Acquisition.OwnerUID, GID: owner.Acquisition.OwnerGID, Mode: 0o100600, LinkCount: 1}, Journal: processsupervisor.ControlFileIdentity{Device: 71, Inode: 84, FileType: "regular", UID: owner.Acquisition.OwnerUID, GID: owner.Acquisition.OwnerGID, Mode: 0o100600, LinkCount: 1}}
+	supervisorProcess := processsupervisor.ProcessIdentity{PID: 9301, BirthSeconds: owner.Acquisition.OwnerProcess.BirthSeconds + 1, BirthMicroseconds: 0, SessionID: 9301, ProcessGroupID: 9301}
+	handshakeAt := time.Unix(supervisorProcess.BirthSeconds, 0).UTC().Format(time.RFC3339Nano)
+	handshake := processsupervisor.HandshakeResponse{SchemaVersion: processsupervisor.HandshakeSchema, ProtocolRevision: processsupervisor.ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: prepared.SessionID, SessionNonceDigest: prepared.SessionNonceDigest, OwnerEpoch: state.Owner.OwnerEpoch, CurrentAuthorityHead: prepared.Request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: canonical.DigestBytes([]byte("terminal-initial-journal")), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: handshakeAt, SupervisorProcess: supervisorProcess, SupervisorBinary: prepared.SupervisorBinary, ControlSocket: socket, ControlFiles: files}
+	anchor := processsupervisor.HandshakeAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, Authority: tuple, OwnerEpoch: handshake.OwnerEpoch, CurrentAuthorityHead: handshake.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: handshake.JournalHead, UID: owner.Acquisition.OwnerUID, GID: owner.Acquisition.OwnerGID, FixedBinary: prepared.SupervisorBinary, ControlSocket: socket, ControlFiles: files}
+	finalDirectory := directory
+	finalDirectory.LinkCount++
+	connection := processsupervisor.ConnectionEvidence{Core: bootstrapRequest.Core, ControlDirectory: finalDirectory, Handshake: handshake, Anchor: anchor}
+	startedSupervisor, err := resultingress.NewProcessSupervisorStartedFromBootstrap(state.SupervisorBootstrapDigest, prepared, connection, processsupervisor.CoreIdentity{UID: owner.Acquisition.OwnerUID, GID: owner.Acquisition.OwnerGID, Process: supervisorProcess, Binary: prepared.SupervisorBinary})
+	if err != nil {
+		t.Fatalf("project supervisor started: %v", err)
+	}
+	startedResult, err := fixture.ledger.ingress.AppendSupervisorStarted(context.Background(), fixture.ledger.owner, fixture.ledger, state.Revision, state.HeadDigest, request, startedSupervisor)
+	if err != nil {
+		t.Fatalf("append supervisor started: %v", err)
+	}
+	state = startedResult.State
+	bindPrepared, err := processsupervisor.PrepareCommand(anchor, processsupervisor.CommandOptions{Command: processsupervisor.CommandBindAuthority, CommandID: "terminal-bind", Sequence: 1, PreviousCommandDigest: anchor.CommandHead, CurrentAuthorityHead: anchor.CurrentAuthorityHead, Deadline: time.Now().UTC().Add(10 * time.Second)}, processsupervisor.BindAuthorityPayload{SupervisorStartedFactDigest: state.SupervisorStartedDigest, OwnerEpoch: state.Owner.OwnerEpoch, PreviousAuthorityHead: anchor.CurrentAuthorityHead, AuthorityHead: state.SupervisorStartedDigest})
+	if err != nil {
+		t.Fatalf("prepare bind: %v", err)
+	}
+	bindIntent, err := resultingress.NewSupervisorCommandIntent(bindPrepared.Evidence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, bindDigest := terminalAppendCommand(t, fixture, state, bindIntent, terminalVerifiedOutcome(t, bindIntent, "process-authority-bound", nil, state.SupervisorStartedDigest))
+	runtimeDigest := canonical.DigestBytes([]byte("terminal-runtime"))
+	workingDigest := canonical.DigestBytes([]byte("terminal-working"))
+	exactSetDigest := canonical.DigestBytes([]byte("terminal-exact-set"))
+	spawnIntent := resultingress.SupervisorCommandIntent{ProtocolRevision: processsupervisor.ProtocolRevision, SessionID: state.SupervisorStarted.Handshake.SessionID, Command: processsupervisor.CommandSpawn, CommandID: "terminal-spawn", Sequence: state.SupervisorCommandSequence + 1, PreviousCommandHead: state.SupervisorCommandHead, CurrentAuthorityHead: state.HeadDigest, Deadline: time.Now().UTC().Add(10 * time.Second).Format(time.RFC3339Nano), RequestDigest: canonical.DigestBytes([]byte("terminal-spawn-request")), PayloadDigest: canonical.DigestBytes([]byte("terminal-spawn-payload")), Rebuild: processsupervisor.PreparedCommandProjection{SupervisorStartedFactDigest: state.SupervisorStartedDigest, LaunchAuthorizedFactDigest: state.LaunchAuthorizedDigest, LaunchMaterialsDigest: state.LaunchMaterialsDigest, AgentLaunchSpecDigest: state.AgentLaunchSpecDigest, SourceGateRevision: processsupervisor.SourceGateRevisionV1, RuntimeObjectDigest: runtimeDigest, WorkingObjectDigest: workingDigest, ClosureProfileID: state.LaunchClosure.ClosureProfileID, ArgvDigest: canonical.DigestBytes([]byte("terminal-argv")), EnvironmentDigest: canonical.DigestBytes([]byte("terminal-env")), StdinDigest: canonical.DigestBytes([]byte("terminal-stdin"))}, PreCommand: state.SupervisorMechanicsAnchor}
+	child := processsupervisor.ProcessIdentity{PID: 9401, BirthSeconds: supervisorProcess.BirthSeconds + 1, BirthMicroseconds: 0, SessionID: 9401, ProcessGroupID: 9401}
+	observedAt := time.Unix(child.BirthSeconds, 0).UTC().Format(time.RFC3339Nano)
+	report := processsupervisor.ProcessReport{State: "exec-stopped", ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: observedAt, Process: child, RuntimeObjectDigest: runtimeDigest, WorkingObjectDigest: workingDigest, SourceGateRevision: processsupervisor.SourceGateRevisionV1, ExactSetDigest: exactSetDigest}
+	state, spawnDigest := terminalAppendCommand(t, fixture, state, spawnIntent, terminalVerifiedOutcome(t, spawnIntent, "process-exec-stopped", &report, ""))
+	runtime := state.LaunchClosure.RuntimeExecutable
+	observation, err := resultingress.SealProcessObservation(resultingress.ProcessObservation{PID: child.PID, PGID: child.ProcessGroupID, BirthSeconds: child.BirthSeconds, BirthMicroseconds: child.BirthMicroseconds, WorkingDirectory: state.LaunchClosure.WorkingDirectory, WorkingDirectoryDevice: 71, WorkingDirectoryInode: 85, WorkingDirectoryType: resultingress.POSIXFileTypeDirectory, WorkingDirectoryOwner: owner.Acquisition.OwnerUID, WorkingDirectoryMode: resultingress.POSIXFileTypeDirectory | 0o700, ExecutablePath: runtime.CanonicalPath, ExecutableDevice: runtime.Device, ExecutableInode: runtime.Inode, ExecutableSize: runtime.Size, ExecutableType: resultingress.POSIXFileTypeRegular, ExecutableOwner: runtime.UID, ExecutableGroup: runtime.GID, ExecutableMode: runtime.Mode, ExecutableLinkCount: runtime.LinkCount, ExecutableSHA256: runtime.RawSHA256, ObserverIdentity: "darwin-terminal-lease-recovery/v1"})
+	if err != nil {
+		t.Fatalf("seal process observation: %v", err)
+	}
+	transition := resultingress.AttemptTransition{Kind: resultingress.AttemptTransitionProcessStarted, Identity: state.Identity, CommandID: spawnIntent.CommandID, ObservedAt: observedAt, Process: observation, LaunchMaterialsDigest: state.LaunchMaterialsDigest, AgentLaunchSpecDigest: state.AgentLaunchSpecDigest, SupervisorBindOutcomeFactDigest: bindDigest, SupervisorOutcomeFactDigest: spawnDigest}
+	appended, err := fixture.ledger.ingress.AppendProcessStarted(context.Background(), fixture.ledger.owner, fixture.ledger, state.Revision, state.HeadDigest, request, state.Owner, transition)
+	if err != nil {
+		t.Fatalf("append process started: %v", err)
+	}
+	return appended.State
+}
+
 // TestTerminalCollectLeaseRecoveryMatrix freezes the completion-only lease
 // rules. AckDeadlineAt remains a pre-start gate; a durably started process
 // may replay its original claim after that boundary, but never after expiry
@@ -429,8 +586,7 @@ func TestTerminalCollectLeaseRecoveryMatrix(t *testing.T) {
 		if _, _, _, err := fixture.ledger.leaseLedger.CurrentByAttempt(fixture.lease.RunId, fixture.lease.AttemptId, late); !errors.Is(err, dispatch.ErrLeaseConflict) {
 			t.Fatalf("pre-start lookup after ack err=%v", err)
 		}
-		started := fixture.attempt
-		started.ProcessStartedDigest = canonical.DigestBytes([]byte("terminal-lease-started"))
+		started := appendDurableTerminalStartedAttempt(t, fixture)
 		before := dispatchLedgerBytes(t, fixture.base)
 		got, capability, err := fixture.ledger.recoverStartedAttemptLease(started)
 		if err != nil {
@@ -462,8 +618,7 @@ func TestTerminalCollectLeaseRecoveryMatrix(t *testing.T) {
 		fixture := newTerminalLeaseRecoveryFixture(t)
 		expires, _ := time.Parse(time.RFC3339, fixture.lease.ExpiresAt)
 		fixture.ledger.now = func() time.Time { return expires }
-		started := fixture.attempt
-		started.ProcessStartedDigest = canonical.DigestBytes([]byte("terminal-lease-started"))
+		started := appendDurableTerminalStartedAttempt(t, fixture)
 		before := dispatchLedgerBytes(t, fixture.base)
 		if _, _, err := fixture.ledger.recoverStartedAttemptLease(started); !errors.Is(err, dispatch.ErrLeaseConflict) {
 			t.Fatalf("expired started attempt err=%v", err)
@@ -478,8 +633,13 @@ func TestTerminalCollectLeaseRecoveryMatrix(t *testing.T) {
 			name   string
 			mutate func(*resultingress.AttemptIdentity)
 		}{
+			{"typed-namespace", func(id *resultingress.AttemptIdentity) { id.AuthorityNamespaceID.AuthorityScopeId += "-drift" }},
+			{"namespace-ref", func(id *resultingress.AttemptIdentity) { id.AuthorityNamespaceRef += "-drift" }},
 			{"task", func(id *resultingress.AttemptIdentity) { id.TaskID += "-drift" }},
+			{"run", func(id *resultingress.AttemptIdentity) { id.RunID += "-drift" }},
+			{"attempt", func(id *resultingress.AttemptIdentity) { id.AttemptID += "-drift" }},
 			{"allocation", func(id *resultingress.AttemptIdentity) { id.AllocationID += "-drift" }},
+			{"lease-id", func(id *resultingress.AttemptIdentity) { id.LeaseID += "-drift" }},
 			{"generation", func(id *resultingress.AttemptIdentity) { id.DispatchGeneration++ }},
 			{"fencing", func(id *resultingress.AttemptIdentity) {
 				id.FencingTokenDigest = canonical.DigestBytes([]byte("drifted-fencing"))
@@ -493,12 +653,11 @@ func TestTerminalCollectLeaseRecoveryMatrix(t *testing.T) {
 				fixture := newTerminalLeaseRecoveryFixture(t)
 				ack, _ := time.Parse(time.RFC3339, fixture.lease.AckDeadlineAt)
 				fixture.ledger.now = func() time.Time { return ack.Add(time.Second) }
-				started := fixture.attempt
-				started.ProcessStartedDigest = canonical.DigestBytes([]byte("terminal-lease-started"))
+				started := appendDurableTerminalStartedAttempt(t, fixture)
 				mutation.mutate(&started.Identity)
 				before := dispatchLedgerBytes(t, fixture.base)
-				if _, _, err := fixture.ledger.recoverStartedAttemptLease(started); !errors.Is(err, dispatch.ErrLeaseConflict) {
-					t.Fatalf("identity drift err=%v", err)
+				if _, _, err := fixture.ledger.recoverStartedAttemptLease(started); err == nil {
+					t.Fatal("identity drift was accepted")
 				}
 				if after := dispatchLedgerBytes(t, fixture.base); !reflect.DeepEqual(after, before) {
 					t.Fatal("identity-drift recovery appended a dispatch fact")
@@ -511,8 +670,17 @@ func TestTerminalCollectLeaseRecoveryMatrix(t *testing.T) {
 		fixture := newTerminalLeaseRecoveryFixture(t)
 		ack, _ := time.Parse(time.RFC3339, fixture.lease.AckDeadlineAt)
 		late := ack.Add(time.Second)
-		started := fixture.attempt
-		started.ProcessStartedDigest = canonical.DigestBytes([]byte("terminal-lease-started"))
+		started := appendDurableTerminalStartedAttempt(t, fixture)
+		reopenedIngress, err := resultingress.OpenResultIngressStore(filepath.Join(fixture.base, "result-ingress"))
+		if err != nil {
+			t.Fatalf("reopen ResultIngress: %v", err)
+		}
+		t.Cleanup(func() { _ = reopenedIngress.Close() })
+		replayed, found, err := reopenedIngress.AttemptState(started.Identity)
+		if err != nil || !found || !reflect.DeepEqual(replayed, started) || replayed.ProcessStartedDigest == "" {
+			t.Fatalf("cold ProcessStarted replay: found=%t equal=%t digest=%q err=%v", found, reflect.DeepEqual(replayed, started), replayed.ProcessStartedDigest, err)
+		}
+		started = replayed
 		before := dispatchLedgerBytes(t, fixture.base)
 		reopened, err := dispatch.NewLeaseLedger(filepath.Join(fixture.base, "dispatch-ledger"))
 		if err != nil {

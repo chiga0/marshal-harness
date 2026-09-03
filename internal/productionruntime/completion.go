@@ -247,6 +247,7 @@ func (l *CompositionLedger) recoverStartedAttemptLease(attempt resultingress.Att
 	fencingDigest := canonical.DigestBytes([]byte(lease.FencingToken))
 	exact := lease.Validate() == nil &&
 		lease.AuthorityNamespaceId.Equal(identity.AuthorityNamespaceID) &&
+		identity.AuthorityNamespaceRef == l.namespaceRef() &&
 		lease.TaskId == identity.TaskID && lease.RunId == identity.RunID && lease.AttemptId == identity.AttemptID &&
 		lease.AllocationId == identity.AllocationID && lease.LeaseId == identity.LeaseID &&
 		lease.Generation == identity.DispatchGeneration && generation == identity.DispatchGeneration &&
