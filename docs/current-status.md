@@ -2,6 +2,12 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
+## 2026-09-04 main exact-head CLI 回归闭环：真实 Pi 到 `ACCEPTED`
+
+`main@c2198e3628f38b126402cf7ab153120ea25e3d77` 已用 build-from-head 固定 candidate 与真实 Pi `0.84.4`（`pai-eas/qwen3.7-plus`）完成 sealed CLI 纵切。run phase [33788766642](https://github.com/chiga0/marshal-harness/actions/runs/33788766642) 仅消费一次 Attempt，穿过 existing-worktree path-B、`PrepareRunStart → StartPreparedRun`、真实 worker terminal collect 与 Verification，到达 `REVIEW_PENDING`；独立 reviewer 确认 `P0=0`、`P1=0`。finalize phase [33790168049](https://github.com/chiga0/marshal-harness/actions/runs/33790168049) 导入精确绑定的 ReviewDecision 后持久到 `ACCEPTED`，`rc1-carrier-check` 通过；carrier artifact 为 `9907034593`，上传 zip digest 为 `sha256:e212f4e817fdc774828a7eaffa6b584eeeb5b243af98e486289e2c94362143b7`。
+
+因此 [#226](https://github.com/chiga0/marshal-harness/issues/226) 已按 PR #228 的 exact-head `StartPreparedRun` 关闭合同完成，不再列为 stable 当前阻塞。[#224](https://github.com/chiga0/marshal-harness/issues/224) 与 [#225](https://github.com/chiga0/marshal-harness/issues/225) 的实现已在 main，但 ADR 0075 还要求用 `m13-e2e-dogfood` 在相同 published-asset pin 下以真实复杂中文任务到 `ACCEPTED`，并覆盖 default umask 与“散文 + 单 JSON”输出、提取时间/token 指标；本次 marker canary 不能替代该证据，所以两项继续开放。该结果也不把 fixed server 或 v1.0 stable 提前标记为完成：S4 的真实跨进程 server restart/response-loss T1、T2 server 路径到 `ACCEPTED`、完整 recovery/fault matrix、Issue #212 的 managed signing/notarization、Linux stable gate 与受保护 stable candidate 仍开放。本机 macOS 26.6.2 对 ADR 0059 `PT_TRACE_ME → exec → SIGTRAP → PtraceDetach` 的兼容性故障也仍须以窄 ADR 和固定 `marshal` 内部 launcher 修复；不得生成匿名临时 executable，也不得把云端 runner 成功冒充本机该缺口已关闭。
+
 ## 2026-09-03 fixed server S4 候选：resident production composition
 
 S2 已由 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 合入 `main@0a0c73e`。S3 候选在同一认证 AF_UNIX connection 上增加仅包含 `Status`、`StartRun`、`InspectRun` 的 closed HTTP/1.1 路由：header/body/response、阶段 deadline、repository inflight/queue 均有固定上限，canonical JSON、unknown/duplicate field、unsupported operation、过期或超界 deadline、binding 漂移均在 application/delivery 前拒绝。每条 connection 当前只接受一次 request，严于协议上限并消除 keep-alive/pipelining 歧义。
@@ -16,7 +22,7 @@ fixed server 主线已从 CLI-only 回归切换到 [ADR 0076](adr/0076-darwin-fi
 
 实现 sourceHead 为 `7ee24cc8b4f2e47146410ab69e041038d6f318c6`，PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 已以 merge commit `0a0c73e4947c4124de89de842a1e4857e77fba88` 合入；required CI（Ubuntu、macOS、secret scan）全绿。测试覆盖有效认证与应用字节往返、exact cleanup、oversize、伪造 HMAC、proof replay、token ABA 和 short write；client dialing只接受current `FixedEndpointAuthority`，使用close-on-exec duplicate control descriptor并在握手前后重验owner，避免裸FD复用与snapshot自洽。
 
-本候选仍只把 authenticated transport 建成 `COMPONENT`：尚无 bounded HTTP/application routing、resident `marshal control-plane serve` 命令、真实 Pi 或 restart/response-loss canary。下一顺序固定为 S3 bounded request + immutable delivery reconcile → S4 resident composition/recovery → 固定 candidate bytes 的真实 Pi `RUNNING`/strict-successor replay → T2 独立 Verification/Decision 到 `ACCEPTED`。[#226](https://github.com/chiga0/marshal-harness/issues/226) 保留为 CLI-only adapter 回归债务，但不再阻塞 fixed server 纵切；server 不得回退到该 CLI mutation path。
+本候选仍只把 authenticated transport 建成 `COMPONENT`：尚无 bounded HTTP/application routing、resident `marshal control-plane serve` 命令、真实 Pi 或 restart/response-loss canary。下一顺序固定为 S3 bounded request + immutable delivery reconcile → S4 resident composition/recovery → 固定 candidate bytes 的真实 Pi `RUNNING`/strict-successor replay → T2 独立 Verification/Decision 到 `ACCEPTED`。当时 [#226](https://github.com/chiga0/marshal-harness/issues/226) 保留为 CLI-only adapter 回归债务但不阻塞 fixed server；它现已由上方 2026-09-04 exact-head checkpoint 关闭，server 仍不得回退到该 CLI mutation path。
 
 ## 2026-09-03 fixed server S1.3 候选：strict successor 可恢复旧 pending
 
@@ -24,7 +30,7 @@ fixed `marshal control-plane serve` 的 S1 durable delivery 已按 [ADR 0076](ad
 
 S1.3 代码 sourceHead 为 `62c1aed5fa80017a609fe87d2a6c92696f55f66b`；本地 Darwin/Linux compile-only、`go vet`、staticcheck 与 diff-check 已通过，动态测试和 secret scan 以最终分支 required CI 全绿为合入条件。测试矩阵覆盖 cold successor 重开、稳定 root identity、旧 pending exact replay、receipt 闭合，以及伪造 fact/acquisition/epoch 的拒绝。本候选只关闭 S1，不包含 socket 或用户入口；S2 AF_UNIX endpoint auth、S3 bounded HTTP、S4 真实 Pi restart canary 和 T2 到 `ACCEPTED` 仍未完成，因此 fixed server 继续为 `COMPONENT/INTEGRATION-OPEN`。
 
-## 2026-09-02 #226 叶因已锁定 CLI adapter 层（转交状态）
+## 2026-09-02 #226 叶因已锁定 CLI adapter 层（历史转交状态，现已关闭）
 
 分层探针 PR #227（squash 合入 [b522008](https://github.com/chiga0/marshal-harness/commit/b522008)）给出证据化分层：
 
@@ -32,19 +38,19 @@ S1.3 代码 sourceHead 为 `62c1aed5fa80017a609fe87d2a6c92696f55f66b`；本地 D
 - `controller.startPreparedRun` 直接驱动（step6）在测试宿主下分类为 `application: production-bridge-unavailable`（spawn 相关生产门禁，**不是** dogfood 的 `application: authority-conflict`）——durable/resultingress/productionruntime 排除作为叶因；
 - **#226 叶因锁定 CLI 扩展层 `internal/cli/sealed_application_darwin.go`（636c80d 的 435 行 adapter）**。
 
-当前由新 agent 接手继续实施（交接说明见 `docs/handoff-226-cli-adapter.md`）：
+当时的 agent 交接计划如下（交接说明见 `docs/handoff-226-cli-adapter.md`；修复与 exact-head 验证现已完成）：
 
 - 第一步：review `sealed_repository_application` 的 `openRun` 调用链与 durable replay 字段等价性，定位确切 leaf；
 - 修复后按 ADR 0068 路径以 `m13-e2e-dogfood`（`candidate-mode=build-from-head`）重跑到 `ACCEPTED`；
-- 关闭 #224/#225/#226 与 #212 的 stable 门禁再修复它。
+- 关闭 #226；#224/#225 仍须完成 ADR 0075 的复杂任务外部验证，#212 作为独立 managed signing/notarization 门禁保留。
 
-## 2026-09-02 ADR 0075 修复已上 main，#226 仍阻塞 sealed StartPreparedRun
+## 2026-09-02 ADR 0075 修复已上 main，#226 当时仍阻塞 sealed StartPreparedRun（历史）
 
 [ADR 0075](adr/0075-rc1-dogfood-usability-barriers.md) 已接受并在 main 上全部落地（`516e6a3`、`9029619`、candidate-mode `0a192ec`、workflow 链 `be3183b`/`0de20c5`），三组定向回归测试（0700 worktree 不变量、launch 输入 token 契约、终态单 JSON 提取）覆盖三种原文 dogfood 确定性屏障（#224、#225）。相关 exact-head CI 已全绿。build-from-head dogfood 实证：PrepareRunStart 全路径通过（ingress 八条事实完整晋级至 `prepared-execution-created`）。
 
-当前阻塞已定位为 [#226](https://github.com/chiga0/marshal-harness/issues/226)：main-line composition session 重构（`e691aea`、`636c80d`）在 CLI-driven existing-worktree path-B 下的 sealed `StartPreparedRun` 确定性返回 `application: authority-conflict`（承袭内层映射），supervisor 从未 spawn；RC1 sourceHead `c1407bd` 在同一条链下可过，HEAD 不可过。本方向锁定 ADR 0075 域之外（独立回归），已按门禁单独归档。2026-09-03 路线调整后，#226 不再作为 fixed server 的串行前置：server 必须直接复用 `RepositorySession`/`PublicApplicationPort`，且不得以 CLI mutation fallback 绕过 transport。stable 的当前顺序改为 S2→S3→S4→真实 server Pi/T2 `ACCEPTED`→recovery/fault matrix→managed signing/notarization（Issue #212）→Linux stable gate→protected stable candidate；#226 在不阻断该链时并行或随后修复。
+该时点的阻塞已定位为 [#226](https://github.com/chiga0/marshal-harness/issues/226)：main-line composition session 重构（`e691aea`、`636c80d`）在 CLI-driven existing-worktree path-B 下的 sealed `StartPreparedRun` 确定性返回 `application: authority-conflict`（承袭内层映射），supervisor 从未 spawn；RC1 sourceHead `c1407bd` 在同一条链下可过，HEAD 不可过。本方向锁定 ADR 0075 域之外（独立回归），已按门禁单独归档。2026-09-03 路线调整后，#226 不再作为 fixed server 的串行前置：server 必须直接复用 `RepositorySession`/`PublicApplicationPort`，且不得以 CLI mutation fallback 绕过 transport。#226 现已由 PR #228 与上方 2026-09-04 exact-head `ACCEPTED` 证据关闭；stable 顺序保持 S4→真实 server Pi/T2 `ACCEPTED`→recovery/fault matrix→managed signing/notarization（Issue #212）→Linux stable gate→protected stable candidate。
 
-## 2026-09-02 M13 GoalLite 真实任务 dogfood：worker 交付完成，collect finalize 暴露第三道 RC1 缺陷
+## 2026-09-02 M13 GoalLite 真实任务 dogfood：worker 交付完成，collect finalize 暴露第三道 RC1 缺陷（历史取证）
 
 以已发布 `v1.0.0-rc1`（digest 钉死、外部下载安装、无重建）执行首个真实相对复杂任务 `m13-goal-lite-walking-skeleton-20260902`：产出 GoalLite walking skeleton 的中文设计文档与两份 schema 样例（allowPaths 限定 3 文件，3 文件均真实写出）。GH macos-14 runner（workflow `m13-e2e-dogfood`，run [33578572483](https://github.com/chiga0/marshal-harness/actions/runs/33578572483)）上真实 Pi `0.84.4`（`pai-eas/qwen3.8-max`）通过 activation v2 → render → plan → approve → sealed run.start → spawn+resume → 完整执行 ~11.5 → terminal。
 
@@ -52,7 +58,7 @@ S1.3 代码 sourceHead 为 `62c1aed5fa80017a609fe87d2a6c92696f55f66b`；本地 D
 
 **结论**：真实复杂任务的 supply→spawn→harvest 在发布二进制上可行且效率可度量；但首个 process-terminal collect 以 `application: authority-conflict` 确定性 fail closed（[Issue #225](https://github.com/chiga0/marshal-harness/issues/225)，result-ingress 事实链落在 collect command-outcome 后的组合层），生命周期未能到达 VERIFYING/REVIEW_PENDING。另已归档 [Issue #224](https://github.com/chiga0/marshal-harness/issues/224)（0700 worktree admission 与 CJK/空白后 `/` 的 launch 输入闸门，两道 PrepareRunStart 确定性屏障）。本机 macOS 26.6.2 上 pi 子进程另被宿主策略以 trace/BPT 杀死（属 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 签名/宿主策略族）。
 
-上述结果不改变发布基线与成熟度：RC1 仍为 unsigned local-dogfood prerelease；#224、#225 两道确定性体验缺陷与 #212 的 signing/notarization 均为 v1.0 stable 的硬门禁，不得伪称 stable。
+上述结果在该时点不改变发布基线与成熟度：RC1 仍为 unsigned local-dogfood prerelease；#224、#225 的实现已合入，但 ADR 0075 要求的复杂任务外部关闭证据仍开放。#212 的 signing/notarization 同样开放，不得伪称 stable。
 
 ## 2026-09-01 `v1.0.0-rc1` 已发布
 

@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-04：main exact-head CLI 回归关闭与剩余 stable 边界审计
+
+本轮以 `main@c2198e3628f38b126402cf7ab153120ea25e3d77` 的 build-from-head 固定 candidate 执行真实 Pi `0.84.4`，而不是复用旧 RC1 二进制或测试 seam。[run 33788766642](https://github.com/chiga0/marshal-harness/actions/runs/33788766642) 在一个 Attempt 内完成 existing-worktree path-B、sealed `PrepareRunStart → StartPreparedRun`、真实 worker terminal collect、Verification 与 `REVIEW_PENDING`。独立 reviewer 对真实 ReviewPacket/evidence 确认 `P0=0`、`P1=0`；[finalize 33790168049](https://github.com/chiga0/marshal-harness/actions/runs/33790168049) 导入精确 Decision 后到 `ACCEPTED`，`rc1-carrier-check` 通过，artifact `9907034593` 的 zip digest 为 `sha256:e212f4e817fdc774828a7eaffa6b584eeeb5b243af98e486289e2c94362143b7`。该证据满足 PR #228 对 #226 的关闭合同，因此 #226 可以关闭。
+
+该证据不满足 ADR 0075 对 #224/#225 的完整关闭合同：`rc1-canary.yml` 使用 marker 任务与 `umask 077`，终态是裸 WorkerResult JSON；它不是 `m13-e2e-dogfood` 在相同 published-asset pin 下的真实复杂中文任务，也未覆盖 default umask、“散文 + 恰好一个完整 JSON”或提取时间/token 指标。因此 #224/#225 继续作为实现已合入、外部验证仍开放的 stable blocker；不得用 marker success 替代这些路径。
+
+审计同时拒绝两种过度结论。第一，CLI success 不等于 fixed server success：S4 仍缺同一 fixed bytes 的跨进程 `StartRun → RUNNING → InspectRun`、response-loss/same-key replay、server restart strict-successor T1，以及 T2 经 server collect/verify/review/Decision 到 `ACCEPTED`。第二，GitHub macOS runner success 不等于当前开发机已具备 managed production launch；macOS 26.6.2 上 ADR 0059 的 `PT_TRACE_ME → exec → SIGTRAP → PtraceDetach` 已对 signed Node 在 dyld 边界复现 `SIGTRAP`。后继修复应以窄 ADR 把固定 `marshal __sandbox-launch` 的最终 barrier 换为 Darwin `posix_spawn(POSIX_SPAWN_SETEXEC | POSIX_SPAWN_START_SUSPENDED)`，在 live stopped PID 上完成路径/CDHash/held-object 双端重验后 `SIGCONT`；不得新增匿名 helper、放宽身份校验或声称该机制替代 Issue #212 的 Developer ID/notarization。
+
+结论：当前实施没有偏离 v1 主线，#226 已从阻塞清单删除；#224/#225 只差 ADR 0075 指定的复杂任务外部验证，不再扩展实现范围。最短发布关键路径为并行补齐该验证，同时继续 fixed server T1/T2 → recovery/fault matrix → managed signing/notarization → Linux stable → protected stable candidate。I186-R2–R6 继续保持 `COMPONENT/IN_PROGRESS` 的诚实口径。
+
 ## 2026-09-03：fixed server S4 resident integration 候选审计
 
 S1–S3 已合入 `main@0761ad3`。S4 候选把生产入口收敛为同一个固定 `marshal` 的 `control-plane serve|status|inspect|start`，没有新增 `marshal-server`、临时 Go helper、`/tmp` executable、第二状态根或 CLI fallback。server 在 endpoint ready 前以 resident `RepositorySession` 完成全仓恢复；独立 client 只以 `O_RDONLY` held descriptor 和共享锁重放 current owner，不获取 owner 写锁、不创建缺失文件，也不借用 server 进程内 FD。AF_UNIX pathname 仍只负责定位，授权继续绑定 current owner、完整 acquisition、held root、fixed binary、peer、nonce/token proof 与 application intent。
@@ -24,7 +34,7 @@ S2 已以 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 合入 `
 
 实现过程中两项首轮CI问题已作为跨平台门禁修正，而未降低合同：一是 `productionruntime` 错误反向依赖 `processsupervisor`，已把fixed-binary observation下沉到transport拥有者并恢复层次边界；二是Darwin私有protocol helper留在common build graph导致Linux staticcheck unused，已拆为`protocol_darwin.go`。同时修正共享token descriptor offset竞态为`Pread`、frame short write为完整循环、authority mutation/close锁递归风险为descriptor显式传递。上述问题说明S3开始前必须继续做Darwin/Linux compile+staticcheck，但不需要回退为临时二进制或扩大架构。
 
-本切片关闭的是`S2-ENDPOINT-AUTH-COMPONENT`，不是fixed server integration。S3必须把有界parse/queue/application deadline与S1 immutable delivery接到同一认证连接；S4必须由fixed candidate bytes运行resident `marshal control-plane serve`，完成recovery-before-ready与真实Pi restart/response-loss strict-successor replay。T2独立Verification/Decision到`ACCEPTED`前，ADR 0062 full fixed-server lifecycle仍不可标记`INTEGRATED`。#226只影响CLI-only adapter，保留为并行债务，不再作为server串行前置；任何server→CLI fallback仍属P0。
+本切片关闭的是`S2-ENDPOINT-AUTH-COMPONENT`，不是fixed server integration。S3必须把有界parse/queue/application deadline与S1 immutable delivery接到同一认证连接；S4必须由fixed candidate bytes运行resident `marshal control-plane serve`，完成recovery-before-ready与真实Pi restart/response-loss strict-successor replay。T2独立Verification/Decision到`ACCEPTED`前，ADR 0062 full fixed-server lifecycle仍不可标记`INTEGRATED`。#226 在该时点只影响CLI-only adapter、保留为并行债务；它现已由上方 2026-09-04 checkpoint 关闭。任何server→CLI fallback仍属P0。
 
 ## 2026-09-03：fixed server S1.3 strict successor 审计
 
