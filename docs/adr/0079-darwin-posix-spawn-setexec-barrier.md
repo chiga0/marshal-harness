@@ -2,9 +2,11 @@
 
 | 字段 | 值 |
 | --- | --- |
-| 状态 | 提议（Proposed） |
+| 状态 | 已接受（Accepted） |
 | 日期 | 2026-09-04 |
 | 提议基线 | `origin/main@c2198e3628f38b126402cf7ab153120ea25e3d77` |
+| 接受基线 | `main@9f5f16688a4c2f24f0611bd5de6e68b8914a5610`；接受只冻结合同，不表示实现、真实 canary、Issue #212 或 stable gate 已完成 |
+| 决定者 | 维护者 |
 | 关联 ADR | [ADR 0051](0051-darwin-local-dogfood-profile.md)、[ADR 0056](0056-darwin-process-observation-and-attempt-terminalization.md)、[ADR 0058](0058-interpreted-agent-launch-identity.md)、[ADR 0059](0059-fixed-darwin-process-supervisor.md)、[ADR 0060](0060-supervisor-mechanics-authority-binding-and-recovery.md)、[ADR 0062](0062-fixed-marshal-production-server-mode.md)、[ADR 0064](0064-darwin-control-directory-phased-identity.md)、[ADR 0067](0067-darwin-ordinary-user-launch-and-attach-recovery.md)、[ADR 0071](0071-darwin-sealed-completion-and-durable-result-capability.md)、[Issue #212](https://github.com/chiga0/marshal-harness/issues/212) |
 | 关联范围 | Darwin ordinary-user 的最终 runtime exec barrier；不改变上层 lifecycle、ResultIngress、terminalization、server 或发布权限 |
 
