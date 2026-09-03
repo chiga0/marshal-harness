@@ -2,11 +2,11 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
-## 2026-09-03 fixed server S1.2：同 owner 的 response-loss receipt 已闭合
+## 2026-09-03 fixed server S1.3 候选：strict successor 可恢复旧 pending
 
-fixed `marshal control-plane serve` 的 S1 durable delivery 已按 [ADR 0076](adr/0076-darwin-fixed-server-pathname-locator.md) 推进到 S1.2。S1.1 已把完整 `ControlOwnerAcquisition` digest、owner fact、repository/namespace/root、request/idempotency key、application intent 与冻结 deadline 写入同一 held `control` authority root 下的 immutable `pending`；S1.2 新增只读 `PublicApplicationPort.ReconcileStartRun`，只从 current RB1 重读 exact preparation 与 sealed `run.start-outcome` successor，随后才以 `O_EXCL`/nofollow 追加 exact `receipt-ref`。响应丢失后的同请求重放不会再次 Prepare、再次启动 Attempt 或生成第二条 Supervisor command；RB1 尚无结果时保持 `pending/unknown`，伪造或漂移的 durable result 固定 conflict。
+fixed `marshal control-plane serve` 的 S1 durable delivery 已按 [ADR 0076](adr/0076-darwin-fixed-server-pathname-locator.md) 形成完整候选。S1.1/S1.2 已建立 immutable `pending → current RB1 read-only reconcile → receipt-ref`；S1.3 把 `AuthorityRootDigest` 收敛为 canonical repository、held directory object 与 closed-name graph 的稳定身份，并从同一 physical RB1 ledger 重放完整 owner history。旧 owner 的 pending 不是 handoff capability：只有持有 current physical owner lock 的 strict successor，证明 old owner fact/acquisition 到 current acquisition 之间同 scope、epoch 严格递增、digest 连续且无分叉，并重新核对 root/request/intent 后，才可 exact replay 或补同一 receipt。
 
-本切片代码 sourceHead 为 `a9ef62b9409d5b53d2ddfc90e01ab6aad638facc`；初始代码 head 的 Linux amd64/arm64 candidate conformance 与 secret scan 已通过，最终分支 head 仍以 required CI 全绿为合入条件。它只关闭同一 live owner/session 内的 receipt 对账，不解决跨 owner restart：当前 `AuthorityRootDigest` 仍是 session-local mutation observation，S1.3 必须改为可由 strict successor 重证的稳定 authority identity 与 owner lineage。S2 AF_UNIX 认证、S3 bounded HTTP、S4 真实 Pi restart canary 和 T2 到 `ACCEPTED` 均未完成，因此 fixed server 仍为 `COMPONENT/INTEGRATION-OPEN`，还不能作为正式用户入口。
+S1.3 代码 sourceHead 为 `62c1aed5fa80017a609fe87d2a6c92696f55f66b`；本地 Darwin/Linux compile-only、`go vet`、staticcheck 与 diff-check 已通过，动态测试和 secret scan 以最终分支 required CI 全绿为合入条件。测试矩阵覆盖 cold successor 重开、稳定 root identity、旧 pending exact replay、receipt 闭合，以及伪造 fact/acquisition/epoch 的拒绝。本候选只关闭 S1，不包含 socket 或用户入口；S2 AF_UNIX endpoint auth、S3 bounded HTTP、S4 真实 Pi restart canary 和 T2 到 `ACCEPTED` 仍未完成，因此 fixed server 继续为 `COMPONENT/INTEGRATION-OPEN`。
 
 ## 2026-09-02 #226 叶因已锁定 CLI adapter 层（转交状态）
 
