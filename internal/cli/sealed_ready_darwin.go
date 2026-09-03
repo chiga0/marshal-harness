@@ -29,24 +29,37 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, _, run
 		fmt.Fprintln(stderr, "运行失败：sealed 组合需要 MARSHAL_PI_RUNTIME 与 MARSHAL_PI_ENTRYPOINT 指向冻结的 Pi 0.84.4 镜像。")
 		return ExitUnavailable
 	}
-	applicationAdapter, err := openSealedRepositoryApplication(ctx, sealedRepositoryApplicationConfig{
+	config := sealedRepositoryApplicationConfig{
 		StateRoot: stateRoot, RepositoryRoot: repositoryRoot, PiRuntime: piRuntime, PiEntrypoint: piEntrypoint,
 		EntryIdentity: entryLocalSelfIdentity, RecoveryMode: sealedRepositoryRecoveryOneShot,
 		ObserveIdentity: func() (selfidentity.LocalSelfIdentityObservationV2, error) {
 			return freshLocalDogfoodObservation(selfidentity.CommandTaskRun)
 		},
-	})
+	}
+	if waitForWorker {
+		after, stage, err := driveSealedRunAcrossOwnerBoundary(ctx, runID, func(ctx context.Context) (sealedForegroundApplication, func() error, error) {
+			applicationAdapter, openErr := openSealedRepositoryApplication(ctx, config)
+			if openErr != nil {
+				return nil, nil, openErr
+			}
+			return applicationAdapter, applicationAdapter.Close, nil
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "运行失败：%s：%v\n", stage, err)
+			return ExitFailure
+		}
+		fmt.Fprintf(stdout, "Run：%s\nAttempt：%s\n状态：%s\n", runID, after.AttemptID, after.State)
+		return ExitOK
+	}
+
+	applicationAdapter, err := openSealedRepositoryApplication(ctx, config)
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：sealed repository application 组装失败：%v\n", err)
 		return ExitFailure
 	}
 	defer applicationAdapter.Close()
 
-	advance := applicationAdapter.advanceRun
-	if waitForWorker {
-		advance = applicationAdapter.driveRunToWorkerCompletion
-	}
-	after, stage, err := advance(ctx, runID)
+	after, stage, err := applicationAdapter.advanceRun(ctx, runID)
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：%s：%v\n", stage, err)
 		return ExitFailure

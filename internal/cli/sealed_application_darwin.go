@@ -347,11 +347,12 @@ func (adapter *sealedRepositoryApplication) advanceRun(ctx context.Context, runI
 	})
 }
 
-// driveRunToWorkerCompletion keeps one repository owner, one Run composition
-// and one descriptor graph alive from READY through worker terminalization.
-// This is the foreground CLI path used for real tasks whose worker may run for
-// minutes. Reopening one CLI process per collect would append an owner
-// successor and replay an ever-growing authority ledger on every poll.
+// driveRunToWorkerCompletion keeps one already-current repository owner, one
+// Run composition and one descriptor graph alive through worker
+// terminalization. The foreground READY path first crosses the single owner
+// successor required by process-started, then enters this resident loop.
+// Reopening one CLI process per collect would append an owner successor and
+// replay an ever-growing authority ledger on every poll.
 func (adapter *sealedRepositoryApplication) driveRunToWorkerCompletion(ctx context.Context, runID string) (application.RunProjection, string, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
@@ -368,6 +369,78 @@ type sealedRunOpenFunc func(context.Context, string) (sealedRunAdvancer, func() 
 
 type sealedRunWaitFunc func(context.Context) error
 
+// sealedForegroundApplication is the repository-application slice needed by
+// the explicit CLI --wait flow. A READY Run must cross exactly one repository
+// owner boundary after StartRun: process-started advanced the Attempt head, so
+// the successor application supplies the current control-owner-bound fact
+// required by authenticated Attach. A Run that was already RUNNING is rebound
+// by its first InspectRun composition and can stay in that application.
+type sealedForegroundApplication interface {
+	InspectRun(context.Context, application.InspectRunRequest) (application.RunProjection, error)
+	StartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, error)
+	driveRunToWorkerCompletion(context.Context, string) (application.RunProjection, string, error)
+}
+
+type sealedForegroundOpenFunc func(context.Context) (sealedForegroundApplication, func() error, error)
+
+func driveSealedRunAcrossOwnerBoundary(ctx context.Context, runID string, open sealedForegroundOpenFunc) (application.RunProjection, string, error) {
+	if ctx == nil || runID == "" || open == nil {
+		return application.RunProjection{}, "sealed Run 组装失败", application.NewError("sealed-run-open", application.ReasonInvalidRequest)
+	}
+	current, closeCurrent, err := open(ctx)
+	if err != nil {
+		return application.RunProjection{}, "sealed Run 组装失败", err
+	}
+	if current == nil || closeCurrent == nil {
+		if closeCurrent != nil {
+			_ = closeCurrent()
+		}
+		return application.RunProjection{}, "sealed Run 组装失败", application.NewError("sealed-run-open", application.ReasonCompositionIncomplete)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = closeCurrent()
+		}
+	}()
+
+	before, err := current.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
+	if err != nil {
+		return application.RunProjection{}, "当前 Run 权威投影不可读", err
+	}
+	if before.State != domain.StateReady {
+		return current.driveRunToWorkerCompletion(ctx, runID)
+	}
+	started, err := current.StartRun(ctx, application.StartRunRequest{
+		RunID: runID, ExpectedSequence: before.Sequence, ExpectedAuthorityHead: before.AuthorityHead,
+	})
+	if err != nil {
+		return application.RunProjection{}, "sealed StartRun 失败", err
+	}
+	if started.Run.State != domain.StateRunning {
+		return started.Run, "", nil
+	}
+	// StartRun committed process-started under the first owner. Close that
+	// repository application before acquiring the single successor that will
+	// Attach/rebind and remain resident for all terminal probes and collection.
+	if err := closeCurrent(); err != nil {
+		return application.RunProjection{}, "sealed owner successor 切换失败", err
+	}
+	closed = true
+	successor, closeSuccessor, err := open(ctx)
+	if err != nil {
+		return application.RunProjection{}, "sealed owner successor 组装失败", err
+	}
+	if successor == nil || closeSuccessor == nil {
+		if closeSuccessor != nil {
+			_ = closeSuccessor()
+		}
+		return application.RunProjection{}, "sealed owner successor 组装失败", application.NewError("sealed-run-open", application.ReasonCompositionIncomplete)
+	}
+	defer closeSuccessor()
+	return successor.driveRunToWorkerCompletion(ctx, runID)
+}
+
 func waitForSealedRunPoll(ctx context.Context) error {
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
@@ -380,8 +453,9 @@ func waitForSealedRunPoll(ctx context.Context) error {
 }
 
 // driveSealedRunToWorkerCompletionWithOpen is the testable resident-driver
-// core. The exact Run runtime is opened once and closed once; every terminal
-// probe therefore uses the same owner and held objects. Public server StartRun
+// core after the repository owner is already current for the RUNNING Attempt.
+// The exact Run runtime is opened once and closed once; every terminal probe
+// therefore uses the same owner and held objects. Public server StartRun
 // remains non-blocking—only the explicit foreground CLI --wait path calls this
 // helper.
 func driveSealedRunToWorkerCompletionWithOpen(ctx context.Context, runID string, open sealedRunOpenFunc, wait sealedRunWaitFunc) (application.RunProjection, string, error) {

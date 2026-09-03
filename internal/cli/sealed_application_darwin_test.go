@@ -20,6 +20,80 @@ type sealedRunAdvancerStub struct {
 	started      application.RunStartProjection
 }
 
+type sealedForegroundApplicationStub struct {
+	before     application.RunProjection
+	started    application.RunStartProjection
+	driven     application.RunProjection
+	inspectErr error
+	startErr   error
+	driveErr   error
+	inspects   int
+	starts     int
+	drives     int
+}
+
+func (stub *sealedForegroundApplicationStub) InspectRun(context.Context, application.InspectRunRequest) (application.RunProjection, error) {
+	stub.inspects++
+	return stub.before, stub.inspectErr
+}
+
+func (stub *sealedForegroundApplicationStub) StartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, error) {
+	stub.starts++
+	return stub.started, stub.startErr
+}
+
+func (stub *sealedForegroundApplicationStub) driveRunToWorkerCompletion(context.Context, string) (application.RunProjection, string, error) {
+	stub.drives++
+	return stub.driven, "", stub.driveErr
+}
+
+func TestDriveSealedRunAcrossOwnerBoundaryReopensOnceAfterFreshStart(t *testing.T) {
+	ready := sealedRunProjection(domain.StateReady, 51)
+	running := sealedRunProjection(domain.StateRunning, 52)
+	verifying := sealedRunProjection(domain.StateVerifying, 53)
+	first := &sealedForegroundApplicationStub{before: ready, started: application.RunStartProjection{Run: running}}
+	second := &sealedForegroundApplicationStub{driven: verifying}
+	applications := []sealedForegroundApplication{first, second}
+	openCalls, closeCalls := 0, 0
+	got, stage, err := driveSealedRunAcrossOwnerBoundary(context.Background(), ready.RunID, func(context.Context) (sealedForegroundApplication, func() error, error) {
+		current := applications[openCalls]
+		openCalls++
+		return current, func() error { closeCalls++; return nil }, nil
+	})
+	if err != nil || stage != "" {
+		t.Fatalf("drive error = %v, stage = %q", err, stage)
+	}
+	if got != verifying {
+		t.Fatalf("projection = %#v, want %#v", got, verifying)
+	}
+	if openCalls != 2 || closeCalls != 2 {
+		t.Fatalf("open calls = %d, close calls = %d; want 2 each", openCalls, closeCalls)
+	}
+	if first.inspects != 1 || first.starts != 1 || first.drives != 0 || second.inspects != 0 || second.starts != 0 || second.drives != 1 {
+		t.Fatalf("unexpected call distribution: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestDriveSealedRunAcrossOwnerBoundaryKeepsCurrentRecoveredOwner(t *testing.T) {
+	running := sealedRunProjection(domain.StateRunning, 52)
+	verifying := sealedRunProjection(domain.StateVerifying, 53)
+	current := &sealedForegroundApplicationStub{before: running, driven: verifying}
+	openCalls, closeCalls := 0, 0
+	got, stage, err := driveSealedRunAcrossOwnerBoundary(context.Background(), running.RunID, func(context.Context) (sealedForegroundApplication, func() error, error) {
+		openCalls++
+		return current, func() error { closeCalls++; return nil }, nil
+	})
+	if err != nil || stage != "" {
+		t.Fatalf("drive error = %v, stage = %q", err, stage)
+	}
+	if got != verifying {
+		t.Fatalf("projection = %#v, want %#v", got, verifying)
+	}
+	if openCalls != 1 || closeCalls != 1 || current.inspects != 1 || current.starts != 0 || current.drives != 1 {
+		t.Fatalf("unexpected calls: open=%d close=%d current=%+v", openCalls, closeCalls, current)
+	}
+}
+
 func TestRecoverSealedRepositoryOnOpenSeparatesOneShotAndResidentModes(t *testing.T) {
 	recoverCalls := 0
 	recoverRuns := func(context.Context) error {
