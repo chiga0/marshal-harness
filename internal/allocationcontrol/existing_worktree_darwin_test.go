@@ -634,6 +634,54 @@ func TestExistingWorktreeCurrentNameDetectsRenameReplacementAndRenameBack(t *tes
 	}
 }
 
+func TestExistingWorktreeDirectoryEdgeCanonicalizesOnlyAPFSVolatileIdentity(t *testing.T) {
+	fixture := newExistingWorktreeFixture(t)
+	defer fixture.Close()
+	parentFD, err := openExistingDirectoryPath(filepath.Dir(fixture.worktree))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(parentFD)
+	leaf := filepath.Base(fixture.worktree)
+	childFD, err := unix.Openat(parentFD, leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(childFD)
+
+	edge, err := observeDirectoryEdge(parentFD, childFD, leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edge.ObjectIdentity.Size != 0 || edge.ObjectIdentity.Nlink != 1 {
+		t.Fatalf("volatile directory identity was not canonicalized: %+v", edge.ObjectIdentity)
+	}
+
+	base := edge.ObjectIdentity
+	volatile := base
+	volatile.Size = 4096
+	volatile.Nlink = 99
+	if !sameDirectoryObject(base, volatile) {
+		t.Fatal("APFS-only size/link drift changed directory authority")
+	}
+	for name, mutate := range map[string]func(*ObjectIdentityV1){
+		"device": func(value *ObjectIdentityV1) { value.Device = "999" },
+		"inode":  func(value *ObjectIdentityV1) { value.Inode = "999" },
+		"mode":   func(value *ObjectIdentityV1) { value.Mode ^= 0o100 },
+		"uid":    func(value *ObjectIdentityV1) { value.UID++ },
+		"gid":    func(value *ObjectIdentityV1) { value.GID++ },
+		"type":   func(value *ObjectIdentityV1) { value.Type = ObjectTypeRegular },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := base
+			mutate(&changed)
+			if sameDirectoryObject(base, changed) {
+				t.Fatalf("%s drift retained directory authority", name)
+			}
+		})
+	}
+}
+
 func TestExistingWorktreeLocatorDetectsAncestorReplacement(t *testing.T) {
 	fixture := newExistingWorktreeFixture(t)
 	defer fixture.Close()
