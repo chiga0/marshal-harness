@@ -18,7 +18,7 @@ RC1_LDFLAGS := -w -buildid= \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.buildDate=$(BUILD_DATE) \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=darwin-local-dogfood
 
-.PHONY: format format-check architecture-check vet lint test build dist dist-rc1 vuln release-check check ci
+.PHONY: format format-check architecture-check vet lint test build dist dist-rc1 vuln fixed-server-t1-check release-check check ci
 
 format:
 	gofmt -w $(GO_FILES)
@@ -130,6 +130,10 @@ dist-rc1:
 vuln:
 	$(GO) tool govulncheck ./...
 
+fixed-server-t1-check:
+	bash scripts/fixed-server-t1-canary_test.sh
+	/usr/bin/python3 -I -B scripts/fixed-server-t1-evidence_test.py
+
 # Local convenience only. CI release authority invokes the fixed Python checker
 # before any candidate Make/script execution and does not trust this target.
 release-check:
@@ -138,9 +142,11 @@ release-check:
 	bash scripts/dist-profile_test.sh
 	bash scripts/install_test.sh
 	bash scripts/release-canary_test.sh
+	bash scripts/fixed-server-t1-canary_test.sh
+	/usr/bin/python3 -I -B scripts/fixed-server-t1-evidence_test.py
 	/usr/bin/python3 -I -B scripts/rc1-carrier-check_test.py
 	/usr/bin/python3 -I -B scripts/rc1-release-carrier-artifact_test.py
 
-check: format-check architecture-check vet lint test build
+check: format-check architecture-check vet lint test build fixed-server-t1-check
 
 ci: check vuln

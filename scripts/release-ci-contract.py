@@ -27,6 +27,7 @@ RELEASE_WORKFLOW_RELATIVE_PATH = ".github/workflows/release.yml"
 RELEASE_WORKFLOW_DIGEST_RELATIVE_PATH = "scripts/release-workflow.sha256"
 FIXED_FILES = {
     ".github/workflows/ci.yml": "100644",
+    ".github/workflows/fixed-server-t1-canary.yml": "100644",
     RELEASE_WORKFLOW_RELATIVE_PATH: "100644",
     "Makefile": "100644",
     CHECKER_RELATIVE_PATH: "100644",
@@ -40,6 +41,11 @@ FIXED_FILES = {
     RELEASE_WORKFLOW_DIGEST_RELATIVE_PATH: "100644",
     "scripts/release-contract_test.sh": "100755",
     "scripts/release-ci-gate_test.sh": "100755",
+    "scripts/fixed-server-t1-canary.sh": "100755",
+    "scripts/fixed-server-t1-canary_test.sh": "100755",
+    "scripts/fixed-server-t1-evidence.py": "100755",
+    "scripts/fixed-server-t1-evidence_test.py": "100755",
+    "scripts/fixed-server-t1-task.py": "100755",
     "scripts/dist-profile_test.sh": "100755",
     "scripts/install_test.sh": "100755",
     "scripts/linux-candidate-conformance.sh": "100755",
@@ -105,6 +111,7 @@ jobs:
             scripts/release-ci-gate_test.sh \\
             scripts/install_test.sh \\
             scripts/release-canary_test.sh \\
+            scripts/fixed-server-t1-canary_test.sh \\
             scripts/m13-e2e-dogfood-workflow_test.sh; do
             run_checker
             /usr/bin/env -i \\
@@ -112,6 +119,12 @@ jobs:
               PATH=/usr/bin:/bin \\
               /bin/bash --noprofile --norc "$GITHUB_WORKSPACE/$test_path"
           done
+          run_checker
+          /usr/bin/env -i \\
+            LC_ALL=C \\
+            PATH=/usr/bin:/bin \\
+            /usr/bin/python3 -I -B \\
+            "$GITHUB_WORKSPACE/scripts/fixed-server-t1-evidence_test.py"
           run_checker
           /usr/bin/env -i \\
             LC_ALL=C \\
@@ -244,6 +257,8 @@ EXPECTED_RELEASE_TARGET = """release-check:
 \tbash scripts/dist-profile_test.sh
 \tbash scripts/install_test.sh
 \tbash scripts/release-canary_test.sh
+\tbash scripts/fixed-server-t1-canary_test.sh
+\t/usr/bin/python3 -I -B scripts/fixed-server-t1-evidence_test.py
 \t/usr/bin/python3 -I -B scripts/rc1-carrier-check_test.py
 \t/usr/bin/python3 -I -B scripts/rc1-release-carrier-artifact_test.py
 

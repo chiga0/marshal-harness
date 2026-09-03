@@ -51,6 +51,7 @@ jobs:
             scripts/release-ci-gate_test.sh \
             scripts/install_test.sh \
             scripts/release-canary_test.sh \
+            scripts/fixed-server-t1-canary_test.sh \
             scripts/m13-e2e-dogfood-workflow_test.sh; do
             run_checker
             /usr/bin/env -i \
@@ -58,6 +59,12 @@ jobs:
               PATH=/usr/bin:/bin \
               /bin/bash --noprofile --norc "$GITHUB_WORKSPACE/$test_path"
           done
+          run_checker
+          /usr/bin/env -i \
+            LC_ALL=C \
+            PATH=/usr/bin:/bin \
+            /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/fixed-server-t1-evidence_test.py"
           run_checker
           /usr/bin/env -i \
             LC_ALL=C \

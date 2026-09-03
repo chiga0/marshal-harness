@@ -1,0 +1,155 @@
+name: Fixed server T1 exact-head canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected-head:
+        description: 40 位小写 sourceHead（必须是已通过 required CI 的精确 commit）
+        required: true
+        type: string
+      pi-model:
+        description: 冻结到真实 Pi 0.84.4 Task 的 provider/model
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fixed-server-t1-${{ inputs.expected-head }}
+  cancel-in-progress: false
+
+jobs:
+  exact-head-canary:
+    name: Fixed server T1 response-loss/recovery
+    runs-on: macos-14
+    timeout-minutes: 80
+    permissions:
+      actions: read
+      contents: read
+    env:
+      EXPECTED_HEAD: ${{ inputs.expected-head }}
+      PI_MODEL: ${{ inputs.pi-model }}
+      PHY_PI_VERSION: "0.84.4"
+      PHY_NODE_VERSION: "v24.15.0"
+      PHY_NODE_SHA256: "3200fbd9f7fd4410426dd541e10d1ab829d3472f270d743c7fabd1696c03fe32"
+      PHY_PI_BUNDLE_SHA256: "5406c369954516fb56879d685e082ff9095cd6e06e41af406f394942377fd4bf"
+      GO_TARBALL_URL: "https://mirror.nju.edu.cn/golang/go1.26.6.darwin-arm64.tar.gz"
+      GO_TARBALL_SHA256: "2dc95ce4675829f2df0e86b28bcef3283635902062a5f0580ca659bf570f3204"
+    steps:
+      - name: Validate exact-head inputs
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          VARS_MODELS: ${{ vars.OPENAI_MODELS }}
+        run: |
+          test "${{ github.repository }}" = "chiga0/marshal-harness" || { echo "::error::仅允许 canonical 仓库" >&2; exit 1; }
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::expected-head 必须是 40 位小写 commit" >&2; exit 1; }
+          [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || { echo "::error::pi-model 必须是 provider/model" >&2; exit 1; }
+          MODEL_ID="${PI_MODEL#*/}" VARS_MODELS="$VARS_MODELS" /usr/bin/python3 -I -B -c 'import os,sys; values=[v.strip() for v in os.environ["VARS_MODELS"].split(",") if v.strip()]; os.environ["MODEL_ID"] in values or sys.exit("pi-model 不在 OPENAI_MODELS allowlist")'
+
+      - name: Checkout exact expected-head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.expected-head }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Gate canonical repository and required CI
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git remote set-url origin https://github.com/chiga0/marshal-harness.git
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" || { echo "::error::checkout head 漂移" >&2; exit 1; }
+          git checkout -q -B main "$EXPECTED_HEAD"
+          bash scripts/release-ci-gate.sh "${{ github.repository }}" "$EXPECTED_HEAD"
+
+      - name: Provision pinned Go 1.26.6
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          root="$RUNNER_WORKSPACE/fixed-server-t1-go"
+          rm -rf "$root" && mkdir -p "$root"
+          curl -fsSLo "$root/go.tar.gz" "$GO_TARBALL_URL"
+          test "$(shasum -a 256 "$root/go.tar.gz" | awk '{print tolower($1)}')" = "$GO_TARBALL_SHA256" || { echo "::error::Go tarball digest 漂移" >&2; exit 1; }
+          /usr/bin/tar -xzf "$root/go.tar.gz" -C "$root"
+          go_bin="$root/go/bin/go"
+          test "$(GOTOOLCHAIN=local "$go_bin" env GOVERSION)" = go1.26.6 || { echo "::error::Go version 漂移" >&2; exit 1; }
+          printf 'T1_GO_BIN=%s\n' "$go_bin" >> "$GITHUB_ENV"
+
+      - name: Build once exact-head fixed Marshal candidate
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          umask 077
+          rm -rf dist bin
+          build_date="$(bash scripts/release-contract.sh build-date . "$EXPECTED_HEAD")"
+          make dist-rc1 GO="$T1_GO_BIN" VERSION=1.0.0-rc1 COMMIT="$EXPECTED_HEAD" BUILD_DATE="$build_date"
+          mkdir -p bin
+          cp dist/marshal_1.0.0-rc1_darwin_arm64 bin/marshal
+          chmod 755 bin/marshal
+          test ! -L bin/marshal
+          test "$(shasum -a 256 bin/marshal | awk '{print tolower($1)}')" = "$(shasum -a 256 dist/marshal_1.0.0-rc1_darwin_arm64 | awk '{print tolower($1)}')" || { echo "::error::fixed bin bytes 漂移" >&2; exit 1; }
+          version_json="$(bin/marshal version --json)"
+          VERSION_JSON="$version_json" /usr/bin/python3 -I -B -c 'import json,os; v=json.loads(os.environ["VERSION_JSON"]); assert v.get("commit")==os.environ["EXPECTED_HEAD"] and v.get("selfProfile")=="darwin-local-dogfood" and v.get("os")=="darwin" and v.get("arch")=="arm64"'
+
+      - name: Provision pinned Node v24.15.0 and Pi 0.84.4
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          root="$RUNNER_WORKSPACE/fixed-server-t1-pi"
+          rm -rf "$root" && mkdir -p "$root"
+          curl -fsSLo "$root/node.tar.gz" "https://nodejs.org/dist/${PHY_NODE_VERSION}/node-${PHY_NODE_VERSION}-darwin-arm64.tar.gz"
+          /usr/bin/tar -xzf "$root/node.tar.gz" -C "$root"
+          node_root="$root/node-${PHY_NODE_VERSION}-darwin-arm64"
+          test "$(shasum -a 256 "$node_root/bin/node" | awk '{print tolower($1)}')" = "$PHY_NODE_SHA256" || { echo "::error::Node digest 漂移" >&2; exit 1; }
+          test "$("$node_root/bin/node" --version)" = "$PHY_NODE_VERSION" || { echo "::error::Node version 漂移" >&2; exit 1; }
+          export PATH="$node_root/bin:$PATH"
+          npm install --global --no-fund --no-audit @earendil-works/pi-coding-agent@${PHY_PI_VERSION}
+          pi_wrapper="$(command -v pi)"
+          test -L "$pi_wrapper" || { echo "::error::Pi wrapper 形态漂移" >&2; exit 1; }
+          bundle="$(/usr/bin/readlink "$pi_wrapper")"
+          case "$bundle" in /*) ;; *) bundle="$(dirname "$pi_wrapper")/$bundle" ;; esac
+          bundle="$(/usr/bin/python3 -I -B -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$bundle")"
+          case "$bundle" in */@earendil-works/pi-coding-agent/dist/bundle/cli.js) ;; *) echo "::error::Pi bundle path 漂移" >&2; exit 1 ;; esac
+          test "$(shasum -a 256 "$bundle" | awk '{print tolower($1)}')" = "$PHY_PI_BUNDLE_SHA256" || { echo "::error::Pi bundle digest 漂移" >&2; exit 1; }
+          test "$(env -i HOME="$HOME" "$node_root/bin/node" "$bundle" --version)" = "$PHY_PI_VERSION" || { echo "::error::Pi version 漂移" >&2; exit 1; }
+          printf 'PI_NODE=%s\nPI_BIN=%s\nPI_BUNDLE=%s\nNODE_ROOT_BIN=%s\n' "$node_root/bin/node" "$pi_wrapper" "$bundle" "$node_root/bin" >> "$GITHUB_ENV"
+
+      - name: Provision Pi provider config without emitting credentials
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODELS: ${{ vars.OPENAI_MODELS }}
+        run: |
+          test -n "$OPENAI_BASE_URL" && test -n "$OPENAI_API_KEY" && test -n "$OPENAI_MODELS" || { echo "::error::缺少 Pi provider 配置" >&2; exit 1; }
+          mkdir -p "$HOME/.pi/agent"
+          chmod 700 "$HOME/.pi" "$HOME/.pi/agent"
+          /usr/bin/python3 -I -B scripts/rc1-canary-provider-config.py "$HOME/.pi/agent/models.json" "$OPENAI_BASE_URL" "${PI_MODEL%%/*}"
+
+      - name: Run fixed server T1 canary and close evidence
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          run_id="fixed-server-t1-${{ github.run_id }}"
+          evidence_root="$(pwd)/.marshal/fixed-server-t1-canary/$run_id"
+          printf 'T1_RUN_ID=%s\nT1_EVIDENCE_ROOT=%s\n' "$run_id" "$evidence_root" >> "$GITHUB_ENV"
+          export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+          scripts/fixed-server-t1-canary.sh \
+            --expected-head "$EXPECTED_HEAD" --pi-model "$PI_MODEL" \
+            --pi-node "$PI_NODE" --pi-bin "$PI_BIN" --pi-bundle "$PI_BUNDLE" \
+            --run-id "$run_id" --evidence-root "$evidence_root"
+
+      - name: Upload fixed server T1 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fixed-server-t1-${{ github.run_id }}
+          path: |
+            dist/
+            .marshal/fixed-server-t1-canary/
+            .marshal/runs/${{ env.T1_RUN_ID }}/state.json
+            .marshal/runs/${{ env.T1_RUN_ID }}/events.jsonl
+            .marshal/result-ingress/result-ingress.jsonl
+            .marshal/runtime-v1/control/delivery-v1/*.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
+          include-hidden-files: true
