@@ -20,6 +20,11 @@ type heldBuiltinName struct {
 	stat   unix.Stat_t
 }
 
+type builtinArtifactPlatformHooks struct {
+	afterLeafOpen      func()
+	beforeFinalRecheck func()
+}
+
 func readTaskSpecBuiltinArtifact(ctx context.Context, isolate, pattern string, hooks builtinArtifactReadHooks) (builtinArtifact, string) {
 	if ctx.Err() != nil {
 		return builtinArtifact{}, reasonBuiltinTimeout

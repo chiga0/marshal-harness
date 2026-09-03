@@ -30,8 +30,7 @@ type builtinArtifact struct {
 // builtinArtifactReadHooks is test-only fault injection at held-object
 // boundaries. Production always passes the zero value.
 type builtinArtifactReadHooks struct {
-	afterLeafOpen      func()
-	beforeFinalRecheck func()
+	builtinArtifactPlatformHooks
 }
 
 func runTaskSpecBuiltin(ctx context.Context, isolate string, spec CommandSpec, plan verificationbuiltin.Plan) (CommandResult, string, bool, string) {
