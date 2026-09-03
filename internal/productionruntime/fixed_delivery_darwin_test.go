@@ -37,6 +37,52 @@ type fixedStartRunReconcilerStub struct {
 	err     error
 }
 
+func TestFixedDeliveryRejectsAuthenticatedBindingMismatchBeforePending(t *testing.T) {
+	fixture := newFixedDeliveryFixture(t)
+	binding, err := NewFixedStartRunDeliveryBinding("request:bound-mismatch", fixture.request, fixture.deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding.RequestDigest = canonical.DigestBytes([]byte("forged-request"))
+	if _, _, err := fixture.store.BeginStartRunBound(context.Background(), "request:bound-mismatch", fixture.request, fixture.deadline, binding); !errors.Is(err, ErrFixedDeliveryConflict) {
+		t.Fatalf("BeginStartRunBound err=%v", err)
+	}
+	leaf := fixedDeliveryPendingLeaf(canonical.DigestBytes([]byte("request:bound-mismatch")))
+	if _, found, err := readFixedDeliveryRecord(fixture.session.fixedRoot, leaf, fixedDeliveryMaxRecord); err != nil || found {
+		t.Fatalf("binding mismatch published pending: found=%v err=%v", found, err)
+	}
+}
+
+func TestFixedDeliveryRejectsExpiredOrCancelledBindingBeforePending(t *testing.T) {
+	fixture := newFixedDeliveryFixture(t)
+	for _, testCase := range []struct {
+		name     string
+		deadline time.Time
+		context  func() context.Context
+	}{
+		{name: "expired", deadline: time.Now().UTC().Add(-time.Second), context: context.Background},
+		{name: "cancelled", deadline: fixture.deadline, context: func() context.Context {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			binding, err := NewFixedStartRunDeliveryBinding("request:"+testCase.name, fixture.request, testCase.deadline)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := fixture.store.BeginStartRunBound(testCase.context(), "request:"+testCase.name, fixture.request, testCase.deadline, binding); !errors.Is(err, ErrFixedDeliveryConflict) {
+				t.Fatalf("BeginStartRunBound err=%v", err)
+			}
+			leaf := fixedDeliveryPendingLeaf(canonical.DigestBytes([]byte("request:" + testCase.name)))
+			if _, found, err := readFixedDeliveryRecord(fixture.session.fixedRoot, leaf, fixedDeliveryMaxRecord); err != nil || found {
+				t.Fatalf("invalid binding published pending: found=%v err=%v", found, err)
+			}
+		})
+	}
+}
+
 func (stub fixedStartRunReconcilerStub) ReconcileStartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, bool, error) {
 	return stub.started, stub.found, stub.err
 }
@@ -270,6 +316,18 @@ func TestFixedDeliveryReceiptClosesOnlyExactReconciledStart(t *testing.T) {
 	}
 	if receipt.PendingDigest != pending.Digest || receipt.PreparationDigest != started.Prepared.PreparationDigest || receipt.ApplicationReceiptFactDigest != started.Run.AuthorityHead || receipt.PostRevision != started.Run.Sequence || receipt.PostAuthorityHead != started.Run.AuthorityHead {
 		t.Fatalf("receipt binding mismatch: %+v", receipt)
+	}
+	if err := ValidateFixedStartRunDeliveryReceipt(pending, receipt); err != nil {
+		t.Fatalf("public receipt validation: %v", err)
+	}
+	wrongPending := receipt
+	wrongPending.PendingDigest = canonical.DigestBytes([]byte("wrong-pending"))
+	wrongPending.Digest = ""
+	if _, err := sealFixedDeliveryRecord(&wrongPending.Digest, &wrongPending); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateFixedStartRunDeliveryReceipt(pending, wrongPending); !errors.Is(err, ErrFixedDeliveryConflict) {
+		t.Fatalf("wrong pending receipt err=%v", err)
 	}
 	replayed, applied, err := fixture.store.ReconcileStartRunDelivery(context.Background(), pending, fixture.request, reconciler)
 	if err != nil || !applied || replayed != receipt {

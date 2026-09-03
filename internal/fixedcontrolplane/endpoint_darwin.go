@@ -58,6 +58,7 @@ type AuthenticatedConnection struct {
 	*net.UnixConn
 	Binding RequestBinding
 	Peer    processsupervisor.CoreIdentity
+	recheck func(context.Context) error
 	release func()
 	once    sync.Once
 }
@@ -69,6 +70,18 @@ func (connection *AuthenticatedConnection) Close() error {
 	err := connection.UnixConn.Close()
 	connection.once.Do(connection.release)
 	return err
+}
+
+// Recheck proves that the authenticated endpoint, current owner and fixed
+// binary still match the handshake before or after an application operation.
+func (connection *AuthenticatedConnection) Recheck(ctx context.Context) error {
+	if connection == nil || ctx == nil || connection.recheck == nil {
+		return ErrConflict
+	}
+	if err := connection.recheck(ctx); err != nil {
+		return ErrConflict
+	}
+	return nil
 }
 
 func OpenEndpoint(ctx context.Context, authority *productionruntime.FixedEndpointAuthority) (*Endpoint, error) {
@@ -247,7 +260,7 @@ func (endpoint *Endpoint) authenticate(ctx context.Context, connection *net.Unix
 		return nil, ErrConflict
 	}
 	_ = connection.SetDeadline(time.Time{})
-	return &AuthenticatedConnection{UnixConn: connection, Binding: proof.Binding, Peer: peer, release: release}, nil
+	return &AuthenticatedConnection{UnixConn: connection, Binding: proof.Binding, Peer: peer, recheck: authenticatedPeerRecheck(connection, peer, endpoint.recheck), release: release}, nil
 }
 
 func Dial(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, binding RequestBinding) (*AuthenticatedConnection, error) {
@@ -349,7 +362,20 @@ func Dial(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 		return fail(ErrConflict)
 	}
 	_ = connection.SetDeadline(time.Time{})
-	return &AuthenticatedConnection{UnixConn: connection, Binding: binding, Peer: peer, release: func() {}}, nil
+	return &AuthenticatedConnection{UnixConn: connection, Binding: binding, Peer: peer, recheck: authenticatedPeerRecheck(connection, peer, authority.Recheck), release: func() {}}, nil
+}
+
+func authenticatedPeerRecheck(connection *net.UnixConn, expected processsupervisor.CoreIdentity, authority func(context.Context) error) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if connection == nil || ctx == nil || authority == nil || authority(ctx) != nil {
+			return ErrConflict
+		}
+		observed, err := processsupervisor.ObserveFixedMarshalPeer(connection)
+		if err != nil || observed != expected {
+			return ErrConflict
+		}
+		return nil
+	}
 }
 
 func (endpoint *Endpoint) recheck(ctx context.Context) error {

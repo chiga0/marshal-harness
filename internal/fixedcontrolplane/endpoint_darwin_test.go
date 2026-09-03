@@ -144,6 +144,17 @@ func TestEndpointAuthenticatesAndCarriesBoundApplicationBytes(t *testing.T) {
 	if server.Binding != binding {
 		t.Fatalf("binding=%+v want=%+v", server.Binding, binding)
 	}
+	if err := server.Recheck(context.Background()); err != nil {
+		t.Fatalf("server authenticated peer recheck: %v", err)
+	}
+	if err := client.Recheck(context.Background()); err != nil {
+		t.Fatalf("client authenticated peer recheck: %v", err)
+	}
+	driftedPeer := server.Peer
+	driftedPeer.Process.PID++
+	if err := authenticatedPeerRecheck(server.UnixConn, driftedPeer, endpoint.recheck)(context.Background()); !errors.Is(err, ErrConflict) {
+		t.Fatalf("peer drift recheck err=%v", err)
+	}
 	if _, err := client.Write([]byte("ping")); err != nil {
 		t.Fatal(err)
 	}

@@ -2,11 +2,19 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
-## 2026-09-03 fixed server S2 候选：固定二进制的认证 AF_UNIX 端点
+## 2026-09-03 fixed server S3 候选：认证连接上的有界 application delivery
 
-fixed server 主线已从 CLI-only 回归切换到 [ADR 0076](adr/0076-darwin-fixed-server-pathname-locator.md) 的相邻纵切。S2 候选把 endpoint 放在 canonical repository 的 held `.marshal/runtime-v1/control` 下，按 current owner epoch 确定性派生 socket/token leaf；server 与 client 在 handshake 前后联合重验 held root、current owner、peer process、fixed `marshal` binary、socket object 和 token identity，并用单次 nonce + HMAC-SHA-256 绑定 request key、request/intent digest 与冻结 deadline。生产实现不生成或执行 `/tmp`/随机目录 Mach-O，也不允许 endpoint override、TCP、cwd/Fchdir 或第二 authority root。
+S2 已由 PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 合入 `main@0a0c73e`。S3 候选在同一认证 AF_UNIX connection 上增加仅包含 `Status`、`StartRun`、`InspectRun` 的 closed HTTP/1.1 路由：header/body/response、阶段 deadline、repository inflight/queue 均有固定上限，canonical JSON、unknown/duplicate field、unsupported operation、过期或超界 deadline、binding 漂移均在 application/delivery 前拒绝。每条 connection 当前只接受一次 request，严于协议上限并消除 keep-alive/pipelining 歧义。
 
-实现 sourceHead 为 `7ee24cc8b4f2e47146410ab69e041038d6f318c6`，PR 为 [#230](https://github.com/chiga0/marshal-harness/pull/230)。本地 Darwin/Linux compile-only、`go vet`、双平台 staticcheck、architecture check、diff-check 与 source scan 已通过；动态 hostile matrix 和 secret scan以 exact-head required CI 为准。测试覆盖有效认证与应用字节往返、exact cleanup、oversize、伪造 HMAC、proof replay、token ABA 和 short write；client dialing只接受current `FixedEndpointAuthority`，使用close-on-exec duplicate control descriptor并在握手前后重验owner，避免裸FD复用与snapshot自洽。
+`StartRun` 先写 immutable pending，再查 current RB1；只有 exact application receipt 已闭合为 receipt-ref 且 current projection 再次吻合时才返回 `success`。Port 返回错误、客户端断开或 response loss 都不能证明 mutation 未发生：RB1 未命中时只返回 `delivery-pending`，重放已有 receipt 时不产生第二次 mutation。实现仍运行于现有固定 `marshal` 进程，没有 `/tmp`、随机 helper Mach-O、TCP、CLI fallback 或第二 authority root。
+
+S3 仍是 `COMPONENT`，尚未提供用户可调用的 server 命令。下一步是 S4：把 router 接入 resident `marshal control-plane serve` 与同进程 `PublicApplicationPort`，完成 ready-before-recovery、固定 candidate bytes 的真实 Pi `RUNNING`、server restart/response-loss strict-successor replay；随后 T2 才扩展到 collect/verify/review/Decision 和 `ACCEPTED`。在这些动态证据完成前不得宣称 fixed server 可用或 v1.0 stable 已满足。
+
+## 2026-09-03 fixed server S2：固定二进制的认证 AF_UNIX 端点
+
+fixed server 主线已从 CLI-only 回归切换到 [ADR 0076](adr/0076-darwin-fixed-server-pathname-locator.md) 的相邻纵切。S2 把 endpoint 放在 canonical repository 的 held `.marshal/runtime-v1/control` 下，按 current owner epoch 确定性派生 socket/token leaf；server 与 client 在 handshake 前后联合重验 held root、current owner、peer process、fixed `marshal` binary、socket object 和 token identity，并用单次 nonce + HMAC-SHA-256 绑定 request key、request/intent digest 与冻结 deadline。生产实现不生成或执行 `/tmp`/随机目录 Mach-O，也不允许 endpoint override、TCP、cwd/Fchdir 或第二 authority root。
+
+实现 sourceHead 为 `7ee24cc8b4f2e47146410ab69e041038d6f318c6`，PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 已以 merge commit `0a0c73e4947c4124de89de842a1e4857e77fba88` 合入；required CI（Ubuntu、macOS、secret scan）全绿。测试覆盖有效认证与应用字节往返、exact cleanup、oversize、伪造 HMAC、proof replay、token ABA 和 short write；client dialing只接受current `FixedEndpointAuthority`，使用close-on-exec duplicate control descriptor并在握手前后重验owner，避免裸FD复用与snapshot自洽。
 
 本候选仍只把 authenticated transport 建成 `COMPONENT`：尚无 bounded HTTP/application routing、resident `marshal control-plane serve` 命令、真实 Pi 或 restart/response-loss canary。下一顺序固定为 S3 bounded request + immutable delivery reconcile → S4 resident composition/recovery → 固定 candidate bytes 的真实 Pi `RUNNING`/strict-successor replay → T2 独立 Verification/Decision 到 `ACCEPTED`。[#226](https://github.com/chiga0/marshal-harness/issues/226) 保留为 CLI-only adapter 回归债务，但不再阻塞 fixed server 纵切；server 不得回退到该 CLI mutation path。
 

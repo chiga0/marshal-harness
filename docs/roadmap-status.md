@@ -1,8 +1,10 @@
 # Roadmap 状态
 
-更新时间：2026-09-01（`v1.0.0-rc1` same-bytes prerelease 已发布并完成外部安装验证）
+更新时间：2026-09-03（fixed server S2 已合入，S3 bounded delivery 候选收口中）
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
+
+> **2026-09-03 fixed server S3 candidate**：`main@0a0c73e` 已包含 S2 authenticated AF_UNIX endpoint；当前相邻切片只增加 `Status`/`StartRun`/`InspectRun` 的 bounded HTTP adapter，并把 authenticated request binding 精确传给 S1 immutable delivery。`StartRun` 固定执行 `pending → current RB1 reconcile → 至多一次 Port handoff → current RB1 reconcile → receipt-ref → response`；只有 exact receipt 与 current projection 同时匹配才报告 success，错误/断连后的未知结果保持 pending，receipt replay 不产生第二次 mutation。canonical JSON、closed headers/operations、独立 header/body/application/write deadline、1 MiB request/response、32 inflight/32 queue 和 disconnect cancellation 已进入组件测试。生产路径不创建匿名 Mach-O；S3 仍为 `COMPONENT`，S4 resident `marshal control-plane serve` + 真实 Pi restart canary 与 T2 `ACCEPTED` 仍是升级门禁。
 
 > **2026-09-03 fixed server S2 candidate**：PR [#230](https://github.com/chiga0/marshal-harness/pull/230) 的实现 sourceHead `7ee24cc` 已建立 canonical `.marshal/runtime-v1/control` 下 owner-epoch scoped AF_UNIX socket/token、held descriptor/current-name recheck、peer/current-owner/fixed-binary联合身份验证、单次nonce+HMAC握手，以及16 KiB/5s/64连接硬边界。client只接受current `FixedEndpointAuthority`并在握手前后重验owner；生产路径不生成随机Mach-O、不使用`/tmp`/TCP/cwd切换，也不允许调用者覆盖locator。S2仍为`COMPONENT`：S3 bounded request+delivery、S4 resident `marshal control-plane serve`、真实Pi restart/response-loss与T2 `ACCEPTED`尚未完成。#226降为CLI-only并行债务，不再串行阻塞fixed server；server不得回退到CLI mutation writer。
 

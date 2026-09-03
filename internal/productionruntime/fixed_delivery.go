@@ -72,6 +72,46 @@ type FixedDeliveryReceipt struct {
 	Digest                       string `json:"digest"`
 }
 
+// ValidateFixedStartRunDeliveryReceipt proves that receipt is a completely
+// sealed S1 receipt-ref for the exact pending returned to the transport. A
+// response adapter must call this before treating any implementation of the
+// delivery interface as authoritative.
+func ValidateFixedStartRunDeliveryReceipt(pending FixedDeliveryPending, receipt FixedDeliveryReceipt) error {
+	if validateFixedDeliveryPending(pending) != nil || validateFixedDeliveryReceipt(receipt) != nil || receipt.PendingDigest != pending.Digest {
+		return ErrFixedDeliveryConflict
+	}
+	return nil
+}
+
+// FixedStartRunDeliveryBinding is the single canonical digest projection used
+// by the authenticated transport and the immutable delivery store. Keeping
+// this derivation in productionruntime prevents the transport from growing a
+// second interpretation of StartRun request or intent bytes.
+type FixedStartRunDeliveryBinding struct {
+	RequestKeyDigest        string
+	RequestDigest           string
+	ApplicationIntentDigest string
+	Deadline                string
+}
+
+// NewFixedStartRunDeliveryBinding derives the exact values that must already
+// have been authenticated before BeginStartRunBound may append a pending.
+func NewFixedStartRunDeliveryBinding(idempotencyKey string, request application.StartRunRequest, deadline time.Time) (FixedStartRunDeliveryBinding, error) {
+	if request.Validate() != nil || strings.TrimSpace(idempotencyKey) != idempotencyKey || idempotencyKey == "" || len(idempotencyKey) > 512 || deadline.IsZero() || deadline.Location() != time.UTC || deadline.Format(time.RFC3339Nano) == "" {
+		return FixedStartRunDeliveryBinding{}, ErrFixedDeliveryConflict
+	}
+	requestDigest, intentDigest, err := fixedStartRunDigests(request)
+	if err != nil {
+		return FixedStartRunDeliveryBinding{}, err
+	}
+	return FixedStartRunDeliveryBinding{
+		RequestKeyDigest:        canonical.DigestBytes([]byte(idempotencyKey)),
+		RequestDigest:           requestDigest,
+		ApplicationIntentDigest: intentDigest,
+		Deadline:                deadline.Format(time.RFC3339Nano),
+	}, nil
+}
+
 // FixedStartRunReconciler is the narrow, read-only application capability
 // required to close a pending delivery after response loss.
 type FixedStartRunReconciler interface {
@@ -149,12 +189,34 @@ func (store *FixedDeliveryStore) ownerReference(pending FixedDeliveryPending) re
 // then immutable pending publish. A strict successor may only replay the exact
 // old pending; it never rewrites that record under the new owner identity.
 func (store *FixedDeliveryStore) BeginStartRun(ctx context.Context, idempotencyKey string, request application.StartRunRequest, deadline time.Time) (result FixedDeliveryPending, replay bool, resultErr error) {
+	binding, err := NewFixedStartRunDeliveryBinding(idempotencyKey, request, deadline)
+	if err != nil {
+		return FixedDeliveryPending{}, false, err
+	}
+	return store.beginStartRun(ctx, request, binding)
+}
+
+// BeginStartRunBound refuses an authenticated/request digest mismatch before
+// acquiring a Run lease or publishing any transport record.
+func (store *FixedDeliveryStore) BeginStartRunBound(ctx context.Context, idempotencyKey string, request application.StartRunRequest, deadline time.Time, authenticated FixedStartRunDeliveryBinding) (result FixedDeliveryPending, replay bool, resultErr error) {
+	binding, err := NewFixedStartRunDeliveryBinding(idempotencyKey, request, deadline)
+	if err != nil || binding != authenticated {
+		return FixedDeliveryPending{}, false, ErrFixedDeliveryConflict
+	}
+	return store.beginStartRun(ctx, request, binding)
+}
+
+func (store *FixedDeliveryStore) beginStartRun(ctx context.Context, request application.StartRunRequest, binding FixedStartRunDeliveryBinding) (result FixedDeliveryPending, replay bool, resultErr error) {
 	if store == nil {
+		return FixedDeliveryPending{}, false, ErrFixedDeliveryConflict
+	}
+	deadline, err := time.Parse(time.RFC3339Nano, binding.Deadline)
+	if err != nil || deadline.Location() != time.UTC || !deadline.After(time.Now().UTC()) || ctx == nil || ctx.Err() != nil {
 		return FixedDeliveryPending{}, false, ErrFixedDeliveryConflict
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if store.closed || store.session == nil || ctx == nil || request.Validate() != nil || strings.TrimSpace(idempotencyKey) != idempotencyKey || idempotencyKey == "" || len(idempotencyKey) > 512 || deadline.IsZero() || deadline.Location() != time.UTC || deadline.Format(time.RFC3339Nano) == "" {
+	if store.closed || store.session == nil || ctx.Err() != nil || !deadline.After(time.Now().UTC()) {
 		return FixedDeliveryPending{}, false, ErrFixedDeliveryConflict
 	}
 	lease, err := store.session.runs.AcquireExisting(request.RunID)
@@ -172,11 +234,9 @@ func (store *FixedDeliveryStore) BeginStartRun(ctx context.Context, idempotencyK
 			}
 		}
 	}()
-	keyDigest := canonical.DigestBytes([]byte(idempotencyKey))
-	requestDigest, intentDigest, err := fixedStartRunDigests(request)
-	if err != nil {
-		return FixedDeliveryPending{}, false, err
-	}
+	keyDigest := binding.RequestKeyDigest
+	requestDigest := binding.RequestDigest
+	intentDigest := binding.ApplicationIntentDigest
 	leaf := fixedDeliveryPendingLeaf(keyDigest)
 	observedRaw, observed, err := readFixedDeliveryRecord(store.session.fixedRoot, leaf, fixedDeliveryMaxRecord)
 	if err != nil {
@@ -184,7 +244,7 @@ func (store *FixedDeliveryStore) BeginStartRun(ctx context.Context, idempotencyK
 	}
 	lineage := FixedDeliveryPending{OwnerAcquisitionDigest: store.ownerDigest, OwnerFactDigest: store.session.ownerState.FactDigest}
 	if observed {
-		if decodeFixedDeliveryRecord(observedRaw, &lineage) != nil || validateFixedDeliveryPending(lineage) != nil || !store.pendingMatchesRequest(lineage, request) || lineage.RequestKeyDigest != keyDigest || lineage.Deadline != deadline.Format(time.RFC3339Nano) {
+		if decodeFixedDeliveryRecord(observedRaw, &lineage) != nil || validateFixedDeliveryPending(lineage) != nil || !store.pendingMatchesRequest(lineage, request) || lineage.RequestKeyDigest != keyDigest || lineage.Deadline != binding.Deadline {
 			return FixedDeliveryPending{}, false, ErrFixedDeliveryConflict
 		}
 	}
@@ -195,7 +255,7 @@ func (store *FixedDeliveryStore) BeginStartRun(ctx context.Context, idempotencyK
 		}
 		if found {
 			var existing FixedDeliveryPending
-			if decodeFixedDeliveryRecord(raw, &existing) != nil || validateFixedDeliveryPending(existing) != nil || existing != lineage || existing.RequestKeyDigest != keyDigest || existing.RequestDigest != requestDigest || existing.ApplicationIntentDigest != intentDigest || existing.Deadline != deadline.Format(time.RFC3339Nano) || !store.pendingMatchesRequest(existing, request) {
+			if decodeFixedDeliveryRecord(raw, &existing) != nil || validateFixedDeliveryPending(existing) != nil || existing != lineage || existing.RequestKeyDigest != keyDigest || existing.RequestDigest != requestDigest || existing.ApplicationIntentDigest != intentDigest || existing.Deadline != binding.Deadline || !store.pendingMatchesRequest(existing, request) {
 				return ErrFixedDeliveryConflict
 			}
 			if adoptErr := adoptFixedDeliveryRecord(store.session.fixedRoot, leaf, raw, store.publishHook); adoptErr != nil {
@@ -208,7 +268,7 @@ func (store *FixedDeliveryStore) BeginStartRun(ctx context.Context, idempotencyK
 		if readErr != nil || projection.Run.State != domain.StateReady || projection.Run.AttemptID != "" || projection.Run.RunID != request.RunID || projection.Run.Sequence != request.ExpectedSequence || projection.Run.AuthorityHead != request.ExpectedAuthorityHead {
 			return ErrFixedDeliveryConflict
 		}
-		result = FixedDeliveryPending{SchemaVersion: fixedDeliverySchema, ProtocolRevision: fixedDeliveryProtocol, RecordType: fixedDeliveryPending, Operation: fixedDeliveryStartRun, OwnerAcquisitionDigest: store.ownerDigest, OwnerFactDigest: store.session.ownerState.FactDigest, RepositoryDigest: store.session.acquisition.Scope.RepositoryIdentityDigest, NamespaceDigest: store.namespaceDigest, AuthorityRootDigest: store.authorityRootDigest, RequestKeyDigest: keyDigest, RequestDigest: requestDigest, ApplicationIntentDigest: intentDigest, Deadline: deadline.Format(time.RFC3339Nano)}
+		result = FixedDeliveryPending{SchemaVersion: fixedDeliverySchema, ProtocolRevision: fixedDeliveryProtocol, RecordType: fixedDeliveryPending, Operation: fixedDeliveryStartRun, OwnerAcquisitionDigest: store.ownerDigest, OwnerFactDigest: store.session.ownerState.FactDigest, RepositoryDigest: store.session.acquisition.Scope.RepositoryIdentityDigest, NamespaceDigest: store.namespaceDigest, AuthorityRootDigest: store.authorityRootDigest, RequestKeyDigest: keyDigest, RequestDigest: requestDigest, ApplicationIntentDigest: intentDigest, Deadline: binding.Deadline}
 		sealed, sealErr := sealFixedDeliveryRecord(&result.Digest, &result)
 		if sealErr != nil {
 			return sealErr
