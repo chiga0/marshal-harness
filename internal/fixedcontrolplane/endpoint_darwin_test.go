@@ -29,7 +29,11 @@ func newEndpointFixture(t *testing.T) endpointFixture {
 	t.Helper()
 	root, err := os.MkdirTemp("/private/tmp", "marshal-fixed-endpoint-")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("create short fixture root: %v", err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("canonicalize short fixture root: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := os.RemoveAll(root); err != nil {
@@ -57,7 +61,7 @@ func newEndpointFixture(t *testing.T) endpointFixture {
 	}
 	repository, err := productionruntime.OpenCanonicalRepositoryRoot(repositoryPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open canonical repository root %q: %v", repositoryPath, err)
 	}
 	t.Cleanup(func() { _ = repository.Close() })
 	fixed, err := os.Executable()
