@@ -20,7 +20,9 @@ type heldBuiltinName struct {
 	stat   unix.Stat_t
 }
 
-type builtinArtifactPlatformHooks struct {
+// builtinArtifactReadHooks is test-only fault injection at held-object
+// boundaries. Production always passes the zero value.
+type builtinArtifactReadHooks struct {
 	afterLeafOpen      func()
 	beforeFinalRecheck func()
 }

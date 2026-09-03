@@ -4,7 +4,7 @@ package verification
 
 import "context"
 
-type builtinArtifactPlatformHooks struct{}
+type builtinArtifactReadHooks struct{}
 
 // The first verifier builtin is deliberately Darwin-only. Reserved commands
 // fail closed here and are never sent to PATH or a shell.
