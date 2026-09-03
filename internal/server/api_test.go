@@ -100,6 +100,16 @@ func (port *fixtureApplicationPort) StartRun(_ context.Context, request applicat
 	return application.RunStartProjection{Prepared: port.prepared, Run: port.successor}, nil
 }
 
+func (port *fixtureApplicationPort) ReconcileStartRun(_ context.Context, request application.StartRunRequest) (application.RunStartProjection, bool, error) {
+	if request.RunID != port.prepared.RunID || request.ExpectedSequence != port.prepared.Sequence || request.ExpectedAuthorityHead != port.prepared.AuthorityHead {
+		return application.RunStartProjection{}, false, application.NewError("reconcile-start-run", application.ReasonAuthorityConflict)
+	}
+	if port.projection != port.successor {
+		return application.RunStartProjection{}, false, nil
+	}
+	return application.RunStartProjection{Prepared: port.prepared, Run: port.successor}, true, nil
+}
+
 func readyFixtureApplicationPort() *fixtureApplicationPort {
 	digest := func(character string) string { return "sha256:" + strings.Repeat(character, 64) }
 	ready := application.RunProjection{
@@ -181,6 +191,10 @@ func (port *legacyFixtureApplicationPort) StartRun(ctx context.Context, request 
 	// is minted by execution.Run rather than by the fixture preparation.
 	prepared.AttemptID = after.AttemptID
 	return application.RunStartProjection{Prepared: prepared, Run: after}, nil
+}
+
+func (port *legacyFixtureApplicationPort) ReconcileStartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, bool, error) {
+	return application.RunStartProjection{}, false, nil
 }
 
 func (a *fixtureAdapter) ID() string { return a.id }
