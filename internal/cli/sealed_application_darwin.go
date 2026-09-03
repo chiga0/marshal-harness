@@ -63,11 +63,23 @@ type sealedRepositoryApplicationConfig struct {
 	PiEntrypoint    string
 	EntryIdentity   *selfidentity.LocalSelfIdentityObservationV2
 	ObserveIdentity productionruntime.LocalSelfIdentityObserver
+	RecoveryMode    sealedRepositoryRecoveryMode
+}
+
+type sealedRepositoryRecoveryMode uint8
+
+const (
+	sealedRepositoryRecoveryOneShot sealedRepositoryRecoveryMode = iota + 1
+	sealedRepositoryRecoveryResident
+)
+
+func (mode sealedRepositoryRecoveryMode) valid() bool {
+	return mode == sealedRepositoryRecoveryOneShot || mode == sealedRepositoryRecoveryResident
 }
 
 func openSealedRepositoryApplication(ctx context.Context, config sealedRepositoryApplicationConfig) (_ *sealedRepositoryApplication, err error) {
 	if ctx == nil || config.StateRoot == "" || config.RepositoryRoot == "" || config.PiRuntime == "" || config.PiEntrypoint == "" ||
-		config.EntryIdentity == nil || config.ObserveIdentity == nil {
+		config.EntryIdentity == nil || config.ObserveIdentity == nil || !config.RecoveryMode.valid() {
 		return nil, application.NewError("sealed-repository-application", application.ReasonInvalidRequest)
 	}
 	piRuntime, err := filepath.EvalSymlinks(config.PiRuntime)
@@ -189,10 +201,26 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	if err != nil {
 		return nil, fmt.Errorf("sealed repository application: construct Pi status profile: %w", err)
 	}
-	if err := applicationAdapter.recoverRepositoryRuns(ctx); err != nil {
+	if err := recoverSealedRepositoryOnOpen(ctx, config.RecoveryMode, applicationAdapter.recoverRepositoryRuns); err != nil {
 		return nil, fmt.Errorf("sealed repository application: recover repository runs: %w", err)
 	}
 	return applicationAdapter, nil
+}
+
+type sealedRepositoryRecoverFunc func(context.Context) error
+
+// recoverSealedRepositoryOnOpen keeps recovery policy explicit at every
+// composition root. A one-shot CLI operation defers target recovery to its
+// sole openRun call. A resident server must recover the complete repository
+// before it advertises readiness.
+func recoverSealedRepositoryOnOpen(ctx context.Context, mode sealedRepositoryRecoveryMode, recoverRuns sealedRepositoryRecoverFunc) error {
+	if !mode.valid() || recoverRuns == nil {
+		return application.NewError("sealed-repository-recovery", application.ReasonInvalidRequest)
+	}
+	if mode == sealedRepositoryRecoveryOneShot {
+		return nil
+	}
+	return recoverRuns(ctx)
 }
 
 func (adapter *sealedRepositoryApplication) Close() error {
@@ -299,18 +327,42 @@ type sealedRunAdvancer interface {
 func (adapter *sealedRepositoryApplication) advanceRun(ctx context.Context, runID string) (application.RunProjection, string, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
-	run, err := adapter.openRun(ctx, runID)
+	return advanceSealedRunWithOpen(ctx, runID, func(ctx context.Context, runID string) (sealedRunAdvancer, func() error, error) {
+		run, err := adapter.openRun(ctx, runID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return run.runtime, run.Close, nil
+	})
+}
+
+type sealedRunOpenFunc func(context.Context, string) (sealedRunAdvancer, func() error, error)
+
+// advanceSealedRunWithOpen makes the one-composition boundary explicit and
+// testable. The returned runtime remains alive for the complete bounded
+// Inspect -> Start/Collect -> Inspect transaction.
+func advanceSealedRunWithOpen(ctx context.Context, runID string, open sealedRunOpenFunc) (application.RunProjection, string, error) {
+	if open == nil {
+		return application.RunProjection{}, "sealed Run 组装失败", application.NewError("sealed-run-open", application.ReasonCompositionIncomplete)
+	}
+	runtime, closeRun, err := open(ctx, runID)
 	if err != nil {
 		return application.RunProjection{}, "sealed Run 组装失败", err
 	}
-	defer run.Close()
-	return advanceSealedRun(ctx, run.runtime, runID)
+	if runtime == nil || closeRun == nil {
+		if closeRun != nil {
+			_ = closeRun()
+		}
+		return application.RunProjection{}, "sealed Run 组装失败", application.NewError("sealed-run-open", application.ReasonCompositionIncomplete)
+	}
+	defer closeRun()
+	return advanceSealedRun(ctx, runtime, runID)
 }
 
 func advanceSealedRun(ctx context.Context, runtime sealedRunAdvancer, runID string) (application.RunProjection, string, error) {
 	before, err := runtime.InspectRun(ctx, application.InspectRunRequest{RunID: runID})
 	if err != nil {
-		return application.RunProjection{}, "READY 权威投影不可读", err
+		return application.RunProjection{}, "当前 Run 权威投影不可读", err
 	}
 	switch before.State {
 	case domain.StateReady:
