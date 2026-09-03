@@ -132,6 +132,16 @@ func (acquisition ControlOwnerAcquisition) Validate() error {
 	return nil
 }
 
+// ControlOwnerAcquisitionDigest is the only canonical encoding of a durable
+// repository owner acquisition. Delivery and transport code consume this
+// digest instead of selecting or re-encoding acquisition fields themselves.
+func ControlOwnerAcquisitionDigest(acquisition ControlOwnerAcquisition) (string, error) {
+	if err := acquisition.Validate(); err != nil {
+		return "", err
+	}
+	return canonicalDigest(acquisition)
+}
+
 type ControlOwnerState struct {
 	Acquisition        ControlOwnerAcquisition `json:"acquisition"`
 	PreviousFactDigest string                  `json:"previousFactDigest,omitempty"`

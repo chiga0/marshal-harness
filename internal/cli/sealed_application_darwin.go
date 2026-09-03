@@ -152,6 +152,11 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 		return nil, fmt.Errorf("sealed repository application: bind run store: %w", err)
 	}
 	applicationAdapter.resources = append(applicationAdapter.resources, applicationAdapter.runs)
+	repositoryDirectory, err := productionruntime.OpenCanonicalRepositoryRoot(config.RepositoryRoot)
+	if err != nil {
+		return nil, fmt.Errorf("sealed repository application: bind canonical repository root: %w", err)
+	}
+	applicationAdapter.resources = append(applicationAdapter.resources, repositoryDirectory)
 
 	applicationAdapter.leaseLedger, err = dispatch.NewLeaseLedger(ledgerDir)
 	if err != nil {
@@ -181,7 +186,7 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 		return nil, fmt.Errorf("sealed repository application: persist provider authority: %w", err)
 	}
 	applicationAdapter.session, err = productionruntime.OpenRepositorySession(ctx, productionruntime.RepositorySessionInputs{
-		HeldIngressDir: heldIngress, OwnerDirectory: ownerDirectory, Acquisition: acquisition,
+		HeldIngressDir: heldIngress, HeldRepositoryRoot: repositoryDirectory, OwnerDirectory: ownerDirectory, Acquisition: acquisition,
 		FixedMarshalPath: fixedMarshal, OwnerPrivateControlRoot: controlRoot,
 	})
 	if err != nil {
