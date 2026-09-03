@@ -4,9 +4,11 @@ package productionruntime
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/provider"
+	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
@@ -358,6 +361,184 @@ func TestPathBReplayProducesNoSibling(t *testing.T) {
 	if after := pathBLedgerBytes(t, base); string(before) != string(after) {
 		t.Fatalf("path B replay appended new RB1 facts: before=%d bytes after=%d bytes", len(before), len(after))
 	}
+}
+
+type terminalLeaseRecoveryFixture struct {
+	ledger  *CompositionLedger
+	attempt resultingress.AttemptAuthorityState
+	lease   dispatch.DispatchLease
+	base    string
+}
+
+func newTerminalLeaseRecoveryFixture(t *testing.T) terminalLeaseRecoveryFixture {
+	t.Helper()
+	inputs, runID, _, base := pathBCompositionInputs(t)
+	ledger, err := NewCompositionLedger(context.Background(), inputs)
+	if err != nil {
+		t.Fatalf("composition ledger: %v", err)
+	}
+	if err := ledger.owner.claimRuntime(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ledger.Close() })
+	fixedNow := time.Now().UTC().Truncate(time.Second)
+	ledger.now = func() time.Time { return fixedNow }
+	projection := pathBProjection(t, ledger)
+	prepared, err := ledger.PrepareRunStart(context.Background(), ledger.owner, inputs.Acquisition, application.PrepareRunStartRequest{RunID: runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
+	if err != nil {
+		t.Fatalf("prepare run start: %v", err)
+	}
+	resolved, err := ledger.ingress.ResolvePreparedExecution(context.Background(), ledger.owner, inputs.Acquisition, prepared.PreparationDigest)
+	if err != nil {
+		t.Fatalf("resolve prepared: %v", err)
+	}
+	attempt, found, err := ledger.ingress.AttemptState(resolved.AttemptIdentity)
+	if err != nil || !found {
+		t.Fatalf("attempt state: found=%t err=%v", found, err)
+	}
+	lease, state, _, err := ledger.leaseLedger.Current(attempt.Identity.LeaseID)
+	if err != nil || state != dispatch.LeaseStateClaimed {
+		t.Fatalf("current lease: state=%s err=%v", state, err)
+	}
+	return terminalLeaseRecoveryFixture{ledger: ledger, attempt: attempt, lease: lease, base: base}
+}
+
+func dispatchLedgerBytes(t *testing.T, base string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(base, "dispatch-ledger", "leases.jsonl"))
+	if err != nil {
+		t.Fatalf("read dispatch ledger: %v", err)
+	}
+	return raw
+}
+
+// TestTerminalCollectLeaseRecoveryMatrix freezes the completion-only lease
+// rules. AckDeadlineAt remains a pre-start gate; a durably started process
+// may replay its original claim after that boundary, but never after expiry
+// or after any identity drift. Reopening the ledger/matcher must replay the
+// exact bytes without appending a sibling fact.
+func TestTerminalCollectLeaseRecoveryMatrix(t *testing.T) {
+	t.Run("started-after-ack-replays-original", func(t *testing.T) {
+		fixture := newTerminalLeaseRecoveryFixture(t)
+		ack, err := time.Parse(time.RFC3339, fixture.lease.AckDeadlineAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		late := ack.Add(time.Second)
+		fixture.ledger.now = func() time.Time { return late }
+		if _, _, _, err := fixture.ledger.leaseLedger.CurrentByAttempt(fixture.lease.RunId, fixture.lease.AttemptId, late); !errors.Is(err, dispatch.ErrLeaseConflict) {
+			t.Fatalf("pre-start lookup after ack err=%v", err)
+		}
+		started := fixture.attempt
+		started.ProcessStartedDigest = canonical.DigestBytes([]byte("terminal-lease-started"))
+		before := dispatchLedgerBytes(t, fixture.base)
+		got, capability, err := fixture.ledger.recoverStartedAttemptLease(started)
+		if err != nil {
+			t.Fatalf("recover started lease: %v", err)
+		}
+		if !reflect.DeepEqual(got, fixture.lease) || capability.Validate() != nil || capability.BoundAttemptId != started.Identity.AttemptID || capability.BoundAllocationId != started.Identity.AllocationID {
+			t.Fatalf("recovered claim drifted: leaseEqual=%t capability=%+v", reflect.DeepEqual(got, fixture.lease), capability)
+		}
+		if after := dispatchLedgerBytes(t, fixture.base); !reflect.DeepEqual(after, before) {
+			t.Fatal("started recovery appended a dispatch fact")
+		}
+	})
+
+	t.Run("unstarted-after-ack-remains-rejected", func(t *testing.T) {
+		fixture := newTerminalLeaseRecoveryFixture(t)
+		ack, _ := time.Parse(time.RFC3339, fixture.lease.AckDeadlineAt)
+		fixture.ledger.now = func() time.Time { return ack.Add(time.Second) }
+		before := dispatchLedgerBytes(t, fixture.base)
+		_, err := fixture.ledger.ensureAttemptLease(fixture.attempt.ReservationFactDigest, fixture.attempt.Identity.TaskID, fixture.attempt.Identity.RunID, fixture.attempt.Identity.AttemptID, fixture.attempt.Identity.AllocationID)
+		if !errors.Is(err, dispatch.ErrLeaseConflict) {
+			t.Fatalf("unstarted attempt after ack err=%v", err)
+		}
+		if after := dispatchLedgerBytes(t, fixture.base); !reflect.DeepEqual(after, before) {
+			t.Fatal("rejected unstarted recovery appended a dispatch fact")
+		}
+	})
+
+	t.Run("started-at-expiry-remains-rejected", func(t *testing.T) {
+		fixture := newTerminalLeaseRecoveryFixture(t)
+		expires, _ := time.Parse(time.RFC3339, fixture.lease.ExpiresAt)
+		fixture.ledger.now = func() time.Time { return expires }
+		started := fixture.attempt
+		started.ProcessStartedDigest = canonical.DigestBytes([]byte("terminal-lease-started"))
+		before := dispatchLedgerBytes(t, fixture.base)
+		if _, _, err := fixture.ledger.recoverStartedAttemptLease(started); !errors.Is(err, dispatch.ErrLeaseConflict) {
+			t.Fatalf("expired started attempt err=%v", err)
+		}
+		if after := dispatchLedgerBytes(t, fixture.base); !reflect.DeepEqual(after, before) {
+			t.Fatal("expired recovery appended a dispatch fact")
+		}
+	})
+
+	t.Run("started-identity-drift-remains-rejected", func(t *testing.T) {
+		mutations := []struct {
+			name   string
+			mutate func(*resultingress.AttemptIdentity)
+		}{
+			{"task", func(id *resultingress.AttemptIdentity) { id.TaskID += "-drift" }},
+			{"allocation", func(id *resultingress.AttemptIdentity) { id.AllocationID += "-drift" }},
+			{"generation", func(id *resultingress.AttemptIdentity) { id.DispatchGeneration++ }},
+			{"fencing", func(id *resultingress.AttemptIdentity) {
+				id.FencingTokenDigest = canonical.DigestBytes([]byte("drifted-fencing"))
+			}},
+			{"lease-digest", func(id *resultingress.AttemptIdentity) {
+				id.LeaseDigest = canonical.DigestBytes([]byte("drifted-lease"))
+			}},
+		}
+		for _, mutation := range mutations {
+			t.Run(mutation.name, func(t *testing.T) {
+				fixture := newTerminalLeaseRecoveryFixture(t)
+				ack, _ := time.Parse(time.RFC3339, fixture.lease.AckDeadlineAt)
+				fixture.ledger.now = func() time.Time { return ack.Add(time.Second) }
+				started := fixture.attempt
+				started.ProcessStartedDigest = canonical.DigestBytes([]byte("terminal-lease-started"))
+				mutation.mutate(&started.Identity)
+				before := dispatchLedgerBytes(t, fixture.base)
+				if _, _, err := fixture.ledger.recoverStartedAttemptLease(started); !errors.Is(err, dispatch.ErrLeaseConflict) {
+					t.Fatalf("identity drift err=%v", err)
+				}
+				if after := dispatchLedgerBytes(t, fixture.base); !reflect.DeepEqual(after, before) {
+					t.Fatal("identity-drift recovery appended a dispatch fact")
+				}
+			})
+		}
+	})
+
+	t.Run("reopened-authority-replays-without-amplification", func(t *testing.T) {
+		fixture := newTerminalLeaseRecoveryFixture(t)
+		ack, _ := time.Parse(time.RFC3339, fixture.lease.AckDeadlineAt)
+		late := ack.Add(time.Second)
+		started := fixture.attempt
+		started.ProcessStartedDigest = canonical.DigestBytes([]byte("terminal-lease-started"))
+		before := dispatchLedgerBytes(t, fixture.base)
+		reopened, err := dispatch.NewLeaseLedger(filepath.Join(fixture.base, "dispatch-ledger"))
+		if err != nil {
+			t.Fatalf("reopen dispatch ledger: %v", err)
+		}
+		edges, err := authority.NewEdgeRuntime(fixture.ledger.namespace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		edges.BindLeaseResolver(compositionLeaseResolver{ledger: reopened})
+		edges.BindTargetEligibilityResolver(compositionTargetResolver{store: fixture.ledger.providerStore, registrationID: fixture.ledger.providerRecord.RegistrationId, target: fixture.ledger.resultTarget})
+		fixture.ledger.leaseLedger = reopened
+		fixture.ledger.matcher = dispatch.NewMatcherWithReservedClaimLedger(fixture.ledger.providerStore, edges, reopened)
+		fixture.ledger.resultCapabilities = map[string]authority.DispatchResultCapability{}
+		fixture.ledger.now = func() time.Time { return late }
+		got, capability, err := fixture.ledger.recoverStartedAttemptLease(started)
+		if err != nil {
+			t.Fatalf("recover through reopened authority: %v", err)
+		}
+		if !reflect.DeepEqual(got, fixture.lease) || capability.Validate() != nil {
+			t.Fatalf("reopened recovery drifted: leaseEqual=%t capabilityErr=%v", reflect.DeepEqual(got, fixture.lease), capability.Validate())
+		}
+		if after := dispatchLedgerBytes(t, fixture.base); !reflect.DeepEqual(after, before) {
+			t.Fatal("reopened recovery amplified the dispatch ledger")
+		}
+	})
 }
 
 // TestPathBHeldTargetIdentityDriftRejectsAndNoBindAuthority proves that

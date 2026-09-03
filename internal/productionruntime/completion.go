@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
@@ -51,14 +52,9 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		capability = claimed.ResultCapability
 	} else {
 		var err error
-		lease, err = l.ensureAttemptLease(attempt.ReservationFactDigest, attempt.Identity.TaskID, attempt.Identity.RunID, attempt.Identity.AttemptID, attempt.Identity.AllocationID)
+		lease, capability, err = l.recoverStartedAttemptLease(attempt)
 		if err != nil {
 			return CollectedRunResult{}, err
-		}
-		var ok bool
-		capability, ok = l.resultCapabilities[lease.LeaseId]
-		if !ok {
-			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 		}
 	}
 	if capability.Validate() != nil {
@@ -230,6 +226,58 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		return CollectedRunResult{}, err
 	}
 	return CollectedRunResult{Run: projection, WorkerResult: result, AdmissionFactDigest: admission.FactDigest, DRCDigest: drcDigest, EnvelopeDigest: envelopeDigest}, nil
+}
+
+// recoverStartedAttemptLease restores the exact durable reserved claim for a
+// process that ResultIngress already proved started. Completion must not run
+// the pre-start CurrentByAttempt admission again: its short AckDeadlineAt
+// bounds startup acknowledgement, while the already-started process remains
+// eligible only until the original ExpiresAt. Reusing the persisted deadline
+// bytes also makes ClaimReserved a byte-identical replay instead of a sibling
+// claim with recovery-time timestamps.
+func (l *CompositionLedger) recoverStartedAttemptLease(attempt resultingress.AttemptAuthorityState) (dispatch.DispatchLease, authority.DispatchResultCapability, error) {
+	identity := attempt.Identity
+	if attempt.ProcessStartedDigest == "" || identity.Validate() != nil || l.matcher == nil {
+		return dispatch.DispatchLease{}, authority.DispatchResultCapability{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
+	}
+	lease, state, generation, err := l.leaseLedger.Current(identity.LeaseID)
+	if err != nil {
+		return dispatch.DispatchLease{}, authority.DispatchResultCapability{}, err
+	}
+	fencingDigest := canonical.DigestBytes([]byte(lease.FencingToken))
+	exact := lease.Validate() == nil &&
+		lease.AuthorityNamespaceId.Equal(identity.AuthorityNamespaceID) &&
+		lease.TaskId == identity.TaskID && lease.RunId == identity.RunID && lease.AttemptId == identity.AttemptID &&
+		lease.AllocationId == identity.AllocationID && lease.LeaseId == identity.LeaseID &&
+		lease.Generation == identity.DispatchGeneration && generation == identity.DispatchGeneration &&
+		lease.LeaseDigest == identity.LeaseDigest && fencingDigest == identity.FencingTokenDigest &&
+		lease.LeaseState == state && (state == dispatch.LeaseStateClaimed || state == dispatch.LeaseStateActive)
+	if !exact {
+		return dispatch.DispatchLease{}, authority.DispatchResultCapability{}, fmt.Errorf("%w: started attempt no longer matches its durable lease", dispatch.ErrLeaseConflict)
+	}
+	now := l.now()
+	expiresAt, err := time.Parse(time.RFC3339, lease.ExpiresAt)
+	if err != nil || !now.Before(expiresAt) {
+		return dispatch.DispatchLease{}, authority.DispatchResultCapability{}, fmt.Errorf("%w: started attempt lease is expired", dispatch.ErrLeaseConflict)
+	}
+	request, err := l.reservedClaimRequest(attempt.ReservationFactDigest, identity.TaskID, identity.RunID, identity.AttemptID, identity.AllocationID, lease.AckDeadlineAt, lease.ExpiresAt)
+	if err != nil {
+		return dispatch.DispatchLease{}, authority.DispatchResultCapability{}, err
+	}
+	claimed, err := l.matcher.ClaimReserved(request, now)
+	if err != nil {
+		return dispatch.DispatchLease{}, authority.DispatchResultCapability{}, err
+	}
+	capability := claimed.ResultCapability
+	capabilityExact := capability.Validate() == nil && capability.Issuer.Equal(lease.AuthorityNamespaceId) &&
+		capability.SourceActor == lease.SecurityDomainId && capability.TargetActor == l.resultTarget &&
+		capability.BoundAttemptId == identity.AttemptID && capability.BoundAllocationId == identity.AllocationID &&
+		capability.Expiry == lease.ExpiresAt && capability.Generation == uint64(lease.Generation) && capability.RevocationGeneration == 0
+	if claimed.Lease.Validate() != nil || !reflect.DeepEqual(claimed.Lease, lease) || !capabilityExact {
+		return dispatch.DispatchLease{}, authority.DispatchResultCapability{}, fmt.Errorf("%w: started attempt replay did not reproduce the durable claim", dispatch.ErrLeaseConflict)
+	}
+	l.resultCapabilities[lease.LeaseId] = capability
+	return claimed.Lease, capability, nil
 }
 
 // resultObservation freezes the candidate observation before result admission
