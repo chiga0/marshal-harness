@@ -15,6 +15,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
+	"github.com/chiga0/marshal-harness/internal/verificationbuiltin"
 )
 
 type Input struct {
@@ -63,7 +64,15 @@ type Result struct {
 }
 
 type Verifier struct {
-	now func() time.Time
+	now   func() time.Time
+	hooks verifierBuiltinTestHooks
+}
+
+// verifierBuiltinTestHooks injects candidate-ledger races at the two
+// authority recheck boundaries. Production New() always leaves it empty.
+type verifierBuiltinTestHooks struct {
+	beforeAuthorityCheck func(*localCandidateStore, Input, Observation, string)
+	afterExecution       func(*localCandidateStore, Input, Observation, string)
 }
 
 func New() *Verifier { return &Verifier{now: time.Now} }
@@ -226,6 +235,10 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 	}
 	result.Report.Gates = append(result.Report.Gates, formatNormalizeGate(normalized, normalizeGateCandidate))
 	artifacts, artifactGates := CollectArtifacts(input.Worktree, input.Deliverables, started)
+	builtinDeliverableIDs := seenBuiltinDeliverableIDs(input.Commands, input.Deliverables)
+	if candidateMode && len(builtinDeliverableIDs) > 0 {
+		bindBuiltinArtifactsToCandidate(artifacts, builtinDeliverableIDs, headCandidate.CandidateDigest)
+	}
 	result.Manifest.Artifacts = append(result.Manifest.Artifacts, artifacts...)
 	result.Report.Gates = append(result.Report.Gates, artifactGates...)
 	denialAssessment, err := assessDenialSummary(input.RunDirectory, started)
@@ -264,13 +277,56 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 		}
 		isolated := isolatedCommandResult{}
 		var isolationErr error
+		builtinClosedReason := ""
+		builtinPlan, reserved, builtinErr := parseBuiltinPlan(spec, input.Deliverables)
+		if builtinErr != nil {
+			isolationErr = builtinErr
+			builtinClosedReason = verificationbuiltin.ReasonDenied
+		} else if reserved {
+			if v.hooks.beforeAuthorityCheck != nil {
+				v.hooks.beforeAuthorityCheck(store, input, observation, headCandidate.CandidateDigest)
+			}
+			if !currentBuiltinCandidateMatches(store, input, observation, headCandidate.CandidateDigest) {
+				isolationErr = errors.New(reasonArtifactDenied)
+				builtinClosedReason = reasonArtifactDenied
+			} else {
+				builtinPlan, builtinErr = resolveBuiltinExecutionPlan(result.Manifest, builtinPlan, headCandidate.CandidateDigest)
+				if builtinErr != nil {
+					isolationErr = builtinErr
+					builtinClosedReason = reasonDeliverableDenied
+				}
+			}
+		}
 		if baselineObserveErr != nil {
 			isolationErr = errors.New("cannot freeze baseline before candidate command")
-		} else {
-			isolated, isolationErr = runCommandIsolated(ctx, runner, input.Worktree, input.BaseSHA, observation, spec, candidateProtection...)
+			if reserved {
+				builtinClosedReason = verificationbuiltin.ReasonDenied
+			}
+		} else if isolationErr == nil {
+			var planned *verificationbuiltin.Plan
+			if reserved {
+				planned = &builtinPlan
+			}
+			isolated, isolationErr = runCommandIsolatedPlanned(ctx, runner, input.Worktree, input.BaseSHA, observation, spec, planned, candidateProtection...)
+		}
+		if reserved && isolationErr == nil && v.hooks.afterExecution != nil {
+			v.hooks.afterExecution(store, input, observation, headCandidate.CandidateDigest)
 		}
 		commandResult := isolated.Command
-		if isolationErr != nil && !isolated.Executed {
+		if reserved {
+			if isolationErr != nil {
+				if builtinClosedReason == "" {
+					builtinClosedReason = verificationbuiltin.ReasonDenied
+				}
+				commandResult = closedTaskSpecBuiltinCommand(spec, builtinClosedReason)
+			} else if isolated.Mutated {
+				builtinClosedReason = verificationbuiltin.ReasonDenied
+				commandResult = closedTaskSpecBuiltinCommand(spec, builtinClosedReason)
+			} else if isolated.BuiltinConsumed && (!currentBuiltinCandidateMatches(store, input, observation, headCandidate.CandidateDigest) || !builtinArtifactBindingMatches(result.Manifest, builtinPlan, isolated.BuiltinArtifactDigest, headCandidate.CandidateDigest)) {
+				builtinClosedReason = reasonArtifactDenied
+				commandResult = closedTaskSpecBuiltinCommand(spec, builtinClosedReason)
+			}
+		} else if isolationErr != nil && !isolated.Executed {
 			commandResult = isolationErrorCommand(spec)
 		}
 		baselineRequested := spec.BaselinePolicy == "always" || (spec.BaselinePolicy == "on-failure" && commandResult.Status != "pass")
@@ -302,6 +358,9 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 			return result, persistErr
 		}
 		gate := Gate{ID: "command:" + spec.ID, Category: "command", Required: spec.Required, Status: commandResult.Status, Summary: commandSummary(commandResult), Evidence: []string{"artifact://" + stdoutID, "artifact://" + stderrID}, Command: &commandResult.Record}
+		if reserved && isolated.BuiltinConsumed && builtinClosedReason == "" {
+			gate.Evidence = append(gate.Evidence, builtinTaskSpecEvidence(builtinPlan, isolated.BuiltinArtifactDigest, headCandidate.CandidateDigest)...)
+		}
 		if verdict != "" {
 			// The regression verdict is a mark only (issue #87): it never
 			// alters the candidate status or the gate outcome. The command
@@ -315,7 +374,12 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 			gate.Status, gate.Summary = "error", "命令请求 Baseline Diagnostic，但没有提供干净 Base Worktree"
 			commandResult.Record.BaselineStatus = "error"
 		}
-		if isolationErr != nil {
+		if reserved && builtinClosedReason != "" {
+			gate.Status = commandResult.Status
+			gate.Summary = builtinClosedReason
+		} else if reserved && isolated.BuiltinFailureReason != "" {
+			gate.Summary = isolated.BuiltinFailureReason
+		} else if isolationErr != nil {
 			gate.Status = "error"
 			gate.Summary = commandSummary(commandResult) + "；verifier-command-isolation-error: " + isolationErr.Error()
 		} else if isolated.Mutated {
@@ -430,6 +494,27 @@ func validateInput(input Input) error {
 	if input.RunDirectory == "" || input.Worktree == "" {
 		return errors.New("worktree and run directory are required")
 	}
+	seenBuiltinDeliverables := make(map[string]struct{})
+	hasBuiltin := false
+	for _, spec := range input.Commands {
+		plan, reserved, err := parseBuiltinPlan(spec, input.Deliverables)
+		if err != nil {
+			return errors.New(verificationbuiltin.ReasonDenied)
+		}
+		if reserved {
+			hasBuiltin = true
+			if spec.Timeout <= 0 {
+				return errors.New(verificationbuiltin.ReasonDenied)
+			}
+			if _, duplicate := seenBuiltinDeliverables[plan.DeliverableID]; duplicate {
+				return errors.New(verificationbuiltin.ReasonDenied)
+			}
+			seenBuiltinDeliverables[plan.DeliverableID] = struct{}{}
+		}
+	}
+	if hasBuiltin && (input.AttemptID == "" || input.AuthorityNamespaceID == "") {
+		return errors.New(verificationbuiltin.ReasonDenied)
+	}
 	// Candidate chain mode (ADR 0027) is switched on by the orchestration
 	// layer injecting the Attempt identity together with the owning authority
 	// namespace. It is all-or-nothing and fails closed on any missing or
@@ -446,6 +531,76 @@ func validateInput(input Input) error {
 		}
 	}
 	return nil
+}
+
+func seenBuiltinDeliverableIDs(commands []CommandSpec, deliverables []Deliverable) map[string]struct{} {
+	seen := make(map[string]struct{})
+	for _, command := range commands {
+		plan, reserved, err := parseBuiltinPlan(command, deliverables)
+		if err == nil && reserved {
+			seen[plan.DeliverableID] = struct{}{}
+		}
+	}
+	return seen
+}
+
+func bindBuiltinArtifactsToCandidate(artifacts []Artifact, deliverableIDs map[string]struct{}, candidateDigest string) {
+	for index := range artifacts {
+		if _, required := deliverableIDs[artifacts[index].ID]; required && artifacts[index].PathRoot == "repository" && artifacts[index].Producer == "worker" {
+			artifacts[index].CandidateDigest = candidateDigest
+		}
+	}
+}
+
+func currentBuiltinCandidateMatches(store CandidateStore, input Input, observation Observation, candidateDigest string) bool {
+	if candidateDigest == "" || input.AttemptID == "" || input.AuthorityNamespaceID == "" {
+		return false
+	}
+	head, found, err := store.Head()
+	if err != nil || !found {
+		return false
+	}
+	return head.CandidateDigest == candidateDigest &&
+		head.TaskID == input.TaskID && head.RunID == input.RunID && head.AttemptID == input.AttemptID &&
+		head.AuthorityNamespaceID == input.AuthorityNamespaceID && head.BaseSHA == input.BaseSHA &&
+		head.ContentDigest == canonical.DigestBytes(observation.Patch)
+}
+
+func builtinArtifactBindingMatches(manifest ArtifactManifest, plan verificationbuiltin.Plan, digest, candidateDigest string) bool {
+	if digest == "" || candidateDigest == "" {
+		return false
+	}
+	matches := 0
+	for _, artifact := range manifest.Artifacts {
+		if artifact.ID == plan.DeliverableID && artifact.Required && artifact.Producer == "worker" && artifact.Status == "validated" &&
+			artifact.PathRoot == "repository" && artifact.RelativePath == plan.PathGlob && artifact.Digest == digest && artifact.CandidateDigest == candidateDigest {
+			matches++
+		}
+	}
+	return matches == 1
+}
+
+func resolveBuiltinExecutionPlan(manifest ArtifactManifest, plan verificationbuiltin.Plan, candidateDigest string) (verificationbuiltin.Plan, error) {
+	matches := 0
+	relative := ""
+	for _, artifact := range manifest.Artifacts {
+		if artifact.ID != plan.DeliverableID {
+			continue
+		}
+		matches++
+		if artifact.Required && artifact.Producer == "worker" && artifact.Status == "validated" && artifact.PathRoot == "repository" && artifact.CandidateDigest == candidateDigest {
+			relative = artifact.RelativePath
+		}
+	}
+	if matches != 1 || relative == "" {
+		return verificationbuiltin.Plan{}, errors.New(reasonDeliverableDenied)
+	}
+	plan.PathGlob = relative
+	return plan, nil
+}
+
+func builtinTaskSpecEvidence(plan verificationbuiltin.Plan, digest, candidateDigest string) []string {
+	return []string{"builtin:contract-task-spec:v1", "deliverable:" + plan.DeliverableID, "artifact-digest:" + digest, "candidate:" + candidateDigest}
 }
 
 // admitObservedCandidate admits the Candidate record for the observed patch

@@ -26,6 +26,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
+	"github.com/chiga0/marshal-harness/internal/verificationbuiltin"
 )
 
 // Failure errors that carry no dynamic values, so callers can compare and log
@@ -125,7 +126,14 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{}, err
 	}
 
-	// 3. TaskSpec admission gate (issue #23): a prepared admission is
+	// 3. Reject malformed verifier builtins before preconditions or any other
+	// planning side effect. The marshal-builtin namespace is permanently
+	// reserved and never falls through to an external acceptance command.
+	if err := verificationbuiltin.Preflight(task); err != nil {
+		return Result{}, fmt.Errorf("planning: %w", err)
+	}
+
+	// 4. TaskSpec admission gate (issue #23): a prepared admission is
 	// rejected fail-closed, every dependsOn entry resolves read-only against
 	// the run store, and every precondition executes as a controlled
 	// subprocess at the repository root. The gate runs after full policy
@@ -137,7 +145,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{}, err
 	}
 
-	// 4. Syntax-preflight the supported inline Python acceptance scripts.
+	// 5. Syntax-preflight the supported inline Python acceptance scripts.
 	// This runs after TaskSpec schema validation, decode, full policy
 	// validation, and the admission gate, and before any repository
 	// resolution, adapter probe, worktree, run lease, journal, or frozen
@@ -152,7 +160,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{}, err
 	}
 
-	// 5. Canonical repository path must match the TaskSpec repository.
+	// 6. Canonical repository path must match the TaskSpec repository.
 	repository, err := gitworktree.OpenContext(ctx, input.RepositoryRoot)
 	if err != nil {
 		return Result{}, fmt.Errorf("planning: open repository: %w", err)
@@ -165,13 +173,13 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{}, errors.New("planning: TaskSpec repository does not match active repository")
 	}
 
-	// 6. Resolve the base ref to a unique commit SHA.
+	// 7. Resolve the base ref to a unique commit SHA.
 	baseSHA, err := ResolveBase(ctx, repository.Root, task.Repository.BaseRef)
 	if err != nil {
 		return Result{}, fmt.Errorf("planning: %w", err)
 	}
 
-	// 7. Confirm the remote name and, when declared, the exact remote URL.
+	// 8. Confirm the remote name and, when declared, the exact remote URL.
 	// Resolved URLs may carry credentials, so a mismatch is reported as a
 	// fixed error that never echoes either URL.
 	resolvedURL, err := ResolveRemote(ctx, repository.Root, task.Repository.Remote)

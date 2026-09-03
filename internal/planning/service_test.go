@@ -19,6 +19,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
+	"github.com/chiga0/marshal-harness/internal/verificationbuiltin"
 )
 
 type planningTestWorker struct {
@@ -364,6 +365,48 @@ func TestPlanRejectsInvalidAcceptanceSyntaxBeforeSideEffects(t *testing.T) {
 	if command.Run() == nil {
 		t.Fatal("preflight rejection left the task branch")
 	}
+}
+
+func TestPlanRejectsReservedBuiltinBeforeAdmissionPrecondition(t *testing.T) {
+	repositoryRoot, baseSHA := planningGitFixture(t)
+	const (
+		taskID    = "task-plan-builtin-preflight"
+		runID     = "run-plan-builtin-preflight"
+		adapterID = "adapter-plan"
+		remoteURL = "https://example.invalid/builtin-preflight.git"
+	)
+	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	taskData := planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA)
+	var task map[string]any
+	if err := json.Unmarshal(taskData, &task); err != nil {
+		t.Fatal(err)
+	}
+	task["acceptance"].(map[string]any)["commands"] = []any{map[string]any{
+		"id": "unknown-builtin", "argv": []any{"marshal-builtin:unknown:v1", "deliverable:implementation"},
+		"cwd": ".", "timeoutSeconds": 30, "required": true, "baselinePolicy": "none", "maxLogBytes": 4096,
+	}}
+	sentinel := filepath.Join(repositoryRoot, "precondition-must-not-run")
+	task["preconditions"] = []any{map[string]any{
+		"id": "would-mutate", "argv": []any{"/usr/bin/touch", sentinel}, "cwd": ".", "timeoutSeconds": 5,
+	}}
+	taskData = mustMarshal(t, task)
+	worker := &planningTestWorker{id: adapterID, capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: planningCapabilityFixture(t, adapterID)}}
+	stateRoot := filepath.Join(repositoryRoot, ".marshal")
+	result, err := Plan(context.Background(), Input{
+		StateRoot: stateRoot, RepositoryRoot: repositoryRoot, RunID: runID,
+		TaskSpec: taskData, PolicySnapshot: planningPolicyFixture(t, taskID, runID, adapterID),
+		Selector: planningSelector(t, worker), Validator: newValidator(t),
+	})
+	if err == nil || err.Error() != "planning: "+verificationbuiltin.ReasonDenied {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if len(result.SelectionAttempts) != 0 {
+		t.Fatalf("selection attempts = %#v", result.SelectionAttempts)
+	}
+	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+		t.Fatalf("reserved preflight allowed admission precondition: %v", statErr)
+	}
+	assertPlanningNoRunSideEffects(t, stateRoot, taskID, runID)
 }
 
 // TestPlanValidatesPolicyBeforePreflightSpawn proves that an invalid or

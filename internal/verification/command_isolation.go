@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/chiga0/marshal-harness/internal/verificationbuiltin"
 )
 
 const verifierWorktreeMutatedReason = "verifier-worktree-mutated"
@@ -39,11 +41,15 @@ const (
 )
 
 type isolatedCommandResult struct {
-	Command      CommandResult
-	BeforeDigest string
-	AfterDigest  string
-	Mutated      bool
-	Executed     bool
+	Command               CommandResult
+	BeforeDigest          string
+	AfterDigest           string
+	Mutated               bool
+	Executed              bool
+	BuiltinArtifactDigest string
+	BuiltinDeliverableID  string
+	BuiltinConsumed       bool
+	BuiltinFailureReason  string
 }
 
 type commandProtectedSource struct {
@@ -57,10 +63,18 @@ type commandProtectedSource struct {
 // managed candidate worktree is only read while the clone is constructed and
 // re-observed; command writes can therefore never become candidate bytes.
 func runCommandIsolated(ctx context.Context, runner Runner, source, baseSHA string, expected Observation, spec CommandSpec, additional ...commandProtectedSource) (result isolatedCommandResult, resultErr error) {
-	return runCommandIsolatedWithHooks(ctx, runner, source, baseSHA, expected, spec, commandIsolationHooks{}, additional...)
+	return runCommandIsolatedPlanned(ctx, runner, source, baseSHA, expected, spec, nil, additional...)
+}
+
+func runCommandIsolatedPlanned(ctx context.Context, runner Runner, source, baseSHA string, expected Observation, spec CommandSpec, builtin *verificationbuiltin.Plan, additional ...commandProtectedSource) (result isolatedCommandResult, resultErr error) {
+	return runCommandIsolatedWithPlanAndHooks(ctx, runner, source, baseSHA, expected, spec, builtin, commandIsolationHooks{}, additional...)
 }
 
 func runCommandIsolatedWithHooks(ctx context.Context, runner Runner, source, baseSHA string, expected Observation, spec CommandSpec, hooks commandIsolationHooks, additional ...commandProtectedSource) (result isolatedCommandResult, resultErr error) {
+	return runCommandIsolatedWithPlanAndHooks(ctx, runner, source, baseSHA, expected, spec, nil, hooks, additional...)
+}
+
+func runCommandIsolatedWithPlanAndHooks(ctx context.Context, runner Runner, source, baseSHA string, expected Observation, spec CommandSpec, builtin *verificationbuiltin.Plan, hooks commandIsolationHooks, additional ...commandProtectedSource) (result isolatedCommandResult, resultErr error) {
 	canonicalSource, err := filepath.EvalSymlinks(source)
 	if err != nil {
 		return isolatedCommandResult{}, errors.New("cannot resolve command source")
@@ -134,16 +148,22 @@ func runCommandIsolatedWithHooks(ctx context.Context, runner Runner, source, bas
 		return isolatedCommandResult{}, errors.New("cannot snapshot command isolate before execution")
 	}
 
-	environment, err := commandIsolationEnvironment(root, runner.Environment)
-	if err != nil {
-		return isolatedCommandResult{}, err
+	var command CommandResult
+	if builtin != nil {
+		command, result.BuiltinArtifactDigest, result.BuiltinConsumed, result.BuiltinFailureReason = runTaskSpecBuiltin(ctx, isolate, spec, *builtin)
+		result.BuiltinDeliverableID = builtin.DeliverableID
+	} else {
+		environment, environmentErr := commandIsolationEnvironment(root, runner.Environment)
+		if environmentErr != nil {
+			return isolatedCommandResult{}, environmentErr
+		}
+		runner.Environment = environment
+		if err := rejectResolvedExecutable(isolate, runner, spec, protectedRoots...); err != nil {
+			return isolatedCommandResult{}, err
+		}
+		command = runner.Run(ctx, isolate, spec)
+		command.Record.Executable = stableIsolateExecutable(command.Record.Executable, isolate)
 	}
-	runner.Environment = environment
-	if err := rejectResolvedExecutable(isolate, runner, spec, protectedRoots...); err != nil {
-		return isolatedCommandResult{}, err
-	}
-	command := runner.Run(ctx, isolate, spec)
-	command.Record.Executable = stableIsolateExecutable(command.Record.Executable, isolate)
 	result.Command = command
 	result.BeforeDigest = before
 	result.Executed = true

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/chiga0/marshal-harness/internal/verificationbuiltin"
 )
 
 type Runner struct {
@@ -27,6 +29,10 @@ func (r Runner) Run(ctx context.Context, worktree string, spec CommandSpec) Comm
 	result := CommandResult{StartedAt: started, Status: "error", Record: CommandRecord{Argv: append([]string(nil), spec.Argv...), CWD: spec.CWD, Executable: executableHint, StartedAt: started, BaselineStatus: "not-run"}}
 	if len(spec.Argv) == 0 || strings.HasPrefix(spec.Argv[0], "-") {
 		return finishCommand(result, nil, errors.New("command argv is empty or invalid"), started)
+	}
+	if strings.HasPrefix(spec.Argv[0], verificationbuiltin.ReservedPrefix) {
+		result.Record.Executable = verificationbuiltin.ReservedPrefix + "denied"
+		return finishCommand(result, nil, errors.New(verificationbuiltin.ReasonDenied), started)
 	}
 	if spec.Timeout <= 0 {
 		return finishCommand(result, nil, errors.New("command timeout must be positive"), started)
