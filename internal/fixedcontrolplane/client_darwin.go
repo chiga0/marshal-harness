@@ -85,6 +85,9 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	if response.Operation != operation || connection.Recheck(ctx) != nil {
 		return httpResponse{}, ErrConflict
 	}
+	if connection.CloseWrite() != nil {
+		return httpResponse{}, ErrUnavailable
+	}
 	return response, nil
 }
 

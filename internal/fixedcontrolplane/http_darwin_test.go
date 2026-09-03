@@ -232,6 +232,9 @@ func callHTTPRouter(t *testing.T, router *HTTPRouter, binding RequestBinding, pa
 	if decodeHTTPBody(responseBody, &decoded) != nil {
 		t.Fatalf("invalid response: %s", responseBody)
 	}
+	if err := client.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case serveErr := <-served:
 		return response.StatusCode, decoded, serveErr

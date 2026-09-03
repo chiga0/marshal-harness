@@ -117,9 +117,11 @@ func (router *HTTPRouter) ServeAuthenticated(ctx context.Context, connection *Au
 		return err
 	}
 
-	// A client close cancels a running application operation. CloseRead below
-	// ends the watcher when application work completes without affecting the
-	// bounded response write half of the Unix connection.
+	// A client close cancels a running application operation. After reading the
+	// complete response, a conforming client half-closes its write side only
+	// after its post-response authority/peer recheck. Keeping this watcher alive
+	// through the response therefore prevents the server from racing that
+	// required recheck by closing its end first.
 	disconnected := make(chan struct{})
 	go func() {
 		var extra [1]byte
@@ -129,12 +131,6 @@ func (router *HTTPRouter) ServeAuthenticated(ctx context.Context, connection *Au
 	}()
 
 	response, statusCode, operationErr := router.dispatch(applicationContext, connection.Binding, request, deadline)
-	_ = connection.CloseRead()
-	select {
-	case <-disconnected:
-	case <-time.After(time.Second):
-		operationErr = errors.Join(operationErr, ErrUnavailable)
-	}
 	recheckContext, recheckCancel := context.WithTimeout(context.Background(), handshakeTimeout)
 	recheckErr := connection.Recheck(recheckContext)
 	recheckCancel()
@@ -147,7 +143,14 @@ func (router *HTTPRouter) ServeAuthenticated(ctx context.Context, connection *Au
 		response = errorHTTPResponse(request.operation, operationErr)
 	}
 	if writeErr := writeHTTPResponse(connection, statusCode, response); writeErr != nil {
+		_ = connection.CloseRead()
 		return errors.Join(operationErr, writeErr)
+	}
+	select {
+	case <-disconnected:
+	case <-time.After(time.Second):
+		_ = connection.CloseRead()
+		operationErr = errors.Join(operationErr, ErrUnavailable)
 	}
 	return operationErr
 }
