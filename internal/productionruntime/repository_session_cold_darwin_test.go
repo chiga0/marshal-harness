@@ -66,8 +66,11 @@ func TestRepositorySessionReopensThroughFourColdOwnerProcesses(t *testing.T) {
 	if err := os.MkdirAll(stateRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{filepath.Join(root, ".marshal"), stateRoot} {
+	for _, path := range []string{root, filepath.Join(root, ".marshal"), stateRoot} {
 		if err := os.Chmod(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chown(path, -1, os.Getgid()); err != nil {
 			t.Fatal(err)
 		}
 	}
