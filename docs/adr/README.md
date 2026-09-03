@@ -52,6 +52,8 @@
 
 2026-08-29，exact-head macOS CI发现APFS在同一held control-directory合法创建Supervisor控制/输出对象时可能改变目录`st_nlink`，既有全字段runtime equality会在首条command前误报ABA。维护者在提案 `7d91e9704c69dcbde987d64d6fa93e0a06d7f32a` 经独立 reviewer 聚合复审确认 P0/P1/P2 均为 0 后接受 ADR 0064：冻结bootstrap initial empty完整身份、setup final observation、稳定目录对象字段、descriptor-relative phase-aware exact entry set，以及nonce/journal/socket与单次transcript read的对象/content门禁；它明确不把未持久化的输出inode夸大为跨时间authority。候选`765617c20ea3faee71af980d70a35ecd06e3462a`尚缺phase-aware exact-set gate，在实现补齐前保持冻结；接受不授权Linux/hardened/stable release。
 
+2026-09-04，macOS 26.6.2 实机回归发现 ADR 0059 的 `PT_TRACE_ME → exec SIGTRAP → PtraceDetach` mechanics 会让 signed/hardened Node 在 dyld 边界以 `SIGTRAP` 终止；同机原型证明 `CGO_ENABLED=0` 的 fixed Marshal 可经 libSystem bridge 使用 `posix_spawn(POSIX_SPAWN_SETEXEC | POSIX_SPAWN_START_SUSPENDED)`，在同 PID 的 runtime 用户态放行前取得 stopped observation，并在 `SIGCONT` 后正常继续。ADR 0079（Proposed）据此提议只替换 `internal/sandboxlaunch` 最终 exec barrier 与 `processcontrol` await/resume mechanics，保留 fixed `__sandbox-launch`、ready/release、held FD、双端身份核验、全部上层authority/terminalization与fail-closed边界；新producer使用`process-supervisor/v2`，v1 journal只读且禁止原地混用。该提案不宣称消除pathname TOCTOU，不关闭Issue #212，不回写RC1，也不改变当前成熟度。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -123,3 +125,4 @@
 | [0076](0076-darwin-fixed-server-pathname-locator.md) | Darwin fixed server 的 AF_UNIX absolute pathname locator、held-descriptor authority、durable acquisition binding与分阶段transport deadline | 已接受（Accepted，2026-09-03；只冻结合同，S1–S4均未因此完成；S4真实resident+Pi canary只可把`fixed transport/T1 capability`升级为`INTEGRATED`，`ADR 0062 full fixed-server lifecycle capability`仍须T2真实`ACCEPTED` canary，不授权远程/TCP/多用户） |
 | [0077](0077-local-dogfood-read-only-task-spec-validation.md) | Darwin local dogfood fixed Marshal 的 exact、repository-bound、只读 TaskSpec 契约验证 command class | 已取代（Superseded by ADR 0078，2026-09-03；public CLI/self-admission 是错误的验证层，不再授权实现） |
 | [0078](0078-verifier-builtin-task-spec-contract-gate.md) | candidate isolate 内 pathless verifier builtin 的 TaskSpec契约门禁、held artifact读取、Core唯一validator与closed evidence | 已接受（Accepted，2026-09-03；只冻结Darwin verifier builtin，不修改schema/selfidentity/activation/lifecycle/publication，不升级M13或I186成熟度） |
+| [0079](0079-darwin-posix-spawn-setexec-barrier.md) | Darwin `posix_spawn(POSIX_SPAWN_SETEXEC | POSIX_SPAWN_START_SUSPENDED)` 最终exec屏障、双端runtime身份核验与Supervisor v2只读迁移 | 提议（Proposed，2026-09-04；仅替换Darwin launch mechanics，不改变上层lifecycle/authority，不关闭Issue #212或升级I186成熟度） |
