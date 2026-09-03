@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-03：ADR 0076 fixed server 合同接受与大爆炸实施纠偏
+
+独立复审确认，先前候选`45e54b1`把ADR接受、durable delivery、AF_UNIX认证、HTTP路由和production canary压在同一分支，留下三项缺陷：两项P1分别是immutable `pending`只保存owner epoch/fact而没有exact durable `OwnerAcquisitionDigest`，无法在restart后证明完整process/binary/observer acquisition，以及所谓集成证据仍是fake `PublicApplicationPort`、synthetic owner与source string count，没有经过`control-plane serve → resident recovery → 真实Pi RUNNING → restart exact replay`；一项P2是`ReadHeaderTimeout=5s`与总`ReadTimeout=15s`共享时间窗，不满足独立15秒read-body phase。该候选保留为失败证据，不推送、不合并，也不继续滚动rework。
+
+[ADR 0076](adr/0076-darwin-fixed-server-pathname-locator.md)现于`main@d9cd001`接受并精确冻结修正后的合同：durable owner authority对完整`ControlOwnerAcquisition`产生唯一canonical digest，delivery `pending`必须同时持久化该digest与owner fact；socket object digest仅为host-local endpoint证据，不能替代durable acquisition；read-header、read-body、application与write deadline必须分别在各自phase启动。实施固定拆为`S1 durable delivery → S2 endpoint auth → S3 bounded HTTP delivery → S4 resident production integration`，禁止整体cherry-pick旧候选或再次合成大分支。
+
+成熟度主体保持诚实：S1–S3期间`fixed transport/T1 capability`最多为`COMPONENT`；只有exact-head macOS使用固定candidate bytes、resident recovery和真实配置Pi，证明ready-before-recovery、RUNNING、response-loss/restart strict successor exact receipt replay且零CLI fallback/重复Run/Attempt/Supervisor command，`fixed transport/T1 capability`才能标记`INTEGRATED`。`ADR 0062 full fixed-server lifecycle capability`仍必须等待T2真实Pi与外部独立Decision到`ACCEPTED`的canary后才能标记`INTEGRATED`。本次只关闭治理合同，不实现fixed server、不升级I186成熟度，也不改变managed signing/notarization、Linux stable或受保护stable candidate门禁。
+
 ## 2026-09-01：`v1.0.0-rc1` same-bytes 发布终验与失败复盘
 
 [`v1.0.0-rc1`](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0-rc1) 已完成 ADR 0068 的 local-dogfood prerelease distribution exit。annotated tag object `e99326fa6b6e57a19db8d6404c56b3dcf396fdc7` 精确指向 sourceHead `c1407bd77924c97dc6784f4d81938a3f0bfa75f6`；candidate SHA-256 为 `f9ed7fa59d05f5e71fef7164b8015240497e1d18e25ef1d3f8e199c1378a3774`。真实 Pi `0.84.4` canary run `33504020360` 与 finalize run `33504247271` 形成单 Run/单 Attempt、9 项 Gate、独立 Verification/ReviewDecision、`ACCEPTED`、current receipt/carrier；receipt digest 为 `sha256:7bd5b500bbaff5c5b008922b713d9844b792a3e82ece4e4a46ccd837496b4525`。candidate exact-head CI run `33502847249` 的 Ubuntu、macOS 与 secret scan 全绿。
