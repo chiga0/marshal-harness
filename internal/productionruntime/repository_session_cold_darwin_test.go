@@ -62,8 +62,17 @@ func TestRepositorySessionReopensThroughFourColdOwnerProcesses(t *testing.T) {
 			t.Errorf("remove cold owner fixture: %v", err)
 		}
 	})
-	for _, name := range []string{"owner", "result-ingress", "control"} {
-		createOwnerOnlyDirectory(t, filepath.Join(root, name))
+	stateRoot := filepath.Join(root, ".marshal", "runtime-v1")
+	if err := os.MkdirAll(stateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(root, ".marshal"), stateRoot} {
+		if err := os.Chmod(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{OwnerDirName, ResultIngressDirName, "owner-control"} {
+		createOwnerOnlyDirectory(t, filepath.Join(stateRoot, name))
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -90,7 +99,7 @@ func TestRepositorySessionReopensThroughFourColdOwnerProcesses(t *testing.T) {
 			t.Fatalf("cold owner epoch %d: %v\n%s", expectedEpoch, runErr, output)
 		}
 
-		store, openErr := resultingress.OpenResultIngressStore(filepath.Join(root, "result-ingress"))
+		store, openErr := resultingress.OpenResultIngressStore(filepath.Join(stateRoot, ResultIngressDirName))
 		if openErr != nil {
 			t.Fatal(openErr)
 		}
@@ -112,6 +121,7 @@ func TestRepositorySessionColdOwnerProcessHelper(t *testing.T) {
 		t.Skip("cold owner subprocess helper")
 	}
 	root := os.Getenv(coldOwnerRootEnv)
+	stateRoot := filepath.Join(root, ".marshal", "runtime-v1")
 	expectedEpoch, err := strconv.Atoi(os.Getenv(coldOwnerEpochEnv))
 	if err != nil || expectedEpoch < 1 {
 		t.Fatalf("invalid expected epoch")
@@ -124,17 +134,17 @@ func TestRepositorySessionColdOwnerProcessHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownerDirectory, err := os.Open(filepath.Join(root, "owner"))
+	ownerDirectory, err := os.Open(filepath.Join(stateRoot, OwnerDirName))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ownerDirectory.Close()
-	ingressDirectory, err := os.Open(filepath.Join(root, "result-ingress"))
+	ingressDirectory, err := os.Open(filepath.Join(stateRoot, ResultIngressDirName))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ingressDirectory.Close()
-	controlDirectory, err := os.Open(filepath.Join(root, "control"))
+	controlDirectory, err := os.Open(filepath.Join(stateRoot, "owner-control"))
 	if err != nil {
 		t.Fatal(err)
 	}
