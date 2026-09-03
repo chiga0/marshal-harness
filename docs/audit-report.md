@@ -6,7 +6,7 @@ S1–S3 已合入 `main@0761ad3`。S4 候选把生产入口收敛为同一个固
 
 实现自审发现并在进入独立 reviewer 前关闭两项主链缺口。第一，原 `sealedRepositoryApplication.StartRun` 依赖 CLI 外层执行 frozen local-dogfood binding 与 plan approval；直接接入 server 会绕过批准。候选已把二者下沉到共享 Application Adapter，并保留 expected sequence/head CAS，transport 不复制或降低业务门禁。第二，shutdown 最初会在 request drain 前调用 endpoint `Close`，使在途请求的收尾 authority recheck 被本进程提前删除的 socket/token 破坏；现改为 accept-stop 仅设置 listener deadline，取消并有界 drain 后才关闭 listener、精确 unlink 当前对象并最后释放 application/session。client 还在响应后重新验证 server/owner，并对 status line、closed header、canonical body 与 operation 做完整校验。
 
-当前证据只到候选级：Darwin/Linux 定向 compile-only、`go vet`、staticcheck、architecture check 与 `git diff --check` 已通过；本机没有执行随机临时测试 Mach-O。S4 仍须经过一次独立代码审查、exact-head GitHub macOS 动态门禁，以及同一固定 candidate bytes + 真实 Pi `0.84.4` 的跨进程 `StartRun→RUNNING→InspectRun`、server restart、response-loss/same-key replay canary。完成前 `fixed transport/T1 capability` 继续标记 `COMPONENT`，不得宣称 fixed server 已生产可用；T2 到独立 Decision/`ACCEPTED` 仍是后继。
+当前证据只到候选级：Darwin/Linux 定向 compile-only、`go vet`、staticcheck、architecture check 与 `git diff --check` 已通过；本机没有执行随机临时测试 Mach-O。唯一独立 reviewer 已在一次 aggregate rework 后确认 `P0=0`、`P1=0`；rework 关闭了显式冻结 deadline、Accept/StopAccept lost-wakeup、三阶段 shutdown 与对应确定性测试。S4 仍须通过 exact-head GitHub macOS 动态门禁，以及同一固定 candidate bytes + 真实 Pi `0.84.4` 的跨进程 `StartRun→RUNNING→InspectRun`、server restart、response-loss/same-key replay canary。完成前 `fixed transport/T1 capability` 继续标记 `COMPONENT`，不得宣称 fixed server 已生产可用；T2 到独立 Decision/`ACCEPTED` 仍是后继。
 
 ## 2026-09-03：fixed server S3 bounded delivery 候选审计
 
