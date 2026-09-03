@@ -36,6 +36,7 @@ type RepositorySession struct {
 	owner       repositoryOwnerLock
 	ownerState  resultingress.ControlOwnerState
 	acquisition resultingress.ControlOwnerAcquisition
+	fixedPath   string
 }
 
 type repositorySessionBorrow struct {
@@ -121,7 +122,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		cleanup()
 		return nil, err
 	}
-	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition}
+	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath}
 	if err := session.owner.WithCurrentOwnerLock(ctx, acquisition, func() error {
 		current, found, openErr := ingress.OpenOwner(acquisition.Scope)
 		if openErr != nil || !found || current.Acquisition != acquisition || current.FactDigest != ownerState.FactDigest {

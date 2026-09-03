@@ -277,6 +277,25 @@ func validateFixedServerRoot(root fixedServerRoot, count int) error {
 	return nil
 }
 
+// adoptFixedServerControlMutation advances only the frozen mutation
+// observation of the already-held control directory after the current owner
+// has created or removed exact endpoint objects. Stable object/name fields and
+// the complete child chain remain mandatory; ordinary rechecks never call it.
+func adoptFixedServerControlMutation(root *fixedServerRoot) error {
+	if root == nil || validateFixedServerRoot(*root, 3) != nil {
+		return ErrFixedDeliveryConflict
+	}
+	parent := root.nodes[2]
+	control := root.nodes[3]
+	held, heldErr := observeFixedServerDirectory(int(control.file.Fd()), true)
+	named, namedErr := observeFixedServerDirectoryAt(int(parent.file.Fd()), control.name, true)
+	if heldErr != nil || namedErr != nil || !sameFixedServerDirectory(held, control.identity, false) || !sameFixedServerDirectory(named, control.identity, false) || !sameFixedServerDirectory(held, named, true) {
+		return ErrFixedDeliveryConflict
+	}
+	root.nodes[3].identity = held
+	return validateFixedServerRoot(*root, len(root.nodes))
+}
+
 // stateRoot returns the held canonical RepositoryRoot/.marshal directory.
 //
 // runtime-v1 is the private namespace for owner, ingress, control and other
