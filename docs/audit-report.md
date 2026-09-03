@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-03：ADR 0077 local dogfood 只读 TaskSpec 验证权限
+
+M13 walking-skeleton dogfood Run `33709488741` 已由真实 Worker 完成交付并通过 Drive，Verification 中 8 项通过、2 项跳过，唯一 required command failure 为 `taskspec-validate`：同一 fixed candidate 执行 `contract validate` 时被 local-profile self gate 以 `self-local-command-denied` 拒绝。审计确认这不是 TaskSpec、Agent 或网络失败，而是[开发文档](development.md)已经承诺 `contract validate` 为只读命令，local dogfood closed command classes却没有对应入口。
+
+删除 gate、手写 Python schema 子集、清空 activation 或构建临时 checker都会分别造成验证降级、语义漂移、无效绕过或匿名 Mach-O；因此维护者接受[ADR 0077](adr/0077-local-dogfood-read-only-task-spec-validation.md)，仅新增 `contract.validate-task-spec-file-readonly`。它只允许 exact `contract validate --schema task-spec <repository-relative-path>`，由现有 activation继续绑定 fixed executable、`sourceHead`与canonical repository；输入必须经held-root逐段nofollow打开为root内regular non-symlink file，并沿用`32 MiB`上限。stdin、auto-detect、flag permutation、absolute/escape/symlink/FIFO、其它schema与所有其它`contract`子命令继续fail closed。
+
+该权限只执行现有Draft 2020-12+semantic validator，无网络、持久化、生命周期、publication或child-process effect；result/evidence/diagnostic必须白名单化、有界且不泄露path、argv、env、activation、输入值或secret。接受只冻结合同，尚未实现，不表示M13完成或任何I186成熟度升级；后继实现必须以direct argv替换`sh|cat`验收命令并通过完整argv/path/object/identity/schema/semantic/zero-effect/secret负向矩阵。
+
 ## 2026-09-03：ADR 0076 fixed server 合同接受与大爆炸实施纠偏
 
 独立复审确认，先前候选`45e54b1`把ADR接受、durable delivery、AF_UNIX认证、HTTP路由和production canary压在同一分支，留下三项缺陷：两项P1分别是immutable `pending`只保存owner epoch/fact而没有exact durable `OwnerAcquisitionDigest`，无法在restart后证明完整process/binary/observer acquisition，以及所谓集成证据仍是fake `PublicApplicationPort`、synthetic owner与source string count，没有经过`control-plane serve → resident recovery → 真实Pi RUNNING → restart exact replay`；一项P2是`ReadHeaderTimeout=5s`与总`ReadTimeout=15s`共享时间窗，不满足独立15秒read-body phase。该候选保留为失败证据，不推送、不合并，也不继续滚动rework。
