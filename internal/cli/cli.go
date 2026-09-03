@@ -2307,6 +2307,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	flags := flag.NewFlagSet("task run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	runID := flags.String("run", "", "Run ID")
+	waitForWorker := flags.Bool("wait", false, "sealed Pi 前台运行时保持同一 owner/session，直至 Worker 到达 VERIFYING")
 	throughVerify := flags.Bool("through-verify", false, "Worker 成功转入 VERIFYING 后，在同一调用内继续执行独立 verify")
 	recoverDeadDriver := flags.Bool("recover-dead-driver", false, "仅在监督器已证明当前 Worker PID 退出时立即恢复孤儿 Attempt")
 	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
@@ -2314,7 +2315,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	logPath := flags.String("log", "", "--detach 的 stdout 日志文件（缺省 .marshal/detached/RUN_ID.log）")
 	logErrPath := flags.String("log-err", "", "--detach 的 stderr 日志文件（缺省与 --log 相同）")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
-		fmt.Fprintln(stderr, "用法：marshal task run --run RUN_ID [--through-verify] [--json] [--detach [--log PATH] [--log-err PATH]]")
+		fmt.Fprintln(stderr, "用法：marshal task run --run RUN_ID [--wait] [--through-verify] [--json] [--detach [--log PATH] [--log-err PATH]]")
 		return ExitUsage
 	}
 	entryObservation := localDogfoodObservation(ctx)
@@ -2324,6 +2325,10 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 	if (*logPath != "" || *logErrPath != "") && !*detach {
 		fmt.Fprintln(stderr, "运行失败：--log/--log-err 只能与 --detach 一起使用。")
+		return ExitUsage
+	}
+	if *waitForWorker && *detach {
+		fmt.Fprintln(stderr, "运行失败：--wait 仅用于前台 sealed Pi Run，不能与 --detach 同时使用。")
 		return ExitUsage
 	}
 	if err := domain.ValidateID(*runID); err != nil {
@@ -2440,7 +2445,11 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if sealedRun && (state.State == domain.StateReady || state.State == domain.StateRunning) {
 		// ADR 0068 sealed 组合是 READY→RUNNING 以及 terminal
 		// RUNNING→VERIFYING 的唯一生产入口。
-		return runSealedReadyBranch(ctx, location.StateRoot, location.RepositoryRoot, state.TaskID, *runID, stdout, stderr)
+		return runSealedReadyBranch(ctx, location.StateRoot, location.RepositoryRoot, state.TaskID, *runID, *waitForWorker, stdout, stderr)
+	}
+	if *waitForWorker {
+		fmt.Fprintln(stderr, "运行失败：--wait 只适用于 sealed Pi Run。")
+		return ExitUsage
 	}
 	// v1 production admission is unconditional: non-LaunchCapable adapters
 	// can never reach the executor through an environment selector.
@@ -3310,7 +3319,7 @@ func writeUsage(output io.Writer) {
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
   marshal task approve --run RUN_ID --gate plan|publish [--actor ID] [--json]
   marshal task status --run RUN_ID [--json]
-  marshal task run --run RUN_ID [--through-verify] [--json] [--detach [--log PATH] [--log-err PATH]]
+  marshal task run --run RUN_ID [--wait] [--through-verify] [--json] [--detach [--log PATH] [--log-err PATH]]
   marshal task verify --run RUN_ID [--json]
   marshal task review --run RUN_ID [--decision PATH] [--json]
   marshal task publish --run RUN_ID [--json] [--detach [--log PATH] [--log-err PATH]]

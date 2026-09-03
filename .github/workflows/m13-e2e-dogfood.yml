@@ -248,9 +248,19 @@ jobs:
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
           export MARSHAL_PI_PATH="$PI_BIN" MARSHAL_PI_NODE_PATH="$PI_NODE"
           export MARSHAL_PI_RUNTIME="$PI_NODE" MARSHAL_PI_ENTRYPOINT="$PI_BUNDLE"
-          "$MARSHAL_BIN" task run --run "$RUN_ID" --json > "$CONTROL_ROOT/run-start.json" 2>&1 || {
+          wait_args=()
+          if [ "${{ inputs.candidate-mode }}" = "build-from-head" ]; then
+            wait_args=(--wait)
+          fi
+          "$MARSHAL_BIN" task run --run "$RUN_ID" "${wait_args[@]}" --json > "$CONTROL_ROOT/run-start.json" 2>&1 || {
             cat "$CONTROL_ROOT/run-start.json" >&2; exit 1; }
           cat "$CONTROL_ROOT/run-start.json"
+          if [ "${{ inputs.candidate-mode }}" = "build-from-head" ]; then
+            state="$("$MARSHAL_BIN" task status --run "$RUN_ID" --json 2>/dev/null | /usr/bin/python3 -I -B -c 'import json,sys; print(json.load(sys.stdin).get("state", ""))' 2>/dev/null)"
+            [ "$state" = VERIFYING ] || { echo "::error::--wait 返回后 Run 未到达 VERIFYING：$state" >&2; exit 1; }
+            echo "run reached VERIFYING in one resident owner/session"
+            exit 0
+          fi
           # READY 只启动 sealed Attempt；后续 RUNNING 调用等价于一次有界 collect：
           # attempt 未终态时立即返回，需要与 release-canary.sh 相同的轮询节奏。
           collect_attempt=0

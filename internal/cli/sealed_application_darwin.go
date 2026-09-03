@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	piadapter "github.com/chiga0/marshal-harness/internal/adapter/pi"
 	"github.com/chiga0/marshal-harness/internal/app"
@@ -346,7 +347,71 @@ func (adapter *sealedRepositoryApplication) advanceRun(ctx context.Context, runI
 	})
 }
 
+// driveRunToWorkerCompletion keeps one repository owner, one Run composition
+// and one descriptor graph alive from READY through worker terminalization.
+// This is the foreground CLI path used for real tasks whose worker may run for
+// minutes. Reopening one CLI process per collect would append an owner
+// successor and replay an ever-growing authority ledger on every poll.
+func (adapter *sealedRepositoryApplication) driveRunToWorkerCompletion(ctx context.Context, runID string) (application.RunProjection, string, error) {
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	return driveSealedRunToWorkerCompletionWithOpen(ctx, runID, func(ctx context.Context, runID string) (sealedRunAdvancer, func() error, error) {
+		run, err := adapter.openRun(ctx, runID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return run.runtime, run.Close, nil
+	}, waitForSealedRunPoll)
+}
+
 type sealedRunOpenFunc func(context.Context, string) (sealedRunAdvancer, func() error, error)
+
+type sealedRunWaitFunc func(context.Context) error
+
+func waitForSealedRunPoll(ctx context.Context) error {
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// driveSealedRunToWorkerCompletionWithOpen is the testable resident-driver
+// core. The exact Run runtime is opened once and closed once; every terminal
+// probe therefore uses the same owner and held objects. Public server StartRun
+// remains non-blocking—only the explicit foreground CLI --wait path calls this
+// helper.
+func driveSealedRunToWorkerCompletionWithOpen(ctx context.Context, runID string, open sealedRunOpenFunc, wait sealedRunWaitFunc) (application.RunProjection, string, error) {
+	if open == nil {
+		return application.RunProjection{}, "sealed Run 组装失败", application.NewError("sealed-run-open", application.ReasonCompositionIncomplete)
+	}
+	if wait == nil {
+		return application.RunProjection{}, "sealed Run 等待器无效", application.NewError("sealed-run-wait", application.ReasonInvalidRequest)
+	}
+	runtime, closeRun, err := open(ctx, runID)
+	if err != nil {
+		return application.RunProjection{}, "sealed Run 组装失败", err
+	}
+	if runtime == nil || closeRun == nil {
+		if closeRun != nil {
+			_ = closeRun()
+		}
+		return application.RunProjection{}, "sealed Run 组装失败", application.NewError("sealed-run-open", application.ReasonCompositionIncomplete)
+	}
+	defer closeRun()
+	for {
+		after, stage, err := advanceSealedRun(ctx, runtime, runID)
+		if err != nil || after.State != domain.StateRunning {
+			return after, stage, err
+		}
+		if err := wait(ctx); err != nil {
+			return application.RunProjection{}, "等待 sealed Attempt 终态失败", err
+		}
+	}
+}
 
 // advanceSealedRunWithOpen makes the one-composition boundary explicit and
 // testable. The returned runtime remains alive for the complete bounded

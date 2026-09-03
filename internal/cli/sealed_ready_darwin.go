@@ -18,7 +18,7 @@ import (
 // runSealedReadyBranch drives one READY/RUNNING Run through the same
 // repository application adapter used by fixed server mode. Direct CLI use
 // keeps the application lifetime bounded to this operation.
-func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, _, runID string, stdout, stderr io.Writer) int {
+func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, _, runID string, waitForWorker bool, stdout, stderr io.Writer) int {
 	entryLocalSelfIdentity := localDogfoodObservation(ctx)
 	if entryLocalSelfIdentity == nil {
 		fmt.Fprintln(stderr, "运行失败：sealed local-dogfood 组合缺少命令入口身份观察。")
@@ -42,7 +42,11 @@ func runSealedReadyBranch(ctx context.Context, stateRoot, repositoryRoot, _, run
 	}
 	defer applicationAdapter.Close()
 
-	after, stage, err := applicationAdapter.advanceRun(ctx, runID)
+	advance := applicationAdapter.advanceRun
+	if waitForWorker {
+		advance = applicationAdapter.driveRunToWorkerCompletion
+	}
+	after, stage, err := advance(ctx, runID)
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：%s：%v\n", stage, err)
 		return ExitFailure

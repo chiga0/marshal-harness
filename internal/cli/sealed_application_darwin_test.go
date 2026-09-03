@@ -16,6 +16,8 @@ type sealedRunAdvancerStub struct {
 	inspectCalls int
 	collectCalls int
 	collectErr   error
+	collectErrs  []error
+	started      application.RunStartProjection
 }
 
 func TestRecoverSealedRepositoryOnOpenSeparatesOneShotAndResidentModes(t *testing.T) {
@@ -79,13 +81,50 @@ func (stub *sealedRunAdvancerStub) InspectRun(context.Context, application.Inspe
 	return projection, nil
 }
 
-func (*sealedRunAdvancerStub) StartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, error) {
-	return application.RunStartProjection{}, nil
+func (stub *sealedRunAdvancerStub) StartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, error) {
+	return stub.started, nil
 }
 
 func (stub *sealedRunAdvancerStub) CollectRunResult(context.Context, string) (productionruntime.CollectedRunResult, error) {
+	if stub.collectCalls < len(stub.collectErrs) {
+		err := stub.collectErrs[stub.collectCalls]
+		stub.collectCalls++
+		return productionruntime.CollectedRunResult{}, err
+	}
 	stub.collectCalls++
 	return productionruntime.CollectedRunResult{}, stub.collectErr
+}
+
+func TestDriveSealedRunToWorkerCompletionKeepsOneCompositionUntilVerifying(t *testing.T) {
+	running := sealedRunProjection(domain.StateRunning, 52)
+	verifying := sealedRunProjection(domain.StateVerifying, 53)
+	stub := &sealedRunAdvancerStub{
+		projections: []application.RunProjection{running, running, verifying},
+		collectErrs: []error{productionruntime.ErrAttemptStillRunning, nil},
+	}
+	openCalls, closeCalls, waitCalls := 0, 0, 0
+	got, stage, err := driveSealedRunToWorkerCompletionWithOpen(context.Background(), running.RunID, func(_ context.Context, runID string) (sealedRunAdvancer, func() error, error) {
+		openCalls++
+		if runID != running.RunID {
+			t.Fatalf("open runID = %q, want %q", runID, running.RunID)
+		}
+		return stub, func() error { closeCalls++; return nil }, nil
+	}, func(context.Context) error {
+		waitCalls++
+		return nil
+	})
+	if err != nil || stage != "" {
+		t.Fatalf("drive error = %v, stage = %q", err, stage)
+	}
+	if got != verifying {
+		t.Fatalf("projection = %#v, want %#v", got, verifying)
+	}
+	if openCalls != 1 || closeCalls != 1 {
+		t.Fatalf("open calls = %d, close calls = %d, want 1 each", openCalls, closeCalls)
+	}
+	if waitCalls != 1 || stub.collectCalls != 2 || stub.inspectCalls != 3 {
+		t.Fatalf("wait calls = %d, collect calls = %d, inspect calls = %d; want 1, 2, 3", waitCalls, stub.collectCalls, stub.inspectCalls)
+	}
 }
 
 func TestAdvanceSealedRunReturnsVerifiedRunningProjectionWithoutSecondInspect(t *testing.T) {
