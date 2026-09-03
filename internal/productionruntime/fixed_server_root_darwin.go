@@ -235,6 +235,14 @@ func openFixedServerRoot(repository *CanonicalRepositoryRoot) (fixedServerRoot, 
 	if err := validateFixedServerRoot(root, len(root.nodes)); err != nil {
 		return cleanup(err)
 	}
+	// Creating the fixed hierarchy is the one authorized mutation of the
+	// canonical repository object during construction. Keep the caller-held
+	// capability usable for a later owner generation by advancing its frozen
+	// mutation observation only after the complete held/name chain has been
+	// revalidated. Device, inode, permissions and current pathname remain
+	// exact; an external replacement or incomplete hierarchy never reaches
+	// this adoption point.
+	repository.identity = root.nodes[0].identity
 	return root, nil
 }
 

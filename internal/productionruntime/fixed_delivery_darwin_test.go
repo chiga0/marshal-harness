@@ -40,11 +40,11 @@ type publicFixedDeliveryInputs struct {
 func newPublicFixedDeliveryInputs(t *testing.T) publicFixedDeliveryInputs {
 	t.Helper()
 	ownerFixture := newOwnerLockFixture(t)
-	bootstrap := openOwnerStore(t, ownerFixture)
-	if err := bootstrap.Close(); err != nil {
-		t.Fatal(err)
-	}
-	ingressPath := filepath.Join(ownerFixture.base, "result-ingress")
+	// Construct the production held ingress directly. A public composition
+	// test must not depend on the legacy pathname Store constructor as an
+	// implicit directory producer.
+	ingressPath := filepath.Join(ownerFixture.base, "held-result-ingress")
+	createOwnerOnlyDirectory(t, ingressPath)
 	ingress, err := os.Open(ingressPath)
 	if err != nil {
 		t.Fatal(err)

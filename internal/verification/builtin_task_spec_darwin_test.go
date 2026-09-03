@@ -199,7 +199,21 @@ func TestTaskSpecBuiltinHeldReaderHostileObjectMatrix(t *testing.T) {
 	valid := taskSpecBuiltinFixture(t)
 	newFixture := func(t *testing.T) (string, string) {
 		t.Helper()
-		root := t.TempDir()
+		// Darwin limits sockaddr_un paths to roughly 104 bytes. Go's default
+		// per-test temporary path includes the full nested test name and can
+		// exceed that limit before the hostile socket is even created. Keep the
+		// fixture under the real short private temp root; the production reader
+		// still receives the exact absolute root and exercises the same held
+		// descriptor boundary.
+		root, err := os.MkdirTemp("/private/tmp", "marshal-builtin-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.RemoveAll(root); err != nil {
+				t.Errorf("remove builtin fixture: %v", err)
+			}
+		})
 		relative := "out/task.json"
 		writeBuiltinArtifact(t, root, relative, valid)
 		return root, relative
