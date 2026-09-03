@@ -895,7 +895,13 @@ func observeDirectoryEdge(parentFD, childFD int, name string) (CurrentNameIdenti
 	if unix.Fstat(parentFD, &parent) != nil || unix.Fstat(childFD, &held) != nil || unix.Fstatat(parentFD, name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !sameNamedDirectoryStat(held, named) || held.Dev != parent.Dev || held.Uid != uint32(unix.Geteuid()) || held.Mode&0o022 != 0 || parent.Mode&unix.S_IFMT != unix.S_IFDIR || parent.Nlink < 1 {
 		return CurrentNameIdentityV1{}, ErrFilesystemConflict
 	}
-	return CurrentNameIdentityV1{ParentIdentity: stableDirectoryIdentity(parent), ParentMutationDigest: statGenerationDigest(parent), RelativeName: name, ObjectIdentity: objectIdentity(held), ObjectMutationDigest: statMutationDigest(held)}, nil
+	// APFS may change a directory's st_size or st_nlink after the descriptor and
+	// current-name checks above have already proved the same live object. Those
+	// fields are not authority attributes (sameDirectoryObject deliberately
+	// excludes them), so do not persist them into an edge that is compared again
+	// after an authority fsync. The mutation digest still catches rename-away /
+	// restore ABA and directory-content changes during the guarded operation.
+	return CurrentNameIdentityV1{ParentIdentity: stableDirectoryIdentity(parent), ParentMutationDigest: statGenerationDigest(parent), RelativeName: name, ObjectIdentity: stableDirectoryIdentity(held), ObjectMutationDigest: statMutationDigest(held)}, nil
 }
 
 func observeRegularEdge(parentFD, childFD int, name string) (CurrentNameIdentityV1, error) {
