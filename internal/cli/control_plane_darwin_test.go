@@ -3,10 +3,15 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/chiga0/marshal-harness/internal/application"
 )
 
 func TestParseControlPlaneDeadlineRequiresCanonicalFrozenUTC(t *testing.T) {
@@ -24,6 +29,17 @@ func TestParseControlPlaneDeadlineRequiresCanonicalFrozenUTC(t *testing.T) {
 		if _, err := parseControlPlaneDeadline(invalid, now); err == nil {
 			t.Fatalf("invalid deadline %q admitted", invalid)
 		}
+	}
+}
+
+func TestWriteControlPlaneRequestFailureRedactsRawError(t *testing.T) {
+	var output bytes.Buffer
+	writeControlPlaneRequestFailure(&output, errors.Join(errors.New("/private/secret/provider"), application.NewError("start-run", application.ReasonRecoveryRequired)))
+	if got := output.String(); got != "control-plane request failed: operation=start-run reasonCode=recovery-required\n" {
+		t.Fatalf("output=%q", got)
+	}
+	if strings.Contains(output.String(), "secret") {
+		t.Fatal("raw error escaped stable diagnostic boundary")
 	}
 }
 

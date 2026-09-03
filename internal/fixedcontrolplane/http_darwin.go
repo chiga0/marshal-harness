@@ -250,13 +250,18 @@ func (router *HTTPRouter) startRun(ctx context.Context, authenticated RequestBin
 	// Once pending is durable, even a typed Port error cannot prove that no
 	// mutation committed before response loss. Only the current RB1 reconcile
 	// below may distinguish success from an unresolved delivery.
-	_, _ = router.application.StartRun(ctx, input)
+	_, startErr := router.application.StartRun(ctx, input)
 	receipt, applied, err := router.delivery.ReconcileStartRunDelivery(ctx, pending, input, router.application)
 	if err != nil {
 		return httpResponse{}, applicationHTTPStatus(err), err
 	}
 	if !applied {
-		return errorHTTPResponse(request.operation, errHTTPPending), 202, errHTTPPending
+		// The client-facing result must remain an unresolved delivery even when
+		// the application returned a typed failure: once pending is durable, that
+		// failure cannot prove that no mutation committed before response loss.
+		// Preserve it in the internal error chain so the resident server can emit
+		// a stable reasonCode instead of discarding the only root-cause signal.
+		return errorHTTPResponse(request.operation, errHTTPPending), 202, errors.Join(errHTTPPending, startErr)
 	}
 	return router.replayedStart(ctx, input, pending, receipt)
 }

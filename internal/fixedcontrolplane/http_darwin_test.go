@@ -402,7 +402,7 @@ func TestHTTPRouterStartRunErrorStillRequiresCurrentLedgerReconcile(t *testing.T
 	}
 	binding := RequestBinding{RequestKeyDigest: deliveryBinding.RequestKeyDigest, RequestDigest: deliveryBinding.RequestDigest, IntentDigest: deliveryBinding.ApplicationIntentDigest, Deadline: deliveryBinding.Deadline}
 	code, response, serveErr := callHTTPRouter(t, router, binding, "/v1/runs/start", "request:start-error", body)
-	if !errors.Is(serveErr, errHTTPPending) || code != 202 || response.Disposition != "pending" || response.ReasonCode != "delivery-pending" || delivery.reconcileCalls != 2 || port.startCalls != 1 {
+	if !errors.Is(serveErr, errHTTPPending) || !application.HasReason(serveErr, application.ReasonAuthorityConflict) || code != 202 || response.Disposition != "pending" || response.ReasonCode != "delivery-pending" || delivery.reconcileCalls != 2 || port.startCalls != 1 {
 		t.Fatalf("code=%d response=%+v err=%v deliveryReconcile=%d start=%d", code, response, serveErr, delivery.reconcileCalls, port.startCalls)
 	}
 }

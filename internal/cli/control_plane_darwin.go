@@ -140,7 +140,9 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 		go func() {
 			defer requests.Done()
 			defer connection.Close()
-			_ = router.ServeAuthenticated(requestCtx, connection)
+			if requestErr := router.ServeAuthenticated(requestCtx, connection); requestErr != nil {
+				writeControlPlaneRequestFailure(stderr, requestErr)
+			}
 		}()
 	}
 	close(stop)
@@ -158,6 +160,18 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 		return ExitFailure
 	}
 	return ExitOK
+}
+
+// writeControlPlaneRequestFailure deliberately emits only the typed
+// application operation/reason pair. Raw errors may contain host paths or
+// provider details and therefore never cross this diagnostic boundary.
+func writeControlPlaneRequestFailure(stderr io.Writer, err error) {
+	var applicationError *application.Error
+	if errors.As(err, &applicationError) {
+		fmt.Fprintf(stderr, "control-plane request failed: operation=%s reasonCode=%s\n", applicationError.Operation, applicationError.Reason)
+		return
+	}
+	fmt.Fprintln(stderr, "control-plane request failed: reasonCode=transport-failure")
 }
 
 func drainControlPlaneRequests(requests *sync.WaitGroup, cancel context.CancelFunc, drainTimeout, cancelTimeout time.Duration) bool {
