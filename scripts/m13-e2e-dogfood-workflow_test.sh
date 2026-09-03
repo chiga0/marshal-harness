@@ -35,6 +35,7 @@ SUMMARY_SCRIPT="${TMP_ROOT}/summary.sh"
 VERIFY_SCRIPT="${TMP_ROOT}/verify.sh"
 PLAN_SCRIPT="${TMP_ROOT}/plan.sh"
 DRIVE_SCRIPT="${TMP_ROOT}/drive.sh"
+FAILURE_SCRIPT="${TMP_ROOT}/failure.sh"
 extract_step 'Validate inputs and resolve identities' "$VALIDATE_RAW"
 # canonical repository 约束由 GitHub expression 注入；本测试只执行其后的
 # 纯输入解析，且单独静态断言该约束未被移除。
@@ -47,6 +48,7 @@ extract_step 'Write metrics summary' "$SUMMARY_SCRIPT"
 extract_step 'Run independent verification' "$VERIFY_SCRIPT"
 extract_step 'Plan and approve the M13 run' "$PLAN_SCRIPT"
 extract_step 'Drive the sealed run to worker completion' "$DRIVE_SCRIPT"
+extract_step 'Capture bounded failure diagnostic' "$FAILURE_SCRIPT"
 
 run_validate() {
   local pi_model="$1" models="$2" output="$3"
@@ -454,10 +456,68 @@ if /usr/bin/python3 -I -B "$DRIVER" metrics --state-root "$METRIC_STATE" --run-i
   fail '缺少 wallClockSeconds 未 fail closed'
 fi
 
+# failure-diagnostic 允许 Run snapshot 已失去 currentAttemptId，但只在
+# ResultIngress 恰好给出一个 Attempt 时恢复诊断 identity；输出仅含阶段、摘要、
+# event shape 与 digest，不复制 control path、session id 或原始文本。
+FAILURE_STATE="${TMP_ROOT}/failure-state"
+FAILURE_CONTROL="$FAILURE_STATE/owner-control/attempt-failure"
+mkdir -p "$FAILURE_STATE/runs/failure-run" "$FAILURE_STATE/result-ingress" "$FAILURE_CONTROL"
+chmod 700 "$FAILURE_STATE/owner-control" "$FAILURE_CONTROL"
+printf '{"taskId":"failure-task","runId":"failure-run","state":"RUNNING","sequence":2,"attemptsUsed":1,"baseSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","specDigest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}\n' \
+  >"$FAILURE_STATE/runs/failure-run/state.json"
+/usr/bin/python3 -I -B - "$FAILURE_STATE/result-ingress/result-ingress.jsonl" "$FAILURE_CONTROL" <<'PY'
+import json, sys
+identity={"taskId":"failure-task","runId":"failure-run","attemptId":"attempt-failure"}
+records=[]
+for sequence, kind in enumerate(("attempt-opened","process-supervisor-started","result-admitted","terminalization-barrier","process-terminal","allocation-terminated","process-supervisor-closed","cleanup-completed","cleanup-released"), 1):
+    transition={"kind":kind,"identity":identity}
+    if kind == "process-supervisor-started":
+        transition["supervisorStarted"]={"controlDirectory":{"canonicalPath":sys.argv[2]}}
+    records.append({"sequence":sequence,"revision":sequence,"factType":kind,"digest":"sha256:"+(str(sequence%10)*64),"transition":transition})
+with open(sys.argv[1],"w") as handle:
+    for record in records: handle.write(json.dumps(record,separators=(",",":"))+"\n")
+PY
+printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"交付已完成，以下为唯一 WorkerResult：\n{\"kind\":\"WorkerResult\",\"taskId\":\"failure-task\",\"runId\":\"failure-run\",\"attemptId\":\"attempt-failure\"}"}]}],"willRetry":false}' \
+  >"$FAILURE_CONTROL/stdout.bin"
+printf '{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}\n' \
+  >"$FAILURE_CONTROL/transcript.jcs"
+chmod 600 "$FAILURE_CONTROL/stdout.bin" "$FAILURE_CONTROL/transcript.jcs"
+printf '{"sequence":1,"type":"worker.started","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt-failure"}\n' \
+  >"$FAILURE_STATE/runs/failure-run/events.jsonl"
+printf '{"sequence":2,"type":"secret-bearing-unknown-event","stateFrom":"PRIVATE","stateTo":"PRIVATE","attemptId":"do-not-export"}\n' \
+  >>"$FAILURE_STATE/runs/failure-run/events.jsonl"
+/usr/bin/python3 -I -B "$DRIVER" failure-diagnostic --state-root "$FAILURE_STATE" \
+  --run-id failure-run --out "$FAILURE_STATE/failure.json" >/dev/null \
+  || fail 'failure diagnostic 未生成'
+/usr/bin/python3 -I -B - "$FAILURE_STATE/failure.json" "$FAILURE_CONTROL" <<'PY' \
+  || fail 'failure diagnostic 泄漏路径/文本或未定域 terminalization 阶段'
+import json, sys
+raw=open(sys.argv[1],encoding="utf-8").read(); d=json.loads(raw)
+assert sys.argv[2] not in raw and "session" not in raw.lower()
+assert d["run"]["currentAttemptId"] is None
+assert d["attemptSelection"] == "unique-result-ingress-attempt"
+assert d["attemptId"] == "attempt-failure"
+assert d["resultIngressTransitions"][-1]["kind"] == "cleanup-released"
+assert d["supervisor"]["finalAssistant"]["status"] == "valid-single-object"
+assert d["supervisor"]["finalAssistant"]["identityExact"] is True
+assert d["workerResult"]["present"] is False
+assert d["runEvents"][0] == {"attemptMatchesSelected":True,"sequence":1,"stateFrom":"READY","stateTo":"RUNNING","type":"worker.started"}
+assert d["runEvents"][1] == {"attemptMatchesSelected":False,"sequence":2,"stateFrom":None,"stateTo":None,"type":"unsupported"}
+assert "secret-bearing-unknown-event" not in raw and "do-not-export" not in raw and "PRIVATE" not in raw
+PY
+
 grep -A2 -F '      - name: Pack dogfood evidence tarball' "$WORKFLOW" | grep -Fq 'if: always()' \
   || fail 'evidence pack 不再保证 always 执行'
 grep -A3 -F '      - name: Upload dogfood evidence' "$WORKFLOW" | grep -Fq 'if: always()' \
   || fail 'evidence upload 不再保证 always 执行'
+grep -A3 -F '      - name: Capture bounded failure diagnostic' "$WORKFLOW" | grep -Fq 'if: failure()' \
+  || fail '失败诊断未绑定 failure-only 条件'
+grep -Fq -- '--out "$control_root/failure-diagnostic.json"' "$FAILURE_SCRIPT" \
+  || fail '失败诊断未写入固定 control artifact'
+grep -Fq '.m13-e2e/failure-diagnostic.json' "$WORKFLOW" \
+  || fail '失败诊断未进入 artifact allowlist'
+grep -A2 -F '      - name: Extract token and time metrics' "$WORKFLOW" | grep -Fq 'if: success()' \
+  || fail 'metrics 仍在失败 Run 上制造二次失败'
 grep -A4 -F '      - name: Run independent verification' "$WORKFLOW" \
   | grep -Fq 'id: independent_verification' \
   || fail 'verification step 缺少稳定 outcome identity'

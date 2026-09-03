@@ -12,6 +12,7 @@
   stage-evidence  仅暂存显式 allowlist 中的关闭证据并生成摘要 manifest。
   archive-evidence 从已校验 staging tree 生成不含 owner-control auth material 的归档。
   verify-evidence-archive 独立复核归档 member allowlist、摘要与大小。
+  failure-diagnostic 在闭环失败时输出无 secret 的阶段摘要，不复制原始 transcript。
   metrics         摘要 current Attempt 的 token 用量与时间线。
 
 只读取显式传入的文件；不回显任何 secret 值。
@@ -702,6 +703,227 @@ def verify_evidence_archive(args):
                      ensure_ascii=False, sort_keys=True))
 
 
+def safe_digest_file(path, limit=64 << 20):
+    info = require_regular_evidence_source(path, "diagnostic source", limit)
+    return {"present": True, "bytes": info.st_size, "sha256": "sha256:" + sha256_file(path)}
+
+
+def final_text_shape(stdout_path, task_id, run_id, attempt_id):
+    event_counts = {}
+    final = None
+    known_event_types = frozenset({
+        "session", "agent_start", "agent_end", "agent_settled", "turn_start", "turn_end",
+        "message_start", "message_update", "message_end", "tool_execution_start",
+        "tool_execution_update", "tool_execution_end", "auto_retry_start", "auto_retry_end",
+        "compaction_start", "compaction_end", "summarization_retry_scheduled",
+        "summarization_retry_attempt_start", "summarization_retry_finished",
+    })
+    with open(stdout_path, "rb") as handle:
+        for raw_line in handle:
+            if not raw_line.strip():
+                continue
+            try:
+                event = json.loads(raw_line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return {"status": "invalid-jsonl"}
+            if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+                return {"status": "invalid-event-shape"}
+            event_type = event["type"]
+            count_key = event_type if event_type in known_event_types else "unsupported"
+            event_counts[count_key] = event_counts.get(count_key, 0) + 1
+            if event_type == "agent_end" and event.get("willRetry") is False:
+                final = event
+    summary = {"status": "missing-final-agent-end", "eventCounts": event_counts}
+    if final is None:
+        return summary
+    messages = final.get("messages")
+    if not isinstance(messages, list) or not messages or not isinstance(messages[-1], dict):
+        summary["status"] = "invalid-final-messages"
+        return summary
+    message = messages[-1]
+    content = message.get("content")
+    if message.get("role") != "assistant" or not isinstance(content, list):
+        summary["status"] = "invalid-final-assistant"
+        return summary
+    content_types = []
+    texts = []
+    for item in content:
+        if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+            summary["status"] = "invalid-final-content"
+            return summary
+        content_types.append(item["type"] if item["type"] in ("thinking", "text") else "unsupported")
+        if item["type"] == "text":
+            texts.append(item.get("text"))
+    summary.update({"contentTypes": content_types, "textItemCount": len(texts)})
+    if len(texts) != 1 or not isinstance(texts[0], str) or not texts[0].strip():
+        summary["status"] = "invalid-text-count"
+        return summary
+    text = texts[0]
+    decoder = json.JSONDecoder()
+    matches = []
+    skip_until = 0
+    for index, character in enumerate(text):
+        if character != "{" or index < skip_until:
+            continue
+        try:
+            value, consumed = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, dict):
+            continue
+        end = index + consumed
+        skip_until = max(skip_until, end)
+        matches.append((index, end, value))
+    summary["completeObjectCount"] = len(matches)
+    summary["m13PrefixExact"] = text.startswith(M13_FINAL_PREFIX)
+    if len(matches) != 1:
+        summary["status"] = "object-count-mismatch"
+        return summary
+    start, end, value = matches[0]
+    summary.update({
+        "status": "valid-single-object" if not text[end:].strip() else "trailing-content",
+        "prosePrefixPresent": bool(text[:start].strip()),
+        "trailingNonWhitespace": bool(text[end:].strip()),
+        "workerResultKind": value.get("kind") == "WorkerResult",
+        "identityExact": (value.get("taskId"), value.get("runId"), value.get("attemptId")) ==
+                         (task_id, run_id, attempt_id),
+    })
+    return summary
+
+
+def failure_diagnostic(args):
+    state_root = os.path.realpath(args.state_root)
+    run_root = os.path.join(state_root, "runs", args.run_id)
+    state = load_object(os.path.join(run_root, "state.json"), "RunState")
+    if state.get("runId") != args.run_id:
+        raise ValueError("failure diagnostic Run identity 漂移")
+    ledger_path = os.path.join(state_root, "result-ingress", "result-ingress.jsonl")
+    require_regular_evidence_source(ledger_path, "ResultIngress ledger", 64 << 20)
+    transitions = []
+    attempt_ids = []
+    known_transition_kinds = frozenset({
+        "attempt-reserved", "attempt-opened", "control-owner-bound",
+        "existing-worktree-bind-intent", "existing-worktree-bind-receipt",
+        "launch-authorized", "process-supervisor-bootstrap-prepared",
+        "process-supervisor-started", "process-started", "result-admitted",
+        "terminalization-barrier", "process-terminal", "existing-worktree-release-intent",
+        "existing-worktree-release-receipt", "allocation-terminated",
+        "process-supervisor-closed", "cleanup-completed", "cleanup-released",
+        "process-supervisor-intervention-required",
+    })
+    known_fact_types = known_transition_kinds | frozenset({"result-admitted", "result-quarantined"})
+    with open(ledger_path, encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            transition = record.get("transition")
+            if not isinstance(transition, dict):
+                continue
+            identity = transition.get("identity")
+            if not isinstance(identity, dict) or identity.get("runId") != args.run_id:
+                continue
+            attempt_id = identity.get("attemptId")
+            if isinstance(attempt_id, str) and attempt_id and attempt_id not in attempt_ids:
+                attempt_ids.append(attempt_id)
+            kind = transition.get("kind")
+            fact_type = record.get("factType")
+            transitions.append({
+                "sequence": record.get("sequence"),
+                "revision": record.get("revision"),
+                "factType": fact_type if fact_type in known_fact_types else "unsupported",
+                "kind": kind if kind in known_transition_kinds else "unsupported",
+                "digest": record.get("digest") if isinstance(record.get("digest"), str) and
+                          DIGEST_PATTERN.fullmatch(record["digest"]) else None,
+            })
+    current_attempt = state.get("currentAttemptId")
+    if not isinstance(current_attempt, str):
+        current_attempt = ""
+    selected_attempt = current_attempt
+    selection = "current-run-state"
+    if not selected_attempt and len(attempt_ids) == 1:
+        selected_attempt = attempt_ids[0]
+        selection = "unique-result-ingress-attempt"
+    elif not selected_attempt:
+        selection = "unavailable-or-ambiguous"
+
+    events = []
+    known_run_event_types = frozenset({
+        "run.transition", "state.transitioned", "planning.inputs-frozen",
+        "planning.spec-accepted", "worker.started", "worker.progress",
+        "worker.completed", "verification.completed", "review.accept",
+        "publication.reconciled", "publication.merged", "run.aborted",
+        "reconciliation.snapshot-repaired",
+    })
+    known_run_states = frozenset({
+        "CREATED", "PLANNED", "READY", "RUNNING", "RETRY_PENDING",
+        "VERIFYING", "REVIEW_PENDING", "REWORK_REQUESTED", "PUBLISHING",
+        "PUBLISHED", "CI_PENDING", "ACCEPTED", "REJECTED", "BLOCKED",
+        "ABORTED", "NO_CHANGE",
+    })
+    events_path = os.path.join(run_root, "events.jsonl")
+    if os.path.exists(events_path):
+        require_regular_evidence_source(events_path, "Run events", 64 << 20)
+        with open(events_path, encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                event_type = event.get("type")
+                state_from = event.get("stateFrom")
+                state_to = event.get("stateTo")
+                events.append({
+                    "sequence": event.get("sequence") if isinstance(event.get("sequence"), int) else None,
+                    "type": event_type if event_type in known_run_event_types else "unsupported",
+                    "stateFrom": state_from if state_from in known_run_states else None,
+                    "stateTo": state_to if state_to in known_run_states else None,
+                    "attemptMatchesSelected": bool(selected_attempt) and event.get("attemptId") == selected_attempt,
+                })
+
+    diagnostic = {
+        "schemaVersion": "marshal.m13-failure-diagnostic.v1",
+        "run": {key: state.get(key) for key in
+                ("taskId", "runId", "state", "sequence", "currentAttemptId", "attemptsUsed",
+                 "operationalRetriesUsed", "reworkRoundsUsed", "baseSha", "specDigest")},
+        "attemptSelection": selection,
+        "attemptId": selected_attempt,
+        "attemptIdsObserved": attempt_ids,
+        "resultIngressTransitions": transitions,
+        "runEvents": events,
+    }
+    if selected_attempt:
+        try:
+            stdout_path = control_stdout_path(state_root, state.get("taskId"), args.run_id, selected_attempt)
+        except (OSError, ValueError, json.JSONDecodeError):
+            diagnostic["supervisor"] = {"status": "unavailable-or-invalid"}
+        else:
+            supervisor = safe_digest_file(stdout_path, 32 << 20)
+            supervisor["status"] = "available"
+            supervisor["finalAssistant"] = final_text_shape(
+                stdout_path, state.get("taskId"), args.run_id, selected_attempt)
+            transcript_path = os.path.join(os.path.dirname(stdout_path), "transcript.jcs")
+            supervisor["transcriptJCS"] = (safe_digest_file(transcript_path, 32 << 20)
+                                            if os.path.exists(transcript_path) else {"present": False})
+            diagnostic["supervisor"] = supervisor
+        worker_result_path = os.path.join(run_root, "attempts", selected_attempt, "worker-result.json")
+        if os.path.exists(worker_result_path):
+            worker_result = load_object(worker_result_path, "Attempt WorkerResult")
+            diagnostic["workerResult"] = {
+                **safe_digest_file(worker_result_path, 16 << 20),
+                "kindExact": worker_result.get("kind") == "WorkerResult",
+                "identityExact": (worker_result.get("taskId"), worker_result.get("runId"),
+                                  worker_result.get("attemptId")) ==
+                                 (state.get("taskId"), args.run_id, selected_attempt),
+            }
+        else:
+            diagnostic["workerResult"] = {"present": False}
+    with open(args.out, "w", encoding="utf-8") as handle:
+        json.dump(diagnostic, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+    os.chmod(args.out, 0o600)
+    print(f"[e2e-m13] failure diagnostic -> {args.out}")
+
+
 def metrics(args):
     runs_root = os.path.join(args.state_root, "runs", args.run_id)
     with open(os.path.join(runs_root, "state.json"), encoding="utf-8") as handle:
@@ -812,6 +1034,12 @@ def main():
     verify_archive = sub.add_parser("verify-evidence-archive")
     verify_archive.add_argument("--archive", required=True)
     verify_archive.set_defaults(handler=verify_evidence_archive)
+
+    failure = sub.add_parser("failure-diagnostic")
+    failure.add_argument("--state-root", required=True)
+    failure.add_argument("--run-id", required=True)
+    failure.add_argument("--out", required=True)
+    failure.set_defaults(handler=failure_diagnostic)
 
     metric = sub.add_parser("metrics")
     metric.add_argument("--state-root", required=True)
