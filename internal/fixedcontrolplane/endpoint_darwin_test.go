@@ -63,6 +63,10 @@ func newEndpointFixture(t *testing.T) endpointFixture {
 	if err := os.Mkdir(repositoryPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	stateRoot := filepath.Join(repositoryPath, ".marshal")
+	if err := os.Mkdir(stateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	repository, err := productionruntime.OpenCanonicalRepositoryRoot(repositoryPath)
 	if err != nil {
 		t.Fatalf("open canonical repository root %q: %v", repositoryPath, err)
@@ -83,10 +87,6 @@ func newEndpointFixture(t *testing.T) endpointFixture {
 	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: repositoryPath}
 	repositoryDigest, err := namespace.Digest()
 	if err != nil {
-		t.Fatal(err)
-	}
-	stateRoot := filepath.Join(repositoryPath, ".marshal")
-	if err := os.Mkdir(stateRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	acquisition := resultingress.ControlOwnerAcquisition{
