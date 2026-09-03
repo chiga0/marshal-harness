@@ -6,6 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 WORKFLOW="${SCRIPT_DIR}/../.github/workflows/m13-e2e-dogfood.yml"
+DRIVER="${SCRIPT_DIR}/e2e-m13-dogfood.py"
 TMP_RAW="$(mktemp -d "${TMPDIR:-/tmp}/m13-e2e-workflow-test.XXXXXX")"
 TMP_ROOT="$(cd "$TMP_RAW" && pwd -P)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -32,6 +33,8 @@ METRICS_SCRIPT="${TMP_ROOT}/metrics.sh"
 PACK_SCRIPT="${TMP_ROOT}/pack.sh"
 SUMMARY_SCRIPT="${TMP_ROOT}/summary.sh"
 VERIFY_SCRIPT="${TMP_ROOT}/verify.sh"
+PLAN_SCRIPT="${TMP_ROOT}/plan.sh"
+DRIVE_SCRIPT="${TMP_ROOT}/drive.sh"
 extract_step 'Validate inputs and resolve identities' "$VALIDATE_RAW"
 # canonical repository 约束由 GitHub expression 注入；本测试只执行其后的
 # 纯输入解析，且单独静态断言该约束未被移除。
@@ -42,6 +45,8 @@ extract_step 'Extract token and time metrics' "$METRICS_SCRIPT"
 extract_step 'Pack dogfood evidence tarball' "$PACK_SCRIPT"
 extract_step 'Write metrics summary' "$SUMMARY_SCRIPT"
 extract_step 'Run independent verification' "$VERIFY_SCRIPT"
+extract_step 'Plan and approve the M13 run' "$PLAN_SCRIPT"
+extract_step 'Drive the sealed run to worker completion' "$DRIVE_SCRIPT"
 
 run_validate() {
   local pi_model="$1" models="$2" output="$3"
@@ -196,6 +201,190 @@ for forbidden in (
     assert forbidden not in rendered, (forbidden, rendered)
 PY
 
+# Driver 回归：Task objective 冻结固定中文前缀，并明确要求
+# 前缀后恰好一个 JSON object + whitespace-only tail。
+mkdir -p "${TMP_ROOT}/render"
+printf '{"policyEnvironmentBinding":{"schemaVersion":"fixture"}}\n' >"${TMP_ROOT}/render/doctor.json"
+/usr/bin/python3 -I -B "$DRIVER" render-task \
+  --doctor "${TMP_ROOT}/render/doctor.json" --repo-root "${TMP_ROOT}/render" \
+  --base-ref aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --task-id m13-task --run-id m13-run --model pai-eas/model \
+  --marshal-bin /tmp/marshal --task-out "${TMP_ROOT}/render/task.json" \
+  --policy-out "${TMP_ROOT}/render/policy.json" >/dev/null
+/usr/bin/python3 -I -B - "${TMP_ROOT}/render/task.json" <<'PY' \
+  || fail 'render-task 未冻结最终 assistant 形状'
+import json, sys
+work = json.load(open(sys.argv[1], encoding="utf-8"))["work"]
+objective = work["objective"]
+assert "交付已完成，以下为唯一 WorkerResult：" in objective
+assert "紧接恰好一个完整 WorkerResult JSON 对象" in objective
+assert "对象之后到回复结尾只能有空白" in objective
+assert any("恰好一个完整 WorkerResult JSON object" in item and "只允许空白尾部" in item for item in work["constraints"])
+PY
+printf 'candidate-bytes\n' >"${TMP_ROOT}/render/marshal"
+candidate_sha="$(shasum -a 256 "${TMP_ROOT}/render/marshal" | awk '{print $1}')"
+/usr/bin/python3 -I -B "$DRIVER" render-candidate-evidence \
+  --candidate-mode build-from-head --source-head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --candidate "${TMP_ROOT}/render/marshal" --expected-sha256 "$candidate_sha" \
+  --out "${TMP_ROOT}/render/candidate.json" >/dev/null
+/usr/bin/python3 -I -B - "${TMP_ROOT}/render/candidate.json" "$candidate_sha" <<'PY' \
+  || fail 'candidate evidence 未冻结 sourceHead/SHA256 或错误宣称 published RC1'
+import json, sys
+c=json.load(open(sys.argv[1])); assert c["candidateMode"] == "build-from-head"; assert c["sourceHead"] == "a"*40; assert c["candidateSHA256"] == sys.argv[2]; assert c["closureEligible"] is True; assert c["publishedRC1ContainsThisFix"] is False
+PY
+
+# F1 harness 证据：不依赖当前 umask，直接检查 linked worktree
+# root 与 git admin dir 恰好 0700，任一处 0755 均 fail closed。
+PRIVATE_REPO="${TMP_ROOT}/private-repo"
+PRIVATE_WORKTREE="${TMP_ROOT}/private-worktree"
+PRIVATE_STATE="${TMP_ROOT}/private-state"
+mkdir -p "$PRIVATE_REPO" "$PRIVATE_STATE/runs/private-run"
+git -C "$PRIVATE_REPO" init -q -b main
+git -C "$PRIVATE_REPO" config user.email fixture@example.invalid
+git -C "$PRIVATE_REPO" config user.name Fixture
+printf 'fixture\n' >"${PRIVATE_REPO}/README.md"
+git -C "$PRIVATE_REPO" add README.md
+git -C "$PRIVATE_REPO" commit -q -m fixture
+git -C "$PRIVATE_REPO" worktree add -q --detach "$PRIVATE_WORKTREE" HEAD
+PRIVATE_ADMIN="$(git -C "$PRIVATE_WORKTREE" rev-parse --path-format=absolute --git-dir)"
+chmod 700 "$PRIVATE_WORKTREE" "$PRIVATE_ADMIN"
+PRIVATE_WORKTREE="$PRIVATE_WORKTREE" /usr/bin/python3 -I -B - \
+  >"${PRIVATE_STATE}/runs/private-run/state.json" <<'PY'
+import json, os
+print(json.dumps({"runId":"private-run","state":"READY","worktreePath":os.environ["PRIVATE_WORKTREE"]}))
+PY
+/usr/bin/python3 -I -B "$DRIVER" assert-worktree-private \
+  --state-root "$PRIVATE_STATE" --run-id private-run >/dev/null \
+  || fail '0700 worktree/admin 未通过独立检查'
+chmod 755 "$PRIVATE_WORKTREE"
+if /usr/bin/python3 -I -B "$DRIVER" assert-worktree-private \
+    --state-root "$PRIVATE_STATE" --run-id private-run >/dev/null 2>&1; then
+  fail '0755 worktree root 未 fail closed'
+fi
+chmod 700 "$PRIVATE_WORKTREE"
+chmod 755 "$PRIVATE_ADMIN"
+if /usr/bin/python3 -I -B "$DRIVER" assert-worktree-private \
+    --state-root "$PRIVATE_STATE" --run-id private-run >/dev/null 2>&1; then
+  fail '0755 git admin dir 未 fail closed'
+fi
+chmod 700 "$PRIVATE_ADMIN"
+
+# Decision 前独立证据检查：恰好三文件、当前 ReviewPacket、
+# Attempt-root WorkerResult，以及 owner-control stdout 最后 agent_end。
+EVIDENCE_REPO="${TMP_ROOT}/evidence-repo"
+EVIDENCE_STATE="${TMP_ROOT}/evidence-state"
+mkdir -p "$EVIDENCE_REPO" "$EVIDENCE_STATE"
+git -C "$EVIDENCE_REPO" init -q -b main
+git -C "$EVIDENCE_REPO" config user.email fixture@example.invalid
+git -C "$EVIDENCE_REPO" config user.name Fixture
+printf 'fixture\n' >"${EVIDENCE_REPO}/README.md"
+git -C "$EVIDENCE_REPO" add README.md
+git -C "$EVIDENCE_REPO" commit -q -m fixture
+EVIDENCE_REPO="$EVIDENCE_REPO" EVIDENCE_STATE="$EVIDENCE_STATE" /usr/bin/python3 -I -B - <<'PY'
+import hashlib, json, os
+repo, state = os.environ["EVIDENCE_REPO"], os.environ["EVIDENCE_STATE"]
+task, run, attempt = "m13-task", "m13-run", "attempt-1"
+paths = ["docs/m13-goal-lite-walking-skeleton.md", "schemas/examples/goal-lite/approved-proposal.example.json", "schemas/examples/goal-lite/walking-skeleton.tasks.json"]
+for path in paths:
+    target = os.path.join(repo, path); os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8") as f: f.write("中文交付\n" if path.endswith(".md") else '{"kind":"Task"}\n')
+run_root = os.path.join(state, "runs", run); os.makedirs(os.path.join(run_root, "attempts", attempt), exist_ok=True)
+base = "d"*40; spec = "sha256:" + "a"*64
+with open(os.path.join(run_root, "state.json"), "w") as f: json.dump({"taskId":task,"runId":run,"state":"REVIEW_PENDING","currentAttemptId":attempt,"worktreePath":repo,"baseSha":base,"specDigest":spec}, f)
+result = {"kind":"WorkerResult","taskId":task,"runId":run,"attemptId":attempt,"usage":{"inputTokens":12,"outputTokens":7}}
+with open(os.path.join(run_root, "attempts", attempt, "worker-result.json"), "w") as f: json.dump(result, f)
+result_digest = "sha256:" + hashlib.sha256(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+control = os.path.join(state, "owner-control", "session-1"); os.makedirs(control, exist_ok=True); os.chmod(control, 0o700)
+declared = {"apiVersion":"marshal.dev/v1alpha1", **result}
+end = {"type":"agent_end","willRetry":False,"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"done"},{"type":"text","text":"交付已完成，以下为唯一 WorkerResult：\n"+json.dumps(declared, ensure_ascii=False)+"\n"}]}]}
+stdout_path = os.path.join(control, "stdout.bin")
+with open(stdout_path, "w", encoding="utf-8") as f: f.write(json.dumps(end, ensure_ascii=False)+"\n")
+os.chmod(stdout_path, 0o600)
+os.makedirs(os.path.join(state, "result-ingress"), exist_ok=True)
+ledger = {"transition":{"identity":{"taskId":task,"runId":run,"attemptId":attempt},"supervisorStarted":{"controlDirectory":{"canonicalPath":control}}}}
+with open(os.path.join(state, "result-ingress", "result-ingress.jsonl"), "w") as f: f.write(json.dumps(ledger)+"\n")
+d = "sha256:" + "e"*64
+packet = {"apiVersion":"marshal.dev/v1alpha1","kind":"ReviewPacket","taskId":task,"runId":run,"reviewRound":1,"specDigest":spec,"baseSha":base,"snapshotDigest":d,"diffDigest":d,"verificationDigest":d,"artifactManifestDigest":d,"evidenceDigest":d,"workerResultDigests":[result_digest],"inputs":{"workerResults":[f"attempts/{attempt}/worker-result.json"]}}
+with open(os.path.join(state, "packet.json"), "w") as f: json.dump(packet, f)
+candidate = {"schemaVersion":"marshal.m13-candidate-evidence.v1","candidateMode":"build-from-head","sourceHead":"b"*40,"candidateSHA256":"c"*64,"closureEligible":True,"publishedRC1ContainsThisFix":False}
+with open(os.path.join(state, "candidate.json"), "w") as f: json.dump(candidate, f)
+PY
+/usr/bin/python3 -I -B "$DRIVER" validate-evidence \
+  --state-root "$EVIDENCE_STATE" --task-id m13-task --run-id m13-run \
+  --packet "$EVIDENCE_STATE/packet.json" --candidate-evidence "$EVIDENCE_STATE/candidate.json" \
+  --candidate-mode build-from-head --source-head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+  --out "$EVIDENCE_STATE/evidence-check.json" >/dev/null \
+  || fail '合法的三文件/ReviewPacket/raw transcript 证据未通过'
+/usr/bin/python3 -I -B "$DRIVER" render-decision \
+  --packet "$EVIDENCE_STATE/packet.json" --task-id m13-task --run-id m13-run \
+  --reviewer-id independent-reviewer --summary '独立检查通过' \
+  --evidence-check "$EVIDENCE_STATE/evidence-check.json" --out "$EVIDENCE_STATE/decision.json" >/dev/null \
+  || fail 'Decision 未绑定已检查 ReviewPacket'
+cp "$EVIDENCE_STATE/owner-control/session-1/stdout.bin" "$EVIDENCE_STATE/original-stdout.bin"
+/usr/bin/python3 -I -B - "$EVIDENCE_STATE/owner-control/session-1/stdout.bin" <<'PY'
+import json, sys
+p=sys.argv[1]; event=json.load(open(p, encoding="utf-8")); event["messages"][-1]["content"][-1]["text"] += '{"second":true}'
+json.dump(event, open(p, "w", encoding="utf-8"), ensure_ascii=False)
+PY
+if /usr/bin/python3 -I -B "$DRIVER" validate-evidence \
+    --state-root "$EVIDENCE_STATE" --task-id m13-task --run-id m13-run \
+    --packet "$EVIDENCE_STATE/packet.json" --candidate-evidence "$EVIDENCE_STATE/candidate.json" \
+    --candidate-mode build-from-head --source-head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --out "$EVIDENCE_STATE/invalid-evidence-check.json" >/dev/null 2>&1; then
+  fail '最后 agent_end 含第二 JSON object 未 fail closed'
+fi
+cp "$EVIDENCE_STATE/original-stdout.bin" "$EVIDENCE_STATE/owner-control/session-1/stdout.bin"
+printf ' \n' >>"$EVIDENCE_STATE/packet.json"
+# canonical digest 对空白不敏感；改变语义才必须触发漂移。
+/usr/bin/python3 -I -B "$DRIVER" render-decision \
+  --packet "$EVIDENCE_STATE/packet.json" --task-id m13-task --run-id m13-run \
+  --reviewer-id independent-reviewer --summary '独立检查通过' \
+  --evidence-check "$EVIDENCE_STATE/evidence-check.json" --out "$EVIDENCE_STATE/whitespace-decision.json" \
+  >/dev/null || fail 'ReviewPacket canonical digest 错误绑定了空白 bytes'
+/usr/bin/python3 -I -B - "$EVIDENCE_STATE/packet.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1])); p["reviewRound"] = 2
+json.dump(p, open(sys.argv[1], "w"))
+PY
+if /usr/bin/python3 -I -B "$DRIVER" render-decision \
+    --packet "$EVIDENCE_STATE/packet.json" --task-id m13-task --run-id m13-run \
+    --reviewer-id independent-reviewer --summary '独立检查通过' \
+    --evidence-check "$EVIDENCE_STATE/evidence-check.json" --out "$EVIDENCE_STATE/drifted-decision.json" \
+    >/dev/null 2>&1; then
+  fail '被检查后语义漂移的 ReviewPacket 仍产生 Decision'
+fi
+
+# metrics 只读 Attempt 根 worker-result.json 的 inputTokens/outputTokens，
+# 且 ACCEPTED、正 token 与 wallClockSeconds 任一缺失都 fail closed。
+METRIC_STATE="${TMP_ROOT}/metric-state"
+mkdir -p "$METRIC_STATE/runs/metric-run/attempts/attempt-1"
+printf '{"taskId":"metric-task","state":"ACCEPTED","attemptsUsed":1}\n' >"$METRIC_STATE/runs/metric-run/state.json"
+printf '{"usage":{"inputTokens":11,"outputTokens":5}}\n' >"$METRIC_STATE/runs/metric-run/attempts/attempt-1/worker-result.json"
+/usr/bin/python3 -I -B "$DRIVER" metrics --state-root "$METRIC_STATE" --run-id metric-run \
+  --wall-start 2000-01-01T00:00:00Z --out "$METRIC_STATE/metrics.json" >/dev/null \
+  || fail 'Attempt-root token metrics 未被提取'
+/usr/bin/python3 -I -B - "$METRIC_STATE/metrics.json" <<'PY' \
+  || fail 'metrics 未冻结 ACCEPTED/正 token/wall clock'
+import json, sys
+m=json.load(open(sys.argv[1])); assert m["finalState"] == "ACCEPTED"; assert m["inputTokens"] == 11; assert m["outputTokens"] == 5; assert m["wallClockSeconds"] > 0
+PY
+printf '{"usage":{"inputTokens":11,"outputTokens":0}}\n' >"$METRIC_STATE/runs/metric-run/attempts/attempt-1/worker-result.json"
+if /usr/bin/python3 -I -B "$DRIVER" metrics --state-root "$METRIC_STATE" --run-id metric-run \
+    --wall-start 2000-01-01T00:00:00Z --out "$METRIC_STATE/zero.json" >/dev/null 2>&1; then
+  fail 'outputTokens=0 未 fail closed'
+fi
+printf '{"usage":{"inputTokens":11,"outputTokens":5}}\n' >"$METRIC_STATE/runs/metric-run/attempts/attempt-1/worker-result.json"
+printf '{"taskId":"metric-task","state":"REVIEW_PENDING","attemptsUsed":1}\n' >"$METRIC_STATE/runs/metric-run/state.json"
+if /usr/bin/python3 -I -B "$DRIVER" metrics --state-root "$METRIC_STATE" --run-id metric-run \
+    --wall-start 2000-01-01T00:00:00Z --out "$METRIC_STATE/nonterminal.json" >/dev/null 2>&1; then
+  fail 'finalState 非 ACCEPTED 未 fail closed'
+fi
+printf '{"taskId":"metric-task","state":"ACCEPTED","attemptsUsed":1}\n' >"$METRIC_STATE/runs/metric-run/state.json"
+if /usr/bin/python3 -I -B "$DRIVER" metrics --state-root "$METRIC_STATE" --run-id metric-run \
+    --out "$METRIC_STATE/no-wall.json" >/dev/null 2>&1; then
+  fail '缺少 wallClockSeconds 未 fail closed'
+fi
+
 grep -A2 -F '      - name: Pack dogfood evidence tarball' "$WORKFLOW" | grep -Fq 'if: always()' \
   || fail 'evidence pack 不再保证 always 执行'
 grep -A3 -F '      - name: Upload dogfood evidence' "$WORKFLOW" | grep -Fq 'if: always()' \
@@ -206,5 +395,21 @@ grep -A4 -F '      - name: Run independent verification' "$WORKFLOW" \
 grep -A3 -F '      - name: Upload dogfood evidence' "$WORKFLOW" \
   | grep -Fq "continue-on-error: \${{ steps.independent_verification.outcome == 'failure' }}" \
   || fail 'artifact upload 未仅在 verification failure 时降级网络失败'
+
+grep -Fxq 'umask 022' "$PLAN_SCRIPT" || fail 'Plan 没有显式使用 umask 022'
+grep -Fxq 'umask 022' "$DRIVE_SCRIPT" || fail 'Drive 没有显式使用 umask 022'
+! grep -Fq 'umask 077' "$PLAN_SCRIPT" || fail 'Plan 仍用 umask 077 遮蔽创建端缺陷'
+! grep -Fq 'umask 077' "$DRIVE_SCRIPT" || fail 'Drive 仍用 umask 077 遮蔽创建端缺陷'
+grep -Fq 'assert-worktree-private' "$PLAN_SCRIPT" || fail 'Plan 后未检查 worktree/admin 0700'
+grep -A2 -F 'default: build-from-head' "$WORKFLOW" >/dev/null \
+  || fail 'ADR 0075 关闭 workflow 默认 candidate 不是 build-from-head'
+grep -Fq -- '--candidate-mode "$CANDIDATE_MODE" --source-head "$CANDIDATE_SOURCE_HEAD"' "$WORKFLOW" \
+  || fail 'candidate mode/sourceHead 未冻结进 evidence'
+grep -Fq -- '--evidence-check "$CONTROL_ROOT/evidence-check.json"' "$WORKFLOW" \
+  || fail 'Decision 未强制消费独立 evidence check'
+grep -Fq '不声称已发布 v1.0.0-rc1 包含本修复' "$WORKFLOW" \
+  || fail 'build-from-head 摘要未排除已发布 RC1 修复声称'
+! grep -Fq 'control", "output", "worker-result.json' "$DRIVER" \
+  || fail 'metrics 仍读取错误 control/output WorkerResult 路径'
 
 printf '[m13-e2e-workflow-test] PASS\n'

@@ -1,12 +1,12 @@
-name: M13 e2e dogfood (published RC1)
+name: M13 e2e dogfood (candidate evidence)
 
 on:
   workflow_dispatch:
     inputs:
       candidate-mode:
-        description: candidate 获得方式：published-rc1=下载已发布资产（钉死 digest）；build-from-head=按 main HEAD 现场构建（用于验证修复）
+        description: candidate 获得方式：build-from-head=按 main HEAD 构建 ADR 0075 关闭证据；published-rc1=仅重放已发布历史资产
         required: true
-        default: published-rc1
+        default: build-from-head
         type: choice
         options:
           - published-rc1
@@ -39,7 +39,7 @@ concurrency:
 
 jobs:
   dogfood:
-    name: M13 GoalLite dogfood on published RC1
+    name: M13 GoalLite dogfood candidate evidence
     runs-on: macos-14
     timeout-minutes: 80
     permissions:
@@ -53,6 +53,7 @@ jobs:
       PHY_PI_BUNDLE_SHA256: "5406c369954516fb56879d685e082ff9095cd6e06e41af406f394942377fd4bf"
       TASK_ID: "m13-goal-lite-walking-skeleton-20260901"
       EXPECTED_CANDIDATE_SHA256: ${{ inputs.expected-candidate-sha256 }}
+      CANDIDATE_MODE: ${{ inputs.candidate-mode }}
     steps:
       - name: Validate inputs and resolve identities
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
@@ -115,6 +116,8 @@ jobs:
           version_json="$(bin/marshal version --json)"
           VERSION_JSON="$version_json" /usr/bin/python3 -I -B -c 'import json, os; v = json.loads(os.environ["VERSION_JSON"]); assert v.get("commit") == "c1407bd77924c97dc6784f4d81938a3f0bfa75f6", v; assert v.get("version") == "1.0.0-rc1", v; assert v.get("selfProfile") == "darwin-local-dogfood", v; assert v.get("os") == "darwin", v; print("published candidate identity verified")'
           printf 'MARSHAL_BIN=%s\n' "$(pwd)/bin/marshal" >> "$GITHUB_ENV"
+          printf 'CANDIDATE_SOURCE_HEAD=%s\n' 'c1407bd77924c97dc6784f4d81938a3f0bfa75f6' >> "$GITHUB_ENV"
+          printf 'CANDIDATE_SHA256=%s\n' "$asset_sha" >> "$GITHUB_ENV"
 
       - name: Provision pinned Go 1.26.6 toolchain (build-from-head mode)
         if: inputs.candidate-mode == 'build-from-head'
@@ -152,7 +155,10 @@ jobs:
           [ ! -L bin/marshal ]
           version_json="$(bin/marshal version --json)"
           VERSION_JSON="$version_json" EXPECTED_HEAD="$MAIN_HEAD" /usr/bin/python3 -I -B -c 'import json, os; v = json.loads(os.environ["VERSION_JSON"]); assert v.get("commit") == os.environ["EXPECTED_HEAD"], (v, os.environ["EXPECTED_HEAD"]); assert v.get("selfProfile") == "darwin-local-dogfood", v; assert v.get("os") == "darwin", v; print("head-built candidate identity verified:", v.get("version"))'
+          candidate_sha="$(shasum -a 256 bin/marshal | awk '{print tolower($1)}')"
           printf 'MARSHAL_BIN=%s\n' "$(pwd)/bin/marshal" >> "$GITHUB_ENV"
+          printf 'CANDIDATE_SOURCE_HEAD=%s\n' "$MAIN_HEAD" >> "$GITHUB_ENV"
+          printf 'CANDIDATE_SHA256=%s\n' "$candidate_sha" >> "$GITHUB_ENV"
 
       - name: Provision pinned Node v24.15.0 + Pi 0.84.4 with digest assertions
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
@@ -203,6 +209,10 @@ jobs:
           [ -n "$MARSHAL_BIN" ] && [ -x "$MARSHAL_BIN" ]
           control_root="$(pwd)/.m13-e2e"
           rm -rf "$control_root" && mkdir -p "$control_root"
+          python3 -I -B scripts/e2e-m13-dogfood.py render-candidate-evidence \
+            --candidate-mode "$CANDIDATE_MODE" --source-head "$CANDIDATE_SOURCE_HEAD" \
+            --candidate "$MARSHAL_BIN" --expected-sha256 "$CANDIDATE_SHA256" \
+            --out "$control_root/candidate-evidence.json"
           "$MARSHAL_BIN" doctor --self --repository-root "$(pwd)" \
             --activation-id "m13-e2e-${{ github.run_id }}" > "$control_root/activation.json"
           /usr/bin/python3 -I -B -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("schemaVersion") == "marshal.local-dogfood-activation.v2"; assert d.get("expectedRawSHA256") == sys.argv[2], (d.get("expectedRawSHA256"), sys.argv[2])' \
@@ -229,22 +239,25 @@ jobs:
       - name: Plan and approve the M13 run
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          # RB1 existing-worktree bind admission 要求 worktree 根恰好 0700：
-          # 与 release-canary.sh 一致，整个 dogfood 链一律在 umask 077 下运行。
-          umask 077
+          # ADR 0075 F1 要求创建端在普通 operator umask 022 下仍产生
+          # owner-only worktree root 与 git admin dir，不允许 harness 用 077 遮蔽缺陷。
+          umask 022
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
           export MARSHAL_PI_PATH="$PI_BIN" MARSHAL_PI_NODE_PATH="$PI_NODE"
           export MARSHAL_PI_RUNTIME="$PI_NODE" MARSHAL_PI_ENTRYPOINT="$PI_BUNDLE"
           printf 'WALL_START=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           "$MARSHAL_BIN" task plan --task "$CONTROL_ROOT/task.json" --policy "$CONTROL_ROOT/policy.json" \
             --run "$RUN_ID" --json > "$CONTROL_ROOT/plan.json"
+          python3 -I -B scripts/e2e-m13-dogfood.py assert-worktree-private \
+            --state-root .marshal --run-id "$RUN_ID" \
+            > "$CONTROL_ROOT/worktree-private-check.json"
           "$MARSHAL_BIN" task approve --run "$RUN_ID" --gate plan --actor "github-actions[e2e-operator]" \
             --json > "$CONTROL_ROOT/approve.json"
 
       - name: Drive the sealed run to worker completion
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          umask 077
+          umask 022
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
           export MARSHAL_PI_PATH="$PI_BIN" MARSHAL_PI_NODE_PATH="$PI_NODE"
           export MARSHAL_PI_RUNTIME="$PI_NODE" MARSHAL_PI_ENTRYPOINT="$PI_BUNDLE"
@@ -353,7 +366,7 @@ jobs:
           fi
           /usr/bin/python3 -I -B -c 'import json,sys; assert json.load(open(sys.argv[1])).get("state") == "REVIEW_PENDING"' "$CONTROL_ROOT/status-review-pending.json"
 
-      - name: Build independent ReviewDecision from the generated packet
+      - name: Check deliverables, ReviewPacket, and raw transcript before Decision
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           umask 077
@@ -362,10 +375,22 @@ jobs:
           /usr/bin/python3 -I -B -c 'import json,sys; assert json.load(open(sys.argv[1])).get("status") == "generated"' "$CONTROL_ROOT/review-packet-step.json"
           packet_file=".marshal/runs/${RUN_ID}/review-packet.json"
           [ -f "$packet_file" ] || { echo "::error::缺少 review-packet.json" >&2; exit 1; }
+          python3 -I -B scripts/e2e-m13-dogfood.py validate-evidence \
+            --state-root .marshal --task-id "$TASK_ID" --run-id "$RUN_ID" \
+            --packet "$packet_file" --candidate-evidence "$CONTROL_ROOT/candidate-evidence.json" \
+            --candidate-mode "$CANDIDATE_MODE" --source-head "$CANDIDATE_SOURCE_HEAD" \
+            --out "$CONTROL_ROOT/evidence-check.json"
+
+      - name: Build independent ReviewDecision from checked evidence
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          umask 077
+          packet_file=".marshal/runs/${RUN_ID}/review-packet.json"
           python3 -I -B scripts/e2e-m13-dogfood.py render-decision \
             --packet "$packet_file" --task-id "$TASK_ID" --run-id "$RUN_ID" \
             --reviewer-id "$REVIEWER_ID" \
             --summary "M13 GoalLite walking skeleton 文档与样例满足 scope/acceptance 全部证据面，独立核验通过，接受本 reworkRound 的产物。" \
+            --evidence-check "$CONTROL_ROOT/evidence-check.json" \
             --out "$CONTROL_ROOT/decision.json"
 
       - name: Apply decision and expect ACCEPTED
@@ -432,10 +457,16 @@ jobs:
           run_id="${RUN_ID:-unresolved}"
           pi_model="${PI_MODEL:-unresolved}"
           {
-            echo "# M13 GoalLite dogfood 指标（published RC1）"
+            echo "# M13 GoalLite dogfood 指标（candidate evidence）"
             echo
             echo "- run id: \`$run_id\`"
             echo "- model: \`$pi_model\`"
+            echo "- candidate mode: \`${CANDIDATE_MODE:-unresolved}\`"
+            echo "- candidate sourceHead: \`${CANDIDATE_SOURCE_HEAD:-unresolved}\`"
+            echo "- candidate SHA256: \`${CANDIDATE_SHA256:-unresolved}\`"
+            if [ "${CANDIDATE_MODE:-}" = "build-from-head" ]; then
+              echo "- evidence scope: 本次仅证明 sourceHead 现场构建 candidate；不声称已发布 v1.0.0-rc1 包含本修复。"
+            fi
             echo
             echo '```json'
             cat "$control_root/metrics.json"

@@ -66,3 +66,9 @@
 2. exact-head CI（Ubuntu、macOS、secret scan + architecture gate）全绿。
 3. 用 `m13-e2e-dogfood` 在相同 published-asset pin 下重跑首个真实复杂任务；必须到达 `VERIFYING → REVIEW_PENDING`，随后独立 ReviewDecision `accept` 到达 `ACCEPTED`，并提取 token/时间指标。
 4. 关闭 Issue #224、#225 并在 `docs/current-status.md`、`docs/roadmap-status.md` 如实记录修复与残留缺口。
+
+## 实施证据载体勘误（2026-09-04）
+
+上述实施顺序第 3 项的“相同 published-asset pin”与第 1 项“修复只进入 next candidate build，已发布 `v1.0.0-rc1` 不回溯”矛盾，勘误为：Issue #224/#225 的关闭证据必须使用 `candidate-mode=build-from-head`，同时冻结精确 `sourceHead` 与 candidate SHA-256；`published-rc1` 只可重放历史失败，不得声称已发布 `v1.0.0-rc1` 包含本 ADR 修复。
+
+本勘误只纠正 evidence carrier 的归属，不改变 worktree admission、launch 文本闸门、WorkerResult 提取、ResultIngress、ReviewDecision、publication 或任何 trust boundary。
