@@ -38,7 +38,7 @@ type objectIdentity struct {
 }
 
 type Endpoint struct {
-	mu          sync.Mutex
+	mu          sync.RWMutex
 	authority   *productionruntime.FixedEndpointAuthority
 	listener    *net.UnixListener
 	tokenFile   *os.File
@@ -160,13 +160,13 @@ func (endpoint *Endpoint) Accept(ctx context.Context) (*AuthenticatedConnection,
 	if endpoint == nil || ctx == nil {
 		return nil, ErrInvalid
 	}
-	endpoint.mu.Lock()
+	endpoint.mu.RLock()
 	if endpoint.closed || endpoint.listener == nil {
-		endpoint.mu.Unlock()
+		endpoint.mu.RUnlock()
 		return nil, ErrUnavailable
 	}
 	listener := endpoint.listener
-	endpoint.mu.Unlock()
+	endpoint.mu.RUnlock()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = listener.SetDeadline(deadline)
 	} else {
@@ -250,8 +250,19 @@ func (endpoint *Endpoint) authenticate(ctx context.Context, connection *net.Unix
 	return &AuthenticatedConnection{UnixConn: connection, Binding: proof.Binding, Peer: peer, release: release}, nil
 }
 
-func Dial(ctx context.Context, control *os.File, snapshot productionruntime.FixedEndpointSnapshot, binding RequestBinding) (*AuthenticatedConnection, error) {
-	if ctx == nil || control == nil || validateSnapshot(snapshot) != nil || binding.Validate(time.Now().UTC()) != nil {
+func Dial(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, binding RequestBinding) (*AuthenticatedConnection, error) {
+	if ctx == nil || authority == nil || binding.Validate(time.Now().UTC()) != nil {
+		return nil, ErrInvalid
+	}
+	if authority.Recheck(ctx) != nil {
+		return nil, ErrConflict
+	}
+	control, snapshot, err := authority.OpenControlView()
+	if err != nil {
+		return nil, ErrConflict
+	}
+	defer control.Close()
+	if validateSnapshot(snapshot) != nil {
 		return nil, ErrInvalid
 	}
 	epoch := strconv.FormatUint(snapshot.Acquisition.OwnerEpoch, 36)
@@ -334,12 +345,20 @@ func Dial(ctx context.Context, control *os.File, snapshot productionruntime.Fixe
 	if current, err := observeNamed(control, tokenName, unix.S_IFREG, 0o600, 32); err != nil || current != tokenObject {
 		return fail(ErrConflict)
 	}
+	if authority.Recheck(ctx) != nil {
+		return fail(ErrConflict)
+	}
 	_ = connection.SetDeadline(time.Time{})
 	return &AuthenticatedConnection{UnixConn: connection, Binding: binding, Peer: peer, release: func() {}}, nil
 }
 
 func (endpoint *Endpoint) recheck(ctx context.Context) error {
-	if endpoint == nil || endpoint.authority == nil || endpoint.listener == nil || endpoint.tokenFile == nil || endpoint.authority.Recheck(ctx) != nil || endpoint.listener.Addr().String() != endpoint.locator {
+	if endpoint == nil {
+		return ErrConflict
+	}
+	endpoint.mu.RLock()
+	defer endpoint.mu.RUnlock()
+	if endpoint.authority == nil || endpoint.listener == nil || endpoint.tokenFile == nil || endpoint.authority.Recheck(ctx) != nil || endpoint.listener.Addr().String() != endpoint.locator {
 		return ErrConflict
 	}
 	server, err := processsupervisor.ObserveCurrentCore(endpoint.snapshot.FixedMarshalPath)

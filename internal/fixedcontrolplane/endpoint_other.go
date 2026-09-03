@@ -4,7 +4,6 @@ package fixedcontrolplane
 
 import (
 	"context"
-	"os"
 
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
 )
@@ -22,6 +21,6 @@ func (endpoint *Endpoint) Accept(context.Context) (*AuthenticatedConnection, err
 
 func (endpoint *Endpoint) Close() error { return nil }
 
-func Dial(context.Context, *os.File, productionruntime.FixedEndpointSnapshot, RequestBinding) (*AuthenticatedConnection, error) {
+func Dial(context.Context, *productionruntime.FixedEndpointAuthority, RequestBinding) (*AuthenticatedConnection, error) {
 	return nil, ErrUnavailable
 }

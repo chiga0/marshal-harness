@@ -121,7 +121,7 @@ func TestEndpointAuthenticatesAndCarriesBoundApplicationBytes(t *testing.T) {
 		}
 		accepted <- connection
 	}()
-	client, err := Dial(context.Background(), fixture.authority.ControlDirectory(), fixture.authority.Snapshot(), binding)
+	client, err := Dial(context.Background(), fixture.authority, binding)
 	if err != nil {
 		t.Fatalf("dial endpoint: %v", err)
 	}

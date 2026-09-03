@@ -2,11 +2,13 @@ package productionruntime
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"sync"
 
 	"github.com/chiga0/marshal-harness/internal/resultingress"
+	"golang.org/x/sys/unix"
 )
 
 // FixedEndpointSnapshot is the secret-free current authority tuple consumed
@@ -56,6 +58,31 @@ func (authority *FixedEndpointAuthority) ControlDirectory() *os.File {
 		return nil
 	}
 	return authority.control
+}
+
+// OpenControlView returns a close-on-exec duplicate of the held control
+// directory and the authority snapshot observed under the same read lock.
+// Callers own the duplicate; closing the authority cannot turn it into a
+// reused raw descriptor while a client is locating the endpoint.
+func (authority *FixedEndpointAuthority) OpenControlView() (*os.File, FixedEndpointSnapshot, error) {
+	if authority == nil {
+		return nil, FixedEndpointSnapshot{}, ErrFixedDeliveryConflict
+	}
+	authority.mu.RLock()
+	defer authority.mu.RUnlock()
+	if authority.closed || authority.control == nil {
+		return nil, FixedEndpointSnapshot{}, ErrFixedDeliveryConflict
+	}
+	fd, err := unix.FcntlInt(authority.control.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return nil, FixedEndpointSnapshot{}, errors.Join(ErrFixedDeliveryConflict, err)
+	}
+	view := os.NewFile(uintptr(fd), "marshal-fixed-endpoint-control-view")
+	if view == nil {
+		_ = unix.Close(fd)
+		return nil, FixedEndpointSnapshot{}, ErrFixedDeliveryConflict
+	}
+	return view, authority.snapshot, nil
 }
 
 // Recheck proves the exact current owner, held root and fixed server process
