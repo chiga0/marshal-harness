@@ -15,7 +15,7 @@
 //	Signal      -> delete the exact session
 //	Checkpoint  -> persist (raw tar, Marshal-side digest)
 //	Restore     -> create + hydrate (+ destroy of the previous sandbox)
-//	Terminate   -> destroy
+//	Terminate   -> destroy (durable prepared/delivered protocol)
 //	Reconcile   -> local bookkeeping + running observation + intent ambiguity
 //
 // Frozen boundaries of this package:
@@ -51,6 +51,30 @@
 //     outcome. A failed store write never mutates the in-memory state, and
 //     a crash at any write point converges on replay because the create is
 //     idempotent under its idempotency key.
+//   - The internal durable phase key and the external HTTP Idempotency-Key
+//     are layered: the internal key is the operation identity ReplayKey
+//     that keys the durable intent, while the external key is an
+//     allocation-derived, HTTP-safe (base64url), stable and deterministic
+//     derivation that travels only on the wire.
+//   - Provision and Terminate normalize onto the Core authority records and
+//     cross-bind them in one EffectAuthorityRecord whose Validate fails
+//     closed on any namespace, scope, effect identity, reconcile identity,
+//     operation, allocation target, allocation/phase-derived idempotency
+//     key, disposition class or run/attempt-derived policy/authorization
+//     digest inconsistency. The record is durably persisted through the
+//     EffectAuthoritySink, whose reopen validates every persisted record and
+//     rejects any divergent fork under an already-persisted effect id.
+//   - Terminate is crash-safe through a durable prepared/delivered protocol:
+//     a durable terminate intent precedes the idempotent destroy, and the
+//     terminal state is installed atomically with the intent resolution, so
+//     a crash at any write point converges on reopen with the destroy
+//     delivered exactly once.
+//   - The production composition root (NewProductionProvider) mechanically
+//     forces a file-backed state store, a non-nil durable file-backed effect
+//     authority sink and a non-nil Core-backed authority resolver whose
+//     context resolves and matches the Core typed-edge runtime issuer before
+//     any remote call; a missing, in-memory or typed-nil piece fails startup,
+//     never an in-memory fallback.
 //
 // The package uses only the Go standard library plus the harness canonical
 // package: no Cloudflare SDK dependency, and no test ever connects to real
