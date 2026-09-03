@@ -328,7 +328,7 @@ func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, reques
 	if adapter.closed || adapter.validator == nil || adapter.entryIdentity == nil {
 		return application.RunStartProjection{}, application.NewError("start-run", application.ReasonBridgeUnavailable)
 	}
-	state, err := adapter.runs.Inspect(request.RunID)
+	state, err := inspectDescriptorBoundRunState(adapter.runs, request.RunID)
 	if err != nil || validateFrozenLocalDogfoodBinding(adapter.stateRoot, request.RunID, adapter.validator, adapter.entryIdentity) != nil {
 		return application.RunStartProjection{}, application.NewError("start-run", application.ReasonAuthorityConflict)
 	}
@@ -346,6 +346,23 @@ func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, reques
 	}
 	defer run.Close()
 	return run.runtime.StartRun(ctx, request)
+}
+
+// inspectDescriptorBoundRunState reads the current Run through the exact
+// StateRoot/Run descriptors retained by the production application. Calling
+// Store.Inspect here would fall back to a pathname API that descriptor-bound
+// stores deliberately reject.
+func inspectDescriptorBoundRunState(runs *runstore.Store, runID string) (domain.RunState, error) {
+	if runs == nil {
+		return domain.RunState{}, runstore.ErrConflict
+	}
+	lease, err := runs.AcquireExisting(runID)
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	state, readErr := runstore.InspectUnderLease(lease)
+	releaseErr := lease.Release()
+	return state, errors.Join(readErr, releaseErr)
 }
 
 func (adapter *sealedRepositoryApplication) ReconcileStartRun(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, bool, error) {

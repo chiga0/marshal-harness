@@ -4,11 +4,16 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
+	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
 type sealedRunAdvancerStub struct {
@@ -111,6 +116,56 @@ func TestRecoverSealedRepositoryOnOpenSeparatesOneShotAndResidentModes(t *testin
 	}
 	if recoverCalls != 1 {
 		t.Fatalf("resident recovery calls = %d, want 1", recoverCalls)
+	}
+}
+
+func TestInspectDescriptorBoundRunStateAvoidsRejectedPathnameAPI(t *testing.T) {
+	root := t.TempDir()
+	seed := runstore.New(root)
+	lease, err := seed.Acquire("run:descriptor-start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := domain.RunEvent{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent,
+		EventID: "event:descriptor-start", RunID: "run:descriptor-start", Sequence: 1,
+		Type: "run.transition", StateFrom: domain.StateCreated, StateTo: domain.StatePlanned,
+		Timestamp: time.Unix(2, 0).UTC(), Payload: map[string]any{},
+	}
+	if err := seed.Append(lease, event, 0); err != nil {
+		t.Fatal(err)
+	}
+	state, err := lifecycle.Replay(domain.NewRunState("task:descriptor-start", "run:descriptor-start", time.Unix(1, 0).UTC()), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.WriteSnapshot(lease, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	rootHandle, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootHandle.Close()
+	descriptorStore, err := runstore.NewFromStateRootDescriptor(rootHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer descriptorStore.Close()
+	if _, err := descriptorStore.Inspect(state.RunID); !errors.Is(err, runstore.ErrDescriptorBoundPathAPI) {
+		t.Fatalf("pathname Inspect error = %v, want %v", err, runstore.ErrDescriptorBoundPathAPI)
+	}
+
+	got, err := inspectDescriptorBoundRunState(descriptorStore, state.RunID)
+	if err != nil {
+		t.Fatalf("descriptor-bound state read failed: %v", err)
+	}
+	if got != state {
+		t.Fatalf("state = %#v, want %#v", got, state)
 	}
 }
 
