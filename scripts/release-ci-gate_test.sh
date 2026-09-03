@@ -328,6 +328,8 @@ make_contract_fixture() {
     "${root}/schemas/release/examples/valid" \
     "${root}/schemas/release/examples/invalid"
   cp "$workflow" "${root}/.github/workflows/ci.yml"
+  cp "${ROOT}/.github/workflows/fixed-server-t1-canary.yml" \
+    "${root}/.github/workflows/fixed-server-t1-canary.yml"
   cp "$WORKFLOW" "${root}/.github/workflows/release.yml"
   cp "$makefile" "${root}/Makefile"
   cp "$CI_CONTRACT" "${root}/scripts/release-ci-contract.py"
@@ -361,6 +363,11 @@ make_contract_fixture() {
     install_test.sh \
     linux-candidate-conformance.sh \
     release-canary_test.sh \
+    fixed-server-t1-canary.sh \
+    fixed-server-t1-canary_test.sh \
+    fixed-server-t1-evidence.py \
+    fixed-server-t1-evidence_test.py \
+    fixed-server-t1-task.py \
     m13-e2e-dogfood-workflow_test.sh; do
     cp "${ROOT}/scripts/${fixed_test}" "${root}/scripts/${fixed_test}"
   done

@@ -2281,13 +2281,13 @@ func validProductionWorkerResultID(value string) bool {
 
 // containsAbsolutePOSIXPathToken reports whether any whitespace-delimited
 // token of s is an absolute POSIX path: a token beginning with '/' once
-// leading ASCII delimiter characters (quotes and open brackets) are stripped
+// leading ASCII delimiter characters (quotes, backticks, and open brackets) are stripped
 // (ADR 0075: relative components and CJK-adjacent slash pairs such as
 // 行尾/行首 or 非法/重复 are not paths; a host absolute path may only enter
 // argv from engine code, never from prompt text).
 func containsAbsolutePOSIXPathToken(s string) bool {
 	for _, token := range strings.Fields(s) {
-		token = strings.TrimLeft(token, "\"'(<{[")
+		token = strings.TrimLeft(token, "\"'`(<{[")
 		if strings.HasPrefix(token, "/") {
 			return true
 		}

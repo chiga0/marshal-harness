@@ -67,7 +67,8 @@ assert task["repository"] == {"baseRef": sys.argv[3], "expectedRemoteUrl": "http
 assert task["worker"]["preferredAdapter"] == "pi" and task["worker"]["fallbackAdapters"] == []
 assert task["budgets"]["maxAttempts"] == 1
 assert task["scope"]["allowPaths"] == ["fixed-server-t1-canary.txt"]
-assert "/bin/sleep 300" in task["work"]["objective"]
+assert "sleep 300" in task["work"]["objective"]
+assert "/bin/sleep" not in task["work"]["objective"]
 assert policy["effective"]["allowedAdapters"] == ["pi"]
 detached = dict(policy)
 detached["policyDigest"] = ""

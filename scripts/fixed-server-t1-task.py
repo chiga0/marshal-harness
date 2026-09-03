@@ -60,14 +60,14 @@ def render(args):
         },
         "work": {
             "objective": (
-                "这是 fixed server T1 恢复 canary。必须先调用 shell 执行 `/bin/sleep 300`，"
+                "这是 fixed server T1 恢复 canary。必须先调用 shell 执行 `sleep 300`，"
                 f"sleep 正常返回后再创建 `{marker_path}`，内容必须恰好为 `{marker.rstrip()}` 加一个结尾换行；"
                 "最终回复必须只包含一个 WorkerResult JSON 对象。"
             ),
             "constraints": [
                 f"只允许创建 `{marker_path}`，不得修改或删除其它文件。",
                 "不得提交、推送、创建 Git 引用或访问网络。",
-                "不得跳过、缩短、后台化或并行化 `/bin/sleep 300`。",
+                "不得跳过、缩短、后台化或并行化 `sleep 300`。",
             ],
             "context": ["长时间 sleep 为 server crash/recovery 留出确定的 RUNNING 观察窗口。"],
             "nonGoals": ["不完成验证、评审、发布或 merge。"],

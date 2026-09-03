@@ -262,6 +262,7 @@ func TestBuildProductionLaunchAbsolutePOSIXPathRejection(t *testing.T) {
 		{name: "constraint-private-path", mutate: func(in *ProductionLaunchInput) { in.Constraints = []string{"ignore /.marshal/state"} }},
 		{name: "constraint-tmp-path", mutate: func(in *ProductionLaunchInput) { in.Constraints = []string{"never write /tmp/worker-result.json"} }},
 		{name: "quoted-absolute-path", mutate: func(in *ProductionLaunchInput) { in.Objective = `inspect "/private/tmp/work"` }},
+		{name: "backtick-quoted-absolute-path", mutate: func(in *ProductionLaunchInput) { in.Objective = "run `/bin/sleep 300`" }},
 		{name: "parenthesized-absolute-path", mutate: func(in *ProductionLaunchInput) { in.Objective = "inspect (/tmp/work)" }},
 	}
 	for _, test := range tests {
@@ -297,6 +298,7 @@ func TestContainsAbsolutePOSIXPathTokenContract(t *testing.T) {
 		"do not touch /private/tmp",
 		"ignore /.marshal/state",
 		`inspect "/private/tmp/work"`,
+		"run `/bin/sleep 300`",
 		"inspect (/tmp/work)",
 		"run /usr/bin/python3 to check",
 		"//srv/share",

@@ -126,17 +126,106 @@ def record_for_digest(records, fact_type, digest):
     return matches[0]
 
 
-def command_for_attempt(records, attempt_key, command):
-    matches = [
-        record for record in records
-        if record.get("factType") == "process-supervisor-command-outcome"
-        and record.get("attemptKey") == attempt_key
-        and (record.get("outcome") or {}).get("command") == command
-        and (record.get("outcome") or {}).get("disposition") == "ok"
+def check_supervisor_command_chain(records, attempt_key, bind_authority_heads):
+    fact_types = {
+        "process-supervisor-command-intent",
+        "process-supervisor-command-outcome",
+        "process-supervisor-session-reconnected",
+    }
+    all_supervisor = [record for record in records if record.get("factType") in fact_types]
+    require(all_supervisor, "missing process-supervisor authority chain")
+    require(
+        all(record.get("attemptKey") == attempt_key for record in all_supervisor),
+        "process-supervisor fact for a second/unknown Attempt",
+    )
+    require(
+        not any(record.get("factType") == "process-supervisor-session-reconnected" for record in all_supervisor),
+        "unexpected reconnect fact in fixed attach/rebind command chain",
+    )
+    command_facts = [record for record in all_supervisor if record.get("factType") != "process-supervisor-session-reconnected"]
+    require(len(command_facts) == 8, f"expected four intent/outcome pairs, got {len(command_facts)} command facts")
+
+    pairs = []
+    previous_recovery_digest = ""
+    previous_post = None
+    matching_fields = (
+        "protocolRevision",
+        "sessionId",
+        "command",
+        "commandId",
+        "sequence",
+        "previousCommandHead",
+        "currentAuthorityHead",
+        "requestDigest",
+    )
+    for offset in range(0, len(command_facts), 2):
+        intent_fact, outcome_fact = command_facts[offset:offset + 2]
+        require(intent_fact.get("factType") == "process-supervisor-command-intent", "supervisor outcome without preceding intent")
+        require(outcome_fact.get("factType") == "process-supervisor-command-outcome", "supervisor intent remains pending")
+        intent_digest = sealed_digest(intent_fact)
+        outcome_digest = sealed_digest(outcome_fact)
+        require(intent_fact.get("previousRecoveryFactDigest", "") == previous_recovery_digest, "supervisor recovery chain skips/duplicates a fact")
+        require(outcome_fact.get("previousRecoveryFactDigest") == intent_digest, "supervisor outcome does not close its exact intent")
+        previous_recovery_digest = outcome_digest
+        require(
+            intent_fact.get("attemptRevision") == outcome_fact.get("attemptRevision")
+            and intent_fact.get("attemptAuthorityHead") == outcome_fact.get("attemptAuthorityHead"),
+            "supervisor pair changed Attempt authority",
+        )
+
+        intent = intent_fact.get("intent") or {}
+        outcome = outcome_fact.get("outcome") or {}
+        require(all(intent.get(field) == outcome.get(field) for field in matching_fields), "supervisor intent/outcome identity or requestDigest mismatch")
+        require(outcome.get("disposition") == "ok", f"supervisor command is rejected/unknown: {outcome.get('disposition')!r}")
+        require(DIGEST.fullmatch(intent.get("requestDigest", "")) is not None, "supervisor requestDigest invalid")
+        require(isinstance(intent.get("commandId"), str) and intent.get("commandId"), "supervisor commandId invalid")
+
+        pre = intent.get("preCommand") or {}
+        post = outcome.get("postCommand") or {}
+        require(outcome.get("preCommand") == pre, "supervisor outcome preCommand does not bind intent mechanics")
+        require(previous_post is None or pre == previous_post, "supervisor mechanics journal has a gap")
+        for anchor_name, anchor in (("preCommand", pre), ("postCommand", post)):
+            require(isinstance(anchor.get("commandSequence"), int), f"{anchor_name} commandSequence invalid")
+            require(isinstance(anchor.get("journalSequence"), int), f"{anchor_name} journalSequence invalid")
+            require(DIGEST.fullmatch(anchor.get("commandHead", "")) is not None, f"{anchor_name} commandHead invalid")
+            require(DIGEST.fullmatch(anchor.get("journalHead", "")) is not None, f"{anchor_name} journalHead invalid")
+        require(intent.get("sequence") == pre["commandSequence"] + 1, "supervisor intent sequence does not follow mechanics anchor")
+        require(post["commandSequence"] == intent.get("sequence"), "supervisor post commandSequence mismatch")
+        require(intent.get("previousCommandHead") == pre["commandHead"], "supervisor previousCommandHead mismatch")
+        require(outcome.get("commandHead") == post["commandHead"], "supervisor outcome commandHead mismatch")
+        require(post["journalSequence"] == pre["journalSequence"] + 2, "supervisor mechanics journal did not append intent+receipt")
+        require(post["journalHead"] != pre["journalHead"], "supervisor mechanics journal head did not advance")
+        previous_post = post
+        pairs.append({
+            "command": intent["command"],
+            "commandId": intent["commandId"],
+            "requestDigest": intent["requestDigest"],
+            "intentFactDigest": intent_digest,
+            "outcomeFactDigest": outcome_digest,
+            "disposition": outcome["disposition"],
+            "preJournalSequence": pre["journalSequence"],
+            "preJournalHead": pre["journalHead"],
+            "postJournalSequence": post["journalSequence"],
+            "postJournalHead": post["journalHead"],
+        })
+
+    command_counts = {command: sum(pair["command"] == command for pair in pairs) for command in {pair["command"] for pair in pairs}}
+    require(command_counts == {"bind-authority": 2, "spawn": 1, "resume": 1}, f"supervisor command set/count drift: {command_counts}")
+    bind_pairs = [
+        (pair, fact.get("outcome") or {})
+        for pair, fact in zip(pairs, command_facts[1::2])
+        if pair["command"] == "bind-authority"
     ]
-    require(len(matches) == 1, f"expected one successful {command}, got {len(matches)}")
-    sealed_digest(matches[0])
-    return matches[0]
+    require(
+        [outcome.get("boundAuthorityHead") for _, outcome in bind_pairs] == bind_authority_heads,
+        "bind-authority outcomes do not bind supervisor-started+recovery owner successors",
+    )
+    return {
+        "pairs": pairs,
+        "chainDigest": sha256_bytes(canonical_bytes(pairs)),
+        "counts": command_counts,
+        "outcomes": {pair["command"]: fact for pair, fact in zip(pairs, command_facts[1::2]) if pair["command"] in {"spawn", "resume"}},
+    }
 
 
 def check_binary(observation, expected_head, current_sha):
@@ -312,32 +401,28 @@ def check(args):
     require(sha256_bytes(canonical_bytes(detached_prepared)) == preparation_digest == prepared.get("preparationDigest"), "prepared execution digest drift")
 
     attempt_key = open_record.get("attemptKey")
-    spawn = command_for_attempt(ingress, attempt_key, "spawn")
-    resume = command_for_attempt(ingress, attempt_key, "resume")
-    transition = process_record.get("transition") or {}
-    require(spawn.get("digest") == transition.get("supervisorOutcomeFactDigest"), "spawn/process-started binding drift")
-    require(resume.get("digest") == payload.get("resumeOutcomeFactDigest"), "resume/Run binding drift")
     owner_bindings = [record for record in ingress if record.get("factType") == "control-owner-bound" and record.get("attemptKey") == attempt_key]
     require(len(owner_bindings) == 2, f"expected initial+recovery owner bindings, got {len(owner_bindings)}")
     for binding in owner_bindings:
         sealed_digest(binding)
     require((owner_bindings[0].get("transition") or {}).get("owner", {}).get("ownerEpoch") == status1["ownerEpoch"], "initial Attempt owner drift")
     require((owner_bindings[1].get("transition") or {}).get("owner", {}).get("ownerEpoch") == status2["ownerEpoch"], "recovered Attempt owner drift")
-    bind_outcomes = [
+    supervisor_started_records = [
         record for record in ingress
-        if record.get("factType") == "process-supervisor-command-outcome"
-        and record.get("attemptKey") == attempt_key
-        and (record.get("outcome") or {}).get("command") == "bind-authority"
-        and (record.get("outcome") or {}).get("disposition") == "ok"
+        if record.get("factType") == "process-supervisor-started" and record.get("attemptKey") == attempt_key
     ]
-    require(len(bind_outcomes) == 2, f"expected initial+recovery bind-authority outcomes, got {len(bind_outcomes)}")
-    for outcome in bind_outcomes:
-        sealed_digest(outcome)
-    recovery_binds = [
-        outcome for outcome in bind_outcomes
-        if (outcome.get("outcome") or {}).get("boundAuthorityHead") == owner_bindings[1].get("digest")
-    ]
-    require(len(recovery_binds) == 1, "recovery bind-authority does not bind the E1+1 owner successor")
+    require(len(supervisor_started_records) == 1, f"expected one process-supervisor-started authority fact, got {len(supervisor_started_records)}")
+    supervisor_started_digest = sealed_digest(supervisor_started_records[0])
+    supervisor_chain = check_supervisor_command_chain(
+        ingress,
+        attempt_key,
+        [supervisor_started_digest, owner_bindings[1].get("digest")],
+    )
+    spawn = supervisor_chain["outcomes"]["spawn"]
+    resume = supervisor_chain["outcomes"]["resume"]
+    transition = process_record.get("transition") or {}
+    require(spawn.get("digest") == transition.get("supervisorOutcomeFactDigest"), "spawn/process-started binding drift")
+    require(resume.get("digest") == payload.get("resumeOutcomeFactDigest"), "resume/Run binding drift")
 
     delivery_dir = os.path.join(repository, ".marshal", "runtime-v1", "control", "delivery-v1")
     delivery_entries = sorted(os.listdir(delivery_dir))
@@ -417,6 +502,15 @@ def check(args):
         "runAuthorityHead": current_run["authorityHead"],
         "ownerEpochs": [status1["ownerEpoch"], status2["ownerEpoch"]],
         "unique": {"reservation": 1, "open": 1, "workerStarted": 1, "spawn": 1, "resume": 1, "recoveryBind": 1, "pending": 1, "receipt": 1},
+        "supervisorCommands": {
+            "intentCount": len(supervisor_chain["pairs"]),
+            "outcomeCount": len(supervisor_chain["pairs"]),
+            "counts": supervisor_chain["counts"],
+            "mechanicsAuthorityChainDigest": supervisor_chain["chainDigest"],
+            "pairs": supervisor_chain["pairs"],
+            "pending": 0,
+            "rejectedOrUnknown": 0,
+        },
         "cliFallback": False,
     }
     with open(args.out, "wb") as handle:

@@ -128,15 +128,97 @@ class EvidenceTest(unittest.TestCase):
         }
         prepared_value["preparationDigest"] = MODULE.sha256_bytes(MODULE.canonical_bytes(prepared_value))
         preparation["preparationDigest"] = prepared_value["preparationDigest"]
-        spawn = seal({"factType": "process-supervisor-command-outcome", "attemptKey": opened["attemptKey"], "outcome": {"command": "spawn", "disposition": "ok"}, "digest": ""})
-        resume = seal({"factType": "process-supervisor-command-outcome", "attemptKey": opened["attemptKey"], "outcome": {"command": "resume", "disposition": "ok"}, "digest": ""})
-        process_started = seal({"factType": "process-started", "attemptKey": opened["attemptKey"], "transition": {"identity": {"runId": self.run_id, "attemptId": self.attempt_id}, "supervisorOutcomeFactDigest": spawn["digest"]}, "digest": ""})
-        prepared_record = seal({"factType": "prepared-execution-created", "prepared": prepared_value, "digest": ""})
         binding1 = seal({"factType": "control-owner-bound", "attemptKey": opened["attemptKey"], "transition": {"owner": {"ownerEpoch": 7}}, "digest": ""})
         binding2 = seal({"factType": "control-owner-bound", "attemptKey": opened["attemptKey"], "transition": {"owner": {"ownerEpoch": 8}}, "digest": ""})
-        initial_bind = seal({"factType": "process-supervisor-command-outcome", "attemptKey": opened["attemptKey"], "outcome": {"command": "bind-authority", "disposition": "ok", "boundAuthorityHead": "sha256:" + "6" * 64}, "digest": ""})
-        recovery_bind = seal({"factType": "process-supervisor-command-outcome", "attemptKey": opened["attemptKey"], "outcome": {"command": "bind-authority", "disposition": "ok", "boundAuthorityHead": binding2["digest"]}, "digest": ""})
-        ingress = [owner1, reservation, opened, binding1, initial_bind, spawn, resume, process_started, prepared_record, owner2, binding2, recovery_bind]
+        supervisor_started = seal({"factType": "process-supervisor-started", "attemptKey": opened["attemptKey"], "transition": {"identity": {"runId": self.run_id, "attemptId": self.attempt_id}}, "digest": ""})
+        recovery_head = ""
+        mechanics_anchor = {
+            "commandSequence": 0,
+            "commandHead": MODULE.sha256_bytes(b"command-genesis"),
+            "journalSequence": 1,
+            "journalHead": MODULE.sha256_bytes(b"journal-genesis"),
+        }
+
+        def command_pair(command, authority_head, bound_authority_head=None):
+            nonlocal recovery_head, mechanics_anchor
+            sequence = mechanics_anchor["commandSequence"] + 1
+            command_id = f"fixture-{command}-{sequence}"
+            request_digest = MODULE.sha256_bytes(command_id.encode())
+            intent_value = {
+                "protocolRevision": "process-supervisor/v1",
+                "sessionId": "session-t1",
+                "command": command,
+                "commandId": command_id,
+                "sequence": sequence,
+                "previousCommandHead": mechanics_anchor["commandHead"],
+                "currentAuthorityHead": authority_head,
+                "deadline": "2026-09-04T00:05:00Z",
+                "requestDigest": request_digest,
+                "payloadDigest": MODULE.sha256_bytes((command_id + "-payload").encode()),
+                "rebuild": {},
+                "preCommand": mechanics_anchor,
+            }
+            intent_fact = seal({
+                "protocolRevision": "process-supervisor-command-authority/v1",
+                "factType": "process-supervisor-command-intent",
+                "sequence": sequence * 2,
+                "attemptKey": opened["attemptKey"],
+                "attemptRevision": sequence,
+                "attemptAuthorityHead": authority_head,
+                "previousRecoveryFactDigest": recovery_head,
+                "intent": intent_value,
+                "digest": "",
+            })
+            command_head = MODULE.sha256_bytes((command_id + "-command").encode())
+            post = dict(mechanics_anchor)
+            post.update({
+                "commandSequence": sequence,
+                "commandHead": command_head,
+                "journalSequence": mechanics_anchor["journalSequence"] + 2,
+                "journalHead": MODULE.sha256_bytes((command_id + "-journal").encode()),
+            })
+            outcome_value = {
+                **{field: intent_value[field] for field in (
+                    "protocolRevision", "sessionId", "command", "commandId", "sequence",
+                    "previousCommandHead", "currentAuthorityHead", "requestDigest",
+                )},
+                "receiptDigest": MODULE.sha256_bytes((command_id + "-receipt").encode()),
+                "observationDigest": MODULE.sha256_bytes((command_id + "-observation").encode()),
+                "commandHead": command_head,
+                "disposition": "ok",
+                "reasonCode": "",
+                "preCommand": mechanics_anchor,
+                "postCommand": post,
+            }
+            if bound_authority_head is not None:
+                outcome_value["boundAuthorityHead"] = bound_authority_head
+            outcome_fact = seal({
+                "protocolRevision": "process-supervisor-command-authority/v1",
+                "factType": "process-supervisor-command-outcome",
+                "sequence": sequence * 2 + 1,
+                "attemptKey": opened["attemptKey"],
+                "attemptRevision": sequence,
+                "attemptAuthorityHead": authority_head,
+                "previousRecoveryFactDigest": intent_fact["digest"],
+                "outcome": outcome_value,
+                "digest": "",
+            })
+            recovery_head = outcome_fact["digest"]
+            mechanics_anchor = post
+            return intent_fact, outcome_fact
+
+        initial_bind_intent, initial_bind = command_pair("bind-authority", supervisor_started["digest"], supervisor_started["digest"])
+        spawn_intent, spawn = command_pair("spawn", binding1["digest"])
+        process_started = seal({"factType": "process-started", "attemptKey": opened["attemptKey"], "transition": {"identity": {"runId": self.run_id, "attemptId": self.attempt_id}, "supervisorOutcomeFactDigest": spawn["digest"]}, "digest": ""})
+        resume_intent, resume = command_pair("resume", process_started["digest"])
+        prepared_record = seal({"factType": "prepared-execution-created", "prepared": prepared_value, "digest": ""})
+        recovery_bind_intent, recovery_bind = command_pair("bind-authority", binding2["digest"], binding2["digest"])
+        ingress = [
+            owner1, reservation, opened, binding1, supervisor_started,
+            initial_bind_intent, initial_bind, spawn_intent, spawn,
+            process_started, prepared_record, resume_intent, resume,
+            owner2, binding2, recovery_bind_intent, recovery_bind,
+        ]
         write_jsonl(os.path.join(self.repository, ".marshal", "result-ingress", "result-ingress.jsonl"), ingress)
 
         payload = {
@@ -211,7 +293,12 @@ class EvidenceTest(unittest.TestCase):
 
     def test_complete_fixture_passes(self):
         MODULE.check(self.args())
-        self.assertEqual(MODULE.load_json(self.args().out)["result"], "pass")
+        summary = MODULE.load_json(self.args().out)
+        self.assertEqual(summary["result"], "pass")
+        self.assertEqual(summary["supervisorCommands"]["intentCount"], 4)
+        self.assertEqual(summary["supervisorCommands"]["outcomeCount"], 4)
+        self.assertEqual(summary["supervisorCommands"]["counts"], {"bind-authority": 2, "resume": 1, "spawn": 1})
+        self.assertEqual(summary["supervisorCommands"]["pairs"][1]["commandId"], "fixture-spawn-2")
 
     def test_second_run_fails_closed(self):
         os.makedirs(os.path.join(self.repository, ".marshal", "runs", "run-second"))
@@ -224,7 +311,33 @@ class EvidenceTest(unittest.TestCase):
         spawn = next(record for record in records if (record.get("outcome") or {}).get("command") == "spawn")
         records.append(spawn)
         write_jsonl(path, records)
-        with self.assertRaisesRegex(MODULE.EvidenceError, "one successful spawn"):
+        with self.assertRaisesRegex(MODULE.EvidenceError, "four intent/outcome pairs"):
+            MODULE.check(self.args())
+
+    def test_pending_supervisor_intent_fails_closed(self):
+        path = os.path.join(self.repository, ".marshal", "result-ingress", "result-ingress.jsonl")
+        records = MODULE.load_jsonl(path)
+        records.pop()
+        write_jsonl(path, records)
+        with self.assertRaisesRegex(MODULE.EvidenceError, "four intent/outcome pairs"):
+            MODULE.check(self.args())
+
+    def test_supervisor_request_digest_mismatch_fails_closed(self):
+        path = os.path.join(self.repository, ".marshal", "result-ingress", "result-ingress.jsonl")
+        records = MODULE.load_jsonl(path)
+        records[-1]["outcome"]["requestDigest"] = MODULE.sha256_bytes(b"different request")
+        seal(records[-1])
+        write_jsonl(path, records)
+        with self.assertRaisesRegex(MODULE.EvidenceError, "requestDigest mismatch"):
+            MODULE.check(self.args())
+
+    def test_rejected_supervisor_outcome_fails_closed(self):
+        path = os.path.join(self.repository, ".marshal", "result-ingress", "result-ingress.jsonl")
+        records = MODULE.load_jsonl(path)
+        records[-1]["outcome"]["disposition"] = "rejected"
+        seal(records[-1])
+        write_jsonl(path, records)
+        with self.assertRaisesRegex(MODULE.EvidenceError, "rejected/unknown"):
             MODULE.check(self.args())
 
     def test_second_pending_fails_closed(self):
