@@ -353,6 +353,81 @@ func TestEndpointRejectsForgedAndReplayedProofs(t *testing.T) {
 	}
 }
 
+func TestEndpointDoesNotRetractWrittenAcceptance(t *testing.T) {
+	fixture := newEndpointFixture(t)
+	endpoint, err := OpenEndpoint(context.Background(), fixture.authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = endpoint.Close() })
+
+	// Force authority loss after the peer can observe the complete accepted
+	// frame. The server must return the committed connection; its next
+	// application-boundary Recheck must fail closed.
+	endpoint.acceptedWritten = func() {
+		if err := fixture.authority.Close(); err != nil {
+			t.Errorf("close authority after acceptance: %v", err)
+		}
+	}
+	accepted := make(chan *AuthenticatedConnection, 1)
+	failed := make(chan error, 1)
+	go func() {
+		connection, acceptErr := endpoint.Accept(context.Background())
+		if acceptErr != nil {
+			failed <- acceptErr
+			return
+		}
+		accepted <- connection
+	}()
+
+	raw, err := net.Dial("unix", endpoint.locator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := raw.(*net.UnixConn)
+	defer client.Close()
+	challengeRaw, err := readFrame(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var challenge challengeFrame
+	if decodeClosed(challengeRaw, &challenge) != nil {
+		t.Fatal("invalid server challenge")
+	}
+	self, err := processsupervisor.ObserveCurrentCore(fixture.authority.Snapshot().FixedMarshalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientDigest, err := identityDigest(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := testBinding()
+	proof, err := proofDigest(endpoint.token[:], challenge, clientDigest, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proofRaw, err := canonicalBytes(proofFrame{SchemaVersion: "fixed-control-proof/v1", ProtocolRevision: ProtocolRevision, ChallengeDigest: canonical.DigestBytes(challengeRaw), ClientIdentityDigest: clientDigest, Binding: binding, Proof: proof})
+	if err != nil || writeFrame(client, proofRaw) != nil {
+		t.Fatalf("write proof: %v", err)
+	}
+	if _, err := readFrame(client); err != nil {
+		t.Fatalf("read committed acceptance: %v", err)
+	}
+
+	select {
+	case connection := <-accepted:
+		defer connection.Close()
+		if err := connection.Recheck(context.Background()); !errors.Is(err, ErrConflict) {
+			t.Fatalf("post-commit authority drift err=%v", err)
+		}
+	case err := <-failed:
+		t.Fatalf("server retracted committed acceptance: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("accept timeout")
+	}
+}
+
 func TestEndpointRejectsTokenABA(t *testing.T) {
 	fixture := newEndpointFixture(t)
 	endpoint, err := OpenEndpoint(context.Background(), fixture.authority)
