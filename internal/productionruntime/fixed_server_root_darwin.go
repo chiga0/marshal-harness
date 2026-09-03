@@ -1,0 +1,308 @@
+//go:build darwin && arm64
+
+package productionruntime
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"unsafe"
+
+	"github.com/chiga0/marshal-harness/internal/canonical"
+	"golang.org/x/sys/unix"
+)
+
+const fixedServerPathBufferSize = 4096
+
+var fixedServerRootComponents = [...]string{".marshal", "runtime-v1", "control", "delivery-v1"}
+
+type fixedServerDirectoryIdentity struct {
+	Device    uint64                `json:"device"`
+	Inode     uint64                `json:"inode"`
+	FileType  uint32                `json:"fileType"`
+	UID       uint32                `json:"uid"`
+	GID       uint32                `json:"gid"`
+	Mode      uint32                `json:"mode"`
+	LinkCount uint64                `json:"linkCount"`
+	Mutation  ownerMutationIdentity `json:"mutation"`
+}
+
+type fixedServerDirectoryNode struct {
+	file     *os.File
+	identity fixedServerDirectoryIdentity
+	name     string
+}
+
+// fixedServerRoot is the complete held parent/child capability. A delivery
+// leaf is never authorized by a standalone path or child descriptor.
+type fixedServerRoot struct {
+	repositoryPath string
+	nodes          [5]fixedServerDirectoryNode
+}
+
+// CanonicalRepositoryRoot is the fixed CLI's held repository capability. It
+// freezes the accepted current pathname and object at open time so a rename
+// before RepositorySession construction cannot be washed through F_GETPATH.
+type CanonicalRepositoryRoot struct {
+	file     *os.File
+	path     string
+	identity fixedServerDirectoryIdentity
+}
+
+func OpenCanonicalRepositoryRoot(path string) (*CanonicalRepositoryRoot, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.IndexByte(path, 0) >= 0 {
+		return nil, ErrFixedDeliveryConflict
+	}
+	file, identity, err := openCanonicalRepositoryDirectory(path)
+	if err != nil {
+		return nil, err
+	}
+	return &CanonicalRepositoryRoot{file: file, path: path, identity: identity}, nil
+}
+
+func openCanonicalRepositoryDirectory(path string) (*os.File, fixedServerDirectoryIdentity, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW_ANY, 0)
+	if err != nil {
+		return nil, fixedServerDirectoryIdentity{}, ErrFixedDeliveryConflict
+	}
+	file := os.NewFile(uintptr(fd), "marshal-canonical-repository-root")
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fixedServerDirectoryIdentity{}, ErrFixedDeliveryConflict
+	}
+	observed, err := descriptorPath(fd)
+	if err != nil || observed != path {
+		_ = file.Close()
+		return nil, fixedServerDirectoryIdentity{}, ErrFixedDeliveryConflict
+	}
+	identity, err := observeFixedServerDirectory(fd, false)
+	if err != nil {
+		_ = file.Close()
+		return nil, fixedServerDirectoryIdentity{}, err
+	}
+	return file, identity, nil
+}
+
+func (root *CanonicalRepositoryRoot) validateAndReopen() (*os.File, error) {
+	if root == nil || root.file == nil || root.path == "" {
+		return nil, ErrFixedDeliveryConflict
+	}
+	heldPath, pathErr := descriptorPath(int(root.file.Fd()))
+	held, heldErr := observeFixedServerDirectory(int(root.file.Fd()), false)
+	if pathErr != nil || heldErr != nil || heldPath != root.path || !sameFixedServerDirectory(held, root.identity, true) {
+		return nil, ErrFixedDeliveryConflict
+	}
+	reopened, reopenedIdentity, err := openCanonicalRepositoryDirectory(root.path)
+	if err != nil || !sameFixedServerDirectory(reopenedIdentity, root.identity, true) {
+		if reopened != nil {
+			_ = reopened.Close()
+		}
+		return nil, ErrFixedDeliveryConflict
+	}
+	return reopened, nil
+}
+
+func (root *CanonicalRepositoryRoot) Close() error {
+	if root == nil || root.file == nil {
+		return nil
+	}
+	err := root.file.Close()
+	root.file = nil
+	return err
+}
+
+func descriptorPath(fd int) (string, error) {
+	buffer := make([]byte, fixedServerPathBufferSize)
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETPATH, int(uintptr(unsafe.Pointer(&buffer[0])))); err != nil {
+		return "", err
+	}
+	end := 0
+	for end < len(buffer) && buffer[end] != 0 {
+		end++
+	}
+	path := string(buffer[:end])
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.IndexByte(path, 0) >= 0 {
+		return "", ErrFixedDeliveryConflict
+	}
+	return path, nil
+}
+
+func observeFixedServerDirectory(fd int, ownerOnly bool) (fixedServerDirectoryIdentity, error) {
+	var stat unix.Stat_t
+	if unix.Fstat(fd, &stat) != nil {
+		return fixedServerDirectoryIdentity{}, ErrFixedDeliveryConflict
+	}
+	return fixedServerDirectoryIdentityFromStat(stat, ownerOnly)
+}
+
+func observeFixedServerDirectoryAt(parentFD int, name string, ownerOnly bool) (fixedServerDirectoryIdentity, error) {
+	var stat unix.Stat_t
+	if unix.Fstatat(parentFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW) != nil {
+		return fixedServerDirectoryIdentity{}, ErrFixedDeliveryConflict
+	}
+	return fixedServerDirectoryIdentityFromStat(stat, ownerOnly)
+}
+
+func fixedServerDirectoryIdentityFromStat(stat unix.Stat_t, ownerOnly bool) (fixedServerDirectoryIdentity, error) {
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Uid != uint32(os.Geteuid()) || stat.Gid != uint32(os.Getegid()) || stat.Nlink < 2 {
+		return fixedServerDirectoryIdentity{}, ErrFixedDeliveryConflict
+	}
+	permissions := stat.Mode & 0o777
+	if ownerOnly && permissions != 0o700 || !ownerOnly && permissions&0o022 != 0 {
+		return fixedServerDirectoryIdentity{}, ErrFixedDeliveryConflict
+	}
+	return fixedServerDirectoryIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, FileType: uint32(stat.Mode & unix.S_IFMT), UID: stat.Uid, GID: stat.Gid, Mode: uint32(stat.Mode), LinkCount: uint64(stat.Nlink), Mutation: mutationIdentity(stat)}, nil
+}
+
+func sameFixedServerDirectory(left, right fixedServerDirectoryIdentity, exactMutation bool) bool {
+	// Link count can increase while the fixed hierarchy is created and while
+	// immutable records are appended; it remains a validity check, not object
+	// identity. All security-relevant stable fields remain exact.
+	return left.Device == right.Device && left.Inode == right.Inode && left.FileType == right.FileType && left.UID == right.UID && left.GID == right.GID && left.Mode == right.Mode && (!exactMutation || left.Mutation == right.Mutation)
+}
+
+func openFixedServerRoot(repository *CanonicalRepositoryRoot) (fixedServerRoot, error) {
+	if repository == nil {
+		return fixedServerRoot{}, ErrFixedDeliveryConflict
+	}
+	reopened, err := repository.validateAndReopen()
+	if err != nil {
+		return fixedServerRoot{}, err
+	}
+	root := fixedServerRoot{repositoryPath: repository.path}
+	root.nodes[0] = fixedServerDirectoryNode{file: reopened, identity: repository.identity}
+	cleanup := func(cause error) (fixedServerRoot, error) {
+		_ = root.close()
+		return fixedServerRoot{}, cause
+	}
+	for index, component := range fixedServerRootComponents {
+		parent := root.nodes[index].file
+		if err := validateFixedServerRoot(root, index+1); err != nil {
+			return cleanup(err)
+		}
+		created := false
+		if err := unix.Mkdirat(int(parent.Fd()), component, 0o700); err != nil {
+			if !errors.Is(err, unix.EEXIST) {
+				return cleanup(ErrFixedDeliveryConflict)
+			}
+		} else {
+			created = true
+		}
+		fd, err := unix.Openat(int(parent.Fd()), component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW_ANY, 0)
+		if err != nil {
+			return cleanup(ErrFixedDeliveryConflict)
+		}
+		child := os.NewFile(uintptr(fd), "marshal-fixed-server-"+component)
+		if child == nil {
+			_ = unix.Close(fd)
+			return cleanup(ErrFixedDeliveryConflict)
+		}
+		identity, err := observeFixedServerDirectory(fd, true)
+		named, namedErr := observeFixedServerDirectoryAt(int(parent.Fd()), component, true)
+		if err != nil || namedErr != nil || !sameFixedServerDirectory(identity, named, true) {
+			_ = child.Close()
+			return cleanup(ErrFixedDeliveryConflict)
+		}
+		root.nodes[index+1] = fixedServerDirectoryNode{file: child, identity: identity, name: component}
+		if created {
+			if child.Sync() != nil || parent.Sync() != nil {
+				return cleanup(ErrFixedDeliveryUnknown)
+			}
+			parentIdentity, parentErr := observeFixedServerDirectory(int(parent.Fd()), index != 0)
+			childIdentity, childErr := observeFixedServerDirectory(fd, true)
+			if parentErr != nil || childErr != nil {
+				return cleanup(ErrFixedDeliveryConflict)
+			}
+			root.nodes[index].identity = parentIdentity
+			root.nodes[index+1].identity = childIdentity
+		}
+		if err := validateFixedServerRoot(root, index+2); err != nil {
+			return cleanup(err)
+		}
+	}
+	// Directory creation legitimately changes parent link counts. Refresh the
+	// complete post-create observation once, so the authority-root digest is
+	// stable across a cold reopen of the same hierarchy.
+	for index := range root.nodes {
+		identity, err := observeFixedServerDirectory(int(root.nodes[index].file.Fd()), index != 0)
+		if err != nil {
+			return cleanup(err)
+		}
+		root.nodes[index].identity = identity
+	}
+	if err := validateFixedServerRoot(root, len(root.nodes)); err != nil {
+		return cleanup(err)
+	}
+	return root, nil
+}
+
+func validateFixedServerRoot(root fixedServerRoot, count int) error {
+	if count < 1 || count > len(root.nodes) || root.nodes[0].file == nil {
+		return ErrFixedDeliveryConflict
+	}
+	reopened, reopenedIdentity, err := openCanonicalRepositoryDirectory(root.repositoryPath)
+	if err != nil {
+		return ErrFixedDeliveryConflict
+	}
+	_ = reopened.Close()
+	heldRoot, heldErr := observeFixedServerDirectory(int(root.nodes[0].file.Fd()), false)
+	if heldErr != nil || !sameFixedServerDirectory(heldRoot, root.nodes[0].identity, true) || !sameFixedServerDirectory(reopenedIdentity, root.nodes[0].identity, true) {
+		return ErrFixedDeliveryConflict
+	}
+	for index := 1; index < count; index++ {
+		parent, child := root.nodes[index-1], root.nodes[index]
+		if parent.file == nil || child.file == nil || child.name == "" {
+			return ErrFixedDeliveryConflict
+		}
+		held, err := observeFixedServerDirectory(int(child.file.Fd()), true)
+		named, namedErr := observeFixedServerDirectoryAt(int(parent.file.Fd()), child.name, true)
+		// delivery-v1 is the append-only record directory, so publishing a
+		// record legitimately changes its own ctime. Its current name is still
+		// protected against ABA by the exact mutation identity of control.
+		exactMutation := index < len(root.nodes)-1
+		if err != nil || namedErr != nil || !sameFixedServerDirectory(held, child.identity, exactMutation) || !sameFixedServerDirectory(named, child.identity, exactMutation) {
+			return ErrFixedDeliveryConflict
+		}
+	}
+	return nil
+}
+
+func (root fixedServerRoot) runtimeRoot() *os.File  { return root.nodes[2].file }
+func (root fixedServerRoot) deliveryRoot() *os.File { return root.nodes[4].file }
+
+func (root fixedServerRoot) digest() (string, error) {
+	if err := validateFixedServerRoot(root, len(root.nodes)); err != nil {
+		return "", err
+	}
+	// This digest intentionally includes current mutation observations. It is
+	// an S1.1 same-session recheck value, not a stable successor/S1.3 identity.
+	value := struct {
+		RepositoryPath string                          `json:"repositoryPath"`
+		Objects        [5]fixedServerDirectoryIdentity `json:"objects"`
+		Names          [4]string                       `json:"names"`
+	}{RepositoryPath: root.repositoryPath, Names: fixedServerRootComponents}
+	for index := range root.nodes {
+		value.Objects[index] = root.nodes[index].identity
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return canonical.DigestJSON(raw)
+}
+
+func (root *fixedServerRoot) close() error {
+	if root == nil {
+		return nil
+	}
+	var result error
+	for index := len(root.nodes) - 1; index >= 0; index-- {
+		if root.nodes[index].file != nil {
+			result = errors.Join(result, root.nodes[index].file.Close())
+			root.nodes[index].file = nil
+		}
+	}
+	return result
+}

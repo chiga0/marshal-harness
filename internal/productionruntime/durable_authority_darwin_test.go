@@ -453,8 +453,17 @@ func TestRepositorySessionReusesOneOwnerAcrossSequentialRunRuntimes(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	repositoryPath, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := OpenCanonicalRepositoryRoot(repositoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
 	sessionInputs := RepositorySessionInputs{
-		HeldIngressDir: held, OwnerDirectory: inputs.OwnerDirectory,
+		HeldIngressDir: held, HeldRepositoryRoot: repository, OwnerDirectory: inputs.OwnerDirectory,
 		Acquisition: inputs.Acquisition, FixedMarshalPath: fixed, OwnerPrivateControlRoot: control,
 	}
 	session, err := OpenRepositorySession(context.Background(), sessionInputs)

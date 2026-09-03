@@ -139,11 +139,17 @@ func TestRepositorySessionColdOwnerProcessHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer controlDirectory.Close()
+	repositoryDirectory, err := OpenCanonicalRepositoryRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repositoryDirectory.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), coldOwnerTimeout)
 	defer cancel()
 	session, err := OpenRepositorySession(ctx, RepositorySessionInputs{
 		HeldIngressDir:          ingressDirectory,
+		HeldRepositoryRoot:      repositoryDirectory,
 		OwnerDirectory:          ownerDirectory,
 		Acquisition:             exactProcessAcquisition(t, fixed),
 		FixedMarshalPath:        fixed,

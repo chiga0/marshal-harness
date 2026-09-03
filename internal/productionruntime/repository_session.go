@@ -9,6 +9,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
+	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
 // RepositorySessionInputs freezes the repository-wide resources owned by a
@@ -16,6 +17,7 @@ import (
 // inputs deliberately remain in CompositionInputs.
 type RepositorySessionInputs struct {
 	HeldIngressDir          *os.File
+	HeldRepositoryRoot      *CanonicalRepositoryRoot
 	OwnerDirectory          *os.File
 	Acquisition             resultingress.ControlOwnerAcquisition
 	FixedMarshalPath        string
@@ -29,6 +31,8 @@ type RepositorySession struct {
 	mu          sync.RWMutex
 	closed      bool
 	ingress     *resultingress.DurableStore
+	runs        *runstore.Store
+	fixedRoot   fixedServerRoot
 	owner       repositoryOwnerLock
 	ownerState  resultingress.ControlOwnerState
 	acquisition resultingress.ControlOwnerAcquisition
@@ -47,7 +51,7 @@ var _ io.Closer = (*repositorySessionBorrow)(nil)
 // replay, Phase-B binding, sealed ResultIngress construction, and the runtime
 // claim. The held ingress is opened only after the physical owner lock wins.
 func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) (*RepositorySession, error) {
-	if ctx == nil || inputs.HeldIngressDir == nil || inputs.OwnerDirectory == nil ||
+	if ctx == nil || inputs.HeldIngressDir == nil || inputs.HeldRepositoryRoot == nil || inputs.OwnerDirectory == nil ||
 		inputs.FixedMarshalPath == "" || inputs.OwnerPrivateControlRoot == nil ||
 		validateCompositionAcquisitionCandidate(inputs.Acquisition) != nil {
 		return nil, application.NewError("repository-session", application.ReasonInvalidRequest)
@@ -72,7 +76,39 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		_ = owner.Close()
 		return nil, err
 	}
+	// WithCurrentOwnerLock deliberately admits only the one runtime-claimed
+	// owner. Claim before the first canonical-root recheck; every later
+	// construction failure closes the claimed owner and releases its lock.
+	if err := claimRepositorySessionOwner(owner); err != nil {
+		_ = ingress.Close()
+		_ = owner.Close()
+		return nil, err
+	}
+	var fixedRoot fixedServerRoot
+	err = owner.WithCurrentOwnerLock(ctx, acquisition, func() error {
+		current, found, openErr := ingress.OpenOwner(acquisition.Scope)
+		if openErr != nil || !found || current.Acquisition != acquisition || current.FactDigest != ownerState.FactDigest {
+			return application.NewError("repository-session-root", application.ReasonOwnerNotCurrent)
+		}
+		var rootErr error
+		fixedRoot, rootErr = openFixedServerRoot(inputs.HeldRepositoryRoot)
+		return rootErr
+	})
+	if err != nil {
+		_ = ingress.Close()
+		_ = owner.Close()
+		return nil, err
+	}
+	runs, err := runstore.NewFromStateRootDescriptor(fixedRoot.runtimeRoot())
+	if err != nil {
+		_ = fixedRoot.close()
+		_ = ingress.Close()
+		_ = owner.Close()
+		return nil, err
+	}
 	cleanup := func() {
+		_ = runs.Close()
+		_ = fixedRoot.close()
 		_ = ingress.Close()
 		_ = owner.Close()
 	}
@@ -85,11 +121,18 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		cleanup()
 		return nil, err
 	}
-	if err := claimRepositorySessionOwner(owner); err != nil {
-		cleanup()
+	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition}
+	if err := session.owner.WithCurrentOwnerLock(ctx, acquisition, func() error {
+		current, found, openErr := ingress.OpenOwner(acquisition.Scope)
+		if openErr != nil || !found || current.Acquisition != acquisition || current.FactDigest != ownerState.FactDigest {
+			return application.NewError("repository-session-root", application.ReasonOwnerNotCurrent)
+		}
+		return validateFixedServerRoot(fixedRoot, 5)
+	}); err != nil {
+		_ = session.Close()
 		return nil, err
 	}
-	return &RepositorySession{ingress: ingress, owner: owner, ownerState: ownerState, acquisition: acquisition}, nil
+	return session, nil
 }
 
 func (session *RepositorySession) borrow() (*repositorySessionBorrow, error) {
@@ -153,6 +196,10 @@ func (session *RepositorySession) Close() error {
 	if session.ingress != nil {
 		closeErrors = append(closeErrors, session.ingress.Close())
 	}
+	if session.runs != nil {
+		closeErrors = append(closeErrors, session.runs.Close())
+	}
+	closeErrors = append(closeErrors, session.fixedRoot.close())
 	if session.owner != nil {
 		closeErrors = append(closeErrors, session.owner.Close())
 	}
