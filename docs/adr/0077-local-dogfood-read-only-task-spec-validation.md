@@ -2,12 +2,14 @@
 
 | 字段 | 值 |
 | --- | --- |
-| 状态 | 已接受（Accepted） |
+| 状态 | 已取代（Superseded by [ADR 0078](0078-verifier-builtin-task-spec-contract-gate.md)） |
 | 日期 | 2026-09-03 |
 | 接受依据 | 维护者依据 M13 dogfood Run `33709488741` 的真实 Verification 证据接受：8 项通过、`taskspec-validate` 以 `self-local-command-denied` 失败、2 项跳过；本 ADR 只修复已承诺的只读契约验证与 local-profile self gate 之间的冲突 |
 | 决定者 | 维护者 |
 | 关联 ADR | [ADR 0047](0047-marshal-darwin-self-identity-and-release-signing.md)、[ADR 0051](0051-darwin-local-dogfood-profile.md)、[ADR 0068](0068-mac-first-cli-only-lifecycle-preview-rc1.md)、[ADR 0073](0073-dogfood-activation-v2-host-portability.md)、[ADR 0075](0075-rc1-dogfood-usability-barriers.md) |
 | 关联范围 | fixed `darwin-local-dogfood` Marshal 对 canonical repository 内一个 TaskSpec 文件执行精确、只读、无网络的契约验证；不授权其它 `contract` 形态 |
+
+> 2026-09-03 设计复审确认：把 verifier 的 TaskSpec 契约门禁提升为 public CLI/self-admission 权限，会让候选路径进入 TaskSpec argv 与 `CommandRecord`，并把验证能力错误地绑定到 local-profile executable admission。ADR 0078 以 candidate-isolate 内的 pathless verifier builtin 完整取代本 ADR；本 ADR 保留为问题与拒绝方案的历史记录，不再授权实现。
 
 ## 背景
 
