@@ -298,7 +298,7 @@ func openAttachedControlDirectory(profile *preparedDarwinExecutionProfile, state
 // production entry point above is the only non-test caller.
 func openAttachedControlDirectoryAfterCoreValidation(profile *preparedDarwinExecutionProfile, state AttemptAuthorityState) (*os.File, error) {
 	root, err := processsupervisor.ObserveHeldControlDirectory(profile.controlRoot)
-	if err != nil || root != profile.controlIdentity {
+	if err != nil || !sameStableControlDirectoryIdentity(root, profile.controlIdentity) {
 		return nil, ErrPreparedExecutionUnavailable
 	}
 	sessionID := state.SupervisorStarted.Handshake.SessionID
