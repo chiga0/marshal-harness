@@ -80,6 +80,7 @@ type legacyPreparedExecutionFact struct {
 var (
 	ErrPreparedExecutionConflict    = errors.New("resultingress: prepared execution authority conflict")
 	ErrPreparedExecutionUnavailable = errors.New("resultingress: prepared execution unavailable")
+	ErrPreparedRunStartNotFound     = errors.New("resultingress: prepared Run start not found")
 	ErrCommittedRunStartProof       = errors.New("resultingress: committed Run-start proof violation")
 )
 
@@ -434,7 +435,7 @@ func (s *DurableStore) ResolvePreparedRunStart(ctx context.Context, verifier Cur
 				}
 			}
 			if matches == 0 {
-				return ErrPreparedExecutionUnavailable
+				return ErrPreparedRunStartNotFound
 			}
 			if matches != 1 {
 				return ErrPreparedExecutionConflict

@@ -549,6 +549,13 @@ func (l *CompositionLedger) RehydrateRunStart(ctx context.Context, verifier resu
 	resolved, err := l.ingress.ResolvePreparedRunStart(ctx, verifier, acquisition, resultingress.PreparedRunStartKey{
 		RunID: request.RunID, ReadySequence: request.ExpectedSequence, ReadyAuthorityHead: request.ExpectedAuthorityHead,
 	})
+	// A request may be reconciled before its first preparation was committed.
+	// That is an authoritative "not found" result, not a conflict: callers use
+	// it to distinguish an unapplied delivery from an ambiguous or forged one.
+	// Keep ambiguity and every other ResultIngress failure fail-closed.
+	if errors.Is(err, resultingress.ErrPreparedRunStartNotFound) {
+		return application.PreparedRunStart{}, application.RunProjection{}, false, nil
+	}
 	if err != nil {
 		return application.PreparedRunStart{}, application.RunProjection{}, false, err
 	}
