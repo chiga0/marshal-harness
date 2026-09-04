@@ -79,7 +79,27 @@ type CurrentClosureObservation struct {
 // temporary descriptors before returning. It never creates, renames, writes,
 // launches, or retains a descriptor for a later phase.
 func VerifyCurrentClosure(closure ClosureV1, allocationLive LiveIdentity) (CurrentClosureObservation, error) {
-	if closure.Validate() != nil || allocationLive.Validate() != nil {
+	return verifyCurrentClosure(closure, allocationLive, exactDirectoryIdentity)
+}
+
+// VerifyCurrentClosureWithStableDirectoryIdentity verifies an existing
+// worktree against the APFS-stable directory identity persisted by the RB1
+// bind receipt. Directory size and link count are deliberately normalized in
+// that receipt because APFS may change them without replacing the directory.
+// All replacement-relevant fields remain exact, and the returned observation
+// carries the current live size/link count for the mutation-adjacent
+// supervisor source gate.
+func VerifyCurrentClosureWithStableDirectoryIdentity(closure ClosureV1, stableDirectory LiveIdentity) (CurrentClosureObservation, error) {
+	if stableDirectory.Size != 0 || stableDirectory.LinkCount != 1 {
+		return CurrentClosureObservation{}, ErrUnavailable
+	}
+	return verifyCurrentClosure(closure, stableDirectory, stableDirectoryIdentity)
+}
+
+type directoryIdentityMatcher func(current, expected LiveIdentity) bool
+
+func verifyCurrentClosure(closure ClosureV1, allocationLive LiveIdentity, matches directoryIdentityMatcher) (CurrentClosureObservation, error) {
+	if closure.Validate() != nil || allocationLive.Validate() != nil || matches == nil {
 		return CurrentClosureObservation{}, ErrUnavailable
 	}
 	runtimeFile, runtime, err := openObject(closure.RuntimeExecutable.CanonicalPath, unix.S_IFREG, true)
@@ -95,7 +115,7 @@ func VerifyCurrentClosure(closure ClosureV1, allocationLive LiveIdentity) (Curre
 		return CurrentClosureObservation{}, ErrUnavailable
 	}
 	defer workingFile.Close()
-	if working.CanonicalPath != closure.WorkingDirectory || !sameLiveIdentity(LiveIdentityFromObject(working), allocationLive) {
+	if working.CanonicalPath != closure.WorkingDirectory || !matches(LiveIdentityFromObject(working), allocationLive) {
 		return CurrentClosureObservation{}, ErrUnavailable
 	}
 
@@ -153,7 +173,7 @@ func VerifyCurrentClosure(closure ClosureV1, allocationLive LiveIdentity) (Curre
 	if currentWorkingFile != nil {
 		_ = currentWorkingFile.Close()
 	}
-	if runtimeErr != nil || currentRuntime != closure.RuntimeExecutable || workingErr != nil || !sameLiveIdentity(LiveIdentityFromObject(currentWorking), allocationLive) {
+	if runtimeErr != nil || currentRuntime != closure.RuntimeExecutable || workingErr != nil || !matches(LiveIdentityFromObject(currentWorking), allocationLive) {
 		return CurrentClosureObservation{}, ErrUnavailable
 	}
 	piIdentityDigest := ""
@@ -169,14 +189,20 @@ func VerifyCurrentClosure(closure ClosureV1, allocationLive LiveIdentity) (Curre
 		piIdentityDigest = identity.IdentityDigest
 	}
 	return CurrentClosureObservation{
-		Runtime: runtime, WorkingDirectory: working, MaterialRoots: roots,
+		Runtime: runtime, WorkingDirectory: currentWorking, MaterialRoots: roots,
 		LaunchMaterials: materials, LaunchMaterialsDigest: materialsDigest,
 		AgentLaunchSpecDigest: specDigest, Pi0844IdentityDigest: piIdentityDigest,
 	}, nil
 }
 
-func sameLiveIdentity(left, right LiveIdentity) bool {
+func exactDirectoryIdentity(left, right LiveIdentity) bool {
 	return left.Device == right.Device && left.Inode == right.Inode && left.FileType == right.FileType && left.Mode == right.Mode && left.UID == right.UID && left.GID == right.GID && left.Size == right.Size && left.LinkCount == right.LinkCount
+}
+
+func stableDirectoryIdentity(current, expected LiveIdentity) bool {
+	return current.validDirectory() && expected.validDirectory() && expected.Size == 0 && expected.LinkCount == 1 &&
+		current.Device == expected.Device && current.Inode == expected.Inode && current.FileType == expected.FileType &&
+		current.Mode == expected.Mode && current.UID == expected.UID && current.GID == expected.GID
 }
 
 func sameCurrentPath(left, right string) bool {

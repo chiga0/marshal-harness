@@ -44,6 +44,39 @@ func TestVerifyCurrentClosureRejectsAllocationLiveAndCWDDrift(t *testing.T) {
 	}
 }
 
+func TestVerifyCurrentClosureWithStableDirectoryIdentityReturnsFreshLiveIdentity(t *testing.T) {
+	closure, live, _, _ := currentNativeFixture(t)
+	stable := live
+	stable.Size = 0
+	stable.LinkCount = 1
+
+	observed, err := VerifyCurrentClosureWithStableDirectoryIdentity(closure, stable)
+	if err != nil {
+		t.Fatalf("verify stable directory identity: %v", err)
+	}
+	if got := LiveIdentityFromObject(observed.WorkingDirectory); got != live {
+		t.Fatalf("stable verification did not return the fresh live identity: got=%+v want=%+v", got, live)
+	}
+
+	drifts := map[string]LiveIdentity{
+		"device": func() LiveIdentity { value := stable; value.Device++; return value }(),
+		"inode":  func() LiveIdentity { value := stable; value.Inode++; return value }(),
+		"mode":   func() LiveIdentity { value := stable; value.Mode ^= 0o100; return value }(),
+		"owner":  func() LiveIdentity { value := stable; value.UID++; return value }(),
+	}
+	for name, drifted := range drifts {
+		if _, err := VerifyCurrentClosureWithStableDirectoryIdentity(closure, drifted); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("stable %s drift error=%v", name, err)
+		}
+	}
+
+	nonCanonical := stable
+	nonCanonical.Size = 1
+	if _, err := VerifyCurrentClosureWithStableDirectoryIdentity(closure, nonCanonical); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("non-canonical stable identity error=%v", err)
+	}
+}
+
 func TestEnumerateCurrentRootRejectsSymlinkAndReturnsExactRoleRecords(t *testing.T) {
 	root := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(root); resolveErr != nil {

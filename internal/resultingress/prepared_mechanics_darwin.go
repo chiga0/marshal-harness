@@ -92,22 +92,20 @@ func (s *DurableStore) reconcilePreparedExecutionLocked(ctx context.Context, pro
 
 // preparedAllocationSource is the private, non-persistent normalization of
 // the durable allocation authority that satisfies Darwin prepared source
-// verification and spawn construction. It carries only the exact directory
-// ObjectIdentityV1 that the current closure must still be reachable through:
-// path A copies it from AllocationProvisionReceiptV1.LiveIdentity; path B
-// copies it from
-// ExistingWorktreeBindReceiptV1.Observation.TargetCurrentName.ObjectIdentity.
-// It is never persisted, carries no bearer token, and exposes no path beyond
-// the closure's own working directory. Both paths converge on this single
-// value so source verification, spawn construction and process observation
-// treat allocation authority uniformly without fabricating a provision
-// receipt for path B.
+// verification and spawn construction. The durable path A receipt has an
+// exact live identity. The durable path B receipt has an APFS-stable identity
+// whose size/link count are normalized; after the stable current-name check,
+// path B is upgraded to the freshly observed exact live identity. It is never
+// persisted, carries no bearer token, and exposes no path beyond the closure's
+// own working directory. The supervisor therefore still receives exact,
+// mutation-adjacent source-gate values on both paths.
 type preparedAllocationSource struct {
-	directoryIdentity allocationcontrol.ObjectIdentityV1
+	liveIdentity launchidentity.LiveIdentity
 }
 
 func (s *DurableStore) verifyPreparedCurrentSourcesLocked(projection *Ingress, prepared PreparedExecutionV1, state AttemptAuthorityState) (launchidentity.ClosureV1, preparedAllocationSource, error) {
 	var directoryIdentity allocationcontrol.ObjectIdentityV1
+	stableDirectory := false
 	if prepared.AllocationProvisionReceiptFactDigest != "" {
 		// Path A: recheck the durable AllocationProvision applied receipt and
 		// copy its live directory identity. No existing-worktree receipt is
@@ -128,6 +126,7 @@ func (s *DurableStore) verifyPreparedCurrentSourcesLocked(projection *Ingress, p
 			return launchidentity.ClosureV1{}, preparedAllocationSource{}, err
 		}
 		directoryIdentity = worktree.receipt.Observation.TargetCurrentName.ObjectIdentity
+		stableDirectory = true
 	}
 	closure, err := state.LaunchClosure.Closure()
 	if err != nil {
@@ -137,7 +136,12 @@ func (s *DurableStore) verifyPreparedCurrentSourcesLocked(projection *Ingress, p
 	if err != nil {
 		return launchidentity.ClosureV1{}, preparedAllocationSource{}, err
 	}
-	observed, err := launchidentity.VerifyCurrentClosure(closure, live)
+	var observed launchidentity.CurrentClosureObservation
+	if stableDirectory {
+		observed, err = launchidentity.VerifyCurrentClosureWithStableDirectoryIdentity(closure, live)
+	} else {
+		observed, err = launchidentity.VerifyCurrentClosure(closure, live)
+	}
 	if err != nil || observed.LaunchMaterialsDigest != prepared.LaunchMaterialsDigest || observed.AgentLaunchSpecDigest != prepared.AgentLaunchSpecDigest || observed.Pi0844IdentityDigest != prepared.Pi0844IdentityDigest || observed.WorkingDirectory.CanonicalPath != closure.WorkingDirectory {
 		return launchidentity.ClosureV1{}, preparedAllocationSource{}, ErrPreparedExecutionUnavailable
 	}
@@ -145,7 +149,7 @@ func (s *DurableStore) verifyPreparedCurrentSourcesLocked(projection *Ingress, p
 	if err != nil || identity.IdentityDigest != prepared.Pi0844IdentityDigest {
 		return launchidentity.ClosureV1{}, preparedAllocationSource{}, ErrPreparedExecutionConflict
 	}
-	return closure, preparedAllocationSource{directoryIdentity: directoryIdentity}, nil
+	return closure, preparedAllocationSource{liveIdentity: launchidentity.LiveIdentityFromObject(observed.WorkingDirectory)}, nil
 }
 
 func (s *DurableStore) startPreparedSupervisorLocked(ctx context.Context, projection *Ingress, state AttemptAuthorityState) (*processsupervisor.Client, AttemptAuthorityState, error) {
@@ -324,7 +328,7 @@ func (s *DurableStore) appendPreparedSupervisorOutcomeLocked(projection *Ingress
 }
 
 func preparedSpawnPayload(state AttemptAuthorityState, closure launchidentity.ClosureV1, source preparedAllocationSource) (processsupervisor.SpawnPayload, error) {
-	live, err := preparedSupervisorAllocationLiveIdentity(source.directoryIdentity)
+	live, err := preparedSupervisorAllocationLiveIdentity(source.liveIdentity)
 	if err != nil {
 		return processsupervisor.SpawnPayload{}, err
 	}
@@ -362,13 +366,14 @@ func preparedHeldObjectSpec(role string, object launchidentity.ObjectV1, kind st
 }
 
 func preparedProcessObservation(closure launchidentity.ClosureV1, source preparedAllocationSource, outcome SupervisorProcessOutcome) (ProcessObservation, error) {
-	working, err := preparedAllocationLiveIdentity(source.directoryIdentity)
-	if err != nil {
-		return ProcessObservation{}, err
+	working := source.liveIdentity
+	if working.Validate() != nil {
+		return ProcessObservation{}, ErrPreparedExecutionConflict
 	}
 	// The authenticated report binds cwd through WorkingObjectDigest and the
-	// exact-set digest. The persisted object fields come from the same closure
-	// and allocation receipt verified immediately before spawn.
+	// exact-set digest. The persisted object fields come from the current live
+	// directory observation verified immediately before spawn; path B first
+	// binds that observation to the stable RB1 receipt identity.
 	return SealProcessObservation(ProcessObservation{
 		PID: outcome.Process.PID, PGID: outcome.Process.ProcessGroupID, BirthSeconds: outcome.Process.BirthSeconds, BirthMicroseconds: outcome.Process.BirthMicroseconds,
 		WorkingDirectory: closure.WorkingDirectory, WorkingDirectoryDevice: working.Device, WorkingDirectoryInode: working.Inode,
@@ -396,10 +401,9 @@ func preparedAllocationLiveIdentity(identity allocationcontrol.ObjectIdentityV1)
 	return live, nil
 }
 
-func preparedSupervisorAllocationLiveIdentity(identity allocationcontrol.ObjectIdentityV1) (processsupervisor.AllocationLiveIdentity, error) {
-	live, err := preparedAllocationLiveIdentity(identity)
-	if err != nil {
-		return processsupervisor.AllocationLiveIdentity{}, err
+func preparedSupervisorAllocationLiveIdentity(live launchidentity.LiveIdentity) (processsupervisor.AllocationLiveIdentity, error) {
+	if live.Validate() != nil {
+		return processsupervisor.AllocationLiveIdentity{}, ErrPreparedExecutionConflict
 	}
 	return processsupervisor.AllocationLiveIdentity{Device: live.Device, Inode: live.Inode, FileType: "directory", UID: live.UID, GID: live.GID, Mode: live.Mode, LinkCount: live.LinkCount, Size: live.Size}, nil
 }
