@@ -141,13 +141,6 @@ type launchChildSpecV2 struct {
 	Environment                 []string              `json:"environment"`
 }
 
-func (spec launchChildSpecV2) canonical() ([]byte, error) {
-	if spec.validate() != nil {
-		return nil, ErrInvalid
-	}
-	return canonicalValue(spec)
-}
-
 func (spec launchChildSpecV2) validate() error {
 	const (
 		workingDirectoryFD = 6

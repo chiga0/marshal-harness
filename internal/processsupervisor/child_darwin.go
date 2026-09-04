@@ -10,6 +10,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func (spec launchChildSpecV2) canonical() ([]byte, error) {
+	if spec.validate() != nil {
+		return nil, ErrInvalid
+	}
+	return canonicalValue(spec)
+}
+
 func inheritedInvocationKind() (string, error) {
 	var stat unix.Stat_t
 	if err := unix.Fstat(int(SupervisorBootstrapFD), &stat); err != nil {
