@@ -83,6 +83,22 @@ func ValidateFixedStartRunDeliveryReceipt(pending FixedDeliveryPending, receipt 
 	return nil
 }
 
+// ValidateFixedStartRunDeliveryResult validates the self-contained success
+// tuple returned by the fixed server. The immutable pending remains the
+// server-side delivery authority; this narrower check lets an already-
+// authenticated client prove that the receipt and public successor describe
+// the same exact committed start before it admits the server's derived
+// projection mutation into its read-only root observation.
+func ValidateFixedStartRunDeliveryResult(started application.RunStartProjection, receipt FixedDeliveryReceipt) error {
+	if started.Validate() != nil || validateFixedDeliveryReceipt(receipt) != nil ||
+		receipt.RunID != started.Run.RunID || receipt.AttemptID != started.Run.AttemptID ||
+		receipt.PostRevision != started.Run.Sequence || receipt.PostAuthorityHead != started.Run.AuthorityHead ||
+		receipt.ApplicationReceiptFactDigest != started.Run.AuthorityHead || receipt.PreparationDigest != started.Prepared.PreparationDigest {
+		return ErrFixedDeliveryConflict
+	}
+	return nil
+}
+
 // FixedStartRunDeliveryBinding is the single canonical digest projection used
 // by the authenticated transport and the immutable delivery store. Keeping
 // this derivation in productionruntime prevents the transport from growing a

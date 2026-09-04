@@ -89,7 +89,20 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	if response.SchemaVersion == "" {
 		return httpResponse{}, responseErr
 	}
-	if response.Operation != operation || connection.Recheck(ctx) != nil {
+	if response.Operation != operation {
+		return httpResponse{}, ErrConflict
+	}
+	var recheckErr error
+	if operation == "start-run" && responseErr == nil && response.Started != nil && response.DeliveryReceipt != nil {
+		startRequest, ok := request.(application.StartRunRequest)
+		if !ok || response.Started.Prepared.RunID != startRequest.RunID || response.Started.Prepared.Sequence != startRequest.ExpectedSequence || response.Started.Prepared.AuthorityHead != startRequest.ExpectedAuthorityHead {
+			return httpResponse{}, ErrConflict
+		}
+		recheckErr = connection.RecheckStartRun(ctx, *response.Started, *response.DeliveryReceipt)
+	} else {
+		recheckErr = connection.Recheck(ctx)
+	}
+	if recheckErr != nil {
 		return httpResponse{}, ErrConflict
 	}
 	if connection.CloseWrite() != nil {

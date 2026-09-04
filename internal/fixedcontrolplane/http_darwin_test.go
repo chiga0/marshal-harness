@@ -362,6 +362,51 @@ func TestFixedClientPendingStartCompletesAuthenticatedResponseProtocol(t *testin
 	}
 }
 
+func TestFixedClientSuccessfulStartRechecksExactResultTuple(t *testing.T) {
+	fixture := newEndpointFixture(t)
+	endpoint, err := OpenEndpoint(context.Background(), fixture.authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = endpoint.Close() })
+	port, delivery := testHTTPApplication()
+	router, err := NewHTTPRouter(port, delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() {
+		connection, acceptErr := endpoint.Accept(context.Background())
+		if acceptErr != nil {
+			served <- acceptErr
+			return
+		}
+		defer connection.Close()
+		served <- router.ServeAuthenticated(context.Background(), connection)
+	}()
+	clientAuthority, err := productionruntime.OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientAuthority.Close()
+	request := application.StartRunRequest{RunID: port.run.RunID, ExpectedSequence: port.started.Prepared.Sequence, ExpectedAuthorityHead: port.started.Prepared.AuthorityHead}
+	projection, err := CallStartRun(context.Background(), clientAuthority, "start:successful-client", request, time.Now().UTC().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("CallStartRun: %v", err)
+	}
+	if projection.Projection != port.started || productionruntime.ValidateFixedStartRunDeliveryResult(projection.Projection, projection.Receipt) != nil {
+		t.Fatalf("projection=%+v receipt=%+v", projection.Projection, projection.Receipt)
+	}
+	select {
+	case serveErr := <-served:
+		if serveErr != nil {
+			t.Fatalf("serve: %v", serveErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve timeout")
+	}
+}
+
 func TestFixedClientStartRunBindingMatchesDurableDeliveryBinding(t *testing.T) {
 	port, _ := testHTTPApplication()
 	request := application.StartRunRequest{RunID: port.run.RunID, ExpectedSequence: port.started.Prepared.Sequence, ExpectedAuthorityHead: port.started.Prepared.AuthorityHead}

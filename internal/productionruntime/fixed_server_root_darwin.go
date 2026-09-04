@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"golang.org/x/sys/unix"
 )
@@ -222,6 +223,15 @@ func openFixedServerRoot(repository *CanonicalRepositoryRoot) (fixedServerRoot, 
 			return cleanup(err)
 		}
 	}
+	// Existing-worktree projections are produced lazily by the first real
+	// StartRun. Materialize their stable parent before freezing runtime-v1;
+	// otherwise that legitimate first projection adds a child directory and
+	// makes the fixed server reject its own delivery receipt as root drift.
+	// Files inside this directory remain rebuildable and are still validated by
+	// allocationcontrol; only the parent name/object is admitted here.
+	if err := ensureFixedExistingWorktreeProjectionRoot(root.nodes[2].file); err != nil {
+		return cleanup(err)
+	}
 	// Directory creation legitimately changes parent link counts. Refresh the
 	// complete post-create observation once, so the authority-root digest is
 	// stable across a cold reopen of the same hierarchy.
@@ -318,6 +328,98 @@ func validateFixedServerRoot(root fixedServerRoot, count int) error {
 		}
 	}
 	return nil
+}
+
+func ensureFixedExistingWorktreeProjectionRoot(runtimeRoot *os.File) error {
+	if runtimeRoot == nil {
+		return ErrFixedDeliveryConflict
+	}
+	created := false
+	if err := unix.Mkdirat(int(runtimeRoot.Fd()), allocationcontrol.ExistingWorktreeProjectionDirectory, 0o700); err != nil {
+		if !errors.Is(err, unix.EEXIST) {
+			return ErrFixedDeliveryConflict
+		}
+	} else {
+		created = true
+	}
+	fd, err := unix.Openat(int(runtimeRoot.Fd()), allocationcontrol.ExistingWorktreeProjectionDirectory, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW_ANY, 0)
+	if err != nil {
+		return ErrFixedDeliveryConflict
+	}
+	projectionRoot := os.NewFile(uintptr(fd), "marshal-fixed-server-existing-worktree-bindings")
+	if projectionRoot == nil {
+		_ = unix.Close(fd)
+		return ErrFixedDeliveryConflict
+	}
+	defer projectionRoot.Close()
+	held, heldErr := observeFixedServerDirectory(fd, true)
+	named, namedErr := observeFixedServerDirectoryAt(int(runtimeRoot.Fd()), allocationcontrol.ExistingWorktreeProjectionDirectory, true)
+	if heldErr != nil || namedErr != nil || !sameFixedServerDirectory(held, named, true) {
+		return ErrFixedDeliveryConflict
+	}
+	if created && (projectionRoot.Sync() != nil || runtimeRoot.Sync() != nil) {
+		return ErrFixedDeliveryUnknown
+	}
+	return nil
+}
+
+// adoptFixedServerRuntimeMutation advances runtime-v1 only after the caller
+// has independently joined the current RB1 ledger to the exact derived
+// projection bytes. The runtime directory must still contain exactly the two
+// admitted children, and the authoritative control/delivery chain must retain
+// its pre-mutation identity. This admits the projection's RENAME_SWAP without
+// washing through an unrelated sibling insertion or control-directory ABA.
+func adoptFixedServerRuntimeMutation(root *fixedServerRoot) error {
+	if root == nil || validateFixedServerRoot(*root, 2) != nil {
+		return ErrFixedDeliveryConflict
+	}
+	marshalRoot := root.nodes[1]
+	runtimeRoot := root.nodes[2]
+	held, heldErr := observeFixedServerDirectory(int(runtimeRoot.file.Fd()), true)
+	named, namedErr := observeFixedServerDirectoryAt(int(marshalRoot.file.Fd()), runtimeRoot.name, true)
+	if heldErr != nil || namedErr != nil || !sameFixedServerDirectory(held, runtimeRoot.identity, false) || !sameFixedServerDirectory(named, runtimeRoot.identity, false) || !sameFixedServerDirectory(held, named, true) {
+		return ErrFixedDeliveryConflict
+	}
+	if _, err := runtimeRoot.file.Seek(0, 0); err != nil {
+		return ErrFixedDeliveryConflict
+	}
+	entries, err := runtimeRoot.file.ReadDir(-1)
+	if err != nil || len(entries) != 2 {
+		return ErrFixedDeliveryConflict
+	}
+	expected := map[string]bool{
+		fixedServerRootComponents[2]:                          false,
+		allocationcontrol.ExistingWorktreeProjectionDirectory: false,
+	}
+	for _, entry := range entries {
+		if _, ok := expected[entry.Name()]; !ok || !entry.IsDir() || expected[entry.Name()] {
+			return ErrFixedDeliveryConflict
+		}
+		expected[entry.Name()] = true
+	}
+	for _, found := range expected {
+		if !found {
+			return ErrFixedDeliveryConflict
+		}
+	}
+	control := root.nodes[3]
+	controlHeld, controlHeldErr := observeFixedServerDirectory(int(control.file.Fd()), true)
+	controlNamed, controlNamedErr := observeFixedServerDirectoryAt(int(runtimeRoot.file.Fd()), control.name, true)
+	if controlHeldErr != nil || controlNamedErr != nil || !sameFixedServerDirectory(controlHeld, control.identity, true) || !sameFixedServerDirectory(controlNamed, control.identity, true) || !sameFixedServerDirectory(controlHeld, controlNamed, true) {
+		return ErrFixedDeliveryConflict
+	}
+	delivery := root.nodes[4]
+	deliveryHeld, deliveryHeldErr := observeFixedServerDirectory(int(delivery.file.Fd()), true)
+	deliveryNamed, deliveryNamedErr := observeFixedServerDirectoryAt(int(control.file.Fd()), delivery.name, true)
+	if deliveryHeldErr != nil || deliveryNamedErr != nil || !sameFixedServerDirectory(deliveryHeld, delivery.identity, false) || !sameFixedServerDirectory(deliveryNamed, delivery.identity, false) || !sameFixedServerDirectory(deliveryHeld, deliveryNamed, true) {
+		return ErrFixedDeliveryConflict
+	}
+	projection, projectionErr := observeFixedServerDirectoryAt(int(runtimeRoot.file.Fd()), allocationcontrol.ExistingWorktreeProjectionDirectory, true)
+	if projectionErr != nil || projection.Device == 0 || projection.Inode == 0 {
+		return ErrFixedDeliveryConflict
+	}
+	root.nodes[2].identity = held
+	return validateFixedServerRoot(*root, len(root.nodes))
 }
 
 // adoptFixedServerControlMutation advances only the frozen mutation

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
@@ -59,11 +60,12 @@ type Endpoint struct {
 
 type AuthenticatedConnection struct {
 	*net.UnixConn
-	Binding RequestBinding
-	Peer    processsupervisor.CoreIdentity
-	recheck func(context.Context) error
-	release func()
-	once    sync.Once
+	Binding         RequestBinding
+	Peer            processsupervisor.CoreIdentity
+	recheck         func(context.Context) error
+	recheckStartRun func(context.Context, application.RunStartProjection, productionruntime.FixedDeliveryReceipt) error
+	release         func()
+	once            sync.Once
 }
 
 func (connection *AuthenticatedConnection) Close() error {
@@ -82,6 +84,16 @@ func (connection *AuthenticatedConnection) Recheck(ctx context.Context) error {
 		return ErrConflict
 	}
 	if err := connection.recheck(ctx); err != nil {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (connection *AuthenticatedConnection) RecheckStartRun(ctx context.Context, started application.RunStartProjection, receipt productionruntime.FixedDeliveryReceipt) error {
+	if connection == nil || ctx == nil || connection.recheckStartRun == nil || productionruntime.ValidateFixedStartRunDeliveryResult(started, receipt) != nil {
+		return ErrConflict
+	}
+	if err := connection.recheckStartRun(ctx, started, receipt); err != nil {
 		return ErrConflict
 	}
 	return nil
@@ -395,7 +407,12 @@ func Dial(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 		return fail(ErrConflict)
 	}
 	_ = connection.SetDeadline(time.Time{})
-	return &AuthenticatedConnection{UnixConn: connection, Binding: binding, Peer: peer, recheck: authenticatedPeerRecheck(connection, peer, authority.Recheck), release: func() {}}, nil
+	return &AuthenticatedConnection{
+		UnixConn: connection, Binding: binding, Peer: peer,
+		recheck:         authenticatedPeerRecheck(connection, peer, authority.Recheck),
+		recheckStartRun: authenticatedPeerStartRunRecheck(connection, peer, authority),
+		release:         func() {},
+	}, nil
 }
 
 func authenticatedPeerRecheck(connection *net.UnixConn, expected processsupervisor.CoreIdentity, authority func(context.Context) error) func(context.Context) error {
@@ -408,6 +425,22 @@ func authenticatedPeerRecheck(connection *net.UnixConn, expected processsupervis
 			return ErrConflict
 		}
 		return nil
+	}
+}
+
+func authenticatedPeerStartRunRecheck(connection *net.UnixConn, expected processsupervisor.CoreIdentity, authority *productionruntime.FixedEndpointAuthority) func(context.Context, application.RunStartProjection, productionruntime.FixedDeliveryReceipt) error {
+	return func(ctx context.Context, started application.RunStartProjection, receipt productionruntime.FixedDeliveryReceipt) error {
+		if connection == nil || ctx == nil || authority == nil {
+			return ErrConflict
+		}
+		observed, err := processsupervisor.ObserveFixedMarshalPeer(connection)
+		if err != nil || observed != expected {
+			return ErrConflict
+		}
+		if authority.AdoptAuthenticatedClientStartRun(ctx, started, receipt) != nil {
+			return ErrConflict
+		}
+		return authenticatedPeerRecheck(connection, expected, authority.Recheck)(ctx)
 	}
 }
 

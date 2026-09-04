@@ -246,7 +246,7 @@ class EvidenceTest(unittest.TestCase):
 
         run_dir = os.path.join(self.repository, ".marshal", "runs", self.run_id)
         os.makedirs(os.path.join(run_dir, "attempts", self.attempt_id))
-        write_json(os.path.join(run_dir, "state.json"), {"runId": self.run_id, "state": "RUNNING", "currentAttemptId": self.attempt_id, "attemptsUsed": 1, "sequence": 3, "baseSha": self.head})
+        write_json(os.path.join(run_dir, "state.json"), {"runId": self.run_id, "state": "READY", "attemptsUsed": 0, "sequence": 2, "baseSha": self.head})
         write_jsonl(os.path.join(run_dir, "events.jsonl"), [event1, event2, event3])
 
         request_key = "request-t1"

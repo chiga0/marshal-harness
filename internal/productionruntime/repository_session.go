@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
@@ -174,6 +175,54 @@ func (session *RepositorySession) OwnerProjection(ctx context.Context) (OwnerPro
 	return projection, err
 }
 
+// InspectRun reads the current RB1 Run projection under the resident
+// repository owner without composing a Run runtime. Inspection is a pure
+// query: a RUNNING Attempt may require Attach/rebind before its next lifecycle
+// mutation, but merely reporting the durable Run state must not manufacture an
+// owner successor or invoke recovery mechanics.
+func (session *RepositorySession) InspectRun(ctx context.Context, request application.InspectRunRequest) (result application.RunProjection, resultErr error) {
+	if ctx == nil {
+		return application.RunProjection{}, application.NewError("inspect-run", application.ReasonInvalidRequest)
+	}
+	if err := request.Validate(); err != nil {
+		return application.RunProjection{}, err
+	}
+	borrow, err := session.borrow()
+	if err != nil {
+		return application.RunProjection{}, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, borrow.Close()) }()
+
+	lease, err := session.runs.AcquireExisting(request.RunID)
+	if err != nil {
+		return application.RunProjection{}, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, lease.Release()) }()
+
+	err = session.owner.WithCurrentOwnerLock(ctx, session.acquisition, func() error {
+		current, found, openErr := session.ingress.OpenOwner(session.acquisition.Scope)
+		if openErr != nil {
+			return openErr
+		}
+		if !found || current.Acquisition != session.acquisition || current.FactDigest != session.ownerState.FactDigest {
+			return application.NewError("inspect-run", application.ReasonOwnerNotCurrent)
+		}
+		authority, readErr := session.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
+		if readErr != nil {
+			return readErr
+		}
+		if authority.Run.Validate() != nil || authority.Run.RunID != request.RunID {
+			return application.NewError("inspect-run", application.ReasonAuthorityConflict)
+		}
+		result = authority.Run
+		return nil
+	})
+	if err != nil {
+		return application.RunProjection{}, err
+	}
+	return result, nil
+}
+
 // ReconcileStartRun reads the exact current PreparedExecution/RUNNING pair
 // without composing a Run runtime. Fixed-delivery reconciliation happens
 // after StartRun has already released its short-lived runtime; reopening that
@@ -244,6 +293,56 @@ func (session *RepositorySession) ReconcileStartRun(ctx context.Context, request
 		return nil
 	})
 	return result, found, err
+}
+
+// AdoptExistingWorktreeProjectionMutation closes the one legitimate
+// runtime-v1 mutation made by a successful path-B preparation. It first
+// re-derives the exact PreparedExecution and RB1 snapshot under the current
+// repository owner, then verifies the projection bytes through the original
+// held descriptor graph. Only after that join may the fixed root advance its
+// runtime-v1 mutation observation.
+func (session *RepositorySession) AdoptExistingWorktreeProjectionMutation(ctx context.Context, graph allocationcontrol.ExistingWorktreeDescriptorGraphV1, prepared application.PreparedRunStart) (resultErr error) {
+	if ctx == nil || prepared.Validate() != nil {
+		return application.NewError("adopt-existing-worktree-projection", application.ReasonInvalidRequest)
+	}
+	borrow, err := session.borrow()
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, borrow.Close()) }()
+	return session.owner.WithCurrentOwnerLock(ctx, session.acquisition, func() error {
+		current, found, openErr := session.ingress.OpenOwner(session.acquisition.Scope)
+		if openErr != nil || !found || current.Acquisition != session.acquisition || current.FactDigest != session.ownerState.FactDigest {
+			return application.NewError("adopt-existing-worktree-projection", application.ReasonOwnerNotCurrent)
+		}
+		verifier := &borrowedOwnerVerifier{acquisition: session.acquisition, active: true}
+		defer verifier.close()
+		resolved, resolveErr := session.ingress.ResolvePreparedRunStart(ctx, verifier, session.acquisition, resultingress.PreparedRunStartKey{
+			RunID: prepared.RunID, ReadySequence: prepared.Sequence, ReadyAuthorityHead: prepared.AuthorityHead,
+		})
+		if resolveErr != nil {
+			return reconcileStartRunStageError("adopt-existing-worktree-projection-lookup", resolveErr)
+		}
+		projected, projectErr := session.ingress.PrepareMacRunStart(ctx, verifier, session.acquisition, resolved.PreparationDigest)
+		if projectErr != nil || projected != prepared {
+			return application.NewError("adopt-existing-worktree-projection", application.ReasonAuthorityConflict)
+		}
+		snapshot, snapshotErr := session.ingress.CurrentExistingWorktreeSnapshot(resolved.AttemptIdentity)
+		if snapshotErr != nil {
+			return application.NewError("adopt-existing-worktree-projection-snapshot", application.ReasonAuthorityConflict)
+		}
+		if allocationcontrol.VerifyExistingWorktreeProjectionFromGraph(graph, snapshot) != nil {
+			return application.NewError("adopt-existing-worktree-projection-files", application.ReasonAuthorityConflict)
+		}
+		if adoptFixedServerRuntimeMutation(&session.fixedRoot) != nil {
+			return application.NewError("adopt-existing-worktree-projection-root", application.ReasonAuthorityConflict)
+		}
+		after, afterFound, afterErr := session.ingress.OpenOwner(session.acquisition.Scope)
+		if afterErr != nil || !afterFound || after != current {
+			return application.NewError("adopt-existing-worktree-projection", application.ReasonOwnerNotCurrent)
+		}
+		return nil
+	})
 }
 
 // reconcileStartRunStageError retains the internal error for callers while
