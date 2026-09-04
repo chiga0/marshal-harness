@@ -205,7 +205,7 @@ func (session *RepositorySession) ReconcileStartRun(ctx context.Context, request
 	err = session.owner.WithCurrentOwnerLock(ctx, session.acquisition, func() error {
 		current, currentFound, openErr := session.ingress.OpenOwner(session.acquisition.Scope)
 		if openErr != nil {
-			return openErr
+			return reconcileStartRunStageError("reconcile-start-run-owner-read", openErr)
 		}
 		if !currentFound || current.Acquisition != session.acquisition || current.FactDigest != session.ownerState.FactDigest {
 			return application.NewError("reconcile-start-run", application.ReasonOwnerNotCurrent)
@@ -220,18 +220,18 @@ func (session *RepositorySession) ReconcileStartRun(ctx context.Context, request
 			return nil
 		}
 		if resolveErr != nil {
-			return resolveErr
+			return reconcileStartRunStageError("reconcile-start-run-prepared-lookup", resolveErr)
 		}
 		prepared, prepareErr := session.ingress.PrepareMacRunStart(ctx, verifier, session.acquisition, resolved.PreparationDigest)
 		if prepareErr != nil {
-			return prepareErr
+			return reconcileStartRunStageError("reconcile-start-run-prepared-projection", prepareErr)
 		}
 		if prepared.RunID != request.RunID || prepared.Sequence != request.ExpectedSequence || prepared.AuthorityHead != request.ExpectedAuthorityHead {
 			return application.NewError("reconcile-start-run", application.ReasonAuthorityConflict)
 		}
 		authority, readErr := session.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
 		if readErr != nil {
-			return readErr
+			return reconcileStartRunStageError("reconcile-start-run-runstore-read", readErr)
 		}
 		if authority.Run.State != domain.StateRunning || authority.PreparationDigest != prepared.PreparationDigest {
 			return nil
@@ -244,6 +244,16 @@ func (session *RepositorySession) ReconcileStartRun(ctx context.Context, request
 		return nil
 	})
 	return result, found, err
+}
+
+// reconcileStartRunStageError retains the internal error for callers while
+// exposing only a closed, path-free operation label at the server diagnostic
+// boundary. It changes no admission or recovery decision.
+func reconcileStartRunStageError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.Join(application.NewError(operation, application.ReasonAuthorityConflict), err)
 }
 
 func (borrow *repositorySessionBorrow) Close() error {
