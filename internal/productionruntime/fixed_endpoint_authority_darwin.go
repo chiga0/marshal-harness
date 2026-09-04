@@ -124,7 +124,10 @@ func OpenFixedEndpointClientAuthority(ctx context.Context, repositoryPath string
 		_ = client.close()
 		return nil, cause
 	}
-	ingressFD, err := unix.Openat(int(root.nodes[1].file.Fd()), ResultIngressDirName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW_ANY, 0)
+	// ADR 0066 fixes ResultIngress below the held runtime-v1 directory. Using
+	// the .marshal descriptor here would open the obsolete pre-S2 layout and
+	// make a healthy resident server unreachable to its read-only client.
+	ingressFD, err := unix.Openat(int(root.nodes[2].file.Fd()), ResultIngressDirName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW_ANY, 0)
 	if err != nil {
 		return fail(ErrFixedDeliveryConflict)
 	}

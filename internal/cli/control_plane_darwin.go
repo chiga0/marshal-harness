@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,7 +84,7 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 		},
 	})
 	if err != nil {
-		fmt.Fprintln(stderr, "control-plane serve 失败：resident recovery 未完成。")
+		fmt.Fprintf(stderr, "control-plane serve 失败：compositionStage=%s。\n", sealedRepositoryOpenStage(err))
 		writeControlPlaneRequestFailure(stderr, err)
 		return ExitFailure
 	}
@@ -170,6 +171,34 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 		return ExitFailure
 	}
 	return ExitOK
+}
+
+func sealedRepositoryOpenStage(err error) string {
+	if err == nil {
+		return "none"
+	}
+	message := err.Error()
+	for _, stage := range []string{
+		"open owner scope", "open result ingress", "acquire owner", "close owner phase", "claim owner",
+		"open fixed root", "open runstore", "seal prepared execution", "validate fixed root",
+	} {
+		if strings.Contains(message, "repository session: "+stage+":") {
+			return "repository-session-" + strings.ReplaceAll(stage, " ", "-")
+		}
+	}
+	for _, stage := range []string{
+		"resolve Pi runtime", "resolve Pi entrypoint", "locate fixed marshal", "resolve fixed marshal",
+		"prepare authority directory", "compile contracts", "open owner directory", "open ingress directory",
+		"open control root", "open provider directory", "open state root", "bind run store", "bind canonical repository root",
+		"open dispatch ledger", "observe owner acquisition", "observe attestation", "open repository session",
+		"open provider authority", "construct provider authority", "persist provider authority", "observe Pi identity",
+		"derive Pi identity", "construct Pi status profile", "recover repository runs",
+	} {
+		if strings.Contains(message, "sealed repository application: "+stage+":") {
+			return strings.ReplaceAll(stage, " ", "-")
+		}
+	}
+	return "unknown"
 }
 
 // writeControlPlaneRequestFailure deliberately emits only the typed

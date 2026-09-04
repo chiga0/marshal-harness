@@ -105,8 +105,9 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	}
 
 	ingressDir, ledgerDir, allocationRoot, ownerDir := productionruntime.CompositionPaths(config.StateRoot)
-	providerDir := filepath.Join(config.StateRoot, "provider-authority")
-	controlRootPath := filepath.Join(config.StateRoot, "owner-control")
+	runtimeRoot := productionruntime.RuntimeRootPath(config.StateRoot)
+	providerDir := filepath.Join(runtimeRoot, "provider-authority")
+	controlRootPath := filepath.Join(runtimeRoot, "control")
 	for _, dir := range []string{ingressDir, ledgerDir, allocationRoot, ownerDir, providerDir, controlRootPath} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("sealed repository application: prepare authority directory: %w", err)

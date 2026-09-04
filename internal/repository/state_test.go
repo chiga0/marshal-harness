@@ -38,6 +38,55 @@ func TestInitIsIdempotentAndMarshalStateIsIgnored(t *testing.T) {
 	}
 }
 
+func TestInitRepairsExistingStateRootToOwnerOnly(t *testing.T) {
+	repository := t.TempDir()
+	runGit(t, repository, "init", "-q")
+	stateRoot := filepath.Join(repository, ".marshal")
+	if err := os.Mkdir(stateRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(stateRoot, "operator-evidence")
+	if err := os.WriteFile(sentinel, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := Discover(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Init(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("state root mode=%#o", info.Mode().Perm())
+	}
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "preserve" {
+		t.Fatalf("existing state changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestInitRejectsSymlinkStateRoot(t *testing.T) {
+	repository := t.TempDir()
+	runGit(t, repository, "init", "-q")
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(repository, ".marshal")); err != nil {
+		t.Fatal(err)
+	}
+	state, err := Discover(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Init(); err == nil {
+		t.Fatal("symlink state root admitted")
+	}
+	if _, err := os.Stat(filepath.Join(target, "repo.json")); !os.IsNotExist(err) {
+		t.Fatalf("symlink target mutated: %v", err)
+	}
+}
+
 func TestStateOverrideRejectsDifferentRepository(t *testing.T) {
 	first := t.TempDir()
 	second := t.TempDir()
