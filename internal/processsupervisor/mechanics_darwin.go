@@ -173,6 +173,9 @@ func NewPlatformMechanics(controlDirectory *os.File) (Mechanics, error) {
 	if controlDirectory == nil {
 		return nil, ErrInvalid
 	}
+	if !darwinSetexecBridgeLinked() {
+		return nil, ErrUnavailable
+	}
 	path, err := os.Executable()
 	if err != nil || !absoluteClean(path) {
 		return nil, ErrConflict
