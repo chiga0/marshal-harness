@@ -20,8 +20,6 @@ type Runtime struct {
 	closeOwner bool
 }
 
-var _ application.PublicApplicationPort = (*Runtime)(nil)
-
 // newRuntime is package-private until the complete composition root can
 // construct all mandatory components. This foundation cannot be selected by
 // CLI/server and cannot truthfully report production readiness.

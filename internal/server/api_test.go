@@ -110,6 +110,22 @@ func (port *fixtureApplicationPort) ReconcileStartRun(_ context.Context, request
 	return application.RunStartProjection{Prepared: port.prepared, Run: port.successor}, true, nil
 }
 
+func (port *fixtureApplicationPort) CollectRunResult(context.Context, application.CollectRunResultRequest) (application.CollectedRunProjection, error) {
+	return application.CollectedRunProjection{}, application.NewError("collect-run-result", application.ReasonCompositionIncomplete)
+}
+
+func (port *fixtureApplicationPort) VerifyRun(context.Context, application.VerifyRunRequest) (application.VerificationProjection, error) {
+	return application.VerificationProjection{}, application.NewError("verify-run", application.ReasonCompositionIncomplete)
+}
+
+func (port *fixtureApplicationPort) BuildReviewPacket(context.Context, application.BuildReviewPacketRequest) (application.ReviewPacketProjection, error) {
+	return application.ReviewPacketProjection{}, application.NewError("build-review-packet", application.ReasonCompositionIncomplete)
+}
+
+func (port *fixtureApplicationPort) ApplyReviewDecision(context.Context, application.ApplyReviewDecisionRequest) (application.ReviewDecisionProjection, error) {
+	return application.ReviewDecisionProjection{}, application.NewError("apply-review-decision", application.ReasonCompositionIncomplete)
+}
+
 func readyFixtureApplicationPort() *fixtureApplicationPort {
 	digest := func(character string) string { return "sha256:" + strings.Repeat(character, 64) }
 	ready := application.RunProjection{
@@ -195,6 +211,22 @@ func (port *legacyFixtureApplicationPort) StartRun(ctx context.Context, request 
 
 func (port *legacyFixtureApplicationPort) ReconcileStartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, bool, error) {
 	return application.RunStartProjection{}, false, nil
+}
+
+func (port *legacyFixtureApplicationPort) CollectRunResult(context.Context, application.CollectRunResultRequest) (application.CollectedRunProjection, error) {
+	return application.CollectedRunProjection{}, application.NewError("collect-run-result", application.ReasonCompositionIncomplete)
+}
+
+func (port *legacyFixtureApplicationPort) VerifyRun(context.Context, application.VerifyRunRequest) (application.VerificationProjection, error) {
+	return application.VerificationProjection{}, application.NewError("verify-run", application.ReasonCompositionIncomplete)
+}
+
+func (port *legacyFixtureApplicationPort) BuildReviewPacket(context.Context, application.BuildReviewPacketRequest) (application.ReviewPacketProjection, error) {
+	return application.ReviewPacketProjection{}, application.NewError("build-review-packet", application.ReasonCompositionIncomplete)
+}
+
+func (port *legacyFixtureApplicationPort) ApplyReviewDecision(context.Context, application.ApplyReviewDecisionRequest) (application.ReviewDecisionProjection, error) {
+	return application.ReviewDecisionProjection{}, application.NewError("apply-review-decision", application.ReasonCompositionIncomplete)
 }
 
 func (a *fixtureAdapter) ID() string { return a.id }

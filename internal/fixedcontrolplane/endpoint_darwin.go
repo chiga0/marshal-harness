@@ -60,12 +60,13 @@ type Endpoint struct {
 
 type AuthenticatedConnection struct {
 	*net.UnixConn
-	Binding         RequestBinding
-	Peer            processsupervisor.CoreIdentity
-	recheck         func(context.Context) error
-	recheckStartRun func(context.Context, application.RunStartProjection, productionruntime.FixedDeliveryReceipt) error
-	release         func()
-	once            sync.Once
+	Binding          RequestBinding
+	Peer             processsupervisor.CoreIdentity
+	recheck          func(context.Context) error
+	recheckStartRun  func(context.Context, application.RunStartProjection, productionruntime.FixedDeliveryReceipt) error
+	recheckLifecycle func(context.Context, productionruntime.FixedLifecycleResult, productionruntime.FixedLifecycleReceipt) error
+	release          func()
+	once             sync.Once
 }
 
 func (connection *AuthenticatedConnection) Close() error {
@@ -94,6 +95,16 @@ func (connection *AuthenticatedConnection) RecheckStartRun(ctx context.Context, 
 		return ErrConflict
 	}
 	if err := connection.recheckStartRun(ctx, started, receipt); err != nil {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (connection *AuthenticatedConnection) RecheckLifecycle(ctx context.Context, result productionruntime.FixedLifecycleResult, receipt productionruntime.FixedLifecycleReceipt) error {
+	if connection == nil || ctx == nil || connection.recheckLifecycle == nil || productionruntime.ValidateFixedLifecycleDeliveryResult(result, receipt) != nil {
+		return ErrConflict
+	}
+	if err := connection.recheckLifecycle(ctx, result, receipt); err != nil {
 		return ErrConflict
 	}
 	return nil
@@ -409,10 +420,24 @@ func Dial(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	_ = connection.SetDeadline(time.Time{})
 	return &AuthenticatedConnection{
 		UnixConn: connection, Binding: binding, Peer: peer,
-		recheck:         authenticatedPeerRecheck(connection, peer, authority.Recheck),
-		recheckStartRun: authenticatedPeerStartRunRecheck(connection, peer, authority),
-		release:         func() {},
+		recheck:          authenticatedPeerRecheck(connection, peer, authority.Recheck),
+		recheckStartRun:  authenticatedPeerStartRunRecheck(connection, peer, authority),
+		recheckLifecycle: authenticatedPeerLifecycleRecheck(connection, peer, authority),
+		release:          func() {},
 	}, nil
+}
+
+func authenticatedPeerLifecycleRecheck(connection *net.UnixConn, expected processsupervisor.CoreIdentity, authority *productionruntime.FixedEndpointAuthority) func(context.Context, productionruntime.FixedLifecycleResult, productionruntime.FixedLifecycleReceipt) error {
+	return func(ctx context.Context, result productionruntime.FixedLifecycleResult, receipt productionruntime.FixedLifecycleReceipt) error {
+		if connection == nil || ctx == nil || authority == nil {
+			return ErrConflict
+		}
+		observed, err := processsupervisor.ObserveFixedMarshalPeer(connection)
+		if err != nil || observed != expected || authority.AdoptAuthenticatedClientLifecycle(ctx, result, receipt) != nil {
+			return ErrConflict
+		}
+		return authenticatedPeerRecheck(connection, expected, authority.Recheck)(ctx)
+	}
 }
 
 func authenticatedPeerRecheck(connection *net.UnixConn, expected processsupervisor.CoreIdentity, authority func(context.Context) error) func(context.Context) error {

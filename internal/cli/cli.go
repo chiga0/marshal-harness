@@ -3350,6 +3350,10 @@ func writeUsage(output io.Writer) {
   marshal control-plane status
   marshal control-plane inspect --run RUN_ID
   marshal control-plane start --run RUN_ID --expected-sequence N --expected-authority-head DIGEST --request-key KEY --deadline UTC_RFC3339NANO
+  marshal control-plane collect --run RUN_ID --attempt ATTEMPT_ID --expected-sequence N --expected-authority-head DIGEST --request-key KEY --deadline UTC_RFC3339NANO
+  marshal control-plane verify --run RUN_ID --attempt ATTEMPT_ID --expected-sequence N --expected-authority-head DIGEST --request-key KEY --deadline UTC_RFC3339NANO
+  marshal control-plane review-packet --run RUN_ID --attempt ATTEMPT_ID --expected-sequence N --expected-authority-head DIGEST --request-key KEY --deadline UTC_RFC3339NANO
+  marshal control-plane decision --run RUN_ID --attempt ATTEMPT_ID --expected-sequence N --expected-authority-head DIGEST --request-key KEY --deadline UTC_RFC3339NANO --decision PATH
   marshal task scaffold --draft PATH|- [--preferred-adapter ID --fallback-adapter ID ...]
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
   marshal task approve --run RUN_ID --gate plan|publish [--actor ID] [--json]

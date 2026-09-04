@@ -282,6 +282,113 @@ func fixedDeliveryStarted(request application.StartRunRequest) application.RunSt
 	}}
 }
 
+func advanceFixedDeliveryRunToRunning(t *testing.T, fixture fixedDeliveryFixture) application.RunProjection {
+	t.Helper()
+	lease, err := fixture.session.runs.AcquireExisting(fixture.request.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	state, err := runstore.InspectUnderLease(lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := func(value string) string { return canonical.DigestBytes([]byte(value)) }
+	attemptID := "attempt:fixed-delivery-1"
+	event := domain.RunEvent{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event:fixed-run-start", RunID: state.RunID, AttemptID: attemptID,
+		Sequence: state.Sequence + 1, Type: "run.start-outcome", StateFrom: domain.StateReady, StateTo: domain.StateRunning, Timestamp: time.Date(2029, 1, 1, 0, 0, 2, 0, time.UTC), Actor: &domain.Actor{Type: "system", ID: "test"},
+		Payload: map[string]any{
+			"protocolRevision": "run-start-outcome/v2", "taskId": state.TaskID,
+			"preparationDigest": digest("preparation"), "processStartedFactDigest": digest("process-started"), "resumeOutcomeFactDigest": digest("resume"),
+			"reservationFactDigest": digest("reservation"), "attemptOpenedFactDigest": digest("attempt-opened"), "attemptOrdinal": uint64(1), "attemptsUsedBefore": uint64(0), "maxAttempts": uint64(3),
+			"readySequence": state.Sequence, "readyAuthorityHead": fixture.request.ExpectedAuthorityHead,
+		},
+	}
+	next, err := lifecycle.Reduce(state, event, lifecycle.Guard{LeaseHeld: true, BudgetAvailable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.session.runs.Append(lease, event, state.Sequence); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.session.runs.WriteSnapshot(lease, next); err != nil {
+		t.Fatal(err)
+	}
+	projection, err := fixture.session.runs.ReadRunStartAuthorityUnderLease(context.Background(), lease)
+	if err != nil || projection.Run.State != domain.StateRunning || projection.Run.AttemptID != attemptID {
+		t.Fatalf("running projection=%+v err=%v", projection, err)
+	}
+	return projection.Run
+}
+
+func advanceFixedDeliveryRunToVerifying(t *testing.T, fixture fixedDeliveryFixture, running application.RunProjection) application.CollectedRunProjection {
+	t.Helper()
+	lease, err := fixture.session.runs.AcquireExisting(fixture.request.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	state, err := runstore.InspectUnderLease(lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := func(value string) string { return canonical.DigestBytes([]byte(value)) }
+	event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event:fixed-worker-completed", RunID: state.RunID, AttemptID: running.AttemptID, Sequence: state.Sequence + 1, Type: "worker.completed", StateFrom: domain.StateRunning, StateTo: domain.StateVerifying, Timestamp: time.Date(2029, 1, 1, 0, 0, 3, 0, time.UTC), Actor: &domain.Actor{Type: "system", ID: "test"}, Payload: map[string]any{"resultAdmissionFactDigest": digest("admission"), "resultDRCDigest": digest("drc"), "resultEnvelopeDigest": digest("envelope")}}
+	next, err := lifecycle.Reduce(state, event, lifecycle.Guard{LeaseHeld: true, WorkerProtocolComplete: true, SnapshotRecorded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.session.runs.Append(lease, event, state.Sequence); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.session.runs.WriteSnapshot(lease, next); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := fixture.session.runs.ReadRunStartAuthorityUnderLease(context.Background(), lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return application.CollectedRunProjection{ProtocolRevision: application.FullLifecycleProtocolRevision, Run: authority.Run, AdmissionFactDigest: digest("admission"), DRCDigest: digest("drc"), EnvelopeDigest: digest("envelope")}
+}
+
+func TestFixedLifecycleDeliveryPublishesAndReplaysExactCollectReceipt(t *testing.T) {
+	fixture := newFixedDeliveryFixture(t)
+	running := advanceFixedDeliveryRunToRunning(t, fixture)
+	request := application.CollectRunResultRequest{RunID: running.RunID, AttemptID: running.AttemptID, ExpectedSequence: running.Sequence, ExpectedAuthorityHead: running.AuthorityHead}
+	current := application.CurrentRunRequest(request)
+	binding, err := NewFixedLifecycleDeliveryBinding("request:lifecycle-collect", FixedLifecycleCollectOperation, request, fixture.deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, replay, err := fixture.store.BeginLifecycleBound(context.Background(), "request:lifecycle-collect", FixedLifecycleCollectOperation, request, current, fixture.deadline, binding)
+	if err != nil || replay || validateFixedLifecyclePending(pending) != nil {
+		t.Fatalf("pending=%+v replay=%t err=%v", pending, replay, err)
+	}
+	collected := advanceFixedDeliveryRunToVerifying(t, fixture, running)
+	raw, err := json.Marshal(collected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultDigest, err := canonical.DigestJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := FixedLifecycleResult{Operation: FixedLifecycleCollectOperation, Run: collected.Run, ResultDigest: resultDigest, ApplicationReceiptFactDigest: collected.Run.AuthorityHead}
+	receipt, err := fixture.store.CommitLifecycleDelivery(context.Background(), pending, FixedLifecycleCollectOperation, request, current, result)
+	if err != nil || ValidateFixedLifecycleDeliveryResult(result, receipt) != nil {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	replayedPending, replay, err := fixture.store.BeginLifecycleBound(context.Background(), "request:lifecycle-collect", FixedLifecycleCollectOperation, request, current, fixture.deadline, binding)
+	if err != nil || !replay || replayedPending != pending {
+		t.Fatalf("replayed pending=%+v replay=%t err=%v", replayedPending, replay, err)
+	}
+	replayedReceipt, err := fixture.store.CommitLifecycleDelivery(context.Background(), pending, FixedLifecycleCollectOperation, request, current, result)
+	if err != nil || replayedReceipt != receipt {
+		t.Fatalf("replayed receipt=%+v err=%v", replayedReceipt, err)
+	}
+}
+
 func TestFixedDeliveryBeginPublishesAndExactlyReplaysPending(t *testing.T) {
 	fixture := newFixedDeliveryFixture(t)
 	first, replay, err := fixture.store.BeginStartRun(context.Background(), "request-1", fixture.request, fixture.deadline)

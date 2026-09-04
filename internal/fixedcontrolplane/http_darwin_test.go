@@ -28,10 +28,12 @@ type httpApplicationStub struct {
 	statusCalls         int
 	startCalls          int
 	inspectCalls        int
+	collectCalls        int
 	reconcileCalls      int
 	status              application.StatusProjection
 	started             application.RunStartProjection
 	run                 application.RunProjection
+	collected           application.CollectedRunProjection
 	startErr            error
 	startContextErr     error
 	reconcileContextErr error
@@ -67,17 +69,38 @@ func (stub *httpApplicationStub) InspectRun(context.Context, application.Inspect
 	return stub.run, nil
 }
 
+func (stub *httpApplicationStub) CollectRunResult(context.Context, application.CollectRunResultRequest) (application.CollectedRunProjection, error) {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	stub.collectCalls++
+	return stub.collected, nil
+}
+
+func (stub *httpApplicationStub) VerifyRun(context.Context, application.VerifyRunRequest) (application.VerificationProjection, error) {
+	return application.VerificationProjection{}, application.NewError("verify-run", application.ReasonCompositionIncomplete)
+}
+
+func (stub *httpApplicationStub) BuildReviewPacket(context.Context, application.BuildReviewPacketRequest) (application.ReviewPacketProjection, error) {
+	return application.ReviewPacketProjection{}, application.NewError("build-review-packet", application.ReasonCompositionIncomplete)
+}
+
+func (stub *httpApplicationStub) ApplyReviewDecision(context.Context, application.ApplyReviewDecisionRequest) (application.ReviewDecisionProjection, error) {
+	return application.ReviewDecisionProjection{}, application.NewError("apply-review-decision", application.ReasonCompositionIncomplete)
+}
+
 type httpDeliveryStub struct {
-	mu                  sync.Mutex
-	beginCalls          int
-	reconcileCalls      int
-	applyAt             int
-	beginReplay         bool
-	pending             productionruntime.FixedDeliveryPending
-	receipt             productionruntime.FixedDeliveryReceipt
-	wrongPending        bool
-	afterBegin          func()
-	reconcileContextErr error
+	mu                   sync.Mutex
+	beginCalls           int
+	reconcileCalls       int
+	applyAt              int
+	beginReplay          bool
+	pending              productionruntime.FixedDeliveryPending
+	receipt              productionruntime.FixedDeliveryReceipt
+	wrongPending         bool
+	afterBegin           func()
+	reconcileContextErr  error
+	lifecycleBeginCalls  int
+	lifecycleCommitCalls int
 }
 
 func (stub *httpDeliveryStub) BeginStartRunBound(_ context.Context, _ string, _ application.StartRunRequest, _ time.Time, binding productionruntime.FixedStartRunDeliveryBinding) (productionruntime.FixedDeliveryPending, bool, error) {
@@ -125,6 +148,37 @@ func (stub *httpDeliveryStub) ReconcileStartRunDelivery(ctx context.Context, _ p
 	return receipt, true, nil
 }
 
+func (stub *httpDeliveryStub) BeginLifecycleBound(_ context.Context, _ string, operation string, _ any, _ application.CurrentRunRequest, _ time.Time, binding productionruntime.FixedLifecycleDeliveryBinding) (productionruntime.FixedLifecyclePending, bool, error) {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	stub.lifecycleBeginCalls++
+	digest := func(value string) string { return canonical.DigestBytes([]byte(value)) }
+	pending := productionruntime.FixedLifecyclePending{
+		SchemaVersion: "fixed-lifecycle-delivery-record/v1", ProtocolRevision: "darwin-fixed-lifecycle-delivery/v1", RecordType: "pending", Operation: operation,
+		OwnerAcquisitionDigest: digest("owner-acquisition"), OwnerFactDigest: digest("owner-fact"), RepositoryDigest: digest("repository"), NamespaceDigest: digest("namespace"), AuthorityRootDigest: digest("authority-root"),
+		RequestKeyDigest: binding.RequestKeyDigest, RequestDigest: binding.RequestDigest, ApplicationIntentDigest: binding.ApplicationIntentDigest, Deadline: binding.Deadline,
+	}
+	if err := sealHTTPLifecyclePending(&pending); err != nil {
+		return productionruntime.FixedLifecyclePending{}, false, err
+	}
+	return pending, false, nil
+}
+
+func (stub *httpDeliveryStub) CommitLifecycleDelivery(_ context.Context, pending productionruntime.FixedLifecyclePending, operation string, _ any, _ application.CurrentRunRequest, result productionruntime.FixedLifecycleResult) (productionruntime.FixedLifecycleReceipt, error) {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	stub.lifecycleCommitCalls++
+	receipt := productionruntime.FixedLifecycleReceipt{
+		SchemaVersion: "fixed-lifecycle-delivery-record/v1", ProtocolRevision: "darwin-fixed-lifecycle-delivery/v1", RecordType: "receipt-ref", Operation: operation,
+		PendingDigest: pending.Digest, ApplicationReceiptFactDigest: result.ApplicationReceiptFactDigest, ResultDigest: result.ResultDigest,
+		RunID: result.Run.RunID, AttemptID: result.Run.AttemptID, PostRevision: result.Run.Sequence, PostAuthorityHead: result.Run.AuthorityHead,
+	}
+	if err := sealHTTPLifecycleReceipt(&receipt); err != nil {
+		return productionruntime.FixedLifecycleReceipt{}, err
+	}
+	return receipt, nil
+}
+
 func sealHTTPPending(pending *productionruntime.FixedDeliveryPending) error {
 	pending.Digest = ""
 	raw, err := json.Marshal(pending)
@@ -136,6 +190,26 @@ func sealHTTPPending(pending *productionruntime.FixedDeliveryPending) error {
 }
 
 func sealHTTPReceipt(receipt *productionruntime.FixedDeliveryReceipt) error {
+	receipt.Digest = ""
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		return err
+	}
+	receipt.Digest, err = canonical.DigestJSON(raw)
+	return err
+}
+
+func sealHTTPLifecyclePending(pending *productionruntime.FixedLifecyclePending) error {
+	pending.Digest = ""
+	raw, err := json.Marshal(pending)
+	if err != nil {
+		return err
+	}
+	pending.Digest, err = canonical.DigestJSON(raw)
+	return err
+}
+
+func sealHTTPLifecycleReceipt(receipt *productionruntime.FixedLifecycleReceipt) error {
 	receipt.Digest = ""
 	raw, err := json.Marshal(receipt)
 	if err != nil {
@@ -163,6 +237,11 @@ func testHTTPApplication() (*httpApplicationStub, *httpDeliveryStub) {
 		},
 		started: started,
 		run:     run,
+		collected: application.CollectedRunProjection{
+			ProtocolRevision:    application.FullLifecycleProtocolRevision,
+			Run:                 application.RunProjection{TaskID: run.TaskID, RunID: run.RunID, AttemptID: run.AttemptID, State: domain.StateVerifying, Sequence: run.Sequence + 1, AuthorityHead: digest("verifying-head")},
+			AdmissionFactDigest: digest("admission"), DRCDigest: digest("drc"), EnvelopeDigest: digest("envelope"),
+		},
 	}
 	delivery := &httpDeliveryStub{
 		applyAt: 1,
@@ -407,6 +486,51 @@ func TestFixedClientSuccessfulStartRechecksExactResultTuple(t *testing.T) {
 	}
 }
 
+func TestFixedClientCollectUsesLifecycleDeliveryAndExactResultRecheck(t *testing.T) {
+	fixture := newEndpointFixture(t)
+	endpoint, err := OpenEndpoint(context.Background(), fixture.authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = endpoint.Close() })
+	port, delivery := testHTTPApplication()
+	router, err := NewHTTPRouter(port, delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() {
+		connection, acceptErr := endpoint.Accept(context.Background())
+		if acceptErr != nil {
+			served <- acceptErr
+			return
+		}
+		defer connection.Close()
+		served <- router.ServeAuthenticated(context.Background(), connection)
+	}()
+	clientAuthority, err := productionruntime.OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientAuthority.Close()
+	request := application.CollectRunResultRequest{RunID: port.run.RunID, AttemptID: port.run.AttemptID, ExpectedSequence: port.run.Sequence, ExpectedAuthorityHead: port.run.AuthorityHead}
+	result, err := CallCollectRunResult(context.Background(), clientAuthority, "collect:successful-client", request, time.Now().UTC().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("CallCollectRunResult: %v", err)
+	}
+	if result.Projection != port.collected || result.Receipt.Operation != productionruntime.FixedLifecycleCollectOperation || result.Receipt.PostAuthorityHead != port.collected.Run.AuthorityHead || port.collectCalls != 1 || delivery.lifecycleBeginCalls != 1 || delivery.lifecycleCommitCalls != 1 {
+		t.Fatalf("result=%+v collect=%d begin=%d commit=%d", result, port.collectCalls, delivery.lifecycleBeginCalls, delivery.lifecycleCommitCalls)
+	}
+	select {
+	case serveErr := <-served:
+		if serveErr != nil {
+			t.Fatalf("serve: %v", serveErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve timeout")
+	}
+}
+
 func TestFixedClientStartRunBindingMatchesDurableDeliveryBinding(t *testing.T) {
 	port, _ := testHTTPApplication()
 	request := application.StartRunRequest{RunID: port.run.RunID, ExpectedSequence: port.started.Prepared.Sequence, ExpectedAuthorityHead: port.started.Prepared.AuthorityHead}
@@ -429,6 +553,40 @@ func TestFixedClientStartRunBindingMatchesDurableDeliveryBinding(t *testing.T) {
 	}
 	if _, err := clientRequestBinding("request:start-client", body, "start-run", application.StatusRequest{}, deadline); err == nil {
 		t.Fatal("start-run accepted a non-StartRunRequest value")
+	}
+}
+
+func TestFixedClientLifecycleBindingsMatchDurableDeliveryBindings(t *testing.T) {
+	port, _ := testHTTPApplication()
+	deadline := time.Now().UTC().Add(time.Minute)
+	requests := []struct {
+		operation string
+		request   any
+	}{
+		{productionruntime.FixedLifecycleCollectOperation, application.CollectRunResultRequest{RunID: port.run.RunID, AttemptID: port.run.AttemptID, ExpectedSequence: port.run.Sequence, ExpectedAuthorityHead: port.run.AuthorityHead}},
+		{productionruntime.FixedLifecycleVerifyOperation, application.VerifyRunRequest{RunID: port.run.RunID, AttemptID: port.run.AttemptID, ExpectedSequence: port.run.Sequence, ExpectedAuthorityHead: port.run.AuthorityHead}},
+		{productionruntime.FixedLifecycleReviewOperation, application.BuildReviewPacketRequest{RunID: port.run.RunID, AttemptID: port.run.AttemptID, ExpectedSequence: port.run.Sequence, ExpectedAuthorityHead: port.run.AuthorityHead}},
+		{productionruntime.FixedLifecycleDecisionOperation, application.ApplyReviewDecisionRequest{RunID: port.run.RunID, AttemptID: port.run.AttemptID, ExpectedSequence: port.run.Sequence, ExpectedAuthorityHead: port.run.AuthorityHead, Decision: json.RawMessage(`{"verdict":"accepted"}`), DecisionDigest: canonical.DigestBytes([]byte(`{"verdict":"accepted"}`))}},
+	}
+	for _, fixture := range requests {
+		t.Run(fixture.operation, func(t *testing.T) {
+			body := canonicalBody(t, fixture.request)
+			got, err := clientRequestBinding("request:"+fixture.operation, body, fixture.operation, fixture.request, deadline)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delivery, err := productionruntime.NewFixedLifecycleDeliveryBinding("request:"+fixture.operation, fixture.operation, fixture.request, deadline)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := RequestBinding{RequestKeyDigest: delivery.RequestKeyDigest, RequestDigest: delivery.RequestDigest, IntentDigest: delivery.ApplicationIntentDigest, Deadline: delivery.Deadline}
+			if got != want {
+				t.Fatalf("client binding=%+v want=%+v", got, want)
+			}
+			if got == readBinding("request:"+fixture.operation, body, fixture.operation, fixture.request, deadline) {
+				t.Fatal("lifecycle operation silently used the read-only HTTP binding")
+			}
+		})
 	}
 }
 
