@@ -7,7 +7,6 @@ import (
 	"os"
 	"sync"
 
-	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"golang.org/x/sys/unix"
 )
@@ -91,41 +90,6 @@ func (authority *FixedEndpointAuthority) OpenControlView() (*os.File, FixedEndpo
 // before or after every transport boundary.
 func (authority *FixedEndpointAuthority) Recheck(ctx context.Context) error {
 	return authority.withCurrent(ctx, false, nil)
-}
-
-// AdoptAuthenticatedClientStartRun advances only a read-only client's
-// runtime-v1 mutation observation after the transport has proved the exact
-// fixed server peer and decoded a self-consistent committed StartRun result.
-// The server has already joined that result to RB1 and the derived projection;
-// this method still rejects extra runtime siblings and control/delivery drift.
-func (authority *FixedEndpointAuthority) AdoptAuthenticatedClientStartRun(ctx context.Context, started application.RunStartProjection, receipt FixedDeliveryReceipt) error {
-	if authority == nil || ctx == nil || ValidateFixedStartRunDeliveryResult(started, receipt) != nil {
-		return ErrFixedDeliveryConflict
-	}
-	authority.mu.Lock()
-	defer authority.mu.Unlock()
-	if authority.closed || authority.client == nil || authority.client.ingress == nil || authority.control == nil {
-		return ErrFixedDeliveryConflict
-	}
-	client := authority.client
-	current, found, err := client.ingress.OpenOwner(client.scope)
-	if err != nil || !found || current.Acquisition != authority.snapshot.Acquisition || current.FactDigest != authority.snapshot.OwnerFactDigest {
-		return ErrFixedDeliveryConflict
-	}
-	if validateFixedServerRoot(client.root, len(client.root.nodes)) != nil {
-		if adoptFixedServerRuntimeMutation(&client.root) != nil {
-			return ErrFixedDeliveryConflict
-		}
-	}
-	rootDigest, err := client.root.digest()
-	if err != nil || rootDigest != authority.snapshot.AuthorityRootDigest {
-		return ErrFixedDeliveryConflict
-	}
-	after, afterFound, afterErr := client.ingress.OpenOwner(client.scope)
-	if afterErr != nil || !afterFound || after != current {
-		return ErrFixedDeliveryConflict
-	}
-	return nil
 }
 
 // WithControlMutation authorizes one endpoint setup/teardown callback and then
