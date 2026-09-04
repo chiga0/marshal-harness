@@ -399,6 +399,33 @@ func TestFixedDeliveryProductionWiringUsesPublicRepositorySession(t *testing.T) 
 	// that AuthorityRootDigest is a stable S1.3 or successor identity.
 }
 
+func TestRepositorySessionReconcileStartRunIsReadOnlyBeforePreparation(t *testing.T) {
+	fixture := newFixedDeliveryFixture(t)
+	readRun := func() domain.RunState {
+		lease, err := fixture.session.runs.AcquireExisting(fixture.request.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, readErr := runstore.InspectUnderLease(lease)
+		if err := errors.Join(readErr, lease.Release()); err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	before := readRun()
+	got, found, err := fixture.session.ReconcileStartRun(context.Background(), fixture.request)
+	if err != nil || found || got != (application.RunStartProjection{}) {
+		t.Fatalf("reconcile got=%+v found=%t err=%v", got, found, err)
+	}
+	after := readRun()
+	if after != before || after.State != domain.StateReady {
+		t.Fatalf("read-only reconcile mutated Run: before=%+v after=%+v", before, after)
+	}
+	if _, err := fixture.session.OwnerProjection(context.Background()); err != nil {
+		t.Fatalf("read-only reconcile invalidated resident owner: %v", err)
+	}
+}
+
 func TestFixedDeliveryStrictSuccessorReplaysOldPendingAndClosesReceipt(t *testing.T) {
 	fixture := newPublicFixedDeliveryInputs(t)
 	session1, err := OpenRepositorySession(context.Background(), fixture.inputs)
