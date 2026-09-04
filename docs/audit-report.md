@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-04：ADR 0079 S2-A closed protocol 与只读代际路由候选
+
+本轮在 `S1 dormant mechanics` 之后加入独立且仍不生产的 `process-supervisor/v2` 合同实现。v2 bootstrap、reconnect、handshake、request、response、inherited child spec 与 mechanics journal 均使用 ADR 0079 冻结的 exact schema/protocol/launch-child/mechanics identity；closed decoder 拒绝 unknown、v1 字段与混代 identity。`requestDigest`、`receiptDigest`、`observationDigest`、`commandHead` 与 `recordDigest` 均显式纳入 v2 代际绑定，其中 process report 只能使用 `darwin-fixed-process-supervisor/v2`，不得把 v1 observer 的结果包装成 v2 response。
+
+新增 journal audit surface 只能按 exact leaf 把 `process-supervisor-v1.journal` 路由到现有 v1 decoder，把 `process-supervisor-v2.journal` 路由到独立 v2 decoder；它不返回 writer、不截断 partial tail，也不执行 Attach、adopt 或 append。两代 journal 同时出现、wrong genesis、first command sequence/head 不合法、intent/receipt 不配对、完整但语义非法的 torn frame、v1 leaf 出现在 v2 control-directory phase、输出对象跳序、重复或未知 entry 均 fail closed。现有 v1 producer、journal writer、`runLaunchChild` 与 ptrace mechanics 没有改动，故该切片不产生 v2 authority fact，也不把 S2 或 T2 标记为完成。
+
+Darwin arm64/amd64 与 Linux amd64 package tests 已采用固定输出路径完成 compile-only，随后删除产物；`go vet`、staticcheck 与 diff-check 通过。本机没有执行 Go 临时测试 Mach-O。本候选只关闭 `ADR0079-S2A-CLOSED-DECODERS`；S2 仍须把 exact projection/limit 与 fixed-binary hostile/timeout/early-exit/cleanup matrix 收口，S3 才能在证明零 active/pending v1 session 后切换 new-session producer。固定 Marshal 主二进制的 Developer ID 签名、公证、安装 receipt 与企业白名单继续由 Issue #212/stable gate 负责。
+
 ## 2026-09-04：fixed server T2 实机阻塞定位与 ADR 0079 S1 bridge 候选
 
 `feat/fixed-server-t2-lifecycle@138a49c` 已把 fixed server 的 resident application surface 扩展到 collect、verify、review 与 Decision，并以同一 canonical `bin/marshal`、同一 repository owner 和同一 server authority 启动真实 T2 Run `run:fixed-server-final-138a49c`。`control-plane start` 在 response loss 后由重启 server 以 owner epoch `3` 重读为唯一 `RUNNING` Attempt，证明 server 本身、固定二进制定位与 restart recovery 没有被 Gatekeeper/EDR 终止；后续 collect 观察到真实 runtime child 已 terminal。Darwin crash report 进一步把失败收敛到旧 Supervisor mechanics：fixed Marshal parent 仍存活，已签名 Node `24.15.0` 在 `PT_TRACE_ME → exec → PtraceDetach` 后于 dyld 边界以 `SIGTRAP` 退出。相同 Node/Pi 在普通 `env -i` 固定路径直接探测均正常，因此该失败不是 Pi 未安装、未登录或 server 匿名二进制，而是 ADR 0059 的 ptrace exec-stop 在 macOS 26.6.2 上失效。
