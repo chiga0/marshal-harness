@@ -4,16 +4,22 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
 type sealedRunAdvancerStub struct {
@@ -166,6 +172,84 @@ func TestInspectDescriptorBoundRunStateAvoidsRejectedPathnameAPI(t *testing.T) {
 	}
 	if got != state {
 		t.Fatalf("state = %#v, want %#v", got, state)
+	}
+}
+
+func TestInspectAndValidateDescriptorBoundLocalDogfoodBindingSurvivesStateRootSwap(t *testing.T) {
+	root := t.TempDir()
+	const runID = "run:descriptor-policy"
+	observation := &selfidentity.LocalSelfIdentityObservationV2{
+		SelfProfile: selfidentity.LocalProfile, ActivationDigest: "sha256:" + strings.Repeat("a", 64),
+		IdentitySubjectDigest: "sha256:" + strings.Repeat("b", 64),
+	}
+	policy := readCLIFixture(t, "examples/happy-path/policy-snapshot.json")
+	policy["taskId"] = "task:descriptor-policy"
+	policy["runId"] = runID
+	policy["environmentBinding"] = map[string]any{
+		"schemaVersion":         selfidentity.LocalApplicabilitySchema,
+		"selfProfile":           selfidentity.LocalProfile,
+		"activationDigest":      observation.ActivationDigest,
+		"identitySubjectDigest": observation.IdentitySubjectDigest,
+		"assurance":             "ordinary-user", "execution": "workspace-write",
+		"production": false, "publication": "none",
+	}
+	policyData, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validator.Validate(domain.KindPolicySnapshot, policyData); err != nil {
+		t.Fatalf("policy fixture invalid: %v", err)
+	}
+	policyDigest, err := canonical.DigestJSON(policyData)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seed := runstore.New(root)
+	lease, err := seed.Acquire(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := domain.NewRunState("task:descriptor-policy", runID, time.Unix(1, 0).UTC())
+	state.PolicyDigest = policyDigest
+	if err := os.WriteFile(filepath.Join(root, "runs", runID, "policy-snapshot.json"), policyData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.WriteSnapshot(lease, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	rootHandle, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptorStore, err := runstore.NewFromStateRootDescriptor(rootHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootHandle.Close()
+	defer descriptorStore.Close()
+	heldPath := root + "-held"
+	if err := os.Rename(root, heldPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := inspectAndValidateDescriptorBoundLocalDogfoodBinding(descriptorStore, runID, validator, observation)
+	if err != nil {
+		t.Fatalf("descriptor-bound frozen policy rejected after StateRoot swap: %v", err)
+	}
+	if got.RunID != runID || got.PolicyDigest != policyDigest {
+		t.Fatalf("state = %#v", got)
 	}
 }
 

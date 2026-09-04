@@ -3260,7 +3260,14 @@ func validateFrozenLocalDogfoodBinding(stateRoot, runID string, validator *contr
 	}
 	policyPath := filepath.Join(stateRoot, "runs", runID, "policy-snapshot.json")
 	policyData, err := os.ReadFile(policyPath)
-	if err != nil || int64(len(policyData)) > maxContractInputBytes {
+	if err != nil {
+		return errors.New("frozen local policy unavailable")
+	}
+	return validateFrozenLocalDogfoodBindingData(state, policyData, validator, observation)
+}
+
+func validateFrozenLocalDogfoodBindingData(state domain.RunState, policyData []byte, validator *contract.Validator, observation *selfidentity.LocalSelfIdentityObservationV2) error {
+	if int64(len(policyData)) > maxContractInputBytes {
 		return errors.New("frozen local policy unavailable")
 	}
 	canonicalPolicy, err := canonical.JSON(policyData)

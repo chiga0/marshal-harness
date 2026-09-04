@@ -328,16 +328,16 @@ func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, reques
 	if adapter.closed || adapter.validator == nil || adapter.entryIdentity == nil {
 		return application.RunStartProjection{}, application.NewError("start-run", application.ReasonBridgeUnavailable)
 	}
-	state, err := inspectDescriptorBoundRunState(adapter.runs, request.RunID)
-	if err != nil || validateFrozenLocalDogfoodBinding(adapter.stateRoot, request.RunID, adapter.validator, adapter.entryIdentity) != nil {
-		return application.RunStartProjection{}, application.NewError("start-run", application.ReasonAuthorityConflict)
+	state, err := inspectAndValidateDescriptorBoundLocalDogfoodBinding(adapter.runs, request.RunID, adapter.validator, adapter.entryIdentity)
+	if err != nil {
+		return application.RunStartProjection{}, err
 	}
 	if state.State == domain.StateReady {
 		if err := controlplane.Require(controlplane.ApprovalInput{
 			StateRoot: adapter.stateRoot, RunID: request.RunID, Gate: domain.ApprovalGatePlan,
 			Validator: adapter.validator, LocalSelfIdentity: adapter.entryIdentity,
 		}); err != nil {
-			return application.RunStartProjection{}, application.NewError("start-run", application.ReasonAuthorityConflict)
+			return application.RunStartProjection{}, application.NewError("start-run-plan-approval", application.ReasonAuthorityConflict)
 		}
 	}
 	run, err := adapter.openRun(ctx, request.RunID)
@@ -346,6 +346,37 @@ func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, reques
 	}
 	defer run.Close()
 	return run.runtime.StartRun(ctx, request)
+}
+
+// inspectAndValidateDescriptorBoundLocalDogfoodBinding keeps the current Run
+// state and its frozen policy on the same held Run authority. Fixed server
+// mode must not re-open StateRoot by pathname after composition has already
+// bound the exact directory object.
+func inspectAndValidateDescriptorBoundLocalDogfoodBinding(runs *runstore.Store, runID string, validator *contract.Validator, observation *selfidentity.LocalSelfIdentityObservationV2) (domain.RunState, error) {
+	if runs == nil {
+		return domain.RunState{}, application.NewError("start-run-frozen-state", application.ReasonAuthorityConflict)
+	}
+	lease, err := runs.AcquireExisting(runID)
+	if err != nil {
+		return domain.RunState{}, application.NewError("start-run-frozen-state", application.ReasonAuthorityConflict)
+	}
+	state, stateErr := runstore.InspectUnderLease(lease)
+	var policyData []byte
+	var policyErr error
+	if stateErr == nil {
+		policyData, policyErr = runstore.ReadFileUnderLease(lease, maxContractInputBytes, "policy-snapshot.json")
+	}
+	releaseErr := lease.Release()
+	if errors.Join(stateErr, releaseErr) != nil {
+		return domain.RunState{}, application.NewError("start-run-frozen-state", application.ReasonAuthorityConflict)
+	}
+	if policyErr != nil {
+		return domain.RunState{}, application.NewError("start-run-frozen-policy", application.ReasonAuthorityConflict)
+	}
+	if err := validateFrozenLocalDogfoodBindingData(state, policyData, validator, observation); err != nil {
+		return domain.RunState{}, application.NewError("start-run-frozen-policy", application.ReasonAuthorityConflict)
+	}
+	return state, nil
 }
 
 // inspectDescriptorBoundRunState reads the current Run through the exact
