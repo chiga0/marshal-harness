@@ -84,6 +84,7 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "control-plane serve 失败：resident recovery 未完成。")
+		writeControlPlaneRequestFailure(stderr, err)
 		return ExitFailure
 	}
 	endpointAuthority, err := applicationAdapter.session.OpenFixedEndpointAuthority(ctx)

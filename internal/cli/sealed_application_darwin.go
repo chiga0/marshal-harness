@@ -290,30 +290,30 @@ func (adapter *sealedRepositoryApplication) Status(ctx context.Context, _ applic
 func (adapter *sealedRepositoryApplication) recoverRepositoryRuns(ctx context.Context) error {
 	runIDs, err := adapter.runs.ListExistingRunIDs()
 	if err != nil {
-		return err
+		return errors.Join(application.NewError("recover-list-runs", application.ReasonAuthorityConflict), err)
 	}
 	for _, runID := range runIDs {
 		lease, err := adapter.runs.AcquireExisting(runID)
 		if err != nil {
-			return err
+			return errors.Join(application.NewError("recover-acquire-run", application.ReasonAuthorityConflict), err)
 		}
 		authority, readErr := adapter.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
 		releaseErr := lease.Release()
 		if readErr != nil {
-			return readErr
+			return errors.Join(application.NewError("recover-read-run-authority", application.ReasonAuthorityConflict), readErr)
 		}
 		if releaseErr != nil {
-			return releaseErr
+			return errors.Join(application.NewError("recover-release-run", application.ReasonAuthorityConflict), releaseErr)
 		}
 		if authority.Run.State != domain.StateRunning {
 			continue
 		}
 		run, err := adapter.openRun(ctx, runID)
 		if err != nil {
-			return err
+			return errors.Join(application.NewError("recover-open-running-run", application.ReasonCompositionIncomplete), err)
 		}
 		if err := run.Close(); err != nil {
-			return err
+			return errors.Join(application.NewError("recover-close-running-run", application.ReasonAuthorityConflict), err)
 		}
 	}
 	return nil
