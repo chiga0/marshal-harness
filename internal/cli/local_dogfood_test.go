@@ -367,6 +367,25 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	}
 }
 
+func TestLocalDogfoodClassifiesCompleteFixedServerLifecycle(t *testing.T) {
+	for _, test := range []struct {
+		command string
+		want    string
+	}{
+		{"collect", selfidentity.CommandControlPlaneCollect},
+		{"verify", selfidentity.CommandControlPlaneVerify},
+		{"review-packet", selfidentity.CommandControlPlaneReview},
+		{"decision", selfidentity.CommandControlPlaneDecision},
+	} {
+		t.Run(test.command, func(t *testing.T) {
+			got, reason := localDogfoodCommandClass([]string{"control-plane", test.command}, nil)
+			if got != test.want || reason != "" {
+				t.Fatalf("class=%q reason=%q, want class=%q", got, reason, test.want)
+			}
+		})
+	}
+}
+
 func TestDarwinUnprofiledBuildFailsClosedAtProductionEntry(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("Darwin profile gate")
