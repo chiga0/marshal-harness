@@ -195,6 +195,9 @@ func TestCompositionLedgerCurrentOwnerAndPrepareRunStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got, after, found, err := fixture.ledger.RehydrateRunStart(context.Background(), fixture.ledger.owner, fixture.acquisition, application.StartRunRequest{RunID: fixture.runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead}); err != nil || found || got != (application.PreparedRunStart{}) || after != (application.RunProjection{}) {
+		t.Fatalf("unprepared reconcile got=%+v after=%+v found=%t err=%v", got, after, found, err)
+	}
 	start, err = fixture.ledger.PrepareRunStart(context.Background(), fixture.ledger.owner, fixture.acquisition, application.PrepareRunStartRequest{RunID: fixture.runID, ExpectedSequence: projection.Run.Sequence, ExpectedAuthorityHead: projection.Run.AuthorityHead})
 	if err != nil {
 		t.Fatalf("prepare run start: %v", err)

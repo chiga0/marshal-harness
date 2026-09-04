@@ -186,7 +186,7 @@ func TestResolvePreparedRunStartUsesExactReadyHeadWithoutMutation(t *testing.T) 
 		t.Fatal("READY-head lookup mutated the authority ledger")
 	}
 	key.ReadyAuthorityHead = attemptTestDigest("other-ready-head")
-	if _, err := fixture.store.ResolvePreparedRunStart(context.Background(), fixture.verifier, fixture.owner.Acquisition, key); !errors.Is(err, ErrPreparedExecutionUnavailable) {
+	if _, err := fixture.store.ResolvePreparedRunStart(context.Background(), fixture.verifier, fixture.owner.Acquisition, key); !errors.Is(err, ErrPreparedRunStartNotFound) {
 		t.Fatalf("wrong READY head resolved: %v", err)
 	}
 }
