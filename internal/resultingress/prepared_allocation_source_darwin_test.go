@@ -9,8 +9,18 @@ import (
 	"testing"
 
 	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
+
+func testPreparedAllocationSource(t *testing.T, identity allocationcontrol.ObjectIdentityV1) preparedAllocationSource {
+	t.Helper()
+	live, err := preparedAllocationLiveIdentity(identity)
+	if err != nil {
+		t.Fatalf("prepared allocation live identity: %v", err)
+	}
+	return preparedAllocationSource{liveIdentity: live}
+}
 
 // pathBPreparedFixture builds a path B (existing-worktree bind receipt)
 // prepared execution: a fresh reserved v2 Attempt with a bound owner, a
@@ -149,24 +159,21 @@ func TestPreparedPathASourceVerificationUnchanged(t *testing.T) {
 	}
 }
 
-// TestPreparedSpawnPayloadNormalizesPathAAndPathB proves the private
-// preparedAllocationSource normalization makes path A (provision receipt
-// LiveIdentity) and path B (worktree bind receipt TargetCurrentName.
-// ObjectIdentity) interchangeable: the same directory ObjectIdentityV1
-// produces byte-identical spawn payloads regardless of which allocation
-// authority produced it. The payload's allocation live identity and
-// working-directory held object are both derived from the normalized source
-// identity, so a path-replaced cwd would be rejected by the supervisor source
-// gate. This is the path A byte/behavior compatibility invariant.
+// TestPreparedSpawnPayloadNormalizesPathAAndPathB proves both authority paths
+// converge only after current-source verification has produced an exact live
+// directory identity. Given that same verified identity, spawn bytes remain
+// identical and the supervisor source gate retains exact path-replacement
+// checks.
 func TestPreparedSpawnPayloadNormalizesPathAAndPathB(t *testing.T) {
 	closure := preparedTestPiClosure(t)
 	state := AttemptAuthorityState{LaunchAuthorizedDigest: attemptTestDigest("path-launch"), SupervisorStartedDigest: attemptTestDigest("path-supervisor")}
 	identity := allocationcontrol.ObjectIdentityV1{Device: "1", Inode: "10", Mode: 0o040700, UID: 501, GID: 20, Nlink: 2, Type: allocationcontrol.ObjectTypeDirectory}
-	payloadA, err := preparedSpawnPayload(state, closure, preparedAllocationSource{directoryIdentity: identity})
+	source := testPreparedAllocationSource(t, identity)
+	payloadA, err := preparedSpawnPayload(state, closure, source)
 	if err != nil {
 		t.Fatalf("path A spawn payload: %v", err)
 	}
-	payloadB, err := preparedSpawnPayload(state, closure, preparedAllocationSource{directoryIdentity: identity})
+	payloadB, err := preparedSpawnPayload(state, closure, source)
 	if err != nil {
 		t.Fatalf("path B spawn payload: %v", err)
 	}
@@ -185,18 +192,19 @@ func TestPreparedSpawnPayloadNormalizesPathAAndPathB(t *testing.T) {
 }
 
 // TestPreparedProcessObservationNormalizesPathAAndPathB proves the process
-// observation built after spawn is also normalized through the same source
-// value, so path A and path B with the same directory identity produce
-// byte-identical observations.
+// observation built after spawn uses the same verified live source value, so
+// path A and path B with the same current directory produce byte-identical
+// observations.
 func TestPreparedProcessObservationNormalizesPathAAndPathB(t *testing.T) {
 	closure := preparedTestPiClosure(t)
 	outcome := SupervisorProcessOutcome{Process: processsupervisor.ProcessIdentity{PID: 4321, ProcessGroupID: 4321, BirthSeconds: 100, BirthMicroseconds: 33, SessionID: 4321}, ObserverIdentity: "core-darwin-observer/v1"}
 	identity := allocationcontrol.ObjectIdentityV1{Device: "1", Inode: "10", Mode: 0o040700, UID: 501, GID: 20, Nlink: 2, Type: allocationcontrol.ObjectTypeDirectory}
-	obsA, err := preparedProcessObservation(closure, preparedAllocationSource{directoryIdentity: identity}, outcome)
+	source := testPreparedAllocationSource(t, identity)
+	obsA, err := preparedProcessObservation(closure, source, outcome)
 	if err != nil {
 		t.Fatalf("path A process observation: %v", err)
 	}
-	obsB, err := preparedProcessObservation(closure, preparedAllocationSource{directoryIdentity: identity}, outcome)
+	obsB, err := preparedProcessObservation(closure, source, outcome)
 	if err != nil {
 		t.Fatalf("path B process observation: %v", err)
 	}
@@ -219,7 +227,7 @@ func TestPreparedSpawnPayloadRejectsIdentityReplacementDrift(t *testing.T) {
 	closure := preparedTestPiClosure(t)
 	state := AttemptAuthorityState{LaunchAuthorizedDigest: attemptTestDigest("launch"), SupervisorStartedDigest: attemptTestDigest("started")}
 	base := allocationcontrol.ObjectIdentityV1{Device: "1", Inode: "10", Mode: 0o040700, UID: 501, GID: 20, Nlink: 2, Type: allocationcontrol.ObjectTypeDirectory}
-	if _, err := preparedSpawnPayload(state, closure, preparedAllocationSource{directoryIdentity: base}); err != nil {
+	if _, err := preparedSpawnPayload(state, closure, testPreparedAllocationSource(t, base)); err != nil {
 		t.Fatalf("baseline source identity rejected: %v", err)
 	}
 	drifts := map[string]allocationcontrol.ObjectIdentityV1{
@@ -230,8 +238,21 @@ func TestPreparedSpawnPayloadRejectsIdentityReplacementDrift(t *testing.T) {
 		"wrong-type-replacement":   {Device: "1", Inode: "10", Mode: 0o040700, UID: 501, GID: 20, Nlink: 2, Type: "symlink"},
 	}
 	for name, drifted := range drifts {
-		if _, err := preparedSpawnPayload(state, closure, preparedAllocationSource{directoryIdentity: drifted}); !errors.Is(err, ErrPreparedExecutionConflict) {
+		if _, err := preparedAllocationLiveIdentity(drifted); !errors.Is(err, ErrPreparedExecutionConflict) {
 			t.Fatalf("identity drift %q was accepted before spawn: %v", name, err)
 		}
+	}
+}
+
+func TestPreparedSpawnPayloadUsesFreshObservedDirectoryIdentity(t *testing.T) {
+	closure := preparedTestPiClosure(t)
+	state := AttemptAuthorityState{LaunchAuthorizedDigest: attemptTestDigest("fresh-launch"), SupervisorStartedDigest: attemptTestDigest("fresh-supervisor")}
+	live := launchidentity.LiveIdentity{Device: 9, Inode: 42, FileType: POSIXFileTypeDirectory, Mode: POSIXFileTypeDirectory | 0o700, UID: 501, GID: 20, Size: 192, LinkCount: 7}
+	payload, err := preparedSpawnPayload(state, closure, preparedAllocationSource{liveIdentity: live})
+	if err != nil {
+		t.Fatalf("spawn payload: %v", err)
+	}
+	if payload.WorkingDirectory.Size != live.Size || payload.WorkingDirectory.LinkCount != live.LinkCount || payload.AllocationLiveIdentity == nil || payload.AllocationLiveIdentity.Size != live.Size || payload.AllocationLiveIdentity.LinkCount != live.LinkCount {
+		t.Fatalf("spawn payload did not carry fresh exact APFS values: working=%+v live=%+v", payload.WorkingDirectory, payload.AllocationLiveIdentity)
 	}
 }
