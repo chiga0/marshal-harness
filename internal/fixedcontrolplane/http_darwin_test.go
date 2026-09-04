@@ -24,15 +24,17 @@ import (
 )
 
 type httpApplicationStub struct {
-	mu             sync.Mutex
-	statusCalls    int
-	startCalls     int
-	inspectCalls   int
-	reconcileCalls int
-	status         application.StatusProjection
-	started        application.RunStartProjection
-	run            application.RunProjection
-	startErr       error
+	mu                  sync.Mutex
+	statusCalls         int
+	startCalls          int
+	inspectCalls        int
+	reconcileCalls      int
+	status              application.StatusProjection
+	started             application.RunStartProjection
+	run                 application.RunProjection
+	startErr            error
+	startContextErr     error
+	reconcileContextErr error
 }
 
 func (stub *httpApplicationStub) Status(context.Context, application.StatusRequest) (application.StatusProjection, error) {
@@ -42,17 +44,19 @@ func (stub *httpApplicationStub) Status(context.Context, application.StatusReque
 	return stub.status, nil
 }
 
-func (stub *httpApplicationStub) StartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, error) {
+func (stub *httpApplicationStub) StartRun(ctx context.Context, _ application.StartRunRequest) (application.RunStartProjection, error) {
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
 	stub.startCalls++
+	stub.startContextErr = ctx.Err()
 	return stub.started, stub.startErr
 }
 
-func (stub *httpApplicationStub) ReconcileStartRun(context.Context, application.StartRunRequest) (application.RunStartProjection, bool, error) {
+func (stub *httpApplicationStub) ReconcileStartRun(ctx context.Context, _ application.StartRunRequest) (application.RunStartProjection, bool, error) {
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
 	stub.reconcileCalls++
+	stub.reconcileContextErr = ctx.Err()
 	return stub.started, true, nil
 }
 
@@ -64,14 +68,16 @@ func (stub *httpApplicationStub) InspectRun(context.Context, application.Inspect
 }
 
 type httpDeliveryStub struct {
-	mu             sync.Mutex
-	beginCalls     int
-	reconcileCalls int
-	applyAt        int
-	beginReplay    bool
-	pending        productionruntime.FixedDeliveryPending
-	receipt        productionruntime.FixedDeliveryReceipt
-	wrongPending   bool
+	mu                  sync.Mutex
+	beginCalls          int
+	reconcileCalls      int
+	applyAt             int
+	beginReplay         bool
+	pending             productionruntime.FixedDeliveryPending
+	receipt             productionruntime.FixedDeliveryReceipt
+	wrongPending        bool
+	afterBegin          func()
+	reconcileContextErr error
 }
 
 func (stub *httpDeliveryStub) BeginStartRunBound(_ context.Context, _ string, _ application.StartRunRequest, _ time.Time, binding productionruntime.FixedStartRunDeliveryBinding) (productionruntime.FixedDeliveryPending, bool, error) {
@@ -95,13 +101,17 @@ func (stub *httpDeliveryStub) BeginStartRunBound(_ context.Context, _ string, _ 
 	if err := sealHTTPReceipt(&stub.receipt); err != nil {
 		return productionruntime.FixedDeliveryPending{}, false, err
 	}
+	if stub.afterBegin != nil {
+		stub.afterBegin()
+	}
 	return stub.pending, stub.beginReplay, nil
 }
 
-func (stub *httpDeliveryStub) ReconcileStartRunDelivery(context.Context, productionruntime.FixedDeliveryPending, application.StartRunRequest, productionruntime.FixedStartRunReconciler) (productionruntime.FixedDeliveryReceipt, bool, error) {
+func (stub *httpDeliveryStub) ReconcileStartRunDelivery(ctx context.Context, _ productionruntime.FixedDeliveryPending, _ application.StartRunRequest, _ productionruntime.FixedStartRunReconciler) (productionruntime.FixedDeliveryReceipt, bool, error) {
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
 	stub.reconcileCalls++
+	stub.reconcileContextErr = ctx.Err()
 	if stub.applyAt == 0 || stub.reconcileCalls < stub.applyAt {
 		return productionruntime.FixedDeliveryReceipt{}, false, nil
 	}
@@ -409,6 +419,34 @@ func TestHTTPRouterStartRunPublishesPendingBeforeSingleMutationAndExactReceipt(t
 	code, response, serveErr := callHTTPRouter(t, router, binding, "/v1/runs/start", "request:start", body)
 	if serveErr != nil || code != 200 || response.Disposition != "success" || response.Started == nil || response.DeliveryReceipt == nil || delivery.beginCalls != 1 || delivery.reconcileCalls != 1 || port.startCalls != 1 || port.reconcileCalls != 1 {
 		t.Fatalf("code=%d response=%+v err=%v begin=%d deliveryReconcile=%d start=%d appReconcile=%d", code, response, serveErr, delivery.beginCalls, delivery.reconcileCalls, port.startCalls, port.reconcileCalls)
+	}
+}
+
+func TestHTTPRouterDurablePendingSurvivesTransportCancellationUntilFrozenDeadline(t *testing.T) {
+	port, delivery := testHTTPApplication()
+	router, err := NewHTTPRouter(port, delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := application.StartRunRequest{RunID: port.run.RunID, ExpectedSequence: port.started.Prepared.Sequence, ExpectedAuthorityHead: port.started.Prepared.AuthorityHead}
+	body := canonicalBody(t, request)
+	deadline := time.Now().UTC().Add(time.Minute)
+	deliveryBinding, err := productionruntime.NewFixedStartRunDeliveryBinding("request:response-loss", request, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := RequestBinding{RequestKeyDigest: deliveryBinding.RequestKeyDigest, RequestDigest: deliveryBinding.RequestDigest, IntentDigest: deliveryBinding.ApplicationIntentDigest, Deadline: deliveryBinding.Deadline}
+	transportContext, cancelTransport := context.WithCancel(context.Background())
+	delivery.afterBegin = cancelTransport
+	response, code, serveErr := router.startRun(transportContext, binding, httpRequest{operation: "start-run", requestKey: "request:response-loss", body: body}, deadline)
+	if transportContext.Err() == nil {
+		t.Fatal("test did not cancel transport context after durable pending")
+	}
+	if serveErr != nil || code != 200 || response.Disposition != "success" || response.DeliveryReceipt == nil {
+		t.Fatalf("code=%d response=%+v err=%v", code, response, serveErr)
+	}
+	if port.startContextErr != nil || port.reconcileContextErr != nil || delivery.reconcileContextErr != nil {
+		t.Fatalf("durable delivery inherited transport cancellation: start=%v applicationReconcile=%v deliveryReconcile=%v", port.startContextErr, port.reconcileContextErr, delivery.reconcileContextErr)
 	}
 }
 
