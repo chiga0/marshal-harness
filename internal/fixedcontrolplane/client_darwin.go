@@ -81,15 +81,22 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	if connection.SetWriteDeadline(time.Now().Add(writeTimeout)) != nil || writeFull(connection, []byte(header)) != nil || writeFull(connection, body) != nil {
 		return httpResponse{}, ErrUnavailable
 	}
-	response, err := readClientHTTPResponse(connection)
-	if err != nil {
-		return httpResponse{}, err
+	response, responseErr := readClientHTTPResponse(connection)
+	// A syntactically valid non-success response still completes the
+	// authenticated request protocol. Recheck the peer and half-close only
+	// after consuming that exact response; otherwise 202/409/503 returns can
+	// make the server mistake an application outcome for a transport failure.
+	if response.SchemaVersion == "" {
+		return httpResponse{}, responseErr
 	}
 	if response.Operation != operation || connection.Recheck(ctx) != nil {
 		return httpResponse{}, ErrConflict
 	}
 	if connection.CloseWrite() != nil {
 		return httpResponse{}, ErrUnavailable
+	}
+	if responseErr != nil {
+		return response, responseErr
 	}
 	return response, nil
 }
@@ -191,12 +198,12 @@ func readClientHTTPResponse(connection *AuthenticatedConnection) (httpResponse, 
 	}
 	if statusCode != 200 || response.Disposition != "success" {
 		if statusCode == 202 && response.Disposition == "pending" {
-			return httpResponse{}, errHTTPPending
+			return response, errHTTPPending
 		}
 		if statusCode == 409 {
-			return httpResponse{}, ErrConflict
+			return response, ErrConflict
 		}
-		return httpResponse{}, ErrUnavailable
+		return response, ErrUnavailable
 	}
 	return response, nil
 }
