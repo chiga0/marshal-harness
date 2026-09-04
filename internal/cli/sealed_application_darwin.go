@@ -297,7 +297,7 @@ func (adapter *sealedRepositoryApplication) recoverRepositoryRuns(ctx context.Co
 		if err != nil {
 			return err
 		}
-		projection, readErr := adapter.runs.ReadCurrentRunProjectionUnderLease(lease)
+		authority, readErr := adapter.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
 		releaseErr := lease.Release()
 		if readErr != nil {
 			return readErr
@@ -305,7 +305,7 @@ func (adapter *sealedRepositoryApplication) recoverRepositoryRuns(ctx context.Co
 		if releaseErr != nil {
 			return releaseErr
 		}
-		if projection.State != domain.StateRunning {
+		if authority.Run.State != domain.StateRunning {
 			continue
 		}
 		run, err := adapter.openRun(ctx, runID)
@@ -345,7 +345,14 @@ func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, reques
 		return application.RunStartProjection{}, err
 	}
 	defer run.Close()
-	return run.runtime.StartRun(ctx, request)
+	started, err := run.runtime.StartRun(ctx, request)
+	if err != nil {
+		return application.RunStartProjection{}, err
+	}
+	if err := adapter.session.AdoptExistingWorktreeProjectionMutation(ctx, run.worktree.graph, started.Prepared); err != nil {
+		return application.RunStartProjection{}, err
+	}
+	return started, nil
 }
 
 // inspectAndValidateDescriptorBoundLocalDogfoodBinding keeps the current Run
@@ -627,12 +634,10 @@ func advanceSealedRun(ctx context.Context, runtime sealedRunAdvancer, runID stri
 func (adapter *sealedRepositoryApplication) InspectRun(ctx context.Context, request application.InspectRunRequest) (application.RunProjection, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
-	run, err := adapter.openRun(ctx, request.RunID)
-	if err != nil {
-		return application.RunProjection{}, err
+	if adapter.closed || adapter.session == nil {
+		return application.RunProjection{}, application.NewError("inspect-run", application.ReasonBridgeUnavailable)
 	}
-	defer run.Close()
-	return run.runtime.InspectRun(ctx, request)
+	return adapter.session.InspectRun(ctx, request)
 }
 
 type sealedComposedRun struct {

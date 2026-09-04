@@ -395,8 +395,85 @@ func TestFixedDeliveryProductionWiringUsesPublicRepositorySession(t *testing.T) 
 	if err != nil || pending.AuthorityRootDigest != rootDigest {
 		t.Fatalf("S1.1 current mutation observation mismatch: pending=%q root=%q err=%v", pending.AuthorityRootDigest, rootDigest, err)
 	}
-	// The equality above is deliberately session-local. It is not evidence
-	// that AuthorityRootDigest is a stable S1.3 or successor identity.
+	projectionRoot := filepath.Join(fixture.repository, ".marshal", "runtime-v1", "existing-worktree-bindings")
+	info, err := os.Lstat(projectionRoot)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("fixed session did not pre-materialize projection root: info=%v err=%v", info, err)
+	}
+}
+
+func TestFixedServerRootAdoptsOnlyControlledProjectionSwap(t *testing.T) {
+	t.Run("exact-swap", func(t *testing.T) {
+		fixture := newFixedDeliveryFixture(t)
+		runtimeRoot := filepath.Join(fixture.repository, ".marshal", "runtime-v1")
+		projectionRoot := filepath.Join(runtimeRoot, "existing-worktree-bindings")
+		oldRoot := filepath.Join(runtimeRoot, ".existing-worktree-bindings-old")
+		stageRoot := filepath.Join(runtimeRoot, ".existing-worktree-bindings-stage")
+		if err := os.Mkdir(stageRoot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stageRoot, "projection.jsonl"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(projectionRoot, oldRoot); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(stageRoot, projectionRoot); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(oldRoot); err != nil {
+			t.Fatal(err)
+		}
+		if validateFixedServerRoot(fixture.session.fixedRoot, len(fixture.session.fixedRoot.nodes)) == nil {
+			t.Fatal("projection replacement did not invalidate frozen runtime mutation")
+		}
+		if err := adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot); err != nil {
+			t.Fatalf("controlled projection replacement rejected: %v", err)
+		}
+		if err := validateFixedServerRoot(fixture.session.fixedRoot, len(fixture.session.fixedRoot.nodes)); err != nil {
+			t.Fatalf("adopted root is not current: %v", err)
+		}
+	})
+
+	t.Run("unknown-sibling", func(t *testing.T) {
+		fixture := newFixedDeliveryFixture(t)
+		runtimeRoot := filepath.Join(fixture.repository, ".marshal", "runtime-v1")
+		if err := os.Mkdir(filepath.Join(runtimeRoot, "forged"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot); err == nil {
+			t.Fatal("unknown runtime sibling was adopted")
+		}
+	})
+}
+
+func TestValidateFixedStartRunDeliveryResultBindsExactSuccessor(t *testing.T) {
+	fixture := newFixedDeliveryFixture(t)
+	pending, _, err := fixture.store.BeginStartRun(context.Background(), "result-tuple", fixture.request, fixture.deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := fixedDeliveryStarted(fixture.request)
+	receipt, applied, err := fixture.store.ReconcileStartRunDelivery(context.Background(), pending, fixture.request, fixedStartRunReconcilerStub{started: started, found: true})
+	if err != nil || !applied {
+		t.Fatalf("receipt=%+v applied=%t err=%v", receipt, applied, err)
+	}
+	if err := ValidateFixedStartRunDeliveryResult(started, receipt); err != nil {
+		t.Fatalf("exact result tuple rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*FixedDeliveryReceipt){
+		"attempt": func(value *FixedDeliveryReceipt) { value.AttemptID = "attempt:forged" },
+		"head":    func(value *FixedDeliveryReceipt) { value.PostAuthorityHead = canonical.DigestBytes([]byte("forged")) },
+		"prepare": func(value *FixedDeliveryReceipt) { value.PreparationDigest = canonical.DigestBytes([]byte("forged")) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			forged := receipt
+			mutate(&forged)
+			if err := ValidateFixedStartRunDeliveryResult(started, forged); err == nil {
+				t.Fatal("forged result tuple accepted")
+			}
+		})
+	}
 }
 
 func TestRepositorySessionReconcileStartRunIsReadOnlyBeforePreparation(t *testing.T) {

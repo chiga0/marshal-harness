@@ -33,3 +33,6 @@ func VerifyExistingWorktreeTargetFromGraph(ExistingWorktreeDescriptorGraphV1, Ex
 func SyncExistingWorktreeProjectionFromGraph(ExistingWorktreeDescriptorGraphV1, ExistingWorktreeAuthoritySnapshotV1) error {
 	return ErrPlatformUnavailable
 }
+func VerifyExistingWorktreeProjectionFromGraph(ExistingWorktreeDescriptorGraphV1, ExistingWorktreeAuthoritySnapshotV1) error {
+	return ErrPlatformUnavailable
+}

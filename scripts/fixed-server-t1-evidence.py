@@ -307,16 +307,21 @@ def check(args):
     run_entries = sorted(os.listdir(run_root))
     require(run_entries == [args.run_id], f"second Run or unexpected run-root entry present: {run_entries}")
     run_dir = os.path.join(run_root, args.run_id)
+    # state.json is the immutable legacy READY predecessor. Sealed Run-start
+    # authority lives in control/records.jsonl and is projected by the three
+    # authenticated inspect responses above. Treating state.json as the
+    # successor would make the canary contradict RunStore's append-only
+    # contract and miss the exact bug T1 is intended to detect.
     state = load_json(os.path.join(run_dir, "state.json"))
-    require(state.get("runId") == args.run_id and state.get("state") == "RUNNING", "durable state is not RUNNING")
-    require(state.get("currentAttemptId") == attempt_id and state.get("attemptsUsed") == 1, "attemptsUsed/current Attempt drift")
-    require(state.get("sequence") == current_run.get("sequence") and state.get("baseSha") == args.expected_head, "durable Run identity drift")
+    require(state.get("runId") == args.run_id and state.get("state") == "READY", "legacy predecessor is not exact READY")
+    require(state.get("sequence") == ready_run.get("sequence") and state.get("baseSha") == args.expected_head, "legacy predecessor identity drift")
+    require(state.get("attemptsUsed") == 0 and not state.get("currentAttemptId"), "legacy predecessor was mutated by sealed start")
     attempts_root = os.path.join(run_dir, "attempts")
     attempt_entries = sorted(os.listdir(attempts_root))
     require(attempt_entries == [attempt_id], f"expected one Attempt directory, got {attempt_entries}")
 
     events = load_jsonl(os.path.join(run_dir, "events.jsonl"))
-    require(len(events) == state.get("sequence"), "Run sequence/event count drift")
+    require(len(events) == current_run.get("sequence"), "sealed Run sequence/event count drift")
     started_events = [event for event in events if event.get("type") == "run.start-outcome"]
     require(len(started_events) == 1, f"expected one sealed worker.started event, got {len(started_events)}")
     require(not any(event.get("type") == "worker.started" for event in events), "legacy worker.started fallback observed")

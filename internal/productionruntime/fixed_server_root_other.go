@@ -17,8 +17,9 @@ func openFixedServerRoot(*CanonicalRepositoryRoot) (fixedServerRoot, error) {
 	return fixedServerRoot{}, ErrFixedDeliveryConflict
 }
 
-func validateFixedServerRoot(fixedServerRoot, int) error { return ErrFixedDeliveryConflict }
-func (fixedServerRoot) stateRoot() *os.File              { return nil }
-func (fixedServerRoot) deliveryRoot() *os.File           { return nil }
-func (fixedServerRoot) digest() (string, error)          { return "", ErrFixedDeliveryConflict }
-func (*fixedServerRoot) close() error                    { return nil }
+func validateFixedServerRoot(fixedServerRoot, int) error     { return ErrFixedDeliveryConflict }
+func adoptFixedServerRuntimeMutation(*fixedServerRoot) error { return ErrFixedDeliveryConflict }
+func (fixedServerRoot) stateRoot() *os.File                  { return nil }
+func (fixedServerRoot) deliveryRoot() *os.File               { return nil }
+func (fixedServerRoot) digest() (string, error)              { return "", ErrFixedDeliveryConflict }
+func (*fixedServerRoot) close() error                        { return nil }

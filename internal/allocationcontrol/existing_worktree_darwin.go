@@ -1178,6 +1178,20 @@ func SyncExistingWorktreeProjectionFromGraph(graph ExistingWorktreeDescriptorGra
 	return store.Sync(snapshot)
 }
 
+// VerifyExistingWorktreeProjectionFromGraph proves that the current derived
+// projection is the exact byte-for-byte materialization of snapshot. It never
+// repairs, extends or swaps the projection. Callers must still prove snapshot
+// came from the current RB1 authority; this function only closes the
+// filesystem half of that join.
+func VerifyExistingWorktreeProjectionFromGraph(graph ExistingWorktreeDescriptorGraphV1, snapshot ExistingWorktreeAuthoritySnapshotV1) error {
+	store, err := openExistingWorktreeProjection(graph)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return store.Verify(snapshot)
+}
+
 func openExistingWorktreeProjection(graph ExistingWorktreeDescriptorGraphV1) (*existingWorktreeProjection, error) {
 	if validateExistingWorktreeDescriptorGraph(graph) != nil {
 		return nil, ErrAuthorityConflict
@@ -1358,6 +1372,30 @@ func (projection *existingWorktreeProjection) Sync(snapshot ExistingWorktreeAuth
 		}
 	}
 	return nil
+}
+
+func (projection *existingWorktreeProjection) Verify(snapshot ExistingWorktreeAuthoritySnapshotV1) error {
+	if projection == nil || projection.directory == nil || projection.lock == nil || snapshot.Validate() != nil {
+		return ErrAuthorityConflict
+	}
+	expected, err := projectionRecords(snapshot)
+	if err != nil {
+		return err
+	}
+	plans, err := projection.preflight(expected)
+	if err != nil {
+		return err
+	}
+	defer closeExistingWorktreeProjectionPlans(plans)
+	if err := projection.revalidatePlans(plans); err != nil {
+		return err
+	}
+	for _, plan := range plans {
+		if plan.missing || !bytes.Equal(plan.observed, plan.expected) {
+			return ErrAuthorityConflict
+		}
+	}
+	return projection.revalidateAuthority()
 }
 
 // preflight is deliberately all-read-before-any-write. It holds every

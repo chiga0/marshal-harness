@@ -813,6 +813,45 @@ func TestExistingWorktreeProjectionCorruptionFailsClosed(t *testing.T) {
 	}
 }
 
+func TestVerifyExistingWorktreeProjectionIsReadOnlyAndExact(t *testing.T) {
+	fixture := newExistingWorktreeFixture(t)
+	defer fixture.Close()
+	receipt, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := fixture.authority.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := fixture.authority.DescriptorGraph()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyExistingWorktreeProjectionFromGraph(graph, snapshot); err != nil {
+		t.Fatalf("exact projection rejected: %v", err)
+	}
+	path := fixture.projectionPath(receipt.Observation.TargetIdentityDigest)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("forged\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	forged := mustReadFile(t, path)
+	if err := VerifyExistingWorktreeProjectionFromGraph(graph, snapshot); err == nil {
+		t.Fatal("forged projection accepted")
+	}
+	if after := mustReadFile(t, path); !bytes.Equal(after, forged) {
+		t.Fatal("verification repaired or otherwise changed projection bytes")
+	}
+}
+
 func TestExistingWorktreePartialProjectionTailFailsClosedWithoutRepair(t *testing.T) {
 	fixture := newExistingWorktreeFixture(t)
 	defer fixture.Close()

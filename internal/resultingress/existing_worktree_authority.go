@@ -568,6 +568,14 @@ func (s *DurableStore) CurrentExistingWorktreeBindReceipt(identity AttemptIdenti
 	return receipt, err
 }
 
+// CurrentExistingWorktreeSnapshot returns the complete current RB1 snapshot
+// for one exact Attempt identity. It is read-only; callers must already hold
+// and recheck the repository owner before using it to admit any filesystem
+// observation or lifecycle transition.
+func (s *DurableStore) CurrentExistingWorktreeSnapshot(identity AttemptIdentity) (allocationcontrol.ExistingWorktreeAuthoritySnapshotV1, error) {
+	return s.loadExistingWorktreeSnapshot(identity)
+}
+
 // CurrentExistingWorktreeRelease projects an already-created release union.
 // A pending intent returns its exact sealed request so recovery cannot create
 // a sibling request from the later Attempt head; a committed receipt is
