@@ -98,6 +98,10 @@ func (e *ProtocolError) Error() string {
 func reject(reason string) error { return &ProtocolError{ReasonCode: reason} }
 
 func ReasonCode(err error) string {
+	var closed interface{ closedReasonCode() string }
+	if errors.As(err, &closed) && validID(closed.closedReasonCode()) {
+		return closed.closedReasonCode()
+	}
 	var protocol *ProtocolError
 	if errors.As(err, &protocol) && protocol.ReasonCode != "" {
 		return protocol.ReasonCode

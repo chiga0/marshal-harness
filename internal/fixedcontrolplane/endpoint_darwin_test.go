@@ -67,6 +67,14 @@ func newEndpointFixture(t *testing.T) endpointFixture {
 	if err := os.Mkdir(stateRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	runtimeRoot := filepath.Join(stateRoot, productionruntime.RuntimeRootDirName)
+	if err := os.Mkdir(runtimeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	controlRoot := filepath.Join(runtimeRoot, "control")
+	if err := os.Mkdir(controlRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	repository, err := productionruntime.OpenCanonicalRepositoryRoot(repositoryPath)
 	if err != nil {
 		t.Fatalf("open canonical repository root %q: %v", repositoryPath, err)
@@ -98,8 +106,8 @@ func newEndpointFixture(t *testing.T) endpointFixture {
 		ObserverIdentity: "fixed-endpoint-test/v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	session, err := productionruntime.OpenRepositorySession(context.Background(), productionruntime.RepositorySessionInputs{
-		HeldIngressDir: openDirectory(filepath.Join(stateRoot, productionruntime.ResultIngressDirName)), HeldRepositoryRoot: repository, OwnerDirectory: openDirectory(filepath.Join(stateRoot, productionruntime.OwnerDirName)),
-		Acquisition: acquisition, FixedMarshalPath: fixed, OwnerPrivateControlRoot: openDirectory(filepath.Join(stateRoot, "owner-control")),
+		HeldIngressDir: openDirectory(filepath.Join(runtimeRoot, productionruntime.ResultIngressDirName)), HeldRepositoryRoot: repository, OwnerDirectory: openDirectory(filepath.Join(runtimeRoot, productionruntime.OwnerDirName)),
+		Acquisition: acquisition, FixedMarshalPath: fixed, OwnerPrivateControlRoot: openDirectory(filepath.Join(controlRoot, "supervisor")),
 	})
 	if err != nil {
 		t.Fatalf("open repository session: %v", err)

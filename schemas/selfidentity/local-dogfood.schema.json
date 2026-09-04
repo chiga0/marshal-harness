@@ -19,7 +19,7 @@
         "publication": { "const": "none" },
         "adapterAuthority": { "const": "ordinary-user" },
         "lifecycleCommandClasses": {
-          "const": ["doctor", "init", "task-scaffold", "task-plan", "task-status", "task-approve-plan", "task-run", "task-verify", "task-review", "control-plane-serve", "control-plane-status", "control-plane-inspect", "control-plane-start"]
+          "const": ["doctor", "init", "task-scaffold", "task-plan", "task-status", "task-approve-plan", "task-run", "task-verify", "task-review", "control-plane-serve", "control-plane-status", "control-plane-inspect", "control-plane-start", "control-plane-collect", "control-plane-verify", "control-plane-review-packet", "control-plane-decision"]
         }
       }
     },

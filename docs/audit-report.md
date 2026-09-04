@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-04：ADR 0079 S2-B fixed-image SETEXEC canary 候选
+
+本轮把 S2-A 的 dormant v2 contract 接到 `runLaunchChild` 的唯一调用链，但没有启用生产 selector：`NewPlatformMechanics` 继续固定返回 v1，只有隐藏且带 `--attestation-ready` 的固定 `marshal internal process-supervisor-v2-canary` 显式构造 v2 mechanics。canary 不生成、复制或执行临时 Mach-O；它从当前安装环境解析已签名 Node，立即转成 absolute real path 并冻结 device/inode/mode/size/SHA-256，子进程仍由当前 fixed Marshal 经 inherited FD 进入 `runLaunchChild`。输出只含 protocol/mechanics/observer identity、自然退出码和四个布尔/状态结论，不含 path、PID、argv、environment、nonce 或 transcript。
+
+真实 fixed-binary 检修关闭了四个此前静态检查无法发现的问题。第一，macOS 的 `/var` 是 `/private/var` 别名，`O_NOFOLLOW_ANY` 会正确拒绝默认 `/var/folders` 临时目录，因此 canary 数据固定放在 `/private/tmp` 的 owner-only 目录，且退出后无残留。第二，sealed system volume 的 `/usr/bin/true|false` inode 超过 JSON safe-integer 合同，不能拿它们伪装普通 runtime；canary 改用 Pi 已依赖的签名 Node，而不放宽 inode 门禁。第三，fixed Marshal 必须以 canonical absolute path 启动；相对 `./bin/...` 会在 child 的 parent-binary 双端复核中 fail closed。第四，Darwin 对 `POSIX_SPAWN_START_SUSPENDED` 返回 `WIFSTOPPED=true` 且 stop signal 为 `0`，不是 `SIGSTOP`；v2 现精确接受该状态并继续拒绝 ptrace `SIGTRAP`、signal-delivered stop、exit/signaled/unknown。自然短任务还暴露了 `Inspect` 在 process exit 与 `command.Wait` channel delivery 之间的竞态；v2 只允许对同一 command 做一次 20ms 有界 wait 收敛，拿不到 exact terminal result 仍返回原身份错误。
+
+同一 absolute fixed candidate 已真实通过：inherited FD → v2 child closed decode → SETEXEC/START_SUSPENDED → stopped runtime identity recheck → `SIGCONT` → Node 自然 `exit=1` → inspect/collect/close；另一路在 resume 前完成 exact process-group cleanup，canceled context 在任何 child effect 前拒绝，重新 seal 后的 runtime symlink 在 nofollow source gate 拒绝。Darwin arm64/amd64 与 Linux amd64 的 processsupervisor/CLI tests 均以固定输出路径 compile-only 并删除，`go vet`、staticcheck、diff-check 与 gitleaks 通过；本机未执行 Go 临时测试 Mach-O。
+
+该结果关闭 `ADR0079-S2B-FIXED-CANARY-CANDIDATE`，但仍不把 v2 标成 production 或 `INTEGRATED`。S3 仍须证明零 active/pending v1 session 后才允许 new-session-only producer cutover，并以同一最终 fixed bytes、真实 Pi、fixed server restart/response-loss 及完整 collect/verify/review/Decision 到 `ACCEPTED`。Issue #212 的 Developer ID 签名、公证、安装 receipt 与企业白名单仍是独立 stable gate；server/canary 减少随机 executable 面，不替代主二进制的 OS 信任。
+
 ## 2026-09-04：ADR 0079 S2-A closed protocol 与只读代际路由候选
 
 本轮在 `S1 dormant mechanics` 之后加入独立且仍不生产的 `process-supervisor/v2` 合同实现。v2 bootstrap、reconnect、handshake、request、response、inherited child spec 与 mechanics journal 均使用 ADR 0079 冻结的 exact schema/protocol/launch-child/mechanics identity；closed decoder 拒绝 unknown、v1 字段与混代 identity。`requestDigest`、`receiptDigest`、`observationDigest`、`commandHead` 与 `recordDigest` 均显式纳入 v2 代际绑定，其中 process report 只能使用 `darwin-fixed-process-supervisor/v2`，不得把 v1 observer 的结果包装成 v2 response。

@@ -309,7 +309,33 @@ func advanceFixedDeliveryRunToRunning(t *testing.T, fixture fixedDeliveryFixture
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.session.runs.Append(lease, event, state.Sequence); err != nil {
+	// This fixture needs a pre-existing, valid sealed Run-start fact only to
+	// exercise the later fixed lifecycle delivery. Generic Store.Append must
+	// continue to reject this reserved event in production. Seed the canonical
+	// replay bytes directly in the test repository instead of weakening that
+	// mutation boundary or pretending to mint a ResultIngress proof here.
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = canonical.JSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(fixture.repository, ".marshal", "runs", state.RunID, "events.jsonl")
+	file, err := os.OpenFile(journal, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(append(raw, '\n')); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.session.runs.WriteSnapshot(lease, next); err != nil {

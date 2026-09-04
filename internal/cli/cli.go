@@ -101,6 +101,10 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	// inherited bootstrap descriptor, never by argv or environment.
 	if _, kindErr := processsupervisor.InheritedInvocationKind(); kindErr == nil {
 		if runErr := processsupervisor.RunInheritedMain(ctx); runErr != nil {
+			// The process supervisor exposes only a closed, input-independent
+			// reason code. Emitting it keeps inherited failures diagnosable without
+			// leaking paths, arguments, environment, PID or transcript bytes.
+			fmt.Fprintln(stderr, processsupervisor.ReasonCode(runErr))
 			return ExitFailure
 		}
 		return ExitOK
@@ -247,6 +251,7 @@ func localDogfoodBoundedInternalCommand(args []string) bool {
 		"review-freshness-check",
 		"codex-provider-schema-check",
 		"closure-matrix-check",
+		"process-supervisor-v2-canary",
 	}, args[1])
 }
 
@@ -380,6 +385,8 @@ func runInternal(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return runInternalCodexSchemaCheck(args[1:], stdin, stdout, stderr)
 	case "closure-matrix-check":
 		return runInternalClosureMatrixCheck(args[1:], stdin, stdout, stderr)
+	case "process-supervisor-v2-canary":
+		return runInternalProcessSupervisorV2Canary(ctx, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "内部调用无效。")
 		return ExitUsage

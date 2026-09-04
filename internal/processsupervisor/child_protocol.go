@@ -3,10 +3,29 @@
 package processsupervisor
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
 )
+
+type childInvocation struct {
+	protocolRevision string
+	spec             childSpec
+}
+
+type childStageError struct {
+	cause  error
+	reason string
+}
+
+func (err *childStageError) Error() string            { return err.cause.Error() }
+func (err *childStageError) Unwrap() error            { return err.cause }
+func (err *childStageError) closedReasonCode() string { return err.reason }
+
+func childReject(reason string, cause error) error {
+	return &childStageError{cause: cause, reason: "process-supervisor-child-" + reason}
+}
 
 const (
 	SupervisorBootstrapFD  = uintptr(3)
@@ -54,6 +73,51 @@ func decodeChildSpec(raw []byte) (childSpec, error) {
 		return childSpec{}, ErrInvalid
 	}
 	return spec, nil
+}
+
+func decodeChildInvocation(raw []byte) (childInvocation, error) {
+	var envelope map[string]json.RawMessage
+	if len(raw) == 0 || len(raw) > MaxWireFrameBytes || strictCanonicalDecode(raw, &envelope) != nil {
+		return childInvocation{}, ErrInvalid
+	}
+	var protocol string
+	if value, ok := envelope["protocolRevision"]; !ok || json.Unmarshal(value, &protocol) != nil {
+		return childInvocation{}, ErrInvalid
+	}
+	switch protocol {
+	case ProtocolRevision:
+		spec, err := decodeChildSpec(raw)
+		if err != nil {
+			return childInvocation{}, err
+		}
+		return childInvocation{protocolRevision: ProtocolRevision, spec: spec}, nil
+	case protocolRevisionV2:
+		var spec launchChildSpecV2
+		if strictCanonicalDecode(raw, &spec) != nil || spec.validate() != nil {
+			return childInvocation{}, ErrInvalid
+		}
+		return childInvocation{protocolRevision: protocolRevisionV2, spec: spec.executionSpec()}, nil
+	default:
+		return childInvocation{}, ErrInvalid
+	}
+}
+
+func (spec launchChildSpecV2) executionSpec() childSpec {
+	convert := func(value launchChildObjectV2) childObject {
+		return childObject(value)
+	}
+	result := childSpec{
+		ProtocolRevision: spec.ProtocolRevision, ParentPID: spec.ParentPID,
+		Runtime: convert(spec.Runtime), WorkingDirectory: convert(spec.WorkingDirectory), Marshal: convert(spec.Marshal),
+		Argv: append([]string(nil), spec.Argv...), Environment: append([]string(nil), spec.Environment...),
+	}
+	for _, value := range spec.MaterialRoots {
+		result.MaterialRoots = append(result.MaterialRoots, convert(value))
+	}
+	for _, value := range spec.LaunchMaterials {
+		result.LaunchMaterials = append(result.LaunchMaterials, convert(value))
+	}
+	return result
 }
 
 func (spec childSpec) validate() error {

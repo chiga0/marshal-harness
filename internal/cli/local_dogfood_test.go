@@ -159,7 +159,7 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	}
 	for _, check := range []string{
 		"artifact-attestation-check", "qoder-transcript-check", "plan-premortem-check",
-		"review-freshness-check", "codex-provider-schema-check", "closure-matrix-check",
+		"review-freshness-check", "codex-provider-schema-check", "closure-matrix-check", "process-supervisor-v2-canary",
 	} {
 		if !localDogfoodBootstrapCommand([]string{"internal", check, "--attestation-ready"}, nil) {
 			t.Fatalf("fixed read-only internal checker %q was not admitted", check)
