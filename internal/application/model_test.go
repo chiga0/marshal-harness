@@ -1,6 +1,7 @@
 package application
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -41,5 +42,35 @@ func TestErrorDoesNotEchoInput(t *testing.T) {
 	}
 	if got := err.Error(); got != "application: invalid-request" {
 		t.Fatalf("error = %q", got)
+	}
+}
+
+func TestT2RequestsRequireExactAttemptHead(t *testing.T) {
+	valid := CurrentRunRequest{RunID: "run-1", AttemptID: "attempt-1", ExpectedSequence: 4, ExpectedAuthorityHead: testDigest}
+	for name, validate := range map[string]func() error{
+		"collect": func() error { return CollectRunResultRequest(valid).Validate() },
+		"verify":  func() error { return VerifyRunRequest(valid).Validate() },
+		"review":  func() error { return BuildReviewPacketRequest(valid).Validate() },
+	} {
+		if err := validate(); err != nil {
+			t.Fatalf("%s valid request: %v", name, err)
+		}
+	}
+	invalid := CollectRunResultRequest(valid)
+	invalid.AttemptID = ""
+	if err := invalid.Validate(); !HasReason(err, ReasonInvalidRequest) {
+		t.Fatalf("missing attempt reason = %v", err)
+	}
+}
+
+func TestApplyReviewDecisionRequiresBoundedCanonicalInput(t *testing.T) {
+	valid := ApplyReviewDecisionRequest{RunID: "run-1", AttemptID: "attempt-1", ExpectedSequence: 7, ExpectedAuthorityHead: testDigest, Decision: json.RawMessage(`{"verdict":"accept"}`), DecisionDigest: testDigest}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid decision request: %v", err)
+	}
+	invalid := valid
+	invalid.Decision = json.RawMessage(`{"verdict":`)
+	if err := invalid.Validate(); !HasReason(err, ReasonInvalidRequest) {
+		t.Fatalf("invalid json reason = %v", err)
 	}
 }

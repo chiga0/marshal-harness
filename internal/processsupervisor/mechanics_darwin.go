@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -26,6 +27,29 @@ type waitOutcome struct {
 	exitCode   int
 	signal     string
 	waitFailed bool
+}
+
+type mechanicsStageError struct {
+	cause error
+	stage string
+}
+
+func (err *mechanicsStageError) Error() string { return err.cause.Error() }
+func (err *mechanicsStageError) Unwrap() error { return err.cause }
+
+func (mechanics *darwinMechanics) stageError(cause error, stage string) error {
+	if mechanics.protocolRevision == protocolRevisionV2 {
+		return &mechanicsStageError{cause: cause, stage: stage}
+	}
+	return cause
+}
+
+func mechanicsFailureStage(err error) string {
+	var failure *mechanicsStageError
+	if errors.As(err, &failure) {
+		return failure.stage
+	}
+	return ""
 }
 
 type descendantObservation struct {
@@ -143,6 +167,8 @@ type darwinMechanics struct {
 	controlDirectory *os.File
 	marshalFile      *os.File
 	marshalSpec      HeldObjectSpec
+	protocolRevision string
+	observerIdentity string
 
 	command            *exec.Cmd
 	process            ProcessIdentity
@@ -170,8 +196,15 @@ type darwinMechanics struct {
 }
 
 func NewPlatformMechanics(controlDirectory *os.File) (Mechanics, error) {
+	return newDarwinMechanics(controlDirectory, ProtocolRevision)
+}
+
+func newDarwinMechanics(controlDirectory *os.File, protocolRevision string) (*darwinMechanics, error) {
 	if controlDirectory == nil {
 		return nil, ErrInvalid
+	}
+	if !darwinSetexecBridgeLinked() {
+		return nil, ErrUnavailable
 	}
 	path, err := os.Executable()
 	if err != nil || !absoluteClean(path) {
@@ -184,12 +217,22 @@ func NewPlatformMechanics(controlDirectory *os.File) (Mechanics, error) {
 		}
 		return nil, ErrConflict
 	}
-	return &darwinMechanics{controlDirectory: controlDirectory, marshalFile: marshalFile, marshalSpec: spec}, nil
+	observerIdentity := "darwin-fixed-process-supervisor-v1"
+	if protocolRevision == protocolRevisionV2 {
+		observerIdentity = observerIdentityV2
+	} else if protocolRevision != ProtocolRevision {
+		_ = marshalFile.Close()
+		return nil, ErrInvalid
+	}
+	return &darwinMechanics{controlDirectory: controlDirectory, marshalFile: marshalFile, marshalSpec: spec, protocolRevision: protocolRevision, observerIdentity: observerIdentity}, nil
 }
 
 func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayload) (MechanicsResult, error) {
 	mechanics.mu.Lock()
 	defer mechanics.mu.Unlock()
+	if ctx == nil || ctx.Err() != nil {
+		return MechanicsResult{}, ErrIntervention
+	}
 	if mechanics.command != nil || mechanics.closed || payload.SourceGateRevision != SourceGateRevisionV1 || validateSpawnPayload(payload) != nil {
 		return MechanicsResult{}, ErrConflict
 	}
@@ -240,11 +283,7 @@ func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayloa
 		return MechanicsResult{}, ErrIntervention
 	}
 	defer closeFiles(specRead, specWrite, readyRead, readyWrite, releaseRead, releaseWrite)
-	child, err := buildChildSpec(payload, mechanics.marshalSpec)
-	if err != nil {
-		return MechanicsResult{}, err
-	}
-	rawSpec, err := child.canonical()
+	rawSpec, err := buildChildSpecForProtocol(payload, mechanics.marshalSpec, mechanics.protocolRevision)
 	if err != nil {
 		return MechanicsResult{}, err
 	}
@@ -259,7 +298,7 @@ func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayloa
 	command.ExtraFiles = append(command.ExtraFiles[:5], append([]*os.File{mechanics.marshalFile}, command.ExtraFiles[5:]...)...)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := command.Start(); err != nil {
-		return MechanicsResult{}, ErrIntervention
+		return MechanicsResult{}, mechanics.stageError(ErrIntervention, "child-start")
 	}
 	spawnCommitted := false
 	var launchedProcess ProcessIdentity
@@ -275,26 +314,33 @@ func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayloa
 	}
 	launchedProcess = process
 	if err := writeAll(specWrite, rawSpec); err != nil || specWrite.Close() != nil {
-		return MechanicsResult{}, ErrIntervention
+		return MechanicsResult{}, mechanics.stageError(ErrIntervention, "child-spec")
 	}
 	for index := range rawSpec {
 		rawSpec[index] = 0
 	}
-	if err := waitReady(ctx, readyRead); err != nil || !guard.clean() || revalidateHeldSet(held, heldSpecs) != nil || verifyHeldObject(mechanics.marshalFile, mechanics.marshalSpec) != nil {
-		return MechanicsResult{}, ErrIntervention
+	if err := waitReady(ctx, readyRead); err != nil {
+		stage := "child-ready"
+		if errors.Is(err, ErrConflict) {
+			stage = childReadyFailureStage(stderr)
+		}
+		return MechanicsResult{}, mechanics.stageError(ErrIntervention, stage)
+	}
+	if !guard.clean() || revalidateHeldSet(held, heldSpecs) != nil || verifyHeldObject(mechanics.marshalFile, mechanics.marshalSpec) != nil {
+		return MechanicsResult{}, mechanics.stageError(ErrIntervention, "child-ready-revalidation")
 	}
 	if count, err := releaseWrite.Write([]byte{childReleaseByte}); err != nil || count != 1 || releaseWrite.Close() != nil {
-		return MechanicsResult{}, ErrIntervention
+		return MechanicsResult{}, mechanics.stageError(ErrIntervention, "child-release")
 	}
 	var status syscall.WaitStatus
 	for {
 		pid, waitErr := syscall.Wait4(command.Process.Pid, &status, syscall.WUNTRACED|syscall.WNOHANG, nil)
 		if waitErr != nil {
-			return MechanicsResult{}, ErrIntervention
+			return MechanicsResult{}, mechanics.stageError(ErrIntervention, "exec-wait")
 		}
 		if pid == command.Process.Pid {
-			if !status.Stopped() || status.StopSignal() != syscall.SIGTRAP {
-				return MechanicsResult{}, ErrIntervention
+			if !validExecBarrier(status, mechanics.protocolRevision) {
+				return MechanicsResult{}, mechanics.stageError(ErrIntervention, unexpectedExecStopStage(status))
 			}
 			break
 		}
@@ -308,11 +354,11 @@ func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayloa
 	}
 	path, err := processExecutablePath(command.Process.Pid)
 	if err != nil || path != payload.Runtime.CanonicalPath {
-		return MechanicsResult{}, ErrConflict
+		return MechanicsResult{}, mechanics.stageError(ErrConflict, "runtime-path")
 	}
 	process, err = observeProcessIdentity(command.Process.Pid)
 	if err != nil || !sameProcessBirth(process, launchedProcess) || !guard.clean() || revalidateHeldSet(held, heldSpecs) != nil {
-		return MechanicsResult{}, ErrConflict
+		return MechanicsResult{}, mechanics.stageError(ErrConflict, "post-exec-identity")
 	}
 	mechanics.command = command
 	mechanics.process = process
@@ -338,6 +384,92 @@ func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayloa
 	return resultForReport("process-exec-stopped", mechanics.lastReport), nil
 }
 
+func validExecBarrier(status syscall.WaitStatus, protocolRevision string) bool {
+	switch protocolRevision {
+	case ProtocolRevision:
+		return status.Stopped() && status.StopSignal() == syscall.SIGTRAP
+	case protocolRevisionV2:
+		// Darwin reports POSIX_SPAWN_START_SUSPENDED as WIFSTOPPED with a
+		// zero stop signal. This is distinct from ptrace's SIGTRAP barrier
+		// and from a signal-delivered SIGSTOP.
+		return status.Stopped() && status.StopSignal() == 0
+	default:
+		return false
+	}
+}
+
+func unexpectedExecStopStage(status syscall.WaitStatus) string {
+	if !status.Stopped() {
+		if status.Signaled() {
+			return "exec-stop-signaled"
+		}
+		return "exec-stop-exited"
+	}
+	switch status.StopSignal() {
+	case syscall.SIGTRAP:
+		return "exec-stop-sigtrap"
+	case syscall.SIGSTOP:
+		return "exec-stop-sigstop"
+	case syscall.SIGTSTP:
+		return "exec-stop-sigtstp"
+	default:
+		return "exec-stop-signal-" + strconv.Itoa(int(status.StopSignal()))
+	}
+}
+
+func childReadyFailureStage(stderr *boundedCapture) string {
+	if stderr == nil {
+		return "child-ready"
+	}
+	deadline := time.NewTimer(20 * time.Millisecond)
+	ticker := time.NewTicker(time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	var raw []byte
+	var truncated bool
+	for len(raw) == 0 {
+		raw, _, _, truncated = stderr.snapshot()
+		if len(raw) != 0 || truncated {
+			break
+		}
+		select {
+		case <-deadline.C:
+			return "child-ready-exited"
+		case <-ticker.C:
+		}
+	}
+	if truncated {
+		return "child-ready"
+	}
+	trimmed := bytes.TrimSpace(raw)
+	switch {
+	case bytes.Contains(trimmed, []byte("process-supervisor-child-runtime-identity-conflict")):
+		return "child-ready-runtime-identity"
+	case bytes.Contains(trimmed, []byte("process-supervisor-child-working-identity-conflict")):
+		return "child-ready-working-identity"
+	case bytes.Contains(trimmed, []byte("process-supervisor-child-marshal-descriptor-conflict")):
+		return "child-ready-marshal-descriptor"
+	case bytes.Contains(trimmed, []byte("process-supervisor-child-marshal-self-conflict")):
+		return "child-ready-marshal-self"
+	case bytes.Contains(trimmed, []byte("process-supervisor-child-marshal-parent-conflict")):
+		return "child-ready-marshal-parent"
+	case bytes.Contains(trimmed, []byte("process-supervisor-child-closure-identity-conflict")):
+		return "child-ready-closure-identity"
+	case bytes.Contains(trimmed, []byte("process-supervisor-child-source-identity-conflict")):
+		return "child-ready-source-identity"
+	case bytes.Contains(trimmed, []byte(ErrInvalid.ReasonCode)):
+		return "child-ready-protocol"
+	case bytes.Contains(trimmed, []byte(ErrConflict.ReasonCode)):
+		return "child-ready-identity"
+	case bytes.Contains(trimmed, []byte(ErrUnavailable.ReasonCode)):
+		return "child-ready-unavailable"
+	case bytes.Contains(trimmed, []byte(ErrIntervention.ReasonCode)):
+		return "child-ready-intervention"
+	default:
+		return "child-ready-exited"
+	}
+}
+
 func (mechanics *darwinMechanics) Resume(ctx context.Context, payload ResumePayload) (MechanicsResult, error) {
 	mechanics.mu.Lock()
 	defer mechanics.mu.Unlock()
@@ -347,8 +479,17 @@ func (mechanics *darwinMechanics) Resume(ctx context.Context, payload ResumePayl
 	if mechanics.command == nil || !mechanics.stopped || mechanics.resumed || mechanics.terminal || mechanics.revalidateLocked() != nil || !validDigest(payload.ProcessStartedFactDigest) {
 		return MechanicsResult{}, ErrConflict
 	}
-	if err := syscall.PtraceDetach(mechanics.process.PID); err != nil {
-		return MechanicsResult{}, ErrIntervention
+	switch mechanics.protocolRevision {
+	case ProtocolRevision:
+		if err := syscall.PtraceDetach(mechanics.process.PID); err != nil {
+			return MechanicsResult{}, ErrIntervention
+		}
+	case protocolRevisionV2:
+		if err := unix.Kill(mechanics.process.PID, unix.SIGCONT); err != nil {
+			return MechanicsResult{}, ErrIntervention
+		}
+	default:
+		return MechanicsResult{}, ErrInvalid
 	}
 	mechanics.stopped = false
 	mechanics.resumed = true
@@ -369,7 +510,16 @@ func (mechanics *darwinMechanics) Inspect(ctx context.Context, payload CleanupPa
 			return MechanicsResult{}, err
 		}
 	} else if err := mechanics.revalidateLocked(); err != nil {
-		return MechanicsResult{}, err
+		// A short-lived v2 runtime can exit between the non-blocking wait
+		// refresh and live identity observation. Admit only the exact command's
+		// terminal result within one bounded poll; otherwise preserve the
+		// original fail-closed identity error.
+		if mechanics.protocolRevision != protocolRevisionV2 || !mechanics.awaitWaitLocked(ctx, 20*time.Millisecond) {
+			return MechanicsResult{}, err
+		}
+		if terminalErr := mechanics.proveTerminalLocked(); terminalErr != nil {
+			return MechanicsResult{}, terminalErr
+		}
 	}
 	state := "running"
 	if mechanics.stopped {
@@ -618,7 +768,7 @@ func (mechanics *darwinMechanics) proveTerminalLocked() error {
 func (mechanics *darwinMechanics) report(state string, outcome *waitOutcome) ProcessReport {
 	runtimeDigest, _ := digestHeldSpec(mechanics.runtimeSpec)
 	workingDigest, _ := digestHeldSpec(mechanics.workingSpec)
-	report := ProcessReport{State: state, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Process: mechanics.process, RuntimeObjectDigest: runtimeDigest, WorkingObjectDigest: workingDigest, SourceGateRevision: mechanics.sourceGateRevision, ExactSetDigest: mechanics.exactSetDigest}
+	report := ProcessReport{State: state, ObserverIdentity: mechanics.observerIdentity, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Process: mechanics.process, RuntimeObjectDigest: runtimeDigest, WorkingObjectDigest: workingDigest, SourceGateRevision: mechanics.sourceGateRevision, ExactSetDigest: mechanics.exactSetDigest}
 	if outcome != nil {
 		report.ExitCode, report.Signal = outcome.exitCode, outcome.signal
 	}
@@ -641,6 +791,44 @@ func buildChildSpec(payload SpawnPayload, marshal HeldObjectSpec) (childSpec, er
 	for _, material := range payload.LaunchMaterials {
 		object := heldLaunchMaterial(material)
 		spec.LaunchMaterials = append(spec.LaunchMaterials, childObject{FD: next, Object: object})
+		next++
+	}
+	return spec, spec.validate()
+}
+
+func buildChildSpecForProtocol(payload SpawnPayload, marshal HeldObjectSpec, protocolRevision string) ([]byte, error) {
+	switch protocolRevision {
+	case ProtocolRevision:
+		spec, err := buildChildSpec(payload, marshal)
+		if err != nil {
+			return nil, err
+		}
+		return spec.canonical()
+	case protocolRevisionV2:
+		spec, err := buildChildSpecV2(payload, marshal)
+		if err != nil {
+			return nil, err
+		}
+		return spec.canonical()
+	default:
+		return nil, ErrInvalid
+	}
+}
+
+func buildChildSpecV2(payload SpawnPayload, marshal HeldObjectSpec) (launchChildSpecV2, error) {
+	spec := launchChildSpecV2{
+		SchemaVersion: launchChildSchemaV2, ProtocolRevision: protocolRevisionV2, LaunchChildProtocolRevision: launchChildProtocolRevisionV2, MechanicsIdentity: mechanicsIdentityV2,
+		ParentPID: os.Getpid(), Runtime: launchChildObjectV2{FD: int(childRuntimeFD), Object: payload.Runtime},
+		WorkingDirectory: launchChildObjectV2{FD: int(childCwdFD), Object: payload.WorkingDirectory}, Marshal: launchChildObjectV2{FD: int(childMarshalFD), Object: marshal},
+		Argv: append([]string(nil), payload.Argv...), Environment: append([]string(nil), payload.Environment...),
+	}
+	next := childClosureFD
+	for _, root := range payload.MaterialRoots {
+		spec.MaterialRoots = append(spec.MaterialRoots, launchChildObjectV2{FD: next, Object: heldMaterialRoot(root)})
+		next++
+	}
+	for _, material := range payload.LaunchMaterials {
+		spec.LaunchMaterials = append(spec.LaunchMaterials, launchChildObjectV2{FD: next, Object: heldLaunchMaterial(material)})
 		next++
 	}
 	return spec, spec.validate()

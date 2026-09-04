@@ -142,6 +142,33 @@ func TestPreparedRunStartCommitsOnceAndReplaysFromRunJournal(t *testing.T) {
 	}
 }
 
+func TestReadCurrentRunTransitionBindsExactPredecessorAndCurrentHead(t *testing.T) {
+	fixture := newPreparedRunStartFixture(t)
+	running := appendPreparedClaim(t, fixture, fixture.claim)
+	state, err := InspectUnderLease(fixture.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event:worker-completed", RunID: state.RunID, AttemptID: fixture.prepared.AttemptID, Sequence: state.Sequence + 1, Type: "worker.completed", StateFrom: domain.StateRunning, StateTo: domain.StateVerifying, Timestamp: time.Unix(1_800_000_000, 0).UTC(), Actor: &domain.Actor{Type: "system", ID: "test"}, Payload: map[string]any{"resultAdmissionFactDigest": canonical.DigestBytes([]byte("admission"))}}
+	next, err := lifecycle.Reduce(state, completed, lifecycle.Guard{LeaseHeld: true, WorkerProtocolComplete: true, SnapshotRecorded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.Append(fixture.lease, completed, state.Sequence); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.WriteSnapshot(fixture.lease, next); err != nil {
+		t.Fatal(err)
+	}
+	transition, err := fixture.store.ReadCurrentRunTransitionUnderLease(context.Background(), fixture.lease, running.Sequence, running.AuthorityHead)
+	if err != nil || transition.Before != running || transition.Event.Type != "worker.completed" || transition.After.State != domain.StateVerifying || transition.After.Sequence != running.Sequence+1 || transition.After.AuthorityHead == running.AuthorityHead {
+		t.Fatalf("transition=%+v err=%v", transition, err)
+	}
+	if _, err := fixture.store.ReadCurrentRunTransitionUnderLease(context.Background(), fixture.lease, running.Sequence, canonical.DigestBytes([]byte("forged"))); !errors.Is(err, ErrConflict) {
+		t.Fatalf("forged predecessor err=%v", err)
+	}
+}
+
 func TestPreparedRunStartBindsDescriptorLocalDispatchAndRejectsEvidenceDrift(t *testing.T) {
 	fixture := newPreparedRunStartFixture(t)
 	dispatch := preparedLocalObservation(t, time.Unix(1_800_000_010, 0).UTC())

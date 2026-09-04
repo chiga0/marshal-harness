@@ -159,7 +159,7 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	}
 	for _, check := range []string{
 		"artifact-attestation-check", "qoder-transcript-check", "plan-premortem-check",
-		"review-freshness-check", "codex-provider-schema-check", "closure-matrix-check",
+		"review-freshness-check", "codex-provider-schema-check", "closure-matrix-check", "process-supervisor-v2-canary",
 	} {
 		if !localDogfoodBootstrapCommand([]string{"internal", check, "--attestation-ready"}, nil) {
 			t.Fatalf("fixed read-only internal checker %q was not admitted", check)
@@ -364,6 +364,25 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	if got := RunContext(context.Background(), []string{"task", "scaffold", "--draft", draftPath}, strings.NewReader(""), &stdout, &missing); got != ExitUnavailable ||
 		!strings.Contains(missing.String(), selfidentity.ReasonOptInMissing) {
 		t.Fatalf("missing activation exit=%d stderr=%q", got, missing.String())
+	}
+}
+
+func TestLocalDogfoodClassifiesCompleteFixedServerLifecycle(t *testing.T) {
+	for _, test := range []struct {
+		command string
+		want    string
+	}{
+		{"collect", selfidentity.CommandControlPlaneCollect},
+		{"verify", selfidentity.CommandControlPlaneVerify},
+		{"review-packet", selfidentity.CommandControlPlaneReview},
+		{"decision", selfidentity.CommandControlPlaneDecision},
+	} {
+		t.Run(test.command, func(t *testing.T) {
+			got, reason := localDogfoodCommandClass([]string{"control-plane", test.command}, nil)
+			if got != test.want || reason != "" {
+				t.Fatalf("class=%q reason=%q, want class=%q", got, reason, test.want)
+			}
+		})
 	}
 }
 

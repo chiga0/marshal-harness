@@ -105,8 +105,13 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	}
 
 	ingressDir, ledgerDir, allocationRoot, ownerDir := productionruntime.CompositionPaths(config.StateRoot)
-	providerDir := filepath.Join(config.StateRoot, "provider-authority")
-	controlRootPath := filepath.Join(config.StateRoot, "owner-control")
+	runtimeRoot := productionruntime.RuntimeRootPath(config.StateRoot)
+	providerDir := filepath.Join(runtimeRoot, "provider-authority")
+	// Fixed endpoint socket/token and delivery authority live directly below
+	// runtime-v1/control. The process supervisor needs a held directory whose
+	// identity does not change when those endpoint objects are created, so its
+	// per-session objects are isolated under this stable child.
+	controlRootPath := filepath.Join(runtimeRoot, "control", "supervisor")
 	for _, dir := range []string{ingressDir, ledgerDir, allocationRoot, ownerDir, providerDir, controlRootPath} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("sealed repository application: prepare authority directory: %w", err)
@@ -290,30 +295,30 @@ func (adapter *sealedRepositoryApplication) Status(ctx context.Context, _ applic
 func (adapter *sealedRepositoryApplication) recoverRepositoryRuns(ctx context.Context) error {
 	runIDs, err := adapter.runs.ListExistingRunIDs()
 	if err != nil {
-		return err
+		return errors.Join(application.NewError("recover-list-runs", application.ReasonAuthorityConflict), err)
 	}
 	for _, runID := range runIDs {
 		lease, err := adapter.runs.AcquireExisting(runID)
 		if err != nil {
-			return err
+			return errors.Join(application.NewError("recover-acquire-run", application.ReasonAuthorityConflict), err)
 		}
 		authority, readErr := adapter.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
 		releaseErr := lease.Release()
 		if readErr != nil {
-			return readErr
+			return errors.Join(application.NewError("recover-read-run-authority", application.ReasonAuthorityConflict), readErr)
 		}
 		if releaseErr != nil {
-			return releaseErr
+			return errors.Join(application.NewError("recover-release-run", application.ReasonAuthorityConflict), releaseErr)
 		}
 		if authority.Run.State != domain.StateRunning {
 			continue
 		}
 		run, err := adapter.openRun(ctx, runID)
 		if err != nil {
-			return err
+			return errors.Join(application.NewError("recover-open-running-run", application.ReasonCompositionIncomplete), err)
 		}
 		if err := run.Close(); err != nil {
-			return err
+			return errors.Join(application.NewError("recover-close-running-run", application.ReasonAuthorityConflict), err)
 		}
 	}
 	return nil

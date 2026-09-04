@@ -1008,6 +1008,7 @@ func readGraphDotGitAt(graph ExistingWorktreeDescriptorGraphV1, targetFD int) ([
 	if graph.RepositoryDotGitFile == nil {
 		return readObservedRegularAt(targetFD, ".git", 16<<10)
 	}
+	sameRepository := sameHeldDirectoryFD(targetFD, int(graph.RepositoryRoot.Fd()))
 	heldRaw, err := readHeldGraphDotGit(graph.RepositoryRoot, graph.RepositoryDotGitFile, graph.RepositoryDotGitCurrentName)
 	if err != nil || digestBytes(heldRaw) != graph.RepositoryDotGitDigest {
 		return nil, ObjectIdentityV1{}, "", ErrFilesystemConflict
@@ -1019,11 +1020,14 @@ func readGraphDotGitAt(graph ExistingWorktreeDescriptorGraphV1, targetFD int) ([
 	if graph.afterDotGitRead != nil {
 		graph.afterDotGitRead()
 	}
-	if readErr != nil || identity != graph.RepositoryDotGitCurrentName.ObjectIdentity || mutation != graph.RepositoryDotGitCurrentName.ObjectMutationDigest || digestBytes(raw) != graph.RepositoryDotGitDigest {
+	if readErr != nil {
+		return nil, ObjectIdentityV1{}, "", ErrFilesystemConflict
+	}
+	if sameRepository && (identity != graph.RepositoryDotGitCurrentName.ObjectIdentity || mutation != graph.RepositoryDotGitCurrentName.ObjectMutationDigest || digestBytes(raw) != graph.RepositoryDotGitDigest) {
 		return nil, ObjectIdentityV1{}, "", ErrFilesystemConflict
 	}
 	heldRaw, err = readHeldGraphDotGit(graph.RepositoryRoot, graph.RepositoryDotGitFile, graph.RepositoryDotGitCurrentName)
-	if err != nil || digestBytes(heldRaw) != graph.RepositoryDotGitDigest || !bytes.Equal(raw, heldRaw) {
+	if err != nil || digestBytes(heldRaw) != graph.RepositoryDotGitDigest || sameRepository && !bytes.Equal(raw, heldRaw) {
 		return nil, ObjectIdentityV1{}, "", ErrFilesystemConflict
 	}
 	return raw, identity, mutation, nil

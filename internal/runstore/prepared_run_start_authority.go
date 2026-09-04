@@ -101,6 +101,52 @@ type RunStartAuthorityProjection struct {
 	WorktreePath      string
 }
 
+// RunTransitionProjection is the exact current two-head RB1 proof used by
+// fixed-server delivery reconciliation for post-start lifecycle operations.
+// It is intentionally available only under an already-held Run lease and
+// only when the requested successor is still the current journal head.
+type RunTransitionProjection struct {
+	Before application.RunProjection
+	Event  domain.RunEvent
+	After  application.RunProjection
+}
+
+func (s *Store) ReadCurrentRunTransitionUnderLease(ctx context.Context, lease *Lease, expectedSequence uint64, expectedAuthorityHead string) (RunTransitionProjection, error) {
+	if s == nil || ctx == nil || expectedSequence == 0 || !leaseOwnerMatches(lease) {
+		return RunTransitionProjection{}, ErrConflict
+	}
+	if err := ctx.Err(); err != nil {
+		return RunTransitionProjection{}, err
+	}
+	lease.guard.mu.RLock()
+	defer lease.guard.mu.RUnlock()
+	if !leaseHeldBySelfLocked(lease) || lease.root != s.root || lease.guard.preparedBorrowed.Load() {
+		return RunTransitionProjection{}, ErrConflict
+	}
+	records, err := strictRunJournalAt(int(lease.runDir.Fd()))
+	if err != nil || expectedSequence >= uint64(len(records)) {
+		return RunTransitionProjection{}, ErrConflict
+	}
+	state, err := inspectAt(int(lease.runDir.Fd()))
+	if err != nil || state.Sequence != uint64(len(records)) || state.Sequence != expectedSequence+1 {
+		return RunTransitionProjection{}, ErrConflict
+	}
+	beforeRecord := records[expectedSequence-1]
+	afterRecord := records[expectedSequence]
+	if beforeRecord.digest != expectedAuthorityHead || afterRecord.event.Sequence != expectedSequence+1 || afterRecord.event.RunID != state.RunID || afterRecord.event.AttemptID == "" || afterRecord.event.AttemptID != state.CurrentAttemptID || afterRecord.event.StateTo != state.State {
+		return RunTransitionProjection{}, ErrConflict
+	}
+	projection := RunTransitionProjection{
+		Before: application.RunProjection{TaskID: state.TaskID, RunID: state.RunID, AttemptID: afterRecord.event.AttemptID, State: afterRecord.event.StateFrom, Sequence: expectedSequence, AuthorityHead: beforeRecord.digest},
+		Event:  afterRecord.event,
+		After:  application.RunProjection{TaskID: state.TaskID, RunID: state.RunID, AttemptID: state.CurrentAttemptID, State: state.State, Sequence: state.Sequence, AuthorityHead: afterRecord.digest},
+	}
+	if projection.Before.Validate() != nil || projection.After.Validate() != nil {
+		return RunTransitionProjection{}, ErrConflict
+	}
+	return projection, nil
+}
+
 // ReadRunStartAuthorityUnderLease strictly replays the descriptor-bound Run
 // journal without mutation or callbacks. READY is deliberately projected with
 // an empty PreparationDigest; RUNNING is accepted only when its exact head is

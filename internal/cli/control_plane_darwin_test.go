@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -40,6 +41,20 @@ func TestWriteControlPlaneRequestFailureRedactsRawError(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "secret") {
 		t.Fatal("raw error escaped stable diagnostic boundary")
+	}
+}
+
+func TestSealedRepositoryOpenStageReturnsOnlyStablePhase(t *testing.T) {
+	err := fmt.Errorf("sealed repository application: resolve Pi runtime: %w", errors.New("/private/secret/runtime"))
+	if got := sealedRepositoryOpenStage(err); got != "resolve-Pi-runtime" {
+		t.Fatalf("stage=%q", got)
+	}
+	if got := sealedRepositoryOpenStage(errors.New("/private/secret/unknown")); got != "unknown" {
+		t.Fatalf("unknown stage=%q", got)
+	}
+	err = fmt.Errorf("sealed repository application: open repository session: repository session: seal prepared execution: %w", errors.New("/private/secret/control"))
+	if got := sealedRepositoryOpenStage(err); got != "repository-session-seal-prepared-execution" {
+		t.Fatalf("nested stage=%q", got)
 	}
 }
 

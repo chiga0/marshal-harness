@@ -101,6 +101,10 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	// inherited bootstrap descriptor, never by argv or environment.
 	if _, kindErr := processsupervisor.InheritedInvocationKind(); kindErr == nil {
 		if runErr := processsupervisor.RunInheritedMain(ctx); runErr != nil {
+			// The process supervisor exposes only a closed, input-independent
+			// reason code. Emitting it keeps inherited failures diagnosable without
+			// leaking paths, arguments, environment, PID or transcript bytes.
+			fmt.Fprintln(stderr, processsupervisor.ReasonCode(runErr))
 			return ExitFailure
 		}
 		return ExitOK
@@ -247,6 +251,7 @@ func localDogfoodBoundedInternalCommand(args []string) bool {
 		"review-freshness-check",
 		"codex-provider-schema-check",
 		"closure-matrix-check",
+		"process-supervisor-v2-canary",
 	}, args[1])
 }
 
@@ -310,6 +315,14 @@ func localDogfoodCommandClass(args []string, doctor *doctorOptions) (string, str
 			return selfidentity.CommandControlPlaneInspect, ""
 		case "start":
 			return selfidentity.CommandControlPlaneStart, ""
+		case "collect":
+			return selfidentity.CommandControlPlaneCollect, ""
+		case "verify":
+			return selfidentity.CommandControlPlaneVerify, ""
+		case "review-packet":
+			return selfidentity.CommandControlPlaneReview, ""
+		case "decision":
+			return selfidentity.CommandControlPlaneDecision, ""
 		default:
 			return "", selfidentity.ReasonCommandDenied
 		}
@@ -372,6 +385,8 @@ func runInternal(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return runInternalCodexSchemaCheck(args[1:], stdin, stdout, stderr)
 	case "closure-matrix-check":
 		return runInternalClosureMatrixCheck(args[1:], stdin, stdout, stderr)
+	case "process-supervisor-v2-canary":
+		return runInternalProcessSupervisorV2Canary(ctx, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "内部调用无效。")
 		return ExitUsage
@@ -3350,6 +3365,10 @@ func writeUsage(output io.Writer) {
   marshal control-plane status
   marshal control-plane inspect --run RUN_ID
   marshal control-plane start --run RUN_ID --expected-sequence N --expected-authority-head DIGEST --request-key KEY --deadline UTC_RFC3339NANO
+  marshal control-plane collect --run RUN_ID --attempt ATTEMPT_ID --expected-sequence N --expected-authority-head DIGEST --request-key KEY --deadline UTC_RFC3339NANO
+  marshal control-plane verify --run RUN_ID --attempt ATTEMPT_ID --expected-sequence N --expected-authority-head DIGEST --request-key KEY --deadline UTC_RFC3339NANO
+  marshal control-plane review-packet --run RUN_ID --attempt ATTEMPT_ID --expected-sequence N --expected-authority-head DIGEST --request-key KEY --deadline UTC_RFC3339NANO
+  marshal control-plane decision --run RUN_ID --attempt ATTEMPT_ID --expected-sequence N --expected-authority-head DIGEST --request-key KEY --deadline UTC_RFC3339NANO --decision PATH
   marshal task scaffold --draft PATH|- [--preferred-adapter ID --fallback-adapter ID ...]
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
   marshal task approve --run RUN_ID --gate plan|publish [--actor ID] [--json]

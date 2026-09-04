@@ -44,7 +44,7 @@ func TestPreparedRunStartHasOneExportedMutationSeam(t *testing.T) {
 		}
 	}
 	for name := range methods {
-		if ast.IsExported(name) && name != "WithPreparedRunStartAuthority" && name != "ReadRunStartAuthorityUnderLease" && name != "ProjectCommittedRunStart" && name != "WithCurrentReadyRunAuthority" && name != "WithCurrentSealedRunSuccessor" && name != "WithCurrentRunningRunAuthority" && name != "WithCurrentRunAuthority" {
+		if ast.IsExported(name) && name != "WithPreparedRunStartAuthority" && name != "ReadRunStartAuthorityUnderLease" && name != "ReadCurrentRunTransitionUnderLease" && name != "ProjectCommittedRunStart" && name != "WithCurrentReadyRunAuthority" && name != "WithCurrentSealedRunSuccessor" && name != "WithCurrentRunningRunAuthority" && name != "WithCurrentRunAuthority" {
 			t.Fatalf("unexpected exported prepared Run-start method %s", name)
 		}
 	}

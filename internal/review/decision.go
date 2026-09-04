@@ -51,6 +51,20 @@ func (d *DecisionImporter) Import(input DecisionInput) (DecisionResult, error) {
 	if err != nil {
 		return DecisionResult{}, fmt.Errorf("read review decision: %w", err)
 	}
+	return d.ImportBytes(input, submittedData)
+}
+
+// ImportBytes validates an externally supplied Decision without requiring a
+// local pathname. Fixed server mode uses this entry point so the authenticated
+// application request, not an ambient filesystem path, carries the exact
+// reviewer content. Import remains the CLI compatibility adapter.
+func (d *DecisionImporter) ImportBytes(input DecisionInput, submittedData []byte) (DecisionResult, error) {
+	if d.Validator == nil {
+		return DecisionResult{}, errors.New("contract validator is required")
+	}
+	if len(submittedData) == 0 || int64(len(submittedData)) > packetByteLimit {
+		return DecisionResult{}, errors.New("review decision exceeds bounded input")
+	}
 	if err := d.Validator.Validate(domain.KindReviewDecision, submittedData); err != nil {
 		return DecisionResult{}, fmt.Errorf("validate review decision: %w", err)
 	}

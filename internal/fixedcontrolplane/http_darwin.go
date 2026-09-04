@@ -19,7 +19,8 @@ import (
 )
 
 const (
-	httpProtocolRevision  = "darwin-fixed-control-http/v1"
+	httpProtocolRevision  = "darwin-fixed-control-http/v2"
+	httpResponseSchema    = "fixed-control-http-response/v2"
 	maxHTTPHeaderCount    = 32
 	maxHTTPHeaderBytes    = 32 << 10
 	maxHTTPSingleHeader   = 8 << 10
@@ -43,6 +44,8 @@ var (
 type StartRunDelivery interface {
 	BeginStartRunBound(context.Context, string, application.StartRunRequest, time.Time, productionruntime.FixedStartRunDeliveryBinding) (productionruntime.FixedDeliveryPending, bool, error)
 	ReconcileStartRunDelivery(context.Context, productionruntime.FixedDeliveryPending, application.StartRunRequest, productionruntime.FixedStartRunReconciler) (productionruntime.FixedDeliveryReceipt, bool, error)
+	BeginLifecycleBound(context.Context, string, string, any, application.CurrentRunRequest, time.Time, productionruntime.FixedLifecycleDeliveryBinding) (productionruntime.FixedLifecyclePending, bool, error)
+	CommitLifecycleDelivery(context.Context, productionruntime.FixedLifecyclePending, string, any, application.CurrentRunRequest, productionruntime.FixedLifecycleResult) (productionruntime.FixedLifecycleReceipt, error)
 }
 
 // HTTPRouter is the bounded T1 application adapter. It owns no business
@@ -69,15 +72,20 @@ type httpRequest struct {
 }
 
 type httpResponse struct {
-	SchemaVersion    string                                  `json:"schemaVersion"`
-	ProtocolRevision string                                  `json:"protocolRevision"`
-	Operation        string                                  `json:"operation,omitempty"`
-	Disposition      string                                  `json:"disposition"`
-	ReasonCode       string                                  `json:"reasonCode,omitempty"`
-	Status           *application.StatusProjection           `json:"status,omitempty"`
-	Run              *application.RunProjection              `json:"run,omitempty"`
-	Started          *application.RunStartProjection         `json:"started,omitempty"`
-	DeliveryReceipt  *productionruntime.FixedDeliveryReceipt `json:"deliveryReceipt,omitempty"`
+	SchemaVersion    string                                   `json:"schemaVersion"`
+	ProtocolRevision string                                   `json:"protocolRevision"`
+	Operation        string                                   `json:"operation,omitempty"`
+	Disposition      string                                   `json:"disposition"`
+	ReasonCode       string                                   `json:"reasonCode,omitempty"`
+	Status           *application.StatusProjection            `json:"status,omitempty"`
+	Run              *application.RunProjection               `json:"run,omitempty"`
+	Started          *application.RunStartProjection          `json:"started,omitempty"`
+	DeliveryReceipt  *productionruntime.FixedDeliveryReceipt  `json:"deliveryReceipt,omitempty"`
+	Collected        *application.CollectedRunProjection      `json:"collected,omitempty"`
+	Verification     *application.VerificationProjection      `json:"verification,omitempty"`
+	ReviewPacket     *application.ReviewPacketProjection      `json:"reviewPacket,omitempty"`
+	Decision         *application.ReviewDecisionProjection    `json:"decision,omitempty"`
+	LifecycleReceipt *productionruntime.FixedLifecycleReceipt `json:"lifecycleReceipt,omitempty"`
 }
 
 type httpIntent struct {
@@ -221,9 +229,120 @@ func (router *HTTPRouter) dispatch(ctx context.Context, authenticated RequestBin
 		return successHTTPResponse(request.operation, nil, &projection, nil, nil), 200, nil
 	case "start-run":
 		return router.startRun(ctx, authenticated, request, deadline)
+	case productionruntime.FixedLifecycleCollectOperation:
+		var input application.CollectRunResultRequest
+		if decodeHTTPBody(request.body, &input) != nil || input.Validate() != nil {
+			return httpResponse{}, 400, ErrInvalid
+		}
+		return router.lifecycleOperation(ctx, authenticated, request, deadline, input, application.CurrentRunRequest(input), func(callCtx context.Context) (any, error) { return router.application.CollectRunResult(callCtx, input) })
+	case productionruntime.FixedLifecycleVerifyOperation:
+		var input application.VerifyRunRequest
+		if decodeHTTPBody(request.body, &input) != nil || input.Validate() != nil {
+			return httpResponse{}, 400, ErrInvalid
+		}
+		return router.lifecycleOperation(ctx, authenticated, request, deadline, input, application.CurrentRunRequest(input), func(callCtx context.Context) (any, error) { return router.application.VerifyRun(callCtx, input) })
+	case productionruntime.FixedLifecycleReviewOperation:
+		var input application.BuildReviewPacketRequest
+		if decodeHTTPBody(request.body, &input) != nil || input.Validate() != nil {
+			return httpResponse{}, 400, ErrInvalid
+		}
+		return router.lifecycleOperation(ctx, authenticated, request, deadline, input, application.CurrentRunRequest(input), func(callCtx context.Context) (any, error) {
+			return router.application.BuildReviewPacket(callCtx, input)
+		})
+	case productionruntime.FixedLifecycleDecisionOperation:
+		var input application.ApplyReviewDecisionRequest
+		if decodeHTTPBody(request.body, &input) != nil || input.Validate() != nil {
+			return httpResponse{}, 400, ErrInvalid
+		}
+		current := application.CurrentRunRequest{RunID: input.RunID, AttemptID: input.AttemptID, ExpectedSequence: input.ExpectedSequence, ExpectedAuthorityHead: input.ExpectedAuthorityHead}
+		return router.lifecycleOperation(ctx, authenticated, request, deadline, input, current, func(callCtx context.Context) (any, error) {
+			return router.application.ApplyReviewDecision(callCtx, input)
+		})
 	default:
 		return httpResponse{}, 404, errHTTPUnsupported
 	}
+}
+
+func (router *HTTPRouter) lifecycleOperation(ctx context.Context, authenticated RequestBinding, request httpRequest, deadline time.Time, input any, current application.CurrentRunRequest, apply func(context.Context) (any, error)) (httpResponse, int, error) {
+	binding, err := productionruntime.NewFixedLifecycleDeliveryBinding(request.requestKey, request.operation, input, deadline)
+	if err != nil || authenticated != (RequestBinding{RequestKeyDigest: binding.RequestKeyDigest, RequestDigest: binding.RequestDigest, IntentDigest: binding.ApplicationIntentDigest, Deadline: binding.Deadline}) {
+		return httpResponse{}, 409, ErrConflict
+	}
+	pending, _, err := router.delivery.BeginLifecycleBound(ctx, request.requestKey, request.operation, input, current, deadline, binding)
+	if err != nil {
+		return httpResponse{}, applicationHTTPStatus(err), err
+	}
+	if pending.RequestKeyDigest != binding.RequestKeyDigest || pending.RequestDigest != binding.RequestDigest || pending.ApplicationIntentDigest != binding.ApplicationIntentDigest || pending.Deadline != binding.Deadline || pending.Operation != request.operation {
+		return httpResponse{}, 409, ErrConflict
+	}
+	deliveryContext, cancelDelivery := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	defer cancelDelivery()
+	projection, applyErr := apply(deliveryContext)
+	result, resultErr := fixedLifecycleResult(request.operation, projection)
+	if resultErr != nil {
+		return errorHTTPResponse(request.operation, errHTTPPending), 202, errors.Join(errHTTPPending, applyErr, resultErr)
+	}
+	receipt, commitErr := router.delivery.CommitLifecycleDelivery(deliveryContext, pending, request.operation, input, current, result)
+	if commitErr != nil {
+		return httpResponse{}, applicationHTTPStatus(commitErr), errors.Join(application.NewError("commit-lifecycle-delivery", application.ReasonAuthorityConflict), commitErr)
+	}
+	if applyErr != nil || productionruntime.ValidateFixedLifecycleDeliveryResult(result, receipt) != nil {
+		return httpResponse{}, 409, errors.Join(ErrConflict, applyErr)
+	}
+	return successLifecycleHTTPResponse(request.operation, projection, &receipt), 200, nil
+}
+
+func fixedLifecycleResult(operation string, projection any) (productionruntime.FixedLifecycleResult, error) {
+	var run application.RunProjection
+	var fact string
+	switch value := projection.(type) {
+	case application.CollectedRunProjection:
+		if operation != productionruntime.FixedLifecycleCollectOperation || value.Validate() != nil {
+			return productionruntime.FixedLifecycleResult{}, ErrConflict
+		}
+		run, fact = value.Run, value.Run.AuthorityHead
+	case application.VerificationProjection:
+		if operation != productionruntime.FixedLifecycleVerifyOperation || value.Validate() != nil {
+			return productionruntime.FixedLifecycleResult{}, ErrConflict
+		}
+		run, fact = value.Run, value.Run.AuthorityHead
+	case application.ReviewPacketProjection:
+		if operation != productionruntime.FixedLifecycleReviewOperation || value.Validate() != nil {
+			return productionruntime.FixedLifecycleResult{}, ErrConflict
+		}
+		run, fact = value.Run, value.PacketDigest
+	case application.ReviewDecisionProjection:
+		if operation != productionruntime.FixedLifecycleDecisionOperation || value.Validate() != nil {
+			return productionruntime.FixedLifecycleResult{}, ErrConflict
+		}
+		run, fact = value.Run, value.Run.AuthorityHead
+	default:
+		return productionruntime.FixedLifecycleResult{}, ErrConflict
+	}
+	raw, err := json.Marshal(projection)
+	if err != nil {
+		return productionruntime.FixedLifecycleResult{}, ErrConflict
+	}
+	digest, err := canonical.DigestJSON(raw)
+	if err != nil {
+		return productionruntime.FixedLifecycleResult{}, ErrConflict
+	}
+	return productionruntime.FixedLifecycleResult{Operation: operation, Run: run, ResultDigest: digest, ApplicationReceiptFactDigest: fact}, nil
+}
+
+func successLifecycleHTTPResponse(operation string, projection any, receipt *productionruntime.FixedLifecycleReceipt) httpResponse {
+	response := httpResponse{SchemaVersion: httpResponseSchema, ProtocolRevision: httpProtocolRevision, Operation: operation, Disposition: "success", LifecycleReceipt: receipt}
+	switch value := projection.(type) {
+	case application.CollectedRunProjection:
+		response.Collected = &value
+	case application.VerificationProjection:
+		response.Verification = &value
+	case application.ReviewPacketProjection:
+		response.ReviewPacket = &value
+	case application.ReviewDecisionProjection:
+		response.Decision = &value
+	}
+	return response
 }
 
 func (router *HTTPRouter) startRun(ctx context.Context, authenticated RequestBinding, request httpRequest, deadline time.Time) (httpResponse, int, error) {
@@ -322,6 +441,14 @@ func readHTTPRequest(connection *AuthenticatedConnection) (httpRequest, error) {
 		operation = "inspect-run"
 	case "/v1/runs/start":
 		operation = "start-run"
+	case "/v1/runs/collect":
+		operation = productionruntime.FixedLifecycleCollectOperation
+	case "/v1/runs/verify":
+		operation = productionruntime.FixedLifecycleVerifyOperation
+	case "/v1/runs/review-packet":
+		operation = productionruntime.FixedLifecycleReviewOperation
+	case "/v1/runs/decision":
+		operation = productionruntime.FixedLifecycleDecisionOperation
 	default:
 		// Consume and validate the complete request before returning an
 		// unsupported-operation response. This lets the authenticated peer use
@@ -445,7 +572,7 @@ func decodeHTTPBody(raw []byte, target any) error {
 }
 
 func successHTTPResponse(operation string, status *application.StatusProjection, run *application.RunProjection, started *application.RunStartProjection, receipt *productionruntime.FixedDeliveryReceipt) httpResponse {
-	return httpResponse{SchemaVersion: "fixed-control-http-response/v1", ProtocolRevision: httpProtocolRevision, Operation: operation, Disposition: "success", Status: status, Run: run, Started: started, DeliveryReceipt: receipt}
+	return httpResponse{SchemaVersion: httpResponseSchema, ProtocolRevision: httpProtocolRevision, Operation: operation, Disposition: "success", Status: status, Run: run, Started: started, DeliveryReceipt: receipt}
 }
 
 func errorHTTPResponse(operation string, err error) httpResponse {
@@ -471,7 +598,7 @@ func errorHTTPResponse(operation string, err error) httpResponse {
 	if reason == "delivery-pending" {
 		disposition = "pending"
 	}
-	return httpResponse{SchemaVersion: "fixed-control-http-response/v1", ProtocolRevision: httpProtocolRevision, Operation: operation, Disposition: disposition, ReasonCode: reason}
+	return httpResponse{SchemaVersion: httpResponseSchema, ProtocolRevision: httpProtocolRevision, Operation: operation, Disposition: disposition, ReasonCode: reason}
 }
 
 func applicationHTTPStatus(err error) int {

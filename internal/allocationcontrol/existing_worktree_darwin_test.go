@@ -89,6 +89,19 @@ func TestLinkedExistingWorktreeDescriptorGraphBindsDotGitAndCommonDirectoryEdges
 	if graph.RepositoryDotGitDigest != digestBytes([]byte("gitdir: ../common-parent/admin\n")) {
 		t.Fatal("linked graph did not freeze held .git bytes")
 	}
+	targetPath := filepath.Join(rootPath, "target")
+	if err := os.Mkdir(targetPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	targetDotGit := []byte("gitdir: ../common-parent/target-admin\n")
+	if err := os.WriteFile(filepath.Join(targetPath, ".git"), targetDotGit, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := openDirectory(targetPath)
+	observedTargetDotGit, _, _, err := readGraphDotGitAt(graph, int(target.Fd()))
+	if err != nil || !bytes.Equal(observedTargetDotGit, targetDotGit) {
+		t.Fatalf("linked source graph must admit a distinct target worktree .git file: raw=%q err=%v", observedTargetDotGit, err)
+	}
 	detachedPath := dotGitPath + ".detached"
 	graph.beforeDotGitRead = func() {
 		if err := os.Rename(dotGitPath, detachedPath); err != nil {

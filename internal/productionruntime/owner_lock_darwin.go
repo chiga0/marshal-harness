@@ -113,7 +113,8 @@ const (
 )
 
 type repositoryOwnerTransitionError struct {
-	kind repositoryOwnerTransitionFailureKind
+	kind   repositoryOwnerTransitionFailureKind
+	detail string
 }
 
 func (err *repositoryOwnerTransitionError) Error() string {
@@ -128,12 +129,47 @@ func newRepositoryOwnerTransitionError(kind repositoryOwnerTransitionFailureKind
 	return &repositoryOwnerTransitionError{kind: kind}
 }
 
+func newRepositoryOwnerTransitionErrorWithDetail(kind repositoryOwnerTransitionFailureKind, detail string) error {
+	return &repositoryOwnerTransitionError{kind: kind, detail: detail}
+}
+
 func repositoryOwnerTransitionKind(err error) (repositoryOwnerTransitionFailureKind, bool) {
 	var transition *repositoryOwnerTransitionError
 	if !errors.As(err, &transition) || transition == nil {
 		return "", false
 	}
 	return transition.kind, true
+}
+
+func repositoryOwnerTransitionLabel(err error) (string, bool) {
+	var transition *repositoryOwnerTransitionError
+	if !errors.As(err, &transition) || transition == nil {
+		return "", false
+	}
+	if transition.detail == "" {
+		return string(transition.kind), true
+	}
+	return string(transition.kind) + "/" + transition.detail, true
+}
+
+type ownerIdentityValidationError struct {
+	detail string
+}
+
+func (err *ownerIdentityValidationError) Error() string {
+	return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent).Error()
+}
+
+func (err *ownerIdentityValidationError) Unwrap() error {
+	return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
+}
+
+func ownerIdentityValidationDetail(err error) string {
+	var validation *ownerIdentityValidationError
+	if errors.As(err, &validation) && validation != nil {
+		return validation.detail
+	}
+	return "unclassified"
 }
 
 func ownerReplayFailure(err error) error {
@@ -211,7 +247,7 @@ func openRepositoryOwnerScopeLock(ownerDirectory *os.File, scope resultingress.C
 		_ = directory.Close()
 		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
 	}
-	fileFD, err := openOwnerFile(directoryFD, name)
+	fileFD, created, err := openOwnerFile(directoryFD, name)
 	if err != nil {
 		_ = parent.Close()
 		_ = directory.Close()
@@ -225,6 +261,21 @@ func openRepositoryOwnerScopeLock(ownerDirectory *os.File, scope resultingress.C
 		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
 	}
 	if err := unix.Flock(fileFD, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = file.Close()
+		_ = parent.Close()
+		_ = directory.Close()
+		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
+	}
+	// A newly created coordination entry must be durable before its file and
+	// containing-directory mutation identities are frozen.  On APFS, observing
+	// those identities immediately after O_CREAT and only syncing unrelated
+	// authority files later can make the first current-owner recheck see the
+	// creation metadata settle as an apparent hostile drift.  This mirrors the
+	// ResultIngress held-file boundary: sync the new leaf first, then its parent,
+	// and only then attest the stable current names.  Existing entries are
+	// already durable and are left untouched.
+	if created && (unix.Fsync(fileFD) != nil || unix.Fsync(directoryFD) != nil) {
+		_ = unix.Flock(fileFD, unix.LOCK_UN)
 		_ = file.Close()
 		_ = parent.Close()
 		_ = directory.Close()
@@ -252,15 +303,17 @@ func openRepositoryOwnerScopeLock(ownerDirectory *os.File, scope resultingress.C
 	return &darwinRepositoryOwnerScopeLock{physical: physical, ownerScope: scope}, nil
 }
 
-func openOwnerFile(directoryFD int, name string) (int, error) {
+func openOwnerFile(directoryFD int, name string) (int, bool, error) {
 	fd, err := unix.Openat(directoryFD, name, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	created := false
 	if errors.Is(err, unix.ENOENT) {
 		fd, err = unix.Openat(directoryFD, name, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT|unix.O_EXCL, 0o600)
+		created = err == nil
 	}
 	if err != nil {
-		return -1, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
+		return -1, false, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
 	}
-	return fd, nil
+	return fd, created, nil
 }
 
 func mutationIdentity(stat unix.Stat_t) ownerMutationIdentity {
@@ -325,8 +378,29 @@ func validateOwnerDirectory(parentFD, heldFD int, name string, parentIdentity ow
 	parent, err := observeOwnerParent(parentFD)
 	held, heldErr := observeOwnerDirectory(heldFD)
 	var named unix.Stat_t
-	if err != nil || heldErr != nil || parent != parentIdentity || held != identity || filepath.Base(identity.Path) != name || filepath.Join(parentIdentity.Path, name) != identity.Path || unix.Fstatat(parentFD, name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !namedOwnerDirectoryMatches(named, identity) {
-		return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
+	if err != nil {
+		return &ownerIdentityValidationError{detail: "parent-observe"}
+	}
+	if heldErr != nil {
+		return &ownerIdentityValidationError{detail: "directory-observe"}
+	}
+	if parent != parentIdentity {
+		return &ownerIdentityValidationError{detail: "parent-identity"}
+	}
+	if held != identity {
+		if sameOwnerDirectoryObject(held, identity) && held.Mutation != identity.Mutation {
+			return &ownerIdentityValidationError{detail: "directory-mutation"}
+		}
+		return &ownerIdentityValidationError{detail: "directory-identity"}
+	}
+	if filepath.Base(identity.Path) != name || filepath.Join(parentIdentity.Path, name) != identity.Path {
+		return &ownerIdentityValidationError{detail: "directory-path-shape"}
+	}
+	if unix.Fstatat(parentFD, name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil {
+		return &ownerIdentityValidationError{detail: "directory-name-observe"}
+	}
+	if !namedOwnerDirectoryMatches(named, identity) {
+		return &ownerIdentityValidationError{detail: "directory-name-identity"}
 	}
 	return nil
 }
@@ -419,7 +493,7 @@ func (lock *darwinRepositoryOwnerScopeLock) acquireAndBind(ctx context.Context, 
 		// once more after ledger replay and before transferring Phase A into the
 		// acquisition-bound verifier.
 		if err := physical.revalidateLocked(); err != nil {
-			return newRepositoryOwnerTransitionError(repositoryOwnerFailureOwnerIdentityDrift)
+			return newRepositoryOwnerTransitionErrorWithDetail(repositoryOwnerFailureOwnerIdentityDrift, ownerIdentityValidationDetail(err))
 		}
 		lock.physical = nil
 		bound = &darwinRepositoryOwnerLock{physical: physical, ownerAcquisition: candidate}
@@ -430,7 +504,7 @@ func (lock *darwinRepositoryOwnerScopeLock) acquireAndBind(ctx context.Context, 
 			if ctx.Err() != nil {
 				err = application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
 			} else {
-				err = newRepositoryOwnerTransitionError(repositoryOwnerFailureOwnerIdentityDrift)
+				err = newRepositoryOwnerTransitionErrorWithDetail(repositoryOwnerFailureOwnerIdentityDrift, ownerIdentityValidationDetail(err))
 			}
 		} else if _, typed := repositoryOwnerTransitionKind(err); !typed && ctx.Err() == nil {
 			err = newRepositoryOwnerTransitionError(repositoryOwnerFailureIngressIdentityIO)
@@ -467,8 +541,14 @@ func (physical *darwinRepositoryOwnerPhysicalLock) revalidateLocked() error {
 		return err
 	}
 	identity, err := observeOwnerFile(int(physical.directory.Fd()), int(physical.file.Fd()), physical.name)
-	if err != nil || identity != physical.lockIdentity {
-		return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
+	if err != nil {
+		return &ownerIdentityValidationError{detail: "file-observe"}
+	}
+	if identity != physical.lockIdentity {
+		if identity.Object == physical.lockIdentity.Object && identity.Mode == physical.lockIdentity.Mode && identity.UID == physical.lockIdentity.UID && identity.GID == physical.lockIdentity.GID && identity.LinkCount == physical.lockIdentity.LinkCount && identity.Size == physical.lockIdentity.Size && identity.Mutation != physical.lockIdentity.Mutation {
+			return &ownerIdentityValidationError{detail: "file-mutation"}
+		}
+		return &ownerIdentityValidationError{detail: "file-identity"}
 	}
 	return nil
 }

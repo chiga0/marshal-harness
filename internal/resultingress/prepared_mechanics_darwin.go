@@ -162,7 +162,7 @@ func (s *DurableStore) startPreparedSupervisorLocked(ctx context.Context, projec
 		return nil, AttemptAuthorityState{}, ErrPreparedExecutionUnavailable
 	}
 	rootIdentity, err := processsupervisor.ObserveHeldControlDirectory(profile.controlRoot)
-	if err != nil || rootIdentity != profile.controlIdentity {
+	if err != nil || !sameStableControlDirectoryIdentity(rootIdentity, profile.controlIdentity) {
 		return nil, AttemptAuthorityState{}, ErrPreparedExecutionUnavailable
 	}
 	sessionID, nonce, err := newPreparedSessionIdentity()

@@ -15,4 +15,8 @@ type PublicApplicationPort interface {
 	// never authorizes a fresh mutation.
 	ReconcileStartRun(context.Context, StartRunRequest) (RunStartProjection, bool, error)
 	InspectRun(context.Context, InspectRunRequest) (RunProjection, error)
+	CollectRunResult(context.Context, CollectRunResultRequest) (CollectedRunProjection, error)
+	VerifyRun(context.Context, VerifyRunRequest) (VerificationProjection, error)
+	BuildReviewPacket(context.Context, BuildReviewPacketRequest) (ReviewPacketProjection, error)
+	ApplyReviewDecision(context.Context, ApplyReviewDecisionRequest) (ReviewDecisionProjection, error)
 }

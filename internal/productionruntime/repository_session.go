@@ -3,6 +3,7 @@ package productionruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -61,23 +62,26 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 	}
 	phase, err := openRepositoryOwnerScopeLock(inputs.OwnerDirectory, inputs.Acquisition.Scope)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("repository session: open owner scope: %w", err)
 	}
 	ingress, err := resultingress.OpenDarwinResultIngressStore(inputs.HeldIngressDir)
 	if err != nil {
 		_ = phase.Close()
-		return nil, err
+		return nil, fmt.Errorf("repository session: open result ingress: %w", err)
 	}
 	owner, ownerState, acquisition, err := phase.acquireAndBind(ctx, ingress, inputs.Acquisition)
 	if err != nil {
 		_ = ingress.Close()
 		_ = phase.Close()
-		return nil, err
+		if kind, classified := repositoryOwnerTransitionLabel(err); classified {
+			return nil, fmt.Errorf("repository session: acquire owner: transition=%s: %w", kind, err)
+		}
+		return nil, fmt.Errorf("repository session: acquire owner: %w", err)
 	}
 	if err := phase.Close(); err != nil {
 		_ = ingress.Close()
 		_ = owner.Close()
-		return nil, err
+		return nil, fmt.Errorf("repository session: close owner phase: %w", err)
 	}
 	// WithCurrentOwnerLock deliberately admits only the one runtime-claimed
 	// owner. Claim before the first canonical-root recheck; every later
@@ -85,7 +89,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 	if err := claimRepositorySessionOwner(owner); err != nil {
 		_ = ingress.Close()
 		_ = owner.Close()
-		return nil, err
+		return nil, fmt.Errorf("repository session: claim owner: %w", err)
 	}
 	var fixedRoot fixedServerRoot
 	err = owner.WithCurrentOwnerLock(ctx, acquisition, func() error {
@@ -100,14 +104,14 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 	if err != nil {
 		_ = ingress.Close()
 		_ = owner.Close()
-		return nil, err
+		return nil, fmt.Errorf("repository session: open fixed root: %w", err)
 	}
 	runs, err := runstore.NewFromStateRootDescriptor(fixedRoot.stateRoot())
 	if err != nil {
 		_ = fixedRoot.close()
 		_ = ingress.Close()
 		_ = owner.Close()
-		return nil, err
+		return nil, fmt.Errorf("repository session: open runstore: %w", err)
 	}
 	cleanup := func() {
 		_ = runs.Close()
@@ -122,7 +126,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 	borrowed.close()
 	if err != nil {
 		cleanup()
-		return nil, err
+		return nil, fmt.Errorf("repository session: seal prepared execution: %w", err)
 	}
 	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath}
 	if err := session.owner.WithCurrentOwnerLock(ctx, acquisition, func() error {
@@ -133,7 +137,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		return validateFixedServerRoot(fixedRoot, 5)
 	}); err != nil {
 		_ = session.Close()
-		return nil, err
+		return nil, fmt.Errorf("repository session: validate fixed root: %w", err)
 	}
 	return session, nil
 }

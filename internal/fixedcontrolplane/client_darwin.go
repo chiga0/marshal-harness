@@ -23,6 +23,26 @@ type StartRunClientResult struct {
 	Receipt    productionruntime.FixedDeliveryReceipt
 }
 
+type CollectRunClientResult struct {
+	Projection application.CollectedRunProjection
+	Receipt    productionruntime.FixedLifecycleReceipt
+}
+
+type VerifyRunClientResult struct {
+	Projection application.VerificationProjection
+	Receipt    productionruntime.FixedLifecycleReceipt
+}
+
+type ReviewPacketClientResult struct {
+	Projection application.ReviewPacketProjection
+	Receipt    productionruntime.FixedLifecycleReceipt
+}
+
+type ReviewDecisionClientResult struct {
+	Projection application.ReviewDecisionProjection
+	Receipt    productionruntime.FixedLifecycleReceipt
+}
+
 func CallStatus(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, requestKey string, deadline time.Time) (application.StatusProjection, error) {
 	response, err := call(ctx, authority, "status", "/v1/status", requestKey, application.StatusRequest{}, deadline)
 	if err != nil || response.Status == nil || response.Status.Validate() != nil {
@@ -51,6 +71,50 @@ func CallStartRun(ctx context.Context, authority *productionruntime.FixedEndpoin
 		return StartRunClientResult{}, errors.Join(ErrConflict, err)
 	}
 	return StartRunClientResult{Projection: *response.Started, Receipt: *response.DeliveryReceipt}, nil
+}
+
+func CallCollectRunResult(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, requestKey string, request application.CollectRunResultRequest, deadline time.Time) (CollectRunClientResult, error) {
+	if request.Validate() != nil {
+		return CollectRunClientResult{}, ErrInvalid
+	}
+	response, err := call(ctx, authority, productionruntime.FixedLifecycleCollectOperation, "/v1/runs/collect", requestKey, request, deadline)
+	if err != nil || response.Collected == nil || response.LifecycleReceipt == nil || response.Collected.Validate() != nil {
+		return CollectRunClientResult{}, errors.Join(ErrConflict, err)
+	}
+	return CollectRunClientResult{Projection: *response.Collected, Receipt: *response.LifecycleReceipt}, nil
+}
+
+func CallVerifyRun(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, requestKey string, request application.VerifyRunRequest, deadline time.Time) (VerifyRunClientResult, error) {
+	if request.Validate() != nil {
+		return VerifyRunClientResult{}, ErrInvalid
+	}
+	response, err := call(ctx, authority, productionruntime.FixedLifecycleVerifyOperation, "/v1/runs/verify", requestKey, request, deadline)
+	if err != nil || response.Verification == nil || response.LifecycleReceipt == nil || response.Verification.Validate() != nil {
+		return VerifyRunClientResult{}, errors.Join(ErrConflict, err)
+	}
+	return VerifyRunClientResult{Projection: *response.Verification, Receipt: *response.LifecycleReceipt}, nil
+}
+
+func CallBuildReviewPacket(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, requestKey string, request application.BuildReviewPacketRequest, deadline time.Time) (ReviewPacketClientResult, error) {
+	if request.Validate() != nil {
+		return ReviewPacketClientResult{}, ErrInvalid
+	}
+	response, err := call(ctx, authority, productionruntime.FixedLifecycleReviewOperation, "/v1/runs/review-packet", requestKey, request, deadline)
+	if err != nil || response.ReviewPacket == nil || response.LifecycleReceipt == nil || response.ReviewPacket.Validate() != nil {
+		return ReviewPacketClientResult{}, errors.Join(ErrConflict, err)
+	}
+	return ReviewPacketClientResult{Projection: *response.ReviewPacket, Receipt: *response.LifecycleReceipt}, nil
+}
+
+func CallApplyReviewDecision(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, requestKey string, request application.ApplyReviewDecisionRequest, deadline time.Time) (ReviewDecisionClientResult, error) {
+	if request.Validate() != nil {
+		return ReviewDecisionClientResult{}, ErrInvalid
+	}
+	response, err := call(ctx, authority, productionruntime.FixedLifecycleDecisionOperation, "/v1/runs/decision", requestKey, request, deadline)
+	if err != nil || response.Decision == nil || response.LifecycleReceipt == nil || response.Decision.Validate() != nil {
+		return ReviewDecisionClientResult{}, errors.Join(ErrConflict, err)
+	}
+	return ReviewDecisionClientResult{Projection: *response.Decision, Receipt: *response.LifecycleReceipt}, nil
 }
 
 func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, operation, path, requestKey string, request any, deadline time.Time) (httpResponse, error) {
@@ -99,6 +163,14 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 			return httpResponse{}, ErrConflict
 		}
 		recheckErr = connection.RecheckStartRun(ctx, *response.Started, *response.DeliveryReceipt)
+	} else if isLifecycleOperation(operation) && responseErr == nil && response.LifecycleReceipt != nil {
+		projection, projectionErr := lifecycleResponseProjection(response, operation)
+		result, resultErr := fixedLifecycleResult(operation, projection)
+		current, currentErr := lifecycleCurrentRequest(request)
+		if projectionErr != nil || resultErr != nil || currentErr != nil || validateLifecycleClientResult(current, result) != nil {
+			return httpResponse{}, ErrConflict
+		}
+		recheckErr = connection.RecheckLifecycle(ctx, result, *response.LifecycleReceipt)
 	} else {
 		recheckErr = connection.Recheck(ctx)
 	}
@@ -119,23 +191,88 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 // HTTP protocol intent; start-run deliberately uses the delivery protocol
 // intent because BeginStartRunBound rejects any independently derived digest.
 func clientRequestBinding(requestKey string, body []byte, operation string, request any, deadline time.Time) (RequestBinding, error) {
-	if operation != "start-run" {
+	switch {
+	case operation == "start-run":
+		input, ok := request.(application.StartRunRequest)
+		if !ok {
+			return RequestBinding{}, ErrInvalid
+		}
+		binding, err := productionruntime.NewFixedStartRunDeliveryBinding(requestKey, input, deadline)
+		if err != nil {
+			return RequestBinding{}, ErrInvalid
+		}
+		return RequestBinding{RequestKeyDigest: binding.RequestKeyDigest, RequestDigest: binding.RequestDigest, IntentDigest: binding.ApplicationIntentDigest, Deadline: binding.Deadline}, nil
+	case isLifecycleOperation(operation):
+		binding, err := productionruntime.NewFixedLifecycleDeliveryBinding(requestKey, operation, request, deadline)
+		if err != nil {
+			return RequestBinding{}, ErrInvalid
+		}
+		return RequestBinding{RequestKeyDigest: binding.RequestKeyDigest, RequestDigest: binding.RequestDigest, IntentDigest: binding.ApplicationIntentDigest, Deadline: binding.Deadline}, nil
+	default:
 		return readBinding(requestKey, body, operation, request, deadline), nil
 	}
-	input, ok := request.(application.StartRunRequest)
-	if !ok {
-		return RequestBinding{}, ErrInvalid
+}
+
+func isLifecycleOperation(operation string) bool {
+	switch operation {
+	case productionruntime.FixedLifecycleCollectOperation, productionruntime.FixedLifecycleVerifyOperation, productionruntime.FixedLifecycleReviewOperation, productionruntime.FixedLifecycleDecisionOperation:
+		return true
+	default:
+		return false
 	}
-	binding, err := productionruntime.NewFixedStartRunDeliveryBinding(requestKey, input, deadline)
-	if err != nil {
-		return RequestBinding{}, ErrInvalid
+}
+
+func lifecycleResponseProjection(response httpResponse, operation string) (any, error) {
+	switch operation {
+	case productionruntime.FixedLifecycleCollectOperation:
+		if response.Collected != nil {
+			return *response.Collected, nil
+		}
+	case productionruntime.FixedLifecycleVerifyOperation:
+		if response.Verification != nil {
+			return *response.Verification, nil
+		}
+	case productionruntime.FixedLifecycleReviewOperation:
+		if response.ReviewPacket != nil {
+			return *response.ReviewPacket, nil
+		}
+	case productionruntime.FixedLifecycleDecisionOperation:
+		if response.Decision != nil {
+			return *response.Decision, nil
+		}
 	}
-	return RequestBinding{
-		RequestKeyDigest: binding.RequestKeyDigest,
-		RequestDigest:    binding.RequestDigest,
-		IntentDigest:     binding.ApplicationIntentDigest,
-		Deadline:         binding.Deadline,
-	}, nil
+	return nil, ErrConflict
+}
+
+func lifecycleCurrentRequest(request any) (application.CurrentRunRequest, error) {
+	switch value := request.(type) {
+	case application.CollectRunResultRequest:
+		return application.CurrentRunRequest(value), nil
+	case application.VerifyRunRequest:
+		return application.CurrentRunRequest(value), nil
+	case application.BuildReviewPacketRequest:
+		return application.CurrentRunRequest(value), nil
+	case application.ApplyReviewDecisionRequest:
+		return application.CurrentRunRequest{RunID: value.RunID, AttemptID: value.AttemptID, ExpectedSequence: value.ExpectedSequence, ExpectedAuthorityHead: value.ExpectedAuthorityHead}, nil
+	default:
+		return application.CurrentRunRequest{}, ErrInvalid
+	}
+}
+
+func validateLifecycleClientResult(current application.CurrentRunRequest, result productionruntime.FixedLifecycleResult) error {
+	if result.Run.RunID != current.RunID || result.Run.AttemptID != current.AttemptID {
+		return ErrConflict
+	}
+	if result.Operation == productionruntime.FixedLifecycleReviewOperation {
+		if result.Run.Sequence != current.ExpectedSequence || result.Run.AuthorityHead != current.ExpectedAuthorityHead {
+			return ErrConflict
+		}
+		return nil
+	}
+	if result.Run.Sequence != current.ExpectedSequence+1 || result.Run.AuthorityHead == current.ExpectedAuthorityHead {
+		return ErrConflict
+	}
+	return nil
 }
 
 func readClientHTTPResponse(connection *AuthenticatedConnection) (httpResponse, error) {
@@ -206,7 +343,7 @@ func readClientHTTPResponse(connection *AuthenticatedConnection) (httpResponse, 
 		return httpResponse{}, ErrInvalid
 	}
 	var extra json.RawMessage
-	if decoder.Decode(&extra) == nil || response.SchemaVersion != "fixed-control-http-response/v1" || response.ProtocolRevision != httpProtocolRevision {
+	if decoder.Decode(&extra) == nil || response.SchemaVersion != httpResponseSchema || response.ProtocolRevision != httpProtocolRevision {
 		return httpResponse{}, ErrInvalid
 	}
 	if statusCode != 200 || response.Disposition != "success" {

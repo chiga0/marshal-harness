@@ -10,6 +10,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func (spec launchChildSpecV2) canonical() ([]byte, error) {
+	if spec.validate() != nil {
+		return nil, ErrInvalid
+	}
+	return canonicalValue(spec)
+}
+
 func inheritedInvocationKind() (string, error) {
 	var stat unix.Stat_t
 	if err := unix.Fstat(int(SupervisorBootstrapFD), &stat); err != nil {
@@ -70,10 +77,11 @@ func runLaunchChild() error {
 	if err != nil || len(raw) > MaxWireFrameBytes {
 		return ErrInvalid
 	}
-	spec, err := decodeChildSpec(raw)
+	invocation, err := decodeChildInvocation(raw)
 	for index := range raw {
 		raw[index] = 0
 	}
+	spec := invocation.spec
 	if err != nil || spec.ParentPID != os.Getppid() {
 		return ErrInvalid
 	}
@@ -86,35 +94,47 @@ func runLaunchChild() error {
 		closure = append(closure, file)
 		defer file.Close()
 	}
-	if verifyHeldObject(runtime, spec.Runtime.Object) != nil || verifyHeldObject(working, spec.WorkingDirectory.Object) != nil || verifyHeldObject(marshal, spec.Marshal.Object) != nil || verifyCurrentMarshal(spec.Marshal.Object) != nil || verifyParentMarshal(spec.ParentPID, spec.Marshal.Object) != nil {
-		return ErrConflict
+	if verifyHeldObject(runtime, spec.Runtime.Object) != nil {
+		return childReject("runtime-identity-conflict", ErrConflict)
+	}
+	if verifyHeldObject(working, spec.WorkingDirectory.Object) != nil {
+		return childReject("working-identity-conflict", ErrConflict)
+	}
+	if verifyHeldObject(marshal, spec.Marshal.Object) != nil {
+		return childReject("marshal-descriptor-conflict", ErrConflict)
+	}
+	if verifyCurrentMarshal(spec.Marshal.Object) != nil {
+		return childReject("marshal-self-conflict", ErrConflict)
+	}
+	if verifyParentMarshal(spec.ParentPID, spec.Marshal.Object) != nil {
+		return childReject("marshal-parent-conflict", ErrConflict)
 	}
 	for index, object := range append(append([]childObject(nil), spec.MaterialRoots...), spec.LaunchMaterials...) {
 		if verifyHeldObject(closure[index], object.Object) != nil || verifyPathObject(object.Object) != nil {
-			return ErrConflict
+			return childReject("closure-identity-conflict", ErrConflict)
 		}
 	}
 	if verifyPathObject(spec.Runtime.Object) != nil || verifyPathObject(spec.WorkingDirectory.Object) != nil || unix.Fchdir(int(working.Fd())) != nil {
-		return ErrConflict
+		return childReject("source-identity-conflict", ErrConflict)
 	}
 	if count, err := readyFile.Write([]byte{childReadyByte}); err != nil || count != 1 || readyFile.Close() != nil {
-		return ErrInvalid
+		return childReject("ready-write-invalid", ErrInvalid)
 	}
 	var release [2]byte
 	count, err := io.ReadFull(releaseFile, release[:1])
 	if err != nil || count != 1 || release[0] != childReleaseByte {
-		return ErrInvalid
+		return childReject("release-read-invalid", ErrInvalid)
 	}
 	count, err = releaseFile.Read(release[1:])
 	if err != io.EOF || count != 0 {
-		return ErrInvalid
+		return childReject("release-frame-invalid", ErrInvalid)
 	}
 	if verifyHeldObject(runtime, spec.Runtime.Object) != nil || verifyHeldObject(working, spec.WorkingDirectory.Object) != nil || verifyHeldObject(marshal, spec.Marshal.Object) != nil || verifyCurrentMarshal(spec.Marshal.Object) != nil || verifyParentMarshal(spec.ParentPID, spec.Marshal.Object) != nil || verifyPathObject(spec.Runtime.Object) != nil || verifyPathObject(spec.WorkingDirectory.Object) != nil {
-		return ErrConflict
+		return childReject("release-identity-conflict", ErrConflict)
 	}
 	for index, object := range append(append([]childObject(nil), spec.MaterialRoots...), spec.LaunchMaterials...) {
 		if verifyHeldObject(closure[index], object.Object) != nil || verifyPathObject(object.Object) != nil {
-			return ErrConflict
+			return childReject("release-closure-conflict", ErrConflict)
 		}
 	}
 	_ = specFile.Close()
@@ -125,11 +145,20 @@ func runLaunchChild() error {
 		_ = file.Close()
 	}
 	unix.CloseOnExec(int(childRuntimeFD))
-	if _, _, errno := syscall.RawSyscall6(syscall.SYS_PTRACE, uintptr(syscall.PT_TRACE_ME), 0, 0, 0, 0, 0); errno != 0 {
-		return ErrIntervention
-	}
-	if err := syscall.Exec(spec.Runtime.Object.CanonicalPath, spec.Argv, spec.Environment); err != nil {
-		return ErrIntervention
+	switch invocation.protocolRevision {
+	case ProtocolRevision:
+		if _, _, errno := syscall.RawSyscall6(syscall.SYS_PTRACE, uintptr(syscall.PT_TRACE_ME), 0, 0, 0, 0, 0); errno != 0 {
+			return ErrIntervention
+		}
+		if err := syscall.Exec(spec.Runtime.Object.CanonicalPath, spec.Argv, spec.Environment); err != nil {
+			return ErrIntervention
+		}
+	case protocolRevisionV2:
+		if err := darwinSetexecStartSuspended(spec.Runtime.Object.CanonicalPath, spec.Argv, spec.Environment); err != nil {
+			return ErrIntervention
+		}
+	default:
+		return ErrInvalid
 	}
 	return nil
 }

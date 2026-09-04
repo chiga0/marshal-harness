@@ -55,6 +55,40 @@ func (authority *FixedEndpointAuthority) AdoptAuthenticatedClientStartRun(ctx co
 	return nil
 }
 
+// AdoptAuthenticatedClientLifecycle advances the read-only client's held
+// runtime-v1 observation after a T2 operation has been joined to its exact
+// immutable delivery receipt. It grants no mutation authority and uses the
+// same root-adoption boundary as StartRun.
+func (authority *FixedEndpointAuthority) AdoptAuthenticatedClientLifecycle(ctx context.Context, result FixedLifecycleResult, receipt FixedLifecycleReceipt) error {
+	if authority == nil || ctx == nil || ValidateFixedLifecycleDeliveryResult(result, receipt) != nil {
+		return ErrFixedDeliveryConflict
+	}
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	if authority.closed || authority.client == nil || authority.client.ingress == nil || authority.control == nil {
+		return ErrFixedDeliveryConflict
+	}
+	client := authority.client
+	current, found, err := client.ingress.OpenOwner(client.scope)
+	if err != nil || !found || current.Acquisition != authority.snapshot.Acquisition || current.FactDigest != authority.snapshot.OwnerFactDigest {
+		return ErrFixedDeliveryConflict
+	}
+	if validateFixedServerRoot(client.root, len(client.root.nodes)) != nil {
+		if adoptFixedServerRuntimeMutation(&client.root) != nil {
+			return ErrFixedDeliveryConflict
+		}
+	}
+	rootDigest, err := client.root.digest()
+	if err != nil || rootDigest != authority.snapshot.AuthorityRootDigest {
+		return ErrFixedDeliveryConflict
+	}
+	after, afterFound, afterErr := client.ingress.OpenOwner(client.scope)
+	if afterErr != nil || !afterFound || after != current {
+		return ErrFixedDeliveryConflict
+	}
+	return nil
+}
+
 func (state *fixedEndpointClientState) close() error {
 	if state == nil {
 		return nil
@@ -90,7 +124,10 @@ func OpenFixedEndpointClientAuthority(ctx context.Context, repositoryPath string
 		_ = client.close()
 		return nil, cause
 	}
-	ingressFD, err := unix.Openat(int(root.nodes[1].file.Fd()), ResultIngressDirName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW_ANY, 0)
+	// ADR 0066 fixes ResultIngress below the held runtime-v1 directory. Using
+	// the .marshal descriptor here would open the obsolete pre-S2 layout and
+	// make a healthy resident server unreachable to its read-only client.
+	ingressFD, err := unix.Openat(int(root.nodes[2].file.Fd()), ResultIngressDirName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW_ANY, 0)
 	if err != nil {
 		return fail(ErrFixedDeliveryConflict)
 	}

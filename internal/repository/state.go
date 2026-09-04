@@ -50,6 +50,23 @@ func (s State) Init() error {
 	if err := os.MkdirAll(s.StateRoot, 0o700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
+	// MkdirAll deliberately preserves an existing directory's mode. A common
+	// real-world bootstrap creates .marshal through an operator-owned evidence
+	// directory before `marshal init`, leaving it at 0755. ADR 0066 requires
+	// canonical StateRoot to be owner-only before any production authority
+	// subtree can be opened, so init repairs that non-authoritative bootstrap
+	// state and then rechecks the same directory object.
+	before, err := os.Lstat(s.StateRoot)
+	if err != nil || before.Mode()&os.ModeSymlink != 0 || !before.IsDir() {
+		return errors.New("state directory must be a real directory")
+	}
+	if err := os.Chmod(s.StateRoot, 0o700); err != nil {
+		return fmt.Errorf("secure state directory: %w", err)
+	}
+	after, err := os.Lstat(s.StateRoot)
+	if err != nil || after.Mode()&os.ModeSymlink != 0 || !after.IsDir() || !os.SameFile(before, after) || after.Mode().Perm() != 0o700 {
+		return errors.New("state directory identity or permissions changed during initialization")
+	}
 	if err := s.bindIdentity(); err != nil {
 		return err
 	}
