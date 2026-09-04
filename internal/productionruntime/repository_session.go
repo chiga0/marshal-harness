@@ -73,7 +73,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 	if err != nil {
 		_ = ingress.Close()
 		_ = phase.Close()
-		if kind, classified := repositoryOwnerTransitionKind(err); classified {
+		if kind, classified := repositoryOwnerTransitionLabel(err); classified {
 			return nil, fmt.Errorf("repository session: acquire owner: transition=%s: %w", kind, err)
 		}
 		return nil, fmt.Errorf("repository session: acquire owner: %w", err)

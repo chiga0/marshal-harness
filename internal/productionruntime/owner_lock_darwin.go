@@ -136,6 +136,11 @@ func repositoryOwnerTransitionKind(err error) (repositoryOwnerTransitionFailureK
 	return transition.kind, true
 }
 
+func repositoryOwnerTransitionLabel(err error) (string, bool) {
+	kind, classified := repositoryOwnerTransitionKind(err)
+	return string(kind), classified
+}
+
 func ownerReplayFailure(err error) error {
 	if errors.Is(err, resultingress.ErrDurableReplayConflict) || errors.Is(err, resultingress.ErrControlOwnerConflict) || errors.Is(err, resultingress.ErrControlOwnerUnknown) || errors.Is(err, resultingress.ErrControlOwnerNotCurrent) {
 		return newRepositoryOwnerTransitionError(repositoryOwnerFailureReplayConflict)
