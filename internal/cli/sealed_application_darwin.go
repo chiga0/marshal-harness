@@ -107,7 +107,11 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	ingressDir, ledgerDir, allocationRoot, ownerDir := productionruntime.CompositionPaths(config.StateRoot)
 	runtimeRoot := productionruntime.RuntimeRootPath(config.StateRoot)
 	providerDir := filepath.Join(runtimeRoot, "provider-authority")
-	controlRootPath := filepath.Join(runtimeRoot, "control")
+	// Fixed endpoint socket/token and delivery authority live directly below
+	// runtime-v1/control. The process supervisor needs a held directory whose
+	// identity does not change when those endpoint objects are created, so its
+	// per-session objects are isolated under this stable child.
+	controlRootPath := filepath.Join(runtimeRoot, "control", "supervisor")
 	for _, dir := range []string{ingressDir, ledgerDir, allocationRoot, ownerDir, providerDir, controlRootPath} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("sealed repository application: prepare authority directory: %w", err)
