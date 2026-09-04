@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
@@ -171,6 +172,78 @@ func (session *RepositorySession) OwnerProjection(ctx context.Context) (OwnerPro
 		return nil
 	})
 	return projection, err
+}
+
+// ReconcileStartRun reads the exact current PreparedExecution/RUNNING pair
+// without composing a Run runtime. Fixed-delivery reconciliation happens
+// after StartRun has already released its short-lived runtime; reopening that
+// runtime here would run Attach/recovery and turn a read-only response-loss
+// check into a lifecycle mutation.
+//
+// Lock order remains Run lease -> repository owner -> ResultIngress. The
+// repository owner callback lends a non-reentrant verifier to ResultIngress,
+// so the complete cross-ledger join is observed under one current owner.
+func (session *RepositorySession) ReconcileStartRun(ctx context.Context, request application.StartRunRequest) (result application.RunStartProjection, found bool, resultErr error) {
+	if ctx == nil {
+		return application.RunStartProjection{}, false, application.NewError("reconcile-start-run", application.ReasonInvalidRequest)
+	}
+	if err := request.Validate(); err != nil {
+		return application.RunStartProjection{}, false, err
+	}
+	borrow, err := session.borrow()
+	if err != nil {
+		return application.RunStartProjection{}, false, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, borrow.Close()) }()
+
+	lease, err := session.runs.AcquireExisting(request.RunID)
+	if err != nil {
+		return application.RunStartProjection{}, false, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, lease.Release()) }()
+
+	err = session.owner.WithCurrentOwnerLock(ctx, session.acquisition, func() error {
+		current, currentFound, openErr := session.ingress.OpenOwner(session.acquisition.Scope)
+		if openErr != nil {
+			return openErr
+		}
+		if !currentFound || current.Acquisition != session.acquisition || current.FactDigest != session.ownerState.FactDigest {
+			return application.NewError("reconcile-start-run", application.ReasonOwnerNotCurrent)
+		}
+		verifier := &borrowedOwnerVerifier{acquisition: session.acquisition, active: true}
+		defer verifier.close()
+
+		resolved, resolveErr := session.ingress.ResolvePreparedRunStart(ctx, verifier, session.acquisition, resultingress.PreparedRunStartKey{
+			RunID: request.RunID, ReadySequence: request.ExpectedSequence, ReadyAuthorityHead: request.ExpectedAuthorityHead,
+		})
+		if errors.Is(resolveErr, resultingress.ErrPreparedRunStartNotFound) {
+			return nil
+		}
+		if resolveErr != nil {
+			return resolveErr
+		}
+		prepared, prepareErr := session.ingress.PrepareMacRunStart(ctx, verifier, session.acquisition, resolved.PreparationDigest)
+		if prepareErr != nil {
+			return prepareErr
+		}
+		if prepared.RunID != request.RunID || prepared.Sequence != request.ExpectedSequence || prepared.AuthorityHead != request.ExpectedAuthorityHead {
+			return application.NewError("reconcile-start-run", application.ReasonAuthorityConflict)
+		}
+		authority, readErr := session.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
+		if readErr != nil {
+			return readErr
+		}
+		if authority.Run.State != domain.StateRunning || authority.PreparationDigest != prepared.PreparationDigest {
+			return nil
+		}
+		candidate := application.RunStartProjection{Prepared: prepared, Run: authority.Run}
+		if candidate.Validate() != nil {
+			return application.NewError("reconcile-start-run", application.ReasonAuthorityConflict)
+		}
+		result, found = candidate, true
+		return nil
+	})
+	return result, found, err
 }
 
 func (borrow *repositorySessionBorrow) Close() error {

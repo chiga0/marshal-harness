@@ -402,12 +402,10 @@ func (adapter *sealedRepositoryApplication) ReconcileStartRun(ctx context.Contex
 	if adapter.closed {
 		return application.RunStartProjection{}, false, application.NewError("reconcile-start-run", application.ReasonBridgeUnavailable)
 	}
-	run, err := adapter.openRun(ctx, request.RunID)
-	if err != nil {
-		return application.RunStartProjection{}, false, err
-	}
-	defer run.Close()
-	return run.runtime.ReconcileStartRun(ctx, request)
+	// Delivery reconciliation is a read-only current-ledger join. Reopening a
+	// full Run runtime here would execute Attach/recovery after a successful
+	// fresh start and incorrectly require a successor owner epoch.
+	return adapter.session.ReconcileStartRun(ctx, request)
 }
 
 type sealedRunAdvancer interface {
