@@ -242,6 +242,13 @@ func (router *HTTPRouter) startRun(ctx context.Context, authenticated RequestBin
 	if pending.RequestKeyDigest != binding.RequestKeyDigest || pending.RequestDigest != binding.RequestDigest || pending.ApplicationIntentDigest != binding.ApplicationIntentDigest || pending.Deadline != binding.Deadline {
 		return httpResponse{}, 409, ErrConflict
 	}
+	// Once the immutable pending is durable, client response loss must not
+	// cancel the operation whose outcome that pending exists to recover. Keep
+	// request values but replace the transport lifetime with the already-frozen
+	// delivery deadline. This remains bounded and does not let an unauthenticated
+	// or pre-pending request outlive its connection.
+	deliveryContext, cancelDelivery := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	defer cancelDelivery()
 	// A newly-created pending intent has no predecessor delivery to recover.
 	// Reconcile before mutation only when BeginStartRunBound reports a durable
 	// replay; concurrent identical requests remain safe because StartRun itself
@@ -249,17 +256,17 @@ func (router *HTTPRouter) startRun(ctx context.Context, authenticated RequestBin
 	// This also avoids turning over the fresh path's held Run graph immediately
 	// before StartRun prepares and launches.
 	if replay {
-		if receipt, applied, reconcileErr := router.delivery.ReconcileStartRunDelivery(ctx, pending, input, router.application); reconcileErr != nil {
+		if receipt, applied, reconcileErr := router.delivery.ReconcileStartRunDelivery(deliveryContext, pending, input, router.application); reconcileErr != nil {
 			return httpResponse{}, applicationHTTPStatus(reconcileErr), errors.Join(application.NewError("reconcile-start-run-delivery", application.ReasonAuthorityConflict), reconcileErr)
 		} else if applied {
-			return router.replayedStart(ctx, input, pending, receipt)
+			return router.replayedStart(deliveryContext, input, pending, receipt)
 		}
 	}
 	// Once pending is durable, even a typed Port error cannot prove that no
 	// mutation committed before response loss. Only the current RB1 reconcile
 	// below may distinguish success from an unresolved delivery.
-	_, startErr := router.application.StartRun(ctx, input)
-	receipt, applied, err := router.delivery.ReconcileStartRunDelivery(ctx, pending, input, router.application)
+	_, startErr := router.application.StartRun(deliveryContext, input)
+	receipt, applied, err := router.delivery.ReconcileStartRunDelivery(deliveryContext, pending, input, router.application)
 	if err != nil {
 		return httpResponse{}, applicationHTTPStatus(err), errors.Join(application.NewError("reconcile-start-run-delivery", application.ReasonAuthorityConflict), err)
 	}
@@ -271,7 +278,7 @@ func (router *HTTPRouter) startRun(ctx context.Context, authenticated RequestBin
 		// a stable reasonCode instead of discarding the only root-cause signal.
 		return errorHTTPResponse(request.operation, errHTTPPending), 202, errors.Join(errHTTPPending, startErr)
 	}
-	return router.replayedStart(ctx, input, pending, receipt)
+	return router.replayedStart(deliveryContext, input, pending, receipt)
 }
 
 func (router *HTTPRouter) replayedStart(ctx context.Context, request application.StartRunRequest, pending productionruntime.FixedDeliveryPending, receipt productionruntime.FixedDeliveryReceipt) (httpResponse, int, error) {
