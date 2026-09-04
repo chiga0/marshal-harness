@@ -2,11 +2,19 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
+## 2026-09-04 fixed server T1 已真实集成：restart/response-loss 恢复闭环
+
+PR [#252](https://github.com/chiga0/marshal-harness/pull/252) 已以 merge commit `b39c346ae2fdb856c8442bdd6b56eec361ab1f84` 合入 main；该 exact head 的 [required CI](https://github.com/chiga0/marshal-harness/actions/runs/33850189142) 在 Ubuntu、macOS、Linux amd64/arm64 candidate conformance 与 secret scan 全绿后，触发 [fixed server T1 canary](https://github.com/chiga0/marshal-harness/actions/runs/33851302323)。canary 从该 head 构建一次固定 `bin/marshal`，以真实 Pi `0.84.4`（`pai-eas/qwen3.7-plus`）经 `marshal control-plane serve → authenticated AF_UNIX → StartRun → RUNNING → InspectRun` 执行；随后受控 `kill -9` 第一个 server，严格 successor 在 owner epoch `2` 完成 recovery-before-ready，并以同一 request key、request bytes 与冻结 deadline 对 response-loss delivery 做 exact replay。
+
+上传 artifact `9928466621` 的闭合摘要为：`sourceHead=b39c346…1f84`，candidate SHA-256 `sha256:180364721455b23f18aa4e72a4e2059683fb772eb39bb95b0e00f107cb35c4c5`，CDHash `f940ce13b175951b27105356958bf31c64bd62d7`，owner epochs `[1,2]`；Supervisor command 只有 `spawn=1`、`resume=1`、`bind-authority=2`，且每条 intent/outcome 均闭合，`pending=0`、`rejectedOrUnknown=0`。delivery 恰好形成一份 immutable pending 与一份 receipt-ref；Run/Attempt、worker start、recovery bind 均唯一，`cliFallback=false`。两个 server observation 都绑定同一 canonical `bin/marshal` 路径、device/inode、bytes 与 CDHash；生产路径没有匿名临时 Mach-O、第二 writer/root 或 CLI mutation fallback。
+
+因此 ADR 0076 定义的 **fixed transport/T1 capability** 从 `COMPONENT` 升级为 `INTEGRATED`。该结论只覆盖真实 Agent 到 `RUNNING`、response-loss 与 server restart strict-successor replay，不把 ADR 0062 的完整 fixed-server lifecycle 或 I186-R2–R6 整体提前升级：T2 仍须把 collect/verify/review/独立 ReviewDecision 全部接入同一个 resident `PublicApplicationPort` 并到达 `ACCEPTED`；随后仍需完整 recovery/fault matrix、Issue #212 的 Developer ID signing/notarization 与 managed launch、Linux stable gate、受保护 stable candidate。T1 candidate 只有 CI ad-hoc identity，不能据此声称企业安全软件信任、managed production 或 stable。
+
 ## 2026-09-04 main exact-head CLI 回归闭环：真实 Pi 到 `ACCEPTED`
 
 `main@c2198e3628f38b126402cf7ab153120ea25e3d77` 已用 build-from-head 固定 candidate 与真实 Pi `0.84.4`（`pai-eas/qwen3.7-plus`）完成 sealed CLI 纵切。run phase [33788766642](https://github.com/chiga0/marshal-harness/actions/runs/33788766642) 仅消费一次 Attempt，穿过 existing-worktree path-B、`PrepareRunStart → StartPreparedRun`、真实 worker terminal collect 与 Verification，到达 `REVIEW_PENDING`；独立 reviewer 确认 `P0=0`、`P1=0`。finalize phase [33790168049](https://github.com/chiga0/marshal-harness/actions/runs/33790168049) 导入精确绑定的 ReviewDecision 后持久到 `ACCEPTED`，`rc1-carrier-check` 通过；carrier artifact 为 `9907034593`，上传 zip digest 为 `sha256:e212f4e817fdc774828a7eaffa6b584eeeb5b243af98e486289e2c94362143b7`。
 
-因此 [#226](https://github.com/chiga0/marshal-harness/issues/226) 已按 PR #228 的 exact-head `StartPreparedRun` 关闭合同完成，不再列为 stable 当前阻塞。[#224](https://github.com/chiga0/marshal-harness/issues/224) 与 [#225](https://github.com/chiga0/marshal-harness/issues/225) 的实现已在 main，但 ADR 0075 还要求用 `m13-e2e-dogfood` 在相同 published-asset pin 下以真实复杂中文任务到 `ACCEPTED`，并覆盖 default umask 与“散文 + 单 JSON”输出、提取时间/token 指标；本次 marker canary 不能替代该证据，所以两项继续开放。该结果也不把 fixed server 或 v1.0 stable 提前标记为完成：S4 的真实跨进程 server restart/response-loss T1、T2 server 路径到 `ACCEPTED`、完整 recovery/fault matrix、Issue #212 的 managed signing/notarization、Linux stable gate 与受保护 stable candidate 仍开放。本机 macOS 26.6.2 对 ADR 0059 `PT_TRACE_ME → exec → SIGTRAP → PtraceDetach` 的兼容性故障也仍须以窄 ADR 和固定 `marshal` 内部 launcher 修复；不得生成匿名临时 executable，也不得把云端 runner 成功冒充本机该缺口已关闭。
+因此 [#226](https://github.com/chiga0/marshal-harness/issues/226) 已按 PR #228 的 exact-head `StartPreparedRun` 关闭合同完成，不再列为 stable 当前阻塞。[#224](https://github.com/chiga0/marshal-harness/issues/224) 与 [#225](https://github.com/chiga0/marshal-harness/issues/225) 的实现已在 main，但 ADR 0075 还要求用 `m13-e2e-dogfood` 在相同 published-asset pin 下以真实复杂中文任务到 `ACCEPTED`，并覆盖 default umask 与“散文 + 单 JSON”输出、提取时间/token 指标；本次 marker canary 不能替代该证据，所以两项继续开放。该 CLI 证据本身不把 fixed server 或 v1.0 stable 提前标记为完成；S4 的真实跨进程 server restart/response-loss T1 已由上方后继证据关闭，当前仍开放的是 T2 server 路径到 `ACCEPTED`、完整 recovery/fault matrix、Issue #212 的 managed signing/notarization、Linux stable gate 与受保护 stable candidate。本机 macOS 26.6.2 对 ADR 0059 `PT_TRACE_ME → exec → SIGTRAP → PtraceDetach` 的兼容性故障也仍须以窄 ADR 和固定 `marshal` 内部 launcher 修复；不得生成匿名临时 executable，也不得把云端 runner 成功冒充本机该缺口已关闭。
 
 ## 2026-09-03 fixed server S4 候选：resident production composition
 
@@ -154,6 +162,6 @@ Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Prov
 
 ## 接下来怎么走
 
-近期建设顺序为：冻结 RC1 发布证据与复盘 → fixed server/recovery fault matrix → managed signing/notarization 与 Linux stable gate → 受保护 stable candidate → `v1.0.0`。GoalLite 只以不冲突的独立纵切并行推进。
+近期建设顺序为：fixed server T2 到 `ACCEPTED` → recovery/fault matrix → managed signing/notarization 与 Linux stable gate → 受保护 stable candidate → `v1.0.0`。GoalLite 只以不冲突的独立纵切并行推进。
 
 详细范围见 GitHub 上的 [ADR 0052](https://github.com/chiga0/marshal-harness/blob/main/docs/adr/0052-v1-release-scope-and-production-reachability.md)，实时工程状态见 [Roadmap](https://github.com/chiga0/marshal-harness/blob/main/docs/roadmap-status.md)。
