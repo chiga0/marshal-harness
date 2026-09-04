@@ -250,7 +250,7 @@ func (router *HTTPRouter) startRun(ctx context.Context, authenticated RequestBin
 	// before StartRun prepares and launches.
 	if replay {
 		if receipt, applied, reconcileErr := router.delivery.ReconcileStartRunDelivery(ctx, pending, input, router.application); reconcileErr != nil {
-			return httpResponse{}, applicationHTTPStatus(reconcileErr), reconcileErr
+			return httpResponse{}, applicationHTTPStatus(reconcileErr), errors.Join(application.NewError("reconcile-start-run-delivery", application.ReasonAuthorityConflict), reconcileErr)
 		} else if applied {
 			return router.replayedStart(ctx, input, pending, receipt)
 		}
@@ -261,7 +261,7 @@ func (router *HTTPRouter) startRun(ctx context.Context, authenticated RequestBin
 	_, startErr := router.application.StartRun(ctx, input)
 	receipt, applied, err := router.delivery.ReconcileStartRunDelivery(ctx, pending, input, router.application)
 	if err != nil {
-		return httpResponse{}, applicationHTTPStatus(err), err
+		return httpResponse{}, applicationHTTPStatus(err), errors.Join(application.NewError("reconcile-start-run-delivery", application.ReasonAuthorityConflict), err)
 	}
 	if !applied {
 		// The client-facing result must remain an unresolved delivery even when
