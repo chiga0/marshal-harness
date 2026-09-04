@@ -68,6 +68,7 @@ type httpDeliveryStub struct {
 	beginCalls     int
 	reconcileCalls int
 	applyAt        int
+	beginReplay    bool
 	pending        productionruntime.FixedDeliveryPending
 	receipt        productionruntime.FixedDeliveryReceipt
 	wrongPending   bool
@@ -94,7 +95,7 @@ func (stub *httpDeliveryStub) BeginStartRunBound(_ context.Context, _ string, _ 
 	if err := sealHTTPReceipt(&stub.receipt); err != nil {
 		return productionruntime.FixedDeliveryPending{}, false, err
 	}
-	return stub.pending, false, nil
+	return stub.pending, stub.beginReplay, nil
 }
 
 func (stub *httpDeliveryStub) ReconcileStartRunDelivery(context.Context, productionruntime.FixedDeliveryPending, application.StartRunRequest, productionruntime.FixedStartRunReconciler) (productionruntime.FixedDeliveryReceipt, bool, error) {
@@ -154,7 +155,7 @@ func testHTTPApplication() (*httpApplicationStub, *httpDeliveryStub) {
 		run:     run,
 	}
 	delivery := &httpDeliveryStub{
-		applyAt: 2,
+		applyAt: 1,
 		receipt: productionruntime.FixedDeliveryReceipt{
 			PreparationDigest: started.Prepared.PreparationDigest, ApplicationReceiptFactDigest: run.AuthorityHead,
 			RunID: run.RunID, AttemptID: run.AttemptID, PostRevision: run.Sequence, PostAuthorityHead: run.AuthorityHead,
@@ -343,7 +344,7 @@ func TestHTTPRouterStartRunPublishesPendingBeforeSingleMutationAndExactReceipt(t
 	}
 	binding := RequestBinding{RequestKeyDigest: deliveryBinding.RequestKeyDigest, RequestDigest: deliveryBinding.RequestDigest, IntentDigest: deliveryBinding.ApplicationIntentDigest, Deadline: deliveryBinding.Deadline}
 	code, response, serveErr := callHTTPRouter(t, router, binding, "/v1/runs/start", "request:start", body)
-	if serveErr != nil || code != 200 || response.Disposition != "success" || response.Started == nil || response.DeliveryReceipt == nil || delivery.beginCalls != 1 || delivery.reconcileCalls != 2 || port.startCalls != 1 || port.reconcileCalls != 1 {
+	if serveErr != nil || code != 200 || response.Disposition != "success" || response.Started == nil || response.DeliveryReceipt == nil || delivery.beginCalls != 1 || delivery.reconcileCalls != 1 || port.startCalls != 1 || port.reconcileCalls != 1 {
 		t.Fatalf("code=%d response=%+v err=%v begin=%d deliveryReconcile=%d start=%d appReconcile=%d", code, response, serveErr, delivery.beginCalls, delivery.reconcileCalls, port.startCalls, port.reconcileCalls)
 	}
 }
@@ -402,7 +403,7 @@ func TestHTTPRouterStartRunErrorStillRequiresCurrentLedgerReconcile(t *testing.T
 	}
 	binding := RequestBinding{RequestKeyDigest: deliveryBinding.RequestKeyDigest, RequestDigest: deliveryBinding.RequestDigest, IntentDigest: deliveryBinding.ApplicationIntentDigest, Deadline: deliveryBinding.Deadline}
 	code, response, serveErr := callHTTPRouter(t, router, binding, "/v1/runs/start", "request:start-error", body)
-	if !errors.Is(serveErr, errHTTPPending) || !application.HasReason(serveErr, application.ReasonAuthorityConflict) || code != 202 || response.Disposition != "pending" || response.ReasonCode != "delivery-pending" || delivery.reconcileCalls != 2 || port.startCalls != 1 {
+	if !errors.Is(serveErr, errHTTPPending) || !application.HasReason(serveErr, application.ReasonAuthorityConflict) || code != 202 || response.Disposition != "pending" || response.ReasonCode != "delivery-pending" || delivery.reconcileCalls != 1 || port.startCalls != 1 {
 		t.Fatalf("code=%d response=%+v err=%v deliveryReconcile=%d start=%d", code, response, serveErr, delivery.reconcileCalls, port.startCalls)
 	}
 }
@@ -410,6 +411,7 @@ func TestHTTPRouterStartRunErrorStillRequiresCurrentLedgerReconcile(t *testing.T
 func TestHTTPRouterReplaysReceiptWithoutSecondMutation(t *testing.T) {
 	port, delivery := testHTTPApplication()
 	delivery.applyAt = 1
+	delivery.beginReplay = true
 	router, err := NewHTTPRouter(port, delivery)
 	if err != nil {
 		t.Fatal(err)
@@ -428,9 +430,32 @@ func TestHTTPRouterReplaysReceiptWithoutSecondMutation(t *testing.T) {
 	}
 }
 
+func TestHTTPRouterUnappliedReplayReconcilesBeforeMutation(t *testing.T) {
+	port, delivery := testHTTPApplication()
+	delivery.applyAt = 0
+	delivery.beginReplay = true
+	router, err := NewHTTPRouter(port, delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := application.StartRunRequest{RunID: port.run.RunID, ExpectedSequence: port.started.Prepared.Sequence, ExpectedAuthorityHead: port.started.Prepared.AuthorityHead}
+	body := canonicalBody(t, request)
+	deadline := time.Now().UTC().Add(time.Minute)
+	deliveryBinding, err := productionruntime.NewFixedStartRunDeliveryBinding("request:unapplied-replay", request, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := RequestBinding{RequestKeyDigest: deliveryBinding.RequestKeyDigest, RequestDigest: deliveryBinding.RequestDigest, IntentDigest: deliveryBinding.ApplicationIntentDigest, Deadline: deliveryBinding.Deadline}
+	code, response, serveErr := callHTTPRouter(t, router, binding, "/v1/runs/start", "request:unapplied-replay", body)
+	if !errors.Is(serveErr, errHTTPPending) || code != 202 || response.Disposition != "pending" || delivery.reconcileCalls != 2 || port.startCalls != 1 {
+		t.Fatalf("code=%d response=%+v err=%v deliveryReconcile=%d start=%d", code, response, serveErr, delivery.reconcileCalls, port.startCalls)
+	}
+}
+
 func TestHTTPRouterRejectsReceiptForDifferentPending(t *testing.T) {
 	port, delivery := testHTTPApplication()
 	delivery.applyAt = 1
+	delivery.beginReplay = true
 	delivery.wrongPending = true
 	router, err := NewHTTPRouter(port, delivery)
 	if err != nil {

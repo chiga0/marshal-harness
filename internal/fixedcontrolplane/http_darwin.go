@@ -235,17 +235,25 @@ func (router *HTTPRouter) startRun(ctx context.Context, authenticated RequestBin
 	if err != nil || authenticated != (RequestBinding{RequestKeyDigest: binding.RequestKeyDigest, RequestDigest: binding.RequestDigest, IntentDigest: binding.ApplicationIntentDigest, Deadline: binding.Deadline}) {
 		return httpResponse{}, 409, ErrConflict
 	}
-	pending, _, err := router.delivery.BeginStartRunBound(ctx, request.requestKey, input, deadline, binding)
+	pending, replay, err := router.delivery.BeginStartRunBound(ctx, request.requestKey, input, deadline, binding)
 	if err != nil {
 		return httpResponse{}, applicationHTTPStatus(err), err
 	}
 	if pending.RequestKeyDigest != binding.RequestKeyDigest || pending.RequestDigest != binding.RequestDigest || pending.ApplicationIntentDigest != binding.ApplicationIntentDigest || pending.Deadline != binding.Deadline {
 		return httpResponse{}, 409, ErrConflict
 	}
-	if receipt, applied, reconcileErr := router.delivery.ReconcileStartRunDelivery(ctx, pending, input, router.application); reconcileErr != nil {
-		return httpResponse{}, applicationHTTPStatus(reconcileErr), reconcileErr
-	} else if applied {
-		return router.replayedStart(ctx, input, pending, receipt)
+	// A newly-created pending intent has no predecessor delivery to recover.
+	// Reconcile before mutation only when BeginStartRunBound reports a durable
+	// replay; concurrent identical requests remain safe because StartRun itself
+	// rehydrates an exact successor and every path still reconciles afterward.
+	// This also avoids turning over the fresh path's held Run graph immediately
+	// before StartRun prepares and launches.
+	if replay {
+		if receipt, applied, reconcileErr := router.delivery.ReconcileStartRunDelivery(ctx, pending, input, router.application); reconcileErr != nil {
+			return httpResponse{}, applicationHTTPStatus(reconcileErr), reconcileErr
+		} else if applied {
+			return router.replayedStart(ctx, input, pending, receipt)
+		}
 	}
 	// Once pending is durable, even a typed Port error cannot prove that no
 	// mutation committed before response loss. Only the current RB1 reconcile
