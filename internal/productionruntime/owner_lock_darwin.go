@@ -211,7 +211,7 @@ func openRepositoryOwnerScopeLock(ownerDirectory *os.File, scope resultingress.C
 		_ = directory.Close()
 		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
 	}
-	fileFD, err := openOwnerFile(directoryFD, name)
+	fileFD, created, err := openOwnerFile(directoryFD, name)
 	if err != nil {
 		_ = parent.Close()
 		_ = directory.Close()
@@ -225,6 +225,21 @@ func openRepositoryOwnerScopeLock(ownerDirectory *os.File, scope resultingress.C
 		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
 	}
 	if err := unix.Flock(fileFD, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = file.Close()
+		_ = parent.Close()
+		_ = directory.Close()
+		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
+	}
+	// A newly created coordination entry must be durable before its file and
+	// containing-directory mutation identities are frozen.  On APFS, observing
+	// those identities immediately after O_CREAT and only syncing unrelated
+	// authority files later can make the first current-owner recheck see the
+	// creation metadata settle as an apparent hostile drift.  This mirrors the
+	// ResultIngress held-file boundary: sync the new leaf first, then its parent,
+	// and only then attest the stable current names.  Existing entries are
+	// already durable and are left untouched.
+	if created && (unix.Fsync(fileFD) != nil || unix.Fsync(directoryFD) != nil) {
+		_ = unix.Flock(fileFD, unix.LOCK_UN)
 		_ = file.Close()
 		_ = parent.Close()
 		_ = directory.Close()
@@ -252,15 +267,17 @@ func openRepositoryOwnerScopeLock(ownerDirectory *os.File, scope resultingress.C
 	return &darwinRepositoryOwnerScopeLock{physical: physical, ownerScope: scope}, nil
 }
 
-func openOwnerFile(directoryFD int, name string) (int, error) {
+func openOwnerFile(directoryFD int, name string) (int, bool, error) {
 	fd, err := unix.Openat(directoryFD, name, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	created := false
 	if errors.Is(err, unix.ENOENT) {
 		fd, err = unix.Openat(directoryFD, name, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT|unix.O_EXCL, 0o600)
+		created = err == nil
 	}
 	if err != nil {
-		return -1, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
+		return -1, false, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
 	}
-	return fd, nil
+	return fd, created, nil
 }
 
 func mutationIdentity(stat unix.Stat_t) ownerMutationIdentity {
