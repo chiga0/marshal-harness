@@ -289,6 +289,69 @@ func TestFixedClientViewCallsResidentStatus(t *testing.T) {
 	}
 }
 
+func TestReadClientHTTPResponseRetainsAuthenticatedPendingEnvelope(t *testing.T) {
+	server, rawClient := unixConnectionPair(t, testBinding())
+	client := &AuthenticatedConnection{UnixConn: rawClient, recheck: func(context.Context) error { return nil }, release: func() {}}
+	response := errorHTTPResponse("start-run", errHTTPPending)
+	written := make(chan error, 1)
+	go func() {
+		written <- writeHTTPResponse(server, 202, response)
+	}()
+	got, err := readClientHTTPResponse(client)
+	if !errors.Is(err, errHTTPPending) {
+		t.Fatalf("read pending response err=%v", err)
+	}
+	if got != response {
+		t.Fatalf("pending response=%+v want=%+v", got, response)
+	}
+	if err := <-written; err != nil {
+		t.Fatalf("write pending response: %v", err)
+	}
+}
+
+func TestFixedClientPendingStartCompletesAuthenticatedResponseProtocol(t *testing.T) {
+	fixture := newEndpointFixture(t)
+	endpoint, err := OpenEndpoint(context.Background(), fixture.authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = endpoint.Close() })
+	port, delivery := testHTTPApplication()
+	delivery.applyAt = 0
+	router, err := NewHTTPRouter(port, delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() {
+		connection, acceptErr := endpoint.Accept(context.Background())
+		if acceptErr != nil {
+			served <- acceptErr
+			return
+		}
+		defer connection.Close()
+		served <- router.ServeAuthenticated(context.Background(), connection)
+	}()
+	clientAuthority, err := productionruntime.OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientAuthority.Close()
+	request := application.StartRunRequest{RunID: port.run.RunID, ExpectedSequence: port.started.Prepared.Sequence, ExpectedAuthorityHead: port.started.Prepared.AuthorityHead}
+	_, err = CallStartRun(context.Background(), clientAuthority, "start:pending-client", request, time.Now().UTC().Add(time.Minute))
+	if !errors.Is(err, errHTTPPending) {
+		t.Fatalf("CallStartRun pending err=%v", err)
+	}
+	select {
+	case serveErr := <-served:
+		if !errors.Is(serveErr, errHTTPPending) || errors.Is(serveErr, ErrUnavailable) {
+			t.Fatalf("serve pending err=%v", serveErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve pending timeout")
+	}
+}
+
 func TestFixedClientStartRunBindingMatchesDurableDeliveryBinding(t *testing.T) {
 	port, _ := testHTTPApplication()
 	request := application.StartRunRequest{RunID: port.run.RunID, ExpectedSequence: port.started.Prepared.Sequence, ExpectedAuthorityHead: port.started.Prepared.AuthorityHead}
