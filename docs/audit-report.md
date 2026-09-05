@@ -1,5 +1,9 @@
 # 设计审计报告
 
+2026-09-05 ResultIngress v2 rebind 接线：主生产恢复入口保留原物理 owner 锁与 RB1 transaction，按 SupervisorStarted 的完整代际调用 v2 Attach；不转换为 v1 handshake，也不写 generic reconnect fact。先提交 creation-once owner-bound successor，再验证完整 Attach observation，随后只提交精确 v2 intent 并发送其 prepared command，最后接纳已验证 outcome。通用 rebind validator 与 journal fact producer 按原代际验证/写入；held session-directory lookup 从已验证的 v2 started 读取 session ID。既有 v1 历史与权限不变。
+
+验证沿用同一个 durable bootstrap→initial bind→spawn→ProcessStarted→resume 测试账本，再续 owner acquisition/rebind：伪造观察不得发送命令或追加 intent；执行前读取最后一条账本确认 exact intent/recovery revision 已存在；成功后幂等调用不再次进入 transport，冷重放保持相同状态；模拟丢回复后 pending intent 保留，重试不得改写账本或重复执行。此为 Core 集成候选的测试证据，不是真实 fixed server/Pi/独立 Decision。当前 v2 pending 仍明确返回 intervention，避免误入 legacy replay；后继需要 descriptor-bound v2 receipt 分类与恢复，而不是把“拒绝重试”当作恢复完成。`e51dccf` 的 CI 33948930989 五项全绿；客户端 `408f02f` 的 CI 33949630841 单独运行，不混为本候选动态证明。
+
 2026-09-05 v2 borrowed client 接线：`WithAttachedV2` 只在完整 generation/owner authority 的同步 verifier 内检查 held directory、nonce/journal/socket 与 fixed peer；借用对象仅公开一次 observation 和四个既有 continuation，不返回通用 Client/connection。prepared bind 的目标在发送前等于 owner-bound successor。回调错误不能被 verifier 吞掉，异步/重复/回调外调用失败；命令 context 同时受 Attach scope 取消约束。已尝试但未取得验证 outcome 的命令固定 intervention，不能用“journal 未保持只读”把已发生的效果误报为 no-effect。
 
 本轮实现检查还发现 decoder 切换会丢失已预读的异常帧：v2 client 保留 Attach 的原 codec，最终 EOF 也通过同一 codec 检查；服务端的第二帧检查同样读取原 buffered reader，而非绕过其缓冲直接读连接。验证包含真实 Unix socket 的只读/同连接 prepared bind、错误 successor/method、跨 goroutine、取消的零重复 child effect，以及 portable owner 回调次数、逃逸、异常和闭集接口检查。这里的 verifier 为测试替身，不是 current-ledger 集成或独立业务 Decision 证据；ResultIngress producer 仍是下一关键接线，真实 Pi/stable gate 不变。

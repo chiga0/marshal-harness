@@ -61,6 +61,10 @@ func (s *DurableStore) RebindOwnerSuccessorForAttachedRecovery(ctx context.Conte
 // seam that accepts a transport injection. Production calls
 // RebindOwnerSuccessorForAttachedRecovery which wires productionRebindTransport.
 func (s *DurableStore) rebindOwnerSuccessorForAttachedRecoveryWithTransport(ctx context.Context, verifier CurrentOwnerLockVerifier, acquisition ControlOwnerAcquisition, identity AttemptIdentity, controlDirectory *os.File, fixedMarshalPath string, transport rebindTransport) (AttemptAuthorityState, error) {
+	return s.rebindOwnerSuccessorForAttachedRecoveryWithTransports(ctx, verifier, acquisition, identity, controlDirectory, fixedMarshalPath, transport, productionRebindTransportV2)
+}
+
+func (s *DurableStore) rebindOwnerSuccessorForAttachedRecoveryWithTransports(ctx context.Context, verifier CurrentOwnerLockVerifier, acquisition ControlOwnerAcquisition, identity AttemptIdentity, controlDirectory *os.File, fixedMarshalPath string, transport rebindTransport, transportV2 rebindTransportV2) (AttemptAuthorityState, error) {
 	if s == nil || ctx == nil || verifier == nil || transport == nil {
 		return AttemptAuthorityState{}, ErrPreparedExecutionConflict
 	}
@@ -124,6 +128,10 @@ func (s *DurableStore) rebindOwnerSuccessorForAttachedRecoveryWithTransport(ctx 
 				}
 				result = state
 				return nil
+			}
+			if state.SupervisorStarted.V2 != (SupervisorStartedV2{}) {
+				result, err = s.rebindOwnerSuccessorV2Locked(ctx, projection, state, ownerState, identity, controlDirectory, fixedMarshalPath, transportV2)
+				return err
 			}
 			preAnchor := supervisorHandshakeAnchor(state.SupervisorMechanicsAnchor)
 			if state.SupervisorPendingIntentDigest != "" {
@@ -302,6 +310,12 @@ func openAttachedControlDirectoryAfterCoreValidation(profile *preparedDarwinExec
 		return nil, ErrPreparedExecutionUnavailable
 	}
 	sessionID := state.SupervisorStarted.Handshake.SessionID
+	if state.SupervisorStarted.V2 != (SupervisorStartedV2{}) {
+		if state.SupervisorStarted.Validate() != nil {
+			return nil, ErrPreparedExecutionConflict
+		}
+		sessionID = state.SupervisorStarted.V2.Handshake.SessionID
+	}
 	fd, err := unix.Openat(int(profile.controlRoot.Fd()), sessionID, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW_ANY|unix.O_DIRECTORY, 0)
 	if err != nil {
 		return nil, ErrPreparedExecutionUnavailable
@@ -486,7 +500,7 @@ func (s *DurableStore) appendRebindSupervisorIntentLocked(projection *Ingress, s
 	if !found || !samePreparedAuthorityState(current, state) || state.SupervisorPendingIntentDigest != "" || validateRebindSupervisorIntentAgainstState(state, intent) != nil {
 		return AttemptAuthorityState{}, "", ErrPreparedExecutionConflict
 	}
-	fact := &supervisorCommandFact{ProtocolRevision: supervisorCommandProtocolRevision, FactType: supervisorCommandIntentFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Intent: intent}
+	fact := &supervisorCommandFact{ProtocolRevision: supervisorIntentRecoveryRevision(intent), FactType: supervisorCommandIntentFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Intent: intent}
 	if err := s.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
 		return AttemptAuthorityState{}, "", err
 	}

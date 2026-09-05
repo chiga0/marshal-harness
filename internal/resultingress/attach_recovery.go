@@ -26,7 +26,8 @@ type AttachedRebindSession interface {
 // done, the PreCommand to be the current mechanics anchor, and the new
 // AuthorityHead to be the exact control-owner-bound successor Attempt head.
 func validateRebindSupervisorIntentAgainstState(state AttemptAuthorityState, intent SupervisorCommandIntent) error {
-	if intent.Validate() != nil || intent.Command != processsupervisor.CommandBindAuthority || intent.SessionID != state.SupervisorStarted.Handshake.SessionID ||
+	sessionID, _, protocol := supervisorStartedCommandBinding(state.SupervisorStarted)
+	if intent.Validate() != nil || intent.ProtocolRevision != protocol || intent.Command != processsupervisor.CommandBindAuthority || intent.SessionID != sessionID ||
 		intent.Sequence != state.SupervisorCommandSequence+1 || intent.PreviousCommandHead != state.SupervisorCommandHead {
 		return ErrAttemptAuthorityOrder
 	}

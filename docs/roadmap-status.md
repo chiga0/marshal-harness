@@ -4,6 +4,8 @@
 
 ## 业务交付当前表
 
+2026-09-05 最新 Core 候选：`RebindOwnerSuccessorForAttachedRecovery` 按耐久 Supervisor generation 选择 v2 transport；无 pending 时在原 owner/ledger 锁内完成 owner-successor→只读 Attach→v2 intent fsync→同连接 bind→v2 outcome，并保留幂等短路。rebind validator、recovery fact revision 和 held session-directory lookup 不再误读 v1 字段。连续 RB1 测试从已有真实账本 bootstrap/start/resume 延伸至 rebind、冷重放及丢回复 pending 保留，peer 仍为替身。本地 compile-only/vet/staticcheck/架构检查通过；动态 CI 待 exact head。**v2 pending receipt 分类恢复、Collect/terminal producer 和最终 selector/canary 尚未接完，不能将本候选称为重启闭环或生产可用。**B1 保持 IN_PROGRESS。
+
 2026-09-05 最新客户端候选：新增 `WithAttachedV2`，以完整 v2 authority 调用 held-owner verifier，借用原 Unix socket 完成 observation→单次 prepared continuation→EOF。禁止重复/跨 goroutine/回调外消费，拒绝错误 successor、错误 method 和取消请求；持久化命令可能已执行但丢回复时保持 intervention，不声称无副作用。新增真实 socket 的客户端与服务端互通测试；Darwin/Linux 本地只做 compile-only、vet/staticcheck/架构检查。当前生产 selector 未切换；**后继必须接通 ResultIngress 的 v2 rebind/collect/terminal producer，并以固定 server 的真实 Pi 独立验收到 ACCEPTED；B1 仍为 IN_PROGRESS。**以下是先前 checkpoint，不表示当前可生产使用。
 
 2026-09-05 后续接线候选：v2 Attach 服务端现在接受同一认证连接上的至多一个 `bind-authority/Inspect/Collect/Close`，不进入通用命令循环。检查点在命令锁内再次核对；bind 只允许精确 owner-bound successor，旧 checkpoint、错误 successor、Spawn/Resume 和跨代请求在 journal intent 前拒绝。已提交命令的丢响应仍由既有 exact receipt recovery 处理，不重用已消费的 Attach。Close 即使丢响应也退出服务循环。新增 portable 生命周期/拒绝矩阵与同一 Unix socket bind 测试；本地仅 compile-only、vet/staticcheck 与架构检查，不冒充动态测试。**callback-scoped 客户端与 Core producer 接线仍待完成，生产 selector 保持未切换，B1 未关闭。**下段为上一 checkpoint 的历史记录。

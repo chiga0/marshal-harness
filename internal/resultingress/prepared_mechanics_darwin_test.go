@@ -446,4 +446,5 @@ func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixtu
 	if _, err := exactSuccessfulResume(replayed); err == nil {
 		t.Fatal("resume accepted unrelated business started fact")
 	}
+	testLauncherV2OwnerRebind(t, fixture, state)
 }
