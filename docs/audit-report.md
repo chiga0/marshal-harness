@@ -1,5 +1,9 @@
 # 设计审计报告
 
+2026-09-05 启动业务接线与动态失败复盘：ProcessStarted 原实现读取 v1 handshake 时间，v2 会读到空值；现按已验证的原代际读取时间，并绑定同一 session 的 spawn CommandID/ObservedAt/ObserverIdentity。resume 重放必须对应当前 ProcessStarted，不把 exec-stopped 当作运行成功。增加完整耐久链与错误观察零写入测试；这不是切换生产 selector 或实机闭环证据。
+
+`78cfa06` 的 CI 33947059050：Ubuntu quality、Linux amd64/arm64 conformance、secret scan 通过，macOS 的 `TestOpenAttachedControlDirectoryAllowsPostCollectLinkCountGrowth` 在首次 `ObserveHeldControlDirectory` 失败。代码检查发现 processsupervisor、productionruntime 两处及 provider 共四处 `F_GETPATH` 缓冲区指针经 `FcntlInt` 的普通整数参数传递，丢失 Go 指针保活/移动语义。依据 [Go unsafe.Pointer 的系统调用规则](https://pkg.go.dev/unsafe#Pointer)，统一改为 syscall 表达式内直接转换，与仓库现有 Darwin identity 读取方式一致，并增加 fresh-goroutine/GC/无效 fd 测试。该模式缺陷已修正，但它是否解释本次间歇性 CI 失败仍待新 head 动态回归确认；不将一次绿灯或重复重跑当作完整根因证明，不放宽目录模式、owner、inode 或路径检查。
+
 2026-09-05 v2 outcome 候选接线：结果不能只携带“形状合法”的 post journal head。当前由 `PreparedCommandEvidenceV2` 在传输前冻结 redacted journal request 摘要，返回结果由 process-supervisor 自己重算完整 receipt 与 journal 链，ResultIngress 只消费 typed outcome 并核对耐久 intent。无原始 argv/environment values/stdin/nonce/transcript bytes 进入新增字段；未知字段与非 canonical 请求投影拒绝。v2 的 semantic process outcome 复用代际无关业务映射，不转换为 v1 wire；外层 RB1/Attempt 协议名不变，旧 v1 optional 新字段保持缺省。该候选尚未对真实 session 启用，因此不会迁移/重写已发布 v1 历史，也不授予生产、Attach 或正式发布完成结论。后继 Attach 必须保留旧 command A0/post receipt 与新 owner recovery anchor 的区别，不能把重连后的 owner/head 回填到原 command receipt。上一 head `0a887f2` 的 CI 33946412476 已最终五项全绿，当前 outcome 候选须单独验证。
 
 ## 2026-09-05：B1 v2 恢复候选与失败复盘

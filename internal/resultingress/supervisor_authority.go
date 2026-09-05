@@ -771,7 +771,14 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 			if _, err := currentOwner(prior.Owner); err != nil {
 				return err
 			}
-			handshakeAt, handshakeErr := time.Parse(time.RFC3339Nano, prior.SupervisorStarted.Handshake.ObservedAt)
+			observedAt := prior.SupervisorStarted.Handshake.ObservedAt
+			if prior.SupervisorStarted.V2 != (SupervisorStartedV2{}) {
+				if prior.SupervisorStarted.Validate() != nil {
+					return ErrAttemptAuthorityConflict
+				}
+				observedAt = prior.SupervisorStarted.V2.Handshake.ObservedAt
+			}
+			handshakeAt, handshakeErr := time.Parse(time.RFC3339Nano, observedAt)
 			processAt, processErr := time.Parse(time.RFC3339Nano, transition.ObservedAt)
 			if handshakeErr != nil || processErr != nil || processAt.Before(handshakeAt) {
 				return ErrAttemptAuthorityOrder

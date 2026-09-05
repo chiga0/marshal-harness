@@ -11,6 +11,11 @@ import (
 // by ResultIngress, and every record/head is checked by the protocol owner.
 func testBindOutcomeV2(t *testing.T, intent SupervisorCommandIntent) SupervisorCommandEvidence {
 	t.Helper()
+	return testCommandOutcomeV2(t, intent, nil, nil)
+}
+
+func testCommandOutcomeV2(t *testing.T, intent SupervisorCommandIntent, report *processsupervisor.ProcessReport, environmentKeys []string) SupervisorCommandEvidence {
+	t.Helper()
 	p, err := SupervisorPreparedCommandEvidenceV2(intent)
 	if err != nil {
 		t.Fatal(err)
@@ -33,11 +38,32 @@ func testBindOutcomeV2(t *testing.T, intent SupervisorCommandIntent) SupervisorC
 		return b
 	}
 	request := map[string]any{"command": p.Command, "commandId": p.CommandID, "sequence": p.Sequence, "requestDigest": p.RequestDigest,
-		"previousCommandDigest": p.PreviousCommandDigest, "currentAuthorityHead": p.CurrentAuthorityHead, "deadline": p.Deadline,
-		"nextAuthorityHead": p.Projection.AuthorityHead, "supervisorStartedFactDigest": p.Projection.SupervisorStartedFactDigest}
+		"previousCommandDigest": p.PreviousCommandDigest, "currentAuthorityHead": p.CurrentAuthorityHead, "deadline": p.Deadline}
+	source, reason, resultPayload := p.Projection.SupervisorStartedFactDigest, "authority-bound", json.RawMessage("{}")
+	switch p.Command {
+	case processsupervisor.CommandBindAuthority:
+		request["nextAuthorityHead"], request["supervisorStartedFactDigest"] = p.Projection.AuthorityHead, p.Projection.SupervisorStartedFactDigest
+	case processsupervisor.CommandSpawn:
+		v := p.Projection
+		request["launchMaterialsDigest"], request["agentLaunchSpecDigest"] = v.LaunchMaterialsDigest, v.AgentLaunchSpecDigest
+		request["sourceGateRevision"], request["closureProfileId"] = v.SourceGateRevision, v.ClosureProfileID
+		request["argvDigest"], request["environmentDigest"], request["stdinDigest"] = v.ArgvDigest, v.EnvironmentDigest, v.StdinDigest
+		if len(environmentKeys) != 0 {
+			request["environmentKeys"] = environmentKeys
+		}
+		reason = "process-exec-stopped"
+	case processsupervisor.CommandResume:
+		request["processStartedFactDigest"] = p.Projection.ProcessStartedFactDigest
+		reason = "process-resumed"
+	default:
+		t.Fatalf("unsupported fixture command %s", p.Command)
+	}
+	if report != nil {
+		source, resultPayload = digest(*report), raw(*report)
+	}
 	observation := digest(map[string]any{"schemaVersion": g.ResponseSchema, "protocolRevision": g.ProtocolRevision, "launchChildProtocolRevision": g.LaunchChildProtocolRevision,
-		"mechanicsIdentity": g.MechanicsIdentity, "observerIdentity": g.ObserverIdentity, "command": p.Command, "sourceDigest": p.Projection.SupervisorStartedFactDigest})
-	result := processsupervisor.MechanicsResult{Disposition: "ok", ReasonCode: "authority-bound", ObservationDigest: observation, Payload: json.RawMessage("{}")}
+		"mechanicsIdentity": g.MechanicsIdentity, "observerIdentity": g.ObserverIdentity, "command": p.Command, "sourceDigest": source})
+	result := processsupervisor.MechanicsResult{Disposition: "ok", ReasonCode: reason, ObservationDigest: observation, Payload: resultPayload}
 	receipt := digest(map[string]any{"schemaVersion": g.ResponseSchema, "protocolRevision": g.ProtocolRevision, "launchChildProtocolRevision": g.LaunchChildProtocolRevision, "mechanicsIdentity": g.MechanicsIdentity, "result": result})
 	commandHead := digest(map[string]any{"previousCommandDigest": p.PreviousCommandDigest, "requestDigest": p.RequestDigest, "receiptDigest": receipt})
 	response := map[string]any{"schemaVersion": g.ResponseSchema, "protocolRevision": g.ProtocolRevision, "launchChildProtocolRevision": g.LaunchChildProtocolRevision,
@@ -52,9 +78,12 @@ func testBindOutcomeV2(t *testing.T, intent SupervisorCommandIntent) SupervisorC
 	post := p.PreCommand
 	post.Binding.CommandSequence, post.Binding.CommandHead = p.Sequence, commandHead
 	post.Binding.JournalSequence, post.Binding.JournalHead = b.JournalSequence+2, digest(record)
-	post.Binding.CurrentAuthorityHead = p.Projection.AuthorityHead
+	post.Binding.CurrentAuthorityHead = p.CurrentAuthorityHead
+	if p.Command == processsupervisor.CommandBindAuthority {
+		post.Binding.CurrentAuthorityHead = p.Projection.AuthorityHead
+	}
 	evidence, err := NewSupervisorCommandEvidenceV2(processsupervisor.VerifiedCommandOutcomeV2{Preparation: p, JournalRequest: string(raw(request)), PostCommand: post,
-		Status: "ok", ReasonCode: result.ReasonCode, ReceiptDigest: receipt, ObservationDigest: observation, CommandHead: commandHead})
+		Status: "ok", ReasonCode: result.ReasonCode, ReceiptDigest: receipt, ObservationDigest: observation, CommandHead: commandHead, ProcessReport: report})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +99,22 @@ func TestSupervisorOutcomeV2ExactProjectionAndTamperRejection(t *testing.T) {
 	started := testInitialStartedV2(t, bootstrap, attemptTestDigest("bootstrap"))
 	intent, _, _ := testBindIntentV2(t, started.V2.Anchor, attemptTestDigest("started"))
 	e := testBindOutcomeV2(t, intent)
+	if !supervisorOutcomeMatchesStartedV2(started, e) {
+		t.Fatal("original session outcome lost its started binding")
+	}
+	for name, mutate := range map[string]func(*processsupervisor.SessionAnchorV2){
+		"collect-directory-growth": func(a *processsupervisor.SessionAnchorV2) { a.ControlDirectory.LinkCount += 3 },
+		"session-substitution":     func(a *processsupervisor.SessionAnchorV2) { a.Binding.SessionID = "other-session" },
+		"directory-substitution":   func(a *processsupervisor.SessionAnchorV2) { a.ControlDirectory.Inode++ },
+	} {
+		anchor := started.V2.Anchor
+		mutate(&anchor)
+		otherIntent, _, _ := testBindIntentV2(t, anchor, attemptTestDigest("started"))
+		other := testBindOutcomeV2(t, otherIntent)
+		if supervisorOutcomeMatchesStartedV2(started, other) != (name == "collect-directory-growth") {
+			t.Fatalf("%s: stable session identity not enforced", name)
+		}
+	}
 	var replay SupervisorCommandEvidence
 	raw, err := json.Marshal(e)
 	if err != nil || json.Unmarshal(raw, &replay) != nil || replay != e || replay.Validate() != nil {

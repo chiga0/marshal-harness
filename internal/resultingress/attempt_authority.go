@@ -1203,6 +1203,9 @@ func validateBusinessOutcomeReference(state AttemptAuthorityState, digest string
 		return ErrAttemptAuthorityConflict
 	}
 	latest := state.SupervisorCommandCheckpoints[len(state.SupervisorCommandCheckpoints)-1]
+	if state.SupervisorStarted.V2 != (SupervisorStartedV2{}) && !supervisorOutcomeMatchesStartedV2(state.SupervisorStarted, latest.Evidence) {
+		return ErrAttemptAuthorityConflict
+	}
 	if latest.FactDigest != digest || latest.Evidence.Disposition != "ok" || command != "" && latest.Evidence.Command != command || outcome != "" && latest.Evidence.Outcome.State != outcome {
 		return ErrAttemptAuthorityConflict
 	}
@@ -1218,6 +1221,11 @@ func validateProcessStartedOutcomeReferences(state AttemptAuthorityState, transi
 		return ErrAttemptAuthorityConflict
 	}
 	spawn, _ := supervisorCheckpointEvidence(state, transition.SupervisorOutcomeFactDigest)
+	if state.SupervisorStarted.V2 != (SupervisorStartedV2{}) &&
+		(!supervisorOutcomeMatchesStartedV2(state.SupervisorStarted, bind) || transition.CommandID != spawn.CommandID ||
+			transition.ObservedAt != spawn.Outcome.ObservedAt || transition.Process.ObserverIdentity != spawn.Outcome.ObserverIdentity) {
+		return ErrAttemptAuthorityConflict
+	}
 	if !commandEvidenceMatchesProcess(spawn, transition.Process) {
 		return ErrAttemptAuthorityConflict
 	}

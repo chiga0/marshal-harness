@@ -2,6 +2,20 @@ package resultingress
 
 import "github.com/chiga0/marshal-harness/internal/processsupervisor"
 
+// Business references retain the original session identity across owner
+// rebinds. The owner/head may advance, but generation, nonce and held objects
+// cannot be replaced by a self-consistent receipt from a different session.
+func supervisorOutcomeMatchesStartedV2(started ProcessSupervisorStarted, evidence SupervisorCommandEvidence) bool {
+	if started.V2 == (SupervisorStartedV2{}) || started.Validate() != nil || evidence.Validate() != nil {
+		return false
+	}
+	a, b := started.V2.Anchor, evidence.V2Preparation.PreCommand
+	return a.Generation == b.Generation && sameStableControlDirectoryIdentity(a.ControlDirectory, b.ControlDirectory) &&
+		a.Binding.SessionID == b.Binding.SessionID && a.Binding.SessionNonceDigest == b.Binding.SessionNonceDigest &&
+		a.Binding.Authority == b.Binding.Authority && a.Binding.FixedBinary == b.Binding.FixedBinary &&
+		a.Binding.ControlSocket == b.Binding.ControlSocket && a.Binding.ControlFiles == b.Binding.ControlFiles
+}
+
 func NewSupervisorCommandEvidenceV2(outcome processsupervisor.VerifiedCommandOutcomeV2) (SupervisorCommandEvidence, error) {
 	if outcome.Validate() != nil {
 		return SupervisorCommandEvidence{}, ErrAttemptAuthorityConflict

@@ -1118,8 +1118,10 @@ func controlDirectoryEntryForLeaf(name, leaf string) (controlDirectoryEntrySet, 
 
 func descriptorPath(fd int) (string, error) {
 	buffer := make([]byte, maxPathBytes)
-	_, err := unix.FcntlInt(uintptr(fd), unix.F_GETPATH, int(uintptr(unsafe.Pointer(&buffer[0]))))
-	if err != nil {
+	// Keep the pointer conversion in the syscall expression so the runtime
+	// pins the buffer through the call; FcntlInt's int argument loses it.
+	_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), uintptr(unix.F_GETPATH), uintptr(unsafe.Pointer(&buffer[0])))
+	if errno != 0 {
 		return "", ErrConflict
 	}
 	end := 0

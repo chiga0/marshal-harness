@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
@@ -318,5 +319,131 @@ func TestLauncherV2BootstrapUsesExistingDurableAdmissionAndColdReplay(t *testing
 	var outcomeFact supervisorCommandFact
 	if err := json.Unmarshal(line, &outcomeFact); err != nil || outcomeFact.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().CommandRecoveryRevision {
 		t.Fatalf("outcome lost v2 recovery generation: %v", err)
+	}
+	testLauncherV2StartedAndResume(t, fixture, projection, next)
+}
+
+// Continue the same durable business chain, not an independently seeded
+// registry. The only fake is the peer report; no executable is launched.
+func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixture, projection *Ingress, state AttemptAuthorityState) {
+	t.Helper()
+	_, provision, err := currentPreparedProvisionReceipt(projection, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := preparedAllocationLiveIdentity(provision.LiveIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := preparedAllocationSource{liveIdentity: live}
+	closure, err := state.LaunchClosure.Closure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawnPayload, err := preparedSpawnPayload(state, closure, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendCommand := func(command processsupervisor.CommandName, payload any, report *processsupervisor.ProcessReport) string {
+		t.Helper()
+		anchor := supervisorSessionAnchorV2(state.SupervisorMechanicsAnchor)
+		prepared, err := processsupervisor.PrepareCommandV2(anchor, processsupervisor.CommandOptions{Command: command, CommandID: "durable-v2-" + string(command),
+			Sequence: anchor.Binding.CommandSequence + 1, PreviousCommandDigest: anchor.Binding.CommandHead, CurrentAuthorityHead: state.HeadDigest,
+			Deadline: time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)}, payload)
+		if err != nil {
+			t.Fatalf("prepare %s: %v", command, err)
+		}
+		intent, err := NewSupervisorCommandIntentV2(prepared.Evidence())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if command == processsupervisor.CommandSpawn {
+			report.RuntimeObjectDigest, report.WorkingObjectDigest = intent.Rebuild.RuntimeObjectDigest, intent.Rebuild.WorkingObjectDigest
+		}
+		outcome := testCommandOutcomeV2(t, intent, report, spawnPayload.EnvironmentKeys)
+		var digest string
+		err = fixture.store.transact(projection, func() error {
+			var err error
+			state, _, err = fixture.store.appendPreparedSupervisorIntentLocked(projection, state, intent)
+			if err != nil {
+				return err
+			}
+			state, digest, err = fixture.store.appendPreparedSupervisorOutcomeLocked(projection, state, outcome)
+			return err
+		})
+		if err != nil {
+			t.Fatalf("persist %s: %v", command, err)
+		}
+		return digest
+	}
+	bindDigest := state.SupervisorCommandCheckpoints[0].FactDigest
+	report := processsupervisor.ProcessReport{State: "exec-stopped", ObserverIdentity: state.SupervisorStarted.V2.Anchor.Generation.ObserverIdentity,
+		ObservedAt: "2026-09-05T00:00:01Z", Process: processsupervisor.ProcessIdentity{PID: 4321, ProcessGroupID: 4321, SessionID: 4321, BirthSeconds: 100, BirthMicroseconds: 33},
+		SourceGateRevision: processsupervisor.SourceGateRevisionV1, ExactSetDigest: attemptTestDigest("v2-exact-set")}
+	spawnDigest := appendCommand(processsupervisor.CommandSpawn, spawnPayload, &report)
+	spawn, _ := supervisorCheckpointEvidence(state, spawnDigest)
+	process, err := preparedProcessObservation(closure, source, spawn.Outcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition := AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: state.Identity, CommandID: spawn.CommandID, ObservedAt: spawn.Outcome.ObservedAt, Process: process,
+		LaunchMaterialsDigest: state.LaunchMaterialsDigest, AgentLaunchSpecDigest: state.AgentLaunchSpecDigest, SupervisorBindOutcomeFactDigest: bindDigest, SupervisorOutcomeFactDigest: spawnDigest}
+	before, err := os.ReadFile(fixture.store.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*AttemptTransition){
+		"observation-time": func(v *AttemptTransition) { v.ObservedAt = "2026-09-05T00:00:02Z" },
+		"command-id":       func(v *AttemptTransition) { v.CommandID = "unrelated-spawn" },
+		"observer": func(v *AttemptTransition) {
+			v.Process.ObserverIdentity = "core-darwin-observer/v1"
+			v.Process, err = SealProcessObservation(v.Process)
+			if err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		bad := transition
+		mutate(&bad)
+		err = fixture.store.transact(projection, func() error {
+			_, _, err := fixture.store.appendPreparedAttemptTransitionLocked(projection, state, bad)
+			return err
+		})
+		if err == nil {
+			t.Fatalf("%s substituted business observation", name)
+		}
+		after, readErr := os.ReadFile(fixture.store.ledgerPath())
+		if readErr != nil || !bytes.Equal(before, after) {
+			t.Fatalf("%s changed ledger", name)
+		}
+	}
+	err = fixture.store.transact(projection, func() error {
+		var err error
+		state, _, err = fixture.store.appendPreparedAttemptTransitionLocked(projection, state, transition)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("v2 business process started: %v", err)
+	}
+	if _, err := exactSuccessfulResume(state); err == nil {
+		t.Fatal("spawn alone claimed resume")
+	}
+	report.State, report.ObservedAt = "running", "2026-09-05T00:00:02Z"
+	resumeDigest := appendCommand(processsupervisor.CommandResume, processsupervisor.ResumePayload{ProcessStartedFactDigest: state.ProcessStartedDigest}, &report)
+	reopened, err := OpenResultIngressStore(fixture.store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	replayed, found, err := reopened.AttemptState(state.Identity)
+	if err != nil || !found || !reflect.DeepEqual(replayed, state) {
+		t.Fatalf("cold started/resume: %v", err)
+	}
+	if digest, err := exactSuccessfulResume(replayed); err != nil || digest != resumeDigest {
+		t.Fatalf("cold exact resume: %v", err)
+	}
+	replayed.ProcessStartedDigest = attemptTestDigest("unrelated-process-started")
+	if _, err := exactSuccessfulResume(replayed); err == nil {
+		t.Fatal("resume accepted unrelated business started fact")
 	}
 }

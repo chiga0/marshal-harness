@@ -735,6 +735,11 @@ func exactSuccessfulResume(state AttemptAuthorityState) (string, error) {
 	}
 	latest := state.SupervisorCommandCheckpoints[len(state.SupervisorCommandCheckpoints)-1]
 	evidence := latest.Evidence
+	if state.SupervisorStarted.V2 != (SupervisorStartedV2{}) &&
+		(!supervisorOutcomeMatchesStartedV2(state.SupervisorStarted, evidence) || latest.Intent.Validate() != nil ||
+			latest.Intent.Rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest || evidence.V2Preparation.Projection.ProcessStartedFactDigest != state.ProcessStartedDigest) {
+		return "", ErrPreparedExecutionConflict
+	}
 	if requireDigest("resumeOutcomeFactDigest", latest.FactDigest) != nil || latest.FactDigest != state.SupervisorCommandRecoveryHead || evidence.Validate() != nil || evidence.Command != processsupervisor.CommandResume || evidence.Disposition != "ok" || evidence.ReasonCode != "process-resumed" || evidence.CurrentAuthorityHead != state.HeadDigest || evidence.Outcome.State != SupervisorProcessRunning || evidence.Outcome.MechanicsState != "running" || evidence.Outcome.SourceGateRevision != processsupervisor.SourceGateRevisionV1 || requireDigest("exactSetDigest", evidence.Outcome.ExactSetDigest) != nil || !sameSupervisorChildEvidence(state.ProcessStartedEvidence, evidence) {
 		return "", ErrPreparedExecutionConflict
 	}

@@ -4,7 +4,7 @@
 
 ## 业务交付当前表
 
-2026-09-05 候选增量：在同一 S3 分支把 v2 command outcome 接入原 RB1 recovery append/projector。准备阶段新增冻结无敏感值 journal request 的摘要；outcome 仅携带该闭集 redacted projection，协议所有者重算 observation/receipt/command head 和两条 journal record，再与完整 post anchor 比较。ledger 接纳要求完整 preparation 等于已耐久 intent；bind 的 v2 wrapped observation 不再走旧 v1 直接摘要比较。新增 bootstrap→started→bind intent→outcome→cold replay、错误 intent 的自洽 receipt 零写入、混代/伪造 journal head/未知 raw 字段等测试。本地 compile-only、vet/staticcheck、architecture 通过；动态证据尚待此候选的 CI。上一 head `0a887f2` 的 CI [33946412476](https://github.com/chiga0/marshal-harness/actions/runs/33946412476) 已五项全绿，确认该 head 的重连 fixture 修正及 started/intent 动态回归；不能延伸为本次 outcome 的证据。生产 selector 未切换，后继仍是 Attach、process-started/resume、Collect/terminal 及实机独立验收，B1 不升级。
+2026-09-05 候选增量：同一 S3 分支已将 v2 bootstrap、started、命令 intent/outcome 接到现有耐久账本；本轮继续接通业务 ProcessStarted/resume，并新增同一真实账本的 bind→spawn→ProcessStarted→resume→cold replay 测试。业务启动引用必须保持原 v2 session、命令与观察时间/observer，不能混入 v1 handshake；resume 必须引用当前 ProcessStarted。`78cfa06` 的 CI [33947059050](https://github.com/chiga0/marshal-harness/actions/runs/33947059050) 四项通过，macOS 在已有 Attach 目录身份测试失败；发现并修正四处把缓冲区指针经普通 `int` 传给 `F_GETPATH` 的不安全调用，新增 fresh-goroutine 路径观察回归。本轮动态验证待新 head CI，不宣称旧失败已关闭。最后五项全绿仍是 `0a887f2` 的 [CI 33946412476](https://github.com/chiga0/marshal-harness/actions/runs/33946412476)。生产 selector 未切换，剩余 Attach/rebind、Collect/terminal、固定 bytes 的真实 Pi 独立验收；B1 不升级。
 
 此表是当前 milestone 的唯一汇总入口；下方按日期保留历史 checkpoint，不覆盖本表。目标/验收见 [业务交付计划](agent-team-delivery-plan.md)，范围变化见 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md)。
 

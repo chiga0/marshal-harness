@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"unsafe"
 
 	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
@@ -116,8 +117,8 @@ func (root *CanonicalRepositoryRoot) Close() error {
 
 func descriptorPath(fd int) (string, error) {
 	buffer := make([]byte, fixedServerPathBufferSize)
-	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETPATH, int(uintptr(unsafe.Pointer(&buffer[0])))); err != nil {
-		return "", err
+	if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), uintptr(unix.F_GETPATH), uintptr(unsafe.Pointer(&buffer[0]))); errno != 0 {
+		return "", errno
 	}
 	end := 0
 	for end < len(buffer) && buffer[end] != 0 {
