@@ -33,6 +33,11 @@ type supervisorV2Harness struct {
 
 func newSupervisorV2Harness(t *testing.T, configure func(*sessionV2, *os.File), mechanics Mechanics) *supervisorV2Harness {
 	t.Helper()
+	return newSupervisorV2HarnessOptions(t, configure, mechanics, nil)
+}
+
+func newSupervisorV2HarnessOptions(t *testing.T, configure func(*sessionV2, *os.File), mechanics Mechanics, adjust func(*supervisorLoopOptions)) *supervisorV2Harness {
+	t.Helper()
 	root, err := os.MkdirTemp("/private/tmp", "marshal-v2-wire-")
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +86,9 @@ func newSupervisorV2Harness(t *testing.T, configure func(*sessionV2, *os.File), 
 			}
 			ready <- s
 		},
+	}
+	if adjust != nil {
+		adjust(&options)
 	}
 	go func() { h.done <- runSupervisorLoop(ctx, serverFile, directory, options) }()
 	t.Cleanup(func() { cancel(); _ = connection.Close(); _ = h.wait(t) })

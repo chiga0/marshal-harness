@@ -127,6 +127,19 @@ v2 明确逐项沿用下列 v1 nested object/payload 字段，不得以「结构
 
 `requestDigest` 的 preimage 是 request 除 `requestDigest` 外的全部 exact v2 字段；`receiptDigest`、`observationDigest`、`commandHead` 和 `recordDigest` 必须把 v2 schema/protocol/launch-child/mechanics identity 一并纳入 canonical preimage。任一绑定不能从上下文默认推导，也不得在验证后丢弃再生产业务投影。
 
+### 6.1 只读 Attach 的 v2 编码细化（2026-09-05）
+
+本节落实 §1.3 保留的 ADR 0067 只读 Attach 顺序，不新增 command、reconciliation state、owner mutation 或持久化 fact。`reconnect.v2` 会进入 reconnect admission，不能冒充只读 Attach；生产恢复不写 `process-supervisor-session-reconnected`。
+
+只读认证使用 `marshal.process-supervisor-attach.v2` 和 `marshal.process-supervisor-attach-observation.v2` 独立闭集信封。两者均显式携带 `protocolRevision=process-supervisor/v2, launchChildProtocolRevision=process-supervisor-launch-child/v2, mechanicsIdentity=darwin-posix-spawn-setexec/v1`；observer 固定 `darwin-fixed-process-supervisor/v2`。它们不是 command journal 的新 kind。
+
+- request：`schemaVersion, protocolRevision, launchChildProtocolRevision, mechanicsIdentity, sessionNonce, core, authority, requestDigest`。
+- authority：`previousSupervisor, supervisor, currentAcquisition, currentOwnerBoundFact, child, childObservationDigest`。`previousSupervisor` 为完整 `SessionAnchorV2`（generation、binding、controlDirectory）；其 generation 保留全部 §6/§8 schema、genesis、leaf、mechanics/observer/recovery identity；其余字段严格沿用 ADR 0067 的 typed owner/child projection。
+- response：`schemaVersion, protocolRevision, launchChildProtocolRevision, mechanicsIdentity, status, reasonCode, requestDigest, handshake, authority, observerIdentity, observedAt, responseDigest`；只允许 `status=ok, reasonCode=process-supervisor-attached`，失败关闭连接。handshake 必须是 exact v2 handshake，绑定 unchanged previous anchor，不能包含 recovery/replayed response。
+- request digest 以完整 request 的 `sessionNonce` 替换为 previous anchor 的 `sessionNonceDigest`，并移除 `requestDigest` 后计算；response digest 移除自身 `responseDigest` 后计算。持久化观察只含上述无 raw nonce 的 projection，不能携带原始 request。
+
+只有 held-owner callback 内的 observation 和 exact prepared continuation 能消费该认证。只读 Attach 不推进 owner/head/pending/journal/child；后续 bind 仍须 RB1 intent-before-effect 与 exact outcome。这个编码细化不授权跨 owner pending replay，也不把 generic `ReconnectV2` 变成生产 authority 来源。v1 Attach bytes 仍只读，禁止 translate/fallback。
+
 ### 7. v2 journal、genesis 与 control-directory 阶段
 
 v2 mechanics journal 只能命名为 `process-supervisor-v2.journal`。它逐项沿用 ADR 0059 的 `8 lowercase hex length + ':' + exact JCS payload + LF`、append-only、intent-before-effect `fsync`、receipt-before-response `fsync`、held-parent sync、partial-tail 唯一可截断条件，以及 gap/fork/duplicate/trailing-garbage intervention 规则。v2 冻结：

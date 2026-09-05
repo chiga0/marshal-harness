@@ -166,6 +166,9 @@ func serveReconnectV2(ctx context.Context, connection *net.UnixConn, session *se
 		session.core.intervene()
 		return false, ErrIntervention
 	}
+	if peerErr == nil && readErr == nil && wireSchema(raw) == AttachSchemaV2 {
+		return false, serveReadOnlyAttachV2(connection, reader, session, boundary, self, peer, raw)
+	}
 	var request reconnectRequestV2
 	if peerErr != nil || readErr != nil || strictCanonicalDecode(raw, &request) != nil {
 		return false, ErrInvalid

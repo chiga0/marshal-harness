@@ -1,5 +1,9 @@
 # 设计审计报告
 
+2026-09-05 Attach 接线审计：不能把已有 generic `ReconnectV2` 接到生产 owner recovery。前者推进 session 内存 owner/head，并可处理其通用 pending recovery；ADR 0067 被 ADR 0079 保留的生产顺序要求只读 Attach、RB1 bind intent、相同 prepared bind、authenticated outcome，且跨 owner pending 固定 intervention。当前候选补足 ADR 0079 的只读 v2 编码与响应观察（完整 generation/anchor、current acquisition/owner-bound、peer/child、nonce challenge），服务端在 reconnect admission **之前**分流，拒绝新 owner/head 的握手伪装成 unchanged Attach。没有新增 reconnect authority fact、fallback 或生产 selector。
+
+验证方式：portable 自洽篡改/全部 generation 字段缺失/unknown reconnect field/nonce/owner/head/child/peer 测试，以及真实 Unix socket 的无效请求后有效 Attach、EOF 收口、journal bytes/owner/head/last observation/mechanics calls 不变检查。本轮仅接通只读交换，任何 continuation 仍关闭；后继必须实现 borrowed callback 和 exact prepared-command gate，再开放 bind/collect/terminal。`a5a261e` 的 CI 33947799422 已最终五项全绿，确认上一轮业务启动链和 F_GETPATH 回归；本轮增量须单独 CI，不复用旧 head 作为动态证明。
+
 2026-09-05 启动业务接线与动态失败复盘：ProcessStarted 原实现读取 v1 handshake 时间，v2 会读到空值；现按已验证的原代际读取时间，并绑定同一 session 的 spawn CommandID/ObservedAt/ObserverIdentity。resume 重放必须对应当前 ProcessStarted，不把 exec-stopped 当作运行成功。增加完整耐久链与错误观察零写入测试；这不是切换生产 selector 或实机闭环证据。
 
 `78cfa06` 的 CI 33947059050：Ubuntu quality、Linux amd64/arm64 conformance、secret scan 通过，macOS 的 `TestOpenAttachedControlDirectoryAllowsPostCollectLinkCountGrowth` 在首次 `ObserveHeldControlDirectory` 失败。代码检查发现 processsupervisor、productionruntime 两处及 provider 共四处 `F_GETPATH` 缓冲区指针经 `FcntlInt` 的普通整数参数传递，丢失 Go 指针保活/移动语义。依据 [Go unsafe.Pointer 的系统调用规则](https://pkg.go.dev/unsafe#Pointer)，统一改为 syscall 表达式内直接转换，与仓库现有 Darwin identity 读取方式一致，并增加 fresh-goroutine/GC/无效 fd 测试。该模式缺陷已修正，但它是否解释本次间歇性 CI 失败仍待新 head 动态回归确认；不将一次绿灯或重复重跑当作完整根因证明，不放宽目录模式、owner、inode 或路径检查。
