@@ -1,5 +1,7 @@
 # 设计审计报告
 
+2026-09-05 新任务 producer 接线：删除该调用链的 v1 `Start` 与 v1 bootstrap/command evidence 构造，改为同一 fixed executable 的 `StartV2`、完整 handshake/anchor、v2 intent/outcome。source gate 与业务 `process-started → exact resume` 顺序保持；新启动前从当前 RB1 拒绝任何尚未 cleanup release 或仍 pending 的 legacy Supervisor。测试不再只手写 Spawn/Resume facts，而是借助显式假 Client 调用实际 producer，验证 intent-before-transport 并冷重放同一事实。新候选尚未部署；此检查不等于所有 v1 mutation API 已退役，也不替代零 active/pending v1 的实机 rollout 检查。取消/超时尚缺完整 production 调度链，必须继续实现，不能以 mechanics 支持 Terminate 代替业务可用性。
+
 2026-09-05 v2 终态 producer 接线：Inspect 沿既有 exact intent/Attach/receipt 进入 RB1；Close 的 receipt 恢复还要求独立观察精确 Supervisor 已缺席，绑定固定 Core、held control files 与完整 v2 final journal checkpoint。进程仍活跃、前后 absence 不一致、破损尾部、错误 receipt/代际均拒绝；已提交 Close 不重新执行，不以 EOF 代替退出证明。业务 `SupervisorClosed` 接纳器同步检查 started 的实际代际和进程身份，以及 outcome 与 absence 的同一最终 checkpoint；历史 v1 不迁移、不重写。该变化实现 ADR 0079 已有终态合同，不新增生命周期步骤或旁路发布权限。
 
 连续耐久测试覆盖 Inspect/Close 丢回复、缺席等待零重放、伪造 absence 写前拒绝、完整 cleanup release 与冷重放；processsupervisor 测试仍真实读取 held journal，只有 peer/内核观察采用显式替身。当前本地仅编译/静态证据，动态 CI 待验证。祖先 Collect `40bea7e` 的 CI 33950856231 五项全绿，不能替代当前候选；真实 Pi、生产 selector、取消/Terminate 与 fixed server 完整验收继续开放。

@@ -29,6 +29,9 @@ func (s *DurableStore) reconcilePreparedExecutionLocked(ctx context.Context, pro
 	if !ok || profile == nil || profile.controlRoot == nil || ctx == nil || projection == nil {
 		return AttemptAuthorityState{}, ErrPreparedExecutionUnavailable
 	}
+	if err := requireNoActiveLegacySupervisor(projection); err != nil {
+		return AttemptAuthorityState{}, err
+	}
 	if _, err := exactSuccessfulResume(state); err == nil {
 		return state, nil
 	}
@@ -47,7 +50,7 @@ func (s *DurableStore) reconcilePreparedExecutionLocked(ctx context.Context, pro
 
 	bindPayload := processsupervisor.BindAuthorityPayload{
 		SupervisorStartedFactDigest: state.SupervisorStartedDigest,
-		OwnerEpoch:                  state.Owner.OwnerEpoch, PreviousAuthorityHead: client.Anchor().CurrentAuthorityHead,
+		OwnerEpoch:                  state.Owner.OwnerEpoch, PreviousAuthorityHead: client.Anchor().Binding.CurrentAuthorityHead,
 		AuthorityHead: state.SupervisorStartedDigest,
 	}
 	state, bindOutcomeDigest, err := s.executePreparedCommandLocked(ctx, projection, state, client, processsupervisor.CommandBindAuthority, bindPayload)
@@ -152,7 +155,23 @@ func (s *DurableStore) verifyPreparedCurrentSourcesLocked(projection *Ingress, p
 	return closure, preparedAllocationSource{liveIdentity: launchidentity.LiveIdentityFromObject(observed.WorkingDirectory)}, nil
 }
 
-func (s *DurableStore) startPreparedSupervisorLocked(ctx context.Context, projection *Ingress, state AttemptAuthorityState) (*processsupervisor.Client, AttemptAuthorityState, error) {
+// New-session admission is deliberately separate from historical replay. An
+// old Supervisor must be drained by its original bytes, not adopted by v2.
+func requireNoActiveLegacySupervisor(projection *Ingress) error {
+	if projection == nil {
+		return ErrPreparedExecutionConflict
+	}
+	for _, state := range projection.attempts {
+		legacy := state.SupervisorBootstrapDigest != "" && state.SupervisorBootstrap.Request.Generation == (processsupervisor.ProtocolGenerationContract{}) ||
+			state.SupervisorStartedDigest != "" && state.SupervisorStarted.V2 == (SupervisorStartedV2{})
+		if legacy && (state.CleanupReleasedDigest == "" || state.SupervisorPendingIntentDigest != "") {
+			return ErrPreparedExecutionUnavailable
+		}
+	}
+	return nil
+}
+
+func (s *DurableStore) startPreparedSupervisorLocked(ctx context.Context, projection *Ingress, state AttemptAuthorityState) (*processsupervisor.ClientV2, AttemptAuthorityState, error) {
 	profile, ok := s.preparedDarwin.(*preparedDarwinExecutionProfile)
 	if !ok || profile == nil || profile.controlRoot == nil {
 		return nil, AttemptAuthorityState{}, ErrPreparedExecutionUnavailable
@@ -186,13 +205,15 @@ func (s *DurableStore) startPreparedSupervisorLocked(ctx context.Context, projec
 	if err != nil || directoryIdentity.UID != profile.controlIdentity.UID || directoryIdentity.GID != profile.controlIdentity.GID || directoryIdentity.Mode&0o777 != 0o700 {
 		return nil, AttemptAuthorityState{}, ErrPreparedExecutionUnavailable
 	}
-	request := processsupervisor.BootstrapRequest{
-		SchemaVersion: processsupervisor.BootstrapSchema, ProtocolRevision: processsupervisor.ProtocolRevision,
+	generation := processsupervisor.DormantV2ProtocolContract()
+	request := processsupervisor.BootstrapRequestV2{
+		SchemaVersion: generation.BootstrapSchema, ProtocolRevision: generation.ProtocolRevision,
+		LaunchChildProtocolRevision: generation.LaunchChildProtocolRevision, MechanicsIdentity: generation.MechanicsIdentity,
 		SessionID: sessionID, SessionNonce: nonce, OwnerEpoch: state.Owner.OwnerEpoch,
 		Authority: supervisorAuthorityTuple(state.Identity), LaunchAuthorizedFact: state.LaunchAuthorizedDigest,
 		CurrentAuthorityHead: state.HeadDigest, ControlDirectoryIdentity: directoryIdentity, Core: currentCore,
 	}
-	preparedBootstrap, err := NewSupervisorBootstrapPrepared(state.Owner, request)
+	preparedBootstrap, err := NewSupervisorBootstrapPreparedV2(state.Owner, request)
 	if err != nil {
 		return nil, AttemptAuthorityState{}, err
 	}
@@ -200,13 +221,13 @@ func (s *DurableStore) startPreparedSupervisorLocked(ctx context.Context, projec
 	if err != nil {
 		return nil, AttemptAuthorityState{}, err
 	}
-	client, err := processsupervisor.Start(ctx, processsupervisor.StartOptions{FixedMarshalPath: profile.fixedMarshalPath, ControlDirectory: directory, Bootstrap: request})
+	client, err := processsupervisor.StartV2(ctx, processsupervisor.StartOptionsV2{FixedMarshalPath: profile.fixedMarshalPath, ControlDirectory: directory, Bootstrap: request})
 	if err != nil {
 		return nil, AttemptAuthorityState{}, err
 	}
-	connection := client.Evidence()
-	observedPeer := processsupervisor.CoreIdentity{UID: connection.Anchor.UID, GID: connection.Anchor.GID, Process: connection.Handshake.SupervisorProcess, Binary: connection.Handshake.SupervisorBinary}
-	started, err := NewProcessSupervisorStartedFromBootstrap(state.SupervisorBootstrapDigest, preparedBootstrap, connection, observedPeer)
+	anchor, handshake := client.Anchor(), client.Handshake()
+	observedPeer := processsupervisor.CoreIdentity{UID: anchor.Binding.UID, GID: anchor.Binding.GID, Process: handshake.SupervisorProcess, Binary: handshake.SupervisorBinary}
+	started, err := NewProcessSupervisorStartedV2FromBootstrap(state.SupervisorBootstrapDigest, preparedBootstrap, handshake, anchor, observedPeer)
 	if err != nil {
 		_ = client.Disconnect()
 		return nil, AttemptAuthorityState{}, err
@@ -219,13 +240,19 @@ func (s *DurableStore) startPreparedSupervisorLocked(ctx context.Context, projec
 	return client, state, nil
 }
 
-func (s *DurableStore) executePreparedCommandLocked(ctx context.Context, projection *Ingress, state AttemptAuthorityState, client *processsupervisor.Client, command processsupervisor.CommandName, payload any) (AttemptAuthorityState, string, error) {
+type preparedCommandClientV2 interface {
+	Anchor() processsupervisor.SessionAnchorV2
+	Prepare(processsupervisor.CommandOptions, any) (processsupervisor.PreparedCommandV2, error)
+	DoPrepared(context.Context, processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
+}
+
+func (s *DurableStore) executePreparedCommandLocked(ctx context.Context, projection *Ingress, state AttemptAuthorityState, client preparedCommandClientV2, command processsupervisor.CommandName, payload any) (AttemptAuthorityState, string, error) {
 	if state.SupervisorPendingIntentDigest != "" || client == nil {
 		return AttemptAuthorityState{}, "", ErrPreparedExecutionConflict
 	}
 	currentAuthorityHead := state.HeadDigest
 	if command == processsupervisor.CommandBindAuthority || command == processsupervisor.CommandSpawn {
-		currentAuthorityHead = client.Anchor().CurrentAuthorityHead
+		currentAuthorityHead = client.Anchor().Binding.CurrentAuthorityHead
 	}
 	prepared, err := client.Prepare(processsupervisor.CommandOptions{
 		Command: command, CommandID: fmt.Sprintf("prepared-%s-%d", command, state.SupervisorCommandSequence+1),
@@ -235,7 +262,7 @@ func (s *DurableStore) executePreparedCommandLocked(ctx context.Context, project
 	if err != nil {
 		return AttemptAuthorityState{}, "", err
 	}
-	intent, err := NewSupervisorCommandIntent(prepared.Evidence())
+	intent, err := NewSupervisorCommandIntentV2(prepared.Evidence())
 	if err != nil {
 		return AttemptAuthorityState{}, "", err
 	}
@@ -247,7 +274,7 @@ func (s *DurableStore) executePreparedCommandLocked(ctx context.Context, project
 	if err != nil {
 		return AttemptAuthorityState{}, "", err
 	}
-	evidence, err := NewSupervisorCommandEvidence(verified)
+	evidence, err := NewSupervisorCommandEvidenceV2(verified)
 	if err != nil {
 		return AttemptAuthorityState{}, "", err
 	}

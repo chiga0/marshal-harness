@@ -4,12 +4,12 @@ package resultingress
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
@@ -347,28 +347,29 @@ func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixtu
 	appendCommand := func(command processsupervisor.CommandName, payload any, report *processsupervisor.ProcessReport) string {
 		t.Helper()
 		anchor := supervisorSessionAnchorV2(state.SupervisorMechanicsAnchor)
-		prepared, err := processsupervisor.PrepareCommandV2(anchor, processsupervisor.CommandOptions{Command: command, CommandID: "durable-v2-" + string(command),
-			Sequence: anchor.Binding.CommandSequence + 1, PreviousCommandDigest: anchor.Binding.CommandHead, CurrentAuthorityHead: state.HeadDigest,
-			Deadline: time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)}, payload)
-		if err != nil {
-			t.Fatalf("prepare %s: %v", command, err)
-		}
-		intent, err := NewSupervisorCommandIntentV2(prepared.Evidence())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if command == processsupervisor.CommandSpawn {
-			report.RuntimeObjectDigest, report.WorkingObjectDigest = intent.Rebuild.RuntimeObjectDigest, intent.Rebuild.WorkingObjectDigest
-		}
-		outcome := testCommandOutcomeV2(t, intent, report, spawnPayload.EnvironmentKeys)
+		client := preparedFakeClientV2{anchor: anchor, do: func(p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
+			intent, err := NewSupervisorCommandIntentV2(p.Evidence())
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(fixture.store.ledgerPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := bytes.Split(bytes.TrimSpace(raw), []byte("\n"))
+			var fact supervisorCommandFact
+			if json.Unmarshal(lines[len(lines)-1], &fact) != nil || fact.Intent != intent || fact.ProtocolRevision != anchor.Generation.CommandRecoveryRevision {
+				t.Fatal("v2 production command sent before exact durable intent")
+			}
+			if command == processsupervisor.CommandSpawn {
+				report.RuntimeObjectDigest, report.WorkingObjectDigest = intent.Rebuild.RuntimeObjectDigest, intent.Rebuild.WorkingObjectDigest
+			}
+			return verifiedSupervisorOutcomeV2(testCommandOutcomeV2(t, intent, report, spawnPayload.EnvironmentKeys))
+		}}
 		var digest string
 		err = fixture.store.transact(projection, func() error {
 			var err error
-			state, _, err = fixture.store.appendPreparedSupervisorIntentLocked(projection, state, intent)
-			if err != nil {
-				return err
-			}
-			state, digest, err = fixture.store.appendPreparedSupervisorOutcomeLocked(projection, state, outcome)
+			state, digest, err = fixture.store.executePreparedCommandLocked(context.Background(), projection, state, client, command, payload)
 			return err
 		})
 		if err != nil {
@@ -447,4 +448,47 @@ func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixtu
 		t.Fatal("resume accepted unrelated business started fact")
 	}
 	testLauncherV2OwnerRebind(t, fixture, state)
+}
+
+type preparedFakeClientV2 struct {
+	anchor processsupervisor.SessionAnchorV2
+	do     func(processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
+}
+
+func (c preparedFakeClientV2) Anchor() processsupervisor.SessionAnchorV2 { return c.anchor }
+func (c preparedFakeClientV2) Prepare(o processsupervisor.CommandOptions, payload any) (processsupervisor.PreparedCommandV2, error) {
+	return processsupervisor.PrepareCommandV2(c.anchor, o, payload)
+}
+func (c preparedFakeClientV2) DoPrepared(_ context.Context, p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
+	return c.do(p)
+}
+
+func TestV2NewSessionAdmissionRejectsUndrainedLegacyWithoutMutatingHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name, bootstrap, started, released, pending string
+		v2                                          bool
+		allow                                       bool
+	}{
+		{name: "empty", allow: true},
+		{name: "legacy-bootstrap-only", bootstrap: "b"},
+		{name: "legacy-live", started: "s"},
+		{name: "legacy-cleanup-pending", started: "s", released: "r", pending: "p"},
+		{name: "legacy-drained", started: "s", released: "r", allow: true},
+		{name: "v2-active", bootstrap: "b", v2: true, allow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := newAuthorityProjection()
+			state := AttemptAuthorityState{SupervisorBootstrapDigest: tc.bootstrap, SupervisorStartedDigest: tc.started, CleanupReleasedDigest: tc.released, SupervisorPendingIntentDigest: tc.pending}
+			if tc.v2 {
+				state.SupervisorBootstrap.Request.Generation = processsupervisor.DormantV2ProtocolContract()
+			}
+			in.attempts["existing"] = state
+			if err := requireNoActiveLegacySupervisor(in); (err == nil) != tc.allow {
+				t.Fatalf("allow=%v, err=%v", tc.allow, err)
+			}
+			if !reflect.DeepEqual(in.attempts["existing"], state) {
+				t.Fatal("admission modified historical session")
+			}
+		})
+	}
 }
