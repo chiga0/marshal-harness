@@ -4,12 +4,15 @@
 import argparse
 import datetime
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import stat
 import sys
+import tarfile
 import time
 
 
@@ -20,6 +23,78 @@ LIVE_PENDING = {"disposition": "pending", "reasonCode": "attempt-still-running"}
 
 class DriveError(Exception):
     pass
+
+
+def capture_review_inputs(root, run_id, packet, archive):
+    """Copy only the packet's review inputs, not a restorable authority store.
+
+    These bytes still require independent digest/semantic verification against
+    the packet. This diagnostic archive grants no Decision or import authority.
+    """
+    fixed = {"taskSpec": "task-spec.json", "patch": "observed.patch",
+             "verificationReport": "verification-report.json", "artifactManifest": "artifact-manifest.json"}
+    if not isinstance(packet, dict) or not ID.fullmatch(run_id):
+        raise DriveError("invalid-review-inputs")
+    inputs = packet.get("inputs")
+    if packet.get("runId") != run_id or not isinstance(inputs, dict) or any(inputs.get(key) != path for key, path in fixed.items()):
+        raise DriveError("invalid-review-inputs")
+    workers = inputs.get("workerResults")
+    if not isinstance(workers, list) or len(workers) > 16 or any(not isinstance(path, str) or not re.fullmatch(r"attempts/[A-Za-z0-9][A-Za-z0-9._:-]{2,120}/worker-result\.json", path) for path in workers):
+        raise DriveError("invalid-review-worker-inputs")
+    paths = ["review-packet.json", *fixed.values(), *workers]
+    if len(set(workers)) != len(workers):
+        raise DriveError("duplicate-review-worker-inputs")
+    if packet.get("workerCandidateDigest"):
+        paths.append("worker.patch")
+    for key in ("candidateDigest", "workerCandidateDigest"):
+        digest = packet.get(key)
+        if digest:
+            if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
+                raise DriveError("invalid-review-candidate-input")
+            paths.append(f"candidates/{digest}.json")
+    payloads, total = {}, 0
+    try:
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for path in dict.fromkeys(paths):
+                directory = os.dup(root_fd)
+                try:
+                    parts = [".marshal", "runs", run_id, *path.split("/")]
+                    for part in parts[:-1]:
+                        child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                        os.close(directory)
+                        directory = child
+                    fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                    with os.fdopen(fd, "rb") as source:
+                        before = os.fstat(source.fileno())
+                        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 8 << 20:
+                            raise DriveError("review-input-type-or-size")
+                        raw = source.read((8 << 20) + 1)
+                        after = os.fstat(source.fileno())
+                    if len(raw) != before.st_size or (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                        raise DriveError("review-input-drift")
+                    total += len(raw)
+                    if total > 64 << 20:
+                        raise DriveError("review-input-total-limit")
+                    payloads[path] = raw
+                finally:
+                    os.close(directory)
+        finally:
+            os.close(root_fd)
+        if json.loads(payloads["review-packet.json"]) != packet:
+            raise DriveError("review-packet-changed")
+        manifest = {"purpose": "review-only-not-authority-import", "runId": run_id,
+                    "files": [{"path": path, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()} for path, raw in payloads.items()]}
+        payloads["capture-manifest.json"] = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        # Tar preserves colon-containing Attempt IDs without exposing them as
+        # upload-artifact filenames. Every member is generated as regular data.
+        with archive.open("xb") as output, tarfile.open(fileobj=output, mode="w") as bundle:
+            for path, raw in payloads.items():
+                member = tarfile.TarInfo(path)
+                member.size, member.mode = len(raw), 0o600
+                bundle.addfile(member, io.BytesIO(raw))
+    except (OSError, ValueError, TypeError) as exc:
+        raise DriveError("review-input-capture-unavailable") from exc
 
 
 def run_projection(value, run_id, state, prior=None, advance=False):
@@ -161,6 +236,8 @@ def main():
 
     try:
         drive(call, save, args.run, time.time() + args.timeout_seconds)
+        packet = json.loads((evidence / "review-packet.json").read_bytes())["Projection"]["packet"]
+        capture_review_inputs(root, args.run, packet, evidence / "review-inputs.tar")
         if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
             raise DriveError("fixed-binary-drift")
     except DriveError as exc:

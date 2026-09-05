@@ -4,6 +4,10 @@
 
 ## 业务交付当前表
 
+`6e62c8e` 的 [CI 33966029736](https://github.com/chiga0/marshal-harness/actions/runs/33966029736) 与 PR #257 的 `034a0f7` [CI 33966320451](https://github.com/chiga0/marshal-harness/actions/runs/33966320451) 均已五项全绿，包含 launcher v2、Terminate fixture 修复及 typed live-pending 的动态/质量回归。当前评审输入打包增量仅有本地定向证据，不借用前一 head 绿色，仍须新 head CI。下方运行中记录为历史采样。
+
+当前候选为 [PR #257](https://github.com/chiga0/marshal-harness/pull/257)，仍待完整 CI 和独立评审。业务 canary 实机前发现 artifact 未包含 packet 引用的实际评审文件，当前在已有 T2 driver/上传目录补有界只读 `review-inputs.tar`，9 个定向测试通过；不增加另一个 controller、不重跑 Worker、不宣称可导入 authority。真实业务到独立 ACCEPTED 仍是下一条集成证据，B1/B2/B3 状态不变。
+
 `6e62c8e` 已修复下述 CI 契约遗漏并推送，本地 committed-fixture 正反例和提交后 fixed checker 均通过，CI 33966029736 已越过原失败步骤。实机调度仍要求候选评审合入后的同 head main push CI；分支手动 CI 不满足这个现有 gate。驱动另修正 Python/Go 的 canonical deadline 小数尾零不一致，7 个定向测试通过。尚未派实机 Pi、没有 Decision/ACCEPTED，不借此更新 milestone 成熟度。
 
 最新 CI：`8c37fff` 的 [33965649054](https://github.com/chiga0/marshal-harness/actions/runs/33965649054) 失败，四个 job 同因新增 T2 测试步骤未同步封闭工作流契约而停止，secret scan 通过。当前修复契约及固定文件绑定，补本地 committed-fixture 正反例和常规 T2 测试入口；新 head 的完整 CI 与真实 Pi 业务 canary 待执行。B1 仍 `IN_PROGRESS`，B2/B3 仍 `PLANNED`。下方“等待新 head”均为对应提交当时状态，不代表当前仍运行。

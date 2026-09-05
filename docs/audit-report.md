@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-05：实机前补齐独立评审输入
+
+验证更新：`6e62c8e` 的 CI 33966029736 与 `034a0f7` 的 PR CI 33966320451 五项全部通过，前述工作流契约和 Terminate fixture 失败已由新 head 关闭。等待后者真正结束后才推送本次 Python 打包增量，没有中断既有检查；本次增量单独记证。
+
+PR #257 已建立，`034a0f7` 的 CI 33966320451 正在运行。进一步沿 ReviewPacket producer 和 artifact upload 核对发现：原 T1 artifact 只包含 Run state/events、ingress journal 和客户端响应；T2 响应内的 packet 只引用输入文件，不内嵌实际 patch/报告/WorkerResult。若直接派业务 Pi，runner 退出后独立 reviewer 将缺少原始评审输入，可能被迫重跑。这是当前 B1 验收的直接阻塞，不另起产品路线。
+
+现有 T2 driver 增加成功验证后的有界只读打包：固定四类输入、原始 packet、最多 16 个规范 WorkerResult 路径及 packet 指定的候选记录；单文件 8 MiB、总量 64 MiB。逐层使用 no-follow directory FD，拒绝 symlink、hardlink、FIFO、超限、缺失、packet 漂移和覆盖已有包；tar 仅含生成的普通数据成员，解决 Attempt ID 的冒号不适合作为 artifact 直接文件名的问题。新增正反例覆盖实际 bytes、摘要目录、敏感无关文件排除与上述拒绝分支，驱动合计 9 个测试通过。未复制原始日志/凭据，未授予 authority import、Decision 或跨 runner 恢复权限；真实 Pi 和独立 ACCEPTED 仍开放。
+
 ## 2026-09-05：业务驱动 CI 契约遗漏
 
 本地 `release-ci-gate_test.sh` 已通过，`6e62c8e` 提交后固定 checker 也已通过，CI 33966029736 已越过原失败步骤。准备实机时进一步核对到两个前置：现有 canary 用的是 main push CI gate，分支手动 CI 不能替代（须评审合入后再运行）；Python `isoformat` 的小数尾零会被 CLI 的 canonical RFC3339Nano 比较拒绝。当前按相同瞬间去掉小数尾零，新增整数秒/尾零/六位小数回归，7 个驱动测试通过；不延长 deadline，不放宽 CLI parser。实际 Pi 尚未启动。

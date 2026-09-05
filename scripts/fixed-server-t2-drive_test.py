@@ -3,7 +3,12 @@
 
 import copy
 import importlib.util
+import hashlib
+import json
+import os
 from pathlib import Path
+import tarfile
+import tempfile
 import unittest
 
 spec = importlib.util.spec_from_file_location("t2drive", Path(__file__).with_name("fixed-server-t2-drive.py"))
@@ -109,6 +114,75 @@ class DriverTest(unittest.TestCase):
         with self.assertRaises(driver.DriveError):
             execute()
         self.assertNotIn("review-summary.json", saved)
+
+
+class ReviewCaptureTest(unittest.TestCase):
+    def fixture(self, root):
+        run_dir = root / ".marshal" / "runs" / "run-test"
+        run_dir.mkdir(parents=True)
+        worker = "attempts/attempt:one/worker-result.json"
+        packet = {"runId": "run-test", "inputs": {"taskSpec": "task-spec.json", "patch": "observed.patch",
+                  "verificationReport": "verification-report.json", "artifactManifest": "artifact-manifest.json", "workerResults": [worker]},
+                  "candidateDigest": "sha256:" + "a" * 64, "workerCandidateDigest": "sha256:" + "a" * 64}
+        files = {"review-packet.json": json.dumps(packet).encode(), "task-spec.json": b"{}", "observed.patch": b"business patch",
+                 "verification-report.json": b"{}", "artifact-manifest.json": b"{}", worker: b"{}", "worker.patch": b"business patch",
+                 "candidates/sha256:" + "a" * 64 + ".json": b"{}"}
+        for path, raw in files.items():
+            target = run_dir / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        (run_dir / "credentials.json").write_text("NEVER_EXPORT")
+        (run_dir / "stdout.log").write_text("NEVER_EXPORT")
+        return run_dir, packet, files
+
+    def test_capture_preserves_exact_bytes_without_logs_or_authority_import(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            _, packet, files = self.fixture(root)
+            archive = root / "review.tar"
+            driver.capture_review_inputs(root, "run-test", packet, archive)
+            with tarfile.open(archive) as bundle:
+                self.assertEqual(set(bundle.getnames()), set(files) | {"capture-manifest.json"})
+                for path, raw in files.items():
+                    self.assertTrue(bundle.getmember(path).isreg())
+                    self.assertEqual(bundle.extractfile(path).read(), raw)
+                manifest = json.load(bundle.extractfile("capture-manifest.json"))
+                self.assertEqual(manifest["purpose"], "review-only-not-authority-import")
+                for entry in manifest["files"]:
+                    self.assertEqual(entry["sha256"], hashlib.sha256(files[entry["path"]]).hexdigest())
+            original = archive.read_bytes()
+            with self.assertRaises(driver.DriveError):
+                driver.capture_review_inputs(root, "run-test", packet, archive)
+            self.assertEqual(archive.read_bytes(), original)
+
+    def test_rejects_missing_linked_special_oversized_and_changed_input(self):
+        for mutation in ("missing", "symlink", "hardlink", "directory-link", "fifo", "large", "packet-drift", "traversal"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                run_dir, packet, _ = self.fixture(root)
+                target = run_dir / "observed.patch"
+                if mutation in ("missing", "symlink", "hardlink", "fifo"):
+                    target.unlink()
+                if mutation == "symlink":
+                    target.symlink_to(run_dir / "credentials.json")
+                elif mutation == "hardlink":
+                    os.link(run_dir / "credentials.json", target)
+                elif mutation == "directory-link":
+                    (run_dir / "attempts").rename(run_dir / "real-attempts")
+                    (run_dir / "attempts").symlink_to(run_dir / "real-attempts", target_is_directory=True)
+                elif mutation == "fifo":
+                    os.mkfifo(target)
+                elif mutation == "large":
+                    with target.open("wb") as handle:
+                        handle.truncate((8 << 20) + 1)
+                elif mutation == "packet-drift":
+                    (run_dir / "review-packet.json").write_text("{}")
+                elif mutation == "traversal":
+                    packet["inputs"]["workerResults"] = ["attempts/../../credentials.json"]
+                archive = root / "review.tar"
+                with self.assertRaises(driver.DriveError):
+                    driver.capture_review_inputs(root, "run-test", packet, archive)
+                self.assertFalse(archive.exists())
 
 
 if __name__ == "__main__":
