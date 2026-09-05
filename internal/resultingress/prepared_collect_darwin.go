@@ -74,6 +74,11 @@ func (s *DurableStore) collectPreparedExecutionWithTransport(ctx context.Context
 				}
 				defer controlDirectory.Close()
 			}
+			if state.SupervisorStarted.V2 != (SupervisorStartedV2{}) {
+				result, err = s.collectPreparedExecutionV2Locked(ctx, projection, state, ownerState, identity, controlDirectory, fixedMarshalPath,
+					productionContinuationTransportV2, processsupervisor.ReadCollectedTranscriptV2, processsupervisor.ObservePreparedCommandV2)
+				return err
+			}
 
 			// A successful Collect may already be durable when the caller lost the
 			// descriptor read result. Re-read the same sealed objects instead of

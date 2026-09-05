@@ -1,5 +1,9 @@
 # 设计审计报告
 
+2026-09-05 v2 Collect producer 接线：既有生产 Collect 入口仍保留物理 owner/current ledger 检查，v2 不再误读 v1 handshake。exact prepared request 在任何执行前耐久；丢响应的 receipt 只作为待认证观察，Attach 必须绑定 post-checkpoint 和新 child observation 才接纳；未执行时只发送原请求，intent-only 仍 intervention。成功 outcome 已入账但输出读取失败时保留事实并只重读固定对象。新增 reader 读取 held v2 journal，不转换代际；前后检查完整 checkpoint、nonce、目录/文件/socket，并核对 exact Collect receipt、manifest、输出长度和摘要。原始 transcript bytes 不进入 RB1，后续 ResultIngress 继续引用 outcome fact。
+
+效率复盘：上一候选 `71d53c2` 的 CI 33950429378 两个平台都在 `Makefile:27 format-check` 失败；手列 gofmt 文件时漏掉 `client_other.go`。这是本地可发现的流程失误，不是架构或业务失败，也不应原样重跑。已修正格式，后续采用仓库现有 `make format-check` 作为提交前统一检查，不为此引入新协议/工具或另拆 PR。quality 未跑到测试，不能把该次 conformance/secret scan 成功外推为恢复测试成功。本轮 Collect 与此前 pending-bind 必须在新 exact head 验证。
+
 2026-09-05 pending-bind 丢响应恢复：实现 ADR 0067/0079 保留的同 owner 恢复规则，不新增持久化字段或 generic reconnect 权限。先读取精确 held v2 journal 分类，保留原 prepared command 的 deadline、request digest 和 A0；intent-only 不发送命令，未写 intent 仅在认证的原 checkpoint 上发送原命令，receipt 已提交则只读 Attach 认证 post-checkpoint 后追加 exact outcome。只读磁盘分类不是授权：伪造 peer 或不匹配的当前 owner 不能接纳 receipt。跨 owner pending 保持 intervention，Close 仍需独立进程缺席证明，未因 bind 恢复而开放。
 
 新增 portable 三态/伪造 checkpoint/重复分类零写入测试、Darwin held-directory/取消/截断尾部不修复测试，以及原 RB1 业务链上的 intent-only、未执行丢回复、磁盘 receipt 加坏 peer 拒绝、认证 receipt 不重做命令和冷重放检查。动态行为由 CI 验证，本地不执行临时 Mach-O。`408f02f` 的 CI 33949630841 已五项全绿；本候选不可沿用其动态通过声明。生产 selector 未切换，未发生真实 Pi 业务验收或发布。

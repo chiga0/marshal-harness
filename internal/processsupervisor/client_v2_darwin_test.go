@@ -64,6 +64,20 @@ func TestClientV2ToInheritedServerCompletePreparedLifecycle(t *testing.T) {
 	if collected.ProcessReport == nil || collected.TranscriptDigest == collected.ObservationDigest {
 		t.Fatal("v2 transcript and wrapped observation conflated")
 	}
+	readOptions := CollectedTranscriptReadOptionsV2{FixedMarshalPath: anchor.Binding.FixedBinary.CanonicalPath, ControlDirectory: h.directory, Outcome: collected}
+	coreObserver := func(string) (CoreIdentity, error) { return h.bootstrap.Core, nil }
+	transcript, err := readCollectedTranscriptWithCoreV2(readOptions, coreObserver)
+	if err != nil || string(transcript.Stdout) != "business result\n" || transcript.Report != *collected.ProcessReport {
+		t.Fatalf("v2 transcript read: %v", err)
+	}
+	wrong := readOptions
+	wrong.Outcome.ReceiptDigest = digest("forged")
+	if _, err := readCollectedTranscriptWithCoreV2(wrong, coreObserver); err == nil {
+		t.Fatal("wrong receipt read output")
+	}
+	if _, err := readCollectedTranscriptWithCoreV2(readOptions, func(string) (CoreIdentity, error) { c := h.bootstrap.Core; c.Binary.Inode++; return c, nil }); err == nil {
+		t.Fatal("wrong fixed binary read output")
+	}
 	// Close may finish and close the writer before the client receives its
 	// response. Inspect the held file via a separately opened read descriptor.
 	file, err := openControlFileAt(h.directory, journalFileNameV2)

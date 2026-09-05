@@ -55,6 +55,9 @@ func testCommandOutcomeV2(t *testing.T, intent SupervisorCommandIntent, report *
 	case processsupervisor.CommandResume:
 		request["processStartedFactDigest"] = p.Projection.ProcessStartedFactDigest
 		reason = "process-resumed"
+	case processsupervisor.CommandCollect:
+		request["processStartedFactDigest"], request["lastObservationDigest"] = p.Projection.ProcessStartedFactDigest, p.Projection.LastObservationDigest
+		reason = "transcript-collected"
 	default:
 		t.Fatalf("unsupported fixture command %s", p.Command)
 	}
@@ -64,6 +67,9 @@ func testCommandOutcomeV2(t *testing.T, intent SupervisorCommandIntent, report *
 	observation := digest(map[string]any{"schemaVersion": g.ResponseSchema, "protocolRevision": g.ProtocolRevision, "launchChildProtocolRevision": g.LaunchChildProtocolRevision,
 		"mechanicsIdentity": g.MechanicsIdentity, "observerIdentity": g.ObserverIdentity, "command": p.Command, "sourceDigest": source})
 	result := processsupervisor.MechanicsResult{Disposition: "ok", ReasonCode: reason, ObservationDigest: observation, Payload: resultPayload}
+	if p.Command == processsupervisor.CommandCollect && report != nil {
+		result.TranscriptDigest, result.StdoutBytes, result.StderrBytes, result.Truncated = digest(*report), report.StdoutBytes, report.StderrBytes, report.TranscriptTruncated
+	}
 	receipt := digest(map[string]any{"schemaVersion": g.ResponseSchema, "protocolRevision": g.ProtocolRevision, "launchChildProtocolRevision": g.LaunchChildProtocolRevision, "mechanicsIdentity": g.MechanicsIdentity, "result": result})
 	commandHead := digest(map[string]any{"previousCommandDigest": p.PreviousCommandDigest, "requestDigest": p.RequestDigest, "receiptDigest": receipt})
 	response := map[string]any{"schemaVersion": g.ResponseSchema, "protocolRevision": g.ProtocolRevision, "launchChildProtocolRevision": g.LaunchChildProtocolRevision,
@@ -83,7 +89,8 @@ func testCommandOutcomeV2(t *testing.T, intent SupervisorCommandIntent, report *
 		post.Binding.CurrentAuthorityHead = p.Projection.AuthorityHead
 	}
 	evidence, err := NewSupervisorCommandEvidenceV2(processsupervisor.VerifiedCommandOutcomeV2{Preparation: p, JournalRequest: string(raw(request)), PostCommand: post,
-		Status: "ok", ReasonCode: result.ReasonCode, ReceiptDigest: receipt, ObservationDigest: observation, CommandHead: commandHead, ProcessReport: report})
+		Status: "ok", ReasonCode: result.ReasonCode, ReceiptDigest: receipt, ObservationDigest: observation, CommandHead: commandHead, ProcessReport: report,
+		TranscriptDigest: result.TranscriptDigest, StdoutBytes: result.StdoutBytes, StderrBytes: result.StderrBytes, Truncated: result.Truncated})
 	if err != nil {
 		t.Fatal(err)
 	}

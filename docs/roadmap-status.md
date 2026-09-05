@@ -4,6 +4,10 @@
 
 ## 业务交付当前表
 
+2026-09-05 最新 Collect 接线候选：生产 `CollectPreparedExecution` 按完整 Supervisor generation 进入 v2 分支；原 owner/RB1 锁内持久化 exact intent、借用 Attach 收取结果并接纳 outcome。pending receipt 先认证 post-checkpoint；输出读取失败后复用已耐久 receipt，仅重读 held 输出，不再执行 Collect。新增固定 Core/held v2 journal/transcript reader，绑定 receipt、manifest、长度和内容摘要，不把 v2 转成 v1。连续 RB1 测试已延伸到 Collect 丢回复、receipt 恢复、读取失败重读和结果 fact 引用；仍使用显式假 peer，不是真实 Pi 验收。
+
+验证纠偏：`71d53c2` 的 [CI 33950429378](https://github.com/chiga0/marshal-harness/actions/runs/33950429378) 双平台 quality 在 `format-check` 失败，未运行动态测试；原因是非 Darwin stub 未 gofmt，现已修正并补跑仓库统一 `make format-check`。Linux 双架构 conformance 与 secret scan 通过不代表 quality 通过。本候选仍待新 head CI；下一关键路径是终态 Inspect/Close/absence、selector 与固定 server 真实 Pi 独立 ACCEPTED，B1 状态不变。
+
 2026-09-05 当前增量：接通同 owner 的 v2 pending-bind 恢复。held journal 只读分类为未执行、intent-only 或 exact receipt；未执行保留原 deadline/request 才能在认证 Attach 内发送，已提交 receipt 必须先认证其 post-checkpoint 才能进入 RB1，不能重做 bind。跨 owner pending、部分尾部或身份漂移继续 intervention。补充只读文件边界、零重放、连续 RB1 丢响应/伪造 peer/receipt 恢复和冷重放测试。本地仅 compile-only 与静态检查；本增量动态 CI 待验证。客户端 `408f02f` 的 [CI 33949630841](https://github.com/chiga0/marshal-harness/actions/runs/33949630841) 已五项全绿，不代替本增量测试。**下一关键路径：Collect/terminal producer、完整 selector 与固定 server 真实 Pi 到独立 ACCEPTED；B1 仍未关闭，B2/B3 尚未完成。**下面保留先前 checkpoint。
 
 2026-09-05 最新 Core 候选：`RebindOwnerSuccessorForAttachedRecovery` 按耐久 Supervisor generation 选择 v2 transport；无 pending 时在原 owner/ledger 锁内完成 owner-successor→只读 Attach→v2 intent fsync→同连接 bind→v2 outcome，并保留幂等短路。rebind validator、recovery fact revision 和 held session-directory lookup 不再误读 v1 字段。连续 RB1 测试从已有真实账本 bootstrap/start/resume 延伸至 rebind、冷重放及丢回复 pending 保留，peer 仍为替身。本地 compile-only/vet/staticcheck/架构检查通过；动态 CI 待 exact head。**v2 pending receipt 分类恢复、Collect/terminal producer 和最终 selector/canary 尚未接完，不能将本候选称为重启闭环或生产可用。**B1 保持 IN_PROGRESS。

@@ -253,4 +253,5 @@ func testLauncherV2OwnerRebind(t *testing.T, fixture preparedExecutionFixture, s
 	if err != nil || !found || !reflect.DeepEqual(cold, recovered) {
 		t.Fatalf("recovered receipt cold replay: %v", err)
 	}
+	testLauncherV2Collect(t, fixture, recovered, owner, verifier, directory)
 }
