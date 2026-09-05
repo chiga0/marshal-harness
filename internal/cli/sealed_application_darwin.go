@@ -677,10 +677,29 @@ func (run *sealedComposedRun) Close() error {
 	return errors.Join(closeErrors...)
 }
 
+// sealedRunOpenError carries diagnostic context without adding an application
+// ReasonCode: doing that could turn an existing untyped 500 into a typed 409.
+type sealedRunOpenError struct {
+	stage string
+	cause error
+}
+
+func (*sealedRunOpenError) Error() string     { return "sealed Run composition failed" }
+func (err *sealedRunOpenError) Unwrap() error { return err.cause }
+
 func (adapter *sealedRepositoryApplication) openRun(ctx context.Context, runID string) (_ *sealedComposedRun, err error) {
+	stage := "sealed-run-open"
+	defer func() {
+		if err != nil {
+			// Preserve the original cause internally; the server logger emits
+			// only these input-free phase labels, not filesystem/provider text.
+			err = &sealedRunOpenError{stage: stage, cause: err}
+		}
+	}()
 	if adapter.closed || adapter.session == nil {
 		return nil, application.NewError("sealed-repository-application", application.ReasonBridgeUnavailable)
 	}
+	stage = "sealed-run-acquire-lease"
 	preReadLease, err := adapter.runs.AcquireExisting(runID)
 	if err != nil {
 		return nil, err
@@ -691,6 +710,7 @@ func (adapter *sealedRepositoryApplication) openRun(ctx context.Context, runID s
 			_ = preReadLease.Release()
 		}
 	}()
+	stage = "sealed-run-read-authority"
 	projection, err := adapter.runs.ReadRunStartAuthorityUnderLease(ctx, preReadLease)
 	if err != nil {
 		return nil, err
@@ -698,15 +718,18 @@ func (adapter *sealedRepositoryApplication) openRun(ctx context.Context, runID s
 	// Freeze the descriptor graph while the exact Run projection is still
 	// protected by its pre-read lease. Releasing first would leave a pathname
 	// race between WorktreePath authority and the held target object.
+	stage = "sealed-run-open-worktree"
 	worktree, err := openExistingWorktreeComposition(adapter.repositoryRoot, projection.WorktreePath)
 	if err != nil {
 		return nil, err
 	}
+	stage = "sealed-run-read-task"
 	taskData, err := runstore.ReadFileUnderLease(preReadLease, 2<<20, "task-spec.json")
 	if err != nil {
 		_ = worktree.Close()
 		return nil, err
 	}
+	stage = "sealed-run-release-preread"
 	if err := preReadLease.Release(); err != nil {
 		_ = worktree.Close()
 		return nil, err
@@ -718,6 +741,7 @@ func (adapter *sealedRepositoryApplication) openRun(ctx context.Context, runID s
 			_ = run.Close()
 		}
 	}()
+	stage = "sealed-run-parse-task"
 	appInstance, err := app.New()
 	if err != nil {
 		return nil, err
@@ -726,15 +750,18 @@ func (adapter *sealedRepositoryApplication) openRun(ctx context.Context, runID s
 	if err != nil {
 		return nil, err
 	}
+	stage = "sealed-run-pi-requirements"
 	requirements, err := productionruntime.Pi0844Requirements(task.Worker.ExecutionProfile)
 	if err != nil {
 		return nil, err
 	}
+	stage = "sealed-run-pi-closure"
 	heldClosure, err := launchidentity.OpenPi0844(adapter.piRuntime, adapter.piEntrypoint, []string{adapter.piRuntime, adapter.piEntrypoint}, nil, projection.WorktreePath)
 	if err != nil {
 		return nil, err
 	}
 	run.closure = heldClosure
+	stage = "sealed-run-pi-identity"
 	identity, err := launchidentity.Pi0844IdentityFromClosure(heldClosure.Closure)
 	if err != nil {
 		return nil, err
@@ -743,6 +770,7 @@ func (adapter *sealedRepositoryApplication) openRun(ctx context.Context, runID s
 	if err != nil {
 		return nil, err
 	}
+	stage = "sealed-run-compose-runtime"
 	composed, err := productionruntime.ComposeRuntime(ctx, productionruntime.CompositionInputs{
 		RepositorySession: adapter.session, Runs: adapter.runs, LeaseLedger: adapter.leaseLedger, RunID: runID,
 		Namespace: adapter.namespace, OrchestratorID: "orchestrator:" + projection.Run.TaskID,

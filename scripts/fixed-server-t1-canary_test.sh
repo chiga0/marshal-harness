@@ -51,6 +51,11 @@ grep -F 'scripts/release-ci-gate.sh' "$WORKFLOW" >/dev/null || fail 'workflow la
 grep -F 'go1.26.6.darwin-arm64.tar.gz' "$WORKFLOW" >/dev/null || fail 'workflow lacks pinned Go toolchain'
 grep -F 'PHY_PI_VERSION: "0.84.4"' "$WORKFLOW" >/dev/null || fail 'workflow lacks Pi 0.84.4 pin'
 grep -F 'fixed-server-t1-canary.sh' "$WORKFLOW" >/dev/null || fail 'workflow does not use the fixed driver'
+grep -F '.marshal/runtime-v1/result-ingress/result-ingress.jsonl' "$WORKFLOW" >/dev/null \
+  || fail 'workflow omits the production runtime-v1 ingress ledger'
+if grep -F '.marshal/result-ingress/result-ingress.jsonl' "$WORKFLOW" >/dev/null; then
+  fail 'workflow collects a nonexistent legacy ingress path'
+fi
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

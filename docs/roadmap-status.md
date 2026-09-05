@@ -4,6 +4,22 @@
 
 ## 业务交付当前表
 
+当前已合入基线为 `origin/main@cb4b6464fe10730f8abaa40b6bca1c60ab8537bc`（[PR #257](https://github.com/chiga0/marshal-harness/pull/257)，sourceHead `05571f3174fdda4891d25a7e271a807ab0f6a38e`）。精确 source PR CI [33967017702](https://github.com/chiga0/marshal-harness/actions/runs/33967017702) 和合并后的 main push CI [33967908642](https://github.com/chiga0/marshal-harness/actions/runs/33967908642) 均五项全部通过。远端合并已发生，不存在此 PR 的 pendingRemoteSync；未更改其他本地 worktree。
+
+| Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
+| --- | --- | --- | --- |
+| B1 完整单任务服务 | `IN_PROGRESS` | launcher v2 完整 producer/Attach/recovery/terminalization、legacy mutation fence、typed Collect pending 和 review 输入导出已合入；同 head 订单报价 canary [33968513566](https://github.com/chiga0/marshal-harness/actions/runs/33968513566) 失败，固定构建/Pi 配置通过，Start 未到达预期响应输出边界，诊断已上传 | 先定位本次 Start 失败；真实业务 Collect/Verify/独立 Decision/ACCEPTED；正常与故障路径实机证据；取消/超时 Outcome 与持续推进 |
+| B2 受限 Agent Team | `PLANNED` | ADR 0080 目标与 ADR 0019 组件可复用 | approved plan 耐久物化/调度、两个到三个实现节点、集成候选业务验收、局部 replan、暂停恢复 |
+| B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
+
+[ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 已补充具体停止输入/幂等、不可变业务 deadline 来源、终态事件/Outcome 和冷恢复选择，仍为 Proposed，尚未开启 cancel/timeout。本次 canary 的外层报错不是根因，也不能证明 Pi 已实际启动；先读取保留的 Start stderr/RB1，再根因修复，不原样重跑。本机 fixed binary 退出 137 是另一个未查明的现场，不能混为此次原因。
+
+现场已读：Run 为 `READY/sequence=2`，server 仅记录外层 `reconcile-start-run-delivery/authority-conflict`；artifact 因工作流路径错误未收集真实 RB1。后继候选修复被掩盖的 Start/reconcile 阶段诊断和 `.marshal/runtime-v1/result-ingress` 收集，不改变准入、重放或成功规则。当前本地定向脚本、Go compile-only 和静态检查通过；动态/race 与补齐证据后的业务定位尚未完成，不能将诊断修复宣称为 Start 根因修复。
+
+### 合入前过程记录（历史采样，不是当前状态）
+
+以下保留原始失败、修复和 CI 采样；其中“当前候选”“尚未派发”“正在运行”、旧基线及旧 milestone 表均指记录当时，当前结论仅以上表为准。
+
 `6e62c8e` 的 [CI 33966029736](https://github.com/chiga0/marshal-harness/actions/runs/33966029736) 与 PR #257 的 `034a0f7` [CI 33966320451](https://github.com/chiga0/marshal-harness/actions/runs/33966320451) 均已五项全绿，包含 launcher v2、Terminate fixture 修复及 typed live-pending 的动态/质量回归。当前评审输入打包增量仅有本地定向证据，不借用前一 head 绿色，仍须新 head CI。下方运行中记录为历史采样。
 
 当前候选为 [PR #257](https://github.com/chiga0/marshal-harness/pull/257)，仍待完整 CI 和独立评审。业务 canary 实机前发现 artifact 未包含 packet 引用的实际评审文件，当前在已有 T2 driver/上传目录补有界只读 `review-inputs.tar`，9 个定向测试通过；不增加另一个 controller、不重跑 Worker、不宣称可导入 authority。真实业务到独立 ACCEPTED 仍是下一条集成证据，B1/B2/B3 状态不变。

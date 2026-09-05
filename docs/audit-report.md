@@ -1,5 +1,17 @@
 # 设计审计报告
 
+## 2026-09-05：S3 合入与 B1 业务验证开始
+
+PR #257 已于 13:05 UTC 合并，sourceHead `05571f3174fdda4891d25a7e271a807ab0f6a38e`、mergeHead `cb4b6464fe10730f8abaa40b6bca1c60ab8537bc`。source CI 33967017702 与 mergeHead main push CI 33967908642 均五项通过；随后自动派发同 head 的 fixed server order-quote canary 33968513566。维护者定向源码检查与独立执行的 CI 不冒称独立业务 Decision；Pi 候选仍由未编写它的 reviewer 基于精确 packet 审核。该合入关闭 S3 源码/合并等待，不关闭 B1。
+
+canary 随后失败：13:19 UTC 的外层检查报告 `fixed CLI did not reach its stdout response write boundary`。固定 Marshal 构建、Node/Pi 固定版本与 provider 配置步骤成功；现场 artifact 9970201332 已上传，未原样重跑。该提示只证明没有到达预期的 SIGPIPE/输出失败边界，不能据它认定具体 runtime 根因、Pi 已运行、或本机 137 原因复发。下一动作是核对 artifact 中的原始 Start stderr、Run 与 RB1 阶段，而非调整 timeout 或跳过 response-loss 检查。
+
+artifact 解包后的实际证据：Run 停留 `READY/sequence=2/currentAttemptId=null`；Start stderr 表示结果未证明成功；server stderr 只有 `reconcile-start-run-delivery/authority-conflict`。源码核对确认两个诊断缺陷：reconcile 失败分支丢弃先前 `startErr`，日志又只取最外层 typed error；工作流误收集 `.marshal/result-ingress`，真实布局位于 `.marshal/runtime-v1/result-ingress`，因此本次缺少关键 RB1，不能从缺文件推断零 mutation。当前修复保留两段内部原因、最多 32 个错误节点/8 个去重结构化诊断、Run composition 的常量阶段与正确 artifact 路径。原始错误不输出；composition wrapper 不改变原有 application reason/HTTP 分类。测试覆盖双失败无成功 receipt、路径/换行/非法字段脱敏、循环链及输出预算、原有 reason 保留。脚本回归、Go compile-only、vet/staticcheck 已通过；Go 动态/race 与新证据仍待后继 CI/实机，业务根因尚未证实，B1 不升级。
+
+取消/超时的下一纵切已在 ADR 0081 草案中补齐具体选择。调用链发现 reservation 没有时间字段，因此不能从不存在的 reserved-at 或恢复时 now 推导业务预算；拟复用已冻结的 Task budgets、Run 创建时间、当前 ProcessStarted 观测时间，deadline 检查同时进入结果接纳而非仅靠 timer。stop intent 与 admission closure/generation bump 同一 RB1 barrier 原子化；cleanup 完成才生成 Run terminal event 和可恢复 Outcome。该草案尚未接受或启用，不把文档方案算成 runtime 交付。
+
+效率纠偏：Roadmap 的“当前表”此前累积多条互相矛盾的历史 CI 采样，容易误判还在等待早已完成的作业；现将它们明确标为历史，只保留顶部唯一当前表。历史证据未删除；不新增另一个 controller、计时状态库或微切片 PR。
+
 ## 2026-09-05：实机前补齐独立评审输入
 
 验证更新：`6e62c8e` 的 CI 33966029736 与 `034a0f7` 的 PR CI 33966320451 五项全部通过，前述工作流契约和 Terminate fixture 失败已由新 head 关闭。等待后者真正结束后才推送本次 Python 打包增量，没有中断既有检查；本次增量单独记证。

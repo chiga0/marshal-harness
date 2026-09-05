@@ -395,7 +395,10 @@ func (router *HTTPRouter) startRun(ctx context.Context, authenticated RequestBin
 	_, startErr := router.application.StartRun(deliveryContext, input)
 	receipt, applied, err := router.delivery.ReconcileStartRunDelivery(deliveryContext, pending, input, router.application)
 	if err != nil {
-		return httpResponse{}, applicationHTTPStatus(err), errors.Join(application.NewError("reconcile-start-run-delivery", application.ReasonAuthorityConflict), err)
+		// A failed reconcile must not erase the preceding Port failure. Keep
+		// both internal causes while the public response still follows the
+		// authoritative reconcile result and never claims a successful start.
+		return httpResponse{}, applicationHTTPStatus(err), errors.Join(application.NewError("reconcile-start-run-delivery", application.ReasonAuthorityConflict), startErr, err)
 	}
 	if !applied {
 		// The client-facing result must remain an unresolved delivery even when

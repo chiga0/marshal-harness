@@ -101,6 +101,7 @@ type httpDeliveryStub struct {
 	afterBegin           func()
 	reconcileContextErr  error
 	lifecycleBeginCalls  int
+	reconcileErr         error
 	lifecycleCommitCalls int
 }
 
@@ -136,6 +137,9 @@ func (stub *httpDeliveryStub) ReconcileStartRunDelivery(ctx context.Context, _ p
 	defer stub.mu.Unlock()
 	stub.reconcileCalls++
 	stub.reconcileContextErr = ctx.Err()
+	if stub.reconcileErr != nil {
+		return productionruntime.FixedDeliveryReceipt{}, false, stub.reconcileErr
+	}
 	if stub.applyAt == 0 || stub.reconcileCalls < stub.applyAt {
 		return productionruntime.FixedDeliveryReceipt{}, false, nil
 	}
@@ -710,6 +714,28 @@ func TestHTTPRouterStartRunErrorStillRequiresCurrentLedgerReconcile(t *testing.T
 	code, response, serveErr := callHTTPRouter(t, router, binding, "/v1/runs/start", "request:start-error", body)
 	if !errors.Is(serveErr, errHTTPPending) || !application.HasReason(serveErr, application.ReasonAuthorityConflict) || code != 202 || response.Disposition != "pending" || response.ReasonCode != "delivery-pending" || delivery.reconcileCalls != 1 || port.startCalls != 1 {
 		t.Fatalf("code=%d response=%+v err=%v deliveryReconcile=%d start=%d", code, response, serveErr, delivery.reconcileCalls, port.startCalls)
+	}
+}
+
+func TestHTTPRouterPreservesStartAndReconcileFailuresWithoutReceipt(t *testing.T) {
+	port, delivery := testHTTPApplication()
+	port.startErr = application.NewError("prepare-run-start", application.ReasonRecoveryRequired)
+	delivery.reconcileErr = application.NewError("reconcile-start-run-owner-read", application.ReasonOwnerNotCurrent)
+	router, err := NewHTTPRouter(port, delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := application.StartRunRequest{RunID: port.run.RunID, ExpectedSequence: port.started.Prepared.Sequence, ExpectedAuthorityHead: port.started.Prepared.AuthorityHead}
+	body := canonicalBody(t, request)
+	deadline := time.Now().UTC().Add(time.Minute)
+	deliveryBinding, err := productionruntime.NewFixedStartRunDeliveryBinding("request:two-errors", request, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := RequestBinding{RequestKeyDigest: deliveryBinding.RequestKeyDigest, RequestDigest: deliveryBinding.RequestDigest, IntentDigest: deliveryBinding.ApplicationIntentDigest, Deadline: deliveryBinding.Deadline}
+	code, response, serveErr := callHTTPRouter(t, router, binding, "/v1/runs/start", "request:two-errors", body)
+	if !errors.Is(serveErr, port.startErr) || !errors.Is(serveErr, delivery.reconcileErr) || code != applicationHTTPStatus(delivery.reconcileErr) || response.Started != nil || response.DeliveryReceipt != nil || port.startCalls != 1 || delivery.reconcileCalls != 1 {
+		t.Fatalf("code=%d response=%+v err=%v start=%d reconcile=%d", code, response, serveErr, port.startCalls, delivery.reconcileCalls)
 	}
 }
 
