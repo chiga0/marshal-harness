@@ -88,7 +88,7 @@ func serveAttachV2(connection *net.UnixConn, reader *bufio.Reader, session *sess
 		return ErrConflict
 	}
 	var unexpected [1]byte
-	if count, readErr := connection.Read(unexpected[:]); count != 0 || !errors.Is(readErr, io.EOF) {
+	if count, readErr := reader.Read(unexpected[:]); count != 0 || !errors.Is(readErr, io.EOF) {
 		return ErrConflict
 	}
 	final := session.journal.recoverySnapshot("")

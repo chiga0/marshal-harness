@@ -41,3 +41,7 @@ func Reconnect(context.Context, ReconnectOptions) (*Client, error) {
 func WithAttached(context.Context, AttachOptions, func(*AttachedSession) error) error {
 	return ErrUnavailable
 }
+
+func WithAttachedV2(context.Context, AttachOptionsV2, func(*AttachedSessionV2) error) error {
+	return ErrUnavailable
+}

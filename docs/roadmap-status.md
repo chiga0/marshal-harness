@@ -4,6 +4,8 @@
 
 ## 业务交付当前表
 
+2026-09-05 最新客户端候选：新增 `WithAttachedV2`，以完整 v2 authority 调用 held-owner verifier，借用原 Unix socket 完成 observation→单次 prepared continuation→EOF。禁止重复/跨 goroutine/回调外消费，拒绝错误 successor、错误 method 和取消请求；持久化命令可能已执行但丢回复时保持 intervention，不声称无副作用。新增真实 socket 的客户端与服务端互通测试；Darwin/Linux 本地只做 compile-only、vet/staticcheck/架构检查。当前生产 selector 未切换；**后继必须接通 ResultIngress 的 v2 rebind/collect/terminal producer，并以固定 server 的真实 Pi 独立验收到 ACCEPTED；B1 仍为 IN_PROGRESS。**以下是先前 checkpoint，不表示当前可生产使用。
+
 2026-09-05 后续接线候选：v2 Attach 服务端现在接受同一认证连接上的至多一个 `bind-authority/Inspect/Collect/Close`，不进入通用命令循环。检查点在命令锁内再次核对；bind 只允许精确 owner-bound successor，旧 checkpoint、错误 successor、Spawn/Resume 和跨代请求在 journal intent 前拒绝。已提交命令的丢响应仍由既有 exact receipt recovery 处理，不重用已消费的 Attach。Close 即使丢响应也退出服务循环。新增 portable 生命周期/拒绝矩阵与同一 Unix socket bind 测试；本地仅 compile-only、vet/staticcheck 与架构检查，不冒充动态测试。**callback-scoped 客户端与 Core producer 接线仍待完成，生产 selector 保持未切换，B1 未关闭。**下段为上一 checkpoint 的历史记录。
 
 2026-09-05 候选增量：`a5a261e` 的 [CI 33947799422](https://github.com/chiga0/marshal-harness/actions/runs/33947799422) 五项全绿，验证 v2 bootstrap→started→bind/spawn→ProcessStarted→resume→cold replay 与 F_GETPATH 修正回归。继续 S3 接线时发现 generic `ReconnectV2` 会推进内存 owner/head，不能替代 ADR 0067 保留的只读 Attach；本轮在 ADR 0079 补足 v2 Attach 编码，新增显式 v2 authority/observation、只读服务端入口和 Unix socket 零副作用测试。尚未接通 callback-scoped prepared continuation，入口不放行任何 command，生产 selector 未切换。本轮动态证据待新 head CI；后继是 borrowed Attach→已耐久 bind/collect/terminal 命令以及固定 bytes 真实 Pi 独立验收，B1 仍为 IN_PROGRESS。

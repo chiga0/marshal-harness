@@ -1,5 +1,9 @@
 # 设计审计报告
 
+2026-09-05 v2 borrowed client 接线：`WithAttachedV2` 只在完整 generation/owner authority 的同步 verifier 内检查 held directory、nonce/journal/socket 与 fixed peer；借用对象仅公开一次 observation 和四个既有 continuation，不返回通用 Client/connection。prepared bind 的目标在发送前等于 owner-bound successor。回调错误不能被 verifier 吞掉，异步/重复/回调外调用失败；命令 context 同时受 Attach scope 取消约束。已尝试但未取得验证 outcome 的命令固定 intervention，不能用“journal 未保持只读”把已发生的效果误报为 no-effect。
+
+本轮实现检查还发现 decoder 切换会丢失已预读的异常帧：v2 client 保留 Attach 的原 codec，最终 EOF 也通过同一 codec 检查；服务端的第二帧检查同样读取原 buffered reader，而非绕过其缓冲直接读连接。验证包含真实 Unix socket 的只读/同连接 prepared bind、错误 successor/method、跨 goroutine、取消的零重复 child effect，以及 portable owner 回调次数、逃逸、异常和闭集接口检查。这里的 verifier 为测试替身，不是 current-ledger 集成或独立业务 Decision 证据；ResultIngress producer 仍是下一关键接线，真实 Pi/stable gate 不变。
+
 2026-09-05 Attach continuation 候选：复用 v2 的 intent→mechanics→receipt 提交流程，新增窄命令入口，不把 v1 Request 转换为 v2。只读观察不写状态；后续命令必须在锁内重新匹配完整 session/journal/owner/child-observation checkpoint。bind 的目标额外精确等于已认证 owner-bound fact 的 Attempt head，保留旧 mechanics owner epoch。已消费 checkpoint 不允许重放；丢响应只能走现有 exact receipt recovery。终态 Close 在已提交但回复失败时也终止监听，不留下已关闭 session 的无效常驻循环。
 
 实现覆盖：错误 successor、owner、started fact、head、deadline、sequence、混代、Spawn replay、Resume 的零写入拒绝；普通命令入口拒绝 rebind；单次 rebind 不重复启动 child；Inspect→Collect→Close 按既有生命周期准入；真实 Unix socket 同一连接的 Attach→bind→EOF。客户端 borrowed capability 和 Core RB1 producer 尚未连接，故这些仍是候选代码，不是独立业务验收、生产恢复或 release 证据。后续必须完成客户端及 Core，再跑固定 bytes 的真实 Pi 完整闭环，不把当前服务端单测当作终点。下段保留前一只读 checkpoint 的历史状态。

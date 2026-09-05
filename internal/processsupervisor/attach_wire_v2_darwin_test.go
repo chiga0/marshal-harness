@@ -27,7 +27,8 @@ func TestAttachV2WireCommitsSingleBoundSuccessorOnSameConnection(t *testing.T) {
 	testAttachV2Wire(t, true)
 }
 
-func testAttachV2Wire(t *testing.T, rebind bool) {
+func newAttachV2WireFixture(t *testing.T) (*supervisorV2Harness, *attachMechanicsV2, CoreIdentity, attachRequestV2) {
+	t.Helper()
 	m := &attachMechanicsV2{}
 	self := validBootstrapV2().Core
 	self.Process.PID += 100
@@ -40,16 +41,12 @@ func testAttachV2Wire(t *testing.T, rebind bool) {
 	spawn := spawnRequestForSessionV2(t, h.session)
 	h.session.core.mu.Unlock()
 	h.do(t, spawn)
-	before, err := os.ReadFile(filepath.Join(h.root, journalFileNameV2))
-	if err != nil {
-		t.Fatal(err)
-	}
 	h.session.core.mu.Lock()
 	anchor := testAnchorV2(h.session)
 	anchor.ControlDirectory = h.bootstrap.ControlDirectoryIdentity
 	anchor.Binding.FixedBinary = self.Binary
 	anchor.Binding.ControlSocket, anchor.Binding.ControlFiles = h.handshake.ControlSocket, h.handshake.ControlFiles
-	lastObservation, calls := h.session.core.lastObservation, m.calls
+	lastObservation := h.session.core.lastObservation
 	h.session.core.mu.Unlock()
 	_ = h.connection.Close()
 	select {
@@ -69,6 +66,17 @@ func testAttachV2Wire(t *testing.T, rebind bool) {
 	request.RequestDigest, _ = request.detachedDigest()
 	if request.validate() != nil {
 		t.Fatal("invalid wire authority fixture")
+	}
+	return h, m, self, request
+}
+
+func testAttachV2Wire(t *testing.T, rebind bool) {
+	h, m, self, request := newAttachV2WireFixture(t)
+	a := &request.Authority
+	anchor, lastObservation, calls := a.PreviousSupervisor, a.ChildObservationDigest, m.calls
+	before, err := os.ReadFile(filepath.Join(h.root, journalFileNameV2))
+	if err != nil {
+		t.Fatal(err)
 	}
 	for _, mutate := range []func(*attachRequestV2){
 		func(r *attachRequestV2) { r.Authority.Child.PID++ },

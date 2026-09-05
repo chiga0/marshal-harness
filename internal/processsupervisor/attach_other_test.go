@@ -13,6 +13,9 @@ import (
 // platform it must never provide authority and must return ErrUnavailable
 // before touching the verifier, control directory, or callback.
 func TestWithAttachedFailsClosedOnNonDarwin(t *testing.T) {
+	if err := WithAttachedV2(context.Background(), AttachOptionsV2{}, func(*AttachedSessionV2) error { t.Fatal("non-Darwin v2 callback invoked"); return nil }); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("v2 Attach on non-Darwin: %v", err)
+	}
 	verifier := attachVerifierFunc(func(context.Context, AttachAuthority, func() error) error {
 		t.Fatal("non-Darwin WithAttached invoked the owner verifier")
 		return ErrConflict
