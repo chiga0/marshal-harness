@@ -566,7 +566,10 @@ func validCanonicalObjectPrefix(data []byte) bool {
 			if complete {
 				return false
 			}
-			if errors.Is(err, io.EOF) {
+			// Decoder.Token returns ErrUnexpectedEOF for a token cut in the
+			// middle (for example an object key string), not SyntaxError. This
+			// is a recoverable prefix, just like EOF between complete tokens.
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return true
 			}
 			var syntax *json.SyntaxError

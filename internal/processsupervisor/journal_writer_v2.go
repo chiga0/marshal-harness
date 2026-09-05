@@ -118,6 +118,24 @@ func (journal *journalWriterV2) checkpoint() (uint64, string, bool) {
 	return journal.state.sequence, journal.state.head, journal.state.pending != nil
 }
 
+// recoverySnapshot copies only the checkpoint and one requested command;
+// reconnect cost does not grow with the number of earlier receipts.
+func (journal *journalWriterV2) recoverySnapshot(commandID string) journalStateV2 {
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	state := journal.state
+	state.created = cloneJournalRecordV2(state.created)
+	state.receipts = make(map[string]journalRecordV2)
+	if record, ok := journal.state.receipts[commandID]; ok {
+		state.receipts[commandID] = cloneJournalRecordV2(record)
+	}
+	if state.pending != nil {
+		pending := cloneJournalRecordV2(*state.pending)
+		state.pending = &pending
+	}
+	return state
+}
+
 func openJournalWriterV2(file *os.File) (*journalWriterV2, error) {
 	if file == nil || filepath.Base(file.Name()) != journalFileNameV2 {
 		return nil, ErrInvalid

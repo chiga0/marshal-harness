@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-05：B1 v2 恢复候选与失败复盘
+
+S3 在同一候选分支连续实现 v2 journal、命令执行与 live-session reconnect；尚未切换 production selector。重连只按最后认证的 A0 和 exact v2 journal 分类，不以新 owner head 伪造旧命令的 journal base。未写 intent 才可执行一次，已有 receipt 只重放原结果，pending intent 保留不确定性；进入可能执行 mechanics 的阶段后，失败必须使 transport 静默关闭，不能回报“无副作用”。这些仍为候选实现及测试，不是实机恢复证据；transport 和 Core producer chain 未接通。
+
+`485c606` 的 [CI 33939567946](https://github.com/chiga0/marshal-harness/actions/runs/33939567946) 在 `TestJournalWriterV2ValidatesBeforeTailRepair` 发现合法截断被误拒绝。Go `Decoder.Token` 对未结束的字符串返回 `io.ErrUnexpectedEOF`；共用 prefix parser 原来仅接受 `io.EOF` 或特定 `SyntaxError`，因此两者混淆。修正接纳合法 incomplete token，并新增真实 canonical 对象逐字节截断、重复 key、非法 escape/数字/分隔符及完整非法记录不修改的测试。未降低完整 frame 的 exact schema、digest、链序与语义验证；没有改写任何历史 journal。此为现有崩溃尾部合同的实现修复，不新增持久化语义。
+
+效率纠偏：本地 compile-only/vet/staticcheck 不能替代动态恢复测试。本次定位具体失败再提交修正，不对同一 head 盲目重跑 CI，也不另拆微型 PR；下一 exact-head CI 通过前不得称失败已关闭。后继必须把同一恢复链接入 fixed server/真实 Pi，再证明业务交付，而不是继续只积累独立组件。
+
 ## 2026-09-05：三面分离与真实业务交付纠偏
 
 基线 `origin/main@0c6d9cd`。保留确定性 Core、独立验证、Provider 分层与恢复资产；当前不能把 single-task kernel 或 T2 API 存在描述成自治 Agent Team。[ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 接受 B1→B2→B3 的业务路线，细节见 [业务交付计划](agent-team-delivery-plan.md)。

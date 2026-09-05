@@ -20,7 +20,9 @@ B1 候选实现同时把 `Status` 与长 mutation mutex 解耦，使用单独 li
 
 本轮本地验证：订单报价 oracle 的 5 个测试通过（含 28 条业务用例、典型错误实现、生成验收命令实执行与 oracle 摘要漂移）；T1 shell 回归与 9 个 evidence 回归通过；Darwin/Linux 定向 vet、staticcheck、architecture check 与 Darwin CLI test compile-only 通过。另新增 Go 合同测试，直接验证 marker/order-quote renderer 的真实 Task 输出；它与 Status 动态/race 测试交由 CI 执行。现有固定二进制在新工作区报告 `self-local-profile-mismatch`，没有绕过或冒用历史身份；本轮未启动实机 Worker，也未签发 Decision/发布。
 
-当前在途为同一 `feat/launcher-v2-production` 分支上的 S3 连贯实现，不按内部文件拆 PR：已编写 v2 journal writer 与 command session，复用代际无关命令语义，保留 v2 exact decode/digest/receipt；新增耐久 intent-before-mechanics、receipt replay、旧代拒绝与不确定效果保留测试。追加仅校验下一转换，启动重放为线性；非法完整记录在 torn-tail 修复前拒绝。该候选尚待动态 CI，transport/reconnect、Core v2 subprojection、零 active/pending v1 admission 与实机链仍未完成，生产 selector 保持 v1；不得据此升级 B1。
+当前在途为同一 `feat/launcher-v2-production` 分支上的 S3 连贯实现，不按内部文件拆 PR：已编写 v2 journal writer、command session 与 live-session reconnect 分类，复用代际无关命令语义，保留 v2 exact decode/digest/receipt。未有 intent 才允许一次恢复执行；pending intent 保留 intervention；committed receipt 原样返回。新增连续两次 Core restart/丢握手、过期 receipt replay、不同 digest 冲突、伪造 A0/peer/旧代拒绝测试；重连仅复制 checkpoint 与目标 receipt，避免每次扫描全部历史。
+
+候选 `485c606` 的 [CI 33939567946](https://github.com/chiga0/marshal-harness/actions/runs/33939567946) 暴露合法 journal 字符串中途截断被拒绝；根因是共用 parser 未接纳 Go `io.ErrUnexpectedEOF`。本轮修复并增加逐字节截断与损坏输入回归，完整非法记录仍在修复前拒绝且不修改文件。候选未全绿，不重跑同一失败 head、不合并、不升级 B1。修正及 reconnect 动态测试须由后继 exact-head CI 验证；transport、Core v2 subprojection、零 active/pending v1 admission 与实机链仍未完成，生产 selector 保持 v1。
 
 ## 历史 checkpoint 与技术证据映射
 

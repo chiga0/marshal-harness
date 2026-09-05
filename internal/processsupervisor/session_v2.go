@@ -57,14 +57,15 @@ func (session *sessionV2) journalBase() journalRecordV2 {
 func (session *sessionV2) handle(raw []byte) (responseV2, error) {
 	session.core.mu.Lock()
 	defer session.core.mu.Unlock()
+	return session.handleLocked(raw)
+}
+
+func (session *sessionV2) handleLocked(raw []byte) (responseV2, error) {
 	var request requestV2
 	if len(raw) > MaxWireFrameBytes || strictCanonicalDecode(raw, &request) != nil || request.validate() != nil || request.SessionID != session.core.sessionID {
 		return responseV2{}, ErrInvalid
 	}
-	projection := requestProjection{Command: request.Command, CommandID: request.CommandID, Sequence: request.Sequence,
-		RequestDigest: request.RequestDigest, PreviousCommandDigest: request.PreviousCommandDigest,
-		CurrentAuthorityHead: request.CurrentAuthorityHead, Deadline: request.Deadline}
-	payload, err := decodePayload(request.Command, request.Payload, &projection)
+	projection, payload, err := projectRequestV2(request)
 	if err != nil {
 		return responseV2{}, err
 	}
@@ -118,6 +119,17 @@ func (session *sessionV2) handle(raw []byte) (responseV2, error) {
 		session.core.state = sessionIntervention
 	}
 	return response, nil
+}
+
+func projectRequestV2(request requestV2) (requestProjection, any, error) {
+	if request.validate() != nil {
+		return requestProjection{}, nil, ErrInvalid
+	}
+	projection := requestProjection{Command: request.Command, CommandID: request.CommandID, Sequence: request.Sequence,
+		RequestDigest: request.RequestDigest, PreviousCommandDigest: request.PreviousCommandDigest,
+		CurrentAuthorityHead: request.CurrentAuthorityHead, Deadline: request.Deadline}
+	payload, err := decodePayload(request.Command, request.Payload, &projection)
+	return projection, payload, err
 }
 
 func commandResponseV2(request requestV2, projection requestProjection, result MechanicsResult, commandErr error) (responseV2, error) {
