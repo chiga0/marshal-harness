@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-05：fixed image 实机阻塞与业务取消合同缺口
+
+`cb615e7` 的 CI 33963625091 五项全部通过，前次两个 fixture 失败已由该 head 的动态回归验证；最新 `c9b2d11` 另跑 CI 33964259197。没有把前一绿色结果扩展到后一提交或实机。
+
+对精确 `c9b2d113f428f66c6f4352758dcf22f61a53665c` 在独立工作区构建固定 `bin/marshal`，使用 `darwin-local-dogfood`、`dev`、buildDate `2026-09-05T11:49:41Z`。SHA-256 为 `0e4ff2cfefe0b42fb7e67de1248fb4fae9fcf2799c08481018f693a98cc90780`，大小 17980578 bytes。执行 bootstrap 命令组（version/doctor --self）返回 137，无输出，不能证明已执行 activation 或任何 lifecycle。磁盘 codesign verify 成功，但为 linker ad-hoc、Identifier `a.out`、无 TeamIdentifier；codesigning identity 查询为 0。限定 amfid/syspolicyd 的近三分钟日志未提供匹配原因，因此只记录 SIGKILL 型退出，**不认定已查明是 EDR、Gatekeeper 或内存终止**。未改变安全设置、未重新签名/替换该候选、未直接启动 Pi；产物留在被忽略的固定 bin 路径。固定 pathname 并不自动解决执行信任，managed signing 仍为外部前置。
+
+同时确认 B1 取消缺口是跨层合同而非单个缺失 handler：Port 没有 cancel；已有 runtime terminalization 仅正常完成；历史 reducer 明确拒绝 RUNNING 的 run.aborted；reserved lease 初始两小时并非用户确认的 wall-timeout。新增 ADR 0081 提案列明原子 stop intent、结果竞争、cleanup、Run Outcome 和 deadline 的待冻结选择，避免再次先接 handler 后返工。它尚未接受或改变运行时权限，不升级 B1 成熟度。
+
 ## 2026-09-05：取消链路与 legacy receipt-only 写旁路
 
 逐层追踪发现 v2 Attach continuation 原先没有暴露已有 `terminate` command，ResultIngress 也只有 Inspect/Close producer；不能据 mechanics 支持信号而宣称服务端取消可用。当前在既有 ADR 0056/0067/0079 terminalization 合同下补 typed Terminate continuation，复用相同 owner 锁、RB1 barrier/intent/outcome、exact pending 分类和 post-checkpoint 认证，不新增 command schema 或生命周期状态。没有 barrier、owner binding 漂移或 intervention 时拒绝，原 command deadline 不在恢复时刷新；已有 receipt 不重复发信号。连续耐久测试增加未 Collect 的运行任务到 Terminate、丢回复恢复、终态释放和冷重放；peer/mechanics 仍显式 Fake，服务端 cancel/timeout 编排及实机故障矩阵尚未关闭。

@@ -4,6 +4,10 @@
 
 ## 业务交付当前表
 
+最新检查：`cb615e7` 的 [CI 33963625091](https://github.com/chiga0/marshal-harness/actions/runs/33963625091) 已五项全绿；`c9b2d11` 的 Terminate/legacy recovery 增量已推送，正在单独运行 [CI 33964259197](https://github.com/chiga0/marshal-harness/actions/runs/33964259197)，不能混用两者证据。固定工作区首次构建 `bin/marshal` 后，bootstrap 命令组返回 137 且没有版本/activation 输出；磁盘 codesign verify 通过，身份为 linker ad-hoc、`Identifier=a.out`、无 Team ID，本机可用 codesigning identity 数为 0。尚无日志证明具体终止来源，未重签、绕过保护、反复执行或启动 Pi。该固定路径候选仍不能计为实机可用。
+
+取消入口的合同缺口收敛至 [ADR 0081 提案](adr/0081-fixed-server-stop-intent-and-outcome.md)：当前 Port 无 cancel、Run reducer 不接受 RUNNING 的 `run.aborted`，内部两小时 lease expiry 不能冒充业务 wall-timeout。先明确 stop intent/barrier 原子性、Outcome 和已确认 deadline，再完整接线；不使用旧 server 或 HTTP context cancellation 绕过。B1 仍 IN_PROGRESS，B2/B3 不变。
+
 当前取消链路接线候选：`TerminatePreparedExecution` 已沿现有 owner/RB1 guard 接入 v2 Attach prepared continuation，要求 terminalization barrier 已耐久，不能从 context cancellation 直接推导发信号权限。与 Inspect 共用 exact intent/receipt 恢复；已提交结果先认证 post-checkpoint，已有成功终态重复调用不再执行或追加。新增连续 bootstrap→running→owner rebind→Terminate 丢回复→receipt 恢复→cleanup 冷重放测试及真实 Unix socket/Fake mechanics 的 Terminate continuation 测试。本地 compile-only/静态检查不等于动态通过；尚未把服务端 cancel/timeout 调度器接入该入口。共同生产目录入口同时拒绝 legacy generation，覆盖无需 socket 的 Close receipt 恢复写旁路。前一提交 `cb615e7` 的 CI 33963625091 与本候选分别计证，B1 仍未关闭。
 
 最新验证纠偏：终态候选 `c921e1b` 的 [CI 33955604098](https://github.com/chiga0/marshal-harness/actions/runs/33955604098) 已结束，Ubuntu quality、Linux 双架构 conformance、secret scan 通过，macOS quality 失败。两处失败的夹具分别把 Inspect 的不存在事实写成 `ProcessTerminated`、把 Close 返回原因写成通用测试值而非 `mechanics-closed`；当前修正夹具并保留生产校验，增加固定阶段诊断，等待新 head 动态回归。新 fixed entry 同时退役 v1 Start/Reconnect/Attach 与旧 child 启动分支，在启动副作用前拒绝 legacy bootstrap；v1 解码/历史组件测试仍保留。此候选未部署，取消/超时、完整 legacy mutation 排查与真实 Pi 独立 ACCEPTED 仍是 B1 阻塞，不能把源码接线当成生产完成。下方 CI“仍在运行”为提交当时的历史状态。
