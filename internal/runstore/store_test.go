@@ -974,7 +974,10 @@ func writeNotifyRecorder(t *testing.T) (string, string) {
 	directory := t.TempDir()
 	record := filepath.Join(directory, "notify-record.json")
 	command := filepath.Join(directory, "notify-recorder.sh")
-	script := "#!/bin/sh\nprintf '%s' \"$1\" > \"" + record + "\"\n"
+	// Existence is the reader's completion signal. Publish only after printf
+	// closes the complete payload; opening/truncating the final leaf first
+	// races waitForNotifyRecord and can expose empty or partial JSON.
+	script := "#!/bin/sh\nset -eu\nrecord=\"" + record + "\"\nstage=\"$record.$$\"\nprintf '%s' \"$1\" > \"$stage\"\nmv \"$stage\" \"$record\"\n"
 	if err := os.WriteFile(command, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}

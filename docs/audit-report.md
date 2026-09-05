@@ -2,6 +2,8 @@
 
 ## 2026-09-05：B1 生产目录布局与隔离夹具脱节
 
+PR #259 的首轮 CI 33972990414 中 Ubuntu 动态检查暴露旧 notification recorder 夹具竞态：`TestNotifyHookGateHonoursFirstEventAndSameState` 在最终文件刚被 shell truncate、JSON 尚未写完时读取，报 `unexpected end of JSON input`。失败发生在未改动的 runstore，不能算成目录修复失效，也不凭“偶发”原样重跑。修复测试 recorder 先写独立 staging leaf、完成后 rename 发布；不放宽 JSON 断言、不增加等待时长、不改生产通知语义。未中断 macOS：其于 15:05 UTC 动态/race 全绿，Linux 双架构与 secret scan 同样通过；聚合完整结果后更新同一 PR，新 head 仍单独验证。业务 canary 未提前派发。
+
 新 canary 33971611314（`d9d603f`）在 14:23 UTC 失败。artifact 9971098258 的精确成员经 ZIP CRC 检验读取：server 输出 `adopt-existing-worktree-projection-root/authority-conflict`；RB1 有 17 条 fact，包括 prepared execution、supervisor bootstrap/started、三组 command intent/outcome 与 seq 15 `process-started`。这证明阻塞已在启动后，不证明业务完成、ACCEPTED 或旧 137 根因。
 
 根因是 `adoptFixedServerRuntimeMutation` 要求 runtime 只有两个目录，而实际 CLI 先创建 `result-ingress`、`dispatch-ledger`、`allocations`、`owner`、`provider-authority` 等同层目录。原公开装配夹具把 ingress 放在 repository 外，隔离 delivery 夹具只有两项，掩盖了必然失败的集成路径。修复冻结已存在的封闭 composition 目录的 held descriptor 与 current name/object；只容许其正常内部记录变化，不接纳启动后新增名称、对象替换、类型/权限漂移。control 与祖先原有精确 mutation/ABA 门禁、RB1/projection bytes join、receipt digest 格式均不变。这是恢复 ADR 0066/0076 已有布局，不增加 authority store 或降低业务证据条件。
