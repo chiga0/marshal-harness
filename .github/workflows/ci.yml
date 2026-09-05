@@ -70,6 +70,12 @@ jobs:
             LC_ALL=C \
             PATH=/usr/bin:/bin \
             /usr/bin/python3 -I -B \
+            "$GITHUB_WORKSPACE/scripts/fixed-server-t2-drive_test.py"
+          run_checker
+          /usr/bin/env -i \
+            LC_ALL=C \
+            PATH=/usr/bin:/bin \
+            /usr/bin/python3 -I -B \
             "$GITHUB_WORKSPACE/scripts/rc1-carrier-check_test.py"
           run_checker
           /usr/bin/env -i \

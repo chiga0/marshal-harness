@@ -35,6 +35,7 @@ type httpApplicationStub struct {
 	run                 application.RunProjection
 	collected           application.CollectedRunProjection
 	startErr            error
+	collectErr          error
 	startContextErr     error
 	reconcileContextErr error
 }
@@ -73,7 +74,7 @@ func (stub *httpApplicationStub) CollectRunResult(context.Context, application.C
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
 	stub.collectCalls++
-	return stub.collected, nil
+	return stub.collected, stub.collectErr
 }
 
 func (stub *httpApplicationStub) VerifyRun(context.Context, application.VerifyRunRequest) (application.VerificationProjection, error) {

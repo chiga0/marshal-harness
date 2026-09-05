@@ -15,7 +15,11 @@ var (
 	ErrInvalid     = errors.New("fixedcontrolplane: invalid")
 	ErrConflict    = errors.New("fixedcontrolplane: conflict")
 	ErrUnavailable = errors.New("fixedcontrolplane: unavailable")
-	digestPattern  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	// ErrAttemptStillRunning is a current observation, not a success receipt
+	// or proof that the durable delivery pending has had no effects. A caller
+	// may retry only the identical collect request within its original deadline.
+	ErrAttemptStillRunning = errors.New("fixedcontrolplane: attempt is still running")
+	digestPattern          = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
 // RequestBinding is the secret-free request identity authenticated before S3

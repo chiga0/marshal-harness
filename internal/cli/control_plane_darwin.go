@@ -365,6 +365,12 @@ func runControlPlaneCollect(ctx context.Context, args []string, stdout, stderr i
 	}
 	defer authority.Close()
 	result, err := fixedcontrolplane.CallCollectRunResult(ctx, authority, input.requestKey, application.CollectRunResultRequest(input.current), input.deadline)
+	if errors.Is(err, fixedcontrolplane.ErrAttemptStillRunning) {
+		if exit := writeControlPlaneJSON(stdout, stderr, map[string]string{"disposition": "pending", "reasonCode": string(application.ReasonAttemptStillRunning)}); exit != ExitOK {
+			return exit
+		}
+		return ExitUnavailable
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "control-plane collect 失败：结果未证明成功；请使用同一 request key 与冻结请求重放。")
 		return ExitFailure

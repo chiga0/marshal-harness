@@ -143,7 +143,23 @@ func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixtur
 	request := CleanupAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run, TerminalizationID: current.TerminalizationID, TerminalGeneration: current.TerminalGeneration, CleanupBindingDigest: current.CleanupBindingDigest, Operation: CleanupInspect}
 	kind := ProcessAbsent
 	if command == processsupervisor.CommandTerminate {
-		kind, request.Operation = ProcessTerminated, CleanupTerminate
+		// The signal effect is already durably observed. Recording the process
+		// fact is reconciliation, not authorization to terminate an allocation.
+		kind, request.Operation = ProcessTerminated, CleanupReconcile
+	}
+	if command == processsupervisor.CommandTerminate {
+		wrong := request
+		wrong.Operation = CleanupTerminate
+		before, readErr := os.ReadFile(store.ledgerPath())
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		_, rejected := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, current.Revision, current.HeadDigest, wrong,
+			AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: state.Identity, TerminalizationID: current.TerminalizationID, ProcessTerminalKind: kind, ObservationDigest: inspection.Evidence.ObservationDigest, SupervisorOutcomeFactDigest: inspection.OutcomeFactDigest})
+		after, readErr := os.ReadFile(store.ledgerPath())
+		if !errors.Is(rejected, ErrCleanupUnauthorized) || readErr != nil || !bytes.Equal(before, after) {
+			t.Fatal("allocation terminate authorization recorded a process fact")
+		}
 	}
 	terminal, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, current.Revision, current.HeadDigest, request,
 		AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: state.Identity, TerminalizationID: current.TerminalizationID, ProcessTerminalKind: kind, ObservationDigest: inspection.Evidence.ObservationDigest, SupervisorOutcomeFactDigest: inspection.OutcomeFactDigest})

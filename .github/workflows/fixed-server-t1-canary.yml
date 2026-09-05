@@ -1,4 +1,4 @@
-name: Fixed server T1 exact-head canary
+name: Fixed server exact-head canary
 
 on:
   workflow_dispatch:
@@ -11,6 +11,12 @@ on:
         description: 冻结到真实 Pi 0.84.4 Task 的 provider/model
         required: true
         type: string
+      scenario:
+        description: t1-marker=启动恢复；order-quote=T2真实业务到ReviewPacket，不自动Decision
+        required: true
+        default: t1-marker
+        type: choice
+        options: [t1-marker, order-quote]
 
 permissions:
   contents: read
@@ -21,7 +27,7 @@ concurrency:
 
 jobs:
   exact-head-canary:
-    name: Fixed server T1 response-loss/recovery
+    name: Fixed server ${{ inputs.scenario }} response-loss/recovery
     runs-on: macos-14
     timeout-minutes: 80
     permissions:
@@ -30,6 +36,7 @@ jobs:
     env:
       EXPECTED_HEAD: ${{ inputs.expected-head }}
       PI_MODEL: ${{ inputs.pi-model }}
+      CANARY_SCENARIO: ${{ inputs.scenario }}
       PHY_PI_VERSION: "0.84.4"
       PHY_NODE_VERSION: "v24.15.0"
       PHY_NODE_SHA256: "3200fbd9f7fd4410426dd541e10d1ab829d3472f270d743c7fabd1696c03fe32"
@@ -45,6 +52,7 @@ jobs:
           test "${{ github.repository }}" = "chiga0/marshal-harness" || { echo "::error::仅允许 canonical 仓库" >&2; exit 1; }
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::expected-head 必须是 40 位小写 commit" >&2; exit 1; }
           [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || { echo "::error::pi-model 必须是 provider/model" >&2; exit 1; }
+          case "$CANARY_SCENARIO" in t1-marker|order-quote) ;; *) echo "::error::invalid scenario" >&2; exit 1 ;; esac
           MODEL_ID="${PI_MODEL#*/}" VARS_MODELS="$VARS_MODELS" /usr/bin/python3 -I -B -c 'import os,sys; values=[v.strip() for v in os.environ["VARS_MODELS"].split(",") if v.strip()]; os.environ["MODEL_ID"] in values or sys.exit("pi-model 不在 OPENAI_MODELS allowlist")'
 
       - name: Checkout exact expected-head
@@ -135,7 +143,7 @@ jobs:
           scripts/fixed-server-t1-canary.sh \
             --expected-head "$EXPECTED_HEAD" --pi-model "$PI_MODEL" \
             --pi-node "$PI_NODE" --pi-bin "$PI_BIN" --pi-bundle "$PI_BUNDLE" \
-            --run-id "$run_id" --evidence-root "$evidence_root"
+            --run-id "$run_id" --evidence-root "$evidence_root" --scenario "$CANARY_SCENARIO"
 
       - name: Upload fixed server T1 evidence
         if: always()

@@ -4,6 +4,8 @@
 
 ## 业务交付当前表
 
+当前候选新增可直接运行的 T2 业务验收路径：手动 fixed-server canary 的 `scenario=order-quote` 复用同一 fixed binary/Pi/启动重启，随后自动 Collect→Verify→ReviewPacket；只有已认证 `attempt-still-running` 按冻结请求有界等待，其他失败停止自动重试。不生成 Decision、不声明 ACCEPTED。本地 6 个驱动回归与原 T1 shell 回归通过，真实业务 canary 尚未运行。`c9b2d11` 的 CI 33964259197 已结束：四项通过，macOS 因 Terminate 夹具使用错误 cleanup append operation 失败；当前改为 Reconcile 并保留错误权限零写入反例，等待新 head CI。B1 状态不变，下方运行中状态为先前检查时记录。
+
 最新检查：`cb615e7` 的 [CI 33963625091](https://github.com/chiga0/marshal-harness/actions/runs/33963625091) 已五项全绿；`c9b2d11` 的 Terminate/legacy recovery 增量已推送，正在单独运行 [CI 33964259197](https://github.com/chiga0/marshal-harness/actions/runs/33964259197)，不能混用两者证据。固定工作区首次构建 `bin/marshal` 后，bootstrap 命令组返回 137 且没有版本/activation 输出；磁盘 codesign verify 通过，身份为 linker ad-hoc、`Identifier=a.out`、无 Team ID，本机可用 codesigning identity 数为 0。尚无日志证明具体终止来源，未重签、绕过保护、反复执行或启动 Pi。该固定路径候选仍不能计为实机可用。
 
 取消入口的合同缺口收敛至 [ADR 0081 提案](adr/0081-fixed-server-stop-intent-and-outcome.md)：当前 Port 无 cancel、Run reducer 不接受 RUNNING 的 `run.aborted`，内部两小时 lease expiry 不能冒充业务 wall-timeout。先明确 stop intent/barrier 原子性、Outcome 和已确认 deadline，再完整接线；不使用旧 server 或 HTTP context cancellation 绕过。B1 仍 IN_PROGRESS，B2/B3 不变。

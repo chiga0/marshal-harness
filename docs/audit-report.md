@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-05：终止夹具权限纠偏与 T2 有界业务驱动
+
+`c9b2d11` 的 CI 33964259197 最终四项通过、macOS quality 失败；失败为 `TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply` 的 process terminal append 返回 cleanup unauthorized。夹具把已完成信号效果后的“追加进程终态事实”误写为 `CleanupTerminate`；既有合同只允许此处 Inspect/Reconcile，Terminate 用于 allocation 终止。当前改用 Reconcile，并增加错误权限零账本写入断言；没有放宽 production append allowlist。该修复需新 head 动态回归，不能重跑旧 head 当作修复。
+
+为直接得到业务交付证据，现有手动 fixed server canary 增加 order-quote 分支：复用相同构建/CI/Pi/认证/启动/重启路径，再经固定 CLI 客户端驱动 Collect→Verify→ReviewPacket，不引入另一个 runtime。准备驱动时发现“仍在运行”在 application→HTTP→CLI 之间丢失，全部退化为未知 pending，无法安全决定是否等待。当前只为真实 `ErrAttemptStillRunning` 映射 closed reason，响应仍为 HTTP 202 pending、无成功 receipt；客户端必须重验 peer/owner，错 operation 或混有成功 payload 拒绝。CLI 输出明确 pending JSON 并保留非零退出码。未知错误保持未知，不能按同一循环盲目重试。
+
+驱动记录精确请求、deadline、观察次数和阶段结果，只在明确仍在运行时等待；错误结果、摘要/Attempt/sequence 漂移、普通 pending 或 verification fail 不自动返工。首批 6 个 injected-call 回归覆盖等待、冻结请求、未知失败零重试、deadline 不延期、receipt 漂移、失败 verification 保留 packet 与最终查询漂移。另增加真实 Unix socket 的 pending 分类和伪造 envelope 拒绝测试，Go 动态执行仍由 exact-head CI 完成。本候选尚未实机验证，没有自动 Decision，也没有关闭 B1 或本机退出 137 的独立阻塞。
+
 ## 2026-09-05：fixed image 实机阻塞与业务取消合同缺口
 
 `cb615e7` 的 CI 33963625091 五项全部通过，前次两个 fixture 失败已由该 head 的动态回归验证；最新 `c9b2d11` 另跑 CI 33964259197。没有把前一绿色结果扩展到后一提交或实机。
