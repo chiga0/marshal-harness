@@ -162,4 +162,47 @@ func TestLauncherV2BootstrapUsesExistingDurableAdmissionAndColdReplay(t *testing
 	if err != nil || !found || !reflect.DeepEqual(replayed, next) || replayed.SupervisorBootstrap.Request.Generation != processsupervisor.DormantV2ProtocolContract() {
 		t.Fatalf("cold v2 projection: %v", err)
 	}
+	started := testInitialStartedV2(t, next.SupervisorBootstrap, next.SupervisorBootstrapDigest)
+	preStarted := next
+	beforeStarted, err := os.ReadFile(fixture.store.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*ProcessSupervisorStarted){
+		func(s *ProcessSupervisorStarted) {
+			s.V2.Handshake.SupervisorProcess = next.SupervisorBootstrap.Request.Core.Process
+		},
+		func(s *ProcessSupervisorStarted) {
+			s.BootstrapPreparedFactDigest = attemptTestDigest("unrelated-bootstrap-fact")
+		},
+	} {
+		forged := started
+		mutate(&forged)
+		if forged.Validate() != nil {
+			t.Fatal("started negative fixture not self-consistent")
+		}
+		err := fixture.store.transact(projection, func() error {
+			_, _, err := fixture.store.appendPreparedAttemptTransitionLocked(projection, preStarted, AttemptTransition{Kind: AttemptTransitionProcessSupervisorStarted, Identity: preStarted.Identity, SupervisorStarted: forged})
+			return err
+		})
+		if err == nil {
+			t.Fatal("self-consistent forgery bypassed current ledger")
+		}
+		after, err := os.ReadFile(fixture.store.ledgerPath())
+		if err != nil || !bytes.Equal(beforeStarted, after) {
+			t.Fatal("rejected started modified ledger")
+		}
+	}
+	err = fixture.store.transact(projection, func() error {
+		var err error
+		next, _, err = fixture.store.appendPreparedAttemptTransitionLocked(projection, preStarted, AttemptTransition{Kind: AttemptTransitionProcessSupervisorStarted, Identity: preStarted.Identity, SupervisorStarted: started})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("durable v2 started: %v", err)
+	}
+	replayed, found, err = reopened.AttemptState(state.Identity)
+	if err != nil || !found || !reflect.DeepEqual(replayed, next) || replayed.SupervisorMechanicsAnchor != projectSupervisorMechanicsAnchorV2(started.V2.Anchor) || replayed.SupervisorMechanicsAnchor.Validate() != nil {
+		t.Fatalf("cold started/anchor: %v", err)
+	}
 }

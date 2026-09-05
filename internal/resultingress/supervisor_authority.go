@@ -483,10 +483,14 @@ type ProcessSupervisorStarted struct {
 	LaunchAuthorizedFactDigest  string                                     `json:"launchAuthorizedFactDigest"`
 	BootstrapPreparedFactDigest string                                     `json:"bootstrapPreparedFactDigest,omitempty"`
 	ControlDirectory            processsupervisor.ControlDirectoryIdentity `json:"controlDirectory"`
-	Handshake                   processsupervisor.HandshakeResponse        `json:"handshake"`
+	Handshake                   processsupervisor.HandshakeResponse        `json:"handshake,omitempty,omitzero"`
+	V2                          SupervisorStartedV2                        `json:"v2,omitempty,omitzero"`
 }
 
 func (started ProcessSupervisorStarted) Validate() error {
+	if started.V2 != (SupervisorStartedV2{}) {
+		return validateProcessSupervisorStartedV2(started)
+	}
 	if started.Owner.Validate() != nil || requireDigest("launchAuthorizedFactDigest", started.LaunchAuthorizedFactDigest) != nil || validateControlDirectoryIdentity(started.ControlDirectory) != nil || processsupervisor.ValidateHandshakeResponse(started.Handshake) != nil || started.Handshake.OwnerEpoch != started.Owner.OwnerEpoch {
 		return fmt.Errorf("%w: invalid process-supervisor-started payload", ErrAttemptAuthorityConflict)
 	}
@@ -694,6 +698,12 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 		if err != nil {
 			return err
 		}
+		if started.V2 != (SupervisorStartedV2{}) {
+			return validateStartedV2AgainstProjection(in, prior, exists, transition, owner)
+		}
+		if prior.SupervisorBootstrap.Request.Generation != (processsupervisor.ProtocolGenerationContract{}) {
+			return ErrAttemptAuthorityConflict
+		}
 		expectedHandshakeHead := prior.HeadDigest
 		typedBootstrap := prior.SupervisorBootstrap.Request != (SupervisorBootstrapRequestProjection{})
 		if prior.SupervisorBootstrapDigest != "" && typedBootstrap {
@@ -717,7 +727,7 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 			// v1 intentionally keeps closed Attempt identities in the append-only
 			// authority projection. Device/inode reuse is therefore fail-closed
 			// across history until a future ADR defines bounded authority-aware GC.
-			if other.Handshake.SessionID == started.Handshake.SessionID || sameSupervisorProcess(other.Handshake.SupervisorProcess, started.Handshake.SupervisorProcess) || sameControlObject(other.ControlDirectory.Device, other.ControlDirectory.Inode, started.ControlDirectory.Device, started.ControlDirectory.Inode) || sameControlObject(other.Handshake.ControlSocket.Device, other.Handshake.ControlSocket.Inode, started.Handshake.ControlSocket.Device, started.Handshake.ControlSocket.Inode) {
+			if supervisorStartedObjectsConflict(other, started) {
 				return ErrAttemptAuthorityConflict
 			}
 		}

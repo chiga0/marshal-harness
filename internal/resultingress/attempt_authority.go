@@ -1821,6 +1821,14 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 		state.SupervisorStarted = t.SupervisorStarted
 		state.SupervisorStartedDigest = fact.Digest
 		if state.SupervisorBootstrapDigest != "" {
+			if t.SupervisorStarted.V2 != (SupervisorStartedV2{}) {
+				anchor := t.SupervisorStarted.V2.Anchor
+				state.SupervisorCommandSequence, state.SupervisorCommandHead = anchor.Binding.CommandSequence, anchor.Binding.CommandHead
+				state.SupervisorCommandIDs = nil
+				state.SupervisorMechanicsAuthorityHead = fact.Digest
+				state.SupervisorMechanicsAnchor = projectSupervisorMechanicsAnchorV2(anchor)
+				break
+			}
 			state.SupervisorCommandSequence = t.SupervisorStarted.Handshake.CommandSequence
 			state.SupervisorCommandHead = t.SupervisorStarted.Handshake.CommandHead
 			state.SupervisorCommandIDs = nil

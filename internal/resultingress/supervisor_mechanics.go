@@ -18,23 +18,34 @@ var supervisorEvidenceID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,2
 // command sequence/head alone cannot distinguish a lost receipt from a
 // journal intent that never closed.
 type SupervisorMechanicsAnchor struct {
-	SessionID            string                                  `json:"sessionId"`
-	SessionNonceDigest   string                                  `json:"sessionNonceDigest"`
-	Authority            processsupervisor.AuthorityTuple        `json:"authority"`
-	OwnerEpoch           uint64                                  `json:"ownerEpoch"`
-	CurrentAuthorityHead string                                  `json:"currentAuthorityHead"`
-	CommandSequence      uint64                                  `json:"commandSequence"`
-	CommandHead          string                                  `json:"commandHead"`
-	JournalSequence      uint64                                  `json:"journalSequence"`
-	JournalHead          string                                  `json:"journalHead"`
-	UID                  uint32                                  `json:"uid"`
-	GID                  uint32                                  `json:"gid"`
-	FixedBinary          processsupervisor.BinaryIdentity        `json:"fixedBinary"`
-	ControlSocket        processsupervisor.ControlSocketIdentity `json:"controlSocket"`
-	ControlFiles         processsupervisor.SessionControlFiles   `json:"controlFiles,omitempty,omitzero"`
+	Generation           processsupervisor.ProtocolGenerationContract `json:"generation,omitempty,omitzero"`
+	ControlDirectory     processsupervisor.ControlDirectoryIdentity   `json:"controlDirectory,omitempty,omitzero"`
+	SessionID            string                                       `json:"sessionId"`
+	SessionNonceDigest   string                                       `json:"sessionNonceDigest"`
+	Authority            processsupervisor.AuthorityTuple             `json:"authority"`
+	OwnerEpoch           uint64                                       `json:"ownerEpoch"`
+	CurrentAuthorityHead string                                       `json:"currentAuthorityHead"`
+	CommandSequence      uint64                                       `json:"commandSequence"`
+	CommandHead          string                                       `json:"commandHead"`
+	JournalSequence      uint64                                       `json:"journalSequence"`
+	JournalHead          string                                       `json:"journalHead"`
+	UID                  uint32                                       `json:"uid"`
+	GID                  uint32                                       `json:"gid"`
+	FixedBinary          processsupervisor.BinaryIdentity             `json:"fixedBinary"`
+	ControlSocket        processsupervisor.ControlSocketIdentity      `json:"controlSocket"`
+	ControlFiles         processsupervisor.SessionControlFiles        `json:"controlFiles,omitempty,omitzero"`
 }
 
 func supervisorHandshakeAnchor(anchor SupervisorMechanicsAnchor) processsupervisor.HandshakeAnchor {
+	if anchor.Generation != (processsupervisor.ProtocolGenerationContract{}) || anchor.ControlDirectory != (processsupervisor.ControlDirectoryIdentity{}) {
+		return processsupervisor.HandshakeAnchor{}
+	}
+	return supervisorObjectBinding(anchor)
+}
+
+// This is only the generation-neutral object tuple, never a wire decoder or
+// authority projection. Callers must preserve Generation and ControlDirectory.
+func supervisorObjectBinding(anchor SupervisorMechanicsAnchor) processsupervisor.HandshakeAnchor {
 	return processsupervisor.HandshakeAnchor{SessionID: anchor.SessionID, SessionNonceDigest: anchor.SessionNonceDigest, Authority: anchor.Authority, OwnerEpoch: anchor.OwnerEpoch, CurrentAuthorityHead: anchor.CurrentAuthorityHead, CommandSequence: anchor.CommandSequence, CommandHead: anchor.CommandHead, JournalSequence: anchor.JournalSequence, JournalHead: anchor.JournalHead, UID: anchor.UID, GID: anchor.GID, FixedBinary: anchor.FixedBinary, ControlSocket: anchor.ControlSocket, ControlFiles: anchor.ControlFiles}
 }
 
@@ -43,6 +54,15 @@ func projectSupervisorMechanicsAnchor(anchor processsupervisor.HandshakeAnchor) 
 }
 
 func (anchor SupervisorMechanicsAnchor) Validate() error {
+	if anchor.Generation != (processsupervisor.ProtocolGenerationContract{}) {
+		if supervisorSessionAnchorV2(anchor).Validate() != nil {
+			return ErrAttemptAuthorityConflict
+		}
+		return nil
+	}
+	if anchor.ControlDirectory != (processsupervisor.ControlDirectoryIdentity{}) {
+		return ErrAttemptAuthorityConflict
+	}
 	if !supervisorEvidenceID.MatchString(anchor.SessionID) || requireDigest("sessionNonceDigest", anchor.SessionNonceDigest) != nil || validateSupervisorAuthorityTuple(anchor.Authority) != nil || anchor.OwnerEpoch == 0 || anchor.OwnerEpoch > maxExactJSONInteger || requireDigest("currentAuthorityHead", anchor.CurrentAuthorityHead) != nil || anchor.CommandSequence > maxExactJSONInteger || requireDigest("commandHead", anchor.CommandHead) != nil || anchor.JournalSequence == 0 || anchor.JournalSequence > maxExactJSONInteger || requireDigest("journalHead", anchor.JournalHead) != nil || anchor.UID == 0 || validateFixedMarshalBinaryIdentity(anchor.FixedBinary) != nil || validateControlSocketIdentity(anchor.ControlSocket) != nil || anchor.ControlFiles != (processsupervisor.SessionControlFiles{}) && processsupervisor.ValidateSessionControlFiles(anchor.ControlFiles) != nil {
 		return ErrAttemptAuthorityConflict
 	}
@@ -73,6 +93,9 @@ func newSupervisorReconnectEvidence(recovery processsupervisor.SessionRecoveryEv
 
 func (evidence SupervisorReconnectEvidence) Validate() error {
 	previous, current := evidence.Previous, evidence.Current
+	if previous.Generation != (processsupervisor.ProtocolGenerationContract{}) || current.Generation != (processsupervisor.ProtocolGenerationContract{}) {
+		return ErrAttemptAuthorityConflict
+	}
 	if previous.Validate() != nil || current.Validate() != nil || previous.SessionID != current.SessionID || previous.SessionNonceDigest != current.SessionNonceDigest || previous.Authority != current.Authority || previous.UID != current.UID || previous.GID != current.GID || previous.FixedBinary != current.FixedBinary || previous.ControlSocket != current.ControlSocket || previous.ControlFiles != current.ControlFiles || current.OwnerEpoch <= previous.OwnerEpoch || current.CurrentAuthorityHead == previous.CurrentAuthorityHead {
 		return fmt.Errorf("%w: reconnect mechanics identity mismatch", ErrAttemptAuthorityConflict)
 	}
@@ -224,6 +247,9 @@ func validSupervisorCommand(command processsupervisor.CommandName) bool {
 }
 
 func (e SupervisorCommandEvidence) Validate() error {
+	if e.PreCommand.Generation != (processsupervisor.ProtocolGenerationContract{}) || e.PostCommand.Generation != (processsupervisor.ProtocolGenerationContract{}) {
+		return ErrAttemptAuthorityConflict
+	}
 	if e.ProtocolRevision != processsupervisor.ProtocolRevision || !supervisorEvidenceID.MatchString(e.SessionID) || !validSupervisorCommand(e.Command) || !supervisorEvidenceID.MatchString(e.CommandID) || e.Sequence == 0 || e.Sequence > maxExactJSONInteger || e.Disposition != "ok" && e.Disposition != "rejected" || !supervisorEvidenceID.MatchString(e.ReasonCode) {
 		return fmt.Errorf("%w: invalid supervisor command identity", ErrAttemptAuthorityConflict)
 	}
@@ -603,6 +629,9 @@ func NewSupervisorCommandIntent(evidence processsupervisor.PreparedCommandEviden
 }
 
 func (intent SupervisorCommandIntent) Validate() error {
+	if intent.PreCommand.Generation != (processsupervisor.ProtocolGenerationContract{}) {
+		return ErrAttemptAuthorityConflict
+	}
 	deadline, err := time.Parse(time.RFC3339Nano, intent.Deadline)
 	if err != nil || deadline.Location() != time.UTC || deadline.Format(time.RFC3339Nano) != intent.Deadline || intent.ProtocolRevision != processsupervisor.ProtocolRevision || !supervisorEvidenceID.MatchString(intent.SessionID) || !validSupervisorCommand(intent.Command) || !supervisorEvidenceID.MatchString(intent.CommandID) || intent.Sequence == 0 || intent.Sequence > maxExactJSONInteger {
 		return fmt.Errorf("%w: invalid supervisor command intent identity", ErrAttemptAuthorityConflict)

@@ -62,6 +62,23 @@ func ValidateHandshakeBindingV2(response HandshakeResponseV2, anchor SessionAnch
 	return nil
 }
 
+// ValidateInitialHandshakeBindingV2 also recomputes the only admissible
+// genesis journal record from the authenticated bootstrap authority. A valid
+// looking arbitrary journal hash cannot become durable started evidence.
+func ValidateInitialHandshakeBindingV2(response HandshakeResponseV2, anchor SessionAnchorV2, observed CoreIdentity) error {
+	if ValidateHandshakeBindingV2(response, anchor, observed) != nil || response.Reconciliation != "" || response.ReplayedResponse != nil ||
+		anchor.Binding.CommandSequence != 0 || anchor.Binding.CommandHead != commandGenesisDigestV2 || anchor.Binding.JournalSequence != 1 {
+		return ErrConflict
+	}
+	created := commandBaseV2(anchor)
+	created.Kind, created.JournalSequence, created.PreviousRecordDigest = journalSessionCreated, 1, journalGenesisDigestV2
+	head, err := created.detachedDigest()
+	if err != nil || head != anchor.Binding.JournalHead {
+		return ErrConflict
+	}
+	return nil
+}
+
 // PreparedCommandEvidenceV2 is secret-free. No private request, nonce, argv,
 // environment values or input bytes can be recovered from this value.
 type PreparedCommandEvidenceV2 struct {

@@ -32,6 +32,8 @@ B1 候选实现同时把 `Status` 与长 mutation mutex 解耦，使用单独 li
 
 `1057418` 的上述 CI 已最终全绿（含 macOS/Ubuntu quality），确认该 head 的 Close fixture 修正与 prepared client 回归通过；不延伸为后继 `aa0dd00` 恢复客户端的动态证据。本轮开始接入 ResultIngress：`NewSupervisorBootstrapPreparedV2` 直接从 exact v2 请求产生无原始 nonce 的完整代际投影，并进入现有 `appendPreparedAttemptTransitionLocked`/owner/Run/current-head/CAS 与冷重放路径；外层 `attempt-authority` 不改名、不新建账本。新增 fresh Attempt 上 v2 bootstrap append/reopen、重算摘要的错误 current head 写前拒绝、逐字段缺失/混代拒绝与旧 v1 原字节/摘要不变测试。当前本地 compile-only/vet/staticcheck/architecture 已通过，后继动态 CI 待执行；started、command intent/outcome、Attach 和业务结果链仍须完成后才能切换生产入口。
 
+本轮进一步把 exact v2 `process-supervisor-started` 接入原有 Attempt transition、owner/current-ledger 校验和冷重放：started 的显式 `v2` subprojection 保留完整握手与 anchor，禁止与 legacy handshake 同时出现，并重算唯一初始 journal record digest。新 started 向当前 projection 传递完整 generation/control-directory mechanics anchor，跨 v1/v2 历史仍执行 session/process/directory/socket ABA 检查；旧 command/reconnect 消费者明确拒绝 v2 anchor，不能默默丢字段后当 v1 使用。已补 bootstrap→started 的 fresh Attempt 耐久链、冷重放、伪造初始 head、自洽但错误 bootstrap 引用/Core 冒充 Supervisor 的写前拒绝测试。本地 compile-only/vet/staticcheck/architecture 通过；`cfa0e1b` 的 CI 33942406526 记录时 Linux 双架构/secret scan 通过，macOS/Ubuntu quality 仍运行，新 started 动态验证待后继 CI。command intent/outcome、Attach/terminal/collect 和生产 cutover 仍开放，B1 不升级。
+
 ## 历史 checkpoint 与技术证据映射
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
