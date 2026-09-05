@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-05：业务驱动 CI 契约遗漏
+
+`8c37fff` 的 CI 33965649054 为失败：secret scan 通过，其余四个 job 均被同一个精确工作流契约差异挡住，未得到本候选 Go 动态回归的绿色证据。新增 T2 Python 测试步骤时遗漏更新 `release-ci-contract.py` 内的封闭工作流副本，不是四项独立产品故障，也不能靠重跑解决。当前同步唯一新增步骤，绑定 T2 driver/test/task 的固定路径、模式与 HEAD bytes，更新契约夹具并增加 driver 脏字节拒绝反例；原 publication 权限和门禁不变。
+
+效率纠偏：固定工作流改动必须同时运行本地 `release-ci-gate_test.sh`（已包含 committed fixture 的正反例），提交后再执行固定 checker 校验真实 HEAD，然后才推送/派发 CI；仅验证 YAML 语法不够。T2 驱动回归加入现有 `fixed-server-t1-check`，避免本地常规检查遗漏。真实业务 Pi、独立 Decision/ACCEPTED、本机 fixed image 退出 137、服务端业务取消/超时仍未关闭，不升级 B1。
+
 ## 2026-09-05：终止夹具权限纠偏与 T2 有界业务驱动
 
 `c9b2d11` 的 CI 33964259197 最终四项通过、macOS quality 失败；失败为 `TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply` 的 process terminal append 返回 cleanup unauthorized。夹具把已完成信号效果后的“追加进程终态事实”误写为 `CleanupTerminate`；既有合同只允许此处 Inspect/Reconcile，Terminate 用于 allocation 终止。当前改用 Reconcile，并增加错误权限零账本写入断言；没有放宽 production append allowlist。该修复需新 head 动态回归，不能重跑旧 head 当作修复。

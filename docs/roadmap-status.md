@@ -4,6 +4,8 @@
 
 ## 业务交付当前表
 
+最新 CI：`8c37fff` 的 [33965649054](https://github.com/chiga0/marshal-harness/actions/runs/33965649054) 失败，四个 job 同因新增 T2 测试步骤未同步封闭工作流契约而停止，secret scan 通过。当前修复契约及固定文件绑定，补本地 committed-fixture 正反例和常规 T2 测试入口；新 head 的完整 CI 与真实 Pi 业务 canary 待执行。B1 仍 `IN_PROGRESS`，B2/B3 仍 `PLANNED`。下方“等待新 head”均为对应提交当时状态，不代表当前仍运行。
+
 当前候选新增可直接运行的 T2 业务验收路径：手动 fixed-server canary 的 `scenario=order-quote` 复用同一 fixed binary/Pi/启动重启，随后自动 Collect→Verify→ReviewPacket；只有已认证 `attempt-still-running` 按冻结请求有界等待，其他失败停止自动重试。不生成 Decision、不声明 ACCEPTED。本地 6 个驱动回归与原 T1 shell 回归通过，真实业务 canary 尚未运行。`c9b2d11` 的 CI 33964259197 已结束：四项通过，macOS 因 Terminate 夹具使用错误 cleanup append operation 失败；当前改为 Reconcile 并保留错误权限零写入反例，等待新 head CI。B1 状态不变，下方运行中状态为先前检查时记录。
 
 最新检查：`cb615e7` 的 [CI 33963625091](https://github.com/chiga0/marshal-harness/actions/runs/33963625091) 已五项全绿；`c9b2d11` 的 Terminate/legacy recovery 增量已推送，正在单独运行 [CI 33964259197](https://github.com/chiga0/marshal-harness/actions/runs/33964259197)，不能混用两者证据。固定工作区首次构建 `bin/marshal` 后，bootstrap 命令组返回 137 且没有版本/activation 输出；磁盘 codesign verify 通过，身份为 linker ad-hoc、`Identifier=a.out`、无 Team ID，本机可用 codesigning identity 数为 0。尚无日志证明具体终止来源，未重签、绕过保护、反复执行或启动 Pi。该固定路径候选仍不能计为实机可用。
