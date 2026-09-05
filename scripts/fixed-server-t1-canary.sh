@@ -12,6 +12,7 @@ PI_BUNDLE=""
 RUN_ID=""
 EVIDENCE_ROOT=""
 SCENARIO="t1-marker"
+AWAIT_REVIEW=0
 
 die() {
   printf '[fixed-server-t1] ERROR: %s\n' "$*" >&2
@@ -23,7 +24,7 @@ usage() {
 usage: scripts/fixed-server-t1-canary.sh \
   --expected-head HEAD --pi-model PROVIDER/MODEL --pi-node PATH --pi-bin PATH \
   --pi-bundle PATH --run-id RUN_ID --evidence-root ABSOLUTE_PATH \
-  [--scenario t1-marker|order-quote]
+  [--scenario t1-marker|order-quote] [--await-review]
 EOF
   exit 2
 }
@@ -38,6 +39,7 @@ while [ "$#" -gt 0 ]; do
     --run-id) [ "$#" -ge 2 ] || usage; RUN_ID="$2"; shift 2 ;;
     --evidence-root) [ "$#" -ge 2 ] || usage; EVIDENCE_ROOT="$2"; shift 2 ;;
     --scenario) [ "$#" -ge 2 ] || usage; SCENARIO="$2"; shift 2 ;;
+    --await-review) AWAIT_REVIEW=1200; shift ;;
     *) usage ;;
   esac
 done
@@ -46,6 +48,7 @@ done
 [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || die 'pi-model 必须是 provider/model'
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{2,120}$ ]] || die 'run-id 形态非法'
 case "$SCENARIO" in t1-marker|order-quote) ;; *) die 'scenario 必须为 t1-marker 或 order-quote' ;; esac
+[ "$AWAIT_REVIEW" -eq 0 ] || [ "$SCENARIO" = order-quote ] || die 'await-review 只适用于 order-quote'
 [ -x "$PI_NODE" ] && [ ! -L "$PI_NODE" ] || die 'pi-node 必须是固定普通 executable'
 [ -x "$PI_BIN" ] || die 'pi-bin 必须是可执行入口'
 [ -f "$PI_BUNDLE" ] && [ ! -L "$PI_BUNDLE" ] || die 'pi-bundle 必须是固定普通文件'
@@ -80,7 +83,9 @@ cleanup() {
     fi
   done
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 append_audit() {
   local server="$1" operation="$2" response="$3"
@@ -291,9 +296,10 @@ append_audit server2 inspect received-final
 
 if [ "$SCENARIO" = order-quote ]; then
   # The same post-restart server owns all T2 mutation. The driver stops at an
-  # exact ReviewPacket; it cannot author a Decision or claim ACCEPTED.
+  # exact ReviewPacket unless an external reviewer supplies a Decision. The
+  # driver cannot author it or replace current-ledger admission.
   "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
-    --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2"
+    --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2" --await-review-seconds "$AWAIT_REVIEW"
 fi
 
 assert_server_pid "$server2_pid"
@@ -312,5 +318,9 @@ if [ "$SCENARIO" = t1-marker ]; then
     --expected-head "$EXPECTED_HEAD" --run-id "$RUN_ID" --out "$EVIDENCE_ROOT/summary.json"
   printf '[fixed-server-t1] PASS run=%s evidence=%s\n' "$RUN_ID" "$EVIDENCE_ROOT"
 else
-  printf '[fixed-server-t2] REVIEW_PENDING run=%s; independent Decision required\n' "$RUN_ID"
+  if [ "$AWAIT_REVIEW" -eq 0 ]; then
+    printf '[fixed-server-t2] REVIEW_PENDING run=%s; independent Decision required\n' "$RUN_ID"
+  else
+    printf '[fixed-server-t2] ACCEPTED run=%s; independent Decision applied through server\n' "$RUN_ID"
+  fi
 fi

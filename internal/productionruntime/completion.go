@@ -79,7 +79,7 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		}
 		collected, collectErr := l.ingress.CollectPreparedExecution(ctx, verifier, acquisition, attempt.Identity)
 		if collectErr != nil {
-			return CollectedRunResult{}, collectErr
+			return CollectedRunResult{}, mapAuthorityError("collect-prepared-transcript", collectErr)
 		}
 		collectOutcomeDigest = collected.OutcomeFactDigest
 		startedAt, parseErr := time.Parse(time.RFC3339Nano, attempt.ObservedAt)
@@ -100,7 +100,7 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 			MaxOutputBytes: 16 << 20,
 		})
 		if err != nil {
-			return CollectedRunResult{}, fmt.Errorf("collect-run-result: parse worker result: %w", err)
+			return CollectedRunResult{}, mapAuthorityError("parse-production-worker-result", err)
 		}
 		if result.Kind != domain.KindWorkerResult {
 			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
@@ -123,21 +123,21 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 
 	observation, observationBinding, err := l.resultObservation(ctx, attemptDirectory, read, attempt.CommittedResultFactDigest != "", attempt.CommittedResultObservation)
 	if err != nil {
-		return CollectedRunResult{}, err
+		return CollectedRunResult{}, mapAuthorityError("observe-collected-worktree", err)
 	}
 	localDispatchDigest, localIngressDigest, err := l.localIngressObservationDigests(attemptDirectory, attempt.CommittedResultFactDigest != "")
 	if err != nil {
-		return CollectedRunResult{}, err
+		return CollectedRunResult{}, mapAuthorityError("observe-collected-ingress", err)
 	}
 
 	envelopeDigest := canonical.DigestBytes(result.Data)
 	drc, binding, err := l.resultAdmissionAuthority(attempt, lease, capability, envelopeDigest)
 	if err != nil {
-		return CollectedRunResult{}, err
+		return CollectedRunResult{}, mapAuthorityError("bind-collected-result-authority", err)
 	}
 	ingress, err := resultingress.NewDurableIngress(binding, l.ingress)
 	if err != nil {
-		return CollectedRunResult{}, err
+		return CollectedRunResult{}, mapAuthorityError("open-collected-result-ingress", err)
 	}
 	envelope := resultingress.ResultEnvelope{Kind: resultingress.KindWorkerResult, ResultDigest: envelopeDigest, Sequence: 1}
 	var admission resultingress.AdmissionFact

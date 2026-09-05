@@ -1,0 +1,9 @@
+name: Fixed server live review
+description: 同宿主上传只读评审材料并递交独立维护者 Decision，不自签通过。
+inputs:
+  token:
+    description: 仅用于 canonical GitHub 只读查询
+    required: true
+runs:
+  using: node24
+  main: index.cjs

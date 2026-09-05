@@ -3,6 +3,7 @@ package productionruntime
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/chiga0/marshal-harness/internal/application"
@@ -11,6 +12,19 @@ import (
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 )
+
+func TestCollectStageMappingPreservesSafeStageAndHidesRawFailure(t *testing.T) {
+	for _, stage := range []string{"collect-prepared-transcript", "parse-production-worker-result", "observe-collected-worktree", "observe-collected-ingress", "bind-collected-result-authority", "open-collected-result-ingress"} {
+		mapped := mapAuthorityError(stage, errors.New("sensitive worker material"))
+		var detail *application.Error
+		if !errors.As(mapped, &detail) || detail.Operation != stage || detail.Reason != application.ReasonAuthorityConflict || strings.Contains(mapped.Error(), "sensitive") {
+			t.Fatalf("unsafe stage mapping: %v", mapped)
+		}
+		if remapped := mapAuthorityError("collect-run-result", mapped); remapped != mapped {
+			t.Fatal("controller erased the closed inner stage")
+		}
+	}
+}
 
 const runtimeTestDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const runtimeSuccessDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
