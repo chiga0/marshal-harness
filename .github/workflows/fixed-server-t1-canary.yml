@@ -17,6 +17,11 @@ on:
         default: t1-marker
         type: choice
         options: [t1-marker, order-quote]
+      live-review:
+        description: 在原 server 存活期间等待独立维护者 Decision，最长20分钟
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -33,6 +38,7 @@ jobs:
     permissions:
       actions: read
       contents: read
+      issues: read
     env:
       EXPECTED_HEAD: ${{ inputs.expected-head }}
       PI_MODEL: ${{ inputs.pi-model }}
@@ -53,6 +59,7 @@ jobs:
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::expected-head 必须是 40 位小写 commit" >&2; exit 1; }
           [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || { echo "::error::pi-model 必须是 provider/model" >&2; exit 1; }
           case "$CANARY_SCENARIO" in t1-marker|order-quote) ;; *) echo "::error::invalid scenario" >&2; exit 1 ;; esac
+          if [ '${{ inputs.live-review }}' = true ]; then test "$CANARY_SCENARIO" = order-quote; fi
           MODEL_ID="${PI_MODEL#*/}" VARS_MODELS="$VARS_MODELS" /usr/bin/python3 -I -B -c 'import os,sys; values=[v.strip() for v in os.environ["VARS_MODELS"].split(",") if v.strip()]; os.environ["MODEL_ID"] in values or sys.exit("pi-model 不在 OPENAI_MODELS allowlist")'
 
       - name: Checkout exact expected-head
@@ -133,7 +140,22 @@ jobs:
           chmod 700 "$HOME/.pi" "$HOME/.pi/agent"
           /usr/bin/python3 -I -B scripts/rc1-canary-provider-config.py "$HOME/.pi/agent/models.json" "$OPENAI_BASE_URL" "${PI_MODEL%%/*}"
 
+      - name: Install locked live review carrier
+        if: inputs.live-review
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+          npm ci --prefix .github/actions/live-review --ignore-scripts --no-audit --no-fund
+          node --test .github/actions/live-review/index.test.cjs
+
+      - name: Run fixed server with independent live review
+        if: inputs.live-review
+        uses: ./.github/actions/live-review
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run fixed server T1 canary and close evidence
+        if: ${{ !inputs.live-review }}
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           run_id="fixed-server-t1-${{ github.run_id }}"

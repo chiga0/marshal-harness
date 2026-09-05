@@ -1,5 +1,7 @@
 # 架构决策记录
 
+[ADR 0082](0082-fixed-server-live-review-carrier.md) 冻结 B1 canary 的同宿主独立评审载体：只传输维护者 Decision，不导入跨 runner authority、不自签通过；实机验收尚未完成。
+
 [ADR 0081](0081-fixed-server-stop-intent-and-outcome.md) 为 B1 fixed server 停止意图与 Outcome 的提案（Proposed）：明确现有 Port/reducer/deadline 缺口，尚未冻结新 Schema 或授予取消权限。
 
 2026-09-05，维护者明确接受 [ADR 0080：三面分离与业务交付路线](0080-three-plane-business-delivery-roadmap.md)：控制/执行/存储职责分离，按 B1 单任务→B2 受限团队→B3 长期运行与正式支持推进；仅将受限团队 profile 前移，不复活通用 M13，不削减 ADR 0052 的安全和发布门禁。接受不表示实现或实机验收完成。
