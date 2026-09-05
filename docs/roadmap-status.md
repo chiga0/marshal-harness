@@ -26,6 +26,8 @@ B1 候选实现同时把 `Status` 与长 mutation mutex 解耦，使用单独 li
 
 后继 `b0780bd` 的 [CI 33940177093](https://github.com/chiga0/marshal-harness/actions/runs/33940177093) 已通过 Ubuntu quality、Linux 双架构与 secret scan，记录时 macOS quality 仍在运行。本轮进一步把 exact v2 bootstrap 接入已有 inherited server 入口，使用 v2 journal leaf、v2 mechanics、v2 handshake/command/reconnect；共用 held file/directory/socket 检查显式选择代际，不翻译 v2 为 v1。新增 Unix socket 全生命周期/receipt 恢复与混代 journal、输出篡改回归，bootstrap 读取也增加有界等待及 context 取消。v2 闭合握手合同没有 rejected 变体，因此错误/busy 连接只关闭，不生成非法 v2 或 v1 响应。此候选仍未完成 Core 的 v2 producer/subprojection、Attach 与 rollout admission，尚无真实 Pi 业务链证据，不能生产切换或升级 B1。
 
+`b0780bd` 的上述 CI 后续已全部通过。server 候选 `5e1519a` 的 [CI 33940718334](https://github.com/chiga0/marshal-harness/actions/runs/33940718334) 通过 Ubuntu、Linux 双架构与 secret scan，macOS 完整生命周期测试在 Close 处超时，整轮为失败。本轮新增 `StartV2` 与 `ClientV2`：固定同一 Marshal image、empty env、inherited FD；准备/重建证据绑定完整 generation、两个 genesis、control directory 与命令前后 anchor，响应丢失或篡改保留 pending 并停止连接内重试。新测试通过客户端 API 连接同一 inherited server 的完整 bind→spawn→resume→inspect→collect→close 路径，但 mechanics 明确为 Fake，不冒充实机。已修正上轮 wire 测试 Close 输入遗漏的两项必需终结事实摘要，没有放宽关闭校验；同时修正 rejected receipt 不应消费外部 authority head 的 journal/client 一致性问题，并增加拒绝后继续执行的回归。当前本地验证为 compile-only/vet/staticcheck/architecture，动态结果待后继 CI；ResultIngress/ProductionRuntime v2 事实接线、client reconnect/Attach、rollout admission 和真实 Pi 仍开放。
+
 ## 历史 checkpoint 与技术证据映射
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。

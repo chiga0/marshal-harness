@@ -10,6 +10,10 @@ S3 在同一候选分支连续实现 v2 journal、命令执行与 live-session r
 
 后继接线检查发现不能直接复用三处 v1 默认值：控制目录的 journal 文件名、busy/rejected 握手与 collect 的 observation digest。当前候选由同一 inherited server 入口解码 v2 bootstrap，代际显式传入文件身份/entry-set 检查；v2 错误连接关闭而不制造不存在的 rejected handshake；collect 分别验证 v2-wrapped observation 与实际 manifest/transcript digest，再校验 held 输出对象。测试覆盖全 wire 生命周期、receipt 恢复、效果发生后的混代文件漂移与 collect 后内容篡改。Core producer 尚未接线，Attach/正式 rollout 与实机矩阵仍开放；不是第二个 server、不同发布身份或生产成熟度升级。
 
+客户端侧接线沿 `PrepareCommandV2 → exact evidence → DoPrepared`，没有添加自动重试或直接 `Do` 旁路。命令结果计算 v2 intent/receipt 的精确 journal head，绑定 generation 与前后 anchor；超时/EOF/伪造 receipt 只保留 pending，不提升 authority。`StartV2` 先验证当前 fixed image、初始空目录与 peer，再核对 held nonce、v2 初始 journal 和完整 handshake；非 Darwin 固定 unavailable。新的公共类型当前只是 Core 接线所需的类型边界，尚未进入 durable ResultIngress facts，不代表新持久化协议已经启用。连接级测试使用 Fake mechanics，不能替代同一 fixed bytes 的真实 Pi/重启及 rollout admission。
+
+客户端与 journal 对照检查发现 rejected receipt 原先会把请求携带的外部 authority head 写成当前 head，而 live Session 拒绝时保留 A0；这会让后续合法命令的 journal 校验失败。现统一 rejected 保留 A0、成功 bind 使用 next head、其他成功命令采用请求 head，增加拒绝后合法 spawn 的链式回归，未改变已接受的权限语义。`5e1519a` CI 的 macOS 失败已保留：Close 测试遗漏必需终结事实摘要导致超时；本次补齐 fixture，修复是否有效以新候选动态 CI 为准，不重跑旧失败 head、不把本地编译称为测试通过。
+
 ## 2026-09-05：三面分离与真实业务交付纠偏
 
 基线 `origin/main@0c6d9cd`。保留确定性 Core、独立验证、Provider 分层与恢复资产；当前不能把 single-task kernel 或 T2 API 存在描述成自治 Agent Team。[ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 接受 B1→B2→B3 的业务路线，细节见 [业务交付计划](agent-team-delivery-plan.md)。

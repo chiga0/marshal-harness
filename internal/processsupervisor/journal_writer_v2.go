@@ -81,11 +81,18 @@ func (state *journalStateV2) accept(record journalRecordV2) {
 		}
 		state.commandSeq, state.commandHead = record.Request.Sequence, record.Response.CommandHead
 		state.ownerEpoch = record.OwnerEpoch
-		state.authorityHead = record.Request.CurrentAuthorityHead
-		if record.Request.Command == CommandBindAuthority && record.Response.Status == "ok" {
-			state.authorityHead = record.Request.NextAuthorityHead
-		}
+		state.authorityHead = commandPostAuthorityHeadV2(record.CurrentAuthorityHead, *record.Request, *record.Response)
 	}
+}
+
+func commandPostAuthorityHeadV2(previous string, request requestProjection, response responseV2) string {
+	if response.Status != "ok" {
+		return previous
+	}
+	if request.Command == CommandBindAuthority {
+		return request.NextAuthorityHead
+	}
+	return request.CurrentAuthorityHead
 }
 
 func cloneJournalRecordV2(record journalRecordV2) journalRecordV2 {

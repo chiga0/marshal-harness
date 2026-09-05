@@ -276,7 +276,7 @@ func testSupervisorV2Collect(t *testing.T, tamper bool) {
 		t.Fatalf("transcript: %v", err)
 	}
 	if !tamper {
-		h.do(t, h.request(t, CommandClose, "wire-close", ClosePayload{CleanupBindingDigest: cleanup.CleanupBindingDigest}))
+		h.do(t, h.request(t, CommandClose, "wire-close", ClosePayload{CleanupBindingDigest: cleanup.CleanupBindingDigest, ProcessTerminalFactDigest: digest("wire-terminal-fact"), AllocationTerminatedDigest: digest("wire-allocation-terminal")}))
 		if err := h.wait(t); err != nil {
 			t.Fatalf("complete lifecycle: %v", err)
 		}
@@ -288,7 +288,7 @@ func testSupervisorV2Collect(t *testing.T, tamper bool) {
 	if err := os.WriteFile(filepath.Join(h.root, stdoutObjectName), []byte("forged output!\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	closeRequest := h.request(t, CommandClose, "wire-close", ClosePayload{CleanupBindingDigest: cleanup.CleanupBindingDigest})
+	closeRequest := h.request(t, CommandClose, "wire-close", ClosePayload{CleanupBindingDigest: cleanup.CleanupBindingDigest, ProcessTerminalFactDigest: digest("wire-terminal-fact"), AllocationTerminatedDigest: digest("wire-allocation-terminal")})
 	if h.codec.Write(closeRequest) != nil {
 		t.Fatal("close write")
 	}

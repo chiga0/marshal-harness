@@ -72,20 +72,24 @@ func openControlFileAt(directory *os.File, name string) (*os.File, error) {
 }
 
 func openHeldSessionControlFiles(directory *os.File, expected SessionControlFiles) (*heldSessionControlFiles, error) {
-	if expected.validate() != nil {
+	return openHeldSessionControlFilesForLeaf(directory, expected, JournalFileName)
+}
+
+func openHeldSessionControlFilesForLeaf(directory *os.File, expected SessionControlFiles, leaf string) (*heldSessionControlFiles, error) {
+	if expected.validate() != nil || leaf != JournalFileName && leaf != journalFileNameV2 {
 		return nil, ErrInvalid
 	}
 	nonce, err := openControlFileAt(directory, nonceFileName)
 	if err != nil {
 		return nil, err
 	}
-	journal, err := openControlFileAt(directory, JournalFileName)
+	journal, err := openControlFileAt(directory, leaf)
 	if err != nil {
 		_ = nonce.Close()
 		return nil, err
 	}
 	held := &heldSessionControlFiles{nonce: nonce, journal: journal, identity: expected}
-	if err := revalidateHeldSessionControlFiles(directory, held, expected); err != nil {
+	if err := revalidateHeldSessionControlFilesForLeaf(directory, held, expected, leaf); err != nil {
 		held.close()
 		return nil, err
 	}
