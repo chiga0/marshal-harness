@@ -99,16 +99,21 @@ func newPublicFixedDeliveryInputs(t *testing.T) publicFixedDeliveryInputs {
 	// Construct the production held ingress directly. A public composition
 	// test must not depend on the legacy pathname Store constructor as an
 	// implicit directory producer.
-	ingressPath := filepath.Join(ownerFixture.base, "held-result-ingress")
+	repository := filepath.Join(ownerFixture.base, "repository")
+	createOwnerOnlyDirectory(t, repository)
+	request := seedFixedDeliveryReadyRun(t, filepath.Join(repository, ".marshal"), "run:public-fixed-delivery")
+	ingressPath, dispatchPath, allocationPath, ownerPath := CompositionPaths(filepath.Join(repository, ".marshal"))
+	for _, path := range []string{dispatchPath, allocationPath, ownerPath, filepath.Join(RuntimeRootPath(filepath.Join(repository, ".marshal")), "provider-authority")} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	createOwnerOnlyDirectory(t, ingressPath)
 	ingress, err := os.Open(ingressPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ingress.Close() })
-	repository := filepath.Join(ownerFixture.base, "repository")
-	createOwnerOnlyDirectory(t, repository)
-	request := seedFixedDeliveryReadyRun(t, filepath.Join(repository, ".marshal"), "run:public-fixed-delivery")
 	heldRepository, err := OpenCanonicalRepositoryRoot(repository)
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +143,11 @@ func newPublicFixedDeliveryInputs(t *testing.T) publicFixedDeliveryInputs {
 }
 
 func newFixedDeliveryFixture(t *testing.T) fixedDeliveryFixture {
+	return newFixedDeliveryFixtureWithStores(t, true)
+}
+
+func newFixedDeliveryFixtureWithStores(t *testing.T, productionLayout bool) fixedDeliveryFixture {
+	t.Helper()
 	ownerFixture := newOwnerLockFixture(t)
 	acquisition := currentProcessAcquisition()
 	acquisition.OwnerEpoch = 0
@@ -150,6 +160,13 @@ func newFixedDeliveryFixture(t *testing.T) fixedDeliveryFixture {
 		t.Fatal(err)
 	}
 	request := seedFixedDeliveryReadyRun(t, stateRoot, "run:fixed-delivery")
+	if productionLayout {
+		for _, name := range []string{ResultIngressDirName, DispatchLedgerDirName, AllocationRootDirName, OwnerDirName, "provider-authority"} {
+			if err := os.MkdirAll(filepath.Join(RuntimeRootPath(stateRoot), name), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	heldRepository, err := OpenCanonicalRepositoryRoot(repository)
 	if err != nil {
 		t.Fatal(err)
@@ -576,6 +593,64 @@ func TestFixedServerRootAdoptsOnlyControlledProjectionSwap(t *testing.T) {
 		}
 		if err := adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot); err == nil {
 			t.Fatal("unknown runtime sibling was adopted")
+		}
+	})
+
+	t.Run("known-name-inserted-after-open", func(t *testing.T) {
+		fixture := newFixedDeliveryFixtureWithStores(t, false)
+		if err := os.Mkdir(filepath.Join(RuntimeRootPath(filepath.Join(fixture.repository, ".marshal")), ResultIngressDirName), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot) == nil {
+			t.Fatal("new store name must not be admitted by a static allowlist")
+		}
+	})
+
+	for _, name := range []string{ResultIngressDirName, DispatchLedgerDirName, AllocationRootDirName, OwnerDirName, "provider-authority", "control"} {
+		t.Run("replacement-"+name, func(t *testing.T) {
+			fixture := newFixedDeliveryFixture(t)
+			path := filepath.Join(RuntimeRootPath(filepath.Join(fixture.repository, ".marshal")), name)
+			before := fixture.session.fixedRoot.nodes[2].identity
+			// Keep the top-level entry count unchanged: rejection must come
+			// from held identity, not merely an extra sibling name.
+			oldPath := filepath.Join(filepath.Dir(path), "existing-worktree-bindings", name+"-old")
+			if err := os.Rename(path, oldPath); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot) == nil {
+				t.Fatal("replacement of held composition store accepted")
+			}
+			if fixture.session.fixedRoot.nodes[2].identity != before {
+				t.Fatal("rejected replacement changed the frozen root")
+			}
+		})
+	}
+
+	t.Run("control-aba", func(t *testing.T) {
+		fixture := newFixedDeliveryFixture(t)
+		path := filepath.Join(RuntimeRootPath(filepath.Join(fixture.repository, ".marshal")), "control")
+		if err := os.Rename(path, path+"-old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(path+"-old", path); err != nil {
+			t.Fatal(err)
+		}
+		if adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot) == nil {
+			t.Fatal("control ABA washed through projection adoption")
+		}
+	})
+
+	t.Run("store-append", func(t *testing.T) {
+		fixture := newFixedDeliveryFixture(t)
+		path := filepath.Join(RuntimeRootPath(filepath.Join(fixture.repository, ".marshal")), ResultIngressDirName, "record.jsonl")
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot); err != nil {
+			t.Fatalf("store append changed no runtime child identity: %v", err)
 		}
 	})
 }
