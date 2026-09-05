@@ -45,3 +45,7 @@ func WithAttached(context.Context, AttachOptions, func(*AttachedSession) error) 
 func WithAttachedV2(context.Context, AttachOptionsV2, func(*AttachedSessionV2) error) error {
 	return ErrUnavailable
 }
+
+func ObservePreparedCommandV2(context.Context, PreparedJournalOptionsV2) (PreparedJournalObservationV2,error) {
+	return PreparedJournalObservationV2{},ErrUnavailable
+}

@@ -143,8 +143,7 @@ func testLauncherV2OwnerRebind(t *testing.T, fixture preparedExecutionFixture, s
 	if err != nil || !found || !reflect.DeepEqual(cold, result) {
 		t.Fatalf("v2 rebind cold replay: %v", err)
 	}
-	// Until the descriptor-bound v2 recovery path classifies the old command,
-	// neither same-owner retry nor a later owner may blindly repeat its effect.
+	// Missing held-journal evidence must not permit a blind retry.
 	currentOwner, found, err := store.OpenOwner(result.Owner.Scope)
 	if err != nil || !found {
 		t.Fatal(err)
@@ -175,5 +174,83 @@ func testLauncherV2OwnerRebind(t *testing.T, fixture preparedExecutionFixture, s
 	after, err := os.ReadFile(store.ledgerPath())
 	if err != nil || !bytes.Equal(before, after) || calls != 3 || executes != 2 {
 		t.Fatal("pending retry modified authority or repeated transport")
+	}
+	owner, found, err := store.OpenOwner(pending.Owner.Scope)
+	if err != nil || !found {
+		t.Fatal(err)
+	}
+	e := testBindOutcomeV2(t, pending.SupervisorPendingIntent)
+	receipt := processsupervisor.VerifiedCommandOutcomeV2{Preparation: e.V2Preparation, JournalRequest: e.JournalRequest, PostCommand: supervisorSessionAnchorV2(e.PostCommand),
+		Status: e.Disposition, ReasonCode: e.ReasonCode, ReceiptDigest: e.ReceiptDigest, ObservationDigest: e.ObservationDigest, CommandHead: e.CommandHead}
+	mode := processsupervisor.ReconciliationIntentPending
+	observeCalls := 0
+	observer := func(_ context.Context, o processsupervisor.PreparedJournalOptionsV2) (processsupervisor.PreparedJournalObservationV2, error) {
+		observeCalls++
+		if o.Prepared.Evidence() != receipt.Preparation {
+			t.Fatal("recovery renewed deadline or replaced pending request")
+		}
+		value := processsupervisor.PreparedJournalObservationV2{Reconciliation: mode}
+		if mode == processsupervisor.ReconciliationReceiptCommitted {
+			value.Outcome = &receipt
+		}
+		return value, nil
+	}
+	recoveryTransport := func(ctx context.Context, options processsupervisor.AttachOptionsV2, fn func(attachedRebindSessionV2) error) error {
+		want := receipt.Preparation.PreCommand
+		if mode == processsupervisor.ReconciliationReceiptCommitted {
+			want = receipt.PostCommand
+		}
+		if options.Authority.PreviousSupervisor != want {
+			t.Fatal("recovery authenticated the wrong journal checkpoint")
+		}
+		return transport(ctx, options, fn)
+	}
+	recover := func() (AttemptAuthorityState, error) {
+		var recovered AttemptAuthorityState
+		err := withCurrentOwnerLock(context.Background(), verifier, successor, func() error {
+			projection := newAuthorityProjection()
+			return store.transact(projection, func() error {
+				key, err := pending.Identity.Key()
+				if err != nil {
+					return err
+				}
+				recovered, err = store.recoverPendingRebindV2Locked(context.Background(), projection, projection.attempts[key], owner, pending.Identity, directory, successor.OwnerBinary.CanonicalPath, recoveryTransport, observer)
+				return err
+			})
+		})
+		return recovered, err
+	}
+	owner.Acquisition.OwnerEpoch++
+	if _, err := recover(); !errors.Is(err, processsupervisor.ErrIntervention) || observeCalls != 0 || calls != 3 {
+		t.Fatal("cross-owner pending entered journal or peer recovery")
+	}
+	owner.Acquisition.OwnerEpoch--
+	if _, err := recover(); !errors.Is(err, processsupervisor.ErrIntervention) || calls != 3 || executes != 2 {
+		t.Fatal("intent-only recovery called peer")
+	}
+	mode = processsupervisor.ReconciliationUnchanged
+	if _, err := recover(); !errors.Is(err, processsupervisor.ErrIntervention) || calls != 4 || executes != 3 {
+		t.Fatal("unchanged recovery did not replay exact existing intent")
+	}
+	mode = processsupervisor.ReconciliationReceiptCommitted
+	badObservation = true
+	if _, err := recover(); err == nil || executes != 3 {
+		t.Fatal("disk receipt accepted without authenticated peer")
+	}
+	after, err = os.ReadFile(store.ledgerPath())
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("failed recovery changed durable intent")
+	}
+	badObservation = false
+	recovered, err := recover()
+	if err != nil || calls != 6 || executes != 3 || observeCalls != 4 || recovered.SupervisorPendingIntentDigest != "" || recovered.SupervisorBoundAuthorityHead != recovered.HeadDigest {
+		t.Fatalf("committed receipt recovery: %v calls=%d executes=%d", err, calls, executes)
+	}
+	if recovered.SupervisorMechanicsAnchor != e.PostCommand {
+		t.Fatal("recovery replaced original command anchor")
+	}
+	cold, found, err = reopened.AttemptState(pending.Identity)
+	if err != nil || !found || !reflect.DeepEqual(cold, recovered) {
+		t.Fatalf("recovered receipt cold replay: %v", err)
 	}
 }

@@ -4,6 +4,8 @@
 
 ## 业务交付当前表
 
+2026-09-05 当前增量：接通同 owner 的 v2 pending-bind 恢复。held journal 只读分类为未执行、intent-only 或 exact receipt；未执行保留原 deadline/request 才能在认证 Attach 内发送，已提交 receipt 必须先认证其 post-checkpoint 才能进入 RB1，不能重做 bind。跨 owner pending、部分尾部或身份漂移继续 intervention。补充只读文件边界、零重放、连续 RB1 丢响应/伪造 peer/receipt 恢复和冷重放测试。本地仅 compile-only 与静态检查；本增量动态 CI 待验证。客户端 `408f02f` 的 [CI 33949630841](https://github.com/chiga0/marshal-harness/actions/runs/33949630841) 已五项全绿，不代替本增量测试。**下一关键路径：Collect/terminal producer、完整 selector 与固定 server 真实 Pi 到独立 ACCEPTED；B1 仍未关闭，B2/B3 尚未完成。**下面保留先前 checkpoint。
+
 2026-09-05 最新 Core 候选：`RebindOwnerSuccessorForAttachedRecovery` 按耐久 Supervisor generation 选择 v2 transport；无 pending 时在原 owner/ledger 锁内完成 owner-successor→只读 Attach→v2 intent fsync→同连接 bind→v2 outcome，并保留幂等短路。rebind validator、recovery fact revision 和 held session-directory lookup 不再误读 v1 字段。连续 RB1 测试从已有真实账本 bootstrap/start/resume 延伸至 rebind、冷重放及丢回复 pending 保留，peer 仍为替身。本地 compile-only/vet/staticcheck/架构检查通过；动态 CI 待 exact head。**v2 pending receipt 分类恢复、Collect/terminal producer 和最终 selector/canary 尚未接完，不能将本候选称为重启闭环或生产可用。**B1 保持 IN_PROGRESS。
 
 2026-09-05 最新客户端候选：新增 `WithAttachedV2`，以完整 v2 authority 调用 held-owner verifier，借用原 Unix socket 完成 observation→单次 prepared continuation→EOF。禁止重复/跨 goroutine/回调外消费，拒绝错误 successor、错误 method 和取消请求；持久化命令可能已执行但丢回复时保持 intervention，不声称无副作用。新增真实 socket 的客户端与服务端互通测试；Darwin/Linux 本地只做 compile-only、vet/staticcheck/架构检查。当前生产 selector 未切换；**后继必须接通 ResultIngress 的 v2 rebind/collect/terminal producer，并以固定 server 的真实 Pi 独立验收到 ACCEPTED；B1 仍为 IN_PROGRESS。**以下是先前 checkpoint，不表示当前可生产使用。

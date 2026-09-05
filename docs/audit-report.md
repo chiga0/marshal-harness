@@ -1,5 +1,9 @@
 # 设计审计报告
 
+2026-09-05 pending-bind 丢响应恢复：实现 ADR 0067/0079 保留的同 owner 恢复规则，不新增持久化字段或 generic reconnect 权限。先读取精确 held v2 journal 分类，保留原 prepared command 的 deadline、request digest 和 A0；intent-only 不发送命令，未写 intent 仅在认证的原 checkpoint 上发送原命令，receipt 已提交则只读 Attach 认证 post-checkpoint 后追加 exact outcome。只读磁盘分类不是授权：伪造 peer 或不匹配的当前 owner 不能接纳 receipt。跨 owner pending 保持 intervention，Close 仍需独立进程缺席证明，未因 bind 恢复而开放。
+
+新增 portable 三态/伪造 checkpoint/重复分类零写入测试、Darwin held-directory/取消/截断尾部不修复测试，以及原 RB1 业务链上的 intent-only、未执行丢回复、磁盘 receipt 加坏 peer 拒绝、认证 receipt 不重做命令和冷重放检查。动态行为由 CI 验证，本地不执行临时 Mach-O。`408f02f` 的 CI 33949630841 已五项全绿；本候选不可沿用其动态通过声明。生产 selector 未切换，未发生真实 Pi 业务验收或发布。
+
 2026-09-05 ResultIngress v2 rebind 接线：主生产恢复入口保留原物理 owner 锁与 RB1 transaction，按 SupervisorStarted 的完整代际调用 v2 Attach；不转换为 v1 handshake，也不写 generic reconnect fact。先提交 creation-once owner-bound successor，再验证完整 Attach observation，随后只提交精确 v2 intent 并发送其 prepared command，最后接纳已验证 outcome。通用 rebind validator 与 journal fact producer 按原代际验证/写入；held session-directory lookup 从已验证的 v2 started 读取 session ID。既有 v1 历史与权限不变。
 
 验证沿用同一个 durable bootstrap→initial bind→spawn→ProcessStarted→resume 测试账本，再续 owner acquisition/rebind：伪造观察不得发送命令或追加 intent；执行前读取最后一条账本确认 exact intent/recovery revision 已存在；成功后幂等调用不再次进入 transport，冷重放保持相同状态；模拟丢回复后 pending intent 保留，重试不得改写账本或重复执行。此为 Core 集成候选的测试证据，不是真实 fixed server/Pi/独立 Decision。当前 v2 pending 仍明确返回 intervention，避免误入 legacy replay；后继需要 descriptor-bound v2 receipt 分类与恢复，而不是把“拒绝重试”当作恢复完成。`e51dccf` 的 CI 33948930989 五项全绿；客户端 `408f02f` 的 CI 33949630841 单独运行，不混为本候选动态证明。
