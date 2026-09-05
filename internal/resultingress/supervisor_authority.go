@@ -483,10 +483,14 @@ type ProcessSupervisorStarted struct {
 	LaunchAuthorizedFactDigest  string                                     `json:"launchAuthorizedFactDigest"`
 	BootstrapPreparedFactDigest string                                     `json:"bootstrapPreparedFactDigest,omitempty"`
 	ControlDirectory            processsupervisor.ControlDirectoryIdentity `json:"controlDirectory"`
-	Handshake                   processsupervisor.HandshakeResponse        `json:"handshake"`
+	Handshake                   processsupervisor.HandshakeResponse        `json:"handshake,omitempty,omitzero"`
+	V2                          SupervisorStartedV2                        `json:"v2,omitempty,omitzero"`
 }
 
 func (started ProcessSupervisorStarted) Validate() error {
+	if started.V2 != (SupervisorStartedV2{}) {
+		return validateProcessSupervisorStartedV2(started)
+	}
 	if started.Owner.Validate() != nil || requireDigest("launchAuthorizedFactDigest", started.LaunchAuthorizedFactDigest) != nil || validateControlDirectoryIdentity(started.ControlDirectory) != nil || processsupervisor.ValidateHandshakeResponse(started.Handshake) != nil || started.Handshake.OwnerEpoch != started.Owner.OwnerEpoch {
 		return fmt.Errorf("%w: invalid process-supervisor-started payload", ErrAttemptAuthorityConflict)
 	}
@@ -580,8 +584,11 @@ func (observation SupervisorAbsenceObservation) Validate() error {
 }
 
 func (closed ProcessSupervisorClosed) Validate() error {
-	if closed.ProtocolRevision != processsupervisor.ProtocolRevision || strings.TrimSpace(closed.SessionID) == "" || closed.Owner.Validate() != nil || strings.TrimSpace(closed.TerminalizationID) == "" || validateSupervisorProcessIdentity(closed.SupervisorProcess) != nil || strings.TrimSpace(closed.ObserverIdentity) == "" {
+	if closed.ProtocolRevision != processsupervisor.ProtocolRevision && closed.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().ProtocolRevision || strings.TrimSpace(closed.SessionID) == "" || closed.Owner.Validate() != nil || strings.TrimSpace(closed.TerminalizationID) == "" || validateSupervisorProcessIdentity(closed.SupervisorProcess) != nil || strings.TrimSpace(closed.ObserverIdentity) == "" {
 		return fmt.Errorf("%w: invalid process-supervisor-closed identity", ErrAttemptAuthorityConflict)
+	}
+	if closed.ProtocolRevision == processsupervisor.DormantV2ProtocolContract().ProtocolRevision && (closed.AuthenticatedSupervisorAbsence.Validate() != nil || closed.SupervisorAbsence != (SupervisorAbsenceObservation{})) {
+		return ErrAttemptAuthorityConflict
 	}
 	for name, digest := range map[string]string{
 		"supervisorStartedFactDigest":        closed.SupervisorStartedFactDigest,
@@ -694,6 +701,12 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 		if err != nil {
 			return err
 		}
+		if started.V2 != (SupervisorStartedV2{}) {
+			return validateStartedV2AgainstProjection(in, prior, exists, transition, owner)
+		}
+		if prior.SupervisorBootstrap.Request.Generation != (processsupervisor.ProtocolGenerationContract{}) {
+			return ErrAttemptAuthorityConflict
+		}
 		expectedHandshakeHead := prior.HeadDigest
 		typedBootstrap := prior.SupervisorBootstrap.Request != (SupervisorBootstrapRequestProjection{})
 		if prior.SupervisorBootstrapDigest != "" && typedBootstrap {
@@ -717,7 +730,7 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 			// v1 intentionally keeps closed Attempt identities in the append-only
 			// authority projection. Device/inode reuse is therefore fail-closed
 			// across history until a future ADR defines bounded authority-aware GC.
-			if other.Handshake.SessionID == started.Handshake.SessionID || sameSupervisorProcess(other.Handshake.SupervisorProcess, started.Handshake.SupervisorProcess) || sameControlObject(other.ControlDirectory.Device, other.ControlDirectory.Inode, started.ControlDirectory.Device, started.ControlDirectory.Inode) || sameControlObject(other.Handshake.ControlSocket.Device, other.Handshake.ControlSocket.Inode, started.Handshake.ControlSocket.Device, started.Handshake.ControlSocket.Inode) {
+			if supervisorStartedObjectsConflict(other, started) {
 				return ErrAttemptAuthorityConflict
 			}
 		}
@@ -761,7 +774,14 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 			if _, err := currentOwner(prior.Owner); err != nil {
 				return err
 			}
-			handshakeAt, handshakeErr := time.Parse(time.RFC3339Nano, prior.SupervisorStarted.Handshake.ObservedAt)
+			observedAt := prior.SupervisorStarted.Handshake.ObservedAt
+			if prior.SupervisorStarted.V2 != (SupervisorStartedV2{}) {
+				if prior.SupervisorStarted.Validate() != nil {
+					return ErrAttemptAuthorityConflict
+				}
+				observedAt = prior.SupervisorStarted.V2.Handshake.ObservedAt
+			}
+			handshakeAt, handshakeErr := time.Parse(time.RFC3339Nano, observedAt)
 			processAt, processErr := time.Parse(time.RFC3339Nano, transition.ObservedAt)
 			if handshakeErr != nil || processErr != nil || processAt.Before(handshakeAt) {
 				return ErrAttemptAuthorityOrder
@@ -773,7 +793,9 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 		if _, err := currentOwner(closed.Owner); err != nil {
 			return err
 		}
-		if !exists || prior.Owner != closed.Owner || prior.SupervisorStartedDigest == "" || closed.SessionID != prior.SupervisorStarted.Handshake.SessionID || closed.SupervisorProcess != prior.SupervisorStarted.Handshake.SupervisorProcess || closed.FinalCommandHead == prior.SupervisorStarted.Handshake.CommandHead {
+		sessionID, initialHead, protocol := supervisorStartedCommandBinding(prior.SupervisorStarted)
+		process, observedAt := supervisorStartedProcessIdentity(prior.SupervisorStarted)
+		if !exists || prior.Owner != closed.Owner || prior.SupervisorStartedDigest == "" || closed.ProtocolRevision != protocol || closed.SessionID != sessionID || closed.SupervisorProcess != process || closed.FinalCommandHead == initialHead {
 			return ErrAttemptAuthorityConflict
 		}
 		if prior.SupervisorBootstrapDigest != "" && transition.SupervisorOutcomeFactDigest != "" && !zeroSupervisorCommandEvidence(closed.Mechanics) {
@@ -782,7 +804,7 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 		if prior.SupervisorBootstrapDigest != "" && transition.SupervisorOutcomeFactDigest == "" && (zeroSupervisorCommandEvidence(closed.Mechanics) || closed.Mechanics.CurrentAuthorityHead != prior.HeadDigest || closed.Mechanics.Outcome.Process != prior.ProcessStartedEvidence.Outcome.Process) {
 			return ErrAttemptAuthorityConflict
 		}
-		startedAt, startedErr := time.Parse(time.RFC3339Nano, prior.SupervisorStarted.Handshake.ObservedAt)
+		startedAt, startedErr := time.Parse(time.RFC3339Nano, observedAt)
 		closedAt, closedErr := time.Parse(time.RFC3339Nano, closed.ObservedAt)
 		if startedErr != nil || closedErr != nil || closedAt.Before(startedAt) {
 			return ErrAttemptAuthorityConflict
@@ -958,7 +980,7 @@ func (s *ingressDurableStore) AppendSupervisorCommandIntent(ctx context.Context,
 				if validateSupervisorCommandIntentAgainstState(state, intent) != nil {
 					return ErrAttemptAuthorityOrder
 				}
-				fact := &supervisorCommandFact{ProtocolRevision: supervisorCommandProtocolRevision, FactType: supervisorCommandIntentFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Intent: intent}
+				fact := &supervisorCommandFact{ProtocolRevision: supervisorIntentRecoveryRevision(intent), FactType: supervisorCommandIntentFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Intent: intent}
 				if err := s.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
 					return err
 				}
@@ -1009,7 +1031,7 @@ func (s *ingressDurableStore) AppendSupervisorCommandOutcome(ctx context.Context
 				if validateSupervisorCommandOutcomeAgainstIntent(state, outcome) != nil {
 					return ErrAttemptAuthorityOrder
 				}
-				fact := &supervisorCommandFact{ProtocolRevision: supervisorCommandProtocolRevision, FactType: supervisorCommandOutcomeFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Outcome: outcome}
+				fact := &supervisorCommandFact{ProtocolRevision: supervisorOutcomeRecoveryRevision(outcome), FactType: supervisorCommandOutcomeFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Outcome: outcome}
 				if err := s.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
 					return err
 				}
@@ -1040,7 +1062,7 @@ func applySupervisorCommandLine(line []byte, in *Ingress, wantSequence int64) er
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("%w: trailing supervisor command value", ErrAttemptAuthorityConflict)
 	}
-	if fact.ProtocolRevision != supervisorCommandProtocolRevision || fact.Sequence != wantSequence || fact.FactType != supervisorCommandIntentFactType && fact.FactType != supervisorCommandOutcomeFactType && fact.FactType != supervisorReconnectFactType {
+	if !validSupervisorRecoveryFactGeneration(fact) || fact.Sequence != wantSequence || fact.FactType != supervisorCommandIntentFactType && fact.FactType != supervisorCommandOutcomeFactType && fact.FactType != supervisorReconnectFactType {
 		return ErrAttemptAuthorityConflict
 	}
 	stored := fact.Digest
@@ -1054,6 +1076,9 @@ func applySupervisorCommandLine(line []byte, in *Ingress, wantSequence int64) er
 }
 
 func applySupervisorCommandFactValue(fact supervisorCommandFact, in *Ingress) error {
+	if !validSupervisorRecoveryFactGeneration(fact) {
+		return ErrAttemptAuthorityConflict
+	}
 	state, found := in.attempts[fact.AttemptKey]
 	if !found || state.Revision != fact.AttemptRevision || state.HeadDigest != fact.AttemptAuthorityHead || state.SupervisorStartedDigest == "" || state.SupervisorInterventionDigest != "" {
 		return ErrAttemptAuthorityOrder

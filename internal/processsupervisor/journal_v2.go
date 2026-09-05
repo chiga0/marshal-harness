@@ -169,63 +169,12 @@ func completeTornPayload(tail []byte) ([]byte, bool) {
 }
 
 func validateJournalV2Replay(records []journalRecordV2) error {
-	if len(records) == 0 {
-		return nil
-	}
-	created := records[0]
-	if created.Kind != journalSessionCreated {
-		return ErrIntervention
-	}
-	expectedAuthorityHead := created.CurrentAuthorityHead
-	lastOwnerEpoch := created.OwnerEpoch
-	commandSequence := uint64(0)
-	commandHead := commandGenesisDigestV2
-	commands := make(map[string]struct{})
-	var pending *journalRecordV2
-	previousRecordHead := journalGenesisDigestV2
-	for index, record := range records {
-		if err := record.validate(previousRecordHead, uint64(index+1)); err != nil {
+	state := newJournalStateV2()
+	for _, record := range records {
+		if err := state.validateNext(record); err != nil {
 			return err
 		}
-		previousRecordHead = record.RecordDigest
-		if index == 0 {
-			continue
-		}
-		if record.SessionID != created.SessionID || record.SessionNonceDigest != created.SessionNonceDigest || record.Authority != created.Authority ||
-			record.OwnerEpoch < lastOwnerEpoch || record.OwnerEpoch == lastOwnerEpoch && record.CurrentAuthorityHead != expectedAuthorityHead || record.Request == nil ||
-			record.Request.Sequence != commandSequence+1 || record.Request.PreviousCommandDigest != commandHead || record.Response != nil && record.Response.SessionID != created.SessionID {
-			return ErrIntervention
-		}
-		if record.OwnerEpoch > lastOwnerEpoch {
-			expectedAuthorityHead = record.CurrentAuthorityHead
-		}
-		switch record.Kind {
-		case journalCommandIntent:
-			if pending != nil {
-				return ErrIntervention
-			}
-			copy := record
-			pending = &copy
-		case journalCommandReceipt:
-			if pending == nil || !equalProjection(*pending.Request, *record.Request) || !sameJournalCommandBaseV2(*pending, record) {
-				return ErrIntervention
-			}
-			if _, duplicate := commands[record.Request.CommandID]; duplicate {
-				return ErrIntervention
-			}
-			commands[record.Request.CommandID] = struct{}{}
-			pending = nil
-			commandSequence = record.Request.Sequence
-			commandHead = record.Response.CommandHead
-			lastOwnerEpoch = record.OwnerEpoch
-			if record.Request.Command == CommandBindAuthority && record.Response.Status == "ok" {
-				expectedAuthorityHead = record.Request.NextAuthorityHead
-			} else {
-				expectedAuthorityHead = record.Request.CurrentAuthorityHead
-			}
-		default:
-			return ErrIntervention
-		}
+		state.accept(record)
 	}
 	return nil
 }

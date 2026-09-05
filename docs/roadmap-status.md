@@ -4,6 +4,44 @@
 
 ## 业务交付当前表
 
+`6e62c8e` 的 [CI 33966029736](https://github.com/chiga0/marshal-harness/actions/runs/33966029736) 与 PR #257 的 `034a0f7` [CI 33966320451](https://github.com/chiga0/marshal-harness/actions/runs/33966320451) 均已五项全绿，包含 launcher v2、Terminate fixture 修复及 typed live-pending 的动态/质量回归。当前评审输入打包增量仅有本地定向证据，不借用前一 head 绿色，仍须新 head CI。下方运行中记录为历史采样。
+
+当前候选为 [PR #257](https://github.com/chiga0/marshal-harness/pull/257)，仍待完整 CI 和独立评审。业务 canary 实机前发现 artifact 未包含 packet 引用的实际评审文件，当前在已有 T2 driver/上传目录补有界只读 `review-inputs.tar`，9 个定向测试通过；不增加另一个 controller、不重跑 Worker、不宣称可导入 authority。真实业务到独立 ACCEPTED 仍是下一条集成证据，B1/B2/B3 状态不变。
+
+`6e62c8e` 已修复下述 CI 契约遗漏并推送，本地 committed-fixture 正反例和提交后 fixed checker 均通过，CI 33966029736 已越过原失败步骤。实机调度仍要求候选评审合入后的同 head main push CI；分支手动 CI 不满足这个现有 gate。驱动另修正 Python/Go 的 canonical deadline 小数尾零不一致，7 个定向测试通过。尚未派实机 Pi、没有 Decision/ACCEPTED，不借此更新 milestone 成熟度。
+
+最新 CI：`8c37fff` 的 [33965649054](https://github.com/chiga0/marshal-harness/actions/runs/33965649054) 失败，四个 job 同因新增 T2 测试步骤未同步封闭工作流契约而停止，secret scan 通过。当前修复契约及固定文件绑定，补本地 committed-fixture 正反例和常规 T2 测试入口；新 head 的完整 CI 与真实 Pi 业务 canary 待执行。B1 仍 `IN_PROGRESS`，B2/B3 仍 `PLANNED`。下方“等待新 head”均为对应提交当时状态，不代表当前仍运行。
+
+当前候选新增可直接运行的 T2 业务验收路径：手动 fixed-server canary 的 `scenario=order-quote` 复用同一 fixed binary/Pi/启动重启，随后自动 Collect→Verify→ReviewPacket；只有已认证 `attempt-still-running` 按冻结请求有界等待，其他失败停止自动重试。不生成 Decision、不声明 ACCEPTED。本地 6 个驱动回归与原 T1 shell 回归通过，真实业务 canary 尚未运行。`c9b2d11` 的 CI 33964259197 已结束：四项通过，macOS 因 Terminate 夹具使用错误 cleanup append operation 失败；当前改为 Reconcile 并保留错误权限零写入反例，等待新 head CI。B1 状态不变，下方运行中状态为先前检查时记录。
+
+最新检查：`cb615e7` 的 [CI 33963625091](https://github.com/chiga0/marshal-harness/actions/runs/33963625091) 已五项全绿；`c9b2d11` 的 Terminate/legacy recovery 增量已推送，正在单独运行 [CI 33964259197](https://github.com/chiga0/marshal-harness/actions/runs/33964259197)，不能混用两者证据。固定工作区首次构建 `bin/marshal` 后，bootstrap 命令组返回 137 且没有版本/activation 输出；磁盘 codesign verify 通过，身份为 linker ad-hoc、`Identifier=a.out`、无 Team ID，本机可用 codesigning identity 数为 0。尚无日志证明具体终止来源，未重签、绕过保护、反复执行或启动 Pi。该固定路径候选仍不能计为实机可用。
+
+取消入口的合同缺口收敛至 [ADR 0081 提案](adr/0081-fixed-server-stop-intent-and-outcome.md)：当前 Port 无 cancel、Run reducer 不接受 RUNNING 的 `run.aborted`，内部两小时 lease expiry 不能冒充业务 wall-timeout。先明确 stop intent/barrier 原子性、Outcome 和已确认 deadline，再完整接线；不使用旧 server 或 HTTP context cancellation 绕过。B1 仍 IN_PROGRESS，B2/B3 不变。
+
+当前取消链路接线候选：`TerminatePreparedExecution` 已沿现有 owner/RB1 guard 接入 v2 Attach prepared continuation，要求 terminalization barrier 已耐久，不能从 context cancellation 直接推导发信号权限。与 Inspect 共用 exact intent/receipt 恢复；已提交结果先认证 post-checkpoint，已有成功终态重复调用不再执行或追加。新增连续 bootstrap→running→owner rebind→Terminate 丢回复→receipt 恢复→cleanup 冷重放测试及真实 Unix socket/Fake mechanics 的 Terminate continuation 测试。本地 compile-only/静态检查不等于动态通过；尚未把服务端 cancel/timeout 调度器接入该入口。共同生产目录入口同时拒绝 legacy generation，覆盖无需 socket 的 Close receipt 恢复写旁路。前一提交 `cb615e7` 的 CI 33963625091 与本候选分别计证，B1 仍未关闭。
+
+最新验证纠偏：终态候选 `c921e1b` 的 [CI 33955604098](https://github.com/chiga0/marshal-harness/actions/runs/33955604098) 已结束，Ubuntu quality、Linux 双架构 conformance、secret scan 通过，macOS quality 失败。两处失败的夹具分别把 Inspect 的不存在事实写成 `ProcessTerminated`、把 Close 返回原因写成通用测试值而非 `mechanics-closed`；当前修正夹具并保留生产校验，增加固定阶段诊断，等待新 head 动态回归。新 fixed entry 同时退役 v1 Start/Reconnect/Attach 与旧 child 启动分支，在启动副作用前拒绝 legacy bootstrap；v1 解码/历史组件测试仍保留。此候选未部署，取消/超时、完整 legacy mutation 排查与真实 Pi 独立 ACCEPTED 仍是 B1 阻塞，不能把源码接线当成生产完成。下方 CI“仍在运行”为提交当时的历史状态。
+
+2026-09-05 新任务启动候选：原 `reconcilePreparedExecutionLocked` 调用链中的 bootstrap、started、Bind/Spawn/Resume producer 已改为完整 v2；不增加第二 coordinator 或环境 selector，仍依赖相同 owner/Run/RB1 guard、source precheck 与 sealed resume proof。新启动前扫描当前耐久投影，存在未释放或 pending 的 v1 Supervisor 时拒绝启动，不 adopt 或改写历史。连续耐久测试的 Spawn/Resume 已改为调用实际命令 producer，并在假 transport 内检查 exact intent 已落盘；本地 compile-only、vet/staticcheck、format 与 architecture 检查通过。该候选尚未安装/启用，终态候选 `c921e1b` 的 CI 33955604098 仍在运行；v1 mutation 入口退役、取消/超时生产链及 fixed server 实机矩阵仍开放，不能宣称 rollout/B1 已完成。
+
+2026-09-05 当前终态接线候选：v2 `InspectPreparedExecution` 在既有 owner/RB1 guard 内记录 exact intent，经 Attach 收取或认证已提交 receipt；v2 Close 必须同时取得 exact receipt 与独立内核 Supervisor absence，EOF 或磁盘 receipt 单独不能授权关闭。已提交但尚未证明退出的 Close 不重复发送；最终 `SupervisorClosed → CleanupCompleted → CleanupReleased` 沿原业务账本接纳完整 v2 身份，保持 v1 历史兼容。连续 RB1 测试从 bootstrap/start/rebind/Collect 延伸到该终态和冷重放，另覆盖 absence 漂移、伪造 checkpoint 与破损 journal 不修复；显式假 peer/内核观察不是真实 Pi。候选本地 compile-only、format、architecture、双平台 vet/staticcheck 通过，动态 CI 待提交后验证。下一步为 Terminate/恢复调用链检查、完整 selector 与固定 server 真实 Pi 独立 ACCEPTED；B1 仍未关闭。
+
+验证更新：Collect 候选 `40bea7e` 的 [CI 33950856231](https://github.com/chiga0/marshal-harness/actions/runs/33950856231) 已五项全绿，包括 macOS/Ubuntu quality、Linux 双架构 conformance 与 secret scan；覆盖其祖先 pending-bind 修复，但不覆盖上方终态候选。下面保留各次提交时的原始状态。
+
+2026-09-05 最新 Collect 接线候选：生产 `CollectPreparedExecution` 按完整 Supervisor generation 进入 v2 分支；原 owner/RB1 锁内持久化 exact intent、借用 Attach 收取结果并接纳 outcome。pending receipt 先认证 post-checkpoint；输出读取失败后复用已耐久 receipt，仅重读 held 输出，不再执行 Collect。新增固定 Core/held v2 journal/transcript reader，绑定 receipt、manifest、长度和内容摘要，不把 v2 转成 v1。连续 RB1 测试已延伸到 Collect 丢回复、receipt 恢复、读取失败重读和结果 fact 引用；仍使用显式假 peer，不是真实 Pi 验收。
+
+验证纠偏：`71d53c2` 的 [CI 33950429378](https://github.com/chiga0/marshal-harness/actions/runs/33950429378) 双平台 quality 在 `format-check` 失败，未运行动态测试；原因是非 Darwin stub 未 gofmt，现已修正并补跑仓库统一 `make format-check`。Linux 双架构 conformance 与 secret scan 通过不代表 quality 通过。本候选仍待新 head CI；下一关键路径是终态 Inspect/Close/absence、selector 与固定 server 真实 Pi 独立 ACCEPTED，B1 状态不变。
+
+2026-09-05 当前增量：接通同 owner 的 v2 pending-bind 恢复。held journal 只读分类为未执行、intent-only 或 exact receipt；未执行保留原 deadline/request 才能在认证 Attach 内发送，已提交 receipt 必须先认证其 post-checkpoint 才能进入 RB1，不能重做 bind。跨 owner pending、部分尾部或身份漂移继续 intervention。补充只读文件边界、零重放、连续 RB1 丢响应/伪造 peer/receipt 恢复和冷重放测试。本地仅 compile-only 与静态检查；本增量动态 CI 待验证。客户端 `408f02f` 的 [CI 33949630841](https://github.com/chiga0/marshal-harness/actions/runs/33949630841) 已五项全绿，不代替本增量测试。**下一关键路径：Collect/terminal producer、完整 selector 与固定 server 真实 Pi 到独立 ACCEPTED；B1 仍未关闭，B2/B3 尚未完成。**下面保留先前 checkpoint。
+
+2026-09-05 最新 Core 候选：`RebindOwnerSuccessorForAttachedRecovery` 按耐久 Supervisor generation 选择 v2 transport；无 pending 时在原 owner/ledger 锁内完成 owner-successor→只读 Attach→v2 intent fsync→同连接 bind→v2 outcome，并保留幂等短路。rebind validator、recovery fact revision 和 held session-directory lookup 不再误读 v1 字段。连续 RB1 测试从已有真实账本 bootstrap/start/resume 延伸至 rebind、冷重放及丢回复 pending 保留，peer 仍为替身。本地 compile-only/vet/staticcheck/架构检查通过；动态 CI 待 exact head。**v2 pending receipt 分类恢复、Collect/terminal producer 和最终 selector/canary 尚未接完，不能将本候选称为重启闭环或生产可用。**B1 保持 IN_PROGRESS。
+
+2026-09-05 最新客户端候选：新增 `WithAttachedV2`，以完整 v2 authority 调用 held-owner verifier，借用原 Unix socket 完成 observation→单次 prepared continuation→EOF。禁止重复/跨 goroutine/回调外消费，拒绝错误 successor、错误 method 和取消请求；持久化命令可能已执行但丢回复时保持 intervention，不声称无副作用。新增真实 socket 的客户端与服务端互通测试；Darwin/Linux 本地只做 compile-only、vet/staticcheck/架构检查。当前生产 selector 未切换；**后继必须接通 ResultIngress 的 v2 rebind/collect/terminal producer，并以固定 server 的真实 Pi 独立验收到 ACCEPTED；B1 仍为 IN_PROGRESS。**以下是先前 checkpoint，不表示当前可生产使用。
+
+2026-09-05 后续接线候选：v2 Attach 服务端现在接受同一认证连接上的至多一个 `bind-authority/Inspect/Collect/Close`，不进入通用命令循环。检查点在命令锁内再次核对；bind 只允许精确 owner-bound successor，旧 checkpoint、错误 successor、Spawn/Resume 和跨代请求在 journal intent 前拒绝。已提交命令的丢响应仍由既有 exact receipt recovery 处理，不重用已消费的 Attach。Close 即使丢响应也退出服务循环。新增 portable 生命周期/拒绝矩阵与同一 Unix socket bind 测试；本地仅 compile-only、vet/staticcheck 与架构检查，不冒充动态测试。**callback-scoped 客户端与 Core producer 接线仍待完成，生产 selector 保持未切换，B1 未关闭。**下段为上一 checkpoint 的历史记录。
+
+2026-09-05 候选增量：`a5a261e` 的 [CI 33947799422](https://github.com/chiga0/marshal-harness/actions/runs/33947799422) 五项全绿，验证 v2 bootstrap→started→bind/spawn→ProcessStarted→resume→cold replay 与 F_GETPATH 修正回归。继续 S3 接线时发现 generic `ReconnectV2` 会推进内存 owner/head，不能替代 ADR 0067 保留的只读 Attach；本轮在 ADR 0079 补足 v2 Attach 编码，新增显式 v2 authority/observation、只读服务端入口和 Unix socket 零副作用测试。尚未接通 callback-scoped prepared continuation，入口不放行任何 command，生产 selector 未切换。本轮动态证据待新 head CI；后继是 borrowed Attach→已耐久 bind/collect/terminal 命令以及固定 bytes 真实 Pi 独立验收，B1 仍为 IN_PROGRESS。
+
 此表是当前 milestone 的唯一汇总入口；下方按日期保留历史 checkpoint，不覆盖本表。目标/验收见 [业务交付计划](agent-team-delivery-plan.md)，范围变化见 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md)。
 
 | Milestone | 状态 | 已有事实 | 未关闭的退出条件 |
@@ -12,13 +50,29 @@
 | B2 受限 Agent Team | `PLANNED` | ADR 0019 已有计划接纳组件，ADR 0080 已确认受限产品目标 | approved plan 耐久物化/调度、两个到三个独立实现任务、集成候选业务验收、局部 replan、暂停恢复；不能以子 Run 全绿替代 |
 | B3 长期运行与正式支持 | `PLANNED` | I186-R2–R6 组件和历史测试可复用 | B2 同路径故障与长历史测试、升级/恢复、#212 signing/notarization、Linux server 实机 gate、受保护 stable release |
 
-最近已合入基线：`origin/main@0c6d9cd0cb209af87bccbe9e61d3e6cdcd3d465f`，required CI [33882237317](https://github.com/chiga0/marshal-harness/actions/runs/33882237317) 成功。当前工作分支 `feat/delivery-product-vertical` 的文档与参考测试不构成真实 Agent 或独立发布证据。T2 的 `production-owner-not-current` 仍缺失败现场根因闭环：fsync 后曾复现，后续 CI 绿色不能单独证明已修复。
+最近已合入基线：`origin/main@c8ee8dd213eb1c0dea4fce0772318221259bdf46`（PR #256），required CI [33938666374](https://github.com/chiga0/marshal-harness/actions/runs/33938666374) 的 macOS/Ubuntu quality、Linux amd64/arm64 candidate conformance 与 secret scan 全绿。文档、锁修复及参考测试已合入，但不构成真实业务 Agent 或独立发布证据。T2 的 `production-owner-not-current` 仍缺失败现场根因闭环：fsync 后曾复现，后续 CI 绿色不能单独证明已修复。
 
 本轮不改变 Run/Goal 持久化、授权或生产 selector。最先执行参考 oracle 正反例，再沿 B1 的 fixed server 路径收集真实业务证据；不新起另一套 controller。I186-R0 PASSED、R1 IN_PROGRESS/INTEGRATED、R2–R6 IN_PROGRESS/COMPONENT 保持。
 
 B1 候选实现同时把 `Status` 与长 mutation mutex 解耦，使用单独 lifetime 读写锁保护 session 关闭，并保留实时 owner 复核。新增 mutation-held、Close 并发和无效 receiver 测试；这不解锁其它 mutation，也不保证底层存储无等待。定向动态/race 与健康 session 实机延迟证据仍须 CI/后继 canary，不提前标记 B1 完成。
 
 本轮本地验证：订单报价 oracle 的 5 个测试通过（含 28 条业务用例、典型错误实现、生成验收命令实执行与 oracle 摘要漂移）；T1 shell 回归与 9 个 evidence 回归通过；Darwin/Linux 定向 vet、staticcheck、architecture check 与 Darwin CLI test compile-only 通过。另新增 Go 合同测试，直接验证 marker/order-quote renderer 的真实 Task 输出；它与 Status 动态/race 测试交由 CI 执行。现有固定二进制在新工作区报告 `self-local-profile-mismatch`，没有绕过或冒用历史身份；本轮未启动实机 Worker，也未签发 Decision/发布。
+
+当前在途为同一 `feat/launcher-v2-production` 分支上的 S3 连贯实现，不按内部文件拆 PR：已编写 v2 journal writer、command session 与 live-session reconnect 分类，复用代际无关命令语义，保留 v2 exact decode/digest/receipt。未有 intent 才允许一次恢复执行；pending intent 保留 intervention；committed receipt 原样返回。新增连续两次 Core restart/丢握手、过期 receipt replay、不同 digest 冲突、伪造 A0/peer/旧代拒绝测试；重连仅复制 checkpoint 与目标 receipt，避免每次扫描全部历史。
+
+候选 `485c606` 的 [CI 33939567946](https://github.com/chiga0/marshal-harness/actions/runs/33939567946) 暴露合法 journal 字符串中途截断被拒绝；根因是共用 parser 未接纳 Go `io.ErrUnexpectedEOF`。本轮修复并增加逐字节截断与损坏输入回归，完整非法记录仍在修复前拒绝且不修改文件。候选未全绿，不重跑同一失败 head、不合并、不升级 B1。修正及 reconnect 动态测试须由后继 exact-head CI 验证；transport、Core v2 subprojection、零 active/pending v1 admission 与实机链仍未完成，生产 selector 保持 v1。
+
+后继 `b0780bd` 的 [CI 33940177093](https://github.com/chiga0/marshal-harness/actions/runs/33940177093) 已通过 Ubuntu quality、Linux 双架构与 secret scan，记录时 macOS quality 仍在运行。本轮进一步把 exact v2 bootstrap 接入已有 inherited server 入口，使用 v2 journal leaf、v2 mechanics、v2 handshake/command/reconnect；共用 held file/directory/socket 检查显式选择代际，不翻译 v2 为 v1。新增 Unix socket 全生命周期/receipt 恢复与混代 journal、输出篡改回归，bootstrap 读取也增加有界等待及 context 取消。v2 闭合握手合同没有 rejected 变体，因此错误/busy 连接只关闭，不生成非法 v2 或 v1 响应。此候选仍未完成 Core 的 v2 producer/subprojection、Attach 与 rollout admission，尚无真实 Pi 业务链证据，不能生产切换或升级 B1。
+
+`b0780bd` 的上述 CI 后续已全部通过。server 候选 `5e1519a` 的 [CI 33940718334](https://github.com/chiga0/marshal-harness/actions/runs/33940718334) 通过 Ubuntu、Linux 双架构与 secret scan，macOS 完整生命周期测试在 Close 处超时，整轮为失败。本轮新增 `StartV2` 与 `ClientV2`：固定同一 Marshal image、empty env、inherited FD；准备/重建证据绑定完整 generation、两个 genesis、control directory 与命令前后 anchor，响应丢失或篡改保留 pending 并停止连接内重试。新测试通过客户端 API 连接同一 inherited server 的完整 bind→spawn→resume→inspect→collect→close 路径，但 mechanics 明确为 Fake，不冒充实机。已修正上轮 wire 测试 Close 输入遗漏的两项必需终结事实摘要，没有放宽关闭校验；同时修正 rejected receipt 不应消费外部 authority head 的 journal/client 一致性问题，并增加拒绝后继续执行的回归。当前本地验证为 compile-only/vet/staticcheck/architecture，动态结果待后继 CI；ResultIngress/ProductionRuntime v2 事实接线、client reconnect/Attach、rollout admission 和真实 Pi 仍开放。
+
+客户端候选 `1057418` 的 [CI 33941565125](https://github.com/chiga0/marshal-harness/actions/runs/33941565125) 已通过 Linux 双架构和 secret scan，记录时 macOS/Ubuntu quality 正在运行，不记为通过。本轮继续同一 S3 分支：新增 `ReconnectV2`，从 held v2 nonce/journal/socket 和当前 fixed Core 构造请求，连接前后校验文件边界及精确 journal 位置；恢复返回完整 generation、原始命令 A0、新 owner anchor、pending 和 typed replayed outcome。连续丢失两次恢复握手时 A0 不变，已提交 receipt 不重做；intent-only 的客户端锁定，不准继续发命令。测试新增三种 journal 分类、过期 receipt、已提交 bind 的旧/新 authority 分离、伪造恢复和 Unix wire 恢复后 successor resume；本地 compile-only、Darwin/Linux vet、staticcheck/architecture 通过，动态证据待新候选 CI。剩余主阻塞是 ResultIngress/ProductionRuntime 的完整 v2 subprojection 与调用链、Attach、rollout admission 和同一 fixed bytes 的真实 Pi 业务验收，B1 不升级。
+
+`1057418` 的上述 CI 已最终全绿（含 macOS/Ubuntu quality），确认该 head 的 Close fixture 修正与 prepared client 回归通过；不延伸为后继 `aa0dd00` 恢复客户端的动态证据。本轮开始接入 ResultIngress：`NewSupervisorBootstrapPreparedV2` 直接从 exact v2 请求产生无原始 nonce 的完整代际投影，并进入现有 `appendPreparedAttemptTransitionLocked`/owner/Run/current-head/CAS 与冷重放路径；外层 `attempt-authority` 不改名、不新建账本。新增 fresh Attempt 上 v2 bootstrap append/reopen、重算摘要的错误 current head 写前拒绝、逐字段缺失/混代拒绝与旧 v1 原字节/摘要不变测试。当前本地 compile-only/vet/staticcheck/architecture 已通过，后继动态 CI 待执行；started、command intent/outcome、Attach 和业务结果链仍须完成后才能切换生产入口。
+
+本轮进一步把 exact v2 `process-supervisor-started` 接入原有 Attempt transition、owner/current-ledger 校验和冷重放：started 的显式 `v2` subprojection 保留完整握手与 anchor，禁止与 legacy handshake 同时出现，并重算唯一初始 journal record digest。新 started 向当前 projection 传递完整 generation/control-directory mechanics anchor，跨 v1/v2 历史仍执行 session/process/directory/socket ABA 检查；旧 command/reconnect 消费者明确拒绝 v2 anchor，不能默默丢字段后当 v1 使用。已补 bootstrap→started 的 fresh Attempt 耐久链、冷重放、伪造初始 head、自洽但错误 bootstrap 引用/Core 冒充 Supervisor 的写前拒绝测试。本地 compile-only/vet/staticcheck/architecture 通过；`cfa0e1b` 的 CI 33942406526 记录时 Linux 双架构/secret scan 通过，macOS/Ubuntu quality 仍运行，新 started 动态验证待后继 CI。command intent/outcome、Attach/terminal/collect 和生产 cutover 仍开放，B1 不升级。
+
+后继进展：`2d45f5f` 已推送 started 接线。CI 33942406526 已结束：Linux 双架构、Ubuntu quality、secret scan 通过，macOS 在新增重连测试的 socket address 准备阶段失败；Fake 目录位于 `/private/tmp`，却调用要求 cwd 内相对地址的生产 helper，尚未发生 reconnect 握手。候选改用该 Fake harness 已持有的短绝对 socket 地址，保留生产路径边界，不改变全局 cwd。当前继续接入 v2 command intent：原 RB1 recovery 子链按 exact v2 revision 写入完整准备证据摘要、generation 与 A0；fresh Attempt 的 bootstrap→started→bind intent→cold replay 可恢复同一准备证据并要求 exact payload 重建，错误 started 引用及混代 recovery header 写前拒绝。该新增链已完成本地 compile-only、vet/staticcheck 与 architecture 检查，动态回归待新 CI；outcome、Attach/terminal/collect 与实机生产切换仍未完成，B1 保持 `IN_PROGRESS`。
 
 ## 历史 checkpoint 与技术证据映射
 

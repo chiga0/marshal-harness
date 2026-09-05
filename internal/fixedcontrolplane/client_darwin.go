@@ -78,8 +78,11 @@ func CallCollectRunResult(ctx context.Context, authority *productionruntime.Fixe
 		return CollectRunClientResult{}, ErrInvalid
 	}
 	response, err := call(ctx, authority, productionruntime.FixedLifecycleCollectOperation, "/v1/runs/collect", requestKey, request, deadline)
-	if err != nil || response.Collected == nil || response.LifecycleReceipt == nil || response.Collected.Validate() != nil {
-		return CollectRunClientResult{}, errors.Join(ErrConflict, err)
+	if err != nil {
+		return CollectRunClientResult{}, err
+	}
+	if response.Collected == nil || response.LifecycleReceipt == nil || response.Collected.Validate() != nil {
+		return CollectRunClientResult{}, ErrConflict
 	}
 	return CollectRunClientResult{Projection: *response.Collected, Receipt: *response.LifecycleReceipt}, nil
 }
@@ -348,6 +351,12 @@ func readClientHTTPResponse(connection *AuthenticatedConnection) (httpResponse, 
 	}
 	if statusCode != 200 || response.Disposition != "success" {
 		if statusCode == 202 && response.Disposition == "pending" {
+			if response.ReasonCode == string(application.ReasonAttemptStillRunning) {
+				if response.Operation != productionruntime.FixedLifecycleCollectOperation || response.Status != nil || response.Run != nil || response.Started != nil || response.DeliveryReceipt != nil || response.Collected != nil || response.Verification != nil || response.ReviewPacket != nil || response.Decision != nil || response.LifecycleReceipt != nil {
+					return httpResponse{}, ErrInvalid
+				}
+				return response, ErrAttemptStillRunning
+			}
 			return response, errHTTPPending
 		}
 		if statusCode == 409 {

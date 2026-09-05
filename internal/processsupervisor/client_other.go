@@ -23,6 +23,14 @@ func Start(context.Context, StartOptions) (*Client, error) {
 	return nil, ErrUnavailable
 }
 
+func StartV2(context.Context, StartOptionsV2) (*ClientV2, error) {
+	return nil, ErrUnavailable
+}
+
+func ReconnectV2(context.Context, ReconnectOptionsV2) (*ClientV2, error) {
+	return nil, ErrUnavailable
+}
+
 func Reconnect(context.Context, ReconnectOptions) (*Client, error) {
 	return nil, ErrUnavailable
 }
@@ -32,4 +40,16 @@ func Reconnect(context.Context, ReconnectOptions) (*Client, error) {
 // another platform or hardened profile.
 func WithAttached(context.Context, AttachOptions, func(*AttachedSession) error) error {
 	return ErrUnavailable
+}
+
+func WithAttachedV2(context.Context, AttachOptionsV2, func(*AttachedSessionV2) error) error {
+	return ErrUnavailable
+}
+
+func ObservePreparedCommandV2(context.Context, PreparedJournalOptionsV2) (PreparedJournalObservationV2, error) {
+	return PreparedJournalObservationV2{}, ErrUnavailable
+}
+
+func RecoverCommittedCloseV2(context.Context, CommittedCloseRecoveryOptionsV2) (CommittedCloseRecoveryEvidenceV2, error) {
+	return CommittedCloseRecoveryEvidenceV2{}, ErrUnavailable
 }

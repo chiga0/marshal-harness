@@ -132,7 +132,7 @@ func (l *CompositionLedger) terminalizeCompletedAttempt(ctx context.Context, ver
 		if err != nil || !found {
 			return resultingress.AttemptAuthorityState{}, resultingress.ErrAttemptAuthorityConflict
 		}
-		closed, err := resultingress.NewProcessSupervisorClosedFromRecovery(resultingress.ProcessSupervisorCloseAuthority{Owner: current.Owner, SupervisorStartedFactDigest: current.SupervisorStartedDigest, TerminalizationID: current.TerminalizationID, CleanupBindingDigest: current.CleanupBindingDigest, ProcessTerminalFactDigest: current.ProcessTerminalDigest, AllocationTerminatedFactDigest: current.AllocationTerminalDigest}, closedEvidence.Recovery)
+		closed, err := closedEvidence.SupervisorClosed(resultingress.ProcessSupervisorCloseAuthority{Owner: current.Owner, SupervisorStartedFactDigest: current.SupervisorStartedDigest, TerminalizationID: current.TerminalizationID, CleanupBindingDigest: current.CleanupBindingDigest, ProcessTerminalFactDigest: current.ProcessTerminalDigest, AllocationTerminatedFactDigest: current.AllocationTerminalDigest})
 		if err != nil {
 			return resultingress.AttemptAuthorityState{}, err
 		}

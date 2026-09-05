@@ -368,6 +368,9 @@ make_contract_fixture() {
     fixed-server-t1-evidence.py \
     fixed-server-t1-evidence_test.py \
     fixed-server-t1-task.py \
+    fixed-server-t2-drive.py \
+    fixed-server-t2-drive_test.py \
+    fixed-server-t2-task.py \
     m13-e2e-dogfood-workflow_test.sh; do
     cp "${ROOT}/scripts/${fixed_test}" "${root}/scripts/${fixed_test}"
   done
@@ -570,6 +573,12 @@ DIRTY_CONTRACT_ROOT="$(make_contract_fixture dirty "$CI_WORKFLOW" "$MAKEFILE")"
 printf '\n# dirty bytes\n' >>"${DIRTY_CONTRACT_ROOT}/.github/workflows/ci.yml"
 if check_main_ci_contract "$DIRTY_CONTRACT_ROOT" 2>/dev/null; then
   fail 'fixed path bytes 与 HEAD tree blob 漂移应 fail closed'
+fi
+
+T2_DIRTY_CONTRACT_ROOT="$(make_contract_fixture t2-dirty "$CI_WORKFLOW" "$MAKEFILE")"
+printf '\n# dirty driver bytes\n' >>"${T2_DIRTY_CONTRACT_ROOT}/scripts/fixed-server-t2-drive.py"
+if check_main_ci_contract "$T2_DIRTY_CONTRACT_ROOT" 2>/dev/null; then
+  fail 'T2 driver bytes 与 HEAD tree blob 漂移应 fail closed'
 fi
 
 if check_main_ci_contract "$VALID_CONTRACT_ROOT" . 2>/dev/null; then

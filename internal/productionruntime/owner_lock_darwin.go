@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"unsafe"
 
 	"github.com/chiga0/marshal-harness/internal/application"
@@ -330,9 +331,9 @@ func observeOwnerFile(directoryFD, fileFD int, name string) (ownerFileIdentity, 
 
 func descriptorCurrentPath(fd int) (string, error) {
 	buffer := make([]byte, ownerPathBufferSize)
-	_, err := unix.FcntlInt(uintptr(fd), unix.F_GETPATH, int(uintptr(unsafe.Pointer(&buffer[0]))))
-	if err != nil {
-		return "", err
+	_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), uintptr(unix.F_GETPATH), uintptr(unsafe.Pointer(&buffer[0])))
+	if errno != 0 {
+		return "", errno
 	}
 	end := 0
 	for end < len(buffer) && buffer[end] != 0 {

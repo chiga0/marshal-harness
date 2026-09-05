@@ -11,6 +11,7 @@ PI_BIN=""
 PI_BUNDLE=""
 RUN_ID=""
 EVIDENCE_ROOT=""
+SCENARIO="t1-marker"
 
 die() {
   printf '[fixed-server-t1] ERROR: %s\n' "$*" >&2
@@ -21,7 +22,8 @@ usage() {
   cat >&2 <<'EOF'
 usage: scripts/fixed-server-t1-canary.sh \
   --expected-head HEAD --pi-model PROVIDER/MODEL --pi-node PATH --pi-bin PATH \
-  --pi-bundle PATH --run-id RUN_ID --evidence-root ABSOLUTE_PATH
+  --pi-bundle PATH --run-id RUN_ID --evidence-root ABSOLUTE_PATH \
+  [--scenario t1-marker|order-quote]
 EOF
   exit 2
 }
@@ -35,6 +37,7 @@ while [ "$#" -gt 0 ]; do
     --pi-bundle) [ "$#" -ge 2 ] || usage; PI_BUNDLE="$2"; shift 2 ;;
     --run-id) [ "$#" -ge 2 ] || usage; RUN_ID="$2"; shift 2 ;;
     --evidence-root) [ "$#" -ge 2 ] || usage; EVIDENCE_ROOT="$2"; shift 2 ;;
+    --scenario) [ "$#" -ge 2 ] || usage; SCENARIO="$2"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -42,6 +45,7 @@ done
 [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || die 'expected-head 必须是 40 位小写 commit'
 [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || die 'pi-model 必须是 provider/model'
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{2,120}$ ]] || die 'run-id 形态非法'
+case "$SCENARIO" in t1-marker|order-quote) ;; *) die 'scenario 必须为 t1-marker 或 order-quote' ;; esac
 [ -x "$PI_NODE" ] && [ ! -L "$PI_NODE" ] || die 'pi-node 必须是固定普通 executable'
 [ -x "$PI_BIN" ] || die 'pi-bin 必须是可执行入口'
 [ -f "$PI_BUNDLE" ] && [ ! -L "$PI_BUNDLE" ] || die 'pi-bundle 必须是固定普通文件'
@@ -196,8 +200,16 @@ export MARSHAL_LOCAL_DOGFOOD_ACTIVATION="$EVIDENCE_ROOT/activation.json"
 "$MARSHAL_BIN" version --json >"$EVIDENCE_ROOT/binary-version.json"
 
 task_id="FIXED-SERVER-T1-${EXPECTED_HEAD:0:12}"
-"$PYTHON_BIN" -I -B scripts/fixed-server-t1-task.py \
-  --doctor "$EVIDENCE_ROOT/doctor.json" --repository "$ROOT" --base-ref "$EXPECTED_HEAD" \
+task_renderer=scripts/fixed-server-t1-task.py
+# Keep the array nonempty: macOS Bash 3.2 rejects an empty array expansion
+# under nounset, even when quoted.
+renderer_args=(--doctor "$EVIDENCE_ROOT/doctor.json" --repository "$ROOT" --base-ref "$EXPECTED_HEAD")
+if [ "$SCENARIO" = order-quote ]; then
+  task_id="FIXED-SERVER-T2-${EXPECTED_HEAD:0:12}"
+  task_renderer=scripts/fixed-server-t2-task.py
+  renderer_args+=(--scenario order-quote)
+fi
+"$PYTHON_BIN" -I -B "$task_renderer" "${renderer_args[@]}" \
   --task-id "$task_id" --run-id "$RUN_ID" --model "$PI_MODEL" \
   --task-out "$EVIDENCE_ROOT/task.json" --policy-out "$EVIDENCE_ROOT/policy.json"
 "$MARSHAL_BIN" task plan --task "$EVIDENCE_ROOT/task.json" --policy "$EVIDENCE_ROOT/policy.json" \
@@ -277,6 +289,13 @@ append_start_audit server2 received-replay
 "$MARSHAL_BIN" control-plane inspect --run "$RUN_ID" >"$EVIDENCE_ROOT/server2-final-inspect.json"
 append_audit server2 inspect received-final
 
+if [ "$SCENARIO" = order-quote ]; then
+  # The same post-restart server owns all T2 mutation. The driver stops at an
+  # exact ReviewPacket; it cannot author a Decision or claim ACCEPTED.
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
+    --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2"
+fi
+
 assert_server_pid "$server2_pid"
 kill -TERM "$server2_pid"
 set +e
@@ -287,8 +306,11 @@ set -e
 write_process_evidence "$EVIDENCE_ROOT/server2-process.json" "$server2_pid" SIGTERM "$server2_status"
 server2_pid=""
 
-"$PYTHON_BIN" -I -B scripts/fixed-server-t1-evidence.py check \
-  --repository "$ROOT" --evidence-root "$EVIDENCE_ROOT" --binary "$MARSHAL_BIN" \
-  --expected-head "$EXPECTED_HEAD" --run-id "$RUN_ID" --out "$EVIDENCE_ROOT/summary.json"
-
-printf '[fixed-server-t1] PASS run=%s evidence=%s\n' "$RUN_ID" "$EVIDENCE_ROOT"
+if [ "$SCENARIO" = t1-marker ]; then
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t1-evidence.py check \
+    --repository "$ROOT" --evidence-root "$EVIDENCE_ROOT" --binary "$MARSHAL_BIN" \
+    --expected-head "$EXPECTED_HEAD" --run-id "$RUN_ID" --out "$EVIDENCE_ROOT/summary.json"
+  printf '[fixed-server-t1] PASS run=%s evidence=%s\n' "$RUN_ID" "$EVIDENCE_ROOT"
+else
+  printf '[fixed-server-t2] REVIEW_PENDING run=%s; independent Decision required\n' "$RUN_ID"
+fi

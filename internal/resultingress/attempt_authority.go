@@ -761,7 +761,9 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 		}
 	case AttemptTransitionProcessSupervisorClosed:
 		closed := t.SupervisorClosed
-		if prior.ProcessTerminalDigest == "" || prior.AllocationTerminalDigest == "" || prior.SupervisorStartedDigest == "" || prior.SupervisorClosedDigest != "" || closed.SupervisorStartedFactDigest != prior.SupervisorStartedDigest || closed.ProcessTerminalFactDigest != prior.ProcessTerminalDigest || closed.AllocationTerminatedFactDigest != prior.AllocationTerminalDigest || closed.CleanupBindingDigest != prior.CleanupBindingDigest || closed.TerminalizationID != prior.TerminalizationID || closed.SessionID != prior.SupervisorStarted.Handshake.SessionID || closed.SupervisorProcess != prior.SupervisorStarted.Handshake.SupervisorProcess || closed.Owner != prior.Owner {
+		sessionID, _, protocol := supervisorStartedCommandBinding(prior.SupervisorStarted)
+		process, _ := supervisorStartedProcessIdentity(prior.SupervisorStarted)
+		if prior.ProcessTerminalDigest == "" || prior.AllocationTerminalDigest == "" || prior.SupervisorStartedDigest == "" || prior.SupervisorClosedDigest != "" || closed.SupervisorStartedFactDigest != prior.SupervisorStartedDigest || closed.ProcessTerminalFactDigest != prior.ProcessTerminalDigest || closed.AllocationTerminatedFactDigest != prior.AllocationTerminalDigest || closed.CleanupBindingDigest != prior.CleanupBindingDigest || closed.TerminalizationID != prior.TerminalizationID || closed.ProtocolRevision != protocol || closed.SessionID != sessionID || closed.SupervisorProcess != process || closed.Owner != prior.Owner {
 			return ErrAttemptAuthorityOrder
 		}
 		newSupervisorBinding := t.SupervisorOutcomeFactDigest != ""
@@ -1043,7 +1045,8 @@ func validateSupervisorReconnectAgainstState(state AttemptAuthorityState, owner 
 }
 
 func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, intent SupervisorCommandIntent) error {
-	if intent.Validate() != nil || intent.SessionID != state.SupervisorStarted.Handshake.SessionID || intent.Sequence != state.SupervisorCommandSequence+1 || intent.PreviousCommandHead != state.SupervisorCommandHead {
+	sessionID, initialHead, protocol := supervisorStartedCommandBinding(state.SupervisorStarted)
+	if intent.Validate() != nil || intent.ProtocolRevision != protocol || intent.SessionID != sessionID || intent.Sequence != state.SupervisorCommandSequence+1 || intent.PreviousCommandHead != state.SupervisorCommandHead {
 		return ErrAttemptAuthorityOrder
 	}
 	pre, prior := intent.PreCommand, state.SupervisorMechanicsAnchor
@@ -1088,7 +1091,7 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 	}
 	rebuild := intent.Rebuild
 	if intent.Command == processsupervisor.CommandBindAuthority {
-		if state.SupervisorBoundAuthorityHead != "" || pre.CurrentAuthorityHead != state.SupervisorStarted.Handshake.CurrentAuthorityHead || intent.CurrentAuthorityHead != pre.CurrentAuthorityHead || rebuild.OwnerEpoch != state.Owner.OwnerEpoch || rebuild.PreviousAuthorityHead != state.SupervisorStarted.Handshake.CurrentAuthorityHead || rebuild.AuthorityHead != state.SupervisorStartedDigest || rebuild.SupervisorStartedFactDigest != state.SupervisorStartedDigest {
+		if state.SupervisorBoundAuthorityHead != "" || pre.CurrentAuthorityHead != initialHead || intent.CurrentAuthorityHead != pre.CurrentAuthorityHead || rebuild.OwnerEpoch != state.Owner.OwnerEpoch || rebuild.PreviousAuthorityHead != initialHead || rebuild.AuthorityHead != state.SupervisorStartedDigest || rebuild.SupervisorStartedFactDigest != state.SupervisorStartedDigest {
 			return ErrAttemptAuthorityOrder
 		}
 		return nil
@@ -1129,8 +1132,15 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 
 func validateSupervisorCommandOutcomeAgainstIntent(state AttemptAuthorityState, evidence SupervisorCommandEvidence) error {
 	intent := state.SupervisorPendingIntent
-	if evidence.Validate() != nil || evidence.SessionID != intent.SessionID || evidence.Command != intent.Command || evidence.CommandID != intent.CommandID || evidence.Sequence != intent.Sequence || evidence.PreviousCommandHead != intent.PreviousCommandHead || evidence.CurrentAuthorityHead != intent.CurrentAuthorityHead || evidence.RequestDigest != intent.RequestDigest || evidence.PreCommand != intent.PreCommand {
+	if evidence.Validate() != nil || evidence.ProtocolRevision != intent.ProtocolRevision || evidence.SessionID != intent.SessionID || evidence.Command != intent.Command || evidence.CommandID != intent.CommandID || evidence.Sequence != intent.Sequence || evidence.PreviousCommandHead != intent.PreviousCommandHead || evidence.CurrentAuthorityHead != intent.CurrentAuthorityHead || evidence.RequestDigest != intent.RequestDigest || evidence.PreCommand != intent.PreCommand {
 		return ErrAttemptAuthorityConflict
+	}
+	isV2 := evidence.ProtocolRevision == processsupervisor.DormantV2ProtocolContract().ProtocolRevision
+	if isV2 {
+		prepared, err := SupervisorPreparedCommandEvidenceV2(intent)
+		if err != nil || prepared != evidence.V2Preparation {
+			return ErrAttemptAuthorityConflict
+		}
 	}
 	if state.SupervisorReconnectFactDigest != "" && state.SupervisorCommandRecoveryHead == state.SupervisorReconnectFactDigest && state.SupervisorReconnect.Pending != (processsupervisor.PendingReplayEvidence{}) {
 		if state.SupervisorReconnect.MechanicsLocked || evidence.PostCommand != state.SupervisorReconnect.Current || evidence.PreCommand != state.SupervisorReconnect.Previous {
@@ -1142,7 +1152,7 @@ func validateSupervisorCommandOutcomeAgainstIntent(state AttemptAuthorityState, 
 	}
 	switch intent.Command {
 	case processsupervisor.CommandBindAuthority:
-		if evidence.BoundAuthorityHead != intent.Rebuild.AuthorityHead || evidence.ObservationDigest != intent.Rebuild.SupervisorStartedFactDigest {
+		if evidence.BoundAuthorityHead != intent.Rebuild.AuthorityHead || !isV2 && evidence.ObservationDigest != intent.Rebuild.SupervisorStartedFactDigest {
 			return ErrAttemptAuthorityConflict
 		}
 	case processsupervisor.CommandSpawn:
@@ -1195,6 +1205,9 @@ func validateBusinessOutcomeReference(state AttemptAuthorityState, digest string
 		return ErrAttemptAuthorityConflict
 	}
 	latest := state.SupervisorCommandCheckpoints[len(state.SupervisorCommandCheckpoints)-1]
+	if state.SupervisorStarted.V2 != (SupervisorStartedV2{}) && !supervisorOutcomeMatchesStartedV2(state.SupervisorStarted, latest.Evidence) {
+		return ErrAttemptAuthorityConflict
+	}
 	if latest.FactDigest != digest || latest.Evidence.Disposition != "ok" || command != "" && latest.Evidence.Command != command || outcome != "" && latest.Evidence.Outcome.State != outcome {
 		return ErrAttemptAuthorityConflict
 	}
@@ -1210,6 +1223,11 @@ func validateProcessStartedOutcomeReferences(state AttemptAuthorityState, transi
 		return ErrAttemptAuthorityConflict
 	}
 	spawn, _ := supervisorCheckpointEvidence(state, transition.SupervisorOutcomeFactDigest)
+	if state.SupervisorStarted.V2 != (SupervisorStartedV2{}) &&
+		(!supervisorOutcomeMatchesStartedV2(state.SupervisorStarted, bind) || transition.CommandID != spawn.CommandID ||
+			transition.ObservedAt != spawn.Outcome.ObservedAt || transition.Process.ObserverIdentity != spawn.Outcome.ObserverIdentity) {
+		return ErrAttemptAuthorityConflict
+	}
 	if !commandEvidenceMatchesProcess(spawn, transition.Process) {
 		return ErrAttemptAuthorityConflict
 	}
@@ -1236,6 +1254,12 @@ func terminalCheckpointMatches(state AttemptAuthorityState, transition AttemptTr
 func closedCheckpointMatches(state AttemptAuthorityState, transition AttemptTransition) bool {
 	evidence, found := supervisorCheckpointEvidence(state, transition.SupervisorOutcomeFactDigest)
 	closed := transition.SupervisorClosed
+	if closed.ProtocolRevision == processsupervisor.DormantV2ProtocolContract().ProtocolRevision {
+		outcome, err := verifiedSupervisorOutcomeV2(evidence)
+		if err != nil || (processsupervisor.CommittedCloseRecoveryEvidenceV2{Outcome: outcome, Absence: closed.AuthenticatedSupervisorAbsence}).Validate() != nil {
+			return false
+		}
+	}
 	return found && evidence.Command == processsupervisor.CommandClose && evidence.RequestDigest == closed.CloseIntentDigest && evidence.ReceiptDigest == closed.CloseReceiptDigest && evidence.ObservationDigest == closed.CloseObservationDigest && evidence.CommandHead == closed.FinalCommandHead && terminalReportsEquivalent(state.ProcessTerminalEvidence, evidence)
 }
 
@@ -1821,6 +1845,14 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 		state.SupervisorStarted = t.SupervisorStarted
 		state.SupervisorStartedDigest = fact.Digest
 		if state.SupervisorBootstrapDigest != "" {
+			if t.SupervisorStarted.V2 != (SupervisorStartedV2{}) {
+				anchor := t.SupervisorStarted.V2.Anchor
+				state.SupervisorCommandSequence, state.SupervisorCommandHead = anchor.Binding.CommandSequence, anchor.Binding.CommandHead
+				state.SupervisorCommandIDs = nil
+				state.SupervisorMechanicsAuthorityHead = fact.Digest
+				state.SupervisorMechanicsAnchor = projectSupervisorMechanicsAnchorV2(anchor)
+				break
+			}
 			state.SupervisorCommandSequence = t.SupervisorStarted.Handshake.CommandSequence
 			state.SupervisorCommandHead = t.SupervisorStarted.Handshake.CommandHead
 			state.SupervisorCommandIDs = nil

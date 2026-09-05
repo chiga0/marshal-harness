@@ -280,6 +280,14 @@ func (router *HTTPRouter) lifecycleOperation(ctx context.Context, authenticated 
 	projection, applyErr := apply(deliveryContext)
 	result, resultErr := fixedLifecycleResult(request.operation, projection)
 	if resultErr != nil {
+		emptyCollect, collectType := projection.(application.CollectedRunProjection)
+		if request.operation == productionruntime.FixedLifecycleCollectOperation && collectType && emptyCollect == (application.CollectedRunProjection{}) && application.HasReason(applyErr, application.ReasonAttemptStillRunning) {
+			// Keep the existing durable pending. This only distinguishes a
+			// positively observed live Attempt from an unknown delivery failure.
+			response := errorHTTPResponse(request.operation, errHTTPPending)
+			response.ReasonCode = string(application.ReasonAttemptStillRunning)
+			return response, 202, errors.Join(errHTTPPending, applyErr)
+		}
 		return errorHTTPResponse(request.operation, errHTTPPending), 202, errors.Join(errHTTPPending, applyErr, resultErr)
 	}
 	receipt, commitErr := router.delivery.CommitLifecycleDelivery(deliveryContext, pending, request.operation, input, current, result)

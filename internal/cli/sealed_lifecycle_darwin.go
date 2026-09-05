@@ -17,6 +17,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
+	"github.com/chiga0/marshal-harness/internal/productionruntime"
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
@@ -49,6 +50,9 @@ func (adapter *sealedRepositoryApplication) CollectRunResult(ctx context.Context
 		return application.CollectedRunProjection{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 	}
 	collected, err := run.runtime.CollectRunResult(ctx, request.RunID)
+	if errors.Is(err, productionruntime.ErrAttemptStillRunning) {
+		return application.CollectedRunProjection{}, application.NewError("collect-run-result", application.ReasonAttemptStillRunning)
+	}
 	if err != nil {
 		return application.CollectedRunProjection{}, err
 	}

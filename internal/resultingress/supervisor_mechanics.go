@@ -18,23 +18,34 @@ var supervisorEvidenceID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,2
 // command sequence/head alone cannot distinguish a lost receipt from a
 // journal intent that never closed.
 type SupervisorMechanicsAnchor struct {
-	SessionID            string                                  `json:"sessionId"`
-	SessionNonceDigest   string                                  `json:"sessionNonceDigest"`
-	Authority            processsupervisor.AuthorityTuple        `json:"authority"`
-	OwnerEpoch           uint64                                  `json:"ownerEpoch"`
-	CurrentAuthorityHead string                                  `json:"currentAuthorityHead"`
-	CommandSequence      uint64                                  `json:"commandSequence"`
-	CommandHead          string                                  `json:"commandHead"`
-	JournalSequence      uint64                                  `json:"journalSequence"`
-	JournalHead          string                                  `json:"journalHead"`
-	UID                  uint32                                  `json:"uid"`
-	GID                  uint32                                  `json:"gid"`
-	FixedBinary          processsupervisor.BinaryIdentity        `json:"fixedBinary"`
-	ControlSocket        processsupervisor.ControlSocketIdentity `json:"controlSocket"`
-	ControlFiles         processsupervisor.SessionControlFiles   `json:"controlFiles,omitempty,omitzero"`
+	Generation           processsupervisor.ProtocolGenerationContract `json:"generation,omitempty,omitzero"`
+	ControlDirectory     processsupervisor.ControlDirectoryIdentity   `json:"controlDirectory,omitempty,omitzero"`
+	SessionID            string                                       `json:"sessionId"`
+	SessionNonceDigest   string                                       `json:"sessionNonceDigest"`
+	Authority            processsupervisor.AuthorityTuple             `json:"authority"`
+	OwnerEpoch           uint64                                       `json:"ownerEpoch"`
+	CurrentAuthorityHead string                                       `json:"currentAuthorityHead"`
+	CommandSequence      uint64                                       `json:"commandSequence"`
+	CommandHead          string                                       `json:"commandHead"`
+	JournalSequence      uint64                                       `json:"journalSequence"`
+	JournalHead          string                                       `json:"journalHead"`
+	UID                  uint32                                       `json:"uid"`
+	GID                  uint32                                       `json:"gid"`
+	FixedBinary          processsupervisor.BinaryIdentity             `json:"fixedBinary"`
+	ControlSocket        processsupervisor.ControlSocketIdentity      `json:"controlSocket"`
+	ControlFiles         processsupervisor.SessionControlFiles        `json:"controlFiles,omitempty,omitzero"`
 }
 
 func supervisorHandshakeAnchor(anchor SupervisorMechanicsAnchor) processsupervisor.HandshakeAnchor {
+	if anchor.Generation != (processsupervisor.ProtocolGenerationContract{}) || anchor.ControlDirectory != (processsupervisor.ControlDirectoryIdentity{}) {
+		return processsupervisor.HandshakeAnchor{}
+	}
+	return supervisorObjectBinding(anchor)
+}
+
+// This is only the generation-neutral object tuple, never a wire decoder or
+// authority projection. Callers must preserve Generation and ControlDirectory.
+func supervisorObjectBinding(anchor SupervisorMechanicsAnchor) processsupervisor.HandshakeAnchor {
 	return processsupervisor.HandshakeAnchor{SessionID: anchor.SessionID, SessionNonceDigest: anchor.SessionNonceDigest, Authority: anchor.Authority, OwnerEpoch: anchor.OwnerEpoch, CurrentAuthorityHead: anchor.CurrentAuthorityHead, CommandSequence: anchor.CommandSequence, CommandHead: anchor.CommandHead, JournalSequence: anchor.JournalSequence, JournalHead: anchor.JournalHead, UID: anchor.UID, GID: anchor.GID, FixedBinary: anchor.FixedBinary, ControlSocket: anchor.ControlSocket, ControlFiles: anchor.ControlFiles}
 }
 
@@ -43,6 +54,15 @@ func projectSupervisorMechanicsAnchor(anchor processsupervisor.HandshakeAnchor) 
 }
 
 func (anchor SupervisorMechanicsAnchor) Validate() error {
+	if anchor.Generation != (processsupervisor.ProtocolGenerationContract{}) {
+		if supervisorSessionAnchorV2(anchor).Validate() != nil {
+			return ErrAttemptAuthorityConflict
+		}
+		return nil
+	}
+	if anchor.ControlDirectory != (processsupervisor.ControlDirectoryIdentity{}) {
+		return ErrAttemptAuthorityConflict
+	}
 	if !supervisorEvidenceID.MatchString(anchor.SessionID) || requireDigest("sessionNonceDigest", anchor.SessionNonceDigest) != nil || validateSupervisorAuthorityTuple(anchor.Authority) != nil || anchor.OwnerEpoch == 0 || anchor.OwnerEpoch > maxExactJSONInteger || requireDigest("currentAuthorityHead", anchor.CurrentAuthorityHead) != nil || anchor.CommandSequence > maxExactJSONInteger || requireDigest("commandHead", anchor.CommandHead) != nil || anchor.JournalSequence == 0 || anchor.JournalSequence > maxExactJSONInteger || requireDigest("journalHead", anchor.JournalHead) != nil || anchor.UID == 0 || validateFixedMarshalBinaryIdentity(anchor.FixedBinary) != nil || validateControlSocketIdentity(anchor.ControlSocket) != nil || anchor.ControlFiles != (processsupervisor.SessionControlFiles{}) && processsupervisor.ValidateSessionControlFiles(anchor.ControlFiles) != nil {
 		return ErrAttemptAuthorityConflict
 	}
@@ -73,6 +93,9 @@ func newSupervisorReconnectEvidence(recovery processsupervisor.SessionRecoveryEv
 
 func (evidence SupervisorReconnectEvidence) Validate() error {
 	previous, current := evidence.Previous, evidence.Current
+	if previous.Generation != (processsupervisor.ProtocolGenerationContract{}) || current.Generation != (processsupervisor.ProtocolGenerationContract{}) {
+		return ErrAttemptAuthorityConflict
+	}
 	if previous.Validate() != nil || current.Validate() != nil || previous.SessionID != current.SessionID || previous.SessionNonceDigest != current.SessionNonceDigest || previous.Authority != current.Authority || previous.UID != current.UID || previous.GID != current.GID || previous.FixedBinary != current.FixedBinary || previous.ControlSocket != current.ControlSocket || previous.ControlFiles != current.ControlFiles || current.OwnerEpoch <= previous.OwnerEpoch || current.CurrentAuthorityHead == previous.CurrentAuthorityHead {
 		return fmt.Errorf("%w: reconnect mechanics identity mismatch", ErrAttemptAuthorityConflict)
 	}
@@ -116,23 +139,25 @@ func (evidence SupervisorReconnectEvidence) Validate() error {
 // payload: argv, environment values, stdin and transcript bytes never enter
 // the RB1 authority ledger.
 type SupervisorCommandEvidence struct {
-	ProtocolRevision     string                        `json:"protocolRevision"`
-	SessionID            string                        `json:"sessionId"`
-	Command              processsupervisor.CommandName `json:"command"`
-	CommandID            string                        `json:"commandId"`
-	Sequence             uint64                        `json:"sequence"`
-	PreviousCommandHead  string                        `json:"previousCommandHead"`
-	CurrentAuthorityHead string                        `json:"currentAuthorityHead"`
-	RequestDigest        string                        `json:"requestDigest"`
-	ReceiptDigest        string                        `json:"receiptDigest"`
-	ObservationDigest    string                        `json:"observationDigest"`
-	CommandHead          string                        `json:"commandHead"`
-	Disposition          string                        `json:"disposition"`
-	ReasonCode           string                        `json:"reasonCode"`
-	BoundAuthorityHead   string                        `json:"boundAuthorityHead,omitempty"`
-	Outcome              SupervisorProcessOutcome      `json:"outcome,omitempty,omitzero"`
-	PreCommand           SupervisorMechanicsAnchor     `json:"preCommand,omitempty,omitzero"`
-	PostCommand          SupervisorMechanicsAnchor     `json:"postCommand,omitempty,omitzero"`
+	V2Preparation        processsupervisor.PreparedCommandEvidenceV2 `json:"v2Preparation,omitempty,omitzero"`
+	JournalRequest       string                                      `json:"journalRequest,omitempty"`
+	ProtocolRevision     string                                      `json:"protocolRevision"`
+	SessionID            string                                      `json:"sessionId"`
+	Command              processsupervisor.CommandName               `json:"command"`
+	CommandID            string                                      `json:"commandId"`
+	Sequence             uint64                                      `json:"sequence"`
+	PreviousCommandHead  string                                      `json:"previousCommandHead"`
+	CurrentAuthorityHead string                                      `json:"currentAuthorityHead"`
+	RequestDigest        string                                      `json:"requestDigest"`
+	ReceiptDigest        string                                      `json:"receiptDigest"`
+	ObservationDigest    string                                      `json:"observationDigest"`
+	CommandHead          string                                      `json:"commandHead"`
+	Disposition          string                                      `json:"disposition"`
+	ReasonCode           string                                      `json:"reasonCode"`
+	BoundAuthorityHead   string                                      `json:"boundAuthorityHead,omitempty"`
+	Outcome              SupervisorProcessOutcome                    `json:"outcome,omitempty,omitzero"`
+	PreCommand           SupervisorMechanicsAnchor                   `json:"preCommand,omitempty,omitzero"`
+	PostCommand          SupervisorMechanicsAnchor                   `json:"postCommand,omitempty,omitzero"`
 }
 
 // SupervisorProcessOutcome is the Core-owned typed projection of mechanics
@@ -224,6 +249,15 @@ func validSupervisorCommand(command processsupervisor.CommandName) bool {
 }
 
 func (e SupervisorCommandEvidence) Validate() error {
+	if e.ProtocolRevision == processsupervisor.DormantV2ProtocolContract().ProtocolRevision {
+		return validateSupervisorCommandEvidenceV2(e)
+	}
+	if e.V2Preparation != (processsupervisor.PreparedCommandEvidenceV2{}) || e.JournalRequest != "" {
+		return ErrAttemptAuthorityConflict
+	}
+	if e.PreCommand.Generation != (processsupervisor.ProtocolGenerationContract{}) || e.PostCommand.Generation != (processsupervisor.ProtocolGenerationContract{}) {
+		return ErrAttemptAuthorityConflict
+	}
 	if e.ProtocolRevision != processsupervisor.ProtocolRevision || !supervisorEvidenceID.MatchString(e.SessionID) || !validSupervisorCommand(e.Command) || !supervisorEvidenceID.MatchString(e.CommandID) || e.Sequence == 0 || e.Sequence > maxExactJSONInteger || e.Disposition != "ok" && e.Disposition != "rejected" || !supervisorEvidenceID.MatchString(e.ReasonCode) {
 		return fmt.Errorf("%w: invalid supervisor command identity", ErrAttemptAuthorityConflict)
 	}
@@ -444,21 +478,26 @@ func NewSupervisorCommandEvidence(outcome processsupervisor.VerifiedCommandOutco
 // ProcessTerminated. The authenticated report state alone is insufficient;
 // command and reason are part of the closed semantic union.
 func projectVerifiedSupervisorProcessOutcome(outcome processsupervisor.VerifiedCommandOutcome) (SupervisorProcessOutcome, error) {
-	report := *outcome.ProcessReport
-	projected := SupervisorProcessOutcome{MechanicsState: report.State, Process: report.Process, ObserverIdentity: report.ObserverIdentity, ObservedAt: report.ObservedAt, RuntimeObjectDigest: report.RuntimeObjectDigest, WorkingObjectDigest: report.WorkingObjectDigest, SourceGateRevision: report.SourceGateRevision, ExactSetDigest: report.ExactSetDigest, ExitCode: report.ExitCode, Signal: report.Signal, StdoutDigest: report.StdoutDigest, StderrDigest: report.StderrDigest, StdoutBytes: report.StdoutBytes, StderrBytes: report.StderrBytes, TranscriptTruncated: report.TranscriptTruncated, TranscriptDigest: outcome.TranscriptDigest}
-	switch outcome.Command {
+	return projectSupervisorProcessOutcome(outcome.Command, outcome.ReasonCode, outcome.TranscriptDigest, *outcome.ProcessReport)
+}
+
+// Business semantics are generation-neutral. Each caller first validates its
+// own exact protocol; this helper never parses or translates wire evidence.
+func projectSupervisorProcessOutcome(command processsupervisor.CommandName, reason, transcript string, report processsupervisor.ProcessReport) (SupervisorProcessOutcome, error) {
+	projected := SupervisorProcessOutcome{MechanicsState: report.State, Process: report.Process, ObserverIdentity: report.ObserverIdentity, ObservedAt: report.ObservedAt, RuntimeObjectDigest: report.RuntimeObjectDigest, WorkingObjectDigest: report.WorkingObjectDigest, SourceGateRevision: report.SourceGateRevision, ExactSetDigest: report.ExactSetDigest, ExitCode: report.ExitCode, Signal: report.Signal, StdoutDigest: report.StdoutDigest, StderrDigest: report.StderrDigest, StdoutBytes: report.StdoutBytes, StderrBytes: report.StderrBytes, TranscriptTruncated: report.TranscriptTruncated, TranscriptDigest: transcript}
+	switch command {
 	case processsupervisor.CommandSpawn:
-		if outcome.ReasonCode != "process-exec-stopped" || report.State != "exec-stopped" {
+		if reason != "process-exec-stopped" || report.State != "exec-stopped" {
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged spawn mechanics outcome", ErrAttemptAuthorityConflict)
 		}
 		projected.State = SupervisorProcessExecStopped
 	case processsupervisor.CommandResume:
-		if outcome.ReasonCode != "process-resumed" || report.State != "running" {
+		if reason != "process-resumed" || report.State != "running" {
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged resume mechanics outcome", ErrAttemptAuthorityConflict)
 		}
 		projected.State = SupervisorProcessRunning
 	case processsupervisor.CommandInspect:
-		if outcome.ReasonCode != "process-inspected" {
+		if reason != "process-inspected" {
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged inspect mechanics reason", ErrAttemptAuthorityConflict)
 		}
 		switch report.State {
@@ -475,7 +514,7 @@ func projectVerifiedSupervisorProcessOutcome(outcome processsupervisor.VerifiedC
 		if report.State != "terminal" {
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: terminate lacks terminal mechanics report", ErrAttemptAuthorityConflict)
 		}
-		switch outcome.ReasonCode {
+		switch reason {
 		case "process-already-terminal":
 			projected.State = SupervisorProcessAbsent
 		case "process-terminal":
@@ -484,12 +523,12 @@ func projectVerifiedSupervisorProcessOutcome(outcome processsupervisor.VerifiedC
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged terminate mechanics reason", ErrAttemptAuthorityConflict)
 		}
 	case processsupervisor.CommandCollect:
-		if outcome.ReasonCode != "transcript-collected" || report.State != "terminal" {
+		if reason != "transcript-collected" || report.State != "terminal" {
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged collect mechanics outcome", ErrAttemptAuthorityConflict)
 		}
 		projected.State = SupervisorTranscriptCollected
 	case processsupervisor.CommandClose:
-		if outcome.ReasonCode != "mechanics-closed" || report.State != "terminal" {
+		if reason != "mechanics-closed" || report.State != "terminal" {
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged close mechanics outcome", ErrAttemptAuthorityConflict)
 		}
 		projected.State = SupervisorSessionClosed
@@ -504,16 +543,19 @@ func projectVerifiedSupervisorProcessOutcome(outcome processsupervisor.VerifiedC
 // value; it is never an arbitrary digest echo. Only SessionNonceDigest is
 // retained, never the raw nonce.
 type SupervisorBootstrapRequestProjection struct {
-	SchemaVersion            string                                     `json:"schemaVersion"`
-	ProtocolRevision         string                                     `json:"protocolRevision"`
-	SessionID                string                                     `json:"sessionId"`
-	SessionNonceDigest       string                                     `json:"sessionNonceDigest"`
-	OwnerEpoch               uint64                                     `json:"ownerEpoch"`
-	Authority                processsupervisor.AuthorityTuple           `json:"authority"`
-	LaunchAuthorizedFact     string                                     `json:"launchAuthorizedFactDigest"`
-	CurrentAuthorityHead     string                                     `json:"currentAuthorityHead"`
-	ControlDirectoryIdentity processsupervisor.ControlDirectoryIdentity `json:"controlDirectoryIdentity"`
-	Core                     processsupervisor.CoreIdentity             `json:"core"`
+	Generation                  processsupervisor.ProtocolGenerationContract `json:"generation,omitempty,omitzero"`
+	LaunchChildProtocolRevision string                                       `json:"launchChildProtocolRevision,omitempty"`
+	MechanicsIdentity           string                                       `json:"mechanicsIdentity,omitempty"`
+	SchemaVersion               string                                       `json:"schemaVersion"`
+	ProtocolRevision            string                                       `json:"protocolRevision"`
+	SessionID                   string                                       `json:"sessionId"`
+	SessionNonceDigest          string                                       `json:"sessionNonceDigest"`
+	OwnerEpoch                  uint64                                       `json:"ownerEpoch"`
+	Authority                   processsupervisor.AuthorityTuple             `json:"authority"`
+	LaunchAuthorizedFact        string                                       `json:"launchAuthorizedFactDigest"`
+	CurrentAuthorityHead        string                                       `json:"currentAuthorityHead"`
+	ControlDirectoryIdentity    processsupervisor.ControlDirectoryIdentity   `json:"controlDirectoryIdentity"`
+	Core                        processsupervisor.CoreIdentity               `json:"core"`
 }
 
 func projectSupervisorBootstrapRequest(request processsupervisor.BootstrapRequest) (SupervisorBootstrapRequestProjection, string, error) {
@@ -569,18 +611,20 @@ type SupervisorCommandRebuildProjection = processsupervisor.PreparedCommandProje
 // SupervisorCommandIntent is creation-once durable intent. It is appended
 // before Client.Do and contains no executable payload or bearer material.
 type SupervisorCommandIntent struct {
-	ProtocolRevision     string                             `json:"protocolRevision"`
-	SessionID            string                             `json:"sessionId"`
-	Command              processsupervisor.CommandName      `json:"command"`
-	CommandID            string                             `json:"commandId"`
-	Sequence             uint64                             `json:"sequence"`
-	PreviousCommandHead  string                             `json:"previousCommandHead"`
-	CurrentAuthorityHead string                             `json:"currentAuthorityHead"`
-	Deadline             string                             `json:"deadline"`
-	RequestDigest        string                             `json:"requestDigest"`
-	PayloadDigest        string                             `json:"payloadDigest"`
-	Rebuild              SupervisorCommandRebuildProjection `json:"rebuild"`
-	PreCommand           SupervisorMechanicsAnchor          `json:"preCommand"`
+	PreparedEvidenceDigest string                             `json:"preparedEvidenceDigest,omitempty"`
+	JournalRequestDigest   string                             `json:"journalRequestDigest,omitempty"`
+	ProtocolRevision       string                             `json:"protocolRevision"`
+	SessionID              string                             `json:"sessionId"`
+	Command                processsupervisor.CommandName      `json:"command"`
+	CommandID              string                             `json:"commandId"`
+	Sequence               uint64                             `json:"sequence"`
+	PreviousCommandHead    string                             `json:"previousCommandHead"`
+	CurrentAuthorityHead   string                             `json:"currentAuthorityHead"`
+	Deadline               string                             `json:"deadline"`
+	RequestDigest          string                             `json:"requestDigest"`
+	PayloadDigest          string                             `json:"payloadDigest"`
+	Rebuild                SupervisorCommandRebuildProjection `json:"rebuild"`
+	PreCommand             SupervisorMechanicsAnchor          `json:"preCommand"`
 }
 
 func NewSupervisorCommandIntent(evidence processsupervisor.PreparedCommandEvidence) (SupervisorCommandIntent, error) {
@@ -600,6 +644,13 @@ func NewSupervisorCommandIntent(evidence processsupervisor.PreparedCommandEviden
 }
 
 func (intent SupervisorCommandIntent) Validate() error {
+	if intent.ProtocolRevision == processsupervisor.DormantV2ProtocolContract().ProtocolRevision {
+		_, err := SupervisorPreparedCommandEvidenceV2(intent)
+		return err
+	}
+	if intent.PreparedEvidenceDigest != "" || intent.JournalRequestDigest != "" || intent.PreCommand.Generation != (processsupervisor.ProtocolGenerationContract{}) {
+		return ErrAttemptAuthorityConflict
+	}
 	deadline, err := time.Parse(time.RFC3339Nano, intent.Deadline)
 	if err != nil || deadline.Location() != time.UTC || deadline.Format(time.RFC3339Nano) != intent.Deadline || intent.ProtocolRevision != processsupervisor.ProtocolRevision || !supervisorEvidenceID.MatchString(intent.SessionID) || !validSupervisorCommand(intent.Command) || !supervisorEvidenceID.MatchString(intent.CommandID) || intent.Sequence == 0 || intent.Sequence > maxExactJSONInteger {
 		return fmt.Errorf("%w: invalid supervisor command intent identity", ErrAttemptAuthorityConflict)
@@ -644,6 +695,12 @@ func NewSupervisorBootstrapPrepared(owner CurrentOwnerBinding, request processsu
 }
 
 func (prepared SupervisorBootstrapPrepared) Validate() error {
+	if prepared.ProtocolRevision == processsupervisor.DormantV2ProtocolContract().ProtocolRevision {
+		return validateSupervisorBootstrapPreparedV2(prepared)
+	}
+	if prepared.Request.Generation != (processsupervisor.ProtocolGenerationContract{}) || prepared.Request.LaunchChildProtocolRevision != "" || prepared.Request.MechanicsIdentity != "" {
+		return ErrAttemptAuthorityConflict
+	}
 	if prepared.ProtocolRevision != processsupervisor.ProtocolRevision || prepared.Owner.Validate() != nil || !supervisorEvidenceID.MatchString(prepared.SessionID) || validateControlDirectoryIdentity(prepared.ControlDirectory) != nil || validateFixedMarshalBinaryIdentity(prepared.SupervisorBinary) != nil {
 		return fmt.Errorf("%w: invalid supervisor bootstrap identity", ErrAttemptAuthorityConflict)
 	}

@@ -30,6 +30,12 @@ B1 优先关闭当前 launcher 与 T2 真实链路阻塞。B2 的业务样例/�
 
 调用现有 `scripts/fixed-server-t2-task.py` 时增加 `--scenario order-quote` 即生成业务 Task；其余 repository/base-ref/model/doctor/task-out/policy-out 参数不变。oracle 的 SHA-256 随 Task 冻结，验收执行已校验的同一份内存 bytes；oracle 变化必须重新生成/接纳 Task，不可修改已冻结 Run。生成不代表 dispatch：先闭合固定 server 的 profile/launcher 与准入，再走既有 server start/collect/verify/Decision；不可直接启动 Pi 补造这条证据。
 
+业务 canary 复用 `.github/workflows/fixed-server-t1-canary.yml` 的 exact-head/required-CI、固定产物、Pi 与 provider 配置，显式选择 `scenario=order-quote`。原 `t1-marker` 默认路径保持。业务路径在同一 server 重启/请求重放后运行 `fixed-server-t2-drive.py`，自动 Collect→Verify→ReviewPacket，保留每阶段冻结请求和响应摘要；它只调用固定 `bin/marshal control-plane`，不启动 Worker 或直接写业务账本。只有已认证的 `attempt-still-running` 才按原 key/head/deadline 有界等待；普通 delivery-pending、身份冲突、CLI 超时/无效响应停止自动重试。该观察不证明无副作用，也不授权创建新 Attempt。
+
+驱动成功只表示 `REVIEW_PENDING` 且业务 verification pass；不会生成 ReviewDecision、签发 ACCEPTED 或宣称整个 B1 通过。独立 reviewer 仍须检查精确候选与证据，并通过同一 fixed server 的 Decision operation 收口。驱动 deadline 到期只停止客户端，不代表业务取消；自动 wall-timeout/Outcome 仍按 ADR 0081 的合同缺口推进。新增驱动的 injected-call 测试不是实机 Pi 证据，canary 必须等待本候选 exact-head CI。
+
+业务 verification pass 后，驱动把 packet 引用的 Task、实际 patch、VerificationReport、ArtifactManifest、WorkerResult 及两个候选记录/worker patch 打包到已有上传范围内的 `t2/review-inputs.tar`。仅复制有界普通文件，逐层拒绝符号链接并拒绝硬链接/特殊文件/读取中变化；不复制原始日志、凭据、Git 工作区或整份 authority store。该包标为 `review-only-not-authority-import`：便于独立 reviewer 读取真实输入，但不能代替 Core 的 canonical digest 验证、current-ledger recheck 或跨 runner 恢复协议。打包失败不重跑 Pi、不修改 Run、不宣称可以验收；same-server Decision 和恢复材料仍需按实际状态完成。
+
 ## 每轮最小记录
 
 任务类型/难度、冻结需求/输入/候选/运行 binary 身份、开始结束时间、各阶段等待/运行时间、Attempt/rework 数、失败分类、人工介入、业务验收和 evidence refs。token 缺失记为 unavailable，不能计为零。样例测试通过仅是测试基础设施证据，不是实机 Agent 成功。

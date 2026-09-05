@@ -54,17 +54,19 @@ func runSupervisor(ctx context.Context) error {
 	}
 	defer bootstrapFile.Close()
 	defer controlDirectory.Close()
-	return runSupervisorLoop(ctx, bootstrapFile, controlDirectory, supervisorLoopOptions{})
+	return runSupervisorLoop(ctx, bootstrapFile, controlDirectory, supervisorLoopOptions{requireV2: true})
 }
 
 // supervisorLoopOptions is an internal fault-injection seam for exercising the
 // complete inherited bootstrap, listener, reconnect and wire loop. Production
-// always supplies the zero value and therefore constructs platform mechanics.
+// requires v2 and otherwise supplies zero values to construct platform mechanics.
 // Tests may substitute mechanics or mutate a boundary only at the explicit
 // post-replay point; they do not bypass admission, replay or wire emission.
 type supervisorLoopOptions struct {
+	requireV2             bool
 	mechanics             Mechanics
 	configureSession      func(*Session)
+	configureSessionV2    func(*sessionV2)
 	afterReconnectAttempt func(*Session, reconnectAttemptResult, sessionControlBoundary)
 	reconnectReady        func()
 	observePeer           func(*net.UnixConn) (CoreIdentity, error)
@@ -84,6 +86,11 @@ func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.
 	if !ok {
 		return ErrInvalid
 	}
+	stopBootstrap := context.AfterFunc(ctx, func() { _ = unixConnection.Close() })
+	defer stopBootstrap()
+	if unixConnection.SetReadDeadline(time.Now().Add(30*time.Second)) != nil {
+		return ErrInvalid
+	}
 	reader := bufio.NewReaderSize(unixConnection, MaxWireFrameBytes+frameHeaderBytes+1)
 	raw, err := readFrame(reader, MaxWireFrameBytes)
 	if err != nil {
@@ -91,6 +98,15 @@ func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.
 	}
 	if rejectBootstrapExtra(reader, unixConnection) != nil {
 		return ErrInvalid
+	}
+	if unixConnection.SetReadDeadline(time.Time{}) != nil {
+		return ErrInvalid
+	}
+	if wireSchema(raw) == bootstrapSchemaV2 {
+		return runSupervisorLoopV2(ctx, unixConnection, reader, controlDirectory, raw, options)
+	}
+	if options.requireV2 {
+		return ErrUnavailable
 	}
 	var bootstrap BootstrapRequest
 	if strictCanonicalDecode(raw, &bootstrap) != nil || bootstrap.validate() != nil {
@@ -659,6 +675,10 @@ func listenUnixAt(directory *os.File, name string) (*net.UnixListener, error) {
 // connection is rejected immediately instead of waiting in the kernel accept
 // queue where it could be mistaken for a future reconnect owner.
 func acceptConnections(ctx context.Context, listener *net.UnixListener, active *atomic.Bool) (<-chan *net.UnixConn, <-chan error) {
+	return acceptConnectionsWithRejection(ctx, listener, active, HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "rejected", ReasonCode: "process-supervisor-core-already-connected"})
+}
+
+func acceptConnectionsWithRejection(ctx context.Context, listener *net.UnixListener, active *atomic.Bool, rejection any) (<-chan *net.UnixConn, <-chan error) {
 	incoming := make(chan *net.UnixConn, 1)
 	errors := make(chan error, 1)
 	go func() {
@@ -673,7 +693,9 @@ func acceptConnections(ctx context.Context, listener *net.UnixListener, active *
 			}
 			if !active.CompareAndSwap(false, true) {
 				_ = connection.SetWriteDeadline(time.Now().Add(time.Second))
-				_ = writeFrame(connection, HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "rejected", ReasonCode: "process-supervisor-core-already-connected"}, MaxWireFrameBytes)
+				if rejection != nil {
+					_ = writeFrame(connection, rejection, MaxWireFrameBytes)
+				}
 				_ = connection.Close()
 				continue
 			}
@@ -948,6 +970,13 @@ func revalidateInitialControlDirectory(file *os.File, expected ControlDirectoryI
 // exact set. allowLinkCountDrift is represented by exactIdentity=false; no
 // entry is admitted merely because its name belongs to the frozen vocabulary.
 func revalidateControlDirectoryEntries(file *os.File, expected ControlDirectoryIdentity, exactIdentity bool, allowed ...controlDirectoryEntrySet) error {
+	return revalidateControlDirectoryEntriesForLeaf(file, expected, exactIdentity, JournalFileName, allowed...)
+}
+
+func revalidateControlDirectoryEntriesForLeaf(file *os.File, expected ControlDirectoryIdentity, exactIdentity bool, leaf string, allowed ...controlDirectoryEntrySet) error {
+	if leaf != JournalFileName && leaf != journalFileNameV2 {
+		return ErrInvalid
+	}
 	path, observed, err := observeControlDirectory(file)
 	if err != nil || expected.validate() != nil || path != expected.CanonicalPath || exactIdentity && observed != expected || !exactIdentity && !sameControlDirectoryObject(observed, expected) || len(allowed) == 0 {
 		return ErrConflict
@@ -958,7 +987,7 @@ func revalidateControlDirectoryEntries(file *os.File, expected ControlDirectoryI
 	}
 	var observedEntries controlDirectoryEntrySet
 	for _, entry := range entries {
-		bit, ok := controlDirectoryEntry(entry)
+		bit, ok := controlDirectoryEntryForLeaf(entry, leaf)
 		if !ok || observedEntries&bit != 0 {
 			return ErrConflict
 		}
@@ -1071,12 +1100,13 @@ func sameControlDirectoryObject(left, right ControlDirectoryIdentity) bool {
 	return left.CanonicalPath == right.CanonicalPath && left.Device == right.Device && left.Inode == right.Inode && left.FileType == right.FileType && left.UID == right.UID && left.GID == right.GID && left.Mode == right.Mode
 }
 
-func controlDirectoryEntry(name string) (controlDirectoryEntrySet, bool) {
+func controlDirectoryEntryForLeaf(name, leaf string) (controlDirectoryEntrySet, bool) {
+	if name == leaf && (leaf == JournalFileName || leaf == journalFileNameV2) {
+		return controlDirectoryJournal, true
+	}
 	switch name {
 	case nonceFileName:
 		return controlDirectoryNonce, true
-	case JournalFileName:
-		return controlDirectoryJournal, true
 	case controlSocket:
 		return controlDirectorySocket, true
 	case stdoutObjectName:
@@ -1092,8 +1122,10 @@ func controlDirectoryEntry(name string) (controlDirectoryEntrySet, bool) {
 
 func descriptorPath(fd int) (string, error) {
 	buffer := make([]byte, maxPathBytes)
-	_, err := unix.FcntlInt(uintptr(fd), unix.F_GETPATH, int(uintptr(unsafe.Pointer(&buffer[0]))))
-	if err != nil {
+	// Keep the pointer conversion in the syscall expression so the runtime
+	// pins the buffer through the call; FcntlInt's int argument loses it.
+	_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), uintptr(unix.F_GETPATH), uintptr(unsafe.Pointer(&buffer[0])))
+	if errno != 0 {
 		return "", ErrConflict
 	}
 	end := 0
@@ -1114,7 +1146,7 @@ func openatExclusive(directory *os.File, name string, mode uint32) (*os.File, er
 	if err != nil {
 		return nil, ErrIntervention
 	}
-	return os.NewFile(uintptr(fd), "marshal-supervisor-owned-object"), nil
+	return os.NewFile(uintptr(fd), name), nil
 }
 
 func writeHeldOpenatExclusive(directory *os.File, name string, data []byte, mode uint32) (*os.File, error) {

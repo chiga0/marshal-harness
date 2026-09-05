@@ -46,6 +46,9 @@ FIXED_FILES = {
     "scripts/fixed-server-t1-evidence.py": "100755",
     "scripts/fixed-server-t1-evidence_test.py": "100755",
     "scripts/fixed-server-t1-task.py": "100755",
+    "scripts/fixed-server-t2-drive.py": "100644",
+    "scripts/fixed-server-t2-drive_test.py": "100644",
+    "scripts/fixed-server-t2-task.py": "100644",
     "scripts/dist-profile_test.sh": "100755",
     "scripts/install_test.sh": "100755",
     "scripts/linux-candidate-conformance.sh": "100755",
@@ -125,6 +128,12 @@ jobs:
             PATH=/usr/bin:/bin \\
             /usr/bin/python3 -I -B \\
             "$GITHUB_WORKSPACE/scripts/fixed-server-t1-evidence_test.py"
+          run_checker
+          /usr/bin/env -i \\
+            LC_ALL=C \\
+            PATH=/usr/bin:/bin \\
+            /usr/bin/python3 -I -B \\
+            "$GITHUB_WORKSPACE/scripts/fixed-server-t2-drive_test.py"
           run_checker
           /usr/bin/env -i \\
             LC_ALL=C \\

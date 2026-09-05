@@ -392,42 +392,51 @@ func (session *Session) admitRequest(request Request) (requestProjection, any, e
 	if err != nil {
 		return requestProjection{}, nil, err
 	}
-	if session.state == sessionUnbound && request.Command != CommandBindAuthority && request.Command != CommandAbortUnbound || session.state == sessionBound && (request.Command == CommandBindAuthority || request.Command == CommandAbortUnbound) || session.state == sessionAborted || session.state == sessionClosed || session.state == sessionIntervention {
-		return requestProjection{}, nil, ErrConflict
+	if err := session.admitCommandState(request.Command, request.CurrentAuthorityHead, payload); err != nil {
+		return requestProjection{}, nil, err
 	}
-	if (request.Command == CommandBindAuthority || request.Command == CommandAbortUnbound || request.Command == CommandSpawn) && request.CurrentAuthorityHead != session.authorityHead {
-		return requestProjection{}, nil, ErrConflict
+	return projection, payload, nil
+}
+
+// admitCommandState is generation-neutral command semantics. Both wire
+// generations validate their own exact headers/digests before entering here.
+func (session *Session) admitCommandState(command CommandName, authorityHead string, payload any) error {
+	if session.state == sessionUnbound && command != CommandBindAuthority && command != CommandAbortUnbound || session.state == sessionBound && (command == CommandBindAuthority || command == CommandAbortUnbound) || session.state == sessionAborted || session.state == sessionClosed || session.state == sessionIntervention {
+		return ErrConflict
 	}
-	switch request.Command {
+	if (command == CommandBindAuthority || command == CommandAbortUnbound || command == CommandSpawn) && authorityHead != session.authorityHead {
+		return ErrConflict
+	}
+	switch command {
 	case CommandSpawn:
 		value := payload.(SpawnPayload)
 		if value.SourceGateRevision != SourceGateRevisionV1 {
 			// A legacy spawn may be decoded for completed-journal replay, but it
 			// must never be executed again as a live mechanics command.
-			return requestProjection{}, nil, ErrIntervention
+			return ErrIntervention
 		}
 		if value.LaunchAuthorizedFactDigest != session.launchFact || value.SupervisorStartedFactDigest != session.supervisorStartedFact {
-			return requestProjection{}, nil, ErrConflict
+			return ErrConflict
 		}
 	case CommandInspect, CommandTerminate:
 		value := payload.(CleanupPayload)
 		if session.startedFact != "" && value.ProcessStartedFactDigest != session.startedFact || session.lastObservation == "" || value.LastObservationDigest != session.lastObservation {
-			return requestProjection{}, nil, ErrConflict
+			return ErrConflict
 		}
 		if session.cleanupBinding != "" && (value.CleanupBindingDigest != session.cleanupBinding || value.TerminalizationBarrierDigest != session.terminalBarrier || value.TerminalizationID != session.terminalizationID || value.TerminalGeneration != session.terminalGeneration) {
-			return requestProjection{}, nil, ErrConflict
+			return ErrConflict
 		}
 	case CommandCollect:
 		value := payload.(CollectPayload)
 		if value.ProcessStartedFactDigest != session.startedFact || value.LastObservationDigest != session.lastObservation {
-			return requestProjection{}, nil, ErrConflict
+			return ErrConflict
 		}
 	case CommandClose:
 		if session.cleanupBinding == "" || payload.(ClosePayload).CleanupBindingDigest != session.cleanupBinding {
-			return requestProjection{}, nil, ErrConflict
+			return ErrConflict
 		}
 	}
-	return projection, payload, nil
+	return nil
 }
 
 // admitRebind is the strictly narrower admission gate for the Attach-borrowed

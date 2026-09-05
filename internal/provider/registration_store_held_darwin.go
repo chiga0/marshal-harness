@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -192,8 +193,8 @@ func openHeldRegistrationLedger(directoryFD int) (*os.File, heldRegistrationIden
 
 func heldRegistrationPath(fd int) (string, error) {
 	buffer := make([]byte, heldRegistrationPathBufferSize)
-	_, err := unix.FcntlInt(uintptr(fd), unix.F_GETPATH, int(uintptr(unsafe.Pointer(&buffer[0]))))
-	if err != nil {
+	_, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), uintptr(unix.F_GETPATH), uintptr(unsafe.Pointer(&buffer[0])))
+	if errno != 0 {
 		return "", ErrHeldRegistrationUnavailable
 	}
 	end := bytes.IndexByte(buffer, 0)

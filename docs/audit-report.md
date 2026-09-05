@@ -1,5 +1,107 @@
 # 设计审计报告
 
+## 2026-09-05：实机前补齐独立评审输入
+
+验证更新：`6e62c8e` 的 CI 33966029736 与 `034a0f7` 的 PR CI 33966320451 五项全部通过，前述工作流契约和 Terminate fixture 失败已由新 head 关闭。等待后者真正结束后才推送本次 Python 打包增量，没有中断既有检查；本次增量单独记证。
+
+PR #257 已建立，`034a0f7` 的 CI 33966320451 正在运行。进一步沿 ReviewPacket producer 和 artifact upload 核对发现：原 T1 artifact 只包含 Run state/events、ingress journal 和客户端响应；T2 响应内的 packet 只引用输入文件，不内嵌实际 patch/报告/WorkerResult。若直接派业务 Pi，runner 退出后独立 reviewer 将缺少原始评审输入，可能被迫重跑。这是当前 B1 验收的直接阻塞，不另起产品路线。
+
+现有 T2 driver 增加成功验证后的有界只读打包：固定四类输入、原始 packet、最多 16 个规范 WorkerResult 路径及 packet 指定的候选记录；单文件 8 MiB、总量 64 MiB。逐层使用 no-follow directory FD，拒绝 symlink、hardlink、FIFO、超限、缺失、packet 漂移和覆盖已有包；tar 仅含生成的普通数据成员，解决 Attempt ID 的冒号不适合作为 artifact 直接文件名的问题。新增正反例覆盖实际 bytes、摘要目录、敏感无关文件排除与上述拒绝分支，驱动合计 9 个测试通过。未复制原始日志/凭据，未授予 authority import、Decision 或跨 runner 恢复权限；真实 Pi 和独立 ACCEPTED 仍开放。
+
+## 2026-09-05：业务驱动 CI 契约遗漏
+
+本地 `release-ci-gate_test.sh` 已通过，`6e62c8e` 提交后固定 checker 也已通过，CI 33966029736 已越过原失败步骤。准备实机时进一步核对到两个前置：现有 canary 用的是 main push CI gate，分支手动 CI 不能替代（须评审合入后再运行）；Python `isoformat` 的小数尾零会被 CLI 的 canonical RFC3339Nano 比较拒绝。当前按相同瞬间去掉小数尾零，新增整数秒/尾零/六位小数回归，7 个驱动测试通过；不延长 deadline，不放宽 CLI parser。实际 Pi 尚未启动。
+
+`8c37fff` 的 CI 33965649054 为失败：secret scan 通过，其余四个 job 均被同一个精确工作流契约差异挡住，未得到本候选 Go 动态回归的绿色证据。新增 T2 Python 测试步骤时遗漏更新 `release-ci-contract.py` 内的封闭工作流副本，不是四项独立产品故障，也不能靠重跑解决。当前同步唯一新增步骤，绑定 T2 driver/test/task 的固定路径、模式与 HEAD bytes，更新契约夹具并增加 driver 脏字节拒绝反例；原 publication 权限和门禁不变。
+
+效率纠偏：固定工作流改动必须同时运行本地 `release-ci-gate_test.sh`（已包含 committed fixture 的正反例），提交后再执行固定 checker 校验真实 HEAD，然后才推送/派发 CI；仅验证 YAML 语法不够。T2 驱动回归加入现有 `fixed-server-t1-check`，避免本地常规检查遗漏。真实业务 Pi、独立 Decision/ACCEPTED、本机 fixed image 退出 137、服务端业务取消/超时仍未关闭，不升级 B1。
+
+## 2026-09-05：终止夹具权限纠偏与 T2 有界业务驱动
+
+`c9b2d11` 的 CI 33964259197 最终四项通过、macOS quality 失败；失败为 `TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply` 的 process terminal append 返回 cleanup unauthorized。夹具把已完成信号效果后的“追加进程终态事实”误写为 `CleanupTerminate`；既有合同只允许此处 Inspect/Reconcile，Terminate 用于 allocation 终止。当前改用 Reconcile，并增加错误权限零账本写入断言；没有放宽 production append allowlist。该修复需新 head 动态回归，不能重跑旧 head 当作修复。
+
+为直接得到业务交付证据，现有手动 fixed server canary 增加 order-quote 分支：复用相同构建/CI/Pi/认证/启动/重启路径，再经固定 CLI 客户端驱动 Collect→Verify→ReviewPacket，不引入另一个 runtime。准备驱动时发现“仍在运行”在 application→HTTP→CLI 之间丢失，全部退化为未知 pending，无法安全决定是否等待。当前只为真实 `ErrAttemptStillRunning` 映射 closed reason，响应仍为 HTTP 202 pending、无成功 receipt；客户端必须重验 peer/owner，错 operation 或混有成功 payload 拒绝。CLI 输出明确 pending JSON 并保留非零退出码。未知错误保持未知，不能按同一循环盲目重试。
+
+驱动记录精确请求、deadline、观察次数和阶段结果，只在明确仍在运行时等待；错误结果、摘要/Attempt/sequence 漂移、普通 pending 或 verification fail 不自动返工。首批 6 个 injected-call 回归覆盖等待、冻结请求、未知失败零重试、deadline 不延期、receipt 漂移、失败 verification 保留 packet 与最终查询漂移。另增加真实 Unix socket 的 pending 分类和伪造 envelope 拒绝测试，Go 动态执行仍由 exact-head CI 完成。本候选尚未实机验证，没有自动 Decision，也没有关闭 B1 或本机退出 137 的独立阻塞。
+
+## 2026-09-05：fixed image 实机阻塞与业务取消合同缺口
+
+`cb615e7` 的 CI 33963625091 五项全部通过，前次两个 fixture 失败已由该 head 的动态回归验证；最新 `c9b2d11` 另跑 CI 33964259197。没有把前一绿色结果扩展到后一提交或实机。
+
+对精确 `c9b2d113f428f66c6f4352758dcf22f61a53665c` 在独立工作区构建固定 `bin/marshal`，使用 `darwin-local-dogfood`、`dev`、buildDate `2026-09-05T11:49:41Z`。SHA-256 为 `0e4ff2cfefe0b42fb7e67de1248fb4fae9fcf2799c08481018f693a98cc90780`，大小 17980578 bytes。执行 bootstrap 命令组（version/doctor --self）返回 137，无输出，不能证明已执行 activation 或任何 lifecycle。磁盘 codesign verify 成功，但为 linker ad-hoc、Identifier `a.out`、无 TeamIdentifier；codesigning identity 查询为 0。限定 amfid/syspolicyd 的近三分钟日志未提供匹配原因，因此只记录 SIGKILL 型退出，**不认定已查明是 EDR、Gatekeeper 或内存终止**。未改变安全设置、未重新签名/替换该候选、未直接启动 Pi；产物留在被忽略的固定 bin 路径。固定 pathname 并不自动解决执行信任，managed signing 仍为外部前置。
+
+同时确认 B1 取消缺口是跨层合同而非单个缺失 handler：Port 没有 cancel；已有 runtime terminalization 仅正常完成；历史 reducer 明确拒绝 RUNNING 的 run.aborted；reserved lease 初始两小时并非用户确认的 wall-timeout。新增 ADR 0081 提案列明原子 stop intent、结果竞争、cleanup、Run Outcome 和 deadline 的待冻结选择，避免再次先接 handler 后返工。它尚未接受或改变运行时权限，不升级 B1 成熟度。
+
+## 2026-09-05：取消链路与 legacy receipt-only 写旁路
+
+逐层追踪发现 v2 Attach continuation 原先没有暴露已有 `terminate` command，ResultIngress 也只有 Inspect/Close producer；不能据 mechanics 支持信号而宣称服务端取消可用。当前在既有 ADR 0056/0067/0079 terminalization 合同下补 typed Terminate continuation，复用相同 owner 锁、RB1 barrier/intent/outcome、exact pending 分类和 post-checkpoint 认证，不新增 command schema 或生命周期状态。没有 barrier、owner binding 漂移或 intervention 时拒绝，原 command deadline 不在恢复时刷新；已有 receipt 不重复发信号。连续耐久测试增加未 Collect 的运行任务到 Terminate、丢回复恢复、终态释放和冷重放；peer/mechanics 仍显式 Fake，服务端 cancel/timeout 编排及实机故障矩阵尚未关闭。
+
+另发现只禁用 legacy socket 客户端不够：已提交 Close 的只读 receipt 恢复仍可能追加后继 RB1 fact。生产 rebind/collect/terminal 共用的 held-directory 入口现在在首次写入及 Core/目录 IO 前拒绝 legacy started generation；显式历史解析/测试 helper 保留，不转换历史证据。这是 ADR 0079 v1 只读约束的实现补漏，不扩大权限，也不代表已部署新的 fixed image。
+
+## 2026-09-05：S3 终态夹具纠偏与旧入口退役候选
+
+CI 33955604098 的 macOS quality 暴露两个契约错配：Inspect 观察到 terminal 只能提供 `ProcessAbsent`，不能冒充 Terminate 的 `ProcessTerminated`；Close 恢复需要 exact `mechanics-closed`，Fake mechanics 却返回了通用测试 reasonCode。当前修复测试夹具并在 wire Close 处直接断言该原因，未放宽生产接纳。恢复错误增加无敏感值的固定阶段标签，便于一次定位身份/held journal/checkpoint/absence 失败。必须由新 head CI 确认，不能借用同次 Ubuntu 或旧 head 绿色结果。
+
+依 ADR 0079，当前候选让固定 Supervisor 入口只接纳完整 v2，新 child 仅使用 SETEXEC；legacy Start/Reconnect/Attach 在借用 owner、连接或写文件之前拒绝，不翻译旧 session。保留历史 decoder 与显式 legacy 组件 harness，不删除旧证据。fresh producer 已在 `02d1f95` 切换源码，但尚未安装新 fixed bytes，也未完成所有 legacy 业务写入口排查，因此不宣称 rollout 完成。效率教训：贯穿终态链的 Fake 必须遵循真实状态及 reasonCode；编译和结构检查不能证明这些动态语义。保持同一 S3 分支闭环，不为两处夹具修正拆新 PR。
+
+2026-09-05 新任务 producer 接线：删除该调用链的 v1 `Start` 与 v1 bootstrap/command evidence 构造，改为同一 fixed executable 的 `StartV2`、完整 handshake/anchor、v2 intent/outcome。source gate 与业务 `process-started → exact resume` 顺序保持；新启动前从当前 RB1 拒绝任何尚未 cleanup release 或仍 pending 的 legacy Supervisor。测试不再只手写 Spawn/Resume facts，而是借助显式假 Client 调用实际 producer，验证 intent-before-transport 并冷重放同一事实。新候选尚未部署；此检查不等于所有 v1 mutation API 已退役，也不替代零 active/pending v1 的实机 rollout 检查。取消/超时尚缺完整 production 调度链，必须继续实现，不能以 mechanics 支持 Terminate 代替业务可用性。
+
+2026-09-05 v2 终态 producer 接线：Inspect 沿既有 exact intent/Attach/receipt 进入 RB1；Close 的 receipt 恢复还要求独立观察精确 Supervisor 已缺席，绑定固定 Core、held control files 与完整 v2 final journal checkpoint。进程仍活跃、前后 absence 不一致、破损尾部、错误 receipt/代际均拒绝；已提交 Close 不重新执行，不以 EOF 代替退出证明。业务 `SupervisorClosed` 接纳器同步检查 started 的实际代际和进程身份，以及 outcome 与 absence 的同一最终 checkpoint；历史 v1 不迁移、不重写。该变化实现 ADR 0079 已有终态合同，不新增生命周期步骤或旁路发布权限。
+
+连续耐久测试覆盖 Inspect/Close 丢回复、缺席等待零重放、伪造 absence 写前拒绝、完整 cleanup release 与冷重放；processsupervisor 测试仍真实读取 held journal，只有 peer/内核观察采用显式替身。当前本地仅编译/静态证据，动态 CI 待验证。祖先 Collect `40bea7e` 的 CI 33950856231 五项全绿，不能替代当前候选；真实 Pi、生产 selector、取消/Terminate 与 fixed server 完整验收继续开放。
+
+2026-09-05 v2 Collect producer 接线：既有生产 Collect 入口仍保留物理 owner/current ledger 检查，v2 不再误读 v1 handshake。exact prepared request 在任何执行前耐久；丢响应的 receipt 只作为待认证观察，Attach 必须绑定 post-checkpoint 和新 child observation 才接纳；未执行时只发送原请求，intent-only 仍 intervention。成功 outcome 已入账但输出读取失败时保留事实并只重读固定对象。新增 reader 读取 held v2 journal，不转换代际；前后检查完整 checkpoint、nonce、目录/文件/socket，并核对 exact Collect receipt、manifest、输出长度和摘要。原始 transcript bytes 不进入 RB1，后续 ResultIngress 继续引用 outcome fact。
+
+效率复盘：上一候选 `71d53c2` 的 CI 33950429378 两个平台都在 `Makefile:27 format-check` 失败；手列 gofmt 文件时漏掉 `client_other.go`。这是本地可发现的流程失误，不是架构或业务失败，也不应原样重跑。已修正格式，后续采用仓库现有 `make format-check` 作为提交前统一检查，不为此引入新协议/工具或另拆 PR。quality 未跑到测试，不能把该次 conformance/secret scan 成功外推为恢复测试成功。本轮 Collect 与此前 pending-bind 必须在新 exact head 验证。
+
+2026-09-05 pending-bind 丢响应恢复：实现 ADR 0067/0079 保留的同 owner 恢复规则，不新增持久化字段或 generic reconnect 权限。先读取精确 held v2 journal 分类，保留原 prepared command 的 deadline、request digest 和 A0；intent-only 不发送命令，未写 intent 仅在认证的原 checkpoint 上发送原命令，receipt 已提交则只读 Attach 认证 post-checkpoint 后追加 exact outcome。只读磁盘分类不是授权：伪造 peer 或不匹配的当前 owner 不能接纳 receipt。跨 owner pending 保持 intervention，Close 仍需独立进程缺席证明，未因 bind 恢复而开放。
+
+新增 portable 三态/伪造 checkpoint/重复分类零写入测试、Darwin held-directory/取消/截断尾部不修复测试，以及原 RB1 业务链上的 intent-only、未执行丢回复、磁盘 receipt 加坏 peer 拒绝、认证 receipt 不重做命令和冷重放检查。动态行为由 CI 验证，本地不执行临时 Mach-O。`408f02f` 的 CI 33949630841 已五项全绿；本候选不可沿用其动态通过声明。生产 selector 未切换，未发生真实 Pi 业务验收或发布。
+
+2026-09-05 ResultIngress v2 rebind 接线：主生产恢复入口保留原物理 owner 锁与 RB1 transaction，按 SupervisorStarted 的完整代际调用 v2 Attach；不转换为 v1 handshake，也不写 generic reconnect fact。先提交 creation-once owner-bound successor，再验证完整 Attach observation，随后只提交精确 v2 intent 并发送其 prepared command，最后接纳已验证 outcome。通用 rebind validator 与 journal fact producer 按原代际验证/写入；held session-directory lookup 从已验证的 v2 started 读取 session ID。既有 v1 历史与权限不变。
+
+验证沿用同一个 durable bootstrap→initial bind→spawn→ProcessStarted→resume 测试账本，再续 owner acquisition/rebind：伪造观察不得发送命令或追加 intent；执行前读取最后一条账本确认 exact intent/recovery revision 已存在；成功后幂等调用不再次进入 transport，冷重放保持相同状态；模拟丢回复后 pending intent 保留，重试不得改写账本或重复执行。此为 Core 集成候选的测试证据，不是真实 fixed server/Pi/独立 Decision。当前 v2 pending 仍明确返回 intervention，避免误入 legacy replay；后继需要 descriptor-bound v2 receipt 分类与恢复，而不是把“拒绝重试”当作恢复完成。`e51dccf` 的 CI 33948930989 五项全绿；客户端 `408f02f` 的 CI 33949630841 单独运行，不混为本候选动态证明。
+
+2026-09-05 v2 borrowed client 接线：`WithAttachedV2` 只在完整 generation/owner authority 的同步 verifier 内检查 held directory、nonce/journal/socket 与 fixed peer；借用对象仅公开一次 observation 和四个既有 continuation，不返回通用 Client/connection。prepared bind 的目标在发送前等于 owner-bound successor。回调错误不能被 verifier 吞掉，异步/重复/回调外调用失败；命令 context 同时受 Attach scope 取消约束。已尝试但未取得验证 outcome 的命令固定 intervention，不能用“journal 未保持只读”把已发生的效果误报为 no-effect。
+
+本轮实现检查还发现 decoder 切换会丢失已预读的异常帧：v2 client 保留 Attach 的原 codec，最终 EOF 也通过同一 codec 检查；服务端的第二帧检查同样读取原 buffered reader，而非绕过其缓冲直接读连接。验证包含真实 Unix socket 的只读/同连接 prepared bind、错误 successor/method、跨 goroutine、取消的零重复 child effect，以及 portable owner 回调次数、逃逸、异常和闭集接口检查。这里的 verifier 为测试替身，不是 current-ledger 集成或独立业务 Decision 证据；ResultIngress producer 仍是下一关键接线，真实 Pi/stable gate 不变。
+
+2026-09-05 Attach continuation 候选：复用 v2 的 intent→mechanics→receipt 提交流程，新增窄命令入口，不把 v1 Request 转换为 v2。只读观察不写状态；后续命令必须在锁内重新匹配完整 session/journal/owner/child-observation checkpoint。bind 的目标额外精确等于已认证 owner-bound fact 的 Attempt head，保留旧 mechanics owner epoch。已消费 checkpoint 不允许重放；丢响应只能走现有 exact receipt recovery。终态 Close 在已提交但回复失败时也终止监听，不留下已关闭 session 的无效常驻循环。
+
+实现覆盖：错误 successor、owner、started fact、head、deadline、sequence、混代、Spawn replay、Resume 的零写入拒绝；普通命令入口拒绝 rebind；单次 rebind 不重复启动 child；Inspect→Collect→Close 按既有生命周期准入；真实 Unix socket 同一连接的 Attach→bind→EOF。客户端 borrowed capability 和 Core RB1 producer 尚未连接，故这些仍是候选代码，不是独立业务验收、生产恢复或 release 证据。后续必须完成客户端及 Core，再跑固定 bytes 的真实 Pi 完整闭环，不把当前服务端单测当作终点。下段保留前一只读 checkpoint 的历史状态。
+
+2026-09-05 Attach 接线审计：不能把已有 generic `ReconnectV2` 接到生产 owner recovery。前者推进 session 内存 owner/head，并可处理其通用 pending recovery；ADR 0067 被 ADR 0079 保留的生产顺序要求只读 Attach、RB1 bind intent、相同 prepared bind、authenticated outcome，且跨 owner pending 固定 intervention。当前候选补足 ADR 0079 的只读 v2 编码与响应观察（完整 generation/anchor、current acquisition/owner-bound、peer/child、nonce challenge），服务端在 reconnect admission **之前**分流，拒绝新 owner/head 的握手伪装成 unchanged Attach。没有新增 reconnect authority fact、fallback 或生产 selector。
+
+验证方式：portable 自洽篡改/全部 generation 字段缺失/unknown reconnect field/nonce/owner/head/child/peer 测试，以及真实 Unix socket 的无效请求后有效 Attach、EOF 收口、journal bytes/owner/head/last observation/mechanics calls 不变检查。本轮仅接通只读交换，任何 continuation 仍关闭；后继必须实现 borrowed callback 和 exact prepared-command gate，再开放 bind/collect/terminal。`a5a261e` 的 CI 33947799422 已最终五项全绿，确认上一轮业务启动链和 F_GETPATH 回归；本轮增量须单独 CI，不复用旧 head 作为动态证明。
+
+2026-09-05 启动业务接线与动态失败复盘：ProcessStarted 原实现读取 v1 handshake 时间，v2 会读到空值；现按已验证的原代际读取时间，并绑定同一 session 的 spawn CommandID/ObservedAt/ObserverIdentity。resume 重放必须对应当前 ProcessStarted，不把 exec-stopped 当作运行成功。增加完整耐久链与错误观察零写入测试；这不是切换生产 selector 或实机闭环证据。
+
+`78cfa06` 的 CI 33947059050：Ubuntu quality、Linux amd64/arm64 conformance、secret scan 通过，macOS 的 `TestOpenAttachedControlDirectoryAllowsPostCollectLinkCountGrowth` 在首次 `ObserveHeldControlDirectory` 失败。代码检查发现 processsupervisor、productionruntime 两处及 provider 共四处 `F_GETPATH` 缓冲区指针经 `FcntlInt` 的普通整数参数传递，丢失 Go 指针保活/移动语义。依据 [Go unsafe.Pointer 的系统调用规则](https://pkg.go.dev/unsafe#Pointer)，统一改为 syscall 表达式内直接转换，与仓库现有 Darwin identity 读取方式一致，并增加 fresh-goroutine/GC/无效 fd 测试。该模式缺陷已修正，但它是否解释本次间歇性 CI 失败仍待新 head 动态回归确认；不将一次绿灯或重复重跑当作完整根因证明，不放宽目录模式、owner、inode 或路径检查。
+
+2026-09-05 v2 outcome 候选接线：结果不能只携带“形状合法”的 post journal head。当前由 `PreparedCommandEvidenceV2` 在传输前冻结 redacted journal request 摘要，返回结果由 process-supervisor 自己重算完整 receipt 与 journal 链，ResultIngress 只消费 typed outcome 并核对耐久 intent。无原始 argv/environment values/stdin/nonce/transcript bytes 进入新增字段；未知字段与非 canonical 请求投影拒绝。v2 的 semantic process outcome 复用代际无关业务映射，不转换为 v1 wire；外层 RB1/Attempt 协议名不变，旧 v1 optional 新字段保持缺省。该候选尚未对真实 session 启用，因此不会迁移/重写已发布 v1 历史，也不授予生产、Attach 或正式发布完成结论。后继 Attach 必须保留旧 command A0/post receipt 与新 owner recovery anchor 的区别，不能把重连后的 owner/head 回填到原 command receipt。上一 head `0a887f2` 的 CI 33946412476 已最终五项全绿，当前 outcome 候选须单独验证。
+
+## 2026-09-05：B1 v2 恢复候选与失败复盘
+
+S3 在同一候选分支连续实现 v2 journal、命令执行与 live-session reconnect；尚未切换 production selector。重连只按最后认证的 A0 和 exact v2 journal 分类，不以新 owner head 伪造旧命令的 journal base。未写 intent 才可执行一次，已有 receipt 只重放原结果，pending intent 保留不确定性；进入可能执行 mechanics 的阶段后，失败必须使 transport 静默关闭，不能回报“无副作用”。这些仍为候选实现及测试，不是实机恢复证据；transport 和 Core producer chain 未接通。
+
+`485c606` 的 [CI 33939567946](https://github.com/chiga0/marshal-harness/actions/runs/33939567946) 在 `TestJournalWriterV2ValidatesBeforeTailRepair` 发现合法截断被误拒绝。Go `Decoder.Token` 对未结束的字符串返回 `io.ErrUnexpectedEOF`；共用 prefix parser 原来仅接受 `io.EOF` 或特定 `SyntaxError`，因此两者混淆。修正接纳合法 incomplete token，并新增真实 canonical 对象逐字节截断、重复 key、非法 escape/数字/分隔符及完整非法记录不修改的测试。未降低完整 frame 的 exact schema、digest、链序与语义验证；没有改写任何历史 journal。此为现有崩溃尾部合同的实现修复，不新增持久化语义。
+
+效率纠偏：本地 compile-only/vet/staticcheck 不能替代动态恢复测试。本次定位具体失败再提交修正，不对同一 head 盲目重跑 CI，也不另拆微型 PR；下一 exact-head CI 通过前不得称失败已关闭。后继必须把同一恢复链接入 fixed server/真实 Pi，再证明业务交付，而不是继续只积累独立组件。
+
+后继接线检查发现不能直接复用三处 v1 默认值：控制目录的 journal 文件名、busy/rejected 握手与 collect 的 observation digest。当前候选由同一 inherited server 入口解码 v2 bootstrap，代际显式传入文件身份/entry-set 检查；v2 错误连接关闭而不制造不存在的 rejected handshake；collect 分别验证 v2-wrapped observation 与实际 manifest/transcript digest，再校验 held 输出对象。测试覆盖全 wire 生命周期、receipt 恢复、效果发生后的混代文件漂移与 collect 后内容篡改。Core producer 尚未接线，Attach/正式 rollout 与实机矩阵仍开放；不是第二个 server、不同发布身份或生产成熟度升级。
+
+客户端侧接线沿 `PrepareCommandV2 → exact evidence → DoPrepared`，没有添加自动重试或直接 `Do` 旁路。命令结果计算 v2 intent/receipt 的精确 journal head，绑定 generation 与前后 anchor；超时/EOF/伪造 receipt 只保留 pending，不提升 authority。`StartV2` 先验证当前 fixed image、初始空目录与 peer，再核对 held nonce、v2 初始 journal 和完整 handshake；非 Darwin 固定 unavailable。新的公共类型当前只是 Core 接线所需的类型边界，尚未进入 durable ResultIngress facts，不代表新持久化协议已经启用。连接级测试使用 Fake mechanics，不能替代同一 fixed bytes 的真实 Pi/重启及 rollout admission。
+
+客户端与 journal 对照检查发现 rejected receipt 原先会把请求携带的外部 authority head 写成当前 head，而 live Session 拒绝时保留 A0；这会让后续合法命令的 journal 校验失败。现统一 rejected 保留 A0、成功 bind 使用 next head、其他成功命令采用请求 head，增加拒绝后合法 spawn 的链式回归，未改变已接受的权限语义。`5e1519a` CI 的 macOS 失败已保留：Close 测试遗漏必需终结事实摘要导致超时；本次补齐 fixture，修复是否有效以新候选动态 CI 为准，不重跑旧失败 head、不把本地编译称为测试通过。
+
+恢复客户端继续使用原来的 owner acquisition 顺序与 live Supervisor，不创建第二个 coordinator、不重启或 adopt 进程。`ReconnectV2` 将旧命令 A0 与恢复计划的 previous/current owner 分离：丢失第一次恢复握手后，第二次计划可以前进而原命令的 journal base 不变；已提交 bind 的 outcome authority 也不得被新 owner head 覆盖。恢复前只接受 A0、exact intent 或 exact receipt 三类 held journal，恢复后再核对握手和实际 journal，保留 buffer、不用 v1 decoder/default。新增 Fake 与 Unix wire 回归证明所需检查路径，动态执行仍须 CI；这不是实机接线已经完成。下一步直接进入 ResultIngress/ProductionRuntime 的代际 subprojection 和现有调用链，避免另起独立业务模型。
+
+`1057418` 的 CI 33941565125 已全部通过，Close fixture 和该 head 的客户端动态/race 回归有实证；后继恢复客户端尚不借用该结果。ResultIngress 的相邻接线选择既有 bootstrap fact 的显式代际 subprojection，而非重写外层协议或另一套持久化状态机：v2 必须带完整 generation、bootstrap/child/mechanics 标识及已有 owner/authority/identity/digest；v1 的新增字段为零且不序列化，混入任一 v2 字段立即拒绝。无原始 nonce 落盘，当前 authority 仍在现有投影器与 CAS 处校验，不能用自洽摘要替代 current-ledger。新鲜 Attempt 的实际 append/cold replay 测试已编写并编译，动态 CI 未确认前不提升成熟度；production producer 不做半条链切换。
+
+started 接线增加两层不可互替的验证：process-supervisor 重算 initial journal head 并绑定 exact peer/generation；ResultIngress 继续核对当前 owner、已耐久 bootstrap fact、角色分离与历史对象复用，禁止用构造器自洽验证代替账本。初始握手上的任意合法格式摘要不再足以成为 v2 started 事实。显式 `v2` subprojection 与旧 handshake 互斥，旧非零 handshake 的序列化不变；v2 mechanics anchor 携带完整 generation 和 control directory，旧 command/reconnect 校验先拒绝该新 anchor，防止新字段被旧 consumer 静默忽略。fresh Attempt 的 bootstrap→started→cold replay 与写前拒绝负例已编译，动态执行以候选 CI 为准；尚未接通后续 command/collect/terminal，因此未切换 producer 或声称实机闭环。
+
+后继把 v2 command intent 接入同一 RB1 recovery projector，保留 producer `PreparedCommandEvidenceV2.EvidenceDigest`，回放完整 generation/A0/参数投影后验证摘要；该投影不是可执行请求，必须经 `RebuildPreparedCommandV2` 与重新取得的精确 payload 比较才能传输。当前账本继续决定初始 bind 是否引用本 Attempt 的 started fact，不能以自洽的伪造请求替代。recovery header 必须与子投影代际一致；未接线的 v2 outcome/Attach 仍拒绝，不以 v1 body 伪装 v2。CI 33942406526 的 macOS 失败已定位为 Fake socket 位于 cwd 外、误用生产相对路径 helper；修正只作用于测试连接地址，不删除路径门禁、不改变 cwd，也不把 Fake 回归计为真实 fixed-image/Pi 证据。重复教训：测试在调用生产 helper 前须满足其路径与对象前置条件；普通协议 harness 与固定产物安装验证应明确分开。
+
 ## 2026-09-05：三面分离与真实业务交付纠偏
 
 基线 `origin/main@0c6d9cd`。保留确定性 Core、独立验证、Provider 分层与恢复资产；当前不能把 single-task kernel 或 T2 API 存在描述成自治 Agent Team。[ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 接受 B1→B2→B3 的业务路线，细节见 [业务交付计划](agent-team-delivery-plan.md)。

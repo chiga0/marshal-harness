@@ -72,20 +72,24 @@ func openControlFileAt(directory *os.File, name string) (*os.File, error) {
 }
 
 func openHeldSessionControlFiles(directory *os.File, expected SessionControlFiles) (*heldSessionControlFiles, error) {
-	if expected.validate() != nil {
+	return openHeldSessionControlFilesForLeaf(directory, expected, JournalFileName)
+}
+
+func openHeldSessionControlFilesForLeaf(directory *os.File, expected SessionControlFiles, leaf string) (*heldSessionControlFiles, error) {
+	if expected.validate() != nil || leaf != JournalFileName && leaf != journalFileNameV2 {
 		return nil, ErrInvalid
 	}
 	nonce, err := openControlFileAt(directory, nonceFileName)
 	if err != nil {
 		return nil, err
 	}
-	journal, err := openControlFileAt(directory, JournalFileName)
+	journal, err := openControlFileAt(directory, leaf)
 	if err != nil {
 		_ = nonce.Close()
 		return nil, err
 	}
 	held := &heldSessionControlFiles{nonce: nonce, journal: journal, identity: expected}
-	if err := revalidateHeldSessionControlFiles(directory, held, expected); err != nil {
+	if err := revalidateHeldSessionControlFilesForLeaf(directory, held, expected, leaf); err != nil {
 		held.close()
 		return nil, err
 	}
@@ -93,6 +97,13 @@ func openHeldSessionControlFiles(directory *os.File, expected SessionControlFile
 }
 
 func revalidateHeldSessionControlFiles(directory *os.File, held *heldSessionControlFiles, expected SessionControlFiles) error {
+	return revalidateHeldSessionControlFilesForLeaf(directory, held, expected, JournalFileName)
+}
+
+func revalidateHeldSessionControlFilesForLeaf(directory *os.File, held *heldSessionControlFiles, expected SessionControlFiles, leaf string) error {
+	if leaf != JournalFileName && leaf != journalFileNameV2 {
+		return ErrInvalid
+	}
 	if directory == nil || held == nil || expected.validate() != nil {
 		return ErrInvalid
 	}
@@ -108,7 +119,7 @@ func revalidateHeldSessionControlFiles(directory *os.File, held *heldSessionCont
 	if err != nil || nonceAt != expected.Nonce {
 		return ErrConflict
 	}
-	journalAt, _, err := observeControlFileAt(directory, JournalFileName)
+	journalAt, _, err := observeControlFileAt(directory, leaf)
 	if err != nil || journalAt != expected.Journal {
 		return ErrConflict
 	}

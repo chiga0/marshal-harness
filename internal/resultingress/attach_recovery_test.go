@@ -15,6 +15,20 @@ import (
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
 
+func TestProductionRecoveryRejectsLegacyBeforeCoreOrDirectoryIO(t *testing.T) {
+	// A nil profile would panic at Core lookup if legacy recovery reached IO.
+	// Even an already committed Close must not append a successor in v2.
+	for _, state := range []AttemptAuthorityState{
+		{},
+		{SupervisorStartedDigest: attemptTestDigest("legacy-started")},
+		{SupervisorClosedDigest: attemptTestDigest("legacy-closed")},
+	} {
+		if _, err := openAttachedControlDirectory(nil, state); !errors.Is(err, ErrPreparedExecutionUnavailable) {
+			t.Fatalf("legacy recovery: %v", err)
+		}
+	}
+}
+
 func TestOpenAttachedControlDirectoryAllowsPostCollectLinkCountGrowth(t *testing.T) {
 	rootPath := t.TempDir()
 	if err := os.Chmod(rootPath, 0o700); err != nil {
