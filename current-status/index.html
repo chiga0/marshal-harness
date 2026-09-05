@@ -1,0 +1,1379 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="面向 Agent 软件工程的长寿命确定性 Control Plane / Durable deterministic control plane for agentic software engineering">
+      
+      
+      
+        <link rel="canonical" href="https://chiga0.github.io/marshal-harness/current-status/">
+      
+      
+        <link rel="prev" href="../concepts/">
+      
+      
+        <link rel="next" href="../getting-started/">
+      
+      
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/" hreflang="zh">
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/en/" hreflang="en">
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>当前可用能力 - Marshal Harness</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#_1" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href=".." title="Marshal Harness" class="md-header__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Marshal Harness
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              当前可用能力
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换暗色"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换暗色" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换亮色"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换亮色" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="选择当前语言">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/en/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Marshal Harness" class="md-nav__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Marshal Harness
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开始
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    开始
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Marshal 是什么
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    当前可用能力
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    当前可用能力
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-05" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-05 当前摘要
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-04-fixed-server-t1-restartresponse-loss" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-04 fixed server T1 已真实集成：restart/response-loss 恢复闭环
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-04-main-exact-head-cli-pi-accepted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-04 main exact-head CLI 回归闭环：真实 Pi 到 ACCEPTED
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-03-fixed-server-s4-resident-production-composition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-03 fixed server S4 候选：resident production composition
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-03-fixed-server-s2-af_unix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-03 fixed server S2：固定二进制的认证 AF_UNIX 端点
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-03-fixed-server-s13-strict-successor-pending" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-03 fixed server S1.3 候选：strict successor 可恢复旧 pending
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-02-226-cli-adapter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-02 #226 叶因已锁定 CLI adapter 层（历史转交状态，现已关闭）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-02-adr-0075-main226-sealed-startpreparedrun" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-02 ADR 0075 修复已上 main，#226 当时仍阻塞 sealed StartPreparedRun（历史）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-02-m13-goallite-dogfoodworker-collect-finalize-rc1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-02 M13 GoalLite 真实任务 dogfood：worker 交付完成，collect finalize 暴露第三道 RC1 缺陷（历史取证）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-01-v100-rc1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-01 v1.0.0-rc1 已发布
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-01-stable-server-cutover" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-01 stable server cutover 开始
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-08-31-fixed-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-08-31 fixed CLI 生命周期检查点
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        现在可以使用
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mac-first-adapter-2026-08-30" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mac-first Adapter 现状（2026-08-30）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pi-first-darwin-canary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        历史定位记录：Pi-first Darwin 启动检查点（已被完整 canary 取代）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#v10-stable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v1.0 stable 正在建设
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        能力不会被混淆
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        接下来怎么走
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    使用 Marshal
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    使用 Marshal
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install-and-upgrade/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安装、升级与回滚
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    日常使用
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../marshal-skill/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    在 Codex 中使用
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    了解设计
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    了解设计
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-it-works/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    工作原理
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安全与隐私
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-05" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-05 当前摘要
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-04-fixed-server-t1-restartresponse-loss" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-04 fixed server T1 已真实集成：restart/response-loss 恢复闭环
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-04-main-exact-head-cli-pi-accepted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-04 main exact-head CLI 回归闭环：真实 Pi 到 ACCEPTED
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-03-fixed-server-s4-resident-production-composition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-03 fixed server S4 候选：resident production composition
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-03-fixed-server-s2-af_unix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-03 fixed server S2：固定二进制的认证 AF_UNIX 端点
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-03-fixed-server-s13-strict-successor-pending" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-03 fixed server S1.3 候选：strict successor 可恢复旧 pending
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-02-226-cli-adapter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-02 #226 叶因已锁定 CLI adapter 层（历史转交状态，现已关闭）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-02-adr-0075-main226-sealed-startpreparedrun" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-02 ADR 0075 修复已上 main，#226 当时仍阻塞 sealed StartPreparedRun（历史）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-02-m13-goallite-dogfoodworker-collect-finalize-rc1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-02 M13 GoalLite 真实任务 dogfood：worker 交付完成，collect finalize 暴露第三道 RC1 缺陷（历史取证）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-01-v100-rc1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-01 v1.0.0-rc1 已发布
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-01-stable-server-cutover" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-01 stable server cutover 开始
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-08-31-fixed-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-08-31 fixed CLI 生命周期检查点
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        现在可以使用
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mac-first-adapter-2026-08-30" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mac-first Adapter 现状（2026-08-30）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pi-first-darwin-canary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        历史定位记录：Pi-first Darwin 启动检查点（已被完整 canary 取代）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#v10-stable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v1.0 stable 正在建设
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        能力不会被混淆
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        接下来怎么走
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="_1">当前可用能力<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h1>
+<p>Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。</p>
+<h2 id="2026-09-05">2026-09-05 当前摘要<a class="headerlink" href="#2026-09-05" title="Permanent link">&para;</a></h2>
+<p>PR #254 已合入 <code>main@0c6d9cd</code>：fixed server 已有 collect/verify/review/Decision 接口，不能再说“尚未接线”；但最终 bytes 的真实 T2 业务闭环、完整恢复及正式发布门禁仍未关闭，不能说“server 已生产可用”。RC1 的发布事实与 T1 的实机证据保留。新路线按 <a href="../roadmap-status/#业务交付当前表">Roadmap 当前表</a> 的 B1 单任务服务→B2 受限 Agent Team→B3 长期运行/正式支持推进；目标和验收见 <a href="../agent-team-delivery-plan/">业务交付计划</a>。本轮参考业务测试不是实机成功证据。</p>
+<p>下方均为带日期的历史证据；其中“当前/下一步”只描述对应 checkpoint，不覆盖本节及 Roadmap。</p>
+<h2 id="2026-09-04-fixed-server-t1-restartresponse-loss">2026-09-04 fixed server T1 已真实集成：restart/response-loss 恢复闭环<a class="headerlink" href="#2026-09-04-fixed-server-t1-restartresponse-loss" title="Permanent link">&para;</a></h2>
+<p>PR <a href="https://github.com/chiga0/marshal-harness/pull/252">#252</a> 已以 merge commit <code>b39c346ae2fdb856c8442bdd6b56eec361ab1f84</code> 合入 main；该 exact head 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33850189142">required CI</a> 在 Ubuntu、macOS、Linux amd64/arm64 candidate conformance 与 secret scan 全绿后，触发 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33851302323">fixed server T1 canary</a>。canary 从该 head 构建一次固定 <code>bin/marshal</code>，以真实 Pi <code>0.84.4</code>（<code>pai-eas/qwen3.7-plus</code>）经 <code>marshal control-plane serve → authenticated AF_UNIX → StartRun → RUNNING → InspectRun</code> 执行；随后受控 <code>kill -9</code> 第一个 server，严格 successor 在 owner epoch <code>2</code> 完成 recovery-before-ready，并以同一 request key、request bytes 与冻结 deadline 对 response-loss delivery 做 exact replay。</p>
+<p>上传 artifact <code>9928466621</code> 的闭合摘要为：<code>sourceHead=b39c346…1f84</code>，candidate SHA-256 <code>sha256:180364721455b23f18aa4e72a4e2059683fb772eb39bb95b0e00f107cb35c4c5</code>，CDHash <code>f940ce13b175951b27105356958bf31c64bd62d7</code>，owner epochs <code>[1,2]</code>；Supervisor command 只有 <code>spawn=1</code>、<code>resume=1</code>、<code>bind-authority=2</code>，且每条 intent/outcome 均闭合，<code>pending=0</code>、<code>rejectedOrUnknown=0</code>。delivery 恰好形成一份 immutable pending 与一份 receipt-ref；Run/Attempt、worker start、recovery bind 均唯一，<code>cliFallback=false</code>。两个 server observation 都绑定同一 canonical <code>bin/marshal</code> 路径、device/inode、bytes 与 CDHash；生产路径没有匿名临时 Mach-O、第二 writer/root 或 CLI mutation fallback。</p>
+<p>因此 ADR 0076 定义的 <strong>fixed transport/T1 capability</strong> 从 <code>COMPONENT</code> 升级为 <code>INTEGRATED</code>。该结论只覆盖真实 Agent 到 <code>RUNNING</code>、response-loss 与 server restart strict-successor replay，不把 ADR 0062 的完整 fixed-server lifecycle 或 I186-R2–R6 整体提前升级：T2 仍须把 collect/verify/review/独立 ReviewDecision 全部接入同一个 resident <code>PublicApplicationPort</code> 并到达 <code>ACCEPTED</code>；随后仍需完整 recovery/fault matrix、Issue #212 的 Developer ID signing/notarization 与 managed launch、Linux stable gate、受保护 stable candidate。T1 candidate 只有 CI ad-hoc identity，不能据此声称企业安全软件信任、managed production 或 stable。</p>
+<h2 id="2026-09-04-main-exact-head-cli-pi-accepted">2026-09-04 main exact-head CLI 回归闭环：真实 Pi 到 <code>ACCEPTED</code><a class="headerlink" href="#2026-09-04-main-exact-head-cli-pi-accepted" title="Permanent link">&para;</a></h2>
+<p><code>main@c2198e3628f38b126402cf7ab153120ea25e3d77</code> 已用 build-from-head 固定 candidate 与真实 Pi <code>0.84.4</code>（<code>pai-eas/qwen3.7-plus</code>）完成 sealed CLI 纵切。run phase <a href="https://github.com/chiga0/marshal-harness/actions/runs/33788766642">33788766642</a> 仅消费一次 Attempt，穿过 existing-worktree path-B、<code>PrepareRunStart → StartPreparedRun</code>、真实 worker terminal collect 与 Verification，到达 <code>REVIEW_PENDING</code>；独立 reviewer 确认 <code>P0=0</code>、<code>P1=0</code>。finalize phase <a href="https://github.com/chiga0/marshal-harness/actions/runs/33790168049">33790168049</a> 导入精确绑定的 ReviewDecision 后持久到 <code>ACCEPTED</code>，<code>rc1-carrier-check</code> 通过；carrier artifact 为 <code>9907034593</code>，上传 zip digest 为 <code>sha256:e212f4e817fdc774828a7eaffa6b584eeeb5b243af98e486289e2c94362143b7</code>。</p>
+<p>因此 <a href="https://github.com/chiga0/marshal-harness/issues/226">#226</a> 已按 PR #228 的 exact-head <code>StartPreparedRun</code> 关闭合同完成，不再列为 stable 当前阻塞。<a href="https://github.com/chiga0/marshal-harness/issues/224">#224</a> 与 <a href="https://github.com/chiga0/marshal-harness/issues/225">#225</a> 的实现已在 main，但 ADR 0075 还要求用 <code>m13-e2e-dogfood</code> 在相同 published-asset pin 下以真实复杂中文任务到 <code>ACCEPTED</code>，并覆盖 default umask 与“散文 + 单 JSON”输出、提取时间/token 指标；本次 marker canary 不能替代该证据，所以两项继续开放。该 CLI 证据本身不把 fixed server 或 v1.0 stable 提前标记为完成；S4 的真实跨进程 server restart/response-loss T1 已由上方后继证据关闭，当前仍开放的是 T2 server 路径到 <code>ACCEPTED</code>、完整 recovery/fault matrix、Issue #212 的 managed signing/notarization、Linux stable gate 与受保护 stable candidate。本机 macOS 26.6.2 对 ADR 0059 <code>PT_TRACE_ME → exec → SIGTRAP → PtraceDetach</code> 的兼容性故障也仍须以窄 ADR 和固定 <code>marshal</code> 内部 launcher 修复；不得生成匿名临时 executable，也不得把云端 runner 成功冒充本机该缺口已关闭。</p>
+<h2 id="2026-09-03-fixed-server-s4-resident-production-composition">2026-09-03 fixed server S4 候选：resident production composition<a class="headerlink" href="#2026-09-03-fixed-server-s4-resident-production-composition" title="Permanent link">&para;</a></h2>
+<p>S2 已由 PR <a href="https://github.com/chiga0/marshal-harness/pull/230">#230</a> 合入 <code>main@0a0c73e</code>。S3 候选在同一认证 AF_UNIX connection 上增加仅包含 <code>Status</code>、<code>StartRun</code>、<code>InspectRun</code> 的 closed HTTP/1.1 路由：header/body/response、阶段 deadline、repository inflight/queue 均有固定上限，canonical JSON、unknown/duplicate field、unsupported operation、过期或超界 deadline、binding 漂移均在 application/delivery 前拒绝。每条 connection 当前只接受一次 request，严于协议上限并消除 keep-alive/pipelining 歧义。</p>
+<p><code>StartRun</code> 先写 immutable pending，再查 current RB1；只有 exact application receipt 已闭合为 receipt-ref 且 current projection 再次吻合时才返回 <code>success</code>。Port 返回错误、客户端断开或 response loss 都不能证明 mutation 未发生：RB1 未命中时只返回 <code>delivery-pending</code>，重放已有 receipt 时不产生第二次 mutation。实现仍运行于现有固定 <code>marshal</code> 进程，没有 <code>/tmp</code>、随机 helper Mach-O、TCP、CLI fallback 或第二 authority root。</p>
+<p>S4 候选已提供固定 <code>marshal control-plane serve|status|inspect|start</code> 入口：server 在对外报告 ready 前完成 resident recovery，独立只读 client 经认证 socket 调用同进程 <code>PublicApplicationPort</code>，mutation 的 request key、canonical request 与显式 UTC deadline 可在 response-loss/restart 后原样重放。代码已通过独立审查（<code>P0=0</code>、<code>P1=0</code>），但 fixed candidate bytes 的真实 Pi <code>RUNNING</code>、server restart/response-loss strict-successor replay 和 exact-head 动态 CI 尚未完成，因此仍是 <code>COMPONENT</code>，不是已生产可用的 server。随后 T2 才扩展到 collect/verify/review/Decision 和 <code>ACCEPTED</code>；这些动态证据完成前不得宣称 v1.0 stable 已满足。</p>
+<h2 id="2026-09-03-fixed-server-s2-af_unix">2026-09-03 fixed server S2：固定二进制的认证 AF_UNIX 端点<a class="headerlink" href="#2026-09-03-fixed-server-s2-af_unix" title="Permanent link">&para;</a></h2>
+<p>fixed server 主线已从 CLI-only 回归切换到 <a href="../adr/0076-darwin-fixed-server-pathname-locator/">ADR 0076</a> 的相邻纵切。S2 把 endpoint 放在 canonical repository 的 held <code>.marshal/runtime-v1/control</code> 下，按 current owner epoch 确定性派生 socket/token leaf；server 与 client 在 handshake 前后联合重验 held root、current owner、peer process、fixed <code>marshal</code> binary、socket object 和 token identity，并用单次 nonce + HMAC-SHA-256 绑定 request key、request/intent digest 与冻结 deadline。生产实现不生成或执行 <code>/tmp</code>/随机目录 Mach-O，也不允许 endpoint override、TCP、cwd/Fchdir 或第二 authority root。</p>
+<p>实现 sourceHead 为 <code>7ee24cc8b4f2e47146410ab69e041038d6f318c6</code>，PR <a href="https://github.com/chiga0/marshal-harness/pull/230">#230</a> 已以 merge commit <code>0a0c73e4947c4124de89de842a1e4857e77fba88</code> 合入；required CI（Ubuntu、macOS、secret scan）全绿。测试覆盖有效认证与应用字节往返、exact cleanup、oversize、伪造 HMAC、proof replay、token ABA 和 short write；client dialing只接受current <code>FixedEndpointAuthority</code>，使用close-on-exec duplicate control descriptor并在握手前后重验owner，避免裸FD复用与snapshot自洽。</p>
+<p>本候选仍只把 authenticated transport 建成 <code>COMPONENT</code>：尚无 bounded HTTP/application routing、resident <code>marshal control-plane serve</code> 命令、真实 Pi 或 restart/response-loss canary。下一顺序固定为 S3 bounded request + immutable delivery reconcile → S4 resident composition/recovery → 固定 candidate bytes 的真实 Pi <code>RUNNING</code>/strict-successor replay → T2 独立 Verification/Decision 到 <code>ACCEPTED</code>。当时 <a href="https://github.com/chiga0/marshal-harness/issues/226">#226</a> 保留为 CLI-only adapter 回归债务但不阻塞 fixed server；它现已由上方 2026-09-04 exact-head checkpoint 关闭，server 仍不得回退到该 CLI mutation path。</p>
+<h2 id="2026-09-03-fixed-server-s13-strict-successor-pending">2026-09-03 fixed server S1.3 候选：strict successor 可恢复旧 pending<a class="headerlink" href="#2026-09-03-fixed-server-s13-strict-successor-pending" title="Permanent link">&para;</a></h2>
+<p>fixed <code>marshal control-plane serve</code> 的 S1 durable delivery 已按 <a href="../adr/0076-darwin-fixed-server-pathname-locator/">ADR 0076</a> 形成完整候选。S1.1/S1.2 已建立 immutable <code>pending → current RB1 read-only reconcile → receipt-ref</code>；S1.3 把 <code>AuthorityRootDigest</code> 收敛为 canonical repository、held directory object 与 closed-name graph 的稳定身份，并从同一 physical RB1 ledger 重放完整 owner history。旧 owner 的 pending 不是 handoff capability：只有持有 current physical owner lock 的 strict successor，证明 old owner fact/acquisition 到 current acquisition 之间同 scope、epoch 严格递增、digest 连续且无分叉，并重新核对 root/request/intent 后，才可 exact replay 或补同一 receipt。</p>
+<p>S1.3 代码 sourceHead 为 <code>62c1aed5fa80017a609fe87d2a6c92696f55f66b</code>；本地 Darwin/Linux compile-only、<code>go vet</code>、staticcheck 与 diff-check 已通过，动态测试和 secret scan 以最终分支 required CI 全绿为合入条件。测试矩阵覆盖 cold successor 重开、稳定 root identity、旧 pending exact replay、receipt 闭合，以及伪造 fact/acquisition/epoch 的拒绝。本候选只关闭 S1，不包含 socket 或用户入口；S2 AF_UNIX endpoint auth、S3 bounded HTTP、S4 真实 Pi restart canary 和 T2 到 <code>ACCEPTED</code> 仍未完成，因此 fixed server 继续为 <code>COMPONENT/INTEGRATION-OPEN</code>。</p>
+<h2 id="2026-09-02-226-cli-adapter">2026-09-02 #226 叶因已锁定 CLI adapter 层（历史转交状态，现已关闭）<a class="headerlink" href="#2026-09-02-226-cli-adapter" title="Permanent link">&para;</a></h2>
+<p>分层探针 PR #227（squash 合入 <a href="https://github.com/chiga0/marshal-harness/commit/b522008">b522008</a>）给出证据化分层：</p>
+<ul>
+<li>sealed composition staging、ExistingWorktree path-B、<code>PrepareRunStart → RehydratePreparedRunStart</code> 的 durable 身份契约全部通过（step2/3/4 绿）；</li>
+<li><code>controller.startPreparedRun</code> 直接驱动（step6）在测试宿主下分类为 <code>application: production-bridge-unavailable</code>（spawn 相关生产门禁，<strong>不是</strong> dogfood 的 <code>application: authority-conflict</code>）——durable/resultingress/productionruntime 排除作为叶因；</li>
+<li><strong>#226 叶因锁定 CLI 扩展层 <code>internal/cli/sealed_application_darwin.go</code>（636c80d 的 435 行 adapter）</strong>。</li>
+</ul>
+<p>当时的 agent 交接计划如下（交接说明见 <code>docs/handoff-226-cli-adapter.md</code>；修复与 exact-head 验证现已完成）：</p>
+<ul>
+<li>第一步：review <code>sealed_repository_application</code> 的 <code>openRun</code> 调用链与 durable replay 字段等价性，定位确切 leaf；</li>
+<li>修复后按 ADR 0068 路径以 <code>m13-e2e-dogfood</code>（<code>candidate-mode=build-from-head</code>）重跑到 <code>ACCEPTED</code>；</li>
+<li>关闭 #226；#224/#225 仍须完成 ADR 0075 的复杂任务外部验证，#212 作为独立 managed signing/notarization 门禁保留。</li>
+</ul>
+<h2 id="2026-09-02-adr-0075-main226-sealed-startpreparedrun">2026-09-02 ADR 0075 修复已上 main，#226 当时仍阻塞 sealed StartPreparedRun（历史）<a class="headerlink" href="#2026-09-02-adr-0075-main226-sealed-startpreparedrun" title="Permanent link">&para;</a></h2>
+<p><a href="../adr/0075-rc1-dogfood-usability-barriers/">ADR 0075</a> 已接受并在 main 上全部落地（<code>516e6a3</code>、<code>9029619</code>、candidate-mode <code>0a192ec</code>、workflow 链 <code>be3183b</code>/<code>0de20c5</code>），三组定向回归测试（0700 worktree 不变量、launch 输入 token 契约、终态单 JSON 提取）覆盖三种原文 dogfood 确定性屏障（#224、#225）。相关 exact-head CI 已全绿。build-from-head dogfood 实证：PrepareRunStart 全路径通过（ingress 八条事实完整晋级至 <code>prepared-execution-created</code>）。</p>
+<p>该时点的阻塞已定位为 <a href="https://github.com/chiga0/marshal-harness/issues/226">#226</a>：main-line composition session 重构（<code>e691aea</code>、<code>636c80d</code>）在 CLI-driven existing-worktree path-B 下的 sealed <code>StartPreparedRun</code> 确定性返回 <code>application: authority-conflict</code>（承袭内层映射），supervisor 从未 spawn；RC1 sourceHead <code>c1407bd</code> 在同一条链下可过，HEAD 不可过。本方向锁定 ADR 0075 域之外（独立回归），已按门禁单独归档。2026-09-03 路线调整后，#226 不再作为 fixed server 的串行前置：server 必须直接复用 <code>RepositorySession</code>/<code>PublicApplicationPort</code>，且不得以 CLI mutation fallback 绕过 transport。#226 现已由 PR #228 与上方 2026-09-04 exact-head <code>ACCEPTED</code> 证据关闭；stable 顺序保持 S4→真实 server Pi/T2 <code>ACCEPTED</code>→recovery/fault matrix→managed signing/notarization（Issue #212）→Linux stable gate→protected stable candidate。</p>
+<h2 id="2026-09-02-m13-goallite-dogfoodworker-collect-finalize-rc1">2026-09-02 M13 GoalLite 真实任务 dogfood：worker 交付完成，collect finalize 暴露第三道 RC1 缺陷（历史取证）<a class="headerlink" href="#2026-09-02-m13-goallite-dogfoodworker-collect-finalize-rc1" title="Permanent link">&para;</a></h2>
+<p>以已发布 <code>v1.0.0-rc1</code>（digest 钉死、外部下载安装、无重建）执行首个真实相对复杂任务 <code>m13-goal-lite-walking-skeleton-20260902</code>：产出 GoalLite walking skeleton 的中文设计文档与两份 schema 样例（allowPaths 限定 3 文件，3 文件均真实写出）。GH macos-14 runner（workflow <code>m13-e2e-dogfood</code>，run <a href="https://github.com/chiga0/marshal-harness/actions/runs/33578572483">33578572483</a>）上真实 Pi <code>0.84.4</code>（<code>pai-eas/qwen3.8-max</code>）通过 activation v2 → render → plan → approve → sealed run.start → spawn+resume → 完整执行 ~11.5 → terminal。</p>
+<p><strong>度量</strong>：worker 会话 API usage 汇总 <code>input=296,176 / output=82,326 / cacheRead=4,561,792 / cacheWrite=0 / reasoning=58,735</code>（token）；worker 执行 11.5 分钟；run 墙钟约 12.9 分钟；collect 轮询 196 轮期间 attach 健康。</p>
+<p><strong>结论</strong>：真实复杂任务的 supply→spawn→harvest 在发布二进制上可行且效率可度量；但首个 process-terminal collect 以 <code>application: authority-conflict</code> 确定性 fail closed（<a href="https://github.com/chiga0/marshal-harness/issues/225">Issue #225</a>，result-ingress 事实链落在 collect command-outcome 后的组合层），生命周期未能到达 VERIFYING/REVIEW_PENDING。另已归档 <a href="https://github.com/chiga0/marshal-harness/issues/224">Issue #224</a>（0700 worktree admission 与 CJK/空白后 <code>/</code> 的 launch 输入闸门，两道 PrepareRunStart 确定性屏障）。本机 macOS 26.6.2 上 pi 子进程另被宿主策略以 trace/BPT 杀死（属 <a href="https://github.com/chiga0/marshal-harness/issues/212">Issue #212</a> 签名/宿主策略族）。</p>
+<p>上述结果在该时点不改变发布基线与成熟度：RC1 仍为 unsigned local-dogfood prerelease；#224、#225 的实现已合入，但 ADR 0075 要求的复杂任务外部关闭证据仍开放。#212 的 signing/notarization 同样开放，不得伪称 stable。</p>
+<h2 id="2026-09-01-v100-rc1">2026-09-01 <code>v1.0.0-rc1</code> 已发布<a class="headerlink" href="#2026-09-01-v100-rc1" title="Permanent link">&para;</a></h2>
+<p><a href="https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0-rc1"><code>v1.0.0-rc1</code></a> 已发布为 unsigned、Mac-first、Darwin arm64、CLI-only 的 <code>darwin-local-dogfood</code> 生命周期预览。annotated tag object <code>e99326fa6b6e57a19db8d6404c56b3dcf396fdc7</code> 精确指向 sourceHead <code>c1407bd77924c97dc6784f4d81938a3f0bfa75f6</code>，candidate SHA-256 为 <code>f9ed7fa59d05f5e71fef7164b8015240497e1d18e25ef1d3f8e199c1378a3774</code>。</p>
+<p>真实 Pi <code>0.84.4</code> canary run <code>33504020360</code> 与 finalize <code>33504247271</code> 已通过 fixed CLI、Local allocation、ResultIngress、独立 Verification/ReviewDecision 到达 <code>ACCEPTED</code>，receipt digest 为 <code>sha256:7bd5b500bbaff5c5b008922b713d9844b792a3e82ece4e4a46ccd837496b4525</code>。candidate exact-head CI run <code>33502847249</code> 的 Ubuntu、macOS、secret scan 全绿；release workflow run <code>33506656403</code> 只消费同一 carrier，不重建 candidate。</p>
+<p>外部下载 release 后，二进制 SHA-256 与 canary 完全相同；临时目录安装成功，<code>marshal version --json</code> 精确返回 <code>1.0.0-rc1</code>、commit <code>c1407bd</code>、Go <code>1.26.6</code>、<code>darwin/arm64</code> 与 <code>darwin-local-dogfood</code>。安装必须显式指定 exact tag 和 <code>MARSHAL_LOCAL_DOGFOOD_PREVIEW=1</code>，安装器不会自动生成 activation，也不会修改 Gatekeeper、SIP 或 EDR。</p>
+<p>本次结果只关闭 <a href="../adr/0068-mac-first-cli-only-lifecycle-preview-rc1/">ADR 0068</a> 的 local-dogfood prerelease distribution exit。它不满足 ADR 0052 的 <code>RELEASED</code> 成熟度，也不是 production、managed、notarized、hardened、server、Linux 或 stable release。R2–R5 继续为 <code>COMPONENT</code>，R6 为 <code>IN_PROGRESS/COMPONENT</code>。</p>
+<h2 id="2026-09-01-stable-server-cutover">2026-09-01 stable server cutover 开始<a class="headerlink" href="#2026-09-01-stable-server-cutover" title="Permanent link">&para;</a></h2>
+<p>独立 <code>cmd/marshal-server</code> 已按 <a href="../adr/0062-fixed-marshal-production-server-mode/">ADR 0062</a> 从生产权威路径降权：删除 <code>--marshal-executable</code>、child <code>marshal task run</code>、Provider registration 写入口和相关环境转发；兼容进程只提供既有 Run/Task 查询与事件投影，所有 Task create/cancel、Run approval/start 在读取请求体或写入幂等账本前统一返回 <code>mutation-authority-unavailable</code>。启动 banner 明示 <code>mutationMode=disabled</code>，不存在通过 flag 或环境变量重新开启 mutation 的路径。</p>
+<p>这关闭了“独立二进制仍可成为第二 authority root”的旧实现风险，但没有完成 stable server。下一相邻切片仍须在 fixed <code>marshal</code> 内实现 <code>marshal control-plane serve</code>，复用同一个 in-process <code>PublicApplicationPort</code>、<code>ProductionRuntime</code> owner 与恢复控制器，并通过 authenticated loopback、并发 owner、response-loss 和 restart recovery 矩阵。因此 fixed server finding 继续为 <code>INTEGRATION-OPEN</code>，R2–R6 成熟度不升级。</p>
+<p>第二段相邻 cutover 已把 <code>internal/server</code> 的 Run start 从 <code>RunExecutor func</code> 旁路改为唯一注入的 <code>PublicApplicationPort</code>：transport 先以 <code>InspectRun</code> 冻结 exact sequence、Attempt 与 <code>authorityHead</code>，调用 <code>PrepareRunStart</code> 后把 exact prepared Attempt 与 <code>preparationDigest</code> 一同写入 pending intent，再调用 <code>StartPreparedRun</code>；返回值改为 path-free <code>RunProjection</code>，正常成功停在权威 <code>RUNNING</code>，不会把结果收集或 Verification 冒充为 start 的一部分。响应丢失恢复只接受同一 prepared Attempt 且 current authority 上 sequence/head 均已前进的 receipt；定向测试覆盖不重复 Prepare/Start 与“其它 Attempt 不得被旧 intent 认领”的负向场景。</p>
+<p>该段消除了 Run start 的 direct execution seam，但 server 仍保留旧 Task create/cancel、approval、query/event 资产，fixed <code>marshal control-plane serve</code> 及 repo-wide owner/session runtime 尚未实现；因此仍不得把 <code>internal/server</code> 视为完整 ADR 0062 adapter，也不得升级 stable/R2–R6 状态。下一切片必须先给 <code>ProductionRuntime</code> 建立可服务多个 Run 的 owner-scoped session/factory，再由 fixed CLI 注入，而不是在 HTTP 包内重新装配 per-Run authority。</p>
+<p>第三段相邻 cutover 已新增 <code>RepositorySession</code>：fixed Marshal 进程只执行一次 Phase-A scope lock、durable owner append/replay、Phase-B bind、sealed ResultIngress 与 runtime claim；后续 Run-scoped <code>ComposeRuntime</code> 只借用同一 current owner/ingress，并各自持有和释放 Run lease。Session 关闭会等待在途 Run runtime，随后关闭 ingress 并最后释放 owner；关闭单个 Run 不再释放仓库 owner，已关闭 Session 也不能继续组合新 Run。定向测试覆盖同一 owner epoch 下连续组合两个 Run runtime、并发第二 Session fail closed、关闭等待、关闭后拒绝借用以及释放后严格 successor epoch。</p>
+<p>本段没有新增 authority fact、Schema、状态转换或发布权限，因此沿用 ADR 0062/0066/0069 的既有合同；它只是 fixed server 的资源生命周期基础，尚未把 run resolver、完整 <code>PublicApplicationPort</code> 或 AF_UNIX transport 接入 <code>cmd/marshal</code>。因此 fixed server finding 仍为 <code>INTEGRATION-OPEN</code>，下一步是把 Run-specific composition assembler 收敛为 Session 之上的应用 Port，再实现 <code>marshal control-plane serve</code>。</p>
+<p>第四段相邻 cutover 已把 fixed CLI 原先内联在 <code>task run</code> 中的 Run-specific composition 提取为 <code>sealedRepositoryApplication</code>。该 adapter 在一个 <code>RepositorySession</code> 下复用 held owner、ResultIngress、descriptor-bound Run store、dispatch ledger 与 Provider authority；每次 <code>InspectRun</code> / <code>PrepareRunStart</code> / <code>StartPreparedRun</code> 只短暂组合并关闭精确 Run runtime。启动时它通过 held StateRoot 枚举全部 Run，先对每个 <code>RUNNING</code> Run 执行既有 attach/rebind recovery，全部成功后才让 <code>Status</code> 返回 <code>ready</code>。CLI <code>task run</code> 已改为消费这同一个 application Port，而不是保留第二套装配流程。</p>
+<p>本段同时关闭了一个提前发现的 namespace 漂移：现有 server compatibility 默认使用 <code>repo:&lt;root&gt;</code>，而真实 production owner 使用 canonical <code>&lt;root&gt;</code>。<code>server.Config</code> 现在允许 fixed composition 显式注入 exact <code>AuthorityNamespaceId</code>，并拒绝 tenant/control-plane/root 任一漂移；独立 compatibility server 的历史默认保持不变。该 checkpoint 仍未实现 <code>marshal control-plane serve</code> 命令、descriptor-relative authenticated AF_UNIX、peer/current-owner handshake 或 transport delivery ledger，因此 stable server 仍为 <code>INTEGRATION-OPEN</code>，不得升级 R2–R6。</p>
+<h2 id="2026-08-31-fixed-cli">2026-08-31 fixed CLI 生命周期检查点<a class="headerlink" href="#2026-08-31-fixed-cli" title="Permanent link">&para;</a></h2>
+<p>固定候选 <code>main@3819462</code> 已构建为 <code>v1.0.0-rc1</code> Darwin arm64 local-dogfood bytes，并以真实 Pi 执行 canary <code>RC1-PI-20260831-3819462</code>。该 Run 只经 ResultIngress 接纳结果，由独立 Verification 生成 current Evidence，再由独立 reviewer 生成精确绑定 Evidence 的 accept Decision，最终由新的 Marshal 进程重读为 <code>ACCEPTED</code>。Decision digest 为 <code>sha256:5d50b624e41419ef32a1d7251481d5843ab001d3affe0ef6c8a6aad5465df5e9</code>。</p>
+<p>该证据已经关闭“真实 Pi 是否能穿过 fixed CLI 完整生命周期”的核心不确定性，但尚未授权发布。以下列表记录的是 2026-08-31 当日遗留状态；architecture CI 与 selector 两项后来已经关闭，当前剩余路径以上方 2026-09-01 checkpoint 为准：</p>
+<ul>
+<li><code>main@3819462</code> 的 required CI 只剩 architecture check 红灯；其根因是 <code>productionruntime</code> 越层读取 <code>processsupervisor</code> mechanics，以及同一 invocation 重复读取 legacy executor selector。本地修复保持 fail-closed 语义，并已通过 architecture check、定向 test/race、vet、staticcheck 与 diff-check；全包 Darwin test 仍受本机匿名 Go test Mach-O 身份策略和既有 owner fixture 影响，不能冒充通过。</li>
+<li>ADR 0068 要求 RC1 调用链中的 environment selector、legacy/direct <code>Adapter.Run</code> fallback 计数为零。本次 selector snapshot 只修复 CI 的冻结债务和同 invocation TOCTOU，不等于完成 RC1 cutover；下一切片必须删除 production selector 与 direct fallback。</li>
+<li>当前 release workflow 仍会在 tag 后重建四平台产物，并由 <code>publication_guard</code> 无条件拒绝 <code>v1.*</code>；还没有把 pre-tag immutable candidate、current-authority canary receipt、RC1 单资产 tag 校验和 GitHub prerelease 串成无重建闭环。</li>
+</ul>
+<p>因此最短剩余路径是：合入架构 CI 修复 → 删除 production selector/direct fallback → 在新 final sourceHead 构建一次并重跑真实 Pi <code>ACCEPTED</code>、恢复与负向门禁 → 生成 current-authority receipt/carrier → required CI 全绿 → annotated tag 与 GitHub prerelease。不得复用 <code>main@3819462</code> 的 digest 冒充后续最终 bytes。</p>
+<h2 id="_2">现在可以使用<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<p>当前源码版适合在 macOS 或 Linux 上，由单个用户把本地 Git 仓库任务交给 Coding Agent；已发布 RC1 的封闭支持面仅为 Darwin arm64、可信用户、可信仓库和 <code>publication:none</code>：</p>
+<ul>
+<li>初始化独立的 Marshal 工作目录，不污染主 checkout；</li>
+<li>使用 OpenCode 或 Pi 执行编码任务；Qwen Code 是否可调度以当前 <code>marshal doctor</code> 的 <code>supported</code> admission 为准；</li>
+<li>为每个写任务创建独立工作区，避免直接修改用户当前工作目录；</li>
+<li>在 Agent 结束后独立运行测试和交付物检查；</li>
+<li>根据真实代码差异和检查结果进行审查与返工；</li>
+<li>使用独立凭据创建 GitHub Draft PR；</li>
+<li>在任务失败、中止或无需改动时保存结果记录；</li>
+<li>对中断任务进行状态检查、恢复和安全清理。</li>
+</ul>
+<p>这套本地能力已经通过真实 Agent、真实 GitHub Draft PR、Linux 与 macOS CI 验证。Darwin arm64 用户现在可以显式安装 <code>v1.0.0-rc1</code> 试用 fixed CLI local-dogfood 纵切；其它平台继续使用源码/既有 release 路径，不能把 RC1 资产外推为 Linux 或 stable 支持。</p>
+<h2 id="mac-first-adapter-2026-08-30">Mac-first Adapter 现状（2026-08-30）<a class="headerlink" href="#mac-first-adapter-2026-08-30" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Qoder 的路线要求固定 <code>/Users/gawain/.qoder/bin/qodercli/qodercli-1.1.23</code>。当前开发机虽存在该文件，但 <code>MARSHAL_QODER_PATH</code> 尚未绑定，且 PATH 中的 <code>1.1.27</code> 是不同 identity；当前没有可复用的最终 sourceHead live evidence。</li>
+<li>Codex 的路线要求 <code>0.145.0</code>。当前开发机实际探测到的是 <code>0.149.1</code>，不能把历史 <code>0.145.0</code> smoke 记录当作当前最终 bytes 的生产证据。</li>
+<li>上述版本/路径问题与 fixed CLI production composition 是独立门禁；在 composition 闭合前，Qoder/Codex 均不得宣称为 Marshal production Worker。</li>
+<li>Qwen Code <code>0.21.11</code> 的本地命令可执行，但当前 Marshal admission 仍为 <code>unsupported/unprobed</code>。在 doctor 取得新鲜 <code>supported</code> 证据前，Marshal 不会直接调度它。</li>
+</ul>
+<p>因此，“本地 CLI 能运行”与“Marshal 可安全调度该 Adapter”是两个不同结论；文档只采用后者作为生产可用依据。</p>
+<h2 id="pi-first-darwin-canary">历史定位记录：Pi-first Darwin 启动检查点（已被完整 canary 取代）<a class="headerlink" href="#pi-first-darwin-canary" title="Permanent link">&para;</a></h2>
+<p>在历史候选分支 <code>feat/pi-first-architecture-fix</code>（<code>d630aa2</code>，基于 <code>5b95ed1</code>）上，固定 Node/Pi bundle 与空环境曾两次通过 sealed launch chain。该记录只解释早期阻塞定位；上方 <code>main@3819462</code> 的完整 fixed CLI <code>ACCEPTED</code> canary 已取代它作为当前生命周期证据。</p>
+<p>该历史检查点修复了 live allocation 重封装、空环境 spawn payload、Darwin 工作目录 <code>NOTE_ATTRIB</code> 噪声，以及普通 CLI 的 FD3/4 inherited-child 误判。后续提交已经接通 WorkerRequest、Pi 执行、结果接纳和独立 Verification；这些旧的“尚未接线”结论不再适用于当前主线。</p>
+<h2 id="v10-stable">v1.0 stable 正在建设<a class="headerlink" href="#v10-stable" title="Permanent link">&para;</a></h2>
+<p>RC1 已把 RB1 existing-worktree、sealed start、Attach/terminalization、ResultIngress、fixed CLI real-Pi <code>ACCEPTED</code> 和 same-bytes distribution 串成真实纵切。下一阶段不再重复构建 RC1，而是按 ADR 0052 收敛 stable v1.0：</p>
+<ul>
+<li>实现并验证 fixed <code>marshal control-plane serve</code> 的唯一 composition 与 loopback authenticated transport；</li>
+<li>关闭 kill/restart/cancel/timeout/response-loss/retry、重复 start、stale/replayed result 与 binding drift 的完整恢复/故障矩阵；</li>
+<li>provision 并验证 <a href="https://github.com/chiga0/marshal-harness/issues/212">Issue #212</a> 的 macOS managed signing/notarization、protected producer 和 anti-rollback authority；</li>
+<li>完成 Linux stable 产物、安装、升级/回滚和同路径 conformance；</li>
+<li>从受保护输入重新构建 stable candidate，不能把 unsigned RC1 原地补签或 promote。</li>
+</ul>
+<p>RC1 后可以并行推进 GoalLite/Agent Team 的最薄产品纵切，但不得让横向 Provider、Cloudflare、HA、多租户或复杂 Goal DAG 抢占 stable 主链。</p>
+<p>这些能力目前处于 <code>COMPONENT</code> 或集成中，不能因为 package、测试或 API 已存在就表述为 <code>INTEGRATED</code>。</p>
+<p>Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Provider SDK、Web UI 与复杂 Goal DAG 已明确延期到 1.x。</p>
+<h2 id="_3">能力不会被混淆<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<p>文档中的“目标”表示已经确定的产品方向，不代表代码已经实现；“可用”只用于经过实际测试的能力。每个后续阶段都要经过实现、自动化测试、独立审查和远端 CI，才会更新本页。</p>
+<p>如果你现在需要成熟的多用户云服务、远程 Sandbox 或 Web UI，建议等待相应版本，而不是根据设计文档自行推断支持情况。</p>
+<h2 id="_4">接下来怎么走<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
+<p>近期建设顺序为：fixed server T2 到 <code>ACCEPTED</code> → recovery/fault matrix → managed signing/notarization 与 Linux stable gate → 受保护 stable candidate → <code>v1.0.0</code>。GoalLite 只以不冲突的独立纵切并行推进。</p>
+<p>详细范围见 GitHub 上的 <a href="https://github.com/chiga0/marshal-harness/blob/main/docs/adr/0052-v1-release-scope-and-production-reachability.md">ADR 0052</a>，实时工程状态见 <a href="https://github.com/chiga0/marshal-harness/blob/main/docs/roadmap-status.md">Roadmap</a>。</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.suggest", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

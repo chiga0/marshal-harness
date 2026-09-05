@@ -1,0 +1,1879 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="面向 Agent 软件工程的长寿命确定性 Control Plane / Durable deterministic control plane for agentic software engineering">
+      
+      
+      
+        <link rel="canonical" href="https://chiga0.github.io/marshal-harness/m10-cloud-deployment-research/">
+      
+      
+      
+      
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/" hreflang="zh">
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/en/" hreflang="en">
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>M10 云端部署调研：Cloudflare Provider 前置研究 - Marshal Harness</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#m10-cloudflare-provider" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href=".." title="Marshal Harness" class="md-header__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Marshal Harness
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              M10 云端部署调研：Cloudflare Provider 前置研究
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换暗色"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换暗色" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换亮色"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换亮色" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="选择当前语言">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/en/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Marshal Harness" class="md-nav__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Marshal Harness
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开始
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    开始
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Marshal 是什么
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../current-status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    当前可用能力
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    使用 Marshal
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    使用 Marshal
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install-and-upgrade/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安装、升级与回滚
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    日常使用
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../marshal-skill/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    在 Codex 中使用
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    了解设计
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    了解设计
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-it-works/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    工作原理
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安全与隐私
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0. 事实引用分级与方法说明
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. 调研范围与前置结论摘要
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. 调研范围与前置结论摘要">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 范围
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 前置结论（详细论证见后文）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-cloudflare" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Cloudflare 候选形态概览
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-sandboxprovider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. SandboxProvider 十操作映射分析
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. SandboxProvider 十操作映射分析">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 逐操作补充分析 [推断]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. 最小部署拓扑草案
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. 最小部署拓扑草案">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 拓扑总览
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 控制面/数据面边界清单
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-fencinggeneration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 fencing/generation 在远端执行下的语义保持 [仓库文档] [推断]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. 安全边界
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. 安全边界">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-credential" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Credential 纪律在云端的保持
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-scoped-handle-artifact" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 scoped handle / artifact 边界
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-sse-m11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 SSE 客户端鉴权（M11 前置）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 成本与配额模型调研
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. 成本与配额模型调研">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-marshal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 计费维度与 Marshal 负载的映射
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62-marshal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 与 Marshal 事件密度的匹配度 [推断]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#63-m10-a" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.3 配额清单（记忆引用，M10-a 在线复核） [官方文档·记忆引用]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-m10-a-m10-b-m10-c" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. 分阶段路线建议（M10-a / M10-b / M10-c）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. 分阶段路线建议（M10-a / M10-b / M10-c）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#m10-aprovider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M10-a：Provider 骨架 + 单操作打通
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m10-b" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M10-b：全十操作
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m10-cconformance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M10-c：conformance 等价
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        阶段不变量
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m10-b-2026-08-14" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M10-b 部署事实（2026-08-14 在线核验）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. 风险清单
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. 风险清单">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#adr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        平台限制与 ADR 契约冲突点汇总 [推断]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. 遗留问题与建议决策（供后续任务）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        文档关系
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="m10-cloudflare-provider">M10 云端部署调研：Cloudflare Provider 前置研究<a class="headerlink" href="#m10-cloudflare-provider" title="Permanent link">&para;</a></h1>
+<ul>
+<li>状态：<strong>调研文档（非 ADR）</strong>。本文不冻结任何契约、不修改任何 ADR、不构成实施承诺；M10 实施一律以 <a href="../adr/0016-durable-runtime-and-sandbox-provider/">ADR 0016</a>、<a href="../adr/0017-provider-neutral-sandbox-contract/">ADR 0017</a>、<a href="../adr/0018-control-plane-and-provider-ports/">ADR 0018</a>、<a href="../adr/0019-deterministic-control-plane-typed-execution-and-goal-admission/">ADR 0019</a>、<a href="../runtime-architecture/">Runtime 架构</a>、<a href="../implementation-plan/">实施计划</a> 与 <a href="../roadmap-status/">Roadmap 状态</a> 为准。</li>
+<li>基线：main HEAD <code>f571547a4241e8902299f54fb67193b18c703335</code>；M8 <code>IN_PROGRESS</code>、M9–M12 <code>PLANNED</code>（见 <a href="../roadmap-status/">Roadmap 状态</a>）。</li>
+<li>调研对象：M10 = Cloudflare Provider（remote transport）+ 云端纵切；与 M11（生产 API/SSE 客户端与多租户键空间生产化）、M12（其余五类 Provider wire/SDK）的分工见 §7。</li>
+<li>术语约定：中文叙述，协议字段、状态名与代码标识保留英文，且与 <code>internal/sandbox/spi.go</code>、<code>schemas/</code>、ADR 0016–0019 保持一致。</li>
+</ul>
+<h2 id="0">0. 事实引用分级与方法说明<a class="headerlink" href="#0" title="Permanent link">&para;</a></h2>
+<p>本文所有事实引用按三级标注：</p>
+<table>
+<thead>
+<tr>
+<th>标注</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[官方文档·记忆引用]</code></td>
+<td>出自 Cloudflare 官方公开文档的事实，由本调研依据既有知识转述。<strong>本 Attempt 无网络访问，未做在线核验</strong>；M10-a 开工前必须逐项在线复核，漂移即 fail closed 处理</td>
+</tr>
+<tr>
+<td><code>[仓库文档]</code></td>
+<td>出自本仓库已接受 ADR 与文档（其本身已声明取自官方公开文档）</td>
+</tr>
+<tr>
+<td><code>[推断]</code></td>
+<td>本调研基于上述两类事实的分析推断，不构成事实承诺</td>
+</tr>
+</tbody>
+</table>
+<p><strong>实测：无。</strong> 本 Attempt 不执行任何命令、不进行任何在线或本地实测；所有"实测"类结论留待 M10-a 以 conformance fixture 与故障注入产生。凡 <code>internal/sandbox/spi.go</code> 契约与平台事实冲突处，一律以 SPI 契约为准，平台侧缺口记入 §8 风险清单。</p>
+<h2 id="1">1. 调研范围与前置结论摘要<a class="headerlink" href="#1" title="Permanent link">&para;</a></h2>
+<h3 id="11">1.1 范围<a class="headerlink" href="#11" title="Permanent link">&para;</a></h3>
+<p>本文覆盖 TaskSpec 指定的六个调研项：</p>
+<ol>
+<li>Cloudflare 候选形态（Workers/Containers/Durable Objects/Queues）与 SandboxProvider 十操作的映射分析（§3）；</li>
+<li>marshal-server（M9 常驻形态）+ Cloudflare Provider 的最小云端拓扑、控制面/数据面边界、fencing/generation 在远端执行下的语义保持（§4）；</li>
+<li>安全边界：credential 纪律的云端保持、scoped handle/artifact 边界、SSE 客户端鉴权（M11 前置）（§5）；</li>
+<li>成本与配额模型及其与 Marshal 事件密度的匹配度（§6）；</li>
+<li>M10-a/b/c 分阶段路线建议（§7）；</li>
+<li>风险清单（平台限制与 ADR 契约冲突点、egress、checkpoint 大小等）（§8）。</li>
+</ol>
+<h3 id="12">1.2 前置结论（详细论证见后文）<a class="headerlink" href="#12" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>承载分工明确</strong>：真实进程/文件系统执行只能由 Containers 承载；Durable Objects（DO）是每 sandbox 的会话协调器（单实例强一致、alarm、hibernation）；Workers 只能承担控制面传输（Bridge HTTP/OpenAPI、SSE 中继），不能承载 workload；Queues 只适合作为异步通知/对账传输，不得成为第二权威（ADR 0018 §4）<code>[官方文档·记忆引用]</code> <code>[仓库文档]</code> <code>[推断]</code>。</li>
+<li><strong>十操作全部可映射</strong>，但 Checkpoint/Restore 只覆盖文件系统态（与 SPI"snapshot the staged content"语义恰好一致），不含可移植的进程/内存态；DO hibernation 是平台内部机制，不可作为 Marshal <code>CheckpointRecord</code>（不可验证、不可移植、digest 不可绑定）<code>[推断]</code>。</li>
+<li><strong>最小拓扑</strong>：marshal-server 常驻于自托管侧（权威账本、DurableExecutionEngine、对象存储），经 versioned HTTP/JSON Push 拓扑调用部署在用户 Cloudflare 账号内的官方 Bridge；Cloudflare 专有概念（DO/R2/Workers binding）只经 <code>SandboxAllocation</code> opaque locator 与 receipt 表达，Marshal Core 不出现（ADR 0016 §4）<code>[仓库文档]</code>。</li>
+<li><strong>fencing/generation 语义不因远端执行削弱</strong>：generation/fencingToken 的裁决点在 marshal-server 的权威写入边界（atomic compare-and-append），Bridge/DO/容器只是执行与观测通道；<code>fencingToken</code> 是非凭据 stale-write guard，Bridge Bearer 令牌是 transport credential，两者绝不互相替代（ADR 0018 §3/§13）<code>[仓库文档]</code>。</li>
+<li><strong>hardened 无豁免</strong>：Cloudflare 与 Local 走同一 ConformanceEvidence 证据准入；network 维度强制能力（出站管控）目前未见官方记载的可验证手段，可能成为 hardened 四维中的首个 fail 维度，按 fail closed 处理（§8-R2）<code>[仓库文档]</code> <code>[推断]</code>。</li>
+<li><strong>成本主项是容器运行时长</strong>，与 Marshal "有界 Attempt" 模型天然匹配；事件密度主项是 heartbeat/流式通道，应以每 Attempt 一条长连流 + 有界 heartbeat 间隔承载，禁止高频轮询（§6）<code>[推断]</code>。</li>
+</ol>
+<h2 id="2-cloudflare">2. Cloudflare 候选形态概览<a class="headerlink" href="#2-cloudflare" title="Permanent link">&para;</a></h2>
+<p>以下形态事实均为 <code>[官方文档·记忆引用]</code>，M10-a 开工前逐项在线复核。</p>
+<table>
+<thead>
+<tr>
+<th>形态</th>
+<th>执行模型</th>
+<th>与 Marshal 的关系定位</th>
+<th>关键限制（记忆引用）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workers</td>
+<td>V8 isolate，无操作系统、无任意进程、无文件系统</td>
+<td>只作控制面传输：官方 Bridge 即自部署的 HTTP/OpenAPI Worker <code>[仓库文档]</code>；也可作 SSE/日志中继</td>
+<td>请求体大小上限、CPU 时长上限、内存上限均按套餐计；不能执行仓库构建类 workload</td>
+</tr>
+<tr>
+<td>Containers</td>
+<td>独立 microVM 容器，绑定到 DO 实例生命周期；支持 hibernate（闲置休眠、可恢复）；容器内磁盘/进程/session 在闲置、故障或重启时丢失 <code>[仓库文档]</code></td>
+<td><strong>唯一可承载 Exec workload 的形态</strong>；每 sandbox 一个容器</td>
+<td>磁盘容量按规格配置；出站网络默认可用（管控手段未验证，见 §8-R2）；账号级并发容器数、镜像尺寸存在配额（具体数值待复核）</td>
+</tr>
+<tr>
+<td>Durable Objects</td>
+<td>单实例强一致计算单元，可挂 SQLite 存储、alarm 定时器、WebSocket/SSE；支持 hibernation 降低空闲成本</td>
+<td>每 sandbox 一个 DO，作为容器生命周期与会话的协调器；Marshal 只把它当作 opaque locator 背后的 Provider 内部结构</td>
+<td>单实例模型天然契合"同一 allocation 单活"不变量，但这是 Provider 内部实现选择，不是 Marshal 权威</td>
+</tr>
+<tr>
+<td>Queues</td>
+<td>托管消息队列，at-least-once，consumer 批量触发 Worker</td>
+<td>可选的异步传输：对账事件通知、（Pull 拓扑的）offer 投递通道；只是投影/传输，不是权威（ADR 0018 §4）</td>
+<td>消息大小有上限（具体数值待复核）；消费幂等由消费方保证</td>
+</tr>
+<tr>
+<td>R2（配套）</td>
+<td>对象存储，S3 兼容，官方口径无 egress 费用</td>
+<td>Bridge <code>persist</code>/<code>hydrate</code> 的持久化后端（R2 backup 只作恢复优化，不是权威状态 <code>[仓库文档]</code>）；checkpoint/artifact bytes 的云端暂存</td>
+<td>配额与操作速率限制待复核</td>
+</tr>
+</tbody>
+</table>
+<p>Bridge 基线事实（<code>[仓库文档]</code>，ADR 0016 §7，其来源为官方公开文档）：</p>
+<ul>
+<li>Cloudflare Sandbox 由 Worker + Durable Object + 独立 VM Container 组成；</li>
+<li>官方 Bridge 是自部署到用户 Cloudflare 账号的 HTTP/OpenAPI Worker，提供 Bearer 令牌认证与 create/running/exec SSE/file/persist/hydrate/destroy 操作；</li>
+<li>容器在闲置、故障或重启时丢失文件、进程与 session；R2 backup 只作为恢复优化，不是权威状态；</li>
+<li>Sandbox SDK/Bridge 为 Apache-2.0，但托管运行平台不可自部署，SDK 仍为 1.0 preview/Beta。</li>
+</ul>
+<p>由此得到的形态选择结论 <code>[推断]</code>：</p>
+<ul>
+<li><strong>Workers 单独不可行</strong>：无进程/文件系统，十操作中 Stage/Exec/Inspect/Checkpoint/Restore 无从落地；Workers 只能是 Bridge 传输层。</li>
+<li><strong>DO 单独不可行</strong>：DO 本身不是通用进程沙箱（其 isolate 模型与 Workers 同源），必须与 Containers 组合才能承载 Exec。</li>
+<li><strong>Containers 是执行面必选项</strong>；DO 是官方 Sandbox 的既有协调结构，沿用即可，无需自造协调层。</li>
+<li><strong>Queues 非必需</strong>：Marshal 的分发状态机是 DispatchLease（唯一状态机，Push/Pull outcome/invariant equivalence），队列只是可选传输适配；M10 建议不引入 Queues，避免新增一条对账面（§7 M10-a）。</li>
+</ul>
+<h2 id="3-sandboxprovider">3. SandboxProvider 十操作映射分析<a class="headerlink" href="#3-sandboxprovider" title="Permanent link">&para;</a></h2>
+<p>SPI 权威定义见 <code>internal/sandbox/spi.go</code>（ADR 0016 §4 十操作）。下表给出每个操作的可行承载形态、Bridge 映射与限制。Bridge 操作名取自 <code>[仓库文档]</code>（ADR 0016 §7）；"承载形态"列为 <code>[推断]</code>。</p>
+<table>
+<thead>
+<tr>
+<th>SPI 操作</th>
+<th>Bridge/平台映射</th>
+<th>承载形态</th>
+<th>可行性</th>
+<th>主要限制</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Probe</code></td>
+<td>Bridge 健康/版本探测（running 类只读端点）+ Marshal 侧证据引用装配</td>
+<td>Workers（Bridge）</td>
+<td>直接可行</td>
+<td><code>ProbeReport.SelfSignedConformanceClaim</code> 一律忽略；<code>ConformanceEvidenceRef</code> 由 Marshal 证据链提供，不由平台提供</td>
+</tr>
+<tr>
+<td><code>Provision</code></td>
+<td><code>create</code>：ensure DO 实例 + 启动容器</td>
+<td>DO + Containers</td>
+<td>可行</td>
+<td>冷启动（镜像拉取、容器拉起）时延影响 ack deadline 配置（§8-R8）；账号级并发容器配额耗尽必须 fail closed（返回容量错误，Run 保持 <code>BLOCKED</code>，不静默降级）</td>
+</tr>
+<tr>
+<td><code>Stage</code></td>
+<td><code>file</code> 写入（inline 小对象）；locator 输入由容器经出站网络从 ArtifactStore 拉取</td>
+<td>Containers（经 Bridge 投递）</td>
+<td>可行，需 fixture 加固</td>
+<td>Provider 消费前后重算 sha256 必须在容器内对真实 bytes 执行；回显声明 digest 的实现在 conformance 篡改 fixture 下必须失败（ADR 0017 §3）；inline 上限（单对象 1 MiB / 单次 16 MiB）在 Marshal 侧已低于 Workers 请求体平台上限（待复核），无冲突</td>
+</tr>
+<tr>
+<td><code>Exec</code></td>
+<td><code>exec</code> SSE：启动受控进程、流式 stdout/stderr、退出状态</td>
+<td>Containers</td>
+<td>可行</td>
+<td>日志必须有界捕获（Marshal 侧截断）；ExecReceipt 只是 lifecycle guard，任何 conformance/裁决不读其 verdict（SPI 注释、ADR 0017）</td>
+</tr>
+<tr>
+<td><code>Inspect</code></td>
+<td><code>file</code> 读取 + 进程状态观测（经 Bridge 只读端点）</td>
+<td>DO + Containers</td>
+<td>可行，但注意观测通道独立性</td>
+<td>Inspect 是 conformance 裁决通道，必须反映观测态而非自报态（SPI 注释）；在托管平台上观测通道仍经过被测 Provider 自身 API，需以"可观察效果 + 外部回调探针"补强独立性（§8-R1）</td>
+</tr>
+<tr>
+<td><code>Signal</code></td>
+<td>经 Bridge 对 exec 会话/进程树投递终止（term/kill/interrupt 封闭枚举）</td>
+<td>Containers</td>
+<td>可行</td>
+<td>进程树级精确信号依赖 Bridge exec 会话管理；容器重启是更粗的手段，不能替代 Signal 的封闭枚举语义</td>
+</tr>
+<tr>
+<td><code>Checkpoint</code></td>
+<td><code>persist</code>：文件系统态快照写入 R2，返回可定位对象</td>
+<td>Containers + R2</td>
+<td>可行（仅文件系统态）</td>
+<td>CheckpointReceipt 需要 checkpointId/sha256/sizeBytes：sha256 必须对快照 bytes 重算（容器侧或 Marshal 读回重算），不得回显；内存/进程态不在 SPI Checkpoint 语义内，DO hibernation 不可替代（§1.2-2）</td>
+</tr>
+<tr>
+<td><code>Restore</code></td>
+<td>默认 replacement allocation：<code>create</code> 新 sandbox → <code>hydrate</code> 自 R2 → 控制面 CAS 激活新 generation；旧容器 <code>destroy</code></td>
+<td>DO + Containers + R2</td>
+<td>与 SPI 语义高度契合</td>
+<td>in-place Restore 仅在 Inspect 确认旧进程树终止/从未存在时允许（ADR 0017 §5）；hydrate 失败必须可判定；lost-response 走独立 reconcile 路径，不重发同一 generation 的 Restore（ADR 0017 §4）</td>
+</tr>
+<tr>
+<td><code>Terminate</code></td>
+<td><code>destroy</code>：终止并回收容器/DO 会话</td>
+<td>DO + Containers</td>
+<td>可行，需幂等</td>
+<td>已 terminal 的 allocation 重复 Terminate 幂等（SPI）；平台侧静默回收（闲置 TTL）不等于 Marshal Terminate，Reconcile 必须区分（§8-R4）</td>
+</tr>
+<tr>
+<td><code>Reconcile</code></td>
+<td>Bridge <code>running</code>/清单类端点对账 (runId, attemptId) scope 内的真实分配</td>
+<td>Workers（Bridge）</td>
+<td>可行</td>
+<td>平台静默回收、漂移、孤儿分配必须进入 <code>ReconcileReport.DriftDetected</code>；陈旧/漂移状态 fail closed（SPI）；Cloudflare 资源全生命周期（Provision/Stage/Persist/Hydrate/Terminate/TTL）全部进入对账与 leak scan（ADR 0019 §9、实施计划 M10 增量）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="31">3.1 逐操作补充分析 <code>[推断]</code><a class="headerlink" href="#31" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Probe</strong>：Probe 的输入是 operation identity + <code>domain.SandboxRequirements</code>，输出支持标志、证据引用与自报声明。Cloudflare 侧只需一个无副作用、可重复的只读端点；能力判定（镜像可用性、配额余量、区域可用性）在 Probe 阶段尽力而为，最终以 Provision fail closed 兜底。</li>
+<li><strong>Provision/单活不变量</strong>：<code>ErrDuplicateActiveAllocation</code> 要求同一 (runId, attemptId, generation) 不得有第二个 active allocation。DO 单实例模型在 Provider 内部天然支持该不变量，但 Marshal 侧的权威裁决仍依赖控制面单写者 CAS——Provider 侧不变量只是实现便利，不是权威来源。</li>
+<li><strong>Stage 两条路径</strong>：</li>
+<li>inline：Marshal → Bridge file API → 容器文件系统。全程 digest 重算点在容器内（消费前）与落地后交付前（消费后回验）。</li>
+<li>locator：<code>artifactRef = { storeId, sha256, sizeBytes }</code>，<code>storeId</code> 是 Provision 时绑定的 ArtifactStore 别名（SPI <code>AllowedStoreIds</code>）。容器必须能经出站网络访问该 store——这要求 Network Intent 与出站能力匹配，且拉取通道经 MaterialAccessGrant 授予 scoped 访问（ADR 0018 §3），容器不解析 Data 域 raw handle。</li>
+<li><strong>Exec 与 SSE 双语义区分</strong>：Bridge <code>exec</code> SSE 是<strong>数据面日志流</strong>（Provider → marshal-server），与 Marshal Public API 的 SSE 事件投影（client → marshal-server，ADR 0018 §14）是两个不同 Port 上的不同 SSE，不得复用鉴权、cursor 或背压策略。</li>
+<li><strong>Checkpoint 大小</strong>：SPI 只要求 checkpointId/sha256/sizeBytes，不设大小上限；大小约束来自平台磁盘规格、R2 对象与 persist 时长（§8-R7），Marshal 侧应以 Policy 冻结 checkpoint 预算（<code>maxArtifactBytes</code> 类的有界预算）。</li>
+<li><strong>Restore 与 hydration 的可判定性</strong>：hydrate 的失败模式（对象缺失、digest 不符、部分写入）必须映射为确定性错误，落入"终止 + 对账 + 新 Attempt"路径，不允许悬挂态。</li>
+</ul>
+<h2 id="4">4. 最小部署拓扑草案<a class="headerlink" href="#4" title="Permanent link">&para;</a></h2>
+<h3 id="41">4.1 拓扑总览<a class="headerlink" href="#41" title="Permanent link">&para;</a></h3>
+<p>前提：M9 已交付常驻 <code>marshal-server</code>、TaskSubmission/Run Public API、SSE、Push/Pull DispatchLease 与最小 scope-bound 注册身份（<a href="../roadmap-status/">Roadmap 状态</a>、实施计划 M9）。M10 的最小云端拓扑在此基础上只新增"Cloudflare Provider 侧"。<code>[推断]</code></p>
+<pre class="mermaid"><code>flowchart TB
+    subgraph SELF["自托管侧（控制面 / 权威）"]
+        MS["marshal-server：Core lifecycle / 证据裁决 / 发布裁决（唯一业务权威）"]
+        LEDGER[("authority ledger（authorityNamespaceId 拥有，append-only）")]
+        ENGINE["DurableExecutionEngine backend（Local Engine / Temporal）"]
+        STORE[("ArtifactStore / Evidence 对象存储")]
+        MS --- LEDGER
+        MS --- ENGINE
+        MS --- STORE
+    end
+    subgraph CF["用户 Cloudflare 账号（数据面 / 执行）"]
+        BRIDGE["官方 Bridge：自部署 HTTP/OpenAPI Worker（Bearer 认证）"]
+        DO1["Sandbox DO（每 allocation 一个）"]
+        CT1["Container microVM（Worker / Verifier workload）"]
+        R2[("R2：persist/hydrate 暂存（恢复优化，非权威）")]
+        BRIDGE --&gt; DO1 --&gt; CT1
+        DO1 --- R2
+    end
+    MS -- "versioned HTTP/JSON（Push 拓扑，TLS）" --&gt; BRIDGE
+    CT1 -- "locator 拉取：MaterialAccessGrant scoped 访问" --&gt; STORE
+    CLI["CLI / Web / CI（Public API client）"] -. "Public API + SSE（M11 前置鉴权见 §5.3）" .-&gt; MS</code></pre>
+<p>要点 <code>[仓库文档]</code> <code>[推断]</code>：</p>
+<ol>
+<li><strong>控制面 = marshal-server 及其权威存储</strong>。append-only event ledger 是唯一业务权威；snapshot/queue/SSE/registry 是可重建投影（ADR 0018 §4）。Control Plane 权威对象全部由 <code>authorityNamespaceId=(tenantNamespace, controlPlaneId, authorityScopeId)</code> 拥有、只允许 Core 写入；单实例部署 controlPlaneId 可固定 <code>default</code>。</li>
+<li><strong>数据面 = 用户 Cloudflare 账号内的 Bridge/DO/容器/R2</strong>。Marshal Core 不得出现 Durable Object、R2、Workers binding 等专有概念；一切只经 <code>SandboxAllocation</code> opaque locator 与 receipt 表达（ADR 0016 §4）。<code>allocationId</code> 内部可以编码 DO 实例身份，但 Core 只做等值比较。</li>
+<li><strong>传输拓扑首版选 Push</strong>：marshal-server 调用 Bridge endpoint（ADR 0017 §10 的 Push 形态）。Pull 形态（Cloudflare 侧 outbound-only runner 领取同一 DispatchLease）在协议族内等价（outcome/invariant equivalence，ADR 0018 §16），但需要额外 runner 组件，不在最小拓扑内；留待 M10-c 或 M12 评估。</li>
+<li><strong>DurableExecutionEngine 位置不变</strong>：backend（Local Engine 或 Temporal）留在自托管侧，是 Core 的内部 Port（ADR 0018 §4/§15）；命令出站经单一权威 seam（同事务 outbox 或 ledger-derived journal 二选一）。把 DurableExecutionEngine 搬上 Cloudflare Workers/DO 的设想<strong>否决</strong>：backend workflow state 不是业务权威，且引入第二个持久化权威面。</li>
+<li><strong>存储位置</strong>：authority ledger 与证据对象存储留在自托管侧事务数据库/对象存储；R2 只是 persist/hydrate 的暂存（恢复优化），checkpoint bytes 被 Marshal 接纳时必须经 digest-verified put-if-absent 进入 authorityNamespaceId scoped immutable key（ADR 0018 §13），R2 副本不是权威、可清理。</li>
+</ol>
+<h3 id="42">4.2 控制面/数据面边界清单<a class="headerlink" href="#42" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>边界项</th>
+<th>控制面（自托管）</th>
+<th>数据面（Cloudflare）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>业务权威</td>
+<td>ledger、lifecycle、ReviewDecision、发布裁决</td>
+<td>无；Provider 的 completed/receipt 只是输入（ADR 0018 §1）</td>
+</tr>
+<tr>
+<td>注册/快照</td>
+<td>ProviderRegistration/ProviderCapabilitySnapshot 是 authority ledger 事实（ADR 0018 §5）</td>
+<td>Bridge 实例只携带 actor securityDomainId/provenance</td>
+</tr>
+<tr>
+<td>身份</td>
+<td>authorityNamespaceId（权威侧）</td>
+<td>securityDomainId=(tenantNamespace, trustDomainKind=execution, isolationDomainId=Cloudflare 账号/实例派生)（actor 侧）</td>
+</tr>
+<tr>
+<td>凭据</td>
+<td>Bridge token 的保管与 JIT 解析（§5.1）</td>
+<td>容器内不注入任何 Marshal 凭据；locator 拉取经 MaterialAccessGrant</td>
+</tr>
+<tr>
+<td>对账</td>
+<td>SideEffectIntent/Receipt/ReconcileRecord（ADR 0019 §7）</td>
+<td>Bridge <code>running</code>/清单端点提供外部真实态观测</td>
+</tr>
+</tbody>
+</table>
+<h3 id="43-fencinggeneration">4.3 fencing/generation 在远端执行下的语义保持 <code>[仓库文档]</code> <code>[推断]</code><a class="headerlink" href="#43-fencinggeneration" title="Permanent link">&para;</a></h3>
+<p>远端执行不改变 fencing 裁决点，只延长观测链路：</p>
+<ol>
+<li><strong>裁决点在权威写入边界</strong>：每个 dispatch-bound 回报携带 attemptId、generation、fencingToken，在 marshal-server 的权威写入边界以 expectedSequence/CAS 校验，并与 ledger transition、当前 lease generation 同原子提交（atomic compare-and-append，ADR 0018 §13）。Bridge/DO 距离权威边界多远，不改变该裁决点的位置。</li>
+<li><strong>陈旧写入路径</strong>：容器被平台静默回收后"复活"（同一 DO 重启）、或旧 generation 的容器晚到回报，一律只进 quarantine namespace，不进入当前 Evidence/Review/Publication。</li>
+<li><strong>心跳与资格重判</strong>：每次 heartbeat、结果接纳与恢复 reconcile 都按当前 ledger 重判 eligibility（ADR 0018 §6）；registration/snapshot/evidence 失效时在途 lease 立即失去资格——Cloudflare 侧的对应动作是 Terminate + 对账，不得"原地续租"。</li>
+<li><strong>Restore 无双写</strong>：replacement allocation 在远端语义下更自然——新 DO/容器 + hydrate，旧容器 destroy；控制面 CAS 激活新 generation。任何时刻同一 Run/Attempt 最多一个持有当前 generation 的 active allocation（ADR 0017 §5）。</li>
+<li><strong>时钟依赖</strong>：lease expiry/heartbeat deadline 只以 marshal-server 时钟为准，Bridge/容器本地时间不参与 fencing 判定 <code>[推断]</code>。</li>
+<li><strong>Bridge 无状态化要求</strong>：Marshal 不依赖 Bridge 保留跨请求业务状态；Bridge 重启/重新部署后，Marshal 凭 ledger + Inspect/Reconcile 恢复对每个 allocation 的认知（可丢弃执行体原则，ADR 0016 §6）。</li>
+</ol>
+<h2 id="5">5. 安全边界<a class="headerlink" href="#5" title="Permanent link">&para;</a></h2>
+<h3 id="51-credential">5.1 Credential 纪律在云端的保持<a class="headerlink" href="#51-credential" title="Permanent link">&para;</a></h3>
+<p>既有纪律 <code>[仓库文档]</code>（ADR 0018 §3、security-model.md）：credential 不进入业务 JSON、事件、日志或 digest；fencingToken 是非凭据 stale-write guard，不能替代 AuthN/AuthZ；Secret/Artifact Provider 只交付有界引用或 workload-scoped 短期能力，secret 明文不得写入 TaskSpec、事件、Prompt、日志或 WorkerResult，有效期以 Attempt 为界。</p>
+<p>云端保持方案 <code>[推断]</code>：</p>
+<table>
+<thead>
+<tr>
+<th>凭据</th>
+<th>持有者</th>
+<th>纪律落实</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Bridge Bearer 令牌 <code>[仓库文档：Bridge 认证模型]</code></td>
+<td>仅 marshal-server 内的 CloudflareSandboxProvider 配置（Secret Port/安全存储）</td>
+<td>JIT 解析于 Provider 调用路径内；不写入 TaskSpec/事件/Prompt/日志/digest；日志 redaction；rotation 支持（短期凭据 rotation/revocation 是 ADR 0018 §12 基线）</td>
+</tr>
+<tr>
+<td>ArtifactStore locator 拉取凭据</td>
+<td>不直接交给容器</td>
+<td>容器只经 MaterialAccessGrant 出示 target-bound grant；Data Provider 只接受 target-bound grant，禁止转授/bearer 化/跨 Attempt 复用（ADR 0018 §3）</td>
+</tr>
+<tr>
+<td>Publisher/Forge 凭据</td>
+<td>永不进入 Execution 信任域</td>
+<td>Publisher 永不成为 Sandbox workload（ADR 0003/0017 §4）；云端不改变该边界</td>
+</tr>
+<tr>
+<td>模型/API 类 Worker 运行所需 secret</td>
+<td>Secret Provider scoped handle</td>
+<td>有效期以 Attempt 为界，超期失效并可从账本追溯（ADR 0017 §8）</td>
+</tr>
+</tbody>
+</table>
+<p>补充约束 <code>[推断]</code>：</p>
+<ul>
+<li><strong>Bridge 令牌是 transferable shared secret</strong>：ADR 0018 §12 对 workload-to-workload 通道优先 mTLS 或不可转移 workload identity；对 server→Bridge 通道，Bearer 令牌 + TLS + 双向身份校验（audience/scope）是 Bridge 官方模型的落地形态，必须辅以短有效期、可撤销、按账号/按 scope 分离（不得多实例共享同一令牌），并在 Provider 注册 attestation 链中记录 trust root（ADR 0018 §11）。该差距列入 §8-R9。</li>
+<li><strong>凭据轮换触发 eligibility 重判</strong>：effective configDigest 或 trust root 变化产生新 immutable snapshot/evidence（ADR 0018 §11）；credential compromise 属 security-critical revoke——立即 cancel + generation bump + kill，不留 drain 窗口（ADR 0018 §6）。</li>
+<li><strong>测试 fixture 纪律</strong>：一切 Key/Digest/Secret/Token 类测试字面量按 gitleaks-safe 约定构造（两个字符串相加或 helper），与 M8 基线一致。</li>
+</ul>
+<h3 id="52-scoped-handle-artifact">5.2 scoped handle / artifact 边界<a class="headerlink" href="#52-scoped-handle-artifact" title="Permanent link">&para;</a></h3>
+<p><code>[仓库文档]</code> + <code>[推断]</code>：</p>
+<ol>
+<li><strong>artifactRef 形态固定</strong>：<code>{ storeId, sha256, sizeBytes }</code>，<code>storeId</code> 是 Provision 时绑定的 Marshal ArtifactStore 别名；locator 不得是任意外部 URL、不得携带凭据（ADR 0017 §3）。Cloudflare 侧的"外部 URL"（R2 预签名地址等）只能出现在 Provider 内部实现，不进入 Marshal wire schema。</li>
+<li><strong>对象 key 归属</strong>：Checkpoint/Candidate/Evidence bytes 的接纳关系归 authority ledger——<code>authorityNamespaceId</code>+run+attempt+allocation+generation scoped immutable key，digest-verified put-if-absent；陈旧/冲突 bytes 只进 quarantine namespace（ADR 0018 §13）。R2 中的 persist 对象在被接纳前是"候选 bytes"，被拒绝后按 cleanup/compensation 语义处置（ADR 0019 §7，<code>dispositionClass=ephemeral-cleanup</code>）。</li>
+<li><strong>跨信任域访问唯一通道</strong>：Execution workload 访问 Data/Capability 域物料只能经 MaterialAccessGrant（operation 封闭 read/fetch/decrypt，scope/maxBytes/maxUses 约束，expiry 以 Attempt 为界）；Execution 不解析 Data 域 raw handle（ADR 0018 §3）。</li>
+<li><strong>Warm reuse 边界</strong>：仅限相同 securityDomainId 且有可证明 sanitization；云端默认每 Attempt 独立 ephemeral 容器，不依赖容器复用（ADR 0016 §6、security-model.md）。</li>
+</ol>
+<h3 id="53-sse-m11">5.3 SSE 客户端鉴权（M11 前置）<a class="headerlink" href="#53-sse-m11" title="Permanent link">&para;</a></h3>
+<p>两个 SSE 面的鉴权分别处理 <code>[仓库文档]</code> + <code>[推断]</code>：</p>
+<ul>
+<li><strong>Marshal Public API SSE（client → marshal-server，事件投影）</strong>：cursor 身份为 authorityNamespaceId+scope+ledgerSequence，订阅方另绑定自身 securityDomainId 完成授权判定；at-least-once + eventId/sequence 去重；cursor 过期/gap/压缩返回 deterministic resync；周期性 re-Authorization + 敏感变更即时 re-Authorization；SSE 不承载 ACK、lease heartbeat 或 command（ADR 0018 §14）。<strong>M10 对它的要求只有一条</strong>：M10 启用远程能力时使用 M9 交付的最小 scope-bound、可撤销客户端身份，不等待 M11；M11 只扩展 HA/多节点/多用户 AuthN/AuthZ（operator/API caller 身份分离、按 repository/project 授权、审计），不补首次安全基线（ADR 0018 §8/§12）。</li>
+<li><strong>Bridge exec SSE（marshal-server → Bridge，数据面日志流）</strong>：使用 Bridge Bearer 令牌 + TLS；日志有界捕获与 redaction 在 marshal-server 侧完成；该流不是 Marshal SSE 协议族成员，不复用其 cursor/resync 语义。</li>
+<li><strong>M11 前置调研结论</strong>：SSE 终止点在 marshal-server，与 Cloudflare 平台无关；M10 不需要也不应当为 SSE 引入任何 Cloudflare 侧组件（如 DO WebSocket 中继），避免把只读投影的传输与执行面耦合 <code>[推断]</code>。</li>
+</ul>
+<h2 id="6">6. 成本与配额模型调研<a class="headerlink" href="#6" title="Permanent link">&para;</a></h2>
+<p>本节给出<strong>结构性成本模型与配额清单</strong>，不给出商业定价数字（定价随时间变化，以 Cloudflare 官方定价页在线复核为准）<code>[官方文档·记忆引用]</code> + <code>[推断]</code>。</p>
+<h3 id="61-marshal">6.1 计费维度与 Marshal 负载的映射<a class="headerlink" href="#61-marshal" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Cloudflare 计费面</th>
+<th>计费维度（记忆引用）</th>
+<th>Marshal 负载来源</th>
+<th>密度估计 <code>[推断]</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workers（Bridge）</td>
+<td>请求数 + CPU 时长</td>
+<td>每次 SPI 调用（Provision/Stage/Exec/Inspect/Signal/Checkpoint/Restore/Terminate/Reconcile/Probe）≈ 若干 HTTP 请求</td>
+<td>与 Attempt 生命周期事件同阶；heartbeat 间隔 T_hb 下每活跃 Attempt ≈ O(1/T_hb) req/s，属低频</td>
+</tr>
+<tr>
+<td>Durable Objects</td>
+<td>请求数 + 活跃时长（hibernation 可削减空闲成本）+ 存储操作</td>
+<td>sandbox DO 承载 exec 流式会话与容器生命周期；exec SSE 期间 DO 处于活跃态</td>
+<td>活跃时长 ≈ Attempt 活跃执行时长，与"有界 Attempt"模型线性对应；hibernation 天然匹配 Attempt 间歇</td>
+</tr>
+<tr>
+<td>Containers</td>
+<td>运行时长（秒级计量）+ 规格（vCPU/内存档位）</td>
+<td>每个 allocation 一个容器，自 Provision 至 Terminate</td>
+<td><strong>成本主项</strong>：∑(Attempt 墙钟时长 × 规格档位)；idle TTL 与 leak scan 是成本失控的主要防线</td>
+</tr>
+<tr>
+<td>R2</td>
+<td>存储量 + 操作数（官方口径无 egress 费用）</td>
+<td>persist/hydrate 快照暂存、quarantine 暂存</td>
+<td>存储量 = 未清理 checkpoint 之和；需要 GC 策略（checkpoint 有效期 + cleanup 副作用）</td>
+</tr>
+<tr>
+<td>Queues（如引入）</td>
+<td>操作数/消息数</td>
+<td>仅对账/通知</td>
+<td>最小拓扑不引入（§2 结论）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="62-marshal">6.2 与 Marshal 事件密度的匹配度 <code>[推断]</code><a class="headerlink" href="#62-marshal" title="Permanent link">&para;</a></h3>
+<p>Marshal 事件密度来源（按活跃 Attempt 计）：heartbeat（间隔由 lease 配置决定）、Exec 日志流、Stage/Inspect/Checkpoint 等生命周期调用、Reconcile 周期扫描。</p>
+<ul>
+<li><strong>匹配良好的部分</strong>：DO hibernation + 容器秒级计量与 Marshal"有界 Attempt、可丢弃执行体"模型同构——Attempt 终止即计费终止；checkpoint 只是 Attempt 级加速，R2 无 egress 费用使 hydrate 重建成本可控。</li>
+<li><strong>需要纪律的部分</strong>：</li>
+<li><strong>heartbeat 频率</strong>：每 heartbeat 是一次 Bridge/DO 请求。T_hb 过小会线性放大请求计费面；应以 lease deadline = k × T_hb（k 为容忍丢失心跳次数）反推最小合理间隔，并批量化（一次 heartbeat 携带多 observation）。</li>
+<li><strong>禁止轮询反模式</strong>：以高频轮询替代 SSE/长连接会同时放大 Workers 请求数与 DO 请求数；exec 输出必须走流式通道。</li>
+<li><strong>zombie 容器</strong>：marshal-server 崩溃或 Terminate 响应丢失后，容器不会自动消失（平台 TTL 除外）。ADR 0019 §9 的 M10 增量正是针对该风险：Provision/Stage/Persist/Hydrate/Terminate/TTL 全部进入对账与 leak scan；建议容器侧设置平台 TTL 作为最后防线，TTL 触发视为 drift，进入 Reconcile fail closed 路径。</li>
+<li><strong>Inspect/Reconcile 扫描频率</strong>：对账扫描是周期性低频调用，密度远低于执行面，不构成主项。</li>
+</ul>
+<h3 id="63-m10-a">6.3 配额清单（记忆引用，M10-a 在线复核） <code>[官方文档·记忆引用]</code><a class="headerlink" href="#63-m10-a" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>配额项</th>
+<th>影响的操作</th>
+<th>触顶行为（Marshal 侧约定）<code>[推断]</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>账号级并发容器数/容器规格档位</td>
+<td>Provision</td>
+<td>fail closed：容量错误 → 当前 Allocation/Attempt 终止对账；Run 等待新 Attempt 或保持 <code>BLOCKED</code>，不降级</td>
+</tr>
+<tr>
+<td>容器磁盘容量</td>
+<td>Stage/Checkpoint</td>
+<td>Stage 前按 EnvironmentSpec 声明预算；超限 fail closed</td>
+</tr>
+<tr>
+<td>镜像尺寸/镜像仓配额</td>
+<td>Provision（镜像拉取）</td>
+<td>EnvironmentSpecDigest 冻结镜像身份；拉取失败按 Provision 失败语义处理</td>
+</tr>
+<tr>
+<td>Workers 请求体上限</td>
+<td>Stage inline 路径</td>
+<td>Marshal inline 上限（1 MiB/对象、16 MiB/请求，ADR 0017 §3）低于平台上限（待复核）即无冲突；超限走 locator</td>
+</tr>
+<tr>
+<td>DO 请求速率/存储配额</td>
+<td>heartbeat、SQLite（如使用）</td>
+<td>heartbeat 间隔下限受请求速率约束；建议 Provider 内部状态不依赖 DO SQLite 作权威</td>
+</tr>
+<tr>
+<td>R2 对象大小/操作速率</td>
+<td>persist/hydrate</td>
+<td>checkpoint 预算（Policy 冻结 maxArtifactBytes 类上限）；超大 checkpoint 拆分或拒绝</td>
+</tr>
+</tbody>
+</table>
+<h2 id="7-m10-a-m10-b-m10-c">7. 分阶段路线建议（M10-a / M10-b / M10-c）<a class="headerlink" href="#7-m10-a-m10-b-m10-c" title="Permanent link">&para;</a></h2>
+<p>前置依赖 <code>[仓库文档]</code>：M8（SPI/Fake/Local conformance、注册/快照 Schema、顺序硬门禁）与 M9（marshal-server、wire contract、Push/Pull、注册身份、transport 安全基线）先行；M10 不补、不推迟 ADR 0018 §12 首次安全基线。以下拆分是 <code>[推断]</code> 建议，最终以实施计划与 TaskSpec 冻结为准。</p>
+<h3 id="m10-aprovider">M10-a：Provider 骨架 + 单操作打通<a class="headerlink" href="#m10-aprovider" title="Permanent link">&para;</a></h3>
+<p>目标：CloudflareSandboxProvider 以最小可信路径接入调度闭环，证明"注册 → Provision → Terminate → 对账"的云端副作用链。</p>
+<ul>
+<li>Bridge Go client：versioned HTTP/JSON、TLS、Bearer 令牌按 §5.1 纪律管理；重复 JSON member 拒绝、JCS 规范化（ADR 0017 §11）。</li>
+<li>ProviderRegistration + 不可变 ProviderCapabilitySnapshot：registrationId canonical 幂等绑定（securityDomainId、principal、providerType、providerName、providerVersion、protocolVersion、scope + idempotencyKey/requestDigest）；禁止 memory-only registration；protocolVersion fail closed（ADR 0018 §5）。</li>
+<li>SPI 覆盖：<code>Probe</code> + <code>Provision</code> + <code>Terminate</code>（+ 最小 <code>Reconcile</code>：单 scope 清单对账）；opaque locator 设计冻结（Core 零 Cloudflare 概念泄漏）。</li>
+<li>SideEffect 覆盖：Provision/Terminate 进入 SideEffectIntent/Receipt/ReconcileRecord（ADR 0019 §7/§9 首批云端 operation），TTL 字段进入对账。</li>
+<li>live opt-in 开关：默认关闭；能力探测失败 fail closed（ADR 0016 §7）。</li>
+<li>退出证据：单操作链路故障注入（Terminate 响应丢失、重复 Provision 竞争、stale registration replay）通过；leak scan 骨架可报告孤儿容器。</li>
+</ul>
+<h3 id="m10-b">M10-b：全十操作<a class="headerlink" href="#m10-b" title="Permanent link">&para;</a></h3>
+<p>目标：SPI 十操作全部落地并接入调度与证据链。</p>
+<ul>
+<li><code>Stage</code>（inline + locator 双路径、消费前后 sha256 重算、篡改 fixture）、<code>Exec</code>（SSE 有界日志、退出状态）、<code>Inspect</code>、<code>Signal</code>（封闭枚举）、<code>Checkpoint</code>（persist→R2、digest 重算）、<code>Restore</code>（replacement allocation + hydrate、in-place 确认语义、lost-response 独立 reconcile）、完整 <code>Reconcile</code>（drift/orphan/静默回收）。</li>
+<li>Push 拓扑 dispatch 全链路：DispatchLease capability match（消费持久 ProviderCapabilitySnapshot + conformanceEvidenceDigests 封闭集合）→ ack/heartbeat/deadline/generation/fencing 全语义。</li>
+<li>故障注入矩阵：lost-response、concurrent-write、old-generation overwrite（陈旧 generation 不得先覆盖对象 key 再被 ledger 拒绝，ADR 0018 §13）、容器静默丢失、Bridge 重部署、凭据过期。</li>
+<li>Cloudflare 资源全生命周期对账与 leak scan 完整覆盖（Provision/Stage/Persist/Hydrate/Terminate/TTL，ADR 0019 §9）。</li>
+<li>退出证据：M8/M9 既有 conformance 用例在 CloudflareSandboxProvider 上逐项通过（未通过项以 fail closed 语义记录，不放宽）。</li>
+</ul>
+<h3 id="m10-cconformance">M10-c：conformance 等价<a class="headerlink" href="#m10-cconformance" title="Permanent link">&para;</a></h3>
+<p>目标：仅替换 Provider 重跑同一套用例，用例不变；证据等价与 hardened 准入裁决。</p>
+<ul>
+<li>同一 conformance/E2E 套件（含 ADR 0017 §2 证据拓扑：probe 作为敌对测试负载运行在被测 Provider 的 target allocation 内，out-of-band 观察与独立签发）在 Local 与 Cloudflare 两实现上对比 normalized business trace 与业务不变量。</li>
+<li><code>hardened</code> 裁决：四维（mount/network/resource/credential）全部 passed 且有独立签发的有效 ConformanceEvidence 才声明 hardened；任一维度 not-tested/failed 即回落到最高 workspace-write 并如实记录（不放宽声明）。</li>
+<li>attestation 全链绑定验收：providerInstanceId/configDigest/trust root 变更后旧证据不可复用（ADR 0018 §11 substitution/config/key-rotation fixture）。</li>
+<li>Push/Pull outcome/invariant equivalence：若 M10-c 引入 Pull adapter（outbound-only runner），两拓扑比较 normalized business trace，不比较逐步 wire trace（ADR 0018 §16）；否则 Pull 推迟至 M12。</li>
+<li>失效处置分级验收：security-critical revoke 立即 cancel + generation bump + kill；planned upgrade 新 registration/snapshot + stop-new + bounded drain（ADR 0018 §6）。</li>
+<li>Dogfooding：M8/M9 dogfooding 任务集原样切换 CloudflareSandboxProvider 重跑，对比证据一致性（实施计划 M10）。</li>
+<li>产出成本/配额实测报告（本节 §6 的实测补全）。</li>
+</ul>
+<h3 id="_1">阶段不变量<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h3>
+<p>每个子阶段都必须：先过 Local MVP 全量回归；不改变生命周期语义；不把 Cloudflare 变成 Core 必选依赖；任何平台能力漂移按 fail closed 处置（终止 + 对账 + 新 Attempt；无兼容 Provider 时 Run 保持 <code>BLOCKED</code>）。</p>
+<h3 id="m10-b-2026-08-14">M10-b 部署事实（2026-08-14 在线核验）<a class="headerlink" href="#m10-b-2026-08-14" title="Permanent link">&para;</a></h3>
+<p>以下事实为<strong>在线核验</strong>（非记忆引用），核对账号掩码 <code>34817bdd...</code>（账号名「高琦」，standard 计划）：</p>
+<table>
+<thead>
+<tr>
+<th>事实</th>
+<th>核验结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Containers 可用性</td>
+<td><code>/accounts/:id/containers/instances</code> 返回 <code>success:true</code>（实例清单为空）——账号已具备 Containers 能力，无需单独 beta 申请</td>
+</tr>
+<tr>
+<td>Bridge 来源</td>
+<td>调研中的 <code>cloudflare/sandbox-template</code> 仓库已下线；官方继任为 <code>cloudflare/sandbox-sdk</code>，Bridge worker 位于其 <code>bridge/worker/</code>（TypeScript + Hono，<code>@cloudflare/sandbox</code> SDK 0.12.5）</td>
+</tr>
+<tr>
+<td>部署形态</td>
+<td><code>marshal-bridge</code> worker 部署成功：containers[]（Sandbox class，<code>instance_type: lite</code>，<code>max_instances: 3</code>）+ Durable Objects 绑定（Sandbox/WarmPool）+ cron（warm pool，<code>WARM_POOL_TARGET=0</code> 不预热不产生实例费用）；镜像直引 <code>docker.io/cloudflare/sandbox:0.12.5</code>（免本地 Docker 构建）</td>
+</tr>
+<tr>
+<td>访问入口</td>
+<td>自定义域 <code>https://bridge.aflow.dev</code>（custom_domain 绑定后 <code>*.workers.dev</code> 子域默认停用）；办公网对 <code>*.workers.dev</code> 与部分自定义域存在安全网关拦截，远端验证经 GitHub Actions（<code>.github/workflows/m10-bridge-smoke.yml</code>）执行</td>
+</tr>
+<tr>
+<td>鉴权核验</td>
+<td>三探针全过：<code>GET /health</code> → 200 <code>{"ok":true}</code>；<code>GET /v1/openapi.json</code> 无凭据 → 401；携 <code>SANDBOX_API_KEY</code> → 200。密钥经 <code>openssl rand -hex 32</code> 生成、<code>wrangler secret</code> 注入，并因一次日志回显事故完成全链轮换（worker secret + 本地 env + CI secret）</td>
+</tr>
+<tr>
+<td>R2</td>
+<td>registry bucket <code>aflow-registry</code> 已创建（账号现有 buckets：images/sites/aflow-registry）</td>
+</tr>
+<tr>
+<td>漂移处置</td>
+<td><code>sandbox-template → sandbox-sdk</code> 的仓库漂移不影响 §1.2 Bridge OpenAPI 口径（端点/语义一致，已合入的 <code>internal/provider/cloudflare</code> Bridge client 按此口径实现）；<code>Containers beta 必须显式开启</code> 一项修正为「付费计划默认可用，经 instances API 探测确认」</td>
+</tr>
+</tbody>
+</table>
+<h2 id="8">8. 风险清单<a class="headerlink" href="#8" title="Permanent link">&para;</a></h2>
+<p>等级：<code>P0</code>=可能阻塞 M10 验收或触碰 ADR 契约；<code>P1</code>=影响实现方案但可工程缓解；<code>P2</code>=观察项。"来源"列标注事实依据分级。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>风险</th>
+<th>等级</th>
+<th>来源</th>
+<th>缓解</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R1</td>
+<td>Inspect/conformance 观测通道独立性不足：托管平台上 out-of-band 观测仍经被测 Provider 自身 API（Bridge），与自托管 Provider 的进程级旁路观测不等价</td>
+<td>P0</td>
+<td><code>[推断]</code></td>
+<td>裁决基于<strong>可观察效果</strong>：外部回调探针（probe 尝试出站回连独立观察端）、challenge/nonce artifact digest 比对、Marshal 侧读回重算；证据拓扑的裁决与签发仍独立于被测 Provider（ADR 0017 §2）；残余平台信任在 ConformanceEvidence 与 Outcome 中如实记录</td>
+</tr>
+<tr>
+<td>R2</td>
+<td>network 维度强制能力未验证：未见官方记载的按容器出站网络管控手段；Network Intent 可能无法强制</td>
+<td>P0</td>
+<td><code>[官方文档·记忆引用]</code> <code>[推断]</code></td>
+<td>conformance network 维度 probe（boundary-write/sensitive-env-read/spawn-flood 之外的出站探测）如实判定；failed/not-tested 则 hardened 不成立，回落 workspace-write AssuranceLevel，Run 侧 Network Intent 记录 unenforced 并允许 Policy 拒绝（security-model.md）；不静默降级</td>
+</tr>
+<tr>
+<td>R3</td>
+<td>SDK/Bridge 处于 1.0 preview/Beta 且托管平台不可自部署：行为漂移、接口变更、不可本地复现</td>
+<td>P0</td>
+<td><code>[仓库文档]</code></td>
+<td>live opt-in；protocolVersion 不兼容即 fail closed（拒绝注册/新 registration）；漂移检测进 Reconcile；Local/Docker/Kubernetes 自托管 Provider 走同一 conformance 保底，Cloudflare 不成为必选依赖（ADR 0016 §7）</td>
+</tr>
+<tr>
+<td>R4</td>
+<td>平台静默回收（闲置 TTL、故障、重启）丢失文件/进程/session，且回收事件可能不可观测</td>
+<td>P0</td>
+<td><code>[仓库文档]</code></td>
+<td>可丢弃执行体原则：权威状态全部外置；Reconcile 将"账本 active 但平台无实体"判为 drift，fail closed 走终止 + 对账 + 新 Attempt；绝不复活旧 handle</td>
+</tr>
+<tr>
+<td>R5</td>
+<td>Bridge Bearer 令牌为可转移共享 secret，与 ADR 0018 §12 "不可转移 workload identity" 的理想形态有差距</td>
+<td>P1</td>
+<td><code>[仓库文档]</code> <code>[推断]</code></td>
+<td>短有效期 + rotation/revocation + 按账号/scope 分离 + TLS 双向校验 audience/scope；令牌泄漏按 security-critical revoke 处置（立即 cancel + generation bump + kill）；跟踪 Cloudflare 官方更强身份机制（待复核）</td>
+</tr>
+<tr>
+<td>R6</td>
+<td>checkpoint 只覆盖文件系统态：进程/内存态不可移植；DO hibernation 是平台内部机制，digest 不可绑定、不可外部验证</td>
+<td>P1</td>
+<td><code>[官方文档·记忆引用]</code> <code>[推断]</code></td>
+<td>与 SPI Checkpoint 语义（staged content 快照）恰好一致，不构成契约冲突；Restore 一律"hydrate 文件态 + 重新 Exec"，不承诺进程续跑；Attempt 有界性吸收重建成本；hibernation 只作 Provider 内部成本优化并如实记录</td>
+</tr>
+<tr>
+<td>R7</td>
+<td>checkpoint/persist 大小受容器磁盘、R2 对象与 persist 时长约束；大仓库快照可能超限</td>
+<td>P1</td>
+<td><code>[官方文档·记忆引用]</code> <code>[推断]</code></td>
+<td>Policy 冻结 checkpoint 字节预算；超限 fail closed 并记录；内容寻址 + 增量缓存（ArtifactStore 别名绑定）降低快照体积；配额数值 M10-a 在线复核</td>
+</tr>
+<tr>
+<td>R8</td>
+<td>冷启动时延（镜像拉取、容器拉起、DO/容器自 hibernation 恢复）可能超过 lease ack/heartbeat deadline，造成误判 lease 失效</td>
+<td>P1</td>
+<td><code>[官方文档·记忆引用]</code> <code>[推断]</code></td>
+<td>Provision 阶段独立于 Exec ack deadline 计时；heartbeat deadline 按冷启动上界配置；误判路径本身是安全的（reconcile + 新 Attempt），但需实测调参（M10-c 成本/时延报告）</td>
+</tr>
+<tr>
+<td>R9</td>
+<td>出站网络是 Stage locator 拉取的必要条件；若账号策略限制出站，locator 路径断裂</td>
+<td>P1</td>
+<td><code>[推断]</code></td>
+<td>Probe 阶段探测出站可达性并如实报告；inline 路径作兜底（受 inline 上限约束）；EnvironmentSpec 声明网络要求，匹配失败 fail closed</td>
+</tr>
+<tr>
+<td>R10</td>
+<td>zombie 容器成本失控：Terminate 响应丢失或 marshal-server 崩溃后容器继续计费</td>
+<td>P1</td>
+<td><code>[推断]</code></td>
+<td>TTL + Reconcile/leak scan（ADR 0019 §9）；Terminate 幂等重试 + 对账；成本报告按 allocation 归因</td>
+</tr>
+<tr>
+<td>R11</td>
+<td>Exec 日志流无界增长冲击有界日志捕获与事件账本体积</td>
+<td>P1</td>
+<td><code>[推断]</code></td>
+<td>marshal-server 侧截断（有界 LogLines，SPI InspectReport 语义）；超限按 Policy 记录并终止；流式背压失败即断流 + reconcile</td>
+</tr>
+<tr>
+<td>R12</td>
+<td>平台配额触顶（并发容器、镜像仓、请求速率）导致 Provision 间歇失败</td>
+<td>P2</td>
+<td><code>[官方文档·记忆引用]</code></td>
+<td>容量错误与语义错误区分：容量不足 → 调度退避/新 Attempt；语义失败 → fail closed；配额清单 M10-a 在线复核（§6.3）</td>
+</tr>
+<tr>
+<td>R13</td>
+<td>Bridge 重新部署（用户账号侧操作）中断在途 exec 会话</td>
+<td>P2</td>
+<td><code>[推断]</code></td>
+<td>Bridge 无状态化约定（§4.3-6）：Marshal 凭 Inspect/Reconcile 恢复；在途 Attempt 按执行体丢失语义处理</td>
+</tr>
+<tr>
+<td>R14</td>
+<td>多租户演进时单账号拓扑的键空间压力</td>
+<td>P2</td>
+<td><code>[推断]</code></td>
+<td>当前单租户 tenantNamespace=<code>default</code> 合法（ADR 0018 §10）；多租户属 M11+ 评估项，tenant 只能作为 authorityNamespaceId/securityDomainId 的组成参与授权；isolationDomainId 预留按 Cloudflare 账号派生</td>
+</tr>
+<tr>
+<td>R15</td>
+<td>记忆引用的平台事实过期或错误（本文无在线核验）</td>
+<td>P0（对调研本身）</td>
+<td><code>[官方文档·记忆引用]</code></td>
+<td>M10-a 第一步即在线复核 §2/§6 全部数值与能力项；复核结果与本文不符时，以官方文档为准更新本文并重新评估映射结论</td>
+</tr>
+</tbody>
+</table>
+<h3 id="adr">平台限制与 ADR 契约冲突点汇总 <code>[推断]</code><a class="headerlink" href="#adr" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>ADR 契约要求</th>
+<th>平台现状</th>
+<th>冲突判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>hardened 四维证据（mount/network/resource/credential 全部 passed）</td>
+<td>network 管控手段未验证（R2）</td>
+<td><strong>潜在冲突</strong>：network 维度可能 not-tested/failed → 不得声明 hardened；无豁免</td>
+</tr>
+<tr>
+<td>Inspect 反映观测态、裁决 out-of-band</td>
+<td>观测通道经 Bridge（R1）</td>
+<td><strong>部分冲突</strong>：以可观察效果探针补强；残余信任如实记录</td>
+</tr>
+<tr>
+<td>Checkpoint digest 绑定、可验证</td>
+<td>persist 产物在 R2，digest 需重算</td>
+<td><strong>无冲突</strong>：Marshal 或容器侧重算 sha256；hibernation 不作 CheckpointRecord（R6）</td>
+</tr>
+<tr>
+<td>陈旧 bytes 只进 quarantine、put-if-absent</td>
+<td>无对应平台机制</td>
+<td><strong>无冲突</strong>：接纳语义完全在 Marshal 权威写入边界实现（ADR 0018 §13），平台只是 bytes 来源</td>
+</tr>
+<tr>
+<td>同 Attempt 单活 allocation</td>
+<td>DO 单实例模型</td>
+<td><strong>无冲突</strong>：Provider 内部便利与控制面 CAS 双保险</td>
+</tr>
+<tr>
+<td>credential 不入业务 JSON/事件/日志/digest</td>
+<td>Bridge 令牌存在</td>
+<td><strong>无冲突</strong>：令牌只在 Provider 配置与传输层，纪律见 §5.1</td>
+</tr>
+<tr>
+<td>Provider 失败不 Attempt 内回退、不静默降级</td>
+<td>容器丢失/TTL/漂移</td>
+<td><strong>无冲突</strong>：全部走终止 + 对账 + 新 Attempt / BLOCKED</td>
+</tr>
+</tbody>
+</table>
+<h2 id="9">9. 遗留问题与建议决策（供后续任务）<a class="headerlink" href="#9" title="Permanent link">&para;</a></h2>
+<p>以下问题不阻塞本调研结论，但 M10-a 启动前应逐项给出决策或复核结果：</p>
+<ol>
+<li><strong>在线复核清单</strong>：§2/§6 所有 <code>[官方文档·记忆引用]</code> 数值与能力项（配额、计费维度、hibernation 语义、出站管控能力、Bridge API 表面与版本状态）。</li>
+<li><strong>Bridge 协议版本策略</strong>：Bridge/SDK 版本与 Marshal <code>protocolVersion</code> 的映射规则；版本漂移时 fail closed 的具体错误码与 reason code（机器可读，ADR 0018 §6）。</li>
+<li><strong>heartbeat 间隔与 lease deadline 初值</strong>：结合冷启动时延实测（M10-c）冻结；参数值归属 M9 Schema/OpenAPI 的既有分工。</li>
+<li><strong>Pull 拓扑取舍</strong>：M10-c 是否引入 outbound-only runner，或整体推迟到 M12 的多拓扑 conformance。</li>
+<li><strong>checkpoint 预算默认值</strong>：Policy 层 maxArtifactBytes 类上限的默认与豁免流程。</li>
+<li><strong>network 维度 probe 设计</strong>：出站探测的独立观察端部署位置（自托管侧），与 ADR 0017 §2 证据拓扑的调度方/签发方分工确认。</li>
+<li><strong>R2 暂存 GC 策略</strong>：persist 对象的有效期与 cleanup 副作用分类（ephemeral-cleanup）确认。</li>
+</ol>
+<h2 id="_2">文档关系<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<ul>
+<li>本文为 M10 前置调研，服务于 <a href="../implementation-plan/">实施计划</a> Milestone 10 与其退出门禁；不替代 ADR，不改变 <a href="../roadmap-status/">Roadmap 状态</a>。</li>
+<li>上游依据：<a href="../adr/0016-durable-runtime-and-sandbox-provider/">ADR 0016</a>（§4 SPI 分层、§6 恢复/fencing/checkpoint、§7 Cloudflare 边界）、<a href="../adr/0017-provider-neutral-sandbox-contract/">ADR 0017</a>（二维模型、证据拓扑、内容寻址 Stage、身份 fencing、无双写 Restore、DispatchLease）、<a href="../adr/0018-control-plane-and-provider-ports/">ADR 0018</a>（Port 分流、双键空间、typed edge、transport 基线、原子 fencing sink、SSE、protocol family）、<a href="../adr/0019-deterministic-control-plane-typed-execution-and-goal-admission/">ADR 0019</a>（typed execution、副作用对账/补偿、M10 leak scan 增量）。</li>
+<li>相关研究：<a href="../research/cloud-agent-readiness-2026/">云端长程 Agent 能力审计</a>（公开研究，不构成实施承诺）。</li>
+<li>SPI 权威定义：<code>internal/sandbox/spi.go</code>；安全纪律：<a href="../security-model/">安全模型</a>。</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.suggest", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
