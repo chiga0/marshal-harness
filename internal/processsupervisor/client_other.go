@@ -27,6 +27,10 @@ func StartV2(context.Context, StartOptionsV2) (*ClientV2, error) {
 	return nil, ErrUnavailable
 }
 
+func ReconnectV2(context.Context, ReconnectOptionsV2) (*ClientV2, error) {
+	return nil, ErrUnavailable
+}
+
 func Reconnect(context.Context, ReconnectOptions) (*Client, error) {
 	return nil, ErrUnavailable
 }

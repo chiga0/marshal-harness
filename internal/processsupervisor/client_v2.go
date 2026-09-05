@@ -220,6 +220,7 @@ type ClientV2 struct {
 	anchor    SessionAnchorV2
 	handshake HandshakeResponseV2
 	pending   *PreparedCommandEvidenceV2
+	recovery  *SessionRecoveryEvidenceV2
 	poisoned  bool
 }
 

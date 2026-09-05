@@ -14,6 +14,8 @@ S3 在同一候选分支连续实现 v2 journal、命令执行与 live-session r
 
 客户端与 journal 对照检查发现 rejected receipt 原先会把请求携带的外部 authority head 写成当前 head，而 live Session 拒绝时保留 A0；这会让后续合法命令的 journal 校验失败。现统一 rejected 保留 A0、成功 bind 使用 next head、其他成功命令采用请求 head，增加拒绝后合法 spawn 的链式回归，未改变已接受的权限语义。`5e1519a` CI 的 macOS 失败已保留：Close 测试遗漏必需终结事实摘要导致超时；本次补齐 fixture，修复是否有效以新候选动态 CI 为准，不重跑旧失败 head、不把本地编译称为测试通过。
 
+恢复客户端继续使用原来的 owner acquisition 顺序与 live Supervisor，不创建第二个 coordinator、不重启或 adopt 进程。`ReconnectV2` 将旧命令 A0 与恢复计划的 previous/current owner 分离：丢失第一次恢复握手后，第二次计划可以前进而原命令的 journal base 不变；已提交 bind 的 outcome authority 也不得被新 owner head 覆盖。恢复前只接受 A0、exact intent 或 exact receipt 三类 held journal，恢复后再核对握手和实际 journal，保留 buffer、不用 v1 decoder/default。新增 Fake 与 Unix wire 回归证明所需检查路径，动态执行仍须 CI；这不是实机接线已经完成。下一步直接进入 ResultIngress/ProductionRuntime 的代际 subprojection 和现有调用链，避免另起独立业务模型。
+
 ## 2026-09-05：三面分离与真实业务交付纠偏
 
 基线 `origin/main@0c6d9cd`。保留确定性 Core、独立验证、Provider 分层与恢复资产；当前不能把 single-task kernel 或 T2 API 存在描述成自治 Agent Team。[ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 接受 B1→B2→B3 的业务路线，细节见 [业务交付计划](agent-team-delivery-plan.md)。

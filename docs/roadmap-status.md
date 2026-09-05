@@ -28,6 +28,8 @@ B1 候选实现同时把 `Status` 与长 mutation mutex 解耦，使用单独 li
 
 `b0780bd` 的上述 CI 后续已全部通过。server 候选 `5e1519a` 的 [CI 33940718334](https://github.com/chiga0/marshal-harness/actions/runs/33940718334) 通过 Ubuntu、Linux 双架构与 secret scan，macOS 完整生命周期测试在 Close 处超时，整轮为失败。本轮新增 `StartV2` 与 `ClientV2`：固定同一 Marshal image、empty env、inherited FD；准备/重建证据绑定完整 generation、两个 genesis、control directory 与命令前后 anchor，响应丢失或篡改保留 pending 并停止连接内重试。新测试通过客户端 API 连接同一 inherited server 的完整 bind→spawn→resume→inspect→collect→close 路径，但 mechanics 明确为 Fake，不冒充实机。已修正上轮 wire 测试 Close 输入遗漏的两项必需终结事实摘要，没有放宽关闭校验；同时修正 rejected receipt 不应消费外部 authority head 的 journal/client 一致性问题，并增加拒绝后继续执行的回归。当前本地验证为 compile-only/vet/staticcheck/architecture，动态结果待后继 CI；ResultIngress/ProductionRuntime v2 事实接线、client reconnect/Attach、rollout admission 和真实 Pi 仍开放。
 
+客户端候选 `1057418` 的 [CI 33941565125](https://github.com/chiga0/marshal-harness/actions/runs/33941565125) 已通过 Linux 双架构和 secret scan，记录时 macOS/Ubuntu quality 正在运行，不记为通过。本轮继续同一 S3 分支：新增 `ReconnectV2`，从 held v2 nonce/journal/socket 和当前 fixed Core 构造请求，连接前后校验文件边界及精确 journal 位置；恢复返回完整 generation、原始命令 A0、新 owner anchor、pending 和 typed replayed outcome。连续丢失两次恢复握手时 A0 不变，已提交 receipt 不重做；intent-only 的客户端锁定，不准继续发命令。测试新增三种 journal 分类、过期 receipt、已提交 bind 的旧/新 authority 分离、伪造恢复和 Unix wire 恢复后 successor resume；本地 compile-only、Darwin/Linux vet、staticcheck/architecture 通过，动态证据待新候选 CI。剩余主阻塞是 ResultIngress/ProductionRuntime 的完整 v2 subprojection 与调用链、Attach、rollout admission 和同一 fixed bytes 的真实 Pi 业务验收，B1 不升级。
+
 ## 历史 checkpoint 与技术证据映射
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
