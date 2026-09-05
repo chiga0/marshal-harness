@@ -20,6 +20,7 @@ type fakeContinuationV2 struct {
 	observation processsupervisor.AttachObservationV2
 	execute     func(processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
 	inspect     func(processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
+	terminate   func(processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
 	close       func(processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
 }
 
@@ -32,6 +33,12 @@ func (f fakeContinuationV2) ExecutePreparedCollect(_ context.Context, p processs
 func (f fakeContinuationV2) ExecutePreparedInspect(_ context.Context, p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
 	if f.inspect != nil {
 		return f.inspect(p)
+	}
+	return processsupervisor.VerifiedCommandOutcomeV2{}, ErrPreparedExecutionConflict
+}
+func (f fakeContinuationV2) ExecutePreparedTerminate(_ context.Context, p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
+	if f.terminate != nil {
+		return f.terminate(p)
 	}
 	return processsupervisor.VerifiedCommandOutcomeV2{}, ErrPreparedExecutionConflict
 }

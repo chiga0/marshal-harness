@@ -294,6 +294,18 @@ func pendingTerminalAttachOptions(state AttemptAuthorityState, ownerState Contro
 // reopens a caller-supplied absolute path: both the root and child object are
 // re-observed and matched to the identities frozen by ResultIngress.
 func openAttachedControlDirectory(profile *preparedDarwinExecutionProfile, state AttemptAuthorityState) (*os.File, error) {
+	// All production rebind/collect/terminal paths enter here before their
+	// first append, including receipt-only Close recovery with no socket IO.
+	// ADR 0079 retires that legacy mutation path, not merely its transport.
+	if state.SupervisorStarted.V2 == (SupervisorStartedV2{}) {
+		return nil, ErrPreparedExecutionUnavailable
+	}
+	if state.SupervisorStarted.Validate() != nil {
+		return nil, ErrPreparedExecutionConflict
+	}
+	if profile == nil || profile.controlRoot == nil {
+		return nil, ErrPreparedExecutionUnavailable
+	}
 	currentCore, err := processsupervisor.ObserveCurrentCore(profile.fixedMarshalPath)
 	if err != nil || currentCore != profile.core {
 		return nil, ErrPreparedExecutionUnavailable

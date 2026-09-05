@@ -106,6 +106,14 @@ func preparedBootstrapForState(t *testing.T, fixture preparedExecutionFixture, s
 }
 
 func TestLauncherV2BootstrapUsesExistingDurableAdmissionAndColdReplay(t *testing.T) {
+	testLauncherV2DurableLifecycle(t, false)
+}
+
+func TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply(t *testing.T) {
+	testLauncherV2DurableLifecycle(t, true)
+}
+
+func testLauncherV2DurableLifecycle(t *testing.T, terminate bool) {
 	fixture := newPreparedExecutionFixture(t)
 	state := fixture.storeStateAfterPrepared(t, fixture)
 	_, request := testBootstrapV2Input()
@@ -320,12 +328,12 @@ func TestLauncherV2BootstrapUsesExistingDurableAdmissionAndColdReplay(t *testing
 	if err := json.Unmarshal(line, &outcomeFact); err != nil || outcomeFact.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().CommandRecoveryRevision {
 		t.Fatalf("outcome lost v2 recovery generation: %v", err)
 	}
-	testLauncherV2StartedAndResume(t, fixture, projection, next)
+	testLauncherV2StartedAndResume(t, fixture, projection, next, terminate)
 }
 
 // Continue the same durable business chain, not an independently seeded
 // registry. The only fake is the peer report; no executable is launched.
-func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixture, projection *Ingress, state AttemptAuthorityState) {
+func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixture, projection *Ingress, state AttemptAuthorityState, terminate bool) {
 	t.Helper()
 	_, provision, err := currentPreparedProvisionReceipt(projection, state)
 	if err != nil {
@@ -447,7 +455,7 @@ func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixtu
 	if _, err := exactSuccessfulResume(replayed); err == nil {
 		t.Fatal("resume accepted unrelated business started fact")
 	}
-	testLauncherV2OwnerRebind(t, fixture, state)
+	testLauncherV2OwnerRebind(t, fixture, state, terminate)
 }
 
 type preparedFakeClientV2 struct {

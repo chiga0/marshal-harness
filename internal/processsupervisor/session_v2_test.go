@@ -53,7 +53,9 @@ func (m *countingMechanicsV2) Inspect(context.Context, CleanupPayload) (Mechanic
 	return m.result(CommandInspect, "terminal")
 }
 func (m *countingMechanicsV2) Terminate(context.Context, CleanupPayload) (MechanicsResult, error) {
-	return m.result(CommandTerminate, "terminal")
+	result, err := m.result(CommandTerminate, "terminal")
+	result.ReasonCode = "process-terminal"
+	return result, err
 }
 func (m *countingMechanicsV2) Collect(context.Context, CollectPayload) (MechanicsResult, error) {
 	return m.result(CommandCollect, "terminal")

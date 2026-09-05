@@ -23,7 +23,7 @@ type AttachOptionsV2 struct {
 // AttachedSessionV2 is a borrowed capability, not a reconnectable ClientV2.
 // Only the observation/outcome can escape; no generic command channel is
 // exposed. Core persists the exact preparation after Observation and before
-// calling one of the four closed continuation methods.
+// calling one of the closed continuation methods.
 type AttachedSessionV2 struct {
 	mu                                              sync.Mutex
 	active, observed, violated, attempted, executed bool
@@ -54,6 +54,9 @@ func (s *AttachedSessionV2) ExecutePreparedBindAuthority(ctx context.Context, p 
 }
 func (s *AttachedSessionV2) ExecutePreparedInspect(ctx context.Context, p PreparedCommandV2) (VerifiedCommandOutcomeV2, error) {
 	return s.execute(ctx, p, CommandInspect)
+}
+func (s *AttachedSessionV2) ExecutePreparedTerminate(ctx context.Context, p PreparedCommandV2) (VerifiedCommandOutcomeV2, error) {
+	return s.execute(ctx, p, CommandTerminate)
 }
 func (s *AttachedSessionV2) ExecutePreparedCollect(ctx context.Context, p PreparedCommandV2) (VerifiedCommandOutcomeV2, error) {
 	return s.execute(ctx, p, CommandCollect)

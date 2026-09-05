@@ -94,7 +94,7 @@ func TestAttachedV2CapabilityCannotEscapeOrGainGenericCommands(t *testing.T) {
 		})
 	}
 	methods := reflect.TypeOf((*AttachedSessionV2)(nil))
-	want := map[string]bool{"Observation": true, "ExecutePreparedBindAuthority": true, "ExecutePreparedInspect": true, "ExecutePreparedCollect": true, "ExecutePreparedClose": true}
+	want := map[string]bool{"Observation": true, "ExecutePreparedBindAuthority": true, "ExecutePreparedInspect": true, "ExecutePreparedTerminate": true, "ExecutePreparedCollect": true, "ExecutePreparedClose": true}
 	if methods.NumMethod() != len(want) {
 		t.Fatal("unexpected exported capability")
 	}

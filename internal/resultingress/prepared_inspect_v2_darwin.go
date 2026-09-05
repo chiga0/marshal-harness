@@ -13,12 +13,30 @@ import (
 
 func (s *DurableStore) inspectPreparedExecutionV2Locked(ctx context.Context, projection *Ingress, state AttemptAuthorityState, owner ControlOwnerState,
 	identity AttemptIdentity, directory *os.File, fixedPath string, transport continuationTransportV2, observe preparedJournalObserverV2) (PreparedExecutionTerminalObservation, error) {
+	return s.observeTerminalPreparedExecutionV2Locked(ctx, projection, state, owner, identity, directory, fixedPath, transport, observe, processsupervisor.CommandInspect)
+}
+
+// Inspect and Terminate share the same exact-intent/receipt recovery path.
+// Terminate is only reachable after the caller has durably fenced eligibility;
+// cancellation of a caller context alone never authorizes a process signal.
+func (s *DurableStore) observeTerminalPreparedExecutionV2Locked(ctx context.Context, projection *Ingress, state AttemptAuthorityState, owner ControlOwnerState,
+	identity AttemptIdentity, directory *os.File, fixedPath string, transport continuationTransportV2, observe preparedJournalObserverV2, command processsupervisor.CommandName) (PreparedExecutionTerminalObservation, error) {
+	if command != processsupervisor.CommandInspect && command != processsupervisor.CommandTerminate || state.BarrierDigest == "" || state.ProcessTerminalDigest != "" ||
+		state.AllocationTerminalDigest != "" || state.SupervisorClosedDigest != "" || state.SupervisorInterventionDigest != "" {
+		return PreparedExecutionTerminalObservation{}, ErrPreparedExecutionConflict
+	}
 	if transport == nil || observe == nil || state.SupervisorStarted.Validate() != nil || state.SupervisorMechanicsAnchor.Validate() != nil ||
 		state.SupervisorStarted.V2.Anchor.Generation != state.SupervisorMechanicsAnchor.Generation {
 		return PreparedExecutionTerminalObservation{}, ErrPreparedExecutionConflict
 	}
 	if state.ControlOwnerBindingRevision < 2 || state.ControlOwnerBindingRevision > state.Revision || state.SupervisorBoundAuthorityHead != state.ControlOwnerBindingDigest {
 		return PreparedExecutionTerminalObservation{}, ErrPreparedExecutionConflict
+	}
+	if state.SupervisorPendingIntentDigest == "" && len(state.SupervisorCommandCheckpoints) > 0 {
+		last := state.SupervisorCommandCheckpoints[len(state.SupervisorCommandCheckpoints)-1]
+		if last.Evidence.Command == command && last.Evidence.Disposition == "ok" && terminalSupervisorState(last.Evidence.Outcome.State) {
+			return PreparedExecutionTerminalObservation{Identity: identity, OutcomeFactDigest: last.FactDigest, Evidence: last.Evidence}, nil
+		}
 	}
 	pending := state.SupervisorPendingIntentDigest != ""
 	anchor := supervisorSessionAnchorV2(state.SupervisorMechanicsAnchor)
@@ -28,7 +46,7 @@ func (s *DurableStore) inspectPreparedExecutionV2Locked(ctx context.Context, pro
 	committed := false
 	if pending {
 		intent := state.SupervisorPendingIntent
-		if intent.Command != processsupervisor.CommandInspect || intent.PreCommand != state.SupervisorMechanicsAnchor {
+		if intent.Command != command || intent.PreCommand != state.SupervisorMechanicsAnchor {
 			return PreparedExecutionTerminalObservation{}, ErrPreparedExecutionConflict
 		}
 		expected, err := SupervisorPreparedCommandEvidenceV2(intent)
@@ -59,7 +77,7 @@ func (s *DurableStore) inspectPreparedExecutionV2Locked(ctx context.Context, pro
 			return PreparedExecutionTerminalObservation{}, processsupervisor.ErrIntervention
 		}
 	} else {
-		prepared, err = processsupervisor.PrepareCommandV2(anchor, processsupervisor.CommandOptions{Command: processsupervisor.CommandInspect, CommandID: fmt.Sprintf("inspect-terminal-%d", state.SupervisorCommandSequence+1),
+		prepared, err = processsupervisor.PrepareCommandV2(anchor, processsupervisor.CommandOptions{Command: command, CommandID: fmt.Sprintf("%s-terminal-%d", command, state.SupervisorCommandSequence+1),
 			Sequence: state.SupervisorCommandSequence + 1, PreviousCommandDigest: state.SupervisorCommandHead, CurrentAuthorityHead: state.HeadDigest, Deadline: s.authorityNow().Add(30 * time.Second)}, preparedCleanupPayload(state))
 		if err != nil {
 			return PreparedExecutionTerminalObservation{}, err
@@ -96,7 +114,11 @@ func (s *DurableStore) inspectPreparedExecutionV2Locked(ctx context.Context, pro
 				return err
 			}
 		}
-		outcome, err = session.ExecutePreparedInspect(ctx, prepared)
+		if command == processsupervisor.CommandTerminate {
+			outcome, err = session.ExecutePreparedTerminate(ctx, prepared)
+		} else {
+			outcome, err = session.ExecutePreparedInspect(ctx, prepared)
+		}
 		return err
 	})
 	if err != nil {

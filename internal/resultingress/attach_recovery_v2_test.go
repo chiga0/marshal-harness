@@ -54,7 +54,7 @@ func testRebindObservationV2(t *testing.T, a processsupervisor.AttachAuthorityV2
 
 // Extends the real durable bootstrap/start/resume test chain. Only the
 // Supervisor peer is simulated; owner, intent, outcome and cold replay use RB1.
-func testLauncherV2OwnerRebind(t *testing.T, fixture preparedExecutionFixture, state AttemptAuthorityState) {
+func testLauncherV2OwnerRebind(t *testing.T, fixture preparedExecutionFixture, state AttemptAuthorityState, terminate bool) {
 	t.Helper()
 	store := fixture.store
 	prior, found, err := store.OpenOwner(state.Owner.Scope)
@@ -253,5 +253,17 @@ func testLauncherV2OwnerRebind(t *testing.T, fixture preparedExecutionFixture, s
 	if err != nil || !found || !reflect.DeepEqual(cold, recovered) {
 		t.Fatalf("recovered receipt cold replay: %v", err)
 	}
-	testLauncherV2Collect(t, fixture, recovered, owner, verifier, directory)
+	if terminate {
+		var report processsupervisor.ProcessReport
+		for _, checkpoint := range recovered.SupervisorCommandCheckpoints {
+			v := checkpoint.Evidence.Outcome
+			if v.State == SupervisorProcessRunning {
+				report = processsupervisor.ProcessReport{State: "terminal", ObserverIdentity: v.ObserverIdentity, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Process: v.Process,
+					RuntimeObjectDigest: v.RuntimeObjectDigest, WorkingObjectDigest: v.WorkingObjectDigest, SourceGateRevision: v.SourceGateRevision, ExactSetDigest: v.ExactSetDigest}
+			}
+		}
+		testLauncherV2TerminalCommand(t, fixture, recovered, owner, verifier, directory, report, processsupervisor.CommandTerminate)
+	} else {
+		testLauncherV2Collect(t, fixture, recovered, owner, verifier, directory)
+	}
 }

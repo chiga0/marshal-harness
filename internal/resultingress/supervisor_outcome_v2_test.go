@@ -58,11 +58,14 @@ func testCommandOutcomeV2(t *testing.T, intent SupervisorCommandIntent, report *
 	case processsupervisor.CommandCollect:
 		request["processStartedFactDigest"], request["lastObservationDigest"] = p.Projection.ProcessStartedFactDigest, p.Projection.LastObservationDigest
 		reason = "transcript-collected"
-	case processsupervisor.CommandInspect:
+	case processsupervisor.CommandInspect, processsupervisor.CommandTerminate:
 		v := p.Projection
 		request["processStartedFactDigest"], request["lastObservationDigest"] = v.ProcessStartedFactDigest, v.LastObservationDigest
 		request["terminalizationBarrierDigest"], request["terminalizationId"], request["terminalGeneration"], request["cleanupBindingDigest"] = v.TerminalizationBarrierDigest, v.TerminalizationID, v.TerminalGeneration, v.CleanupBindingDigest
 		reason = "process-inspected"
+		if p.Command == processsupervisor.CommandTerminate {
+			reason = "process-terminal"
+		}
 	case processsupervisor.CommandClose:
 		v := p.Projection
 		request["processTerminalFactDigest"], request["allocationTerminatedFactDigest"], request["cleanupBindingDigest"] = v.ProcessTerminalFactDigest, v.AllocationTerminatedFactDigest, v.CleanupBindingDigest

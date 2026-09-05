@@ -12,8 +12,8 @@ import (
 )
 
 func TestAttachedClientV2SameConnectionPreparedBindAndNoEscapedCapability(t *testing.T) {
-	for _, name := range []string{"read-only", "prepared-bind", "wrong-successor", "wrong-method", "cross-goroutine", "canceled-command"} {
-		command := name == "prepared-bind"
+	for _, name := range []string{"read-only", "prepared-bind", "prepared-terminate", "wrong-successor", "wrong-method", "cross-goroutine", "canceled-command"} {
+		command := name == "prepared-bind" || name == "prepared-terminate"
 		t.Run(name, func(t *testing.T) {
 			h, m, self, request := newAttachV2WireFixture(t)
 			directory, err := os.Open(h.root)
@@ -46,6 +46,19 @@ func TestAttachedClientV2SameConnectionPreparedBindAndNoEscapedCapability(t *tes
 					return nil
 				}
 				a := request.Authority.PreviousSupervisor
+				if name == "prepared-terminate" {
+					prepared, err := PrepareCommandV2(a, clientOptionsV2(a, CommandTerminate, "borrowed-terminate-v2"), CleanupPayload{
+						ProcessStartedFactDigest: digest("started"), LastObservationDigest: request.Authority.ChildObservationDigest,
+						TerminalizationBarrierDigest: digest("barrier"), TerminalizationID: "borrowed-terminal", TerminalGeneration: 1, CleanupBindingDigest: digest("cleanup")})
+					if err != nil {
+						t.Fatal(err)
+					}
+					outcome, err := s.ExecutePreparedTerminate(context.Background(), prepared)
+					if err != nil || outcome.Validate() != nil || outcome.ReasonCode != "process-terminal" || outcome.ProcessReport.State != "terminal" {
+						t.Fatalf("terminate outcome: %v", err)
+					}
+					return nil
+				}
 				h.session.core.mu.Lock()
 				startedFact := h.session.core.supervisorStartedFact
 				h.session.core.mu.Unlock()
@@ -93,7 +106,7 @@ func TestAttachedClientV2SameConnectionPreparedBindAndNoEscapedCapability(t *tes
 			},
 				func(*net.UnixConn) (CoreIdentity, error) { return self, nil },
 				func(ControlDirectoryIdentity) (string, error) { return filepath.Join(h.root, controlSocket), nil })
-			wantFailure := name != "read-only" && name != "prepared-bind"
+			wantFailure := name != "read-only" && !command
 			if (err != nil) != wantFailure || callbacks != 1 || held {
 				t.Fatalf("Attach: %v callbacks=%d", err, callbacks)
 			}
@@ -106,7 +119,11 @@ func TestAttachedClientV2SameConnectionPreparedBindAndNoEscapedCapability(t *tes
 			if command {
 				want++
 			}
-			if h.session.core.commandSequence != want || m.calls != 1 {
+			wantCalls := 1
+			if name == "prepared-terminate" {
+				wantCalls++
+			}
+			if h.session.core.commandSequence != want || m.calls != wantCalls {
 				t.Fatal("Attach repeated child effect or command")
 			}
 		})

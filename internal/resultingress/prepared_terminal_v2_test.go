@@ -18,6 +18,10 @@ import (
 // Extends the same durable bootstrap/start/rebind/Collect chain. The kernel
 // peer and absence remain explicit substitutes; this is not a live Pi gate.
 func testLauncherV2Terminal(t *testing.T, fixture preparedExecutionFixture, state AttemptAuthorityState, owner ControlOwnerState, verifier attemptOwnerVerifier, directory *os.File, report processsupervisor.ProcessReport) {
+	testLauncherV2TerminalCommand(t, fixture, state, owner, verifier, directory, report, processsupervisor.CommandInspect)
+}
+
+func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixture, state AttemptAuthorityState, owner ControlOwnerState, verifier attemptOwnerVerifier, directory *os.File, report processsupervisor.ProcessReport, command processsupervisor.CommandName) {
 	t.Helper()
 	store := fixture.store
 	state = appendTestBarrier(t, store, state, "v2-terminal-chain", TerminalAttemptFailed).State
@@ -43,7 +47,10 @@ func testLauncherV2Terminal(t *testing.T, fixture preparedExecutionFixture, stat
 	transport := func(ctx context.Context, o processsupervisor.AttachOptionsV2, fn func(attachedContinuationV2) error) error {
 		transportCalls++
 		return o.OwnerVerifier.WithCurrentAttachOwnerV2(ctx, o.Authority, func() error {
-			return fn(fakeContinuationV2{observation: testRebindObservationV2(t, o.Authority), inspect: func(p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
+			executeTerminal := func(p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
+				if p.Evidence().Command != command {
+					t.Fatal("terminal method selected a different command")
+				}
 				inspectCalls++
 				intent := assertIntent(p)
 				var err error
@@ -52,7 +59,8 @@ func testLauncherV2Terminal(t *testing.T, fixture preparedExecutionFixture, stat
 					t.Fatal(err)
 				}
 				return processsupervisor.VerifiedCommandOutcomeV2{}, processsupervisor.ErrIntervention
-			}, close: func(p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
+			}
+			return fn(fakeContinuationV2{observation: testRebindObservationV2(t, o.Authority), inspect: executeTerminal, terminate: executeTerminal, close: func(p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
 				closeCalls++
 				intent := assertIntent(p)
 				var err error
@@ -87,10 +95,29 @@ func testLauncherV2Terminal(t *testing.T, fixture preparedExecutionFixture, stat
 		})
 	}
 	var inspection PreparedExecutionTerminalObservation
+	beforeAdmission, err := os.ReadFile(store.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*AttemptAuthorityState){
+		func(s *AttemptAuthorityState) { s.BarrierDigest = "" },
+		func(s *AttemptAuthorityState) { s.SupervisorInterventionDigest = attemptTestDigest("intervention") },
+		func(s *AttemptAuthorityState) { s.SupervisorBoundAuthorityHead = attemptTestDigest("stale-owner") },
+	} {
+		invalid := state
+		mutate(&invalid)
+		if _, err := store.observeTerminalPreparedExecutionV2Locked(context.Background(), nil, invalid, owner, state.Identity, directory, owner.Acquisition.OwnerBinary.CanonicalPath, transport, observer, command); err == nil {
+			t.Fatal("invalid terminal authority reached transport")
+		}
+	}
+	afterAdmission, err := os.ReadFile(store.ledgerPath())
+	if err != nil || !bytes.Equal(beforeAdmission, afterAdmission) || transportCalls != 0 {
+		t.Fatal("terminal admission failure changed ledger or borrowed transport")
+	}
 	inspect := func() error {
 		return transaction(func(p *Ingress, current AttemptAuthorityState) error {
 			var err error
-			inspection, err = store.inspectPreparedExecutionV2Locked(context.Background(), p, current, owner, state.Identity, directory, owner.Acquisition.OwnerBinary.CanonicalPath, transport, observer)
+			inspection, err = store.observeTerminalPreparedExecutionV2Locked(context.Background(), p, current, owner, state.Identity, directory, owner.Acquisition.OwnerBinary.CanonicalPath, transport, observer, command)
 			return err
 		})
 	}
@@ -100,14 +127,26 @@ func testLauncherV2Terminal(t *testing.T, fixture preparedExecutionFixture, stat
 	if err := inspect(); err != nil || inspectCalls != 1 || inspection.OutcomeFactDigest == "" {
 		t.Fatalf("inspect exact receipt recovery: %v", err)
 	}
+	beforeReplay, _ := os.ReadFile(store.ledgerPath())
+	if err := inspect(); err != nil || inspectCalls != 1 {
+		t.Fatalf("terminal idempotent repeat: %v", err)
+	}
+	afterReplay, _ := os.ReadFile(store.ledgerPath())
+	if !bytes.Equal(beforeReplay, afterReplay) {
+		t.Fatal("terminal idempotent repeat appended facts")
+	}
 	current, found, err := store.AttemptState(state.Identity)
 	if err != nil || !found {
 		t.Fatal(err)
 	}
 	run := attemptTestRunAuthority(state.Identity)
 	request := CleanupAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run, TerminalizationID: current.TerminalizationID, TerminalGeneration: current.TerminalGeneration, CleanupBindingDigest: current.CleanupBindingDigest, Operation: CleanupInspect}
+	kind := ProcessAbsent
+	if command == processsupervisor.CommandTerminate {
+		kind, request.Operation = ProcessTerminated, CleanupTerminate
+	}
 	terminal, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, current.Revision, current.HeadDigest, request,
-		AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: state.Identity, TerminalizationID: current.TerminalizationID, ProcessTerminalKind: ProcessAbsent, ObservationDigest: inspection.Evidence.ObservationDigest, SupervisorOutcomeFactDigest: inspection.OutcomeFactDigest})
+		AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: state.Identity, TerminalizationID: current.TerminalizationID, ProcessTerminalKind: kind, ObservationDigest: inspection.Evidence.ObservationDigest, SupervisorOutcomeFactDigest: inspection.OutcomeFactDigest})
 	if err != nil {
 		t.Fatalf("v2 process terminal: %v", err)
 	}

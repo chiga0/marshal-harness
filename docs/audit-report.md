@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-05：取消链路与 legacy receipt-only 写旁路
+
+逐层追踪发现 v2 Attach continuation 原先没有暴露已有 `terminate` command，ResultIngress 也只有 Inspect/Close producer；不能据 mechanics 支持信号而宣称服务端取消可用。当前在既有 ADR 0056/0067/0079 terminalization 合同下补 typed Terminate continuation，复用相同 owner 锁、RB1 barrier/intent/outcome、exact pending 分类和 post-checkpoint 认证，不新增 command schema 或生命周期状态。没有 barrier、owner binding 漂移或 intervention 时拒绝，原 command deadline 不在恢复时刷新；已有 receipt 不重复发信号。连续耐久测试增加未 Collect 的运行任务到 Terminate、丢回复恢复、终态释放和冷重放；peer/mechanics 仍显式 Fake，服务端 cancel/timeout 编排及实机故障矩阵尚未关闭。
+
+另发现只禁用 legacy socket 客户端不够：已提交 Close 的只读 receipt 恢复仍可能追加后继 RB1 fact。生产 rebind/collect/terminal 共用的 held-directory 入口现在在首次写入及 Core/目录 IO 前拒绝 legacy started generation；显式历史解析/测试 helper 保留，不转换历史证据。这是 ADR 0079 v1 只读约束的实现补漏，不扩大权限，也不代表已部署新的 fixed image。
+
 ## 2026-09-05：S3 终态夹具纠偏与旧入口退役候选
 
 CI 33955604098 的 macOS quality 暴露两个契约错配：Inspect 观察到 terminal 只能提供 `ProcessAbsent`，不能冒充 Terminate 的 `ProcessTerminated`；Close 恢复需要 exact `mechanics-closed`，Fake mechanics 却返回了通用测试 reasonCode。当前修复测试夹具并在 wire Close 处直接断言该原因，未放宽生产接纳。恢复错误增加无敏感值的固定阶段标签，便于一次定位身份/held journal/checkpoint/absence 失败。必须由新 head CI 确认，不能借用同次 Ubuntu 或旧 head 绿色结果。

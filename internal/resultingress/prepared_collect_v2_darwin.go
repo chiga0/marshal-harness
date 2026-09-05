@@ -15,6 +15,7 @@ type attachedContinuationV2 interface {
 	Observation() (processsupervisor.AttachObservationV2, error)
 	ExecutePreparedCollect(context.Context, processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
 	ExecutePreparedInspect(context.Context, processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
+	ExecutePreparedTerminate(context.Context, processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
 	ExecutePreparedClose(context.Context, processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
 }
 type continuationTransportV2 func(context.Context, processsupervisor.AttachOptionsV2, func(attachedContinuationV2) error) error

@@ -94,7 +94,7 @@ func (session *sessionV2) handleWithAttachLocked(raw []byte, attach *AttachAutho
 	}
 	if attach != nil {
 		switch request.Command {
-		case CommandBindAuthority, CommandCollect, CommandInspect, CommandClose:
+		case CommandBindAuthority, CommandCollect, CommandInspect, CommandTerminate, CommandClose:
 		default:
 			return responseV2{}, ErrConflict
 		}

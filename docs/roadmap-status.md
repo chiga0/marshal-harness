@@ -4,6 +4,8 @@
 
 ## 业务交付当前表
 
+当前取消链路接线候选：`TerminatePreparedExecution` 已沿现有 owner/RB1 guard 接入 v2 Attach prepared continuation，要求 terminalization barrier 已耐久，不能从 context cancellation 直接推导发信号权限。与 Inspect 共用 exact intent/receipt 恢复；已提交结果先认证 post-checkpoint，已有成功终态重复调用不再执行或追加。新增连续 bootstrap→running→owner rebind→Terminate 丢回复→receipt 恢复→cleanup 冷重放测试及真实 Unix socket/Fake mechanics 的 Terminate continuation 测试。本地 compile-only/静态检查不等于动态通过；尚未把服务端 cancel/timeout 调度器接入该入口。共同生产目录入口同时拒绝 legacy generation，覆盖无需 socket 的 Close receipt 恢复写旁路。前一提交 `cb615e7` 的 CI 33963625091 与本候选分别计证，B1 仍未关闭。
+
 最新验证纠偏：终态候选 `c921e1b` 的 [CI 33955604098](https://github.com/chiga0/marshal-harness/actions/runs/33955604098) 已结束，Ubuntu quality、Linux 双架构 conformance、secret scan 通过，macOS quality 失败。两处失败的夹具分别把 Inspect 的不存在事实写成 `ProcessTerminated`、把 Close 返回原因写成通用测试值而非 `mechanics-closed`；当前修正夹具并保留生产校验，增加固定阶段诊断，等待新 head 动态回归。新 fixed entry 同时退役 v1 Start/Reconnect/Attach 与旧 child 启动分支，在启动副作用前拒绝 legacy bootstrap；v1 解码/历史组件测试仍保留。此候选未部署，取消/超时、完整 legacy mutation 排查与真实 Pi 独立 ACCEPTED 仍是 B1 阻塞，不能把源码接线当成生产完成。下方 CI“仍在运行”为提交当时的历史状态。
 
 2026-09-05 新任务启动候选：原 `reconcilePreparedExecutionLocked` 调用链中的 bootstrap、started、Bind/Spawn/Resume producer 已改为完整 v2；不增加第二 coordinator 或环境 selector，仍依赖相同 owner/Run/RB1 guard、source precheck 与 sealed resume proof。新启动前扫描当前耐久投影，存在未释放或 pending 的 v1 Supervisor 时拒绝启动，不 adopt 或改写历史。连续耐久测试的 Spawn/Resume 已改为调用实际命令 producer，并在假 transport 内检查 exact intent 已落盘；本地 compile-only、vet/staticcheck、format 与 architecture 检查通过。该候选尚未安装/启用，终态候选 `c921e1b` 的 CI 33955604098 仍在运行；v1 mutation 入口退役、取消/超时生产链及 fixed server 实机矩阵仍开放，不能宣称 rollout/B1 已完成。
