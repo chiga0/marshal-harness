@@ -22,15 +22,10 @@ func validateAttachServerV2(session *sessionV2, boundary sessionControlBoundary,
 	}
 	session.core.mu.Lock()
 	defer session.core.mu.Unlock()
-	c := &session.core
-	j := session.journal.recoverySnapshot("")
-	if c.state != sessionBound || c.sessionID != p.SessionID || c.nonceDigest != p.SessionNonceDigest || c.authority != p.Authority ||
-		c.ownerEpoch != p.OwnerEpoch || c.authorityHead != p.CurrentAuthorityHead || c.commandSequence != p.CommandSequence || c.commandHead != p.CommandHead ||
-		c.lastObservation != a.ChildObservationDigest || j.sequence != p.JournalSequence || j.head != p.JournalHead || j.pending != nil ||
-		j.commandSeq != p.CommandSequence || j.commandHead != p.CommandHead || j.ownerEpoch != p.OwnerEpoch || j.authorityHead != p.CurrentAuthorityHead {
+	if !session.matchesAttachCheckpointLocked(a) {
 		return ErrConflict
 	}
-	observer, ok := c.mechanics.(attachChildObserver)
+	observer, ok := session.core.mechanics.(attachChildObserver)
 	if !ok {
 		return ErrConflict
 	}
@@ -41,7 +36,7 @@ func validateAttachServerV2(session *sessionV2, boundary sessionControlBoundary,
 	return nil
 }
 
-func serveReadOnlyAttachV2(connection *net.UnixConn, reader *bufio.Reader, session *sessionV2, boundary sessionControlBoundary, self, peer CoreIdentity, raw []byte) error {
+func serveAttachV2(connection *net.UnixConn, reader *bufio.Reader, session *sessionV2, boundary sessionControlBoundary, self, peer CoreIdentity, raw []byte) error {
 	var request attachRequestV2
 	if strictCanonicalDecode(raw, &request) != nil || !sameCoreIdentity(request.Core, peer) || validateAttachServerV2(session, boundary, self, request) != nil {
 		return ErrConflict
@@ -58,18 +53,47 @@ func serveReadOnlyAttachV2(connection *net.UnixConn, reader *bufio.Reader, sessi
 	if writeFrame(connection, response, MaxWireFrameBytes) != nil {
 		return ErrConflict
 	}
-	// Only the read-only exchange is admitted at this integration stage.
-	// A continuation needs the callback-scoped exact prepared-command gate;
-	// it must not fall through to the generic authenticated command loop.
-	_, err = readFrame(reader, MaxWireFrameBytes)
+	// EOF is a read-only Attach. Otherwise the same authenticated connection
+	// admits at most one command in the closed continuation set, never the
+	// generic command loop. Core must persist its preparation before sending.
+	if connection.SetReadDeadline(time.Now().Add(handshakeTimeout)) != nil {
+		return ErrConflict
+	}
+	frame, err := readFrame(reader, MaxWireFrameBytes)
 	if boundary.revalidateV2(session.journal.recoverySnapshot("")) != nil {
 		return ErrIntervention
 	}
 	if validateAttachServerV2(session, boundary, self, request) != nil {
 		return ErrConflict
 	}
-	if !errors.Is(err, io.EOF) {
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err != nil {
 		return ErrConflict
+	}
+	result, err := session.handleAttachContinuation(frame, request.Authority)
+	if err != nil {
+		return err
+	}
+	post := session.journal.recoverySnapshot("")
+	if post.pending != nil || post.sequence != request.Authority.PreviousSupervisor.Binding.JournalSequence+2 ||
+		post.commandSeq != result.Sequence || post.commandHead != result.CommandHead || boundary.revalidateV2(post) != nil {
+		return ErrIntervention
+	}
+	if connection.SetDeadline(time.Now().Add(handshakeTimeout)) != nil {
+		return ErrConflict
+	}
+	if writeFrame(connection, result, MaxWireFrameBytes) != nil {
+		return ErrConflict
+	}
+	var unexpected [1]byte
+	if count, readErr := connection.Read(unexpected[:]); count != 0 || !errors.Is(readErr, io.EOF) {
+		return ErrConflict
+	}
+	final := session.journal.recoverySnapshot("")
+	if final.pending != nil || final.sequence != post.sequence || final.head != post.head || boundary.revalidateV2(final) != nil {
+		return ErrIntervention
 	}
 	return nil
 }

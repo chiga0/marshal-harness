@@ -61,15 +61,54 @@ func (session *sessionV2) handle(raw []byte) (responseV2, error) {
 }
 
 func (session *sessionV2) handleLocked(raw []byte) (responseV2, error) {
+	return session.handleWithAttachLocked(raw, nil)
+}
+
+// handleAttachContinuation is callable only after an authenticated read-only
+// Attach. The frozen checkpoint is rechecked under the command lock, so a
+// stale observation cannot authorize an intervening command or receipt replay.
+func (session *sessionV2) handleAttachContinuation(raw []byte, authority AttachAuthorityV2) (responseV2, error) {
+	if session == nil || authority.Validate() != nil {
+		return responseV2{}, ErrConflict
+	}
+	session.core.mu.Lock()
+	defer session.core.mu.Unlock()
+	if !session.matchesAttachCheckpointLocked(authority) {
+		return responseV2{}, ErrConflict
+	}
+	return session.handleWithAttachLocked(raw, &authority)
+}
+
+func (session *sessionV2) matchesAttachCheckpointLocked(a AttachAuthorityV2) bool {
+	p, c, j := a.PreviousSupervisor.Binding, &session.core, session.journal.recoverySnapshot("")
+	return c.state == sessionBound && c.sessionID == p.SessionID && c.nonceDigest == p.SessionNonceDigest && c.authority == p.Authority &&
+		c.ownerEpoch == p.OwnerEpoch && c.authorityHead == p.CurrentAuthorityHead && c.commandSequence == p.CommandSequence && c.commandHead == p.CommandHead &&
+		c.lastObservation == a.ChildObservationDigest && j.sequence == p.JournalSequence && j.head == p.JournalHead && j.pending == nil &&
+		j.commandSeq == p.CommandSequence && j.commandHead == p.CommandHead && j.ownerEpoch == p.OwnerEpoch && j.authorityHead == p.CurrentAuthorityHead
+}
+
+func (session *sessionV2) handleWithAttachLocked(raw []byte, attach *AttachAuthorityV2) (responseV2, error) {
 	var request requestV2
 	if len(raw) > MaxWireFrameBytes || strictCanonicalDecode(raw, &request) != nil || request.validate() != nil || request.SessionID != session.core.sessionID {
 		return responseV2{}, ErrInvalid
+	}
+	if attach != nil {
+		switch request.Command {
+		case CommandBindAuthority, CommandCollect, CommandInspect, CommandClose:
+		default:
+			return responseV2{}, ErrConflict
+		}
 	}
 	projection, payload, err := projectRequestV2(request)
 	if err != nil {
 		return responseV2{}, err
 	}
 	if prior, ok := session.journal.receipt(request.CommandID); ok {
+		// Response-loss recovery uses the exact journal/intent recovery path,
+		// not a second command through a newly observed Attach checkpoint.
+		if attach != nil {
+			return responseV2{}, ErrConflict
+		}
 		if !equalProjection(*prior.Request, projection) || validateV2ResponseBinding(*prior.Response, request) != nil {
 			return responseV2{}, ErrConflict
 		}
@@ -84,8 +123,17 @@ func (session *sessionV2) handleLocked(raw []byte) (responseV2, error) {
 	if request.Sequence != session.core.commandSequence+1 || request.PreviousCommandDigest != session.core.commandHead {
 		return responseV2{}, ErrConflict
 	}
-	if err := session.core.admitCommandState(request.Command, request.CurrentAuthorityHead, payload); err != nil {
-		return responseV2{}, err
+	if attach != nil && request.Command == CommandBindAuthority {
+		value := payload.(BindAuthorityPayload)
+		c := &session.core
+		if request.CurrentAuthorityHead != c.authorityHead || value.OwnerEpoch != c.ownerEpoch || value.PreviousAuthorityHead != c.authorityHead ||
+			value.AuthorityHead == c.authorityHead || value.AuthorityHead != attach.CurrentOwnerBoundFact.AttemptHead || value.SupervisorStartedFactDigest != c.supervisorStartedFact {
+			return responseV2{}, ErrConflict
+		}
+	} else {
+		if err := session.core.admitCommandState(request.Command, request.CurrentAuthorityHead, payload); err != nil {
+			return responseV2{}, err
+		}
 	}
 	base := session.journalBase()
 	base.Kind, base.Request = journalCommandIntent, &projection

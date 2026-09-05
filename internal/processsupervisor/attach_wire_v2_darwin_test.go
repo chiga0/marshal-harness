@@ -20,6 +20,14 @@ func (m *attachMechanicsV2) attachChildIdentity() (ProcessIdentity, error) {
 }
 
 func TestReadOnlyAttachV2WirePreservesOwnerJournalAndMechanics(t *testing.T) {
+	testAttachV2Wire(t, false)
+}
+
+func TestAttachV2WireCommitsSingleBoundSuccessorOnSameConnection(t *testing.T) {
+	testAttachV2Wire(t, true)
+}
+
+func testAttachV2Wire(t *testing.T, rebind bool) {
 	m := &attachMechanicsV2{}
 	self := validBootstrapV2().Core
 	self.Process.PID += 100
@@ -101,6 +109,22 @@ func TestReadOnlyAttachV2WirePreservesOwnerJournalAndMechanics(t *testing.T) {
 	if err := codec.Read(&response); err != nil || response.validate(request, self) != nil {
 		t.Fatalf("Attach response: %v", err)
 	}
+	expectedHead, expectedCommandHead := anchor.Binding.CurrentAuthorityHead, anchor.Binding.CommandHead
+	if rebind {
+		h.session.core.mu.Lock()
+		command := sessionRequestV2(t, h.session, CommandBindAuthority, "wire-attach-bind-v2", BindAuthorityPayload{
+			SupervisorStartedFactDigest: h.session.core.supervisorStartedFact, OwnerEpoch: anchor.Binding.OwnerEpoch,
+			PreviousAuthorityHead: anchor.Binding.CurrentAuthorityHead, AuthorityHead: a.CurrentOwnerBoundFact.AttemptHead})
+		h.session.core.mu.Unlock()
+		if codec.Write(command) != nil {
+			t.Fatal("continuation write")
+		}
+		var result responseV2
+		if err := codec.Read(&result); err != nil || result.Status != "ok" || validateV2ResponseBinding(result, command) != nil {
+			t.Fatalf("continuation receipt: %+v %v", result, err)
+		}
+		expectedHead, expectedCommandHead = a.CurrentOwnerBoundFact.AttemptHead, result.CommandHead
+	}
 	if err := connection.CloseWrite(); err != nil {
 		t.Fatal(err)
 	}
@@ -108,13 +132,22 @@ func TestReadOnlyAttachV2WirePreservesOwnerJournalAndMechanics(t *testing.T) {
 		t.Fatalf("Attach did not close read-only exchange: %v", err)
 	}
 	after, err := os.ReadFile(filepath.Join(h.root, journalFileNameV2))
-	if err != nil || !bytes.Equal(before, after) {
-		t.Fatal("Attach wrote mechanics journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rebind && !bytes.Equal(before, after) {
+		t.Fatal("read-only Attach wrote mechanics journal")
+	}
+	if rebind {
+		journal, err := DecodeSupervisorJournalReadOnly(journalFileNameV2, after)
+		if err != nil || journal.Sequence != anchor.Binding.JournalSequence+2 {
+			t.Fatal("rebind journal not exactly one pair")
+		}
 	}
 	h.session.core.mu.Lock()
 	defer h.session.core.mu.Unlock()
-	if h.session.core.ownerEpoch != anchor.Binding.OwnerEpoch || h.session.core.authorityHead != anchor.Binding.CurrentAuthorityHead ||
-		h.session.core.commandHead != anchor.Binding.CommandHead || h.session.core.lastObservation != lastObservation || m.calls != calls {
+	if h.session.core.ownerEpoch != anchor.Binding.OwnerEpoch || h.session.core.authorityHead != expectedHead ||
+		h.session.core.commandHead != expectedCommandHead || h.session.core.lastObservation != lastObservation || m.calls != calls {
 		t.Fatal("Attach mutated owner/head/child or executed mechanics")
 	}
 }

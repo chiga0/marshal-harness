@@ -167,7 +167,12 @@ func serveReconnectV2(ctx context.Context, connection *net.UnixConn, session *se
 		return false, ErrIntervention
 	}
 	if peerErr == nil && readErr == nil && wireSchema(raw) == AttachSchemaV2 {
-		return false, serveReadOnlyAttachV2(connection, reader, session, boundary, self, peer, raw)
+		err := serveAttachV2(connection, reader, session, boundary, self, peer, raw)
+		if errors.Is(err, ErrIntervention) {
+			session.core.intervene()
+		}
+		// Close remains terminal even when its committed response is lost.
+		return session.core.State() == string(sessionClosed), err
 	}
 	var request reconnectRequestV2
 	if peerErr != nil || readErr != nil || strictCanonicalDecode(raw, &request) != nil {

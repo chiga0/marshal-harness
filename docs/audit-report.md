@@ -1,5 +1,9 @@
 # 设计审计报告
 
+2026-09-05 Attach continuation 候选：复用 v2 的 intent→mechanics→receipt 提交流程，新增窄命令入口，不把 v1 Request 转换为 v2。只读观察不写状态；后续命令必须在锁内重新匹配完整 session/journal/owner/child-observation checkpoint。bind 的目标额外精确等于已认证 owner-bound fact 的 Attempt head，保留旧 mechanics owner epoch。已消费 checkpoint 不允许重放；丢响应只能走现有 exact receipt recovery。终态 Close 在已提交但回复失败时也终止监听，不留下已关闭 session 的无效常驻循环。
+
+实现覆盖：错误 successor、owner、started fact、head、deadline、sequence、混代、Spawn replay、Resume 的零写入拒绝；普通命令入口拒绝 rebind；单次 rebind 不重复启动 child；Inspect→Collect→Close 按既有生命周期准入；真实 Unix socket 同一连接的 Attach→bind→EOF。客户端 borrowed capability 和 Core RB1 producer 尚未连接，故这些仍是候选代码，不是独立业务验收、生产恢复或 release 证据。后续必须完成客户端及 Core，再跑固定 bytes 的真实 Pi 完整闭环，不把当前服务端单测当作终点。下段保留前一只读 checkpoint 的历史状态。
+
 2026-09-05 Attach 接线审计：不能把已有 generic `ReconnectV2` 接到生产 owner recovery。前者推进 session 内存 owner/head，并可处理其通用 pending recovery；ADR 0067 被 ADR 0079 保留的生产顺序要求只读 Attach、RB1 bind intent、相同 prepared bind、authenticated outcome，且跨 owner pending 固定 intervention。当前候选补足 ADR 0079 的只读 v2 编码与响应观察（完整 generation/anchor、current acquisition/owner-bound、peer/child、nonce challenge），服务端在 reconnect admission **之前**分流，拒绝新 owner/head 的握手伪装成 unchanged Attach。没有新增 reconnect authority fact、fallback 或生产 selector。
 
 验证方式：portable 自洽篡改/全部 generation 字段缺失/unknown reconnect field/nonce/owner/head/child/peer 测试，以及真实 Unix socket 的无效请求后有效 Attach、EOF 收口、journal bytes/owner/head/last observation/mechanics calls 不变检查。本轮仅接通只读交换，任何 continuation 仍关闭；后继必须实现 borrowed callback 和 exact prepared-command gate，再开放 bind/collect/terminal。`a5a261e` 的 CI 33947799422 已最终五项全绿，确认上一轮业务启动链和 F_GETPATH 回归；本轮增量须单独 CI，不复用旧 head 作为动态证明。
