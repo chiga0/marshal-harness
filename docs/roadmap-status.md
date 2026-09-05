@@ -4,6 +4,10 @@
 
 ## 业务交付当前表
 
+2026-09-05 当前终态接线候选：v2 `InspectPreparedExecution` 在既有 owner/RB1 guard 内记录 exact intent，经 Attach 收取或认证已提交 receipt；v2 Close 必须同时取得 exact receipt 与独立内核 Supervisor absence，EOF 或磁盘 receipt 单独不能授权关闭。已提交但尚未证明退出的 Close 不重复发送；最终 `SupervisorClosed → CleanupCompleted → CleanupReleased` 沿原业务账本接纳完整 v2 身份，保持 v1 历史兼容。连续 RB1 测试从 bootstrap/start/rebind/Collect 延伸到该终态和冷重放，另覆盖 absence 漂移、伪造 checkpoint 与破损 journal 不修复；显式假 peer/内核观察不是真实 Pi。候选本地 compile-only、format、architecture、双平台 vet/staticcheck 通过，动态 CI 待提交后验证。下一步为 Terminate/恢复调用链检查、完整 selector 与固定 server 真实 Pi 独立 ACCEPTED；B1 仍未关闭。
+
+验证更新：Collect 候选 `40bea7e` 的 [CI 33950856231](https://github.com/chiga0/marshal-harness/actions/runs/33950856231) 已五项全绿，包括 macOS/Ubuntu quality、Linux 双架构 conformance 与 secret scan；覆盖其祖先 pending-bind 修复，但不覆盖上方终态候选。下面保留各次提交时的原始状态。
+
 2026-09-05 最新 Collect 接线候选：生产 `CollectPreparedExecution` 按完整 Supervisor generation 进入 v2 分支；原 owner/RB1 锁内持久化 exact intent、借用 Attach 收取结果并接纳 outcome。pending receipt 先认证 post-checkpoint；输出读取失败后复用已耐久 receipt，仅重读 held 输出，不再执行 Collect。新增固定 Core/held v2 journal/transcript reader，绑定 receipt、manifest、长度和内容摘要，不把 v2 转成 v1。连续 RB1 测试已延伸到 Collect 丢回复、receipt 恢复、读取失败重读和结果 fact 引用；仍使用显式假 peer，不是真实 Pi 验收。
 
 验证纠偏：`71d53c2` 的 [CI 33950429378](https://github.com/chiga0/marshal-harness/actions/runs/33950429378) 双平台 quality 在 `format-check` 失败，未运行动态测试；原因是非 Darwin stub 未 gofmt，现已修正并补跑仓库统一 `make format-check`。Linux 双架构 conformance 与 secret scan 通过不代表 quality 通过。本候选仍待新 head CI；下一关键路径是终态 Inspect/Close/absence、selector 与固定 server 真实 Pi 独立 ACCEPTED，B1 状态不变。

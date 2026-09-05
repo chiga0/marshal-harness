@@ -584,8 +584,11 @@ func (observation SupervisorAbsenceObservation) Validate() error {
 }
 
 func (closed ProcessSupervisorClosed) Validate() error {
-	if closed.ProtocolRevision != processsupervisor.ProtocolRevision || strings.TrimSpace(closed.SessionID) == "" || closed.Owner.Validate() != nil || strings.TrimSpace(closed.TerminalizationID) == "" || validateSupervisorProcessIdentity(closed.SupervisorProcess) != nil || strings.TrimSpace(closed.ObserverIdentity) == "" {
+	if closed.ProtocolRevision != processsupervisor.ProtocolRevision && closed.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().ProtocolRevision || strings.TrimSpace(closed.SessionID) == "" || closed.Owner.Validate() != nil || strings.TrimSpace(closed.TerminalizationID) == "" || validateSupervisorProcessIdentity(closed.SupervisorProcess) != nil || strings.TrimSpace(closed.ObserverIdentity) == "" {
 		return fmt.Errorf("%w: invalid process-supervisor-closed identity", ErrAttemptAuthorityConflict)
+	}
+	if closed.ProtocolRevision == processsupervisor.DormantV2ProtocolContract().ProtocolRevision && (closed.AuthenticatedSupervisorAbsence.Validate() != nil || closed.SupervisorAbsence != (SupervisorAbsenceObservation{})) {
+		return ErrAttemptAuthorityConflict
 	}
 	for name, digest := range map[string]string{
 		"supervisorStartedFactDigest":        closed.SupervisorStartedFactDigest,
@@ -790,7 +793,9 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 		if _, err := currentOwner(closed.Owner); err != nil {
 			return err
 		}
-		if !exists || prior.Owner != closed.Owner || prior.SupervisorStartedDigest == "" || closed.SessionID != prior.SupervisorStarted.Handshake.SessionID || closed.SupervisorProcess != prior.SupervisorStarted.Handshake.SupervisorProcess || closed.FinalCommandHead == prior.SupervisorStarted.Handshake.CommandHead {
+		sessionID, initialHead, protocol := supervisorStartedCommandBinding(prior.SupervisorStarted)
+		process, observedAt := supervisorStartedProcessIdentity(prior.SupervisorStarted)
+		if !exists || prior.Owner != closed.Owner || prior.SupervisorStartedDigest == "" || closed.ProtocolRevision != protocol || closed.SessionID != sessionID || closed.SupervisorProcess != process || closed.FinalCommandHead == initialHead {
 			return ErrAttemptAuthorityConflict
 		}
 		if prior.SupervisorBootstrapDigest != "" && transition.SupervisorOutcomeFactDigest != "" && !zeroSupervisorCommandEvidence(closed.Mechanics) {
@@ -799,7 +804,7 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 		if prior.SupervisorBootstrapDigest != "" && transition.SupervisorOutcomeFactDigest == "" && (zeroSupervisorCommandEvidence(closed.Mechanics) || closed.Mechanics.CurrentAuthorityHead != prior.HeadDigest || closed.Mechanics.Outcome.Process != prior.ProcessStartedEvidence.Outcome.Process) {
 			return ErrAttemptAuthorityConflict
 		}
-		startedAt, startedErr := time.Parse(time.RFC3339Nano, prior.SupervisorStarted.Handshake.ObservedAt)
+		startedAt, startedErr := time.Parse(time.RFC3339Nano, observedAt)
 		closedAt, closedErr := time.Parse(time.RFC3339Nano, closed.ObservedAt)
 		if startedErr != nil || closedErr != nil || closedAt.Before(startedAt) {
 			return ErrAttemptAuthorityConflict

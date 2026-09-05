@@ -19,6 +19,8 @@ import (
 type fakeContinuationV2 struct {
 	observation processsupervisor.AttachObservationV2
 	execute     func(processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
+	inspect     func(processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
+	close       func(processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error)
 }
 
 func (f fakeContinuationV2) Observation() (processsupervisor.AttachObservationV2, error) {
@@ -27,10 +29,16 @@ func (f fakeContinuationV2) Observation() (processsupervisor.AttachObservationV2
 func (f fakeContinuationV2) ExecutePreparedCollect(_ context.Context, p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
 	return f.execute(p)
 }
-func (f fakeContinuationV2) ExecutePreparedInspect(context.Context, processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
+func (f fakeContinuationV2) ExecutePreparedInspect(_ context.Context, p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
+	if f.inspect != nil {
+		return f.inspect(p)
+	}
 	return processsupervisor.VerifiedCommandOutcomeV2{}, ErrPreparedExecutionConflict
 }
-func (f fakeContinuationV2) ExecutePreparedClose(context.Context, processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
+func (f fakeContinuationV2) ExecutePreparedClose(_ context.Context, p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
+	if f.close != nil {
+		return f.close(p)
+	}
 	return processsupervisor.VerifiedCommandOutcomeV2{}, ErrPreparedExecutionConflict
 }
 
@@ -153,4 +161,5 @@ func testLauncherV2Collect(t *testing.T, fixture preparedExecutionFixture, state
 	if err != nil || bytes.Contains(bytesOnDisk, stdout) {
 		t.Fatal("transcript bytes entered RB1")
 	}
+	testLauncherV2Terminal(t, fixture, saved, owner, verifier, directory, report)
 }

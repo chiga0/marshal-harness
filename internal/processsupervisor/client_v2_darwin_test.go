@@ -89,6 +89,16 @@ func TestClientV2ToInheritedServerCompletePreparedLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	recoveryOptions := CommittedCloseRecoveryOptionsV2{FixedMarshalPath: anchor.Binding.FixedBinary.CanonicalPath, ControlDirectory: h.directory, PreparedClose: prepared, ExpectedSupervisor: h.handshake.SupervisorProcess}
+	absenceObserver := func(expected ProcessIdentity) (SupervisorAbsenceState, *ProcessIdentity, error) {
+		if expected != h.handshake.SupervisorProcess {
+			t.Fatal("wrong supervisor birth queried")
+		}
+		return SupervisorExpectedAbsent, nil, nil
+	}
+	if _, err := recoverCommittedCloseWithObserversV2(context.Background(), recoveryOptions, coreObserver, absenceObserver); err == nil {
+		t.Fatal("uncommitted close recovered")
+	}
 	closed, err := client.DoPrepared(context.Background(), prepared)
 	if err != nil || closed.Status != "ok" {
 		t.Fatalf("close: %v", err)
@@ -99,6 +109,51 @@ func TestClientV2ToInheritedServerCompletePreparedLifecycle(t *testing.T) {
 	state, err := readHeldJournalStateV2(file)
 	if err != nil || state.sequence != 13 || state.head != closed.PostCommand.Binding.JournalHead || state.pending != nil || m.calls != 5 {
 		t.Fatalf("terminal journal: %v seq=%d calls=%d", err, state.sequence, m.calls)
+	}
+	recovered, err := recoverCommittedCloseWithObserversV2(context.Background(), recoveryOptions, coreObserver, absenceObserver)
+	if err != nil || recovered.Validate() != nil || recovered.Outcome.Preparation != prepared.Evidence() || recovered.Outcome.ReceiptDigest != closed.ReceiptDigest {
+		t.Fatalf("v2 close absence recovery: %v", err)
+	}
+	if _, err := recoverCommittedCloseWithObserversV2(context.Background(), recoveryOptions, coreObserver, func(ProcessIdentity) (SupervisorAbsenceState, *ProcessIdentity, error) { return "", nil, ErrConflict }); err == nil {
+		t.Fatal("live supervisor accepted as absent")
+	}
+	calls := 0
+	if _, err := recoverCommittedCloseWithObserversV2(context.Background(), recoveryOptions, coreObserver, func(ProcessIdentity) (SupervisorAbsenceState, *ProcessIdentity, error) {
+		calls++
+		if calls == 1 {
+			return SupervisorExpectedAbsent, nil, nil
+		}
+		replacement := h.handshake.SupervisorProcess
+		replacement.BirthSeconds++
+		return SupervisorPIDReused, &replacement, nil
+	}); err == nil {
+		t.Fatal("changing kernel observation accepted")
+	}
+	forged := recovered
+	forged.Absence.FinalJournalHead = digest("wrong-final")
+	if forged.Validate() == nil {
+		t.Fatal("absence not tied to exact journal")
+	}
+	writer, err := os.OpenFile(filepath.Join(h.root, journalFileNameV2), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.WriteString("{"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(h.root, journalFileNameV2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recoverCommittedCloseWithObserversV2(context.Background(), recoveryOptions, coreObserver, absenceObserver); err == nil {
+		t.Fatal("torn close journal accepted")
+	}
+	after, err := os.ReadFile(filepath.Join(h.root, journalFileNameV2))
+	if err != nil || string(before) != string(after) {
+		t.Fatal("close recovery repaired journal")
 	}
 }
 

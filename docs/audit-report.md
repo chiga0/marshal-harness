@@ -1,5 +1,9 @@
 # 设计审计报告
 
+2026-09-05 v2 终态 producer 接线：Inspect 沿既有 exact intent/Attach/receipt 进入 RB1；Close 的 receipt 恢复还要求独立观察精确 Supervisor 已缺席，绑定固定 Core、held control files 与完整 v2 final journal checkpoint。进程仍活跃、前后 absence 不一致、破损尾部、错误 receipt/代际均拒绝；已提交 Close 不重新执行，不以 EOF 代替退出证明。业务 `SupervisorClosed` 接纳器同步检查 started 的实际代际和进程身份，以及 outcome 与 absence 的同一最终 checkpoint；历史 v1 不迁移、不重写。该变化实现 ADR 0079 已有终态合同，不新增生命周期步骤或旁路发布权限。
+
+连续耐久测试覆盖 Inspect/Close 丢回复、缺席等待零重放、伪造 absence 写前拒绝、完整 cleanup release 与冷重放；processsupervisor 测试仍真实读取 held journal，只有 peer/内核观察采用显式替身。当前本地仅编译/静态证据，动态 CI 待验证。祖先 Collect `40bea7e` 的 CI 33950856231 五项全绿，不能替代当前候选；真实 Pi、生产 selector、取消/Terminate 与 fixed server 完整验收继续开放。
+
 2026-09-05 v2 Collect producer 接线：既有生产 Collect 入口仍保留物理 owner/current ledger 检查，v2 不再误读 v1 handshake。exact prepared request 在任何执行前耐久；丢响应的 receipt 只作为待认证观察，Attach 必须绑定 post-checkpoint 和新 child observation 才接纳；未执行时只发送原请求，intent-only 仍 intervention。成功 outcome 已入账但输出读取失败时保留事实并只重读固定对象。新增 reader 读取 held v2 journal，不转换代际；前后检查完整 checkpoint、nonce、目录/文件/socket，并核对 exact Collect receipt、manifest、输出长度和摘要。原始 transcript bytes 不进入 RB1，后续 ResultIngress 继续引用 outcome fact。
 
 效率复盘：上一候选 `71d53c2` 的 CI 33950429378 两个平台都在 `Makefile:27 format-check` 失败；手列 gofmt 文件时漏掉 `client_other.go`。这是本地可发现的流程失误，不是架构或业务失败，也不应原样重跑。已修正格式，后续采用仓库现有 `make format-check` 作为提交前统一检查，不为此引入新协议/工具或另拆 PR。quality 未跑到测试，不能把该次 conformance/secret scan 成功外推为恢复测试成功。本轮 Collect 与此前 pending-bind 必须在新 exact head 验证。

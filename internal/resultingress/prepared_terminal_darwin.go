@@ -45,6 +45,10 @@ func (s *DurableStore) inspectPreparedExecutionWithTransport(ctx context.Context
 				result = PreparedExecutionTerminalObservation{Identity: identity, OutcomeFactDigest: checkpoint.FactDigest, Evidence: checkpoint.Evidence}
 				return nil
 			}
+			if state.SupervisorStarted.V2 != (SupervisorStartedV2{}) {
+				result, err = s.inspectPreparedExecutionV2Locked(ctx, projection, state, ownerState, identity, directory, fixedMarshalPath, productionContinuationTransportV2, processsupervisor.ObservePreparedCommandV2)
+				return err
+			}
 			pending := state.SupervisorPendingIntentDigest != ""
 			var prepared processsupervisor.PreparedCommand
 			if pending {
@@ -133,6 +137,10 @@ func (s *DurableStore) closePreparedExecutionWithTransport(ctx context.Context, 
 			}
 			if state.ProcessTerminalDigest == "" || state.AllocationTerminalDigest == "" || state.SupervisorClosedDigest != "" || state.SupervisorInterventionDigest != "" {
 				return ErrPreparedExecutionNotClosable
+			}
+			if state.SupervisorStarted.V2 != (SupervisorStartedV2{}) {
+				result, err = s.closePreparedExecutionV2Locked(ctx, projection, state, ownerState, identity, directory, fixedMarshalPath, productionContinuationTransportV2, processsupervisor.RecoverCommittedCloseV2, processsupervisor.ObservePreparedCommandV2)
+				return err
 			}
 
 			var prepared processsupervisor.PreparedCommand

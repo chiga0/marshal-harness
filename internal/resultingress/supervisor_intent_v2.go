@@ -72,3 +72,13 @@ func supervisorStartedCommandBinding(started ProcessSupervisorStarted) (sessionI
 	}
 	return started.Handshake.SessionID, started.Handshake.CurrentAuthorityHead, processsupervisor.ProtocolRevision
 }
+
+func supervisorStartedProcessIdentity(started ProcessSupervisorStarted) (processsupervisor.ProcessIdentity, string) {
+	if started.V2 != (SupervisorStartedV2{}) {
+		if started.Validate() != nil {
+			return processsupervisor.ProcessIdentity{}, ""
+		}
+		return started.V2.Handshake.SupervisorProcess, started.V2.Handshake.ObservedAt
+	}
+	return started.Handshake.SupervisorProcess, started.Handshake.ObservedAt
+}

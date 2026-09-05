@@ -761,7 +761,9 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 		}
 	case AttemptTransitionProcessSupervisorClosed:
 		closed := t.SupervisorClosed
-		if prior.ProcessTerminalDigest == "" || prior.AllocationTerminalDigest == "" || prior.SupervisorStartedDigest == "" || prior.SupervisorClosedDigest != "" || closed.SupervisorStartedFactDigest != prior.SupervisorStartedDigest || closed.ProcessTerminalFactDigest != prior.ProcessTerminalDigest || closed.AllocationTerminatedFactDigest != prior.AllocationTerminalDigest || closed.CleanupBindingDigest != prior.CleanupBindingDigest || closed.TerminalizationID != prior.TerminalizationID || closed.SessionID != prior.SupervisorStarted.Handshake.SessionID || closed.SupervisorProcess != prior.SupervisorStarted.Handshake.SupervisorProcess || closed.Owner != prior.Owner {
+		sessionID, _, protocol := supervisorStartedCommandBinding(prior.SupervisorStarted)
+		process, _ := supervisorStartedProcessIdentity(prior.SupervisorStarted)
+		if prior.ProcessTerminalDigest == "" || prior.AllocationTerminalDigest == "" || prior.SupervisorStartedDigest == "" || prior.SupervisorClosedDigest != "" || closed.SupervisorStartedFactDigest != prior.SupervisorStartedDigest || closed.ProcessTerminalFactDigest != prior.ProcessTerminalDigest || closed.AllocationTerminatedFactDigest != prior.AllocationTerminalDigest || closed.CleanupBindingDigest != prior.CleanupBindingDigest || closed.TerminalizationID != prior.TerminalizationID || closed.ProtocolRevision != protocol || closed.SessionID != sessionID || closed.SupervisorProcess != process || closed.Owner != prior.Owner {
 			return ErrAttemptAuthorityOrder
 		}
 		newSupervisorBinding := t.SupervisorOutcomeFactDigest != ""
@@ -1252,6 +1254,12 @@ func terminalCheckpointMatches(state AttemptAuthorityState, transition AttemptTr
 func closedCheckpointMatches(state AttemptAuthorityState, transition AttemptTransition) bool {
 	evidence, found := supervisorCheckpointEvidence(state, transition.SupervisorOutcomeFactDigest)
 	closed := transition.SupervisorClosed
+	if closed.ProtocolRevision == processsupervisor.DormantV2ProtocolContract().ProtocolRevision {
+		outcome, err := verifiedSupervisorOutcomeV2(evidence)
+		if err != nil || (processsupervisor.CommittedCloseRecoveryEvidenceV2{Outcome: outcome, Absence: closed.AuthenticatedSupervisorAbsence}).Validate() != nil {
+			return false
+		}
+	}
 	return found && evidence.Command == processsupervisor.CommandClose && evidence.RequestDigest == closed.CloseIntentDigest && evidence.ReceiptDigest == closed.CloseReceiptDigest && evidence.ObservationDigest == closed.CloseObservationDigest && evidence.CommandHead == closed.FinalCommandHead && terminalReportsEquivalent(state.ProcessTerminalEvidence, evidence)
 }
 

@@ -30,4 +30,15 @@ type PreparedExecutionClose struct {
 	OutcomeFactDigest string
 	Evidence          SupervisorCommandEvidence
 	Recovery          processsupervisor.CommittedCloseRecoveryEvidence
+	RecoveryV2        *processsupervisor.CommittedCloseRecoveryEvidenceV2
+}
+
+func (c PreparedExecutionClose) SupervisorClosed(authority ProcessSupervisorCloseAuthority) (ProcessSupervisorClosed, error) {
+	if c.RecoveryV2 != nil {
+		if c.Recovery.Outcome.Command != "" || c.Evidence.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().ProtocolRevision {
+			return ProcessSupervisorClosed{}, ErrAttemptAuthorityConflict
+		}
+		return NewProcessSupervisorClosedFromRecoveryV2(authority, *c.RecoveryV2)
+	}
+	return NewProcessSupervisorClosedFromRecovery(authority, c.Recovery)
 }
