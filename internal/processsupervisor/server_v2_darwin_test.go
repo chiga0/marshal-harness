@@ -76,7 +76,7 @@ func newSupervisorV2HarnessOptions(t *testing.T, configure func(*sessionV2, *os.
 	h := &supervisorV2Harness{root: root, directory: directory, connection: connection, bootstrap: bootstrap,
 		reconnectReady: make(chan struct{}), cancel: cancel, done: make(chan error, 1)}
 	ready := make(chan *sessionV2, 1)
-	options := supervisorLoopOptions{mechanics: mechanics,
+	options := supervisorLoopOptions{requireV2: true, mechanics: mechanics,
 		observePeer:    func(*net.UnixConn) (CoreIdentity, error) { return bootstrap.Core, nil },
 		observeSelf:    func() (CoreIdentity, error) { return bootstrap.Core, nil },
 		reconnectReady: func() { close(h.reconnectReady) },

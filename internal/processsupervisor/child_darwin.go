@@ -5,7 +5,6 @@ package processsupervisor
 import (
 	"io"
 	"os"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -82,7 +81,7 @@ func runLaunchChild() error {
 		raw[index] = 0
 	}
 	spec := invocation.spec
-	if err != nil || spec.ParentPID != os.Getppid() {
+	if err != nil || invocation.protocolRevision != protocolRevisionV2 || spec.ParentPID != os.Getppid() {
 		return ErrInvalid
 	}
 	closure := make([]*os.File, 0, len(spec.MaterialRoots)+len(spec.LaunchMaterials))
@@ -145,20 +144,8 @@ func runLaunchChild() error {
 		_ = file.Close()
 	}
 	unix.CloseOnExec(int(childRuntimeFD))
-	switch invocation.protocolRevision {
-	case ProtocolRevision:
-		if _, _, errno := syscall.RawSyscall6(syscall.SYS_PTRACE, uintptr(syscall.PT_TRACE_ME), 0, 0, 0, 0, 0); errno != 0 {
-			return ErrIntervention
-		}
-		if err := syscall.Exec(spec.Runtime.Object.CanonicalPath, spec.Argv, spec.Environment); err != nil {
-			return ErrIntervention
-		}
-	case protocolRevisionV2:
-		if err := darwinSetexecStartSuspended(spec.Runtime.Object.CanonicalPath, spec.Argv, spec.Environment); err != nil {
-			return ErrIntervention
-		}
-	default:
-		return ErrInvalid
+	if err := darwinSetexecStartSuspended(spec.Runtime.Object.CanonicalPath, spec.Argv, spec.Environment); err != nil {
+		return ErrIntervention
 	}
 	return nil
 }

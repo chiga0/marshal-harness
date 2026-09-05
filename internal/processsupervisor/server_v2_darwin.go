@@ -15,8 +15,8 @@ import (
 )
 
 // The inherited fixed-image entry routes only an exact v2 bootstrap here.
-// Core's production producer remains v1 until the complete S3 cutover gate;
-// this path never imports, appends to or adopts an existing v1 session.
+// Core's fresh producer uses this exact generation. This path never imports,
+// appends to or adopts an existing v1 session; rollout still needs S3 evidence.
 func runSupervisorLoopV2(ctx context.Context, connection *net.UnixConn, reader *bufio.Reader, directory *os.File, raw []byte, options supervisorLoopOptions) error {
 	var bootstrap bootstrapRequestV2
 	if strictCanonicalDecode(raw, &bootstrap) != nil || bootstrap.validate() != nil {

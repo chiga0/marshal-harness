@@ -2,7 +2,10 @@
 
 package processsupervisor
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // ObservePreparedCommandV2 reads the exact held v2 journal, never repairing a
 // tail, advancing an owner or opening a writable descriptor. No PATH lookup,
@@ -14,15 +17,15 @@ func ObservePreparedCommandV2(ctx context.Context, options PreparedJournalOption
 	a := options.Prepared.evidence.PreCommand
 	directory, err := ObserveHeldControlDirectory(options.ControlDirectory)
 	if err != nil || !sameControlDirectoryObject(directory, a.ControlDirectory) {
-		return PreparedJournalObservationV2{}, ErrConflict
+		return PreparedJournalObservationV2{}, fmt.Errorf("prepared journal directory: %w", ErrConflict)
 	}
 	held, err := openHeldSessionControlFilesForLeaf(options.ControlDirectory, a.Binding.ControlFiles, journalFileNameV2)
 	if err != nil {
-		return PreparedJournalObservationV2{}, ErrConflict
+		return PreparedJournalObservationV2{}, fmt.Errorf("prepared journal held files: %w", ErrConflict)
 	}
 	defer held.close()
 	if _, err := readSessionNonce(held, a.Binding.SessionNonceDigest); err != nil {
-		return PreparedJournalObservationV2{}, ErrConflict
+		return PreparedJournalObservationV2{}, fmt.Errorf("prepared journal nonce: %w", ErrConflict)
 	}
 	boundary := sessionControlBoundary{directory: options.ControlDirectory, directoryIdentity: directory, socket: a.Binding.ControlSocket, controlFiles: a.Binding.ControlFiles, heldFiles: held}
 	state, err := readHeldJournalStateV2(held.journal)
@@ -31,7 +34,7 @@ func ObservePreparedCommandV2(ctx context.Context, options PreparedJournalOption
 	}
 	observation, err := classifyPreparedJournalV2(state, options.Prepared)
 	if err != nil {
-		return PreparedJournalObservationV2{}, err
+		return PreparedJournalObservationV2{}, fmt.Errorf("prepared journal command checkpoint: %w", err)
 	}
 	after, err := readHeldJournalStateV2(held.journal)
 	if err != nil || after.sequence != state.sequence || after.head != state.head || boundary.revalidateV2(after) != nil || ctx.Err() != nil {

@@ -4,6 +4,7 @@ package processsupervisor
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -24,7 +25,7 @@ func recoverCommittedCloseWithObserversV2(ctx context.Context, options Committed
 	}
 	observer, err := coreObserver(options.FixedMarshalPath)
 	if err != nil || observer.UID != p.PreCommand.Binding.UID || observer.GID != p.PreCommand.Binding.GID || !sameBinaryObject(observer.Binary, p.PreCommand.Binding.FixedBinary) {
-		return CommittedCloseRecoveryEvidenceV2{}, ErrConflict
+		return CommittedCloseRecoveryEvidenceV2{}, fmt.Errorf("close recovery core identity: %w", ErrConflict)
 	}
 	state, replacement, err := absenceObserver(options.ExpectedSupervisor)
 	if err != nil {
@@ -32,21 +33,21 @@ func recoverCommittedCloseWithObserversV2(ctx context.Context, options Committed
 	}
 	observed, err := ObservePreparedCommandV2(ctx, PreparedJournalOptionsV2{ControlDirectory: options.ControlDirectory, Prepared: options.PreparedClose})
 	if err != nil {
-		return CommittedCloseRecoveryEvidenceV2{}, err
+		return CommittedCloseRecoveryEvidenceV2{}, fmt.Errorf("close recovery held journal: %w", err)
 	}
 	if observed.Reconciliation != ReconciliationReceiptCommitted || observed.Outcome == nil {
 		return CommittedCloseRecoveryEvidenceV2{}, ErrIntervention
 	}
 	after, replacementAfter, err := absenceObserver(options.ExpectedSupervisor)
 	if err != nil || state != after || !sameOptionalProcess(replacement, replacementAfter) || ctx.Err() != nil {
-		return CommittedCloseRecoveryEvidenceV2{}, ErrConflict
+		return CommittedCloseRecoveryEvidenceV2{}, fmt.Errorf("close recovery absence drift: %w", ErrConflict)
 	}
 	o := *observed.Outcome
 	absence := SupervisorAbsenceEvidence{SchemaVersion: SupervisorAbsenceSchema, State: state, Expected: options.ExpectedSupervisor, Replacement: replacement, Observer: observer,
 		ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), ControlFiles: o.PostCommand.Binding.ControlFiles, FinalJournalSequence: o.PostCommand.Binding.JournalSequence, FinalJournalHead: o.PostCommand.Binding.JournalHead}
 	recovered := CommittedCloseRecoveryEvidenceV2{Outcome: o, Absence: absence}
 	if recovered.Validate() != nil {
-		return CommittedCloseRecoveryEvidenceV2{}, ErrConflict
+		return CommittedCloseRecoveryEvidenceV2{}, fmt.Errorf("close recovery evidence binding: %w", ErrConflict)
 	}
 	return recovered, nil
 }

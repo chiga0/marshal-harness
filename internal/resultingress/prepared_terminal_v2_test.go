@@ -107,7 +107,7 @@ func testLauncherV2Terminal(t *testing.T, fixture preparedExecutionFixture, stat
 	run := attemptTestRunAuthority(state.Identity)
 	request := CleanupAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run, TerminalizationID: current.TerminalizationID, TerminalGeneration: current.TerminalGeneration, CleanupBindingDigest: current.CleanupBindingDigest, Operation: CleanupInspect}
 	terminal, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, current.Revision, current.HeadDigest, request,
-		AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: state.Identity, TerminalizationID: current.TerminalizationID, ProcessTerminalKind: ProcessTerminated, ObservationDigest: inspection.Evidence.ObservationDigest, SupervisorOutcomeFactDigest: inspection.OutcomeFactDigest})
+		AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: state.Identity, TerminalizationID: current.TerminalizationID, ProcessTerminalKind: ProcessAbsent, ObservationDigest: inspection.Evidence.ObservationDigest, SupervisorOutcomeFactDigest: inspection.OutcomeFactDigest})
 	if err != nil {
 		t.Fatalf("v2 process terminal: %v", err)
 	}

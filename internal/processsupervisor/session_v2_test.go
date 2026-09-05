@@ -59,7 +59,9 @@ func (m *countingMechanicsV2) Collect(context.Context, CollectPayload) (Mechanic
 	return m.result(CommandCollect, "terminal")
 }
 func (m *countingMechanicsV2) Close(context.Context, ClosePayload) (MechanicsResult, error) {
-	return m.result(CommandClose, "terminal")
+	result, err := m.result(CommandClose, "terminal")
+	result.ReasonCode = "mechanics-closed"
+	return result, err
 }
 
 func sessionRequestV2(t *testing.T, session *sessionV2, command CommandName, id string, payload any) requestV2 {

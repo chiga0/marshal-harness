@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-05：S3 终态夹具纠偏与旧入口退役候选
+
+CI 33955604098 的 macOS quality 暴露两个契约错配：Inspect 观察到 terminal 只能提供 `ProcessAbsent`，不能冒充 Terminate 的 `ProcessTerminated`；Close 恢复需要 exact `mechanics-closed`，Fake mechanics 却返回了通用测试 reasonCode。当前修复测试夹具并在 wire Close 处直接断言该原因，未放宽生产接纳。恢复错误增加无敏感值的固定阶段标签，便于一次定位身份/held journal/checkpoint/absence 失败。必须由新 head CI 确认，不能借用同次 Ubuntu 或旧 head 绿色结果。
+
+依 ADR 0079，当前候选让固定 Supervisor 入口只接纳完整 v2，新 child 仅使用 SETEXEC；legacy Start/Reconnect/Attach 在借用 owner、连接或写文件之前拒绝，不翻译旧 session。保留历史 decoder 与显式 legacy 组件 harness，不删除旧证据。fresh producer 已在 `02d1f95` 切换源码，但尚未安装新 fixed bytes，也未完成所有 legacy 业务写入口排查，因此不宣称 rollout 完成。效率教训：贯穿终态链的 Fake 必须遵循真实状态及 reasonCode；编译和结构检查不能证明这些动态语义。保持同一 S3 分支闭环，不为两处夹具修正拆新 PR。
+
 2026-09-05 新任务 producer 接线：删除该调用链的 v1 `Start` 与 v1 bootstrap/command evidence 构造，改为同一 fixed executable 的 `StartV2`、完整 handshake/anchor、v2 intent/outcome。source gate 与业务 `process-started → exact resume` 顺序保持；新启动前从当前 RB1 拒绝任何尚未 cleanup release 或仍 pending 的 legacy Supervisor。测试不再只手写 Spawn/Resume facts，而是借助显式假 Client 调用实际 producer，验证 intent-before-transport 并冷重放同一事实。新候选尚未部署；此检查不等于所有 v1 mutation API 已退役，也不替代零 active/pending v1 的实机 rollout 检查。取消/超时尚缺完整 production 调度链，必须继续实现，不能以 mechanics 支持 Terminate 代替业务可用性。
 
 2026-09-05 v2 终态 producer 接线：Inspect 沿既有 exact intent/Attach/receipt 进入 RB1；Close 的 receipt 恢复还要求独立观察精确 Supervisor 已缺席，绑定固定 Core、held control files 与完整 v2 final journal checkpoint。进程仍活跃、前后 absence 不一致、破损尾部、错误 receipt/代际均拒绝；已提交 Close 不重新执行，不以 EOF 代替退出证明。业务 `SupervisorClosed` 接纳器同步检查 started 的实际代际和进程身份，以及 outcome 与 absence 的同一最终 checkpoint；历史 v1 不迁移、不重写。该变化实现 ADR 0079 已有终态合同，不新增生命周期步骤或旁路发布权限。

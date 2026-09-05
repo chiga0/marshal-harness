@@ -54,15 +54,16 @@ func runSupervisor(ctx context.Context) error {
 	}
 	defer bootstrapFile.Close()
 	defer controlDirectory.Close()
-	return runSupervisorLoop(ctx, bootstrapFile, controlDirectory, supervisorLoopOptions{})
+	return runSupervisorLoop(ctx, bootstrapFile, controlDirectory, supervisorLoopOptions{requireV2: true})
 }
 
 // supervisorLoopOptions is an internal fault-injection seam for exercising the
 // complete inherited bootstrap, listener, reconnect and wire loop. Production
-// always supplies the zero value and therefore constructs platform mechanics.
+// requires v2 and otherwise supplies zero values to construct platform mechanics.
 // Tests may substitute mechanics or mutate a boundary only at the explicit
 // post-replay point; they do not bypass admission, replay or wire emission.
 type supervisorLoopOptions struct {
+	requireV2             bool
 	mechanics             Mechanics
 	configureSession      func(*Session)
 	configureSessionV2    func(*sessionV2)
@@ -103,6 +104,9 @@ func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.
 	}
 	if wireSchema(raw) == bootstrapSchemaV2 {
 		return runSupervisorLoopV2(ctx, unixConnection, reader, controlDirectory, raw, options)
+	}
+	if options.requireV2 {
+		return ErrUnavailable
 	}
 	var bootstrap BootstrapRequest
 	if strictCanonicalDecode(raw, &bootstrap) != nil || bootstrap.validate() != nil {

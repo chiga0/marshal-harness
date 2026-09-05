@@ -100,7 +100,7 @@ func TestClientV2ToInheritedServerCompletePreparedLifecycle(t *testing.T) {
 		t.Fatal("uncommitted close recovered")
 	}
 	closed, err := client.DoPrepared(context.Background(), prepared)
-	if err != nil || closed.Status != "ok" {
+	if err != nil || closed.Status != "ok" || closed.ReasonCode != "mechanics-closed" {
 		t.Fatalf("close: %v", err)
 	}
 	if err := h.wait(t); err != nil {
