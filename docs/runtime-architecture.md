@@ -5,6 +5,10 @@
 - 定位：本文是 Marshal 的冻结 Runtime 规范，也是产品实现应持续收敛的长期目标。Local MVP（Milestone 0–6，`USABLE`）行为不变；历史 M8/M9 资产保留，但其 Runtime 成熟度当前为 `COMPONENT`。v1.0 按 ADR 0052 的 `I186-R0→R6` 生产纵切交付；Cloudflare、HA、多用户与 Goal DAG 在 1.x 重排。任何对象与契约在真实 composition root 可达前都不构成已实现能力。
 - 术语约定：中文叙述，协议字段、状态名、CLI 命令与代码标识保留英文，且与 `docs/task-lifecycle.md`、`schemas/` 保持一致。
 
+## 当前实施解释（2026-09-05）
+
+[ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 只前移单仓库受限 Agent Team，沿 [B1→B2→B3](agent-team-delivery-plan.md) 复用本文既有权威、计划接纳和预算语义，不开放通用 DSL/HA。控制面、执行面、存储面职责分离；存储实现替换前先测账本历史规模，不为分层引入第二权威或强制数据库迁移。本文历史 `marshal-server` 生产角色统一按 ADR 0062 理解为固定 `marshal control-plane serve`，独立 executable 不属于生产入口。
+
 ## 产品目标
 
 Marshal 是：**长寿命 Runtime/Control Plane，持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。
@@ -164,7 +168,7 @@ Adapter 不含执行环境语义：不创建、不复用、不恢复执行环境
 - `DurableExecutionEngine` 是 Core 的内部 Port（ADR 0018 §4）：backend 不是 Provider 信任域成员，也不构成第二个业务权威；command 出站经单一权威 seam（同事务 outbox 或 ledger-derived Core command journal 二选一）：`commandId` 从 ledger 权威事实稳定派生，消除“ledger 已提交而 command 未投递”或反向的双写窗口（ADR 0018 §15）；
 - 权威 ledger sink 使用同事务 atomic compare-and-append/transaction：ledger transition、当前 lease generation 与 Evidence/Artifact 引用同原子校验提交；Artifact/Evidence/Checkpoint/Candidate bytes 的接纳关系归 authority ledger：对象 key 使用 `authorityNamespaceId`+run+attempt+allocation+generation scoped 的 immutable key 与 digest-verified put-if-absent，actor securityDomainId 只作为 provenance 记录，已存在 key 永不覆盖；陈旧/冲突 bytes 只能进入 quarantine namespace，永不覆盖当前对象、永不进入当前 evidence graph（ADR 0018 §13）；
 - 事件账本保持 append-only 审计语义与可移植格式，是唯一业务权威；账本作为 Control Plane 权威对象由 `authorityNamespaceId` 拥有、只允许 Core 写入（ADR 0018 §10）；快照（原子替换的索引）、queue、SSE 事件流与 Provider registry 都是账本的可重建投影（projection），可凭账本重建，不构成第二个权威（ADR 0018 §4）；
-- 单机开发形态：Temporal dev server + SQLite/local blob adapter；生产参考形态：Temporal self-host + PostgreSQL + S3/MinIO；
+- 长期可选参考形态：Temporal + PostgreSQL + S3/MinIO；当前 B1/B2 使用现有 Local Engine、file-backed ledger 与本地 objects，不要求部署 Temporal 或迁移数据库；
 - 不得演变成自研 workflow engine：替换 backend 必须通过同一生命周期一致性测试。
 
 ## 版本化 Provider Protocol、信任域与部署形态（ADR 0017 冻结，ADR 0018 修订）

@@ -8,7 +8,7 @@
 
 Marshal 是一个可自托管的任务控制系统。它持续接收新的开发任务，把复杂需求拆成有限、可检查的执行步骤，安排不同 Agent 和执行环境完成工作，并保留恢复、验证与审计所需的信息。
 
-当前版本已经可以在本地完成 Coding Agent 的执行、独立验证、审查和 GitHub Draft PR 发布。v1.0 正在把这些组件收敛为一条可恢复的 Agent-in-Sandbox 生产链；常驻云端、多节点 HA 与跨任务 Goal 编排属于后续 1.x。
+当前 Local MVP 已有执行、独立验证、审查和 Draft PR 的历史能力，RC1 的支持面是下述 CLI-only local-dogfood。正式产品按 B1 单任务服务、B2 受限多 Agent 交付、B3 长期运行与正式支持收敛；它们尚未整体完成。多节点 HA、多租户和通用 Goal DAG 仍属于 1.x。
 
 [阅读文档](https://chiga0.github.io/marshal-harness/) · [查看当前能力](https://chiga0.github.io/marshal-harness/current-status/) · [快速开始](https://chiga0.github.io/marshal-harness/getting-started/)
 
@@ -50,7 +50,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 v1.0 只承诺单节点、单用户、可信仓库：至少一个真实 AgentProvider 在真实 Local/Container Sandbox allocation 中运行，命令和结果由同一 durable authority ledger 管理，结果只经 ResultIngress 接纳，并通过重启恢复、双 binding、独立验证和故障注入。发布支持 `publication:none` 与可选 GitHub Draft PR，默认不 merge。
 
-Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、全部 Provider hardened 矩阵、Web UI 与复杂 Goal DAG 延期到 1.x，不阻塞首个正式版本。完整范围见 [ADR 0052](docs/adr/0052-v1-release-scope-and-production-reachability.md) 与 [Roadmap](docs/roadmap-status.md)。
+正式 Agent Team 产品还须完成单仓库受限团队的方案确认、持续调度、集成候选与独立验收；这不等于恢复整个 M13。控制面、执行面、存储面职责分离，初期不拆微服务。Cloudflare 完整生产拓扑、HA、多租户、全部 Provider hardened 矩阵、Web UI 与通用 Goal DAG 延期到 1.x。范围见 [ADR 0080](docs/adr/0080-three-plane-business-delivery-roadmap.md)，执行方法见 [业务交付计划](docs/agent-team-delivery-plan.md)，当前完成状态只见 [Roadmap](docs/roadmap-status.md#业务交付当前表)。
 
 ### 2026-09-01 RC1 发布检查点
 

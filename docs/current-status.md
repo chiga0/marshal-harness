@@ -2,6 +2,12 @@
 
 Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下面只描述用户实际可以获得的能力，不用设计阶段代替完成状态。
 
+## 2026-09-05 当前摘要
+
+PR #254 已合入 `main@0c6d9cd`：fixed server 已有 collect/verify/review/Decision 接口，不能再说“尚未接线”；但最终 bytes 的真实 T2 业务闭环、完整恢复及正式发布门禁仍未关闭，不能说“server 已生产可用”。RC1 的发布事实与 T1 的实机证据保留。新路线按 [Roadmap 当前表](roadmap-status.md#业务交付当前表) 的 B1 单任务服务→B2 受限 Agent Team→B3 长期运行/正式支持推进；目标和验收见 [业务交付计划](agent-team-delivery-plan.md)。本轮参考业务测试不是实机成功证据。
+
+下方均为带日期的历史证据；其中“当前/下一步”只描述对应 checkpoint，不覆盖本节及 Roadmap。
+
 ## 2026-09-04 fixed server T1 已真实集成：restart/response-loss 恢复闭环
 
 PR [#252](https://github.com/chiga0/marshal-harness/pull/252) 已以 merge commit `b39c346ae2fdb856c8442bdd6b56eec361ab1f84` 合入 main；该 exact head 的 [required CI](https://github.com/chiga0/marshal-harness/actions/runs/33850189142) 在 Ubuntu、macOS、Linux amd64/arm64 candidate conformance 与 secret scan 全绿后，触发 [fixed server T1 canary](https://github.com/chiga0/marshal-harness/actions/runs/33851302323)。canary 从该 head 构建一次固定 `bin/marshal`，以真实 Pi `0.84.4`（`pai-eas/qwen3.7-plus`）经 `marshal control-plane serve → authenticated AF_UNIX → StartRun → RUNNING → InspectRun` 执行；随后受控 `kill -9` 第一个 server，严格 successor 在 owner epoch `2` 完成 recovery-before-ready，并以同一 request key、request bytes 与冻结 deadline 对 response-loss delivery 做 exact replay。

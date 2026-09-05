@@ -1,5 +1,17 @@
 # 实施计划
 
+## 当前执行顺序（2026-09-05）
+
+按 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 和 [业务交付计划](agent-team-delivery-plan.md) 的 B1→B2→B3 推进；唯一完成状态见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)。本节取代下方历史 checkpoint 的“下一步”，但不抹掉历史证据或 I186 技术门禁。
+
+1. B1：复用已合入 T2 接口；首先验证订单报价业务 oracle 正反例及 Task renderer。随后关闭 ADR 0079 production cutover 与真实 fixed-server T2→独立 Decision→ACCEPTED；有界查询/取消/超时/持续协调沿同一路径补齐。
+2. B2：单仓库受限团队流程；先冻结批准计划、幂等物化与集成候选的具体持久契约，再复用既有 Goal/Run 实现接线。独立实现任务最多三个；参考业务与 Marshal 自身开发交错 dogfood。
+3. B3：同一路径故障与长期运行、升级恢复和正式发布；签名与 Linux 的外部准备可并行，不能因此提前宣称 production。
+
+每轮按业务退出条件而非 PR 数量报告；相同结构性失败先分类/止损，不重复付费 Attempt。流程不要求 Marshal skill 或每文件一 Run；独立验证、单写工作区、精确证据与发布分权不变。不要在 B1 与相邻 B2 接线之间插入无关 Provider/存储/微服务清理。
+
+## 历史实施 checkpoint
+
 > **2026-09-04 ADR 0079 S2-B fixed-image canary checkpoint**：候选已在 producer 仍固定为 v1 的前提下，把 dormant v2 child spec/mechanics 接到唯一 `runLaunchChild`，并新增隐藏的 fixed `marshal internal process-supervisor-v2-canary --attestation-ready`。本机以 absolute fixed Marshal 和已签名 Node 真实通过 SETEXEC/START_SUSPENDED、zero-signal stopped observation、post-load identity、SIGCONT、自然非零退出、collect/close、pre-resume cleanup、pre-effect cancel 与重新 seal 后的 hostile symlink 拒绝；未生成或执行匿名/临时 Mach-O。检修同时固化 `/var` symlink、sealed-volume 超大 inode、relative parent invocation 与 short-lived wait delivery 竞态四项 fail-closed 行为。Darwin arm64/amd64、Linux amd64 compile-only、vet、staticcheck、diff-check 与 gitleaks 已通过。该切片只关闭 `ADR0079-S2B-FIXED-CANARY-CANDIDATE`；下一步是 S3 在零 active/pending v1 session 后做 new-session-only producer cutover，再用同一最终 fixed bytes 和真实 Pi 完成 fixed server restart/response-loss 与 T2→独立 Decision→`ACCEPTED`。Issue #212 signing/notarization 和 stable gate 保持开放。
 
 > **2026-09-04 ADR 0079 S2-A checkpoint**：在 S1 bridge 仍 disabled、现有 v1 producer 完全不变的前提下，候选已加入完整 v2 顶层 closed decoder、inherited child-spec、代际绑定 digest、独立 journal parser/semantic replay、v1 read-only audit routing 与 v2 control-directory exact phase set。v1/v2 leaf、schema、genesis、observer、launch-child 或 mechanics 混用，以及语义非法的 intent/receipt/torn tail 均 fail closed；read-only surface 不返回 writer、不修复或追加历史 journal。Darwin arm64/amd64、Linux amd64 compile-only、vet、staticcheck 与 diff-check 已通过且本机未执行临时测试 Mach-O。该切片只标记 `ADR0079-S2A-CLOSED-DECODERS`，不表示 S2/T2 完成；下一步是 S2-B fixed-binary hostile/timeout/early-exit/cleanup 与完整 projection/limit 门禁，随后才是 S3 零 active/pending v1 的 new-session-only producer cutover和真实 Pi T2→`ACCEPTED`。

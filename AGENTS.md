@@ -8,7 +8,11 @@
 
 除明确标注层级的章节外，本文档其余章节均为 universal 规则。
 
-## 当前阶段
+## 2026-09-05 当前产品路线
+
+维护者已接受 [ADR 0080](docs/adr/0080-three-plane-business-delivery-roadmap.md)：控制面/执行面/存储面职责分离，按 B1 单任务服务→B2 单仓库受限 Agent Team→B3 长期运行与正式支持推进。该节取代下方把全部 Goal 编排延期到 1.x 的排期；通用 M13、HA、多租户仍不恢复为发布前置。唯一当前完成状态见 [Roadmap 当前表](docs/roadmap-status.md#业务交付当前表)，具体退出条件见 [业务交付计划](docs/agent-team-delivery-plan.md)。不使用仓库 Marshal skill 驱动本次开发。此调整不削减 universal 不变量、I186 证据、签名/Linux/stable 门禁，不表示能力已生产可用。
+
+## 当前阶段（历史基线，当前排期以上节为准）
 
 本仓库已于 2026-08-03 通过实施门禁，ADR 0001–0011 已接受；2026-08-07 增补接受 ADR 0012–0014；2026-08-10 接受 ADR 0016，把长期目标重置为长寿命 Runtime/Control Plane，并冻结 AgentAdapter 与 SandboxProvider 分层及 M7–M13 路线，ADR 0015 未接受即被 ADR 0016 取代；2026-08-11 接受 ADR 0017–0019，依次冻结 Provider-neutral Sandbox、Control Plane/Provider Port，以及确定性 Supervisor、Typed Execution、Goal admission 与 append-only 补偿语义。Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`；M7 设计与契约已通过；M8/M9 保留当时定义下的 `PASSED` 历史证据，但相关 Runtime 资产尚未整体进入真实生产调用链，不得据此宣称 v1.0 端到端集成完成。2026-08-24 接受 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的 `I186-R0→R6` 纵切路线。2026-08-27 接受 ADR 0051，冻结 `darwin-local-dogfood` 的 ordinary-user/non-production 边界；同日接受 [ADR 0052](docs/adr/0052-v1-release-scope-and-production-reachability.md)，把 v1.0 收敛为单节点、单用户、可信仓库、至少一个真实 AgentProvider 与一个真实 Local/Container SandboxProvider，并增加 `DESIGN→COMPONENT→INTEGRATED→RELEASED` 成熟度和生产可达性门禁。**2026-08-27 维护者主线纠偏结论**：ADR 0052 的 `R1→R2→R3` 顺序不可跳越；审计发现结果接纳的 recheck 是以结果携带 Facts 临时构造 registry/ledger 的自洽验证（`seedRegistry`/`seedSandboxLedger`），不构成真实 durable current-ledger recheck，lease expiry 也是接纳时重新生成而非 dispatch 时冻结——因此 R3–R5 的所有 INTEGRATED 宣称一律撤回为 COMPONENT，真实 Agent 已走通 Local allocation 的 R1 纵切保留为 INTEGRATED 实质进展。2026-09-01 RC1 发布后，当前主线调整为：**保持 R2–R5 的 COMPONENT 诚实口径，先完成 fixed server 与 recovery fault matrix，再完成 managed signing/notarization、Linux stable gate 和受保护 stable candidate；unsigned 构建仍只允许 prerelease tag**。当前权威状态：`I186-R0: PASSED`、`I186-R1: IN_PROGRESS（INTEGRATED）`、`I186-R2–R5: IN_PROGRESS（COMPONENT）`、`I186-R6: IN_PROGRESS（COMPONENT；RC1 prerelease 已发布，stable gate 开放）`。M10–M13 不再阻塞 v1.0，作为 R6 后 1.x 候选重新排期。后续变更仍须按门禁流程：信任边界/持久化契约/生命周期或发布权限的改变必须新增或替代 ADR。
 
