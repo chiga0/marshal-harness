@@ -20,6 +20,11 @@ const fixedServerPathBufferSize = 4096
 
 var fixedServerRootComponents = [...]string{".marshal", "runtime-v1", "control", "delivery-v1"}
 
+// These are existing composition-owned stores, not additional delivery
+// authority. Freeze their objects before StartRun, rather than assuming the
+// isolated delivery test fixture is the complete production layout.
+var fixedServerRuntimeSiblingNames = [...]string{ResultIngressDirName, DispatchLedgerDirName, AllocationRootDirName, OwnerDirName, "provider-authority"}
+
 type fixedServerDirectoryIdentity struct {
 	Device    uint64                `json:"device"`
 	Inode     uint64                `json:"inode"`
@@ -42,6 +47,8 @@ type fixedServerDirectoryNode struct {
 type fixedServerRoot struct {
 	repositoryPath string
 	nodes          [5]fixedServerDirectoryNode
+
+	runtimeSiblings [5]fixedServerDirectoryNode
 }
 
 // CanonicalRepositoryRoot is the fixed CLI's held repository capability. It
@@ -233,6 +240,9 @@ func openFixedServerRoot(repository *CanonicalRepositoryRoot) (fixedServerRoot, 
 	if err := ensureFixedExistingWorktreeProjectionRoot(root.nodes[2].file); err != nil {
 		return cleanup(err)
 	}
+	if err := root.openRuntimeSiblings(); err != nil {
+		return cleanup(err)
+	}
 	// Directory creation legitimately changes parent link counts. Refresh the
 	// complete post-create observation once, so the authority-root digest is
 	// stable across a cold reopen of the same hierarchy.
@@ -294,10 +304,53 @@ func openExistingFixedServerRoot(repository *CanonicalRepositoryRoot) (fixedServ
 		}
 		root.nodes[index+1] = fixedServerDirectoryNode{file: child, identity: identity, name: component}
 	}
+	if err := root.openRuntimeSiblings(); err != nil {
+		return cleanup(err)
+	}
 	if err := validateFixedServerRoot(root, len(root.nodes)); err != nil {
 		return cleanup(err)
 	}
 	return root, nil
+}
+
+func (root *fixedServerRoot) openRuntimeSiblings() error {
+	parent := root.nodes[2].file
+	for index, name := range fixedServerRuntimeSiblingNames {
+		fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW_ANY, 0)
+		if errors.Is(err, unix.ENOENT) {
+			continue // Isolated consumers need not compose every store.
+		}
+		if err != nil {
+			return ErrFixedDeliveryConflict
+		}
+		file := os.NewFile(uintptr(fd), "marshal-fixed-server-runtime-store")
+		if file == nil {
+			_ = unix.Close(fd)
+			return ErrFixedDeliveryConflict
+		}
+		identity, err := observeFixedServerDirectory(fd, true)
+		root.runtimeSiblings[index] = fixedServerDirectoryNode{file: file, identity: identity, name: name}
+		if err != nil {
+			return ErrFixedDeliveryConflict
+		}
+	}
+	return root.validateRuntimeSiblings()
+}
+
+func (root fixedServerRoot) validateRuntimeSiblings() error {
+	for _, child := range root.runtimeSiblings {
+		if child.file == nil {
+			continue
+		}
+		held, heldErr := observeFixedServerDirectory(int(child.file.Fd()), true)
+		named, namedErr := observeFixedServerDirectoryAt(int(root.nodes[2].file.Fd()), child.name, true)
+		// Store appends may change directory timestamps. They do not authorize
+		// replacing its held object, current name, owner, type or permissions.
+		if heldErr != nil || namedErr != nil || !sameFixedServerDirectory(held, child.identity, false) || !sameFixedServerDirectory(named, child.identity, false) || !sameFixedServerDirectory(held, named, true) {
+			return ErrFixedDeliveryConflict
+		}
+	}
+	return nil
 }
 
 func validateFixedServerRoot(root fixedServerRoot, count int) error {
@@ -327,6 +380,9 @@ func validateFixedServerRoot(root fixedServerRoot, count int) error {
 		if err != nil || namedErr != nil || !sameFixedServerDirectory(held, child.identity, exactMutation) || !sameFixedServerDirectory(named, child.identity, exactMutation) {
 			return ErrFixedDeliveryConflict
 		}
+	}
+	if count >= 3 {
+		return root.validateRuntimeSiblings()
 	}
 	return nil
 }
@@ -366,8 +422,9 @@ func ensureFixedExistingWorktreeProjectionRoot(runtimeRoot *os.File) error {
 
 // adoptFixedServerRuntimeMutation advances runtime-v1 only after the caller
 // has independently joined the current RB1 ledger to the exact derived
-// projection bytes. The runtime directory must still contain exactly the two
-// admitted children, and the authoritative control/delivery chain must retain
+// projection bytes. The runtime directory must still contain exactly the
+// admitted children plus the original held composition stores, and the
+// authoritative control/delivery chain must retain
 // its pre-mutation identity. This admits the projection's RENAME_SWAP without
 // washing through an unrelated sibling insertion or control-directory ABA.
 func adoptFixedServerRuntimeMutation(root *fixedServerRoot) error {
@@ -385,12 +442,20 @@ func adoptFixedServerRuntimeMutation(root *fixedServerRoot) error {
 		return ErrFixedDeliveryConflict
 	}
 	entries, err := runtimeRoot.file.ReadDir(-1)
-	if err != nil || len(entries) != 2 {
+	if err != nil {
 		return ErrFixedDeliveryConflict
 	}
 	expected := map[string]bool{
 		fixedServerRootComponents[2]:                          false,
 		allocationcontrol.ExistingWorktreeProjectionDirectory: false,
+	}
+	for _, child := range root.runtimeSiblings {
+		if child.file != nil {
+			expected[child.name] = false
+		}
+	}
+	if len(entries) != len(expected) || root.validateRuntimeSiblings() != nil {
+		return ErrFixedDeliveryConflict
 	}
 	for _, entry := range entries {
 		if _, ok := expected[entry.Name()]; !ok || !entry.IsDir() || expected[entry.Name()] {
@@ -419,8 +484,13 @@ func adoptFixedServerRuntimeMutation(root *fixedServerRoot) error {
 	if projectionErr != nil || projection.Device == 0 || projection.Inode == 0 {
 		return ErrFixedDeliveryConflict
 	}
+	candidate := *root
+	candidate.nodes[2].identity = held
+	if err := validateFixedServerRoot(candidate, len(candidate.nodes)); err != nil {
+		return err
+	}
 	root.nodes[2].identity = held
-	return validateFixedServerRoot(*root, len(root.nodes))
+	return nil
 }
 
 // adoptFixedServerControlMutation advances only the frozen mutation
@@ -488,6 +558,12 @@ func (root *fixedServerRoot) close() error {
 		return nil
 	}
 	var result error
+	for index := range root.runtimeSiblings {
+		if root.runtimeSiblings[index].file != nil {
+			result = errors.Join(result, root.runtimeSiblings[index].file.Close())
+			root.runtimeSiblings[index].file = nil
+		}
+	}
 	for index := len(root.nodes) - 1; index >= 0; index-- {
 		if root.nodes[index].file != nil {
 			result = errors.Join(result, root.nodes[index].file.Close())

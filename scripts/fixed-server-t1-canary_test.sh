@@ -56,6 +56,14 @@ grep -F '.marshal/runtime-v1/result-ingress/result-ingress.jsonl' "$WORKFLOW" >/
 if grep -F '.marshal/result-ingress/result-ingress.jsonl' "$WORKFLOW" >/dev/null; then
   fail 'workflow collects a nonexistent legacy ingress path'
 fi
+diagnostics="$(awk '/      - name: Upload fixed server diagnostic evidence/{copy=1} /      - name: Upload fixed server T1 evidence/{copy=0} copy' "$WORKFLOW")"
+printf '%s\n' "$diagnostics" | grep -F 'name: fixed-server-diagnostics-${{ github.run_id }}' >/dev/null \
+  || fail 'workflow lacks separate diagnostic artifact'
+printf '%s\n' "$diagnostics" | grep -F '.marshal/runtime-v1/result-ingress/result-ingress.jsonl' >/dev/null \
+  || fail 'diagnostic artifact lacks authoritative ledger'
+if printf '%s\n' "$diagnostics" | grep -E 'dist/|review-inputs|/transcript|/task.json|/activation.json|/policy.json' >/dev/null; then
+  fail 'diagnostic artifact includes executable, review archive, transcript or configuration'
+fi
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

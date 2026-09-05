@@ -1,5 +1,23 @@
 # 设计审计报告
 
+## 2026-09-05：B1 生产目录布局与隔离夹具脱节
+
+新 canary 33971611314（`d9d603f`）在 14:23 UTC 失败。artifact 9971098258 的精确成员经 ZIP CRC 检验读取：server 输出 `adopt-existing-worktree-projection-root/authority-conflict`；RB1 有 17 条 fact，包括 prepared execution、supervisor bootstrap/started、三组 command intent/outcome 与 seq 15 `process-started`。这证明阻塞已在启动后，不证明业务完成、ACCEPTED 或旧 137 根因。
+
+根因是 `adoptFixedServerRuntimeMutation` 要求 runtime 只有两个目录，而实际 CLI 先创建 `result-ingress`、`dispatch-ledger`、`allocations`、`owner`、`provider-authority` 等同层目录。原公开装配夹具把 ingress 放在 repository 外，隔离 delivery 夹具只有两项，掩盖了必然失败的集成路径。修复冻结已存在的封闭 composition 目录的 held descriptor 与 current name/object；只容许其正常内部记录变化，不接纳启动后新增名称、对象替换、类型/权限漂移。control 与祖先原有精确 mutation/ABA 门禁、RB1/projection bytes join、receipt digest 格式均不变。这是恢复 ADR 0066/0076 已有布局，不增加 authority store 或降低业务证据条件。
+
+公开装配回归改用真实 runtime ingress，delivery 回归默认七目录，新增 projection swap、晚插入已知名称、等 entry count 的 store/control 替换、control ABA 和 store append 用例。新根因修复尚待 hosted 动态/相关 race 和一次真实业务复验；本地 compile-only 不冒称执行测试。
+
+效率教训固化：目录 producer 和消费校验必须共享真实布局测试，不能只验证 isolation fixture；失败诊断先单独上传小型 stderr/RB1/state/delivery artifact，再上传完整 binary/evidence，避免本次 19 MB 下载成为定位的串行瓶颈。完整包保留，诊断不包含配置密钥、transcript 或二进制；没有新建微切片 PR 或重复业务 Attempt。
+
+## 2026-09-05：B1 诊断修复合入，实机根因仍开放
+
+PR #258 的 sourceHead `dc2ed51bd61a110f8511b9959b7a2aa34eb2f777` 已通过 CI 33969959998 五项检查（含 macOS/Ubuntu quality、Linux 双架构和 secret scan），于 14:02 UTC 远端合并为 `d9d603f9353fea828e939c172faf1aa87eb488cd`。它关闭错误原因被掩盖与 artifact 路径错误，不关闭业务 Start。合并基线 CI 33970630902 与后继单次 canary 按依赖继续；旧失败 33968513566 不原样重跑、不补造其缺失 ledger。以下候选/等待描述保留为历史采样，唯一当前状态见 Roadmap 顶部表。
+
+主线 CI 于 14:18 UTC 整体 `completed/success`，但 Secret scan job `101318382429` 的 REST 单项、jobs 列表及 GraphQL 均仍为 `in_progress/success`，同时携带 14:02:49 UTC 结束时间且全部步骤已完成。其余四个 job 已正常 `completed/success`。单次 canary 派发检查因此正确停止，未启动 Worker；不把该外部状态不一致归为 Marshal 代码失败，不修改 required-CI 门禁。保留旧 job 证据后，仅请求重跑该已结束的 Secret scan job，避免整套 quality/业务重做；后继结果另记，不覆盖首个采样。
+
+定向 job 重跑后，33970630902 最新五个 job 均为 `completed/success`；仅在整体 run、精确 head、五项状态、current main 和该 head 零既有 canary 全部通过后，实际单次派发 order-quote run [33971611314](https://github.com/chiga0/marshal-harness/actions/runs/33971611314)。这是补齐诊断后的新版本实验，不是旧业务 Attempt 重试或已验收结果；尚未声明 Pi 启动或 ACCEPTED。
+
 ## 2026-09-05：S3 合入与 B1 业务验证开始
 
 PR #257 已于 13:05 UTC 合并，sourceHead `05571f3174fdda4891d25a7e271a807ab0f6a38e`、mergeHead `cb4b6464fe10730f8abaa40b6bca1c60ab8537bc`。source CI 33967017702 与 mergeHead main push CI 33967908642 均五项通过；随后自动派发同 head 的 fixed server order-quote canary 33968513566。维护者定向源码检查与独立执行的 CI 不冒称独立业务 Decision；Pi 候选仍由未编写它的 reviewer 基于精确 packet 审核。该合入关闭 S3 源码/合并等待，不关闭 B1。

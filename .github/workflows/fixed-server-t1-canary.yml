@@ -145,6 +145,29 @@ jobs:
             --pi-node "$PI_NODE" --pi-bin "$PI_BIN" --pi-bundle "$PI_BUNDLE" \
             --run-id "$run_id" --evidence-root "$evidence_root" --scenario "$CANARY_SCENARIO"
 
+      # Publish the small failure surface first. Diagnosis must not require
+      # downloading the fixed executable or the full review-input archive.
+      # The complete, original evidence artifact below remains unchanged.
+      - name: Upload fixed server diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fixed-server-diagnostics-${{ github.run_id }}
+          path: |
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/*.stderr
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/binary-*.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/server*-ready*.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/start-request.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/command-audit.jsonl
+            .marshal/runs/${{ env.T1_RUN_ID }}/state.json
+            .marshal/runs/${{ env.T1_RUN_ID }}/events.jsonl
+            .marshal/runtime-v1/result-ingress/result-ingress.jsonl
+            .marshal/runtime-v1/control/delivery-v1/*.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+          include-hidden-files: true
+
       - name: Upload fixed server T1 evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
