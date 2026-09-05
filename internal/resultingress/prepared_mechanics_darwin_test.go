@@ -4,6 +4,7 @@ package resultingress
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"reflect"
 	"strings"
@@ -204,5 +205,74 @@ func TestLauncherV2BootstrapUsesExistingDurableAdmissionAndColdReplay(t *testing
 	replayed, found, err = reopened.AttemptState(state.Identity)
 	if err != nil || !found || !reflect.DeepEqual(replayed, next) || replayed.SupervisorMechanicsAnchor != projectSupervisorMechanicsAnchorV2(started.V2.Anchor) || replayed.SupervisorMechanicsAnchor.Validate() != nil {
 		t.Fatalf("cold started/anchor: %v", err)
+	}
+	intent, preparedCommand, payload := testBindIntentV2(t, started.V2.Anchor, next.SupervisorStartedDigest)
+	preIntent := next
+	beforeIntent, err := os.ReadFile(fixture.store.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A freshly created and internally valid command still cannot cite an
+	// unrelated business started fact. The current ledger decides admission.
+	forgedIntent, _, _ := testBindIntentV2(t, started.V2.Anchor, attemptTestDigest("other-started"))
+	err = fixture.store.transact(projection, func() error {
+		_, _, err := fixture.store.appendPreparedSupervisorIntentLocked(projection, preIntent, forgedIntent)
+		return err
+	})
+	if err == nil {
+		t.Fatal("unrelated started fact admitted as bind intent")
+	}
+	after, err = os.ReadFile(fixture.store.ledgerPath())
+	if err != nil || !bytes.Equal(beforeIntent, after) {
+		t.Fatal("rejected v2 command modified ledger")
+	}
+	err = fixture.store.transact(projection, func() error {
+		var err error
+		next, _, err = fixture.store.appendPreparedSupervisorIntentLocked(projection, preIntent, intent)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("durable v2 intent: %v", err)
+	}
+	replayed, found, err = reopened.AttemptState(state.Identity)
+	if err != nil || !found || !reflect.DeepEqual(replayed, next) || replayed.SupervisorPendingIntent != intent || replayed.SupervisorPendingIntentDigest == "" {
+		t.Fatalf("cold v2 pending intent: %v", err)
+	}
+	evidence, err := SupervisorPreparedCommandEvidenceV2(replayed.SupervisorPendingIntent)
+	if err != nil || evidence != preparedCommand.Evidence() {
+		t.Fatal("cold replay lost exact preparation")
+	}
+	if _, err := processsupervisor.RebuildPreparedCommandV2(evidence, payload); err != nil {
+		t.Fatal("cold replay cannot rebuild exact request")
+	}
+	after, err = os.ReadFile(fixture.store.ledgerPath())
+	if err != nil || len(after) <= len(beforeIntent) || !bytes.Equal(beforeIntent, after[:len(beforeIntent)]) {
+		t.Fatal("intent changed history")
+	}
+	line := bytes.TrimSpace(after[len(beforeIntent):])
+	var fact supervisorCommandFact
+	if err := json.Unmarshal(line, &fact); err != nil || fact.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().CommandRecoveryRevision {
+		t.Fatalf("v2 intent lacks exact recovery header: %v", err)
+	}
+	key, _ := preIntent.Identity.Key()
+	fresh := newAuthorityProjection()
+	fresh.attempts[key] = preIntent
+	if err := applySupervisorCommandLine(line, fresh, fact.Sequence); err != nil || !reflect.DeepEqual(fresh.attempts[key], next) {
+		t.Fatalf("exact recovery line rejected: %v", err)
+	}
+	// Changing the outer recovery generation and recomputing its digest must
+	// not translate an otherwise valid v2 command into a legacy fact.
+	fact.ProtocolRevision, fact.Digest = supervisorCommandProtocolRevision, ""
+	fact.Digest, err = canonicalDigest(fact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgedLine, err := processsupervisor.CanonicalProtocolMessage(fact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh.attempts[key] = preIntent
+	if applySupervisorCommandLine(forgedLine, fresh, fact.Sequence) == nil || !reflect.DeepEqual(fresh.attempts[key], preIntent) {
+		t.Fatal("mixed recovery generation accepted or changed state")
 	}
 }

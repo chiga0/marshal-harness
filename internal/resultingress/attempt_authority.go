@@ -1043,7 +1043,8 @@ func validateSupervisorReconnectAgainstState(state AttemptAuthorityState, owner 
 }
 
 func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, intent SupervisorCommandIntent) error {
-	if intent.Validate() != nil || intent.SessionID != state.SupervisorStarted.Handshake.SessionID || intent.Sequence != state.SupervisorCommandSequence+1 || intent.PreviousCommandHead != state.SupervisorCommandHead {
+	sessionID, initialHead, protocol := supervisorStartedCommandBinding(state.SupervisorStarted)
+	if intent.Validate() != nil || intent.ProtocolRevision != protocol || intent.SessionID != sessionID || intent.Sequence != state.SupervisorCommandSequence+1 || intent.PreviousCommandHead != state.SupervisorCommandHead {
 		return ErrAttemptAuthorityOrder
 	}
 	pre, prior := intent.PreCommand, state.SupervisorMechanicsAnchor
@@ -1088,7 +1089,7 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 	}
 	rebuild := intent.Rebuild
 	if intent.Command == processsupervisor.CommandBindAuthority {
-		if state.SupervisorBoundAuthorityHead != "" || pre.CurrentAuthorityHead != state.SupervisorStarted.Handshake.CurrentAuthorityHead || intent.CurrentAuthorityHead != pre.CurrentAuthorityHead || rebuild.OwnerEpoch != state.Owner.OwnerEpoch || rebuild.PreviousAuthorityHead != state.SupervisorStarted.Handshake.CurrentAuthorityHead || rebuild.AuthorityHead != state.SupervisorStartedDigest || rebuild.SupervisorStartedFactDigest != state.SupervisorStartedDigest {
+		if state.SupervisorBoundAuthorityHead != "" || pre.CurrentAuthorityHead != initialHead || intent.CurrentAuthorityHead != pre.CurrentAuthorityHead || rebuild.OwnerEpoch != state.Owner.OwnerEpoch || rebuild.PreviousAuthorityHead != initialHead || rebuild.AuthorityHead != state.SupervisorStartedDigest || rebuild.SupervisorStartedFactDigest != state.SupervisorStartedDigest {
 			return ErrAttemptAuthorityOrder
 		}
 		return nil

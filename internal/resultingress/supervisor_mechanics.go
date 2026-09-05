@@ -598,18 +598,19 @@ type SupervisorCommandRebuildProjection = processsupervisor.PreparedCommandProje
 // SupervisorCommandIntent is creation-once durable intent. It is appended
 // before Client.Do and contains no executable payload or bearer material.
 type SupervisorCommandIntent struct {
-	ProtocolRevision     string                             `json:"protocolRevision"`
-	SessionID            string                             `json:"sessionId"`
-	Command              processsupervisor.CommandName      `json:"command"`
-	CommandID            string                             `json:"commandId"`
-	Sequence             uint64                             `json:"sequence"`
-	PreviousCommandHead  string                             `json:"previousCommandHead"`
-	CurrentAuthorityHead string                             `json:"currentAuthorityHead"`
-	Deadline             string                             `json:"deadline"`
-	RequestDigest        string                             `json:"requestDigest"`
-	PayloadDigest        string                             `json:"payloadDigest"`
-	Rebuild              SupervisorCommandRebuildProjection `json:"rebuild"`
-	PreCommand           SupervisorMechanicsAnchor          `json:"preCommand"`
+	PreparedEvidenceDigest string                             `json:"preparedEvidenceDigest,omitempty"`
+	ProtocolRevision       string                             `json:"protocolRevision"`
+	SessionID              string                             `json:"sessionId"`
+	Command                processsupervisor.CommandName      `json:"command"`
+	CommandID              string                             `json:"commandId"`
+	Sequence               uint64                             `json:"sequence"`
+	PreviousCommandHead    string                             `json:"previousCommandHead"`
+	CurrentAuthorityHead   string                             `json:"currentAuthorityHead"`
+	Deadline               string                             `json:"deadline"`
+	RequestDigest          string                             `json:"requestDigest"`
+	PayloadDigest          string                             `json:"payloadDigest"`
+	Rebuild                SupervisorCommandRebuildProjection `json:"rebuild"`
+	PreCommand             SupervisorMechanicsAnchor          `json:"preCommand"`
 }
 
 func NewSupervisorCommandIntent(evidence processsupervisor.PreparedCommandEvidence) (SupervisorCommandIntent, error) {
@@ -629,7 +630,11 @@ func NewSupervisorCommandIntent(evidence processsupervisor.PreparedCommandEviden
 }
 
 func (intent SupervisorCommandIntent) Validate() error {
-	if intent.PreCommand.Generation != (processsupervisor.ProtocolGenerationContract{}) {
+	if intent.ProtocolRevision == processsupervisor.DormantV2ProtocolContract().ProtocolRevision {
+		_, err := SupervisorPreparedCommandEvidenceV2(intent)
+		return err
+	}
+	if intent.PreparedEvidenceDigest != "" || intent.PreCommand.Generation != (processsupervisor.ProtocolGenerationContract{}) {
 		return ErrAttemptAuthorityConflict
 	}
 	deadline, err := time.Parse(time.RFC3339Nano, intent.Deadline)

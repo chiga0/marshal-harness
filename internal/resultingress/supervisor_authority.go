@@ -968,7 +968,7 @@ func (s *ingressDurableStore) AppendSupervisorCommandIntent(ctx context.Context,
 				if validateSupervisorCommandIntentAgainstState(state, intent) != nil {
 					return ErrAttemptAuthorityOrder
 				}
-				fact := &supervisorCommandFact{ProtocolRevision: supervisorCommandProtocolRevision, FactType: supervisorCommandIntentFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Intent: intent}
+				fact := &supervisorCommandFact{ProtocolRevision: supervisorIntentRecoveryRevision(intent), FactType: supervisorCommandIntentFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Intent: intent}
 				if err := s.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
 					return err
 				}
@@ -1050,7 +1050,7 @@ func applySupervisorCommandLine(line []byte, in *Ingress, wantSequence int64) er
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("%w: trailing supervisor command value", ErrAttemptAuthorityConflict)
 	}
-	if fact.ProtocolRevision != supervisorCommandProtocolRevision || fact.Sequence != wantSequence || fact.FactType != supervisorCommandIntentFactType && fact.FactType != supervisorCommandOutcomeFactType && fact.FactType != supervisorReconnectFactType {
+	if !validSupervisorRecoveryFactGeneration(fact) || fact.Sequence != wantSequence || fact.FactType != supervisorCommandIntentFactType && fact.FactType != supervisorCommandOutcomeFactType && fact.FactType != supervisorReconnectFactType {
 		return ErrAttemptAuthorityConflict
 	}
 	stored := fact.Digest
@@ -1064,6 +1064,9 @@ func applySupervisorCommandLine(line []byte, in *Ingress, wantSequence int64) er
 }
 
 func applySupervisorCommandFactValue(fact supervisorCommandFact, in *Ingress) error {
+	if !validSupervisorRecoveryFactGeneration(fact) {
+		return ErrAttemptAuthorityConflict
+	}
 	state, found := in.attempts[fact.AttemptKey]
 	if !found || state.Revision != fact.AttemptRevision || state.HeadDigest != fact.AttemptAuthorityHead || state.SupervisorStartedDigest == "" || state.SupervisorInterventionDigest != "" {
 		return ErrAttemptAuthorityOrder

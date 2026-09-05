@@ -34,6 +34,8 @@ B1 候选实现同时把 `Status` 与长 mutation mutex 解耦，使用单独 li
 
 本轮进一步把 exact v2 `process-supervisor-started` 接入原有 Attempt transition、owner/current-ledger 校验和冷重放：started 的显式 `v2` subprojection 保留完整握手与 anchor，禁止与 legacy handshake 同时出现，并重算唯一初始 journal record digest。新 started 向当前 projection 传递完整 generation/control-directory mechanics anchor，跨 v1/v2 历史仍执行 session/process/directory/socket ABA 检查；旧 command/reconnect 消费者明确拒绝 v2 anchor，不能默默丢字段后当 v1 使用。已补 bootstrap→started 的 fresh Attempt 耐久链、冷重放、伪造初始 head、自洽但错误 bootstrap 引用/Core 冒充 Supervisor 的写前拒绝测试。本地 compile-only/vet/staticcheck/architecture 通过；`cfa0e1b` 的 CI 33942406526 记录时 Linux 双架构/secret scan 通过，macOS/Ubuntu quality 仍运行，新 started 动态验证待后继 CI。command intent/outcome、Attach/terminal/collect 和生产 cutover 仍开放，B1 不升级。
 
+后继进展：`2d45f5f` 已推送 started 接线。CI 33942406526 已结束：Linux 双架构、Ubuntu quality、secret scan 通过，macOS 在新增重连测试的 socket address 准备阶段失败；Fake 目录位于 `/private/tmp`，却调用要求 cwd 内相对地址的生产 helper，尚未发生 reconnect 握手。候选改用该 Fake harness 已持有的短绝对 socket 地址，保留生产路径边界，不改变全局 cwd。当前继续接入 v2 command intent：原 RB1 recovery 子链按 exact v2 revision 写入完整准备证据摘要、generation 与 A0；fresh Attempt 的 bootstrap→started→bind intent→cold replay 可恢复同一准备证据并要求 exact payload 重建，错误 started 引用及混代 recovery header 写前拒绝。该新增链已完成本地 compile-only、vet/staticcheck 与 architecture 检查，动态回归待新 CI；outcome、Attach/terminal/collect 与实机生产切换仍未完成，B1 保持 `IN_PROGRESS`。
+
 ## 历史 checkpoint 与技术证据映射
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。

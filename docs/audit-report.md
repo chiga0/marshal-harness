@@ -20,6 +20,8 @@ S3 在同一候选分支连续实现 v2 journal、命令执行与 live-session r
 
 started 接线增加两层不可互替的验证：process-supervisor 重算 initial journal head 并绑定 exact peer/generation；ResultIngress 继续核对当前 owner、已耐久 bootstrap fact、角色分离与历史对象复用，禁止用构造器自洽验证代替账本。初始握手上的任意合法格式摘要不再足以成为 v2 started 事实。显式 `v2` subprojection 与旧 handshake 互斥，旧非零 handshake 的序列化不变；v2 mechanics anchor 携带完整 generation 和 control directory，旧 command/reconnect 校验先拒绝该新 anchor，防止新字段被旧 consumer 静默忽略。fresh Attempt 的 bootstrap→started→cold replay 与写前拒绝负例已编译，动态执行以候选 CI 为准；尚未接通后续 command/collect/terminal，因此未切换 producer 或声称实机闭环。
 
+后继把 v2 command intent 接入同一 RB1 recovery projector，保留 producer `PreparedCommandEvidenceV2.EvidenceDigest`，回放完整 generation/A0/参数投影后验证摘要；该投影不是可执行请求，必须经 `RebuildPreparedCommandV2` 与重新取得的精确 payload 比较才能传输。当前账本继续决定初始 bind 是否引用本 Attempt 的 started fact，不能以自洽的伪造请求替代。recovery header 必须与子投影代际一致；未接线的 v2 outcome/Attach 仍拒绝，不以 v1 body 伪装 v2。CI 33942406526 的 macOS 失败已定位为 Fake socket 位于 cwd 外、误用生产相对路径 helper；修正只作用于测试连接地址，不删除路径门禁、不改变 cwd，也不把 Fake 回归计为真实 fixed-image/Pi 证据。重复教训：测试在调用生产 helper 前须满足其路径与对象前置条件；普通协议 harness 与固定产物安装验证应明确分开。
+
 ## 2026-09-05：三面分离与真实业务交付纠偏
 
 基线 `origin/main@0c6d9cd`。保留确定性 Core、独立验证、Provider 分层与恢复资产；当前不能把 single-task kernel 或 T2 API 存在描述成自治 Agent Team。[ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 接受 B1→B2→B3 的业务路线，细节见 [业务交付计划](agent-team-delivery-plan.md)。

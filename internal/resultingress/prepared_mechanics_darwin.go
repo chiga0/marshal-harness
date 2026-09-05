@@ -299,7 +299,7 @@ func (s *DurableStore) appendPreparedSupervisorIntentLocked(projection *Ingress,
 	if err != nil || !found || !samePreparedAuthorityState(current, state) || state.SupervisorPendingIntentDigest != "" || validateSupervisorCommandIntentAgainstState(state, intent) != nil {
 		return AttemptAuthorityState{}, "", ErrPreparedExecutionConflict
 	}
-	fact := &supervisorCommandFact{ProtocolRevision: supervisorCommandProtocolRevision, FactType: supervisorCommandIntentFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Intent: intent}
+	fact := &supervisorCommandFact{ProtocolRevision: supervisorIntentRecoveryRevision(intent), FactType: supervisorCommandIntentFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Intent: intent}
 	if err := s.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
 		return AttemptAuthorityState{}, "", err
 	}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -133,10 +134,10 @@ func TestClientV2ReconnectWireThenSuccessorCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	address, err := controlSocketAddress(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// This Fake harness owns a short /private/tmp socket outside repository
+	// cwd. Production ReconnectV2 deliberately requires a repository-relative
+	// address; do not relax that boundary or change process-wide cwd for a test.
+	address := filepath.Join(h.root, controlSocket)
 	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: address, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
