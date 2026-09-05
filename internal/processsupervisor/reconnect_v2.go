@@ -116,9 +116,17 @@ func (session *sessionV2) reconcilePendingLocked(request reconnectRequestV2) (re
 // not the request's possibly newer authority head. No v1 defaults participate.
 func expectedPendingJournalHeadsV2(base journalRecordV2, sequence uint64, head string, request requestV2, response *responseV2) (string, string, error) {
 	projection, _, err := projectRequestV2(request)
-	if err != nil || base.SessionID != request.SessionID || sequence == 0 || sequence > maxSafeJSONInteger-2 {
+	if err != nil || base.SessionID != request.SessionID || response != nil && validateV2ResponseBinding(*response, request) != nil {
 		return "", "", ErrConflict
 	}
+	return expectedProjectedJournalHeadsV2(base, sequence, head, projection, response)
+}
+
+func expectedProjectedJournalHeadsV2(base journalRecordV2, sequence uint64, head string, projection requestProjection, response *responseV2) (string, string, error) {
+	if validateProjection(projection) != nil || sequence == 0 || sequence > maxSafeJSONInteger-2 {
+		return "", "", ErrConflict
+	}
+	var err error
 	intent := base
 	intent.JournalSequence, intent.PreviousRecordDigest = sequence+1, head
 	intent.Kind, intent.Request, intent.Response = journalCommandIntent, &projection, nil
@@ -129,7 +137,7 @@ func expectedPendingJournalHeadsV2(base journalRecordV2, sequence uint64, head s
 	if response == nil {
 		return intent.RecordDigest, "", nil
 	}
-	if validateV2ResponseBinding(*response, request) != nil {
+	if response.SessionID != base.SessionID || validateStoredResponseV2(*response, projection) != nil {
 		return "", "", ErrConflict
 	}
 	receipt := intent

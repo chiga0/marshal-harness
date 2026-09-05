@@ -1,5 +1,7 @@
 # 设计审计报告
 
+2026-09-05 v2 outcome 候选接线：结果不能只携带“形状合法”的 post journal head。当前由 `PreparedCommandEvidenceV2` 在传输前冻结 redacted journal request 摘要，返回结果由 process-supervisor 自己重算完整 receipt 与 journal 链，ResultIngress 只消费 typed outcome 并核对耐久 intent。无原始 argv/environment values/stdin/nonce/transcript bytes 进入新增字段；未知字段与非 canonical 请求投影拒绝。v2 的 semantic process outcome 复用代际无关业务映射，不转换为 v1 wire；外层 RB1/Attempt 协议名不变，旧 v1 optional 新字段保持缺省。该候选尚未对真实 session 启用，因此不会迁移/重写已发布 v1 历史，也不授予生产、Attach 或正式发布完成结论。后继 Attach 必须保留旧 command A0/post receipt 与新 owner recovery anchor 的区别，不能把重连后的 owner/head 回填到原 command receipt。上一 head `0a887f2` 的 CI 33946412476 已最终五项全绿，当前 outcome 候选须单独验证。
+
 ## 2026-09-05：B1 v2 恢复候选与失败复盘
 
 S3 在同一候选分支连续实现 v2 journal、命令执行与 live-session reconnect；尚未切换 production selector。重连只按最后认证的 A0 和 exact v2 journal 分类，不以新 owner head 伪造旧命令的 journal base。未写 intent 才可执行一次，已有 receipt 只重放原结果，pending intent 保留不确定性；进入可能执行 mechanics 的阶段后，失败必须使 transport 静默关闭，不能回报“无副作用”。这些仍为候选实现及测试，不是实机恢复证据；transport 和 Core producer chain 未接通。

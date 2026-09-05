@@ -90,6 +90,7 @@ type PreparedCommandEvidenceV2 struct {
 	CurrentAuthorityHead  string                    `json:"currentAuthorityHead"`
 	RequestDigest         string                    `json:"requestDigest"`
 	PayloadDigest         string                    `json:"payloadDigest"`
+	JournalRequestDigest  string                    `json:"journalRequestDigest"`
 	Deadline              string                    `json:"deadline"`
 	Projection            PreparedCommandProjection `json:"projection"`
 	EvidenceDigest        string                    `json:"evidenceDigest"`
@@ -101,8 +102,8 @@ func (e PreparedCommandEvidenceV2) integrityDigest() (string, error) {
 }
 func (e PreparedCommandEvidenceV2) Validate() error {
 	b := e.PreCommand.Binding
-	if e.PreCommand.Validate() != nil || !validCommand(e.Command) || !validID(e.CommandID) || e.Sequence != b.CommandSequence+1 || e.Sequence > MaxCommands ||
-		e.PreviousCommandDigest != b.CommandHead || !validDigest(e.CurrentAuthorityHead) || !validDigest(e.RequestDigest) || !validDigest(e.PayloadDigest) ||
+	if e.PreCommand.Validate() != nil || b.JournalSequence != b.CommandSequence*2+1 || !validCommand(e.Command) || !validID(e.CommandID) || e.Sequence != b.CommandSequence+1 || e.Sequence > MaxCommands ||
+		e.PreviousCommandDigest != b.CommandHead || !validDigest(e.CurrentAuthorityHead) || !validDigest(e.RequestDigest) || !validDigest(e.PayloadDigest) || !validDigest(e.JournalRequestDigest) ||
 		commandRequiresPreAuthorityHead(e.Command) && e.CurrentAuthorityHead != b.CurrentAuthorityHead || validatePreparedProjection(e.Command, e.Projection) != nil {
 		return ErrInvalid
 	}
@@ -142,7 +143,8 @@ func PrepareCommandV2(anchor SessionAnchorV2, options CommandOptions, payload an
 	if err != nil {
 		return PreparedCommandV2{}, err
 	}
-	if _, _, err := projectRequestV2(r); err != nil {
+	journalRequest, _, err := projectRequestV2(r)
+	if err != nil {
 		return PreparedCommandV2{}, err
 	}
 	projection, err := projectPreparedPayload(r.Command, payload)
@@ -151,6 +153,10 @@ func PrepareCommandV2(anchor SessionAnchorV2, options CommandOptions, payload an
 	}
 	e := PreparedCommandEvidenceV2{PreCommand: anchor, Command: r.Command, CommandID: r.CommandID, Sequence: r.Sequence, PreviousCommandDigest: r.PreviousCommandDigest,
 		CurrentAuthorityHead: r.CurrentAuthorityHead, RequestDigest: r.RequestDigest, PayloadDigest: canonical.DigestBytes(raw), Deadline: r.Deadline, Projection: projection}
+	e.JournalRequestDigest, err = digestValue(journalRequest)
+	if err != nil {
+		return PreparedCommandV2{}, err
+	}
 	e.EvidenceDigest, err = e.integrityDigest()
 	if err != nil || e.Validate() != nil {
 		return PreparedCommandV2{}, ErrInvalid
@@ -176,6 +182,7 @@ func RebuildPreparedCommandV2(expected PreparedCommandEvidenceV2, payload any) (
 
 type VerifiedCommandOutcomeV2 struct {
 	Preparation       PreparedCommandEvidenceV2
+	JournalRequest    string
 	PostCommand       SessionAnchorV2
 	Status            string
 	ReasonCode        string
@@ -218,12 +225,20 @@ func verifiedCommandOutcomeV2(prepared PreparedCommandV2, response responseV2) (
 	}
 	outcome := VerifiedCommandOutcomeV2{Preparation: prepared.evidence, PostCommand: post, Status: response.Status, ReasonCode: response.ReasonCode, ReceiptDigest: response.ReceiptDigest,
 		ObservationDigest: response.ObservationDigest, CommandHead: response.CommandHead, TranscriptDigest: result.TranscriptDigest, StdoutBytes: result.StdoutBytes, StderrBytes: result.StderrBytes, Truncated: result.Truncated}
+	journalRequest, err := canonicalValue(projection)
+	if err != nil {
+		return VerifiedCommandOutcomeV2{}, err
+	}
+	outcome.JournalRequest = string(journalRequest)
 	if response.Status == "ok" && r.Command != CommandBindAuthority && r.Command != CommandAbortUnbound {
 		var report ProcessReport
 		if strictCanonicalDecode(result.Payload, &report) != nil || ValidateDormantV2ProcessReport(report) != nil {
 			return VerifiedCommandOutcomeV2{}, ErrConflict
 		}
 		outcome.ProcessReport = &report
+	}
+	if err := outcome.Validate(); err != nil {
+		return VerifiedCommandOutcomeV2{}, err
 	}
 	return outcome, nil
 }

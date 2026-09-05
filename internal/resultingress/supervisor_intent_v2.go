@@ -9,7 +9,7 @@ func NewSupervisorCommandIntentV2(e processsupervisor.PreparedCommandEvidenceV2)
 		return SupervisorCommandIntent{}, ErrAttemptAuthorityConflict
 	}
 	intent := SupervisorCommandIntent{ProtocolRevision: e.PreCommand.Generation.ProtocolRevision,
-		PreparedEvidenceDigest: e.EvidenceDigest, SessionID: e.PreCommand.Binding.SessionID,
+		PreparedEvidenceDigest: e.EvidenceDigest, JournalRequestDigest: e.JournalRequestDigest, SessionID: e.PreCommand.Binding.SessionID,
 		Command: e.Command, CommandID: e.CommandID, Sequence: e.Sequence, PreviousCommandHead: e.PreviousCommandDigest,
 		CurrentAuthorityHead: e.CurrentAuthorityHead, Deadline: e.Deadline, RequestDigest: e.RequestDigest,
 		PayloadDigest: e.PayloadDigest, Rebuild: e.Projection, PreCommand: projectSupervisorMechanicsAnchorV2(e.PreCommand)}
@@ -29,7 +29,7 @@ func SupervisorPreparedCommandEvidenceV2(intent SupervisorCommandIntent) (proces
 	e := processsupervisor.PreparedCommandEvidenceV2{PreCommand: supervisorSessionAnchorV2(intent.PreCommand),
 		Command: intent.Command, CommandID: intent.CommandID, Sequence: intent.Sequence, PreviousCommandDigest: intent.PreviousCommandHead,
 		CurrentAuthorityHead: intent.CurrentAuthorityHead, RequestDigest: intent.RequestDigest, PayloadDigest: intent.PayloadDigest,
-		Deadline: intent.Deadline, Projection: intent.Rebuild, EvidenceDigest: intent.PreparedEvidenceDigest}
+		Deadline: intent.Deadline, Projection: intent.Rebuild, EvidenceDigest: intent.PreparedEvidenceDigest, JournalRequestDigest: intent.JournalRequestDigest}
 	if e.Validate() != nil {
 		return processsupervisor.PreparedCommandEvidenceV2{}, ErrAttemptAuthorityConflict
 	}
@@ -51,8 +51,11 @@ func validSupervisorRecoveryFactGeneration(fact supervisorCommandFact) bool {
 		revision := supervisorIntentRecoveryRevision(fact.Intent)
 		return revision != "" && fact.ProtocolRevision == revision
 	}
-	// Outcome/Attach producers remain closed to v2 until their complete
-	// response/reconnect projections are wired. Never mark a v1 body as v2.
+	if fact.FactType == supervisorCommandOutcomeFactType {
+		revision := supervisorOutcomeRecoveryRevision(fact.Outcome)
+		return revision != "" && fact.ProtocolRevision == revision
+	}
+	// Attach remains closed to v2 until its reconnect projection is wired.
 	return fact.ProtocolRevision == supervisorCommandProtocolRevision
 }
 

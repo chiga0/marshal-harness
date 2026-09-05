@@ -316,7 +316,7 @@ func (s *DurableStore) appendPreparedSupervisorOutcomeLocked(projection *Ingress
 	if err != nil || !found || !samePreparedAuthorityState(current, state) || state.SupervisorPendingIntentDigest == "" || validateSupervisorCommandOutcomeAgainstIntent(state, outcome) != nil {
 		return AttemptAuthorityState{}, "", ErrPreparedExecutionConflict
 	}
-	fact := &supervisorCommandFact{ProtocolRevision: supervisorCommandProtocolRevision, FactType: supervisorCommandOutcomeFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Outcome: outcome}
+	fact := &supervisorCommandFact{ProtocolRevision: supervisorOutcomeRecoveryRevision(outcome), FactType: supervisorCommandOutcomeFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Outcome: outcome}
 	if err := s.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
 		return AttemptAuthorityState{}, "", err
 	}

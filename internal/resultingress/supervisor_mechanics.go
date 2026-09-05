@@ -139,23 +139,25 @@ func (evidence SupervisorReconnectEvidence) Validate() error {
 // payload: argv, environment values, stdin and transcript bytes never enter
 // the RB1 authority ledger.
 type SupervisorCommandEvidence struct {
-	ProtocolRevision     string                        `json:"protocolRevision"`
-	SessionID            string                        `json:"sessionId"`
-	Command              processsupervisor.CommandName `json:"command"`
-	CommandID            string                        `json:"commandId"`
-	Sequence             uint64                        `json:"sequence"`
-	PreviousCommandHead  string                        `json:"previousCommandHead"`
-	CurrentAuthorityHead string                        `json:"currentAuthorityHead"`
-	RequestDigest        string                        `json:"requestDigest"`
-	ReceiptDigest        string                        `json:"receiptDigest"`
-	ObservationDigest    string                        `json:"observationDigest"`
-	CommandHead          string                        `json:"commandHead"`
-	Disposition          string                        `json:"disposition"`
-	ReasonCode           string                        `json:"reasonCode"`
-	BoundAuthorityHead   string                        `json:"boundAuthorityHead,omitempty"`
-	Outcome              SupervisorProcessOutcome      `json:"outcome,omitempty,omitzero"`
-	PreCommand           SupervisorMechanicsAnchor     `json:"preCommand,omitempty,omitzero"`
-	PostCommand          SupervisorMechanicsAnchor     `json:"postCommand,omitempty,omitzero"`
+	V2Preparation        processsupervisor.PreparedCommandEvidenceV2 `json:"v2Preparation,omitempty,omitzero"`
+	JournalRequest       string                                      `json:"journalRequest,omitempty"`
+	ProtocolRevision     string                                      `json:"protocolRevision"`
+	SessionID            string                                      `json:"sessionId"`
+	Command              processsupervisor.CommandName               `json:"command"`
+	CommandID            string                                      `json:"commandId"`
+	Sequence             uint64                                      `json:"sequence"`
+	PreviousCommandHead  string                                      `json:"previousCommandHead"`
+	CurrentAuthorityHead string                                      `json:"currentAuthorityHead"`
+	RequestDigest        string                                      `json:"requestDigest"`
+	ReceiptDigest        string                                      `json:"receiptDigest"`
+	ObservationDigest    string                                      `json:"observationDigest"`
+	CommandHead          string                                      `json:"commandHead"`
+	Disposition          string                                      `json:"disposition"`
+	ReasonCode           string                                      `json:"reasonCode"`
+	BoundAuthorityHead   string                                      `json:"boundAuthorityHead,omitempty"`
+	Outcome              SupervisorProcessOutcome                    `json:"outcome,omitempty,omitzero"`
+	PreCommand           SupervisorMechanicsAnchor                   `json:"preCommand,omitempty,omitzero"`
+	PostCommand          SupervisorMechanicsAnchor                   `json:"postCommand,omitempty,omitzero"`
 }
 
 // SupervisorProcessOutcome is the Core-owned typed projection of mechanics
@@ -247,6 +249,12 @@ func validSupervisorCommand(command processsupervisor.CommandName) bool {
 }
 
 func (e SupervisorCommandEvidence) Validate() error {
+	if e.ProtocolRevision == processsupervisor.DormantV2ProtocolContract().ProtocolRevision {
+		return validateSupervisorCommandEvidenceV2(e)
+	}
+	if e.V2Preparation != (processsupervisor.PreparedCommandEvidenceV2{}) || e.JournalRequest != "" {
+		return ErrAttemptAuthorityConflict
+	}
 	if e.PreCommand.Generation != (processsupervisor.ProtocolGenerationContract{}) || e.PostCommand.Generation != (processsupervisor.ProtocolGenerationContract{}) {
 		return ErrAttemptAuthorityConflict
 	}
@@ -470,21 +478,26 @@ func NewSupervisorCommandEvidence(outcome processsupervisor.VerifiedCommandOutco
 // ProcessTerminated. The authenticated report state alone is insufficient;
 // command and reason are part of the closed semantic union.
 func projectVerifiedSupervisorProcessOutcome(outcome processsupervisor.VerifiedCommandOutcome) (SupervisorProcessOutcome, error) {
-	report := *outcome.ProcessReport
-	projected := SupervisorProcessOutcome{MechanicsState: report.State, Process: report.Process, ObserverIdentity: report.ObserverIdentity, ObservedAt: report.ObservedAt, RuntimeObjectDigest: report.RuntimeObjectDigest, WorkingObjectDigest: report.WorkingObjectDigest, SourceGateRevision: report.SourceGateRevision, ExactSetDigest: report.ExactSetDigest, ExitCode: report.ExitCode, Signal: report.Signal, StdoutDigest: report.StdoutDigest, StderrDigest: report.StderrDigest, StdoutBytes: report.StdoutBytes, StderrBytes: report.StderrBytes, TranscriptTruncated: report.TranscriptTruncated, TranscriptDigest: outcome.TranscriptDigest}
-	switch outcome.Command {
+	return projectSupervisorProcessOutcome(outcome.Command, outcome.ReasonCode, outcome.TranscriptDigest, *outcome.ProcessReport)
+}
+
+// Business semantics are generation-neutral. Each caller first validates its
+// own exact protocol; this helper never parses or translates wire evidence.
+func projectSupervisorProcessOutcome(command processsupervisor.CommandName, reason, transcript string, report processsupervisor.ProcessReport) (SupervisorProcessOutcome, error) {
+	projected := SupervisorProcessOutcome{MechanicsState: report.State, Process: report.Process, ObserverIdentity: report.ObserverIdentity, ObservedAt: report.ObservedAt, RuntimeObjectDigest: report.RuntimeObjectDigest, WorkingObjectDigest: report.WorkingObjectDigest, SourceGateRevision: report.SourceGateRevision, ExactSetDigest: report.ExactSetDigest, ExitCode: report.ExitCode, Signal: report.Signal, StdoutDigest: report.StdoutDigest, StderrDigest: report.StderrDigest, StdoutBytes: report.StdoutBytes, StderrBytes: report.StderrBytes, TranscriptTruncated: report.TranscriptTruncated, TranscriptDigest: transcript}
+	switch command {
 	case processsupervisor.CommandSpawn:
-		if outcome.ReasonCode != "process-exec-stopped" || report.State != "exec-stopped" {
+		if reason != "process-exec-stopped" || report.State != "exec-stopped" {
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged spawn mechanics outcome", ErrAttemptAuthorityConflict)
 		}
 		projected.State = SupervisorProcessExecStopped
 	case processsupervisor.CommandResume:
-		if outcome.ReasonCode != "process-resumed" || report.State != "running" {
+		if reason != "process-resumed" || report.State != "running" {
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged resume mechanics outcome", ErrAttemptAuthorityConflict)
 		}
 		projected.State = SupervisorProcessRunning
 	case processsupervisor.CommandInspect:
-		if outcome.ReasonCode != "process-inspected" {
+		if reason != "process-inspected" {
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged inspect mechanics reason", ErrAttemptAuthorityConflict)
 		}
 		switch report.State {
@@ -501,7 +514,7 @@ func projectVerifiedSupervisorProcessOutcome(outcome processsupervisor.VerifiedC
 		if report.State != "terminal" {
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: terminate lacks terminal mechanics report", ErrAttemptAuthorityConflict)
 		}
-		switch outcome.ReasonCode {
+		switch reason {
 		case "process-already-terminal":
 			projected.State = SupervisorProcessAbsent
 		case "process-terminal":
@@ -510,12 +523,12 @@ func projectVerifiedSupervisorProcessOutcome(outcome processsupervisor.VerifiedC
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged terminate mechanics reason", ErrAttemptAuthorityConflict)
 		}
 	case processsupervisor.CommandCollect:
-		if outcome.ReasonCode != "transcript-collected" || report.State != "terminal" {
+		if reason != "transcript-collected" || report.State != "terminal" {
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged collect mechanics outcome", ErrAttemptAuthorityConflict)
 		}
 		projected.State = SupervisorTranscriptCollected
 	case processsupervisor.CommandClose:
-		if outcome.ReasonCode != "mechanics-closed" || report.State != "terminal" {
+		if reason != "mechanics-closed" || report.State != "terminal" {
 			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged close mechanics outcome", ErrAttemptAuthorityConflict)
 		}
 		projected.State = SupervisorSessionClosed
@@ -599,6 +612,7 @@ type SupervisorCommandRebuildProjection = processsupervisor.PreparedCommandProje
 // before Client.Do and contains no executable payload or bearer material.
 type SupervisorCommandIntent struct {
 	PreparedEvidenceDigest string                             `json:"preparedEvidenceDigest,omitempty"`
+	JournalRequestDigest   string                             `json:"journalRequestDigest,omitempty"`
 	ProtocolRevision       string                             `json:"protocolRevision"`
 	SessionID              string                             `json:"sessionId"`
 	Command                processsupervisor.CommandName      `json:"command"`
@@ -634,7 +648,7 @@ func (intent SupervisorCommandIntent) Validate() error {
 		_, err := SupervisorPreparedCommandEvidenceV2(intent)
 		return err
 	}
-	if intent.PreparedEvidenceDigest != "" || intent.PreCommand.Generation != (processsupervisor.ProtocolGenerationContract{}) {
+	if intent.PreparedEvidenceDigest != "" || intent.JournalRequestDigest != "" || intent.PreCommand.Generation != (processsupervisor.ProtocolGenerationContract{}) {
 		return ErrAttemptAuthorityConflict
 	}
 	deadline, err := time.Parse(time.RFC3339Nano, intent.Deadline)

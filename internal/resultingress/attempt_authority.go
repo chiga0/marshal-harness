@@ -1130,8 +1130,15 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 
 func validateSupervisorCommandOutcomeAgainstIntent(state AttemptAuthorityState, evidence SupervisorCommandEvidence) error {
 	intent := state.SupervisorPendingIntent
-	if evidence.Validate() != nil || evidence.SessionID != intent.SessionID || evidence.Command != intent.Command || evidence.CommandID != intent.CommandID || evidence.Sequence != intent.Sequence || evidence.PreviousCommandHead != intent.PreviousCommandHead || evidence.CurrentAuthorityHead != intent.CurrentAuthorityHead || evidence.RequestDigest != intent.RequestDigest || evidence.PreCommand != intent.PreCommand {
+	if evidence.Validate() != nil || evidence.ProtocolRevision != intent.ProtocolRevision || evidence.SessionID != intent.SessionID || evidence.Command != intent.Command || evidence.CommandID != intent.CommandID || evidence.Sequence != intent.Sequence || evidence.PreviousCommandHead != intent.PreviousCommandHead || evidence.CurrentAuthorityHead != intent.CurrentAuthorityHead || evidence.RequestDigest != intent.RequestDigest || evidence.PreCommand != intent.PreCommand {
 		return ErrAttemptAuthorityConflict
+	}
+	isV2 := evidence.ProtocolRevision == processsupervisor.DormantV2ProtocolContract().ProtocolRevision
+	if isV2 {
+		prepared, err := SupervisorPreparedCommandEvidenceV2(intent)
+		if err != nil || prepared != evidence.V2Preparation {
+			return ErrAttemptAuthorityConflict
+		}
 	}
 	if state.SupervisorReconnectFactDigest != "" && state.SupervisorCommandRecoveryHead == state.SupervisorReconnectFactDigest && state.SupervisorReconnect.Pending != (processsupervisor.PendingReplayEvidence{}) {
 		if state.SupervisorReconnect.MechanicsLocked || evidence.PostCommand != state.SupervisorReconnect.Current || evidence.PreCommand != state.SupervisorReconnect.Previous {
@@ -1143,7 +1150,7 @@ func validateSupervisorCommandOutcomeAgainstIntent(state AttemptAuthorityState, 
 	}
 	switch intent.Command {
 	case processsupervisor.CommandBindAuthority:
-		if evidence.BoundAuthorityHead != intent.Rebuild.AuthorityHead || evidence.ObservationDigest != intent.Rebuild.SupervisorStartedFactDigest {
+		if evidence.BoundAuthorityHead != intent.Rebuild.AuthorityHead || !isV2 && evidence.ObservationDigest != intent.Rebuild.SupervisorStartedFactDigest {
 			return ErrAttemptAuthorityConflict
 		}
 	case processsupervisor.CommandSpawn:

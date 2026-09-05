@@ -275,4 +275,48 @@ func TestLauncherV2BootstrapUsesExistingDurableAdmissionAndColdReplay(t *testing
 	if applySupervisorCommandLine(forgedLine, fresh, fact.Sequence) == nil || !reflect.DeepEqual(fresh.attempts[key], preIntent) {
 		t.Fatal("mixed recovery generation accepted or changed state")
 	}
+	outcome := testBindOutcomeV2(t, intent)
+	preOutcome := next
+	beforeOutcome, err := os.ReadFile(fixture.store.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongOutcome := testBindOutcomeV2(t, forgedIntent)
+	err = fixture.store.transact(projection, func() error {
+		_, _, err := fixture.store.appendPreparedSupervisorOutcomeLocked(projection, preOutcome, wrongOutcome)
+		return err
+	})
+	if err == nil {
+		t.Fatal("valid receipt for unrelated intent admitted")
+	}
+	after, err = os.ReadFile(fixture.store.ledgerPath())
+	if err != nil || !bytes.Equal(beforeOutcome, after) {
+		t.Fatal("rejected outcome modified ledger")
+	}
+	err = fixture.store.transact(projection, func() error {
+		var err error
+		next, _, err = fixture.store.appendPreparedSupervisorOutcomeLocked(projection, preOutcome, outcome)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("durable v2 outcome: %v", err)
+	}
+	replayed, found, err = reopened.AttemptState(state.Identity)
+	if err != nil || !found || !reflect.DeepEqual(replayed, next) || replayed.SupervisorPendingIntentDigest != "" || replayed.SupervisorCommandSequence != 1 ||
+		replayed.SupervisorMechanicsAnchor != outcome.PostCommand || replayed.SupervisorBoundAuthorityHead != next.SupervisorStartedDigest || len(replayed.SupervisorCommandCheckpoints) != 1 {
+		t.Fatalf("cold v2 command closure: %v", err)
+	}
+	checkpoint := replayed.SupervisorCommandCheckpoints[0]
+	if checkpoint.Intent != intent || checkpoint.Evidence != outcome || checkpoint.FactDigest == "" {
+		t.Fatal("cold checkpoint lost exact intent/outcome")
+	}
+	after, err = os.ReadFile(fixture.store.ledgerPath())
+	if err != nil || len(after) <= len(beforeOutcome) || !bytes.Equal(beforeOutcome, after[:len(beforeOutcome)]) {
+		t.Fatal("outcome changed history")
+	}
+	line = bytes.TrimSpace(after[len(beforeOutcome):])
+	var outcomeFact supervisorCommandFact
+	if err := json.Unmarshal(line, &outcomeFact); err != nil || outcomeFact.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().CommandRecoveryRevision {
+		t.Fatalf("outcome lost v2 recovery generation: %v", err)
+	}
 }

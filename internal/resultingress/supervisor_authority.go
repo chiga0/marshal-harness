@@ -1019,7 +1019,7 @@ func (s *ingressDurableStore) AppendSupervisorCommandOutcome(ctx context.Context
 				if validateSupervisorCommandOutcomeAgainstIntent(state, outcome) != nil {
 					return ErrAttemptAuthorityOrder
 				}
-				fact := &supervisorCommandFact{ProtocolRevision: supervisorCommandProtocolRevision, FactType: supervisorCommandOutcomeFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Outcome: outcome}
+				fact := &supervisorCommandFact{ProtocolRevision: supervisorOutcomeRecoveryRevision(outcome), FactType: supervisorCommandOutcomeFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Outcome: outcome}
 				if err := s.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
 					return err
 				}
