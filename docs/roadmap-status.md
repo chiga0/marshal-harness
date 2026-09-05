@@ -12,13 +12,15 @@
 | B2 受限 Agent Team | `PLANNED` | ADR 0019 已有计划接纳组件，ADR 0080 已确认受限产品目标 | approved plan 耐久物化/调度、两个到三个独立实现任务、集成候选业务验收、局部 replan、暂停恢复；不能以子 Run 全绿替代 |
 | B3 长期运行与正式支持 | `PLANNED` | I186-R2–R6 组件和历史测试可复用 | B2 同路径故障与长历史测试、升级/恢复、#212 signing/notarization、Linux server 实机 gate、受保护 stable release |
 
-最近已合入基线：`origin/main@0c6d9cd0cb209af87bccbe9e61d3e6cdcd3d465f`，required CI [33882237317](https://github.com/chiga0/marshal-harness/actions/runs/33882237317) 成功。当前工作分支 `feat/delivery-product-vertical` 的文档与参考测试不构成真实 Agent 或独立发布证据。T2 的 `production-owner-not-current` 仍缺失败现场根因闭环：fsync 后曾复现，后续 CI 绿色不能单独证明已修复。
+最近已合入基线：`origin/main@c8ee8dd213eb1c0dea4fce0772318221259bdf46`（PR #256），required CI [33938666374](https://github.com/chiga0/marshal-harness/actions/runs/33938666374) 的 macOS/Ubuntu quality、Linux amd64/arm64 candidate conformance 与 secret scan 全绿。文档、锁修复及参考测试已合入，但不构成真实业务 Agent 或独立发布证据。T2 的 `production-owner-not-current` 仍缺失败现场根因闭环：fsync 后曾复现，后续 CI 绿色不能单独证明已修复。
 
 本轮不改变 Run/Goal 持久化、授权或生产 selector。最先执行参考 oracle 正反例，再沿 B1 的 fixed server 路径收集真实业务证据；不新起另一套 controller。I186-R0 PASSED、R1 IN_PROGRESS/INTEGRATED、R2–R6 IN_PROGRESS/COMPONENT 保持。
 
 B1 候选实现同时把 `Status` 与长 mutation mutex 解耦，使用单独 lifetime 读写锁保护 session 关闭，并保留实时 owner 复核。新增 mutation-held、Close 并发和无效 receiver 测试；这不解锁其它 mutation，也不保证底层存储无等待。定向动态/race 与健康 session 实机延迟证据仍须 CI/后继 canary，不提前标记 B1 完成。
 
 本轮本地验证：订单报价 oracle 的 5 个测试通过（含 28 条业务用例、典型错误实现、生成验收命令实执行与 oracle 摘要漂移）；T1 shell 回归与 9 个 evidence 回归通过；Darwin/Linux 定向 vet、staticcheck、architecture check 与 Darwin CLI test compile-only 通过。另新增 Go 合同测试，直接验证 marker/order-quote renderer 的真实 Task 输出；它与 Status 动态/race 测试交由 CI 执行。现有固定二进制在新工作区报告 `self-local-profile-mismatch`，没有绕过或冒用历史身份；本轮未启动实机 Worker，也未签发 Decision/发布。
+
+当前在途为同一 `feat/launcher-v2-production` 分支上的 S3 连贯实现，不按内部文件拆 PR：已编写 v2 journal writer 与 command session，复用代际无关命令语义，保留 v2 exact decode/digest/receipt；新增耐久 intent-before-mechanics、receipt replay、旧代拒绝与不确定效果保留测试。追加仅校验下一转换，启动重放为线性；非法完整记录在 torn-tail 修复前拒绝。该候选尚待动态 CI，transport/reconnect、Core v2 subprojection、零 active/pending v1 admission 与实机链仍未完成，生产 selector 保持 v1；不得据此升级 B1。
 
 ## 历史 checkpoint 与技术证据映射
 
