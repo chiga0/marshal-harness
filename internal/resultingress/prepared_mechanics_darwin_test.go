@@ -102,3 +102,64 @@ func preparedBootstrapForState(t *testing.T, fixture preparedExecutionFixture, s
 	}
 	return prepared
 }
+
+func TestLauncherV2BootstrapUsesExistingDurableAdmissionAndColdReplay(t *testing.T) {
+	fixture := newPreparedExecutionFixture(t)
+	state := fixture.storeStateAfterPrepared(t, fixture)
+	_, request := testBootstrapV2Input()
+	request.SessionID = "launcher-v2-durable-bootstrap"
+	request.OwnerEpoch, request.Authority = state.Owner.OwnerEpoch, supervisorAuthorityTuple(state.Identity)
+	request.CurrentAuthorityHead, request.LaunchAuthorizedFact = state.HeadDigest, state.LaunchAuthorizedDigest
+	request.Core = processsupervisor.CoreIdentity{UID: fixture.owner.Acquisition.OwnerUID, GID: fixture.owner.Acquisition.OwnerGID, Process: fixture.owner.Acquisition.OwnerProcess, Binary: fixture.owner.Acquisition.OwnerBinary}
+	request.ControlDirectoryIdentity.UID, request.ControlDirectoryIdentity.GID = request.Core.UID, request.Core.GID
+	prepared, err := NewSupervisorBootstrapPreparedV2(state.Owner, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(fixture.store.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Even an internally consistent, rehashed v2 request cannot substitute a
+	// different current head. Rejection must happen before the durable write.
+	forged := prepared
+	forged.Request.CurrentAuthorityHead = attemptTestDigest("forged-current-head")
+	forged.BootstrapRequestDigest, err = canonicalDigest(forged.Request)
+	if err != nil || forged.Validate() != nil {
+		t.Fatal("malformed negative fixture")
+	}
+	projection := newAuthorityProjection()
+	err = fixture.store.transact(projection, func() error {
+		_, _, err := fixture.store.appendPreparedAttemptTransitionLocked(projection, state, AttemptTransition{Kind: AttemptTransitionSupervisorBootstrap, Identity: state.Identity, SupervisorBootstrap: forged})
+		return err
+	})
+	if err == nil {
+		t.Fatal("forged current authority admitted")
+	}
+	after, err := os.ReadFile(fixture.store.ledgerPath())
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("rejected input changed ledger")
+	}
+	var next AttemptAuthorityState
+	err = fixture.store.transact(projection, func() error {
+		var err error
+		next, _, err = fixture.store.appendPreparedAttemptTransitionLocked(projection, state, AttemptTransition{Kind: AttemptTransitionSupervisorBootstrap, Identity: state.Identity, SupervisorBootstrap: prepared})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err = os.ReadFile(fixture.store.ledgerPath())
+	if err != nil || len(after) <= len(before) || !bytes.Equal(before, after[:len(before)]) || bytes.Contains(after, []byte(request.SessionNonce)) {
+		t.Fatal("append-only/secret boundary")
+	}
+	reopened, err := OpenResultIngressStore(fixture.store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	replayed, found, err := reopened.AttemptState(state.Identity)
+	if err != nil || !found || !reflect.DeepEqual(replayed, next) || replayed.SupervisorBootstrap.Request.Generation != processsupervisor.DormantV2ProtocolContract() {
+		t.Fatalf("cold v2 projection: %v", err)
+	}
+}

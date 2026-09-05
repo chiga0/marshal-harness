@@ -30,6 +30,8 @@ B1 候选实现同时把 `Status` 与长 mutation mutex 解耦，使用单独 li
 
 客户端候选 `1057418` 的 [CI 33941565125](https://github.com/chiga0/marshal-harness/actions/runs/33941565125) 已通过 Linux 双架构和 secret scan，记录时 macOS/Ubuntu quality 正在运行，不记为通过。本轮继续同一 S3 分支：新增 `ReconnectV2`，从 held v2 nonce/journal/socket 和当前 fixed Core 构造请求，连接前后校验文件边界及精确 journal 位置；恢复返回完整 generation、原始命令 A0、新 owner anchor、pending 和 typed replayed outcome。连续丢失两次恢复握手时 A0 不变，已提交 receipt 不重做；intent-only 的客户端锁定，不准继续发命令。测试新增三种 journal 分类、过期 receipt、已提交 bind 的旧/新 authority 分离、伪造恢复和 Unix wire 恢复后 successor resume；本地 compile-only、Darwin/Linux vet、staticcheck/architecture 通过，动态证据待新候选 CI。剩余主阻塞是 ResultIngress/ProductionRuntime 的完整 v2 subprojection 与调用链、Attach、rollout admission 和同一 fixed bytes 的真实 Pi 业务验收，B1 不升级。
 
+`1057418` 的上述 CI 已最终全绿（含 macOS/Ubuntu quality），确认该 head 的 Close fixture 修正与 prepared client 回归通过；不延伸为后继 `aa0dd00` 恢复客户端的动态证据。本轮开始接入 ResultIngress：`NewSupervisorBootstrapPreparedV2` 直接从 exact v2 请求产生无原始 nonce 的完整代际投影，并进入现有 `appendPreparedAttemptTransitionLocked`/owner/Run/current-head/CAS 与冷重放路径；外层 `attempt-authority` 不改名、不新建账本。新增 fresh Attempt 上 v2 bootstrap append/reopen、重算摘要的错误 current head 写前拒绝、逐字段缺失/混代拒绝与旧 v1 原字节/摘要不变测试。当前本地 compile-only/vet/staticcheck/architecture 已通过，后继动态 CI 待执行；started、command intent/outcome、Attach 和业务结果链仍须完成后才能切换生产入口。
+
 ## 历史 checkpoint 与技术证据映射
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。

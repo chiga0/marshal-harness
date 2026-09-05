@@ -504,16 +504,19 @@ func projectVerifiedSupervisorProcessOutcome(outcome processsupervisor.VerifiedC
 // value; it is never an arbitrary digest echo. Only SessionNonceDigest is
 // retained, never the raw nonce.
 type SupervisorBootstrapRequestProjection struct {
-	SchemaVersion            string                                     `json:"schemaVersion"`
-	ProtocolRevision         string                                     `json:"protocolRevision"`
-	SessionID                string                                     `json:"sessionId"`
-	SessionNonceDigest       string                                     `json:"sessionNonceDigest"`
-	OwnerEpoch               uint64                                     `json:"ownerEpoch"`
-	Authority                processsupervisor.AuthorityTuple           `json:"authority"`
-	LaunchAuthorizedFact     string                                     `json:"launchAuthorizedFactDigest"`
-	CurrentAuthorityHead     string                                     `json:"currentAuthorityHead"`
-	ControlDirectoryIdentity processsupervisor.ControlDirectoryIdentity `json:"controlDirectoryIdentity"`
-	Core                     processsupervisor.CoreIdentity             `json:"core"`
+	Generation                  processsupervisor.ProtocolGenerationContract `json:"generation,omitempty,omitzero"`
+	LaunchChildProtocolRevision string                                       `json:"launchChildProtocolRevision,omitempty"`
+	MechanicsIdentity           string                                       `json:"mechanicsIdentity,omitempty"`
+	SchemaVersion               string                                       `json:"schemaVersion"`
+	ProtocolRevision            string                                       `json:"protocolRevision"`
+	SessionID                   string                                       `json:"sessionId"`
+	SessionNonceDigest          string                                       `json:"sessionNonceDigest"`
+	OwnerEpoch                  uint64                                       `json:"ownerEpoch"`
+	Authority                   processsupervisor.AuthorityTuple             `json:"authority"`
+	LaunchAuthorizedFact        string                                       `json:"launchAuthorizedFactDigest"`
+	CurrentAuthorityHead        string                                       `json:"currentAuthorityHead"`
+	ControlDirectoryIdentity    processsupervisor.ControlDirectoryIdentity   `json:"controlDirectoryIdentity"`
+	Core                        processsupervisor.CoreIdentity               `json:"core"`
 }
 
 func projectSupervisorBootstrapRequest(request processsupervisor.BootstrapRequest) (SupervisorBootstrapRequestProjection, string, error) {
@@ -644,6 +647,12 @@ func NewSupervisorBootstrapPrepared(owner CurrentOwnerBinding, request processsu
 }
 
 func (prepared SupervisorBootstrapPrepared) Validate() error {
+	if prepared.ProtocolRevision == processsupervisor.DormantV2ProtocolContract().ProtocolRevision {
+		return validateSupervisorBootstrapPreparedV2(prepared)
+	}
+	if prepared.Request.Generation != (processsupervisor.ProtocolGenerationContract{}) || prepared.Request.LaunchChildProtocolRevision != "" || prepared.Request.MechanicsIdentity != "" {
+		return ErrAttemptAuthorityConflict
+	}
 	if prepared.ProtocolRevision != processsupervisor.ProtocolRevision || prepared.Owner.Validate() != nil || !supervisorEvidenceID.MatchString(prepared.SessionID) || validateControlDirectoryIdentity(prepared.ControlDirectory) != nil || validateFixedMarshalBinaryIdentity(prepared.SupervisorBinary) != nil {
 		return fmt.Errorf("%w: invalid supervisor bootstrap identity", ErrAttemptAuthorityConflict)
 	}

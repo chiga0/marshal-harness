@@ -16,6 +16,8 @@ S3 在同一候选分支连续实现 v2 journal、命令执行与 live-session r
 
 恢复客户端继续使用原来的 owner acquisition 顺序与 live Supervisor，不创建第二个 coordinator、不重启或 adopt 进程。`ReconnectV2` 将旧命令 A0 与恢复计划的 previous/current owner 分离：丢失第一次恢复握手后，第二次计划可以前进而原命令的 journal base 不变；已提交 bind 的 outcome authority 也不得被新 owner head 覆盖。恢复前只接受 A0、exact intent 或 exact receipt 三类 held journal，恢复后再核对握手和实际 journal，保留 buffer、不用 v1 decoder/default。新增 Fake 与 Unix wire 回归证明所需检查路径，动态执行仍须 CI；这不是实机接线已经完成。下一步直接进入 ResultIngress/ProductionRuntime 的代际 subprojection 和现有调用链，避免另起独立业务模型。
 
+`1057418` 的 CI 33941565125 已全部通过，Close fixture 和该 head 的客户端动态/race 回归有实证；后继恢复客户端尚不借用该结果。ResultIngress 的相邻接线选择既有 bootstrap fact 的显式代际 subprojection，而非重写外层协议或另一套持久化状态机：v2 必须带完整 generation、bootstrap/child/mechanics 标识及已有 owner/authority/identity/digest；v1 的新增字段为零且不序列化，混入任一 v2 字段立即拒绝。无原始 nonce 落盘，当前 authority 仍在现有投影器与 CAS 处校验，不能用自洽摘要替代 current-ledger。新鲜 Attempt 的实际 append/cold replay 测试已编写并编译，动态 CI 未确认前不提升成熟度；production producer 不做半条链切换。
+
 ## 2026-09-05：三面分离与真实业务交付纠偏
 
 基线 `origin/main@0c6d9cd`。保留确定性 Core、独立验证、Provider 分层与恢复资产；当前不能把 single-task kernel 或 T2 API 存在描述成自治 Agent Team。[ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 接受 B1→B2→B3 的业务路线，细节见 [业务交付计划](agent-team-delivery-plan.md)。
