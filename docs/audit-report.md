@@ -8,6 +8,8 @@ S3 在同一候选分支连续实现 v2 journal、命令执行与 live-session r
 
 效率纠偏：本地 compile-only/vet/staticcheck 不能替代动态恢复测试。本次定位具体失败再提交修正，不对同一 head 盲目重跑 CI，也不另拆微型 PR；下一 exact-head CI 通过前不得称失败已关闭。后继必须把同一恢复链接入 fixed server/真实 Pi，再证明业务交付，而不是继续只积累独立组件。
 
+后继接线检查发现不能直接复用三处 v1 默认值：控制目录的 journal 文件名、busy/rejected 握手与 collect 的 observation digest。当前候选由同一 inherited server 入口解码 v2 bootstrap，代际显式传入文件身份/entry-set 检查；v2 错误连接关闭而不制造不存在的 rejected handshake；collect 分别验证 v2-wrapped observation 与实际 manifest/transcript digest，再校验 held 输出对象。测试覆盖全 wire 生命周期、receipt 恢复、效果发生后的混代文件漂移与 collect 后内容篡改。Core producer 尚未接线，Attach/正式 rollout 与实机矩阵仍开放；不是第二个 server、不同发布身份或生产成熟度升级。
+
 ## 2026-09-05：三面分离与真实业务交付纠偏
 
 基线 `origin/main@0c6d9cd`。保留确定性 Core、独立验证、Provider 分层与恢复资产；当前不能把 single-task kernel 或 T2 API 存在描述成自治 Agent Team。[ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 接受 B1→B2→B3 的业务路线，细节见 [业务交付计划](agent-team-delivery-plan.md)。

@@ -20,6 +20,7 @@ type journalStateV2 struct {
 	authorityHead string
 	commandSeq    uint64
 	commandHead   string
+	collected     *journalRecordV2
 }
 
 func newJournalStateV2() journalStateV2 {
@@ -53,6 +54,9 @@ func (state *journalStateV2) validateNext(record journalRecordV2) error {
 		if state.pending == nil || !equalProjection(*state.pending.Request, *record.Request) || !sameJournalCommandBaseV2(*state.pending, record) {
 			return ErrIntervention
 		}
+		if record.Request.Command == CommandCollect && record.Response.Status == "ok" && state.collected != nil {
+			return ErrIntervention
+		}
 	default:
 		return ErrIntervention
 	}
@@ -72,6 +76,9 @@ func (state *journalStateV2) accept(record journalRecordV2) {
 	case journalCommandReceipt:
 		state.receipts[record.Request.CommandID] = record
 		state.pending = nil
+		if record.Request.Command == CommandCollect && record.Response.Status == "ok" {
+			state.collected = &record
+		}
 		state.commandSeq, state.commandHead = record.Request.Sequence, record.Response.CommandHead
 		state.ownerEpoch = record.OwnerEpoch
 		state.authorityHead = record.Request.CurrentAuthorityHead
@@ -125,6 +132,10 @@ func (journal *journalWriterV2) recoverySnapshot(commandID string) journalStateV
 	defer journal.mu.Unlock()
 	state := journal.state
 	state.created = cloneJournalRecordV2(state.created)
+	if state.collected != nil {
+		collected := cloneJournalRecordV2(*state.collected)
+		state.collected = &collected
+	}
 	state.receipts = make(map[string]journalRecordV2)
 	if record, ok := journal.state.receipts[commandID]; ok {
 		state.receipts[commandID] = cloneJournalRecordV2(record)

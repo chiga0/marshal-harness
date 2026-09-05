@@ -24,6 +24,8 @@ B1 候选实现同时把 `Status` 与长 mutation mutex 解耦，使用单独 li
 
 候选 `485c606` 的 [CI 33939567946](https://github.com/chiga0/marshal-harness/actions/runs/33939567946) 暴露合法 journal 字符串中途截断被拒绝；根因是共用 parser 未接纳 Go `io.ErrUnexpectedEOF`。本轮修复并增加逐字节截断与损坏输入回归，完整非法记录仍在修复前拒绝且不修改文件。候选未全绿，不重跑同一失败 head、不合并、不升级 B1。修正及 reconnect 动态测试须由后继 exact-head CI 验证；transport、Core v2 subprojection、零 active/pending v1 admission 与实机链仍未完成，生产 selector 保持 v1。
 
+后继 `b0780bd` 的 [CI 33940177093](https://github.com/chiga0/marshal-harness/actions/runs/33940177093) 已通过 Ubuntu quality、Linux 双架构与 secret scan，记录时 macOS quality 仍在运行。本轮进一步把 exact v2 bootstrap 接入已有 inherited server 入口，使用 v2 journal leaf、v2 mechanics、v2 handshake/command/reconnect；共用 held file/directory/socket 检查显式选择代际，不翻译 v2 为 v1。新增 Unix socket 全生命周期/receipt 恢复与混代 journal、输出篡改回归，bootstrap 读取也增加有界等待及 context 取消。v2 闭合握手合同没有 rejected 变体，因此错误/busy 连接只关闭，不生成非法 v2 或 v1 响应。此候选仍未完成 Core 的 v2 producer/subprojection、Attach 与 rollout admission，尚无真实 Pi 业务链证据，不能生产切换或升级 B1。
+
 ## 历史 checkpoint 与技术证据映射
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。

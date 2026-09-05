@@ -93,6 +93,13 @@ func openHeldSessionControlFiles(directory *os.File, expected SessionControlFile
 }
 
 func revalidateHeldSessionControlFiles(directory *os.File, held *heldSessionControlFiles, expected SessionControlFiles) error {
+	return revalidateHeldSessionControlFilesForLeaf(directory, held, expected, JournalFileName)
+}
+
+func revalidateHeldSessionControlFilesForLeaf(directory *os.File, held *heldSessionControlFiles, expected SessionControlFiles, leaf string) error {
+	if leaf != JournalFileName && leaf != journalFileNameV2 {
+		return ErrInvalid
+	}
 	if directory == nil || held == nil || expected.validate() != nil {
 		return ErrInvalid
 	}
@@ -108,7 +115,7 @@ func revalidateHeldSessionControlFiles(directory *os.File, held *heldSessionCont
 	if err != nil || nonceAt != expected.Nonce {
 		return ErrConflict
 	}
-	journalAt, _, err := observeControlFileAt(directory, JournalFileName)
+	journalAt, _, err := observeControlFileAt(directory, leaf)
 	if err != nil || journalAt != expected.Journal {
 		return ErrConflict
 	}
