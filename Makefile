@@ -133,6 +133,7 @@ vuln:
 fixed-server-t1-check:
 	bash scripts/fixed-server-t1-canary_test.sh
 	/usr/bin/python3 -I -B scripts/fixed-server-t1-evidence_test.py
+	/usr/bin/python3 -I -B scripts/order-quote-oracle_test.py
 
 # Local convenience only. CI release authority invokes the fixed Python checker
 # before any candidate Make/script execution and does not trust this target.

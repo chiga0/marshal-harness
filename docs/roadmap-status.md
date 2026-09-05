@@ -1,6 +1,26 @@
 # Roadmap 状态
 
-更新时间：2026-09-04（fixed server T1 已真实集成，T2 与 stable gates 继续开放）
+更新时间：2026-09-05（ADR 0080 三面分离与业务交付路线；不升级历史成熟度）
+
+## 业务交付当前表
+
+此表是当前 milestone 的唯一汇总入口；下方按日期保留历史 checkpoint，不覆盖本表。目标/验收见 [业务交付计划](agent-team-delivery-plan.md)，范围变化见 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md)。
+
+| Milestone | 状态 | 已有事实 | 未关闭的退出条件 |
+| --- | --- | --- | --- |
+| B1 完整单任务服务 | `IN_PROGRESS` | RC1 已发布；T1 实机恢复已集成；main `0c6d9cd`（PR #254）已有 T2 collect/verify/review/Decision 接口；本轮增加订单报价参考 oracle 与 T2 业务 Task 模式 | 新最终 bytes 的真实 T2 到独立 Decision/ACCEPTED；ADR 0079 launcher production cutover；有界查询、取消/超时与持续推进 |
+| B2 受限 Agent Team | `PLANNED` | ADR 0019 已有计划接纳组件，ADR 0080 已确认受限产品目标 | approved plan 耐久物化/调度、两个到三个独立实现任务、集成候选业务验收、局部 replan、暂停恢复；不能以子 Run 全绿替代 |
+| B3 长期运行与正式支持 | `PLANNED` | I186-R2–R6 组件和历史测试可复用 | B2 同路径故障与长历史测试、升级/恢复、#212 signing/notarization、Linux server 实机 gate、受保护 stable release |
+
+最近已合入基线：`origin/main@0c6d9cd0cb209af87bccbe9e61d3e6cdcd3d465f`，required CI [33882237317](https://github.com/chiga0/marshal-harness/actions/runs/33882237317) 成功。当前工作分支 `feat/delivery-product-vertical` 的文档与参考测试不构成真实 Agent 或独立发布证据。T2 的 `production-owner-not-current` 仍缺失败现场根因闭环：fsync 后曾复现，后续 CI 绿色不能单独证明已修复。
+
+本轮不改变 Run/Goal 持久化、授权或生产 selector。最先执行参考 oracle 正反例，再沿 B1 的 fixed server 路径收集真实业务证据；不新起另一套 controller。I186-R0 PASSED、R1 IN_PROGRESS/INTEGRATED、R2–R6 IN_PROGRESS/COMPONENT 保持。
+
+B1 候选实现同时把 `Status` 与长 mutation mutex 解耦，使用单独 lifetime 读写锁保护 session 关闭，并保留实时 owner 复核。新增 mutation-held、Close 并发和无效 receiver 测试；这不解锁其它 mutation，也不保证底层存储无等待。定向动态/race 与健康 session 实机延迟证据仍须 CI/后继 canary，不提前标记 B1 完成。
+
+本轮本地验证：订单报价 oracle 的 5 个测试通过（含 28 条业务用例、典型错误实现、生成验收命令实执行与 oracle 摘要漂移）；T1 shell 回归与 9 个 evidence 回归通过；Darwin/Linux 定向 vet、staticcheck、architecture check 与 Darwin CLI test compile-only 通过。另新增 Go 合同测试，直接验证 marker/order-quote renderer 的真实 Task 输出；它与 Status 动态/race 测试交由 CI 执行。现有固定二进制在新工作区报告 `self-local-profile-mismatch`，没有绕过或冒用历史身份；本轮未启动实机 Worker，也未签发 Decision/发布。
+
+## 历史 checkpoint 与技术证据映射
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
@@ -77,7 +97,7 @@ Milestone 状态与能力成熟度是两个维度：
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
-当前最短剩余路径是：合入 architecture CI 修复→删除 production environment selector/direct `Adapter.Run` fallback→pre-tag build-once immutable candidate→在新 final bytes 上重跑真实 Pi/独立 Decision `ACCEPTED`、恢复与负向矩阵→由 current authority 产生 receipt/carrier→required CI 全绿→annotated tag 与 consume-existing-artifact GitHub prerelease。component checker或历史 canary 不等于当前 final bytes publication authority，不能提前升级阶段。
+上述 RC1 最短路径已形成历史发布证据；当前顺序由页首 B1→B2→B3 表定义。component checker 或历史 canary 不等于当前 final bytes publication authority，不能提前升级阶段。
 
 ## 快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
 

@@ -118,6 +118,50 @@ def render(args):
             "requiredChecks": [],
         },
     }
+    if getattr(args, "scenario", "marker") == "order-quote":
+        # Oracle 来自冻结的控制仓库，不进入 Worker 的 allowPaths。
+        oracle = os.path.join(repository, "scripts", "order-quote-oracle.py")
+        if os.path.islink(oracle) or not os.path.isfile(oracle):
+            raise SystemExit("缺少固定 order-quote oracle")
+        with open(oracle, "rb") as handle:
+            oracle_digest = hashlib.sha256(handle.read()).hexdigest()
+        # 在冻结 Task 中绑定 oracle bytes；验证时执行已校验的同一份内存 bytes。
+        oracle_command = (
+            "import hashlib,pathlib,sys; "
+            "p=pathlib.Path(sys.argv[1]); "
+            "data=p.read_bytes() if not p.is_symlink() else b''; "
+            "hashlib.sha256(data).hexdigest()==sys.argv[2] or sys.exit('oracle-drift'); "
+            "sys.argv=[str(p),sys.argv[3]]; "
+            "exec(compile(data,str(p),'exec'),{'__name__':'__main__','__file__':str(p)})"
+        )
+        task["metadata"]["title"] = "fixed server T2 订单报价业务验收"
+        task["work"] = {
+            "objective": (
+                "实现 quote_order.py 的纯函数 quote_order(items)。items 必须是非空 list，"
+                "每项为恰有 unit_price_cents 和 quantity 两个键的 dict；"
+                "单价为非负 int（分），数量为正 int，bool 不算 int。"
+                "非法输入统一抛 ValueError，成功或失败都不得修改输入。"
+                "subtotal_cents 为单价乘数量之和；小计 >=5000 时运费为0，否则500。"
+                "返回恰含 subtotal_cents、shipping_cents、total_cents 的 dict，值均为 int。"
+                "支持大整数，不用浮点；不做网络、文件写入或进程操作。"
+                "最终回复为一个 WorkerResult JSON 对象。"
+            ),
+            "constraints": ["只创建 quote_order.py，不改其它文件；不提交、推送或创建 Git 引用。"],
+            "context": ["合成订单报价参考场景；验收由冻结控制仓库的独立 oracle 执行。"],
+            "nonGoals": ["不增加 CLI/Web 框架、依赖、支付或真实订单集成。"],
+        }
+        task["scope"]["allowPaths"] = ["quote_order.py"]
+        task["acceptance"]["commands"] = [{
+            "id": "order-quote-business",
+            "argv": ["/usr/bin/python3", "-I", "-B", "-c", oracle_command,
+                     oracle, oracle_digest, "quote_order.py"],
+            "cwd": ".", "timeoutSeconds": 30, "maxLogBytes": 4000,
+            "required": True, "baselinePolicy": "none",
+        }]
+        task["deliverables"] = [{
+            "id": "order-quote", "kind": "code", "required": True,
+            "pathGlob": "quote_order.py", "minimumCount": 1,
+        }]
     policy = {
         "apiVersion": "marshal.dev/v1alpha1",
         "kind": "PolicySnapshot",
@@ -164,6 +208,7 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--task-out", required=True)
     parser.add_argument("--policy-out", required=True)
+    parser.add_argument("--scenario", choices=("marker", "order-quote"), default="marker")
     render(parser.parse_args())
 
 

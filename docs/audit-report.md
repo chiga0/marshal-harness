@@ -1,5 +1,17 @@
 # 设计审计报告
 
+## 2026-09-05：三面分离与真实业务交付纠偏
+
+基线 `origin/main@0c6d9cd`。保留确定性 Core、独立验证、Provider 分层与恢复资产；当前不能把 single-task kernel 或 T2 API 存在描述成自治 Agent Team。[ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 接受 B1→B2→B3 的业务路线，细节见 [业务交付计划](agent-team-delivery-plan.md)。
+
+本轮打开的架构问题：Goal records/admission 尚未形成生产 controller；`sealedRepositoryApplication.VerifyRun` 在实际验证期间持仓库级 mutex，Status 等亦竞争该锁；resident recovery 任一 Run 失败阻断整体 ready；ingress transact 在独占锁内全量重放账本。前两项为代码事实，长历史性能影响尚未压测，不写成已测事故。锁/故障隔离/持久化优化保留 current-ledger 与 lease 不变量，具体语义调整先窄 ADR。
+
+纠正检修口径：`production-owner-not-current` 在 fsync 修改后仍复现，后续诊断提交 CI 绿色不能证明根因关闭。不同日期文档把 RC1 同时称为“未发布”和“已发布”已改为 Roadmap 当前表与历史 checkpoint 分层；文档修正不改变运行成熟度。
+
+开始执行：订单报价独立 oracle、典型错误实现反例与 T2 `--scenario order-quote`，沿既有 Task 格式接入，不新建生命周期或放宽 gate。它只是 B1 验收基础设施；尚无本场景真实 Worker/独立 Decision 证据。后续必须记录失败分母、人工介入、等待与重做成本，并以一个集成业务候选完成判定，而非各子 Run 的通过率。
+
+B1 相邻修复：`Status` 不再取得 mutation mutex，仅与 `Close` 共享 lifetime guard，随后仍调用 `RepositorySession.OwnerProjection` 实时复核；关闭顺序为 mutation mutex→status guard→session，避免观察已释放资源。没有缓存 ready、修改 owner/Run 合同或取消 mutation 序列化。测试使用未 claim session 证明可以越过 mutation 锁并仍拒绝错误 owner，不伪造成功生产 session；健康实机延迟、其余锁及恢复隔离仍开放。
+
 ## 2026-09-04：ADR 0079 S2-B fixed-image SETEXEC canary 候选
 
 本轮把 S2-A 的 dormant v2 contract 接到 `runLaunchChild` 的唯一调用链，但没有启用生产 selector：`NewPlatformMechanics` 继续固定返回 v1，只有隐藏且带 `--attestation-ready` 的固定 `marshal internal process-supervisor-v2-canary` 显式构造 v2 mechanics。canary 不生成、复制或执行临时 Mach-O；它从当前安装环境解析已签名 Node，立即转成 absolute real path 并冻结 device/inode/mode/size/SHA-256，子进程仍由当前 fixed Marshal 经 inherited FD 进入 `runLaunchChild`。输出只含 protocol/mechanics/observer identity、自然退出码和四个布尔/状态结论，不含 path、PID、argv、environment、nonce 或 transcript。

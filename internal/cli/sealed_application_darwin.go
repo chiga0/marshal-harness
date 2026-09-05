@@ -30,10 +30,14 @@ import (
 // sealedRepositoryApplication is the fixed-binary application adapter shared
 // by direct CLI mutation and the forthcoming control-plane server mode. It
 // owns repository-wide authority once and composes one short-lived Run runtime
-// for each bounded transaction. The mutex intentionally serializes the first
-// Mac implementation; Run leases remain the durable concurrency fence.
+// for each bounded transaction. Mutations remain serialized; Status only
+// shares a lifetime guard with Close, not the long-running verification lock.
+// Run leases remain the durable concurrency fence.
 type sealedRepositoryApplication struct {
 	mu sync.Mutex
+	// Lock order: mu -> statusMu -> session. Status never takes mu. Every write
+	// to closed and teardown of the immutable Status dependencies holds both.
+	statusMu sync.RWMutex
 
 	repositoryRoot  string
 	stateRoot       string
@@ -253,6 +257,8 @@ func (adapter *sealedRepositoryApplication) Close() error {
 	}
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
+	adapter.statusMu.Lock()
+	defer adapter.statusMu.Unlock()
 	if adapter.closed {
 		return nil
 	}
@@ -269,9 +275,12 @@ func (adapter *sealedRepositoryApplication) Close() error {
 }
 
 func (adapter *sealedRepositoryApplication) Status(ctx context.Context, _ application.StatusRequest) (application.StatusProjection, error) {
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	if adapter.closed {
+	if adapter == nil || ctx == nil {
+		return application.StatusProjection{}, application.NewError("status", application.ReasonInvalidRequest)
+	}
+	adapter.statusMu.RLock()
+	defer adapter.statusMu.RUnlock()
+	if adapter.closed || adapter.session == nil {
 		return application.StatusProjection{}, application.NewError("status", application.ReasonBridgeUnavailable)
 	}
 	owner, err := adapter.session.OwnerProjection(ctx)

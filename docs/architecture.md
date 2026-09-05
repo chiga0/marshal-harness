@@ -6,6 +6,12 @@
 
 本文定义 Marshal 的整体产品架构：系统由哪些部分组成、权威在哪里、Executor 如何协作，以及 embedded/local 与 C/S 如何共享同一业务语义。Local MVP 仅在“当前交付映射”中说明，不定义系统边界。字段级契约与故障语义见 [Runtime 架构](runtime-architecture.md)。
 
+## 三面分离与产品交付投影（2026-09-05）
+
+依据 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md)，控制面负责计划/预算/调度/接纳，执行面负责有界 Agent 与独立验证，存储面负责权威事实与制品持久化。Core 是权威写入唯一入口；Verifier 与 Publisher 的凭据/证据权限不因部署同机而合并。首个部署保持一个 fixed server、多执行进程、现有账本和对象存储，不增加存储微服务。
+
+终态业务路径是需求澄清与确认→有界执行→集成候选→独立验收→交付。受限团队 profile 按 B1→B2→B3 前移，通用 Goal DAG/HA 仍延期；下文的 1.x Goal 标记指通用扩展，不覆盖该受限计划。具体退出条件见 [业务交付计划](agent-team-delivery-plan.md)，实时状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。长任务恢复计划与制品，不保证原 Agent 会话永久存活。长锁、单 Run 恢复隔离与历史重放优化是待实现项目，不是本段已经实现的能力。
+
 ## 架构目标
 
 Marshal 的目标不是让一个 Agent 或进程连续运行数月，而是提供一个可以长期稳定运行的 Control Plane：持续接受新的 Task，将其分发为有界 Attempt，在进程、机器或 Provider 故障后恢复，并保留可审计的状态、Evidence 和 SideEffect 记录。
@@ -25,7 +31,7 @@ Marshal 的目标不是让一个 Agent 或进程连续运行数月，而是提�
 | Local MVP（M0–M6） | `USABLE` | CLI-first 模块化单体、独立 worktree、Worker Adapter、Verification、Review/Rework、GitHub Draft Publisher、恢复与审计 |
 | Runtime 设计（M7） | `PASSED` | C/S、SandboxProvider、Provider Port、权威/actor 分离、Typed Execution 与 Goal admission 已冻结 |
 | Runtime 组件资产（历史 M8/M9） | `PASSED` / `COMPONENT` | 保留当时退出证据；Sandbox SPI、legacy `marshal-server`、lease、transport 与 ResultIngress 相关组件尚未共同进入真实 Agent 生产链；独立 server executable 不属于当前 production topology |
-| v1.0 生产纵切（I186-R0→R6） | `IN_PROGRESS` | R0 `PASSED`；R1 `IN_PROGRESS / INTEGRATED`；R2–R5 `IN_PROGRESS / COMPONENT`；R6 `PLANNED / DESIGN`。目标是一条单节点、单用户、可信仓库的可恢复真实执行链 |
+| v1.0 生产纵切（I186-R0→R6） | `IN_PROGRESS` | R0 `PASSED`；R1 `IN_PROGRESS / INTEGRATED`；R2–R5 `IN_PROGRESS / COMPONENT`；R6 `IN_PROGRESS / COMPONENT`。目标是一条单节点、单用户、可信仓库的可恢复真实执行链 |
 | 1.x 平台扩展（原 M10–M13） | `PLANNED` | Cloudflare 完整生产拓扑、HA、多用户、SDK 与 Goal DAG 在 v1.0 后重排 |
 
 上表只把已交付代码映射到终态架构，不以当前实现反向定义产品。本文不会把 `PLANNED` 能力描述成已交付；实时状态以 [Roadmap](roadmap-status.md) 为准。

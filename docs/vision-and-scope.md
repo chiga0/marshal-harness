@@ -1,5 +1,9 @@
 # 愿景与范围
 
+## 当前产品投影（2026-09-05）
+
+[ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 将受限 Agent Team 前移：用户意图→澄清/确认→有界任务→集成候选→独立验证→授权交付，按 B1→B2→B3 验收。下文旧排期中“Goal DAG 延期”仍适用于通用/复杂编排，不再排除这个受限 profile。控制面、执行面、存储面分离不意味着每个模块独立部署。能力现状只见 [Roadmap](roadmap-status.md#业务交付当前表)。
+
 ## 愿景
 
 Marshal 是面向 Agent 驱动软件工程的长寿命、可自托管、确定性 Control Plane。它持续接收 Goal 与 Task，把复杂需求接纳为有界的 typed workload，调度可替换的 Agent 与 Sandbox Provider，并让环境、状态、Evidence 与 SideEffect 在进程或 Provider 故障后仍可恢复、可审计、可验证。
@@ -17,7 +21,7 @@ Marshal 让 Agent 工作成为受控工程执行，而不是无结构的终端�
 Marshal 在这张地图上的差异化不是“更好的 harness”或“更全的入口”，而是三条结构性差异：
 
 1. **开源自托管与数据不出域**：Marshal 可完整运行在自有基础设施上，事件账本、Evidence、凭据与审计不依赖任何外部托管控制面；这是企业采用的硬条件，也是托管产品无法让渡的性质；
-2. **证据法学级的治理深度**：Worker 不自证、独立验证、ReviewDecision 绑定精确证据摘要、ConformanceEvidence 的敌对拓扑签发、跨信任域默认拒绝（仅三条 Core-only typed cross-domain edge 例外）——托管控制面通常受自家 Agent 体验约束，难以选择这个严格度；对 Marshal 而言这正是产品本体；
+2. **可验证且高效的交付**：Worker 不自证、独立验证、精确证据和权限边界用于降低错误交付与恢复成本；治理深度不是独立的产品产出，不能替代业务完成率、人工介入和交付耗时。尚未有数据的竞品优劣不作事实声明；
 3. **Provider 中立**：核心生命周期不根据 Provider 名称分叉，更换 Agent、Sandbox 或 durable backend 不改变任务含义与验收标准；当最好的 Agent 快速换代时，中立控制面是跨周期资产。
 
 因此 Marshal 不与通用编码 Agent 竞争编码体验，也不把入口当护城河：CLI、Web、IM bot、webhook、定时触发器等入口都是可替换的 Public API client（定位声明，非实现承诺），执行环境是可插拔 Provider；竞争发生在“治理深度 × Provider 中立 × 自托管”这一层。垂直领域的 Agent 平台可以作为 Public API client 构建在 Marshal 之上，也可以独立存在——Marshal 服务的是跨领域的治理底座本身。
@@ -154,7 +158,7 @@ MVP 包含：
 
 ## 成功指标
 
-初始指标关注可验证运行，而不是模型质量宣传：
+首先统计每个真实用户需求的交付时间、人工介入、等待、retry/rework/replan 原因、最终业务验收与 token 可用性；再分任务族对比单 Agent 与团队基线。失败必须进入分母，缺失 token 不记为零，PR 数量不能代表目标进度。以下不变量继续作为必要条件，而不是充分的产品成功指标：
 
 - 100% 的 Run 具有冻结基线和 Outcome Bundle。
 - 100% 的 Accepted Run 具有通过的独立 VerificationReport。
