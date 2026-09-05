@@ -44,6 +44,78 @@ func TestWriteControlPlaneRequestFailureRedactsRawError(t *testing.T) {
 	}
 }
 
+type cyclicControlPlaneError struct{}
+
+func (*cyclicControlPlaneError) Error() string     { panic("raw error must not be formatted") }
+func (err *cyclicControlPlaneError) Unwrap() error { return err }
+
+func TestWriteControlPlaneRequestFailurePreservesBoundedTypedCauses(t *testing.T) {
+	outer := application.NewError("reconcile-start-run-delivery", application.ReasonAuthorityConflict)
+	start := application.NewError("prepare-run-start", application.ReasonRecoveryRequired)
+	reconcile := application.NewError("reconcile-start-run-owner-read", application.ReasonOwnerNotCurrent)
+	var output bytes.Buffer
+	writeControlPlaneRequestFailure(&output, errors.Join(outer, start, fmt.Errorf("/private/secret: %w", reconcile), start))
+	want := "control-plane request failed: operation=reconcile-start-run-delivery reasonCode=authority-conflict\n" +
+		"control-plane request failed: operation=prepare-run-start reasonCode=recovery-required\n" +
+		"control-plane request failed: operation=reconcile-start-run-owner-read reasonCode=production-owner-not-current\n"
+	if output.String() != want {
+		t.Fatalf("output=%q", output.String())
+	}
+	output.Reset()
+	writeControlPlaneRequestFailure(&output, &cyclicControlPlaneError{})
+	if output.String() != "control-plane request failed: reasonCode=transport-failure\n" {
+		t.Fatalf("cycle output=%q", output.String())
+	}
+	output.Reset()
+	var causes []error
+	for index := 0; index < 40; index++ {
+		causes = append(causes, application.NewError(fmt.Sprintf("stage-%d", index), application.ReasonAuthorityConflict))
+	}
+	writeControlPlaneRequestFailure(&output, errors.Join(causes...))
+	if strings.Count(output.String(), "\n") != 8 {
+		t.Fatalf("diagnostic output exceeded fixed budget: %q", output.String())
+	}
+}
+
+func TestWriteControlPlaneRequestFailureRejectsInvalidTypedFields(t *testing.T) {
+	for _, err := range []error{
+		(*application.Error)(nil),
+		application.NewError("/private/secret", application.ReasonAuthorityConflict),
+		application.NewError("stage\nforged", application.ReasonAuthorityConflict),
+		application.NewError(strings.Repeat("a", 97), application.ReasonAuthorityConflict),
+		application.NewError("stage", application.ReasonCode("secret")),
+	} {
+		var output bytes.Buffer
+		writeControlPlaneRequestFailure(&output, err)
+		if output.String() != "control-plane request failed: reasonCode=transport-failure\n" {
+			t.Fatalf("invalid typed error emitted: %q", output.String())
+		}
+	}
+}
+
+func TestSealedRunOpenDiagnosticsDoNotChangeApplicationReason(t *testing.T) {
+	_, openErr := (&sealedRepositoryApplication{closed: true}).openRun(context.Background(), "run:closed")
+	var phase *sealedRunOpenError
+	if !application.HasReason(openErr, application.ReasonBridgeUnavailable) || !errors.As(openErr, &phase) || phase.stage != "sealed-run-open" {
+		t.Fatal("actual openRun failure lost original reason or phase")
+	}
+	raw := errors.New("/private/secret")
+	wrapped := &sealedRunOpenError{stage: "sealed-run-open-worktree", cause: raw}
+	var typed *application.Error
+	if !errors.Is(wrapped, raw) || errors.As(wrapped, &typed) {
+		t.Fatal("diagnostic wrapper changed application error classification")
+	}
+	var output bytes.Buffer
+	writeControlPlaneRequestFailure(&output, wrapped)
+	if output.String() != "control-plane request failed: operation=sealed-run-open-worktree reasonCode=composition-failure\n" {
+		t.Fatalf("output=%q", output.String())
+	}
+	wrapped.cause = application.NewError("sealed-repository-application", application.ReasonBridgeUnavailable)
+	if !application.HasReason(wrapped, application.ReasonBridgeUnavailable) {
+		t.Fatal("diagnostic wrapper masked original typed reason")
+	}
+}
+
 func TestSealedRepositoryOpenStageReturnsOnlyStablePhase(t *testing.T) {
 	err := fmt.Errorf("sealed repository application: resolve Pi runtime: %w", errors.New("/private/secret/runtime"))
 	if got := sealedRepositoryOpenStage(err); got != "resolve-Pi-runtime" {

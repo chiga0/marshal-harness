@@ -155,7 +155,7 @@ jobs:
             .marshal/fixed-server-t1-canary/
             .marshal/runs/${{ env.T1_RUN_ID }}/state.json
             .marshal/runs/${{ env.T1_RUN_ID }}/events.jsonl
-            .marshal/result-ingress/result-ingress.jsonl
+            .marshal/runtime-v1/result-ingress/result-ingress.jsonl
             .marshal/runtime-v1/control/delivery-v1/*.json
           if-no-files-found: warn
           retention-days: 30

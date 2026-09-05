@@ -202,15 +202,63 @@ func sealedRepositoryOpenStage(err error) string {
 }
 
 // writeControlPlaneRequestFailure deliberately emits only the typed
-// application operation/reason pair. Raw errors may contain host paths or
+// application operation/reason pairs. Raw errors may contain host paths or
 // provider details and therefore never cross this diagnostic boundary.
 func writeControlPlaneRequestFailure(stderr io.Writer, err error) {
-	var applicationError *application.Error
-	if errors.As(err, &applicationError) {
-		fmt.Fprintf(stderr, "control-plane request failed: operation=%s reasonCode=%s\n", applicationError.Operation, applicationError.Reason)
-		return
+	// errors.As returns only the outermost typed error, hiding the original
+	// StartRun cause when its subsequent reconcile also fails. Walk the
+	// internal chain with a fixed work/output budget, never formatting raw
+	// errors or invoking arbitrary As methods. Cycles cannot exhaust the log.
+	visited := 0
+	emitted := make(map[application.Error]bool)
+	var visit func(error)
+	visit = func(current error) {
+		if current == nil || visited >= 32 || len(emitted) >= 8 {
+			return
+		}
+		visited++
+		if stage, ok := current.(*sealedRunOpenError); ok && stage != nil && validControlPlaneDiagnosticLabel(stage.stage) {
+			label := application.Error{Operation: stage.stage}
+			if !emitted[label] {
+				emitted[label] = true
+				fmt.Fprintf(stderr, "control-plane request failed: operation=%s reasonCode=composition-failure\n", stage.stage)
+			}
+		}
+		if typed, ok := current.(*application.Error); ok {
+			if typed != nil && validControlPlaneDiagnosticLabel(typed.Operation) && typed.Error() != "application: unavailable" && !emitted[*typed] {
+				emitted[*typed] = true
+				fmt.Fprintf(stderr, "control-plane request failed: operation=%s reasonCode=%s\n", typed.Operation, typed.Reason)
+			}
+			return
+		}
+		switch wrapped := current.(type) {
+		case interface{ Unwrap() []error }:
+			for _, child := range wrapped.Unwrap() {
+				visit(child)
+				if visited >= 32 || len(emitted) >= 8 {
+					break
+				}
+			}
+		case interface{ Unwrap() error }:
+			visit(wrapped.Unwrap())
+		}
 	}
-	fmt.Fprintln(stderr, "control-plane request failed: reasonCode=transport-failure")
+	visit(err)
+	if len(emitted) == 0 {
+		fmt.Fprintln(stderr, "control-plane request failed: reasonCode=transport-failure")
+	}
+}
+
+func validControlPlaneDiagnosticLabel(label string) bool {
+	if len(label) == 0 || len(label) > 96 {
+		return false
+	}
+	for _, character := range label {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func drainControlPlaneRequests(requests *sync.WaitGroup, cancel context.CancelFunc, drainTimeout, cancelTimeout time.Duration) bool {
