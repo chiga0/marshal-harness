@@ -2,6 +2,8 @@
 
 ## 2026-09-05：业务驱动 CI 契约遗漏
 
+本地 `release-ci-gate_test.sh` 已通过，`6e62c8e` 提交后固定 checker 也已通过，CI 33966029736 已越过原失败步骤。准备实机时进一步核对到两个前置：现有 canary 用的是 main push CI gate，分支手动 CI 不能替代（须评审合入后再运行）；Python `isoformat` 的小数尾零会被 CLI 的 canonical RFC3339Nano 比较拒绝。当前按相同瞬间去掉小数尾零，新增整数秒/尾零/六位小数回归，7 个驱动测试通过；不延长 deadline，不放宽 CLI parser。实际 Pi 尚未启动。
+
 `8c37fff` 的 CI 33965649054 为失败：secret scan 通过，其余四个 job 均被同一个精确工作流契约差异挡住，未得到本候选 Go 动态回归的绿色证据。新增 T2 Python 测试步骤时遗漏更新 `release-ci-contract.py` 内的封闭工作流副本，不是四项独立产品故障，也不能靠重跑解决。当前同步唯一新增步骤，绑定 T2 driver/test/task 的固定路径、模式与 HEAD bytes，更新契约夹具并增加 driver 脏字节拒绝反例；原 publication 权限和门禁不变。
 
 效率纠偏：固定工作流改动必须同时运行本地 `release-ci-gate_test.sh`（已包含 committed fixture 的正反例），提交后再执行固定 checker 校验真实 HEAD，然后才推送/派发 CI；仅验证 YAML 语法不够。T2 驱动回归加入现有 `fixed-server-t1-check`，避免本地常规检查遗漏。真实业务 Pi、独立 Decision/ACCEPTED、本机 fixed image 退出 137、服务端业务取消/超时仍未关闭，不升级 B1。

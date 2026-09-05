@@ -43,7 +43,10 @@ def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep):
     Neither generic pending, timeout nor a failed process is classified as a
     retryable result. The driver is a client, never a new business state store.
     """
-    deadline_text = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    # The fixed CLI requires Go's canonical RFC3339Nano form: fractional
+    # trailing zeroes are forbidden. Python isoformat alone retains them and
+    # would intermittently reject an otherwise identical valid deadline.
+    deadline_text = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="microseconds").rstrip("0").rstrip(".") + "Z"
 
     def invoke(args):
         remaining = deadline - now()

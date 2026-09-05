@@ -23,6 +23,21 @@ def result(state, sequence, **fields):
 
 
 class DriverTest(unittest.TestCase):
+    def test_deadline_is_canonical_rfc3339_for_fractional_and_whole_seconds(self):
+        for deadline, expected in ((30.12, "1970-01-01T00:00:30.12Z"), (30, "1970-01-01T00:00:30Z"), (30.123456, "1970-01-01T00:00:30.123456Z")):
+            with self.subTest(deadline=deadline):
+                requests = []
+
+                def call(args, remaining):
+                    requests.append(args)
+                    if args[0] == "inspect":
+                        return 0, run("RUNNING", 1)
+                    return 1, {}
+
+                with self.assertRaises(driver.DriveError):
+                    driver.drive(call, lambda *_: None, "run-test", deadline, now=lambda: 0)
+                self.assertEqual(requests[1][requests[1].index("--deadline") + 1], expected)
+
     def exercise(self, responses, deadline=30):
         saved, calls, tick = {}, [], [0]
 
