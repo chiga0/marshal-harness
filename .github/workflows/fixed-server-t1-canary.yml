@@ -27,6 +27,11 @@ on:
         required: true
         default: false
         type: boolean
+      verify-peer:
+        description: 仅 Attempt-timeout，在同一 server 的另一真实 Pi Run 长 Verify 期间验证自动停止；不创建 Decision
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -66,6 +71,7 @@ jobs:
           case "$CANARY_SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout) ;; *) echo "::error::invalid scenario" >&2; exit 1 ;; esac
           if [ '${{ inputs.live-review }}' = true ]; then test "$CANARY_SCENARIO" = order-quote; fi
           if [ '${{ inputs.stop-crash }}' = true ]; then case "$CANARY_SCENARIO" in order-quote-timeout|order-quote-run-timeout) ;; *) exit 1 ;; esac; fi
+          if [ '${{ inputs.verify-peer }}' = true ]; then test "$CANARY_SCENARIO" = order-quote-timeout; test '${{ inputs.stop-crash }}' != true; test '${{ inputs.live-review }}' != true; fi
           MODEL_ID="${PI_MODEL#*/}" VARS_MODELS="$VARS_MODELS" /usr/bin/python3 -I -B -c 'import os,sys; values=[v.strip() for v in os.environ["VARS_MODELS"].split(",") if v.strip()]; os.environ["MODEL_ID"] in values or sys.exit("pi-model 不在 OPENAI_MODELS allowlist")'
 
       - name: Checkout exact expected-head
@@ -179,6 +185,7 @@ jobs:
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
           crash_args=()
           if [ '${{ inputs.stop-crash }}' = true ]; then crash_args=(--stop-crash); fi
+          if [ '${{ inputs.verify-peer }}' = true ]; then crash_args=(--verify-peer); fi
           scripts/fixed-server-t1-canary.sh \
             --expected-head "$EXPECTED_HEAD" --pi-model "$PI_MODEL" \
             --pi-node "$PI_NODE" --pi-bin "$PI_BIN" --pi-bundle "$PI_BUNDLE" \
@@ -202,6 +209,12 @@ jobs:
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/task.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/start-request.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/command-audit.jsonl
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}-verify/task.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}-verify/verification-started.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}-verify/t2/*.json
+            .marshal/runs/${{ env.T1_RUN_ID }}-verify/state.json
+            .marshal/runs/${{ env.T1_RUN_ID }}-verify/events.jsonl
+            .marshal/runs/${{ env.T1_RUN_ID }}-verify/verification-report.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/t2/driver-subject.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/t2/call-*.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/t2/cancel-request.json

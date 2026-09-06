@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 import tarfile
 import tempfile
+import threading
+import time
 import unittest
 from types import SimpleNamespace
 
@@ -56,6 +58,82 @@ class TimeoutTaskTest(unittest.TestCase):
                 self.assertEqual(task["budgets"]["maxOperationalRetries"], 0)
                 self.assertEqual(task["scope"]["allowPaths"], ["quote_order.py"])
                 self.assertEqual(task["publication"]["provider"], "none")
+            args.scenario, args.long_verify = "order-quote", True
+            renderer.render(args)
+            peer = json.loads((root / "task.json").read_bytes())
+            self.assertEqual([c["id"] for c in peer["acceptance"]["commands"]],
+                             ["order-quote-business", "cross-run-long-verification"])
+            command = peer["acceptance"]["commands"][-1]
+            self.assertEqual(command["timeoutSeconds"], 120)
+            self.assertEqual(command["argv"][-2:], [str(root / ".marshal/fixed-server-t1-canary/run-test/verification-started.json"), "run-test"])
+            compile(command["argv"][4], "frozen-verifier", "exec")
+            self.assertEqual(peer["budgets"], {**task["budgets"], "attemptTimeoutSeconds": 300, "runTimeoutSeconds": 600})
+            args.scenario = "order-quote-timeout"
+            with self.assertRaises(SystemExit):
+                renderer.render(args)
+
+
+class CrossRunTest(unittest.TestCase):
+    def test_rendezvous_is_bounded_and_subject_bound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "signal.json"
+            done = threading.Event()
+            path.write_text(json.dumps({"runId": "run-peer", "startedAt": 10}))
+            self.assertEqual(driver.await_verifier(path, "run-peer", 20, done, now=lambda: 11)["startedAt"], 10)
+            with self.assertRaises(driver.DriveError):
+                driver.await_verifier(path, "run-other", 20, done, now=lambda: 11)
+            done.set()
+            with self.assertRaises(driver.DriveError):
+                driver.await_verifier(path, "run-peer", 20, done, now=lambda: 11)
+            done.clear()
+            path.unlink()
+            path.symlink_to(Path(tmp) / "missing")
+            with self.assertRaises(OSError):
+                driver.await_verifier(path, "run-peer", 20, done, now=lambda: 11)
+            path.unlink()
+            with self.assertRaises(driver.DriveError):
+                driver.await_verifier(path, "run-peer", 11, done, now=lambda: 11)
+
+    def fixture(self):
+        digest = lambda v: "sha256:" + hashlib.sha256(json.dumps(v, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        task = {"acceptance": {"commands": [{"id": "cross-run-long-verification", "argv": ["/usr/bin/python3", "test"]}]}}
+        report = {"status": "pass", "runId": "run-peer", "specDigest": digest(task), "gates": [
+            {"id": "command:cross-run-long-verification", "status": "pass", "command": {
+                "argv": task["acceptance"]["commands"][0]["argv"], "exitCode": 0,
+                "startedAt": "2026-09-07T00:00:00Z", "completedAt": "2026-09-07T00:01:40Z"}}]}
+        projection = {"reportDigest": digest(report), "run": {"runId": "run-peer"}}
+        return task, report, projection, digest
+
+    def test_overlap_binds_report_task_and_actual_command_interval(self):
+        task, report, projection, _ = self.fixture()
+        stamp = lambda v: driver.datetime.datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+        start = stamp(report["gates"][0]["command"]["startedAt"])
+        self.assertFalse(driver.cross_run_overlap(report, task, projection, start + 65)["accepted"])
+        for stopped in (start - 1, start, start + 100, start + 101):
+            with self.assertRaises(driver.DriveError):
+                driver.cross_run_overlap(report, task, projection, stopped)
+        for mutation in ("digest", "argv", "duration", "spec", "status"):
+            task, report, projection, digest = self.fixture()
+            if mutation == "digest": projection["reportDigest"] = "wrong"
+            if mutation == "argv": report["gates"][0]["command"]["argv"] = ["other"]
+            if mutation == "duration": report["gates"][0]["command"]["completedAt"] = "2026-09-07T00:01:10Z"
+            if mutation == "spec": report["specDigest"] = "wrong"
+            if mutation == "status": report["status"] = "fail"
+            if mutation != "digest": projection["reportDigest"] = digest(report)
+            with self.subTest(mutation=mutation), self.assertRaises(driver.DriveError):
+                driver.cross_run_overlap(report, task, projection, start + 65)
+
+    def test_start_failure_does_not_retry(self):
+        calls, saved = [], {}
+        def call(args, remaining):
+            calls.append(args)
+            if len(calls) == 1:
+                return 0, {"runId": "run-stop", "state": "READY", "sequence": 2, "authorityHead": "sha256:" + "a" * 64}
+            return 1, {}
+        with self.assertRaises(driver.DriveError):
+            driver.start_ready(call, saved.__setitem__, "run-stop", time.time() + 60)
+        self.assertEqual([args[0] for args in calls], ["inspect", "start"])
+        self.assertIn("start-response.json", saved)
 
 
 def run(state, sequence):
@@ -393,6 +471,22 @@ class FinalizeReviewTest(unittest.TestCase):
 
 
 class DriverTest(unittest.TestCase):
+    def test_peer_starts_only_after_collection_and_once_before_verify(self):
+        responses = iter(self.happy())
+        operations, hooks = [], []
+        def call(args, remaining):
+            operations.append(args[0])
+            if args[0] == "verify":
+                self.assertEqual(hooks, ["begin"])
+            return next(responses)
+        def hook():
+            self.assertEqual(operations, ["inspect", "collect", "collect"])
+            hooks.append("begin")
+        summary = driver.drive(call, lambda *_: None, "run-test", 30,
+                               now=lambda: 0, pause=lambda _: None, before_verify=hook)
+        self.assertFalse(summary["accepted"])
+        self.assertEqual(hooks, ["begin"])
+
     def test_deadline_is_canonical_rfc3339_for_fractional_and_whole_seconds(self):
         for deadline, expected in ((30.12, "1970-01-01T00:00:30.12Z"), (30, "1970-01-01T00:00:30Z"), (30.123456, "1970-01-01T00:00:30.123456Z")):
             with self.subTest(deadline=deadline):

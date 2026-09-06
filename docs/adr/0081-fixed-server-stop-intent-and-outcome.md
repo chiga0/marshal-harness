@@ -92,6 +92,8 @@ Verify 只在当前 Run 已验证为 VERIFYING 后移除其可重建 RUNNING dea
 
 锁顺序为 Run lane → 全局 lane（适用阶段）→ application mutex（适用阶段）→ 原 Run/owner/ledger；Verify 在 mutex 下取得生命周期读保护，释放 mutex 后不再回取它，Close 等待验证结束后才关闭依赖。Status/Inspect 不经过 lane，Inspect 的真实 Run lease 争用仍在调用 deadline 内返回，不以未锁快照或缓存伪造当前成功。该候选只解除验证对无关 Run 的阻塞，不宣称任意长 Start/Collect/cleanup 都已有实时上界。须验证同 Run 串行、跨 Run deadline、Close/超时/丢响应及原证据重放，再升级支持状态；后台的其他长事务与最终组合仍开放。
 
+跨 Run 实机采用上述 Attempt-timeout 场景的显式 `verify-peer`，不和 crash/live-review 混跑：两个独立 worktree 的真实 Pi Task 在 server 启动前冻结并批准，peer 保留订单报价 oracle，另加有界 100 秒验证命令。命令只在本 canary evidence 写入诊断 rendezvous，然后保持执行；驱动观察后才经 fixed server Start 另一个 60 秒 Attempt Run。最终必须由绑定公开 Verify projection 摘要与原 Task 的验证报告，证明另一 Run 的 stopped Collect 已完成时间严格处于长命令执行区间。诊断信号不是 Run authority、不是 Worker 自报成功，不改变验证接纳；缺信号、错过区间或任一调用失败均保留失败，不自动重试。实验只证明跨 Run 调度，不宣称 Agent Team 集成交付或独立 Decision 已完成。
+
 实机候选与发布门禁必须分开：停止候选尚未满足本节实机要求时不得先合并 main，也不能被 main-only release CI gate 阻止验证。仅显式 `order-quote-cancel`、`order-quote-timeout`、`order-quote-run-timeout` 的未合入 `feat/` 分支，允许用 canonical 仓库、workflow dispatch SHA 与 expected-head 相等、同精确 SHA/分支最新手动 CI 五项成功的 candidate-only gate 做隔离实机验证；不创建 tag、release、独立 Decision 或 production 声明。main 上的任何场景及其他场景仍走原 main push CI gate，正式发布脚本和权限不变。此候选验证许可不等于接受本 ADR 或开启正式支持。
 
 当前证据补充：`20a9999` 的 CI 34026216770 五项全绿，覆盖下述 READY 准入。后续 fixed CLI cancel 与显式 `order-quote-cancel` 驱动只补测试入口：request key 派生唯一 stop requestId，未知响应不重试，已证明停止的 Collect 返回非成功退出码。驱动必须验证精确 receipt/Outcome、同请求重放与终态查询，不生成独立 Decision；尚未运行真实取消 canary，不能用脚本测试替代 enable 门槛。

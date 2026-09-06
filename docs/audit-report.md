@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-07：跨 Run 长 Verify 与自动停止组合验证接入
+
+在同一 fixed server 的既有 Attempt-timeout canary 增加显式 `verify-peer`，不新增 Worker launcher 或业务状态库。两个 Task 在 server 启动前冻结并批准：peer 真实 Pi 完成订单报价，保留原业务 oracle，并执行 100 秒有界验证命令；命令的诊断 rendezvous 出现后，驱动才经公开 Start 启动另一个 60 秒 Attempt Run。所有 Start/Collect/Verify/ReviewPacket/Inspect 仍走 fixed control-plane，未知错误不重试，不创建 Decision。
+
+最终判定必须绑定公开 Verify projection 的 reportDigest、冻结 Task specDigest 和精确验收 argv，并证明另一 Run 的终态查询与 stopped Collect 已完成时间严格位于真实长命令执行区间；单纯看到信号不计作通过。并发调用日志使用独立序号，避免两个响应抢写同一文件。新增回归覆盖 rendezvous/模式/身份拒绝、精确报告绑定、重叠区间、失败不重试和 hook 时机；这些是驱动测试，不代表实机跨 Run 或 B2 已通过。实验不与 crash/独立 Decision 混用，以免把多类失败混成一次 rework；中断恢复已有独立的 34050602081 证据。
+
 ## 2026-09-07：真实 Pi 在 stop barrier 后中断并恢复通过
 
 候选 `0130465bfb65dd1b947c09113f988714c6952c00` 的 CI [34049622019](https://github.com/chiga0/marshal-harness/actions/runs/34049622019) 五项成功后，仅派发一次 [34050602081](https://github.com/chiga0/marshal-harness/actions/runs/34050602081)，实机成功。诊断 artifact `9994442912` 已核对：中断前后均停在第 22 条 `terminalization-barrier`，Run 仍 RUNNING/sequence=3；两次观察的 journal/ingress 摘要相同，并可由最终归档前缀复算。server2 是驱动自己持有的进程，SIGKILL/wait=137；同身份后继 server 完成停止，之后 server3 再执行原 Collect 请求冷恢复，两者正常退出 0。

@@ -170,6 +170,23 @@ def render(args):
         # the Run expire first because its creation predates process start.
         task["budgets"]["attemptTimeoutSeconds"] = 60
         task["budgets"]["runTimeoutSeconds"] = 60
+    if getattr(args, "long_verify", False):
+        if args.scenario != "order-quote":
+            raise SystemExit("long-verify 仅用于真实订单报价 peer")
+        signal_path = os.path.join(repository, ".marshal", "fixed-server-t1-canary", args.run_id, "verification-started.json")
+        # A test rendezvous, not Run authority. The original business oracle
+        # remains required. No candidate program is imported by this command.
+        command = (
+            "import json,sys,time; "
+            "f=open(sys.argv[1],'x'); "
+            "json.dump({'runId':sys.argv[2],'startedAt':time.time()},f); f.close(); "
+            "time.sleep(100)"
+        )
+        task["acceptance"]["commands"].append({
+            "id": "cross-run-long-verification", "argv": ["/usr/bin/python3", "-I", "-B", "-c", command, signal_path, args.run_id],
+            "cwd": ".", "timeoutSeconds": 120, "maxLogBytes": 4000,
+            "required": True, "baselinePolicy": "none",
+        })
     policy = {
         "apiVersion": "marshal.dev/v1alpha1",
         "kind": "PolicySnapshot",
@@ -217,6 +234,7 @@ def main():
     parser.add_argument("--task-out", required=True)
     parser.add_argument("--policy-out", required=True)
     parser.add_argument("--scenario", choices=("marker", "order-quote", "order-quote-timeout", "order-quote-run-timeout"), default="marker")
+    parser.add_argument("--long-verify", action="store_true")
     render(parser.parse_args())
 
 

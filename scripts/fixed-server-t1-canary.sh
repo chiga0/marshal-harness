@@ -14,6 +14,7 @@ EVIDENCE_ROOT=""
 SCENARIO="t1-marker"
 AWAIT_REVIEW=0
 STOP_CRASH=0
+VERIFY_PEER=0
 
 die() {
   printf '[fixed-server-t1] ERROR: %s\n' "$*" >&2
@@ -25,7 +26,7 @@ usage() {
 usage: scripts/fixed-server-t1-canary.sh \
   --expected-head HEAD --pi-model PROVIDER/MODEL --pi-node PATH --pi-bin PATH \
   --pi-bundle PATH --run-id RUN_ID --evidence-root ABSOLUTE_PATH \
-  [--scenario t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout] [--await-review] [--stop-crash]
+  [--scenario t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout] [--await-review] [--stop-crash|--verify-peer]
 EOF
   exit 2
 }
@@ -42,6 +43,7 @@ while [ "$#" -gt 0 ]; do
     --scenario) [ "$#" -ge 2 ] || usage; SCENARIO="$2"; shift 2 ;;
     --await-review) AWAIT_REVIEW=1200; shift ;;
     --stop-crash) STOP_CRASH=1; shift ;;
+    --verify-peer) VERIFY_PEER=1; shift ;;
     *) usage ;;
   esac
 done
@@ -53,6 +55,10 @@ case "$SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout
 [ "$AWAIT_REVIEW" -eq 0 ] || [ "$SCENARIO" = order-quote ] || die 'await-review 只适用于 order-quote'
 if [ "$STOP_CRASH" -eq 1 ]; then
   case "$SCENARIO" in order-quote-timeout|order-quote-run-timeout) ;; *) die 'stop-crash 只适用于业务 timeout' ;; esac
+fi
+if [ "$VERIFY_PEER" -eq 1 ]; then
+  [ "$SCENARIO" = order-quote-timeout ] && [ "$STOP_CRASH" -eq 0 ] && [ "$AWAIT_REVIEW" -eq 0 ] || die 'verify-peer 只允许无 crash/review 的 Attempt-timeout 场景'
+  [ "${#RUN_ID}" -le 114 ] || die 'verify-peer run-id 过长'
 fi
 [ -x "$PI_NODE" ] && [ ! -L "$PI_NODE" ] || die 'pi-node 必须是固定普通 executable'
 [ -x "$PI_BIN" ] || die 'pi-bin 必须是可执行入口'
@@ -231,6 +237,21 @@ fi
 "$MARSHAL_BIN" task approve --run "$RUN_ID" --gate plan --actor fixed-server-t1-operator \
   --json >"$EVIDENCE_ROOT/approve.json"
 
+if [ "$VERIFY_PEER" -eq 1 ]; then
+  peer_run="$RUN_ID-verify"
+  peer_root="$ROOT/.marshal/fixed-server-t1-canary/$peer_run"
+  [ ! -e "$peer_root" ] && [ ! -L "$peer_root" ] || die 'peer evidence 已存在'
+  mkdir "$peer_root"
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t2-task.py \
+    --doctor "$EVIDENCE_ROOT/doctor.json" --repository "$ROOT" --base-ref "$EXPECTED_HEAD" \
+    --task-id "$task_id-VERIFY" --run-id "$peer_run" --model "$PI_MODEL" \
+    --scenario order-quote --long-verify --task-out "$peer_root/task.json" --policy-out "$peer_root/policy.json"
+  "$MARSHAL_BIN" task plan --task "$peer_root/task.json" --policy "$peer_root/policy.json" \
+    --run "$peer_run" --json >"$peer_root/plan.json"
+  "$MARSHAL_BIN" task approve --run "$peer_run" --gate plan --actor fixed-server-t1-operator \
+    --json >"$peer_root/approve.json"
+fi
+
 # T1_NO_DIRECT_CLI_MUTATION_AFTER_APPROVAL
 # From this point through evidence closure, every Marshal operation is the
 # fixed control-plane surface. In particular there is no task run/verify or
@@ -243,6 +264,24 @@ fi
 server1_pid=$!
 wait_ready "$server1_pid" "$EVIDENCE_ROOT/server1-ready.json"
 append_audit server1 serve ready
+if [ "$VERIFY_PEER" -eq 1 ]; then
+  # Both Runs were frozen/approved before serve. All mutations now use the
+  # fixed public surface. This experiment intentionally does not crash the
+  # verifier or manufacture a Decision; it proves cross-Run scheduling only.
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py --run "$peer_run" \
+    --evidence-dir "$peer_root/t2" --concurrent-stop-run "$RUN_ID"
+  assert_server_pid "$server1_pid"
+  kill -TERM "$server1_pid"
+  set +e
+  wait "$server1_pid"
+  peer_server_status=$?
+  set -e
+  [ "$peer_server_status" -eq 0 ] || die 'cross-run server 未正常退出'
+  write_process_evidence "$EVIDENCE_ROOT/server1-process.json" "$server1_pid" SIGTERM "$peer_server_status"
+  server1_pid=""
+  printf '[fixed-server-t2] CROSS_RUN_OBSERVED; independent business Decision still required\n'
+  exit 0
+fi
 "$MARSHAL_BIN" control-plane status >"$EVIDENCE_ROOT/server1-status.json"
 append_audit server1 status received
 "$MARSHAL_BIN" control-plane inspect --run "$RUN_ID" >"$EVIDENCE_ROOT/server1-ready-inspect.json"

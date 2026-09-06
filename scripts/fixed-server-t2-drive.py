@@ -2,6 +2,7 @@
 """Drive an already approved/running T2 Run through the fixed server to review."""
 
 import argparse
+import concurrent.futures
 import datetime
 import hashlib
 import io
@@ -12,6 +13,7 @@ import re
 import subprocess
 import stat
 import sys
+import threading
 import tarfile
 import time
 
@@ -128,7 +130,7 @@ def run_projection(value, run_id, state, prior=None, advance=False):
     return value
 
 
-def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep):
+def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep, before_verify=None):
     """Only positive running observations authorize bounded identical polling.
 
     Neither generic pending, timeout nor a failed process is classified as a
@@ -158,6 +160,8 @@ def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep):
                    "--expected-sequence", str(current["sequence"]), "--expected-authority-head", current["authorityHead"],
                    "--request-key", f"t2:{run_id}:{operation}:{current['sequence']}", "--deadline", deadline_text]
         save(f"{operation}-request.json", {"args": request})
+        if operation == "verify" and before_verify is not None:
+            before_verify()
         polls = 0
         while True:
             code, value = invoke(request)
@@ -196,6 +200,71 @@ def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep):
     if summary.get("verificationStatus") != "pass":
         raise DriveError("business-verification-failed")
     return summary
+
+
+def start_ready(call, save, run_id, deadline):
+    code, current = call(["inspect", "--run", run_id], deadline - time.time())
+    if (code != 0 or not isinstance(current, dict) or current.get("runId") != run_id
+            or current.get("state") != "READY" or type(current.get("sequence")) is not int
+            or current["sequence"] <= 0 or not DIGEST.fullmatch(current.get("authorityHead", ""))):
+        raise DriveError("peer-start-not-ready")
+    deadline_text = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="microseconds").rstrip("0").rstrip(".") + "Z"
+    args = ["start", "--run", run_id, "--expected-sequence", str(current["sequence"]),
+            "--expected-authority-head", current["authorityHead"], "--request-key", f"cross:{run_id}:start",
+            "--deadline", deadline_text]
+    save("start-request.json", {"args": args})
+    code, result = call(args, deadline - time.time())
+    save("start-response.json", {"exitCode": code, "response": result})
+    if code != 0:
+        raise DriveError("peer-start-unresolved-no-retry")
+
+
+def await_verifier(signal_path, run_id, deadline, finished, now=time.time):
+    while now() < deadline:
+        if finished.is_set():
+            raise DriveError("verification-finished-before-rendezvous")
+        try:
+            fd = os.open(signal_path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            finished.wait(min(0.05, max(0, deadline - now())))
+            continue
+        with os.fdopen(fd, "rb") as source:
+            meta = os.fstat(source.fileno())
+            if not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1 or meta.st_size > 4096:
+                raise DriveError("verification-rendezvous-boundary")
+            raw = source.read(4097)
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            # The frozen command has just created the file; a bounded partial
+            # diagnostic write is not a new business attempt or authority.
+            finished.wait(min(0.05, max(0, deadline - now())))
+            continue
+        if (not isinstance(value, dict) or value.get("runId") != run_id or type(value.get("startedAt")) not in (int, float)
+                or not 0 <= now() - value["startedAt"] < 120):
+            raise DriveError("verification-rendezvous-subject")
+        return value
+    raise DriveError("verification-rendezvous-timeout")
+
+
+def cross_run_overlap(report, task, projection, stopped_at):
+    digest = lambda v: "sha256:" + hashlib.sha256(json.dumps(v, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if (digest(report) != projection.get("reportDigest") or digest(task) != report.get("specDigest")
+            or report.get("runId") != projection.get("run", {}).get("runId")):
+        raise DriveError("cross-run-evidence-drift")
+    specs = [c for c in task["acceptance"]["commands"] if c["id"] == "cross-run-long-verification"]
+    gates = [g for g in report.get("gates", []) if g.get("id") == "command:cross-run-long-verification"]
+    if report.get("status") != "pass" or len(gates) != 1 or gates[0].get("status") != "pass":
+        raise DriveError("long-verification-not-proved")
+    command = gates[0]["command"]
+    stamp = lambda v: datetime.datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+    if len(specs) != 1 or command["argv"] != specs[0]["argv"] or command.get("exitCode") != 0:
+        raise DriveError("long-verification-command-drift")
+    if (not stamp(command["startedAt"]) < stopped_at < stamp(command["completedAt"])
+            or stamp(command["completedAt"]) - stamp(command["startedAt"]) < 100):
+        raise DriveError("stop-did-not-overlap-verification")
+    return {"commandStartedAt": command["startedAt"], "stopObservedAt": stopped_at,
+            "commandCompletedAt": command["completedAt"], "accepted": False}
 
 
 def cancel_run(call, save, run_id, deadline, now=time.time, previous=None):
@@ -450,6 +519,7 @@ def main():
     parser.add_argument("--cancel-recovery", action="store_true", help="verify the same proved stop after server restart, without extending its deadline")
     parser.add_argument("--observe-business-stop", action="store_true", help="observe resident stopping without Cancel or pre-stop Collect")
     parser.add_argument("--business-stop-recovery", action="store_true", help="recheck the same stopped Run and Collect request after cold server restart")
+    parser.add_argument("--concurrent-stop-run", help="already approved READY Run to stop while this Run verifies")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     binary = root / "bin" / "marshal"
@@ -459,6 +529,9 @@ def main():
     stop_modes = (args.cancel, args.cancel_recovery, args.observe_business_stop, args.business_stop_recovery)
     if sum(stop_modes) > 1 or any(stop_modes) and args.await_review_seconds:
         parser.error("cancel cannot request independent business acceptance")
+    if args.concurrent_stop_run and (not ID.fullmatch(args.concurrent_stop_run)
+            or args.run != args.concurrent_stop_run + "-verify" or any(stop_modes) or args.await_review_seconds):
+        parser.error("invalid cross-run subject or mode")
     if binary.is_symlink() or not binary.is_file() or binary.resolve() != binary:
         parser.error("fixed bin/marshal is required")
     if not evidence.is_absolute() or evidence.resolve() != evidence or evidence.parent != root / ".marshal" / "fixed-server-t1-canary" / args.run:
@@ -475,10 +548,13 @@ def main():
     binary_digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     save("driver-subject.json", {"runId": args.run, "binarySHA256": binary_digest, "timeoutSeconds": args.timeout_seconds})
     invocation = 0
+    call_lock = threading.Lock()
 
     def call(command, remaining):
         nonlocal invocation
-        invocation += 1
+        with call_lock:
+            invocation += 1
+            call_index = invocation
         try:
             completed = subprocess.run([str(binary), "control-plane"] + command, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=remaining, check=False)
@@ -490,7 +566,7 @@ def main():
         # Never echo a response/diagnostic into CI logs.
         if len(completed.stdout) > 2 << 20 or len(completed.stderr) > 64 << 10:
             raise DriveError("fixed-cli-output-limit")
-        save(f"call-{invocation}.json", {"operation": command[0], "exitCode": completed.returncode,
+        save(f"call-{call_index}.json", {"operation": command[0], "exitCode": completed.returncode,
                                        "stdoutSHA256": hashlib.sha256(completed.stdout).hexdigest(),
                                        "stderrSHA256": hashlib.sha256(completed.stderr).hexdigest(),
                                        "transportStages": safe_transport_stages(completed.stderr)})
@@ -538,7 +614,43 @@ def main():
             if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
                 raise DriveError("fixed-binary-drift")
             return 0
-        summary = drive(call, save, args.run, time.time() + args.timeout_seconds)
+        if args.concurrent_stop_run:
+            deadline = time.time() + args.timeout_seconds
+            signal_path = evidence.parent / "verification-started.json"
+            if signal_path.exists() or signal_path.is_symlink():
+                raise DriveError("preexisting-verification-rendezvous")
+            start_ready(call, save, args.run, deadline)
+            finished = threading.Event()
+
+            def other_run():
+                await_verifier(signal_path, args.run, deadline, finished)
+                other_save = lambda name, value: save("concurrent-stop-" + name, value)
+                start_ready(call, other_save, args.concurrent_stop_run, deadline)
+                observe_business_stop(call, other_save, args.concurrent_stop_run, deadline)
+                return time.time()
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = None
+                def begin_other():
+                    nonlocal future
+                    future = executor.submit(other_run)
+                try:
+                    summary = drive(call, save, args.run, deadline, before_verify=begin_other)
+                finally:
+                    finished.set()
+                if future is None:
+                    raise DriveError("verification-not-started")
+                stopped_at = future.result()
+            report_path = root / ".marshal" / "runs" / args.run / "verification-report.json"
+            if report_path.is_symlink() or report_path.stat().st_size > 8 << 20:
+                raise DriveError("verification-report-boundary")
+            task = json.loads((evidence.parent / "task.json").read_bytes())
+            projection = json.loads((evidence / "verify.json").read_bytes())["Projection"]
+            overlap = cross_run_overlap(json.loads(report_path.read_bytes()), task, projection, stopped_at)
+            overlap.update(verifyingRun=args.run, stoppedRun=args.concurrent_stop_run)
+            save("cross-run-summary.json", overlap)
+        else:
+            summary = drive(call, save, args.run, time.time() + args.timeout_seconds)
         packet = json.loads((evidence / "review-packet.json").read_bytes())["Projection"]["packet"]
         capture_review_inputs(root, args.run, packet, evidence / "review-inputs.tar")
         if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:

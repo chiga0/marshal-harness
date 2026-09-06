@@ -72,6 +72,12 @@ for leaf in task.json 'stop-crash-*.json' 'stop-recovery-*.json' 'server*-proces
   printf '%s\n' "$diagnostics" | grep -F "/$leaf" >/dev/null || fail "missing stop evidence $leaf"
 done
 "/usr/bin/python3" -I -B "$ROOT/scripts/fixed-server-stop-fault_test.py"
+# Both approved Runs share one fixed server; the peer command's rendezvous
+# is diagnostic only and never authorizes a Decision or a Worker restart.
+grep -F -- '--concurrent-stop-run "$RUN_ID"' "$DRIVER" >/dev/null || fail 'missing fixed cross-run driver'
+grep -F -- '--scenario order-quote --long-verify' "$DRIVER" >/dev/null || fail 'peer business verifier was not frozen before approval'
+grep -F 'verify-peer:' "$WORKFLOW" >/dev/null || fail 'missing explicit cross-run opt-in'
+printf '%s\n' "$diagnostics" | grep -F '/verification-report.json' >/dev/null || fail 'missing cross-run report evidence'
 for phase in t2 t2-recovery; do
   for leaf in driver-subject.json 'call-*.json' cancel-request.json; do
     printf '%s\n' "$diagnostics" | grep -F "/$phase/$leaf" >/dev/null \
