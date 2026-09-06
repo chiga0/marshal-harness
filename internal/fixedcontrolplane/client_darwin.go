@@ -396,6 +396,9 @@ func readClientHTTPResponseUntil(connection *AuthenticatedConnection, deadline t
 	if decoder.Decode(&extra) == nil || response.SchemaVersion != httpResponseSchema || response.ProtocolRevision != httpProtocolRevision {
 		return httpResponse{}, ErrInvalid
 	}
+	if response.TeamApproval != nil && (statusCode != 200 || response.Disposition != "success" || (response.Operation != "approve-initial-team" && response.Operation != "reconcile-team-approval")) {
+		return httpResponse{}, ErrConflict
+	}
 	if statusCode != 200 || response.Disposition != "success" {
 		if statusCode == 202 && response.Disposition == "pending" {
 			if response.ReasonCode == string(application.ReasonAttemptStillRunning) {

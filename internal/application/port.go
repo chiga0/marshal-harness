@@ -2,6 +2,13 @@ package application
 
 import "context"
 
+// InitialTeamApplicationPort is an optional capability of the same resident
+// application, not another controller. Missing capability fails closed.
+type InitialTeamApplicationPort interface {
+	ApproveInitialTeam(context.Context, ApproveInitialTeamRequest) (InitialTeamApprovalProjection, error)
+	ReconcileInitialTeamApproval(context.Context, ApproveInitialTeamRequest) (InitialTeamApprovalProjection, bool, error)
+}
+
 // PublicApplicationPort is the only production-shaped entry point exposed to
 // CLI/server input adapters. StartRun owns preparation, execution and durable
 // reconciliation as one bounded application operation so no input adapter

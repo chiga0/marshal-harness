@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-07：B2 批准从固定 CLI 接到认证 HTTP 与原事实查询
+
+在 `5811572` 的会话接缝上继续接通 `team-approve/team-reconcile → authenticated fixed HTTP → 同一 sealed application/RepositorySession → RB1`，没有单独 controller、Worker launcher 或第二批准库。批准输入增加原 canonical UTC deadline 并纳入 request digest；批准与 transport 的 key/deadline 必须相同，查询允许原 deadline 过期但不改写。服务端写后重读 exact fact，客户端在 fixed peer post-check 后用 held read-only ledger 再查 owner/原请求/原 fact；未知提交不自动执行第二次批准，伪造投影与错误“不存在”均拒绝。
+
+回归沿实际 HTTP framing/认证后 router 覆盖读写、key/body/deadline 绑定、未知字段、能力缺失、提交未知和只读查询；实际 held owner/RB1 fixture 覆盖冷重放、客户端只读回查、伪造 fact/错误 absence/owner successor 拒绝。HTTP 的应用对象及 session 的模板预检仍是明确替身，不能把两组测试拼成已经执行真实完整 server/Schema 的证据。另覆盖 CLI 有界常规文件、符号链接/FIFO/未知/重复字段与过期批准在连接前拒绝。当前只完成本地 compile-only/静态验证，本次动态测试待精确 CI，不派付费 Pi。
+
+剩余关键路径是 Run 创建义务到 READY 的幂等物化、完整固定 server 批准实机、实际并行节点及集成交付，B2 不升级 INTEGRATED。B1 最新失败仍按上条完整记录保留，不借批准接口实现回避其结果格式及并发验收缺口。
+
 ## 2026-09-07：B2 同账本测试通过，接入真实 owner 会话；B1 新实机未进入并发场景
 
 耐久接纳候选 `ab43a4220e8863d8fe88c4c8c7b0c94f55945312` 的 [CI 34058800862](https://github.com/chiga0/marshal-harness/actions/runs/34058800862) 五项全部成功。后继候选将完整输入预检安装在 fixed server 构造入口，新增封闭批准请求和现有 RepositorySession 接缝：先冻结请求/校验完整输入，再持真实 owner 锁重查 held root/current RB1 owner，追加原有原子 fact。没有让账本反向依赖 planning、暴露 raw store 或新建控制进程。

@@ -29,7 +29,7 @@ const (
 
 func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "用法：marshal control-plane <serve|status|inspect|start|cancel|collect|verify|review-packet|decision>")
+		fmt.Fprintln(stderr, "用法：marshal control-plane <serve|status|inspect|start|cancel|collect|verify|review-packet|decision|team-approve|team-reconcile>")
 		return ExitUsage
 	}
 	switch args[0] {
@@ -59,8 +59,10 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 		return runControlPlaneReviewPacket(ctx, args[1:], stdout, stderr)
 	case "decision":
 		return runControlPlaneDecision(ctx, args[1:], stdout, stderr)
+	case "team-approve", "team-reconcile":
+		return runControlPlaneTeam(ctx, args[0], args[1:], stdout, stderr)
 	default:
-		fmt.Fprintln(stderr, "用法：marshal control-plane <serve|status|inspect|start|cancel|collect|verify|review-packet|decision>")
+		fmt.Fprintln(stderr, "用法：marshal control-plane <serve|status|inspect|start|cancel|collect|verify|review-packet|decision|team-approve|team-reconcile>")
 		return ExitUsage
 	}
 }

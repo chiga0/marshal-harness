@@ -42,7 +42,7 @@
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
 | B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline 自动停止/冷恢复通过；0130465 证明 barrier 后进程中断恢复；d0be824 实机同 owner 无重启 Collect 到 VERIFYING | 分阶段传输预算；长 Verify 跨 Run 实机及响应上界；候选合入与最终组合；完整 B2 同路径故障矩阵在 B3，不以单次通过概括可靠性 |
-| B2 受限 Agent Team | `IN_PROGRESS`（隔离候选，未集成） | ab43a42 同一 RB1 原子接纳五项 CI 通过；后继接入构造绑定的完整预检与真实 owner session，动态待验证，团队 route 尚未开放 | fixed API 用户批准/响应丢失 reconcile、Run 创建恢复/调度、真实并行节点、集成候选业务验收、局部 replan/结算、暂停恢复 |
+| B2 受限 Agent Team | `IN_PROGRESS`（隔离候选，未集成） | ab43a42 同一 RB1 原子接纳五项 CI 通过；后继已写入 fixed CLI/认证批准 route/原请求查询与客户端只读账本回查，动态/实机待验证 | 完整固定 server 批准验证、Run 创建恢复/调度、真实并行节点、集成候选业务验收、局部 replan/结算、暂停恢复 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
 [ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 仍为 Proposed，main 尚未开启 cancel/timeout。下一步验证长 Verify 期间无关 Run 的 deadline 能继续推进，完成停止纵切的组合验收与独立审查，随后进入 B2；不重跑已通过的旧 source，不扩大 Provider 或另起 controller。完整失败样本及证据边界见审计记录。本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。

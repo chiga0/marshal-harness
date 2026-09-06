@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/goal"
 )
@@ -49,11 +50,18 @@ func repositoryTeamRequest(t *testing.T, fixture publicFixedDeliveryInputs) appl
 	if err != nil {
 		t.Fatal(err)
 	}
-	return application.ApproveInitialTeamRequest{ProtocolRevision: application.InitialTeamApprovalProtocol, RequestID: "approval-1", InputsDigest: canonical.DigestBytes(raw), Inputs: raw}
+	return application.ApproveInitialTeamRequest{ProtocolRevision: application.InitialTeamApprovalProtocol, RequestID: "approval-1", Deadline: "2030-01-01T00:00:00Z", InputsDigest: canonical.DigestBytes(raw), Inputs: raw}
 }
 
 func TestRepositoryTeamApprovalUsesHeldOwnerAndColdReplay(t *testing.T) {
 	fixture := newPublicFixedDeliveryInputs(t)
+	ns := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: fixture.repository}
+	repoDigest, err := ns.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.inputs.Acquisition.Scope.AuthorityNamespaceID = ns
+	fixture.inputs.Acquisition.Scope.RepositoryIdentityDigest = repoDigest
 	request := repositoryTeamRequest(t, fixture)
 	preflights := 0
 	fixture.inputs.TeamInputPreflight = func(raw []byte) error {
@@ -68,9 +76,32 @@ func TestRepositoryTeamApprovalUsesHeldOwnerAndColdReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = session.Close() })
+	client, err := OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.VerifyInitialTeamReadback(context.Background(), request, nil); err != nil {
+		t.Fatalf("absence: %v", err)
+	}
 	first, err := session.ApproveInitialTeam(context.Background(), request)
 	if err != nil || first.GoalID != "team-session" || first.PlanRevision != 1 || first.ObligationCount != 3 || first.FactDigest == "" {
 		t.Fatalf("approval=%+v err=%v", first, err)
+	}
+	if err := client.VerifyInitialTeamReadback(context.Background(), request, &first); err != nil {
+		t.Fatalf("readback: %v", err)
+	}
+	if err := client.VerifyInitialTeamReadback(context.Background(), request, nil); err == nil {
+		t.Fatal("false absence accepted")
+	}
+	forged := first
+	forged.FactDigest = canonical.DigestBytes([]byte("forged"))
+	if err := client.VerifyInitialTeamReadback(context.Background(), request, &forged); err == nil {
+		t.Fatal("forged approval accepted")
+	}
+	queried, found, err := session.ReconcileInitialTeamApproval(context.Background(), request)
+	if err != nil || !found || queried != first {
+		t.Fatalf("query=%+v found=%t err=%v", queried, found, err)
 	}
 	replay, err := session.ApproveInitialTeam(context.Background(), request)
 	if err != nil || replay != first || preflights != 2 {
@@ -92,6 +123,9 @@ func TestRepositoryTeamApprovalUsesHeldOwnerAndColdReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer successor.Close()
+	if err := client.VerifyInitialTeamReadback(context.Background(), request, &first); err == nil {
+		t.Fatal("stale client owner accepted")
+	}
 	replay, err = successor.ApproveInitialTeam(context.Background(), request)
 	if err != nil || replay != first {
 		t.Fatalf("cold owner replay=%+v err=%v", replay, err)

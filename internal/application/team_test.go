@@ -10,7 +10,7 @@ import (
 
 func TestInitialTeamRequestFreezesExactApproval(t *testing.T) {
 	raw := []byte(`{"plan":1}`)
-	r := ApproveInitialTeamRequest{ProtocolRevision: InitialTeamApprovalProtocol, RequestID: "approval-1", InputsDigest: canonical.DigestBytes(raw), Inputs: raw}
+	r := ApproveInitialTeamRequest{ProtocolRevision: InitialTeamApprovalProtocol, RequestID: "approval-1", Deadline: "2030-01-01T00:00:00Z", InputsDigest: canonical.DigestBytes(raw), Inputs: raw}
 	frozen, digest, err := r.Frozen()
 	if err != nil || !validDigest(digest) {
 		t.Fatal(err)
@@ -36,8 +36,16 @@ func TestInitialTeamRequestFreezesExactApproval(t *testing.T) {
 		{ProtocolRevision: InitialTeamApprovalProtocol, RequestID: "approval-1", InputsDigest: r.InputsDigest, ExpectedHead: r.InputsDigest, Inputs: frozen.Inputs},
 		{ProtocolRevision: InitialTeamApprovalProtocol, RequestID: "approval-1", InputsDigest: r.InputsDigest, Inputs: []byte(strings.Repeat(" ", MaxInitialTeamInputsBytes+1))},
 	} {
+		bad.Deadline = "2030-01-01T00:00:00Z"
 		if _, _, err := bad.Frozen(); !HasReason(err, ReasonInvalidRequest) {
 			t.Fatal("invalid approval accepted")
+		}
+	}
+	for _, deadline := range []string{"", "not-a-date", "2030-01-01T00:00:00+00:00", "2030-01-01T01:00:00+01:00"} {
+		bad := frozen
+		bad.Deadline = deadline
+		if _, _, err := bad.Frozen(); !HasReason(err, ReasonInvalidRequest) {
+			t.Fatal("noncanonical deadline accepted")
 		}
 	}
 }

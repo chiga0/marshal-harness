@@ -309,9 +309,8 @@ func (adapter *sealedRepositoryApplication) Status(ctx context.Context, _ applic
 	return projection, projection.Validate()
 }
 
-// The eventual authenticated team route uses this same resident application;
-// it must not open another ledger/owner or execute a child CLI. Until that
-// route's delivery contract is connected this method is not externally exposed.
+// The authenticated team route uses this same resident application; it must
+// not open another ledger/owner or execute a child CLI.
 func (adapter *sealedRepositoryApplication) ApproveInitialTeam(ctx context.Context, request application.ApproveInitialTeamRequest) (application.InitialTeamApprovalProjection, error) {
 	if adapter == nil || ctx == nil {
 		return application.InitialTeamApprovalProjection{}, application.NewError("approve-initial-team", application.ReasonInvalidRequest)
@@ -323,6 +322,20 @@ func (adapter *sealedRepositoryApplication) ApproveInitialTeam(ctx context.Conte
 	}
 	return adapter.session.ApproveInitialTeam(ctx, request)
 }
+
+func (adapter *sealedRepositoryApplication) ReconcileInitialTeamApproval(ctx context.Context, request application.ApproveInitialTeamRequest) (application.InitialTeamApprovalProjection, bool, error) {
+	if adapter == nil || ctx == nil {
+		return application.InitialTeamApprovalProjection{}, false, application.NewError("reconcile-team-approval", application.ReasonInvalidRequest)
+	}
+	adapter.statusMu.RLock()
+	defer adapter.statusMu.RUnlock()
+	if adapter.closed || adapter.session == nil {
+		return application.InitialTeamApprovalProjection{}, false, application.NewError("reconcile-team-approval", application.ReasonOwnerUnavailable)
+	}
+	return adapter.session.ReconcileInitialTeamApproval(ctx, request)
+}
+
+var _ application.InitialTeamApplicationPort = (*sealedRepositoryApplication)(nil)
 
 // recoverRepositoryRuns enumerates the descriptor-bound Run set while the
 // repository owner session is held, then composes every RUNNING Run once.

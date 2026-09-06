@@ -74,21 +74,22 @@ type httpRequest struct {
 }
 
 type httpResponse struct {
-	SchemaVersion    string                                   `json:"schemaVersion"`
-	ProtocolRevision string                                   `json:"protocolRevision"`
-	Operation        string                                   `json:"operation,omitempty"`
-	Disposition      string                                   `json:"disposition"`
-	ReasonCode       string                                   `json:"reasonCode,omitempty"`
-	Status           *application.StatusProjection            `json:"status,omitempty"`
-	Run              *application.RunProjection               `json:"run,omitempty"`
-	Started          *application.RunStartProjection          `json:"started,omitempty"`
-	DeliveryReceipt  *productionruntime.FixedDeliveryReceipt  `json:"deliveryReceipt,omitempty"`
-	Collected        *application.CollectedRunProjection      `json:"collected,omitempty"`
-	Verification     *application.VerificationProjection      `json:"verification,omitempty"`
-	ReviewPacket     *application.ReviewPacketProjection      `json:"reviewPacket,omitempty"`
-	Decision         *application.ReviewDecisionProjection    `json:"decision,omitempty"`
-	Stopped          *application.CancelRunProjection         `json:"stopped,omitempty"`
-	LifecycleReceipt *productionruntime.FixedLifecycleReceipt `json:"lifecycleReceipt,omitempty"`
+	SchemaVersion    string                                     `json:"schemaVersion"`
+	ProtocolRevision string                                     `json:"protocolRevision"`
+	Operation        string                                     `json:"operation,omitempty"`
+	Disposition      string                                     `json:"disposition"`
+	ReasonCode       string                                     `json:"reasonCode,omitempty"`
+	Status           *application.StatusProjection              `json:"status,omitempty"`
+	Run              *application.RunProjection                 `json:"run,omitempty"`
+	Started          *application.RunStartProjection            `json:"started,omitempty"`
+	DeliveryReceipt  *productionruntime.FixedDeliveryReceipt    `json:"deliveryReceipt,omitempty"`
+	Collected        *application.CollectedRunProjection        `json:"collected,omitempty"`
+	Verification     *application.VerificationProjection        `json:"verification,omitempty"`
+	ReviewPacket     *application.ReviewPacketProjection        `json:"reviewPacket,omitempty"`
+	Decision         *application.ReviewDecisionProjection      `json:"decision,omitempty"`
+	Stopped          *application.CancelRunProjection           `json:"stopped,omitempty"`
+	LifecycleReceipt *productionruntime.FixedLifecycleReceipt   `json:"lifecycleReceipt,omitempty"`
+	TeamApproval     *application.InitialTeamApprovalProjection `json:"teamApproval,omitempty"`
 }
 
 type httpIntent struct {
@@ -208,6 +209,8 @@ func (router *HTTPRouter) release() {
 
 func (router *HTTPRouter) dispatch(ctx context.Context, authenticated RequestBinding, request httpRequest, deadline time.Time) (httpResponse, int, error) {
 	switch request.operation {
+	case "approve-initial-team", "reconcile-team-approval":
+		return router.initialTeam(ctx, authenticated, request, deadline)
 	case "status":
 		var input application.StatusRequest
 		if decodeHTTPBody(request.body, &input) != nil {
@@ -512,6 +515,10 @@ func readHTTPRequest(connection *AuthenticatedConnection) (httpRequest, error) {
 	}
 	operation := ""
 	switch parts[1] {
+	case "/v1/teams/approve":
+		operation = "approve-initial-team"
+	case "/v1/teams/reconcile-approval":
+		operation = "reconcile-team-approval"
 	case "/v1/status":
 		operation = "status"
 	case "/v1/runs/inspect":

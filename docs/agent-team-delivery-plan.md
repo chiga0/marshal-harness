@@ -36,6 +36,12 @@ B1 优先关闭当前 launcher 与 T2 真实链路阻塞。B2 的业务样例/�
 
 业务 verification pass 后，驱动把 packet 引用的 Task、实际 patch、VerificationReport、ArtifactManifest、WorkerResult 及两个候选记录/worker patch 打包到已有上传范围内的 `t2/review-inputs.tar`。仅复制有界普通文件，逐层拒绝符号链接并拒绝硬链接/特殊文件/读取中变化；不复制原始日志、凭据、Git 工作区或整份 authority store。该包标为 `review-only-not-authority-import`：便于独立 reviewer 读取真实输入，但不能代替 Core 的 canonical digest 验证、current-ledger recheck 或跨 runner 恢复协议。打包失败不重跑 Pi、不修改 Run、不宣称可以验收；same-server Decision 和恢复材料仍需按实际状态完成。
 
+## B2 批准操作候选（未构成团队交付）
+
+固定 server 候选接受 `marshal control-plane team-approve --request-file REQUEST.json`；输入文件为 `initial-team-approval/v1`，字段为 `protocolRevision`、稳定 `requestId`、完整 `inputs`（ADR 0083 的 `bounded-team-inputs/v1`）、确认的 `inputsDigest`、初始为空的 `expectedHead`、未来十分钟内的 canonical UTC `deadline`。调用者必须先检查完整方案并确认摘要；不得以 Worker 自称确认代替用户批准。文件必须是有界常规文件，未知/重复字段拒绝，不把部分 Task 读模型序列化成完整模板。
+
+响应丢失或批准过期时，使用同一 REQUEST.json 执行 `marshal control-plane team-reconcile --request-file REQUEST.json`；只读查询自动使用短查询窗口，但不修改原批准 deadline。`found:true` 和原 fact digest 仅代表创建义务已提交，`found:false` 是经只读账本回查的当次不存在；查询错误/未知不等于不存在，不自动重复批准。两条命令只连接已运行的同一 fixed server，不新开 owner、直接派 Pi 或调用子 CLI。Run 幂等物化、独立节点/集成与 Goal Outcome 仍待同路径接通；候选未合入和实机通过前不作为生产使用说明。
+
 ## 每轮最小记录
 
 任务类型/难度、冻结需求/输入/候选/运行 binary 身份、开始结束时间、各阶段等待/运行时间、Attempt/rework 数、失败分类、人工介入、业务验收和 evidence refs。token 缺失记为 unavailable，不能计为零。样例测试通过仅是测试基础设施证据，不是实机 Agent 成功。

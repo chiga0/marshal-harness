@@ -2,8 +2,10 @@ package application
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/domain"
 )
 
 const InitialTeamApprovalProtocol = "initial-team-approval/v1"
@@ -18,6 +20,7 @@ type ApproveInitialTeamRequest struct {
 	RequestID        string          `json:"requestId"`
 	InputsDigest     string          `json:"inputsDigest"`
 	ExpectedHead     string          `json:"expectedHead"`
+	Deadline         string          `json:"deadline"`
 	Inputs           json.RawMessage `json:"inputs"`
 }
 
@@ -25,7 +28,11 @@ func (request ApproveInitialTeamRequest) Frozen() (ApproveInitialTeamRequest, st
 	fail := func() (ApproveInitialTeamRequest, string, error) {
 		return ApproveInitialTeamRequest{}, "", NewError("approve-initial-team", ReasonInvalidRequest)
 	}
-	if request.ProtocolRevision != InitialTeamApprovalProtocol || !validID(request.RequestID) || !validDigest(request.InputsDigest) || request.ExpectedHead != "" || len(request.Inputs) == 0 || len(request.Inputs) > MaxInitialTeamInputsBytes {
+	if request.ProtocolRevision != InitialTeamApprovalProtocol || domain.ValidateID(request.RequestID) != nil || !validDigest(request.InputsDigest) || request.ExpectedHead != "" || len(request.Inputs) == 0 || len(request.Inputs) > MaxInitialTeamInputsBytes {
+		return fail()
+	}
+	deadline, err := time.Parse(time.RFC3339Nano, request.Deadline)
+	if err != nil || deadline.Location() != time.UTC || deadline.Format(time.RFC3339Nano) != request.Deadline {
 		return fail()
 	}
 	frozen, err := canonical.JSON(request.Inputs)
@@ -42,6 +49,13 @@ func (request ApproveInitialTeamRequest) Frozen() (ApproveInitialTeamRequest, st
 		return fail()
 	}
 	return request, canonical.DigestBytes(raw), nil
+}
+
+func (projection InitialTeamApprovalProjection) Validate() error {
+	if !validID(projection.GoalID) || projection.PlanRevision != 1 || !validDigest(projection.InputsDigest) || !validDigest(projection.RequestDigest) || !validDigest(projection.FactDigest) || projection.ObligationCount != 3 {
+		return NewError("initial-team-approval", ReasonAuthorityConflict)
+	}
+	return nil
 }
 
 // The projection reports durable plan approval, never business acceptance or

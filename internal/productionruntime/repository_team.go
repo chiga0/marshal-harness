@@ -3,15 +3,18 @@ package productionruntime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/goal"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 )
 
 // ApproveInitialTeam is a privileged application seam. It does not authenticate
-// a transport on its own and is not registered as an HTTP route yet. The input
+// a transport on its own. The authenticated team route's input
 // adapter must supply the authenticated operator request, not Worker output.
 // Approval commits obligations only; Run creation is a later reconciliation.
 func (session *RepositorySession) ApproveInitialTeam(ctx context.Context, request application.ApproveInitialTeamRequest) (application.InitialTeamApprovalProjection, error) {
@@ -23,6 +26,9 @@ func (session *RepositorySession) ApproveInitialTeam(ctx context.Context, reques
 	if err != nil {
 		return application.InitialTeamApprovalProjection{}, err
 	}
+	deadline, _ := time.Parse(time.RFC3339Nano, frozen.Deadline)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	borrow, err := session.borrow()
 	if err != nil {
 		return application.InitialTeamApprovalProjection{}, err
@@ -50,11 +56,58 @@ func (session *RepositorySession) ApproveInitialTeam(ctx context.Context, reques
 		}
 		return application.InitialTeamApprovalProjection{}, err
 	}
+	return teamApprovalProjection(plan), nil
+}
+
+func teamApprovalProjection(plan resultingress.TeamPlanState) application.InitialTeamApprovalProjection {
 	return application.InitialTeamApprovalProjection{
 		GoalID: plan.Revision.GoalId, PlanRevision: plan.Revision.PlanRevision,
 		InputsDigest: plan.Approval.InputsDigest, RequestDigest: plan.Approval.RequestDigest,
 		FactDigest: plan.FactDigest, ObligationCount: len(plan.Materializations),
-	}, nil
+	}
+}
+
+// ReconcileInitialTeamApproval never appends or refreshes a deadline. A query
+// after the original approval deadline may recover the exact committed fact.
+func (session *RepositorySession) ReconcileInitialTeamApproval(ctx context.Context, request application.ApproveInitialTeamRequest) (application.InitialTeamApprovalProjection, bool, error) {
+	if ctx == nil {
+		return application.InitialTeamApprovalProjection{}, false, application.NewError("reconcile-team-approval", application.ReasonInvalidRequest)
+	}
+	frozen, digest, err := request.Frozen()
+	if err != nil {
+		return application.InitialTeamApprovalProjection{}, false, err
+	}
+	var inputs goal.TeamInputs
+	if json.Unmarshal(frozen.Inputs, &inputs) != nil || inputs.Spec.Validate() != nil {
+		return application.InitialTeamApprovalProjection{}, false, application.NewError("reconcile-team-approval", application.ReasonInvalidRequest)
+	}
+	borrow, err := session.borrow()
+	if err != nil {
+		return application.InitialTeamApprovalProjection{}, false, err
+	}
+	defer borrow.Close()
+	if !inputs.Spec.AuthorityNamespaceId.Equal(session.acquisition.Scope.AuthorityNamespaceID) {
+		return application.InitialTeamApprovalProjection{}, false, application.NewError("reconcile-team-approval", application.ReasonAuthorityConflict)
+	}
+	approval := resultingress.TeamPlanApproval{InputsDigest: frozen.InputsDigest, RequestDigest: digest, ExpectedHead: frozen.ExpectedHead}
+	verifier := repositoryApprovedTeamVerifier{session: session, approval: approval}
+	var result application.InitialTeamApprovalProjection
+	var found bool
+	err = verifier.WithCurrentApprovedTeam(ctx, session.acquisition, approval, func() error {
+		plan, exists, err := session.ingress.ReadTeamPlan(session.acquisition.Scope, inputs.Spec.GoalId)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return nil
+		}
+		if plan.Approval != approval || !bytes.Equal(plan.Inputs, frozen.Inputs) {
+			return application.NewError("reconcile-team-approval", application.ReasonAuthorityConflict)
+		}
+		result, found = teamApprovalProjection(plan), true
+		return result.Validate()
+	})
+	return result, found, err
 }
 
 // This verifier cannot be constructed by an input adapter or deserialized from
