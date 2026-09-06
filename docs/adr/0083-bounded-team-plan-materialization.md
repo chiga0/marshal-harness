@@ -49,6 +49,8 @@ Goal 投影由同一物理账本 replay 得到，`goal.Evaluate` 只接收该投
 
 先耐久绑定该命令的最终 TaskSpec/Policy digest、repository/base、选定 Provider profile 和目标 RunID，再调用同一生产 planning seam。开始前和返回后均重查已有 Run 的冻结输入与事实：精确 READY 复用；CREATED/PLANNED 只沿同一创建义务补齐；冲突/无法判定则保留明确阻塞，不删除旧目录、重选新 ID 或绕过准入。需将现有 `planning.Plan` 的创建步骤补为可恢复入口，而不是宣称它目前已经幂等。
 
+候选将单 Run 入口分成 `planning.Prepare → PreparedPlan.Create`，原 `Plan` 也使用同一路径。Prepare 完成完整校验/准入/锁定 base/能力选择，不创建 Run 或 worktree；但原有 precondition、解释器预检和 probe 仍可能执行，不冒充纯函数。其私有进程内句柄保留完整 canonical Task/Policy/Capability，提供独立副本供 Core 绑定创建义务；Create 不再次解析可变 base ref 或 probe，创建前重查 repository/remote 与适配器身份。该句柄不是可反序列化的批准或冷恢复凭据，现阶段仍拒绝已有 Run。耐久创建绑定与 CREATED/PLANNED/READY 重放尚待接通，不把这个阶段分离算作幂等物化完成。
+
 计划批准向子 Run 的 plan approval 映射是显式 Core producer：必须绑定 accepted Goal fact、节点最终输入和当前 Policy，只授权该一个 Run 的执行。不能生成通用 actor 批准文件或扩大用户确认范围。保留原 Run/Attempt reservation 与 dispatch lookup-before-claim；Goal reservation 记录预算归属，不替代它们或重复扣费。每条物化事实引用精确 Run 创建/Start 事实，恢复先核对再提交 committed；失败/终态的 release/settle 沿 ADR 0019，不凭本地进程状态释放预算。
 
 ## 4. 成果集成是冻结方案的一部分

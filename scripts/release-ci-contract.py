@@ -170,6 +170,10 @@ jobs:
       - name: Verify modules
         run: go mod verify
 
+      - name: Run bounded-team planning regression before full quality
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'feat/b2-')
+        run: go test -race -count=1 -v ./internal/planning
+
       # RC1 distribution validation builds and ad-hoc signs the real
       # Darwin/arm64 candidate with the fixed /usr/bin/codesign required by
       # the release contract. It therefore runs on macOS after setup-go has

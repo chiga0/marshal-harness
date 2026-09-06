@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-07：批准会话 CI 通过，单 Run 创建分离出冻结阶段
+
+`5811572252c9fc80d714528770636bd9156d31dd` 的 [CI 34059842649](https://github.com/chiga0/marshal-harness/actions/runs/34059842649) 五项成功。条件链随后仅派发 `99ca8ca53742f001edef8fbfe7b6c9aebfb1473b` 的 [CI 34060885444](https://github.com/chiga0/marshal-harness/actions/runs/34060885444)，认证批准入口动态结果仍在验证；没有新派 Pi。
+
+现有 Plan 将验证/probe 与 Run 写入揉在一起，无法先把实际选中输入交给同账本创建事务。候选把原生产 Plan 改为同一 `Prepare → Create`，冻结完整原始协议而非有损领域读模型；预检成功之前及冻结之后尚未 Create 时均不写 Run。创建使用原 base 和 capability，不重新探测，并重查 repository/remote/适配器身份。新增测试检验 caller buffer/返回投影篡改、可变 HEAD 前移、取消/漂移零创建和重复创建不覆盖原 journal。新增 B2 前置 planning/race 回归，尽早发现本次调用链错误，完整质量门禁保留。
+
+本次仍仅是幂等物化的必要接缝，不提供冷恢复或 Goal 创建授权；耐久创建绑定、部分 Run 补齐、真实并行节点及集成尚未完成。静态与 compile-only 检查不冒充动态通过，B1/B2/B3 不升级、main 未合并、没有 stable 发布。
+
 ## 2026-09-07：B2 批准从固定 CLI 接到认证 HTTP 与原事实查询
 
 在 `5811572` 的会话接缝上继续接通 `team-approve/team-reconcile → authenticated fixed HTTP → 同一 sealed application/RepositorySession → RB1`，没有单独 controller、Worker launcher 或第二批准库。批准输入增加原 canonical UTC deadline 并纳入 request digest；批准与 transport 的 key/deadline 必须相同，查询允许原 deadline 过期但不改写。服务端写后重读 exact fact，客户端在 fixed peer post-check 后用 held read-only ledger 再查 owner/原请求/原 fact；未知提交不自动执行第二次批准，伪造投影与错误“不存在”均拒绝。
