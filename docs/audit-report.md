@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-07：Pi 最终结果载体失败，先补确定性诊断而非重复实机
+
+`80084bb8cf7c02e945a4605da51423c6d25239ee` 的精确 CI [34058120709](https://github.com/chiga0/marshal-harness/actions/runs/34058120709) 五项成功；后续唯一跨 Run 实机 [34059061091](https://github.com/chiga0/marshal-harness/actions/runs/34059061091) 整体失败。peer Collect 报 `pi-result-final-content-shape`，尚无 worker.completed、Verify 或第二个 Run 的并发验收。失败保留在总成本中，不将此前传输修复的 CI 当本次实机成功。
+
+审查实际生产链确认 Collect 将 held transcript 原样送入 Pi 解析器；旧通用错误仍包含最终 assistant 未携带 `content` 的情况。失败归档没有这部分 transcript，故目前不能证实该次失败就是缺字段，也不能声称根因已修复。本机已安装 Pi 0.84.4 的 `toJsonEvent` 对 `agent_end` 原样透传；通过固定 Node 执行该纯函数的人工夹具确认 content 保留，无 Worker、无网络、无真实模型调用。该证据不代表云端失败实例或真实业务通过。
+
+本次仅新增封闭 `pi-result-final-content-missing` 诊断：保持缺字段拒绝，覆盖 `stop`/`length` 和存在/不存在此前合法结果四种完整解析输入，禁止回退到旧 assistant 结果。`length` 仍优先报告原 `provider-terminal`，不让内容诊断覆盖 provider 失败；完整调用链自检已在提交前修正对应夹具预期。此前容器、元素、type/text 类型错误和未知异常仍走原封闭分类；不输出模型正文或自定义字段。未改变持久化契约、权限、重试或接纳行为。本地 compile-only、vet、staticcheck、diff 检查通过；动态回归待精确候选 CI，不冒充实机证据。
+
+效率边界：这是当前业务阻塞的诊断补齐，不是新里程碑；不得据此再次盲目付费重试。下一步需要带可判读且不泄密的失败证据完成同一生产路径验证，同时继续 B2 实际团队启动链路；B1/B2 均未关闭，未证明相对 Lead＋SubAgents 的交付收益。
+
 ## 2026-09-07：长 Verify 通过、并行停止已发生，但查询握手仍失败
 
 `b1e838014242c8e5b131f72d56c8a57fd1884d85` 的精确 CI [34056176966](https://github.com/chiga0/marshal-harness/actions/runs/34056176966) 五项成功，随后只派发一次真实 Pi [34056947651](https://github.com/chiga0/marshal-harness/actions/runs/34056947651)，整次失败。小诊断 artifact `9996297294` 已读取，完整 executable artifact 未下载或执行。peer 的 VerificationReport 为 `pass`，起止为 20:08:14.590559Z→20:10:01.019362Z，约 106 秒，随后 ReviewPacket 操作成功；其中部分非适用 gate 为 SKIPPED，不能描述为所有 gate 都实际执行通过。未产生独立 Decision 或 ACCEPTED。

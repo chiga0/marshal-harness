@@ -58,6 +58,40 @@ func TestProductionContentShapeDiagnosticsKeepEveryRejectionClosed(t *testing.T)
 	}
 }
 
+func TestProductionResultMissingFinalContentNeverBorrowsEarlierMessage(t *testing.T) {
+	declared, err := json.Marshal(validDeclaredResult("worker-claim"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stop := range []string{"stop", "length"} {
+		for _, history := range []bool{false, true} {
+			messages := []any{}
+			if history {
+				messages = append(messages, map[string]any{"role": "assistant", "stopReason": "stop", "content": []any{map[string]any{"type": "text", "text": string(declared)}}})
+			}
+			messages = append(messages, map[string]any{"role": "assistant", "stopReason": stop})
+			end, err := json.Marshal(map[string]any{"type": "agent_end", "willRetry": false, "messages": messages})
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)
+			record, err := ParseProductionWorkerResult(context.Background(), ProductionResultInput{
+				Transcript: []byte(jsonLines(captureSessionHeader("session-1"), `{"type":"agent_start"}`, string(end))),
+				Worktree:   "/worktree", TaskID: "TASK-1", RunID: "run-1", AttemptID: "attempt-1", Executable: "/usr/local/bin/pi", Version: "0.84.4",
+				StartedAt: started, CompletedAt: started.Add(time.Second), MaxOutputBytes: 1 << 20,
+			})
+			want := "pi-result-final-content-missing"
+			if stop == "length" {
+				// Provider failure takes precedence over carrier decoding.
+				want = "pi-result-provider-terminal"
+			}
+			if ProductionResultFailureCode(err) != want || len(record.Data) != 0 || (stop == "stop" && !errors.Is(err, ErrProtocol)) {
+				t.Fatalf("missing final content: stop=%s history=%t code=%s", stop, history, ProductionResultFailureCode(err))
+			}
+		}
+	}
+}
+
 func TestProductionResultFailureClassificationDoesNotChangeAdmission(t *testing.T) {
 	for _, tc := range []struct {
 		name, want string

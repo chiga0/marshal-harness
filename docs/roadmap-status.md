@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 当前纠偏：`80084bb` 的精确 CI 34058120709 五项成功，但跨 Run 实机 34059061091 在 peer Collect 的 `pi-result-final-content-shape` 失败，尚未进入第二个 Run 的并发验收。当前只补最终消息缺少 `content` 的封闭诊断和“不得借用此前消息”的回归，不放宽接纳、不原样重跑模型。B1 仍 IN_PROGRESS；B2 持久化团队分支独立推进，不将组件 CI 算团队交付；停止候选未合并、无 stable 发布。最新诊断尚待动态 CI，详情见审计报告首节。
+
 2026-09-07 最新检查点：`b1e8380` 精确 CI 34056176966 五项成功，单次实机 34056947651 整体失败。已获得约 106 秒的成功 Verify 报告及 ReviewPacket，另一 Run 在原 Attempt deadline 后约 1.02 秒写停止意图、7.24 秒写终态；但并发 Inspect 在 `client-dial` 失败，未完成 stopped Collect，不能关闭跨 Run 验收。候选正在补握手 authority 排队/proof 窗口与取消的真实锁争用回归，尚待动态验证。**B1 IN_PROGRESS；main 不变，停止候选未合并，无 stable 发布。** 具体证据与未证实归因见审计记录；以下均为历史检查点。
 
 2026-09-07 当前：`d0be824` 的精确 CI 34054261338 与 PR CI 均通过；单次跨 Run 实机 34055217240 已在同一 owner、无重启条件下完成 peer Collect 到 VERIFYING，并启动第二个 Run，但整体因客户端响应失败而结束。已确认 15 秒固定响应读取窗口与 100 秒 Verify 不兼容，另有 1 秒 half-close 等待与身份复查预算冲突；后继候选集中修正传输阶段预算、补实际认证客户端回归和缺失的阶段诊断。**B1 仍 IN_PROGRESS，main 仍 ba2196b；PR #268 为 Draft，无停止候选合并、无 stable 发布。** 后续历史段落中的“在途”不代表作业仍活跃。
