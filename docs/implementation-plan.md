@@ -10,6 +10,8 @@
 
 每轮按业务退出条件而非 PR 数量报告；相同结构性失败先分类/止损，不重复付费 Attempt。流程不要求 Marshal skill 或每文件一 Run；独立验证、单写工作区、精确证据与发布分权不变。不要在 B1 与相邻 B2 接线之间插入无关 Provider/存储/微服务清理。
 
+2026-09-06 执行纠偏：B1 当前阻断真实调用的故障优先；强 Lead＋SubAgents 对照的任务/验收同时准备，在安全前提满足后尽早验证最小 B2 集成交付，不等待 B3 所有正式支持工作完成才检验价值。B1→B2→B3 的完成门禁不变。完整业务项跨 source/Run 统计返工和总时间，实测无收益时简化策略而非扩展协议；具体执行和只读统计见[价值验证实施约定](agent-team-delivery-plan.md#价值验证实施约定2026-09-06)。
+
 ## 历史实施 checkpoint
 
 > **2026-09-04 ADR 0079 S2-B fixed-image canary checkpoint**：候选已在 producer 仍固定为 v1 的前提下，把 dormant v2 child spec/mechanics 接到唯一 `runLaunchChild`，并新增隐藏的 fixed `marshal internal process-supervisor-v2-canary --attestation-ready`。本机以 absolute fixed Marshal 和已签名 Node 真实通过 SETEXEC/START_SUSPENDED、zero-signal stopped observation、post-load identity、SIGCONT、自然非零退出、collect/close、pre-resume cleanup、pre-effect cancel 与重新 seal 后的 hostile symlink 拒绝；未生成或执行匿名/临时 Mach-O。检修同时固化 `/var` symlink、sealed-volume 超大 inode、relative parent invocation 与 short-lived wait delivery 竞态四项 fail-closed 行为。Darwin arm64/amd64、Linux amd64 compile-only、vet、staticcheck、diff-check 与 gitleaks 已通过。该切片只关闭 `ADR0079-S2B-FIXED-CANARY-CANDIDATE`；下一步是 S3 在零 active/pending v1 session 后做 new-session-only producer cutover，再用同一最终 fixed bytes 和真实 Pi 完成 fixed server restart/response-loss 与 T2→独立 Decision→`ACCEPTED`。Issue #212 signing/notarization 和 stable gate 保持开放。

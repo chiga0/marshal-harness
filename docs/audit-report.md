@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-06：以强基线验证团队价值，不把 Run 内零返工当整体效率
+
+当前真实 server 正常业务 ACCEPTED 是集成进步，不是 Agent Team 效率证明。历史 213/491 Run 的 rework 事件密度约为 0.432/0.430（不是有 rework 的 Run 占比），不能推出流程已明显改善；新 canary 与旧探索 Run 分母不同，不能跨样本直接声称错误率下降。跨 source 修改→CI→canary 的工程重做必须计入业务工作项。
+
+本轮按维护者接受的复盘调整实施方法：强 Lead＋SubAgents 同条件对照、三个任务族重复配对、失败/缺失不删除、未知 token 不计零、无收益先简化；保留 B1/B2/B3 安全与发布条件，尽早验证最小 B2 用户价值。新增 `delivery-scorecard.py` 仅产生描述性统计，不导入 authority、不签 Decision、不自动判断 production。所有单元测试数据为合成记录，真实比较尚未完成。本轮不扩大 runtime 架构或修改持久协议。
+
+未关闭的问题：B1 停止候选在 main 之外；Attempt-timeout 34041730043 的停止后 Inspect transport-failure 仍须定位，禁止原样重试；B2 真实团队集成、外部业务仓库样本和强基线比较均未完成。当前只能说关键 Runtime 资产有进展，不能说已经优于主 Agent＋SubAgents。
+
 ## 2026-09-06：fixed server 真实业务首次独立 ACCEPTED
 
 在 main `c93e31bde15d9dbcd3487dfc1db323eafc4127e1` 的 CI 34029534577 五项全绿后，单次 [业务 canary 34030199172](https://github.com/chiga0/marshal-harness/actions/runs/34030199172) 全部成功。真实 Pi 0.84.4 / `openai/qwen3.8-max` 通过 fixed server 完成订单报价纯函数；同 bytes Start 丢响应、server 重启/rebind/replay 后，沿 Collect→cleanup→delivery receipt→Verify→ReviewPacket→独立 Decision→终态查询走通。Run snapshot 为 `ACCEPTED/sequence=6`，第 6 条 event 为 `review.accept`；一次 Attempt、零 operational retry、零 rework。没有手改 `.marshal`、没有假 Decision、没有业务候选发布。
