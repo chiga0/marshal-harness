@@ -1,22 +1,22 @@
 # Roadmap 状态
 
-2026-09-06 最新实机结果：Collect receipt 修复已随 PR #264 合入 main `5bdec88`，CI 34027276856 五项全绿；单次 canary 34027927457 提前失败于 Pi 最终 content 形态，尚未验证新 receipt 路径。候选补齐容器/元素/字段错误的封闭分类，不放宽接纳规则、不原样重跑。取消/业务超时分支 `c1daeeb` 的 CI 34027878879 五项全绿，仍未合入或实机放行。B1 为 IN_PROGRESS，B2/B3 仍 PLANNED，详见 [审计记录](audit-report.md)。
+2026-09-06 11:35 UTC：同一 fixed server 的真实 Pi 订单报价链已到 **ACCEPTED**。单次 canary 34030199172 成功：一次 Attempt、零 operational retry、零 rework，经过 Start 丢响应/重启/rebind/replay、Collect、业务 Verify、独立 Decision 和终态查询。B1 的正常业务交付子条件已关闭；取消/业务超时及恢复尚未通过，B1 仍 IN_PROGRESS，B2/B3 仍 PLANNED。详见 [本次验收证据](audit-report.md#2026-09-06fixed-server-真实业务首次独立-accepted)。
 
 更新时间：2026-09-06（ADR 0080 三面分离与业务交付路线；不升级历史成熟度）
 
 ## 业务交付当前表
 
-当前已合入基线为 `origin/main@5bdec88d7161771caa2a556c70bbdef576375ff9`（[PR #264](https://github.com/chiga0/marshal-harness/pull/264)，sourceHead `224409272eb9c30762b8b0e15a2fd730d38db0e8`），2026-09-06 10:23 UTC 远端合并；该 PR 无 pendingRemoteSync。main CI 34027276856 全绿后，仅派发一次 [34027927457](https://github.com/chiga0/marshal-harness/actions/runs/34027927457)。该次在 parser 失败，无 ACCEPTED；此前 34024740089 的 VERIFYING 是历史实机进展，不移植为新 binary 的通过证据。先解除 carrier 诊断缺口，不用重复 Attempt 代替根因处理。
+当前实机验证的 main 基线为 `c93e31bde15d9dbcd3487dfc1db323eafc4127e1`（[PR #265](https://github.com/chiga0/marshal-harness/pull/265)，sourceHead `e805129fd8b684824f25c6dffbfb9267642bdf65`），远端已合并，pendingRemoteSync=false。main CI 34029534577 五项全绿后，仅派发一次 [34030199172](https://github.com/chiga0/marshal-harness/actions/runs/34030199172)，全部成功。Run `fixed-server-t1-34030199172` 的第 6 条 event 为 `review.accept`，快照 `ACCEPTED/sequence=6`。此前 34027927457 的不合法 Pi content 失败仍保留，分类修复不是放宽解析或保证模型永不违约；本次通过不能删除失败分母。
 
-同机独立 Decision 载体已随 #260 整体合入，默认关闭、仅显式 `live-review=true` 启用。客户端 current-head/receipt/Outcome/终态查询校验、上传与外部 Decision 原文递交通道已有 27 项 Node/Python 回归与 source hosted CI；仍无真实 ACCEPTED，不把测试设施合入当作业务验收。新阶段诊断只用于缩小 Collect 根因，不宣称修复已发生。
+独立 Decision 载体默认关闭、仅显式 `live-review=true` 启用。本次 reviewer 检查完整候选/冻结 Task/验证报告并复算证据摘要，复跑 28 项 oracle 与额外 500 组确定性业务断言；[原始 Decision](https://github.com/chiga0/marshal-harness/issues/186#issuecomment-5558942471) 由同一 server 接纳，不是 Worker 自评或人工改 Run。Task publication=none，因此业务候选没有发布或合并；这仍是可信仓库、Darwin ordinary-user 的合成参考场景，不等同外部业务仓库、team 或正式生产支持。
 
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | 历史实机 Start/丢响应/重启/rebind/replay、结果接纳、cleanup-released 与 VERIFYING 已到达；独立 Decision 载体及 receipt 修复已合入 | 当前 Pi carrier 失败定位/修复；新 receipt 实机验证；业务 Verify/独立 Decision/ACCEPTED；取消/超时 Outcome 与恢复 |
+| B1 完整单任务服务 | `IN_PROGRESS` | 当前 main 同 bytes 实机 Start/丢响应/重启/rebind/replay→Collect/cleanup/receipt→业务 Verify→独立 Decision→ACCEPTED；一次 Attempt、零 rework | 取消/业务超时 Outcome 与恢复故障矩阵；长写事务的停止/查询响应上界；扩展场景验证不能借单次通过概括可靠性 |
 | B2 受限 Agent Team | `PLANNED` | ADR 0080 目标与 ADR 0019 组件可复用 | approved plan 耐久物化/调度、两个到三个实现节点、集成候选业务验收、局部 replan、暂停恢复 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
-[ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 已补充具体停止输入/幂等、不可变业务 deadline 来源、终态事件/Outcome 和冷恢复选择，仍为 Proposed，尚未开启 cancel/timeout。本次 `process-started` 不等于 Pi 业务完成或 ACCEPTED；不原样重跑。本机 fixed binary 退出 137 是另一个未查明的现场，不能混为此次原因。
+[ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 仍为 Proposed，main 尚未开启 cancel/timeout。隔离取消候选 `5e0a8e3` 的实机 34029737648 在 server 重启后的 Start 重放失败，尚未执行取消；不能称取消失败或通过。`2422d14` 已补完整 delivery 与后台 deadline 的共享写协调通道，CI 34030543935 在途，未合并。关闭这个主线阻塞后继续取消/超时同路径验证；本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。
 
 旧现场 33968513566 的 Run 为 `READY/sequence=2` 且漏收 RB1；#258 已修复诊断和收集路径。新现场 33971611314 的 artifact 9971098258 提供 17 条 RB1 fact：启动链已推进，随后 adoption 错把生产 namespace 限为 `control` 与 `existing-worktree-bindings`。候选改为冻结已存在的五类 composition store descriptor/name/object，保留未知插入、对象替换及 control ABA 拒绝；同步将公开装配测试的 ingress 放回真实 runtime 布局。增设先上传的小型诊断 artifact，避免以后等待整包 candidate 下载才定位失败；原完整 evidence 包继续保留。
 

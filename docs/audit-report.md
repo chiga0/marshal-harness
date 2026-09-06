@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-06：fixed server 真实业务首次独立 ACCEPTED
+
+在 main `c93e31bde15d9dbcd3487dfc1db323eafc4127e1` 的 CI 34029534577 五项全绿后，单次 [业务 canary 34030199172](https://github.com/chiga0/marshal-harness/actions/runs/34030199172) 全部成功。真实 Pi 0.84.4 / `openai/qwen3.8-max` 通过 fixed server 完成订单报价纯函数；同 bytes Start 丢响应、server 重启/rebind/replay 后，沿 Collect→cleanup→delivery receipt→Verify→ReviewPacket→独立 Decision→终态查询走通。Run snapshot 为 `ACCEPTED/sequence=6`，第 6 条 event 为 `review.accept`；一次 Attempt、零 operational retry、零 rework。没有手改 `.marshal`、没有假 Decision、没有业务候选发布。
+
+证据锚点：review artifact `9988370868`、diagnostics `9988482042`、完整 evidence `9988482580`；packet `sha256:61c35baf2a9ee1d5b1a9037482594b13a9c249e41936964113d333c782940338`，Decision `sha256:b0a13645291bdf90d6b5b0171676f5e30685ed2a8bba44c404785d7f5f2c7ffe`。[维护者提交的独立 Decision 原文](https://github.com/chiga0/marshal-harness/issues/186#issuecomment-5558942471) 由仍运行的同一 server 验证并接纳。reviewer 读取冻结 Task/完整 patch/VerificationReport/ArtifactManifest/WorkerResult，复算 capture 及 canonical 摘要，独立执行绑定候选的 28 项 oracle 和 500 组额外确定性业务断言，全部通过。Worker 明确没有运行 shell 验收，其自评未被充当权威证据。
+
+耗时与边界：Run 创建到 ACCEPTED 约 541 秒，其中 WorkerResult 记录执行约 69 秒、verification 到独立 accept 约 458 秒。后者含 reviewer 读取/下载/审查及递交时间，说明下一阶段应及时消费 review-ready，而非增加 Worker 重试；这只是单样本，不宣称团队加速或生产成功率。旧 carrier 失败保留；#265 只细分失败原因，本次合法输出通过不代表它修好了所有模型输出。当前关闭 B1 正常交付子条件，不关闭取消/超时、B2 Agent Team、B3 长时恢复/签名/Linux/stable；不升级历史 COMPONENT 或 ordinary-user 信任等级。
+
+停止候选另有真实反馈：`5e0a8e3` 的 CI 34029043931 五项成功后，34029737648 已启动 Pi，但 server2 Start 重放出现 transport-failure，尚未调用 cancel。代码发现后台只锁 application，delivery Begin/Commit 可在其外侧竞争 Run lease；现场封闭日志不足以断言原始错误必为 lease-held。`2422d14` 在原停止分支补整个 delivery 写事务与后台统一协调，保留只读查询、context 和 durable authority；本地 compile-only/vet/staticcheck/架构检查通过，CI 34030543935 在途，不原样再派失败候选。
+
 ## 2026-09-06：Collect receipt 修复合入，新的 Pi carrier 失败尚未定位
 
 PR #264 的 sourceHead `224409272eb9c30762b8b0e15a2fd730d38db0e8` 已合入 `main@5bdec88d7161771caa2a556c70bbdef576375ff9`，pendingRemoteSync=false；source CI 34026422197 与 main CI 34027276856 五项全绿。单次后继真实业务 canary [34027927457](https://github.com/chiga0/marshal-harness/actions/runs/34027927457) 失败于 `pi-result-final-content-shape/authority-conflict`，未产生 worker.completed、VerificationReport、ReviewPacket 或 Decision。七次 pending 是同一请求的观察，不是七个 Attempt。journal 的 RUNNING/sequence=3 为权威，state.json 的 READY/sequence=2 只是尚未刷新投影；本次尚未走到新 Collect receipt 代码，不能宣称其实机出口通过。
