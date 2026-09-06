@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-07：B2 输入预检动态通过，耐久接纳接入同一 RB1 候选
+
+`c59c0aa97fe165cfb298fabd8c9f052be6234b7a` 的精确 CI [34057248679](https://github.com/chiga0/marshal-harness/actions/runs/34057248679) 五项全部成功；包括此前有损 Task fixture 修正和整个 Goal 预算绑定。没有因此新派 Pi 或宣称团队交付完成。
+
+后继候选沿 ADR 0083 向既有 `result-ingress.jsonl` 接入一个 `team-plan-accepted` 原子 record，完整输入、accepted revision、预算 reservation 与确定性创建义务同时追加/fsync。所有 projection 构造和冷重放入口一起更新；接纳前重读真实 owner/Goal 历史，已存在的 Goal 不通过初始入口重置预算。exact 重放在 owner successor 后仍返回原 fact/RunID，不多 reserve 或另造 Run；错误请求、预算不足和缺少批准 verifier 均零追加。
+
+测试覆盖一次完整 append、冷重放与 owner 更替、过期 owner 拒绝、同批准并发只提交一次、错误批准/超预算/同 Goal 异方案拒绝，以及重算 digest 后仍拒绝伪造 RunID/重复 fact。测试中的 owner/批准和 Task 模板显式为 store fixture；它们不证明真实用户确认，不取代完整 planning Schema/Policy 检查。当前本地仅编译、vet/staticcheck 和架构检查，动态结果待精确 CI。
+
+尚未关闭：固定 API 认证批准 producer、跨 Goal scope/调度、Run 创建到 READY 的恢复、实际并行执行、集成候选、局部 replan/预算结算和独立 Goal Outcome。此提交是同一 B2 纵切的耐久基础，不是可单独启用的团队服务，未合入 main、不升级生产成熟度。B1 另在 80084bb 精确 CI 验证握手排队修正，macOS 前置真实锁争用/race 已通过，尚待整次 CI 与实机；不以 B1 验证等待为由停止 B2 接线。
+
 ## 2026-09-07：B2 批准输入的可执行绑定候选
 
 在既有 `internal/planning` 添加完整 Task/Policy 输入束预检，复用 Task Schema 与 `ValidatePolicy`，不执行命令或写入 Run。明确封闭初始模板为两个实现节点加一个集成节点，并绑定 scope、固定 base、Pi/model、publication:none、预算与确定性 Task/Run ID；重复字段、未知字段、串接 JSON、超限输入和跨节点 Policy 均拒绝。前移这些错误可避免在付费 Worker 开始后才发现方案无法物化。

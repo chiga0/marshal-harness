@@ -31,6 +31,10 @@ Goal 投影由同一物理账本 replay 得到，`goal.Evaluate` 只接收该投
 
 传输请求丢失或 fsync 结果不确定时，用原 request digest、Goal key 和 expected revision 在同一 held ledger 查询；命中精确提交则返回原结果，未决则保留未决，冲突则拒绝。不产生另一个 accepted revision 或另一个 materialization key。历史 fact 不改写；旧程序遇到未知 Goal fact 必须 fail closed，因此部署/回退必须按新 reader 支持范围管理，不能启动旧 binary 擦除新记录。
 
+首个候选追加 `bounded-team-plan/v1` 的 `team-plan-accepted` fact：同一 record 保存 owner scope/fact 引用、完整 canonical 输入、认证批准 request/input digest、accepted revision 及每节点 TaskID/RunID、reservation 和模板摘要。`expectedHead` 为空仅表示初次创建；事务必须先从当前 RB1 replay 证明 Goal key 不存在，才可使用零历史预算。已有同 key 只允许 exact approval/input 重放；包括换 ProposalID 在内的异输入均拒绝，绝不能把累计消耗重新置零。后继 replan/settlement 未接通前，不开放更新操作。
+
+生产批准 verifier 必须同时持有 current owner，并绑定已通过完整 Task/Policy preview 的不可变 bytes、真实认证操作者和当前请求；输入摘要自身不是批准。store 内再次检查 ledger 的 current owner，接纳和重放重新计算 revision/reservation/确定性物化义务，不信任已存派生字段。完整 record 的大小在 append 前检查，避免成功写入却无法重放；旧 reader 的未知 fact 拒绝规则保留。当前 store-only 测试中的显式 verifier/模板 fixture 不提供生产批准证据。fixed API producer、Run 创建恢复和集成接线未完成时，本候选不启用、不单独算 B2 INTEGRATED。
+
 ## 3. 物化是可恢复工作，不是接纳事务中的长操作
 
 接纳返回后，现有 fixed server reconcile 循环按依赖、scope、宿主/Provider 和验证容量取就绪节点。创建和 Start 不占用 Goal/RB1 锁执行长命令。每个节点的 materialization key、TaskID、RunID 在 preview 前从版本域、authority namespace、GoalID、ProposalID 和 NodeID 的 canonical tuple 确定性派生，随后由 accepted fact 绑定；不能从 accepted fact digest 再推导输入中已有的 ID，否则形成 `fact→RunID→Policy digest→bundle digest→fact` 循环。相同 key 的不同输入是冲突，不自动产生另一 Run；新方案必须换 ProposalID 并重新批准。换 server/丢响应/暂停恢复不能换 key。
