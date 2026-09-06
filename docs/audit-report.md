@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-06：取消、停止后 Collect 与冷 server 恢复实机通过
+
+停止候选 `6e87f34a68f085384b8eaba09d76d2b5bd682b90` 的 [CI 34037704960](https://github.com/chiga0/marshal-harness/actions/runs/34037704960) 五项全绿后，单次 [canary 34038482097](https://github.com/chiga0/marshal-harness/actions/runs/34038482097) 全部成功。真实 Pi 经 Start 丢响应/server1 crash/server2 rebind/replay 后，取消生成 `worker.stopped/BLOCKED/sequence=4`、完整 cleanup 和 Outcome；原 Cancel 精确重放、当前终态 head 的 Collect 返回 `stopped/run-stopped`，server2 正常退出。相同固定 bytes 的 server3 冷启动后再次验证原 Cancel/receipt/Outcome、终态 Collect 和查询，未重启 Worker、未延长冻结 deadline。
+
+诊断 artifact `9990944385` 已独立取回，完整 evidence `9990944800` 远端保留。server2 首次/重复及 server3 Cancel 的响应 SHA-256 均为 `5d8c04d2b4e57a7cd39a351d40774e5f15842abe9c3b5d84e6a04351d57ebf65`；两次终态 Collect stdout SHA-256 均为 `606f11c437c8af004acfcc1e766d73e63ec1b10df913949757d9147d739a6e1e`，exit=1、stderr 为空（这是预期的非成功业务结果）。Run 从 14:14:21.440921Z 创建，到 14:14:43.124358Z 停止；整个 canary 于 14:15:04Z 完成。不把上述整体时间当作取消请求延迟，也不以单样本推导可靠性。
+
+关闭的是隔离候选的显式取消及完成后冷恢复子条件，不是所有 stop 故障窗口：自动业务 deadline、signal/cleanup 中途崩溃、长写事务下查询/停止响应上界仍开放，ADR 0081 继续 Proposed，B1 IN_PROGRESS。此前失败全部保留。为继续同一路径，开发分支同步 `origin/main@ba2196b` 的已合入正常 Pi 分类/ACCEPTED 文档，保留两侧审计历史；本次同步不是把停止候选合入 main，合并后的新 source 也不能冒用上述实机身份。
+
 ## 2026-09-06：真实取消与精确重放成功，停止后新 Collect 误用旧 head
 
 `a553c445928a566874dfdb852e9f6f698ddeac88` 的 [CI 34036324414](https://github.com/chiga0/marshal-harness/actions/runs/34036324414) 五项通过。单次 [canary 34037154719](https://github.com/chiga0/marshal-harness/actions/runs/34037154719) 已越过之前的查询失败，两个 Cancel 调用均 exit=0，响应 SHA-256 同为 `e5b4181fa740ffae94677df66e2e81ff96b94561d9710137293b2f6f995619b1`；journal sequence 4 为 `worker.stopped`，含完整 barrier/process/allocation/supervisor/cleanup 引用及 `aborted-by-operator`。驱动已验证 stop/Outcome/receipt 形状后，在第四次调用 Collect 收到 transport failure。没有取消后 server3 冷恢复证据，整次 canary 仍失败。诊断 artifact 9990541132 已保留，完整包 9990541531 独立留存。
@@ -102,6 +110,26 @@ PR #263 的 source `31b64a8` 经 Linux/macOS quality、两架构 Linux conforman
 本开发候选补充：恢复既有 stop intent 的 cleanup/Run/Outcome；从 frozen Task/首条 planning/ProcessStarted 读取业务 deadline；在 ingress 同一 durable admission transaction 内核对 Task 与 started 摘要及截止点；到期禁止 fresh admission，精确已提交结果仍允许重放。新增截止前 1ns、精确到期、到期后 1ns、冷 ingress 重放和来源漂移负例。这里只证明代码与编译检查进展，新增动态/race 证据待该候选 hosted CI。READY 到期准入、resident timer、完整故障矩阵和对外停止状态/错误闭环仍未完成，ADR 0081 保持 Proposed，禁止合并放行停止纵切或升级 B1 状态。
 
 效率纠偏：在原开发分支保存完整纵切中间结果，CI 可提前发现平台问题；不为通过局部测试另造生产完成结论，也不重试未修复的同源实机失败。
+## 2026-09-06：fixed server 真实业务首次独立 ACCEPTED
+
+在 main `c93e31bde15d9dbcd3487dfc1db323eafc4127e1` 的 CI 34029534577 五项全绿后，单次 [业务 canary 34030199172](https://github.com/chiga0/marshal-harness/actions/runs/34030199172) 全部成功。真实 Pi 0.84.4 / `openai/qwen3.8-max` 通过 fixed server 完成订单报价纯函数；同 bytes Start 丢响应、server 重启/rebind/replay 后，沿 Collect→cleanup→delivery receipt→Verify→ReviewPacket→独立 Decision→终态查询走通。Run snapshot 为 `ACCEPTED/sequence=6`，第 6 条 event 为 `review.accept`；一次 Attempt、零 operational retry、零 rework。没有手改 `.marshal`、没有假 Decision、没有业务候选发布。
+
+证据锚点：review artifact `9988370868`、diagnostics `9988482042`、完整 evidence `9988482580`；packet `sha256:61c35baf2a9ee1d5b1a9037482594b13a9c249e41936964113d333c782940338`，Decision `sha256:b0a13645291bdf90d6b5b0171676f5e30685ed2a8bba44c404785d7f5f2c7ffe`。[维护者提交的独立 Decision 原文](https://github.com/chiga0/marshal-harness/issues/186#issuecomment-5558942471) 由仍运行的同一 server 验证并接纳。reviewer 读取冻结 Task/完整 patch/VerificationReport/ArtifactManifest/WorkerResult，复算 capture 及 canonical 摘要，独立执行绑定候选的 28 项 oracle 和 500 组额外确定性业务断言，全部通过。Worker 明确没有运行 shell 验收，其自评未被充当权威证据。
+
+耗时与边界：Run 创建到 ACCEPTED 约 541 秒，其中 WorkerResult 记录执行约 69 秒、verification 到独立 accept 约 458 秒。后者含 reviewer 读取/下载/审查及递交时间，说明下一阶段应及时消费 review-ready，而非增加 Worker 重试；这只是单样本，不宣称团队加速或生产成功率。旧 carrier 失败保留；#265 只细分失败原因，本次合法输出通过不代表它修好了所有模型输出。当前关闭 B1 正常交付子条件，不关闭取消/超时、B2 Agent Team、B3 长时恢复/签名/Linux/stable；不升级历史 COMPONENT 或 ordinary-user 信任等级。
+
+停止候选另有真实反馈：`5e0a8e3` 的 CI 34029043931 五项成功后，34029737648 已启动 Pi，但 server2 Start 重放出现 transport-failure，尚未调用 cancel。代码发现后台只锁 application，delivery Begin/Commit 可在其外侧竞争 Run lease；现场封闭日志不足以断言原始错误必为 lease-held。`2422d14` 在原停止分支补整个 delivery 写事务与后台统一协调，保留只读查询、context 和 durable authority；本地 compile-only/vet/staticcheck/架构检查通过，CI 34030543935 在途，不原样再派失败候选。
+
+## 2026-09-06：Collect receipt 修复合入，新的 Pi carrier 失败尚未定位
+
+PR #264 的 sourceHead `224409272eb9c30762b8b0e15a2fd730d38db0e8` 已合入 `main@5bdec88d7161771caa2a556c70bbdef576375ff9`，pendingRemoteSync=false；source CI 34026422197 与 main CI 34027276856 五项全绿。单次后继真实业务 canary [34027927457](https://github.com/chiga0/marshal-harness/actions/runs/34027927457) 失败于 `pi-result-final-content-shape/authority-conflict`，未产生 worker.completed、VerificationReport、ReviewPacket 或 Decision。七次 pending 是同一请求的观察，不是七个 Attempt。journal 的 RUNNING/sequence=3 为权威，state.json 的 READY/sequence=2 只是尚未刷新投影；本次尚未走到新 Collect receipt 代码，不能宣称其实机出口通过。
+
+小型诊断 artifact `9987677079` 与完整 artifact `9987677324` 已保存到 GitHub，但两者的上传白名单均不含 supervisor 原始 transcript。固定 Pi 0.84.4 bundle SHA-256 `5406c369954516fb56879d685e082ff9095cd6e06e41af406f394942377fd4bf` 对应 producer 的 assistant content 为数组、agent_end 原样携带 messages；这不能替代本次现场内容。现有 Go 解码错误把非数组容器、非对象元素、type 字段类型错误和 text 字段类型错误全部压成一个码，无法判断是哪一种；不得直接认定 provider 配置错误、接受字符串载体或假设 thinking 字段为根因。
+
+本候选仅根据既有 json.Unmarshal 的失败元数据区分 container/item/type/text 四种封闭错误码，未知元数据仍回到旧码。不输出值、未知字段名、正文或凭证，不另行解码/归一化/重试，既有成功及失败集合不变。回归覆盖容器、元素、字段及 null/空数组负例和未知错误兜底；本地仅编译检查与 vet，不算动态通过。目的为解除真实业务阻塞所需的定位缺口，不计为业务交付，不升级 B1。
+
+取消/业务超时独立分支 `feat/b1-stop-lifecycle@c1daeebb43541371d442e414ba830d59bf262ecd` 已推送，[CI 34027878879](https://github.com/chiga0/marshal-harness/actions/runs/34027878879) 五项全绿，新增真实 sealed StopIntent 的 terminal 故障链测试和取消后 server 重启查询驱动。仍未合入、ADR 0081 仍 Proposed，未运行真实取消/业务超时 canary，不用测试通过代替实机出口。
+
 ## 2026-09-06：真实 Pi 已到 VERIFYING，修复 release 与 fixed delivery 的观察衔接
 
 候选 `c6a1609` 的 CI 34025737001 在 Linux 的既有 `TestSuperviseOnceJSONCarriesCompleteDecisionFields` 失败（exit=1，stderr 空）；该测试未输出 JSON 模式的 decision.error，故现场原因尚不能确认。代码核对发现测试子进程的一次非阻塞 Acquire 会与 readiness 的短暂 flock 探测竞争；夹具现仅对 ErrLeaseHeld 有界重试，其他错误仍立即失败，并在断言失败时输出自身生成的 decision JSON。生产获取锁/启动逻辑不变，不能把候选假设记作已证实现场根因；新 source CI 仍是放行条件，不原样重跑取巧。该次 Linux 的 productionruntime 测试通过也不能抵消整套 CI 失败。

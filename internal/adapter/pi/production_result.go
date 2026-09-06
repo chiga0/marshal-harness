@@ -226,7 +226,8 @@ func extractFinalWorkerResult(transcript []byte) (result []byte, err error) {
 	stage = "final-content-shape"
 	var content []productionContentItem
 	if err := json.Unmarshal(message.Content, &content); err != nil {
-		return nil, fmt.Errorf("%w: final production assistant content is not an array", ErrProtocol)
+		stage = productionContentDecodeFailure(err)
+		return nil, fmt.Errorf("%w: final production assistant content cannot decode as typed content items", ErrProtocol)
 	}
 	var text string
 	textItems := 0
