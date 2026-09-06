@@ -52,6 +52,9 @@ func expectedProductionPrompt(taskID, runID, attemptID, objective string, constr
 		}
 	}
 	b.WriteString("\nWorkerResult contract:\n")
+	b.WriteString("- This final message is a machine-readable protocol response, not a Markdown report. Emit the JSON object itself, without code fences, backticks, introductory text, or text after the closing brace.\n")
+	b.WriteString("- The first non-whitespace character must be { and the last must be }. Put all explanations, test results, and limitations inside the summary, declaredCommands, declaredRisks, or blocker fields; do not append a separate explanation, example, or sign-off.\n")
+	b.WriteString("- Before sending, check that the complete final message parses as exactly one JSON object. The object below is the output shape to fill in, not an example to quote or wrap.\n")
 	b.WriteString("- Keep apiVersion, kind, taskId, runId, attemptId, and adapter.id exactly as shown.\n")
 	b.WriteString("- Do not add a result wrapper or any key not shown in the object, except blocker as described below.\n")
 	b.WriteString("- Set status truthfully to completed, blocked, failed, or cancelled. Use completed only when the objective and every constraint are fully satisfied.\n")
@@ -138,6 +141,11 @@ func TestBuildProductionLaunchExactArgv(t *testing.T) {
 
 func TestProductionPromptEmbedsValidWorkerResultContract(t *testing.T) {
 	prompt := buildProductionPrompt(validProductionInput())
+	for _, required := range []string{"without code fences, backticks", "or text after the closing brace", "Put all explanations, test results, and limitations inside", "complete final message parses as exactly one JSON object", "not an example to quote or wrap"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("production prompt omits wire-format rule %q", required)
+		}
+	}
 	for _, required := range []string{"Use completed only when the objective and every constraint are fully satisfied", "For any non-completed status, add a top-level blocker", "set outputTruncated truthfully", "Do not add a result wrapper", "declaredChangedFiles is a unique array of relative-path strings", "declaredArtifacts is [] unless", "each artifact must be an object", "declaredCommands is [] or an array of objects", "declaredRisks is [] or an array of non-empty strings"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("production prompt lacks terminal-result rule %q", required)

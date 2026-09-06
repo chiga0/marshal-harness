@@ -1,12 +1,12 @@
 # Roadmap 状态
 
-2026-09-06 03:01 UTC 最新实机结果：main `80dc39f` 的 CI 34007198729 五项全绿；单次 canary 34007829215 已完成真实启动/恢复与 transcript 读取，但以 `pi-result-final-message/authority-conflict` 停止，尚无 Verify/ReviewPacket/ACCEPTED。当前修复经已安装 Pi 类型定义确认的非终态消息字符串/数组联合类型不匹配，并补最终载体的封闭失败分类；尚未证明它是此次现场的唯一根因，不原样重跑。B1 为 IN_PROGRESS，B2/B3 仍 PLANNED，详见 [审计记录](audit-report.md)。
+2026-09-06 最新实机结果：main `5945b68` 的 CI 34008933865 五项全绿；单次 canary 34009508838 已越过历史消息解析并提取最终 assistant 文本，但以 `pi-result-final-object-trailing/authority-conflict` 停止，尚无 Verify/ReviewPacket/ACCEPTED。本候选将机器输出约束明确前移到 Pi prompt，禁止代码围栏/尾随报告，解析器门禁不变；不原样重试、不宣称格式问题已实机解决。取消纵切候选 `feat/b1-stop-lifecycle@f41b3aa` 已推送并运行独立 CI，仍不允许合并放行。B1 为 IN_PROGRESS，B2/B3 仍 PLANNED，详见 [审计记录](audit-report.md)。
 
 更新时间：2026-09-06（ADR 0080 三面分离与业务交付路线；不升级历史成熟度）
 
 ## 业务交付当前表
 
-当前已合入基线为 `origin/main@80dc39fb060c0bee885e8945a8dcf28f6500f7c0`（[PR #261](https://github.com/chiga0/marshal-harness/pull/261)，sourceHead `01c4a545847ce99cb7624ad18c33b4d7b655954f`）。精确 source CI 34006591660 五项全部通过后，于 2026-09-06 02:43 UTC 远端合并；该 PR 无 pendingRemoteSync。main push CI [34007198729](https://github.com/chiga0/marshal-harness/actions/runs/34007198729) 单独全绿后，仅派发一次 [34007829215](https://github.com/chiga0/marshal-harness/actions/runs/34007829215)，失败位置进一步缩小到最终消息提取。#259 的布局修复没有复发；Pi 已真实运行，不是未配置。原始 transcript 未进入公开诊断 artifact，不能把尚未实证的猜测当根因。后继候选与取消/超时工作区分离，禁止混用 head/CI 或宣称业务已接纳。
+当前已合入基线为 `origin/main@5945b6854220eb86b229e19efe3e883a17556a48`（[PR #262](https://github.com/chiga0/marshal-harness/pull/262)，sourceHead `8de96487ff37a3520c7c867e25099a1f028a066e`）。精确 source CI 34008326479 五项全部通过后，于 2026-09-06 03:24 UTC 远端合并；该 PR 无 pendingRemoteSync。main push CI [34008933865](https://github.com/chiga0/marshal-harness/actions/runs/34008933865) 单独全绿后，仅派发一次 [34009508838](https://github.com/chiga0/marshal-harness/actions/runs/34009508838)，失败位置缩小到最终 JSON 后的非空白内容。#259 的布局修复没有复发；Pi 已真实运行，不是未配置。原始 transcript 未进入公开诊断 artifact，不能推断尾随内容的具体形式。后继候选与取消/超时工作区分离，禁止混用 head/CI 或宣称业务已接纳。
 
 同机独立 Decision 载体已随 #260 整体合入，默认关闭、仅显式 `live-review=true` 启用。客户端 current-head/receipt/Outcome/终态查询校验、上传与外部 Decision 原文递交通道已有 27 项 Node/Python 回归与 source hosted CI；仍无真实 ACCEPTED，不把测试设施合入当作业务验收。新阶段诊断只用于缩小 Collect 根因，不宣称修复已发生。
 

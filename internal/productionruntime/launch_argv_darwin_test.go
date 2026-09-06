@@ -68,6 +68,9 @@ func testProductionPrompt(taskID, runID, attemptID string) string {
 		"attemptId: " + attemptID + "\n" +
 		"\nObjective:\nTest objective\n" +
 		"\nWorkerResult contract:\n" +
+		"- This final message is a machine-readable protocol response, not a Markdown report. Emit the JSON object itself, without code fences, backticks, introductory text, or text after the closing brace.\n" +
+		"- The first non-whitespace character must be { and the last must be }. Put all explanations, test results, and limitations inside the summary, declaredCommands, declaredRisks, or blocker fields; do not append a separate explanation, example, or sign-off.\n" +
+		"- Before sending, check that the complete final message parses as exactly one JSON object. The object below is the output shape to fill in, not an example to quote or wrap.\n" +
 		"- Keep apiVersion, kind, taskId, runId, attemptId, and adapter.id exactly as shown.\n" +
 		"- Do not add a result wrapper or any key not shown in the object, except blocker as described below.\n" +
 		"- Set status truthfully to completed, blocked, failed, or cancelled. Use completed only when the objective and every constraint are fully satisfied.\n" +
