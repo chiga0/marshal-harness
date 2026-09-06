@@ -96,6 +96,8 @@ Verify 只在当前 Run 已验证为 VERIFYING 后移除其可重建 RUNNING dea
 
 跨 Run 实机采用上述 Attempt-timeout 场景的显式 `verify-peer`，不和 crash/live-review 混跑：两个独立 worktree 的真实 Pi Task 在 server 启动前冻结并批准，peer 保留订单报价 oracle，另加有界 100 秒验证命令。命令只在本 canary evidence 写入诊断 rendezvous，然后保持执行；驱动观察后才经 fixed server Start 另一个 60 秒 Attempt Run。最终必须由绑定公开 Verify projection 摘要与原 Task 的验证报告，证明另一 Run 的 stopped Collect 已完成时间严格处于长命令执行区间。诊断信号不是 Run authority、不是 Worker 自报成功，不改变验证接纳；缺信号、错过区间或任一调用失败均保留失败，不自动重试。实验只证明跨 Run 调度，不宣称 Agent Team 集成交付或独立 Decision 已完成。
 
+传输等待必须与应用阶段匹配：客户端从认证后等响应首 byte，以原冻结请求 deadline 与 caller context 的更早截止点为上限，不拿 15 秒字节传输窗口充当 Verify 的业务预算；首 byte 后整份 HTTP envelope 只获得一个最多 15 秒、不随流量刷新的窗口，仍不得越过原截止点。父 context 取消关闭本请求独占连接，服务端沿既有断连取消应用，不据此伪造 Run 停止。消费响应后用最多 5 秒且受原截止点约束的 context 执行完整 current owner/peer/receipt 复查，成功后才 half-close。服务端保留响应连接直到 half-close，最多使用响应传输加复查窗口（20 秒）且不越过原请求 deadline，不能仅 1 秒就抢先关闭。此调整不延长 Run/Attempt 预算、不重发业务、不放宽身份或 receipt 校验；必须由真实认证客户端/HTTP router 的长应用、父取消、原截止点、部分 envelope 与 half-close 回归覆盖。未知响应仍保留不确定性，不自动重试。
+
 实机候选与发布门禁必须分开：停止候选尚未满足本节实机要求时不得先合并 main，也不能被 main-only release CI gate 阻止验证。仅显式 `order-quote-cancel`、`order-quote-timeout`、`order-quote-run-timeout` 的未合入 `feat/` 分支，允许用 canonical 仓库、workflow dispatch SHA 与 expected-head 相等、同精确 SHA/分支最新手动 CI 五项成功的 candidate-only gate 做隔离实机验证；不创建 tag、release、独立 Decision 或 production 声明。main 上的任何场景及其他场景仍走原 main push CI gate，正式发布脚本和权限不变。此候选验证许可不等于接受本 ADR 或开启正式支持。
 
 当前证据补充：`20a9999` 的 CI 34026216770 五项全绿，覆盖下述 READY 准入。后续 fixed CLI cancel 与显式 `order-quote-cancel` 驱动只补测试入口：request key 派生唯一 stop requestId，未知响应不重试，已证明停止的 Collect 返回非成功退出码。驱动必须验证精确 receipt/Outcome、同请求重放与终态查询，不生成独立 Decision；尚未运行真实取消 canary，不能用脚本测试替代 enable 门槛。

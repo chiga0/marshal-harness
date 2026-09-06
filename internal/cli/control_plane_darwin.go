@@ -382,6 +382,7 @@ func runControlPlaneStart(ctx context.Context, args []string, stdout, stderr io.
 	defer authority.Close()
 	result, err := fixedcontrolplane.CallStartRun(ctx, authority, *requestKey, application.StartRunRequest{RunID: *runID, ExpectedSequence: *sequence, ExpectedAuthorityHead: *head}, deadline)
 	if err != nil {
+		writeControlPlaneRequestFailure(stderr, err)
 		fmt.Fprintln(stderr, "control-plane start 失败：结果未证明成功；请使用同一 request key 与冻结请求重放。")
 		return ExitFailure
 	}
@@ -506,6 +507,7 @@ func runControlPlaneVerify(ctx context.Context, args []string, stdout, stderr io
 	defer authority.Close()
 	result, err := fixedcontrolplane.CallVerifyRun(ctx, authority, input.requestKey, application.VerifyRunRequest(input.current), input.deadline)
 	if err != nil {
+		writeControlPlaneRequestFailure(stderr, err)
 		fmt.Fprintln(stderr, "control-plane verify 失败：结果未证明成功；请使用同一 request key 与冻结请求重放。")
 		return ExitFailure
 	}

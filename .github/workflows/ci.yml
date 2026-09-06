@@ -130,6 +130,7 @@ jobs:
         run: |
           go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v -run '^Test(InspectionLease|StoppedRead|FixedLifecycleStoppedCollect|FixedEndpointClientProjectionContainerMutationBoundary)' ./internal/productionruntime
           go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v -run '^TestLauncherV2(TerminateUsesDurableBarrierAndRecoversLostReply|SameOwnerContinuesWithoutRestart)$' ./internal/resultingress
+          go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v -run '^TestResponsePhase' ./internal/fixedcontrolplane
           go test -race -count=1 -v -run '^TestExistingWorktreeProjection(ContainerKeepsRuntimeStable|LegacyPreservedOrRejected)$' ./internal/allocationcontrol
 
       - name: Run quality gate
