@@ -176,30 +176,7 @@ func rehydrateStoppedRunUnderLease(ctx context.Context, runs *runstore.Store, le
 		return application.CancelRunProjection{}, resultingress.ErrAttemptAuthorityConflict
 	}
 	outcome := domain.OutcomeBundle{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindOutcome, TaskID: transition.After.TaskID, RunID: request.RunID, TerminalState: domain.StateBlocked, Verdict: "abort", FinalReviewRound: 1, FinalReviewDigest: gotDigest, FinalEvidenceDigest: gotDigest, Summary: want["terminalReason"].(string), RetentionPolicy: "default", GeneratedAt: transition.Event.Timestamp}
-	raw, err := json.Marshal(outcome)
-	if err != nil {
-		return application.CancelRunProjection{}, err
-	}
-	validator, err := contract.NewValidator()
-	if err != nil {
-		return application.CancelRunProjection{}, err
-	}
-	if err := validator.Validate(domain.KindOutcome, raw); err != nil {
-		return application.CancelRunProjection{}, err
-	}
-	directory, err := runstore.OpenDirectoryUnderLease(lease)
-	if err != nil {
-		return application.CancelRunProjection{}, err
-	}
-	defer directory.Close()
-	if err := runstore.WriteFileInDirectory(directory, "outcome.json", raw, 0o600); err != nil {
-		return application.CancelRunProjection{}, err
-	}
-	summary := []byte(fmt.Sprintf("# Run 停止结果\n\n终态：BLOCKED\n\n原因：%s\n\n停止事件证据：%s\n\n本结果不代表任务成功，也不代表存在独立 ReviewDecision。\n", outcome.Summary, gotDigest))
-	if err := runstore.WriteFileInDirectory(directory, "result.md", summary, 0o600); err != nil {
-		return application.CancelRunProjection{}, err
-	}
-	digest, err := canonical.DigestJSON(raw)
+	digest, err := materializeStoppedOutcome(lease, outcome)
 	if err != nil {
 		return application.CancelRunProjection{}, err
 	}
@@ -208,4 +185,35 @@ func rehydrateStoppedRunUnderLease(ctx context.Context, runs *runstore.Store, le
 		return application.CancelRunProjection{}, err
 	}
 	return result, nil
+}
+
+// Derived file materialization only: the caller above must first recheck the
+// exact current stop/cleanup and Run event. This function cannot authorize a
+// stop, append a Run event or launch a Worker. Existing conflicting bytes are
+// rejected by the same immutable directory writer used for a fresh outcome.
+func materializeStoppedOutcome(lease *runstore.Lease, outcome domain.OutcomeBundle) (string, error) {
+	raw, err := json.Marshal(outcome)
+	if err != nil {
+		return "", err
+	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		return "", err
+	}
+	if err := validator.Validate(domain.KindOutcome, raw); err != nil {
+		return "", err
+	}
+	directory, err := runstore.OpenDirectoryUnderLease(lease)
+	if err != nil {
+		return "", err
+	}
+	defer directory.Close()
+	if err := runstore.WriteFileInDirectory(directory, "outcome.json", raw, 0o600); err != nil {
+		return "", err
+	}
+	summary := []byte(fmt.Sprintf("# Run 停止结果\n\n终态：BLOCKED\n\n原因：%s\n\n停止事件证据：%s\n\n本结果不代表任务成功，也不代表存在独立 ReviewDecision。\n", outcome.Summary, outcome.FinalEvidenceDigest))
+	if err := runstore.WriteFileInDirectory(directory, "result.md", summary, 0o600); err != nil {
+		return "", err
+	}
+	return canonical.DigestJSON(raw)
 }

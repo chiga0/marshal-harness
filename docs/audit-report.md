@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：停止 Outcome 部分落盘恢复回归
+
+停止事件的 current-ledger/cleanup 校验保持在原入口；只把其后既有的 Outcome 和说明文件不可变写入提取为内部函数，未新增停止权限、事件、协议或 Worker 启动路径。回归直接调用这个生产写入函数：第二个文件被测试自有空目录阻断时不得返回成功摘要，已写入的 Outcome 保留；释放并重新取得 lease 后补齐说明文件，两次重放保持原始 bytes、时间、原因和摘要。另覆盖两个目标文件的冲突内容、符号链接及已关闭 lease，均不得覆盖已有内容或报告成功。
+
+这些是合成 Outcome 的文件物化组件测试，不是完整停止授权、实机崩溃或磁盘断电证据，不关闭 signal/cleanup 中途故障矩阵。本地 compile-only、vet、staticcheck、diff-check 通过；动态执行须由新 source 的 hosted CI 验证，不执行本机匿名 Mach-O。Run-first/两类超时冷恢复仍先验证已推送的 `49f745d`，不把后继测试代码混入它的 binary 身份。
+
 ## 2026-09-06：Run-first 与两类超时冷恢复候选
 
 `d10cd98` 的 CI 34040123782 五项全部通过，包含 Cancel 排队 deadline/零意图及 Task renderer 的动态 schema 回归。本轮在同一个 canary 增加 `order-quote-run-timeout`，并让两类 timeout 完成后正常关闭 server2、以同 bytes server3 重启、重放原 Collect 请求和原 deadline。冷恢复若看到 RUNNING、不同终态 head、不同 binary/Run、被改写的 key/参数或过期原 deadline，即停止，不等待新一轮执行、不取消或启动 Worker。原取消场景保持。
