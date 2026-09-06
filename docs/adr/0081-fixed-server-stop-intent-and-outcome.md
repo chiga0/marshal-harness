@@ -67,6 +67,8 @@ Collect 对已完成 stop 使用封闭 `run-stopped` 错误，不伪造 Collecte
 
 ### 接受与 enable 门槛
 
+当前证据补充：`20a9999` 的 CI 34026216770 五项全绿，覆盖下述 READY 准入。后续 fixed CLI cancel 与显式 `order-quote-cancel` 驱动只补测试入口：request key 派生唯一 stop requestId，未知响应不重试，已证明停止的 Collect 返回非成功退出码。驱动必须验证精确 receipt/Outcome、同请求重放与终态查询，不生成独立 Decision；尚未运行真实取消 canary，不能用脚本测试替代 enable 门槛。
+
 READY 原始预算准入候选已在 preparation 的 ReserveAttempt 前和 bridge 进入启动链前接入，使用同一冻结 TaskSpec/首事件与当前 Run head；恰好到期即拒绝。拒绝不创建 started stop；已提交启动结果由既有 replay 先行恢复。两次检查不是整个 launch 的原子 deadline：检查后到 Resume 的窗口、长 public mutation 的调度延迟仍须与同路径停止机制一起验证。`a04d76c` 的 CI 34025131805 五项全绿覆盖此前常驻循环/Outcome 恢复，不覆盖本次新增准入；下文“仍未完成”的历史候选描述以此项和当前 Roadmap 表为准，完整 enable 门槛不变。
 
 常驻调度候选复用 fixed server 自身生命周期：启动恢复时登记 RUNNING Run，StartRun 在可能提交启动结果前登记；索引和轮询游标只存在内存、可由账本重建。每秒最多公平处理三个 Run，每轮 30 秒 context 上限；后台不排队抢占正在执行的 public mutation。每次推进重新读取 Run、当前 owner、原业务预算和 Attempt，调用同一 stop barrier/cleanup，而不是自行构造 deadline 或 PID。server shutdown 先取消并 drain 此循环，再释放 delivery/session/owner。停止事件后 Outcome 未完成的 BLOCKED Run 在启动扫描和活跃项处理中走已存意图恢复；不能因为 Run 已非 RUNNING 就永久漏掉 Outcome。该候选尚需实机故障和容量验证；长 public mutation 的 deadline 响应上界及 READY 阶段准入仍待关闭。

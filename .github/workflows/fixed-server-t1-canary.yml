@@ -12,11 +12,11 @@ on:
         required: true
         type: string
       scenario:
-        description: t1-marker=启动恢复；order-quote=T2真实业务到ReviewPacket，不自动Decision
+        description: t1-marker=启动恢复；order-quote=业务验收；order-quote-cancel=显式停止与重放，不是ACCEPTED
         required: true
         default: t1-marker
         type: choice
-        options: [t1-marker, order-quote]
+        options: [t1-marker, order-quote, order-quote-cancel]
       live-review:
         description: 在原 server 存活期间等待独立维护者 Decision，最长20分钟
         required: true
@@ -58,7 +58,7 @@ jobs:
           test "${{ github.repository }}" = "chiga0/marshal-harness" || { echo "::error::仅允许 canonical 仓库" >&2; exit 1; }
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::expected-head 必须是 40 位小写 commit" >&2; exit 1; }
           [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || { echo "::error::pi-model 必须是 provider/model" >&2; exit 1; }
-          case "$CANARY_SCENARIO" in t1-marker|order-quote) ;; *) echo "::error::invalid scenario" >&2; exit 1 ;; esac
+          case "$CANARY_SCENARIO" in t1-marker|order-quote|order-quote-cancel) ;; *) echo "::error::invalid scenario" >&2; exit 1 ;; esac
           if [ '${{ inputs.live-review }}' = true ]; then test "$CANARY_SCENARIO" = order-quote; fi
           MODEL_ID="${PI_MODEL#*/}" VARS_MODELS="$VARS_MODELS" /usr/bin/python3 -I -B -c 'import os,sys; values=[v.strip() for v in os.environ["VARS_MODELS"].split(",") if v.strip()]; os.environ["MODEL_ID"] in values or sys.exit("pi-model 不在 OPENAI_MODELS allowlist")'
 

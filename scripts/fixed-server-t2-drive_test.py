@@ -27,6 +27,77 @@ def result(state, sequence, **fields):
                                                               "postRevision": sequence, "postAuthorityHead": value["authorityHead"]}}
 
 
+class CancelRunTest(unittest.TestCase):
+    def replies(self):
+        stopped = result("BLOCKED", 4, protocolRevision="run-stop/v1", terminalReason="aborted-by-operator",
+                         requestDigest="sha256:" + "a" * 64, stopIntentDigest="sha256:" + "b" * 64,
+                         outcomeDigest="sha256:" + "c" * 64)
+        return [(0, run("RUNNING", 3)), (0, stopped), (0, copy.deepcopy(stopped)),
+                (1, {"disposition": "stopped", "reasonCode": "run-stopped"}), (0, run("BLOCKED", 4))]
+
+    def invoke(self, replies):
+        calls, saved = [], {}
+
+        def call(args, remaining):
+            self.assertGreater(remaining, 0)
+            calls.append(list(args))
+            return replies[len(calls) - 1]
+
+        return call, calls, saved
+
+    def test_cancel_replay_and_collect_stop_without_acceptance(self):
+        call, calls, saved = self.invoke(self.replies())
+        summary = driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 0)
+        self.assertFalse(summary["accepted"])
+        self.assertEqual(summary["stage"], "cancelled")
+        self.assertEqual(calls[1], calls[2])
+        self.assertEqual([item[0] for item in calls], ["inspect", "cancel", "cancel", "collect", "inspect"])
+        self.assertEqual(saved["cancel-summary.json"]["run"], run("BLOCKED", 4))
+        self.assertNotIn("review-summary.json", saved)
+
+    def test_uncertain_cancel_is_never_retried(self):
+        replies = self.replies()
+        replies[1] = (3, driver.LIVE_PENDING)
+        call, calls, saved = self.invoke(replies)
+        with self.assertRaisesRegex(driver.DriveError, "cancel-unresolved"):
+            driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 0)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("cancel-summary.json", saved)
+
+    def test_rejects_partial_wrong_reason_and_wrong_receipt(self):
+        for kind in ("digest", "reason", "receipt", "attempt"):
+            replies = self.replies()
+            value = replies[1][1]
+            if kind == "digest":
+                del value["Projection"]["outcomeDigest"]
+            elif kind == "reason":
+                value["Projection"]["terminalReason"] = "attempt-deadline-exceeded"
+            elif kind == "receipt":
+                value["Receipt"]["postRevision"] += 1
+            else:
+                value["Projection"]["run"]["attemptId"] = "attempt-other"
+            call, calls, saved = self.invoke(replies)
+            with self.assertRaises(driver.DriveError):
+                driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 0)
+            self.assertEqual(len(calls), 2)
+
+    def test_post_stop_replay_collect_and_query_must_match(self):
+        for index, value in ((2, (1, {})), (3, (3, driver.LIVE_PENDING)), (4, (0, run("RUNNING", 3)))):
+            replies = self.replies()
+            replies[index] = value
+            call, calls, saved = self.invoke(replies)
+            with self.assertRaises(driver.DriveError):
+                driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 0)
+            self.assertEqual(len(calls), index + 1)
+            self.assertNotIn("cancel-summary.json", saved)
+
+    def test_expired_client_deadline_does_not_dispatch_cancel(self):
+        call, calls, saved = self.invoke(self.replies())
+        with self.assertRaisesRegex(driver.DriveError, "cancel-driver-deadline"):
+            driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 100)
+        self.assertEqual(calls, [])
+
+
 class FinalizeReviewTest(unittest.TestCase):
     def test_wait_is_bounded_and_invalid_publication_is_not_retried(self):
         with tempfile.TemporaryDirectory() as directory:

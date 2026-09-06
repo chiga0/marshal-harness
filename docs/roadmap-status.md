@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-06 当前增量：停止分支 `20a9999` 的 CI 34026216770 五项全绿，覆盖 preparation 前与 launch 前 READY 原始预算检查。最新未发布候选新增 fixed CLI cancel、明确非成功的 stopped Collect 输出与显式 `order-quote-cancel` canary 驱动；23 项 Python 测试通过，但尚未实机派发。stop 端到端故障矩阵、release/receipt 衔接和截止延迟仍未关闭，不合并放行。主线实机仍是 `4f7311b` 到 VERIFYING，PR #264 待 macOS 检查；B1 IN_PROGRESS，B2/B3 PLANNED。下方为此前检查点。
+
 2026-09-06 最新状态：main `4f7311b` 的 CI 全绿，唯一 canary 34024740089 已到 `VERIFYING/cleanup-released`，尚无 Verify/ReviewPacket/ACCEPTED。receipt 阻塞修复见 PR #264，其精确 source CI 独立推进，不原样重跑旧 canary。停止分支 `a04d76c` 的 CI 34025131805 五项全绿；最新候选补 preparation 前与 launch 前的 READY 原始预算检查，需新 source 动态证据。stop 端到端故障矩阵、release/receipt 衔接和截止延迟仍未关闭，不合并放行。B1 IN_PROGRESS，B2/B3 PLANNED；以下为历史检查点。
 
 2026-09-06 停止纵切后续候选：已补 `run-stopped` 的 Core→fixed HTTP→客户端返回以及原 Collect 请求的终态重放，避免完成取消/超时后仍显示 live pending。只在 stop/cleanup/Outcome 验证后返回；部分结果仍 pending。当前仍在隔离开发分支，尚缺 resident timer、READY 到期准入和全链路 fault matrix；B1 未完成、B2/B3 未升级。主线与最新实机事实见下段；新候选动态证据独立记录，不借用旧 CI。

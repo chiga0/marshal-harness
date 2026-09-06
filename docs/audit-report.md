@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：READY 准入动态通过，补停止场景的真实入口
+
+`20a9999bdbe11a0eab899737651135e35c5422e5` 的 [CI 34026216770](https://github.com/chiga0/marshal-harness/actions/runs/34026216770) 五项全绿，覆盖原始预算准入及此前停止纵切。新增候选为 fixed CLI `cancel` 派生单一 request-key 绑定的停止请求，拒绝自由 PID/actor/reason；认证、当前 Run 绑定与停止权限仍由原 fixed server 校验。Collect 的已证明停止输出为 `stopped/run-stopped`，退出码 1，不冒充成功收集。
+
+显式 `order-quote-cancel` 驱动复用真实 order-quote 的同一固定 server/启动恢复路径：要求取消后的 BLOCKED、Outcome 摘要、精确 receipt，成功后才执行一次同请求幂等重放，并验证 Collect 不再 pending、查询保持终态。未知响应立即保留证据退出，不自动重新取消；不创建 Decision、不输出 ACCEPTED。23 项注入调用 Python 测试及 shell 回归通过，不是真实 Pi 证据。取消后的重启、stop release/receipt 根绑定和完整故障矩阵仍待实现/实机验证；该选项尚未派发，ADR 0081 继续 Proposed，B1 不升级。
+
 ## 2026-09-06：停止纵切 CI 全绿，补 READY 原始预算准入
 
 隔离候选 `a04d76c8239eb0a55822e01f7470ed9ff09a452a` 的 [CI 34025131805](https://github.com/chiga0/marshal-harness/actions/runs/34025131805) 五项全绿，包含两平台动态质量、两个 Linux conformance 和 secret scan。此前测试夹具混合历史 ProcessStarted/v2 reservation 的问题已用完整 Supervisor 启动/Collect 链修正，关闭借用的测试死锁也未再复发。这不替代真实 stop 故障矩阵，分支仍不合并。

@@ -29,7 +29,7 @@ const (
 
 func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "用法：marshal control-plane <serve|status|inspect|start|collect|verify|review-packet|decision>")
+		fmt.Fprintln(stderr, "用法：marshal control-plane <serve|status|inspect|start|cancel|collect|verify|review-packet|decision>")
 		return ExitUsage
 	}
 	switch args[0] {
@@ -49,6 +49,8 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 		return runControlPlaneInspect(ctx, args[1:], stdout, stderr)
 	case "start":
 		return runControlPlaneStart(ctx, args[1:], stdout, stderr)
+	case "cancel":
+		return runControlPlaneCancel(ctx, args[1:], stdout, stderr)
 	case "collect":
 		return runControlPlaneCollect(ctx, args[1:], stdout, stderr)
 	case "verify":
@@ -58,7 +60,7 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	case "decision":
 		return runControlPlaneDecision(ctx, args[1:], stdout, stderr)
 	default:
-		fmt.Fprintln(stderr, "用法：marshal control-plane <serve|status|inspect|start|collect|verify|review-packet|decision>")
+		fmt.Fprintln(stderr, "用法：marshal control-plane <serve|status|inspect|start|cancel|collect|verify|review-packet|decision>")
 		return ExitUsage
 	}
 }
@@ -411,6 +413,40 @@ func parseControlPlaneCurrentInput(command string, args []string, stderr io.Writ
 	return controlPlaneCurrentInput{current: application.CurrentRunRequest{RunID: *runID, AttemptID: *attemptID, ExpectedSequence: *sequence, ExpectedAuthorityHead: *head}, requestKey: *requestKey, deadline: deadline, decisionPath: *decisionPath}, ExitOK
 }
 
+func controlPlaneCancelRequest(input controlPlaneCurrentInput) (application.CancelRunRequest, error) {
+	// One logical request key controls both transport replay and stop intent
+	// identity. Do not accept a second free-form stop ID, PID or actor flag.
+	request := application.CancelRunRequest{CurrentRunRequest: input.current, RequestID: "cancel:" + canonical.DigestBytes([]byte(input.requestKey))[7:]}
+	if input.requestKey == "" || request.Validate() != nil {
+		return application.CancelRunRequest{}, application.NewError("cancel-run", application.ReasonInvalidRequest)
+	}
+	return request, nil
+}
+
+func runControlPlaneCancel(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	input, exit := parseControlPlaneCurrentInput("cancel", args, stderr, false)
+	if exit != ExitOK {
+		return exit
+	}
+	request, err := controlPlaneCancelRequest(input)
+	if err != nil {
+		fmt.Fprintln(stderr, "control-plane cancel 失败：请求身份或当前 Run 绑定无效。")
+		return ExitUsage
+	}
+	authority, err := openControlPlaneClient(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, "control-plane cancel 失败：resident server 不可用。")
+		return ExitUnavailable
+	}
+	defer authority.Close()
+	result, err := fixedcontrolplane.CallCancelRun(ctx, authority, input.requestKey, request, input.deadline)
+	if err != nil {
+		fmt.Fprintln(stderr, "control-plane cancel 未证明完成：请查询当前 Run，并保留同一 request key 与冻结请求。")
+		return ExitFailure
+	}
+	return writeControlPlaneJSON(stdout, stderr, result)
+}
+
 func runControlPlaneCollect(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	input, exit := parseControlPlaneCurrentInput("collect", args, stderr, false)
 	if exit != ExitOK {
@@ -423,6 +459,16 @@ func runControlPlaneCollect(ctx context.Context, args []string, stdout, stderr i
 	}
 	defer authority.Close()
 	result, err := fixedcontrolplane.CallCollectRunResult(ctx, authority, input.requestKey, application.CollectRunResultRequest(input.current), input.deadline)
+	return writeControlPlaneCollectResult(stdout, stderr, result, err)
+}
+
+func writeControlPlaneCollectResult(stdout, stderr io.Writer, result fixedcontrolplane.CollectRunClientResult, err error) int {
+	if application.HasReason(err, application.ReasonRunStopped) && result == (fixedcontrolplane.CollectRunClientResult{}) {
+		if exit := writeControlPlaneJSON(stdout, stderr, map[string]string{"disposition": "stopped", "reasonCode": string(application.ReasonRunStopped)}); exit != ExitOK {
+			return exit
+		}
+		return ExitFailure // A verified stop is not a successful collection.
+	}
 	if errors.Is(err, fixedcontrolplane.ErrAttemptStillRunning) {
 		if exit := writeControlPlaneJSON(stdout, stderr, map[string]string{"disposition": "pending", "reasonCode": string(application.ReasonAttemptStillRunning)}); exit != ExitOK {
 			return exit

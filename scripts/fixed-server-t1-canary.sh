@@ -24,7 +24,7 @@ usage() {
 usage: scripts/fixed-server-t1-canary.sh \
   --expected-head HEAD --pi-model PROVIDER/MODEL --pi-node PATH --pi-bin PATH \
   --pi-bundle PATH --run-id RUN_ID --evidence-root ABSOLUTE_PATH \
-  [--scenario t1-marker|order-quote] [--await-review]
+  [--scenario t1-marker|order-quote|order-quote-cancel] [--await-review]
 EOF
   exit 2
 }
@@ -47,7 +47,7 @@ done
 [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || die 'expected-head 必须是 40 位小写 commit'
 [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || die 'pi-model 必须是 provider/model'
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{2,120}$ ]] || die 'run-id 形态非法'
-case "$SCENARIO" in t1-marker|order-quote) ;; *) die 'scenario 必须为 t1-marker 或 order-quote' ;; esac
+case "$SCENARIO" in t1-marker|order-quote|order-quote-cancel) ;; *) die 'scenario 必须为 t1-marker、order-quote 或 order-quote-cancel' ;; esac
 [ "$AWAIT_REVIEW" -eq 0 ] || [ "$SCENARIO" = order-quote ] || die 'await-review 只适用于 order-quote'
 [ -x "$PI_NODE" ] && [ ! -L "$PI_NODE" ] || die 'pi-node 必须是固定普通 executable'
 [ -x "$PI_BIN" ] || die 'pi-bin 必须是可执行入口'
@@ -209,7 +209,7 @@ task_renderer=scripts/fixed-server-t1-task.py
 # Keep the array nonempty: macOS Bash 3.2 rejects an empty array expansion
 # under nounset, even when quoted.
 renderer_args=(--doctor "$EVIDENCE_ROOT/doctor.json" --repository "$ROOT" --base-ref "$EXPECTED_HEAD")
-if [ "$SCENARIO" = order-quote ]; then
+if [ "$SCENARIO" != t1-marker ]; then
   task_id="FIXED-SERVER-T2-${EXPECTED_HEAD:0:12}"
   task_renderer=scripts/fixed-server-t2-task.py
   renderer_args+=(--scenario order-quote)
@@ -294,7 +294,10 @@ append_start_audit server2 received-replay
 "$MARSHAL_BIN" control-plane inspect --run "$RUN_ID" >"$EVIDENCE_ROOT/server2-final-inspect.json"
 append_audit server2 inspect received-final
 
-if [ "$SCENARIO" = order-quote ]; then
+if [ "$SCENARIO" = order-quote-cancel ]; then
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
+    --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2" --cancel
+elif [ "$SCENARIO" = order-quote ]; then
   # The same post-restart server owns all T2 mutation. The driver stops at an
   # exact ReviewPacket unless an external reviewer supplies a Decision. The
   # driver cannot author it or replace current-ledger admission.
@@ -317,6 +320,8 @@ if [ "$SCENARIO" = t1-marker ]; then
     --repository "$ROOT" --evidence-root "$EVIDENCE_ROOT" --binary "$MARSHAL_BIN" \
     --expected-head "$EXPECTED_HEAD" --run-id "$RUN_ID" --out "$EVIDENCE_ROOT/summary.json"
   printf '[fixed-server-t1] PASS run=%s evidence=%s\n' "$RUN_ID" "$EVIDENCE_ROOT"
+elif [ "$SCENARIO" = order-quote-cancel ]; then
+  printf '[fixed-server-t2] CANCELLED run=%s; exact replay and stopped Collect verified, not ACCEPTED\n' "$RUN_ID"
 else
   if [ "$AWAIT_REVIEW" -eq 0 ]; then
     printf '[fixed-server-t2] REVIEW_PENDING run=%s; independent Decision required\n' "$RUN_ID"

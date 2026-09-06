@@ -182,6 +182,60 @@ def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep):
     return summary
 
 
+def cancel_run(call, save, run_id, deadline, now=time.time):
+    """Prove an explicit operator stop through fixed-client operations only.
+
+    No retry follows an uncertain response. The second cancel is a deliberate
+    exact replay after a verified receipt, not a retry of unknown side effects.
+    """
+    deadline_text = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="microseconds").rstrip("0").rstrip(".") + "Z"
+
+    def invoke(args):
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise DriveError("cancel-driver-deadline-exceeded")
+        return call(args, remaining)
+
+    code, value = invoke(["inspect", "--run", run_id])
+    if code != 0:
+        raise DriveError("cancel-initial-inspect-unavailable")
+    current = run_projection(value, run_id, "RUNNING")
+    save("cancel-initial-run.json", current)
+    frozen = ["--run", run_id, "--attempt", current["attemptId"], "--expected-sequence", str(current["sequence"]),
+              "--expected-authority-head", current["authorityHead"], "--deadline", deadline_text]
+    request = ["cancel", *frozen, "--request-key", f"t2:{run_id}:cancel:{current['sequence']}"]
+    save("cancel-request.json", {"args": request})
+    code, value = invoke(request)
+    save("cancel-response.json", {"exitCode": code, "response": value})
+    if code != 0 or not isinstance(value, dict) or not isinstance(value.get("Projection"), dict) or not isinstance(value.get("Receipt"), dict):
+        raise DriveError("cancel-unresolved-no-automatic-retry")
+    projection, receipt = value["Projection"], value["Receipt"]
+    stopped = run_projection(projection.get("run"), run_id, "BLOCKED", current, True)
+    if projection.get("protocolRevision") != "run-stop/v1" or projection.get("terminalReason") != "aborted-by-operator":
+        raise DriveError("cancel-reason-mismatch")
+    if any(not isinstance(projection.get(key), str) or not DIGEST.fullmatch(projection[key]) for key in ("requestDigest", "stopIntentDigest", "outcomeDigest")):
+        raise DriveError("cancel-terminal-digests-missing")
+    if receipt.get("runId") != run_id or receipt.get("attemptId") != current["attemptId"] or receipt.get("postRevision") != stopped["sequence"] or receipt.get("postAuthorityHead") != stopped["authorityHead"]:
+        raise DriveError("cancel-receipt-mismatch")
+    code, replay = invoke(request)
+    save("cancel-replay.json", {"exitCode": code, "response": replay})
+    if code != 0 or replay != value:
+        raise DriveError("cancel-replay-mismatch")
+    collect = ["collect", *frozen, "--request-key", f"t2:{run_id}:collect-after-cancel:{current['sequence']}"]
+    code, collected = invoke(collect)
+    save("collect-after-cancel.json", {"exitCode": code, "response": collected})
+    if code != 1 or collected != {"disposition": "stopped", "reasonCode": "run-stopped"}:
+        raise DriveError("cancel-collect-did-not-stop")
+    code, inspected = invoke(["inspect", "--run", run_id])
+    if code != 0 or inspected != stopped:
+        raise DriveError("cancel-final-inspect-mismatch")
+    summary = {"runId": run_id, "run": stopped, "stage": "cancelled", "accepted": False,
+               "terminalReason": projection["terminalReason"], "outcomeDigest": projection["outcomeDigest"],
+               "stopIntentDigest": projection["stopIntentDigest"], "transport": "fixed-control-plane"}
+    save("cancel-summary.json", summary)
+    return summary
+
+
 def finalize_review(call, save, summary, packet, decision, decision_path, deadline, now=time.time):
     """Deliver an external review; neither construct one nor retry mutation.
 
@@ -287,12 +341,15 @@ def main():
     parser.add_argument("--evidence-dir", required=True)
     parser.add_argument("--timeout-seconds", type=int, default=480)
     parser.add_argument("--await-review-seconds", type=int, default=0)
+    parser.add_argument("--cancel", action="store_true", help="verify explicit stop, exact replay and stopped Collect instead of business acceptance")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     binary = root / "bin" / "marshal"
     evidence = Path(args.evidence_dir)
     if not ID.fullmatch(args.run) or not 1 <= args.timeout_seconds <= 480 or not 0 <= args.await_review_seconds <= 1200:
         parser.error("invalid run/deadline")
+    if args.cancel and args.await_review_seconds:
+        parser.error("cancel cannot request independent business acceptance")
     if binary.is_symlink() or not binary.is_file() or binary.resolve() != binary:
         parser.error("fixed bin/marshal is required")
     if not evidence.is_absolute() or evidence.resolve() != evidence or evidence.parent != root / ".marshal" / "fixed-server-t1-canary" / args.run:
@@ -334,6 +391,11 @@ def main():
         return completed.returncode, value
 
     try:
+        if args.cancel:
+            cancel_run(call, save, args.run, time.time() + args.timeout_seconds)
+            if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
+                raise DriveError("fixed-binary-drift")
+            return 0
         summary = drive(call, save, args.run, time.time() + args.timeout_seconds)
         packet = json.loads((evidence / "review-packet.json").read_bytes())["Projection"]["packet"]
         capture_review_inputs(root, args.run, packet, evidence / "review-inputs.tar")
