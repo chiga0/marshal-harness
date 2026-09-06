@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-06 03:01 UTC：最终消息提取拒绝，修复 Pi 消息联合类型适配
+
+PR #261 source `01c4a54` 经 CI 34006591660 全绿后合入 main `80dc39f`，main CI 34007198729 也五项全绿。单次真实 canary [34007829215](https://github.com/chiga0/marshal-harness/actions/runs/34007829215) 运行后返回 `pi-result-final-message/authority-conflict`；此前十次 `attempt-still-running` 为同一冻结请求的允许观察，不是十个 Attempt。没有 ReviewPacket、Decision 或 ACCEPTED。诊断 artifact 9981544614 保留，未原样重试。
+
+对照已安装 Pi 0.84.4 的公开 `pi-ai/dist/types.d.ts` 与 `core/messages.d.ts`，UserMessage/CustomMessage 的 content 合法类型为 string 或数组，而 AssistantMessage 为数组。现有 `extractFinalWorkerResult` 却把 agent_end 中所有消息都解码为 assistant 数组，合法历史 user/custom 字符串可在选取最终 assistant 之前触发拒绝。修复把历史 content 保存为 raw JSON，只对选定的最终 assistant 执行既有严格内容校验；并没有从 user/tool 文本抽取 WorkerResult，也不允许最终 assistant 字符串、toolCall、重复 text、多个 JSON 或尾随内容绕过校验。新增整条生产 parser 回归覆盖合法历史联合类型和各项反例。
+
+现场没有公开原始 transcript，因此当前只能证明这个实现缺陷存在且与失败阶段相符，不能断言是此次现场的唯一原因。最终事件解码、空消息、角色、内容形状/类型/text 数量新增封闭分类以避免下一次仍只有笼统信息；分类只来自 Core 分支，不输出内容、路径或错误原文。新候选须独立通过 hosted 动态门禁，再跑一次真实业务路径；B1 保持 IN_PROGRESS，B2/B3 不变。
+
 ## 2026-09-06 02:09 UTC：Collect 阻塞缩小到 Pi 结果解析
 
 main `13f42e9` 的 CI 34005015027 五项全绿后，一次性条件派发执行 canary [34005690401](https://github.com/chiga0/marshal-harness/actions/runs/34005690401)。固定产物、Pi/provider 配置及 live-review 依赖安装通过；实际 Start/重启链完成，RB1 23 条事实含 `transcript-collected`（stdout 574166 bytes）。新增阶段诊断明确为 `parse-production-worker-result/authority-conflict`：本轮已经通过 held transcript 读取，失败在 Pi parser，不是后继 observation 或 ResultIngress 接纳失败。没有 ReviewPacket、独立 Decision 或 ACCEPTED。诊断 artifact 9980863196 已本地取得，完整 artifact 9980863392 远端保留；不重跑该 head。

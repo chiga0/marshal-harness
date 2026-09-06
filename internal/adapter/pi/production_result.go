@@ -165,8 +165,8 @@ type productionAgentEnd struct {
 }
 
 type productionMessage struct {
-	Role    string                  `json:"role"`
-	Content []productionContentItem `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
 }
 
 type productionContentItem struct {
@@ -174,7 +174,14 @@ type productionContentItem struct {
 	Text string `json:"text"`
 }
 
-func extractFinalWorkerResult(transcript []byte) ([]byte, error) {
+func extractFinalWorkerResult(transcript []byte) (result []byte, err error) {
+	stage := "final-event-decode"
+	defer func() {
+		var classified *productionResultFailure
+		if err != nil && !errors.As(err, &classified) {
+			err = &productionResultFailure{code: stage, cause: err}
+		}
+	}()
 	lines := bytes.Split(transcript, []byte{'\n'})
 	var final *productionAgentEnd
 	for _, line := range lines {
@@ -204,15 +211,26 @@ func extractFinalWorkerResult(transcript []byte) ([]byte, error) {
 		}
 	}
 	if final == nil || len(final.Messages) == 0 {
+		stage = "final-event-empty"
 		return nil, fmt.Errorf("%w: final production agent_end has no messages", ErrProtocol)
 	}
 	message := final.Messages[len(final.Messages)-1]
 	if message.Role != "assistant" {
+		stage = "final-role"
 		return nil, fmt.Errorf("%w: final production message is not assistant", ErrProtocol)
+	}
+	// Pi user/custom message content may legitimately be a string. Only
+	// the selected terminal assistant is a WorkerResult carrier and must
+	// satisfy the assistant content-array contract. Do not decode earlier
+	// user/tool messages using the assistant-only schema.
+	stage = "final-content-shape"
+	var content []productionContentItem
+	if err := json.Unmarshal(message.Content, &content); err != nil {
+		return nil, fmt.Errorf("%w: final production assistant content is not an array", ErrProtocol)
 	}
 	var text string
 	textItems := 0
-	for _, item := range message.Content {
+	for _, item := range content {
 		switch item.Type {
 		case "thinking":
 			continue
@@ -220,10 +238,12 @@ func extractFinalWorkerResult(transcript []byte) ([]byte, error) {
 			textItems++
 			text = item.Text
 		default:
+			stage = "final-content-type"
 			return nil, fmt.Errorf("%w: final production assistant content contains unsupported type %q", ErrProtocol, item.Type)
 		}
 	}
 	if textItems != 1 || strings.TrimSpace(text) == "" {
+		stage = "final-content-text"
 		return nil, fmt.Errorf("%w: final production assistant must contain exactly one non-empty text item", ErrProtocol)
 	}
 	return extractSingleWorkerResultObject(text)

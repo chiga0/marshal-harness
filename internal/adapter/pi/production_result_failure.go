@@ -29,6 +29,7 @@ func ProductionResultFailureCode(err error) string {
 		"transcript-read", "transcript-json", "transcript-session", "transcript-event", "transcript-agent-end",
 		"transcript-tool", "transcript-compaction", "transcript-retry", "transcript-settled", "transcript-framing", "transcript-closure",
 		"final-message", "final-object-missing", "final-object-trailing", "validator",
+		"final-event-decode", "final-event-empty", "final-role", "final-content-shape", "final-content-type", "final-content-text",
 		"declared-schema", "declared-decode", "declared-identity", "declared-session",
 		"normalization", "normalized-schema":
 		code := "pi-result-" + failure.code
