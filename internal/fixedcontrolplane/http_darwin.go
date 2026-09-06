@@ -52,11 +52,12 @@ type StartRunDelivery interface {
 // authority: mutation is delegated to PublicApplicationPort and its only
 // durable transport state is the injected immutable delivery store.
 type HTTPRouter struct {
-	application application.PublicApplicationPort
-	delivery    StartRunDelivery
-	inflight    chan struct{}
-	queue       chan struct{}
-	mutation    chan struct{}
+	application  application.PublicApplicationPort
+	delivery     StartRunDelivery
+	inflight     chan struct{}
+	queue        chan struct{}
+	mutation     chan struct{}
+	runMutations runMutationLanes
 }
 
 func NewHTTPRouter(port application.PublicApplicationPort, delivery StartRunDelivery) (*HTTPRouter, error) {
@@ -277,10 +278,20 @@ func (router *HTTPRouter) lifecycleOperation(ctx context.Context, authenticated 
 	if err != nil || authenticated != (RequestBinding{RequestKeyDigest: binding.RequestKeyDigest, RequestDigest: binding.RequestDigest, IntentDigest: binding.ApplicationIntentDigest, Deadline: binding.Deadline}) {
 		return httpResponse{}, 409, ErrConflict
 	}
+	releaseRun, err := router.runMutations.acquire(ctx, current.RunID)
+	if err != nil {
+		return httpResponse{}, 503, err
+	}
+	defer releaseRun()
 	if err := router.acquireMutation(ctx); err != nil {
 		return httpResponse{}, 503, err
 	}
-	defer router.releaseMutation()
+	writerHeld := true
+	defer func() {
+		if writerHeld {
+			router.releaseMutation()
+		}
+	}()
 	pending, _, err := router.delivery.BeginLifecycleBound(ctx, request.requestKey, request.operation, input, current, deadline, binding)
 	if err != nil {
 		return httpResponse{}, applicationHTTPStatus(err), err
@@ -290,7 +301,17 @@ func (router *HTTPRouter) lifecycleOperation(ctx context.Context, authenticated 
 	}
 	deliveryContext, cancelDelivery := context.WithDeadline(context.WithoutCancel(ctx), deadline)
 	defer cancelDelivery()
+	if request.operation == productionruntime.FixedLifecycleVerifyOperation {
+		router.releaseMutation()
+		writerHeld = false
+	}
 	projection, applyErr := apply(deliveryContext)
+	if !writerHeld {
+		if err := router.acquireMutation(deliveryContext); err != nil {
+			return httpResponse{}, 503, errors.Join(err, applyErr)
+		}
+		writerHeld = true
+	}
 	result, resultErr := fixedLifecycleResult(request.operation, projection)
 	if resultErr != nil {
 		emptyStop, stopType := projection.(application.CancelRunProjection)
@@ -389,6 +410,11 @@ func (router *HTTPRouter) startRun(ctx context.Context, authenticated RequestBin
 	if err != nil || authenticated != (RequestBinding{RequestKeyDigest: binding.RequestKeyDigest, RequestDigest: binding.RequestDigest, IntentDigest: binding.ApplicationIntentDigest, Deadline: binding.Deadline}) {
 		return httpResponse{}, 409, ErrConflict
 	}
+	releaseRun, err := router.runMutations.acquire(ctx, input.RunID)
+	if err != nil {
+		return httpResponse{}, 503, err
+	}
+	defer releaseRun()
 	if err := router.acquireMutation(ctx); err != nil {
 		return httpResponse{}, 503, err
 	}

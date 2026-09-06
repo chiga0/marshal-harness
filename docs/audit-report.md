@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-07：验证长事务阻塞其他 Run 的调度修复候选
+
+调用链核对确认：fixed router 的全局 writer lane 覆盖完整 Verify，`sealedRepositoryApplication.VerifyRun` 又把 application mutex 持有到验收命令退出，后台 deadline 的两层 Try 因而只能跳过。Status/Inspect 的旧 mock 测试仅证明绕过调度锁；真实 Inspect 还竞争 Run lease，不能据此声称长验证期间查询都成功。
+
+按 ADR 0081 的同一停止纵切补进程内 Run lane，保护完整 Begin→application→receipt；Verify 执行阶段让出全局 lane，application 在已证明当前 VERIFYING 后只保留该 Run/worktree lease 与 Close 生命周期读保护。其他 runtime mutation 的全局串行及原始 authority/CAS/receipt 规则不变；不新增 RPC、持久化状态或查询缓存。四项新增组件回归覆盖 Run waiter 取消与条目回收、Verify 期间允许后台 writer、Begin/receipt 期间仍互斥、receipt 等待不延长 deadline，以及 preflight 失败不泄漏生命周期锁。本地 Go 结果仅为 compile-only，另有 vet/staticcheck；动态/race 与真实跨 Run 故障验收尚待执行。
+
+这只解除 Verify 对无关 Run 的阻塞：同 Run Inspect 的 lease 等待仍受原 caller deadline 限制，其他长 Start/Collect/cleanup、验证进程故障及完整业务预算/终态覆盖仍需实证，不能据本候选宣称 B1/B2 完成。中途停止 canary 仍使用已推送的 0130465，与本候选分别取证。
+
 ## 2026-09-07：停止中途崩溃验证接入（尚待实机）
 
 在同一固定 server canary 增加显式 `stop-crash`：只允许两种业务 timeout 场景；观察到原 RB1 stop intent 且 Run 仍 RUNNING 后，仅中断驱动自己持有、尚未回收的 server 子进程。等待进程退出后再次读取同一 Run/Attempt/意图；若窗口已经错过，明确失败，不把终态冷重启冒充中途恢复，也不自动重试。后继同 bytes server 必须沿既有 owner rebind/stop reconciliation 完成终态查询与 stopped Collect，再做原请求冷恢复。观察器不提供 PID、不调用 Worker、不修改 Run/RB1；这是诊断证据，不是新的接纳 authority。

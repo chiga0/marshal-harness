@@ -88,7 +88,17 @@ func (adapter *sealedRepositoryApplication) CollectRunResult(ctx context.Context
 
 func (adapter *sealedRepositoryApplication) VerifyRun(ctx context.Context, request application.VerifyRunRequest) (result application.VerificationProjection, resultErr error) {
 	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
+	preparing := true
+	defer func() {
+		if preparing {
+			adapter.mu.Unlock()
+		}
+	}()
+	// Acquire the lifetime guard in the same order as Close, and never take
+	// mu again after releasing it. Run/worktree leases remain held throughout
+	// verification; unrelated Run mutations need not wait for test commands.
+	adapter.statusMu.RLock()
+	defer adapter.statusMu.RUnlock()
 	if adapter.closed || adapter.validator == nil || adapter.entryIdentity == nil || request.Validate() != nil {
 		return application.VerificationProjection{}, application.NewError("verify-run", application.ReasonInvalidRequest)
 	}
@@ -107,6 +117,9 @@ func (adapter *sealedRepositoryApplication) VerifyRun(ctx context.Context, reque
 	if !currentRunMatches(authorityProjection.Run, application.CurrentRunRequest(request), domain.StateVerifying) {
 		return application.VerificationProjection{}, application.NewError("verify-run", application.ReasonAuthorityConflict)
 	}
+	delete(adapter.deadlineRuns, request.RunID)
+	adapter.mu.Unlock()
+	preparing = false
 	state, err := runstore.InspectUnderLease(lease)
 	if err != nil || state.State != domain.StateVerifying || state.CurrentAttemptID != request.AttemptID {
 		return application.VerificationProjection{}, application.NewError("verify-run", application.ReasonAuthorityConflict)

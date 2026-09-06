@@ -122,3 +122,20 @@ func TestSealedInspectInvalidInput(t *testing.T) {
 		}
 	}
 }
+
+func TestSealedVerificationPreflightFailureReleasesLifetimeAndMutationLocks(t *testing.T) {
+	adapter := &sealedRepositoryApplication{}
+	if _, err := adapter.VerifyRun(context.Background(), application.VerifyRunRequest{}); err == nil {
+		t.Fatal("unconfigured verification accepted")
+	}
+	done := make(chan error, 1)
+	go func() { done <- adapter.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed verification retained lifetime or mutation lock")
+	}
+}

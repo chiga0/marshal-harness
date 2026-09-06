@@ -30,8 +30,9 @@ import (
 // sealedRepositoryApplication is the fixed-binary application adapter shared
 // by direct CLI mutation and the forthcoming control-plane server mode. It
 // owns repository-wide authority once and composes one short-lived Run runtime
-// for each bounded transaction. Mutations remain serialized; queries only
-// shares a lifetime guard with Close, not the long-running verification lock.
+// for each bounded transaction. Runtime mutations remain serialized; Verify
+// retains only its Run/worktree leases and a Close lifetime guard during
+// execution, allowing unrelated runtime mutations to advance.
 // Run leases remain the durable concurrency fence.
 type sealedRepositoryApplication struct {
 	mu sync.Mutex

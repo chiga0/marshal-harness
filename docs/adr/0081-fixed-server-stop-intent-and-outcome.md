@@ -86,7 +86,11 @@ Collect 对已完成 stop 使用封闭 `run-stopped` 错误，不伪造 Collecte
 
 验证必须覆盖真实 projection producer 的 bind/release 与公共客户端连续重验/新开、stage/commit/cleanup 各边界、冷恢复、旧合法/损坏布局，以及固定容器/runtime/control 替换与 ABA 拒绝。单纯手工 swap 测试或 compile-only 不能关闭实机门槛。
 
-常驻写调度必须覆盖整个 `delivery Begin → application → receipt reconcile/commit`，而非只锁 application。HTTP Start（包括精确重放）、Collect/Cancel/Verify/Review/Decision 与后台 deadline/Outcome 恢复共享同一个进程内 writer lane；后台 Try 不排队，公开请求在原有有界 inflight/queue 和请求 context 下等待。Status/Inspect 不经过该 lane。该调度锁不授予业务权限、不代替 durable CAS/Run lease；pending 已耐久后的原 deadline/丢响应恢复语义不变。所有资源的锁顺序为 lane → application mutex（适用时）→ 原有 Run/owner/ledger 规则，禁止在后台 callback 递归发起公开写请求。长写事务造成的停止延迟仍需单独证明，不能把互斥修复称为实时 deadline 保证。
+常驻写调度必须覆盖整个 `delivery Begin → application → receipt reconcile/commit`，而非只锁 application。原候选使用全局 writer lane，实际核对发现 Verify 执行验收命令也持有该 lane 和 application mutex，使无关 RUNNING Run 的 deadline 无法推进。后继候选改为：公开写请求先取得精确 Run 的进程内 lane，并持有至 receipt 阶段结束；Start（含重放）、Collect/Cancel/Review/Decision 及后台恢复仍由全局 mutation lane 串行保护，Verify 仅在 Begin/receipt 阶段持有全局 lane，执行阶段保留本 Run lease、独立 worktree lease 与 application 生命周期读保护。Verify 不修改共享调度/运行时资源，验收结果仍经原 Run authority 守卫与 journal 提交，不新增状态或放宽接纳。
+
+Verify 只在当前 Run 已验证为 VERIFYING 后移除其可重建 RUNNING deadline 索引；启动恢复仍从账本重建，不能据索引宣称终态。相同 Run 的后续公开 mutation 不能穿过未提交 receipt；其他 Run 可在验证期间推进。后台 Try 不排队，也不递归发起公开写请求。公开等待受既有 inflight/queue 和原请求 deadline 限制；receipt 阶段重新取得全局 lane 若超时，只保留已有 pending/事实，由精确请求恢复，不重做 Worker 或制造成功。Run lane 无引用时回收，不能按历史 Run 数永久增长。
+
+锁顺序为 Run lane → 全局 lane（适用阶段）→ application mutex（适用阶段）→ 原 Run/owner/ledger；Verify 在 mutex 下取得生命周期读保护，释放 mutex 后不再回取它，Close 等待验证结束后才关闭依赖。Status/Inspect 不经过 lane，Inspect 的真实 Run lease 争用仍在调用 deadline 内返回，不以未锁快照或缓存伪造当前成功。该候选只解除验证对无关 Run 的阻塞，不宣称任意长 Start/Collect/cleanup 都已有实时上界。须验证同 Run 串行、跨 Run deadline、Close/超时/丢响应及原证据重放，再升级支持状态；后台的其他长事务与最终组合仍开放。
 
 实机候选与发布门禁必须分开：停止候选尚未满足本节实机要求时不得先合并 main，也不能被 main-only release CI gate 阻止验证。仅显式 `order-quote-cancel`、`order-quote-timeout`、`order-quote-run-timeout` 的未合入 `feat/` 分支，允许用 canonical 仓库、workflow dispatch SHA 与 expected-head 相等、同精确 SHA/分支最新手动 CI 五项成功的 candidate-only gate 做隔离实机验证；不创建 tag、release、独立 Decision 或 production 声明。main 上的任何场景及其他场景仍走原 main push CI gate，正式发布脚本和权限不变。此候选验证许可不等于接受本 ADR 或开启正式支持。
 
