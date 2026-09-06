@@ -12,6 +12,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/goal"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
+	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
 // ApproveInitialTeam is a privileged application seam. It does not authenticate
@@ -157,6 +158,109 @@ func (session *RepositorySession) PrepareInitialTeamRun(ctx context.Context, req
 		return resultingress.TeamRunCreationState{}, err
 	}
 	return session.ingress.FreezeInitialTeamRun(ctx, verifier, session.acquisition, approval, inputs.Spec.GoalId, nodeID, plan.FactDigest, prepared)
+}
+
+// MaterializeInitialTeamRun is a privileged controller seam, not an HTTP
+// endpoint or plan approval. It creates/reuses READY from the original fact;
+// it neither starts a Worker nor consumes another Goal reservation.
+func (session *RepositorySession) MaterializeInitialTeamRun(ctx context.Context, request application.ApproveInitialTeamRequest, nodeID string) (domain.RunState, error) {
+	const operation = "materialize-initial-team-run"
+	if ctx == nil || session == nil || session.teamRunMaterializer == nil {
+		return domain.RunState{}, application.NewError(operation, application.ReasonCompositionIncomplete)
+	}
+	creation, err := session.PrepareInitialTeamRun(ctx, request, nodeID)
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	borrow, err := session.borrow()
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	defer borrow.Close()
+	frozen, digest, err := request.Frozen()
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	approval := resultingress.TeamPlanApproval{InputsDigest: frozen.InputsDigest, RequestDigest: digest, ExpectedHead: frozen.ExpectedHead}
+	verifier := repositoryApprovedTeamVerifier{session: session, approval: approval}
+	guard := func(operationContext context.Context, fn func() error) error {
+		return verifier.WithCurrentApprovedTeam(operationContext, session.acquisition, approval, func() error {
+			plan, found, err := session.ingress.ReadTeamPlan(session.acquisition.Scope, creation.GoalID)
+			if err != nil {
+				return err
+			}
+			if !found || plan.Approval != approval || plan.FactDigest != creation.PlanFactDigest || !bytes.Equal(plan.Inputs, frozen.Inputs) {
+				return application.NewError(operation, application.ReasonAuthorityConflict)
+			}
+			current, found, err := session.ingress.ReadTeamRunCreation(session.acquisition.Scope, creation.GoalID, creation.NodeID)
+			if err != nil {
+				return err
+			}
+			if !found || current.FactDigest != creation.FactDigest || current.RunID != creation.RunID || !bytes.Equal(current.Inputs, creation.Inputs) {
+				return application.NewError(operation, application.ReasonAuthorityConflict)
+			}
+			return fn()
+		})
+	}
+	if err := guard(ctx, func() error { return nil }); err != nil {
+		return domain.RunState{}, err
+	}
+	state, err := session.teamRunMaterializer(ctx, bytes.Clone(creation.Inputs), guard)
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	var prepared struct {
+		BaseSHA    string          `json:"baseSha"`
+		PreparedAt time.Time       `json:"preparedAt"`
+		Task       json.RawMessage `json:"task"`
+		Policy     json.RawMessage `json:"policy"`
+		Capability json.RawMessage `json:"capability"`
+	}
+	var task struct {
+		Metadata struct {
+			ID string `json:"id"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(creation.Inputs, &prepared) != nil || json.Unmarshal(prepared.Task, &task) != nil {
+		return domain.RunState{}, application.NewError(operation, application.ReasonAuthorityConflict)
+	}
+	// A factory return value is not proof of a committed Run. Read it back
+	// through this session's held canonical state root under the same owner.
+	err = guard(ctx, func() error {
+		if state.RunID != creation.RunID || state.TaskID != task.Metadata.ID || state.State != domain.StateReady || state.Sequence != 2 ||
+			state.BaseSHA != prepared.BaseSHA || !state.CreatedAt.Equal(prepared.PreparedAt) ||
+			state.SpecDigest != canonical.DigestBytes(prepared.Task) || state.PolicyDigest != canonical.DigestBytes(prepared.Policy) || state.CapabilityDigest != canonical.DigestBytes(prepared.Capability) {
+			return application.NewError(operation, application.ReasonAuthorityConflict)
+		}
+		lease, err := session.runs.AcquireExisting(creation.RunID)
+		if err != nil {
+			return err
+		}
+		defer lease.Release()
+		for name, expected := range map[string][]byte{"task-spec.json": prepared.Task, "policy-snapshot.json": prepared.Policy, "capability-snapshot.json": prepared.Capability} {
+			raw, err := runstore.ReadFileUnderLease(lease, int64(len(expected)+1), name)
+			if err != nil || !bytes.Equal(raw, expected) {
+				return application.NewError(operation, application.ReasonAuthorityConflict)
+			}
+		}
+		actual, err := runstore.InspectUnderLease(lease)
+		if err != nil {
+			return err
+		}
+		want, err := json.Marshal(state)
+		if err != nil {
+			return err
+		}
+		got, err := json.Marshal(actual)
+		if err != nil || !bytes.Equal(want, got) {
+			return application.NewError(operation, application.ReasonAuthorityConflict)
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	return state, nil
 }
 
 // ReconcileInitialTeamApproval never appends or refreshes a deadline. A query

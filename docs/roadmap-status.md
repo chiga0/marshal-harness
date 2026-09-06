@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 最新：928b8ab CI 五项已通过；a614acb CI 34063169000 四项成功、macOS 冷恢复正例失败，已定位 canonical repository 与路径别名字符串比较不一致，修正与恢复纵切一起验证。后继实现同 Run journal/snapshot/worktree 恢复，并接入 fixed server 构造与 current-owner/fact guard、返回前 RunStore 读回；新 head 动态验证尚待执行。B1/B2 仍 IN_PROGRESS、B3 PLANNED，未有真实团队或新 main merge。下方保留历史检查点。
+
 2026-09-07 最新检查点：B1 `80084bb` 的 CI 五项通过，但实机 34059061091 在 peer Collect 的 `pi-result-final-content-shape` 失败，尚未进入跨 Run 组合验收，禁止原样重试。B2 `928b8ab` 的 CI 34062410465 已通过 Linux quality、双架构 conformance 和 secret scan，记录时 macOS quality 在途；后继正接通原冻结输入的无 Probe planning 重建，尚未完成部分 Run 补齐和真实团队。Goal 保持 B1→B2→B3 与至少三个业务族的强 Lead＋SubAgents 重复配对收益验证。main 仍 ba2196b、两候选均未合并；下方旧“当前/在途”段落是历史检查点，不代表最新状态。
 
 2026-09-07 当前：`d0be824` 的精确 CI 34054261338 与 PR CI 均通过；单次跨 Run 实机 34055217240 已在同一 owner、无重启条件下完成 peer Collect 到 VERIFYING，并启动第二个 Run，但整体因客户端响应失败而结束。已确认 15 秒固定响应读取窗口与 100 秒 Verify 不兼容，另有 1 秒 half-close 等待与身份复查预算冲突；后继候选集中修正传输阶段预算、补实际认证客户端回归和缺失的阶段诊断。**B1 仍 IN_PROGRESS，main 仍 ba2196b；PR #268 为 Draft，无停止候选合并、无 stable 发布。** 后续历史段落中的“在途”不代表作业仍活跃。
@@ -44,7 +46,7 @@
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
 | B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline 与 barrier 中断恢复通过；80084bb 握手排队修正 CI 全绿，但新实机在 peer Collect 格式失败 | 有界结果结构诊断与根因修复；长 Verify 跨 Run 实机及响应上界；候选合入与最终组合；完整 B2 同路径故障矩阵在 B3 |
-| B2 受限 Agent Team | `IN_PROGRESS`（隔离候选，未集成） | ab43a42/5811572/99ca8ca CI 全绿；091f2ae 的 immutable-SHA fixture 已修正，928b8ab 四项通过/macOS 在途；后继复用同 planning 重建冻结输入，不重 Probe、不刷新时间 | 当前 RB1 义务到部分 Run/READY 的幂等恢复与 Core plan approval/调度、完整认证 server 纵切、真实并行与集成业务验收、局部 replan/结算、暂停恢复 |
+| B2 受限 Agent Team | `IN_PROGRESS`（隔离候选，未集成） | 928b8ab CI 全绿；a614acb macOS 路径别名误拒绝已修正待新 CI；同 Run 创建恢复接到 fixed server current-owner/RB1 guard 与持有的 RunStore 读回，未动态/实机通过 | 创建恢复动态验证、resident 启动时从 RB1 恢复部分创建义务、Core plan approval/调度、完整认证 server 纵切、真实并行与集成业务验收、局部 replan/结算、暂停恢复 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
 [ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 仍为 Proposed，main 尚未开启 cancel/timeout。下一步验证长 Verify 期间无关 Run 的 deadline 能继续推进，完成停止纵切的组合验收与独立审查，随后进入 B2；不重跑已通过的旧 source，不扩大 Provider 或另起 controller。完整失败样本及证据边界见审计记录。本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。

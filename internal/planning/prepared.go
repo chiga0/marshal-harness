@@ -78,13 +78,19 @@ func RestorePrepared(ctx context.Context, input Input, frozen PreparedInputs) (*
 	invalid := errors.New("planning: invalid or changed frozen preparation")
 	if ctx == nil || frozen.PreparedAt.IsZero() || frozen.PreparedAt.Location() != time.UTC ||
 		(!input.Now.IsZero() && !input.Now.Equal(frozen.PreparedAt)) ||
-		input.RunID != frozen.RunID || input.RepositoryRoot != frozen.RepositoryRoot ||
+		input.RunID != frozen.RunID ||
 		len(frozen.Task) > 128<<10 || len(frozen.Policy) > 128<<10 || len(frozen.Capability) > 64<<10 ||
 		len(frozen.SelectionAttempts) != 1 {
 		return nil, invalid
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	// Prepare freezes a canonical repository. Darwin's /var and /private/var
+	// aliases must identify the same repository here too, not fail on spelling.
+	repositoryRoot, err := canonicalPath(input.RepositoryRoot)
+	if err != nil || repositoryRoot != frozen.RepositoryRoot {
+		return nil, invalid
 	}
 	// Caller-provided buffers and the value read from the ledger must describe
 	// the same exact canonical input, not merely the same partial domain model.

@@ -32,23 +32,27 @@ type RepositorySessionInputs struct {
 	// Trusted, process-local planning composition. Never an HTTP/Worker input.
 	// It returns canonical PreparedInputs without creating a Run.
 	TeamRunPreparer func(context.Context, []byte, []byte, string) ([]byte, error)
+	// Trusted immutable factory: restore exact RB1 input, then create/recover
+	// only while the supplied current-owner/fact guard admits each mutation.
+	TeamRunMaterializer func(context.Context, []byte, func(context.Context, func() error) error) (domain.RunState, error)
 }
 
 // RepositorySession owns one repository owner acquisition and the sealed
 // ResultIngress store for the lifetime of a fixed Marshal process. Individual
 // Run runtimes borrow these resources and cannot close or reacquire them.
 type RepositorySession struct {
-	mu                 sync.RWMutex
-	closed             bool
-	ingress            *resultingress.DurableStore
-	runs               *runstore.Store
-	fixedRoot          fixedServerRoot
-	owner              repositoryOwnerLock
-	ownerState         resultingress.ControlOwnerState
-	acquisition        resultingress.ControlOwnerAcquisition
-	fixedPath          string
-	teamInputPreflight func([]byte) error
-	teamRunPreparer    func(context.Context, []byte, []byte, string) ([]byte, error)
+	mu                  sync.RWMutex
+	closed              bool
+	ingress             *resultingress.DurableStore
+	runs                *runstore.Store
+	fixedRoot           fixedServerRoot
+	owner               repositoryOwnerLock
+	ownerState          resultingress.ControlOwnerState
+	acquisition         resultingress.ControlOwnerAcquisition
+	fixedPath           string
+	teamInputPreflight  func([]byte) error
+	teamRunPreparer     func(context.Context, []byte, []byte, string) ([]byte, error)
+	teamRunMaterializer func(context.Context, []byte, func(context.Context, func() error) error) (domain.RunState, error)
 }
 
 type repositorySessionBorrow struct {
@@ -137,7 +141,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		cleanup()
 		return nil, fmt.Errorf("repository session: seal prepared execution: %w", err)
 	}
-	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath, teamInputPreflight: inputs.TeamInputPreflight, teamRunPreparer: inputs.TeamRunPreparer}
+	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath, teamInputPreflight: inputs.TeamInputPreflight, teamRunPreparer: inputs.TeamRunPreparer, teamRunMaterializer: inputs.TeamRunMaterializer}
 	if err := session.owner.WithCurrentOwnerLock(ctx, acquisition, func() error {
 		current, found, openErr := ingress.OpenOwner(acquisition.Scope)
 		if openErr != nil || !found || current.Acquisition != acquisition || current.FactDigest != ownerState.FactDigest {

@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-07：同一 Run 的创建恢复接入 fixed server 构造候选
+
+前驱 `928b8ab` 的 CI 34062410465 最终五项通过。`a614acb126b35a82b213f4c1401b1cf0ba5bfba4` 的 [CI 34063169000](https://github.com/chiga0/marshal-harness/actions/runs/34063169000) 四项通过、macOS 前置 planning 失败：冷恢复正向测试返回 invalid frozen preparation。核对 Prepare/Restore 路径发现，前者冻结 canonical repository，后者却直接比较原路径字符串；macOS /var→/private/var 导致同仓库误拒绝。改用同一规范路径校验并补跨平台 symlink alias 正例，不改 frozen repository 或重选输入。该失败计入工程返工，未派付费 Worker；此前 compile-only 仍不代表动态成功。
+
+本轮新增同一 PreparedPlan 的 ReconcileCreation，与原 Plan 共用两条 creation transition producer。恢复核对原 planning 事件、完整快照及三份冻结文件，只补缺失项；零至两条 journal、缺失/落后 snapshot、文件写入后 owner 失效均沿原 Run 接续，不删除目录、不重新 Probe、不加 Attempt。worktree 恢复持 task flock，复用原 base/branch/clean directory，并处理进程锁已释放但 Git 管理锁遗留、仅原分支已创建的中断；脏内容、foreign lock、分支或 HEAD 漂移保留并拒绝。FIFO 读取改用 nonblock 再检查普通文件，避免恢复挂死在 open。
+
+同批把恢复接到真实 RepositorySession/固定 CLI 构造：先读批准和原创建 fact，owner/RB1 guard 包围短写入，Git/probe 不占 owner 锁；返回 READY 前从会话持有的 RunStore 复核状态与冻结输入。server 在冻结 StateRoot 前准备容器，避免首次物化自己改变 parent identity。新增真实 Git/RunStore 边界测试、held session 冷 owner 重用与伪造结果拒绝；session 的 materializer 为明确 fixture，不冒充实际 Pi/完整 HTTP 证据。
+
+候选本地 compile-only、静态与架构检查不等于动态恢复通过，须精确新 head CI。调用链复核还发现 resident startup 先逐个要求完整 Run-start authority，不能直接跨过部分 planning Run；下一步须从 RB1 枚举原创建义务，先恢复再扫描，而不是跳过错误或要求新批准。当前测试的冷 owner 重开只覆盖 RepositorySession，不代表完整 server 冷启动已通。仍缺该启动接线、Core Goal→Run plan approval、生产调度入口、真实并行与集成验收及 B3 故障/发布门禁；不合并或升级 B2 INTEGRATED，不以这批代码关闭 B1 的格式/组合验收阻塞。
+
 ## 2026-09-07：沿原 planning 调用链恢复冻结输入，不重新探测 Provider
 
 创建冻结候选 `928b8ab3e72e5867009e6ef0071d50ee0d751034` 的 [CI 34062410465](https://github.com/chiga0/marshal-harness/actions/runs/34062410465) 已通过 Linux quality、双架构 Linux conformance 与 secret scan；记录时 macOS quality 仍在运行，尚不能声称五项全绿。它已越过前驱 immutable-SHA fixture 的早期失败；旧失败继续计入工程返工分母。

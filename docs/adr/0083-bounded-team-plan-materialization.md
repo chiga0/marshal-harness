@@ -55,11 +55,21 @@ Goal 投影由同一物理账本 replay 得到，`goal.Evaluate` 只接收该投
 
 fixed server 构造时安装不可由请求替换的 `TeamRunPreparer`，使用该 server 已冻结的 Pi runtime/entrypoint 构造既有 production selector，调用实际 Prepare；不在 reconcile 时从 PATH/环境重新发现 Provider。RepositorySession 先持 current owner 核对原批准及已有冻结事实；命中即原值返回，未命中才在 owner/RB1 锁外执行 Prepare，提交时再次验证 current owner 和原计划。此特权应用接缝目前不暴露新 HTTP 操作，也不 Create/Start；下一阶段须用原冻结值恢复创建并补 Goal→Run approval，不能依靠重新 probe 来“恢复”。
 
-冷读取的 PreparedInputs 必须通过 `planning.RestorePrepared` 重新执行同一完整 Task/Policy/环境、precondition、解释器、repository/base/remote 和能力 Schema 校验；唯一不同是 production selector 重新核对 registry eligibility/admission 后复用原单候选能力快照，不 Probe、不 fallback、不刷新时间。受限团队模板必须有非空 expectedRemoteUrl，否则冷恢复无法证明原 remote 名字仍指向原目标；该缺口在批准 preview 前拒绝，不等付费 Worker 开始。恢复函数自身不验证账本或授予批准，controller 必须从当前 owner/RB1 取原事实并在写入前复查；不能把客户端 PreparedInputs 当作 receipt。当前只新增无 Run 副作用的重建接缝与原 Create 正向测试，仍未接通已有 CREATED/PLANNED/READY 补齐，也未暴露生产物化操作。
+冷读取的 PreparedInputs 必须通过 `planning.RestorePrepared` 重新执行同一完整 Task/Policy/环境、precondition、解释器、repository/base/remote 和能力 Schema 校验；唯一不同是 production selector 重新核对 registry eligibility/admission 后复用原单候选能力快照，不 Probe、不 fallback、不刷新时间。受限团队模板必须有非空 expectedRemoteUrl，否则冷恢复无法证明原 remote 名字仍指向原目标；该缺口在批准 preview 前拒绝，不等付费 Worker 开始。恢复函数自身不验证账本或授予批准，controller 必须从当前 owner/RB1 取原事实并在写入前复查；不能把客户端 PreparedInputs 当作 receipt。候选现通过 `RepositorySession.MaterializeInitialTeamRun` 读取原事实并安装 current-owner/fact 写入 guard；固定构造器恢复原 PreparedPlan 后调用 ReconcileCreation，返回前重读会话持有的 RunStore、精确状态及三份冻结文件。尚无团队 HTTP 物化/Start、Core plan approval 或完整实机团队证据。
 
 计划批准向子 Run 的 plan approval 映射是显式 Core producer：必须绑定 accepted Goal fact、节点最终输入和当前 Policy，只授权该一个 Run 的执行。不能生成通用 actor 批准文件或扩大用户确认范围。保留原 Run/Attempt reservation 与 dispatch lookup-before-claim；Goal reservation 记录预算归属，不替代它们或重复扣费。每条物化事实引用精确 Run 创建/Start 事实，恢复先核对再提交 committed；失败/终态的 release/settle 沿 ADR 0019，不凭本地进程状态释放预算。
 
 ## 4. 成果集成是冻结方案的一部分
+
+### 创建恢复的受限写入规则（未启用候选）
+
+物化通过原 PreparedPlan 的专用恢复入口处理，要求 controller 在 Run lease 创建及每批文件/journal/snapshot 写入时持 current owner 并重查同一 RB1 创建 fact。Git 操作在 owner 锁外、Run lease 与 task flock 内执行；owner 漂移后只能留下待诊断的原工作区，不能提交 READY。恢复不 Probe、不启动 Worker，也不生成新 Run/Attempt。
+
+fixed server 必须在冻结 StateRoot identity 前准备 runs/locks/worktrees 容器，后续仅创建其子项，避免合法物化改变已冻结父目录身份。Run 恢复读取采用有界 descriptor-relative nofollow/nonblock 普通文件检查；FIFO 不得在文件类型检查前阻塞。原事件与输入文件不重写；快照只是对已验证 journal 的完整投影补齐。
+
+只接纳零至两条精确的既有 planning 事件；每条除原随机 event ID 外，类型、状态边、actor、原时间与完整 payload 都须与原准备一致。快照必须等于这些事件对应的完整投影，不允许用“重建快照”掩盖冲突；缺失或合法落后才补齐，截断 journal 和已运行状态拒绝。三份冻结文件使用现有 descriptor-relative immutable writer，存在值必须逐字相等、单链接普通文件；缺失才安装，不覆盖现有异内容。
+
+创建 worktree 使用原 task/run 派生路径与分支。恢复前必须拿到 task flock，验证同 Git common directory、精确分支/原 HEAD、干净工作区；只允许接管已释放进程锁留下的 `managed by Marshal` Git 管理锁，不处理其他原因的锁。只有分支已创建而目录尚未出现时，允许精确原 base 的未占用分支继续 `worktree add`；任何冲突保留，不强制删除或 reset。该恢复入口是内部 composition 接缝，不能直接接收 HTTP 请求宣称它自带批准。
 
 两个实现节点共享锁定原始 base、使用独立 worktree。每个成果仍经过既有 Collect、独立 Verify 与精确 Decision；集成只消费已接纳的精确 candidate/base/patch digest，不读“最新分支”、未审 scratchpad 或其他 worktree 的可变文件。不得用子 Run 数量或单元测试通过替代最终验收。
 

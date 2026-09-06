@@ -269,7 +269,7 @@ func readFileInDirectory(directory *BoundDirectory, name string, limit int64, af
 		return nil, err
 	}
 	parentFD := int(directory.File().Fd())
-	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}

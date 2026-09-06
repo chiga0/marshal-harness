@@ -295,10 +295,9 @@ func (prepared *PreparedPlan) Create(ctx context.Context) (result Result, err er
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
-	input, task, effective, selection := prepared.input, prepared.task, prepared.effective, prepared.selection
-	now, baseSHA := prepared.now, prepared.baseSHA
+	input, task, selection := prepared.input, prepared.task, prepared.selection
+	baseSHA := prepared.baseSHA
 	taskCanonical, policyCanonical, capabilityCanonical := prepared.taskCanonical, prepared.policyCanonical, prepared.capabilityCanonical
-	specDigest, policyDigest, capabilityDigest := prepared.specDigest, prepared.policyDigest, prepared.capabilityDigest
 	// Preparation and creation may be separated by a durable owner transaction.
 	// Recheck the repository path and remote before any Run/worktree mutation.
 	repository, err := gitworktree.OpenContext(ctx, input.RepositoryRoot)
@@ -377,74 +376,21 @@ func (prepared *PreparedPlan) Create(ctx context.Context) (result Result, err er
 		return Result{}, fmt.Errorf("planning: freeze CapabilitySnapshot: %w", err)
 	}
 
-	// 14. CREATED -> PLANNED under the held lease.
-	state := domain.NewRunState(task.Metadata.ID, input.RunID, now)
-	state.SpecDigest = specDigest
-	state.PolicyDigest = policyDigest
-	plannedEvent, plannedState, err := transition(state, "planning.spec-accepted", domain.StatePlanned, now, map[string]any{
-		"specDigest":       specDigest,
-		"executionProfile": task.Worker.ExecutionProfile,
-		"sessionPolicy":    task.Worker.SessionPolicy,
-	}, lifecycle.Guard{LeaseHeld: true, DraftValid: true})
+	// Both first creation and recovery use exactly these two transitions.
+	events, states, err := prepared.creationTransitions(worktree)
 	if err != nil {
-		return Result{}, fmt.Errorf("planning: build planned transition: %w", err)
+		return Result{}, err
 	}
-	if err := store.Append(lease, plannedEvent, state.Sequence); err != nil {
-		return Result{}, fmt.Errorf("planning: append planned event: %w", err)
+	for index, event := range events {
+		if err := store.Append(lease, event, states[index].Sequence); err != nil {
+			return Result{}, fmt.Errorf("planning: append creation event: %w", err)
+		}
+		committed = true
+		if err := store.WriteSnapshot(lease, states[index+1]); err != nil {
+			return Result{}, fmt.Errorf("planning: write creation snapshot: %w", err)
+		}
 	}
-	committed = true
-	if err := store.WriteSnapshot(lease, plannedState); err != nil {
-		return Result{}, fmt.Errorf("planning: write planned snapshot: %w", err)
-	}
-
-	// 15. PLANNED -> READY with the resolved baseline and frozen inputs.
-	// M8 embedded vertical slice: record the frozen two-dimensional sandbox
-	// requirements derived from the legacy execution profile into the READY
-	// freeze event, on top of the issue-23 admission gate. The mapping is the
-	// single compatibility direction of domain.SandboxRequirementsFromLegacy
-	// and fails closed on an unknown profile; the existing planning
-	// validations are unchanged.
-	sandboxRequirements, err := domain.SandboxRequirementsFromLegacy(task.Worker.ExecutionProfile)
-	if err != nil {
-		return Result{}, fmt.Errorf("planning: %w", err)
-	}
-	readyPayload := map[string]any{
-		"adapterId":         selection.Adapter.ID(),
-		"baseSha":           baseSHA,
-		"specDigest":        specDigest,
-		"policyDigest":      policyDigest,
-		"capabilityDigest":  capabilityDigest,
-		"worktreePath":      worktree.Path,
-		"branch":            worktree.Branch,
-		"fallbackAllowed":   effective.AllowFallbackWorkers,
-		"selectionAttempts": selectionAttemptPayload(selection.Attempts),
-		"maxAttempts":       task.Budgets.MaxAttempts,
-		"sandboxRequirements": map[string]any{
-			"accessMode":            string(sandboxRequirements.AccessMode),
-			"minimumAssuranceLevel": string(sandboxRequirements.MinimumAssuranceLevel),
-		},
-	}
-	readyEvent, readyState, err := transition(plannedState, "planning.inputs-frozen", domain.StateReady, now, readyPayload, lifecycle.Guard{
-		LeaseHeld:     true,
-		BaseResolved:  true,
-		PolicyAllowed: true,
-		AdapterProbed: true,
-		InputsFrozen:  true,
-	})
-	if err != nil {
-		return Result{}, fmt.Errorf("planning: build ready transition: %w", err)
-	}
-	readyState.CapabilityDigest = capabilityDigest
-	readyState.BaseSHA = baseSHA
-	readyState.WorktreePath = worktree.Path
-	if err := store.Append(lease, readyEvent, plannedState.Sequence); err != nil {
-		return Result{}, fmt.Errorf("planning: append ready event: %w", err)
-	}
-	if err := store.WriteSnapshot(lease, readyState); err != nil {
-		return Result{}, fmt.Errorf("planning: write ready snapshot: %w", err)
-	}
-
-	return Result{State: readyState, Adapter: selection.Adapter, SelectionAttempts: append([]adapter.SelectionAttempt(nil), selection.Attempts...)}, nil
+	return Result{State: states[2], Adapter: selection.Adapter, SelectionAttempts: append([]adapter.SelectionAttempt(nil), selection.Attempts...)}, nil
 }
 
 // ValidateLocalDogfoodCapabilityProjection binds the selected adapter fact to

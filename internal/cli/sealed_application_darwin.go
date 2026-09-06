@@ -122,7 +122,9 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	// identity does not change when those endpoint objects are created, so its
 	// per-session objects are isolated under this stable child.
 	controlRootPath := filepath.Join(runtimeRoot, "control", "supervisor")
-	for _, dir := range []string{ingressDir, ledgerDir, allocationRoot, ownerDir, providerDir, controlRootPath} {
+	// Team materialization creates children of these containers later. Create
+	// the containers before freezing the StateRoot mutation identity.
+	for _, dir := range []string{ingressDir, ledgerDir, allocationRoot, ownerDir, providerDir, controlRootPath, filepath.Join(config.StateRoot, "runs"), filepath.Join(config.StateRoot, "locks"), filepath.Join(config.StateRoot, "worktrees")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("sealed repository application: prepare authority directory: %w", err)
 		}
@@ -213,16 +215,7 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 		TeamRunPreparer: func(ctx context.Context, task, policy []byte, runID string) ([]byte, error) {
 			// Use only this server's frozen Pi paths; never rediscover a provider
 			// from mutable PATH/environment during Goal reconciliation.
-			workers, err := app.NewWorkerRuntime(func(key string) string {
-				switch key {
-				case "MARSHAL_PI_PATH":
-					return applicationAdapter.piEntrypoint
-				case "MARSHAL_PI_NODE_PATH":
-					return applicationAdapter.piRuntime
-				default:
-					return ""
-				}
-			})
+			workers, err := applicationAdapter.teamPlanningRuntime()
 			if err != nil {
 				return nil, err
 			}
@@ -236,6 +229,27 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 				return nil, err
 			}
 			return json.Marshal(prepared.Inputs())
+		},
+		TeamRunMaterializer: func(ctx context.Context, raw []byte, guard func(context.Context, func() error) error) (domain.RunState, error) {
+			var frozen planning.PreparedInputs
+			if len(raw) == 0 || len(raw) > 256<<10 || json.Unmarshal(raw, &frozen) != nil {
+				return domain.RunState{}, application.NewError("team-materialization", application.ReasonInvalidRequest)
+			}
+			workers, err := applicationAdapter.teamPlanningRuntime()
+			if err != nil {
+				return domain.RunState{}, err
+			}
+			prepared, err := planning.RestorePrepared(ctx, planning.Input{
+				StateRoot: applicationAdapter.stateRoot, RepositoryRoot: applicationAdapter.repositoryRoot,
+				RunID: frozen.RunID, TaskSpec: frozen.Task, PolicySnapshot: frozen.Policy,
+				Selector: workers.ProductionSelector(), Validator: applicationAdapter.validator,
+				LocalSelfIdentity: applicationAdapter.entryIdentity,
+			}, frozen)
+			if err != nil {
+				return domain.RunState{}, err
+			}
+			result, err := prepared.ReconcileCreation(ctx, planning.CreationGuard(guard))
+			return result.State, err
 		},
 	})
 	if err != nil {
@@ -273,6 +287,19 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 		return nil, fmt.Errorf("sealed repository application: recover repository runs: %w", err)
 	}
 	return applicationAdapter, nil
+}
+
+func (adapter *sealedRepositoryApplication) teamPlanningRuntime() (*app.WorkerRuntime, error) {
+	return app.NewWorkerRuntime(func(key string) string {
+		switch key {
+		case "MARSHAL_PI_PATH":
+			return adapter.piEntrypoint
+		case "MARSHAL_PI_NODE_PATH":
+			return adapter.piRuntime
+		default:
+			return ""
+		}
+	})
 }
 
 type sealedRepositoryRecoverFunc func(context.Context) error

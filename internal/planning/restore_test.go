@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -69,6 +70,20 @@ func TestRestorePreparedColdCreationRetainsOriginalInputsAndTimestamp(t *testing
 	if _, err := restored.Create(context.Background()); err == nil {
 		t.Fatal("restore overwrote an existing Run")
 	}
+}
+
+func TestRestorePreparedCanonicalRepositoryAlias(t *testing.T) {
+	input, worker, frozen := restoredFixture(t)
+	alias := filepath.Join(t.TempDir(), "same-repository")
+	if err := os.Symlink(frozen.RepositoryRoot, alias); err != nil {
+		t.Fatal(err)
+	}
+	input.RepositoryRoot = alias
+	prepared, err := RestorePrepared(context.Background(), input, frozen)
+	if err != nil || prepared.Inputs().RepositoryRoot != frozen.RepositoryRoot || worker.probes != 1 {
+		t.Fatalf("canonical alias rejected: probes=%d err=%v", worker.probes, err)
+	}
+	assertPreparationNoRun(t, input)
 }
 
 func TestRestorePreparedRejectsDriftWithoutRunOrProbe(t *testing.T) {
