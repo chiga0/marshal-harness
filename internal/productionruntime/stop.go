@@ -71,6 +71,17 @@ func (l *CompositionLedger) CancelRun(ctx context.Context, verifier resultingres
 		}
 		attempt = barrier.State
 	}
+	return l.finishStoppedAttempt(ctx, verifier, acquisition, read, attempt)
+}
+
+// Recovery reuses the original durable stop request, not a new request ID or
+// observation time. This path accepts no input capable of creating an intent.
+func (l *CompositionLedger) finishStoppedAttempt(ctx context.Context, verifier resultingress.CurrentOwnerLockVerifier, acquisition resultingress.ControlOwnerAcquisition, read runstore.RunStartAuthorityProjection, attempt resultingress.AttemptAuthorityState) (application.CancelRunProjection, error) {
+	intent := attempt.StopIntent
+	if intent.Validate(attempt.Identity) != nil || read.Run.RunID != attempt.Identity.RunID || read.Run.AttemptID != attempt.Identity.AttemptID || read.Run.State != domain.StateRunning || read.Run.Sequence != intent.ExpectedSequence || read.Run.AuthorityHead != intent.ExpectedAuthorityHead {
+		return application.CancelRunProjection{}, resultingress.ErrAttemptAuthorityConflict
+	}
+	request := application.CancelRunRequest{CurrentRunRequest: application.CurrentRunRequest{RunID: read.Run.RunID, AttemptID: read.Run.AttemptID, ExpectedSequence: intent.ExpectedSequence, ExpectedAuthorityHead: intent.ExpectedAuthorityHead}, RequestID: intent.RequestID}
 	terminal, err := l.terminalizeAttemptAfterBarrier(ctx, verifier, acquisition, read, attempt)
 	if err != nil {
 		return application.CancelRunProjection{}, err

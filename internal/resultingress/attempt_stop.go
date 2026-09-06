@@ -9,6 +9,8 @@ import (
 
 var ErrStopTooLate = errors.New("resultingress: result admission already committed before stop")
 
+var ErrBusinessDeadlineExceeded = errors.New("resultingress: immutable business deadline exceeded")
+
 // Stop intents are authority inputs, never provider observations. The caller
 // must load and authenticate their sources while holding current Run authority.
 // This contract is part of the ADR 0081 vertical implementation, not a public

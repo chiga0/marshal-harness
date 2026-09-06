@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-06：Pi 输出修复已合入，停止纵切补业务接纳截止检查
+
+PR #263 的 source `31b64a8` 经 Linux/macOS quality、两架构 Linux conformance、secret scan 及附加检查全部通过，已远端合并为 `4f7311b08bf59f6fad31aaae6661fc253ab0b0b4`。主线 CI 34023916927 仍在运行，尚未派发该新 head 的真实 canary；最近真实业务结果仍是 34009508838 的尾随文本拒绝，没有 ACCEPTED。该合并不改变严格结果解析门禁。
+
+取消分支 `f41b3aa` 的 CI 34009447676 在 Linux 全部通过，但 macOS `TestReconcileStoppedRunRejectsInvalidInputAndClosedSession` 超时。堆栈显示测试在 delivery store 仍持有 session borrow 时调用 `RepositorySession.Close`，等待自己的读锁；不是 Pi 无响应。修复测试按生产资源顺序先关闭 store，再关闭 session，保留 owner 必须等待借用释放的约束，不增加超时掩盖问题。
+
+本开发候选补充：恢复既有 stop intent 的 cleanup/Run/Outcome；从 frozen Task/首条 planning/ProcessStarted 读取业务 deadline；在 ingress 同一 durable admission transaction 内核对 Task 与 started 摘要及截止点；到期禁止 fresh admission，精确已提交结果仍允许重放。新增截止前 1ns、精确到期、到期后 1ns、冷 ingress 重放和来源漂移负例。这里只证明代码与编译检查进展，新增动态/race 证据待该候选 hosted CI。READY 到期准入、resident timer、完整故障矩阵和对外停止状态/错误闭环仍未完成，ADR 0081 保持 Proposed，禁止合并放行停止纵切或升级 B1 状态。
+
+效率纠偏：在原开发分支保存完整纵切中间结果，CI 可提前发现平台问题；不为通过局部测试另造生产完成结论，也不重试未修复的同源实机失败。
+
 ## 2026-09-06：最终 JSON 后有非空白内容，前移输出格式约束
 
 PR #262 source `8de9648` 全部检查通过后合入 main `5945b6854220eb86b229e19efe3e883a17556a48`；main CI [34008933865](https://github.com/chiga0/marshal-harness/actions/runs/34008933865) 五项通过。唯一后继实机 [34009508838](https://github.com/chiga0/marshal-harness/actions/runs/34009508838) 在三次同请求 `attempt-still-running` 观察后失败于 `pi-result-final-object-trailing`，小型诊断 artifact `9982033321` 已保留。启动、恢复、transcript 与最终 assistant 消息解析均已越过原屏障，但尚未进入 WorkerResult Schema/独立 Verification，没有 ReviewPacket、Decision 或 ACCEPTED。不能只读旧 `state.json` 的 READY 快照忽略实际 RB1 启动事实。

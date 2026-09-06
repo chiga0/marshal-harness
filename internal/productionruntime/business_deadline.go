@@ -1,0 +1,57 @@
+package productionruntime
+
+import (
+	"context"
+	"time"
+
+	"github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/resultingress"
+	"github.com/chiga0/marshal-harness/internal/runstore"
+)
+
+func (l *CompositionLedger) currentBusinessDeadline(ctx context.Context, read runstore.RunStartAuthorityProjection, attempt resultingress.AttemptAuthorityState) (resultingress.BusinessDeadlineWitness, error) {
+	budget, err := l.runs.ReadBusinessBudgetUnderLease(ctx, l.runLease)
+	if err != nil || budget.Run != read.Run || attempt.Identity.RunID != read.Run.RunID || attempt.Identity.AttemptID != read.Run.AttemptID || attempt.ProcessStartedDigest == "" {
+		return resultingress.BusinessDeadlineWitness{}, resultingress.ErrAttemptAuthorityConflict
+	}
+	return resultingress.SealBusinessDeadline(resultingress.BusinessDeadlineWitness{SpecDigest: budget.SpecDigest, CreationEventDigest: budget.CreationEventDigest, ProcessStartedFactDigest: attempt.ProcessStartedDigest, RunCreatedAt: budget.CreatedAt.UTC().Format(time.RFC3339Nano), ProcessStartedAt: attempt.ObservedAt, RunTimeoutSeconds: budget.RunTimeoutSeconds, AttemptTimeoutSeconds: budget.AttemptTimeoutSeconds})
+}
+
+// stopDueAttempt uses no caller-supplied deadline and never extends a budget
+// during recovery. A committed result wins; an existing stop keeps its intent.
+func (l *CompositionLedger) stopDueAttempt(ctx context.Context, verifier resultingress.CurrentOwnerLockVerifier, acquisition resultingress.ControlOwnerAcquisition, read runstore.RunStartAuthorityProjection, attempt resultingress.AttemptAuthorityState) (application.CancelRunProjection, bool, error) {
+	current, found, err := l.ingress.AttemptState(attempt.Identity)
+	if err != nil || !found {
+		return application.CancelRunProjection{}, false, resultingress.ErrAttemptAuthorityConflict
+	}
+	if current.CommittedResultFactDigest != "" {
+		return application.CancelRunProjection{}, false, nil
+	}
+	if current.StopIntent != (resultingress.AttemptStopIntent{}) {
+		result, err := l.finishStoppedAttempt(ctx, verifier, acquisition, read, current)
+		return result, err == nil, err
+	}
+	witness, err := l.currentBusinessDeadline(ctx, read, current)
+	if err != nil {
+		return application.CancelRunProjection{}, false, err
+	}
+	expires, category, err := witness.Effective()
+	if err != nil {
+		return application.CancelRunProjection{}, false, err
+	}
+	now := l.now().UTC()
+	if now.Before(expires) {
+		return application.CancelRunProjection{}, false, nil
+	}
+	intent, err := resultingress.SealAttemptStopIntent(current.Identity, resultingress.AttemptStopIntent{RequestID: "deadline:" + canonical.DigestBytes([]byte(current.Identity.AttemptID))[7:], ExpectedSequence: read.Run.Sequence, ExpectedAuthorityHead: read.Run.AuthorityHead, OperatorUID: acquisition.OwnerUID, ObservedAt: now.Format(time.RFC3339Nano), Category: category, Deadline: witness})
+	if err != nil {
+		return application.CancelRunProjection{}, false, err
+	}
+	barrier, err := l.ingress.CompareAndAppendBarrier(ctx, l, current.Revision, current.HeadDigest, resultingress.BarrierAuthorizationRequest{Identity: current.Identity, CurrentRunAuthority: runAuthorityForAttempt(current.Identity)}, resultingress.AttemptTransition{Kind: resultingress.AttemptTransitionTerminalizationBarrier, Identity: current.Identity, TerminalizationID: intent.IntentDigest, EligibilityTerminal: intent.Eligibility(), StopIntent: intent})
+	if err != nil {
+		return application.CancelRunProjection{}, false, err
+	}
+	result, err := l.finishStoppedAttempt(ctx, verifier, acquisition, read, barrier.State)
+	return result, err == nil, err
+}

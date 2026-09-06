@@ -463,23 +463,38 @@ func (i *Ingress) AdmitWithSupervisorCollectOutcomeAndObservation(ctx context.Co
 }
 
 func (i *Ingress) admitWithSupervisorCollect(ctx context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string, observation ResultObservationBinding) (AdmissionFact, error) {
+	return i.admitWithBusinessDeadline(ctx, drc, envelope, collect, outcomeFactDigest, observation, nil)
+}
+
+// AdmitWithBusinessDeadline is the fixed-server production admission entry.
+// Core reads immutable Task/creation anchors under its held Run lease. This
+// transaction rechecks the Task digest, ProcessStarted binding and deadline
+// against current authority. Exact committed replay survives deadline expiry.
+func (i *Ingress) AdmitWithBusinessDeadline(ctx context.Context, drc DRC, envelope ResultEnvelope, outcomeFactDigest string, observation ResultObservationBinding, deadline BusinessDeadlineWitness) (AdmissionFact, error) {
+	if i == nil || i.store == nil || ctx == nil || ctx.Err() != nil || envelope.Kind != KindWorkerResult || observation.Validate() != nil {
+		return AdmissionFact{}, ErrAttemptAuthorityConflict
+	}
+	return i.admitWithBusinessDeadline(ctx, drc, envelope, SupervisorCommandEvidence{}, outcomeFactDigest, observation, &deadline)
+}
+
+func (i *Ingress) admitWithBusinessDeadline(ctx context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string, observation ResultObservationBinding, deadline *BusinessDeadlineWitness) (AdmissionFact, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.store != nil {
 		var fact AdmissionFact
 		var admitErr error
 		if err := i.store.transact(i, func() error {
-			fact, admitErr = i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest, observation)
+			fact, admitErr = i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest, observation, deadline)
 			return nil
 		}); err != nil {
 			return AdmissionFact{}, err
 		}
 		return fact, admitErr
 	}
-	return i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest, observation)
+	return i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest, observation, deadline)
 }
 
-func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string, observation ResultObservationBinding) (AdmissionFact, error) {
+func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string, observation ResultObservationBinding, deadline *BusinessDeadlineWitness) (AdmissionFact, error) {
 	now := i.clock()
 	if observation != (ResultObservationBinding{}) && (envelope.Kind != KindWorkerResult || observation.Validate() != nil) {
 		return AdmissionFact{}, fmt.Errorf("%w: invalid result observation binding", ErrMalformedEnvelope)
@@ -534,6 +549,22 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 		i.recordQuarantine(ReasonDigestMismatch, drcDigest, envelope.ResultDigest, now)
 		return AdmissionFact{}, fmt.Errorf("%w: idempotency key %q reused with different DRC or result digest",
 			ErrDigestMismatch, replayKey)
+	}
+	if deadline != nil {
+		reservation, found := i.reservations[authorityState.ReservationFactDigest]
+		if !governed || !found || reservation.Reservation.Ready.SpecDigest != deadline.SpecDigest || deadline.ProcessStartedFactDigest != authorityState.ProcessStartedDigest || deadline.ProcessStartedAt != authorityState.ObservedAt {
+			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, ErrAttemptAuthorityConflict
+		}
+		expires, _, err := deadline.Effective()
+		if err != nil {
+			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, err
+		}
+		if !now.Before(expires) {
+			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, ErrBusinessDeadlineExceeded
+		}
 	}
 	// Every result kind participates in the same Attempt barrier. Hot-path
 	// checkpoint/heartbeat/log traffic is not allowed to leak through after

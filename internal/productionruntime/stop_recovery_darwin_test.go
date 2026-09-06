@@ -49,6 +49,11 @@ func TestReconcileStoppedRunRejectsInvalidInputAndClosedSession(t *testing.T) {
 	if _, found, err := fixture.session.ReconcileStoppedRun(context.Background(), invalid); err == nil || found {
 		t.Fatalf("invalid input accepted: %v", err)
 	}
+	// The delivery store deliberately borrows the session for its lifetime.
+	// Release it before closing the owner; Close correctly waits for borrows.
+	if err := fixture.store.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := fixture.session.Close(); err != nil {
 		t.Fatal(err)
 	}
