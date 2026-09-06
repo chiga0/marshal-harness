@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-07：实现节点冻结义务接到同账本与固定 server 准备器
+
+`99ca8ca53742f001edef8fbfe7b6c9aebfb1473b` 的 [CI 34060885444](https://github.com/chiga0/marshal-harness/actions/runs/34060885444) 五项成功。后继 `091f2ae66b0b439489345e1dbe8bf87c1d99f068` 的 [CI 34061770534](https://github.com/chiga0/marshal-harness/actions/runs/34061770534) 失败：新 fixture 错把 HEAD 当成合法 base，原 ResolveBase 在 probe 前正确拒绝；两平台都在前置 planning/race 结束，未进入完整质量检查，也没有派 Pi。修正为真实不可变 SHA，保留仓库 HEAD 前移时使用原 SHA 的测试，另补 mutable ref 必须零 probe 拒绝。该错误计入工程返工；不能把 compile-only 当成行为验证，也不能只读调用点而遗漏既有 ResolveBase 合同。修正与同链路冻结实现一次验证，不为修 fixture 原样启动付费 Worker。
+
+后继实现将实际 PreparedInputs 以单条创建冻结 fact 接入同一 RB1；重放重新核对已批准模板、确定性身份、base 和 Pi 选择，集成/有依赖节点拒绝提前冻结。same key 的新时间、能力快照或输入均拒绝，不追加第二份 reservation。fixed server 安装不可被请求替换的实际 planning 准备器；会话在 probe 前读取原批准/已有冻结事实，已有值冷重放零 probe，未命中在 owner 锁外准备、提交时复查 owner。没有直接启动 Worker、新增状态库或修改旧 fact。
+
+store 回归覆盖一次追加、冷 owner successor、并发 exact 重放、未批准/错误模板与提前集成/伪造 RunID/重复 fact；真实 held session 回归覆盖批准前零准备、冷恢复不重新探测和失败零创建事实。测试中的模板/probe 为明确 fixture，不冒充真实 Pi；实际构造接线仍需整条 server 调用链验证。当前仅完成本地 compile-only/静态检查，新候选动态结果待 CI；Run 创建到 READY 恢复、Core plan approval、真实并行及集成仍待完成，B2 不升级。B1 的结果格式实机失败保留，不以冻结义务替代其修复。
+
 ## 2026-09-07：批准会话 CI 通过，单 Run 创建分离出冻结阶段
 
 `5811572252c9fc80d714528770636bd9156d31dd` 的 [CI 34059842649](https://github.com/chiga0/marshal-harness/actions/runs/34059842649) 五项成功。条件链随后仅派发 `99ca8ca53742f001edef8fbfe7b6c9aebfb1473b` 的 [CI 34060885444](https://github.com/chiga0/marshal-harness/actions/runs/34060885444)，认证批准入口动态结果仍在验证；没有新派 Pi。

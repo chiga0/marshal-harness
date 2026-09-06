@@ -38,7 +38,7 @@ func preparationFixture(t *testing.T) (Input, *preparationWorker, string) {
 	return Input{
 		StateRoot: filepath.Join(repository, ".marshal"), RepositoryRoot: repository,
 		RunID:          "run-prepared",
-		TaskSpec:       planningTaskFixture(t, repository, "task-prepared", worker.ID(), remote, "HEAD"),
+		TaskSpec:       planningTaskFixture(t, repository, "task-prepared", worker.ID(), remote, base),
 		PolicySnapshot: planningPolicyFixture(t, "task-prepared", "run-prepared", worker.ID()),
 		Selector:       planningSelectorForWorker(t, worker), Validator: newValidator(t),
 		Now: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC),
@@ -82,7 +82,7 @@ func TestPrepareThenCreateUsesExactlyFrozenInputWithoutReprobe(t *testing.T) {
 	clear(frozen.Capability)
 	frozen.SelectionAttempts[0].AdapterID = "forged"
 	attempts[0].AdapterID = "forged"
-	// The original mutable base ref advances between Prepare and Create.
+	// Repository HEAD advances, but the admitted Task uses an immutable SHA.
 	planningGit(t, input.RepositoryRoot, "commit", "--allow-empty", "-m", "advance HEAD")
 	if planningGitOutput(t, input.RepositoryRoot, "rev-parse", "HEAD") == base {
 		t.Fatal("fixture did not advance HEAD")
@@ -92,7 +92,7 @@ func TestPrepareThenCreateUsesExactlyFrozenInputWithoutReprobe(t *testing.T) {
 		t.Fatalf("create state=%+v probes=%d err=%v", result.State, worker.probes, err)
 	}
 	if head := planningGitOutput(t, result.State.WorktreePath, "rev-parse", "HEAD"); head != base {
-		t.Fatal("creation resolved the mutable base a second time")
+		t.Fatal("creation replaced the approved base with the new repository HEAD")
 	}
 	runDir := filepath.Join(input.StateRoot, "runs", input.RunID)
 	assertPlanningFrozenFile(t, filepath.Join(runDir, "task-spec.json"), wantTask, result.State.SpecDigest)
@@ -161,6 +161,20 @@ func TestPrepareInvalidInputsAndUninitializedCreateCannotMutate(t *testing.T) {
 		if _, err := prepared.Create(context.Background()); err == nil {
 			t.Fatal("unvalidated preparation accepted")
 		}
+	}
+	assertPreparationNoRun(t, input)
+}
+
+func TestPrepareRejectsMutableBaseBeforeProbe(t *testing.T) {
+	input, worker, _ := preparationFixture(t)
+	var task map[string]any
+	if err := json.Unmarshal(input.TaskSpec, &task); err != nil {
+		t.Fatal(err)
+	}
+	task["repository"].(map[string]any)["baseRef"] = "HEAD"
+	input.TaskSpec = mustMarshal(t, task)
+	if _, _, err := Prepare(context.Background(), input); err == nil || worker.probes != 0 {
+		t.Fatalf("mutable baseline accepted: probes=%d err=%v", worker.probes, err)
 	}
 	assertPreparationNoRun(t, input)
 }

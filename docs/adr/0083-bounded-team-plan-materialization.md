@@ -51,6 +51,10 @@ Goal 投影由同一物理账本 replay 得到，`goal.Evaluate` 只接收该投
 
 候选将单 Run 入口分成 `planning.Prepare → PreparedPlan.Create`，原 `Plan` 也使用同一路径。Prepare 完成完整校验/准入/锁定 base/能力选择，不创建 Run 或 worktree；但原有 precondition、解释器预检和 probe 仍可能执行，不冒充纯函数。其私有进程内句柄保留完整 canonical Task/Policy/Capability，提供独立副本供 Core 绑定创建义务；Create 不再次解析可变 base ref 或 probe，创建前重查 repository/remote 与适配器身份。该句柄不是可反序列化的批准或冷恢复凭据，现阶段仍拒绝已有 Run。耐久创建绑定与 CREATED/PLANNED/READY 重放尚待接通，不把这个阶段分离算作幂等物化完成。
 
+实现节点的首次冻结沿同一 RB1 追加 `bounded-team-run-creation/v1 / team-run-inputs-frozen`，引用当前 owner fact、原 approved plan fact、Goal/Node/Run ID，并保存完整 canonical PreparedInputs 及摘要。事务从已接纳计划重算绑定：只接受无上游的 implement 节点，Task/Policy 必须与已批准模板逐字 canonical 相同，repository/base/确定性 ID 相同，仅一次 Pi selected（无 fallback）；Capability 仍须由实际 Prepare 完成完整 Schema/环境与 probe 校验。集成节点不能借此直接使用原 base 创建；须待上游成果接纳及集成派生算法另行接通。第一次冻结原子提交；exact 输入重放返回原 fact，不增加 reservation；同 key 异 capability、时间或正文均冲突。冷恢复先读原冻结值而不是再 probe/刷新时间；冻结事实不表示 Run 已创建、READY 或 Start。此 record 不新增第二状态库或放宽旧 reader 的未知 fact 拒绝行为。
+
+fixed server 构造时安装不可由请求替换的 `TeamRunPreparer`，使用该 server 已冻结的 Pi runtime/entrypoint 构造既有 production selector，调用实际 Prepare；不在 reconcile 时从 PATH/环境重新发现 Provider。RepositorySession 先持 current owner 核对原批准及已有冻结事实；命中即原值返回，未命中才在 owner/RB1 锁外执行 Prepare，提交时再次验证 current owner 和原计划。此特权应用接缝目前不暴露新 HTTP 操作，也不 Create/Start；下一阶段须用原冻结值恢复创建并补 Goal→Run approval，不能依靠重新 probe 来“恢复”。
+
 计划批准向子 Run 的 plan approval 映射是显式 Core producer：必须绑定 accepted Goal fact、节点最终输入和当前 Policy，只授权该一个 Run 的执行。不能生成通用 actor 批准文件或扩大用户确认范围。保留原 Run/Attempt reservation 与 dispatch lookup-before-claim；Goal reservation 记录预算归属，不替代它们或重复扣费。每条物化事实引用精确 Run 创建/Start 事实，恢复先核对再提交 committed；失败/终态的 release/settle 沿 ADR 0019，不凭本地进程状态释放预算。
 
 ## 4. 成果集成是冻结方案的一部分

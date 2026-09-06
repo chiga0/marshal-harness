@@ -9,6 +9,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/authority"
@@ -163,6 +164,147 @@ func TestRepositoryTeamApprovalRejectsMissingDeniedOrMutatingPreflight(t *testin
 			}
 			if _, found, err := session.ingress.ReadTeamPlan(session.acquisition.Scope, "team-session"); err != nil || found {
 				t.Fatalf("rejection wrote fact: found=%t err=%v", found, err)
+			}
+		})
+	}
+}
+
+func repositoryTeamCreationRequest(t *testing.T, fixture publicFixedDeliveryInputs) application.ApproveInitialTeamRequest {
+	t.Helper()
+	request := repositoryTeamRequest(t, fixture)
+	var inputs goal.TeamInputs
+	if json.Unmarshal(request.Inputs, &inputs) != nil {
+		t.Fatal("decode fixture")
+	}
+	for i := range inputs.Nodes {
+		node := &inputs.Nodes[i]
+		taskID, runID, err := goal.TeamNodeIDs(inputs.Proposal, node.NodeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		node.Task, err = json.Marshal(map[string]any{
+			"metadata":   map[string]any{"id": taskID},
+			"repository": map[string]any{"path": fixture.repository, "baseRef": inputs.BaseSHA},
+			"work":       map[string]any{"context": "session-only fixture"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		node.Policy, err = json.Marshal(map[string]any{"taskId": taskID, "runId": runID})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := json.Marshal(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Inputs, err = canonical.JSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.InputsDigest = canonical.DigestBytes(request.Inputs)
+	return request
+}
+
+func TestRepositoryTeamPreparationRequiresApprovalAndReusesColdFactWithoutProbe(t *testing.T) {
+	fixture := newPublicFixedDeliveryInputs(t)
+	request := repositoryTeamCreationRequest(t, fixture)
+	fixture.inputs.TeamInputPreflight = func(raw []byte) error {
+		if !bytes.Equal(raw, request.Inputs) {
+			return errors.New("fixture mismatch")
+		}
+		return nil
+	}
+	preparations := 0
+	fixture.inputs.TeamRunPreparer = func(ctx context.Context, task, policy []byte, runID string) ([]byte, error) {
+		preparations++
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		// Explicit no-process preparation fixture. It does not claim a real Pi
+		// probe; the constructor in sealed_application supplies planning.Prepare.
+		return json.Marshal(map[string]any{
+			"runId": runID, "repositoryRoot": fixture.repository, "baseSha": strings.Repeat("a", 40),
+			"preparedAt": time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC),
+			"task":       json.RawMessage(task), "policy": json.RawMessage(policy),
+			"capability":        map[string]any{"adapterId": "pi", "probeStatus": "supported"},
+			"selectionAttempts": []any{map[string]any{"AdapterID": "pi", "Outcome": "selected"}},
+		})
+	}
+	session, err := OpenRepositorySession(context.Background(), fixture.inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	if _, err := session.PrepareInitialTeamRun(context.Background(), request, "service"); err == nil || preparations != 0 {
+		t.Fatalf("unapproved plan reached preparation: count=%d err=%v", preparations, err)
+	}
+	if _, err := session.ApproveInitialTeam(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.PrepareInitialTeamRun(context.Background(), request, "integration"); err == nil || preparations != 0 {
+		t.Fatalf("integration prepared without upstream candidate: count=%d err=%v", preparations, err)
+	}
+	first, err := session.PrepareInitialTeamRun(context.Background(), request, "service")
+	if err != nil || first.FactDigest == "" || preparations != 1 {
+		t.Fatalf("prepare: count=%d err=%v", preparations, err)
+	}
+	second, err := session.PrepareInitialTeamRun(context.Background(), request, "service")
+	if err != nil || second.FactDigest != first.FactDigest || preparations != 1 {
+		t.Fatalf("exact replay: count=%d err=%v", preparations, err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	successor, err := OpenRepositorySession(context.Background(), fixture.inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer successor.Close()
+	cold, err := successor.PrepareInitialTeamRun(context.Background(), request, "service")
+	if err != nil || cold.FactDigest != first.FactDigest || !bytes.Equal(cold.Inputs, first.Inputs) || preparations != 1 {
+		t.Fatalf("cold replay re-probed or changed frozen input: count=%d err=%v", preparations, err)
+	}
+	changed := request
+	changed.RequestID = "different-approval"
+	if _, err := successor.PrepareInitialTeamRun(context.Background(), changed, "service"); err == nil || preparations != 1 {
+		t.Fatal("changed approval accepted or re-probed")
+	}
+}
+
+func TestRepositoryTeamPreparationFailureLeavesNoCreationFact(t *testing.T) {
+	for _, mode := range []string{"missing", "error", "changed", "canceled"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := newPublicFixedDeliveryInputs(t)
+			request := repositoryTeamCreationRequest(t, fixture)
+			fixture.inputs.TeamInputPreflight = func([]byte) error { return nil }
+			if mode != "missing" {
+				fixture.inputs.TeamRunPreparer = func(context.Context, []byte, []byte, string) ([]byte, error) {
+					if mode == "error" {
+						return nil, errors.New("fixture preparation failed")
+					}
+					return []byte("{}"), nil
+				}
+			}
+			session, err := OpenRepositorySession(context.Background(), fixture.inputs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			if _, err := session.ApproveInitialTeam(context.Background(), request); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if mode == "canceled" {
+				cancel()
+			}
+			if _, err := session.PrepareInitialTeamRun(ctx, request, "service"); err == nil {
+				t.Fatal("invalid preparation accepted")
+			}
+			if _, found, err := session.ingress.ReadTeamRunCreation(session.acquisition.Scope, "team-session", "service"); err != nil || found {
+				t.Fatalf("failed preparation wrote creation fact: found=%v err=%v", found, err)
 			}
 		})
 	}

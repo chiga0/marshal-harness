@@ -9,6 +9,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/goal"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 )
@@ -65,6 +66,97 @@ func teamApprovalProjection(plan resultingress.TeamPlanState) application.Initia
 		InputsDigest: plan.Approval.InputsDigest, RequestDigest: plan.Approval.RequestDigest,
 		FactDigest: plan.FactDigest, ObligationCount: len(plan.Materializations),
 	}
+}
+
+// PrepareInitialTeamRun is a privileged controller seam, not a transport
+// endpoint. It reads the approved fact before any probe, then freezes exactly
+// the immutable composition's planning result. A cold/exact replay reads the
+// original preparation without probing or refreshing its timestamp.
+// Run creation/recovery and Goal-to-Run approval are NOT performed here.
+func (session *RepositorySession) PrepareInitialTeamRun(ctx context.Context, request application.ApproveInitialTeamRequest, nodeID string) (resultingress.TeamRunCreationState, error) {
+	const operation = "prepare-initial-team-run"
+	fail := func() (resultingress.TeamRunCreationState, error) {
+		return resultingress.TeamRunCreationState{}, application.NewError(operation, application.ReasonAuthorityConflict)
+	}
+	if ctx == nil || domain.ValidateID(nodeID) != nil {
+		return fail()
+	}
+	frozen, digest, err := request.Frozen()
+	if err != nil {
+		return resultingress.TeamRunCreationState{}, err
+	}
+	borrow, err := session.borrow()
+	if err != nil {
+		return resultingress.TeamRunCreationState{}, err
+	}
+	defer borrow.Close()
+	if session.teamInputPreflight == nil || session.teamRunPreparer == nil {
+		return resultingress.TeamRunCreationState{}, application.NewError(operation, application.ReasonCompositionIncomplete)
+	}
+	if err := ctx.Err(); err != nil {
+		return resultingress.TeamRunCreationState{}, err
+	}
+	validation := bytes.Clone(frozen.Inputs)
+	if session.teamInputPreflight(validation) != nil || canonical.DigestBytes(validation) != frozen.InputsDigest {
+		return fail()
+	}
+	var inputs goal.TeamInputs
+	if json.Unmarshal(frozen.Inputs, &inputs) != nil || inputs.Spec.Validate() != nil ||
+		!inputs.Spec.AuthorityNamespaceId.Equal(session.acquisition.Scope.AuthorityNamespaceID) {
+		return fail()
+	}
+	var node goal.TeamNodeInputs
+	for _, candidate := range inputs.Nodes {
+		if candidate.NodeID == nodeID {
+			node = candidate
+		}
+	}
+	if node.Role != "implement" {
+		return fail()
+	}
+	for _, edge := range inputs.Proposal.Edges {
+		if edge.To == nodeID {
+			return fail()
+		}
+	}
+	_, runID, err := goal.TeamNodeIDs(inputs.Proposal, nodeID)
+	if err != nil {
+		return fail()
+	}
+	approval := resultingress.TeamPlanApproval{InputsDigest: frozen.InputsDigest, RequestDigest: digest, ExpectedHead: frozen.ExpectedHead}
+	verifier := repositoryApprovedTeamVerifier{session: session, approval: approval}
+	var plan resultingress.TeamPlanState
+	var existing resultingress.TeamRunCreationState
+	var found bool
+	err = verifier.WithCurrentApprovedTeam(ctx, session.acquisition, approval, func() error {
+		var exists bool
+		var readErr error
+		plan, exists, readErr = session.ingress.ReadTeamPlan(session.acquisition.Scope, inputs.Spec.GoalId)
+		if readErr != nil {
+			return readErr
+		}
+		if !exists || plan.Approval != approval || !bytes.Equal(plan.Inputs, frozen.Inputs) {
+			return application.NewError(operation, application.ReasonAuthorityConflict)
+		}
+		existing, found, readErr = session.ingress.ReadTeamRunCreation(session.acquisition.Scope, inputs.Spec.GoalId, nodeID)
+		return readErr
+	})
+	if err != nil {
+		return resultingress.TeamRunCreationState{}, err
+	}
+	if found {
+		if existing.PlanFactDigest != plan.FactDigest || existing.RunID != runID {
+			return fail()
+		}
+		return existing, nil
+	}
+	// No repository-owner/RB1 lock is held during validation subprocesses or
+	// the one fixed Pi probe. The commit rechecks current owner and exact plan.
+	prepared, err := session.teamRunPreparer(ctx, bytes.Clone(node.Task), bytes.Clone(node.Policy), runID)
+	if err != nil {
+		return resultingress.TeamRunCreationState{}, err
+	}
+	return session.ingress.FreezeInitialTeamRun(ctx, verifier, session.acquisition, approval, inputs.Spec.GoalId, nodeID, plan.FactDigest, prepared)
 }
 
 // ReconcileInitialTeamApproval never appends or refreshes a deadline. A query

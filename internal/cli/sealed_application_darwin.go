@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -208,6 +209,33 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 				return application.NewError("team-input-preflight", application.ReasonInvalidRequest)
 			}
 			return nil
+		},
+		TeamRunPreparer: func(ctx context.Context, task, policy []byte, runID string) ([]byte, error) {
+			// Use only this server's frozen Pi paths; never rediscover a provider
+			// from mutable PATH/environment during Goal reconciliation.
+			workers, err := app.NewWorkerRuntime(func(key string) string {
+				switch key {
+				case "MARSHAL_PI_PATH":
+					return applicationAdapter.piEntrypoint
+				case "MARSHAL_PI_NODE_PATH":
+					return applicationAdapter.piRuntime
+				default:
+					return ""
+				}
+			})
+			if err != nil {
+				return nil, err
+			}
+			prepared, _, err := planning.Prepare(ctx, planning.Input{
+				StateRoot: applicationAdapter.stateRoot, RepositoryRoot: applicationAdapter.repositoryRoot,
+				RunID: runID, TaskSpec: task, PolicySnapshot: policy,
+				Selector: workers.ProductionSelector(), Validator: applicationAdapter.validator,
+				LocalSelfIdentity: applicationAdapter.entryIdentity,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(prepared.Inputs())
 		},
 	})
 	if err != nil {

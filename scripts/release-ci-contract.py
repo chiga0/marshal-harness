@@ -170,9 +170,14 @@ jobs:
       - name: Verify modules
         run: go mod verify
 
-      - name: Run bounded-team planning regression before full quality
+      - name: Run bounded-team regression before full quality
         if: github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'feat/b2-')
-        run: go test -race -count=1 -v ./internal/planning
+        run: |
+          go test -race -count=1 -v ./internal/planning
+          go test -race -count=1 -v -run '^TestTeam' ./internal/resultingress
+          if [ "$(go env GOOS)" = darwin ]; then
+            go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v -run '^TestRepositoryTeam' ./internal/productionruntime
+          fi
 
       # RC1 distribution validation builds and ad-hoc signs the real
       # Darwin/arm64 candidate with the fixed /usr/bin/codesign required by

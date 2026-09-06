@@ -29,6 +29,9 @@ type RepositorySessionInputs struct {
 	// Installed only by trusted composition, never supplied by an HTTP caller.
 	// Nil disables team approval without affecting existing single Run APIs.
 	TeamInputPreflight func([]byte) error
+	// Trusted, process-local planning composition. Never an HTTP/Worker input.
+	// It returns canonical PreparedInputs without creating a Run.
+	TeamRunPreparer func(context.Context, []byte, []byte, string) ([]byte, error)
 }
 
 // RepositorySession owns one repository owner acquisition and the sealed
@@ -45,6 +48,7 @@ type RepositorySession struct {
 	acquisition        resultingress.ControlOwnerAcquisition
 	fixedPath          string
 	teamInputPreflight func([]byte) error
+	teamRunPreparer    func(context.Context, []byte, []byte, string) ([]byte, error)
 }
 
 type repositorySessionBorrow struct {
@@ -133,7 +137,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		cleanup()
 		return nil, fmt.Errorf("repository session: seal prepared execution: %w", err)
 	}
-	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath, teamInputPreflight: inputs.TeamInputPreflight}
+	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath, teamInputPreflight: inputs.TeamInputPreflight, teamRunPreparer: inputs.TeamRunPreparer}
 	if err := session.owner.WithCurrentOwnerLock(ctx, acquisition, func() error {
 		current, found, openErr := ingress.OpenOwner(acquisition.Scope)
 		if openErr != nil || !found || current.Acquisition != acquisition || current.FactDigest != ownerState.FactDigest {
