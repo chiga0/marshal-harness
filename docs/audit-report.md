@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-06：真实 Pi 已到 VERIFYING，修复 release 与 fixed delivery 的观察衔接
+
+PR #263 source `31b64a84b50e41f29f773c31762c0c29b2bc58a5` 经检查后合入 main `4f7311b08bf59f6fad31aaae6661fc253ab0b0b4`；main CI [34023916927](https://github.com/chiga0/marshal-harness/actions/runs/34023916927) 五项通过。唯一后继真实业务 canary [34024740089](https://github.com/chiga0/marshal-harness/actions/runs/34024740089) 已产生 `worker.completed`、`RUNNING→VERIFYING`，RB1 共 36 条事实且末条为 `cleanup-released`。说明该次 Pi 输出已完成解析、结果接纳和终态清理，但尚无 VerificationReport、ReviewPacket、Decision 或 ACCEPTED。
+
+失败为 `commit-lifecycle-delivery/authority-conflict`；小型诊断 artifact `9986706443` 保留。七次 `attempt-still-running` 是同一请求的观察，不是七个新 Attempt；脚本主动注入的 server1 `Killed:9` 是既有重启测试，不是此次根因。不得混用旧的尾随 JSON 失败或声称 Pi 未配置，也不原样重跑这个 head。
+
+调用链存在确定的不匹配：existing-worktree release 通过 `RENAME_SWAP` 原子更新 RB1 派生投影，改变 `runtime-v1` mutation observation；fixed server 只在 preparation 后采用受控更新，terminalization 后仍使用旧观察，交付层因而拒绝 receipt。候选在完整 `cleanup-released` 后、`worker.completed` 前增加同一观察衔接：当前 owner/精确完整 Attempt/当前 Run/已提交 release receipt/完整 RB1 snapshot/held graph 投影字节全部吻合，才调用既有 root adoption。未知 sibling、原 store 替换、control ABA、旧 owner 仍拒绝；不跳过 receipt，不新建 authority，不改变 ADR 0069/0076 的生命周期或信任边界。
+
+回归覆盖投影交换后的 receipt 拒绝、受控更新后的 exact receipt/replay，以及无 durable Attempt 时伪造 terminal 字段不能改变观察；既有 allocationcontrol 的 exact-byte/损坏投影和 fixed-root ABA 测试继续约束边界。仅编译检查与 vet 通过不能关闭缺陷；需 hosted 动态/race 门禁，再进行一次 exact-main 真实验证。B1 保持 IN_PROGRESS。取消/超时另存 `feat/b1-stop-lifecycle@a04d76c`，CI [34025131805](https://github.com/chiga0/marshal-harness/actions/runs/34025131805) 为独立证据，不混入本候选，也不因 WIP 已推送宣称其出口完成。
+
 ## 2026-09-06：最终 JSON 后有非空白内容，前移输出格式约束
 
 PR #262 source `8de9648` 全部检查通过后合入 main `5945b6854220eb86b229e19efe3e883a17556a48`；main CI [34008933865](https://github.com/chiga0/marshal-harness/actions/runs/34008933865) 五项通过。唯一后继实机 [34009508838](https://github.com/chiga0/marshal-harness/actions/runs/34009508838) 在三次同请求 `attempt-still-running` 观察后失败于 `pi-result-final-object-trailing`，小型诊断 artifact `9982033321` 已保留。启动、恢复、transcript 与最终 assistant 消息解析均已越过原屏障，但尚未进入 WorkerResult Schema/独立 Verification，没有 ReviewPacket、Decision 或 ACCEPTED。不能只读旧 `state.json` 的 READY 快照忽略实际 RB1 启动事实。
