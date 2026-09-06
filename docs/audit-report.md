@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-07：沿原 planning 调用链恢复冻结输入，不重新探测 Provider
+
+创建冻结候选 `928b8ab3e72e5867009e6ef0071d50ee0d751034` 的 [CI 34062410465](https://github.com/chiga0/marshal-harness/actions/runs/34062410465) 已通过 Linux quality、双架构 Linux conformance 与 secret scan；记录时 macOS quality 仍在运行，尚不能声称五项全绿。它已越过前驱 immutable-SHA fixture 的早期失败；旧失败继续计入工程返工分母。
+
+本次沿同一 Prepare 实现新增冻结输入重建：保留原始完整 JSON、选定能力与准备时间，重新检查当前环境/仓库/remote/准入，production selector 仍执行当前 registry eligibility/admission，但不重新 Probe 或 fallback。序列化后冷重建到原 Create 的回归同时核对 READY、两个原时间事件、三份冻结文件和原 base；另覆盖输入/时间/能力/remote/adapter 漂移、取消和无配置零 Run，已有 Run 仍拒绝覆盖。测试使用显式 fixture，不冒充真实 Pi 或 RB1 批准。
+
+接线审计发现原模板允许只声明 remote 名字：重启时该名字可能已指向另一 URL。现要求受限团队在 preview 前提供非空 expectedRemoteUrl，恢复复用原 ResolveRemote 核对；不增加持久化字段或放宽单 Run 的既有合同。此问题在 Worker 启动前确定性处理，不启动付费重试。
+
+当前未完成项仍是：当前 owner/RB1 到实际物化入口的写入复查、已有 CREATED/PLANNED/READY 的幂等补齐、Core plan approval、真实并行与业务集成。这个函数本身不认证 receipt、不自动创建或启动 Run。B2 仍是隔离候选而非 INTEGRATED；本次本地编译/静态验证不替代新 head 的动态 CI。B1 原有实机结果格式失败和 B3 门禁不被这项进展关闭。
+
 ## 2026-09-07：实现节点冻结义务接到同账本与固定 server 准备器
 
 `99ca8ca53742f001edef8fbfe7b6c9aebfb1473b` 的 [CI 34060885444](https://github.com/chiga0/marshal-harness/actions/runs/34060885444) 五项成功。后继 `091f2ae66b0b439489345e1dbe8bf87c1d99f068` 的 [CI 34061770534](https://github.com/chiga0/marshal-harness/actions/runs/34061770534) 失败：新 fixture 错把 HEAD 当成合法 base，原 ResolveBase 在 probe 前正确拒绝；两平台都在前置 planning/race 结束，未进入完整质量检查，也没有派 Pi。修正为真实不可变 SHA，保留仓库 HEAD 前移时使用原 SHA 的测试，另补 mutable ref 必须零 probe 拒绝。该错误计入工程返工；不能把 compile-only 当成行为验证，也不能只读调用点而遗漏既有 ResolveBase 合同。修正与同链路冻结实现一次验证，不为修 fixture 原样启动付费 Worker。

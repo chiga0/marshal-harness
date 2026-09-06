@@ -123,7 +123,7 @@ func PreviewTeamInputs(raw []byte, validator *contract.Validator) (TeamInputsPre
 			return fail()
 		}
 		policy, policyErr := ValidatePolicy(input.Policy, task, runID, validator)
-		if policyErr != nil || task.Metadata.ID != taskID || task.Repository.Path != spec.Repository || task.Repository.BaseRef != inputs.BaseSHA || !slices.Equal(task.Scope.AllowPaths, node.Paths) {
+		if policyErr != nil || task.Metadata.ID != taskID || task.Repository.Path != spec.Repository || task.Repository.BaseRef != inputs.BaseSHA || task.Repository.ExpectedRemoteURL == "" || !slices.Equal(task.Scope.AllowPaths, node.Paths) {
 			return fail()
 		}
 		// Dependencies and the integration base are derived from accepted exact

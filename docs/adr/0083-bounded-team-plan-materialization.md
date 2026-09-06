@@ -55,6 +55,8 @@ Goal 投影由同一物理账本 replay 得到，`goal.Evaluate` 只接收该投
 
 fixed server 构造时安装不可由请求替换的 `TeamRunPreparer`，使用该 server 已冻结的 Pi runtime/entrypoint 构造既有 production selector，调用实际 Prepare；不在 reconcile 时从 PATH/环境重新发现 Provider。RepositorySession 先持 current owner 核对原批准及已有冻结事实；命中即原值返回，未命中才在 owner/RB1 锁外执行 Prepare，提交时再次验证 current owner 和原计划。此特权应用接缝目前不暴露新 HTTP 操作，也不 Create/Start；下一阶段须用原冻结值恢复创建并补 Goal→Run approval，不能依靠重新 probe 来“恢复”。
 
+冷读取的 PreparedInputs 必须通过 `planning.RestorePrepared` 重新执行同一完整 Task/Policy/环境、precondition、解释器、repository/base/remote 和能力 Schema 校验；唯一不同是 production selector 重新核对 registry eligibility/admission 后复用原单候选能力快照，不 Probe、不 fallback、不刷新时间。受限团队模板必须有非空 expectedRemoteUrl，否则冷恢复无法证明原 remote 名字仍指向原目标；该缺口在批准 preview 前拒绝，不等付费 Worker 开始。恢复函数自身不验证账本或授予批准，controller 必须从当前 owner/RB1 取原事实并在写入前复查；不能把客户端 PreparedInputs 当作 receipt。当前只新增无 Run 副作用的重建接缝与原 Create 正向测试，仍未接通已有 CREATED/PLANNED/READY 补齐，也未暴露生产物化操作。
+
 计划批准向子 Run 的 plan approval 映射是显式 Core producer：必须绑定 accepted Goal fact、节点最终输入和当前 Policy，只授权该一个 Run 的执行。不能生成通用 actor 批准文件或扩大用户确认范围。保留原 Run/Attempt reservation 与 dispatch lookup-before-claim；Goal reservation 记录预算归属，不替代它们或重复扣费。每条物化事实引用精确 Run 创建/Start 事实，恢复先核对再提交 committed；失败/终态的 release/settle 沿 ADR 0019，不凭本地进程状态释放预算。
 
 ## 4. 成果集成是冻结方案的一部分

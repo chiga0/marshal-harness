@@ -91,8 +91,13 @@ func Plan(ctx context.Context, input Input) (Result, error) {
 // capability selection used by Plan, without acquiring a Run lease, creating a
 // worktree, writing frozen files or appending lifecycle events. Preconditions,
 // interpreter checks and adapter probes may execute as in Plan. The returned
-// process-local handle cannot be reconstructed from an input document.
+// process-local handle is not deserializable; durable composition must use
+// RestorePrepared's full revalidation rather than decoding a handle.
 func Prepare(ctx context.Context, input Input) (*PreparedPlan, []adapter.SelectionAttempt, error) {
+	return prepare(ctx, input, nil)
+}
+
+func prepare(ctx context.Context, input Input, frozen *PreparedInputs) (*PreparedPlan, []adapter.SelectionAttempt, error) {
 	if ctx == nil {
 		return nil, nil, errors.New("planning: context is required")
 	}
@@ -214,7 +219,14 @@ func Prepare(ctx context.Context, input Input) (*PreparedPlan, []adapter.Selecti
 
 	// 8. Select the adapter strictly from the effective policy's explicit
 	// candidate list; when fallback is not allowed it carries none.
-	selection, err := input.Selector.Select(ctx, effective.SelectionRequest())
+	var selection adapter.Selection
+	if frozen == nil {
+		selection, err = input.Selector.Select(ctx, effective.SelectionRequest())
+	} else {
+		selection, err = input.Selector.RestoreSelection(ctx, effective.SelectionRequest(), domain.Record{
+			Kind: domain.KindCapabilitySnapshot, Data: frozen.Capability,
+		}, frozen.SelectionAttempts)
+	}
 	if err != nil {
 		return nil, append([]adapter.SelectionAttempt(nil), selection.Attempts...), fmt.Errorf("planning: select adapter: %w", err)
 	}

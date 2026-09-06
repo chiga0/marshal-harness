@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 最新检查点：B1 `80084bb` 的 CI 五项通过，但实机 34059061091 在 peer Collect 的 `pi-result-final-content-shape` 失败，尚未进入跨 Run 组合验收，禁止原样重试。B2 `928b8ab` 的 CI 34062410465 已通过 Linux quality、双架构 conformance 和 secret scan，记录时 macOS quality 在途；后继正接通原冻结输入的无 Probe planning 重建，尚未完成部分 Run 补齐和真实团队。Goal 保持 B1→B2→B3 与至少三个业务族的强 Lead＋SubAgents 重复配对收益验证。main 仍 ba2196b、两候选均未合并；下方旧“当前/在途”段落是历史检查点，不代表最新状态。
+
 2026-09-07 当前：`d0be824` 的精确 CI 34054261338 与 PR CI 均通过；单次跨 Run 实机 34055217240 已在同一 owner、无重启条件下完成 peer Collect 到 VERIFYING，并启动第二个 Run，但整体因客户端响应失败而结束。已确认 15 秒固定响应读取窗口与 100 秒 Verify 不兼容，另有 1 秒 half-close 等待与身份复查预算冲突；后继候选集中修正传输阶段预算、补实际认证客户端回归和缺失的阶段诊断。**B1 仍 IN_PROGRESS，main 仍 ba2196b；PR #268 为 Draft，无停止候选合并、无 stable 发布。** 后续历史段落中的“在途”不代表作业仍活跃。
 
 2026-09-07 最新：`0130465` 的 CI 五项全绿，真实 Pi 中断恢复 [34050602081](https://github.com/chiga0/marshal-harness/actions/runs/34050602081) 通过。已证明 stop barrier 落盘后、Run 仍 RUNNING 时中断 server，原 Attempt/stop intent 在同身份后继恢复为 BLOCKED，并通过原 Collect 请求冷恢复；一 Attempt、零 retry/rework，包含恢复的终态延迟为原 deadline 后 4.334296 秒。仅关闭该进程中断边界，不代表完整故障矩阵。长 Verify 让出全局写锁的后继 `74e8619` 已推送，CI 34050715623 在途，跨 Run 实机尚待验证。**B1 IN_PROGRESS，B2/B3 不升级；main 仍 ba2196b，停止候选未合并、无 stable 发布。** 下列段落保留为历史检查点。
@@ -41,8 +43,8 @@
 
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline 自动停止/冷恢复通过；0130465 证明 barrier 后进程中断恢复；d0be824 实机同 owner 无重启 Collect 到 VERIFYING | 分阶段传输预算；长 Verify 跨 Run 实机及响应上界；候选合入与最终组合；完整 B2 同路径故障矩阵在 B3，不以单次通过概括可靠性 |
-| B2 受限 Agent Team | `IN_PROGRESS`（隔离候选，未集成） | ab43a42/5811572/99ca8ca 五项 CI 均通过；091f2ae 因 HEAD fixture 违反 immutable-SHA 合同失败，候选已修正；后继接入同 RB1 创建冻结与固定 server 准备器，动态待验证 | 完整固定 server 批准验证、原冻结输入到 READY 恢复与 Core plan approval/调度、真实并行节点、集成候选业务验收、局部 replan/结算、暂停恢复 |
+| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline 与 barrier 中断恢复通过；80084bb 握手排队修正 CI 全绿，但新实机在 peer Collect 格式失败 | 有界结果结构诊断与根因修复；长 Verify 跨 Run 实机及响应上界；候选合入与最终组合；完整 B2 同路径故障矩阵在 B3 |
+| B2 受限 Agent Team | `IN_PROGRESS`（隔离候选，未集成） | ab43a42/5811572/99ca8ca CI 全绿；091f2ae 的 immutable-SHA fixture 已修正，928b8ab 四项通过/macOS 在途；后继复用同 planning 重建冻结输入，不重 Probe、不刷新时间 | 当前 RB1 义务到部分 Run/READY 的幂等恢复与 Core plan approval/调度、完整认证 server 纵切、真实并行与集成业务验收、局部 replan/结算、暂停恢复 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
 [ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 仍为 Proposed，main 尚未开启 cancel/timeout。下一步验证长 Verify 期间无关 Run 的 deadline 能继续推进，完成停止纵切的组合验收与独立审查，随后进入 B2；不重跑已通过的旧 source，不扩大 Provider 或另起 controller。完整失败样本及证据边界见审计记录。本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。

@@ -122,6 +122,9 @@ func TestTeamInputsRejectsUnexecutableAndMismatchedBundle(t *testing.T) {
 		{"missing-goal-policy", func(i *TeamInputs) { i.AdmissionPolicy = goal.AdmissionPolicy{} }},
 		{"goal-policy-denies-scope", func(i *TeamInputs) { i.AdmissionPolicy.Paths = []string{"unrelated.py"} }},
 		{"moving-base", func(i *TeamInputs) { i.BaseSHA = "main" }},
+		{"unbound-remote", func(i *TeamInputs) {
+			mutateTeamTask(t, i, func(task map[string]any) { delete(task["repository"].(map[string]any), "expectedRemoteUrl") })
+		}},
 		{"spec-drift", func(i *TeamInputs) { i.Spec.Description += "changed" }},
 		{"missing-node", func(i *TeamInputs) { i.Nodes = i.Nodes[:2] }},
 		{"duplicate-input", func(i *TeamInputs) { i.Nodes[1] = i.Nodes[0] }},
