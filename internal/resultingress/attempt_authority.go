@@ -332,6 +332,7 @@ type AttemptTransition struct {
 	Process                         ProcessObservation          `json:"process,omitempty"`
 	TerminalizationID               string                      `json:"terminalizationId,omitempty"`
 	EligibilityTerminal             EligibilityTerminal         `json:"eligibilityTerminal,omitempty"`
+	StopIntent                      AttemptStopIntent           `json:"stopIntent,omitempty,omitzero"`
 	ProcessTerminalKind             ProcessTerminalKind         `json:"processTerminalKind,omitempty"`
 	ObservationDigest               string                      `json:"terminalObservationDigest,omitempty"`
 	ReceiptDigest                   string                      `json:"receiptDigest,omitempty"`
@@ -401,6 +402,7 @@ type AttemptAuthorityState struct {
 	CommittedResultOutcomeDigest     string                        `json:"committedResultOutcomeDigest,omitempty"`
 	CommittedResultObservation       ResultObservationBinding      `json:"committedResultObservation,omitempty,omitzero"`
 	BarrierDigest                    string                        `json:"barrierDigest,omitempty"`
+	StopIntent                       AttemptStopIntent             `json:"stopIntent,omitempty,omitzero"`
 	TerminalizationID                string                        `json:"terminalizationId,omitempty"`
 	EligibilityTerminal              EligibilityTerminal           `json:"eligibilityTerminal,omitempty"`
 	AdmissionClosed                  bool                          `json:"admissionClosed"`
@@ -715,6 +717,17 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 		if prior.BarrierDigest != "" {
 			return ErrAttemptAuthorityOrder
 		}
+		if t.StopIntent != (AttemptStopIntent{}) {
+			if prior.CommittedResultFactDigest != "" {
+				return ErrStopTooLate
+			}
+			if prior.ProcessStartedDigest == "" || prior.LaunchState != LaunchStarted {
+				return ErrAttemptAuthorityOrder
+			}
+			if t.StopIntent.Category != StopOperatorRequest && (t.StopIntent.Deadline.ProcessStartedFactDigest != prior.ProcessStartedDigest || t.StopIntent.Deadline.ProcessStartedAt != prior.ObservedAt) {
+				return ErrAttemptAuthorityConflict
+			}
+		}
 		// The barrier always closes result admission. Whether it bound an
 		// already-admitted result or closed an empty admission slot is encoded
 		// by AdmissionFactDigest/AdmissionSequence, not by this state bit.
@@ -810,6 +823,9 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 func validateTransitionShape(t AttemptTransition) error {
 	if err := t.Identity.Validate(); err != nil {
 		return err
+	}
+	if t.StopIntent != (AttemptStopIntent{}) && (t.Kind != AttemptTransitionTerminalizationBarrier || t.StopIntent.Validate(t.Identity) != nil || t.StopIntent.Eligibility() != t.EligibilityTerminal || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0) {
+		return ErrAttemptAuthorityConflict
 	}
 	if t.Kind != AttemptTransitionLaunchAuthorized && t.Kind != AttemptTransitionProcessStarted && (!zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "") {
 		return fmt.Errorf("%w: launch identity on unrelated transition", ErrAttemptAuthorityConflict)
@@ -1300,7 +1316,7 @@ func exactTransitionReplay(state AttemptAuthorityState, exists bool, t AttemptTr
 	case attemptTransitionResultAdmitted:
 		return state, state.CommittedResultFactDigest == t.AdmissionFactDigest && state.CommittedResultSequence == t.AdmissionSequence && exactSupervisorOutcomeReplay(state.CommittedResultOutcomeDigest, state.CommittedResultPreceding, state.CommittedResultCollect, t)
 	case AttemptTransitionTerminalizationBarrier:
-		return state, state.BarrierDigest != "" && state.TerminalizationID == t.TerminalizationID && state.EligibilityTerminal == t.EligibilityTerminal
+		return state, state.BarrierDigest != "" && state.TerminalizationID == t.TerminalizationID && state.EligibilityTerminal == t.EligibilityTerminal && state.StopIntent == t.StopIntent
 	case AttemptTransitionProcessTerminal:
 		return state, state.ProcessTerminalDigest != "" && state.TerminalizationID == t.TerminalizationID && state.ProcessTerminalKind == t.ProcessTerminalKind && state.ProcessTerminalObservation == t.ObservationDigest && exactSupervisorOutcomeReplay(state.ProcessTerminalOutcomeDigest, state.ProcessTerminalPreceding, state.ProcessTerminalEvidence, t)
 	case AttemptTransitionAllocationTerminated:
@@ -1893,6 +1909,7 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 			return ErrAttemptAuthorityConflict
 		}
 		state.BarrierDigest, state.TerminalizationID, state.EligibilityTerminal = fact.Digest, t.TerminalizationID, t.EligibilityTerminal
+		state.StopIntent = t.StopIntent
 		state.AdmissionClosed = fact.AdmissionClosed
 		state.BarrierAdmissionFactDigest, state.BarrierAdmissionSequence = t.AdmissionFactDigest, t.AdmissionSequence
 		state.TerminalGeneration, state.CleanupBindingDigest = fact.TerminalGeneration, fact.CleanupBindingDigest

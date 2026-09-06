@@ -43,6 +43,22 @@ type ReviewDecisionClientResult struct {
 	Receipt    productionruntime.FixedLifecycleReceipt
 }
 
+type CancelRunClientResult struct {
+	Projection application.CancelRunProjection
+	Receipt    productionruntime.FixedLifecycleReceipt
+}
+
+func CallCancelRun(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, requestKey string, request application.CancelRunRequest, deadline time.Time) (CancelRunClientResult, error) {
+	if request.Validate() != nil {
+		return CancelRunClientResult{}, ErrInvalid
+	}
+	response, err := call(ctx, authority, productionruntime.FixedLifecycleCancelOperation, "/v1/runs/cancel", requestKey, request, deadline)
+	if err != nil || response.Stopped == nil || response.LifecycleReceipt == nil || response.Stopped.Validate() != nil {
+		return CancelRunClientResult{}, errors.Join(ErrConflict, err)
+	}
+	return CancelRunClientResult{Projection: *response.Stopped, Receipt: *response.LifecycleReceipt}, nil
+}
+
 func CallStatus(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, requestKey string, deadline time.Time) (application.StatusProjection, error) {
 	response, err := call(ctx, authority, "status", "/v1/status", requestKey, application.StatusRequest{}, deadline)
 	if err != nil || response.Status == nil || response.Status.Validate() != nil {
@@ -218,7 +234,7 @@ func clientRequestBinding(requestKey string, body []byte, operation string, requ
 
 func isLifecycleOperation(operation string) bool {
 	switch operation {
-	case productionruntime.FixedLifecycleCollectOperation, productionruntime.FixedLifecycleVerifyOperation, productionruntime.FixedLifecycleReviewOperation, productionruntime.FixedLifecycleDecisionOperation:
+	case productionruntime.FixedLifecycleCollectOperation, productionruntime.FixedLifecycleVerifyOperation, productionruntime.FixedLifecycleReviewOperation, productionruntime.FixedLifecycleDecisionOperation, productionruntime.FixedLifecycleCancelOperation:
 		return true
 	default:
 		return false
@@ -227,6 +243,10 @@ func isLifecycleOperation(operation string) bool {
 
 func lifecycleResponseProjection(response httpResponse, operation string) (any, error) {
 	switch operation {
+	case productionruntime.FixedLifecycleCancelOperation:
+		if response.Stopped != nil {
+			return *response.Stopped, nil
+		}
 	case productionruntime.FixedLifecycleCollectOperation:
 		if response.Collected != nil {
 			return *response.Collected, nil
@@ -249,6 +269,8 @@ func lifecycleResponseProjection(response httpResponse, operation string) (any, 
 
 func lifecycleCurrentRequest(request any) (application.CurrentRunRequest, error) {
 	switch value := request.(type) {
+	case application.CancelRunRequest:
+		return value.CurrentRunRequest, nil
 	case application.CollectRunResultRequest:
 		return application.CurrentRunRequest(value), nil
 	case application.VerifyRunRequest:
@@ -352,7 +374,7 @@ func readClientHTTPResponse(connection *AuthenticatedConnection) (httpResponse, 
 	if statusCode != 200 || response.Disposition != "success" {
 		if statusCode == 202 && response.Disposition == "pending" {
 			if response.ReasonCode == string(application.ReasonAttemptStillRunning) {
-				if response.Operation != productionruntime.FixedLifecycleCollectOperation || response.Status != nil || response.Run != nil || response.Started != nil || response.DeliveryReceipt != nil || response.Collected != nil || response.Verification != nil || response.ReviewPacket != nil || response.Decision != nil || response.LifecycleReceipt != nil {
+				if response.Operation != productionruntime.FixedLifecycleCollectOperation || response.Status != nil || response.Run != nil || response.Started != nil || response.DeliveryReceipt != nil || response.Collected != nil || response.Verification != nil || response.ReviewPacket != nil || response.Decision != nil || response.Stopped != nil || response.LifecycleReceipt != nil {
 					return httpResponse{}, ErrInvalid
 				}
 				return response, ErrAttemptStillRunning
@@ -360,6 +382,12 @@ func readClientHTTPResponse(connection *AuthenticatedConnection) (httpResponse, 
 			return response, errHTTPPending
 		}
 		if statusCode == 409 {
+			if response.ReasonCode == string(application.ReasonStopTooLate) {
+				if response.Operation != productionruntime.FixedLifecycleCancelOperation || response.Disposition != "error" || response.Status != nil || response.Run != nil || response.Started != nil || response.DeliveryReceipt != nil || response.Collected != nil || response.Verification != nil || response.ReviewPacket != nil || response.Decision != nil || response.Stopped != nil || response.LifecycleReceipt != nil {
+					return httpResponse{}, ErrInvalid
+				}
+				return response, application.NewError("cancel-run", application.ReasonStopTooLate)
+			}
 			return response, ErrConflict
 		}
 		return response, ErrUnavailable

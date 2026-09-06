@@ -44,6 +44,39 @@ type runCompletionAuthority interface {
 	CollectRunResult(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, string) (CollectedRunResult, error)
 }
 
+type runStopAuthority interface {
+	CancelRun(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, application.CancelRunRequest) (application.CancelRunProjection, error)
+}
+
+func (controller *controller) cancelRun(ctx context.Context, request application.CancelRunRequest) (application.CancelRunProjection, error) {
+	if err := request.Validate(); err != nil {
+		return application.CancelRunProjection{}, err
+	}
+	authority, ok := controller.authority.(runStopAuthority)
+	if !ok {
+		return application.CancelRunProjection{}, application.NewError("cancel-run", application.ReasonCompositionIncomplete)
+	}
+	var result application.CancelRunProjection
+	err := controller.withOwner(ctx, false, func(verifier resultingress.CurrentOwnerLockVerifier, _ OwnerProjection) error {
+		var err error
+		result, err = authority.CancelRun(ctx, verifier, controller.acquisition, request)
+		if errors.Is(err, resultingress.ErrStopTooLate) {
+			return application.NewError("cancel-run", application.ReasonStopTooLate)
+		}
+		if err != nil {
+			return mapAuthorityError("cancel-run", err)
+		}
+		if result.Validate() != nil || result.Run.RunID != request.RunID || result.Run.AttemptID != request.AttemptID || result.Run.Sequence != request.ExpectedSequence+1 || result.Run.AuthorityHead == request.ExpectedAuthorityHead {
+			return application.NewError("cancel-run", application.ReasonAuthorityConflict)
+		}
+		return nil
+	})
+	if err != nil {
+		return application.CancelRunProjection{}, err
+	}
+	return result, nil
+}
+
 // controller is deliberately package-private. Only Runtime can reach mutation
 // methods, after the real repository lock has accepted its one runtime claim.
 type controller struct {

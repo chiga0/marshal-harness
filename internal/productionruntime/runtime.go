@@ -292,6 +292,15 @@ func (runtime *Runtime) CollectRunResult(ctx context.Context, runID string) (Col
 	return controller.collectRunResult(ctx, runID)
 }
 
+func (runtime *Runtime) CancelRun(ctx context.Context, request application.CancelRunRequest) (application.CancelRunProjection, error) {
+	controller, _, release, err := runtime.beginOperation("cancel-run")
+	if err != nil {
+		return application.CancelRunProjection{}, err
+	}
+	defer release()
+	return controller.cancelRun(ctx, request)
+}
+
 // beginOperation keeps Runtime.Close behind every in-flight operation and
 // rejects operations that begin after close. The owner verifier itself remains
 // the authority gate; this lock only makes its process lifecycle deterministic.

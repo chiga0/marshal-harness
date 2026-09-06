@@ -31,6 +31,14 @@
 - 同 `requestId`、同原四元组与摘要恢复同一个 stop；同 ID 不同内容冲突，不能替换原因。已经存在其他 stop 时返回其只读引用，不追加第二意图、不消费 Attempt/rework 预算。Run 已终态时只允许精确已提交 stop 的只读/Outcome 补齐重放。
 - fresh stop 在 held Run authority 与 ingress transaction 内再次检查当前 head、started authority 和 `CommittedResultFactDigest`。结果先接纳则返回 `stop-too-late`，不得改成取消成功；stop 先提交则原子关闭 admission 并提升 eligibility generation，后到结果 quarantine。
 
+### 实施中的字节合同（尚未 enable）
+
+`AttemptTransition` 的 barrier 增加可选 `stopIntent`，无此字段的历史事实保持原始编码与摘要；其他 transition 禁止携带它。`stopIntent` 使用 `schemaRevision=attempt-stop/v1`，绑定 `requestId`、原 Run `sequence/headDigest`、Core 观察的 `operatorUid`、`observedAt` 与封闭 `category`（`operator-request|attempt-deadline-exceeded|run-deadline-exceeded`）。外层 barrier 的 `AttemptIdentity` 进入意图摘要计算，不接受另一份可替换的 identity。`requestDigest` 由原 public 请求身份和 requestId 派生；`intentDigest` 则绑定全部意图字段及 AttemptIdentity。普通取消不携带 deadline witness，业务超时必须携带完整 witness，不允许混合形状。
+
+deadline witness 保存 `specDigest`、`creationEventDigest`（首条 `planning.spec-accepted`）、`processStartedFactDigest`、`runCreatedAt`、`processStartedAt`、两个正整秒预算及两个计算后的 deadline。Core 加载原始 Task/Run/ProcessStarted 时验证来源；authority 记录重放时重算算法并验证摘要和选择规则，不能只信客户端时间或已存计算结果。上述字段只随同一 barrier CAS 一次提交。fresh stop 遇到已提交结果必须拒绝；原 stop 的精确重放不追加新事实。
+
+此节是实现工作中的合同，取消/超时仍须完整生产接线和故障矩阵通过后，才能接受本 ADR、开启入口并更新 B1 状态。
+
 ### 业务截止点：复用不可变来源，而不是增加计时状态库
 
 冻结算法版本为本 ADR 的 business-deadline/v1：
@@ -41,7 +49,7 @@ attemptDeadline = ProcessStarted.observedAt + TaskSpec.budgets.attemptTimeoutSec
 effectiveDeadline = min(runDeadline, attemptDeadline)
 ```
 
-- 三个来源均从精确 Run lease 下加载并验证：Task 原始 bytes 与 `specDigest` 相同，Run 创建事件与 replay 状态一致，ProcessStarted 是当前 Attempt 已接受的 Core/Supervisor fact。时间解析、正预算和加法溢出失败时拒绝，不从文件 mtime、HTTP deadline 或 WorkerResult 推导。
+- 三个来源均从精确 Run lease 下加载并验证：Task 原始 bytes 的 canonical 摘要与 `specDigest` 相同；Run 没有独立 `run.created` 事件，现有 planning producer 对 `NewRunState` 与首条 `planning.spec-accepted` 使用同一个 `now`，因此必须验证该首条 `CREATED → PLANNED` 事件的 timestamp 与快照 `CreatedAt` 精确相同，并绑定其事件摘要；ProcessStarted 是当前 Attempt 已接受的 Core/Supervisor fact。时间解析、正预算和加法溢出失败时拒绝，不从文件 mtime、HTTP deadline 或 WorkerResult 推导。历史记录若缺少该锚点只能拒绝业务 deadline 授权，不在恢复时补造时间。
 - ProcessStarted 是实际 Resume 前的启动观测，因此该预算包含 exec-stopped/Resume 等待，不能推迟到第一次查询或重启。Run deadline 从创建计时；READY 阶段已耗尽预算时不得放行新的 Worker，但保持原 pre-Attempt 恢复/终态规则，不伪造 started stop。
 - 同时到期时固定优先 `run-deadline-exceeded`。停止意图保存原始来源摘要、两个计算结果和选定类别；Core 在提交前重新计算，拒绝客户端提供截止点和重启延期。
 - 原有两小时 lease expiry 仍是执行资格上限，不是用户 SLA。业务 deadline 通常更早，使用 `cancelled/deadline-exceeded` 屏障收口。即使尚未到内部 lease expiry，也不能继续接纳已过业务截止点的新结果；admission 必须在同一提交边界执行这一检查，不能只依赖 timer 抢先运行。
@@ -56,6 +64,10 @@ effectiveDeadline = min(runDeadline, attemptDeadline)
 - 状态查询在 stop 尚未完成时保留 Run 当前状态并附有界 stop/recovery 投影；投影不是 Run 转换或新授权。重启、客户端断线或 delivery 文件丢失都从 stop fact 继续，不能恢复原执行资格。fresh cancel 超时不等于取消撤销。
 
 ### 接受与 enable 门槛
+
+实现核对发现：`ReadRunStartAuthorityUnderLease` 只在 `READY/RUNNING` 返回启动 worktree 等冻结输入，`BLOCKED` 终态不返回这些字段。因此 event 后丢响应的恢复不能再次走 `openRun`，也不能为了恢复响应补造 worktree/launch closure。已提交终态的 Outcome 补齐由 `RepositorySession.ReconcileStoppedRun` 在现有 Run lease、当前 owner 和 ingress 下直接连接原请求、当前 Attempt cleanup 与精确 `worker.stopped` 事件；它不得创建停止意图、启动/Attach Worker 或消费预算。尚未提交 terminal event 的停止仍走原 runtime cleanup 恢复，两条路径不能混用。
+
+当前取消实现仍是未发布的纵切候选：已接入 public `CancelRun`、fixed `/v1/runs/cancel` 与原 delivery pending/receipt，贯穿 barrier 意图模型、terminal eligibility/cleanup、封闭 `worker.stopped` 和终态 Outcome 恢复；原始业务预算读取已实现，deadline admission 检查、定时推进、未完成 stop 的自动恢复和完整故障矩阵仍未接通。允许在隔离开发分支保存候选并运行 hosted CI，不能合并放行或声称 B1 已完成。当前本地 Go 检查为 compile-only（不执行测试二进制），另有 vet/staticcheck、架构与 diff 检查；新增动态测试、Draft 2020-12 metaschema/示例验证和 race 仍需 hosted CI 证据。不得把这些编译结果记作业务通过。
 
 实现必须一次接通 application、Core、barrier、v2 cleanup、Run event/Outcome、fixed transport 与恢复扫描，并补齐下节故障测试，再接受本 ADR 和 enable。不得只提交新类型/handler 就把取消列为可用。与正常 Collect/admission 的竞争必须在同一生产组合路径测试；timer-only 或 mock-only 通过不关闭 B1。
 

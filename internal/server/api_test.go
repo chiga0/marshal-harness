@@ -114,6 +114,10 @@ func (port *fixtureApplicationPort) CollectRunResult(context.Context, applicatio
 	return application.CollectedRunProjection{}, application.NewError("collect-run-result", application.ReasonCompositionIncomplete)
 }
 
+func (port *fixtureApplicationPort) CancelRun(context.Context, application.CancelRunRequest) (application.CancelRunProjection, error) {
+	return application.CancelRunProjection{}, application.NewError("cancel-run", application.ReasonCompositionIncomplete)
+}
+
 func (port *fixtureApplicationPort) VerifyRun(context.Context, application.VerifyRunRequest) (application.VerificationProjection, error) {
 	return application.VerificationProjection{}, application.NewError("verify-run", application.ReasonCompositionIncomplete)
 }
@@ -215,6 +219,10 @@ func (port *legacyFixtureApplicationPort) ReconcileStartRun(context.Context, app
 
 func (port *legacyFixtureApplicationPort) CollectRunResult(context.Context, application.CollectRunResultRequest) (application.CollectedRunProjection, error) {
 	return application.CollectedRunProjection{}, application.NewError("collect-run-result", application.ReasonCompositionIncomplete)
+}
+
+func (port *legacyFixtureApplicationPort) CancelRun(context.Context, application.CancelRunRequest) (application.CancelRunProjection, error) {
+	return application.CancelRunProjection{}, application.NewError("cancel-run", application.ReasonCompositionIncomplete)
 }
 
 func (port *legacyFixtureApplicationPort) VerifyRun(context.Context, application.VerifyRunRequest) (application.VerificationProjection, error) {

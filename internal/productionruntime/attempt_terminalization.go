@@ -17,13 +17,43 @@ type attemptEligibilityVerifier struct {
 
 func (verifier attemptEligibilityVerifier) VerifyAttemptEligibilityProjection(projection dispatch.AttemptEligibilityProjection) error {
 	state, found, err := verifier.store.AttemptState(verifier.identity)
-	if err != nil || !found || state.Identity != verifier.identity || state.BarrierDigest == "" || state.BarrierDigest != projection.AttemptAuthorityHeadDigest ||
-		state.EligibilityTerminal.Kind != resultingress.EligibilityTerminalCompleted || state.EligibilityTerminal.CompletionReason != resultingress.TerminalAttemptCompleted ||
-		projection.LeaseId != verifier.identity.LeaseID || projection.RunId != verifier.identity.RunID || projection.AttemptId != verifier.identity.AttemptID || projection.AllocationId != verifier.identity.AllocationID ||
-		projection.FromGeneration != verifier.identity.DispatchGeneration || projection.TerminalGeneration != verifier.identity.DispatchGeneration+1 || projection.TerminalState != dispatch.LeaseStateCompleted || projection.CompletionReason != dispatch.CompletionReasonAttemptCompleted || projection.CancelReason != "" {
+	if err != nil || !found || state.Identity != verifier.identity {
+		return fmt.Errorf("productionruntime: stale Attempt eligibility projection")
+	}
+	expected, err := terminalEligibilityProjection(state)
+	if err != nil || expected != projection {
 		return fmt.Errorf("productionruntime: stale Attempt eligibility projection")
 	}
 	return nil
+}
+
+// Only three business terminal reasons are supported here. Other cleanup
+// classes remain outside this production path; no arbitrary enum cast can
+// turn a provider observation into terminal eligibility.
+func terminalEligibilityProjection(state resultingress.AttemptAuthorityState) (dispatch.AttemptEligibilityProjection, error) {
+	if state.Identity.Validate() != nil || state.BarrierDigest == "" || !state.AdmissionClosed || state.TerminalGeneration != state.Identity.DispatchGeneration+1 {
+		return dispatch.AttemptEligibilityProjection{}, resultingress.ErrAttemptAuthorityConflict
+	}
+	projection := dispatch.AttemptEligibilityProjection{LeaseId: state.Identity.LeaseID, RunId: state.Identity.RunID, AttemptId: state.Identity.AttemptID, AllocationId: state.Identity.AllocationID, FromGeneration: state.Identity.DispatchGeneration, TerminalGeneration: state.TerminalGeneration, AttemptAuthorityHeadDigest: state.BarrierDigest}
+	if state.StopIntent == (resultingress.AttemptStopIntent{}) {
+		if state.EligibilityTerminal != (resultingress.EligibilityTerminal{Kind: resultingress.EligibilityTerminalCompleted, CompletionReason: resultingress.TerminalAttemptCompleted}) {
+			return dispatch.AttemptEligibilityProjection{}, resultingress.ErrAttemptAuthorityConflict
+		}
+		projection.TerminalState, projection.CompletionReason = dispatch.LeaseStateCompleted, dispatch.CompletionReasonAttemptCompleted
+		return projection, nil
+	}
+	if state.StopIntent.Validate(state.Identity) != nil || state.StopIntent.Eligibility() != state.EligibilityTerminal || state.CommittedResultFactDigest != "" || state.BarrierAdmissionFactDigest != "" || state.BarrierAdmissionSequence != 0 {
+		return dispatch.AttemptEligibilityProjection{}, resultingress.ErrAttemptAuthorityConflict
+	}
+	switch state.StopIntent.Category {
+	case resultingress.StopOperatorRequest:
+		projection.TerminalState, projection.CompletionReason = dispatch.LeaseStateCompleted, dispatch.CompletionReasonAttemptAborted
+	case resultingress.StopAttemptDeadline, resultingress.StopRunDeadline:
+		projection.TerminalState, projection.CancelReason = dispatch.LeaseStateCancelled, dispatch.CancelReasonDeadlineExceeded
+	default:
+		return dispatch.AttemptEligibilityProjection{}, resultingress.ErrAttemptAuthorityConflict
+	}
+	return projection, nil
 }
 
 func runAuthorityForAttempt(identity resultingress.AttemptIdentity) resultingress.RunAuthorityBinding {
@@ -35,9 +65,12 @@ func cleanupRequest(identity resultingress.AttemptIdentity, state resultingress.
 }
 
 // beginCompletedTerminalization appends or replays the result-closing barrier
-// and projects the exact terminal eligibility into the dispatch read model.
+// before the shared cleanup path projects eligibility into the dispatch model.
 func (l *CompositionLedger) beginCompletedTerminalization(ctx context.Context, attempt resultingress.AttemptAuthorityState) (resultingress.AttemptAuthorityState, error) {
 	state := attempt
+	if state.StopIntent != (resultingress.AttemptStopIntent{}) {
+		return resultingress.AttemptAuthorityState{}, resultingress.ErrAttemptAuthorityConflict
+	}
 	if state.BarrierDigest == "" {
 		key, err := state.Identity.Key()
 		if err != nil {
@@ -51,10 +84,6 @@ func (l *CompositionLedger) beginCompletedTerminalization(ctx context.Context, a
 			return resultingress.AttemptAuthorityState{}, err
 		}
 		state = result.State
-	}
-	projection := dispatch.AttemptEligibilityProjection{LeaseId: state.Identity.LeaseID, RunId: state.Identity.RunID, AttemptId: state.Identity.AttemptID, AllocationId: state.Identity.AllocationID, FromGeneration: state.Identity.DispatchGeneration, TerminalGeneration: state.Identity.DispatchGeneration + 1, TerminalState: dispatch.LeaseStateCompleted, CompletionReason: dispatch.CompletionReasonAttemptCompleted, AttemptAuthorityHeadDigest: state.BarrierDigest}
-	if err := l.leaseLedger.ProjectAttemptEligibility(attemptEligibilityVerifier{store: l.ingress, identity: state.Identity}, projection); err != nil {
-		return resultingress.AttemptAuthorityState{}, err
 	}
 	return state, nil
 }
@@ -100,8 +129,33 @@ func (l *CompositionLedger) terminalizeCompletedAttempt(ctx context.Context, ver
 	if err != nil {
 		return resultingress.AttemptAuthorityState{}, err
 	}
+	return l.terminalizeAttemptAfterBarrier(ctx, verifier, acquisition, read, state)
+}
+
+// Both success and stop recovery consume a durable barrier before reaching
+// mechanics. The recorded stop reason, not an HTTP context or caller flag,
+// selects Terminate instead of Inspect. Allocation and supervisor cleanup is
+// shared so cancellation cannot skip absence or release evidence.
+func (l *CompositionLedger) terminalizeAttemptAfterBarrier(ctx context.Context, verifier resultingress.CurrentOwnerLockVerifier, acquisition resultingress.ControlOwnerAcquisition, read runstore.RunStartAuthorityProjection, state resultingress.AttemptAuthorityState) (resultingress.AttemptAuthorityState, error) {
+	projection, err := terminalEligibilityProjection(state)
+	if err != nil {
+		return resultingress.AttemptAuthorityState{}, err
+	}
+	if err := l.leaseLedger.ProjectAttemptEligibility(attemptEligibilityVerifier{store: l.ingress, identity: state.Identity}, projection); err != nil {
+		return resultingress.AttemptAuthorityState{}, err
+	}
 	if state.ProcessTerminalDigest == "" {
-		observed, err := l.ingress.InspectPreparedExecution(ctx, verifier, acquisition, state.Identity)
+		var observed resultingress.PreparedExecutionTerminalObservation
+		operation := resultingress.CleanupInspect
+		if state.StopIntent != (resultingress.AttemptStopIntent{}) {
+			// The signal command has its own Terminate authority. Appending
+			// its observed process-terminal fact is reconciliation, not a
+			// second signal permission (cleanupTransitionAllowed).
+			operation = resultingress.CleanupReconcile
+			observed, err = l.ingress.TerminatePreparedExecution(ctx, verifier, acquisition, state.Identity)
+		} else {
+			observed, err = l.ingress.InspectPreparedExecution(ctx, verifier, acquisition, state.Identity)
+		}
 		if err != nil {
 			return resultingress.AttemptAuthorityState{}, err
 		}
@@ -113,7 +167,7 @@ func (l *CompositionLedger) terminalizeCompletedAttempt(ctx context.Context, ver
 		if err != nil || !found {
 			return resultingress.AttemptAuthorityState{}, resultingress.ErrAttemptAuthorityConflict
 		}
-		result, err := l.ingress.CompareAndAppendCleanup(ctx, l, current.Revision, current.HeadDigest, cleanupRequest(current.Identity, current, resultingress.CleanupInspect), resultingress.AttemptTransition{Kind: resultingress.AttemptTransitionProcessTerminal, Identity: current.Identity, TerminalizationID: current.TerminalizationID, ProcessTerminalKind: kind, ObservationDigest: observed.Evidence.ObservationDigest, SupervisorOutcomeFactDigest: observed.OutcomeFactDigest})
+		result, err := l.ingress.CompareAndAppendCleanup(ctx, l, current.Revision, current.HeadDigest, cleanupRequest(current.Identity, current, operation), resultingress.AttemptTransition{Kind: resultingress.AttemptTransitionProcessTerminal, Identity: current.Identity, TerminalizationID: current.TerminalizationID, ProcessTerminalKind: kind, ObservationDigest: observed.Evidence.ObservationDigest, SupervisorOutcomeFactDigest: observed.OutcomeFactDigest})
 		if err != nil {
 			return resultingress.AttemptAuthorityState{}, err
 		}

@@ -29,13 +29,16 @@ type httpApplicationStub struct {
 	startCalls          int
 	inspectCalls        int
 	collectCalls        int
+	cancelCalls         int
 	reconcileCalls      int
 	status              application.StatusProjection
 	started             application.RunStartProjection
 	run                 application.RunProjection
 	collected           application.CollectedRunProjection
+	stopped             application.CancelRunProjection
 	startErr            error
 	collectErr          error
+	cancelErr           error
 	startContextErr     error
 	reconcileContextErr error
 }
@@ -79,6 +82,13 @@ func (stub *httpApplicationStub) CollectRunResult(context.Context, application.C
 
 func (stub *httpApplicationStub) VerifyRun(context.Context, application.VerifyRunRequest) (application.VerificationProjection, error) {
 	return application.VerificationProjection{}, application.NewError("verify-run", application.ReasonCompositionIncomplete)
+}
+
+func (stub *httpApplicationStub) CancelRun(context.Context, application.CancelRunRequest) (application.CancelRunProjection, error) {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	stub.cancelCalls++
+	return stub.stopped, stub.cancelErr
 }
 
 func (stub *httpApplicationStub) BuildReviewPacket(context.Context, application.BuildReviewPacketRequest) (application.ReviewPacketProjection, error) {
@@ -569,6 +579,7 @@ func TestFixedClientLifecycleBindingsMatchDurableDeliveryBindings(t *testing.T) 
 		request   any
 	}{
 		{productionruntime.FixedLifecycleCollectOperation, application.CollectRunResultRequest{RunID: port.run.RunID, AttemptID: port.run.AttemptID, ExpectedSequence: port.run.Sequence, ExpectedAuthorityHead: port.run.AuthorityHead}},
+		{productionruntime.FixedLifecycleCancelOperation, application.CancelRunRequest{CurrentRunRequest: application.CurrentRunRequest{RunID: port.run.RunID, AttemptID: port.run.AttemptID, ExpectedSequence: port.run.Sequence, ExpectedAuthorityHead: port.run.AuthorityHead}, RequestID: "cancel-1"}},
 		{productionruntime.FixedLifecycleVerifyOperation, application.VerifyRunRequest{RunID: port.run.RunID, AttemptID: port.run.AttemptID, ExpectedSequence: port.run.Sequence, ExpectedAuthorityHead: port.run.AuthorityHead}},
 		{productionruntime.FixedLifecycleReviewOperation, application.BuildReviewPacketRequest{RunID: port.run.RunID, AttemptID: port.run.AttemptID, ExpectedSequence: port.run.Sequence, ExpectedAuthorityHead: port.run.AuthorityHead}},
 		{productionruntime.FixedLifecycleDecisionOperation, application.ApplyReviewDecisionRequest{RunID: port.run.RunID, AttemptID: port.run.AttemptID, ExpectedSequence: port.run.Sequence, ExpectedAuthorityHead: port.run.AuthorityHead, Decision: json.RawMessage(`{"verdict":"accepted"}`), DecisionDigest: canonical.DigestBytes([]byte(`{"verdict":"accepted"}`))}},

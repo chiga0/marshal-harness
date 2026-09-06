@@ -41,7 +41,37 @@
     },
     "payload": { "type": "object", "additionalProperties": true }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "worker.stopped" } }, "required": ["type"] },
+      "then": {
+        "required": ["attemptId", "actor", "stateFrom", "stateTo"],
+        "properties": {
+          "stateFrom": { "const": "RUNNING" },
+          "stateTo": { "const": "BLOCKED" },
+          "actor": { "properties": { "type": { "const": "system" }, "id": { "const": "marshal-core" } } },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["stopIntentDigest", "stopRequestDigest", "originalRunAuthorityHead", "terminalizationBarrierFactDigest", "processTerminalFactDigest", "allocationTerminatedFactDigest", "supervisorClosedFactDigest", "cleanupReleasedFactDigest", "terminalReason"],
+            "properties": {
+              "stopIntentDigest": { "$ref": "#/$defs/stopDigest" },
+              "stopRequestDigest": { "$ref": "#/$defs/stopDigest" },
+              "originalRunAuthorityHead": { "$ref": "#/$defs/stopDigest" },
+              "terminalizationBarrierFactDigest": { "$ref": "#/$defs/stopDigest" },
+              "processTerminalFactDigest": { "$ref": "#/$defs/stopDigest" },
+              "allocationTerminatedFactDigest": { "$ref": "#/$defs/stopDigest" },
+              "supervisorClosedFactDigest": { "$ref": "#/$defs/stopDigest" },
+              "cleanupReleasedFactDigest": { "$ref": "#/$defs/stopDigest" },
+              "terminalReason": { "enum": ["aborted-by-operator", "attempt-deadline-exceeded", "run-deadline-exceeded"] }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
+    "stopDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "id": {
       "type": "string",
       "minLength": 1,

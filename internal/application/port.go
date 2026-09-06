@@ -16,6 +16,7 @@ type PublicApplicationPort interface {
 	ReconcileStartRun(context.Context, StartRunRequest) (RunStartProjection, bool, error)
 	InspectRun(context.Context, InspectRunRequest) (RunProjection, error)
 	CollectRunResult(context.Context, CollectRunResultRequest) (CollectedRunProjection, error)
+	CancelRun(context.Context, CancelRunRequest) (CancelRunProjection, error)
 	VerifyRun(context.Context, VerifyRunRequest) (VerificationProjection, error)
 	BuildReviewPacket(context.Context, BuildReviewPacketRequest) (ReviewPacketProjection, error)
 	ApplyReviewDecision(context.Context, ApplyReviewDecisionRequest) (ReviewDecisionProjection, error)

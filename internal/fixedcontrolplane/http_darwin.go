@@ -85,6 +85,7 @@ type httpResponse struct {
 	Verification     *application.VerificationProjection      `json:"verification,omitempty"`
 	ReviewPacket     *application.ReviewPacketProjection      `json:"reviewPacket,omitempty"`
 	Decision         *application.ReviewDecisionProjection    `json:"decision,omitempty"`
+	Stopped          *application.CancelRunProjection         `json:"stopped,omitempty"`
 	LifecycleReceipt *productionruntime.FixedLifecycleReceipt `json:"lifecycleReceipt,omitempty"`
 }
 
@@ -235,6 +236,12 @@ func (router *HTTPRouter) dispatch(ctx context.Context, authenticated RequestBin
 			return httpResponse{}, 400, ErrInvalid
 		}
 		return router.lifecycleOperation(ctx, authenticated, request, deadline, input, application.CurrentRunRequest(input), func(callCtx context.Context) (any, error) { return router.application.CollectRunResult(callCtx, input) })
+	case productionruntime.FixedLifecycleCancelOperation:
+		var input application.CancelRunRequest
+		if decodeHTTPBody(request.body, &input) != nil || input.Validate() != nil {
+			return httpResponse{}, 400, ErrInvalid
+		}
+		return router.lifecycleOperation(ctx, authenticated, request, deadline, input, input.CurrentRunRequest, func(callCtx context.Context) (any, error) { return router.application.CancelRun(callCtx, input) })
 	case productionruntime.FixedLifecycleVerifyOperation:
 		var input application.VerifyRunRequest
 		if decodeHTTPBody(request.body, &input) != nil || input.Validate() != nil {
@@ -280,6 +287,10 @@ func (router *HTTPRouter) lifecycleOperation(ctx context.Context, authenticated 
 	projection, applyErr := apply(deliveryContext)
 	result, resultErr := fixedLifecycleResult(request.operation, projection)
 	if resultErr != nil {
+		emptyStop, stopType := projection.(application.CancelRunProjection)
+		if request.operation == productionruntime.FixedLifecycleCancelOperation && stopType && emptyStop == (application.CancelRunProjection{}) && application.HasReason(applyErr, application.ReasonStopTooLate) {
+			return errorHTTPResponse(request.operation, applyErr), 409, applyErr
+		}
 		emptyCollect, collectType := projection.(application.CollectedRunProjection)
 		if request.operation == productionruntime.FixedLifecycleCollectOperation && collectType && emptyCollect == (application.CollectedRunProjection{}) && application.HasReason(applyErr, application.ReasonAttemptStillRunning) {
 			// Keep the existing durable pending. This only distinguishes a
@@ -304,6 +315,11 @@ func fixedLifecycleResult(operation string, projection any) (productionruntime.F
 	var run application.RunProjection
 	var fact string
 	switch value := projection.(type) {
+	case application.CancelRunProjection:
+		if operation != productionruntime.FixedLifecycleCancelOperation || value.Validate() != nil {
+			return productionruntime.FixedLifecycleResult{}, ErrConflict
+		}
+		run, fact = value.Run, value.Run.AuthorityHead
 	case application.CollectedRunProjection:
 		if operation != productionruntime.FixedLifecycleCollectOperation || value.Validate() != nil {
 			return productionruntime.FixedLifecycleResult{}, ErrConflict
@@ -341,6 +357,8 @@ func fixedLifecycleResult(operation string, projection any) (productionruntime.F
 func successLifecycleHTTPResponse(operation string, projection any, receipt *productionruntime.FixedLifecycleReceipt) httpResponse {
 	response := httpResponse{SchemaVersion: httpResponseSchema, ProtocolRevision: httpProtocolRevision, Operation: operation, Disposition: "success", LifecycleReceipt: receipt}
 	switch value := projection.(type) {
+	case application.CancelRunProjection:
+		response.Stopped = &value
 	case application.CollectedRunProjection:
 		response.Collected = &value
 	case application.VerificationProjection:
@@ -460,6 +478,8 @@ func readHTTPRequest(connection *AuthenticatedConnection) (httpRequest, error) {
 		operation = productionruntime.FixedLifecycleReviewOperation
 	case "/v1/runs/decision":
 		operation = productionruntime.FixedLifecycleDecisionOperation
+	case "/v1/runs/cancel":
+		operation = productionruntime.FixedLifecycleCancelOperation
 	default:
 		// Consume and validate the complete request before returning an
 		// unsupported-operation response. This lets the authenticated peer use
