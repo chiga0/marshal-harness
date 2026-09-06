@@ -118,7 +118,7 @@ def render(args):
             "requiredChecks": [],
         },
     }
-    if getattr(args, "scenario", "marker") == "order-quote":
+    if getattr(args, "scenario", "marker") in ("order-quote", "order-quote-timeout"):
         # Oracle 来自冻结的控制仓库，不进入 Worker 的 allowPaths。
         oracle = os.path.join(repository, "scripts", "order-quote-oracle.py")
         if os.path.islink(oracle) or not os.path.isfile(oracle):
@@ -162,6 +162,9 @@ def render(args):
             "id": "order-quote", "kind": "code", "required": True,
             "pathGlob": "quote_order.py", "minimumCount": 1,
         }]
+    if getattr(args, "scenario", "marker") == "order-quote-timeout":
+        # Frozen before plan/approval. This is not the HTTP client deadline.
+        task["budgets"]["attemptTimeoutSeconds"] = 60
     policy = {
         "apiVersion": "marshal.dev/v1alpha1",
         "kind": "PolicySnapshot",
@@ -208,7 +211,7 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--task-out", required=True)
     parser.add_argument("--policy-out", required=True)
-    parser.add_argument("--scenario", choices=("marker", "order-quote"), default="marker")
+    parser.add_argument("--scenario", choices=("marker", "order-quote", "order-quote-timeout"), default="marker")
     render(parser.parse_args())
 
 

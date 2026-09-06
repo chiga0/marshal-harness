@@ -10,10 +10,37 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location("t2drive", Path(__file__).with_name("fixed-server-t2-drive.py"))
 driver = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(driver)
+
+
+class TimeoutTaskTest(unittest.TestCase):
+    def test_budget_is_frozen_in_task_without_changing_normal_task(self):
+        task_spec = importlib.util.spec_from_file_location("t2task", Path(__file__).with_name("fixed-server-t2-task.py"))
+        renderer = importlib.util.module_from_spec(task_spec)
+        task_spec.loader.exec_module(renderer)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / ".git").mkdir()
+            (root / "scripts").mkdir()
+            (root / "scripts/order-quote-oracle.py").write_text("# synthetic oracle bytes\n")
+            (root / "doctor.json").write_text(json.dumps({"policyEnvironmentBinding": {"digest": "sha256:" + "a" * 64}}))
+            args = SimpleNamespace(repository=str(root), base_ref="a" * 40, task_id="task-test", run_id="run-test",
+                                   model="provider/model", doctor=str(root / "doctor.json"),
+                                   task_out=str(root / "task.json"), policy_out=str(root / "policy.json"))
+            for scenario, seconds in (("order-quote", 300), ("order-quote-timeout", 60)):
+                args.scenario = scenario
+                renderer.render(args)
+                task = json.loads((root / "task.json").read_bytes())
+                self.assertEqual(task["budgets"]["attemptTimeoutSeconds"], seconds)
+                self.assertEqual(task["budgets"]["runTimeoutSeconds"], 600)
+                self.assertEqual(task["budgets"]["maxAttempts"], 1)
+                self.assertEqual(task["budgets"]["maxOperationalRetries"], 0)
+                self.assertEqual(task["scope"]["allowPaths"], ["quote_order.py"])
+                self.assertEqual(task["publication"]["provider"], "none")
 
 
 def run(state, sequence):
@@ -25,6 +52,69 @@ def result(state, sequence, **fields):
     value = run(state, sequence)
     return {"Projection": dict(run=value, **fields), "Receipt": {"runId": value["runId"], "attemptId": value["attemptId"],
                                                               "postRevision": sequence, "postAuthorityHead": value["authorityHead"]}}
+
+
+class BusinessStopObservationTest(unittest.TestCase):
+    def invoke(self, replies, limit=20):
+        calls, saved, clock = [], {}, [0]
+
+        def call(args, remaining):
+            self.assertGreater(remaining, 0)
+            calls.append(list(args))
+            return replies[min(len(calls) - 1, len(replies) - 1)]
+
+        def pause(seconds):
+            clock[0] += seconds
+
+        def drive():
+            return driver.observe_business_stop(call, saved.__setitem__, "run-test", limit,
+                                                now=lambda: clock[0], pause=pause)
+        return drive, calls, saved
+
+    def test_observe_only_until_stopped_then_collect_current_head(self):
+        drive, calls, saved = self.invoke([(0, run("RUNNING", 3)), (0, run("RUNNING", 3)),
+                                          (0, run("BLOCKED", 4)),
+                                          (1, {"disposition": "stopped", "reasonCode": "run-stopped"}),
+                                          (0, run("BLOCKED", 4))])
+        summary = drive()
+        self.assertEqual([c[0] for c in calls], ["inspect", "inspect", "inspect", "collect", "inspect"])
+        self.assertEqual(calls[3][calls[3].index("--expected-sequence") + 1], "4")
+        self.assertFalse(summary["accepted"])
+        self.assertFalse(summary["deadlineWitnessVerified"])
+        self.assertEqual(saved["business-stop-observed.json"]["elapsedSeconds"], 4)
+
+    def test_expiry_is_failure_not_cancel_or_collect(self):
+        drive, calls, saved = self.invoke([(0, run("RUNNING", 3))], limit=3)
+        with self.assertRaisesRegex(driver.DriveError, "observation-deadline"):
+            drive()
+        self.assertTrue(all(c[0] == "inspect" for c in calls))
+        self.assertNotIn("business-stop-summary.json", saved)
+
+    def test_unavailable_wrong_successor_or_completion_is_not_retried(self):
+        for reply in ((1, {}), (3, driver.LIVE_PENDING), (0, run("ACCEPTED", 6)),
+                      (0, run("BLOCKED", 5)), (0, run("RUNNING", 4))):
+            drive, calls, saved = self.invoke([(0, run("RUNNING", 3)), reply])
+            with self.assertRaises(driver.DriveError):
+                drive()
+            self.assertEqual(len(calls), 2)
+            self.assertNotIn("business-stop-summary.json", saved)
+
+    def test_already_blocked_is_only_observation_not_deadline_proof(self):
+        drive, calls, saved = self.invoke([(0, run("BLOCKED", 4)),
+                                          (1, {"disposition": "stopped", "reasonCode": "run-stopped"}),
+                                          (0, run("BLOCKED", 4))])
+        self.assertFalse(drive()["deadlineWitnessVerified"])
+        self.assertFalse(saved["business-stop-observed.json"]["observedRunning"])
+
+    def test_stopped_collect_and_final_head_must_match(self):
+        for replies in ([(0, run("BLOCKED", 4)), (3, driver.LIVE_PENDING)],
+                        [(0, run("BLOCKED", 4)), (1, {"disposition": "stopped", "reasonCode": "run-stopped"}),
+                         (0, run("BLOCKED", 5))]):
+            drive, calls, saved = self.invoke(replies)
+            with self.assertRaises(driver.DriveError):
+                drive()
+            self.assertEqual(len(calls), len(replies))
+            self.assertNotIn("business-stop-summary.json", saved)
 
 
 class CancelRunTest(unittest.TestCase):

@@ -252,6 +252,58 @@ def cancel_run(call, save, run_id, deadline, now=time.time, previous=None):
     return summary
 
 
+def observe_business_stop(call, save, run_id, deadline, now=time.time, pause=time.sleep):
+    """Observe resident stopping before any Collect; never issue Cancel.
+
+    This proves the public stopped path, not its reason or deadline witness.
+    Those require a separate check of the retained journal/ingress evidence.
+    """
+    initial = None
+    started = now()
+
+    def invoke(args):
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise DriveError("business-stop-observation-deadline")
+        return call(args, min(30, remaining))
+
+    while True:
+        code, value = invoke(["inspect", "--run", run_id])
+        if code != 0 or not isinstance(value, dict):
+            raise DriveError("business-stop-inspect-unavailable")
+        state = value.get("state")
+        if state == "BLOCKED":
+            stopped = run_projection(value, run_id, "BLOCKED", initial, initial is not None)
+            break
+        current = run_projection(value, run_id, "RUNNING", initial)
+        if initial is None:
+            initial = current
+            save("business-stop-initial-run.json", initial)
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise DriveError("business-stop-observation-deadline")
+        pause(min(2, remaining))
+
+    save("business-stop-observed.json", {"run": stopped, "elapsedSeconds": now() - started,
+                                        "observedRunning": initial is not None})
+    deadline_text = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="microseconds").rstrip("0").rstrip(".") + "Z"
+    request = ["collect", "--run", run_id, "--attempt", stopped["attemptId"],
+               "--expected-sequence", str(stopped["sequence"]), "--expected-authority-head", stopped["authorityHead"],
+               "--deadline", deadline_text, "--request-key", f"t2:{run_id}:collect-after-business-stop:{stopped['sequence']}"]
+    save("business-stop-collect-request.json", {"args": request})
+    code, collected = invoke(request)
+    save("collect-after-business-stop.json", {"exitCode": code, "response": collected})
+    if code != 1 or collected != {"disposition": "stopped", "reasonCode": "run-stopped"}:
+        raise DriveError("business-stop-collect-mismatch")
+    code, final = invoke(["inspect", "--run", run_id])
+    if code != 0 or final != stopped:
+        raise DriveError("business-stop-final-inspect-mismatch")
+    summary = {"runId": run_id, "run": stopped, "stage": "resident-stop-observed", "accepted": False,
+               "deadlineWitnessVerified": False, "transport": "fixed-control-plane"}
+    save("business-stop-summary.json", summary)
+    return summary
+
+
 def finalize_review(call, save, summary, packet, decision, decision_path, deadline, now=time.time):
     """Deliver an external review; neither construct one nor retry mutation.
 
@@ -359,13 +411,14 @@ def main():
     parser.add_argument("--await-review-seconds", type=int, default=0)
     parser.add_argument("--cancel", action="store_true", help="verify explicit stop, exact replay and stopped Collect instead of business acceptance")
     parser.add_argument("--cancel-recovery", action="store_true", help="verify the same proved stop after server restart, without extending its deadline")
+    parser.add_argument("--observe-business-stop", action="store_true", help="observe resident stopping without Cancel or pre-stop Collect")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     binary = root / "bin" / "marshal"
     evidence = Path(args.evidence_dir)
     if not ID.fullmatch(args.run) or not 1 <= args.timeout_seconds <= 480 or not 0 <= args.await_review_seconds <= 1200:
         parser.error("invalid run/deadline")
-    if (args.cancel or args.cancel_recovery) and args.await_review_seconds or args.cancel and args.cancel_recovery:
+    if sum((args.cancel, args.cancel_recovery, args.observe_business_stop)) > 1 or (args.cancel or args.cancel_recovery or args.observe_business_stop) and args.await_review_seconds:
         parser.error("cancel cannot request independent business acceptance")
     if binary.is_symlink() or not binary.is_file() or binary.resolve() != binary:
         parser.error("fixed bin/marshal is required")
@@ -408,6 +461,11 @@ def main():
         return completed.returncode, value
 
     try:
+        if args.observe_business_stop:
+            observe_business_stop(call, save, args.run, time.time() + args.timeout_seconds)
+            if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
+                raise DriveError("fixed-binary-drift")
+            return 0
         if args.cancel or args.cancel_recovery:
             previous = None
             deadline = time.time() + args.timeout_seconds

@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：自动业务停止观察候选，不能把观察当作 deadline 证明
+
+显式取消与完成后冷恢复通过后，本候选在同一 fixed server/Pi/canary 增加 `order-quote-timeout`：审批前 Task 冻结 60 秒 Attempt、600 秒 Run 预算；原业务场景仍为 300/600，不改变 runtime 合同。Start 丢响应/重启后只进行有界 Inspect，直到观察 BLOCKED 才调用当前 head 的 Collect，并要求 `stopped/run-stopped`；不调用 Cancel，不在 RUNNING 时用 Collect 触发停止，不自动重试失败 transport。180 秒是观察器等待上限，不是业务 deadline。
+
+观察成功只记 `resident-stop-observed/deadlineWitnessVerified=false`。须独立检查保留的真实 journal/ingress 的 terminalReason、冻结预算与来源、原 deadline、stop/cleanup/Outcome 链后才能记自动业务超时通过；不能以 BLOCKED 或 CI 绿色替代该检查。新增测试覆盖观察到期不派取消、异常不重试、当前 head、停止后 Collect 失败和普通 Task 预算不变。本候选尚待新 source CI/实机，不关闭 B1。
+
 ## 2026-09-06：取消、停止后 Collect 与冷 server 恢复实机通过
 
 停止候选 `6e87f34a68f085384b8eaba09d76d2b5bd682b90` 的 [CI 34037704960](https://github.com/chiga0/marshal-harness/actions/runs/34037704960) 五项全绿后，单次 [canary 34038482097](https://github.com/chiga0/marshal-harness/actions/runs/34038482097) 全部成功。真实 Pi 经 Start 丢响应/server1 crash/server2 rebind/replay 后，取消生成 `worker.stopped/BLOCKED/sequence=4`、完整 cleanup 和 Outcome；原 Cancel 精确重放、当前终态 head 的 Collect 返回 `stopped/run-stopped`，server2 正常退出。相同固定 bytes 的 server3 冷启动后再次验证原 Cancel/receipt/Outcome、终态 Collect 和查询，未重启 Worker、未延长冻结 deadline。
