@@ -73,11 +73,20 @@ jobs:
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISPATCH_HEAD: ${{ github.sha }}
+          DISPATCH_BRANCH: ${{ github.ref_name }}
         run: |
           git remote set-url origin https://github.com/chiga0/marshal-harness.git
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" || { echo "::error::checkout head 漂移" >&2; exit 1; }
           git checkout -q -B main "$EXPECTED_HEAD"
-          bash scripts/release-ci-gate.sh "${{ github.repository }}" "$EXPECTED_HEAD"
+          if [ "$CANARY_SCENARIO" = order-quote-cancel ] && [ "$DISPATCH_BRANCH" != main ]; then
+            # Unreleased stop candidates must pass real validation before
+            # enable/merge. This does not replace the stable/main release gate.
+            test "$EXPECTED_HEAD" = "$DISPATCH_HEAD"
+            /usr/bin/python3 -I -B scripts/candidate-ci-gate.py "$EXPECTED_HEAD" "$DISPATCH_BRANCH"
+          else
+            bash scripts/release-ci-gate.sh "${{ github.repository }}" "$EXPECTED_HEAD"
+          fi
 
       - name: Provision pinned Go 1.26.6
         shell: /bin/bash --noprofile --norc -euo pipefail {0}

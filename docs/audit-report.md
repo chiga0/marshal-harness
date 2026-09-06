@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：取消候选实机验证在 Worker 启动前被错误的发布准入阻塞
+
+取消候选 `c1daeebb43541371d442e414ba830d59bf262ecd` 的 CI 34027878879 五项全绿。单次 canary 34028776232 却在 `Gate canonical repository and required CI` 失败：原脚本仅查 `event=push/head_branch=main`，而该候选证据来自 `workflow_dispatch`。失败在 candidate build、配置和 Worker 启动之前，零新业务 Attempt；这不是 Pi 配置或取消代码的实机失败，也不能归为实机通过。派发前未核对 gate 的事件合同，是本轮可避免的流程错误。
+
+纠偏保持 release-ci-gate.sh 及正式发布权限原样，只给显式取消候选验证增加独立 candidate-only gate：canonical API、feat 分支、dispatch SHA=expected-head、最新同 SHA/分支手动 CI 已完成，五个必需 job 全部且唯一成功。较新的失败/运行中 CI 不能借旧绿逃逸；错误 head/branch/event、缺 job、重复 job、skip 或未知字段类型拒绝。正常业务/main 场景仍用原 main gate；不先合并未完成取消来满足测试准入。具体边界记入仍为 Proposed 的 ADR 0081。
+
 ## 2026-09-06：停止后的冷 server 验证候选
 
 同路径故障测试补充：v2 Terminate 链原先使用普通 `attempt-failed` barrier，不能覆盖取消合同。现改为经公开 producer 提交的 sealed operator stop intent，再沿原真实 durable bootstrap/start/rebind 链验证 signal 丢回复、exact receipt 恢复、Close 丢回复与独立 absence、cleanup 冷重放；末端必须保留原 stop intent、admission closed 且没有 CommittedResult。Supervisor peer/内核观察仍为明确替身，不宣称实机取消；本地 compile-only/vet/staticcheck 通过，新 source 动态证据待 CI。

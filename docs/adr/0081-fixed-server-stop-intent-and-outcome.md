@@ -67,6 +67,8 @@ Collect 对已完成 stop 使用封闭 `run-stopped` 错误，不伪造 Collecte
 
 ### 接受与 enable 门槛
 
+实机候选与发布门禁必须分开：取消候选尚未满足本节实机要求时不得先合并 main，也不能被 main-only release CI gate 阻止验证。仅显式 `order-quote-cancel` 的未合入 `feat/` 分支，允许用 canonical 仓库、workflow dispatch SHA 与 expected-head 相等、同精确 SHA/分支最新手动 CI 五项成功的 candidate-only gate 做隔离实机验证；不创建 tag、release、独立 Decision 或 production 声明。main 上的任何场景及其他场景仍走原 main push CI gate，正式发布脚本和权限不变。此候选验证许可不等于接受本 ADR 或开启正式支持。
+
 当前证据补充：`20a9999` 的 CI 34026216770 五项全绿，覆盖下述 READY 准入。后续 fixed CLI cancel 与显式 `order-quote-cancel` 驱动只补测试入口：request key 派生唯一 stop requestId，未知响应不重试，已证明停止的 Collect 返回非成功退出码。驱动必须验证精确 receipt/Outcome、同请求重放与终态查询，不生成独立 Decision；尚未运行真实取消 canary，不能用脚本测试替代 enable 门槛。
 
 停止场景进一步覆盖成功后的冷 server：关闭 server2 后以同一固定 bytes 启动 server3，独立 evidence 目录记录原取消请求、原 deadline、精确 receipt/Outcome 的再次验证与终态 Collect。只读取本 Run 固定目录中的有界证据来重建封闭参数，证据不替代服务端 authority；不延长预算、不重启 Worker，未知响应不再次取消。24 项 Python 回归通过不等于这一场景已实机通过。共享 release 观察也已改为同时接受两类经耐久账本重读的合法终态：已接纳正常结果，或 sealed stop intent 与闭合 eligibility；停止绝不能伪造 CommittedResult 来复用正常完成分支。

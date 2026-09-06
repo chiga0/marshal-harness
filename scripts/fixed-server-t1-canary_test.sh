@@ -48,6 +48,8 @@ if grep -E '^[[:space:]]+(push|pull_request|schedule):' "$WORKFLOW" >/dev/null; 
 fi
 grep -F 'ref: ${{ inputs.expected-head }}' "$WORKFLOW" >/dev/null || fail 'workflow does not exact-checkout input head'
 grep -F 'scripts/release-ci-gate.sh' "$WORKFLOW" >/dev/null || fail 'workflow lacks required-CI pre-gate'
+"/usr/bin/python3" -I -B "$ROOT/scripts/candidate-ci-gate_test.py"
+grep -F 'test "$EXPECTED_HEAD" = "$DISPATCH_HEAD"' "$WORKFLOW" >/dev/null || fail 'candidate checkout is not dispatch-bound'
 grep -F 'go1.26.6.darwin-arm64.tar.gz' "$WORKFLOW" >/dev/null || fail 'workflow lacks pinned Go toolchain'
 grep -F 'PHY_PI_VERSION: "0.84.4"' "$WORKFLOW" >/dev/null || fail 'workflow lacks Pi 0.84.4 pin'
 grep -F 'fixed-server-t1-canary.sh' "$WORKFLOW" >/dev/null || fail 'workflow does not use the fixed driver'
