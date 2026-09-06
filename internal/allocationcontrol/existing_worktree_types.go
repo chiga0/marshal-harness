@@ -24,7 +24,8 @@ const (
 	ExistingWorktreeFactReleaseIntent  ExistingWorktreeFactKind = "release-intent"
 	ExistingWorktreeFactReleaseReceipt ExistingWorktreeFactKind = "release-receipt"
 
-	ExistingWorktreeProjectionDirectory = "existing-worktree-bindings"
+	ExistingWorktreeProjectionDirectory        = "existing-worktree-bindings"
+	ExistingWorktreeProjectionCurrentDirectory = "current-v2"
 )
 
 type ExistingWorktreeFactKind string

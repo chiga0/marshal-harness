@@ -74,6 +74,16 @@ Collect 对已完成 stop 使用封闭 `run-stopped` 错误，不伪造 Collecte
 
 ### 接受与 enable 门槛
 
+#### 投影更新不得使正常查询失效
+
+候选 `88f9eddb` 的真实 Attempt timeout 在投影 release 后、终态收口前遇到独立客户端 open 失败；公共客户端回归进一步证明，旧布局的 `RENAME_SWAP` 会改变 transport 冻结的 `runtime-v1` 父目录观察。这不是允许忽略 current-name/ABA 的理由。
+
+本纵切部分替代 ADR 0069 §3.3 的派生投影布局：`existing-worktree-bindings` 成为固定、owner-private 容器，当前投影及事务 stage 位于其内部的 `current-v2`、`.projection.stage`。transport 冻结容器的 held object/name/type/owner/mode，仍精确冻结 `runtime-v1`、`control` 的 mutation；内部投影 swap 不需要重新认证或刷新 transport 根。RB1、Run journal、receipt bytes、锁序与业务权限不迁移，不新增 authority。
+
+旧布局的根部 entry 只作保留历史：开启/验证 v2 前逐项证明它们是当前 RB1 投影的合法前缀；损坏、超前、未知 entry、symlink 或旧 runtime 根部遗留 stage 均拒绝，不删除、不遮蔽。已验证的旧 entry 原样保留；v2 缺失/落后仍只能由 RB1 重建。旧 binary 看见新目录必须拒绝，不允许静默降级。新布局 stage 的崩溃恢复仍复用原有全量 preflight、原子 swap、精确清理；不得把投影切换解释为 binding release。
+
+验证必须覆盖真实 projection producer 的 bind/release 与公共客户端连续重验/新开、stage/commit/cleanup 各边界、冷恢复、旧合法/损坏布局，以及固定容器/runtime/control 替换与 ABA 拒绝。单纯手工 swap 测试或 compile-only 不能关闭实机门槛。
+
 常驻写调度必须覆盖整个 `delivery Begin → application → receipt reconcile/commit`，而非只锁 application。HTTP Start（包括精确重放）、Collect/Cancel/Verify/Review/Decision 与后台 deadline/Outcome 恢复共享同一个进程内 writer lane；后台 Try 不排队，公开请求在原有有界 inflight/queue 和请求 context 下等待。Status/Inspect 不经过该 lane。该调度锁不授予业务权限、不代替 durable CAS/Run lease；pending 已耐久后的原 deadline/丢响应恢复语义不变。所有资源的锁顺序为 lane → application mutex（适用时）→ 原有 Run/owner/ledger 规则，禁止在后台 callback 递归发起公开写请求。长写事务造成的停止延迟仍需单独证明，不能把互斥修复称为实时 deadline 保证。
 
 实机候选与发布门禁必须分开：停止候选尚未满足本节实机要求时不得先合并 main，也不能被 main-only release CI gate 阻止验证。仅显式 `order-quote-cancel`、`order-quote-timeout`、`order-quote-run-timeout` 的未合入 `feat/` 分支，允许用 canonical 仓库、workflow dispatch SHA 与 expected-head 相等、同精确 SHA/分支最新手动 CI 五项成功的 candidate-only gate 做隔离实机验证；不创建 tag、release、独立 Decision 或 production 声明。main 上的任何场景及其他场景仍走原 main push CI gate，正式发布脚本和权限不变。此候选验证许可不等于接受本 ADR 或开启正式支持。

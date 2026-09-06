@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-07：用稳定投影容器消除查询与业务写入的目录耦合
+
+`487bbc243673b8e1c389e0d4e58f235767a3f188` 的 CI 34045694199 五项全绿，公共客户端 characterization 动态确认了旧布局的观察失效；它只证明接缝缺陷，不是修复或实机成功。后继候选按 ADR 0081 的同一纵切，把原子投影和 stage 移入固定容器内的 `current-v2`，transport 不再刷新 `runtime-v1` 观察，容器、runtime、control 的替换/ABA 继续拒绝。旧根部投影先按当前 RB1 合法前缀只读校验并原样保留；未知/损坏/旧中断 stage 不被覆盖或遮蔽。新布局不修改 RB1/Run journal/receipt，不新增业务 authority。
+
+回归覆盖实际 allocation bind/release/reopen 不修改 transport 父目录、旧合法/损坏/符号链接/未知/未完成布局、容器 ABA，以及公共客户端在 stage/commit/cleanup 后原连接观察仍有效且新开身份相同。该客户端测试不冒充 HTTP+RB1 全链路，仍需新 source hosted 动态门禁和真实自动超时/冷恢复。全量发布证据保留，但这组窄回归放在 macOS 全量之前；无模型 canary 原样重试。当前仍为未合并候选，B1 IN_PROGRESS，B2/B3 不升级，无 production/stable 声明。
+
+工程教训：把派生数据更新与 transport 根身份绑定在同一目录 mutation 上，再逐个为 Start/Collect/后台停止补“观察刷新”，会反复遗漏独立客户端。修复应隔离可变存储边界并测试完整 producer/consumer，而不是扩大错误重试集。效率是否优于 Lead+SubAgents 仍待配对业务试验，不能用本次组件通过替代。
+
 ## 2026-09-06：前置回归遗漏测试 binary 的 sourceHead
 
 CI 34045483914 在 macOS 前置回归约 17 秒即失败：公开客户端测试的 fixture 在 `ObserveCurrentCore` 返回 identity conflict，尚未执行目录切换。原因是手写的前置 `go test` 漏掉 `Makefile:test` 已明确要求的 buildinfo.commit 注入，测试 binary 使用 `unknown` 而非精确 40-hex sourceHead。此次补齐两条前置命令与封闭 workflow producer；不跳过进程身份检查，不把 compile-only 当成已执行该检查。这是新增测试的启动配置返工，不是实机 Provider 重试，也不是目录竞态已被动态证明；B1 状态不变。后续真实身份测试必须保留同一 sourceHead 构建参数，不能只复制包名和 `-run`。

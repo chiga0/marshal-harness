@@ -11,10 +11,10 @@ import (
 )
 
 // adoptTerminalProjectionMutation closes the release half of the same
-// derived-projection mutation already admitted after PrepareRunStart. Release
-// atomically swaps existing-worktree-bindings, changing runtime-v1 timestamps.
-// Do not turn off root validation: join the current terminal ledger and exact
-// projection bytes before updating only that directory's observation.
+// derived-projection verification already performed after PrepareRunStart.
+// Release swaps only current-v2 inside the fixed projection container; it
+// cannot authorize any transport-root mutation. Keep the exact terminal
+// ledger/projection join before returning a lifecycle receipt.
 func (l *CompositionLedger) adoptTerminalProjectionMutation(ctx context.Context, verifier resultingress.CurrentOwnerLockVerifier, acquisition resultingress.ControlOwnerAcquisition, read runstore.RunStartAuthorityProjection, terminal resultingress.AttemptAuthorityState) error {
 	if l.sessionBorrow == nil {
 		return nil // Standalone composition has no resident fixed-server root.

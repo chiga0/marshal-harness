@@ -23,7 +23,7 @@ var fixedServerRootComponents = [...]string{".marshal", "runtime-v1", "control",
 // These are existing composition-owned stores, not additional delivery
 // authority. Freeze their objects before StartRun, rather than assuming the
 // isolated delivery test fixture is the complete production layout.
-var fixedServerRuntimeSiblingNames = [...]string{ResultIngressDirName, DispatchLedgerDirName, AllocationRootDirName, OwnerDirName, "provider-authority"}
+var fixedServerRuntimeSiblingNames = [...]string{ResultIngressDirName, DispatchLedgerDirName, AllocationRootDirName, OwnerDirName, "provider-authority", allocationcontrol.ExistingWorktreeProjectionDirectory}
 
 type fixedServerDirectoryIdentity struct {
 	Device    uint64                `json:"device"`
@@ -48,7 +48,7 @@ type fixedServerRoot struct {
 	repositoryPath string
 	nodes          [5]fixedServerDirectoryNode
 
-	runtimeSiblings [5]fixedServerDirectoryNode
+	runtimeSiblings [len(fixedServerRuntimeSiblingNames)]fixedServerDirectoryNode
 }
 
 // CanonicalRepositoryRoot is the fixed CLI's held repository capability. It
@@ -420,77 +420,14 @@ func ensureFixedExistingWorktreeProjectionRoot(runtimeRoot *os.File) error {
 	return nil
 }
 
-// adoptFixedServerRuntimeMutation advances runtime-v1 only after the caller
-// has independently joined the current RB1 ledger to the exact derived
-// projection bytes. The runtime directory must still contain exactly the
-// admitted children plus the original held composition stores, and the
-// authoritative control/delivery chain must retain
-// its pre-mutation identity. This admits the projection's RENAME_SWAP without
-// washing through an unrelated sibling insertion or control-directory ABA.
+// Projection transactions now live inside a fixed container. There is no
+// legitimate runtime-v1 mutation to adopt after startup. Keep the existing
+// receipt-gated callsites, but never refresh a stale transport observation.
 func adoptFixedServerRuntimeMutation(root *fixedServerRoot) error {
-	if root == nil || validateFixedServerRoot(*root, 2) != nil {
+	if root == nil {
 		return ErrFixedDeliveryConflict
 	}
-	marshalRoot := root.nodes[1]
-	runtimeRoot := root.nodes[2]
-	held, heldErr := observeFixedServerDirectory(int(runtimeRoot.file.Fd()), true)
-	named, namedErr := observeFixedServerDirectoryAt(int(marshalRoot.file.Fd()), runtimeRoot.name, true)
-	if heldErr != nil || namedErr != nil || !sameFixedServerDirectory(held, runtimeRoot.identity, false) || !sameFixedServerDirectory(named, runtimeRoot.identity, false) || !sameFixedServerDirectory(held, named, true) {
-		return ErrFixedDeliveryConflict
-	}
-	if _, err := runtimeRoot.file.Seek(0, 0); err != nil {
-		return ErrFixedDeliveryConflict
-	}
-	entries, err := runtimeRoot.file.ReadDir(-1)
-	if err != nil {
-		return ErrFixedDeliveryConflict
-	}
-	expected := map[string]bool{
-		fixedServerRootComponents[2]:                          false,
-		allocationcontrol.ExistingWorktreeProjectionDirectory: false,
-	}
-	for _, child := range root.runtimeSiblings {
-		if child.file != nil {
-			expected[child.name] = false
-		}
-	}
-	if len(entries) != len(expected) || root.validateRuntimeSiblings() != nil {
-		return ErrFixedDeliveryConflict
-	}
-	for _, entry := range entries {
-		if _, ok := expected[entry.Name()]; !ok || !entry.IsDir() || expected[entry.Name()] {
-			return ErrFixedDeliveryConflict
-		}
-		expected[entry.Name()] = true
-	}
-	for _, found := range expected {
-		if !found {
-			return ErrFixedDeliveryConflict
-		}
-	}
-	control := root.nodes[3]
-	controlHeld, controlHeldErr := observeFixedServerDirectory(int(control.file.Fd()), true)
-	controlNamed, controlNamedErr := observeFixedServerDirectoryAt(int(runtimeRoot.file.Fd()), control.name, true)
-	if controlHeldErr != nil || controlNamedErr != nil || !sameFixedServerDirectory(controlHeld, control.identity, true) || !sameFixedServerDirectory(controlNamed, control.identity, true) || !sameFixedServerDirectory(controlHeld, controlNamed, true) {
-		return ErrFixedDeliveryConflict
-	}
-	delivery := root.nodes[4]
-	deliveryHeld, deliveryHeldErr := observeFixedServerDirectory(int(delivery.file.Fd()), true)
-	deliveryNamed, deliveryNamedErr := observeFixedServerDirectoryAt(int(control.file.Fd()), delivery.name, true)
-	if deliveryHeldErr != nil || deliveryNamedErr != nil || !sameFixedServerDirectory(deliveryHeld, delivery.identity, false) || !sameFixedServerDirectory(deliveryNamed, delivery.identity, false) || !sameFixedServerDirectory(deliveryHeld, deliveryNamed, true) {
-		return ErrFixedDeliveryConflict
-	}
-	projection, projectionErr := observeFixedServerDirectoryAt(int(runtimeRoot.file.Fd()), allocationcontrol.ExistingWorktreeProjectionDirectory, true)
-	if projectionErr != nil || projection.Device == 0 || projection.Inode == 0 {
-		return ErrFixedDeliveryConflict
-	}
-	candidate := *root
-	candidate.nodes[2].identity = held
-	if err := validateFixedServerRoot(candidate, len(candidate.nodes)); err != nil {
-		return err
-	}
-	root.nodes[2].identity = held
-	return nil
+	return validateFixedServerRoot(*root, len(root.nodes))
 }
 
 // adoptFixedServerControlMutation advances only the frozen mutation

@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 当前候选：`487bbc2` 的 CI 34045694199 五项全绿，已动态复现旧投影布局使公共客户端观察失效。根因修复改为稳定容器内更新 `current-v2`，并移除 transport 根的事后观察刷新；旧状态只读校验、原样保留，身份/ABA 拒绝不放宽。新增真实投影 producer 与公共客户端边界回归，待新 source hosted CI 和自动超时/冷恢复实机。**B1 IN_PROGRESS；B2/B3 不升级；候选未合并 main，无 stable 发布。** 以下是历史检查点。
+
 2026-09-06 16:19 UTC：诊断候选 `88f9edd` 的 CI 34043986843 全绿，但 Attempt-timeout 34044944162 在第 17 次 Inspect 的客户端 authority 打开阶段失败，未进入 HTTP；RB1 到 worktree release receipt，尚无 stopped Run 终态/Collect/server3。本轮新增公开客户端目录观察切换的确定性回归，冻结同类实机重试，先定位并修复完整接缝。**B1 仍 IN_PROGRESS，B2/B3 未升级；停止候选未合入 main、无 stable 发布。** 前文在途 CI/待派发语句为历史时点，不代表当前仍运行。
 
 2026-09-06 15:19 UTC：`49f745d` 的 Run-first 实机 34041702160 通过，已独立核对原始预算来源和 server3 同字节/原请求/原 deadline 冷恢复；新增关闭一个候选子条件。Attempt-timeout 34041730043 虽已停止到 BLOCKED，但一次 Inspect 出现 `transport-failure`，未进入 Collect/冷恢复，整次失败并保留证据，不原样重跑。B1 当前关键阻塞是停止期间查询的完整并发路径，另有中途故障、长事务响应上界和最终组合验收；B2/B3 状态不变。后继 Outcome/归档候选 `97e448a` 已推送，CI 34041798874 在途。main 未合并停止候选、未发布 stable。

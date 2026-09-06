@@ -425,7 +425,10 @@ func TestFixedLifecycleDeliveryPublishesAndReplaysExactCollectReceipt(t *testing
 	// worker.completed event and delivery commit. The contents are unchanged
 	// here: this test isolates delivery's root-observation boundary, not RB1
 	// release authorization (which the composition helper must prove).
-	projectionRoot := filepath.Join(fixture.repository, ".marshal", "runtime-v1", "existing-worktree-bindings")
+	projectionRoot := filepath.Join(fixture.repository, ".marshal", "runtime-v1", "existing-worktree-bindings", "current-v2")
+	if err := os.MkdirAll(projectionRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	stageRoot := projectionRoot + "-test-stage"
 	oldRoot := projectionRoot + "-test-old"
 	if err := os.Mkdir(stageRoot, 0o700); err != nil {
@@ -455,9 +458,6 @@ func TestFixedLifecycleDeliveryPublishesAndReplaysExactCollectReceipt(t *testing
 	}
 	if err := os.RemoveAll(oldRoot); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := fixture.store.CommitLifecycleDelivery(context.Background(), pending, FixedLifecycleCollectOperation, request, current, result); err == nil {
-		t.Fatal("stale runtime observation allowed a receipt")
 	}
 	if err := adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot); err != nil {
 		t.Fatal(err)
@@ -631,10 +631,10 @@ func TestFixedDeliveryProductionWiringUsesPublicRepositorySession(t *testing.T) 
 	}
 }
 
-// Characterization, not permission to adopt a query response or retry an
-// authority failure: use the public client and production namespace/layout.
-// This isolates a real snapshot invalidation from unavailable provider/auth.
-func TestFixedEndpointClientProjectionSwapRequiresFreshObservation(t *testing.T) {
+// Model the projection filesystem transaction while using a public client.
+// Producer/RB1 correctness is separately exercised by allocation tests; this
+// test proves no query retry or observation adoption is necessary.
+func TestFixedEndpointClientProjectionContainerMutationBoundary(t *testing.T) {
 	fixture := newPublicFixedDeliveryInputs(t)
 	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: fixture.repository}
 	digest, err := namespace.Digest()
@@ -656,6 +656,37 @@ func TestFixedEndpointClientProjectionSwapRequiresFreshObservation(t *testing.T)
 		t.Fatal(err)
 	}
 	runtimeFD := int(session.fixedRoot.nodes[2].file.Fd())
+	containerFD := int(session.fixedRoot.runtimeSiblings[len(fixedServerRuntimeSiblingNames)-1].file.Fd())
+	for _, name := range []string{"current-v2", ".projection.stage"} {
+		if err := unix.Mkdirat(containerFD, name, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.Recheck(context.Background()); err != nil {
+			t.Fatalf("projection staging invalidated client: %v", err)
+		}
+	}
+	if err := unix.RenameatxNp(containerFD, ".projection.stage", containerFD, "current-v2", unix.RENAME_SWAP); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Recheck(context.Background()); err != nil {
+		t.Fatalf("projection commit invalidated client: %v", err)
+	}
+	if err := unix.Unlinkat(containerFD, ".projection.stage", unix.AT_REMOVEDIR); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Recheck(context.Background()); err != nil {
+		t.Fatalf("projection cleanup invalidated client: %v", err)
+	}
+	fresh, err := OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.Close()
+	if err := fresh.Recheck(context.Background()); err != nil || fresh.snapshot != client.snapshot {
+		t.Fatalf("fresh query identity changed after projection transaction: %v", err)
+	}
+	// Replacing the stable container itself still fails closed, even if the
+	// replacement has the same name and mode. No receipt may wash it through.
 	const stage = ".client-projection-swap-test"
 	if err := unix.Mkdirat(runtimeFD, stage, 0o700); err != nil {
 		t.Fatal(err)
@@ -663,24 +694,11 @@ func TestFixedEndpointClientProjectionSwapRequiresFreshObservation(t *testing.T)
 	if err := unix.RenameatxNp(runtimeFD, stage, runtimeFD, "existing-worktree-bindings", unix.RENAME_SWAP); err != nil {
 		t.Fatal(err)
 	}
-	if err := unix.Unlinkat(runtimeFD, stage, unix.AT_REMOVEDIR); err != nil {
-		t.Fatal(err)
-	}
 	if err := client.Recheck(context.Background()); !errors.Is(err, ErrFixedDeliveryConflict) {
 		t.Fatalf("old client did not reject mutated observation: %v", err)
 	}
-	// A fresh public open can observe the same stable objects after the swap;
-	// neither opening nor rejecting the old view changes the owner epoch.
-	fresh, err := OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fresh.Close()
-	if err := fresh.Recheck(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if fresh.snapshot != client.snapshot {
-		t.Fatal("projection-only mutation changed fixed endpoint identity")
+	if err := adoptFixedServerRuntimeMutation(&session.fixedRoot); err == nil {
+		t.Fatal("stable container replacement was adopted")
 	}
 }
 
@@ -709,11 +727,8 @@ func TestFixedServerRootAdoptsOnlyControlledProjectionSwap(t *testing.T) {
 		if validateFixedServerRoot(fixture.session.fixedRoot, len(fixture.session.fixedRoot.nodes)) == nil {
 			t.Fatal("projection replacement did not invalidate frozen runtime mutation")
 		}
-		if err := adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot); err != nil {
-			t.Fatalf("controlled projection replacement rejected: %v", err)
-		}
-		if err := validateFixedServerRoot(fixture.session.fixedRoot, len(fixture.session.fixedRoot.nodes)); err != nil {
-			t.Fatalf("adopted root is not current: %v", err)
+		if err := adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot); err == nil {
+			t.Fatal("replacement of the now-stable projection container was adopted")
 		}
 	})
 

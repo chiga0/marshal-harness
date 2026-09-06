@@ -196,8 +196,9 @@ jobs:
         if: matrix.os == 'macos-latest' && github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'feat/b1-')
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v -run '^Test(InspectionLease|StoppedRead|FixedLifecycleStoppedCollect|FixedEndpointClientProjectionSwapRequiresFreshObservation)' ./internal/productionruntime
+          go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v -run '^Test(InspectionLease|StoppedRead|FixedLifecycleStoppedCollect|FixedEndpointClientProjectionContainerMutationBoundary)' ./internal/productionruntime
           go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v -run '^TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply$' ./internal/resultingress
+          go test -race -count=1 -v -run '^TestExistingWorktreeProjection(ContainerKeepsRuntimeStable|LegacyPreservedOrRejected)$' ./internal/allocationcontrol
 
       - name: Run quality gate
         run: make check
