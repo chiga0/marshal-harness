@@ -10,6 +10,8 @@
 
 效率纠偏：每次恢复实验必须同时保留一个**不注入故障、不重启**的正常控制路径，不能以恢复分支覆盖代替基础调用链。先聚合相关入口与连续回归，再运行一次精确候选 CI/实机；已失败的 34052534488 不原样重跑。
 
+后续动态 CI [34053220150](https://github.com/chiga0/marshal-harness/actions/runs/34053220150) 在 `d67e3b7` 的新增 `TestLauncherV2SameOwnerContinuesWithoutRestart` 两个分支失败：普通 Collect 未留下预期 pending，停止后的 cleanup Collect 返回 authority conflict；其余四个 job 成功。已确认底层 `validateSupervisorCommandIntentAgainstState` 仍要求 reconnect/rebind，遗漏同一初始 owner 的 v2 bind/resume 连续证据。补齐该入口，保留 legacy reconnect 限制以及现有 owner、intent、mechanics、journal 与结果校验；不通过强制重启绕过。将该连续回归加入 macOS 前置测试，避免每次等全量约 15 分钟才发现同类错误。条件派发链因 CI 失败退出，未为 `d67e3b7` 新启 Pi；修正后的动态与实机结果仍待验证。
+
 ## 2026-09-07：跨 Run 长 Verify 与自动停止组合验证接入
 
 在同一 fixed server 的既有 Attempt-timeout canary 增加显式 `verify-peer`，不新增 Worker launcher 或业务状态库。两个 Task 在 server 启动前冻结并批准：peer 真实 Pi 完成订单报价，保留原业务 oracle，并执行 100 秒有界验证命令；命令的诊断 rendezvous 出现后，驱动才经公开 Start 启动另一个 60 秒 Attempt Run。所有 Start/Collect/Verify/ReviewPacket/Inspect 仍走 fixed control-plane，未知错误不重试，不创建 Decision。

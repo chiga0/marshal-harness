@@ -1125,10 +1125,11 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 			return ErrAttemptAuthorityOrder
 		}
 	case processsupervisor.CommandCollect:
-		// A collect Rebuild reanchors the business projection. The supervisor
-		// reconnect fact is the only admitted session-continuity proof, so the
-		// first collect of every attempt must follow it.
-		continuityReanchored := state.SupervisorReconnectFactDigest != "" || boundToCurrentRecoveryHead
+		// Legacy recovery requires its recorded reconnect/rebind. A v2
+		// initial owner already has a replayed bind/resume chain and an exact
+		// live Attach/journal check; forcing a restart adds no authority.
+		initialV2Continuity := state.SupervisorStarted.V2 != (SupervisorStartedV2{}) && boundToInitialHead && AttemptSupervisorBindingCurrent(state)
+		continuityReanchored := state.SupervisorReconnectFactDigest != "" || boundToCurrentRecoveryHead || initialV2Continuity
 		if !continuityReanchored || state.ProcessStartedDigest == "" || state.BarrierDigest != "" && !stoppedTranscriptCollectible(state) || state.CommittedResultFactDigest != "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest || rebuild.LastObservationDigest != supervisorLastObservation(state) {
 			return ErrAttemptAuthorityOrder
 		}
