@@ -4,7 +4,78 @@
 import copy
 import http.client
 import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import socketserver
+import threading
 from urllib.parse import urlsplit
+
+
+def check_transport(client_quote):
+    """Verifier-owned response challenges, not evidence of a correct service.
+
+    The outer verifier must bound candidate execution. Same-UID Python is not
+    an isolation boundary against a hostile client.
+    """
+    class LoopbackServer(HTTPServer):
+        def server_bind(self):
+            socketserver.TCPServer.server_bind(self)
+            self.server_name = "localhost"
+            self.server_port = self.server_address[1]
+
+        def get_request(self):
+            connection, address = super().get_request()
+            connection.settimeout(1)
+            return connection, address
+
+    items = [{"unit_price_cents": 1200, "quantity": 2}]
+    # Intentionally not the pricing oracle: verify that the client consumes
+    # the HTTP response instead of silently implementing its own pricing.
+    for status, response in [(200, {"subtotal_cents": 137, "shipping_cents": 0, "total_cents": 137}),
+                             (422, {"error": "invalid-order"})]:
+        calls = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                length = self.headers.get("Content-Length", "")
+                if not length.isdecimal() or not 0 < int(length) <= 65536 or self.headers.get("Transfer-Encoding"):
+                    self.send_error(400)
+                    return
+                payload = self.rfile.read(int(length))
+                calls.append((self.path, self.headers.get("Content-Type", "").split(";", 1)[0], payload))
+                data = json.dumps(response).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        server = LoopbackServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        worker.start()
+        before = copy.deepcopy(items)
+        try:
+            try:
+                result = client_quote(f"http://127.0.0.1:{server.server_port}", items)
+            except ValueError:
+                if status == 200:
+                    raise ValueError("client-response-not-consumed") from None
+            else:
+                if status != 200 or result != response or type(result) is not dict or any(type(v) is not int for v in result.values()):
+                    raise ValueError("client-response-not-consumed")
+            if len(calls) != 1 or calls[0][:2] != ("/quote", "application/json") or json.loads(calls[0][2]) != {"items": before}:
+                raise ValueError("client-request-not-observed")
+            if items != before:
+                raise ValueError("client-input-mutation")
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(2)
+            if worker.is_alive():
+                raise RuntimeError("transport-observer-did-not-stop")
+    return 2
 
 
 def request(base_url, payload, *, raw=False, path="/quote"):
@@ -27,8 +98,8 @@ def request(base_url, payload, *, raw=False, path="/quote"):
 def check(base_url, client_quote):
     """Check server independently, then the client against that same server.
 
-    The controlling verifier must bound the whole workload and independently
-    observe client transport; passing these checks alone is not a Team verdict.
+    The controlling verifier must bound the whole workload. Transport checks
+    use separate response challenges; passing alone is not a Team verdict.
     """
     count = 0
     for items, subtotal, shipping in [
@@ -68,4 +139,4 @@ def check(base_url, client_quote):
             raise ValueError("client-invalid-order")
         if items != before:
             raise ValueError("client-input-mutation")
-    return count + 4
+    return count + 4 + check_transport(client_quote)

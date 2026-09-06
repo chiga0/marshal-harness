@@ -89,8 +89,33 @@ def client(url, items):
 class TeamOracleTests(unittest.TestCase):
     def test_real_http_roundtrips(self):
         with fixture() as (url, calls):
-            self.assertEqual(oracle.check(url, client), 23)
+            self.assertEqual(oracle.check(url, client), 25)
             self.assertEqual(len(calls), 23)
+
+    def test_rejects_client_that_computes_locally(self):
+        with fixture() as (url, _):
+            with self.assertRaisesRegex(ValueError, "client-response-not-consumed"):
+                oracle.check(url, lambda _url, items: baseline.correct(items))
+
+    def test_rejects_client_that_ignores_service_response(self):
+        def ignores(url, items):
+            oracle.request(url, {"items": items})
+            return baseline.correct(items)
+        with self.assertRaisesRegex(ValueError, "client-response-not-consumed"):
+            oracle.check_transport(ignores)
+
+    def test_rejects_hardcoded_response_without_request(self):
+        with self.assertRaisesRegex(ValueError, "client-request-not-observed"):
+            oracle.check_transport(lambda *_: {"subtotal_cents": 137, "shipping_cents": 0, "total_cents": 137})
+
+    def test_rejects_wrong_request_body(self):
+        def wrong_body(url, items):
+            status, response = oracle.request(url, {"items": []})
+            if status != 200:
+                raise ValueError("invalid-order")
+            return response
+        with self.assertRaisesRegex(ValueError, "client-request-not-observed"):
+            oracle.check_transport(wrong_body)
 
     def test_rejects_wrong_service_quote(self):
         with fixture(lambda status, value: (status, dict(value, total_cents=-1)) if status == 200 else (status, value)) as (url, _):

@@ -23,6 +23,6 @@
 
 ## 独立验收与诚实边界
 
-`scripts/order-quote-team-oracle.py` 先直接通过 HTTP 检查服务，再调用客户端检查同一服务的报价。覆盖运费阈值、多商品、零价、大整数、错误输入、错误 JSON、路由与输入不变。后继集成验证还必须独立观察客户端真实请求，并以不同响应 challenge 排除硬编码或客户端私自计算；本 oracle 当前不单独证明这一点。
+`scripts/order-quote-team-oracle.py` 先直接通过 HTTP 检查服务，再调用客户端检查同一服务的报价。覆盖运费阈值、多商品、零价、大整数、错误输入、错误 JSON、路由与输入不变。随后使用验证者自己的 loopback HTTP fixture 观察精确 POST body，并提供不同的 200 报价与 422 响应，排除纯本地重算、发请求但忽略响应、未发请求的硬编码与错误请求体。客户端消费服务响应，不重复实现服务端定价；fixture 的不同报价只检验响应传递，不作为服务定价正确的证据。这 25 项观察不替代真实团队候选/独立 Decision，外层执行器仍必须提供整体 deadline；同 UID 下的 HTTP observer 不是对恶意客户端的隔离证明。
 
 测试使用本地合成 HTTP fixture，测试通过只说明验收基础设施可运行，不是实际 Agent Team 交付。真实 B2 仍缺 approved plan 耐久接纳/物化、调度、集成候选、独立 Decision、replan 和恢复；不新增第二个 controller 或账本。最终支持面保持可信单用户，普通 Python/HTTP 进程不是恶意代码沙箱。

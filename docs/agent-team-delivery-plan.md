@@ -24,7 +24,7 @@ B1 优先关闭当前 launcher 与 T2 真实链路阻塞。B2 的业务样例/�
 
 - B1：真实 Agent 在现有 T2 Task 路径实现 `quote_order.py`，提供 `quote_order(items)`；固定参考 oracle 检查正常、边界、非法输入、输入不变和 JSON 类型。
 - B2：扩展成订单报价 API 与客户端。先确认共享输入/错误契约，然后分开实现服务与客户端，集成任务验证从客户端到服务的完整请求；不把两个不相交文件的提交当作团队完成。
-- B2 的 [HTTP 参考契约候选](reference-order-quote-team-contract.md) 和 `scripts/order-quote-team-oracle.py` 预先定义同一服务的直接请求与客户端验收。它们不是 accepted plan，也不是多 Agent 已完成；真实派发前仍须冻结确认、补客户端传输 challenge，再由同一 B2 控制链执行。
+- B2 的 [HTTP 参考契约候选](reference-order-quote-team-contract.md) 和 `scripts/order-quote-team-oracle.py` 预先定义同一服务的直接请求与客户端验收，并加入验证者 HTTP fixture 的请求观察/响应 challenge。它们不是 accepted plan，也不是多 Agent 已完成；真实派发前仍须冻结确认、接入外层有界集成执行，再由同一 B2 控制链执行。
 - 独立 oracle 放在控制仓库的固定脚本，不在 Worker 可修改范围内；Oracle 本身用正确实现和典型错误实现做回归。测试素材全部为合成数据，无客户数据/真实订单。
 - 参考工作区与 Marshal 业务代码隔离。当前 Task renderer 仍绑定 canonical Marshal repository，因此 B1 的文件范围隔离只用于首轮，**不冒充外部参考仓库集成已支持**；后继应用入口允许可信外部仓库后，迁移同一场景到独立小仓库。
 - 保留现有 marker 作为传输诊断模式；marker 通过不能替代本业务验收。
