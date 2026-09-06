@@ -155,16 +155,23 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	if binding.Validate(time.Now().UTC()) != nil {
 		return httpResponse{}, ErrInvalid
 	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	connection, err := Dial(ctx, authority, binding)
 	if err != nil {
 		return httpResponse{}, atRequestStage("client-dial", err)
 	}
 	defer connection.Close()
+	// Cancellation must interrupt socket I/O as well as application/recheck
+	// work. Closing this single-use connection cannot affect another request.
+	stopCancellation := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancellation()
 	header := "POST " + path + " HTTP/1.1\r\nHost: marshal.local\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\nMarshal-Request-Key: " + requestKey + "\r\nConnection: close\r\n\r\n"
 	if connection.SetWriteDeadline(time.Now().Add(writeTimeout)) != nil || writeFull(connection, []byte(header)) != nil || writeFull(connection, body) != nil {
 		return httpResponse{}, atRequestStage("client-write", ErrUnavailable)
 	}
-	response, responseErr := readClientHTTPResponse(connection)
+	responseDeadline, _ := ctx.Deadline()
+	response, responseErr := readClientHTTPResponseUntil(connection, responseDeadline)
 	// A syntactically valid non-success response still completes the
 	// authenticated request protocol. Recheck the peer and half-close only
 	// after consuming that exact response; otherwise 202/409/503 returns can
@@ -175,13 +182,15 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	if response.Operation != operation {
 		return httpResponse{}, atRequestStage("client-operation", ErrConflict)
 	}
+	recheckContext, cancelRecheck := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancelRecheck()
 	var recheckErr error
 	if operation == "start-run" && responseErr == nil && response.Started != nil && response.DeliveryReceipt != nil {
 		startRequest, ok := request.(application.StartRunRequest)
 		if !ok || response.Started.Prepared.RunID != startRequest.RunID || response.Started.Prepared.Sequence != startRequest.ExpectedSequence || response.Started.Prepared.AuthorityHead != startRequest.ExpectedAuthorityHead {
 			return httpResponse{}, ErrConflict
 		}
-		recheckErr = connection.RecheckStartRun(ctx, *response.Started, *response.DeliveryReceipt)
+		recheckErr = connection.RecheckStartRun(recheckContext, *response.Started, *response.DeliveryReceipt)
 	} else if isLifecycleOperation(operation) && responseErr == nil && response.LifecycleReceipt != nil {
 		projection, projectionErr := lifecycleResponseProjection(response, operation)
 		result, resultErr := fixedLifecycleResult(operation, projection)
@@ -189,11 +198,11 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 		if projectionErr != nil || resultErr != nil || currentErr != nil || validateLifecycleClientResult(current, result) != nil {
 			return httpResponse{}, ErrConflict
 		}
-		recheckErr = connection.RecheckLifecycle(ctx, result, *response.LifecycleReceipt)
+		recheckErr = connection.RecheckLifecycle(recheckContext, result, *response.LifecycleReceipt)
 	} else {
-		recheckErr = connection.Recheck(ctx)
+		recheckErr = connection.Recheck(recheckContext)
 	}
-	if recheckErr != nil {
+	if recheckErr != nil || recheckContext.Err() != nil {
 		return httpResponse{}, atRequestStage("client-recheck", ErrConflict)
 	}
 	if connection.CloseWrite() != nil {
@@ -301,10 +310,26 @@ func validateLifecycleClientResult(current application.CurrentRunRequest, result
 }
 
 func readClientHTTPResponse(connection *AuthenticatedConnection) (httpResponse, error) {
-	if connection == nil || connection.SetReadDeadline(time.Now().Add(writeTimeout)) != nil {
+	return readClientHTTPResponseUntil(connection, time.Now().Add(writeTimeout))
+}
+
+// Waiting for the application is bounded by the original request, not the
+// byte-transfer timeout. Once the first byte arrives, the entire envelope
+// gets one bounded transfer window (never refreshed by a slow peer).
+func readClientHTTPResponseUntil(connection *AuthenticatedConnection, deadline time.Time) (httpResponse, error) {
+	if connection == nil || !deadline.After(time.Now()) || connection.SetReadDeadline(deadline) != nil {
 		return httpResponse{}, ErrUnavailable
 	}
 	reader := bufio.NewReaderSize(connection, maxHTTPSingleHeader+1)
+	if _, err := reader.Peek(1); err != nil {
+		return httpResponse{}, ErrUnavailable
+	}
+	if transferDeadline := time.Now().Add(writeTimeout); transferDeadline.Before(deadline) {
+		deadline = transferDeadline
+	}
+	if connection.SetReadDeadline(deadline) != nil {
+		return httpResponse{}, ErrUnavailable
+	}
 	statusLine, err := readHTTPLine(reader, maxHTTPSingleHeader)
 	parts := strings.Split(statusLine, " ")
 	if err != nil || len(parts) != 3 || parts[0] != "HTTP/1.1" {

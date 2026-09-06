@@ -10,6 +10,16 @@
 
 直接核对 `internal/goal`、`internal/outbox`、`internal/planning` 和 TaskSpec：现有计划组件不耐久落账，节点不绑定完整 Task 输入，planning 尚不是幂等 Goal 物化，Task 依赖也不传递或集成成果。不能据此把 B2 提前列为可用。[ADR 0083 提案](adr/0083-bounded-team-plan-materialization.md) 将后继限制为同一 fixed server/RB1 的批准输入束、原子创建义务、现有 Run 创建恢复和真实集成候选，不引入新 controller/DSL。该文档是 B2 的设计准备，不是实施完成；依赖的 B1 候选仍未合入。
 
+## 2026-09-07：初始续行实机通过后暴露传输阶段预算错配
+
+`d0be824` 精确 CI [34054261338](https://github.com/chiga0/marshal-harness/actions/runs/34054261338) 与 PR CI 34054248613 均通过；条件链仅派发一次实机 [34055217240](https://github.com/chiga0/marshal-harness/actions/runs/34055217240)，整次失败。诊断 artifact `9995784841` 已读取：peer 在唯一 owner 下从 Start 经五次 authenticated live-pending Collect 到成功 Collect，19:34:16.581183Z 写入 `worker.completed/VERIFYING/sequence=4`；对应 admission fact 为 `sha256:99c5ad1d80a3f197cebbbb5e911f0c95941acd302c3b5b518e6c8d3ea6264792`。因此前次初始 owner 故障已在本样本的真实连续链路越过，不是再次停在首次 Collect。
+
+长验证命令已产生 rendezvous（Unix 时间 1788723263.80846），另一个 Run 19:34:31.235692Z 已写入 RUNNING。两个 Run 各一 Attempt，RB1 仅一个 `control-owner-acquired`；但 Verify 与第二次 Start 的客户端均 exit=1、空 stdout，19:34:34.287768Z 驱动报 `fixed-cli-invalid-response`；server 还记录一次 `server-half-close/transport-failure`。没有 verification report、独立 Decision、停止 Outcome 或跨 Run 组合通过，不能把上述局部推进算整次成功。原失败与两次 Attempt 均保留在交付成本中。
+
+代码直接确认传输预算缺陷：`readClientHTTPResponse` 在等应用首个响应前就安装固定 15 秒 read deadline，必然无法支持本次 100 秒验收；server 仅等 1 秒 half-close，而客户端须先复查身份/receipt。后者是已确认的协议预算竞态，但现有 Start stderr 只有泛化文案，不能把其具体失败位置强行归因于某个 recheck。候选按 ADR 0081 分离原请求内的应用等待、字节传输和复查预算，并补 Start/Verify 的既有封闭阶段诊断；不输出原始 error、路径、secret 或放宽错误重试。
+
+先补无模型的实际 authenticated client→HTTP router 长应用回归（超过旧 15 秒）、父取消中断、原 deadline/部分 envelope 限制，以及延迟 half-close/缺失 half-close 的有界回归，再运行一次精确候选 CI/实机。回归中的业务 application 为显式 fixture，不冒充 Pi 或独立验收。当前修正尚未动态/实机通过；B1 仍 IN_PROGRESS，停止候选未合入 main，B2/B3 不升级。
+
 ## 2026-09-07：不重启 server 的首次 Collect 暴露初始 owner 续行缺口
 
 `593eb5d` 的精确 CI [34051652443](https://github.com/chiga0/marshal-harness/actions/runs/34051652443) 五项通过后，只派发一次跨 Run 实机 [34052534488](https://github.com/chiga0/marshal-harness/actions/runs/34052534488)。实验失败，未进入长 Verify，不能计作跨 Run 调度通过。诊断 artifact `9994993010` 已保留并读取：peer 的 Start 和 Inspect 返回 RUNNING/sequence=3，首次 Collect 已留下 delivery pending，但客户端无 JSON、退出 1；server 明确记录 `sealed-run-compose-runtime/composition-failure` 与 `recover-running-attempt/recovery-required`。RB1 只有一个 attempt-opened、17 条 fact，最后为初始 Resume 成功；另一 Run 尚未启动。没有业务 Decision、完成 Outcome 或新的业务 retry，不能把这个失败排除出实验分母。
@@ -19,6 +29,8 @@
 本次候选集中修复上述完整接缝：重放后的绑定分类区分初始同 owner 与已完成恢复绑定；初始分支额外核对 v2 generation、原始/current mechanics owner epoch 与 mechanics authority head，仍由调用方持有 current owner/Run/RB1、认证原 Attach 和 journal。新增同一 durable bootstrap→bind→Spawn→ProcessStarted→Resume 直接到 Collect/Close 或 stop/Terminate/Close 的连续回归，复用原丢响应、坏证据拒绝和冷重放测试；不插入 owner 升级或 server 重启。该候选尚待动态 CI 和原跨 Run 实机，未合并 main，不宣称修复已实机通过。
 
 效率纠偏：每次恢复实验必须同时保留一个**不注入故障、不重启**的正常控制路径，不能以恢复分支覆盖代替基础调用链。先聚合相关入口与连续回归，再运行一次精确候选 CI/实机；已失败的 34052534488 不原样重跑。
+
+后续动态 CI [34053220150](https://github.com/chiga0/marshal-harness/actions/runs/34053220150) 在 `d67e3b7` 的新增 `TestLauncherV2SameOwnerContinuesWithoutRestart` 两个分支失败：普通 Collect 未留下预期 pending，停止后的 cleanup Collect 返回 authority conflict；其余四个 job 成功。已确认底层 `validateSupervisorCommandIntentAgainstState` 仍要求 reconnect/rebind，遗漏同一初始 owner 的 v2 bind/resume 连续证据。补齐该入口，保留 legacy reconnect 限制以及现有 owner、intent、mechanics、journal 与结果校验；不通过强制重启绕过。将该连续回归加入 macOS 前置测试，避免每次等全量约 15 分钟才发现同类错误。条件派发链因 CI 失败退出，未为 `d67e3b7` 新启 Pi；修正后的动态与实机结果仍待验证。
 
 ## 2026-09-07：跨 Run 长 Verify 与自动停止组合验证接入
 

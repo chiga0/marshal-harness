@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-2026-09-07 当前：`593eb5d` 的 CI 34051652443 五项通过，跨 Run 实机 34052534488 失败于同一 server 初始 Start 后首次 Collect，尚未进入长 Verify。根因是初始 owner 绑定被误送到 successor recovery，候选正在同时修正 composition、Collect、停止和 Close，并补不重启的连续回归。**B1 仍 IN_PROGRESS，main 仍 ba2196b；无停止候选合并、无 stable 发布。** 后续历史段落中的“在途”不代表作业仍活跃。
+2026-09-07 当前：`d0be824` 的精确 CI 34054261338 与 PR CI 均通过；单次跨 Run 实机 34055217240 已在同一 owner、无重启条件下完成 peer Collect 到 VERIFYING，并启动第二个 Run，但整体因客户端响应失败而结束。已确认 15 秒固定响应读取窗口与 100 秒 Verify 不兼容，另有 1 秒 half-close 等待与身份复查预算冲突；后继候选集中修正传输阶段预算、补实际认证客户端回归和缺失的阶段诊断。**B1 仍 IN_PROGRESS，main 仍 ba2196b；PR #268 为 Draft，无停止候选合并、无 stable 发布。** 后续历史段落中的“在途”不代表作业仍活跃。
 
 2026-09-07 最新：`0130465` 的 CI 五项全绿，真实 Pi 中断恢复 [34050602081](https://github.com/chiga0/marshal-harness/actions/runs/34050602081) 通过。已证明 stop barrier 落盘后、Run 仍 RUNNING 时中断 server，原 Attempt/stop intent 在同身份后继恢复为 BLOCKED，并通过原 Collect 请求冷恢复；一 Attempt、零 retry/rework，包含恢复的终态延迟为原 deadline 后 4.334296 秒。仅关闭该进程中断边界，不代表完整故障矩阵。长 Verify 让出全局写锁的后继 `74e8619` 已推送，CI 34050715623 在途，跨 Run 实机尚待验证。**B1 IN_PROGRESS，B2/B3 不升级；main 仍 ba2196b，停止候选未合并、无 stable 发布。** 下列段落保留为历史检查点。
 
@@ -33,7 +33,7 @@
 
 ## 业务交付当前表
 
-远端 main 为 `ba2196bea33e6f007809f75f9671928c892bfa11`（含 #266 的正常业务证据文档）。停止候选 `74e8619` 与跨 Run 驱动 `593eb5d` 的精确 CI 均五项通过；593eb5d 的实机 34052534488 暴露同 owner 初始续行缺口，修复与回归在途。最近成功的中断恢复属于前驱 `0130465`。候选尚未合入 main，不存在 localMergeSha 或 remote merge；分支已推送不等于 main 已启用取消。
+远端 main 为 `ba2196bea33e6f007809f75f9671928c892bfa11`（含 #266 的正常业务证据文档）。停止候选最新已验证代码 `d0be824` 的精确 CI/PR CI 全绿；其 34055217240 实机证明初始同 owner Collect 已越过 34052534488 的故障，但暴露后续传输阶段预算错配，未证明跨 Run 组合完成。最近完整成功的中断恢复属于前驱 `0130465`。后继修正及回归仍在同一 Draft PR #268，尚未合入 main，不存在 localMergeSha 或 remote merge；分支已推送不等于 main 已启用取消。
 
 当前实机验证的 main 基线为 `c93e31bde15d9dbcd3487dfc1db323eafc4127e1`（[PR #265](https://github.com/chiga0/marshal-harness/pull/265)，sourceHead `e805129fd8b684824f25c6dffbfb9267642bdf65`），远端已合并，pendingRemoteSync=false。main CI 34029534577 五项全绿后，仅派发一次 [34030199172](https://github.com/chiga0/marshal-harness/actions/runs/34030199172)，全部成功。Run `fixed-server-t1-34030199172` 的第 6 条 event 为 `review.accept`，快照 `ACCEPTED/sequence=6`。此前 34027927457 的不合法 Pi content 失败仍保留，分类修复不是放宽解析或保证模型永不违约；本次通过不能删除失败分母。
 
@@ -41,7 +41,7 @@
 
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline 自动停止/冷恢复通过；0130465 的 34050602081 证明 barrier 后进程中断恢复 | 同 owner 无重启续行；长 Verify 跨 Run 实机及响应上界；候选合入与最终组合；完整 B2 同路径故障矩阵在 B3，不以单次通过概括可靠性 |
+| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline 自动停止/冷恢复通过；0130465 证明 barrier 后进程中断恢复；d0be824 实机同 owner 无重启 Collect 到 VERIFYING | 分阶段传输预算；长 Verify 跨 Run 实机及响应上界；候选合入与最终组合；完整 B2 同路径故障矩阵在 B3，不以单次通过概括可靠性 |
 | B2 受限 Agent Team | `PLANNED` | ADR 0080 目标与 ADR 0019 组件可复用 | approved plan 耐久物化/调度、两个到三个实现节点、集成候选业务验收、局部 replan、暂停恢复 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 

@@ -160,14 +160,23 @@ func watchClientDisconnect(connection *AuthenticatedConnection, cancel context.C
 }
 
 func writeHTTPResponseAndAwaitClient(connection *AuthenticatedConnection, statusCode int, response httpResponse, disconnected <-chan struct{}) error {
+	// The client must consume the response and perform a bounded, authenticated
+	// post-response recheck before half-closing. One second is shorter than
+	// the protocol's own recheck budget and races healthy clients.
+	completionDeadline := time.Now().Add(writeTimeout + handshakeTimeout)
+	if requestDeadline, err := time.Parse(time.RFC3339Nano, connection.Binding.Deadline); err == nil && requestDeadline.Before(completionDeadline) {
+		completionDeadline = requestDeadline
+	}
 	if err := writeHTTPResponse(connection, statusCode, response); err != nil {
 		_ = connection.CloseRead()
 		return atRequestStage("server-response", err)
 	}
+	timer := time.NewTimer(time.Until(completionDeadline))
+	defer timer.Stop()
 	select {
 	case <-disconnected:
 		return nil
-	case <-time.After(time.Second):
+	case <-timer.C:
 		_ = connection.CloseRead()
 		return atRequestStage("server-half-close", ErrUnavailable)
 	}
