@@ -1,7 +1,9 @@
 package pi
 
 import (
+	"encoding/json"
 	"errors"
+	"reflect"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -30,6 +32,7 @@ func ProductionResultFailureCode(err error) string {
 		"transcript-tool", "transcript-compaction", "transcript-retry", "transcript-settled", "transcript-framing", "transcript-closure",
 		"final-message", "final-object-missing", "final-object-trailing", "validator",
 		"final-event-decode", "final-event-empty", "final-role", "final-content-shape", "final-content-type", "final-content-text",
+		"final-content-container-shape", "final-content-item-shape", "final-content-type-shape", "final-content-text-shape",
 		"declared-schema", "declared-decode", "declared-identity", "declared-session",
 		"normalization", "normalized-schema":
 		code := "pi-result-" + failure.code
@@ -40,6 +43,32 @@ func ProductionResultFailureCode(err error) string {
 	default:
 		return ""
 	}
+}
+
+// json.Unmarshal into []productionContentItem can reject either the array
+// container, an element, or a known field. Do not describe all these failures
+// as "not an array", or expose UnmarshalTypeError.Value/Field (provider input).
+// This only classifies a rejection from the existing decoder; it never retries
+// decoding, normalizes content, or changes the set of admitted results.
+func productionContentDecodeFailure(err error) string {
+	var mismatch *json.UnmarshalTypeError
+	if !errors.As(err, &mismatch) || mismatch == nil || mismatch.Type == nil {
+		return "final-content-shape"
+	}
+	switch mismatch.Field {
+	case "type":
+		return "final-content-type-shape"
+	case "text":
+		return "final-content-text-shape"
+	case "":
+		switch mismatch.Type {
+		case reflect.TypeFor[[]productionContentItem]():
+			return "final-content-container-shape"
+		case reflect.TypeFor[productionContentItem]():
+			return "final-content-item-shape"
+		}
+	}
+	return "final-content-shape"
 }
 
 // Only a schema-owned top-level field label may leave this function. Never

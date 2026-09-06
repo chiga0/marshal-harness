@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-06：Collect receipt 修复合入，新的 Pi carrier 失败尚未定位
+
+PR #264 的 sourceHead `224409272eb9c30762b8b0e15a2fd730d38db0e8` 已合入 `main@5bdec88d7161771caa2a556c70bbdef576375ff9`，pendingRemoteSync=false；source CI 34026422197 与 main CI 34027276856 五项全绿。单次后继真实业务 canary [34027927457](https://github.com/chiga0/marshal-harness/actions/runs/34027927457) 失败于 `pi-result-final-content-shape/authority-conflict`，未产生 worker.completed、VerificationReport、ReviewPacket 或 Decision。七次 pending 是同一请求的观察，不是七个 Attempt。journal 的 RUNNING/sequence=3 为权威，state.json 的 READY/sequence=2 只是尚未刷新投影；本次尚未走到新 Collect receipt 代码，不能宣称其实机出口通过。
+
+小型诊断 artifact `9987677079` 与完整 artifact `9987677324` 已保存到 GitHub，但两者的上传白名单均不含 supervisor 原始 transcript。固定 Pi 0.84.4 bundle SHA-256 `5406c369954516fb56879d685e082ff9095cd6e06e41af406f394942377fd4bf` 对应 producer 的 assistant content 为数组、agent_end 原样携带 messages；这不能替代本次现场内容。现有 Go 解码错误把非数组容器、非对象元素、type 字段类型错误和 text 字段类型错误全部压成一个码，无法判断是哪一种；不得直接认定 provider 配置错误、接受字符串载体或假设 thinking 字段为根因。
+
+本候选仅根据既有 json.Unmarshal 的失败元数据区分 container/item/type/text 四种封闭错误码，未知元数据仍回到旧码。不输出值、未知字段名、正文或凭证，不另行解码/归一化/重试，既有成功及失败集合不变。回归覆盖容器、元素、字段及 null/空数组负例和未知错误兜底；本地仅编译检查与 vet，不算动态通过。目的为解除真实业务阻塞所需的定位缺口，不计为业务交付，不升级 B1。
+
+取消/业务超时独立分支 `feat/b1-stop-lifecycle@c1daeebb43541371d442e414ba830d59bf262ecd` 已推送，[CI 34027878879](https://github.com/chiga0/marshal-harness/actions/runs/34027878879) 五项全绿，新增真实 sealed StopIntent 的 terminal 故障链测试和取消后 server 重启查询驱动。仍未合入、ADR 0081 仍 Proposed，未运行真实取消/业务超时 canary，不用测试通过代替实机出口。
+
 ## 2026-09-06：真实 Pi 已到 VERIFYING，修复 release 与 fixed delivery 的观察衔接
 
 候选 `c6a1609` 的 CI 34025737001 在 Linux 的既有 `TestSuperviseOnceJSONCarriesCompleteDecisionFields` 失败（exit=1，stderr 空）；该测试未输出 JSON 模式的 decision.error，故现场原因尚不能确认。代码核对发现测试子进程的一次非阻塞 Acquire 会与 readiness 的短暂 flock 探测竞争；夹具现仅对 ErrLeaseHeld 有界重试，其他错误仍立即失败，并在断言失败时输出自身生成的 decision JSON。生产获取锁/启动逻辑不变，不能把候选假设记作已证实现场根因；新 source CI 仍是放行条件，不原样重跑取巧。该次 Linux 的 productionruntime 测试通过也不能抵消整套 CI 失败。

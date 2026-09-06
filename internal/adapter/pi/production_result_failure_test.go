@@ -5,12 +5,58 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
+
+func TestProductionContentShapeDiagnosticsKeepEveryRejectionClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, want string
+	}{
+		{"container-string", `"private body"`, "container-shape"},
+		{"container-object", `{"private-key":"private body"}`, "container-shape"},
+		{"container-number", `42`, "container-shape"},
+		{"container-bool", `true`, "container-shape"},
+		{"element-string", `["private body"]`, "item-shape"},
+		{"element-array", `[["private body"]]`, "item-shape"},
+		{"type-object", `[{"type":{"private-key":true}}]`, "type-shape"},
+		{"type-number", `[{"type":42}]`, "type-shape"},
+		{"text-object", `[{"type":"text","text":{"private-key":"private body"}}]`, "text-shape"},
+		{"text-array", `[{"type":"text","text":["private body"]}]`, "text-shape"},
+		{"thinking-text-number", `[{"type":"thinking","text":42}]`, "text-shape"},
+		{"null", `null`, "text"},
+		{"empty-array", `[]`, "text"},
+		{"null-element", `[null]`, "type"},
+		{"unknown-type", `[{"type":"private body"}]`, "type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			end := `{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"stop","content":` + tc.content + `}]}`
+			started := time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC)
+			record, err := ParseProductionWorkerResult(context.Background(), ProductionResultInput{
+				Transcript: []byte(jsonLines(captureSessionHeader("session-1"), `{"type":"agent_start"}`, end)),
+				Worktree:   "/worktree", TaskID: "TASK-1", RunID: "run-1", AttemptID: "attempt-1",
+				Executable: "/usr/local/bin/pi", Version: "0.84.4", StartedAt: started,
+				CompletedAt: started.Add(time.Second), MaxOutputBytes: 1 << 20,
+			})
+			if code := ProductionResultFailureCode(err); code != "pi-result-final-content-"+tc.want || !errors.Is(err, ErrProtocol) || len(record.Data) != 0 {
+				t.Fatalf("classification=%q, expected=%q; rejected=%v, empty=%v", code, tc.want, errors.Is(err, ErrProtocol), len(record.Data) == 0)
+			}
+		})
+	}
+	for _, err := range []error{
+		errors.New("private error"),
+		&json.UnmarshalTypeError{Field: "private-key", Value: "private body", Type: reflect.TypeFor[string]()},
+		&json.UnmarshalTypeError{Value: "private body"},
+	} {
+		if productionContentDecodeFailure(err) != "final-content-shape" {
+			t.Fatal("unknown decoder metadata escaped the closed fallback")
+		}
+	}
+}
 
 func TestProductionResultFailureClassificationDoesNotChangeAdmission(t *testing.T) {
 	for _, tc := range []struct {
