@@ -9,10 +9,112 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 )
+
+type observedOwnerWaitContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (c *observedOwnerWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+func TestPhysicalOwnerWaitHonorsCancellationWithoutBorrowingMutex(t *testing.T) {
+	for _, alreadyCancelled := range []bool{true, false} {
+		t.Run(map[bool]string{true: "already-cancelled", false: "cancel-waiter"}[alreadyCancelled], func(t *testing.T) {
+			physical := &darwinRepositoryOwnerPhysicalLock{}
+			physical.mu.Lock()
+			defer physical.mu.Unlock()
+			ctx, cancel := context.WithCancel(context.Background())
+			observed := &observedOwnerWaitContext{Context: ctx, waiting: make(chan struct{})}
+			defer cancel()
+			if alreadyCancelled {
+				cancel()
+			}
+			done := make(chan error, 1)
+			entered := make(chan struct{}, 1)
+			go func() {
+				done <- physical.withHeld(observed, false, func() error { entered <- struct{}{}; return nil })
+			}()
+			if !alreadyCancelled {
+				select {
+				case <-observed.waiting:
+				case <-time.After(time.Second):
+					t.Fatal("held mutex wait did not observe request context")
+				}
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !application.HasReason(err, application.ReasonOwnerNotCurrent) {
+					t.Fatalf("cancelled wait: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("cancelled waiter remained behind held owner mutex")
+			}
+			if len(entered) != 0 {
+				t.Fatal("cancelled waiter ran authority callback")
+			}
+			if physical.mu.TryLock() {
+				physical.mu.Unlock()
+				t.Fatal("waiter released another caller's mutex")
+			}
+		})
+	}
+}
+
+func TestPhysicalOwnerWaitRejectsNilContext(t *testing.T) {
+	physical := &darwinRepositoryOwnerPhysicalLock{}
+	//lint:ignore SA1012 Deliberately exercise the internal nil-context rejection boundary.
+	if err := physical.withHeld(nil, false, func() error { t.Fatal("nil context callback"); return nil }); !application.HasReason(err, application.ReasonOwnerNotCurrent) {
+		t.Fatalf("nil context: %v", err)
+	}
+}
+
+func TestPhysicalOwnerWaitRevalidatesAfterContention(t *testing.T) {
+	fixture := newOwnerLockFixture(t)
+	phase, err := openRepositoryOwnerScopeLock(fixture.directory, acquisitionAtEpoch(1).Scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer phase.Close()
+	physical := phase.(*darwinRepositoryOwnerScopeLock).physical
+	physical.mu.Lock()
+	released := false
+	defer func() {
+		if !released {
+			physical.mu.Unlock()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	observed := &observedOwnerWaitContext{Context: ctx, waiting: make(chan struct{})}
+	done := make(chan error, 1)
+	entered := make(chan struct{}, 1)
+	go func() { done <- physical.withHeld(observed, false, func() error { entered <- struct{}{}; return nil }) }()
+	select {
+	case <-observed.waiting:
+	case <-ctx.Done():
+		t.Fatal("waiter did not enter cancellable wait")
+	}
+	physical.mu.Unlock()
+	released = true
+	select {
+	case err := <-done:
+		if err != nil || len(entered) != 1 {
+			t.Fatalf("valid physical owner not reacquired: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("waiter did not reacquire released owner")
+	}
+}
 
 func currentProcessAcquisition() resultingress.ControlOwnerAcquisition {
 	value := testAcquisition()

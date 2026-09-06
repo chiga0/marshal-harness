@@ -8,6 +8,8 @@
 
 ## 2026-09-06：查询候选消除 application 长互斥等待
 
+后续调用链核对：`darwinRepositoryOwnerPhysicalLock.withHeld` 仍先执行不可取消的 mutex 等待，再检查 context，可能让到期查询排在长 owner transaction 后。候选采用有界间隔的 TryLock/context 等待；到期不调用 authority callback、不释放其他调用者的锁，取得锁后仍执行全部原始身份/runtime 校验。回归用明确的等待进入信号覆盖排队中取消、预取消、nil context 和锁归属；不是用 sleep 猜测并发时序。该改动仅解决进程内 owner 锁的排队取消，不能宣称正在执行的 filesystem/kernel 校验具有硬实时上界；同路径实机查询时延仍需测量。
+
 `InspectRun` 原先与 Start/Collect/Verify/Cancel 共用 `adapter.mu`，即使 HTTP router 的只读请求不进入 writer lane，仍可能在长验证后排队。候选改为复用 `Status` 的 session lifetime 读锁；Close 仍同时取得 mutation/lifetime 写锁，Inspect 仍由 RepositorySession 获取精确 Run lease 并重新验证 owner/current ledger，不读取陈旧快照兜底。补充 mutation-held、Close 并发与无效输入测试；本地 compile-only/vet/staticcheck 通过，动态/race 尚待后继精确 CI。测试中的未 claim session 只证明不等待 application mutex，不证明有效 session 的全链路时延；底层 owner/storage 等待、同 Run 写冲突响应与实机查询延迟仍是 B1 开放项。
 
 ## 2026-09-06：取消失败定位到 fixed CLI activation 漏接线
