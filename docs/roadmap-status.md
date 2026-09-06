@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-06 16:19 UTC：诊断候选 `88f9edd` 的 CI 34043986843 全绿，但 Attempt-timeout 34044944162 在第 17 次 Inspect 的客户端 authority 打开阶段失败，未进入 HTTP；RB1 到 worktree release receipt，尚无 stopped Run 终态/Collect/server3。本轮新增公开客户端目录观察切换的确定性回归，冻结同类实机重试，先定位并修复完整接缝。**B1 仍 IN_PROGRESS，B2/B3 未升级；停止候选未合入 main、无 stable 发布。** 前文在途 CI/待派发语句为历史时点，不代表当前仍运行。
+
 2026-09-06 15:19 UTC：`49f745d` 的 Run-first 实机 34041702160 通过，已独立核对原始预算来源和 server3 同字节/原请求/原 deadline 冷恢复；新增关闭一个候选子条件。Attempt-timeout 34041730043 虽已停止到 BLOCKED，但一次 Inspect 出现 `transport-failure`，未进入 Collect/冷恢复，整次失败并保留证据，不原样重跑。B1 当前关键阻塞是停止期间查询的完整并发路径，另有中途故障、长事务响应上界和最终组合验收；B2/B3 状态不变。后继 Outcome/归档候选 `97e448a` 已推送，CI 34041798874 在途。main 未合并停止候选、未发布 stable。
 
 2026-09-06 15:15 UTC：`49f745d` 的 CI 34040876557 五项全绿；已通过精确候选 gate 派发 Run-first/冷恢复 34041702160，以及 Attempt-timeout/冷恢复 34041730043，后者按同 source 并发组排队，不是失联重试。后继 `3c5e734` 补停止 Outcome 部分落盘/冲突/冷 lease 重放组件回归，`7229b30` 修复 canary 未归档原始 Outcome 的清单缺口；本地静态与脚本检查通过，后继动态证据尚待新 source CI。上述实机未完成，B1 仍 IN_PROGRESS，B2/B3 不升级，未合并停止候选或发布 stable。

@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-06：精确诊断候选仍失败，位置前移到客户端 authority 打开
+
+`88f9eddb856ca0c438ae574a2f8391981f8b2c23` 的 CI 34043986843 五项全绿；单次 Attempt-timeout canary [34044944162](https://github.com/chiga0/marshal-harness/actions/runs/34044944162) 失败。小诊断 artifact `9992827944` 保留全部 17 次 Inspect 摘要：前 16 次成功，第 17 次 exit=3、空 stdout、无 HTTP stage；stderr SHA-256 `f85f116f2ae11c764fec6975425fee1d413fddcc160431808a0649b216b5998f` 精确匹配固定文案“control-plane inspect 失败：resident server 不可用。”加换行，定位到 `openControlPlaneClient`，尚未发送 HTTP。不能据此断言 Provider 配置错误。
+
+RB1 已记录 Attempt deadline barrier、process-terminal、existing-worktree-release-intent/receipt（sequence 22–27），但尚无 allocation-terminal/supervisor-closed/cleanup-completed/released；Run journal 仍为 RUNNING/3。该次不能沿用前次 BLOCKED 结论，也未完成 Collect/server3。server2 的 shutdown 不完整文案没有携带最初 authority 打开失败的内部原因，不能单凭它判断 server 先崩溃。
+
+代码确认一个需要确定性覆盖的窗口：投影 `RENAME_SWAP` 改变 runtime-v1 目录观察；独立客户端持有的观察不会随 server 更新。新增公开 `OpenRepositorySession → OpenFixedEndpointClientAuthority → swap → old Recheck 拒绝 → fresh open` 的组件 characterization，使用真实 local/default/repository namespace、真实 held directory 与原子 swap，不使用 Provider，不冒充 HTTP 全链路或 RB1 合法 release 证明。把它加入 macOS CI 前置回归，先验证这一假设，不第三次原样派实机。没有放宽身份验证、重试集合或接纳条件；根因修复和 B1 仍开放。
+
+反馈周期也有具体证据：前序 CI 34041798874 的 macOS quality 用时约 15 分半，其中 resultingress race 包 523.947 秒。当前需要把接缝复现放在全量之前；不能为节省等待删除全量发布证据，也不立即另起测试框架。
+
 ## 2026-09-06：停止后查询失败的诊断缺口（尚未修复根因）
 
 对 34041730043 的原始小诊断复核后，server 仅有通用 transport-failure，客户端也只输出 authenticated request 未完成；驱动只保留 stderr 摘要。现有材料无法区分 request 读取、准入、前后身份复核、dispatch、response 和 half-close，不能断言锁或 timeout 是根因。

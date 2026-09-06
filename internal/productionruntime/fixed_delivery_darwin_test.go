@@ -17,11 +17,13 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"golang.org/x/sys/unix"
 )
 
 type fixedDeliveryFixture struct {
@@ -626,6 +628,59 @@ func TestFixedDeliveryProductionWiringUsesPublicRepositorySession(t *testing.T) 
 	info, err := os.Lstat(projectionRoot)
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
 		t.Fatalf("fixed session did not pre-materialize projection root: info=%v err=%v", info, err)
+	}
+}
+
+// Characterization, not permission to adopt a query response or retry an
+// authority failure: use the public client and production namespace/layout.
+// This isolates a real snapshot invalidation from unavailable provider/auth.
+func TestFixedEndpointClientProjectionSwapRequiresFreshObservation(t *testing.T) {
+	fixture := newPublicFixedDeliveryInputs(t)
+	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: fixture.repository}
+	digest, err := namespace.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.inputs.Acquisition.Scope = resultingress.ControlOwnerScope{AuthorityNamespaceID: namespace, RepositoryIdentityDigest: digest}
+	session, err := OpenRepositorySession(context.Background(), fixture.inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	client, err := OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.Recheck(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runtimeFD := int(session.fixedRoot.nodes[2].file.Fd())
+	const stage = ".client-projection-swap-test"
+	if err := unix.Mkdirat(runtimeFD, stage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.RenameatxNp(runtimeFD, stage, runtimeFD, "existing-worktree-bindings", unix.RENAME_SWAP); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Unlinkat(runtimeFD, stage, unix.AT_REMOVEDIR); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Recheck(context.Background()); !errors.Is(err, ErrFixedDeliveryConflict) {
+		t.Fatalf("old client did not reject mutated observation: %v", err)
+	}
+	// A fresh public open can observe the same stable objects after the swap;
+	// neither opening nor rejecting the old view changes the owner epoch.
+	fresh, err := OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.Close()
+	if err := fresh.Recheck(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.snapshot != client.snapshot {
+		t.Fatal("projection-only mutation changed fixed endpoint identity")
 	}
 }
 
