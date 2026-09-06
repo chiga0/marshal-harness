@@ -21,6 +21,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
+	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/runstore"
@@ -201,6 +202,13 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	applicationAdapter.session, err = productionruntime.OpenRepositorySession(ctx, productionruntime.RepositorySessionInputs{
 		HeldIngressDir: heldIngress, HeldRepositoryRoot: repositoryDirectory, OwnerDirectory: ownerDirectory, Acquisition: acquisition,
 		FixedMarshalPath: fixedMarshal, OwnerPrivateControlRoot: controlRoot,
+		TeamInputPreflight: func(raw []byte) error {
+			preview, err := planning.PreviewTeamInputs(raw, applicationAdapter.validator)
+			if err != nil || preview.Inputs.Spec.Repository != applicationAdapter.repositoryRoot || !preview.Inputs.Spec.AuthorityNamespaceId.Equal(applicationAdapter.namespace) {
+				return application.NewError("team-input-preflight", application.ReasonInvalidRequest)
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sealed repository application: open repository session: %w", err)
@@ -299,6 +307,21 @@ func (adapter *sealedRepositoryApplication) Status(ctx context.Context, _ applic
 		OwnerEpoch: owner.OwnerEpoch, OwnerFactDigest: owner.OwnerFactDigest,
 	}
 	return projection, projection.Validate()
+}
+
+// The eventual authenticated team route uses this same resident application;
+// it must not open another ledger/owner or execute a child CLI. Until that
+// route's delivery contract is connected this method is not externally exposed.
+func (adapter *sealedRepositoryApplication) ApproveInitialTeam(ctx context.Context, request application.ApproveInitialTeamRequest) (application.InitialTeamApprovalProjection, error) {
+	if adapter == nil || ctx == nil {
+		return application.InitialTeamApprovalProjection{}, application.NewError("approve-initial-team", application.ReasonInvalidRequest)
+	}
+	adapter.statusMu.RLock()
+	defer adapter.statusMu.RUnlock()
+	if adapter.closed || adapter.session == nil {
+		return application.InitialTeamApprovalProjection{}, application.NewError("approve-initial-team", application.ReasonOwnerUnavailable)
+	}
+	return adapter.session.ApproveInitialTeam(ctx, request)
 }
 
 // recoverRepositoryRuns enumerates the descriptor-bound Run set while the

@@ -37,6 +37,10 @@ Goal 投影由同一物理账本 replay 得到，`goal.Evaluate` 只接收该投
 
 ## 3. 物化是可恢复工作，不是接纳事务中的长操作
 
+固定 server 的构造入口安装纯 `TeamInputPreflight`：复用 planning 的完整 Schema/Policy 预检，并绑定该进程的 canonical repository 与 authority namespace。请求不能提供或替换这个函数；缺失配置时团队批准关闭，既有单 Run 接口不受影响。批准请求封闭绑定协议版本、request ID、完整 canonical 输入和用户确认摘要；session 在自己的 lifetime guard 内先验证不可变副本，再用私有 verifier 持有真实 owner 锁、重查 held root 和 RB1 owner，调用同一原子接纳事务。不把可反序列化的批准标志或外部传入 verifier 当作认证。
+
+该 session 方法本身是特权应用接缝，不提供 transport 身份认证。目前仍未注册团队 HTTP route；只有随后将现有认证入口、原请求 deadline 与批准响应丢失 reconcile 全部接通后才能对外开放。返回投影只表示计划已批准及创建义务数，不表示 Run 已创建、Worker 已执行或业务 ACCEPTED。session 冷重开后 exact request 返回原 fact，非 exact request 冲突；拒绝与取消不能追加批准。
+
 接纳返回后，现有 fixed server reconcile 循环按依赖、scope、宿主/Provider 和验证容量取就绪节点。创建和 Start 不占用 Goal/RB1 锁执行长命令。每个节点的 materialization key、TaskID、RunID 在 preview 前从版本域、authority namespace、GoalID、ProposalID 和 NodeID 的 canonical tuple 确定性派生，随后由 accepted fact 绑定；不能从 accepted fact digest 再推导输入中已有的 ID，否则形成 `fact→RunID→Policy digest→bundle digest→fact` 循环。相同 key 的不同输入是冲突，不自动产生另一 Run；新方案必须换 ProposalID 并重新批准。换 server/丢响应/暂停恢复不能换 key。
 
 先耐久绑定该命令的最终 TaskSpec/Policy digest、repository/base、选定 Provider profile 和目标 RunID，再调用同一生产 planning seam。开始前和返回后均重查已有 Run 的冻结输入与事实：精确 READY 复用；CREATED/PLANNED 只沿同一创建义务补齐；冲突/无法判定则保留明确阻塞，不删除旧目录、重选新 ID 或绕过准入。需将现有 `planning.Plan` 的创建步骤补为可恢复入口，而不是宣称它目前已经幂等。

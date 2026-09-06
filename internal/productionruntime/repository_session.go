@@ -26,21 +26,25 @@ type RepositorySessionInputs struct {
 	Acquisition             resultingress.ControlOwnerAcquisition
 	FixedMarshalPath        string
 	OwnerPrivateControlRoot *os.File
+	// Installed only by trusted composition, never supplied by an HTTP caller.
+	// Nil disables team approval without affecting existing single Run APIs.
+	TeamInputPreflight func([]byte) error
 }
 
 // RepositorySession owns one repository owner acquisition and the sealed
 // ResultIngress store for the lifetime of a fixed Marshal process. Individual
 // Run runtimes borrow these resources and cannot close or reacquire them.
 type RepositorySession struct {
-	mu          sync.RWMutex
-	closed      bool
-	ingress     *resultingress.DurableStore
-	runs        *runstore.Store
-	fixedRoot   fixedServerRoot
-	owner       repositoryOwnerLock
-	ownerState  resultingress.ControlOwnerState
-	acquisition resultingress.ControlOwnerAcquisition
-	fixedPath   string
+	mu                 sync.RWMutex
+	closed             bool
+	ingress            *resultingress.DurableStore
+	runs               *runstore.Store
+	fixedRoot          fixedServerRoot
+	owner              repositoryOwnerLock
+	ownerState         resultingress.ControlOwnerState
+	acquisition        resultingress.ControlOwnerAcquisition
+	fixedPath          string
+	teamInputPreflight func([]byte) error
 }
 
 type repositorySessionBorrow struct {
@@ -129,7 +133,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		cleanup()
 		return nil, fmt.Errorf("repository session: seal prepared execution: %w", err)
 	}
-	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath}
+	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath, teamInputPreflight: inputs.TeamInputPreflight}
 	if err := session.owner.WithCurrentOwnerLock(ctx, acquisition, func() error {
 		current, found, openErr := ingress.OpenOwner(acquisition.Scope)
 		if openErr != nil || !found || current.Acquisition != acquisition || current.FactDigest != ownerState.FactDigest {

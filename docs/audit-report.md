@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-07：B2 同账本测试通过，接入真实 owner 会话；B1 新实机未进入并发场景
+
+耐久接纳候选 `ab43a4220e8863d8fe88c4c8c7b0c94f55945312` 的 [CI 34058800862](https://github.com/chiga0/marshal-harness/actions/runs/34058800862) 五项全部成功。后继候选将完整输入预检安装在 fixed server 构造入口，新增封闭批准请求和现有 RepositorySession 接缝：先冻结请求/校验完整输入，再持真实 owner 锁重查 held root/current RB1 owner，追加原有原子 fact。没有让账本反向依赖 planning、暴露 raw store 或新建控制进程。
+
+新增测试覆盖请求摘要/内容冻结、构造缺少校验时拒绝、校验拒绝/篡改/取消零追加、实际 held owner 下同请求重放和冷 owner successor 复用原批准。session 测试的节点正文与 preflight 是明确替身，不冒充完整 HTTP 用户批准；完整 Schema/Policy 校验仍由实际 CLI 构造绑定。团队 route、响应丢失查询、Run 物化与真实集成交付尚未接通，B2 保持 IN_PROGRESS/未集成。这一后继仅完成本地 compile-only、vet/staticcheck/架构检查，动态测试待新 head CI。
+
+B1 `80084bb` 的 [CI 34058120709](https://github.com/chiga0/marshal-harness/actions/runs/34058120709) 五项成功；条件链派发的单次实机 [34059061091](https://github.com/chiga0/marshal-harness/actions/runs/34059061091) 失败。peer 的第 13 次调用（Collect）exit=1、空 stdout，server 记录 `pi-result-final-content-shape`；peer Run event 仅到 RUNNING/3，主 Run 尚未 Start，未产生长 Verify/第二 Run 并发证据。小包 `9996906939` 和完整包 `9996907539` 都没有保存失败 terminal content 的结构材料，故不能据错误码推定具体字段形态，也不能评价新握手修复的实机效果。保留失败分母，不放宽解析、不原样派第三次同类付费重试；后继需把该诊断缺口纳入同一次真实调用链验证，而非另起无关清理。
+
+本轮 main 未合并、无 stable 发布。目标继续围绕 B1→B2→B3 与业务配对收益验证，不因组件 CI 全绿改写产品完成状态。
+
 ## 2026-09-07：B2 输入预检动态通过，耐久接纳接入同一 RB1 候选
 
 `c59c0aa97fe165cfb298fabd8c9f052be6234b7a` 的精确 CI [34057248679](https://github.com/chiga0/marshal-harness/actions/runs/34057248679) 五项全部成功；包括此前有损 Task fixture 修正和整个 Goal 预算绑定。没有因此新派 Pi 或宣称团队交付完成。
