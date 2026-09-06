@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-06 实施策略更新：保持 B1→B2→B3 完成条件，优先关闭 B1 停止后查询 blocker，同时准备强 Lead＋SubAgents 对照，尽早验证最小 B2 集成交付。按完整业务项跨 source/Run 计入失败、返工与人工等待；新增只读统计工具，真实配对试验尚未完成，B1/B2/B3 不因本更新升级。停止开发分支的候选证据不等于 main 能力；本策略分支以 main `ba2196b` 为基线，未合入停止代码。详见[价值验证实施约定](agent-team-delivery-plan.md#价值验证实施约定2026-09-06)。下方检查点保留原时点事实。
+
 2026-09-06 11:35 UTC：同一 fixed server 的真实 Pi 订单报价链已到 **ACCEPTED**。单次 canary 34030199172 成功：一次 Attempt、零 operational retry、零 rework，经过 Start 丢响应/重启/rebind/replay、Collect、业务 Verify、独立 Decision 和终态查询。B1 的正常业务交付子条件已关闭；取消/业务超时及恢复尚未通过，B1 仍 IN_PROGRESS，B2/B3 仍 PLANNED。详见 [本次验收证据](audit-report.md#2026-09-06fixed-server-真实业务首次独立-accepted)。
 
 更新时间：2026-09-06（ADR 0080 三面分离与业务交付路线；不升级历史成熟度）
