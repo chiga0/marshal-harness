@@ -1,5 +1,9 @@
 # 设计审计报告
 
+## 2026-09-07：B2 计划到真实 Run 的接缝仍未实现
+
+直接核对 `internal/goal`、`internal/outbox`、`internal/planning` 和 TaskSpec：现有计划组件不耐久落账，节点不绑定完整 Task 输入，planning 尚不是幂等 Goal 物化，Task 依赖也不传递或集成成果。不能据此把 B2 提前列为可用。[ADR 0083 提案](adr/0083-bounded-team-plan-materialization.md) 将后继限制为同一 fixed server/RB1 的批准输入束、原子创建义务、现有 Run 创建恢复和真实集成候选，不引入新 controller/DSL。该文档是 B2 的设计准备，不是实施完成；依赖的 B1 候选仍未合入。
+
 ## 2026-09-07：不重启 server 的首次 Collect 暴露初始 owner 续行缺口
 
 `593eb5d` 的精确 CI [34051652443](https://github.com/chiga0/marshal-harness/actions/runs/34051652443) 五项通过后，只派发一次跨 Run 实机 [34052534488](https://github.com/chiga0/marshal-harness/actions/runs/34052534488)。实验失败，未进入长 Verify，不能计作跨 Run 调度通过。诊断 artifact `9994993010` 已保留并读取：peer 的 Start 和 Inspect 返回 RUNNING/sequence=3，首次 Collect 已留下 delivery pending，但客户端无 JSON、退出 1；server 明确记录 `sealed-run-compose-runtime/composition-failure` 与 `recover-running-attempt/recovery-required`。RB1 只有一个 attempt-opened、17 条 fact，最后为初始 Resume 成功；另一 Run 尚未启动。没有业务 Decision、完成 Outcome 或新的业务 retry，不能把这个失败排除出实验分母。

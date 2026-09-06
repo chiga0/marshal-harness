@@ -1,0 +1,62 @@
+# ADR 0083：受限团队计划接纳与 Run 幂等物化
+
+- 状态：提议（Proposed），未启用。设计工作区锁定 d67e3b7；依赖未合入的 B1 候选，不能作为 main 的能力声明。
+- 依据：ADR 0019、0052、0069、0080、0082；目标为 B2，不恢复通用 M13/HA/多租户/DSL。
+
+## 实现事实与要解决的缺口
+
+`internal/goal.Evaluate` 能检查图、scope 和累计预算，但输入的 AuthorityState 由调用方提供，输出 reservation plan 不落盘；`internal/outbox` 为内存实现。把二者串起来不构成生产 Goal 接纳。`GoalNode` 也没有 TaskSpec/Policy 输入，无法从 node title 安全创建真实 Run。
+
+`internal/planning.Plan` 接收完整 TaskSpec、Policy 和指定 RunID，完成已有单 Run 的准入、worktree 与 READY 创建，但并非可重放的 Goal 物化事务。不能在丢响应后换一个 RunID 再调用它。现有 Task `dependsOn` 只能指定 Run/Task 终态，既不传递成果，也不创建集成候选。
+
+本合同只补这个真实缺口：同一个 fixed server 接纳用户批准的有界方案，耐久记录创建义务，复用单 Run 生产入口并完成业务集成交付。不得另起 Python 业务状态库、内存 controller 或 CLI 子进程协调器。
+
+## 1. 确认的是完整可执行方案，不是 node 标题
+
+先通过只读 preview 返回：用户需求/非目标、确认后不得自动改变的业务验收、锁定 repository identity/base SHA、节点角色/scope/依赖、真实 Pi 配置、每节点和整个 Goal 的预算、集成策略与 publication:none。Planner 只能提交提案；服务器的确定性检查不能由 Planner 自称通过。
+
+首个支持模板为两个独立实现节点加一个集成节点，初始三个节点、同时活跃 Implement Run 不超过三个，禁止 nested fan-out。后继节点/Run 必须计入整个 Goal 预先批准的累计预算，不能以这个并发上限代替累计上限。集成节点不是增加可插拔 Executor 类型，而是同一 Task/Run 机制中的明确业务角色。模板上限只限定首个受支持 profile，不把三节点样例通过泛化为任意 Agent Team。
+
+新增封闭版本的计划输入束，绑定既有 GoalSpecRevision、GoalPlanProposal、每个节点的完整 TaskSpec/Policy 模板及其 canonical digest。请求总量和落账记录均有确定上限（初始总束不超过 512 KiB、节点模板各不超过 128 KiB），不接受任意路径引用、远端可变文档或 shell 模板插值。预算同时覆盖所有节点、后继 revision 和失败，不仅当前 fan-out。
+
+批准 operation 必须来自现有已认证 Public API 操作者，精确绑定 preview/输入束/Policy digest、expected Goal revision/head；请求中的 actor 文本、GitHub 评论、Worker 文本都不构成批准。ADR 0082 的 Issue 评论载体只用于 hosted B1 验证，不能复用为生产 Goal 审批数据库。批准不能授权绕过子 Run 独立验证或 publication 边界。
+
+## 2. 接纳、预算与创建义务只有一个提交点
+
+在现有 held owner 与 RB1 `result-ingress.jsonl` 追加封闭的 Goal 事务 fact；不增加第二权威文件。该 fact 持有完整输入束、accepted revision、同批 reserved reservation 与确定性 materialization command 集。它们由一次 compare-and-append/fsync 提交，并纳入原 replay/digest/unknown-outcome 规则；不借用“依次写三份 JSON”假装事务。
+
+Goal 投影由同一物理账本 replay 得到，`goal.Evaluate` 只接收该投影和冻结 Policy，不接收客户端构造的 AuthorityState。调用顺序沿用 ADR 0019 的六项纯检查，随后验证批准并进行事务 CAS。拒绝只记录有界原因，不创建 live reservation、worktree、Run 或 Worker。
+
+传输请求丢失或 fsync 结果不确定时，用原 request digest、Goal key 和 expected revision 在同一 held ledger 查询；命中精确提交则返回原结果，未决则保留未决，冲突则拒绝。不产生另一个 accepted revision 或另一个 materialization key。历史 fact 不改写；旧程序遇到未知 Goal fact 必须 fail closed，因此部署/回退必须按新 reader 支持范围管理，不能启动旧 binary 擦除新记录。
+
+## 3. 物化是可恢复工作，不是接纳事务中的长操作
+
+接纳返回后，现有 fixed server reconcile 循环按依赖、scope、宿主/Provider 和验证容量取就绪节点。创建和 Start 不占用 Goal/RB1 锁执行长命令。每个节点的 materialization key、TaskID、RunID 从 accepted fact 与 node identity 确定性派生；换 server/丢响应/暂停恢复不能换 key。
+
+先耐久绑定该命令的最终 TaskSpec/Policy digest、repository/base、选定 Provider profile 和目标 RunID，再调用同一生产 planning seam。开始前和返回后均重查已有 Run 的冻结输入与事实：精确 READY 复用；CREATED/PLANNED 只沿同一创建义务补齐；冲突/无法判定则保留明确阻塞，不删除旧目录、重选新 ID 或绕过准入。需将现有 `planning.Plan` 的创建步骤补为可恢复入口，而不是宣称它目前已经幂等。
+
+计划批准向子 Run 的 plan approval 映射是显式 Core producer：必须绑定 accepted Goal fact、节点最终输入和当前 Policy，只授权该一个 Run 的执行。不能生成通用 actor 批准文件或扩大用户确认范围。保留原 Run/Attempt reservation 与 dispatch lookup-before-claim；Goal reservation 记录预算归属，不替代它们或重复扣费。每条物化事实引用精确 Run 创建/Start 事实，恢复先核对再提交 committed；失败/终态的 release/settle 沿 ADR 0019，不凭本地进程状态释放预算。
+
+## 4. 成果集成是冻结方案的一部分
+
+两个实现节点共享锁定原始 base、使用独立 worktree。每个成果仍经过既有 Collect、独立 Verify 与精确 Decision；集成只消费已接纳的精确 candidate/base/patch digest，不读“最新分支”、未审 scratchpad 或其他 worktree 的可变文件。不得用子 Run 数量或单元测试通过替代最终验收。
+
+依赖就绪后，Core 在尚未交给 Worker 的专属集成 worktree 按固定节点顺序应用这两个精确 patch，生成可复算的候选 tree/commit，并落账绑定上游候选及原 base。冲突是 integration-blocked，不隐式改需求、选 theirs/ours 或启动无预算修复。此操作只产生本地候选，不 push/merge，不属于 Publisher。
+
+集成 Task 的业务要求、scope、model、预算、oracle 和权限来自已批准模板；唯一允许派生的字段为已批准算法生成的输入 base/上游绑定及确定性身份。最终 Task bytes 在 Run 创建前耐久冻结。其他字段变化必须新 proposal/批准。集成 Agent 在这个 base 上检查/修复组合行为，独立 oracle 从实际客户端发起 HTTP 请求并验证服务响应，而不是重新计算本地答案。
+
+最终交付绑定集成 candidate、全部上游 candidate 与独立证据/Decision。首个 publication:none 返回可获取的候选与说明，不自动 merge，也不把 Goal 完成等同部署或正式版本发布。
+
+## 5. 有界暂停、局部重规划与失败
+
+用户等待/预算/依赖阻塞在 Goal 上有 typed reason；初始暂停采用 drain-active，不发新节点，既有 Run 仍受其原 deadline 限制。需要取消时只调用 B1 的合法 cancel/terminal reconciliation，不直接 kill。恢复重查 current owner、输入适用性与预算，不延长已冻结 Run 的 deadline。
+
+重规划仅 supersede 未运行节点；已经运行或完成的节点保持不可变，修改其成果通过有预算的新节点/Run 表达。只有依赖变化的后继失效，无关已接纳成果继续复用。不能偷偷增加 Run/rework 预算。一次局部失败保留 Outcome、原因和消耗；结构性原因先修 preflight，不按原输入反复 fan-out。
+
+## 6. 一条业务链的实施与退出
+
+实现以“两个实现任务→一个真实集成候选”为一个纵切，一次接通：输入 preview/批准→RB1 原子接纳→Run 创建恢复→单 Run Start/Collect/Verify/Decision→集成→Goal Outcome。纯 Goal 类型、独立 store 或 mock controller 不能单独标 B2 INTEGRATED。
+
+同一调用链必须覆盖：无批准零创建；同输入重放/同 key 异输入拒绝；accepted fact 前后丢响应；Run 创建和 READY 之间中断；Start 丢响应不多 Attempt；两个独立写节点真正重叠执行；上游漂移或集成冲突拒绝；局部 replan 不重做无关成果；Goal 暂停/重启后继续；独立业务验收与最终 Decision。测试先无故障、无重启走通，然后再注入故障，不能只验证恢复分支。
+
+先在订单报价 API/客户端样例上验证机制，再在至少另外两个业务任务族进行重复配对比较。统计所有失败与修复、总交付时间、人工介入及实际成果复用；若不优于强 Lead＋SubAgents，简化策略或保留 Runtime-only 价值，不以增加协议来解释失败。B3 的同路径长期故障、安装信任和 stable 门禁仍须完成，本 ADR 不授予 production。
