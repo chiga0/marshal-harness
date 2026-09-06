@@ -213,5 +213,8 @@ func (l *CompositionLedger) terminalizeAttemptAfterBarrier(ctx context.Context, 
 	if state.CleanupReleasedDigest == "" {
 		return resultingress.AttemptAuthorityState{}, resultingress.ErrCleanupUnauthorized
 	}
+	if err := l.adoptTerminalProjectionMutation(ctx, verifier, acquisition, read, state); err != nil {
+		return resultingress.AttemptAuthorityState{}, err
+	}
 	return state, nil
 }

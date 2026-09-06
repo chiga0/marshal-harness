@@ -20,6 +20,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
+	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
@@ -418,6 +419,47 @@ func TestFixedLifecycleDeliveryPublishesAndReplaysExactCollectReceipt(t *testing
 		t.Fatal(err)
 	}
 	result := FixedLifecycleResult{Operation: FixedLifecycleCollectOperation, Run: collected.Run, ResultDigest: resultDigest, ApplicationReceiptFactDigest: collected.Run.AuthorityHead}
+	// Model the filesystem effect of path-B release between the durable
+	// worker.completed event and delivery commit. The contents are unchanged
+	// here: this test isolates delivery's root-observation boundary, not RB1
+	// release authorization (which the composition helper must prove).
+	projectionRoot := filepath.Join(fixture.repository, ".marshal", "runtime-v1", "existing-worktree-bindings")
+	stageRoot := projectionRoot + "-test-stage"
+	oldRoot := projectionRoot + "-test-old"
+	if err := os.Mkdir(stageRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(projectionRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			t.Fatalf("unexpected fixture entry: %s", entry.Name())
+		}
+		raw, err := os.ReadFile(filepath.Join(projectionRoot, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stageRoot, entry.Name()), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Rename(projectionRoot, oldRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(stageRoot, projectionRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(oldRoot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.CommitLifecycleDelivery(context.Background(), pending, FixedLifecycleCollectOperation, request, current, result); err == nil {
+		t.Fatal("stale runtime observation allowed a receipt")
+	}
+	if err := adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot); err != nil {
+		t.Fatal(err)
+	}
 	receipt, err := fixture.store.CommitLifecycleDelivery(context.Background(), pending, FixedLifecycleCollectOperation, request, current, result)
 	if err != nil || ValidateFixedLifecycleDeliveryResult(result, receipt) != nil {
 		t.Fatalf("receipt=%+v err=%v", receipt, err)
@@ -429,6 +471,41 @@ func TestFixedLifecycleDeliveryPublishesAndReplaysExactCollectReceipt(t *testing
 	replayedReceipt, err := fixture.store.CommitLifecycleDelivery(context.Background(), pending, FixedLifecycleCollectOperation, request, current, result)
 	if err != nil || replayedReceipt != receipt {
 		t.Fatalf("replayed receipt=%+v err=%v", replayedReceipt, err)
+	}
+}
+
+func TestCompletedProjectionCannotAdoptCallerTerminalWithoutDurableAuthority(t *testing.T) {
+	fixture := newFixedDeliveryFixture(t)
+	ledger := &CompositionLedger{sessionBorrow: &repositorySessionBorrow{session: fixture.session}, ingress: fixture.session.ingress, existingWorktreeEnabled: true}
+	before := fixture.session.fixedRoot.nodes[2].identity
+	terminal := resultingress.AttemptAuthorityState{
+		CommittedResultFactDigest: "untrusted", BarrierDigest: "untrusted", ProcessTerminalDigest: "untrusted",
+		AllocationTerminalDigest: "untrusted", SupervisorClosedDigest: "untrusted", CleanupReleasedDigest: "untrusted",
+		ExistingWorktreeReleaseReceiptDigest: "untrusted",
+	}
+	verifier := &borrowedOwnerVerifier{acquisition: fixture.session.acquisition, active: true}
+	defer verifier.close()
+	if err := ledger.adoptTerminalProjectionMutation(context.Background(), verifier, fixture.session.acquisition, runstore.RunStartAuthorityProjection{}, terminal); err == nil {
+		t.Fatal("caller terminal fields without an exact durable Attempt were adopted")
+	}
+	if fixture.session.fixedRoot.nodes[2].identity != before {
+		t.Fatal("failed terminal join changed the root observation")
+	}
+}
+
+func TestStoppedProjectionCannotAdoptSealedIntentWithoutDurableAuthority(t *testing.T) {
+	fixture := newFixedDeliveryFixture(t)
+	ledger := &CompositionLedger{sessionBorrow: &repositorySessionBorrow{session: fixture.session}, ingress: fixture.session.ingress, existingWorktreeEnabled: true}
+	before := fixture.session.fixedRoot.nodes[2].identity
+	terminal := stoppedAttemptFixture(t)
+	terminal.ExistingWorktreeReleaseReceiptDigest = canonical.DigestBytes([]byte("caller-release"))
+	verifier := &borrowedOwnerVerifier{acquisition: fixture.session.acquisition, active: true}
+	defer verifier.close()
+	if err := ledger.adoptTerminalProjectionMutation(context.Background(), verifier, fixture.session.acquisition, runstore.RunStartAuthorityProjection{}, terminal); err == nil {
+		t.Fatal("sealed but non-durable stop was adopted")
+	}
+	if fixture.session.fixedRoot.nodes[2].identity != before {
+		t.Fatal("failed stop join changed the root observation")
 	}
 }
 

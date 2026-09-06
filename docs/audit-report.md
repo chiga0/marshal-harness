@@ -1,5 +1,8 @@
 # 设计审计报告
 
+## 2026-09-06 10:23 UTC：正常 Collect receipt 修复已远端合并
+
+PR #264 的 source `224409272eb9c30762b8b0e15a2fd730d38db0e8` 经 CI 34026422197 五项及全部附加检查通过，远端 merge SHA 为 `5bdec88d7161771caa2a556c70bbdef576375ff9`，pendingRemoteSync=false；main CI 34027276856 尚在途，尚无新 canary 或 ACCEPTED。同步到停止开发分支后，共享 cleanup 入口会调用新的投影观察校验；停止没有 CommittedResult，必须用已耐久的 stop intent/eligibility 证明其合法终态，不能跳过 root 校验。后续实现与 source 验证另记，不借用正常完成 CI。
 ## 2026-09-06：READY 准入动态通过，补停止场景的真实入口
 
 `20a9999bdbe11a0eab899737651135e35c5422e5` 的 [CI 34026216770](https://github.com/chiga0/marshal-harness/actions/runs/34026216770) 五项全绿，覆盖原始预算准入及此前停止纵切。新增候选为 fixed CLI `cancel` 派生单一 request-key 绑定的停止请求，拒绝自由 PID/actor/reason；认证、当前 Run 绑定与停止权限仍由原 fixed server 校验。Collect 的已证明停止输出为 `stopped/run-stopped`，退出码 1，不冒充成功收集。
@@ -33,6 +36,17 @@ PR #263 的 source `31b64a8` 经 Linux/macOS quality、两架构 Linux conforman
 本开发候选补充：恢复既有 stop intent 的 cleanup/Run/Outcome；从 frozen Task/首条 planning/ProcessStarted 读取业务 deadline；在 ingress 同一 durable admission transaction 内核对 Task 与 started 摘要及截止点；到期禁止 fresh admission，精确已提交结果仍允许重放。新增截止前 1ns、精确到期、到期后 1ns、冷 ingress 重放和来源漂移负例。这里只证明代码与编译检查进展，新增动态/race 证据待该候选 hosted CI。READY 到期准入、resident timer、完整故障矩阵和对外停止状态/错误闭环仍未完成，ADR 0081 保持 Proposed，禁止合并放行停止纵切或升级 B1 状态。
 
 效率纠偏：在原开发分支保存完整纵切中间结果，CI 可提前发现平台问题；不为通过局部测试另造生产完成结论，也不重试未修复的同源实机失败。
+## 2026-09-06：真实 Pi 已到 VERIFYING，修复 release 与 fixed delivery 的观察衔接
+
+候选 `c6a1609` 的 CI 34025737001 在 Linux 的既有 `TestSuperviseOnceJSONCarriesCompleteDecisionFields` 失败（exit=1，stderr 空）；该测试未输出 JSON 模式的 decision.error，故现场原因尚不能确认。代码核对发现测试子进程的一次非阻塞 Acquire 会与 readiness 的短暂 flock 探测竞争；夹具现仅对 ErrLeaseHeld 有界重试，其他错误仍立即失败，并在断言失败时输出自身生成的 decision JSON。生产获取锁/启动逻辑不变，不能把候选假设记作已证实现场根因；新 source CI 仍是放行条件，不原样重跑取巧。该次 Linux 的 productionruntime 测试通过也不能抵消整套 CI 失败。
+
+PR #263 source `31b64a84b50e41f29f773c31762c0c29b2bc58a5` 经检查后合入 main `4f7311b08bf59f6fad31aaae6661fc253ab0b0b4`；main CI [34023916927](https://github.com/chiga0/marshal-harness/actions/runs/34023916927) 五项通过。唯一后继真实业务 canary [34024740089](https://github.com/chiga0/marshal-harness/actions/runs/34024740089) 已产生 `worker.completed`、`RUNNING→VERIFYING`，RB1 共 36 条事实且末条为 `cleanup-released`。说明该次 Pi 输出已完成解析、结果接纳和终态清理，但尚无 VerificationReport、ReviewPacket、Decision 或 ACCEPTED。
+
+失败为 `commit-lifecycle-delivery/authority-conflict`；小型诊断 artifact `9986706443` 保留。七次 `attempt-still-running` 是同一请求的观察，不是七个新 Attempt；脚本主动注入的 server1 `Killed:9` 是既有重启测试，不是此次根因。不得混用旧的尾随 JSON 失败或声称 Pi 未配置，也不原样重跑这个 head。
+
+调用链存在确定的不匹配：existing-worktree release 通过 `RENAME_SWAP` 原子更新 RB1 派生投影，改变 `runtime-v1` mutation observation；fixed server 只在 preparation 后采用受控更新，terminalization 后仍使用旧观察，交付层因而拒绝 receipt。候选在完整 `cleanup-released` 后、`worker.completed` 前增加同一观察衔接：当前 owner/精确完整 Attempt/当前 Run/已提交 release receipt/完整 RB1 snapshot/held graph 投影字节全部吻合，才调用既有 root adoption。未知 sibling、原 store 替换、control ABA、旧 owner 仍拒绝；不跳过 receipt，不新建 authority，不改变 ADR 0069/0076 的生命周期或信任边界。
+
+回归覆盖投影交换后的 receipt 拒绝、受控更新后的 exact receipt/replay，以及无 durable Attempt 时伪造 terminal 字段不能改变观察；既有 allocationcontrol 的 exact-byte/损坏投影和 fixed-root ABA 测试继续约束边界。仅编译检查与 vet 通过不能关闭缺陷；需 hosted 动态/race 门禁，再进行一次 exact-main 真实验证。B1 保持 IN_PROGRESS。取消/超时另存 `feat/b1-stop-lifecycle@a04d76c`，CI [34025131805](https://github.com/chiga0/marshal-harness/actions/runs/34025131805) 为独立证据，不混入本候选，也不因 WIP 已推送宣称其出口完成。
 
 ## 2026-09-06：最终 JSON 后有非空白内容，前移输出格式约束
 
