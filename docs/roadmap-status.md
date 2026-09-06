@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-06 停止纵切后续候选：已补 `run-stopped` 的 Core→fixed HTTP→客户端返回以及原 Collect 请求的终态重放，避免完成取消/超时后仍显示 live pending。只在 stop/cleanup/Outcome 验证后返回；部分结果仍 pending。当前仍在隔离开发分支，尚缺 resident timer、READY 到期准入和全链路 fault matrix；B1 未完成、B2/B3 未升级。主线与最新实机事实见下段；新候选动态证据独立记录，不借用旧 CI。
+
 2026-09-06 09:15 UTC 当前增量：PR #263 已在全部 source 检查通过后远端合并，main 为 `4f7311b08bf59f6fad31aaae6661fc253ab0b0b4`，该 PR 的 pendingRemoteSync=false。main CI 34023916927 在途，尚无新 canary/ACCEPTED。取消分支 macOS CI 的 session 借用关闭死锁已定位并修复测试；继续实现原始业务 deadline 的原子接纳检查与既有 stop 恢复，尚缺 timer/READY 到期准入及完整故障证据，不可合并放行。B1 IN_PROGRESS，B2/B3 PLANNED。以下保留前一检查点，不覆盖本段最新事实。
 
 2026-09-06 最新实机结果：main `5945b68` 的 CI 34008933865 五项全绿；单次 canary 34009508838 已越过历史消息解析并提取最终 assistant 文本，但以 `pi-result-final-object-trailing/authority-conflict` 停止，尚无 Verify/ReviewPacket/ACCEPTED。本候选将机器输出约束明确前移到 Pi prompt，禁止代码围栏/尾随报告，解析器门禁不变；不原样重试、不宣称格式问题已实机解决。取消纵切候选 `feat/b1-stop-lifecycle@f41b3aa` 已推送并运行独立 CI，仍不允许合并放行。B1 为 IN_PROGRESS，B2/B3 仍 PLANNED，详见 [审计记录](audit-report.md)。

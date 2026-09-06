@@ -382,6 +382,12 @@ func readClientHTTPResponse(connection *AuthenticatedConnection) (httpResponse, 
 			return response, errHTTPPending
 		}
 		if statusCode == 409 {
+			if response.ReasonCode == string(application.ReasonRunStopped) {
+				if response.Operation != productionruntime.FixedLifecycleCollectOperation || response.Disposition != "error" || response.Status != nil || response.Run != nil || response.Started != nil || response.DeliveryReceipt != nil || response.Collected != nil || response.Verification != nil || response.ReviewPacket != nil || response.Decision != nil || response.Stopped != nil || response.LifecycleReceipt != nil {
+					return httpResponse{}, ErrInvalid
+				}
+				return response, application.NewError("collect-run-result", application.ReasonRunStopped)
+			}
 			if response.ReasonCode == string(application.ReasonStopTooLate) {
 				if response.Operation != productionruntime.FixedLifecycleCancelOperation || response.Disposition != "error" || response.Status != nil || response.Run != nil || response.Started != nil || response.DeliveryReceipt != nil || response.Collected != nil || response.Verification != nil || response.ReviewPacket != nil || response.Decision != nil || response.Stopped != nil || response.LifecycleReceipt != nil {
 					return httpResponse{}, ErrInvalid

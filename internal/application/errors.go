@@ -21,6 +21,7 @@ const (
 	ReasonRecoveryRequired           ReasonCode = "recovery-required"
 	ReasonAttemptStillRunning        ReasonCode = "attempt-still-running"
 	ReasonStopTooLate                ReasonCode = "stop-too-late"
+	ReasonRunStopped                 ReasonCode = "run-stopped"
 )
 
 // Error is intentionally closed and input-free. Detail belongs in durable,
@@ -48,7 +49,7 @@ func HasReason(err error, reason ReasonCode) bool {
 
 func validReason(reason ReasonCode) bool {
 	switch reason {
-	case ReasonInvalidRequest, ReasonPlatformProfileUnavailable, ReasonOwnerUnavailable, ReasonOwnerNotCurrent, ReasonBridgeUnavailable, ReasonCompositionIncomplete, ReasonAuthorityConflict, ReasonRecoveryRequired, ReasonAttemptStillRunning, ReasonStopTooLate:
+	case ReasonInvalidRequest, ReasonPlatformProfileUnavailable, ReasonOwnerUnavailable, ReasonOwnerNotCurrent, ReasonBridgeUnavailable, ReasonCompositionIncomplete, ReasonAuthorityConflict, ReasonRecoveryRequired, ReasonAttemptStillRunning, ReasonStopTooLate, ReasonRunStopped:
 		return true
 	default:
 		return false

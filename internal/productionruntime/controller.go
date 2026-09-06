@@ -323,7 +323,7 @@ func mapAuthorityError(operation string, err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, reason := range []application.ReasonCode{application.ReasonOwnerUnavailable, application.ReasonOwnerNotCurrent, application.ReasonAuthorityConflict, application.ReasonRecoveryRequired} {
+	for _, reason := range []application.ReasonCode{application.ReasonOwnerUnavailable, application.ReasonOwnerNotCurrent, application.ReasonAuthorityConflict, application.ReasonRecoveryRequired, application.ReasonRunStopped} {
 		if application.HasReason(err, reason) {
 			return err
 		}

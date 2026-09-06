@@ -24,6 +24,10 @@ func TestReconcileStoppedRunDoesNotInventStopBeforeExecution(t *testing.T) {
 	if err != nil || found || result != (application.CancelRunProjection{}) {
 		t.Fatalf("invented stop: found=%v result=%+v err=%v", found, result, err)
 	}
+	result, found, err = fixture.session.ReconcileStoppedCurrentRun(context.Background(), request.CurrentRunRequest)
+	if err != nil || found || result != (application.CancelRunProjection{}) {
+		t.Fatalf("invented Collect stop: found=%v result=%+v err=%v", found, result, err)
+	}
 	after, err := fixture.session.ingress.AttemptStates()
 	if err != nil || len(after) != len(before) {
 		t.Fatalf("unexpected Attempt mutation: %v", err)

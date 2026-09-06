@@ -16,6 +16,21 @@ func (session *RepositorySession) ReconcileStoppedRun(ctx context.Context, reque
 	if ctx == nil || request.Validate() != nil {
 		return result, false, application.NewError("reconcile-stopped-run", application.ReasonInvalidRequest)
 	}
+	return session.reconcileStoppedRun(ctx, request)
+}
+
+// ReconcileStoppedCurrentRun is the Collect response-loss path. The caller
+// supplies the original Run authority, not a fabricated cancellation request.
+// The stored stop intent supplies its own request ID after current-ledger
+// selection; the shared terminal verifier still checks the original head.
+func (session *RepositorySession) ReconcileStoppedCurrentRun(ctx context.Context, request application.CurrentRunRequest) (application.CancelRunProjection, bool, error) {
+	if ctx == nil || application.CollectRunResultRequest(request).Validate() != nil {
+		return application.CancelRunProjection{}, false, application.NewError("reconcile-stopped-run", application.ReasonInvalidRequest)
+	}
+	return session.reconcileStoppedRun(ctx, application.CancelRunRequest{CurrentRunRequest: request})
+}
+
+func (session *RepositorySession) reconcileStoppedRun(ctx context.Context, request application.CancelRunRequest) (result application.CancelRunProjection, found bool, resultErr error) {
 	borrow, err := session.borrow()
 	if err != nil {
 		return result, false, err
@@ -55,6 +70,9 @@ func (session *RepositorySession) ReconcileStoppedRun(ctx context.Context, reque
 		}
 		if matches != 1 {
 			return application.NewError("reconcile-stopped-run", application.ReasonAuthorityConflict)
+		}
+		if request.RequestID == "" {
+			request.RequestID = terminal.StopIntent.RequestID
 		}
 		result, err = rehydrateStoppedRunUnderLease(ctx, session.runs, lease, session.ingress, request, terminal)
 		if err != nil {

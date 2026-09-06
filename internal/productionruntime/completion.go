@@ -35,7 +35,7 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		if _, stopped, stopErr := l.stopDueAttempt(ctx, verifier, acquisition, read, attempt); stopErr != nil {
 			return CollectedRunResult{}, stopErr
 		} else if stopped {
-			return CollectedRunResult{}, resultingress.ErrBusinessDeadlineExceeded
+			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonRunStopped)
 		}
 		businessDeadline, err = l.currentBusinessDeadline(ctx, read, attempt)
 		if err != nil {
@@ -172,8 +172,10 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		if closeErr := attemptDirectory.Close(); closeErr != nil {
 			return CollectedRunResult{}, closeErr
 		}
-		if _, _, stopErr := l.stopDueAttempt(ctx, verifier, acquisition, read, attempt); stopErr != nil {
+		if _, stopped, stopErr := l.stopDueAttempt(ctx, verifier, acquisition, read, attempt); stopErr != nil {
 			return CollectedRunResult{}, stopErr
+		} else if stopped {
+			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonRunStopped)
 		}
 	}
 	if err != nil {

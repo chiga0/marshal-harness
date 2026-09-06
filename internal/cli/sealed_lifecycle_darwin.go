@@ -37,6 +37,13 @@ func (adapter *sealedRepositoryApplication) CollectRunResult(ctx context.Context
 	if current.State == domain.StateVerifying && current.Sequence == request.ExpectedSequence+1 {
 		return adapter.rehydrateCollectedRun(ctx, request)
 	}
+	if current.State == domain.StateBlocked {
+		if _, found, err := adapter.session.ReconcileStoppedCurrentRun(ctx, application.CurrentRunRequest(request)); err != nil {
+			return application.CollectedRunProjection{}, err
+		} else if found {
+			return application.CollectedRunProjection{}, application.NewError("collect-run-result", application.ReasonRunStopped)
+		}
+	}
 	if !currentRunMatches(current, application.CurrentRunRequest(request), domain.StateRunning) {
 		return application.CollectedRunProjection{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 	}
@@ -46,6 +53,18 @@ func (adapter *sealedRepositoryApplication) CollectRunResult(ctx context.Context
 	}
 	defer run.Close()
 	before, err := run.runtime.InspectRun(ctx, application.InspectRunRequest{RunID: request.RunID})
+	if err == nil && before.State == domain.StateBlocked {
+		// Constructor recovery may finish an existing stop. Return its Run
+		// lease before asking the repository session to verify the terminal.
+		if closeErr := run.Close(); closeErr != nil {
+			return application.CollectedRunProjection{}, closeErr
+		}
+		if _, found, stopErr := adapter.session.ReconcileStoppedCurrentRun(ctx, application.CurrentRunRequest(request)); stopErr != nil {
+			return application.CollectedRunProjection{}, stopErr
+		} else if found {
+			return application.CollectedRunProjection{}, application.NewError("collect-run-result", application.ReasonRunStopped)
+		}
+	}
 	if err != nil || !currentRunMatches(before, application.CurrentRunRequest(request), domain.StateRunning) {
 		return application.CollectedRunProjection{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 	}

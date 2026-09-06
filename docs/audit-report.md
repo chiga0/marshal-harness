@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：取消/超时后的 Collect 必须停止等待
+
+继续 ADR 0081 纵切时发现：底层停止完成后返回 deadline sentinel，被通用 authority 映射改成 `authority-conflict`，fixed transport 又保留 pending；这会让客户端在已停止 Run 上继续等待。候选新增封闭 `run-stopped`，只在 terminal event、cleanup 和 Outcome 已验证后返回。已终态或 constructor 恢复中完成 stop 的 Collect 重放不重新打开已释放 worktree，而由 repository session 将原 current-request 连接到已存 stop intent，再执行同一终态核验。认证 HTTP 409 与客户端分类同时接通，零成功 receipt、零冒充业务 ACCEPTED。
+
+新增认证 socket 的正常停止/部分投影测试，确保部分 projection 仍是 pending；同时覆盖无停止意图时不能从 Collect 发明 stop。compile-only、vet/staticcheck 已通过，动态证据待本候选 CI；608ae0b 的在途 CI 不覆盖这些后续改动。resident timer、READY 到期准入和全链路 fault matrix 仍未完成，不把该接口修补计作 B1 exit 关闭。
+
 ## 2026-09-06：Pi 输出修复已合入，停止纵切补业务接纳截止检查
 
 PR #263 的 source `31b64a8` 经 Linux/macOS quality、两架构 Linux conformance、secret scan 及附加检查全部通过，已远端合并为 `4f7311b08bf59f6fad31aaae6661fc253ab0b0b4`。主线 CI 34023916927 仍在运行，尚未派发该新 head 的真实 canary；最近真实业务结果仍是 34009508838 的尾随文本拒绝，没有 ACCEPTED。该合并不改变严格结果解析门禁。

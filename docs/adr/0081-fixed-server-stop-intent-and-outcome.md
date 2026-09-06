@@ -63,6 +63,8 @@ effectiveDeadline = min(runDeadline, attemptDeadline)
 - Run 终态事件是提交点，Outcome 用现有可恢复 record 路径物化并绑定该事件。event 后崩溃只补同一 Outcome；Outcome 未就绪时返回 typed pending，不生成第二事件。完成响应必须包含精确 Run、stop、terminal receipt 与 Outcome 摘要。
 - 状态查询在 stop 尚未完成时保留 Run 当前状态并附有界 stop/recovery 投影；投影不是 Run 转换或新授权。重启、客户端断线或 delivery 文件丢失都从 stop fact 继续，不能恢复原执行资格。fresh cancel 超时不等于取消撤销。
 
+Collect 对已完成 stop 使用封闭 `run-stopped` 错误，不伪造 CollectedRunProjection、成功 receipt 或独立 Decision；fixed HTTP 返回 409，客户端据此停止 live polling 并查询 Run/Outcome。返回该类别前必须验证当前 Attempt cleanup、精确 `worker.stopped` 和 Outcome，单纯看到 BLOCKED、原始 deadline 到期或已经发送 TERM 均不足以授权。丢响应后的 Collect 从原 Run/Attempt/sequence/head 与当前存储意图连接，内部取原 stop requestId，再复用同一 terminal verifier；不能用这条读取/物化路径创建停止意图。部分投影、未知故障仍为 pending，不通过错误分类消除不确定性。
+
 ### 接受与 enable 门槛
 
 实现核对发现：`ReadRunStartAuthorityUnderLease` 只在 `READY/RUNNING` 返回启动 worktree 等冻结输入，`BLOCKED` 终态不返回这些字段。因此 event 后丢响应的恢复不能再次走 `openRun`，也不能为了恢复响应补造 worktree/launch closure。已提交终态的 Outcome 补齐由 `RepositorySession.ReconcileStoppedRun` 在现有 Run lease、当前 owner 和 ingress 下直接连接原请求、当前 Attempt cleanup 与精确 `worker.stopped` 事件；它不得创建停止意图、启动/Attach Worker 或消费预算。尚未提交 terminal event 的停止仍走原 runtime cleanup 恢复，两条路径不能混用。

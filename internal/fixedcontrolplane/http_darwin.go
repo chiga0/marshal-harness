@@ -292,6 +292,9 @@ func (router *HTTPRouter) lifecycleOperation(ctx context.Context, authenticated 
 			return errorHTTPResponse(request.operation, applyErr), 409, applyErr
 		}
 		emptyCollect, collectType := projection.(application.CollectedRunProjection)
+		if request.operation == productionruntime.FixedLifecycleCollectOperation && collectType && emptyCollect == (application.CollectedRunProjection{}) && application.HasReason(applyErr, application.ReasonRunStopped) {
+			return errorHTTPResponse(request.operation, applyErr), 409, applyErr
+		}
 		if request.operation == productionruntime.FixedLifecycleCollectOperation && collectType && emptyCollect == (application.CollectedRunProjection{}) && application.HasReason(applyErr, application.ReasonAttemptStillRunning) {
 			// Keep the existing durable pending. This only distinguishes a
 			// positively observed live Attempt from an unknown delivery failure.

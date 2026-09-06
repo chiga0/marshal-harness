@@ -76,3 +76,57 @@ func TestCancelNeverConfusesPendingCleanupWithSuccessOrTooLate(t *testing.T) {
 		})
 	}
 }
+
+func TestCollectStoppedIsTerminalNotSuccessOrLivePending(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		t.Run(map[bool]string{false: "verified-stop", true: "partial-projection"}[partial], func(t *testing.T) {
+			fixture := newEndpointFixture(t)
+			endpoint, err := OpenEndpoint(context.Background(), fixture.authority)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = endpoint.Close() })
+			port, delivery := testHTTPApplication()
+			port.collected = application.CollectedRunProjection{}
+			if partial {
+				port.collected.Run.RunID = port.run.RunID
+			}
+			port.collectErr = application.NewError("collect-run-result", application.ReasonRunStopped)
+			router, err := NewHTTPRouter(port, delivery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			served := make(chan error, 1)
+			go func() {
+				connection, err := endpoint.Accept(context.Background())
+				if err != nil {
+					served <- err
+					return
+				}
+				defer connection.Close()
+				served <- router.ServeAuthenticated(context.Background(), connection)
+			}()
+			authority, err := productionruntime.OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer authority.Close()
+			request := application.CollectRunResultRequest{RunID: port.run.RunID, AttemptID: port.run.AttemptID, ExpectedSequence: port.run.Sequence, ExpectedAuthorityHead: port.run.AuthorityHead}
+			result, err := CallCollectRunResult(context.Background(), authority, "collect:stopped", request, time.Now().UTC().Add(time.Minute))
+			if err == nil || application.HasReason(err, application.ReasonRunStopped) == partial || result.Projection != (application.CollectedRunProjection{}) {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			select {
+			case serveErr := <-served:
+				if partial && !errors.Is(serveErr, errHTTPPending) || !partial && !application.HasReason(serveErr, application.ReasonRunStopped) {
+					t.Fatalf("server: %v", serveErr)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("serve timeout")
+			}
+			if port.collectCalls != 1 || delivery.lifecycleBeginCalls != 1 || delivery.lifecycleCommitCalls != 0 {
+				t.Fatalf("collect=%d pending=%d receipt=%d", port.collectCalls, delivery.lifecycleBeginCalls, delivery.lifecycleCommitCalls)
+			}
+		})
+	}
+}
