@@ -190,6 +190,12 @@ jobs:
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/server*-ready*.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/start-request.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/command-audit.jsonl
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/t2/driver-subject.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/t2/call-*.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/t2/cancel-request.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/t2-recovery/driver-subject.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/t2-recovery/call-*.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/t2-recovery/cancel-request.json
             .marshal/runs/${{ env.T1_RUN_ID }}/state.json
             .marshal/runs/${{ env.T1_RUN_ID }}/events.jsonl
             .marshal/runtime-v1/result-ingress/result-ingress.jsonl

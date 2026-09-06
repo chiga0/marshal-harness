@@ -66,6 +66,12 @@ printf '%s\n' "$diagnostics" | grep -F '.marshal/runtime-v1/result-ingress/resul
 if printf '%s\n' "$diagnostics" | grep -E 'dist/|review-inputs|/transcript|/task.json|/activation.json|/policy.json' >/dev/null; then
   fail 'diagnostic artifact includes executable, review archive, transcript or configuration'
 fi
+for phase in t2 t2-recovery; do
+  for leaf in driver-subject.json 'call-*.json' cancel-request.json; do
+    printf '%s\n' "$diagnostics" | grep -F "/$phase/$leaf" >/dev/null \
+      || fail 'diagnostic artifact omits bounded driver subject/call/request metadata'
+  done
+done
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

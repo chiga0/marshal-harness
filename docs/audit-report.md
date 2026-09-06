@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：取消候选越过 Start 重放，驱动响应诊断仍阻塞
+
+`2422d14` 的 CI 34030543935 五项全绿（macOS fixedcontrolplane/cli 动态测试均通过）后，仅派发一次 34031227675。command-audit 已记录 server2 的 `received-replay` 和随后 `received-final`，越过 34029737648 的旧失败点；随后 T2 driver 报 `fixed-cli-invalid-response`。journal 保留真实 Start outcome（sequence=3），磁盘 state.json 仍是 READY/2 的旧投影，不用它覆盖 journal；无 stop intent、没有取消成功或冷恢复证据。server2.stderr 为空，不能猜测该次原始 CLI 错误。
+
+小型诊断包 9988677224 已保留，但未包含 T2 调用元数据，必须等待完整包 9988677757（约 19 MB）才能区分初始 inspect 与 cancel 调用，这是可避免的诊断延迟。候选将既有 `driver-subject.json`、只含 operation/exitCode/stdoutSHA256/stderrSHA256 的 `call-*.json`、冻结 `cancel-request.json` 加入小型包，覆盖 t2 和 t2-recovery；不上传原始 stdout/stderr、transcript、配置或 executable，完整包保留。仅改善诊断交付，不重试旧 Run、不声称取消根因已修复。
+
 ## 2026-09-06：取消实机越过启动准入，但重启后的 Start 重放失败
 
 候选 `5e0a8e30971e7cb89d937adf401317e945c4c5de` 的 CI 34029043931 五项全绿后，单次 [canary 34029737648](https://github.com/chiga0/marshal-harness/actions/runs/34029737648) 已启动真实 Pi，Run journal 到 `run.start-outcome/READY→RUNNING`，server2 重启/rebind 与查询成功；随后 Start 重放出现封闭 `transport-failure`，没有执行到取消、没有 stop intent/Outcome。因此既不是取消通过，也不是 Pi 未配置。诊断 artifact 9988209944 已保留；不原样重跑。
