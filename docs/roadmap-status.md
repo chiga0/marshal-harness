@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-2026-09-06 14:15 UTC：隔离停止候选 `6e87f34` 经五项 CI 后，真实 canary 34038482097 通过显式取消、Outcome/精确重放、停止后 Collect 和同 bytes server3 冷恢复。正常业务 ACCEPTED 的 main 证据继续有效；B1 尚缺自动业务超时、停止中途故障与响应上界，仍为 IN_PROGRESS。下列早期检查点只保存历史，当前汇总以下表为准。
+2026-09-06 14:45 UTC：候选 `dd8178f` 的五项 CI 与自动超时实机 34040069400 通过，原始 60 秒 Attempt deadline 未因 server 重启延长；零 Cancel，停止原因与原始预算来源已独立核对。显式取消/冷恢复和 main 正常业务 ACCEPTED 证据继续保留。B1 尚缺 Run budget 先到期、超时后冷恢复、中途故障与长事务响应上界，仍 IN_PROGRESS；以下为历史检查点，当前汇总以下表为准。
 
 ### 2026-09-06 早期检查点（历史）
 
@@ -21,7 +21,7 @@
 
 ## 业务交付当前表
 
-远端 main 当前为 `ba2196bea33e6f007809f75f9671928c892bfa11`（含 #266 的正常业务证据文档）；停止候选实机 source 为 `6e87f34a68f085384b8eaba09d76d2b5bd682b90`，尚未合入 main，不存在该候选的 localMergeSha 或 remote merge。开发分支已同步上述 main；合并后 source 的后续证据单独验证，不能把候选通过说成 main 已启用取消。
+远端 main 当前为 `ba2196bea33e6f007809f75f9671928c892bfa11`（含 #266 的正常业务证据文档）；取消实机 source 为 `6e87f34a68f085384b8eaba09d76d2b5bd682b90`，自动超时实机 source 为 `dd8178f096df9503fafa355f19a126105f2e7c76`。停止候选尚未合入 main，不存在其 localMergeSha 或 remote merge。后继测试 source `d10cd98` 已推送，CI 34040123782 在途；各 source 证据分别绑定，不能把候选通过说成 main 已启用取消。
 
 当前实机验证的 main 基线为 `c93e31bde15d9dbcd3487dfc1db323eafc4127e1`（[PR #265](https://github.com/chiga0/marshal-harness/pull/265)，sourceHead `e805129fd8b684824f25c6dffbfb9267642bdf65`），远端已合并，pendingRemoteSync=false。main CI 34029534577 五项全绿后，仅派发一次 [34030199172](https://github.com/chiga0/marshal-harness/actions/runs/34030199172)，全部成功。Run `fixed-server-t1-34030199172` 的第 6 条 event 为 `review.accept`，快照 `ACCEPTED/sequence=6`。此前 34027927457 的不合法 Pi content 失败仍保留，分类修复不是放宽解析或保证模型永不违约；本次通过不能删除失败分母。
 
@@ -29,11 +29,11 @@
 
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务已独立 ACCEPTED；隔离候选 34038482097 已证明显式取消、Outcome、精确重放、终态 Collect 与完成后冷 server 恢复 | 自动业务超时与中途恢复故障矩阵；长写事务的停止/查询响应上界；候选合入与同支持路径回归；扩展场景验证不能借单次通过概括可靠性 |
+| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务已独立 ACCEPTED；候选显式取消/终态 Collect/冷恢复通过；34040069400 已证明原始 Attempt deadline 自动停止，无 operator Cancel | Run budget 先到期、超时终态冷恢复与中途故障矩阵；长写事务停止/查询响应上界；候选合入与同支持路径回归；单次通过不概括可靠性 |
 | B2 受限 Agent Team | `PLANNED` | ADR 0080 目标与 ADR 0019 组件可复用 | approved plan 耐久物化/调度、两个到三个实现节点、集成候选业务验收、局部 replan、暂停恢复 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
-[ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 仍为 Proposed，main 尚未开启 cancel/timeout。最新 [取消实机 34038482097](https://github.com/chiga0/marshal-harness/actions/runs/34038482097) 已全部通过；历史 Start 竞争、cleanup Collect、terminal report 衔接、查询 lease 竞争和 fresh Collect 旧 head 问题及失败样本完整保留在审计记录。下一步验证不依靠显式 cancel 的业务 deadline/Outcome，并关闭停止中途故障与响应上界；不扩大 Provider 或另起 controller。本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。
+[ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 仍为 Proposed，main 尚未开启 cancel/timeout。[取消实机 34038482097](https://github.com/chiga0/marshal-harness/actions/runs/34038482097) 和 [自动 Attempt 超时 34040069400](https://github.com/chiga0/marshal-harness/actions/runs/34040069400) 已通过；完整失败样本及本次证据强弱边界见审计记录。下一步验证 Run budget 更早到期及超时冷恢复，并关闭停止中途故障与响应上界；不扩大 Provider 或另起 controller。本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。
 
 旧现场 33968513566 的 Run 为 `READY/sequence=2` 且漏收 RB1；#258 已修复诊断和收集路径。新现场 33971611314 的 artifact 9971098258 提供 17 条 RB1 fact：启动链已推进，随后 adoption 错把生产 namespace 限为 `control` 与 `existing-worktree-bindings`。候选改为冻结已存在的五类 composition store descriptor/name/object，保留未知插入、对象替换及 control ABA 拒绝；同步将公开装配测试的 ingress 放回真实 runtime 布局。增设先上传的小型诊断 artifact，避免以后等待整包 candidate 下载才定位失败；原完整 evidence 包继续保留。
 

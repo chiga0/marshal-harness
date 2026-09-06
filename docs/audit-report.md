@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-06：原始 Attempt deadline 自动停止实机通过
+
+精确 `dd8178f096df9503fafa355f19a126105f2e7c76` 经 [CI 34039269163](https://github.com/chiga0/marshal-harness/actions/runs/34039269163) 五项全绿后，单次 [34040069400](https://github.com/chiga0/marshal-harness/actions/runs/34040069400) 成功。server2 binary SHA-256 为 `3488ade9641164f0d7a498e400d55826e10338e3d64a5c9313517e536c0772e5`。真实 Run `fixed-server-t1-34040069400` 一次 Attempt、零 operational retry/rework；驱动只有 19 次 Inspect 与终态后一次 Collect，零 Cancel，不能把它解释成 operator stop。
+
+独立读取诊断 artifact `9991417910`（42,435 bytes），逐项核对 creation event 的 canonical digest、Task specDigest、同 Attempt 的 process-started fact/timestamp、原始 60/600 秒预算及计算结果、barrier/stopIntent 与停止事件的引用、process-terminal/allocation-terminated/supervisor-closed/cleanup-released 链。原 Attempt deadline 为 `14:45:33.642022Z`，stop intent 于 `14:45:33.752306Z` 形成，`worker.stopped/BLOCKED/sequence=4` 于 `14:45:36.212847Z` 形成：本样本意图延迟 0.110284 秒、终态延迟 2.570825 秒。此前 server1 crash/server2 rebind 没有重置 processStartedAt 或延长预算。停止原因精确为 `attempt-deadline-exceeded`，stopIntentDigest 为 `sha256:800125bc9e7bac8fef02d7a6d94c0fcf0059f4093de318740f4e9b3fcbe9a739`。
+
+终态 Collect exit=1、stderr 为空，stdout SHA-256 为 `606f11c437c8af004acfcc1e766d73e63ec1b10df913949757d9147d739a6e1e`，对应 Core 已验证 stop/cleanup/Outcome 的 `stopped/run-stopped`。小诊断不含原始 Outcome，不能说已独立下载并重算 Outcome 摘要；完整 artifact `9991418302` 保留并单独取回。驱动自己的 `deadlineWitnessVerified=false` 保持原样，本段是驱动之外的来源/引用审计，不修改历史证据。
+
+这关闭了隔离候选的一次原始 Attempt 自动超时实机子条件；Run budget 先到期、超时终态后的冷恢复、signal/cleanup 中途故障及长写事务延迟仍须继续验证，不推导普遍 SLA、不关闭 B1。后继 `d10cd98` 的 CI 34040123782 独立运行，只含排队回归/Task schema 枚举与过程记录；不能冒用本次 binary 身份。停止候选仍未合入 main，ADR 0081 仍 Proposed。
+
 ## 2026-09-06：等待精确超时候选 CI 时补查排队边界
 
 `dd8178f` 已推送，精确 CI 为 34039269163。紧接 push 的第一次 workflow dispatch 34039237556 在 GitHub 解析到上一 source `86b6553`，已核对并取消该自有 CI；随后确认远端 API head 为 `dd8178f` 才重新派发，未重复 Worker、未把旧 source CI 借给新候选。以后 dispatch 后仍立即核对实际 `headSha`，不能只凭命令成功认定版本正确。
