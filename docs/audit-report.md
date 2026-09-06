@@ -1,5 +1,19 @@
 # 设计审计报告
 
+## 2026-09-06 02:09 UTC：Collect 阻塞缩小到 Pi 结果解析
+
+main `13f42e9` 的 CI 34005015027 五项全绿后，一次性条件派发执行 canary [34005690401](https://github.com/chiga0/marshal-harness/actions/runs/34005690401)。固定产物、Pi/provider 配置及 live-review 依赖安装通过；实际 Start/重启链完成，RB1 23 条事实含 `transcript-collected`（stdout 574166 bytes）。新增阶段诊断明确为 `parse-production-worker-result/authority-conflict`：本轮已经通过 held transcript 读取，失败在 Pi parser，不是后继 observation 或 ResultIngress 接纳失败。没有 ReviewPacket、独立 Decision 或 ACCEPTED。诊断 artifact 9980863196 已本地取得，完整 artifact 9980863392 远端保留；不重跑该 head。
+
+仍缺 parser 内部失败分类，原始 transcript 没有对外归档，也不能为了定位把潜在凭据/Worker 原文直接打印。后继补充私有来源的封闭分类（输入、协议、输出上限、provider 终态、最终对象、声明 Schema/identity/session、规范化），Schema 仅输出有限白名单字段类别；公共 composition 转为原有 `authority-conflict`，原始 Error 不进入 HTTP/CLI 日志。保留原校验、归一化和 ErrProtocol 的内部错误身份，不放宽格式、Schema 或结果接纳。回归同时覆盖成功保持、各类失败零结果、错误文本不能冒充分类、Schema 错误环/遍历预算，以及实际 CLI 日志的脱敏出口。这是定位修复，业务根因仍未确认，不能计为 B1 通过。
+
+## 2026-09-06：同机评审载体合入，保持实机根因与发布边界
+
+PR #260 的 source `f52e958` 经 CI 33977253462 全部五项通过（含 macOS/Ubuntu 动态质量与 Linux 双架构检查）后，远端合并为 `13f42e9`；main CI 34005015027 单独验证。旧 canary 的原始 transcript 没有进入失败 artifact，因此不能声称已离线证明 Pi 解析或 ResultIngress 的具体根因。后继只允许针对新增封闭阶段诊断的一次受控实机定位，不重启旧失败 Run、不放宽接纳。
+
+核对本机已安装 Pi 0.84.4 的公开程序文件，其 agent_end producer 确实增加 `willRetry`，print-mode 输出 session header；当前未发现这两处生产/解析契约不符。此排查不能替代失败 Run 的原始输出。正式支持的独立外部依赖也已核对：#212 仍开放，仓库 secret 名称清单没有签名/notarization 配置；只读取名称，未读取或输出凭据。该缺口不阻止 B1/B2，但 B3 未满足前不能发布 stable 或声称企业 EDR 必然允许。
+
+B2 复用范围核对：`internal/goal/admission.go` 的 evaluator 可复用，但 `AdmissionAudit` 当前仅为 mutex 保护的进程内事件列表；非测试 `cmd`/`internal` 源码尚无 `internal/goal` 导入。不能据组件单测宣称 approved plan 已耐久接纳或可恢复调度。后继按 ADR 0080 接入同一个 fixed server 与现有存储，以确认方案→耐久接纳→幂等 Run 物化为首条纵切，不先扩大并发或再造旁路 controller。
+
 ## 2026-09-05 15:44 UTC：真实 Start/重启已前进，Collect 接纳仍失败
 
 `a6fe94f` 的 main CI 33974743678 五项全绿后，单次真实 Pi 订单报价 canary [33975628490](https://github.com/chiga0/marshal-harness/actions/runs/33975628490) 已实际执行。Start 丢回复、RUNNING 查询、server1 crash、server2 ready、owner rebind、原 Start replay 与恢复后查询全部完成；此前目录布局根因没有复发。RB1 23 条 fact 包含成功 `transcript-collected` receipt（stdout 788827 bytes），但随后 Collect 接纳返回 `authority-conflict`，没有 result-admitted、Verification 或 ACCEPTED。runstore 的历史 snapshot 仍为 READY seq 2，不能用它抹掉 sealed RB1 的运行事实，也不能伪造推进。

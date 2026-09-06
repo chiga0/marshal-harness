@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,20 @@ import (
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
+
+func TestPiProductionFailureReachesSafeControlPlaneDiagnostic(t *testing.T) {
+	result, err := parsePiProductionResult(context.Background(), productionruntime.AttemptResultInput{
+		Transcript: []byte("sensitive transcript"), Worktree: "sensitive-relative-path",
+	}, "sensitive-model")
+	if len(result.Data) != 0 || !application.HasReason(err, application.ReasonAuthorityConflict) {
+		t.Fatal("invalid parser input changed admission behavior")
+	}
+	var stderr bytes.Buffer
+	writeControlPlaneRequestFailure(&stderr, err)
+	if stderr.String() != "control-plane request failed: operation=pi-result-input reasonCode=authority-conflict\n" {
+		t.Fatalf("unexpected safe diagnostic: %s", stderr.String())
+	}
+}
 
 type sealedRunAdvancerStub struct {
 	projections  []application.RunProjection

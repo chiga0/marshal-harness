@@ -784,12 +784,7 @@ func (adapter *sealedRepositoryApplication) openRun(ctx context.Context, runID s
 		ExistingWorktreeDescriptorGraph: worktree.graph, ExistingWorktreeTargetWorktree: worktree.target,
 		LaunchArgvBuilder: piProductionLaunchBuilder(adapter.piRuntime, adapter.piEntrypoint, task),
 		ResultParser: func(parserCtx context.Context, input productionruntime.AttemptResultInput) (domain.Record, error) {
-			return piadapter.ParseProductionWorkerResult(parserCtx, piadapter.ProductionResultInput{
-				Transcript: input.Transcript, Worktree: input.Worktree,
-				TaskID: input.TaskID, RunID: input.RunID, AttemptID: input.AttemptID,
-				Executable: input.Executable, Version: input.Version, Model: task.Worker.Model,
-				StartedAt: input.StartedAt, CompletedAt: input.CompletedAt, MaxOutputBytes: input.MaxOutputBytes,
-			})
+			return parsePiProductionResult(parserCtx, input, task.Worker.Model)
 		},
 		EntryLocalSelfIdentity: adapter.entryIdentity, ObserveLocalSelfIdentity: adapter.observeIdentity,
 	}, profile)
@@ -798,4 +793,17 @@ func (adapter *sealedRepositoryApplication) openRun(ctx context.Context, runID s
 	}
 	run.runtime = composed.Runtime
 	return run, nil
+}
+
+func parsePiProductionResult(ctx context.Context, input productionruntime.AttemptResultInput, model string) (domain.Record, error) {
+	result, err := piadapter.ParseProductionWorkerResult(ctx, piadapter.ProductionResultInput{
+		Transcript: input.Transcript, Worktree: input.Worktree,
+		TaskID: input.TaskID, RunID: input.RunID, AttemptID: input.AttemptID,
+		Executable: input.Executable, Version: input.Version, Model: model,
+		StartedAt: input.StartedAt, CompletedAt: input.CompletedAt, MaxOutputBytes: input.MaxOutputBytes,
+	})
+	if code := piadapter.ProductionResultFailureCode(err); code != "" {
+		return domain.Record{}, application.NewError(code, application.ReasonAuthorityConflict)
+	}
+	return result, err
 }

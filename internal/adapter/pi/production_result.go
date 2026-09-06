@@ -37,47 +37,69 @@ type ProductionResultInput struct {
 // agent_end assistant message. Identity, session, provider, timing, and usage
 // fields are then overwritten with Marshal-observed authority before a final
 // schema validation.
-func ParseProductionWorkerResult(ctx context.Context, input ProductionResultInput) (domain.Record, error) {
+func ParseProductionWorkerResult(ctx context.Context, input ProductionResultInput) (record domain.Record, err error) {
+	stage := "input"
+	defer func() {
+		var classified *productionResultFailure
+		if err != nil && !errors.As(err, &classified) {
+			err = &productionResultFailure{code: stage, cause: err}
+		}
+	}()
 	if err := validateProductionResultInput(input); err != nil {
 		return domain.Record{}, err
 	}
+	stage = "transcript"
 	capture := decodeTranscript(ctx, input.Transcript, input.Worktree, input.MaxOutputBytes)
 	if capture.limitExceeded {
+		stage = "output-limit"
 		return domain.Record{}, errors.New("pi: production transcript exceeds the output limit")
 	}
 	if capture.err != nil {
+		switch capture.failurePhase {
+		case "read", "json", "session", "event", "agent-end", "tool", "compaction", "retry", "settled", "framing", "closure":
+			stage += "-" + capture.failurePhase
+		}
 		return domain.Record{}, capture.err
 	}
 	if capture.providerFailed {
+		stage = "provider-terminal"
 		return domain.Record{}, errors.New("pi: provider reported a failed terminal invocation")
 	}
 	if capture.sessionID == "" {
+		stage = "session-missing"
 		return domain.Record{}, fmt.Errorf("%w: session id is missing", ErrProtocol)
 	}
 
+	stage = "final-message"
 	declaredBytes, err := extractFinalWorkerResult(input.Transcript)
 	if err != nil {
 		return domain.Record{}, err
 	}
 	declaredBytes = NormalizeDeclaredWorkerResult(declaredBytes)
+	stage = "validator"
 	validator, err := contract.NewValidator()
 	if err != nil {
 		return domain.Record{}, fmt.Errorf("compile WorkerResult validator: %w", err)
 	}
+	stage = "declared-schema"
 	if err := validator.Validate(domain.KindWorkerResult, declaredBytes); err != nil {
 		return domain.Record{}, fmt.Errorf("validate declared production WorkerResult: %w", err)
 	}
+	stage = "declared-decode"
 	var declared declaredResult
 	if err := json.Unmarshal(declaredBytes, &declared); err != nil {
 		return domain.Record{}, fmt.Errorf("decode declared production WorkerResult: %w", err)
 	}
 	if declared.TaskID != input.TaskID || declared.RunID != input.RunID || declared.AttemptID != input.AttemptID || declared.Adapter.ID != adapterID {
+		stage = "declared-identity"
 		return domain.Record{}, errors.New("WorkerResult identity does not match production attempt")
 	}
 	if declared.Session != nil && declared.Session.ID != "" && declared.Session.ID != capture.sessionID {
+		stage = "declared-session"
 		return domain.Record{}, errors.New("WorkerResult session does not match production transcript")
 	}
 
+	stage = "normalization"
 	declared.Adapter.Executable = input.Executable
 	declared.Adapter.Version = input.Version
 	if input.Model != "" {
@@ -107,6 +129,7 @@ func ParseProductionWorkerResult(ctx context.Context, input ProductionResultInpu
 	if err != nil {
 		return domain.Record{}, fmt.Errorf("encode normalized production WorkerResult: %w", err)
 	}
+	stage = "normalized-schema"
 	if err := validator.Validate(domain.KindWorkerResult, data); err != nil {
 		return domain.Record{}, fmt.Errorf("validate normalized production WorkerResult: %w", err)
 	}
@@ -241,10 +264,10 @@ func extractSingleWorkerResultObject(text string) ([]byte, error) {
 		matchedEnd = end
 	}
 	if candidates != 1 {
-		return nil, fmt.Errorf("%w: final production assistant text is not one JSON object", ErrProtocol)
+		return nil, &productionResultFailure{code: "final-object-missing", cause: fmt.Errorf("%w: final production assistant text is not one JSON object", ErrProtocol)}
 	}
 	if strings.TrimSpace(text[matchedEnd:]) != "" {
-		return nil, fmt.Errorf("%w: final production assistant text contains trailing non-whitespace after the result object", ErrProtocol)
+		return nil, &productionResultFailure{code: "final-object-trailing", cause: fmt.Errorf("%w: final production assistant text contains trailing non-whitespace after the result object", ErrProtocol)}
 	}
 	return json.Marshal(matched)
 }
