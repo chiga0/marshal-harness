@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 最新：`0130465` 的 CI 五项全绿，真实 Pi 中断恢复 [34050602081](https://github.com/chiga0/marshal-harness/actions/runs/34050602081) 通过。已证明 stop barrier 落盘后、Run 仍 RUNNING 时中断 server，原 Attempt/stop intent 在同身份后继恢复为 BLOCKED，并通过原 Collect 请求冷恢复；一 Attempt、零 retry/rework，包含恢复的终态延迟为原 deadline 后 4.334296 秒。仅关闭该进程中断边界，不代表完整故障矩阵。长 Verify 让出全局写锁的后继 `74e8619` 已推送，CI 34050715623 在途，跨 Run 实机尚待验证。**B1 IN_PROGRESS，B2/B3 不升级；main 仍 ba2196b，停止候选未合并、无 stable 发布。** 下列段落保留为历史检查点。
+
 2026-09-07 当前候选：`c61998515512f064fc4b113c229295e5df28e185` 的 CI 34047040755 五项全绿；真实 Pi 的 Attempt-timeout 34047844723 和 Run-first 34048091298 均通过终态查询、stopped Collect、同 bytes server3 冷恢复。稳定投影容器修复首次在两类预算顺序的完整查询路径得到实机正向证据；两次各一 Attempt、零 Cancel/retry/rework，不删除此前失败分母。**B1 IN_PROGRESS：尚缺停止中途故障矩阵、长写事务响应上界与最终组合验收；B2/B3 不升级。候选未合并 main，无 stable 发布。** 证据范围见 [审计报告](audit-report.md#2026-09-07稳定容器修复后的两类自动超时和冷恢复通过)。以下是历史检查点。
 
 2026-09-06 16:19 UTC：诊断候选 `88f9edd` 的 CI 34043986843 全绿，但 Attempt-timeout 34044944162 在第 17 次 Inspect 的客户端 authority 打开阶段失败，未进入 HTTP；RB1 到 worktree release receipt，尚无 stopped Run 终态/Collect/server3。本轮新增公开客户端目录观察切换的确定性回归，冻结同类实机重试，先定位并修复完整接缝。**B1 仍 IN_PROGRESS，B2/B3 未升级；停止候选未合入 main、无 stable 发布。** 前文在途 CI/待派发语句为历史时点，不代表当前仍运行。
@@ -29,7 +31,7 @@
 
 ## 业务交付当前表
 
-远端 main 当前为 `ba2196bea33e6f007809f75f9671928c892bfa11`（含 #266 的正常业务证据文档）；取消实机 source 为 `6e87f34a68f085384b8eaba09d76d2b5bd682b90`，自动超时实机 source 为 `dd8178f096df9503fafa355f19a126105f2e7c76`。停止候选尚未合入 main，不存在其 localMergeSha 或 remote merge。后继测试 source `d10cd98` 已推送，CI 34040123782 在途；各 source 证据分别绑定，不能把候选通过说成 main 已启用取消。
+远端 main 为 `ba2196bea33e6f007809f75f9671928c892bfa11`（含 #266 的正常业务证据文档）。停止候选代码 sourceHead 为 `74e8619fa8168abbc76a7eda3f3f647f6882ed6f`，分支已同步，精确 CI 34050715623 在途；最近完成的中断恢复实机属于其前驱 `0130465`。候选尚未合入 main，不存在 localMergeSha 或 remote merge；分支已推送不等于 main 已启用取消。
 
 当前实机验证的 main 基线为 `c93e31bde15d9dbcd3487dfc1db323eafc4127e1`（[PR #265](https://github.com/chiga0/marshal-harness/pull/265)，sourceHead `e805129fd8b684824f25c6dffbfb9267642bdf65`），远端已合并，pendingRemoteSync=false。main CI 34029534577 五项全绿后，仅派发一次 [34030199172](https://github.com/chiga0/marshal-harness/actions/runs/34030199172)，全部成功。Run `fixed-server-t1-34030199172` 的第 6 条 event 为 `review.accept`，快照 `ACCEPTED/sequence=6`。此前 34027927457 的不合法 Pi content 失败仍保留，分类修复不是放宽解析或保证模型永不违约；本次通过不能删除失败分母。
 
@@ -37,11 +39,11 @@
 
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务已独立 ACCEPTED；候选显式取消通过；c619985 的 34047844723/34048091298 分别证明原始 Attempt/Run deadline 自动停止、完整终态查询及同 bytes 冷恢复 | 停止中途故障矩阵（驱动已接入，尚待实机）；长写事务停止/查询响应上界；候选合入与同支持路径回归；单次通过不概括可靠性 |
+| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline 自动停止/冷恢复通过；0130465 的 34050602081 证明 barrier 后进程中断恢复 | 其余停止故障边界；长 Verify 跨 Run 实机及其他长事务响应上界；候选合入与最终组合；单次通过不概括可靠性 |
 | B2 受限 Agent Team | `PLANNED` | ADR 0080 目标与 ADR 0019 组件可复用 | approved plan 耐久物化/调度、两个到三个实现节点、集成候选业务验收、局部 replan、暂停恢复 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
-[ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 仍为 Proposed，main 尚未开启 cancel/timeout。[取消实机 34038482097](https://github.com/chiga0/marshal-harness/actions/runs/34038482097) 和 [自动 Attempt 超时 34040069400](https://github.com/chiga0/marshal-harness/actions/runs/34040069400) 已通过；完整失败样本及本次证据强弱边界见审计记录。下一步验证 Run budget 更早到期及超时冷恢复，并关闭停止中途故障与响应上界；不扩大 Provider 或另起 controller。本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。
+[ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 仍为 Proposed，main 尚未开启 cancel/timeout。下一步验证长 Verify 期间无关 Run 的 deadline 能继续推进，完成停止纵切的组合验收与独立审查，随后进入 B2；不重跑已通过的旧 source，不扩大 Provider 或另起 controller。完整失败样本及证据边界见审计记录。本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。
 
 旧现场 33968513566 的 Run 为 `READY/sequence=2` 且漏收 RB1；#258 已修复诊断和收集路径。新现场 33971611314 的 artifact 9971098258 提供 17 条 RB1 fact：启动链已推进，随后 adoption 错把生产 namespace 限为 `control` 与 `existing-worktree-bindings`。候选改为冻结已存在的五类 composition store descriptor/name/object，保留未知插入、对象替换及 control ABA 拒绝；同步将公开装配测试的 ingress 放回真实 runtime 布局。增设先上传的小型诊断 artifact，避免以后等待整包 candidate 下载才定位失败；原完整 evidence 包继续保留。
 

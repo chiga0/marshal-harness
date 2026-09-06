@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-07：真实 Pi 在 stop barrier 后中断并恢复通过
+
+候选 `0130465bfb65dd1b947c09113f988714c6952c00` 的 CI [34049622019](https://github.com/chiga0/marshal-harness/actions/runs/34049622019) 五项成功后，仅派发一次 [34050602081](https://github.com/chiga0/marshal-harness/actions/runs/34050602081)，实机成功。诊断 artifact `9994442912` 已核对：中断前后均停在第 22 条 `terminalization-barrier`，Run 仍 RUNNING/sequence=3；两次观察的 journal/ingress 摘要相同，并可由最终归档前缀复算。server2 是驱动自己持有的进程，SIGKILL/wait=137；同身份后继 server 完成停止，之后 server3 再执行原 Collect 请求冷恢复，两者正常退出 0。
+
+最终 RB1 40 条 fact 的封闭摘要逐条复算通过，Run 4 条 event，只有一条 attempt-opened；原 Task 的 Attempt=60 秒、Run=600 秒与 creation event/process-start witness 一致，未延长预算。停止意图在原 Attempt deadline 后 0.458190 秒出现，包含崩溃恢复的终态在 deadline 后 4.334296 秒写入。Outcome 为 `BLOCKED/abort/attempt-deadline-exceeded`，规范摘要 `sha256:cc42602cd37872f42fa4467e88e24fac0fa992390674e29611523f6d02d59565`；同 Run/Attempt/stop intent、终态 authority head 和 Collect request key/deadline 在冷恢复中保持一致，无第二 Attempt、Cancel、retry、rework 或 ACCEPTED。
+
+四次 binary observation 完全一致，SHA-256 `912bc611d9d77ebf480c3d2c76ce229fc220846043810bd4b7941263ea39ef69`、CDHash `7f124dadb114c2bf80078346f6cba10fd3de7c67`；本次本地审计仅下载诊断包，未另行下载完整二进制复算。结论只关闭 **barrier 已落盘、Run 尚未终态时的 server 进程中断恢复** 子条件，不代表断电、任意持久化边界或完整故障矩阵。driver 的 `deadlineWitnessVerified=false` 如实保留；上述预算检查是本次对原始材料的额外核对，不改写 driver 结果。
+
+长 Verify 调度修复 `74e8619fa8168abbc76a7eda3f3f647f6882ed6f` 已推送，精确 CI [34050715623](https://github.com/chiga0/marshal-harness/actions/runs/34050715623) 在途。首次 dispatch 34050684925 遇到分支传播延迟选中旧 SHA，已立即取消，不计作新 source 的 CI 或业务重试；后续 dispatch 须核对解析的 headSha。B1 仍 IN_PROGRESS，跨 Run 实机、最终组合与候选合入尚未关闭；B2/B3 不升级。
+
 ## 2026-09-07：验证长事务阻塞其他 Run 的调度修复候选
 
 调用链核对确认：fixed router 的全局 writer lane 覆盖完整 Verify，`sealedRepositoryApplication.VerifyRun` 又把 application mutex 持有到验收命令退出，后台 deadline 的两层 Try 因而只能跳过。Status/Inspect 的旧 mock 测试仅证明绕过调度锁；真实 Inspect 还竞争 Run lease，不能据此声称长验证期间查询都成功。
