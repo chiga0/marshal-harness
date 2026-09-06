@@ -2,6 +2,8 @@
 
 ## 2026-09-06：真实 Pi 已到 VERIFYING，修复 release 与 fixed delivery 的观察衔接
 
+候选 `c6a1609` 的 CI 34025737001 在 Linux 的既有 `TestSuperviseOnceJSONCarriesCompleteDecisionFields` 失败（exit=1，stderr 空）；该测试未输出 JSON 模式的 decision.error，故现场原因尚不能确认。代码核对发现测试子进程的一次非阻塞 Acquire 会与 readiness 的短暂 flock 探测竞争；夹具现仅对 ErrLeaseHeld 有界重试，其他错误仍立即失败，并在断言失败时输出自身生成的 decision JSON。生产获取锁/启动逻辑不变，不能把候选假设记作已证实现场根因；新 source CI 仍是放行条件，不原样重跑取巧。该次 Linux 的 productionruntime 测试通过也不能抵消整套 CI 失败。
+
 PR #263 source `31b64a84b50e41f29f773c31762c0c29b2bc58a5` 经检查后合入 main `4f7311b08bf59f6fad31aaae6661fc253ab0b0b4`；main CI [34023916927](https://github.com/chiga0/marshal-harness/actions/runs/34023916927) 五项通过。唯一后继真实业务 canary [34024740089](https://github.com/chiga0/marshal-harness/actions/runs/34024740089) 已产生 `worker.completed`、`RUNNING→VERIFYING`，RB1 共 36 条事实且末条为 `cleanup-released`。说明该次 Pi 输出已完成解析、结果接纳和终态清理，但尚无 VerificationReport、ReviewPacket、Decision 或 ACCEPTED。
 
 失败为 `commit-lifecycle-delivery/authority-conflict`；小型诊断 artifact `9986706443` 保留。七次 `attempt-still-running` 是同一请求的观察，不是七个新 Attempt；脚本主动注入的 server1 `Killed:9` 是既有重启测试，不是此次根因。不得混用旧的尾随 JSON 失败或声称 Pi 未配置，也不原样重跑这个 head。
