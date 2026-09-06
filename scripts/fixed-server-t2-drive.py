@@ -182,7 +182,7 @@ def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep):
     return summary
 
 
-def cancel_run(call, save, run_id, deadline, now=time.time):
+def cancel_run(call, save, run_id, deadline, now=time.time, previous=None):
     """Prove an explicit operator stop through fixed-client operations only.
 
     No retry follows an uncertain response. The second cancel is a deliberate
@@ -199,16 +199,27 @@ def cancel_run(call, save, run_id, deadline, now=time.time):
     code, value = invoke(["inspect", "--run", run_id])
     if code != 0:
         raise DriveError("cancel-initial-inspect-unavailable")
-    current = run_projection(value, run_id, "RUNNING")
+    if previous is None:
+        current = run_projection(value, run_id, "RUNNING")
+    else:
+        current = run_projection(previous["initial"], run_id, "RUNNING")
+        expected = previous["response"]
+        stopped = run_projection(expected["Projection"]["run"], run_id, "BLOCKED", current, True)
+        if value != stopped:
+            raise DriveError("cancel-recovery-query-mismatch")
     save("cancel-initial-run.json", current)
     frozen = ["--run", run_id, "--attempt", current["attemptId"], "--expected-sequence", str(current["sequence"]),
               "--expected-authority-head", current["authorityHead"], "--deadline", deadline_text]
     request = ["cancel", *frozen, "--request-key", f"t2:{run_id}:cancel:{current['sequence']}"]
+    if previous is not None and previous["request"] != {"args": request}:
+        raise DriveError("cancel-recovery-frozen-request-mismatch")
     save("cancel-request.json", {"args": request})
     code, value = invoke(request)
     save("cancel-response.json", {"exitCode": code, "response": value})
     if code != 0 or not isinstance(value, dict) or not isinstance(value.get("Projection"), dict) or not isinstance(value.get("Receipt"), dict):
         raise DriveError("cancel-unresolved-no-automatic-retry")
+    if previous is not None and value != previous["response"]:
+        raise DriveError("cancel-recovery-receipt-mismatch")
     projection, receipt = value["Projection"], value["Receipt"]
     stopped = run_projection(projection.get("run"), run_id, "BLOCKED", current, True)
     if projection.get("protocolRevision") != "run-stop/v1" or projection.get("terminalReason") != "aborted-by-operator":
@@ -342,20 +353,21 @@ def main():
     parser.add_argument("--timeout-seconds", type=int, default=480)
     parser.add_argument("--await-review-seconds", type=int, default=0)
     parser.add_argument("--cancel", action="store_true", help="verify explicit stop, exact replay and stopped Collect instead of business acceptance")
+    parser.add_argument("--cancel-recovery", action="store_true", help="verify the same proved stop after server restart, without extending its deadline")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     binary = root / "bin" / "marshal"
     evidence = Path(args.evidence_dir)
     if not ID.fullmatch(args.run) or not 1 <= args.timeout_seconds <= 480 or not 0 <= args.await_review_seconds <= 1200:
         parser.error("invalid run/deadline")
-    if args.cancel and args.await_review_seconds:
+    if (args.cancel or args.cancel_recovery) and args.await_review_seconds or args.cancel and args.cancel_recovery:
         parser.error("cancel cannot request independent business acceptance")
     if binary.is_symlink() or not binary.is_file() or binary.resolve() != binary:
         parser.error("fixed bin/marshal is required")
     if not evidence.is_absolute() or evidence.resolve() != evidence or evidence.parent != root / ".marshal" / "fixed-server-t1-canary" / args.run:
         parser.error("evidence-dir must be the fresh t2 child of this Run's canary evidence")
-    if evidence.name != "t2":
-        parser.error("evidence leaf must be t2")
+    if evidence.name != ("t2-recovery" if args.cancel_recovery else "t2"):
+        parser.error("invalid evidence leaf")
     evidence.mkdir(mode=0o700, exist_ok=False)
 
     def save(name, value):
@@ -391,8 +403,33 @@ def main():
         return completed.returncode, value
 
     try:
-        if args.cancel:
-            cancel_run(call, save, args.run, time.time() + args.timeout_seconds)
+        if args.cancel or args.cancel_recovery:
+            previous = None
+            deadline = time.time() + args.timeout_seconds
+            if args.cancel_recovery:
+                prior = evidence.parent / "t2"
+                if prior.is_symlink() or not prior.is_dir() or prior.resolve() != prior:
+                    raise DriveError("cancel-recovery-evidence-path")
+
+                def read_prior(name):
+                    path = prior / name
+                    if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 << 20:
+                        raise DriveError("cancel-recovery-evidence-file")
+                    return json.loads(path.read_bytes())
+
+                subject = read_prior("driver-subject.json")
+                summary = read_prior("cancel-summary.json")
+                response = read_prior("cancel-response.json")
+                if subject["binarySHA256"] != binary_digest or subject["runId"] != args.run or summary["accepted"] is not False or summary["stage"] != "cancelled" or response["exitCode"] != 0:
+                    raise DriveError("cancel-recovery-subject-mismatch")
+                previous = {"initial": read_prior("cancel-initial-run.json"), "request": read_prior("cancel-request.json"), "response": response["response"]}
+                frozen = previous["request"]["args"]
+                # Reconstruct the complete argument list inside cancel_run;
+                # a local evidence file never supplies arbitrary CLI options.
+                deadline = datetime.datetime.fromisoformat(frozen[frozen.index("--deadline") + 1].replace("Z", "+00:00")).timestamp()
+                if not 0 < deadline - time.time() <= args.timeout_seconds:
+                    raise DriveError("cancel-recovery-deadline")
+            cancel_run(call, save, args.run, deadline, previous=previous)
             if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
                 raise DriveError("fixed-binary-drift")
             return 0
@@ -418,6 +455,10 @@ def main():
     except DriveError as exc:
         save("driver-failure.json", {"reasonCode": str(exc), "accepted": False})
         print(f"fixed-server-t2: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError, KeyError, TypeError, IndexError, OverflowError):
+        save("driver-failure.json", {"reasonCode": "driver-evidence-invalid", "accepted": False})
+        print("fixed-server-t2: driver-evidence-invalid", file=sys.stderr)
         return 1
     print("fixed-server-t2: REVIEW_PENDING; independent Decision still required")
     return 0

@@ -97,6 +97,33 @@ class CancelRunTest(unittest.TestCase):
             driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 100)
         self.assertEqual(calls, [])
 
+    def test_restart_uses_original_request_receipt_and_deadline(self):
+        call, calls, saved = self.invoke(self.replies())
+        driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 0)
+        previous = {"initial": saved["cancel-initial-run.json"], "request": saved["cancel-request.json"],
+                    "response": saved["cancel-response.json"]["response"]}
+        replies = self.replies()
+        replies[0] = (0, run("BLOCKED", 4))
+        recovered, recovery_calls, recovery_saved = self.invoke(replies)
+        driver.cancel_run(recovered, recovery_saved.__setitem__, "run-test", 100, now=lambda: 30, previous=previous)
+        self.assertEqual(recovery_calls[1], calls[1])
+        self.assertFalse(recovery_saved["cancel-summary.json"]["accepted"])
+        for kind in ("extended-deadline", "new-attempt", "changed-receipt", "injected-args"):
+            altered = copy.deepcopy(previous)
+            answers = copy.deepcopy(replies)
+            if kind == "new-attempt":
+                answers[0] = (0, run("RUNNING", 3))
+            elif kind == "changed-receipt":
+                answers[1][1]["Projection"]["outcomeDigest"] = "sha256:" + "e" * 64
+            elif kind == "injected-args":
+                altered["request"]["args"].extend(["--actor", "forged"])
+            failed, attempted, evidence = self.invoke(answers)
+            with self.assertRaises(driver.DriveError):
+                driver.cancel_run(failed, evidence.__setitem__, "run-test", 101 if kind == "extended-deadline" else 100,
+                                  now=lambda: 30, previous=altered)
+            self.assertLessEqual(len(attempted), 2)
+            self.assertNotIn("cancel-summary.json", evidence)
+
 
 class FinalizeReviewTest(unittest.TestCase):
     def test_wait_is_bounded_and_invalid_publication_is_not_retried(self):

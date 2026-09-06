@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：停止后的冷 server 验证候选
+
+停止开发分支已推送 `984f45e`，同步 main `5bdec88` 并修正共享 release root adoption：正常完成要求已接纳结果，停止要求 sealed intent 与闭合 eligibility，二者都须在当前 owner 下重读 exact Attempt、release receipt 和 projection bytes。新增非耐久 sealed stop 拒绝反例；compile-only/vet/staticcheck 通过，动态证据待新 source，不借用 #264。
+
+`order-quote-cancel` 场景现延伸至 server2 正常退出、同 bytes server3 冷启动、原请求/原 deadline 的精确取消重放、BLOCKED 查询和 stopped Collect。新 evidence 使用独立 `t2-recovery` 目录，拒绝二进制漂移、deadline 延长、参数注入、终态/receipt 改变；24 项 Python 回归通过。尚未派实机取消，仍缺 signal/cleanup 中途崩溃与业务超时同路径证明；本增量不能关闭 B1。
+
 ## 2026-09-06 10:23 UTC：正常 Collect receipt 修复已远端合并
 
 PR #264 的 source `224409272eb9c30762b8b0e15a2fd730d38db0e8` 经 CI 34026422197 五项及全部附加检查通过，远端 merge SHA 为 `5bdec88d7161771caa2a556c70bbdef576375ff9`，pendingRemoteSync=false；main CI 34027276856 尚在途，尚无新 canary 或 ACCEPTED。同步到停止开发分支后，共享 cleanup 入口会调用新的投影观察校验；停止没有 CommittedResult，必须用已耐久的 stop intent/eligibility 证明其合法终态，不能跳过 root 校验。后续实现与 source 验证另记，不借用正常完成 CI。

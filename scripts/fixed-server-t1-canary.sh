@@ -315,6 +315,29 @@ set -e
 write_process_evidence "$EVIDENCE_ROOT/server2-process.json" "$server2_pid" SIGTERM "$server2_status"
 server2_pid=""
 
+if [ "$SCENARIO" = order-quote-cancel ]; then
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t1-evidence.py observe-binary \
+    --binary "$MARSHAL_BIN" --version-json "$EVIDENCE_ROOT/binary-version.json" \
+    --out "$EVIDENCE_ROOT/binary-server3.json"
+  "$MARSHAL_BIN" control-plane serve >"$EVIDENCE_ROOT/server3-ready.json" \
+    2>"$EVIDENCE_ROOT/server3.stderr" &
+  # Reuse the now-empty owned child slot so the existing EXIT trap reaps it.
+  server2_pid=$!
+  wait_ready "$server2_pid" "$EVIDENCE_ROOT/server3-ready.json"
+  append_audit server3 serve ready-after-cancel
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
+    --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2-recovery" --cancel-recovery
+  assert_server_pid "$server2_pid"
+  kill -TERM "$server2_pid"
+  set +e
+  wait "$server2_pid"
+  server3_status=$?
+  set -e
+  [ "$server3_status" -eq 0 ] || die "server3 未正常退出：$server3_status"
+  write_process_evidence "$EVIDENCE_ROOT/server3-process.json" "$server2_pid" SIGTERM "$server3_status"
+  server2_pid=""
+fi
+
 if [ "$SCENARIO" = t1-marker ]; then
   "$PYTHON_BIN" -I -B scripts/fixed-server-t1-evidence.py check \
     --repository "$ROOT" --evidence-root "$EVIDENCE_ROOT" --binary "$MARSHAL_BIN" \
