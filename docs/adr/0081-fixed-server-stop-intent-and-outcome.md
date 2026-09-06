@@ -76,7 +76,7 @@ Collect 对已完成 stop 使用封闭 `run-stopped` 错误，不伪造 Collecte
 
 常驻写调度必须覆盖整个 `delivery Begin → application → receipt reconcile/commit`，而非只锁 application。HTTP Start（包括精确重放）、Collect/Cancel/Verify/Review/Decision 与后台 deadline/Outcome 恢复共享同一个进程内 writer lane；后台 Try 不排队，公开请求在原有有界 inflight/queue 和请求 context 下等待。Status/Inspect 不经过该 lane。该调度锁不授予业务权限、不代替 durable CAS/Run lease；pending 已耐久后的原 deadline/丢响应恢复语义不变。所有资源的锁顺序为 lane → application mutex（适用时）→ 原有 Run/owner/ledger 规则，禁止在后台 callback 递归发起公开写请求。长写事务造成的停止延迟仍需单独证明，不能把互斥修复称为实时 deadline 保证。
 
-实机候选与发布门禁必须分开：取消候选尚未满足本节实机要求时不得先合并 main，也不能被 main-only release CI gate 阻止验证。仅显式 `order-quote-cancel` 的未合入 `feat/` 分支，允许用 canonical 仓库、workflow dispatch SHA 与 expected-head 相等、同精确 SHA/分支最新手动 CI 五项成功的 candidate-only gate 做隔离实机验证；不创建 tag、release、独立 Decision 或 production 声明。main 上的任何场景及其他场景仍走原 main push CI gate，正式发布脚本和权限不变。此候选验证许可不等于接受本 ADR 或开启正式支持。
+实机候选与发布门禁必须分开：停止候选尚未满足本节实机要求时不得先合并 main，也不能被 main-only release CI gate 阻止验证。仅显式 `order-quote-cancel`、`order-quote-timeout`、`order-quote-run-timeout` 的未合入 `feat/` 分支，允许用 canonical 仓库、workflow dispatch SHA 与 expected-head 相等、同精确 SHA/分支最新手动 CI 五项成功的 candidate-only gate 做隔离实机验证；不创建 tag、release、独立 Decision 或 production 声明。main 上的任何场景及其他场景仍走原 main push CI gate，正式发布脚本和权限不变。此候选验证许可不等于接受本 ADR 或开启正式支持。
 
 当前证据补充：`20a9999` 的 CI 34026216770 五项全绿，覆盖下述 READY 准入。后续 fixed CLI cancel 与显式 `order-quote-cancel` 驱动只补测试入口：request key 派生唯一 stop requestId，未知响应不重试，已证明停止的 Collect 返回非成功退出码。驱动必须验证精确 receipt/Outcome、同请求重放与终态查询，不生成独立 Decision；尚未运行真实取消 canary，不能用脚本测试替代 enable 门槛。
 

@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-06 15:15 UTC：`49f745d` 的 CI 34040876557 五项全绿；已通过精确候选 gate 派发 Run-first/冷恢复 34041702160，以及 Attempt-timeout/冷恢复 34041730043，后者按同 source 并发组排队，不是失联重试。后继 `3c5e734` 补停止 Outcome 部分落盘/冲突/冷 lease 重放组件回归，`7229b30` 修复 canary 未归档原始 Outcome 的清单缺口；本地静态与脚本检查通过，后继动态证据尚待新 source CI。上述实机未完成，B1 仍 IN_PROGRESS，B2/B3 不升级，未合并停止候选或发布 stable。
+
 2026-09-06 14:45 UTC：候选 `dd8178f` 的五项 CI 与自动超时实机 34040069400 通过，原始 60 秒 Attempt deadline 未因 server 重启延长；零 Cancel，停止原因与原始预算来源已独立核对。显式取消/冷恢复和 main 正常业务 ACCEPTED 证据继续保留。B1 尚缺 Run budget 先到期、超时后冷恢复、中途故障与长事务响应上界，仍 IN_PROGRESS；以下为历史检查点，当前汇总以下表为准。
 
 ### 2026-09-06 早期检查点（历史）
