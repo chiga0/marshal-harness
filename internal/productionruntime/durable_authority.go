@@ -510,7 +510,7 @@ func runningAttemptBoundToOwner(attempt resultingress.AttemptAuthorityState, own
 	return attempt.ProcessStartedDigest != "" && attempt.SupervisorStartedDigest != "" &&
 		attempt.SupervisorPendingIntentDigest == "" && attempt.SupervisorInterventionDigest == "" && attempt.SupervisorClosedDigest == "" &&
 		attempt.Owner.OwnerEpoch == owner.Acquisition.OwnerEpoch && attempt.Owner.ControlOwnerAcquiredFactDigest == owner.FactDigest &&
-		attempt.SupervisorBoundAuthorityHead == attempt.HeadDigest
+		resultingress.AttemptSupervisorBindingCurrent(attempt)
 }
 
 func runningAttemptReadyForCloseRecovery(attempt resultingress.AttemptAuthorityState, owner resultingress.ControlOwnerState) bool {

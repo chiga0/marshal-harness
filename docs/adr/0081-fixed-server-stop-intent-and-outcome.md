@@ -9,6 +9,8 @@
 
 ## 从实际调用链发现的问题
 
+2026-09-07 同 owner 续行纠偏：593eb5d 的跨 Run 实机 34052534488 在首次 Collect 前暴露了此前被 Start 后重启掩盖的缺口。启动 owner 的成功 bind 指向 SupervisorStarted，Resume 后 mechanics/current Attempt 指向 ProcessStarted；它不是 owner 漂移，不能要求再造 owner successor。候选修复必须从 current-owner 下重放的同一 Attempt 识别两种已存在绑定：初始 v2 SupervisorStarted 绑定（原始和当前 mechanics 的 owner epoch 均与 current owner 一致），或已完成的 ControlOwnerBinding 绑定。仍保持 exact owner fact、generation、anchor、Run head、pending intent/receipt 和 Attach 的独立实机校验；不新增 wire/持久记录、不伪造 rebind、不以自动重启规避。Collect、Inspect/Terminate、Close 与 composition 恢复判定必须一起覆盖；只修改一处布尔判断不足以关闭该缺口。
+
 2026-09-06 后继验证：`dd8178f` 已通过真实原始 Attempt deadline 自动停止（34040069400），其来源、预算计算和终态 cleanup 引用已在审计记录中核对；不是客户端 timeout 或显式 Cancel。候选继续用等长 60 秒 Run/Attempt budget 验证更早创建的 Run deadline，并在两类 timeout 后用同 bytes 冷 server 重放原 Collect/原 deadline。它不修改本 ADR 的 runtime 语义，尚未升级正式支持；中途故障、响应上界与最新组合路径仍须完成。
 
 当前 `PublicApplicationPort` 没有取消 operation；历史 `internal/server` 的 task cancel 不属于 fixed server 生产入口。`CompositionLedger.terminalizeCompletedAttempt` 只接纳已完成结果，不能直接用于用户取消。`run.aborted` 的闭集也不接受 `RUNNING`。虽然 v2 `TerminatePreparedExecution` 已有 barrier 后的安全终止实现，直接从 HTTP context cancellation 调用它仍缺业务授权和最终 Outcome。

@@ -52,7 +52,7 @@ func (s *DurableStore) collectPreparedExecutionWithTransport(ctx context.Context
 				return err
 			}
 			state, found := projection.attempts[key]
-			if !found || state.Identity != identity || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.CommittedResultFactDigest != "" || state.SupervisorInterventionDigest != "" || state.SupervisorClosedDigest != "" || state.SupervisorPendingIntentDigest != "" && state.SupervisorPendingIntent.Command != processsupervisor.CommandCollect || state.SupervisorBoundAuthorityHead != state.HeadDigest || state.HeadDigest != state.ControlOwnerBindingDigest {
+			if !found || state.Identity != identity || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.CommittedResultFactDigest != "" || state.SupervisorInterventionDigest != "" || state.SupervisorClosedDigest != "" || state.SupervisorPendingIntentDigest != "" && state.SupervisorPendingIntent.Command != processsupervisor.CommandCollect || !preparedCollectBindingCurrent(state) {
 				return ErrPreparedExecutionConflict
 			}
 			scopeKey, err := acquisition.Scope.key()
@@ -159,6 +159,13 @@ func (s *DurableStore) collectPreparedExecutionWithTransport(ctx context.Context
 		})
 	})
 	return result, err
+}
+
+func preparedCollectBindingCurrent(state AttemptAuthorityState) bool {
+	if state.SupervisorStarted.V2 != (SupervisorStartedV2{}) {
+		return AttemptSupervisorBindingCurrent(state)
+	}
+	return state.SupervisorBoundAuthorityHead != "" && state.SupervisorBoundAuthorityHead == state.HeadDigest && state.HeadDigest == state.ControlOwnerBindingDigest
 }
 
 func currentAttachOptions(state AttemptAuthorityState, ownerState ControlOwnerState, identity AttemptIdentity, controlDirectory *os.File, fixedMarshalPath string) (processsupervisor.AttachAuthority, processsupervisor.AttachOptions, error) {

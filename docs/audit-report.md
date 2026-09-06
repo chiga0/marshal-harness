@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-07：不重启 server 的首次 Collect 暴露初始 owner 续行缺口
+
+`593eb5d` 的精确 CI [34051652443](https://github.com/chiga0/marshal-harness/actions/runs/34051652443) 五项通过后，只派发一次跨 Run 实机 [34052534488](https://github.com/chiga0/marshal-harness/actions/runs/34052534488)。实验失败，未进入长 Verify，不能计作跨 Run 调度通过。诊断 artifact `9994993010` 已保留并读取：peer 的 Start 和 Inspect 返回 RUNNING/sequence=3，首次 Collect 已留下 delivery pending，但客户端无 JSON、退出 1；server 明确记录 `sealed-run-compose-runtime/composition-failure` 与 `recover-running-attempt/recovery-required`。RB1 只有一个 attempt-opened、17 条 fact，最后为初始 Resume 成功；另一 Run 尚未启动。没有业务 Decision、完成 Outcome 或新的业务 retry，不能把这个失败排除出实验分母。
+
+原因不是 Pi 响应速度：初始 bind 绑定 SupervisorStarted（revision 7），Resume 后 mechanics/Attempt head 已到 ProcessStarted（revision 8），owner 仍为同一 epoch 1。`runningAttemptBoundToOwner` 却只认可 bound=head，误入 owner-successor rebind；Collect、Inspect/Terminate、Close 的 v2 gate 又只认可恢复后的 ControlOwnerBinding。这解释了旧 canary 在 Start 后重启、再 Collect 可以成功，却没有证明最普通的同 server 连续执行。
+
+本次候选集中修复上述完整接缝：重放后的绑定分类区分初始同 owner 与已完成恢复绑定；初始分支额外核对 v2 generation、原始/current mechanics owner epoch 与 mechanics authority head，仍由调用方持有 current owner/Run/RB1、认证原 Attach 和 journal。新增同一 durable bootstrap→bind→Spawn→ProcessStarted→Resume 直接到 Collect/Close 或 stop/Terminate/Close 的连续回归，复用原丢响应、坏证据拒绝和冷重放测试；不插入 owner 升级或 server 重启。该候选尚待动态 CI 和原跨 Run 实机，未合并 main，不宣称修复已实机通过。
+
+效率纠偏：每次恢复实验必须同时保留一个**不注入故障、不重启**的正常控制路径，不能以恢复分支覆盖代替基础调用链。先聚合相关入口与连续回归，再运行一次精确候选 CI/实机；已失败的 34052534488 不原样重跑。
+
 ## 2026-09-07：跨 Run 长 Verify 与自动停止组合验证接入
 
 在同一 fixed server 的既有 Attempt-timeout canary 增加显式 `verify-peer`，不新增 Worker launcher 或业务状态库。两个 Task 在 server 启动前冻结并批准：peer 真实 Pi 完成订单报价，保留原业务 oracle，并执行 100 秒有界验证命令；命令的诊断 rendezvous 出现后，驱动才经公开 Start 启动另一个 60 秒 Attempt Run。所有 Start/Collect/Verify/ReviewPacket/Inspect 仍走 fixed control-plane，未知错误不重试，不创建 Decision。

@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
@@ -106,14 +107,19 @@ func preparedBootstrapForState(t *testing.T, fixture preparedExecutionFixture, s
 }
 
 func TestLauncherV2BootstrapUsesExistingDurableAdmissionAndColdReplay(t *testing.T) {
-	testLauncherV2DurableLifecycle(t, false)
+	testLauncherV2DurableLifecycle(t, false, false)
 }
 
 func TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply(t *testing.T) {
-	testLauncherV2DurableLifecycle(t, true)
+	testLauncherV2DurableLifecycle(t, true, false)
 }
 
-func testLauncherV2DurableLifecycle(t *testing.T, terminate bool) {
+func TestLauncherV2SameOwnerContinuesWithoutRestart(t *testing.T) {
+	t.Run("collect-close", func(t *testing.T) { testLauncherV2DurableLifecycle(t, false, true) })
+	t.Run("stop-close", func(t *testing.T) { testLauncherV2DurableLifecycle(t, true, true) })
+}
+
+func testLauncherV2DurableLifecycle(t *testing.T, terminate, sameOwner bool) {
 	fixture := newPreparedExecutionFixture(t)
 	state := fixture.storeStateAfterPrepared(t, fixture)
 	_, request := testBootstrapV2Input()
@@ -328,12 +334,12 @@ func testLauncherV2DurableLifecycle(t *testing.T, terminate bool) {
 	if err := json.Unmarshal(line, &outcomeFact); err != nil || outcomeFact.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().CommandRecoveryRevision {
 		t.Fatalf("outcome lost v2 recovery generation: %v", err)
 	}
-	testLauncherV2StartedAndResume(t, fixture, projection, next, terminate)
+	testLauncherV2StartedAndResume(t, fixture, projection, next, terminate, sameOwner)
 }
 
 // Continue the same durable business chain, not an independently seeded
 // registry. The only fake is the peer report; no executable is launched.
-func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixture, projection *Ingress, state AttemptAuthorityState, terminate bool) {
+func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixture, projection *Ingress, state AttemptAuthorityState, terminate, sameOwner bool) {
 	t.Helper()
 	_, provision, err := currentPreparedProvisionReceipt(projection, state)
 	if err != nil {
@@ -455,7 +461,45 @@ func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixtu
 	if _, err := exactSuccessfulResume(replayed); err == nil {
 		t.Fatal("resume accepted unrelated business started fact")
 	}
-	testLauncherV2OwnerRebind(t, fixture, state, terminate)
+	if !sameOwner {
+		testLauncherV2OwnerRebind(t, fixture, state, terminate)
+		return
+	}
+	if !AttemptSupervisorBindingCurrent(state) || !preparedCollectBindingCurrent(state) || state.HeadDigest == state.SupervisorBoundAuthorityHead {
+		t.Fatal("real initial bind/resume chain incorrectly requires owner recovery")
+	}
+	for name, mutate := range map[string]func(*AttemptAuthorityState){
+		"owner-epoch":  func(s *AttemptAuthorityState) { s.Owner.OwnerEpoch++ },
+		"binding-head": func(s *AttemptAuthorityState) { s.SupervisorBoundAuthorityHead = attemptTestDigest("wrong-binding") },
+		"mechanics-head": func(s *AttemptAuthorityState) {
+			s.SupervisorMechanicsAuthorityHead = attemptTestDigest("wrong-mechanics")
+		},
+		"missing-owner-binding": func(s *AttemptAuthorityState) { s.ControlOwnerBindingRevision = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := state
+			mutate(&changed)
+			if AttemptSupervisorBindingCurrent(changed) || preparedCollectBindingCurrent(changed) {
+				t.Fatal("drifted initial binding accepted")
+			}
+		})
+	}
+	owner, found, err := fixture.store.OpenOwner(state.Owner.Scope)
+	if err != nil || !found {
+		t.Fatal("missing original owner", err)
+	}
+	verifier := attemptOwnerVerifier{want: owner.Acquisition}
+	directory, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	if terminate {
+		report.State, report.ObservedAt = "terminal", time.Now().UTC().Format(time.RFC3339Nano)
+		testLauncherV2TerminalCommand(t, fixture, state, owner, verifier, directory, report, processsupervisor.CommandTerminate)
+	} else {
+		testLauncherV2Collect(t, fixture, state, owner, verifier, directory)
+	}
 }
 
 type preparedFakeClientV2 struct {
