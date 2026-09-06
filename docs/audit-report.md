@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：真实业务进入 VERIFYING，响应 receipt 尚未闭环
+
+main `4f7311b` 的 CI 34023916927 全绿后，仅派发一次 [34024740089](https://github.com/chiga0/marshal-harness/actions/runs/34024740089)。小型诊断 artifact `9986706443` 已保留：Run event 第四条为 `worker.completed/RUNNING→VERIFYING`，authority 账本有 36 条事实并已到 `cleanup-released`。因此新 prompt 对本次真实输出有效，WorkerResult/接纳/清理已越过旧失败点；不能据此保证未来模型永不违约。随后 server 报 `commit-lifecycle-delivery/authority-conflict`，客户端报 `fixed-cli-invalid-response`。尚无 Verify、ReviewPacket、独立 Decision 或 ACCEPTED。恢复测试中 server1 的 Killed:9 是既有显式故障注入，不拿它替代本次 receipt 问题的根因。后继必须核对 receipt 的当前 Run/owner/目录绑定与提交链，不重新执行已完成业务，也不原样重跑。
+
+取消纵切本轮接入 fixed server 常驻超时推进及 event 后 Outcome 恢复，并补有界公平批次、关闭取消、串行消费和不排队阻塞 public mutation 的测试。608ae0b 的两平台动态 CI 失败于新测试夹具混合 v2 reservation 与历史 ProcessStarted；已改用完整 Supervisor 启动/Collect 证据链。原 session Close 死锁未再出现在该次输出中，但最新常驻候选仍待动态验证；不得把 compile-only 当成故障矩阵通过。停止纵切继续隔离，不合入 main，不升级 B1。
+
 ## 2026-09-06：取消/超时后的 Collect 必须停止等待
 
 继续 ADR 0081 纵切时发现：底层停止完成后返回 deadline sentinel，被通用 authority 映射改成 `authority-conflict`，fixed transport 又保留 pending；这会让客户端在已停止 Run 上继续等待。候选新增封闭 `run-stopped`，只在 terminal event、cleanup 和 Outcome 已验证后返回。已终态或 constructor 恢复中完成 stop 的 Collect 重放不重新打开已释放 worktree，而由 repository session 将原 current-request 连接到已存 stop intent，再执行同一终态核验。认证 HTTP 409 与客户端分类同时接通，零成功 receipt、零冒充业务 ACCEPTED。

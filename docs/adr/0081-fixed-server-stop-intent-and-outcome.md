@@ -67,6 +67,8 @@ Collect 对已完成 stop 使用封闭 `run-stopped` 错误，不伪造 Collecte
 
 ### 接受与 enable 门槛
 
+常驻调度候选复用 fixed server 自身生命周期：启动恢复时登记 RUNNING Run，StartRun 在可能提交启动结果前登记；索引和轮询游标只存在内存、可由账本重建。每秒最多公平处理三个 Run，每轮 30 秒 context 上限；后台不排队抢占正在执行的 public mutation。每次推进重新读取 Run、当前 owner、原业务预算和 Attempt，调用同一 stop barrier/cleanup，而不是自行构造 deadline 或 PID。server shutdown 先取消并 drain 此循环，再释放 delivery/session/owner。停止事件后 Outcome 未完成的 BLOCKED Run 在启动扫描和活跃项处理中走已存意图恢复；不能因为 Run 已非 RUNNING 就永久漏掉 Outcome。该候选尚需实机故障和容量验证；长 public mutation 的 deadline 响应上界及 READY 阶段准入仍待关闭。
+
 实现核对发现：`ReadRunStartAuthorityUnderLease` 只在 `READY/RUNNING` 返回启动 worktree 等冻结输入，`BLOCKED` 终态不返回这些字段。因此 event 后丢响应的恢复不能再次走 `openRun`，也不能为了恢复响应补造 worktree/launch closure。已提交终态的 Outcome 补齐由 `RepositorySession.ReconcileStoppedRun` 在现有 Run lease、当前 owner 和 ingress 下直接连接原请求、当前 Attempt cleanup 与精确 `worker.stopped` 事件；它不得创建停止意图、启动/Attach Worker 或消费预算。尚未提交 terminal event 的停止仍走原 runtime cleanup 恢复，两条路径不能混用。
 
 当前取消实现仍是未发布的纵切候选：已接入 public `CancelRun`、fixed `/v1/runs/cancel` 与原 delivery pending/receipt，贯穿 barrier 意图模型、terminal eligibility/cleanup、封闭 `worker.stopped` 和终态 Outcome 恢复；原始业务预算读取、deadline admission transaction 检查与已有 stop intent 的恢复 cleanup 已接入候选。READY 到期准入、resident timer、对外停止状态/错误闭环和完整故障矩阵仍未完成。允许在隔离开发分支保存候选并运行 hosted CI，不能合并放行或声称 B1 已完成。当前本地 Go 检查为 compile-only（不执行测试二进制），另有 vet/staticcheck、架构与 diff 检查；新增动态测试和 race 仍需对应 sourceHead 的 hosted CI 证据。f41b3aa 的 Linux contract/metaschema 检查通过不能替代最新候选动态验证；该版本 macOS session 关闭测试死锁另已定位修复，不原样重跑。不得把这些编译结果记作业务通过。

@@ -122,6 +122,15 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 	requestCtx, cancelRequests := context.WithCancel(context.Background())
 	defer cancelRequests()
 	var requests sync.WaitGroup
+	deadlineCtx, cancelDeadlines := context.WithCancel(ctx)
+	defer cancelDeadlines()
+	requests.Add(1)
+	go func() {
+		defer requests.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		driveBusinessDeadlines(deadlineCtx, ticker.C, applicationAdapter.advanceBusinessDeadlines, func(err error) { writeControlPlaneRequestFailure(stderr, err) })
+	}()
 	stop := make(chan struct{})
 	go func() {
 		select {
@@ -157,6 +166,7 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 		}()
 	}
 	close(stop)
+	cancelDeadlines()
 	stopErr := endpoint.StopAccept()
 	if !drainControlPlaneRequests(&requests, cancelRequests, controlPlaneDrainTimeout, controlPlaneCancelTimeout) {
 		// The process returns without releasing owner resources. main exits the

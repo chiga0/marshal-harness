@@ -103,6 +103,12 @@ func openFreshStartedAttempt(t *testing.T, store *ingressDurableStore) AttemptAu
 		t.Fatal(err)
 	}
 	opened := openedResult.State
+	return startFreshAttemptFromOpened(t, store, opened)
+}
+
+func startFreshAttemptFromOpened(t *testing.T, store *DurableStore, opened AttemptAuthorityState) AttemptAuthorityState {
+	t.Helper()
+	id := opened.Identity
 	opened = appendTestAcceptedProvision(t, store, opened)
 	authorizedResult, err := appendAuthorizedAttempt(t, store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-1"})
 	if err != nil {

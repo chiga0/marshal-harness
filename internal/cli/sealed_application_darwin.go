@@ -61,6 +61,9 @@ type sealedRepositoryApplication struct {
 	closed        bool
 	statusProfile productionruntime.PiProfile
 	validator     *contract.Validator
+	// Rebuildable scheduling hints only; every tick reloads Run authority.
+	deadlineRuns   map[string]struct{}
+	deadlineCursor string
 }
 
 var _ application.PublicApplicationPort = (*sealedRepositoryApplication)(nil)
@@ -319,14 +322,21 @@ func (adapter *sealedRepositoryApplication) recoverRepositoryRuns(ctx context.Co
 		if releaseErr != nil {
 			return errors.Join(application.NewError("recover-release-run", application.ReasonAuthorityConflict), releaseErr)
 		}
+		if authority.Run.State == domain.StateBlocked {
+			if _, _, err := adapter.session.RecoverStoppedRun(ctx, runID); err != nil {
+				return err
+			}
+		}
 		if authority.Run.State != domain.StateRunning {
 			continue
 		}
+		adapter.trackDeadlineRun(runID)
 		run, err := adapter.openRun(ctx, runID)
 		if err != nil {
 			return errors.Join(application.NewError("recover-open-running-run", application.ReasonCompositionIncomplete), err)
 		}
-		if err := run.Close(); err != nil {
+		advanceErr := run.runtime.ReconcileBusinessStop(ctx, runID)
+		if err := errors.Join(advanceErr, run.Close()); err != nil {
 			return errors.Join(application.NewError("recover-close-running-run", application.ReasonAuthorityConflict), err)
 		}
 	}
@@ -359,6 +369,9 @@ func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, reques
 		return application.RunStartProjection{}, err
 	}
 	defer run.Close()
+	// Register before Start: a lost start response must not omit a newly
+	// RUNNING Run from resident deadline processing.
+	adapter.trackDeadlineRun(request.RunID)
 	started, err := run.runtime.StartRun(ctx, request)
 	if err != nil {
 		return application.RunStartProjection{}, err

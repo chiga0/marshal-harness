@@ -5,9 +5,11 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
 
-func deadlineAdmissionFixture(t *testing.T) (*DurableStore, *Ingress, AttemptAuthorityState, BusinessDeadlineWitness) {
+func deadlineAdmissionFixture(t *testing.T) (*DurableStore, *Ingress, AttemptAuthorityState, BusinessDeadlineWitness, string) {
 	t.Helper()
 	store, err := OpenResultIngressStore(t.TempDir())
 	if err != nil {
@@ -15,12 +17,15 @@ func deadlineAdmissionFixture(t *testing.T) (*DurableStore, *Ingress, AttemptAut
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	opened := appendFreshReservedAttempt(t, store, attemptTestIdentity())
-	provisioned := appendTestAcceptedProvision(t, store, opened)
-	authorized, err := appendAuthorizedAttempt(t, store, provisioned.Revision, provisioned.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: opened.Identity, LaunchAuthorizationID: "deadline-test-launch"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	started := appendHistoricalAttemptTransition(t, store, authorized.State, AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: opened.Identity, CommandID: "deadline-test-command", ObservedAt: "2026-08-28T00:00:02Z", Process: attemptTestProcess(t), LaunchMaterialsDigest: authorized.State.LaunchMaterialsDigest, AgentLaunchSpecDigest: authorized.State.AgentLaunchSpecDigest})
+	started := startFreshAttemptFromOpened(t, store, opened)
+	started = appendTestSupervisorReconnect(t, store, started)
+	intent := testSupervisorIntent(started, processsupervisor.CommandCollect, SupervisorCommandRebuildProjection{ProcessStartedFactDigest: started.ProcessStartedDigest, LastObservationDigest: supervisorLastObservation(started)})
+	outcome := started.ProcessStartedEvidence.Outcome
+	outcome.State, outcome.MechanicsState = SupervisorTranscriptCollected, "terminal"
+	outcome.ObservedAt = "2026-08-28T00:00:03Z"
+	outcome.StdoutDigest, outcome.StderrDigest, outcome.TranscriptDigest = attemptTestDigest("stdout"), attemptTestDigest("stderr"), attemptTestDigest("transcript")
+	outcome.StdoutBytes, outcome.StderrBytes = 10, 2
+	started, collectDigest := appendTestSupervisorCheckpoint(t, store, started, intent, outcome, "ok")
 	ingress, err := NewDurableIngress(attemptTestBinding(), store)
 	if err != nil {
 		t.Fatal(err)
@@ -31,7 +36,7 @@ func deadlineAdmissionFixture(t *testing.T) (*DurableStore, *Ingress, AttemptAut
 	if err != nil {
 		t.Fatal(err)
 	}
-	return store, ingress, started, w
+	return store, ingress, started, w, collectDigest
 }
 
 func deadlineObservation() ResultObservationBinding {
@@ -41,14 +46,14 @@ func deadlineObservation() ResultObservationBinding {
 func TestBusinessDeadlineAdmissionBoundaryAndReplay(t *testing.T) {
 	for _, offset := range []time.Duration{-time.Nanosecond, 0, time.Nanosecond} {
 		t.Run(offset.String(), func(t *testing.T) {
-			store, ingress, started, witness := deadlineAdmissionFixture(t)
+			store, ingress, started, witness, collectDigest := deadlineAdmissionFixture(t)
 			deadline, _, err := witness.Effective()
 			if err != nil {
 				t.Fatal(err)
 			}
 			ingress.clock = func() time.Time { return deadline.Add(offset) }
 			drc, envelope := attemptTestDRCForState(started, KindWorkerResult, 1)
-			fact, err := ingress.AdmitWithBusinessDeadline(context.Background(), drc, envelope, "", deadlineObservation(), witness)
+			fact, err := ingress.AdmitWithBusinessDeadline(context.Background(), drc, envelope, collectDigest, deadlineObservation(), witness)
 			if offset >= 0 {
 				if !errors.Is(err, ErrBusinessDeadlineExceeded) {
 					t.Fatalf("late admission: %v", err)
@@ -69,7 +74,7 @@ func TestBusinessDeadlineAdmissionBoundaryAndReplay(t *testing.T) {
 				t.Fatal(err)
 			}
 			recovered.clock = func() time.Time { return deadline.Add(time.Hour) }
-			replay, err := recovered.AdmitWithBusinessDeadline(context.Background(), drc, envelope, "", deadlineObservation(), witness)
+			replay, err := recovered.AdmitWithBusinessDeadline(context.Background(), drc, envelope, collectDigest, deadlineObservation(), witness)
 			if err != nil || !replay.IdempotentReplay || replay.FactDigest != fact.FactDigest {
 				t.Fatalf("lost committed winner: %+v %v", replay, err)
 			}
@@ -85,11 +90,11 @@ func TestBusinessDeadlineAdmissionRejectsSourceDrift(t *testing.T) {
 		"derived-deadline": func(w *BusinessDeadlineWitness) { w.AttemptDeadline = "2026-08-29T00:00:05Z" },
 	} {
 		t.Run(name, func(t *testing.T) {
-			store, ingress, started, witness := deadlineAdmissionFixture(t)
+			store, ingress, started, witness, collectDigest := deadlineAdmissionFixture(t)
 			ingress.clock = func() time.Time { return time.Date(2026, 8, 28, 0, 0, 3, 0, time.UTC) }
 			mutate(&witness)
 			drc, envelope := attemptTestDRCForState(started, KindWorkerResult, 1)
-			if _, err := ingress.AdmitWithBusinessDeadline(context.Background(), drc, envelope, "", deadlineObservation(), witness); err == nil {
+			if _, err := ingress.AdmitWithBusinessDeadline(context.Background(), drc, envelope, collectDigest, deadlineObservation(), witness); err == nil {
 				t.Fatal("forged deadline admitted")
 			}
 			current, found, err := store.AttemptState(started.Identity)

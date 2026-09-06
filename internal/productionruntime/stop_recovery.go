@@ -30,6 +30,15 @@ func (session *RepositorySession) ReconcileStoppedCurrentRun(ctx context.Context
 	return session.reconcileStoppedRun(ctx, application.CancelRunRequest{CurrentRunRequest: request})
 }
 
+// RecoverStoppedRun is resident recovery, not a new cancel request. Both the
+// selected Attempt and its original request come from current stored facts.
+func (session *RepositorySession) RecoverStoppedRun(ctx context.Context, runID string) (application.CancelRunProjection, bool, error) {
+	if ctx == nil || (application.InspectRunRequest{RunID: runID}).Validate() != nil {
+		return application.CancelRunProjection{}, false, application.NewError("recover-stopped-run", application.ReasonInvalidRequest)
+	}
+	return session.reconcileStoppedRun(ctx, application.CancelRunRequest{CurrentRunRequest: application.CurrentRunRequest{RunID: runID}})
+}
+
 func (session *RepositorySession) reconcileStoppedRun(ctx context.Context, request application.CancelRunRequest) (result application.CancelRunProjection, found bool, resultErr error) {
 	borrow, err := session.borrow()
 	if err != nil {
@@ -53,6 +62,10 @@ func (session *RepositorySession) reconcileStoppedRun(ctx context.Context, reque
 		if read.Run.State != domain.StateBlocked {
 			return nil
 		}
+		deriveStoredRequest := request.AttemptID == ""
+		if deriveStoredRequest {
+			request.AttemptID = read.Run.AttemptID
+		}
 		if read.Run.RunID != request.RunID || read.Run.AttemptID != request.AttemptID {
 			return application.NewError("reconcile-stopped-run", application.ReasonAuthorityConflict)
 		}
@@ -68,8 +81,15 @@ func (session *RepositorySession) reconcileStoppedRun(ctx context.Context, reque
 				terminal, matches = state, matches+1
 			}
 		}
+		if deriveStoredRequest && (matches == 0 || matches == 1 && terminal.StopIntent == (resultingress.AttemptStopIntent{})) {
+			return nil
+		}
 		if matches != 1 {
 			return application.NewError("reconcile-stopped-run", application.ReasonAuthorityConflict)
+		}
+		if deriveStoredRequest {
+			request.ExpectedSequence = terminal.StopIntent.ExpectedSequence
+			request.ExpectedAuthorityHead = terminal.StopIntent.ExpectedAuthorityHead
 		}
 		if request.RequestID == "" {
 			request.RequestID = terminal.StopIntent.RequestID

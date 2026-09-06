@@ -10,6 +10,29 @@ import (
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
+// ReconcileBusinessStop consumes only immutable sources under this Run's
+// current owner and lease. The resident scheduler supplies no deadline/PID.
+func (l *CompositionLedger) ReconcileBusinessStop(ctx context.Context, verifier resultingress.CurrentOwnerLockVerifier, acquisition resultingress.ControlOwnerAcquisition, runID string) error {
+	if l == nil || ctx == nil || ctx.Err() != nil || runID == "" {
+		return application.NewError("reconcile-business-stop", application.ReasonInvalidRequest)
+	}
+	if _, err := l.CurrentOwner(ctx, verifier, acquisition); err != nil {
+		return err
+	}
+	read, attempt, running, err := l.currentRunningAttempt(ctx)
+	if err != nil {
+		return err
+	}
+	if !running {
+		return nil
+	}
+	if read.Run.RunID != runID {
+		return application.NewError("reconcile-business-stop", application.ReasonAuthorityConflict)
+	}
+	_, _, err = l.stopDueAttempt(ctx, verifier, acquisition, read, attempt)
+	return err
+}
+
 func (l *CompositionLedger) currentBusinessDeadline(ctx context.Context, read runstore.RunStartAuthorityProjection, attempt resultingress.AttemptAuthorityState) (resultingress.BusinessDeadlineWitness, error) {
 	budget, err := l.runs.ReadBusinessBudgetUnderLease(ctx, l.runLease)
 	if err != nil || budget.Run != read.Run || attempt.Identity.RunID != read.Run.RunID || attempt.Identity.AttemptID != read.Run.AttemptID || attempt.ProcessStartedDigest == "" {
