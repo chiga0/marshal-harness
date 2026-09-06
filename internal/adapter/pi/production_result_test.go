@@ -102,6 +102,47 @@ func TestExtractFinalWorkerResultFailsClosed(t *testing.T) {
 	}
 }
 
+func TestProductionFinalCarrierDoesNotImposeAssistantShapeOnHistory(t *testing.T) {
+	declared, err := json.Marshal(validDeclaredResult("worker-claim"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		history any
+		final   any
+		want    string
+	}{
+		{"user-string", map[string]any{"role": "user", "content": "ordinary user prompt"}, []any{map[string]any{"type": "text", "text": string(declared)}}, ""},
+		{"custom-string", map[string]any{"role": "custom", "content": "extension context"}, []any{map[string]any{"type": "text", "text": string(declared)}}, ""},
+		{"user-array", map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "request"}}}, []any{map[string]any{"type": "text", "text": string(declared)}}, ""},
+		{"final-string-rejected", map[string]any{"role": "user", "content": "request"}, string(declared), "pi-result-final-content-shape"},
+		{"final-tool-rejected", map[string]any{"role": "user", "content": "request"}, []any{map[string]any{"type": "toolCall", "text": string(declared)}}, "pi-result-final-content-type"},
+		{"two-text-rejected", map[string]any{"role": "user", "content": "request"}, []any{map[string]any{"type": "text", "text": string(declared)}, map[string]any{"type": "text", "text": string(declared)}}, "pi-result-final-content-text"},
+		{"history-not-result", map[string]any{"role": "user", "content": string(declared)}, []any{map[string]any{"type": "text", "text": "no result"}}, "pi-result-final-object-missing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			end, err := json.Marshal(map[string]any{"type": "agent_end", "willRetry": false, "messages": []any{tc.history, map[string]any{"role": "assistant", "stopReason": "stop", "content": tc.final}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC)
+			record, err := ParseProductionWorkerResult(context.Background(), ProductionResultInput{
+				Transcript: []byte(jsonLines(captureSessionHeader("session-1"), `{"type":"agent_start"}`, string(end))),
+				Worktree:   "/worktree", TaskID: "TASK-1", RunID: "run-1", AttemptID: "attempt-1",
+				Executable: "/usr/local/bin/pi", Version: "0.84.4", StartedAt: started, CompletedAt: started.Add(time.Second), MaxOutputBytes: 1 << 20,
+			})
+			if tc.want == "" {
+				if err != nil || record.Kind != "WorkerResult" || len(record.Data) == 0 {
+					t.Fatalf("valid Pi message union rejected: %v", err)
+				}
+			} else if !errors.Is(err, ErrProtocol) || ProductionResultFailureCode(err) != tc.want || len(record.Data) != 0 {
+				t.Fatalf("code=%q expected=%q err=%v", ProductionResultFailureCode(err), tc.want, err)
+			}
+		})
+	}
+}
+
 // ADR 0075 F3：终态 assistant 文本容忍散文，但全文必须恰好有一个完整
 // JSON 对象且其后只含空白；0 个或多个完整对象、截断与尾随非空白一律
 // fail closed。

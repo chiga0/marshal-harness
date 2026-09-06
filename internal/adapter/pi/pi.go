@@ -1037,6 +1037,7 @@ type captureResult struct {
 	toolNames         []string
 	limitExceeded     bool
 	providerFailed    bool
+	failurePhase      string // closed diagnostic location, never provider text
 	err               error
 }
 
@@ -1429,6 +1430,7 @@ func captureTranscript(ctx context.Context, reader io.Reader, worktree string, l
 	summarizationRetryPhase := 0
 	pending := map[string]json.RawMessage{}
 	terminated := false
+	phase := "read"
 	terminate := func() {
 		if !terminated {
 			terminated = true
@@ -1438,6 +1440,7 @@ func captureTranscript(ctx context.Context, reader io.Reader, worktree string, l
 	fail := func(reason error) {
 		if result.err == nil {
 			result.err = reason
+			result.failurePhase = phase
 			terminate()
 		}
 	}
@@ -1748,6 +1751,7 @@ func captureTranscript(ctx context.Context, reader io.Reader, worktree string, l
 		state = statePostAgentEnd
 	}
 	handle := func(fragment []byte) {
+		phase = "json"
 		trimmed := bytes.TrimSpace(fragment)
 		if len(trimmed) == 0 {
 			fail(fmt.Errorf("%w: blank JSONL fragment is not an event", ErrProtocol))
@@ -1760,6 +1764,7 @@ func captureTranscript(ctx context.Context, reader io.Reader, worktree string, l
 		}
 		result.eventCount++
 		if result.eventCount == 1 {
+			phase = "session"
 			if event.Type != "session" {
 				fail(fmt.Errorf("%w: first event must be the session header", ErrProtocol))
 				return
@@ -1774,6 +1779,19 @@ func captureTranscript(ctx context.Context, reader io.Reader, worktree string, l
 			}
 			result.sessionID = event.ID
 			return
+		}
+		phase = "event"
+		switch event.Type {
+		case "agent_end":
+			phase = "agent-end"
+		case "tool_execution_start", "tool_execution_end", "tool_execution_update":
+			phase = "tool"
+		case "compaction_start", "compaction_end", "compaction_retry":
+			phase = "compaction"
+		case "auto_retry_start", "auto_retry_end":
+			phase = "retry"
+		case "agent_settled":
+			phase = "settled"
 		}
 		switch state {
 		case stateActive, stateRetryActive:
@@ -1891,6 +1909,7 @@ func captureTranscript(ctx context.Context, reader io.Reader, worktree string, l
 		}
 	}
 	for {
+		phase = "framing"
 		fragment, err := buffered.ReadSlice('\n')
 		if len(fragment) > 0 && result.err == nil && !result.limitExceeded {
 			room := limit - received
@@ -1925,10 +1944,12 @@ func captureTranscript(ctx context.Context, reader io.Reader, worktree string, l
 				switch {
 				case !errors.Is(err, io.EOF):
 					result.err = err
+					result.failurePhase = "read"
 					terminate()
 				case len(line) > 0:
 					fail(fmt.Errorf("%w: final fragment is not LF-terminated", ErrProtocol))
 				case !state.closed():
+					phase = "closure"
 					fail(eofClosureError(state))
 				case state == statePostAgentEnd || state == stateTerminalProviderFailure:
 					result.providerFailed = pendingProviderFailure

@@ -1,18 +1,18 @@
 # Roadmap 状态
 
-2026-09-05 15:44 UTC 最新实机结果：main `a6fe94f` 的 CI 33974743678 五项全绿；真实 Pi 订单报价 canary 33975628490 已完成 Start 丢响应、服务重启、owner rebind 和原请求重放。Collect 收到成功 transcript receipt 后接纳报 authority-conflict，尚未独立 Verify/ACCEPTED；没有原样重试。失败证据与边界见 [审计记录](audit-report.md)。同宿主外部 ReviewDecision 载体已形成默认关闭的候选（ADR 0082），本地 27 项定向测试通过，尚未部署/实机验证。B1 为 IN_PROGRESS，B2/B3 仍 PLANNED。
+2026-09-06 03:01 UTC 最新实机结果：main `80dc39f` 的 CI 34007198729 五项全绿；单次 canary 34007829215 已完成真实启动/恢复与 transcript 读取，但以 `pi-result-final-message/authority-conflict` 停止，尚无 Verify/ReviewPacket/ACCEPTED。当前修复经已安装 Pi 类型定义确认的非终态消息字符串/数组联合类型不匹配，并补最终载体的封闭失败分类；尚未证明它是此次现场的唯一根因，不原样重跑。B1 为 IN_PROGRESS，B2/B3 仍 PLANNED，详见 [审计记录](audit-report.md)。
 
-更新时间：2026-09-05（ADR 0080 三面分离与业务交付路线；不升级历史成熟度）
+更新时间：2026-09-06（ADR 0080 三面分离与业务交付路线；不升级历史成熟度）
 
 ## 业务交付当前表
 
-当前已合入基线为 `origin/main@a6fe94f6dd3fe8a177e50f1644f4c74ae0096a6f`（[PR #259](https://github.com/chiga0/marshal-harness/pull/259)，sourceHead `c1590a5533c065e7a17e0d7d95494166e59502a0`）。精确 source CI [33973809127](https://github.com/chiga0/marshal-harness/actions/runs/33973809127) 五项全部通过后，于 2026-09-05 15:25 UTC 远端合并；该 PR 无 pendingRemoteSync。main push CI [33974743678](https://github.com/chiga0/marshal-harness/actions/runs/33974743678) 随后启动，新实机结果尚未取得。#258 的诊断使前轮 canary 33971611314 定位到 `adopt-existing-worktree-projection-root`，#259 已修复生产布局与夹具脱节，并修正首轮 CI 暴露的通知 recorder 竞态；这不是 Pi 配置失败，也不代表 B1 完成。
+当前已合入基线为 `origin/main@80dc39fb060c0bee885e8945a8dcf28f6500f7c0`（[PR #261](https://github.com/chiga0/marshal-harness/pull/261)，sourceHead `01c4a545847ce99cb7624ad18c33b4d7b655954f`）。精确 source CI 34006591660 五项全部通过后，于 2026-09-06 02:43 UTC 远端合并；该 PR 无 pendingRemoteSync。main push CI [34007198729](https://github.com/chiga0/marshal-harness/actions/runs/34007198729) 单独全绿后，仅派发一次 [34007829215](https://github.com/chiga0/marshal-harness/actions/runs/34007829215)，失败位置进一步缩小到最终消息提取。#259 的布局修复没有复发；Pi 已真实运行，不是未配置。原始 transcript 未进入公开诊断 artifact，不能把尚未实证的猜测当根因。后继候选与取消/超时工作区分离，禁止混用 head/CI 或宣称业务已接纳。
 
-后继 `feat/b1-live-review` 基于该 main 补同机独立 Decision：已接入客户端的 current-head/receipt/Outcome/终态查询校验和有界等待，18 项 injected/文件边界测试通过。托管 runner 的评审包即时上传与独立 Decision 交付通道仍在实施；尚未整体提交/启用，不将 helper 测试算成真实 ACCEPTED。
+同机独立 Decision 载体已随 #260 整体合入，默认关闭、仅显式 `live-review=true` 启用。客户端 current-head/receipt/Outcome/终态查询校验、上传与外部 Decision 原文递交通道已有 27 项 Node/Python 回归与 source hosted CI；仍无真实 ACCEPTED，不把测试设施合入当作业务验收。新阶段诊断只用于缩小 Collect 根因，不宣称修复已发生。
 
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | 前轮 RB1 已有 `process-started` 及成功 Resume；目录布局根因与真实布局回归已合入、source 动态/race 全绿，实机复验仍开放；同机独立 Decision 客户端接线实施中 | 修复版本实机；真实业务 Collect/Verify/独立 Decision/ACCEPTED；正常与故障路径证据；取消/超时 Outcome 与持续推进 |
+| B1 完整单任务服务 | `IN_PROGRESS` | 真实 Start/丢响应/重启/rebind/replay 与 transcript-collected 已完成；同机独立 Decision 载体已合入并通过 source CI | Collect 后接纳根因；真实业务 Verify/独立 Decision/ACCEPTED；正常与故障路径证据；取消/超时 Outcome 与持续推进 |
 | B2 受限 Agent Team | `PLANNED` | ADR 0080 目标与 ADR 0019 组件可复用 | approved plan 耐久物化/调度、两个到三个实现节点、集成候选业务验收、局部 replan、暂停恢复 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
