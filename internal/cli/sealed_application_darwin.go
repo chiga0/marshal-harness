@@ -452,11 +452,17 @@ func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, reques
 		return application.RunStartProjection{}, err
 	}
 	if state.State == domain.StateReady {
-		if err := controlplane.Require(controlplane.ApprovalInput{
-			StateRoot: adapter.stateRoot, RunID: request.RunID, Gate: domain.ApprovalGatePlan,
-			Validator: adapter.validator, LocalSelfIdentity: adapter.entryIdentity,
-		}); err != nil {
+		teamMember, err := adapter.session.RequireInitialTeamRunPlan(ctx, request)
+		if err != nil {
 			return application.RunStartProjection{}, application.NewError("start-run-plan-approval", application.ReasonAuthorityConflict)
+		}
+		if !teamMember {
+			if err := controlplane.Require(controlplane.ApprovalInput{
+				StateRoot: adapter.stateRoot, RunID: request.RunID, Gate: domain.ApprovalGatePlan,
+				Validator: adapter.validator, LocalSelfIdentity: adapter.entryIdentity,
+			}); err != nil {
+				return application.RunStartProjection{}, application.NewError("start-run-plan-approval", application.ReasonAuthorityConflict)
+			}
 		}
 	}
 	run, err := adapter.openRun(ctx, request.RunID)

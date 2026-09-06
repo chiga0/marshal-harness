@@ -146,6 +146,39 @@ type TeamCreationObligation struct {
 	Creation TeamRunCreationState
 }
 
+// ReadTeamRunObligation looks up membership in approved plans, not merely
+// completed creation facts. An approved-but-unfrozen node is a conflict, so
+// callers cannot fall back to standalone authorization for a team member.
+func (s *DurableStore) ReadTeamRunObligation(scope ControlOwnerScope, runID string) (result TeamCreationObligation, member bool, err error) {
+	if scope.Validate() != nil || domain.ValidateID(runID) != nil {
+		return result, false, ErrTeamRunCreationConflict
+	}
+	projection := newAuthorityProjection()
+	err = s.transact(projection, func() error {
+		for key, plan := range projection.teamPlans {
+			if key != teamPlanKey(scope, plan.Revision.GoalId) {
+				continue
+			}
+			for _, node := range plan.Materializations {
+				if node.RunID != runID {
+					continue
+				}
+				if member {
+					return ErrTeamRunCreationConflict
+				}
+				member = true
+				creation, found := projection.teamRunCreations[teamRunCreationKey(scope, plan.Revision.GoalId, node.NodeID)]
+				if !found || creation.RunID != runID || creation.PlanFactDigest != plan.FactDigest {
+					return ErrTeamRunCreationConflict
+				}
+				result = TeamCreationObligation{Plan: plan, Creation: creation}
+			}
+		}
+		return nil
+	})
+	return result, member, err
+}
+
 // ListTeamCreationObligations replays once and returns only this exact owner
 // scope's frozen creations. The caller must still hold/recheck current owner
 // and both facts before performing each recovery mutation.

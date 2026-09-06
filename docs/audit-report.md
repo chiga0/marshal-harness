@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-07：团队批准派生首次子 Run 执行门禁，不复制人工审批状态
+
+后继 `71702fc` 的启动恢复接线已推送。完整 Start 调用链检查发现，原单 Run plan gate 尚不识别 RB1 团队批准；本轮把首次 implement READY 的批准从当前 owner 下的原 approved plan/creation 直接派生，核对精确 sequence/head、原准备时间、Task/Policy/Capability bytes 与摘要后，仍进入原 StartRun、reservation 和 launch CAS。没有伪造 human actor、生成额外 ApprovalRecord 或新增持久化协议。成员查找以已批准计划为准；已批准但尚未冻结的节点不能误判为普通 Run 再走人工 fallback。非团队 Run 保留原 gate，团队错误一律拒绝。
+
+补充 session 冷重开、精确首次 READY、无创建/无冻结、head/sequence/Policy 漂移、取消和提前 integration 的回归；复用明确的 RunStore fixture，不声称真实 Pi 启动或团队交付。前驱 `2486b1c` CI 34064463717 记录时四项通过、macOS quality 在途；本轮编译/静态验证仍不代替后继精确 head 的动态 CI。B2 仍缺调度/Start 事实衔接、真实两实现加集成、独立业务验收与有界暂停/replan；B1 格式/组合验收阻塞未被此变更关闭，不能因候选变多宣称收益已经成立。
+
 ## 2026-09-07：恢复顺序由“先要求完整 Run”改为“先履行原创建义务”
 
 创建恢复候选 `2486b1c8a44fafc048abcaded2c2eaa1c718fc7d` 已推送，[CI 34064463717](https://github.com/chiga0/marshal-harness/actions/runs/34064463717) 在途；它包含前驱 macOS canonical path 修正，不能提前宣称动态通过。本次沿完整启动调用链补接：resident 在普通 Run 扫描前，以同一 held RB1 枚举 scope 内原 plan/creation；从耐久批准恢复原创建，不依赖已丢失的原 HTTP 请求，不重新 Probe/批准/追加预算。未冻结节点仍不自动准备，已执行 Run 核对完整 authority 与原输入后交原恢复路径，不重置。

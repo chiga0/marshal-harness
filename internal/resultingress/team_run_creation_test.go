@@ -114,6 +114,13 @@ func TestTeamCreationObligationsAreScopedReadOnlyAndColdReplayable(t *testing.T)
 	if got, err := store.ListTeamCreationObligations(owner.Acquisition.Scope); err != nil || len(got) != 0 {
 		t.Fatalf("approval alone is not a frozen creation: %v", err)
 	}
+	var prepared teamPreparedInputs
+	if json.Unmarshal(raw, &prepared) != nil {
+		t.Fatal("decode prepared fixture")
+	}
+	if _, member, err := store.ReadTeamRunObligation(owner.Acquisition.Scope, prepared.RunID); err == nil || !member {
+		t.Fatal("approved but unfrozen node allowed standalone fallback")
+	}
 	creation, err := store.FreezeInitialTeamRun(context.Background(), teamTestApproval{owner.Acquisition, approval, false}, owner.Acquisition, approval, "team-1", "service", plan.FactDigest, raw)
 	if err != nil {
 		t.Fatal(err)
@@ -131,8 +138,14 @@ func TestTeamCreationObligationsAreScopedReadOnlyAndColdReplayable(t *testing.T)
 	if err != nil || len(got) != 1 || got[0].Plan.FactDigest != plan.FactDigest || got[0].Creation.FactDigest != creation.FactDigest || !bytes.Equal(got[0].Creation.Inputs, raw) {
 		t.Fatalf("cold enumeration lost exact facts: %v", err)
 	}
+	if bound, member, err := store.ReadTeamRunObligation(owner.Acquisition.Scope, creation.RunID); err != nil || !member || bound.Creation.FactDigest != creation.FactDigest {
+		t.Fatalf("cold membership lost creation: %v", err)
+	}
 	other := owner.Acquisition.Scope
 	other.RepositoryIdentityDigest = attemptTestDigest("other repository")
+	if _, member, err := store.ReadTeamRunObligation(other, creation.RunID); err != nil || member {
+		t.Fatalf("membership crossed repository scope: %v", err)
+	}
 	if got, err := store.ListTeamCreationObligations(other); err != nil || len(got) != 0 {
 		t.Fatalf("enumeration crossed repository scope: %v", err)
 	}

@@ -59,6 +59,8 @@ fixed server 构造时安装不可由请求替换的 `TeamRunPreparer`，使用�
 
 计划批准向子 Run 的 plan approval 映射是显式 Core producer：必须绑定 accepted Goal fact、节点最终输入和当前 Policy，只授权该一个 Run 的执行。不能生成通用 actor 批准文件或扩大用户确认范围。保留原 Run/Attempt reservation 与 dispatch lookup-before-claim；Goal reservation 记录预算归属，不替代它们或重复扣费。每条物化事实引用精确 Run 创建/Start 事实，恢复先核对再提交 committed；失败/终态的 release/settle 沿 ADR 0019，不凭本地进程状态释放预算。
 
+初始 implement 的 plan gate 直接由 Core 在 current owner 下读取同账本批准与创建 fact，并核对原 READY sequence/head、原准备时间、Task/Policy/Capability bytes 与摘要。它是仅适用于原首次 READY 的批准派生检查，不新增 ApprovalRecord、human actor 或第二批准状态库；客户端布尔值不能代替它。团队成员发生任何冲突均拒绝，不回退到普通人工审批；非团队 Run 继续既有单 Run plan gate。实际 Start 仍使用同一个携带 expected sequence/head 的生产入口，后续 reservation/launch 再查 current owner 与 Run CAS。旧团队批准不授权后继 READY/rework、发布或扩大预算；后继必须由已批准的新计划规则接纳。
+
 ## 4. 成果集成是冻结方案的一部分
 
 ### 创建恢复的受限写入规则（未启用候选）

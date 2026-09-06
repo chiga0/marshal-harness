@@ -101,6 +101,10 @@ func materializationFixture(t *testing.T) (publicFixedDeliveryInputs, applicatio
 					from = domain.StatePlanned
 				}
 				event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: []string{"event-fixture-plan", "event-fixture-ready"}[index], RunID: frozen.RunID, Sequence: uint64(index + 1), Type: []string{"planning.spec-accepted", "planning.inputs-frozen"}[index], StateFrom: from, StateTo: target, Timestamp: frozen.PreparedAt, Payload: map[string]any{}}
+				if index == 1 {
+					event.Payload = map[string]any{"specDigest": state.SpecDigest, "policyDigest": state.PolicyDigest, "capabilityDigest": state.CapabilityDigest,
+						"baseSha": state.BaseSHA, "worktreePath": state.WorktreePath, "maxAttempts": 1}
+				}
 				if err := store.Append(lease, event, uint64(index)); err != nil {
 					return err
 				}
