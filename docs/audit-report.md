@@ -1,5 +1,17 @@
 # 设计审计报告
 
+## 2026-09-07：长 Verify 通过、并行停止已发生，但查询握手仍失败
+
+`b1e838014242c8e5b131f72d56c8a57fd1884d85` 的精确 CI [34056176966](https://github.com/chiga0/marshal-harness/actions/runs/34056176966) 五项成功，随后只派发一次真实 Pi [34056947651](https://github.com/chiga0/marshal-harness/actions/runs/34056947651)，整次失败。小诊断 artifact `9996297294` 已读取，完整 executable artifact 未下载或执行。peer 的 VerificationReport 为 `pass`，起止为 20:08:14.590559Z→20:10:01.019362Z，约 106 秒，随后 ReviewPacket 操作成功；其中部分非适用 gate 为 SKIPPED，不能描述为所有 gate 都实际执行通过。未产生独立 Decision 或 ACCEPTED。
+
+另一 Run 的原 Attempt deadline 为 20:09:27.384502Z，停止意图在 20:09:28.405749Z 出现，`worker.stopped` 在 20:09:34.620746Z 写入，分别延迟约 1.02/7.24 秒，均处于上述 Verify 报告区间。两 Run 各一 Attempt，只有一个 owner acquisition。但第 22 次调用 Inspect exit=1、空 stdout，封闭阶段为 `client-dial`；并发线程因此未完成 stopped Collect。不能用停止事件或 peer Verify 的局部成功代替完整跨 Run 验收，也不能排除失败的两个 Attempt 成本。
+
+代码核对确认一种确定的预算错配：client 从 connect 后统一计 5 秒；server 在 challenge 签发前和 proof 之后都要获取 current owner 锁。超过 5 秒的合法停止事务因而可能让认证排队被误算成 proof/传输超时。该结构缺陷与现场相容，但旧 stderr 仅保留摘要和大阶段，**尚不能证明本次具体失败就是这一锁等待**，更不能排除其它身份/连接失败。
+
+候选依 ADR 0081 将本机 authority 等待与 nonce/frame 窗口分离，保持原 request/caller deadline、5 秒 nonce/proof、16 KiB frame、完整 current identity/owner/receipt 复查和零自动重试；新增真实 owner 锁争用超过 5 秒、原 deadline、父取消与部分帧回归，复用既有 hostile/replay 拒绝测试。动态测试先于任何新 Pi 实机；本地 compile-only 不是通过证据。B1 仍 IN_PROGRESS，PR #268 仍 Draft，未合入 main；B2 的冻结输入/总预算候选仍未形成 durable approved plan 或实际团队交付。
+
+效率复盘：两轮实机都暴露阶段预算/交互问题，说明此前回归覆盖偏向单入口而没有充分覆盖端到端等待。后续同类修复必须同时检查认证排队、应用等待、字节传输、复查、关闭与原 deadline，并先用真实锁/transport 的无模型组合测试；不能把每个窗口都留给下一次付费实验发现。此次先聚合 handshake 的排队、proof、取消与截断帧，而不是只调高一个 timeout 常量。
+
 ## 2026-09-07：初始续行实机通过后暴露传输阶段预算错配
 
 `d0be824` 精确 CI [34054261338](https://github.com/chiga0/marshal-harness/actions/runs/34054261338) 与 PR CI 34054248613 均通过；条件链仅派发一次实机 [34055217240](https://github.com/chiga0/marshal-harness/actions/runs/34055217240)，整次失败。诊断 artifact `9995784841` 已读取：peer 在唯一 owner 下从 Start 经五次 authenticated live-pending Collect 到成功 Collect，19:34:16.581183Z 写入 `worker.completed/VERIFYING/sequence=4`；对应 admission fact 为 `sha256:99c5ad1d80a3f197cebbbb5e911f0c95941acd302c3b5b518e6c8d3ea6264792`。因此前次初始 owner 故障已在本样本的真实连续链路越过，不是再次停在首次 Collect。

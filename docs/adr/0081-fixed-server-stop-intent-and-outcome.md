@@ -114,6 +114,14 @@ READY 原始预算准入候选已在 preparation 的 ReserveAttempt 前和 bridg
 
 实现必须一次接通 application、Core、barrier、v2 cleanup、Run event/Outcome、fixed transport 与恢复扫描，并补齐下节故障测试，再接受本 ADR 和 enable。不得只提交新类型/handler 就把取消列为可用。与正常 Collect/admission 的竞争必须在同一生产组合路径测试；timer-only 或 mock-only 通过不关闭 B1。
 
+### 握手的本机 authority 等待与 proof 时限（候选澄清）
+
+34056947651 已产生成功的长 Verify 报告，另一个 Run 也在其间停止，但并发 Inspect 在 `client-dial` 失败；已有摘要不能区分具体握手子阶段，不能据此宣称根因已实机确认。代码确认客户端从 connect 后就计算 5 秒，而 server 在 challenge 前和 proof 后均须等待同一个 owner 锁；停止事务可超过该窗口。
+
+本候选部分替代 ADR 0076 §7 的统一 handshake deadline：**nonce 从签发到 proof 校验仍为 5 秒，单 frame 仍为 16 KiB/5 秒**；本机 current-authority 排队单独最多 30 秒，且所有 client 等待仍服从原 RequestBinding deadline 和更早 caller deadline。server 在 challenge 前以独立 30 秒 context 重验 authority；合法 proof 到达后先验证 nonce/HMAC/freshness，再以最多 30 秒且不越过原 binding deadline 的 context 重验 current authority，之后有界写 accepted。不能让过期 proof 因排队变有效，不能缓存或跳过任何 owner/peer/object 检查。
+
+客户端等待 challenge/accepted 的首 byte 使用上述有界 authority 等待；首 byte 后整帧只有一次最多 5 秒、不可按流量刷新的窗口。发送 proof 受 challenge 原 expiry 限制。取消从 Dial 阶段就关闭本次独占 socket，不只在 HTTP 阶段生效。所有等待仍零业务重发、零额外 Attempt；server shutdown context 取消必须传入 authority 等待。回归必须覆盖真实 owner 锁争用、原截止点、父取消和部分帧，并保留已有过期/错误 proof 与 identity 漂移拒绝。动态回归及跨 Run 实机未通过前，不接受本澄清为正式支持。
+
 ## 同一纵切的验证与实施顺序
 
 停止链必须包含证据保存：v2 Terminate → process-terminal → allocation release → **cleanup-only Collect** → Close/独立 absence → cleanup release。真实 mechanics 的 Close 要求先完成有界 transcript 封存，不能以取消为由跳过或放宽。cleanup-only Collect 仅在精确 sealed StopIntent、已关闭 admission、对应 eligibility、process-terminal 与 allocation-terminal 均成立时允许；复用原 v2 command intent/receipt、held object 校验及丢响应恢复，不创建 CommittedResult、Candidate 或成功业务接纳。普通 Collect 的 barrier 拒绝规则不变。Close intent 已存在而无成功 Collect 的旧失败链保留 intervention，不能更换该命令或擦除历史。停止后的 Collect 可以更新观察时间与封存输出，但必须引用 process-terminal 之后、Close 之前的精确成功 v2 receipt；终态进程身份、runtime/workdir、source gate、observer、exit/signal 不变，Close 必须精确复述该 Collect 的完整 report。不得仅忽略输出字段来通过旧的 terminal-report 比较。该规则随本提议纵切一起验证，不独立授予 production authority。

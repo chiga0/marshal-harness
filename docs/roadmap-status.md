@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 最新检查点：`b1e8380` 精确 CI 34056176966 五项成功，单次实机 34056947651 整体失败。已获得约 106 秒的成功 Verify 报告及 ReviewPacket，另一 Run 在原 Attempt deadline 后约 1.02 秒写停止意图、7.24 秒写终态；但并发 Inspect 在 `client-dial` 失败，未完成 stopped Collect，不能关闭跨 Run 验收。候选正在补握手 authority 排队/proof 窗口与取消的真实锁争用回归，尚待动态验证。**B1 IN_PROGRESS；main 不变，停止候选未合并，无 stable 发布。** 具体证据与未证实归因见审计记录；以下均为历史检查点。
+
 2026-09-07 当前：`d0be824` 的精确 CI 34054261338 与 PR CI 均通过；单次跨 Run 实机 34055217240 已在同一 owner、无重启条件下完成 peer Collect 到 VERIFYING，并启动第二个 Run，但整体因客户端响应失败而结束。已确认 15 秒固定响应读取窗口与 100 秒 Verify 不兼容，另有 1 秒 half-close 等待与身份复查预算冲突；后继候选集中修正传输阶段预算、补实际认证客户端回归和缺失的阶段诊断。**B1 仍 IN_PROGRESS，main 仍 ba2196b；PR #268 为 Draft，无停止候选合并、无 stable 发布。** 后续历史段落中的“在途”不代表作业仍活跃。
 
 2026-09-07 最新：`0130465` 的 CI 五项全绿，真实 Pi 中断恢复 [34050602081](https://github.com/chiga0/marshal-harness/actions/runs/34050602081) 通过。已证明 stop barrier 落盘后、Run 仍 RUNNING 时中断 server，原 Attempt/stop intent 在同身份后继恢复为 BLOCKED，并通过原 Collect 请求冷恢复；一 Attempt、零 retry/rework，包含恢复的终态延迟为原 deadline 后 4.334296 秒。仅关闭该进程中断边界，不代表完整故障矩阵。长 Verify 让出全局写锁的后继 `74e8619` 已推送，CI 34050715623 在途，跨 Run 实机尚待验证。**B1 IN_PROGRESS，B2/B3 不升级；main 仍 ba2196b，停止候选未合并、无 stable 发布。** 下列段落保留为历史检查点。
@@ -41,7 +43,7 @@
 
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline 自动停止/冷恢复通过；0130465 证明 barrier 后进程中断恢复；d0be824 实机同 owner 无重启 Collect 到 VERIFYING | 分阶段传输预算；长 Verify 跨 Run 实机及响应上界；候选合入与最终组合；完整 B2 同路径故障矩阵在 B3，不以单次通过概括可靠性 |
+| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline/冷恢复及 barrier 后进程中断恢复通过；b1e8380 实机长 Verify 成功、其他 Run 按 deadline 停止，但查询握手失败 | 握手排队/取消动态验证；跨 Run 终态查询与 stopped Collect 完整组合；候选合入与最终组合；完整 B2 同路径故障矩阵在 B3，不以单次通过概括可靠性 |
 | B2 受限 Agent Team | `PLANNED` | ADR 0080 目标与 ADR 0019 组件可复用 | approved plan 耐久物化/调度、两个到三个实现节点、集成候选业务验收、局部 replan、暂停恢复 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
