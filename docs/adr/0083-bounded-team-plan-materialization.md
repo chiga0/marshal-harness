@@ -19,6 +19,8 @@
 
 新增封闭版本的计划输入束，绑定既有 GoalSpecRevision、GoalPlanProposal、每个节点的完整 TaskSpec/Policy 模板及其 canonical digest。请求总量和落账记录均有确定上限（初始总束不超过 512 KiB、节点模板各不超过 128 KiB），不接受任意路径引用、远端可变文档或 shell 模板插值。预算同时覆盖所有节点、后继 revision 和失败，不仅当前 fan-out。
 
+输入束还必须包含整个 Goal 的 Guardrails 与 AdmissionPolicy，任何预算/准入配置变动都改变待批准摘要，不能等接纳时再由默认值或环境补齐。纯数据及确定性 ID 放在已有 `internal/goal`，planning 复用它完成 Task/Policy 预检，RB1 复用它落账；禁止让账本反向导入 planning（后者已通过 runstore 引用 RB1）。preview 可用空历史做初次可行性检查，但该结果没有 authority；接纳仍须以真实账本的历史和累计消耗重新执行 `goal.Evaluate`。
+
 批准 operation 必须来自现有已认证 Public API 操作者，精确绑定 preview/输入束/Policy digest、expected Goal revision/head；请求中的 actor 文本、GitHub 评论、Worker 文本都不构成批准。ADR 0082 的 Issue 评论载体只用于 hosted B1 验证，不能复用为生产 Goal 审批数据库。批准不能授权绕过子 Run 独立验证或 publication 边界。
 
 ## 2. 接纳、预算与创建义务只有一个提交点

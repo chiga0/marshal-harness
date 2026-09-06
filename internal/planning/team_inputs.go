@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	TeamInputsVersion  = "bounded-team-inputs/v1"
-	MaxTeamInputsBytes = 512 << 10
-	MaxTeamNodeBytes   = 128 << 10
+	TeamInputsVersion  = goal.TeamInputsVersion
+	MaxTeamInputsBytes = goal.MaxTeamInputsBytes
+	MaxTeamNodeBytes   = goal.MaxTeamNodeBytes
 )
 
 var (
@@ -27,20 +27,8 @@ var (
 // TeamInputs is a complete initial proposal, not approval or current authority.
 // Raw messages retain all schema-governed Task/Policy fields. No file reference,
 // environment lookup, executable probe or mutable branch resolves in preview.
-type TeamInputs struct {
-	SchemaVersion string                `json:"schemaVersion"`
-	Spec          goal.GoalSpecRevision `json:"spec"`
-	Proposal      goal.GoalPlanProposal `json:"proposal"`
-	BaseSHA       string                `json:"baseSha"`
-	Nodes         []TeamNodeInputs      `json:"nodes"`
-}
-
-type TeamNodeInputs struct {
-	NodeID string          `json:"nodeId"`
-	Role   string          `json:"role"`
-	Task   json.RawMessage `json:"task"`
-	Policy json.RawMessage `json:"policy"`
-}
+type TeamInputs = goal.TeamInputs
+type TeamNodeInputs = goal.TeamNodeInputs
 
 // TeamInputsPreview is deliberately not an accepted plan. The fixed server
 // must still evaluate current-ledger budget/scope/CAS and authenticate operator
@@ -56,25 +44,7 @@ type TeamInputsPreview struct {
 // A changed bundle with the same identities is a ledger conflict, not permission
 // to create another Run. The proposal ID must change for a new proposal.
 func TeamNodeIDs(proposal goal.GoalPlanProposal, nodeID string) (taskID, runID string, err error) {
-	if proposal.Validate() != nil || domain.ValidateID(nodeID) != nil {
-		return "", "", ErrTeamInputs
-	}
-	identity, err := json.Marshal(struct {
-		Version    string `json:"version"`
-		Namespace  any    `json:"namespace"`
-		GoalID     string `json:"goalId"`
-		ProposalID string `json:"proposalId"`
-		NodeID     string `json:"nodeId"`
-	}{TeamInputsVersion, proposal.AuthorityNamespaceId, proposal.GoalId, proposal.ProposalId, nodeID})
-	if err != nil {
-		return "", "", ErrTeamInputs
-	}
-	identity, err = canonical.JSON(identity)
-	if err != nil {
-		return "", "", ErrTeamInputs
-	}
-	digest := canonical.DigestBytes(identity)[len("sha256:"):]
-	return "team-task-" + digest, "team-run-" + digest, nil
+	return goal.TeamNodeIDs(proposal, nodeID)
 }
 
 // PreviewTeamInputs validates only the executable-input binding for the first
@@ -102,6 +72,19 @@ func PreviewTeamInputs(raw []byte, validator *contract.Validator) (TeamInputsPre
 		return fail()
 	}
 	if len(inputs.Nodes) != 3 || len(proposal.Nodes) != 3 || len(proposal.Edges) != 2 {
+		return fail()
+	}
+	if inputs.Limits.Validate() != nil || inputs.Limits.MaxConcurrentNodes > 3 || inputs.AdmissionPolicy.Validate() != nil {
+		return fail()
+	}
+	// This zero-usage feasibility check is preview only. RB1 admission must
+	// evaluate again against its own current projection and consumed budget.
+	proposalRaw, err := proposal.Canonical()
+	if err != nil {
+		return fail()
+	}
+	initial := goal.AuthorityState{AuthorityNamespaceId: spec.AuthorityNamespaceId, GoalId: spec.GoalId, ProjectId: spec.ProjectId, Repository: spec.Repository, SpecRevision: &spec, Budget: goal.GoalBudgetLedger{AuthorityNamespaceId: spec.AuthorityNamespaceId, GoalId: spec.GoalId, Limits: inputs.Limits}}
+	if !goal.Evaluate(proposalRaw, initial, inputs.AdmissionPolicy).Accepted {
 		return fail()
 	}
 	nodes := make(map[string]goal.GoalNode, 3)

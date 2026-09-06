@@ -27,6 +27,8 @@ func teamInputsFixture(t *testing.T) TeamInputs {
 	}
 	proposal.Edges = []goal.GoalEdge{{From: "service", To: "integration", Kind: goal.EdgeKindDependsOn}, {From: "client", To: "integration", Kind: goal.EdgeKindDependsOn}}
 	inputs := TeamInputs{SchemaVersion: TeamInputsVersion, Spec: spec, Proposal: proposal, BaseSHA: strings.Repeat("a", 40)}
+	inputs.Limits = goal.Guardrails{MaxNodes: 3, MaxDepth: 3, MaxFanOut: 2, MaxConcurrentNodes: 3, MaxPlanRevisions: 2, MaxTotalRuns: 6, MaxTotalAttempts: 24, MaxWallTimeSeconds: 60000, MaxComputeUnits: 100, MaxTokens: 1000000, MaxArtifactBytes: 6 << 30}
+	inputs.AdmissionPolicy = goal.AdmissionPolicy{ExecutorKinds: []goal.ExecutorKind{goal.ExecutorKindImplement}, Repositories: []string{spec.Repository}, Paths: []string{"service.py", "client.py"}, SideEffectClasses: []string{"workspace-write"}}
 	for _, node := range proposal.Nodes {
 		taskID, runID, err := TeamNodeIDs(proposal, node.NodeId)
 		if err != nil {
@@ -63,12 +65,19 @@ func TestTeamInputsPreviewBindsCompleteFrozenInputs(t *testing.T) {
 	if err != nil || replayed.Digest != preview.Digest || !bytes.Equal(replayed.Canonical, preview.Canonical) {
 		t.Fatalf("canonical replay drift: %v", err)
 	}
-	var task domain.TaskSpec
-	if err := json.Unmarshal(inputs.Nodes[0].Task, &task); err != nil {
-		t.Fatal(err)
+	inputs.Limits.MaxTotalRuns++
+	budgetChanged, err := PreviewTeamInputs(mustMarshal(t, inputs), validator)
+	if err != nil || budgetChanged.Digest == preview.Digest {
+		t.Fatalf("Goal budget change escaped approval binding: %v", err)
 	}
-	task.Work.Objective += "；保持 API 输入不变"
-	inputs.Nodes[0].Task = mustMarshal(t, task)
+	inputs.Limits.MaxTotalRuns--
+	// TaskSpec is a read projection, not a lossless transport: e.g. work.context
+	// is schema-governed but not represented there. Preserve the full envelope
+	// when changing one field, as production materialization must also do.
+	mutateTeamTask(t, &inputs, func(task map[string]any) {
+		work := task["work"].(map[string]any)
+		work["objective"] = work["objective"].(string) + "；保持 API 输入不变"
+	})
 	changed, err := PreviewTeamInputs(mustMarshal(t, inputs), validator)
 	if err != nil || changed.Digest == preview.Digest {
 		t.Fatalf("changed work was not bound: %v", err)
@@ -107,6 +116,11 @@ func TestTeamInputsRejectsUnexecutableAndMismatchedBundle(t *testing.T) {
 		mutate func(*TeamInputs)
 	}{
 		{"wrong-version", func(i *TeamInputs) { i.SchemaVersion = "team/v2" }},
+		{"missing-goal-budget", func(i *TeamInputs) { i.Limits = goal.Guardrails{} }},
+		{"oversold-goal-budget", func(i *TeamInputs) { i.Limits.MaxTotalAttempts = 1 }},
+		{"unbounded-concurrency", func(i *TeamInputs) { i.Limits.MaxConcurrentNodes = 4 }},
+		{"missing-goal-policy", func(i *TeamInputs) { i.AdmissionPolicy = goal.AdmissionPolicy{} }},
+		{"goal-policy-denies-scope", func(i *TeamInputs) { i.AdmissionPolicy.Paths = []string{"unrelated.py"} }},
 		{"moving-base", func(i *TeamInputs) { i.BaseSHA = "main" }},
 		{"spec-drift", func(i *TeamInputs) { i.Spec.Description += "changed" }},
 		{"missing-node", func(i *TeamInputs) { i.Nodes = i.Nodes[:2] }},

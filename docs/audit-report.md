@@ -6,6 +6,10 @@
 
 同时修正 ADR 0083 的 ID 循环：身份由批准前的 namespace/Goal/Proposal/node tuple 派生，完整输入摘要随后由 accepted fact 绑定；不从最终 fact digest 反推该 fact 内 Policy 已引用的 RunID。同 key 改内容仍须由后续 durable CAS 拒绝，不以改 ID 实现隐式 retry。候选目前仅编译、vet/staticcheck 与架构检查通过，动态测试待 CI；尚无生产 endpoint、耐久批准、物化或真实团队证据，B2 仍未集成。该工作分支仍基于未合入的 B1，不代表 main 已具备此能力。
 
+接 RB1 前进一步发现，只有节点预算仍不足以绑定用户同意的总成本：输入束现增加整个 Goal 的 Guardrails 与 AdmissionPolicy，预算不足、超出三并发或不满足准入策略在 preview 阶段拒绝；批准摘要随这些字段变化。数据类型和 ID 派生置于既有 Goal 层，避免 planning→runstore→RB1 的导入环。初次可行性复用 Goal 的 canonical proposal 和六步检查，但空历史结果仍不算 current-ledger 接纳。此改动尚未派发 Worker，属于生产接线前发现的设计缺口；不能将预检通过作为耐久批准或团队收益证据。
+
+首个候选 `10264d2` 的 CI [34056632311](https://github.com/chiga0/marshal-harness/actions/runs/34056632311) 在 Linux 的新增正向变更测试失败：测试把完整 Task 解码成部分 `domain.TaskSpec` 再编码，丢掉 Schema 必需的 `work.context`，因此收到正确的输入拒绝而非期待的摘要变化。产品输入束保留 RawMessage，未执行该有损转换。修正测试为保留全 envelope 只修改目标字段；同一教训约束后续物化：不能用局部领域读模型重写完整冻结协议。失败计入工程验证，不启动或重试任何 Pi；修正结果须待新的精确 CI。
+
 ## 2026-09-07：B2 计划到真实 Run 的接缝仍未实现
 
 直接核对 `internal/goal`、`internal/outbox`、`internal/planning` 和 TaskSpec：现有计划组件不耐久落账，节点不绑定完整 Task 输入，planning 尚不是幂等 Goal 物化，Task 依赖也不传递或集成成果。不能据此把 B2 提前列为可用。[ADR 0083 提案](adr/0083-bounded-team-plan-materialization.md) 将后继限制为同一 fixed server/RB1 的批准输入束、原子创建义务、现有 Run 创建恢复和真实集成候选，不引入新 controller/DSL。该文档是 B2 的设计准备，不是实施完成；依赖的 B1 候选仍未合入。
