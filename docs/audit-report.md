@@ -1,5 +1,23 @@
 # 设计审计报告
 
+## 2026-09-05 15:44 UTC：真实 Start/重启已前进，Collect 接纳仍失败
+
+`a6fe94f` 的 main CI 33974743678 五项全绿后，单次真实 Pi 订单报价 canary [33975628490](https://github.com/chiga0/marshal-harness/actions/runs/33975628490) 已实际执行。Start 丢回复、RUNNING 查询、server1 crash、server2 ready、owner rebind、原 Start replay 与恢复后查询全部完成；此前目录布局根因没有复发。RB1 23 条 fact 包含成功 `transcript-collected` receipt（stdout 788827 bytes），但随后 Collect 接纳返回 `authority-conflict`，没有 result-admitted、Verification 或 ACCEPTED。runstore 的历史 snapshot 仍为 READY seq 2，不能用它抹掉 sealed RB1 的运行事实，也不能伪造推进。
+
+目前证据不能区分 transcript 读取、Pi 协议解析与后续 ResultIngress 接纳的具体失败点；外层 `fixed-cli-invalid-response` 不是根因。完整 artifact 9972244043 和独立诊断 artifact 9972243598 均保留，本地已取得；禁止推测为 provider 未配置，禁止原样重跑。诊断包 27496 bytes 优先上传，恢复阶段错误可在数秒内获取；完整包仅用于补充取证。
+
+同宿主评审载体按 [ADR 0082](adr/0082-fixed-server-live-review-carrier.md) 接线：默认关闭，明确 opt-in；原 shell/server 保持存活，上传 review-only immutable artifact，读取 canonical owner 的精确未编辑评论，原文递交既有 Decision Port。9 项 Node 与 18 项 Python 测试已通过，不代表真实 ACCEPTED。执行环境不继承 GitHub/Actions token；载体没有写 Issue/发布权限。当前 Collect blocker 与取消/超时仍需关闭，B1/B2/B3 状态不提升。
+
+针对缺失的根因定位，在 Collect 的 transcript、parser、worktree observation 和 ingress 构造边界补充封闭 operation 名；保留已有 typed reason，不输出原始 Worker 内容。这只是诊断改进，不能算作接纳根因修复。本地 Go 仅 compile-only、vet/staticcheck，动态与 race 仍由 hosted CI 验证。评审载体锁定 `@actions/artifact` 6.2.1；依赖审计当前为零已知漏洞，不沿用检查时发现漏洞的旧依赖版本。
+
+## 2026-09-05：目录修复合入，补齐同机独立 Decision 验收入口
+
+PR #259 的新 source `c1590a5` 经 CI 33973809127 五项全绿，15:25 UTC 已远端合并为 `a6fe94f6dd3fe8a177e50f1644f4c74ae0096a6f`。首轮 33972990414 的 Ubuntu recorder 竞态已保存并按根因修复，不归为 Pi rework，也未重复启动业务 Attempt。合并 main CI 为 33974743678；真实 Start/恢复/业务验收仍待后继。
+
+B1 调用链核对发现现有脚本在 ReviewPacket 后正常退出 server，因此仅靠上传评审包不能完成同机 ACCEPTED。后继接线保留原 server/owner，等待独立 reviewer 发布完整 Decision，再调用既有固定 CLI `control-plane decision`：核对当前 packet/head、一次提交、receipt 与 Outcome，再 inspect 相同终态。拒绝/rework Decision 不被转换为 accept；无效或未知响应不自动重复 mutation。等待采用固定 monotonic 上限，缺文件仅表示等待，半写/重复键/链接/特殊文件立即拒绝；就绪标志在评审包和说明文件关闭后才创建，避免重演 recorder 竞态。
+
+当前 18 项 Python 定向测试证明客户端行为，不证明实机业务、独立评审或发布。GitHub-hosted 同机评审交付通道尚未整体接线，未启用；不能借 RC1 的另一 runner finalize 或导入 review-only 包替代本条 server authority。此改动只复用既有 Decision Port，不引入新的业务 ledger 或自动签发 Decision。
+
 ## 2026-09-05：B1 生产目录布局与隔离夹具脱节
 
 PR #259 的首轮 CI 33972990414 中 Ubuntu 动态检查暴露旧 notification recorder 夹具竞态：`TestNotifyHookGateHonoursFirstEventAndSameState` 在最终文件刚被 shell truncate、JSON 尚未写完时读取，报 `unexpected end of JSON input`。失败发生在未改动的 runstore，不能算成目录修复失效，也不凭“偶发”原样重跑。修复测试 recorder 先写独立 staging leaf、完成后 rename 发布；不放宽 JSON 断言、不增加等待时长、不改生产通知语义。未中断 macOS：其于 15:05 UTC 动态/race 全绿，Linux 双架构与 secret scan 同样通过；聚合完整结果后更新同一 PR，新 head 仍单独验证。业务 canary 未提前派发。

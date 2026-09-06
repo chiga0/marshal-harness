@@ -26,6 +26,11 @@ CHECKER_RELATIVE_PATH = "scripts/release-ci-contract.py"
 RELEASE_WORKFLOW_RELATIVE_PATH = ".github/workflows/release.yml"
 RELEASE_WORKFLOW_DIGEST_RELATIVE_PATH = "scripts/release-workflow.sha256"
 FIXED_FILES = {
+    ".github/actions/live-review/action.yml": "100644",
+    ".github/actions/live-review/index.cjs": "100644",
+    ".github/actions/live-review/index.test.cjs": "100644",
+    ".github/actions/live-review/package.json": "100644",
+    ".github/actions/live-review/package-lock.json": "100644",
     ".github/workflows/ci.yml": "100644",
     ".github/workflows/fixed-server-t1-canary.yml": "100644",
     RELEASE_WORKFLOW_RELATIVE_PATH: "100644",
@@ -147,6 +152,9 @@ jobs:
             /usr/bin/python3 -I -B \\
             "$GITHUB_WORKSPACE/scripts/rc1-release-carrier-artifact_test.py"
           run_checker
+
+      - name: Test live review carrier without network or SDK
+        run: node --test .github/actions/live-review/index.test.cjs
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

@@ -325,9 +325,13 @@ make_contract_fixture() {
   local name="$1" workflow="$2" makefile="$3" root
   root="${TMP_ROOT}/contract-${name}"
   mkdir -p "${root}/.github/workflows" "${root}/scripts" \
+    "${root}/.github/actions/live-review" \
     "${root}/schemas/release/examples/valid" \
     "${root}/schemas/release/examples/invalid"
   cp "$workflow" "${root}/.github/workflows/ci.yml"
+  for carrier_file in action.yml index.cjs index.test.cjs package.json package-lock.json; do
+    cp "${ROOT}/.github/actions/live-review/${carrier_file}" "${root}/.github/actions/live-review/${carrier_file}"
+  done
   cp "${ROOT}/.github/workflows/fixed-server-t1-canary.yml" \
     "${root}/.github/workflows/fixed-server-t1-canary.yml"
   cp "$WORKFLOW" "${root}/.github/workflows/release.yml"
@@ -378,7 +382,7 @@ make_contract_fixture() {
   git -C "$root" config core.hooksPath /dev/null
   git -C "$root" config user.name 'Release Contract Test'
   git -C "$root" config user.email 'release-contract@example.invalid'
-  git -C "$root" add .github/workflows Makefile scripts schemas
+  git -C "$root" add .github/workflows .github/actions Makefile scripts schemas
   git -C "$root" commit -qm fixture
   printf '%s\n' "$root"
 }

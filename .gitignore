@@ -7,4 +7,5 @@
 /coverage.out
 .marshal/
 web/node_modules/
+.github/actions/live-review/node_modules/
 *.tsbuildinfo

@@ -182,17 +182,116 @@ def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep):
     return summary
 
 
+def finalize_review(call, save, summary, packet, decision, decision_path, deadline, now=time.time):
+    """Deliver an external review; neither construct one nor retry mutation.
+
+    These checks catch transport mistakes. The fixed client and server still
+    own canonical digest validation, current-ledger admission and Outcome.
+    """
+    current = summary["run"]
+    if summary.get("verificationStatus") != "pass" or summary.get("accepted") is not False:
+        raise DriveError("review-not-ready")
+    if not isinstance(decision, dict) or decision.get("kind") != "ReviewDecision":
+        raise DriveError("invalid-external-decision")
+    if decision.get("runId") != current["runId"] or decision.get("reviewPacketDigest") != summary["packetDigest"]:
+        raise DriveError("external-decision-packet-mismatch")
+    for key in ("taskId", "reviewRound", "specDigest", "verificationDigest", "artifactManifestDigest", "evidenceDigest", "localSelfIdentityBindingDigest"):
+        if key in packet and (key not in decision or decision[key] != packet[key]):
+            raise DriveError("external-decision-evidence-mismatch")
+    reviewer = decision.get("reviewer")
+    if not isinstance(reviewer, dict) or reviewer.get("type") not in ("human", "lead-agent") or not reviewer.get("id"):
+        raise DriveError("external-reviewer-required")
+
+    def invoke(args):
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise DriveError("decision-deadline-exceeded")
+        return call(args, remaining)
+
+    code, inspected = invoke(["inspect", "--run", current["runId"]])
+    if code != 0 or run_projection(inspected, current["runId"], "REVIEW_PENDING", current) != current:
+        raise DriveError("review-current-inspection-mismatch")
+    deadline_text = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="microseconds").rstrip("0").rstrip(".") + "Z"
+    request = ["decision", "--run", current["runId"], "--attempt", current["attemptId"],
+               "--expected-sequence", str(current["sequence"]), "--expected-authority-head", current["authorityHead"],
+               "--request-key", f"t2:{current['runId']}:decision:{current['sequence']}", "--deadline", deadline_text,
+               "--decision", str(decision_path)]
+    save("decision-request.json", {"args": request})
+    code, value = invoke(request)
+    save("decision-response.json", {"exitCode": code, "response": value})
+    if code != 0 or not isinstance(value, dict) or not isinstance(value.get("Projection"), dict) or not isinstance(value.get("Receipt"), dict):
+        raise DriveError("decision-unresolved-no-automatic-retry")
+    projection, receipt = value["Projection"], value["Receipt"]
+    observed = projection.get("run")
+    if not isinstance(observed, dict) or observed.get("state") not in ("ACCEPTED", "NO_CHANGE", "REJECTED", "BLOCKED", "RETRY_PENDING"):
+        raise DriveError("unexpected-decision-state")
+    after = run_projection(observed, current["runId"], observed["state"], current, True)
+    if any(receipt.get(key) != expected for key, expected in {"runId": after["runId"], "attemptId": after["attemptId"], "postRevision": after["sequence"], "postAuthorityHead": after["authorityHead"]}.items()):
+        raise DriveError("decision-receipt-mismatch")
+    if projection.get("verdict") != decision.get("verdict") or projection.get("evidenceDigest") != decision.get("evidenceDigest") or not DIGEST.fullmatch(projection.get("decisionDigest", "")):
+        raise DriveError("decision-projection-mismatch")
+    if after["state"] != "RETRY_PENDING" and not DIGEST.fullmatch(projection.get("outcomeDigest", "")):
+        raise DriveError("decision-outcome-missing")
+    code, inspected = invoke(["inspect", "--run", current["runId"]])
+    if code != 0 or run_projection(inspected, current["runId"], after["state"], after) != after:
+        raise DriveError("decision-final-inspection-mismatch")
+    accepted = after["state"] == "ACCEPTED" and decision.get("verdict") == "accept"
+    save("decision-summary.json", {"run": after, "accepted": accepted, "decisionDigest": projection["decisionDigest"],
+                                   "outcomeDigest": projection.get("outcomeDigest"), "finishedAt": now()})
+    if not accepted:
+        raise DriveError("independent-review-not-accepted")
+    return after
+
+
+def await_external_decision(path, deadline, now=time.monotonic, pause=time.sleep):
+    """Wait for atomic publication, not for an invalid record to turn valid."""
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate key")
+            value[key] = item
+        return value
+
+    while True:
+        if now() >= deadline:
+            raise DriveError("independent-review-wait-expired")
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            pause(min(2, max(0, deadline - now())))
+            continue
+        except OSError:
+            raise DriveError("external-decision-unavailable") from None
+        try:
+            with os.fdopen(fd, "rb") as source:
+                before = os.fstat(source.fileno())
+                if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 1 << 20:
+                    raise DriveError("external-decision-type-or-size")
+                raw = source.read((1 << 20) + 1)
+                after = os.fstat(source.fileno())
+            if len(raw) != before.st_size or (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise DriveError("external-decision-drift")
+            value = json.loads(raw, object_pairs_hook=unique_object)
+            if not isinstance(value, dict):
+                raise ValueError("not object")
+            return value
+        except (OSError, ValueError, UnicodeDecodeError):
+            raise DriveError("external-decision-invalid") from None
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", required=True)
     parser.add_argument("--evidence-dir", required=True)
     parser.add_argument("--timeout-seconds", type=int, default=480)
+    parser.add_argument("--await-review-seconds", type=int, default=0)
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     binary = root / "bin" / "marshal"
     evidence = Path(args.evidence_dir)
-    if not ID.fullmatch(args.run) or not 1 <= args.timeout_seconds <= 480:
+    if not ID.fullmatch(args.run) or not 1 <= args.timeout_seconds <= 480 or not 0 <= args.await_review_seconds <= 1200:
         parser.error("invalid run/deadline")
     if binary.is_symlink() or not binary.is_file() or binary.resolve() != binary:
         parser.error("fixed bin/marshal is required")
@@ -235,11 +334,25 @@ def main():
         return completed.returncode, value
 
     try:
-        drive(call, save, args.run, time.time() + args.timeout_seconds)
+        summary = drive(call, save, args.run, time.time() + args.timeout_seconds)
         packet = json.loads((evidence / "review-packet.json").read_bytes())["Projection"]["packet"]
         capture_review_inputs(root, args.run, packet, evidence / "review-inputs.tar")
         if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
             raise DriveError("fixed-binary-drift")
+        if args.await_review_seconds:
+            # This signal follows the closed archive, and is not authority.
+            save("review-ready.json", {"run": summary["run"], "packetDigest": summary["packetDigest"],
+                                       "archive": "review-inputs.tar", "binarySHA256": binary_digest})
+            # Existence is signalled only after all referenced files close.
+            with (evidence / "review.ready").open("xb"):
+                pass
+            decision_path = evidence / "review-decision.json"
+            decision = await_external_decision(decision_path, time.monotonic() + args.await_review_seconds)
+            if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
+                raise DriveError("fixed-binary-drift")
+            finalize_review(call, save, summary, packet, decision, decision_path, time.time() + 300)
+            print("fixed-server-t2: ACCEPTED by independent Decision through the same server")
+            return 0
     except DriveError as exc:
         save("driver-failure.json", {"reasonCode": str(exc), "accepted": False})
         print(f"fixed-server-t2: {exc}", file=sys.stderr)
