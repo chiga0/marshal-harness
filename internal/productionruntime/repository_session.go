@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/application"
@@ -197,7 +198,7 @@ func (session *RepositorySession) InspectRun(ctx context.Context, request applic
 	}
 	defer func() { resultErr = errors.Join(resultErr, borrow.Close()) }()
 
-	lease, err := session.runs.AcquireExisting(request.RunID)
+	lease, err := acquireInspectionLease(ctx, session.runs, request.RunID)
 	if err != nil {
 		return application.RunProjection{}, err
 	}
@@ -225,6 +226,28 @@ func (session *RepositorySession) InspectRun(ctx context.Context, request applic
 		return application.RunProjection{}, err
 	}
 	return result, nil
+}
+
+// Inspection shares the durable Run lease with resident reconciliation. Busy
+// is transient contention, not a transport failure or permission to read an
+// unlocked snapshot. Only retry that exact error, within the caller's context.
+func acquireInspectionLease(ctx context.Context, runs *runstore.Store, runID string) (*runstore.Lease, error) {
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		lease, err := runs.AcquireExisting(runID)
+		if !errors.Is(err, runstore.ErrLeaseHeld) {
+			return lease, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // ReconcileStartRun reads the exact current PreparedExecution/RUNNING pair

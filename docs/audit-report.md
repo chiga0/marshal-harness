@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：停止候选完整 CI 通过，实机暴露并发查询接缝
+
+精确候选 `e65b7aa0657dbc2d48bd7da9c29145b9d41e45b8` 的 [CI 34035050503](https://github.com/chiga0/marshal-harness/actions/runs/34035050503) 五项全部通过；前置 stop-chain race 回归也通过。随后唯一 [canary 34035979322](https://github.com/chiga0/marshal-harness/actions/runs/34035979322) 完成真实 Pi Start、server2 重启/rebind、原 Start replay，却在随后 Inspect 返回 `transport-failure`，尚未进入 cancel。因此不能把新 Collect/Close 衔接记作实机取消成功，也不原样重试。诊断 artifact 9990188334 已保存，完整 artifact 9990188687 保留。
+
+代码核对发现 Inspect 不再等待 application 长事务后，`RepositorySession.InspectRun` 仍只执行一次 `AcquireExisting`；后台 deadline 检查可同时持有同 Run lease，原始 `ErrLeaseHeld` 会逃逸成 transport failure。现场仅有封闭分类，不能断言该次一定就是此错误。候选只对这个确定的 busy 错误做遵守原请求 context 的等待，其他错误立即返回；取得 lease 后仍重读 current owner/ledger，不读无锁快照、不加入 writer lane、不创建缺失 Run。真实 Run lease 回归验证写者释放后取得、等待取消不改 owner/不释放别人的 lease、预取消和缺失 Run。新增候选仍需动态 CI 与新的单次实机，B1 保持 IN_PROGRESS。
+
 ## 2026-09-06：动态回归发现停止后 Collect 的 report 衔接缺口
 
 候选 `c118249` 的 CI 34033879517 结束：Linux quality、双架构 conformance 与 secret scan 通过；macOS 的 `TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply` 在追加 SupervisorClosed 时失败。该回归已越过新增 cleanup Collect/丢响应恢复和 Close；不能据此派实机或把失败归为环境问题。旧比较要求 Close 的 report 与 Terminate 原报告完全一致，无法表达中间 Collect 封存输出及更新观察时间的合法事实链。
