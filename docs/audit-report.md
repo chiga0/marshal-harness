@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-07：批准提交后无需原 HTTP 请求即可继续创建
+
+完整调用链复盘发现，原节点 Prepare 接缝依赖 `ApproveInitialTeamRequest`，而 RB1 批准保存的是请求摘要而非可重新构造的原 HTTP request ID/deadline。若批准成功后客户端丢失请求、server 在首次冻结之前重启，仅恢复已冻结义务无法让这个节点继续。候选新增从 current owner/RB1 按 Goal/Node/精确 PlanFactDigest 定位的内部物化入口，并与原请求入口共享全部 preflight、Prepare、冻结与创建恢复逻辑；不重建 HTTP 请求、不追加另一批准或预算，不改变已有持久化格式。
+
+冷 session 夹具覆盖批准前拒绝、批准后尚未冻结直接续行、再次冷重开不重复 Prepare、陈旧摘要/未知节点/提前集成/取消拒绝；另外覆盖 preflight、Prepare、materializer 三处失败单次返回，原计划和预算义务不变，已冻结值保留。该入口尚未接到自动调度，不宣称客户端已经可以完成团队交付；后继必须一次处理容量、失败止损、Start 事实与两实现并行，不给每秒 tick 加上无界重试。
+
+前驱创建恢复 `2486b1c` 的 CI 34064463717 已五项通过；`fc5d479` 的 CI 34065300476 当前四项通过，macOS quality 仍运行。本候选本地只编译及静态检查，不计动态通过。B1 修复分支已推送 `4ace42c` 的缺 content 诊断，PR CI 34065812558 在途；旧 Pi 实机失败未被抹去。B1/B2 保持 IN_PROGRESS，尚无完整团队交付或对照收益。
+
 ## 2026-09-07：团队批准派生首次子 Run 执行门禁，不复制人工审批状态
 
 后继 `71702fc` 的启动恢复接线已推送。完整 Start 调用链检查发现，原单 Run plan gate 尚不识别 RB1 团队批准；本轮把首次 implement READY 的批准从当前 owner 下的原 approved plan/creation 直接派生，核对精确 sequence/head、原准备时间、Task/Policy/Capability bytes 与摘要后，仍进入原 StartRun、reservation 和 launch CAS。没有伪造 human actor、生成额外 ApprovalRecord 或新增持久化协议。成员查找以已批准计划为准；已批准但尚未冻结的节点不能误判为普通 Run 再走人工 fallback。非团队 Run 保留原 gate，团队错误一律拒绝。

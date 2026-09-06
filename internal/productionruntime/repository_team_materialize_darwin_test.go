@@ -152,6 +152,116 @@ func TestRepositoryTeamMaterializationReadsBackAndReusesAfterColdOwner(t *testin
 	}
 }
 
+func TestRepositoryTeamApprovedContinuationWithoutOriginalRequest(t *testing.T) {
+	fixture, request, prepares, calls := materializationFixture(t)
+	session, err := OpenRepositorySession(context.Background(), fixture.inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	if _, err := session.MaterializeApprovedInitialTeamRun(context.Background(), "absent-goal", "service", canonical.DigestBytes([]byte("absent"))); err == nil || *prepares != 0 || *calls != 0 {
+		t.Fatal("an unapproved selector created a Run")
+	}
+	approval, err := session.ApproveInitialTeam(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *prepares != 0 || *calls != 0 {
+		t.Fatal("approval eagerly materialized")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate response loss and a cold server with only its real ledger. No
+	// original request or transport deadline is supplied to continuation.
+	session, err = OpenRepositorySession(context.Background(), fixture.inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []string{"integration", "unknown-node"} {
+		if _, err := session.MaterializeApprovedInitialTeamRun(context.Background(), approval.GoalID, node, approval.FactDigest); err == nil || *prepares != 0 || *calls != 0 {
+			t.Fatal("non-ready node was materialized")
+		}
+	}
+	if _, err := session.MaterializeApprovedInitialTeamRun(context.Background(), approval.GoalID, "service", canonical.DigestBytes([]byte("stale-plan"))); err == nil || *prepares != 0 || *calls != 0 {
+		t.Fatal("stale plan selector reached the preparer")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := session.MaterializeApprovedInitialTeamRun(ctx, approval.GoalID, "service", approval.FactDigest); err == nil || *prepares != 0 || *calls != 0 {
+		t.Fatal("canceled continuation reached the preparer")
+	}
+	first, err := session.MaterializeApprovedInitialTeamRun(context.Background(), approval.GoalID, "service", approval.FactDigest)
+	if err != nil || first.State != domain.StateReady || first.Sequence != 2 || *prepares != 1 || *calls != 1 {
+		t.Fatalf("approved cold continuation: %v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	session, err = OpenRepositorySession(context.Background(), fixture.inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := session.MaterializeApprovedInitialTeamRun(context.Background(), approval.GoalID, "service", approval.FactDigest)
+	if err != nil || replayed.RunID != first.RunID || replayed.CreatedAt != first.CreatedAt || *prepares != 1 || *calls != 2 {
+		t.Fatalf("frozen continuation repeated preparation: %v", err)
+	}
+}
+
+func TestRepositoryTeamApprovedContinuationKeepsFailureBounded(t *testing.T) {
+	for _, mode := range []string{"preflight", "prepare", "materialize"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture, request, prepares, calls := materializationFixture(t)
+			session, err := OpenRepositorySession(context.Background(), fixture.inputs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = session.Close() })
+			approval, err := session.ApproveInitialTeam(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := session.Close(); err != nil {
+				t.Fatal(err)
+			}
+			failureCalls := 0
+			fail := func() error { failureCalls++; return errors.New("fixture structural failure") }
+			switch mode {
+			case "preflight":
+				fixture.inputs.TeamInputPreflight = func([]byte) error { return fail() }
+			case "prepare":
+				fixture.inputs.TeamRunPreparer = func(context.Context, []byte, []byte, string) ([]byte, error) { return nil, fail() }
+			case "materialize":
+				fixture.inputs.TeamRunMaterializer = func(context.Context, []byte, func(context.Context, func() error) error) (domain.RunState, error) {
+					return domain.RunState{}, fail()
+				}
+			}
+			session, err = OpenRepositorySession(context.Background(), fixture.inputs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := session.MaterializeApprovedInitialTeamRun(context.Background(), approval.GoalID, "service", approval.FactDigest); err == nil || failureCalls != 1 || *calls != 0 {
+				t.Fatal("continuation ignored or retried a failure")
+			}
+			wantPrepared := 0
+			if mode == "materialize" {
+				wantPrepared = 1
+			}
+			if *prepares != wantPrepared {
+				t.Fatal("failure caused unexpected preparation")
+			}
+			_, frozen, err := session.ingress.ReadTeamRunCreation(session.acquisition.Scope, approval.GoalID, "service")
+			if err != nil || frozen != (mode == "materialize") {
+				t.Fatal("failure lost frozen inputs or fabricated creation")
+			}
+			plan, found, err := session.ingress.ReadTeamPlan(session.acquisition.Scope, approval.GoalID)
+			if err != nil || !found || plan.FactDigest != approval.FactDigest || len(plan.Materializations) != 3 {
+				t.Fatal("failure changed original plan/budget obligations")
+			}
+		})
+	}
+}
+
 func TestRepositoryTeamMaterializerCannotReplaceCommittedResultWithClaims(t *testing.T) {
 	for _, mode := range []string{"missing", "failure", "forged-ready", "changed-result", "cancel"} {
 		t.Run(mode, func(t *testing.T) {

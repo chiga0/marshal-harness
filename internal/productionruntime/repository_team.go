@@ -76,11 +76,8 @@ func teamApprovalProjection(plan resultingress.TeamPlanState) application.Initia
 // Run creation/recovery and Goal-to-Run approval are NOT performed here.
 func (session *RepositorySession) PrepareInitialTeamRun(ctx context.Context, request application.ApproveInitialTeamRequest, nodeID string) (resultingress.TeamRunCreationState, error) {
 	const operation = "prepare-initial-team-run"
-	fail := func() (resultingress.TeamRunCreationState, error) {
-		return resultingress.TeamRunCreationState{}, application.NewError(operation, application.ReasonAuthorityConflict)
-	}
 	if ctx == nil || domain.ValidateID(nodeID) != nil {
-		return fail()
+		return resultingress.TeamRunCreationState{}, application.NewError(operation, application.ReasonAuthorityConflict)
 	}
 	frozen, digest, err := request.Frozen()
 	if err != nil {
@@ -91,18 +88,30 @@ func (session *RepositorySession) PrepareInitialTeamRun(ctx context.Context, req
 		return resultingress.TeamRunCreationState{}, err
 	}
 	defer borrow.Close()
+	approval := resultingress.TeamPlanApproval{InputsDigest: frozen.InputsDigest, RequestDigest: digest, ExpectedHead: frozen.ExpectedHead}
+	return session.prepareApprovedTeamRun(ctx, frozen.Inputs, approval, nodeID)
+}
+
+// The caller borrows the session lifetime. Both the original-request path and
+// the resident controller use this same preflight, current-ledger check and
+// creation freeze; no transport request is reconstructed during cold recovery.
+func (session *RepositorySession) prepareApprovedTeamRun(ctx context.Context, raw []byte, approval resultingress.TeamPlanApproval, nodeID string) (resultingress.TeamRunCreationState, error) {
+	const operation = "prepare-initial-team-run"
+	fail := func() (resultingress.TeamRunCreationState, error) {
+		return resultingress.TeamRunCreationState{}, application.NewError(operation, application.ReasonAuthorityConflict)
+	}
 	if session.teamInputPreflight == nil || session.teamRunPreparer == nil {
 		return resultingress.TeamRunCreationState{}, application.NewError(operation, application.ReasonCompositionIncomplete)
 	}
 	if err := ctx.Err(); err != nil {
 		return resultingress.TeamRunCreationState{}, err
 	}
-	validation := bytes.Clone(frozen.Inputs)
-	if session.teamInputPreflight(validation) != nil || canonical.DigestBytes(validation) != frozen.InputsDigest {
+	validation := bytes.Clone(raw)
+	if session.teamInputPreflight(validation) != nil || canonical.DigestBytes(validation) != approval.InputsDigest {
 		return fail()
 	}
 	var inputs goal.TeamInputs
-	if json.Unmarshal(frozen.Inputs, &inputs) != nil || inputs.Spec.Validate() != nil ||
+	if json.Unmarshal(raw, &inputs) != nil || inputs.Spec.Validate() != nil ||
 		!inputs.Spec.AuthorityNamespaceId.Equal(session.acquisition.Scope.AuthorityNamespaceID) {
 		return fail()
 	}
@@ -124,7 +133,6 @@ func (session *RepositorySession) PrepareInitialTeamRun(ctx context.Context, req
 	if err != nil {
 		return fail()
 	}
-	approval := resultingress.TeamPlanApproval{InputsDigest: frozen.InputsDigest, RequestDigest: digest, ExpectedHead: frozen.ExpectedHead}
 	verifier := repositoryApprovedTeamVerifier{session: session, approval: approval}
 	var plan resultingress.TeamPlanState
 	var existing resultingress.TeamRunCreationState
@@ -136,7 +144,7 @@ func (session *RepositorySession) PrepareInitialTeamRun(ctx context.Context, req
 		if readErr != nil {
 			return readErr
 		}
-		if !exists || plan.Approval != approval || !bytes.Equal(plan.Inputs, frozen.Inputs) {
+		if !exists || plan.Approval != approval || !bytes.Equal(plan.Inputs, raw) {
 			return application.NewError(operation, application.ReasonAuthorityConflict)
 		}
 		existing, found, readErr = session.ingress.ReadTeamRunCreation(session.acquisition.Scope, inputs.Spec.GoalId, nodeID)
@@ -158,6 +166,49 @@ func (session *RepositorySession) PrepareInitialTeamRun(ctx context.Context, req
 		return resultingress.TeamRunCreationState{}, err
 	}
 	return session.ingress.FreezeInitialTeamRun(ctx, verifier, session.acquisition, approval, inputs.Spec.GoalId, nodeID, plan.FactDigest, prepared)
+}
+
+// MaterializeApprovedInitialTeamRun is the resident controller's privileged
+// continuation of a committed plan, including approval-before-freeze crashes.
+// IDs/digest are selectors, never authority: the exact plan is read under the
+// current owner before any preflight/probe, and every mutation rechecks it.
+// It does not accept client templates, reconstruct HTTP deadlines, Start a
+// Worker, retry a failure, or authorize integration before its dependencies.
+func (session *RepositorySession) MaterializeApprovedInitialTeamRun(ctx context.Context, goalID, nodeID, planFactDigest string) (domain.RunState, error) {
+	const operation = "materialize-approved-team-run"
+	if ctx == nil || domain.ValidateID(goalID) != nil || domain.ValidateID(nodeID) != nil || planFactDigest == "" {
+		return domain.RunState{}, application.NewError(operation, application.ReasonInvalidRequest)
+	}
+	borrow, err := session.borrow()
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	defer borrow.Close()
+	if session.teamRunMaterializer == nil {
+		return domain.RunState{}, application.NewError(operation, application.ReasonCompositionIncomplete)
+	}
+	reader := repositoryApprovedTeamVerifier{session: session}
+	var plan resultingress.TeamPlanState
+	err = reader.WithCurrentApprovedTeam(ctx, session.acquisition, resultingress.TeamPlanApproval{}, func() error {
+		var found bool
+		var err error
+		plan, found, err = session.ingress.ReadTeamPlan(session.acquisition.Scope, goalID)
+		if err != nil {
+			return err
+		}
+		if !found || plan.FactDigest != planFactDigest {
+			return application.NewError(operation, application.ReasonAuthorityConflict)
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	creation, err := session.prepareApprovedTeamRun(ctx, plan.Inputs, plan.Approval, nodeID)
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	return session.materializeTeamCreation(ctx, plan.Approval, plan.Inputs, creation)
 }
 
 // MaterializeInitialTeamRun is a privileged controller seam, not an HTTP
