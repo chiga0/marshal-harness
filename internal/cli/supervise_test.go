@@ -43,7 +43,18 @@ func TestCLISuperviseLeaseHelper(t *testing.T) {
 	if root == "" || runID == "" || release == "" {
 		return
 	}
-	lease, err := runstore.New(root).Acquire(runID)
+	// Readiness itself briefly takes the lease lock when probing a free
+	// lease. A one-shot nonblocking Acquire can collide with that probe and
+	// make the fake child exit before it can acknowledge readiness. Retry
+	// only contention, within the existing ten-second readiness budget; do
+	// not swallow storage/identity errors or alter production acquisition.
+	store := runstore.New(root)
+	lease, err := store.Acquire(runID)
+	acquireDeadline := time.Now().Add(5 * time.Second)
+	for errors.Is(err, runstore.ErrLeaseHeld) && time.Now().Before(acquireDeadline) {
+		time.Sleep(5 * time.Millisecond)
+		lease, err = store.Acquire(runID)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +405,7 @@ func TestSuperviseOnceJSONCarriesCompleteDecisionFields(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	exit := Run([]string{"supervise", "--once", "--json", "--marshal-binary", binary}, strings.NewReader(""), &stdout, &stderr)
 	if exit != ExitOK {
-		t.Fatalf("supervise --once --json exit = %d, stderr = %s", exit, stderr.String())
+		t.Fatalf("supervise --once --json exit = %d, stderr = %s, decision JSON = %s", exit, stderr.String(), stdout.String())
 	}
 	waitForLeaseReleased(t, stateRoot, runID)
 	var raw []map[string]json.RawMessage

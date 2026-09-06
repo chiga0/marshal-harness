@@ -159,5 +159,8 @@ func (l *CompositionLedger) terminalizeCompletedAttempt(ctx context.Context, ver
 	if state.CleanupReleasedDigest == "" {
 		return resultingress.AttemptAuthorityState{}, resultingress.ErrCleanupUnauthorized
 	}
+	if err := l.adoptCompletedProjectionMutation(ctx, verifier, acquisition, read, state); err != nil {
+		return resultingress.AttemptAuthorityState{}, err
+	}
 	return state, nil
 }
