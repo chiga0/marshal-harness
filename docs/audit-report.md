@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-06：取消实机越过启动准入，但重启后的 Start 重放失败
+
+候选 `5e0a8e30971e7cb89d937adf401317e945c4c5de` 的 CI 34029043931 五项全绿后，单次 [canary 34029737648](https://github.com/chiga0/marshal-harness/actions/runs/34029737648) 已启动真实 Pi，Run journal 到 `run.start-outcome/READY→RUNNING`，server2 重启/rebind 与查询成功；随后 Start 重放出现封闭 `transport-failure`，没有执行到取消、没有 stop intent/Outcome。因此既不是取消通过，也不是 Pi 未配置。诊断 artifact 9988209944 已保留；不原样重跑。
+
+代码确认一个真实竞争窗口：resident deadline 循环在 application mutex 下取得 Run lease，而 HTTP delivery 的 Begin 在进入 application 之前先取得同一个 lease。只锁 application 无法覆盖 Begin/receipt，可能导致重放收到 lease-held/raw transport 错误；当前封闭现场日志不足以断言该次原始错误必为 lease-held。候选把完整 delivery 写事务与后台协调纳入同一 writer lane，保留 Status/Inspect 不阻塞、后台不排队、请求 context 和持久化权限检查。回归覆盖首次/重放 Start、Collect 的 Begin/receipt 阶段互斥与排队取消零意图；动态证据仍待新 source CI 和同路径实机，不用新测试替代业务可用证明。
+
+正常主线不等待该隔离停止候选：PR #265 已合并为 `c93e31b`，main CI 34029534577 五项全绿，已单次派发正常 order-quote canary 34030199172。此时尚无新 ACCEPTED，B1 不升级。
+
 ## 2026-09-06：取消候选实机验证在 Worker 启动前被错误的发布准入阻塞
 
 取消候选 `c1daeebb43541371d442e414ba830d59bf262ecd` 的 CI 34027878879 五项全绿。单次 canary 34028776232 却在 `Gate canonical repository and required CI` 失败：原脚本仅查 `event=push/head_branch=main`，而该候选证据来自 `workflow_dispatch`。失败在 candidate build、配置和 Worker 启动之前，零新业务 Attempt；这不是 Pi 配置或取消代码的实机失败，也不能归为实机通过。派发前未核对 gate 的事件合同，是本轮可避免的流程错误。

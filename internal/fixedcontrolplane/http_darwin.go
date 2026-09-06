@@ -56,13 +56,14 @@ type HTTPRouter struct {
 	delivery    StartRunDelivery
 	inflight    chan struct{}
 	queue       chan struct{}
+	mutation    chan struct{}
 }
 
 func NewHTTPRouter(port application.PublicApplicationPort, delivery StartRunDelivery) (*HTTPRouter, error) {
 	if port == nil || delivery == nil {
 		return nil, ErrInvalid
 	}
-	return &HTTPRouter{application: port, delivery: delivery, inflight: make(chan struct{}, maxRepositoryInflight), queue: make(chan struct{}, maxRepositoryQueue)}, nil
+	return &HTTPRouter{application: port, delivery: delivery, inflight: make(chan struct{}, maxRepositoryInflight), queue: make(chan struct{}, maxRepositoryQueue), mutation: make(chan struct{}, 1)}, nil
 }
 
 type httpRequest struct {
@@ -275,6 +276,10 @@ func (router *HTTPRouter) lifecycleOperation(ctx context.Context, authenticated 
 	if err != nil || authenticated != (RequestBinding{RequestKeyDigest: binding.RequestKeyDigest, RequestDigest: binding.RequestDigest, IntentDigest: binding.ApplicationIntentDigest, Deadline: binding.Deadline}) {
 		return httpResponse{}, 409, ErrConflict
 	}
+	if err := router.acquireMutation(ctx); err != nil {
+		return httpResponse{}, 503, err
+	}
+	defer router.releaseMutation()
 	pending, _, err := router.delivery.BeginLifecycleBound(ctx, request.requestKey, request.operation, input, current, deadline, binding)
 	if err != nil {
 		return httpResponse{}, applicationHTTPStatus(err), err
@@ -383,6 +388,10 @@ func (router *HTTPRouter) startRun(ctx context.Context, authenticated RequestBin
 	if err != nil || authenticated != (RequestBinding{RequestKeyDigest: binding.RequestKeyDigest, RequestDigest: binding.RequestDigest, IntentDigest: binding.ApplicationIntentDigest, Deadline: binding.Deadline}) {
 		return httpResponse{}, 409, ErrConflict
 	}
+	if err := router.acquireMutation(ctx); err != nil {
+		return httpResponse{}, 503, err
+	}
+	defer router.releaseMutation()
 	pending, replay, err := router.delivery.BeginStartRunBound(ctx, request.requestKey, input, deadline, binding)
 	if err != nil {
 		return httpResponse{}, applicationHTTPStatus(err), err
