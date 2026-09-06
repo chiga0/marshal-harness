@@ -65,3 +65,60 @@ func TestSealedStatusInvalidReceiver(t *testing.T) {
 		t.Fatal("nil adapter accepted")
 	}
 }
+
+func TestSealedInspectDoesNotWaitForMutation(t *testing.T) {
+	adapter := &sealedRepositoryApplication{session: &productionruntime.RepositorySession{}}
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.InspectRun(context.Background(), application.InspectRunRequest{RunID: "run-test"})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("unclaimed owner must not yield a Run projection")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("InspectRun waited for the mutation lock")
+	}
+}
+
+func TestSealedInspectCloseConcurrency(t *testing.T) {
+	adapter := &sealedRepositoryApplication{}
+	var readers sync.WaitGroup
+	for range 8 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for range 50 {
+				if _, err := adapter.InspectRun(context.Background(), application.InspectRunRequest{RunID: "run-test"}); err == nil {
+					t.Error("missing/closed session must not yield a Run projection")
+				}
+			}
+		}()
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	readers.Wait()
+}
+
+func TestSealedInspectInvalidInput(t *testing.T) {
+	var missing *sealedRepositoryApplication
+	adapter := &sealedRepositoryApplication{}
+	for _, test := range []struct {
+		adapter *sealedRepositoryApplication
+		ctx     context.Context
+		request application.InspectRunRequest
+	}{
+		{missing, context.Background(), application.InspectRunRequest{RunID: "run-test"}},
+		{adapter, nil, application.InspectRunRequest{RunID: "run-test"}},
+		{adapter, context.Background(), application.InspectRunRequest{}},
+	} {
+		if _, err := test.adapter.InspectRun(test.ctx, test.request); err == nil {
+			t.Fatal("invalid inspection accepted")
+		}
+	}
+}

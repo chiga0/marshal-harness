@@ -30,13 +30,13 @@ import (
 // sealedRepositoryApplication is the fixed-binary application adapter shared
 // by direct CLI mutation and the forthcoming control-plane server mode. It
 // owns repository-wide authority once and composes one short-lived Run runtime
-// for each bounded transaction. Mutations remain serialized; Status only
+// for each bounded transaction. Mutations remain serialized; queries only
 // shares a lifetime guard with Close, not the long-running verification lock.
 // Run leases remain the durable concurrency fence.
 type sealedRepositoryApplication struct {
 	mu sync.Mutex
-	// Lock order: mu -> statusMu -> session. Status never takes mu. Every write
-	// to closed and teardown of the immutable Status dependencies holds both.
+	// Lock order: mu -> statusMu -> session. Queries never take mu. Every write
+	// to closed and teardown of the immutable query dependencies holds both.
 	statusMu sync.RWMutex
 
 	repositoryRoot  string
@@ -659,8 +659,15 @@ func advanceSealedRun(ctx context.Context, runtime sealedRunAdvancer, runID stri
 }
 
 func (adapter *sealedRepositoryApplication) InspectRun(ctx context.Context, request application.InspectRunRequest) (application.RunProjection, error) {
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
+	if adapter == nil || ctx == nil || request.Validate() != nil {
+		return application.RunProjection{}, application.NewError("inspect-run", application.ReasonInvalidRequest)
+	}
+	// Protect the session against Close without waiting for a verification or
+	// stop transaction. Session.InspectRun still acquires the Run lease and
+	// checks current owner/ledger; contention is not permission to read stale
+	// state, and this does not promise a bound on storage/owner-lock latency.
+	adapter.statusMu.RLock()
+	defer adapter.statusMu.RUnlock()
 	if adapter.closed || adapter.session == nil {
 		return application.RunProjection{}, application.NewError("inspect-run", application.ReasonBridgeUnavailable)
 	}

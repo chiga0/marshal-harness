@@ -1,5 +1,9 @@
 # 设计审计报告
 
+## 2026-09-06：查询候选消除 application 长互斥等待
+
+`InspectRun` 原先与 Start/Collect/Verify/Cancel 共用 `adapter.mu`，即使 HTTP router 的只读请求不进入 writer lane，仍可能在长验证后排队。候选改为复用 `Status` 的 session lifetime 读锁；Close 仍同时取得 mutation/lifetime 写锁，Inspect 仍由 RepositorySession 获取精确 Run lease 并重新验证 owner/current ledger，不读取陈旧快照兜底。补充 mutation-held、Close 并发与无效输入测试；本地 compile-only/vet/staticcheck 通过，动态/race 尚待后继精确 CI。测试中的未 claim session 只证明不等待 application mutex，不证明有效 session 的全链路时延；底层 owner/storage 等待、同 Run 写冲突响应与实机查询延迟仍是 B1 开放项。
+
 ## 2026-09-06：取消失败定位到 fixed CLI activation 漏接线
 
 完整 artifact 9988677757 已取回：34031227675 的 `call-1` 为 inspect/exit=0，`call-2` 为 cancel/exit=3、空 stdout。后者 stderr SHA-256 `bb8d1e32fe9bfd6c9b829425e953f6649875f6b436c9a56893a8dec7176fa5e7` 与固定诊断 `Marshal local dogfood gate 拒绝：self-local-command-denied。`（含换行）精确相等。因此请求在 CLI self gate 被拒绝，尚未进入 server；不是 Pi 未配置，也不是新的 stop runtime 失败。
