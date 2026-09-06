@@ -118,7 +118,7 @@ func TestProductionFinalCarrierDoesNotImposeAssistantShapeOnHistory(t *testing.T
 		{"user-string", map[string]any{"role": "user", "content": "ordinary user prompt"}, []any{map[string]any{"type": "text", "text": string(declared)}}, ""},
 		{"custom-string", map[string]any{"role": "custom", "content": "extension context"}, []any{map[string]any{"type": "text", "text": string(declared)}}, ""},
 		{"user-array", map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "request"}}}, []any{map[string]any{"type": "text", "text": string(declared)}}, ""},
-		{"final-string-rejected", map[string]any{"role": "user", "content": "request"}, string(declared), "pi-result-final-content-shape"},
+		{"final-string-rejected", map[string]any{"role": "user", "content": "request"}, string(declared), "pi-result-final-content-container-shape"},
 		{"final-tool-rejected", map[string]any{"role": "user", "content": "request"}, []any{map[string]any{"type": "toolCall", "text": string(declared)}}, "pi-result-final-content-type"},
 		{"two-text-rejected", map[string]any{"role": "user", "content": "request"}, []any{map[string]any{"type": "text", "text": string(declared)}, map[string]any{"type": "text", "text": string(declared)}}, "pi-result-final-content-text"},
 		{"history-not-result", map[string]any{"role": "user", "content": string(declared)}, []any{map[string]any{"type": "text", "text": "no result"}}, "pi-result-final-object-missing"},

@@ -1,18 +1,18 @@
 # Roadmap 状态
 
-2026-09-06 最新实机结果：main `4f7311b` 的 CI 34023916927 五项全绿；单次 canary 34024740089 已完成真实 Pi 结果接纳与 cleanup-released，并到 `VERIFYING`，随后 fixed delivery receipt 提交失败。候选修复 release 投影交换后 root mutation observation 未衔接的问题，不放宽门禁；尚无 Verify/ReviewPacket/ACCEPTED，不原样重试。取消/业务超时另在 `feat/b1-stop-lifecycle@a04d76c` 运行独立 CI，未放行。B1 为 IN_PROGRESS，B2/B3 仍 PLANNED，详见 [审计记录](audit-report.md)。
+2026-09-06 最新实机结果：Collect receipt 修复已随 PR #264 合入 main `5bdec88`，CI 34027276856 五项全绿；单次 canary 34027927457 提前失败于 Pi 最终 content 形态，尚未验证新 receipt 路径。候选补齐容器/元素/字段错误的封闭分类，不放宽接纳规则、不原样重跑。取消/业务超时分支 `c1daeeb` 的 CI 34027878879 五项全绿，仍未合入或实机放行。B1 为 IN_PROGRESS，B2/B3 仍 PLANNED，详见 [审计记录](audit-report.md)。
 
 更新时间：2026-09-06（ADR 0080 三面分离与业务交付路线；不升级历史成熟度）
 
 ## 业务交付当前表
 
-当前已合入基线为 `origin/main@4f7311b08bf59f6fad31aaae6661fc253ab0b0b4`（[PR #263](https://github.com/chiga0/marshal-harness/pull/263)，sourceHead `31b64a84b50e41f29f773c31762c0c29b2bc58a5`），2026-09-06 09:10 UTC 远端合并；该 PR 无 pendingRemoteSync。main CI [34023916927](https://github.com/chiga0/marshal-harness/actions/runs/34023916927) 全绿后，仅派发一次 [34024740089](https://github.com/chiga0/marshal-harness/actions/runs/34024740089)。该次 parser 及 ResultIngress 已通过，当前根因收敛到 terminal release 与 receipt 的目录观察衔接；先修复并验证，再派新 exact-head 业务 canary，不用重复 Attempt 代替根因处理。
+当前已合入基线为 `origin/main@5bdec88d7161771caa2a556c70bbdef576375ff9`（[PR #264](https://github.com/chiga0/marshal-harness/pull/264)，sourceHead `224409272eb9c30762b8b0e15a2fd730d38db0e8`），2026-09-06 10:23 UTC 远端合并；该 PR 无 pendingRemoteSync。main CI 34027276856 全绿后，仅派发一次 [34027927457](https://github.com/chiga0/marshal-harness/actions/runs/34027927457)。该次在 parser 失败，无 ACCEPTED；此前 34024740089 的 VERIFYING 是历史实机进展，不移植为新 binary 的通过证据。先解除 carrier 诊断缺口，不用重复 Attempt 代替根因处理。
 
 同机独立 Decision 载体已随 #260 整体合入，默认关闭、仅显式 `live-review=true` 启用。客户端 current-head/receipt/Outcome/终态查询校验、上传与外部 Decision 原文递交通道已有 27 项 Node/Python 回归与 source hosted CI；仍无真实 ACCEPTED，不把测试设施合入当作业务验收。新阶段诊断只用于缩小 Collect 根因，不宣称修复已发生。
 
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | 真实 Start/丢响应/重启/rebind/replay、结果接纳、cleanup-released 与 VERIFYING 已到达；独立 Decision 载体已合入 | Collect receipt 阻塞；真实业务 Verify/独立 Decision/ACCEPTED；正常与故障路径证据；取消/超时 Outcome 与持续推进 |
+| B1 完整单任务服务 | `IN_PROGRESS` | 历史实机 Start/丢响应/重启/rebind/replay、结果接纳、cleanup-released 与 VERIFYING 已到达；独立 Decision 载体及 receipt 修复已合入 | 当前 Pi carrier 失败定位/修复；新 receipt 实机验证；业务 Verify/独立 Decision/ACCEPTED；取消/超时 Outcome 与恢复 |
 | B2 受限 Agent Team | `PLANNED` | ADR 0080 目标与 ADR 0019 组件可复用 | approved plan 耐久物化/调度、两个到三个实现节点、集成候选业务验收、局部 replan、暂停恢复 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
