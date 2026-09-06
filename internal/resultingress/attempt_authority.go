@@ -1276,7 +1276,44 @@ func closedCheckpointMatches(state AttemptAuthorityState, transition AttemptTran
 			return false
 		}
 	}
-	return found && evidence.Command == processsupervisor.CommandClose && evidence.RequestDigest == closed.CloseIntentDigest && evidence.ReceiptDigest == closed.CloseReceiptDigest && evidence.ObservationDigest == closed.CloseObservationDigest && evidence.CommandHead == closed.FinalCommandHead && terminalReportsEquivalent(state.ProcessTerminalEvidence, evidence)
+	if !found || evidence.Command != processsupervisor.CommandClose || evidence.RequestDigest != closed.CloseIntentDigest || evidence.ReceiptDigest != closed.CloseReceiptDigest || evidence.ObservationDigest != closed.CloseObservationDigest || evidence.CommandHead != closed.FinalCommandHead {
+		return false
+	}
+	if terminalReportsEquivalent(state.ProcessTerminalEvidence, evidence) {
+		return true
+	}
+	return stoppedCloseReportsEquivalent(state, evidence)
+}
+
+// A stop's Collect seals output after the process-terminal observation. Its
+// timestamp/output may advance, but only via an exact intervening v2 receipt;
+// the immutable terminal process identity/status cannot change. Close must
+// repeat that collected report exactly, not invent new transcript fields.
+func stoppedCloseReportsEquivalent(state AttemptAuthorityState, closed SupervisorCommandEvidence) bool {
+	if !stoppedTranscriptCollectible(state) || state.ProcessTerminalEvidence.Validate() != nil || closed.Validate() != nil || closed.Command != processsupervisor.CommandClose || closed.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().ProtocolRevision {
+		return false
+	}
+	terminalSeen := false
+	for _, checkpoint := range state.SupervisorCommandCheckpoints {
+		if checkpoint.FactDigest == state.ProcessTerminalOutcomeDigest {
+			if checkpoint.Evidence != state.ProcessTerminalEvidence {
+				return false
+			}
+			terminalSeen = true
+			continue
+		}
+		collected := checkpoint.Evidence
+		if !terminalSeen || collected.Sequence >= closed.Sequence || collected.Command != processsupervisor.CommandCollect {
+			continue
+		}
+		if collected.Validate() != nil || collected.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().ProtocolRevision || collected.Disposition != "ok" || collected.Outcome.State != SupervisorTranscriptCollected || !terminalReportsEquivalent(collected, closed) {
+			return false
+		}
+		before, after := state.ProcessTerminalEvidence.Outcome, collected.Outcome
+		return sameSupervisorChildEvidence(state.ProcessTerminalEvidence, collected) && before.MechanicsState == "terminal" && after.MechanicsState == "terminal" &&
+			before.ObserverIdentity == after.ObserverIdentity && before.ExitCode == after.ExitCode && before.Signal == after.Signal
+	}
+	return false
 }
 
 func exactSupervisorOutcomeReplay(storedDigest string, storedPreceding []SupervisorCommandEvidence, storedEvidence SupervisorCommandEvidence, transition AttemptTransition) bool {

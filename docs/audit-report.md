@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-06：动态回归发现停止后 Collect 的 report 衔接缺口
+
+候选 `c118249` 的 CI 34033879517 结束：Linux quality、双架构 conformance 与 secret scan 通过；macOS 的 `TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply` 在追加 SupervisorClosed 时失败。该回归已越过新增 cleanup Collect/丢响应恢复和 Close；不能据此派实机或把失败归为环境问题。旧比较要求 Close 的 report 与 Terminate 原报告完全一致，无法表达中间 Collect 封存输出及更新观察时间的合法事实链。
+
+候选改为只对 sealed v2 stop 识别精确 process-terminal → Collect receipt → Close receipt；终态进程身份、exit/signal、runtime/workdir/source、observer 不变，Close 的完整 report 必须等于该 Collect report。普通完成/历史路径保留旧严格比较，不忽略输出字段或凭空接受新摘要。回归显式采用更新的时间/输出，并拒绝缺失 terminal/Collect 引用、身份或退出状态改变及未收集输出。新精确 CI/实机仍待验证；B1 未完成。
+
+为缩短这类纵切反馈，`feat/b1-*` 的手动 macOS CI 在完整 quality 前先执行该精确 stop-chain race 回归；原五项检查、完整 quality/vulnerability 与实机准入不变。workflow 与 release-ci-contract 的固定白名单同步更新，不加入权限、自动发布或放行例外。前置失败仍会阻止整个 CI，不能用前置单测通过替代后续完整门禁。
+
 ## 2026-09-06：取消已终止进程，缺 cleanup transcript 导致 Close 失败
 
 `f9c974d` 的 CI 34032441612 五项通过后，单次 canary 34033184062 已进入真实 cancel：RB1 sequence 22 为 barrier，23–25 为 Terminate intent/outcome 与 process-terminal，26–28 为 existing-worktree release intent/receipt 与 allocation-terminal，29 留下 Close intent，随后 fixed server 返回 `authority-conflict`。尚无 supervisor-closed、cleanup release、worker.stopped 或 Outcome，不能称为取消成功。小诊断包 9989307623 在数秒内返回上述事实，无须等待完整 executable 包才能定位执行阶段。

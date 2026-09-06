@@ -50,6 +50,11 @@ func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixtur
 	collectedReport := report
 	if command == processsupervisor.CommandTerminate {
 		collectedReport.StdoutDigest, collectedReport.StderrDigest = canonical.DigestBytes(nil), canonical.DigestBytes(nil)
+		observedAt, err := time.Parse(time.RFC3339Nano, report.ObservedAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		collectedReport.ObservedAt = observedAt.Add(time.Millisecond).Format(time.RFC3339Nano)
 	}
 	assertIntent := func(p processsupervisor.PreparedCommandV2) SupervisorCommandIntent {
 		t.Helper()
@@ -312,6 +317,38 @@ func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixtur
 	closed, err := closeEvidence.SupervisorClosed(authority)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if command == processsupervisor.CommandTerminate {
+		if terminalReportsEquivalent(current.ProcessTerminalEvidence, closeEvidence.Evidence) || !stoppedCloseReportsEquivalent(current, closeEvidence.Evidence) {
+			t.Fatal("stop Close must bridge the exact intervening Collect report")
+		}
+		for name, mutate := range map[string]func(*AttemptAuthorityState){
+			"missing-terminal-reference": func(s *AttemptAuthorityState) { s.ProcessTerminalOutcomeDigest = attemptTestDigest("missing") },
+			"missing-collect": func(s *AttemptAuthorityState) {
+				var kept []SupervisorCommandCheckpoint
+				for _, c := range s.SupervisorCommandCheckpoints {
+					if c.Evidence.Command != processsupervisor.CommandCollect {
+						kept = append(kept, c)
+					}
+				}
+				s.SupervisorCommandCheckpoints = kept
+			},
+			"changed-process":  func(s *AttemptAuthorityState) { s.ProcessTerminalEvidence.Outcome.Process.PID++ },
+			"changed-exit":     func(s *AttemptAuthorityState) { s.ProcessTerminalEvidence.Outcome.ExitCode++ },
+			"changed-signal":   func(s *AttemptAuthorityState) { s.ProcessTerminalEvidence.Outcome.Signal = "SIGKILL" },
+			"changed-observer": func(s *AttemptAuthorityState) { s.ProcessTerminalEvidence.Outcome.ObserverIdentity = "other" },
+		} {
+			bad := current
+			mutate(&bad)
+			if stoppedCloseReportsEquivalent(bad, closeEvidence.Evidence) {
+				t.Fatalf("stop Close admitted %s", name)
+			}
+		}
+		wrongReport := closeEvidence.Evidence
+		wrongReport.Outcome.StdoutDigest = attemptTestDigest("uncollected")
+		if stoppedCloseReportsEquivalent(current, wrongReport) {
+			t.Fatal("Close invented transcript output")
+		}
 	}
 	request.Operation = CleanupReconcile
 	wrong := closed
