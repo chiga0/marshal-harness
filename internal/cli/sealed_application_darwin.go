@@ -397,6 +397,9 @@ var _ application.InitialTeamApplicationPort = (*sealedRepositoryApplication)(ni
 // NewCompositionLedger performs the exact attach/rebind reconciliation. Only
 // after this pass succeeds may Status report the resident port as ready.
 func (adapter *sealedRepositoryApplication) recoverRepositoryRuns(ctx context.Context) error {
+	if err := adapter.session.RecoverInitialTeamCreations(ctx); err != nil {
+		return errors.Join(application.NewError("recover-team-creations", application.ReasonAuthorityConflict), err)
+	}
 	runIDs, err := adapter.runs.ListExistingRunIDs()
 	if err != nil {
 		return errors.Join(application.NewError("recover-list-runs", application.ReasonAuthorityConflict), err)

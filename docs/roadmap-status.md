@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-2026-09-07 最新：928b8ab CI 五项已通过；a614acb CI 34063169000 四项成功、macOS 冷恢复正例失败，已定位 canonical repository 与路径别名字符串比较不一致，修正与恢复纵切一起验证。后继实现同 Run journal/snapshot/worktree 恢复，并接入 fixed server 构造与 current-owner/fact guard、返回前 RunStore 读回；新 head 动态验证尚待执行。B1/B2 仍 IN_PROGRESS、B3 PLANNED，未有真实团队或新 main merge。下方保留历史检查点。
+2026-09-07 最新：928b8ab CI 五项已通过；a614acb CI 34063169000 的 macOS canonical path 失败已修正，计入工程返工。原 Run journal/snapshot/worktree 恢复候选 2486b1c 已推送，CI 34064463717 在途。后继补接 resident 启动先恢复 RB1 原冻结创建义务，再扫描完整 Run；不依赖原 HTTP 请求、不重复 Probe/预算，已执行 Run 不重新创建。新增接线动态验证待精确 head CI，真实 Pi 团队与完整 server 冷启动仍未证明。B1/B2 仍 IN_PROGRESS、B3 PLANNED，无新 main merge/stable 发布。下方保留历史检查点。
 
 2026-09-07 最新检查点：B1 `80084bb` 的 CI 五项通过，但实机 34059061091 在 peer Collect 的 `pi-result-final-content-shape` 失败，尚未进入跨 Run 组合验收，禁止原样重试。B2 `928b8ab` 的 CI 34062410465 已通过 Linux quality、双架构 conformance 和 secret scan，记录时 macOS quality 在途；后继正接通原冻结输入的无 Probe planning 重建，尚未完成部分 Run 补齐和真实团队。Goal 保持 B1→B2→B3 与至少三个业务族的强 Lead＋SubAgents 重复配对收益验证。main 仍 ba2196b、两候选均未合并；下方旧“当前/在途”段落是历史检查点，不代表最新状态。
 

@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-07：恢复顺序由“先要求完整 Run”改为“先履行原创建义务”
+
+创建恢复候选 `2486b1c8a44fafc048abcaded2c2eaa1c718fc7d` 已推送，[CI 34064463717](https://github.com/chiga0/marshal-harness/actions/runs/34064463717) 在途；它包含前驱 macOS canonical path 修正，不能提前宣称动态通过。本次沿完整启动调用链补接：resident 在普通 Run 扫描前，以同一 held RB1 枚举 scope 内原 plan/creation；从耐久批准恢复原创建，不依赖已丢失的原 HTTP 请求，不重新 Probe/批准/追加预算。未冻结节点仍不自动准备，已执行 Run 核对完整 authority 与原输入后交原恢复路径，不重置。
+
+新增 store 冷重放/跨 scope 零泄漏及 session 无原请求、部分 Run、原 READY、缺失配置、占用、损坏、取消、已前进 Run 与输入漂移测试。session 使用明确的无 Pi fixture；实际 fixed server 构造已接线，但完整 server 冷启动、真实双 Worker 与业务集成仍需实机验证。该增量未增加协议、未新开付费 Run，避免为了同一启动缺口再产生后继 Run；也不能用新增测试数冲抵此前失败。B1/B2 仍 IN_PROGRESS，B3 PLANNED，不升级 INTEGRATED 或 production。下方“下一步启动接线”的叙述保留为前驱检查点。
+
 ## 2026-09-07：同一 Run 的创建恢复接入 fixed server 构造候选
 
 前驱 `928b8ab` 的 CI 34062410465 最终五项通过。`a614acb126b35a82b213f4c1401b1cf0ba5bfba4` 的 [CI 34063169000](https://github.com/chiga0/marshal-harness/actions/runs/34063169000) 四项通过、macOS 前置 planning 失败：冷恢复正向测试返回 invalid frozen preparation。核对 Prepare/Restore 路径发现，前者冻结 canonical repository，后者却直接比较原路径字符串；macOS /var→/private/var 导致同仓库误拒绝。改用同一规范路径校验并补跨平台 symlink alias 正例，不改 frozen repository 或重选输入。该失败计入工程返工，未派付费 Worker；此前 compile-only 仍不代表动态成功。

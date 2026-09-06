@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
@@ -98,7 +100,7 @@ func materializationFixture(t *testing.T) (publicFixedDeliveryInputs, applicatio
 				if index == 1 {
 					from = domain.StatePlanned
 				}
-				event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: []string{"event-fixture-plan", "event-fixture-ready"}[index], RunID: frozen.RunID, Sequence: uint64(index + 1), Type: "run.transition", StateFrom: from, StateTo: target, Timestamp: frozen.PreparedAt, Payload: map[string]any{}}
+				event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: []string{"event-fixture-plan", "event-fixture-ready"}[index], RunID: frozen.RunID, Sequence: uint64(index + 1), Type: []string{"planning.spec-accepted", "planning.inputs-frozen"}[index], StateFrom: from, StateTo: target, Timestamp: frozen.PreparedAt, Payload: map[string]any{}}
 				if err := store.Append(lease, event, uint64(index)); err != nil {
 					return err
 				}
@@ -188,5 +190,167 @@ func TestRepositoryTeamMaterializerCannotReplaceCommittedResultWithClaims(t *tes
 				t.Fatal("disabled/canceled materializer executed")
 			}
 		})
+	}
+}
+
+func TestRepositoryTeamStartupRecoversFrozenCreationWithoutOriginalRequest(t *testing.T) {
+	for _, mode := range []string{"missing-run", "partial-run", "ready"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture, request, prepares, calls := materializationFixture(t)
+			session, err := OpenRepositorySession(context.Background(), fixture.inputs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = session.Close() })
+			if err := session.RecoverInitialTeamCreations(context.Background()); err != nil || *prepares != 0 || *calls != 0 {
+				t.Fatalf("empty ledger triggered creation: %v", err)
+			}
+			if _, err := session.ApproveInitialTeam(context.Background(), request); err != nil {
+				t.Fatal(err)
+			}
+			if err := session.RecoverInitialTeamCreations(context.Background()); err != nil || *prepares != 0 || *calls != 0 {
+				t.Fatalf("unfrozen node was prepared at startup: %v", err)
+			}
+			creation, err := session.PrepareInitialTeamRun(context.Background(), request, "service")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "partial-run" {
+				store := runstore.New(filepath.Join(fixture.repository, ".marshal"))
+				lease, err := store.Acquire(creation.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := lease.Release(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "ready" {
+				if _, err := session.MaterializeInitialTeamRun(context.Background(), request, "service"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := session.Close(); err != nil {
+				t.Fatal(err)
+			}
+			// No original request, preflight or preparer is available on restart.
+			fixture.inputs.TeamInputPreflight = nil
+			fixture.inputs.TeamRunPreparer = nil
+			session, err = OpenRepositorySession(context.Background(), fixture.inputs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := *calls
+			if err := session.RecoverInitialTeamCreations(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if *prepares != 1 || *calls != before+1 {
+				t.Fatal("startup refreshed probe or omitted materialization")
+			}
+			lease, err := session.runs.AcquireExisting(creation.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, readErr := runstore.InspectUnderLease(lease)
+			releaseErr := lease.Release()
+			if readErr != nil || releaseErr != nil || state.RunID != creation.RunID || state.State != domain.StateReady || state.Sequence != 2 {
+				t.Fatalf("original READY missing: %v %v", readErr, releaseErr)
+			}
+		})
+	}
+}
+
+func TestRepositoryTeamStartupRejectsConflictAndMissingComposition(t *testing.T) {
+	for _, mode := range []string{"missing-materializer", "malformed-journal", "leased", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture, request, _, calls := materializationFixture(t)
+			if mode == "missing-materializer" {
+				fixture.inputs.TeamRunMaterializer = nil
+			}
+			session, err := OpenRepositorySession(context.Background(), fixture.inputs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			if _, err := session.ApproveInitialTeam(context.Background(), request); err != nil {
+				t.Fatal(err)
+			}
+			creation, err := session.PrepareInitialTeamRun(context.Background(), request, "service")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "leased" || mode == "malformed-journal" {
+				store := runstore.New(filepath.Join(fixture.repository, ".marshal"))
+				lease, err := store.Acquire(creation.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer lease.Release()
+				if mode == "malformed-journal" {
+					if err := lease.Release(); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(fixture.repository, ".marshal", "runs", creation.RunID, "events.jsonl"), []byte("{broken"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if mode == "cancel" {
+				cancel()
+			}
+			if err := session.RecoverInitialTeamCreations(ctx); err == nil || *calls != 0 {
+				t.Fatalf("invalid startup recovered: %v", err)
+			}
+		})
+	}
+}
+
+func TestRepositoryTeamStartupDoesNotRecreateAdvancedRun(t *testing.T) {
+	fixture, request, prepares, calls := materializationFixture(t)
+	session, err := OpenRepositorySession(context.Background(), fixture.inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if _, err := session.ApproveInitialTeam(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	state, err := session.MaterializeInitialTeamRun(context.Background(), request, "service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := session.runs.AcquireExisting(state.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event-fixture-aborted", RunID: state.RunID, Sequence: 3, Type: lifecycle.AbortEventType, StateFrom: domain.StateReady, StateTo: domain.StateAborted, Timestamp: state.CreatedAt,
+		Actor: &domain.Actor{Type: domain.ControlSourceTypeHuman, ID: "fixture-user"}, Payload: map[string]any{"terminalReason": lifecycle.PreAttemptAbortTerminalReason, "reason": "fixture abort"}}
+	if err := lifecycle.ValidateTransition(state.State, state.RunID, state.Sequence, event); err != nil {
+		lease.Release()
+		t.Fatal(err)
+	}
+	if err := session.runs.Append(lease, event, state.Sequence); err != nil {
+		lease.Release()
+		t.Fatal(err)
+	}
+	state.State, state.Sequence = domain.StateAborted, 3
+	if err := session.runs.WriteSnapshot(lease, state); err != nil {
+		lease.Release()
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.RecoverInitialTeamCreations(context.Background()); err != nil || *prepares != 1 || *calls != 1 {
+		t.Fatalf("advanced Run was recreated: %v", err)
+	}
+	// Existing Run authority alone is not enough if its creation input drifts.
+	if err := os.WriteFile(filepath.Join(fixture.repository, ".marshal", "runs", state.RunID, "task-spec.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.RecoverInitialTeamCreations(context.Background()); err == nil || *calls != 1 {
+		t.Fatal("advanced Run input conflict was silently skipped")
 	}
 }

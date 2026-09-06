@@ -67,6 +67,8 @@ fixed server 构造时安装不可由请求替换的 `TeamRunPreparer`，使用�
 
 fixed server 必须在冻结 StateRoot identity 前准备 runs/locks/worktrees 容器，后续仅创建其子项，避免合法物化改变已冻结父目录身份。Run 恢复读取采用有界 descriptor-relative nofollow/nonblock 普通文件检查；FIFO 不得在文件类型检查前阻塞。原事件与输入文件不重写；快照只是对已验证 journal 的完整投影补齐。
 
+resident 启动先从 held RB1 重放当前 repository scope 的既有冻结创建义务，再进入普通 Run-start authority 扫描。恢复只使用账本中原 approved plan/creation，不能伪造原 HTTP request ID/deadline、重新批准或给未冻结节点重新 Probe。每项重新检查 current owner 和原两份 fact；不完整的原创建沿同一物化入口补齐。已超过两条创建事件的 Run 只有在完整 Run authority、原创建身份和冻结文件均相符时才留给既有执行恢复，不回滚或重新物化；冲突/占用/损坏不得静默跳过。该枚举不增加持久化协议或第二状态库，也不在 startup 自动 Start。
+
 只接纳零至两条精确的既有 planning 事件；每条除原随机 event ID 外，类型、状态边、actor、原时间与完整 payload 都须与原准备一致。快照必须等于这些事件对应的完整投影，不允许用“重建快照”掩盖冲突；缺失或合法落后才补齐，截断 journal 和已运行状态拒绝。三份冻结文件使用现有 descriptor-relative immutable writer，存在值必须逐字相等、单链接普通文件；缺失才安装，不覆盖现有异内容。
 
 创建 worktree 使用原 task/run 派生路径与分支。恢复前必须拿到 task flock，验证同 Git common directory、精确分支/原 HEAD、干净工作区；只允许接管已释放进程锁留下的 `managed by Marshal` Git 管理锁，不处理其他原因的锁。只有分支已创建而目录尚未出现时，允许精确原 base 的未占用分支继续 `worktree add`；任何冲突保留，不强制删除或 reset。该恢复入口是内部 composition 接缝，不能直接接收 HTTP 请求宣称它自带批准。

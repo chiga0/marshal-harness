@@ -103,6 +103,47 @@ func TestTeamRunCreationColdReplayDoesNotRefreshOrReserveAgain(t *testing.T) {
 	}
 }
 
+func TestTeamCreationObligationsAreScopedReadOnlyAndColdReplayable(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenResultIngressStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _ := supervisorTestAcquireOwner(t, store, attemptTestIdentity())
+	plan, approval, raw := teamCreationFixture(t, store, owner.Acquisition)
+	if got, err := store.ListTeamCreationObligations(owner.Acquisition.Scope); err != nil || len(got) != 0 {
+		t.Fatalf("approval alone is not a frozen creation: %v", err)
+	}
+	creation, err := store.FreezeInitialTeamRun(context.Background(), teamTestApproval{owner.Acquisition, approval, false}, owner.Acquisition, approval, "team-1", "service", plan.FactDigest, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenResultIngressStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	before := reservationLedgerBytes(t, store)
+	got, err := store.ListTeamCreationObligations(owner.Acquisition.Scope)
+	if err != nil || len(got) != 1 || got[0].Plan.FactDigest != plan.FactDigest || got[0].Creation.FactDigest != creation.FactDigest || !bytes.Equal(got[0].Creation.Inputs, raw) {
+		t.Fatalf("cold enumeration lost exact facts: %v", err)
+	}
+	other := owner.Acquisition.Scope
+	other.RepositoryIdentityDigest = attemptTestDigest("other repository")
+	if got, err := store.ListTeamCreationObligations(other); err != nil || len(got) != 0 {
+		t.Fatalf("enumeration crossed repository scope: %v", err)
+	}
+	if _, err := store.ListTeamCreationObligations(ControlOwnerScope{}); err == nil {
+		t.Fatal("invalid scope accepted")
+	}
+	if !bytes.Equal(before, reservationLedgerBytes(t, store)) {
+		t.Fatal("enumeration mutated ledger")
+	}
+}
+
 func TestTeamRunCreationRejectsChangedPlanInputAndPrematureIntegration(t *testing.T) {
 	store, err := OpenResultIngressStore(t.TempDir())
 	if err != nil {

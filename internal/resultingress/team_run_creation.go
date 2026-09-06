@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -135,6 +137,47 @@ func (s *DurableStore) ReadTeamRunCreation(scope ControlOwnerScope, goalID, node
 		return nil
 	})
 	return result, found, err
+}
+
+// TeamCreationObligation joins existing committed facts, not directory names
+// or a newly supplied approval. It grants neither Start nor a new reservation.
+type TeamCreationObligation struct {
+	Plan     TeamPlanState
+	Creation TeamRunCreationState
+}
+
+// ListTeamCreationObligations replays once and returns only this exact owner
+// scope's frozen creations. The caller must still hold/recheck current owner
+// and both facts before performing each recovery mutation.
+func (s *DurableStore) ListTeamCreationObligations(scope ControlOwnerScope) ([]TeamCreationObligation, error) {
+	if scope.Validate() != nil {
+		return nil, ErrTeamRunCreationConflict
+	}
+	projection := newAuthorityProjection()
+	var result []TeamCreationObligation
+	err := s.transact(projection, func() error {
+		for key, creation := range projection.teamRunCreations {
+			if key != teamRunCreationKey(scope, creation.GoalID, creation.NodeID) {
+				continue
+			}
+			plan, found := projection.teamPlans[teamPlanKey(scope, creation.GoalID)]
+			if !found || plan.FactDigest != creation.PlanFactDigest {
+				return ErrTeamRunCreationConflict
+			}
+			result = append(result, TeamCreationObligation{Plan: plan, Creation: creation})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	slices.SortFunc(result, func(a, b TeamCreationObligation) int {
+		if n := strings.Compare(a.Creation.GoalID, b.Creation.GoalID); n != 0 {
+			return n
+		}
+		return strings.Compare(a.Creation.NodeID, b.Creation.NodeID)
+	})
+	return result, nil
 }
 
 func teamRunCreationKey(scope ControlOwnerScope, goalID, nodeID string) string {

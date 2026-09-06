@@ -182,6 +182,13 @@ func (session *RepositorySession) MaterializeInitialTeamRun(ctx context.Context,
 		return domain.RunState{}, err
 	}
 	approval := resultingress.TeamPlanApproval{InputsDigest: frozen.InputsDigest, RequestDigest: digest, ExpectedHead: frozen.ExpectedHead}
+	return session.materializeTeamCreation(ctx, approval, frozen.Inputs, creation)
+}
+
+// The session lifetime must already be borrowed. Startup uses the approval
+// stored in RB1, not a fabricated original transport request/deadline.
+func (session *RepositorySession) materializeTeamCreation(ctx context.Context, approval resultingress.TeamPlanApproval, inputs []byte, creation resultingress.TeamRunCreationState) (domain.RunState, error) {
+	const operation = "materialize-initial-team-run"
 	verifier := repositoryApprovedTeamVerifier{session: session, approval: approval}
 	guard := func(operationContext context.Context, fn func() error) error {
 		return verifier.WithCurrentApprovedTeam(operationContext, session.acquisition, approval, func() error {
@@ -189,7 +196,7 @@ func (session *RepositorySession) MaterializeInitialTeamRun(ctx context.Context,
 			if err != nil {
 				return err
 			}
-			if !found || plan.Approval != approval || plan.FactDigest != creation.PlanFactDigest || !bytes.Equal(plan.Inputs, frozen.Inputs) {
+			if !found || plan.Approval != approval || plan.FactDigest != creation.PlanFactDigest || !bytes.Equal(plan.Inputs, inputs) {
 				return application.NewError(operation, application.ReasonAuthorityConflict)
 			}
 			current, found, err := session.ingress.ReadTeamRunCreation(session.acquisition.Scope, creation.GoalID, creation.NodeID)
