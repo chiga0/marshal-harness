@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-06：Run-first 冷恢复通过；Attempt 停止完成但查询失败
+
+`49f745da10d33a71146afa75528d1f34a691b159` 的 [CI 34040876557](https://github.com/chiga0/marshal-harness/actions/runs/34040876557) 五项全绿，随后 [Run-first 34041702160](https://github.com/chiga0/marshal-harness/actions/runs/34041702160) 成功。独立读取诊断 artifact `9991894362`，重新计算 creation event digest，连接同 Attempt process-started、原始 60/60 秒预算、stop intent、四类 terminal/cleanup 引用及 BLOCKED 事件。Run deadline `15:16:48.357751Z` 早于 Attempt deadline `15:16:52.173736Z`；停止原因精确为 `run-deadline-exceeded`，本样本意图延迟 0.805517 秒、终态延迟 3.340678 秒。server2/server3 binary identity 相同，raw SHA-256 为 `656d53a2b8237a76566db52b469016a7fde5259de3b7556d0a0058a2893215dc`；冷恢复保留原 Collect key/head/deadline、终态投影和响应 SHA-256 `606f11c437c8af004acfcc1e766d73e63ec1b10df913949757d9147d739a6e1e`。没有 Cancel、第二 Attempt 或业务 ACCEPTED，仍是 candidate-only，原始 Outcome 文件不在此旧归档清单中。
+
+同 source 的 [Attempt-timeout 34041730043](https://github.com/chiga0/marshal-harness/actions/runs/34041730043) 在并发组排队后执行，但整次失败：原始账本已于 `15:19:05.43834Z` 形成 `worker.stopped/BLOCKED/sequence=4/attempt-deadline-exceeded`，末端 process-supervisor-closed、cleanup-completed/released 均存在；驱动一次 Inspect 却得到空 stdout、exit=1，stderr SHA-256 为 `abf43c190890f51240c04294f209715a3c0e54b125631cc10d078e0a04d20237`，server 只保留 `reasonCode=transport-failure`，驱动于 `15:19:06.193157Z` 报 `fixed-cli-invalid-response`。未进入 Collect 或 server3，不能把停止事件当成整条恢复验证通过。诊断 `9991926037` 与完整包 `9991926396` 保留，未原样重跑。
+
+复盘：此前只为 Inspect 的 Run lease 竞争增加等待，并没有证明连接鉴权、current owner/root recheck 到完整查询响应的并发路径都可用。本次再次出现查询 transport 类失败，应冻结同类实机重试，先补足可定位且不含路径/secret 的错误阶段证据及真实读写并发回归。现有证据不足以断言是 lease、endpoint recheck 或超时；不扩大可重试错误集合，不用客户端重试掩盖。后继 `97e448a` 的 CI 34041798874 验证 Outcome 物化回归与归档修正，不声称修复这次查询问题。B1 仍 IN_PROGRESS；下一关键动作是关闭该查询接缝，再验证两类超时完整恢复和其余故障窗口。
+
 ## 2026-09-06：停止 Outcome 部分落盘恢复回归
 
 后续检查归档清单发现：此前完整包和小诊断都只显式包含 Run state/events，未包含 `outcome.json/result.md`。因此原始 Outcome 缺失不只是下载等待，重下同一包也无用；历史证据仍只支持已记录的 Core stopped-Collect 验证口径。候选为两份 artifact 增加精确 Run 的这两个派生文件，以便后续独立检查 bytes/摘要；不读取或上传新类别的 Worker transcript/secret，不补造历史证据。
