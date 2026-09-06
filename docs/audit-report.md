@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：等待精确超时候选 CI 时补查排队边界
+
+`dd8178f` 已推送，精确 CI 为 34039269163。紧接 push 的第一次 workflow dispatch 34039237556 在 GitHub 解析到上一 source `86b6553`，已核对并取消该自有 CI；随后确认远端 API head 为 `dd8178f` 才重新派发，未重复 Worker、未把旧 source CI 借给新候选。以后 dispatch 后仍立即核对实际 `headSha`，不能只凭命令成功认定版本正确。
+
+响应上界复核追到 `HTTPRouter.acquireMutation`：它已有 context-aware writer queue，Status/Inspect 绕过该队列；仅看到 application 全局互斥锁不足以断言 HTTP 会无限挂起。因此本次不新增锁或 controller，只补 Cancel 排队的请求 deadline 到期、零 delivery pending/停止意图/receipt、查询可达和不释放他人 writer lane 的定向回归，并将 timeout renderer 加入真实 Task schema 测试枚举。这是 routing/fixture 测试，不证明执行中的 verification 可以被抢占，也不关闭长事务下实际业务停止延迟。新增代码本地 compile-only、vet/staticcheck 通过，动态证据仍需其自身 source CI；不混入已派发的 `dd8178f`。
+
 ## 2026-09-06：自动业务停止观察候选，不能把观察当作 deadline 证明
 
 显式取消与完成后冷恢复通过后，本候选在同一 fixed server/Pi/canary 增加 `order-quote-timeout`：审批前 Task 冻结 60 秒 Attempt、600 秒 Run 预算；原业务场景仍为 300/600，不改变 runtime 合同。Start 丢响应/重启后只进行有界 Inspect，直到观察 BLOCKED 才调用当前 head 的 Collect，并要求 `stopped/run-stopped`；不调用 Cancel，不在 RUNNING 时用 Collect 触发停止，不自动重试失败 transport。180 秒是观察器等待上限，不是业务 deadline。

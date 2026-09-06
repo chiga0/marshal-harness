@@ -161,6 +161,90 @@ func TestResidentWriterLaneCoversEntireDeliveryAndLeavesQueriesAvailable(t *test
 	}
 }
 
+// A queued operator cancellation must remain bounded by its own request, even
+// if an unrelated verification owns the writer lane. This is a routing/lane
+// regression, not proof that an already-running verifier is preemptible.
+func TestQueuedCancelExpiresWithoutIntentAndQueriesBypassWriter(t *testing.T) {
+	port, delivery := testHTTPApplication()
+	router, err := NewHTTPRouter(port, delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.acquireMutation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer router.releaseMutation()
+	deadline := time.Now().UTC().Add(time.Minute)
+	input := application.CancelRunRequest{CurrentRunRequest: application.CurrentRunRequest{
+		RunID: port.run.RunID, AttemptID: port.run.AttemptID,
+		ExpectedSequence: port.run.Sequence, ExpectedAuthorityHead: port.run.AuthorityHead,
+	}, RequestID: "cancel-queued"}
+	body := canonicalBody(t, input)
+	binding, err := clientRequestBinding("request:queued-cancel", body, productionruntime.FixedLifecycleCancelOperation, input, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	waiting := &mutationWaitContext{Context: ctx, entered: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, code, err := router.dispatch(waiting, binding, httpRequest{
+			operation:  productionruntime.FixedLifecycleCancelOperation,
+			requestKey: "request:queued-cancel", body: body,
+		}, deadline)
+		if code != 503 || !errors.Is(err, ErrUnavailable) {
+			done <- errors.New("queued cancel did not expire as unavailable")
+			return
+		}
+		done <- nil
+	}()
+	select {
+	case <-waiting.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancel did not enter bounded writer wait")
+	}
+	query := application.InspectRunRequest{RunID: port.run.RunID}
+	queryBody := canonicalBody(t, query)
+	queryBinding := readBinding("request:inspect-during-cancel", queryBody, "inspect-run", query, deadline)
+	queried := make(chan error, 1)
+	go func() {
+		response, code, err := router.dispatch(context.Background(), queryBinding, httpRequest{
+			operation: "inspect-run", requestKey: "request:inspect-during-cancel", body: queryBody,
+		}, deadline)
+		if err != nil || code != 200 || response.Disposition != "success" {
+			queried <- errors.New("query failed behind writer")
+			return
+		}
+		queried <- nil
+	}()
+	select {
+	case err := <-queried:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("query waited behind writer")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued cancel ignored its request deadline")
+	}
+	if port.cancelCalls != 0 || delivery.lifecycleBeginCalls != 0 || delivery.lifecycleCommitCalls != 0 {
+		t.Fatal("expired queued cancel created a pending intent, mutation or receipt")
+	}
+	if called, err := router.TryBackgroundMutation(context.Background(), func(context.Context) error {
+		t.Fatal("cancel released another writer's lane")
+		return nil
+	}); called || err != nil {
+		t.Fatalf("writer ownership changed: called=%v err=%v", called, err)
+	}
+}
+
 func TestResidentWriterLaneRejectsInvalidAndReleasesOnCallbackError(t *testing.T) {
 	port, delivery := testHTTPApplication()
 	router, err := NewHTTPRouter(port, delivery)
