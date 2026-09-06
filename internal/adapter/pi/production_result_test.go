@@ -85,6 +85,8 @@ func TestExtractFinalWorkerResultFailsClosed(t *testing.T) {
 		{name: "duplicate-text", content: []any{map[string]any{"type": "text", "text": valid}, map[string]any{"type": "text", "text": valid}}},
 		{name: "tool-call", content: []any{map[string]any{"type": "toolCall", "text": valid}}},
 		{name: "trailing-json", content: []any{map[string]any{"type": "text", "text": valid + ` {}`}}},
+		{name: "markdown-fence", content: []any{map[string]any{"type": "text", "text": "```json\n" + valid + "\n```"}}},
+		{name: "trailing-report", content: []any{map[string]any{"type": "text", "text": valid + "\nAll tests passed."}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
