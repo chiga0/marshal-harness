@@ -3,6 +3,7 @@ package gitworktree
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,7 +64,7 @@ func TestRecoverPreparationContinuesBranchOnlyCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer worktree.Release()
-	if got := gitCommand(t, worktree.Path, "rev-parse", "HEAD"); got != base {
+	if got := strings.TrimSpace(gitCommand(t, worktree.Path, "rev-parse", "HEAD")); got != base {
 		t.Fatal("base changed")
 	}
 }
