@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-06：最终 JSON 后有非空白内容，前移输出格式约束
+
+PR #262 source `8de9648` 全部检查通过后合入 main `5945b6854220eb86b229e19efe3e883a17556a48`；main CI [34008933865](https://github.com/chiga0/marshal-harness/actions/runs/34008933865) 五项通过。唯一后继实机 [34009508838](https://github.com/chiga0/marshal-harness/actions/runs/34009508838) 在三次同请求 `attempt-still-running` 观察后失败于 `pi-result-final-object-trailing`，小型诊断 artifact `9982033321` 已保留。启动、恢复、transcript 与最终 assistant 消息解析均已越过原屏障，但尚未进入 WorkerResult Schema/独立 Verification，没有 ReviewPacket、Decision 或 ACCEPTED。不能只读旧 `state.json` 的 READY 快照忽略实际 RB1 启动事实。
+
+本次分类证明最终文本内一个 JSON 对象后仍有非空白内容；公开诊断不包含原始 transcript，不能断言它具体是 Markdown 围栏、结束语，或对象是否已满足 WorkerResult Schema。现有 prompt 只要求“exactly one WorkerResult JSON object”，没有明说禁止围栏/尾随报告，也没有说明所有解释必须进入 JSON 字段。本候选补齐这些 producer 约束与发出前的整条消息检查，保留完整 schema 模板；解析器和 ADR 0075 的尾随内容拒绝规则不变，新增围栏/尾随报告负例。提示词改善不等于确定性保证；新候选仍需 hosted CI 和单次真实验证，禁止把尚未发生的成功写入 B1。
+
+取消/超时另在 `feat/b1-stop-lifecycle` 开发分支保存：`f41b3aa` 已推送并启动 [CI 34009447676](https://github.com/chiga0/marshal-harness/actions/runs/34009447676)，未建合并 PR、未放行该未完成纵切；不混用它与本次实机的 sourceHead。下一步仍优先真实业务 ACCEPTED，同时完成停止/业务 deadline 与自动恢复。
+
 ## 2026-09-06 03:01 UTC：最终消息提取拒绝，修复 Pi 消息联合类型适配
 
 PR #261 source `01c4a54` 经 CI 34006591660 全绿后合入 main `80dc39f`，main CI 34007198729 也五项全绿。单次真实 canary [34007829215](https://github.com/chiga0/marshal-harness/actions/runs/34007829215) 运行后返回 `pi-result-final-message/authority-conflict`；此前十次 `attempt-still-running` 为同一冻结请求的允许观察，不是十个 Attempt。没有 ReviewPacket、Decision 或 ACCEPTED。诊断 artifact 9981544614 保留，未原样重试。
