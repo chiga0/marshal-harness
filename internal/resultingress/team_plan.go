@@ -146,6 +146,28 @@ func (s *DurableStore) ReadTeamPlan(scope ControlOwnerScope, goalID string) (Tea
 	return result, found, err
 }
 
+// ListTeamPlans is a read-only replay for the exact scope. The deterministic
+// ordering is a scheduling hint, not execution approval or budget authority.
+func (s *DurableStore) ListTeamPlans(scope ControlOwnerScope) ([]TeamPlanState, error) {
+	if scope.Validate() != nil {
+		return nil, ErrTeamPlanConflict
+	}
+	projection := newAuthorityProjection()
+	var result []TeamPlanState
+	err := s.transact(projection, func() error {
+		for key, plan := range projection.teamPlans {
+			if key == teamPlanKey(scope, plan.Revision.GoalId) {
+				result = append(result, plan)
+			}
+		}
+		slices.SortFunc(result, func(a, b TeamPlanState) int {
+			return bytes.Compare([]byte(a.Revision.GoalId), []byte(b.Revision.GoalId))
+		})
+		return nil
+	})
+	return result, err
+}
+
 func teamPlanKey(scope ControlOwnerScope, goalID string) string {
 	return canonicalDigestOrEmpty(struct {
 		Scope  ControlOwnerScope

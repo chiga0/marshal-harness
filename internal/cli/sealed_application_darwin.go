@@ -67,6 +67,9 @@ type sealedRepositoryApplication struct {
 	// Rebuildable scheduling hints only; every tick reloads Run authority.
 	deadlineRuns   map[string]struct{}
 	deadlineCursor string
+	// A local circuit breaker for unknown dispatch/stop-record outcomes only.
+	// Durable team halts remain the authority across process restarts.
+	teamDispatchStopped bool
 }
 
 var _ application.PublicApplicationPort = (*sealedRepositoryApplication)(nil)
@@ -444,6 +447,12 @@ func (adapter *sealedRepositoryApplication) recoverRepositoryRuns(ctx context.Co
 func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
+	return adapter.startRunLocked(ctx, request)
+}
+
+// The public operation and resident team controller hold the same write lock
+// and execute the identical preparation/launch/current-ledger path.
+func (adapter *sealedRepositoryApplication) startRunLocked(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, error) {
 	if adapter.closed || adapter.validator == nil || adapter.entryIdentity == nil {
 		return application.RunStartProjection{}, application.NewError("start-run", application.ReasonBridgeUnavailable)
 	}

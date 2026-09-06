@@ -133,8 +133,18 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 		defer requests.Done()
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
-		driveBusinessDeadlines(deadlineCtx, ticker.C, func(step context.Context) error {
+		driveResidentReconciliation(deadlineCtx, ticker.C, func(step context.Context) error {
 			_, err := router.TryBackgroundMutation(step, applicationAdapter.advanceBusinessDeadlines)
+			return err
+		}, func(err error) { writeControlPlaneRequestFailure(stderr, err) })
+	}()
+	requests.Add(1)
+	go func() {
+		defer requests.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		driveResidentReconciliation(deadlineCtx, ticker.C, func(step context.Context) error {
+			_, err := router.TryBackgroundMutation(step, applicationAdapter.advanceInitialTeams)
 			return err
 		}, func(err error) { writeControlPlaneRequestFailure(stderr, err) })
 	}()

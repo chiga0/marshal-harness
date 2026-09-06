@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-07：从批准账本接到 resident 的实际 Start 路径
+
+`aa230da` 的精确 CI 34066292363 已五项成功。本轮将耐久停派与初始调度接入 fixed server：单独 timer、同一 router mutation lane、同一应用写锁，每次选取一个原始 implement，复用原 Materialize、Inspect sequence/head 与实际 StartRun。没有 CLI 子进程协调器、内存批准或另建状态库；同时运行的 Worker 不持全局写锁。
+
+自动派发按仓库 busy 容量 2 与原 Goal 更低上限取最小值。计入执行、重试待定、验证/审核、rework 与发布中；非团队 busy 或多个 busy Goal 时不新增，单个 busy Goal 优先继续其已批准的独立节点。该上限只约束自动派发，不宣称新增了全局人工 Start 配额或自适应内存/CPU 调度。集成依赖尚未接通，不提前执行 integration，不自动 rework。
+
+完整调用链检查在提交前发现：Verify 合法持有 Run lease 时，调度器不能把 `ErrLeaseHeld` 当永久结构性失败。候选明确把它作为本轮容量不可判定→不派发；只读观察被取消也不触发永久停派。读取损坏/未知则停本进程派发；物化、Inspect 或 Start 失败只提交一次原计划 halt，halt 提交未决也停本进程派发。既有 deadline timer 和查询不受该本地开关禁用，shutdown 同时等待两个 timer 退出后再释放 owner。
+
+新增 current-ledger 冷选择/READY 复用/停派、合法 lease、容量/审核队列/非团队占用/更低 Goal 上限/陈旧 READY/不提前集成的回归；纯策略输入明确标为合成投影，不作为实机证据。原 Start 的实现抽为同一持锁函数供公开入口与 controller 共用，未复制执行语义。Darwin/Linux compile-only、vet、Darwin staticcheck、架构和 diff 检查通过；halt/调度组合仍待最新精确 head 动态 CI。B1 精确分支 CI 34066636760 已五项通过，并经 candidate-ci-gate 派发一次带新诊断的真实 Pi 组合验证 34067556449，尚无结果；B2 尚缺自动 Collect/独立接纳/集成/Goal Outcome/暂停与 replan 及真实团队，因此状态不升级。
+
 ## 2026-09-07：自动调度前先接通耐久停派，不把心跳变成重试器
 
 前驱 `fc5d479` 的精确 CI 34065300476 已五项成功；批准后无原 HTTP 请求续行的 `aa230da` 正由 34066292363 动态验证。本轮发现当前创建接口虽单次返回错误，但若直接挂入 tick，失败会被下轮再次调用，冷重开也没有停派依据。候选依 ADR 0083 在同 RB1 增加封闭 `team-plan-halted` 记录，绑定原 plan、节点、阶段与 current owner；原原因不可覆盖、exact replay 不追加、不改变原计划/预算。Prepare/Freeze 与原首次 Start gate 检查 halt；被阻止的成员不回退到普通人工批准。

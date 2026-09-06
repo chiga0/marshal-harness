@@ -2,6 +2,7 @@ package resultingress
 
 import (
 	"context"
+
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
 

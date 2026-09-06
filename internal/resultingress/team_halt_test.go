@@ -100,6 +100,10 @@ func TestTeamHaltColdReplayPreventsNewCreationWithoutBudgetRefund(t *testing.T) 
 	if err != nil || !exists || !bytes.Equal(teamTestBytes(t, current), teamTestBytes(t, plan)) {
 		t.Fatal("halt rewrote plan or budget")
 	}
+	plans, err := store.ListTeamPlans(owner2.Acquisition.Scope)
+	if err != nil || len(plans) != 1 || plans[0].FactDigest != plan.FactDigest || !bytes.Equal(before, reservationLedgerBytes(t, store)) {
+		t.Fatal("cold enumeration changed or omitted halted plan")
+	}
 	changed := halt
 	changed.Stage = "start"
 	if _, err := store.HaltTeamPlan(context.Background(), verifier, owner2.Acquisition, approval, changed); err == nil {

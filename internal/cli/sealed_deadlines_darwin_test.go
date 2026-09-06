@@ -42,7 +42,7 @@ func TestDeadlineDriverCancelsInflightStepAndDoesNotOverlap(t *testing.T) {
 	var calls, reports atomic.Int32
 	go func() {
 		defer close(finished)
-		driveBusinessDeadlines(ctx, ticks, func(step context.Context) error {
+		driveResidentReconciliation(ctx, ticks, func(step context.Context) error {
 			calls.Add(1)
 			deadline, ok := step.Deadline()
 			if !ok || time.Until(deadline) > 30*time.Second {
@@ -78,7 +78,7 @@ func TestDeadlineDriverReportsFailureAndClosedTicksExit(t *testing.T) {
 	close(ticks)
 	want := errors.New("bounded failure")
 	var calls, reports int
-	driveBusinessDeadlines(context.Background(), ticks, func(context.Context) error { calls++; return want }, func(err error) {
+	driveResidentReconciliation(context.Background(), ticks, func(context.Context) error { calls++; return want }, func(err error) {
 		if !errors.Is(err, want) {
 			t.Fatal(err)
 		}

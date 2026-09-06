@@ -1,9 +1,11 @@
 # ADR 0083：受限团队计划接纳与 Run 幂等物化
 
-- 状态：提议（Proposed），未启用。初始设计基线为 d67e3b7，输入绑定候选已随 B1 依赖更新到 b1e8380；依赖未合入的 B1 候选，不能作为 main 的能力声明。
+- 状态：提议（Proposed），仅未发布候选含接线，未在 main/正式产品启用。初始设计基线为 d67e3b7，输入绑定候选已随 B1 依赖更新到 b1e8380；依赖未合入的 B1 候选，不能作为 main 的能力声明。
 - 依据：ADR 0019、0052、0069、0080、0082；目标为 B2，不恢复通用 M13/HA/多租户/DSL。
 
 ## 实现事实与要解决的缺口
+
+2026-09-07 候选当前接线：批准→耐久输入/创建→首次 Start gate→resident tick 的两个 implement 调度已编写，失败沿同 RB1 停派；调度与 halt 的组合动态验证及真实并行尚未完成。Collect/独立验收/集成/Goal Outcome/暂停与 replan 仍待接通。以下实现段同时保留阶段演进，不应把较早的“尚无接线”或当前存在的代码当成正式启用、INTEGRATED 或完成证明。
 
 `internal/goal.Evaluate` 能检查图、scope 和累计预算，但输入的 AuthorityState 由调用方提供，输出 reservation plan 不落盘；`internal/outbox` 为内存实现。把二者串起来不构成生产 Goal 接纳。`GoalNode` 也没有 TaskSpec/Policy 输入，无法从 node title 安全创建真实 Run。
 
@@ -46,6 +48,10 @@ Goal 投影由同一物理账本 replay 得到，`goal.Evaluate` 只接收该投
 该 session 方法本身是特权应用接缝，不提供 transport 身份认证；候选现由上述 authenticated route 调用，固定 CLI 提供 `team-approve` / `team-reconcile`。生产版本启用仍须本候选的实际链路验证，不能以存在 route 宣称团队可用。返回投影只表示计划已批准及创建义务数，不表示 Run 已创建、Worker 已执行或业务 ACCEPTED。session 冷重开后 exact request 返回原 fact，非 exact request 冲突；拒绝与取消不能追加批准。
 
 接纳返回后，现有 fixed server reconcile 循环按依赖、scope、宿主/Provider 和验证容量取就绪节点。创建和 Start 不占用 Goal/RB1 锁执行长命令。每个节点的 materialization key、TaskID、RunID 在 preview 前从版本域、authority namespace、GoalID、ProposalID 和 NodeID 的 canonical tuple 确定性派生，随后由 accepted fact 绑定；不能从 accepted fact digest 再推导输入中已有的 ID，否则形成 `fact→RunID→Policy digest→bundle digest→fact` 循环。相同 key 的不同输入是冲突，不自动产生另一 Run；新方案必须换 ProposalID 并重新批准。换 server/丢响应/暂停恢复不能换 key。
+
+首个 resident dispatch tick 每次最多物化并 Start 一个 dependency-free implement，顺序启动允许两个真实 Worker 在执行阶段重叠。初始 profile 的自动调度按仓库 busy 上限 2 判断容量，同时遵守原 Goal 更低上限；这不新增人工 Start 接口的全局配额。RUNNING、重试待定、VERIFYING/REVIEW_PENDING、rework 和发布中均占容量，不能把审核排队当作空槽。现有非团队 busy Run 或同时存在多个 busy Goal 时不增加派发，避免跨方案 scope 冲突；单个 busy Goal 优先续行其已批准的无冲突节点。该固定上限不宣称具备自适应内存/CPU 扩容能力。
+
+候选列表来自同 owner 下的 RB1 计划/停派投影与 descriptor-bound Run authority，不来自目录存在或进程 PID。只接受未创建或原首次 READY；不自动重试/rework，不提前创建 integration。选中后仍由原物化入口重查计划，并用实际 Inspect 的 sequence/head 调用同一 StartRun；不以调度输入结构授予执行权。调度与公开 mutation 共用 writer lane，运行中的 Worker 不持该锁。截止处理使用独立 timer，团队控制失败不得停止已有 Run 的 deadline 处理。单次失败落原 halt；查询/停派提交未决时本进程停派且报告，保留现有 Run/Outcome，不循环猜测重试。
 
 先耐久绑定该命令的最终 TaskSpec/Policy digest、repository/base、选定 Provider profile 和目标 RunID，再调用同一生产 planning seam。开始前和返回后均重查已有 Run 的冻结输入与事实：精确 READY 复用；CREATED/PLANNED 只沿同一创建义务补齐；冲突/无法判定则保留明确阻塞，不删除旧目录、重选新 ID 或绕过准入。需将现有 `planning.Plan` 的创建步骤补为可恢复入口，而不是宣称它目前已经幂等。
 

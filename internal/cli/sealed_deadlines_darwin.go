@@ -88,9 +88,9 @@ func (adapter *sealedRepositoryApplication) advanceBusinessDeadlines(ctx context
 	return errors.Join(failures...)
 }
 
-// The fixed server owns this loop and drains it before releasing its owner.
-// No tick creates a Run, launches a Worker or supplies stop authority.
-func driveBusinessDeadlines(ctx context.Context, ticks <-chan time.Time, advance func(context.Context) error, report func(error)) {
+// The fixed server owns and drains this bounded loop before releasing its
+// owner. A tick supplies scheduling only, never execution or stop authority.
+func driveResidentReconciliation(ctx context.Context, ticks <-chan time.Time, advance func(context.Context) error, report func(error)) {
 	for {
 		if ctx.Err() != nil {
 			return
