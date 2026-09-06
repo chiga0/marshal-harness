@@ -132,7 +132,8 @@ func newCompositionInputs(t *testing.T) (CompositionInputs, string) {
 	timestamp := time.Unix(1_800_000_000, 0).UTC()
 	planned := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event:composition-planned", RunID: runID, Sequence: 1, Type: "run.transition", StateFrom: domain.StateCreated, StateTo: domain.StatePlanned, Timestamp: timestamp, Payload: map[string]any{}}
 	readyEvent := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event:composition-ready", RunID: runID, Sequence: 2, Type: "run.transition", StateFrom: domain.StatePlanned, StateTo: domain.StateReady, Timestamp: timestamp.Add(time.Second), Payload: map[string]any{}}
-	specDigest := canonical.DigestBytes([]byte("composition-spec"))
+	specDigest := writeBusinessSpecFixture(t, filepath.Join(ownerFixture.base, "run-store", "runs", runID), "task:composition")
+	planned.Type, planned.Payload = "planning.spec-accepted", map[string]any{"specDigest": specDigest}
 	policyDigest := canonical.DigestBytes([]byte("composition-policy"))
 	capabilityDigest := canonical.DigestBytes([]byte("composition-capability"))
 	baseSHA := strings.Repeat("a", 40)

@@ -2,13 +2,31 @@ package productionruntime
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
+
+// admitBusinessStart checks the original Run budget before reservation and
+// again before launch. Expired READY tasks are pre-start recovery cases, not
+// fake stopped Attempts; this gate appends no stop intent or terminal event.
+func (l *CompositionLedger) admitBusinessStart(ctx context.Context, run application.RunProjection) error {
+	budget, err := l.runs.ReadBusinessBudgetUnderLease(ctx, l.runLease)
+	if err != nil || budget.Run != run || run.State != domain.StateReady || run.AttemptID != "" ||
+		budget.CreatedAt.IsZero() || budget.RunTimeoutSeconds <= 0 || budget.RunTimeoutSeconds > math.MaxInt64/int64(time.Second) {
+		return application.NewError("admit-business-start", application.ReasonAuthorityConflict)
+	}
+	expires := budget.CreatedAt.Add(time.Duration(budget.RunTimeoutSeconds) * time.Second)
+	if !l.now().UTC().Before(expires) {
+		return resultingress.ErrBusinessDeadlineExceeded
+	}
+	return nil
+}
 
 // ReconcileBusinessStop consumes only immutable sources under this Run's
 // current owner and lease. The resident scheduler supplies no deadline/PID.

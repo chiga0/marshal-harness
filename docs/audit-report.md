@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：停止纵切 CI 全绿，补 READY 原始预算准入
+
+隔离候选 `a04d76c8239eb0a55822e01f7470ed9ff09a452a` 的 [CI 34025131805](https://github.com/chiga0/marshal-harness/actions/runs/34025131805) 五项全绿，包含两平台动态质量、两个 Linux conformance 和 secret scan。此前测试夹具混合历史 ProcessStarted/v2 reservation 的问题已用完整 Supervisor 启动/Collect 链修正，关闭借用的测试死锁也未再复发。这不替代真实 stop 故障矩阵，分支仍不合并。
+
+本候选继续补 READY 预算门禁：preparation 在 ReserveAttempt 前读取冻结 TaskSpec 和首个 planning.spec-accepted；bridge 在真正进入启动链前再次检查相同 Run deadline，防止 preparation 后长时间等待消耗完预算仍启动。已提交 RUNNING outcome 保持原 exact replay，不因恢复时的新时钟拒绝历史结果。拒绝不创建 StopIntent，不伪造 ProcessStarted/Outcome；受控存储源缺失也不放宽。新增到期前 1ns/恰好到期/到期后、不同 Run head、preparation→launch 间到期的回归，更新旧 composition 夹具为同源 TaskSpec/首事件。该改动另需新 source CI；长 public mutation 的停止延迟、启动检查后到 Resume 的竞态、stop 的 release/receipt 衔接及端到端故障矩阵仍需完成。
+
 ## 2026-09-06：真实业务进入 VERIFYING，响应 receipt 尚未闭环
 
 main `4f7311b` 的 CI 34023916927 全绿后，仅派发一次 [34024740089](https://github.com/chiga0/marshal-harness/actions/runs/34024740089)。小型诊断 artifact `9986706443` 已保留：Run event 第四条为 `worker.completed/RUNNING→VERIFYING`，authority 账本有 36 条事实并已到 `cleanup-released`。因此新 prompt 对本次真实输出有效，WorkerResult/接纳/清理已越过旧失败点；不能据此保证未来模型永不违约。随后 server 报 `commit-lifecycle-delivery/authority-conflict`，客户端报 `fixed-cli-invalid-response`。尚无 Verify、ReviewPacket、独立 Decision 或 ACCEPTED。恢复测试中 server1 的 Killed:9 是既有显式故障注入，不拿它替代本次 receipt 问题的根因。后继必须核对 receipt 的当前 Run/owner/目录绑定与提交链，不重新执行已完成业务，也不原样重跑。

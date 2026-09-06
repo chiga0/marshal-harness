@@ -679,6 +679,9 @@ func (l *CompositionLedger) PrepareRunStart(ctx context.Context, verifier result
 			read.Run.Sequence != request.ExpectedSequence || read.Run.AuthorityHead != request.ExpectedAuthorityHead {
 			return application.NewError("prepare-run-start", application.ReasonAuthorityConflict)
 		}
+		if err := l.admitBusinessStart(ctx, read.Run); err != nil {
+			return err
+		}
 		ready := resultingress.ReadyRunAuthority{AuthorityNamespaceID: l.namespace, TaskID: read.Run.TaskID, RunID: read.Run.RunID, OrchestratorID: l.orchestrator, ReadySequence: read.Run.Sequence, ReadyAuthorityHead: read.Run.AuthorityHead, AttemptsUsed: read.AttemptsUsed, MaxAttempts: read.MaxAttempts, SpecDigest: read.SpecDigest, PolicyDigest: read.PolicyDigest, CapabilityDigest: read.CapabilityDigest, BaseSHA: read.BaseSHA, WorktreePath: read.WorktreePath}
 		reservation, err := l.ingress.ReserveAttempt(ctx, l.runReady, ready)
 		if err != nil {

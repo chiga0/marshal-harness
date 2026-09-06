@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-2026-09-06 09:33 UTC 最新实机：main `4f7311b` 的 CI 34023916927 全绿，单次 canary 34024740089 已将真实订单报价 Run 推进到 `VERIFYING`（`worker.completed`，authority seq 36 cleanup released），随后失败于 `commit-lifecycle-delivery/authority-conflict`，尚无 Verify/ReviewPacket/ACCEPTED。下一优先是修复该 receipt 收口，停止同 head 原样重试。取消分支已接入 resident deadline 循环和 event 后 Outcome 恢复候选，并修复 CI 发现的测试夹具协议混用；完整动态/故障证据、READY 到期准入仍缺。B1 IN_PROGRESS，B2/B3 PLANNED；以下为历史检查点。
+2026-09-06 最新状态：main `4f7311b` 的 CI 全绿，唯一 canary 34024740089 已到 `VERIFYING/cleanup-released`，尚无 Verify/ReviewPacket/ACCEPTED。receipt 阻塞修复见 PR #264，其精确 source CI 独立推进，不原样重跑旧 canary。停止分支 `a04d76c` 的 CI 34025131805 五项全绿；最新候选补 preparation 前与 launch 前的 READY 原始预算检查，需新 source 动态证据。stop 端到端故障矩阵、release/receipt 衔接和截止延迟仍未关闭，不合并放行。B1 IN_PROGRESS，B2/B3 PLANNED；以下为历史检查点。
 
 2026-09-06 停止纵切后续候选：已补 `run-stopped` 的 Core→fixed HTTP→客户端返回以及原 Collect 请求的终态重放，避免完成取消/超时后仍显示 live pending。只在 stop/cleanup/Outcome 验证后返回；部分结果仍 pending。当前仍在隔离开发分支，尚缺 resident timer、READY 到期准入和全链路 fault matrix；B1 未完成、B2/B3 未升级。主线与最新实机事实见下段；新候选动态证据独立记录，不借用旧 CI。
 
