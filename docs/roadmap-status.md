@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-2026-09-07 最新：创建恢复 2486b1c 的 CI 34064463717 已五项通过；启动恢复和首次子 Run plan gate 候选 fc5d479 的 CI 34065300476 当前四项通过、macOS quality 在途。后继补批准已落账但尚未冻结时的内部续行：由 current RB1 读取原批准，共享 Prepare/Freeze/创建恢复，不要求重建原 HTTP 请求。新增冷 session 与三处失败单次返回回归，本地仅编译/静态验证；自动调度、失败止损及真实两实现加集成尚未接通。B1 的 Pi 结果诊断 4ace42c 已推送，PR CI 34065812558 在途，旧实机失败未关闭。B1/B2 仍 IN_PROGRESS、B3 PLANNED，无新 main merge/stable 发布。下方保留历史检查点。
+2026-09-07 最新：创建恢复 2486b1c 和首次子 Run plan gate fc5d479 的精确 CI 均已五项通过；批准后无原 HTTP 请求续行 aa230da 的 CI 34066292363 在途。后继正补同账本耐久停派及创建/首次 Start 拒绝，防止把失败接口直接挂入心跳后反复调用；本地编译和静态检查通过，未开启自动调度、未形成真实团队交付。B1 的 Pi 诊断 4ace42c 的 PR CI 34065812558 已通过，实机前精确分支 CI 34066636760 在途，旧实机失败未关闭。B1/B2 仍 IN_PROGRESS、B3 PLANNED，无新 main merge/stable 发布。下方保留历史检查点。
 
 2026-09-07 最新检查点：B1 `80084bb` 的 CI 五项通过，但实机 34059061091 在 peer Collect 的 `pi-result-final-content-shape` 失败，尚未进入跨 Run 组合验收，禁止原样重试。B2 `928b8ab` 的 CI 34062410465 已通过 Linux quality、双架构 conformance 和 secret scan，记录时 macOS quality 在途；后继正接通原冻结输入的无 Probe planning 重建，尚未完成部分 Run 补齐和真实团队。Goal 保持 B1→B2→B3 与至少三个业务族的强 Lead＋SubAgents 重复配对收益验证。main 仍 ba2196b、两候选均未合并；下方旧“当前/在途”段落是历史检查点，不代表最新状态。
 

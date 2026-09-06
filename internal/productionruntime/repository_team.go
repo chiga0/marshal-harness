@@ -147,6 +147,11 @@ func (session *RepositorySession) prepareApprovedTeamRun(ctx context.Context, ra
 		if !exists || plan.Approval != approval || !bytes.Equal(plan.Inputs, raw) {
 			return application.NewError(operation, application.ReasonAuthorityConflict)
 		}
+		if _, halted, err := session.ingress.ReadTeamPlanHalt(session.acquisition.Scope, inputs.Spec.GoalId); err != nil {
+			return err
+		} else if halted {
+			return application.NewError(operation, application.ReasonRecoveryRequired)
+		}
 		existing, found, readErr = session.ingress.ReadTeamRunCreation(session.acquisition.Scope, inputs.Spec.GoalId, nodeID)
 		return readErr
 	})
@@ -209,6 +214,37 @@ func (session *RepositorySession) MaterializeApprovedInitialTeamRun(ctx context.
 		return domain.RunState{}, err
 	}
 	return session.materializeTeamCreation(ctx, plan.Approval, plan.Inputs, creation)
+}
+
+// HaltInitialTeam preserves the first failure in the same owner ledger. The
+// privileged controller must call this after a failed step and stop its local
+// dispatch loop if the commit itself has an unknown outcome. It never cancels
+// existing Runs or refunds reservations.
+func (session *RepositorySession) HaltInitialTeam(ctx context.Context, goalID, nodeID, planFactDigest, stage string) (resultingress.TeamPlanHalt, error) {
+	borrow, err := session.borrow()
+	if err != nil {
+		return resultingress.TeamPlanHalt{}, err
+	}
+	defer borrow.Close()
+	reader := repositoryApprovedTeamVerifier{session: session}
+	var plan resultingress.TeamPlanState
+	err = reader.WithCurrentApprovedTeam(ctx, session.acquisition, resultingress.TeamPlanApproval{}, func() error {
+		var found bool
+		var err error
+		plan, found, err = session.ingress.ReadTeamPlan(session.acquisition.Scope, goalID)
+		if err != nil {
+			return err
+		}
+		if !found || plan.FactDigest != planFactDigest {
+			return application.NewError("halt-team", application.ReasonAuthorityConflict)
+		}
+		return nil
+	})
+	if err != nil {
+		return resultingress.TeamPlanHalt{}, err
+	}
+	verifier := repositoryApprovedTeamVerifier{session: session, approval: plan.Approval}
+	return session.ingress.HaltTeamPlan(ctx, verifier, session.acquisition, plan.Approval, resultingress.TeamPlanHalt{GoalID: goalID, NodeID: nodeID, PlanFactDigest: planFactDigest, Stage: stage})
 }
 
 // MaterializeInitialTeamRun is a privileged controller seam, not an HTTP

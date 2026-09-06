@@ -15,6 +15,69 @@ import (
 )
 
 // Explicit session/RunStore fixture, not a real Worker or launch verdict.
+func TestRepositoryTeamHaltBlocksColdCreationAndInitialStart(t *testing.T) {
+	fixture, request, prepares, calls := materializationFixture(t)
+	session, err := OpenRepositorySession(context.Background(), fixture.inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	approval, err := session.ApproveInitialTeam(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := session.MaterializeInitialTeamRun(context.Background(), request, "service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := session.runs.AcquireExisting(created.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, readErr := session.runs.ReadRunStartAuthorityUnderLease(context.Background(), lease)
+	releaseErr := lease.Release()
+	if readErr != nil || releaseErr != nil {
+		t.Fatalf("read READY: %v %v", readErr, releaseErr)
+	}
+	start := application.StartRunRequest{RunID: created.RunID, ExpectedSequence: 2, ExpectedAuthorityHead: authority.Run.AuthorityHead}
+	if _, err := session.HaltInitialTeam(context.Background(), approval.GoalID, "service", approval.FactDigest, "start"); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	session, err = OpenRepositorySession(context.Background(), fixture.inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if member, err := session.RequireInitialTeamRunPlan(context.Background(), start); err == nil || !member {
+		t.Fatal("halt bypassed through first Start or standalone fallback")
+	}
+	if _, err := session.MaterializeInitialTeamRun(context.Background(), request, "service"); err == nil {
+		t.Fatal("original request bypassed halt")
+	}
+	if _, err := session.MaterializeApprovedInitialTeamRun(context.Background(), approval.GoalID, "service", approval.FactDigest); err == nil {
+		t.Fatal("resident continuation bypassed halt")
+	}
+	if *prepares != 1 || *calls != 1 {
+		t.Fatal("halt repeated preparation/materialization")
+	}
+	// Halt is not cancellation: frozen creation remains recoverable and the
+	// original READY/Attempt budget is unchanged; only future dispatch stops.
+	if err := session.RecoverInitialTeamCreations(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lease, err = session.runs.AcquireExisting(created.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, readErr := session.runs.ReadRunStartAuthorityUnderLease(context.Background(), lease)
+	releaseErr = lease.Release()
+	if readErr != nil || releaseErr != nil || current.Run != authority.Run || current.AttemptsUsed != 0 {
+		t.Fatal("halt fabricated a Run terminal state or consumed/refunded an Attempt")
+	}
+}
+
 func TestRepositoryTeamPlanGateUsesOriginalApprovalAndExactReady(t *testing.T) {
 	fixture, approval, prepares, calls := materializationFixture(t)
 	session, err := OpenRepositorySession(context.Background(), fixture.inputs)

@@ -489,6 +489,10 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		return err
 	}
 	switch head.FactType {
+	case teamHaltFactType:
+		if err := applyTeamHaltLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
 	case teamRunCreationFactType:
 		if err := applyTeamRunCreationLine(line, in, s.nextSequence); err != nil {
 			return err

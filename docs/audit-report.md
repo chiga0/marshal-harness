@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-07：自动调度前先接通耐久停派，不把心跳变成重试器
+
+前驱 `fc5d479` 的精确 CI 34065300476 已五项成功；批准后无原 HTTP 请求续行的 `aa230da` 正由 34066292363 动态验证。本轮发现当前创建接口虽单次返回错误，但若直接挂入 tick，失败会被下轮再次调用，冷重开也没有停派依据。候选依 ADR 0083 在同 RB1 增加封闭 `team-plan-halted` 记录，绑定原 plan、节点、阶段与 current owner；原原因不可覆盖、exact replay 不追加、不改变原计划/预算。Prepare/Freeze 与原首次 Start gate 检查 halt；被阻止的成员不回退到普通人工批准。
+
+新增真实 DurableStore 冷重开/幂等、未知字段值/节点/旧 plan/拒绝 verifier/取消拒绝，以及重新计算 hash 后的 stage/node/plan/owner 伪造和重复 fact 回归；session 夹具验证冷重开后两种物化入口及首次 Start 都不能绕过停派。停派不是取消或成功：原 READY 创建仍可修复，Attempt 仍为零，预算不退回。上述均不冒充真实 Worker 或最终业务验收。
+
+本轮尚未开启自动调度。后继需把一次有容量的启动、失败停派提交与提交未决时本进程停止派发一起接通；不能仅依据新增记录就宣称无人值守已安全。halt 提交前崩溃、原 Start 丢响应/复用及显式 replan 仍需同链路验证。本地 Darwin/Linux 编译及 vet、Darwin staticcheck 通过，动态测试待后继精确 head；B1/B2 状态不升级。
+
+效率证据：B1 `4ace42c` 的 PR CI 34065812558 已五项通过，但现有 canary gate 仅接纳 workflow_dispatch 的精确分支证据，因此又启动 34066636760，尚未重复 Pi 实机。该双重 CI 会增加总等待；优化应验证 PR 合成提交与 sourceHead 的等价范围、保留分支特有回归后统一 gate，不能直接把任何绿色检查当作放行。本轮仍优先推进业务控制链，不额外拆出 CI 清理切片。
+
 ## 2026-09-07：批准提交后无需原 HTTP 请求即可继续创建
 
 完整调用链复盘发现，原节点 Prepare 接缝依赖 `ApproveInitialTeamRequest`，而 RB1 批准保存的是请求摘要而非可重新构造的原 HTTP request ID/deadline。若批准成功后客户端丢失请求、server 在首次冻结之前重启，仅恢复已冻结义务无法让这个节点继续。候选新增从 current owner/RB1 按 Goal/Node/精确 PlanFactDigest 定位的内部物化入口，并与原请求入口共享全部 preflight、Prepare、冻结与创建恢复逻辑；不重建 HTTP 请求、不追加另一批准或预算，不改变已有持久化格式。

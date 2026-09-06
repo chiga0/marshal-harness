@@ -87,6 +87,8 @@ resident 启动先从 held RB1 重放当前 repository scope 的既有冻结创�
 
 ## 5. 有界暂停、局部重规划与失败
 
+初始自动调度前增加同 RB1 的 `bounded-team-halt/v1 / team-plan-halted` 事实：精确引用原计划、出错节点与封闭阶段（`prepare`、`materialize`、`start`、`inspect`），由持 current owner 的 Core 追加。首次调度失败后原计划停止派发；后续 tick、冷重开和手动内部物化均先读该事实，不再次启动相同节点或继续扩散。它只撤销后续派发资格，不宣称 Run 已终止、不释放预算、不替代 Run Outcome，也不杀已有 Worker；现有 deadline/Collect/恢复仍须履行。重复同事实只返回原摘要，不重复追加；不同原因不能覆盖首个失败。恢复派发必须走后续显式 replan/重新确认，不能删除 halt。若 halt 无法耐久提交，controller 必须停止本进程团队派发并报告未决，不能继续循环调用。
+
 用户等待/预算/依赖阻塞在 Goal 上有 typed reason；初始暂停采用 drain-active，不发新节点，既有 Run 仍受其原 deadline 限制。需要取消时只调用 B1 的合法 cancel/terminal reconciliation，不直接 kill。恢复重查 current owner、输入适用性与预算，不延长已冻结 Run 的 deadline。
 
 重规划仅 supersede 未运行节点；已经运行或完成的节点保持不可变，修改其成果通过有预算的新节点/Run 表达。只有依赖变化的后继失效，无关已接纳成果继续复用。不能偷偷增加 Run/rework 预算。一次局部失败保留 Outcome、原因和消耗；结构性原因先修 preflight，不按原输入反复 fan-out。

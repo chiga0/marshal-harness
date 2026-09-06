@@ -91,6 +91,9 @@ func (s *DurableStore) FreezeInitialTeamRun(ctx context.Context, verifier Curren
 			if !ok || plan.Approval != approval {
 				return ErrTeamRunCreationConflict
 			}
+			if _, halted := projection.teamHalts[teamPlanKey(owner.Scope, goalID)]; halted {
+				return ErrTeamPlanConflict
+			}
 			candidate := TeamRunCreationState{GoalID: goalID, NodeID: nodeID, PlanFactDigest: planFactDigest, Inputs: frozen, InputsDigest: canonical.DigestBytes(frozen)}
 			key, runID, err := validateTeamRunCreation(owner.Scope, plan, candidate)
 			if err != nil {
@@ -297,6 +300,9 @@ func applyTeamRunCreationLine(line []byte, in *Ingress, sequence int64) error {
 	plan, ok := in.teamPlans[teamPlanKey(fact.Scope, fact.Creation.GoalID)]
 	if !ok {
 		return ErrTeamRunCreationConflict
+	}
+	if _, halted := in.teamHalts[teamPlanKey(fact.Scope, fact.Creation.GoalID)]; halted {
+		return ErrTeamPlanConflict
 	}
 	key, _, err := validateTeamRunCreation(fact.Scope, plan, fact.Creation)
 	if err != nil {
