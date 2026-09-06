@@ -13,6 +13,7 @@ RUN_ID=""
 EVIDENCE_ROOT=""
 SCENARIO="t1-marker"
 AWAIT_REVIEW=0
+STOP_CRASH=0
 
 die() {
   printf '[fixed-server-t1] ERROR: %s\n' "$*" >&2
@@ -24,7 +25,7 @@ usage() {
 usage: scripts/fixed-server-t1-canary.sh \
   --expected-head HEAD --pi-model PROVIDER/MODEL --pi-node PATH --pi-bin PATH \
   --pi-bundle PATH --run-id RUN_ID --evidence-root ABSOLUTE_PATH \
-  [--scenario t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout] [--await-review]
+  [--scenario t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout] [--await-review] [--stop-crash]
 EOF
   exit 2
 }
@@ -40,6 +41,7 @@ while [ "$#" -gt 0 ]; do
     --evidence-root) [ "$#" -ge 2 ] || usage; EVIDENCE_ROOT="$2"; shift 2 ;;
     --scenario) [ "$#" -ge 2 ] || usage; SCENARIO="$2"; shift 2 ;;
     --await-review) AWAIT_REVIEW=1200; shift ;;
+    --stop-crash) STOP_CRASH=1; shift ;;
     *) usage ;;
   esac
 done
@@ -49,6 +51,9 @@ done
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{2,120}$ ]] || die 'run-id 形态非法'
 case "$SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout) ;; *) die 'scenario 非法' ;; esac
 [ "$AWAIT_REVIEW" -eq 0 ] || [ "$SCENARIO" = order-quote ] || die 'await-review 只适用于 order-quote'
+if [ "$STOP_CRASH" -eq 1 ]; then
+  case "$SCENARIO" in order-quote-timeout|order-quote-run-timeout) ;; *) die 'stop-crash 只适用于业务 timeout' ;; esac
+fi
 [ -x "$PI_NODE" ] && [ ! -L "$PI_NODE" ] || die 'pi-node 必须是固定普通 executable'
 [ -x "$PI_BIN" ] || die 'pi-bin 必须是可执行入口'
 [ -f "$PI_BUNDLE" ] && [ ! -L "$PI_BUNDLE" ] || die 'pi-bundle 必须是固定普通文件'
@@ -298,6 +303,33 @@ append_start_audit server2 received-replay
 "$MARSHAL_BIN" control-plane inspect --run "$RUN_ID" >"$EVIDENCE_ROOT/server2-final-inspect.json"
 append_audit server2 inspect received-final
 
+server2_process_path="$EVIDENCE_ROOT/server2-process.json"
+if [ "$STOP_CRASH" -eq 1 ]; then
+  # The observer never returns a PID or a command. Only the unreaped child
+  # owned by this shell is interrupted; post-wait evidence must still prove
+  # that Run terminalization had not committed. A missed window is a failure.
+  "$PYTHON_BIN" -I -B scripts/fixed-server-stop-fault.py wait --repository "$ROOT" --run "$RUN_ID"
+  assert_server_pid "$server2_pid"
+  kill -KILL "$server2_pid"
+  set +e
+  wait "$server2_pid"
+  server2_status=$?
+  set -e
+  [ "$server2_status" -eq 137 ] || die "stop crash SIGKILL wait status 非 137：$server2_status"
+  write_process_evidence "$server2_process_path" "$server2_pid" SIGKILL "$server2_status"
+  server2_pid=""
+  "$PYTHON_BIN" -I -B scripts/fixed-server-stop-fault.py after --repository "$ROOT" --run "$RUN_ID"
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t1-evidence.py observe-binary \
+    --binary "$MARSHAL_BIN" --version-json "$EVIDENCE_ROOT/binary-version.json" \
+    --out "$EVIDENCE_ROOT/binary-stop-recovery.json"
+  "$MARSHAL_BIN" control-plane serve >"$EVIDENCE_ROOT/stop-recovery-ready.json" \
+    2>"$EVIDENCE_ROOT/stop-recovery.stderr" &
+  server2_pid=$!
+  wait_ready "$server2_pid" "$EVIDENCE_ROOT/stop-recovery-ready.json"
+  append_audit stop-recovery serve ready-after-interrupted-stop
+  server2_process_path="$EVIDENCE_ROOT/stop-recovery-process.json"
+fi
+
 if [ "$SCENARIO" = order-quote-timeout ] || [ "$SCENARIO" = order-quote-run-timeout ]; then
   "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
     --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2" --observe-business-stop --timeout-seconds 180
@@ -319,7 +351,7 @@ wait "$server2_pid"
 server2_status=$?
 set -e
 [ "$server2_status" -eq 0 ] || die "server2 未正常退出：$server2_status"
-write_process_evidence "$EVIDENCE_ROOT/server2-process.json" "$server2_pid" SIGTERM "$server2_status"
+write_process_evidence "$server2_process_path" "$server2_pid" SIGTERM "$server2_status"
 server2_pid=""
 
 if [ "$SCENARIO" = order-quote-cancel ] || [ "$SCENARIO" = order-quote-timeout ] || [ "$SCENARIO" = order-quote-run-timeout ]; then

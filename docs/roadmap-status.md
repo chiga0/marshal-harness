@@ -37,7 +37,7 @@
 
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务已独立 ACCEPTED；候选显式取消/终态 Collect/冷恢复通过；34040069400 已证明原始 Attempt deadline 自动停止，无 operator Cancel | Run budget 先到期、超时终态冷恢复与中途故障矩阵；长写事务停止/查询响应上界；候选合入与同支持路径回归；单次通过不概括可靠性 |
+| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务已独立 ACCEPTED；候选显式取消通过；c619985 的 34047844723/34048091298 分别证明原始 Attempt/Run deadline 自动停止、完整终态查询及同 bytes 冷恢复 | 停止中途故障矩阵（驱动已接入，尚待实机）；长写事务停止/查询响应上界；候选合入与同支持路径回归；单次通过不概括可靠性 |
 | B2 受限 Agent Team | `PLANNED` | ADR 0080 目标与 ADR 0019 组件可复用 | approved plan 耐久物化/调度、两个到三个实现节点、集成候选业务验收、局部 replan、暂停恢复 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 

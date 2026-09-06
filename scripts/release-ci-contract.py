@@ -51,6 +51,8 @@ FIXED_FILES = {
     "scripts/fixed-server-t1-evidence.py": "100755",
     "scripts/fixed-server-t1-evidence_test.py": "100755",
     "scripts/fixed-server-t1-task.py": "100755",
+    "scripts/fixed-server-stop-fault.py": "100644",
+    "scripts/fixed-server-stop-fault_test.py": "100644",
     "scripts/fixed-server-t2-drive.py": "100644",
     "scripts/fixed-server-t2-drive_test.py": "100644",
     "scripts/fixed-server-t2-task.py": "100644",

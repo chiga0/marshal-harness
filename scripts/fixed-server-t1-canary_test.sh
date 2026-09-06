@@ -63,9 +63,15 @@ printf '%s\n' "$diagnostics" | grep -F 'name: fixed-server-diagnostics-${{ githu
   || fail 'workflow lacks separate diagnostic artifact'
 printf '%s\n' "$diagnostics" | grep -F '.marshal/runtime-v1/result-ingress/result-ingress.jsonl' >/dev/null \
   || fail 'diagnostic artifact lacks authoritative ledger'
-if printf '%s\n' "$diagnostics" | grep -E 'dist/|review-inputs|/transcript|/task.json|/activation.json|/policy.json' >/dev/null; then
+if printf '%s\n' "$diagnostics" | grep -E 'dist/|review-inputs|/transcript|/activation.json|/policy.json' >/dev/null; then
   fail 'diagnostic artifact includes executable, review archive, transcript or configuration'
 fi
+# The generated frozen Task already belongs to the full artifact. The small
+# copy enables budget/specDigest audit without downloading the executable.
+for leaf in task.json 'stop-crash-*.json' 'stop-recovery-*.json' 'server*-process.json'; do
+  printf '%s\n' "$diagnostics" | grep -F "/$leaf" >/dev/null || fail "missing stop evidence $leaf"
+done
+"/usr/bin/python3" -I -B "$ROOT/scripts/fixed-server-stop-fault_test.py"
 for phase in t2 t2-recovery; do
   for leaf in driver-subject.json 'call-*.json' cancel-request.json; do
     printf '%s\n' "$diagnostics" | grep -F "/$phase/$leaf" >/dev/null \

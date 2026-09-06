@@ -372,6 +372,8 @@ make_contract_fixture() {
     fixed-server-t1-evidence.py \
     fixed-server-t1-evidence_test.py \
     fixed-server-t1-task.py \
+    fixed-server-stop-fault.py \
+    fixed-server-stop-fault_test.py \
     fixed-server-t2-drive.py \
     fixed-server-t2-drive_test.py \
     fixed-server-t2-task.py \

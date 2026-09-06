@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-07：停止中途崩溃验证接入（尚待实机）
+
+在同一固定 server canary 增加显式 `stop-crash`：只允许两种业务 timeout 场景；观察到原 RB1 stop intent 且 Run 仍 RUNNING 后，仅中断驱动自己持有、尚未回收的 server 子进程。等待进程退出后再次读取同一 Run/Attempt/意图；若窗口已经错过，明确失败，不把终态冷重启冒充中途恢复，也不自动重试。后继同 bytes server 必须沿既有 owner rebind/stop reconciliation 完成终态查询与 stopped Collect，再做原请求冷恢复。观察器不提供 PID、不调用 Worker、不修改 Run/RB1；这是诊断证据，不是新的接纳 authority。
+
+12 项无模型观察器回归、现有 canary 脚本回归和 release producer 契约回归通过；两份既有真实 RB1 的编码/摘要兼容性检查通过。这些都不代替新场景实机结果。小诊断同时加入完整 artifact 原已有的冻结 Task 与进程退出记录，避免仅为预算来源而下载 executable；仍排除 executable、transcript 与配置文件。没有新增运行时协议，B1 中途故障、长写事务响应上界与组合验收仍开放；只按实际命中的中断阶段记录覆盖，不宣称完整 crash/power-loss 矩阵通过。
+
 ## 2026-09-07：稳定容器修复后的两类自动超时和冷恢复通过
 
 精确候选 `c61998515512f064fc4b113c229295e5df28e185` 的 [CI 34047040755](https://github.com/chiga0/marshal-harness/actions/runs/34047040755) 五项全绿，macOS 前置停止链回归先于全量质量检查通过，完整 macOS job 用时 14 分 25 秒。随后分别派发一次真实 Pi 场景，未改变 Provider/模型，未原样重跑失败版本。

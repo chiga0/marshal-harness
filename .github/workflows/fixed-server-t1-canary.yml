@@ -22,6 +22,11 @@ on:
         required: true
         default: false
         type: boolean
+      stop-crash:
+        description: 仅 timeout 场景，在已观察停止意图且 Run 未终态时中断本作业 server，再恢复；未命中窗口即失败
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -60,6 +65,7 @@ jobs:
           [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || { echo "::error::pi-model 必须是 provider/model" >&2; exit 1; }
           case "$CANARY_SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout) ;; *) echo "::error::invalid scenario" >&2; exit 1 ;; esac
           if [ '${{ inputs.live-review }}' = true ]; then test "$CANARY_SCENARIO" = order-quote; fi
+          if [ '${{ inputs.stop-crash }}' = true ]; then case "$CANARY_SCENARIO" in order-quote-timeout|order-quote-run-timeout) ;; *) exit 1 ;; esac; fi
           MODEL_ID="${PI_MODEL#*/}" VARS_MODELS="$VARS_MODELS" /usr/bin/python3 -I -B -c 'import os,sys; values=[v.strip() for v in os.environ["VARS_MODELS"].split(",") if v.strip()]; os.environ["MODEL_ID"] in values or sys.exit("pi-model 不在 OPENAI_MODELS allowlist")'
 
       - name: Checkout exact expected-head
@@ -171,10 +177,12 @@ jobs:
           evidence_root="$(pwd)/.marshal/fixed-server-t1-canary/$run_id"
           printf 'T1_RUN_ID=%s\nT1_EVIDENCE_ROOT=%s\n' "$run_id" "$evidence_root" >> "$GITHUB_ENV"
           export PATH="$NODE_ROOT_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+          crash_args=()
+          if [ '${{ inputs.stop-crash }}' = true ]; then crash_args=(--stop-crash); fi
           scripts/fixed-server-t1-canary.sh \
             --expected-head "$EXPECTED_HEAD" --pi-model "$PI_MODEL" \
             --pi-node "$PI_NODE" --pi-bin "$PI_BIN" --pi-bundle "$PI_BUNDLE" \
-            --run-id "$run_id" --evidence-root "$evidence_root" --scenario "$CANARY_SCENARIO"
+            --run-id "$run_id" --evidence-root "$evidence_root" --scenario "$CANARY_SCENARIO" ${crash_args[@]+"${crash_args[@]}"}
 
       # Publish the small failure surface first. Diagnosis must not require
       # downloading the fixed executable or the full review-input archive.
@@ -188,6 +196,10 @@ jobs:
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/*.stderr
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/binary-*.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/server*-ready*.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/server*-process.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/stop-crash-*.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/stop-recovery-*.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/task.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/start-request.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/command-audit.jsonl
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/t2/driver-subject.json
