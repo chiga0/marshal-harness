@@ -196,7 +196,7 @@ jobs:
         if: matrix.os == 'macos-latest' && github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'feat/b1-')
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          go test -race -count=1 -v -run '^TestInspectionLease' ./internal/productionruntime
+          go test -race -count=1 -v -run '^Test(InspectionLease|StoppedRead|FixedLifecycleStoppedCollect)' ./internal/productionruntime
           go test -race -count=1 -v -run '^TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply$' ./internal/resultingress
 
       - name: Run quality gate

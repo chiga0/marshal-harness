@@ -52,6 +52,10 @@ class CancelRunTest(unittest.TestCase):
         self.assertEqual(summary["stage"], "cancelled")
         self.assertEqual(calls[1], calls[2])
         self.assertEqual([item[0] for item in calls], ["inspect", "cancel", "cancel", "collect", "inspect"])
+        self.assertEqual(calls[3][calls[3].index("--expected-sequence") + 1], "4")
+        self.assertEqual(calls[3][calls[3].index("--expected-authority-head") + 1], run("BLOCKED", 4)["authorityHead"])
+        self.assertEqual(calls[1][calls[1].index("--expected-sequence") + 1], "3")
+        self.assertEqual(calls[3][calls[3].index("--deadline") + 1], calls[1][calls[1].index("--deadline") + 1])
         self.assertEqual(saved["cancel-summary.json"]["run"], run("BLOCKED", 4))
         self.assertNotIn("review-summary.json", saved)
 
@@ -107,6 +111,7 @@ class CancelRunTest(unittest.TestCase):
         recovered, recovery_calls, recovery_saved = self.invoke(replies)
         driver.cancel_run(recovered, recovery_saved.__setitem__, "run-test", 100, now=lambda: 30, previous=previous)
         self.assertEqual(recovery_calls[1], calls[1])
+        self.assertEqual(recovery_calls[3], calls[3])
         self.assertFalse(recovery_saved["cancel-summary.json"]["accepted"])
         for kind in ("extended-deadline", "new-attempt", "changed-receipt", "injected-args"):
             altered = copy.deepcopy(previous)

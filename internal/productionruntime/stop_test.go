@@ -3,11 +3,48 @@ package productionruntime
 import (
 	"testing"
 
+	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 )
+
+func TestStoppedReadBindsOnlyExactCurrentHeadToStoredIntent(t *testing.T) {
+	state := stoppedAttemptFixture(t)
+	current := application.RunProjection{RunID: state.Identity.RunID, TaskID: state.Identity.TaskID, AttemptID: state.Identity.AttemptID, State: domain.StateBlocked, Sequence: 4, AuthorityHead: canonical.DigestBytes([]byte("stopped-run"))}
+	request := application.CancelRunRequest{CurrentRunRequest: application.CurrentRunRequest{RunID: current.RunID, AttemptID: current.AttemptID, ExpectedSequence: current.Sequence, ExpectedAuthorityHead: current.AuthorityHead}}
+	bound := bindStoppedReadToOriginalIntent(current, request, state.StopIntent)
+	if bound.ExpectedSequence != state.StopIntent.ExpectedSequence || bound.ExpectedAuthorityHead != state.StopIntent.ExpectedAuthorityHead || bound.RequestID != "" || bound.RunID != request.RunID || bound.AttemptID != request.AttemptID {
+		t.Fatal("current stopped read did not select original intent without inventing a cancel")
+	}
+	for name, change := range map[string]func(*application.CancelRunRequest){
+		"explicit-cancel": func(r *application.CancelRunRequest) { r.RequestID = "cancel-fresh" },
+		"wrong-head": func(r *application.CancelRunRequest) {
+			r.ExpectedAuthorityHead = canonical.DigestBytes([]byte("wrong"))
+		},
+		"wrong-sequence": func(r *application.CancelRunRequest) { r.ExpectedSequence++ },
+		"wrong-attempt":  func(r *application.CancelRunRequest) { r.AttemptID = "attempt-other" },
+		"wrong-run":      func(r *application.CancelRunRequest) { r.RunID = "run-other" },
+		"original-replay": func(r *application.CancelRunRequest) {
+			r.ExpectedSequence = state.StopIntent.ExpectedSequence
+			r.ExpectedAuthorityHead = state.StopIntent.ExpectedAuthorityHead
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			original := request
+			change(&original)
+			if got := bindStoppedReadToOriginalIntent(current, original, state.StopIntent); got != original {
+				t.Fatal("non-current or explicit request rewritten")
+			}
+		})
+	}
+	current.State = domain.StateRunning
+	if got := bindStoppedReadToOriginalIntent(current, request, state.StopIntent); got != request {
+		t.Fatal("non-terminal read rewritten")
+	}
+}
 
 func stoppedAttemptFixture(t *testing.T) resultingress.AttemptAuthorityState {
 	t.Helper()

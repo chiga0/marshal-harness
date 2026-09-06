@@ -66,6 +66,8 @@ effectiveDeadline = min(runDeadline, attemptDeadline)
 
 Collect 对已完成 stop 使用封闭 `run-stopped` 错误，不伪造 CollectedRunProjection、成功 receipt 或独立 Decision；fixed HTTP 返回 409，客户端据此停止 live polling 并查询 Run/Outcome。返回该类别前必须验证当前 Attempt cleanup、精确 `worker.stopped` 和 Outcome，单纯看到 BLOCKED、原始 deadline 到期或已经发送 TERM 均不足以授权。丢响应后的 Collect 从原 Run/Attempt/sequence/head 与当前存储意图连接，内部取原 stop requestId，再复用同一 terminal verifier；不能用这条读取/物化路径创建停止意图。部分投影、未知故障仍为 pending，不通过错误分类消除不确定性。
 
+新请求与旧 pending 的重放不可混淆：已获知停止成功后首次发起的 Collect，必须绑定精确当前 BLOCKED sequence/head 才能创建 delivery pending；不能拿旧 RUNNING head 新建请求。Core 仅对无显式 cancel requestId 的 Collect 读取，在当前 Run/Attempt/终态 head 完全吻合时，从现有 stop intent 取回原始停止 sequence/head，再沿相同 terminal/Outcome verifier 验证；显式 Cancel 输入不被改写，错误 current head 不转换。停止前已存在的 Collect pending 则继续按原 key/head/deadline 重放，由原停止意图证明其终态。二者都不生成新的 stop、Worker、业务结果或成功 Collect receipt，普通 stale-head delivery 拒绝不变。
+
 ### 接受与 enable 门槛
 
 常驻写调度必须覆盖整个 `delivery Begin → application → receipt reconcile/commit`，而非只锁 application。HTTP Start（包括精确重放）、Collect/Cancel/Verify/Review/Decision 与后台 deadline/Outcome 恢复共享同一个进程内 writer lane；后台 Try 不排队，公开请求在原有有界 inflight/queue 和请求 context 下等待。Status/Inspect 不经过该 lane。该调度锁不授予业务权限、不代替 durable CAS/Run lease；pending 已耐久后的原 deadline/丢响应恢复语义不变。所有资源的锁顺序为 lane → application mutex（适用时）→ 原有 Run/owner/ledger 规则，禁止在后台 callback 递归发起公开写请求。长写事务造成的停止延迟仍需单独证明，不能把互斥修复称为实时 deadline 保证。

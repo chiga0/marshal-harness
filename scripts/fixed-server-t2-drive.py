@@ -232,7 +232,12 @@ def cancel_run(call, save, run_id, deadline, now=time.time, previous=None):
     save("cancel-replay.json", {"exitCode": code, "response": replay})
     if code != 0 or replay != value:
         raise DriveError("cancel-replay-mismatch")
-    collect = ["collect", *frozen, "--request-key", f"t2:{run_id}:collect-after-cancel:{current['sequence']}"]
+    # This is a new request, not a replay of a pre-stop Collect pending. Its
+    # delivery binding must name the proved current BLOCKED head. The original
+    # cancel request above remains byte-identical, including after restart.
+    collect = ["collect", "--run", run_id, "--attempt", stopped["attemptId"],
+               "--expected-sequence", str(stopped["sequence"]), "--expected-authority-head", stopped["authorityHead"],
+               "--deadline", deadline_text, "--request-key", f"t2:{run_id}:collect-after-cancel:{stopped['sequence']}"]
     code, collected = invoke(collect)
     save("collect-after-cancel.json", {"exitCode": code, "response": collected})
     if code != 1 or collected != {"disposition": "stopped", "reasonCode": "run-stopped"}:

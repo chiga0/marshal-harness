@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：真实取消与精确重放成功，停止后新 Collect 误用旧 head
+
+`a553c445928a566874dfdb852e9f6f698ddeac88` 的 [CI 34036324414](https://github.com/chiga0/marshal-harness/actions/runs/34036324414) 五项通过。单次 [canary 34037154719](https://github.com/chiga0/marshal-harness/actions/runs/34037154719) 已越过之前的查询失败，两个 Cancel 调用均 exit=0，响应 SHA-256 同为 `e5b4181fa740ffae94677df66e2e81ff96b94561d9710137293b2f6f995619b1`；journal sequence 4 为 `worker.stopped`，含完整 barrier/process/allocation/supervisor/cleanup 引用及 `aborted-by-operator`。驱动已验证 stop/Outcome/receipt 形状后，在第四次调用 Collect 收到 transport failure。没有取消后 server3 冷恢复证据，整次 canary 仍失败。诊断 artifact 9990541132 已保留，完整包 9990541531 独立留存。
+
+根因核对：该 Collect 是新 key，却使用取消前 RUNNING sequence/head；真实 `BeginLifecycleBound` 必须拒绝非当前 head，而原 injected-call 测试只返回预置结果，漏掉了 delivery 约束。候选使新 Collect 使用已证明的 BLOCKED head；Core 仅将精确当前终态读取连接到耐久 stop intent 的原始 head，再执行完整 terminal/Outcome 验证。旧 pending 重放、显式 Cancel 与通用 stale-head 拒绝不变，合同补入仍为 Proposed 的 ADR 0081。增加真实 delivery store 测试区分新请求与历史 pending，纯映射负例及驱动参数断言；该测试的停止引用是明确 synthetic，不冒充完整 authority 证明。新 source 的动态和实机证据仍待验证，B1 不关闭。
+
 ## 2026-09-06：停止候选完整 CI 通过，实机暴露并发查询接缝
 
 精确候选 `e65b7aa0657dbc2d48bd7da9c29145b9d41e45b8` 的 [CI 34035050503](https://github.com/chiga0/marshal-harness/actions/runs/34035050503) 五项全部通过；前置 stop-chain race 回归也通过。随后唯一 [canary 34035979322](https://github.com/chiga0/marshal-harness/actions/runs/34035979322) 完成真实 Pi Start、server2 重启/rebind、原 Start replay，却在随后 Inspect 返回 `transport-failure`，尚未进入 cancel。因此不能把新 Collect/Close 衔接记作实机取消成功，也不原样重试。诊断 artifact 9990188334 已保存，完整 artifact 9990188687 保留。

@@ -19,10 +19,9 @@ func (session *RepositorySession) ReconcileStoppedRun(ctx context.Context, reque
 	return session.reconcileStoppedRun(ctx, request)
 }
 
-// ReconcileStoppedCurrentRun is the Collect response-loss path. The caller
-// supplies the original Run authority, not a fabricated cancellation request.
-// The stored stop intent supplies its own request ID after current-ledger
-// selection; the shared terminal verifier still checks the original head.
+// ReconcileStoppedCurrentRun joins either an original Collect replay or a new
+// Collect bound to the current stopped Run. It does not manufacture a cancel:
+// the stored intent supplies the original request for terminal verification.
 func (session *RepositorySession) ReconcileStoppedCurrentRun(ctx context.Context, request application.CurrentRunRequest) (application.CancelRunProjection, bool, error) {
 	if ctx == nil || application.CollectRunResultRequest(request).Validate() != nil {
 		return application.CancelRunProjection{}, false, application.NewError("reconcile-stopped-run", application.ReasonInvalidRequest)
@@ -91,6 +90,7 @@ func (session *RepositorySession) reconcileStoppedRun(ctx context.Context, reque
 			request.ExpectedSequence = terminal.StopIntent.ExpectedSequence
 			request.ExpectedAuthorityHead = terminal.StopIntent.ExpectedAuthorityHead
 		}
+		request = bindStoppedReadToOriginalIntent(read.Run, request, terminal.StopIntent)
 		if request.RequestID == "" {
 			request.RequestID = terminal.StopIntent.RequestID
 		}
@@ -105,4 +105,15 @@ func (session *RepositorySession) reconcileStoppedRun(ctx context.Context, reque
 		return application.CancelRunProjection{}, false, err
 	}
 	return result, found, nil
+}
+
+// Only an exact current terminal read can be translated to the stored intent.
+// Explicit cancel requests and original pending replays keep their own heads.
+// The caller still runs rehydrateStoppedRunUnderLease's complete durable checks.
+func bindStoppedReadToOriginalIntent(current application.RunProjection, request application.CancelRunRequest, intent resultingress.AttemptStopIntent) application.CancelRunRequest {
+	if request.RequestID == "" && current.State == domain.StateBlocked && currentMatchesDelivery(current, request.CurrentRunRequest) {
+		request.ExpectedSequence = intent.ExpectedSequence
+		request.ExpectedAuthorityHead = intent.ExpectedAuthorityHead
+	}
+	return request
 }
