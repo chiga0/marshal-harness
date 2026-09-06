@@ -88,6 +88,8 @@ READY 原始预算准入候选已在 preparation 的 ReserveAttempt 前和 bridg
 
 ## 同一纵切的验证与实施顺序
 
+停止链必须包含证据保存：v2 Terminate → process-terminal → allocation release → **cleanup-only Collect** → Close/独立 absence → cleanup release。真实 mechanics 的 Close 要求先完成有界 transcript 封存，不能以取消为由跳过或放宽。cleanup-only Collect 仅在精确 sealed StopIntent、已关闭 admission、对应 eligibility、process-terminal 与 allocation-terminal 均成立时允许；复用原 v2 command intent/receipt、held object 校验及丢响应恢复，不创建 CommittedResult、Candidate 或成功业务接纳。普通 Collect 的 barrier 拒绝规则不变。Close intent 已存在而无成功 Collect 的旧失败链保留 intervention，不能更换该命令或擦除历史。该规则随本提议纵切一起验证，不独立授予 production authority。
+
 先冻结以上选择，再在一个连贯实现中接通 application→runtime→现有 barrier/Terminate/cleanup→Run event/Outcome→fixed delivery，不把孤立 handler 或新类型标为可用。测试覆盖：错误 current head/owner 零 mutation；admission/stop 两种 CAS 顺序；intent 前后、signal 前后、cleanup 后、event 后及响应丢失；同请求重放；原因替换拒绝；过期原始 deadline 与重启不延期；身份冲突零 kill/零 release；迟到结果；终态 Outcome 重建。
 
 真实验证使用同一固定 bytes 的 server 和 cooperative Pi，保留本机签名/执行准入失败，不借用旧 image 或直接 Pi 调用。B1 仍须另外证明正常 Collect→Verify→独立 Decision→ACCEPTED；取消通过不能替代正常业务交付。

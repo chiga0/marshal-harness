@@ -139,6 +139,10 @@ func (s *DurableStore) closePreparedExecutionWithTransport(ctx context.Context, 
 				return ErrPreparedExecutionNotClosable
 			}
 			if state.SupervisorStarted.V2 != (SupervisorStartedV2{}) {
+				state, err = s.collectStoppedBeforeCloseV2Locked(ctx, projection, state, ownerState, identity, directory, fixedMarshalPath, productionContinuationTransportV2, processsupervisor.ReadCollectedTranscriptV2, processsupervisor.ObservePreparedCommandV2)
+				if err != nil {
+					return err
+				}
 				result, err = s.closePreparedExecutionV2Locked(ctx, projection, state, ownerState, identity, directory, fixedMarshalPath, productionContinuationTransportV2, processsupervisor.RecoverCommittedCloseV2, processsupervisor.ObservePreparedCommandV2)
 				return err
 			}

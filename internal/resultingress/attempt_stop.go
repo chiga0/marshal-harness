@@ -11,6 +11,15 @@ var ErrStopTooLate = errors.New("resultingress: result admission already committ
 
 var ErrBusinessDeadlineExceeded = errors.New("resultingress: immutable business deadline exceeded")
 
+// Cleanup evidence is not result admission. Only a sealed v2 stop whose child
+// and allocation are already terminal can collect behind a closed barrier.
+func stoppedTranscriptCollectible(s AttemptAuthorityState) bool {
+	return s.SupervisorStarted.V2 != (SupervisorStartedV2{}) && s.StopIntent != (AttemptStopIntent{}) &&
+		s.StopIntent.Validate(s.Identity) == nil && s.BarrierDigest != "" && s.AdmissionClosed &&
+		s.EligibilityTerminal == s.StopIntent.Eligibility() && s.ProcessTerminalDigest != "" && s.AllocationTerminalDigest != "" &&
+		s.CommittedResultFactDigest == "" && s.SupervisorClosedDigest == "" && s.SupervisorInterventionDigest == ""
+}
+
 // Stop intents are authority inputs, never provider observations. The caller
 // must load and authenticate their sources while holding current Run authority.
 // This contract is part of the ADR 0081 vertical implementation, not a public

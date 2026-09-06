@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：取消已终止进程，缺 cleanup transcript 导致 Close 失败
+
+`f9c974d` 的 CI 34032441612 五项通过后，单次 canary 34033184062 已进入真实 cancel：RB1 sequence 22 为 barrier，23–25 为 Terminate intent/outcome 与 process-terminal，26–28 为 existing-worktree release intent/receipt 与 allocation-terminal，29 留下 Close intent，随后 fixed server 返回 `authority-conflict`。尚无 supervisor-closed、cleanup release、worker.stopped 或 Outcome，不能称为取消成功。小诊断包 9989307623 在数秒内返回上述事实，无须等待完整 executable 包才能定位执行阶段。
+
+代码核对发现确定性缺口：真实 `darwinMechanics.Close` 要求 `terminal && collected`，停止 composition 在 Terminate 后直接 Close；正常结果链事先 Collect，停止链没有，而 terminal 测试替身未模拟这一前提。按 ADR 0081 的候选补充 cleanup-only Collect，沿同一 held owner/RB1 transaction 与 v2 intent/receipt/有界 transcript reader，在 Close 前保存证据；barrier 与业务接纳保持关闭，不生成 CommittedResult。测试补 sealed stop 负向矩阵、Collect 丢响应恢复一次、Close 未 Collect 即失败、无业务接纳及冷账本重放。保留旧 pending Close，不插队改写旧命令。该修复尚待新精确 source 的动态 CI/实机证据，不关闭 B1。
+
 ## 2026-09-06：查询候选消除 application 长互斥等待
 
 `InspectRun` 原先与 Start/Collect/Verify/Cancel 共用 `adapter.mu`，即使 HTTP router 的只读请求不进入 writer lane，仍可能在长验证后排队。候选改为复用 `Status` 的 session lifetime 读锁；Close 仍同时取得 mutation/lifetime 写锁，Inspect 仍由 RepositorySession 获取精确 Run lease 并重新验证 owner/current ledger，不读取陈旧快照兜底。补充 mutation-held、Close 并发与无效输入测试；本地 compile-only/vet/staticcheck 通过，动态/race 尚待后继精确 CI。测试中的未 claim session 只证明不等待 application mutex，不证明有效 session 的全链路时延；底层 owner/storage 等待、同 Run 写冲突响应与实机查询延迟仍是 B1 开放项。
