@@ -31,12 +31,13 @@ class TimeoutTaskTest(unittest.TestCase):
             args = SimpleNamespace(repository=str(root), base_ref="a" * 40, task_id="task-test", run_id="run-test",
                                    model="provider/model", doctor=str(root / "doctor.json"),
                                    task_out=str(root / "task.json"), policy_out=str(root / "policy.json"))
-            for scenario, seconds in (("order-quote", 300), ("order-quote-timeout", 60)):
+            for scenario, seconds, run_seconds in (("order-quote", 300, 600), ("order-quote-timeout", 60, 600), ("order-quote-run-timeout", 60, 60)):
                 args.scenario = scenario
                 renderer.render(args)
                 task = json.loads((root / "task.json").read_bytes())
                 self.assertEqual(task["budgets"]["attemptTimeoutSeconds"], seconds)
-                self.assertEqual(task["budgets"]["runTimeoutSeconds"], 600)
+                self.assertEqual(task["budgets"]["runTimeoutSeconds"], run_seconds)
+                self.assertLessEqual(task["budgets"]["attemptTimeoutSeconds"], task["budgets"]["runTimeoutSeconds"])
                 self.assertEqual(task["budgets"]["maxAttempts"], 1)
                 self.assertEqual(task["budgets"]["maxOperationalRetries"], 0)
                 self.assertEqual(task["scope"]["allowPaths"], ["quote_order.py"])
@@ -115,6 +116,58 @@ class BusinessStopObservationTest(unittest.TestCase):
                 drive()
             self.assertEqual(len(calls), len(replies))
             self.assertNotIn("business-stop-summary.json", saved)
+
+
+class BusinessStopRecoveryTest(unittest.TestCase):
+    def previous(self):
+        saved = {}
+        replies = iter([(0, run("BLOCKED", 4)), (1, {"disposition": "stopped", "reasonCode": "run-stopped"}), (0, run("BLOCKED", 4))])
+        driver.observe_business_stop(lambda *a: next(replies), saved.__setitem__, "run-test", 100, now=lambda: 0)
+        saved["driver-subject.json"] = {"binarySHA256": "binary-one", "runId": "run-test"}
+        return saved
+
+    def test_cold_recovery_reuses_exact_request_and_deadline(self):
+        original = self.previous()
+        prior, deadline = driver.business_stop_recovery(original.__getitem__, "binary-one", "run-test", 10, 480)
+        self.assertEqual(deadline, 100)
+        replies = iter([(0, run("BLOCKED", 4)), (1, {"disposition": "stopped", "reasonCode": "run-stopped"}), (0, run("BLOCKED", 4))])
+        calls, saved = [], {}
+        def call(args, remaining):
+            calls.append(list(args))
+            return next(replies)
+        summary = driver.observe_business_stop(call, saved.__setitem__, "run-test", deadline, now=lambda: 10, previous=prior)
+        self.assertFalse(summary["accepted"])
+        self.assertEqual([c[0] for c in calls], ["inspect", "collect", "inspect"])
+        self.assertEqual(saved["business-stop-collect-request.json"], original["business-stop-collect-request.json"])
+
+    def test_identity_expiry_and_unproved_prior_are_rejected(self):
+        for kind in ("binary", "run", "accepted", "stage", "expired", "future"):
+            saved = self.previous(); now = 10
+            if kind == "binary": saved["driver-subject.json"]["binarySHA256"] = "other"
+            if kind == "run": saved["business-stop-summary.json"]["runId"] = "other-run"
+            if kind == "accepted": saved["business-stop-summary.json"]["accepted"] = True
+            if kind == "stage": saved["business-stop-summary.json"]["stage"] = "unproved"
+            if kind == "expired": now = 100
+            if kind == "future": now = -500
+            with self.assertRaises(driver.DriveError):
+                driver.business_stop_recovery(saved.__getitem__, "binary-one", "run-test", now, 480)
+
+    def test_recovery_cannot_wait_for_new_stop_or_change_frozen_arguments(self):
+        for kind in ("running", "head", "deadline", "key", "operation"):
+            prior, deadline = driver.business_stop_recovery(self.previous().__getitem__, "binary-one", "run-test", 10, 480)
+            value = run("BLOCKED", 4)
+            if kind == "running": value = run("RUNNING", 3)
+            if kind == "head": value["authorityHead"] = "sha256:" + "f" * 64
+            if kind == "deadline": deadline = 110
+            if kind == "key": prior["request"]["args"][-1] = "other-key"
+            if kind == "operation": prior["request"]["args"][0] = "cancel"
+            calls = []
+            def call(args, remaining):
+                calls.append(args)
+                return 0, value
+            with self.assertRaises(driver.DriveError):
+                driver.observe_business_stop(call, lambda *a: None, "run-test", deadline, now=lambda: 10, previous=prior)
+            self.assertEqual([c[0] for c in calls], ["inspect"])
 
 
 class CancelRunTest(unittest.TestCase):

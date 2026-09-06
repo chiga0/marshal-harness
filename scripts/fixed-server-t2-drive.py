@@ -252,7 +252,7 @@ def cancel_run(call, save, run_id, deadline, now=time.time, previous=None):
     return summary
 
 
-def observe_business_stop(call, save, run_id, deadline, now=time.time, pause=time.sleep):
+def observe_business_stop(call, save, run_id, deadline, now=time.time, pause=time.sleep, previous=None):
     """Observe resident stopping before any Collect; never issue Cancel.
 
     This proves the public stopped path, not its reason or deadline witness.
@@ -272,6 +272,8 @@ def observe_business_stop(call, save, run_id, deadline, now=time.time, pause=tim
         if code != 0 or not isinstance(value, dict):
             raise DriveError("business-stop-inspect-unavailable")
         state = value.get("state")
+        if previous is not None and value != run_projection(previous["run"], run_id, "BLOCKED"):
+            raise DriveError("business-stop-recovery-query-mismatch")
         if state == "BLOCKED":
             stopped = run_projection(value, run_id, "BLOCKED", initial, initial is not None)
             break
@@ -290,6 +292,8 @@ def observe_business_stop(call, save, run_id, deadline, now=time.time, pause=tim
     request = ["collect", "--run", run_id, "--attempt", stopped["attemptId"],
                "--expected-sequence", str(stopped["sequence"]), "--expected-authority-head", stopped["authorityHead"],
                "--deadline", deadline_text, "--request-key", f"t2:{run_id}:collect-after-business-stop:{stopped['sequence']}"]
+    if previous is not None and previous["request"] != {"args": request}:
+        raise DriveError("business-stop-recovery-frozen-request-mismatch")
     save("business-stop-collect-request.json", {"args": request})
     code, collected = invoke(request)
     save("collect-after-business-stop.json", {"exitCode": code, "response": collected})
@@ -302,6 +306,23 @@ def observe_business_stop(call, save, run_id, deadline, now=time.time, pause=tim
                "deadlineWitnessVerified": False, "transport": "fixed-control-plane"}
     save("business-stop-summary.json", summary)
     return summary
+
+
+def business_stop_recovery(read_prior, binary_digest, run_id, now, timeout):
+    """Recover diagnostic bindings only; never let a file supply CLI commands."""
+    subject = read_prior("driver-subject.json")
+    summary = read_prior("business-stop-summary.json")
+    request = read_prior("business-stop-collect-request.json")
+    if (subject["binarySHA256"] != binary_digest or subject["runId"] != run_id
+            or summary["runId"] != run_id or summary["accepted"] is not False
+            or summary["stage"] != "resident-stop-observed"):
+        raise DriveError("business-stop-recovery-subject-mismatch")
+    previous = {"run": run_projection(summary["run"], run_id, "BLOCKED"), "request": request}
+    frozen = request["args"]
+    deadline = datetime.datetime.fromisoformat(frozen[frozen.index("--deadline") + 1].replace("Z", "+00:00")).timestamp()
+    if not 0 < deadline - now <= timeout:
+        raise DriveError("business-stop-recovery-deadline")
+    return previous, deadline
 
 
 def finalize_review(call, save, summary, packet, decision, decision_path, deadline, now=time.time):
@@ -412,19 +433,21 @@ def main():
     parser.add_argument("--cancel", action="store_true", help="verify explicit stop, exact replay and stopped Collect instead of business acceptance")
     parser.add_argument("--cancel-recovery", action="store_true", help="verify the same proved stop after server restart, without extending its deadline")
     parser.add_argument("--observe-business-stop", action="store_true", help="observe resident stopping without Cancel or pre-stop Collect")
+    parser.add_argument("--business-stop-recovery", action="store_true", help="recheck the same stopped Run and Collect request after cold server restart")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     binary = root / "bin" / "marshal"
     evidence = Path(args.evidence_dir)
     if not ID.fullmatch(args.run) or not 1 <= args.timeout_seconds <= 480 or not 0 <= args.await_review_seconds <= 1200:
         parser.error("invalid run/deadline")
-    if sum((args.cancel, args.cancel_recovery, args.observe_business_stop)) > 1 or (args.cancel or args.cancel_recovery or args.observe_business_stop) and args.await_review_seconds:
+    stop_modes = (args.cancel, args.cancel_recovery, args.observe_business_stop, args.business_stop_recovery)
+    if sum(stop_modes) > 1 or any(stop_modes) and args.await_review_seconds:
         parser.error("cancel cannot request independent business acceptance")
     if binary.is_symlink() or not binary.is_file() or binary.resolve() != binary:
         parser.error("fixed bin/marshal is required")
     if not evidence.is_absolute() or evidence.resolve() != evidence or evidence.parent != root / ".marshal" / "fixed-server-t1-canary" / args.run:
         parser.error("evidence-dir must be the fresh t2 child of this Run's canary evidence")
-    if evidence.name != ("t2-recovery" if args.cancel_recovery else "t2"):
+    if evidence.name != ("t2-recovery" if args.cancel_recovery or args.business_stop_recovery else "t2"):
         parser.error("invalid evidence leaf")
     evidence.mkdir(mode=0o700, exist_ok=False)
 
@@ -461,8 +484,20 @@ def main():
         return completed.returncode, value
 
     try:
-        if args.observe_business_stop:
-            observe_business_stop(call, save, args.run, time.time() + args.timeout_seconds)
+        def read_prior(name):
+            prior = evidence.parent / "t2"
+            if prior.is_symlink() or not prior.is_dir() or prior.resolve() != prior:
+                raise DriveError("stop-recovery-evidence-path")
+            path = prior / name
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 << 20:
+                raise DriveError("stop-recovery-evidence-file")
+            return json.loads(path.read_bytes())
+
+        if args.observe_business_stop or args.business_stop_recovery:
+            previous, deadline = None, time.time() + args.timeout_seconds
+            if args.business_stop_recovery:
+                previous, deadline = business_stop_recovery(read_prior, binary_digest, args.run, time.time(), args.timeout_seconds)
+            observe_business_stop(call, save, args.run, deadline, previous=previous)
             if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
                 raise DriveError("fixed-binary-drift")
             return 0
@@ -470,16 +505,6 @@ def main():
             previous = None
             deadline = time.time() + args.timeout_seconds
             if args.cancel_recovery:
-                prior = evidence.parent / "t2"
-                if prior.is_symlink() or not prior.is_dir() or prior.resolve() != prior:
-                    raise DriveError("cancel-recovery-evidence-path")
-
-                def read_prior(name):
-                    path = prior / name
-                    if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 << 20:
-                        raise DriveError("cancel-recovery-evidence-file")
-                    return json.loads(path.read_bytes())
-
                 subject = read_prior("driver-subject.json")
                 summary = read_prior("cancel-summary.json")
                 response = read_prior("cancel-response.json")

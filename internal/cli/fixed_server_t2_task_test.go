@@ -31,7 +31,7 @@ func TestFixedServerT2TaskRendererContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"marker", "order-quote", "order-quote-timeout"} {
+	for _, scenario := range []string{"marker", "order-quote", "order-quote-timeout", "order-quote-run-timeout"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir := t.TempDir()
 			doctor := filepath.Join(dir, "doctor.json")

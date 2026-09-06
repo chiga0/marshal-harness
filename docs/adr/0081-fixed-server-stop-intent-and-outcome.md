@@ -7,6 +7,8 @@
 
 ## 从实际调用链发现的问题
 
+2026-09-06 后继验证：`dd8178f` 已通过真实原始 Attempt deadline 自动停止（34040069400），其来源、预算计算和终态 cleanup 引用已在审计记录中核对；不是客户端 timeout 或显式 Cancel。候选继续用等长 60 秒 Run/Attempt budget 验证更早创建的 Run deadline，并在两类 timeout 后用同 bytes 冷 server 重放原 Collect/原 deadline。它不修改本 ADR 的 runtime 语义，尚未升级正式支持；中途故障、响应上界与最新组合路径仍须完成。
+
 当前 `PublicApplicationPort` 没有取消 operation；历史 `internal/server` 的 task cancel 不属于 fixed server 生产入口。`CompositionLedger.terminalizeCompletedAttempt` 只接纳已完成结果，不能直接用于用户取消。`run.aborted` 的闭集也不接受 `RUNNING`。虽然 v2 `TerminatePreparedExecution` 已有 barrier 后的安全终止实现，直接从 HTTP context cancellation 调用它仍缺业务授权和最终 Outcome。
 
 另一个独立缺口是 `ensureAttemptLease` 初次 reserved claim 使用固定两小时 expiry。恢复保留原值是正确的，但不能把这个内部 lease expiry 宣称为用户已确认的业务 wall-timeout；HTTP deadline 更不是业务 deadline。

@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：Run-first 与两类超时冷恢复候选
+
+`d10cd98` 的 CI 34040123782 五项全部通过，包含 Cancel 排队 deadline/零意图及 Task renderer 的动态 schema 回归。本轮在同一个 canary 增加 `order-quote-run-timeout`，并让两类 timeout 完成后正常关闭 server2、以同 bytes server3 重启、重放原 Collect 请求和原 deadline。冷恢复若看到 RUNNING、不同终态 head、不同 binary/Run、被改写的 key/参数或过期原 deadline，即停止，不等待新一轮执行、不取消或启动 Worker。原取消场景保持。
+
+前置核对发现 Task 语义禁止 Attempt budget 大于 Run budget；因此 Run-first 采用两者均为 60 秒，Run 创建早于 process-started，实际较早 deadline 仍须在实机 witness 中检查。这个配置问题在提交/CI/付费 Worker 前已纠正，没有修改合同门禁。Python 33 项通过；Go 本地只 compile-only/vet，新 source 动态与实机仍待完成。此前 Attempt 超时完整 artifact 的下载仍是已确认存活的同一任务，未重启下载或重复 Worker；小诊断足以推进 deadline 来源审计，但不能冒称已读取未下载的原始 Outcome。
+
 ## 2026-09-06：原始 Attempt deadline 自动停止实机通过
 
 精确 `dd8178f096df9503fafa355f19a126105f2e7c76` 经 [CI 34039269163](https://github.com/chiga0/marshal-harness/actions/runs/34039269163) 五项全绿后，单次 [34040069400](https://github.com/chiga0/marshal-harness/actions/runs/34040069400) 成功。server2 binary SHA-256 为 `3488ade9641164f0d7a498e400d55826e10338e3d64a5c9313517e536c0772e5`。真实 Run `fixed-server-t1-34040069400` 一次 Attempt、零 operational retry/rework；驱动只有 19 次 Inspect 与终态后一次 Collect，零 Cancel，不能把它解释成 operator stop。

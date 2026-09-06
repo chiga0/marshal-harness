@@ -24,7 +24,7 @@ usage() {
 usage: scripts/fixed-server-t1-canary.sh \
   --expected-head HEAD --pi-model PROVIDER/MODEL --pi-node PATH --pi-bin PATH \
   --pi-bundle PATH --run-id RUN_ID --evidence-root ABSOLUTE_PATH \
-  [--scenario t1-marker|order-quote|order-quote-cancel|order-quote-timeout] [--await-review]
+  [--scenario t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout] [--await-review]
 EOF
   exit 2
 }
@@ -47,7 +47,7 @@ done
 [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || die 'expected-head 必须是 40 位小写 commit'
 [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || die 'pi-model 必须是 provider/model'
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{2,120}$ ]] || die 'run-id 形态非法'
-case "$SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout) ;; *) die 'scenario 非法' ;; esac
+case "$SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout) ;; *) die 'scenario 非法' ;; esac
 [ "$AWAIT_REVIEW" -eq 0 ] || [ "$SCENARIO" = order-quote ] || die 'await-review 只适用于 order-quote'
 [ -x "$PI_NODE" ] && [ ! -L "$PI_NODE" ] || die 'pi-node 必须是固定普通 executable'
 [ -x "$PI_BIN" ] || die 'pi-bin 必须是可执行入口'
@@ -212,8 +212,8 @@ renderer_args=(--doctor "$EVIDENCE_ROOT/doctor.json" --repository "$ROOT" --base
 if [ "$SCENARIO" != t1-marker ]; then
   task_id="FIXED-SERVER-T2-${EXPECTED_HEAD:0:12}"
   task_renderer=scripts/fixed-server-t2-task.py
-  if [ "$SCENARIO" = order-quote-timeout ]; then
-    renderer_args+=(--scenario order-quote-timeout)
+  if [ "$SCENARIO" = order-quote-timeout ] || [ "$SCENARIO" = order-quote-run-timeout ]; then
+    renderer_args+=(--scenario "$SCENARIO")
   else
     renderer_args+=(--scenario order-quote)
   fi
@@ -298,7 +298,7 @@ append_start_audit server2 received-replay
 "$MARSHAL_BIN" control-plane inspect --run "$RUN_ID" >"$EVIDENCE_ROOT/server2-final-inspect.json"
 append_audit server2 inspect received-final
 
-if [ "$SCENARIO" = order-quote-timeout ]; then
+if [ "$SCENARIO" = order-quote-timeout ] || [ "$SCENARIO" = order-quote-run-timeout ]; then
   "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
     --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2" --observe-business-stop --timeout-seconds 180
 elif [ "$SCENARIO" = order-quote-cancel ]; then
@@ -322,7 +322,7 @@ set -e
 write_process_evidence "$EVIDENCE_ROOT/server2-process.json" "$server2_pid" SIGTERM "$server2_status"
 server2_pid=""
 
-if [ "$SCENARIO" = order-quote-cancel ]; then
+if [ "$SCENARIO" = order-quote-cancel ] || [ "$SCENARIO" = order-quote-timeout ] || [ "$SCENARIO" = order-quote-run-timeout ]; then
   "$PYTHON_BIN" -I -B scripts/fixed-server-t1-evidence.py observe-binary \
     --binary "$MARSHAL_BIN" --version-json "$EVIDENCE_ROOT/binary-version.json" \
     --out "$EVIDENCE_ROOT/binary-server3.json"
@@ -331,9 +331,15 @@ if [ "$SCENARIO" = order-quote-cancel ]; then
   # Reuse the now-empty owned child slot so the existing EXIT trap reaps it.
   server2_pid=$!
   wait_ready "$server2_pid" "$EVIDENCE_ROOT/server3-ready.json"
-  append_audit server3 serve ready-after-cancel
-  "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
-    --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2-recovery" --cancel-recovery
+  if [ "$SCENARIO" = order-quote-cancel ]; then
+    append_audit server3 serve ready-after-cancel
+    "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
+      --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2-recovery" --cancel-recovery
+  else
+    append_audit server3 serve ready-after-business-stop
+    "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
+      --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2-recovery" --business-stop-recovery
+  fi
   assert_server_pid "$server2_pid"
   kill -TERM "$server2_pid"
   set +e
@@ -350,7 +356,7 @@ if [ "$SCENARIO" = t1-marker ]; then
     --repository "$ROOT" --evidence-root "$EVIDENCE_ROOT" --binary "$MARSHAL_BIN" \
     --expected-head "$EXPECTED_HEAD" --run-id "$RUN_ID" --out "$EVIDENCE_ROOT/summary.json"
   printf '[fixed-server-t1] PASS run=%s evidence=%s\n' "$RUN_ID" "$EVIDENCE_ROOT"
-elif [ "$SCENARIO" = order-quote-timeout ]; then
+elif [ "$SCENARIO" = order-quote-timeout ] || [ "$SCENARIO" = order-quote-run-timeout ]; then
   printf '[fixed-server-t2] RESIDENT_STOP_OBSERVED run=%s; deadline witness requires independent evidence audit, not ACCEPTED\n' "$RUN_ID"
 elif [ "$SCENARIO" = order-quote-cancel ]; then
   printf '[fixed-server-t2] CANCELLED run=%s; exact replay and stopped Collect verified, not ACCEPTED\n' "$RUN_ID"
