@@ -2,6 +2,8 @@
 
 ## 2026-09-06：停止后的冷 server 验证候选
 
+同路径故障测试补充：v2 Terminate 链原先使用普通 `attempt-failed` barrier，不能覆盖取消合同。现改为经公开 producer 提交的 sealed operator stop intent，再沿原真实 durable bootstrap/start/rebind 链验证 signal 丢回复、exact receipt 恢复、Close 丢回复与独立 absence、cleanup 冷重放；末端必须保留原 stop intent、admission closed 且没有 CommittedResult。Supervisor peer/内核观察仍为明确替身，不宣称实机取消；本地 compile-only/vet/staticcheck 通过，新 source 动态证据待 CI。
+
 停止开发分支已推送 `984f45e`，同步 main `5bdec88` 并修正共享 release root adoption：正常完成要求已接纳结果，停止要求 sealed intent 与闭合 eligibility，二者都须在当前 owner 下重读 exact Attempt、release receipt 和 projection bytes。新增非耐久 sealed stop 拒绝反例；compile-only/vet/staticcheck 通过，动态证据待新 source，不借用 #264。
 
 `order-quote-cancel` 场景现延伸至 server2 正常退出、同 bytes server3 冷启动、原请求/原 deadline 的精确取消重放、BLOCKED 查询和 stopped Collect。新 evidence 使用独立 `t2-recovery` 目录，拒绝二进制漂移、deadline 延长、参数注入、终态/receipt 改变；24 项 Python 回归通过。尚未派实机取消，仍缺 signal/cleanup 中途崩溃与业务超时同路径证明；本增量不能关闭 B1。

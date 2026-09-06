@@ -24,7 +24,25 @@ func testLauncherV2Terminal(t *testing.T, fixture preparedExecutionFixture, stat
 func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixture, state AttemptAuthorityState, owner ControlOwnerState, verifier attemptOwnerVerifier, directory *os.File, report processsupervisor.ProcessReport, command processsupervisor.CommandName) {
 	t.Helper()
 	store := fixture.store
-	state = appendTestBarrier(t, store, state, "v2-terminal-chain", TerminalAttemptFailed).State
+	if command == processsupervisor.CommandTerminate {
+		// Carry an actual durable operator stop through the same v2 signal,
+		// lost reply, Close/absence, cleanup and cold-replay chain. A generic
+		// failed-attempt barrier does not exercise the cancellation contract.
+		intent, err := SealAttemptStopIntent(state.Identity, AttemptStopIntent{
+			RequestID: "cancel-v2-terminal-chain", ExpectedSequence: 3, ExpectedAuthorityHead: attemptTestDigest("current-run"),
+			OperatorUID: owner.Acquisition.OwnerUID, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Category: StopOperatorRequest,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stopped, err := appendStopForTest(store, state, intent)
+		if err != nil {
+			t.Fatalf("v2 operator stop barrier: %v", err)
+		}
+		state = stopped.State
+	} else {
+		state = appendTestBarrier(t, store, state, "v2-terminal-chain", TerminalAttemptFailed).State
+	}
 	var inspected, closedOutcome processsupervisor.VerifiedCommandOutcomeV2
 	inspectCalls, closeCalls, transportCalls := 0, 0, 0
 	assertIntent := func(p processsupervisor.PreparedCommandV2) SupervisorCommandIntent {
@@ -254,5 +272,8 @@ func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixtur
 	cold, found, err := reopened.AttemptState(state.Identity)
 	if err != nil || !found || !reflect.DeepEqual(cold, released.State) || cold.CleanupReleasedDigest == "" {
 		t.Fatalf("full v2 cleanup cold replay: %v", err)
+	}
+	if command == processsupervisor.CommandTerminate && (cold.StopIntent != state.StopIntent || cold.CommittedResultFactDigest != "" || !cold.AdmissionClosed || cold.StopIntent.Category != StopOperatorRequest) {
+		t.Fatal("v2 cancellation lost its original intent or became admitted completion")
 	}
 }
