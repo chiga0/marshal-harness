@@ -157,12 +157,12 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	}
 	connection, err := Dial(ctx, authority, binding)
 	if err != nil {
-		return httpResponse{}, err
+		return httpResponse{}, atRequestStage("client-dial", err)
 	}
 	defer connection.Close()
 	header := "POST " + path + " HTTP/1.1\r\nHost: marshal.local\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\nMarshal-Request-Key: " + requestKey + "\r\nConnection: close\r\n\r\n"
 	if connection.SetWriteDeadline(time.Now().Add(writeTimeout)) != nil || writeFull(connection, []byte(header)) != nil || writeFull(connection, body) != nil {
-		return httpResponse{}, ErrUnavailable
+		return httpResponse{}, atRequestStage("client-write", ErrUnavailable)
 	}
 	response, responseErr := readClientHTTPResponse(connection)
 	// A syntactically valid non-success response still completes the
@@ -170,10 +170,10 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	// after consuming that exact response; otherwise 202/409/503 returns can
 	// make the server mistake an application outcome for a transport failure.
 	if response.SchemaVersion == "" {
-		return httpResponse{}, responseErr
+		return httpResponse{}, atRequestStage("client-response", responseErr)
 	}
 	if response.Operation != operation {
-		return httpResponse{}, ErrConflict
+		return httpResponse{}, atRequestStage("client-operation", ErrConflict)
 	}
 	var recheckErr error
 	if operation == "start-run" && responseErr == nil && response.Started != nil && response.DeliveryReceipt != nil {
@@ -194,10 +194,10 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 		recheckErr = connection.Recheck(ctx)
 	}
 	if recheckErr != nil {
-		return httpResponse{}, ErrConflict
+		return httpResponse{}, atRequestStage("client-recheck", ErrConflict)
 	}
 	if connection.CloseWrite() != nil {
-		return httpResponse{}, ErrUnavailable
+		return httpResponse{}, atRequestStage("client-half-close", ErrUnavailable)
 	}
 	if responseErr != nil {
 		return response, responseErr

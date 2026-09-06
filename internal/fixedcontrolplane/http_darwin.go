@@ -107,7 +107,7 @@ func (router *HTTPRouter) ServeAuthenticated(ctx context.Context, connection *Au
 	request, err := readHTTPRequest(connection)
 	if err != nil {
 		_ = writeHTTPResponse(connection, transportHTTPStatus(err), errorHTTPResponse("", err))
-		return err
+		return atRequestStage("server-read", err)
 	}
 	deadline, err := time.Parse(time.RFC3339Nano, connection.Binding.Deadline)
 	requestNow := time.Now().UTC()
@@ -119,11 +119,11 @@ func (router *HTTPRouter) ServeAuthenticated(ctx context.Context, connection *Au
 	defer cancel()
 	disconnected := watchClientDisconnect(connection, cancel)
 	if err := router.admit(applicationContext); err != nil {
-		return errors.Join(err, writeHTTPResponseAndAwaitClient(connection, 503, errorHTTPResponse(request.operation, err), disconnected))
+		return errors.Join(atRequestStage("server-admission", err), writeHTTPResponseAndAwaitClient(connection, 503, errorHTTPResponse(request.operation, err), disconnected))
 	}
 	defer router.release()
 	if err := connection.Recheck(applicationContext); err != nil {
-		return errors.Join(err, writeHTTPResponseAndAwaitClient(connection, 409, errorHTTPResponse(request.operation, err), disconnected))
+		return errors.Join(atRequestStage("server-precheck", err), writeHTTPResponseAndAwaitClient(connection, 409, errorHTTPResponse(request.operation, err), disconnected))
 	}
 
 	// A client close cancels a running application operation. After reading the
@@ -132,11 +132,12 @@ func (router *HTTPRouter) ServeAuthenticated(ctx context.Context, connection *Au
 	// through the response therefore prevents the server from racing that
 	// required recheck by closing its end first.
 	response, statusCode, operationErr := router.dispatch(applicationContext, connection.Binding, request, deadline)
+	operationErr = atRequestStage("server-dispatch", operationErr)
 	recheckContext, recheckCancel := context.WithTimeout(context.Background(), handshakeTimeout)
 	recheckErr := connection.Recheck(recheckContext)
 	recheckCancel()
 	if recheckErr != nil {
-		operationErr = errors.Join(operationErr, recheckErr)
+		operationErr = errors.Join(operationErr, atRequestStage("server-postcheck", recheckErr))
 		statusCode = 409
 		response = errorHTTPResponse(request.operation, ErrConflict)
 	}
@@ -160,14 +161,14 @@ func watchClientDisconnect(connection *AuthenticatedConnection, cancel context.C
 func writeHTTPResponseAndAwaitClient(connection *AuthenticatedConnection, statusCode int, response httpResponse, disconnected <-chan struct{}) error {
 	if err := writeHTTPResponse(connection, statusCode, response); err != nil {
 		_ = connection.CloseRead()
-		return err
+		return atRequestStage("server-response", err)
 	}
 	select {
 	case <-disconnected:
 		return nil
 	case <-time.After(time.Second):
 		_ = connection.CloseRead()
-		return ErrUnavailable
+		return atRequestStage("server-half-close", ErrUnavailable)
 	}
 }
 

@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：停止后查询失败的诊断缺口（尚未修复根因）
+
+对 34041730043 的原始小诊断复核后，server 仅有通用 transport-failure，客户端也只输出 authenticated request 未完成；驱动只保留 stderr 摘要。现有材料无法区分 request 读取、准入、前后身份复核、dispatch、response 和 half-close，不能断言锁或 timeout 是根因。
+
+本候选在原有 HTTP/client 调用链添加本地封闭 stage 标签，保留原 error 分类、HTTP 结果与拒绝行为；CLI 沿已有有界错误树输出标签，driver 只收集精确 allowlist 标签，不上传原始 stderr，不把标签用于验收或重试。补充分类/脱敏单测、真实 socket router 错误阶段断言与 driver 反例；本机仅 Python 动态测试和 Go compile-only/vet/staticcheck，不执行匿名 Mach-O。前序 97e448a 的 CI 34041798874 已全绿，不覆盖本候选。尚未得到实机根因或关闭 B1，不原样重跑原失败。
+
 ## 2026-09-06：Run-first 冷恢复通过；Attempt 停止完成但查询失败
 
 `49f745da10d33a71146afa75528d1f34a691b159` 的 [CI 34040876557](https://github.com/chiga0/marshal-harness/actions/runs/34040876557) 五项全绿，随后 [Run-first 34041702160](https://github.com/chiga0/marshal-harness/actions/runs/34041702160) 成功。独立读取诊断 artifact `9991894362`，重新计算 creation event digest，连接同 Attempt process-started、原始 60/60 秒预算、stop intent、四类 terminal/cleanup 引用及 BLOCKED 事件。Run deadline `15:16:48.357751Z` 早于 Attempt deadline `15:16:52.173736Z`；停止原因精确为 `run-deadline-exceeded`，本样本意图延迟 0.805517 秒、终态延迟 3.340678 秒。server2/server3 binary identity 相同，raw SHA-256 为 `656d53a2b8237a76566db52b469016a7fde5259de3b7556d0a0058a2893215dc`；冷恢复保留原 Collect key/head/deadline、终态投影和响应 SHA-256 `606f11c437c8af004acfcc1e766d73e63ec1b10df913949757d9147d739a6e1e`。没有 Cancel、第二 Attempt 或业务 ACCEPTED，仍是 candidate-only，原始 Outcome 文件不在此旧归档清单中。

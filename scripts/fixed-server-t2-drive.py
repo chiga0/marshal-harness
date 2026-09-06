@@ -25,6 +25,22 @@ class DriveError(Exception):
     pass
 
 
+def safe_transport_stages(stderr):
+    """Local diagnostics only; never infer acceptance or retry from these labels."""
+    allowed = {"client-dial", "client-write", "client-response", "client-operation",
+               "client-recheck", "client-half-close", "server-read", "server-admission",
+               "server-precheck", "server-dispatch", "server-postcheck", "server-response",
+               "server-half-close"}
+    stages = []
+    for line in stderr.decode("utf-8", errors="replace").splitlines():
+        match = re.fullmatch(r"control-plane request failed: stage=([a-z-]+) reasonCode=transport-failure", line)
+        if match and match[1] in allowed and match[1] not in stages:
+            stages.append(match[1])
+            if len(stages) == 8:
+                break
+    return stages
+
+
 def capture_review_inputs(root, run_id, packet, archive):
     """Copy only the packet's review inputs, not a restorable authority store.
 
@@ -476,7 +492,8 @@ def main():
             raise DriveError("fixed-cli-output-limit")
         save(f"call-{invocation}.json", {"operation": command[0], "exitCode": completed.returncode,
                                        "stdoutSHA256": hashlib.sha256(completed.stdout).hexdigest(),
-                                       "stderrSHA256": hashlib.sha256(completed.stderr).hexdigest()})
+                                       "stderrSHA256": hashlib.sha256(completed.stderr).hexdigest(),
+                                       "transportStages": safe_transport_stages(completed.stderr)})
         try:
             value = json.loads(completed.stdout)
         except (ValueError, UnicodeDecodeError):

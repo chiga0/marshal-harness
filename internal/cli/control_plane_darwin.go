@@ -232,6 +232,13 @@ func writeControlPlaneRequestFailure(stderr io.Writer, err error) {
 			return
 		}
 		visited++
+		if stage := fixedcontrolplane.DiagnosticStage(current); stage != "" {
+			label := application.Error{Operation: stage}
+			if !emitted[label] {
+				emitted[label] = true
+				fmt.Fprintf(stderr, "control-plane request failed: stage=%s reasonCode=transport-failure\n", stage)
+			}
+		}
 		if stage, ok := current.(*sealedRunOpenError); ok && stage != nil && validControlPlaneDiagnosticLabel(stage.stage) {
 			label := application.Error{Operation: stage.stage}
 			if !emitted[label] {
@@ -343,6 +350,7 @@ func runControlPlaneInspect(ctx context.Context, args []string, stdout, stderr i
 	defer authority.Close()
 	projection, err := fixedcontrolplane.CallInspectRun(ctx, authority, controlPlaneReadKey("inspect", *runID), application.InspectRunRequest{RunID: *runID}, time.Now().UTC().Add(2*time.Minute))
 	if err != nil {
+		writeControlPlaneRequestFailure(stderr, err)
 		fmt.Fprintln(stderr, "control-plane inspect 失败：authenticated request 未完成。")
 		return ExitFailure
 	}

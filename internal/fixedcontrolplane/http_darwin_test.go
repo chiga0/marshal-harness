@@ -830,6 +830,10 @@ func TestHTTPRouterRejectsNonCanonicalUnknownBodyAndDeadlineBeforePort(t *testin
 	if !errors.Is(serveErr, ErrInvalid) || code != 400 || response.ReasonCode != "invalid-request" || port.statusCalls != 0 || delivery.beginCalls != 0 {
 		t.Fatalf("unknown code=%d response=%+v err=%v statusCalls=%d beginCalls=%d", code, response, serveErr, port.statusCalls, delivery.beginCalls)
 	}
+	var stage *requestStageError
+	if !errors.As(serveErr, &stage) || DiagnosticStage(stage) != "server-dispatch" {
+		t.Fatal("real HTTP dispatch failure lost local stage diagnostic")
+	}
 
 	body := canonicalBody(t, application.StatusRequest{})
 	deadline = time.Now().UTC().Add(maxApplicationTime + time.Minute)

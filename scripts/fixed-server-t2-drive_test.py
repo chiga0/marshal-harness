@@ -17,6 +17,20 @@ driver = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(driver)
 
 
+class TransportDiagnosticTest(unittest.TestCase):
+    def test_only_exact_allowlisted_labels_are_archived(self):
+        raw = (b"private/path credential\n"
+               b"control-plane request failed: stage=client-recheck reasonCode=transport-failure\n"
+               b"control-plane request failed: stage=client-recheck reasonCode=transport-failure\n"
+               b"control-plane request failed: stage=secret reasonCode=transport-failure\n"
+               b"control-plane request failed: stage=client-dial reasonCode=transport-failure extra-secret\n"
+               b"\xff\n")
+        self.assertEqual(driver.safe_transport_stages(raw), ["client-recheck"])
+
+    def test_unknown_and_generic_failures_do_not_become_retry_admission(self):
+        self.assertEqual(driver.safe_transport_stages(b"reasonCode=transport-failure\n"), [])
+
+
 class TimeoutTaskTest(unittest.TestCase):
     def test_budget_is_frozen_in_task_without_changing_normal_task(self):
         task_spec = importlib.util.spec_from_file_location("t2task", Path(__file__).with_name("fixed-server-t2-task.py"))
