@@ -1,5 +1,22 @@
 # 设计审计报告
 
+## 2026-09-07：稳定容器修复后的两类自动超时和冷恢复通过
+
+精确候选 `c61998515512f064fc4b113c229295e5df28e185` 的 [CI 34047040755](https://github.com/chiga0/marshal-harness/actions/runs/34047040755) 五项全绿，macOS 前置停止链回归先于全量质量检查通过，完整 macOS job 用时 14 分 25 秒。随后分别派发一次真实 Pi 场景，未改变 Provider/模型，未原样重跑失败版本。
+
+| 场景 | 实机与诊断 artifact | 原始业务截止点（UTC） | 停止意图 / Run 终态延迟 | 结果 |
+| --- | --- | --- | --- | --- |
+| Attempt 60 秒先到期 | [34047844723](https://github.com/chiga0/marshal-harness/actions/runs/34047844723)，`9993670793`（45,991 bytes） | `2026-09-06T17:13:48.789964Z` | 0.801903 / 4.524347 秒 | 作业 2 分 11 秒；终态查询/Collect/server3 冷恢复通过 |
+| Run 60 秒先到期 | [34048091298](https://github.com/chiga0/marshal-harness/actions/runs/34048091298)，`9993737275`（46,356 bytes） | `2026-09-06T17:18:23.541713Z`；Attempt 截止点为 `17:18:27.654604Z` | 0.868224 / 3.720027 秒 | 作业 2 分 13 秒；终态查询/Collect/server3 冷恢复通过 |
+
+直接读取原始证据核对，而不只采用 workflow 绿色：两次各 36 条 RB1 fact、4 条 Run event、一次 Attempt、零 operational retry/rework；停止原因分别为 `attempt-deadline-exceeded` / `run-deadline-exceeded`。creation event canonical digest、specDigest、原始 process-started fact/时间与 deadline 计算一致；`worker.stopped` 引用 barrier、process-terminal、allocation-terminated、supervisor-closed、cleanup-released 的精确 fact digest。Outcome 为 `BLOCKED/abort`，绑定 stopped payload 的 canonical digest、原终态时间与原因，不冒充独立 ReviewDecision。两次 Outcome digest 分别为 `sha256:7606aae4cff99e449ee672328d2573a0966006fea3cbd76744d4080bc6545701`、`sha256:d5ae8eadd0dab6c0cdc84282972f97b78bedbaf43294b2bacde863238da0d1f1`。
+
+两次实机的三代 server 均保持完整 binary identity，跨两次 artifact 的 binary SHA-256 也相同：`a55e680713258f357c3846473ba2f1ed53a685764f5d8a52cda5858545883aa3`。Attempt 场景初段 13 次 Inspect、一次 Collect；Run-first 初段 14 次 Inspect、一次 Collect；各自 server3 均两次 Inspect、一次原请求 Collect，零 Cancel。原 Collect key/参数/deadline 与终态投影跨冷重启相同，所有 Inspect 成功，Collect 返回封闭的非成功 `stopped`，没有新增 Attempt 或假 ACCEPTED。完整 artifacts `9993671390`、`9993739378` 均已下载：两份原始 Task canonical digest 与各自 witness specDigest 相同，Attempt/Run 预算分别为 60/600 秒与 60/60 秒；各自完整/小包 Outcome bytes 相同，server2/3 正常退出，实际下载的两个 binary hash 也与上述观察一致。
+
+取证效率缺口：小诊断缺少原始 Task，预算来源复核被迫下载约 19.8 MB 的含 binary 完整包；本轮第二份下载约 7 分钟，长于两次 canary 自身。后继故障矩阵应一并归档必要的冻结业务输入到有界诊断材料；完整 artifact 仍保留，但不再把它作为读取少量预算证据的唯一入口。该改进尚未实施，不另起脱离 B1 验收的微修切片。
+
+结论与后继：旧布局在 34044944162 的客户端打开失败没有再出现在这两次完整样本中，支持稳定容器根因修复有效；不据两个成功样本承诺竞态永不复发或普遍加速。停止中途故障矩阵、长写事务下响应上界、精确最终版本正常业务与停止组合验收、独立审查仍开放。B1 保持 `IN_PROGRESS`，B2/B3 不升级，候选未合并 main、无 stable 发布。历史失败继续计入总交付成本；下一轮应处理上述剩余验收，而非再次派这两个已通过场景。同步纠正文档“唯一当前表”仍停留早期接口阶段的陈旧内容，保留历史检查点但不让它覆盖已有业务进展。
+
 ## 2026-09-07：用稳定投影容器消除查询与业务写入的目录耦合
 
 `487bbc243673b8e1c389e0d4e58f235767a3f188` 的 CI 34045694199 五项全绿，公共客户端 characterization 动态确认了旧布局的观察失效；它只证明接缝缺陷，不是修复或实机成功。后继候选按 ADR 0081 的同一纵切，把原子投影和 stage 移入固定容器内的 `current-v2`，transport 不再刷新 `runtime-v1` 观察，容器、runtime、control 的替换/ABA 继续拒绝。旧根部投影先按当前 RB1 合法前缀只读校验并原样保留；未知/损坏/旧中断 stage 不被覆盖或遮蔽。新布局不修改 RB1/Run journal/receipt，不新增业务 authority。

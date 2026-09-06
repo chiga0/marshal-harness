@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-2026-09-07 当前候选：`487bbc2` 的 CI 34045694199 五项全绿，已动态复现旧投影布局使公共客户端观察失效。根因修复改为稳定容器内更新 `current-v2`，并移除 transport 根的事后观察刷新；旧状态只读校验、原样保留，身份/ABA 拒绝不放宽。新增真实投影 producer 与公共客户端边界回归，待新 source hosted CI 和自动超时/冷恢复实机。**B1 IN_PROGRESS；B2/B3 不升级；候选未合并 main，无 stable 发布。** 以下是历史检查点。
+2026-09-07 当前候选：`c61998515512f064fc4b113c229295e5df28e185` 的 CI 34047040755 五项全绿；真实 Pi 的 Attempt-timeout 34047844723 和 Run-first 34048091298 均通过终态查询、stopped Collect、同 bytes server3 冷恢复。稳定投影容器修复首次在两类预算顺序的完整查询路径得到实机正向证据；两次各一 Attempt、零 Cancel/retry/rework，不删除此前失败分母。**B1 IN_PROGRESS：尚缺停止中途故障矩阵、长写事务响应上界与最终组合验收；B2/B3 不升级。候选未合并 main，无 stable 发布。** 证据范围见 [审计报告](audit-report.md#2026-09-07稳定容器修复后的两类自动超时和冷恢复通过)。以下是历史检查点。
 
 2026-09-06 16:19 UTC：诊断候选 `88f9edd` 的 CI 34043986843 全绿，但 Attempt-timeout 34044944162 在第 17 次 Inspect 的客户端 authority 打开阶段失败，未进入 HTTP；RB1 到 worktree release receipt，尚无 stopped Run 终态/Collect/server3。本轮新增公开客户端目录观察切换的确定性回归，冻结同类实机重试，先定位并修复完整接缝。**B1 仍 IN_PROGRESS，B2/B3 未升级；停止候选未合入 main、无 stable 发布。** 前文在途 CI/待派发语句为历史时点，不代表当前仍运行。
 
@@ -91,11 +91,13 @@
 
 | Milestone | 状态 | 已有事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | RC1 已发布；T1 实机恢复已集成；main `0c6d9cd`（PR #254）已有 T2 collect/verify/review/Decision 接口；本轮增加订单报价参考 oracle 与 T2 业务 Task 模式 | 新最终 bytes 的真实 T2 到独立 Decision/ACCEPTED；ADR 0079 launcher production cutover；有界查询、取消/超时与持续推进 |
+| B1 完整单任务服务 | `IN_PROGRESS` | main `c93e31b` 的真实 Pi 订单报价已独立 ACCEPTED（34030199172）；候选显式取消/冷恢复通过；最新 `c619985` 的两类自动超时、终态查询/Collect、冷恢复通过 | 停止中途故障矩阵；长写事务下查询/停止响应上界；独立审查与最终版本正常业务/停止组合验收、主线合入。候选子条件通过不等于 B1 完成 |
 | B2 受限 Agent Team | `PLANNED` | ADR 0019 已有计划接纳组件，ADR 0080 已确认受限产品目标 | approved plan 耐久物化/调度、两个到三个独立实现任务、集成候选业务验收、局部 replan、暂停恢复；不能以子 Run 全绿替代 |
 | B3 长期运行与正式支持 | `PLANNED` | I186-R2–R6 组件和历史测试可复用 | B2 同路径故障与长历史测试、升级/恢复、#212 signing/notarization、Linux server 实机 gate、受保护 stable release |
 
-最近已合入基线：`origin/main@c8ee8dd213eb1c0dea4fce0772318221259bdf46`（PR #256），required CI [33938666374](https://github.com/chiga0/marshal-harness/actions/runs/33938666374) 的 macOS/Ubuntu quality、Linux amd64/arm64 candidate conformance 与 secret scan 全绿。文档、锁修复及参考测试已合入，但不构成真实业务 Agent 或独立发布证据。T2 的 `production-owner-not-current` 仍缺失败现场根因闭环：fsync 后曾复现，后续 CI 绿色不能单独证明已修复。
+2026-09-07 核对远端 `main@ba2196bea33e6f007809f75f9671928c892bfa11`，包含 #266 的正常业务证据；正常业务实机 source 为 `c93e31b`。停止候选 `c619985` 已推送 `feat/b1-stop-lifecycle`，没有 localMergeSha 或远端 merge，不得把其能力说成 main 已启用。两类超时均使用其同一 candidate binary SHA-256 `a55e680713258f357c3846473ba2f1ed53a685764f5d8a52cda5858545883aa3`；历史 source 的成功不替代最终组合验收。
+
+### 历史实施检查点（不覆盖上方当前表）
 
 本轮不改变 Run/Goal 持久化、授权或生产 selector。最先执行参考 oracle 正反例，再沿 B1 的 fixed server 路径收集真实业务证据；不新起另一套 controller。I186-R0 PASSED、R1 IN_PROGRESS/INTEGRATED、R2–R6 IN_PROGRESS/COMPONENT 保持。
 
