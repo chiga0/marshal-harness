@@ -1,5 +1,9 @@
 # 设计审计报告
 
+## 2026-09-06：前置回归遗漏测试 binary 的 sourceHead
+
+CI 34045483914 在 macOS 前置回归约 17 秒即失败：公开客户端测试的 fixture 在 `ObserveCurrentCore` 返回 identity conflict，尚未执行目录切换。原因是手写的前置 `go test` 漏掉 `Makefile:test` 已明确要求的 buildinfo.commit 注入，测试 binary 使用 `unknown` 而非精确 40-hex sourceHead。此次补齐两条前置命令与封闭 workflow producer；不跳过进程身份检查，不把 compile-only 当成已执行该检查。这是新增测试的启动配置返工，不是实机 Provider 重试，也不是目录竞态已被动态证明；B1 状态不变。后续真实身份测试必须保留同一 sourceHead 构建参数，不能只复制包名和 `-run`。
+
 ## 2026-09-06：精确诊断候选仍失败，位置前移到客户端 authority 打开
 
 `88f9eddb856ca0c438ae574a2f8391981f8b2c23` 的 CI 34043986843 五项全绿；单次 Attempt-timeout canary [34044944162](https://github.com/chiga0/marshal-harness/actions/runs/34044944162) 失败。小诊断 artifact `9992827944` 保留全部 17 次 Inspect 摘要：前 16 次成功，第 17 次 exit=3、空 stdout、无 HTTP stage；stderr SHA-256 `f85f116f2ae11c764fec6975425fee1d413fddcc160431808a0649b216b5998f` 精确匹配固定文案“control-plane inspect 失败：resident server 不可用。”加换行，定位到 `openControlPlaneClient`，尚未发送 HTTP。不能据此断言 Provider 配置错误。
