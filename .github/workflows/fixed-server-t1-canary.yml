@@ -204,6 +204,8 @@ jobs:
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/t2-recovery/business-stop-collect-request.json
             .marshal/runs/${{ env.T1_RUN_ID }}/state.json
             .marshal/runs/${{ env.T1_RUN_ID }}/events.jsonl
+            .marshal/runs/${{ env.T1_RUN_ID }}/outcome.json
+            .marshal/runs/${{ env.T1_RUN_ID }}/result.md
             .marshal/runtime-v1/result-ingress/result-ingress.jsonl
             .marshal/runtime-v1/control/delivery-v1/*.json
           if-no-files-found: warn
@@ -221,6 +223,8 @@ jobs:
             .marshal/fixed-server-t1-canary/
             .marshal/runs/${{ env.T1_RUN_ID }}/state.json
             .marshal/runs/${{ env.T1_RUN_ID }}/events.jsonl
+            .marshal/runs/${{ env.T1_RUN_ID }}/outcome.json
+            .marshal/runs/${{ env.T1_RUN_ID }}/result.md
             .marshal/runtime-v1/result-ingress/result-ingress.jsonl
             .marshal/runtime-v1/control/delivery-v1/*.json
           if-no-files-found: warn

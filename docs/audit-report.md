@@ -2,6 +2,8 @@
 
 ## 2026-09-06：停止 Outcome 部分落盘恢复回归
 
+后续检查归档清单发现：此前完整包和小诊断都只显式包含 Run state/events，未包含 `outcome.json/result.md`。因此原始 Outcome 缺失不只是下载等待，重下同一包也无用；历史证据仍只支持已记录的 Core stopped-Collect 验证口径。候选为两份 artifact 增加精确 Run 的这两个派生文件，以便后续独立检查 bytes/摘要；不读取或上传新类别的 Worker transcript/secret，不补造历史证据。
+
 停止事件的 current-ledger/cleanup 校验保持在原入口；只把其后既有的 Outcome 和说明文件不可变写入提取为内部函数，未新增停止权限、事件、协议或 Worker 启动路径。回归直接调用这个生产写入函数：第二个文件被测试自有空目录阻断时不得返回成功摘要，已写入的 Outcome 保留；释放并重新取得 lease 后补齐说明文件，两次重放保持原始 bytes、时间、原因和摘要。另覆盖两个目标文件的冲突内容、符号链接及已关闭 lease，均不得覆盖已有内容或报告成功。
 
 这些是合成 Outcome 的文件物化组件测试，不是完整停止授权、实机崩溃或磁盘断电证据，不关闭 signal/cleanup 中途故障矩阵。本地 compile-only、vet、staticcheck、diff-check 通过；动态执行须由新 source 的 hosted CI 验证，不执行本机匿名 Mach-O。Run-first/两类超时冷恢复仍先验证已推送的 `49f745d`，不把后继测试代码混入它的 binary 身份。
