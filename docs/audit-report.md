@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-06：取消失败定位到 fixed CLI activation 漏接线
+
+完整 artifact 9988677757 已取回：34031227675 的 `call-1` 为 inspect/exit=0，`call-2` 为 cancel/exit=3、空 stdout。后者 stderr SHA-256 `bb8d1e32fe9bfd6c9b829425e953f6649875f6b436c9a56893a8dec7176fa5e7` 与固定诊断 `Marshal local dogfood gate 拒绝：self-local-command-denied。`（含换行）精确相等。因此请求在 CLI self gate 被拒绝，尚未进入 server；不是 Pi 未配置，也不是新的 stop runtime 失败。
+
+根因是新增 handler/transport 未同步 CLI command classifier、activation 命令闭集和 Schema。此前 package 测试绕过了真实入口，完整 CI 绿色未覆盖这个调用链接缝。候选按 ADR 0081 补齐封闭 `control-plane-cancel`，并从 `RunContext` 使用真实生成的 activation 验证所有 fixed lifecycle 命令到达参数校验；取消缺 activation、旧命令集合仍拒绝，不增加 bootstrap 豁免。小诊断包已补调用摘要，避免再次为了几百字节诊断下载约 19 MB 完整包。动态 CI 与新的单次实机结果仍待此精确候选验证，B1 未关闭。
+
 ## 2026-09-06：取消候选越过 Start 重放，驱动响应诊断仍阻塞
 
 `2422d14` 的 CI 34030543935 五项全绿（macOS fixedcontrolplane/cli 动态测试均通过）后，仅派发一次 34031227675。command-audit 已记录 server2 的 `received-replay` 和随后 `received-final`，越过 34029737648 的旧失败点；随后 T2 driver 报 `fixed-cli-invalid-response`。journal 保留真实 Start outcome（sequence=3），磁盘 state.json 仍是 READY/2 的旧投影，不用它覆盖 journal；无 stop intent、没有取消成功或冷恢复证据。server2.stderr 为空，不能猜测该次原始 CLI 错误。

@@ -116,6 +116,29 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	}
 	t.Setenv(selfidentity.ActivationEnv, activationPath)
 
+	// Exercise the real entry gate with a freshly generated activation, not
+	// just runControlPlaneCancel or the HTTP handler. Invalid arguments stop
+	// before connecting to a server; reaching usage proves both allowlists.
+	if runtime.GOARCH == "arm64" {
+		for _, command := range []string{"start", "cancel", "collect", "verify", "review-packet", "decision"} {
+			t.Run("fixed entry "+command, func(t *testing.T) {
+				var output, diagnostic bytes.Buffer
+				exit := RunContext(context.Background(), []string{"control-plane", command}, strings.NewReader(""), &output, &diagnostic)
+				if exit != ExitUsage || output.Len() != 0 || !strings.HasPrefix(diagnostic.String(), "用法：marshal control-plane "+command+" ") {
+					t.Fatalf("fixed entry exit=%d stdout=%q stderr=%q", exit, output.String(), diagnostic.String())
+				}
+			})
+		}
+		t.Run("cancel still requires activation", func(t *testing.T) {
+			t.Setenv(selfidentity.ActivationEnv, filepath.Join(root, "missing-activation.json"))
+			var output, diagnostic bytes.Buffer
+			exit := RunContext(context.Background(), []string{"control-plane", "cancel"}, strings.NewReader(""), &output, &diagnostic)
+			if exit != ExitUnavailable || output.Len() != 0 || !strings.Contains(diagnostic.String(), selfidentity.ReasonOptInMissing) {
+				t.Fatalf("missing activation exit=%d stderr=%q", exit, diagnostic.String())
+			}
+		})
+	}
+
 	draftRaw, err := os.ReadFile(filepath.Join(originalDirectory, "..", "..", "schemas", "examples", "happy-path", "task-spec.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -372,6 +395,7 @@ func TestLocalDogfoodClassifiesCompleteFixedServerLifecycle(t *testing.T) {
 		command string
 		want    string
 	}{
+		{"cancel", selfidentity.CommandControlPlaneCancel},
 		{"collect", selfidentity.CommandControlPlaneCollect},
 		{"verify", selfidentity.CommandControlPlaneVerify},
 		{"review-packet", selfidentity.CommandControlPlaneReview},

@@ -27,6 +27,7 @@ const (
 	CommandControlPlaneStatus   = "control-plane-status"
 	CommandControlPlaneInspect  = "control-plane-inspect"
 	CommandControlPlaneStart    = "control-plane-start"
+	CommandControlPlaneCancel   = "control-plane-cancel"
 	CommandControlPlaneCollect  = "control-plane-collect"
 	CommandControlPlaneVerify   = "control-plane-verify"
 	CommandControlPlaneReview   = "control-plane-review-packet"

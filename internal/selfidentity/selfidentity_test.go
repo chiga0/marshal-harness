@@ -53,6 +53,10 @@ func TestDarwinActivationAndObservationPositivePath(t *testing.T) {
 		t.Fatalf("DecodeActivation: %v", err)
 	}
 	activationPath := writeActivation(t, root, raw)
+	if _, err := admit(activationPath, CommandControlPlaneCancel, root, executable,
+		BuildIdentity{SourceHead: testSourceHead, SelfProfile: LocalProfile}, testNow, nil); err != nil {
+		t.Fatalf("fixed cancel is not in the closed activation: %v", err)
+	}
 	observation, err := admit(activationPath, CommandTaskScaffold, root, executable,
 		BuildIdentity{SourceHead: testSourceHead, SelfProfile: LocalProfile}, testNow, nil)
 	if err != nil {
@@ -111,6 +115,17 @@ func TestDarwinActivationStrictAndIdentityNegativeMatrix(t *testing.T) {
 
 	t.Run("trailing newline", func(t *testing.T) {
 		_, err := DecodeActivation(append(append([]byte(nil), raw...), '\n'), testNow)
+		assertReason(t, err, ReasonOptInMissing)
+	})
+	t.Run("old command set is not silently expanded", func(t *testing.T) {
+		legacy := activation
+		legacy.Scope.LifecycleCommandClasses = nil
+		for _, command := range activation.Scope.LifecycleCommandClasses {
+			if command != CommandControlPlaneCancel {
+				legacy.Scope.LifecycleCommandClasses = append(legacy.Scope.LifecycleCommandClasses, command)
+			}
+		}
+		_, err := DecodeActivation(marshalActivation(t, legacy), testNow)
 		assertReason(t, err, ReasonOptInMissing)
 	})
 	t.Run("duplicate member", func(t *testing.T) {

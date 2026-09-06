@@ -25,6 +25,7 @@
 
 ### 输入、身份与幂等
 
+- fixed CLI 的封闭 activation 增加 `control-plane-cancel`，只映射 `marshal control-plane cancel`；不是绕过 self identity 的 bootstrap 命令。生成器、解码器、Schema、CLI 分类与真实入口测试必须一起更新。旧 activation 不原地扩权；其命令集合与新 binary 不匹配时继续拒绝，操作者为精确新 bytes/sourceHead 重新生成 activation。未知命令、错误 profile、缺失 activation 与身份漂移仍在连接 server 前拒绝。
 - Public cancel 输入使用现有 `CurrentRunRequest` 四元组，再加有界 `requestId`。首版原因固定为 `operator-request`，不把任意自由文本、actor、PID、generation 或 deadline 当作客户端可授权字段。
 - 请求者是现有 fixed server 本机受信调用边界的操作者；Core 记录从该边界取得的本机身份，不采信 JSON 自报 actor。这仍是单用户 ordinary-user 模式，不增加远程身份或多用户保证。
 - 首次停止意图保存 `schemaRevision`、上述请求及其 canonical `requestDigest`、Core 观察的操作者、停止类别、精确 Attempt identity、原 Run sequence/head。所有字段进入同一 barrier fact 的摘要，零旁路状态文件。现有无 stop intent 的 completion barrier 原始字节和 replay 保持不变。
