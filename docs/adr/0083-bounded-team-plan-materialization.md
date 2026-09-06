@@ -31,7 +31,7 @@ Goal 投影由同一物理账本 replay 得到，`goal.Evaluate` 只接收该投
 
 ## 3. 物化是可恢复工作，不是接纳事务中的长操作
 
-接纳返回后，现有 fixed server reconcile 循环按依赖、scope、宿主/Provider 和验证容量取就绪节点。创建和 Start 不占用 Goal/RB1 锁执行长命令。每个节点的 materialization key、TaskID、RunID 从 accepted fact 与 node identity 确定性派生；换 server/丢响应/暂停恢复不能换 key。
+接纳返回后，现有 fixed server reconcile 循环按依赖、scope、宿主/Provider 和验证容量取就绪节点。创建和 Start 不占用 Goal/RB1 锁执行长命令。每个节点的 materialization key、TaskID、RunID 在 preview 前从版本域、authority namespace、GoalID、ProposalID 和 NodeID 的 canonical tuple 确定性派生，随后由 accepted fact 绑定；不能从 accepted fact digest 再推导输入中已有的 ID，否则形成 `fact→RunID→Policy digest→bundle digest→fact` 循环。相同 key 的不同输入是冲突，不自动产生另一 Run；新方案必须换 ProposalID 并重新批准。换 server/丢响应/暂停恢复不能换 key。
 
 先耐久绑定该命令的最终 TaskSpec/Policy digest、repository/base、选定 Provider profile 和目标 RunID，再调用同一生产 planning seam。开始前和返回后均重查已有 Run 的冻结输入与事实：精确 READY 复用；CREATED/PLANNED 只沿同一创建义务补齐；冲突/无法判定则保留明确阻塞，不删除旧目录、重选新 ID 或绕过准入。需将现有 `planning.Plan` 的创建步骤补为可恢复入口，而不是宣称它目前已经幂等。
 
@@ -58,5 +58,7 @@ Goal 投影由同一物理账本 replay 得到，`goal.Evaluate` 只接收该投
 实现以“两个实现任务→一个真实集成候选”为一个纵切，一次接通：输入 preview/批准→RB1 原子接纳→Run 创建恢复→单 Run Start/Collect/Verify/Decision→集成→Goal Outcome。纯 Goal 类型、独立 store 或 mock controller 不能单独标 B2 INTEGRATED。
 
 同一调用链必须覆盖：无批准零创建；同输入重放/同 key 异输入拒绝；accepted fact 前后丢响应；Run 创建和 READY 之间中断；Start 丢响应不多 Attempt；两个独立写节点真正重叠执行；上游漂移或集成冲突拒绝；局部 replan 不重做无关成果；Goal 暂停/重启后继续；独立业务验收与最终 Decision。测试先无故障、无重启走通，然后再注入故障，不能只验证恢复分支。
+
+当前实现候选首先在既有 `internal/planning` 增加完整输入预检：封闭版本与大小、重复/未知 JSON 字段、Spec/Proposal digest、两实现加一集成图、确定性身份、Task schema、既有 Policy 验证、scope/锁定 base、显式 Pi/model、publication:none、禁止子 Worker fan-out 和声明预算不低于 Task。输出仅是 canonical preview，不是批准、预留、current-ledger verdict 或 Run。全局 scope 冲突、累计预算、批准及 CAS 必须在耐久接纳时依据账本再判定；生产 endpoint、物化与真实团队链尚未接通，不将这段预检单独计为 B2 INTEGRATED。
 
 先在订单报价 API/客户端样例上验证机制，再在至少另外两个业务任务族进行重复配对比较。统计所有失败与修复、总交付时间、人工介入及实际成果复用；若不优于强 Lead＋SubAgents，简化策略或保留 Runtime-only 价值，不以增加协议来解释失败。B3 的同路径长期故障、安装信任和 stable 门禁仍须完成，本 ADR 不授予 production。

@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-07：B2 批准输入的可执行绑定候选
+
+在既有 `internal/planning` 添加完整 Task/Policy 输入束预检，复用 Task Schema 与 `ValidatePolicy`，不执行命令或写入 Run。明确封闭初始模板为两个实现节点加一个集成节点，并绑定 scope、固定 base、Pi/model、publication:none、预算与确定性 Task/Run ID；重复字段、未知字段、串接 JSON、超限输入和跨节点 Policy 均拒绝。前移这些错误可避免在付费 Worker 开始后才发现方案无法物化。
+
+同时修正 ADR 0083 的 ID 循环：身份由批准前的 namespace/Goal/Proposal/node tuple 派生，完整输入摘要随后由 accepted fact 绑定；不从最终 fact digest 反推该 fact 内 Policy 已引用的 RunID。同 key 改内容仍须由后续 durable CAS 拒绝，不以改 ID 实现隐式 retry。候选目前仅编译、vet/staticcheck 与架构检查通过，动态测试待 CI；尚无生产 endpoint、耐久批准、物化或真实团队证据，B2 仍未集成。该工作分支仍基于未合入的 B1，不代表 main 已具备此能力。
+
 ## 2026-09-07：B2 计划到真实 Run 的接缝仍未实现
 
 直接核对 `internal/goal`、`internal/outbox`、`internal/planning` 和 TaskSpec：现有计划组件不耐久落账，节点不绑定完整 Task 输入，planning 尚不是幂等 Goal 物化，Task 依赖也不传递或集成成果。不能据此把 B2 提前列为可用。[ADR 0083 提案](adr/0083-bounded-team-plan-materialization.md) 将后继限制为同一 fixed server/RB1 的批准输入束、原子创建义务、现有 Run 创建恢复和真实集成候选，不引入新 controller/DSL。该文档是 B2 的设计准备，不是实施完成；依赖的 B1 候选仍未合入。
