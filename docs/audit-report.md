@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-08：原生结果实机进入独立 Verify，团队仍未交付
+
+`a5418f4acbb1fe3b581a4c6d079510048d82dcee` 的完整 CI `34149966062` 五项全绿，Darwin 定向 `34149938176` 的 30 项必跑检查通过。精确候选 gate 通过后只派发一次真实双 Pi 团队 `34151269983`，其失败证据保存在 diagnostic artifact `10029503062`。service Run `team-run-0189f9bd1f824517f7eb8d01a8b1d5fd5a38150a7b515f9ea39197e055743772` 的事件已到 sequence 4 `worker.completed` 和 sequence 5 `verification.completed`，报告为 pass，包含 `command:quote-team-service`。这首次为本候选原生结果→独立 Verify 接缝提供正向实机证据，但不表示整个团队成功。
+
+随后 `call-21.json` 的 `review-packet` 请求退出 1、stdout 为空；server 仅记录 `stage=server-dispatch reasonCode=transport-failure`，尚不足以确定底层原因。没有独立 Decision、集成或下载消费；另一路的原始 state 快照不能替代 journal/current projection 判断实际状态。保留整次失败和既有预算，不原样重跑，也不把完整 CI 绿或单节点验证通过关闭 B1。下一步沿实际 ReviewPacket 接线定位，同时在独立 worktree 补 Task HTTP 用户出口。
+
+独立接线审计进一步发现确定性 P1：服务 HTTP 请求从 `context.Background()` 建根，丢失入口已 gate 的 local identity；后台 Verify 继承入口 context，故可生成带 local binding 的报告，而 HTTP ReviewPacket 的 `prepareLocalReviewBinding` 必拒绝缺失身份。归档与此阻断吻合，但缺少原始内部错误及 manifest，不能排除更早输入失败，不能称为此次唯一首错。修正仅改为保留值的 `context.WithoutCancel(ctx)` 再建立独立 request cancellation，不跳过身份检查，也不使服务停止立即取消排空中的请求。补身份保留、无身份不伪造、父 deadline/取消隔离及显式排空取消回归，纳入 Darwin 快速必跑清单；本地 vet 通过不替代远端动态回归，更不等于 ReviewPacket 或 B1 已实机通过。
+
 ## 2026-09-08：Schema 消费链漏检与前移修正
 
 候选 `2885dcc` 的全量 CI `34148751006` 在 Ubuntu 的 execution 包发现两项失败：新增 `/worker/resultContract` 未加入既有 prompt projection 分类目录，同时使合成未知字段反例出现额外未分类项。这是实现遗漏及定向检查选取不完整，不是模型失败；计入额外修正，不以先前 22 项 Darwin 定向通过掩盖。未启动新的付费团队 canary。

@@ -38,7 +38,7 @@ jobs:
         run: |
           go test -race -p 2 -count=1 -timeout=120s -json \
             -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$GITHUB_SHA" \
-            -run '^(TestProductionResult.*|TestParseProductionWorkerResult.*|TestExtractFinalWorkerResult.*|TestPiProduction.*|TestTaskSpecResultContract.*|TestTaskSpecPromptProjection.*|TestRenderPromptProjection.*|TestEmbeddedSchemasAreValidDraft202012Documents|TestRunRejectsNativeResultContractBeforeLegacyAdapter|TestTeamProgress.*|TestRepositoryTeamProgress.*|TestBackgroundTeamRunLanesAndVerificationYield|TestBackgroundRunReleasePreservesPublicWaiter|TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor)$' \
+            -run '^(TestControlPlaneRequestContextPreservesIdentityAndDrainOwnership|TestDrainControlPlaneRequests.*|TestProductionResult.*|TestParseProductionWorkerResult.*|TestExtractFinalWorkerResult.*|TestPiProduction.*|TestTaskSpecResultContract.*|TestTaskSpecPromptProjection.*|TestRenderPromptProjection.*|TestEmbeddedSchemasAreValidDraft202012Documents|TestRunRejectsNativeResultContractBeforeLegacyAdapter|TestTeamProgress.*|TestRepositoryTeamProgress.*|TestBackgroundTeamRunLanesAndVerificationYield|TestBackgroundRunReleasePreservesPublicWaiter|TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor)$' \
             ./internal/adapter/pi ./internal/contract ./internal/cli ./internal/execution ./internal/productionruntime ./internal/fixedcontrolplane ./internal/resultingress \
             | tee team-progress-results.jsonl
       - name: Reject empty or skipped regression coverage
@@ -47,6 +47,9 @@ jobs:
           import json
           from pathlib import Path
           expected = {
+              "TestControlPlaneRequestContextPreservesIdentityAndDrainOwnership",
+              "TestDrainControlPlaneRequestsDrainsBeforeCancel",
+              "TestDrainControlPlaneRequestsCancelsOnlyAfterDrainDeadline",
               "TestProductionResultNativeTerminalPreservesReportAndObservedAuthority",
               "TestProductionResultNativeTerminalRejectsUnsafeCompletion",
               "TestProductionResultNativeLaunchIsExplicitAndLegacyStable",
