@@ -8,6 +8,37 @@ import (
 	"testing"
 )
 
+func TestTeamHaltProgressStagesSurviveColdReplay(t *testing.T) {
+	for _, stage := range []string{"collect", "verify"} {
+		t.Run(stage, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := OpenResultIngressStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner, _ := supervisorTestAcquireOwner(t, store, attemptTestIdentity())
+			plan, approval, _ := teamCreationFixture(t, store, owner.Acquisition)
+			halt := TeamPlanHalt{GoalID: "team-1", NodeID: "service", PlanFactDigest: plan.FactDigest, Stage: stage}
+			first, err := store.HaltTeamPlan(context.Background(), teamTestApproval{owner.Acquisition, approval, false}, owner.Acquisition, approval, halt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err = OpenResultIngressStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			got, found, err := store.ReadTeamPlanHalt(owner.Acquisition.Scope, "team-1")
+			if err != nil || !found || got != first {
+				t.Fatalf("cold stage lost: %v", err)
+			}
+		})
+	}
+}
+
 func TestTeamHaltReplayRejectsRehashedForgeryAndDuplicate(t *testing.T) {
 	for _, mode := range []string{"stage", "node", "plan", "owner", "duplicate"} {
 		t.Run(mode, func(t *testing.T) {

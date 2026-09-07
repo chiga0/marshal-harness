@@ -91,6 +91,10 @@ func (adapter *sealedRepositoryApplication) advanceBusinessDeadlines(ctx context
 // The fixed server owns and drains this bounded loop before releasing its
 // owner. A tick supplies scheduling only, never execution or stop authority.
 func driveResidentReconciliation(ctx context.Context, ticks <-chan time.Time, advance func(context.Context) error, report func(error)) {
+	driveResidentReconciliationWithTimeout(ctx, ticks, 30*time.Second, advance, report)
+}
+
+func driveResidentReconciliationWithTimeout(ctx context.Context, ticks <-chan time.Time, timeout time.Duration, advance func(context.Context) error, report func(error)) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -105,7 +109,7 @@ func driveResidentReconciliation(ctx context.Context, ticks <-chan time.Time, ad
 			if ctx.Err() != nil {
 				return
 			}
-			step, cancel := context.WithTimeout(ctx, 30*time.Second)
+			step, cancel := context.WithTimeout(ctx, timeout)
 			err := advance(step)
 			cancel()
 			if err != nil && ctx.Err() == nil {

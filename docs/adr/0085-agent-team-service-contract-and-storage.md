@@ -29,6 +29,18 @@ ADR 0052 的正式签名、公证、Linux 与 stable gate 不删除；从关键�
 
 ## 2. 唯一服务与依赖反转
 
+### B1 首条实现：resident 自动收集与验证（候选）
+
+沿 ADR 0083 已批准计划和原 Run 生命周期增加内部自动推进，不新增 HTTP 权限、Worker、预算或第二账本：从 current owner 下的原计划/创建/Run 事实选择 RUNNING→Collect 或 VERIFYING→Verify，按 Run 轮转，跳过忙 lease 与已 halt 计划；每步重读精确 Run/Attempt/head，陈旧选择仅跳过。与原 HTTP 共用每 Run 调度 lane；Collect 只占短 writer lane，Verify 释放全局 writer，仍持原 Run/worktree lease，独立 deadline loop 不受阻。每个 tick 最多推进一个节点，不递归完成全队或自动签 Decision。
+
+未发布候选先以 `marshal control-plane serve --auto-team-progress` 显式开启；默认旧 serve 不变，避免仍逐阶段驱动的旧客户端被后台推进抢先。Collect 与 Verify 各一个受管、有界循环：前者沿原 30 秒 step 上限，后者上限 10 分钟且仍受原 Task 验证期限/父 context 约束；两者均由同 server 停止并 drain。后续 Task HTTP 主入口采用该模式前须完成对应客户端及真实交付验收。
+
+明确的 attempt-still-running 只继续观察；其他执行失败先保留已有 Run 证据，再追加原 team halt，封闭 stage 增加 collect/verify。halt 同时禁止本候选自动结果推进，避免重启后重复相同错误；不等于 Run 已停止、不释放预算，原手动 Collect/合法停止/独立 deadline 与恢复仍可用。无法提交 halt 则通过 dispatch/collect/verify 共享的进程内 circuit 停止本进程团队自动化并报告未决。只有选择/锁等待阶段的取消可无副作用跳过；操作已调用后失败，即使上下文取消也尝试有界保存 halt，不自动重试。
+
+本候选不透明恢复崩溃中断的 Verify：opt-in server 在开放 endpoint 和启动任何循环前，检查当前批准团队中既存的 VERIFYING Run，先持久 halt 对应团队；因为没有 durable verification-start 事实，无法区分尚未执行与执行中断，保守地把两者都转交人工处置。冷检查遇到忙 lease、读取或 halt 写入失败就拒绝启动，不能跳过后在后台重新验证。已经 REVIEW_PENDING 的完成验证不回滚；本次启动后由 Collect 新产生的 VERIFYING 可正常推进。此最小屏障不建立通用恢复平台，不关闭 B2/B3 的自动恢复出口。
+
+语义 ReviewDecision、任务级 HTTP 与下载消费仍待同一 B1 链接通；自动验证到 REVIEW_PENDING 不等于 ACCEPTED/团队完成。阶段枚举扩展仅适用于未发布同版本候选，旧 reader 不因此获新记录兼容性，既有记录字节不重写。
+
 用户只需要 Task、Worker、Artifact；计划、问题、DAG、交付与审计是 Task 的子视图，不是用户必须先创建的独立平台。公开 Task 复用既有 Goal ID/revision/预算/事实，旧内部 Task 执行规格对外称 WorkItem。B1 先做薄映射，不全仓重命名类型。
 
 一个固定 server、多受管执行进程、一个所选 Store 和本地制品；控制/执行/存储三面逻辑分离，不先拆微服务。HTTP/CLI 共用 Application Port，Core 不导入具体 Agent 或数据库。Port 是 Go interface 一类的依赖边界，DI 是构造函数注入，不是网络端口或动态插件平台。

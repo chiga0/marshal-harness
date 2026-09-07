@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-07：自动团队推进候选与远端验证边界
+
+`feat/team-resident-progress` 基于 `00d3749` 复用现有 Collect/Verify/Run lane/current-ledger 路径，避免要求客户端逐节点推动。语义 Decision、任务级 HTTP 与下载消费仍待完成，不将 REVIEW_PENDING 计作团队交付。
+
+独立 reviewer 首审发现三项 P1：新 flag 在更早的 CLI gate 被拒、Verify 硬崩溃后无开始事实而会自动重跑、旧 dispatch circuit 不覆盖新自动推进。集中修正真实 CLI 准入测试、冷启动既存 VERIFYING 团队持久 halt/忙 lease 拒启动、共享 atomic circuit；同一 reviewer 限定复核未见新增 P0/P1。冷启动屏障有意保守，可能同时暂停未真正开始验证的旧 Run，不冒充自动恢复。新增当前账本/冷重开/共享锁测试；新候选仅本地编译与静态检查通过，动态验证转 macOS CI，不挪用旧结果。
+
+效率教训：内部函数通过不代表完整入口可达；幂等结果不等于命令不会重复执行；增加循环必须共享故障控制。这三类检查应一起纳入后续纵切，不再等 reviewer 逐项发现。继续不用 Marshal skill。
+
+用户授权 ECS 已通过 SSH 安装校验过的 Go 工具链并实际执行旧候选基线测试，未用 root/关闭安全防护/开放公网端口。Linux 测试不能证明 Darwin 代码正确，缺测试明确记录；旧 renderer 固定 `/usr/bin/python3` 与该机器系统 Python 不兼容，两次失败保留，停止原样重试。具体配置和证据范围见[远端验证](remote-linux-validation.md)。新 Goal 保持业务出口，不因 runner 配置完成而宣称生产可用。
+
 ## 2026-09-07：Task-first，团队交付先于管理平台
 
 按用户要求重新检查首个业务出口，发现上一稿把 Workspace/安装身份/显式初始化/全面 SQLite/三 Provider 放在团队之前。源码有现成 RepositorySession/Store、双节点物化与受控执行接缝，换库不能自动解除 Git 耦合；先补团队闭环更短。本轮删除 Workspace 产品实体，B1 先一个 Provider 两实例真实交付，B2 再简启动/SQLite/零 Git/问答/更多 Provider，B3 保留正式故障和发布门禁。不是把旧失败重新计成完成。

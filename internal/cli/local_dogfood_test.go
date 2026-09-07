@@ -120,6 +120,15 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	// just runControlPlaneCancel or the HTTP handler. Invalid arguments stop
 	// before connecting to a server; reaching usage proves both allowlists.
 	if runtime.GOARCH == "arm64" {
+		t.Run("automatic team serve reaches composition", func(t *testing.T) {
+			t.Setenv("MARSHAL_PI_RUNTIME", "")
+			t.Setenv("MARSHAL_PI_ENTRYPOINT", "")
+			var output, diagnostic bytes.Buffer
+			exit := RunContext(context.Background(), []string{"control-plane", "serve", "--auto-team-progress"}, strings.NewReader(""), &output, &diagnostic)
+			if exit != ExitUnavailable || output.Len() != 0 || !strings.HasPrefix(diagnostic.String(), "control-plane serve 失败：") {
+				t.Fatalf("serve entry exit=%d stderr=%q", exit, diagnostic.String())
+			}
+		})
 		for _, command := range []string{"start", "cancel", "collect", "verify", "review-packet", "decision", "team-approve", "team-reconcile"} {
 			t.Run("fixed entry "+command, func(t *testing.T) {
 				var output, diagnostic bytes.Buffer

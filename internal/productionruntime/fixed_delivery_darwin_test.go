@@ -303,6 +303,10 @@ func fixedDeliveryStarted(request application.StartRunRequest) application.RunSt
 }
 
 func advanceFixedDeliveryRunToRunning(t *testing.T, fixture fixedDeliveryFixture) application.RunProjection {
+	return advanceFixedDeliveryRunToRunningWithBudget(t, fixture, 3)
+}
+
+func advanceFixedDeliveryRunToRunningWithBudget(t *testing.T, fixture fixedDeliveryFixture, maxAttempts uint64) application.RunProjection {
 	t.Helper()
 	lease, err := fixture.session.runs.AcquireExisting(fixture.request.RunID)
 	if err != nil {
@@ -321,7 +325,7 @@ func advanceFixedDeliveryRunToRunning(t *testing.T, fixture fixedDeliveryFixture
 		Payload: map[string]any{
 			"protocolRevision": "run-start-outcome/v2", "taskId": state.TaskID,
 			"preparationDigest": digest("preparation"), "processStartedFactDigest": digest("process-started"), "resumeOutcomeFactDigest": digest("resume"),
-			"reservationFactDigest": digest("reservation"), "attemptOpenedFactDigest": digest("attempt-opened"), "attemptOrdinal": uint64(1), "attemptsUsedBefore": uint64(0), "maxAttempts": uint64(3),
+			"reservationFactDigest": digest("reservation"), "attemptOpenedFactDigest": digest("attempt-opened"), "attemptOrdinal": uint64(1), "attemptsUsedBefore": uint64(0), "maxAttempts": maxAttempts,
 			"readySequence": state.Sequence, "readyAuthorityHead": fixture.request.ExpectedAuthorityHead,
 		},
 	}

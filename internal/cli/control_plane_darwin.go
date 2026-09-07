@@ -16,6 +16,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/fixedcontrolplane"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
 	"github.com/chiga0/marshal-harness/internal/repository"
@@ -34,11 +35,14 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	switch args[0] {
 	case "serve":
-		if len(args) != 1 {
-			fmt.Fprintln(stderr, "用法：marshal control-plane serve")
+		if len(args) != 1 && !(len(args) == 2 && args[1] == "--auto-team-progress") {
+			fmt.Fprintln(stderr, "用法：marshal control-plane serve [--auto-team-progress]")
 			return ExitUsage
 		}
-		return runControlPlaneServe(ctx, stdout, stderr)
+		if len(args) == 1 {
+			return runControlPlaneServe(ctx, stdout, stderr)
+		}
+		return runControlPlaneServeWithTeamProgress(ctx, stdout, stderr, true)
 	case "status":
 		if len(args) != 1 {
 			fmt.Fprintln(stderr, "用法：marshal control-plane status")
@@ -68,6 +72,10 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 }
 
 func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
+	return runControlPlaneServeWithTeamProgress(ctx, stdout, stderr, false)
+}
+
+func runControlPlaneServeWithTeamProgress(ctx context.Context, stdout, stderr io.Writer, autoTeamProgress bool) int {
 	location, err := repository.Discover(".")
 	if err != nil {
 		fmt.Fprintln(stderr, "control-plane serve 失败：无法验证仓库。")
@@ -91,6 +99,13 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "control-plane serve 失败：compositionStage=%s。\n", sealedRepositoryOpenStage(err))
 		writeControlPlaneRequestFailure(stderr, err)
 		return ExitFailure
+	}
+	if autoTeamProgress {
+		if err := applicationAdapter.session.HaltColdInitialTeamVerifications(ctx); err != nil {
+			_ = applicationAdapter.Close()
+			fmt.Fprintln(stderr, "control-plane serve 失败：team verification cold-start barrier 未完成。")
+			return ExitFailure
+		}
 	}
 	endpointAuthority, err := applicationAdapter.session.OpenFixedEndpointAuthority(ctx)
 	if err != nil {
@@ -148,6 +163,25 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 			return err
 		}, func(err error) { writeControlPlaneRequestFailure(stderr, err) })
 	}()
+	if autoTeamProgress {
+		// Separate bounded collection/verification loops prevent one long
+		// verifier from starving the other author's collection or deadlines.
+		for _, phase := range []domain.State{domain.StateRunning, domain.StateVerifying} {
+			requests.Add(1)
+			go func() {
+				defer requests.Done()
+				ticker := time.NewTicker(time.Second)
+				defer ticker.Stop()
+				timeout := 30 * time.Second
+				if phase == domain.StateVerifying {
+					timeout = 10 * time.Minute
+				}
+				driveResidentReconciliationWithTimeout(deadlineCtx, ticker.C, timeout, func(step context.Context) error {
+					return applicationAdapter.advanceInitialTeamProgress(step, router, phase)
+				}, func(err error) { writeControlPlaneRequestFailure(stderr, err) })
+			}()
+		}
+	}
 	stop := make(chan struct{})
 	go func() {
 		select {

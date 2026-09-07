@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	piadapter "github.com/chiga0/marshal-harness/internal/adapter/pi"
@@ -70,7 +71,9 @@ type sealedRepositoryApplication struct {
 	deadlineCursor string
 	// A local circuit breaker for unknown dispatch/stop-record outcomes only.
 	// Durable team halts remain the authority across process restarts.
-	teamDispatchStopped bool
+	teamProgressStopped atomic.Bool
+	teamCollectCursor   string
+	teamVerifyCursor    string
 }
 
 var _ application.PublicApplicationPort = (*sealedRepositoryApplication)(nil)
