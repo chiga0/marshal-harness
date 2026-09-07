@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 验证纠偏：`5ca49bc` 的 CI 34080540487 前置团队回归通过，但 macOS/Linux quality 均在新 CLI 跨链测试中发现手写 environment-binding 版本错误；该测试此前未包含在前置步骤。现改用正式类型/版本常量及逐节点 Task/Policy Schema 诊断，并前移整个 CLI 包的 race 回归，同步 CI 精确内容契约。实机未派发，不把前置绿灯冒充完整链路通过；此第二次夹具来源返工计入成本。B1/B2 IN_PROGRESS、B3 PLANNED，仍须新 head CI→真实双节点→独立验收与集成交付。
+
 2026-09-07 验证更新：提示/准入修复 `283b19b` 的 CI 34080167668 被前置团队回归拦截，原因是旧 store/session 夹具使用不符合既有 Schema 的字符串 context。已统一修正数组形状及对应反例，不修改生产门禁；没有派发该候选实机。B1/B2/B3 状态不变，下一动作仍是新 head 动态验证。
 
 2026-09-07 最新：`b8dbf3c` 精确 CI 34078286247 五项通过；团队实机 [34079333520](https://github.com/chiga0/marshal-harness/actions/runs/34079333520) 完成批准、两个 Run 创建及一个节点启动，但第二节点在 launch 文本检查失败后耐久停派，最终客户端查询超时，整次失败。26 条 RB1 记录逐条摘要与顺序检查通过，含 2 个 reservation/open、1 个 process-started、1 个 team-plan-halted；没有团队 ACCEPTED/集成。已修候选中的 typed Task context 丢失、完整 Pi 提示传递，并将实际 launch builder 全节点预检移到批准前；HTTP 路由使用完整 URL，保留原路径检查。后继动态 CI/实机尚待完成，失败后的查询超时仍未证明关闭。B1/B2 IN_PROGRESS、B3 PLANNED；无新增 main merge/stable 或效率优势证明。

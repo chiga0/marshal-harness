@@ -16,6 +16,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/goal"
 	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
 // Exercise the actual reference renderer -> Core preview -> production launch
@@ -31,8 +32,15 @@ func TestTeamReferenceRendererProductionLaunchPreflight(t *testing.T) {
 	}
 	dir := t.TempDir()
 	doctor, output := filepath.Join(dir, "doctor.json"), filepath.Join(dir, "request.json")
-	fixture := `{"policyEnvironmentBinding":{"schemaVersion":"marshal.local-dogfood-environment.v1","selfProfile":"darwin-local-dogfood","activationDigest":"sha256:` + strings.Repeat("a", 64) + `","identitySubjectDigest":"sha256:` + strings.Repeat("b", 64) + `","assurance":"ordinary-user","execution":"workspace-write","production":false,"publication":"none"}}`
-	if err := os.WriteFile(doctor, []byte(fixture), 0600); err != nil {
+	fixture, err := json.Marshal(map[string]any{"policyEnvironmentBinding": planning.LocalDogfoodEnvironmentBinding{
+		SchemaVersion: planning.LocalDogfoodEnvironmentBindingSchema, SelfProfile: selfidentity.LocalProfile,
+		ActivationDigest: "sha256:" + strings.Repeat("a", 64), IdentitySubjectDigest: "sha256:" + strings.Repeat("b", 64),
+		Assurance: "ordinary-user", Execution: "workspace-write", Production: false, Publication: "none",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(doctor, fixture, 0600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -54,6 +62,18 @@ func TestTeamReferenceRendererProductionLaunchPreflight(t *testing.T) {
 	validator, err := contract.NewValidator()
 	if err != nil {
 		t.Fatal(err)
+	}
+	var inputs goal.TeamInputs
+	if err := json.Unmarshal(request.Inputs, &inputs); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range inputs.Nodes {
+		if err := validator.Validate(domain.KindTask, node.Task); err != nil {
+			t.Fatalf("%s rendered Task schema: %v", node.NodeID, err)
+		}
+		if err := validator.Validate(domain.KindPolicySnapshot, node.Policy); err != nil {
+			t.Fatalf("%s rendered Policy schema: %v", node.NodeID, err)
+		}
 	}
 	preview, err := planning.PreviewTeamInputs(request.Inputs, validator)
 	if err != nil {
