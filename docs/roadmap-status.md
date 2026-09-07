@@ -6,8 +6,8 @@
 
 本节是当前实施依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。
 
-- 主线最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；B2 候选在 `feat/b2-durable-materialization`，代码 `cef27236c0b97b44f7bd2c19fc1dad398ada6c09` 已推送。候选分支同步不等于 main 合并；没有本切片的 localMergeSha/remote merge/stable。
-- 该代码的精确 [CI 34092330921](https://github.com/chiga0/marshal-harness/actions/runs/34092330921) 五项全绿；随后单次三节点 [PoC 34094155668](https://github.com/chiga0/marshal-harness/actions/runs/34094155668) 使用真实 Pi 0.84.4 / openai/qwen3.8-max，在 Collect 结果解析阶段失败。两条 Run journal 已记录启动，尚无独立 Decision、业务 ACCEPTED、第三节点或 GoalOutcome；不借 CI 宣称 PoC 完成。当前聚合修复为 [ADR 0084](adr/0084-pi-typed-terminal-result-framing.md) 的 typed framing 与精确诊断，原始终态文本未归档，不伪造模型输出归因。
+- 主线最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；B2 候选在 `feat/b2-durable-materialization`，已验证代码 `798ea395abd97744cfc69d125ee997933dad06f9` 已推送。候选分支同步不等于 main 合并；没有本切片的 localMergeSha/remote merge/stable。
+- 798ea39 的精确 [CI 34095940005](https://github.com/chiga0/marshal-harness/actions/runs/34095940005) 五项全绿；先前 34094155668 的结果计数阻断由 [ADR 0084](adr/0084-pi-typed-terminal-result-framing.md) 候选修正。后继 max 实机 34097645547、一次显式 flash 替代 34098369837 均未完成团队；后者 service 通过真实 Collect/Verify 的 33 项检查并形成 ReviewPacket，client 在模型终态失败。没有本轮独立 Decision/ACCEPTED、第三节点或 GoalOutcome。停止模型轮换，后继聚合终态分类与任务上下文/输出收敛，不删失败分母。演示范围和实际证据见 [PoC 交付页](poc-agent-team-delivery.md)。
 - 最终目标不改为“完成更多协议/PR”：交付 fixed server 的完整业务任务与受限团队，并用至少三个代表任务族的重复配对实验，与相同冻结契约、oracle、模型、工具及资源的强 Lead＋SubAgents 比较。源代码返工、失败 CI、失败 Attempt、人工等待全部计入；目前没有效率优势证据。
 
 | Milestone | 当前状态 | 已有证据 / 实现 | 尚待退出条件 |

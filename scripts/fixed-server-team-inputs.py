@@ -80,7 +80,10 @@ def build(args):
         task["metadata"]["title"] = "订单团队：" + node
         task["admission"] = {"status": "executable"}
         task["work"] = {"objective": OBJECTIVES[node]+"最终回复必须是一个 WorkerResult JSON 对象。",
-                        "constraints": ["只修改已批准 scope；不提交、推送、创建 Git 引用；不访问外部网络；不启动子 Agent。"],
+                        "constraints": ["只修改已批准 scope；不提交、推送、创建 Git 引用；不访问外部网络；不启动子 Agent。",
+                                        "满足必要的仓库规范后，直接依据本任务已完整提供的共享契约处理批准文件；不探索全仓架构、路线或无关实现。",
+                                        "当前工具面没有 shell。不要反复寻找命令执行替代路径，也不要逐项模拟验收脚本；独立 verifier 会实际运行原验收，不由 Worker 证明通过。未执行的命令如实记为 not-run。",
+                                        "完成必要代码检查后立即交付；WorkerResult 的 summary 建议不超过500字，不重复接口全文、测试矩阵或逐步推理。"],
                         "context": [CONTRACT], "nonGoals": ["不部署、不发布、不扩展框架和第三方依赖。"]}
         task["scope"].update(allowPaths=paths, maxChangedFiles=len(paths), maxDiffBytes=60000)
         argv = ["/usr/bin/python3", "-I", "-B", "-c", command, str(oracle), oracle_sha]

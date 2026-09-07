@@ -79,6 +79,19 @@ class InputTests(unittest.TestCase):
         third = renderer.build(self.args)
         self.assertNotEqual(second["inputs"]["nodes"][0]["policy"]["runId"], third["inputs"]["nodes"][0]["policy"]["runId"])
 
+    def test_work_contract_bounds_exploration_not_independent_acceptance(self):
+        for node in renderer.build(self.args)["inputs"]["nodes"]:
+            task = node["task"]
+            constraints = "\n".join(task["work"]["constraints"])
+            self.assertIn("当前工具面没有 shell", constraints)
+            self.assertIn("不由 Worker 证明通过", constraints)
+            self.assertIn("not-run", constraints)
+            self.assertIn("不探索全仓架构", constraints)
+            self.assertIn(renderer.CONTRACT, task["work"]["context"])
+            self.assertEqual(task["acceptance"]["commands"][0]["id"], "quote-team-"+node["nodeId"])
+            self.assertTrue(task["acceptance"]["commands"][0]["required"])
+            self.assertFalse(task["acceptance"]["allowNoChange"])
+
     def test_invalid_ids_deadlines_and_environment(self):
         for field, value in (("goal_id", "../bad"), ("proposal_id", "x"), ("deadline", "2030-01-01T00:00:00+08:00"), ("deadline", "2030-01-01T00:00:00")):
             args = copy.copy(self.args)

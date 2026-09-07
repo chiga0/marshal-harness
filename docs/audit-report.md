@@ -1,5 +1,9 @@
 # 设计审计报告
 
+2026-09-07 一次替代验证 34098369837 仍未完成团队：相同 798ea39，Pi/qwen3.8-flash；service 已 Collect/Verify pass、33 项验收、ReviewPacket，client 却在 `pi-result-provider-terminal` 退出。服务端 109 行 patch 和原 WorkerResult 已保留；报告 outputTokens=25456，并明确称没有 shell、通过静态逐项模拟 oracle 解释结果。不能把 Verify pass 写成独立 Decision/ACCEPTED；不在已结束 runner 上补签。停止模型轮换，后继一次聚合：保留原 transcript 状态机与 providerFailed 判定，仅在闭合时保留已观察的 length/error/aborted 闭集分类；失败仍拒绝，即使携带合法 WorkerResult。任务提示前移当前 no-shell 工具限制，聚焦批准文件、禁止无关全仓探索和模拟整套验收，建议简短 summary；原独立 oracle、预算、scope 与全部门禁不变。终态码只是观察，不证明上游 HTTP 根因，也不自动授权重试；旧失败分母保留。
+
+2026-09-07 PoC 后继 34097645547：798ea39 的 CI 34095940005 五项全绿（Linux 质量 10m32s，macOS 19m28s），同宿主实机仍在独立评审前失败，闭集诊断为 `pi-result-provider-terminal`。RB1 记录两个真实 resume，service Collect 为 2283223 stdout bytes；不是“未配置”“零执行”，也不能据此认定模型仅仅超时。原始终态未归档且诊断合并了 length/error/aborted，形成可观测性缺口；不对未知具体原因造结论。为 PoC 采取一次显式模型替代：34098369837 保持相同代码/任务验收，将已配置的 qwen3.8-max 换为 qwen3.8-flash；所有失败 Attempt 保留，不能合并成同模型证据或称为零 rework。若替代仍失败，停止模型轮换并补齐终态诊断，不循环尝试 Provider 矩阵。
+
 2026-09-07 三节点 PoC 34094155668 未完成：精确候选 cef2723 的 CI 34092330921 五项成功后单次派发；两个 Run journal 均已有 start-outcome，不能按落后的 READY/AttemptsUsed=0 快照计为零执行。Collect 最终返回非 JSON，server 的闭集诊断为 `pi-result-final-content-shape`；未到独立评审、第三节点或 GoalOutcome。原始终态文本不在归档中，具体模型输出未知。源码可复现的缺陷是“多个完整对象”错误未分类，落入 content-shape；ADR 0075 的计数还把业务示例当作第二份结果。按候选 ADR 0084 一次修正 typed framing、重复字段/损坏容器拒绝和精确诊断，并补完整 parser/生产解析反例；没有为旧 Run 补签或自动重试。候选修复未获实机证明，不关闭 B2，不宣称生产可用。
 
 2026-09-07 B2 最终结果接线：按 ADR 0083 在原 RB1 新增一次 completed outcome，验证器在同 current-owner/三个 Run lease 回调中复用原 Decision/Outcome producer 校验；最终结果绑定全部原创建、候选/patch、独立评审与集成派生 base。resident 仅补终态 append，不补派或重跑；`team-reconcile` 在原认证与固定客户端 held ledger readback 后返回完成投影。查询不写，absence 不解释为重新执行，旧 NO_CHANGE 不冒充完成。原预算 digest 仍代表 reservation，实际只声明三个 Attempt 的计量覆盖，未宣称 token/compute 已结算或获得效率收益。store/session/HTTP/客户端回归已编写，本地编译与静态检查不等于实机通过；缺少生产 session 的完整三 ACCEPTED 正向实机、故障注入、局部 replan 仍明确开放。

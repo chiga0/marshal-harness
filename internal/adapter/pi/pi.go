@@ -1025,20 +1025,21 @@ func readDeclaredResult(path string, limit int64, validator *contract.Validator)
 }
 
 type captureResult struct {
-	raw               []byte
-	sessionID         string
-	eventCount        int
-	toolCalls         int
-	inputTokens       int
-	outputTokens      int
-	cachedInputTokens int
-	cost              float64
-	denials           []denials.RawDenial
-	toolNames         []string
-	limitExceeded     bool
-	providerFailed    bool
-	failurePhase      string // closed diagnostic location, never provider text
-	err               error
+	raw                []byte
+	sessionID          string
+	eventCount         int
+	toolCalls          int
+	inputTokens        int
+	outputTokens       int
+	cachedInputTokens  int
+	cost               float64
+	denials            []denials.RawDenial
+	toolNames          []string
+	limitExceeded      bool
+	providerFailed     bool
+	providerStopReason string // closed terminal observation, not errorMessage or retry authority
+	failurePhase       string // closed diagnostic location, never provider text
+	err                error
 }
 
 // piEvent covers only the fields Marshal validates. Unknown fields are
@@ -1423,6 +1424,16 @@ func captureTranscript(ctx context.Context, reader io.Reader, worktree string, l
 	retryMaxAttempts := 0
 	pendingProviderFailure := false
 	pendingStopReason := ""
+	observeTerminal := func(failed bool) {
+		result.providerFailed = failed
+		result.providerStopReason = ""
+		if failed {
+			switch pendingStopReason {
+			case "error", "length", "aborted":
+				result.providerStopReason = pendingStopReason
+			}
+		}
+	}
 	compactionReason := ""
 	overflowRecoverySeen := false
 	summarizationRetryAttempt := 0
@@ -1858,7 +1869,7 @@ func captureTranscript(ctx context.Context, reader io.Reader, worktree string, l
 		case statePostAgentEnd:
 			switch event.Type {
 			case "agent_settled":
-				result.providerFailed = pendingProviderFailure
+				observeTerminal(pendingProviderFailure)
 				state = stateTerminalSettled
 			case "compaction_start":
 				acceptCompactionStart(&event)
@@ -1902,7 +1913,7 @@ func captureTranscript(ctx context.Context, reader io.Reader, worktree string, l
 				unauthorized()
 				return
 			}
-			result.providerFailed = true
+			observeTerminal(true)
 			state = stateTerminalSettled
 		case stateTerminalSettled:
 			unauthorized()
@@ -1952,7 +1963,7 @@ func captureTranscript(ctx context.Context, reader io.Reader, worktree string, l
 					phase = "closure"
 					fail(eofClosureError(state))
 				case state == statePostAgentEnd || state == stateTerminalProviderFailure:
-					result.providerFailed = pendingProviderFailure
+					observeTerminal(pendingProviderFailure)
 				}
 			}
 			return result

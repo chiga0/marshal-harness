@@ -64,6 +64,10 @@ func ParseProductionWorkerResult(ctx context.Context, input ProductionResultInpu
 	}
 	if capture.providerFailed {
 		stage = "provider-terminal"
+		switch capture.providerStopReason {
+		case "error", "length", "aborted":
+			stage += "-" + capture.providerStopReason
+		}
 		return domain.Record{}, errors.New("pi: provider reported a failed terminal invocation")
 	}
 	if capture.sessionID == "" {
