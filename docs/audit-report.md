@@ -1,5 +1,7 @@
 # 设计审计报告
 
+2026-09-07 B2 交付契约前检：参考 integration Task 允许 `no_change`，但 deliverables 只有 code；既有 DecisionImporter 要求 validated diagnostic，故“两个上游本来就可正确组合”反而没有模板承诺的成功出口。这是任务设计错误，不是模型需要重试。新 proposal 把最终代码摘要、入口与示例清单作为明确交付物，保持代码可不变、正常非空交付/独立 Decision；oracle 另行实际验证 HTTP 并核对清单，拒绝漂移、伪造通过、额外/重复字段和不合规输入。不修改旧批准、不放松 no_change 门禁、不增加任务数或 Attempt。输入与 oracle 共 25 项本地回归通过，Go Core preview 的真实 renderer 回归继续由 hosted CI 覆盖；不宣称完成团队交付、生产可用或相对效率收益。
+
 2026-09-07 集成 CI 与相邻收口：`047b170` 的 34087532524 已五项全绿；`10a5edf` 的 34088862794 在两平台目标回归中拒绝合法集成创建，根因是 `json.Marshal(TeamIntegrationBase)` 的字段顺序不是 JCS，而防御性克隆直接交给要求 canonical bytes 的 `decodeTeamRecord`。在克隆前规范化，保留严格 reader；这是作者生产接线返工，不是 Worker 失败，不应以所有负例通过掩盖正例失败。没有为该候选启动付费 Worker，修复动态结果仍待新 head CI。
 
 同批继续业务关键路径：原团队驱动在两个正式 ACCEPTED 后观察 resident 的第三节点，经原 Collect/Verify 形成独立归档；ADR 0082 载体在同一宿主和总等待预算中传输第三份 Decision，不重新启动两个实现、不生成 accept、不刷新预算。12 项团队驱动、44 项既有驱动、17 项载体测试本地通过；仅为客户端/传输组件证据。NO_CHANGE 不伪装 ACCEPTED，团队仍缺耐久 GoalOutcome、局部 replan/reuse 与完整实机证明，B2 不升级。

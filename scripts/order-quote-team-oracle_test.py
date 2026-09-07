@@ -4,7 +4,9 @@
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
+import hashlib
 import json
+import os
 from pathlib import Path
 import socketserver
 import subprocess
@@ -94,6 +96,84 @@ def client(url, items):
     if status != 200 or not oracle.valid_quote(value):
         raise ValueError("invalid-order")
     return value
+
+
+class DeliveryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.api, self.client, self.delivery = (self.root/name for name in ("quote_api.py", "quote_client.py", "quote_delivery.json"))
+        self.api.write_bytes(b"# already accepted API\n")
+        self.client.write_bytes(b"# already accepted client\n")
+        self.manifest = {"version": "order-quote-delivery/v1", "apiSha256": hashlib.sha256(self.api.read_bytes()).hexdigest(),
+                         "clientSha256": hashlib.sha256(self.client.read_bytes()).hexdigest(),
+                         "apiEntryPoint": "quote_api.create_server", "clientEntryPoint": "quote_client.quote_order",
+                         "sampleItems": [{"unit_price_cents": 1200, "quantity": 2}],
+                         "sampleQuote": {"subtotal_cents": 2400, "shipping_cents": 500, "total_cents": 2900}}
+        self.delivery.write_text(json.dumps(self.manifest))
+        # Every negative starts from a valid independently rendered input.
+        oracle.check_delivery(self.delivery, self.api, self.client)
+
+    def test_valid_delivery_still_executes_actual_client_service_roundtrips(self):
+        original = (self.api.read_bytes(), self.client.read_bytes())
+        servers = []
+        def candidate(path, _):
+            if path == str(self.api):
+                def create_server(host, port):
+                    server, calls = make_server()
+                    servers.append(calls)
+                    return server
+                return types.SimpleNamespace(create_server=create_server)
+            return types.SimpleNamespace(quote_order=client)
+        with patch.object(oracle, "load_candidate", side_effect=candidate):
+            self.assertEqual(oracle.main(["--api", str(self.api), "--client", str(self.client), "--delivery", str(self.delivery)]), 0)
+        self.assertEqual(len(servers), 1)
+        self.assertEqual(len(servers[0]), 23)
+        self.assertEqual((self.api.read_bytes(), self.client.read_bytes()), original)
+
+    def test_each_manifest_field_is_verified(self):
+        for field in self.manifest:
+            with self.subTest(field=field):
+                bad = dict(self.manifest)
+                bad[field] = "wrong"
+                self.delivery.write_text(json.dumps(bad))
+                with self.assertRaises(ValueError):
+                    oracle.check_delivery(self.delivery, self.api, self.client)
+        self.delivery.write_text(json.dumps(self.manifest))
+        self.api.write_bytes(b"# changed accepted bytes\n")
+        with self.assertRaises(ValueError):
+            oracle.check_delivery(self.delivery, self.api, self.client)
+
+    def test_duplicate_extra_numeric_type_and_oversize_rejected(self):
+        original = json.dumps(self.manifest)
+        for bad in [original[:-1]+', "version":"order-quote-delivery/v1"}',
+                    original[:-1]+', "passed":true}', original.replace("2400", "2400.0"), " "*16385+original]:
+            self.delivery.write_text(bad)
+            with self.subTest(value=bad[:30]), self.assertRaises(ValueError):
+                oracle.check_delivery(self.delivery, self.api, self.client)
+
+    def test_missing_symlink_fifo_and_component_only_rejected_before_execution(self):
+        link = self.root/"link.json"
+        link.symlink_to(self.delivery)
+        fifo = self.root/"fifo.json"
+        os.mkfifo(fifo)
+        for path in (link, fifo, self.root/"missing.json"):
+            with patch.object(oracle, "run_component") as run:
+                self.assertEqual(oracle.main(["--api", str(self.api), "--client", str(self.client), "--delivery", str(path)]), 1)
+                run.assert_not_called()
+        with self.assertRaises(ValueError):
+            oracle.check_delivery(self.delivery, self.api, None)
+
+    def test_manifest_is_not_a_pass_receipt_and_drift_after_execution_rejected(self):
+        argv = ["--api", str(self.api), "--client", str(self.client), "--delivery", str(self.delivery)]
+        with patch.object(oracle, "run_component", side_effect=ValueError("bad-client")):
+            self.assertEqual(oracle.main(argv), 1)
+        def drifts(*_):
+            self.client.write_bytes(b"# drift\n")
+            return 33
+        with patch.object(oracle, "run_component", side_effect=drifts):
+            self.assertEqual(oracle.main(argv), 1)
 
 
 class TeamOracleTests(unittest.TestCase):

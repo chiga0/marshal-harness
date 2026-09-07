@@ -5,6 +5,8 @@
 
 ## 实现事实与要解决的缺口
 
+2026-09-07 参考业务模板修正（只作用于新的 proposal/批准）：集成除两个代码文件外，交付 `quote_delivery.json`，包含最终文件摘要、公开入口与可复现请求/响应示例。已有代码正确时只增加这份有用的交付清单，不要求制造代码 diff。旧模板的 `allowNoChange=true` 没有对应诊断交付物，无法满足既有 `no_change` 门禁；新模板不再承诺该路径，使用正常非空交付 Candidate 和独立 `accept`。不改变 Core 的空变更/Decision 语义、不将清单宣称为证据：固定 oracle 先检查清单、执行原实际 HTTP 集成验收、再检查摘要；清单与通过声明不能替代独立验证。新增 scope 与 oracle 摘要在新 proposal 中整体确认，不改写已批准输入、旧 Run 或旧证据。旧比较样本不与新交付要求混算；后续 Lead＋SubAgents 对照须使用同一新增交付契约。
+
 2026-09-07 后继候选已编写集成接线：resident 在两个实现 Run ACCEPTED 后选择原 integrate 节点，current-owner/双 lease 读取精确成果，固定 composition 组合 Git base、lossless 派生 Task，经原 Prepare→同 RB1 创建冻结→恢复物化→首次 plan gate→同 StartRun 继续。创建/Start 重查上游，原义务/Policy/预算不变。该代码仍待完整动态与实机证明；自动 Collect/Verify、第三节点同宿主独立 Decision、GoalOutcome 及局部 replan/reuse 仍开放，不能把接线代码算成 B2 完成。
 
 2026-09-07 候选当前接线：批准→耐久输入/创建→首次 Start gate→resident tick 的两个 implement 调度已编写，失败沿同 RB1 停派；调度与 halt 的组合动态验证及真实并行尚未完成。Collect/独立验收/集成/Goal Outcome/暂停与 replan 仍待接通。以下实现段同时保留阶段演进，不应把较早的“尚无接线”或当前存在的代码当成正式启用、INTEGRATED 或完成证明。

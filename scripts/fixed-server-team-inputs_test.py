@@ -52,7 +52,22 @@ class InputTests(unittest.TestCase):
             self.assertEqual(task["budgets"]["maxAttempts"], 1)
             self.assertEqual(task["budgets"]["maxReworkRounds"], 0)
             self.assertFalse(policy["effective"]["allowWorkerSubagents"])
-            self.assertEqual(task["acceptance"]["allowNoChange"], node["role"]=="integrate")
+            self.assertFalse(task["acceptance"]["allowNoChange"])
+
+    def test_integration_delivers_bound_handoff_without_forcing_code_edits(self):
+        inputs = renderer.build(self.args)["inputs"]
+        for node in inputs["nodes"]:
+            task = node["task"]
+            argv = task["acceptance"]["commands"][0]["argv"]
+            if node["role"] == "integrate":
+                self.assertEqual(argv[-2:], ["--delivery", "quote_delivery.json"])
+                self.assertIn("不要制造代码修改", task["work"]["objective"])
+                self.assertEqual(task["scope"]["maxChangedFiles"], 3)
+                self.assertEqual(task["deliverables"][-1], {"id": "quote-2", "kind": "diagnostic", "required": True,
+                                                          "pathGlob": "quote_delivery.json", "minimumCount": 1})
+            else:
+                self.assertNotIn("--delivery", argv)
+                self.assertNotIn("quote_delivery.json", task["scope"]["allowPaths"])
 
     def test_identity_change_and_input_digest_change(self):
         first = renderer.build(self.args)

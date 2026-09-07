@@ -2,14 +2,56 @@
 """订单报价团队的 HTTP 集成 oracle；不提供执行隔离或发布授权。"""
 
 import copy
+import hashlib
 import http.client
 import importlib.util
 import json
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 import socketserver
+import stat
 import threading
 from urllib.parse import urlsplit
+
+
+def delivery_bytes(path, limit):
+    # Same-UID validation, not a hostile-code sandbox. Descriptor/type checks
+    # keep missing/symlink/FIFO inputs from turning a cheap preflight into a wait.
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError("delivery-regular-file-required")
+        data = source.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("delivery-size-exceeded")
+    return data
+
+
+def check_delivery(path, api_path, client_path):
+    if not api_path or not client_path:
+        raise ValueError("delivery-requires-both-components")
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("delivery-duplicate-key")
+            result[key] = value
+        return result
+
+    actual = json.loads(delivery_bytes(path, 16384), object_pairs_hook=unique)
+    expected = {
+        "version": "order-quote-delivery/v1",
+        "apiSha256": hashlib.sha256(delivery_bytes(api_path, 60000)).hexdigest(),
+        "clientSha256": hashlib.sha256(delivery_bytes(client_path, 60000)).hexdigest(),
+        "apiEntryPoint": "quote_api.create_server", "clientEntryPoint": "quote_client.quote_order",
+        "sampleItems": [{"unit_price_cents": 1200, "quantity": 2}],
+        "sampleQuote": {"subtotal_cents": 2400, "shipping_cents": 500, "total_cents": 2900},
+    }
+    # JSON comparison preserves numeric types (2400.0 must not equal 2400).
+    if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
+        raise ValueError("delivery-binding-conflict")
 
 
 def valid_quote(value):
@@ -237,9 +279,16 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api")
     parser.add_argument("--client")
+    parser.add_argument("--delivery")
     args = parser.parse_args(argv)
     try:
+        if args.delivery:
+            check_delivery(args.delivery, args.api, args.client)
         count = run_component(args.api, args.client)
+        if args.delivery:
+            # The manifest never stands in for actual HTTP verification.
+            check_delivery(args.delivery, args.api, args.client)
+            count += 1
     except BaseException:
         # Candidate exit(0) must not masquerade as an oracle verdict; never
         # echo candidate-controlled exception text or paths.

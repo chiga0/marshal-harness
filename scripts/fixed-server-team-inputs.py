@@ -22,7 +22,7 @@ t2 = load_t2()
 canonical = t2.canonical_bytes
 digest = lambda value: "sha256:" + hashlib.sha256(canonical(value)).hexdigest()
 VERSION = "bounded-team-inputs/v1"
-PATHS = {"service": ["quote_api.py"], "client": ["quote_client.py"], "integration": ["quote_api.py", "quote_client.py"]}
+PATHS = {"service": ["quote_api.py"], "client": ["quote_client.py"], "integration": ["quote_api.py", "quote_client.py", "quote_delivery.json"]}
 CONTRACT = (
     "订单报价共享契约：POST http://127.0.0.1:PORT/quote（PORT 为实际绑定端口），Content-Type application/json，body 恰含 items。"
     "items 是非空 list，每项恰含 unit_price_cents 和 quantity；单价非负 int，数量正 int，bool/float 非法。"
@@ -34,7 +34,7 @@ CONTRACT = (
 OBJECTIVES = {
     "service": "实现 quote_api.py，导出 create_server(host, port)，只接受 host=127.0.0.1，支持 port=0。返回已绑定但未启动 serve_forever 的标准库 HTTPServer，由调用者启动和关闭。导入模块不得启动服务。实现共享 HTTP/报价契约。",
     "client": "实现 quote_client.py，导出 quote_order(base_url, items)。base_url 只接受 http://127.0.0.1:PORT（无用户信息、路径、query、fragment）；空 userinfo 也必须在联网前拒绝。发送一次 POST http://127.0.0.1:PORT/quote（使用 base_url 的实际端口），消费服务的200报价响应。200 JSON 必须恰含共享契约的三个报价字段，值须为 int 而非 bool/float；其他结构属于协议失败。只校验响应结构，不重算价格；禁止本地重算、伪造响应或跟随重定向。422或连接/协议失败抛 ValueError，不修改输入；单次网络超时最多3秒。导入模块无副作用。",
-    "integration": "验证并在必要时修复已接纳的 quote_api.py 与 quote_client.py：由客户端实际向同一个服务发起 HTTP 调用，通过共享契约和独立集成 oracle。保留接口与预算，不扩展功能。无需修改时允许 no-change，但仍须验收。",
+    "integration": "验证并在必要时修复已接纳的 quote_api.py 与 quote_client.py：由客户端实际向同一个服务发起 HTTP 调用，通过共享契约和独立集成 oracle。保留接口与预算，不扩展功能。代码正确时不要制造代码修改；仍须交付 quote_delivery.json，恰含 version=order-quote-delivery/v1、apiSha256 和 clientSha256（对应最终两个文件原始 bytes 的小写 SHA-256 hex，无前缀）、apiEntryPoint=quote_api.create_server、clientEntryPoint=quote_client.quote_order、sampleItems=[{\"unit_price_cents\":1200,\"quantity\":2}]、sampleQuote={\"subtotal_cents\":2400,\"shipping_cents\":500,\"total_cents\":2900}。此清单用于交付接口与示例，不是测试通过声明或权威证据；独立 verifier 会重算摘要并实际执行 HTTP 验收。",
 }
 
 
@@ -86,9 +86,10 @@ def build(args):
         argv = ["/usr/bin/python3", "-I", "-B", "-c", command, str(oracle), oracle_sha]
         if node != "client": argv += ["--api", "quote_api.py"]
         if node != "service": argv += ["--client", "quote_client.py"]
-        task["acceptance"] = {"allowNoChange": node == "integration", "commands": [{"id": "quote-team-"+node, "argv": argv,
+        if node == "integration": argv += ["--delivery", "quote_delivery.json"]
+        task["acceptance"] = {"allowNoChange": False, "commands": [{"id": "quote-team-"+node, "argv": argv,
                               "cwd": ".", "timeoutSeconds": 30, "maxLogBytes": 4000, "required": True, "baselinePolicy": "none"}]}
-        task["deliverables"] = [{"id": "quote-"+str(index), "kind": "code", "required": True, "pathGlob": path, "minimumCount": 1} for index,path in enumerate(paths)]
+        task["deliverables"] = [{"id": "quote-"+str(index), "kind": "diagnostic" if path == "quote_delivery.json" else "code", "required": True, "pathGlob": path, "minimumCount": 1} for index,path in enumerate(paths)]
         nodes.append({"nodeId": node, "role": "integrate" if node == "integration" else "implement", "task": task, "policy": policy})
     limits = {"maxNodes": 3, "maxDepth": 2, "maxFanOut": 2, "maxConcurrentNodes": 2, "maxPlanRevisions": 1,
               "maxTotalRuns": 3, "maxTotalAttempts": 3, "maxWallTimeSeconds": 1800, "maxComputeUnits": 1, "maxTokens": 1000000, "maxArtifactBytes": 3*8388608}
