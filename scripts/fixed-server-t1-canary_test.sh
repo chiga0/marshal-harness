@@ -81,7 +81,7 @@ grep -F 'order-quote-team' "$WORKFLOW" >/dev/null || fail 'missing team candidat
 grep -F 'scripts/fixed-server-team-drive.py --evidence-root' "$DRIVER" >/dev/null || fail 'missing team client'
 printf '%s\n' "$diagnostics" | grep -F '/team/*.json' >/dev/null || fail 'missing team response evidence'
 # Team mode branches before legacy task plan/approve. Its observer delegates
-# Collect/Verify only; neither helper contains a node Start or approval loop.
+# progress observation only; neither helper starts, collects or verifies.
 /usr/bin/python3 -I -B - "$DRIVER" "$ROOT/scripts/fixed-server-team-drive.py" <<'PY'
 import pathlib, sys
 shell, driver = (pathlib.Path(p).read_text() for p in sys.argv[1:])
@@ -90,7 +90,9 @@ legacy = shell.index('task_id="FIXED-SERVER-T1-')
 assert team < legacy and '\nelse\n' in shell[team:legacy]
 assert driver.count('["team-approve",') == 1
 assert '["start",' not in driver and 'start_ready(' not in driver
-assert 't2.drive(' in driver and 'processOverlapProven' in driver
+assert 'observe_review(' in driver and 't2.drive(' not in driver and 'processOverlapProven' in driver
+assert '["collect",' not in driver and '["verify",' not in driver
+assert 'server_options+=(--auto-team-progress)' in shell
 PY
 printf '%s\n' "$diagnostics" | grep -F '/verification-report.json' >/dev/null || fail 'missing cross-run report evidence'
 for phase in t2 t2-recovery; do

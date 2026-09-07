@@ -272,7 +272,11 @@ fi
 "$PYTHON_BIN" -I -B scripts/fixed-server-t1-evidence.py observe-binary \
   --binary "$MARSHAL_BIN" --version-json "$EVIDENCE_ROOT/binary-version.json" \
   --out "$EVIDENCE_ROOT/binary-server1.json"
-"$MARSHAL_BIN" control-plane serve >"$EVIDENCE_ROOT/server1-ready.json" \
+server_options=(serve)
+if [ "$SCENARIO" = order-quote-team ]; then
+  server_options+=(--auto-team-progress)
+fi
+"$MARSHAL_BIN" control-plane "${server_options[@]}" >"$EVIDENCE_ROOT/server1-ready.json" \
   2>"$EVIDENCE_ROOT/server1.stderr" &
 server1_pid=$!
 wait_ready "$server1_pid" "$EVIDENCE_ROOT/server1-ready.json"

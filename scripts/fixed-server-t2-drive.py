@@ -111,6 +111,9 @@ def capture_review_inputs(root, run_id, packet, archive):
                 member = tarfile.TarInfo(path)
                 member.size, member.mode = len(raw), 0o600
                 bundle.addfile(member, io.BytesIO(raw))
+        # Return the already captured bytes, never reopen a mutable report.
+        # This remains diagnostic material, not independent digest evidence.
+        return payloads["verification-report.json"]
     except (OSError, ValueError, TypeError) as exc:
         raise DriveError("review-input-capture-unavailable") from exc
 

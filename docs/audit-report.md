@@ -2,6 +2,10 @@
 
 ## 2026-09-07：自动团队推进候选与远端验证边界
 
+后续 canary 修正客户端验真方式：`order-quote-team` 显式启动 `--auto-team-progress`，客户端只观察原 Attempt 的单调状态、获取 ReviewPacket 和传递独立 Decision；禁止客户端 Start/Collect/Verify，诊断记录三者调用为零。原主动驱动的其他场景不变。归档报告 status 仅标记诊断来源，不代替 Core canonical digest/current-ledger 重查或独立审查，也不证明进程重叠。19 项团队客户端、44 项原客户端与 canary 脚本检查通过；这是测试准备，不是实机团队成功。完整 HTTP Task、独立集成及下载消费仍开放。
+
+该客户端独立首审发现 1 项 P1：只读 Inspect 等待 verifier 的 Run lease，却被新增 30 秒子进程上限提前终止。取消这一额外截断，保留 CLI/服务端原操作期限与场景总预算；补 40 秒模拟锁等待、90 秒剩余预算及不重试测试。学习点是读操作同样可能等待执行锁，客户端超时不能脱离服务端锁/phase 契约。
+
 `feat/team-resident-progress` 基于 `00d3749` 复用现有 Collect/Verify/Run lane/current-ledger 路径，避免要求客户端逐节点推动。语义 Decision、任务级 HTTP 与下载消费仍待完成，不将 REVIEW_PENDING 计作团队交付。
 
 独立 reviewer 首审发现三项 P1：新 flag 在更早的 CLI gate 被拒、Verify 硬崩溃后无开始事实而会自动重跑、旧 dispatch circuit 不覆盖新自动推进。集中修正真实 CLI 准入测试、冷启动既存 VERIFYING 团队持久 halt/忙 lease 拒启动、共享 atomic circuit；同一 reviewer 限定复核未见新增 P0/P1。冷启动屏障有意保守，可能同时暂停未真正开始验证的旧 Run，不冒充自动恢复。新增当前账本/冷重开/共享锁测试；新候选仅本地编译与静态检查通过，动态验证转 macOS CI，不挪用旧结果。

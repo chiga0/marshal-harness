@@ -21,6 +21,8 @@
 
 ## 平台证据不能混用
 
+2026-09-07 候选 `3f91d42549082b5c644929174912d1caee0a1637`：远端固定 SHA 源码包与本地独立下载 SHA-256 同为 `9196e3bdd2830a3dc28882bee95c72720ed6394403a137c990fe1a029b2c1b46`；`go mod verify`、`TestTeam(Halt|ProgressEntry)` 的 resultingress/CLI 定向 race，以及四个所改包的 vet/staticcheck 通过。Darwin 专属自动推进/锁/冷恢复未被这些 Linux 结果覆盖，继续由 exact-head macOS CI 验证。该机器仍未部署产品服务或真实 Worker。
+
 Linux 编译通过不代表 Darwin 代码被编译；`[no tests to run]` 不能记为该模块测试通过。Darwin 专属 runtime/进程身份/恢复测试由已有 macOS CI 承接。未在本机重跑的新代码不能沿用旧测试结果。
 
 SSH 验证执行机与产品 SandboxProvider 无直接等价关系。产品在 Linux 启动真实 Agent、结果接纳、取消、恢复与部署仍须独立完成对应支持矩阵；本机常驻服务的企业信任/签名也不因远端测试可用而自动解决。
