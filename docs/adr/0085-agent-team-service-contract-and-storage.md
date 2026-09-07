@@ -29,6 +29,14 @@ ADR 0052 的正式签名、公证、Linux 与 stable gate 不删除；从关键�
 
 ## 2. 唯一服务与依赖反转
 
+### B1 原生终态结果合同（显式候选，不改旧 Run）
+
+内部 WorkItem 的 `worker.resultContract` 冻结于 TaskSpec 摘要：省略或 `worker-result-json/v1` 保持原模型声明协议；`native-terminal/v1` 才选择原生终态。未知值在启动前拒绝，未实现该合同的执行路径同样拒绝；不允许旧解析失败后自动回退。组合根从同一冻结字段选择 prompt 与结果解析器，Core 不识别 Provider 品牌。当前仅固定 Pi composition 实现候选，不代表所有 Adapter 已支持。
+
+原生模式下模型只交付业务文件和真实报告，不填写 Marshal 身份、时间、控制状态或证据摘要。Adapter 必须先验证完整原生 transcript 的 session、worktree、事件闭合、重试/工具顺序和 Provider 正常终态，并要求持有的 Supervisor 收集记录确认进程 terminal、exit code 为 0、无 signal、无 transcript 截断；未知退出信息不等于成功。Task/Run/Attempt、执行身份与时间来自冻结输入和受管观察。报告是原生末条 assistant 文本，原样保留（最多 12000 字符，超限拒绝，不静默截断），其中的 JSON/控制字段不获得权威；不可将“受阻/未完成”的报告改写成成功摘要。
+
+此合同生成的 `WorkerResult.status=completed` 仅表示本次调用正常结束、候选可进入独立 Verify，不表示业务完成。`declaredRisks` 明示此边界；未提供结构化文件/命令声明时用空声明集合，不能解释成“没有改动/测试已通过”。用量只写已观察到的数据，未知省略。原 snapshot、DRC、current-ledger recheck、停止竞争、独立 Verification/ReviewDecision 与最终集成验收不变。原 JSON 合同的 completed 语义和字节不变；旧 Run 不迁移或补签。候选测试绿不关闭 B1，必须以真实团队交付和独立业务消费证明。
+
 ### B1 首条实现：resident 自动收集与验证（候选）
 
 沿 ADR 0083 已批准计划和原 Run 生命周期增加内部自动推进，不新增 HTTP 权限、Worker、预算或第二账本：从 current owner 下的原计划/创建/Run 事实选择 RUNNING→Collect 或 VERIFYING→Verify，按 Run 轮转，跳过忙 lease 与已 halt 计划；每步重读精确 Run/Attempt/head，陈旧选择仅跳过。与原 HTTP 共用每 Run 调度 lane；Collect 只占短 writer lane，Verify 释放全局 writer，仍持原 Run/worktree lease，独立 deadline loop 不受阻。每个 tick 最多推进一个节点，不递归完成全队或自动签 Decision。

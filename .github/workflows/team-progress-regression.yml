@@ -38,8 +38,8 @@ jobs:
         run: |
           go test -race -p 2 -count=1 -timeout=120s -json \
             -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$GITHUB_SHA" \
-            -run '^(TestProductionResult.*|TestTeamProgress.*|TestRepositoryTeamProgress.*|TestBackgroundTeamRunLanesAndVerificationYield|TestBackgroundRunReleasePreservesPublicWaiter|TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor)$' \
-            ./internal/adapter/pi ./internal/cli ./internal/productionruntime ./internal/fixedcontrolplane ./internal/resultingress \
+            -run '^(TestProductionResult.*|TestParseProductionWorkerResult.*|TestExtractFinalWorkerResult.*|TestPiProduction.*|TestTaskSpecResultContract.*|TestEmbeddedSchemasAreValidDraft202012Documents|TestRunRejectsNativeResultContractBeforeLegacyAdapter|TestTeamProgress.*|TestRepositoryTeamProgress.*|TestBackgroundTeamRunLanesAndVerificationYield|TestBackgroundRunReleasePreservesPublicWaiter|TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor)$' \
+            ./internal/adapter/pi ./internal/contract ./internal/cli ./internal/execution ./internal/productionruntime ./internal/fixedcontrolplane ./internal/resultingress \
             | tee team-progress-results.jsonl
       - name: Reject empty or skipped regression coverage
         run: |
@@ -47,6 +47,14 @@ jobs:
           import json
           from pathlib import Path
           expected = {
+              "TestProductionResultNativeTerminalPreservesReportAndObservedAuthority",
+              "TestProductionResultNativeTerminalRejectsUnsafeCompletion",
+              "TestProductionResultNativeLaunchIsExplicitAndLegacyStable",
+              "TestPiProductionNativeCompositionRequiresObservedExit",
+              "TestPiProductionLaunchBuilderFreezesResultContract",
+              "TestTaskSpecResultContractIsOptionalAndClosed",
+              "TestEmbeddedSchemasAreValidDraft202012Documents",
+              "TestRunRejectsNativeResultContractBeforeLegacyAdapter",
               "TestProductionResultFinalObjectFailureLocationIsClosed",
               "TestProductionResultFailureClassificationDoesNotChangeAdmission",
               "TestTeamProgressCollectVerifyAndStaleSelections",

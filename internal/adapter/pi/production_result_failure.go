@@ -27,7 +27,7 @@ func ProductionResultFailureCode(err error) string {
 		return ""
 	}
 	switch failure.code {
-	case "input", "transcript", "output-limit", "provider-terminal", "session-missing",
+	case "input", "result-contract", "process-terminal", "transcript", "output-limit", "provider-terminal", "session-missing",
 		"provider-terminal-error", "provider-terminal-length", "provider-terminal-aborted",
 		"transcript-read", "transcript-json", "transcript-session", "transcript-event", "transcript-agent-end",
 		"transcript-tool", "transcript-compaction", "transcript-retry", "transcript-settled", "transcript-framing", "transcript-closure",

@@ -107,7 +107,11 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 		}
 		result, err = l.resultParser(ctx, AttemptResultInput{
-			Transcript: collected.Transcript.Stdout, Worktree: read.WorktreePath,
+			ProcessTerminal:     collected.Transcript.Report.State == "terminal",
+			ProcessExitCode:     collected.Transcript.Report.ExitCode,
+			ProcessSignal:       collected.Transcript.Report.Signal,
+			TranscriptTruncated: collected.Transcript.Report.TranscriptTruncated,
+			Transcript:          collected.Transcript.Stdout, Worktree: read.WorktreePath,
 			TaskID: read.Run.TaskID, RunID: read.Run.RunID, AttemptID: read.Run.AttemptID,
 			Executable: l.closure.Arguments[1], Version: PiProviderVersion, StartedAt: startedAt, CompletedAt: completedAt,
 			MaxOutputBytes: 16 << 20,

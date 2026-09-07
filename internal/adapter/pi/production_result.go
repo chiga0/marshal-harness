@@ -20,17 +20,23 @@ import (
 // The result transport is the held supervisor transcript; no result pathname
 // is trusted or created by the worker.
 type ProductionResultInput struct {
-	Transcript     []byte
-	Worktree       string
-	TaskID         string
-	RunID          string
-	AttemptID      string
-	Executable     string
-	Version        string
-	Model          string
-	StartedAt      time.Time
-	CompletedAt    time.Time
-	MaxOutputBytes int64
+	ResultContract string
+	// These observations come only from the held supervisor Collect report.
+	ProcessTerminal     bool
+	ProcessExitCode     int
+	ProcessSignal       string
+	TranscriptTruncated bool
+	Transcript          []byte
+	Worktree            string
+	TaskID              string
+	RunID               string
+	AttemptID           string
+	Executable          string
+	Version             string
+	Model               string
+	StartedAt           time.Time
+	CompletedAt         time.Time
+	MaxOutputBytes      int64
 }
 
 // ParseProductionWorkerResult validates the complete Pi JSONL protocol and
@@ -48,6 +54,15 @@ func ParseProductionWorkerResult(ctx context.Context, input ProductionResultInpu
 	}()
 	if err := validateProductionResultInput(input); err != nil {
 		return domain.Record{}, err
+	}
+	native := input.ResultContract == domain.ResultContractNativeTerminal
+	if input.ResultContract != "" && input.ResultContract != domain.ResultContractWorkerJSON && !native {
+		stage = "result-contract"
+		return domain.Record{}, ErrProtocol
+	}
+	if native && (!input.ProcessTerminal || input.ProcessExitCode != 0 || input.ProcessSignal != "" || input.TranscriptTruncated) {
+		stage = "process-terminal"
+		return domain.Record{}, ErrProtocol
 	}
 	stage = "transcript"
 	capture := decodeTranscript(ctx, input.Transcript, input.Worktree, input.MaxOutputBytes)
@@ -76,7 +91,24 @@ func ParseProductionWorkerResult(ctx context.Context, input ProductionResultInpu
 	}
 
 	stage = "final-message"
-	declaredBytes, err := extractFinalWorkerResult(input.Transcript)
+	var declaredBytes []byte
+	if native {
+		var report []byte
+		report, err = extractFinalAssistantText(input.Transcript)
+		if err == nil {
+			declaredBytes, err = json.Marshal(declaredResult{
+				APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindWorkerResult,
+				TaskID: input.TaskID, RunID: input.RunID, AttemptID: input.AttemptID,
+				Adapter: declaredAdapter{ID: adapterID, Executable: input.Executable, Version: input.Version, Model: input.Model},
+				Status:  "completed", Summary: string(report),
+				DeclaredChangedFiles: []string{}, DeclaredArtifacts: []json.RawMessage{}, DeclaredCommands: []json.RawMessage{},
+				DeclaredRisks: []string{"native-terminal/v1: invocation ended normally; business completion and report claims require independent verification; empty declaration arrays are not proof of no changes or passing tests"},
+				StartedAt:     input.StartedAt.UTC(), CompletedAt: input.CompletedAt.UTC(),
+			})
+		}
+	} else {
+		declaredBytes, err = extractFinalWorkerResult(input.Transcript)
+	}
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -179,7 +211,15 @@ type productionContentItem struct {
 	Text string `json:"text"`
 }
 
-func extractFinalWorkerResult(transcript []byte) (result []byte, err error) {
+func extractFinalWorkerResult(transcript []byte) ([]byte, error) {
+	text, err := extractFinalAssistantText(transcript)
+	if err != nil {
+		return nil, err
+	}
+	return extractSingleWorkerResultObject(string(text))
+}
+
+func extractFinalAssistantText(transcript []byte) (result []byte, err error) {
 	stage := "final-event-decode"
 	defer func() {
 		var classified *productionResultFailure
@@ -256,7 +296,7 @@ func extractFinalWorkerResult(transcript []byte) (result []byte, err error) {
 		stage = "final-content-text"
 		return nil, fmt.Errorf("%w: final production assistant must contain exactly one non-empty text item", ErrProtocol)
 	}
-	return extractSingleWorkerResultObject(text)
+	return []byte(text), nil
 }
 
 // extractSingleWorkerResultObject implements ADR 0084 typed framing. Complete

@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-08：从模型控制 JSON 改为显式原生结果候选
+
+针对 `34145704791` 的真实 Collect 拒绝，本轮不再仅改提示词/诊断后重复付费 canary。按 ADR 0085 的 Adapter 责任边界，新增冻结的 `worker.resultContract=native-terminal/v1`：同一 TaskSpec 字段贯穿 Pi launch、真实 Supervisor terminal/exit/signal/truncation、严格 transcript、结果构造与原独立 Verify。模型只负责业务文件及真实报告，不能提供身份/时间/控制证据；报告中的受阻、失败和未完成内容原样保留。旧 JSON 默认语义不变，未知协议和不支持新协议的 legacy executor 在启动前拒绝，不能自动 fallback。
+
+本次候选同时更新订单团队输入，保留原共享业务契约、独立 oracle、一次尝试/零 rework 和成果要求；没有降格验收或扩大工具权限。新增协议兼容、伪造字段、真实退出失败、缺失终态、截断、Provider 失败、报告超限和组合根传递反例。动态 Go 验证交给远端，不在受管 Mac 上执行临时编译程序。此处记录实现范围，不声称 B1、生产启用、远端合并或正式发布完成；须待独立审查、精确候选 CI 与真实交付通过。
+
 ## 2026-09-08：公平调度候选的实机结果与 Pi 结果拒绝
 
 `495ab02fcae086984407fb92f96fbc65c390ef2f` 完整 CI `34144298657` 全绿，Darwin 定向 `34144087380` 的 11 项检查通过；真实团队 `34145704791` 仍失败。诊断 artifact `10027742173` 中首个业务错误为 `pi-result-final-object-invalid`，当前账本记录 service 的 `team-plan-halted(stage=collect)`、两条 `process-terminal`，另一路 Outcome 为 `BLOCKED/attempt-deadline-exceeded`；driver 最终报 `fixed-cli-response-timeout`。本轮已有 Collect 进入并拒绝结果的证据，与上一轮仅 RUNNING 不同；未提交 Decision、未集成、未重试，不计 B1 通过。
