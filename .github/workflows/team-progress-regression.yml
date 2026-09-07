@@ -49,6 +49,9 @@ jobs:
           expected = {
               "TestTeamProgressCollectVerifyAndStaleSelections",
               "TestTeamProgressFailureAndPositiveLiveness",
+              "TestTeamProgressShortActionsServeEveryPhaseDespiteBufferedTicks",
+              "TestTeamProgressLongActionWaitsForAdmissionThenYieldsAndDrains",
+              "TestTeamProgressLongActionCancelsUnadmittedWork",
               "TestRepositoryTeamProgressUsesApprovedCreationAndColdHalt",
               "TestTeamProgressRoundRobinDoesNotStarveFinishedSibling",
               "TestRepositoryTeamProgressColdVerificationBarrierAndBusySibling",
@@ -62,5 +65,5 @@ jobs:
           passed = {event.get("Test") for event in events if event.get("Action") == "pass"}
           if not expected <= passed:
               raise SystemExit("missing passing regression cases: " + ", ".join(sorted(expected - passed)))
-          print("8 required Darwin regression cases passed; diagnostic only")
+          print(f"{len(expected)} required Darwin regression cases passed; diagnostic only")
           PY

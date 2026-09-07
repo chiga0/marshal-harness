@@ -143,45 +143,36 @@ func runControlPlaneServeWithTeamProgress(ctx context.Context, stdout, stderr io
 	var requests sync.WaitGroup
 	deadlineCtx, cancelDeadlines := context.WithCancel(ctx)
 	defer cancelDeadlines()
-	requests.Add(1)
-	go func() {
-		defer requests.Done()
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		driveResidentReconciliation(deadlineCtx, ticker.C, func(step context.Context) error {
+	// One short-action scheduler prevents same-period TryLock loops from
+	// repeatedly losing to the same expensive reconciliation. Each action
+	// retains its existing authority checks and nonblocking public-writer lane.
+	shortActions := []func(context.Context) error{
+		func(step context.Context) error {
 			_, err := router.TryBackgroundMutation(step, applicationAdapter.advanceBusinessDeadlines)
 			return err
-		}, func(err error) { writeControlPlaneRequestFailure(stderr, err) })
-	}()
+		},
+		func(step context.Context) error {
+			_, err := router.TryBackgroundMutation(step, applicationAdapter.advanceInitialTeams)
+			return err
+		},
+	}
+	if autoTeamProgress {
+		shortActions = append(shortActions, func(step context.Context) error {
+			return applicationAdapter.advanceInitialTeamProgress(step, router, domain.StateRunning)
+		})
+		shortActions = append(shortActions, newResidentLongAction(deadlineCtx, &requests, 10*time.Minute,
+			func(step context.Context, admitted func()) error {
+				return applicationAdapter.advanceInitialTeamProgressAdmitted(step, router, domain.StateVerifying, admitted)
+			}, func(err error) { writeControlPlaneRequestFailure(stderr, err) }))
+	}
 	requests.Add(1)
 	go func() {
 		defer requests.Done()
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
-		driveResidentReconciliation(deadlineCtx, ticker.C, func(step context.Context) error {
-			_, err := router.TryBackgroundMutation(step, applicationAdapter.advanceInitialTeams)
-			return err
-		}, func(err error) { writeControlPlaneRequestFailure(stderr, err) })
+		driveResidentShortActions(deadlineCtx, ticker.C, shortActions,
+			func(err error) { writeControlPlaneRequestFailure(stderr, err) })
 	}()
-	if autoTeamProgress {
-		// Separate bounded collection/verification loops prevent one long
-		// verifier from starving the other author's collection or deadlines.
-		for _, phase := range []domain.State{domain.StateRunning, domain.StateVerifying} {
-			requests.Add(1)
-			go func() {
-				defer requests.Done()
-				ticker := time.NewTicker(time.Second)
-				defer ticker.Stop()
-				timeout := 30 * time.Second
-				if phase == domain.StateVerifying {
-					timeout = 10 * time.Minute
-				}
-				driveResidentReconciliationWithTimeout(deadlineCtx, ticker.C, timeout, func(step context.Context) error {
-					return applicationAdapter.advanceInitialTeamProgress(step, router, phase)
-				}, func(err error) { writeControlPlaneRequestFailure(stderr, err) })
-			}()
-		}
-	}
 	stop := make(chan struct{})
 	go func() {
 		select {

@@ -69,6 +69,10 @@ func teamProgressSuccessor(before, after application.RunProjection) bool {
 }
 
 func (adapter *sealedRepositoryApplication) advanceInitialTeamProgress(ctx context.Context, router *fixedcontrolplane.HTTPRouter, phase domain.State) error {
+	return adapter.advanceInitialTeamProgressAdmitted(ctx, router, phase, nil)
+}
+
+func (adapter *sealedRepositoryApplication) advanceInitialTeamProgressAdmitted(ctx context.Context, router *fixedcontrolplane.HTTPRouter, phase domain.State, admitted func()) error {
 	if ctx == nil || ctx.Err() != nil || router == nil || phase != domain.StateRunning && phase != domain.StateVerifying {
 		return application.NewError("team-progress", application.ReasonInvalidRequest)
 	}
@@ -115,6 +119,12 @@ func (adapter *sealedRepositoryApplication) advanceInitialTeamProgress(ctx conte
 		}
 		if !allowed || step.Err() != nil {
 			return step.Err()
+		}
+		if admitted != nil {
+			// Selection, the original Run lane and current team admission are
+			// complete. Keep the Run lane until the operation returns, but let
+			// the short scheduler serve siblings during long verification.
+			admitted()
 		}
 		if err := advanceTeamRun(step, adapter, selection.Run); err != nil {
 			// An operation error is never retried on a fresh tick/timeout. A

@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-08：真实团队超时与后台调度公平性
+
+精确候选 `cd19a6d20dcce4ef9eb51ea3cf455f6fd89c76de` 的完整 CI `34140891818` 五项全绿，Darwin 定向 `34140755250` 通过；但真实双 Pi canary `34142425497` 在 360 秒观察期限内未到评审，原因 `team-resident-progress-deadline`，未提交 Decision、未自动重试。两条 `process-started` 已入账，49 次 service 查询仍为同一 RUNNING head。原始 `state.json` 的 READY 不能覆盖 fixed Inspect 的 journal 投影。上传包没有 Worker 终态输出；空 stderr、没有 Collect successor 也不能证明 Collect 从未进入，因为正向 still-running 本来不追加结果事实。因此本次唯一根因尚未确定，不归咎模型速度、不直接扩大时间预算。
+
+独立源码诊断确认四个同周期后台 ticker 缺乏调度公平性：deadline/dispatch 持 writer 与 adapter 锁进行较重扫描，其他入口 TryLock 失败静默跳过；耗时大于周期时积压 tick 可使某循环持续获胜。候选修正为四类短入口轮转，Verify 经原 Run lane 与当前团队准入的显式握手后独立有界执行，保持单个验证槽、原精确重查和 halt/circuit。增加积压 tick、准入前不得让行、长验证期间兄弟继续、重复调度不重复验证与未准入取消测试。此处仅修正已证实的饥饿风险，不宣称真实 canary 已恢复或 B1 完成；后续须同候选动态验证及真实完整团队交付。
+
+效率教训：纯 selector cursor 测试不能证明多个生产循环公平；应测试实际 callback 的有限服务机会。运行证据必须能区分无候选、锁忙、正向存活和结果接纳，不能持续以空日志猜测。正式 Task HTTP、集成下载消费等 B1 出口仍开放。
+
 ## 2026-09-07：Darwin 动态验证失败与前移反馈
 
 `3f91d425` 的 CI `34138530708`：Linux 两种架构 conformance、Ubuntu quality 与 secret scan 通过，Darwin quality 失败，不得进入团队实机或标记通过。新增 cold verification/busy sibling 测试未先调用团队批准就物化，触发预期的 authority-conflict；修测试前提，不放宽产品批准。另一失败是 resultingress 全包 race 达到 Go 默认 10 分钟上限，当时栈中单测仅运行 4 秒；ECS 对 `eb480a83` 同名单测独跑 7.014 秒通过，只能排除该 Linux 定向运行的持续卡死，不能替代 Darwin 结论。
