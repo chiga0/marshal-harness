@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 团队终态纵切候选：新增同 RB1 的 completed outcome，current owner 与三 Run lease 内复查原独立接纳/上游/集成 base；resident 自动一次收口、重放不增加 Attempt。已接原 `team-reconcile` 查询、固定客户端独立账本 readback、客户端只读等待，最终 summary 只有看到该事实才置业务 accepted。Outcome 的 budgetDigest 是原 reservation snapshot，实测仅 Attempt 数，token/compute 未测不写零。已添加 store 正常/冷恢复/幂等/拒绝、session 未就绪/越权、HTTP 只读绑定与客户端等待回归；本地编译、vet/staticcheck/架构及脚本回归通过，真实 Go 动态与三节点实机仍待候选 CI/验证，不能把候选实现记为 B2 完成。`55a435e` 的 CI 34089521238 最终四项通过，macOS 超过 20 分钟上限被取消；质量作业改为 30 分钟且保留全部检查。局部 replan/reuse、失败 Goal Outcome、计量与配对收益仍开放。
+
 2026-09-07 当前关键路径修正：在新 Worker 派发前发现参考集成模板的正常成功路径矛盾——允许 `no_change`，却未声明其必需诊断交付物。新 proposal 明确交付绑定最终代码摘要、接口与 HTTP 示例的 `quote_delivery.json`；代码正确时不造无意义修改，固定 oracle 仍执行原真实 HTTP 验收，清单不充当通过证据。本地 5 项输入/20 项 oracle 回归通过（包括真实 loopback、代码不变交付、摘要漂移、重复字段、FIFO 与伪造通过拒绝），没有新增付费 Attempt。当前集成创建/同宿主评审候选 `55a435e` 的完整 CI 仍待终结；GoalOutcome 耐久收口、局部 replan/reuse 和真实第三节点仍未完成，B2 不升级。下一步是把三节点结果耐久聚合并读取，再执行同路径真实验证；不得把本次模板修正或清单当作 GoalOutcome。
 
 2026-09-07 当前增量：`047b170` CI 34087532524 五项已全绿；`10a5edf` CI 34088862794 在两平台前置回归发现集成克隆未先 JCS 规范化，合法输入被拒绝，现已补齐且保留失败成本。继续接通第三节点客户端 Collect/Verify/独立评审载体，共用原等待预算，不重跑整个团队；本地 12+44+17 项客户端/载体测试通过，Go 修复动态结果待后继精确 CI。B1/B2 IN_PROGRESS、B3 PLANNED；没有新真实 integration、GoalOutcome、main merge 或 stable，也没有效率优于基线的证据。

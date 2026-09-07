@@ -1,11 +1,14 @@
 package application
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/goal"
 )
 
 const InitialTeamApprovalProtocol = "initial-team-approval/v1"
@@ -67,4 +70,28 @@ type InitialTeamApprovalProjection struct {
 	RequestDigest   string `json:"requestDigest"`
 	FactDigest      string `json:"factDigest"`
 	ObligationCount int    `json:"obligationCount"`
+}
+
+// Compact read projection of a durable team completion, not permission to
+// publish. The exact fact binds both upstreams as well as this final candidate.
+type InitialTeamOutcomeProjection struct {
+	Outcome            goal.GoalOutcome `json:"outcome"`
+	PlanFactDigest     string           `json:"planFactDigest"`
+	FactDigest         string           `json:"factDigest"`
+	IntegrationRunID   string           `json:"integrationRunId"`
+	CandidateDigest    string           `json:"candidateDigest"`
+	PatchDigest        string           `json:"patchDigest"`
+	IntegrationBaseSHA string           `json:"integrationBaseSha"`
+	AttemptsUsed       int64            `json:"attemptsUsed"`
+	Measurement        string           `json:"measurement"`
+}
+
+func (p InitialTeamOutcomeProjection) Validate() error {
+	_, objectErr := hex.DecodeString(p.IntegrationBaseSHA)
+	if p.Outcome.Validate() != nil || p.Outcome.State != goal.OutcomeStateCompleted || p.Outcome.Reason != "verified-team-delivery" ||
+		!validDigest(p.PlanFactDigest) || !validDigest(p.FactDigest) || !validDigest(p.CandidateDigest) || !validDigest(p.PatchDigest) ||
+		!validID(p.IntegrationRunID) || objectErr != nil || (len(p.IntegrationBaseSHA) != 40 && len(p.IntegrationBaseSHA) != 64) || strings.ToLower(p.IntegrationBaseSHA) != p.IntegrationBaseSHA || p.AttemptsUsed != 3 || p.Measurement != "attempt-counts-only" {
+		return NewError("team-outcome", ReasonAuthorityConflict)
+	}
+	return nil
 }

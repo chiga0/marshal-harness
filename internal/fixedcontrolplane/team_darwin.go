@@ -56,6 +56,20 @@ func (router *HTTPRouter) initialTeam(ctx context.Context, authenticated Request
 			return httpResponse{}, 409, ErrConflict
 		}
 		response.TeamApproval = &projection
+		if request.operation == "reconcile-team-approval" {
+			if outcomes, ok := router.application.(application.InitialTeamOutcomePort); ok {
+				result, exists, err := outcomes.ReadInitialTeamOutcome(ctx, input)
+				if err != nil {
+					return httpResponse{}, applicationHTTPStatus(err), err
+				}
+				if exists {
+					if result.Validate() != nil || result.Outcome.GoalId != projection.GoalID || result.PlanFactDigest != projection.FactDigest {
+						return httpResponse{}, 409, ErrConflict
+					}
+					response.TeamOutcome = &result
+				}
+			}
+		}
 	}
 	return response, 200, nil
 }
@@ -81,25 +95,30 @@ func CallApproveInitialTeam(ctx context.Context, authority *productionruntime.Fi
 }
 
 func CallReconcileInitialTeamApproval(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, requestKey string, request application.ApproveInitialTeamRequest, deadline time.Time) (application.InitialTeamApprovalProjection, bool, error) {
+	approval, _, found, err := CallReadInitialTeamResult(ctx, authority, requestKey, request, deadline)
+	return approval, found, err
+}
+
+func CallReadInitialTeamResult(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, requestKey string, request application.ApproveInitialTeamRequest, deadline time.Time) (application.InitialTeamApprovalProjection, *application.InitialTeamOutcomeProjection, bool, error) {
 	if ctx == nil {
-		return application.InitialTeamApprovalProjection{}, false, ErrInvalid
+		return application.InitialTeamApprovalProjection{}, nil, false, ErrInvalid
 	}
 	if _, _, err := request.Frozen(); err != nil {
-		return application.InitialTeamApprovalProjection{}, false, ErrInvalid
+		return application.InitialTeamApprovalProjection{}, nil, false, ErrInvalid
 	}
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	response, err := call(ctx, authority, "reconcile-team-approval", "/v1/teams/reconcile-approval", requestKey, request, deadline)
 	if err != nil {
-		return application.InitialTeamApprovalProjection{}, false, err
+		return application.InitialTeamApprovalProjection{}, nil, false, err
 	}
-	if validateInitialTeamHTTPResponse(response) != nil || authority.VerifyInitialTeamReadback(ctx, request, response.TeamApproval) != nil {
-		return application.InitialTeamApprovalProjection{}, false, errors.Join(ErrConflict, err)
+	if validateInitialTeamHTTPResponse(response) != nil || authority.VerifyInitialTeamReadback(ctx, request, response.TeamApproval) != nil || authority.VerifyInitialTeamOutcomeReadback(ctx, response.TeamApproval, response.TeamOutcome) != nil {
+		return application.InitialTeamApprovalProjection{}, nil, false, errors.Join(ErrConflict, err)
 	}
 	if response.TeamApproval == nil {
-		return application.InitialTeamApprovalProjection{}, false, nil
+		return application.InitialTeamApprovalProjection{}, nil, false, nil
 	}
-	return *response.TeamApproval, true, nil
+	return *response.TeamApproval, response.TeamOutcome, true, nil
 }
 
 func validateInitialTeamHTTPResponse(response httpResponse) error {
@@ -107,6 +126,9 @@ func validateInitialTeamHTTPResponse(response httpResponse) error {
 		return ErrConflict
 	}
 	if response.TeamApproval != nil && response.TeamApproval.Validate() != nil {
+		return ErrConflict
+	}
+	if response.TeamOutcome != nil && (response.TeamOutcome.Validate() != nil || response.TeamApproval == nil || response.TeamOutcome.Outcome.GoalId != response.TeamApproval.GoalID || response.TeamOutcome.PlanFactDigest != response.TeamApproval.FactDigest) {
 		return ErrConflict
 	}
 	return nil

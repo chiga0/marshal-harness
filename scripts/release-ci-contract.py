@@ -87,7 +87,7 @@ jobs:
   quality:
     name: Quality (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -181,6 +181,7 @@ jobs:
           go test -race -count=1 -v -run '^TestTeam' ./internal/resultingress || regression_failed=1
           if [ "$(go env GOOS)" = darwin ]; then
             go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v -run '^TestRepositoryTeam' ./internal/productionruntime || regression_failed=1
+            go test -race -count=1 -v -run '^(TestAuthenticatedTeam|TestTeam)' ./internal/fixedcontrolplane || regression_failed=1
           fi
           exit "$regression_failed"
 

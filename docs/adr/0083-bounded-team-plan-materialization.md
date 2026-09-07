@@ -103,6 +103,16 @@ resident 启动先从 held RB1 重放当前 repository scope 的既有冻结创�
 
 最终交付绑定集成 candidate、全部上游 candidate 与独立证据/Decision。首个 publication:none 返回可获取的候选与说明，不自动 merge，也不把 Goal 完成等同部署或正式版本发布。
 
+### 团队完成事实（本候选新增，未发布）
+
+在同一 RB1 增加 `bounded-team-outcome/v1 / team-outcome-completed`，只由持 current owner 的 Core producer 生成；客户端不能提交“完成”输入。producer 同时持两个上游和集成 Run lease，重读原 approved plan、三份创建事实、三个原 `review.accept`、完整 Candidate/patch/packet/Decision/Outcome，核对集成创建冻结的上游仍精确相等；集成结果必须基于原派生 commit。只有全部满足才在保持这些锁的同一回调追加一次事实，写前再次检查计划/owner/创建引用。缺失或忙返回未就绪，损坏/漂移拒绝，不启动新 Run、Attempt 或重新验证 Worker。
+
+完成事实包含既有 `GoalOutcome`、原 plan fact、两个上游与集成的完整接纳摘要、集成 base 和实际累计 Attempt 数。`finalizedAt` 使用集成原接纳事件时间，不在重放时刷新；finalPlanDigest 绑定原 accepted revision。`budgetDigest` 绑定原批准的 reservation snapshot，**不是实测 token/compute 结算**；实际 Attempt 数来自三份 Run journal，计量覆盖明确为 `attempt-counts-only`。未证实的 token/compute 不写零、不据此宣称全维度预算或效率优势；资源计量与局部 replan 仍须后继闭环。此事实关闭本计划的业务交付，不产生发布、merge 或 budget refund 权限。
+
+相同已完成结果只读返回，未知/异内容或 halt 后完成拒绝；cold replay 验证原 owner fact、plan、creation 和字段约束。resident 在可继续派发项为空时尝试收口既有计划；查询只读取原耐久事实，不借查询启动/修复 Worker。已完成计划不能再追加 halt，原 Run/候选仍保留，失败终态与局部 replan 的 Goal Outcome 尚须沿后续明确规则接入，不能把本 completed-only 入口当作全部 B2 退出条件。
+
+查询复用已有认证的 `team-reconcile` / `reconcile-team-approval` 路径与原完整请求；只在已接纳原计划存在时，附带可选 `teamOutcome`。不新增命令授权、不让 approve 响应承担完成语义。固定客户端除验证 server peer 外，通过自己的 held read-only RB1 view 核对当前 owner、原批准与完成事实的精确投影，缺失也须独立核对；不接受不相关 operation 的完成字段。CLI 输出的可选 `outcome` 携带最终候选/patch/base、原 GoalOutcome、fact 与实际 Attempt 计量覆盖；团队驱动在原共享 deadline 内只读等待该事实，不调用 finalize/Start/重试。当第三节点只有 `NO_CHANGE` 或没有耐久完成事实时，保留中间结果但不报告团队完成。此扩展只用于本未发布同版本 fixed server/client 候选，旧客户端不能据未知字段获得兼容授权。
+
 ## 5. 有界暂停、局部重规划与失败
 
 初始自动调度前增加同 RB1 的 `bounded-team-halt/v1 / team-plan-halted` 事实：精确引用原计划、出错节点与封闭阶段（`prepare`、`materialize`、`start`、`inspect`），由持 current owner 的 Core 追加。首次调度失败后原计划停止派发；后续 tick、冷重开和手动内部物化均先读该事实，不再次启动相同节点或继续扩散。它只撤销后续派发资格，不宣称 Run 已终止、不释放预算、不替代 Run Outcome，也不杀已有 Worker；现有 deadline/Collect/恢复仍须履行。重复同事实只返回原摘要，不重复追加；不同原因不能覆盖首个失败。恢复派发必须走后续显式 replan/重新确认，不能删除 halt。若 halt 无法耐久提交，controller 必须停止本进程团队派发并报告未决，不能继续循环调用。

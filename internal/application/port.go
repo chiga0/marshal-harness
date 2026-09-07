@@ -2,6 +2,10 @@ package application
 
 import "context"
 
+type InitialTeamOutcomePort interface {
+	ReadInitialTeamOutcome(context.Context, ApproveInitialTeamRequest) (InitialTeamOutcomeProjection, bool, error)
+}
+
 // InitialTeamApplicationPort is an optional capability of the same resident
 // application, not another controller. Missing capability fails closed.
 type InitialTeamApplicationPort interface {

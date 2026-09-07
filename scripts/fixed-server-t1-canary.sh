@@ -290,7 +290,7 @@ if [ "$SCENARIO" = order-quote-team ]; then
   [ "$team_server_status" -eq 0 ] || die 'team server 未正常退出'
   write_process_evidence "$EVIDENCE_ROOT/server1-process.json" "$server1_pid" SIGTERM "$team_server_status"
   server1_pid=""
-  printf '[fixed-server-team] node evidence retained; consult summary for integration and Decisions; GoalOutcome remains open\n'
+  printf '[fixed-server-team] evidence retained; consult summary for durable GoalOutcome; not production/release authority\n'
   exit 0
 fi
 if [ "$VERIFY_PEER" -eq 1 ]; then

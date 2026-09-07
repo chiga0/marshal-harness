@@ -14,6 +14,9 @@ spec = importlib.util.spec_from_file_location("team_drive", Path(__file__).with_
 driver = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(driver)
 RUNS = {node: "run-" + node for node in ("service", "client", "integration")}
+APPROVAL = {"goalId": "goal-quote", "factDigest": "sha256:" + "d" * 64}
+OUTCOME = {"outcome": {"state": "completed", "goalId": "goal-quote"}, "planFactDigest": APPROVAL["factDigest"],
+           "integrationRunId": RUNS["integration"], "attemptsUsed": 3, "measurement": "attempt-counts-only"}
 
 
 def running(run):
@@ -39,7 +42,9 @@ class TeamDriveTest(unittest.TestCase):
             def execute(command, **kwargs):
                 calls.append(command[2])
                 self.assertEqual(command[:2], [str(root / "bin/marshal"), "control-plane"])
-                value = {} if command[2] == "team-approve" else running(command[-1])
+                value = {"found": True, "approval": APPROVAL} if command[2] == "team-approve" else running(command[-1])
+                if command[2] == "team-reconcile":
+                    value = {"found": True, "approval": APPROVAL, "outcome": OUTCOME}
                 return types.SimpleNamespace(returncode=0, stdout=json.dumps(value).encode(), stderr=b"")
             def drive(call, save, run_id, deadline, require_pass=True):
                 self.assertEqual(require_pass, not live)
@@ -71,19 +76,20 @@ class TeamDriveTest(unittest.TestCase):
                     mock.patch.object(driver.t2, "capture_review_inputs", side_effect=capture) as captured, \
                     mock.patch.object(driver, "await_integration") as awaited, \
                     mock.patch.object(driver, "review_team", side_effect=review) as reviewed:
-                self.assertEqual(driver.main(), 1 if rejected or integration_state == "REJECTED" else 0)
-            self.assertEqual(calls, ["team-approve", "inspect", "inspect"])
+                self.assertEqual(driver.main(), 1 if rejected or (live and integration_state != "ACCEPTED") else 0)
+            completed = live and not rejected and integration_state == "ACCEPTED"
+            self.assertEqual(calls, ["team-approve", "inspect", "inspect"] + (["team-reconcile"] if completed else []))
             integrated = live and not rejected
             self.assertEqual(driven, [RUNS["service"], RUNS["client"]] + ([RUNS["integration"]] if integrated else []))
             self.assertEqual(captured.call_count, 2 + int(integrated))
             self.assertEqual(reviewed.call_count, int(live) + int(integrated))
             self.assertEqual(awaited.call_count, int(integrated))
             summary = json.loads((evidence / "team/summary.json").read_bytes())
-            self.assertFalse(summary["accepted"])
+            self.assertEqual(summary["accepted"], completed)
             self.assertEqual(summary["integrationExecuted"], integrated)
-            self.assertEqual(summary["stage"], "integration-reviewed" if integrated else "two-implement-reviewed" if live else "two-implement-review-pending")
+            self.assertEqual(summary["stage"], "team-completed" if completed else "integration-reviewed" if integrated else "two-implement-reviewed" if live else "two-implement-review-pending")
             if integrated:
-                self.assertFalse(summary["goalOutcomeAvailable"])
+                self.assertEqual(summary["goalOutcomeAvailable"], completed)
                 self.assertEqual(summary["reviewedRuns"]["integration"]["state"], integration_state)
             if rejected:
                 self.assertEqual(summary["reviewedRuns"]["service"]["state"], "ACCEPTED")
@@ -103,6 +109,29 @@ class TeamDriveTest(unittest.TestCase):
 
     def test_integration_reject_keeps_all_review_results_without_retry(self):
         self.exercise_main(live=True, integration_state="REJECTED")
+
+    def test_outcome_wait_only_queries_exact_original_approval(self):
+        clock, calls = [0], []
+        def call(args, seconds):
+            calls.append(args)
+            response = {"found": True, "approval": APPROVAL}
+            if clock[0] > 0: response["outcome"] = OUTCOME
+            return 0, response
+        value = driver.await_team_outcome(call, lambda *_: None, "request.json", APPROVAL, RUNS, 3,
+                                          now=lambda: clock[0], pause=lambda seconds: clock.__setitem__(0, clock[0]+seconds))
+        self.assertEqual(value, OUTCOME)
+        self.assertEqual(calls, [["team-reconcile", "--request-file", "request.json"]] * 2)
+
+    def test_outcome_wait_rejects_wrong_subject_claims_and_deadline(self):
+        for field, value in (("planFactDigest", "wrong"), ("integrationRunId", RUNS["client"]), ("attemptsUsed", 3.0),
+                             ("measurement", "all-tokens-measured"), ("outcome", {"state": "completed", "goalId": "other"})):
+            result = {**OUTCOME, field: value}
+            with self.subTest(field=field), self.assertRaises(driver.Error):
+                driver.await_team_outcome(lambda *_: (0, {"found": True, "approval": APPROVAL, "outcome": result}),
+                                          lambda *_: None, "request.json", APPROVAL, RUNS, 1, now=lambda: 0)
+        with self.assertRaisesRegex(driver.Error, "observation-deadline"):
+            driver.await_team_outcome(lambda *_: self.fail("expired wait performed IO"), lambda *_: None,
+                                      "request.json", APPROVAL, RUNS, 0, now=lambda: 0)
 
     def test_integration_observation_never_starts_and_failure_is_not_retried(self):
         clock, calls, saved = [0], [], {}

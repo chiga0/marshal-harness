@@ -79,11 +79,12 @@ func runControlPlaneTeam(ctx context.Context, operation string, args []string, s
 	}
 	defer authority.Close()
 	var projection application.InitialTeamApprovalProjection
+	var outcome *application.InitialTeamOutcomeProjection
 	found := true
 	if operation == "team-approve" {
 		projection, err = fixedcontrolplane.CallApproveInitialTeam(ctx, authority, request)
 	} else {
-		projection, found, err = fixedcontrolplane.CallReconcileInitialTeamApproval(ctx, authority, controlPlaneReadKey("team-reconcile", request.RequestID), request, time.Now().UTC().Add(2*time.Minute))
+		projection, outcome, found, err = fixedcontrolplane.CallReadInitialTeamResult(ctx, authority, controlPlaneReadKey("team-reconcile", request.RequestID), request, time.Now().UTC().Add(2*time.Minute))
 	}
 	if err != nil {
 		writeControlPlaneRequestFailure(stderr, err)
@@ -97,5 +98,6 @@ func runControlPlaneTeam(ctx context.Context, operation string, args []string, s
 	return writeControlPlaneJSON(stdout, stderr, struct {
 		Found    bool                                       `json:"found"`
 		Approval *application.InitialTeamApprovalProjection `json:"approval,omitempty"`
-	}{found, result})
+		Outcome  *application.InitialTeamOutcomeProjection  `json:"outcome,omitempty"`
+	}{found, result, outcome})
 }

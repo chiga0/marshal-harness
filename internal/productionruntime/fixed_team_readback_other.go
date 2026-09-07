@@ -10,3 +10,7 @@ import (
 func (*FixedEndpointAuthority) VerifyInitialTeamReadback(context.Context, application.ApproveInitialTeamRequest, *application.InitialTeamApprovalProjection) error {
 	return ErrFixedDeliveryConflict
 }
+
+func (*FixedEndpointAuthority) VerifyInitialTeamOutcomeReadback(context.Context, *application.InitialTeamApprovalProjection, *application.InitialTeamOutcomeProjection) error {
+	return ErrFixedDeliveryConflict
+}

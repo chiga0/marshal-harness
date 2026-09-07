@@ -1772,6 +1772,7 @@ func newAuthorityProjection() *Ingress {
 		teamPlans:                   make(map[string]TeamPlanState),
 		teamRunCreations:            make(map[string]TeamRunCreationState),
 		teamHalts:                   make(map[string]TeamPlanHalt),
+		teamOutcomes:                make(map[string]TeamDeliveryOutcome),
 		attemptsByReservation:       make(map[string]AttemptAuthorityState),
 		controlOwners:               make(map[string]ControlOwnerState),
 		controlOwnerHistory:         make(map[string]map[uint64]ControlOwnerState),

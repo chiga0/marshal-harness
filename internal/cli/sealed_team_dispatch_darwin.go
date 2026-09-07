@@ -43,7 +43,11 @@ func (adapter *sealedRepositoryApplication) advanceInitialTeams(ctx context.Cont
 		return err
 	}
 	if !found {
-		return nil
+		err := adapter.session.FinalizeReadyInitialTeams(ctx)
+		if err != nil && ctx.Err() == nil {
+			adapter.teamDispatchStopped = true
+		}
+		return err
 	}
 	halt := func(stage string, cause error) error {
 		// A canceled step must still attempt one bounded diagnostic commit.

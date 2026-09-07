@@ -23,6 +23,13 @@ func (view *CurrentOwnerReadView) ReadTeamPlan(scope ControlOwnerScope, goalID s
 	return view.store.ReadTeamPlan(scope, goalID)
 }
 
+func (view *CurrentOwnerReadView) ReadTeamOutcome(scope ControlOwnerScope, goalID string) (TeamDeliveryOutcome, bool, error) {
+	if view == nil || view.store == nil {
+		return TeamDeliveryOutcome{}, false, ErrResultIngressClosed
+	}
+	return view.store.ReadTeamOutcome(scope, goalID)
+}
+
 func (view *CurrentOwnerReadView) Close() error {
 	if view == nil || view.store == nil {
 		return nil

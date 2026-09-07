@@ -64,6 +64,9 @@ func (s *DurableStore) HaltTeamPlan(ctx context.Context, verifier CurrentApprove
 				return ErrControlOwnerNotCurrent
 			}
 			key := teamPlanKey(owner.Scope, halt.GoalID)
+			if _, completed := projection.teamOutcomes[key]; completed {
+				return ErrTeamPlanConflict
+			}
 			plan, found := projection.teamPlans[key]
 			if !found || plan.Approval != approval || validateTeamHalt(plan, halt) != nil {
 				return ErrTeamPlanConflict
@@ -122,6 +125,9 @@ func applyTeamHaltLine(line []byte, in *Ingress, sequence int64) error {
 		return ErrControlOwnerNotCurrent
 	}
 	key := teamPlanKey(fact.Scope, fact.Halt.GoalID)
+	if _, completed := in.teamOutcomes[key]; completed {
+		return ErrTeamPlanConflict
+	}
 	plan, found := in.teamPlans[key]
 	if !found || validateTeamHalt(plan, fact.Halt) != nil {
 		return ErrTeamPlanConflict

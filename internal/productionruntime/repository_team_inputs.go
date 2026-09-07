@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/contract"
@@ -24,6 +25,8 @@ type AcceptedTeamInput struct {
 	CreationFactDigest string
 	Run                application.RunProjection
 	Candidate          review.AcceptedCandidate
+	AttemptsUsed       uint
+	AcceptedAt         time.Time
 }
 
 // ReadAcceptedTeamInputs reads both upstreams from the original owner ledger
@@ -130,45 +133,59 @@ func (session *RepositorySession) withAcceptedTeamInputsUnderOwner(ctx context.C
 			return err
 		}
 		for index, lease := range leases {
-			if err := ctx.Err(); err != nil {
+			value, accepted, err := session.readAcceptedTeamRunUnderLease(ctx, lease, creations[index], inputs.BaseSHA, namespace, validator)
+			if err != nil || !accepted {
 				return err
 			}
-			authority, err := session.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
-			if err != nil {
-				return err
-			}
-			if authority.Run.State != domain.StateAccepted {
-				return nil
-			}
-			state, err := runstore.InspectUnderLease(lease)
-			if err != nil || state.BaseSHA != inputs.BaseSHA || state.RunID != creations[index].RunID {
-				return fail()
-			}
-			var frozen struct {
-				Task json.RawMessage `json:"task"`
-			}
-			if json.Unmarshal(creations[index].Inputs, &frozen) != nil {
-				return fail()
-			}
-			task, err := runstore.ReadFileUnderLease(lease, int64(len(frozen.Task)+1), "task-spec.json")
-			if err != nil || !bytes.Equal(task, frozen.Task) {
-				return fail()
-			}
-			events, truncated, err := runstore.ReadEventsUnderLease(lease)
-			if err != nil || truncated || len(events) == 0 {
-				return fail()
-			}
-			candidate, err := review.ReadAcceptedCandidate(state, events[len(events)-1], namespace, validator,
-				func(limit int64, parts ...string) ([]byte, error) {
-					return runstore.ReadFileUnderLease(lease, limit, parts...)
-				})
-			if err != nil {
-				return fail()
-			}
-			result = append(result, AcceptedTeamInput{NodeID: upstreams[index], CreationFactDigest: creations[index].FactDigest, Run: authority.Run, Candidate: candidate})
+			result = append(result, value)
 		}
 		ready = true
 		return consume(result)
 	}()
 	return ready && resultErr == nil, resultErr
+}
+
+// Shared by integration preparation and final delivery. The caller owns the
+// repository owner lock and this exact Run lease for the full operation.
+func (session *RepositorySession) readAcceptedTeamRunUnderLease(ctx context.Context, lease *runstore.Lease, creation resultingress.TeamRunCreationState, base, namespace string, validator *contract.Validator) (AcceptedTeamInput, bool, error) {
+	fail := func() (AcceptedTeamInput, bool, error) {
+		return AcceptedTeamInput{}, false, application.NewError("read-accepted-team-run", application.ReasonAuthorityConflict)
+	}
+	if err := ctx.Err(); err != nil {
+		return AcceptedTeamInput{}, false, err
+	}
+	authority, err := session.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
+	if err != nil {
+		return AcceptedTeamInput{}, false, err
+	}
+	if authority.Run.State != domain.StateAccepted {
+		return AcceptedTeamInput{}, false, nil
+	}
+	state, err := runstore.InspectUnderLease(lease)
+	if err != nil || state.BaseSHA != base || state.RunID != creation.RunID || state.Sequence != authority.Run.Sequence || state.CurrentAttemptID != authority.Run.AttemptID {
+		return fail()
+	}
+	var frozen struct {
+		Task json.RawMessage `json:"task"`
+	}
+	if json.Unmarshal(creation.Inputs, &frozen) != nil {
+		return fail()
+	}
+	task, err := runstore.ReadFileUnderLease(lease, int64(len(frozen.Task)+1), "task-spec.json")
+	if err != nil || !bytes.Equal(task, frozen.Task) {
+		return fail()
+	}
+	events, truncated, err := runstore.ReadEventsUnderLease(lease)
+	if err != nil || truncated || len(events) == 0 {
+		return fail()
+	}
+	terminal := events[len(events)-1]
+	candidate, err := review.ReadAcceptedCandidate(state, terminal, namespace, validator, func(limit int64, parts ...string) ([]byte, error) {
+		return runstore.ReadFileUnderLease(lease, limit, parts...)
+	})
+	if err != nil {
+		return fail()
+	}
+	return AcceptedTeamInput{NodeID: creation.NodeID, CreationFactDigest: creation.FactDigest, Run: authority.Run,
+		Candidate: candidate, AttemptsUsed: state.AttemptsUsed, AcceptedAt: terminal.Timestamp}, true, nil
 }

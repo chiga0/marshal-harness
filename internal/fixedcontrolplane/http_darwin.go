@@ -90,6 +90,7 @@ type httpResponse struct {
 	Stopped          *application.CancelRunProjection           `json:"stopped,omitempty"`
 	LifecycleReceipt *productionruntime.FixedLifecycleReceipt   `json:"lifecycleReceipt,omitempty"`
 	TeamApproval     *application.InitialTeamApprovalProjection `json:"teamApproval,omitempty"`
+	TeamOutcome      *application.InitialTeamOutcomeProjection  `json:"teamOutcome,omitempty"`
 }
 
 type httpIntent struct {

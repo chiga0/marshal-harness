@@ -53,3 +53,47 @@ func (authority *FixedEndpointAuthority) VerifyInitialTeamReadback(ctx context.C
 	}
 	return nil
 }
+
+func (authority *FixedEndpointAuthority) VerifyInitialTeamOutcomeReadback(ctx context.Context, approval *application.InitialTeamApprovalProjection, expected *application.InitialTeamOutcomeProjection) error {
+	if authority == nil || ctx == nil || ctx.Err() != nil {
+		return ErrFixedDeliveryConflict
+	}
+	if approval == nil {
+		if expected != nil {
+			return ErrFixedDeliveryConflict
+		}
+		return nil
+	}
+	if approval.Validate() != nil || (expected != nil && expected.Validate() != nil) {
+		return ErrFixedDeliveryConflict
+	}
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	if authority.closed || authority.client == nil || authority.client.ingress == nil || authority.control == nil {
+		return ErrFixedDeliveryConflict
+	}
+	client := authority.client
+	current, found, err := client.ingress.OpenOwner(client.scope)
+	if err != nil || !found || current.Acquisition != authority.snapshot.Acquisition || current.FactDigest != authority.snapshot.OwnerFactDigest || validateFixedServerRoot(client.root, len(client.root.nodes)) != nil {
+		return ErrFixedDeliveryConflict
+	}
+	plan, found, err := client.ingress.ReadTeamPlan(client.scope, approval.GoalID)
+	if err != nil || !found || teamApprovalProjection(plan) != *approval {
+		return ErrFixedDeliveryConflict
+	}
+	value, exists, err := client.ingress.ReadTeamOutcome(client.scope, approval.GoalID)
+	if err != nil || exists != (expected != nil) {
+		return ErrFixedDeliveryConflict
+	}
+	if exists {
+		actual, err := projectTeamOutcome(value)
+		if err != nil || actual != *expected || actual.PlanFactDigest != approval.FactDigest {
+			return ErrFixedDeliveryConflict
+		}
+	}
+	after, found, err := client.ingress.OpenOwner(client.scope)
+	if err != nil || !found || after != current || ctx.Err() != nil || validateFixedServerRoot(client.root, len(client.root.nodes)) != nil {
+		return ErrFixedDeliveryConflict
+	}
+	return nil
+}

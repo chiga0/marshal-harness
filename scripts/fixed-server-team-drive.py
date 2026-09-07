@@ -131,6 +131,31 @@ def review_team(call, save, reviews, output, binary_unchanged, seconds, now=time
     return reviewed
 
 
+def await_team_outcome(call, save, request_path, approval, runs, deadline, now=time.time, pause=time.sleep):
+    sequence = 0
+    while now() < deadline:
+        code, response = call(["team-reconcile", "--request-file", str(request_path)], min(30, deadline-now()))
+        sequence += 1
+        save(f"outcome-observation-{sequence}.json", {"exitCode": code, "response": response})
+        if code != 0 or not isinstance(response, dict) or response.get("found") is not True or response.get("approval") != approval:
+            raise Error("team-outcome-authority-unresolved")
+        result = response.get("outcome")
+        if result is not None:
+            if (not isinstance(result, dict) or not isinstance(result.get("outcome"), dict)
+                    or result["outcome"].get("state") != "completed"
+                    or result["outcome"].get("goalId") != approval["goalId"]
+                    or result.get("planFactDigest") != approval["factDigest"]
+                    or result.get("integrationRunId") != runs["integration"]
+                    or type(result.get("attemptsUsed")) is not int or result["attemptsUsed"] != 3
+                    or result.get("measurement") != "attempt-counts-only"):
+                raise Error("team-outcome-subject-conflict")
+            # Fixed client has already authenticated peer and re-read this
+            # exact durable fact. This script is only a diagnostic consumer.
+            return result
+        pause(min(1, max(0, deadline-now())))
+    raise Error("team-outcome-observation-deadline")
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -240,12 +265,16 @@ def main():
                                  lambda: hashlib.sha256(binary.read_bytes()).hexdigest() == binary_digest,
                                  remaining(), nodes=("integration",))
             summary.update(stage="integration-reviewed", integrationExecuted=True, reviewedRuns={**reviewed, **result})
-            # NO_CHANGE is valid for an already-correct combined base, but is
-            # not ACCEPTED and does not manufacture a durable GoalOutcome.
             summary["goalOutcomeAvailable"] = False
-            save("summary.json", summary)
-            if result["integration"]["state"] not in {"ACCEPTED", "NO_CHANGE"}:
+            if result["integration"]["state"] != "ACCEPTED":
+                # Old diagnostic NO_CHANGE is not a completed code delivery.
+                save("summary.json", summary)
                 raise Error("team-integration-review-not-successful")
+            save("integration-summary.json", summary)
+            outcome = await_team_outcome(call, save, request_path, approval["approval"], runs,
+                                         time.time()+min(60, remaining()))
+            summary.update(stage="team-completed", accepted=True, goalOutcomeAvailable=True, goalOutcome=outcome)
+            save("summary.json", summary)
         else:
             save("summary.json", summary)
         return 0

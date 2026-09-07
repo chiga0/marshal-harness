@@ -5,11 +5,14 @@ package fixedcontrolplane
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/goal"
 )
 
 // Transport contract test with explicit application fixture. Actual held
@@ -21,6 +24,16 @@ type teamHTTPApplication struct {
 	found            bool
 	approveErr       error
 	readErr          error
+	outcome          *application.InitialTeamOutcomeProjection
+	outcomeReads     int
+}
+
+func (app *teamHTTPApplication) ReadInitialTeamOutcome(context.Context, application.ApproveInitialTeamRequest) (application.InitialTeamOutcomeProjection, bool, error) {
+	app.outcomeReads++
+	if app.outcome == nil {
+		return application.InitialTeamOutcomeProjection{}, false, nil
+	}
+	return *app.outcome, true, nil
 }
 
 func (app *teamHTTPApplication) ApproveInitialTeam(context.Context, application.ApproveInitialTeamRequest) (application.InitialTeamApprovalProjection, error) {
@@ -101,6 +114,57 @@ func TestAuthenticatedTeamApprovalAndReadOnlyResponseLossQuery(t *testing.T) {
 			}
 			if (mode == "approve" || mode == "query-present") && (response.TeamApproval == nil || *response.TeamApproval != app.projection) {
 				t.Fatal("response lost exact approval")
+			}
+		})
+	}
+}
+
+func TestTeamCompletedOutcomeUsesOriginalReadOnlyRoute(t *testing.T) {
+	for _, mode := range []string{"complete", "wrong-goal", "wrong-plan", "claimed-metering", "approval-only"} {
+		t.Run(mode, func(t *testing.T) {
+			deadline := time.Now().UTC().Add(time.Minute)
+			input := application.ApproveInitialTeamRequest{ProtocolRevision: application.InitialTeamApprovalProtocol, RequestID: "approval-1", Deadline: deadline.Format(time.RFC3339Nano), Inputs: []byte(`{"transportFixture":true}`)}
+			input.InputsDigest = canonical.DigestBytes(input.Inputs)
+			_, digest, err := input.Frozen()
+			if err != nil {
+				t.Fatal(err)
+			}
+			base, delivery := testHTTPApplication()
+			app := &teamHTTPApplication{httpApplicationStub: base, found: true, projection: application.InitialTeamApprovalProjection{GoalID: "fixture-team", PlanRevision: 1, InputsDigest: input.InputsDigest, RequestDigest: digest, FactDigest: digest, ObligationCount: 3}}
+			app.outcome = &application.InitialTeamOutcomeProjection{Outcome: goal.GoalOutcome{AuthorityNamespaceId: authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: "/repository"}, GoalId: "fixture-team", State: goal.OutcomeStateCompleted, Reason: "verified-team-delivery", FinalPlanDigest: digest, BudgetDigest: digest, FinalizedAt: "2026-09-07T06:00:00Z"},
+				PlanFactDigest: digest, FactDigest: digest, IntegrationRunID: "integration-run", CandidateDigest: digest, PatchDigest: digest, IntegrationBaseSHA: strings.Repeat("a", 40), AttemptsUsed: 3, Measurement: "attempt-counts-only"}
+			if err := app.outcome.Validate(); err != nil {
+				t.Fatal("valid projection fixture", err)
+			}
+			operation, path, key := "reconcile-team-approval", "/v1/teams/reconcile-approval", "read-outcome"
+			wantStatus := 200
+			switch mode {
+			case "wrong-goal":
+				app.outcome.Outcome.GoalId = "other-goal"
+				wantStatus = 409
+			case "wrong-plan":
+				app.outcome.PlanFactDigest = canonical.DigestBytes([]byte("wrong"))
+				wantStatus = 409
+			case "claimed-metering":
+				app.outcome.Measurement = "all-tokens-measured"
+				wantStatus = 409
+			case "approval-only":
+				operation, path, key = "approve-initial-team", "/v1/teams/approve", input.RequestID
+			}
+			body := canonicalBody(t, input)
+			router, err := NewHTTPRouter(app, delivery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status, response, _ := callHTTPRouter(t, router, readBinding(key, body, operation, input, deadline), path, key, body)
+			if status != wantStatus {
+				t.Fatalf("status=%d", status)
+			}
+			if mode == "complete" && (response.TeamOutcome == nil || *response.TeamOutcome != *app.outcome || app.approvals != 0 || app.outcomeReads != 1) {
+				t.Fatal("query changed/lost outcome or approved work")
+			}
+			if mode == "approval-only" && (response.TeamOutcome != nil || app.outcomeReads != 0) {
+				t.Fatal("approval unexpectedly read completion")
 			}
 		})
 	}

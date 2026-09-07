@@ -1,5 +1,9 @@
 # 设计审计报告
 
+2026-09-07 B2 最终结果接线：按 ADR 0083 在原 RB1 新增一次 completed outcome，验证器在同 current-owner/三个 Run lease 回调中复用原 Decision/Outcome producer 校验；最终结果绑定全部原创建、候选/patch、独立评审与集成派生 base。resident 仅补终态 append，不补派或重跑；`team-reconcile` 在原认证与固定客户端 held ledger readback 后返回完成投影。查询不写，absence 不解释为重新执行，旧 NO_CHANGE 不冒充完成。原预算 digest 仍代表 reservation，实际只声明三个 Attempt 的计量覆盖，未宣称 token/compute 已结算或获得效率收益。store/session/HTTP/客户端回归已编写，本地编译与静态检查不等于实机通过；缺少生产 session 的完整三 ACCEPTED 正向实机、故障注入、局部 replan 仍明确开放。
+
+同轮 CI 成本：`55a435e` 的 34089521238 四项成功，macOS 注释明确 `The job has exceeded the maximum execution time of 20m0s`；不记绿，也不归咎 Worker。只把质量作业及其精确 CI 内容契约同步调到 30 分钟，不删除断言/平台/race。补入前置的 fixedcontrolplane 团队 HTTP 回归，避免新查询调用链再次漏到最后才发现；完整 CI 仍需候选精确 head 证据。
+
 2026-09-07 B2 交付契约前检：参考 integration Task 允许 `no_change`，但 deliverables 只有 code；既有 DecisionImporter 要求 validated diagnostic，故“两个上游本来就可正确组合”反而没有模板承诺的成功出口。这是任务设计错误，不是模型需要重试。新 proposal 把最终代码摘要、入口与示例清单作为明确交付物，保持代码可不变、正常非空交付/独立 Decision；oracle 另行实际验证 HTTP 并核对清单，拒绝漂移、伪造通过、额外/重复字段和不合规输入。不修改旧批准、不放松 no_change 门禁、不增加任务数或 Attempt。输入与 oracle 共 25 项本地回归通过，Go Core preview 的真实 renderer 回归继续由 hosted CI 覆盖；不宣称完成团队交付、生产可用或相对效率收益。
 
 2026-09-07 集成 CI 与相邻收口：`047b170` 的 34087532524 已五项全绿；`10a5edf` 的 34088862794 在两平台目标回归中拒绝合法集成创建，根因是 `json.Marshal(TeamIntegrationBase)` 的字段顺序不是 JCS，而防御性克隆直接交给要求 canonical bytes 的 `decodeTeamRecord`。在克隆前规范化，保留严格 reader；这是作者生产接线返工，不是 Worker 失败，不应以所有负例通过掩盖正例失败。没有为该候选启动付费 Worker，修复动态结果仍待新 head CI。

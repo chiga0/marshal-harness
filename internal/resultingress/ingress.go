@@ -303,6 +303,7 @@ type Ingress struct {
 	teamPlans             map[string]TeamPlanState
 	teamRunCreations      map[string]TeamRunCreationState
 	teamHalts             map[string]TeamPlanHalt
+	teamOutcomes          map[string]TeamDeliveryOutcome
 	attemptsByReservation map[string]AttemptAuthorityState
 	// controlOwners is the repository/authority-scope owner projection rebuilt
 	// from control-owner-acquired facts in this same physical ledger. It is not
@@ -369,6 +370,7 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		teamPlans:                   make(map[string]TeamPlanState),
 		teamRunCreations:            make(map[string]TeamRunCreationState),
 		teamHalts:                   make(map[string]TeamPlanHalt),
+		teamOutcomes:                make(map[string]TeamDeliveryOutcome),
 		attemptsByReservation:       make(map[string]AttemptAuthorityState),
 		controlOwners:               make(map[string]ControlOwnerState),
 		controlOwnerHistory:         make(map[string]map[uint64]ControlOwnerState),
@@ -400,6 +402,7 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 		teamPlans:                   make(map[string]TeamPlanState),
 		teamRunCreations:            make(map[string]TeamRunCreationState),
 		teamHalts:                   make(map[string]TeamPlanHalt),
+		teamOutcomes:                make(map[string]TeamDeliveryOutcome),
 		attemptsByReservation:       make(map[string]AttemptAuthorityState),
 		controlOwners:               make(map[string]ControlOwnerState),
 		controlOwnerHistory:         make(map[string]map[uint64]ControlOwnerState),
@@ -826,6 +829,7 @@ func (i *Ingress) resetDurableReplayState() {
 	i.teamPlans = make(map[string]TeamPlanState)
 	i.teamRunCreations = make(map[string]TeamRunCreationState)
 	i.teamHalts = make(map[string]TeamPlanHalt)
+	i.teamOutcomes = make(map[string]TeamDeliveryOutcome)
 	i.attemptsByReservation = make(map[string]AttemptAuthorityState)
 	i.controlOwners = make(map[string]ControlOwnerState)
 	i.controlOwnerHistory = make(map[string]map[uint64]ControlOwnerState)

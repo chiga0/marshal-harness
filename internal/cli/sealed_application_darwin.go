@@ -402,6 +402,18 @@ func (adapter *sealedRepositoryApplication) ReconcileInitialTeamApproval(ctx con
 	return adapter.session.ReconcileInitialTeamApproval(ctx, request)
 }
 
+func (adapter *sealedRepositoryApplication) ReadInitialTeamOutcome(ctx context.Context, request application.ApproveInitialTeamRequest) (application.InitialTeamOutcomeProjection, bool, error) {
+	if adapter == nil || ctx == nil {
+		return application.InitialTeamOutcomeProjection{}, false, application.NewError("read-team-outcome", application.ReasonInvalidRequest)
+	}
+	adapter.statusMu.RLock()
+	defer adapter.statusMu.RUnlock()
+	if adapter.closed || adapter.session == nil {
+		return application.InitialTeamOutcomeProjection{}, false, application.NewError("read-team-outcome", application.ReasonOwnerUnavailable)
+	}
+	return adapter.session.ReadInitialTeamOutcome(ctx, request)
+}
+
 var _ application.InitialTeamApplicationPort = (*sealedRepositoryApplication)(nil)
 
 // recoverRepositoryRuns enumerates the descriptor-bound Run set while the
