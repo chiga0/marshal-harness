@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-08：停止收口实机通过，团队失败观测仍有盲点
+
+精确候选 `dd8e8eccdd1f2118db92e928996321272aff1fc7` 完整 CI `34156121695` 五项通过，Darwin 定向 `34155305960` 的 36 项必跑检查通过。其唯一实机 `34157213736` 仍失败，诊断 artifact `10031514061` 保留原始证据；固定二进制 SHA-256 为 `3bd2b444e62b009449b47887660f4db666161cc4d877756bb3307d2235d5378d`。没有 ReviewPacket、独立 Decision、集成或下载成功，B1 不升级。
+
+独立核对账本：service 已有 `result-admitted`，事件到 sequence 4 `VERIFYING`；client 因 `pi-result-provider-terminal-length` 触发 sequence 54 `team-plan-halted(stage=collect)`。client 的 Collect 52/53 唯一成功，Terminate 56/57、Close 62/63、supervisor closed 64、cleanup completed/released 65/66 全部闭合，没有第二次 Collect 或结果接纳。此次实机证明上一停止收口修复生效；`VERIFYING` 不证明 Verify 已启动，团队 halt 后禁止新 Verify 是既有合同，不应自动解除。
+
+诊断中 59 个已保存调用全部成功（一次批准、58 次 Inspect），54 次 service 进度查询最后仍成功。最终超时调用在保存前抛错，缺少预算与耗时证据，不能据此外推 HTTP/锁故障。驱动串行先等 service，也看不到 client 已 `BLOCKED`。本轮仅改诊断消费者：等待期间查询同一批准团队的另一节点，精确绑定终态失败即结束等待；保存超时操作、预算、耗时和输出摘要，不输出原文、不增加 Collect/Verify/恢复权限。Provider length 已复发，仍缺少实际输出预算原因，禁止原样付费重试或盲目增额。该改进不等于业务交付修复或生产完成。
+
 ## 2026-09-08：结果拒绝后的停止收口仍阻断团队交付
 
 候选 `88883d9c04406fb65fe5b695f80a88bb83fbbfb0` 完整 CI `34152276913` 五项通过，Darwin 定向 `34152276380` 的 33 项必跑检查通过；精确门禁后仅派发一次实机 `34153526402`，结果 failure。诊断 artifact `10030318154` 保留原始证据，没有 Decision、集成或下载成功。本轮未到 ReviewPacket，不能据此宣称上一轮身份传递修复已实机验证。
