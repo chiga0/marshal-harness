@@ -106,6 +106,36 @@ func TestProductionResultNativeTerminalRejectsUnsafeCompletion(t *testing.T) {
 	}
 }
 
+func TestProductionResultNativeRequiresPositiveProviderTerminal(t *testing.T) {
+	for _, replacement := range []string{
+		`"unusedStopReason":"stop"`, `"stopReason":null`, `"stopReason":""`,
+		`"stopReason":"unknown"`, `"stopReason":42`, `"stopReason":"toolUse"`,
+	} {
+		t.Run(replacement, func(t *testing.T) {
+			// Use a valid old envelope so compatibility is checked against the
+			// same transcript, not against an unrelated schema rejection.
+			declared, err := json.Marshal(validDeclaredResult("fixture"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := nativeResultFixture(t, string(declared))
+			input.Transcript = []byte(strings.ReplaceAll(string(input.Transcript), `"stopReason":"stop"`, replacement))
+			got, err := ParseProductionWorkerResult(context.Background(), input)
+			typeInvalid := replacement == `"stopReason":42`
+			code := ProductionResultFailureCode(err)
+			if err == nil || len(got.Data) != 0 || code == "" || (!typeInvalid && code != "pi-result-provider-terminal-unconfirmed") {
+				t.Fatalf("unconfirmed native terminal = %s, %v", got.Data, err)
+			}
+			// A non-string reason was already rejected by the shared decoder;
+			// all legacy behavior must remain byte-for-byte parser compatible.
+			input.ResultContract = ""
+			if _, err := ParseProductionWorkerResult(context.Background(), input); (err != nil) != typeInvalid {
+				t.Fatalf("native-only terminal admission changed legacy behavior: %v", err)
+			}
+		})
+	}
+}
+
 func TestProductionResultNativeLaunchIsExplicitAndLegacyStable(t *testing.T) {
 	input := validProductionInput()
 	legacy, err := BuildProductionLaunch(input)

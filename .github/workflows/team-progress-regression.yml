@@ -50,6 +50,7 @@ jobs:
               "TestProductionResultNativeTerminalPreservesReportAndObservedAuthority",
               "TestProductionResultNativeTerminalRejectsUnsafeCompletion",
               "TestProductionResultNativeLaunchIsExplicitAndLegacyStable",
+              "TestProductionResultNativeRequiresPositiveProviderTerminal",
               "TestPiProductionNativeCompositionRequiresObservedExit",
               "TestPiProductionLaunchBuilderFreezesResultContract",
               "TestTaskSpecResultContractIsOptionalAndClosed",

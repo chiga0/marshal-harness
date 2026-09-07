@@ -6,6 +6,8 @@
 
 本次候选同时更新订单团队输入，保留原共享业务契约、独立 oracle、一次尝试/零 rework 和成果要求；没有降格验收或扩大工具权限。新增协议兼容、伪造字段、真实退出失败、缺失终态、截断、Provider 失败、报告超限和组合根传递反例。动态 Go 验证交给远端，不在受管 Mac 上执行临时编译程序。此处记录实现范围，不声称 B1、生产启用、远端合并或正式发布完成；须待独立审查、精确候选 CI 与真实交付通过。
 
+首稿 `f9923eb` 的 ECS Pi/contract race、legacy 拒绝和 CLI 接线测试，以及 Darwin `34148180525` 的 21 项必跑用例通过；独立审查仍发现 1 项 P1：原 native 路径只排除已识别失败，缺失/null/空/未知 `stopReason` 仍会被当成正常结束。实机重跑前聚合修正为只接受实际末条 assistant 的明确 `stop`，补完整反例和旧协议兼容；停止首稿尚未完成的 CI，未启动付费 Worker。此项计入真实代码 rework，不把先前测试绿当无缺陷证明。
+
 ## 2026-09-08：公平调度候选的实机结果与 Pi 结果拒绝
 
 `495ab02fcae086984407fb92f96fbc65c390ef2f` 完整 CI `34144298657` 全绿，Darwin 定向 `34144087380` 的 11 项检查通过；真实团队 `34145704791` 仍失败。诊断 artifact `10027742173` 中首个业务错误为 `pi-result-final-object-invalid`，当前账本记录 service 的 `team-plan-halted(stage=collect)`、两条 `process-terminal`，另一路 Outcome 为 `BLOCKED/attempt-deadline-exceeded`；driver 最终报 `fixed-cli-response-timeout`。本轮已有 Collect 进入并拒绝结果的证据，与上一轮仅 RUNNING 不同；未提交 Decision、未集成、未重试，不计 B1 通过。

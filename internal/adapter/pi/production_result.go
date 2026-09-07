@@ -94,7 +94,7 @@ func ParseProductionWorkerResult(ctx context.Context, input ProductionResultInpu
 	var declaredBytes []byte
 	if native {
 		var report []byte
-		report, err = extractFinalAssistantText(input.Transcript)
+		report, err = extractFinalAssistantText(input.Transcript, true)
 		if err == nil {
 			declaredBytes, err = json.Marshal(declaredResult{
 				APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindWorkerResult,
@@ -202,8 +202,9 @@ type productionAgentEnd struct {
 }
 
 type productionMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	StopReason json.RawMessage `json:"stopReason"`
 }
 
 type productionContentItem struct {
@@ -212,14 +213,14 @@ type productionContentItem struct {
 }
 
 func extractFinalWorkerResult(transcript []byte) ([]byte, error) {
-	text, err := extractFinalAssistantText(transcript)
+	text, err := extractFinalAssistantText(transcript, false)
 	if err != nil {
 		return nil, err
 	}
 	return extractSingleWorkerResultObject(string(text))
 }
 
-func extractFinalAssistantText(transcript []byte) (result []byte, err error) {
+func extractFinalAssistantText(transcript []byte, native bool) (result []byte, err error) {
 	stage := "final-event-decode"
 	defer func() {
 		var classified *productionResultFailure
@@ -263,6 +264,16 @@ func extractFinalAssistantText(transcript []byte) (result []byte, err error) {
 	if message.Role != "assistant" {
 		stage = "final-role"
 		return nil, fmt.Errorf("%w: final production message is not assistant", ErrProtocol)
+	}
+	if native {
+		// Absence of a recognized failure is not positive completion proof.
+		// Require the selected terminal assistant's supported normal reason,
+		// independently of the OS process exit code. Do not change old Runs.
+		var reason string
+		if json.Unmarshal(message.StopReason, &reason) != nil || reason != "stop" {
+			stage = "provider-terminal-unconfirmed"
+			return nil, ErrProtocol
+		}
 	}
 	// Pi user/custom message content may legitimately be a string. Only
 	// the selected terminal assistant is a WorkerResult carrier and must
