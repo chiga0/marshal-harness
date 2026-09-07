@@ -223,6 +223,10 @@ func extractFinalWorkerResult(transcript []byte) (result []byte, err error) {
 	// the selected terminal assistant is a WorkerResult carrier and must
 	// satisfy the assistant content-array contract. Do not decode earlier
 	// user/tool messages using the assistant-only schema.
+	if len(message.Content) == 0 {
+		stage = "final-content-missing"
+		return nil, fmt.Errorf("%w: final production assistant has no content field", ErrProtocol)
+	}
 	stage = "final-content-shape"
 	var content []productionContentItem
 	if err := json.Unmarshal(message.Content, &content); err != nil {

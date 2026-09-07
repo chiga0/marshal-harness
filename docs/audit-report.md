@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-07：同 server 长验证与另一 Run 自动停止组合通过，B2 同步修复依赖
+
+B2 `00c8351c078fc505fa578d8db590dda9a790fc90` 的 CI 34067600918 已五项通过，包含耐久 halt 与 resident 初始调度动态回归。下面的 B1 合并仍是新的候选 head，父提交成功不代替合并验证；尚无真实 B2 团队交付。
+
+`4ace42c476a3d683f7456ac08312ea4a5cc8c944` 的精确 CI 34066636760 五项通过后，仅派发一次真实 Pi 组合验证 [34067556449](https://github.com/chiga0/marshal-harness/actions/runs/34067556449)，作业成功。小型诊断 artifact `9999466068` 的 62 条 RB1 fact 已重新核对 canonical digest；只有一个 owner acquisition、两个 Run 各一 Attempt、零 operational retry/rework。15 次 Inspect 均 exit=0；停止后的 Collect exit=1 是经认证的 `disposition:stopped/reasonCode:run-stopped`，不是传输失败。
+
+peer 的业务 oracle 与长验证均 pass，总 Verify 104.434435 秒，最终 REVIEW_PENDING；另一个 Run 的原始 Attempt deadline 为 23:43:17.165934Z，停止意图延迟 0.180249 秒、BLOCKED 终态延迟 5.532006 秒，均处于长验证区间。已从原 Task/首条创建事件/process-started fact 复算 60 秒 Attempt 与 600 秒 Run deadline，核对 stop intent、terminal barrier、Run event 与 Outcome 引用，不把客户端 summary 中的 `deadlineWitnessVerified:false` 当证明。该样本无重启、无独立 Decision/ACCEPTED，不替代此前冷恢复证据或完整 B3 矩阵。
+
+本次关闭候选的“长 Verify 不阻断其他 Run 自动停止、终态查询及 stopped Collect”组合子条件；不宣称旧 Pi 缺 content 故障已根治，也不删除此前失败分母。B1 尚需最终审查/主线合入与组合确认，B2 尚无团队交付。为避免下次 B2 实机仍携带已知握手等待缺陷，将 B1 `80084bb` 和 `4ace42c` 正常合入 B2 候选；无业务代码冲突，文档保留两侧历史并以当前表为准。该候选合并不是 main merge，父提交 CI 不冒充合并 head 的精确动态证据；不取消在途 `00c8351` 调度 CI，不为单纯文档或每次查询重复派 CI/Pi。
+
 ## 2026-09-07：从批准账本接到 resident 的实际 Start 路径
 
 `aa230da` 的精确 CI 34066292363 已五项成功。本轮将耐久停派与初始调度接入 fixed server：单独 timer、同一 router mutation lane、同一应用写锁，每次选取一个原始 implement，复用原 Materialize、Inspect sequence/head 与实际 StartRun。没有 CLI 子进程协调器、内存批准或另建状态库；同时运行的 Worker 不持全局写锁。
@@ -117,6 +127,28 @@ B1 `80084bb` 的 [CI 34058120709](https://github.com/chiga0/marshal-harness/acti
 ## 2026-09-07：B2 计划到真实 Run 的接缝仍未实现
 
 直接核对 `internal/goal`、`internal/outbox`、`internal/planning` 和 TaskSpec：现有计划组件不耐久落账，节点不绑定完整 Task 输入，planning 尚不是幂等 Goal 物化，Task 依赖也不传递或集成成果。不能据此把 B2 提前列为可用。[ADR 0083 提案](adr/0083-bounded-team-plan-materialization.md) 将后继限制为同一 fixed server/RB1 的批准输入束、原子创建义务、现有 Run 创建恢复和真实集成候选，不引入新 controller/DSL。该文档是 B2 的设计准备，不是实施完成；依赖的 B1 候选仍未合入。
+
+## 2026-09-07：Pi 最终结果载体失败，先补确定性诊断而非重复实机
+
+`80084bb8cf7c02e945a4605da51423c6d25239ee` 的精确 CI [34058120709](https://github.com/chiga0/marshal-harness/actions/runs/34058120709) 五项成功；后续唯一跨 Run 实机 [34059061091](https://github.com/chiga0/marshal-harness/actions/runs/34059061091) 整体失败。peer Collect 报 `pi-result-final-content-shape`，尚无 worker.completed、Verify 或第二个 Run 的并发验收。失败保留在总成本中，不将此前传输修复的 CI 当本次实机成功。
+
+审查实际生产链确认 Collect 将 held transcript 原样送入 Pi 解析器；旧通用错误仍包含最终 assistant 未携带 `content` 的情况。失败归档没有这部分 transcript，故目前不能证实该次失败就是缺字段，也不能声称根因已修复。本机已安装 Pi 0.84.4 的 `toJsonEvent` 对 `agent_end` 原样透传；通过固定 Node 执行该纯函数的人工夹具确认 content 保留，无 Worker、无网络、无真实模型调用。该证据不代表云端失败实例或真实业务通过。
+
+本次仅新增封闭 `pi-result-final-content-missing` 诊断：保持缺字段拒绝，覆盖 `stop`/`length` 和存在/不存在此前合法结果四种完整解析输入，禁止回退到旧 assistant 结果。`length` 仍优先报告原 `provider-terminal`，不让内容诊断覆盖 provider 失败；完整调用链自检已在提交前修正对应夹具预期。此前容器、元素、type/text 类型错误和未知异常仍走原封闭分类；不输出模型正文或自定义字段。未改变持久化契约、权限、重试或接纳行为。本地 compile-only、vet、staticcheck、diff 检查通过；动态回归待精确候选 CI，不冒充实机证据。
+
+效率边界：这是当前业务阻塞的诊断补齐，不是新里程碑；不得据此再次盲目付费重试。下一步需要带可判读且不泄密的失败证据完成同一生产路径验证，同时继续 B2 实际团队启动链路；B1/B2 均未关闭，未证明相对 Lead＋SubAgents 的交付收益。
+
+## 2026-09-07：长 Verify 通过、并行停止已发生，但查询握手仍失败
+
+`b1e838014242c8e5b131f72d56c8a57fd1884d85` 的精确 CI [34056176966](https://github.com/chiga0/marshal-harness/actions/runs/34056176966) 五项成功，随后只派发一次真实 Pi [34056947651](https://github.com/chiga0/marshal-harness/actions/runs/34056947651)，整次失败。小诊断 artifact `9996297294` 已读取，完整 executable artifact 未下载或执行。peer 的 VerificationReport 为 `pass`，起止为 20:08:14.590559Z→20:10:01.019362Z，约 106 秒，随后 ReviewPacket 操作成功；其中部分非适用 gate 为 SKIPPED，不能描述为所有 gate 都实际执行通过。未产生独立 Decision 或 ACCEPTED。
+
+另一 Run 的原 Attempt deadline 为 20:09:27.384502Z，停止意图在 20:09:28.405749Z 出现，`worker.stopped` 在 20:09:34.620746Z 写入，分别延迟约 1.02/7.24 秒，均处于上述 Verify 报告区间。两 Run 各一 Attempt，只有一个 owner acquisition。但第 22 次调用 Inspect exit=1、空 stdout，封闭阶段为 `client-dial`；并发线程因此未完成 stopped Collect。不能用停止事件或 peer Verify 的局部成功代替完整跨 Run 验收，也不能排除失败的两个 Attempt 成本。
+
+代码核对确认一种确定的预算错配：client 从 connect 后统一计 5 秒；server 在 challenge 签发前和 proof 之后都要获取 current owner 锁。超过 5 秒的合法停止事务因而可能让认证排队被误算成 proof/传输超时。该结构缺陷与现场相容，但旧 stderr 仅保留摘要和大阶段，**尚不能证明本次具体失败就是这一锁等待**，更不能排除其它身份/连接失败。
+
+候选依 ADR 0081 将本机 authority 等待与 nonce/frame 窗口分离，保持原 request/caller deadline、5 秒 nonce/proof、16 KiB frame、完整 current identity/owner/receipt 复查和零自动重试；新增真实 owner 锁争用超过 5 秒、原 deadline、父取消与部分帧回归，复用既有 hostile/replay 拒绝测试。动态测试先于任何新 Pi 实机；本地 compile-only 不是通过证据。B1 仍 IN_PROGRESS，PR #268 仍 Draft，未合入 main；B2 的冻结输入/总预算候选仍未形成 durable approved plan 或实际团队交付。
+
+效率复盘：两轮实机都暴露阶段预算/交互问题，说明此前回归覆盖偏向单入口而没有充分覆盖端到端等待。后续同类修复必须同时检查认证排队、应用等待、字节传输、复查、关闭与原 deadline，并先用真实锁/transport 的无模型组合测试；不能把每个窗口都留给下一次付费实验发现。此次先聚合 handshake 的排队、proof、取消与截断帧，而不是只调高一个 timeout 常量。
 
 ## 2026-09-07：初始续行实机通过后暴露传输阶段预算错配
 

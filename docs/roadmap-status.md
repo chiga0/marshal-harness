@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 当前：B1 `4ace42c` 精确 CI 与真实 Pi 跨 Run 验证 [34067556449](https://github.com/chiga0/marshal-harness/actions/runs/34067556449) 通过；同一 server 内约 104 秒 Verify 期间，另一 Run 在原 deadline 后约 5.53 秒到 BLOCKED，15 次 Inspect 和 stopped Collect 均完成。只关闭该候选组合子条件，无新 ACCEPTED/main merge/stable。B2 `00c8351` 的调度组合 CI 34067600918 已五项通过，同时正常整合上述 B1 修复，避免旧依赖进入下一次真实团队实验；合并 head 仍需自己的精确验证。B1/B2 仍 IN_PROGRESS，B3 PLANNED；以下为历史检查点。
+
 2026-09-07 最新：创建恢复 2486b1c、首次 plan gate fc5d479、批准后冷续行 aa230da 的精确 CI 均已五项通过。耐久停派 1f61c2c 已推送；后继将其与 fixed server 初始调度、实际 Start 共用路径接通，自动 busy 上限 2，合法 Verify lease 仅使本轮不派发。代码已编写、本地编译/静态检查通过，halt/调度组合动态 CI 和真实并行仍待验证；自动 Collect、独立接纳、集成、Goal Outcome/暂停/replan 未完成。B1 的 4ace42c PR CI 与精确分支 CI 34066636760 均已五项通过；一次带新诊断的真实 Pi 组合验证 34067556449 已派发，旧实机失败未关闭。B1/B2 仍 IN_PROGRESS、B3 PLANNED，无新 main merge/stable 发布。下方保留历史检查点。
 
 2026-09-07 最新检查点：B1 `80084bb` 的 CI 五项通过，但实机 34059061091 在 peer Collect 的 `pi-result-final-content-shape` 失败，尚未进入跨 Run 组合验收，禁止原样重试。B2 `928b8ab` 的 CI 34062410465 已通过 Linux quality、双架构 conformance 和 secret scan，记录时 macOS quality 在途；后继正接通原冻结输入的无 Probe planning 重建，尚未完成部分 Run 补齐和真实团队。Goal 保持 B1→B2→B3 与至少三个业务族的强 Lead＋SubAgents 重复配对收益验证。main 仍 ba2196b、两候选均未合并；下方旧“当前/在途”段落是历史检查点，不代表最新状态。
@@ -45,8 +47,8 @@
 
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline 与 barrier 中断恢复通过；4ace42c 精确 CI 五项通过，带新诊断实机 34067556449 在途 | 长 Verify 跨 Run 实机及响应上界；旧 peer Collect 失败仍保留；候选合入与最终组合；完整 B2 同路径故障矩阵在 B3 |
-| B2 受限 Agent Team | `IN_PROGRESS`（隔离候选，未集成） | 创建恢复、首次 plan gate、批准后冷续行精确 CI 均通过；耐久 halt 和 resident 两实现调度/实际 Start 已接线，组合动态验证待完成 | 最新调度组合 CI、真实并行、自动 Collect/独立接纳、成果集成与最终业务验收、Goal Outcome/有界 replan/暂停；尚无对照收益 |
+| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline 与 barrier 中断恢复通过；4ace42c 精确 CI 及同 server 长 Verify/并行停止/查询/Collect 34067556449 通过 | 最终审查/候选主线合入与组合确认；旧 peer Collect 失败仍计入分母；完整 B2 同路径故障矩阵在 B3 |
+| B2 受限 Agent Team | `IN_PROGRESS`（隔离候选，未集成） | 创建恢复、首次 plan gate、批准后冷续行、耐久 halt 与 resident 两实现调度/实际 Start 的精确 CI 均通过；整合 B1 握手修复 | 合并候选精确验证、真实并行、自动 Collect/独立接纳、成果集成与最终业务验收、Goal Outcome/有界 replan/暂停；尚无对照收益 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
 [ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 仍为 Proposed，main 尚未开启 cancel/timeout。下一步验证长 Verify 期间无关 Run 的 deadline 能继续推进，完成停止纵切的组合验收与独立审查，随后进入 B2；不重跑已通过的旧 source，不扩大 Provider 或另起 controller。完整失败样本及证据边界见审计记录。本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。
