@@ -22,7 +22,7 @@ def running(run):
 
 
 class TeamDriveTest(unittest.TestCase):
-    def exercise_main(self, live=False, rejected=False):
+    def exercise_main(self, live=False, rejected=False, integration_state="ACCEPTED"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             (root / "scripts").mkdir()
@@ -50,13 +50,18 @@ class TeamDriveTest(unittest.TestCase):
                 return summary
             def capture(root, run, packet, archive):
                 archive.write_bytes(b"closed-test-archive")
-            def review(call, save, reviews, output, unchanged, seconds):
+            def review(call, save, reviews, output, unchanged, seconds, nodes=("service", "client")):
                 self.assertTrue((output / "review.ready").is_file())
                 self.assertTrue(unchanged())
-                self.assertEqual(seconds, 1200)
-                for node in ("service", "client"):
+                self.assertGreater(seconds, 0)
+                self.assertLessEqual(seconds, 1200)
+                for node in nodes:
                     self.assertEqual((output / node / "review-inputs.tar").read_bytes(), b"closed-test-archive")
                     self.assertEqual(json.loads((output / node / "review-ready.json").read_bytes())["run"]["runId"], RUNS[node])
+                if nodes == ("integration",):
+                    self.assertTrue((output / "integration.review.ready").is_file())
+                    self.assertTrue((output / "implement-summary.json").is_file())
+                    return {"integration": {"state": integration_state}}
                 return {node: {"state": "REJECTED" if rejected and node == "client" else "ACCEPTED"} for node in ("service", "client")}
             with mock.patch.object(driver, "__file__", str(root / "scripts/fixed-server-team-drive.py")), \
                     mock.patch("sys.argv", ["driver", "--evidence-root", str(evidence), "--await-review-seconds", "1200" if live else "0"]), \
@@ -64,16 +69,22 @@ class TeamDriveTest(unittest.TestCase):
                     mock.patch.object(driver.subprocess, "run", side_effect=execute), \
                     mock.patch.object(driver.t2, "drive", side_effect=drive), \
                     mock.patch.object(driver.t2, "capture_review_inputs", side_effect=capture) as captured, \
+                    mock.patch.object(driver, "await_integration") as awaited, \
                     mock.patch.object(driver, "review_team", side_effect=review) as reviewed:
-                self.assertEqual(driver.main(), 1 if rejected else 0)
+                self.assertEqual(driver.main(), 1 if rejected or integration_state == "REJECTED" else 0)
             self.assertEqual(calls, ["team-approve", "inspect", "inspect"])
-            self.assertEqual(driven, [RUNS["service"], RUNS["client"]])
-            self.assertEqual(captured.call_count, 2)
-            self.assertEqual(reviewed.call_count, int(live))
+            integrated = live and not rejected
+            self.assertEqual(driven, [RUNS["service"], RUNS["client"]] + ([RUNS["integration"]] if integrated else []))
+            self.assertEqual(captured.call_count, 2 + int(integrated))
+            self.assertEqual(reviewed.call_count, int(live) + int(integrated))
+            self.assertEqual(awaited.call_count, int(integrated))
             summary = json.loads((evidence / "team/summary.json").read_bytes())
             self.assertFalse(summary["accepted"])
-            self.assertFalse(summary["integrationExecuted"])
-            self.assertEqual(summary["stage"], "two-implement-reviewed" if live else "two-implement-review-pending")
+            self.assertEqual(summary["integrationExecuted"], integrated)
+            self.assertEqual(summary["stage"], "integration-reviewed" if integrated else "two-implement-reviewed" if live else "two-implement-review-pending")
+            if integrated:
+                self.assertFalse(summary["goalOutcomeAvailable"])
+                self.assertEqual(summary["reviewedRuns"]["integration"]["state"], integration_state)
             if rejected:
                 self.assertEqual(summary["reviewedRuns"]["service"]["state"], "ACCEPTED")
                 self.assertEqual(json.loads((evidence / "team/failure.json").read_bytes())["automaticRetry"], False)
@@ -86,6 +97,29 @@ class TeamDriveTest(unittest.TestCase):
 
     def test_main_reject_preserves_other_acceptance_without_retry(self):
         self.exercise_main(live=True, rejected=True)
+
+    def test_integration_no_change_is_not_misreported_as_team_accepted(self):
+        self.exercise_main(live=True, integration_state="NO_CHANGE")
+
+    def test_integration_reject_keeps_all_review_results_without_retry(self):
+        self.exercise_main(live=True, integration_state="REJECTED")
+
+    def test_integration_observation_never_starts_and_failure_is_not_retried(self):
+        clock, calls, saved = [0], [], {}
+        def call(args, remaining):
+            calls.append(args)
+            return 0, {"runId": RUNS["integration"], "state": "READY"} if clock[0] == 0 else running(RUNS["integration"])
+        result = driver.await_integration(call, saved.__setitem__, lambda _: True, RUNS["integration"], 3,
+                                          now=lambda: clock[0], pause=lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+        self.assertEqual(result["state"], "RUNNING")
+        self.assertEqual(calls, [["inspect", "--run", RUNS["integration"]]] * 2)
+        for response in ((1, {}), (0, running("wrong")), (0, {"runId": RUNS["integration"], "state": "BLOCKED"})):
+            with self.subTest(response=response), self.assertRaises(driver.Error):
+                driver.await_integration(lambda *_: response, lambda *_: None, lambda _: True,
+                                         RUNS["integration"], 1, now=lambda: 0)
+        with self.assertRaisesRegex(driver.Error, "dispatch-deadline"):
+            driver.await_integration(lambda *_: self.fail("missing Run"), lambda *_: None, lambda _: False,
+                                     RUNS["integration"], 0, now=lambda: 0)
 
     def test_reviews_arrive_out_of_order_and_reject_does_not_discard_other_node(self):
         with tempfile.TemporaryDirectory() as directory:

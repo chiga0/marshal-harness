@@ -70,6 +70,12 @@ func (s *DurableStore) FreezeIntegrationTeamRun(ctx context.Context, verifier Cu
 		return TeamRunCreationState{}, ErrTeamRunCreationConflict
 	}
 	encoded, err := json.Marshal(integration)
+	if err != nil {
+		return TeamRunCreationState{}, ErrTeamRunCreationConflict
+	}
+	// decodeTeamRecord deliberately requires canonical wire bytes; Go struct
+	// field order is not JCS key order. Canonicalize before the defensive clone.
+	encoded, err = canonical.JSON(encoded)
 	var frozen TeamIntegrationBase
 	if err != nil || decodeTeamRecord(encoded, &frozen) != nil {
 		return TeamRunCreationState{}, ErrTeamRunCreationConflict

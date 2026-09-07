@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""只观察 resident 创建/启动，再用既有公开接口收集两个节点；不代替团队调度器。"""
+"""观察 resident 创建/启动，通过既有接口收集实现与集成；不代替团队调度器。"""
 
 import argparse
 import hashlib
@@ -76,17 +76,44 @@ def await_initial(call, save, ready, runs, deadline, now=time.time, pause=time.s
     raise Error("team-resident-dispatch-deadline")
 
 
-def review_team(call, save, reviews, output, binary_unchanged, seconds, now=time.monotonic, wall=time.time, pause=time.sleep):
+def await_integration(call, save, ready, run, deadline, now=time.time, pause=time.sleep):
+    """Only Inspect observes Core dispatch; this client never creates or Starts."""
+    tick = 0
+    while now() < deadline:
+        if ready(run):
+            code, value = call(["inspect", "--run", run], deadline - now())
+            save(f"integration-initial-{tick}.json", {"exitCode": code, "response": value})
+            if code != 0 or not isinstance(value, dict) or value.get("runId") != run:
+                raise Error("integration-inspect-unavailable")
+            if value.get("state") not in {"CREATED", "PLANNED", "READY"}:
+                return t2.run_projection(value, run, "RUNNING")
+        tick += 1
+        pause(min(1, max(0, deadline - now())))
+    raise Error("integration-resident-dispatch-deadline")
+
+
+def expose_review(save, output, node, summary, binary_digest):
+    directory = output / node
+    directory.mkdir(mode=0o700, exist_ok=False)
+    for leaf in ("review-inputs.tar", "review-summary.json", "review-packet.json"):
+        with (directory / leaf).open("xb") as destination:
+            destination.write((output / (node + "-" + leaf)).read_bytes())
+    save(node + "/review-ready.json", {"run": summary["run"], "packetDigest": summary["packetDigest"],
+                                      "archive": "review-inputs.tar", "binarySHA256": binary_digest})
+
+
+def review_team(call, save, reviews, output, binary_unchanged, seconds, now=time.monotonic, wall=time.time, pause=time.sleep,
+                nodes=("service", "client")):
     """Consume whichever independent Decision arrives first, with one budget.
 
     A known reject is evidence, not a reason to discard the other node. Any
     unknown mutation still aborts: no retry, new approval or integration here.
     """
     deadline, reviewed = now() + seconds, {}
-    while len(reviewed) < 2:
+    while len(reviewed) < len(nodes):
         if now() >= deadline:
             raise Error("independent-review-wait-expired")
-        for node in ("service", "client"):
+        for node in nodes:
             if node in reviewed:
                 continue
             decision_path = output / node / "review-decision.json"
@@ -99,7 +126,7 @@ def review_team(call, save, reviews, output, binary_unchanged, seconds, now=time
             node_save = lambda name, value: save(node + "-" + name, value)
             reviewed[node] = t2.finalize_review(call, node_save, summary, packet, decision, decision_path,
                                                wall() + min(300, max(0, deadline - now())), require_accepted=False)
-        if len(reviewed) < 2:
+        if len(reviewed) < len(nodes):
             pause(min(1, max(0, deadline - now())))
     return reviewed
 
@@ -177,28 +204,50 @@ def main():
         if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
             raise Error("fixed-binary-drift")
         reviewed = {}
+        review_deadline = time.monotonic() + args.await_review_seconds
         if args.await_review_seconds:
             # Closed, diagnostic copies only. Never restore an authority store
             # or turn these files into approval for another runner.
             for node in ("service", "client"):
-                directory = output / node
-                directory.mkdir(mode=0o700, exist_ok=False)
-                for leaf in ("review-inputs.tar", "review-summary.json", "review-packet.json"):
-                    with (directory / leaf).open("xb") as destination:
-                        destination.write((output / (node + "-" + leaf)).read_bytes())
                 summary, _ = reviews[node]
-                save(node + "/review-ready.json", {"run": summary["run"], "packetDigest": summary["packetDigest"],
-                                                   "archive": "review-inputs.tar", "binarySHA256": binary_digest})
+                expose_review(save, output, node, summary, binary_digest)
             with (output / "review.ready").open("xb"):
                 pass
             reviewed = review_team(call, save, reviews, output,
                                    lambda: hashlib.sha256(binary.read_bytes()).hexdigest() == binary_digest,
-                                   args.await_review_seconds)
-        save("summary.json", {"stage": "two-implement-reviewed" if reviewed else "two-implement-review-pending", "accepted": False,
+                                   max(0, review_deadline - time.monotonic()))
+        summary = {"stage": "two-implement-reviewed" if reviewed else "two-implement-review-pending", "accepted": False,
                               "integrationExecuted": False, "processOverlapProven": False,
-                              "externalStartCalls": 0, "runs": runs, "reviewedRuns": reviewed})
+                              "externalStartCalls": 0, "runs": runs, "reviewedRuns": reviewed}
         if reviewed and any(run["state"] != "ACCEPTED" for run in reviewed.values()):
+            save("summary.json", summary)
             raise Error("team-independent-review-not-accepted")
+        if reviewed:
+            # Keep implementation evidence even if dispatch/verification fails.
+            save("implement-summary.json", summary)
+            remaining = lambda: max(0, review_deadline - time.monotonic())
+            if remaining() <= 0:
+                raise Error("independent-review-wait-expired")
+            await_integration(call, save, ready, runs["integration"], time.time() + min(120, remaining()))
+            node_save = lambda name, value: save("integration-" + name, value)
+            integration = t2.drive(call, node_save, runs["integration"], time.time() + min(360, remaining()), require_pass=False)
+            packet = json.loads((output / "integration-review-packet.json").read_bytes())["Projection"]["packet"]
+            t2.capture_review_inputs(root, runs["integration"], packet, output / "integration-review-inputs.tar")
+            expose_review(save, output, "integration", integration, binary_digest)
+            with (output / "integration.review.ready").open("xb"):
+                pass
+            result = review_team(call, save, {"integration": (integration, packet)}, output,
+                                 lambda: hashlib.sha256(binary.read_bytes()).hexdigest() == binary_digest,
+                                 remaining(), nodes=("integration",))
+            summary.update(stage="integration-reviewed", integrationExecuted=True, reviewedRuns={**reviewed, **result})
+            # NO_CHANGE is valid for an already-correct combined base, but is
+            # not ACCEPTED and does not manufacture a durable GoalOutcome.
+            summary["goalOutcomeAvailable"] = False
+            save("summary.json", summary)
+            if result["integration"]["state"] not in {"ACCEPTED", "NO_CHANGE"}:
+                raise Error("team-integration-review-not-successful")
+        else:
+            save("summary.json", summary)
         return 0
     except (Error, OSError, ValueError, KeyError, TypeError) as exc:
         # Do not disclose raw provider output, config, paths or exception text.

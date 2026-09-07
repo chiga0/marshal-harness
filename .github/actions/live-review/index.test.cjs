@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const {workerEnvironment, readFile, validateReady, reviewTargets, publishDecision, reviewMarker, selectComment} = require('./index.cjs');
+const {workerEnvironment, readFile, validateReady, reviewTargets, publishDecision, reviewMarker, selectComment, reviewPhases} = require('./index.cjs');
 const digest = 'sha256:' + 'a'.repeat(64), head = 'b'.repeat(40);
 const subject = {ownerId: 123, startedAt: Date.parse('2026-09-05T00:00:00Z'),
   marker: reviewMarker('123', head, digest), runId: 'fixed-server-t1-123', packetDigest: digest};
@@ -121,3 +121,63 @@ test('legacy B1 review layout is unchanged', () => teamFixture((directory, team,
   assert.equal(targets[0].suffix, '');
   assert.deepEqual(targets[0].ready, ready('service'));
 }));
+
+test('integration phase requires its exact third subject and binary, never client evidence', () => teamFixture((directory, team, ready) => {
+  const child = path.join(directory, 'integration');
+  fs.mkdirSync(child);
+  fs.writeFileSync(path.join(child, 'review-ready.json'), JSON.stringify(ready('integration')));
+  const targets = reviewTargets(directory, 'order-quote-team', 'unused', head, 'integration');
+  assert.equal(targets.length, 1);
+  assert.equal(targets[0].ready.run.runId, team.runs.integration);
+  assert.equal(targets[0].suffix, '-integration');
+  fs.writeFileSync(path.join(child, 'review-ready.json'), JSON.stringify(ready('client')));
+  assert.throws(() => reviewTargets(directory, 'order-quote-team', 'unused', head, 'integration'), /ready-mismatch/);
+  assert.throws(() => reviewTargets(directory, 'order-quote-team', 'unused', head, 'other'), /review-phase/);
+  assert.throws(() => reviewTargets(directory, 'order-quote', 'unused', head, 'integration'), /review-phase/);
+}));
+
+function phaseFixture(overrides = {}) {
+  const events = [], delivered = [];
+  const targets = ['service', 'client', 'integration'].map((node, index) => {
+    const packetDigest = 'sha256:' + String(index + 1).repeat(64);
+    return {node, subject: {...subject, runId: node, packetDigest, marker: reviewMarker('123', head, packetDigest)}};
+  });
+  const comments = targets.map(target => ({...comment(), body: target.subject.marker + JSON.stringify({
+    kind: 'ReviewDecision', runId: target.node, reviewPacketDigest: target.subject.packetDigest, verdict: 'reject'})}));
+  const config = {team: true, deadline: 100, now: () => 0, stopped: () => false,
+    waitReady: async limit => { assert.equal(limit, 100); events.push('wait-integration'); },
+    targetsFor: phase => { events.push(phase); return phase === 'implement' ? targets.slice(0, 2) : targets.slice(2); },
+    prepare: async target => { events.push('upload-' + target.node); },
+    comments: async () => comments,
+    deliver: (target, selected) => { events.push('deliver-' + target.node); delivered.push(selected.raw); },
+    wait: async () => assert.fail('no unnecessary wait'), ...overrides};
+  return {config, events, delivered};
+}
+
+test('same-host transport waits for third packet after two decisions without manufacturing acceptance', async () => {
+  const {config, events, delivered} = phaseFixture();
+  await reviewPhases(config);
+  assert.deepEqual(events, ['implement', 'upload-service', 'upload-client', 'deliver-service', 'deliver-client',
+    'wait-integration', 'integration', 'upload-integration', 'deliver-integration']);
+  assert.equal(delivered.length, 3);
+  assert.ok(delivered.every(raw => JSON.parse(raw).verdict === 'reject'));
+});
+
+test('integration uses original deadline, failure never restarts or re-uploads implementations', async () => {
+  let clock = 0;
+  const {config, events} = phaseFixture({now: () => clock, waitReady: async limit => { assert.equal(limit, 100); clock = 100; }});
+  await assert.rejects(reviewPhases(config), /review-wait-expired/);
+  assert.deepEqual(events, ['implement', 'upload-service', 'upload-client', 'deliver-service', 'deliver-client']);
+  const failed = phaseFixture({waitReady: async () => { throw new Error('carrier-canary-exited-before-integration-review'); }});
+  await assert.rejects(reviewPhases(failed.config), /exited-before-integration-review/);
+  assert.equal(failed.delivered.length, 2);
+});
+
+test('B1 keeps one phase; ambiguous delivery stops without progressing to integration', async () => {
+  const single = phaseFixture({team: false});
+  await reviewPhases(single.config);
+  assert.ok(!single.events.includes('wait-integration'));
+  const failed = phaseFixture({deliver: () => { throw new Error('ambiguous'); }});
+  await assert.rejects(reviewPhases(failed.config), /ambiguous/);
+  assert.ok(!failed.events.includes('wait-integration'));
+});

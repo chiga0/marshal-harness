@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 当前增量：`047b170` CI 34087532524 五项已全绿；`10a5edf` CI 34088862794 在两平台前置回归发现集成克隆未先 JCS 规范化，合法输入被拒绝，现已补齐且保留失败成本。继续接通第三节点客户端 Collect/Verify/独立评审载体，共用原等待预算，不重跑整个团队；本地 12+44+17 项客户端/载体测试通过，Go 修复动态结果待后继精确 CI。B1/B2 IN_PROGRESS、B3 PLANNED；没有新真实 integration、GoalOutcome、main merge 或 stable，也没有效率优于基线的证据。
+
 2026-09-07 集成创建接线候选：实现两个 ACCEPTED 上游→原 integrate 调度→精确 Git 组合→仅变 base 的完整 Task→原 Prepare→同 RB1 创建冻结→原物化/首次 Start。新创建域绑定两个原 creation/Run/Attempt/authority head/candidate/patch/Decision/packet/Outcome，冻结和 Start 均重查；不增加预算或刷新已有创建。尚无真实 integration Run/最终 GoalOutcome，当前仍 B2 IN_PROGRESS。`047b170` 的 Git/review/团队前置动态回归已通过，完整 CI 当时仍在运行；本接线的新动态结果待提交后 CI。
 
 2026-09-07 后续校正：接纳读取改为实际 Core producer 的同 round 归档 Decision/packet；已保留两轮 CI 失败的根因与成本。集成 base 的精确 patch 组合已编写，使用私有 index 生成确定性 commit，不触碰用户 HEAD/index 或工作分支。仍未接通 durable integration creation/Start 和 GoalOutcome，B2 继续 IN_PROGRESS；未新增 Worker 或整队重跑，未宣称效率获益。后继回归增加 gitworktree 并聚合全部目标包失败。

@@ -40,8 +40,10 @@ function validateReady(value, runId) {
   return value;
 }
 
-function reviewTargets(directory, scenario, runId, sourceHead) {
+function reviewTargets(directory, scenario, runId, sourceHead, phase = 'implement') {
+  if (!['implement', 'integration'].includes(phase)) fail('carrier-review-phase');
   if (scenario === 'order-quote') {
+    if (phase !== 'implement') fail('carrier-review-phase');
     return [{directory, suffix: '', ready: validateReady(JSON.parse(readFile(path.join(directory, 'review-ready.json'), 65536)), runId)}];
   }
   if (scenario !== 'order-quote-team') fail('carrier-environment');
@@ -52,7 +54,7 @@ function reviewTargets(directory, scenario, runId, sourceHead) {
       Object.keys(subject.runs).length !== 3 ||
       nodes.some(node => !/^team-run-[a-f0-9]{64}$/.test(subject.runs[node])) ||
       new Set(nodes.map(node => subject.runs[node])).size !== 3) fail('carrier-team-subject');
-  return nodes.slice(0, 2).map(node => {
+  return (phase === 'integration' ? nodes.slice(2) : nodes.slice(0, 2)).map(node => {
     const child = path.join(directory, node);
     const ready = validateReady(JSON.parse(readFile(path.join(child, 'review-ready.json'), 65536)), subject.runs[node]);
     if (ready.binarySHA256 !== subject.binarySHA256) fail('carrier-team-binary-drift');
@@ -142,6 +144,37 @@ async function uploadChild(directory, name) {
   await new Promise((resolve, reject) => process.send({id: result.id, digest: result.digest}, error => error ? reject(error) : resolve()));
 }
 
+async function reviewPhases({team, deadline, stopped, waitReady, targetsFor, prepare, comments, deliver,
+  now = () => performance.now(), wait = pause}) {
+  // One window includes both implementation reviews, integration execution,
+  // upload and final review. Transport never infers upstream acceptance.
+  for (const phase of team ? ['implement', 'integration'] : ['implement']) {
+    if (phase === 'integration') await waitReady(deadline);
+    if (stopped()) fail('carrier-canary-exited-awaiting-review');
+    if (now() >= deadline) fail('carrier-review-wait-expired');
+    const targets = targetsFor(phase);
+    for (const target of targets) {
+      if (now() >= deadline) fail('carrier-review-wait-expired');
+      await prepare(target);
+    }
+    const pending = new Set(targets);
+    while (pending.size) {
+      if (stopped()) fail('carrier-canary-exited-awaiting-review');
+      if (now() >= deadline) fail('carrier-review-wait-expired');
+      const batch = await comments();
+      for (const target of pending) {
+        const selected = selectComment(batch, target.subject);
+        if (selected) {
+          if (now() >= deadline) fail('carrier-review-wait-expired');
+          deliver(target, selected);
+          pending.delete(target);
+        }
+      }
+      if (pending.size) await wait(Math.min(5000, Math.max(0, deadline - now())));
+    }
+  }
+}
+
 async function main() {
   const env = process.env, root = fs.realpathSync('.');
   const startedAt = Date.now(), workflowRun = env.GITHUB_RUN_ID, sourceHead = env.EXPECTED_HEAD;
@@ -177,38 +210,39 @@ async function main() {
       if (performance.now() >= readyDeadline) fail('carrier-review-not-ready');
       await pause(1000);
     }
-    const targets = reviewTargets(reviewDirectory, env.CANARY_SCENARIO, runId, sourceHead);
-    // Upload and both reviews consume the same wait window, not one per node.
     const deadline = performance.now() + 17 * 60000;
-    for (const target of targets) {
-      const marker = reviewMarker(workflowRun, sourceHead, target.ready.packetDigest);
-      target.artifact = await upload(target.directory, `fixed-server-review-${workflowRun}${target.suffix}`);
-      target.subject = {ownerId: repo.owner.id, startedAt, marker, runId: target.ready.run.runId, packetDigest: target.ready.packetDigest};
-      console.log(`Independent review ready: artifact ${target.artifact.id}; Run ${target.ready.run.runId}; issue #186; marker ${marker.trim()}`);
-    }
-    const pending = new Set(targets);
-    while (pending.size) {
-      if (stopped) fail('carrier-canary-exited-awaiting-review');
-      if (performance.now() >= deadline) fail('carrier-review-wait-expired');
-      const comments = [];
-      for (let page = 1; page <= 5; page++) {
-        const batch = await github(`issues/186/comments?since=${encodeURIComponent(new Date(startedAt).toISOString())}&per_page=100&page=${page}`, env.INPUT_TOKEN);
-        if (!Array.isArray(batch)) fail('carrier-comment-response');
-        comments.push(...batch);
-        if (batch.length < 100) break;
-        if (page === 5) fail('carrier-comment-page-limit');
-      }
-      for (const target of pending) {
-        const selected = selectComment(comments, target.subject);
-        if (selected) {
-          publishDecision(target, selected, workflowRun, sourceHead);
-          pending.delete(target);
+    await reviewPhases({team: env.CANARY_SCENARIO === 'order-quote-team', deadline, stopped: () => stopped,
+      waitReady: async limit => {
+        while (true) {
+          if (stopped) fail('carrier-canary-exited-before-integration-review');
+          if (performance.now() >= limit) fail('carrier-review-wait-expired');
+          try { readFile(path.join(reviewDirectory, 'integration.review.ready'), 0); return; }
+          catch (error) { if (error.code !== 'ENOENT') throw error; }
+          await pause(1000);
         }
-      }
-      if (pending.size) await pause(5000);
-    }
+      },
+      targetsFor: phase => reviewTargets(reviewDirectory, env.CANARY_SCENARIO, runId, sourceHead, phase),
+      prepare: async target => {
+        const marker = reviewMarker(workflowRun, sourceHead, target.ready.packetDigest);
+        target.artifact = await upload(target.directory, `fixed-server-review-${workflowRun}${target.suffix}`);
+        target.subject = {ownerId: repo.owner.id, startedAt, marker, runId: target.ready.run.runId, packetDigest: target.ready.packetDigest};
+        console.log(`Independent review ready: artifact ${target.artifact.id}; Run ${target.ready.run.runId}; issue #186; marker ${marker.trim()}`);
+      },
+      comments: async () => {
+        const comments = [];
+        for (let page = 1; page <= 5; page++) {
+          const batch = await github(`issues/186/comments?since=${encodeURIComponent(new Date(startedAt).toISOString())}&per_page=100&page=${page}`, env.INPUT_TOKEN);
+          if (!Array.isArray(batch)) fail('carrier-comment-response');
+          comments.push(...batch);
+          if (batch.length < 100) break;
+          if (page === 5) fail('carrier-comment-page-limit');
+        }
+        return comments;
+      },
+      deliver: (target, selected) => publishDecision(target, selected, workflowRun, sourceHead),
+    });
     await Promise.race([exited, pause(6 * 60000).then(() => fail('carrier-finalize-timeout'))]);
-    if (exitCode !== 0) fail('carrier-canary-not-accepted');
+    if (exitCode !== 0) fail('carrier-canary-not-completed');
   } finally {
     process.removeListener('SIGTERM', terminate);
     process.removeListener('SIGINT', terminate);
@@ -220,7 +254,7 @@ async function main() {
   }
 }
 
-module.exports = {workerEnvironment, readFile, validateReady, reviewTargets, publishDecision, reviewMarker, selectComment};
+module.exports = {workerEnvironment, readFile, validateReady, reviewTargets, publishDecision, reviewMarker, selectComment, reviewPhases};
 if (require.main === module) {
   if (process.argv[2] === '--upload') uploadChild(process.argv[3], process.argv[4]).then(() => process.exit(0), () => process.exit(1));
   else main().then(() => process.exit(0), error => {
