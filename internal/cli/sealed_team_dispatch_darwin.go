@@ -9,6 +9,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/productionruntime"
 )
 
 // advanceInitialTeams shares the router writer lane and application write
@@ -56,6 +57,11 @@ func (adapter *sealedRepositoryApplication) advanceInitialTeams(ctx context.Cont
 		return errors.Join(cause, haltErr)
 	}
 	created, err := adapter.session.MaterializeApprovedInitialTeamRun(ctx, selection.GoalID, selection.NodeID, selection.PlanFactDigest)
+	if errors.Is(err, productionruntime.ErrTeamIntegrationWaiting) {
+		// A lease can become occupied after selection. This sentinel is only
+		// emitted before Prepare/Git/Run mutation, so wait for a later tick.
+		return nil
+	}
 	if err != nil {
 		return halt("materialize", err)
 	}

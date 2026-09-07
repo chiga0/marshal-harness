@@ -23,13 +23,14 @@ var ErrTeamRunCreationConflict = errors.New("resultingress: team Run creation co
 // TeamRunCreationState is the creating obligation, not READY or a Start fact.
 // Inputs retain the exact PreparedInputs chosen before any Run side effects.
 type TeamRunCreationState struct {
-	GoalID         string          `json:"goalId"`
-	NodeID         string          `json:"nodeId"`
-	RunID          string          `json:"runId"`
-	PlanFactDigest string          `json:"planFactDigest"`
-	Inputs         json.RawMessage `json:"inputs"`
-	InputsDigest   string          `json:"inputsDigest"`
-	FactDigest     string          `json:"factDigest"`
+	GoalID         string               `json:"goalId"`
+	NodeID         string               `json:"nodeId"`
+	RunID          string               `json:"runId"`
+	PlanFactDigest string               `json:"planFactDigest"`
+	Inputs         json.RawMessage      `json:"inputs"`
+	InputsDigest   string               `json:"inputsDigest"`
+	FactDigest     string               `json:"factDigest"`
+	Integration    *TeamIntegrationBase `json:"integration,omitempty"`
 }
 
 type teamRunCreationFact struct {
@@ -66,6 +67,10 @@ type teamPreparedInputs struct {
 // unvalidated client/Worker bytes. The current-owner verifier holds the same
 // owner while RB1 replays and commits. No Run/worktree/Attempt is created here.
 func (s *DurableStore) FreezeInitialTeamRun(ctx context.Context, verifier CurrentApprovedTeamVerifier, owner ControlOwnerAcquisition, approval TeamPlanApproval, goalID, nodeID, planFactDigest string, raw []byte) (TeamRunCreationState, error) {
+	return s.freezeTeamRun(ctx, verifier, owner, approval, goalID, nodeID, planFactDigest, raw, nil)
+}
+
+func (s *DurableStore) freezeTeamRun(ctx context.Context, verifier CurrentApprovedTeamVerifier, owner ControlOwnerAcquisition, approval TeamPlanApproval, goalID, nodeID, planFactDigest string, raw []byte, integration *TeamIntegrationBase) (TeamRunCreationState, error) {
 	if ctx == nil || verifier == nil || owner.Validate() != nil || domain.ValidateID(goalID) != nil ||
 		domain.ValidateID(nodeID) != nil || requireDigest("team plan", planFactDigest) != nil ||
 		len(raw) == 0 || len(raw) > maxTeamRunCreationBytes {
@@ -94,14 +99,17 @@ func (s *DurableStore) FreezeInitialTeamRun(ctx context.Context, verifier Curren
 			if _, halted := projection.teamHalts[teamPlanKey(owner.Scope, goalID)]; halted {
 				return ErrTeamPlanConflict
 			}
-			candidate := TeamRunCreationState{GoalID: goalID, NodeID: nodeID, PlanFactDigest: planFactDigest, Inputs: frozen, InputsDigest: canonical.DigestBytes(frozen)}
+			candidate := TeamRunCreationState{GoalID: goalID, NodeID: nodeID, PlanFactDigest: planFactDigest, Inputs: frozen, InputsDigest: canonical.DigestBytes(frozen), Integration: integration}
 			key, runID, err := validateTeamRunCreation(owner.Scope, plan, candidate)
 			if err != nil {
 				return err
 			}
 			candidate.RunID = runID
+			if err := validateTeamIntegrationDependencies(projection, owner.Scope, candidate); err != nil {
+				return err
+			}
 			if previous, ok := projection.teamRunCreations[key]; ok {
-				if previous.PlanFactDigest != candidate.PlanFactDigest || !bytes.Equal(previous.Inputs, candidate.Inputs) {
+				if previous.PlanFactDigest != candidate.PlanFactDigest || !bytes.Equal(previous.Inputs, candidate.Inputs) || !equalTeamIntegration(previous.Integration, candidate.Integration) {
 					return ErrTeamRunCreationConflict
 				}
 				result = previous
@@ -233,9 +241,16 @@ func validateTeamRunCreation(scope ControlOwnerScope, plan TeamPlanState, creati
 	var inputs goal.TeamInputs
 	var prepared teamPreparedInputs
 	if decodeTeamRecord(plan.Inputs, &inputs) != nil || decodeTeamRecord(creation.Inputs, &prepared) != nil ||
-		prepared.RepositoryRoot != inputs.Spec.Repository || prepared.BaseSHA != inputs.BaseSHA || prepared.PreparedAt.IsZero() ||
+		prepared.RepositoryRoot != inputs.Spec.Repository || prepared.PreparedAt.IsZero() ||
 		len(prepared.Task)+len(prepared.Policy) > goal.MaxTeamNodeBytes || len(prepared.Capability) == 0 || len(prepared.Capability) > 64<<10 ||
 		len(prepared.SelectionAttempts) != 1 || prepared.SelectionAttempts[0].AdapterID != "pi" || prepared.SelectionAttempts[0].Outcome != "selected" {
+		return fail()
+	}
+	if creation.Integration == nil {
+		if prepared.BaseSHA != inputs.BaseSHA {
+			return fail()
+		}
+	} else if validateTeamIntegration(plan, inputs, creation) != nil || prepared.BaseSHA != creation.Integration.CommitSHA {
 		return fail()
 	}
 	// PreparedAt has one UTC encoding. A changed time on retry is new input,
@@ -246,7 +261,7 @@ func validateTeamRunCreation(scope ControlOwnerScope, plan TeamPlanState, creati
 		return fail()
 	}
 	for _, edge := range inputs.Proposal.Edges {
-		if edge.To == creation.NodeID {
+		if edge.To == creation.NodeID && creation.Integration == nil {
 			return fail()
 		}
 	}
@@ -255,8 +270,21 @@ func validateTeamRunCreation(scope ControlOwnerScope, plan TeamPlanState, creati
 			continue
 		}
 		taskID, runID, err := goal.TeamNodeIDs(inputs.Proposal, node.NodeID)
-		if err != nil || node.Role != "implement" || prepared.RunID != runID || (creation.RunID != "" && creation.RunID != runID) ||
-			!bytes.Equal(node.Task, prepared.Task) || !bytes.Equal(node.Policy, prepared.Policy) {
+		expectedTask := node.Task
+		if creation.Integration != nil {
+			if node.Role != "integrate" {
+				return fail()
+			}
+			derived, deriveErr := DeriveTeamIntegrationTask(node.Task, inputs.BaseSHA, creation.Integration.CommitSHA)
+			if deriveErr != nil {
+				return fail()
+			}
+			expectedTask = derived
+		} else if node.Role != "implement" {
+			return fail()
+		}
+		if err != nil || prepared.RunID != runID || (creation.RunID != "" && creation.RunID != runID) ||
+			!bytes.Equal(expectedTask, prepared.Task) || !bytes.Equal(node.Policy, prepared.Policy) {
 			return fail()
 		}
 		var task domain.TaskSpec
@@ -306,6 +334,9 @@ func applyTeamRunCreationLine(line []byte, in *Ingress, sequence int64) error {
 	}
 	key, _, err := validateTeamRunCreation(fact.Scope, plan, fact.Creation)
 	if err != nil {
+		return err
+	}
+	if err := validateTeamIntegrationDependencies(in, fact.Scope, fact.Creation); err != nil {
 		return err
 	}
 	if _, exists := in.teamRunCreations[key]; exists {

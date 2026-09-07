@@ -148,16 +148,24 @@ func selectInitialTeamDispatch(plans []resultingress.TeamPlanState, halts map[st
 			continue
 		}
 		for _, node := range input.Nodes {
-			if node.Role != "implement" {
+			if node.Role != "implement" && node.Role != "integrate" {
 				continue
 			}
-			dependent := false
+			dependencies, inputsReady := 0, true
 			for _, edge := range input.Proposal.Edges {
 				if edge.To == node.NodeID {
-					dependent = true
+					dependencies++
+					_, sourceRun, err := goal.TeamNodeIDs(input.Proposal, edge.From)
+					if err != nil || runGoals[sourceRun] != id {
+						return fail()
+					}
+					state, exists := states[sourceRun]
+					if !exists || state.State != domain.StateAccepted {
+						inputsReady = false
+					}
 				}
 			}
-			if dependent {
+			if node.Role == "implement" && dependencies != 0 || node.Role == "integrate" && (dependencies != 2 || !inputsReady) {
 				continue
 			}
 			_, runID, err := goal.TeamNodeIDs(input.Proposal, node.NodeID)

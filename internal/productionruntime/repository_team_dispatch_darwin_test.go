@@ -104,12 +104,13 @@ func TestRepositoryTeamDispatchCapacityAndDependencyPolicy(t *testing.T) {
 		n := nodes[node]
 		return application.RunProjection{TaskID: n.TaskID, RunID: n.RunID, State: state, Sequence: 3, AttemptID: "fixture-attempt", AuthorityHead: canonical.DigestBytes([]byte(node))}
 	}
-	for _, mode := range []string{"one-running", "two-running", "review-backlog", "standalone", "completed-implementations", "halted", "goal-capacity", "stale-ready"} {
+	for _, mode := range []string{"one-running", "two-running", "review-backlog", "standalone", "completed-implementations", "rejected-upstream", "halted", "goal-capacity", "stale-ready"} {
 		t.Run(mode, func(t *testing.T) {
 			states := map[string]application.RunProjection{}
 			halts := map[string]bool{}
 			plan := plans[0]
 			wantFound, wantError := false, false
+			wantNode := "client"
 			switch mode {
 			case "one-running":
 				states[nodes["service"].RunID] = projection("service", domain.StateRunning)
@@ -127,6 +128,10 @@ func TestRepositoryTeamDispatchCapacityAndDependencyPolicy(t *testing.T) {
 			case "completed-implementations":
 				states[nodes["service"].RunID] = projection("service", domain.StateAccepted)
 				states[nodes["client"].RunID] = projection("client", domain.StateAccepted)
+				wantFound, wantNode = true, "integration"
+			case "rejected-upstream":
+				states[nodes["service"].RunID] = projection("service", domain.StateAccepted)
+				states[nodes["client"].RunID] = projection("client", domain.StateRejected)
 			case "halted":
 				halts[approval.GoalID] = true
 			case "goal-capacity":
@@ -149,8 +154,8 @@ func TestRepositoryTeamDispatchCapacityAndDependencyPolicy(t *testing.T) {
 			if found != wantFound || (err != nil) != wantError {
 				t.Fatalf("found=%t err=%v", found, err)
 			}
-			if found && selected.NodeID != "client" {
-				t.Fatal("running implementation duplicated or integration dispatched")
+			if found && selected.NodeID != wantNode {
+				t.Fatal("wrong ready node selected")
 			}
 		})
 	}

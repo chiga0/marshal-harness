@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 集成创建接线候选：实现两个 ACCEPTED 上游→原 integrate 调度→精确 Git 组合→仅变 base 的完整 Task→原 Prepare→同 RB1 创建冻结→原物化/首次 Start。新创建域绑定两个原 creation/Run/Attempt/authority head/candidate/patch/Decision/packet/Outcome，冻结和 Start 均重查；不增加预算或刷新已有创建。尚无真实 integration Run/最终 GoalOutcome，当前仍 B2 IN_PROGRESS。`047b170` 的 Git/review/团队前置动态回归已通过，完整 CI 当时仍在运行；本接线的新动态结果待提交后 CI。
+
 2026-09-07 后续校正：接纳读取改为实际 Core producer 的同 round 归档 Decision/packet；已保留两轮 CI 失败的根因与成本。集成 base 的精确 patch 组合已编写，使用私有 index 生成确定性 commit，不触碰用户 HEAD/index 或工作分支。仍未接通 durable integration creation/Start 和 GoalOutcome，B2 继续 IN_PROGRESS；未新增 Worker 或整队重跑，未宣称效率获益。后继回归增加 gitworktree 并聚合全部目标包失败。
 
 2026-09-07 集成准备候选：新增 current-owner/双 Run lease 的已接纳输入读取，复用原 Decision 校验与 Outcome producer，绑定精确 candidate/patch，不消费可变分支或仅凭 ACCEPTED 快照标签。已完成 Darwin/Linux 编译检查、vet/staticcheck；Go 动态测试待候选 CI，不把 `-exec /usr/bin/true` 计为测试通过。该读取尚未接入 resident 的集成创建，局部 replan、集成 Task/派生 base 耐久冻结、最终 GoalOutcome 仍开放；B2 不升级，本轮不再派整队重跑。

@@ -5,6 +5,7 @@ package productionruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,6 +72,12 @@ func TestRepositoryTeamAcceptedInputsWaitOnRealLeasesAndRejectSnapshotClaims(t *
 		}
 	}
 	read()
+	if _, err := session.MaterializeApprovedInitialTeamRun(context.Background(), "team-session", "integration", plan.FactDigest); !errors.Is(err, ErrTeamIntegrationWaiting) {
+		t.Fatal("unaccepted sources were not a pre-mutation wait", err)
+	}
+	if *prepares != 2 || *materializations != 2 {
+		t.Fatal("waiting integration performed extra work")
+	}
 	// Sorted acquisition takes client before service. An occupied second lease
 	// must release the first; it is capacity waiting, not a missing Run/retry.
 	lease, err := session.runs.AcquireExisting(runs["service"].RunID)

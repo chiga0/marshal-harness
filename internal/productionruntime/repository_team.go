@@ -121,6 +121,9 @@ func (session *RepositorySession) prepareApprovedTeamRun(ctx context.Context, ra
 			node = candidate
 		}
 	}
+	if node.Role == "integrate" {
+		return session.prepareIntegrationTeamRun(ctx, raw, inputs, approval, node)
+	}
 	if node.Role != "implement" {
 		return fail()
 	}
@@ -293,7 +296,7 @@ func (session *RepositorySession) materializeTeamCreation(ctx context.Context, a
 			if !found || current.FactDigest != creation.FactDigest || current.RunID != creation.RunID || !bytes.Equal(current.Inputs, creation.Inputs) {
 				return application.NewError(operation, application.ReasonAuthorityConflict)
 			}
-			return fn()
+			return session.withCurrentCreationInputsUnderOwner(operationContext, current, fn)
 		})
 	}
 	if err := guard(ctx, func() error { return nil }); err != nil {

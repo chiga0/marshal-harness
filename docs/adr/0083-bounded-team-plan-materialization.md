@@ -5,6 +5,8 @@
 
 ## 实现事实与要解决的缺口
 
+2026-09-07 后继候选已编写集成接线：resident 在两个实现 Run ACCEPTED 后选择原 integrate 节点，current-owner/双 lease 读取精确成果，固定 composition 组合 Git base、lossless 派生 Task，经原 Prepare→同 RB1 创建冻结→恢复物化→首次 plan gate→同 StartRun 继续。创建/Start 重查上游，原义务/Policy/预算不变。该代码仍待完整动态与实机证明；自动 Collect/Verify、第三节点同宿主独立 Decision、GoalOutcome 及局部 replan/reuse 仍开放，不能把接线代码算成 B2 完成。
+
 2026-09-07 候选当前接线：批准→耐久输入/创建→首次 Start gate→resident tick 的两个 implement 调度已编写，失败沿同 RB1 停派；调度与 halt 的组合动态验证及真实并行尚未完成。Collect/独立验收/集成/Goal Outcome/暂停与 replan 仍待接通。以下实现段同时保留阶段演进，不应把较早的“尚无接线”或当前存在的代码当成正式启用、INTEGRATED 或完成证明。
 
 `internal/goal.Evaluate` 能检查图、scope 和累计预算，但输入的 AuthorityState 由调用方提供，输出 reservation plan 不落盘；`internal/outbox` 为内存实现。把二者串起来不构成生产 Goal 接纳。`GoalNode` 也没有 TaskSpec/Policy 输入，无法从 node title 安全创建真实 Run。
@@ -94,6 +96,8 @@ resident 启动先从 held RB1 重放当前 repository scope 的既有冻结创�
 依赖就绪后，Core 按固定节点顺序在私有临时 Git index 中对原 base 应用两个精确 patch，生成可复算的候选 tree/commit，并落账绑定上游候选及原 base；不先 checkout、扫描 Worker 工作分支或调用 clean/smudge filter。私有 index 位于已有 locks 容器，命令仅为有界 Git plumbing，不生成临时可执行文件。提交只有原 base 一个 parent，固定作者/时间及输入绑定摘要消息，不使用当前墙钟、用户 Git 身份、签名或 hook；不更新 ref、主仓库 index 或 worktree。崩溃留下的未引用对象不是授权，重算仍得到相同对象；只有耐久创建事实才能授权以该 base 物化专属集成 worktree。冲突是 integration-blocked，不隐式改需求、选 theirs/ours 或启动无预算修复。此操作只产生本地候选，不 push/merge，不属于 Publisher。
 
 集成 Task 的业务要求、scope、model、预算、oracle 和权限来自已批准模板；唯一允许派生的字段为已批准算法生成的输入 base/上游绑定及确定性身份。最终 Task bytes 在 Run 创建前耐久冻结。其他字段变化必须新 proposal/批准。集成 Agent 在这个 base 上检查/修复组合行为，独立 oracle 从实际客户端发起 HTTP 请求并验证服务响应，而不是重新计算本地答案。
+
+候选创建记录的 `integration` 可选域仅用于 integrate 节点，implement 必须省略：保存原 plan/base/节点、按节点 ID 排序的两个上游 Run/Attempt/current authority head/creation fact/candidate/patch/Decision/packet/Outcome digest，以及输入束摘要、生成的 tree/commit。输入摘要进入固定 Git commit 消息；最终 Task 仅 lossless 替换 `repository.baseRef` 为该 commit，Policy 与其他 Task 字段保持原批准 bytes/语义不变。冻结入口必须在 current owner 与两个上游 Run lease 内重新读原证据，随后在同一回调追加原 RB1 创建事实；结构合法的客户端摘要不是证明。恢复和首次 Start 同样重查两个原接纳输入，不能仅凭已存在 Git commit 放行。沿用原创建事实的单次冻结/精确重放和已有 Goal reservation，不增加 Run ID、Attempt 或独立预算库。
 
 最终交付绑定集成 candidate、全部上游 candidate 与独立证据/Decision。首个 publication:none 返回可获取的候选与说明，不自动 merge，也不把 Goal 完成等同部署或正式版本发布。
 

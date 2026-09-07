@@ -42,7 +42,7 @@ func (session *RepositorySession) RequireInitialTeamRunPlan(ctx context.Context,
 			} else if halted {
 				return application.NewError(operation, application.ReasonRecoveryRequired)
 			}
-			return session.requireInitialTeamReady(ctx, request, obligation.Creation)
+			return session.withCurrentCreationInputsUnderOwner(ctx, obligation.Creation, func() error { return session.requireInitialTeamReady(ctx, request, obligation.Creation) })
 		}
 		return nil
 	})

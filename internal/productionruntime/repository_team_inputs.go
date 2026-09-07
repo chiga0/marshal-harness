@@ -20,9 +20,10 @@ import (
 // capability. Integration freezing must re-read current owner/plan/Run facts
 // and compare these exact bytes before granting any creation obligation.
 type AcceptedTeamInput struct {
-	NodeID    string
-	Run       application.RunProjection
-	Candidate review.AcceptedCandidate
+	NodeID             string
+	CreationFactDigest string
+	Run                application.RunProjection
+	Candidate          review.AcceptedCandidate
 }
 
 // ReadAcceptedTeamInputs reads both upstreams from the original owner ledger
@@ -31,7 +32,6 @@ type AcceptedTeamInput struct {
 // Not-ready and a legitimately occupied Run are non-mutating observations.
 func (session *RepositorySession) ReadAcceptedTeamInputs(ctx context.Context, goalID, integrationID, planFactDigest string) (result []AcceptedTeamInput, ready bool, resultErr error) {
 	const operation = "read-accepted-team-inputs"
-	fail := func() error { return application.NewError(operation, application.ReasonAuthorityConflict) }
 	if ctx == nil || domain.ValidateID(goalID) != nil || domain.ValidateID(integrationID) != nil || planFactDigest == "" {
 		return nil, false, application.NewError(operation, application.ReasonInvalidRequest)
 	}
@@ -45,7 +45,24 @@ func (session *RepositorySession) ReadAcceptedTeamInputs(ctx context.Context, go
 		return nil, false, err
 	}
 	reader := repositoryApprovedTeamVerifier{session: session}
-	resultErr = reader.WithCurrentApprovedTeam(ctx, session.acquisition, resultingress.TeamPlanApproval{}, func() (readErr error) {
+	resultErr = reader.WithCurrentApprovedTeam(ctx, session.acquisition, resultingress.TeamPlanApproval{}, func() error {
+		var err error
+		ready, err = session.withAcceptedTeamInputsUnderOwner(ctx, goalID, integrationID, planFactDigest, validator, func(inputs []AcceptedTeamInput) error { result = inputs; return nil })
+		return err
+	})
+	if resultErr != nil || !ready {
+		return nil, false, resultErr
+	}
+	return result, true, nil
+}
+
+// Caller holds the session lifetime and current repository owner. The callback
+// runs before either upstream lease is released, including a creation append.
+func (session *RepositorySession) withAcceptedTeamInputsUnderOwner(ctx context.Context, goalID, integrationID, planFactDigest string, validator *contract.Validator, consume func([]AcceptedTeamInput) error) (ready bool, resultErr error) {
+	const operation = "read-accepted-team-inputs"
+	fail := func() error { return application.NewError(operation, application.ReasonAuthorityConflict) }
+	var result []AcceptedTeamInput
+	resultErr = func() (readErr error) {
 		plan, found, err := session.ingress.ReadTeamPlan(session.acquisition.Scope, goalID)
 		if err != nil {
 			return err
@@ -148,13 +165,10 @@ func (session *RepositorySession) ReadAcceptedTeamInputs(ctx context.Context, go
 			if err != nil {
 				return fail()
 			}
-			result = append(result, AcceptedTeamInput{NodeID: upstreams[index], Run: authority.Run, Candidate: candidate})
+			result = append(result, AcceptedTeamInput{NodeID: upstreams[index], CreationFactDigest: creations[index].FactDigest, Run: authority.Run, Candidate: candidate})
 		}
 		ready = true
-		return nil
-	})
-	if resultErr != nil || !ready {
-		return nil, false, resultErr
-	}
-	return result, true, nil
+		return consume(result)
+	}()
+	return ready && resultErr == nil, resultErr
 }

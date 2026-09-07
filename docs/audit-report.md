@@ -1,5 +1,7 @@
 # 设计审计报告
 
+2026-09-07 集成创建链：按 ADR 0083 补齐原 resident 选择、可信 Git builder、lossless Task 派生、RB1 集成创建域、原物化/恢复及首次 plan gate。只读上游值不直接授予授权：FreezeIntegrationTeamRun 要求专用 current accepted verifier，在同 current owner 和两个上游 Run lease 内重查并追加；记录复用原 reservation/Run ID，Policy 不变。前置调度仅把 ACCEPTED 投影作为候选提示，实际 Prepare/Start 仍读原归档证据；未就绪/冲突不换 ID 重跑。store fixture 正例只证明记录与模板绑定、单次追加/冷重放，不冒充实际接纳或生产集成；还需同 server 第三节点完整 Collect/Verify/Decision 与 GoalOutcome。上一候选 `047b170` 的前置回归已实际通过，旧两轮失败原因未移除。
+
 2026-09-07 聚合回归结果与集成候选：`f97400b` 的 34087007472 暴露了第二层接缝错误：接纳读取错误地寻找根目录 `review-decision.json`，但真实 producer 写入 `decisions/decision-NNN.json`；现改为消费同 round 的归档 Decision/packet，不依赖临时传输文件或当前 packet 别名。另一个测试误以为正常 WriteSnapshot 可以伪造 ACCEPTED，而真实存储提前拒绝；现先断言该拒绝，再只在临时测试仓库注入损坏，验证读取拒绝。所有负例首先证明原正例可读，防止“原本就失败”造成负例假通过。两次 CI/作者返工均保留，B2 没有因此前进到完成。
 
 同时实现 ADR 0083 的私有 index 组合：只对冻结 base 应用两个精确 patch，生成绑定输入摘要、固定作者/时间的 tree/commit，不修改用户 HEAD/index/worktree、不调用签名/hook/filter、不产生匿名可执行文件。测试覆盖相同输入重算、不同批准摘要、保留用户暂存变更、冲突/越界/取消和输出上限。当前仍是待接到耐久集成创建的 Git 数据操作，不能单独算业务集成；本地只有编译/静态验证，动态回归交由后继 CI。

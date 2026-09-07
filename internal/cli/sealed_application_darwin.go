@@ -21,6 +21,7 @@ import (
 	controlplane "github.com/chiga0/marshal-harness/internal/control"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
@@ -214,6 +215,14 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 				return application.NewError("team-input-preflight", application.ReasonInvalidRequest)
 			}
 			return preflightPiTeamLaunch(applicationAdapter.piRuntime, applicationAdapter.piEntrypoint, preview.Inputs)
+		},
+		TeamIntegrationBuilder: func(ctx context.Context, base, binding string, patches [][]byte) (string, string, error) {
+			repository, err := gitworktree.OpenContext(ctx, applicationAdapter.repositoryRoot)
+			if err != nil {
+				return "", "", err
+			}
+			derived, err := repository.CombineAcceptedPatches(ctx, applicationAdapter.stateRoot, base, binding, patches)
+			return derived.TreeSHA, derived.CommitSHA, err
 		},
 		TeamRunPreparer: func(ctx context.Context, task, policy []byte, runID string) ([]byte, error) {
 			// Use only this server's frozen Pi paths; never rediscover a provider
