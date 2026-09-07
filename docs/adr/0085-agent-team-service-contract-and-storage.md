@@ -63,6 +63,20 @@ ADR 0052 的正式签名、公证、Linux 与 stable gate 不删除；从关键�
 
 ## 3. 简启动、本地访问与最小身份
 
+### B1 Task HTTP 与可消费交付（未发布实施候选）
+
+本轮准备提交只有以下合同提案、未接线 DTO、纯模板预览和负例；尚未实现或启用 RB1 draft/stop/delivery、Task HTTP、自动 Decision 与交付 bundle。ADR 仍为 Proposed，以下段落描述待正式接纳并验证的目标，不构成当前服务能力或生产授权。
+
+首个入口只开放服务启动时显式安装的 `order-quote/v1` 小团队模板。模板冻结完整业务接口、原独立 oracle bytes/digest、节点范围、实际 Provider 配置、预算、publication:none 和客观验收模式；客户端只提交 intent/inline context 并选择模板，不提交 authority namespace、TaskSpec/Policy、环境或 executable。额外文本仅作需求上下文，不能修改模板的验收或权限；超出模板能力的需求须拒绝或返回明确待确认，不能自动扩 scope。既有 AF_UNIX 客户端和旧批准链保持原合同。
+
+公开 Task ID 就是 Goal ID。首次提交在同一 RB1 追加有界 draft fact，保存规范请求摘要、幂等键摘要、完整已预检模板、创建时间与固定确认期限；不创建 reservation、Run 或 Worker。创建重放先读取原 fact，不刷新身份、输入、期限或预算。确认请求绑定该 draft 的精确摘要/版本，认证后先匹配已有原批准，再核对当前 draft、取消状态和期限；原 accepted-plan fact 仍是预算与创建义务唯一提交点。查询从同一 current-owner 下按 ID 读取 draft/plan/creation/Run/halt/outcome，不要求用户重传原内部批准包；不新增独立 Task JSON 状态机。
+
+本地 HTTP 使用独立随机 token 的受保护 loopback 输入 adapter，并与 AF_UNIX 共用同一应用、writer lane 与 owned Run lane。token 只写受保护连接信息，不进入草案/Worker/日志；拒绝不可信 Host/Origin、任意 PID/路径、超量请求与无界输出。HTTP 请求只调用 Application Port，不直接打开账本或运行子 CLI。取消先在 RB1 记录该 Task 的 stop intent，在实际批准、物化与 Start 准入提交点重新检查并拒绝后续动作，再沿已有 CancelRun/停止与清理 receipt 收口所属执行；意图、信号或 halt 不等于已取消。已有非 RUNNING Run 不能凭 stop intent 伪报 cancelled；只能依据其真实终态或原停止/清理回执展示状态，未决与失败保留可查询事实，重放不能制造替身或重置预算。
+
+只对显式批准上述模板、包含精确固定 oracle 的新 Task，独立客观验收可自动产生原 ReviewDecision：必须实际经过原 Verify，重读当前 Run/Attempt、完整 packet/report/manifest 和所有必需 gate，以批准的 oracle 身份及当前节点全部必需业务断言证明可接纳，再经原 DecisionImporter/current-ledger 接纳。两个上游分别经过各自冻结的节点 oracle 后独立 ACCEPTED，不依赖尚未创建的集成；集成 Run 只有在两上游接纳后才创建，并必须经过组合 oracle。下载后新目录的消费验收另行证明最终交付可使用，不作为上游接纳的循环前置。Worker 摘要、可替换 report 的 pass 标签、存在文件或进程正常退出均不够。出现额外语义/风险需求、缺失或冲突证据、未知/失败 gate 时不自动 accept；旧 Run、原 AF_UNIX 批准和其他模板不继承此模式。实现状态在独立审查与动态验收前仍为 candidate，不宣称 production。
+
+完整交付不能直接等于集成 Run 的增量 patch。producer 在 current owner 下读取原 completed outcome、两份独立 ACCEPTED 上游及集成 ACCEPTED candidate，重验原 plan/creation/Decision/patch 摘要；复用原 `CombineAcceptedPatches` 的固定 commit 元数据、冻结的节点顺序与 `InputsDigest`，从原 base 应用两份上游 patch，同时证明重建 `TreeSHA` 与 commit 等于冻结 integration base，再应用集成 patch，形成最终允许交付文件集合。只导出普通文件和明确声明的使用说明，不导出 Git 元数据、运行证据目录、路径逃逸或未批准文件。manifest 绑定原 outcome fact、三份 candidate/patch/Decision、集成 base、文件摘要及 bundle 摘要；bytes 有界耐久保存后才提交同 RB1 引用。相同事实只复用精确对象，下载按 Task/Artifact ID 与授权查验，不接收宿主文件路径、不读取可变 Worker worktree。成果在新目录执行原整体业务 oracle 通过才关闭 B1 消费出口；bundle 生成或 HTTP 200 本身不是业务成功。
+
 目标命令 `marshal serve` 启动 loopback HTTP 并显示端口；可选 `--data-dir` 只在本机启动时选择内部状态目录，不向 Task HTTP 开放任意根路径切换。新根不存在时自动以限制权限创建；已存在有效 Store 就打开，损坏、遗失部分状态、不兼容格式或 owner 未释放则报出具体原因，不当空库重建。初始化可重入，第二 server 不能取得同一根写权。
 
 不新增用户注册、组织、RBAC、安装收据、Workspace ID 或单独 init 命令。内部 Store ID/generation、Task/Attempt/command ID 与进程句柄仍用来避免串任务、重复启动和误杀，它们不是需要用户管理的身份体系。B1 使用既有合法安装与真实样例环境；全新环境的一键体验在 B2 验证，不冒充已有。
