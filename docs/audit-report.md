@@ -10,6 +10,8 @@
 
 后继实现增加可选 GitHub variable `PI_MODEL_PROFILE_JSON`，仅接受选定 model 的 `id/contextWindow/maxTokens/reasoning` 与受支持的 `compat/thinkingLevelMap`。限额必须为正整数、输出上限不大于 context，拒绝未知字段、重复键、错 model、超大/深层 JSON；显式配置错误在创建模型配置文件前失败，不能静默退回旧值。未设置时旧调用者行为保持，日志明确 `legacy-default`；显式时仅输出规范化配置摘要，绝不输出凭据或 endpoint。该输入不设置实际 reasoning level、不调整 Task 总预算、不证明服务端能力。当前未设置远端变量；须管理员确认 endpoint/profile 后才启用，未知配置不得作为新的实机重试理由。
 
+首稿 `6d9306f` 的 CI `34159224060` 在三个 Linux 作业的 release contract 前置检查失败：新增独立 CI step 不符合既有锁定步骤结构，尚未执行新增测试。该错误属于本轮调用链检查遗漏，不能归咎 Provider。聚合修正撤回新增 CI step，把离线配置测试放入既有 `fixed-server-t1-canary_test.sh` 入口，保留原发布合同与完整断言；以后修改 CI 接线必须在本地先执行现有解释型 release contract gate。动态质量检查与真实业务出口继续分别计量。
+
 ## 2026-09-08：停止收口实机通过，团队失败观测仍有盲点
 
 精确候选 `dd8e8eccdd1f2118db92e928996321272aff1fc7` 完整 CI `34156121695` 五项通过，Darwin 定向 `34155305960` 的 36 项必跑检查通过。其唯一实机 `34157213736` 仍失败，诊断 artifact `10031514061` 保留原始证据；固定二进制 SHA-256 为 `3bd2b444e62b009449b47887660f4db666161cc4d877756bb3307d2235d5378d`。没有 ReviewPacket、独立 Decision、集成或下载成功，B1 不升级。
