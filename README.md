@@ -4,13 +4,15 @@
 [![Pages](https://img.shields.io/badge/docs-GitHub_Pages-blue)](https://chiga0.github.io/marshal-harness/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**让 Agent 可以长期、可靠地完成软件工程任务。**
+**让 Agent Team 可以长期、可靠地完成真实业务任务。**
 
-Marshal 是一个可自托管的任务控制系统。它持续接收新的开发任务，把复杂需求拆成有限、可检查的执行步骤，安排不同 Agent 和执行环境完成工作，并保留恢复、验证与审计所需的信息。
+Marshal 是一个可自托管的任务控制系统。它在轻量 Workspace 中接收需求与上下文，把可确认的方案接纳为有限、可检查的执行步骤，安排一个或多个 Agent 和执行环境完成工作，并保留恢复、验证与审计所需的信息。Workspace 不要求是 Git 仓库，也不是业务资源目录；任务可以交付 SQL、文档或一个/多个仓库的代码成果。
 
 当前 Local MVP 已有执行、独立验证、审查和 Draft PR 的历史能力，RC1 的支持面是下述 CLI-only local-dogfood。正式产品按 B1 单任务服务、B2 受限多 Agent 交付、B3 长期运行与正式支持收敛；它们尚未整体完成。多节点 HA、多租户和通用 Goal DAG 仍属于 1.x。
 
-2026-09-07 产品方案已整理为 [Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与[多轮审计记录](docs/audit-agent-team-service-design-2026-09-07.md)：一个固定命令启动 HTTP 服务，开放 Pi/Qwen Code/OpenCode 接入，内置监督、持久问答、任务 DAG、复盘，SQLite 单一权威存储。边界变化由 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md) 承载；这是待实施设计，不表示上述能力已发布。
+2026-09-07 产品方案已整理为 [Workspace Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与[多轮审计记录](docs/audit-agent-team-service-design-2026-09-07.md)：一个固定命令启动认证 HTTP API，开放 Pi/Qwen Code/OpenCode 接入，内置监督、持久问答、任务 DAG 和审计，每 Workspace 使用 SQLite 单一权威存储。先交付 API，达到 `API-STABLE` 后才开发 UI，UI 不阻塞 API 正式发布。边界变化由 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md) 承载；这是待实施设计，不表示上述能力已发布。
+
+旧 Marshal skill 不再是产品运行依赖、研发准入或验收标准，不读取、加载或执行其流程；保留历史运行、失败和审计资产。Pi/Qwen Code/OpenCode 自带的 Skill、模型配置与登录仍由各 Agent 自行管理。
 
 [阅读文档](https://chiga0.github.io/marshal-harness/) · [查看当前能力](https://chiga0.github.io/marshal-harness/current-status/) · [快速开始](https://chiga0.github.io/marshal-harness/getting-started/)
 
@@ -30,7 +32,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 - **长期运行**：Runtime 持续接受新任务；单次执行保持有限，失败后可以恢复或重新安排。
 - **独立验证**：Agent 结束后重新观察真实改动并运行验收步骤。
-- **安全委派**：执行与发布权限分离，默认只创建 Draft PR，不自动合并。
+- **安全委派**：执行与发布权限分离，默认 `publication:none` 只交付成果；经授权可创建 Draft PR，不自动合并。
 - **可插拔环境**：目标架构支持本地、容器和云端 Sandbox，不绑定单一供应商。
 - **可审计结果**：成功、失败、中断和无需改动都会保存结果与原因。
 - **复杂任务**：长期目标由多个有限任务逐步推进，而不是依赖永不退出的 Agent 会话。
@@ -50,9 +52,11 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 ## v1.0 发布目标
 
-当前 v1.0 目标是单节点、单用户、可信仓库的 Agent Team 服务：固定安装命令启动认证 HTTP 和最小任务页，先走通一个真实 Agent，再完成 Pi/Qwen Code/OpenCode 核心兼容；本机 Local/Container allocation、SQLite 单一事务存储、内置监督、持久问答/确认、受限团队与独立验收共同交付可下载重建的成果。发布支持 `publication:none` 与可选 GitHub Draft PR，默认不 merge。
+当前 v1.0 目标是单节点、单用户、可信业务任务的 Workspace Agent Team HTTP 服务。目标命令 `marshal control-plane serve --workspace <path> --listen 127.0.0.1:0` 打开一个工作区并报告监听地址；这是新设计命令，不是现有 RC1 使用说明。Workspace 组织任务、默认执行配置、目录、输入、制品和审计，允许零 Git；仓库、表结构和平台信息通过任务 prompt/context 提供，不要求在 Core 注册资源。
 
-控制面、执行面、存储面职责分离，初期不拆微服务。Cloudflare 完整生产拓扑、HA、多租户、全部 Provider hardened 矩阵、通用可视化编排器与动态 Goal DAG 延期；最小任务页和受限图不延期。目标详情见[服务架构](docs/agent-team-service-architecture.md)，顺序见[实施计划](docs/implementation-plan.md)，旧合同替代见 [ADR 0085（Proposed）](docs/adr/0085-agent-team-service-contract-and-storage.md)与[适用性](docs/design-contract-map.md)，实际完成状态只见 [Roadmap](docs/roadmap-status.md#业务交付当前表)。
+对外 `Task` 映射已有 `Goal`，DAG 节点叫 `WorkItem`，不并列两套任务权威。先走通一个真实 Agent，再完成 Pi/Qwen Code/OpenCode 核心兼容；Local/Container allocation、SQLite 单一事务存储、内置监督、持久问答/确认、受限团队与独立验收共同交付可下载消费的成果。首版验证零 Git 制品和单/多仓库交付；外部 SQL 发布、执行或补数只能按实测支持声明，生成文件不等于业务已执行。发布支持 `publication:none` 与可选 GitHub Draft PR，默认不 merge。
+
+控制面、执行面、存储面职责分离，初期不拆微服务。`<workspace>/.marshal/` 是新目标状态根；旧 repository `.marshal` profile 只按原合同运行与显式迁移，不自动接管。API 可独立使用和发布，`API-STABLE` 后的 UI-1 才提供任务页/DAG/Worker 详情。Cloudflare 完整生产拓扑、HA、多租户、全部 Provider hardened 矩阵、通用可视化编排器与动态 Goal DAG 延期。目标详情见[服务架构](docs/agent-team-service-architecture.md)，顺序见[实施计划](docs/implementation-plan.md)，旧合同替代见 [ADR 0085（Proposed）](docs/adr/0085-agent-team-service-contract-and-storage.md)与[适用性](docs/design-contract-map.md)，实际完成状态只见 [Roadmap](docs/roadmap-status.md#业务交付当前表)。
 
 ### 2026-09-01 RC1 发布检查点
 

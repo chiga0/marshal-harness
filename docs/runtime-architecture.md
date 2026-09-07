@@ -6,7 +6,9 @@
 
 HTTP/CLI→Application Port→Core controllers→Store/Execution/Agent/Sandbox/Verification/Publication Port；唯一生产组合根注入实现。Core 不导入具体 Provider 品牌，不将 CLI handler 当应用层，不回落 legacy server/child CLI/通用可写账本 API。
 
-一个 repository scope 同时只有一个 current owner。服务安装身份与业务仓库身份独立，canonical `.marshal` 仍是仓库状态根。目标 Store 是 SQLite WAL；现有 file-backed store 是旧运行路径，二者不为同 scope 双写，不从“哪个较新”选真值。
+一个 Workspace 同时只有一个 current owner；状态根为 `<workspace>/.marshal`，Workspace 无需是仓库。服务安装身份与 Workspace 身份独立。SQLite 是目标唯一 Store，旧 repository file-backed 仅保留为旧路径/显式迁移来源，不双写、不按修改时间选真值。
+
+Core 不注册仓库或表：业务对象通过 Task prompt/context 传入。通用事务处理批准输入、执行 profile、预算、归属与证据，不要求 repoId/baseCommit/ResourceBinding。Git 的锁定基线/独立 worktree/patch 由适配层提供，非 Git 使用独立目录和制品。Port 是接口契约，DI 在组合根注入实现，不是微服务或网络端口。
 
 ## 权威事务与执行顺序
 
@@ -16,7 +18,7 @@ HTTP/CLI→Application Port→Core controllers→Store/Execution/Agent/Sandbox/V
 | 准备执行 | 重验 owner/输入/预算/scope，预留唯一 Attempt 与 execution obligation，记录 command intent/outbox | 按冻结身份启动/观察进程或调用 Provider |
 | 接纳结果 | 重验 current owner/lease/generation、实际 outcome、Run head；原子记录接纳与合法 successor | 独立验证/工具/网络不能持全局数据库锁 |
 | 停止执行 | 与结果接纳竞争 CAS；持久化 stop intent/fence | owned controller 有界停止/Inspect；未知不释放 writer |
-| 结束与释放 | 核对 terminal/cleanup/allocation/stop 或正常完成的精确链；记 release、结算、Outcome | 回收已证明可清理的资源；用户 worktree 不擅自删除 |
+| 结束与释放 | 核对 terminal/cleanup/allocation/stop 或正常完成的精确链；记 release、结算、Outcome | 回收已证明可清理的资源；用户目录/worktree 不擅自删除 |
 
 数据库短事务取代新路径的跨文件 proof/shared-guard/固定 AST 形状，不取代真实副作用证明、唯一 producer 与 currentness。旧 schema/replay 不原地改写，字段级新协议在对应纵切与生产者/测试一起落地。
 
@@ -36,7 +38,7 @@ HTTP/CLI→Application Port→Core controllers→Store/Execution/Agent/Sandbox/V
 
 ## 问答、DAG 与审计
 
-Goal 是用户任务，有限 work node→Task→Run→Attempt；UI 阶段是投影，不另造权威生命周期。UserInteraction 冻结 subject/revision、待答节点、期限和批准范围；普通回答、计划批准、工具权限、交付验收不能互相替代。
+公开 Task 对应既有 Goal，taskId 直接映射 Goal ID；有限 work item/node→旧内部 Task 执行规格→Run→Attempt。HTTP `/tasks` 为主入口，阶段是只读投影；若保留旧 `/goals` 别名则共用 canonical command/幂等/revision，不另造生命周期。UI 只在 API-STABLE 后消费同一接口。UserInteraction 冻结 subject/revision、待答节点、期限和批准范围；普通回答、计划批准、工具权限、交付验收不能互相替代。
 
 节点待答只阻塞相关依赖，Goal `PAUSED`/cancel 优先停全图新派发。向 Agent 送答案通过 outbox，发送前重验 fence；ack 丢失无原生查询/幂等时保留 unknown，不因 Core 已消费就声称 Agent 只收一次。终态 Run 不因用户回答复活。
 
@@ -48,7 +50,9 @@ SQLite 使用本地耐久磁盘、WAL、`synchronous=FULL` 和有界事务；事
 
 首次迁移只导入已合法收口历史；包括 REVIEW_PENDING 在内的旧非终态不得自动 rebind。持原 owner 锁备份，保留 IDs/原 bytes/digest/引用/预算/幂等，验证等价后切唯一 store generation；旧入口必须机械拒绝新布局，仅写旧版本不认识的 marker 不够。切换后旧账本只读，不双写、不补签旧授权。
 
-真正空的新仓库可先做 SQLite 原生完整业务纵切，不等待复杂历史导入；旧 `.marshal` 不能被清空或改名冒充新仓库。升级受支持前仍须通过旧库迁移与恢复验收。
+新空 Workspace 与新的独立执行目录直接做 SQLite 原生完整 HTTP 纵切，包含零 Git SQL/文件交付，不先在旧账本重复实现。旧来源升级单列 B1-U；需复用的旧工作目录未合法释放就不能接管，旧 `.marshal` 不得清空/改名冒充新状态。不要求全机资源盘点或仓库注册。
+
+首版排他保证覆盖自身受管执行目录，不冒充跨 Workspace/人工/外部表的全局锁。原生工具外部副作用必须在批准范围内；缺回执/查询/取消证据标 unknown 或限制支持，禁止自动重跑可能重复写的执行。取消本机 Agent 不等于取消远端作业，SQLite 恢复不回滚外部数据。
 
 备份使用一致快照和制品 manifest；恢复先只读，确认旧执行/owner 不能继续写及外部效果可对账后才开放变更。历史 replay 不执行 outbox；数据库恢复从不等于 Git/云端回滚。PostgreSQL 后续通过同一 Port/conformance 接入，不能增加第二真值。
 
