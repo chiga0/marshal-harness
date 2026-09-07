@@ -41,10 +41,16 @@ jobs:
             -run '^(TestControlPlaneRequestContextPreservesIdentityAndDrainOwnership|TestDrainControlPlaneRequests.*|TestProductionResult.*|TestParseProductionWorkerResult.*|TestExtractFinalWorkerResult.*|TestPiProduction.*|TestTaskSpecResultContract.*|TestTaskSpecPromptProjection.*|TestRenderPromptProjection.*|TestEmbeddedSchemasAreValidDraft202012Documents|TestRunRejectsNativeResultContractBeforeLegacyAdapter|TestTeamProgress.*|TestRepositoryTeamProgress.*|TestBackgroundTeamRunLanesAndVerificationYield|TestBackgroundRunReleasePreservesPublicWaiter|TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor)$' \
             ./internal/adapter/pi ./internal/contract ./internal/cli ./internal/execution ./internal/productionruntime ./internal/fixedcontrolplane ./internal/resultingress \
             | tee team-progress-results.jsonl
-          go test -race -p 2 -count=1 -timeout=120s -json \
-            -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$GITHUB_SHA" \
-            -run '^(TestLauncherV2CollectedStopClosesWithoutDuplicateCollect|TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply|TestLauncherV2SameOwnerContinuesWithoutRestart)$' \
-            ./internal/resultingress | tee -a team-progress-results.jsonl
+          # These durable chains each replay a real append-only fixture. Bound
+          # each chain, rather than letting earlier chains consume its timeout.
+          for case_name in TestLauncherV2CollectedStopClosesWithoutDuplicateCollect \
+            TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply \
+            TestLauncherV2SameOwnerContinuesWithoutRestart; do
+            go test -race -p 2 -count=1 -timeout=120s -json \
+              -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$GITHUB_SHA" \
+              -run "^${case_name}$" ./internal/resultingress \
+              | tee -a team-progress-results.jsonl
+          done
       - name: Reject empty or skipped regression coverage
         run: |
           python3 -I -B - <<'PY'

@@ -10,6 +10,8 @@
 
 Provider length 的具体输出/预算原因仍需证据，不能猜测为用户未配置、直接增预算或修改正常终态准入。保留两次 Attempt 和失败分母，不原样付费重跑，不放宽 `native-terminal/v1` 的正向终态要求。B1/B2/B3 状态不升级。
 
+修复候选 `a003ca7` 的快速检查 `34154916006` 首次失败于测试编排：三组耐久链共用 120 秒总限时；原 Terminate 链及 SameOwner 两分支通过（后者 65.96 秒），新 Collect→Stop 链运行约 17 秒时总限时耗尽，堆栈仍在耐久重放/摘要计算，没有业务断言失败。纠正为三个精确顶层用例各自 120 秒，保留 race、全部断言及必跑成功集合，并让新失败链先运行；不增加 Worker 预算、不以超时当测试通过。原完整 CI `34154917505` 保留运行，不为诊断编排修正取消。
+
 ## 2026-09-08：原生结果实机进入独立 Verify，团队仍未交付
 
 `a5418f4acbb1fe3b581a4c6d079510048d82dcee` 的完整 CI `34149966062` 五项全绿，Darwin 定向 `34149938176` 的 30 项必跑检查通过。精确候选 gate 通过后只派发一次真实双 Pi 团队 `34151269983`，其失败证据保存在 diagnostic artifact `10029503062`。service Run `team-run-0189f9bd1f824517f7eb8d01a8b1d5fd5a38150a7b515f9ea39197e055743772` 的事件已到 sequence 4 `worker.completed` 和 sequence 5 `verification.completed`，报告为 pass，包含 `command:quote-team-service`。这首次为本候选原生结果→独立 Verify 接缝提供正向实机证据，但不表示整个团队成功。
