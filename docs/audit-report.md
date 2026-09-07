@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-07：团队批准接入 hosted fixed-server 实机路径
+
+在 `4867ff7` 完整输入/业务 oracle 候选之上，新增 `order-quote-team` 显式场景，复用同一个 exact-head CI gate、固定 binary 与 Pi 0.84.4 配置，不另建 server 或生产业务状态库。该模式跳过单任务 `task plan/approve`，只向认证公开入口发送一次原始 `team-approve`；resident Core 自行物化并 Start 两个 implement，客户端只有有界 Inspect 与既有 Collect/Verify/ReviewPacket。未知响应、终态或超时保留失败，不重新批准、不启动替代 Run、不自动 rework。
+
+两条 RUNNING 投影只作为进入结果收集的前提，明确 `processOverlapProven:false`；真实重叠须后续审计原 events/RB1 的进程起止，不能从状态名推导。两节点均须业务验证通过并保留 ReviewPacket/完整 review inputs；integration 在独立接纳前不得出现，脚本不会伪造 Decision、集成成果或 Goal Outcome。成功只表示 `two-implement-review-pending`，并非 B2 完成、生产启用或收益优于 Lead＋SubAgents。
+
+本地新客户端的 5 项确定性回归覆盖精确批准摘要绑定、仅 Inspect 等待、缺节点超时、失败不重试、未批准集成拒绝，以及一次批准复用两个既有结果驱动的完整客户端构造。既有脚本/业务 oracle 回归通过。该路径尚未真实执行；须当前精确提交 CI 通过后只派一次无故障团队 canary，再基于证据接通独立接纳与集成，不扩大 Provider 或故障矩阵。
+
 ## 2026-09-07：既有团队业务样例进入同一候选，补完整输入到 Core 的回归
 
 B1 修复已正常整合并推送为 B2 候选 `2ecf8b1`。随后整合已有参考契约/HTTP oracle 分支 `964cba4`，新增待确认的完整三节点输入生成器，复用 B1 Task/Policy 构造，避免再维护一份不一致的 Provider 配置。生成器不批准、不创建 Run 或启动 Agent；摘要由实际 Go application/planning parser 再校验，新增跨语言回归直接运行真实 Python 生成器再执行 `Frozen/PreviewTeamInputs`，不是两套 fixture 各自自洽。

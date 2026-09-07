@@ -77,6 +77,21 @@ done
 grep -F -- '--concurrent-stop-run "$RUN_ID"' "$DRIVER" >/dev/null || fail 'missing fixed cross-run driver'
 grep -F -- '--scenario order-quote --long-verify' "$DRIVER" >/dev/null || fail 'peer business verifier was not frozen before approval'
 grep -F 'verify-peer:' "$WORKFLOW" >/dev/null || fail 'missing explicit cross-run opt-in'
+grep -F 'order-quote-team' "$WORKFLOW" >/dev/null || fail 'missing team candidate opt-in'
+grep -F 'scripts/fixed-server-team-drive.py --evidence-root' "$DRIVER" >/dev/null || fail 'missing team client'
+printf '%s\n' "$diagnostics" | grep -F '/team/*.json' >/dev/null || fail 'missing team response evidence'
+# Team mode branches before legacy task plan/approve. Its observer delegates
+# Collect/Verify only; neither helper contains a node Start or approval loop.
+/usr/bin/python3 -I -B - "$DRIVER" "$ROOT/scripts/fixed-server-team-drive.py" <<'PY'
+import pathlib, sys
+shell, driver = (pathlib.Path(p).read_text() for p in sys.argv[1:])
+team = shell.index('if [ "$SCENARIO" = order-quote-team ]; then')
+legacy = shell.index('task_id="FIXED-SERVER-T1-')
+assert team < legacy and '\nelse\n' in shell[team:legacy]
+assert driver.count('["team-approve",') == 1
+assert '["start",' not in driver and 'start_ready(' not in driver
+assert 't2.drive(' in driver and 'processOverlapProven' in driver
+PY
 printf '%s\n' "$diagnostics" | grep -F '/verification-report.json' >/dev/null || fail 'missing cross-run report evidence'
 for phase in t2 t2-recovery; do
   for leaf in driver-subject.json 'call-*.json' cancel-request.json; do

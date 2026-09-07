@@ -26,7 +26,7 @@ usage() {
 usage: scripts/fixed-server-t1-canary.sh \
   --expected-head HEAD --pi-model PROVIDER/MODEL --pi-node PATH --pi-bin PATH \
   --pi-bundle PATH --run-id RUN_ID --evidence-root ABSOLUTE_PATH \
-  [--scenario t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout] [--await-review] [--stop-crash|--verify-peer]
+  [--scenario t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout|order-quote-team] [--await-review] [--stop-crash|--verify-peer]
 EOF
   exit 2
 }
@@ -51,7 +51,10 @@ done
 [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || die 'expected-head 必须是 40 位小写 commit'
 [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || die 'pi-model 必须是 provider/model'
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{2,120}$ ]] || die 'run-id 形态非法'
-case "$SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout) ;; *) die 'scenario 非法' ;; esac
+case "$SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout|order-quote-team) ;; *) die 'scenario 非法' ;; esac
+if [ "$SCENARIO" = order-quote-team ]; then
+  [ "${#RUN_ID}" -le 112 ] || die 'team run-id 过长'
+fi
 [ "$AWAIT_REVIEW" -eq 0 ] || [ "$SCENARIO" = order-quote ] || die 'await-review 只适用于 order-quote'
 if [ "$STOP_CRASH" -eq 1 ]; then
   case "$SCENARIO" in order-quote-timeout|order-quote-run-timeout) ;; *) die 'stop-crash 只适用于业务 timeout' ;; esac
@@ -215,6 +218,13 @@ export MARSHAL_LOCAL_DOGFOOD_ACTIVATION="$EVIDENCE_ROOT/activation.json"
 "$MARSHAL_BIN" doctor --json >"$EVIDENCE_ROOT/doctor.json"
 "$MARSHAL_BIN" version --json >"$EVIDENCE_ROOT/binary-version.json"
 
+if [ "$SCENARIO" = order-quote-team ]; then
+  team_deadline="$($PYTHON_BIN -I -B -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(minutes=8)).replace(microsecond=0).isoformat().replace("+00:00","Z"))')"
+  "$PYTHON_BIN" -I -B scripts/fixed-server-team-inputs.py \
+    --doctor "$EVIDENCE_ROOT/doctor.json" --repository "$ROOT" --base-ref "$EXPECTED_HEAD" \
+    --model "$PI_MODEL" --goal-id "$RUN_ID" --proposal-id "$RUN_ID-plan" \
+    --request-id "$RUN_ID-approve" --deadline "$team_deadline" --out "$EVIDENCE_ROOT/team-request.json"
+else
 task_id="FIXED-SERVER-T1-${EXPECTED_HEAD:0:12}"
 task_renderer=scripts/fixed-server-t1-task.py
 # Keep the array nonempty: macOS Bash 3.2 rejects an empty array expansion
@@ -236,6 +246,7 @@ fi
   --run "$RUN_ID" --json >"$EVIDENCE_ROOT/plan.json"
 "$MARSHAL_BIN" task approve --run "$RUN_ID" --gate plan --actor fixed-server-t1-operator \
   --json >"$EVIDENCE_ROOT/approve.json"
+fi
 
 if [ "$VERIFY_PEER" -eq 1 ]; then
   peer_run="$RUN_ID-verify"
@@ -264,6 +275,22 @@ fi
 server1_pid=$!
 wait_ready "$server1_pid" "$EVIDENCE_ROOT/server1-ready.json"
 append_audit server1 serve ready
+if [ "$SCENARIO" = order-quote-team ]; then
+  # No task plan/approve or per-node Start. The authenticated team operation
+  # is the only approval; resident Core owns creation and both first Starts.
+  "$PYTHON_BIN" -I -B scripts/fixed-server-team-drive.py --evidence-root "$EVIDENCE_ROOT"
+  assert_server_pid "$server1_pid"
+  kill -TERM "$server1_pid"
+  set +e
+  wait "$server1_pid"
+  team_server_status=$?
+  set -e
+  [ "$team_server_status" -eq 0 ] || die 'team server 未正常退出'
+  write_process_evidence "$EVIDENCE_ROOT/server1-process.json" "$server1_pid" SIGTERM "$team_server_status"
+  server1_pid=""
+  printf '[fixed-server-team] TWO_IMPLEMENT_REVIEW_PENDING; integration and independent Decision remain open\n'
+  exit 0
+fi
 if [ "$VERIFY_PEER" -eq 1 ]; then
   # Both Runs were frozen/approved before serve. All mutations now use the
   # fixed public surface. This experiment intentionally does not crash the

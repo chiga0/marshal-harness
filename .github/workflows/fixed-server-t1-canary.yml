@@ -16,7 +16,7 @@ on:
         required: true
         default: t1-marker
         type: choice
-        options: [t1-marker, order-quote, order-quote-cancel, order-quote-timeout, order-quote-run-timeout]
+        options: [t1-marker, order-quote, order-quote-cancel, order-quote-timeout, order-quote-run-timeout, order-quote-team]
       live-review:
         description: 在原 server 存活期间等待独立维护者 Decision，最长20分钟
         required: true
@@ -68,7 +68,7 @@ jobs:
           test "${{ github.repository }}" = "chiga0/marshal-harness" || { echo "::error::仅允许 canonical 仓库" >&2; exit 1; }
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::expected-head 必须是 40 位小写 commit" >&2; exit 1; }
           [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || { echo "::error::pi-model 必须是 provider/model" >&2; exit 1; }
-          case "$CANARY_SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout) ;; *) echo "::error::invalid scenario" >&2; exit 1 ;; esac
+          case "$CANARY_SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout|order-quote-team) ;; *) echo "::error::invalid scenario" >&2; exit 1 ;; esac
           if [ '${{ inputs.live-review }}' = true ]; then test "$CANARY_SCENARIO" = order-quote; fi
           if [ '${{ inputs.stop-crash }}' = true ]; then case "$CANARY_SCENARIO" in order-quote-timeout|order-quote-run-timeout) ;; *) exit 1 ;; esac; fi
           if [ '${{ inputs.verify-peer }}' = true ]; then test "$CANARY_SCENARIO" = order-quote-timeout; test '${{ inputs.stop-crash }}' != true; test '${{ inputs.live-review }}' != true; fi
@@ -91,8 +91,8 @@ jobs:
           git remote set-url origin https://github.com/chiga0/marshal-harness.git
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" || { echo "::error::checkout head 漂移" >&2; exit 1; }
           git checkout -q -B main "$EXPECTED_HEAD"
-          if { [ "$CANARY_SCENARIO" = order-quote-cancel ] || [ "$CANARY_SCENARIO" = order-quote-timeout ] || [ "$CANARY_SCENARIO" = order-quote-run-timeout ]; } && [ "$DISPATCH_BRANCH" != main ]; then
-            # Unreleased stop candidates must pass real validation before
+          if { [ "$CANARY_SCENARIO" = order-quote-cancel ] || [ "$CANARY_SCENARIO" = order-quote-timeout ] || [ "$CANARY_SCENARIO" = order-quote-run-timeout ] || [ "$CANARY_SCENARIO" = order-quote-team ]; } && [ "$DISPATCH_BRANCH" != main ]; then
+            # Unreleased stop/team candidates must pass real validation before
             # enable/merge. This does not replace the stable/main release gate.
             test "$EXPECTED_HEAD" = "$DISPATCH_HEAD"
             /usr/bin/python3 -I -B scripts/candidate-ci-gate.py "$EXPECTED_HEAD" "$DISPATCH_BRANCH"
@@ -209,6 +209,11 @@ jobs:
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/task.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/start-request.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/command-audit.jsonl
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/team/*.json
+            .marshal/runs/team-run-*/state.json
+            .marshal/runs/team-run-*/events.jsonl
+            .marshal/runs/team-run-*/outcome.json
+            .marshal/runs/team-run-*/verification-report.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}-verify/task.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}-verify/verification-started.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}-verify/t2/*.json
@@ -246,6 +251,10 @@ jobs:
           path: |
             dist/
             .marshal/fixed-server-t1-canary/
+            .marshal/runs/team-run-*/state.json
+            .marshal/runs/team-run-*/events.jsonl
+            .marshal/runs/team-run-*/outcome.json
+            .marshal/runs/team-run-*/verification-report.json
             .marshal/runs/${{ env.T1_RUN_ID }}/state.json
             .marshal/runs/${{ env.T1_RUN_ID }}/events.jsonl
             .marshal/runs/${{ env.T1_RUN_ID }}/outcome.json

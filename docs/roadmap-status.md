@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 团队验证入口：在 `4867ff7` 上接入 `order-quote-team` hosted 场景：一次团队批准→resident 自动物化/启动两个实现节点→既有 Collect/Verify/ReviewPacket；不逐个外部 Start，不提前创建 integration。新客户端与既有脚本回归通过，真实团队执行、进程重叠证据、独立接纳及集成交付仍待完成。`4867ff7` 的跨语言输入回归已在 macOS/Linux CI 通过，记录时全量质量作业仍在途；新入口仍需自己的精确 CI。B1/B2 仍 IN_PROGRESS、B3 PLANNED，无新 main merge/stable。
+
 2026-09-07 当前：B1 `4ace42c` 精确 CI 与真实 Pi 跨 Run 验证 [34067556449](https://github.com/chiga0/marshal-harness/actions/runs/34067556449) 通过；同一 server 内约 104 秒 Verify 期间，另一 Run 在原 deadline 后约 5.53 秒到 BLOCKED，15 次 Inspect 和 stopped Collect 均完成。只关闭该候选组合子条件，无新 ACCEPTED/main merge/stable。B2 `00c8351` 的调度组合 CI 34067600918 已五项通过，同时正常整合上述 B1 修复，避免旧依赖进入下一次真实团队实验；合并 head 仍需自己的精确验证。B1/B2 仍 IN_PROGRESS，B3 PLANNED；以下为历史检查点。
 
 2026-09-07 最新：创建恢复 2486b1c、首次 plan gate fc5d479、批准后冷续行 aa230da 的精确 CI 均已五项通过。耐久停派 1f61c2c 已推送；后继将其与 fixed server 初始调度、实际 Start 共用路径接通，自动 busy 上限 2，合法 Verify lease 仅使本轮不派发。代码已编写、本地编译/静态检查通过，halt/调度组合动态 CI 和真实并行仍待验证；自动 Collect、独立接纳、集成、Goal Outcome/暂停/replan 未完成。B1 的 4ace42c PR CI 与精确分支 CI 34066636760 均已五项通过；一次带新诊断的真实 Pi 组合验证 34067556449 已派发，旧实机失败未关闭。B1/B2 仍 IN_PROGRESS、B3 PLANNED，无新 main merge/stable 发布。下方保留历史检查点。
