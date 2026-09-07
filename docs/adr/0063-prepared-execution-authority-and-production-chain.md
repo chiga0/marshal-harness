@@ -1,5 +1,7 @@
 # ADR 0063：PreparedExecution 启动权威合同与唯一生产者链
 
+> 2026-09-07 适用性：固定 Pi0843 身份、专属 Prepared 对象形状与一次性两切片顺序是旧生产组合合同；新 Adapter/Store 路径的映射见 ADR 0085 §1–§4。真实 producer、输入冻结、实际启动 outcome 和唯一合法 Run successor 保留；禁止 caller DTO/Fake 冒充当前权威。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：已接受（Accepted，2026-08-29）。本 ADR 只冻结 ProcessBridge 前后的最小耐久合同；不表示实现已完成，不升级 I186-R2–R6，也不授权真实进程启动或发布。
 - 关联：[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)（唯一 `ProductionRuntime` 与 Allocation receipt）、[ADR 0058](0058-interpreted-agent-launch-identity.md)（`launch-authorized` 与 `StoredClosureV1`）、[ADR 0059](0059-fixed-darwin-process-supervisor.md)（固定 Supervisor）、[ADR 0060](0060-supervisor-mechanics-authority-binding-and-recovery.md)（Supervisor mechanics 子链）、[ADR 0062](0062-fixed-marshal-production-server-mode.md)（固定 Marshal server mode）、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)。
 

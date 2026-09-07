@@ -1,6 +1,6 @@
 # 安全模型
 
-2026-09-07 的 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)冻结服务方案的新增边界：loopback HTTP 也必须认证，非 loopback 首次开启即 TLS/授权；Agent 自管登录/Skill 不授予其 Core 或 Publisher 权限；普通同 UID 原生配置存在 ambient credential 风险，不能描述为恶意代码隔离。稳定安装身份与业务 repository identity 分开，状态迁移必须证明旧 writer 被阻断。新设计不豁免以下证据、路径、凭据、取消归属或发布门禁；当前完成情况仍以 Roadmap 为准。
+2026-09-07 的 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)提出服务方案的新增边界，仍为 Proposed：loopback HTTP 也必须认证，非 loopback 首次开启即 TLS/授权；Agent 自管登录/Skill 不授予其 Core 或 Publisher 权限；普通同 UID 原生配置存在 ambient credential 风险，不能描述为恶意代码隔离。稳定安装身份与业务 repository identity 分开，状态迁移必须证明旧 writer 被阻断。新目标不豁免以下证据、路径、凭据、取消归属或发布门禁，也不将历史远程/hardened 全矩阵变成单机 ordinary-user 的实施前置；适用性见[合同对照](design-contract-map.md)，当前完成情况仍以 Roadmap 为准。
 
 ## 安全定位
 

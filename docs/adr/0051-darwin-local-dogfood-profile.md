@@ -1,5 +1,7 @@
 # ADR 0051：Darwin 本地 Dogfood 执行 Profile 与受管发布权威分流
 
+> 2026-09-07 适用性：旧 darwin-local-dogfood 的 activation、安装布局与 non-production 权限仍按本文；新服务的独立安装/operator-local 记录拟由 ADR 0085 §3 承载。旧证据不自动 rebind，不授予 managed/stable。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：已接受（Accepted，2026-08-27）；接受证据绑定提案 sourceHead `e38a94887352cd0ba00f7c7183209d6a6a3ef339` 的独立 reviewer 结论 `ACCEPT`（P0/P1=0；唯一 P2 措辞在接受同步中关闭）；接受只冻结本地 dogfood 与 managed/release 的分流合同，未实现，不表示 Issue #212、I186-R3 或 Marshal v1.0 已关闭
 - 关联：[ADR 0003](0003-separate-worker-and-publisher.md)、[ADR 0014](0014-read-only-execution-profile.md)、[ADR 0042](0042-mac-ordinary-user-adapter-mode.md)、[ADR 0047](0047-marshal-darwin-self-identity-and-release-signing.md)、[ADR 0048](0048-protected-build-input-and-artifact-attestation.md)、[Issue #191](https://github.com/chiga0/marshal-harness/issues/191)、[Issue #212](https://github.com/chiga0/marshal-harness/issues/212)
 

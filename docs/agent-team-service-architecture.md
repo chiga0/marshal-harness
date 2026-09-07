@@ -1,6 +1,6 @@
 # Marshal Agent Team 服务：产品方案与架构
 
-日期：2026-09-07。状态：实施设计，不是已实现能力。边界决策见 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)，实施与验收见 [Milestone](agent-team-service-milestones.md)，独立复核见 [审计记录](audit-agent-team-service-design-2026-09-07.md)。完成状态只维护在 [Roadmap](roadmap-status.md#业务交付当前表)。
+日期：2026-09-07。状态：当前目标设计，不是已实现能力。边界提案见 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed），实施与验收见 [Milestone](agent-team-service-milestones.md)，独立复核见 [审计记录](audit-agent-team-service-design-2026-09-07.md)。旧合同与启用范围见[适用性对照](design-contract-map.md)；完成状态只维护在 [Roadmap](roadmap-status.md#业务交付当前表)。
 
 ## 1. 产品承诺与范围
 

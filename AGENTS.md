@@ -12,7 +12,7 @@
 
 维护者已接受 [ADR 0080](docs/adr/0080-three-plane-business-delivery-roadmap.md)：控制面/执行面/存储面职责分离，按 B1 单任务服务→B2 单仓库受限 Agent Team→B3 长期运行与正式支持推进。该节取代下方把全部 Goal 编排延期到 1.x 的排期；通用 M13、HA、多租户仍不恢复为发布前置。唯一当前完成状态见 [Roadmap 当前表](docs/roadmap-status.md#业务交付当前表)，具体退出条件见 [业务交付计划](docs/agent-team-delivery-plan.md)。不使用仓库 Marshal skill 驱动本次开发。此调整不削减 universal 不变量、I186 证据、签名/Linux/stable 门禁，不表示能力已生产可用。
 
-本轮产品方案统一见 [Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)：固定 HTTP 服务、开放 AgentAdapter、内置监督/持久交互/DAG/审计、SQLite 单一权威存储；当前能力状态不因设计文档升级。按 ADR 0085 的明确取代范围处理旧物理账本/固定 Pi/界面延期假设，不能新旧合同混用。以下 universal 不变量不变。
+当前目标设计统一见 [Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)：固定 HTTP 服务、开放 AgentAdapter、内置监督/持久交互/DAG/审计、SQLite 单一权威存储。0085 仍为 Proposed，不等于正式接纳或运行时启用；[合同适用性](docs/design-contract-map.md)明确旧 profile 仍执行原合同，新设计不继承旧函数/文件/物理账本/历史切片形状。以下 universal 不变量不变。
 
 ## 当前阶段（历史基线，当前排期以上节为准）
 
@@ -26,11 +26,11 @@
 
 1. `README.md`
 2. `docs/vision-and-scope.md`
-3. `docs/architecture.md`
-4. `docs/task-lifecycle.md`
-5. `docs/security-model.md`
-6. `docs/runtime-architecture.md`（长期目标架构；v1.0 投影由 ADR 0052 与 I186-R0→R6 定义）
-7. `docs/adr/` 中相关 ADR
+3. `docs/design-contract-map.md`（先区分目标、合同状态、旧 profile 与实际成熟度）
+4. `docs/architecture.md`、`docs/agent-team-service-architecture.md`
+5. `docs/implementation-plan.md`、`docs/agent-team-service-milestones.md`、`docs/roadmap-status.md` 当前表
+6. `docs/task-lifecycle.md`、`docs/security-model.md`、`docs/runtime-architecture.md`
+7. `docs/adr/0085-agent-team-service-contract-and-storage.md` 与命中接缝的原 ADR；`*-reference-*` 只用于历史追溯，不形成第二套强制排期
 
 ## 不可破坏的不变量（universal）
 

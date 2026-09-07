@@ -4,7 +4,7 @@
 
 ## 当前唯一状态与关键路径（2026-09-07）
 
-本节是当前实施依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。2026-09-07 产品要求统一为[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)及 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)；多轮审计见[设计复核](audit-agent-team-service-design-2026-09-07.md)。新设计完成不改变下表能力成熟度。
+本节是当前进度依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。2026-09-07 产品要求统一为[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)及 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）；多轮审计见[设计复核](audit-agent-team-service-design-2026-09-07.md)。设计方向、ADR 接纳、runtime enable 与 release 按[合同适用性](design-contract-map.md)分别判断；新设计完成不改变下表能力成熟度。
 
 - 主线最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；B2 候选在 `feat/b2-durable-materialization@ff71d7b732e42a90d20bec97f01e6c6fed8ba27f`。下述 CI/canary 证据精确属于 `798ea395abd97744cfc69d125ee997933dad06f9`，不能挪给后继。设计文档在独立 `feat/agent-team-service-blueprint` 分支；候选同步不等于 main 合并，没有本轮 localMergeSha/remote merge/stable。
 - 798ea39 的精确 [CI 34095940005](https://github.com/chiga0/marshal-harness/actions/runs/34095940005) 五项全绿；先前 34094155668 的结果计数阻断由 [ADR 0084](adr/0084-pi-typed-terminal-result-framing.md) 候选修正。后继 max 实机 34097645547、一次显式 flash 替代 34098369837 均未完成团队；后者 service 通过真实 Collect/Verify 的 33 项检查并形成 ReviewPacket，client 在模型终态失败。没有本轮独立 Decision/ACCEPTED、第三节点或 GoalOutcome。停止模型轮换，后继聚合终态分类与任务上下文/输出收敛，不删失败分母。演示范围和实际证据见 [PoC 交付页](poc-agent-team-delivery.md)。
@@ -18,7 +18,9 @@
 
 下一步顺序：按 ADR 0085 的目标合同先推进 B1 唯一应用组合/认证 HTTP 与真实单任务，再完成 SQLite 单写与恢复；真正无旧 authority 的新仓库可以直接初始化 SQLite 做最小需求确认纵切，旧仓库另验静止迁移。B2 现有三节点候选保留为诊断/回归资产，不放弃其成果，也不为等待历史导入反复跑旧团队。之后完成 B2 持久交互、受限团队、三个 Provider 与详情/复盘，再 B3。不给旧 Run 补签 Decision、重置预算或洗掉失败成本；没有结构变化和预检不重复付费 Attempt。本轮只修改方案文档，未启动 Run 或迁移状态。
 
-并发边界：当前候选运行时仍只允许两个 scope 互斥的实现节点，第三节点等待上游接纳，不将新方案“最多三个并行 implement”写成已有能力。产品开发可按已冻结合同并行应用/Store 主路径、Adapter、UI/审计投影，共享提交边界只有一个 owner。进程重叠与实际计量需实证；未知测量不得写零。
+并发边界：当前候选运行时仍只允许两个 scope 互斥的实现节点，第三节点等待上游接纳，不将新方案“最多三个并行 implement”写成已有能力。产品开发可围绕目标接口并行应用/Store 主路径、Adapter、UI/审计投影，接口未定先做 fixture/审计，不各自猜测；新边界默认启用前仍须接纳0085与对应验收，共享提交边界只有一个 owner。进程重叠与实际计量需实证；未知测量不得写零。
+
+本轮设计纠偏：旧 architecture/runtime/implementation 长文已转为历史参考，当前入口重写为服务目标；19 份相关 ADR 和四份旧 Adapter 文档标明作用域，0085 补齐固定 Pi、双账本/AST、owner 构造、allocation/stop 等精确替代。只关闭文档误导，不关闭 B1/B2/B3 或新增真实交付；未运行 Worker、未迁移状态、未远端合并。
 
 ## 历史过程记录（不作为当前待办）
 

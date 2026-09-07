@@ -1,5 +1,7 @@
 # ADR 0083：受限团队计划接纳与 Run 幂等物化
 
+> 2026-09-07 适用性：仍为候选提案，不因新设计而追认。固定三节点 Pi/RB1 物化与本机客户端 readback 是旧候选实现；ADR 0085 拟用 Store 事务、注入 Provider、有限模板与节点问答承接，保留计划批准、预算/创建义务原子性及精确成果接纳。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：提议（Proposed），仅未发布候选含接线，未在 main/正式产品启用。初始设计基线为 d67e3b7，B1 依赖现整合到 4ace42c；该 B1 候选的同 server 长 Verify/并行停止组合实机已通过，但尚未合入 main，不能作为 main 的能力声明。
 - 依据：ADR 0019、0052、0069、0080、0082；目标为 B2，不恢复通用 M13/HA/多租户/DSL。
 

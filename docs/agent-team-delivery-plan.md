@@ -8,7 +8,9 @@
 
 控制面管理事实与决策，执行面产生候选和独立验证观察，存储面保留状态与制品。现有实现为 fixed server、多进程、文件账本；目标通过明确单写迁移到 SQLite 与本地对象存储，不建存储微服务、HA 或通用 DSL。
 
-## 三个业务 milestone
+## 历史业务出口与可复用样例
+
+下表是 ADR 0080 时点的业务出口摘要；当前新服务还须满足[完整 Milestone](agent-team-service-milestones.md)的 HTTP、SQLite、持久交互、三 Provider 与交付消费要求，不能只据旧表关闭 B1/B2。ADR 0085 仍为 Proposed，设计/启用状态按[合同适用性](design-contract-map.md)区分。
 
 | 阶段 | 用户结果 | 必须在同一支持路径证明的退出条件 |
 | --- | --- | --- |

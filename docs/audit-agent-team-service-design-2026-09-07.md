@@ -95,3 +95,15 @@
 ## 6. 本轮文档验证
 
 16 份新增/修改 Markdown 的新增本地链接检查通过（56 个目标/锚点），四份新文档代码围栏配对；完整 staged diff 的 `git diff --cached --check` 通过；新增内容约 81 KB 经 gitleaks stdin（redact）未发现 secret。没有修改代码、Schema 或现存运行状态，因此未运行 Go 全仓测试、实机 canary 或数据迁移；这些文档检查不构成产品验收证据。
+
+## 后续专项复核：历史合同与当前设计
+
+维护者要求重新检查旧 ADR/设计是否继续束缚新架构。该检查以 `abc3899` 为基线，不将前三轮“草案内部闭合”解释为整个历史文档集已一致。
+
+两路只读审计发现：固定 Pi/55 materials、双账本 proof/AST、owner 构造形状、allocation projection、全部 UI/Goal 延期、旧 S1′/S2′顺序仍在当前正文使用强制措辞；0085 Proposed 与部分入口“冻结”冲突。问题不是需要删除安全规则，而是历史实现形状被当作长期产品合同。
+
+一次成组修订：重写当前 architecture/runtime/implementation 三个入口、原文归档；19 份旧 ADR/候选与四份 Adapter 文档增加适用性，0085 扩展精确取代表；更新必读路线、README/vision/lifecycle/security、ADR 索引和 Roadmap。新增[合同适用性](design-contract-map.md)，把产品目标、ADR 接纳、runtime enable、实际成熟度分开；0085 保持 Proposed。
+
+验收范围：检查旧 profile 未被放宽、新方案不会再被旧物理形状否定、历史证据未改写，检查相对链接/锚点/围栏/diff/secret；不运行产品或迁库。
+
+两路原审计者对聚合修订复核均为 `P0=0/P1=0`：合同侧确认固定 Pi/跨账本/owner/allocation/transport 漏项已补齐，入口侧确认六类旧矛盾已关闭；未发现误删关键不变量。机械检查覆盖43份 Markdown，194 个新增/归档本地链接和15个锚点无缺失、代码围栏闭合；三份归档正文与 `abc3899` 原文逐字相同（仅标题/归档提示新增）。`git diff --check` 与 staged diff-check 通过，完整 staged diff（约424 KB，含归档）经 gitleaks stdin/redact 未发现 secret。该结果只关闭 `LEGACY-CONTRACT-AS-CURRENT-DESIGN` 的文档问题，不代表 ADR 接纳、数据库迁移或产品验收。

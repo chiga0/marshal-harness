@@ -1,5 +1,7 @@
 # ADR 0065：密封 Run-start proof 与单向生产组合
 
+> 2026-09-07 适用性：双账本各自解释、shared-guard/proof/borrow、exact AST、文件集合及 §10 的 S1→S2 排期拟由 ADR 0085 §4 在新 SQLite 路径替代为短事务/锁外执行/事务重验。旧实现仍执行本文；唯一 producer、current owner/lease/CAS 与 crash/replay 行为必须迁移验证，不能只删测试。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：已接受（Accepted，2026-08-29）。本文档基于 `main@40fa493d1955fd6d039169483a6501a787d3cc14`；接受只冻结合同，不表示实现、集成或发布完成，不升级 I186-R2–R6。
 - 关联：[ADR 0052](0052-v1-release-scope-and-production-reachability.md)（v1.0 生产可达性）、[ADR 0056](0056-darwin-process-observation-and-attempt-terminalization.md)（Attempt terminalization）、[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)（Run/Allocation authority 与唯一 composition root）、[ADR 0060](0060-supervisor-mechanics-authority-binding-and-recovery.md)（Supervisor mechanics 子链）、[ADR 0063](0063-prepared-execution-authority-and-production-chain.md)（PreparedExecution 与 Run-start）、[ADR 0064](0064-darwin-control-directory-phased-identity.md)（Darwin 控制目录身份）、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)。
 

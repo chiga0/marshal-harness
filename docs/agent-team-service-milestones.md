@@ -2,6 +2,8 @@
 
 日期：2026-09-07。依据 [产品架构](agent-team-service-architecture.md)与 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)。保留 B1→B2→B3，不重置失败记录或另起一套“已经完成”的表；当前状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。以下编号是阶段内验收项，不要求每项一 PR、一 Run 或一个 ADR。
 
+0085 仍为 Proposed：本表规定目标出口，不单独授予新边界的默认启用/旧库迁移权限。旧 profile 继续用原合同，新候选按[适用性对照](design-contract-map.md)验证；旧函数/文件/AST/切片顺序不作为本表之外的强制待办。
+
 ## 1. 交付顺序与停止扩张线
 
 主路径：**B1 唯一应用组合 → 一个真实 Agent 的 HTTP 交付 → SQLite 单写与同路径恢复 → B2 交互/受限团队/三个 Agent/最小界面与复盘 → B3 同路径可靠性与正式发布。** 全新无旧 authority 的仓库可直接进入 SQLite 的最小需求/确认/单任务纵切；已有仓库的升级另验迁移，不让历史导入阻塞新业务试验，也不绕过它的正式升级门禁。

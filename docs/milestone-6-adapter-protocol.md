@@ -1,5 +1,7 @@
 # Milestone 6 Agent Adapter 协议
 
+> 2026-09-07 范围说明：本文记录历史 Local MVP/具体 Adapter profile 的实现与验收，不为所有新 Agent 永久规定精确版本、禁 Skill 或原生配置禁用。新目标按[服务架构](agent-team-service-architecture.md)与 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)设计；旧 profile 仍按本文运行，未验证的新版本/能力不能填为 supported。历史证据保留，适用性见[合同对照](design-contract-map.md)。
+
 状态：`FROZEN_FOR_IMPLEMENTATION`
 
 冻结日期：2026-08-04

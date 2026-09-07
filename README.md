@@ -37,7 +37,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 ## 当前可用版本
 
-目前可用的是 macOS 与 Linux 上的本地单用户版本，支持：
+历史 Local MVP 曾在 macOS/Linux 本地单用户路径验证以下能力；这是旧实现的能力清单，不是新服务或 RC1 的统一支持矩阵：
 
 - OpenCode、Qwen Code 和 Pi；
 - 每个任务独立的 Git 工作区；
@@ -50,9 +50,9 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 ## v1.0 发布目标
 
-v1.0 只承诺单节点、单用户、可信仓库：至少一个真实 AgentProvider 在真实 Local/Container Sandbox allocation 中运行，命令和结果由同一 durable authority ledger 管理，结果只经 ResultIngress 接纳，并通过重启恢复、双 binding、独立验证和故障注入。发布支持 `publication:none` 与可选 GitHub Draft PR，默认不 merge。
+当前 v1.0 目标是单节点、单用户、可信仓库的 Agent Team 服务：固定安装命令启动认证 HTTP 和最小任务页，先走通一个真实 Agent，再完成 Pi/Qwen Code/OpenCode 核心兼容；本机 Local/Container allocation、SQLite 单一事务存储、内置监督、持久问答/确认、受限团队与独立验收共同交付可下载重建的成果。发布支持 `publication:none` 与可选 GitHub Draft PR，默认不 merge。
 
-正式 Agent Team 产品还须完成单仓库受限团队的方案确认、持续调度、集成候选与独立验收；这不等于恢复整个 M13。控制面、执行面、存储面职责分离，初期不拆微服务。Cloudflare 完整生产拓扑、HA、多租户、全部 Provider hardened 矩阵、Web UI 与通用 Goal DAG 延期到 1.x。范围见 [ADR 0080](docs/adr/0080-three-plane-business-delivery-roadmap.md)，执行方法见 [业务交付计划](docs/agent-team-delivery-plan.md)，当前完成状态只见 [Roadmap](docs/roadmap-status.md#业务交付当前表)。
+控制面、执行面、存储面职责分离，初期不拆微服务。Cloudflare 完整生产拓扑、HA、多租户、全部 Provider hardened 矩阵、通用可视化编排器与动态 Goal DAG 延期；最小任务页和受限图不延期。目标详情见[服务架构](docs/agent-team-service-architecture.md)，顺序见[实施计划](docs/implementation-plan.md)，旧合同替代见 [ADR 0085（Proposed）](docs/adr/0085-agent-team-service-contract-and-storage.md)与[适用性](docs/design-contract-map.md)，实际完成状态只见 [Roadmap](docs/roadmap-status.md#业务交付当前表)。
 
 ### 2026-09-01 RC1 发布检查点
 

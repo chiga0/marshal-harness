@@ -1,6 +1,6 @@
 # ADR 0085：Agent Team 服务、开放接入与单一事务存储
 
-- 状态：Proposed（产品方向已由维护者于 2026-09-07 确认；本方案已完成三轮设计审计，建议接纳为实施合同；未合入 main，未启用新运行时）
+- 状态：Proposed（当前产品目标设计；初稿完成三轮审计，本轮补齐旧合同适用性。尚未记录本 ADR 的正式接纳，未启用新运行时）
 - 日期：2026-09-07
 - 决策范围：单用户、单节点、可信仓库的 B1→B2→B3；不启用 HA、多租户、恶意代码执行或自动发布。
 - 方案：[服务架构](../agent-team-service-architecture.md)；验收：[Milestone](../agent-team-service-milestones.md)；审计：[复核记录](../audit-agent-team-service-design-2026-09-07.md)。
@@ -9,14 +9,16 @@
 
 维护者需要的产品是一个可独立安装的 HTTP 服务：用户提交简单需求，经澄清/确认后由本机不同 Agent 协作，能够查询 DAG、内部可见进展、答疑、取消及复盘。当前代码的 fixed AF_UNIX/Pi 组合、文件 RB1、禁止部分原生 Skill 的 profile 和人工驱动团队脚本不能直接等同这个产品。
 
-本 ADR 接受后，仅对下列部分取代/澄清，未列出的证据、授权、fencing 与故障不变量保留：
+本 ADR 接受后，仅对下列新服务 profile 的部分取代/澄清。当前设计可按此目标消除旧实现耦合，但提案不授权默认 enable、旧库迁移或复用旧 activation。旧 profile 在实际 cutover 前仍执行原合同，未列出的证据、授权、fencing 与故障不变量保留；文档适用性见[对照表](../design-contract-map.md)。
 
 | 原合同 | 本次替代 |
 | --- | --- |
 | ADR 0052 §1 文件型存储、§2 全部 Web UI/Goal DAG 延期 | SQLite 为首版目标权威存储；前移有限任务详情 UI 与受限 Goal 图，不前移通用编辑器/动态 DSL |
-| ADR 0062 §1/§3 仅本机 AF_UNIX 身份客户端 | 保留 fixed `marshal control-plane serve` 与唯一 Application Port；新增认证 TCP HTTP facade，外部客户端不要求读本机 RB1/验证进程 peer，服务端仍重查当前 authority |
-| ADR 0066 §3/§4 仓库内 `./bin/marshal`、固定物理日志布局/Pi 组合 | 稳定安装身份与业务 repository identity 分离；canonical `.marshal` 和两阶段单 owner 保留；依赖通过唯一组合根注入，物理业务提交迁往 SQLite |
-| ADR 0065 §1/§3–§7 的跨账本 proof API、borrow/锁序、各读自账本及 exact AST 形状 | SQLite 路径改为事务写 intent/outbox→锁外有界执行→同 Store 事务重验/接纳 outcome 与 Run successor；保留唯一 Core producer、当前 owner/lease/CAS 与无通用 append 旁路，不保留已经被替代的物理锁/函数形状测试 |
+| ADR 0058 §1/§3/§7/后果、0063 §1–§4 的 Pi0843IdentityV1、固定根/55 materials/版本常量 | 只保留为旧 Pi profile 的证据合同；新 Agent 身份描述/协议解码由受信注入 Adapter 提供，Core 使用中立 schema，执行层核对实际观测；开放版本不取消逐 Attempt identity/input/fencing，不采信 Worker 自报兼容性 |
+| ADR 0062 §1/§3 仅本机 AF_UNIX 身份客户端、0076 §1–§6/§9 的本机定位/客户端与固定 T1/T2 范围 | 保留 fixed `marshal control-plane serve` 与唯一 Application Port；新增认证 TCP HTTP facade，外部客户端不要求读本机 RB1/验证进程 peer。旧 AF_UNIX 仍守原认证合同；新 HTTP 不是 locator 失败时的隐式降级，服务端仍重查当前 authority |
+| ADR 0066 §2–§6 的仓库内 `./bin/marshal`、固定物理布局/Pi 组合、direct-call/文件集合/AST 及 S1→S2 顺序 | 稳定安装与 repository identity 分离，唯一组合根 DI、业务提交迁 SQLite；保留先拿 scope 单 owner 锁、再验证/提交 owner successor，持锁前无业务副作用；不要求旧 provisional verifier 函数形状或旧两切片排期 |
+| ADR 0065 §1–§7、§10 与后果的双账本解释器、跨账本 proof、borrow/锁序/exact AST、封闭文件与阶段顺序；0067 §2.7/§7 及 S1′/S2′段的继承条款 | SQLite 路径改为事务写 intent/outbox→锁外有界执行→同 Store 事务重验/接纳 outcome 与 Run successor；保留唯一 Core producer、当前 owner/lease/CAS 与无通用 append 旁路。旧路径形状测试保留，新路径以等价行为门禁替代；0067 的 source/process 观测及未知归属/permanent intervention 不变 |
+| ADR 0069 §2–§4 的跨账本 reservation/budget 与 allocation projection/固定锁序、0070 §2/§4 的 RB1 字段派生、0081 候选中的 projection/lane 物理形状 | 新 Store 一次事务保存对应 reservation、预算、binding、release 与投影；保留 creation-once/lookup-before-claim、全仓 target 唯一性、输入摘要、stop/admission 竞争、terminal/cleanup/release 后复用。旧 revision 字节/派生语义不改写，0081 不因引用而被追认 |
 | ADR 0051/0068/0073 的旧安装路径 activation 续行约束 | 新服务引入下述 operator-local 安装记录，只授权新 lineage 的 non-production 试用；旧 activation/旧 Run 不自动 rebind，首次导入仅已收口历史；managed/stable 仍保留原门禁 |
 | ADR 0080 的首部署 file-backed、暂不扩 Provider/UI | 明确目标为 SQLite + 三个首批 Provider + 最小任务页；按一个 Provider 单纵切先完成，不等待完整增强矩阵 |
 | ADR 0019 §8 人工等待全局 Goal pause 的解释 | 新增有界节点级 UserInteraction，局部待答不隐式全局停派；显式 Goal PAUSED 始终停全图新派发，terminal Run 不复活 |
@@ -26,6 +28,8 @@
 
 不得把文档取代解释成当前 unsigned binary 已获新生产授权、历史组件已经集成、旧 Run 可以改写或旧审批扩大。ADR 0052 stable、签名/Linux 门禁不变。
 
+历史实施阶段与函数/文件/物理锁结构不是长期不变量。当前排期统一为 B1→B2→B3；0058/0063 的“新版本必须修改 Core 常量”、0065/0066/0067 的封闭切片/AST 条款不再作为新 profile 的设计准入。这里只集中替代同一服务重构所需的旧假设，不删除其它 ADR，也不为每个实现拆分追加新 ADR。
+
 ## 2. 唯一服务与依赖反转
 
 一个 fixed binary、一套应用组合、同仓库一个 owner、一份权威 Store。HTTP/CLI 只注入 Application Port；生产调用链不能回落到 `execution.Run`、独立 legacy server 或 child CLI。
@@ -33,6 +37,8 @@
 Core 只依赖中立 Port、能力快照与领域类型。Adapter 准备/解码 Agent 协议，执行层管理启动/句柄/deadline/归属，SandboxProvider 管理 allocation。Plan/Review 可使用本地 Agent 生成 proposal/Assessment，但必须使用与 Implement 不同的角色输入、权限与接纳规则；不创建通用 Provider 权威 RPC，不授予 Agent 写账本能力。
 
 核心能力是可驱动、可追踪执行身份、可判终态/取成果、有界止损、显式失败；callback、工具事件、原生交互、中途 steering、resume、tokens/context 都是分别可选的增强。版本按兼容协议与 conformance 管理，实际 binary/config/能力仍逐 Attempt 冻结，禁止中途替换或复用其他身份的旧证据。
+
+Agent launch descriptor 是注册的受信 Adapter 按版本化中立 schema 生成的配置，不是 Worker 提供的权威结果。Core 检查允许 profile、能力和冻结输入；执行层按该 profile 核对真实 executable/runtime/material 观测并绑定 command/outcome。未知协议或不可证明的强制能力拒绝，增强能力未知诚实降级展示。更改支持版本通常更新 Adapter/conformance 而非 Core；只有身份/信任语义改变才需要新决策。
 
 配置选择优先级在同一 Port 明确为：已批准的任务 profile 引用（仅选择允许项）→服务启动时的显式 profile 配置→该 Adapter 声明采用的 Agent 原生配置。Marshal 不私自插入模型 fallback；环境和原生加载规则由 Adapter 记录可见来源。不可见配置内容标 unknown，不能宣称完整可复现或满足需要其证明的任务。
 
@@ -59,6 +65,8 @@ Store 最小语义是 `expected owner/revision + validated command → append im
 启动具体顺序：事务冻结当前 Attempt/输入、预算与 command intent/outbox→释放事务锁后由所属执行控制器执行→事务中重验当前 owner/lease/generation、真实 command outcome 与 Run CAS，并原子接纳 outcome/唯一合法 Run successor。命令落账不等于进程已启动；缺失、未知或被 fence 的结果不得合成 RUNNING。跨步骤 crash 用同 commandId Inspect/Reconcile，不能用旧跨文件 proof 或新通用 `Append` 旁路。ADR 0065 中仍有意义的 hostile/replay 断言迁到该事务接缝，旧路径在该 scope 切换后不可写。
 
 SQLite WAL 使用本地磁盘，权威提交使用 `synchronous=FULL` 及受支持的耐久文件系统，短事务串行写入；Worker/Verifier 执行和网络调用不能持事务锁。查询可并发，长 Verify 不占全局 writer lane。高频遥测与权威事件分流，不承诺所有 token 都落业务日志。
+
+reservation、dispatch claim 和 budget 使用同一 Store 的 creation-once/幂等键与事务，不再要求双账本两次 fsync 补 consumed。任何真正可能启动的 execution obligation 先有冻结输入、授权和保留额度；合法 Run start successor 消费一次，response loss 不 mint sibling。allocation 以 repository-global target identity 保证一个 worktree 一个活跃写绑定；release 必须核对同一 current owner/Attempt/generation、terminalization、process-terminal、cleanup/disposition 的精确链。新绑定只能在旧 release 耐久成立后取得，不因投影缺失、关闭 FD、server 重启或换库而释放。0070 的旧字段定义用于旧记录逐字节解释，新 schema 不把 reservation key、Run revision 与 Attempt revision 混用。
 
 制品先持久化再提交引用；失败事务留下未引用对象供有界 GC，不留下悬空 authority ref。原始不可变 bytes 和 digest 保留，导入/恢复不能因重序列化重新定义旧审批的 subject。PostgreSQL 以后实现同一事务与 conformance，不默认引入事件中间件。
 

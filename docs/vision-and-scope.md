@@ -82,9 +82,10 @@ Marshal Core 是唯一 Supervisor 与权威状态机；Plan/Implement/Verify/Rev
 
 v1.0 用最小但完整的生产纵切证明上述方向可用，而不是交付终态的全部横向能力。它支持单节点、单用户和可信仓库，并要求：
 
-- 至少一个真实 AgentProvider 与一个真实 Local/Container SandboxProvider；
+- 先完成一个真实 Agent 单任务纵切，首版补齐 Pi、Qwen Code、OpenCode 核心兼容和真实 Local/Container Sandbox allocation；
 - Agent 进程实际运行在 allocation 内，真实结果只经 ResultIngress 接纳；
-- CLI 或 loopback `marshal-server`、durable Run journal、WorkerExecutor、Sandbox、AgentRuntime、ResultIngress、独立 Verification 与 Outcome 组成唯一真实调用链；
+- 固定 `marshal control-plane serve` 的认证 HTTP/CLI 共用 Application Port；SQLite 为目标唯一事务 Store，Agent/Execution/Sandbox 依赖注入，ResultIngress、独立 Verification/Review 与 Outcome 组成唯一真实调用链，不使用独立 legacy `marshal-server`；
+- 需求澄清/确认、节点级问答、有限 DAG、内置确定性 Supervisor、最小任务页/审计，以及最终成果下载重建均进入首版；
 - 重启恢复、幂等接纳、generation fencing、Agent/Sandbox 双 binding、cancel/timeout/retry/terminal 均在该链路上生效；
 - 发布仅为 `publication:none` 或可选 GitHub Draft PR，默认不 merge；
 - macOS/Linux 具有稳定发布产物，macOS 正式包通过签名与 notarization。
@@ -92,6 +93,8 @@ v1.0 用最小但完整的生产纵切证明上述方向可用，而不是交付
 v1.0 不承诺多节点 HA、多用户/多租户、Cloudflare 完整生产拓扑、全部 Provider hardened 矩阵、通用可视化编排器、远程 SDK 全矩阵或复杂 Goal DAG。这些能力属于 1.x；最小任务详情 UI 与受限图按 ADR 0085 的服务方案前移，不代表已实现。Local ordinary-user 可以是受支持的 trusted profile，但不能宣称 `hardened` 或恶意代码隔离。
 
 能力只有在真实 composition root 可达且真实 Agent/result bytes 穿过时才算 `INTEGRATED`；只有 release gate 通过才算 `RELEASED`。单独的 ADR、Schema、package 或 component test 不能满足 v1.0。
+
+本节是当前产品目标，新增边界依 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）接纳并分阶段启用；旧 profile 不自动切换。[合同适用性](design-contract-map.md)明确哪些实现假设被替换，哪些安全/恢复语义继续保留。
 
 ## 当前交付基线：Local MVP
 

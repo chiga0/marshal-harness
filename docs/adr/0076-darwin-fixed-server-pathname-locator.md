@@ -1,5 +1,7 @@
 # ADR 0076：Darwin fixed server 的 AF_UNIX pathname locator 与 held-descriptor authority
 
+> 2026-09-07 适用性：本文的 locator/peer/RB1 readback、fixed Pi、S0–S4/T1/T2 和禁止 TCP/UI/其它 Agent 只定义旧 Darwin AF_UNIX 切片，不是产品永远不能扩展。新认证 HTTP 见 ADR 0085 §3；旧 AF_UNIX 的认证、阶段上限、current-owner 与恢复合同不被删除。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 | 字段 | 值 |
 | --- | --- |
 | 状态 | 已接受（Accepted） |

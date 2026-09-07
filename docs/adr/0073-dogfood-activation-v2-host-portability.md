@@ -1,5 +1,7 @@
 # ADR 0073：darwin-local-dogfood activation v2 的同布局 runner 可迁移性
 
+> 2026-09-07 适用性：同布局 activation v2 的旧授权边界保留。新服务独立安装与业务仓库分离拟依 ADR 0085 §3 建新 lineage；不复制旧 activation、不为旧 Run 改签，不追认跨路径在途续行或 managed authority。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 | 字段 | 值 |
 | --- | --- |
 | 状态 | 已接受（Accepted） |

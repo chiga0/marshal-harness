@@ -1,5 +1,7 @@
 # ADR 0062：固定 Marshal 的生产 server mode 与唯一 composition root
 
+> 2026-09-07 适用性：fixed server/唯一 Application Port/无 child CLI fallback 保留；仅 AF_UNIX、客户端自读 RB1 与精确本机 peer 的协议限旧本机 transport。新认证 TCP HTTP facade 的身份与应用接纳边界见 ADR 0085 §3，不是旧连接失败的隐式 fallback。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：已接受（Accepted，2026-08-29）。候选 `742dbf0cc8c55971105710b5142f4c803e97e0f7` 经同一独立 reviewer 聚合复审确认 P0/P1/P2 均为 0；接受只冻结 v1 Mac-first 的生产二进制与入口拓扑，尚未实现 fixed server mode，也不构成 production reachability 或发布授权。
 - 关联：[ADR 0047](0047-marshal-darwin-self-identity-and-release-signing.md)、[ADR 0052](0052-v1-release-scope-and-production-reachability.md)、[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)、[ADR 0059](0059-fixed-darwin-process-supervisor.md)、[ADR 0060](0060-supervisor-mechanics-authority-binding-and-recovery.md)、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)。
 
