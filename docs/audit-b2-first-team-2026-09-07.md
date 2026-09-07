@@ -38,3 +38,5 @@
 两份规范化 WorkerResult 报告的 usage 分别为：服务 inputTokens=27518、outputTokens=30476、cachedInputTokens=570496；客户端 inputTokens=84455、outputTokens=28753、cachedInputTokens=179520。它们是当前 adapter 报告值，不是独立计费账单；缓存口径/去重尚未审计，不直接相加成总消耗或比较成本优势。对 114/70 行候选而言，用量值得专项检查，但尚无同条件 Lead＋SubAgents 配对数据，不能断言浪费来源或宣称加速。
 
 下一步仍是业务闭环：保留服务精确候选；将客户端两项问题合成一次修正，不逐项重试、不原样重跑两个实现节点。当前模板 rework=0、replan 尚未接通，不能偷偷加预算或修改旧 Task。接通正式 Decision、server 自动收集/验证、已接纳上游集成与局部 replan/reuse，后续必须通过原 owner/current-ledger 和 Run 生命周期入口；不要以更多样例通过替代这些缺口。B1/B2 继续 IN_PROGRESS，B3 PLANNED。
+
+补充：本次 runner 已结束，不能将 review-only 归档复制到新 runner 后给原 Run 补签权威 Decision；保留候选不等于已经获得可自动复用的 ACCEPTED。后继已实现 opt-in 同宿主双节点评审载体候选，支持分别记录接受/拒绝并保留另一成果，尚待实机。不立即派新的完整团队；局部 replan/reuse 必须先设计明确预算延续、成果来源和接纳入口，不能用换 Goal 或伪造旧 receipt 实现“复用”。

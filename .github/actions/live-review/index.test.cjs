@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const {workerEnvironment, readFile, validateReady, reviewMarker, selectComment} = require('./index.cjs');
+const {workerEnvironment, readFile, validateReady, reviewTargets, publishDecision, reviewMarker, selectComment} = require('./index.cjs');
 const digest = 'sha256:' + 'a'.repeat(64), head = 'b'.repeat(40);
 const subject = {ownerId: 123, startedAt: Date.parse('2026-09-05T00:00:00Z'),
   marker: reviewMarker('123', head, digest), runId: 'fixed-server-t1-123', packetDigest: digest};
@@ -59,3 +59,65 @@ test('bounded file reader rejects symlinks, hardlinks, directories and excess by
     assert.throws(() => readFile(directory, 1024), /carrier-file-type-or-size/);
   } finally { fs.rmSync(directory, {recursive: true}); }
 });
+
+function teamFixture(check) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-team-review-test-'));
+  const runs = {service: 'team-run-' + 'a'.repeat(64), client: 'team-run-' + 'b'.repeat(64), integration: 'team-run-' + 'c'.repeat(64)};
+  const subject = {runs, sourceHead: head, binarySHA256: 'd'.repeat(64), inputsDigest: digest};
+  const ready = node => ({run: {runId: runs[node], state: 'REVIEW_PENDING'}, packetDigest: 'sha256:' + (node === 'service' ? 'e' : 'f').repeat(64),
+    binarySHA256: subject.binarySHA256, archive: 'review-inputs.tar'});
+  try {
+    fs.writeFileSync(path.join(directory, 'subject.json'), JSON.stringify(subject));
+    for (const node of ['service', 'client']) {
+      fs.mkdirSync(path.join(directory, node));
+      fs.writeFileSync(path.join(directory, node, 'review-ready.json'), JSON.stringify(ready(node)));
+    }
+    check(directory, subject, ready);
+  } finally { fs.rmSync(directory, {recursive: true}); }
+}
+
+test('team carrier has exactly two distinct implement subjects and no integration', () => teamFixture((directory, team) => {
+  const targets = reviewTargets(directory, 'order-quote-team', 'fixed-server-t1-123', head);
+  assert.deepEqual(targets.map(t => t.ready.run.runId), [team.runs.service, team.runs.client]);
+  assert.deepEqual(targets.map(t => t.suffix), ['-service', '-client']);
+  assert.throws(() => reviewTargets(directory, 'other', 'fixed-server-t1-123', head), /carrier-environment/);
+}));
+
+test('team source, run uniqueness and binary drift fail before comment delivery', () => {
+  for (const change of [{sourceHead: '0'.repeat(40)}, {inputsDigest: 'bad'}, {runs: {service: '../other', client: 'x', integration: 'y'}}])
+    teamFixture((directory, team) => {
+      fs.writeFileSync(path.join(directory, 'subject.json'), JSON.stringify({...team, ...change}));
+      assert.throws(() => reviewTargets(directory, 'order-quote-team', 'unused', head), /carrier-team-subject/);
+    });
+  teamFixture((directory, team) => {
+    team.runs.client = team.runs.service;
+    fs.writeFileSync(path.join(directory, 'subject.json'), JSON.stringify(team));
+    assert.throws(() => reviewTargets(directory, 'order-quote-team', 'unused', head), /carrier-team-subject/);
+  });
+  teamFixture((directory, team, ready) => {
+    fs.writeFileSync(path.join(directory, 'client/review-ready.json'), JSON.stringify({...ready('client'), binarySHA256: '0'.repeat(64)}));
+    assert.throws(() => reviewTargets(directory, 'order-quote-team', 'unused', head), /carrier-team-binary-drift/);
+  });
+});
+
+test('client review cannot be confused with service and raw reject bytes publish once', () => teamFixture((directory) => {
+  const targets = reviewTargets(directory, 'order-quote-team', 'unused', head);
+  const subjects = targets.map(target => ({...subject, runId: target.ready.run.runId,
+    packetDigest: target.ready.packetDigest, marker: reviewMarker('123', head, target.ready.packetDigest)}));
+  const raw = JSON.stringify({kind: 'ReviewDecision', runId: subjects[1].runId, reviewPacketDigest: subjects[1].packetDigest, verdict: 'reject'});
+  const clientComment = {...comment(), body: subjects[1].marker + raw};
+  assert.equal(selectComment([clientComment], subjects[0]), null);
+  const selected = selectComment([clientComment], subjects[1]);
+  publishDecision(targets[1], selected, '123', head);
+  assert.equal(fs.readFileSync(path.join(directory, 'client/review-decision.json'), 'utf8'), raw);
+  assert.equal(fs.existsSync(path.join(directory, 'service/review-decision.json')), false);
+  assert.throws(() => publishDecision(targets[1], selected, '123', head), /carrier-decision-already-present/);
+  assert.equal(fs.readFileSync(path.join(directory, 'client/review-decision.json'), 'utf8'), raw);
+}));
+
+test('legacy B1 review layout is unchanged', () => teamFixture((directory, team, ready) => {
+  const targets = reviewTargets(path.join(directory, 'service'), 'order-quote', team.runs.service, head);
+  assert.equal(targets.length, 1);
+  assert.equal(targets[0].suffix, '');
+  assert.deepEqual(targets[0].ready, ready('service'));
+}));

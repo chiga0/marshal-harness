@@ -402,10 +402,10 @@ class FinalizeReviewTest(unittest.TestCase):
             self.assertEqual(driver.await_external_decision(path, 1, now=lambda: 0),
                              {"kind": "ReviewDecision", "verdict": "reject"})
 
-    def setup_delivery(self, verdict="accept", state="ACCEPTED"):
+    def setup_delivery(self, verdict="accept", state="ACCEPTED", verification_status="pass"):
         packet = {"taskId": "task-test", "reviewRound": 1, "specDigest": "sha256:" + "b" * 64,
                   "evidenceDigest": "sha256:" + "c" * 64}
-        summary = {"run": run("REVIEW_PENDING", 3), "verificationStatus": "pass", "accepted": False,
+        summary = {"run": run("REVIEW_PENDING", 3), "verificationStatus": verification_status, "accepted": False,
                    "packetDigest": "sha256:" + "a" * 64}
         decision = dict(packet, kind="ReviewDecision", runId="run-test", verdict=verdict,
                         reviewer={"type": "human", "id": "independent-reviewer"}, reviewPacketDigest=summary["packetDigest"])
@@ -418,9 +418,9 @@ class FinalizeReviewTest(unittest.TestCase):
             calls.append(args)
             return responses.pop(0)
 
-        def execute():
+        def execute(**kwargs):
             return driver.finalize_review(call, lambda name, value: saved.update({name: value}), summary, packet,
-                                          decision, "/fixed/review-decision.json", 30, now=lambda: 0)
+                                          decision, "/fixed/review-decision.json", 30, now=lambda: 0, **kwargs)
 
         return execute, decision, responses, saved, calls
 
@@ -468,6 +468,33 @@ class FinalizeReviewTest(unittest.TestCase):
             execute()
         self.assertFalse(saved["decision-summary.json"]["accepted"])
         self.assertEqual([args[0] for args in calls], ["inspect", "decision", "inspect"])
+
+    def test_team_can_record_failed_verification_reject_without_restarting(self):
+        execute, _, _, saved, calls = self.setup_delivery("reject", "REJECTED", "fail")
+        self.assertEqual(execute(require_accepted=False)["state"], "REJECTED")
+        self.assertFalse(saved["decision-summary.json"]["accepted"])
+        self.assertEqual([args[0] for args in calls], ["inspect", "decision", "inspect"])
+
+    def test_team_mode_cannot_accept_failed_verification(self):
+        execute, _, _, saved, calls = self.setup_delivery(verification_status="fail")
+        with self.assertRaisesRegex(driver.DriveError, "failed-verification-cannot-accept"):
+            execute(require_accepted=False)
+        self.assertEqual(calls, [])
+        self.assertEqual(saved, {})
+
+    def test_rework_records_real_core_state_without_starting_an_attempt(self):
+        execute, _, responses, saved, calls = self.setup_delivery("rework", "REWORK_REQUESTED")
+        del responses[1][1]["Projection"]["outcomeDigest"]
+        self.assertEqual(execute(require_accepted=False)["state"], "REWORK_REQUESTED")
+        self.assertIsNone(saved["decision-summary.json"]["outcomeDigest"])
+        self.assertEqual([args[0] for args in calls], ["inspect", "decision", "inspect"])
+
+    def test_rework_cannot_invent_terminal_outcome_or_retry_pending(self):
+        for state in ("REWORK_REQUESTED", "RETRY_PENDING"):
+            execute, _, _, saved, _ = self.setup_delivery("rework", state)
+            with self.assertRaises(driver.DriveError):
+                execute(require_accepted=False)
+            self.assertNotIn("decision-summary.json", saved)
 
 
 class DriverTest(unittest.TestCase):
@@ -565,6 +592,13 @@ class DriverTest(unittest.TestCase):
             execute()
         self.assertIn("review-packet.json", saved)
         self.assertFalse(saved["review-summary.json"]["accepted"])
+
+    def test_team_driver_can_capture_failed_verification_for_independent_reject(self):
+        responses = iter(self.happy(status="fail"))
+        summary = driver.drive(lambda *_: next(responses), lambda *_: None, "run-test", 30,
+                               now=lambda: 0, pause=lambda _: None, require_pass=False)
+        self.assertEqual(summary["verificationStatus"], "fail")
+        self.assertFalse(summary["accepted"])
 
     def test_final_query_drift_rejected(self):
         responses = self.happy()

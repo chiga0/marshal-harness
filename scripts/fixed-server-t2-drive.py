@@ -130,7 +130,7 @@ def run_projection(value, run_id, state, prior=None, advance=False):
     return value
 
 
-def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep, before_verify=None):
+def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep, before_verify=None, require_pass=True):
     """Only positive running observations authorize bounded identical polling.
 
     Neither generic pending, timeout nor a failed process is classified as a
@@ -197,7 +197,7 @@ def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep, before_
         raise DriveError("final-inspection-mismatch")
     summary.update(stage="review-pending", finishedAt=now(), run=current)
     save("review-summary.json", summary)
-    if summary.get("verificationStatus") != "pass":
+    if summary.get("verificationStatus") not in {"pass", "fail"} or require_pass and summary["verificationStatus"] != "pass":
         raise DriveError("business-verification-failed")
     return summary
 
@@ -410,17 +410,19 @@ def business_stop_recovery(read_prior, binary_digest, run_id, now, timeout):
     return previous, deadline
 
 
-def finalize_review(call, save, summary, packet, decision, decision_path, deadline, now=time.time):
+def finalize_review(call, save, summary, packet, decision, decision_path, deadline, now=time.time, require_accepted=True):
     """Deliver an external review; neither construct one nor retry mutation.
 
     These checks catch transport mistakes. The fixed client and server still
     own canonical digest validation, current-ledger admission and Outcome.
     """
     current = summary["run"]
-    if summary.get("verificationStatus") != "pass" or summary.get("accepted") is not False:
+    if summary.get("verificationStatus") not in {"pass", "fail"} or summary.get("accepted") is not False:
         raise DriveError("review-not-ready")
     if not isinstance(decision, dict) or decision.get("kind") != "ReviewDecision":
         raise DriveError("invalid-external-decision")
+    if summary["verificationStatus"] != "pass" and decision.get("verdict") not in {"reject", "rework"}:
+        raise DriveError("failed-verification-cannot-accept")
     if decision.get("runId") != current["runId"] or decision.get("reviewPacketDigest") != summary["packetDigest"]:
         raise DriveError("external-decision-packet-mismatch")
     for key in ("taskId", "reviewRound", "specDigest", "verificationDigest", "artifactManifestDigest", "evidenceDigest", "localSelfIdentityBindingDigest"):
@@ -451,22 +453,24 @@ def finalize_review(call, save, summary, packet, decision, decision_path, deadli
         raise DriveError("decision-unresolved-no-automatic-retry")
     projection, receipt = value["Projection"], value["Receipt"]
     observed = projection.get("run")
-    if not isinstance(observed, dict) or observed.get("state") not in ("ACCEPTED", "NO_CHANGE", "REJECTED", "BLOCKED", "RETRY_PENDING"):
+    if not isinstance(observed, dict) or observed.get("state") not in ("ACCEPTED", "NO_CHANGE", "REJECTED", "BLOCKED", "REWORK_REQUESTED"):
         raise DriveError("unexpected-decision-state")
     after = run_projection(observed, current["runId"], observed["state"], current, True)
     if any(receipt.get(key) != expected for key, expected in {"runId": after["runId"], "attemptId": after["attemptId"], "postRevision": after["sequence"], "postAuthorityHead": after["authorityHead"]}.items()):
         raise DriveError("decision-receipt-mismatch")
     if projection.get("verdict") != decision.get("verdict") or projection.get("evidenceDigest") != decision.get("evidenceDigest") or not DIGEST.fullmatch(projection.get("decisionDigest", "")):
         raise DriveError("decision-projection-mismatch")
-    if after["state"] != "RETRY_PENDING" and not DIGEST.fullmatch(projection.get("outcomeDigest", "")):
+    if after["state"] != "REWORK_REQUESTED" and not DIGEST.fullmatch(projection.get("outcomeDigest", "")):
         raise DriveError("decision-outcome-missing")
+    if after["state"] == "REWORK_REQUESTED" and projection.get("outcomeDigest"):
+        raise DriveError("nonterminal-decision-outcome")
     code, inspected = invoke(["inspect", "--run", current["runId"]])
     if code != 0 or run_projection(inspected, current["runId"], after["state"], after) != after:
         raise DriveError("decision-final-inspection-mismatch")
     accepted = after["state"] == "ACCEPTED" and decision.get("verdict") == "accept"
     save("decision-summary.json", {"run": after, "accepted": accepted, "decisionDigest": projection["decisionDigest"],
                                    "outcomeDigest": projection.get("outcomeDigest"), "finishedAt": now()})
-    if not accepted:
+    if require_accepted and not accepted:
         raise DriveError("independent-review-not-accepted")
     return after
 

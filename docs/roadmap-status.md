@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 后继实现：按 ADR 0082 扩展同宿主团队评审载体，两个 implement 的审查包全部关闭后才 ready，各自接收独立 Decision；先到先处理，共用有界等待，拒绝不丢弃另一节点成果，不启动新 Attempt。已通过 9 项团队驱动、44 项生命周期驱动、13 项载体测试及原脚本回归；新候选仍待精确 CI/实机，不倒填 34082574786 的 Decision。当前 Goal 保持业务交付及对照收益口径，不重建 Goal 清零失败成本；暂不再派整个团队，先闭环局部 replan/reuse 和集成。B1/B2 IN_PROGRESS、B3 PLANNED，无新 main merge/stable。
+
 2026-09-07 实质进展与限制：`7a4f7d0` CI 34081513199 五项通过，真实团队 34082574786 成功完成两个节点各一次 Attempt、Collect/Verify 和 REVIEW_PENDING；66 条 RB1 记录及审查包绑定已核对。但独立审查以真实 HTTP 反例确认客户端 P1/P2，尚无 Decision/ACCEPTED、integration、Goal Outcome 或效率优势。已补齐原契约的 oracle 盲区与提示澄清，不修改旧 Run、不重跑已完成服务；下一关键路径为正式接纳/聚合客户端修正、局部 replan/reuse 和成果集成。详见[业务审查](audit-b2-first-team-2026-09-07.md)。
 
 2026-09-07 验证纠偏：`5ca49bc` 的 CI 34080540487 前置团队回归通过，但 macOS/Linux quality 均在新 CLI 跨链测试中发现手写 environment-binding 版本错误；该测试此前未包含在前置步骤。现改用正式类型/版本常量及逐节点 Task/Policy Schema 诊断，并前移整个 CLI 包的 race 回归，同步 CI 精确内容契约。实机未派发，不把前置绿灯冒充完整链路通过；此第二次夹具来源返工计入成本。B1/B2 IN_PROGRESS、B3 PLANNED，仍须新 head CI→真实双节点→独立验收与集成交付。

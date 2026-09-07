@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-07：补齐团队同宿主独立 Decision 传输断点
+
+首轮 hosted 团队在 REVIEW_PENDING 后退出；离线审查包不能恢复原宿主 current-ledger 权威，故不能补签原 Run ACCEPTED。按 ADR 0082 的封闭扩展，在原 server 内为 service/client 分别传送已有 ReviewDecision，节点精确身份/packet/binary/source 绑定不变；统一等待预算，先到先处理，已证明的 reject 不阻止另一节点 Decision，未知 mutation 仍停止且不重试。验证 fail 仅允许独立 reject/rework，不允许 accept。即使两个实现都 ACCEPTED，也明确没有 integration/Goal Outcome，团队 accepted=false。
+
+本轮没有新付费 Worker、没有手改 `.marshal` 或跨 runner 导入 authority。核对实际 DecisionImporter 调用链时同步纠正旧驱动把 rework 后状态误写为 `RETRY_PENDING` 的错误：使用真实 `REWORK_REQUESTED`，非终态无 Outcome，仍不触发 Attempt。9 项团队驱动、44 项生命周期驱动、13 项载体测试及原脚本检查通过；这是可执行的候选入口，不是团队正式接纳证据。下一步仍须局部 replan/reuse、接纳上游的集成与 server 自主推进；不以又一次全团队运行代替缺失的恢复/复用能力。
+
 ## 2026-09-07：真实双节点完成原验收，独立审查仍发现业务缺陷
 
 `7a4f7d0` 的 CI 34081513199 五项通过；实机 34082574786 完成同 server 批准→两个真实 Pi 节点各一次 Attempt→Collect/Verify/REVIEW_PENDING，66 条 RB1 摘要/序号与两个审查包的各八份文件绑定已检查。没有逐节点外部 Start，没有 integration、正式 Decision 或 Goal Outcome，进程重叠尚未独立证明。详见[精确候选业务审查与效率复盘](audit-b2-first-team-2026-09-07.md)。

@@ -40,6 +40,36 @@ function validateReady(value, runId) {
   return value;
 }
 
+function reviewTargets(directory, scenario, runId, sourceHead) {
+  if (scenario === 'order-quote') {
+    return [{directory, suffix: '', ready: validateReady(JSON.parse(readFile(path.join(directory, 'review-ready.json'), 65536)), runId)}];
+  }
+  if (scenario !== 'order-quote-team') fail('carrier-environment');
+  const subject = JSON.parse(readFile(path.join(directory, 'subject.json'), 65536));
+  const nodes = ['service', 'client', 'integration'];
+  if (subject.sourceHead !== sourceHead || !/^[a-f0-9]{64}$/.test(subject.binarySHA256) ||
+      !DIGEST.test(subject.inputsDigest) || !subject.runs ||
+      Object.keys(subject.runs).length !== 3 ||
+      nodes.some(node => !/^team-run-[a-f0-9]{64}$/.test(subject.runs[node])) ||
+      new Set(nodes.map(node => subject.runs[node])).size !== 3) fail('carrier-team-subject');
+  return nodes.slice(0, 2).map(node => {
+    const child = path.join(directory, node);
+    const ready = validateReady(JSON.parse(readFile(path.join(child, 'review-ready.json'), 65536)), subject.runs[node]);
+    if (ready.binarySHA256 !== subject.binarySHA256) fail('carrier-team-binary-drift');
+    return {directory: child, suffix: `-${node}`, ready};
+  });
+}
+
+function publishDecision(target, selected, workflowRun, sourceHead) {
+  const stage = path.join(target.directory, 'external-decision.stage');
+  const destination = path.join(target.directory, 'review-decision.json');
+  fs.writeFileSync(stage, selected.raw, {flag: 'wx', mode: 0o600});
+  if (fs.existsSync(destination)) fail('carrier-decision-already-present');
+  fs.renameSync(stage, destination);
+  fs.writeFileSync(path.join(target.directory, 'review-carrier.json'), JSON.stringify({artifact: target.artifact,
+    commentId: selected.commentId, workflowRun, sourceHead, packetDigest: target.ready.packetDigest}) + '\n', {flag: 'wx', mode: 0o600});
+}
+
 function reviewMarker(workflowRun, sourceHead, digest) {
   if (!/^[1-9][0-9]*$/.test(workflowRun) || !/^[a-f0-9]{40}$/.test(sourceHead) || !DIGEST.test(digest)) fail('carrier-invalid-identity');
   return `<!-- marshal-fixed-server-review:v1:${workflowRun}:${sourceHead}:${digest} -->\n`;
@@ -116,16 +146,18 @@ async function main() {
   const env = process.env, root = fs.realpathSync('.');
   const startedAt = Date.now(), workflowRun = env.GITHUB_RUN_ID, sourceHead = env.EXPECTED_HEAD;
   const runId = `fixed-server-t1-${workflowRun}`;
-  if (env.GITHUB_REPOSITORY !== REPO || env.GITHUB_RUN_ATTEMPT !== '1' || env.CANARY_SCENARIO !== 'order-quote' || !env.INPUT_TOKEN) fail('carrier-environment');
+  if (env.GITHUB_REPOSITORY !== REPO || env.GITHUB_RUN_ATTEMPT !== '1' ||
+      !['order-quote', 'order-quote-team'].includes(env.CANARY_SCENARIO) || !env.INPUT_TOKEN) fail('carrier-environment');
   reviewMarker(workflowRun, sourceHead, 'sha256:' + '0'.repeat(64));
   const maintainers = readFile(path.join(root, '.github/MAINTAINERS'), 65536).toString('utf8').split(/\r?\n/);
   const repo = await github('', env.INPUT_TOKEN);
   if (repo.full_name !== REPO || repo.owner?.login !== 'chiga0' || !Number.isSafeInteger(repo.owner.id) || !maintainers.includes('chiga0')) fail('carrier-owner-not-authorized');
-  const evidence = path.join(root, '.marshal/fixed-server-t1-canary', runId), t2 = path.join(evidence, 't2');
+  const evidence = path.join(root, '.marshal/fixed-server-t1-canary', runId);
+  const reviewDirectory = path.join(evidence, env.CANARY_SCENARIO === 'order-quote-team' ? 'team' : 't2');
   fs.appendFileSync(env.GITHUB_ENV, `T1_RUN_ID=${runId}\nT1_EVIDENCE_ROOT=${evidence}\n`);
   const args = ['scripts/fixed-server-t1-canary.sh', '--expected-head', sourceHead, '--pi-model', env.PI_MODEL,
     '--pi-node', env.PI_NODE, '--pi-bin', env.PI_BIN, '--pi-bundle', env.PI_BUNDLE,
-    '--run-id', runId, '--evidence-root', evidence, '--scenario', 'order-quote', '--await-review'];
+    '--run-id', runId, '--evidence-root', evidence, '--scenario', env.CANARY_SCENARIO, '--await-review'];
   if (args.some(arg => typeof arg !== 'string')) fail('carrier-missing-input');
   const child = spawn('/bin/bash', args, {cwd: root, env: workerEnvironment(env), stdio: ['ignore', 'inherit', 'inherit']});
   let stopped = false, exitCode;
@@ -140,19 +172,22 @@ async function main() {
     const readyDeadline = performance.now() + 15 * 60000;
     while (true) {
       if (stopped) fail('carrier-canary-exited-before-review');
-      try { readFile(path.join(t2, 'review.ready'), 0); break; }
+      try { readFile(path.join(reviewDirectory, 'review.ready'), 0); break; }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
       if (performance.now() >= readyDeadline) fail('carrier-review-not-ready');
       await pause(1000);
     }
-    const ready = validateReady(JSON.parse(readFile(path.join(t2, 'review-ready.json'), 65536)), runId);
-    const marker = reviewMarker(workflowRun, sourceHead, ready.packetDigest);
-    const artifact = await upload(t2, `fixed-server-review-${workflowRun}`);
-    console.log(`Independent review ready: artifact ${artifact.id}; issue #186; marker ${marker.trim()}`);
-    const subject = {ownerId: repo.owner.id, startedAt, marker, runId, packetDigest: ready.packetDigest};
+    const targets = reviewTargets(reviewDirectory, env.CANARY_SCENARIO, runId, sourceHead);
+    // Upload and both reviews consume the same wait window, not one per node.
     const deadline = performance.now() + 17 * 60000;
-    let selected;
-    while (!selected) {
+    for (const target of targets) {
+      const marker = reviewMarker(workflowRun, sourceHead, target.ready.packetDigest);
+      target.artifact = await upload(target.directory, `fixed-server-review-${workflowRun}${target.suffix}`);
+      target.subject = {ownerId: repo.owner.id, startedAt, marker, runId: target.ready.run.runId, packetDigest: target.ready.packetDigest};
+      console.log(`Independent review ready: artifact ${target.artifact.id}; Run ${target.ready.run.runId}; issue #186; marker ${marker.trim()}`);
+    }
+    const pending = new Set(targets);
+    while (pending.size) {
       if (stopped) fail('carrier-canary-exited-awaiting-review');
       if (performance.now() >= deadline) fail('carrier-review-wait-expired');
       const comments = [];
@@ -163,18 +198,15 @@ async function main() {
         if (batch.length < 100) break;
         if (page === 5) fail('carrier-comment-page-limit');
       }
-      selected = selectComment(comments, subject);
-      if (!selected) await pause(5000);
+      for (const target of pending) {
+        const selected = selectComment(comments, target.subject);
+        if (selected) {
+          publishDecision(target, selected, workflowRun, sourceHead);
+          pending.delete(target);
+        }
+      }
+      if (pending.size) await pause(5000);
     }
-    // Evidence is a new exact canary directory. Publish complete bytes once;
-    // the Python consumer additionally validates type, duplicate JSON and drift.
-    const stage = path.join(t2, 'external-decision.stage');
-    const destination = path.join(t2, 'review-decision.json');
-    fs.writeFileSync(stage, selected.raw, {flag: 'wx', mode: 0o600});
-    if (fs.existsSync(destination)) fail('carrier-decision-already-present');
-    fs.renameSync(stage, destination);
-    fs.writeFileSync(path.join(t2, 'review-carrier.json'), JSON.stringify({artifact, commentId: selected.commentId,
-      workflowRun, sourceHead, packetDigest: ready.packetDigest}) + '\n', {flag: 'wx', mode: 0o600});
     await Promise.race([exited, pause(6 * 60000).then(() => fail('carrier-finalize-timeout'))]);
     if (exitCode !== 0) fail('carrier-canary-not-accepted');
   } finally {
@@ -188,7 +220,7 @@ async function main() {
   }
 }
 
-module.exports = {workerEnvironment, readFile, validateReady, reviewMarker, selectComment};
+module.exports = {workerEnvironment, readFile, validateReady, reviewTargets, publishDecision, reviewMarker, selectComment};
 if (require.main === module) {
   if (process.argv[2] === '--upload') uploadChild(process.argv[3], process.argv[4]).then(() => process.exit(0), () => process.exit(1));
   else main().then(() => process.exit(0), error => {

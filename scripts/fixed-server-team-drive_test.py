@@ -22,7 +22,7 @@ def running(run):
 
 
 class TeamDriveTest(unittest.TestCase):
-    def test_main_one_approval_two_existing_drives_no_start(self):
+    def exercise_main(self, live=False, rejected=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             (root / "scripts").mkdir()
@@ -41,22 +41,90 @@ class TeamDriveTest(unittest.TestCase):
                 self.assertEqual(command[:2], [str(root / "bin/marshal"), "control-plane"])
                 value = {} if command[2] == "team-approve" else running(command[-1])
                 return types.SimpleNamespace(returncode=0, stdout=json.dumps(value).encode(), stderr=b"")
-            def drive(call, save, run_id, deadline):
+            def drive(call, save, run_id, deadline, require_pass=True):
+                self.assertEqual(require_pass, not live)
                 driven.append(run_id)
                 save("review-packet.json", {"Projection": {"packet": {"runId": run_id}}})
+                summary = {"run": {**running(run_id), "state": "REVIEW_PENDING"}, "packetDigest": "sha256:" + "c"*64}
+                save("review-summary.json", summary)
+                return summary
+            def capture(root, run, packet, archive):
+                archive.write_bytes(b"closed-test-archive")
+            def review(call, save, reviews, output, unchanged, seconds):
+                self.assertTrue((output / "review.ready").is_file())
+                self.assertTrue(unchanged())
+                self.assertEqual(seconds, 1200)
+                for node in ("service", "client"):
+                    self.assertEqual((output / node / "review-inputs.tar").read_bytes(), b"closed-test-archive")
+                    self.assertEqual(json.loads((output / node / "review-ready.json").read_bytes())["run"]["runId"], RUNS[node])
+                return {node: {"state": "REJECTED" if rejected and node == "client" else "ACCEPTED"} for node in ("service", "client")}
             with mock.patch.object(driver, "__file__", str(root / "scripts/fixed-server-team-drive.py")), \
-                    mock.patch("sys.argv", ["driver", "--evidence-root", str(evidence)]), \
+                    mock.patch("sys.argv", ["driver", "--evidence-root", str(evidence), "--await-review-seconds", "1200" if live else "0"]), \
                     mock.patch.object(driver, "subjects", return_value=RUNS), \
                     mock.patch.object(driver.subprocess, "run", side_effect=execute), \
                     mock.patch.object(driver.t2, "drive", side_effect=drive), \
-                    mock.patch.object(driver.t2, "capture_review_inputs") as capture:
-                self.assertEqual(driver.main(), 0)
+                    mock.patch.object(driver.t2, "capture_review_inputs", side_effect=capture) as captured, \
+                    mock.patch.object(driver, "review_team", side_effect=review) as reviewed:
+                self.assertEqual(driver.main(), 1 if rejected else 0)
             self.assertEqual(calls, ["team-approve", "inspect", "inspect"])
             self.assertEqual(driven, [RUNS["service"], RUNS["client"]])
-            self.assertEqual(capture.call_count, 2)
+            self.assertEqual(captured.call_count, 2)
+            self.assertEqual(reviewed.call_count, int(live))
             summary = json.loads((evidence / "team/summary.json").read_bytes())
             self.assertFalse(summary["accepted"])
             self.assertFalse(summary["integrationExecuted"])
+            self.assertEqual(summary["stage"], "two-implement-reviewed" if live else "two-implement-review-pending")
+            if rejected:
+                self.assertEqual(summary["reviewedRuns"]["service"]["state"], "ACCEPTED")
+                self.assertEqual(json.loads((evidence / "team/failure.json").read_bytes())["automaticRetry"], False)
+
+    def test_main_one_approval_two_existing_drives_no_start(self):
+        self.exercise_main()
+
+    def test_main_closes_both_archives_before_live_review_without_claiming_team_acceptance(self):
+        self.exercise_main(live=True)
+
+    def test_main_reject_preserves_other_acceptance_without_retry(self):
+        self.exercise_main(live=True, rejected=True)
+
+    def test_reviews_arrive_out_of_order_and_reject_does_not_discard_other_node(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            for node in ("service", "client"):
+                (output / node).mkdir()
+            client = output / "client/review-decision.json"
+            service = output / "service/review-decision.json"
+            client.write_text('{"verdict":"reject"}')
+            clock, calls = [0], []
+            def pause(seconds):
+                clock[0] += seconds
+                if not service.exists():
+                    service.write_text('{"verdict":"accept"}')
+            def finalize(call, save, summary, packet, decision, path, deadline, require_accepted):
+                self.assertFalse(require_accepted)
+                self.assertLessEqual(deadline, 10)
+                calls.append(path.parent.name)
+                return {"state": "ACCEPTED" if decision["verdict"] == "accept" else "REJECTED"}
+            with mock.patch.object(driver.t2, "finalize_review", side_effect=finalize):
+                result = driver.review_team(None, lambda *_: None, {node: ({}, {}) for node in RUNS}, output,
+                                            lambda: True, 10, now=lambda: clock[0], wall=lambda: clock[0], pause=pause)
+            self.assertEqual(calls, ["client", "service"])
+            self.assertEqual(result["service"]["state"], "ACCEPTED")
+            self.assertEqual(result["client"]["state"], "REJECTED")
+
+    def test_shared_review_deadline_and_binary_drift_do_not_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "client").mkdir()
+            clock = [0]
+            with mock.patch.object(driver.t2, "finalize_review") as finalize:
+                with self.assertRaisesRegex(driver.Error, "wait-expired"):
+                    driver.review_team(None, None, {}, output, lambda: True, 2, now=lambda: clock[0],
+                                       pause=lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+                (output / "client/review-decision.json").write_text('{}')
+                with self.assertRaisesRegex(driver.Error, "binary-drift"):
+                    driver.review_team(None, None, {}, output, lambda: False, 2)
+                finalize.assert_not_called()
 
     def test_approval_exact_binding(self):
         bundle = {"spec": {"goalId": "goal-1", "authorityNamespaceId": {}},

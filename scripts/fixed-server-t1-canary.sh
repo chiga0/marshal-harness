@@ -55,7 +55,9 @@ case "$SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout
 if [ "$SCENARIO" = order-quote-team ]; then
   [ "${#RUN_ID}" -le 112 ] || die 'team run-id 过长'
 fi
-[ "$AWAIT_REVIEW" -eq 0 ] || [ "$SCENARIO" = order-quote ] || die 'await-review 只适用于 order-quote'
+if [ "$AWAIT_REVIEW" -gt 0 ]; then
+  case "$SCENARIO" in order-quote|order-quote-team) ;; *) die 'await-review 只适用于 order-quote/team' ;; esac
+fi
 if [ "$STOP_CRASH" -eq 1 ]; then
   case "$SCENARIO" in order-quote-timeout|order-quote-run-timeout) ;; *) die 'stop-crash 只适用于业务 timeout' ;; esac
 fi
@@ -278,7 +280,7 @@ append_audit server1 serve ready
 if [ "$SCENARIO" = order-quote-team ]; then
   # No task plan/approve or per-node Start. The authenticated team operation
   # is the only approval; resident Core owns creation and both first Starts.
-  "$PYTHON_BIN" -I -B scripts/fixed-server-team-drive.py --evidence-root "$EVIDENCE_ROOT"
+  "$PYTHON_BIN" -I -B scripts/fixed-server-team-drive.py --evidence-root "$EVIDENCE_ROOT" --await-review-seconds "$AWAIT_REVIEW"
   assert_server_pid "$server1_pid"
   kill -TERM "$server1_pid"
   set +e
@@ -288,7 +290,7 @@ if [ "$SCENARIO" = order-quote-team ]; then
   [ "$team_server_status" -eq 0 ] || die 'team server 未正常退出'
   write_process_evidence "$EVIDENCE_ROOT/server1-process.json" "$server1_pid" SIGTERM "$team_server_status"
   server1_pid=""
-  printf '[fixed-server-team] TWO_IMPLEMENT_REVIEW_PENDING; integration and independent Decision remain open\n'
+  printf '[fixed-server-team] implementation evidence retained; consult summary for Decisions; integration remains open\n'
   exit 0
 fi
 if [ "$VERIFY_PEER" -eq 1 ]; then

@@ -76,11 +76,42 @@ def await_initial(call, save, ready, runs, deadline, now=time.time, pause=time.s
     raise Error("team-resident-dispatch-deadline")
 
 
+def review_team(call, save, reviews, output, binary_unchanged, seconds, now=time.monotonic, wall=time.time, pause=time.sleep):
+    """Consume whichever independent Decision arrives first, with one budget.
+
+    A known reject is evidence, not a reason to discard the other node. Any
+    unknown mutation still aborts: no retry, new approval or integration here.
+    """
+    deadline, reviewed = now() + seconds, {}
+    while len(reviewed) < 2:
+        if now() >= deadline:
+            raise Error("independent-review-wait-expired")
+        for node in ("service", "client"):
+            if node in reviewed:
+                continue
+            decision_path = output / node / "review-decision.json"
+            if not decision_path.exists() and not decision_path.is_symlink():
+                continue
+            decision = t2.await_external_decision(decision_path, deadline, now=now, pause=pause)
+            if not binary_unchanged():
+                raise Error("fixed-binary-drift")
+            summary, packet = reviews[node]
+            node_save = lambda name, value: save(node + "-" + name, value)
+            reviewed[node] = t2.finalize_review(call, node_save, summary, packet, decision, decision_path,
+                                               wall() + min(300, max(0, deadline - now())), require_accepted=False)
+        if len(reviewed) < 2:
+            pause(min(1, max(0, deadline - now())))
+    return reviewed
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence-root", required=True)
+    parser.add_argument("--await-review-seconds", type=int, default=0)
     args = parser.parse_args()
+    if not 0 <= args.await_review_seconds <= 1200:
+        parser.error("invalid review deadline")
     root = Path(__file__).resolve().parent.parent
     binary, evidence = root / "bin/marshal", Path(args.evidence_root)
     if (not evidence.is_absolute() or evidence.resolve() != evidence
@@ -134,18 +165,40 @@ def main():
         ready = lambda run: (root / ".marshal/runs" / run / "state.json").is_file()
         await_initial(call, save, ready, runs, time.time() + 120)
         deadline = time.time() + 360
+        reviews = {}
         for node in ("service", "client"):
             node_save = lambda name, value: save(node + "-" + name, value)
-            t2.drive(call, node_save, runs[node], deadline)
+            summary = t2.drive(call, node_save, runs[node], deadline, require_pass=not args.await_review_seconds)
             packet = json.loads((output / (node + "-review-packet.json")).read_bytes())["Projection"]["packet"]
             t2.capture_review_inputs(root, runs[node], packet, output / (node + "-review-inputs.tar"))
+            reviews[node] = (summary, packet)
         if ready(runs["integration"]):
             raise Error("integration-materialized-before-acceptance")
         if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
             raise Error("fixed-binary-drift")
-        save("summary.json", {"stage": "two-implement-review-pending", "accepted": False,
+        reviewed = {}
+        if args.await_review_seconds:
+            # Closed, diagnostic copies only. Never restore an authority store
+            # or turn these files into approval for another runner.
+            for node in ("service", "client"):
+                directory = output / node
+                directory.mkdir(mode=0o700, exist_ok=False)
+                for leaf in ("review-inputs.tar", "review-summary.json", "review-packet.json"):
+                    with (directory / leaf).open("xb") as destination:
+                        destination.write((output / (node + "-" + leaf)).read_bytes())
+                summary, _ = reviews[node]
+                save(node + "/review-ready.json", {"run": summary["run"], "packetDigest": summary["packetDigest"],
+                                                   "archive": "review-inputs.tar", "binarySHA256": binary_digest})
+            with (output / "review.ready").open("xb"):
+                pass
+            reviewed = review_team(call, save, reviews, output,
+                                   lambda: hashlib.sha256(binary.read_bytes()).hexdigest() == binary_digest,
+                                   args.await_review_seconds)
+        save("summary.json", {"stage": "two-implement-reviewed" if reviewed else "two-implement-review-pending", "accepted": False,
                               "integrationExecuted": False, "processOverlapProven": False,
-                              "externalStartCalls": 0, "runs": runs})
+                              "externalStartCalls": 0, "runs": runs, "reviewedRuns": reviewed})
+        if reviewed and any(run["state"] != "ACCEPTED" for run in reviewed.values()):
+            raise Error("team-independent-review-not-accepted")
         return 0
     except (Error, OSError, ValueError, KeyError, TypeError) as exc:
         # Do not disclose raw provider output, config, paths or exception text.

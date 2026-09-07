@@ -18,7 +18,7 @@ on:
         type: choice
         options: [t1-marker, order-quote, order-quote-cancel, order-quote-timeout, order-quote-run-timeout, order-quote-team]
       live-review:
-        description: 在原 server 存活期间等待独立维护者 Decision，最长20分钟
+        description: 在原 server 等待独立维护者 Decision（order-quote 或两个 team implement，共用最长20分钟）
         required: true
         default: false
         type: boolean
@@ -69,7 +69,7 @@ jobs:
           [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::expected-head 必须是 40 位小写 commit" >&2; exit 1; }
           [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || { echo "::error::pi-model 必须是 provider/model" >&2; exit 1; }
           case "$CANARY_SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout|order-quote-team) ;; *) echo "::error::invalid scenario" >&2; exit 1 ;; esac
-          if [ '${{ inputs.live-review }}' = true ]; then test "$CANARY_SCENARIO" = order-quote; fi
+          if [ '${{ inputs.live-review }}' = true ]; then case "$CANARY_SCENARIO" in order-quote|order-quote-team) ;; *) exit 1 ;; esac; fi
           if [ '${{ inputs.stop-crash }}' = true ]; then case "$CANARY_SCENARIO" in order-quote-timeout|order-quote-run-timeout) ;; *) exit 1 ;; esac; fi
           if [ '${{ inputs.verify-peer }}' = true ]; then test "$CANARY_SCENARIO" = order-quote-timeout; test '${{ inputs.stop-crash }}' != true; test '${{ inputs.live-review }}' != true; fi
           MODEL_ID="${PI_MODEL#*/}" VARS_MODELS="$VARS_MODELS" /usr/bin/python3 -I -B -c 'import os,sys; values=[v.strip() for v in os.environ["VARS_MODELS"].split(",") if v.strip()]; os.environ["MODEL_ID"] in values or sys.exit("pi-model 不在 OPENAI_MODELS allowlist")'
@@ -210,6 +210,8 @@ jobs:
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/start-request.json
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/command-audit.jsonl
             .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/team/*.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/team/service/review-carrier.json
+            .marshal/fixed-server-t1-canary/${{ env.T1_RUN_ID }}/team/client/review-carrier.json
             .marshal/runs/team-run-*/state.json
             .marshal/runs/team-run-*/events.jsonl
             .marshal/runs/team-run-*/outcome.json
