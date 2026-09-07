@@ -17,10 +17,28 @@ import (
 func acceptedFixture(t *testing.T) (reviewFixture, domain.RunState, domain.RunEvent) {
 	t.Helper()
 	f := newReviewFixture(t)
-	f.task.Repository.BaseRef = strings.Repeat("1", 40)
+	// TaskSpec is a partial read model, not a lossless producer. Preserve the
+	// original document instead of materializing omitted optional fields as
+	// invalid zero values (for example deliverable mediaType="").
+	var taskDocument map[string]json.RawMessage
+	if err := json.Unmarshal(f.taskData, &taskDocument); err != nil {
+		t.Fatal(err)
+	}
+	var repository map[string]json.RawMessage
+	if err := json.Unmarshal(taskDocument["repository"], &repository); err != nil {
+		t.Fatal(err)
+	}
+	repository["baseRef"], _ = json.Marshal(strings.Repeat("1", 40))
+	taskDocument["repository"], _ = json.Marshal(repository)
 	var err error
-	f.taskData, err = json.Marshal(f.task)
+	f.taskData, err = json.Marshal(taskDocument)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.validator.Validate(domain.KindTask, f.taskData); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(f.taskData, &f.task); err != nil {
 		t.Fatal(err)
 	}
 	f.specDigest, err = canonical.DigestJSON(f.taskData)

@@ -1,5 +1,7 @@
 # 设计审计报告
 
+2026-09-07 候选 CI 纠偏：`5753ca3` 的 34086700262 在 Linux/macOS 的新 review 正例构造失败，原因是本次测试把部分读取模型 `domain.TaskSpec` 重新序列化，令原本省略的 deliverable `mediaType` 变成 Schema 不允许的空串；不是 Worker 失败，也没有执行到接纳读取断言。修正为保留原完整 JSON、仅替换锁定 base，并在 fixture 构造时立即校验 Schema。该成本计一次作者/测试返工，不能把多个同源测试失败计成多个独立业务失败。前置回归改为串行运行全部目标包、聚合退出失败，避免第一个包失败掩盖后续接缝、下一轮才发现；不增加并行负载、不降低失败门禁。动态修复结果仍待后继 CI。
+
 ## 2026-09-07：集成输入从已接纳证据读取，不从工作分支取最新值
 
 按 ADR 0083 增加 `RepositorySession.ReadAcceptedTeamInputs`：只接受原 Goal/集成节点/plan fact 选择器，在当前 owner 下同时持有两个原 Run lease，核对创建绑定、原 Task、最终 review.accept 事件、Decision/packet/report/manifest 与 Core Outcome producer，再核对 candidate detached identity、namespace/base/Attempt 及实际 patch。返回值只是只读快照，不是创建授权；后继冻结和 Start 必须重查。占用或未接纳是等待，不触发 Prepare/Worker；损坏、halt 或 owner 失效不猜测重试。
