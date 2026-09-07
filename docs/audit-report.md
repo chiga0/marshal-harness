@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-07：Darwin 动态验证失败与前移反馈
+
+`3f91d425` 的 CI `34138530708`：Linux 两种架构 conformance、Ubuntu quality 与 secret scan 通过，Darwin quality 失败，不得进入团队实机或标记通过。新增 cold verification/busy sibling 测试未先调用团队批准就物化，触发预期的 authority-conflict；修测试前提，不放宽产品批准。另一失败是 resultingress 全包 race 达到 Go 默认 10 分钟上限，当时栈中单测仅运行 4 秒；ECS 对 `eb480a83` 同名单测独跑 7.014 秒通过，只能排除该 Linux 定向运行的持续卡死，不能替代 Darwin 结论。
+
+发现后取消包含相同测试代码、由本任务启动的 `34140017814`，保留日志，不继续原样全仓重试。补候选分支 push 触发的 Darwin 8 项关键路径诊断（检查实际 pass、拒绝零匹配和任意 test/package fail），先反馈当前调用链；新 workflow 不以尚不存在的默认分支 manual 入口为前提。全仓仍保留全部 race，将包级预算显式设为 20 分钟，原 CI job 30 分钟上限保留。该时间是整个测试包的累计预算，不改变产品期限或准入；若仍超限继续分析，不无限延长或删测试。诊断 workflow 不授予 canary、merge、release 权限。独立审查指出 `go test | tee` 的退出码遮蔽风险，已显式启用 pipefail 并拒绝 JSON 中任意 fail，避免只检查选定成功名而漏掉额外失败。
+
 ## 2026-09-07：自动团队推进候选与远端验证边界
 
 后续 canary 修正客户端验真方式：`order-quote-team` 显式启动 `--auto-team-progress`，客户端只观察原 Attempt 的单调状态、获取 ReviewPacket 和传递独立 Decision；禁止客户端 Start/Collect/Verify，诊断记录三者调用为零。原主动驱动的其他场景不变。归档报告 status 仅标记诊断来源，不代替 Core canonical digest/current-ledger 重查或独立审查，也不证明进程重叠。19 项团队客户端、44 项原客户端与 canary 脚本检查通过；这是测试准备，不是实机团队成功。完整 HTTP Task、独立集成及下载消费仍开放。

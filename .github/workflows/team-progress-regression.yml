@@ -1,0 +1,66 @@
+name: Team progress candidate regression
+
+# Diagnostic fast feedback only. This workflow never grants canary, merge,
+# stable or deployment authority; the complete CI workflow remains required.
+on:
+  push:
+    branches: [feat/team-autonomy-canary]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: macos-14
+    timeout-minutes: 12
+    env:
+      GOMAXPROCS: '2'
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout dispatch commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify source and modules
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          go mod download
+          go mod verify
+      - name: Run bounded Darwin regression
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          go test -race -p 2 -count=1 -timeout=120s -json \
+            -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$GITHUB_SHA" \
+            -run '^(TestTeamProgress.*|TestRepositoryTeamProgress.*|TestBackgroundTeamRunLanesAndVerificationYield|TestBackgroundRunReleasePreservesPublicWaiter|TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor)$' \
+            ./internal/cli ./internal/productionruntime ./internal/fixedcontrolplane ./internal/resultingress \
+            | tee team-progress-results.jsonl
+      - name: Reject empty or skipped regression coverage
+        run: |
+          python3 -I -B - <<'PY'
+          import json
+          from pathlib import Path
+          expected = {
+              "TestTeamProgressCollectVerifyAndStaleSelections",
+              "TestTeamProgressFailureAndPositiveLiveness",
+              "TestRepositoryTeamProgressUsesApprovedCreationAndColdHalt",
+              "TestTeamProgressRoundRobinDoesNotStarveFinishedSibling",
+              "TestRepositoryTeamProgressColdVerificationBarrierAndBusySibling",
+              "TestBackgroundTeamRunLanesAndVerificationYield",
+              "TestBackgroundRunReleasePreservesPublicWaiter",
+              "TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor",
+          }
+          events = [json.loads(line) for line in Path("team-progress-results.jsonl").read_text().splitlines()]
+          if any(event.get("Action") == "fail" for event in events):
+              raise SystemExit("regression contains test or package failure")
+          passed = {event.get("Test") for event in events if event.get("Action") == "pass"}
+          if not expected <= passed:
+              raise SystemExit("missing passing regression cases: " + ", ".join(sorted(expected - passed)))
+          print("8 required Darwin regression cases passed; diagnostic only")
+          PY

@@ -85,6 +85,9 @@ func TestRepositoryTeamProgressColdVerificationBarrierAndBusySibling(t *testing.
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = session.Close() })
+	if _, err := session.ApproveInitialTeam(ctx, request); err != nil {
+		t.Fatal(err)
+	}
 	var runs []fixedDeliveryFixture
 	var running []application.RunProjection
 	for _, node := range []string{"service", "client"} {
