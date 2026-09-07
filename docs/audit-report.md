@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-07：Task-first，团队交付先于管理平台
+
+按用户要求重新检查首个业务出口，发现上一稿把 Workspace/安装身份/显式初始化/全面 SQLite/三 Provider 放在团队之前。源码有现成 RepositorySession/Store、双节点物化与受控执行接缝，换库不能自动解除 Git 耦合；先补团队闭环更短。本轮删除 Workspace 产品实体，B1 先一个 Provider 两实例真实交付，B2 再简启动/SQLite/零 Git/问答/更多 Provider，B3 保留正式故障和发布门禁。不是把旧失败重新计成完成。
+
+两路对实际三稿只读审查合计 1 项 P1、2 项必要 P2：publication:none 下作者可达发布凭据的歧义、预上传输入尚无 Task 的绑定、恢复失败却承诺在线 HTTP 查询。已一次聚合修订，限定复核见[本轮记录](audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)。仍保留独立验收、受管目录单写、已知结构性失败不原样重试、最小本地保护和持久事实；账号平台后置不等于无保护 HTTP。
+
+ADR 0085 仍 Proposed。本轮只改方案文档，未运行 Agent、修改 .marshal 或发布产品。AGENTS.md 同步被自动审批拒绝，保持原文件并记录待授权事项，不绕过保护。原审计和失败证据全部保留。
+
 ## 2026-09-07：旧合同实施形状被误当长期架构
 
 范围：`feat/agent-team-service-blueprint@abc3899` 后续文档审计；两路只读检查分别覆盖 ADR 适用性和当前入口一致性。发现上一轮虽新增服务方案，但旧正文仍用“当前/唯一/禁止/冻结”要求 file-backed、固定 Pi、exact AST、旧切片顺序，并把全部 UI/问答放旧阶段；0085 的 Proposed 与部分入口“冻结”又不一致。根因是只追加新方向、不撤出旧规范入口。

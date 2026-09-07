@@ -1,6 +1,6 @@
 # 任务生命周期
 
-2026-09-07 服务投影见 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)与[服务架构](agent-team-service-architecture.md)：用户任务复用 Goal；节点级 UserInteraction 只阻塞依赖，全局 Goal pause 仍停止全图派发；已运行的等待有界，terminal Run 不复活。UI 阶段/状态是投影，不绕开以下转换；AskUser、SQLite 原子提交及验收型 NO_CHANGE 交付必须按新合同实施和验证后才启用，不能从本文历史状态名推定已有支持。
+2026-09-07 Task-first 目标见 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）与[服务架构](agent-team-service-architecture.md)：公开 Task 复用 Goal，旧内部 Task 执行规格对外称 WorkItem；没有 Workspace 实体。B1 先明确需求/有限计划确认并完成团队交付，B2 才补完整持久节点问答、SQLite 与同版本恢复。下面身份/状态/转换表是既有 Run/旧工程 Task 合同，不把它复制成第二套公开 Task 生命周期。节点待答不隐式全局暂停，显式 pause/cancel 优先，terminal Run 不复活；新语义须实现/验收后启用，不能由 UI/HTTP PATCH 状态旁路。
 
 ## 目的
 

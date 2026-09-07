@@ -1,63 +1,54 @@
 # Runtime 架构
 
-> 当前服务方案的实现投影，2026-09-07。ADR 0085 仍为 Proposed；本文不替代其接纳或实机门槛。历史合同适用性见[对照表](design-contract-map.md)，产品 API 与详细 matrix 见[服务架构](agent-team-service-architecture.md)。
+> 2026-09-07 Task-first 目标投影。完整行为见[服务架构](agent-team-service-architecture.md)，边界由 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）承载；本文不提前启用新权限、数据迁移或生产支持。
 
-## 单一写入与依赖方向
+## 唯一组合与内部数据根
 
-HTTP/CLI→Application Port→Core controllers→Store/Execution/Agent/Sandbox/Verification/Publication Port；唯一生产组合根注入实现。Core 不导入具体 Provider 品牌，不将 CLI handler 当应用层，不回落 legacy server/child CLI/通用可写账本 API。
+HTTP/CLI→Application Port→Core→Store/Execution/Agent/Sandbox/Verification 接口。组合根注入具体实现，Core 不导入品牌或数据库，HTTP 不启动 child CLI，也不回落 legacy server。
 
-一个 Workspace 同时只有一个 current owner；状态根为 `<workspace>/.marshal`，Workspace 无需是仓库。服务安装身份与 Workspace 身份独立。SQLite 是目标唯一 Store，旧 repository file-backed 仅保留为旧路径/显式迁移来源，不双写、不按修改时间选真值。
+没有 Workspace 实体/ID/API。服务启动时选择一个内部 data-dir，任务不能通过请求切根；内部 Store ID/generation 和执行身份用于互斥、当前性与恢复，不是用户身份系统。受管目录单写、旧根不自动接管；不创建 Project/资源注册替代 Workspace。
 
-Core 不注册仓库或表：业务对象通过 Task prompt/context 传入。通用事务处理批准输入、执行 profile、预算、归属与证据，不要求 repoId/baseCommit/ResourceBinding。Git 的锁定基线/独立 worktree/patch 由适配层提供，非 Git 使用独立目录和制品。Port 是接口契约，DI 在组合根注入实现，不是微服务或网络端口。
+B1 复用已有 RepositorySession、RB1/Run Store 的唯一权威组合，先在真实 Git 样例闭环。它物理上可以是多文件，但不额外加入平行 JSON Task/SQLite 写权威。B2 切最小 SQLite Store 并解除通用任务的仓库前提；Git baseline/worktree 留适配层，非 Git 使用独立目录与制品，不造假 commit。HTTP/application 不绑定存储物理形状，避免换库再写一次业务。
 
-## 权威事务与执行顺序
+## 最小事务语义
 
-| 时点 | 在同一 Store 事务中 | 事务外 |
+| 时点 | 权威提交 | 执行/网络 |
 | --- | --- | --- |
-| 接受请求 | 授权后查幂等；新命令才做 expected revision/CAS；事件、投影、回执一起提交 | 响应可丢失，精确同请求只返回原回执 |
-| 准备执行 | 重验 owner/输入/预算/scope，预留唯一 Attempt 与 execution obligation，记录 command intent/outbox | 按冻结身份启动/观察进程或调用 Provider |
-| 接纳结果 | 重验 current owner/lease/generation、实际 outcome、Run head；原子记录接纳与合法 successor | 独立验证/工具/网络不能持全局数据库锁 |
-| 停止执行 | 与结果接纳竞争 CAS；持久化 stop intent/fence | owned controller 有界停止/Inspect；未知不释放 writer |
-| 结束与释放 | 核对 terminal/cleanup/allocation/stop 或正常完成的精确链；记 release、结算、Outcome | 回收已证明可清理的资源；用户目录/worktree 不擅自删除 |
+| 请求接纳 | 认证后先查精确幂等，未命中新命令才 revision CAS，保存回执 | 丢响应不重建 Task |
+| 准备执行 | 输入/计划/预算、唯一 Attempt/创建义务和 command intent | 事务/受保护提交之外启动所属执行 |
+| 收取结果 | 重验当前 owner/lease/generation、真实 outcome 和 Run head，唯一 successor | 独立验收不长持全局 writer lane |
+| 停止 | stop intent/fence 与结果接纳竞争 | 有界停止/Inspect；未知不释放占用 |
+| 结束 | 精确 terminal/cleanup/disposition 后释放、结算与 Outcome | 仅回收已确认归属且可安全清理的对象 |
 
-数据库短事务取代新路径的跨文件 proof/shared-guard/固定 AST 形状，不取代真实副作用证明、唯一 producer 与 currentness。旧 schema/replay 不原地改写，字段级新协议在对应纵切与生产者/测试一起落地。
+B1 保留原受控提交接缝；B2 SQLite 将相关事件/投影/幂等/预算/outbox 一次事务化，不重写业务含义。真实副作用不能因数据库事务成功而伪造。未知命令先 Inspect/Reconcile，无查询/幂等证据不盲重发，不靠通用 Append 绕过 Core。
 
-外部 outcome 未知时以原 commandId Inspect/Reconcile；没有查询/原生幂等证据就不盲目重发。进程已启动不等于结果已接纳，Agent 自报成功不等于 Run 成功。具体合同见 [ADR 0085 §4](adr/0085-agent-team-service-contract-and-storage.md#4-权威事务与-sqlite-切换)。
+制品先耐久保存并验证摘要，再提交引用；业务记录不可抽样，高频观察可以有界批量且明示丢失。SQLite 使用本地耐久磁盘与短写事务，WAL/同步设置和恢复以故障测试证明。无数据库全量平台建设前置。
 
 ## 内置 Supervisor
 
-一个 resident deterministic controller 从 durable obligations 与当前状态恢复调度，内存活跃索引/计时器可重建；不用用户不断调用 CLI 推进，也不新起权威 watchdog。
+同一 resident controller 自动推进接纳后计划、Start、Collect、Verify/Review 队列、集成和 Outcome；不需要人逐 Run 调 CLI，不起外部 watchdog 或监督 LLM。
 
-- 先处理已到期 deadline、未决停止/结果、review 队列，再补派 scope 互斥任务。
-- 资源准入同时看可用内存、CPU、执行槽、Provider 限额、scope 与待审 WIP；不只看进程数。
-- 原 deadline/预算不因重启、transport retry、局部 rework、successor 而刷新。
-- Activity/tool event 是可选观察：无事件不能直接判死锁，有日志也不能延长硬 deadline 或宣称成功。
-- 取消 API 接收业务 execution ID，不接收任意可 kill PID；结果先接纳则取消太晚，stop 先接纳则迟到结果隔离。
+B1 两作者先跑通；B2 根据目录/依赖、内存/CPU、Provider 限额及验收队列扩容。长 Verify/坏 Run 不拖住查询、取消及其他 deadline。工具事件只是观察，无事件不判定死锁，日志不延长 deadline。取消使用 owned execution ID，不接受任意 PID，stop 未确认不派替身。
 
-队列、日志、订阅、输出、重试与等待都有边界。取消/查询延迟必须在长 Verify 和多 Run 并发下实测；长任务不能持全局 writer lock。原 ADR 0067 的未知归属/permanent intervention 不因改存储变成自动解锁权限。
+重试/返工/后继计原任务预算，结构性错误无事实变化不原样重试。局部修正复用仍有效的无关成果，不能安全恢复就显式非成功，不重跑整队洗掉成本。
 
-## 问答、DAG 与审计
+## 计划与交互
 
-公开 Task 对应既有 Goal，taskId 直接映射 Goal ID；有限 work item/node→旧内部 Task 执行规格→Run→Attempt。HTTP `/tasks` 为主入口，阶段是只读投影；若保留旧 `/goals` 别名则共用 canonical command/幂等/revision，不另造生命周期。UI 只在 API-STABLE 后消费同一接口。UserInteraction 冻结 subject/revision、待答节点、期限和批准范围；普通回答、计划批准、工具权限、交付验收不能互相替代。
+公开 Task 映射既有 Goal；WorkItem 是内部执行规格的节点投影，Run/Attempt 用作历史诊断，不增加可写 Task 状态机。B1 明确需求/模板一次确认；B2 questions/answers 处理关键澄清、节点阻塞和必要人工验收。
 
-节点待答只阻塞相关依赖，Goal `PAUSED`/cancel 优先停全图新派发。向 Agent 送答案通过 outbox，发送前重验 fence；ack 丢失无原生查询/幂等时保留 unknown，不因 Core 已消费就声称 Agent 只收一次。终态 Run 不因用户回答复活。
+答案绑定 subject/revision/类型/期限，发送前重验 pause/cancel/fence；确认丢失无原生查询/幂等则 unknown，不能宣称 exactly-once。全局 pause/cancel 优先，等待不延长执行 deadline；终态 Run 不复活。
 
-审计记录真实提交的 prompt/context 快照、可见事件、耗时、用量来源/覆盖、review/rework/验收与交付结果。不采集隐藏推理，不伪造 Agent 未暴露的全量上下文。强制预算维度与观察维度分开；未知 actual 用 nullable 与保守 debit，补充真实测量通过修正事件，不改旧事实、不把结算未知变成永久活 Worker。
+## 恢复分期与迁移
 
-## 存储、制品与恢复
+- B1：计划、命令、执行/结果/失败持久；正常重启能查事实且不乱重派。恢复失败停止接单、报告原因并保留原受支持只读诊断，不承诺此时在线 HTTP，不宣称透明自动恢复所有崩溃。
+- B2：同版本恢复、节点级等待/取消/结果竞争、SQLite 单 owner/单写真值、无 Git/多仓库成果；新空数据根自动建立，损坏/不兼容/丢失部分状态不自动清空。
+- B3：长历史、一致备份恢复、磁盘满/旧 owner/迟到结果/洪泛、长期任务与正式平台支持。恢复单位是任务事实和成果，不保证 Agent 原会话永存。
+- U1：显式旧来源合法收口后持锁导入只读历史，保留原 ID/bytes/digest/预算/namespace；切原根前机械禁止旧 writer，不重签/双写/强杀/复用未知目录。未过不宣称升级支持，也不阻新任务。
 
-SQLite 使用本地耐久磁盘、WAL、`synchronous=FULL` 和有界事务；事件、投影、幂等、预算、outbox 一次提交。高频遥测不与权威事件同等写放大。制品先耐久保存再提交引用，未引用对象只在证明安全后有界 GC。
+备份包含一致 Store 快照和制品 manifest；恢复先只读核对旧 owner/执行/外部效果再开放写。历史 replay 不执行 outbox，DB rollback 不回滚外部 SQL/Git/云。外部写能力默认不启用；以后按单独实测 profile 处理授权/回执/unknown，不提前造通用资源锁。
 
-首次迁移只导入已合法收口历史；包括 REVIEW_PENDING 在内的旧非终态不得自动 rebind。持原 owner 锁备份，保留 IDs/原 bytes/digest/引用/预算/幂等，验证等价后切唯一 store generation；旧入口必须机械拒绝新布局，仅写旧版本不认识的 marker 不够。切换后旧账本只读，不双写、不补签旧授权。
+## 审计与复用
 
-新空 Workspace 与新的独立执行目录直接做 SQLite 原生完整 HTTP 纵切，包含零 Git SQL/文件交付，不先在旧账本重复实现。旧来源升级单列 B1-U；需复用的旧工作目录未合法释放就不能接管，旧 `.marshal` 不得清空/改名冒充新状态。不要求全机资源盘点或仓库注册。
+自 B1 保存真实提交 prompt/context、阶段时间、尝试/失败、独立 Evidence/Decision 和精确交付；B2 提供 Task 聚合/可选事件。隐藏推理或 Agent 未暴露数据标不可见，未知用量不当零；如果保留额度预留，unknown 只能按批准规则保守 debit，不假退款或占用假活 Worker。
 
-首版排他保证覆盖自身受管执行目录，不冒充跨 Workspace/人工/外部表的全局锁。原生工具外部副作用必须在批准范围内；缺回执/查询/取消证据标 unknown 或限制支持，禁止自动重跑可能重复写的执行。取消本机 Agent 不等于取消远端作业，SQLite 恢复不回滚外部数据。
-
-备份使用一致快照和制品 manifest；恢复先只读，确认旧执行/owner 不能继续写及外部效果可对账后才开放变更。历史 replay 不执行 outbox；数据库恢复从不等于 Git/云端回滚。PostgreSQL 后续通过同一 Port/conformance 接入，不能增加第二真值。
-
-## 验证与保留资产
-
-复用现有状态 reducer、Evidence/Decision、process mechanics、权限和故障案例；把两账本/函数形状测试转为新 Store 接缝上的行为测试。核心矩阵覆盖 stale/forged result、启动/停止/响应丢失、预算单次消费、重复 writer、旧库拒绝与导入、问答后 cancel、交付下载重建。
-
-旧实现的详细字段/锁序可查[历史 Runtime 参考](runtime-architecture-reference-2026-09-07.md)与相关 ADR；它们不是新服务的物理拆分或强制切片清单。验收必须穿过生产组合根，不能以文档、Fake、compile-only 或旧 profile 的证据升级新支持。
+复用 reducer、制品/Decision、process mechanics 与现有故障案例；旧文件/AST/两账本测试在原 profile 留用，SQLite 路径改测等价行为。核心目标是同一真实业务调用链，不是重写所有历史模块。[历史 Runtime 参考](runtime-architecture-reference-2026-09-07.md)仅用于追溯。

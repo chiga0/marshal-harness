@@ -6,11 +6,11 @@
 
 **让 Agent Team 可以长期、可靠地完成真实业务任务。**
 
-Marshal 是一个可自托管的任务控制系统。它在轻量 Workspace 中接收需求与上下文，把可确认的方案接纳为有限、可检查的执行步骤，安排一个或多个 Agent 和执行环境完成工作，并保留恢复、验证与审计所需的信息。Workspace 不要求是 Git 仓库，也不是业务资源目录；任务可以交付 SQL、文档或一个/多个仓库的代码成果。
+Marshal 是一个可自托管的 Agent Team HTTP 服务：接收需求和上下文，确认方案后组织有界执行、集成与独立验收，交付可使用的成果并保留审计。用户只需理解 Task、Worker、Artifact；没有 Workspace/Project 注册。Git、表结构或平台信息是任务上下文，不是 Core 资源目录。
 
-当前 Local MVP 已有执行、独立验证、审查和 Draft PR 的历史能力，RC1 的支持面是下述 CLI-only local-dogfood。正式产品按 B1 单任务服务、B2 受限多 Agent 交付、B3 长期运行与正式支持收敛；它们尚未整体完成。多节点 HA、多租户和通用 Goal DAG 仍属于 1.x。
+当前 Local MVP 已有执行、独立验证、审查和 Draft PR 的历史能力，RC1 支持面仍是下述 CLI-only local-dogfood。当前目标为 B1 真实团队 PoC、B2 本地 API 可用、B3 正式可靠发布；旧单任务与团队证据继续保留，尚未整体完成。
 
-2026-09-07 产品方案已整理为 [Workspace Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与[多轮审计记录](docs/audit-agent-team-service-design-2026-09-07.md)：一个固定命令启动认证 HTTP API，开放 Pi/Qwen Code/OpenCode 接入，内置监督、持久问答、任务 DAG 和审计，每 Workspace 使用 SQLite 单一权威存储。先交付 API，达到 `API-STABLE` 后才开发 UI，UI 不阻塞 API 正式发布。边界变化由 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md) 承载；这是待实施设计，不表示上述能力已发布。
+2026-09-07 方案收缩为 [Task-first Agent Team 架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)和[审计记录](docs/audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)：先用一个可用 Provider 的两个实例走通真实交付，不先做 Workspace、安装身份平台或全面迁库。目标一命令启动本地 HTTP，原生 Agent 自管登录/Skill，Supervisor 内置；SQLite/零 Git/问答在 B2，正式平台支持在 B3。边界由 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)（Proposed）承载，文档不代表功能已发布。
 
 旧 Marshal skill 不再是产品运行依赖、研发准入或验收标准，不读取、加载或执行其流程；保留历史运行、失败和审计资产。Pi/Qwen Code/OpenCode 自带的 Skill、模型配置与登录仍由各 Agent 自行管理。
 
@@ -52,11 +52,15 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 ## v1.0 发布目标
 
-当前 v1.0 目标是单节点、单用户、可信业务任务的 Workspace Agent Team HTTP 服务。目标命令 `marshal control-plane serve --workspace <path> --listen 127.0.0.1:0` 打开一个工作区并报告监听地址；这是新设计命令，不是现有 RC1 使用说明。Workspace 组织任务、默认执行配置、目录、输入、制品和审计，允许零 Git；仓库、表结构和平台信息通过任务 prompt/context 提供，不要求在 Core 注册资源。
+单节点、单用户、可信任务的 Task-first Agent Team 服务。目标命令 `marshal serve` 自动准备默认数据目录和本地访问保护；可选 data-dir 仅是本机启动配置，没有 Workspace ID/初始化向导、账号/组织或资源注册。接口以 `/v1/tasks` 为中心；这是待实现形态，不是 RC1 命令说明。
 
-对外 `Task` 映射已有 `Goal`，DAG 节点叫 `WorkItem`，不并列两套任务权威。先走通一个真实 Agent，再完成 Pi/Qwen Code/OpenCode 核心兼容；Local/Container allocation、SQLite 单一事务存储、内置监督、持久问答/确认、受限团队与独立验收共同交付可下载消费的成果。首版验证零 Git 制品和单/多仓库交付；外部 SQL 发布、执行或补数只能按实测支持声明，生成文件不等于业务已执行。发布支持 `publication:none` 与可选 GitHub Draft PR，默认不 merge。
+- **B1 团队 PoC**：复用现有合法固定安装/Store，用真实 Git 样例、一个 Provider 两实例并行；服务自主收集、独立验收、集成与下载交付。先补业务闭环，不先全面换库或等三品牌。
+- **B2 本地 API 可用**：简短需求问答/确认、SQLite、零 Git 与多仓库、同版本恢复、任务图/Worker 详情/审计和更多 Adapter。Pi、Qwen Code、OpenCode 逐个声明实测支持；全部增强能力不作前置。
+- **B3 正式发布**：同路径长期/故障与恢复验证、Darwin 签名/notarization、Linux 实机及受保护 stable release。U1 旧历史导入单独证明，不挡新任务；UI 仅核心 API-STABLE 后开发，不阻 API 发布。
 
-控制面、执行面、存储面职责分离，初期不拆微服务。`<workspace>/.marshal/` 是新目标状态根；旧 repository `.marshal` profile 只按原合同运行与显式迁移，不自动接管。API 可独立使用和发布，`API-STABLE` 后的 UI-1 才提供任务页/DAG/Worker 详情。Cloudflare 完整生产拓扑、HA、多租户、全部 Provider hardened 矩阵、通用可视化编排器与动态 Goal DAG 延期。目标详情见[服务架构](docs/agent-team-service-architecture.md)，顺序见[实施计划](docs/implementation-plan.md)，旧合同替代见 [ADR 0085（Proposed）](docs/adr/0085-agent-team-service-contract-and-storage.md)与[适用性](docs/design-contract-map.md)，实际完成状态只见 [Roadmap](docs/roadmap-status.md#业务交付当前表)。
+控制/执行/存储三面逻辑分离，初期一个服务，Core 通过接口 DI 与 Agent/Sandbox/Store 解耦。Task 复用既有 Goal；计划、WorkItem、Run/Attempt 是内部记录，不新建两套权威。Agent 使用自身已配置模型和 Skill，不建设统一登录/Skill 平台；独立验证、受管目录单写、所属进程取消、最小持久事实与本地访问保护仍保留。
+
+默认仅交付成果，不自动生产写/发布/merge。SQL 文件生成不等于生产执行/补数；可选 Draft PR 和其他外部写以后按独立权限与实测 profile 开放。旧 repository .marshal 不自动接管，不双写或清空。详细目标见[架构](docs/agent-team-service-architecture.md)，实施顺序见[计划](docs/implementation-plan.md)，真实完成情况只见 [Roadmap](docs/roadmap-status.md#业务交付当前表)。
 
 ### 2026-09-01 RC1 发布检查点
 

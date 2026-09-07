@@ -4,9 +4,9 @@
 
 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 将受限 Agent Team 前移：用户意图→澄清/确认→有界任务→集成候选→独立验证→授权交付，按 B1→B2→B3 验收。下文旧排期中“Goal DAG 延期”仍适用于通用/复杂编排，不再排除这个受限 profile。控制面、执行面、存储面分离不意味着每个模块独立部署。能力现状只见 [Roadmap](roadmap-status.md#业务交付当前表)。
 
-[服务产品方案](agent-team-service-architecture.md)进一步明确首版形态与 [Milestone](agent-team-service-milestones.md)：一个 server 打开一个轻量 Workspace，固定命令启动认证 HTTP API；公开 Task 映射既有 Goal，内部 Task 执行规格对外称 WorkItem。Workspace 可无 Git，只组织任务、配置、目录、输入、制品和审计；仓库/表/平台通过 prompt/context 提供，不建设 Core 资源注册。Agent 自管登录/Skill，Pi、Qwen Code、OpenCode 按核心/增强能力接入；内置确定性监督、持久 AskUser、有限 DAG 和审计 API。SQLite 是 Workspace 目标存储，PostgreSQL 后置。
+[服务产品方案](agent-team-service-architecture.md)与 [Milestone](agent-team-service-milestones.md)明确 Task-first：用户只需 Task、Worker、Artifact；没有 Workspace/Project 实体或资源注册。data-dir 只是服务内部配置，仓库/表/平台通过 prompt/context 提供。目标一个 marshal serve 启动本地 HTTP，自动初始数据与访问保护；账号/安装身份平台/统一 Agent 登录后置。Core 的内置监督、独立验收与执行归属保留。
 
-API-first：B1→B2→`API-STABLE`→B3 交付正式 HTTP 产品；达到 API-STABLE 后才开发 UI-1，UI 未完成不阻塞 API 正式发布。旧 Marshal skill 不读取、不加载、不运行，也不属于研发准入或验收标准；历史运行/失败/审计资产保留，各 Agent 原生 Skill 不受此禁用影响。涉及旧合同的修改见 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed），在其对应实现/实机验收前不升级能力状态。
+API-first 顺序为 B1 真实团队 PoC→B2 本地 API 可用→B3 正式可靠发布。B1 复用现有合法安装/Store，一个 Provider 两实例先交付；SQLite、零 Git/多仓库、问答和更多 Adapter 在 B2，旧库导入 U1 单列。核心 API-STABLE 后才 UI-1，UI 不阻 API 发布。旧 Marshal skill 不读取/加载/执行，各 Agent 原生 Skill 自管。ADR 0085 仍为 Proposed，边界启用和实机完成分别计证。
 
 ## 愿景
 
@@ -16,7 +16,7 @@ Marshal 让 Agent 工作成为受控工程执行，而不是无结构的终端�
 
 当 Runtime 可以长期稳定接收新任务，且更换 Agent、Sandbox 或 durable backend 不会改变任务含义、验收标准和发布所需证据时，Marshal 才算实现目标。
 
-长期目标已由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)（2026-08-10 接受）正式重置：从“本地单次 CLI 编排”升级为**长寿命 Runtime/Control Plane 持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。执行沙箱可插拔，Cloudflare Sandbox 只是一个可替换远程 Provider。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 进一步冻结：Supervisor 是确定性 Core，不是 LLM；LLM 只执行 typed semantic workload；Goal plan 必须先 proposal、后由 Core 确定性接纳。[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md) 当时把首个正式版本收敛为单节点、单用户、可信仓库纵切，并将 Cloudflare、HA、多用户与 Goal DAG 延期到 1.x；这是历史收敛记录，当前 Workspace/受限团队/API-first 目标以上节与 ADR 0085 为准，不恢复通用复杂 DAG。
+长期目标已由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)（2026-08-10 接受）正式重置：从“本地单次 CLI 编排”升级为**长寿命 Runtime/Control Plane 持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。执行沙箱可插拔，Cloudflare Sandbox 只是一个可替换远程 Provider。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 进一步冻结：Supervisor 是确定性 Core，不是 LLM；LLM 只执行 typed semantic workload；Goal plan 必须先 proposal、后由 Core 确定性接纳。[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md) 当时把首个正式版本收敛为单节点、单用户、可信仓库纵切，并将 Cloudflare、HA、多用户与 Goal DAG 延期到 1.x；这是历史收敛记录，当前 Task-first/受限团队/API-first 目标以上节与 ADR 0085 为准，不恢复通用复杂 DAG。
 
 ## 竞争定位与差异化
 
@@ -82,23 +82,20 @@ Marshal Core 是唯一 Supervisor 与权威状态机；Plan/Implement/Verify/Rev
 
 ## v1.0 发布范围
 
-v1.0 用最小但完整的生产纵切证明上述方向可用，而不是交付终态的全部横向能力。它支持单节点、单用户和可信业务任务，一个 server 打开一个 Workspace，并要求：
+正式目标是单用户、单节点、可信业务任务的 Agent Team HTTP 服务，不交付终态全部平台能力。没有 Workspace ID/注册；公开 Task 复用 Goal，用户通过任务上下文提供业务信息。默认数据目录和本地 token 自动建立，损坏/不兼容旧数据不覆盖；不建设账号/组织/安装收据/统一 Agent 登录平台。
 
-- 先完成一个真实 Agent 单任务纵切，首版补齐 Pi、Qwen Code、OpenCode 核心兼容和真实 Local/Container Sandbox allocation；
-- Agent 进程实际运行在 allocation 内，真实结果只经 ResultIngress 接纳；
-- 固定 `marshal control-plane serve --workspace <path>` 的认证 HTTP/CLI 共用 Application Port；`<workspace>/.marshal/` 中 SQLite 为目标唯一事务 Store，Agent/Execution/Sandbox 依赖注入，ResultIngress、独立 Verification/Review 与 Outcome 组成唯一真实调用链，不使用独立 legacy `marshal-server`；新状态根不自动接管旧 repository `.marshal`，旧 profile 收口与历史导入显式进行；
-- 需求澄清/确认、节点级问答、有限 DAG、内置确定性 Supervisor、Task/WorkItem/Worker 详情与审计 API，以及最终成果下载消费均进入首版；
-- 不要求 Git 或资源注册：零 Git 的 SQL/文档/样例制品和单/多仓库代码均需真实验收；仓库/表/平台由 Task prompt/context 提供，权限不由文本自行扩大。生产 SQL 发布/执行/补数按对应执行 profile 实测声明，不以文件交付冒充外部业务完成；
-- 先完成 API-STABLE 的业务、兼容性与故障反例验收，再开始 UI-1；没有 UI 也能独立完成操作、交付、审计和 API 正式发布；
-- 重启恢复、幂等接纳、generation fencing、Agent/Sandbox 双 binding、cancel/timeout/retry/terminal 均在该链路上生效；
-- 发布仅为 `publication:none` 或可选 GitHub Draft PR，默认不 merge；
-- macOS/Linux 具有稳定发布产物，macOS 正式包通过签名与 notarization。
+- B1 先真实团队 PoC：现有合法安装与受控 Store、一个真实 Provider 两个实例、独立目录/Git worktree、一次计划确认、并行实现、集成和独立消费验收。
+- B2 完成本地 API 体验：简短需求澄清/问答、DAG/Worker 进展、暂停取消、SQLite 单写真值、同版本恢复、零 Git 制品与多仓库上下文、审计及第二真实 Adapter；第三 Provider 和增强能力按单独支持项推进。
+- B3 才以同路径业务/故障/长期运行、备份恢复、Darwin 签名/notarization、Linux 实机、最终 same-bytes release gate 证明正式支持。
+- Pi、Qwen Code、OpenCode 是首批适配目标；一个尚未通过者不能冒充支持，也不阻止已验证 profile 的交付。Agent 自管模型登录/Skill，Core 只消费中立接口/能力，不限定精确品牌版本。
+- 默认只交付可使用成果，外部 SQL 发布/执行/补数或 Draft PR 以后按独立授权与实测能力开放；不自动 merge。生成文件不等于用户要求的生产效果。
+- 核心 API-STABLE 后才开发 UI，不以三品牌全部增强或 U1 历史迁移阻挡接口稳定；UI 不阻 API release。
 
-v1.0 不承诺多节点 HA、多用户/多租户、Cloudflare 完整生产拓扑、全部 Provider hardened 矩阵、通用可视化编排器、远程 SDK 全矩阵、复杂 Goal DAG、跨仓库/平台原子发布或通用资源治理。这些扩展按后续证据排期；有限图的数据 API 属于首版，UI-1 后置且不阻塞 API 发布。Local ordinary-user 可以是受支持的 trusted profile，但不能宣称 `hardened` 或恶意代码隔离。
+保留批准范围、有限预算、状态持久、单写目录、重复请求幂等、当前结果接纳、独立验证和 Publisher 分权。B1 不确定恢复可需介入，但不能宣传透明自动恢复；完整保证分 B2/B3 实测。普通宿主进程永不冒充恶意代码隔离。
 
-能力只有在真实 composition root 可达且真实 Agent/result bytes 穿过时才算 `INTEGRATED`；只有 release gate 通过才算 `RELEASED`。单独的 ADR、Schema、package 或 component test 不能满足 v1.0。
+HA、多租户/远端身份平台、通用工作流编辑器、动态任意 DAG、PostgreSQL、统一 Skill/资源治理、跨系统原子发布不在首版前置。U1 旧历史导入独立验证，不双写或重签，未过就只声明已验证的新格式/干净安装支持。
 
-本节是当前产品目标，新增边界依 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）接纳并分阶段启用；旧 profile 不自动切换。[合同适用性](design-contract-map.md)明确哪些实现假设被替换，哪些安全/恢复语义继续保留。
+本节是目标，实际成熟度只见 [Roadmap](roadmap-status.md#业务交付当前表)；边界依据 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）及其对应验收启用，原 profile 不自动变更。文档/Fake/组件测试不等于 INTEGRATED，版本标签不等于 RELEASED。
 
 ## 当前交付基线：Local MVP
 
@@ -136,7 +133,7 @@ MVP 包含：
 
 ### 主要用户
 
-- 自托管常驻 Runtime、通过 Workspace 提交代码、SQL、文档等业务 Task 的个人与团队；
+- 自托管常驻 Runtime、通过 HTTP Task 提交代码、SQL、文档等业务 Task 的个人与团队；
 - 需要在可替换 Agent/Sandbox 上执行，同时保留证据、权限边界和恢复能力的平台开发者与维护者。
 
 ### 次要用户
@@ -161,7 +158,7 @@ MVP 包含：
 
 ## 信任边界
 
-首版面向单用户可信业务任务和已配置的可信 Worker 执行路径。Workspace 是任务与状态容器，不是资源所有权或业务授权。独立执行目录、Git 类型的独立 worktree、环境过滤、工具策略和显式批准降低误操作风险，但普通宿主机子进程不构成恶意代码隔离。提示词中的仓库路径、表名或 URL 不触发 HTTP 自动读取，也不授予业务系统权限。
+首版面向单用户可信任务和已配置可信 Worker。data-dir 不是资源所有权或业务授权；Task prompt/context 中的仓库路径、表名或 URL 不触发 HTTP 自动读取、执行或扩权。独立目录、Git worktree、环境/工具权限、输入绑定与明确批准降低误操作，但不构成同 UID 敌对隔离。作者仍不得得到 Publisher 权限/凭据，原生登录不豁免该边界。
 
 不可信仓库、不可信依赖或多用户执行必须使用容器、VM 或同等可强制执行的沙箱，才能成为受支持的安全配置。
 
@@ -180,7 +177,7 @@ MVP 包含：
 
 ## 当前交付顺序
 
-B1 先完成 Workspace、SQLite 原生 HTTP 单任务、下载验收与恢复；B2 完成持久交互、有界团队、三个 Provider 和详情/审计 API；API-STABLE 通过后 B3 完成同路径长期运行与正式 API 发布，UI-1 可并行但不作为发布前置。具体退出条件只见[实施 Milestone](agent-team-service-milestones.md)，完成情况只见[Roadmap](roadmap-status.md#业务交付当前表)。旧 Marshal skill 不构成任何阶段的实施条件。
+B1 先交付真实团队 PoC，单任务是内部步骤，不先建 Workspace/身份平台或全面迁库；B2 补本地 API、SQLite、零 Git/多仓库、问答/审计与恢复；B3 正式可靠发布。API-STABLE 后 UI 可并行但不阻 API release，U1 历史导入独立。详细出口只见[Milestone](agent-team-service-milestones.md)，完成只见[Roadmap](roadmap-status.md#业务交付当前表)。旧 Marshal skill 不作为任何阶段条件。
 
 ## 历史交付阶段（保留当时路线，不作为当前排期）
 

@@ -6,10 +6,10 @@
 
 | 范围 | 当前目标/保留合同 | 应如何使用 |
 | --- | --- | --- |
-| 业务路线 | 0080 的 B1→B2→B3；0085 服务目标提案 | [新 Milestone](../agent-team-service-milestones.md)是当前目标出口；0085 仍为 Proposed，不表示已接纳或启用 |
+| 业务路线 | 0080 的三面方向；0085 的 B1 团队 PoC→B2 本地 API→B3 正式支持提案 | [新 Milestone](../agent-team-service-milestones.md)是当前目标出口；0085 仍为 Proposed，不表示已接纳或启用 |
 | Adapter/身份 | 0058/0063/0075/0084→0085 §2 | 旧 Pi 版本/材料/文本只限旧 profile；新 DI/核心增强能力仍保留实际身份、输入和独立验收 |
-| 服务/安装 | 0051/0062/0066/0068/0073/0076→0085 §3 | 保留可信固定入口/单 owner；新 HTTP 客户端不继承旧本机 RB1/peer 协议，旧 activation 不跨路径扩权 |
-| 存储/恢复 | 0065/0066/0067/0069/0070/0081→0085 §4 | 新 SQLite 事务替代物理双账本/锁/AST 形状；currentness、唯一写绑定、stop/cleanup/release、幂等与未知不重试保留 |
+| 服务/安装 | 0051/0062/0066/0068/0073/0076→0085 §3 | B1 复用合法安装，目标简启动不新增 Workspace/安装身份平台；本地 token 与单 owner 保留，旧 activation 不跨路径扩权 |
+| 存储/恢复 | 0065/0066/0067/0069/0070/0081→0085 §4 | B1 复用原权威 Store，B2 SQLite 替换物理形状，U1 历史导入独立；currentness/单写/幂等/未知不重试保留 |
 | 交互/预算 | 0019/0083→0085 §5–§6 | 节点问答与未知用量不冒充全局暂停/零消费；原总预算和人工确认保留 |
 | 正式支持 | 0052、各实际安装/执行 profile 的 release gate | 新设计不能继承旧 canary 的成熟度，ordinary-user 不继承 hardened assurance |
 
@@ -19,7 +19,7 @@
 
 下方“当前”“下一步”“尚未”等仅代表各条记录的历史时点；实际完成状态只见 [Roadmap 当前表](../roadmap-status.md#业务交付当前表)。
 
-[ADR 0085](0085-agent-team-service-contract-and-storage.md) 汇总 2026-09-07 的 Agent Team 服务方案：认证 HTTP、稳定安装与业务仓库身份分离、核心/增强 Agent 能力、内置监督/持久问答、SQLite 单写迁移与审计。其状态以 ADR 正文为准；不追认 ADR 0083/0084 候选或升级产品成熟度。实施与多轮复核分别见 [Milestone](../agent-team-service-milestones.md)和[审计记录](../audit-agent-team-service-design-2026-09-07.md)。
+[ADR 0085](0085-agent-team-service-contract-and-storage.md) 汇总并收缩 2026-09-07 服务目标：Task-first，不建 Workspace/身份管理前置；B1 先真实团队交付，B2 SQLite/简启动/问答/更多 Provider，B3 正式支持。它仍为 Proposed；不追认 ADR 0083/0084 候选，不改旧接受记录和实际成熟度。当前验收见 [Milestone](../agent-team-service-milestones.md)，本轮复核见[审计](../audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)。
 
 [ADR 0084](0084-pi-typed-terminal-result-framing.md) 是当前 B2 PoC 的候选：终态按唯一 WorkerResult 类型定界，保留身份、原始 transcript 与独立验收门禁；尚无新候选实机成功证据。
 

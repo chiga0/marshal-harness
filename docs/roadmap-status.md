@@ -12,15 +12,15 @@
 
 | Milestone | 当前状态 | 已有证据 / 实现 | 尚待退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；已整合的 `4ace42c` 停止候选在 34067556449 证明长 Verify 期间另一 Run 的 deadline、查询与 Collect 可前进 | 新服务 B1-A/B：独立安装/外部仓库、认证 HTTP、注入 Adapter、SQLite 唯一事务/迁移与单任务下载重建/取消/恢复；旧证据与失败保留 |
-| B2 受限 Agent Team | `IN_PROGRESS` | 34082574786 两个真实 Pi 节点到 REVIEW_PENDING，但业务未接纳；候选已接独立 Decision、上游组合、第三节点及 completed GoalOutcome 查询，完整实机未过 | 持久 AskUser/确认/用户验收、有限图、真实团队集成下载重建；server 自主推进、局部 rework/reuse/非成功 Outcome；三 Provider 核心兼容、详情/审计与配对收益 |
+| B1 真实团队交付 PoC（原 B1 单任务为内部步骤，原 B2 团队最小闭环前移） | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；已整合的 `4ace42c` 停止候选在 34067556449 证明长 Verify 期间另一 Run 的 deadline、查询与 Collect 可前进；34082574786 两个真实 Pi 节点到 REVIEW_PENDING，未完成团队交付 | 复用现有合法安装/Store：Task HTTP→计划批准→两个真实 Worker 并行→自主 Collect/Verify/Decision/集成→下载消费；取消/失败有事实，正常重启可查询。不以 Workspace、安装管理或全面迁库为前置 |
+| B2 本地 API 可用版 | `IN_PROGRESS` | 候选已接独立 Decision、上游组合、第三节点及 completed GoalOutcome 查询，完整实机未过；原 B2 实现与失败证据保留，不因重排改成完成 | 简启动、SQLite、零 Git/多仓库、持久 AskUser/答案/确认/验收、详情/审计、同版本恢复与局部 rework/reuse；第二真实 Provider 验证解耦。第三品牌可单列待支持，不阻塞核心 API-STABLE |
 | B3 长期运行与正式支持 | `PLANNED` | 历史故障/恢复组件与 RC1 prerelease 证据保留，不升级成熟度 | B2 同路径故障矩阵、长历史/升级恢复、managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
-下一步顺序：按 ADR 0085 的目标合同先推进 B1 唯一应用组合/认证 HTTP 与真实单任务，再完成 SQLite 单写与恢复；真正无旧 authority 的新仓库可以直接初始化 SQLite 做最小需求确认纵切，旧仓库另验静止迁移。B2 现有三节点候选保留为诊断/回归资产，不放弃其成果，也不为等待历史导入反复跑旧团队。之后完成 B2 持久交互、受限团队、三个 Provider 与详情/复盘，再 B3。不给旧 Run 补签 Decision、重置预算或洗掉失败成本；没有结构变化和预检不重复付费 Attempt。本轮只修改方案文档，未启动 Run 或迁移状态。
+下一步顺序：B1 先复用现有合法 fixed server/Store 和团队候选，以真实 Git 业务样例补 Task HTTP→批准→双作者→自主 Collect/Verify/Decision/集成→下载消费闭环。SQLite、零 Git/多仓库、简启动、问答和第二 Adapter 在 B2；U1 旧历史导入不阻新任务，B3 保留正式故障/平台/发布门禁。没有 Workspace/安装身份平台/三品牌矩阵前置，也不绕过旧 activation 或伪造 Git。结构性失败无事实变化不重复付费，历史失败分母不清零。本轮只有设计文档修改，没有新 Run/状态迁移。
 
-并发边界：当前候选运行时仍只允许两个 scope 互斥的实现节点，第三节点等待上游接纳，不将新方案“最多三个并行 implement”写成已有能力。产品开发可围绕目标接口并行应用/Store 主路径、Adapter、UI/审计投影，接口未定先做 fixture/审计，不各自猜测；新边界默认启用前仍须接纳0085与对应验收，共享提交边界只有一个 owner。进程重叠与实际计量需实证；未知测量不得写零。
+并发边界：B1 先两个 scope 互斥的作者，验收/集成也计容量；现有候选仍只证明两个派发接缝，不把新方案写成已完成实机。开发可并行主应用闭环、业务 oracle/API 客户端、当前阻断的 Adapter；共享事务一个 owner，每个作者独立 worktree，不用旧 Marshal skill。UI 只在核心 API-STABLE 后启动。更多并发须依赖、目录、内存/CPU、Provider 与验收队列均允许；不是所有槽满才叫有效率。
 
-本轮设计纠偏：旧 architecture/runtime/implementation 长文已转为历史参考，当前入口重写为服务目标；19 份相关 ADR 和四份旧 Adapter 文档标明作用域，0085 补齐固定 Pi、双账本/AST、owner 构造、allocation/stop 等精确替代。只关闭文档误导，不关闭 B1/B2/B3 或新增真实交付；未运行 Worker、未迁移状态、未远端合并。
+本轮设计纠偏：按用户明确指示删除首版 Workspace 实体/API/注册，将账号/安装身份管理、全面迁库和全 Provider 矩阵移出 B1；旧 B1 单任务是新 B1 团队 PoC 的内部步骤，原状态、SHA/CI 与失败事实全部保留。新架构/Milestone/ADR0085/当前入口同步，0085 仍为 Proposed。AGENTS.md 顶部目标导航在用户另行明确授权后同步，全部 universal 不变量/门禁原文保留。设计调整不代表产品出口、远端合并或正式发布完成。
 
 ## 历史过程记录（不作为当前待办）
 

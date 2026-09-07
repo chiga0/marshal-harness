@@ -1,141 +1,116 @@
-# ADR 0085：Workspace Agent Team、API-first 与单一事务存储
+# ADR 0085：Task-first Agent Team、本地简启动与分阶段事务存储
 
-- 状态：Proposed（当前产品目标设计；初稿完成三轮审计，本轮补齐旧合同适用性。尚未记录本 ADR 的正式接纳，未启用新运行时）
+- 状态：Proposed（2026-09-07 按用户明确要求收缩方案；设计方向已确认，尚不等于本 ADR 正式接纳、运行时启用或发布）
 - 日期：2026-09-07
-- 决策范围：单用户、单节点、轻量业务 Workspace；任务上下文可含仓库/表/平台但不做 Core 资源注册；API-first 的 B1→B2→B3，API-STABLE 后才 UI-1；不启用跨 Workspace 共同控制、HA、多租户、恶意代码执行或自动发布。
+- 决策范围：单用户、单节点、可信任务的 HTTP Agent Team；删除首版 Workspace 产品实体，先真实团队交付，后完善本地服务及正式支持。
 - 方案：[服务架构](../agent-team-service-architecture.md)；验收：[Milestone](../agent-team-service-milestones.md)；审计：[复核记录](../audit-agent-team-service-design-2026-09-07.md)。
 
 ## 1. 背景与精确取代范围
 
-维护者需要的产品是一个可独立安装的 HTTP 服务：用户提交简单需求，经澄清/确认后由本机不同 Agent 协作，能够查询 DAG、内部可见进展、答疑、取消及审计。当前代码的 fixed AF_UNIX/Pi 组合、文件 RB1、禁止部分原生 Skill 的 profile 和人工驱动团队脚本不能直接等同这个产品。
+上一稿把 Workspace、安装身份记录、显式初始化、SQLite 全面替换和三 Provider 矩阵放在团队交付之前，造成管理机制先于业务价值。本稿按用户要求移除这些前置：用户提交 Task，而不是先创建平台对象。一次变更集中记录于本 ADR，不再按每个字段增加 ADR 或开发 Run。
 
-本 ADR 接受后，仅对下列新服务 profile 的部分取代/澄清。当前设计可按此目标消除旧实现耦合，但提案不授权默认 enable、旧库迁移或复用旧 activation。旧 profile 在实际 cutover 前仍执行原合同，未列出的证据、授权、fencing 与故障不变量保留；文档适用性见[对照表](../design-contract-map.md)。
+本 ADR 接纳及对应实现验证前，旧运行路径继续执行原合同；草案不授权绕过旧 activation、接管活动账本或给旧 Run 补签。下表只调整所列新服务设计，不改历史 bytes、失败记录或已接受 ADR 的历史状态。
 
-| 原合同 | 本次替代 |
-| --- | --- |
-| ADR 0052 §1 文件型存储、§2 全部 Goal DAG 延期 | 每 Workspace 一份 SQLite，前移受限 Goal 图及其 HTTP 查询；UI-1 在 API-STABLE 后，不阻塞 API 正式发布，通用编辑器/动态 DSL 不前移 |
-| ADR 0058 §1/§3/§7/后果、0063 §1–§4 的 Pi0843IdentityV1、固定根/55 materials/版本常量 | 只保留为旧 Pi profile 的证据合同；新 Agent 身份描述/协议解码由受信注入 Adapter 提供，Core 使用中立 schema，执行层核对实际观测；开放版本不取消逐 Attempt identity/input/fencing，不采信 Worker 自报兼容性 |
-| ADR 0062 §1/§3 仅本机 AF_UNIX 身份客户端、0076 §1–§6/§9 的本机定位/客户端与固定 T1/T2 范围 | 保留 fixed `marshal control-plane serve` 与唯一 Application Port；新增认证 TCP HTTP facade，外部客户端不要求读本机 RB1/验证进程 peer。旧 AF_UNIX 仍守原认证合同；新 HTTP 不是 locator 失败时的隐式降级，服务端仍重查当前 authority |
-| ADR 0066 §2–§6 的仓库内 `./bin/marshal`、repository `.marshal` 唯一根、固定 Pi/direct-call/文件/AST 及 S1→S2 顺序；0018/0069 的 repository-scope 物理映射 | 安装与 Workspace 分离，唯一组合根 DI、Workspace SQLite/状态根；Core authorityScope 映射 Workspace，Git 工作区/基线/写入排他局部留在执行适配层；不新增 ResourceBinding/仓库目录。保留先拿 scope owner 锁、再验证/提交 successor，持锁前无业务副作用；旧记录身份空间不改写 |
-| ADR 0065 §1–§7、§10 与后果的双账本解释器、跨账本 proof、borrow/锁序/exact AST、封闭文件与阶段顺序；0067 §2.7/§7 及 S1′/S2′段的继承条款 | SQLite 路径改为事务写 intent/outbox→锁外有界执行→同 Store 事务重验/接纳 outcome 与 Run successor；保留唯一 Core producer、当前 owner/lease/CAS 与无通用 append 旁路。旧路径形状测试保留，新路径以等价行为门禁替代；0067 的 source/process 观测及未知归属/permanent intervention 不变 |
-| ADR 0069 §2–§4 的跨账本 reservation/budget 与 allocation projection/固定锁序、0070 §2/§4 的 RB1 字段派生、0081 候选中的 projection/lane 物理形状 | 新 Store 一次事务保存对应 reservation、预算、binding、release 与投影；保留 creation-once/lookup-before-claim、输入摘要、stop/admission 竞争、terminal/cleanup/release 后复用；旧 Git profile 保留全仓 target 解释，新路径保证自身分配执行目录单写。旧 revision 字节/派生语义不改写，0081 不因引用而被追认 |
-| ADR 0051/0068/0073 的旧安装路径 activation 续行约束 | 新服务引入下述 operator-local 安装记录，只授权新 lineage 的 non-production 试用；旧 activation/旧 Run 不自动 rebind，首次导入仅已收口历史；managed/stable 仍保留原门禁 |
-| ADR 0080 的单仓库/首部署 file-backed、暂不扩 Provider | 明确轻量 Workspace/Task API、零 Git 制品与多仓库业务、SQLite 原生新路径、三个首批 Provider；先单任务后团队，不先为旧库扩建新 HTTP 再重做。UI 后置，不恢复无界平台范围 |
-| ADR 0019 §8 人工等待全局 Goal pause 的解释 | 新增有界节点级 UserInteraction，局部待答不隐式全局停派；显式 Goal PAUSED 始终停全图新派发，terminal Run 不复活 |
-| ADR 0019 §4 的全维度强制 actual settlement | 按批准 Policy 分 enforced budget 与 observed usage，支持逐维度 unknown/source/coverage 与保守 debit；不将缺失数据伪装为零或自动退款 |
-| ADR 0083 的候选物理 RB1 事务/固定单仓库三节点 Pi 模板 | 保留批准＋预算＋创建义务原子语义与成果精确接纳；映射 Workspace Store、冻结节点输入/上下文/执行 profile；Git 写节点独立 worktree，多仓库 bundle 验收及注入 Provider。0083 仍为候选，不追认全部实现 |
-| ADR 0075/0084 的 Pi 模型终态控制 envelope | 允许经迁移的 Adapter 从真实执行/制品构造控制 envelope，保留 transcript、错误终态、身份、候选和独立验证；旧 parser 在新合同测试通过前不静默放宽 |
+| 原合同/上一稿 | 新目标中的精确调整 | 继续保留 |
+| --- | --- | --- |
+| 本 ADR 上一稿 Workspace/安装身份/显式 init | 删除 Workspace API、workspaceId、注册/切换/授权生命周期；不改名为 Project；删除新 operator-local 安装收据前置；首次空数据目录自动建立 | OS 安全机制、受管执行身份、数据根排他、损坏/旧数据不覆盖 |
+| ADR 0080 §1 单任务 B1→团队 B2 的排期 | B1 变为首个受限团队 PoC；单任务是其中的内部检查步骤；B2 为本地 API 可用，B3 为正式支持 | 原 B1/B2 证据和 IN_PROGRESS 不被改名洗成完成；独立验收与有限任务 |
+| ADR 0052 §1 file-backed 与本 ADR 上一稿先全面 SQLite | B1 复用当前唯一权威组合；B2 接入最小 SQLite Store，首次新数据使用 SQLite；旧历史迁移单列 U1 | 每个状态根只选一个权威 backend，不双写，不以读取较新文件选真值 |
+| ADR 0062/0076 本机 AF_UNIX 客户端定位与旧 T1/T2 | 同一 Application Port 增加 Task HTTP；目标命令 marshal serve，可作为原 control-plane serve 的薄入口 | 不起第二 legacy server、不执行 child CLI 推生命周期；服务端重验当前事实 |
+| ADR 0066 repository 根、CLI/Pi 固定构造；0018 authorityScope 物理映射 | 目标数据目录属于服务内部配置，不是业务资源；组合根 DI；Git 仅执行适配层绑定，B1 现有 Git 限制如实声明，B2 解除通用任务 Git 前提 | 单 owner、任务/执行 ID、输入摘要、唯一 producer；不建第二 Task/Goal 权威 |
+| ADR 0058/0063 Pi 固定版本/材料，0075/0084 模型终态 envelope | 新 Adapter 按中立协议和核心能力接入，版本是兼容性/诊断维度；Adapter 根据真实终态、transcript、成果生成控制 envelope | 实际执行/config 来源及输入绑定；旧 parser 不静默放宽；不采信 Worker 自报成功 |
+| ADR 0051/0068/0073 旧安装 activation | B1 可复用合法现有安装；新本机 profile 不另建安装身份平台。正式 managed/signing/notarization 留 B3 | 不复制/扩大旧 activation；不绕过 Gatekeeper/EDR；旧在途不跨版本自动 rebind |
+| ADR 0065/0066/0067 双账本 proof/物理锁/AST 形状 | B1 复用其已有受控实现；B2 SQLite 同一事务接纳 intent/预算，再锁外执行、事务重验 outcome/唯一 successor | 当前 owner/lease/generation/CAS、先 intent、归属不明不重试；旧路径的有效恢复合同不提前取消 |
+| ADR 0069/0070/0081 allocation/reservation 的物理 projection/lane | SQLite 接线后同 Store 保存创建义务、预算、绑定和释放；Git 特有字段留适配层 | creation-once、lookup-before-claim、停止/接纳竞争、确认终止后才能复用 |
+| ADR 0019 全局等待及强制全维度 actual | B1 先有限计划确认；B2 节点级持久问答；预算区分 enforced/observed，未知用量不伪造零 | 全局 pause/cancel 优先、原总预算不刷新、人工答复不等于发布授权 |
+| ADR 0083 固定三节点 Pi/RB1 候选 | 复用有界物化/集成/Outcome；首个同 Provider 两实例即可，之后再混合 Provider | 精确上游、独立 Evidence/Decision、整体成果验收；候选仍不冒充实机完成 |
 
-不得把文档取代解释成当前 unsigned binary 已获新生产授权、历史组件已经集成、旧 Run 可以改写或旧审批扩大。ADR 0052 stable、签名/Linux 门禁不变。
-
-历史实施阶段与函数/文件/物理锁结构不是长期不变量。当前排期统一为 B1→B2→B3；0058/0063 的“新版本必须修改 Core 常量”、0065/0066/0067 的封闭切片/AST 条款不再作为新 profile 的设计准入。这里只集中替代同一服务重构所需的旧假设，不删除其它 ADR，也不为每个实现拆分追加新 ADR。
+ADR 0052 的正式签名、公证、Linux 与 stable gate 不删除；从关键路径后置到 B3 不是提前授予 production。后续组织/多租户/远端鉴权平台不作为本地 B1/B2 门槛。原有未知归属/permanent intervention、迟到结果、发布分权等语义不因简化消失。
 
 ## 2. 唯一服务与依赖反转
 
-一个 fixed binary、一套应用组合、一个 Workspace owner、一份 Workspace 权威 Store；Workspace 组织任务/配置/目录/制品/审计，不拥有业务资源目录或资源权限。HTTP/CLI 只注入 Application Port；生产调用链不能回落到 `execution.Run`、独立 legacy server 或 child CLI。
+用户只需要 Task、Worker、Artifact；计划、问题、DAG、交付与审计是 Task 的子视图，不是用户必须先创建的独立平台。公开 Task 复用既有 Goal ID/revision/预算/事实，旧内部 Task 执行规格对外称 WorkItem。B1 先做薄映射，不全仓重命名类型。
 
-旧 Marshal skill 不属于产品运行依赖、研发准入、调度或验收标准；不加载/运行其历史流程，不要求每切片一个 Run 或继承其 round/微切片规则。保留原生 Agent Skill、历史失败/审计和产品自身的独立验证、单写、证据与权限语义。
+一个固定 server、多受管执行进程、一个所选 Store 和本地制品；控制/执行/存储三面逻辑分离，不先拆微服务。HTTP/CLI 共用 Application Port，Core 不导入具体 Agent 或数据库。Port 是 Go interface 一类的依赖边界，DI 是构造函数注入，不是网络端口或动态插件平台。
 
-Port 指依赖边界接口（Go 中通常为 interface），定义行为契约；Adapter 实现契约，DI 在组合根注入实现，不是 TCP 端口或独立服务。Core 只依赖这些中立接口、能力快照与领域类型。Adapter 准备/解码 Agent 协议，执行层管理启动/句柄/deadline/归属，SandboxProvider 管理 allocation。Plan/Review 可使用本地 Agent 生成 proposal/Assessment，但必须使用与 Implement 不同的角色输入、权限与接纳规则；不创建通用 Provider 权威 RPC，不授予 Agent 写账本能力。
+核心接入能力：能接收输入、绑定实际执行、观察结束/失败、收集成果、在 deadline 内停止所属执行。callback、ACP、工具事件、实时用量、问答桥接、steering 与 session resume 都是分别可选的增强。缺增强能力展示 unavailable，不假造进度；任务确需该能力时才拒绝匹配。实际版本/配置来源记录用于诊断，不要求用户每次注册精确版本。
 
-核心能力是可驱动、可追踪执行身份、可判终态/取成果、有界止损、显式失败；callback、工具事件、原生交互、中途 steering、resume、tokens/context 都是分别可选的增强。版本按兼容协议与 conformance 管理，实际 binary/config/能力仍逐 Attempt 冻结，禁止中途替换或复用其他身份的旧证据。
+配置由允许的 Task 选择→服务显式配置→Adapter 声明的原生配置解析，不私自 fallback 模型/Provider。原生 Agent 自管模型鉴权与 Skill；Marshal 不复制 HOME/登录 secret，也不建设统一 Skill 或鉴权系统。首个团队可用一个真实 Provider 的两个实例；Pi、Qwen Code、OpenCode 逐个验证，未测试者不列正式支持。
 
-Agent launch descriptor 是注册的受信 Adapter 按版本化中立 schema 生成的配置，不是 Worker 提供的权威结果。Core 检查允许 profile、能力和冻结输入；执行层按该 profile 核对真实 executable/runtime/material 观测并绑定 command/outcome。未知协议或不可证明的强制能力拒绝，增强能力未知诚实降级展示。更改支持版本通常更新 Adapter/conformance 而非 Core；只有身份/信任语义改变才需要新决策。
+旧 Marshal skill 完全退出产品依赖、研发准入和验收，不读取/加载/运行；历史失败/审计保留。不把独立验证改成模型自证，不强制每次验收都多调一个 LLM：受控、独立于作者的业务测试可提供客观 Evidence；需要语义判断时才安排有界 Reviewer，Decision 仍由 Core 校验接纳。
 
-配置选择优先级在同一 Port 明确为：已批准的任务 profile 引用（仅选择允许项）→服务启动时的显式 profile 配置→该 Adapter 声明采用的 Agent 原生配置。Marshal 不私自插入模型 fallback；环境和原生加载规则由 Adapter 记录可见来源。不可见配置内容标 unknown，不能宣称完整可复现或满足需要其证明的任务。
+<a id="3-http-安全与对象身份"></a>
 
-原生 Skill 可用，但不自动授予额外宿主/发布权限。默认制品作者 profile 可保留 Agent 模型和已批准原生数据读取/验证工具所需鉴权，并非仅准模型登录；生产写入/发布由与作者分离、显式授权的 Publisher 角色使用所需平台鉴权。普通同 UID 加载配置有 ambient credential 风险，若作者仍可访问 Publisher token/已登录发布工具/keychain，就不能声称分权已成立；正式支持必须证明对应权限隔离，无法证明则明示配置阻塞，`publication:none` 或提示词不能绕过。不建设统一鉴权平台，不擅自删除/复制用户登录。
+## 3. 简启动、本地访问与最小身份
 
-## 3. HTTP 安全与对象身份
+目标命令 `marshal serve` 启动 loopback HTTP 并显示端口；可选 `--data-dir` 只在本机启动时选择内部状态目录，不向 Task HTTP 开放任意根路径切换。新根不存在时自动以限制权限创建；已存在有效 Store 就打开，损坏、遗失部分状态、不兼容格式或 owner 未释放则报出具体原因，不当空库重建。初始化可重入，第二 server 不能取得同一根写权。
 
-TCP 默认绑定 loopback，认证仍必需；非 loopback 启用要求 TLS 和显式授权，禁止无保护旁路端口。限制 Host/Origin/CORS、CSRF、输入大小、队列、订阅与 deadline。认证 secret 不进入 URL、业务账本、prompt 或日志。Unix socket 管理路径可以保留。
+不新增用户注册、组织、RBAC、安装收据、Workspace ID 或单独 init 命令。内部 Store ID/generation、Task/Attempt/command ID 与进程句柄仍用来避免串任务、重复启动和误杀，它们不是需要用户管理的身份体系。B1 使用既有合法安装与真实样例环境；全新环境的一键体验在 B2 验证，不冒充已有。
 
-每条变更绑定调用者、Workspace/Task/允许执行 profile、操作/subject、请求摘要、幂等 key、deadline 和预期 revision；服务端取得当前 owner/Policy/lease/Evidence，不接受客户端提交的 current-ledger “证明”。幂等域含 Workspace+principal+operation+subject，同请求幂等、异内容冲突；认证/授权在应用层复用。异步 `202` 的 operation 在 Store 耐久保存，可经 scoped operations API 查询/恢复，不能用 HTTP 成功代替业务终态。
+所有业务 HTTP 默认使用自动生成、限制权限保存的本地随机 token；本地客户端按 OS 权限读取，通用 HTTP 客户端从本机受保护文件配置 Authorization，不通过 URL/日志打印 secret。token 不进入 Worker 环境、prompt 或账本；loopback token 不是防同 UID 恶意程序的隔离保证。认证映射到本地操作者，不按 token 随机 bytes 重新划分业务幂等域。
 
-重新认证/授权后先查 scope 内的幂等记录：同 key 同摘要返回原回执，不能因第一次操作已推进 revision 而拒绝精确重放；只有未命中才对新命令做 revision CAS。远程入口还须遵守 ADR 0018 §12 中适用的双向身份、撤销与 replay/time-window 约束，不能把任意 bearer token 加 TLS 解释为完整 authority。
+首版拒绝非 loopback 绑定，校验 Host/Origin，默认不开跨域；健康接口只返回最小健康状态。无需登录平台，但不能提供无保护的进程启动端口。后续远端入口首次启用前就必须具备 TLS、认证/授权与撤销等对应基线，不能“上线后补安全”。单台 VM/容器中的服务也不默认暴露公网。
 
-启动路径从受信安装元数据验证实际 fixed binary，不要求位于业务仓库。`serve --workspace <path>` 打开固定 Workspace 身份及 `<workspace>/.marshal` 唯一状态根；新根必须显式初始化并验证不存在损坏/遗失的旧 Store。仓库/数据表/平台说明可由 Task prompt/context 提供，不需注册，也不进入 Core 资源 schema。文本含宿主路径/URL 不触发 HTTP 层自动读文件/抓取/执行；实际输入通过已授权上传或受控输入机制进入，Agent 工具依执行 profile 的真实权限使用环境。不开放任意 `--state-dir` 或跨请求更换根。
+业务路由以 /v1/tasks 为中心，不含 /workspaces。写操作由应用层验证本地调用者、Task、批准 profile、摘要、幂等 key 与 expected revision；先在重新认证后匹配原幂等回执，精确重放返回原结果，未命中新命令才 CAS。同 key 异内容冲突；202 是受理、不是执行结束，pending/unknown 可查询，取消不接受任意 PID。
 
-B1 新 lineage 使用 `operator-local` 安装记录：操作员从受信固定安装命令生成 owner-only、版本化不可变记录，绑定安装 ID、canonical executable path、真实 bytes SHA-256/size/sourceHead/profile、Workspace identity、有效期和 `publication:none`。其 producer 从 held 当前对象观察，不接受 Worker/API 伪造；实际执行权限由已批准 profile/任务限定，不因安装可信或 prompt 声明而扩大。server 启动/mutation 重验对象与 scope。这是 same-user opt-in，不是数字签名、抗同 UID 篡改、managed receipt 或生产授权；B3 用正式签名/安装/发布证据提升支持，安全机制拒绝时不以匿名 helper 绕过。
+任务文本可包含资源/仓库/表/URL，不触发 HTTP 自动抓取、宿主读文件或扩权。输入经有界上传/授权读取进入制品；默认只做本地成果交付，不提供任意 executable/env/secret 注入接口。
 
-首次迁移不提供跨路径/版本的旧 Run rebind：包括 REVIEW_PENDING 在内的全部旧非终态必须先由原受支持入口合法收口；新服务仅导入只读历史。复制旧 bytes/digest 不授予新 binary 消费旧 activation 的权限，不重签旧 Evidence。确需在途跨版本续行属于未来单独支持，不阻断新空仓库的业务验证。
+作者不得取得 Publisher 权限/凭据。仅模型与批准数据读取/验证工具鉴权可沿用；作者可达 Publisher 凭据或已登录发布入口的配置不进入支持范围，包括 publication:none，不能仅因产品没有发布 API 就豁免。B1 复用已有合法 profile，不为此先建统一身份平台或完整隔离矩阵；同 UID 的 ambient credential 风险不靠提示词解决，也不删除用户登录凑通过。普通宿主子进程不构成恶意代码 sandbox。
 
-### 轻量 Workspace 与 Task，而非资源注册系统
+<a id="4-权威事务与-sqlite-切换"></a>
 
-1. Workspace 允许零 Git，只组织业务任务、默认配置、状态/执行目录、输入/制品和审计；不新增 ResourceBinding、RepositoryBindings、resourceSet 或跨 Workspace routing claim。仓库/表等通过 prompt/context 交给 Agent 及其原生工具解释。
-2. 公开 Task 复用现有 Goal，taskId 对应 Goal ID；旧内部 Task 是节点执行规格，对外称 WorkItem，使用 nodeId/workItemId。一套 authority/revision/预算/事件；不能通过改名产生第二生命周期。
-3. Core 冻结批准的输入引用/内容摘要、plan、execution profile、limits、验收及执行归属。通用 Run 不强制 repoId/baseCommit/Git worktree。Git 写的真实路径/base/worktree/patch 由适配层处理；无 Git 使用独立执行目录及 ArtifactSet，不造 dummy commit。
-4. 执行层仍须拒绝自身分配的同一目录双写，停止未知不复用。首版不承诺跨 Workspace/人工/外部系统的全局资源锁；没有目标排他证据不得并发写。上下文扩展不能自动授予新的执行或生产写权限。
-5. 原生工具不因可调用就成为 Marshal 可靠受控 Effect；profile 必须明示可观察/取消/恢复范围。外部结果未知不能自动重试可能重复写入的执行；取消 Agent 不等于取消远端 SQL/job。用户要实际补数必须验收数据效果，不拿 SQL 文件替代。具体外部能力按实测支持，不预建通用数据平台。
+## 4. 单一权威事务与分期 SQLite
 
-### API-first 与 UI 解耦
+B1 复用已具备 owner、Run/Attempt、创建/预算/命令记录的现有唯一权威组合。它可物理包含 RB1 和 Run journal，但不增加新的平行 JSON Task 状态机或 SQLite 影子写库。B1 不以旧库迁移、全部数据库抽象重写或完整跨版本续跑为前置；业务状态仍只经原 Application/Core 写。
 
-Workspace scoped HTTP 覆盖 tasks/plans/graph/work-items、interactions/answers、runs/workers/cancel、operations、providers/roles/sandboxes、inputs/artifacts/deliveries、events/audit 与 supervisor。Task pause/resume/cancel、异步操作查询与原请求恢复都是必要接口；health/ready 仅暴露最小状态。没有 resources/repositories 注册 API。
+B2 的目标 Store 在一个本地 SQLite 中原子提交 events、投影、幂等回执、预算与 outbox。数据目录只是内部配置；不新建 Workspace/config 业务表或强制 repository/resource binding。短事务核对当前 owner、Task/Run revision、批准输入/profile 和执行归属，外部执行与网络不能持全局事务锁。
 
-/tasks 是新产品的用户任务写入口；旧 /goals 若需兼容只归一到相同 canonical command/subject/幂等域，不能复制任务。Task status/phase 是只读投影，创建成功、Worker 停止与最终交付分开；不允许 PATCH completed。输入 refs 必须已获授权，API 不展开 prompt 中的任意路径/URL；公开输入字段不得构成任意 executable/env/secret 注入。
+执行次序：事务冻结 Attempt/输入/预算及 command intent→锁外所属执行控制器启动/观察→事务重验当前 generation、真实 outcome 和唯一合法 successor。创建一次、lookup-before-claim；丢响应不消费第二次预算，不把 intent 当成已启动。取消先 stop intent/fence，确认同一执行已终止及 cleanup/disposition 成立才释放目录；未知归属禁止复用或派替身。
 
-以 handler/生成客户端/OpenAPI 一致、纯 HTTP 零 Git/单任务/多仓库/混合 Provider 全链、幂等/权限/恢复反例与对外语义无未处置 P0/P1 达到 API-STABLE，才启动 UI-1。UI 只消费公开 API，不阻塞 API v1.0 发布；preview revision、兼容/弃用规则随 OpenAPI 明示，不以路径 /v1 代替稳定声明。
+制品 bytes 先有界保存、核摘要并耐久写入，再提交引用；失败事务留下未引用对象供之后安全 GC，不留悬空 authority 引用。业务事实不可抽样，遥测可以有界批量并明示丢失。SQLite WAL/本地磁盘/同步与一致备份按故障测试验收，不用模式名冒充耐久证明。
 
-## 4. 权威事务与 SQLite 切换
+最小状态持久化不能后置：批准计划、输入、任务/执行与命令身份、结果/Decision、失败原因、预算和制品必须保存。B1 正常重启可查询已有事实且不重复派发；恢复失败时停止接单、报告原因并保留原受支持只读诊断，不承诺所有未知状态仍有在线 HTTP 查询。B2 证明同版本恢复，B3 扩完整故障矩阵，不要求 B1 假装所有 crash 都能透明恢复。
 
-Store 最小语义是 `expected Workspace owner/revision + approved inputs/profile + validated command → append immutable events + update projections + idempotency result + budget transition + outbox obligations` 一次提交；任一部分失败全部不成立。Workspace 内任务计划批准/预算/创建义务同库原子化，数据库 row 不重新定义业务摘要。不要求仓库存在或提供资源 binding；Git commit、SQL 外部作业与进程都不属于该事务，未知效果必须对账，不把本地提交当外部成功。
+### 旧数据升级 U1（独立支持项）
 
-启动具体顺序：事务冻结当前 Attempt/输入、预算与 command intent/outbox→释放事务锁后由所属执行控制器执行→事务中重验当前 owner/lease/generation、真实 command outcome 与 Run CAS，并原子接纳 outcome/唯一合法 Run successor。命令落账不等于进程已启动；缺失、未知或被 fence 的结果不得合成 RUNNING。跨步骤 crash 用同 commandId Inspect/Reconcile，不能用旧跨文件 proof 或新通用 `Append` 旁路。ADR 0065 中仍有意义的 hostile/replay 断言迁到该事务接缝，旧路径在该 scope 切换后不可写。
+U1 不阻断新 Task 或团队演示。只导入显式选择、已由原受支持入口合法收口的旧历史：包括 REVIEW_PENDING 在内的全部非终态和未知效果必须先处理。逐来源持锁一致备份，保留原 IDs/bytes/digest/预算/顺序，以原 authority namespace 分开归档，同名不覆盖，不重签旧 Decision/activation。
 
-SQLite WAL 使用本地磁盘，权威提交使用 `synchronous=FULL` 及受支持的耐久文件系统，短事务串行写入；Worker/Verifier 执行和网络调用不能持事务锁。查询可并发，长 Verify 不占全局 writer lane。高频遥测与权威事件分流，不承诺所有 token 都落业务日志。
+真正接管原状态根时，先证明旧 writer 不能写，再切唯一 active Store generation；旧 binary 必须拒绝新布局，只有 marker 不足。导入失败保留原库受控恢复，不能清空/改路径冒充迁移完成。已产生新事实后不得退回旧快照丢记录，前向修复/受控迁移。旧在途跨版本自动 rebind 不在首版。
 
-reservation、dispatch claim 和 budget 使用同一 Store 的 creation-once/幂等键与事务，不再要求双账本两次 fsync 补 consumed。任何真正可能启动的 execution obligation 先有冻结输入、授权和保留额度；合法 Run start successor 消费一次，response loss 不 mint sibling。allocation 以真实执行目标 identity 保证自身分配的一个目录一个活跃写绑定，Git 特化额外核对 worktree/base；release 必须核对同一 current owner/Attempt/generation、terminalization、process-terminal、cleanup/disposition 的精确链。新绑定只能在旧 release 耐久成立后取得，不因投影缺失、关闭 FD、server 重启或换库而释放。0070 的旧字段定义用于旧记录逐字节解释，新 schema 不把 reservation key、Run revision 与 Attempt revision 混用。
+SQLite 一致快照与对应制品 manifest 一起备份；恢复先只读核对旧 owner/执行/外部效果，再开放写。历史 replay 不执行 outbox，只有当前 reconcile 可驱动未决命令。数据库恢复不回滚外部世界。PostgreSQL 以后实现同一事务接口，不先做双数据库产品。
 
-制品先持久化再提交引用；失败事务留下未引用对象供有界 GC，不留下悬空 authority ref。原始不可变 bytes 和 digest 保留，导入/恢复不能因重序列化重新定义旧审批的 subject。PostgreSQL 以后实现同一事务与 conformance，不默认引入事件中间件。
+<a id="5-节点交互生命周期与取消"></a>
 
-### 一次性迁移协议
+## 5. 计划、交互、集成与取消
 
-1. 新版本先以只读方式识别旧 store，执行预检，报告未决 Run/command/effect/owner 与导入范围。不得一启动就自动把活动账本迁走。
-2. 在原 writer 路径 stop-new，排空或通过已有合法取消/对账收口全部非终态（不只活动进程）；有 REVIEW_PENDING、未知写入者/外部操作或无法确认的 ownership 时拒绝 cutover，保留原服务的受控恢复，不强杀无归属进程。
-3. 逐来源持原 repository owner 锁，生成一致备份，导入 Workspace Store 的独立 archive namespace（原 authority namespace + 原 repository identity）；所有原 IDs/bytes/digests/引用/预算/幂等保留，相同旧 RunID 不跨来源合并。建立显式导入 manifest 与新 Workspace 历史引用但不改签旧身份，导入物只读，不授予新 current authority。
-4. 检查完整事件/引用/Outcome/预算相等、孤儿与损坏诊断、新旧只读投影等价。再持久提交唯一 active store generation；新 Store 激活前没有新派发。
-5. 切换必须机械禁止旧 reader/writer 误当新 store：安装版本 gate 和旧入口拒绝测试。单独写一个旧版本不识别的 marker **不够**；若旧 binary 不会拒绝，必须先发布识别 gate 的过渡版本，或采用受权且可恢复的旧 writer 不可打开布局并证明所有旧入口已阻断。缺证明不激活。
-6. 切换后旧 ledger 只读，Workspace SQLite 为唯一业务真值；每个来源导入/旧 writer 禁写验收后才使用其历史；旧执行目录未合法释放不能复用。没有双写过渡期，不以部分导入表示全部成功；任意崩溃点只选择经验证的 Workspace store generation，不猜“哪个文件较新”。
-7. 尚无新事务时可在原锁和一致校验下退回原备份；有新事实之后禁止直接换回旧 snapshot，必须前向修复/显式迁移，避免丢失授权、预算和外部效果记录。
+B1 先用固定小团队模板、明确需求和一次计划确认，不先建自动规划平台或通用 DAG；模板要含具体交付物、验收、依赖、范围和总预算。确认后 resident 自主调度、Collect、Verify/Review、集成和 Outcome，不依赖人逐个推动 Run。两个作者写独立目录/Git worktree，最后独立验证整套精确候选及下载后的可消费成果。
 
-新空 Workspace 和新的独立执行目录可以直接初始化 SQLite，完成单任务 HTTP 交付，不先扩建 file-backed 再迁移。检查限于实际状态根、导入来源与将复用的工作目录，不要求全机仓库盘点/注册。新目录不代表旧 authority 已迁移；禁止改路径/清空旧 .marshal 伪装新状态。旧升级单列 B1-U，未通过不宣传支持，不串行阻塞无旧状态的新任务。
+B2 补简短需求的关键澄清和持久 UserInteraction；问题绑定 Task/节点、subject/revision/type、期限及消费记录，重复同答幂等，不同/过期/陈旧答案拒绝。节点待答只阻塞依赖，全局 pause/cancel 优先；活动 Agent 只在原 deadline 内等答，终态 Run 不复活。Agent 无原生交互时由 Core 在执行边界暂停并经确认关联继续，不编造工具问答。
 
-备份由 SQLite 一致快照机制与对应不可变制品 manifest 产生，不在服务运行时只复制主 `.db` 文件。恢复默认 read-only；确认旧 owner/执行不能再写及外部效果可对账后取得新的 ownership 才开放变更。历史 replay 不执行 outbox 副作用；只有当前 reconcile 判定并经授权的未决命令可继续。DB rollback 从不等于外部世界 rollback。
+答案发送属于有界 outbox：发送前重查 pause/cancel/fence；Agent 收到但 ack 丢失且无原生幂等/查询能力时 unknown，不盲重发。同一个答案 Core 一次消费不等于跨进程 exactly-once。需要人工业务验收的计划必须预先声明，答复绑定精确成果与 Evidence；缺失/拒绝/过期不成功，普通答复不能授权发布。
 
-## 5. 节点交互、生命周期与取消
+通用成果是 ArtifactSet/DeliveryManifest，Git 节点额外绑定真实 base/worktree/patch，非 Git 不造 dummy commit；B1 首个真实 Git 样例不是 Core 永久 Git 限制，B2 必须实测零 Git SQL/文档制品及多仓库上下文。执行层保证自身分配目录排他，不承诺跨人工/服务/业务表的全局锁。
 
-UserInteraction 是 Goal 权威对象，持久记录 subject/revision、节点阻塞范围、类型、期限、答案与消费引用。问题创建、答复接纳、预算/继续义务各自走幂等事务；同一答案只消费一次。普通回答不能转成 plan approval、permission 或 publication authorization。
+集成必须消费上游已接纳的精确成果；各节点测试绿但组合错误不得成功。局部修正只重做受影响依赖，累计预算不刷新；冻结合同变更使用新 plan revision/关联 Run。NO_CHANGE 只在批准合同、适用旧 Run 的 allowNoChange/诊断要求与独立验收均满足时复用成果，不伪造改动或改写原终态。
 
-节点待答只阻塞自身依赖；全局 pause 总是优先。待答未运行节点不占执行槽；其 reservation 是否保留到期限必须由批准 Policy 冻结。活动 Agent 只在原 deadline 内有界等待，期间仍占槽/锁。无法继续或过期走合法终态与 Outcome，再由批准范围内新 Run 继续；不增加无限等待 Run 状态，不复活 BLOCKED。
+B1/B2 默认只交付成果，不做生产 SQL 发布/补数或自动 Git 发布。以后启用外部写必须独立授权、按实测 profile 观察回执/终态及业务结果；unknown 不自动重试，停止 Agent 不证明远端 job 已停。可选 Draft PR 使用独立 Publisher，不自动 merge；不承诺跨系统原子发布、自动回滚。
 
-需用户判断的验收项在计划批准时冻结为必需的 `delivery-acceptance` Interaction，绑定精确候选/制品/Evidence/合同与具名 actor；未答不成功，拒绝触发预算内返工或非成功 Outcome，过期按冻结 Policy 收口。候选改变不能消费旧回答；人工通过不豁免强制独立检查，不形成 publish 授权。
+## 6. Supervisor、计量与审计
 
-向活动 Agent 发送答案是 outbox 命令，发送前再次核对 Interaction/Run 与 Goal pause/cancel fence。Agent 已收到但确认丢失时，只有原生幂等/查询能证明结果才可重放，否则 unknown；先停止并确认旧执行/收集成果，才能在原预算下由关联新 Run 消费答案。Core 一次性消费不能宣称远端 exactly-once。测试必须包含“answer commit→cancel→发送”和“Agent 收答→ack 前 crash”。
+Supervisor 是同一 Core 内的确定性控制器，不是额外 Agent 或 watchdog；预算/容量/排队/超时/结果/取消按耐久事实推进，语义建议不直接改账本。B1 两个作者槽，独立验收也计资源；B2 在依赖、目录、内存/CPU、Provider 与验证队列均允许时增加并发，不为并行而拆任务。
 
-取消通过 owned execution identity，不通过任意 PID API。先持久 stop intent/fence，再有界停止并 Inspect，确认结束才释放 writer/scope；未知结果保留未决，绝不以 request accepted 伪装已终止。Run 的实际状态转换沿原生命周期；API 的 waiting/canceling 与后置 UI 都是投影，不旁路转换守卫。
+progress/tool events 是可选观察，展示来源/最后观察时间；沉默不自动等于死锁，刷日志不延长 deadline。只终止持有明确归属的执行，信号已发不是停止完成；无法确认的写入义务保留未决。
 
-### 制品与多仓库交付
+retry/rework/replan/successor 都计原 Task 总预算，transport 重发不造新 Attempt。结构性失败识别后立即阻止原样重试；内容问题一次聚合，局部修正不重跑全队。预算耗尽保存失败 Outcome，不另开同义 Task 刷新额度。
 
-公开 Task 复用 Goal。通用候选是 ArtifactSet，不必有 Git；每节点冻结输入、上下文、上游制品及验收，独立环境从 DeliveryManifest 下载/重建并执行原业务 oracle。Git 写节点独立 worktree、适配层锁定 base；多仓库候选组合验收，不建资源注册。缺成果、错版本、同名伪造、单元测试绿但整体不满足目标均拒绝；必需独立 Evidence/用户验收成立才写成功 GoalOutcome。
+token/cost 无原生计量时 value 为空并记录 source/coverage；先强制墙钟、Attempt、并发、输出限制，不建设计费平台。严格 token/cost 限额只能由可测/可约束 profile 满足。若既有预算维度有预留，未知 actual 不退款，可按批准 Policy 保守 debit 并结清执行义务；补到测量追加幂等修正，不重写旧数值或把 unknown 当零。相关 schema/producer/重启后准入测试须随接缝同步。
 
-无 Git 的 SQL/样例交付明确目标方言、实际检查引擎与未做的验证；本地样例绿不冒充目标数仓实机成功。若任务要求发布/执行/补数，必须检查实际外部结果；原生工具提交回执或 Agent 退出本身不足。默认 publication:none，可选 Draft PR 仍由独立 Publisher；外部生产写须明确批准，缺可靠查询/停止/幂等时限制支持或要求人工收口，unknown 不盲重试。partial/unknown、补偿授权与文件交付分列，不承诺跨系统原子发布/自动回滚。
+审计自 B1 就记录实际提交 prompt/context、执行/等待耗时、尝试、失败、验收和成果；B2 增加可查询聚合视图及增强事件。不可见的 Agent 内部 Skill 展开/模型输入/隐藏推理不冒充已采集，秘密不进入日志和业务事件。
 
-`NO_CHANGE` 的交付扩展只允许原批准合同明确许可且“现有精确成果已经满足批准需求”的验收型节点：兼容旧 Run 时仍检查 `allowNoChange` 和诊断交付物；独立 Evidence 和具名验收决定绑定现有成果，GoalOutcome 显式记录无新 patch，不把 NO_CHANGE Run 改写为 ACCEPTED。字段级 Schema 与 producer 在 B2-B 一起实施，缺失时保留原诊断，不提前宣布团队完成。
+## 7. 验收与非目标
 
-## 6. 监督、计量与审计
+B1 验收真实两 Worker 重叠、整体成果消费、独立 Decision、进度/取消、重复提交不重启及失败记录；B2 验收零 Git/多仓库、简单需求问答、SQLite、同版本恢复和按 Provider 声明能力；B3 才以同路径故障、长期运行、签名、公证、Linux 与受保护资产证明正式支持。具体出口见 Milestone。UI 仅在 B2 的核心 API-STABLE 后启动，不以所有 Provider 或全部增强能力阻挡它，也不阻挡 API 发布。
 
-监督归唯一 resident controller；LLM 只产出 proposal/Assessment。progress 是观察，不改变权威成功状态；增强能力缺失的 worker 仍受硬 deadline、cancel、结果收集和独立验收约束。队列等待、实际执行槽、Review WIP、Provider 额度分别计算，review 堆积不能靠盲目加作者解决。
+拒绝：Workspace 改名继续注册、安装身份平台阻断试用、为 SQLite 全面重写后才集成、三品牌先行、每工具调用一个 DAG 节点、每次验收强制 LLM、无保护 HTTP、双写权威、模型自证、无限返工、绕过 OS 安全或旧运行时检查。
 
-所有 retry、rework、successor 与 plan revision 计入原 Goal 总预算；transport 重发复用 commandId，不制造业务尝试。结构性失败只在事实变化并通过预检后重试。缺实时 token 的 profile 不承诺硬性成本限额，需明确使用可执行的墙钟/Attempts/并发/输出预算；要求严格费用上限时不匹配该 profile。
-
-批准 Policy 按维度冻结 `enforced` 和 `observed` 模式。结算版本化记录包含逐维度 `value`（未知可空）、`source`、`coverage`、`debit` 及其依据：可测量维度按真实消费结清；未知 token/compute 的 actual 保持未知，执行义务可以终结但不能视作零花费或退款。若保留该维度的准入额度，只能按批准的保守 debit 留账，不释放未知预留以扩容；无可信消费上界的 profile 不能声称严格 token/cost enforcement。补到真实数值后用幂等修正事件，不重写原结算。旧 `Actual`/非 nullable token Schema、生产者和重启后后继准入测试在 B1-B 一起更改，不将预算未决错误地保留为活 Worker。已识别结构性失败立即禁止原样重试，第二次同 signature 仅是分类/预检失效告警。
-
-prompt/context 实际提交快照、用量来源和计量覆盖在执行时记录。隐藏推理与 Agent 未暴露输入不要求采集；未知不写零。业务证据与脱敏审计材料区别存储/展示，保留期限与权限控制不能依赖 Agent 自律。日志、事件和摘要都不能授予接纳/发布权限。
-
-## 7. 验收与被拒绝的简化
-
-必须在同一生产路径证明：认证请求/幂等与旧 revision 拒绝；单 owner/Store 切换恢复；真实 Agent 单任务与两个并行节点/集成；无工具事件可执行；原生 Skill 不扩大权限；活动等待/取消/未知结果；错需求但测试绿被拒绝；prompt/用量缺失诚实呈现；独立验证与最后交付。详细 matrix 与次序以本 ADR 引用的 Milestone 为准。
-
-拒绝：双账本写权威、HTTP 包装 legacy child CLI、所有 Agent 强制 ACP/工具流/精确版本、模型自写成功证明、无限 rework、每个工具调用变 DAG 节点、将 DB 恢复称外部回滚、为观察功能先建多服务、把普通主机子进程描述为恶意代码 sandbox。
-
-这是可实施的目标合同，生产成立仍依赖真实交付、故障测试和正式资产支持证据。不能用通过文档审计代替实机验收。
+本稿是实施方案，不是运行成功证明；文档审计不提升 B1/B2/B3 成熟度。

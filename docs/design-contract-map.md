@@ -1,43 +1,46 @@
 # 当前设计与历史合同适用性
 
-更新：2026-09-07。目的不是增加一层审批，而是避免“新方案写在页首，旧强制句留在正文”造成实现反复往返。
+更新：2026-09-07。目标是少流程、少返工，不再让旧产品形状变成新团队交付的前置。
 
-## 先区分三个问题
+## 三个不同结论
 
-| 问题 | 唯一入口 | 当前含义 |
+| 问题 | 唯一入口 | 含义 |
 | --- | --- | --- |
-| 用户要什么产品、接下来设计什么 | [服务架构](agent-team-service-architecture.md)、[Milestone](agent-team-service-milestones.md) | 一个服务完成需求确认、有限 Agent Team、可消费交付；轻量 Workspace/Task API/SQLite/开放 Adapter/内置监督是当前目标设计；仓库和表只作任务上下文，UI 后置 |
-| 哪些合同可以启用到具体运行路径 | [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md) §1 及所列原 ADR | 0085 仍为 Proposed；新边界需接纳并完成对应实现/验收后启用。旧 Accepted 合同继续约束旧 profile，不被草案或文档搬迁默默解除 |
-| 哪些真的完成/可以发布 | [Roadmap 当前表](roadmap-status.md#业务交付当前表)与精确实机/发布证据 | 设计、候选代码、集成、正式发布分别记账；文档通过不提升产品成熟度 |
+| 要实现什么 | [Task-first 架构](agent-team-service-architecture.md)、[Milestone](agent-team-service-milestones.md) | B1 先团队 PoC，B2 本地 API 可用，B3 正式支持；无 Workspace 产品实体 |
+| 哪个合同可启用 | [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md) §1 | 仍为 Proposed；新 profile 接纳并验证后启用，旧 profile 仍守原规则 |
+| 什么真的完成 | [Roadmap](roadmap-status.md#业务交付当前表) | 历史证据/候选/实机/发布分别计，不因文档更新提升成熟度 |
 
-新方案设计不必先满足旧方案的函数、文件、物理存储与历史切片顺序。遇到冲突时把精确取代写入 **同一 ADR 0085**，不再为每个漏项连开 ADR；但 Proposed 不能直接成为生产 mutation、迁库或签名授权。ADR 接纳、代码合入、runtime enable、release 是四个不同动作，不互相冒充。
+用户已明确要求按 Task-first 简化修改设计；它不等于旧 Run/activation 被重新授权。设计审计、ADR 接纳、代码合入、runtime enable 和正式 release 不互相代替。相关取代集中在同一 0085，不每个字段再写 ADR。
 
-## 保留语义，替换实施形状
+## 删除前置，保留必要语义
 
-| 领域 | 当前目标中不再沿用的旧形状 | 必须延续的语义 | 合同载体 |
-| --- | --- | --- | --- |
-| 产品顺序 | M13 后才做所有团队/UI；重走 S1′→S2′→T1/T2 | 一条真实业务纵切、成熟度和故障证据 | 0052/0080→0085，当前 B1→B2→B3 |
-| Agent 接入 | Core 写死 Pi 版本、55 个文件、所有 Agent 强制同一结果文本和禁 Skill | 受信 Adapter、兼容性检查、实际执行/输入身份冻结、真实 transcript、独立验收 | 0058/0063/0075/0084→0085 §2 |
-| 服务与安装 | 只有固定 CLI 客户端自读 RB1、安装与业务仓库同目录 | 固定可信入口、应用层认证授权、唯一 Workspace owner；具体执行路径仍受归属控制、无 child CLI fallback | 0051/0062/0066/0068/0073/0076→0085 §3 |
-| Workspace/Task | 把所有任务绑定 Git、扩通用资源目录、双 Task/Goal authority | 上下文提供业务信息；Task 映射既有 Goal；Git 特化单写/基线；输入与批准边界 | 0018/0066/0069/0080→0085 §2–§5 |
-| 存储与启动 | RB1/Run 分账本、跨文件 proof/shared-guard、exact AST 与专属文件集合 | 单真值、先记 intent、真实 outcome、当前 owner/lease/generation/CAS、唯一合法 successor | 0065/0066/0067→0085 §4 |
-| allocation 与停止 | projection 文件目录、Run lane/全局 lane 固定锁顺序 | 受管执行目录唯一写绑定；Git 路径追加 worktree/base；先 fence、终止归属、精确 terminal/cleanup/release 后才能复用 | 0069/0070/0081→0085 §4–5 |
-| 问答与计量 | 所有待答全局 pause；缺 token 就永远不结算；固定两实现一集成 | 局部阻塞、全局 pause 优先、总预算不重置、未知用量诚实记账、人工验收绑定成果 | 0019/0083→0085 §5–6 |
+| 删除或后置的形状 | 仍要保留 | 落点 |
+| --- | --- | --- |
+| Workspace ID/API/注册/切换，或改名 Project | 内部数据根排他、任务/执行 ID、输入/成果归属 | 0085 §2–§3 |
+| operator-local 安装收据、显式 init、账号/组织/RBAC | 合法固定安装、OS 安全、本地自动 token、空根安全建立、旧/坏数据不覆盖 | 0085 §1/§3；正式管理能力后置 |
+| 全面 SQLite/旧库迁移后才团队 | B1 原唯一 Store，B2 SQLite；任何时刻每根一个权威 backend | 0085 §4；U1 独立升级 |
+| 固定品牌/版本/文本 envelope/强制 ACP | 受信注入 Adapter、实际执行/输入和终态、能力符合、独立验收 | 0058/0063/0075/0084→0085 §2 |
+| 旧 AF_UNIX 客户端持 RB1 证明，child CLI/多 server | HTTP/CLI 共用应用层，服务端当前事实重验 | 0062/0066/0076→0085 §3 |
+| 双账本物理 proof/锁序/AST 是永久形状 | 先 intent、唯一 producer/current owner/CAS、迟到拒绝、无双写 | B1 保留旧实现，B2 依 0065/0066/0067→0085 §4 换接缝 |
+| 所有任务必须 Git 或 Core 注册资源 | Task context、受管目录单写；Git 特化 base/worktree，零 Git 独立目录 | 0066/0069/0080→0085 §2/§5 |
+| 完整规划/所有 Provider/全恢复先行 | 一次有限确认、两个真实作者、独立整体验收、最小事实/止损 | B1；增强体验 B2；正式矩阵 B3 |
 
-这里只替代列明的物理/产品假设；例如 ADR 0067 的未知归属/permanent intervention、ADR 0079 的当前 Darwin process mechanics、旧 profile 的字段摘要与重放规则没有被顺手取消。严格/hardened profile 的签名、launcher、内核证据不会自动继承给 ordinary-user。
+原 ADR 0052 正式 signing/notarization/Linux/stable 门禁不删；原当前性、未知归属/permanent intervention、发布分权和历史 byte/replay 不变。普通 local profile 不继承 hardened/managed 保证。B1 重启只保证能查事实并不乱重派时，就不能宣称透明恢复。
 
-## 文档与实现怎样切换
+## 文档和实现如何收敛
 
-1. **当前入口更新正文**：architecture/runtime/implementation 只描述当前目标与迁移，旧长文保留为 `*-reference-2026-09-07.md`。阅读历史用于复用证据或修复旧 profile，不把它当新增待办。
-2. **ADR 不销毁历史**：原状态、接受证据、原字节语义保留；顶部附具体适用性与 0085 链接。Proposed 候选不因被引用而自动 Accepted。
-3. **测试按用途处理**：独立验证、currentness、响应丢失、取消/结果竞争、重复副作用、数据/凭据边界等行为回归迁到新真实接缝；固定函数名、文件数或旧锁层次的形状测试只留在旧路径。不能只删会报错的测试而不补等价行为证据。
-4. **新旧 scope 不混证据**：新空 Workspace/独立目录可按新 profile 验证，允许零 Git；显式旧来源先合法收口、只读导入、阻断旧 writer，再单写 cutover，不要求全机仓库注册/盘点。首次不做在途 Run 跨版本续行、不复制旧 activation 或重签旧 Decision。
-5. **不重建整套框架**：能沿用的 reducer、验证器、process mechanics、制品与幂等规则继续用；去掉的是不必要的耦合，不是为干净目录重新实现全部核心。
+- 当前架构/runtime/implementation、README、愿景、Roadmap 目标列同步新顺序；历史参考文档与原事实不重写。
+- B1 先补实际业务接线：当前 Store 不形成新的并行 Task 真值，HTTP 不绑定磁盘布局。B2 SQLite 替换复用相同应用与验收，不重新造一套 API。
+- 回归保留独立验收、路径/secret、重复/迟到、结果取消竞争和恢复行为；旧函数名/文件数测试仅留旧 profile，不以删除行为测试换绿。
+- 新空数据根与旧迁移分开；旧非终态先合法收口、只读历史导入，旧 writer 未证明禁止不接管。不得清空/重签/复用未知占用目录。
+- 接口依赖反转不要求一个 Port 一个生命周期/微服务；已有 state reducer、process mechanics、制品与业务 oracle 优先复用。
 
-新增进程内 Port/constructor DI 只需绑定当前退出条件、依赖方向和测试替换需求，**不要求独立生命周期**。新增独立服务/持久控制器才需要真实的扩缩容、故障隔离或信任边界理由。没有业务收益的抽象与无限微切片均不进入关键路径。
+B1 团队 PoC→B2 本地 API/核心 API-STABLE→B3 正式支持。UI 在核心接口稳定后开发，三品牌全部增强/U1/完整 B3 故障不作为 UI 或首演示前置。旧 Marshal skill 不读取、不执行、不作为运行/研发/验收条件；Agent 自带 Skill 保留，术语统一“审计”。
 
-API-first 顺序为 B1 原生 SQLite 完整纵切→B2 团队/审计 API→API-STABLE→B3；UI-1 只在接口验收后启动，不阻 API 正式发布。旧 Marshal skill 永久不属于产品运行、研发准入或验收依赖，不读取/执行；各 Agent 原生 Skill 保留。术语统一使用“审计”，历史记录原措辞不改写。
+## 本轮范围
 
-## 本次明确不做
+只调整方案、Milestone、合同草案、当前入口与审计。没有启动/取消 Worker、修改产品运行时、迁移 .marshal、接纳旧权限或发布正式资产；历史失败不删除。本轮文档保存与后续 Git 同步不等于产品已交付。
 
-不运行/取消 Worker，不迁移 `.marshal`，不改运行时代码，不接纳未确认的 ADR，不删除历史 Run/失败分母，不推送或合并远端。当前调整是设计导航和精确替代草案的修复，不是新服务已经可用。
+### 治理文件同步边界
+
+上一轮同步根 AGENTS.md 被保护规则拦截后保留原文件。2026-09-07 用户明确批准“仅同步目标导航、保留全部安全不变量”，现已同步顶部路线、目标说明和必读导航；universal 不变量与实施/维护者/外部贡献者条款原文未改。不以文档冲突豁免单写、独立验证、凭据分权或旧运行时门禁。

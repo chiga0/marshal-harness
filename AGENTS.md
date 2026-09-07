@@ -10,9 +10,9 @@
 
 ## 2026-09-07 当前产品路线
 
-维护者已接受 [ADR 0080](docs/adr/0080-three-plane-business-delivery-roadmap.md) 的三面分离与 B1→B2→B3 路线。当前目标进一步按 B1 Workspace HTTP 单任务→B2 受限 Agent Team/交互与审计 API→`API-STABLE`→B3 长期运行与正式 API 支持推进；UI-1 仅在 API-STABLE 后启动，不阻塞 API 正式发布。它不恢复通用 M13、HA、多租户作为发布前置。唯一当前完成状态见 [Roadmap 当前表](docs/roadmap-status.md#业务交付当前表)，目标退出条件见 [实施 Milestone](docs/agent-team-service-milestones.md)。此调整不削减独立验证、单写者、发布分权、恢复与签名/Linux/stable 门禁，不表示能力已生产可用。
+维护者已接受 [ADR 0080](docs/adr/0080-three-plane-business-delivery-roadmap.md) 的三面分离与 B1→B2→B3 路线。当前目标进一步按 B1 真实团队交付 PoC→B2 本地 API/SQLite/交互与审计→`API-STABLE`→B3 长期运行与正式 API 支持推进；UI-1 仅在 API-STABLE 后启动，不阻塞 API 正式发布。它不恢复通用 M13、HA、多租户作为发布前置。唯一当前完成状态见 [Roadmap 当前表](docs/roadmap-status.md#业务交付当前表)，目标退出条件见 [实施 Milestone](docs/agent-team-service-milestones.md)。此调整不削减独立验证、单写者、发布分权、恢复与签名/Linux/stable 门禁，不表示能力已生产可用。
 
-当前目标设计统一见 [Workspace Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)：Workspace 是任务/配置/目录/输入/制品/审计的轻量容器，可无 Git，不是资源目录；仓库/表/平台通过任务 prompt/context 提供，不新增 Core 资源注册。公开 Task 映射既有 Goal，内部 Task 执行规格对外称 WorkItem。固定 HTTP 服务、开放 AgentAdapter、内置监督/持久交互/DAG/审计和 Workspace SQLite 是目标；0085 仍为 Proposed，不等于正式接纳或运行时启用。[合同适用性](docs/design-contract-map.md)明确旧 repository profile 仍执行原合同，新设计不继承旧函数/文件/物理账本/历史切片形状，也不自动迁移旧 `.marshal`。
+当前目标设计统一见 [Task-first Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)：删除 Workspace/Project 业务对象与注册流程，仓库/表/平台通过 Task prompt/context 提供。公开 Task 映射既有 Goal，内部执行规格对外称 WorkItem。B1 复用合法固定安装/当前 Store，用一个 Provider 的两个实例先交付；B2 完成本地简启动、SQLite、零 Git/多仓库、问答与更多 Adapter。账号/安装身份平台和 U1 历史导入不作为 B1 前置。0085 的合同状态与运行时启用分别判断；[合同适用性](docs/design-contract-map.md)明确旧 repository profile 仍执行原合同，新设计不自动迁移旧 `.marshal`。本轮只同步目标导航，以下不变量原文保持；其中旧 Workspace 状态布局按旧提案作用域理解，不成为新的注册前置。
 
 旧 Marshal skill 长期完全退出产品运行依赖、研发准入和验收标准：不读取、加载、派发或执行其流程，不要求每个开发切片一个 Marshal Run。保留历史运行/失败/审计资产，不恢复旧 Skill 的微切片和轮次规范；各 Agent 自带 Skill 仍由 Agent 自行管理。这不豁免以下产品证据、权限和恢复不变量。
 
@@ -29,7 +29,7 @@
 1. `README.md`
 2. `docs/vision-and-scope.md`
 3. `docs/design-contract-map.md`（先区分目标、合同状态、旧 profile 与实际成熟度）
-4. `docs/architecture.md`、`docs/agent-team-service-architecture.md`（Workspace/Task/WorkItem 与 API-first 目标）
+4. `docs/architecture.md`、`docs/agent-team-service-architecture.md`（Task-first 与 API-first 目标）
 5. `docs/implementation-plan.md`、`docs/agent-team-service-milestones.md`、`docs/roadmap-status.md` 当前表（目标出口与实机完成状态分开）
 6. `docs/task-lifecycle.md`、`docs/security-model.md`、`docs/runtime-architecture.md`
 7. `docs/adr/0085-agent-team-service-contract-and-storage.md` 与命中接缝的原 ADR；`*-reference-*` 只用于历史追溯，不形成第二套强制排期

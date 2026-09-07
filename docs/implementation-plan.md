@@ -1,41 +1,40 @@
 # 实施计划
 
-更新：2026-09-07。当前产品设计见[服务架构](agent-team-service-architecture.md)，逐项业务退出条件见[Milestone](agent-team-service-milestones.md)，实际状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。[ADR 0085](adr/0085-agent-team-service-contract-and-storage.md) 仍为 Proposed；[合同适用性](design-contract-map.md)区分当前目标、旧 profile 与启用条件。
+更新：2026-09-07。当前方案见[Task-first 架构](agent-team-service-architecture.md)，详细出口只见[Milestone](agent-team-service-milestones.md)，实际完成状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。合同调整集中于 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed），不提前启用新运行时权限。
 
 ## 唯一实施顺序
 
-| 阶段 | 交付 | 先复用、再补齐 | 不等待/不再重复 |
+| 阶段 | 优先实现 | 复用资产 | 不得成为前置 |
 | --- | --- | --- | --- |
-| B1-A Workspace/接口接线 | 独立固定安装、轻量 Workspace、Task HTTP、注入应用组合 | 现有 PublicApplicationPort、fixed server、验证/Decision、process mechanics；移走 CLI/固定品牌耦合 | 不另建第二 server；不重走旧 S1′/S2′；不先铺全部 Provider 增强矩阵 |
-| B1-B 原生单事务完整交付 | 直接 SQLite 跑真实零 Git 制品与 Git 单任务、取消/恢复/下载重建 | 原 reducer/事件/幂等与真实故障案例；迁移跨文件 proof 为短事务＋锁外执行＋事务重验 | 不先扩旧 file-backed HTTP 再迁库；不双写、不重签旧证据 |
-| B1-U 旧库升级 | 显式静止来源、原字节/namespace 导入、旧入口禁写 | 旧真实历史与恢复证据 | 不挡新空 Workspace；未过不宣传升级支持 |
-| B2 受限 Agent Team | 澄清/确认/问答、有限图、并行实现→集成→独立验收→可消费交付；三 Provider、Task/DAG/审计 API | 已有 B2 候选的预算/创建/调度/集成与 Outcome 经验，按新合同接入同一应用和 Store | 不全盘重写；不扩通用 DAG/Skill/鉴权平台；不为演示无限换模型重试 |
-| API-STABLE | OpenAPI/handler/客户端一致、纯 HTTP 全链与负向检查 | B1/B2 真实路径 | 是 UI 启动检查点，不是 release 标签 |
-| B3 长期运行与正式支持 | 同路径故障/升级/长历史；签名/notarization、Linux server、受保护 same-bytes stable release | 历史恢复矩阵与 RC1 发行资产；补新服务真实业务支持证据 | 不用 RC1 或文档审计代替 stable；不先拆 HA/微服务；UI 不阻 API release |
-| UI-1 后置界面 | API-STABLE 后只消费公开 Task API | OpenAPI/生成客户端 | 不读内部 DB、不新建私有状态 |
+| B1 真实团队 PoC | Task HTTP/确认→两个真实作者并行→自主收集/独立验收→集成/下载消费→Outcome | fixed server、Application Port、现有 Store/RepositorySession、受管进程、B2 物化/集成候选 | Workspace/注册、安装身份平台、完整 SQLite 迁移、三 Provider、通用规划器、UI |
+| B2 本地 API 可用 | 简启动、关键澄清/问答/暂停、SQLite、零 Git/多仓库、同版本恢复、审计与第二 Adapter | B1 同一业务入口/状态机、既有预算/恢复测试 | 历史导入 U1、PostgreSQL、全部 Provider 增强能力、远端权限平台 |
+| API-STABLE | 核心 OpenAPI/handler/客户端一致、真实 HTTP 交付和已提供接口的关键反例 | B1/B2 业务验收 | 三品牌全部齐备、B3 全故障矩阵 |
+| B3 正式可靠发布 | 长任务/故障/备份恢复、支持矩阵、签名/公证、Linux、same-bytes stable | 现有发行/故障资产与同路径真实业务证据 | UI、HA、多租户、自动发布或通用工作流 |
+| UI-1 | 核心 API 稳定后提交/详情/DAG/问答/审计 | 公开 HTTP API | 不读私有 DB，不阻 API release |
+| U1 旧数据升级 | 原来源合法收口、只读历史导入、旧 writer 禁写 | 原 ID/bytes/预算/失败证据 | 不串行阻断新数据和 B1/B2 |
 
-ADR 接纳是边界切换的条件，不是把全部编码/学习停住的理由：旧支持路径可按原合同修复；新合同可在隔离候选实现/验证但不得进入默认支持、消耗旧权限或迁移活动数据。接纳后也须通过对应纵切验收才 enable。B1-A 是同一 B1 纵切的接线检查点；B1-B 原生 SQLite 完整交付，不要求 B1-A 先在旧存储跑实机。B1-U 只控制升级支持。精确出口以 Milestone 为准，不再造第四产品阶段。
+旧 B1 单任务是当前 B1 内部检查，旧 B2 最小团队出口前移，历史状态/失败与证据不重新计分。首个团队用现成 Provider 的两个实例和真实 Git 业务样例；零 Git/多仓库支持在 B2 实测后才承诺。独立验收和下载消费是首出口的一部分，不能只报进程跑完。
 
-Workspace 不做仓库或数据资源治理。Task prompt/context 提供仓库/表/平台说明，Core 保留批准输入/执行 profile/预算/归属/证据；Git 专用处理留在适配层。公开 Task=既有 Goal，节点旧 Task 对外称 WorkItem；无 Git 制品不强制 worktree/commit。首版不新增 ResourceBinding、资源注册 API、跨 Workspace claim 或通用连接器平台。
+## 具体下一步
 
-## 资产复用与测试转换
+1. 冻结一个真实小业务的接口、输入、整体 oracle/反例与下载内容；确认现有合法安装/Provider 可执行。结构性失败在付费调用前发现，不再轮换模型试运气。
+2. 同一应用入口接 Task 请求与一次计划确认，连接已有 team materialization、Start、Collect、Verify/Decision、集成与 Outcome。优先补缺失接线，不重建 scheduler。
+3. 两作者真实重叠执行；客户端只经 HTTP 查状态/取消/下载，独立环境消费结果，保留失败与实际耗时。通过才关闭 B1 团队 PoC。
+4. 再沿同一接口完善 B2：自动简启动、最小 SQLite、零 Git/多仓库、问答与局部恢复；第二 Provider 独立接入，第三 Provider 不阻已支持主路径。
+5. 核心 API-STABLE 后可开 UI；B3 在最终同路径资产上验证正式支持，不重做一套演示或绕过 OS 安全。
 
-- 保留已有业务状态机、独立 Verification/Review、当前结果接纳、制品、path/secret 边界和归属终止。
-- 将固定 Pi 常量/原生结果文本规则移入相应 Adapter/profile；Core 只消费中立能力和经真实观察绑定的执行事实。
-- 旧物理账本、函数名/文件集合、exact AST 与一次性的切片顺序不约束新实现形状；等价的当前 owner、输入冻结、预算单次、结果/取消竞争和 crash/replay 行为必须在新接缝验证。
-- 旧二进制/旧 Run 在迁移前仍遵守原合同，历史 bytes/digest 不变；未知归属继续 intervention，不借设计更新自动清理。
-- 旧候选必须按新入口/支持 profile 重测才能贡献新退出条件；仅功能相似、测试绿或已有 PR 不算完成。
+Workspace 不再是实体/API/初始化前提，不能改名为 Project 保留注册流程。data-dir 仅是启动配置；Task 上下文提供仓库/表/平台，权限由允许的执行配置约束。内部 Task/Goal 类型先映射而不是全仓重命名。用户不手写 lease、identity 或每个 Run。
 
-## 并行与效率约束
+## 复用与边界
 
-优先并行三条有边界的工作：应用/Store 主线、AgentAdapter 与 contract tests、API 客户端/业务 oracle/审计投影；API-STABLE 前不派 UI 作者。共享事务/Schema 接缝只指定一个 owner，其他以冻结接口协作。review 与长验收执行不占全局 writer lane；有 scope/资源余量不等于必须增加 Worker。
+B1 复用原 Store 权威组合，B2 一个 SQLite Store，迁移后同一状态根没有双写。既有 source/process 归属、输入绑定、独立验证、幂等、未知不重试及 Publisher 分权不变；新边界在 ADR 接纳和对应验证前不进入默认支持、不消费旧 activation 或改写旧 Run。一份 Proposed 不要求停止所有编码，但不能充当已获生产权限。
 
-每个交付切片绑定一个 B1/B2/B3 用户可见出口，同时聚合必要 producer→consumer→恢复→验收，不按文件或每个字段拆 Run。旧 Marshal skill 完全退出运行/研发/验收依赖，不读取/加载/运行，不让 reviewer 首次发现机器可检的协议/输入问题。
+旧函数/文件/AST 与历史切片形状不约束新接口，等价的 currentness/唯一执行/结果取消竞态等行为仍须验证。旧兼容代码可保留在旧路径，不以“整洁”为由先全仓清理。B1 恢复先保证事实可查、不乱重派；同版本自动恢复与完整故障保证分 B2/B3 交付。
 
-派发前一次聚合输入、原生配置/能力、结果传输、业务 oracle、恢复/超时、最小 schema/path/secret 检查。代码问题一次聚合返工；结构性失败没有事实变化和预检不重复执行。判断收益使用同合同/资源的强 Lead＋SubAgents 配对实验，保留失败 Attempt、CI、人工等待与返工成本；不能以 PR 数量证明效率。
+## 并行与效率
 
-## 历史阶段如何保留
+主链、业务 oracle/API 客户端、Adapter 三条可独立工作，按宿主和验收容量分配。共享 Application/Store 只有一个写 owner；每个作者独立 worktree；接口未定先写 fixture，不各自猜测。审查/验证必须独立，但客观验证不必每次额外调用 LLM。
 
-M0–M13、I186-R0→R6、S1′/S2′、T1/T2 是历史交付与证据坐标，不是当前第二套串行排期。历史 I186 的未关闭安全/发布条件映射到 B1 恢复与 B3 正式支持，既不丢弃，也不重复建设已关闭组件。完整旧表见[实施计划历史参考](implementation-plan-reference-2026-09-07.md)。
+一次业务切片聚合必要实现、预检、审查和修正，不按文件/Schema 字段分 Run。已知结构性失败无事实变化不重试；局部内容错只修受影响节点。每次报告退出条件、证据、blocker 与下一业务动作，不以 PR 数量/全部槽满衡量进展。
 
-只有真实组合路径与消费方验收才能标记 `INTEGRATED`；正式资产/支持门禁通过才能标记 `RELEASED`。每次关闭 Milestone 同步 Roadmap、适用合同和遗留风险；不把 Proposed、候选代码、旧实机证据互相替代。
+旧 Marshal skill 完全退出运行、研发和验收，不读取/执行；保留其历史失败与经验。M0–M13、I186-R0→R6、S1′/S2′、T1/T2 保留[历史参考](implementation-plan-reference-2026-09-07.md)，不形成第二套串行待办。只有同路径实机与最终消费证明 INTEGRATED，正式门禁证明 RELEASED。
