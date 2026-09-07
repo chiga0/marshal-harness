@@ -276,7 +276,7 @@ func extractSingleWorkerResultObject(text string) ([]byte, error) {
 		decoder := json.NewDecoder(strings.NewReader(text[index:]))
 		var raw json.RawMessage
 		if err := decoder.Decode(&raw); err != nil {
-			return nil, &productionResultFailure{code: "final-object-invalid", cause: fmt.Errorf("%w: malformed terminal JSON container", ErrProtocol)}
+			return nil, invalidFinalObject("syntax", candidates > 0, fmt.Errorf("%w: malformed terminal JSON container", ErrProtocol))
 		}
 		// Nested `{"...": {...}}` braces belong to the outer object: skip every
 		// later '{' that falls inside the span just decoded so one complete
@@ -287,7 +287,7 @@ func extractSingleWorkerResultObject(text string) ([]byte, error) {
 		}
 		encoded, err := canonical.JSON(raw)
 		if err != nil {
-			return nil, &productionResultFailure{code: "final-object-invalid", cause: fmt.Errorf("%w: ambiguous terminal JSON container", ErrProtocol)}
+			return nil, invalidFinalObject("canonical", candidates > 0, fmt.Errorf("%w: ambiguous terminal JSON container", ErrProtocol))
 		}
 		if text[index] != '{' {
 			continue

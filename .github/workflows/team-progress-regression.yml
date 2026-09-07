@@ -38,8 +38,8 @@ jobs:
         run: |
           go test -race -p 2 -count=1 -timeout=120s -json \
             -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$GITHUB_SHA" \
-            -run '^(TestTeamProgress.*|TestRepositoryTeamProgress.*|TestBackgroundTeamRunLanesAndVerificationYield|TestBackgroundRunReleasePreservesPublicWaiter|TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor)$' \
-            ./internal/cli ./internal/productionruntime ./internal/fixedcontrolplane ./internal/resultingress \
+            -run '^(TestProductionResult.*|TestTeamProgress.*|TestRepositoryTeamProgress.*|TestBackgroundTeamRunLanesAndVerificationYield|TestBackgroundRunReleasePreservesPublicWaiter|TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor)$' \
+            ./internal/adapter/pi ./internal/cli ./internal/productionruntime ./internal/fixedcontrolplane ./internal/resultingress \
             | tee team-progress-results.jsonl
       - name: Reject empty or skipped regression coverage
         run: |
@@ -47,6 +47,8 @@ jobs:
           import json
           from pathlib import Path
           expected = {
+              "TestProductionResultFinalObjectFailureLocationIsClosed",
+              "TestProductionResultFailureClassificationDoesNotChangeAdmission",
               "TestTeamProgressCollectVerifyAndStaleSelections",
               "TestTeamProgressFailureAndPositiveLiveness",
               "TestTeamProgressShortActionsServeEveryPhaseDespiteBufferedTicks",

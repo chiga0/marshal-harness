@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-08：公平调度候选的实机结果与 Pi 结果拒绝
+
+`495ab02fcae086984407fb92f96fbc65c390ef2f` 完整 CI `34144298657` 全绿，Darwin 定向 `34144087380` 的 11 项检查通过；真实团队 `34145704791` 仍失败。诊断 artifact `10027742173` 中首个业务错误为 `pi-result-final-object-invalid`，当前账本记录 service 的 `team-plan-halted(stage=collect)`、两条 `process-terminal`，另一路 Outcome 为 `BLOCKED/attempt-deadline-exceeded`；driver 最终报 `fixed-cli-response-timeout`。本轮已有 Collect 进入并拒绝结果的证据，与上一轮仅 RUNNING 不同；未提交 Decision、未集成、未重试，不计 B1 通过。
+
+旧分类把终态文本中 JSON 语法错误、canonical 拒绝，以及错误位于已识别结果前/后混为同一标签；上传包又未包含终态内容。下一候选只在原拒绝点输出封闭分类（syntax/canonical、before/after-result），不输出文本、字段名、路径或偏移，不重解码、不更改结果接纳集合。before 包含尚未识别成功的结果声明本身；canonical 也不等同于已证明重复字段。新增确定性拒绝及伪造标签反例，并纳入远端 Darwin 快速反馈。它是诊断补齐，不宣称已修好 Pi 实际输出；获得真实分类前禁止原样付费重试或盲目延长超时。后续仍须完成 Task HTTP、组合验收、下载消费与正式部署出口。
+
 ## 2026-09-08：真实团队超时与后台调度公平性
 
 精确候选 `cd19a6d20dcce4ef9eb51ea3cf455f6fd89c76de` 的完整 CI `34140891818` 五项全绿，Darwin 定向 `34140755250` 通过；但真实双 Pi canary `34142425497` 在 360 秒观察期限内未到评审，原因 `team-resident-progress-deadline`，未提交 Decision、未自动重试。两条 `process-started` 已入账，49 次 service 查询仍为同一 RUNNING head。原始 `state.json` 的 READY 不能覆盖 fixed Inspect 的 journal 投影。上传包没有 Worker 终态输出；空 stderr、没有 Collect successor 也不能证明 Collect 从未进入，因为正向 still-running 本来不追加结果事实。因此本次唯一根因尚未确定，不归咎模型速度、不直接扩大时间预算。
