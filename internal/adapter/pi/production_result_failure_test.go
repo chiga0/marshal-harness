@@ -97,6 +97,8 @@ func TestProductionResultFailureClassificationDoesNotChangeAdmission(t *testing.
 		name, want string
 	}{
 		{"valid", ""}, {"trailing", "pi-result-final-object-trailing"},
+		{"multiple", "pi-result-final-object-multiple"}, {"invalid", "pi-result-final-object-invalid"},
+		{"business-prefix", ""},
 		{"missing", "pi-result-final-object-missing"}, {"identity", "pi-result-declared-identity"},
 		{"schema", "pi-result-declared-schema-artifacts"}, {"protocol", "pi-result-transcript-json"},
 		{"session", "pi-result-transcript-session"}, {"closure", "pi-result-transcript-closure"},
@@ -117,6 +119,12 @@ func TestProductionResultFailureClassificationDoesNotChangeAdmission(t *testing.
 				text += "\n``` sensitive suffix"
 			} else if tc.name == "missing" {
 				text = "sensitive non-result text"
+			} else if tc.name == "multiple" {
+				text = `{"kind":"WorkerResult","taskId":"OTHER"}` + text
+			} else if tc.name == "invalid" {
+				text = `{"kind":"WorkerResult","kind":"Other","private":"sensitive-field-value"}` + text
+			} else if tc.name == "business-prefix" || tc.name == "identity" || tc.name == "schema" {
+				text = `业务示例 {"total":12} ` + text
 			}
 			stop := "stop"
 			if tc.name == "provider" {

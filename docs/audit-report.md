@@ -1,5 +1,7 @@
 # 设计审计报告
 
+2026-09-07 三节点 PoC 34094155668 未完成：精确候选 cef2723 的 CI 34092330921 五项成功后单次派发；两个 Run journal 均已有 start-outcome，不能按落后的 READY/AttemptsUsed=0 快照计为零执行。Collect 最终返回非 JSON，server 的闭集诊断为 `pi-result-final-content-shape`；未到独立评审、第三节点或 GoalOutcome。原始终态文本不在归档中，具体模型输出未知。源码可复现的缺陷是“多个完整对象”错误未分类，落入 content-shape；ADR 0075 的计数还把业务示例当作第二份结果。按候选 ADR 0084 一次修正 typed framing、重复字段/损坏容器拒绝和精确诊断，并补完整 parser/生产解析反例；没有为旧 Run 补签或自动重试。候选修复未获实机证明，不关闭 B2，不宣称生产可用。
+
 2026-09-07 B2 最终结果接线：按 ADR 0083 在原 RB1 新增一次 completed outcome，验证器在同 current-owner/三个 Run lease 回调中复用原 Decision/Outcome producer 校验；最终结果绑定全部原创建、候选/patch、独立评审与集成派生 base。resident 仅补终态 append，不补派或重跑；`team-reconcile` 在原认证与固定客户端 held ledger readback 后返回完成投影。查询不写，absence 不解释为重新执行，旧 NO_CHANGE 不冒充完成。原预算 digest 仍代表 reservation，实际只声明三个 Attempt 的计量覆盖，未宣称 token/compute 已结算或获得效率收益。store/session/HTTP/客户端回归已编写，本地编译与静态检查不等于实机通过；缺少生产 session 的完整三 ACCEPTED 正向实机、故障注入、局部 replan 仍明确开放。
 
 同轮 CI 成本：`55a435e` 的 34089521238 四项成功，macOS 注释明确 `The job has exceeded the maximum execution time of 20m0s`；不记绿，也不归咎 Worker。只把质量作业及其精确 CI 内容契约同步调到 30 分钟，不删除断言/平台/race。补入前置的 fixedcontrolplane 团队 HTTP 回归，避免新查询调用链再次漏到最后才发现；完整 CI 仍需候选精确 head 证据。

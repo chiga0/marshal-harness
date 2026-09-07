@@ -1,5 +1,27 @@
 # Roadmap 状态
 
+<a id="业务交付当前表"></a>
+
+## 当前唯一状态与关键路径（2026-09-07）
+
+本节是当前实施依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。
+
+- 主线最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；B2 候选在 `feat/b2-durable-materialization`，代码 `cef27236c0b97b44f7bd2c19fc1dad398ada6c09` 已推送。候选分支同步不等于 main 合并；没有本切片的 localMergeSha/remote merge/stable。
+- 该代码的精确 [CI 34092330921](https://github.com/chiga0/marshal-harness/actions/runs/34092330921) 五项全绿；随后单次三节点 [PoC 34094155668](https://github.com/chiga0/marshal-harness/actions/runs/34094155668) 使用真实 Pi 0.84.4 / openai/qwen3.8-max，在 Collect 结果解析阶段失败。两条 Run journal 已记录启动，尚无独立 Decision、业务 ACCEPTED、第三节点或 GoalOutcome；不借 CI 宣称 PoC 完成。当前聚合修复为 [ADR 0084](adr/0084-pi-typed-terminal-result-framing.md) 的 typed framing 与精确诊断，原始终态文本未归档，不伪造模型输出归因。
+- 最终目标不改为“完成更多协议/PR”：交付 fixed server 的完整业务任务与受限团队，并用至少三个代表任务族的重复配对实验，与相同冻结契约、oracle、模型、工具及资源的强 Lead＋SubAgents 比较。源代码返工、失败 CI、失败 Attempt、人工等待全部计入；目前没有效率优势证据。
+
+| Milestone | 当前状态 | 已有证据 / 实现 | 尚待退出条件 |
+| --- | --- | --- | --- |
+| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；已整合的 `4ace42c` 停止候选在 34067556449 证明长 Verify 期间另一 Run 的 deadline、查询与 Collect 可前进 | 最终候选主线合入及组合确认；旧失败保留分母 |
+| B2 受限 Agent Team | `IN_PROGRESS` | 34082574786 两个真实 Pi 节点到 REVIEW_PENDING，但客户端存在 P1/P2、业务未接纳；后继已接原独立 Decision、上游 patch 组合、第三节点创建/调度/评审及耐久 completed GoalOutcome 和只读查询 | 当前完整三节点实机与可重建交付物；server 自主 Collect/Verify；有界局部 replan/成果复用、暂停/失败终态/恢复；真实进程重叠与成本测量，配对收益 |
+| B3 长期运行与正式支持 | `PLANNED` | 历史故障/恢复组件与 RC1 prerelease 证据保留，不升级成熟度 | B2 同路径故障矩阵、长历史/升级恢复、managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
+
+下一步顺序：先完成阻断 PoC 的结果解析聚合修复与 exact-head CI，再验证完整三节点、独立评审、原始成果集成及耐久 GoalOutcome，导出可重建业务交付物与演示步骤。不再运行仅到两节点 REVIEW_PENDING 即退出的旧场景；不给旧 Run 补签 Decision、重置预算或洗掉失败成本。原 runner 已结束、旧候选未获得 ACCEPTED，不能伪装成可授权复用成果。若仍失败，保留证据并按根因修正，不自动重试付费团队。先让用户演示这条实际协作交付链，再完成局部 replan/reuse 与同路径恢复、重复配对实验及 B3。
+
+并发边界：当前只允许两个 scope 互斥的实现节点并行，第三节点等待两个原始 ACCEPTED；增开整个团队会放大尚未验证的公共调用链，不是本阶段提速措施。三个 RUNNING 投影不是进程重叠证据，三次 Attempt 也不是 token/compute 实际结算；未知测量不得写零。
+
+## 历史过程记录（不作为当前待办）
+
 2026-09-07 团队终态纵切候选：新增同 RB1 的 completed outcome，current owner 与三 Run lease 内复查原独立接纳/上游/集成 base；resident 自动一次收口、重放不增加 Attempt。已接原 `team-reconcile` 查询、固定客户端独立账本 readback、客户端只读等待，最终 summary 只有看到该事实才置业务 accepted。Outcome 的 budgetDigest 是原 reservation snapshot，实测仅 Attempt 数，token/compute 未测不写零。已添加 store 正常/冷恢复/幂等/拒绝、session 未就绪/越权、HTTP 只读绑定与客户端等待回归；本地编译、vet/staticcheck/架构及脚本回归通过，真实 Go 动态与三节点实机仍待候选 CI/验证，不能把候选实现记为 B2 完成。`55a435e` 的 CI 34089521238 最终四项通过，macOS 超过 20 分钟上限被取消；质量作业改为 30 分钟且保留全部检查。局部 replan/reuse、失败 Goal Outcome、计量与配对收益仍开放。
 
 2026-09-07 当前关键路径修正：在新 Worker 派发前发现参考集成模板的正常成功路径矛盾——允许 `no_change`，却未声明其必需诊断交付物。新 proposal 明确交付绑定最终代码摘要、接口与 HTTP 示例的 `quote_delivery.json`；代码正确时不造无意义修改，固定 oracle 仍执行原真实 HTTP 验收，清单不充当通过证据。本地 5 项输入/20 项 oracle 回归通过（包括真实 loopback、代码不变交付、摘要漂移、重复字段、FIFO 与伪造通过拒绝），没有新增付费 Attempt。当前集成创建/同宿主评审候选 `55a435e` 的完整 CI 仍待终结；GoalOutcome 耐久收口、局部 replan/reuse 和真实第三节点仍未完成，B2 不升级。下一步是把三节点结果耐久聚合并读取，再执行同路径真实验证；不得把本次模板修正或清单当作 GoalOutcome。
@@ -63,7 +85,7 @@
 
 更新时间：2026-09-06（ADR 0080 三面分离与业务交付路线；不升级历史成熟度）
 
-## 业务交付当前表
+### 2026-09-06 业务交付状态表（历史）
 
 远端 main 为 `ba2196bea33e6f007809f75f9671928c892bfa11`（含 #266 的正常业务证据文档）。停止候选最新已验证代码 `d0be824` 的精确 CI/PR CI 全绿；其 34055217240 实机证明初始同 owner Collect 已越过 34052534488 的故障，但暴露后续传输阶段预算错配，未证明跨 Run 组合完成。最近完整成功的中断恢复属于前驱 `0130465`。后继修正及回归仍在同一 Draft PR #268，尚未合入 main，不存在 localMergeSha 或 remote merge；分支已推送不等于 main 已启用取消。
 

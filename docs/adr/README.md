@@ -1,5 +1,7 @@
 # 架构决策记录
 
+[ADR 0084](0084-pi-typed-terminal-result-framing.md) 是当前 B2 PoC 的候选：终态按唯一 WorkerResult 类型定界，保留身份、原始 transcript 与独立验收门禁；尚无新候选实机成功证据。
+
 [ADR 0082](0082-fixed-server-live-review-carrier.md) 冻结 B1 canary 的同宿主独立评审载体：只传输维护者 Decision，不导入跨 runner authority、不自签通过；实机验收尚未完成。
 
 [ADR 0081](0081-fixed-server-stop-intent-and-outcome.md) 为 B1 fixed server 停止意图与 Outcome 的提案（Proposed）：明确现有 Port/reducer/deadline 缺口，尚未冻结新 Schema 或授予取消权限。

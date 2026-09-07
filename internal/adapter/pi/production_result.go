@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
@@ -254,25 +255,24 @@ func extractFinalWorkerResult(transcript []byte) (result []byte, err error) {
 	return extractSingleWorkerResultObject(text)
 }
 
-// extractSingleWorkerResultObject implements the ADR 0075 final-message
-// contract: plain prose is tolerated, but the text must contain exactly one
-// complete JSON object and everything after that object must be whitespace.
-// Zero or two-or-more decodable objects fail closed.
+// extractSingleWorkerResultObject implements ADR 0084 typed framing. Complete
+// non-result containers may precede one declaration; nested declarations are
+// never selected. Malformed containers and duplicate members fail closed.
 func extractSingleWorkerResultObject(text string) ([]byte, error) {
 	var (
-		matched    map[string]json.RawMessage
+		matched    []byte
 		matchedEnd int
 		candidates int
 		skipUntil  int
 	)
 	for index := 0; index < len(text); index++ {
-		if text[index] != '{' || index < skipUntil {
+		if (text[index] != '{' && text[index] != '[') || index < skipUntil {
 			continue
 		}
 		decoder := json.NewDecoder(strings.NewReader(text[index:]))
-		var object map[string]json.RawMessage
-		if err := decoder.Decode(&object); err != nil || object == nil {
-			continue
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return nil, &productionResultFailure{code: "final-object-invalid", cause: fmt.Errorf("%w: malformed terminal JSON container", ErrProtocol)}
 		}
 		// Nested `{"...": {...}}` braces belong to the outer object: skip every
 		// later '{' that falls inside the span just decoded so one complete
@@ -281,11 +281,26 @@ func extractSingleWorkerResultObject(text string) ([]byte, error) {
 		if end > skipUntil {
 			skipUntil = end
 		}
+		encoded, err := canonical.JSON(raw)
+		if err != nil {
+			return nil, &productionResultFailure{code: "final-object-invalid", cause: fmt.Errorf("%w: ambiguous terminal JSON container", ErrProtocol)}
+		}
+		if text[index] != '{' {
+			continue
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &object); err != nil {
+			return nil, &productionResultFailure{code: "final-object-invalid", cause: ErrProtocol}
+		}
+		var kind string
+		if json.Unmarshal(object["kind"], &kind) != nil || kind != "WorkerResult" {
+			continue
+		}
 		candidates++
 		if candidates > 1 {
-			return nil, fmt.Errorf("%w: final production assistant text must contain exactly one complete JSON object", ErrProtocol)
+			return nil, &productionResultFailure{code: "final-object-multiple", cause: fmt.Errorf("%w: multiple terminal WorkerResult declarations", ErrProtocol)}
 		}
-		matched = object
+		matched = encoded
 		matchedEnd = end
 	}
 	if candidates != 1 {
@@ -294,5 +309,5 @@ func extractSingleWorkerResultObject(text string) ([]byte, error) {
 	if strings.TrimSpace(text[matchedEnd:]) != "" {
 		return nil, &productionResultFailure{code: "final-object-trailing", cause: fmt.Errorf("%w: final production assistant text contains trailing non-whitespace after the result object", ErrProtocol)}
 	}
-	return json.Marshal(matched)
+	return matched, nil
 }

@@ -30,7 +30,7 @@ func ProductionResultFailureCode(err error) string {
 	case "input", "transcript", "output-limit", "provider-terminal", "session-missing",
 		"transcript-read", "transcript-json", "transcript-session", "transcript-event", "transcript-agent-end",
 		"transcript-tool", "transcript-compaction", "transcript-retry", "transcript-settled", "transcript-framing", "transcript-closure",
-		"final-message", "final-object-missing", "final-object-trailing", "validator",
+		"final-message", "final-object-missing", "final-object-trailing", "final-object-multiple", "final-object-invalid", "validator",
 		"final-event-decode", "final-event-empty", "final-role", "final-content-missing", "final-content-shape", "final-content-type", "final-content-text",
 		"final-content-container-shape", "final-content-item-shape", "final-content-type-shape", "final-content-text-shape",
 		"declared-schema", "declared-decode", "declared-identity", "declared-session",
