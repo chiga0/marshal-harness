@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-08：结果拒绝后的停止收口仍阻断团队交付
+
+候选 `88883d9c04406fb65fe5b695f80a88bb83fbbfb0` 完整 CI `34152276913` 五项通过，Darwin 定向 `34152276380` 的 33 项必跑检查通过；精确门禁后仅派发一次实机 `34153526402`，结果 failure。诊断 artifact `10030318154` 保留原始证据，没有 Decision、集成或下载成功。本轮未到 ReviewPacket，不能据此宣称上一轮身份传递修复已实机验证。
+
+原日志首个业务拒绝为 `pi-result-provider-terminal-length`，ledger sequence 38 记录 service transcript 已收集，sequence 39 记录 `team-plan-halted(stage=collect)`；并非团队尚未派发。期限终结后 service 已有 `process-terminal` 和 `allocation-terminated`，但后续 collect 在 sequence 48/50/66–88 反复 `process-supervisor-identity-conflict`，缺少其 supervisor closed/cleanup released，最新对外 projection 仍 sequence 3 RUNNING。client 则完成停止清理并投影 `BLOCKED/attempt-deadline-exceeded`。客户端最终 `fixed-cli-response-timeout` 是外层表现，不能替代上述具体失败链，也不能将 service 的旧 RUNNING 投影当成进程仍活跃。
+
+根因已定位：通用 Collect 查找只看最新 checkpoint，后来的 Terminate 遮住旧成功 Collect，而物理 mechanics 明确只允许收集一次。候选仅修停止收口接缝：已有有效耐久 Collect 即继续原 Close；不重发 Collect、不通过历史 anchor 重读，不修改通用结果接纳。Close 仍使用当前 owner/head 校验真实 journal 与 transcript 对象。新增完整耐久链回归覆盖 Collect→Stop→Close、丢回复、独立 absence 与冷重开 CleanupReleased，要求停止后零 Collect、无业务结果接纳；保留原未收集停止与正常 Inspect 路径。本地 vet/staticcheck/diff 检查通过，远端 Darwin 动态结果尚待验证。
+
+Provider length 的具体输出/预算原因仍需证据，不能猜测为用户未配置、直接增预算或修改正常终态准入。保留两次 Attempt 和失败分母，不原样付费重跑，不放宽 `native-terminal/v1` 的正向终态要求。B1/B2/B3 状态不升级。
+
 ## 2026-09-08：原生结果实机进入独立 Verify，团队仍未交付
 
 `a5418f4acbb1fe3b581a4c6d079510048d82dcee` 的完整 CI `34149966062` 五项全绿，Darwin 定向 `34149938176` 的 30 项必跑检查通过。精确候选 gate 通过后只派发一次真实双 Pi 团队 `34151269983`，其失败证据保存在 diagnostic artifact `10029503062`。service Run `team-run-0189f9bd1f824517f7eb8d01a8b1d5fd5a38150a7b515f9ea39197e055743772` 的事件已到 sequence 4 `worker.completed` 和 sequence 5 `verification.completed`，报告为 pass，包含 `command:quote-team-service`。这首次为本候选原生结果→独立 Verify 接缝提供正向实机证据，但不表示整个团队成功。

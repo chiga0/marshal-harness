@@ -22,14 +22,17 @@ func (s *DurableStore) collectStoppedBeforeCloseV2Locked(ctx context.Context, pr
 	closing := state.SupervisorPendingIntentDigest != "" && state.SupervisorPendingIntent.Command == processsupervisor.CommandClose
 	for _, checkpoint := range state.SupervisorCommandCheckpoints {
 		closing = closing || checkpoint.Evidence.Command == processsupervisor.CommandClose
+		if _, err := verifiedCollectOutcomeV2(checkpoint.Evidence); err == nil {
+			// Collect is creation-once. A later Terminate may be the latest
+			// checkpoint without invalidating the durable transcript receipt.
+			// Continue through Close's current-owner/journal boundary, which
+			// revalidates the physical transcript objects; do not replay Collect
+			// or reread through the historical receipt's stale authority head.
+			return state, nil
+		}
 	}
 	if closing {
 		// Never insert another command ahead of an already frozen Close.
-		for _, checkpoint := range state.SupervisorCommandCheckpoints {
-			if _, err := verifiedCollectOutcomeV2(checkpoint.Evidence); err == nil {
-				return state, nil
-			}
-		}
 		return AttemptAuthorityState{}, ErrPreparedExecutionNotClosable
 	}
 	if _, err := s.collectPreparedExecutionV2Locked(ctx, projection, state, owner, identity, directory, fixedPath, transport, read, observe); err != nil {
