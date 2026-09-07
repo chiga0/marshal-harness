@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
@@ -36,15 +37,15 @@ func ReadAcceptedCandidate(state domain.RunState, terminal domain.RunEvent, name
 		terminal.Payload["verdict"] != "accept" {
 		return fail()
 	}
-	load := func(kind domain.Kind, limit int64, path string, value any) ([]byte, error) {
-		raw, err := read(limit, path)
+	load := func(kind domain.Kind, limit int64, value any, path ...string) ([]byte, error) {
+		raw, err := read(limit, path...)
 		if err != nil || validator.Validate(kind, raw) != nil || json.Unmarshal(raw, value) != nil {
 			return nil, errors.New("review: accepted evidence unavailable")
 		}
 		return raw, nil
 	}
 	var task domain.TaskSpec
-	taskData, err := load(domain.KindTask, 2<<20, "task-spec.json", &task)
+	taskData, err := load(domain.KindTask, 2<<20, &task, "task-spec.json")
 	if err != nil {
 		return fail()
 	}
@@ -53,21 +54,21 @@ func ReadAcceptedCandidate(state domain.RunState, terminal domain.RunEvent, name
 		return fail()
 	}
 	var report verification.Report
-	reportData, err := load(domain.KindVerificationReport, 8<<20, "verification-report.json", &report)
+	reportData, err := load(domain.KindVerificationReport, 8<<20, &report, "verification-report.json")
 	if err != nil {
 		return fail()
 	}
 	var manifest verification.ArtifactManifest
-	manifestData, err := load(domain.KindArtifactManifest, 8<<20, "artifact-manifest.json", &manifest)
+	manifestData, err := load(domain.KindArtifactManifest, 8<<20, &manifest, "artifact-manifest.json")
 	if err != nil {
 		return fail()
 	}
 	var packet domain.ReviewPacket
-	packetData, err := load(domain.KindReviewPacket, packetByteLimit, "review-packet.json", &packet)
+	packetData, err := load(domain.KindReviewPacket, packetByteLimit, &packet, "review-packets", fmt.Sprintf("packet-%03d.json", state.ReviewRound))
 	if err != nil || packet.CandidateDigest == "" || packet.CodexEligibilityBinding != nil {
 		return fail()
 	}
-	decisionData, err := read(packetByteLimit, "review-decision.json")
+	decisionData, err := read(packetByteLimit, "decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound))
 	if err != nil {
 		return fail()
 	}

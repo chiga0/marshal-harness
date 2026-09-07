@@ -87,6 +87,9 @@ func acceptedFixture(t *testing.T) (reviewFixture, domain.RunState, domain.RunEv
 		RunID: state.RunID, AttemptID: state.CurrentAttemptID, Sequence: state.Sequence, Type: "review.accept",
 		StateFrom: domain.StateReviewPending, StateTo: domain.StateAccepted, Timestamp: now,
 		Payload: map[string]any{"verdict": "accept", "decisionDigest": imported.DecisionDigest, "evidenceDigest": imported.Decision.EvidenceDigest}}
+	if _, err := ReadAcceptedCandidate(state, event, "authority-01", f.validator, acceptedFixtureRead(f)); err != nil {
+		t.Fatal("negative cases require a working original accepted fixture", err)
+	}
 	return f, state, event
 }
 
@@ -143,7 +146,7 @@ func TestAcceptedCandidateRejectsIncompleteOrWrongCurrentAuthority(t *testing.T)
 }
 
 func TestAcceptedCandidateRejectsEachChangedOrMissingCapturedInput(t *testing.T) {
-	for _, name := range []string{"task-spec.json", "verification-report.json", "artifact-manifest.json", "review-packet.json", "review-decision.json", "outcome.json", "observed.patch", "candidate"} {
+	for _, name := range []string{"task-spec.json", "verification-report.json", "artifact-manifest.json", "review-packets/packet-001.json", "decisions/decision-001.json", "outcome.json", "observed.patch", "candidate"} {
 		for _, mode := range []string{"missing", "changed"} {
 			t.Run(name+"/"+mode, func(t *testing.T) {
 				f, state, event := acceptedFixture(t)
@@ -167,7 +170,7 @@ func TestAcceptedCandidateRejectsEachChangedOrMissingCapturedInput(t *testing.T)
 }
 
 func TestAcceptedCandidateRejectsSchemaValidOutcomeAndDecisionDrift(t *testing.T) {
-	for _, name := range []string{"outcome.json", "review-decision.json"} {
+	for _, name := range []string{"outcome.json", "decisions/decision-001.json"} {
 		t.Run(name, func(t *testing.T) {
 			f, state, event := acceptedFixture(t)
 			path := filepath.Join(f.directory, name)
@@ -185,7 +188,7 @@ func TestAcceptedCandidateRejectsSchemaValidOutcomeAndDecisionDrift(t *testing.T
 				t.Fatal(err)
 			}
 			kind := domain.KindOutcome
-			if name == "review-decision.json" {
+			if name == "decisions/decision-001.json" {
 				kind = domain.KindReviewDecision
 			}
 			if err := f.validator.Validate(kind, raw); err != nil {

@@ -104,6 +104,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'feat/b2-')
         run: |
           regression_failed=0
+          go test -race -count=1 -v ./internal/gitworktree || regression_failed=1
           go test -race -count=1 -v ./internal/review || regression_failed=1
           go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v ./internal/cli || regression_failed=1
           go test -race -count=1 -v ./internal/planning || regression_failed=1

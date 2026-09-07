@@ -4,6 +4,9 @@ package productionruntime
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -84,7 +87,16 @@ func TestRepositoryTeamAcceptedInputsWaitOnRealLeasesAndRejectSnapshotClaims(t *
 	claimed := runs["client"]
 	claimed.State = domain.StateAccepted
 	claimed.CurrentAttemptID = "attempt-forged"
-	if err := session.runs.WriteSnapshot(other, claimed); err != nil {
+	if err := session.runs.WriteSnapshot(other, claimed); err == nil {
+		t.Fatal("normal writer admitted a forged terminal snapshot")
+	}
+	// Simulate on-disk tampering only inside this test's temporary repository;
+	// the real writer correctly refuses an inconsistent snapshot first.
+	raw, err := json.Marshal(claimed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.repository, ".marshal", "runs", claimed.RunID, "state.json"), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := other.Release(); err != nil {
