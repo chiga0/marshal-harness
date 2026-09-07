@@ -4,21 +4,23 @@
 
 ## 当前唯一状态与关键路径（2026-09-07）
 
-本节是当前实施依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。
+本节是当前进度依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。2026-09-07 产品要求统一为[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)及 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）；多轮审计见[设计复核](audit-agent-team-service-design-2026-09-07.md)。设计方向、ADR 接纳、runtime enable 与 release 按[合同适用性](design-contract-map.md)分别判断；新设计完成不改变下表能力成熟度。
 
-- 主线最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；B2 候选在 `feat/b2-durable-materialization`，已验证代码 `798ea395abd97744cfc69d125ee997933dad06f9` 已推送。候选分支同步不等于 main 合并；没有本切片的 localMergeSha/remote merge/stable。
+- 主线最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；B2 候选在 `feat/b2-durable-materialization@ff71d7b732e42a90d20bec97f01e6c6fed8ba27f`。下述 CI/canary 证据精确属于 `798ea395abd97744cfc69d125ee997933dad06f9`，不能挪给后继。设计文档在独立 `feat/agent-team-service-blueprint` 分支；候选同步不等于 main 合并，没有本轮 localMergeSha/remote merge/stable。
 - 798ea39 的精确 [CI 34095940005](https://github.com/chiga0/marshal-harness/actions/runs/34095940005) 五项全绿；先前 34094155668 的结果计数阻断由 [ADR 0084](adr/0084-pi-typed-terminal-result-framing.md) 候选修正。后继 max 实机 34097645547、一次显式 flash 替代 34098369837 均未完成团队；后者 service 通过真实 Collect/Verify 的 33 项检查并形成 ReviewPacket，client 在模型终态失败。没有本轮独立 Decision/ACCEPTED、第三节点或 GoalOutcome。停止模型轮换，后继聚合终态分类与任务上下文/输出收敛，不删失败分母。演示范围和实际证据见 [PoC 交付页](poc-agent-team-delivery.md)。
 - 最终目标不改为“完成更多协议/PR”：交付 fixed server 的完整业务任务与受限团队，并用至少三个代表任务族的重复配对实验，与相同冻结契约、oracle、模型、工具及资源的强 Lead＋SubAgents 比较。源代码返工、失败 CI、失败 Attempt、人工等待全部计入；目前没有效率优势证据。
 
 | Milestone | 当前状态 | 已有证据 / 实现 | 尚待退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；已整合的 `4ace42c` 停止候选在 34067556449 证明长 Verify 期间另一 Run 的 deadline、查询与 Collect 可前进 | 最终候选主线合入及组合确认；旧失败保留分母 |
-| B2 受限 Agent Team | `IN_PROGRESS` | 34082574786 两个真实 Pi 节点到 REVIEW_PENDING，但客户端存在 P1/P2、业务未接纳；后继已接原独立 Decision、上游 patch 组合、第三节点创建/调度/评审及耐久 completed GoalOutcome 和只读查询 | 当前完整三节点实机与可重建交付物；server 自主 Collect/Verify；有界局部 replan/成果复用、暂停/失败终态/恢复；真实进程重叠与成本测量，配对收益 |
+| B1 真实团队交付 PoC（原 B1 单任务为内部步骤，原 B2 团队最小闭环前移） | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；已整合的 `4ace42c` 停止候选在 34067556449 证明长 Verify 期间另一 Run 的 deadline、查询与 Collect 可前进；34082574786 两个真实 Pi 节点到 REVIEW_PENDING，未完成团队交付 | 复用现有合法安装/Store：Task HTTP→计划批准→两个真实 Worker 并行→自主 Collect/Verify/Decision/集成→下载消费；取消/失败有事实，正常重启可查询。不以 Workspace、安装管理或全面迁库为前置 |
+| B2 本地 API 可用版 | `IN_PROGRESS` | 候选已接独立 Decision、上游组合、第三节点及 completed GoalOutcome 查询，完整实机未过；原 B2 实现与失败证据保留，不因重排改成完成 | 简启动、SQLite、零 Git/多仓库、持久 AskUser/答案/确认/验收、详情/审计、同版本恢复与局部 rework/reuse；第二真实 Provider 验证解耦。第三品牌可单列待支持，不阻塞核心 API-STABLE |
 | B3 长期运行与正式支持 | `PLANNED` | 历史故障/恢复组件与 RC1 prerelease 证据保留，不升级成熟度 | B2 同路径故障矩阵、长历史/升级恢复、managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
-下一步顺序：先完成阻断 PoC 的结果解析聚合修复与 exact-head CI，再验证完整三节点、独立评审、原始成果集成及耐久 GoalOutcome，导出可重建业务交付物与演示步骤。不再运行仅到两节点 REVIEW_PENDING 即退出的旧场景；不给旧 Run 补签 Decision、重置预算或洗掉失败成本。原 runner 已结束、旧候选未获得 ACCEPTED，不能伪装成可授权复用成果。若仍失败，保留证据并按根因修正，不自动重试付费团队。先让用户演示这条实际协作交付链，再完成局部 replan/reuse 与同路径恢复、重复配对实验及 B3。
+下一步顺序：B1 先复用现有合法 fixed server/Store 和团队候选，以真实 Git 业务样例补 Task HTTP→批准→双作者→自主 Collect/Verify/Decision/集成→下载消费闭环。SQLite、零 Git/多仓库、简启动、问答和第二 Adapter 在 B2；U1 旧历史导入不阻新任务，B3 保留正式故障/平台/发布门禁。没有 Workspace/安装身份平台/三品牌矩阵前置，也不绕过旧 activation 或伪造 Git。结构性失败无事实变化不重复付费，历史失败分母不清零。本轮只有设计文档修改，没有新 Run/状态迁移。
 
-并发边界：当前只允许两个 scope 互斥的实现节点并行，第三节点等待两个原始 ACCEPTED；增开整个团队会放大尚未验证的公共调用链，不是本阶段提速措施。三个 RUNNING 投影不是进程重叠证据，三次 Attempt 也不是 token/compute 实际结算；未知测量不得写零。
+并发边界：B1 先两个 scope 互斥的作者，验收/集成也计容量；现有候选仍只证明两个派发接缝，不把新方案写成已完成实机。开发可并行主应用闭环、业务 oracle/API 客户端、当前阻断的 Adapter；共享事务一个 owner，每个作者独立 worktree，不用旧 Marshal skill。UI 只在核心 API-STABLE 后启动。更多并发须依赖、目录、内存/CPU、Provider 与验收队列均允许；不是所有槽满才叫有效率。
+
+本轮设计纠偏：按用户明确指示删除首版 Workspace 实体/API/注册，将账号/安装身份管理、全面迁库和全 Provider 矩阵移出 B1；旧 B1 单任务是新 B1 团队 PoC 的内部步骤，原状态、SHA/CI 与失败事实全部保留。新架构/Milestone/ADR0085/当前入口同步，0085 仍为 Proposed。AGENTS.md 顶部目标导航在用户另行明确授权后同步，全部 universal 不变量/门禁原文保留。设计调整不代表产品出口、远端合并或正式发布完成。
 
 ## 历史过程记录（不作为当前待办）
 

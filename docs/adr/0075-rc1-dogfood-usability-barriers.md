@@ -1,5 +1,7 @@
 # ADR 0075：RC1 dogfood 三道确定性屏障的收敛修复（worktree 私隐模式、launch 文本闸门、终态结果提取）
 
+> 2026-09-07 适用性：旧 Pi 终态文本与 launch/profile 门禁仍约束旧 parser。ADR 0085 §2/§5 允许新 Adapter 构造控制 envelope，并按批准 profile 使用原生 Skill；真实 transcript/错误终态、路径/凭据和独立验收不放宽。新生产者与 conformance 通过前不静默修改旧解释。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 | 字段 | 值 |
 | --- | --- |
 | 状态 | 已接受（Accepted） |

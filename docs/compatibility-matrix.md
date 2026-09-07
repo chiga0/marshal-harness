@@ -1,5 +1,7 @@
 # Compatibility Matrix
 
+> 2026-09-07 范围说明：本文记录历史 Local MVP/具体 Adapter profile 的实现与验收，不为所有新 Agent 永久规定精确版本、禁 Skill 或原生配置禁用。新目标按[服务架构](agent-team-service-architecture.md)与 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)设计；旧 profile 仍按本文运行，未验证的新版本/能力不能填为 supported。历史证据保留，适用性见[合同对照](design-contract-map.md)。
+
 更新时间：2026-08-26。本矩阵由共享 Conformance Suite、Live Probe 与受监督 Pilot 证据生成，只记录已验证事实；未验证组合一律不承诺。
 
 ## 证据来源

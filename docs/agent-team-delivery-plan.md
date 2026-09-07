@@ -1,14 +1,16 @@
 # Marshal Agent Team 业务交付计划
 
-更新日期：2026-09-05。依据 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md)。**当前唯一阶段状态见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)**；本文保存目标、验收与操作方法，不另设一份完成状态。
+更新日期：2026-09-07。当前目标是 B1 真实团队交付 PoC→B2 本地 API 可用版→B3 正式支持，完整定义见[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)及 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)。**当前唯一阶段状态见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)**。从“历史业务出口与可复用样例”起保留 ADR 0080 时点的步骤/命令/证据，仅作为操作与回归资产，不是新 Task-first 的排期要求；Workspace、安装身份平台、全面迁库不再作为团队交付前置。
 
 ## 用户承诺与终态
 
 用户给出需求，Marshal 澄清影响行为/范围/权限的关键选择并确认方案，随后持续驱动多 Agent 执行、集成、验证和授权交付。自治是授权与预算内的自动前进，不是取消独立验证或无人负责的自动发布。默认 publication:none，可选 Draft PR；不自动 merge。
 
-控制面管理事实与决策，执行面产生候选和独立验证观察，存储面保留状态与制品。首个实现维持一个固定 server、多个有界执行进程、现有账本和本地对象存储；不要先建存储微服务、HA 或通用 DSL。
+控制面管理事实与决策，执行面产生候选和独立验证观察，存储面保留状态与制品。B1 复用现有合法 fixed server/唯一 Store 与两个 Worker，先补实际交付；B2 使用同一应用接口接 SQLite，并解除零 Git 场景的仓库前置。U1 旧历史导入独立验收，不阻新任务，也不得双写旧库。不建存储微服务、HA 或通用 DSL。
 
-## 三个业务 milestone
+## 历史业务出口与可复用样例
+
+下表是 ADR 0080 时点的业务出口摘要，不是当前排期：旧单任务是新 B1 团队 PoC 的内部步骤，B2 补本地 API/事务存储/交互能力，B3 正式支持；以[完整 Milestone](agent-team-service-milestones.md)为准。下文“不扩 Provider/暂不换 Store”等旧轮次边界不构成当前产品禁令。ADR 0085 仍为 Proposed，设计/启用状态按[合同适用性](design-contract-map.md)区分。
 
 | 阶段 | 用户结果 | 必须在同一支持路径证明的退出条件 |
 | --- | --- | --- |

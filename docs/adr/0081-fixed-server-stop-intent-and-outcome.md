@@ -1,5 +1,7 @@
 # ADR 0081：fixed server 停止意图与可恢复 Outcome
 
+> 2026-09-07 适用性：仍为候选提案，不因被新设计引用而 Accepted。其 stop/fence→owned terminate→terminal/cleanup/release→Outcome 的行为资产复用；RB1/projection/Run lane 物理形状拟映射到 ADR 0085 单事务 Store，不能绕过原始 deadline、归属及结果/停止竞争。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：提议（Proposed）。隔离候选已通过显式取消及两类自动业务超时/完成后冷恢复实机；停止中途故障、长写事务响应上界与最终组合验收尚未闭合，仍不能据本文放行正式取消/超时支持。
 - 关联：ADR 0012、0056、0062、0069、0076、0079、0080。
 

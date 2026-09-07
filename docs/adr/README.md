@@ -1,5 +1,26 @@
 # 架构决策记录
 
+## 当前阅读入口与适用性
+
+先读[合同适用性](../design-contract-map.md)，再读命中范围的 ADR，不按编号顺序把全部历史决策重做一遍。
+
+| 范围 | 当前目标/保留合同 | 应如何使用 |
+| --- | --- | --- |
+| 业务路线 | 0080 的三面方向；0085 的 B1 团队 PoC→B2 本地 API→B3 正式支持提案 | [新 Milestone](../agent-team-service-milestones.md)是当前目标出口；0085 仍为 Proposed，不表示已接纳或启用 |
+| Adapter/身份 | 0058/0063/0075/0084→0085 §2 | 旧 Pi 版本/材料/文本只限旧 profile；新 DI/核心增强能力仍保留实际身份、输入和独立验收 |
+| 服务/安装 | 0051/0062/0066/0068/0073/0076→0085 §3 | B1 复用合法安装，目标简启动不新增 Workspace/安装身份平台；本地 token 与单 owner 保留，旧 activation 不跨路径扩权 |
+| 存储/恢复 | 0065/0066/0067/0069/0070/0081→0085 §4 | B1 复用原权威 Store，B2 SQLite 替换物理形状，U1 历史导入独立；currentness/单写/幂等/未知不重试保留 |
+| 交互/预算 | 0019/0083→0085 §5–§6 | 节点问答与未知用量不冒充全局暂停/零消费；原总预算和人工确认保留 |
+| 正式支持 | 0052、各实际安装/执行 profile 的 release gate | 新设计不能继承旧 canary 的成熟度，ordinary-user 不继承 hardened assurance |
+
+原 ADR 的接受记录与原字节语义保留；顶部适用性说明不是追认 Proposed，也不是解除当前旧运行路径门禁。新增设计遇到下面历史函数/文件/阶段限制时，按0085精确取代范围处理，不再产生平行架构。
+
+## 历史决策与候选记录
+
+下方“当前”“下一步”“尚未”等仅代表各条记录的历史时点；实际完成状态只见 [Roadmap 当前表](../roadmap-status.md#业务交付当前表)。
+
+[ADR 0085](0085-agent-team-service-contract-and-storage.md) 汇总并收缩 2026-09-07 服务目标：Task-first，不建 Workspace/身份管理前置；B1 先真实团队交付，B2 SQLite/简启动/问答/更多 Provider，B3 正式支持。它仍为 Proposed；不追认 ADR 0083/0084 候选，不改旧接受记录和实际成熟度。当前验收见 [Milestone](../agent-team-service-milestones.md)，本轮复核见[审计](../audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)。
+
 [ADR 0084](0084-pi-typed-terminal-result-framing.md) 是当前 B2 PoC 的候选：终态按唯一 WorkerResult 类型定界，保留身份、原始 transcript 与独立验收门禁；尚无新候选实机成功证据。
 
 [ADR 0082](0082-fixed-server-live-review-carrier.md) 冻结 B1 canary 的同宿主独立评审载体：只传输维护者 Decision，不导入跨 runner authority、不自签通过；实机验收尚未完成。

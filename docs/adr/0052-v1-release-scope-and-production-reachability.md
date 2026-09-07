@@ -1,5 +1,7 @@
 # ADR 0052：v1.0 发布范围与生产可达性门禁
 
+> 2026-09-07 适用性：单节点/单用户/可信仓库、成熟度、独立验证与正式发布门禁保留；file-backed 首部署和全部 Goal/UI 延期是旧投影，受限团队已由 ADR 0080 前移，SQLite/最小任务页进一步见 ADR 0085。不把 I186 历史顺序作为当前第二套排期。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：已接受（Accepted）
 - 日期：2026-08-27
 - 决策者：Marshal 维护者

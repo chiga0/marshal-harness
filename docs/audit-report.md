@@ -1,5 +1,25 @@
 # 设计审计报告
 
+## 2026-09-07：Task-first，团队交付先于管理平台
+
+按用户要求重新检查首个业务出口，发现上一稿把 Workspace/安装身份/显式初始化/全面 SQLite/三 Provider 放在团队之前。源码有现成 RepositorySession/Store、双节点物化与受控执行接缝，换库不能自动解除 Git 耦合；先补团队闭环更短。本轮删除 Workspace 产品实体，B1 先一个 Provider 两实例真实交付，B2 再简启动/SQLite/零 Git/问答/更多 Provider，B3 保留正式故障和发布门禁。不是把旧失败重新计成完成。
+
+两路对实际三稿只读审查合计 1 项 P1、2 项必要 P2：publication:none 下作者可达发布凭据的歧义、预上传输入尚无 Task 的绑定、恢复失败却承诺在线 HTTP 查询。已一次聚合修订，限定复核见[本轮记录](audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)。仍保留独立验收、受管目录单写、已知结构性失败不原样重试、最小本地保护和持久事实；账号平台后置不等于无保护 HTTP。
+
+ADR 0085 仍 Proposed。本轮只改方案文档，未运行 Agent、修改 .marshal 或发布产品。AGENTS.md 同步被自动审批拒绝，保持原文件并记录待授权事项，不绕过保护。原审计和失败证据全部保留。
+
+## 2026-09-07：旧合同实施形状被误当长期架构
+
+范围：`feat/agent-team-service-blueprint@abc3899` 后续文档审计；两路只读检查分别覆盖 ADR 适用性和当前入口一致性。发现上一轮虽新增服务方案，但旧正文仍用“当前/唯一/禁止/冻结”要求 file-backed、固定 Pi、exact AST、旧切片顺序，并把全部 UI/问答放旧阶段；0085 的 Proposed 与部分入口“冻结”又不一致。根因是只追加新方向、不撤出旧规范入口。
+
+修订：当前[架构](architecture.md)、[Runtime](runtime-architecture.md)、[实施计划](implementation-plan.md)重写为服务目标，原长文同目录归档；[合同适用性](design-contract-map.md)区分目标/接纳/启用/成熟度；19 份 ADR 和四份 Adapter 文档标注旧 profile 范围，0085 扩展精确替代表。README、必读顺序、v1 范围、节点等待、ADR 索引同步修改。0085 保持 Proposed，不擅自追认候选、扩大旧 activation 或修改运行时。
+
+保留独立验证、单写绑定、Worker/Publisher 分权、current owner/lease/CAS、先 intent 后副作用、未知归属不 kill/release、历史字节/失败与正式发布门禁；移除新设计对旧物理布局、函数/文件/AST 和历史排期的依赖。测试要迁移等价行为，不以删测试换通过。文档修订与补充复核见[本轮审计记录](audit-agent-team-service-design-2026-09-07.md#后续专项复核历史合同与当前设计)。这不是新服务已生产可用的结论。
+
+## 既有审计记录
+
+2026-09-07 服务产品方案审计已形成独立[多轮复核记录](audit-agent-team-service-design-2026-09-07.md)：从用户意图、现有实现与反方向事件序列检查，第二轮发现六项 P1（交付消费验收、人工验收出口、跨账本提交取代、旧安装身份续行、Publisher 凭据分权、unknown 用量结算），一次聚合修订到 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)、[服务架构](agent-team-service-architecture.md)及[实施 Milestone](agent-team-service-milestones.md)，第三轮状态见该记录。方案坚持一个服务/单权威存储、有限 Agent Team 与单 Worker 回退；设计闭合不等于实机成功，B1/B2 仍 IN_PROGRESS，B3 仍 PLANNED。本文下方错误、rework 和历史证据继续保留。
+
 2026-09-07 一次替代验证 34098369837 仍未完成团队：相同 798ea39，Pi/qwen3.8-flash；service 已 Collect/Verify pass、33 项验收、ReviewPacket，client 却在 `pi-result-provider-terminal` 退出。服务端 109 行 patch 和原 WorkerResult 已保留；报告 outputTokens=25456，并明确称没有 shell、通过静态逐项模拟 oracle 解释结果。不能把 Verify pass 写成独立 Decision/ACCEPTED；不在已结束 runner 上补签。停止模型轮换，后继一次聚合：保留原 transcript 状态机与 providerFailed 判定，仅在闭合时保留已观察的 length/error/aborted 闭集分类；失败仍拒绝，即使携带合法 WorkerResult。任务提示前移当前 no-shell 工具限制，聚焦批准文件、禁止无关全仓探索和模拟整套验收，建议简短 summary；原独立 oracle、预算、scope 与全部门禁不变。终态码只是观察，不证明上游 HTTP 根因，也不自动授权重试；旧失败分母保留。
 
 2026-09-07 PoC 后继 34097645547：798ea39 的 CI 34095940005 五项全绿（Linux 质量 10m32s，macOS 19m28s），同宿主实机仍在独立评审前失败，闭集诊断为 `pi-result-provider-terminal`。RB1 记录两个真实 resume，service Collect 为 2283223 stdout bytes；不是“未配置”“零执行”，也不能据此认定模型仅仅超时。原始终态未归档且诊断合并了 length/error/aborted，形成可观测性缺口；不对未知具体原因造结论。为 PoC 采取一次显式模型替代：34098369837 保持相同代码/任务验收，将已配置的 qwen3.8-max 换为 qwen3.8-flash；所有失败 Attempt 保留，不能合并成同模型证据或称为零 rework。若替代仍失败，停止模型轮换并补齐终态诊断，不循环尝试 Provider 矩阵。
@@ -1045,8 +1065,8 @@ cleanup 使用时必须同时经过外部 current Run authority verifier、精�
 
 | Finding | 等级 | 状态 | 处置 |
 | --- | --- | --- | --- |
-| `V1-LOGICAL-PHYSICAL-CONFLATION` | P1 | `CLOSED-DOCS` | [整体架构](architecture.md#逻辑职责不等于物理服务)已明确 v1.0 采用单 Control Plane 进程、唯一 file-backed authority ledger、本地内容寻址对象存储和多个有界 Worker/Verifier runtime；职责默认进程内模块化，只有独立 trust boundary、durable lifecycle 或已测量的扩缩容/故障隔离需要才能拆服务。 |
-| `V1-PREMATURE-PLATFORM-GENERALIZATION` | P1 | `CLOSED-DOCS` | [实施计划](implementation-plan.md#v10-复杂度预算)禁止在 R1–R6 主线新建通用 `WorkflowTemplate` DSL、Goal DAG runtime、跨节点 scheduler、独立 GC service、第二 queue 或第二状态库；新增 seam 必须在同一切片接入真实 composition root。 |
+| `V1-LOGICAL-PHYSICAL-CONFLATION` | P1 | `CLOSED-DOCS` | [当时整体架构](architecture-reference-2026-09-07.md#逻辑职责不等于物理服务)已明确当时 v1.0 采用单 Control Plane 进程、唯一 file-backed authority ledger、本地内容寻址对象存储和多个有界 Worker/Verifier runtime；职责默认进程内模块化，只有独立 trust boundary、durable lifecycle 或已测量的扩缩容/故障隔离需要才能拆服务。 |
+| `V1-PREMATURE-PLATFORM-GENERALIZATION` | P1 | `CLOSED-DOCS` | [当时实施计划](implementation-plan-reference-2026-09-07.md#v10-复杂度预算)禁止在当时 R1–R6 主线新建通用 `WorkflowTemplate` DSL、Goal DAG runtime、跨节点 scheduler、独立 GC service、第二 queue 或第二状态库；新增 seam 必须在同一切片接入真实 composition root。当前排期不据此拒绝0085的有限团队与单库替换。 |
 
 该关闭只表示实现与部署口径已经明确，不升级任何 Milestone 或能力成熟度，也不表示 Goal、WorkflowTemplate、远程 Artifact/Knowledge Store 或 GC 已实现。此次修订不改变 trust boundary、持久化语义、生命周期或发布权限，因此不新增 ADR；未来若拆分引入新的权威写路径、持久对象或跨域授权，仍必须先新增或替代 ADR。
 

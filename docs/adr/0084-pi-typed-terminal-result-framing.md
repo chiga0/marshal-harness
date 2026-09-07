@@ -1,5 +1,7 @@
 # ADR 0084：Pi 终态按结果类型定界，保留唯一声明与独立验收
 
+> 2026-09-07 适用性：仍为候选提案，只约束相应 Pi 终态解析修复。新 Adapter 可按 ADR 0085 从真实结果构造控制 envelope；不放宽 transcript、错误终态、重复冲突或独立验收，不把本提案的 parser 支持等同新 Agent 全面可用。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：候选（Proposed；仅随当前 B2 PoC 候选验证，不宣称 main 已接受）
 - 日期：2026-09-07
 - 关联：ADR 0075 §3、ADR 0080；B2 三节点业务交付
