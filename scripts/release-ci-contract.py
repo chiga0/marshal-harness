@@ -173,6 +173,7 @@ jobs:
       - name: Run bounded-team regression before full quality
         if: github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'feat/b2-')
         run: |
+          go test -race -count=1 -v ./internal/review
           go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v ./internal/cli
           go test -race -count=1 -v ./internal/planning
           go test -race -count=1 -v -run '^TestTeam' ./internal/resultingress

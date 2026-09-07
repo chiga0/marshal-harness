@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 集成准备候选：新增 current-owner/双 Run lease 的已接纳输入读取，复用原 Decision 校验与 Outcome producer，绑定精确 candidate/patch，不消费可变分支或仅凭 ACCEPTED 快照标签。已完成 Darwin/Linux 编译检查、vet/staticcheck；Go 动态测试待候选 CI，不把 `-exec /usr/bin/true` 计为测试通过。该读取尚未接入 resident 的集成创建，局部 replan、集成 Task/派生 base 耐久冻结、最终 GoalOutcome 仍开放；B2 不升级，本轮不再派整队重跑。
+
 2026-09-07 后继实现：按 ADR 0082 扩展同宿主团队评审载体，两个 implement 的审查包全部关闭后才 ready，各自接收独立 Decision；先到先处理，共用有界等待，拒绝不丢弃另一节点成果，不启动新 Attempt。已通过 9 项团队驱动、44 项生命周期驱动、13 项载体测试及原脚本回归；新候选仍待精确 CI/实机，不倒填 34082574786 的 Decision。当前 Goal 保持业务交付及对照收益口径，不重建 Goal 清零失败成本；暂不再派整个团队，先闭环局部 replan/reuse 和集成。B1/B2 IN_PROGRESS、B3 PLANNED，无新 main merge/stable。
 
 2026-09-07 实质进展与限制：`7a4f7d0` CI 34081513199 五项通过，真实团队 34082574786 成功完成两个节点各一次 Attempt、Collect/Verify 和 REVIEW_PENDING；66 条 RB1 记录及审查包绑定已核对。但独立审查以真实 HTTP 反例确认客户端 P1/P2，尚无 Decision/ACCEPTED、integration、Goal Outcome 或效率优势。已补齐原契约的 oracle 盲区与提示澄清，不修改旧 Run、不重跑已完成服务；下一关键路径为正式接纳/聚合客户端修正、局部 replan/reuse 和成果集成。详见[业务审查](audit-b2-first-team-2026-09-07.md)。

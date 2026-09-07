@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-07：集成输入从已接纳证据读取，不从工作分支取最新值
+
+按 ADR 0083 增加 `RepositorySession.ReadAcceptedTeamInputs`：只接受原 Goal/集成节点/plan fact 选择器，在当前 owner 下同时持有两个原 Run lease，核对创建绑定、原 Task、最终 review.accept 事件、Decision/packet/report/manifest 与 Core Outcome producer，再核对 candidate detached identity、namespace/base/Attempt 及实际 patch。返回值只是只读快照，不是创建授权；后继冻结和 Start 必须重查。占用或未接纳是等待，不触发 Prepare/Worker；损坏、halt 或 owner 失效不猜测重试。
+
+此候选尚未接入 resident 集成创建，不能算 B2 INTEGRATED。组件回归使用原 PacketBuilder、DecisionImporter、PrepareRecords 和 Outcome producer 构造正例，另检查逐个缺失/漂移输入、合法 JSON 内容漂移、真实 Run lease 占用及伪造快照标签；本地仅编译/静态检查，动态结果待 CI。将 review 包 race 提到团队前置步骤，并同步封闭 CI 内容契约，避免遗漏新的调用链接缝。
+
+效率记录：上一候选的 CI 派发曾误用 SHA 作为 workflow ref，API 422、没有创建作业；改用已核对远端 SHA 的分支后创建 34085122738，该作业已在精确 `0f3a48e34effb2b74d2d399d3da1d39869d2f779` 上五项全绿。e4016f9 的旧 CI 34083970829 被同分支并发规则取消，不能计为全绿；本次已等当前在途完成再派同分支新 CI，避免浪费尾部作业。上述操作成本不归咎 Worker，也不从总交付成本中删除。
+
 ## 2026-09-07：补齐团队同宿主独立 Decision 传输断点
 
 首轮 hosted 团队在 REVIEW_PENDING 后退出；离线审查包不能恢复原宿主 current-ledger 权威，故不能补签原 Run ACCEPTED。按 ADR 0082 的封闭扩展，在原 server 内为 service/client 分别传送已有 ReviewDecision，节点精确身份/packet/binary/source 绑定不变；统一等待预算，先到先处理，已证明的 reject 不阻止另一节点 Decision，未知 mutation 仍停止且不重试。验证 fail 仅允许独立 reject/rework，不允许 accept。即使两个实现都 ACCEPTED，也明确没有 integration/Goal Outcome，团队 accepted=false。

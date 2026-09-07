@@ -89,6 +89,8 @@ resident 启动先从 held RB1 重放当前 repository scope 的既有冻结创�
 
 两个实现节点共享锁定原始 base、使用独立 worktree。每个成果仍经过既有 Collect、独立 Verify 与精确 Decision；集成只消费已接纳的精确 candidate/base/patch digest，不读“最新分支”、未审 scratchpad 或其他 worktree 的可变文件。不得用子 Run 数量或单元测试通过替代最终验收。
 
+集成准备的只读入口从 current owner 的原计划/创建事实定位两个实现 Run，同时持有它们的 descriptor-bound lease，重放 ACCEPTED 的最终 review.accept 事件并核对其 Decision digest。沿原 DecisionImporter 校验 Task、packet、report、manifest、Decision 和 local applicability；Outcome 必须等于原 Core producer 以该终态事件生成的内容。候选记录的 detached digest、Run/Attempt/namespace/base 及 patch content digest 必须全部相等。返回的 bytes 是这个时点的已接纳输入快照，不是可反序列化批准、跨宿主导入凭据或集成创建授权；在后继耐久冻结/Start 前仍须重查原事实和输入。未接纳返回未就绪；缺失/冲突不解释为可重跑。此入口不创建 Run、预算或第二审批状态库。
+
 依赖就绪后，Core 在尚未交给 Worker 的专属集成 worktree 按固定节点顺序应用这两个精确 patch，生成可复算的候选 tree/commit，并落账绑定上游候选及原 base。冲突是 integration-blocked，不隐式改需求、选 theirs/ours 或启动无预算修复。此操作只产生本地候选，不 push/merge，不属于 Publisher。
 
 集成 Task 的业务要求、scope、model、预算、oracle 和权限来自已批准模板；唯一允许派生的字段为已批准算法生成的输入 base/上游绑定及确定性身份。最终 Task bytes 在 Run 创建前耐久冻结。其他字段变化必须新 proposal/批准。集成 Agent 在这个 base 上检查/修复组合行为，独立 oracle 从实际客户端发起 HTTP 请求并验证服务响应，而不是重新计算本地答案。
