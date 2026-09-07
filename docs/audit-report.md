@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-08：Schema 消费链漏检与前移修正
+
+候选 `2885dcc` 的全量 CI `34148751006` 在 Ubuntu 的 execution 包发现两项失败：新增 `/worker/resultContract` 未加入既有 prompt projection 分类目录，同时使合成未知字段反例出现额外未分类项。这是实现遗漏及定向检查选取不完整，不是模型失败；计入额外修正，不以先前 22 项 Darwin 定向通过掩盖。未启动新的付费团队 canary。
+
+修正把该字段显式列为 Core/Adapter 使用的 hidden 字段，补独立 non-leak oracle 与渲染哨兵；不改变旧 prompt 可见字段或放宽 Schema 覆盖门禁。快速 Darwin 工作流增加 8 项既有 projection/泄漏检查并要求真实 pass。后继先运行 ECS 完整 execution race，再进入精确候选全量 CI；新增持久化字段的前置检查须覆盖既有消费者，不能仅选择新测试名称。本节记录修正范围，动态验证与 B1 实机出口仍须分别取得证据。
+
 ## 2026-09-08：从模型控制 JSON 改为显式原生结果候选
 
 针对 `34145704791` 的真实 Collect 拒绝，本轮不再仅改提示词/诊断后重复付费 canary。按 ADR 0085 的 Adapter 责任边界，新增冻结的 `worker.resultContract=native-terminal/v1`：同一 TaskSpec 字段贯穿 Pi launch、真实 Supervisor terminal/exit/signal/truncation、严格 transcript、结果构造与原独立 Verify。模型只负责业务文件及真实报告，不能提供身份/时间/控制证据；报告中的受阻、失败和未完成内容原样保留。旧 JSON 默认语义不变，未知协议和不支持新协议的 legacy executor 在启动前拒绝，不能自动 fallback。

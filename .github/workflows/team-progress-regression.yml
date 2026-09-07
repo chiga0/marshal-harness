@@ -38,7 +38,7 @@ jobs:
         run: |
           go test -race -p 2 -count=1 -timeout=120s -json \
             -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$GITHUB_SHA" \
-            -run '^(TestProductionResult.*|TestParseProductionWorkerResult.*|TestExtractFinalWorkerResult.*|TestPiProduction.*|TestTaskSpecResultContract.*|TestEmbeddedSchemasAreValidDraft202012Documents|TestRunRejectsNativeResultContractBeforeLegacyAdapter|TestTeamProgress.*|TestRepositoryTeamProgress.*|TestBackgroundTeamRunLanesAndVerificationYield|TestBackgroundRunReleasePreservesPublicWaiter|TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor)$' \
+            -run '^(TestProductionResult.*|TestParseProductionWorkerResult.*|TestExtractFinalWorkerResult.*|TestPiProduction.*|TestTaskSpecResultContract.*|TestTaskSpecPromptProjection.*|TestRenderPromptProjection.*|TestEmbeddedSchemasAreValidDraft202012Documents|TestRunRejectsNativeResultContractBeforeLegacyAdapter|TestTeamProgress.*|TestRepositoryTeamProgress.*|TestBackgroundTeamRunLanesAndVerificationYield|TestBackgroundRunReleasePreservesPublicWaiter|TestSupervisorReconnectFactIsRequiredBeforeBusinessHeadReanchor)$' \
             ./internal/adapter/pi ./internal/contract ./internal/cli ./internal/execution ./internal/productionruntime ./internal/fixedcontrolplane ./internal/resultingress \
             | tee team-progress-results.jsonl
       - name: Reject empty or skipped regression coverage
@@ -54,6 +54,14 @@ jobs:
               "TestPiProductionNativeCompositionRequiresObservedExit",
               "TestPiProductionLaunchBuilderFreezesResultContract",
               "TestTaskSpecResultContractIsOptionalAndClosed",
+              "TestTaskSpecPromptProjectionV1CatalogCoversSchema",
+              "TestTaskSpecPromptProjectionV1RejectsUnclassifiedSchemaLeaf",
+              "TestTaskSpecPromptProjectionV1CatalogHasSingleDecisionPerField",
+              "TestTaskSpecPromptProjectionV1WorkerVisibleFieldsHaveExactOracle",
+              "TestTaskSpecPromptProjectionV1NonVisibleFieldsHaveNonLeakOracle",
+              "TestRenderPromptProjectionV1WorkerVisibleValuesAreExact",
+              "TestRenderPromptProjectionV1VerifierOnlyAndHiddenValuesDoNotLeak",
+              "TestRenderPromptProjectionV1AcceptanceArgvAndOperatorSecretDoNotLeak",
               "TestEmbeddedSchemasAreValidDraft202012Documents",
               "TestRunRejectsNativeResultContractBeforeLegacyAdapter",
               "TestProductionResultFinalObjectFailureLocationIsClosed",

@@ -105,6 +105,8 @@ func buildTaskSpecPromptProjectionCatalog() []catalogEntry {
 	c = append(c, catalogEntry{"/worker/fallbackAdapters/*", hidden})
 	c = append(c, catalogEntry{"/worker/model", hidden})
 	c = append(c, catalogEntry{"/worker/reasoning", hidden})
+	// Result transport is selected by Core/Adapter, not supplied by the model.
+	c = append(c, catalogEntry{"/worker/resultContract", hidden})
 	// ciObserveTimeoutSeconds controls Publisher-side remote check observation;
 	// it grants no capability and is irrelevant to Worker execution.
 	c = append(c, catalogEntry{"/budgets/ciObserveTimeoutSeconds", hidden})

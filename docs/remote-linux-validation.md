@@ -1,6 +1,6 @@
 # Linux 远端验证执行机
 
-更新：2026-09-07。用途是解除开发机执行新编译测试程序需人工授权的阻塞，不是部署完成或 Linux production authority。
+更新：2026-09-08。用途是解除开发机执行新编译测试程序需人工授权的阻塞，不是部署完成或 Linux production authority。
 
 ## 当前配置与边界
 
@@ -28,6 +28,9 @@ Linux 编译通过不代表 Darwin 代码被编译；`[no tests to run]` 不能�
 SSH 验证执行机与产品 SandboxProvider 无直接等价关系。产品在 Linux 启动真实 Agent、结果接纳、取消、恢复与部署仍须独立完成对应支持矩阵；本机常驻服务的企业信任/签名也不因远端测试可用而自动解决。
 
 ## 已观察问题
+
+- 2026-09-08 实测：现有 SSH 账号没有免交互 sudo，专用 `marshal-runner` OS 账号不存在；当时 8 CPU、约 13 GiB 可用内存。因此 Goal 中的“独立用户、受限权限执行机”尚未满足，不能把当前目录隔离写成账号隔离。已向用户请求管理员配置专用账号和 SSH 公钥的方式，不索取密码/私钥、不自行修改 sudo 或其他系统安全策略。此项不阻塞可信代码单测或已有 Darwin CI，但正式受限部署前必须关闭。
+- 原生结果候选 `2885dcc3d76dba1a76a683d0c746b2f017240d82` 经本地固定 commit 的 `git archive` 通过已有 host-key 校验的 SSH 传入独立目录，Pi 与 contract 全包 race 通过。这只是平台无关单测证据；Darwin 专属组合根、受管进程和动态回归另由 CI `34148721086` 的 22 项必跑用例证明，仍不授予 Linux 产品服务能力。
 
 - 本机 `/usr/bin/scp` 首次传输退出 137，原因未确认，未反复重试或放宽安全策略。
 - 远端 Git smart HTTP clone 超时，但固定 SHA 的 GitHub codeload HTTPS 下载可用，因此基线验证使用源码包；失败目录保留，不把它当成功 checkout。
