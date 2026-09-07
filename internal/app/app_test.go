@@ -23,4 +23,7 @@ func TestParseTaskSpecUsesValidatedContract(t *testing.T) {
 	if task.Metadata.ID != "ENG-123" || len(task.Acceptance.Commands) != 1 || len(task.Deliverables) != 3 {
 		t.Fatalf("parsed TaskSpec = %+v", task)
 	}
+	if len(task.Work.Context) != 1 || task.Work.Context[0] != "该问题可在 auth 单元测试中复现。" {
+		t.Fatal("validated Task context was silently discarded")
+	}
 }

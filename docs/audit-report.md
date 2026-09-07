@@ -1,5 +1,17 @@
 # 设计审计报告
 
+## 2026-09-07：团队已启动首节点，暴露晚期文本拒绝与需求静默丢失
+
+`b8dbf3c` 的 [CI 34078286247](https://github.com/chiga0/marshal-harness/actions/runs/34078286247) 五项全绿。随后条件派发漏填必需的 expected-head，GitHub 返回 HTTP 422，未创建作业；补齐参数并确认无同版本作业后才派发 [34079333520](https://github.com/chiga0/marshal-harness/actions/runs/34079333520)。这次操作错误计入人工介入与总耗时，不归咎 Worker，也不增加虚构 Run。
+
+实机失败诊断 artifact `10003206471`：26 条 RB1 canonical record 的摘要及全局序号均已核对，包含一个 approved plan、两个创建冻结、两个 reservation/open 和两个 worktree bind receipt。服务节点有 process-started、Resume outcome 及公开 Inspect 的 RUNNING/sequence=3；客户端停在 bind receipt 后、launch-authorized 前，原计划追加 client/start halt。磁盘 state.json 仍为 READY 不能覆盖 journal/公开 Inspect。最后 fixed-cli-response-timeout 与 sealed-run-acquire-lease 错误仍需同路径复核，不能声称查询/失败闭环已通过。
+
+确定性根因：客户端 objective 的 `POST /quote` 命中 ADR 0075 的原绝对 POSIX token 检查，实际 reseal launch 才检查，故浪费了已创建 Run/reservation。同期发现第二处业务正确性缺口：Task Schema 已有 work.context，但 domain.TaskWork 未声明该字段；ParseTaskSpec 静默丢弃 context，Pi builder 也仅转发 objective/constraints。服务节点未收到共享的价格/HTTP 错误契约，不能把它成功启动当作可正确交付。
+
+候选按 ADR 0083 同批处理：typed Task 保留既有 context，builder 传递完整 context/nonGoals 且沿用原路径/NUL/argv 长度检查；参考路由用完整 loopback URL 表达，不放宽路径门禁。服务器在完整 preview 后、批准 append 前，对全部三个节点调用实际纯 builder，以最大合法 Attempt ID 长度预检；实际 Start 仍绑定真实预留身份，不复用占位身份或重写历史证据。跨语言回归覆盖真实 renderer→Core preview→同一 production builder，检查完整契约出现并拒绝任一节点的绝对路径、控制路径与超长上下文；另检查空 objective 不能被 context 补成合法任务。现有 Schema 未扩张。
+
+本次保留两次失败实机、一次派发拒绝及所有来源修复，不能报告“零返工/无失败”。本地脚本/格式/架构、双平台 compile-only、vet/staticcheck 检查不等于动态通过；后继须自己的精确 CI，再做一次团队验证。自动结果处理、独立 Decision、集成/Goal Outcome、局部 replan 与对照收益均未完成；B2 不升级。
+
 ## 2026-09-07：首次团队实机在 CLI 准入短路，补生产入口回归
 
 `a481f0e` 的精确 CI [34076598876](https://github.com/chiga0/marshal-harness/actions/runs/34076598876) 五项通过后，首次 `order-quote-team` 实机 [34077560755](https://github.com/chiga0/marshal-harness/actions/runs/34077560755) 失败。诊断 artifact `10002598290` 显示 server ready，但第一次 `team-approve` 返回 exit=3、空 stdout；stderr SHA-256 `bb8d1e32fe9bfd6c9b829425e953f6649875f6b436c9a56893a8dec7176fa5e7` 精确匹配封闭 `self-local-command-denied`。RB1 仅一个 `control-owner-acquired`，未创建 Run/Attempt，无付费 Worker 重试；失败计入整个交付分母，不用零 rework 粉饰入口错误。

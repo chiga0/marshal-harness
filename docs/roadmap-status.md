@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 最新：`b8dbf3c` 精确 CI 34078286247 五项通过；团队实机 [34079333520](https://github.com/chiga0/marshal-harness/actions/runs/34079333520) 完成批准、两个 Run 创建及一个节点启动，但第二节点在 launch 文本检查失败后耐久停派，最终客户端查询超时，整次失败。26 条 RB1 记录逐条摘要与顺序检查通过，含 2 个 reservation/open、1 个 process-started、1 个 team-plan-halted；没有团队 ACCEPTED/集成。已修候选中的 typed Task context 丢失、完整 Pi 提示传递，并将实际 launch builder 全节点预检移到批准前；HTTP 路由使用完整 URL，保留原路径检查。后继动态 CI/实机尚待完成，失败后的查询超时仍未证明关闭。B1/B2 IN_PROGRESS、B3 PLANNED；无新增 main merge/stable 或效率优势证明。
+
 2026-09-07 最新：`a481f0e` 精确 CI 34076598876 五项通过，但首次团队实机 [34077560755](https://github.com/chiga0/marshal-harness/actions/runs/34077560755) 在顶层 CLI 的 `self-local-command-denied` 短路，未创建 Run/Attempt。已定位 handler 与 closed activation/classifier 接线遗漏，后继同批补 Schema、权限及真实入口回归，不原样重试。B1/B2 IN_PROGRESS、B3 PLANNED，无新增 main merge/stable。当前目标保持 B1→B2→B3 及至少三个任务族的强 Lead＋SubAgents 配对验证；收益尚未证明。以下“尚未执行/在途”为历史时点。
 
 2026-09-07 团队验证入口：在 `4867ff7` 上接入 `order-quote-team` hosted 场景：一次团队批准→resident 自动物化/启动两个实现节点→既有 Collect/Verify/ReviewPacket；不逐个外部 Start，不提前创建 integration。新客户端与既有脚本回归通过，真实团队执行、进程重叠证据、独立接纳及集成交付仍待完成。`4867ff7` 的跨语言输入回归已在 macOS/Linux CI 通过，记录时全量质量作业仍在途；新入口仍需自己的精确 CI。B1/B2 仍 IN_PROGRESS、B3 PLANNED，无新 main merge/stable。

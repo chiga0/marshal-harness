@@ -15,6 +15,8 @@
 
 ## 1. 确认的是完整可执行方案，不是 node 标题
 
+2026-09-07 实机纠偏：Schema 已允许的 `work.context` 必须保留到 typed Task 并与 objective、constraints、nonGoals 一起进入固定 Pi 提示，不得在反序列化或启动构造时静默丢弃。所有文本仍通过 ADR 0075 原路径/控制路径/长度检查；HTTP 示例采用完整 loopback URL，不为样例放宽宿主绝对路径规则。固定 server 在原完整输入 preview 后、批准落账前，对所有节点（包括后继 integration）调用同一个纯 Pi launch builder，以确定性 Task/Run ID 和最大合法长度的占位 Attempt ID 检查提示与 argv 上限；不 Probe、预留或启动。这只前移确定性文本错误，不授予 Attempt 权威；真实 Start 仍用已预留身份重新构造并核验。旧 frozen Task/已封装 closure 不改写，新 binary 无法复用的旧 closure 仍拒绝漂移。
+
 先通过只读 preview 返回：用户需求/非目标、确认后不得自动改变的业务验收、锁定 repository identity/base SHA、节点角色/scope/依赖、真实 Pi 配置、每节点和整个 Goal 的预算、集成策略与 publication:none。Planner 只能提交提案；服务器的确定性检查不能由 Planner 自称通过。
 
 首个支持模板为两个独立实现节点加一个集成节点，初始三个节点、同时活跃 Implement Run 不超过三个，禁止 nested fan-out。后继节点/Run 必须计入整个 Goal 预先批准的累计预算，不能以这个并发上限代替累计上限。集成节点不是增加可插拔 Executor 类型，而是同一 Task/Run 机制中的明确业务角色。模板上限只限定首个受支持 profile，不把三节点样例通过泛化为任意 Agent Team。

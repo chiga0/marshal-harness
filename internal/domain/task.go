@@ -53,10 +53,11 @@ type TaskWorker struct {
 	Tools []string `json:"tools,omitempty"`
 }
 
-// TaskWork describes the actual work content: objective, constraints and
-// explicit non-goals.
+// TaskWork preserves the approved objective, shared context, constraints and
+// explicit non-goals through typed decoding and production prompt rendering.
 type TaskWork struct {
 	Objective   string   `json:"objective"`
+	Context     []string `json:"context,omitempty"`
 	Constraints []string `json:"constraints"`
 	NonGoals    []string `json:"nonGoals"`
 }

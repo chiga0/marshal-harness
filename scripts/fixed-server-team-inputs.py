@@ -24,7 +24,7 @@ digest = lambda value: "sha256:" + hashlib.sha256(canonical(value)).hexdigest()
 VERSION = "bounded-team-inputs/v1"
 PATHS = {"service": ["quote_api.py"], "client": ["quote_client.py"], "integration": ["quote_api.py", "quote_client.py"]}
 CONTRACT = (
-    "订单报价共享契约：POST /quote，Content-Type application/json，body 恰含 items。"
+    "订单报价共享契约：POST http://127.0.0.1:PORT/quote（PORT 为实际绑定端口），Content-Type application/json，body 恰含 items。"
     "items 是非空 list，每项恰含 unit_price_cents 和 quantity；单价非负 int，数量正 int，bool/float 非法。"
     "subtotal_cents 为乘积和，>=5000 时 shipping_cents 为0，否则500；total_cents 为两者之和。"
     "报价恰含这三个 int 字段，支持大整数。非法 JSON 返回400和{\"error\":\"invalid-json\"}；"
@@ -33,7 +33,7 @@ CONTRACT = (
 )
 OBJECTIVES = {
     "service": "实现 quote_api.py，导出 create_server(host, port)，只接受 host=127.0.0.1，支持 port=0。返回已绑定但未启动 serve_forever 的标准库 HTTPServer，由调用者启动和关闭。导入模块不得启动服务。实现共享 HTTP/报价契约。",
-    "client": "实现 quote_client.py，导出 quote_order(base_url, items)。base_url 只接受 http://127.0.0.1:PORT（无用户信息、路径、query、fragment）。发送一次 POST /quote，消费服务的200报价响应，禁止本地重算、伪造响应或跟随重定向。422或连接/协议失败抛 ValueError，不修改输入；单次网络超时最多3秒。导入模块无副作用。",
+    "client": "实现 quote_client.py，导出 quote_order(base_url, items)。base_url 只接受 http://127.0.0.1:PORT（无用户信息、路径、query、fragment）。发送一次 POST http://127.0.0.1:PORT/quote（使用 base_url 的实际端口），消费服务的200报价响应，禁止本地重算、伪造响应或跟随重定向。422或连接/协议失败抛 ValueError，不修改输入；单次网络超时最多3秒。导入模块无副作用。",
     "integration": "验证并在必要时修复已接纳的 quote_api.py 与 quote_client.py：由客户端实际向同一个服务发起 HTTP 调用，通过共享契约和独立集成 oracle。保留接口与预算，不扩展功能。无需修改时允许 no-change，但仍须验收。",
 }
 

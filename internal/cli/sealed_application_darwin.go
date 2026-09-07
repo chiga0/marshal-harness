@@ -213,7 +213,7 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 			if err != nil || preview.Inputs.Spec.Repository != applicationAdapter.repositoryRoot || !preview.Inputs.Spec.AuthorityNamespaceId.Equal(applicationAdapter.namespace) {
 				return application.NewError("team-input-preflight", application.ReasonInvalidRequest)
 			}
-			return nil
+			return preflightPiTeamLaunch(applicationAdapter.piRuntime, applicationAdapter.piEntrypoint, preview.Inputs)
 		},
 		TeamRunPreparer: func(ctx context.Context, task, policy []byte, runID string) ([]byte, error) {
 			// Use only this server's frozen Pi paths; never rediscover a provider
