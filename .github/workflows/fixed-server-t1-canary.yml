@@ -155,6 +155,7 @@ jobs:
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODELS: ${{ vars.OPENAI_MODELS }}
+          PI_MODEL_PROFILE_JSON: ${{ vars.PI_MODEL_PROFILE_JSON }}
         run: |
           test -n "$OPENAI_BASE_URL" && test -n "$OPENAI_API_KEY" && test -n "$OPENAI_MODELS" || { echo "::error::缺少 Pi provider 配置" >&2; exit 1; }
           mkdir -p "$HOME/.pi/agent"

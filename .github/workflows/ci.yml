@@ -88,6 +88,9 @@ jobs:
       - name: Test live review carrier without network or SDK
         run: node --test .github/actions/live-review/index.test.cjs
 
+      - name: Test explicit canary model configuration without network
+        run: python3 -I -B scripts/rc1-canary-provider-config_test.py
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
