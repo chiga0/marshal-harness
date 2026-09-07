@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-08：CI 模型配置不等于本机已配置模型元数据
+
+停止盲目重跑后的只读核对发现，`scripts/rc1-canary-provider-config.py` 为每个模型统一写入 `contextWindow=128000`、`maxTokens=16384`，不提供 reasoning/compat；这不是读取用户本机 Pi 配置。本机 Pi 0.84.4 中 `qwen3.8-max` 的两个已配置 Provider 均声明 contextWindow 1000000、maxTokens 131072、reasoning true，其中一个还声明 Qwen thinking 格式及禁用 developer role/store。配置声明不等于服务端能力验证，不能盲目复制到未知 endpoint。
+
+在同版本 Pi `streamSimple` 的 `onPayload` 上执行了零网络构造实验：只使用虚构 endpoint 与测试密钥，在请求发送前终止，并断言 fetch 调用数为 0。旧 CI 元数据实际构造 `max_completion_tokens=16384`，缺少 `enable_thinking`/`reasoning_effort`；本机元数据加显式 low 构造 `max_completion_tokens=131072`、`enable_thinking=true`、`reasoning_effort=low`。后者只是对照夹具，并不证明实机 Worker 当前选择 low。该实验确认配置差异会影响实际请求，不证明历次 length 的唯一根因，也不授权扩预算或改终态接纳。
+
+下一步须先确认 CI secret endpoint 对应的已验证 Provider，再使用显式匹配的非敏感配置；无需索取或输出密钥。在确认前不更改远端 Provider 配置、不启动新的付费团队。候选 `775de21` 的 Darwin 定向 `34158437379` 已成功；现有团队交付、Task HTTP 和正式部署出口仍未完成。
+
 ## 2026-09-08：停止收口实机通过，团队失败观测仍有盲点
 
 精确候选 `dd8e8eccdd1f2118db92e928996321272aff1fc7` 完整 CI `34156121695` 五项通过，Darwin 定向 `34155305960` 的 36 项必跑检查通过。其唯一实机 `34157213736` 仍失败，诊断 artifact `10031514061` 保留原始证据；固定二进制 SHA-256 为 `3bd2b444e62b009449b47887660f4db666161cc4d877756bb3307d2235d5378d`。没有 ReviewPacket、独立 Decision、集成或下载成功，B1 不升级。
