@@ -325,6 +325,10 @@ func localDogfoodCommandClass(args []string, doctor *doctorOptions) (string, str
 			return selfidentity.CommandControlPlaneReview, ""
 		case "decision":
 			return selfidentity.CommandControlPlaneDecision, ""
+		case "team-approve":
+			return selfidentity.CommandControlPlaneTeamApprove, ""
+		case "team-reconcile":
+			return selfidentity.CommandControlPlaneTeamReconcile, ""
 		default:
 			return "", selfidentity.ReasonCommandDenied
 		}

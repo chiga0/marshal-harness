@@ -39,6 +39,8 @@ Goal 投影由同一物理账本 replay 得到，`goal.Evaluate` 只接收该投
 
 ## 3. 物化是可恢复工作，不是接纳事务中的长操作
 
+固定 CLI 的 ordinary-user activation 显式增加 `control-plane-team-approve` 与 `control-plane-team-reconcile`，分别只映射上述两个命令，不属于绕过 self identity 的 bootstrap。沿用 ADR 0081 的封闭集合升级规则：生成器、解码器、Schema、CLI 分类与顶层入口回归一同变更；旧 activation 不原地扩权，操作者须为精确新 binary/sourceHead 重新生成。未知命令、错误 profile、缺失授权与身份漂移仍在连接前拒绝。此进程准入不代替 fixed peer 认证、完整方案确认或 current-ledger 检查，也不授予发布权。
+
 初始批准使用 `/v1/teams/approve`，只读原请求查询使用 `/v1/teams/reconcile-approval`，二者均在现有 fixed-peer 认证之后调用同一应用对象。批准 request ID 与 transport request key 相同；原 UTC 截止时间作为请求字段进入 request digest，批准时与认证 transport deadline 完全相同，过期后不得重新写入。查询可使用新的查询 deadline，但携带原批准完整请求，不改变其 ID/截止时间/输入。结果丢失时不在 router 自动重放写入；读取原账本返回 exact fact 或明确不存在，未知/损坏不解释为不存在。
 
 该操作只有单个原子 RB1 提交点，批准事实本身就是 durable receipt，不再复制 StartRun 的跨步骤 pending 文件。服务端返回前从当前 owner 下重读 exact fact；客户端在固定 peer/owner post-check 后，从 held read-only RB1 重放并比较相同请求/投影，缺失、伪造或 owner 漂移均拒绝。查询“不存在”同样须读账本确认，不能仅相信空响应。此入口只批准创建义务，不自动物化/Start；普通用户批准亦不授予子 Run 自我验证或发布权。

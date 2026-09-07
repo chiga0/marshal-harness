@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-07：首次团队实机在 CLI 准入短路，补生产入口回归
+
+`a481f0e` 的精确 CI [34076598876](https://github.com/chiga0/marshal-harness/actions/runs/34076598876) 五项通过后，首次 `order-quote-team` 实机 [34077560755](https://github.com/chiga0/marshal-harness/actions/runs/34077560755) 失败。诊断 artifact `10002598290` 显示 server ready，但第一次 `team-approve` 返回 exit=3、空 stdout；stderr SHA-256 `bb8d1e32fe9bfd6c9b829425e953f6649875f6b436c9a56893a8dec7176fa5e7` 精确匹配封闭 `self-local-command-denied`。RB1 仅一个 `control-owner-acquired`，未创建 Run/Attempt，无付费 Worker 重试；失败计入整个交付分母，不用零 rework 粉饰入口错误。
+
+根因是新团队 handler/HTTP route 已接线，但顶层 CLI classifier 与 activation 的封闭命令集合未接通。输入生成器到 Go preview、模拟客户端以及单独 handler 测试均未经过这个真实门禁；这是生产入口覆盖缺口，不是模型配置、Pi 或 resident server 失联。沿 ADR 0083 明确的权限边界，同批修复命令分类、activation 生成/解码、Schema 与实际 `RunContext` 回归；测试使用新生成且绑定测试 executable/source 的 activation，不走 unprofiled bypass，并覆盖缺授权及未知团队命令拒绝。旧授权不得原地扩权。
+
+本次纠偏不扩大 B2 范围、不补发原失败实验。新精确 head 必须先通过动态回归，再运行一次团队实机；自动 Collect/独立接纳/集成与 Goal Outcome 仍待完成，B1/B2 保持 IN_PROGRESS，B3 PLANNED，无新增 main merge/stable 或对照收益证明。
+
+本地脚本回归、architecture/format、双平台 compile-only/vet/staticcheck、JSON 语法、diff 与 secret scan 已通过；本机 Python 无 jsonschema，Draft 2020-12 与实际 activation 示例验证由现有 Go Schema 测试在 hosted CI 执行。本地 `-exec /usr/bin/true` 只证明编译，不能替代这些动态检查，也没有运行匿名 Go 测试二进制。
+
 ## 2026-09-07：团队批准接入 hosted fixed-server 实机路径
 
 在 `4867ff7` 完整输入/业务 oracle 候选之上，新增 `order-quote-team` 显式场景，复用同一个 exact-head CI gate、固定 binary 与 Pi 0.84.4 配置，不另建 server 或生产业务状态库。该模式跳过单任务 `task plan/approve`，只向认证公开入口发送一次原始 `team-approve`；resident Core 自行物化并 Start 两个 implement，客户端只有有界 Inspect 与既有 Collect/Verify/ReviewPacket。未知响应、终态或超时保留失败，不重新批准、不启动替代 Run、不自动 rework。

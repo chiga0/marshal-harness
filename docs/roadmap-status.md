@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 最新：`a481f0e` 精确 CI 34076598876 五项通过，但首次团队实机 [34077560755](https://github.com/chiga0/marshal-harness/actions/runs/34077560755) 在顶层 CLI 的 `self-local-command-denied` 短路，未创建 Run/Attempt。已定位 handler 与 closed activation/classifier 接线遗漏，后继同批补 Schema、权限及真实入口回归，不原样重试。B1/B2 IN_PROGRESS、B3 PLANNED，无新增 main merge/stable。当前目标保持 B1→B2→B3 及至少三个任务族的强 Lead＋SubAgents 配对验证；收益尚未证明。以下“尚未执行/在途”为历史时点。
+
 2026-09-07 团队验证入口：在 `4867ff7` 上接入 `order-quote-team` hosted 场景：一次团队批准→resident 自动物化/启动两个实现节点→既有 Collect/Verify/ReviewPacket；不逐个外部 Start，不提前创建 integration。新客户端与既有脚本回归通过，真实团队执行、进程重叠证据、独立接纳及集成交付仍待完成。`4867ff7` 的跨语言输入回归已在 macOS/Linux CI 通过，记录时全量质量作业仍在途；新入口仍需自己的精确 CI。B1/B2 仍 IN_PROGRESS、B3 PLANNED，无新 main merge/stable。
 
 2026-09-07 当前：B1 `4ace42c` 精确 CI 与真实 Pi 跨 Run 验证 [34067556449](https://github.com/chiga0/marshal-harness/actions/runs/34067556449) 通过；同一 server 内约 104 秒 Verify 期间，另一 Run 在原 deadline 后约 5.53 秒到 BLOCKED，15 次 Inspect 和 stopped Collect 均完成。只关闭该候选组合子条件，无新 ACCEPTED/main merge/stable。B2 `00c8351` 的调度组合 CI 34067600918 已五项通过，同时正常整合上述 B1 修复，避免旧依赖进入下一次真实团队实验；合并 head 仍需自己的精确验证。B1/B2 仍 IN_PROGRESS，B3 PLANNED；以下为历史检查点。
