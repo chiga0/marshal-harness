@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-07：既有团队业务样例进入同一候选，补完整输入到 Core 的回归
+
+B1 修复已正常整合并推送为 B2 候选 `2ecf8b1`。随后整合已有参考契约/HTTP oracle 分支 `964cba4`，新增待确认的完整三节点输入生成器，复用 B1 Task/Policy 构造，避免再维护一份不一致的 Provider 配置。生成器不批准、不创建 Run 或启动 Agent；摘要由实际 Go application/planning parser 再校验，新增跨语言回归直接运行真实 Python 生成器再执行 `Frozen/PreviewTeamInputs`，不是两套 fixture 各自自洽。
+
+同批把 oracle 接为有界 verification command 的服务、客户端及组合入口；服务生命周期接口先冻结，客户端必须实际消费 HTTP 响应，integration 才检查两个候选组合。新增真实 loopback component 调用及候选 early-exit/异常/缺文件/symlink 拒绝；不输出异常正文、不把同进程候选导入描述为恶意代码隔离。4 项输入脚本、11 项团队 oracle 和 5 项原业务回归本地通过，Go 编译/vet/staticcheck 通过；Go 动态跨语言解析及整合 head 仍需精确 CI。尚未派真实 B2 团队，后继应直接把该输入接入 hosted fixed-server canary，不扩展第二种业务控制器。
+
 ## 2026-09-07：同 server 长验证与另一 Run 自动停止组合通过，B2 同步修复依赖
 
 B2 `00c8351c078fc505fa578d8db590dda9a790fc90` 的 CI 34067600918 已五项通过，包含耐久 halt 与 resident 初始调度动态回归。下面的 B1 合并仍是新的候选 head，父提交成功不代替合并验证；尚无真实 B2 团队交付。

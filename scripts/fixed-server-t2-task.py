@@ -23,7 +23,7 @@ def utc_now():
     return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def render(args):
+def build(args):
     repository = os.path.realpath(args.repository)
     if repository != args.repository or not os.path.exists(os.path.join(repository, ".git")):
         raise SystemExit("repository 必须是 canonical Git worktree 根")
@@ -218,6 +218,11 @@ def render(args):
         "generatedAt": utc_now(),
     }
     policy["policyDigest"] = "sha256:" + hashlib.sha256(canonical_bytes(policy)).hexdigest()
+    return task, policy
+
+
+def render(args):
+    task, policy = build(args)
     for path, value in ((args.task_out, task), (args.policy_out, policy)):
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(canonical_bytes(value).decode("utf-8") + "\n")

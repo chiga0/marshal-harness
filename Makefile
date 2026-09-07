@@ -135,6 +135,8 @@ fixed-server-t1-check:
 	/usr/bin/python3 -I -B scripts/fixed-server-t1-evidence_test.py
 	/usr/bin/python3 -I -B scripts/fixed-server-t2-drive_test.py
 	/usr/bin/python3 -I -B scripts/order-quote-oracle_test.py
+	/usr/bin/python3 -I -B scripts/order-quote-team-oracle_test.py
+	/usr/bin/python3 -I -B scripts/fixed-server-team-inputs_test.py
 
 # Local convenience only. CI release authority invokes the fixed Python checker
 # before any candidate Make/script execution and does not trust this target.

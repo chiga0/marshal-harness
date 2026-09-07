@@ -24,6 +24,7 @@ B1 优先关闭当前 launcher 与 T2 真实链路阻塞。B2 的业务样例/�
 
 - B1：真实 Agent 在现有 T2 Task 路径实现 `quote_order.py`，提供 `quote_order(items)`；固定参考 oracle 检查正常、边界、非法输入、输入不变和 JSON 类型。
 - B2：扩展成订单报价 API 与客户端。先确认共享输入/错误契约，然后分开实现服务与客户端，集成任务验证从客户端到服务的完整请求；不把两个不相交文件的提交当作团队完成。
+- B2 的 [HTTP 参考契约候选](reference-order-quote-team-contract.md) 和 `scripts/order-quote-team-oracle.py` 预先定义同一服务的直接请求与客户端验收，并加入验证者 HTTP fixture 的请求观察/响应 challenge。它们不是 accepted plan，也不是多 Agent 已完成；真实派发前仍须冻结确认、接入外层有界集成执行，再由同一 B2 控制链执行。
 - 独立 oracle 放在控制仓库的固定脚本，不在 Worker 可修改范围内；Oracle 本身用正确实现和典型错误实现做回归。测试素材全部为合成数据，无客户数据/真实订单。
 - 参考工作区与 Marshal 业务代码隔离。当前 Task renderer 仍绑定 canonical Marshal repository，因此 B1 的文件范围隔离只用于首轮，**不冒充外部参考仓库集成已支持**；后继应用入口允许可信外部仓库后，迁移同一场景到独立小仓库。
 - 保留现有 marker 作为传输诊断模式；marker 通过不能替代本业务验收。
@@ -43,6 +44,10 @@ B1 优先关闭当前 launcher 与 T2 真实链路阻塞。B2 的业务样例/�
 响应丢失或批准过期时，使用同一 REQUEST.json 执行 `marshal control-plane team-reconcile --request-file REQUEST.json`；只读查询自动使用短查询窗口，但不修改原批准 deadline。`found:true` 和原 fact digest 仅代表创建义务已提交，`found:false` 是经只读账本回查的当次不存在；查询错误/未知不等于不存在，不自动重复批准。两条命令只连接已运行的同一 fixed server，不新开 owner、直接派 Pi 或调用子 CLI。Run 幂等物化、独立节点/集成与 Goal Outcome 仍待同路径接通；候选未合入和实机通过前不作为生产使用说明。
 
 ## 每轮最小记录
+
+参考团队输入生成（未发布候选）：`python3 -I -B scripts/fixed-server-team-inputs.py --repository CANONICAL_ROOT --base-ref FULL_SHA --doctor DOCTOR.json --model PROVIDER/MODEL --goal-id GOAL_ID --proposal-id PROPOSAL_ID --request-id REQUEST_ID --deadline UTC_DEADLINE --out REQUEST.json`。仅创建不存在的请求文件，不批准或启动 Worker；调用前先运行 fixed binary 的 doctor 获得真实环境绑定，确认完整输入摘要后才使用上述 `team-approve`。Core 再校验全 Task/Policy/Goal，不信任 Python 自称有效。
+
+首个参考输入固定两个实现加一个集成、并发 2、全 Goal 三次 Attempt、零 operational retry/rework、publication:none；变更业务/模型改变批准摘要，变更 proposal 改变确定性节点 ID。模型 token/compute 的零估算不是测量为零，也不能作为成本收益证据。批准仍只适用于原完整输入，集成与有界 replan 尚未接通前，不把这个生成器当成团队完整交付工具。
 
 任务类型/难度、冻结需求/输入/候选/运行 binary 身份、开始结束时间、各阶段等待/运行时间、Attempt/rework 数、失败分类、人工介入、业务验收和 evidence refs。token 缺失记为 unavailable，不能计为零。样例测试通过仅是测试基础设施证据，不是实机 Agent 成功。
 
