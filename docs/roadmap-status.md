@@ -4,21 +4,21 @@
 
 ## 当前唯一状态与关键路径（2026-09-07）
 
-本节是当前实施依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。
+本节是当前实施依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。2026-09-07 产品要求统一为[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)及 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)；多轮审计见[设计复核](audit-agent-team-service-design-2026-09-07.md)。新设计完成不改变下表能力成熟度。
 
-- 主线最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；B2 候选在 `feat/b2-durable-materialization`，已验证代码 `798ea395abd97744cfc69d125ee997933dad06f9` 已推送。候选分支同步不等于 main 合并；没有本切片的 localMergeSha/remote merge/stable。
+- 主线最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；B2 候选在 `feat/b2-durable-materialization@ff71d7b732e42a90d20bec97f01e6c6fed8ba27f`。下述 CI/canary 证据精确属于 `798ea395abd97744cfc69d125ee997933dad06f9`，不能挪给后继。设计文档在独立 `feat/agent-team-service-blueprint` 分支；候选同步不等于 main 合并，没有本轮 localMergeSha/remote merge/stable。
 - 798ea39 的精确 [CI 34095940005](https://github.com/chiga0/marshal-harness/actions/runs/34095940005) 五项全绿；先前 34094155668 的结果计数阻断由 [ADR 0084](adr/0084-pi-typed-terminal-result-framing.md) 候选修正。后继 max 实机 34097645547、一次显式 flash 替代 34098369837 均未完成团队；后者 service 通过真实 Collect/Verify 的 33 项检查并形成 ReviewPacket，client 在模型终态失败。没有本轮独立 Decision/ACCEPTED、第三节点或 GoalOutcome。停止模型轮换，后继聚合终态分类与任务上下文/输出收敛，不删失败分母。演示范围和实际证据见 [PoC 交付页](poc-agent-team-delivery.md)。
 - 最终目标不改为“完成更多协议/PR”：交付 fixed server 的完整业务任务与受限团队，并用至少三个代表任务族的重复配对实验，与相同冻结契约、oracle、模型、工具及资源的强 Lead＋SubAgents 比较。源代码返工、失败 CI、失败 Attempt、人工等待全部计入；目前没有效率优势证据。
 
 | Milestone | 当前状态 | 已有证据 / 实现 | 尚待退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；已整合的 `4ace42c` 停止候选在 34067556449 证明长 Verify 期间另一 Run 的 deadline、查询与 Collect 可前进 | 最终候选主线合入及组合确认；旧失败保留分母 |
-| B2 受限 Agent Team | `IN_PROGRESS` | 34082574786 两个真实 Pi 节点到 REVIEW_PENDING，但客户端存在 P1/P2、业务未接纳；后继已接原独立 Decision、上游 patch 组合、第三节点创建/调度/评审及耐久 completed GoalOutcome 和只读查询 | 当前完整三节点实机与可重建交付物；server 自主 Collect/Verify；有界局部 replan/成果复用、暂停/失败终态/恢复；真实进程重叠与成本测量，配对收益 |
+| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；已整合的 `4ace42c` 停止候选在 34067556449 证明长 Verify 期间另一 Run 的 deadline、查询与 Collect 可前进 | 新服务 B1-A/B：独立安装/外部仓库、认证 HTTP、注入 Adapter、SQLite 唯一事务/迁移与单任务下载重建/取消/恢复；旧证据与失败保留 |
+| B2 受限 Agent Team | `IN_PROGRESS` | 34082574786 两个真实 Pi 节点到 REVIEW_PENDING，但业务未接纳；候选已接独立 Decision、上游组合、第三节点及 completed GoalOutcome 查询，完整实机未过 | 持久 AskUser/确认/用户验收、有限图、真实团队集成下载重建；server 自主推进、局部 rework/reuse/非成功 Outcome；三 Provider 核心兼容、详情/审计与配对收益 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史故障/恢复组件与 RC1 prerelease 证据保留，不升级成熟度 | B2 同路径故障矩阵、长历史/升级恢复、managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
-下一步顺序：先完成阻断 PoC 的结果解析聚合修复与 exact-head CI，再验证完整三节点、独立评审、原始成果集成及耐久 GoalOutcome，导出可重建业务交付物与演示步骤。不再运行仅到两节点 REVIEW_PENDING 即退出的旧场景；不给旧 Run 补签 Decision、重置预算或洗掉失败成本。原 runner 已结束、旧候选未获得 ACCEPTED，不能伪装成可授权复用成果。若仍失败，保留证据并按根因修正，不自动重试付费团队。先让用户演示这条实际协作交付链，再完成局部 replan/reuse 与同路径恢复、重复配对实验及 B3。
+下一步顺序：按 ADR 0085 的目标合同先推进 B1 唯一应用组合/认证 HTTP 与真实单任务，再完成 SQLite 单写与恢复；真正无旧 authority 的新仓库可以直接初始化 SQLite 做最小需求确认纵切，旧仓库另验静止迁移。B2 现有三节点候选保留为诊断/回归资产，不放弃其成果，也不为等待历史导入反复跑旧团队。之后完成 B2 持久交互、受限团队、三个 Provider 与详情/复盘，再 B3。不给旧 Run 补签 Decision、重置预算或洗掉失败成本；没有结构变化和预检不重复付费 Attempt。本轮只修改方案文档，未启动 Run 或迁移状态。
 
-并发边界：当前只允许两个 scope 互斥的实现节点并行，第三节点等待两个原始 ACCEPTED；增开整个团队会放大尚未验证的公共调用链，不是本阶段提速措施。三个 RUNNING 投影不是进程重叠证据，三次 Attempt 也不是 token/compute 实际结算；未知测量不得写零。
+并发边界：当前候选运行时仍只允许两个 scope 互斥的实现节点，第三节点等待上游接纳，不将新方案“最多三个并行 implement”写成已有能力。产品开发可按已冻结合同并行应用/Store 主路径、Adapter、UI/审计投影，共享提交边界只有一个 owner。进程重叠与实际计量需实证；未知测量不得写零。
 
 ## 历史过程记录（不作为当前待办）
 

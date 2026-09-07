@@ -5,9 +5,9 @@
 - 定位：本文是 Marshal 的冻结 Runtime 规范，也是产品实现应持续收敛的长期目标。Local MVP（Milestone 0–6，`USABLE`）行为不变；历史 M8/M9 资产保留，但其 Runtime 成熟度当前为 `COMPONENT`。v1.0 按 ADR 0052 的 `I186-R0→R6` 生产纵切交付；Cloudflare、HA、多用户与 Goal DAG 在 1.x 重排。任何对象与契约在真实 composition root 可达前都不构成已实现能力。
 - 术语约定：中文叙述，协议字段、状态名、CLI 命令与代码标识保留英文，且与 `docs/task-lifecycle.md`、`schemas/` 保持一致。
 
-## 当前实施解释（2026-09-05）
+## 当前实施解释（2026-09-07）
 
-[ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 只前移单仓库受限 Agent Team，沿 [B1→B2→B3](agent-team-delivery-plan.md) 复用本文既有权威、计划接纳和预算语义，不开放通用 DSL/HA。控制面、执行面、存储面职责分离；存储实现替换前先测账本历史规模，不为分层引入第二权威或强制数据库迁移。本文历史 `marshal-server` 生产角色统一按 ADR 0062 理解为固定 `marshal control-plane serve`，独立 executable 不属于生产入口。
+[ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 只前移单仓库受限 Agent Team，沿 B1→B2→B3 复用本文既有权威、计划接纳和预算语义，不开放通用 DSL/HA。2026-09-07 的 [服务架构](agent-team-service-architecture.md)与 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md) 指定目标为认证 HTTP、注入式 AgentAdapter 和 SQLite 权威事务，并明确旧 file-backed store 的静止迁移而非双写；[实施 Milestone](agent-team-service-milestones.md) 保留单任务先行。本文历史 `marshal-server` 生产角色统一按 ADR 0062 理解为固定 `marshal control-plane serve`，独立 executable 不属于生产入口。新设计不表示迁移已发生，不改变 current-ledger、独立验证与 effect 对账不变量。
 
 ## 产品目标
 

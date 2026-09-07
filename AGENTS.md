@@ -8,9 +8,11 @@
 
 除明确标注层级的章节外，本文档其余章节均为 universal 规则。
 
-## 2026-09-05 当前产品路线
+## 2026-09-07 当前产品路线
 
 维护者已接受 [ADR 0080](docs/adr/0080-three-plane-business-delivery-roadmap.md)：控制面/执行面/存储面职责分离，按 B1 单任务服务→B2 单仓库受限 Agent Team→B3 长期运行与正式支持推进。该节取代下方把全部 Goal 编排延期到 1.x 的排期；通用 M13、HA、多租户仍不恢复为发布前置。唯一当前完成状态见 [Roadmap 当前表](docs/roadmap-status.md#业务交付当前表)，具体退出条件见 [业务交付计划](docs/agent-team-delivery-plan.md)。不使用仓库 Marshal skill 驱动本次开发。此调整不削减 universal 不变量、I186 证据、签名/Linux/stable 门禁，不表示能力已生产可用。
+
+本轮产品方案统一见 [Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)：固定 HTTP 服务、开放 AgentAdapter、内置监督/持久交互/DAG/审计、SQLite 单一权威存储；当前能力状态不因设计文档升级。按 ADR 0085 的明确取代范围处理旧物理账本/固定 Pi/界面延期假设，不能新旧合同混用。以下 universal 不变量不变。
 
 ## 当前阶段（历史基线，当前排期以上节为准）
 

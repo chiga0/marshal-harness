@@ -6,11 +6,13 @@
 
 本文定义 Marshal 的整体产品架构：系统由哪些部分组成、权威在哪里、Executor 如何协作，以及 embedded/local 与 C/S 如何共享同一业务语义。Local MVP 仅在“当前交付映射”中说明，不定义系统边界。字段级契约与故障语义见 [Runtime 架构](runtime-architecture.md)。
 
-## 三面分离与产品交付投影（2026-09-05）
+## 三面分离与产品交付投影（2026-09-07）
 
-依据 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md)，控制面负责计划/预算/调度/接纳，执行面负责有界 Agent 与独立验证，存储面负责权威事实与制品持久化。Core 是权威写入唯一入口；Verifier 与 Publisher 的凭据/证据权限不因部署同机而合并。首个部署保持一个 fixed server、多执行进程、现有账本和对象存储，不增加存储微服务。
+依据 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md)，控制面负责计划/预算/调度/接纳，执行面负责有界 Agent 与独立验证，存储面负责权威事实与制品持久化。Core 是权威写入唯一入口；Verifier 与 Publisher 的凭据/证据权限不因部署同机而合并。现有部署使用文件账本；[ADR 0085](adr/0085-agent-team-service-contract-and-storage.md) 的目标部署改为一个 fixed server、多执行进程、SQLite 单一权威库与本地制品，不增加存储微服务或双写真值。
 
 终态业务路径是需求澄清与确认→有界执行→集成候选→独立验收→交付。受限团队 profile 按 B1→B2→B3 前移，通用 Goal DAG/HA 仍延期；下文的 1.x Goal 标记指通用扩展，不覆盖该受限计划。具体退出条件见 [业务交付计划](agent-team-delivery-plan.md)，实时状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。长任务恢复计划与制品，不保证原 Agent 会话永久存活。长锁、单 Run 恢复隔离与历史重放优化是待实现项目，不是本段已经实现的能力。
+
+本轮可实施的 v1 投影统一见 [Agent Team 服务架构](agent-team-service-architecture.md)及 [Milestone](agent-team-service-milestones.md)：HTTP/CLI 共用应用组合；Adapter 通过 DI 接入核心/增强能力；内置 Supervisor、节点级问答、任务图与审计不产生第二控制权威。本文下方长期构件不要求首版分别部署。旧 AF_UNIX、固定 Pi 和物理 RB1 假设的精确迁移边界以 ADR 0085 为准，不能只加 HTTP 壳或 SQLite 索引冒充完成。
 
 ## 架构目标
 

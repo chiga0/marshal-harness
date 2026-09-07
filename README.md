@@ -10,6 +10,8 @@ Marshal 是一个可自托管的任务控制系统。它持续接收新的开发
 
 当前 Local MVP 已有执行、独立验证、审查和 Draft PR 的历史能力，RC1 的支持面是下述 CLI-only local-dogfood。正式产品按 B1 单任务服务、B2 受限多 Agent 交付、B3 长期运行与正式支持收敛；它们尚未整体完成。多节点 HA、多租户和通用 Goal DAG 仍属于 1.x。
 
+2026-09-07 产品方案已整理为 [Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与[多轮审计记录](docs/audit-agent-team-service-design-2026-09-07.md)：一个固定命令启动 HTTP 服务，开放 Pi/Qwen Code/OpenCode 接入，内置监督、持久问答、任务 DAG、复盘，SQLite 单一权威存储。边界变化由 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md) 承载；这是待实施设计，不表示上述能力已发布。
+
 [阅读文档](https://chiga0.github.io/marshal-harness/) · [查看当前能力](https://chiga0.github.io/marshal-harness/current-status/) · [快速开始](https://chiga0.github.io/marshal-harness/getting-started/)
 
 ## 为什么需要 Marshal

@@ -1,8 +1,10 @@
 # 愿景与范围
 
-## 当前产品投影（2026-09-05）
+## 当前产品投影（2026-09-07）
 
 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 将受限 Agent Team 前移：用户意图→澄清/确认→有界任务→集成候选→独立验证→授权交付，按 B1→B2→B3 验收。下文旧排期中“Goal DAG 延期”仍适用于通用/复杂编排，不再排除这个受限 profile。控制面、执行面、存储面分离不意味着每个模块独立部署。能力现状只见 [Roadmap](roadmap-status.md#业务交付当前表)。
+
+[服务产品方案](agent-team-service-architecture.md)进一步明确首版形态与 [Milestone](agent-team-service-milestones.md)：固定命令启动认证 HTTP 服务；Agent 自管登录/Skill，Pi、Qwen Code、OpenCode 按核心/增强能力接入；内置确定性监督、持久 AskUser、有限 DAG、最小任务详情 UI 与诚实复盘。SQLite 是目标存储，PostgreSQL 后置。涉及旧合同的修改见 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)，在其对应实现/实机验收前不升级能力状态。
 
 ## 愿景
 
@@ -87,7 +89,7 @@ v1.0 用最小但完整的生产纵切证明上述方向可用，而不是交付
 - 发布仅为 `publication:none` 或可选 GitHub Draft PR，默认不 merge；
 - macOS/Linux 具有稳定发布产物，macOS 正式包通过签名与 notarization。
 
-v1.0 不承诺多节点 HA、多用户/多租户、Cloudflare 完整生产拓扑、全部 Provider hardened 矩阵、Web UI、远程 SDK 全矩阵或复杂 Goal DAG。这些能力属于 1.x。Local ordinary-user 可以是受支持的 trusted profile，但不能宣称 `hardened` 或恶意代码隔离。
+v1.0 不承诺多节点 HA、多用户/多租户、Cloudflare 完整生产拓扑、全部 Provider hardened 矩阵、通用可视化编排器、远程 SDK 全矩阵或复杂 Goal DAG。这些能力属于 1.x；最小任务详情 UI 与受限图按 ADR 0085 的服务方案前移，不代表已实现。Local ordinary-user 可以是受支持的 trusted profile，但不能宣称 `hardened` 或恶意代码隔离。
 
 能力只有在真实 composition root 可达且真实 Agent/result bytes 穿过时才算 `INTEGRATED`；只有 release gate 通过才算 `RELEASED`。单独的 ADR、Schema、package 或 component test 不能满足 v1.0。
 

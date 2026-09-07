@@ -1,5 +1,7 @@
 # 任务生命周期
 
+2026-09-07 服务投影见 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)与[服务架构](agent-team-service-architecture.md)：用户任务复用 Goal；节点级 UserInteraction 只阻塞依赖，全局 Goal pause 仍停止全图派发；已运行的等待有界，terminal Run 不复活。UI 阶段/状态是投影，不绕开以下转换；AskUser、SQLite 原子提交及验收型 NO_CHANGE 交付必须按新合同实施和验证后才启用，不能从本文历史状态名推定已有支持。
+
 ## 目的
 
 生命周期是 Planning、Worker 执行、Verification、Review、Publishing 和 Recovery 之间的持久化契约。自然语言消息不能改变状态；只有通过守卫的应用命令才能追加转换事件并原子更新状态快照。

@@ -1,5 +1,7 @@
 # 设计审计报告
 
+2026-09-07 服务产品方案审计已形成独立[多轮复核记录](audit-agent-team-service-design-2026-09-07.md)：从用户意图、现有实现与反方向事件序列检查，第二轮发现六项 P1（交付消费验收、人工验收出口、跨账本提交取代、旧安装身份续行、Publisher 凭据分权、unknown 用量结算），一次聚合修订到 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)、[服务架构](agent-team-service-architecture.md)及[实施 Milestone](agent-team-service-milestones.md)，第三轮状态见该记录。方案坚持一个服务/单权威存储、有限 Agent Team 与单 Worker 回退；设计闭合不等于实机成功，B1/B2 仍 IN_PROGRESS，B3 仍 PLANNED。本文下方错误、rework 和历史证据继续保留。
+
 2026-09-07 一次替代验证 34098369837 仍未完成团队：相同 798ea39，Pi/qwen3.8-flash；service 已 Collect/Verify pass、33 项验收、ReviewPacket，client 却在 `pi-result-provider-terminal` 退出。服务端 109 行 patch 和原 WorkerResult 已保留；报告 outputTokens=25456，并明确称没有 shell、通过静态逐项模拟 oracle 解释结果。不能把 Verify pass 写成独立 Decision/ACCEPTED；不在已结束 runner 上补签。停止模型轮换，后继一次聚合：保留原 transcript 状态机与 providerFailed 判定，仅在闭合时保留已观察的 length/error/aborted 闭集分类；失败仍拒绝，即使携带合法 WorkerResult。任务提示前移当前 no-shell 工具限制，聚焦批准文件、禁止无关全仓探索和模拟整套验收，建议简短 summary；原独立 oracle、预算、scope 与全部门禁不变。终态码只是观察，不证明上游 HTTP 根因，也不自动授权重试；旧失败分母保留。
 
 2026-09-07 PoC 后继 34097645547：798ea39 的 CI 34095940005 五项全绿（Linux 质量 10m32s，macOS 19m28s），同宿主实机仍在独立评审前失败，闭集诊断为 `pi-result-provider-terminal`。RB1 记录两个真实 resume，service Collect 为 2283223 stdout bytes；不是“未配置”“零执行”，也不能据此认定模型仅仅超时。原始终态未归档且诊断合并了 length/error/aborted，形成可观测性缺口；不对未知具体原因造结论。为 PoC 采取一次显式模型替代：34098369837 保持相同代码/任务验收，将已配置的 qwen3.8-max 换为 qwen3.8-flash；所有失败 Attempt 保留，不能合并成同模型证据或称为零 rework。若替代仍失败，停止模型轮换并补齐终态诊断，不循环尝试 Provider 矩阵。

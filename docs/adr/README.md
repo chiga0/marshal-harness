@@ -1,5 +1,7 @@
 # 架构决策记录
 
+[ADR 0085](0085-agent-team-service-contract-and-storage.md) 汇总 2026-09-07 的 Agent Team 服务方案：认证 HTTP、稳定安装与业务仓库身份分离、核心/增强 Agent 能力、内置监督/持久问答、SQLite 单写迁移与审计。其状态以 ADR 正文为准；不追认 ADR 0083/0084 候选或升级产品成熟度。实施与多轮复核分别见 [Milestone](../agent-team-service-milestones.md)和[审计记录](../audit-agent-team-service-design-2026-09-07.md)。
+
 [ADR 0084](0084-pi-typed-terminal-result-framing.md) 是当前 B2 PoC 的候选：终态按唯一 WorkerResult 类型定界，保留身份、原始 transcript 与独立验收门禁；尚无新候选实机成功证据。
 
 [ADR 0082](0082-fixed-server-live-review-carrier.md) 冻结 B1 canary 的同宿主独立评审载体：只传输维护者 Decision，不导入跨 runner authority、不自签通过；实机验收尚未完成。

@@ -1,5 +1,7 @@
 # 安全模型
 
+2026-09-07 的 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)冻结服务方案的新增边界：loopback HTTP 也必须认证，非 loopback 首次开启即 TLS/授权；Agent 自管登录/Skill 不授予其 Core 或 Publisher 权限；普通同 UID 原生配置存在 ambient credential 风险，不能描述为恶意代码隔离。稳定安装身份与业务 repository identity 分开，状态迁移必须证明旧 writer 被阻断。新设计不豁免以下证据、路径、凭据、取消归属或发布门禁；当前完成情况仍以 Roadmap 为准。
+
 ## 安全定位
 
 Marshal 是长期运行并持续调度 Agent 工作负载的确定性 Control Plane。它编排能够编辑文件、执行仓库代码和触发外部副作用的进程，因此安全边界必须覆盖权威状态、Provider 身份、执行隔离、Evidence 接纳、凭据与 SideEffect，而不能只依赖 Prompt 或 Worker 自我约束。

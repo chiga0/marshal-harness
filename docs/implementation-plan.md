@@ -1,14 +1,14 @@
 # 实施计划
 
-## 当前执行顺序（2026-09-05）
+## 当前执行顺序（2026-09-07）
 
-按 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 和 [业务交付计划](agent-team-delivery-plan.md) 的 B1→B2→B3 推进；唯一完成状态见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)。本节取代下方历史 checkpoint 的“下一步”，但不抹掉历史证据或 I186 技术门禁。
+按 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 的 B1→B2→B3 推进；本轮新增目标合同见 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)、[服务架构](agent-team-service-architecture.md)和[实施 Milestone](agent-team-service-milestones.md)。唯一完成状态见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)。本节取代下方历史 checkpoint 的“下一步”，但不抹掉历史证据或 I186 技术门禁。
 
-1. B1：复用已合入 T2 接口；首先验证订单报价业务 oracle 正反例及 Task renderer。随后关闭 ADR 0079 production cutover 与真实 fixed-server T2→独立 Decision→ACCEPTED；有界查询/取消/超时/持续协调沿同一路径补齐。
-2. B2：单仓库受限团队流程；先冻结批准计划、幂等物化与集成候选的具体持久契约，再复用既有 Goal/Run 实现接线。独立实现任务最多三个；参考业务与 Marshal 自身开发交错 dogfood。
-3. B3：同一路径故障与长期运行、升级恢复和正式发布；签名与 Linux 的外部准备可并行，不能因此提前宣称 production。
+1. B1：复用现有 Application Port/Runtime，将实际组合移出 CLI，分离安装与业务仓库身份；先贯通认证 HTTP 的一个真实 Agent 单任务，再进行 SQLite 唯一权威迁移与同路径完整交付/取消/恢复。
+2. B2：持久澄清/确认、有限图、真实并行实现/集成与局部成果复用；接入 Pi/Qwen Code/OpenCode，最小任务详情和审计。Adapter 与投影可依赖已冻结 Port 并行，不能形成第二控制器。
+3. B3：同一路径故障与长期运行、升级恢复、稳定安装和正式发布；签名与 Linux 的外部准备可并行，不能因此提前宣称 production。
 
-每轮按业务退出条件而非 PR 数量报告；相同结构性失败先分类/止损，不重复付费 Attempt。流程不要求 Marshal skill 或每文件一 Run；独立验证、单写工作区、精确证据与发布分权不变。不要在 B1 与相邻 B2 接线之间插入无关 Provider/存储/微服务清理。
+每轮按业务退出条件而非 PR 数量报告；相同结构性失败先分类/止损，不重复付费 Attempt。流程不要求 Marshal skill 或每文件一 Run；独立验证、单写工作区、精确证据与发布分权不变。旧 Pi 三节点候选保留作诊断/回归，不能替代新服务验收；不插入无关微服务、HA 或 Provider 增强矩阵清理。
 
 ## 历史实施 checkpoint
 

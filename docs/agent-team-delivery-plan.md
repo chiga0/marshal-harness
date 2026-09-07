@@ -1,12 +1,12 @@
 # Marshal Agent Team 业务交付计划
 
-更新日期：2026-09-05。依据 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md)。**当前唯一阶段状态见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)**；本文保存目标、验收与操作方法，不另设一份完成状态。
+更新日期：2026-09-07。依据 ADR 0080 的业务路径继续保留；本轮完整产品定义见 [服务架构](agent-team-service-architecture.md)，新范围/次序/退出条件见 [实施 Milestone](agent-team-service-milestones.md)及 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)。**当前唯一阶段状态见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)**。下方旧 file-backed/Pi 样例是已有实现的操作与回归资产，不覆盖新服务的 SQLite/开放 Adapter 目标，也不另设完成状态。
 
 ## 用户承诺与终态
 
 用户给出需求，Marshal 澄清影响行为/范围/权限的关键选择并确认方案，随后持续驱动多 Agent 执行、集成、验证和授权交付。自治是授权与预算内的自动前进，不是取消独立验证或无人负责的自动发布。默认 publication:none，可选 Draft PR；不自动 merge。
 
-控制面管理事实与决策，执行面产生候选和独立验证观察，存储面保留状态与制品。首个实现维持一个固定 server、多个有界执行进程、现有账本和本地对象存储；不要先建存储微服务、HA 或通用 DSL。
+控制面管理事实与决策，执行面产生候选和独立验证观察，存储面保留状态与制品。现有实现为 fixed server、多进程、文件账本；目标通过明确单写迁移到 SQLite 与本地对象存储，不建存储微服务、HA 或通用 DSL。
 
 ## 三个业务 milestone
 
