@@ -185,7 +185,7 @@ func repositoryTeamCreationRequest(t *testing.T, fixture publicFixedDeliveryInpu
 		node.Task, err = json.Marshal(map[string]any{
 			"metadata":   map[string]any{"id": taskID},
 			"repository": map[string]any{"path": fixture.repository, "baseRef": inputs.BaseSHA},
-			"work":       map[string]any{"context": "session-only fixture"},
+			"work":       map[string]any{"context": []string{"session-only fixture"}},
 		})
 		if err != nil {
 			t.Fatal(err)

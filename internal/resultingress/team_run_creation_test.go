@@ -28,7 +28,7 @@ func teamCreationFixture(t *testing.T, store *DurableStore, owner ControlOwnerAc
 		node.Task = teamTestBytes(t, map[string]any{
 			"metadata":   map[string]any{"id": taskID},
 			"repository": map[string]any{"path": inputs.Spec.Repository, "baseRef": inputs.BaseSHA},
-			"work":       map[string]any{"context": "preserve the complete approved template"},
+			"work":       map[string]any{"context": []string{"preserve the complete approved template"}},
 		})
 		node.Policy = teamTestBytes(t, map[string]any{"taskId": taskID, "runId": runID})
 	}
@@ -188,7 +188,7 @@ func TestTeamRunCreationRejectsChangedPlanInputAndPrematureIntegration(t *testin
 			case "node":
 				nodeID = "missing"
 			case "task":
-				prepared["task"].(map[string]any)["work"] = map[string]any{"context": "changed"}
+				prepared["task"].(map[string]any)["work"] = map[string]any{"context": []string{"changed"}}
 			case "policy":
 				prepared["policy"].(map[string]any)["extra"] = true
 			case "base":
@@ -284,7 +284,7 @@ func TestTeamRunCreationReplayRejectsForgedAndDuplicateFact(t *testing.T) {
 				if json.Unmarshal(fact.Creation.Inputs, &prepared) != nil {
 					t.Fatal("decode fixture")
 				}
-				prepared["task"].(map[string]any)["work"] = map[string]any{"context": "forged"}
+				prepared["task"].(map[string]any)["work"] = map[string]any{"context": []string{"forged"}}
 				fact.Creation.Inputs = teamTestBytes(t, prepared)
 				fact.Creation.InputsDigest = canonical.DigestBytes(fact.Creation.Inputs)
 			case "duplicate":

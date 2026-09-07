@@ -2,6 +2,8 @@
 
 ## 2026-09-07：团队已启动首节点，暴露晚期文本拒绝与需求静默丢失
 
+后继 `283b19b` 的 CI [34080167668](https://github.com/chiga0/marshal-harness/actions/runs/34080167668) 在两平台前置团队回归失败，实机未派发。定位到 store/session 测试夹具把 work.context 写成字符串，而已有 Schema 要求字符串数组；旧 typed Task 忽略该字段曾掩盖错误。修正所有同类夹具为数组，变更/伪造反例也保持合法形状，以继续验证真实内容绑定而不是意外依赖类型错误。生产解码与门禁不回退。此来源返工计入交付成本，新提交仍需独立动态结果。
+
 `b8dbf3c` 的 [CI 34078286247](https://github.com/chiga0/marshal-harness/actions/runs/34078286247) 五项全绿。随后条件派发漏填必需的 expected-head，GitHub 返回 HTTP 422，未创建作业；补齐参数并确认无同版本作业后才派发 [34079333520](https://github.com/chiga0/marshal-harness/actions/runs/34079333520)。这次操作错误计入人工介入与总耗时，不归咎 Worker，也不增加虚构 Run。
 
 实机失败诊断 artifact `10003206471`：26 条 RB1 canonical record 的摘要及全局序号均已核对，包含一个 approved plan、两个创建冻结、两个 reservation/open 和两个 worktree bind receipt。服务节点有 process-started、Resume outcome 及公开 Inspect 的 RUNNING/sequence=3；客户端停在 bind receipt 后、launch-authorized 前，原计划追加 client/start halt。磁盘 state.json 仍为 READY 不能覆盖 journal/公开 Inspect。最后 fixed-cli-response-timeout 与 sealed-run-acquire-lease 错误仍需同路径复核，不能声称查询/失败闭环已通过。
