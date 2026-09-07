@@ -33,7 +33,7 @@ CONTRACT = (
 )
 OBJECTIVES = {
     "service": "实现 quote_api.py，导出 create_server(host, port)，只接受 host=127.0.0.1，支持 port=0。返回已绑定但未启动 serve_forever 的标准库 HTTPServer，由调用者启动和关闭。导入模块不得启动服务。实现共享 HTTP/报价契约。",
-    "client": "实现 quote_client.py，导出 quote_order(base_url, items)。base_url 只接受 http://127.0.0.1:PORT（无用户信息、路径、query、fragment）。发送一次 POST http://127.0.0.1:PORT/quote（使用 base_url 的实际端口），消费服务的200报价响应，禁止本地重算、伪造响应或跟随重定向。422或连接/协议失败抛 ValueError，不修改输入；单次网络超时最多3秒。导入模块无副作用。",
+    "client": "实现 quote_client.py，导出 quote_order(base_url, items)。base_url 只接受 http://127.0.0.1:PORT（无用户信息、路径、query、fragment）；空 userinfo 也必须在联网前拒绝。发送一次 POST http://127.0.0.1:PORT/quote（使用 base_url 的实际端口），消费服务的200报价响应。200 JSON 必须恰含共享契约的三个报价字段，值须为 int 而非 bool/float；其他结构属于协议失败。只校验响应结构，不重算价格；禁止本地重算、伪造响应或跟随重定向。422或连接/协议失败抛 ValueError，不修改输入；单次网络超时最多3秒。导入模块无副作用。",
     "integration": "验证并在必要时修复已接纳的 quote_api.py 与 quote_client.py：由客户端实际向同一个服务发起 HTTP 调用，通过共享契约和独立集成 oracle。保留接口与预算，不扩展功能。无需修改时允许 no-change，但仍须验收。",
 }
 

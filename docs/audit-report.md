@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-07：真实双节点完成原验收，独立审查仍发现业务缺陷
+
+`7a4f7d0` 的 CI 34081513199 五项通过；实机 34082574786 完成同 server 批准→两个真实 Pi 节点各一次 Attempt→Collect/Verify/REVIEW_PENDING，66 条 RB1 摘要/序号与两个审查包的各八份文件绑定已检查。没有逐节点外部 Start，没有 integration、正式 Decision 或 Goal Outcome，进程重叠尚未独立证明。详见[精确候选业务审查与效率复盘](audit-b2-first-team-2026-09-07.md)。
+
+旧 oracle 均 pass，但客户端真实 HTTP 反例暴露 P1 响应结构未校验及 P2 空 userinfo 接受。已将两类问题同批前移至 oracle（组合 33 项、客户端 10 项；15 个回归测试），并澄清原客户端提示；服务候选复查通过，旧客户端被拒绝。这只是审查诊断，不改写旧报告或签发 ACCEPTED。保留服务成果，不原样重跑团队；既有预算 rework=0，后继必须走正式 Decision/局部 replan 与复用，不能靠换 Goal 清零成本。当前 adapter usage 报告很高，未审计去重/计费口径，也无同条件基线比较；一次 Attempt 不能冒充零返工或效率收益。B2 仍未完成。
+
 ## 2026-09-07：团队已启动首节点，暴露晚期文本拒绝与需求静默丢失
 
 `5ca49bc` 的 [CI 34080540487](https://github.com/chiga0/marshal-harness/actions/runs/34080540487) 前置 planning/store/session 回归通过，但 Linux 全仓 quality 暴露新增 CLI 跨链测试的另一处夹具错误：手写了不存在的 environment-binding v1，既有 Policy Schema 要求 `marshal.local-dogfood-environment-binding.v2`。这不是 Worker 失败或生产 Schema 变更；该候选实机不派发。修正为正式 `LocalDogfoodEnvironmentBinding` 类型与版本常量，先对 renderer 的全部 Task/Policy 做逐节点 Schema 诊断，再经过原完整 Core preview/launch builder；不跳过任何检查。将整个 CLI 包的 race 回归加入前置团队步骤，避免新公共入口测试漏出前置范围、等全仓结束才发现。此第二次夹具返工计入来源修复与总耗时，前置回归通过不能再表述为完整跨调用链通过；动态新 head 证据仍待验证。

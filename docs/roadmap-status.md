@@ -1,5 +1,7 @@
 # Roadmap 状态
 
+2026-09-07 实质进展与限制：`7a4f7d0` CI 34081513199 五项通过，真实团队 34082574786 成功完成两个节点各一次 Attempt、Collect/Verify 和 REVIEW_PENDING；66 条 RB1 记录及审查包绑定已核对。但独立审查以真实 HTTP 反例确认客户端 P1/P2，尚无 Decision/ACCEPTED、integration、Goal Outcome 或效率优势。已补齐原契约的 oracle 盲区与提示澄清，不修改旧 Run、不重跑已完成服务；下一关键路径为正式接纳/聚合客户端修正、局部 replan/reuse 和成果集成。详见[业务审查](audit-b2-first-team-2026-09-07.md)。
+
 2026-09-07 验证纠偏：`5ca49bc` 的 CI 34080540487 前置团队回归通过，但 macOS/Linux quality 均在新 CLI 跨链测试中发现手写 environment-binding 版本错误；该测试此前未包含在前置步骤。现改用正式类型/版本常量及逐节点 Task/Policy Schema 诊断，并前移整个 CLI 包的 race 回归，同步 CI 精确内容契约。实机未派发，不把前置绿灯冒充完整链路通过；此第二次夹具来源返工计入成本。B1/B2 IN_PROGRESS、B3 PLANNED，仍须新 head CI→真实双节点→独立验收与集成交付。
 
 2026-09-07 验证更新：提示/准入修复 `283b19b` 的 CI 34080167668 被前置团队回归拦截，原因是旧 store/session 夹具使用不符合既有 Schema 的字符串 context。已统一修正数组形状及对应反例，不修改生产门禁；没有派发该候选实机。B1/B2/B3 状态不变，下一动作仍是新 head 动态验证。
@@ -58,7 +60,7 @@
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
 | B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline 与 barrier 中断恢复通过；4ace42c 精确 CI 及同 server 长 Verify/并行停止/查询/Collect 34067556449 通过 | 最终审查/候选主线合入与组合确认；旧 peer Collect 失败仍计入分母；完整 B2 同路径故障矩阵在 B3 |
-| B2 受限 Agent Team | `IN_PROGRESS`（隔离候选，未集成） | 创建恢复、首次 plan gate、批准后冷续行、耐久 halt 与 resident 两实现调度/实际 Start 的精确 CI 均通过；整合 B1 握手修复 | 合并候选精确验证、真实并行、自动 Collect/独立接纳、成果集成与最终业务验收、Goal Outcome/有界 replan/暂停；尚无对照收益 |
+| B2 受限 Agent Team | `IN_PROGRESS`（未完成集成交付） | 7a4f7d0 精确 CI 与 34082574786 双节点实机通过：server 自动物化/Start、外部客户端 Collect/Verify→REVIEW_PENDING；独立审查确认客户端 P1/P2并补 oracle 盲区 | 正式 Decision/客户端聚合修正与服务成果复用、进程重叠证据、server 自动 Collect/Verify、成果集成、Goal Outcome/有界 replan/暂停及恢复；尚无对照收益 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
 [ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 仍为 Proposed，main 尚未开启 cancel/timeout。下一步验证长 Verify 期间无关 Run 的 deadline 能继续推进，完成停止纵切的组合验收与独立审查，随后进入 B2；不重跑已通过的旧 source，不扩大 Provider 或另起 controller。完整失败样本及证据边界见审计记录。本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。

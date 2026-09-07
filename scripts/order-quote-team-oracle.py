@@ -12,6 +12,14 @@ import threading
 from urllib.parse import urlsplit
 
 
+def valid_quote(value):
+    # Validate the wire contract, not pricing. Response challenges must still
+    # catch clients which recompute a price instead of consuming the response.
+    return (type(value) is dict
+            and set(value) == {"subtotal_cents", "shipping_cents", "total_cents"}
+            and all(type(item) is int for item in value.values()))
+
+
 def check_transport(client_quote):
     """Verifier-owned response challenges, not evidence of a correct service.
 
@@ -32,8 +40,15 @@ def check_transport(client_quote):
     items = [{"unit_price_cents": 1200, "quantity": 2}]
     # Intentionally not the pricing oracle: verify that the client consumes
     # the HTTP response instead of silently implementing its own pricing.
-    for status, response in [(200, {"subtotal_cents": 137, "shipping_cents": 0, "total_cents": 137}),
-                             (422, {"error": "invalid-order"})]:
+    cases = [(200, {"subtotal_cents": 137, "shipping_cents": 0, "total_cents": 137}),
+             (422, {"error": "invalid-order"}),
+             (200, []), (200, {}),
+             (200, {"subtotal_cents": 137, "shipping_cents": 0}),
+             (200, {"subtotal_cents": 137, "shipping_cents": 0, "total_cents": 137, "extra": 1}),
+             (200, {"subtotal_cents": True, "shipping_cents": 0, "total_cents": 1}),
+             (200, {"subtotal_cents": 137.0, "shipping_cents": 0, "total_cents": 137})]
+    for status, response in cases:
+        accepted_response = status == 200 and valid_quote(response)
         calls = []
 
         class Handler(BaseHTTPRequestHandler):
@@ -62,27 +77,44 @@ def check_transport(client_quote):
             try:
                 result = client_quote(f"http://127.0.0.1:{server.server_port}", items)
             except ValueError:
-                if status == 200:
+                if accepted_response:
                     raise ValueError("client-response-not-consumed") from None
             else:
-                if status != 200 or result != response or type(result) is not dict or any(type(v) is not int for v in result.values()):
+                if not accepted_response:
+                    raise ValueError("client-invalid-response-accepted")
+                if result != response or not valid_quote(result):
                     raise ValueError("client-response-not-consumed")
             if len(calls) != 1 or calls[0][:2] != ("/quote", "application/json") or json.loads(calls[0][2]) != {"items": before}:
                 raise ValueError("client-request-not-observed")
             if items != before:
                 raise ValueError("client-input-mutation")
+            if accepted_response:
+                # Empty userinfo is still userinfo. Keep even a broken client
+                # on the verifier's loopback fixture; never probe external URLs.
+                for userinfo in ("@", ":@"):
+                    previous_calls = len(calls)
+                    try:
+                        client_quote(f"http://{userinfo}127.0.0.1:{server.server_port}", items)
+                    except ValueError:
+                        pass
+                    else:
+                        raise ValueError("client-endpoint-not-rejected")
+                    if len(calls) != previous_calls:
+                        raise ValueError("client-invalid-endpoint-used")
+                    if items != before:
+                        raise ValueError("client-input-mutation")
         finally:
             server.shutdown()
             server.server_close()
             worker.join(2)
             if worker.is_alive():
                 raise RuntimeError("transport-observer-did-not-stop")
-    return 2
+    return len(cases) + 2
 
 
 def request(base_url, payload, *, raw=False, path="/quote"):
     endpoint = urlsplit(base_url)
-    if endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1" or not endpoint.port or endpoint.username or endpoint.password or endpoint.path or endpoint.query or endpoint.fragment:
+    if endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1" or not endpoint.port or endpoint.username is not None or endpoint.password is not None or endpoint.path or endpoint.query or endpoint.fragment:
         raise ValueError("loopback-endpoint-required")
     body = payload if raw else json.dumps(payload, separators=(",", ":")).encode()
     connection = http.client.HTTPConnection("127.0.0.1", endpoint.port, timeout=2)
@@ -186,7 +218,7 @@ def run_component(api_path=None, client_path=None):
                 # does not claim to validate an absent candidate client.
                 def client(endpoint, items):
                     status, value = request(endpoint, {"items": items})
-                    if status != 200:
+                    if status != 200 or not valid_quote(value):
                         raise ValueError("invalid-order")
                     return value
             return check(url, client)

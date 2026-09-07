@@ -91,7 +91,7 @@ def fixture(mutant=None):
 
 def client(url, items):
     status, value = oracle.request(url, {"items": items})
-    if status != 200:
+    if status != 200 or not oracle.valid_quote(value):
         raise ValueError("invalid-order")
     return value
 
@@ -103,9 +103,9 @@ class TeamOracleTests(unittest.TestCase):
                 return types.SimpleNamespace(create_server=lambda host, port: make_server()[0])
             return types.SimpleNamespace(quote_order=client)
         with patch.object(oracle, "load_candidate", side_effect=candidate):
-            self.assertEqual(oracle.run_component("api.py"), 25)
-            self.assertEqual(oracle.run_component(client_path="client.py"), 2)
-            self.assertEqual(oracle.run_component("api.py", "client.py"), 25)
+            self.assertEqual(oracle.run_component("api.py"), 33)
+            self.assertEqual(oracle.run_component(client_path="client.py"), 10)
+            self.assertEqual(oracle.run_component("api.py", "client.py"), 33)
 
     def test_cli_rejects_missing_symlink_early_exit_and_candidate_exception(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -124,7 +124,7 @@ class TeamOracleTests(unittest.TestCase):
 
     def test_real_http_roundtrips(self):
         with fixture() as (url, calls):
-            self.assertEqual(oracle.check(url, client), 25)
+            self.assertEqual(oracle.check(url, client), 33)
             self.assertEqual(len(calls), 23)
 
     def test_rejects_client_that_computes_locally(self):
@@ -138,6 +138,47 @@ class TeamOracleTests(unittest.TestCase):
             return baseline.correct(items)
         with self.assertRaisesRegex(ValueError, "client-response-not-consumed"):
             oracle.check_transport(ignores)
+
+    def test_rejects_client_that_returns_unvalidated_200_json(self):
+        def passthrough(url, items):
+            status, response = oracle.request(url, {"items": items})
+            if status != 200:
+                raise ValueError("invalid-order")
+            return response
+        with self.assertRaisesRegex(ValueError, "client-invalid-response-accepted"):
+            oracle.check_transport(passthrough)
+
+    def test_each_malformed_quote_is_an_independent_negative_case(self):
+        for bad in [[], {}, {"subtotal_cents": 137, "shipping_cents": 0},
+                    {"subtotal_cents": 137, "shipping_cents": 0, "total_cents": 137, "extra": 1},
+                    {"subtotal_cents": True, "shipping_cents": 0, "total_cents": 1},
+                    {"subtotal_cents": 137.0, "shipping_cents": 0, "total_cents": 137}]:
+            def accepts_one(url, items):
+                status, response = oracle.request(url, {"items": items})
+                if status != 200:
+                    raise ValueError("invalid-order")
+                if json.dumps(response, sort_keys=True) == json.dumps(bad, sort_keys=True):
+                    return response
+                if not oracle.valid_quote(response):
+                    raise ValueError("invalid-response")
+                return response
+            with self.subTest(response=bad), self.assertRaisesRegex(ValueError, "client-invalid-response-accepted"):
+                oracle.check_transport(accepts_one)
+
+    def test_rejects_client_that_accepts_empty_userinfo(self):
+        def accepts_userinfo(url, items):
+            return client(url.replace("http://@", "http://").replace("http://:@", "http://"), items)
+        with self.assertRaisesRegex(ValueError, "client-endpoint-not-rejected"):
+            oracle.check_transport(accepts_userinfo)
+
+    def test_rejects_client_that_uses_invalid_endpoint_then_raises(self):
+        def late_rejection(url, items):
+            if "@" in url:
+                client(url.replace("http://@", "http://").replace("http://:@", "http://"), items)
+                raise ValueError("too-late")
+            return client(url, items)
+        with self.assertRaisesRegex(ValueError, "client-invalid-endpoint-used"):
+            oracle.check_transport(late_rejection)
 
     def test_rejects_hardcoded_response_without_request(self):
         with self.assertRaisesRegex(ValueError, "client-request-not-observed"):
@@ -172,7 +213,7 @@ class TeamOracleTests(unittest.TestCase):
                 oracle.check(url, mutating)
 
     def test_rejects_external_or_ambiguous_endpoint_before_network(self):
-        for url in ["https://127.0.0.1:80", "http://localhost:80", "http://example.com:80", "http://user@127.0.0.1:80", "http://127.0.0.1:80/path", "http://127.0.0.1:80?key=value"]:
+        for url in ["https://127.0.0.1:80", "http://localhost:80", "http://example.com:80", "http://user@127.0.0.1:80", "http://@127.0.0.1:80", "http://:@127.0.0.1:80", "http://127.0.0.1:80/path", "http://127.0.0.1:80?key=value"]:
             with self.subTest(url=url), self.assertRaises(ValueError):
                 oracle.request(url, {})
 
