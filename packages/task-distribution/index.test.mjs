@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
-import {execFileSync, spawnSync} from 'node:child_process';
+import {execFileSync, spawnSync, spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {pack, verify, SOURCE_FILES, NODE_VERSION} from './index.mjs';
 
@@ -53,6 +53,56 @@ test('never overwrite an existing destination and reject source-relative targets
   assert.throws(f.create, /package_io_failed/);
   assert.equal(fs.readFileSync(path.join(f.target, 'preserve.txt'), 'utf8'), 'existing user file');
   assert.throws(() => pack({sourceRoot: f.source, target: path.join(f.source, 'output'), sourceHead: f.sourceHead}), /target_inside_source/);
+});
+test('verified installed package serves HTTP and reopens SQLite in a fresh CLI process without model calls', async t => {
+  const f = fixture(t), packed = f.create();
+  const report = verify({root: f.target, manifestDigest: packed.manifestDigest});
+  const {TaskClient} = await import(pathToFileURL(path.join(f.target, 'packages/task-client/index.mjs')).href);
+  const config = path.join(repository, 'packages/task-service/service.fixture.mjs');
+  const state = path.join(f.root, 'state');
+  async function launch(mode) {
+    const child = spawn(process.execPath, [path.join(f.target, report.entrypoint), '--root', state, '--mode', mode,
+      '--config', config, '--port', '0'], {cwd: f.root, stdio: ['ignore', 'pipe', 'pipe']});
+    let output = '', errorOutput = '', firstResolved = false, resolveFirst, rejectFirst;
+    const first = new Promise((resolve, reject) => {resolveFirst = resolve; rejectFirst = reject;});
+    const exit = new Promise(resolve => {
+      child.once('exit', (code, signal) => {rejectFirst(new Error('service exited before ready')); resolve({code, signal});});
+      child.once('error', error => {rejectFirst(error); resolve({code: null, signal: 'spawn-error'});});
+    });
+    const timer = setTimeout(() => {rejectFirst(new Error('installed service startup deadline')); child.kill('SIGTERM');}, 10000);
+    child.stdout.on('data', bytes => {
+      output += bytes.toString();
+      if (output.length > 4096) {rejectFirst(new Error('service output limit')); child.kill('SIGTERM'); return;}
+      if (!firstResolved && output.includes('\n')) {
+        firstResolved = true;
+        try {resolveFirst(JSON.parse(output.split('\n')[0]));} catch (error) {rejectFirst(error);}
+      }
+    });
+    child.stderr.on('data', bytes => {errorOutput += bytes.toString(); if (errorOutput.length > 4096) child.kill('SIGTERM');});
+    try {
+      const started = await first;
+      const connection = JSON.parse(fs.readFileSync(started.connectionFile));
+      assert.equal(fs.statSync(started.connectionFile).mode & 0o777, 0o600);
+      const client = new TaskClient({baseURL: connection.url, token: connection.token});
+      assert.equal((await client.request('health.get')).status, 'ok');
+      assert.equal((await client.request('ready.get')).ready, true);
+      // The external test config throws on prepare/start: no fixture Worker or
+      // real model may run. This tests the installed package, not source imports.
+      return started.connectionFile;
+    } finally {
+      clearTimeout(timer);
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      const killTimer = setTimeout(() => child.kill('SIGKILL'), 3000);
+      try {
+        const ended = await exit;
+        assert.deepEqual(ended, {code: 0, signal: null});
+        assert.equal(JSON.parse(output.trim().split('\n').at(-1)).clean, true);
+      } finally {clearTimeout(killTimer);}
+    }
+  }
+  const original = await launch('create'), reopened = await launch('open');
+  assert.notEqual(original, reopened);
+  assert.deepEqual(verify({root: f.target, manifestDigest: packed.manifestDigest}), report);
 });
 test('wrong commit, current source drift and omitted newly committed runtime dependency are rejected', t => {
   const f = fixture(t);
