@@ -3,16 +3,20 @@
 
 import contextlib
 import copy
+import hashlib
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
 import socket
+import stat
+import sys
 import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
@@ -42,6 +46,7 @@ class Fake:
         self.lose = set()
         self.status = {}
         self.raw = {}
+        self.media = {}
         self.delay_headers = False
         self.declared_port = None
         outer = self
@@ -97,7 +102,7 @@ class Fake:
                 encoded = outer.raw.get(self.path, json.dumps(result).encode())
                 code = outer.status.get(self.path, 200)
                 self.send_response(code)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", outer.media.get(self.path, "application/json"))
                 self.send_header("Content-Length", str(len(encoded)))
                 if code == 302:
                     self.send_header("Location", "http://127.0.0.1:" + str(outer.declared_port) + "/stolen")
@@ -330,6 +335,244 @@ class DemoTests(unittest.TestCase):
             rc, records = self.run_cli(fake, tmp, ["inspect", "--task-id", TOKEN])
             self.assertEqual(rc, 0)
             self.assertEqual(records[0]["taskId"], "[redacted]")
+
+
+API_SOURCE = b'''import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import TCPServer
+def create_server(host, port):
+    class Server(HTTPServer):
+        def server_bind(self):
+            TCPServer.server_bind(self)
+            self.server_name = 'localhost'
+            self.server_port = self.server_address[1]
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args): pass
+        def do_POST(self):
+            try:
+                value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            except ValueError:
+                status, result = 400, {'error': 'invalid-json'}
+            else:
+                try:
+                    if type(value) is not dict or set(value) != {'items'}: raise ValueError()
+                    items = value['items']
+                    if type(items) is not list or not items: raise ValueError()
+                    subtotal = 0
+                    for item in items:
+                        if type(item) is not dict or set(item) != {'unit_price_cents', 'quantity'}: raise ValueError()
+                        price, count = item['unit_price_cents'], item['quantity']
+                        if type(price) is not int or price < 0 or type(count) is not int or count <= 0: raise ValueError()
+                        subtotal += price * count
+                    shipping = 0 if subtotal >= 5000 else 500
+                    status, result = 200, {'subtotal_cents': subtotal, 'shipping_cents': shipping, 'total_cents': subtotal+shipping}
+                except ValueError:
+                    status, result = 422, {'error': 'invalid-order'}
+            if self.path != '/quote': status, result = 404, {'error': 'not-found'}
+            data = json.dumps(result).encode()
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+    return Server((host, port), Handler)
+'''
+CLIENT_SOURCE = b'''import json, http.client
+from urllib.parse import urlsplit
+def quote_order(url, items):
+    endpoint = urlsplit(url)
+    if endpoint.scheme != 'http' or endpoint.hostname != '127.0.0.1' or not endpoint.port or endpoint.username is not None or endpoint.password is not None or endpoint.path or endpoint.query or endpoint.fragment: raise ValueError()
+    connection = http.client.HTTPConnection('127.0.0.1', endpoint.port, timeout=2)
+    try:
+        connection.request('POST', '/quote', json.dumps({'items': items}), {'Content-Type': 'application/json'})
+        response = connection.getresponse()
+        result = json.loads(response.read(65537))
+        if response.status != 200 or type(result) is not dict or set(result) != {'subtotal_cents', 'shipping_cents', 'total_cents'} or any(type(v) is not int for v in result.values()): raise ValueError()
+        return result
+    finally:
+        connection.close()
+'''
+
+
+def delivery_files(api=API_SOURCE, client=CLIENT_SOURCE):
+    delivery = {"version": "order-quote-delivery/v1", "apiSha256": hashlib.sha256(api).hexdigest(),
+                "clientSha256": hashlib.sha256(client).hexdigest(), "apiEntryPoint": "quote_api.create_server",
+                "clientEntryPoint": "quote_client.quote_order", "sampleItems": [{"unit_price_cents": 1200, "quantity": 2}],
+                "sampleQuote": {"subtotal_cents": 2400, "shipping_cents": 500, "total_cents": 2900}}
+    return {"quote_api.py": api, "quote_client.py": client, "quote_delivery.json": json.dumps(delivery).encode()}
+
+
+def zip_bundle(files, mutate=None):
+    target = io.BytesIO()
+    with zipfile.ZipFile(target, "w") as archive:
+        for name, content in files.items():
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            info.compress_type = zipfile.ZIP_DEFLATED
+            if mutate:
+                mutate(info)
+            archive.writestr(info, content)
+    return target.getvalue()
+
+
+def manifest_for(files, bundle):
+    return {"goalId": "task:demo", "outcomeFactDigest": DIGEST, "planFactDigest": DIGEST,
+            "integrationRunId": "run:integration", "integrationBaseSha": "a" * 40,
+            "candidateDigests": [DIGEST] * 3, "patchDigests": [DIGEST] * 3,
+            "decisionDigests": [DIGEST] * 3, "contentDigest": demo.digest_bytes(bundle),
+            "contentBytes": len(bundle), "mediaType": "application/zip", "factDigest": DIGEST,
+            "files": [{"path": name, "sha256": demo.digest_bytes(content), "bytes": len(content)} for name, content in files.items()]}
+
+
+class DeliveryConsumerTests(unittest.TestCase):
+    private = DemoTests.private
+    run_cli = DemoTests.run_cli
+    def setup_download(self, fake, files=None):
+        files = files or delivery_files()
+        bundle = zip_bundle(files)
+        fake.task["status"] = "completed"
+        fake.task["delivery"] = manifest_for(files, bundle)
+        fake.raw["/v1/tasks/task:demo/artifact"] = bundle
+        fake.media["/v1/tasks/task:demo/artifact"] = "application/zip"
+        return files, bundle
+
+    def test_download_only_keeps_business_verdict_pending(self):
+        with Fake() as fake, tempfile.TemporaryDirectory() as tmp:
+            files, _ = self.setup_download(fake)
+            folder = Path(tmp) / "delivery"
+            with mock.patch.object(demo, "run_delivery_oracle", side_effect=AssertionError("implicit execution")):
+                rc, records = self.run_cli(fake, tmp, ["download", "--task-id", "task:demo", "--output-dir", str(folder)])
+            self.assertEqual(rc, 0)
+            self.assertEqual(records[0]["businessOracle"], "not-run")
+            self.assertFalse(records[0]["deliveryComplete"])
+            self.assertFalse(records[0]["coreStateMutated"])
+            self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
+            self.assertEqual({p.name: p.read_bytes() for p in folder.iterdir()}, files)
+            self.assertTrue(all(p.stat().st_mode & 0o777 == 0o644 for p in folder.iterdir()))
+            self.assertTrue(all(call["method"] == "GET" and call["auth"] == "Bearer " + TOKEN for call in fake.calls))
+
+    def test_fixed_oracle_consumes_actual_downloaded_http_components_in_new_directory(self):
+        with Fake() as fake, tempfile.TemporaryDirectory() as tmp:
+            self.setup_download(fake)
+            rc, records = self.run_cli(fake, tmp, ["download", "--task-id", "task:demo", "--output-dir", str(Path(tmp) / "fresh"), "--run-oracle"])
+            self.assertEqual(rc, 0, records)
+            self.assertEqual(records[0]["event"], "delivery-consumed")
+            self.assertTrue(records[0]["deliveryComplete"])
+            self.assertFalse(records[0]["productionReleaseProven"])
+
+    def test_downloaded_business_bug_fails_even_with_valid_archive_and_manifest(self):
+        with Fake() as fake, tempfile.TemporaryDirectory() as tmp:
+            self.setup_download(fake, delivery_files(API_SOURCE.replace(b"subtotal >= 5000", b"subtotal > 5000")))
+            rc, records = self.run_cli(fake, tmp, ["download", "--task-id", "task:demo", "--output-dir", str(Path(tmp) / "fresh"), "--run-oracle"])
+            self.assertEqual(rc, 2)
+            self.assertFalse(records[0]["deliveryComplete"])
+            self.assertEqual(records[0]["code"], "business-oracle-failed")
+
+    def test_not_completed_cannot_download(self):
+        with Fake() as fake, tempfile.TemporaryDirectory() as tmp:
+            self.setup_download(fake)
+            fake.task["status"] = "verified-awaiting-delivery"
+            with self.assertRaisesRegex(demo.ClientError, "task-delivery-not-ready"):
+                demo.Client(fake.record()).download("task:demo", Path(tmp) / "fresh")
+            self.assertFalse(any(call["path"].endswith("/artifact") for call in fake.calls))
+
+    def test_manifest_hostile_shapes_and_bindings_are_rejected(self):
+        files = delivery_files()
+        good = manifest_for(files, zip_bundle(files))
+        demo.validate_manifest(good, "task:demo")
+        mutations = [("goalId", "other"), ("integrationBaseSha", {}), ("contentBytes", True),
+                     ("contentBytes", demo.BUNDLE_LIMIT + 1), ("mediaType", "text/plain"),
+                     ("decisionDigests", []), ("decisionDigests", [DIGEST, DIGEST, {}]),
+                     ("files", {}), ("factDigest", "bad"), ("command", ["arbitrary"])]
+        for key, value in mutations:
+            with self.subTest(key=key, value=value):
+                bad = copy.deepcopy(good)
+                bad[key] = value
+                with self.assertRaises(demo.ClientError):
+                    demo.validate_manifest(bad, "task:demo")
+        for path in ["../quote_api.py", "/quote_api.py", "quote_api.py/", "QUOTE_API.PY", "a\\quote_api.py"]:
+            bad = copy.deepcopy(good)
+            bad["files"][0]["path"] = path
+            with self.subTest(path=path), self.assertRaises(demo.ClientError):
+                demo.validate_manifest(bad, "task:demo")
+
+    def test_corrupted_content_and_file_digests_are_rejected_before_output(self):
+        with Fake() as fake, tempfile.TemporaryDirectory() as tmp:
+            self.setup_download(fake)
+            fake.task["delivery"]["contentDigest"] = DIGEST
+            with self.assertRaisesRegex(demo.ClientError, "delivery-content-mismatch"):
+                demo.Client(fake.record()).download("task:demo", Path(tmp) / "fresh")
+            self.assertFalse((Path(tmp) / "fresh").exists())
+        files = delivery_files()
+        raw = zip_bundle(files)
+        manifest = manifest_for(files, raw)
+        manifest["files"][0]["sha256"] = DIGEST
+        with self.assertRaisesRegex(demo.ClientError, "delivery-file-mismatch"):
+            demo.validate_bundle(manifest, raw)
+
+    def test_zip_paths_duplicates_symlinks_devices_modes_and_extra_files_are_rejected(self):
+        files = delivery_files()
+        for names in [("../escape", "quote_client.py", "quote_delivery.json"),
+                      ("quote_api.py", "quote_client.py", "quote_api.py"),
+                      ("/quote_api.py", "quote_client.py", "quote_delivery.json"),
+                      ("quote_api.py", "quote_client.py", "quote_delivery.json", "extra")]:
+            target = io.BytesIO()
+            import warnings
+            with warnings.catch_warnings(), zipfile.ZipFile(target, "w") as archive:
+                warnings.simplefilter("ignore", UserWarning)
+                for name in names:
+                    archive.writestr(name, b"bad")
+            raw = target.getvalue()
+            with self.subTest(names=names), self.assertRaises(demo.ClientError):
+                demo.validate_bundle(manifest_for(files, raw), raw)
+        for mode in [stat.S_IFLNK | 0o644, stat.S_IFDIR | 0o644, stat.S_IFCHR | 0o644, stat.S_IFREG | 0o755, stat.S_IFREG | 0o4644]:
+            raw = zip_bundle(files, lambda info: setattr(info, "external_attr", mode << 16))
+            with self.subTest(mode=mode), self.assertRaises(demo.ClientError):
+                demo.validate_bundle(manifest_for(files, raw), raw)
+
+    def test_go_zip_timestamp_extra_is_allowed(self):
+        files = delivery_files()
+        raw = zip_bundle(files, lambda info: setattr(info, "extra", b"\x55\x54\x05\x00\x01\x00\x00\x00\x00"))
+        self.assertEqual(demo.validate_bundle(manifest_for(files, raw), raw), files)
+
+    def test_existing_or_symlink_output_is_never_reused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            files = delivery_files()
+            existing = Path(tmp) / "exists"
+            existing.mkdir()
+            sentinel = existing / "sentinel"
+            sentinel.write_text("keep")
+            link = Path(tmp) / "symlink"
+            link.symlink_to(existing, target_is_directory=True)
+            for folder in (existing, link):
+                with self.assertRaises(demo.ClientError):
+                    demo.materialize(folder, files)
+            self.assertEqual(sentinel.read_text(), "keep")
+            self.assertEqual(list(existing.iterdir()), [sentinel])
+
+    def test_oracle_source_drift_and_post_execution_mutation_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            files = delivery_files()
+            folder = demo.materialize(Path(tmp) / "fresh", files)
+            with mock.patch.object(demo, "ORACLE_SHA", "0" * 64), self.assertRaisesRegex(demo.ClientError, "fixed-oracle-drift"):
+                demo.run_delivery_oracle(folder, files)
+            def mutate(*args):
+                (folder / "quote_api.py").write_text("changed")
+            with mock.patch.object(demo, "bounded_oracle_process", side_effect=mutate), self.assertRaisesRegex(demo.ClientError, "delivery-files-changed"):
+                demo.run_delivery_oracle(folder, files)
+
+    def test_oracle_process_is_bounded_and_credentials_not_inherited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code = "import os,json; assert 'MARSHAL_TEST_SECRET' not in os.environ; print(json.dumps({'checks':34,'scope':'integration'}))"
+            with mock.patch.dict(os.environ, {"MARSHAL_TEST_SECRET": TOKEN}):
+                demo.bounded_oracle_process([sys.executable, "-I", "-B", "-c", code], b"x", tmp)
+            for code, reason in [("import time; time.sleep(5)", "business-oracle-timeout"),
+                                 ("print('x'*10000)", "business-oracle-output-limit"),
+                                 ("print('{\"checks\":34.0,\"scope\":\"integration\"}')", "business-oracle-failed"),
+                                 ("import os; os._exit(0)", "invalid-json")]:
+                with self.subTest(reason=reason), self.assertRaisesRegex(demo.ClientError, reason):
+                    demo.bounded_oracle_process([sys.executable, "-I", "-B", "-c", code], b"x", tmp, timeout=0.15)
 
 
 if __name__ == "__main__":
