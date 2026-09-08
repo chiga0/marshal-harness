@@ -17,6 +17,12 @@ const handler = createTaskApiHandler({application: application.dispatch, token, 
 
 ## 受管执行接线端口
 
+### 输入与制品
+
+注入 `depot` 后，另支持 `input.create`、`artifact.get`、`artifact.content`，共17项 Application 操作。上传上限256KiB，严格 canonical base64；SQLite 保存上传清单、单本地用户归属、原幂等回执与已提交 blob 摘要索引，Depot 先持久化 bytes，随后 SQLite 同事务提交元数据。事务失败只留下无引用孤儿，不返回可下载对象。文件 I/O 不持数据库事务。
+
+Task 创建会校验 `context.inputRefs` 指向已提交且可读取的 input，并将精确清单绑定原输入摘要。缺文件、损坏或已提交摘要再次上传不能静默修补；原幂等回执仍表示历史受理事实，新的 GET 必须重新核对 bytes。缺失 Depot 时不声称支持这些操作。上传输入的 `ready` 不授予最终交付或独立验收；最终结果接纳仍待后继实现。
+
 `application.execution` 仍是同一 Application/SQLite reducer，不是第二份进程或业务状态。构造时 `execution:{maxWorkers,providerIds,defaultProvider}` 来自服务可信配置，不能由 HTTP limits 扩大服务并发上限。
 
 - `poll(after,limit)` 分页读取待处理义务；即使过滤后 items 为空也继续 nextCursor。

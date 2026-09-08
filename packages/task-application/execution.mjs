@@ -119,6 +119,24 @@ export class TaskExecution {
     const task = this.app.get(tx, ticket.taskId);
     return {row, record, task};
   }
+  // A known local Worker failure fences the entire Task BEFORE external stop or
+  // cleanup can finish. It is not a cleanup, refund, new attempt or acceptance.
+  fail(ticket, reasonCode) {
+    if (reasonCode !== 'worker_failed') reject('invalid_request', 400);
+    return this.app.transaction(true, tx => {
+      const {row, record, task} = this.ticket(tx, ticket);
+      // Preserve an earlier user cancel/terminal conclusion and make repeated
+      // reports append-free. Old completed Workers cannot fail a later phase.
+      if (live(record.worker) && task.task.status !== 'cancelling' && !terminal.has(task.task.status)) {
+        task.task.status = 'cancelling'; task.failureCode = reasonCode;
+        task.task.revision = nextRevision(task.task.revision);
+        const source = this.app.save(tx, task, 'task.worker-failure-fenced', {workerId: ticket.workerId, reasonCode});
+        record.failureCode = reasonCode;
+        this.putWorker(tx, row, record, source);
+      }
+      return {taskId: task.task.id, status: task.task.status};
+    });
+  }
   // null means a current dependency/capacity/fence prevents launch. A ticket is
   // returned exactly once: reservation + command UNKNOWN commit before spawn.
   nextWork(commandId, expectedRevision) {
@@ -151,7 +169,7 @@ export class TaskExecution {
       if (task.attempts >= budget.maxAttempts) reject('capacity_exceeded', 429);
       const id = this.app.newId('worker'), at = new Date(this.app.now()).toISOString();
       const dependencies = new Set((task.plan?.edges ?? []).filter(edge => edge.to === node.id).map(edge => edge.from));
-      const input = {task: task.input, node, plan: task.plan, upstream: taskWorkers
+      const input = {task: task.input, inputArtifacts: task.inputArtifacts ?? [], node, plan: task.plan, upstream: taskWorkers
         .filter(({record}) => dependencies.has(record.worker.nodeId) && record.ticket.planDigest === task.approved?.planDigest &&
           record.worker.status === 'completed' && record.resultRef !== null)
         .map(({record}) => {
@@ -241,7 +259,8 @@ export class TaskExecution {
       const cancelled = task.task.status === 'cancelling';
       const success = clean && result.status === 'completed' && result.stopReason === 'end_turn' &&
         !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;
-      record.cleanup = clone(completion); record.worker.status = !clean ? 'unknown' : cancelled ? 'cancelled' : success ? 'completed' : 'failed';
+      const failedWorker = record.failureCode === 'worker_failed';
+      record.cleanup = clone(completion); record.worker.status = !clean ? 'unknown' : cancelled && !failedWorker ? 'cancelled' : success ? 'completed' : 'failed';
       record.worker.finishedAt = new Date(this.app.now()).toISOString(); record.worker.phase = 'terminal';
       const candidate = success ? clone(result.result ?? null) : null;
       record.resultRef = candidate === null ? null : this.app.newId('result');
@@ -262,7 +281,7 @@ export class TaskExecution {
         }
       } else if (ticket.planDigest !== null) {
         const node = task.nodes.find(node => node.id === ticket.nodeId);
-        node.status = !clean ? 'unknown' : cancelled ? 'cancelled' : success ? 'completed' : 'failed';
+        node.status = !clean ? 'unknown' : cancelled && !failedWorker ? 'cancelled' : success ? 'completed' : 'failed';
       }
       task.task.revision = nextRevision(task.task.revision);
       const source = this.app.save(tx, task, 'worker.finished', {workerId: ticket.workerId,

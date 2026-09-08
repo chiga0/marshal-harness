@@ -30,7 +30,7 @@ const shutdown = await supervisor.close();
 
 只有确定尚未调用 `Provider.start` 的路径，才产生明确的 `scope:none-start/started:null/cleaned:true` 本地观察。已调用 start 后，缺少或身份不匹配的 cleanup 只能记为 unconfirmed，原 completion 仍保留在所属句柄上；不会凭 `null` 推定已清理、退款或重派。有效 cleanup 原样传给 Application，即使准备之后的回调失败、结果收集失败或取消抢先，也不丢弃实际清理事实。
 
-可归属 Worker 的准备、采集、Provider/进度格式故障，只停止其原句柄并 finish failed/unknown，由 Application 对该 Task 建立失败 fence，再收口同 Task 的其他 Worker；不会因此停掉另一个 Task。只有 owner/执行端口不可用、全局扫描等不变量无法确认时才停止全局接单和所有当前句柄。`onError` 每个失败 Worker或全局失败只通知一次，字段限定为错误码、阶段和对象 ID；最近诊断最多保存 32 项，不输出异常正文、路径或模型内容。通知消费者自身失败可从 `notificationFailures` 观察，不触发执行重试。
+可归属 Worker 的准备、采集、Provider/进度格式故障，先同步调用 `execution.fail(ticket,'worker_failed')`：按完整 ticket/current owner 持久化 Task cancelling/failureCode 和已知失败 Worker 的内部标记，成功后才停止同 Task 的当前 owned 句柄；不会因此停掉另一个 Task。不等待 cleanup 才封住下游准入，也不凭 fence 释放容量或宣称清理。重复报告不追加事件，已先赢的用户取消与终态不被覆写；实际 finish 时已知失败 Worker 保留 failed，因 Task 停止的 siblings 为 cancelled，清理未知仍为 unknown。只有 owner/执行端口不可用、全局扫描等不变量无法确认时才停止全局接单和所有当前句柄。`onError` 每个失败 Worker 或全局失败只通知一次，字段限定为错误码、阶段和对象 ID；最近诊断最多保存 32 项，不输出异常正文、路径或模型内容。通知消费者自身失败可从 `notificationFailures` 观察，不触发执行重试。
 
 没有 ticket 的 `unsupported_task/capacity_exceeded` 准入拒绝，不授权控制器编造 Worker 或直接修改 Task：原 pending 义务保留，由 Application 诊断/期限收口，其他 Task 继续；通知去重最多保留 128 个命令，溢出只给一次聚合提示。正式组合应在冻结计划和支持声明中拒绝不可用 Provider。
 
@@ -40,4 +40,4 @@ const shutdown = await supervisor.close();
 
 固定 Node 24.15.0：`node --test --test-concurrency=1 packages/task-supervisor/controller.test.mjs`。
 
-测试使用真实 SQLite 与 TaskApplication、可控 Fake Provider，验证两个 Worker 重叠、直接依赖汇合、空过滤页续扫、重复 poll 不重派、准备/启动/采集中的取消、原 deadline、冷 owner 未决、进度顺序与上限、暂停恢复、自驱循环，以及一个坏 Task 不阻止另一个 Task 和后续准入。Fake cleanup 明确是夹具事实，不是 OS 进程清理或独立业务验收证明。本包测试不调用模型、不加载真实鉴权配置、不执行 Go/native 程序，不代表完整 HTTP/ACP/交付已完成或 API-STABLE。
+测试使用真实 SQLite 与 TaskApplication、可控 Fake Provider，验证两个 Worker 重叠、直接依赖汇合、空过滤页续扫、重复 poll 不重派、准备/启动/采集中的取消、原 deadline、冷 owner 未决、进度顺序与上限、暂停恢复、自驱循环，以及一个坏 Task 不阻止另一个 Task 和后续准入。延迟 cleanup 反例还要求 stop 回调能读到已提交 failure fence、同 Task sibling/downstream 零新启动或尝试扣减，同时无关 Task 正常推进。Fake cleanup 明确是夹具事实，不是 OS 进程清理或独立业务验收证明。本包测试不调用模型、不加载真实鉴权配置、不执行 Go/native 程序，不代表完整 HTTP/ACP/交付已完成或 API-STABLE。
