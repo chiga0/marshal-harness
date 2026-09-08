@@ -8,6 +8,16 @@ import (
 )
 
 var _ application.TaskDraftPort = (*sealedRepositoryApplication)(nil)
+var _ application.TaskArtifactPort = (*sealedRepositoryApplication)(nil)
+
+func (a *sealedRepositoryApplication) ReadTaskArtifact(ctx context.Context, id string) (application.TaskArtifact, error) {
+	a.statusMu.RLock()
+	defer a.statusMu.RUnlock()
+	if a.closed {
+		return application.TaskArtifact{}, application.NewError("task-artifact", application.ReasonOwnerUnavailable)
+	}
+	return a.session.ReadTaskArtifact(ctx, id)
+}
 
 func (a *sealedRepositoryApplication) CreateTask(ctx context.Context, request application.CreateTaskRequest) (application.TaskProjection, error) {
 	a.mu.Lock()

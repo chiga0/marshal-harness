@@ -75,6 +75,8 @@ ADR 0052 的正式签名、公证、Linux 与 stable gate 不删除；从关键�
 
 只对显式批准上述模板、包含精确固定 oracle 的新 Task，独立客观验收可自动产生原 ReviewDecision：必须实际经过原 Verify，重读当前 Run/Attempt、完整 packet/report/manifest 和所有必需 gate，以批准的 oracle 身份及当前节点全部必需业务断言证明可接纳，再经原 DecisionImporter/current-ledger 接纳。两个上游分别经过各自冻结的节点 oracle 后独立 ACCEPTED，不依赖尚未创建的集成；集成 Run 只有在两上游接纳后才创建，并必须经过组合 oracle。下载后新目录的消费验收另行证明最终交付可使用，不作为上游接纳的循环前置。Worker 摘要、可替换 report 的 pass 标签、存在文件或进程正常退出均不够。出现额外语义/风险需求、缺失或冲突证据、未知/失败 gate 时不自动 accept；旧 Run、原 AF_UNIX 批准和其他模板不继承此模式。实现状态在独立审查与动态验收前仍为 candidate，不宣称 production。
 
+该确定性验证者在新 Decision 中精确表示为 `reviewer.type=system`、`reviewer.id=marshal-order-quote-v1`，不得冒充 human 或 lead-agent。Schema 接受这个表示本身不授予接纳权限：外部 Decision API 默认拒绝 system；只有 current-owner 下由原 Task draft、精确批准与节点创建事实证明适用后，内部验证接缝才能传递非序列化的客观验收 profile，重新核对原 Verify 事件摘要、冻结命令及实际日志/成果。原通用 importer 和旧 Run 不因新增枚举获得自动接纳权限；已接纳结果的下游重用仍重读原 Task 授权及全部 Evidence/Decision，不单凭 system 字样采信。失败不会降级回 Worker 报告或无条件 accept。
+
 完整交付不能直接等于集成 Run 的增量 patch。producer 在 current owner 下读取原 completed outcome、两份独立 ACCEPTED 上游及集成 ACCEPTED candidate，重验原 plan/creation/Decision/patch 摘要；复用原 `CombineAcceptedPatches` 的固定 commit 元数据、冻结的节点顺序与 `InputsDigest`，从原 base 应用两份上游 patch，同时证明重建 `TreeSHA` 与 commit 等于冻结 integration base，再应用集成 patch，形成最终允许交付文件集合。只导出普通文件和明确声明的使用说明，不导出 Git 元数据、运行证据目录、路径逃逸或未批准文件。manifest 绑定原 outcome fact、三份 candidate/patch/Decision、集成 base、文件摘要及 bundle 摘要；bytes 有界耐久保存后才提交同 RB1 引用。相同事实只复用精确对象，下载按 Task/Artifact ID 与授权查验，不接收宿主文件路径、不读取可变 Worker worktree。成果在新目录执行原整体业务 oracle 通过才关闭 B1 消费出口；bundle 生成或 HTTP 200 本身不是业务成功。
 
 目标命令 `marshal serve` 启动 loopback HTTP 并显示端口；可选 `--data-dir` 只在本机启动时选择内部状态目录，不向 Task HTTP 开放任意根路径切换。新根不存在时自动以限制权限创建；已存在有效 Store 就打开，损坏、遗失部分状态、不兼容格式或 owner 未释放则报出具体原因，不当空库重建。初始化可重入，第二 server 不能取得同一根写权。

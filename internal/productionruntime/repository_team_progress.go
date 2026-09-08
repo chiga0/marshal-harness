@@ -43,7 +43,7 @@ func (session *RepositorySession) HaltColdInitialTeamVerifications(ctx context.C
 }
 
 func (session *RepositorySession) nextInitialTeamProgress(ctx context.Context, after string, phase domain.State, rejectBusy bool) (selected InitialTeamProgress, found bool, err error) {
-	if ctx == nil || ctx.Err() != nil || phase != domain.StateRunning && phase != domain.StateVerifying {
+	if ctx == nil || ctx.Err() != nil || phase != domain.StateRunning && phase != domain.StateVerifying && phase != domain.StateReviewPending {
 		return selected, false, application.NewError("team-progress", application.ReasonInvalidRequest)
 	}
 	borrow, err := session.borrow()
@@ -68,6 +68,15 @@ func (session *RepositorySession) nextInitialTeamProgress(ctx context.Context, a
 		var candidates []InitialTeamProgress
 		seen := map[string]bool{}
 		for _, plan := range plans {
+			if phase == domain.StateReviewPending {
+				draft, found, err := session.ingress.ReadTaskDraft(session.acquisition.Scope, plan.Revision.GoalId)
+				if err != nil {
+					return err
+				}
+				if !found || plan.Approval.TaskDraftDigest != draft.FactDigest {
+					continue
+				}
+			}
 			if _, halted, err := session.ingress.ReadTeamPlanHalt(session.acquisition.Scope, plan.Revision.GoalId); err != nil {
 				return err
 			} else if halted {

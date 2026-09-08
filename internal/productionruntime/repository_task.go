@@ -316,7 +316,20 @@ func (s *RepositorySession) readTaskBorrowed(ctx context.Context, id string) (re
 			}
 			result.Outcome = &p
 			result.Status = "verified-awaiting-delivery"
-			result.Reason = "delivery-not-yet-supported"
+			result.Reason = "task-artifact-not-ready"
+			delivery, ready, e := s.ingress.ReadTaskDelivery(s.acquisition.Scope, id)
+			if e != nil {
+				return e
+			}
+			if ready {
+				if delivery.Validate() != nil || delivery.OutcomeFactDigest != outcome.FactDigest || delivery.PlanFactDigest != plan.FactDigest {
+					return application.NewError("read-task", application.ReasonAuthorityConflict)
+				}
+				result.Delivery = &delivery
+				result.Status = "completed"
+				result.Reason = ""
+				result.AllowedActions = append(result.AllowedActions, "download")
+			}
 		}
 		return nil
 	})

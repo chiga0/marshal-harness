@@ -158,7 +158,7 @@ func runControlPlaneServeWithTeamProgress(ctx context.Context, stdout, stderr io
 			Application: applicationAdapter, Address: taskOptions.address,
 			RecordName:  "task-http-" + strconv.FormatUint(snapshot.Acquisition.OwnerEpoch, 36) + ".json",
 			ControlPath: snapshot.ControlPath, Authority: endpointAuthority,
-			Mutation: router.WithAvailableMutation,
+			Mutation: router.WithAvailableMutation, AutomaticDecision: autoTeamProgress,
 		})
 		if err != nil {
 			_ = endpoint.Close()
@@ -203,10 +203,16 @@ func runControlPlaneServeWithTeamProgress(ctx context.Context, stdout, stderr io
 		shortActions = append(shortActions, func(step context.Context) error {
 			return applicationAdapter.advanceInitialTeamProgress(step, router, domain.StateRunning)
 		})
+		shortActions = append(shortActions, func(step context.Context) error {
+			return applicationAdapter.advanceInitialTeamProgress(step, router, domain.StateReviewPending)
+		})
 		shortActions = append(shortActions, newResidentLongAction(deadlineCtx, &requests, 10*time.Minute,
 			func(step context.Context, admitted func()) error {
 				return applicationAdapter.advanceInitialTeamProgressAdmitted(step, router, domain.StateVerifying, admitted)
 			}, func(err error) { writeControlPlaneRequestFailure(stderr, err) }))
+		shortActions = append(shortActions, newResidentLongAction(deadlineCtx, &requests, 2*time.Minute, func(step context.Context, admitted func()) error {
+			return applicationAdapter.advanceTaskDelivery(step, router, admitted)
+		}, func(err error) { writeControlPlaneRequestFailure(stderr, err) }))
 	}
 	requests.Add(1)
 	go func() {

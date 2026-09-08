@@ -27,12 +27,13 @@ type ControlAuthority interface {
 	WithControlMutation(context.Context, func(*os.File) error) error
 }
 type ServerConfig struct {
-	Application application.TaskDraftPort
-	Address     string
-	RecordName  string
-	ControlPath string
-	Authority   ControlAuthority
-	Mutation    MutationLane
+	Application       application.TaskDraftPort
+	Address           string
+	RecordName        string
+	ControlPath       string
+	Authority         ControlAuthority
+	Mutation          MutationLane
+	AutomaticDecision bool
 }
 type Server struct {
 	HTTP           *http.Server
@@ -76,7 +77,7 @@ func OpenServer(ctx context.Context, c ServerConfig) (*Server, error) {
 			_ = s.recordDir.Close()
 		}
 	}
-	handler, err := NewHandler(HandlerConfig{Application: c.Application, Host: listener.Addr().String(), Token: hex.EncodeToString(token[:]), Recheck: s.recheck, Mutation: c.Mutation})
+	handler, err := NewHandler(HandlerConfig{Application: c.Application, Host: listener.Addr().String(), Token: hex.EncodeToString(token[:]), Recheck: s.recheck, Mutation: c.Mutation, AutomaticDecision: c.AutomaticDecision})
 	if err != nil {
 		cleanup()
 		return nil, fail
