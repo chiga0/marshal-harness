@@ -30,7 +30,7 @@ function bounded(callback, value, signal) {
  * selected. An explicitly installed native bridge adapts permission requests
  * to the existing callback Port; this does not make Pi's transport ACP.
  */
-export function createPiProvider({id: providerId, executable, args = [], env = {}, bridge} = {}) {
+export function createPiProvider({id: providerId, executable, args = [], env = {}, bridge, custodyProfile} = {}) {
   if (!id(providerId) || !text(executable, 8192) || !path.isAbsolute(executable) || !Array.isArray(args) || args.length > 128 ||
     args.some(value => !text(value, 32768)) || !object(env) || Object.keys(env).length > 128 ||
     Object.entries(env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || !text(value, 65536))) throw fault('pi_invalid_configuration');
@@ -39,13 +39,20 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
     bridge.shellPath !== undefined && (!text(bridge.shellPath, 8192) || !path.isAbsolute(bridge.shellPath)))) throw fault('pi_invalid_configuration');
   if (bridge && args.length > 126) throw fault('pi_invalid_configuration');
   const config = structuredClone({executable, args, env}), bridgeConfig = bridge === undefined ? null : structuredClone(bridge);
+  if (custodyProfile !== undefined && (!bridgeConfig || !object(custodyProfile) ||
+      Object.keys(custodyProfile).sort().join(',') !== 'eligible,id,scope' || !id(custodyProfile.id) ||
+      custodyProfile.scope !== 'inherited-process-group' || typeof custodyProfile.eligible !== 'boolean')) throw fault('pi_invalid_configuration');
   if (Buffer.byteLength(JSON.stringify(config)) > 100 * 1024) throw fault('pi_invalid_configuration');
-  function start({cwd, deadline, prompt, onProgress, onPermission} = {}) {
+  function start({cwd, deadline, prompt, onProgress, onPermission, executionContext} = {}) {
     if (!text(cwd, 8192) || !path.isAbsolute(cwd) || !Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline - Date.now() > 86400000 ||
       !text(prompt, 256 * 1024) || !prompt.trim() || onProgress !== undefined && typeof onProgress !== 'function') throw fault('pi_invalid_input');
     if (onPermission !== undefined && typeof onPermission !== 'function') throw fault('pi_invalid_input');
     if (onPermission !== undefined && !bridgeConfig) throw fault('pi_permission_bridge_unavailable');
     let runtime, stopping = false, settled = false, scopeUnknown = false, callbackFailure, sessionId = null, prompting = false;
+    const unproven = () => {
+      if (executionContext) executionContext.extraScope('pi_tool_scope_unproven');
+      scopeUnknown = true;
+    };
     const nonce = bridgeConfig ? randomBytes(32).toString('hex') : null, calls = new Map();
     let bridgeReady = false, supportedTools = new Set(), resolveReady;
     const ready = new Promise(resolve => { resolveReady = resolve; });
@@ -61,28 +68,29 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
     async function event(message) {
       if (message.type.startsWith('tool_execution_')) {
         if (!text(message.toolCallId, 128) || !message.toolCallId || !text(message.toolName, 128)) {
-          scopeUnknown = true; throw fault('pi_invalid_progress');
+          unproven(); throw fault('pi_invalid_progress');
         }
         if (bridgeConfig) {
-          if (!bridgeReady) { scopeUnknown = true; throw fault('pi_bridge_not_ready'); }
+          if (!bridgeReady) { unproven(); throw fault('pi_bridge_not_ready'); }
           let call = calls.get(message.toolCallId);
           if (message.type === 'tool_execution_start') {
-            if (call || calls.size >= 4096) { scopeUnknown = true; throw fault('pi_invalid_progress'); }
+            if (call || calls.size >= 4096) { unproven(); throw fault('pi_invalid_progress'); }
+            if (!supportedTools.has(message.toolName)) unproven();
             call = {name: message.toolName, authorized: false, safe: false, selected: false, permission: false, notExecuted: false, ended: false}; calls.set(message.toolCallId, call);
           }
-          if (!call || call.name !== message.toolName || call.ended) { scopeUnknown = true; throw fault('pi_invalid_progress'); }
+          if (!call || call.name !== message.toolName || call.ended) { unproven(); throw fault('pi_invalid_progress'); }
           if (message.type === 'tool_execution_end') {
-            if (typeof message.isError !== 'boolean') { scopeUnknown = true; throw fault('pi_invalid_progress'); }
+            if (typeof message.isError !== 'boolean') { unproven(); throw fault('pi_invalid_progress'); }
             call.ended = true;
             // A replacement tool that bypasses the installed wrapper must not
             // inherit its permission/owned-shell guarantee from just a name.
-            if (!call.safe || call.notExecuted && !message.isError) { scopeUnknown = true; throw fault('pi_execution_scope_unproven'); }
+            if (!call.safe || call.notExecuted && !message.isError) { unproven(); throw fault('pi_execution_scope_unproven'); }
           }
         } else {
         // Pi native bash/powershell use detached process groups. Unknown/custom
         // tools can spawn too. Seeing their execution creates an unproven
         // cleanup obligation; never turn inherited-group cleanup into success.
-        if (!Object.hasOwn(kinds, message.toolName)) { scopeUnknown = true; throw fault('pi_execution_scope_unproven'); }
+        if (!Object.hasOwn(kinds, message.toolName)) { unproven(); throw fault('pi_execution_scope_unproven'); }
         if (message.type === 'tool_execution_end' && typeof message.isError !== 'boolean') throw fault('pi_invalid_progress');
         }
         if (stopping || settled) return;
@@ -99,14 +107,14 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
       let value;
       try { value = JSON.parse(message.message); } catch { return; }
       if (value?.profile !== BRIDGE_PROFILE) return;
-      if (value.nonce !== nonce || value.cwd !== cwd || value.deadline !== deadline) { scopeUnknown = true; throw fault('pi_bridge_binding_mismatch'); }
+      if (value.nonce !== nonce || value.cwd !== cwd || value.deadline !== deadline) { unproven(); throw fault('pi_bridge_binding_mismatch'); }
       if (message.method === 'notify' && value.type === 'ready') {
         if (bridgeReady || prompting || value.scope !== 'inherited-process-group' || !Array.isArray(value.tools) || value.tools.length > 7 ||
           value.tools.some(name => !Object.hasOwn(TOOL_KINDS, name)) || new Set(value.tools).size !== value.tools.length) throw fault('pi_bridge_invalid_ready');
         supportedTools = new Set(value.tools); bridgeReady = true; resolveReady(); return;
       }
       const call = calls.get(value.toolCallId);
-      if (!bridgeReady || !call || call.name !== value.toolName || call.ended) { scopeUnknown = true; throw fault('pi_bridge_unmatched_call'); }
+      if (!bridgeReady || !call || call.name !== value.toolName || call.ended) { unproven(); throw fault('pi_bridge_unmatched_call'); }
       if (message.method === 'notify' && value.type === 'definition-selected' && supportedTools.has(value.toolName) && !call.safe) {
         call.selected = true; call.safe = true; return;
       }
@@ -115,7 +123,7 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
       }
       if (message.method === 'notify' && value.type === 'blocked' && !call.permission && !call.notExecuted) { call.safe = true; return; }
       if (message.method !== 'confirm' || value.type !== 'permission' || value.sessionId !== sessionId || !supportedTools.has(value.toolName) ||
-        call.permission || call.notExecuted || !object(value.input) || Buffer.byteLength(JSON.stringify(value.input)) > 64 * 1024) { scopeUnknown = true; throw fault('pi_bridge_invalid_permission'); }
+        call.permission || call.notExecuted || !object(value.input) || Buffer.byteLength(JSON.stringify(value.input)) > 64 * 1024) { unproven(); throw fault('pi_bridge_invalid_permission'); }
       // Receipt of the execute wrapper's request proves the call has not yet
       // run and can only use that native definition/operations after our reply.
       call.safe = true; call.permission = true;
@@ -125,6 +133,11 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
         rawInput: structuredClone(value.input), _meta: {provider: 'pi', toolName: value.toolName}},
       options: [{optionId: 'allow-once', name: '允许本次已批准操作', kind: 'allow_once'}, {optionId: 'reject-once', name: '拒绝本次操作', kind: 'reject_once'}]};
       const signal = AbortSignal.any([context.signal, observation.signal]);
+      // The installed bridge owns inherited shell processes; commands can still
+      // create remote/detached effects. Never authorize such an extra obligation
+      // while remembering its existence only in this volatile client.
+      if (executionContext && !['read', 'write', 'edit', 'find', 'grep', 'ls'].includes(value.toolName))
+        executionContext.extraScope('pi_shell_extra_scope');
       let answer;
       try { answer = await onPermission(request, {signal}); } catch { return reject; }
       if (signal.aborted || stopping || Date.now() >= deadline) return reject;
@@ -139,7 +152,7 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
           launch.args.push('--extension', fileURLToPath(new URL('./native-bridge.mjs', import.meta.url)));
           launch.env[BRIDGE_ENV] = JSON.stringify({profile: BRIDGE_PROFILE, ...bridgeConfig, nonce, cwd, deadline});
         }
-        runtime = await launchProtocol({...launch, cwd, deadline, createClient: connection => new PiRpcClient({...connection, onEvent: event,
+        runtime = await launchProtocol({...launch, cwd, deadline, executionContext, createClient: connection => new PiRpcClient({...connection, onEvent: event,
           onInteraction: interaction,
           requestTimeoutMs: Math.max(1, Math.min(10000, deadline - Date.now()))})});
         resolveStarted(runtime.started); if (stopping) throw fault('pi_provider_stopped');
@@ -170,7 +183,7 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
       }
       if (stopping) { status = 'cancelled'; reason = 'pi_provider_stopped'; }
       else if (Date.now() >= deadline && status !== 'completed') { status = 'failed'; reason = 'pi_provider_deadline'; }
-      if (bridgeConfig && [...calls.values()].some(call => !call.safe)) scopeUnknown = true;
+      if (bridgeConfig && [...calls.values()].some(call => !call.safe)) unproven();
       if (!originalCleanup?.cleaned || scopeUnknown) { status = 'unknown'; reason = scopeUnknown ? 'pi_execution_scope_unproven' : 'cleanup_unconfirmed'; outputText = ''; }
       settled = true; progress = {...progress, phase: 'terminal', observedAt: new Date().toISOString()};
       return Object.freeze({providerId, status, stopReason, reason, sessionId, outputText, usage: usage(),
@@ -196,5 +209,6 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
     return Object.freeze({started, completion, stop, snapshot});
   }
   return Object.freeze({id: providerId, profile: 'ordinary-user', maturity: 'COMPONENT',
+    ...(custodyProfile === undefined ? {} : {custodyProfile: Object.freeze(structuredClone(custodyProfile))}),
     capabilities: Object.freeze({transport: 'pi-rpc', permission: bridgeConfig ? 'native-extension' : 'unavailable', cleanup: 'inherited-process-group'}), start});
 }

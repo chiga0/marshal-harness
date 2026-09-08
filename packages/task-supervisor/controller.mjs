@@ -20,21 +20,23 @@ const requireValue = value => { if (!value) throw new SupervisorError('superviso
 
 /** Same Application authority; only live handles, timers and observation queues here. */
 export class TaskSupervisor {
-  #execution; #providers; #prepare; #collect; #release; #verification; #onError; #clock; #options;
+  #execution; #providers; #prepare; #collect; #release; #verification; #custody; #onError; #clock; #options;
   #owned = new Map(); #works = new Set(); #timer; #tick; #close;
   #running = false; #closing = false; #closed = false; #failure = null;
   #diagnostics = []; #notificationFailures = 0; #rejected = new Set(); #rejectedOverflow = false;
   #scanCursor = ''; #pollCursor = '';
-  constructor({execution, providers, prepare, collect, release = () => {}, verification = null, onError = () => {}, clock = Date.now,
+  constructor({execution, providers, prepare, collect, release = () => {}, verification = null, custody = null, onError = () => {}, clock = Date.now,
     intervalMs = 100, prepareMs = 30000, collectMs = 30000, pageSize = 25, maxPagesPerTick = 100} = {}) {
     requireValue(execution && PORTS.every(name => typeof execution[name] === 'function') && providers instanceof Map &&
       typeof prepare === 'function' && typeof collect === 'function' && typeof release === 'function' &&
-      (verification === null || typeof verification.start === 'function') && typeof onError === 'function' && typeof clock === 'function');
+      (verification === null || typeof verification.start === 'function') && (custody === null || typeof custody.prepare === 'function' &&
+        ['custodyBinding', 'bindCustody', 'recordExtraScope'].every(key => typeof execution[key] === 'function')) &&
+      typeof onError === 'function' && typeof clock === 'function');
     for (const [id, provider] of providers) requireValue(typeof id === 'string' && provider?.id === id && typeof provider.start === 'function');
     for (const [value, max] of [[intervalMs, 30000], [prepareMs, 30000], [collectMs, 30000], [pageSize, 100], [maxPagesPerTick, 100]])
       requireValue(Number.isSafeInteger(value) && value >= 1 && value <= max);
     this.#execution = execution; this.#providers = new Map(providers); this.#prepare = prepare; this.#collect = collect;
-    this.#verification = verification; this.#release = release;
+    this.#verification = verification; this.#release = release; this.#custody = custody;
     this.#onError = onError; this.#clock = clock; this.#options = {intervalMs, prepareMs, collectMs, pageSize, maxPagesPerTick};
   }
   #call(name, ...args) {
@@ -167,6 +169,7 @@ export class TaskSupervisor {
       try { Promise.resolve(entry.handle.stop()).catch(error => this.#failEntry(entry, 'provider-stop', error)); }
       catch (error) { this.#failEntry(entry, 'provider-stop', error); }
     }
+    if (entry.custody && !entry.handle) void entry.custody.stop();
   }
   #admit(value) {
     const ticket = freeze(structuredClone(value));
@@ -260,11 +263,24 @@ export class TaskSupervisor {
       const verifying = entry.ticket.executionType === 'verification';
       const provider = verifying ? this.#verification : this.#providers.get(entry.ticket.providerId);
       requireValue(provider && provider.id === entry.ticket.providerId);
+      let executionContext;
+      if (this.#custody) {
+        const profile = provider.custodyProfile ?? {id: 'unproven-provider-v1', scope: 'inherited-process-group', eligible: false};
+        const binding = this.#call('custodyBinding', entry.ticket, profile);
+        // This prepare creates an observer, never an Agent. Its original handle
+        // is retained even if the Task is stopped while creation is in flight.
+        entry.custody = await this.#custody.prepare(binding);
+        if (entry.stopping || this.#closing || this.#failure) throw new SupervisorError('supervisor_stopped');
+        this.#call('bindCustody', entry.ticket, entry.custody.descriptor, profile);
+        entry.custody.permit();
+        executionContext = Object.freeze({launch: entry.custody.launch,
+          extraScope: code => this.#call('recordExtraScope', entry.ticket, code)});
+      }
       // No await between final current-ledger check and synchronous start.
       if (!this.#call('mayStart', entry.ticket)) throw new SupervisorError('supervisor_stopped');
       entry.invoked = true; entry.stage = 'starting';
-      entry.handle = verifying ? provider.start({ticket: entry.ticket, prepared}) :
-        provider.start({...prepared, deadline: entry.ticket.deadline, onProgress: update => this.#progress(entry, update)});
+      entry.handle = verifying ? provider.start({ticket: entry.ticket, prepared, executionContext}) :
+        provider.start({...prepared, deadline: entry.ticket.deadline, executionContext, onProgress: update => this.#progress(entry, update)});
       requireValue(object(entry.handle) && typeof entry.handle.stop === 'function' &&
         typeof entry.handle.started?.then === 'function' && typeof entry.handle.completion?.then === 'function');
       const completion = Promise.resolve(entry.handle.completion);
@@ -289,6 +305,7 @@ export class TaskSupervisor {
       failure = true;
       if (error?.code !== 'supervisor_stopped') this.#failEntry(entry, entry.stage, error);
       this.#stop(entry);
+      if (entry.custody && !entry.invoked) await entry.custody.stop();
       if (entry.completion) result = await entry.completion;
       if (!entry.startFact && result?.cleanup?.started) {
         try { this.#bindStarted(entry, result.cleanup.started); } catch (error) { this.#failEntry(entry, 'started', error); }
@@ -319,7 +336,7 @@ export class TaskSupervisor {
       if (!failure && !entry.failure && !entry.stopping && !this.#failure) outcome.receipt = result?.receipt;
     }
     const worker = this.#call('finish', entry.ticket, outcome);
-    entry.clean = cleanup.cleaned === true; entry.finalized = true;
+    entry.clean = cleanup.cleaned === true && worker.status !== 'unknown'; entry.finalized = true;
     entry.stage = worker.status === 'unknown' ? 'unknown' : 'terminal';
     if (['failed', 'unknown'].includes(worker.status) && !entry.failure && !entry.stopping && !this.#failure) {
       entry.failure = true;
