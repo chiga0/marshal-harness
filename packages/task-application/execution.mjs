@@ -282,7 +282,8 @@ export class TaskExecution {
   finish(ticket, result) {
     const verification = ticket.executionType === 'verification';
     // No files, checker, promises or depot writes inside the Store callback.
-    const verified = verification && result?.type === 'verification' && result.status === 'passed' ? this.app.verification.stage(ticket, result) : null;
+    const verified = verification && result?.type === 'verification' && (result.status === 'passed' || result.receipt !== undefined) ?
+      this.app.verification.stage(ticket, result) : null;
     return this.app.transaction(true, tx => {
       const {row, record, task} = this.ticket(tx, ticket);
       if (!live(record.worker)) return clone(record.worker);
@@ -295,7 +296,9 @@ export class TaskExecution {
         result.status === 'completed' && result.stopReason === 'end_turn') &&
         !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;
       let candidate = success && !verification ? clone(result.result ?? null) : null;
-      if (success && verification) {
+      const verificationFailed = clean && verified?.data.status === 'failed' && result.status === 'failed' && verified.staged !== null &&
+        !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;
+      if (verification && (success || verificationFailed)) {
         if (completion.started?.startedAt !== record.worker.startedAt) reject('invalid_verification_receipt', 422);
         this.app.verification.recheck(tx, task, ticket);
       } else if (success && task.verification && ticket.planDigest !== null) {
@@ -327,18 +330,21 @@ export class TaskExecution {
       }
       task.task.revision = nextRevision(task.task.revision);
       let decision = null;
-      if (verification && success) {
+      if (verification && (success || verificationFailed)) {
         const at = new Date(this.app.now()).toISOString();
         for (const item of verified.staged) item.artifact = {id: this.app.newId('artifact'), taskId: task.task.id,
           name: item.name, kind: item.kind, status: 'ready', mediaType: item.mediaType, ...item.ref, createdAt: at};
         const artifacts = verified.staged.map(item => item.artifact);
-        decision = {id: this.app.newId('decision'), type: 'independent-verification', status: 'accepted', taskId: ticket.taskId,
+        decision = {id: this.app.newId('decision'), type: 'independent-verification', status: success ? 'accepted' : 'rejected', taskId: ticket.taskId,
           workerId: ticket.workerId, planDigest: ticket.planDigest, reservationDigest: ticket.reservationDigest,
           inputDigest: ticket.inputDigest, policyDigest: task.verification.policyDigest,
           manifestsDigest: hash(ticket.input.verification.manifests), cleanupDigest: hash(completion), artifacts, at};
+        if (verificationFailed && typeof verified.data.reason === 'string' && /^[a-z][a-z0-9_-]{0,127}$/.test(verified.data.reason))
+          decision.reasonCode = verified.data.reason;
         task.decision = {id: decision.id, digest: hash(decision)};
-        task.acceptance = {status: 'passed', evidenceIds: artifacts.filter(item => item.kind === 'evidence').map(item => item.id), digest: task.decision.digest};
-        task.task.artifactIds = artifacts.map(item => item.id); task.task.status = 'completed'; task.task.phase = 'terminal';
+        task.acceptance = {status: success ? 'passed' : 'failed', evidenceIds: artifacts.filter(item => item.kind === 'evidence').map(item => item.id), digest: task.decision.digest};
+        task.task.artifactIds = artifacts.map(item => item.id);
+        if (success) { task.task.status = 'completed'; task.task.phase = 'terminal'; }
       }
       const source = this.app.save(tx, task, 'worker.finished', {workerId: ticket.workerId,
         status: record.worker.status, resultDigest: record.resultDigest, decisionDigest: task.decision?.digest ?? null});

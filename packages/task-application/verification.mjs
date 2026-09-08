@@ -144,7 +144,7 @@ export class TaskVerification {
   }
   receipt(ticket, result) {
     const receipt = receipts.get(result?.receipt);
-    check(result?.type === 'verification' && receipt?.port === this.port && receipt.binding === hash(ticket) &&
+    check(result?.type === 'verification' && receipt?.port === this.port && receipt.binding === hash(ticket) && result.status === receipt.data.status &&
       same(receipt.data.cleanup, result.cleanup), 'invalid_verification_receipt');
     return receipt.data;
   }
@@ -169,15 +169,21 @@ export class TaskVerification {
       const {record, task} = this.app.execution.ticket(tx, ticket);
       if (record.worker.status === 'completed') return false;
       if (task.task.status === 'cancelling' || ['failed', 'cancelled', 'intervention'].includes(task.task.status) || this.app.now() >= ticket.deadline) return false;
-      if (data.status === 'passed' && data.cleanup?.cleaned === true)
+      if (data.cleanup?.cleaned === true)
         check(data.cleanup.started?.executionId === record.executionId && data.cleanup.started?.startedAt === record.worker.startedAt,
           'invalid_verification_receipt');
       this.recheck(tx, task, ticket); return true;
     });
-    if (!eligible || data.status !== 'passed' || data.cleanup?.cleaned !== true) return {data, staged: null};
+    if (!eligible || data.cleanup?.cleaned !== true) return {data, staged: null};
     check(data.cleanup.started && Number.isFinite(Date.parse(data.cleanup.started.startedAt)), 'invalid_verification_receipt');
-    for (const producer of ticket.input.verification.manifests) for (const file of producer.manifest.files) this.app.artifacts.bytes(file);
-    for (const input of ticket.input.inputArtifacts) this.app.artifacts.bytes(input);
-    return {data, staged: this.app.artifacts.stageOutputs([['evidence', data.evidence], ['delivery', data.delivery]])};
+    if (data.status === 'passed') {
+      for (const producer of ticket.input.verification.manifests) for (const file of producer.manifest.files) this.app.artifacts.bytes(file);
+      for (const input of ticket.input.inputArtifacts) this.app.artifacts.bytes(input);
+    }
+    // A negative checker observation is durable even without a report artifact.
+    // Never fabricate missing evidence, or admit a failed checker's delivery.
+    const outputs = data.status === 'passed' ? [['evidence', data.evidence], ['delivery', data.delivery]] :
+      data.evidence == null ? [] : [['evidence', data.evidence]];
+    return {data, staged: this.app.artifacts.stageOutputs(outputs)};
   }
 }

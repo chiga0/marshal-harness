@@ -236,7 +236,8 @@ export class TaskApplication {
     if (request.operation === 'task.audit') return {taskId: task.id,
       elapsedMs: Math.max(0, (terminal.has(task.status) ? Date.parse(task.updatedAt) : this.now()) - Date.parse(task.createdAt)),
       attempts: record.attempts, retryCount: record.retryCount, reworkCount: record.reworkCount,
-      firstReview: {passed: record.acceptance?.status === 'passed' ? 1 : 0, total: record.acceptance ? 1 : 0, pending: 0},
+      // Final verification is not an independently observed first code review.
+      firstReview: {passed: 0, total: 0, pending: 0},
       acceptance: clone(record.acceptance ?? {status: 'pending', evidenceIds: [], digest: null}),
       usage: unavailableUsage(), workers: this.execution.workers(tx, record).map(({record}) => clone(record.worker)), prompts: []};
     // Never implement the remaining surface with fabricated success/empty

@@ -51,7 +51,15 @@ function fixture(t, options = {}) {
     async cancel(taskId) {const task = await f.get(taskId); return f.call({operation: 'task.cancel', taskId, key: 'cancel', body: {expectedRevision: task.revision}});},
     async plan() {
       const task = await f.call({operation: 'task.create', key: 'create', body: {intent: '交付所有要求，不能只返回末 patch', limits: {timeoutMs: 60000, maxAttempts: 8, maxWorkers: 2}}});
-      const plan = app.proposePlan(task.id, task.revision, proposal()), current = await f.get(task.id);
+      let plan;
+      if (options.planner) {
+        const command = f.commands().find(item => JSON.parse(item.payload).action === 'plan');
+        const ticket = app.execution.nextWork(command.id, command.revision), started = fact(ticket);
+        app.execution.started(ticket, started);
+        app.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', cleanup: {started, cleaned: true}, plan: proposal()});
+        plan = await f.call({operation: 'task.plan', taskId: task.id});
+      } else plan = app.proposePlan(task.id, task.revision, proposal());
+      const current = await f.get(task.id);
       const operation = await f.call({operation: 'task.approve', taskId: task.id, key: 'approve', body: {expectedRevision: current.revision,
         planRevision: plan.revision, planDigest: plan.digest}});
       const dispatch = f.commands().find(item => JSON.parse(item.payload).action === 'dispatch');
@@ -96,6 +104,7 @@ test('approved policy/layout + both branches bind one trusted reservation, Decis
   assert.equal(f.execution.finish(ticket, result).status, 'completed'); assert.equal(f.capacity().length, 0);
   const task = await f.get(taskId), audit = await f.call({operation: 'task.audit', taskId});
   assert.equal(task.status, 'completed'); assert.equal(task.artifactIds.length, 2); assert.equal(audit.acceptance.status, 'passed');
+  assert.deepEqual(audit.firstReview, {passed: 0, total: 0, pending: 0}, 'final verification is not first code review evidence');
   assert.equal(validate(audit, 'Audit'), true); assert.equal((await f.call({operation: 'operation.get', operationId: operation.id})).status, 'succeeded');
   const artifacts = await Promise.all(task.artifactIds.map(artifactId => f.call({operation: 'artifact.content', artifactId})));
   assert.equal(artifacts.find(item => item.artifact.kind === 'delivery').content.toString(), 'code bytes\ndocs bytes');
@@ -235,4 +244,56 @@ test('Supervisor cancellation during verifier bootstrap stops original handle an
   completion.resolve({type: 'verification', status: 'failed', cleanup: {started, cleaned: true}, evidence: null, delivery: null});
   assert.equal((await closing).clean, true); assert.equal(f.capacity().length, 0); assert.equal(released.length, 1);
   assert.equal((await f.get(taskId)).status, 'cancelled'); assert.equal(f.read(tx => tx.projections('artifact')).length, 0);
+  assert.equal((await f.call({operation: 'task.audit', taskId})).acceptance.status, 'pending');
+});
+
+test('normal Planner chain persists trusted negative verification and only existing evidence through cold reopen', async t => {
+  for (const evidencePresent of [true, false]) await t.test(evidencePresent ? 'existing-evidence' : 'no-evidence', async t => {
+    const f = fixture(t, {planner: true}), {taskId, ticket} = await f.ready();
+    const result = await f.receipt(ticket, {status: 'failed', reason: 'verification_assertion_failed',
+      evidence: evidencePresent ? {name: 'negative.json', mediaType: 'application/json', content: Buffer.from('{"actual":false}')} : null,
+      delivery: {name: 'ignored-delivery', mediaType: 'not-valid', content: Buffer.from('never publish failed bundle')}});
+    const before = f.read(tx => tx.head(taskId));
+    for (const forged of [{...result, receipt: {}}, structuredClone(result), {...result, status: 'passed'}])
+      assert.throws(() => f.execution.finish(ticket, forged), error => error.code === 'invalid_verification_receipt');
+    assert.deepEqual(f.read(tx => tx.head(taskId)), before);
+    if (evidencePresent) {
+      f.setSQLFailure(true); assert.throws(() => f.execution.finish(ticket, result), error => error.code === 'application_unavailable');
+      assert.deepEqual(f.read(tx => tx.head(taskId)), before); assert.equal(f.read(tx => tx.projections('artifact')).length, 0);
+      assert.equal((await f.call({operation: 'task.audit', taskId})).acceptance.status, 'pending'); f.setSQLFailure(false);
+    }
+    assert.equal(f.execution.finish(ticket, result).status, 'failed'); f.execution.reconcile(taskId);
+    const task = await f.get(taskId), audit = await f.call({operation: 'task.audit', taskId});
+    assert.equal(task.status, 'failed'); assert.equal(audit.attempts, 4); assert.equal(audit.acceptance.status, 'failed');
+    assert.deepEqual(audit.firstReview, {passed: 0, total: 0, pending: 0}); assert.equal(validate(audit, 'Audit'), true);
+    assert.equal(audit.acceptance.evidenceIds.length, evidencePresent ? 1 : 0); assert.deepEqual(task.artifactIds, audit.acceptance.evidenceIds);
+    const record = JSON.parse(f.read(tx => tx.projection('task', taskId)).bytes);
+    const decision = JSON.parse(f.read(tx => tx.projection('attempt', record.decision.id)).bytes);
+    assert.equal(decision.status, 'rejected'); assert.equal(decision.reasonCode, 'verification_assertion_failed');
+    assert.equal(decision.reservationDigest, ticket.reservationDigest); assert.equal(decision.cleanupDigest, hash(result.cleanup));
+    assert.equal(hash(decision), audit.acceptance.digest); assert.ok(decision.artifacts.every(item => item.kind === 'evidence'));
+    const outputs = await Promise.all(task.artifactIds.map(artifactId => f.call({operation: 'artifact.content', artifactId})));
+    const head = f.read(tx => tx.head(taskId)); f.execution.finish(ticket, result); assert.deepEqual(f.read(tx => tx.head(taskId)), head);
+    f.reopen(null); assert.deepEqual((await f.call({operation: 'task.audit', taskId})).acceptance, audit.acceptance);
+    assert.deepEqual((await f.call({operation: 'task.audit', taskId})).firstReview, audit.firstReview);
+    for (const output of outputs) assert.deepEqual(await f.call({operation: 'artifact.content', artifactId: output.artifact.id}), output);
+  });
+});
+
+test('negative checker receipt cannot misclassify prior cancel, deadline, unknown cleanup or old owner as acceptance failure', async t => {
+  for (const scenario of ['cancel', 'deadline', 'unknown', 'old-owner']) await t.test(scenario, async t => {
+    const f = fixture(t, {planner: true}), {taskId, ticket} = await f.ready(), {handle, item} = f.start(ticket);
+    item.completion.resolve({type: 'verification', status: 'failed', reason: 'verification_failed',
+      cleanup: {started: item.started, cleaned: scenario !== 'unknown'},
+      evidence: {name: 'not-acceptance.json', mediaType: 'application/json', content: Buffer.from('{}')}, delivery: null});
+    const result = await handle.completion;
+    if (scenario === 'cancel') await f.cancel(taskId);
+    if (scenario === 'deadline') f.advance(60001);
+    if (scenario === 'old-owner') {f.reopen(); assert.throws(() => f.execution.finish(ticket, result), error => error.code === 'recovery_required');}
+    else f.execution.finish(ticket, result);
+    const audit = await f.call({operation: 'task.audit', taskId});
+    assert.equal(audit.acceptance.status, 'pending'); assert.deepEqual(audit.firstReview, {passed: 0, total: 0, pending: 0});
+    assert.equal(f.read(tx => tx.projections('artifact')).length, 0);
+    assert.equal(f.capacity().length, ['unknown', 'old-owner'].includes(scenario) ? 1 : 0);
+  });
 });
