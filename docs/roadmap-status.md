@@ -6,7 +6,17 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
-### 当前研发方式：本地集成优先
+### 最新正式 Node 集成检查点
+
+当前代码集成基线 main=`5f511abe0bcb511a5554d7da01fda1328d9f3471` 已包含正式24操作 HTTP 契约、SQLite、14项 Task/Worker/Operation 应用操作、受管 ACP Provider、耐久制品存储与正式 HTTP 客户端。真实 Qwen ACP 已完成原生工具读取并独立核对结果，不再只是握手。执行 reservation/control 经一次聚合修复和同 reviewer 复核合入，Supervisor 仍在开发；正式服务入口、完整团队交付、API-STABLE 和 stable 尚未完成。精确 source/merge、测试范围、重复失误与下一步见[当前实施检查点](node-task-service-status-2026-09-08.md)。pendingRemoteSync=true；没有新的远端 main 合并或正式发行声明。
+
+| Milestone | 当前状态 | 尚缺用户出口 |
+| --- | --- | --- |
+| B1 真实团队交付 | `IN_PROGRESS` | 正式 Node 同链纯 HTTP 自主调度、双作者重叠、独立验收、下载消费与取消/重启 |
+| B2 日常本地 API | `IN_PROGRESS` | 关键问答、通用制品接线、第二 Adapter、局部修正、同版本恢复与 API-STABLE 验收 |
+| B3 正式可靠发布 | `PLANNED` | 正式服务包、声明平台实机/长期故障、安装恢复和受保护同资产发行 |
+
+### 以下为较早本地集成检查点（不覆盖上表）
 
 **最新正式路线**：[ADR 0088](adr/0088-node-task-service-production-projection.md) 明确 Node-only 产品投影；不继续以固定无工具样例作为开发主线。Qwen 实验在 `81a83e6` 上确定性组合 46/46 通过，但真实双作者的业务验收失败；后继独立真实 ACP initialize 成功（协议 1、qwen-code、loadSession=true、exit 0、stderr 0），尚不证明工具/交互/恢复。已审实验与目标纠偏 sourceHead=`c8923cebe6124abb4e4a296ac1717ed0529d3387`，localMergeSha=`97c4558`；Git 空锁经两次无持有者核对后保留改名备份，再完成合并。最新 fetch 确认 origin/main 仍为 `ba2196b`，pendingRemoteSync=true。正式 ACP/Application/SQLite 接线继续推进，B1/B2/B3 不升级。以下较早的“Qwen 未新增证据/下一步决定 Node”等语句保留检查点上下文，以本段为准。
 

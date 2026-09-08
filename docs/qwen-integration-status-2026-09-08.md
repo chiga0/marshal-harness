@@ -2,6 +2,8 @@
 
 ## 已验证与未完成
 
+**最新进展**：已通过真实 ACP prompt＋原生工具读取＋独立结果核对（合计82与原标记），原受管进程清理已确认。它不是完整 Task 团队验收，也不证明真实权限询问/恢复；精确 Runtime source、执行身份和时间见[Node 服务检查点](node-task-service-status-2026-09-08.md#实机-qwen-不再只验证握手)。下列 initialize/session-only 记录保留当时范围，不能再作为“尚未执行 prompt”的当前结论。
+
 - 本机 Qwen Code `0.23.0` 的帮助与已安装实现包含 `--acp`。`serve` 当前帮助标注 Stage 1 experimental HTTP bridge；不能因为支持 ACP 就把这个 daemon 宣称为稳定依赖。
 - 另做一次真实 `--acp` initialize-only 探测（`protocolVersion:1`、空 clientCapabilities，无 session/new/prompt，保留原生登录入口）：进程在合法 initialize 响应前退出，尚未完成握手。该探测未保留 stderr，不能判断退出根因，不能据此归咎登录/配置或否定 ACP 支持。所属进程组已确认消失，不原样重复；后继需有界私有诊断并只报告脱敏原因。
 - 后继维护者独立诊断已 **真实 initialize PASS**：同一本机入口与原生配置，发送后保持 stdin 打开，收到合法响应才关闭；返回 `protocolVersion:1`、`agentInfo.name:qwen-code`、`loadSession:true`，stdout 623 bytes、stderr 0、exit 0。未发送 session/new/prompt、未启动模型任务。它证明本机能进入 ACP，不推断上次退出的唯一原因，也不宣称会话/工具/恢复已经验收。
