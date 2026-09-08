@@ -3,6 +3,7 @@
 ## 已验证与未完成
 
 - 本机 Qwen Code `0.23.0` 的帮助与已安装实现包含 `--acp`。`serve` 当前帮助标注 Stage 1 experimental HTTP bridge；不能因为支持 ACP 就把这个 daemon 宣称为稳定依赖。
+- 另做一次真实 `--acp` initialize-only 探测（`protocolVersion:1`、空 clientCapabilities，无 session/new/prompt，保留原生登录入口）：进程在合法 initialize 响应前退出，尚未完成握手。该探测未保留 stderr，不能判断退出根因，不能据此归咎登录/配置或否定 ACP 支持。所属进程组已确认消失，不原样重复；后继需有界私有诊断并只报告脱敏原因。
 - Node 实验组合候选 `81a83e61fa6cb9fb427ee3ece4e2a40107007f03` 的六文件确定性测试为 **46/46 PASS**。它们覆盖有限 HTTP/DI/Schema/Provider/状态测试，不是正式发布验收。
 - 同候选真实双 Qwen 测试耗时约 38.55 秒，两个作者都启动、返回候选并被收集；Task `task-4f4d5c8a-b175-42a0-b2f6-b92d0041baa7` 最终为 `failed`，原因 `independent-verification-failed`，Attempt 为 1。故障出在已收到的业务候选验收，不应误报成“未配置”或“Qwen 不能启动”。
 - 重新执行本地固定 oracle 仍失败（`checks:6`、`verification_failed`）；没有再次调用模型。该次未走到成功下载及第二任务的真实取消测试，不能复用 Pi 的成功记录填补。
