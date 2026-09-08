@@ -44,6 +44,8 @@ const application = new TaskApplication({store, owner, clarification});
 
 `clarification.test.mjs` 使用仅测试组合安装的两槽模板、真实 SQLite 和 loopback HTTP，覆盖上述原子性、回放/取消/owner 竞争、旧 reader、配置漂移和边界拒绝；Service 测试另贯通正式组合与 resident，证明确认前零 Planner、确认后双作者与原取消清理。这里没有注册新的正式业务模板，也不宣称真实用户关键问答→真实团队交付或 B2 已完成。
 
+问答回归必须同时运行原客户端的全部操作消费者，不能只测新 handler 夹具；`AnswerReceipt` 的完整示例与 `AnswerQuestion`、路由及 accepted revision 精确对应。组合命令为 `node --test --test-concurrency=1 packages/task-application/*.test.mjs packages/task-api/*.test.mjs packages/task-service/*.test.mjs packages/task-supervisor/*.test.mjs packages/task-client/*.test.mjs packages/task-team-integration/team.test.mjs`。Schema 示例另执行 Draft 2020-12 与完整格式验证。
+
 ## 受管执行接线端口
 
 ### 输入与制品

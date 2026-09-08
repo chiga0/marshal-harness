@@ -128,6 +128,8 @@ test('single contract resolves refs, validates complete independent fixtures and
   assert.equal(contract.jsonSchemaDialect, 'https://json-schema.org/draft/2020-12/schema');
   assert.equal(operations.length, 24);
   assert.equal(new Set(operations.map(o => o.operation)).size, operations.length);
+  for (const entry of operations) if (entry.operation !== 'artifact.content')
+    assert.ok(contract.components.schemas[entry.response].examples?.length, entry.operation + ' response example required by TaskClient');
   function walk(value) { if (!value || typeof value !== 'object') return; if (value.$ref) resolve(value.$ref); for (const v of Object.values(value)) walk(v); }
   walk(contract);
   for (const [name, value] of Object.entries({...fixtures, ...inputs})) assert.ok(validate(value, name), name);
