@@ -64,7 +64,9 @@ Core 同时冻结原计划、输入、策略及布局摘要；策略全文、布
 
 Supervisor 不 clone receipt，也不将验收结果送进 Agent 专用 collect；原 finally 统一调用同步 `release(ticket)`，只关闭 business 的目录 FD，不删除目录、不退容量。准备/采集回调仍需遵守 AbortSignal，释放失败仅产生有界诊断。
 
-验收 finish 先在事务外核对原始候选/上传 bytes，并持久化 evidence 和完整 delivery bytes；随后在**同一个** SQLite 事务重查当前 owner、精确 ticket、原期限、取消 fence、所有上游 manifest、已完成作者清理及验收原 executionId/startedAt/cleanup。一次提交独立 Decision、证据/交付引用、Worker/节点终态、容量释放及 Task completed。SQL 失败只有无引用孤儿 bytes，没有 ready 引用或假完成；原 receipt 可在同 owner/同 ticket 下原样重试提交，不启动第二次验证。批准 Operation 仍表示控制受理/展开，不冒充 Task 的完成回执。cancel 先赢时只接纳原 cleanup 释放容量，绝不接纳迟到的 pass；cleanup 未知或旧 generation 未决不退款重派。
+通过的验收 finish 先在事务外核对原始候选/上传 bytes，并持久化 evidence 和完整 delivery bytes；随后在**同一个** SQLite 事务重查当前 owner、精确 ticket、原期限、取消 fence、所有上游 manifest、已完成作者清理及验收原 executionId/startedAt/cleanup。一次提交独立 Decision、证据/交付引用、Worker/节点终态、容量释放及 Task completed。SQL 失败只有无引用孤儿 bytes，没有 ready 引用或假完成；原 receipt 可在同 owner/同 ticket 下原样重试提交，不启动第二次验证。批准 Operation 仍表示控制受理/展开，不冒充 Task 的完成回执。cancel 先赢时只接纳原 cleanup 释放容量，绝不接纳迟到的 pass；cleanup 未知或旧 generation 未决不退款重派。
+
+可信 checker 的 `failed` receipt 同样核对精确 capability/status/ticket、当前 owner、原 execution/cleanup 与冻结 manifest。有效且已清理的负面验收同事务记录 `rejected` Decision、`acceptance.failed` 和**已有** evidence 引用；缺 evidence 时保存无制品的明确失败事实，不制造报告，绝不接纳 delivery 或 Task completed。有界封闭 `reason` 可保存为内部 reasonCode。取消/期限先赢、cleanup 未知、旧 owner 或控制器本地停止/故障，不能冒充独立验收失败；这些路径仍保持原停止/未知语义。`acceptance` 如实呈现独立验收 pass/fail；`firstReview` 是不同维度，没有真实独立代码 review 事实仍为 `{passed:0,total:0,pending:0}`，不能借最终验收成功填为 1/1。
 
 ## 验证
 
@@ -78,6 +80,6 @@ node --test packages/task-application/*.test.mjs
 
 真实 loopback HTTP 已连接此 Application 与 SQLite，覆盖创建/确认/图/Operation、分页、服务重开、取消，以及并发同键创建与竞争确认。此处的规划提议由测试通过内部端口提交，没有实际 Planner/Worker，不能把存储与服务重开说成活跃执行恢复。
 
-新增 `verification.test.mjs` 使用真实 SQLite、Depot、FileBusiness/task-files producer 与可控受信检查器，验证完整双分支布局、原候选采集、opaque receipt 反例、取消保留容量、旧 owner、缺失/漂移 bytes、原 deadline、SQL rollback、Decision/制品/Task 同事务及冷重开同 bytes。Supervisor 组合验证同 owned lane、跳过 Agent collect 和统一 release；夹具检查器/cleanup 不代表真实模型、进程或客观业务检查已通过。
+新增 `verification.test.mjs` 使用真实 SQLite、Depot、FileBusiness/task-files producer 与可控受信检查器，验证完整双分支布局、原候选采集、opaque receipt 反例、取消保留容量、旧 owner、缺失/漂移 bytes、原 deadline、SQL rollback、Decision/制品/Task 同事务及冷重开同 bytes。负面路径从原 Planner reservation → freeze/approve → 作者候选 → verifier failed 贯通，覆盖有/无证据、原 receipt 重放、事务回滚和冷重开，及取消/过期/未知/旧 owner 不误算独立验收失败。Supervisor 组合验证同 owned lane、跳过 Agent collect 和统一 release；夹具检查器/cleanup 不代表真实模型、进程或客观业务检查已通过。
 
 当前为完整 Core 接纳纵切候选，不授予真实业务交付、完整进程恢复、API-STABLE 或 RELEASED。正式出口仍需同一服务实际连接受管 ACP、独立 command checker、完整下载消费，并通过取消/重启与正式发布门禁。

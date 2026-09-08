@@ -313,7 +313,10 @@ export class TaskSupervisor {
     const outcome = {status: failure || entry.failure || entry.stopping || this.#failure ? 'failed' : result?.status ?? 'failed',
       stopReason: result?.stopReason ?? null, cleanup, ...collected};
     if (entry.ticket.executionType === 'verification') {
-      outcome.type = 'verification'; outcome.receipt = result?.receipt; // Parent-only identity: NEVER structuredClone this capability.
+      outcome.type = 'verification';
+      // A local stop/fault is not the checker's independent negative verdict.
+      // Keep original cleanup, but only forward an unmodified checker receipt.
+      if (!failure && !entry.failure && !entry.stopping && !this.#failure) outcome.receipt = result?.receipt;
     }
     const worker = this.#call('finish', entry.ticket, outcome);
     entry.clean = cleanup.cleaned === true; entry.finalized = true;
