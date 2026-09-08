@@ -3,6 +3,8 @@ import {encode, digest, makeEvent} from '../task-store/store.mjs';
 import {TaskError, reject, limits, freezePlan, publicTask, nextRevision, terminal, isText, clone} from './model.mjs';
 import {TaskExecution} from './execution.mjs';
 import {TaskArtifacts} from './artifacts.mjs';
+import {TaskVerification} from './verification.mjs';
+export {createVerificationPort} from './verification.mjs';
 
 const hash = value => digest(encode(value));
 const parse = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
@@ -21,11 +23,12 @@ const idOK = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,
  */
 export class TaskApplication {
   constructor({store, owner, clock = Date.now, makeId = prefix => prefix + '-' + randomUUID(),
-    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null}) {
+    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null}) {
     this.store = store; this.owner = owner; this.clock = clock; this.makeId = makeId;
     this.defaultLimits = limits(defaultLimits);
     this.execution = new TaskExecution(this, execution);
     this.artifacts = new TaskArtifacts(this, depot);
+    this.verification = new TaskVerification(this, verification);
     this.dispatch = this.dispatch.bind(this);
   }
   now() {
@@ -143,7 +146,7 @@ export class TaskApplication {
       if (record.task.revision !== expectedRevision) reject('revision_conflict', 409);
       if (!['draft', 'planning', 'awaiting-approval'].includes(record.task.status) || record.approved) reject('state_conflict', 409);
       if (this.now() >= Date.parse(record.task.deadlineAt)) reject('state_conflict', 409);
-      const plan = freezePlan(record, proposal, value => hash({plan: value, inputDigest: record.inputDigest}));
+      const plan = this.freezePlan(record, proposal);
       record.plan = plan; record.task.plan = {revision: plan.revision, digest: plan.digest};
       record.task.revision = nextRevision(record.task.revision);
       record.task.status = 'awaiting-approval'; record.task.phase = 'planning';
@@ -151,6 +154,16 @@ export class TaskApplication {
       this.save(tx, record, 'task.plan-proposed', {planRevision: plan.revision, planDigest: plan.digest});
       return clone(plan);
     });
+  }
+  freezePlan(record, proposal) {
+    const plan = freezePlan(record, proposal, value => hash({plan: value, inputDigest: record.inputDigest}));
+    const {digest: _digest, ...body} = plan;
+    const binding = this.verification.bind(record, body);
+    if (binding) {
+      record.verification = binding;
+      return {...body, digest: hash({plan: body, inputDigest: record.inputDigest, verification: binding})};
+    }
+    delete record.verification; return plan;
   }
   control(request) {
     return this.mutate(request, tx => {
@@ -162,6 +175,7 @@ export class TaskApplication {
       if (request.operation === 'task.approve') {
         if (original !== 'awaiting-approval' || !record.plan || body.planRevision !== record.plan.revision ||
             body.planDigest !== record.plan.digest) reject('plan_conflict', 409);
+        if (record.verification) this.verification.configured(record.verification);
         const deadline = Math.min(Date.parse(task.deadlineAt), Date.parse(task.createdAt) + record.plan.budget.timeoutMs);
         if (this.now() >= deadline) reject('state_conflict', 409);
         task.deadlineAt = new Date(deadline).toISOString();
@@ -222,7 +236,9 @@ export class TaskApplication {
     if (request.operation === 'task.audit') return {taskId: task.id,
       elapsedMs: Math.max(0, (terminal.has(task.status) ? Date.parse(task.updatedAt) : this.now()) - Date.parse(task.createdAt)),
       attempts: record.attempts, retryCount: record.retryCount, reworkCount: record.reworkCount,
-      firstReview: {passed: 0, total: 0, pending: 0}, acceptance: {status: 'pending', evidenceIds: [], digest: null},
+      // Final verification is not an independently observed first code review.
+      firstReview: {passed: 0, total: 0, pending: 0},
+      acceptance: clone(record.acceptance ?? {status: 'pending', evidenceIds: [], digest: null}),
       usage: unavailableUsage(), workers: this.execution.workers(tx, record).map(({record}) => clone(record.worker)), prompts: []};
     // Never implement the remaining surface with fabricated success/empty
     // records. Execution, interactions and artifacts must bind actual facts.
