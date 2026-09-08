@@ -1,5 +1,45 @@
 # 设计审计报告
 
+## 2026-09-08：CI 模型配置不等于本机已配置模型元数据
+
+停止盲目重跑后的只读核对发现，`scripts/rc1-canary-provider-config.py` 为每个模型统一写入 `contextWindow=128000`、`maxTokens=16384`，不提供 reasoning/compat；这不是读取用户本机 Pi 配置。本机 Pi 0.84.4 中 `qwen3.8-max` 的两个已配置 Provider 均声明 contextWindow 1000000、maxTokens 131072、reasoning true，其中一个还声明 Qwen thinking 格式及禁用 developer role/store。配置声明不等于服务端能力验证，不能盲目复制到未知 endpoint。
+
+在同版本 Pi `streamSimple` 的 `onPayload` 上执行了零网络构造实验：只使用虚构 endpoint 与测试密钥，在请求发送前终止，并断言 fetch 调用数为 0。旧 CI 元数据实际构造 `max_completion_tokens=16384`，缺少 `enable_thinking`/`reasoning_effort`；本机元数据加显式 low 构造 `max_completion_tokens=131072`、`enable_thinking=true`、`reasoning_effort=low`。后者只是对照夹具，并不证明实机 Worker 当前选择 low。该实验确认配置差异会影响实际请求，不证明历次 length 的唯一根因，也不授权扩预算或改终态接纳。
+
+下一步须先确认 CI secret endpoint 对应的已验证 Provider，再使用显式匹配的非敏感配置；无需索取或输出密钥。在确认前不更改远端 Provider 配置、不启动新的付费团队。候选 `775de21` 的 Darwin 定向 `34158437379` 已成功；现有团队交付、Task HTTP 和正式部署出口仍未完成。
+
+后继实现增加可选 GitHub variable `PI_MODEL_PROFILE_JSON`，仅接受选定 model 的 `id/contextWindow/maxTokens/reasoning` 与受支持的 `compat/thinkingLevelMap`。限额必须为正整数、输出上限不大于 context，拒绝未知字段、重复键、错 model、超大/深层 JSON；显式配置错误在创建模型配置文件前失败，不能静默退回旧值。未设置时旧调用者行为保持，日志明确 `legacy-default`；显式时仅输出规范化配置摘要，绝不输出凭据或 endpoint。该输入不设置实际 reasoning level、不调整 Task 总预算、不证明服务端能力。当前未设置远端变量；须管理员确认 endpoint/profile 后才启用，未知配置不得作为新的实机重试理由。
+
+首稿 `6d9306f` 的 CI `34159224060` 在三个 Linux 作业的 release contract 前置检查失败：新增独立 CI step 不符合既有锁定步骤结构，尚未执行新增测试。该错误属于本轮调用链检查遗漏，不能归咎 Provider。聚合修正撤回新增 CI step，把离线配置测试放入既有 `fixed-server-t1-canary_test.sh` 入口，保留原发布合同与完整断言；以后修改 CI 接线必须在本地先执行现有解释型 release contract gate。动态质量检查与真实业务出口继续分别计量。
+
+## 2026-09-08：停止收口实机通过，团队失败观测仍有盲点
+
+精确候选 `dd8e8eccdd1f2118db92e928996321272aff1fc7` 完整 CI `34156121695` 五项通过，Darwin 定向 `34155305960` 的 36 项必跑检查通过。其唯一实机 `34157213736` 仍失败，诊断 artifact `10031514061` 保留原始证据；固定二进制 SHA-256 为 `3bd2b444e62b009449b47887660f4db666161cc4d877756bb3307d2235d5378d`。没有 ReviewPacket、独立 Decision、集成或下载成功，B1 不升级。
+
+独立核对账本：service 已有 `result-admitted`，事件到 sequence 4 `VERIFYING`；client 因 `pi-result-provider-terminal-length` 触发 sequence 54 `team-plan-halted(stage=collect)`。client 的 Collect 52/53 唯一成功，Terminate 56/57、Close 62/63、supervisor closed 64、cleanup completed/released 65/66 全部闭合，没有第二次 Collect 或结果接纳。此次实机证明上一停止收口修复生效；`VERIFYING` 不证明 Verify 已启动，团队 halt 后禁止新 Verify 是既有合同，不应自动解除。
+
+诊断中 59 个已保存调用全部成功（一次批准、58 次 Inspect），54 次 service 进度查询最后仍成功。最终超时调用在保存前抛错，缺少预算与耗时证据，不能据此外推 HTTP/锁故障。驱动串行先等 service，也看不到 client 已 `BLOCKED`。本轮仅改诊断消费者：等待期间查询同一批准团队的另一节点，精确绑定终态失败即结束等待；保存超时操作、预算、耗时和输出摘要，不输出原文、不增加 Collect/Verify/恢复权限。Provider length 已复发，仍缺少实际输出预算原因，禁止原样付费重试或盲目增额。该改进不等于业务交付修复或生产完成。
+
+## 2026-09-08：结果拒绝后的停止收口仍阻断团队交付
+
+候选 `88883d9c04406fb65fe5b695f80a88bb83fbbfb0` 完整 CI `34152276913` 五项通过，Darwin 定向 `34152276380` 的 33 项必跑检查通过；精确门禁后仅派发一次实机 `34153526402`，结果 failure。诊断 artifact `10030318154` 保留原始证据，没有 Decision、集成或下载成功。本轮未到 ReviewPacket，不能据此宣称上一轮身份传递修复已实机验证。
+
+原日志首个业务拒绝为 `pi-result-provider-terminal-length`，ledger sequence 38 记录 service transcript 已收集，sequence 39 记录 `team-plan-halted(stage=collect)`；并非团队尚未派发。期限终结后 service 已有 `process-terminal` 和 `allocation-terminated`，但后续 collect 在 sequence 48/50/66–88 反复 `process-supervisor-identity-conflict`，缺少其 supervisor closed/cleanup released，最新对外 projection 仍 sequence 3 RUNNING。client 则完成停止清理并投影 `BLOCKED/attempt-deadline-exceeded`。客户端最终 `fixed-cli-response-timeout` 是外层表现，不能替代上述具体失败链，也不能将 service 的旧 RUNNING 投影当成进程仍活跃。
+
+根因已定位：通用 Collect 查找只看最新 checkpoint，后来的 Terminate 遮住旧成功 Collect，而物理 mechanics 明确只允许收集一次。候选仅修停止收口接缝：已有有效耐久 Collect 即继续原 Close；不重发 Collect、不通过历史 anchor 重读，不修改通用结果接纳。Close 仍使用当前 owner/head 校验真实 journal 与 transcript 对象。新增完整耐久链回归覆盖 Collect→Stop→Close、丢回复、独立 absence 与冷重开 CleanupReleased，要求停止后零 Collect、无业务结果接纳；保留原未收集停止与正常 Inspect 路径。本地 vet/staticcheck/diff 检查通过，远端 Darwin 动态结果尚待验证。
+
+Provider length 的具体输出/预算原因仍需证据，不能猜测为用户未配置、直接增预算或修改正常终态准入。保留两次 Attempt 和失败分母，不原样付费重跑，不放宽 `native-terminal/v1` 的正向终态要求。B1/B2/B3 状态不升级。
+
+修复候选 `a003ca7` 的快速检查 `34154916006` 首次失败于测试编排：三组耐久链共用 120 秒总限时；原 Terminate 链及 SameOwner 两分支通过（后者 65.96 秒），新 Collect→Stop 链运行约 17 秒时总限时耗尽，堆栈仍在耐久重放/摘要计算，没有业务断言失败。纠正为三个精确顶层用例各自 120 秒，保留 race、全部断言及必跑成功集合，并让新失败链先运行；不增加 Worker 预算、不以超时当测试通过。原完整 CI `34154917505` 保留运行，不为诊断编排修正取消。
+
+## 2026-09-08：原生结果实机进入独立 Verify，团队仍未交付
+
+`a5418f4acbb1fe3b581a4c6d079510048d82dcee` 的完整 CI `34149966062` 五项全绿，Darwin 定向 `34149938176` 的 30 项必跑检查通过。精确候选 gate 通过后只派发一次真实双 Pi 团队 `34151269983`，其失败证据保存在 diagnostic artifact `10029503062`。service Run `team-run-0189f9bd1f824517f7eb8d01a8b1d5fd5a38150a7b515f9ea39197e055743772` 的事件已到 sequence 4 `worker.completed` 和 sequence 5 `verification.completed`，报告为 pass，包含 `command:quote-team-service`。这首次为本候选原生结果→独立 Verify 接缝提供正向实机证据，但不表示整个团队成功。
+
+随后 `call-21.json` 的 `review-packet` 请求退出 1、stdout 为空；server 仅记录 `stage=server-dispatch reasonCode=transport-failure`，尚不足以确定底层原因。没有独立 Decision、集成或下载消费；另一路的原始 state 快照不能替代 journal/current projection 判断实际状态。保留整次失败和既有预算，不原样重跑，也不把完整 CI 绿或单节点验证通过关闭 B1。下一步沿实际 ReviewPacket 接线定位，同时在独立 worktree 补 Task HTTP 用户出口。
+
+独立接线审计进一步发现确定性 P1：服务 HTTP 请求从 `context.Background()` 建根，丢失入口已 gate 的 local identity；后台 Verify 继承入口 context，故可生成带 local binding 的报告，而 HTTP ReviewPacket 的 `prepareLocalReviewBinding` 必拒绝缺失身份。归档与此阻断吻合，但缺少原始内部错误及 manifest，不能排除更早输入失败，不能称为此次唯一首错。修正仅改为保留值的 `context.WithoutCancel(ctx)` 再建立独立 request cancellation，不跳过身份检查，也不使服务停止立即取消排空中的请求。补身份保留、无身份不伪造、父 deadline/取消隔离及显式排空取消回归，纳入 Darwin 快速必跑清单；本地 vet 通过不替代远端动态回归，更不等于 ReviewPacket 或 B1 已实机通过。
+
 ## 2026-09-08：Schema 消费链漏检与前移修正
 
 候选 `2885dcc` 的全量 CI `34148751006` 在 Ubuntu 的 execution 包发现两项失败：新增 `/worker/resultContract` 未加入既有 prompt projection 分类目录，同时使合成未知字段反例出现额外未分类项。这是实现遗漏及定向检查选取不完整，不是模型失败；计入额外修正，不以先前 22 项 Darwin 定向通过掩盖。未启动新的付费团队 canary。

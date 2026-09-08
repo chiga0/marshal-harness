@@ -138,7 +138,7 @@ func runControlPlaneServeWithTeamProgress(ctx context.Context, stdout, stderr io
 	ready, _ := json.Marshal(map[string]any{"availability": "ready", "protocolRevision": fixedcontrolplane.ProtocolRevision})
 	fmt.Fprintln(stdout, string(ready))
 
-	requestCtx, cancelRequests := context.WithCancel(context.Background())
+	requestCtx, cancelRequests := newControlPlaneRequestContext(ctx)
 	defer cancelRequests()
 	var requests sync.WaitGroup
 	deadlineCtx, cancelDeadlines := context.WithCancel(ctx)
@@ -600,6 +600,12 @@ func runControlPlaneDecision(ctx context.Context, args []string, stdout, stderr 
 		return ExitFailure
 	}
 	return writeControlPlaneJSON(stdout, stderr, result)
+}
+
+// Keep the admitted process identity while letting the drain phase, rather than
+// service shutdown, own cancellation of requests already in flight.
+func newControlPlaneRequestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.WithoutCancel(ctx))
 }
 
 func parseControlPlaneDeadline(raw string, now time.Time) (time.Time, error) {

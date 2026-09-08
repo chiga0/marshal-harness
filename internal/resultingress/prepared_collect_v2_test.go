@@ -51,6 +51,11 @@ func (f fakeContinuationV2) ExecutePreparedClose(_ context.Context, p processsup
 
 func testLauncherV2Collect(t *testing.T, fixture preparedExecutionFixture, state AttemptAuthorityState, owner ControlOwnerState, verifier attemptOwnerVerifier, directory *os.File) {
 	t.Helper()
+	testLauncherV2CollectThenTerminal(t, fixture, state, owner, verifier, directory, false)
+}
+
+func testLauncherV2CollectThenTerminal(t *testing.T, fixture preparedExecutionFixture, state AttemptAuthorityState, owner ControlOwnerState, verifier attemptOwnerVerifier, directory *os.File, stopAfterCollect bool) {
+	t.Helper()
 	store := fixture.store
 	var report processsupervisor.ProcessReport
 	for _, c := range state.SupervisorCommandCheckpoints {
@@ -168,5 +173,9 @@ func testLauncherV2Collect(t *testing.T, fixture preparedExecutionFixture, state
 	if err != nil || bytes.Contains(bytesOnDisk, stdout) {
 		t.Fatal("transcript bytes entered RB1")
 	}
-	testLauncherV2Terminal(t, fixture, saved, owner, verifier, directory, report)
+	if stopAfterCollect {
+		testLauncherV2TerminalScenario(t, fixture, saved, owner, verifier, directory, report, processsupervisor.CommandTerminate, true)
+	} else {
+		testLauncherV2Terminal(t, fixture, saved, owner, verifier, directory, report)
+	}
 }

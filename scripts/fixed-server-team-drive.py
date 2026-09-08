@@ -39,14 +39,33 @@ def progress_projection(value, run, prior=None):
     return current
 
 
-def observe_review(call, save, run, deadline, now=time.time, pause=time.sleep, initial=None):
+def observe_review(call, save, run, deadline, now=time.time, pause=time.sleep, initial=None, peers=None):
     """No Collect/Verify/Start: wait for the server, then request its packet.
 
     This is diagnostic observation, not proof of verification correctness.
     The independent reviewer and Core retain all Decision authority.
     """
     prior, tick = initial, 0
+    peer_states = dict(peers or {})
     while now() < deadline:
+        for peer, previous in peer_states.items():
+            if now() >= deadline:
+                raise Error("team-resident-progress-deadline")
+            code, value = call(["inspect", "--run", peer], deadline - now())
+            save(f"peer-{peer}-progress-{tick}.json", {"exitCode": code, "response": value})
+            if code != 0:
+                raise Error("team-peer-inspect-unavailable")
+            if isinstance(value, dict) and value.get("state") == "BLOCKED":
+                current = t2.run_projection(value, peer, "BLOCKED")
+                if (previous["state"] != "RUNNING"
+                        or current["attemptId"] != previous["attemptId"]
+                        or current["sequence"] != previous["sequence"] + 1
+                        or current["authorityHead"] == previous["authorityHead"]):
+                    raise Error("team-peer-authority-conflict")
+                raise Error("team-peer-blocked")
+            peer_states[peer] = progress_projection(value, peer, previous)
+        if now() >= deadline:
+            raise Error("team-resident-progress-deadline")
         # Inspect may wait behind the resident verifier's Run lease. Do not
         # invent a shorter subprocess deadline than the bounded scenario;
         # the fixed client/server still enforce their own operation limits.
@@ -275,10 +294,15 @@ def main():
         sequence += 1
         if remaining <= 0:
             raise Error("team-driver-deadline")
+        started = time.monotonic()
         try:
             result = subprocess.run([str(binary), "control-plane", *command], stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=remaining, check=False)
         except subprocess.TimeoutExpired as exc:
+            save(f"call-{sequence}.json", {"operation": command[0], "timedOut": True,
+                 "timeoutSeconds": remaining, "elapsedSeconds": time.monotonic() - started,
+                 "stdoutSHA256": hashlib.sha256(exc.stdout or b"").hexdigest(),
+                 "stderrSHA256": hashlib.sha256(exc.stderr or b"").hexdigest()})
             raise Error("fixed-cli-response-timeout") from exc
         save(f"call-{sequence}.json", {"operation": command[0], "exitCode": result.returncode,
                                      "stdoutSHA256": hashlib.sha256(result.stdout).hexdigest(),
@@ -309,7 +333,8 @@ def main():
         reviews = {}
         for node in ("service", "client"):
             node_save = lambda name, value: save(node + "-" + name, value)
-            summary = observe_review(call, node_save, runs[node], deadline, initial=initial[node])
+            summary = observe_review(call, node_save, runs[node], deadline, initial=initial[node],
+                                     peers={runs[other]: initial[other] for other in ("service", "client") if other != node})
             packet = json.loads((output / (node + "-review-packet.json")).read_bytes())["Projection"]["packet"]
             capture_review(root, runs[node], packet, output / (node + "-review-inputs.tar"),
                            summary, node_save, require_pass=not args.await_review_seconds)

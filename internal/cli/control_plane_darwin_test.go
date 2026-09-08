@@ -14,7 +14,38 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/fixedcontrolplane"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
+
+func TestControlPlaneRequestContextPreservesIdentityAndDrainOwnership(t *testing.T) {
+	identity := selfidentity.LocalSelfIdentityObservationV2{ObservationDigest: "sha256:" + strings.Repeat("a", 64)}
+	parent, stopService := context.WithTimeout(context.WithValue(context.Background(), localDogfoodObservationContextKey{}, identity), time.Minute)
+	defer stopService()
+	request, cancelRequest := newControlPlaneRequestContext(parent)
+	defer cancelRequest()
+	if got := localDogfoodObservation(request); got == nil || *got != identity {
+		t.Fatal("request lost admitted process identity")
+	}
+	if _, ok := request.Deadline(); ok {
+		t.Fatal("request inherited service deadline instead of owning its drain lifetime")
+	}
+	stopService()
+	if request.Err() != nil || request.Done() == nil {
+		t.Fatal("service stop canceled request before drain")
+	}
+	cancelRequest()
+	if request.Err() != context.Canceled {
+		t.Fatal("explicit drain cancellation did not stop request")
+	}
+	if got := localDogfoodObservation(request); got == nil || *got != identity {
+		t.Fatal("drain cancellation discarded identity")
+	}
+	ungated, cancelUngated := newControlPlaneRequestContext(context.Background())
+	defer cancelUngated()
+	if localDogfoodObservation(ungated) != nil {
+		t.Fatal("request context invented an identity")
+	}
+}
 
 func TestControlPlaneCancelDerivesOneStableIntentIdentity(t *testing.T) {
 	input := controlPlaneCurrentInput{
