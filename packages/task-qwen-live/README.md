@@ -12,12 +12,16 @@
 
 同版本正常 shutdown 后，以 `mode:open` 重开同一数据根，重放原 create/approve 键、请求与回执，查询原 Task 和同摘要成果；不得多起 planner/author/verifier。这里只证明**正常关闭后重开**，不冒称进程崩溃恢复、跨版本升级或 API-STABLE。
 
+`--scenario team|cancel` 为封闭场景选择，默认仍为 `team`。`cancel` 使用完全相同的业务、真实 planner、一次批准及原累计预算；观察到两个原作者已启动，且 HTTP Worker 与原句柄仍活跃时立即发一次 `task.cancel`。不向模型加延时、灌水任务或调整模型配置。成功必须证明两个原作者因所属 stop 取消、原进程在请求后退出并完成 cleanup，Task/取消 Operation 收口、verifier 未启动、无 delivery；随后在同一 Node 宿主正常重建服务实例，原 create/approve/cancel 回执与取消 Task 保持且没有替身执行。
+
+作者已收尾/完成、CAS 竞争失败或未取得取消窗口时记录 `passed:false` 和固定失败原因，视为此取消验收未完成；不因正常任务成功而把取消算通过，不自动重试。取消成功证据标记 `scenario:cancel`、`cancel` 与 `restart` 字段，不生成 `regional-report.json`；它不是正常业务交付成功证据。权限回调与 ordinary-user 边界不变。
+
 ## 手工运行
 
 先在当前候选上运行无模型测试：
 
 ```sh
-/Users/gawain/.local/share/fnm/node-versions/v24.15.0/installation/bin/node --test packages/task-qwen-live/driver.test.mjs
+/Users/gawain/.local/share/fnm/node-versions/v24.15.0/installation/bin/node --test --test-concurrency=1 packages/task-qwen-live/*.test.mjs
 ```
 
 维护者独立审查并确认当前 Core 修复已合入后，才显式运行以下命令。`--run-dir` 必须是不存在的新路径，父目录已存在且为真实路径；驱动创建私有 `0700` 目录，不接受复用旧根、不递归删除失败现场。
@@ -30,6 +34,8 @@
   --qwen-entry /Users/gawain/.local/share/fnm/node-versions/v24.15.0/installation/lib/node_modules/@qwen-code/qwen-code/cli-entry.js \
   --timeout-ms 600000
 ```
+
+真实取消验收需使用另一个不存在的 `--run-dir`，并显式追加 `--scenario cancel`。无模型测试包含原 HTTP/SQLite/ACP 的受控等待 fixture，只验证取消驱动的实际接线，不构成真实 Qwen 取消证据。
 
 不指定模型或模型 fallback；运行固定 Node 24.15.0 和实际安装的 Qwen `cli-entry.js --acp`，记录版本与入口摘要，不读鉴权文件或复制 HOME。传递环境仅为 HOME、语言、TMPDIR 和含当前 Node 的固定 PATH；不继承任意 token 环境。任务累计限额为 4 次执行、2 Worker、默认 10 分钟（可显式 1–15 分钟），不重置期限，不重试失败任务。
 

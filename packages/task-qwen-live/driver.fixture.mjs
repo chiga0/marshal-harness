@@ -50,15 +50,17 @@ export function parseOptions(argv) {
   for (let index = 0; index < argv.length; index++) {
     const name = argv[index];
     if (name === '--execute-real' && !execute) { execute = true; continue; }
-    check(['--run-dir', '--node', '--qwen-entry', '--timeout-ms'].includes(name) && !Object.hasOwn(values, name), 'invalid_arguments');
+    check(['--run-dir', '--node', '--qwen-entry', '--timeout-ms', '--scenario'].includes(name) && !Object.hasOwn(values, name), 'invalid_arguments');
     const value = argv[++index]; check(text(value) && value && !value.startsWith('--'), 'invalid_arguments'); values[name] = value;
   }
   check(execute, 'explicit_real_execution_required');
   const timeoutMs = values['--timeout-ms'] === undefined ? 600000 : Number(values['--timeout-ms']);
   check(Number.isSafeInteger(timeoutMs) && timeoutMs >= 60000 && timeoutMs <= 900000, 'invalid_timeout');
+  const scenario = values['--scenario'] ?? 'team';
+  check(['team', 'cancel'].includes(scenario), 'invalid_scenario');
   for (const key of ['--run-dir', '--node', '--qwen-entry']) check(text(values[key]) && path.isAbsolute(values[key]) &&
     path.normalize(values[key]) === values[key] && values[key] !== path.parse(values[key]).root, 'invalid_path');
-  return {runDir: values['--run-dir'], node: values['--node'], qwenEntry: values['--qwen-entry'], timeoutMs};
+  return {runDir: values['--run-dir'], node: values['--node'], qwenEntry: values['--qwen-entry'], timeoutMs, scenario};
 }
 
 export function validatePlan(task, plan, limits, inputId) {
@@ -145,6 +147,80 @@ export function assertTeam(facts) {
   return end - start;
 }
 
+/** Observe only the original in-memory handle; never reconstruct process control from evidence. */
+export function trackExecution(identity, handle) {
+  const entry = {identity, handle, started: null, settled: false, result: null, failed: false};
+  handle.started.then(value => { entry.started = value; }, () => { entry.failed = true; });
+  handle.completion.then(value => { entry.result = value; entry.settled = true; }, () => { entry.failed = true; entry.settled = true; });
+  return entry;
+}
+export function cancelledExecutionFact(identity, result, requestedAt, started) {
+  const cleanup = result?.cleanup;
+  check(result?.status === 'cancelled' && result.reason === 'provider_stopped' && cleanup?.cleaned === true &&
+    cleanup.agentExit?.observed === true && text(started?.executionId) && started.executionId.length > 0 &&
+    equal(cleanup.started, started) && Number.isFinite(Date.parse(started.startedAt)) &&
+    Date.parse(started.startedAt) <= Date.parse(requestedAt) && Date.parse(cleanup.agentExit.at) > Date.parse(requestedAt),
+  'cancel_execution_unproven');
+  return {...identity, executionId: started.executionId, startedAt: started.startedAt,
+    agentExitedAt: cleanup.agentExit.at, status: result.status, cleanup: true};
+}
+
+/** One explicit HTTP cancellation, with no model delay, mutation retry or substitute execution. */
+export async function cancelActiveTeam({client, taskId, observations, getVerifierStarts, end}) {
+  const authors = () => observations.filter(entry => entry.identity.role === 'author');
+  const live = () => {
+    check(getVerifierStarts() === 0 && observations.length <= 3 && authors().every(entry => !entry.failed && !entry.settled &&
+      !['stopping', 'terminal'].includes(entry.handle.snapshot().phase)), 'cancel_window_missed');
+  };
+  let task, workers;
+  for (;;) {
+    check(Date.now() < end, 'cancel_window_timeout'); live();
+    workers = await client.request('task.workers', {path: {taskId}});
+    task = await client.getTask(taskId); live();
+    check(!['completed', 'failed', 'cancelled', 'cancelling', 'intervention', 'paused', 'awaiting-answer'].includes(task.status), 'cancel_window_missed');
+    const current = authors();
+    if (task.status === 'running' && current.length === 2 && current.every(entry => entry.started)) {
+      check(observations.length === 3 && workers.nextCursor === null && workers.items.length <= 3 &&
+        equal(current.map(entry => entry.identity.nodeId).sort(), ['east', 'west']) &&
+        current.every(entry => entry.identity.taskId === taskId), 'cancel_worker_binding_mismatch');
+      // A read begun before the second started callback may still show starting.
+      // Wait for that original HTTP projection; never replace its identity.
+      if (workers.items.length === 3 && current.every(entry => workers.items.some(worker => worker.id === entry.identity.workerId &&
+        worker.nodeId === entry.identity.nodeId && worker.role === 'author' && worker.status === 'running' && worker.startedAt === entry.started.startedAt))) break;
+    }
+    await pause(20); // Observation polling only; never delay either model or its result.
+  }
+  live(); check(Date.now() < end, 'cancel_window_timeout');
+  const active = authors().map(entry => ({entry, started: structuredClone(entry.started)}));
+  const requestedAt = new Date().toISOString();
+  const request = {path: {taskId}, idempotencyKey: 'qwen-cancel-task', body: {expectedRevision: task.revision}};
+  let operation;
+  try { operation = await client.request('task.cancel', request); }
+  catch (error) { if (error.status === 409) throw new DriverError('cancel_window_missed'); throw error; }
+  const done = await until(client, taskId, ['cancelled'], end);
+  check(getVerifierStarts() === 0 && done.artifactIds.length === 0 && observations.length === 3, 'cancel_started_verifier_or_delivery');
+  let terminalOperation;
+  for (;;) {
+    check(Date.now() < end, 'cancel_observation_timeout');
+    terminalOperation = await client.request('operation.get', {path: {operationId: operation.id}});
+    if (!['accepted', 'running'].includes(terminalOperation.status)) break;
+    await pause(20);
+  }
+  check(terminalOperation.status === 'succeeded' && terminalOperation.taskId === taskId && terminalOperation.kind === 'task.cancel', 'cancel_not_reconciled');
+  const executions = await Promise.all(observations.map(async entry => {
+    const result = await entry.handle.completion;
+    return entry.identity.role === 'planner' ? executionFact(entry.identity, result) :
+      cancelledExecutionFact(entry.identity, result, requestedAt, active.find(item => item.entry === entry)?.started);
+  }));
+  workers = await client.request('task.workers', {path: {taskId}});
+  check(workers.nextCursor === null && workers.items.length === 3 && executions.every(item => workers.items.some(worker =>
+    worker.id === item.workerId && worker.nodeId === item.nodeId && worker.role === item.role && worker.status === item.status)), 'cancel_worker_evidence_mismatch');
+  const audit = await client.request('task.audit', {path: {taskId}});
+  check(audit.attempts === 3 && audit.acceptance.status !== 'passed', 'cancel_unexpected_acceptance');
+  assertTeam(executions);
+  return {done, operation, request, requestedAt, executions, workers: workers.items};
+}
+
 function save(runDir, name, bytes) {
   const fd = fs.openSync(path.join(runDir, name), fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
   try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
@@ -168,6 +244,7 @@ function nativeEnvironment(node) {
 /** Called only after explicit --execute-real. No retry, substitute provider,
  * model output fixture, arbitrary shell or direct Application mutation. */
 export async function runLive(options) {
+  const scenario = options.scenario ?? 'team'; check(['team', 'cancel'].includes(scenario), 'invalid_scenario');
   check(process.versions.node === '24.15.0' && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
   check(fs.realpathSync(options.qwenEntry) === options.qwenEntry && path.basename(options.qwenEntry) === 'cli-entry.js', 'qwen_entry_identity');
   const qwenPackage = JSON.parse(fs.readFileSync(path.join(path.dirname(options.qwenEntry), 'package.json')));
@@ -175,7 +252,7 @@ export async function runLive(options) {
   check(fs.realpathSync(path.dirname(options.runDir)) === path.dirname(options.runDir), 'run_parent_identity');
   fs.mkdirSync(options.runDir, {mode: 0o700}); // Existing roots are never adopted or deleted.
   const observations = [], byCwd = new Map(), byWorker = new Map(); let service = null, verifierStarts = 0, stage = 'starting';
-  const evidence = {profile: 'qwen-http-team-dogfood/v1', startedAt: new Date().toISOString(), passed: false,
+  const evidence = {profile: 'qwen-http-team-dogfood/v1', scenario, startedAt: new Date().toISOString(), passed: false,
     ordinaryUser: true, production: false, publisherSeparationProven: false, nodeVersion: process.versions.node,
     qwenVersion: qwenPackage.version, qwenEntryDigest: digest(fs.readFileSync(options.qwenEntry)), checkerDigest: digest(fs.readFileSync(checkerPath)),
     permission: {allowed: 0, denied: 0}, executions: []};
@@ -183,7 +260,7 @@ export async function runLive(options) {
     const native = createAcpProvider({id: 'qwen-acp', executable: options.node, args: [options.qwenEntry, '--acp'], env: nativeEnvironment(options.node)});
     const provider = {id: native.id, start(input) {
       const identity = byCwd.get(input.cwd); check(identity, 'missing_execution_binding');
-      const handle = native.start(input); observations.push({identity, handle}); return handle;
+      const handle = native.start(input); observations.push(trackExecution(identity, handle)); return handle;
     }};
     const command = createVerificationCommand({executable: options.node, checkerPath, checkerDigest: evidence.checkerDigest,
       policyDigest: digest(encode(policy)), assertions: [{name: 'regions', validate: value => equal(value, expected)}],
@@ -213,6 +290,24 @@ export async function runLive(options) {
     evidence.planDigest = plan.digest; stage = 'executing';
     const operation = await client.approveTask(task.id, request, 'qwen-approve-task'); // Exactly one new approval, no mutation retry.
     evidence.approvalOperationId = operation.id;
+    if (scenario === 'cancel') {
+      stage = 'cancelling';
+      const cancelled = await cancelActiveTeam({client, taskId: task.id, observations, getVerifierStarts: () => verifierStarts, end});
+      evidence.executions = cancelled.executions; evidence.overlapMs = assertTeam(cancelled.executions); evidence.verifierStarts = verifierStarts;
+      evidence.workers = cancelled.workers.map(worker => ({id: worker.id, nodeId: worker.nodeId, role: worker.role, status: worker.status}));
+      evidence.artifacts = [];
+      evidence.cancel = {requestedAt: cancelled.requestedAt, operationId: cancelled.operation.id, originalAuthorsStopped: true, noVerifier: true, noDelivery: true};
+      stage = 'restarting'; check((await service.shutdown()).shutdownClean === true, 'shutdown_unconfirmed'); service = null;
+      client = await start('open');
+      check(equal(await client.createTask(body, 'qwen-create-task'), created), 'create_receipt_changed');
+      check(equal(await client.approveTask(task.id, request, 'qwen-approve-task'), operation), 'approval_receipt_changed');
+      check(equal(await client.request('task.cancel', cancelled.request), cancelled.operation), 'cancel_receipt_changed');
+      check(equal(await client.getTask(task.id), cancelled.done), 'task_changed_after_restart');
+      check((await client.request('operation.get', {path: {operationId: cancelled.operation.id}})).status === 'succeeded', 'cancel_not_reconciled');
+      check(observations.length === 3 && verifierStarts === 0, 'restart_started_duplicate_execution');
+      evidence.restart = {mode: 'graceful-same-version', originalReceipts: true, sameTask: true, duplicateStarts: 0, noDelivery: true};
+      evidence.passed = true; stage = 'complete'; return evidence;
+    }
     const done = await until(client, task.id, ['completed'], end); stage = 'downloading';
     const audit = await client.request('task.audit', {path: {taskId: task.id}});
     check(audit.acceptance.status === 'passed' && audit.attempts === 4 && verifierStarts === 1, 'independent_acceptance_missing');
@@ -264,7 +359,7 @@ export async function runLive(options) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const options = parseOptions(process.argv.slice(2));
-    if (options.help) process.stdout.write('显式实机：--execute-real --run-dir ABS_NEW_PRIVATE_DIR --node ABS_NODE_24_15 --qwen-entry ABS_cli-entry.js [--timeout-ms 600000]\n不会自动重试；仅普通用户 dogfood；不随发行包或 CI 调用。\n');
+    if (options.help) process.stdout.write('显式实机：--execute-real --run-dir ABS_NEW_PRIVATE_DIR --node ABS_NODE_24_15 --qwen-entry ABS_cli-entry.js [--timeout-ms 600000] [--scenario team|cancel]\n不会自动重试；仅普通用户 dogfood；不随发行包或 CI 调用。\n');
     else { const evidence = await runLive(options); process.stdout.write(JSON.stringify({passed: evidence.passed, taskId: evidence.taskId ?? null,
       failure: evidence.failure ?? null, evidence: path.join(options.runDir, 'evidence.json')}) + '\n'); if (!evidence.passed) process.exitCode = 1; }
   } catch (error) { process.stderr.write(JSON.stringify({error: error instanceof DriverError ? error.code : 'driver_preflight_failed'}) + '\n'); process.exitCode = 1; }
