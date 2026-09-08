@@ -4,6 +4,8 @@
 
 `launchAcp(options)` 返回 ACP client、原 started、exited、completion 和 stop，原接口不变。`end_turn` 是协议回合完成，仍需实际 cleanup 后才能采集候选。
 
+`launchProtocol({...options, createClient})` 为可信组合层提供相同受管执行的协议 DI 接缝。同步 `createClient({readable,writable,onClose})` 返回有 `close()` 的协议客户端，只解析现有字节流，不获得 PID/启动权限或 Task Store。它不改变 guard 的原协议、身份与清理范围；`launchAcp` 继续使用原 `AcpClient`，不经过 Pi 实现。工厂异常、异步工厂或无效返回值在执行启动前停止已创建的 guard，并保留原失败清理事实；协议 `close()` 的异常也不能中断原 owned stop。第三方回调仍是受信代码，不是恶意插件隔离。
+
 `launchCommand({executable,args,cwd,env,deadline,input,limits})` 用同一个 guard 执行受信组合根选择的独立验证命令，不创建 ACP client、不伪造 `end_turn`。`input` 为最多1MiB的 Uint8Array，stdin 保持打开，验证协议使用有界帧（例如一行 JSON），不能依赖 EOF。返回：
 
 ```js
