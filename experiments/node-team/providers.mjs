@@ -1,7 +1,8 @@
 import { isAbsolute, dirname } from 'node:path';
 import { TextDecoder } from 'node:util';
+import { MAX_STDOUT_BYTES } from './limits.mjs';
 
-const MAX_STDOUT = 1024 * 1024;
+const MAX_STDOUT = MAX_STDOUT_BYTES;
 const MAX_FILE = 64 * 1024;
 const NAMES = new Set(['normalize.mjs', 'report.mjs']);
 const ENV_NAMES = ['HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR'];

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeCommand, parseCandidate } from './providers.mjs';
+import { MAX_STDOUT_BYTES } from './limits.mjs';
 
 const config = { provider: 'pi', executable: '/operator/agent-entry.mjs' };
 const node = { id: 'normalize', role: 'author', file: 'normalize.mjs' };
@@ -61,7 +62,16 @@ test('native error, truncation, length, retry and tool use are not success', () 
   }
   assert.throws(() => parseCandidate(config, node, stream(ended()).slice(0, -4)));
   assert.throws(() => parseCandidate(config, node, Buffer.from([0xff, 0xfe])));
-  assert.throws(() => parseCandidate(config, node, 'x'.repeat(1024 * 1024 + 1)));
+  assert.throws(() => parseCandidate(config, node, 'x'.repeat(MAX_STDOUT_BYTES + 1)), /output_limit/);
+});
+
+test('bounded native progress amplification is separate from final candidate limits', () => {
+  const progress = {type: 'message_update', assistantMessageEvent: {type: 'text_delta', partial: 'x'.repeat(16384)}};
+  const raw = stream(...Array(80).fill(progress), ended(), {type: 'agent_end', messages: [message()]});
+  assert.ok(Buffer.byteLength(raw) > 1024 * 1024);
+  assert.deepEqual(parseCandidate(config, node, raw), candidate);
+  assert.throws(() => parseCandidate(config, node, stream(...Array(520).fill(progress), ended(),
+    {type: 'agent_end', messages: [message()]})), /output_limit/);
 });
 
 test('only assigned filename and bounded exact candidate fields are accepted', () => {

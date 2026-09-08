@@ -1,12 +1,12 @@
 import { spawn } from 'node:child_process';
 import { TextDecoder } from 'node:util';
+import { MAX_STDOUT_BYTES, MAX_STDERR_BYTES } from './limits.mjs';
 
 // Spawned detached by the supervisor. This Node process remains the living
 // session/group leader after its Agent exits. Only authenticated inherited IPC
 // controls it; no PID restored from disk is ever used to signal a process.
 let child, agentExitedAt, launched = false, cleanup = false, overflow = false;
 let stdout = [], stderrBytes = 0, stdoutBytes = 0;
-const LIMIT = 1024 * 1024;
 const keepAlive = setInterval(() => {}, 60_000);
 process.on('SIGTERM', () => {});
 process.on('SIGINT', () => {});
@@ -48,10 +48,10 @@ process.on('message', message => {
   }
   child.stdout.on('data', chunk => {
     stdoutBytes += chunk.length;
-    if (stdoutBytes <= LIMIT) stdout.push(chunk); else excess();
+    if (stdoutBytes <= MAX_STDOUT_BYTES) stdout.push(chunk); else excess();
     progress();
   });
-  child.stderr.on('data', chunk => { stderrBytes += chunk.length; if (stderrBytes > LIMIT) excess(); progress(); });
+  child.stderr.on('data', chunk => { stderrBytes += chunk.length; if (stderrBytes > MAX_STDERR_BYTES) excess(); progress(); });
   child.stdin.on('error', () => {});
   child.on('error', () => {});
   // stdio close can be delayed by inherited descendant pipes. Freeze the

@@ -35,7 +35,7 @@ node experiments/node-team/main.mjs stop --data-dir /private/tmp/mnt-demo
 确定性测试不调用真实模型：
 
 ```sh
-node --test experiments/node-team/providers.test.mjs experiments/node-team/business.test.mjs experiments/node-team/http.test.mjs
+node --test --test-concurrency=1 experiments/node-team/providers.test.mjs experiments/node-team/business.test.mjs experiments/node-team/runtime.test.mjs experiments/node-team/http.test.mjs
 ```
 
 真实验收须显式指定本机 Pi，使用现有账号额度；不自动重试。它先启动两个真实作者，验证活跃前端重启和模块交付，再启动两个作者验证取消。结果摘要留在私有临时目录，失败证据也保留。
