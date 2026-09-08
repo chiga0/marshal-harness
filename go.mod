@@ -7,7 +7,7 @@ toolchain go1.26.6
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/dlclark/regexp2 v1.11.0
-	github.com/gofrs/flock v0.13.0
+	github.com/gofrs/flock v0.13.1
 	github.com/gowebpki/jcs v1.0.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	golang.org/x/sys v0.47.0
