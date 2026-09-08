@@ -692,23 +692,79 @@ func TestRecordTransactionAndPageBounds(t *testing.T) {
 	}); !errors.Is(err, ErrLimit) {
 		t.Fatal(err)
 	}
+	first := fact(t, testStreams[0], 1, "written before the byte limit")
+	rejected := fact(t, testStreams[1], 1, "one byte beyond the remaining budget")
 	if err := s.Update(context.Background(), owner, func(tx *WriteTx) error {
-		head := Head{}
-		for n := uint64(1); n <= 10; n++ {
-			var err error
-			head, err = tx.CompareAppend(testStreams[0], head, []Record{fact(t, testStreams[0], n, strings.Repeat("x", 900<<10))})
-			if err != nil {
-				return err
+		// This is an accounting fixture for earlier accesses, not evidence of
+		// writing 8 MiB. Keep JSON construction outside the production deadline
+		// and exercise the real CompareAppend -> charge -> rollback path below.
+		beforeAppend := MaxTransactionBytes - len(first.Bytes) - len(rejected.Bytes) + 1
+		for remaining := beforeAppend; remaining > 0; {
+			size := min(remaining, MaxRecordBytes)
+			if err := tx.charge(size); err != nil {
+				t.Fatalf("accounting fixture exceeded budget: %v", err)
 			}
+			remaining -= size
 		}
+		countBeforeAppend := tx.count
+		head, err := tx.CompareAppend(testStreams[0], Head{}, []Record{first})
+		if err != nil {
+			t.Fatalf("prefix write did not succeed: %v (context: %v)", err, tx.ctx.Err())
+		}
+		if head != ref(testStreams[0], first).Head || tx.bytes != beforeAppend+len(first.Bytes) || tx.count != countBeforeAppend+1 {
+			t.Fatal("successful CompareAppend did not charge the original bytes once")
+		}
+		// A different empty stream avoids charging/revalidating the first head:
+		// rejection must come from this second CompareAppend's record charge.
+		if _, err := tx.CompareAppend(testStreams[1], Head{}, []Record{rejected}); !errors.Is(err, ErrLimit) {
+			t.Fatalf("CompareAppend byte limit: %v (context: %v)", err, tx.ctx.Err())
+		}
+		if tx.bytes != MaxTransactionBytes+1 || tx.count != countBeforeAppend+2 {
+			t.Fatal("CompareAppend did not exceed the byte budget by exactly one")
+		}
+		// Ignoring the method error must still poison Update and roll back the
+		// successful first write, not merely leave the rejected stream empty.
 		return nil
 	}); !errors.Is(err, ErrLimit) {
 		t.Fatalf("transaction bound: %v", err)
 	}
 	assertEmpty(t, s, owner)
+	if err := s.View(context.Background(), owner, func(tx *ReadTx) error { _, err := tx.Records(testStreams[0], 0, MaxPage); return err }); err != nil {
+		t.Fatalf("maximum page size rejected: %v", err)
+	}
 	if err := s.View(context.Background(), owner, func(tx *ReadTx) error { _, err := tx.Records(testStreams[0], 0, MaxPage+1); return err }); !errors.Is(err, ErrInvalid) {
 		t.Fatal(err)
 	}
+}
+
+func TestTransactionChargeExactBounds(t *testing.T) {
+	// These are arithmetic/poisoning checks, not storage-throughput fixtures.
+	t.Run("bytes", func(t *testing.T) {
+		tx := &ReadTx{ctx: context.Background()}
+		if err := tx.charge(MaxTransactionBytes - 1); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.charge(1); err != nil || tx.bytes != MaxTransactionBytes || tx.check() != nil {
+			t.Fatalf("exact byte limit rejected: %v", err)
+		}
+		if err := tx.charge(1); !errors.Is(err, ErrLimit) || tx.bytes != MaxTransactionBytes+1 || !errors.Is(tx.check(), ErrLimit) {
+			t.Fatalf("byte limit did not poison transaction: %v", err)
+		}
+	})
+	t.Run("records", func(t *testing.T) {
+		tx := &ReadTx{ctx: context.Background()}
+		for n := 0; n < MaxTransactionRecords; n++ {
+			if err := tx.charge(1); err != nil {
+				t.Fatalf("record charge %d rejected: %v", n+1, err)
+			}
+		}
+		if tx.count != MaxTransactionRecords || tx.bytes != MaxTransactionRecords || tx.check() != nil {
+			t.Fatal("exact record limit rejected")
+		}
+		if err := tx.charge(1); !errors.Is(err, ErrLimit) || tx.count != MaxTransactionRecords+1 || !errors.Is(tx.check(), ErrLimit) {
+			t.Fatalf("record limit did not poison transaction: %v", err)
+		}
+	})
 }
 
 func TestSecondWriterAndUnsafePathsFail(t *testing.T) {
