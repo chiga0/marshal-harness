@@ -329,12 +329,40 @@ func acceptRepositoryDeliveryNode(t *testing.T, fixture publicFixedDeliveryInput
 		t.Fatal(err)
 	}
 	result["taskId"], result["runId"], result["attemptId"] = state.TaskID, state.RunID, state.CurrentAttemptID
+	result["adapter"] = map[string]any{"id": task.Worker.PreferredAdapter, "executable": "/fixture/not-executed/pi", "version": "0.8.4.4"}
+	result["session"] = map[string]any{"id": "fixture-" + node, "resumable": false}
+	result["summary"] = "确定性候选夹具；未启动 Worker 或模型，验收由原 Verifier 独立执行"
+	result["declaredChangedFiles"] = planning.OrderQuotePaths(node)
+	result["declaredArtifacts"], result["declaredCommands"], result["declaredRisks"] = []any{}, []any{}, []any{}
 	resultPath := filepath.Join(runDirectory, "attempts", state.CurrentAttemptID, "worker-result.json")
 	if err := os.MkdirAll(filepath.Dir(resultPath), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(resultPath, mustDeliveryJSON(t, result), 0600); err != nil {
+	validator, err := contract.NewValidator()
+	if err != nil {
 		t.Fatal(err)
+	}
+	resultData := mustDeliveryJSON(t, result)
+	if err := validator.Validate(domain.KindWorkerResult, resultData); err != nil {
+		t.Fatal("Worker fixture schema", err)
+	}
+	if err := os.WriteFile(resultPath, resultData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Match the Adapter's original completeAttempt metadata shape. This is
+	// deterministic simulated Worker input, not a verifier success artifact.
+	// No model/tool execution occurred in the fixture, hence zero tool calls.
+	outputDir := filepath.Join(filepath.Dir(resultPath), "control", "output")
+	if err := os.MkdirAll(outputDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	metadata := map[string]any{"sessionId": "fixture-" + node, "eventCount": 0, "toolCalls": 0, "inputTokens": 0, "outputTokens": 0, "cachedInputTokens": 0, "cost": 0,
+		"capturedBytes": 0, "outputTruncated": false, "permissionDenied": false, "denialsBenign": 0, "denialsFatal": 0, "toolNames": []string{},
+		"exitCode": 0, "signal": "", "stderrBytes": 0, "stderrTruncated": false, "contextError": ""}
+	for name, data := range map[string][]byte{"worker-result.json": resultData, "pi-transcript-meta.json": mustDeliveryJSON(t, metadata), "pi-transcript.jsonl": {}, "pi-stderr.log": {}} {
+		if err := os.WriteFile(filepath.Join(outputDir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	scope, deliverables, commands := verification.PolicyFromTask(task)
 	namespace, err := session.acquisition.Scope.AuthorityNamespaceID.Digest()
@@ -364,10 +392,6 @@ func acceptRepositoryDeliveryNode(t *testing.T, fixture publicFixedDeliveryInput
 		t.Fatal(err)
 	}
 	state = next
-	validator, err := contract.NewValidator()
-	if err != nil {
-		t.Fatal(err)
-	}
 	packet, _, err := (&review.PacketBuilder{RunDirectory: runDirectory, Validator: validator}).Build(review.PacketBuildInput{Task: task, TaskData: rawTask, Report: verified.Report, ReportData: reportData,
 		Manifest: verified.Manifest, ManifestData: manifestData, TaskID: state.TaskID, RunID: runID, SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, ReviewRound: state.ReviewRound, AttemptsUsed: state.AttemptsUsed})
 	if err != nil {
