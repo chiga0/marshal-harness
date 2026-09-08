@@ -1,7 +1,7 @@
 // Deterministic ACP peer, never selected by production service-config.mjs.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {proposal, finalValues} from './policy.mjs';
+import {finalValues} from './policy.mjs';
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const respond = (message, result) => send({jsonrpc: '2.0', id: message.id, result});
 for await (const line of createInterface({input: process.stdin})) {
@@ -12,7 +12,13 @@ for await (const line of createInterface({input: process.stdin})) {
     const text = message.params.prompt[0].text, input = JSON.parse(text.slice(text.indexOf('{"task":')));
     const publish = value => {send({jsonrpc: '2.0', method: 'session/update', params: {sessionId: message.params.sessionId,
       update: {sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: JSON.stringify(value)}}}}); respond(message, {stopReason: 'end_turn'});};
-    if (input.node.role === 'planner') publish(proposal());
+    if (input.node.role === 'planner') {
+      const declaration = /^REGIONAL_WINDOW_FIXED_PROPOSAL_V1\n([^\n]+)\nREGIONAL_WINDOW_FIXED_PROPOSAL_END$/m.exec(text);
+      if (!declaration) throw new Error('fixture-planner-declaration-missing');
+      const proposed = JSON.parse(declaration[1]);
+      if (process.env.WINDOW_FIXTURE === 'alter-planner-goal') proposed.nodes[0].goal += '（同义改写）';
+      publish(proposed);
+    }
     else if (process.env.WINDOW_FIXTURE !== 'hang') setTimeout(() => {
       const dates = finalValues(input.task), rows = JSON.parse(fs.readFileSync('sales.json')).rows;
       const chosen = rows.filter(row => row.status === 'paid' && row.region === input.node.id &&
