@@ -50,4 +50,8 @@ ready 只输出 URL、profile、连接文件路径；随机 token 仅写入当�
 - 同快照的 `-race -run '^Test(Task|TeamPlanConcurrent|InspectionLease)'` 三包通过：1.653s / 1.065s / 1.089s，作业 92.357s、exit 0；不是全包 race 或 Darwin 实机证明。
 - 新测试分层覆盖：同物理 RB1 的草稿/精确批准/冷重放；真实 held RepositorySession 经 HTTP 的创建/确认/重启查询；loopback/token/Host/Origin/大小/冲突/未支持能力负例。transport fixture 不冒充实际 Agent 或业务验收。
 - 唯一独立审查发现两项 P1：真实 `RunContext` gate 尚未允许新启动参数，及正数但不匹配的 revision 返回码与冲突合同不符。经用户明确授权后一次聚合修正：准入与启动共用无 I/O 的封闭参数解析，保留原 activation；同一 router 的 writer lane 拒忙且无泄漏；正数陈旧 revision 返回 `409`。新增真实入口准入和共享 lane 回归。held-session 测试直接调用 Handler，listener 测试使用显式 control fixture，lane 测试使用原 router 与显式应用 fixture；三者不能合称真实 CLI→listener→队列→Agent 的整链验收。
-- 本机只做静态检查，精确最终提交动态/race、Darwin fixed 启动、真实团队独立验收和下载消费仍需后续记录。无本轮模型调用、正式发布或远端合并声明。导航中的 ADR 状态冲突另行核对，本页不变更治理状态。
+- 精确实现提交 `70ec14894f94b1ad0f34c8a42fdbf47c714d1496` 经原 reviewer 复核，原两项 P1 在代码层关闭，无新增 P0/P1。香港 ECS 对该提交的 `resultingress/taskhttp/productionruntime` 三包完整测试 PASS（55.965s / 0.014s / 0.748s，作业 79.761s，exit 0）；此项非 race。
+- 同提交 Mac 定向动态通过 `TestRepositoryTaskHTTPHeldOwnerColdReplay`（0.64s）、`TestDarwinLocalDogfoodProductionEntry`（含真实 Task HTTP activation 入口，6.81s）及 `TestTeamProgressEntryExactAllowlist`。测试二进制使用固定缓存路径；需要身份观察的包必须按 Makefile 注入精确 sourceHead，且从包目录执行，不能把裸 `go test -c` 的 unknown metadata 或错误工作目录造成的失败算作产品缺陷。
+- `TestTaskHTTPUsesExistingResidentWriterLane` 的本机测试进程在任何测试输出前 exit 137；系统日志记录对应固定测试程序的 AMFI `Unrecoverable CT signature issue`。保留未通过状态，不改签名或安全策略绕过；该测试仍须经宿主合法放行或独立 Darwin CI 执行。分层测试不等于真实 CLI→TCP→Agent 全链。
+- 独立 HTTP 客户端 `f333dfda80d3530a162a86908e12ba1edf86c834` 已通过主 Agent 独立复跑的 17 项 loopback 测试、secret scan 与 diff-check；本地候选合入为 `736fcc9a949506963907bbd9b042fefb442e654e`，仅新增两份 Python 文件，未合入 main。用法见 `python3 scripts/task-http-demo-client.py --help`；默认不批准，原预览写入私有文件，明确确认原摘要后才提交批准。未提供的自动 Decision、cancel、下载仍报告 pending。
+- 无本轮模型调用、正式发布或远端 main 合并声明。精确组合候选完整 CI、Darwin 共享 lane 动态和真实团队独立验收/下载消费仍开放；导航中的 ADR 状态冲突另行核对，本页不变更治理状态。

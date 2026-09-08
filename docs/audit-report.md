@@ -2,6 +2,10 @@
 
 ## 2026-09-08：Task HTTP 候选接入与入口遗漏复盘
 
+后续验证：实现 `70ec148` 已经原 reviewer 复核关闭两项 P1；香港 ECS 三包完整测试通过，Mac 的真实 activation 入口和 held Session/HTTP 冷重放通过。独立客户端 `f333dfd` 的 17 项解释型测试经主 Agent 复跑后合入本地候选 `736fcc9`，非 main 合并。详细命令、候选和缺口见入口文档。Mac 共享 lane 测试在测试输出前被 AMFI 以签名问题终止，未记通过、未绕过；该平台回归待合法放行或独立 Darwin CI。无模型调用、自动 Decision 或下载完成声明。
+
+验证流程另有两次可避免的执行错误：主 Agent 初次独立编译测试未注入 Makefile 要求的 sourceHead，随后直接从仓库根启动导致包相对 fixture 路径不成立。按既有构建参数和包工作目录纠正后同测试通过，没有修改产品或测试门禁。后续固定路径测试入口应同时保留精确 linker metadata、包工作目录、测试选择与二进制摘要，不能只固定输出路径。
+
 候选把公开 Task 的创建、精确确认和按 ID 查询接到原 RepositorySession 与同一 RB1；原 accepted plan 仍是预算和三个创建义务唯一提交点，loopback adapter 复用 resident 应用和写入队列。范围与可重复请求方式见 [Task HTTP 候选入口](task-http-preview.md)。自动 Decision、Task cancel 与完整下载尚未实现，B1 不关闭，无模型重试或发布声明。
 
 唯一 reviewer 聚合发现两项 P1：新增 parser/HTTP 测试没有覆盖更外层真实 RunContext 的启动参数 gate；正数陈旧 revision 被过早归为无效输入，导致 Darwin 调用链测试期望冲突时必失败。修正把封闭参数解析复用到真实入口与启动 consumer，增加原 activation 准入和共享 writer lane 回归；revision 正值与当前草稿不符统一为冲突。该经验是验证完整入口，不是增加审批轮次或另建协议。
