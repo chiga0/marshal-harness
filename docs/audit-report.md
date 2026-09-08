@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-08：ADR0085 接受，恢复 Task HTTP 主线实施
+
+用户明确确认“ADR0085 ok，请实施”。据此将 ADR0085 标记 Accepted，解除 Task draft/stop/delivery、HTTP、自动独立 Decision 和完整交付的合同等待；实现复用已验证 resident 候选，不重建平行状态机。B1 仍 IN_PROGRESS，合同接受不是实机或发布证据。
+
+用户同时明确原 ECS 为内网机器，不应接入 GitHub CI；现有 GitHub canary 在 GitHub-hosted runner 上生成 Pi 配置，不是在该 ECS 上执行。后续公网 ECS 的地址及授权尚待提供；不把内网机器注册为 GitHub runner，不把取得公网机器作为 API 编码前置，也不在聊天或日志中索取密钥。
+
 ## 2026-09-08：CI 模型配置不等于本机已配置模型元数据
 
 停止盲目重跑后的只读核对发现，`scripts/rc1-canary-provider-config.py` 为每个模型统一写入 `contextWindow=128000`、`maxTokens=16384`，不提供 reasoning/compat；这不是读取用户本机 Pi 配置。本机 Pi 0.84.4 中 `qwen3.8-max` 的两个已配置 Provider 均声明 contextWindow 1000000、maxTokens 131072、reasoning true，其中一个还声明 Qwen thinking 格式及禁用 developer role/store。配置声明不等于服务端能力验证，不能盲目复制到未知 endpoint。

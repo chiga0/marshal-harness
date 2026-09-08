@@ -1,6 +1,6 @@
 # ADR 0085：Task-first Agent Team、本地简启动与分阶段事务存储
 
-- 状态：Proposed（2026-09-07 按用户明确要求收缩方案；设计方向已确认，尚不等于本 ADR 正式接纳、运行时启用或发布）
+- 状态：Accepted（2026-09-08 用户明确确认“ADR0085 ok，请实施”；授权按本合同实施，不等于运行时已通过验证或已生产发布）
 - 日期：2026-09-07
 - 决策范围：单用户、单节点、可信任务的 HTTP Agent Team；删除首版 Workspace 产品实体，先真实团队交付，后完善本地服务及正式支持。
 - 方案：[服务架构](../agent-team-service-architecture.md)；验收：[Milestone](../agent-team-service-milestones.md)；审计：[复核记录](../audit-agent-team-service-design-2026-09-07.md)。
@@ -65,7 +65,7 @@ ADR 0052 的正式签名、公证、Linux 与 stable gate 不删除；从关键�
 
 ### B1 Task HTTP 与可消费交付（未发布实施候选）
 
-本轮准备提交只有以下合同提案、未接线 DTO、纯模板预览和负例；尚未实现或启用 RB1 draft/stop/delivery、Task HTTP、自动 Decision 与交付 bundle。ADR 仍为 Proposed，以下段落描述待正式接纳并验证的目标，不构成当前服务能力或生产授权。
+截至接受时，已有未接线 DTO、纯模板预览和负例；尚未实现或启用 RB1 draft/stop/delivery、Task HTTP、自动 Decision 与交付 bundle。本合同现已接受，允许推进以下接线；实现及生产可用性仍必须逐项验证，不因合同接受自动成立。
 
 首个入口只开放服务启动时显式安装的 `order-quote/v1` 小团队模板。模板冻结完整业务接口、原独立 oracle bytes/digest、节点范围、实际 Provider 配置、预算、publication:none 和客观验收模式；客户端只提交 intent/inline context 并选择模板，不提交 authority namespace、TaskSpec/Policy、环境或 executable。额外文本仅作需求上下文，不能修改模板的验收或权限；超出模板能力的需求须拒绝或返回明确待确认，不能自动扩 scope。既有 AF_UNIX 客户端和旧批准链保持原合同。
 
