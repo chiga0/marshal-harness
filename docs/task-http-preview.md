@@ -43,7 +43,13 @@ ready 只输出 URL、profile、连接文件路径；随机 token 仅写入当�
 
 丢回复时保留同一 key 和正文重发；原成功重放不重新环境探测、不延期期限、不重置预算、不重复生成义务。同 key 不同正文/确认摘要返回 `409`，首次确认过期返回 `410`，缺失 Task 返回 `404`，owner/写入槽/查询暂不可用返回 `503`。不自动创建替代任务。重启后 token 可变，但 Task 身份和幂等范围来自同一 RB1，不使用 PID/token 作为 namespace；旧损坏或未恢复数据根不能通过此入口旁路接管。
 
-## 验证与尚未完成项
+## 最新验证与下一步
+
+精确 source `8543878cc9cc9b095e94c06c0cc41987611149f2` 的[完整 CI 34184969456](https://github.com/chiga0/marshal-harness/actions/runs/34184969456)五项全部通过，包含 Darwin/Ubuntu quality；PR #271 已合入功能分支 `feat/team-resident-progress`（`be03e7015be12636b7f2af5aca644039b3558492`），不是 main。下列早期记录中的待测/运行中描述仅为历史，不覆盖此结果。
+
+下载客户端后继 `b086d1a0d6331ce0cbacf7471d5d8ad5389ec490` 已通过独立复跑的 30 项无模型测试与复审。`download --task-id ID --output-dir NEW_DIR [--run-oracle]` 只接受已完成 Task 的有界 ZIP、固定文件及匹配摘要；明确指定 `--run-oracle` 才执行本地固定 oracle。审查发现的后代进程残留已修复为持有会话 leader、先清理所属进程组再回收，并有两类真实 fork 回归。此时服务端自动 Decision/完整下载仍在开发，不能据客户端 fixture 宣称 HTTP 团队交付已通；下一项组合验证是消费 Go 实产 ZIP，然后验证完整 Task 主链。Task cancel 与真实双 Worker 验收仍开放。
+
+## 历史验证记录
 
 - 旧基线 `749ed23acf4f0a2b0b79f6801a5c421db1592bb2` 的 ECS 动态：`goal/planning` 的 `TestTask(Submission|Template)` 两包通过；`resultingress/productionruntime` 完整测试通过，包耗时 57.231s / 0.885s、作业 88.702s、exit 0。这不是新 HTTP 实现的证据。
 - 新源码快照 SHA-256 `b41c1ac4e171d53ac4af6bd702db9c5e7b4dac035d99be19a6f33524bc577bb7`，Linux amd64 三包完整测试通过：resultingress 56.412s、taskhttp 0.015s、productionruntime 0.827s，作业 81.680s、exit 0。使用非 root、1 CPU/768 MiB/NoNewPrivileges；非 race，不含 Darwin 专属测试，不替代最终提交验证。
