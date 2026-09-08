@@ -36,6 +36,8 @@ node experiments/node-team/main.mjs stop --data-dir /private/tmp/mnt-demo
 
 确定性测试不调用真实模型：
 
+独立 `Node team` CI 在 Ubuntu/macOS 使用 Node 24.15.0 运行同一组测试，不安装 Agent、不使用模型凭证、不构建或调用 Marshal 原生程序。它只提供跨平台确定性回归证据，不替代下面的真实 Agent 验收；测试文件串行，文件内部的团队仍并行执行两个 Worker。
+
 ```sh
 node --test --test-concurrency=1 experiments/node-team/providers.test.mjs experiments/node-team/business.test.mjs experiments/node-team/runtime.test.mjs experiments/node-team/http.test.mjs
 ```
