@@ -63,7 +63,7 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
         const prior = progress.tool?.id === item.toolCallId ? progress.tool : null;
         const status = item.status ?? prior?.status ?? 'pending';
         const kind = item.kind ?? prior?.kind ?? 'other';
-        if (executionContext && ['execute', 'fetch', 'other'].includes(kind) && !['completed', 'failed'].includes(status))
+        if (executionContext && ['execute', 'fetch', 'other'].includes(kind) && ['in_progress', 'completed'].includes(status))
           executionContext.extraScope('acp_tool_scope_unproven');
         if (!['pending', 'in_progress', 'completed', 'failed'].includes(status) ||
           !['read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'other'].includes(kind)) throw error('provider_invalid_progress');
@@ -75,18 +75,21 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       }
       await bounded(onProgress, snapshot(), observation.signal);
     }
-    function permission(params, context) {
+    async function permission(params, context) {
       if (stopping || settled || !onPermission || Date.now() >= deadline) return {outcome: {outcome: 'cancelled'}};
       const toolCall = {};
       for (const key of ['toolCallId', 'title', 'kind', 'status', 'rawInput']) if (Object.hasOwn(params.toolCall, key)) toolCall[key] = structuredClone(params.toolCall[key]);
       // This callback is trusted policy, not the progress/UI channel. It needs
       // actual tool input to authorize the bound request. Never forward _meta.
-      // A declared trusted profile covers inherited built-in file operations,
-      // not arbitrary shell/remote effects. Persist the unknown extra obligation
-      // BEFORE giving policy a chance to approve those operations.
-      if (executionContext && !['read', 'edit', 'delete', 'move', 'search', 'think'].includes(toolCall.kind))
+      const response = await onPermission({sessionId: params.sessionId, toolCall, options: structuredClone(params.options)}, context);
+      if (stopping || settled || context.signal.aborted || Date.now() >= deadline) return {outcome: {outcome: 'cancelled'}};
+      const selection = response?.outcome?.outcome === 'selected' ? params.options.find(option => option.optionId === response.outcome.optionId) : null;
+      // Refusal creates no execution obligation. The synchronous durable fence
+      // must commit AFTER policy selects allow but BEFORE any allow is sent.
+      if (executionContext && ['allow_once', 'allow_always'].includes(selection?.kind) &&
+          !['read', 'edit', 'delete', 'move', 'search', 'think'].includes(toolCall.kind))
         executionContext.extraScope('acp_tool_scope_unproven');
-      return onPermission({sessionId: params.sessionId, toolCall, options: structuredClone(params.options)}, context);
+      return response;
     }
     const completion = (async () => {
       let status = 'failed', reason = 'provider_failed', stopReason = null, cleanup = null;
@@ -129,6 +132,7 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
     const stop = () => {
       if (settled) return completion;
       stopping = true; observation.abort();
+      if (executionContext?.stop) void executionContext.stop();
       if (runtime) {
         if (sessionId && !runtime.client.closed) void runtime.client.cancel(sessionId).catch(() => {});
         void runtime.stop();

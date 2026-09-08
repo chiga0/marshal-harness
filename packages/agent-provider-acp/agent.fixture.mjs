@@ -15,10 +15,11 @@ for await (const chunk of process.stdin) {
     } else if (message.method === 'session/new') respond(message, {sessionId: 'session-fixture'});
     else if (message.method === 'session/prompt') {
       pending = message;
-      if (mode === 'permission') {
+      if (mode === 'permission' || mode === 'permission-execute') {
+        if (mode === 'permission-execute') update({sessionUpdate: 'tool_call', toolCallId: 'tool-one', kind: 'execute', status: 'pending'});
         send({jsonrpc: '2.0', id: 'permission-fixture', method: 'session/request_permission', params: {
           sessionId: 'session-fixture', _meta: {private: 'PRIVATE_META'},
-          toolCall: {toolCallId: 'tool-one', title: 'Read approved fixture', kind: 'read', rawInput: {path: 'fixture.txt'}, _meta: {private: 'PRIVATE_META'}},
+          toolCall: {toolCallId: 'tool-one', title: 'Read approved fixture', kind: mode === 'permission-execute' ? 'execute' : 'read', rawInput: {path: 'fixture.txt'}, _meta: {private: 'PRIVATE_META'}},
           options: [{optionId: 'once', name: 'Allow once', kind: 'allow_once'}, {optionId: 'deny', name: 'Deny', kind: 'reject_once'}]}});
         continue;
       }

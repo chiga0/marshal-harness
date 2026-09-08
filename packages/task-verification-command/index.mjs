@@ -128,6 +128,7 @@ export function createVerificationCommand({executable, checkerPath, checkerDiges
     })();
     return Object.freeze({started: started.promise, completion, stop() {
       stopped = true;
+      if (executionContext?.stop) void executionContext.stop();
       // launchCommand owns bootstrap. Once it yields the original handle, the
       // stop flag forces owned-group cleanup before this completion settles.
       if (runtime) void runtime.stop();

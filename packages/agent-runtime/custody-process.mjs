@@ -7,10 +7,17 @@ import {CustodyFiles} from './custody-files.mjs';
 // No model protocol, Store, credentials, permission policy or result acceptance.
 // This process retains the ORIGINAL guard handle after its service IPC dies.
 let descriptor, key, files, runtime, launchPromise, sealed = false, permitted = false, finished = false, prepareTimer;
+let stdoutDrained = Promise.resolve(), drainUntil, outputStream;
 const originalParent = process.ppid;
 const send = message => { if (process.connected) try { process.send({profile: CUSTODY_PROFILE, ...message}, () => {}); } catch {} };
 async function settle(cleanup) {
   if (finished) return; finished = true; sealed = true; clearTimeout(prepareTimer);
+  let drainTimer;
+  try {
+    await Promise.race([stdoutDrained, new Promise(resolve => {
+      drainTimer = setTimeout(resolve, Math.max(0, (drainUntil ?? performance.now()) - performance.now()));
+    })]);
+  } finally { clearTimeout(drainTimer); outputStream?.unpipe(process.stdout); }
   const payload = {profile: CUSTODY_PROFILE, custodyId: descriptor.custodyId, executionId: descriptor.executionId,
     bindingDigest: descriptor.bindingDigest, permitReceived: permitted, cleanup, observedAt: new Date().toISOString()};
   const observation = {payload, signature: sign(null, canonical(payload), key).toString('base64')};
@@ -55,8 +62,10 @@ process.on('message', message => {
       message.options?.deadline === descriptor.binding.deadline && Date.now() < Math.min(descriptor.binding.deadline, descriptor.binding.ownerExpiresAt)) {
     permitted = true; clearTimeout(prepareTimer);
     launchPromise = launchCustodyStreams({...message.options, executionId: descriptor.executionId, createClient: ({readable, writable}) => {
+      outputStream = readable;
+      stdoutDrained = new Promise(resolve => { readable.once('end', resolve); readable.once('close', resolve); });
       process.stdin.pipe(writable); readable.pipe(process.stdout, {end: false});
-      return {close() { process.stdin.unpipe(writable); }};
+      return {close() { drainUntil ??= performance.now() + CLEANUP_WAIT_MS; process.stdin.unpipe(writable); }};
     }});
     void launchPromise.then(async handle => {
       runtime = handle;

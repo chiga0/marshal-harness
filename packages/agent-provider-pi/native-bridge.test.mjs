@@ -12,6 +12,7 @@ import * as shell from './fixtures/sdk/utils/shell.js';
 import {createFileBusiness, fileLayoutDigest} from '../task-business/index.mjs';
 import {ArtifactDepot} from '../task-artifacts/depot.mjs';
 import {digest, encode} from '../task-store/store.mjs';
+import {launchProtocol} from '../agent-runtime/index.mjs';
 
 const fixture = fileURLToPath(new URL('./bridge-agent.fixture.mjs', import.meta.url));
 // Opt-in repeat with an installed native SDK exercises the same extension and
@@ -25,6 +26,24 @@ function directory(t) {
 }
 const options = (t, extra = {}) => ({cwd: directory(t), deadline: Date.now() + 15000, prompt: 'approved native fixture', ...extra});
 const clean = result => { assert.equal(result.cleanup?.cleaned, true); assert.equal(result.cleanup.scope, 'inherited-process-group'); };
+
+test('custody Pi denied shell adds no obligation; allowed shell records before effect and SQL failure refuses', {timeout: 15000}, async t => {
+  for (const mode of ['deny', 'allow', 'sql-failure']) {
+    const input = options(t), order = [];
+    input.executionContext = {
+      launch: (options, callbacks) => launchProtocol({...options, createClient: callbacks.createClient}),
+      extraScope(code) { order.push('durable'); assert.equal(code, 'pi_shell_extra_scope');
+        assert.equal(fs.existsSync(path.join(input.cwd, 'output.txt')), false);
+        if (mode === 'sql-failure') throw Error('fixture rejected transaction'); },
+    };
+    input.onPermission = request => { order.push('policy'); assert.deepEqual(order, ['policy']);
+      return mode === 'deny' ? {outcome: {outcome: 'cancelled'}} : allow(request); };
+    const handle = provider('shell').start(input); t.after(() => handle.stop());
+    const result = await handle.completion; clean(result);
+    assert.deepEqual(order, mode === 'deny' ? ['policy'] : ['policy', 'durable']);
+    assert.equal(fs.existsSync(path.join(input.cwd, 'output.txt')), mode === 'allow');
+  }
+});
 
 test('actual extension wrapper prompts final immutable arguments and preserves originally active tools', async t => {
   const cwd = directory(t), handlers = new Map(), tools = new Map(), active = ['write', 'custom']; let observed, reply;

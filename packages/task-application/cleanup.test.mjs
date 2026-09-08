@@ -67,15 +67,25 @@ test('cancel intent survives intervention and cleanup settles original Operation
   assert.equal((await f.app.dispatch({operation: 'operation.get', operationId: receipt.id}, context)).status, 'succeeded');
   assert.deepEqual(await f.app.dispatch(request, context), receipt);
 });
-test('replacement/foreign observation and durable extra scope refuse capacity release with no append', {timeout: 15000}, async t => {
-  const f = await fixture(t);
-  f.app.execution.recordExtraScope(f.ticket, 'remote_effect_unproven'); f.reopen();
+test('replacement/foreign observations reject an otherwise valid binding, then original proof settles', {timeout: 15000}, async t => {
+  const f = await fixture(t); f.reopen();
   const head = f.app.transaction(false, tx => tx.head(f.task.id));
-  for (const observation of [f.observation, {...f.observation, signature: 'A'.repeat(86) + '=='},
-    {...f.observation, payload: {...f.observation.payload, workerId: 'foreign'}}]) {
+  for (const observation of [{...f.observation, signature: 'A'.repeat(86) + '=='},
+    {...f.observation, payload: {...f.observation.payload, custodyId: 'foreign'}},
+    {...f.observation, payload: {...f.observation.payload, cleanup: {...f.observation.payload.cleanup, reason: 'forged'}}}]) {
     assert.throws(() => f.app.execution.reconcileCleanup(f.ticket.workerId, observation), error => error.code === 'recovery_required');
     assert.deepEqual(f.app.transaction(false, tx => tx.head(f.task.id)), head);
   }
+  assert.equal(f.app.transaction(false, tx => f.app.execution.capacity(tx).value.active.length), 1);
+  assert.equal(f.app.execution.reconcileCleanup(f.ticket.workerId, f.observation).status, 'failed');
+  assert.equal(f.app.transaction(false, tx => f.app.execution.capacity(tx).value.active.length), 0);
+});
+test('independently valid original observation cannot settle a durable unknown extra scope', {timeout: 15000}, async t => {
+  const f = await fixture(t);
+  f.app.execution.recordExtraScope(f.ticket, 'remote_effect_unproven'); f.reopen();
+  const head = f.app.transaction(false, tx => tx.head(f.task.id));
+  assert.throws(() => f.app.execution.reconcileCleanup(f.ticket.workerId, f.observation), error => error.code === 'recovery_required');
+  assert.deepEqual(f.app.transaction(false, tx => tx.head(f.task.id)), head);
   assert.equal(f.app.transaction(false, tx => f.app.execution.capacity(tx).value.active.length), 1);
   assert.ok(encode(f.observation).length > 0);
 });

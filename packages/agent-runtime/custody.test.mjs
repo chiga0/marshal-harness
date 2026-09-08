@@ -47,3 +47,14 @@ test('command uses original custodian with exact stdout, durable signed cleanup 
   assert.deepEqual(await runtime.stop(), result);
   await assert.rejects(handle.launch({deadline: binding.deadline}), {code: 'custody_launch_denied'});
 });
+test('near-limit command bytes drain over both pipes before the independent IPC completion', {timeout: 15000}, async t => {
+  const {root, manager, binding} = await fixture(t), handle = await manager.prepare(binding); handle.permit();
+  const expected = Buffer.from(JSON.stringify({nonce: 'drain', sum: 0, leaked: false, payload: 'y'.repeat(240000)}) + '\n');
+  const runtime = await launchCommand({executable: process.execPath,
+    args: [fileURLToPath(new URL('./command.fixture.mjs', import.meta.url)), 'large'], cwd: root, env: {}, deadline: binding.deadline,
+    input: Buffer.from('{"nonce":"drain","values":[],"size":240000}\n'), limits: {outputBytes: 262144},
+    executionContext: {launch: handle.launch}});
+  const result = await runtime.completion;
+  assert.equal(result.cleanup.cleaned, true); assert.equal(result.outputComplete, true);
+  assert.deepEqual(result.stdout, expected); assert.equal(result.cleanup.outputBytes, expected.length);
+});
