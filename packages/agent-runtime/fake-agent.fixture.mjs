@@ -10,11 +10,12 @@ const update = (sessionId, value) => send({ jsonrpc: '2.0', method: 'session/upd
   sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(value) } } } });
 const pending = new Map(), permissions = new Map();
 let sessions = 0, peers = 0;
-if (mode === 'descendant' || mode === 'ignore-term') process.on('SIGTERM', () => {});
+if (mode === 'descendant' || mode === 'descendant-bounded' || mode === 'ignore-term') process.on('SIGTERM', () => {});
 if (mode === 'exit-immediate') process.exit(7);
 if (mode === 'stderr-overflow') process.stderr.write('PRIVATE_STDERR_FIXTURE'.repeat(512));
 if (mode === 'stdout-overflow') process.stdout.write('x'.repeat(8192));
-if (mode === 'descendant' || mode === 'ignore-term') {
+if (mode === 'descendant-bounded') { setTimeout(() => process.exit(0), 7000); process.send?.({ready: true}); }
+if (mode === 'descendant' || mode === 'descendant-bounded' || mode === 'ignore-term') {
   process.stdin.resume(); setInterval(() => {}, 1000);
 } else {
   let raw = '';
@@ -36,11 +37,14 @@ if (mode === 'descendant' || mode === 'ignore-term') {
           send({ jsonrpc: '2.0', id: peer, method: 'session/request_permission', params: { sessionId,
             toolCall: { toolCallId: 'fixture-tool', status: 'pending', title: 'Fixture permission', rawInput: { action: 'fixture' } },
             options: [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }, { optionId: 'reject', name: 'Reject', kind: 'reject_once' }] } });
-        } else if (text === 'descendant' || text === 'descendant-and-exit') {
-          const child = spawn(process.execPath, [HERE], { env: { AGENT_RUNTIME_FIXTURE_MODE: 'descendant' }, stdio: 'ignore', detached: false });
-          update(sessionId, { descendantPid: child.pid });
-          response(message, { stopReason: 'end_turn' });
-          if (text === 'descendant-and-exit') setTimeout(() => process.exit(7), 25);
+        } else if (text === 'descendant' || text === 'descendant-and-exit' || text === 'descendant-bounded') {
+          const child = spawn(process.execPath, [HERE], { env: { AGENT_RUNTIME_FIXTURE_MODE: text === 'descendant-bounded' ? text : 'descendant' },
+            stdio: text === 'descendant-bounded' ? ['ignore', 'ignore', 'ignore', 'ipc'] : 'ignore', detached: false });
+          const ready = () => {
+            update(sessionId, { descendantPid: child.pid }); response(message, { stopReason: 'end_turn' });
+            if (text === 'descendant-and-exit') setTimeout(() => process.exit(7), 25);
+          };
+          if (text === 'descendant-bounded') child.once('message', ready); else ready();
         } else {
           update(sessionId, { echo: text, envLeaked: process.env.AGENT_RUNTIME_PARENT_ONLY !== undefined });
           response(message, { stopReason: 'end_turn' });

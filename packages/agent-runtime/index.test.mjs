@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, ChildProcess } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launchAcp } from './index.mjs';
+import { CLEANUP_WAIT_MS } from './protocol.mjs';
 
 const AGENT = fileURLToPath(new URL('./fake-agent.fixture.mjs', import.meta.url));
 const OWNER = fileURLToPath(new URL('./owner.fixture.mjs', import.meta.url));
@@ -162,4 +163,73 @@ test('actual owner process death disconnects inherited IPC and cleans Agent plus
   owner.kill('SIGKILL'); await closed;
   assert.ok(descendant > 0);
   await gone(started.guardPid); await gone(started.agentPid); await gone(descendant);
+});
+
+test('original leader killed after cleaning cannot certify a surviving inherited descendant', {skip: !posix, timeout: 18000}, async t => {
+  let descendant;
+  const {runtime, cwd} = await launch(t, {deadline: Date.now() + 15000,
+    onUpdate: event => { descendant = JSON.parse(event.update.content.text).descendantPid; }});
+  const id = await session(runtime, cwd);
+  await runtime.client.prompt(id, blocks('descendant-bounded'));
+  assert.ok(descendant > 0); process.kill(descendant, 0);
+  // Inject the fault using the ORIGINAL spawned guard handle, after its real
+  // cleaning message reached Runtime and before its scheduled group SIGKILL.
+  // The descendant has its own bounded fixture exit; no persisted PID is killed.
+  const emit = ChildProcess.prototype.emit; let interrupted = false;
+  t.mock.method(ChildProcess.prototype, 'emit', function (event, ...args) {
+    const result = Reflect.apply(emit, this, [event, ...args]);
+    if (event === 'message' && args[0]?.type === 'cleaning' && args[0]?.executionId === runtime.started.executionId &&
+        this.pid === runtime.started.guardPid && !interrupted) {
+      interrupted = this.kill('SIGKILL');
+    }
+    return result;
+  });
+  const began = performance.now(), stopping = runtime.stop();
+  const repeated = setTimeout(() => { void runtime.stop(); }, Math.floor(CLEANUP_WAIT_MS / 2));
+  t.after(() => clearTimeout(repeated));
+  const fact = await stopping;
+  const elapsed = performance.now() - began;
+  let descendantStillAlive = false;
+  try { process.kill(descendant, 0); descendantStillAlive = true; } catch {}
+  // Await the fixture's OWN bounded exit before assertions/temporary cleanup,
+  // including when a regression would otherwise fail the test early.
+  await gone(descendant); await gone(runtime.started.guardPid); await gone(runtime.started.agentPid);
+  assert.equal(interrupted, true); assert.equal(fact.guardExit.observed, true); assert.equal(fact.guardExit.signal, 'SIGKILL');
+  assert.equal(fact.cleaned, false); assert.equal(fact.reason, 'cleanup_unconfirmed');
+  assert.ok(elapsed >= CLEANUP_WAIT_MS - 100);
+  assert.ok(elapsed < CLEANUP_WAIT_MS + 1500, 'repeat stop must not reset cleanup budget');
+  assert.equal(descendantStillAlive, true, 'descendant must be alive when the false-positive is rejected');
+  assert.equal(await runtime.stop(), fact); assert.equal(await runtime.completion, fact);
+});
+
+test('read-only group probe tolerates brief exit observation lag within the existing cleanup budget', {skip: !posix, timeout: 15000}, async t => {
+  const {runtime} = await launch(t);
+  const kill = process.kill; let probes = 0;
+  t.mock.method(process, 'kill', function (pid, signal) {
+    if (pid === -runtime.started.guardPid) {
+      assert.equal(signal, 0, 'an exited group is only observed, never signalled');
+      if (++probes < 3) return true;
+    }
+    return Reflect.apply(kill, process, [pid, signal]);
+  });
+  const fact = await runtime.stop(); cleanFact(fact); assert.ok(probes >= 3);
+  assert.equal(await runtime.stop(), fact);
+});
+
+test('group probe permission and unexpected errors fail closed instead of proving absence', {skip: !posix, timeout: 15000}, async t => {
+  for (const code of ['EPERM', 'EINVAL']) {
+    const {runtime} = await launch(t), kill = process.kill; let probes = 0;
+    const mock = t.mock.method(process, 'kill', function (pid, signal) {
+      if (pid === -runtime.started.guardPid) {
+        assert.equal(signal, 0); probes++;
+        throw Object.assign(new Error('PRIVATE_PROBE_FAILURE'), {code});
+      }
+      return Reflect.apply(kill, process, [pid, signal]);
+    });
+    const fact = await runtime.stop(); mock.mock.restore();
+    assert.equal(probes, 1); assert.equal(fact.cleaned, false); assert.equal(fact.reason, 'cleanup_unconfirmed');
+    assert.equal(fact.guardExit.observed, true); assert.equal(fact.guardExit.signal, 'SIGKILL');
+    assert.equal(JSON.stringify(fact).includes('PRIVATE_PROBE_FAILURE'), false);
+    await gone(runtime.started.guardPid); await gone(runtime.started.agentPid);
+  }
 });
