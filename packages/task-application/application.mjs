@@ -145,7 +145,9 @@ export class TaskApplication {
       if (request.operation === 'task.approve') {
         if (original !== 'awaiting-approval' || !record.plan || body.planRevision !== record.plan.revision ||
             body.planDigest !== record.plan.digest) reject('plan_conflict', 409);
-        if (this.now() >= Date.parse(task.deadlineAt)) reject('state_conflict', 409);
+        const deadline = Math.min(Date.parse(task.deadlineAt), Date.parse(task.createdAt) + record.plan.budget.timeoutMs);
+        if (this.now() >= deadline) reject('state_conflict', 409);
+        task.deadlineAt = new Date(deadline).toISOString();
         record.approved = {planRevision: record.plan.revision, planDigest: record.plan.digest, at: new Date(this.now()).toISOString()};
         task.status = 'queued'; task.phase = 'execution'; status = 'accepted'; action = 'dispatch';
       } else if (request.operation === 'task.cancel') {
