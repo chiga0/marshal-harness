@@ -11,10 +11,14 @@ import {encode} from '../task-store/store.mjs';
 const options = ['--execute-real', '--run-dir', '/private/tmp/qwen-private-new', '--node', '/installed/node', '--qwen-entry', '/installed/cli-entry.js'];
 test('real execution is explicit; arguments cannot select a model, fallback, existing state mode or arbitrary argv', () => {
   assert.equal(parseOptions(options).timeoutMs, 600000);
+  assert.equal(parseOptions(options).scenario, 'team');
+  assert.equal(parseOptions([...options, '--scenario', 'team']).scenario, 'team');
+  assert.equal(parseOptions([...options, '--scenario', 'cancel']).scenario, 'cancel');
   assert.deepEqual(parseOptions(['--help']), {help: true});
   for (const args of [[], options.slice(1), [...options, '--execute-real'], [...options, '--node', '/other'],
     [...options, '--model', 'fake'], [...options, '--timeout-ms', '0'], [...options, '--timeout-ms', '900001'],
-    [...options, '--mode', 'open'], ['--execute-real', '--run-dir', '../state', '--node', '/n', '--qwen-entry', '/e']])
+    [...options, '--mode', 'open'], [...options, '--scenario', 'shell'], [...options, '--scenario', 'cancel', '--scenario', 'team'],
+    ['--execute-real', '--run-dir', '../state', '--node', '/n', '--qwen-entry', '/e']])
     assert.throws(() => parseOptions(args));
 });
 function planFixture() {
