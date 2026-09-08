@@ -2,6 +2,23 @@
 
 ## 当前结论
 
+### 20:16 CST 真实模型团队突破
+
+已在正式 Node 源码 `42f95658071e9ce03d38d8926b376b26c82ffd50` 完成一次纯HTTP真实Qwen团队验收；该main已实际推送。驱动source=`f9a567c6feeba6bcc046c89e742bfc22ec5c79e1`，localMergeSha=`636c90d8cef0e0f25b9eb0077f7285ddeb4757a4`。下面 `82b64cf` 为其产品运行代码基线；后继仅增加验收驱动与文档。
+
+- Task=`task-46eeda51-779e-41ce-af19-e689ebf6e0db`，2026-09-08 `12:15:40.285Z`→`12:16:12.905Z`，总计 **32.620秒**；本次无自动重试。
+- 真实planner提出计划，经一次HTTP批准后两个作者分别生成east/west报告；实际执行重叠 **16.799秒**，各自原进程cleanup已确认。
+- 独立检查器执行一次，Core接纳验收及最终交付；HTTP中4个Worker均completed（planner、两个author、verifier），不把模型end_turn当业务通过。
+- 下载后独立消费者确认east为2笔/1275 cents、west为2笔/550 cents，共4笔/1825 cents。交付184 bytes，摘要 `sha256:ee6166dd4ce3e6516262414a5e032dd999083ae50b60825e85f4df5482cf56e8`。
+- 同一Node宿主内正常shutdown→同版本open，重新创建HTTP/SQLite服务实例和token后，原create/approve回执与完整Task、成果字节不变，重复启动数0；不是宿主进程退出、崩溃恢复或跨版本升级证据。
+- 实际安装身份为 **Qwen 0.22.3 / Node24.15.0**，入口摘要 `sha256:68cb29eb7ccc936d78ece5564ef55cae41a55b630e6657dc417c1f2e561cf4c9`。不混用较早0.23.0会话证据，不改原生模型/登录，不启动Marshal原生文件。
+
+本地脱敏证据 `/private/tmp/marshal-qwen-team-20260908-201600/evidence.json`，交付 `/private/tmp/marshal-qwen-team-20260908-201600/regional-report.json`；私有运行库和原始日志不提交。源码身份由维护者实际运行记录关联，证据JSON本身不是含sourceHead/driverDigest的签名发行收据。本次permission回调allowed=0/denied=0，仅说明未收到询问，不能证明权限限制或交互路径生效。**Mac ordinary-user dogfood：production=false，publisherSeparationProven=false**。正式同链真实团队成功这一条件已推进；真实运行中取消、完整B1条件、B2/API-STABLE、权限分离及B3发行仍不自动关闭。
+
+付费调用前修正了一项可避免的返工来源：不再要求planner逐字复述中文验收句，改为核对Core确定性追加的完整policy/description/layout/delivery及实际输入绑定；篡改仍拒绝，业务oracle不变。维护者11项无模型检查通过；同候选14项含HTTP团队夹具通过。首次受限工具沙箱中3项HTTP因服务不能启动失败，获批正常本机权限后同代码通过，不修改断言或隐瞒第一次失败。
+
+当前并行：批准前有限问答与Pi正式RPC候选；Pi原生shell脱离继承进程组的清理边界尚待解决，不因本机已安装而宣称正式支持。以下为本次实机前的集成检查点，保留其时间范围。
+
 正式主线是 ADR0088 的 Node-only Task 服务，不再扩充固定订单实验。当前代码集成基线 main=`82b64cfa8d0daef0c188f0e296299b6e3aedcc48`，已包含正式 HTTP、唯一 SQLite、Task 控制/执行 reducer、受管 ACP、Supervisor、输入上传/制品下载、不可变文件物化、通用业务文件适配、独立验收/Decision/最终交付、独立 HTTP 客户端、正式服务入口与目录发行包。**正式全链 Node 进程夹具已通过；真实模型团队与 API-STABLE 尚未完成**。B1/B2 保持 IN_PROGRESS，B3 保持 PLANNED；实验双 Pi 成功与正式组件证据分开。
 
 2026-09-08 20:03 CST 已实际将 main 从 `ba2196b` 推送至 `82b64cfa8d0daef0c188f0e296299b6e3aedcc48`；本机 main 与 origin/main 一致，以上代码 pendingRemoteSync=false。[Node team CI](https://github.com/chiga0/marshal-harness/actions/runs/34223961302)已通过，通用[CI](https://github.com/chiga0/marshal-harness/actions/runs/34223961248)最近查询仍运行中。推送/测试不等于正式发行；以下历史检查点保留原范围。

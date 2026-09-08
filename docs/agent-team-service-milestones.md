@@ -6,6 +6,8 @@
 
 ## 1. 三个用户出口，不再把平台准备当交付
 
+**20:16 CST实机增量**：正式Node源码 `42f9565` 的真实Qwen纯HTTP团队已完成一次批准、双作者重叠16.799秒、独立验收、下载消费和正常重启回执/成果保持，全程32.620秒。该结果推进B1真实同链条件；运行中取消、权限分离及其余B1/B2/B3出口未被该一次成功替代。当前下一步为B2有限问答、Pi第二Adapter和实际安装恢复，B1/B2状态不自动提升。详见[精确实机证据](node-task-service-status-2026-09-08.md)。
+
 最新实施检查点：ADR0088 已接受，正式 HTTP/SQLite/Application/ACP/Supervisor/独立验收/最终交付/服务入口已合入并推送至 `82b64cf`。全链真实Node进程夹具及307项组合测试通过，远端Node team CI通过；真实Qwen原生工具单会话通过不等于正式团队验收。当前推进真实HTTP模型团队交付，与批准前问答并行；目录发行包已准备，平台实机/权限分离/完整恢复未关闭。B1/B2仍IN_PROGRESS、B3仍PLANNED，不更改退出条件。精确事实及未完成范围见[当前状态](node-task-service-status-2026-09-08.md)。
 
 正式实现采用 [ADR 0088 的 Node 投影](adr/0088-node-task-service-production-projection.md)。B1/B2/B3 的用户出口保留，历史 Go/RB1 物理实现和实验 JSON Store 不是新 profile 的前置。优先 Qwen ACP + 通用任务/SQLite/恢复同链集成；签名与安装按实际发行的脚本包、原生资产及运行时分别验证，不继续生成匿名 Marshal 二进制，也不以 Node 形态豁免平台与发行验证。
