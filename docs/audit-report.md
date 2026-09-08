@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-08：Node-only 本机团队闭环实证
+
+[ADR 0087](adr/0087-node-local-team-feasibility-probe.md) 的独立实验候选 `c88410b` 已在 Mac 使用既有 Node/Pi 通过纯 HTTP 双作者、结果收集、69 项固定业务验收、下载后 69 项独立消费、活跃前端重启和另一真实任务取消/重启保留；未调用 Marshal 原生文件。两个实际 Agent 执行区间重叠 13.106 秒。对应有界可行性 finding 关闭，**完整 supervisor 崩溃恢复、任意任务、第二 Provider、生产存储和正式 Node profile 仍开放**，不升级旧 Go B1/B2/stable。
+
+三轮实机共两次失败：先前 1 MiB wire 预算误伤原生事件流，其后独立作者提示未完整给出数值范围而产生真实错误代码。分别以独立有界事件预算、逐角色完整契约与变异负测修正，旧失败保留，未降低文件/终态/oracle 门禁。新候选独立审查无未决 P0/P1。全过程与精确证据见[实机记录](node-team-feasibility-2026-09-08.md)，不从一次通过推导通用效率或生产稳定性。
+
 ## 2026-09-08：关键问答不变成人造等待
 
 B2-A 接缝盘点确认，原 `bounded-task-draft/v1` 是单个不可变草案；0085 的一般交互条款尚未定义问题生产者及答案/新 preview 的原子提交。[ADR 0086](adr/0086-task-preapproval-questions-and-preview-revisions.md) 仅补未批准 Task 的封闭协议，保留旧 draft、原确认期限、同账本和取消优先。`4f76a2e` 经独立审查无 P0/P1，按反馈一次补齐旧批准 fallback、Decision/delivery 消费者和取消 CAS 的明确边界；维护者在已有 B2 实施授权内接纳，不伪称用户曾逐条确认。接纳时尚无新 RB1/HTTP 实现或运行证据。

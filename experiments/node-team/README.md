@@ -2,6 +2,8 @@
 
 对应 [ADR 0087](../../docs/adr/0087-node-local-team-feasibility-probe.md)。这是无 Marshal 原生依赖的独立可行性纵切，不是既有 Go 服务的替换或 production 发布。
 
+2026-09-08 实机实验已通过：两个真实 Pi 重叠运行、HTTP 活跃前端重启、69 项交付验收与下载后 69 项消费检查、另一任务真实取消和取消状态重启保留。完整记录（含两次失败与改进）见[实机记录](../../docs/node-team-feasibility-2026-09-08.md)。测试后服务已停止，以下命令可重新启动独立实验。
+
 ## 形态
 
 由已允许的 Node 24 解释器直接运行 `.mjs` 源码：HTTP 前端 → 内置 Node supervisor → 两个本机 Pi 作者 → 固定组合验收 → 文件交付。没有 Go 编译、Marshal 原生子进程、原生扩展或随机 Mach-O 可执行文件。

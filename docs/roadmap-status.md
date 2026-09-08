@@ -6,6 +6,8 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
+- **Node-only 可行性实验已通过**：`c88410b` 在本机 Node 24.15.0 / Pi 0.84.4 经纯 HTTP 完成真实双 Pi（重叠 13.106 秒）、69 项独立验收、下载后 69 项消费、活跃前端重启及另一真实任务取消/重启保留，全程不调用 Marshal 原生文件；本次约 40.62 秒。前两次真实失败分别为原生事件流预算不足、角色提示未各自完整列明数值范围，均保留并修正，不倒填首轮通过。见 [ADR 0087](adr/0087-node-local-team-feasibility-probe.md) 与[实机记录](node-team-feasibility-2026-09-08.md)。该独立 profile 不修改旧 `.marshal`，不自动授予 Go B1/B2 或 production；下一决策是正式 Node profile 边界，而非继续等待本机原生执行才允许做实验。
+
 - 远端 main 最近核对 `ba2196b`；PR #275 已在完整 CI 全绿后合入功能分支 `feat/team-resident-progress`，merge=`a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1`，pendingRemoteSync=false，**不是 main 合并**。Task HTTP、独立客观 Decision、完整制品链已有原 Store/Verifier 的确定性组合证据，尚无该完整团队的真实下载消费。
 - PR #276 的 `272aa4c` 在 [CI 34195113168](https://github.com/chiga0/marshal-harness/actions/runs/34195113168) 六项通过、macOS quality 失败：输出超限负例的 150ms 预算先触发解释器启动超时。后继 `a97b0f8` 只分离负例预算，超时负例仍 150ms，输出/JSON 负例沿用原默认 30 秒；运行时代码和错误断言不变。独立审查 P0/P1=0，37 项回归通过，新候选 CI 待验证。此前 context 夹具和本次失败成本都保留。
 - **Pi/Qwen 本地可用配置已由用户确认**。Mac 当前实机阻碍是固定 Marshal 二进制启动被 AMFI 拒绝，不是未配置 Agent 或待补额度；不得通过随机换路径、重签或跳过安全策略假报运行。下一条 B1 证据必须来自合法固定候选的真实 Task HTTP 双 Worker→自主验收/集成→下载消费，并验证所属进程重叠、取消/cleanup 及重启。

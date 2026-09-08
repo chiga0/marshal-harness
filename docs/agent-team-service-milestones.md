@@ -2,6 +2,8 @@
 
 更新：2026-09-08。最终方案见[服务架构](agent-team-service-architecture.md)，合同变化集中在 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Accepted）。合同接受允许实施，不表示实现或生产可用；实际事实仍只记 [Roadmap](roadmap-status.md#业务交付当前表)。
 
+**Node 形态可行性检查点已通过（不升级生产阶段）**：[ADR 0087](adr/0087-node-local-team-feasibility-probe.md) 的独立 Node-only profile 在本机完成真实双 Pi→HTTP 活跃重启→69 项独立验收→下载再验收，以及第二任务取消/重启保留。它解决本机此次必须执行 Marshal 原生文件的实验障碍，不代替下面 ADR 0085 的完整 B1/B2/B3 合同。下一步优先决定正式 Node profile 的合同与迁移边界，然后推进局部修正、第二 Provider 和完整恢复；不先全量翻译旧 Core。证据、失败与限制见[实机记录](node-team-feasibility-2026-09-08.md)。
+
 ## 1. 三个用户出口，不再把平台准备当交付
 
 | 阶段 | 用户实际得到什么 | 完成的硬证据 | 不等待 |
