@@ -7,10 +7,10 @@
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
 - 远端 main 最近核对 `ba2196b`；PR #275 已在完整 CI 全绿后合入功能分支 `feat/team-resident-progress`，merge=`a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1`，pendingRemoteSync=false，**不是 main 合并**。Task HTTP、独立客观 Decision、完整制品链已有原 Store/Verifier 的确定性组合证据，尚无该完整团队的真实下载消费。
-- PR #276 取消/交付/观测组合最新 source=`272aa4c68706390b767c17f7e9d24c773df2faf1`，[CI 34195113168](https://github.com/chiga0/marshal-harness/actions/runs/34195113168)在途。此前 macOS CI 的夹具 context 提前开始导致到期失败已定点修正，原运行时期限和门禁未改；该失败成本保留，不挪用旧候选的通过结果。
+- PR #276 的 `272aa4c` 在 [CI 34195113168](https://github.com/chiga0/marshal-harness/actions/runs/34195113168) 六项通过、macOS quality 失败：输出超限负例的 150ms 预算先触发解释器启动超时。后继 `a97b0f8` 只分离负例预算，超时负例仍 150ms，输出/JSON 负例沿用原默认 30 秒；运行时代码和错误断言不变。独立审查 P0/P1=0，37 项回归通过，新候选 CI 待验证。此前 context 夹具和本次失败成本都保留。
 - **Pi/Qwen 本地可用配置已由用户确认**。Mac 当前实机阻碍是固定 Marshal 二进制启动被 AMFI 拒绝，不是未配置 Agent 或待补额度；不得通过随机换路径、重签或跳过安全策略假报运行。下一条 B1 证据必须来自合法固定候选的真实 Task HTTP 双 Worker→自主验收/集成→下载消费，并验证所属进程重叠、取消/cleanup 及重启。
-- B2-A 问答在接受的 [ADR 0086](adr/0086-task-preapproval-questions-and-preview-revisions.md) 下接通候选代码与测试，等待新增动态验证；只处理批准前问题及追加 preview，生产 `order-quote/v1` 保持零问题，测试模板不冒充零 Git 业务或运行中 Agent 交互。独立 HTTP 问题客户端 `91ee1935` 已推功能分支、11 项问答及原 37+12 项客户端回归通过，尚待同片整合。
-- B2 存储候选是互斥的新数据根 SQLite 路径，不双写旧 RB1；冻结 Linux 测试载体摘要前缀 `4cdb62b` 的 19 项顶层测试已由远端专用用户通过（含真实 crash 子进程），独立审查仍进行。它不是当前 Task API 已切库或 Linux server production 的证据。
+- B2-A 问答在接受的 [ADR 0086](adr/0086-task-preapproval-questions-and-preview-revisions.md) 下接通候选代码；`4e8925d` 的三组真实 Session/HTTP 冷恢复及 resultingress/taskhttp 问答 race 通过。独立审查发现 sealed server 漏转发接口，`75af587` 已修复并复审 P0/P1=0，新 CLI 测试仍须精确 Darwin CI。只处理批准前问题，生产 `order-quote/v1` 保持零问题；不冒充零 Git 业务或运行中交互。客户端 `91ee1935` 已整合，11 项问答及原 37+12 项客户端回归通过。
+- SQLite 候选已推送 PR #277：原子后端和目录恢复修正经独立审查无剩余 P0/P1，最终 Linux 测试包 `9b8148d` 在香港 ECS 专用用户 22 组通过、2.136 秒、非 race。当前仅 COMPONENT，未接入生产 Session、不双写旧 RB1，不关闭 B2；旧 19 组证据保留不替代新快照。
 - 流水并行保持 CI(N)/问答实现(N+1)/SQLite 独立准备与审查；共享事务一个作者。后继机器门禁前移到真实 producer/consumer，历史失败、CI、人工等待不删分母。目前没有重复业务配对实验，不能宣称相对强 Lead＋SubAgents 的效率优势。
 
 | Milestone | 当前状态 | 当前尚缺的用户出口 |

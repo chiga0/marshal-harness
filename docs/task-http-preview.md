@@ -17,7 +17,7 @@
 
 模板仅有 `order-quote/v1`：两个作者分别实现报价 API/客户端，随后集成。自由文本只补充固定契约，预览展示实际 work、scope、oracle 摘要和总限额；这不是任意需求的自动规划器。`context.text` 不解释为宿主路径或权限。模板是 operator 启动配置，HTTP 不接收 Policy、执行程序、环境或 authority 对象。
 
-自动客观独立 Decision 与完整成果下载已随 PR #275 全绿后合入功能分支 `a2f41c9`，不是 main 或正式发布。取消组合 PR #276 的新候选 `272aa4c` 正在完整 CI；先前 macOS 失败定位为测试夹具把一分钟 context 提前到三次验收准备前启动，修正没有放宽运行时期限。实际状态以 [Roadmap 顶部](roadmap-status.md#业务交付当前表)与 server capabilities 为准，不把接线当本机旧安装已升级。Pi/Qwen 本地配置已由用户确认可用；当前 Mac 实机障碍是 AMFI 拒绝固定 Marshal 启动，不再写成缺配置或额度。B1 真实自主团队交付与受控取消出口仍开放。
+自动客观独立 Decision 与完整成果下载已随 PR #275 全绿后合入功能分支 `a2f41c9`，不是 main 或正式发布。取消组合 PR #276 的 `272aa4c` CI 六项通过、macOS quality 失败：输出超限客户端负例的 150ms 预算先触发解释器启动超时。后继 `a97b0f8` 只分离各负例预算，原运行时限制不变；37 项回归及独立审查通过，完整 CI 仍待验证。实际状态以 [Roadmap 顶部](roadmap-status.md#业务交付当前表)与 server capabilities 为准。Pi/Qwen 已由用户确认可用；Mac 当前实机阻碍是 AMFI 拒绝固定 Marshal 启动。B1 真实自主交付与取消出口仍开放。
 
 ### 批准前关键问答候选（ADR 0086）
 
@@ -25,7 +25,7 @@
 
 回答正文为 `expectedRevision`、`previewDigest`、`questionRevision`、`answer` 四个字段；`answer` 是不超过 4096 UTF-8 字节且无 NUL 的非空字符串。返回顶层 Task 投影，以及 `questionId/answerFactDigest/acceptedPreviewDigest/acceptedRevision/replayed` 回执。同 key 同正文重放返回原回执及明确的当前 Task（可能已取消），不延长期限、不重答、不自动确认。回答后旧 revision 的取消或旧 preview 的确认返回 409；用户读取最新版本后明确取消或一次最终确认。
 
-当前准备验证：真实 Store 原子追加、同 key/CAS/取消竞争、损坏或截断冷回放拒绝；完整 Task/Policy schema 的 RepositorySession→HTTP→两题→最终 accepted-plan→冷重开组合测试；边界、架构检查及五包 vet/staticcheck 已通过，**新增 Go 动态测试尚待固定源码验收**。这些测试没有模型，不覆盖运行中 Worker 的问答/pause/resume/steering，不关闭 B2；后续仍须接实际零 Git 业务槽及真实团队可消费交付。独立问题客户端由另一分支实现，合入时以其完整脚本回归共同验证。
+已验证：`4e8925d` 固定测试载体下三组 RepositorySession→HTTP→批准/取消/冷重放及 resultingress/taskhttp 问答 race 通过，包含同 key/CAS 竞争、损坏或截断冷回放拒绝与零问题旧模板。边界、架构及 vet/staticcheck 通过。独立审查发现真实 server 的 sealed 包装层未实现问答 Port，`75af587` 已补转发和锁序/关闭回归，同 reviewer 复核无剩余 P0/P1；新 CLI 动态测试须由精确候选 Darwin CI 完成，不用 Session 结果代替。客户端 `91ee1935` 已整合，问答 11 项和原 37+12 项回归通过。这些测试没有模型，不覆盖运行中 Worker 的问答/pause/resume/steering，不关闭 B2；后续仍须实际业务槽及真实团队可消费交付。
 
 ## 启动与访问
 
