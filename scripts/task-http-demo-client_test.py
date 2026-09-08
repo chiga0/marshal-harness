@@ -180,7 +180,8 @@ class DemoTests(unittest.TestCase):
                 with self.subTest(revision=revision), self.assertRaises(demo.ClientError):
                     client.cancel("task:demo", revision, "key")
             self.assertEqual(len(fake.calls), 1)
-            for changes in ({"id": "other"}, {"status": "completed"}, {"cancellationRequested": False}):
+            for changes in ({"id": "other"}, {"status": "completed"}, {"status": []},
+                            {"status": {}}, {"cancellationRequested": False}):
                 original = copy.deepcopy(fake.task)
                 fake.task.update(changes)
                 with self.assertRaisesRegex(demo.ClientError, "invalid-cancellation-response"):
@@ -216,6 +217,19 @@ class DemoTests(unittest.TestCase):
             sent = [c for c in fake.calls if c["method"] == "POST"]
             self.assertEqual(len(sent), 2)
             self.assertEqual(sent[0], sent[1])
+
+    def test_interrupt_after_cancel_request_does_not_deny_possible_cancellation(self):
+        with Fake() as fake, tempfile.TemporaryDirectory() as tmp:
+            self.cancellation(fake)
+            with mock.patch.object(demo.Client, "observe", side_effect=KeyboardInterrupt):
+                rc, rows = self.run_cli(fake, tmp, ["cancel", "--task-id", "task:demo",
+                    "--expected-revision", "9", "--key", "cancel:key"])
+            self.assertEqual(rc, 130)
+            self.assertEqual(rows[-1]["taskId"], "task:demo")
+            self.assertEqual(rows[-1]["taskCancellationStatus"], "unknown")
+            self.assertNotIn("workerCancellationRequested", rows[-1])
+            self.assertFalse(rows[-1]["deliveryComplete"])
+            self.assertEqual(len([c for c in fake.calls if c["method"] == "POST"]), 1)
 
     def private(self, path, value):
         path.write_text(json.dumps(value), encoding="utf-8")

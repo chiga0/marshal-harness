@@ -254,6 +254,7 @@ class Client:
         result = self.request("POST", "/v1/tasks/" + task_id + "/cancel",
                               {"expectedRevision": expected_revision}, key)
         if (preview_identity(result) != task_id
+                or not isinstance(result.get("status"), str)
                 or result.get("status") not in {"cancelling", "cancelled"}
                 or result.get("cancellationRequested") is not True):
             raise ClientError("invalid-cancellation-response")
@@ -631,8 +632,14 @@ def main(argv=None):
         emit(error)
         return 2
     except KeyboardInterrupt:
-        emit({"event": "observation-interrupted", "workerCancellationRequested": False,
-              "deliveryComplete": False, "pending": PENDING})
+        interrupted = {"event": "observation-interrupted", "deliveryComplete": False,
+                       "pending": client.pending if client is not None else PENDING}
+        if args.command == "cancel" and valid_id(args.task_id):
+            interrupted.update(taskId=args.task_id, taskCancellationStatus="unknown",
+                               recovery="inspect-original-task-or-retry-original-cancel-key-and-revision")
+        else:
+            interrupted["workerCancellationRequested"] = False
+        emit(interrupted)
         return 130
 
 
