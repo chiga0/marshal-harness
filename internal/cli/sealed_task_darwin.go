@@ -10,6 +10,27 @@ import (
 var _ application.TaskDraftPort = (*sealedRepositoryApplication)(nil)
 var _ application.TaskArtifactPort = (*sealedRepositoryApplication)(nil)
 var _ application.TaskCancelPort = (*sealedRepositoryApplication)(nil)
+var _ application.TaskQuestionPort = (*sealedRepositoryApplication)(nil)
+
+func (a *sealedRepositoryApplication) ReadTaskQuestions(ctx context.Context, id string) (application.TaskQuestions, error) {
+	a.statusMu.RLock()
+	defer a.statusMu.RUnlock()
+	if a.closed {
+		return application.TaskQuestions{}, application.NewError("task-questions", application.ReasonOwnerUnavailable)
+	}
+	return a.session.ReadTaskQuestions(ctx, id)
+}
+
+func (a *sealedRepositoryApplication) AnswerTaskQuestion(ctx context.Context, request application.AnswerTaskQuestionRequest) (application.TaskQuestionAnswerResult, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.statusMu.RLock()
+	defer a.statusMu.RUnlock()
+	if a.closed {
+		return application.TaskQuestionAnswerResult{}, application.NewError("answer-task-question", application.ReasonOwnerUnavailable)
+	}
+	return a.session.AnswerTaskQuestion(ctx, request)
+}
 
 func (a *sealedRepositoryApplication) CancelTask(ctx context.Context, request application.CancelTaskRequest) (application.TaskProjection, error) {
 	a.mu.Lock()
