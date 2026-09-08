@@ -4,6 +4,8 @@
 
 ## 三个不同结论
 
+2026-09-08 Node-only 正式实现的取代范围集中在 [ADR 0088](adr/0088-node-task-service-production-projection.md)：保留 0085 产品/安全语义，替换其 Go/RB1 专属物理投影；0087 仍只是实验。后文“B1 原 Store”“Task 映射 Go Goal”和原生资产 signing 均按 profile/资产类型理解，不自动约束新 Node 包必须执行 Go，也不自动放宽安全或发布合同。ADR 状态以该文件为准，代码完成仍以 Roadmap 为准。
+
 | 问题 | 唯一入口 | 含义 |
 | --- | --- | --- |
 | 要实现什么 | [Task-first 架构](agent-team-service-architecture.md)、[Milestone](agent-team-service-milestones.md) | B1 先团队 PoC，B2 本地 API 可用，B3 正式支持；无 Workspace 产品实体 |

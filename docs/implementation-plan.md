@@ -17,6 +17,8 @@
 
 ## 具体下一步
 
+**Node 正式主线优先**（[ADR 0088](adr/0088-node-task-service-production-projection.md)）：先通过可复用 ACP 驱动与真实 Qwen，再并行接通通用业务/Application 和 SQLite/恢复，在同一候选关闭 API-STABLE 与 B3。下面原 Go producer 名称仅为复用资产索引，不要求先恢复本机 Go 原生执行或全量翻译旧 Core；不继续扩展固定订单无工具实验。SQLite 接缝的确定性实现可与 ACP 并行，但同一状态根永远只启用一个已声明格式的权威 Store。
+
 1. 冻结一个真实小业务的接口、输入、整体 oracle/反例与下载内容；确认现有合法安装/Provider 可执行。结构性失败在付费调用前发现，不再轮换模型试运气。
 2. 同一应用入口接 Task 请求与一次计划确认，连接已有 team materialization、Start、Collect、Verify/Decision、集成与 Outcome。优先补缺失接线，不重建 scheduler。
 3. 两作者真实重叠执行；客户端只经 HTTP 查状态/取消/下载，独立环境消费结果，保留失败与实际耗时。通过才关闭 B1 团队 PoC。

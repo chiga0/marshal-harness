@@ -6,6 +6,8 @@
 
 ## 1. 三个用户出口，不再把平台准备当交付
 
+正式实现采用 [ADR 0088 的 Node 投影](adr/0088-node-task-service-production-projection.md)。B1/B2/B3 的用户出口保留，历史 Go/RB1 物理实现和实验 JSON Store 不是新 profile 的前置。优先 Qwen ACP + 通用任务/SQLite/恢复同链集成；签名与安装按实际发行的脚本包、原生资产及运行时分别验证，不继续生成匿名 Marshal 二进制，也不以 Node 形态豁免平台与发行验证。
+
 **2026-09-08 发布目标澄清**：用户要求的是完整、可部署的 stable 正式发行，B1 演示和 Node 可行性实验仅是中间证据，不是交付终点。不得继续把固定订单、禁用工具、一次性 JSON 候选当成通用 Agent Team 的实现主线。正式 Qwen 接入优先使用其原生 ACP：保留批准范围内的原生工具/配置/Skill，接入进度、权限/问答、取消；会话加载能力不替代 Marshal 的持久状态、归属与恢复验证。非 ACP Adapter 仍按能力匹配，并不要求所有品牌采用同一种 transport。正式 Node profile 与旧 Go/数据根的关系须明确更新合同后实施，不以实验通过默默替换权威存储或豁免 B2/B3。最新失败与路线纠偏见[Qwen 接入记录](qwen-integration-status-2026-09-08.md)。
 
 | 阶段 | 用户实际得到什么 | 完成的硬证据 | 不等待 |

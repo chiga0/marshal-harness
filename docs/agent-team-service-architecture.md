@@ -4,6 +4,8 @@
 
 ## 1. 最终产品定义：先交付，不先建管理平台
 
+当前正式实现投影见 [ADR 0088](adr/0088-node-task-service-production-projection.md)：Node-only 服务承接下述完整产品合同，不以 ADR 0087 实验代替产品。本文历史 Go/Goal/RB1 的物理映射仅适用于旧 Go profile；新 Node profile 在独立空根中用唯一 SQLite 权威，不调用 Marshal 原生进程、不导入旧根。以下的公开 API、确认、独立验收和 B2/B3 出口继续有效；ADR 接纳与实际支持分开判断。
+
 Marshal 是一个本机优先、可自托管的 Agent Team HTTP 服务。用户给出任务与上下文，确认必要的方案后，服务自己组织有界执行、进度监督、集成和独立验收，交付可下载、可使用、可审计的成果。能由一个 Worker 高效完成时不强制拆分；有互补职责与明确接口时才并行。
 
 **首版删除 Workspace 概念**：没有 Workspace ID、创建、注册、切换或管理 API，也不改名为 Project。数据目录是 server 内部配置，工作目录属于执行实现；二者都不是用户提交任务之前必须创建的业务对象。仓库、表结构、平台说明和操作目标放入 Task prompt/context，Core 不建资源目录，不要求先注册 repository/resource。
@@ -16,7 +18,7 @@ Marshal 是一个本机优先、可自托管的 Agent Team HTTP 服务。用户�
 | Worker | 所属任务/节点、角色、使用的 Agent、实际可见进展、结果、取消 |
 | Artifact | 输入文件、阶段候选、最终成果及独立验收材料 |
 
-Plan、Interaction、Operation、Run/Attempt 是必要的子记录/技术引用，不要求用户先创建一串对象或手写每个 Run。公开 Task 直接映射现有 Goal，旧内部 Task 执行规格在节点视图中称 WorkItem；一套 ID/revision/预算/事实，不全仓重命名或复制生命周期。
+Plan、Interaction、Operation、Run/Attempt 是必要的子记录/技术引用，不要求用户先创建一串对象或手写每个 Run。每个 profile 内保持一套 ID/revision/预算/事实；旧 Go profile 的公开 Task 映射现有 Goal，新 Node profile 不为了保持 Go 类型名称再造平行 Goal 真值。
 
 ### 目标启动体验
 
@@ -26,7 +28,7 @@ marshal serve
 marshal serve --data-dir <本机状态目录> --listen 127.0.0.1:0
 ```
 
-以上是目标接口，尚不表示当前命令已实现。新入口复用原 control-plane serve 的同一应用组合，不增加独立 server。服务报告监听地址与受保护连接信息的位置；默认数据目录、首次建库和本地访问保护自动处理，不要求注册账号、生成安装收据或运行 init 向导。
+以上是目标接口，尚不表示当前命令已实现。Node profile 由固定 Node 执行发布包入口，目标 `marshal serve` 可为脚本入口而非原生程序；应用组合和 Store 唯一，不额外启动旧 Go server。服务报告监听地址与受保护连接信息的位置；默认数据目录、首次建库和本地访问保护自动处理，不要求注册账号、生成安装收据或运行 init 向导。
 
 - 首个 B1 PoC 使用既有合法固定安装、当前可用 Provider 和真实 Git 样例环境，先证明团队交付。
 - B2 完成新数据根的简启动、SQLite 和零 Git 任务；无需历史库迁移。损坏/不兼容旧数据不能当空库重建。

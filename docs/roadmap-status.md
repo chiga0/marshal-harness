@@ -8,6 +8,8 @@
 
 ### 当前研发方式：本地集成优先
 
+**最新正式路线**：[ADR 0088](adr/0088-node-task-service-production-projection.md) 明确 Node-only 产品投影；不继续以固定无工具样例作为开发主线。Qwen 实验在 `81a83e6` 上确定性组合 46/46 通过，但真实双作者的业务验收失败；后继独立真实 ACP initialize 成功（协议 1、qwen-code、loadSession=true、exit 0、stderr 0），尚不证明工具/交互/恢复。已审实验与目标纠偏 sourceHead=`c8923cebe6124abb4e4a296ac1717ed0529d3387`，localMergeSha=`97c4558`；Git 空锁经两次无持有者核对后保留改名备份，再完成合并。最新 fetch 确认 origin/main 仍为 `ba2196b`，pendingRemoteSync=true。正式 ACP/Application/SQLite 接线继续推进，B1/B2/B3 不升级。以下较早的“Qwen 未新增证据/下一步决定 Node”等语句保留检查点上下文，以本段为准。
+
 **API/DI 并行检查点**：产品能力设计已有 ADR0085，但不能把旧 `/v1alpha1` OpenAPI 当作当前 Task-first 稳定协议。Node 实际接口候选见 [API 契约与差距](node-api-contract.md)及 `experiments/node-team/openapi.json`，覆盖 8 个路径、9 个操作；它只描述 ADR0087 实验，尚非 `API-STABLE`。HTTP 已抽为注入 Application 的薄适配器，sourceHead=`fb08495`，localMergeSha=`64c28cb5986c0ec424fc0f3aefd7d1565ba3e6c8`；维护者独立审查及 34/34 Node 组合回归通过。Schema/负例与真实无模型 HTTP 响应验证、DI 单测、第二 Provider 接入分别在独立工作树推进，不等待真实模型才写接口或测试。Qwen 接入仍在实施，未新增该 Adapter 的实机通过证据。
 
 本地 main 已通过 `428acb36a2af69bff0b1f94d6f77ada078a8321c` 集成此前开发栈，并继续合入上述 DI；远端 main 最近核对仍为 `ba2196b`，本地增量 `pendingRemoteSync=true`。以下各 PR 的远端功能分支记录是各自历史同步事实，不表示本地仍未集成，也不表示远端 main 已更新。
