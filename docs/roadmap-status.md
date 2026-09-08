@@ -2,16 +2,17 @@
 
 <a id="业务交付当前表"></a>
 
-## 当前唯一状态与关键路径（2026-09-07）
+## 当前唯一状态与关键路径（2026-09-08）
 
-本节是当前进度依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。2026-09-07 产品要求统一为[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)及 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）；多轮审计见[设计复核](audit-agent-team-service-design-2026-09-07.md)。设计方向、ADR 接纳、runtime enable 与 release 按[合同适用性](design-contract-map.md)分别判断；新设计完成不改变下表能力成熟度。
+本节是当前进度依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。当前产品要求统一为[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)及 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（2026-09-08 Accepted）；多轮审计见[设计复核](audit-agent-team-service-design-2026-09-07.md)。设计方向、ADR 接纳、runtime enable 与 release 按[合同适用性](design-contract-map.md)分别判断；接受合同不改变下表能力成熟度。
 
 - 主线最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；B2 候选在 `feat/b2-durable-materialization@ff71d7b732e42a90d20bec97f01e6c6fed8ba27f`。下述 CI/canary 证据精确属于 `798ea395abd97744cfc69d125ee997933dad06f9`，不能挪给后继。设计文档在独立 `feat/agent-team-service-blueprint` 分支；候选同步不等于 main 合并，没有本轮 localMergeSha/remote merge/stable。
 - 798ea39 的精确 [CI 34095940005](https://github.com/chiga0/marshal-harness/actions/runs/34095940005) 五项全绿；先前 34094155668 的结果计数阻断由 [ADR 0084](adr/0084-pi-typed-terminal-result-framing.md) 候选修正。后继 max 实机 34097645547、一次显式 flash 替代 34098369837 均未完成团队；后者 service 通过真实 Collect/Verify 的 33 项检查并形成 ReviewPacket，client 在模型终态失败。没有本轮独立 Decision/ACCEPTED、第三节点或 GoalOutcome。停止模型轮换，后继聚合终态分类与任务上下文/输出收敛，不删失败分母。演示范围和实际证据见 [PoC 交付页](poc-agent-team-delivery.md)。
 - 最终目标不改为“完成更多协议/PR”：交付 fixed server 的完整业务任务与受限团队，并用至少三个代表任务族的重复配对实验，与相同冻结契约、oracle、模型、工具及资源的强 Lead＋SubAgents 比较。源代码返工、失败 CI、失败 Attempt、人工等待全部计入；目前没有效率优势证据。
 - 最新实施候选 `dd8e8ec` 的完整 CI `34156121695` 五项与 Darwin 定向 `34155305960` 的 36 项通过；真实团队 `34157213736` 证明已收集结果→Stop→Close 收口、零重复 Collect 及 cleanup released。但 client 的 Provider `length` 仍触发团队 halt，service 虽已接纳结果进入 VERIFYING，没有 ReviewPacket/Decision/集成/下载。当前补驱动的跨节点失败观测与超时诊断，不自动解除 halt，不原样付费重跑。`a5418f4` 的历史单节点 Verify pass 不替代本候选团队出口；B1/B2/B3 状态不升级，详细证据见[审计报告](audit-report.md)。
 - 用户已创建以 B1→B2→API-STABLE→B3 正式部署为出口的持续 Goal。[Linux 远端验证执行机](remote-linux-validation.md)已安装并校验 Go 1.26.6，实际开始执行旧远端基线 `68e5c8b` 的测试；它不替代 Darwin 测试或授予 Linux server production 能力。系统绝对路径 Python 不兼容导致 CLI renderer 基线失败，保留失败，不通过改 PATH/跳过后假报全绿。
-- 2026-09-08 后继：Task HTTP 实现 `70ec148` 已接同 RB1 草稿/确认/查询及 resident 写入通道，原 reviewer 复核两项 P1 关闭；香港 ECS 精确三包测试及 Mac activation 入口/held Session 冷重放通过。客户端 `f333dfd` 经独立 17 项测试，合入本地候选 `736fcc9`，不等于 main 合并。Mac 共享 lane 动态被 AMFI 签名检查终止，仍待合法执行。公网 ECS 已使用独立受限账号；内网机器不接 GitHub CI。模型额度不足期间不发起真实 Agent 重试，先完成非模型调用链；证据与开放项见 [Task HTTP 入口](task-http-preview.md)。
+- 2026-09-08 Task HTTP sourceHead=`8543878cc9cc9b095e94c06c0cc41987611149f2` 的[完整 CI 34184969456](https://github.com/chiga0/marshal-harness/actions/runs/34184969456)五项全部通过，包含 Ubuntu/macOS quality。[PR #271](https://github.com/chiga0/marshal-harness/pull/271) 已远端合入 `feat/team-resident-progress`，remoteMergeSha=`be03e7015be12636b7f2af5aca644039b3558492`，tree 与 source 相同；该 PR pendingRemoteSync=false，**不是 main 合并**。草稿/确认/查询、原 writer lane、CLI 封闭参数及 revision 400/409 已接线。首次 CI 发现的跨层依赖已通过组合根 DI 修正，未扩大白名单。ECS 四包定向 race、Mac held Session 冷重放另有通过证据；本机固定测试受安全检查终止的历史保留，Darwin CI 通过不表示本机策略解除。内网机器不接 GitHub CI，额度不足期间不发起真实 Agent 重试。
+- CI 等待期间并行完成安全下载客户端 sourceHead=`b086d1a0d6331ce0cbacf7471d5d8ad5389ec490`：oracle 后代进程残留 P1 已一次聚合修复，原 reviewer 复审无 P0/P1，独立复跑 30 项测试通过。localMergeSha=`027670f421e93d731eac130377218171329c65ee`，整合分支 `feat/task-b1-integration` 尚待候选 CI/远端合并。客户端不等于服务端下载已可用，Go 实产 ZIP 互操作仍待验证。主链作者继续自动客观独立 Decision/完整制品服务端纵切；Task cancel 已完成正常阶段自动收口与故障边界设计，待共享提交点冻结后实施。没有新真实团队交付、取消完成或正式发布证据。
 
 | Milestone | 当前状态 | 已有证据 / 实现 | 尚待退出条件 |
 | --- | --- | --- | --- |
@@ -23,7 +24,7 @@
 
 并发边界：B1 先两个 scope 互斥的作者，验收/集成也计容量；现有候选仍只证明两个派发接缝，不把新方案写成已完成实机。开发可并行主应用闭环、业务 oracle/API 客户端、当前阻断的 Adapter；共享事务一个 owner，每个作者独立 worktree，不用旧 Marshal skill。UI 只在核心 API-STABLE 后启动。更多并发须依赖、目录、内存/CPU、Provider 与验收队列均允许；不是所有槽满才叫有效率。
 
-本轮设计纠偏：按用户明确指示删除首版 Workspace 实体/API/注册，将账号/安装身份管理、全面迁库和全 Provider 矩阵移出 B1；旧 B1 单任务是新 B1 团队 PoC 的内部步骤，原状态、SHA/CI 与失败事实全部保留。新架构/Milestone/ADR0085/当前入口同步，0085 仍为 Proposed。AGENTS.md 顶部目标导航在用户另行明确授权后同步，全部 universal 不变量/门禁原文保留。设计调整不代表产品出口、远端合并或正式发布完成。
+本轮设计纠偏：按用户明确指示删除首版 Workspace 实体/API/注册，将账号/安装身份管理、全面迁库和全 Provider 矩阵移出 B1；旧 B1 单任务是新 B1 团队 PoC 的内部步骤，原状态、SHA/CI 与失败事实全部保留。ADR0085 已于 2026-09-08 接受，当前导航据正文同步，不另行扩大权限。AGENTS.md 的 universal 不变量/门禁保留；设计调整不代表产品出口、远端合并或正式发布完成。
 
 ## 历史过程记录（不作为当前待办）
 
