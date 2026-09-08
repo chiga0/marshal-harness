@@ -8,7 +8,7 @@
 
 ### 最新正式 Node 集成检查点
 
-当前代码集成基线 main=`90591d5e37e6e6eac247f6e19efae853232b9ada` 已包含正式24操作 HTTP 契约、SQLite、17项 Task/Worker/Operation/输入与制品应用操作、受管 ACP Provider、Supervisor、耐久制品/文件采集、通用业务适配、独立命令运行和正式 HTTP 客户端。真实 Qwen ACP 已完成原生工具读取并独立核对结果，不再只是握手。Supervisor的错误fan-out已聚合修复并复核合入；服务入口2个恢复P1聚合修正、13项真实HTTP通过，原reviewer复核中。完整团队交付、API-STABLE 和 stable 尚未完成。组合候选2bca3a26在启动期限测试纠错后184/184通过，不含后来business/service；原178/179失败记录保留。精确source/merge、测试范围、失败与下一步见[当前实施检查点](node-task-service-status-2026-09-08.md)。pendingRemoteSync=true；没有新的远端main合并或正式发行声明。
+当前代码集成基线 main=`f3e32340208c9e707192c3c0ab622b2e147cd969` 已包含正式24操作 HTTP 契约、SQLite、17项 Task/Worker/Operation/输入与制品应用操作、受管 ACP Provider、Supervisor、耐久制品/文件采集、通用业务适配、独立命令运行、正式 HTTP 客户端与服务入口（另4项运行观察）。真实 Qwen ACP 已完成原生工具读取并独立核对结果，不再只是握手。Supervisor的错误fan-out及服务入口2个恢复P1均聚合修正、同reviewer复核合入；维护者服务13项真实HTTP通过。完整团队交付、API-STABLE 和 stable 尚未完成。组合候选2bca3a26在启动期限测试纠错后184/184通过，不含后来business/service；原178/179失败记录保留。精确source/merge、测试范围、失败与下一步见[当前实施检查点](node-task-service-status-2026-09-08.md)。pendingRemoteSync=true；没有新的远端main合并或正式发行声明。
 
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |

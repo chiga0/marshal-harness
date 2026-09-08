@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-正式主线是 ADR0088 的 Node-only Task 服务，不再扩充固定订单实验。当前代码集成基线 main=`90591d5e37e6e6eac247f6e19efae853232b9ada`，已包含正式 HTTP、唯一 SQLite、Task 控制/执行 reducer、受管 ACP、Supervisor、输入上传/制品下载、不可变文件物化、通用业务文件适配、独立验证命令运行和独立 HTTP 客户端。**正式服务入口仍为审查候选，完整自主交付和 API-STABLE 尚未完成**。B1/B2 保持 IN_PROGRESS，B3 保持 PLANNED；实验双 Pi 成功与正式组件证据分开。
+正式主线是 ADR0088 的 Node-only Task 服务，不再扩充固定订单实验。当前代码集成基线 main=`f3e32340208c9e707192c3c0ab622b2e147cd969`，已包含正式 HTTP、唯一 SQLite、Task 控制/执行 reducer、受管 ACP、Supervisor、输入上传/制品下载、不可变文件物化、通用业务文件适配、独立验证命令运行、独立 HTTP 客户端与正式服务入口。**服务组合已合入；完整自主交付和 API-STABLE 尚未完成**。B1/B2 保持 IN_PROGRESS，B3 保持 PLANNED；实验双 Pi 成功与正式组件证据分开。
 
 最新已知 origin/main=`ba2196bea33e6f007809f75f9671928c892bfa11`（此前 fetch 结果，本检查点未重新查询远端），pendingRemoteSync=true。本表记录的是本地 merge，不表示远端 main 已同步、CI 已运行或已发行。
 
@@ -23,6 +23,7 @@
 | 自驱Supervisor及失败先fence | `ee36d7a5221b8d7dacf6a6246f8dcde3edaced90` | `71e0c1fb06314a5abf73f4f4464e5dea81691605` | 原唯一P1聚合修复，同reviewer37/37通过；cleanup等待中不再派同Task下游，其他Task继续 |
 | 独立验证命令运行 | `9b474bbd6c014e6756972a119488b8635589d071` | `22d536044c557f1a650410fc1627875af23f4857` | 独立review无P0/P1，21/21真实Node运行组合通过；复用原guard，不伪造ACP end_turn或业务通过 |
 | 通用业务文件适配 | `f594271df2f1a1264add304391a316dfb3b4802e` | `90591d5e37e6e6eac247f6e19efae853232b9ada` | root独立逐行审查及39/39 business/files/depot组合通过；作者受git写入限制，由root核对三文件SHA后提交；仍需Core批准布局/执行观察端口 |
+| 正式 Node HTTP 服务组合 | `639d3a40b0d872f868ec4b69648200af15dafc69` | `f3e32340208c9e707192c3c0ab622b2e147cd969` | 2项恢复P1一次聚合修正并由同reviewer关闭；维护者13/13真实HTTP/SQLite通过，reviewer另有17项真实SQLite/depot断言；并非模型团队或实机部署 |
 
 ACP Provider 和 ArtifactDepot 的定向测试、diff-check、secret scan、merge-tree 均通过后本地合入。本轮不调用 Marshal 原生二进制，不生成临时原生 checker。统计保留各包/各 source 范围，不把不同快照的测试数相加宣称完整 release 回归。
 
@@ -31,6 +32,8 @@ ACP Provider 和 ArtifactDepot 的定向测试、diff-check、secret scan、merg
 后续组合 `5f511abe` 的八包验证为 **140/140 PASS，29.734秒，零跳过**。最新 `71e0c1fb` 的十包组合为 **178/179 PASS，44.906秒，零跳过**，不是全绿：ACP Provider期限测试在启动前已合法截止，但测试辅助函数无条件读取不存在的 `started.guardPid`，抛出 TypeError。已保留失败，正在将断言区分实际未启动与已启动清理；不能用增加期限或重复运行把原失败抹掉。该组合不含未合入服务入口、独立命令运行或真实模型团队。
 
 该测试错误在 `9b474bb` 修正为：只有明确观察到立即取消/绝对期限且 `handle.started=null` 才允许没有Agent PID，仍要求原guard退出/组清理事实；正常成功仍必须有原PID。修订时一次机械替换误命中相邻测试，被本地运行的ReferenceError捕获并在提交前纠正，也计为作者错误。随后组合候选 `2bca3a26c1471022a0ddd88d4e92f98a1bdb8f4d` 实跑 **184/184 PASS，39.637秒，零跳过**，含十包加独立command入口，不含后来business/service或真实模型团队；与前次失败分别保留，不跨快照相加。
+
+服务入口合入后的 main=`f3e32340208c9e707192c3c0ab622b2e147cd969`，维护者使用固定 Node 24.15.0 执行 `node --test --test-concurrency=1 packages/*/*.test.mjs`，**208/208 PASS，41.670秒，零跳过**。本次包含真实HTTP/SQLite/文件I/O/所属Node进程夹具及business/service，仍不包含在途最终验收、真实模型团队和部署，不升级B1/B2成熟度。
 
 ## 实机 Qwen 不再只验证握手
 
@@ -42,15 +45,15 @@ ACP Provider 和 ArtifactDepot 的定向测试、diff-check、secret scan、merg
 
 ## API 与后续关键路径
 
-机器合同为 [正式 OpenAPI](../packages/task-api/openapi.json)，不是旧 `experiments/node-team/openapi.json`。main 当前17项真实 Application 操作：Task 创建/列表/详情/计划/确认/图/取消/暂停/恢复/事件/审计/Workers、Worker详情、Operation 查询，以及输入上传、制品详情和内容下载。其余7项不能因路由已定义就计作完成。输入ready只表示原始输入可读，不表示最终业务成果已经验收。
+机器合同为 [正式 OpenAPI](../packages/task-api/openapi.json)，不是旧 `experiments/node-team/openapi.json`。main 当前17项真实 Application 操作：Task 创建/列表/详情/计划/确认/图/取消/暂停/恢复/事件/审计/Workers、Worker详情、Operation 查询，以及输入上传、制品详情和内容下载。服务组合另提供 health/ready/providers/supervisor 4项运行观察；问答与单Worker取消仍不能因路由已定义就计作完成。输入ready只表示原始输入可读，不表示最终业务成果已经验收。
 
 执行 reducer 原稿 `5a5079d` 的23项测试没有捕获4个实际P1：较低计划期限未落实、历史完整输入导致合法大计划事务溢出、重启后旧取消Operation无法回填、进度推进用户控制CAS。已一次聚合修正为 `dcbcd1b`，27项通过并独立复核合入；其中合法64节点、每goal 8000字节全部完成，不增加Store限额。回合完成仍不等于业务验收。
 
 当前并行工作按实际依赖分工：
 
-1. 正式 Node 服务候选原稿 `4e6726d7` 独立审查发现2个P1：旧未派发pending在取消后仍永久阻止ready、ready门禁先于原幂等回放。已一次聚合修正为 `639d3a40b0d872f868ec4b69648200af15dafc69`，作者与维护者各13/13真实HTTP/SQLite通过，原reviewer复核中，不是已合入或已部署。
-2. 通用业务 prepare/collect：使用批准的明确布局、当前ticket输入与上游Depot快照；不从模型自由文本推导文件权限，不采用旧Worker目录。
-3. 独立验收作为批准DAG内受管终点，复用预算/取消/清理；非ACP验证命令复用现guard，随后将精确receipt、Decision和交付引用在同SQLite事务接纳。禁止把Agent end_turn或候选manifest当Task completed。
+1. 服务组合作者已在入口合入后当次续派：将同一可信 verification port 注入 Application/Supervisor，组合业务 factory 和 finally release，补完整HTTP集成测试。旧入口原稿 `4e6726d7` 的两项P1及修复证据保留，不以最后通过抹掉返工。
+2. 独立命令验证适配：复用现guard，核对精确配置、输入和原清理事实；业务断言由可信比较器判定，不以exit 0或pass字符串放行。
+3. Core独立验收作为批准DAG内受管终点，复用预算/取消/清理；将精确receipt、Decision和交付引用在同SQLite事务接纳，并提供批准布局与原执行观察给已合入business。禁止把Agent end_turn或候选manifest当Task completed。
 
 部署盘点已完成：旧 `scripts/install.sh` 会走 Go，旧 release workflow 面向 RC1/native，不能拿来发行 Node stable；现有 Node CI 仍只覆盖部分实验/ACP，正式包路径与测试须随部署纵切补齐。复用既有 loopback/私有连接文件经验，不另造身份平台；以版本化 JS＋OpenAPI 资产清单、已允许的 Node 启动和安装后同版本恢复验证交付。
 
