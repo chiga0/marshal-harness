@@ -4,6 +4,8 @@
 
 当前是有界组件与真实进程夹具验证，不代表真实模型 Git 团队、完整 B2 恢复或正式 production 已通过。原 `FileBusiness` 不作修改。
 
+发行目录包只包含本插件的 `git.mjs` 与 `index.mjs` 两个生产模块及既有共享依赖；Agent、checker、业务 oracle 和测试均不随 runtime 包发布。安装包包含模块不等于已配置仓库、已授予写权限或已有通用 Git 验收器；实际部署仍需下述受信映射、可见计划绑定与独立 verification。
+
 ## 接入
 
 ```js
@@ -46,6 +48,8 @@ const businessFactory = ({depot, executionParent, approvedLayout, observeExecuti
 本包不启动 Agent、不签发 Decision、不发信号、不 push/merge/commit，也不持有 Publisher 凭据。Provider/独立 checker 仍由原 Runtime 管理。Worker 与 Publisher 的实际 OS 身份、原生 Agent 登录和可达凭据必须由受信部署先满足；Git worktree lock 不是 OS 隔离，不能阻挡恶意同 UID 代码访问原库或其他路径，本包不宣称恶意代码 sandbox。
 
 `release/close` **只关闭本包 FD**，不代表清理证明、不解锁、不删除或复用工作树。Supervisor 即使在 unknown 时调用 release，原 Git worktree、锁、私有 index、暂存与失败现场也保留，既存路径使相同 Worker 的再次分配拒绝。没有 cleanup 就不能 collect；没有业务成功就没有交付。暂停/取消/预算/容量/崩溃后的未决状态沿原 Core，不以磁盘目录或 `.git/locked` 代替 SQLite 权威，也不从旧路径恢复执行。安全回收与跨代工作树恢复不在本包范围。
+
+服务可显式启用 [custody v2](../task-service/README.md#可选-custody-v2-与恢复边界)，但这不改变上述目录生命周期。即使原执行已由 cleanup-only 恢复收口，Git 插件也不接管旧 worktree、不采集旧候选、不解锁回收。Git 子进程、Worker 工具和部署的实际执行作用域需要分别符合原合同；本包的 Node 夹具验收不能证明任意真实模型/原生工具 profile 都 eligible。
 
 ## 独立验收
 
