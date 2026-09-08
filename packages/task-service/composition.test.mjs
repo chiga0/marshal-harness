@@ -62,6 +62,37 @@ test('missing business composition fails before creating files or accepting work
   }
 });
 
+test('trusted business factory runs after depot exists, receives only readonly authority ports and closes once', async t => {
+  const f = fixture(t); let calls = 0, closes = 0, observed;
+  const service = await f.start({prepare: undefined, collect: undefined, businessFactory: ports => {
+    calls++; observed = ports;
+    assert.equal(fs.statSync(ports.executionParent).isDirectory(), true);
+    const ref = ports.depot.put(Buffer.from('factory initialization'));
+    assert.equal(ports.depot.get(ref).toString(), 'factory initialization');
+    assert.equal(Object.isFrozen(ports), true);
+    assert.deepEqual(Object.keys(ports).sort(), ['approvedLayout', 'depot', 'executionParent', 'observeExecution']);
+    assert.equal(typeof ports.approvedLayout, 'function'); assert.equal(typeof ports.observeExecution, 'function');
+    return {prepare: f.config.prepare, collect: f.config.collect, release() {}, close() {closes++;}};
+  }});
+  assert.equal(calls, 1); assert.equal(f.provider.workers.length, 0);
+  assert.equal((await f.client(service).request('ready.get')).ready, true);
+  await service.shutdown(); await service.shutdown();
+  assert.equal(closes, 1);
+  assert.throws(() => observed.depot.put(Buffer.from('closed')));
+});
+
+test('ambiguous callback/factory configuration is rejected before files and invalid factory is disposed', async t => {
+  const f = fixture(t); let calls = 0, closes = 0;
+  await assert.rejects(f.start({businessFactory() {calls++;}}), {code: 'service_invalid_configuration'});
+  assert.equal(calls, 0); assert.equal(fs.existsSync(f.root), false);
+  await assert.rejects(f.start({prepare: undefined, collect: undefined,
+    businessFactory() {calls++; return {close() {closes++;}};}}), {code: 'service_invalid_business'});
+  assert.equal(calls, 1); assert.equal(closes, 1);
+  assert.equal(fs.existsSync(path.join(f.root, 'store/authority.sqlite')), true);
+  const service = await f.start({mode: 'open'});
+  assert.equal((await f.client(service).request('ready.get')).ready, true);
+});
+
 test('real loopback health/readiness, private token, origin/auth and no default model start', async t => {
   const f = fixture(t), service = await f.start(), client = f.client(service);
   assert.deepEqual({...await client.request('health.get')}, {status: 'ok', profile: 'node-task-service/v1'});
