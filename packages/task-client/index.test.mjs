@@ -131,6 +131,21 @@ test('deadline and caller abort cancel pending transport/reader without cancelli
   }
 });
 
+test('Unicode-escaped token cannot reflect through decoded error requestId or success content', async () => {
+  for (const failure of [true, false]) {
+    const value = failure ? {code: 'application_unavailable', message: 'unavailable', requestId: token, allowedActions: ['query']} : {...example('Task'), intent: token};
+    const escaped = [...token].map(character => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0')).join('');
+    const wire = JSON.stringify(value).replace(token, escaped);
+    assert.equal(wire.includes(token), false); assert.equal(JSON.parse(wire)[failure ? 'requestId' : 'intent'], token);
+    const client = new TaskClient({baseURL: 'http://127.0.0.1:39999', token, fetch: async () => new Response(wire, {
+      status: failure ? 503 : 200, headers: {'Content-Type': 'application/json'}})});
+    await assert.rejects(client.getTask('task-example'), error => {
+      assert.equal(error.code, 'client_invalid_response'); assert.equal(error.requestId, null);
+      assert.equal(JSON.stringify(error).includes(token), false); assert.equal(error.message.includes(token), false); return true;
+    });
+  }
+});
+
 test('download binds fresh artifact manifest, exact bytes and Content-Digest, with one shared deadline', async () => {
   for (const mode of ['ok', 'digest', 'length', 'content-digest', 'not-ready', 'oversize']) {
     let calls = 0;

@@ -45,6 +45,6 @@ const observed = await client.request('operation.get', {path: {operationId: oper
 
 ## 验证口径
 
-`node --test packages/task-client/index.test.mjs`：7 项定向测试包含正式 HTTP handler 的真实 loopback 服务、全部 24 operations、独立消费端下载摘要、显式批准响应丢失/回执、冲突、恶意响应、超时/abort 和资源回收。Application 是清楚标记的 DI fixture，而非 SQLite 或真实 Agent；这些结果只证明客户端/HTTP 合同，不证明真实规划、执行、取消、重启恢复或业务验收。
+`node --test packages/task-client/index.test.mjs`：8 项定向测试包含正式 HTTP handler 的真实 loopback 服务、全部 24 operations、独立消费端下载摘要、显式批准响应丢失/回执、冲突、恶意响应、Unicode 转义 token 反射、超时/abort 和资源回收。Application 是清楚标记的 DI fixture，而非 SQLite 或真实 Agent；这些结果只证明客户端/HTTP 合同，不证明真实规划、执行、取消、重启恢复或业务验收。
 
 现有 Python demo/question clients 服务旧 Go profile 的批准/固定订单制品协议，不替换它们、不声称自动兼容。后续同一 Node SDK 可直接对接正式 Application/SQLite/Supervisor 的真实服务完成独立客户端验收。

@@ -5,6 +5,10 @@ import {parseJson} from '../task-api/http-boundary.mjs';
 const MAX_BYTES = 8 * 1024 * 1024;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const fail = code => new TaskClientError(code);
+function containsToken(value, token) {
+  if (typeof value === 'string') return value.includes(token);
+  return value !== null && typeof value === 'object' && Object.entries(value).some(([key, child]) => key.includes(token) || containsToken(child, token));
+}
 export class TaskClientError extends Error {
   constructor(code, {status = null, requestId = null, allowedActions = []} = {}) {
     super(code); this.name = 'TaskClientError'; this.code = code;
@@ -99,6 +103,9 @@ export class TaskClient {
     }
     if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(response.headers.get('content-type') ?? '') || bytes.includes(Buffer.from(this.#token))) throw fail('client_invalid_response');
     let value; try { value = parseJson(bytes); } catch { throw fail('client_invalid_response'); }
+    // JSON escapes can conceal the credential on the wire. Check decoded
+    // strings before copying requestId or returning any success projection.
+    if (containsToken(value, this.#token)) throw fail('client_invalid_response');
     if (response.status !== entry.status) {
       if (!validate(value, 'Error')) throw fail('client_invalid_response');
       let expected; try { expected = new TaskApiError(value.code); } catch { throw fail('client_invalid_response'); }
