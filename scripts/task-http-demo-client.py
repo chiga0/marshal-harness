@@ -421,16 +421,37 @@ def run_delivery_oracle(folder, files):
 
 def bounded_oracle_process(argv, code, folder, timeout=30):
     process = None
+    status_read = status_write = None
     try:
         deadline = time.monotonic() + timeout
-        process = subprocess.Popen(argv, cwd=folder, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+        # Keep the session leader alive until group cleanup. Waiting/reaping
+        # the oracle directly would release its PID while descendants can still
+        # own our pipes (or continue silently after closing them). The tiny
+        # guard reports only its direct child's exit status, then waits for us;
+        # it is not an independent worker, sandbox or platform supervisor.
+        guard = ("import os,signal,sys\n"
+                 "fd=int(sys.argv[1]); child=os.fork()\n"
+                 "if child==0:\n"
+                 " os.close(fd); os.execv(sys.argv[2],sys.argv[2:])\n"
+                 "os.close(0); os.close(1); os.close(2)\n"
+                 "_,status=os.waitpid(child,0)\n"
+                 "result=os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)\n"
+                 "os.write(fd,str(result).encode('ascii')); os.close(fd)\n"
+                 "while True: signal.pause()\n")
+        status_read, status_write = os.pipe()
+        process = subprocess.Popen([sys.executable, "-I", "-B", "-c", guard, str(status_write)] + argv,
+                                   cwd=folder, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   start_new_session=True)
-        output = {"stdout": bytearray(), "stderr": bytearray()}
+                                   start_new_session=True, pass_fds=(status_write,))
+        os.close(status_write)
+        status_write = None
+        output = {"stdout": bytearray(), "stderr": bytearray(), "status": bytearray()}
         with selectors.DefaultSelector() as selector:
             os.set_blocking(process.stdin.fileno(), False)
             selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
             offset = 0
+            os.set_blocking(status_read, False)
+            selector.register(status_read, selectors.EVENT_READ, "status")
             for stream, key in ((process.stdout, "stdout"), (process.stderr, "stderr")):
                 os.set_blocking(stream.fileno(), False)
                 selector.register(stream, selectors.EVENT_READ, key)
@@ -451,11 +472,9 @@ def bounded_oracle_process(argv, code, folder, timeout=30):
                         raise ClientError("business-oracle-output-limit")
                     if not data:
                         selector.unregister(selected.fileobj)
-            try:
-                code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                raise ClientError("business-oracle-timeout") from None
-        if code != 0 or output["stderr"]:
+        # No poll/wait here: the guard's PID must remain reserved until the
+        # finally block signals the whole owned group, even on success.
+        if bytes(output["status"]) != b"0" or output["stderr"]:
             raise ClientError("business-oracle-failed")
         verdict = decode(bytes(output["stdout"]))
         if verdict != {"checks": 34, "scope": "integration"} or type(verdict.get("checks")) is not int:
@@ -464,14 +483,16 @@ def bounded_oracle_process(argv, code, folder, timeout=30):
         raise ClientError("business-oracle-unavailable") from None
     finally:
         if process is not None:
-            if process.poll() is None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait(timeout=5)
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=5)
             for stream in (process.stdin, process.stdout, process.stderr):
                 stream.close()
+        for descriptor in (status_read, status_write):
+            if descriptor is not None:
+                os.close(descriptor)
 
 
 def safe_worker(worker):

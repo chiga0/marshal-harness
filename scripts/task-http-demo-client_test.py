@@ -574,6 +574,58 @@ class DeliveryConsumerTests(unittest.TestCase):
                 with self.subTest(reason=reason), self.assertRaisesRegex(demo.ClientError, reason):
                     demo.bounded_oracle_process([sys.executable, "-I", "-B", "-c", code], b"x", tmp, timeout=0.15)
 
+    def test_early_exit_descendant_retaining_pipes_is_killed_before_leader_reap(self):
+        code = "import os,time; child=os.fork(); os._exit(0) if child else time.sleep(10)"
+        self.check_group_cleanup(code, "business-oracle-timeout")
+
+    def test_successful_exit_silent_background_descendant_is_also_killed(self):
+        code = ("import os,time\nchild=os.fork()\n"
+                "if child:\n os.write(1,b'{\"checks\":34,\"scope\":\"integration\"}'); os._exit(0)\n"
+                "os.close(0); os.close(1); os.close(2); time.sleep(10)\n")
+        self.check_group_cleanup(code, None)
+
+    def check_group_cleanup(self, code, error):
+        real_popen = demo.subprocess.Popen
+        real_killpg = os.killpg
+        processes, signals = [], []
+
+        def signal_group(pid, value):
+            signals.append((pid, value))
+            return real_killpg(pid, value)
+
+        def spawn(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            wait = process.wait
+
+            def checked_wait(*a, **kw):
+                self.assertIn((process.pid, demo.signal.SIGKILL), signals,
+                              "leader identity released before group cleanup")
+                return wait(*a, **kw)
+
+            process.wait = checked_wait
+            process.poll = mock.Mock(side_effect=AssertionError("premature PID reap"))
+            return process
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(demo.subprocess, "Popen", spawn), mock.patch.object(demo.os, "killpg", signal_group):
+            if error:
+                with self.assertRaisesRegex(demo.ClientError, error):
+                    demo.bounded_oracle_process([sys.executable, "-I", "-B", "-c", code], b"x", tmp, timeout=0.25)
+            else:
+                demo.bounded_oracle_process([sys.executable, "-I", "-B", "-c", code], b"x", tmp, timeout=1)
+        self.assertEqual(len(processes), 1)
+        process = processes[0]
+        self.assertIsNotNone(process.returncode)
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                real_killpg(process.pid, 0)
+            except ProcessLookupError:
+                break
+            if time.monotonic() >= deadline:
+                self.fail("owned process group survived cleanup")
+            time.sleep(0.01)
+
 
 if __name__ == "__main__":
     unittest.main()
