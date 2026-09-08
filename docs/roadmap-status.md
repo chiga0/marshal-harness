@@ -8,6 +8,8 @@
 
 ### 最新正式 Node 集成检查点
 
+**21:21 CST 当前增量**：main/origin/main=`6a2df5ef4c3fc2952a0975cc34d5d0008bcc9b3f`，产品代码已正常推送、pendingRemoteSync=false。批准前问题/答案/新预览/精确确认已贯通 HTTP→SQLite；完整 Node 组合337/337通过，41 schemas/25示例独立核验，25文件目录包已打包核验。一次消费者示例遗漏 P1 已聚合修复并由同 reviewer 关闭，不记首审全绿。真实日期区间问答业务与 Pi 正式原生工具适配并行；尚未形成新模型验收。B1 七项功能条件已有有界证据，明确尚缺适用 profile 的 Worker/Publisher 权限分离证明；不把 B2/B3 全矩阵加成 B1 前置。香港专用账号 SSH 本次被公钥鉴权拒绝，未执行远端检查。精确 source/merge、包摘要与验证范围见[当前检查点](node-task-service-status-2026-09-08.md)。下列时间记录保留历史范围，不覆盖本段。
+
 **21:02 CST增量**：`0a1deed` 真实Qwen启动阶段HTTP取消一次通过，两个原作者清理、Task/Operation收口、零verifier/交付及正常服务实例重开回执保持已验证；未声称模型生成/工具中取消。安装目录包另已通过本机独立CLI进程create→正常退出→open的零模型smoke，并固化10/10回归。最新合入source/merge、范围和本地同步状态见[当前检查点](node-task-service-status-2026-09-08.md)。B2问答候选在独立审查，Pi RPC候选继续处理原生权限/工具清理接缝；B1/B2未整体关闭。
 
 **20:16 CST新增真实团队证据**：正式源码 `42f95658071e9ce03d38d8926b376b26c82ffd50` 已推送；纯HTTP真实Qwen 0.22.3完成planner→一次批准→双作者（重叠16.799秒）→独立验收→下载消费→正常重启原回执/成果不变，总计32.620秒。本次无自动重试，交付为两地区报告、4笔/1825 cents，精确Task/摘要见[实机检查点](node-task-service-status-2026-09-08.md)。这是正式同链的Mac ordinary-user dogfood成功，不是仅实验或进程夹具；仍不证明Worker/Publisher分权、真实运行中取消、崩溃恢复或stable，B1/B2继续IN_PROGRESS。下面82b64cf是此次运行代码基线，不覆盖本段新增实机事实。
@@ -16,8 +18,8 @@
 
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |
-| B1 真实团队交付 | `IN_PROGRESS` | 正式同链真实Qwen交付/正常重开及启动阶段取消已通；仍须完成全部适用边界的整体验收，不能升级production |
-| B2 日常本地 API | `IN_PROGRESS` | 关键问答、第二 Adapter、局部修正、完整同版本恢复与 API-STABLE；通用文件制品已接线但真实业务矩阵未全验收 |
+| B1 真实团队交付 | `IN_PROGRESS` | 七项功能条件已有有界证据；尚缺适用 profile 的 Worker/Publisher 权限分离证明，不能升级production |
+| B2 日常本地 API | `IN_PROGRESS` | 批准前问答已接线，待真实必要问答业务、第二 Adapter、局部修正、完整同版本恢复与 API-STABLE；真实业务矩阵未全验收 |
 | B3 正式可靠发布 | `PLANNED` | 目录包已准备；声明平台实机/长期故障、权限分离、安装恢复和受保护同资产发行未完成 |
 
 ### 以下为较早本地集成检查点（不覆盖上表）

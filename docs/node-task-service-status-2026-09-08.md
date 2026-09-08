@@ -2,6 +2,19 @@
 
 ## 当前结论
 
+### 21:21 CST 问答集成与同步
+
+当前产品 main/origin/main=`6a2df5ef4c3fc2952a0975cc34d5d0008bcc9b3f`，已实际正常推送，产品代码 pendingRemoteSync=false；下文早期 pending 仅表示对应历史时点。批准前有限问答已进入正式 HTTP→Application→SQLite：缺失字段一次形成问题批次，答案产生新预览，最终按精确 digest/revision 批准；完整输入继续零问题，不增加模型调用。原答案回执、冷重开、过期/取消/CAS 竞争和旧客户端兼容均有覆盖。仍不是运行中 Worker 待答或任意自然语言澄清能力。
+
+- 问答 sourceHead=`a90e1f4fe8292defe3f4653f8333a9d8848c512a`；集成 sourceHead=`a5c6b8fef0fdba432a4fed2d8e944cc46850eedb`，文件树与 localMergeSha=`6a2df5ef4c3fc2952a0975cc34d5d0008bcc9b3f` 相同。
+- 独立审查后，完整 Node 组合 **337/337 PASS，142.343秒，零跳过**；41 个 Draft 2020-12 schema、41 个引用编译及25个示例独立验证通过。不是模型、Go 全仓或 Linux 部署验证。
+- 实际发行包包含25文件、386782 bytes，已独立核验，manifest source 保持 `a5c6b8f`；摘要 `sha256:f0b99c8a70739741688c327c4ec22487c5cdff08c09f83f75b7cf2f886e415b5`，本机目录 `/private/tmp/marshal-node-b2-package.ozpAm5/package`。明确包含新增 clarification 运行依赖，不把包内摘要自行当作外部信任。
+- 本次首审发现一项集成 P1：AnswerReceipt 缺示例，使既有 TaskClient 消费者测试失败；原123项定向检查未覆盖该消费者。已一次修正示例并增加合同示例检查，同 reviewer 复核关闭，完整337项覆盖客户端；保留成本，不记首审零问题。
+
+**B1 剩余条件已具体化**：已列七项功能退出条件分别有真实团队交付/下载、启动阶段所属取消、正常服务实例重开及确定性负例支撑；当前还缺适用 profile 的 **Worker/Publisher 权限分离证据**。Mac ordinary-user 并不豁免该不变量，因此保持 IN_PROGRESS；不把全部 B2/B3 故障矩阵或第二 Provider 错加为 B1 前置。香港 ECS 本轮专用账号只读直连返回 `Permission denied (publickey)`，远端身份/Node/权限命令未执行，无新部署证据；未重试或切换身份。
+
+当前两条作者线：Pi 原生 RPC 工具权限与所属子进程清理；真实日期区间业务的必要问答→精确预览→双作者→独立结果检查。共享 reviewer 同时核验问答集成和发行依赖。B2 仍缺实际问答业务、第二 Adapter、局部修正及完整同版本恢复；API-STABLE/B3 尚未完成。全程不使用 Marshal skill 或 Marshal 原生可执行文件。
+
 ### 21:02 CST 真实取消与安装包增量
 
 正式源码 `0a1deedf704c7ccb6257fcb4389bc0eb44b3b66b` 的显式 `--scenario cancel` 一次实机通过：Task=`task-6e6e93b9-de46-4840-8d9b-165cdcfda6d3`，Qwen0.22.3/Node24.15.0，`13:01:30.489Z`→`13:01:48.720Z`，18.231秒，无自动重试。两个原作者实际启动后于 `13:01:48.257Z` 发HTTP取消，两个原Agent均于 `13:01:48.266Z` 观察退出且cleanup已确认；最终Task取消、取消Operation收口，verifierStarts=0、交付0。正常服务实例重开后原create/approve/cancel回执、完整Task保持，重复启动0。
