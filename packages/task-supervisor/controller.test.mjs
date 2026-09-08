@@ -39,6 +39,7 @@ class FakeProvider {
     if (this.autoStarted) record.announce();
     return {started: started.promise, completion: completion.promise, snapshot: () => ({}), stop: () => {
       record.stopCount++;
+      this.onStop?.(record);
       if (this.autoStop && !record.done) {
         record.announce(); record.finish({status: 'cancelled', stopReason: 'cancelled'});
       }
@@ -253,6 +254,52 @@ test('one Task prepare/collect/provider failure cannot stop another Task or clos
     await until(() => f.provider.records.some(record => record.data.taskId !== good.id && record.data.taskId !== bad.id));
     assert.equal(f.errors.length, 1); assert.equal(supervisor.snapshot().failure, null);
   });
+});
+
+test('failure is durable before stop; delayed cleanup cannot admit same-Task downstream while another Task progresses', async t => {
+  const f = fixture(t, {maxWorkers: 3});
+  const supervisor = f.makeController({collect: ticket => {
+    if (ticket.role !== 'planner') return {result: {nodeId: ticket.nodeId}};
+    // The downstream depends ONLY on good; waiting for bad's own result cannot
+    // accidentally mask the missing Task-wide failure fence.
+    const proposal = plan(); proposal.edges = [{from: 'second', to: 'review'}];
+    return {plan: proposal};
+  }});
+  const {task} = await approved(f, supervisor);
+  await until(async () => { await supervisor.tick(); return f.provider.records.length === 3; });
+  const bad = f.provider.records.find(record => record.data.nodeId === 'first');
+  const good = f.provider.records.find(record => record.data.nodeId === 'second');
+  const unrelated = await f.create('unrelated'); await supervisor.tick();
+  await until(() => f.provider.records.length === 4);
+  const survivor = f.provider.records[3];
+  const attempts = (await f.app.dispatch({operation: 'task.audit', taskId: task.id}, context)).attempts;
+  f.provider.autoStop = false;
+  const stopObservations = [];
+  f.provider.onStop = record => {
+    if (record === survivor) assert.fail('unrelated Task must not be stopped');
+    const stored = f.read(tx => JSON.parse(tx.projection('task', task.id).bytes));
+    stopObservations.push(stored.task.status);
+    assert.equal(stored.task.status, 'cancelling', 'stop callback must see already committed fence');
+    assert.equal(stored.failureCode, 'worker_failed');
+  };
+  await assert.rejects(bad.options.onProgress({phase: 'invalid', tool: null}));
+  assert.deepEqual(stopObservations, ['cancelling', 'cancelling']);
+  assert.equal(bad.stopCount, 1); assert.equal(good.stopCount, 1); assert.equal(survivor.stopCount, 0);
+  assert.equal(f.capacity().length, 3, 'failure fence is not a cleanup or refund');
+  // A sibling's late successful completion cannot reopen eligibility.
+  good.finish(); await until(() => f.capacity().length === 2);
+  for (let n = 0; n < 3; n++) await supervisor.tick();
+  assert.equal(f.provider.records.some(record => record.data.nodeId === 'review'), false);
+  assert.equal((await f.app.dispatch({operation: 'task.audit', taskId: task.id}, context)).attempts, attempts);
+  assert.equal((await f.get(task.id)).status, 'cancelling');
+  survivor.finish(); await until(async () => (await f.get(unrelated.id)).status === 'awaiting-approval');
+  assert.equal(supervisor.snapshot().failure, null); assert.equal(f.capacity().length, 1);
+  bad.finish(); await until(() => f.capacity().length === 0); await supervisor.tick();
+  assert.equal((await f.get(task.id)).status, 'failed');
+  const workers = (await f.app.dispatch({operation: 'task.workers', taskId: task.id}, context)).items;
+  assert.equal(workers.find(worker => worker.id === bad.data.workerId).status, 'failed');
+  assert.equal(workers.find(worker => worker.id === good.data.workerId).status, 'cancelled');
+  assert.equal(f.errors.length, 1); f.provider.onStop = null;
 });
 
 test('cancel during collection discards a late candidate but preserves original cleanup', async t => {

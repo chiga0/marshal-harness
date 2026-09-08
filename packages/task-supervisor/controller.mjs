@@ -1,7 +1,7 @@
 import path from 'node:path';
 import {setImmediate as yieldTurn} from 'node:timers/promises';
 
-const PORTS = ['scan', 'reconcile', 'poll', 'settleControl', 'expandDispatch', 'nextWork', 'mayStart', 'started', 'progress', 'finish'];
+const PORTS = ['scan', 'reconcile', 'poll', 'settleControl', 'expandDispatch', 'nextWork', 'mayStart', 'started', 'progress', 'fail', 'finish'];
 const PHASES = new Set(['starting', 'initializing', 'session', 'running', 'stopping', 'terminal']);
 const TOOL_KINDS = new Set(['read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'other']);
 const TOOL_STATES = new Set(['pending', 'in_progress', 'completed', 'failed']);
@@ -143,9 +143,20 @@ export class TaskSupervisor {
     if (error instanceof ExecutionPortError) { this.#fault(stage, entry); return; }
     if (!entry.failure) {
       entry.failure = true;
+      // This is a synchronous same-owner transaction, before any stop callback
+      // can run or delayed cleanup can leave a downstream admission window.
+      try { this.#call('fail', entry.ticket, 'worker_failed'); }
+      catch { this.#fault('failure-fence', entry); return; }
       this.#notify({code: 'worker_failed', stage, taskId: entry.ticket.taskId, workerId: entry.ticket.workerId});
     }
-    this.#stop(entry);
+    for (const owned of this.#owned.values()) if (owned.ticket.taskId === entry.ticket.taskId) this.#stop(owned);
+  }
+  #deadline(entry) {
+    // Prefer the original Task deadline's durable reason where it has expired;
+    // a shorter execution deadline still needs a Worker failure admission fence.
+    try { this.#call('reconcile', entry.ticket.taskId); }
+    catch { this.#fault('deadline-reconcile', entry); return; }
+    this.#failEntry(entry, 'deadline', new SupervisorError('supervisor_deadline'));
   }
   #stop(entry) {
     entry.stopping = true; entry.abort.abort(); entry.wake.resolve();
@@ -162,7 +173,7 @@ export class TaskSupervisor {
       handle: null, invoked: false, startFact: null, acceptStarted: true, progress: Promise.resolve(), sequence: 0, pendingProgress: 0,
       stopping: false, stopSent: false, clean: false, finalized: false};
     this.#owned.set(ticket.workerId, entry);
-    const timer = setTimeout(() => this.#stop(entry), Math.max(1, ticket.deadline - this.#clock()));
+    const timer = setTimeout(() => this.#deadline(entry), Math.max(1, ticket.deadline - this.#clock()));
     const work = this.#run(entry).catch(() => this.#fault(entry.stage, entry)).finally(() => {
       clearTimeout(timer); this.#works.delete(work);
       if (entry.clean && entry.finalized) this.#owned.delete(ticket.workerId);
@@ -177,9 +188,12 @@ export class TaskSupervisor {
       let timer;
       const finish = (error, value) => { clearTimeout(timer); signal.removeEventListener('abort', abort); error ? reject(error) : resolve(value); };
       const abort = () => finish(new SupervisorError('supervisor_stopped'));
-      if (signal.aborted || remaining <= 0) { abort(); return; }
+      if (signal.aborted || remaining <= 0) { if (remaining <= 0 && !signal.aborted) this.#deadline(entry); abort(); return; }
       signal.addEventListener('abort', abort, {once: true});
-      timer = setTimeout(() => { finish(new SupervisorError('supervisor_callback_timeout')); this.#stop(entry); }, remaining);
+      timer = setTimeout(() => {
+        const error = new SupervisorError('supervisor_callback_timeout');
+        finish(error); this.#failEntry(entry, entry.stage, error);
+      }, remaining);
       Promise.resolve().then(() => {
         if (signal.aborted) throw new SupervisorError('supervisor_stopped');
         return callback({signal, deadline: entry.ticket.deadline});
