@@ -53,7 +53,11 @@ test('two guarded processes overlap, deliver bare hashes, replay and cold-read o
     const completed = await wait(owner, task, current => current.status === 'completed');
     assert.equal(completed.attempts, 1);
     assert.ok(completed.workers.every(w => w.cleaned));
-    assert.ok(Math.max(...completed.workers.map(w => Date.parse(w.startedAt))) < Math.min(...completed.workers.map(w => Date.parse(w.finishedAt))));
+    for (const worker of completed.workers) {
+      assert.ok(Date.parse(worker.startedAt) <= Date.parse(worker.agentExitedAt));
+      assert.ok(Date.parse(worker.agentExitedAt) < Date.parse(worker.finishedAt));
+    }
+    assert.ok(Math.max(...completed.workers.map(w => Date.parse(w.startedAt))) < Math.min(...completed.workers.map(w => Date.parse(w.agentExitedAt))));
     const delivered = await owner.command('delivery', task.id);
     assert.ok(delivered.files.every(f => /^[0-9a-f]{64}$/.test(f.sha256)));
     await assert.rejects(owner.command('cancel', task.id, { expectedRevision: completed.revision }, 'late'), /task-already-terminal/);

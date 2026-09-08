@@ -4,7 +4,7 @@ import { TextDecoder } from 'node:util';
 // Spawned detached by the supervisor. This Node process remains the living
 // session/group leader after its Agent exits. Only authenticated inherited IPC
 // controls it; no PID restored from disk is ever used to signal a process.
-let child, launched = false, cleanup = false, overflow = false;
+let child, agentExitedAt, launched = false, cleanup = false, overflow = false;
 let stdout = [], stderrBytes = 0, stdoutBytes = 0;
 const LIMIT = 1024 * 1024;
 const keepAlive = setInterval(() => {}, 60_000);
@@ -54,12 +54,15 @@ process.on('message', message => {
   child.stderr.on('data', chunk => { stderrBytes += chunk.length; if (stderrBytes > LIMIT) excess(); progress(); });
   child.stdin.on('error', () => {});
   child.on('error', () => {});
+  // stdio close can be delayed by inherited descendant pipes. Freeze the
+  // actual direct Agent lifetime separately from transport/group cleanup.
+  child.once('exit', () => { agentExitedAt = new Date().toISOString(); });
   child.on('close', (code, signal) => {
     let raw = '', reason;
     try { raw = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(stdout)); }
     catch { reason = 'invalid-utf8-output'; }
     stdout = [];
-    send({ type: 'terminal', code, signal, reason: overflow ? 'output-limit' : reason, stdout: raw, stdoutBytes, stderrBytes, at: new Date().toISOString() });
+    send({ type: 'terminal', code, signal, reason: overflow ? 'output-limit' : reason, stdout: raw, stdoutBytes, stderrBytes, agentExitedAt, at: new Date().toISOString() });
     // Deliberately do not exit: descendants remain in a group whose live
     // leader cannot be reused until supervisor-owned cleanup has completed.
   });
