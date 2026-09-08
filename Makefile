@@ -40,9 +40,13 @@ lint:
 # Darwin supervisor identity contract rejects a binary whose commit is not the
 # exact 40-hex source head.
 GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+# This is a package-wide budget, not an individual test deadline. The
+# resultingress race suite exceeded Go's implicit 10m on hosted Darwin;
+# retain every test and a finite bound rather than silently skipping coverage.
+TEST_TIMEOUT ?= 20m
 
 test:
-	$(GO) test -race -p 2 -ldflags "$(LDFLAGS_BASE) -X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(GIT_COMMIT)" ./...
+	$(GO) test -race -p 2 -timeout=$(TEST_TIMEOUT) -ldflags "$(LDFLAGS_BASE) -X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(GIT_COMMIT)" ./...
 
 build:
 	$(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/marshal
@@ -138,6 +142,10 @@ fixed-server-t1-check:
 	/usr/bin/python3 -I -B scripts/order-quote-team-oracle_test.py
 	/usr/bin/python3 -I -B scripts/fixed-server-team-inputs_test.py
 	/usr/bin/python3 -I -B scripts/fixed-server-team-drive_test.py
+	/usr/bin/python3 -I -B scripts/task-http-demo-client_test.py
+	/usr/bin/python3 -I -B scripts/task-http-team-drive_test.py
+	/usr/bin/python3 -I -B scripts/task-worker-overlap_test.py
+	/usr/bin/python3 -I -B scripts/task-worker-overlap-live_test.py
 
 # Local convenience only. CI release authority invokes the fixed Python checker
 # before any candidate Make/script execution and does not trust this target.

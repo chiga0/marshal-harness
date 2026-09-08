@@ -233,6 +233,11 @@
         },
         "model": { "type": "string", "minLength": 1, "maxLength": 512 },
         "reasoning": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "resultContract": {
+          "type": "string",
+          "enum": ["worker-result-json/v1", "native-terminal/v1"],
+          "description": "冻结的结果协议；省略保持旧 JSON 声明合同。原生终态仅用于明确实现此合同的执行组合，不自动回退。"
+        },
         "tools": {
           "type": "array",
           "uniqueItems": true,

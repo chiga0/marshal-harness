@@ -107,19 +107,23 @@ func preparedBootstrapForState(t *testing.T, fixture preparedExecutionFixture, s
 }
 
 func TestLauncherV2BootstrapUsesExistingDurableAdmissionAndColdReplay(t *testing.T) {
-	testLauncherV2DurableLifecycle(t, false, false)
+	testLauncherV2DurableLifecycle(t, false, false, false)
 }
 
 func TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply(t *testing.T) {
-	testLauncherV2DurableLifecycle(t, true, false)
+	testLauncherV2DurableLifecycle(t, true, false, false)
 }
 
 func TestLauncherV2SameOwnerContinuesWithoutRestart(t *testing.T) {
-	t.Run("collect-close", func(t *testing.T) { testLauncherV2DurableLifecycle(t, false, true) })
-	t.Run("stop-close", func(t *testing.T) { testLauncherV2DurableLifecycle(t, true, true) })
+	t.Run("collect-close", func(t *testing.T) { testLauncherV2DurableLifecycle(t, false, true, false) })
+	t.Run("stop-close", func(t *testing.T) { testLauncherV2DurableLifecycle(t, true, true, false) })
 }
 
-func testLauncherV2DurableLifecycle(t *testing.T, terminate, sameOwner bool) {
+func TestLauncherV2CollectedStopClosesWithoutDuplicateCollect(t *testing.T) {
+	testLauncherV2DurableLifecycle(t, false, true, true)
+}
+
+func testLauncherV2DurableLifecycle(t *testing.T, terminate, sameOwner, stopAfterCollect bool) {
 	fixture := newPreparedExecutionFixture(t)
 	state := fixture.storeStateAfterPrepared(t, fixture)
 	_, request := testBootstrapV2Input()
@@ -334,12 +338,12 @@ func testLauncherV2DurableLifecycle(t *testing.T, terminate, sameOwner bool) {
 	if err := json.Unmarshal(line, &outcomeFact); err != nil || outcomeFact.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().CommandRecoveryRevision {
 		t.Fatalf("outcome lost v2 recovery generation: %v", err)
 	}
-	testLauncherV2StartedAndResume(t, fixture, projection, next, terminate, sameOwner)
+	testLauncherV2StartedAndResume(t, fixture, projection, next, terminate, sameOwner, stopAfterCollect)
 }
 
 // Continue the same durable business chain, not an independently seeded
 // registry. The only fake is the peer report; no executable is launched.
-func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixture, projection *Ingress, state AttemptAuthorityState, terminate, sameOwner bool) {
+func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixture, projection *Ingress, state AttemptAuthorityState, terminate, sameOwner, stopAfterCollect bool) {
 	t.Helper()
 	_, provision, err := currentPreparedProvisionReceipt(projection, state)
 	if err != nil {
@@ -498,7 +502,7 @@ func testLauncherV2StartedAndResume(t *testing.T, fixture preparedExecutionFixtu
 		report.State, report.ObservedAt = "terminal", time.Now().UTC().Format(time.RFC3339Nano)
 		testLauncherV2TerminalCommand(t, fixture, state, owner, verifier, directory, report, processsupervisor.CommandTerminate)
 	} else {
-		testLauncherV2Collect(t, fixture, state, owner, verifier, directory)
+		testLauncherV2CollectThenTerminal(t, fixture, state, owner, verifier, directory, stopAfterCollect)
 	}
 }
 

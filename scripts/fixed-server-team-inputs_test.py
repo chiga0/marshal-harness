@@ -51,6 +51,8 @@ class InputTests(unittest.TestCase):
             self.assertEqual(task["publication"]["provider"], "none")
             self.assertEqual(task["budgets"]["maxAttempts"], 1)
             self.assertEqual(task["budgets"]["maxReworkRounds"], 0)
+            self.assertEqual(task["worker"]["resultContract"], "native-terminal/v1")
+            self.assertNotIn("WorkerResult JSON", task["work"]["objective"])
             self.assertFalse(policy["effective"]["allowWorkerSubagents"])
             self.assertFalse(task["acceptance"]["allowNoChange"])
 

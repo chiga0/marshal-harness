@@ -24,7 +24,30 @@ func testLauncherV2Terminal(t *testing.T, fixture preparedExecutionFixture, stat
 
 func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixture, state AttemptAuthorityState, owner ControlOwnerState, verifier attemptOwnerVerifier, directory *os.File, report processsupervisor.ProcessReport, command processsupervisor.CommandName) {
 	t.Helper()
+	testLauncherV2TerminalScenario(t, fixture, state, owner, verifier, directory, report, command, false)
+}
+
+func testLauncherV2TerminalScenario(t *testing.T, fixture preparedExecutionFixture, state AttemptAuthorityState, owner ControlOwnerState, verifier attemptOwnerVerifier, directory *os.File, report processsupervisor.ProcessReport, command processsupervisor.CommandName, preCollected bool) {
+	t.Helper()
 	store := fixture.store
+	if preCollected {
+		checkpoint, ok := latestSuccessfulCollect(state)
+		if !ok {
+			t.Fatal("pre-collected stop requires original durable Collect")
+		}
+		if _, err := verifiedCollectOutcomeV2(checkpoint.Evidence); err != nil {
+			t.Fatal(err)
+		}
+		// Real Terminate replaces lastReport, but retains the already-collected
+		// journal objects. Close returns the new terminal report, not Collect's.
+		report.StdoutBytes, report.StderrBytes = 0, 0
+		report.StdoutDigest, report.StderrDigest = "", ""
+		observedAt, err := time.Parse(time.RFC3339Nano, report.ObservedAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		report.ObservedAt = observedAt.Add(time.Millisecond).Format(time.RFC3339Nano)
+	}
 	if command == processsupervisor.CommandTerminate {
 		// Carry an actual durable operator stop through the same v2 signal,
 		// lost reply, Close/absence, cleanup and cold-replay chain. A generic
@@ -48,7 +71,7 @@ func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixtur
 	inspectCalls, closeCalls, transportCalls := 0, 0, 0
 	collectCalls := 0
 	collectedReport := report
-	if command == processsupervisor.CommandTerminate {
+	if command == processsupervisor.CommandTerminate && !preCollected {
 		collectedReport.StdoutDigest, collectedReport.StderrDigest = canonical.DigestBytes(nil), canonical.DigestBytes(nil)
 		observedAt, err := time.Parse(time.RFC3339Nano, report.ObservedAt)
 		if err != nil {
@@ -91,7 +114,7 @@ func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixtur
 			}
 			return fn(fakeContinuationV2{observation: testRebindObservationV2(t, o.Authority), inspect: executeTerminal, terminate: executeTerminal, execute: func(p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
 				collectCalls++
-				if command != processsupervisor.CommandTerminate || p.Evidence().Command != processsupervisor.CommandCollect || collectCalls != 1 {
+				if preCollected || command != processsupervisor.CommandTerminate || p.Evidence().Command != processsupervisor.CommandCollect || collectCalls != 1 {
 					t.Fatal("cleanup duplicated or misrouted Collect")
 				}
 				intent := assertIntent(p)
@@ -103,7 +126,7 @@ func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixtur
 				// Freeze the receipt, lose the reply, then recover before Close.
 				return processsupervisor.VerifiedCommandOutcomeV2{}, processsupervisor.ErrIntervention
 			}, close: func(p processsupervisor.PreparedCommandV2) (processsupervisor.VerifiedCommandOutcomeV2, error) {
-				if command == processsupervisor.CommandTerminate && collectCalls != 1 {
+				if command == processsupervisor.CommandTerminate && !preCollected && collectCalls != 1 {
 					t.Fatal("real mechanics requires transcript Collect before Close")
 				}
 				closeCalls++
@@ -265,6 +288,9 @@ func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixtur
 	}
 	var closeEvidence PreparedExecutionClose
 	reader := func(o processsupervisor.CollectedTranscriptReadOptionsV2) (processsupervisor.CollectedTranscript, error) {
+		if preCollected {
+			t.Fatal("stopped cleanup reread through stale historical Collect anchor")
+		}
 		if !reflect.DeepEqual(o.Outcome, collected) || o.ControlDirectory != directory {
 			t.Fatal("cleanup transcript read not bound to collected receipt")
 		}
@@ -282,7 +308,7 @@ func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixtur
 		})
 	}
 	wantTransports := 3
-	if command == processsupervisor.CommandTerminate {
+	if command == processsupervisor.CommandTerminate && !preCollected {
 		wantTransports += 2
 		if err := closeAttempt(); !errors.Is(err, processsupervisor.ErrIntervention) || collectCalls != 1 || closeCalls != 0 {
 			t.Fatalf("lost cleanup Collect reply advanced Close: %v", err)
@@ -306,6 +332,9 @@ func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixtur
 	if err := closeAttempt(); err != nil || closeCalls != 1 || transportCalls != wantTransports || closeEvidence.OutcomeFactDigest == "" || closeEvidence.RecoveryV2 == nil {
 		t.Fatalf("committed close recovery: %v", err)
 	}
+	if preCollected && collectCalls != 0 {
+		t.Fatal("stop duplicated the original Collect")
+	}
 	current, found, err = store.AttemptState(state.Identity)
 	if err != nil || !found {
 		t.Fatal(err)
@@ -318,7 +347,10 @@ func testLauncherV2TerminalCommand(t *testing.T, fixture preparedExecutionFixtur
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command == processsupervisor.CommandTerminate {
+	if preCollected && !terminalReportsEquivalent(current.ProcessTerminalEvidence, closeEvidence.Evidence) {
+		t.Fatal("pre-collected stop Close lost the current Terminate report")
+	}
+	if command == processsupervisor.CommandTerminate && !preCollected {
 		if terminalReportsEquivalent(current.ProcessTerminalEvidence, closeEvidence.Evidence) || !stoppedCloseReportsEquivalent(current, closeEvidence.Evidence) {
 			t.Fatal("stop Close must bridge the exact intervening Collect report")
 		}

@@ -302,7 +302,7 @@ func localDogfoodCommandClass(args []string, doctor *doctorOptions) (string, str
 		}
 		switch args[1] {
 		case "serve":
-			if len(args) != 2 {
+			if _, _, _, err := controlPlaneServeOptions(args[2:]); err != nil {
 				return "", selfidentity.ReasonCommandDenied
 			}
 			return selfidentity.CommandControlPlaneServe, ""

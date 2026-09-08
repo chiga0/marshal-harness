@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""观察 resident 创建/启动，通过既有接口收集实现与集成；不代替团队调度器。"""
+"""观察 resident 创建、启动、收集与验证；仅传递独立 Decision，不代替控制器。"""
 
 import argparse
 import hashlib
@@ -21,6 +21,112 @@ def load(name):
 inputs = load("fixed-server-team-inputs")
 t2 = load("fixed-server-t2-drive")
 Error = t2.DriveError
+
+
+def progress_projection(value, run, prior=None):
+    states = ("RUNNING", "VERIFYING", "REVIEW_PENDING")
+    if not isinstance(value, dict) or value.get("state") not in states:
+        raise Error("team-unexpected-progress-state")
+    current = t2.run_projection(value, run, value["state"])
+    if prior is not None:
+        # These three phases have exactly one journal transition per step.
+        # Polling may miss a phase; it never licenses a new Attempt or retry.
+        steps = states.index(current["state"]) - states.index(prior["state"])
+        if (steps < 0 or current["attemptId"] != prior["attemptId"]
+                or current["sequence"] != prior["sequence"] + steps
+                or (current["authorityHead"] != prior["authorityHead"]) != (steps > 0)):
+            raise Error("team-progress-authority-conflict")
+    return current
+
+
+def observe_review(call, save, run, deadline, now=time.time, pause=time.sleep, initial=None, peers=None):
+    """No Collect/Verify/Start: wait for the server, then request its packet.
+
+    This is diagnostic observation, not proof of verification correctness.
+    The independent reviewer and Core retain all Decision authority.
+    """
+    prior, tick = initial, 0
+    peer_states = dict(peers or {})
+    while now() < deadline:
+        for peer, previous in peer_states.items():
+            if now() >= deadline:
+                raise Error("team-resident-progress-deadline")
+            code, value = call(["inspect", "--run", peer], deadline - now())
+            save(f"peer-{peer}-progress-{tick}.json", {"exitCode": code, "response": value})
+            if code != 0:
+                raise Error("team-peer-inspect-unavailable")
+            if isinstance(value, dict) and value.get("state") == "BLOCKED":
+                current = t2.run_projection(value, peer, "BLOCKED")
+                if (previous["state"] != "RUNNING"
+                        or current["attemptId"] != previous["attemptId"]
+                        or current["sequence"] != previous["sequence"] + 1
+                        or current["authorityHead"] == previous["authorityHead"]):
+                    raise Error("team-peer-authority-conflict")
+                raise Error("team-peer-blocked")
+            peer_states[peer] = progress_projection(value, peer, previous)
+        if now() >= deadline:
+            raise Error("team-resident-progress-deadline")
+        # Inspect may wait behind the resident verifier's Run lease. Do not
+        # invent a shorter subprocess deadline than the bounded scenario;
+        # the fixed client/server still enforce their own operation limits.
+        code, value = call(["inspect", "--run", run], deadline - now())
+        save(f"progress-{tick}.json", {"exitCode": code, "response": value})
+        if code != 0:
+            raise Error("team-progress-inspect-unavailable")
+        prior = progress_projection(value, run, prior)
+        if prior["state"] == "REVIEW_PENDING":
+            break
+        tick += 1
+        pause(min(1, max(0, deadline - now())))
+    else:
+        raise Error("team-resident-progress-deadline")
+    deadline_text = t2.datetime.datetime.fromtimestamp(deadline, t2.datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="microseconds").rstrip("0").rstrip(".") + "Z"
+    request = ["review-packet", "--run", run, "--attempt", prior["attemptId"],
+               "--expected-sequence", str(prior["sequence"]), "--expected-authority-head", prior["authorityHead"],
+               "--request-key", f"team:{run}:review-packet:{prior['sequence']}", "--deadline", deadline_text]
+    if now() >= deadline:
+        raise Error("team-resident-progress-deadline")
+    code, result = call(request, min(30, deadline - now()))
+    if code != 0 or not isinstance(result, dict):
+        raise Error("team-review-packet-unavailable")
+    projection, receipt = result.get("Projection"), result.get("Receipt")
+    if not isinstance(projection, dict) or not isinstance(receipt, dict):
+        raise Error("missing-verified-cli-result")
+    current = t2.run_projection(projection.get("run"), run, "REVIEW_PENDING", prior)
+    packet = projection.get("packet")
+    if (not isinstance(packet, dict) or packet.get("runId") != run
+            or not t2.DIGEST.fullmatch(projection.get("packetDigest", ""))
+            or receipt.get("runId") != run or receipt.get("attemptId") != current["attemptId"]
+            or receipt.get("postRevision") != current["sequence"]
+            or receipt.get("postAuthorityHead") != current["authorityHead"]):
+        raise Error("team-review-packet-binding")
+    save("review-packet.json", result)
+    if now() >= deadline:
+        raise Error("team-resident-progress-deadline")
+    code, final = call(["inspect", "--run", run], deadline-now())
+    if code != 0 or t2.run_projection(final, run, "REVIEW_PENDING", current) != current:
+        raise Error("final-inspection-mismatch")
+    return {"run": current, "packetDigest": projection["packetDigest"], "accepted": False,
+            "stage": "review-pending", "externalStartCalls": 0, "externalCollectCalls": 0,
+            "externalVerifyCalls": 0}
+
+
+def capture_review(root, run, packet, archive, summary, save, require_pass):
+    raw = t2.capture_review_inputs(root, run, packet, archive)
+    report = json.loads(raw)
+    if (not isinstance(report, dict) or report.get("runId") != run
+            or any(not packet.get(key) or report.get(key) != packet[key]
+                   for key in ("taskId", "specDigest", "baseSha"))
+            or report.get("status") not in {"pass", "fail"}):
+        raise Error("team-captured-verification-report-invalid")
+    # This is the captured report's diagnostic status, NOT independently
+    # verified canonical digest evidence. Never replace Core's acceptance
+    # recheck or the reviewer's archive verification with this summary.
+    summary.update(verificationStatus=report["status"],
+                   verificationStatusSource="captured-report-diagnostic-only")
+    save("review-summary.json", summary)
+    if require_pass and report["status"] != "pass":
+        raise Error("business-verification-failed")
 
 
 def subjects(request, approval):
@@ -64,7 +170,7 @@ def await_initial(call, save, ready, runs, deadline, now=time.time, pause=time.s
                 if node in previous:
                     raise Error("team-state-regressed")
                 continue
-            current = t2.run_projection(value, run, "RUNNING", previous.get(node))
+            current = progress_projection(value, run, previous.get(node))
             previous[node] = current
             observed[node] = current
         if len(observed) == 2:
@@ -86,7 +192,7 @@ def await_integration(call, save, ready, run, deadline, now=time.time, pause=tim
             if code != 0 or not isinstance(value, dict) or value.get("runId") != run:
                 raise Error("integration-inspect-unavailable")
             if value.get("state") not in {"CREATED", "PLANNED", "READY"}:
-                return t2.run_projection(value, run, "RUNNING")
+                return progress_projection(value, run)
         tick += 1
         pause(min(1, max(0, deadline - now())))
     raise Error("integration-resident-dispatch-deadline")
@@ -183,13 +289,20 @@ def main():
 
     def call(command, remaining):
         nonlocal sequence
+        if command[0] in {"start", "collect", "verify"}:
+            raise Error("team-client-must-not-drive-worker-progress")
         sequence += 1
         if remaining <= 0:
             raise Error("team-driver-deadline")
+        started = time.monotonic()
         try:
             result = subprocess.run([str(binary), "control-plane", *command], stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=remaining, check=False)
         except subprocess.TimeoutExpired as exc:
+            save(f"call-{sequence}.json", {"operation": command[0], "timedOut": True,
+                 "timeoutSeconds": remaining, "elapsedSeconds": time.monotonic() - started,
+                 "stdoutSHA256": hashlib.sha256(exc.stdout or b"").hexdigest(),
+                 "stderrSHA256": hashlib.sha256(exc.stderr or b"").hexdigest()})
             raise Error("fixed-cli-response-timeout") from exc
         save(f"call-{sequence}.json", {"operation": command[0], "exitCode": result.returncode,
                                      "stdoutSHA256": hashlib.sha256(result.stdout).hexdigest(),
@@ -215,14 +328,16 @@ def main():
         save("subject.json", {"runs": runs, "sourceHead": request["inputs"]["baseSha"],
                               "binarySHA256": binary_digest, "inputsDigest": request["inputsDigest"]})
         ready = lambda run: (root / ".marshal/runs" / run / "state.json").is_file()
-        await_initial(call, save, ready, runs, time.time() + 120)
+        initial = await_initial(call, save, ready, runs, time.time() + 120)
         deadline = time.time() + 360
         reviews = {}
         for node in ("service", "client"):
             node_save = lambda name, value: save(node + "-" + name, value)
-            summary = t2.drive(call, node_save, runs[node], deadline, require_pass=not args.await_review_seconds)
+            summary = observe_review(call, node_save, runs[node], deadline, initial=initial[node],
+                                     peers={runs[other]: initial[other] for other in ("service", "client") if other != node})
             packet = json.loads((output / (node + "-review-packet.json")).read_bytes())["Projection"]["packet"]
-            t2.capture_review_inputs(root, runs[node], packet, output / (node + "-review-inputs.tar"))
+            capture_review(root, runs[node], packet, output / (node + "-review-inputs.tar"),
+                           summary, node_save, require_pass=not args.await_review_seconds)
             reviews[node] = (summary, packet)
         if ready(runs["integration"]):
             raise Error("integration-materialized-before-acceptance")
@@ -243,7 +358,8 @@ def main():
                                    max(0, review_deadline - time.monotonic()))
         summary = {"stage": "two-implement-reviewed" if reviewed else "two-implement-review-pending", "accepted": False,
                               "integrationExecuted": False, "processOverlapProven": False,
-                              "externalStartCalls": 0, "runs": runs, "reviewedRuns": reviewed}
+                              "externalStartCalls": 0, "externalCollectCalls": 0, "externalVerifyCalls": 0,
+                              "runs": runs, "reviewedRuns": reviewed}
         if reviewed and any(run["state"] != "ACCEPTED" for run in reviewed.values()):
             save("summary.json", summary)
             raise Error("team-independent-review-not-accepted")
@@ -253,11 +369,13 @@ def main():
             remaining = lambda: max(0, review_deadline - time.monotonic())
             if remaining() <= 0:
                 raise Error("independent-review-wait-expired")
-            await_integration(call, save, ready, runs["integration"], time.time() + min(120, remaining()))
+            initial_integration = await_integration(call, save, ready, runs["integration"], time.time() + min(120, remaining()))
             node_save = lambda name, value: save("integration-" + name, value)
-            integration = t2.drive(call, node_save, runs["integration"], time.time() + min(360, remaining()), require_pass=False)
+            integration = observe_review(call, node_save, runs["integration"], time.time() + min(360, remaining()),
+                                         initial=initial_integration)
             packet = json.loads((output / "integration-review-packet.json").read_bytes())["Projection"]["packet"]
-            t2.capture_review_inputs(root, runs["integration"], packet, output / "integration-review-inputs.tar")
+            capture_review(root, runs["integration"], packet, output / "integration-review-inputs.tar",
+                           integration, node_save, require_pass=False)
             expose_review(save, output, "integration", integration, binary_digest)
             with (output / "integration.review.ready").open("xb"):
                 pass

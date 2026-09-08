@@ -92,12 +92,38 @@ func TestProductionResultMissingFinalContentNeverBorrowsEarlierMessage(t *testin
 	}
 }
 
+func TestProductionResultFinalObjectFailureLocationIsClosed(t *testing.T) {
+	const result = `{"kind":"WorkerResult"}`
+	for _, tc := range []struct{ text, suffix string }{
+		{`[private prose] ` + result, "syntax-before-result"},
+		{`{"private":`, "syntax-before-result"},
+		{`{"private":1,"private":2}` + result, "canonical-before-result"},
+		{result + ` [private prose]`, "syntax-after-result"},
+		{result + ` {"private":1,"private":2}`, "canonical-after-result"},
+	} {
+		t.Run(tc.suffix, func(t *testing.T) {
+			record, err := extractSingleWorkerResultObject(tc.text)
+			want := "pi-result-final-object-invalid-" + tc.suffix
+			if len(record) != 0 || !errors.Is(err, ErrProtocol) || ProductionResultFailureCode(err) != want {
+				t.Fatalf("rejection changed: code=%q expected=%q", ProductionResultFailureCode(err), want)
+			}
+		})
+	}
+	// Arbitrary provider-authored labels cannot become public diagnostics.
+	if got := ProductionResultFailureCode(invalidFinalObject("private provider text", false, ErrProtocol)); got != "pi-result-final-object-invalid" {
+		t.Fatalf("untrusted phase escaped: %q", got)
+	}
+	if ProductionResultFailureCode(errors.New("pi-result-final-object-invalid-syntax-before-result")) != "" {
+		t.Fatal("provider text impersonated a classified failure")
+	}
+}
+
 func TestProductionResultFailureClassificationDoesNotChangeAdmission(t *testing.T) {
 	for _, tc := range []struct {
 		name, want string
 	}{
 		{"valid", ""}, {"trailing", "pi-result-final-object-trailing"},
-		{"multiple", "pi-result-final-object-multiple"}, {"invalid", "pi-result-final-object-invalid"},
+		{"multiple", "pi-result-final-object-multiple"}, {"invalid", "pi-result-final-object-invalid-canonical-before-result"},
 		{"business-prefix", ""},
 		{"missing", "pi-result-final-object-missing"}, {"identity", "pi-result-declared-identity"},
 		{"schema", "pi-result-declared-schema-artifacts"}, {"protocol", "pi-result-transcript-json"},

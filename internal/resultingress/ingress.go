@@ -12,6 +12,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/goal"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
@@ -301,6 +302,10 @@ type Ingress struct {
 	reservations          map[string]AttemptReservationState
 	reservationKeys       map[string]string
 	teamPlans             map[string]TeamPlanState
+	taskDrafts            map[string]taskDraftState
+	taskStops             map[string]TaskStop
+	taskCancellations     map[string]TaskCancellation
+	taskDeliveries        map[string]goal.TaskDelivery
 	teamRunCreations      map[string]TeamRunCreationState
 	teamHalts             map[string]TeamPlanHalt
 	teamOutcomes          map[string]TeamDeliveryOutcome
@@ -368,6 +373,10 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		reservations:                make(map[string]AttemptReservationState),
 		reservationKeys:             make(map[string]string),
 		teamPlans:                   make(map[string]TeamPlanState),
+		taskDrafts:                  make(map[string]taskDraftState),
+		taskStops:                   make(map[string]TaskStop),
+		taskCancellations:           make(map[string]TaskCancellation),
+		taskDeliveries:              make(map[string]goal.TaskDelivery),
 		teamRunCreations:            make(map[string]TeamRunCreationState),
 		teamHalts:                   make(map[string]TeamPlanHalt),
 		teamOutcomes:                make(map[string]TeamDeliveryOutcome),
@@ -400,6 +409,10 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 		reservations:                make(map[string]AttemptReservationState),
 		reservationKeys:             make(map[string]string),
 		teamPlans:                   make(map[string]TeamPlanState),
+		taskDrafts:                  make(map[string]taskDraftState),
+		taskStops:                   make(map[string]TaskStop),
+		taskCancellations:           make(map[string]TaskCancellation),
+		taskDeliveries:              make(map[string]goal.TaskDelivery),
 		teamRunCreations:            make(map[string]TeamRunCreationState),
 		teamHalts:                   make(map[string]TeamPlanHalt),
 		teamOutcomes:                make(map[string]TeamDeliveryOutcome),
@@ -827,6 +840,10 @@ func (i *Ingress) resetDurableReplayState() {
 	i.reservations = make(map[string]AttemptReservationState)
 	i.reservationKeys = make(map[string]string)
 	i.teamPlans = make(map[string]TeamPlanState)
+	i.taskDrafts = make(map[string]taskDraftState)
+	i.taskStops = make(map[string]TaskStop)
+	i.taskCancellations = make(map[string]TaskCancellation)
+	i.taskDeliveries = make(map[string]goal.TaskDelivery)
 	i.teamRunCreations = make(map[string]TeamRunCreationState)
 	i.teamHalts = make(map[string]TeamPlanHalt)
 	i.teamOutcomes = make(map[string]TeamDeliveryOutcome)

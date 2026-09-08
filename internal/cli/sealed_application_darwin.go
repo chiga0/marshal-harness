@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	piadapter "github.com/chiga0/marshal-harness/internal/adapter/pi"
@@ -70,19 +71,24 @@ type sealedRepositoryApplication struct {
 	deadlineCursor string
 	// A local circuit breaker for unknown dispatch/stop-record outcomes only.
 	// Durable team halts remain the authority across process restarts.
-	teamDispatchStopped bool
+	teamProgressStopped atomic.Bool
+	teamCollectCursor   string
+	teamVerifyCursor    string
+	teamReviewCursor    string
+	taskCancelCursor    string
 }
 
 var _ application.PublicApplicationPort = (*sealedRepositoryApplication)(nil)
 
 type sealedRepositoryApplicationConfig struct {
-	StateRoot       string
-	RepositoryRoot  string
-	PiRuntime       string
-	PiEntrypoint    string
-	EntryIdentity   *selfidentity.LocalSelfIdentityObservationV2
-	ObserveIdentity productionruntime.LocalSelfIdentityObserver
-	RecoveryMode    sealedRepositoryRecoveryMode
+	StateRoot          string
+	RepositoryRoot     string
+	PiRuntime          string
+	PiEntrypoint       string
+	EntryIdentity      *selfidentity.LocalSelfIdentityObservationV2
+	ObserveIdentity    productionruntime.LocalSelfIdentityObserver
+	RecoveryMode       sealedRepositoryRecoveryMode
+	TaskTemplateInputs []byte
 }
 
 type sealedRepositoryRecoveryMode uint8
@@ -143,6 +149,15 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	applicationAdapter.validator, err = contract.NewValidator()
 	if err != nil {
 		return nil, fmt.Errorf("sealed repository application: compile contracts: %w", err)
+	}
+	// Concrete template parsing belongs to this existing composition root.
+	// Keep a read-only inspector installed when new Task submission is disabled.
+	var taskTemplate planning.TaskTemplate
+	if len(config.TaskTemplateInputs) != 0 {
+		taskTemplate, err = planning.OpenTaskTemplate(config.TaskTemplateInputs, applicationAdapter.validator)
+		if err != nil {
+			return nil, application.NewError("sealed-repository-application", application.ReasonInvalidRequest)
+		}
 	}
 	defer func() {
 		if err != nil {
@@ -209,6 +224,7 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	applicationAdapter.session, err = productionruntime.OpenRepositorySession(ctx, productionruntime.RepositorySessionInputs{
 		HeldIngressDir: heldIngress, HeldRepositoryRoot: repositoryDirectory, OwnerDirectory: ownerDirectory, Acquisition: acquisition,
 		FixedMarshalPath: fixedMarshal, OwnerPrivateControlRoot: controlRoot,
+		TaskTemplate: taskTemplate,
 		TeamInputPreflight: func(raw []byte) error {
 			preview, err := planning.PreviewTeamInputs(raw, applicationAdapter.validator)
 			if err != nil || preview.Inputs.Spec.Repository != applicationAdapter.repositoryRoot || !preview.Inputs.Spec.AuthorityNamespaceId.Equal(applicationAdapter.namespace) {
@@ -223,6 +239,13 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 			}
 			derived, err := repository.CombineAcceptedPatches(ctx, applicationAdapter.stateRoot, base, binding, patches)
 			return derived.TreeSHA, derived.CommitSHA, err
+		},
+		TeamDeliveryExporter: func(ctx context.Context, base, binding, tree, commit string, upstreams [][]byte, final []byte, paths []string) (map[string][]byte, error) {
+			repository, err := gitworktree.OpenContext(ctx, applicationAdapter.repositoryRoot)
+			if err != nil {
+				return nil, err
+			}
+			return repository.ExportTeamDelivery(ctx, applicationAdapter.stateRoot, base, binding, tree, commit, upstreams, final, paths)
 		},
 		TeamRunPreparer: func(ctx context.Context, task, policy []byte, runID string) ([]byte, error) {
 			// Use only this server's frozen Pi paths; never rediscover a provider
@@ -935,7 +958,7 @@ func (adapter *sealedRepositoryApplication) openRun(ctx context.Context, runID s
 		ExistingWorktreeDescriptorGraph: worktree.graph, ExistingWorktreeTargetWorktree: worktree.target,
 		LaunchArgvBuilder: piProductionLaunchBuilder(adapter.piRuntime, adapter.piEntrypoint, task),
 		ResultParser: func(parserCtx context.Context, input productionruntime.AttemptResultInput) (domain.Record, error) {
-			return parsePiProductionResult(parserCtx, input, task.Worker.Model)
+			return parsePiProductionResult(parserCtx, input, task.Worker.Model, task.Worker.ResultContract)
 		},
 		EntryLocalSelfIdentity: adapter.entryIdentity, ObserveLocalSelfIdentity: adapter.observeIdentity,
 	}, profile)
@@ -946,8 +969,10 @@ func (adapter *sealedRepositoryApplication) openRun(ctx context.Context, runID s
 	return run, nil
 }
 
-func parsePiProductionResult(ctx context.Context, input productionruntime.AttemptResultInput, model string) (domain.Record, error) {
+func parsePiProductionResult(ctx context.Context, input productionruntime.AttemptResultInput, model, resultContract string) (domain.Record, error) {
 	result, err := piadapter.ParseProductionWorkerResult(ctx, piadapter.ProductionResultInput{
+		ResultContract: resultContract, ProcessTerminal: input.ProcessTerminal,
+		ProcessExitCode: input.ProcessExitCode, ProcessSignal: input.ProcessSignal, TranscriptTruncated: input.TranscriptTruncated,
 		Transcript: input.Transcript, Worktree: input.Worktree,
 		TaskID: input.TaskID, RunID: input.RunID, AttemptID: input.AttemptID,
 		Executable: input.Executable, Version: input.Version, Model: model,

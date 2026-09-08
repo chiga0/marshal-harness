@@ -1,5 +1,129 @@
 # 设计审计报告
 
+## 2026-09-08：Task 取消组合验证与状态字段生命周期
+
+取消初稿 `a59a138` 的聚合审查发现：坏 Task 的局部 Run 读取失败不推进取消游标；取消信号被 finalizer 当成全局调度错误；HTTP 测试 helper 未释放 endpoint borrow，导致冷关闭无限等待。前两项在 `387561e` 修正，helper 在 `eea6e01` 修正。主 Agent 对自己持有的挂起测试进程取 SIGQUIT 栈，确认阻塞于 Session.Close 后停止该次执行，没有重跑未修代码或终止其他 Worker。
+
+组合 `d9cdfa82e0001a3d7a01d42cf36adae0cf257050` 的 Mac 定向测试通过：坏任务不饿死健康任务、停止任务不触发全局 finalizer、draft/approved/READY/reservation 冷恢复、缺目录与缺 cleanup 拒绝、Outcome 前停止的两个真实 Git/Verifier/Importer 场景（19.55 秒）、Outcome 先赢的 export/cancel 竞争（13.34 秒）以及原完整交付链（14.79 秒）。香港 ECS 在专用账号与资源限制下 application/taskhttp/productionruntime 整包 race 通过；resultingress 整包 race 超过 180 秒失败，随后仅取消三项的定向 race 58.114 秒通过。保留整包超时，不能以定向结果替代整包门禁。
+
+复审发现新的明确缺口：原 RunStart projection 只在 READY/RUNNING 填充冻结摘要，取消 consumer 却在 BLOCKED/VERIFYING/REVIEW_PENDING 等状态继续读取同字段，因此真实 cleanup 后仍不能结案。实现 `f4eb0347` 已改为在同一 Run lease 下重读原冻结文件、快照与 journal，并逐项绑定原 Attempt 和合法 completed/stopped 事件；不扩改旧 projection，不接受手填 cleanup 摘要。新增 projection-only 夹具又暴露非法跳状态，`f1474f47` 按原合法状态路径修正；同 reviewer 已复审无剩余代码 P0/P1。完整 Task→真实 CancelRun→cleanup→disposition 正例继续是 B1 实机出口，不因组件通过而关闭。
+
+实际教训：覆盖 producer 字段的**状态生命周期**，不仅比对静态字段名；缺证据负例必须证明拒绝发生在目标 gate，不能在更早的 fixture 错误处假通过。本轮不为测试共享再造协议平台，局部确定性回归与真实 Worker 验收分别留证。并行 CI/审查/后继开发已执行；#274/#275 全绿后分别合入集成分支，不是 main 或正式发布。
+
+## 2026-09-08：自动验收生产链接缝与流水线修正
+
+核心候选 `064b528` 的唯一 reviewer 发现 P1：objective consumer 漏掉原 Verifier 必定生成的 denial-summary、tool-audit、tool-allowlist，因此手写报告正例通过而真实报告必被拒。修正保持 frozen worker.tools 的必需/可选语义，只允许原 producer 合法 skipped，不放宽未知/缺失/重复/失败 gate。另将实际 sealed Verify 的 ToolAllowlist 接自原冻结 Task，并把 resident 的等待错误映射放回 Application 边界，没有扩架构白名单。
+
+验收改为实际 Verifier→固定 oracle→原 Packet/Importer，以及三个真实 Git 候选→原接纳/集成→制品 producer/RB1/冷读。新增夹具的 mediaType、固定根布局、Worker transcript-meta 曾先后失败；均修正夹具且保留原门禁，不归咎模型。最终 `aa4a82d` 由同 reviewer 复核，主 Agent 独立固定路径复跑完整 Session 测试 15.80 秒通过。这里的 Worker 输入/启动/收集是明确的确定性模拟，不证明真实 Agent、HTTP 自治或 B1 完成。
+
+可执行的作者自测应在审查前运行完整 producer 链；共享固定测试路径明确唯一写入者并交接，最终由非作者独立复跑。CI(N)、开发(N+1)、设计(N+2) 交错，而非每修一个夹具字段重新等待整轮 CI；B2 预设计不占用 B1 当前共享写入文件。具体候选、同步状态和缺口维护在 Roadmap 当前表，历史失败不清零。
+
+## 2026-09-08：Task HTTP 候选接入与入口遗漏复盘
+
+后续验证：实现 `70ec148` 已经原 reviewer 复核关闭两项 P1；香港 ECS 三包完整测试通过，Mac 的真实 activation 入口和 held Session/HTTP 冷重放通过。独立客户端 `f333dfd` 的 17 项解释型测试经主 Agent 复跑后合入本地候选 `736fcc9`，非 main 合并。详细命令、候选和缺口见入口文档。Mac 共享 lane 测试在测试输出前被 AMFI 以签名问题终止，未记通过、未绕过；该平台回归待合法放行或独立 Darwin CI。无模型调用、自动 Decision 或下载完成声明。
+
+验证流程另有两次可避免的执行错误：主 Agent 初次独立编译测试未注入 Makefile 要求的 sourceHead，随后直接从仓库根启动导致包相对 fixture 路径不成立。按既有构建参数和包工作目录纠正后同测试通过，没有修改产品或测试门禁。后续固定路径测试入口应同时保留精确 linker metadata、包工作目录、测试选择与二进制摘要，不能只固定输出路径。
+
+候选把公开 Task 的创建、精确确认和按 ID 查询接到原 RepositorySession 与同一 RB1；原 accepted plan 仍是预算和三个创建义务唯一提交点，loopback adapter 复用 resident 应用和写入队列。范围与可重复请求方式见 [Task HTTP 候选入口](task-http-preview.md)。自动 Decision、Task cancel 与完整下载尚未实现，B1 不关闭，无模型重试或发布声明。
+
+唯一 reviewer 聚合发现两项 P1：新增 parser/HTTP 测试没有覆盖更外层真实 RunContext 的启动参数 gate；正数陈旧 revision 被过早归为无效输入，导致 Darwin 调用链测试期望冲突时必失败。修正把封闭参数解析复用到真实入口与启动 consumer，增加原 activation 准入和共享 writer lane 回归；revision 正值与当前草稿不符统一为冲突。该经验是验证完整入口，不是增加审批轮次或另建协议。
+
+修正曾被自动工具以 ADR 授权不足拒绝，未换工具绕过。用户随后明确授权“按 ADR0085 放行 Task HTTP 的封闭 CLI 参数、复用现有写入通道，并修正 revision 冲突返回码及相应测试”，才以原工具实施。不改 ADR 历史状态。ECS 旧基线和新源码快照的非模型完整/定向 race 结果与实际边界记录在入口文档；精确最终提交与 Darwin 实机证据仍需后续验证，分层 fixture 不冒充完整业务链。
+
+## 2026-09-08：ADR0085 接受，恢复 Task HTTP 主线实施
+
+用户明确确认“ADR0085 ok，请实施”。据此将 ADR0085 标记 Accepted，解除 Task draft/stop/delivery、HTTP、自动独立 Decision 和完整交付的合同等待；实现复用已验证 resident 候选，不重建平行状态机。B1 仍 IN_PROGRESS，合同接受不是实机或发布证据。
+
+用户同时明确原 ECS 为内网机器，不应接入 GitHub CI；现有 GitHub canary 在 GitHub-hosted runner 上生成 Pi 配置，不是在该 ECS 上执行。后续公网 ECS 的地址及授权尚待提供；不把内网机器注册为 GitHub runner，不把取得公网机器作为 API 编码前置，也不在聊天或日志中索取密钥。
+
+## 2026-09-08：CI 模型配置不等于本机已配置模型元数据
+
+停止盲目重跑后的只读核对发现，`scripts/rc1-canary-provider-config.py` 为每个模型统一写入 `contextWindow=128000`、`maxTokens=16384`，不提供 reasoning/compat；这不是读取用户本机 Pi 配置。本机 Pi 0.84.4 中 `qwen3.8-max` 的两个已配置 Provider 均声明 contextWindow 1000000、maxTokens 131072、reasoning true，其中一个还声明 Qwen thinking 格式及禁用 developer role/store。配置声明不等于服务端能力验证，不能盲目复制到未知 endpoint。
+
+在同版本 Pi `streamSimple` 的 `onPayload` 上执行了零网络构造实验：只使用虚构 endpoint 与测试密钥，在请求发送前终止，并断言 fetch 调用数为 0。旧 CI 元数据实际构造 `max_completion_tokens=16384`，缺少 `enable_thinking`/`reasoning_effort`；本机元数据加显式 low 构造 `max_completion_tokens=131072`、`enable_thinking=true`、`reasoning_effort=low`。后者只是对照夹具，并不证明实机 Worker 当前选择 low。该实验确认配置差异会影响实际请求，不证明历次 length 的唯一根因，也不授权扩预算或改终态接纳。
+
+下一步须先确认 CI secret endpoint 对应的已验证 Provider，再使用显式匹配的非敏感配置；无需索取或输出密钥。在确认前不更改远端 Provider 配置、不启动新的付费团队。候选 `775de21` 的 Darwin 定向 `34158437379` 已成功；现有团队交付、Task HTTP 和正式部署出口仍未完成。
+
+后继实现增加可选 GitHub variable `PI_MODEL_PROFILE_JSON`，仅接受选定 model 的 `id/contextWindow/maxTokens/reasoning` 与受支持的 `compat/thinkingLevelMap`。限额必须为正整数、输出上限不大于 context，拒绝未知字段、重复键、错 model、超大/深层 JSON；显式配置错误在创建模型配置文件前失败，不能静默退回旧值。未设置时旧调用者行为保持，日志明确 `legacy-default`；显式时仅输出规范化配置摘要，绝不输出凭据或 endpoint。该输入不设置实际 reasoning level、不调整 Task 总预算、不证明服务端能力。当前未设置远端变量；须管理员确认 endpoint/profile 后才启用，未知配置不得作为新的实机重试理由。
+
+首稿 `6d9306f` 的 CI `34159224060` 在三个 Linux 作业的 release contract 前置检查失败：新增独立 CI step 不符合既有锁定步骤结构，尚未执行新增测试。该错误属于本轮调用链检查遗漏，不能归咎 Provider。聚合修正撤回新增 CI step，把离线配置测试放入既有 `fixed-server-t1-canary_test.sh` 入口，保留原发布合同与完整断言；以后修改 CI 接线必须在本地先执行现有解释型 release contract gate。动态质量检查与真实业务出口继续分别计量。
+
+## 2026-09-08：停止收口实机通过，团队失败观测仍有盲点
+
+精确候选 `dd8e8eccdd1f2118db92e928996321272aff1fc7` 完整 CI `34156121695` 五项通过，Darwin 定向 `34155305960` 的 36 项必跑检查通过。其唯一实机 `34157213736` 仍失败，诊断 artifact `10031514061` 保留原始证据；固定二进制 SHA-256 为 `3bd2b444e62b009449b47887660f4db666161cc4d877756bb3307d2235d5378d`。没有 ReviewPacket、独立 Decision、集成或下载成功，B1 不升级。
+
+独立核对账本：service 已有 `result-admitted`，事件到 sequence 4 `VERIFYING`；client 因 `pi-result-provider-terminal-length` 触发 sequence 54 `team-plan-halted(stage=collect)`。client 的 Collect 52/53 唯一成功，Terminate 56/57、Close 62/63、supervisor closed 64、cleanup completed/released 65/66 全部闭合，没有第二次 Collect 或结果接纳。此次实机证明上一停止收口修复生效；`VERIFYING` 不证明 Verify 已启动，团队 halt 后禁止新 Verify 是既有合同，不应自动解除。
+
+诊断中 59 个已保存调用全部成功（一次批准、58 次 Inspect），54 次 service 进度查询最后仍成功。最终超时调用在保存前抛错，缺少预算与耗时证据，不能据此外推 HTTP/锁故障。驱动串行先等 service，也看不到 client 已 `BLOCKED`。本轮仅改诊断消费者：等待期间查询同一批准团队的另一节点，精确绑定终态失败即结束等待；保存超时操作、预算、耗时和输出摘要，不输出原文、不增加 Collect/Verify/恢复权限。Provider length 已复发，仍缺少实际输出预算原因，禁止原样付费重试或盲目增额。该改进不等于业务交付修复或生产完成。
+
+## 2026-09-08：结果拒绝后的停止收口仍阻断团队交付
+
+候选 `88883d9c04406fb65fe5b695f80a88bb83fbbfb0` 完整 CI `34152276913` 五项通过，Darwin 定向 `34152276380` 的 33 项必跑检查通过；精确门禁后仅派发一次实机 `34153526402`，结果 failure。诊断 artifact `10030318154` 保留原始证据，没有 Decision、集成或下载成功。本轮未到 ReviewPacket，不能据此宣称上一轮身份传递修复已实机验证。
+
+原日志首个业务拒绝为 `pi-result-provider-terminal-length`，ledger sequence 38 记录 service transcript 已收集，sequence 39 记录 `team-plan-halted(stage=collect)`；并非团队尚未派发。期限终结后 service 已有 `process-terminal` 和 `allocation-terminated`，但后续 collect 在 sequence 48/50/66–88 反复 `process-supervisor-identity-conflict`，缺少其 supervisor closed/cleanup released，最新对外 projection 仍 sequence 3 RUNNING。client 则完成停止清理并投影 `BLOCKED/attempt-deadline-exceeded`。客户端最终 `fixed-cli-response-timeout` 是外层表现，不能替代上述具体失败链，也不能将 service 的旧 RUNNING 投影当成进程仍活跃。
+
+根因已定位：通用 Collect 查找只看最新 checkpoint，后来的 Terminate 遮住旧成功 Collect，而物理 mechanics 明确只允许收集一次。候选仅修停止收口接缝：已有有效耐久 Collect 即继续原 Close；不重发 Collect、不通过历史 anchor 重读，不修改通用结果接纳。Close 仍使用当前 owner/head 校验真实 journal 与 transcript 对象。新增完整耐久链回归覆盖 Collect→Stop→Close、丢回复、独立 absence 与冷重开 CleanupReleased，要求停止后零 Collect、无业务结果接纳；保留原未收集停止与正常 Inspect 路径。本地 vet/staticcheck/diff 检查通过，远端 Darwin 动态结果尚待验证。
+
+Provider length 的具体输出/预算原因仍需证据，不能猜测为用户未配置、直接增预算或修改正常终态准入。保留两次 Attempt 和失败分母，不原样付费重跑，不放宽 `native-terminal/v1` 的正向终态要求。B1/B2/B3 状态不升级。
+
+修复候选 `a003ca7` 的快速检查 `34154916006` 首次失败于测试编排：三组耐久链共用 120 秒总限时；原 Terminate 链及 SameOwner 两分支通过（后者 65.96 秒），新 Collect→Stop 链运行约 17 秒时总限时耗尽，堆栈仍在耐久重放/摘要计算，没有业务断言失败。纠正为三个精确顶层用例各自 120 秒，保留 race、全部断言及必跑成功集合，并让新失败链先运行；不增加 Worker 预算、不以超时当测试通过。原完整 CI `34154917505` 保留运行，不为诊断编排修正取消。
+
+## 2026-09-08：原生结果实机进入独立 Verify，团队仍未交付
+
+`a5418f4acbb1fe3b581a4c6d079510048d82dcee` 的完整 CI `34149966062` 五项全绿，Darwin 定向 `34149938176` 的 30 项必跑检查通过。精确候选 gate 通过后只派发一次真实双 Pi 团队 `34151269983`，其失败证据保存在 diagnostic artifact `10029503062`。service Run `team-run-0189f9bd1f824517f7eb8d01a8b1d5fd5a38150a7b515f9ea39197e055743772` 的事件已到 sequence 4 `worker.completed` 和 sequence 5 `verification.completed`，报告为 pass，包含 `command:quote-team-service`。这首次为本候选原生结果→独立 Verify 接缝提供正向实机证据，但不表示整个团队成功。
+
+随后 `call-21.json` 的 `review-packet` 请求退出 1、stdout 为空；server 仅记录 `stage=server-dispatch reasonCode=transport-failure`，尚不足以确定底层原因。没有独立 Decision、集成或下载消费；另一路的原始 state 快照不能替代 journal/current projection 判断实际状态。保留整次失败和既有预算，不原样重跑，也不把完整 CI 绿或单节点验证通过关闭 B1。下一步沿实际 ReviewPacket 接线定位，同时在独立 worktree 补 Task HTTP 用户出口。
+
+独立接线审计进一步发现确定性 P1：服务 HTTP 请求从 `context.Background()` 建根，丢失入口已 gate 的 local identity；后台 Verify 继承入口 context，故可生成带 local binding 的报告，而 HTTP ReviewPacket 的 `prepareLocalReviewBinding` 必拒绝缺失身份。归档与此阻断吻合，但缺少原始内部错误及 manifest，不能排除更早输入失败，不能称为此次唯一首错。修正仅改为保留值的 `context.WithoutCancel(ctx)` 再建立独立 request cancellation，不跳过身份检查，也不使服务停止立即取消排空中的请求。补身份保留、无身份不伪造、父 deadline/取消隔离及显式排空取消回归，纳入 Darwin 快速必跑清单；本地 vet 通过不替代远端动态回归，更不等于 ReviewPacket 或 B1 已实机通过。
+
+## 2026-09-08：Schema 消费链漏检与前移修正
+
+候选 `2885dcc` 的全量 CI `34148751006` 在 Ubuntu 的 execution 包发现两项失败：新增 `/worker/resultContract` 未加入既有 prompt projection 分类目录，同时使合成未知字段反例出现额外未分类项。这是实现遗漏及定向检查选取不完整，不是模型失败；计入额外修正，不以先前 22 项 Darwin 定向通过掩盖。未启动新的付费团队 canary。
+
+修正把该字段显式列为 Core/Adapter 使用的 hidden 字段，补独立 non-leak oracle 与渲染哨兵；不改变旧 prompt 可见字段或放宽 Schema 覆盖门禁。快速 Darwin 工作流增加 8 项既有 projection/泄漏检查并要求真实 pass。后继先运行 ECS 完整 execution race，再进入精确候选全量 CI；新增持久化字段的前置检查须覆盖既有消费者，不能仅选择新测试名称。本节记录修正范围，动态验证与 B1 实机出口仍须分别取得证据。
+
+## 2026-09-08：从模型控制 JSON 改为显式原生结果候选
+
+针对 `34145704791` 的真实 Collect 拒绝，本轮不再仅改提示词/诊断后重复付费 canary。按 ADR 0085 的 Adapter 责任边界，新增冻结的 `worker.resultContract=native-terminal/v1`：同一 TaskSpec 字段贯穿 Pi launch、真实 Supervisor terminal/exit/signal/truncation、严格 transcript、结果构造与原独立 Verify。模型只负责业务文件及真实报告，不能提供身份/时间/控制证据；报告中的受阻、失败和未完成内容原样保留。旧 JSON 默认语义不变，未知协议和不支持新协议的 legacy executor 在启动前拒绝，不能自动 fallback。
+
+本次候选同时更新订单团队输入，保留原共享业务契约、独立 oracle、一次尝试/零 rework 和成果要求；没有降格验收或扩大工具权限。新增协议兼容、伪造字段、真实退出失败、缺失终态、截断、Provider 失败、报告超限和组合根传递反例。动态 Go 验证交给远端，不在受管 Mac 上执行临时编译程序。此处记录实现范围，不声称 B1、生产启用、远端合并或正式发布完成；须待独立审查、精确候选 CI 与真实交付通过。
+
+首稿 `f9923eb` 的 ECS Pi/contract race、legacy 拒绝和 CLI 接线测试，以及 Darwin `34148180525` 的 21 项必跑用例通过；独立审查仍发现 1 项 P1：原 native 路径只排除已识别失败，缺失/null/空/未知 `stopReason` 仍会被当成正常结束。实机重跑前聚合修正为只接受实际末条 assistant 的明确 `stop`，补完整反例和旧协议兼容；停止首稿尚未完成的 CI，未启动付费 Worker。此项计入真实代码 rework，不把先前测试绿当无缺陷证明。
+
+## 2026-09-08：公平调度候选的实机结果与 Pi 结果拒绝
+
+`495ab02fcae086984407fb92f96fbc65c390ef2f` 完整 CI `34144298657` 全绿，Darwin 定向 `34144087380` 的 11 项检查通过；真实团队 `34145704791` 仍失败。诊断 artifact `10027742173` 中首个业务错误为 `pi-result-final-object-invalid`，当前账本记录 service 的 `team-plan-halted(stage=collect)`、两条 `process-terminal`，另一路 Outcome 为 `BLOCKED/attempt-deadline-exceeded`；driver 最终报 `fixed-cli-response-timeout`。本轮已有 Collect 进入并拒绝结果的证据，与上一轮仅 RUNNING 不同；未提交 Decision、未集成、未重试，不计 B1 通过。
+
+旧分类把终态文本中 JSON 语法错误、canonical 拒绝，以及错误位于已识别结果前/后混为同一标签；上传包又未包含终态内容。下一候选只在原拒绝点输出封闭分类（syntax/canonical、before/after-result），不输出文本、字段名、路径或偏移，不重解码、不更改结果接纳集合。before 包含尚未识别成功的结果声明本身；canonical 也不等同于已证明重复字段。新增确定性拒绝及伪造标签反例，并纳入远端 Darwin 快速反馈。它是诊断补齐，不宣称已修好 Pi 实际输出；获得真实分类前禁止原样付费重试或盲目延长超时。后续仍须完成 Task HTTP、组合验收、下载消费与正式部署出口。
+
+## 2026-09-08：真实团队超时与后台调度公平性
+
+精确候选 `cd19a6d20dcce4ef9eb51ea3cf455f6fd89c76de` 的完整 CI `34140891818` 五项全绿，Darwin 定向 `34140755250` 通过；但真实双 Pi canary `34142425497` 在 360 秒观察期限内未到评审，原因 `team-resident-progress-deadline`，未提交 Decision、未自动重试。两条 `process-started` 已入账，49 次 service 查询仍为同一 RUNNING head。原始 `state.json` 的 READY 不能覆盖 fixed Inspect 的 journal 投影。上传包没有 Worker 终态输出；空 stderr、没有 Collect successor 也不能证明 Collect 从未进入，因为正向 still-running 本来不追加结果事实。因此本次唯一根因尚未确定，不归咎模型速度、不直接扩大时间预算。
+
+独立源码诊断确认四个同周期后台 ticker 缺乏调度公平性：deadline/dispatch 持 writer 与 adapter 锁进行较重扫描，其他入口 TryLock 失败静默跳过；耗时大于周期时积压 tick 可使某循环持续获胜。候选修正为四类短入口轮转，Verify 经原 Run lane 与当前团队准入的显式握手后独立有界执行，保持单个验证槽、原精确重查和 halt/circuit。增加积压 tick、准入前不得让行、长验证期间兄弟继续、重复调度不重复验证与未准入取消测试。此处仅修正已证实的饥饿风险，不宣称真实 canary 已恢复或 B1 完成；后续须同候选动态验证及真实完整团队交付。
+
+效率教训：纯 selector cursor 测试不能证明多个生产循环公平；应测试实际 callback 的有限服务机会。运行证据必须能区分无候选、锁忙、正向存活和结果接纳，不能持续以空日志猜测。正式 Task HTTP、集成下载消费等 B1 出口仍开放。
+
+## 2026-09-07：Darwin 动态验证失败与前移反馈
+
+`3f91d425` 的 CI `34138530708`：Linux 两种架构 conformance、Ubuntu quality 与 secret scan 通过，Darwin quality 失败，不得进入团队实机或标记通过。新增 cold verification/busy sibling 测试未先调用团队批准就物化，触发预期的 authority-conflict；修测试前提，不放宽产品批准。另一失败是 resultingress 全包 race 达到 Go 默认 10 分钟上限，当时栈中单测仅运行 4 秒；ECS 对 `eb480a83` 同名单测独跑 7.014 秒通过，只能排除该 Linux 定向运行的持续卡死，不能替代 Darwin 结论。
+
+发现后取消包含相同测试代码、由本任务启动的 `34140017814`，保留日志，不继续原样全仓重试。补候选分支 push 触发的 Darwin 8 项关键路径诊断（检查实际 pass、拒绝零匹配和任意 test/package fail），先反馈当前调用链；新 workflow 不以尚不存在的默认分支 manual 入口为前提。全仓仍保留全部 race，将包级预算显式设为 20 分钟，原 CI job 30 分钟上限保留。该时间是整个测试包的累计预算，不改变产品期限或准入；若仍超限继续分析，不无限延长或删测试。诊断 workflow 不授予 canary、merge、release 权限。独立审查指出 `go test | tee` 的退出码遮蔽风险，已显式启用 pipefail 并拒绝 JSON 中任意 fail，避免只检查选定成功名而漏掉额外失败。
+
+## 2026-09-07：自动团队推进候选与远端验证边界
+
+后续 canary 修正客户端验真方式：`order-quote-team` 显式启动 `--auto-team-progress`，客户端只观察原 Attempt 的单调状态、获取 ReviewPacket 和传递独立 Decision；禁止客户端 Start/Collect/Verify，诊断记录三者调用为零。原主动驱动的其他场景不变。归档报告 status 仅标记诊断来源，不代替 Core canonical digest/current-ledger 重查或独立审查，也不证明进程重叠。19 项团队客户端、44 项原客户端与 canary 脚本检查通过；这是测试准备，不是实机团队成功。完整 HTTP Task、独立集成及下载消费仍开放。
+
+该客户端独立首审发现 1 项 P1：只读 Inspect 等待 verifier 的 Run lease，却被新增 30 秒子进程上限提前终止。取消这一额外截断，保留 CLI/服务端原操作期限与场景总预算；补 40 秒模拟锁等待、90 秒剩余预算及不重试测试。学习点是读操作同样可能等待执行锁，客户端超时不能脱离服务端锁/phase 契约。
+
+`feat/team-resident-progress` 基于 `00d3749` 复用现有 Collect/Verify/Run lane/current-ledger 路径，避免要求客户端逐节点推动。语义 Decision、任务级 HTTP 与下载消费仍待完成，不将 REVIEW_PENDING 计作团队交付。
+
+独立 reviewer 首审发现三项 P1：新 flag 在更早的 CLI gate 被拒、Verify 硬崩溃后无开始事实而会自动重跑、旧 dispatch circuit 不覆盖新自动推进。集中修正真实 CLI 准入测试、冷启动既存 VERIFYING 团队持久 halt/忙 lease 拒启动、共享 atomic circuit；同一 reviewer 限定复核未见新增 P0/P1。冷启动屏障有意保守，可能同时暂停未真正开始验证的旧 Run，不冒充自动恢复。新增当前账本/冷重开/共享锁测试；新候选仅本地编译与静态检查通过，动态验证转 macOS CI，不挪用旧结果。
+
+效率教训：内部函数通过不代表完整入口可达；幂等结果不等于命令不会重复执行；增加循环必须共享故障控制。这三类检查应一起纳入后续纵切，不再等 reviewer 逐项发现。继续不用 Marshal skill。
+
+用户授权 ECS 已通过 SSH 安装校验过的 Go 工具链并实际执行旧候选基线测试，未用 root/关闭安全防护/开放公网端口。Linux 测试不能证明 Darwin 代码正确，缺测试明确记录；旧 renderer 固定 `/usr/bin/python3` 与该机器系统 Python 不兼容，两次失败保留，停止原样重试。具体配置和证据范围见[远端验证](remote-linux-validation.md)。新 Goal 保持业务出口，不因 runner 配置完成而宣称生产可用。
+
 ## 2026-09-07：Task-first，团队交付先于管理平台
 
 按用户要求重新检查首个业务出口，发现上一稿把 Workspace/安装身份/显式初始化/全面 SQLite/三 Provider 放在团队之前。源码有现成 RepositorySession/Store、双节点物化与受控执行接缝，换库不能自动解除 Git 耦合；先补团队闭环更短。本轮删除 Workspace 产品实体，B1 先一个 Provider 两实例真实交付，B2 再简启动/SQLite/零 Git/问答/更多 Provider，B3 保留正式故障和发布门禁。不是把旧失败重新计成完成。

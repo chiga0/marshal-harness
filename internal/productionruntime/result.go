@@ -14,16 +14,20 @@ var ErrAttemptStillRunning = errors.New("productionruntime: attempt is still run
 // AttemptResultInput is the path-free parser boundary between production
 // runtime and the selected AgentProvider adapter.
 type AttemptResultInput struct {
-	Transcript     []byte
-	Worktree       string
-	TaskID         string
-	RunID          string
-	AttemptID      string
-	Executable     string
-	Version        string
-	StartedAt      time.Time
-	CompletedAt    time.Time
-	MaxOutputBytes int64
+	ProcessTerminal     bool
+	ProcessExitCode     int
+	ProcessSignal       string
+	TranscriptTruncated bool
+	Transcript          []byte
+	Worktree            string
+	TaskID              string
+	RunID               string
+	AttemptID           string
+	Executable          string
+	Version             string
+	StartedAt           time.Time
+	CompletedAt         time.Time
+	MaxOutputBytes      int64
 }
 
 type AttemptResultParser func(context.Context, AttemptResultInput) (domain.Record, error)

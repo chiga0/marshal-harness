@@ -16,6 +16,23 @@ import (
 // produce identical argv bytes, the output equals BuildProductionLaunch
 // exactly, the argv carries --mode json --print and ends with the prompt, and
 // a BuildProductionLaunch validation error propagates unchanged.
+func TestPiProductionLaunchBuilderFreezesResultContract(t *testing.T) {
+	task := domain.TaskSpec{
+		Worker: domain.TaskWorker{ExecutionProfile: "workspace-write", ResultContract: domain.ResultContractNativeTerminal},
+		Work:   domain.TaskWork{Objective: "Deliver approved business files", Constraints: []string{"No network"}},
+	}
+	identity := productionruntime.AttemptLaunchIdentity{TaskID: "TASK-1", RunID: "run-1", AttemptID: "attempt-1"}
+	builder := piProductionLaunchBuilder("/opt/pi/bin/node", "/opt/pi/bundle/cli.js", task)
+	task.Worker.ResultContract = "unknown"
+	got, err := builder(identity)
+	if err != nil || strings.Contains(got.Prompt, "exactly one WorkerResult JSON") || !strings.Contains(got.Prompt, "Independent verification") {
+		t.Fatal("builder did not retain frozen native contract")
+	}
+	if _, err := piProductionLaunchBuilder("/opt/pi/bin/node", "/opt/pi/bundle/cli.js", task)(identity); err == nil {
+		t.Fatal("unknown contract reached launch")
+	}
+}
+
 func TestPiProductionLaunchBuilderIsPureMapping(t *testing.T) {
 	const node = "/opt/pi/bin/node"
 	const entry = "/opt/pi/bundle/cli.js"

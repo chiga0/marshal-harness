@@ -1,6 +1,6 @@
 # Marshal Agent Team：Task-first 实施 Milestone
 
-更新：2026-09-07。最终方案见[服务架构](agent-team-service-architecture.md)，合同变化集中在 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）。本表定义下一步出口，不表示实现或生产可用；实际事实仍只记 [Roadmap](roadmap-status.md#业务交付当前表)。
+更新：2026-09-08。最终方案见[服务架构](agent-team-service-architecture.md)，合同变化集中在 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Accepted）。合同接受允许实施，不表示实现或生产可用；实际事实仍只记 [Roadmap](roadmap-status.md#业务交付当前表)。
 
 ## 1. 三个用户出口，不再把平台准备当交付
 
@@ -24,6 +24,7 @@
 4. **只接闭环需要的 API**：Task 创建/查询/计划确认、最小 graph/workers、取消、operations、输入与成果下载、events/最小 audit。轮询可用，不先铺 SSE/角色 CRUD/全量 Provider 管理。
 5. **最低保障自动执行**：本地访问保护、输入/制品路径边界、独立目录、期限和 owned cancel、持久批准/执行/命令/结果/失败记录、重复请求不重复启动。B1 复用现有合法固定安装；不添加新的 operator-local 安装收据流程，也不绕过旧运行时权限。
 6. **客观独立验收**：先把原业务 oracle 正反例跑通，再派作者。整合后的交付在作者之外重建/验证；无需为每个客观检查增加一个 LLM。原合同需要语义 Review 时保留有界独立审查和 Core Decision，不由作者自签。
+7. **原生结果接缝**：新团队显式冻结 `native-terminal/v1`，Adapter 从受管进程正常退出和完整 transcript 构造控制结果，模型仅交付业务成果及真实报告。旧 JSON Run 不自动回退或换解释；当前为待验证候选，不把正常进程退出当成业务完成。
 
 ### 退出条件（全部满足才记 B1 团队 PoC 通过）
 
@@ -99,6 +100,8 @@ API-STABLE 只是接口相对稳定，不授予正式平台支持。开发 UI �
 | Adapter 作者（有空余容量才开） | 当前阻断的终态/原生配置问题；主链稳定后第二 Adapter | 不为矩阵扩展占满主链与验收资源；不猜未冻结接口 |
 
 普通主 Agent＋SubAgents 协作，每位代码作者独立 worktree，主笔/集成者统一处理共享文档与接口；独立验证与 Publisher 权限边界不变。按可用内存、CPU、Provider、scope 和验收队列确定并发，不固定凑满作者数。B1 产品执行先两个作者，之后按证据扩容；API-STABLE 前不派 UI 开发。
+
+采用错峰流水：上一候选跑 CI/独立验证时，后继从精确候选 SHA 的独立 worktree 开发，另一路提前准备下一项的调用链与验收方案。CI 未完成不等于禁止开发，也不授予合并或发布资格。父候选失败时只冻结受影响的提交/依赖，修正后同步后继并补针对性集成验证；不让所有任务陪等，也不在 CI 运行中仅为状态文字反复推送同一候选。共享接口先对齐，设计准备完成即释放协作槽给审查或下条开发。
 
 一个业务切片一次聚合检查和审查；机器可查的协议/配置/验收前提在付费调用前完成。结构性错误没有事实变化不重试；内容反馈集中处理，不逐文件/字段滚动 rework。连续技术修复没有推动当前出口时，收缩设计或改复用路径，不能把修治理本身当目标。
 

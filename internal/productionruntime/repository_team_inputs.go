@@ -66,6 +66,9 @@ func (session *RepositorySession) withAcceptedTeamInputsUnderOwner(ctx context.C
 	fail := func() error { return application.NewError(operation, application.ReasonAuthorityConflict) }
 	var result []AcceptedTeamInput
 	resultErr = func() (readErr error) {
+		if err := session.ingress.RequireTaskNotStopped(session.acquisition.Scope, goalID); err != nil {
+			return taskError(err)
+		}
 		plan, found, err := session.ingress.ReadTeamPlan(session.acquisition.Scope, goalID)
 		if err != nil {
 			return err
@@ -139,6 +142,9 @@ func (session *RepositorySession) withAcceptedTeamInputsUnderOwner(ctx context.C
 			}
 			result = append(result, value)
 		}
+		if err := session.ingress.RequireTaskNotStopped(session.acquisition.Scope, goalID); err != nil {
+			return taskError(err)
+		}
 		ready = true
 		return consume(result)
 	}()
@@ -180,9 +186,26 @@ func (session *RepositorySession) readAcceptedTeamRunUnderLease(ctx context.Cont
 		return fail()
 	}
 	terminal := events[len(events)-1]
-	candidate, err := review.ReadAcceptedCandidate(state, terminal, namespace, validator, func(limit int64, parts ...string) ([]byte, error) {
+	read := func(limit int64, parts ...string) ([]byte, error) {
 		return runstore.ReadFileUnderLease(lease, limit, parts...)
-	})
+	}
+	objective, err := session.taskObjectiveUnderOwner(ctx, creation)
+	if err != nil {
+		return fail()
+	}
+	if objective != nil {
+		if len(events) < 2 {
+			return fail()
+		}
+		verified := events[len(events)-2]
+		if verified.Type != "verification.completed" || verified.Actor == nil || verified.Actor.Type != "system" || verified.Actor.ID != "marshal-verifier" || verified.RunID != state.RunID || verified.AttemptID != state.CurrentAttemptID || verified.Sequence+1 != state.Sequence || verified.StateFrom != domain.StateVerifying || verified.StateTo != domain.StateReviewPending {
+			return fail()
+		}
+		objective.VerificationDigest, _ = verified.Payload["reportDigest"].(string)
+		objective.ArtifactManifestDigest, _ = verified.Payload["artifactManifestDigest"].(string)
+		objective.ReadEvidence = read
+	}
+	candidate, err := review.ReadAcceptedCandidateWithObjective(state, terminal, namespace, validator, read, objective)
 	if err != nil {
 		return fail()
 	}

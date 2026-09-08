@@ -45,6 +45,11 @@ func (session *RepositorySession) RecoverInitialTeamCreations(ctx context.Contex
 		return application.NewError(operation, application.ReasonCompositionIncomplete)
 	}
 	for _, obligation := range obligations {
+		if err := session.ingress.RequireTaskNotStopped(session.acquisition.Scope, obligation.Creation.GoalID); errors.Is(err, resultingress.ErrTaskStopped) {
+			continue
+		} else if err != nil {
+			return err
+		}
 		advanced := false
 		// Serialize with current owner, not just the owner of the old creation
 		// fact. Complete/advanced Runs must remain in the normal recovery path.

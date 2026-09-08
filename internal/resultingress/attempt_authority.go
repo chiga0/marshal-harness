@@ -16,6 +16,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/goal"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
@@ -1770,6 +1771,10 @@ func newAuthorityProjection() *Ingress {
 		reservations:                make(map[string]AttemptReservationState),
 		reservationKeys:             make(map[string]string),
 		teamPlans:                   make(map[string]TeamPlanState),
+		taskDrafts:                  make(map[string]taskDraftState),
+		taskStops:                   make(map[string]TaskStop),
+		taskCancellations:           make(map[string]TaskCancellation),
+		taskDeliveries:              make(map[string]goal.TaskDelivery),
 		teamRunCreations:            make(map[string]TeamRunCreationState),
 		teamHalts:                   make(map[string]TeamPlanHalt),
 		teamOutcomes:                make(map[string]TeamDeliveryOutcome),

@@ -20,17 +20,23 @@ import (
 // The result transport is the held supervisor transcript; no result pathname
 // is trusted or created by the worker.
 type ProductionResultInput struct {
-	Transcript     []byte
-	Worktree       string
-	TaskID         string
-	RunID          string
-	AttemptID      string
-	Executable     string
-	Version        string
-	Model          string
-	StartedAt      time.Time
-	CompletedAt    time.Time
-	MaxOutputBytes int64
+	ResultContract string
+	// These observations come only from the held supervisor Collect report.
+	ProcessTerminal     bool
+	ProcessExitCode     int
+	ProcessSignal       string
+	TranscriptTruncated bool
+	Transcript          []byte
+	Worktree            string
+	TaskID              string
+	RunID               string
+	AttemptID           string
+	Executable          string
+	Version             string
+	Model               string
+	StartedAt           time.Time
+	CompletedAt         time.Time
+	MaxOutputBytes      int64
 }
 
 // ParseProductionWorkerResult validates the complete Pi JSONL protocol and
@@ -48,6 +54,15 @@ func ParseProductionWorkerResult(ctx context.Context, input ProductionResultInpu
 	}()
 	if err := validateProductionResultInput(input); err != nil {
 		return domain.Record{}, err
+	}
+	native := input.ResultContract == domain.ResultContractNativeTerminal
+	if input.ResultContract != "" && input.ResultContract != domain.ResultContractWorkerJSON && !native {
+		stage = "result-contract"
+		return domain.Record{}, ErrProtocol
+	}
+	if native && (!input.ProcessTerminal || input.ProcessExitCode != 0 || input.ProcessSignal != "" || input.TranscriptTruncated) {
+		stage = "process-terminal"
+		return domain.Record{}, ErrProtocol
 	}
 	stage = "transcript"
 	capture := decodeTranscript(ctx, input.Transcript, input.Worktree, input.MaxOutputBytes)
@@ -76,7 +91,24 @@ func ParseProductionWorkerResult(ctx context.Context, input ProductionResultInpu
 	}
 
 	stage = "final-message"
-	declaredBytes, err := extractFinalWorkerResult(input.Transcript)
+	var declaredBytes []byte
+	if native {
+		var report []byte
+		report, err = extractFinalAssistantText(input.Transcript, true)
+		if err == nil {
+			declaredBytes, err = json.Marshal(declaredResult{
+				APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindWorkerResult,
+				TaskID: input.TaskID, RunID: input.RunID, AttemptID: input.AttemptID,
+				Adapter: declaredAdapter{ID: adapterID, Executable: input.Executable, Version: input.Version, Model: input.Model},
+				Status:  "completed", Summary: string(report),
+				DeclaredChangedFiles: []string{}, DeclaredArtifacts: []json.RawMessage{}, DeclaredCommands: []json.RawMessage{},
+				DeclaredRisks: []string{"native-terminal/v1: invocation ended normally; business completion and report claims require independent verification; empty declaration arrays are not proof of no changes or passing tests"},
+				StartedAt:     input.StartedAt.UTC(), CompletedAt: input.CompletedAt.UTC(),
+			})
+		}
+	} else {
+		declaredBytes, err = extractFinalWorkerResult(input.Transcript)
+	}
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -170,8 +202,9 @@ type productionAgentEnd struct {
 }
 
 type productionMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	StopReason json.RawMessage `json:"stopReason"`
 }
 
 type productionContentItem struct {
@@ -179,7 +212,15 @@ type productionContentItem struct {
 	Text string `json:"text"`
 }
 
-func extractFinalWorkerResult(transcript []byte) (result []byte, err error) {
+func extractFinalWorkerResult(transcript []byte) ([]byte, error) {
+	text, err := extractFinalAssistantText(transcript, false)
+	if err != nil {
+		return nil, err
+	}
+	return extractSingleWorkerResultObject(string(text))
+}
+
+func extractFinalAssistantText(transcript []byte, native bool) (result []byte, err error) {
 	stage := "final-event-decode"
 	defer func() {
 		var classified *productionResultFailure
@@ -224,6 +265,16 @@ func extractFinalWorkerResult(transcript []byte) (result []byte, err error) {
 		stage = "final-role"
 		return nil, fmt.Errorf("%w: final production message is not assistant", ErrProtocol)
 	}
+	if native {
+		// Absence of a recognized failure is not positive completion proof.
+		// Require the selected terminal assistant's supported normal reason,
+		// independently of the OS process exit code. Do not change old Runs.
+		var reason string
+		if json.Unmarshal(message.StopReason, &reason) != nil || reason != "stop" {
+			stage = "provider-terminal-unconfirmed"
+			return nil, ErrProtocol
+		}
+	}
 	// Pi user/custom message content may legitimately be a string. Only
 	// the selected terminal assistant is a WorkerResult carrier and must
 	// satisfy the assistant content-array contract. Do not decode earlier
@@ -256,7 +307,7 @@ func extractFinalWorkerResult(transcript []byte) (result []byte, err error) {
 		stage = "final-content-text"
 		return nil, fmt.Errorf("%w: final production assistant must contain exactly one non-empty text item", ErrProtocol)
 	}
-	return extractSingleWorkerResultObject(text)
+	return []byte(text), nil
 }
 
 // extractSingleWorkerResultObject implements ADR 0084 typed framing. Complete
@@ -276,7 +327,7 @@ func extractSingleWorkerResultObject(text string) ([]byte, error) {
 		decoder := json.NewDecoder(strings.NewReader(text[index:]))
 		var raw json.RawMessage
 		if err := decoder.Decode(&raw); err != nil {
-			return nil, &productionResultFailure{code: "final-object-invalid", cause: fmt.Errorf("%w: malformed terminal JSON container", ErrProtocol)}
+			return nil, invalidFinalObject("syntax", candidates > 0, fmt.Errorf("%w: malformed terminal JSON container", ErrProtocol))
 		}
 		// Nested `{"...": {...}}` braces belong to the outer object: skip every
 		// later '{' that falls inside the span just decoded so one complete
@@ -287,7 +338,7 @@ func extractSingleWorkerResultObject(text string) ([]byte, error) {
 		}
 		encoded, err := canonical.JSON(raw)
 		if err != nil {
-			return nil, &productionResultFailure{code: "final-object-invalid", cause: fmt.Errorf("%w: ambiguous terminal JSON container", ErrProtocol)}
+			return nil, invalidFinalObject("canonical", candidates > 0, fmt.Errorf("%w: ambiguous terminal JSON container", ErrProtocol))
 		}
 		if text[index] != '{' {
 			continue

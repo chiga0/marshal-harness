@@ -27,7 +27,7 @@ func (adapter *sealedRepositoryApplication) advanceInitialTeams(ctx context.Cont
 	if adapter.closed || adapter.session == nil {
 		return application.NewError("advance-initial-teams", application.ReasonOwnerUnavailable)
 	}
-	if adapter.teamDispatchStopped {
+	if adapter.teamProgressStopped.Load() {
 		return nil
 	}
 	selection, found, err := adapter.session.NextInitialTeamDispatch(ctx, 2)
@@ -39,13 +39,13 @@ func (adapter *sealedRepositoryApplication) advanceInitialTeams(ctx context.Cont
 		}
 		// No trustworthy selected plan exists on read failure. Do not retry an
 		// unknown queue or fabricate a durable halt against a guessed Goal.
-		adapter.teamDispatchStopped = true
+		adapter.teamProgressStopped.Store(true)
 		return err
 	}
 	if !found {
 		err := adapter.session.FinalizeReadyInitialTeams(ctx)
 		if err != nil && ctx.Err() == nil {
-			adapter.teamDispatchStopped = true
+			adapter.teamProgressStopped.Store(true)
 		}
 		return err
 	}
@@ -56,7 +56,7 @@ func (adapter *sealedRepositoryApplication) advanceInitialTeams(ctx context.Cont
 		defer cancel()
 		_, haltErr := adapter.session.HaltInitialTeam(cleanup, selection.GoalID, selection.NodeID, selection.PlanFactDigest, stage)
 		if haltErr != nil {
-			adapter.teamDispatchStopped = true
+			adapter.teamProgressStopped.Store(true)
 		}
 		return errors.Join(cause, haltErr)
 	}

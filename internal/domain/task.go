@@ -46,12 +46,20 @@ type TaskWorker struct {
 	SessionPolicy    string   `json:"sessionPolicy"`
 	Model            string   `json:"model,omitempty"`
 	Reasoning        string   `json:"reasoning,omitempty"`
+	// ResultContract is frozen with the TaskSpec; absence retains the legacy
+	// model-declared envelope. Unsupported contracts must fail before launch.
+	ResultContract string `json:"resultContract,omitempty"`
 	// Tools is the optional declarative tool allowlist (closed vocabulary
 	// read/edit/write/grep/find/ls/bash). Empty means the Adapter keeps its
 	// frozen execution-profile tool surface; when declared, the Adapter
 	// enforces it mechanically at the Provider call layer.
 	Tools []string `json:"tools,omitempty"`
 }
+
+const (
+	ResultContractWorkerJSON     = "worker-result-json/v1"
+	ResultContractNativeTerminal = "native-terminal/v1"
+)
 
 // TaskWork preserves the approved objective, shared context, constraints and
 // explicit non-goals through typed decoding and production prompt rendering.

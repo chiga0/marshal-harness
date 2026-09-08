@@ -1,6 +1,6 @@
 # ADR 0085：Task-first Agent Team、本地简启动与分阶段事务存储
 
-- 状态：Proposed（2026-09-07 按用户明确要求收缩方案；设计方向已确认，尚不等于本 ADR 正式接纳、运行时启用或发布）
+- 状态：Accepted（2026-09-08 用户明确确认“ADR0085 ok，请实施”；授权按本合同实施，不等于运行时已通过验证或已生产发布）
 - 日期：2026-09-07
 - 决策范围：单用户、单节点、可信任务的 HTTP Agent Team；删除首版 Workspace 产品实体，先真实团队交付，后完善本地服务及正式支持。
 - 方案：[服务架构](../agent-team-service-architecture.md)；验收：[Milestone](../agent-team-service-milestones.md)；审计：[复核记录](../audit-agent-team-service-design-2026-09-07.md)。
@@ -29,6 +29,26 @@ ADR 0052 的正式签名、公证、Linux 与 stable gate 不删除；从关键�
 
 ## 2. 唯一服务与依赖反转
 
+### B1 原生终态结果合同（显式候选，不改旧 Run）
+
+内部 WorkItem 的 `worker.resultContract` 冻结于 TaskSpec 摘要：省略或 `worker-result-json/v1` 保持原模型声明协议；`native-terminal/v1` 才选择原生终态。未知值在启动前拒绝，未实现该合同的执行路径同样拒绝；不允许旧解析失败后自动回退。组合根从同一冻结字段选择 prompt 与结果解析器，Core 不识别 Provider 品牌。当前仅固定 Pi composition 实现候选，不代表所有 Adapter 已支持。
+
+原生模式下模型只交付业务文件和真实报告，不填写 Marshal 身份、时间、控制状态或证据摘要。Adapter 必须先验证完整原生 transcript 的 session、worktree、事件闭合、重试/工具顺序和 Provider 正常终态，并要求持有的 Supervisor 收集记录确认进程 terminal、exit code 为 0、无 signal、无 transcript 截断；未知退出信息不等于成功。Task/Run/Attempt、执行身份与时间来自冻结输入和受管观察。报告是原生末条 assistant 文本，原样保留（最多 12000 字符，超限拒绝，不静默截断），其中的 JSON/控制字段不获得权威；不可将“受阻/未完成”的报告改写成成功摘要。
+
+此合同生成的 `WorkerResult.status=completed` 仅表示本次调用正常结束、候选可进入独立 Verify，不表示业务完成。`declaredRisks` 明示此边界；未提供结构化文件/命令声明时用空声明集合，不能解释成“没有改动/测试已通过”。用量只写已观察到的数据，未知省略。原 snapshot、DRC、current-ledger recheck、停止竞争、独立 Verification/ReviewDecision 与最终集成验收不变。原 JSON 合同的 completed 语义和字节不变；旧 Run 不迁移或补签。候选测试绿不关闭 B1，必须以真实团队交付和独立业务消费证明。
+
+### B1 首条实现：resident 自动收集与验证（候选）
+
+沿 ADR 0083 已批准计划和原 Run 生命周期增加内部自动推进，不新增 HTTP 权限、Worker、预算或第二账本：从 current owner 下的原计划/创建/Run 事实选择 RUNNING→Collect 或 VERIFYING→Verify，按 Run 轮转，跳过忙 lease 与已 halt 计划；每步重读精确 Run/Attempt/head，陈旧选择仅跳过。与原 HTTP 共用每 Run 调度 lane；Collect 只占短 writer lane，Verify 释放全局 writer，仍持原 Run/worktree lease，独立 deadline loop 不受阻。每个 tick 最多推进一个节点，不递归完成全队或自动签 Decision。
+
+未发布候选先以 `marshal control-plane serve --auto-team-progress` 显式开启；默认旧 serve 不变，避免仍逐阶段驱动的旧客户端被后台推进抢先。Collect 与 Verify 各一个受管、有界循环：前者沿原 30 秒 step 上限，后者上限 10 分钟且仍受原 Task 验证期限/父 context 约束；两者均由同 server 停止并 drain。后续 Task HTTP 主入口采用该模式前须完成对应客户端及真实交付验收。
+
+明确的 attempt-still-running 只继续观察；其他执行失败先保留已有 Run 证据，再追加原 team halt，封闭 stage 增加 collect/verify。halt 同时禁止本候选自动结果推进，避免重启后重复相同错误；不等于 Run 已停止、不释放预算，原手动 Collect/合法停止/独立 deadline 与恢复仍可用。无法提交 halt 则通过 dispatch/collect/verify 共享的进程内 circuit 停止本进程团队自动化并报告未决。只有选择/锁等待阶段的取消可无副作用跳过；操作已调用后失败，即使上下文取消也尝试有界保存 halt，不自动重试。
+
+本候选不透明恢复崩溃中断的 Verify：opt-in server 在开放 endpoint 和启动任何循环前，检查当前批准团队中既存的 VERIFYING Run，先持久 halt 对应团队；因为没有 durable verification-start 事实，无法区分尚未执行与执行中断，保守地把两者都转交人工处置。冷检查遇到忙 lease、读取或 halt 写入失败就拒绝启动，不能跳过后在后台重新验证。已经 REVIEW_PENDING 的完成验证不回滚；本次启动后由 Collect 新产生的 VERIFYING 可正常推进。此最小屏障不建立通用恢复平台，不关闭 B2/B3 的自动恢复出口。
+
+语义 ReviewDecision、任务级 HTTP 与下载消费仍待同一 B1 链接通；自动验证到 REVIEW_PENDING 不等于 ACCEPTED/团队完成。阶段枚举扩展仅适用于未发布同版本候选，旧 reader 不因此获新记录兼容性，既有记录字节不重写。
+
 用户只需要 Task、Worker、Artifact；计划、问题、DAG、交付与审计是 Task 的子视图，不是用户必须先创建的独立平台。公开 Task 复用既有 Goal ID/revision/预算/事实，旧内部 Task 执行规格对外称 WorkItem。B1 先做薄映射，不全仓重命名类型。
 
 一个固定 server、多受管执行进程、一个所选 Store 和本地制品；控制/执行/存储三面逻辑分离，不先拆微服务。HTTP/CLI 共用 Application Port，Core 不导入具体 Agent 或数据库。Port 是 Go interface 一类的依赖边界，DI 是构造函数注入，不是网络端口或动态插件平台。
@@ -43,6 +63,22 @@ ADR 0052 的正式签名、公证、Linux 与 stable gate 不删除；从关键�
 
 ## 3. 简启动、本地访问与最小身份
 
+### B1 Task HTTP 与可消费交付（未发布实施候选）
+
+截至接受时，已有未接线 DTO、纯模板预览和负例；尚未实现或启用 RB1 draft/stop/delivery、Task HTTP、自动 Decision 与交付 bundle。本合同现已接受，允许推进以下接线；实现及生产可用性仍必须逐项验证，不因合同接受自动成立。
+
+首个入口只开放服务启动时显式安装的 `order-quote/v1` 小团队模板。模板冻结完整业务接口、原独立 oracle bytes/digest、节点范围、实际 Provider 配置、预算、publication:none 和客观验收模式；客户端只提交 intent/inline context 并选择模板，不提交 authority namespace、TaskSpec/Policy、环境或 executable。额外文本仅作需求上下文，不能修改模板的验收或权限；超出模板能力的需求须拒绝或返回明确待确认，不能自动扩 scope。既有 AF_UNIX 客户端和旧批准链保持原合同。
+
+公开 Task ID 就是 Goal ID。首次提交在同一 RB1 追加有界 draft fact，保存规范请求摘要、幂等键摘要、完整已预检模板、创建时间与固定确认期限；不创建 reservation、Run 或 Worker。创建重放先读取原 fact，不刷新身份、输入、期限或预算。确认请求绑定该 draft 的精确摘要/版本，认证后先匹配已有原批准，再核对当前 draft、取消状态和期限；原 accepted-plan fact 仍是预算与创建义务唯一提交点。查询从同一 current-owner 下按 ID 读取 draft/plan/creation/Run/halt/outcome，不要求用户重传原内部批准包；不新增独立 Task JSON 状态机。
+
+本地 HTTP 使用独立随机 token 的受保护 loopback 输入 adapter，并与 AF_UNIX 共用同一应用、writer lane 与 owned Run lane。token 只写受保护连接信息，不进入草案/Worker/日志；拒绝不可信 Host/Origin、任意 PID/路径、超量请求与无界输出。HTTP 请求只调用 Application Port，不直接打开账本或运行子 CLI。取消先在 RB1 记录该 Task 的 stop intent，在实际批准、物化与 Start 准入提交点重新检查并拒绝后续动作，再沿已有 CancelRun/停止与清理 receipt 收口所属执行；意图、信号或 halt 不等于已取消。已有非 RUNNING Run 不能凭 stop intent 伪报 cancelled；只能依据其真实终态或原停止/清理回执展示状态，未决与失败保留可查询事实，重放不能制造替身或重置预算。
+
+只对显式批准上述模板、包含精确固定 oracle 的新 Task，独立客观验收可自动产生原 ReviewDecision：必须实际经过原 Verify，重读当前 Run/Attempt、完整 packet/report/manifest 和所有必需 gate，以批准的 oracle 身份及当前节点全部必需业务断言证明可接纳，再经原 DecisionImporter/current-ledger 接纳。两个上游分别经过各自冻结的节点 oracle 后独立 ACCEPTED，不依赖尚未创建的集成；集成 Run 只有在两上游接纳后才创建，并必须经过组合 oracle。下载后新目录的消费验收另行证明最终交付可使用，不作为上游接纳的循环前置。Worker 摘要、可替换 report 的 pass 标签、存在文件或进程正常退出均不够。出现额外语义/风险需求、缺失或冲突证据、未知/失败 gate 时不自动 accept；旧 Run、原 AF_UNIX 批准和其他模板不继承此模式。实现状态在独立审查与动态验收前仍为 candidate，不宣称 production。
+
+该确定性验证者在新 Decision 中精确表示为 `reviewer.type=system`、`reviewer.id=marshal-order-quote-v1`，不得冒充 human 或 lead-agent。Schema 接受这个表示本身不授予接纳权限：外部 Decision API 默认拒绝 system；只有 current-owner 下由原 Task draft、精确批准与节点创建事实证明适用后，内部验证接缝才能传递非序列化的客观验收 profile，重新核对原 Verify 事件摘要、冻结命令及实际日志/成果。原通用 importer 和旧 Run 不因新增枚举获得自动接纳权限；已接纳结果的下游重用仍重读原 Task 授权及全部 Evidence/Decision，不单凭 system 字样采信。失败不会降级回 Worker 报告或无条件 accept。
+
+完整交付不能直接等于集成 Run 的增量 patch。producer 在 current owner 下读取原 completed outcome、两份独立 ACCEPTED 上游及集成 ACCEPTED candidate，重验原 plan/creation/Decision/patch 摘要；复用原 `CombineAcceptedPatches` 的固定 commit 元数据、冻结的节点顺序与 `InputsDigest`，从原 base 应用两份上游 patch，同时证明重建 `TreeSHA` 与 commit 等于冻结 integration base，再应用集成 patch，形成最终允许交付文件集合。只导出普通文件和明确声明的使用说明，不导出 Git 元数据、运行证据目录、路径逃逸或未批准文件。manifest 绑定原 outcome fact、三份 candidate/patch/Decision、集成 base、文件摘要及 bundle 摘要；bytes 有界耐久保存后才提交同 RB1 引用。相同事实只复用精确对象，下载按 Task/Artifact ID 与授权查验，不接收宿主文件路径、不读取可变 Worker worktree。成果在新目录执行原整体业务 oracle 通过才关闭 B1 消费出口；bundle 生成或 HTTP 200 本身不是业务成功。
+
 目标命令 `marshal serve` 启动 loopback HTTP 并显示端口；可选 `--data-dir` 只在本机启动时选择内部状态目录，不向 Task HTTP 开放任意根路径切换。新根不存在时自动以限制权限创建；已存在有效 Store 就打开，损坏、遗失部分状态、不兼容格式或 owner 未释放则报出具体原因，不当空库重建。初始化可重入，第二 server 不能取得同一根写权。
 
 不新增用户注册、组织、RBAC、安装收据、Workspace ID 或单独 init 命令。内部 Store ID/generation、Task/Attempt/command ID 与进程句柄仍用来避免串任务、重复启动和误杀，它们不是需要用户管理的身份体系。B1 使用既有合法安装与真实样例环境；全新环境的一键体验在 B2 验证，不冒充已有。
@@ -50,6 +86,20 @@ ADR 0052 的正式签名、公证、Linux 与 stable gate 不删除；从关键�
 所有业务 HTTP 默认使用自动生成、限制权限保存的本地随机 token；本地客户端按 OS 权限读取，通用 HTTP 客户端从本机受保护文件配置 Authorization，不通过 URL/日志打印 secret。token 不进入 Worker 环境、prompt 或账本；loopback token 不是防同 UID 恶意程序的隔离保证。认证映射到本地操作者，不按 token 随机 bytes 重新划分业务幂等域。
 
 首版拒绝非 loopback 绑定，校验 Host/Origin，默认不开跨域；健康接口只返回最小健康状态。无需登录平台，但不能提供无保护的进程启动端口。后续远端入口首次启用前就必须具备 TLS、认证/授权与撤销等对应基线，不能“上线后补安全”。单台 VM/容器中的服务也不默认暴露公网。
+
+### B1 Task 取消的原账本收口（未发布实现候选）
+
+`POST /v1/tasks/{id}/cancel` 沿原 token、Host/Origin 与 current-owner 检查，接受 `Idempotency-Key` 及 `{"expectedRevision":2}`，不接受 PID、路径、reason、命令或新的预算。短全局 writer lane 只追加同 RB1 的 `task-stop-requested`，返回 `202` 和原 TaskProjection；`cancellationRequested=true`、`status=cancelling` 不是进程已停止。已有完成的团队 Outcome 返回 `409 stop-too-late`，不改写成功；精确 key/原 expectedRevision 的重放先于新命令 CAS，即使已经收口也不追加新意图或刷新预算，同 key 异内容冲突。
+
+Task 的 `revision` 是稳定控制版本：draft 为 1，批准后加 1，stop 和最终 disposition 各加 1；各 Worker 进展继续使用其原 Run sequence/head，不让轮询造成 Task CAS 抖动。`previewDigest` 与原确认请求的 revision 固定于 draft；批准丢响应后仍用原 preview/revision/key 重放，不把 Task 当前控制版本改写为新预览或要求重新批准。
+
+resident 先取得目标 Run lane，再取得短全局 lane，调用原 CancelRun/stop cleanup；不在全局锁内等待 Run lane。READY 的 reservation-only 路径仅允许原 ZeroAttemptSideEffectVerifier 对同一 Run lease、dispatch ledger 与 RB1 证明没有 dispatch/Attempt/allocation/launch 副作用后，执行原 CancelAttemptReservation。未开始的创建义务检查全部历史 reservation/Attempt 及原冻结输入、Run journal；只凭 AttemptsUsed=0 或目录缺失不成立。已知从未物化与真实 READY 的 disposition 保留原目录、不复用、不把 READY 伪造为 Run terminal。
+
+最终 `task-cancellation-disposed` 在同一 RB1 绑定 stop/plan、全部节点原 creation、当前 Run head 和相应 proof，撤销尚未执行的剩余义务，不生成另一套 Run 状态机或退款账。RUNNING 由原 CancelRun 收口；已 Collect 的 VERIFYING/REVIEW_PENDING 只有原 `worker.completed`/stop 事件与同 RB1 的 ProcessTerminal、AllocationTerminated、SupervisorClosed、CleanupReleased 全部精确匹配才可记 execution-cleaned。已准入 Verify 持有原 Run lease，收口等待其退出；最终 Verify/Decision 提交仍重验 stop，不能产生迟到接纳。所有节点证明成立后才查询为 `cancelled`，原失败原因、Run 状态和 Outcome 仍可见，已接纳的上游不被改成失败或重写成功。
+
+服务开放 endpoint 前记录已有 Task VERIFYING 的冷观察，仅用于否决：没有 durable verification-start/完成事实时，空闲 Run lease 不证明崩溃 verifier 的外部效果已处理；保持 intervention/pending。正常 REVIEW_PENDING 不因此卡人工。停止中的创建义务在启动恢复时跳过，不重新物化；只读历史查询及原合法停止恢复继续保留。调度在全部 pending-stop 集合上按可重建 cursor 轮转，不限制为历史 Task 首 100 条；一个未知执行不得饿死其他可收口 Task。
+
+这些候选状态及夹具测试不是实机取消成功证明。B1 取消出口仍须以原 server、实际所属执行及真实 cleanup/冷重开动态证据验收；任何缺证据、未知 launch、崩溃 Verify、身份冲突均保留 `cancelling`，不靠意图、halt 或信号假结案。
 
 业务路由以 /v1/tasks 为中心，不含 /workspaces。写操作由应用层验证本地调用者、Task、批准 profile、摘要、幂等 key 与 expected revision；先在重新认证后匹配原幂等回执，精确重放返回原结果，未命中新命令才 CAS。同 key 异内容冲突；202 是受理、不是执行结束，pending/unknown 可查询，取消不接受任意 PID。
 

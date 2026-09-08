@@ -22,9 +22,25 @@ func projectTeamOutcome(value resultingress.TeamDeliveryOutcome) (application.In
 }
 
 func (v repositoryCompletedTeamVerifier) WithCurrentCompletedTeam(ctx context.Context, owner resultingress.ControlOwnerAcquisition, approval resultingress.TeamPlanApproval, goalID, planFact string, consume func(resultingress.TeamDeliveryOutcome) error) error {
+	return v.withCurrentCompletedTeamInputs(ctx, owner, approval, goalID, planFact, func(outcome resultingress.TeamDeliveryOutcome, _ []AcceptedTeamInput, _ AcceptedTeamInput, _ resultingress.TeamRunCreationState, _ *runstore.Lease) error {
+		return consume(outcome)
+	})
+}
+
+// The callback observes all three accepted inputs while their real Run leases
+// and the repository owner are held. Delivery may persist immutable bytes here
+// but cannot run Git or other external commands while holding these locks.
+func (v repositoryCompletedTeamVerifier) withCurrentCompletedTeamInputs(ctx context.Context, owner resultingress.ControlOwnerAcquisition, approval resultingress.TeamPlanApproval, goalID, planFact string, consume func(resultingress.TeamDeliveryOutcome, []AcceptedTeamInput, AcceptedTeamInput, resultingress.TeamRunCreationState, *runstore.Lease) error) error {
 	session := v.session
 	reader := repositoryApprovedTeamVerifier{session: session, approval: approval}
 	return reader.WithCurrentApprovedTeam(ctx, owner, approval, func() error {
+		// Stop is a Task-local disposition, not a broken repository queue.
+		// Check under the current owner before reading any integration inputs;
+		// returning the exact RB1 sentinel lets the finalizer skip this Task
+		// without swallowing owner or ledger read failures.
+		if err := session.ingress.RequireTaskNotStopped(owner.Scope, goalID); err != nil {
+			return err
+		}
 		fail := func() error {
 			return application.NewError("complete-initial-team", application.ReasonAuthorityConflict)
 		}
@@ -102,7 +118,7 @@ func (v repositoryCompletedTeamVerifier) WithCurrentCompletedTeam(ctx context.Co
 					BudgetDigest: plan.Revision.BudgetSnapshotDigest, FinalizedAt: final.AcceptedAt.UTC().Format(time.RFC3339Nano)},
 				PlanFactDigest: planFact, Upstreams: bound.Sources, Integration: finalBinding.Sources[0],
 				IntegrationBaseSHA: integration.Integration.CommitSHA, AttemptsUsed: attempts, Measurement: "attempt-counts-only",
-			})
+			}, upstreams, final, integration, lease)
 		})
 		if err != nil {
 			return err
@@ -149,7 +165,7 @@ func (session *RepositorySession) FinalizeReadyInitialTeams(ctx context.Context)
 			continue
 		}
 		_, err = session.ingress.CompleteTeam(ctx, repositoryCompletedTeamVerifier{session}, session.acquisition, plan.Approval, plan.Revision.GoalId, plan.FactDigest)
-		if errors.Is(err, resultingress.ErrTeamOutcomeNotReady) {
+		if errors.Is(err, resultingress.ErrTeamOutcomeNotReady) || errors.Is(err, resultingress.ErrTaskStopped) {
 			continue
 		}
 		if err != nil {

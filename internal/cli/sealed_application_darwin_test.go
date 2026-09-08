@@ -26,7 +26,7 @@ import (
 func TestPiProductionFailureReachesSafeControlPlaneDiagnostic(t *testing.T) {
 	result, err := parsePiProductionResult(context.Background(), productionruntime.AttemptResultInput{
 		Transcript: []byte("sensitive transcript"), Worktree: "sensitive-relative-path",
-	}, "sensitive-model")
+	}, "sensitive-model", "")
 	if len(result.Data) != 0 || !application.HasReason(err, application.ReasonAuthorityConflict) {
 		t.Fatal("invalid parser input changed admission behavior")
 	}
@@ -34,6 +34,32 @@ func TestPiProductionFailureReachesSafeControlPlaneDiagnostic(t *testing.T) {
 	writeControlPlaneRequestFailure(&stderr, err)
 	if stderr.String() != "control-plane request failed: operation=pi-result-input reasonCode=authority-conflict\n" {
 		t.Fatalf("unexpected safe diagnostic: %s", stderr.String())
+	}
+}
+
+func TestPiProductionNativeCompositionRequiresObservedExit(t *testing.T) {
+	// Even a syntactically terminal transcript cannot replace supervisor exit
+	// observations. The closed code proves native selection reached the parser.
+	input := productionruntime.AttemptResultInput{
+		Transcript: []byte("not parsed before exit admission"), Worktree: "/worktree",
+		TaskID: "TASK-1", RunID: "run-1", AttemptID: "attempt-1", Executable: "/usr/local/bin/pi", Version: "0.84.4",
+		StartedAt: time.Now(), CompletedAt: time.Now().Add(time.Second), MaxOutputBytes: 1 << 20,
+	}
+	for _, mutate := range []func(*productionruntime.AttemptResultInput){
+		func(in *productionruntime.AttemptResultInput) { in.ProcessTerminal = false },
+		func(in *productionruntime.AttemptResultInput) { in.ProcessExitCode = 2 },
+		func(in *productionruntime.AttemptResultInput) { in.ProcessSignal = "SIGTERM" },
+		func(in *productionruntime.AttemptResultInput) { in.TranscriptTruncated = true },
+	} {
+		candidate := input
+		candidate.ProcessTerminal = true
+		mutate(&candidate)
+		result, err := parsePiProductionResult(context.Background(), candidate, "configured/model", domain.ResultContractNativeTerminal)
+		var stderr bytes.Buffer
+		writeControlPlaneRequestFailure(&stderr, err)
+		if len(result.Data) != 0 || stderr.String() != "control-plane request failed: operation=pi-result-process-terminal reasonCode=authority-conflict\n" {
+			t.Fatal("composition lost actual process failure or leaked raw result")
+		}
 	}
 }
 

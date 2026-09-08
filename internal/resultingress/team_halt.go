@@ -9,7 +9,7 @@ import (
 const teamHaltFactType = "team-plan-halted"
 const teamHaltProtocol = "bounded-team-halt/v1"
 
-// TeamPlanHalt revokes further dispatch only. It is not a Run terminal result,
+// TeamPlanHalt revokes dispatch and automatic team advancement. It is not a Run terminal result,
 // budget settlement, cancellation receipt or permission to replace the plan.
 type TeamPlanHalt struct {
 	GoalID         string `json:"goalId"`
@@ -35,7 +35,7 @@ func validateTeamHalt(plan TeamPlanState, halt TeamPlanHalt) error {
 		return ErrTeamPlanConflict
 	}
 	switch halt.Stage {
-	case "prepare", "materialize", "start", "inspect":
+	case "prepare", "materialize", "start", "inspect", "collect", "verify", "review":
 	default:
 		return ErrTeamPlanConflict
 	}

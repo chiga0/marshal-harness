@@ -38,15 +38,16 @@ func piProductionLaunchBuilder(nodeRuntime, entrypoint string, task domain.TaskS
 			return productionruntime.AttemptLaunchArgv{}, application.NewError("pi-launch-objective", application.ReasonInvalidRequest)
 		}
 		out, err := pi.BuildProductionLaunch(pi.ProductionLaunchInput{
-			NodeRuntime: nodeRuntime,
-			Entrypoint:  entrypoint,
-			Profile:     task.Worker.ExecutionProfile,
-			Model:       task.Worker.Model,
-			TaskID:      identity.TaskID,
-			RunID:       identity.RunID,
-			AttemptID:   identity.AttemptID,
-			Objective:   objective,
-			Constraints: task.Work.Constraints,
+			ResultContract: task.Worker.ResultContract,
+			NodeRuntime:    nodeRuntime,
+			Entrypoint:     entrypoint,
+			Profile:        task.Worker.ExecutionProfile,
+			Model:          task.Worker.Model,
+			TaskID:         identity.TaskID,
+			RunID:          identity.RunID,
+			AttemptID:      identity.AttemptID,
+			Objective:      objective,
+			Constraints:    task.Work.Constraints,
 		})
 		if err != nil {
 			return productionruntime.AttemptLaunchArgv{}, err

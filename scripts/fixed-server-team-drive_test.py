@@ -25,7 +25,133 @@ def running(run):
 
 
 class TeamDriveTest(unittest.TestCase):
-    def exercise_main(self, live=False, rejected=False, integration_state="ACCEPTED"):
+    def test_blocked_peer_ends_wait_without_requesting_packet_or_work(self):
+        previous = running(RUNS["client"])
+        for defect in (None, "runId", "attemptId", "sequence", "authorityHead", "skipped", "verifying"):
+            previous = running(RUNS["client"])
+            value = {**previous, "state": "BLOCKED", "sequence": 4, "authorityHead": "sha256:" + "b"*64}
+            if defect == "skipped":
+                value["sequence"] = 99
+            elif defect == "verifying":
+                previous.update(state="VERIFYING", sequence=4)
+                value["sequence"] = 5
+            elif defect:
+                value[defect] = previous[defect] if defect in ("sequence", "authorityHead") else "other"
+            calls, saved = [], {}
+            def call(command, remaining):
+                calls.append(command)
+                return 0, value
+            with self.subTest(defect=defect), self.assertRaises(driver.Error) as failure:
+                driver.observe_review(call, lambda k, v: saved.setdefault(k, v), RUNS["service"], 10,
+                                      now=lambda: 0, peers={RUNS["client"]: previous})
+            self.assertEqual(calls, [["inspect", "--run", RUNS["client"]]])
+            self.assertEqual(str(failure.exception) == "team-peer-blocked", defect is None)
+            self.assertEqual(len(saved), 1)
+
+    def test_observer_waits_without_executing_work_including_fast_completion(self):
+        for phases in (("RUNNING", "VERIFYING", "REVIEW_PENDING"), ("RUNNING", "REVIEW_PENDING"), ("REVIEW_PENDING",)):
+            clock, calls, saved = [0], [], {}
+            def projection(phase):
+                step = ("RUNNING", "VERIFYING", "REVIEW_PENDING").index(phase)
+                return {**running(RUNS["service"]), "state": phase, "sequence": 3+step,
+                        "authorityHead": "sha256:" + "abc"[step]*64}
+            final = projection("REVIEW_PENDING")
+            peer_final = {**final, "runId": RUNS["client"]}
+            peer_initial = peer_final if len(phases) == 1 else running(RUNS["client"])
+            pending = iter(phases)
+            def call(args, remaining):
+                calls.append(args[0])
+                self.assertGreater(remaining, 0)
+                if args[0] == "inspect":
+                    if args[-1] == RUNS["client"]:
+                        return 0, peer_final
+                    return 0, projection(next(pending, "REVIEW_PENDING"))
+                self.assertEqual(args[0], "review-packet")
+                return 0, {"Projection": {"run": final, "packetDigest": "sha256:" + "d"*64,
+                                           "packet": {"runId": RUNS["service"]}},
+                           "Receipt": {"runId": RUNS["service"], "attemptId": "attempt-1",
+                                       "postRevision": final["sequence"], "postAuthorityHead": final["authorityHead"]}}
+            result = driver.observe_review(call, lambda key, value: saved.setdefault(key, value), RUNS["service"], 10,
+                                           now=lambda: clock[0], pause=lambda n: clock.__setitem__(0, clock[0]+n),
+                                           peers={RUNS["client"]: peer_initial})
+            self.assertEqual(result["run"], final)
+            self.assertEqual(calls, ["inspect"]*(2*len(phases)) + ["review-packet", "inspect"])
+            self.assertFalse(result["accepted"])
+            self.assertNotIn("verificationStatus", result)
+
+    def test_observer_stops_on_failure_or_drift_without_retry(self):
+        original = running(RUNS["service"])
+        variants = [{**original, "state": "FAILED"}, {**original, "runId": RUNS["client"]},
+                    {**original, "attemptId": "attempt-2"}, {**original, "sequence": 4},
+                    {**original, "authorityHead": "sha256:" + "f"*64},
+                    {**original, "state": "REVIEW_PENDING", "sequence": 4}]
+        for bad in variants:
+            clock, calls = [0], []
+            def call(args, remaining):
+                calls.append(args[0])
+                return 0, original if len(calls) == 1 else bad
+            with self.subTest(bad=bad), self.assertRaises(driver.Error):
+                driver.observe_review(call, lambda *_: None, RUNS["service"], 5,
+                                      now=lambda: clock[0], pause=lambda n: clock.__setitem__(0, clock[0]+n))
+            self.assertEqual(calls, ["inspect", "inspect"])
+        with self.assertRaisesRegex(driver.Error, "progress-deadline"):
+            driver.observe_review(lambda *_: self.fail("expired observer performed IO"), lambda *_: None,
+                                  RUNS["service"], 0, now=lambda: 0)
+
+    def test_capture_status_is_diagnostic_and_failed_business_gate_is_retained(self):
+        packet = {"runId": RUNS["service"], "taskId": "task-1", "specDigest": "sha256:"+"a"*64, "baseSha": "b"*40}
+        summary, saved = {}, {}
+        with mock.patch.object(driver.t2, "capture_review_inputs", return_value=json.dumps({**packet, "status": "fail"}).encode()):
+            with self.assertRaisesRegex(driver.Error, "business-verification-failed"):
+                driver.capture_review(None, RUNS["service"], packet, None, summary,
+                                      lambda k, v: saved.setdefault(k, v.copy()), True)
+        self.assertEqual(saved["review-summary.json"]["verificationStatus"], "fail")
+        self.assertEqual(summary["verificationStatusSource"], "captured-report-diagnostic-only")
+        with mock.patch.object(driver.t2, "capture_review_inputs", return_value=json.dumps({**packet, "runId": "other", "status": "pass"}).encode()):
+            with self.assertRaises(driver.Error):
+                driver.capture_review(None, RUNS["service"], packet, None, {}, lambda *_: None, False)
+
+    def test_observer_rejects_packet_receipt_and_final_state_drift(self):
+        current = {**running(RUNS["service"]), "state": "REVIEW_PENDING"}
+        for defect in ("receipt", "packet", "final"):
+            calls = []
+            def call(args, remaining):
+                calls.append(args[0])
+                if args[0] == "inspect":
+                    if defect == "final" and len(calls) > 1:
+                        return 0, {**current, "attemptId": "attempt-other"}
+                    return 0, current
+                return 0, {"Projection": {"run": current, "packetDigest": "sha256:"+"d"*64,
+                                           "packet": {"runId": "other" if defect == "packet" else RUNS["service"]}},
+                           "Receipt": {"runId": RUNS["service"], "attemptId": "attempt-1",
+                                       "postRevision": 4 if defect == "receipt" else 3,
+                                       "postAuthorityHead": current["authorityHead"]}}
+            with self.subTest(defect=defect), self.assertRaises(driver.Error):
+                driver.observe_review(call, lambda *_: None, RUNS["service"], 10, now=lambda: 0)
+            self.assertEqual(calls, ["inspect", "review-packet"] + (["inspect"] if defect == "final" else []))
+
+    def test_read_only_inspect_budget_allows_wait_behind_verifier(self):
+        clock, calls = [0], []
+        current = {**running(RUNS["service"]), "state": "REVIEW_PENDING"}
+        def call(args, remaining):
+            calls.append(args[0])
+            if len(calls) == 1:
+                self.assertEqual(remaining, 90)
+                # Existing verifier may legitimately hold its lease >30s.
+                clock[0] += 40
+            if args[0] == "inspect":
+                return 0, current
+            return 0, {"Projection": {"run": current, "packetDigest": "sha256:"+"d"*64,
+                                       "packet": {"runId": RUNS["service"]}},
+                       "Receipt": {"runId": RUNS["service"], "attemptId": "attempt-1",
+                                   "postRevision": 3, "postAuthorityHead": current["authorityHead"]}}
+        driver.observe_review(call, lambda *_: None, RUNS["service"], 90, now=lambda: clock[0])
+        self.assertEqual(calls, ["inspect", "review-packet", "inspect"])
+
+    def test_timeout_is_saved_without_output_or_retry(self):
+        self.exercise_main(timeout=True)
+
+    def exercise_main(self, live=False, rejected=False, integration_state="ACCEPTED", timeout=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             (root / "scripts").mkdir()
@@ -42,19 +168,20 @@ class TeamDriveTest(unittest.TestCase):
             def execute(command, **kwargs):
                 calls.append(command[2])
                 self.assertEqual(command[:2], [str(root / "bin/marshal"), "control-plane"])
+                if timeout:
+                    raise driver.subprocess.TimeoutExpired(command, kwargs["timeout"], output=b"private-output", stderr=b"private-error")
                 value = {"found": True, "approval": APPROVAL} if command[2] == "team-approve" else running(command[-1])
                 if command[2] == "team-reconcile":
                     value = {"found": True, "approval": APPROVAL, "outcome": OUTCOME}
                 return types.SimpleNamespace(returncode=0, stdout=json.dumps(value).encode(), stderr=b"")
-            def drive(call, save, run_id, deadline, require_pass=True):
-                self.assertEqual(require_pass, not live)
+            def drive(call, save, run_id, deadline, initial=None, peers=None):
                 driven.append(run_id)
-                save("review-packet.json", {"Projection": {"packet": {"runId": run_id}}})
+                save("review-packet.json", {"Projection": {"packet": {"runId": run_id, "taskId": "task-1", "specDigest": "sha256:" + "e"*64, "baseSha": "f"*40}}})
                 summary = {"run": {**running(run_id), "state": "REVIEW_PENDING"}, "packetDigest": "sha256:" + "c"*64}
-                save("review-summary.json", summary)
                 return summary
             def capture(root, run, packet, archive):
                 archive.write_bytes(b"closed-test-archive")
+                return json.dumps({**packet, "status": "pass"}).encode()
             def review(call, save, reviews, output, unchanged, seconds, nodes=("service", "client")):
                 self.assertTrue((output / "review.ready").is_file())
                 self.assertTrue(unchanged())
@@ -72,11 +199,22 @@ class TeamDriveTest(unittest.TestCase):
                     mock.patch("sys.argv", ["driver", "--evidence-root", str(evidence), "--await-review-seconds", "1200" if live else "0"]), \
                     mock.patch.object(driver, "subjects", return_value=RUNS), \
                     mock.patch.object(driver.subprocess, "run", side_effect=execute), \
-                    mock.patch.object(driver.t2, "drive", side_effect=drive), \
+                    mock.patch.object(driver, "observe_review", side_effect=drive), \
                     mock.patch.object(driver.t2, "capture_review_inputs", side_effect=capture) as captured, \
                     mock.patch.object(driver, "await_integration") as awaited, \
                     mock.patch.object(driver, "review_team", side_effect=review) as reviewed:
-                self.assertEqual(driver.main(), 1 if rejected or (live and integration_state != "ACCEPTED") else 0)
+                self.assertEqual(driver.main(), 1 if timeout or rejected or (live and integration_state != "ACCEPTED") else 0)
+            if timeout:
+                self.assertEqual(calls, ["team-approve"])
+                raw = (evidence / "team/call-1.json").read_text()
+                recorded = json.loads(raw)
+                self.assertTrue(recorded["timedOut"])
+                self.assertEqual(recorded["timeoutSeconds"], 120)
+                self.assertGreaterEqual(recorded["elapsedSeconds"], 0)
+                self.assertNotIn("private", raw)
+                self.assertEqual(recorded["stdoutSHA256"], driver.hashlib.sha256(b"private-output").hexdigest())
+                self.assertFalse(json.loads((evidence / "team/failure.json").read_bytes())["automaticRetry"])
+                return
             completed = live and not rejected and integration_state == "ACCEPTED"
             self.assertEqual(calls, ["team-approve", "inspect", "inspect"] + (["team-reconcile"] if completed else []))
             integrated = live and not rejected
@@ -86,6 +224,8 @@ class TeamDriveTest(unittest.TestCase):
             self.assertEqual(awaited.call_count, int(integrated))
             summary = json.loads((evidence / "team/summary.json").read_bytes())
             self.assertEqual(summary["accepted"], completed)
+            self.assertEqual(summary["externalCollectCalls"], 0)
+            self.assertEqual(summary["externalVerifyCalls"], 0)
             self.assertEqual(summary["integrationExecuted"], integrated)
             self.assertEqual(summary["stage"], "team-completed" if completed else "integration-reviewed" if integrated else "two-implement-reviewed" if live else "two-implement-review-pending")
             if integrated:

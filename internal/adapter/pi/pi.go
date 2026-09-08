@@ -2100,15 +2100,16 @@ var (
 // identity; Objective and Constraints are the work content. No Marshal state,
 // control, worktree, result, or transcript path belongs in any field.
 type ProductionLaunchInput struct {
-	NodeRuntime string
-	Entrypoint  string
-	Profile     string
-	Model       string
-	TaskID      string
-	RunID       string
-	AttemptID   string
-	Objective   string
-	Constraints []string
+	ResultContract string
+	NodeRuntime    string
+	Entrypoint     string
+	Profile        string
+	Model          string
+	TaskID         string
+	RunID          string
+	AttemptID      string
+	Objective      string
+	Constraints    []string
 }
 
 // ProductionLaunchOutput is the deterministic argv and prompt for one Pi
@@ -2134,6 +2135,9 @@ func BuildProductionLaunch(in ProductionLaunchInput) (ProductionLaunchOutput, er
 		return ProductionLaunchOutput{}, err
 	}
 	prompt := buildProductionPrompt(in)
+	if in.ResultContract == domain.ResultContractNativeTerminal {
+		prompt = buildNativeProductionPrompt(in)
+	}
 	argv, err := productionLaunchArgv(in, prompt)
 	if err != nil {
 		return ProductionLaunchOutput{}, err
@@ -2147,6 +2151,9 @@ func BuildProductionLaunch(in ProductionLaunchInput) (ProductionLaunchOutput, er
 // newline/control characters, and the objective and each constraint must be
 // non-empty and contain no absolute POSIX path token.
 func validateProductionLaunchInput(in ProductionLaunchInput) error {
+	if in.ResultContract != "" && in.ResultContract != domain.ResultContractWorkerJSON && in.ResultContract != domain.ResultContractNativeTerminal {
+		return errors.New("pi production launch result contract is unsupported")
+	}
 	if !filepath.IsAbs(in.NodeRuntime) || filepath.Clean(in.NodeRuntime) != in.NodeRuntime {
 		return errors.New("pi production launch Node runtime must be an absolute clean path")
 	}

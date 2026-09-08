@@ -94,6 +94,7 @@ var nonLeakOracle = []string{
 	"/worker/model",
 	"/worker/preferredAdapter",
 	"/worker/reasoning",
+	"/worker/resultContract",
 	"/worker/tools/*",
 }
 
@@ -515,6 +516,7 @@ func TestRenderPromptProjectionV1VerifierOnlyAndHiddenValuesDoNotLeak(t *testing
 	spec["worker"].(map[string]any)["fallbackAdapters"] = []string{"nl-fallback"}
 	spec["worker"].(map[string]any)["model"] = "nl-model"
 	spec["worker"].(map[string]any)["reasoning"] = "nl-reasoning"
+	spec["worker"].(map[string]any)["resultContract"] = "nl-result-contract"
 	// worker.tools is hidden: it is consumed by the adapter enforcement
 	// layer and the Verification tool-allowlist gate, never rendered. The
 	// sentinel is deliberately not a closed vocabulary word; renderPrompt
@@ -552,7 +554,7 @@ func TestRenderPromptProjectionV1VerifierOnlyAndHiddenValuesDoNotLeak(t *testing
 		"424242",
 		"nl-label-key", "nl-label-value", "nl-repo-path", "nl-base-ref", "nl-remote",
 		"nl-expected-url", "nl-preferred", "nl-fallback", "nl-model",
-		"nl-reasoning", "nl-tools-sentinel", "nl-provider", "nl-mode", "nl-pub-remote",
+		"nl-reasoning", "nl-result-contract", "nl-tools-sentinel", "nl-provider", "nl-mode", "nl-pub-remote",
 		"nl-base-branch", "nl-merge-policy", "nl-merge-method", "nl-check", "nl.ext", "nl-ext-value",
 		"nl-admission-status", "nl-dep-kind", "nl-dep-run", "nl-dep-task",
 		"nl-dep-state", "nl-dep-base", "nl-dep-digest",
