@@ -84,6 +84,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/v1/capabilities" && r.Method == http.MethodGet {
 		supported := []string{"create", "query", "confirm", "graph", "workers"}
 		pending := []string{}
+		if _, ok := h.config.Application.(application.TaskQuestionPort); ok {
+			supported = append(supported, "questions", "answer")
+		} else {
+			pending = append(pending, "questions", "answer")
+		}
 		if _, ok := h.config.Application.(application.TaskCancelPort); ok {
 			supported = append(supported, "cancel")
 		} else {
@@ -145,11 +150,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-		if len(parts) < 3 || len(parts) > 4 || parts[0] != "v1" || parts[1] != "tasks" || domain.ValidateID(parts[2]) != nil || r.URL.RawQuery != "" {
+		if len(parts) < 3 || len(parts) > 6 || parts[0] != "v1" || parts[1] != "tasks" || domain.ValidateID(parts[2]) != nil || r.URL.RawQuery != "" {
 			writeError(w, http.StatusNotFound, "not-found")
 			return
 		}
 		id := parts[2]
+		if h.serveTaskQuestions(w, r, ctx, id, parts) {
+			return
+		}
 		if len(parts) == 4 && parts[3] == "artifact" && r.Method == http.MethodGet {
 			port, ok := h.config.Application.(application.TaskArtifactPort)
 			if !ok {
@@ -214,7 +222,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return e
 			})
 			status = http.StatusAccepted
-		} else if r.Method == http.MethodGet && (len(parts) == 3 || parts[3] == "graph" || parts[3] == "workers") {
+		} else if r.Method == http.MethodGet && (len(parts) == 3 || len(parts) == 4 && (parts[3] == "graph" || parts[3] == "workers")) {
 			var projection application.TaskProjection
 			projection, err = h.config.Application.ReadTask(ctx, id)
 			result = projection

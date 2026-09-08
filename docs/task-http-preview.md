@@ -12,10 +12,20 @@
 | `GET /v1/tasks/{id}` | 当前批准、节点、失败及已存在 Outcome 的投影 |
 | `GET /v1/tasks/{id}/graph`、`/workers` | 原投影中的节点/依赖及 Run 状态；`busy` 表示暂时拿不到 Run lease，不声称进程健康 |
 | `POST /v1/tasks/{id}/approve` | `Idempotency-Key` 加原 `expectedRevision/previewDigest`，批准原三个 Team 义务；既有 resident 调度推进 |
+| `GET /v1/tasks/{id}/questions` | ADR 0086 候选：同 Task 原批问题、已答/未答、当前 revision/preview 及原期限；`order-quote/v1` 返回空 |
+| `POST /v1/tasks/{id}/questions/{qid}/answers` | ADR 0086 候选：原 writer 内一次追加答案及新版 preview，不批准、不创建 Run |
 
 模板仅有 `order-quote/v1`：两个作者分别实现报价 API/客户端，随后集成。自由文本只补充固定契约，预览展示实际 work、scope、oracle 摘要和总限额；这不是任意需求的自动规划器。`context.text` 不解释为宿主路径或权限。模板是 operator 启动配置，HTTP 不接收 Policy、执行程序、环境或 authority 对象。
 
-自动客观独立 Decision 与完整成果下载已随 PR #275 全绿后合入功能分支 `a2f41c9`，不是 main 或正式发布。取消组合 PR #276 的 `272aa4c` CI 六项通过、macOS quality 失败：输出超限客户端负例的 150ms 预算先触发解释器启动超时。后继只分离各负例预算，原运行时限制不变；本机 37 项回归及独立审查通过，完整 CI 仍待验证。使用时以实际 server 的 capabilities 与候选身份为准，不把源码接线当本机旧安装已升级。Pi/Qwen 已由用户确认可用；当前实机阻碍是 AMFI 拒绝固定 Marshal 启动。B1 的真实自主交付与取消退出条件保持开放。
+自动客观独立 Decision 与完整成果下载已随 PR #275 全绿后合入功能分支 `a2f41c9`，不是 main 或正式发布。取消组合 PR #276 的 `272aa4c` CI 六项通过、macOS quality 失败：输出超限客户端负例的 150ms 预算先触发解释器启动超时。后继 `a97b0f8` 只分离各负例预算，原运行时限制不变；37 项回归及独立审查通过，完整 CI 仍待验证。实际状态以 [Roadmap 顶部](roadmap-status.md#业务交付当前表)与 server capabilities 为准。Pi/Qwen 已由用户确认可用；Mac 当前实机阻碍是 AMFI 拒绝固定 Marshal 启动。B1 真实自主交付与取消出口仍开放。
+
+### 批准前关键问答候选（ADR 0086）
+
+该切片复用原 RB1、RepositorySession 与 HTTP 写通道，新增显式事实族保存整批问题、不可变答案及追加 preview；旧 `bounded-task-draft/v1` 不改字节或版本。只有组合根受信模板声明的缺失槽可以提问，最多三个，答案只进入冻结 context 槽，不能修改 oracle、Policy、Provider、scope、预算、图或发布权限。当前生产模板仍只有零问题 `order-quote/v1`，本片测试专用模板不注册为生产业务，也不继承自动 Decision 或固定 ZIP 资格。
+
+回答正文为 `expectedRevision`、`previewDigest`、`questionRevision`、`answer` 四个字段；`answer` 是不超过 4096 UTF-8 字节且无 NUL 的非空字符串。返回顶层 Task 投影，以及 `questionId/answerFactDigest/acceptedPreviewDigest/acceptedRevision/replayed` 回执。同 key 同正文重放返回原回执及明确的当前 Task（可能已取消），不延长期限、不重答、不自动确认。回答后旧 revision 的取消或旧 preview 的确认返回 409；用户读取最新版本后明确取消或一次最终确认。
+
+已验证：`4e8925d` 固定测试载体下三组 RepositorySession→HTTP→批准/取消/冷重放及 resultingress/taskhttp 问答 race 通过，包含同 key/CAS 竞争、损坏或截断冷回放拒绝与零问题旧模板。边界、架构及 vet/staticcheck 通过。独立审查发现真实 server 的 sealed 包装层未实现问答 Port，`75af587` 已补转发和锁序/关闭回归，同 reviewer 复核无剩余 P0/P1；新 CLI 动态测试须由精确候选 Darwin CI 完成，不用 Session 结果代替。客户端 `91ee1935` 已整合，问答 11 项和原 37+12 项回归通过。这些测试没有模型，不覆盖运行中 Worker 的问答/pause/resume/steering，不关闭 B2；后续仍须实际业务槽及真实团队可消费交付。
 
 ## 启动与访问
 

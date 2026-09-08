@@ -2,6 +2,8 @@
 
 ## 当前阅读入口与适用性
 
+新增 [ADR 0086](0086-task-preapproval-questions-and-preview-revisions.md)（Accepted，2026-09-08 维护者接纳）：冻结未批准 Task 的关键问答、同 RB1 原子答案/预览版本和确认/取消顺序；当前 `order-quote/v1` 保持零问题。本次独立审查与接纳允许实施，不代表新事实族已接线或 B2 业务出口完成。
+
 先读[合同适用性](../design-contract-map.md)，再读命中范围的 ADR，不按编号顺序把全部历史决策重做一遍。
 
 | 范围 | 当前目标/保留合同 | 应如何使用 |

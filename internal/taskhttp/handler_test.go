@@ -111,7 +111,7 @@ func TestTaskHTTPThinPortAndTruthfulCapabilities(t *testing.T) {
 		if w.Code != 200 {
 			t.Fatalf("query %s: %d", path, w.Code)
 		}
-		if path == "/v1/capabilities" && !bytes.Contains(w.Body.Bytes(), []byte(`"pending":["cancel","automatic-decision","artifact-download"]`)) {
+		if path == "/v1/capabilities" && !bytes.Contains(w.Body.Bytes(), []byte(`"pending":["questions","answer","cancel","automatic-decision","artifact-download"]`)) {
 			t.Fatal("unsupported capabilities hidden")
 		}
 	}

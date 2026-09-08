@@ -489,6 +489,10 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		return err
 	}
 	switch head.FactType {
+	case taskQuestionCreatedFact, taskQuestionAnsweredFact:
+		if err := applyTaskQuestionLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
 	case taskStopFactType, taskCancelledFactType:
 		if err := applyTaskCancelLine(line, in, s.nextSequence); err != nil {
 			return err

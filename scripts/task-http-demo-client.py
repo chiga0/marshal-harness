@@ -45,10 +45,10 @@ ORACLE_SHA = "dfa7965c65b896e5d0542fa7edfe5d9699150e4c76f7dbc1a5b1f570ab0db7f2"
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 PENDING = ["cancel", "automatic-decision", "artifact-download"]
-STATUSES = {"awaiting-confirmation", "confirmation-expired", "approved",
+STATUSES = {"awaiting-answer", "awaiting-confirmation", "confirmation-expired", "approved",
             "running", "blocked", "review-pending", "verified-awaiting-delivery", "completed",
             "cancelling", "cancelled"}
-STOPS = {"awaiting-confirmation", "confirmation-expired", "blocked",
+STOPS = {"awaiting-answer", "awaiting-confirmation", "confirmation-expired", "blocked",
          "review-pending", "verified-awaiting-delivery", "completed", "cancelled"}
 
 

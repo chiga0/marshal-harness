@@ -72,11 +72,11 @@ type taskCancelFact struct {
 }
 
 func taskControlRevision(in *Ingress, key string) int64 {
-	draft, found := in.taskDrafts[key]
+	draft, found := currentTaskProposal(in, key)
 	if !found {
 		return 0
 	}
-	revision := draft.Draft.Revision
+	revision := draft.Revision
 	if _, found := in.teamPlans[key]; found {
 		revision++
 	}
@@ -91,8 +91,8 @@ func taskControlRevision(in *Ingress, key string) int64 {
 
 func validateTaskStop(in *Ingress, scope ControlOwnerScope, stop TaskStop) error {
 	key := teamPlanKey(scope, stop.TaskID)
-	draft, found := in.taskDrafts[key]
-	if !found || stop.DraftFactDigest != draft.Draft.FactDigest || requireDigest("cancel key", stop.RequestKeyDigest) != nil || stop.ExpectedRevision != taskControlRevision(in, key) {
+	draft, found := currentTaskProposal(in, key)
+	if !found || stop.DraftFactDigest != draft.RootFactDigest || requireDigest("cancel key", stop.RequestKeyDigest) != nil || stop.ExpectedRevision != taskControlRevision(in, key) {
 		return ErrTeamPlanConflict
 	}
 	at, err := time.Parse(time.RFC3339Nano, stop.RequestedAt)
@@ -129,7 +129,8 @@ func (s *DurableStore) RequestTaskStop(ctx context.Context, verifier CurrentAppr
 				result = old
 				return nil // Exact replay precedes current revision CAS.
 			}
-			value := TaskStop{TaskID: taskID, DraftFactDigest: in.taskDrafts[key].Draft.FactDigest, PlanFactDigest: in.teamPlans[key].FactDigest, RequestKeyDigest: keyDigest, ExpectedRevision: revision, RequestedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+			proposal, _ := currentTaskProposal(in, key)
+			value := TaskStop{TaskID: taskID, DraftFactDigest: proposal.RootFactDigest, PlanFactDigest: in.teamPlans[key].FactDigest, RequestKeyDigest: keyDigest, ExpectedRevision: revision, RequestedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 			if err := validateTaskStop(in, owner.Scope, value); err != nil {
 				return err
 			}
@@ -214,7 +215,7 @@ func requireTaskRunNotStopped(in *Ingress, namespace authority.AuthorityNamespac
 		if _, stopped := in.taskStops[key]; !stopped {
 			continue
 		}
-		scope := in.taskDrafts[key].Scope
+		scope := taskProposalScope(in, key)
 		if !scope.AuthorityNamespaceID.Equal(namespace) {
 			continue
 		}
