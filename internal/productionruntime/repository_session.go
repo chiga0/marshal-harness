@@ -61,6 +61,7 @@ type RepositorySession struct {
 	teamRunMaterializer    func(context.Context, []byte, func(context.Context, func() error) error) (domain.RunState, error)
 	teamIntegrationBuilder func(context.Context, string, string, [][]byte) (string, string, error)
 	taskTemplate           application.TaskTemplatePort
+	coldTaskVerifications  map[string]bool
 	teamDeliveryExporter   func(context.Context, string, string, string, string, [][]byte, []byte, []string) (map[string][]byte, error)
 }
 

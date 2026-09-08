@@ -30,6 +30,9 @@ type taskDeliveryFact struct {
 
 func validateTaskDelivery(in *Ingress, scope ControlOwnerScope, value goal.TaskDelivery) error {
 	key := teamPlanKey(scope, value.GoalID)
+	if _, stopped := in.taskStops[key]; stopped {
+		return ErrTaskStopped
+	}
 	draft, drafted := in.taskDrafts[key]
 	plan, planned := in.teamPlans[key]
 	outcome, completed := in.teamOutcomes[key]

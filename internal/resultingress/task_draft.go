@@ -151,6 +151,9 @@ func (s *DurableStore) ListTaskDraftIDs(scope ControlOwnerScope, after string, l
 }
 
 func validateTaskDraftApproval(in *Ingress, scope ControlOwnerScope, taskID string, approval TeamPlanApproval) error {
+	if _, stopped := in.taskStops[teamPlanKey(scope, taskID)]; stopped {
+		return ErrTaskStopped
+	}
 	state, found := in.taskDrafts[teamPlanKey(scope, taskID)]
 	if !found {
 		if approval.TaskDraftDigest != "" {

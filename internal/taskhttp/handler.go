@@ -83,7 +83,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/v1/capabilities" && r.Method == http.MethodGet {
 		supported := []string{"create", "query", "confirm", "graph", "workers"}
-		pending := []string{"cancel"}
+		pending := []string{}
+		if _, ok := h.config.Application.(application.TaskCancelPort); ok {
+			supported = append(supported, "cancel")
+		} else {
+			pending = append(pending, "cancel")
+		}
 		if h.config.AutomaticDecision {
 			supported = append(supported, "automatic-decision")
 		} else {
@@ -172,7 +177,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write(artifact.Content)
 			return
 		}
-		if len(parts) == 4 && parts[3] == "approve" && r.Method == http.MethodPost {
+		if len(parts) == 4 && parts[3] == "cancel" && r.Method == http.MethodPost {
+			port, ok := h.config.Application.(application.TaskCancelPort)
+			if !ok {
+				writeError(w, http.StatusNotFound, "capability-not-supported")
+				return
+			}
+			var request application.CancelTaskRequest
+			if readJSON(w, r, &request) != nil || request.ExpectedRevision < 1 {
+				writeError(w, http.StatusBadRequest, "invalid-request")
+				return
+			}
+			key, ok := requestKey(r)
+			if !ok {
+				writeError(w, http.StatusBadRequest, "invalid-idempotency-key")
+				return
+			}
+			request.TaskID, request.IdempotencyKey = id, key
+			err = h.config.Mutation(ctx, func(call context.Context) error { var e error; result, e = port.CancelTask(call, request); return e })
+			status = http.StatusAccepted
+		} else if len(parts) == 4 && parts[3] == "approve" && r.Method == http.MethodPost {
 			var request application.ApproveTaskRequest
 			if readJSON(w, r, &request) != nil {
 				writeError(w, http.StatusBadRequest, "invalid-request")
@@ -277,7 +301,7 @@ func writeApplicationError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case application.ReasonTaskNotFound:
 		status = http.StatusNotFound
-	case application.ReasonAuthorityConflict, application.ReasonTaskArtifactNotReady:
+	case application.ReasonAuthorityConflict, application.ReasonTaskArtifactNotReady, application.ReasonStopTooLate, application.ReasonRunStopped:
 		status = http.StatusConflict
 	case application.ReasonTaskConfirmationExpired:
 		status = http.StatusGone

@@ -118,6 +118,9 @@ func (adapter *sealedRepositoryApplication) VerifyRun(ctx context.Context, reque
 		return application.VerificationProjection{}, application.NewError("verify-run", application.ReasonAuthorityConflict)
 	}
 	delete(adapter.deadlineRuns, request.RunID)
+	if err := adapter.session.WithTaskRunNotStopped(ctx, request.RunID, func() error { return nil }); err != nil {
+		return result, err
+	}
 	adapter.mu.Unlock()
 	preparing = false
 	state, err := runstore.InspectUnderLease(lease)
@@ -213,10 +216,12 @@ func (adapter *sealedRepositoryApplication) VerifyRun(ctx context.Context, reque
 	if err != nil {
 		return application.VerificationProjection{}, err
 	}
-	if err := adapter.runs.Append(lease, event, state.Sequence); err != nil {
-		return application.VerificationProjection{}, err
-	}
-	if err := adapter.runs.WriteSnapshot(lease, nextState); err != nil {
+	if err := adapter.session.WithTaskRunNotStopped(ctx, request.RunID, func() error {
+		if err := adapter.runs.Append(lease, event, state.Sequence); err != nil {
+			return err
+		}
+		return adapter.runs.WriteSnapshot(lease, nextState)
+	}); err != nil {
 		return application.VerificationProjection{}, err
 	}
 	after, err := adapter.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
@@ -305,6 +310,11 @@ func (adapter *sealedRepositoryApplication) applyReviewDecision(ctx context.Cont
 	}
 	if !objective && authorityProjection.Run.Sequence == request.ExpectedSequence+1 && authorityProjection.Run.State != domain.StateReviewPending {
 		return adapter.rehydrateReviewDecisionUnderLease(ctx, lease, request)
+	}
+	if !objective {
+		if err := adapter.session.WithTaskRunNotStopped(ctx, request.RunID, func() error { return nil }); err != nil {
+			return result, err
+		}
 	}
 	state, task, taskData, report, _, manifest, _, _, err := adapter.loadCurrentReviewInputs(ctx, lease, currentRequest)
 	if err != nil {

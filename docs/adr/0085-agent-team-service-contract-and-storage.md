@@ -87,6 +87,20 @@ ADR 0052 的正式签名、公证、Linux 与 stable gate 不删除；从关键�
 
 首版拒绝非 loopback 绑定，校验 Host/Origin，默认不开跨域；健康接口只返回最小健康状态。无需登录平台，但不能提供无保护的进程启动端口。后续远端入口首次启用前就必须具备 TLS、认证/授权与撤销等对应基线，不能“上线后补安全”。单台 VM/容器中的服务也不默认暴露公网。
 
+### B1 Task 取消的原账本收口（未发布实现候选）
+
+`POST /v1/tasks/{id}/cancel` 沿原 token、Host/Origin 与 current-owner 检查，接受 `Idempotency-Key` 及 `{"expectedRevision":2}`，不接受 PID、路径、reason、命令或新的预算。短全局 writer lane 只追加同 RB1 的 `task-stop-requested`，返回 `202` 和原 TaskProjection；`cancellationRequested=true`、`status=cancelling` 不是进程已停止。已有完成的团队 Outcome 返回 `409 stop-too-late`，不改写成功；精确 key/原 expectedRevision 的重放先于新命令 CAS，即使已经收口也不追加新意图或刷新预算，同 key 异内容冲突。
+
+Task 的 `revision` 是稳定控制版本：draft 为 1，批准后加 1，stop 和最终 disposition 各加 1；各 Worker 进展继续使用其原 Run sequence/head，不让轮询造成 Task CAS 抖动。`previewDigest` 与原确认请求的 revision 固定于 draft；批准丢响应后仍用原 preview/revision/key 重放，不把 Task 当前控制版本改写为新预览或要求重新批准。
+
+resident 先取得目标 Run lane，再取得短全局 lane，调用原 CancelRun/stop cleanup；不在全局锁内等待 Run lane。READY 的 reservation-only 路径仅允许原 ZeroAttemptSideEffectVerifier 对同一 Run lease、dispatch ledger 与 RB1 证明没有 dispatch/Attempt/allocation/launch 副作用后，执行原 CancelAttemptReservation。未开始的创建义务检查全部历史 reservation/Attempt 及原冻结输入、Run journal；只凭 AttemptsUsed=0 或目录缺失不成立。已知从未物化与真实 READY 的 disposition 保留原目录、不复用、不把 READY 伪造为 Run terminal。
+
+最终 `task-cancellation-disposed` 在同一 RB1 绑定 stop/plan、全部节点原 creation、当前 Run head 和相应 proof，撤销尚未执行的剩余义务，不生成另一套 Run 状态机或退款账。RUNNING 由原 CancelRun 收口；已 Collect 的 VERIFYING/REVIEW_PENDING 只有原 `worker.completed`/stop 事件与同 RB1 的 ProcessTerminal、AllocationTerminated、SupervisorClosed、CleanupReleased 全部精确匹配才可记 execution-cleaned。已准入 Verify 持有原 Run lease，收口等待其退出；最终 Verify/Decision 提交仍重验 stop，不能产生迟到接纳。所有节点证明成立后才查询为 `cancelled`，原失败原因、Run 状态和 Outcome 仍可见，已接纳的上游不被改成失败或重写成功。
+
+服务开放 endpoint 前记录已有 Task VERIFYING 的冷观察，仅用于否决：没有 durable verification-start/完成事实时，空闲 Run lease 不证明崩溃 verifier 的外部效果已处理；保持 intervention/pending。正常 REVIEW_PENDING 不因此卡人工。停止中的创建义务在启动恢复时跳过，不重新物化；只读历史查询及原合法停止恢复继续保留。调度在全部 pending-stop 集合上按可重建 cursor 轮转，不限制为历史 Task 首 100 条；一个未知执行不得饿死其他可收口 Task。
+
+这些候选状态及夹具测试不是实机取消成功证明。B1 取消出口仍须以原 server、实际所属执行及真实 cleanup/冷重开动态证据验收；任何缺证据、未知 launch、崩溃 Verify、身份冲突均保留 `cancelling`，不靠意图、halt 或信号假结案。
+
 业务路由以 /v1/tasks 为中心，不含 /workspaces。写操作由应用层验证本地调用者、Task、批准 profile、摘要、幂等 key 与 expected revision；先在重新认证后匹配原幂等回执，精确重放返回原结果，未命中新命令才 CAS。同 key 异内容冲突；202 是受理、不是执行结束，pending/unknown 可查询，取消不接受任意 PID。
 
 任务文本可包含资源/仓库/表/URL，不触发 HTTP 自动抓取、宿主读文件或扩权。输入经有界上传/授权读取进入制品；默认只做本地成果交付，不提供任意 executable/env/secret 注入接口。

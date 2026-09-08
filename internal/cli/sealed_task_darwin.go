@@ -9,6 +9,18 @@ import (
 
 var _ application.TaskDraftPort = (*sealedRepositoryApplication)(nil)
 var _ application.TaskArtifactPort = (*sealedRepositoryApplication)(nil)
+var _ application.TaskCancelPort = (*sealedRepositoryApplication)(nil)
+
+func (a *sealedRepositoryApplication) CancelTask(ctx context.Context, request application.CancelTaskRequest) (application.TaskProjection, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.statusMu.RLock()
+	defer a.statusMu.RUnlock()
+	if a.closed {
+		return application.TaskProjection{}, application.NewError("cancel-task", application.ReasonOwnerUnavailable)
+	}
+	return a.session.CancelTask(ctx, request)
+}
 
 func (a *sealedRepositoryApplication) ReadTaskArtifact(ctx context.Context, id string) (application.TaskArtifact, error) {
 	a.statusMu.RLock()

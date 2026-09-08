@@ -113,6 +113,11 @@ func runControlPlaneServeWithTeamProgress(ctx context.Context, stdout, stderr io
 		writeControlPlaneRequestFailure(stderr, err)
 		return ExitFailure
 	}
+	if err := applicationAdapter.session.ObserveColdTaskVerifications(ctx); err != nil {
+		_ = applicationAdapter.Close()
+		fmt.Fprintln(stderr, "control-plane serve 失败：Task 取消恢复观察未完成。")
+		return ExitFailure
+	}
 	if autoTeamProgress {
 		if err := applicationAdapter.session.HaltColdInitialTeamVerifications(ctx); err != nil {
 			_ = applicationAdapter.Close()
@@ -190,6 +195,7 @@ func runControlPlaneServeWithTeamProgress(ctx context.Context, stdout, stderr io
 	// repeatedly losing to the same expensive reconciliation. Each action
 	// retains its existing authority checks and nonblocking public-writer lane.
 	shortActions := []func(context.Context) error{
+		func(step context.Context) error { return applicationAdapter.advanceTaskCancellations(step, router) },
 		func(step context.Context) error {
 			_, err := router.TryBackgroundMutation(step, applicationAdapter.advanceBusinessDeadlines)
 			return err

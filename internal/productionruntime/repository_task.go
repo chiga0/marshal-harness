@@ -26,6 +26,12 @@ func taskRequestKey(key string) (string, error) {
 }
 
 func taskError(err error) error {
+	if errors.Is(err, resultingress.ErrTaskStopped) {
+		return application.NewError("task", application.ReasonRunStopped)
+	}
+	if errors.Is(err, resultingress.ErrTaskCancelTooLate) {
+		return application.NewError("task", application.ReasonStopTooLate)
+	}
 	if errors.Is(err, resultingress.ErrTaskDraftExpired) {
 		return application.NewError("task", application.ReasonTaskConfirmationExpired)
 	}
@@ -330,6 +336,21 @@ func (s *RepositorySession) readTaskBorrowed(ctx context.Context, id string) (re
 				result.Reason = ""
 				result.AllowedActions = append(result.AllowedActions, "download")
 			}
+		}
+		stop, disposition, revision, err := s.ingress.ReadTaskCancellation(s.acquisition.Scope, id)
+		if err != nil {
+			return err
+		}
+		result.Revision = revision
+		if stop.FactDigest != "" {
+			result.CancellationRequested = true
+			result.AllowedActions = []string{"query"}
+			result.Status = "cancelling"
+			if disposition.FactDigest != "" {
+				result.Status = "cancelled"
+			}
+		} else if !completed {
+			result.AllowedActions = append(result.AllowedActions, "cancel")
 		}
 		return nil
 	})

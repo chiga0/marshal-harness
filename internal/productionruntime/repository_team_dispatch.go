@@ -47,6 +47,11 @@ func (session *RepositorySession) NextInitialTeamDispatch(ctx context.Context, c
 				return err
 			}
 			halts[plan.Revision.GoalId] = halted
+			stop, _, _, e := session.ingress.ReadTaskCancellation(session.acquisition.Scope, plan.Revision.GoalId)
+			if e != nil {
+				return e
+			}
+			halts[plan.Revision.GoalId] = halted || stop.FactDigest != ""
 		}
 		ids, err := session.runs.ListExistingRunIDs()
 		if err != nil {

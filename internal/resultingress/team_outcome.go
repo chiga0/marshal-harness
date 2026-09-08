@@ -53,6 +53,9 @@ func validateTeamOutcome(in *Ingress, scope ControlOwnerScope, value TeamDeliver
 		return fail()
 	}
 	key := teamPlanKey(scope, value.Outcome.GoalId)
+	if _, stopped := in.taskStops[key]; stopped {
+		return ErrTaskStopped
+	}
 	plan, found := in.teamPlans[key]
 	if !found || plan.FactDigest != value.PlanFactDigest || value.Outcome.Validate() != nil || value.Outcome.State != goal.OutcomeStateCompleted ||
 		value.Outcome.AuthorityNamespaceId != scope.AuthorityNamespaceID || value.Outcome.Reason != "verified-team-delivery" ||
