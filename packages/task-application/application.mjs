@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {encode, digest, makeEvent} from '../task-store/store.mjs';
 import {TaskError, reject, limits, freezePlan, publicTask, nextRevision, terminal, isText, clone} from './model.mjs';
+import {TaskExecution} from './execution.mjs';
 
 const hash = value => digest(encode(value));
 const parse = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
@@ -19,9 +20,10 @@ const idOK = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,
  */
 export class TaskApplication {
   constructor({store, owner, clock = Date.now, makeId = prefix => prefix + '-' + randomUUID(),
-    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}}) {
+    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}}) {
     this.store = store; this.owner = owner; this.clock = clock; this.makeId = makeId;
     this.defaultLimits = limits(defaultLimits);
+    this.execution = new TaskExecution(this, execution);
     this.dispatch = this.dispatch.bind(this);
   }
   now() {
@@ -168,6 +170,7 @@ export class TaskApplication {
     });
   }
   query(tx, request) {
+    if (['worker.get', 'task.workers'].includes(request.operation)) return this.execution.query(tx, request);
     const page = request.page ?? {}, limit = page.limit ?? 50, after = page.cursor ?? '';
     if (request.operation === 'task.list') {
       const entries = tx.projections('task', after, limit);
@@ -193,7 +196,7 @@ export class TaskApplication {
       const items = entries.map(entry => {
         const envelope = JSON.parse(entry.bytes.toString('utf8')), event = envelope.payload;
         return {id: 'event-' + envelope.sequence, taskId: task.id, sequence: integer(entry.sequence),
-          type: event.type, at: event.at, workerId: null, summary: event.type, source: 'application'};
+          type: event.type, at: event.at, workerId: event.workerId ?? null, summary: event.type, source: 'application'};
       });
       return {taskId: task.id, items, nextCursor: entries.length === limit ? entries.at(-1).sequence.toString() : null};
     }
@@ -201,7 +204,7 @@ export class TaskApplication {
       elapsedMs: Math.max(0, (terminal.has(task.status) ? Date.parse(task.updatedAt) : this.now()) - Date.parse(task.createdAt)),
       attempts: record.attempts, retryCount: record.retryCount, reworkCount: record.reworkCount,
       firstReview: {passed: 0, total: 0, pending: 0}, acceptance: {status: 'pending', evidenceIds: [], digest: null},
-      usage: unavailableUsage(), workers: [], prompts: []};
+      usage: unavailableUsage(), workers: this.execution.workers(tx, record).map(({record}) => clone(record.worker)), prompts: []};
     // Never implement the remaining surface with fabricated success/empty
     // records. Execution, interactions and artifacts must bind actual facts.
     reject('unsupported_operation', 501);

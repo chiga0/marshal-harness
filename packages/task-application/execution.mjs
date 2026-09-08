@@ -1,0 +1,290 @@
+import {encode, digest, makeEvent} from '../task-store/store.mjs';
+import {clone, reject, terminal, nextRevision, freezePlan, isText} from './model.mjs';
+
+const decode = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
+const hash = value => digest(encode(value));
+const live = worker => ['queued', 'running', 'awaiting-answer', 'stopping', 'unknown'].includes(worker.status);
+const usage = () => ({tokens: null, cost: null, currency: null, source: 'unavailable', coverage: 0});
+const rolePhase = role => ({planner: 'planning', author: 'development', reviewer: 'review',
+  integrator: 'integration', verifier: 'verification'})[role];
+
+// A reducer over the SAME Application/SQLite authority. No timers, subprocess,
+// Agent brands, runtime handles or filesystem side effects live in this class.
+export class TaskExecution {
+  constructor(application, {maxWorkers = 2, providerIds = [], defaultProvider = null} = {}) {
+    if (!Number.isSafeInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 64 || !Array.isArray(providerIds) ||
+        providerIds.length > 32 || providerIds.some(id => !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)) ||
+        new Set(providerIds).size !== providerIds.length || defaultProvider !== null && !providerIds.includes(defaultProvider))
+      reject('invalid_execution_config', 503);
+    this.app = application; this.maxWorkers = maxWorkers;
+    this.providers = new Set(providerIds); this.defaultProvider = defaultProvider;
+  }
+  worker(tx, id) {
+    const row = tx.projection('attempt', id); if (!row) reject('not_found', 404);
+    return {row, record: decode(row)};
+  }
+  workers(tx, task) { return (task.workerIds ?? []).map(id => this.worker(tx, id)); }
+  putWorker(tx, row, record, source) {
+    tx.putProjection('attempt', record.worker.id, row ? row.revision : 0n, source, encode(record));
+  }
+  capacity(tx) {
+    const row = tx.projection('budget', 'service-capacity');
+    return {row, value: decode(row) ?? {active: []}};
+  }
+  putCapacity(tx, row, value) {
+    const stream = 'service-capacity', head = tx.head(stream);
+    const event = makeEvent(stream, head.sequence + 1n, {type: 'capacity.changed', active: value.active,
+      at: new Date(this.app.now()).toISOString()});
+    const source = {stream, ...tx.append(stream, head, [event])};
+    tx.putProjection('budget', stream, row ? row.revision : 0n, source, encode(value));
+  }
+  poll(after = '', limit = 50) {
+    return this.app.transaction(false, tx => {
+      const page = tx.commands(after, limit);
+      return {items: page.filter(command => command.status === 'pending'),
+        nextCursor: page.length === limit ? page.at(-1).id : null};
+    });
+  }
+  scan(after = '', limit = 25) {
+    return this.app.transaction(false, tx => {
+      const page = tx.projections('task', after, limit);
+      return {items: page.map(decode).filter(record => !['completed', 'failed', 'cancelled'].includes(record.task.status))
+        .map(record => record.task.id), nextCursor: page.length === limit ? page.at(-1).id : null};
+    });
+  }
+  // A generation change never proves old processes stopped. Only current
+  // in-memory handles can act on the returned IDs; no persisted PID is used.
+  reconcile(taskId) {
+    return this.app.transaction(true, tx => {
+      const task = this.app.get(tx, taskId), workers = this.workers(tx, task);
+      const before = hash(task), active = workers.filter(({record}) => live(record.worker));
+      if (active.some(({record}) => record.ticket.generation !== this.app.owner.generation.toString())) {
+        task.task.status = 'intervention'; task.task.code = 'previous_execution_unresolved';
+      } else if (!terminal.has(task.task.status) && this.app.now() >= Date.parse(task.task.deadlineAt)) {
+        task.task.status = 'cancelling'; task.failureCode ??= 'task_deadline';
+      }
+      if (task.task.status === 'cancelling' && active.length === 0) {
+        task.task.status = task.failureCode ? 'failed' : 'cancelled'; task.task.phase = 'terminal';
+        if (task.failureCode) task.task.code = task.failureCode;
+        for (const node of task.nodes) if (['pending', 'ready', 'waiting', 'running'].includes(node.status)) node.status = 'cancelled';
+      }
+      if (hash(task) !== before) {
+        task.task.revision = nextRevision(task.task.revision);
+        this.app.save(tx, task, 'task.execution-reconciled', {status: task.task.status});
+      }
+      return {taskId, status: task.task.status,
+        stopWorkerIds: task.task.status === 'cancelling' || terminal.has(task.task.status) ? active
+          .filter(({record}) => record.ticket.generation === this.app.owner.generation.toString())
+          .map(({record}) => record.worker.id) : []};
+    });
+  }
+  settleOperation(tx, operationId, status, source, task) {
+    if (!operationId) return;
+    const row = tx.projection('operation', operationId), operation = decode(row);
+    if (!operation || operation.taskId !== task.task.id) reject('application_unavailable', 503);
+    if (!['accepted', 'running'].includes(operation.status)) return;
+    operation.status = status; operation.taskRevision = task.task.revision;
+    operation.updatedAt = new Date(this.app.now()).toISOString();
+    tx.putProjection('operation', operationId, row.revision, source, encode(operation));
+  }
+  // Control receipt bytes stay immutable; querying the Operation returns its
+  // reconciled observation. Pause fences new dispatch, not existing workers.
+  settleControl(commandId, expectedRevision) {
+    return this.app.transaction(true, tx => {
+      const command = tx.command(commandId);
+      if (!command || command.status !== 'pending' || command.revision !== BigInt(expectedRevision) ||
+          command.generation !== this.app.owner.generation) return false;
+      const payload = decode({bytes: command.payload}), task = this.app.get(tx, command.taskId);
+      const fenced = terminal.has(task.task.status) || task.task.status === 'cancelling';
+      let status = 'succeeded';
+      if (payload.action === 'cancel') {
+        if (!terminal.has(task.task.status)) return false;
+        if (task.task.status === 'intervention') status = 'unknown';
+      } else if (!['pause', 'resume'].includes(payload.action) && !fenced) return false;
+      else if (!['pause', 'resume'].includes(payload.action)) status = 'failed';
+      task.task.revision = nextRevision(task.task.revision);
+      const source = this.app.save(tx, task, 'task.obligation-settled', {commandId, action: payload.action, status});
+      this.settleOperation(tx, payload.operationId, status, source, task);
+      tx.observeCommand(command.id, command.revision, status === 'unknown' ? 'unknown' : 'observed', source);
+      return true;
+    });
+  }
+  ticket(tx, ticket) {
+    const {row, record} = this.worker(tx, ticket.workerId);
+    if (hash(record.ticket) !== hash(ticket) || ticket.generation !== this.app.owner.generation.toString()) reject('recovery_required', 409);
+    const task = this.app.get(tx, ticket.taskId);
+    return {row, record, task};
+  }
+  // null means a current dependency/capacity/fence prevents launch. A ticket is
+  // returned exactly once: reservation + command UNKNOWN commit before spawn.
+  nextWork(commandId, expectedRevision) {
+    return this.app.transaction(true, tx => {
+      const command = tx.command(commandId);
+      if (!command || command.revision !== BigInt(expectedRevision) || command.status !== 'pending' ||
+          command.generation !== this.app.owner.generation) return null;
+      const payload = decode({bytes: command.payload}), task = this.app.get(tx, command.taskId);
+      if (terminal.has(task.task.status) || task.task.status === 'cancelling' || task.task.status === 'paused') return null;
+      if (!['plan', 'execute'].includes(payload.action)) return null;
+      if (this.app.now() >= Date.parse(task.task.deadlineAt)) return null;
+      let node;
+      if (payload.action === 'plan') {
+        if (task.task.status !== 'draft' || task.plan) return null;
+        node = {id: 'planning', role: 'planner', goal: task.task.intent, scope: [], providerId: null};
+      } else {
+        if (!['queued', 'running'].includes(task.task.status) || !task.approved || !task.plan ||
+            task.approved.planDigest !== task.plan.digest || payload.planDigest !== task.plan.digest) return null;
+        node = task.plan.nodes.find(node => node.id === payload.nodeId);
+        const state = task.nodes.find(state => state.id === payload.nodeId);
+        if (!node || !state || state.status !== 'pending') return null;
+        const dependencies = task.plan.edges.filter(edge => edge.to === node.id).map(edge => edge.from);
+        if (dependencies.some(id => task.nodes.find(state => state.id === id)?.status !== 'completed')) return null;
+      }
+      const providerId = node.providerId ?? this.defaultProvider;
+      if (!this.providers.has(providerId)) reject('unsupported_task', 422);
+      const capacity = this.capacity(tx), taskWorkers = this.workers(tx, task);
+      const budget = task.approved ? task.plan.budget : task.limits;
+      if (capacity.value.active.length >= this.maxWorkers || taskWorkers.filter(({record}) => live(record.worker)).length >= budget.maxWorkers) return null;
+      if (task.attempts >= budget.maxAttempts) reject('capacity_exceeded', 429);
+      const id = this.app.newId('worker'), at = new Date(this.app.now()).toISOString();
+      const dependencies = new Set((task.plan?.edges ?? []).filter(edge => edge.to === node.id).map(edge => edge.from));
+      const input = {task: task.input, node, plan: task.plan, upstream: taskWorkers
+        .filter(({record}) => dependencies.has(record.worker.nodeId) && record.ticket.planDigest === task.approved?.planDigest &&
+          record.worker.status === 'completed' && record.result !== null)
+        .map(({record}) => ({workerId: record.worker.id, nodeId: record.worker.nodeId, result: record.result}))};
+      const frozen = {workerId: id, taskId: task.task.id, nodeId: node.id, role: node.role, providerId,
+        generation: this.app.owner.generation.toString(), commandId, inputDigest: hash(input),
+        planDigest: task.approved?.planDigest ?? null,
+        deadline: Math.min(Date.parse(task.task.deadlineAt), this.app.now() + 86400000), input};
+      const ticket = {...frozen, reservationDigest: hash(frozen)};
+      const record = {ticket, worker: {id, taskId: task.task.id, nodeId: node.id, providerId, role: node.role,
+        status: 'queued', phase: rolePhase(node.role), attempt: task.attempts + 1,
+        startedAt: null, finishedAt: null, lastObservedAt: at, progress: null, usage: usage()},
+      executionId: null, cleanup: null, result: null, progressSequence: 0};
+      task.attempts++; task.workerIds ??= []; task.workerIds.push(id);
+      task.task.status = payload.action === 'plan' ? 'planning' : 'running';
+      task.task.phase = payload.action === 'plan' ? 'planning' : 'execution';
+      if (payload.action === 'execute') {
+        const state = task.nodes.find(state => state.id === node.id); state.status = 'running'; state.workerIds.push(id);
+      }
+      task.task.revision = nextRevision(task.task.revision);
+      const source = this.app.save(tx, task, 'worker.reserved', {workerId: id, reservationDigest: ticket.reservationDigest});
+      this.putWorker(tx, null, record, source);
+      tx.observeCommand(command.id, command.revision, 'unknown', source);
+      capacity.value.active.push({workerId: id, taskId: task.task.id, generation: frozen.generation});
+      this.putCapacity(tx, capacity.row, capacity.value);
+      return clone(ticket);
+    });
+  }
+  mayStart(ticket) {
+    return this.app.transaction(false, tx => {
+      const {record, task} = this.ticket(tx, ticket);
+      return record.worker.status === 'queued' && !terminal.has(task.task.status) &&
+        !['cancelling', 'paused'].includes(task.task.status) && this.app.now() < ticket.deadline;
+    });
+  }
+  started(ticket, started) {
+    return this.app.transaction(true, tx => {
+      const {row, record, task} = this.ticket(tx, ticket);
+      if (!started || !isText(started.executionId, 128) || !Number.isFinite(Date.parse(started.startedAt))) reject('invalid_request', 400);
+      if (record.executionId !== null) {
+        if (record.executionId !== started.executionId) reject('state_conflict', 409);
+        return {stop: task.task.status === 'cancelling' || terminal.has(task.task.status) || this.app.now() >= ticket.deadline};
+      }
+      if (record.worker.status !== 'queued') reject('state_conflict', 409);
+      record.executionId = started.executionId; record.worker.startedAt = started.startedAt;
+      const stop = task.task.status === 'cancelling' || terminal.has(task.task.status) || this.app.now() >= ticket.deadline;
+      record.worker.status = stop ? 'stopping' : 'running';
+      task.task.revision = nextRevision(task.task.revision);
+      const source = this.app.save(tx, task, 'worker.started', {workerId: ticket.workerId, executionId: record.executionId});
+      this.putWorker(tx, row, record, source);
+      return {stop};
+    });
+  }
+  progress(ticket, sequence, progress) {
+    return this.app.transaction(true, tx => {
+      const {row, record, task} = this.ticket(tx, ticket);
+      if (!Number.isSafeInteger(sequence) || sequence <= record.progressSequence || !live(record.worker) ||
+          task.task.status === 'cancelling' || terminal.has(task.task.status)) return false;
+      if (!progress || !isText(progress.summary, 2048) || progress.tool !== null && !isText(progress.tool, 256) ||
+          !['agent', 'execution'].includes(progress.source)) reject('invalid_request', 400);
+      record.progressSequence = sequence;
+      record.worker.progress = {summary: progress.summary, tool: progress.tool, source: progress.source};
+      record.worker.lastObservedAt = new Date(this.app.now()).toISOString();
+      task.task.revision = nextRevision(task.task.revision);
+      const source = this.app.save(tx, task, 'worker.progress', {workerId: ticket.workerId, progressSequence: sequence});
+      this.putWorker(tx, row, record, source); return true;
+    });
+  }
+  finish(ticket, result) {
+    return this.app.transaction(true, tx => {
+      const {row, record, task} = this.ticket(tx, ticket);
+      if (!live(record.worker)) return clone(record.worker);
+      const completion = result?.cleanup;
+      if (!completion || completion.started?.executionId !== record.executionId &&
+          !(completion.started === null && record.executionId === null)) reject('recovery_required', 409);
+      const clean = completion.cleaned === true;
+      const cancelled = task.task.status === 'cancelling';
+      const success = clean && result.status === 'completed' && result.stopReason === 'end_turn' &&
+        !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;
+      record.cleanup = clone(completion); record.worker.status = !clean ? 'unknown' : cancelled ? 'cancelled' : success ? 'completed' : 'failed';
+      record.worker.finishedAt = new Date(this.app.now()).toISOString(); record.worker.phase = 'terminal';
+      record.result = success ? clone(result.result ?? null) : null;
+      if (!clean) { task.task.status = 'intervention'; task.task.code = 'cleanup_unconfirmed'; }
+      else if (!cancelled && !success && !terminal.has(task.task.status)) {
+        task.task.status = 'cancelling'; task.failureCode = 'worker_failed';
+      }
+      if (ticket.role === 'planner' && ticket.planDigest === null && success) {
+        try {
+          const plan = freezePlan(task, result.plan, value => hash({plan: value, inputDigest: task.inputDigest}));
+          if (plan.nodes.length + task.attempts > plan.budget.maxAttempts) reject('plan_budget_exceeded', 400);
+          task.plan = plan; task.task.plan = {revision: plan.revision, digest: plan.digest};
+          task.task.status = 'awaiting-approval'; task.task.phase = 'planning';
+          task.nodes = plan.nodes.map(node => ({id: node.id, role: node.role, status: 'pending', workerIds: []}));
+        } catch {
+          record.worker.status = 'failed'; task.task.status = 'failed'; task.task.phase = 'terminal'; task.task.code = 'invalid_plan';
+        }
+      } else if (ticket.planDigest !== null) {
+        const node = task.nodes.find(node => node.id === ticket.nodeId);
+        node.status = !clean ? 'unknown' : cancelled ? 'cancelled' : success ? 'completed' : 'failed';
+      }
+      task.task.revision = nextRevision(task.task.revision);
+      const source = this.app.save(tx, task, 'worker.finished', {workerId: ticket.workerId,
+        status: record.worker.status, resultDigest: hash(record.result)});
+      this.putWorker(tx, row, record, source);
+      const command = tx.command(ticket.commandId);
+      if (clean && command.status !== 'observed') tx.observeCommand(command.id, command.revision, 'observed', source);
+      if (clean) {
+        const capacity = this.capacity(tx); capacity.value.active = capacity.value.active.filter(item => item.workerId !== ticket.workerId);
+        this.putCapacity(tx, capacity.row, capacity.value);
+      }
+      return clone(record.worker);
+    });
+  }
+  expandDispatch(commandId, expectedRevision) {
+    return this.app.transaction(true, tx => {
+      const command = tx.command(commandId);
+      if (!command || command.status !== 'pending' || command.revision !== BigInt(expectedRevision) ||
+          command.generation !== this.app.owner.generation) return false;
+      const payload = decode({bytes: command.payload}), task = this.app.get(tx, command.taskId);
+      if (payload.action !== 'dispatch' || task.task.status !== 'queued' || !task.approved ||
+          payload.planDigest !== task.plan?.digest) return false;
+      task.task.revision = nextRevision(task.task.revision);
+      const source = this.app.save(tx, task, 'task.dispatch-expanded', {planDigest: task.plan.digest});
+      for (const node of task.plan.nodes) this.app.enqueue(tx, source, task.task.id, 'execute',
+        {taskId: task.task.id, nodeId: node.id, planDigest: task.plan.digest});
+      this.settleOperation(tx, payload.operationId, 'succeeded', source, task);
+      tx.observeCommand(command.id, command.revision, 'observed', source); return true;
+    });
+  }
+  query(tx, request) {
+    if (request.operation === 'worker.get') return clone(this.worker(tx, request.workerId).record.worker);
+    if (request.operation === 'task.workers') {
+      const task = this.app.get(tx, request.taskId), all = this.workers(tx, task)
+        .map(({record}) => record.worker).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+      const page = request.page ?? {}, limit = page.limit ?? 50;
+      const items = all.filter(worker => !page.cursor || worker.id > page.cursor).slice(0, limit);
+      return {taskId: task.task.id, items: clone(items), nextCursor: items.length === limit ? items.at(-1).id : null};
+    }
+    reject('unsupported_operation', 501);
+  }
+}
