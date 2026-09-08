@@ -294,9 +294,68 @@ test('bounds: exact record-count and page limits; ignored overflow rolls back re
   }), code('limit'));
   assertEmpty(store, owner);
   store.write(owner, tx => tx.append('task-1', empty(), events));
-  store.read(owner, tx => assert.deepEqual(tx.events('task-1', 0, LIMITS.page), events.slice(0, LIMITS.page)));
-  store.read(owner, tx => assert.deepEqual(tx.events('task-1', LIMITS.page, LIMITS.page), events.slice(LIMITS.page)));
+  for (let after = 0; after < events.length; after += LIMITS.page) {
+    store.read(owner, tx => assert.deepEqual(tx.events('task-1', after, LIMITS.page), events.slice(after, after + LIMITS.page)));
+  }
   assert.throws(() => store.read(owner, tx => tx.events('task-1', 0, LIMITS.page + 1)), code('invalid'));
+});
+
+test('bounds: default full pages of projections and pending/observed commands survive cold reopen', async t => {
+  for (const kind of ['projection', 'pending', 'observed']) await t.test(kind, t => {
+    const { root, store, owner } = fixture(t);
+    const ids = Array.from({ length: LIMITS.page + 37 }, (_, n) => `item-${String(n).padStart(4, '0')}`);
+    for (const itemId of ids) {
+      const event = makeEvent(itemId, 1, { fixtureOnly: true });
+      const source = ref(itemId, event);
+      const observation = makeEvent(itemId, 2, { fixtureOnly: true, observed: true });
+      store.write(owner, tx => {
+        tx.append(itemId, empty(), [event]);
+        if (kind === 'projection') tx.putProjection('task', itemId, 0, source, encode({ itemId }));
+        else {
+          tx.enqueue({ id: itemId, taskId: itemId, kind: 'start', inputDigest: digest(encode(itemId)), payload: encode({ itemId }), source });
+          if (kind === 'observed') {
+            tx.append(itemId, { sequence: 1n, digest: event.digest }, [observation]);
+            tx.observeCommand(itemId, 1, 'observed', ref(itemId, observation));
+          }
+        }
+      });
+    }
+    store.close();
+    const next = Store.openExisting(root, { clock: () => NOW }); t.after(() => next.close());
+    const nextOwner = next.claimOwner(owner.generation, 'pagination-reader', NOW + 60000);
+    const readPage = (tx, after) => kind === 'projection' ? tx.projections('task', after) : tx.commands(after);
+    const all = [], sizes = [];
+    let after = '';
+    for (;;) {
+      // Use the default limit: do not silently lower it or swallow ErrLimit.
+      const page = next.read(nextOwner, tx => readPage(tx, after));
+      sizes.push(page.length);
+      if (page.length === 0) break;
+      for (const value of page) {
+        assert.deepEqual(kind === 'projection' ? value.bytes : value.payload, encode({ itemId: value.id }));
+        if (kind !== 'projection') { assert.equal(value.status, kind); assert.equal(value.generation, owner.generation); }
+      }
+      all.push(...page.map(value => value.id)); after = page.at(-1).id;
+      assert.ok(sizes.length <= 3, 'cursor failed to advance');
+    }
+    assert.deepEqual(sizes, [LIMITS.page, 37, 0]);
+    assert.deepEqual(all, ids); assert.equal(new Set(all).size, ids.length);
+
+    // Several valid full pages in one transaction still exceed the aggregate
+    // access budget. A caught limit must roll back a real preceding write.
+    const accessesPerRow = kind === 'observed' ? 3 : 2;
+    const pagesToExceed = Math.floor(LIMITS.records / (LIMITS.page * accessesPerRow)) + 1;
+    const prefix = makeEvent('pagination-prefix', 1, {});
+    assert.throws(() => next.write(nextOwner, tx => {
+      tx.append('pagination-prefix', empty(), [prefix]);
+      try { for (let n = 0; n < pagesToExceed; n++) readPage(tx, ''); }
+      catch (error) { assert.equal(error.code, 'limit'); }
+    }), code('limit'));
+    next.read(nextOwner, tx => {
+      assert.deepEqual(tx.head('pagination-prefix'), empty());
+      assert.deepEqual(tx.events('pagination-prefix'), []);
+    });
+  });
 });
 
 test('bounds: aggregate bytes are enforced independently of count; oversize poisons prefix', t => {

@@ -47,7 +47,7 @@ Enqueue 输入为 `{id,taskId,nodeId?,attemptId?,kind,inputDigest,payload,source
 
 `encode(value)` 是该新格式唯一规范编码器：有限 JSON、排序对象键、拒绝不完整 Unicode/循环/undefined/非有限数等。`digest(bytes)` 只接受原 bytes；不得拿普通 JSON.stringify 顺序代替批准摘要。旧 Go 账本保持旧格式，不由本库重编码。
 
-固定边界：单记录 1 MiB、事务累计已处理 bytes 8 MiB、128 次计费访问、分页 100、事务期限 5 秒、SQLite busy wait 100 毫秒。引用重读也计费。同步 API 不由 setTimeout 抢占；期限在每次方法及提交前检查，callback 仅限可信短存储工作。`clock/monotonic/syncDirectory` 构造选项仅作可信组合/确定性测试注入，不接受 HTTP 配置。
+固定边界：单记录 1 MiB、事务累计已处理 bytes 8 MiB、512 次计费访问、分页 100、事务期限 5 秒、SQLite busy wait 100 毫秒。引用重读也计费：单条 projection/pending 命令需要 2 次，observed 命令需要 3 次；512 保证小记录的最大合法页 100 能完成这些校验，组合事务仍受累计限额约束。大 bytes 页仍可能触及 8 MiB 限额，调用者须明确报告或采用较小显式页，不能把 limit 当成末页。同步 API 不由 setTimeout 抢占；期限在每次方法及提交前检查，callback 仅限可信短存储工作。`clock/monotonic/syncDirectory` 构造选项仅作可信组合/确定性测试注入，不接受 HTTP 配置。
 
 ## 定向回归
 

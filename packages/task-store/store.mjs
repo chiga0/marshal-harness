@@ -6,7 +6,9 @@ import { DatabaseSync } from 'node:sqlite';
 
 // Internal storage, not a Task reducer, execution supervisor, or public SQL API.
 export const FORMAT = 'marshal-node-task-sqlite/v1';
-export const LIMITS = Object.freeze({ recordBytes: 1 << 20, transactionBytes: 8 << 20, records: 128, page: 100, transactionMs: 5000 });
+// A maximum page of observed commands needs three validated accesses per row.
+// Leave room for its enclosing read/CAS while keeping aggregate work bounded.
+export const LIMITS = Object.freeze({ recordBytes: 1 << 20, transactionBytes: 8 << 20, records: 512, page: 100, transactionMs: 5000 });
 const DATABASE = 'authority.sqlite';
 const FORMAT_BYTES = Buffer.from(FORMAT + '\n');
 const APP_ID = 1297305934;
