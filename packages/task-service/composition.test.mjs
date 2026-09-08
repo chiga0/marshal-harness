@@ -180,6 +180,70 @@ test('cold prior execution remains intervention, never starts a replacement or c
   assert.equal(f.provider.workers.length, 0);
 });
 
+test('old unreserved pending task can be cancelled after reopen without permanently blocking readiness', async t => {
+  const f = fixture(t), initial = await f.start(); await initial.shutdown();
+  const store = Store.openExisting(path.join(f.root, 'store'));
+  const owner = store.claimOwner(store.info().generation, 'fixture-before-reservation', Date.now() + 10000);
+  const app = new TaskApplication({store, owner, execution: {maxWorkers: 2, providerIds: ['fixture'], defaultProvider: 'fixture'}});
+  const task = await app.dispatch({operation: 'task.create', key: 'pending-create', body: {intent: 'not reserved'}}, context);
+  const command = app.execution.poll().items[0];
+  assert.equal(command.status, 'pending');
+  assert.equal((await app.dispatch({operation: 'task.workers', taskId: task.id}, context)).items.length, 0);
+  store.close();
+  const reopened = await f.start({mode: 'open'}), client = f.client(reopened);
+  await assert.rejects(client.request('ready.get'), {code: 'not_ready'});
+  const latest = await client.getTask(task.id);
+  await client.request('task.cancel', {path: {taskId: task.id}, body: {expectedRevision: latest.revision}, idempotencyKey: 'pending-cancel'});
+  await until(async () => (await client.getTask(task.id)).status === 'cancelled');
+  assert.equal((await client.request('ready.get')).ready, true);
+  assert.equal(f.provider.workers.length, 0);
+  const next = await client.createTask({intent: 'next valid task'}, 'after-cancel-create');
+  assert.equal(next.status, 'draft');
+  await until(() => f.provider.workers.length === 1);
+  assert.equal((await client.request('task.audit', {path: {taskId: task.id}})).attempts, 0);
+});
+
+test('recovery preserves create/approve/input receipts and conflicts before new-key readiness gate', async t => {
+  const f = fixture(t), initial = await f.start(), first = f.client(initial);
+  const inputBody = {name: 'source.txt', mediaType: 'text/plain', contentBase64: Buffer.from('original').toString('base64')};
+  const input = await first.request('input.create', {body: inputBody, idempotencyKey: 'preserved-input'});
+  await initial.shutdown();
+  let store = Store.openExisting(path.join(f.root, 'store'));
+  let owner = store.claimOwner(store.info().generation, 'fixture-receipt-owner', Date.now() + 10000);
+  const app = new TaskApplication({store, owner, execution: {maxWorkers: 2, providerIds: ['fixture'], defaultProvider: 'fixture'}});
+  const body = {intent: 'approved task before restart'};
+  const task = await app.dispatch({operation: 'task.create', key: 'preserved-create', body}, context);
+  const proposed = app.proposePlan(task.id, task.revision, plan);
+  const latest = await app.dispatch({operation: 'task.get', taskId: task.id}, context);
+  const approveBody = {expectedRevision: latest.revision, planRevision: proposed.revision, planDigest: proposed.digest};
+  const approved = await app.dispatch({operation: 'task.approve', taskId: task.id, key: 'preserved-approve', body: approveBody}, context);
+  const unknown = await app.dispatch({operation: 'task.create', key: 'unknown-start', body: {intent: 'unknown execution'}}, context);
+  const command = app.execution.poll().items.find(command => command.taskId === unknown.id);
+  const ticket = app.execution.nextWork(command.id, command.revision); assert.ok(ticket);
+  const authority = () => store.read(owner, tx => ({
+    commands: tx.commands('', 100).map(({id, revision, status}) => ({id, revision, status})),
+    capacity: JSON.parse(tx.projection('budget', 'service-capacity').bytes.toString('utf8')),
+  }));
+  const before = authority(); store.close();
+  const reopened = await f.start({mode: 'open'}), client = f.client(reopened);
+  await assert.rejects(client.request('ready.get'), {code: 'not_ready'});
+  assert.deepEqual({...await client.createTask(body, 'preserved-create')}, task);
+  assert.deepEqual({...await client.approveTask(task.id, approveBody, 'preserved-approve')}, approved);
+  assert.deepEqual(await client.request('input.create', {body: inputBody, idempotencyKey: 'preserved-input'}), input);
+  await assert.rejects(client.createTask({intent: 'changed'}, 'preserved-create'), {code: 'idempotency_conflict'});
+  await assert.rejects(client.approveTask(task.id, {...approveBody, expectedRevision: approveBody.expectedRevision + 1}, 'preserved-approve'), {code: 'idempotency_conflict'});
+  await assert.rejects(client.request('input.create', {body: {...inputBody, name: 'changed.txt'}, idempotencyKey: 'preserved-input'}), {code: 'idempotency_conflict'});
+  await assert.rejects(client.createTask(body, 'new-create'), {code: 'not_ready'});
+  await assert.rejects(client.approveTask(task.id, approveBody, 'new-approve'), {code: 'not_ready'});
+  await assert.rejects(client.request('input.create', {body: inputBody, idempotencyKey: 'new-input'}), {code: 'not_ready'});
+  assert.equal(f.provider.workers.length, 0);
+  assert.equal((await client.request('task.audit', {path: {taskId: unknown.id}})).attempts, 1);
+  await reopened.shutdown();
+  store = Store.openExisting(path.join(f.root, 'store'));
+  owner = store.claimOwner(store.info().generation, 'fixture-inspection', Date.now() + 10000);
+  try {assert.deepEqual(authority(), before);} finally {store.close();}
+});
+
 test('missing cleanup is retained as intervention and shutdown cannot report clean', async t => {
   const f = fixture(t), service = await f.start(), client = f.client(service);
   const task = await client.createTask({intent: 'unknown cleanup'}, 'unknown-create');

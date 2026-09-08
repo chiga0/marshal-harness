@@ -128,7 +128,21 @@ export async function startTaskService({root, mode, providers, prepare, collect,
             if (['draft', 'queued'].includes(task.status)) queuedTasks++;
             if (['intervention', 'awaiting-answer', 'awaiting-approval', 'paused'].includes(task.status)) blockedTasks++;
             if (task.status === 'intervention') recovery = true;
-          } else if (row.generation !== application.owner.generation && row.status !== 'observed' && ['start', 'verify'].includes(row.kind)) recovery = true;
+          } else if (row.generation !== application.owner.generation && row.status !== 'observed' && ['start', 'verify'].includes(row.kind)) {
+            // UNKNOWN may already have external effects: never exclude it on
+            // the strength of a Task fence. PENDING has not been reserved; once
+            // fenced and proven unrelated to any Worker it cannot block ready
+            // forever. This is observation only, not refund/replay/settlement.
+            const fencedWithoutExecution = row.status === 'pending' && application.transaction(false, tx => {
+              const current = tx.command(row.id);
+              if (!current || current.status !== 'pending' || current.revision !== row.revision ||
+                  current.generation !== row.generation || current.attemptId !== '') return false;
+              const task = application.get(tx, current.taskId);
+              return ['cancelling', 'cancelled', 'failed', 'completed'].includes(task.task.status) &&
+                !application.execution.workers(tx, task).some(({record}) => record.ticket.commandId === current.id);
+            });
+            if (!fencedWithoutExecution) recovery = true;
+          }
         }
         if (rows.length < 25) { complete = true; break; }
         cursor = rows.at(-1).id;
@@ -152,6 +166,15 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       const {cursor = '', limit = 50} = request.page ?? {};
       const selected = frozenFacts.filter(fact => fact.id > (cursor ?? '')).slice(0, limit);
       return {items: structuredClone(selected), nextCursor: selected.length === limit ? selected.at(-1).id : null};
+    }
+    // HTTP has authenticated/validated the request. Receipt lookup must still
+    // use the current owner and happen BEFORE readiness/CAS: recovery cannot
+    // turn a committed response into a new admission or hide a key conflict.
+    if (context?.principal !== 'local-operator') throw new TaskApiError('forbidden');
+    if (context.signal?.aborted) throw new TaskApiError('request_timeout');
+    if (request.key !== undefined) {
+      const previous = application.replay(request);
+      if (previous) return previous;
     }
     if (state !== 'running' || failure) throw new TaskApiError('not_ready');
     // Recovery diagnostics and cancellation remain available, but no new work

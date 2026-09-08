@@ -56,6 +56,8 @@ const result = await service.shutdown();
 - SQLite 持有物理独占锁；打开当前活跃服务根会失败，不因 lease 到期抢占。每次真正重开显式 claim 新 generation。
 - 默认 lease 60 秒、每 10 秒续租；**在同一同步 turn 把 `renewOwner` 返回的新 owner 更新到 `application.owner`**。不会以新 claim 替代续租。owner/根身份/全局 Supervisor 故障会停止准入并关闭原持有执行，未知清理不得伪报成功。
 - `/health` 只说明 HTTP 进程活着；`/ready` 还检查当前 Store/owner、Supervisor 和旧执行义务。存在旧代未决执行时返回 `not_ready`，保留查询与取消，阻止 HTTP 新任务、批准、恢复、回答和输入提交。它不证明模型登录、外部业务验收或完整 API 支持。
+- 旧 `unknown` 命令始终保留恢复阻断；旧 `pending` 只有在同库重读确认 Task 已取消/失败/完成或取消 fence 生效、命令尚未预留且没有关联 Worker 时，才从 readiness 阻断中排除。此处只作观察，不修改旧命令、不退款、不重新派发，因此未执行 Task 取消后不会永久锁死新任务。
+- 认证后，写请求先通过当前 owner 执行 Application 原回执查询，再判断新请求 readiness。原 key/正文返回原响应，同 key 不同正文返回 `idempotency_conflict`；只有未命中回执的新请求才受恢复准入 gate 限制，不用 503 掩盖已提交结果或冲突。
 - `provider.list` 是显式配置投影；默认 availability 为 `unknown`、能力列表为空，不把有 `start()` 方法等同于实机可用。可信 `providerFacts` 可提供已验证描述；服务不会自动发付费模型探测。
 - `supervisor.get` 从当前 SQLite Task、outbox、容量与当前控制器状态计算只读观察，不把内存 Worker 数当作全库容量。观察扫描每类最多 2500 条，超出返回 unavailable，而非发布截断数字。`queuedTasks` 统计 draft/queued；`blockedTasks` 统计 intervention/awaiting-answer/awaiting-approval/paused。
 - 正常 `shutdown()` 幂等：关闭接单、等原 Supervisor completion/cleanup、保持续租让结果写回、关闭 HTTP 连接，再调用 dispose 和关闭 depot/Store/目录 FD。HTTP drain 有界；Provider 违反原有界停止合同时仍可能等待，不用超时假造 cleanup。
