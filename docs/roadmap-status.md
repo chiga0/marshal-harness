@@ -8,6 +8,8 @@
 
 ### 最新正式 Node 集成检查点
 
+**22:22 CST 当前同步与下一步**：localMergeSha/main/origin/main=`8d48d9452485f6c753cd074587b2307e683e3129`已实际正常推送，产品pendingRemoteSync=false；集成source=`ce2879f`。Qwen日期问答、Pi真实团队候选和crash首批已合入；整合`c576772`完整384/384通过，最终仅新增crash测试的`ce2879f`定向2/2通过，分次范围不合并计数。当前主线转入B2跨代清理收口与create/result故障组合；B1权限分离仍未证，API-STABLE/B3未完成。ECS原scp被SIGKILL且未上传，部署未通过。开发阶段已按用户常驻授权直接review后merge/push，v1正式发布后恢复PR；以下旧阻塞/未推送记录不覆盖本段。[精确证据](node-task-service-status-2026-09-08.md)。
+
 Pi候选完整回归后续确认：`74a239e`独立一次 **374/374 PASS、182.405秒、exit0、零跳过**，HEAD及工作区保持clean；不把它与regional候选347项拼成一个组合，不改变未合main/未发布的状态。
 
 **22:07 CST Pi实机增量**：独立候选`74a239e`真实Pi0.84.4 HTTP团队一次通过，37.064秒、双作者交叠9.403秒、工具许可5/拒绝1、独立验收及下载4笔/1825 cents、正常实例重开零重复。尚未合main/推送，完整组合回归中。Qwen与Pi均已有明确范围的真实团队成功，但权限分离、活跃执行崩溃收口、局部修正及正式同资产部署仍未完成。B1/B2继续IN_PROGRESS，开始补真实进程crash组合测试，详见[精确证据](node-task-service-status-2026-09-08.md)。

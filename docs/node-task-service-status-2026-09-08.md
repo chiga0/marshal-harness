@@ -2,6 +2,16 @@
 
 ## 当前结论
 
+### 22:22 CST 完整整合已推送，转入恢复收口
+
+产品 localMergeSha/main/origin/main=`8d48d9452485f6c753cd074587b2307e683e3129` 已通过正常 `git push origin main` 实际同步，并由 `ls-remote` 核对；**产品代码 pendingRemoteSync=false**。sourceHead=`ce2879fc8c8ff3b0b907e8e81217049f9e63b3a2`，同树合入main。它包含已审Qwen日期问答、Pi RPC/原生工具与显式团队驱动、完整发行依赖、tests-only取消等待修正及真实服务crash组合回归。用户已明确开发阶段review无阻塞且相关本地验证通过后直接merge/push、无需逐次确认/PR；v1正式发布后恢复PR，产品自动merge仍禁用。旧审批阻塞已解除，以下“未合入/未推送”仅保留当时状态。
+
+验证严格按候选范围计：Pi+regional整合`c576772940760122aadabbfc8c5df9199d724730`完整Node组合 **384/384 PASS，203.500秒，零跳过**；随后仅加入`03c7b86`的3个crash测试/fixture文件，最终`ce2879f`定向 **2/2 PASS，3.075秒**。不把分次执行写成同一次386项全套。crash原reviewer另独立2/2通过6.175秒，无P0/P1；diff-check、13提交范围secret scan及merge-tree通过。真实Qwen/Pi验收仍按下文各自精确source保留，不把源码合并冒充重新跑过同一发行包。
+
+两条crash测试真实经过CLI/HTTP/SQLite/ACP guard：自有service在started后、或原cancel fence之后cleanup之前被SIGKILL；原guard/Agent/继承后代实际退出，重开保持旧Attempt/预算/回执，无替身或退款，Task为intervention，ready拒绝接单。它们确认安全保留，同时实证暴露**缺少跨代原清理证明的合法接纳/容量释放入口**。该B2缺口不能用永久intervention或手工改库关闭；下一步补create/result事务故障组合，并设计最小跨代收口合同，保留独立证据和旧结果拒绝。
+
+ECS诊断性原路径复测确认：本机`/usr/bin/scp`原子进程收到SIGKILL，14ms、非观察器超时、输出0B；正常权限下系统签名验证通过，发送信号方仍未知，不推测成网络或安全软件结论。原目标归档/state仍不存在，无服务/模型启动，停止重试/换通道。脱敏事实 `/private/tmp/marshal-linux-package-smoke.xXYfbtC9/scp-diagnostic.json`；需解决宿主传输终止后才可继续Linux同包安装验收。B1/B2保持IN_PROGRESS，API-STABLE/B3未完成。
+
 ### 22:07 CST Pi 正式 HTTP 团队实机通过
 
 后续独立完整组合已结束：精确`74a239effa975b0ba66b9922b0543227a8a878f1` **374/374 PASS，182.405秒，零失败/取消/跳过，exit0**，运行后HEAD不变且clean。日志 `/private/tmp/marshal-node-combination-74a239e.750O4gfB/results.log`，SHA-256=`2703f3786d1e189ffef651fecf535b05dbe44480e74f87267e310b1a9fd397b9`。这是Pi整合候选的一次完整无模型组合，不与regional候选347项相加；覆盖下文“运行中”的历史时点。
