@@ -13,10 +13,13 @@ function input(t, extra = {}) {
   t.after(() => fs.rmSync(cwd, {recursive: true, force: true}));
   return {cwd, deadline: Date.now() + 10000, prompt: 'Perform the approved fixture work', ...extra};
 }
-function cleaned(result) {
+function cleaned(result, allowNoStart = false) {
   assert.equal(result.cleanup.cleaned, true); assert.equal(result.cleanup.scope, 'inherited-process-group');
   assert.equal(result.cleanup.guardExit.observed, true); assert.equal(result.cleanup.guardExit.signal, 'SIGKILL');
-  assert.throws(() => process.kill(result.cleanup.started.guardPid, 0), {code: 'ESRCH'});
+  if (result.cleanup.started === null) {
+    assert.equal(allowNoStart, true, 'only explicitly observed pre-start cancellation/deadline may lack an Agent');
+    assert.equal(result.cleanup.agentExit.observed, false);
+  } else assert.throws(() => process.kill(result.cleanup.started.guardPid, 0), {code: 'ESRCH'});
 }
 
 test('one Worker exposes handle immediately then initializes, runs, normalizes and cleans', {timeout: 15000}, async t => {
@@ -42,7 +45,7 @@ test('stop is available before bootstrap and during initialize without waiting f
     t.after(() => handle.stop());
     if (!immediate) await reached;
     const stopping = handle.stop(); assert.equal(handle.stop(), stopping);
-    const result = await stopping; cleaned(result); assert.equal(result.status, 'cancelled'); assert.equal(result.sessionId, null);
+    const result = await stopping; cleaned(result, immediate && await handle.started === null); assert.equal(result.status, 'cancelled'); assert.equal(result.sessionId, null);
   }
 });
 
@@ -74,7 +77,10 @@ test('native tool permission is denied by default and only exact callback option
 test('output bound/refusal/deadline remain honest non-delivery terminals and clean owned group', {timeout: 15000}, async t => {
   for (const mode of ['overflow', 'refusal', 'hang-prompt']) {
     const handle = provider(mode).start(input(t, mode === 'hang-prompt' ? {deadline: Date.now() + 1200} : {}));
-    t.after(() => handle.stop()); const result = await handle.completion; cleaned(result);
+    t.after(() => handle.stop()); const result = await handle.completion;
+    // An absolute deadline also fences bootstrap; scheduling load must not
+    // force us to invent an Agent PID or change the original time budget.
+    cleaned(result, mode === 'hang-prompt' && await handle.started === null);
     assert.equal(result.status, 'failed');
     assert.equal(result.reason, {overflow: 'provider_output_limit', refusal: 'agent_refusal', 'hang-prompt': 'provider_deadline'}[mode]);
     assert.ok(Buffer.byteLength(result.outputText) <= MAX_OUTPUT_TEXT_BYTES);
