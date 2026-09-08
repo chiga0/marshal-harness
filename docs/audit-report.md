@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-08：自动验收生产链接缝与流水线修正
+
+核心候选 `064b528` 的唯一 reviewer 发现 P1：objective consumer 漏掉原 Verifier 必定生成的 denial-summary、tool-audit、tool-allowlist，因此手写报告正例通过而真实报告必被拒。修正保持 frozen worker.tools 的必需/可选语义，只允许原 producer 合法 skipped，不放宽未知/缺失/重复/失败 gate。另将实际 sealed Verify 的 ToolAllowlist 接自原冻结 Task，并把 resident 的等待错误映射放回 Application 边界，没有扩架构白名单。
+
+验收改为实际 Verifier→固定 oracle→原 Packet/Importer，以及三个真实 Git 候选→原接纳/集成→制品 producer/RB1/冷读。新增夹具的 mediaType、固定根布局、Worker transcript-meta 曾先后失败；均修正夹具且保留原门禁，不归咎模型。最终 `aa4a82d` 由同 reviewer 复核，主 Agent 独立固定路径复跑完整 Session 测试 15.80 秒通过。这里的 Worker 输入/启动/收集是明确的确定性模拟，不证明真实 Agent、HTTP 自治或 B1 完成。
+
+可执行的作者自测应在审查前运行完整 producer 链；共享固定测试路径明确唯一写入者并交接，最终由非作者独立复跑。CI(N)、开发(N+1)、设计(N+2) 交错，而非每修一个夹具字段重新等待整轮 CI；B2 预设计不占用 B1 当前共享写入文件。具体候选、同步状态和缺口维护在 Roadmap 当前表，历史失败不清零。
+
 ## 2026-09-08：Task HTTP 候选接入与入口遗漏复盘
 
 后续验证：实现 `70ec148` 已经原 reviewer 复核关闭两项 P1；香港 ECS 三包完整测试通过，Mac 的真实 activation 入口和 held Session/HTTP 冷重放通过。独立客户端 `f333dfd` 的 17 项解释型测试经主 Agent 复跑后合入本地候选 `736fcc9`，非 main 合并。详细命令、候选和缺口见入口文档。Mac 共享 lane 测试在测试输出前被 AMFI 以签名问题终止，未记通过、未绕过；该平台回归待合法放行或独立 Darwin CI。无模型调用、自动 Decision 或下载完成声明。

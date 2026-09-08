@@ -174,6 +174,7 @@ func (adapter *sealedRepositoryApplication) VerifyRun(ctx context.Context, reque
 		TaskID: state.TaskID, RunID: state.RunID, AttemptID: request.AttemptID, AuthorityNamespaceID: authorityNamespaceID,
 		SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, Worktree: state.WorktreePath, ExpectedCommonDir: repositoryIdentity.CommonDir,
 		RunDirectory: runDirectory, Scope: scope, Deliverables: deliverables, Commands: commands, BaselinePath: baselinePath,
+		ToolAllowlist:     verification.ToolAllowlistFromTask(task),
 		PatchCaptureBytes: patchCaptureLimit(scope.MaxDiffBytes), LocalSelfIdentity: localVerificationInput,
 	})
 	if err != nil {
