@@ -8,11 +8,13 @@
 
 ### 最新正式 Node 集成检查点
 
+**20:16 CST新增真实团队证据**：正式源码 `42f95658071e9ce03d38d8926b376b26c82ffd50` 已推送；纯HTTP真实Qwen 0.22.3完成planner→一次批准→双作者（重叠16.799秒）→独立验收→下载消费→正常重启原回执/成果不变，总计32.620秒。本次无自动重试，交付为两地区报告、4笔/1825 cents，精确Task/摘要见[实机检查点](node-task-service-status-2026-09-08.md)。这是正式同链的Mac ordinary-user dogfood成功，不是仅实验或进程夹具；仍不证明Worker/Publisher分权、真实运行中取消、崩溃恢复或stable，B1/B2继续IN_PROGRESS。下面82b64cf是此次运行代码基线，不覆盖本段新增实机事实。
+
 当前代码集成基线 main/origin/main=`82b64cfa8d0daef0c188f0e296299b6e3aedcc48`，已实际推送，以上代码 pendingRemoteSync=false。正式HTTP→SQLite→Supervisor→双作者→独立验收/Decision→交付下载及取消/正常重启已有真实Node进程夹具证明；不是模型团队通过。维护者在文件树相同的source `3383e0e` 完成307/307组合测试；[远端 Node team CI](https://github.com/chiga0/marshal-harness/actions/runs/34223961302)通过，通用CI最近查询仍运行中。目录发行包24文件已核验，不代表部署或stable。真实Qwen原生工具单会话证据保留，当前正在准备正式同链团队实机验收，B2问答并行开发；API-STABLE和正式发行尚未完成。精确source/merge、Core两轮P1修正及旧失败记录见[当前实施检查点](node-task-service-status-2026-09-08.md)。
 
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |
-| B1 真实团队交付 | `IN_PROGRESS` | 正式同链夹具已通；仍须真实模型团队的重叠、独立验收、下载消费与对应运行控制证据 |
+| B1 真实团队交付 | `IN_PROGRESS` | 正式同链真实Qwen重叠/独立验收/下载/正常重开已通；仍须补齐真实运行控制及全部适用边界，不能升级production |
 | B2 日常本地 API | `IN_PROGRESS` | 关键问答、第二 Adapter、局部修正、完整同版本恢复与 API-STABLE；通用文件制品已接线但真实业务矩阵未全验收 |
 | B3 正式可靠发布 | `PLANNED` | 目录包已准备；声明平台实机/长期故障、权限分离、安装恢复和受保护同资产发行未完成 |
 
