@@ -4,34 +4,49 @@
 create --submission FILE --key KEY --preview-out NEW_FILE
 approve --preview FILE --confirm-preview-digest sha256:... --key KEY
 inspect --task-id ID [--watch-seconds 60]
+download --task-id ID --output-dir NEW_DIR [--run-oracle]
 
 各命令均需 --connection FILE（服务端生成的 0600 连接文件）。批准必须
 先人工查看预览文件，再原样提供其摘要；客户端不是验收器或权威状态源。
-task-draft/v1 尚无取消、自动 Decision、成果下载，不能证明完整交付。
+download 只接受 completed Task 的固定订单报价 bundle；--run-oracle 才执行
+本仓库固定验收器（可信代码、本机普通用户，不是恶意代码沙箱）。仅下载
+不等于业务成功，消费结果不回写 Core；取消仍未支持。
 """
 
 import argparse
+import hashlib
 import http.client
+import io
 import json
 import os
+from pathlib import Path
 import re
+import selectors
+import signal
 import socket
 import stat
+import subprocess
 import sys
 import threading
 import time
 import urllib.parse
+import zipfile
+import zlib
 
 
 PROFILE = "task-draft/v1"
 LIMIT = 2 << 20
+BUNDLE_LIMIT = 8 << 20
+DELIVERY_FILES = ("quote_api.py", "quote_client.py", "quote_delivery.json")
+FILE_LIMITS = (60000, 60000, 16384)
+ORACLE_SHA = "dfa7965c65b896e5d0542fa7edfe5d9699150e4c76f7dbc1a5b1f570ab0db7f2"
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 PENDING = ["cancel", "automatic-decision", "artifact-download"]
 STATUSES = {"awaiting-confirmation", "confirmation-expired", "approved",
-            "running", "blocked", "review-pending", "verified-awaiting-delivery"}
+            "running", "blocked", "review-pending", "verified-awaiting-delivery", "completed"}
 STOPS = {"awaiting-confirmation", "confirmation-expired", "blocked",
-         "review-pending", "verified-awaiting-delivery"}
+         "review-pending", "verified-awaiting-delivery", "completed"}
 
 
 class ClientError(Exception):
@@ -109,20 +124,21 @@ class Client:
             raise ClientError("invalid-loopback-connection") from None
         self.port, self.token = port, token
         self.request_seconds = request_seconds
+        self.pending = list(PENDING)
 
-    def request(self, method, path, value=None, key=None, deadline=None):
+    def request(self, method, path, value=None, key=None, deadline=None, binary=False):
         # One transport retry only; writes reuse the exact bytes and caller key.
         raw = None if value is None else json.dumps(value, separators=(",", ":")).encode()
         if raw is not None and len(raw) > 32 << 10:
             raise ClientError("request-too-large")
         for attempt in range(2):
             try:
-                return self._once(method, path, raw, key, deadline)
+                return self._once(method, path, raw, key, deadline, binary)
             except TransportError:
                 if attempt or (deadline is not None and time.monotonic() >= deadline):
                     raise
 
-    def _once(self, method, path, raw, key, deadline):
+    def _once(self, method, path, raw, key, deadline, binary=False):
         started = time.monotonic()
         timeout = self.request_seconds
         if deadline is not None:
@@ -151,7 +167,7 @@ class Client:
             timer.daemon = True
             timer.start()
             headers = {"Authorization": "Bearer " + self.token,
-                       "Accept": "application/json"}
+                       "Accept": "application/zip" if binary else "application/json"}
             if raw is not None:
                 headers["Content-Type"] = "application/json"
             if key is not None:
@@ -166,14 +182,15 @@ class Client:
                 # Never echo response text, Location, exception or reason (may contain secrets).
                 raise ClientError("http-status-" + str(response.status))
             if (response.getheader("Content-Encoding") is not None
-                    or response.getheader("Content-Type", "").split(";", 1)[0] != "application/json"):
+                    or response.getheader("Content-Type", "").split(";", 1)[0] != ("application/zip" if binary else "application/json")):
                 raise ClientError("invalid-response-content-type")
-            body = response.read(LIMIT + 1)
+            limit = BUNDLE_LIMIT if binary else LIMIT
+            body = response.read(limit + 1)
             if expired.is_set():
                 raise TransportError("transport-deadline")
-            if len(body) > LIMIT:
+            if len(body) > limit:
                 raise ClientError("response-too-large")
-            return decode(body)
+            return body if binary else decode(body)
         except (OSError, http.client.HTTPException):
             raise TransportError("transport-unavailable-operation-may-have-committed") from None
         finally:
@@ -187,6 +204,8 @@ class Client:
                 or any(not isinstance(x, str) for x in caps["supported"])
                 or not {"create", "query", "confirm", "graph", "workers"}.issubset(caps["supported"])):
             raise ClientError("unsupported-task-profile")
+        self.pending = [cap for cap in PENDING if cap not in caps["supported"]]
+        return caps
 
     def create(self, submission, key):
         return self.request("POST", "/v1/tasks", submission, key)
@@ -199,6 +218,28 @@ class Client:
         return self.request("POST", "/v1/tasks/" + task_id + "/approve",
                             {"expectedRevision": preview["revision"],
                              "previewDigest": preview["previewDigest"]}, key)
+
+    def download(self, task_id, output_dir, run_oracle=False):
+        if not valid_id(task_id):
+            raise ClientError("invalid-task-id")
+        deadline = time.monotonic() + self.request_seconds * 3
+        task = self.request("GET", "/v1/tasks/" + task_id, deadline=deadline)
+        if preview_identity(task) != task_id or task.get("status") != "completed":
+            raise ClientError("task-delivery-not-ready")
+        manifest = task.get("delivery")
+        validate_manifest(manifest, task_id)
+        bundle = self.request("GET", "/v1/tasks/" + task_id + "/artifact", deadline=deadline, binary=True)
+        files = validate_bundle(manifest, bundle)
+        folder = materialize(output_dir, files)
+        if run_oracle:
+            run_delivery_oracle(folder, files)
+        return {"event": "delivery-consumed" if run_oracle else "delivery-downloaded",
+                "taskId": task_id, "contentDigest": manifest["contentDigest"],
+                "factDigest": manifest["factDigest"], "fileCount": len(files),
+                "businessOracle": "passed" if run_oracle else "not-run",
+                "deliveryComplete": run_oracle, "coreStateMutated": False,
+                "profile": "trusted-order-quote-consumer/v1", "pending": ["cancel"],
+                "productionReleaseProven": False}
 
     def observe(self, task_id, seconds=0, interval=2):
         if not valid_id(task_id):
@@ -222,7 +263,8 @@ class Client:
                            "status": task["status"], "workerCount": len(worker_list),
                            "edgeCount": len(edges), "atomicSnapshot": False,
                            "elapsedSeconds": round(time.monotonic() - started, 3),
-                           "deliveryComplete": False, "pending": PENDING}
+                           "deliveryComplete": False,
+                           "pending": self.pending + (["business-consumption"] if task["status"] == "completed" else [])}
                 # Return per-worker state/role only from validated enums; never the nested Run or work.
                 summary["workers"] = [safe_worker(w) for w in worker_list]
                 if any(not isinstance(e, dict) or not valid_id(e.get("from"))
@@ -240,9 +282,217 @@ class Client:
                 yield {"event": "observation-timeout", "taskId": task_id,
                        "elapsedSeconds": round(time.monotonic() - started, 3),
                        "workerCancellationRequested": False, "deliveryComplete": False,
-                       "pending": PENDING}
+                       "pending": self.pending}
                 return
             time.sleep(min(interval, remaining))
+
+
+def digest_bytes(value):
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def validate_manifest(manifest, task_id):
+    # Shape/content binding only: the client does not recreate a Core ledger or Decision.
+    fields = {"goalId", "outcomeFactDigest", "planFactDigest", "integrationRunId",
+              "integrationBaseSha", "candidateDigests", "patchDigests", "decisionDigests",
+              "files", "contentDigest", "contentBytes", "mediaType", "factDigest"}
+    if not isinstance(manifest, dict) or set(manifest) != fields:
+        raise ClientError("invalid-delivery-manifest")
+    if (manifest["goalId"] != task_id or not valid_id(manifest["integrationRunId"])
+            or not isinstance(manifest["integrationBaseSha"], str)
+            or re.fullmatch(r"[0-9a-f]{40}", manifest["integrationBaseSha"]) is None
+            or type(manifest["contentBytes"]) is not int
+            or not 0 < manifest["contentBytes"] <= BUNDLE_LIMIT
+            or manifest["mediaType"] != "application/zip"):
+        raise ClientError("invalid-delivery-manifest")
+    digests = [manifest[key] for key in ("outcomeFactDigest", "planFactDigest", "contentDigest", "factDigest")]
+    for key in ("candidateDigests", "patchDigests", "decisionDigests"):
+        if not isinstance(manifest[key], list) or len(manifest[key]) != 3:
+            raise ClientError("invalid-delivery-manifest")
+        digests.extend(manifest[key])
+    if any(not isinstance(d, str) or DIGEST.fullmatch(d) is None for d in digests):
+        raise ClientError("invalid-delivery-manifest")
+    files = manifest["files"]
+    if not isinstance(files, list) or len(files) != len(DELIVERY_FILES):
+        raise ClientError("invalid-delivery-files")
+    for record, name, limit in zip(files, DELIVERY_FILES, FILE_LIMITS):
+        if (not isinstance(record, dict) or set(record) != {"path", "sha256", "bytes"}
+                or record["path"] != name or type(record["bytes"]) is not int
+                or not 0 < record["bytes"] <= limit or not isinstance(record["sha256"], str)
+                or DIGEST.fullmatch(record["sha256"]) is None):
+            raise ClientError("invalid-delivery-files")
+
+
+def validate_bundle(manifest, bundle):
+    if len(bundle) != manifest["contentBytes"] or digest_bytes(bundle) != manifest["contentDigest"]:
+        raise ClientError("delivery-content-mismatch")
+    try:
+        with zipfile.ZipFile(io.BytesIO(bundle), "r") as archive:
+            entries = archive.infolist()
+            if tuple(info.filename for info in entries) != DELIVERY_FILES or archive.comment:
+                raise ClientError("invalid-delivery-archive")
+            result = {}
+            for info, expected in zip(entries, manifest["files"]):
+                mode = info.external_attr >> 16
+                if (info.orig_filename != info.filename or info.is_dir()
+                        or info.create_system != 3 or mode != stat.S_IFREG | 0o644
+                        or info.flag_bits & 1 or len(info.extra) > 256 or info.comment
+                        or info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
+                        or info.file_size != expected["bytes"]):
+                    raise ClientError("invalid-delivery-archive")
+                with archive.open(info, "r") as source:
+                    content = source.read(expected["bytes"] + 1)
+                if len(content) != expected["bytes"] or digest_bytes(content) != expected["sha256"]:
+                    raise ClientError("delivery-file-mismatch")
+                result[info.filename] = content
+            return result
+    except (OSError, ValueError, RuntimeError, NotImplementedError, EOFError, zipfile.BadZipFile, zlib.error):
+        raise ClientError("invalid-delivery-archive") from None
+
+
+def materialize(output_dir, files):
+    # Fresh directory only; flat frozen names, no extractall or archive-chosen paths.
+    folder = Path(output_dir).absolute()
+    parent = directory = None
+    try:
+        parent = os.open(folder.parent, os.O_RDONLY | os.O_DIRECTORY)
+        os.mkdir(folder.name, 0o700, dir_fd=parent)
+        directory = os.open(folder.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        for name in DELIVERY_FILES:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=directory)
+            with os.fdopen(fd, "wb") as target:
+                target.write(files[name])
+                target.flush()
+                os.fchmod(target.fileno(), 0o644)
+                os.fsync(target.fileno())
+        os.fsync(directory)
+        os.fsync(parent)
+        # Returned canonical path is client-selected, never taken from a manifest.
+        return folder.resolve(strict=True)
+    except OSError:
+        # Keep partial evidence for the operator; never reuse/overwrite it on retry.
+        raise ClientError("delivery-output-unavailable-use-new-directory") from None
+    finally:
+        if directory is not None:
+            os.close(directory)
+        if parent is not None:
+            os.close(parent)
+
+
+def recheck_files(folder, files):
+    try:
+        if sorted(os.listdir(folder)) != list(DELIVERY_FILES):
+            raise ClientError("delivery-files-changed")
+        for name, content in files.items():
+            fd = os.open(folder / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as source:
+                st = os.fstat(source.fileno())
+                if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_mode & 0o7777 != 0o644
+                        or st.st_size != len(content) or source.read(len(content) + 1) != content):
+                    raise ClientError("delivery-files-changed")
+    except OSError:
+        raise ClientError("delivery-files-changed") from None
+
+
+def run_delivery_oracle(folder, files):
+    # Local pinned source, never a command or program supplied in HTTP JSON.
+    # A trusted-code consumer, not a sandbox against same-UID malicious Python.
+    oracle = Path(__file__).with_name("order-quote-team-oracle.py")
+    try:
+        fd = os.open(oracle, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise ClientError("fixed-oracle-unavailable")
+            code = source.read(65537)
+    except OSError:
+        raise ClientError("fixed-oracle-unavailable") from None
+    if hashlib.sha256(code).hexdigest() != ORACLE_SHA:
+        raise ClientError("fixed-oracle-drift")
+    recheck_files(folder, files)
+    # Feed the held, checked bytes, avoiding a verify-path-then-execute-path race.
+    bootstrap = ("import hashlib,sys; data=sys.stdin.buffer.read(65537); "
+                 "hashlib.sha256(data).hexdigest()==sys.argv[1] or sys.exit(2); "
+                 "sys.argv=['trusted-order-quote-oracle.py','--api','quote_api.py',"
+                 "'--client','quote_client.py','--delivery','quote_delivery.json']; "
+                 "exec(compile(data,sys.argv[0],'exec'),{'__name__':'__main__','__file__':sys.argv[0]})")
+    bounded_oracle_process([sys.executable, "-I", "-B", "-c", bootstrap, ORACLE_SHA], code, folder)
+    recheck_files(folder, files)
+
+
+def bounded_oracle_process(argv, code, folder, timeout=30):
+    process = None
+    status_read = status_write = None
+    try:
+        deadline = time.monotonic() + timeout
+        # Keep the session leader alive until group cleanup. Waiting/reaping
+        # the oracle directly would release its PID while descendants can still
+        # own our pipes (or continue silently after closing them). The tiny
+        # guard reports only its direct child's exit status, then waits for us;
+        # it is not an independent worker, sandbox or platform supervisor.
+        guard = ("import os,signal,sys\n"
+                 "fd=int(sys.argv[1]); child=os.fork()\n"
+                 "if child==0:\n"
+                 " os.close(fd); os.execv(sys.argv[2],sys.argv[2:])\n"
+                 "os.close(0); os.close(1); os.close(2)\n"
+                 "_,status=os.waitpid(child,0)\n"
+                 "result=os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)\n"
+                 "os.write(fd,str(result).encode('ascii')); os.close(fd)\n"
+                 "while True: signal.pause()\n")
+        status_read, status_write = os.pipe()
+        process = subprocess.Popen([sys.executable, "-I", "-B", "-c", guard, str(status_write)] + argv,
+                                   cwd=folder, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   start_new_session=True, pass_fds=(status_write,))
+        os.close(status_write)
+        status_write = None
+        output = {"stdout": bytearray(), "stderr": bytearray(), "status": bytearray()}
+        with selectors.DefaultSelector() as selector:
+            os.set_blocking(process.stdin.fileno(), False)
+            selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+            offset = 0
+            os.set_blocking(status_read, False)
+            selector.register(status_read, selectors.EVENT_READ, "status")
+            for stream, key in ((process.stdout, "stdout"), (process.stderr, "stderr")):
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, key)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ClientError("business-oracle-timeout")
+                for selected, _ in selector.select(remaining):
+                    if selected.data == "stdin":
+                        offset += os.write(selected.fd, code[offset:offset + 4096])
+                        if offset == len(code):
+                            selector.unregister(selected.fileobj)
+                            process.stdin.close()
+                        continue
+                    data = os.read(selected.fd, 4097)
+                    output[selected.data].extend(data)
+                    if sum(len(value) for value in output.values()) > 4000:
+                        raise ClientError("business-oracle-output-limit")
+                    if not data:
+                        selector.unregister(selected.fileobj)
+        # No poll/wait here: the guard's PID must remain reserved until the
+        # finally block signals the whole owned group, even on success.
+        if bytes(output["status"]) != b"0" or output["stderr"]:
+            raise ClientError("business-oracle-failed")
+        verdict = decode(bytes(output["stdout"]))
+        if verdict != {"checks": 34, "scope": "integration"} or type(verdict.get("checks")) is not int:
+            raise ClientError("business-oracle-failed")
+    except (OSError, BrokenPipeError):
+        raise ClientError("business-oracle-unavailable") from None
+    finally:
+        if process is not None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
+        for descriptor in (status_read, status_write):
+            if descriptor is not None:
+                os.close(descriptor)
 
 
 def safe_worker(worker):
@@ -288,6 +538,11 @@ def main(argv=None):
     approve.add_argument("--key", required=True)
     inspect = commands.add_parser("inspect")
     inspect.add_argument("--task-id", required=True)
+    download = commands.add_parser("download")
+    download.add_argument("--task-id", required=True)
+    download.add_argument("--output-dir", required=True)
+    download.add_argument("--run-oracle", action="store_true",
+                          help="在新目录运行固定业务验收器；仅适用于可信代码，并非沙箱")
     for command in (approve, inspect):
         command.add_argument("--watch-seconds", type=int, default=0, choices=range(601), metavar="0..600")
     args = parser.parse_args(argv)
@@ -303,6 +558,11 @@ def main(argv=None):
     try:
         client = Client(private_json(args.connection, 4096))
         client.capabilities()
+        if args.command == "download":
+            result = client.download(args.task_id, args.output_dir, args.run_oracle)
+            result["elapsedSeconds"] = round(time.monotonic() - started, 3)
+            emit(result)
+            return 0
         if args.command == "create":
             task = client.create(private_json(args.submission, 32 << 10), args.key)
             task_id = preview_identity(task)
