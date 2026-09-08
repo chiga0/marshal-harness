@@ -13,7 +13,22 @@ const handler = createTaskApiHandler({application: application.dispatch, token, 
 
 读写命令按 `task-api` 的 Application Port 接入。幂等查找先于当前 revision CAS，原回执返回原 accepted response，不重复创建任务/Operation/执行义务。Store 内部隐藏异常，Application 只在整个事务回滚后恢复自己的封闭业务错误，未知存储故障仍返回不可用。
 
-目前支持 `task.create/list/get/plan/approve/graph/cancel/pause/resume/events/audit` 与 `operation.get`；未实现的操作明确 `unsupported_operation`。没有实际执行的审计使用 `tokens:null/source:unavailable`、待验收，不把未知用量或未运行验证计成成功。没有计划的图返回 `plan_conflict`，不编造计划 revision。
+目前支持 `task.create/list/get/plan/approve/graph/cancel/pause/resume/events/audit/workers`、`worker.get` 与 `operation.get`；未实现的操作明确 `unsupported_operation`。没有实际执行的审计使用 `tokens:null/source:unavailable`、待验收，不把未知用量或未运行验证计成成功。没有计划的图返回 `plan_conflict`，不编造计划 revision。
+
+## 受管执行接线端口
+
+`application.execution` 仍是同一 Application/SQLite reducer，不是第二份进程或业务状态。构造时 `execution:{maxWorkers,providerIds,defaultProvider}` 来自服务可信配置，不能由 HTTP limits 扩大服务并发上限。
+
+- `poll(after,limit)` 分页读取待处理义务；即使过滤后 items 为空也继续 nextCursor。
+- `expandDispatch(commandId,revision)` 一次展开已确认 DAG；`nextWork(commandId,revision)` 将预算、Worker、容量和命令 unknown 原子持久化后才返回唯一 ticket。Planner 同样消费预算和容量。
+- `mayStart(ticket)` 在实际启动前检查当前 fence；`started(ticket,fact)` 绑定真实 executionId，返回是否应停止；`progress(ticket,sequence,progress)` 保存有界进度。兄弟节点推进不使另一 ticket 自动陈旧。
+- `finish(ticket,result)` 只按原 executionId 的 cleanup 事实接受回合结果；不以 Agent end_turn 冒充业务验收。下游只获得当前确认计划中直接依赖节点的候选。清理未知保留容量并进入 intervention。
+- `scan(after,limit)`、`reconcile(taskId)` 检查期限、取消和 owner 换代；返回的 stopWorkerIds 只能查找当前进程内已持有句柄，禁止由存储 PID 重建 kill 权限。所有已知执行清理后才取消/失败结案；旧代未决执行不退款、不重发。
+- `settleControl(commandId,revision)` 将实际控制观察回填 Operation，原幂等回执不变。暂停仅禁止新增 dispatch，不误杀已运行 Worker；恢复复用原待执行义务，不重置预算或重复展开 DAG。
+
+批准计划降低 timeout 时，实际 deadline 从原 Task createdAt 计算并冻结，不逐节点刷新。Worker progress 只追加观察事件/紧凑 Worker 投影，不改用户控制 CAS；真正状态/控制转换仍推进 Task revision。大输入与候选快照单独持久化，容量和历史查询只读紧凑索引，下游仅加载当前直接依赖，避免完整计划按历史 Attempt 重复读入同一事务。旧 generation 的纯控制义务可由当前 owner 根据已证明状态回填观察，但不因此重新启动旧执行。原 Store 记录/字节/期限上限不变。
+
+上述端口的 SQLite 组合测试不等于 Supervisor 已消费义务；独立验收、最终制品接纳和完整服务部署仍待接线。
 
 ## 验证
 
