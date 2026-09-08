@@ -4,13 +4,13 @@ on:
   pull_request:
     paths:
       - 'experiments/node-team/**'
-      - 'packages/agent-acp/**'
+      - 'packages/**'
       - '.github/workflows/node-team.yml'
   push:
     branches: [main]
     paths:
       - 'experiments/node-team/**'
-      - 'packages/agent-acp/**'
+      - 'packages/**'
       - '.github/workflows/node-team.yml'
   workflow_dispatch:
 
@@ -44,10 +44,10 @@ jobs:
 
       # Fixtures only: no provider login, model calls, Go build or Marshal native
       # executable. Files are serialized; each team still launches two workers.
-      - name: Run deterministic HTTP team and lifecycle regression
+      - name: Run formal Node packages and deterministic HTTP team regression
         run: >-
           node --test --test-concurrency=1
-          packages/agent-acp/client.test.mjs
+          packages/*/*.test.mjs
           experiments/node-team/providers.test.mjs
           experiments/node-team/business.test.mjs
           experiments/node-team/runtime.test.mjs
