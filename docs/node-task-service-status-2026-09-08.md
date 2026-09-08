@@ -2,6 +2,22 @@
 
 ## 当前结论
 
+### 22:00 CST 真实必要问答团队交付
+
+候选 sourceHead=`538c53494fdaf0715bd5817914c44ace46771471` 上，固定 Node24.15.0 + 原生 Qwen0.22.3 一次完成日期业务：HTTP 缺起止日期→两项必要问题→答案及完整预览→精确批准→双作者→独立验证→下载消费→正常服务实例重开。Task=`task-5fdad69d-2a5f-466a-8a0d-c8ec6a8193c1`，`13:57:42.906Z`→`13:58:04.346Z`，**21.440秒**，无自动重试。批准前启动0；作者生命周期交叠 **14.828秒**，两原执行 cleanup 已确认；3 Attempts 为两作者和 verifier，固定模板不额外调用模型规划。
+
+公开8行输入的独立下载消费确认 east 3笔/1000 cents、west 2笔/550 cents，共5笔/1550 cents；日期外及 cancelled 行排除，退款负值与零值保留。下载507 bytes，摘要 `sha256:ecb05b7e173e8dc72b4d33a2192ccc8d075d637c5c2e70adcf6a8e14c2cf6dd3`。正常同宿主服务实例重开后原Task、成果及批准回执相同，重复启动0，不是崩溃恢复。证据 `/private/tmp/marshal-window-live.XW4ktd/evidence.json`、交付同目录 `delivery.json`；显式驱动摘要 `1c1542fb6bd05736ee95424a2be944d3811c9fcb26d71dbcc86f700e7d4ef77a` 来自实际执行记录，不是证据JSON内的签名收据。另一次只读计量核验确认两文件的字节摘要/耗时/汇总一致，不冒充重新执行原8行oracle。permission=0/0，不证明权限检查已触发；ordinary-user、production=false、publisherSeparationProven=false。
+
+完整 Node 组合 **347/347 PASS，138.377秒，零跳过**；独立产品审查无剩余 P0/P1。保留失败成本：较早组合343/344通过，发行测试不应无配置导入服务配置入口；修正仍保留全部运行依赖，增加实际安装入口缺配置负例与 checker 执行测试。另一次独立业务包9/10因测试过早读取合法 cancelling 失败；tests-only 修正 `ef97907` 仅等待终态，仍严格断言 failed/验收失败/零成果，10/10通过、原reviewer复核通过，尚未整合，不改写上述实机源码范围。
+
+Pi修正 `a5004a8` 原唯一P1已由原reviewer关闭，真实已安装Pi SDK/Agent Core无模型9/9通过；HTTP团队驱动 `b1d4c4` 已独立审查、18项无模型测试通过。正式Pi模型团队尚未运行；研发分支合并被安全审批拒绝，等待明确范围授权，未换Git操作绕过。
+
+香港ECS已核验用户文档中的root管理通道与runuser。固定Node24.15.0安装于 `/opt/marshal-runtimes/node-v24.15.0-linux-x64/bin/node`，root拥有/0755，独立SHA-256=`d1de76d8edf2fededf6f8b30d244e2c0529ac607923a018283b77e9c74bd932c`；原系统Node24.18.1未改。专用执行用户仅完成无模型版本/SQLite检查，不是完整分权证明。后续25文件服务包及无模型脚本上传被安全审批拒绝：**没有上传、没有新部署目录、没有服务启动**，等待明确授权。
+
+此时main/origin/main仍为已推送`61a19e9`；regional候选pendingRemoteSync=true、localMergeSha尚无，Pi整合亦未完成。B1/B2保持IN_PROGRESS、API-STABLE/B3未完成；还缺权限分离、第二真实Adapter、局部修正、完整同版本恢复及同资产部署/正式发行验证。
+
+**随后授权及执行更新**：用户明确批准研发整合与限定ECS上传。Pi子任务正常审批通过，两个研发merge实际产生`e618814`/`b97aab3`，独立整合分支正在回归；root的regional研发merge仍被审批器按AGENTS“Merge默认禁用”拒绝，未绕过，已提出明确产品/研发作用域的澄清。ECS正常审批亦通过，已创建`/home/marshal-runner/node-package-smoke-a5c6b8f-20260908`（0700、UID/GID1000），但随后scp命令异常exit137；只读复核归档和state均不存在、服务/模型均未启动。具体终止原因未知，未盲目重传。以上覆盖前段“未获授权/没有目录”的历史时点，不表示部署完成。
+
 ### 21:21 CST 问答集成与同步
 
 当前产品 main/origin/main=`6a2df5ef4c3fc2952a0975cc34d5d0008bcc9b3f`，已实际正常推送，产品代码 pendingRemoteSync=false；下文早期 pending 仅表示对应历史时点。批准前有限问答已进入正式 HTTP→Application→SQLite：缺失字段一次形成问题批次，答案产生新预览，最终按精确 digest/revision 批准；完整输入继续零问题，不增加模型调用。原答案回执、冷重开、过期/取消/CAS 竞争和旧客户端兼容均有覆盖。仍不是运行中 Worker 待答或任意自然语言澄清能力。

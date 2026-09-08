@@ -8,6 +8,10 @@
 
 ### 最新正式 Node 集成检查点
 
+授权后更新：用户已明确批准研发整合和限定ECS上传；Pi独立分支正常获批完成整合、回归中，root的regional研发merge仍被AGENTS作用域解释阻止。ECS已建专用目录但scp异常exit137，复核无归档/state、未启动服务，终止原因未知，未重传。以下“等待授权”保留审批前时点，当前待规则澄清及传输根因诊断，不是用户未授权。
+
+**22:00 CST 当前增量**：候选`538c534`真实Qwen必要日期问答团队一次通过，21.440秒、双作者交叠14.828秒、独立下载验收5笔/1550 cents，正常服务实例重开无重复；完整Node组合347/347通过。Pi原P1关闭，但正式模型团队尚未执行。main/origin/main仍为已推送`61a19e9`，候选pendingRemoteSync=true、尚无localMergeSha。研发合并及香港源码包上传分别被安全审批拒绝，等待明确授权，未绕过；香港固定Node安装不等于服务部署完成。B1/B2继续IN_PROGRESS，权限分离、局部修正、完整恢复、第二真实Adapter和正式部署/发行仍待完成。下列检查点保留历史范围，精确事实见[当前记录](node-task-service-status-2026-09-08.md)。
+
 **21:21 CST 当前增量**：main/origin/main=`6a2df5ef4c3fc2952a0975cc34d5d0008bcc9b3f`，产品代码已正常推送、pendingRemoteSync=false。批准前问题/答案/新预览/精确确认已贯通 HTTP→SQLite；完整 Node 组合337/337通过，41 schemas/25示例独立核验，25文件目录包已打包核验。一次消费者示例遗漏 P1 已聚合修复并由同 reviewer 关闭，不记首审全绿。真实日期区间问答业务与 Pi 正式原生工具适配并行；尚未形成新模型验收。B1 七项功能条件已有有界证据，明确尚缺适用 profile 的 Worker/Publisher 权限分离证明；不把 B2/B3 全矩阵加成 B1 前置。香港专用账号 SSH 本次被公钥鉴权拒绝，未执行远端检查。精确 source/merge、包摘要与验证范围见[当前检查点](node-task-service-status-2026-09-08.md)。下列时间记录保留历史范围，不覆盖本段。
 
 **21:02 CST增量**：`0a1deed` 真实Qwen启动阶段HTTP取消一次通过，两个原作者清理、Task/Operation收口、零verifier/交付及正常服务实例重开回执保持已验证；未声称模型生成/工具中取消。安装目录包另已通过本机独立CLI进程create→正常退出→open的零模型smoke，并固化10/10回归。最新合入source/merge、范围和本地同步状态见[当前检查点](node-task-service-status-2026-09-08.md)。B2问答候选在独立审查，Pi RPC候选继续处理原生权限/工具清理接缝；B1/B2未整体关闭。
