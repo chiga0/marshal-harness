@@ -62,17 +62,33 @@ func validateObjective(input DecisionInput, packet domain.ReviewPacket) error {
 		validateCandidateBinding(input.Report, input.Manifest) != nil {
 		return fail
 	}
-	want := map[string]bool{"repository:integrity": true, "diff:observe": true, "scope:changed-paths": true, "format:normalize": true, "command:" + p.Command.ID: true}
+	type gatePolicy struct {
+		required bool
+		status   string
+	}
+	want := map[string]gatePolicy{}
+	for _, id := range []string{"repository:integrity", "diff:observe", "scope:changed-paths", "denial-summary", "command:" + p.Command.ID} {
+		want[id] = gatePolicy{true, "pass"}
+	}
+	want["format:normalize"] = gatePolicy{false, "pass"}
+	// Match the original Verifier's frozen worker.tools policy. Only these
+	// two gates may be skipped, and only when no allowlist was declared.
+	tools := gatePolicy{true, "pass"}
+	if len(input.Task.Worker.Tools) == 0 {
+		tools = gatePolicy{false, "skipped"}
+	}
+	want["tool-audit"], want["tool-allowlist"] = tools, tools
 	for _, d := range input.Task.Deliverables {
 		if !d.Required {
 			return fail
 		}
-		want["artifact:"+d.ID] = true
+		want["artifact:"+d.ID] = gatePolicy{true, "pass"}
 	}
 	seen := map[string]bool{}
 	commandEvidence := []string(nil)
 	for _, g := range input.Report.Gates {
-		if !want[g.ID] || seen[g.ID] || (!g.Required && g.ID != "format:normalize") || g.Status != "pass" {
+		expected, known := want[g.ID]
+		if !known || seen[g.ID] || g.Required != expected.required || g.Status != expected.status {
 			return fail
 		}
 		seen[g.ID] = true

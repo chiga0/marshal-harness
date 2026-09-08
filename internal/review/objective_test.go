@@ -36,8 +36,11 @@ func objectiveFixture(t *testing.T) (reviewFixture, DecisionInput, domain.Review
 	f.report.Observed.DiffDigest = digest
 	f.report.Observed.DiffBytes = int64(len(patch))
 	f.report.Gates = nil
-	for _, id := range []string{"repository:integrity", "diff:observe", "scope:changed-paths", "format:normalize", "artifact:code"} {
+	for _, id := range []string{"repository:integrity", "diff:observe", "scope:changed-paths", "format:normalize", "artifact:code", "denial-summary"} {
 		f.report.Gates = append(f.report.Gates, verification.Gate{ID: id, Category: "other", Required: id != "format:normalize", Status: "pass", Summary: "fixture", Evidence: []string{}})
+	}
+	for _, id := range []string{"tool-audit", "tool-allowlist"} {
+		f.report.Gates = append(f.report.Gates, verification.Gate{ID: id, Category: "policy", Status: "skipped", Summary: "undeclared tools fixture", Evidence: []string{}})
 	}
 	zero := 0
 	now := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
