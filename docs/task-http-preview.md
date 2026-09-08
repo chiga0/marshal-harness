@@ -67,6 +67,12 @@ python3 scripts/task-http-team-drive.py --connection /absolute/connection.json c
 
 driver source `6ae76e800319636e491713979c85f3609864c327` 已独立复跑 11 项合成 HTTP 测试并审查，无 P0/P1：覆盖创建→显式确认→运行/待审→completed→下载→固定业务 oracle，以及冲突、观察超时、重连和不覆盖。`processOverlapEvidence=unavailable`：HTTP 状态不是 OS 活进程证明。真实 B1 验收仍须同候选真实 Worker、独立 Decision/最终 Outcome、执行重叠及取消/重启证据。
 
+### 取消客户端接线（服务端能力启用后适用）
+
+`task-http-demo-client.py --connection FILE cancel --task-id ID --expected-revision N --key KEY --watch-seconds 60` 只在 capabilities 声明 `cancel` 后发出 Task 请求，不提供 Run/PID 杀进程回退。`N` 使用当前 Task 查询的控制 revision，不替换原批准预览的 revision。冲突返回错误，不自动刷新 revision；响应丢失只用原 Task、revision 和 key 重放。`202` 与 `cancelling` 仅表示取消已受理，`cancelled` 才表示 Task 取消收口，二者均不是成功交付。观察窗口结束不改变服务端状态。完整交付 driver 若观察到外部取消的 `cancelled`，以退出码 `4` 结束，不再下载成果。
+
+此接线及合成 HTTP 测试不是服务端取消能力或真实 Worker 清理证明；服务端接线和实机验收完成前，B1 取消出口保持开放。
+
 服务端开发快照 `sha256:f4baf1fe56f2387ae15e5af32cad105bfc207d4cf9d9b21db55926c7269c85f1` 已提前在受限 ECS 运行五包定向 `Test(Task|TeamOutcome)`，全部通过（非 race，非最终 commit）。其 Go 生产 ZIP 序列化器输出 495 bytes，摘要 `sha256:0010360f529e2099d66c21feb5de1996fefd7e7a18f8304609842722c1531ea8`，已由客户端原 `validate_bundle` 成功消费三个文件。此项只证明跨语言格式兼容；文件为合成内容，不是原完整 Git 导出、HTTP 服务端或真实业务验收证据，后继完整调用链仍需验证。
 
 ## 历史验证记录

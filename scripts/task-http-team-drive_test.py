@@ -203,6 +203,17 @@ class DriverTests(unittest.TestCase):
             self.assertEqual(summary["code"], "invalid-delivery-manifest")
             self.assertFalse((root / "complete-evidence-delivery").exists())
 
+    def test_external_cancellation_ends_delivery_observation_without_new_mutation(self):
+        with fixtures.Fake() as fake, tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            preview = self.prepare(fake, root)
+            delivery(fake, ["cancelling", "cancelled"])
+            result, summary = self.complete(fake, root, preview)
+            self.assertEqual(result, 4, summary)
+            self.assertEqual(summary["lastObservedTaskStatus"], "cancelled")
+            self.assertFalse(summary["deliveryComplete"])
+            self.assertFalse(any(c["path"].endswith(("/cancel", "/artifact")) for c in fake.calls))
+
     def test_existing_download_is_not_overwritten_on_replayed_confirmation(self):
         with fixtures.Fake() as fake, tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

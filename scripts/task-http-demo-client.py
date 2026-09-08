@@ -4,13 +4,15 @@
 create --submission FILE --key KEY --preview-out NEW_FILE
 approve --preview FILE --confirm-preview-digest sha256:... --key KEY
 inspect --task-id ID [--watch-seconds 60]
+cancel --task-id ID --expected-revision N --key KEY [--watch-seconds 60]
 download --task-id ID --output-dir NEW_DIR [--run-oracle]
 
 各命令均需 --connection FILE（服务端生成的 0600 连接文件）。批准必须
 先人工查看预览文件，再原样提供其摘要；客户端不是验收器或权威状态源。
 download 只接受 completed Task 的固定订单报价 bundle；--run-oracle 才执行
 本仓库固定验收器（可信代码、本机普通用户，不是恶意代码沙箱）。仅下载
-不等于业务成功，消费结果不回写 Core；取消仍未支持。
+不等于业务成功，消费结果不回写 Core。cancel 仅在服务声明支持后发送；
+202/cancelling 仅表示受理，cancelled 才表示 Task 收口，不表示所有节点曾启动。
 """
 
 import argparse
@@ -44,9 +46,10 @@ ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 PENDING = ["cancel", "automatic-decision", "artifact-download"]
 STATUSES = {"awaiting-confirmation", "confirmation-expired", "approved",
-            "running", "blocked", "review-pending", "verified-awaiting-delivery", "completed"}
+            "running", "blocked", "review-pending", "verified-awaiting-delivery", "completed",
+            "cancelling", "cancelled"}
 STOPS = {"awaiting-confirmation", "confirmation-expired", "blocked",
-         "review-pending", "verified-awaiting-delivery", "completed"}
+         "review-pending", "verified-awaiting-delivery", "completed", "cancelled"}
 
 
 class ClientError(Exception):
@@ -238,8 +241,27 @@ class Client:
                 "factDigest": manifest["factDigest"], "fileCount": len(files),
                 "businessOracle": "passed" if run_oracle else "not-run",
                 "deliveryComplete": run_oracle, "coreStateMutated": False,
-                "profile": "trusted-order-quote-consumer/v1", "pending": ["cancel"],
+                "profile": "trusted-order-quote-consumer/v1", "pending": self.pending,
                 "productionReleaseProven": False}
+
+    def cancel(self, task_id, expected_revision, key):
+        if (not valid_id(task_id) or type(expected_revision) is not int
+                or not 0 < expected_revision <= (1 << 63) - 1):
+            raise ClientError("invalid-cancellation-request")
+        if "cancel" in self.pending:
+            raise ClientError("task-cancellation-not-supported")
+        # No fresh revision substitution and no PID/Run-level fallback.
+        result = self.request("POST", "/v1/tasks/" + task_id + "/cancel",
+                              {"expectedRevision": expected_revision}, key)
+        if (preview_identity(result) != task_id
+                or not isinstance(result.get("status"), str)
+                or result.get("status") not in {"cancelling", "cancelled"}
+                or result.get("cancellationRequested") is not True):
+            raise ClientError("invalid-cancellation-response")
+        return {"event": "cancellation-response-received", "taskId": task_id,
+                "status": result["status"], "taskCancellationRequested": True,
+                "taskCancellationComplete": result["status"] == "cancelled",
+                "deliveryComplete": False, "pending": self.pending}
 
     def observe(self, task_id, seconds=0, interval=2):
         if not valid_id(task_id):
@@ -264,6 +286,7 @@ class Client:
                            "edgeCount": len(edges), "atomicSnapshot": False,
                            "elapsedSeconds": round(time.monotonic() - started, 3),
                            "deliveryComplete": False,
+                           "taskCancellationComplete": task["status"] == "cancelled",
                            "pending": self.pending + (["business-consumption"] if task["status"] == "completed" else [])}
                 # Return per-worker state/role only from validated enums; never the nested Run or work.
                 summary["workers"] = [safe_worker(w) for w in worker_list]
@@ -538,12 +561,16 @@ def main(argv=None):
     approve.add_argument("--key", required=True)
     inspect = commands.add_parser("inspect")
     inspect.add_argument("--task-id", required=True)
+    cancel = commands.add_parser("cancel")
+    cancel.add_argument("--task-id", required=True)
+    cancel.add_argument("--expected-revision", type=int, required=True)
+    cancel.add_argument("--key", required=True)
     download = commands.add_parser("download")
     download.add_argument("--task-id", required=True)
     download.add_argument("--output-dir", required=True)
     download.add_argument("--run-oracle", action="store_true",
                           help="在新目录运行固定业务验收器；仅适用于可信代码，并非沙箱")
-    for command in (approve, inspect):
+    for command in (approve, inspect, cancel):
         command.add_argument("--watch-seconds", type=int, default=0, choices=range(601), metavar="0..600")
     args = parser.parse_args(argv)
     started = time.monotonic()
@@ -563,14 +590,17 @@ def main(argv=None):
             result["elapsedSeconds"] = round(time.monotonic() - started, 3)
             emit(result)
             return 0
-        if args.command == "create":
+        if args.command == "cancel":
+            emit(client.cancel(args.task_id, args.expected_revision, args.key))
+            task_id, seconds = args.task_id, args.watch_seconds
+        elif args.command == "create":
             task = client.create(private_json(args.submission, 32 << 10), args.key)
             task_id = preview_identity(task)
             save_preview(args.preview_out, task)
             emit({"event": "private-preview-saved", "taskId": task_id,
                   "revision": task["revision"], "previewDigest": task["previewDigest"],
                   "approvalRequested": False, "deliveryComplete": False,
-                  "elapsedSeconds": round(time.monotonic() - started, 3), "pending": PENDING})
+                  "elapsedSeconds": round(time.monotonic() - started, 3), "pending": client.pending})
             seconds = 0
         elif args.command == "approve":
             preview = private_json(args.preview)
@@ -579,7 +609,7 @@ def main(argv=None):
             if preview_identity(result) != task_id:
                 raise ClientError("invalid-task-projection")
             emit({"event": "approval-response-received", "taskId": task_id,
-                  "deliveryComplete": False, "pending": PENDING})
+                  "deliveryComplete": False, "pending": client.pending})
             seconds = args.watch_seconds
         else:
             task_id, seconds = args.task_id, args.watch_seconds
@@ -591,12 +621,25 @@ def main(argv=None):
                 return 4
         return 0  # Successful client operation, explicitly NOT a delivery verdict.
     except ClientError as exc:
-        emit({"event": "client-error", "code": str(exc), "deliveryComplete": False,
-              "pending": PENDING, "elapsedSeconds": round(time.monotonic() - started, 3)})
+        error = {"event": "client-error", "code": str(exc), "deliveryComplete": False,
+                 "pending": client.pending if client is not None else PENDING,
+                 "elapsedSeconds": round(time.monotonic() - started, 3)}
+        if args.command == "cancel" and valid_id(args.task_id):
+            error["taskId"] = args.task_id
+            if isinstance(exc, TransportError):
+                error.update(operationMayHaveCommitted=True,
+                             recovery="retry-original-cancel-key-and-revision")
+        emit(error)
         return 2
     except KeyboardInterrupt:
-        emit({"event": "observation-interrupted", "workerCancellationRequested": False,
-              "deliveryComplete": False, "pending": PENDING})
+        interrupted = {"event": "observation-interrupted", "deliveryComplete": False,
+                       "pending": client.pending if client is not None else PENDING}
+        if args.command == "cancel" and valid_id(args.task_id):
+            interrupted.update(taskId=args.task_id, taskCancellationStatus="unknown",
+                               recovery="inspect-original-task-or-retry-original-cancel-key-and-revision")
+        else:
+            interrupted["workerCancellationRequested"] = False
+        emit(interrupted)
         return 130
 
 

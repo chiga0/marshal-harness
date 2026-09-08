@@ -151,7 +151,7 @@ def run(args, evidence, summary):
                 break
             status = item["status"]
             summary["lastObservedTaskStatus"] = status
-            if status in {"blocked", "confirmation-expired"}:
+            if status in {"blocked", "confirmation-expired", "cancelled"}:
                 summary["result"] = "task-not-delivered"
                 return 4
             if status == "completed":
