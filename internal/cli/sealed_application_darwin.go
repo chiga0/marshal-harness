@@ -75,6 +75,7 @@ type sealedRepositoryApplication struct {
 	teamCollectCursor   string
 	teamVerifyCursor    string
 	teamReviewCursor    string
+	taskCancelCursor    string
 }
 
 var _ application.PublicApplicationPort = (*sealedRepositoryApplication)(nil)

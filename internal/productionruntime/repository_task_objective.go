@@ -26,6 +26,9 @@ func (session *RepositorySession) WithCurrentTaskObjective(ctx context.Context, 
 	}
 	defer borrow.Close()
 	return (repositoryApprovedTeamVerifier{session: session}).WithCurrentApprovedTeam(ctx, session.acquisition, resultingress.TeamPlanApproval{}, func() error {
+		if err := session.ingress.RequireTaskRunNotStopped(session.acquisition.Scope.AuthorityNamespaceID, runID); err != nil {
+			return taskError(err)
+		}
 		plans, err := session.ingress.ListTeamPlans(session.acquisition.Scope)
 		if err != nil {
 			return err

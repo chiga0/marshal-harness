@@ -66,6 +66,9 @@ func (session *RepositorySession) withAcceptedTeamInputsUnderOwner(ctx context.C
 	fail := func() error { return application.NewError(operation, application.ReasonAuthorityConflict) }
 	var result []AcceptedTeamInput
 	resultErr = func() (readErr error) {
+		if err := session.ingress.RequireTaskNotStopped(session.acquisition.Scope, goalID); err != nil {
+			return taskError(err)
+		}
 		plan, found, err := session.ingress.ReadTeamPlan(session.acquisition.Scope, goalID)
 		if err != nil {
 			return err
@@ -138,6 +141,9 @@ func (session *RepositorySession) withAcceptedTeamInputsUnderOwner(ctx context.C
 				return err
 			}
 			result = append(result, value)
+		}
+		if err := session.ingress.RequireTaskNotStopped(session.acquisition.Scope, goalID); err != nil {
+			return taskError(err)
 		}
 		ready = true
 		return consume(result)

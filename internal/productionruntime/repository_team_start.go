@@ -37,6 +37,9 @@ func (session *RepositorySession) RequireInitialTeamRunPlan(ctx context.Context,
 			return err
 		}
 		if member {
+			if err := session.ingress.RequireTaskNotStopped(session.acquisition.Scope, obligation.Creation.GoalID); err != nil {
+				return err
+			}
 			if _, halted, err := session.ingress.ReadTeamPlanHalt(session.acquisition.Scope, obligation.Creation.GoalID); err != nil {
 				return err
 			} else if halted {

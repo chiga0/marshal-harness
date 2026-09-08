@@ -145,6 +145,7 @@ fixed-server-t1-check:
 	/usr/bin/python3 -I -B scripts/task-http-demo-client_test.py
 	/usr/bin/python3 -I -B scripts/task-http-team-drive_test.py
 	/usr/bin/python3 -I -B scripts/task-worker-overlap_test.py
+	/usr/bin/python3 -I -B scripts/task-worker-overlap-live_test.py
 
 # Local convenience only. CI release authority invokes the fixed Python checker
 # before any candidate Make/script execution and does not trust this target.

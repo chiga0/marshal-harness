@@ -68,6 +68,13 @@ func (session *RepositorySession) nextInitialTeamProgress(ctx context.Context, a
 		var candidates []InitialTeamProgress
 		seen := map[string]bool{}
 		for _, plan := range plans {
+			stop, _, _, e := session.ingress.ReadTaskCancellation(session.acquisition.Scope, plan.Revision.GoalId)
+			if e != nil {
+				return e
+			}
+			if stop.FactDigest != "" && !rejectBusy {
+				continue
+			}
 			if phase == domain.StateReviewPending {
 				draft, found, err := session.ingress.ReadTaskDraft(session.acquisition.Scope, plan.Revision.GoalId)
 				if err != nil {
@@ -161,6 +168,13 @@ func (session *RepositorySession) TeamProgressAllowed(ctx context.Context, selec
 			if node.NodeID == selection.NodeID && node.RunID == selection.RunID && node.TaskID == selection.Run.TaskID && selection.RunID == selection.Run.RunID {
 				_, halted, err := session.ingress.ReadTeamPlanHalt(session.acquisition.Scope, selection.GoalID)
 				allowed = err == nil && !halted
+				if err == nil {
+					err = session.ingress.RequireTaskNotStopped(session.acquisition.Scope, selection.GoalID)
+				}
+				if errors.Is(err, resultingress.ErrTaskStopped) {
+					allowed = false
+					return nil
+				}
 				return err
 			}
 		}

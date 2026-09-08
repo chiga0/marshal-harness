@@ -15,7 +15,7 @@
 
 模板仅有 `order-quote/v1`：两个作者分别实现报价 API/客户端，随后集成。自由文本只补充固定契约，预览展示实际 work、scope、oracle 摘要和总限额；这不是任意需求的自动规划器。`context.text` 不解释为宿主路径或权限。模板是 operator 启动配置，HTTP 不接收 Policy、执行程序、环境或 authority 对象。
 
-原 `8543878` 入口中的 Task `cancel`、自动独立 Decision、完整成果下载仍为 pending。后继核心组合 `4564dfe` 已接自动客观独立 Decision 与完整成果下载，原 Task/旧 Team 的适用边界仍精确区分；固定路径五组确定性回归通过，完整 CI 与真实 HTTP Worker 验收尚待完成。使用时以实际 server 的 capabilities 与候选身份为准，不把源码接线当本机旧安装已升级。Task cancel 后端仍在独立实施；B1 的真实自主交付与取消退出条件保持开放。
+自动客观独立 Decision 与完整成果下载已随 PR #275 全绿后合入功能分支 `a2f41c9`，不是 main 或正式发布。取消组合 PR #276 的 `272aa4c` CI 六项通过、macOS quality 失败：输出超限客户端负例的 150ms 预算先触发解释器启动超时。后继只分离各负例预算，原运行时限制不变；本机 37 项回归及独立审查通过，完整 CI 仍待验证。使用时以实际 server 的 capabilities 与候选身份为准，不把源码接线当本机旧安装已升级。Pi/Qwen 已由用户确认可用；当前实机阻碍是 AMFI 拒绝固定 Marshal 启动。B1 的真实自主交付与取消退出条件保持开放。
 
 ## 启动与访问
 
@@ -25,7 +25,7 @@
 marshal control-plane serve --task-http-address 127.0.0.1:0 --task-template /absolute/operator/team.json
 ```
 
-`team.json` 来自现有 `scripts/fixed-server-team-inputs.py` 的完整 operator 输入。它是模板，不是批准：旧 requestId/deadline 不授予新 Task 权限，Core 为新 Task 绑定 ID 并冻结 30 分钟确认期。该 flag 启用原 resident Collect/Verify，但不增加自动 Decision。模型额度不足时不启动真实业务，先运行确定性测试。
+`team.json` 来自现有 `scripts/fixed-server-team-inputs.py` 的完整 operator 输入。它是模板，不是批准：旧 requestId/deadline 不授予新 Task 权限，Core 为新 Task 绑定 ID 并冻结 30 分钟确认期。该 flag 启用原 resident Collect/Verify；后继 `4564dfe` 的客观独立 Decision 只适用于经原 Task HTTP 批准的固定模板，旧 Team 不自动继承。模型额度不足时不启动真实业务，先运行确定性测试。
 
 ready 只输出 URL、profile、连接文件路径；随机 token 仅写入当前 owner control 目录内新建的 0600 文件，不输出日志、不交给 Worker。普通客户端读取该文件，在 HTTP `Authorization: Bearer …` 中发送 token；不要将 token 放 URL、命令参数或日志。仅允许显式 `127.0.0.1`，认证及 Host/Origin 检查先于应用调用。连接文件被替换或 owner 漂移即拒绝。这不构成对同 UID 恶意程序的隔离。
 
@@ -51,6 +51,21 @@ ready 只输出 URL、profile、连接文件路径；随机 token 仅写入当�
 
 ## 两阶段 HTTP 演示驱动
 
+### 实机重叠观察（与 complete 同时运行）
+
+当前候选新增 `scripts/task-worker-overlap-live.py`，用于在 Worker 仍活跃时自动提取原始记录，避免事后手工补造进程重叠。operator 预建独立 0700 证据目录，显式提供当前私有数据根中的 ledger 与 runs：
+
+```sh
+python3 -I -B scripts/task-worker-overlap-live.py \
+  --ledger /absolute/state/runtime-v1/result-ingress/result-ingress.jsonl \
+  --runs-root /absolute/state/runs --task-id ORIGINAL_TASK_ID \
+  --output-dir /absolute/private-evidence --timeout-seconds 60
+```
+
+在确认 Task 后立即并行启动观察与 `complete`。工具只读原文件，从原计划派生双 Worker 身份，记录齐全即采样；不会启动、重试、停止或修改 Task。超时为 unavailable，不能在 Worker 退出后补称重叠。snapshot 文件含未脱敏原 prompt/context，保持本机私有，不上传到 PR/公开日志；report/stdout 只含脱敏观察。它证明绑定进程的生命周期重叠，不证明 CPU 同时忙，不代替 Core 接纳或完整业务验收。
+
+### 创建和确认
+
 `scripts/task-http-team-drive.py` 复用上述客户端，只连接已启动服务，不启动 Marshal/Worker、不调用逐 Run CLI、不读取内部 RB1，也不代签 Decision。先准备并人工查看原预览，再明确确认该摘要：
 
 ```sh
@@ -75,6 +90,8 @@ driver source `6ae76e800319636e491713979c85f3609864c327` 已独立复跑 11 项�
 
 ### 2026-09-08 流水线集成状态
 
+- PR #276 的 `sourceHead=97c6a9b873340108fb192cd19348f826ac8bd1b4` 在 CI `34192548213` 中六项通过，macOS Quality 失败，尚未远端合并。唯一明确断言失败为 `TestRepositoryTaskCancelDeliveryOutcomeWinsDuringExport`：60.26 秒时冷下载返回 `production-owner-not-current`，不是包级 timeout 或死锁。独立审查发现测试在三次真实验收准备之前启动一分钟 context，随后并发导出与冷重开持续复用；owner guard 将过期 context 映射为上述错误。日志未打印 `ctx.Err()`，保留其他 owner 拒绝原因的可能性，不将推断写成已证实的生产故障。
+- 最小纠正只分离测试准备、并发场景和冷查询的计时；场景及冷查询各一分钟，准备仍受原包级预算约束。产品 owner、取消门禁、原三次独立验收、并发 rendezvous 与 goroutine 回收不改。独立复核无 P0/P1；修复工作区固定 Mac 测试连续两次通过（14.48 秒、15.22 秒），同路径重新编译的 race 定向也通过（37.72 秒），vet/staticcheck/diff-check/增量 secret scan 通过；新提交完整 CI 仍待运行，未因旧 Linux 检查绿而跳过 macOS。
 - PR #273 的 sourceHead `4d7355da154d387575ad87bb036d045af3771597` 全部检查通过后，已实际远端合并到 `feat/team-resident-progress`，remoteMergeSha `aef06e587e70ddd259644f557e8caff1297b8723`；`pendingRemoteSync=false`。这不是合入 main 或正式发布。
 - 取消消费者 sourceHead `ec44741e9c27741fae475ec2ebcf9de3f0f55822` 经独立审查，无 P0/P1；37 项客户端及 12 项完整 driver 合成 HTTP 测试通过。localMergeSha `f612986e55965e76770099378298ee81b4b373f6`，本地组合时 `pendingRemoteSync=true`。响应类型与中断后取消未知状态已处理，不因 Ctrl-C 宣称取消未发生。
 - 只读重叠观测 sourceHead `cdc9b54f605f1fabbb038905ddbae4855da2f61d` 经独立审查，两套本机 Python 各 20 项测试、secret scan、diff-check 与 merge-tree 通过；localMergeSha `b758d79e65e71ce0c690b7d0e0d76724252d066d`，本地组合时 `pendingRemoteSync=true`。它使用系统 libproc，不生成临时可执行文件；原事实快照须由 operator 私有提取，输出不授予 Core authority。自身探测不证明真实 Provider 并行，也不证明 CPU 同时工作。

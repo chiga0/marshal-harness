@@ -29,6 +29,9 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 	}
 	var lease dispatch.DispatchLease
+	if err := l.ingress.RequireTaskRunNotStopped(acquisition.Scope.AuthorityNamespaceID, runID); err != nil {
+		return CollectedRunResult{}, taskError(err)
+	}
 	var capability authority.DispatchResultCapability
 	var businessDeadline resultingress.BusinessDeadlineWitness
 	if attempt.CommittedResultFactDigest == "" {

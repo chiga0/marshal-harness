@@ -4,9 +4,11 @@
 
 ## 当前唯一状态与关键路径（2026-09-08）
 
+最新验证：PR #276 的 `272aa4c` 在 CI `34195113168` 六项通过、macOS quality 失败。输出超限客户端负例把解释器启动也限制在 150ms，先返回 timeout；后继只给输出/JSON 负例使用原默认 30 秒，超时负例仍 150ms，运行时和精确错误断言不变。独立审查 P0/P1=0、本机 37 项回归通过，完整候选 CI 待重验；保留此前 context 夹具及本次失败成本。PR #276 未合并，B1/B2 不升级。Pi/Qwen 已由用户确认可用；Mac 当前实机阻塞是 AMFI 拒绝固定 Marshal 启动，不是缺少 Agent 配置。
+
 本节是当前进度依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。当前产品要求统一为[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)及 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（2026-09-08 Accepted）；多轮审计见[设计复核](audit-agent-team-service-design-2026-09-07.md)。设计方向、ADR 接纳、runtime enable 与 release 按[合同适用性](design-contract-map.md)分别判断；接受合同不改变下表能力成熟度。
 
-- main 最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；远端集成分支 `feat/team-resident-progress` 为 `aef06e587e70ddd259644f557e8caff1297b8723`。最新未发布组合在 `feat/task-b1-core`，其来源、验证与 localMergeSha 见下方 2026-09-08 候选记录。早期 B2/设计分支、旧 CI 与 canary 只保留精确证据，不能挪给新候选；分支合并不等于 main 合并或 stable。
+- main 最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；远端集成分支 `feat/team-resident-progress` 为 `a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1`（PR #275 全部检查通过后合并）。取消组合在独立 `feat/task-cancel-integration` 验证。早期 B2/设计分支、旧 CI 与 canary 只保留精确证据，不能挪给新候选；分支合并不等于 main 合并或 stable。
 - 798ea39 的精确 [CI 34095940005](https://github.com/chiga0/marshal-harness/actions/runs/34095940005) 五项全绿；先前 34094155668 的结果计数阻断由 [ADR 0084](adr/0084-pi-typed-terminal-result-framing.md) 候选修正。后继 max 实机 34097645547、一次显式 flash 替代 34098369837 均未完成团队；后者 service 通过真实 Collect/Verify 的 33 项检查并形成 ReviewPacket，client 在模型终态失败。没有本轮独立 Decision/ACCEPTED、第三节点或 GoalOutcome。停止模型轮换，后继聚合终态分类与任务上下文/输出收敛，不删失败分母。演示范围和实际证据见 [PoC 交付页](poc-agent-team-delivery.md)。
 - 最终目标不改为“完成更多协议/PR”：交付 fixed server 的完整业务任务与受限团队，并用至少三个代表任务族的重复配对实验，与相同冻结契约、oracle、模型、工具及资源的强 Lead＋SubAgents 比较。源代码返工、失败 CI、失败 Attempt、人工等待全部计入；目前没有效率优势证据。
 - 最新实施候选 `dd8e8ec` 的完整 CI `34156121695` 五项与 Darwin 定向 `34155305960` 的 36 项通过；真实团队 `34157213736` 证明已收集结果→Stop→Close 收口、零重复 Collect 及 cleanup released。但 client 的 Provider `length` 仍触发团队 halt，service 虽已接纳结果进入 VERIFYING，没有 ReviewPacket/Decision/集成/下载。当前补驱动的跨节点失败观测与超时诊断，不自动解除 halt，不原样付费重跑。`a5418f4` 的历史单节点 Verify pass 不替代本候选团队出口；B1/B2/B3 状态不升级，详细证据见[审计报告](audit-report.md)。
@@ -22,7 +24,11 @@
 | B2 本地 API 可用版 | `IN_PROGRESS` | 候选已接独立 Decision、上游组合、第三节点及 completed GoalOutcome 查询，完整实机未过；原 B2 实现与失败证据保留，不因重排改成完成 | 简启动、SQLite、零 Git/多仓库、持久 AskUser/答案/确认/验收、详情/审计、同版本恢复与局部 rework/reuse；第二真实 Provider 验证解耦。第三品牌可单列待支持，不阻塞核心 API-STABLE |
 | B3 长期运行与正式支持 | `PLANNED` | 历史故障/恢复组件与 RC1 prerelease 证据保留，不升级成熟度 | B2 同路径故障矩阵、长历史/升级恢复、managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
-下一步顺序：完成核心交付组合候选的完整 CI；并行闭合 Task cancel 后端与消费端，验证取消先赢时阻止 Start/验收/集成/制品提交，确认 cleanup 前不假结案。模型配置与额度可用后，以同一候选执行真实 HTTP 双 Worker 订单团队并下载消费、观测所属进程重叠及取消/重启，不把无模型 fixture 当业务完成。B2 关键问答的可复用接缝已预设计，不提前修改当前共享事务；SQLite、零 Git/多仓库、简启动、问答和第二 Adapter 在 B2。U1 旧历史导入不阻新任务，B3 保留正式故障/平台/发布门禁。没有 Workspace/安装身份平台/三品牌矩阵前置，也不绕过旧 activation 或伪造 Git。结构性失败无事实变化不重复付费，历史失败分母不清零。尚未完成团队交付或正式发布。
+本轮流水状态：PR #274 sourceHead=`175cca43cd3d1ac5abb54c5e56c245b5116a76e5`，remoteMergeSha=`019cc08228126a6304725f5a36990b8981c42567`，tree 一致，pendingRemoteSync=false。PR #275 sourceHead=`5c13033e3610371e538e3a067266a83c8287d308` 已推送，CI `34190493630` 在途，尚未合并；此前段落的“待提交”已由此记录取代。取消 sourceHead=`a59a1382989235ef9888ad2436ebe8f9f269b5f0` 的本地组合 merge=`66cf5d10d0b51121cf43aed31536d13a5eea36a6`，接线 `767aaee`、测试资源修正 `eea6e01` 均尚未推送。精确 `eea6e01` 的 draft/approved/READY 冷恢复、缺 cleanup 不假结案、原完整交付链（14.73 秒）通过；reservation 两个夹具因创建目录改变 held root 身份失败，整组测试仍为失败。独立审查发现取消误触发全局调度停止、坏 Task 饿死取消队列及 endpoint 测试借用泄漏，共三项 P1，后者已修，前两项聚合修正中。实时原始 facts 提取与取消/交付组合回归在独立 worktree 并行；不让 CI 等待占住开发槽。
+
+后继验证（取代上段对应在途状态）：PR #275 sourceHead=`5c13033e3610371e538e3a067266a83c8287d308` 的 CI `34190493630` 全绿，remoteMergeSha=`a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1`，tree 一致，pendingRemoteSync=false。取消组合代码 `c7ffc519f4bcee0da1e4e1ddff2bb77210468eb2` 已关闭首轮调度问题及复审发现的终态冻结来源错误；同 reviewer 复审包含合法状态夹具修正 `f1474f47`，无剩余代码 P0/P1。Mac 通过取消 HTTP/冷恢复/公平调度、两类 Outcome 前停止及 Outcome 先赢竞争、原完整交付链；终态六状态来源和事件形状属组件验证，不是实机 cleanup。Linux `d9cdfa8` 的 application/taskhttp/productionruntime race 与 resultingress 取消定向 race 通过，后者整包超时保留；`c7ffc51` 的新 ECS 执行连接失败未启动，不能挪用旧 SHA 结果。实时原始记录 collector `8683c94` 已独立审查，18 项新测试两套 Python 与原 20 项回归通过，并接入既有 CI target。取消组合尚待完整 CI 与真实 Worker 验收。
+
+下一步顺序：提交取消/交付/实时观测的组合 CI，同时准备同一固定候选的实机验收。模型配置与额度可用后，执行真实 HTTP 双 Worker 订单团队并下载消费、观测所属进程重叠及完整 Task→CancelRun→cleanup→disposition、重启；不把无模型 fixture 当业务完成。B2 关键问答的可复用接缝已预设计，不提前修改当前共享事务；SQLite、零 Git/多仓库、简启动、问答和第二 Adapter 在 B2。U1 旧历史导入不阻新任务，B3 保留正式故障/平台/发布门禁。没有 Workspace/安装身份平台/三品牌矩阵前置，也不绕过旧 activation 或伪造 Git。结构性失败无事实变化不重复付费，历史失败分母不清零。尚未完成团队交付或正式发布。
 
 并发边界：B1 先两个 scope 互斥的作者，验收/集成也计容量；现有候选仍只证明两个派发接缝，不把新方案写成已完成实机。开发可并行主应用闭环、业务 oracle/API 客户端、当前阻断的 Adapter；共享事务一个 owner，每个作者独立 worktree，不用旧 Marshal skill。UI 只在核心 API-STABLE 后启动。更多并发须依赖、目录、内存/CPU、Provider 与验收队列均允许；不是所有槽满才叫有效率。
 

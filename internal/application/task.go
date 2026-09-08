@@ -60,8 +60,13 @@ type ApproveTaskRequest struct {
 	PreviewDigest    string `json:"previewDigest"`
 }
 type CancelTaskRequest struct {
-	TaskID         string `json:"-"`
-	IdempotencyKey string `json:"-"`
+	TaskID           string `json:"-"`
+	IdempotencyKey   string `json:"-"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+}
+
+type TaskCancelPort interface {
+	CancelTask(context.Context, CancelTaskRequest) (TaskProjection, error)
 }
 type TaskWorkerProjection struct {
 	ID     string         `json:"id"`

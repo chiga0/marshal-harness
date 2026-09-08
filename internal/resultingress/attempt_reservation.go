@@ -212,6 +212,9 @@ func (s *DurableStore) ReserveAttempt(ctx context.Context, verifier CurrentReady
 		projection := newAuthorityProjection()
 		return s.transact(projection, func() error {
 			key := reservationKey(ready)
+			if err := requireTaskRunNotStopped(projection, ready.AuthorityNamespaceID, ready.RunID); err != nil {
+				return err
+			}
 			if digest, found := projection.reservationKeys[key]; found {
 				state, ok := projection.reservations[digest]
 				if !ok || state.Reservation.Ready != ready || state.Validate() != nil {
@@ -283,6 +286,9 @@ func (s *DurableStore) OpenReservedAttempt(ctx context.Context, verifier Current
 				return nil
 			}
 			transition := AttemptTransition{Kind: AttemptTransitionOpened, Identity: identity}
+			if err := requireTaskRunNotStopped(projection, identity.AuthorityNamespaceID, identity.RunID); err != nil {
+				return err
+			}
 			fact := &attemptAuthorityFact{ProtocolRevision: attemptAuthorityProtocolV2, SchemaRevision: attemptOpenedSchemaV2, FactType: string(AttemptTransitionOpened), Sequence: s.nextSequence, AttemptKey: key, Revision: 1, Transition: transition, ReservationFactDigest: reservationFactDigest, AttemptOrdinal: reservation.Reservation.AttemptOrdinal}
 			if err := prepareAttemptFact(AttemptAuthorityState{}, false, fact, false); err != nil {
 				return err
@@ -632,6 +638,9 @@ func applyAttemptReservationFactValue(fact attemptReservationFact, in *Ingress) 
 	key := fact.Reservation.ReservationKeyDigest
 	switch fact.FactType {
 	case attemptReservedFactType:
+		if err := requireTaskRunNotStopped(in, fact.Reservation.Ready.AuthorityNamespaceID, fact.Reservation.Ready.RunID); err != nil {
+			return err
+		}
 		if fact.ReservationFactDigest != "" || fact.RunSuccessorSequence != 0 || fact.RunSuccessorHead != "" || fact.ZeroSideEffectProof != nil || fact.ZeroSideEffectProofDigest != "" || fact.SealedSuccessorBindingDigest != "" {
 			return ErrAttemptReservationConflict
 		}

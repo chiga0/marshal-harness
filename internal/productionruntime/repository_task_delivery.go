@@ -101,6 +101,11 @@ func (session *RepositorySession) NextTaskDelivery(ctx context.Context) (taskID,
 			if plan.Approval.TaskDraftDigest == "" {
 				continue
 			}
+			if e := session.ingress.RequireTaskNotStopped(session.acquisition.Scope, plan.Revision.GoalId); errors.Is(e, resultingress.ErrTaskStopped) {
+				continue
+			} else if e != nil {
+				return e
+			}
 			outcome, done, e := session.ingress.ReadTeamOutcome(session.acquisition.Scope, plan.Revision.GoalId)
 			if e != nil {
 				return e
@@ -126,6 +131,7 @@ func (session *RepositorySession) BuildTaskDelivery(ctx context.Context, taskID 
 	// Keep storage/readiness sentinels behind the application boundary. The
 	// resident consumer depends on typed application outcomes, not RB1.
 	defer func() {
+		resultErr = taskError(resultErr)
 		if errors.Is(resultErr, resultingress.ErrTeamOutcomeNotReady) {
 			resultErr = application.NewError("task-delivery", application.ReasonTaskArtifactNotReady)
 		} else if errors.Is(resultErr, runstore.ErrLeaseHeld) {
@@ -160,6 +166,9 @@ func (session *RepositorySession) BuildTaskDelivery(ctx context.Context, taskID 
 	var finalPatch []byte
 	verifier := repositoryCompletedTeamVerifier{session: session}
 	err = verifier.withCurrentCompletedTeamInputs(ctx, session.acquisition, plan.Approval, taskID, plan.FactDigest, func(current resultingress.TeamDeliveryOutcome, upstreams []AcceptedTeamInput, final AcceptedTeamInput, frozen resultingress.TeamRunCreationState, _ *runstore.Lease) error {
+		if e := session.ingress.RequireTaskNotStopped(session.acquisition.Scope, taskID); e != nil {
+			return e
+		}
 		var e error
 		observed, e = currentDeliveryOutcome(session, current)
 		if e != nil {
@@ -200,6 +209,9 @@ type repositoryTaskDeliveryVerifier struct {
 
 func (v repositoryTaskDeliveryVerifier) WithCurrentTaskDelivery(ctx context.Context, owner resultingress.ControlOwnerAcquisition, taskID string, consume func(goal.TaskDelivery) error) error {
 	return (repositoryCompletedTeamVerifier{session: v.session}).withCurrentCompletedTeamInputs(ctx, owner, v.plan.Approval, taskID, v.plan.FactDigest, func(current resultingress.TeamDeliveryOutcome, _ []AcceptedTeamInput, _ AcceptedTeamInput, _ resultingress.TeamRunCreationState, lease *runstore.Lease) error {
+		if err := v.session.ingress.RequireTaskNotStopped(owner.Scope, taskID); err != nil {
+			return err
+		}
 		stored, err := currentDeliveryOutcome(v.session, current)
 		if err != nil {
 			return err
@@ -221,6 +233,9 @@ func (v repositoryTaskDeliveryVerifier) WithCurrentTaskDelivery(ctx context.Cont
 			return application.NewError("task-delivery", application.ReasonAuthorityConflict)
 		}
 		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := v.session.ingress.RequireTaskNotStopped(owner.Scope, taskID); err != nil {
 			return err
 		}
 		return consume(v.manifest)
