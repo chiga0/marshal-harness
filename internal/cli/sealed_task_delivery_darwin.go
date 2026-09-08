@@ -30,7 +30,7 @@ func (a *sealedRepositoryApplication) advanceTaskDelivery(ctx context.Context, r
 			admitted()
 		}
 		_, e := a.session.BuildTaskDelivery(step, taskID)
-		if application.HasReason(e, application.ReasonTaskArtifactNotReady) || application.HasReason(e, application.ReasonCapacityBusy) {
+		if application.HasReason(e, application.ReasonTaskArtifactNotReady) || application.HasReason(e, application.ReasonCapacityBusy) || application.HasReason(e, application.ReasonRunStopped) {
 			return nil
 		}
 		if e != nil && step.Err() == nil {
