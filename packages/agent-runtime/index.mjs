@@ -59,22 +59,22 @@ async function launchManaged({executable, args, cwd, env, deadline, onUpdate, on
   catch { throw new RuntimeError('runtime_invalid_options'); }
   if (commandInput !== null && commandInput.length > options.limits.inputBytes) throw new RuntimeError('runtime_invalid_input');
   const executionId = randomUUID(), ready = deferred(), agentExit = deferred(), done = deferred();
-  let guard, client, started, actualExit, receipt, cleanupError = false, stopping = false, completed = false, bootTimer, deadlineTimer, cleanupTimer;
+  let guard, client, started, actualExit, receipt, guardExit, cleanupUntil, cleanupError = false, stopping = false, completed = false, bootTimer, deadlineTimer, cleanupTimer, groupTimer;
   let reason = 'launch_failed', resolvedReady = false;
   const counts = { inputBytes: 0, outputBytes: 0, stderrBytes: 0 };
   const commandChunks = []; let commandBytes = 0;
   const scope = 'inherited-process-group';
   const closeClient = () => { try { client?.close(); } catch {} }; // A trusted protocol bug cannot prevent owned cleanup.
 
-  function complete(code, signal, observed = true) {
+  function complete(code, signal, observed = true, groupEmpty = false) {
     if (completed) return;
-    completed = true; clearTimeout(bootTimer); clearTimeout(deadlineTimer); clearTimeout(cleanupTimer);
-    // A nonce-bound receipt from this live IPC peer + its SIGKILL exit is the
-    // guard contract's cleanup observation, not a PID recovered from storage.
-    const cleaned = observed && !!receipt && !cleanupError && signal === 'SIGKILL';
+    completed = true; clearTimeout(bootTimer); clearTimeout(deadlineTimer); clearTimeout(cleanupTimer); clearTimeout(groupTimer);
+    // The live peer's cleaning message precedes its final group kill. Its own
+    // SIGKILL exit alone cannot prove surviving descendants were terminated.
+    const cleaned = observed && !!receipt && !cleanupError && signal === 'SIGKILL' && groupEmpty;
     const exit = actualExit ?? { observed: false, code: null, signal: null, at: null };
     const fact = Object.freeze({ executionId, scope, started: started ?? null, agentExit: exit,
-      guardExit: { observed, code, signal, at: new Date().toISOString() }, cleaned,
+      guardExit: guardExit ?? { observed, code, signal, at: new Date().toISOString() }, cleaned,
       reason: cleaned ? receipt.reason : 'cleanup_unconfirmed', ...counts });
     closeClient(); agentExit.resolve(exit); ready.resolve(undefined); done.resolve(fact);
     if (!observed && guard?.exitCode === null && guard?.signalCode === null) {
@@ -82,6 +82,28 @@ async function launchManaged({executable, args, cwd, env, deadline, onUpdate, on
       // leader alone or signal a stale/replayed group number from the parent.
       guard.kill('SIGTERM');
     }
+  }
+  function startCleanupWait() {
+    if (cleanupUntil !== undefined) return;
+    cleanupUntil = performance.now() + CLEANUP_WAIT_MS;
+    cleanupTimer = setTimeout(() => complete(guardExit?.code ?? null, guardExit?.signal ?? null, !!guardExit), CLEANUP_WAIT_MS);
+  }
+  function observeGroupEmpty() {
+    if (completed) return;
+    const finish = empty => complete(guardExit.code, guardExit.signal, true, empty);
+    if (performance.now() >= cleanupUntil) { finish(false); return; }
+    // Read-only veto for THIS original child's group after its observed exit.
+    // Never stop an exited/replayed PID. Reuse/presence/EPERM is not evidence of
+    // emptiness; only ESRCH can close this already identity-bound observation.
+    try { process.kill(-guard.pid, 0); }
+    catch (error) { finish(error?.code === 'ESRCH'); return; }
+    groupTimer = setTimeout(observeGroupEmpty, Math.min(25, Math.max(1, cleanupUntil - performance.now())));
+  }
+  function observeGuardExit(code, signal) {
+    if (completed) return;
+    guardExit = Object.freeze({observed: true, code, signal, at: new Date().toISOString()});
+    if (!receipt || cleanupError || signal !== 'SIGKILL') { complete(code, signal); return; }
+    startCleanupWait(); observeGroupEmpty();
   }
   function control(message) {
     if (!guard?.connected) return false;
@@ -95,7 +117,7 @@ async function launchManaged({executable, args, cwd, env, deadline, onUpdate, on
     stopping = true; reason = cause; clearTimeout(bootTimer);
     closeClient();
     if (!control({ type: 'stop' }) && guard?.exitCode === null && guard?.signalCode === null) guard.kill('SIGTERM');
-    cleanupTimer = setTimeout(() => complete(null, null, false), CLEANUP_WAIT_MS);
+    startCleanupWait();
     return done.promise;
   }
   try {
@@ -106,7 +128,7 @@ async function launchManaged({executable, args, cwd, env, deadline, onUpdate, on
   guard.stdin.on('error', () => requestStop('stream_error'));
   guard.stdout.on('error', () => requestStop('stream_error'));
   guard.on('error', () => { reason = 'guard_spawn_failed'; requestStop(reason); });
-  guard.on('exit', (code, signal) => complete(code, signal));
+  guard.on('exit', observeGuardExit);
   guard.on('disconnect', () => { if (!stopping && !completed) requestStop('guard_disconnected'); });
   guard.on('message', message => {
     if (completed) return;
@@ -136,7 +158,7 @@ async function launchManaged({executable, args, cwd, env, deadline, onUpdate, on
       // The guard is already enforcing its local safety bound. This fact is
       // for the caller to persist, not a second Task authority in this module.
       if (!stopping) { stopping = true; reason = message.reason; closeClient(); }
-      cleanupTimer ??= setTimeout(() => complete(null, null, false), CLEANUP_WAIT_MS);
+      startCleanupWait();
     } else if (message.type === 'cleanup_error') cleanupError = true;
     else if (message.type === 'spawn_failed') { reason = 'agent_spawn_failed'; requestStop(reason); }
     else requestStop('invalid_guard_message');
