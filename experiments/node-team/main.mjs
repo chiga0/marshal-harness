@@ -5,7 +5,7 @@ import http from 'node:http';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { FORMAT, Fault, fail, digest, nativeEnvironment, closedObject, privateRoot, readPrivate, atomicPrivate, id } from './store.mjs';
-import { readBody, response, errorResponse, authorized } from './supervisor.mjs';
+import { createTaskHandler } from './http-handler.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export async function sourceDigest() {
@@ -71,40 +71,14 @@ export async function connectSupervisor(directory, config) {
   catch (err) { throw err instanceof Fault ? err : new Fault('supervisor-needs-intervention', 503); }
 }
 
-function route(method, url) {
-  if (url.includes('?') || url.includes('%') || url.includes('//')) fail('not-found', 404);
-  if (url === '/v1/tasks') {
-    if (method === 'GET') return { operation: 'list' };
-    if (method === 'POST') return { operation: 'create' };
-  }
-  const match = /^\/v1\/tasks\/([a-zA-Z0-9_-]+)(?:\/(approve|cancel|workers|audit|delivery))?$/.exec(url);
-  if (!match || !id(match[1])) fail('not-found', 404);
-  const operation = match[2] ?? 'get';
-  if ((['approve', 'cancel'].includes(operation) ? 'POST' : 'GET') !== method) fail('method-not-allowed', 405);
-  return { operation, taskId: match[1] };
-}
 export async function serve(directory, config) {
   const metadata = await connectSupervisor(directory, config);
-  const token = crypto.randomBytes(32).toString('hex'); let expectedHost;
-  const server = http.createServer(async (req, res) => {
-    try {
-      if (req.headers.host !== expectedHost || req.headers.origin || req.rawHeaders.filter((v, n) => n % 2 === 0 && v.toLowerCase() === 'host').length !== 1) fail('untrusted-request', 403);
-      if (req.method === 'GET' && req.url === '/health') { response(res, 200, { status: 'ok', profile: FORMAT }); return; }
-      if (!authorized(req, token)) fail('unauthorized', 401);
-      const input = route(req.method, req.url);
-      if (req.method === 'POST') {
-        if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? '') || req.headers['content-encoding']) fail('invalid-content-type', 415);
-        const keys = req.rawHeaders.filter((v, n) => n % 2 === 0 && v.toLowerCase() === 'idempotency-key');
-        if (keys.length !== 1 || !id(req.headers['idempotency-key'])) fail('invalid-idempotency-key', 400);
-        input.key = req.headers['idempotency-key']; input.body = await readBody(req, 16384);
-      }
-      const value = await rpc(metadata, input);
-      response(res, input.operation === 'create' ? 201 : ['approve', 'cancel'].includes(input.operation) ? 202 : 200, value);
-    } catch (error) { errorResponse(res, error); }
-  });
+  const token = crypto.randomBytes(32).toString('hex');
+  const server = http.createServer();
   server.requestTimeout = 15000; server.headersTimeout = 5000; server.keepAliveTimeout = 1000; server.maxConnections = 32;
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-  expectedHost = '127.0.0.1:' + server.address().port;
+  const expectedHost = '127.0.0.1:' + server.address().port;
+  server.on('request', createTaskHandler({ application: input => rpc(metadata, input), token, expectedHost }));
   const url = 'http://' + expectedHost, connectionFile = path.join(directory, 'connection-' + crypto.randomUUID() + '.json');
   await atomicPrivate(connectionFile, { url, token, profile: FORMAT });
   const fileIdentity = await fs.lstat(connectionFile);
