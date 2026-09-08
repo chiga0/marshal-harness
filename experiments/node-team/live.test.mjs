@@ -7,6 +7,8 @@ import {join, dirname, isAbsolute} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {once} from 'node:events';
 import {createHash} from 'node:crypto';
+import {verifyFiles} from './business.mjs';
+import {sourceDigest} from './main.mjs';
 
 const executable = process.env.MARSHAL_NODE_LIVE_PI;
 const main = join(dirname(fileURLToPath(import.meta.url)), 'main.mjs');
@@ -22,6 +24,7 @@ test('real local Pi pair: collection, frontend restart and cancellation without 
   let server;
   const fronts = [];
   const summary = {profile: 'node-local-experiment', nativeMarshalInvoked: false,
+    nodeVersion: process.version, provider: 'pi', executable, sourceDigest: await sourceDigest(),
     startedAt: new Date().toISOString(), result: 'incomplete'};
 
   async function start() {
@@ -113,15 +116,18 @@ test('real local Pi pair: collection, frontend restart and cancellation without 
   const terminal = await observe(first.draft.id, task => ['completed', 'failed'].includes(task.status));
   assert.equal(terminal.status, 'completed', 'real pair did not pass independent verification');
   const completedWorkers = (await api(`/v1/tasks/${first.draft.id}/workers`)).workers;
-  const overlapMs = Math.min(...completedWorkers.map(w => Date.parse(w.finishedAt))) -
+  const overlapMs = Math.min(...completedWorkers.map(w => Date.parse(w.agentExitedAt))) -
     Math.max(...completedWorkers.map(w => Date.parse(w.startedAt)));
   assert.ok(overlapMs > 0, 'real worker execution intervals must overlap');
   const delivery = await api(`/v1/tasks/${first.draft.id}/delivery`);
   assert.deepEqual(delivery.files.map(f => f.name).sort(), ['normalize.mjs', 'report.mjs']);
   assert.ok(delivery.checks > 0);
   for (const file of delivery.files) assert.equal(createHash('sha256').update(file.content).digest('hex'), file.sha256);
+  const consumed = await verifyFiles(delivery.files.map(({name, content}) => ({name, content})));
+  assert.equal(consumed.passed, true, 'downloaded files must pass the independent consumer oracle');
   summary.delivery = {taskId: first.draft.id, workers: identity(first.workers), checks: delivery.checks,
-    files: delivery.files.map(({name, sha256}) => ({name, sha256})), overlapMs, frontendRestartRecovered: true};
+    files: delivery.files.map(({name, sha256}) => ({name, sha256})), overlapMs,
+    consumerPassed: consumed.passed, consumerChecks: consumed.checks, frontendRestartRecovered: true};
 
   const second = await launch('live-cancel');
   const current = await api(`/v1/tasks/${second.draft.id}`);
