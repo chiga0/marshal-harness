@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createAcpProvider, MAX_OUTPUT_TEXT_BYTES} from './index.mjs';
+import {launchAcp} from '../agent-runtime/index.mjs';
 
 const fixture = fileURLToPath(new URL('./agent.fixture.mjs', import.meta.url));
 const provider = mode => createAcpProvider({id: 'fixture', executable: process.execPath, args: [fixture, mode]});
@@ -72,6 +73,56 @@ test('native tool permission is denied by default and only exact callback option
     const selection = JSON.parse(result.outputText);
     assert.equal(selection.outcome.outcome, allowed ? 'selected' : 'cancelled');
   }
+});
+
+test('custody permission refusal is clean; allow waits for durable scope and failed SQL never sends allow', {timeout: 15000}, async t => {
+  for (const mode of ['deny', 'allow', 'sql-failure']) {
+    const order = [], executionContext = {
+      launch: (options, callbacks) => launchAcp({...options, onUpdate: callbacks.onUpdate, onPermission: callbacks.onPermission}),
+      extraScope(code) { order.push('durable'); assert.equal(code, 'acp_tool_scope_unproven'); if (mode === 'sql-failure') throw Error('fixture rejected transaction'); },
+    };
+    const handle = provider('permission-execute').start(input(t, {executionContext, onPermission: () => {
+      order.push('policy'); assert.deepEqual(order, ['policy']);
+      return {outcome: {outcome: 'selected', optionId: mode === 'deny' ? 'deny' : 'once'}};
+    }}));
+    t.after(() => handle.stop()); const result = await handle.completion; cleaned(result);
+    assert.deepEqual(order, mode === 'deny' ? ['policy'] : ['policy', 'durable']);
+    const reply = result.outputText ? JSON.parse(result.outputText) : null;
+    assert.equal(reply?.outcome?.optionId === 'once', mode === 'allow');
+  }
+});
+
+test('failed-only unsafe tools are unknown unless bound to one exact unused session refusal', {timeout: 20000}, async t => {
+  const cases = [
+    ['failed-only-execute', 1], ['failed-only-fetch', 1], ['failed-only-other', 1],
+    ['permission-execute-denied-failed', 0], ['permission-execute-foreign', 1],
+    ['permission-execute-reused-call', 1], ['permission-execute-reused-permission', 1],
+    ['permission-execute-repeated-failed', 1], ['permission-execute-kind-drift', 1], ['permission-execute-started', 2],
+  ];
+  for (const [mode, expected] of cases) {
+    const durable = [], progress = [], executionContext = {
+      launch: (options, callbacks) => launchAcp({...options, onUpdate: callbacks.onUpdate, onPermission: callbacks.onPermission}),
+      extraScope(code) { durable.push(code); },
+    };
+    const handle = provider(mode).start(input(t, {executionContext, onProgress: event => progress.push(event),
+      onPermission: () => ({outcome: {outcome: 'selected', optionId: 'deny'}})}));
+    t.after(() => handle.stop()); const result = await handle.completion; cleaned(result);
+    assert.equal(result.status, 'completed', mode);
+    assert.deepEqual(durable, Array(expected).fill('acp_tool_scope_unproven'), mode);
+    assert.ok(progress.some(event => event.tool?.status === 'failed'), mode);
+    if (mode.startsWith('permission-')) assert.equal(JSON.parse(result.outputText).outcome.optionId, 'deny', mode);
+  }
+});
+
+test('failed-only durable recording failure cannot become a successful provider result', {timeout: 10000}, async t => {
+  let attempts = 0;
+  const executionContext = {
+    launch: (options, callbacks) => launchAcp({...options, onUpdate: callbacks.onUpdate, onPermission: callbacks.onPermission}),
+    extraScope() { attempts++; throw Error('fixture rejected transaction'); },
+  };
+  const handle = provider('failed-only-execute').start(input(t, {executionContext}));
+  t.after(() => handle.stop()); const result = await handle.completion; cleaned(result);
+  assert.equal(attempts, 1); assert.equal(result.status, 'failed'); assert.equal(result.outputText, '');
 });
 
 test('output bound/refusal/deadline remain honest non-delivery terminals and clean owned group', {timeout: 15000}, async t => {

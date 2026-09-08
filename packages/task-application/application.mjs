@@ -79,16 +79,16 @@ export class TaskApplication {
     tx.putProjection('task', task.id, task.revision - 1, source, encode(record));
     return source;
   }
-  operation(tx, task, source, kind, status) {
+  operation(tx, task, source, kind, status, id = this.newId('operation')) {
     const now = new Date(this.now()).toISOString();
-    const op = {id: this.newId('operation'), taskId: task.id, kind, status,
+    const op = {id, taskId: task.id, kind, status,
       taskRevision: task.revision, createdAt: now, updatedAt: now};
     tx.putProjection('operation', op.id, 0, source, encode(op));
     return op;
   }
-  enqueue(tx, source, taskId, action, payload, kind = 'start') {
+  enqueue(tx, source, taskId, action, payload, kind = 'start', id = this.newId('command')) {
     const bytes = encode({action, ...payload});
-    return tx.enqueue({id: this.newId('command'), taskId, kind, inputDigest: digest(bytes), payload: bytes, source});
+    return tx.enqueue({id, taskId, kind, inputDigest: digest(bytes), payload: bytes, source});
   }
   // Replay lookup deliberately precedes CAS. A lost HTTP reply must not make a
   // previously accepted operation consume another budget or dispatch twice.
@@ -214,6 +214,8 @@ export class TaskApplication {
         // Draft planning also has an obligation. Cancellation always emits a
         // stop/fence; completion must be established by execution reconciliation.
         task.status = 'cancelling'; status = 'accepted'; action = 'cancel';
+        if (this.execution.cleanup.enabled()) record.cancelIntent = {revision: nextRevision(task.revision), at: new Date(this.now()).toISOString(),
+          operationId: this.newId('operation'), commandId: this.newId('command')};
       } else if (request.operation === 'task.pause') {
         if (record.clarification && !record.approved) reject('state_conflict', 409);
         if (!['queued', 'running', 'awaiting-answer'].includes(original)) reject('state_conflict', 409);
@@ -225,10 +227,11 @@ export class TaskApplication {
       }
       task.revision = nextRevision(task.revision);
       const source = this.save(tx, record, request.operation, {from: original, to: task.status});
-      const op = this.operation(tx, task, source, request.operation, status);
+      const cancellation = action === 'cancel' ? record.cancelIntent : null;
+      const op = this.operation(tx, task, source, request.operation, status, cancellation?.operationId);
       if (action) this.enqueue(tx, source, task.id, action,
         {taskId: task.id, expectedRevision: task.revision, operationId: op.id, planDigest: record.approved?.planDigest ?? null},
-        ['cancel', 'pause'].includes(action) ? 'stop' : 'start');
+        ['cancel', 'pause'].includes(action) ? 'stop' : 'start', cancellation?.commandId);
       return {source, result: op};
     });
   }

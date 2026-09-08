@@ -68,7 +68,7 @@ export function createVerificationCommand({executable, checkerPath, checkerDiges
   // Copy the trusted policy so later caller mutation cannot replace validators/env.
   const validators = assertions.map(({name, validate}) => ({name, validate})), environment = {...env};
 
-  function start({ticket, prepared} = {}) {
+  function start({ticket, prepared, executionContext} = {}) {
     const started = deferred();
     let runtime, stopped = false, cleanup = null;
     const completion = (async () => {
@@ -91,7 +91,7 @@ export function createVerificationCommand({executable, checkerPath, checkerDiges
         const input = encode({profile: PROFILE, nonce, binding, input: synchronous(request, context)});
         if (input.length + 1 > MAX_FRAME) fail('verification_input_limit');
         if (stopped || Date.now() >= frozenTicket.deadline) fail('verification_stopped');
-        runtime = await launchCommand({executable, args: [checkerPath], cwd, env: environment, deadline: frozenTicket.deadline,
+        runtime = await launchCommand({executable, args: [checkerPath], cwd, env: environment, deadline: frozenTicket.deadline, executionContext,
           input: Buffer.concat([input, Buffer.from('\n')]), limits: {inputBytes: MAX_FRAME, outputBytes: MAX_FRAME, stderrBytes: 64 * 1024}});
         started.resolve(runtime.started);
         if (stopped) await runtime.stop();
@@ -128,11 +128,13 @@ export function createVerificationCommand({executable, checkerPath, checkerDiges
     })();
     return Object.freeze({started: started.promise, completion, stop() {
       stopped = true;
+      if (executionContext?.stop) void executionContext.stop();
       // launchCommand owns bootstrap. Once it yields the original handle, the
       // stop flag forces owned-group cleanup before this completion settles.
       if (runtime) void runtime.stop();
       return completion;
     }});
   }
-  return Object.freeze({start});
+  Object.defineProperty(start, 'custodyProfile', {value: Object.freeze({id: 'managed-checker-v1', scope: 'inherited-process-group', eligible: true})});
+  return Object.freeze({start, custodyProfile: start.custodyProfile});
 }

@@ -38,8 +38,8 @@ export function createVerificationPort({id, policy, bindPlan, start}) {
   check(typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id) &&
     keys(policy, ['id', 'version', 'description']) && isText(policy.id, 128) && isText(policy.version, 128) &&
     isText(policy.description, 4096) && typeof bindPlan === 'function' && typeof start === 'function', 'invalid_verification_config');
-  const port = Object.freeze({id, start({ticket, prepared}) {
-    const binding = hash(ticket), handle = start({ticket, prepared});
+  const port = Object.freeze({id, ...(start.custodyProfile ? {custodyProfile: clone(start.custodyProfile)} : {}), start({ticket, prepared, executionContext}) {
+    const binding = hash(ticket), handle = start({ticket, prepared, executionContext});
     check(handle && typeof handle.stop === 'function' && typeof handle.started?.then === 'function' &&
       typeof handle.completion?.then === 'function', 'invalid_verification_result');
     return Object.freeze({started: handle.started, stop: (...args) => handle.stop(...args),

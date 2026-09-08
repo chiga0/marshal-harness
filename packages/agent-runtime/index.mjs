@@ -25,8 +25,8 @@ export class RuntimeError extends Error {
  * do not accept business results, release directories or mutate any Task Store.
  */
 export async function launchAcp({ executable, args = [], cwd, env = {}, deadline,
-  onUpdate, onPermission, limits = {} } = {}) {
-  return launchManaged({executable, args, cwd, env, deadline, onUpdate, onPermission, limits});
+  onUpdate, onPermission, limits = {}, executionContext } = {}) {
+  return launchManaged({executable, args, cwd, env, deadline, onUpdate, onPermission, limits, executionContext});
 }
 
 /** Trusted composition seam for a different framed protocol. The synchronous
@@ -35,9 +35,9 @@ export async function launchAcp({ executable, args = [], cwd, env = {}, deadline
  * A returned client must expose synchronous close(). No protocol can mint the
  * original Runtime cleanup observation or expand its inherited-group scope.
  */
-export async function launchProtocol({executable, args = [], cwd, env = {}, deadline, createClient, limits = {}} = {}) {
+export async function launchProtocol({executable, args = [], cwd, env = {}, deadline, createClient, limits = {}, executionContext} = {}) {
   if (typeof createClient !== 'function') throw new RuntimeError('runtime_invalid_client_factory');
-  return launchManaged({executable, args, cwd, env, deadline, limits, createClient});
+  return launchManaged({executable, args, cwd, env, deadline, limits, createClient, executionContext});
 }
 
 /** Trusted command execution for independent verification, not an ACP session.
@@ -45,20 +45,32 @@ export async function launchProtocol({executable, args = [], cwd, env = {}, dead
  * Captured stdout is untrusted data; exit/cleanup are not a business Decision.
  */
 export async function launchCommand({executable, args = [], cwd, env = {}, deadline,
-  input = new Uint8Array(), limits = {}} = {}) {
+  input = new Uint8Array(), limits = {}, executionContext} = {}) {
   if (!(input instanceof Uint8Array) || input.byteLength > 1024 * 1024) throw new RuntimeError('runtime_invalid_input');
   return launchManaged({executable, args, cwd, env, deadline,
-    limits: {inputBytes: 1024 * 1024, outputBytes: 1024 * 1024, ...limits}}, Buffer.from(input));
+    limits: {inputBytes: 1024 * 1024, outputBytes: 1024 * 1024, ...limits}, executionContext}, Buffer.from(input));
 }
 
-async function launchManaged({executable, args, cwd, env, deadline, onUpdate, onPermission, limits, createClient}, commandInput = null) {
+// Custodian-only internal entry. Protocol parsing and Task authority remain in
+// its original service; only its prepared execution ID is used here.
+export async function launchCustodyStreams({executionId, ...options}) {
+  if (typeof executionId !== 'string' || !/^[0-9a-f-]{36}$/.test(executionId)) throw new RuntimeError('runtime_invalid_identity');
+  return launchManaged(options, null, executionId);
+}
+
+async function launchManaged({executable, args, cwd, env, deadline, onUpdate, onPermission, limits, createClient, executionContext}, commandInput = null, forcedId) {
   if (!['darwin', 'linux'].includes(process.platform)) throw new RuntimeError('runtime_platform_unsupported');
   if (onUpdate !== undefined && typeof onUpdate !== 'function' || onPermission !== undefined && typeof onPermission !== 'function') throw new RuntimeError('runtime_invalid_callbacks');
   let options;
   try { options = validateOptions({ executable, args, cwd, env, deadline, limits: { ...DEFAULT_LIMITS, ...limits } }); }
   catch { throw new RuntimeError('runtime_invalid_options'); }
   if (commandInput !== null && commandInput.length > options.limits.inputBytes) throw new RuntimeError('runtime_invalid_input');
-  const executionId = randomUUID(), ready = deferred(), agentExit = deferred(), done = deferred();
+  if (executionContext !== undefined) {
+    if (typeof executionContext?.launch !== 'function') throw new RuntimeError('runtime_invalid_context');
+    try { return await executionContext.launch(options, {createClient, onUpdate, onPermission, input: commandInput}); }
+    catch (error) { throw new RuntimeError(error?.code ?? 'runtime_custody_failed', error?.completion); }
+  }
+  const executionId = forcedId ?? randomUUID(), ready = deferred(), agentExit = deferred(), done = deferred();
   let guard, client, started, actualExit, receipt, guardExit, cleanupUntil, cleanupError = false, stopping = false, completed = false, bootTimer, deadlineTimer, cleanupTimer, groupTimer;
   let reason = 'launch_failed', resolvedReady = false;
   const counts = { inputBytes: 0, outputBytes: 0, stderrBytes: 0 };

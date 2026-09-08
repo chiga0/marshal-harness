@@ -18,6 +18,7 @@ if (mode === 'hang') {
     const request = JSON.parse(line);
     const result = {nonce: request.nonce, sum: request.values.reduce((a, b) => a + b, 0),
       leaked: Object.hasOwn(process.env, 'PRIVATE_COMMAND_ENV')};
+    if (mode === 'large') result.payload = 'y'.repeat(request.size);
     process.stdout.write(JSON.stringify(result) + '\n', () => process.exit(0));
   });
 }
