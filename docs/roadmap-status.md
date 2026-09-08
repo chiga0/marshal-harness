@@ -8,7 +8,7 @@
 
 ### 最新正式 Node 集成检查点
 
-当前代码集成基线 main=`5f511abe0bcb511a5554d7da01fda1328d9f3471` 已包含正式24操作 HTTP 契约、SQLite、14项 Task/Worker/Operation 应用操作、受管 ACP Provider、耐久制品存储与正式 HTTP 客户端。真实 Qwen ACP 已完成原生工具读取并独立核对结果，不再只是握手。执行 reservation/control 经一次聚合修复和同 reviewer 复核合入，Supervisor 仍在开发；正式服务入口、完整团队交付、API-STABLE 和 stable 尚未完成。精确 source/merge、测试范围、重复失误与下一步见[当前实施检查点](node-task-service-status-2026-09-08.md)。pendingRemoteSync=true；没有新的远端 main 合并或正式发行声明。
+当前代码集成基线 main=`71e0c1fb06314a5abf73f4f4464e5dea81691605` 已包含正式24操作 HTTP 契约、SQLite、17项 Task/Worker/Operation/输入与制品应用操作、受管 ACP Provider、Supervisor、耐久制品及文件采集与正式 HTTP 客户端。真实 Qwen ACP 已完成原生工具读取并独立核对结果，不再只是握手。Supervisor 的失败等待cleanup期间错误fan-out已一次修复并由同reviewer复核合入；正式服务入口正在审查，完整团队交付、API-STABLE 和 stable 尚未完成。最新组合回归178/179，有一项启动期限测试的错误假定正在修正，不能称全部全绿。精确 source/merge、测试范围、重复失误与下一步见[当前实施检查点](node-task-service-status-2026-09-08.md)。pendingRemoteSync=true；没有新的远端 main 合并或正式发行声明。
 
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |

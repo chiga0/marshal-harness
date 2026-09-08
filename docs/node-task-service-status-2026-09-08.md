@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-正式主线是 ADR0088 的 Node-only Task 服务，不再扩充固定订单实验。当前代码集成基线 main=`5f511abe0bcb511a5554d7da01fda1328d9f3471`，已经包含正式 HTTP、唯一 SQLite、Task 控制/执行 reducer、受管 ACP、制品字节存储与独立 HTTP 客户端。**尚无正式服务入口、完整自主交付或 API-STABLE**。B1/B2 保持 IN_PROGRESS，B3 保持 PLANNED；实验双 Pi 成功与正式组件证据分开。
+正式主线是 ADR0088 的 Node-only Task 服务，不再扩充固定订单实验。当前代码集成基线 main=`71e0c1fb06314a5abf73f4f4464e5dea81691605`，已包含正式 HTTP、唯一 SQLite、Task 控制/执行 reducer、受管 ACP、Supervisor、输入上传/制品下载、不可变文件物化和独立 HTTP 客户端。**正式服务入口仍为审查候选，完整自主交付和 API-STABLE 尚未完成**。B1/B2 保持 IN_PROGRESS，B3 保持 PLANNED；实验双 Pi 成功与正式组件证据分开。
 
 最新已知 origin/main=`ba2196bea33e6f007809f75f9671928c892bfa11`（此前 fetch 结果，本检查点未重新查询远端），pendingRemoteSync=true。本表记录的是本地 merge，不表示远端 main 已同步、CI 已运行或已发行。
 
@@ -18,10 +18,15 @@
 | ArtifactDepot | `a9e485f8fa09b3172c13b33cbfc50f5708960aa5` | `cb151984b1d6cd4366fce9c7342ada79df3e81f7` | 同 reviewer 复审 P1 关闭，19项真实文件 I/O 故障测试通过；只存 CAS bytes，不自授交付/验收权威 |
 | 正式 HTTP 客户端 | `73aee1c149c28d7c4861e5b2758cb96ac443329f` | `dfa0f13afb878ded6e50f271fe9f0b8a54467ac5` | 独立 review及P2修正复核通过，root实跑8项含真实loopback；没有自动批准/重试/刷新CAS |
 | 持久执行及控制恢复 | `dcbcd1bc68b33e5a01ff9851a939f972f484a279` | `5f511abe0bcb511a5554d7da01fda1328d9f3471` | 一次聚合修复4个P1并由原reviewer复核关闭；root同源27/27含真实HTTP通过，Worker回合不冒充最终验收 |
+| 文件物化与精确采集 | `8bb6e7ffae8bc75fb8c62cac6806519416a18bde` | `076afef53b02db4de1dad179fa72add1296a92de` | 独立审查无P0/P1，独立与维护者各9/9真实FS/Depot测试通过；仅产候选，需先核实原执行cleanup |
+| HTTP输入/制品接线 | `2f4ff6936e2ce5024f0b600ae6c6fde1fefa3ebd` | `3c9eed9d700f922926bef721f7b3d58d8ab54d30` | 独立审查无P0/P1，维护者33/33 Application测试含真实HTTP通过；输入manifest/原receipt/Task摘要绑定，已提交缺失bytes不修复 |
+| 自驱Supervisor及失败先fence | `ee36d7a5221b8d7dacf6a6246f8dcde3edaced90` | `71e0c1fb06314a5abf73f4f4464e5dea81691605` | 原唯一P1聚合修复，同reviewer37/37通过；cleanup等待中不再派同Task下游，其他Task继续 |
 
 ACP Provider 和 ArtifactDepot 的定向测试、diff-check、secret scan、merge-tree 均通过后本地合入。本轮不调用 Marshal 原生二进制，不生成临时原生 checker。统计保留各包/各 source 范围，不把不同快照的测试数相加宣称完整 release 回归。
 
 较早组合 `cb151984`：维护者使用固定 Node 24.15.0 串行运行七包（含既有 `agent-acp`，不含后来客户端）的已列测试入口，**119/119 PASS，24.92秒，零跳过**。包含真实 SQLite/文件 I/O/HTTP/所属 Node 子进程夹具，不含真实模型团队和安装部署；后来合入的执行 reducer/第二客户端不在此119项内。
+
+后续组合 `5f511abe` 的八包验证为 **140/140 PASS，29.734秒，零跳过**。最新 `71e0c1fb` 的十包组合为 **178/179 PASS，44.906秒，零跳过**，不是全绿：ACP Provider期限测试在启动前已合法截止，但测试辅助函数无条件读取不存在的 `started.guardPid`，抛出 TypeError。已保留失败，正在将断言区分实际未启动与已启动清理；不能用增加期限或重复运行把原失败抹掉。该组合不含未合入服务入口、独立命令运行或真实模型团队。
 
 ## 实机 Qwen 不再只验证握手
 
@@ -33,15 +38,15 @@ ACP Provider 和 ArtifactDepot 的定向测试、diff-check、secret scan、merg
 
 ## API 与后续关键路径
 
-机器合同为 [正式 OpenAPI](../packages/task-api/openapi.json)，不是旧 `experiments/node-team/openapi.json`。main 当前14项真实 Application 操作：Task 创建/列表/详情/计划/确认/图/取消/暂停/恢复/事件/审计/Workers、Worker详情及 Operation 查询。其余10项不能因路由已定义就计作完成。
+机器合同为 [正式 OpenAPI](../packages/task-api/openapi.json)，不是旧 `experiments/node-team/openapi.json`。main 当前17项真实 Application 操作：Task 创建/列表/详情/计划/确认/图/取消/暂停/恢复/事件/审计/Workers、Worker详情、Operation 查询，以及输入上传、制品详情和内容下载。其余7项不能因路由已定义就计作完成。输入ready只表示原始输入可读，不表示最终业务成果已经验收。
 
 执行 reducer 原稿 `5a5079d` 的23项测试没有捕获4个实际P1：较低计划期限未落实、历史完整输入导致合法大计划事务溢出、重启后旧取消Operation无法回填、进度推进用户控制CAS。已一次聚合修正为 `dcbcd1b`，27项通过并独立复核合入；其中合法64节点、每goal 8000字节全部完成，不增加Store限额。回合完成仍不等于业务验收。
 
 当前并行工作按实际依赖分工：
 
-1. Supervisor 消费已有 Application 义务，驱动受管 Provider；保留原句柄、取消优先、进度/清理回填，同版本未知执行不重复启动。
-2. 正式 HTTP 客户端以同一24操作合同消费，不自动刷新 revision、重试写或替用户确认；成为 API-STABLE 第二消费端。
-3. 集成者连接通用执行目录/输入、独立验收、耐久制品与最终 Task/Operation，随后提供正式 Node 服务启动入口，跑纯 HTTP 团队交付与下载消费。
+1. 正式 Node 服务候选 `4e6726d7`：组合root/私有连接文件/owner续租/HTTP/Supervisor/关闭与冷重开，作者11/11真实HTTP/SQLite测试通过，正在独立审查，不是已合入或已部署。
+2. 通用业务 prepare/collect：使用批准的明确布局、当前ticket输入与上游Depot快照；不从模型自由文本推导文件权限，不采用旧Worker目录。
+3. 独立验收作为批准DAG内受管终点，复用预算/取消/清理；非ACP验证命令复用现guard，随后将精确receipt、Decision和交付引用在同SQLite事务接纳。禁止把Agent end_turn或候选manifest当Task completed。
 
 部署盘点已完成：旧 `scripts/install.sh` 会走 Go，旧 release workflow 面向 RC1/native，不能拿来发行 Node stable；现有 Node CI 仍只覆盖部分实验/ACP，正式包路径与测试须随部署纵切补齐。复用既有 loopback/私有连接文件经验，不另造身份平台；以版本化 JS＋OpenAPI 资产清单、已允许的 Node 启动和安装后同版本恢复验证交付。
 
