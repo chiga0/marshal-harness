@@ -33,14 +33,43 @@ export default {
 };
 ```
 
-示例中的变量由实际业务组合提供，不是可直接执行的假实现；`service.fixture.mjs` 只供无模型测试。Provider 可由已有 `createAcpProvider({id,executable,args,env})` 构造，CLI 不推断品牌、登录状态或默认工具权限。`prepare/collect` 缺失、没有 Provider 时启动前拒绝，不用空成功实现占位。原生登录和 Publisher 分权仍由部署方证明，不复制 HOME/凭据、不宣称同 UID 是恶意沙箱。
+示例中的变量由实际业务组合提供，不是可直接执行的假实现；`service.fixture.mjs` 只供无模型测试。Provider 可由已有 `createAcpProvider({id,executable,args,env})` 构造，CLI 不推断品牌、登录状态或默认工具权限。没有 `prepare/collect` 且没有有效 `businessFactory`、或没有 Provider 时启动前拒绝，不用空成功实现占位。原生登录和 Publisher 分权仍由部署方证明，不复制 HOME/凭据、不宣称同 UID 是恶意沙箱。
+
+## 可信业务工厂与唯一 verification 实例
+
+真实文件业务推荐使用工厂，在 App、depot 和执行目录已经存在后构造；不必预先打开另一个 Store 或 depot：
+
+```js
+import {createFileBusiness} from '../task-business/index.mjs';
+
+export default {
+  providers,
+  verification: trustedVerificationPort,
+  businessFactory: ({executionParent, depot, approvedLayout, observeExecution}) =>
+    createFileBusiness({
+      parent: executionParent, depot, approvedLayout, observeExecution,
+      layoutFor: ticket => ticket.planDigest === null
+        ? {inputs: [], allowedPaths: []} // 初始 Planner 无写入批准。
+        : ticket.input.fileLayout,
+    }),
+};
+```
+
+`trustedVerificationPort` 由同 Core 导出的 `createVerificationPort({id,policy,bindPlan,start})` 在可信配置中构造。service 将**同一个对象**传给 Application 与 Supervisor，不复制、重建或反序列化原 receipt 能力。政策、完整文件布局与交付映射由 Core 在计划确认前冻结；独立执行与证据由原端口提供，service 不造 Decision。
+
+工厂只收到 `{depot,executionParent,approvedLayout,observeExecution}`，不暴露 Store、owner 或写 reducer。后两个函数在调用时进入当前 Application `execution.approvedLayout(ticket)` 与 `execution.observeExecution(ticket)` 只读端口，不能把当前 layout 现算成批准事实。方法尚未接入时拒绝，不返回伪造绑定。
+
+工厂必须同步返回 `{prepare,collect,release,close}`；与直接 `prepare/collect/release` 配置互斥。不能在构造时启动 Agent，工厂内部抛错之前自行清理它尚未返回的资源。已返回对象的 `close` 会在启动后续失败或正常 shutdown 中执行一次，然后再关闭 depot/Store；原可选 `dispose` 保留作额外受信清理。
+
+`release(ticket)` 原样接入 Supervisor 的逐 Worker finally，成功、失败、取消、准备失败与验收终止都不等到全服务关闭才关文件 FD；它必须同步且只释放本业务适配器资源，不写 Task、改预算、发信号或删除目录。直接回调方式也可显式提供 `release`。`close()` 只是最终兜底，不替代逐 Worker 释放。
 
 ## JavaScript 接口
 
 ```js
 const service = await startTaskService({
   root, mode: 'create', providers, prepare, collect,
-  // 可选：dispose、providerFacts、applicationOptions、supervisorOptions、
+  // 或：businessFactory + verification，替代直接 prepare/collect/release。
+  // 可选：release、dispose、providerFacts、applicationOptions、supervisorOptions、
   // port、leaseMs、renewIntervalMs、requestTimeoutMs、onDiagnostic。
 });
 // {address, connectionFile, snapshot(), shutdown()}
@@ -64,12 +93,15 @@ const result = await service.shutdown();
 - `shutdownClean` 只说明本控制器当前持有执行已清理并写回，不证明旧 generation 的未知执行已恢复。缺 cleanup 时为 false，持久 intervention 保留。
 - **关闭在途服务不是暂停/无损续跑**：原 Supervisor 会停止当前 Worker，Application 按真实事实失败/取消收口。已终态 Task 和原幂等回执可冷重开；崩溃后的未知执行保留 intervention，不按裸 PID 杀进程、不重派、不复用目录。
 
-四项运行观察通过明确 composition dispatch 处理；其余操作原样交给注入了 depot 的 `TaskApplication`。已接线的输入上传、manifest 与 bytes 下载使用真实 SQLite/depot；尚未接线的问答等操作仍返回原 unsupported，不冒充 24 个接口全部可用。独立 finalization、验收绑定、最终交付制品与 Task completed 必须由同一 Application/Store 后继实现，不放在此入口。
+四项运行观察通过明确 composition dispatch 处理；其余操作原样交给注入了 depot/verification 的 `TaskApplication`。已接线的输入上传、manifest 与 bytes 下载使用真实 SQLite/depot；尚未接线的问答等操作仍返回原 unsupported，不冒充 24 个接口全部可用。finalization、验收绑定、最终交付制品与 Task completed 只由同一 Application/Store 实现，不放在此入口；没有 verification 的直接回调配置也不自动获得业务完成能力。
 
 ## 验证
 
 ```sh
 node --test --test-concurrency=1 packages/task-service/composition.test.mjs
+node --test --test-concurrency=1 packages/task-service/business-integration.test.mjs
 ```
 
 测试使用真实 loopback、真实 SQLite/depot 和受控 Fake Provider；覆盖输入上传/下载与冷重开、续租跨初始期限、计划批准双 Worker、取消、真实等待 completion、冷重开原回执、持锁竞争、根漂移、旧代未知义务、缺 cleanup，以及独立 Node CLI 的 SIGTERM。测试里的 cleanup 是明确夹具事实，既不是实机 OS 清理，也不是模型/业务通过。真实双 Qwen、独立验证后下载消费、活跃 crash 恢复、Linux 和同资产部署仍须另行验收。
+
+业务组合测试另外使用真实 FileBusiness 与原 Core verification capability，从纯 HTTP 计划批准到完整制品下载，覆盖验收中取消的迟到结果 fence，以及失败后及时释放 FD。模型和 checker 的进程完成/cleanup 明确为受控夹具，不能用该测试代替实机原生工具或独立外部命令验收。
