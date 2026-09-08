@@ -6,6 +6,14 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
+### 当前研发方式：本地集成优先
+
+2026-09-08 用户明确调整：快速推进期间不再逐切片创建 PR 或等待 CI/E2E；独立本地 review 无阻断后直接合并，继续下一项开发，集中补跑验证。保留单写者、精确 source、未验证项和发布前实际验收，不把本地 merge 当成正式 release。已有远端 CI 可异步完成，不反向阻塞后继开发。
+
+Node 与 SQLite 已在本地候选 `5b50439f79fe55082785b60cea11f09c99c94166` 集成；SQLite 修复 source=`f51ff9a744a84da0e73d6dd358aa1f8110dd5bd2` 经维护者独立代码 review，无生产期限或行为变更，新的动态 race 待集中验证。Node source=`0e1250c` 的 [Node team 34203735967](https://github.com/chiga0/marshal-harness/actions/runs/34203735967) 在 Ubuntu/macOS 均通过确定性回归，本机同组 23/23 通过；不调用真实模型或 Marshal 原生文件。后续直接基于集成代码推进，不继续维护平行功能岛。
+
+当前待补验证：SQLite 新边界/事务回滚的 race、合并候选的全仓回归与真实第二 Provider、完整 supervisor/主机中断恢复；B1/B2/B3 不因本次合并自动升级。香港执行机专用 `marshal-runner`（uid 1000）本轮 SSH 只读核对存在，随后两次连接出现 `Bad file descriptor`，未改宿主策略或循环重试；旧执行机文档的“缺专用用户”不适用于香港此账号，本轮未取得新的远端测试通过证据。
+
 - **Node-only 可行性实验已通过**：`c88410b` 在本机 Node 24.15.0 / Pi 0.84.4 经纯 HTTP 完成真实双 Pi（重叠 13.106 秒）、69 项独立验收、下载后 69 项消费、活跃前端重启及另一真实任务取消/重启保留，全程不调用 Marshal 原生文件；本次约 40.62 秒。前两次真实失败分别为原生事件流预算不足、角色提示未各自完整列明数值范围，均保留并修正，不倒填首轮通过。见 [ADR 0087](adr/0087-node-local-team-feasibility-probe.md) 与[实机记录](node-team-feasibility-2026-09-08.md)。该独立 profile 不修改旧 `.marshal`，不自动授予 Go B1/B2 或 production；下一决策是正式 Node profile 边界，而非继续等待本机原生执行才允许做实验。
 
 - 远端 main 最近核对 `ba2196b`；PR #275 已在完整 CI 全绿后合入功能分支 `feat/team-resident-progress`，merge=`a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1`，pendingRemoteSync=false，**不是 main 合并**。Task HTTP、独立客观 Decision、完整制品链已有原 Store/Verifier 的确定性组合证据，尚无该完整团队的真实下载消费。
