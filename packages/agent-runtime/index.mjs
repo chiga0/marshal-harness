@@ -29,6 +29,17 @@ export async function launchAcp({ executable, args = [], cwd, env = {}, deadline
   return launchManaged({executable, args, cwd, env, deadline, onUpdate, onPermission, limits});
 }
 
+/** Trusted composition seam for a different framed protocol. The synchronous
+ * client factory owns protocol parsing only; it receives streams and onClose,
+ * not a PID, spawn capability or Task authority. The guard contract is unchanged.
+ * A returned client must expose synchronous close(). No protocol can mint the
+ * original Runtime cleanup observation or expand its inherited-group scope.
+ */
+export async function launchProtocol({executable, args = [], cwd, env = {}, deadline, createClient, limits = {}} = {}) {
+  if (typeof createClient !== 'function') throw new RuntimeError('runtime_invalid_client_factory');
+  return launchManaged({executable, args, cwd, env, deadline, limits, createClient});
+}
+
 /** Trusted command execution for independent verification, not an ACP session.
  * stdin is a bounded byte frame; it stays open (use a framed request, not EOF).
  * Captured stdout is untrusted data; exit/cleanup are not a business Decision.
@@ -40,7 +51,7 @@ export async function launchCommand({executable, args = [], cwd, env = {}, deadl
     limits: {inputBytes: 1024 * 1024, outputBytes: 1024 * 1024, ...limits}}, Buffer.from(input));
 }
 
-async function launchManaged({executable, args, cwd, env, deadline, onUpdate, onPermission, limits}, commandInput = null) {
+async function launchManaged({executable, args, cwd, env, deadline, onUpdate, onPermission, limits, createClient}, commandInput = null) {
   if (!['darwin', 'linux'].includes(process.platform)) throw new RuntimeError('runtime_platform_unsupported');
   if (onUpdate !== undefined && typeof onUpdate !== 'function' || onPermission !== undefined && typeof onPermission !== 'function') throw new RuntimeError('runtime_invalid_callbacks');
   let options;
@@ -53,6 +64,7 @@ async function launchManaged({executable, args, cwd, env, deadline, onUpdate, on
   const counts = { inputBytes: 0, outputBytes: 0, stderrBytes: 0 };
   const commandChunks = []; let commandBytes = 0;
   const scope = 'inherited-process-group';
+  const closeClient = () => { try { client?.close(); } catch {} }; // A trusted protocol bug cannot prevent owned cleanup.
 
   function complete(code, signal, observed = true) {
     if (completed) return;
@@ -64,7 +76,7 @@ async function launchManaged({executable, args, cwd, env, deadline, onUpdate, on
     const fact = Object.freeze({ executionId, scope, started: started ?? null, agentExit: exit,
       guardExit: { observed, code, signal, at: new Date().toISOString() }, cleaned,
       reason: cleaned ? receipt.reason : 'cleanup_unconfirmed', ...counts });
-    client?.close(); agentExit.resolve(exit); ready.resolve(undefined); done.resolve(fact);
+    closeClient(); agentExit.resolve(exit); ready.resolve(undefined); done.resolve(fact);
     if (!observed && guard?.exitCode === null && guard?.signalCode === null) {
       // Ask the CURRENT child handle to run its own cleanup; never SIGKILL the
       // leader alone or signal a stale/replayed group number from the parent.
@@ -81,7 +93,7 @@ async function launchManaged({executable, args, cwd, env, deadline, onUpdate, on
   function requestStop(cause = 'owner_stop') {
     if (completed || stopping) return done.promise;
     stopping = true; reason = cause; clearTimeout(bootTimer);
-    client?.close();
+    closeClient();
     if (!control({ type: 'stop' }) && guard?.exitCode === null && guard?.signalCode === null) guard.kill('SIGTERM');
     cleanupTimer = setTimeout(() => complete(null, null, false), CLEANUP_WAIT_MS);
     return done.promise;
@@ -123,15 +135,24 @@ async function launchManaged({executable, args, cwd, env, deadline, onUpdate, on
       receipt = { reason: message.reason, at: message.at };
       // The guard is already enforcing its local safety bound. This fact is
       // for the caller to persist, not a second Task authority in this module.
-      if (!stopping) { stopping = true; reason = message.reason; client?.close(); }
+      if (!stopping) { stopping = true; reason = message.reason; closeClient(); }
       cleanupTimer ??= setTimeout(() => complete(null, null, false), CLEANUP_WAIT_MS);
     } else if (message.type === 'cleanup_error') cleanupError = true;
     else if (message.type === 'spawn_failed') { reason = 'agent_spawn_failed'; requestStop(reason); }
     else requestStop('invalid_guard_message');
   });
   if (commandInput === null) {
-    client = new AcpClient({ readable: guard.stdout, writable: guard.stdin, onUpdate, onPermission,
-      onClose: () => { requestStop('protocol_closed'); } });
+    try {
+      const connection = {readable: guard.stdout, writable: guard.stdin, onClose: () => { requestStop('protocol_closed'); }};
+      client = createClient ? createClient(connection) : new AcpClient({...connection, onUpdate, onPermission});
+      if (!client || typeof client.close !== 'function' || typeof client.then === 'function') {
+        if (typeof client?.then === 'function') Promise.resolve(client).catch(() => {});
+        client = undefined; throw new Error('invalid client');
+      }
+    } catch {
+      const completion = await requestStop('client_factory_failed');
+      throw new RuntimeError('runtime_client_factory_failed', completion);
+    }
   } else {
     guard.stdout.on('data', chunk => {
       commandBytes += chunk.length;
