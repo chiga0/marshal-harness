@@ -73,7 +73,7 @@ func (adapter *sealedRepositoryApplication) advanceInitialTeamProgress(ctx conte
 }
 
 func (adapter *sealedRepositoryApplication) advanceInitialTeamProgressAdmitted(ctx context.Context, router *fixedcontrolplane.HTTPRouter, phase domain.State, admitted func()) error {
-	if ctx == nil || ctx.Err() != nil || router == nil || phase != domain.StateRunning && phase != domain.StateVerifying {
+	if ctx == nil || ctx.Err() != nil || router == nil || phase != domain.StateRunning && phase != domain.StateVerifying && phase != domain.StateReviewPending {
 		return application.NewError("team-progress", application.ReasonInvalidRequest)
 	}
 	if !adapter.mu.TryLock() {
@@ -91,6 +91,9 @@ func (adapter *sealedRepositoryApplication) advanceInitialTeamProgressAdmitted(c
 	if phase == domain.StateVerifying {
 		cursor = &adapter.teamVerifyCursor
 	}
+	if phase == domain.StateReviewPending {
+		cursor = &adapter.teamReviewCursor
+	}
 	selection, found, err := adapter.session.NextInitialTeamProgress(ctx, *cursor, phase)
 	if err != nil && ctx.Err() == nil {
 		adapter.teamProgressStopped.Store(true) // No trustworthy Goal to halt.
@@ -105,6 +108,9 @@ func (adapter *sealedRepositoryApplication) advanceInitialTeamProgressAdmitted(c
 	stage := "collect"
 	if phase == domain.StateVerifying {
 		stage = "verify"
+	}
+	if phase == domain.StateReviewPending {
+		stage = "review"
 	}
 	_, err = router.TryBackgroundRunMutation(ctx, selection.RunID, phase == domain.StateVerifying, func(step context.Context) error {
 		if adapter.teamProgressStopped.Load() {
@@ -126,7 +132,13 @@ func (adapter *sealedRepositoryApplication) advanceInitialTeamProgressAdmitted(c
 			// the short scheduler serve siblings during long verification.
 			admitted()
 		}
-		if err := advanceTeamRun(step, adapter, selection.Run); err != nil {
+		var progressErr error
+		if phase == domain.StateReviewPending {
+			progressErr = adapter.acceptObjectiveTeamRun(step, selection.Run)
+		} else {
+			progressErr = advanceTeamRun(step, adapter, selection.Run)
+		}
+		if err := progressErr; err != nil {
 			// An operation error is never retried on a fresh tick/timeout. A
 			// stopped Run already has its own Outcome; halt does not replace it.
 			return errors.Join(err, adapter.haltTeamProgress(step, selection, stage))
@@ -134,6 +146,28 @@ func (adapter *sealedRepositoryApplication) advanceInitialTeamProgressAdmitted(c
 		return nil
 	})
 	return err
+}
+
+func (adapter *sealedRepositoryApplication) acceptObjectiveTeamRun(ctx context.Context, current application.RunProjection) error {
+	observed, err := adapter.InspectRun(ctx, application.InspectRunRequest{RunID: current.RunID})
+	if err != nil {
+		return err
+	}
+	if observed != current {
+		return nil
+	}
+	request := application.CurrentRunRequest{RunID: current.RunID, AttemptID: current.AttemptID, ExpectedSequence: current.Sequence, ExpectedAuthorityHead: current.AuthorityHead}
+	if _, err := adapter.BuildReviewPacket(ctx, application.BuildReviewPacketRequest(request)); err != nil {
+		return err
+	}
+	result, err := adapter.applyReviewDecision(ctx, application.ApplyReviewDecisionRequest{RunID: current.RunID, AttemptID: current.AttemptID, ExpectedSequence: current.Sequence, ExpectedAuthorityHead: current.AuthorityHead}, true)
+	if err != nil {
+		return err
+	}
+	if result.Validate() != nil || result.Run.State != domain.StateAccepted || !teamProgressSuccessor(current, result.Run) {
+		return application.NewError("task-objective", application.ReasonAuthorityConflict)
+	}
+	return nil
 }
 
 func (adapter *sealedRepositoryApplication) teamProgressAllowed(ctx context.Context, selection productionruntime.InitialTeamProgress) (bool, error) {

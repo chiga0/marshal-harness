@@ -28,6 +28,12 @@ type AcceptedCandidate struct {
 // producer. It never imports authority, edits a Run or observes mutable worker
 // worktrees: integration consumes only the captured, accepted patch bytes.
 func ReadAcceptedCandidate(state domain.RunState, terminal domain.RunEvent, namespace string, validator *contract.Validator, read func(int64, ...string) ([]byte, error)) (AcceptedCandidate, error) {
+	return ReadAcceptedCandidateWithObjective(state, terminal, namespace, validator, read, nil)
+}
+
+// The additional admission is derived from the current Task ledger, never
+// from a reviewer tag. Legacy consumers pass nil and reject system Decisions.
+func ReadAcceptedCandidateWithObjective(state domain.RunState, terminal domain.RunEvent, namespace string, validator *contract.Validator, read func(int64, ...string) ([]byte, error), objective *ObjectivePolicy) (AcceptedCandidate, error) {
 	fail := func() (AcceptedCandidate, error) {
 		return AcceptedCandidate{}, errors.New("review: accepted candidate binding conflict")
 	}
@@ -74,7 +80,7 @@ func ReadAcceptedCandidate(state domain.RunState, terminal domain.RunEvent, name
 	}
 	input := DecisionInput{Task: task, TaskID: state.TaskID, RunID: state.RunID, SpecDigest: state.SpecDigest,
 		ReviewRound: state.ReviewRound, AttemptsUsed: state.AttemptsUsed, ReworkRoundsUsed: state.ReworkRoundsUsed,
-		Report: report, Manifest: manifest, LocalSelfIdentityBinding: packet.LocalSelfIdentityBinding}
+		Report: report, Manifest: manifest, LocalSelfIdentityBinding: packet.LocalSelfIdentityBinding, Objective: objective}
 	imported, err := (&DecisionImporter{Validator: validator}).importBytesWithPacket(input, decisionData, packetData)
 	if err != nil || imported.TargetState != domain.StateAccepted || imported.DecisionDigest != terminal.Payload["decisionDigest"] ||
 		imported.Decision.EvidenceDigest != terminal.Payload["evidenceDigest"] {

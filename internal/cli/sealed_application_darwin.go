@@ -74,6 +74,7 @@ type sealedRepositoryApplication struct {
 	teamProgressStopped atomic.Bool
 	teamCollectCursor   string
 	teamVerifyCursor    string
+	teamReviewCursor    string
 }
 
 var _ application.PublicApplicationPort = (*sealedRepositoryApplication)(nil)
@@ -237,6 +238,13 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 			}
 			derived, err := repository.CombineAcceptedPatches(ctx, applicationAdapter.stateRoot, base, binding, patches)
 			return derived.TreeSHA, derived.CommitSHA, err
+		},
+		TeamDeliveryExporter: func(ctx context.Context, base, binding, tree, commit string, upstreams [][]byte, final []byte, paths []string) (map[string][]byte, error) {
+			repository, err := gitworktree.OpenContext(ctx, applicationAdapter.repositoryRoot)
+			if err != nil {
+				return nil, err
+			}
+			return repository.ExportTeamDelivery(ctx, applicationAdapter.stateRoot, base, binding, tree, commit, upstreams, final, paths)
 		},
 		TeamRunPreparer: func(ctx context.Context, task, policy []byte, runID string) ([]byte, error) {
 			// Use only this server's frozen Pi paths; never rediscover a provider

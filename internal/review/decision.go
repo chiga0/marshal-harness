@@ -31,6 +31,7 @@ type DecisionInput struct {
 	Report                   verification.Report
 	Manifest                 verification.ArtifactManifest
 	LocalSelfIdentityBinding *selfidentity.LocalReviewBindingV2
+	Objective                *ObjectivePolicy
 }
 
 type DecisionResult struct {
@@ -95,6 +96,14 @@ func (d *DecisionImporter) importBytesWithPacket(input DecisionInput, submittedD
 	var packet domain.ReviewPacket
 	if err := json.Unmarshal(packetData, &packet); err != nil {
 		return DecisionResult{}, err
+	}
+	if decision.Reviewer.Type == "system" {
+		if decision.Reviewer.ID != ObjectiveReviewerID || decision.Verdict != "accept" || decision.PublicationRecommendation != "do-not-publish" || decision.MergeRecommendation != "do-not-merge" || len(decision.BlockingFindings) != 0 || len(decision.NonBlockingFindings) != 0 {
+			return DecisionResult{}, errors.New("review: unsupported system Decision")
+		}
+		if err := validateObjective(input, packet); err != nil {
+			return DecisionResult{}, err
+		}
 	}
 	packetDigest, err := canonical.DigestJSON(packetData)
 	if err != nil {

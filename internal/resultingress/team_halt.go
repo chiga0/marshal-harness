@@ -35,7 +35,7 @@ func validateTeamHalt(plan TeamPlanState, halt TeamPlanHalt) error {
 		return ErrTeamPlanConflict
 	}
 	switch halt.Stage {
-	case "prepare", "materialize", "start", "inspect", "collect", "verify":
+	case "prepare", "materialize", "start", "inspect", "collect", "verify", "review":
 	default:
 		return ErrTeamPlanConflict
 	}

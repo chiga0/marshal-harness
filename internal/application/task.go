@@ -33,6 +33,10 @@ type TaskDraftPort interface {
 type TaskApplicationPort interface {
 	TaskDraftPort
 	CancelTask(context.Context, CancelTaskRequest) (TaskProjection, error)
+	TaskArtifactPort
+}
+
+type TaskArtifactPort interface {
 	ReadTaskArtifact(context.Context, string) (TaskArtifact, error)
 }
 

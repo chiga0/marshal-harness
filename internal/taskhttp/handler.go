@@ -28,11 +28,12 @@ const maxResponse = 2 << 20
 type MutationLane func(context.Context, func(context.Context) error) error
 
 type HandlerConfig struct {
-	Application application.TaskDraftPort
-	Host        string
-	Token       string
-	Recheck     func(context.Context) error
-	Mutation    MutationLane
+	Application       application.TaskDraftPort
+	Host              string
+	Token             string
+	Recheck           func(context.Context) error
+	Mutation          MutationLane
+	AutomaticDecision bool
 }
 
 type Handler struct {
@@ -81,7 +82,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/v1/capabilities" && r.Method == http.MethodGet {
-		writeJSON(w, http.StatusOK, map[string]any{"profile": "task-draft/v1", "supported": []string{"create", "query", "confirm", "graph", "workers"}, "pending": []string{"cancel", "automatic-decision", "artifact-download"}})
+		supported := []string{"create", "query", "confirm", "graph", "workers"}
+		pending := []string{"cancel"}
+		if h.config.AutomaticDecision {
+			supported = append(supported, "automatic-decision")
+		} else {
+			pending = append(pending, "automatic-decision")
+		}
+		if _, ok := h.config.Application.(application.TaskArtifactPort); ok {
+			supported = append(supported, "artifact-download")
+		} else {
+			pending = append(pending, "artifact-download")
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"profile": "task-draft/v1", "supported": supported, "pending": pending})
 		return
 	}
 	var result any
@@ -132,6 +145,33 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id := parts[2]
+		if len(parts) == 4 && parts[3] == "artifact" && r.Method == http.MethodGet {
+			port, ok := h.config.Application.(application.TaskArtifactPort)
+			if !ok {
+				writeError(w, http.StatusNotFound, "capability-not-supported")
+				return
+			}
+			artifact, e := port.ReadTaskArtifact(ctx, id)
+			if e != nil {
+				writeApplicationError(w, e)
+				return
+			}
+			if artifact.Manifest.Validate() != nil || artifact.Manifest.GoalID != id || int64(len(artifact.Content)) != artifact.Manifest.ContentBytes || canonical.DigestBytes(artifact.Content) != artifact.Manifest.ContentDigest {
+				writeError(w, http.StatusServiceUnavailable, "authority-conflict")
+				return
+			}
+			if h.config.Recheck(ctx) != nil {
+				writeError(w, http.StatusServiceUnavailable, "production-owner-not-current")
+				return
+			}
+			w.Header().Set("Content-Type", "application/zip")
+			w.Header().Set("Content-Length", strconv.Itoa(len(artifact.Content)))
+			w.Header().Set("Content-Disposition", "attachment; filename=\"task-delivery.zip\"")
+			w.Header().Set("ETag", "\""+artifact.Manifest.ContentDigest+"\"")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(artifact.Content)
+			return
+		}
 		if len(parts) == 4 && parts[3] == "approve" && r.Method == http.MethodPost {
 			var request application.ApproveTaskRequest
 			if readJSON(w, r, &request) != nil {
@@ -237,7 +277,7 @@ func writeApplicationError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case application.ReasonTaskNotFound:
 		status = http.StatusNotFound
-	case application.ReasonAuthorityConflict:
+	case application.ReasonAuthorityConflict, application.ReasonTaskArtifactNotReady:
 		status = http.StatusConflict
 	case application.ReasonTaskConfirmationExpired:
 		status = http.StatusGone
