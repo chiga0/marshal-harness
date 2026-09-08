@@ -49,6 +49,7 @@ class Fake:
         self.media = {}
         self.delay_headers = False
         self.declared_port = None
+        self.supported = ["create", "query", "confirm", "graph", "workers"]
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -91,7 +92,7 @@ class Fake:
                     return
                 result = outer.task
                 if self.path == "/v1/capabilities":
-                    result = {"profile": "task-draft/v1", "supported": ["create", "query", "confirm", "graph", "workers"], "pending": demo.PENDING}
+                    result = {"profile": "task-draft/v1", "supported": outer.supported, "pending": demo.PENDING}
                 elif self.path.endswith("/graph"):
                     result = {"taskId": outer.task["id"], "edges": outer.task["edges"], "status": outer.task["status"]}
                 elif self.path.endswith("/workers"):
@@ -129,6 +130,93 @@ class Fake:
 
 
 class DemoTests(unittest.TestCase):
+    def cancellation(self, fake, status="cancelling"):
+        fake.supported.append("cancel")
+        fake.task.update(status=status, cancellationRequested=True)
+        fake.status["/v1/tasks/task:demo/cancel"] = 202
+
+    def test_cancel_replays_original_revision_and_key_without_claiming_stopped(self):
+        with Fake() as fake, tempfile.TemporaryDirectory() as tmp:
+            self.cancellation(fake)
+            fake.lose.add("/v1/tasks/task:demo/cancel")
+            rc, rows = self.run_cli(fake, tmp, ["cancel", "--task-id", "task:demo",
+                "--expected-revision", "9007199254740993", "--key", "cancel:key"])
+            self.assertEqual(rc, 0, rows)
+            sent = [call for call in fake.calls if call["method"] == "POST"]
+            self.assertEqual(len(sent), 2)
+            self.assertEqual(sent[0], sent[1])
+            self.assertEqual(json.loads(sent[0]["body"]), {"expectedRevision": 9007199254740993})
+            self.assertEqual(sent[0]["key"], "cancel:key")
+            self.assertEqual(rows[0]["status"], "cancelling")
+            self.assertFalse(rows[0]["taskCancellationComplete"])
+            self.assertTrue(all(not row["deliveryComplete"] for row in rows))
+            self.assertNotIn("cancel", rows[0]["pending"])
+
+    def test_cancel_capability_missing_never_sends_mutation(self):
+        with Fake() as fake, tempfile.TemporaryDirectory() as tmp:
+            rc, rows = self.run_cli(fake, tmp, ["cancel", "--task-id", "task:demo",
+                "--expected-revision", "9", "--key", "cancel:key"])
+            self.assertEqual(rc, 2)
+            self.assertEqual(rows[0]["code"], "task-cancellation-not-supported")
+            self.assertEqual([c["method"] for c in fake.calls], ["GET"])
+
+    def test_cancel_conflict_never_refreshes_or_creates_replacement(self):
+        with Fake() as fake, tempfile.TemporaryDirectory() as tmp:
+            self.cancellation(fake)
+            fake.status["/v1/tasks/task:demo/cancel"] = 409
+            rc, rows = self.run_cli(fake, tmp, ["cancel", "--task-id", "task:demo",
+                "--expected-revision", "8", "--key", "cancel:key"])
+            self.assertEqual(rc, 2)
+            self.assertEqual(rows[0]["code"], "http-status-409")
+            self.assertEqual(rows[0]["taskId"], "task:demo")
+            self.assertEqual(len(fake.calls), 2)
+
+    def test_cancel_validates_identity_int64_revision_and_response(self):
+        with Fake() as fake:
+            self.cancellation(fake)
+            client = demo.Client(fake.record())
+            client.capabilities()
+            for revision in (True, 0, -1, 1.5, "9", 1 << 63):
+                with self.subTest(revision=revision), self.assertRaises(demo.ClientError):
+                    client.cancel("task:demo", revision, "key")
+            self.assertEqual(len(fake.calls), 1)
+            for changes in ({"id": "other"}, {"status": "completed"}, {"cancellationRequested": False}):
+                original = copy.deepcopy(fake.task)
+                fake.task.update(changes)
+                with self.assertRaisesRegex(demo.ClientError, "invalid-cancellation-response"):
+                    client.cancel("task:demo", 9, "key")
+                fake.task = original
+
+    def test_cancelled_response_and_observation_are_not_delivery(self):
+        with Fake() as fake, tempfile.TemporaryDirectory() as tmp:
+            self.cancellation(fake, "cancelled")
+            rc, rows = self.run_cli(fake, tmp, ["cancel", "--task-id", "task:demo",
+                "--expected-revision", "9", "--key", "cancel:key", "--watch-seconds", "10"])
+            self.assertEqual(rc, 0, rows)
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(row["taskCancellationComplete"] for row in rows))
+            self.assertTrue(all(not row["deliveryComplete"] for row in rows))
+
+    def test_cancel_response_loss_preserves_original_task_for_recovery(self):
+        with Fake() as fake, tempfile.TemporaryDirectory() as tmp:
+            self.cancellation(fake)
+            original = demo.Client._once
+            def lose(client, method, path, *args, **kwargs):
+                response = original(client, method, path, *args, **kwargs)
+                if path.endswith("/cancel"):
+                    raise demo.TransportError("transport-unavailable-operation-may-have-committed")
+                return response
+            with mock.patch.object(demo.Client, "_once", lose):
+                rc, rows = self.run_cli(fake, tmp, ["cancel", "--task-id", "task:demo",
+                    "--expected-revision", "9", "--key", "cancel:key"])
+            self.assertEqual(rc, 2)
+            self.assertEqual(rows[0]["taskId"], "task:demo")
+            self.assertTrue(rows[0]["operationMayHaveCommitted"])
+            self.assertIn("original-cancel-key", rows[0]["recovery"])
+            sent = [c for c in fake.calls if c["method"] == "POST"]
+            self.assertEqual(len(sent), 2)
+            self.assertEqual(sent[0], sent[1])
+
     def private(self, path, value):
         path.write_text(json.dumps(value), encoding="utf-8")
         path.chmod(0o600)
