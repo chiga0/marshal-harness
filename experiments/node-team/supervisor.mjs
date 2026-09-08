@@ -16,8 +16,8 @@ export function publicTask(task) {
   const { id, status, revision, intent, plan, previewDigest, createdAt, approvedAt, deadline, finishedAt, reason, attempts } = task;
   return { id, status, revision, intent, plan, previewDigest, createdAt, approvedAt, deadline, finishedAt, reason, attempts, usage: null,
     workers: task.workers.map(worker => {
-      const { id, nodeId, role, status, pid, guardPid, startedAt, finishedAt, stdoutBytes, stderrBytes, lastObservedAt, exitCode, reason, cleaned } = worker;
-      return { id, nodeId, role, status, pid, guardPid, startedAt, finishedAt, stdoutBytes, stderrBytes, lastObservedAt, exitCode, reason, cleaned, usage: null };
+      const { id, nodeId, role, status, pid, guardPid, startedAt, agentExitedAt, finishedAt, stdoutBytes, stderrBytes, lastObservedAt, exitCode, reason, cleaned } = worker;
+      return { id, nodeId, role, status, pid, guardPid, startedAt, agentExitedAt, finishedAt, stdoutBytes, stderrBytes, lastObservedAt, exitCode, reason, cleaned, usage: null };
     }) };
 }
 
@@ -161,7 +161,7 @@ export class Supervisor {
       } else if (message?.type === 'terminal') {
         if (entry.terminal) return;
         entry.terminal = message;
-        await this.change(state => { const w = state.tasks.find(t => t.id === entry.taskId).workers.find(w => w.id === entry.workerId); w.status = 'collecting'; w.exitCode = message.code; w.stdoutBytes = message.stdoutBytes; w.stderrBytes = message.stderrBytes; });
+        await this.change(state => { const w = state.tasks.find(t => t.id === entry.taskId).workers.find(w => w.id === entry.workerId); w.status = 'collecting'; w.exitCode = message.code; w.stdoutBytes = message.stdoutBytes; w.stderrBytes = message.stderrBytes; if (message.agentExitedAt) w.agentExitedAt = message.agentExitedAt; });
         this.cleanGuard(entry);
       }
     });
