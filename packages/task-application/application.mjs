@@ -4,7 +4,9 @@ import {TaskError, reject, limits, freezePlan, publicTask, nextRevision, termina
 import {TaskExecution} from './execution.mjs';
 import {TaskArtifacts} from './artifacts.mjs';
 import {TaskVerification} from './verification.mjs';
+import {TaskClarification} from './clarification.mjs';
 export {createVerificationPort} from './verification.mjs';
+export {createClarificationPort} from './clarification.mjs';
 
 const hash = value => digest(encode(value));
 const parse = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
@@ -23,12 +25,13 @@ const idOK = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,
  */
 export class TaskApplication {
   constructor({store, owner, clock = Date.now, makeId = prefix => prefix + '-' + randomUUID(),
-    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null}) {
+    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null}) {
     this.store = store; this.owner = owner; this.clock = clock; this.makeId = makeId;
     this.defaultLimits = limits(defaultLimits);
     this.execution = new TaskExecution(this, execution);
     this.artifacts = new TaskArtifacts(this, depot);
     this.verification = new TaskVerification(this, verification);
+    this.clarification = new TaskClarification(this, clarification);
     this.dispatch = this.dispatch.bind(this);
   }
   now() {
@@ -60,8 +63,12 @@ export class TaskApplication {
     if (!idOK(taskId)) reject('invalid_request', 400);
     const entry = tx.projection('task', taskId);
     if (!entry) reject('not_found', 404);
+    return this.taskRecord(entry, taskId);
+  }
+  taskRecord(entry, taskId = entry.id) {
     const record = parse(entry);
     if (record.task.id !== taskId || record.task.revision !== integer(entry.revision)) reject('application_unavailable', 503);
+    if (record.clarification && record.clarification.profile !== 'task-clarification/v1') reject('recovery_required', 409);
     return record;
   }
   save(tx, record, type, detail = {}) {
@@ -88,7 +95,11 @@ export class TaskApplication {
   receiptKey(request) {
     if (!idOK(request.key)) reject('invalid_request', 400);
     const scope = request.taskId ?? 'tasks', key = {scope, operation: request.operation, keyDigest: hash(request.key)};
-    const requestDigest = hash({operation: request.operation, taskId: request.taskId ?? null, body: request.body});
+    const input = {operation: request.operation, taskId: request.taskId ?? null, body: request.body};
+    // Only the new answer operation adds its route subject. Keep every old
+    // operation's exact digest algorithm and historical receipt bytes unchanged.
+    if (request.operation === 'task.answer') { this.clarification.shape(request); input.questionId = request.questionId; }
+    const requestDigest = hash(input);
     return {key, requestDigest};
   }
   receipt(tx, request) {
@@ -98,7 +109,10 @@ export class TaskApplication {
     catch (error) { if (error.code === 'conflict') reject('idempotency_conflict', 409); throw error; }
     return previous ? parse(previous) : null;
   }
-  replay(request) { return this.transaction(false, tx => this.receipt(tx, request)); }
+  replay(request) { return this.transaction(false, tx => {
+    const previous = this.receipt(tx, request);
+    return previous && request.operation === 'task.answer' ? this.clarification.replay(tx, previous) : previous;
+  }); }
   mutate(request, callback) {
     const {key, requestDigest} = this.receiptKey(request);
     return this.transaction(true, tx => {
@@ -114,35 +128,47 @@ export class TaskApplication {
     if (context.signal?.aborted) reject('application_unavailable', 503);
     if (!request || typeof request.operation !== 'string') reject('invalid_request', 400);
     if (['input.create', 'artifact.get', 'artifact.content'].includes(request.operation)) return this.artifacts.dispatch(request);
-    if (request.operation === 'task.create') return this.create(request);
+    if (request.operation === 'task.create') return this.create(request, context);
+    if (request.operation === 'task.answer') return this.clarification.answer(request, context);
     if (['task.approve', 'task.cancel', 'task.pause', 'task.resume'].includes(request.operation)) return this.control(request);
     return this.transaction(false, tx => this.query(tx, request));
   }
-  create(request) {
+  newTaskRecord(body, budget, inputArtifacts) {
+    const now = this.now(), at = new Date(now).toISOString(), taskId = this.newId('task');
+    return {task: {id: taskId, revision: 1, status: 'draft', phase: 'intake', intent: body.intent,
+      createdAt: at, updatedAt: at, allowedActions: ['cancel'], plan: null, artifactIds: [],
+      deadlineAt: new Date(now + budget.timeoutMs).toISOString()},
+    input: clone(body), inputArtifacts: clone(inputArtifacts), inputDigest: inputArtifacts.length ? hash({body, inputArtifacts}) : hash(body), limits: clone(budget), plan: null,
+    approved: null, nodes: [], attempts: 0, reworkCount: 0, retryCount: 0};
+  }
+  async create(request, context) {
     const body = request.body;
     if (!body || !isText(body.intent) || Object.keys(body).some(key => !['intent', 'context', 'requirements', 'limits'].includes(key))) reject('invalid_request', 400);
     const budget = limits(body.limits ?? this.defaultLimits);
     const previous = this.replay(request);
     if (previous) return previous;
     const inputArtifacts = this.artifacts.inputs(body.context?.inputRefs);
+    const prepared = await this.clarification.prepare(body, budget, inputArtifacts, context);
     return this.mutate(request, tx => {
       this.artifacts.recheck(tx, inputArtifacts);
-      const now = this.now(), at = new Date(now).toISOString(), taskId = this.newId('task');
-      const record = {task: {id: taskId, revision: 1, status: 'draft', phase: 'intake', intent: body.intent,
-        createdAt: at, updatedAt: at, allowedActions: ['cancel'], plan: null, artifactIds: [],
-        deadlineAt: new Date(now + budget.timeoutMs).toISOString()},
-      input: clone(body), inputArtifacts, inputDigest: inputArtifacts.length ? hash({body, inputArtifacts}) : hash(body), limits: budget, plan: null,
-      approved: null, nodes: [], attempts: 0, reworkCount: 0, retryCount: 0};
-      const source = this.save(tx, record, 'task.created', {inputDigest: record.inputDigest});
+      const record = prepared?.record ?? this.newTaskRecord(body, budget, inputArtifacts), taskId = record.task.id;
+      if (prepared) {
+        this.clarification.configuration(record);
+        if (this.now() >= Date.parse(record.clarification.confirmBefore)) reject('question_expired', 410);
+        if (context?.signal?.aborted) reject('application_unavailable', 503);
+      }
+      const source = this.save(tx, record, prepared ? 'task.clarification-created' : 'task.created', {inputDigest: record.inputDigest});
       // Planning is a distinct read/clarification obligation; it grants no
       // unapproved implementation, file edits or publication authority.
-      this.enqueue(tx, source, taskId, 'plan', {taskId, expectedRevision: 1, inputDigest: record.inputDigest});
-      return {source, result: publicTask(record)};
+      if (prepared) this.clarification.persist(tx, record, prepared.preview, source);
+      else this.enqueue(tx, source, taskId, 'plan', {taskId, expectedRevision: 1, inputDigest: record.inputDigest});
+      return {source, result: publicTask(record, this.now())};
     });
   }
   proposePlan(taskId, expectedRevision, proposal) {
     return this.transaction(true, tx => {
       const record = this.get(tx, taskId);
+      if (record.clarification) reject('state_conflict', 409);
       if (record.task.revision !== expectedRevision) reject('revision_conflict', 409);
       if (!['draft', 'planning', 'awaiting-approval'].includes(record.task.status) || record.approved) reject('state_conflict', 409);
       if (this.now() >= Date.parse(record.task.deadlineAt)) reject('state_conflict', 409);
@@ -173,19 +199,23 @@ export class TaskApplication {
       const original = task.status;
       let status = 'succeeded', action;
       if (request.operation === 'task.approve') {
-        if (original !== 'awaiting-approval' || !record.plan || body.planRevision !== record.plan.revision ||
+        this.clarification.approve(tx, record);
+        if (original !== (record.clarification ? 'awaiting-confirmation' : 'awaiting-approval') || !record.plan || body.planRevision !== record.plan.revision ||
             body.planDigest !== record.plan.digest) reject('plan_conflict', 409);
         if (record.verification) this.verification.configured(record.verification);
         const deadline = Math.min(Date.parse(task.deadlineAt), Date.parse(task.createdAt) + record.plan.budget.timeoutMs);
         if (this.now() >= deadline) reject('state_conflict', 409);
         task.deadlineAt = new Date(deadline).toISOString();
         record.approved = {planRevision: record.plan.revision, planDigest: record.plan.digest, at: new Date(this.now()).toISOString()};
+        if (record.clarification) record.approved.preview = {digest: record.clarification.previewDigest,
+          revision: record.clarification.previewRevision, inputsDigest: record.inputDigest};
         task.status = 'queued'; task.phase = 'execution'; status = 'accepted'; action = 'dispatch';
       } else if (request.operation === 'task.cancel') {
         // Draft planning also has an obligation. Cancellation always emits a
         // stop/fence; completion must be established by execution reconciliation.
         task.status = 'cancelling'; status = 'accepted'; action = 'cancel';
       } else if (request.operation === 'task.pause') {
+        if (record.clarification && !record.approved) reject('state_conflict', 409);
         if (!['queued', 'running', 'awaiting-answer'].includes(original)) reject('state_conflict', 409);
         record.pausedFrom = original; task.status = 'paused'; status = 'accepted'; action = 'pause';
       } else {
@@ -203,11 +233,12 @@ export class TaskApplication {
     });
   }
   query(tx, request) {
+    if (request.operation === 'task.questions') return this.clarification.questions(tx, request);
     if (['worker.get', 'task.workers'].includes(request.operation)) return this.execution.query(tx, request);
     const page = request.page ?? {}, limit = page.limit ?? 50, after = page.cursor ?? '';
     if (request.operation === 'task.list') {
       const entries = tx.projections('task', after, limit);
-      return {items: entries.map(entry => publicTask(parse(entry))), nextCursor: entries.length === limit ? entries.at(-1).id : null};
+      return {items: entries.map(entry => publicTask(this.taskRecord(entry), this.now())), nextCursor: entries.length === limit ? entries.at(-1).id : null};
     }
     if (request.operation === 'operation.get') {
       const op = parse(tx.projection('operation', request.operationId));
@@ -216,7 +247,7 @@ export class TaskApplication {
     }
     if (!request.operation.startsWith('task.')) reject('unsupported_operation', 501);
     const record = this.get(tx, request.taskId), task = record.task;
-    if (request.operation === 'task.get') return publicTask(record);
+    if (request.operation === 'task.get') return publicTask(record, this.now());
     if (request.operation === 'task.plan') { if (!record.plan) reject('plan_conflict', 409); return clone(record.plan); }
     if (request.operation === 'task.graph') {
       if (!record.plan) reject('plan_conflict', 409);

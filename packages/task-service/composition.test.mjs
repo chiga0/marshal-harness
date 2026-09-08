@@ -6,8 +6,8 @@ import path from 'node:path';
 import {setImmediate as turn} from 'node:timers/promises';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {Store} from '../task-store/store.mjs';
-import {TaskApplication} from '../task-application/application.mjs';
+import {Store, encode, digest} from '../task-store/store.mjs';
+import {TaskApplication, createClarificationPort} from '../task-application/application.mjs';
 import {TaskClient} from '../task-client/index.mjs';
 import {startTaskService} from './composition.mjs';
 
@@ -172,6 +172,33 @@ test('HTTP cancel finishes only after controlled cleanup, original key does not 
   assert.deepEqual(await client.request('task.cancel', options), operation);
   assert.equal(f.provider.workers.length, 1);
   assert.equal((await client.request('operation.get', {path: {operationId: operation.id}})).status, 'succeeded');
+});
+
+test('trusted finite clarification reaches HTTP and resident without a planner before exact final confirmation', async t => {
+  const f = fixture(t), identity = id => ({id, version: '1', digest: digest(encode({fixture: id}))});
+  const clarification = createClarificationPort({template: identity('finite-service-fixture'), applies: body => body.intent === 'finite service input',
+    slots: [{id: 'language', prompt: '输出使用哪种语言？', validator: identity('validate-language'), read: () => null, validate: value => value === 'zh'}],
+    renderer: {...identity('render-two-authors'), render: () => plan}});
+  let service = await f.start({clarification}), client = f.client(service);
+  const original = await client.createTask({intent: 'finite service input'}, 'finite-create');
+  assert.equal(original.status, 'awaiting-answer');
+  const options = {path: {taskId: original.id}}, questions = await client.request('task.questions', options);
+  assert.equal(questions.items.length, 1); assert.equal(f.provider.workers.length, 0);
+  const answer = {path: {...options.path, questionId: questions.items[0].id}, idempotencyKey: 'finite-answer',
+    body: {expectedRevision: original.revision, questionRevision: 1, previewDigest: questions.previewDigest, answer: 'zh'}};
+  const receipt = await client.request('task.answer', answer); assert.equal(receipt.task.status, 'awaiting-confirmation');
+  assert.equal((await client.request('supervisor.get')).blockedTasks, 1); assert.equal(f.provider.workers.length, 0);
+  await service.shutdown();
+  service = await f.start({mode: 'open', clarification}); client = f.client(service);
+  const replay = await client.request('task.answer', answer); assert.deepEqual(replay.operation, receipt.operation); assert.equal(replay.replayed, true);
+  const current = await client.getTask(original.id); assert.equal(current.status, 'awaiting-confirmation');
+  await client.approveTask(current.id, {expectedRevision: current.revision, planRevision: current.plan.revision, planDigest: current.plan.digest}, 'finite-approve');
+  await until(() => f.provider.workers.length === 2);
+  assert.ok(f.provider.workers.every(worker => worker.identity.role === 'author')); // No paid planner on answers/reopen.
+  const cancel = await client.getTask(original.id);
+  await client.request('task.cancel', {path: options.path, body: {expectedRevision: cancel.revision}, idempotencyKey: 'finite-cancel'});
+  await until(async () => (await client.getTask(original.id)).status === 'cancelled');
+  assert.equal(f.provider.workers.length, 2);
 });
 
 test('same root refuses concurrent owner and unknown/partial layouts without repairs', async t => {

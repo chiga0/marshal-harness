@@ -22,12 +22,16 @@ export function actions(task) {
   if (terminal.has(task.status) || task.status === 'cancelling') return [];
   if (task.status === 'paused') return ['resume', 'cancel'];
   if (task.status === 'awaiting-approval') return ['approve', 'cancel'];
+  if (task.status === 'awaiting-confirmation') return ['approve', 'cancel'];
   if (task.status === 'awaiting-answer') return ['answer', 'cancel', 'pause'];
   return ['queued', 'running'].includes(task.status) ? ['pause', 'cancel'] : ['cancel'];
 }
-export function publicTask(record) {
+export function publicTask(record, now = Date.now()) {
   const task = clone(record.task);
   task.allowedActions = actions(task);
+  if (record.clarification && !record.approved && task.status === 'awaiting-answer') task.allowedActions = ['answer', 'cancel'];
+  if (record.clarification && !record.approved && ['awaiting-answer', 'awaiting-confirmation'].includes(task.status) &&
+    now >= Date.parse(record.clarification.confirmBefore)) task.allowedActions = ['cancel'];
   return task;
 }
 
