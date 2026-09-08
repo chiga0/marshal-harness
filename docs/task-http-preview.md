@@ -49,6 +49,26 @@ ready 只输出 URL、profile、连接文件路径；随机 token 仅写入当�
 
 下载客户端后继 `b086d1a0d6331ce0cbacf7471d5d8ad5389ec490` 已通过独立复跑的 30 项无模型测试与复审。`download --task-id ID --output-dir NEW_DIR [--run-oracle]` 只接受已完成 Task 的有界 ZIP、固定文件及匹配摘要；明确指定 `--run-oracle` 才执行本地固定 oracle。审查发现的后代进程残留已修复为持有会话 leader、先清理所属进程组再回收，并有两类真实 fork 回归。此时服务端自动 Decision/完整下载仍在开发，不能据客户端 fixture 宣称 HTTP 团队交付已通；下一项组合验证是消费 Go 实产 ZIP，然后验证完整 Task 主链。Task cancel 与真实双 Worker 验收仍开放。
 
+## 两阶段 HTTP 演示驱动
+
+`scripts/task-http-team-drive.py` 复用上述客户端，只连接已启动服务，不启动 Marshal/Worker、不调用逐 Run CLI、不读取内部 RB1，也不代签 Decision。先准备并人工查看原预览，再明确确认该摘要：
+
+```sh
+python3 scripts/task-http-team-drive.py --connection /absolute/connection.json prepare \
+  --submission /absolute/submission.json --key demo-create-1 \
+  --preview-out /absolute/preview.json --evidence-dir /absolute/new-prepare-evidence
+python3 scripts/task-http-team-drive.py --connection /absolute/connection.json complete \
+  --preview /absolute/preview.json --confirm-preview-digest sha256:原预览摘要 \
+  --key demo-approve-1 --evidence-dir /absolute/new-complete-evidence \
+  --output-dir /absolute/new-delivery --timeout-seconds 600
+```
+
+输入/连接文件为私有常规文件；原预览含业务正文，须在脱敏证据目录之外保存。`complete` 明确包含在新目录运行固定业务 oracle，仅适用于可信代码。退出码 `0` 为本阶段成功（prepare 只创建草稿；complete 才证明下载消费），`2` 为客户端/协议错误，`3` 为观察窗口结束，`4` 为观察到 blocked/confirmation-expired。超时不代表 Task 失败，不取消 Worker、不刷新服务端预算。连接重启可用新连接文件、原预览和同 key 接续；证据/下载目录必须新建，不覆盖已有成果。输出的 Task ID 与 recovery 提示用于恢复原操作，不能改 key 重建任务掩盖失败。
+
+driver source `6ae76e800319636e491713979c85f3609864c327` 已独立复跑 11 项合成 HTTP 测试并审查，无 P0/P1：覆盖创建→显式确认→运行/待审→completed→下载→固定业务 oracle，以及冲突、观察超时、重连和不覆盖。`processOverlapEvidence=unavailable`：HTTP 状态不是 OS 活进程证明。真实 B1 验收仍须同候选真实 Worker、独立 Decision/最终 Outcome、执行重叠及取消/重启证据。
+
+服务端开发快照 `sha256:f4baf1fe56f2387ae15e5af32cad105bfc207d4cf9d9b21db55926c7269c85f1` 已提前在受限 ECS 运行五包定向 `Test(Task|TeamOutcome)`，全部通过（非 race，非最终 commit）。其 Go 生产 ZIP 序列化器输出 495 bytes，摘要 `sha256:0010360f529e2099d66c21feb5de1996fefd7e7a18f8304609842722c1531ea8`，已由客户端原 `validate_bundle` 成功消费三个文件。此项只证明跨语言格式兼容；文件为合成内容，不是原完整 Git 导出、HTTP 服务端或真实业务验收证据，后继完整调用链仍需验证。
+
 ## 历史验证记录
 
 - 旧基线 `749ed23acf4f0a2b0b79f6801a5c421db1592bb2` 的 ECS 动态：`goal/planning` 的 `TestTask(Submission|Template)` 两包通过；`resultingress/productionruntime` 完整测试通过，包耗时 57.231s / 0.885s、作业 88.702s、exit 0。这不是新 HTTP 实现的证据。
