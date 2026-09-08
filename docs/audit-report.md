@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-08 22:22：真实团队交付已成立，完整崩溃恢复仍有实现缺口
+
+正式Node实现已分别完成Qwen必要日期问答团队与Pi原生工具团队的纯HTTP实机交付、独立验收、下载消费和正常实例重开；产品代码已合入并推送`8d48d94`。这取代下文早期“只有组件/未形成团队”的当前性判断，但不抹去旧失败和源码范围，不自动授予B1整体、API-STABLE或production。
+
+**开放：B2-NODE-CRASH-SETTLEMENT（发布关键缺口）**。独立审查及`03c7b86`两条实际CLI/HTTP/SQLite/guard crash测试确认：服务死后原guard能清理所属Agent及继承后代，open不重复派发/退款；但`TaskExecution.reconcile`将旧代活Worker留为intervention，当前ticket入口拒绝旧generation，没有合法跨代原清理证明接纳路径。容量/ready因而继续阻断，即使物理进程已经消失，也不能以此直接改权威事实。下一步以create/dispatch/result/cancel四接缝组合证据为基础，先明确最小跨代清理收口合同再实施；禁止裸PID回放操作、Worker自签清理、旧成果接纳、手工改库或用永久intervention假称完整恢复。
+
+开发期合并流程已按用户明确授权区分研发与产品：独立review及相关验证通过即可维护者合入并正常推送，v1正式发布后恢复PR；产品自动merge/Publisher权限没有放开。它解除一个实际流程歧义，不是删掉恢复或权限验证来升级成熟度。当前另有Worker/Publisher实际分权未证和ECS本机scp遭SIGKILL的部署阻塞；精确证据、重试成本及边界见[实施记录](node-task-service-status-2026-09-08.md)。
+
 ## 2026-09-08：正式组件已集成，下一步必须关闭自主交付
 
 正式 Node 的24操作合同不等于24项应用能力：当前代码集成基线 `5f511abe` 实际接通14项，Supervisor/最终验收/服务入口尚未完整。真实 Qwen 已用原生工具读取公开输入并通过独立结果核对，不再只是 initialize；也不能将该证据外推为团队或恢复成功。ACP Provider、ArtifactDepot、HTTP客户端及执行 reducer 已独立审查合入。执行首审发现4项P1，经一次聚合修复、27项定向测试与同 reviewer 复核关闭，失败分母不清零；精确证据见[实施检查点](node-task-service-status-2026-09-08.md)。

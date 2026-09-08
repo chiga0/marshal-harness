@@ -6,6 +6,8 @@
 
 ## 1. 三个用户出口，不再把平台准备当交付
 
+**22:22 CST 整合已同步**：产品main/origin/main=`8d48d94`，source=`ce2879f`；Pi+Qwen问答组合384项通过，随后新增两项真实service crash测试通过并合入。当前只关闭对应接线/证据子条件，不提升B1/B2/API-STABLE。优先补活跃执行crash后跨代清理收口与create/result原子性故障组合；权限分离、局部修正与正式部署/发行继续保留。ECS传输被本机SIGKILL，未运行服务。详见[同步及未完成项](node-task-service-status-2026-09-08.md)。
+
 Pi候选`74a239e`的完整Node回归已由非作者独立完成：374/374通过、182.405秒、零跳过；与真实Pi团队证据共同推进第二Adapter子条件，尚未合main，不关闭B2/API-STABLE。
 
 **22:07 CST Pi实机增量**：候选`74a239e`真实Pi HTTP planner→双作者→独立验收→下载/正常重开一次通过，37.064秒；推进第二Adapter真实团队子条件。尚未合main，完整回归中。下一项优先是已定位的活跃执行crash后收口缺口及同链故障测试，不以第二品牌成功关闭B2/API-STABLE，详见[当前记录](node-task-service-status-2026-09-08.md)。
