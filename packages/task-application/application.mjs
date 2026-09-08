@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {encode, digest, makeEvent} from '../task-store/store.mjs';
 import {TaskError, reject, limits, freezePlan, publicTask, nextRevision, terminal, isText, clone} from './model.mjs';
 import {TaskExecution} from './execution.mjs';
+import {TaskArtifacts} from './artifacts.mjs';
 
 const hash = value => digest(encode(value));
 const parse = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
@@ -20,10 +21,11 @@ const idOK = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,
  */
 export class TaskApplication {
   constructor({store, owner, clock = Date.now, makeId = prefix => prefix + '-' + randomUUID(),
-    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}}) {
+    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null}) {
     this.store = store; this.owner = owner; this.clock = clock; this.makeId = makeId;
     this.defaultLimits = limits(defaultLimits);
     this.execution = new TaskExecution(this, execution);
+    this.artifacts = new TaskArtifacts(this, depot);
     this.dispatch = this.dispatch.bind(this);
   }
   now() {
@@ -80,24 +82,35 @@ export class TaskApplication {
   }
   // Replay lookup deliberately precedes CAS. A lost HTTP reply must not make a
   // previously accepted operation consume another budget or dispatch twice.
-  mutate(request, callback) {
+  receiptKey(request) {
     if (!idOK(request.key)) reject('invalid_request', 400);
     const scope = request.taskId ?? 'tasks', key = {scope, operation: request.operation, keyDigest: hash(request.key)};
     const requestDigest = hash({operation: request.operation, taskId: request.taskId ?? null, body: request.body});
+    return {key, requestDigest};
+  }
+  receipt(tx, request) {
+    const {key, requestDigest} = this.receiptKey(request);
+    let previous;
+    try { previous = tx.receipt(key.scope, key.operation, key.keyDigest, requestDigest); }
+    catch (error) { if (error.code === 'conflict') reject('idempotency_conflict', 409); throw error; }
+    return previous ? parse(previous) : null;
+  }
+  replay(request) { return this.transaction(false, tx => this.receipt(tx, request)); }
+  mutate(request, callback) {
+    const {key, requestDigest} = this.receiptKey(request);
     return this.transaction(true, tx => {
-        let previous;
-        try { previous = tx.receipt(key.scope, key.operation, key.keyDigest, requestDigest); }
-        catch (error) { if (error.code === 'conflict') reject('idempotency_conflict', 409); throw error; }
-        if (previous) return parse(previous);
-        const {result, source} = callback(tx);
-        tx.putReceipt(key, requestDigest, source, encode(result));
-        return clone(result);
-      });
+      const previous = this.receipt(tx, request);
+      if (previous) return previous;
+      const {result, source} = callback(tx);
+      tx.putReceipt(key, requestDigest, source, encode(result));
+      return clone(result);
+    });
   }
   async dispatch(request, context) {
     if (context?.principal !== 'local-operator') reject('forbidden', 403);
     if (context.signal?.aborted) reject('application_unavailable', 503);
     if (!request || typeof request.operation !== 'string') reject('invalid_request', 400);
+    if (['input.create', 'artifact.get', 'artifact.content'].includes(request.operation)) return this.artifacts.dispatch(request);
     if (request.operation === 'task.create') return this.create(request);
     if (['task.approve', 'task.cancel', 'task.pause', 'task.resume'].includes(request.operation)) return this.control(request);
     return this.transaction(false, tx => this.query(tx, request));
@@ -106,12 +119,16 @@ export class TaskApplication {
     const body = request.body;
     if (!body || !isText(body.intent) || Object.keys(body).some(key => !['intent', 'context', 'requirements', 'limits'].includes(key))) reject('invalid_request', 400);
     const budget = limits(body.limits ?? this.defaultLimits);
+    const previous = this.replay(request);
+    if (previous) return previous;
+    const inputArtifacts = this.artifacts.inputs(body.context?.inputRefs);
     return this.mutate(request, tx => {
+      this.artifacts.recheck(tx, inputArtifacts);
       const now = this.now(), at = new Date(now).toISOString(), taskId = this.newId('task');
       const record = {task: {id: taskId, revision: 1, status: 'draft', phase: 'intake', intent: body.intent,
         createdAt: at, updatedAt: at, allowedActions: ['cancel'], plan: null, artifactIds: [],
         deadlineAt: new Date(now + budget.timeoutMs).toISOString()},
-      input: clone(body), inputDigest: hash(body), limits: budget, plan: null,
+      input: clone(body), inputArtifacts, inputDigest: inputArtifacts.length ? hash({body, inputArtifacts}) : hash(body), limits: budget, plan: null,
       approved: null, nodes: [], attempts: 0, reworkCount: 0, retryCount: 0};
       const source = this.save(tx, record, 'task.created', {inputDigest: record.inputDigest});
       // Planning is a distinct read/clarification obligation; it grants no
