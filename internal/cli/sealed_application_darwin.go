@@ -79,13 +79,14 @@ type sealedRepositoryApplication struct {
 var _ application.PublicApplicationPort = (*sealedRepositoryApplication)(nil)
 
 type sealedRepositoryApplicationConfig struct {
-	StateRoot       string
-	RepositoryRoot  string
-	PiRuntime       string
-	PiEntrypoint    string
-	EntryIdentity   *selfidentity.LocalSelfIdentityObservationV2
-	ObserveIdentity productionruntime.LocalSelfIdentityObserver
-	RecoveryMode    sealedRepositoryRecoveryMode
+	StateRoot          string
+	RepositoryRoot     string
+	PiRuntime          string
+	PiEntrypoint       string
+	EntryIdentity      *selfidentity.LocalSelfIdentityObservationV2
+	ObserveIdentity    productionruntime.LocalSelfIdentityObserver
+	RecoveryMode       sealedRepositoryRecoveryMode
+	TaskTemplateInputs []byte
 }
 
 type sealedRepositoryRecoveryMode uint8
@@ -212,6 +213,7 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	applicationAdapter.session, err = productionruntime.OpenRepositorySession(ctx, productionruntime.RepositorySessionInputs{
 		HeldIngressDir: heldIngress, HeldRepositoryRoot: repositoryDirectory, OwnerDirectory: ownerDirectory, Acquisition: acquisition,
 		FixedMarshalPath: fixedMarshal, OwnerPrivateControlRoot: controlRoot,
+		TaskTemplateInputs: config.TaskTemplateInputs,
 		TeamInputPreflight: func(raw []byte) error {
 			preview, err := planning.PreviewTeamInputs(raw, applicationAdapter.validator)
 			if err != nil || preview.Inputs.Spec.Repository != applicationAdapter.repositoryRoot || !preview.Inputs.Spec.AuthorityNamespaceId.Equal(applicationAdapter.namespace) {

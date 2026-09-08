@@ -3,18 +3,35 @@ package application
 import (
 	"context"
 
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/goal"
 )
 
-// TaskApplicationPort belongs to the same resident application. IDs select
+// TaskDraftPort belongs to the same resident application. IDs select
 // current Goal facts; none of these inputs carry authority or host paths.
-type TaskApplicationPort interface {
+type TaskDraftPort interface {
 	CreateTask(context.Context, CreateTaskRequest) (TaskProjection, error)
 	ReadTask(context.Context, string) (TaskProjection, error)
-	ListTasks(context.Context) ([]TaskProjection, error)
+	ListTasks(context.Context, TaskListRequest) (TaskPage, error)
 	ApproveTask(context.Context, ApproveTaskRequest) (TaskProjection, error)
+}
+
+// These later capabilities are intentionally separate from the implemented
+// draft/confirmation Port. An adapter must not advertise dummy cancellation
+// or artifact handlers merely to satisfy a larger interface.
+type TaskApplicationPort interface {
+	TaskDraftPort
 	CancelTask(context.Context, CancelTaskRequest) (TaskProjection, error)
 	ReadTaskArtifact(context.Context, string) (TaskArtifact, error)
+}
+
+type TaskListRequest struct {
+	After string `json:"after"`
+	Limit int    `json:"limit"`
+}
+type TaskPage struct {
+	Items      []TaskProjection `json:"items"`
+	NextCursor string           `json:"nextCursor,omitempty"`
 }
 
 type CreateTaskRequest struct {
@@ -38,6 +55,22 @@ type TaskWorkerProjection struct {
 	Status string         `json:"status"`
 	Run    *RunProjection `json:"run,omitempty"`
 }
+
+type TaskPreviewNode struct {
+	ID           string          `json:"id"`
+	Role         string          `json:"role"`
+	Work         domain.TaskWork `json:"work"`
+	Paths        []string        `json:"paths"`
+	OracleDigest string          `json:"oracleDigest"`
+}
+
+type TaskPreview struct {
+	TemplateDigest string            `json:"templateDigest"`
+	InputsDigest   string            `json:"inputsDigest"`
+	Publication    string            `json:"publication"`
+	Limits         goal.Guardrails   `json:"limits"`
+	Nodes          []TaskPreviewNode `json:"nodes"`
+}
 type TaskEdge struct {
 	From string `json:"from"`
 	To   string `json:"to"`
@@ -48,6 +81,7 @@ type TaskProjection struct {
 	Reason                string                         `json:"reason,omitempty"`
 	Revision              int64                          `json:"revision"`
 	PreviewDigest         string                         `json:"previewDigest"`
+	Preview               TaskPreview                    `json:"preview"`
 	Request               goal.TaskSubmission            `json:"request"`
 	CreatedAt             string                         `json:"createdAt"`
 	ConfirmBefore         string                         `json:"confirmBefore"`

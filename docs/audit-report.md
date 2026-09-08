@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-08：Task HTTP 候选接入与入口遗漏复盘
+
+候选把公开 Task 的创建、精确确认和按 ID 查询接到原 RepositorySession 与同一 RB1；原 accepted plan 仍是预算和三个创建义务唯一提交点，loopback adapter 复用 resident 应用和写入队列。范围与可重复请求方式见 [Task HTTP 候选入口](task-http-preview.md)。自动 Decision、Task cancel 与完整下载尚未实现，B1 不关闭，无模型重试或发布声明。
+
+唯一 reviewer 聚合发现两项 P1：新增 parser/HTTP 测试没有覆盖更外层真实 RunContext 的启动参数 gate；正数陈旧 revision 被过早归为无效输入，导致 Darwin 调用链测试期望冲突时必失败。修正把封闭参数解析复用到真实入口与启动 consumer，增加原 activation 准入和共享 writer lane 回归；revision 正值与当前草稿不符统一为冲突。该经验是验证完整入口，不是增加审批轮次或另建协议。
+
+修正曾被自动工具以 ADR 授权不足拒绝，未换工具绕过。用户随后明确授权“按 ADR0085 放行 Task HTTP 的封闭 CLI 参数、复用现有写入通道，并修正 revision 冲突返回码及相应测试”，才以原工具实施。不改 ADR 历史状态。ECS 旧基线和新源码快照的非模型完整/定向 race 结果与实际边界记录在入口文档；精确最终提交与 Darwin 实机证据仍需后续验证，分层 fixture 不冒充完整业务链。
+
 ## 2026-09-08：ADR0085 接受，恢复 Task HTTP 主线实施
 
 用户明确确认“ADR0085 ok，请实施”。据此将 ADR0085 标记 Accepted，解除 Task draft/stop/delivery、HTTP、自动独立 Decision 和完整交付的合同等待；实现复用已验证 resident 候选，不重建平行状态机。B1 仍 IN_PROGRESS，合同接受不是实机或发布证据。

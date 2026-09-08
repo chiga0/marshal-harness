@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -25,6 +26,9 @@ type TeamPlanApproval struct {
 	InputsDigest  string `json:"inputsDigest"`
 	RequestDigest string `json:"requestDigest"`
 	ExpectedHead  string `json:"expectedHead"`
+	// Omitted for original AF_UNIX approvals; a public Task confirmation must
+	// bind the exact same-ledger draft, never just copy its execution inputs.
+	TaskDraftDigest string `json:"taskDraftDigest,omitempty"`
 }
 
 type CurrentApprovedTeamVerifier interface {
@@ -107,6 +111,15 @@ func (s *DurableStore) AcceptInitialTeamPlan(ctx context.Context, verifier Curre
 				result = existing
 				return nil
 			}
+			if err := validateTaskDraftApproval(projection, owner.Scope, inputs.Spec.GoalId, approval); err != nil {
+				return err
+			}
+			if draft, exists := projection.taskDrafts[key]; exists {
+				deadline, _ := time.Parse(time.RFC3339Nano, draft.Draft.ConfirmBefore)
+				if !time.Now().Before(deadline) {
+					return ErrTaskDraftExpired
+				}
+			}
 			_, candidate, err := deriveInitialTeam(owner.Scope, approval, frozen)
 			if err != nil {
 				return err
@@ -120,6 +133,12 @@ func (s *DurableStore) AcceptInitialTeamPlan(ctx context.Context, verifier Curre
 			// a fact that this same reader would reject on its size boundary.
 			if err != nil || len(encoded)+100 > goal.MaxTeamInputsBytes+(128<<10) {
 				return ErrTeamPlanConflict
+			}
+			if draft, exists := projection.taskDrafts[key]; exists {
+				deadline, _ := time.Parse(time.RFC3339Nano, draft.Draft.ConfirmBefore)
+				if !time.Now().Before(deadline) {
+					return ErrTaskDraftExpired
+				}
 			}
 			if err := s.appendLine(fact, func() string { return fact.Digest }, func(digest string) { fact.Digest = digest }); err != nil {
 				return err
@@ -297,6 +316,9 @@ func applyTeamPlanLine(line []byte, in *Ingress, sequence int64) error {
 	}
 	if _, exists := in.teamPlans[key]; exists {
 		return ErrTeamPlanConflict
+	}
+	if err := validateTaskDraftApproval(in, fact.Scope, derived.Revision.GoalId, derived.Approval); err != nil {
+		return err
 	}
 	derived.FactDigest = digest
 	in.teamPlans[key] = derived

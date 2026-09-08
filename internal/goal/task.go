@@ -1,6 +1,7 @@
 package goal
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -71,7 +72,8 @@ func (v TaskDraft) Validate() error {
 		return fail
 	}
 	var inputs TeamInputs
-	if json.Unmarshal(v.Inputs, &inputs) != nil || inputs.Spec.GoalId != v.GoalID || inputs.Proposal.GoalId != v.GoalID {
+	canonicalInputs, err := canonical.JSON(v.Inputs)
+	if err != nil || !bytes.Equal(v.Inputs, canonicalInputs) || json.Unmarshal(v.Inputs, &inputs) != nil || inputs.Spec.GoalId != v.GoalID || inputs.Proposal.GoalId != v.GoalID {
 		return fail
 	}
 	return nil
