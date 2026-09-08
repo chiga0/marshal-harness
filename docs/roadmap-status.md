@@ -8,13 +8,13 @@
 
 ### 最新正式 Node 集成检查点
 
-当前代码集成基线 main=`f3e32340208c9e707192c3c0ab622b2e147cd969` 已包含正式24操作 HTTP 契约、SQLite、17项 Task/Worker/Operation/输入与制品应用操作、受管 ACP Provider、Supervisor、耐久制品/文件采集、通用业务适配、独立命令运行、正式 HTTP 客户端与服务入口（另4项运行观察）。真实 Qwen ACP 已完成原生工具读取并独立核对结果，不再只是握手。Supervisor的错误fan-out及服务入口2个恢复P1均聚合修正、同reviewer复核合入；维护者服务13项真实HTTP通过。完整团队交付、API-STABLE 和 stable 尚未完成。组合候选2bca3a26在启动期限测试纠错后184/184通过，不含后来business/service；原178/179失败记录保留。精确source/merge、测试范围、失败与下一步见[当前实施检查点](node-task-service-status-2026-09-08.md)。pendingRemoteSync=true；没有新的远端main合并或正式发行声明。
+当前代码集成基线 main/origin/main=`82b64cfa8d0daef0c188f0e296299b6e3aedcc48`，已实际推送，以上代码 pendingRemoteSync=false。正式HTTP→SQLite→Supervisor→双作者→独立验收/Decision→交付下载及取消/正常重启已有真实Node进程夹具证明；不是模型团队通过。维护者在文件树相同的source `3383e0e` 完成307/307组合测试；[远端 Node team CI](https://github.com/chiga0/marshal-harness/actions/runs/34223961302)通过，通用CI最近查询仍运行中。目录发行包24文件已核验，不代表部署或stable。真实Qwen原生工具单会话证据保留，当前正在准备正式同链团队实机验收，B2问答并行开发；API-STABLE和正式发行尚未完成。精确source/merge、Core两轮P1修正及旧失败记录见[当前实施检查点](node-task-service-status-2026-09-08.md)。
 
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |
-| B1 真实团队交付 | `IN_PROGRESS` | 正式 Node 同链纯 HTTP 自主调度、双作者重叠、独立验收、下载消费与取消/重启 |
-| B2 日常本地 API | `IN_PROGRESS` | 关键问答、通用制品接线、第二 Adapter、局部修正、同版本恢复与 API-STABLE 验收 |
-| B3 正式可靠发布 | `PLANNED` | 正式服务包、声明平台实机/长期故障、安装恢复和受保护同资产发行 |
+| B1 真实团队交付 | `IN_PROGRESS` | 正式同链夹具已通；仍须真实模型团队的重叠、独立验收、下载消费与对应运行控制证据 |
+| B2 日常本地 API | `IN_PROGRESS` | 关键问答、第二 Adapter、局部修正、完整同版本恢复与 API-STABLE；通用文件制品已接线但真实业务矩阵未全验收 |
+| B3 正式可靠发布 | `PLANNED` | 目录包已准备；声明平台实机/长期故障、权限分离、安装恢复和受保护同资产发行未完成 |
 
 ### 以下为较早本地集成检查点（不覆盖上表）
 
