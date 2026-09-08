@@ -1,0 +1,230 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import http from 'node:http';
+import {randomBytes, randomUUID} from 'node:crypto';
+import {Store} from '../task-store/store.mjs';
+import {ArtifactDepot} from '../task-artifacts/depot.mjs';
+import {TaskApplication} from '../task-application/application.mjs';
+import {TaskSupervisor} from '../task-supervisor/controller.mjs';
+import {createTaskApiHandler} from '../task-api/http-handler.mjs';
+import {PROFILE, TaskApiError, validate} from '../task-api/contract.mjs';
+
+const FORMAT = Buffer.from(JSON.stringify({profile: PROFILE, layout: 1}) + '\n');
+const NOFOLLOW = fs.constants.O_NOFOLLOW;
+const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const requireValue = (value, code = 'service_invalid_configuration') => { if (!value) throw new TaskServiceError(code); };
+export class TaskServiceError extends Error {
+  constructor(code) { super(code); this.name = 'TaskServiceError'; this.code = code; }
+}
+function directory(stat) {
+  requireValue(stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o7777) === 0o700, 'service_root_unavailable');
+}
+function regular(stat) {
+  requireValue(stat.isFile() && stat.nlink === 1 && stat.uid === process.getuid() && (stat.mode & 0o7777) === 0o600, 'service_root_unavailable');
+}
+class ServiceRoot {
+  fds = []; directories = new Map();
+  constructor(root, mode) {
+    this.root = root; this.parent = path.dirname(root);
+    try {
+      requireValue(fs.realpathSync(this.parent) === this.parent, 'service_root_unavailable');
+      this.hold(this.parent); // Explicit private parent, no recursive mkdir/adoption.
+      if (mode === 'create') fs.mkdirSync(root, {mode: 0o700});
+      this.hold(root);
+      if (mode === 'create') this.writeNew(path.join(root, 'profile.json'), FORMAT);
+      const fd = fs.openSync(path.join(root, 'profile.json'), fs.constants.O_RDONLY | NOFOLLOW);
+      this.fds.push(fd); this.formatFd = fd; this.check();
+      if (mode === 'open') {
+        requireValue(fs.readdirSync(root).sort().join(',') === 'artifacts,connections,executions,profile.json,store', 'service_root_unavailable');
+      }
+      for (const name of ['executions', 'connections']) {
+        const target = path.join(root, name);
+        if (mode === 'create') fs.mkdirSync(target, {mode: 0o700});
+        this.hold(target);
+      }
+      this.sync();
+    } catch (error) { this.close(); throw error; }
+  }
+  hold(name) {
+    const fd = fs.openSync(name, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | NOFOLLOW);
+    this.fds.push(fd); this.directories.set(name, fd); this.check(); return fd;
+  }
+  check() {
+    for (const [name, fd] of this.directories) {
+      const stat = fs.fstatSync(fd); directory(stat);
+      requireValue(same(stat, fs.lstatSync(name)) && fs.realpathSync(name) === name, 'service_root_unavailable');
+    }
+    if (this.formatFd !== undefined) {
+      const stat = fs.fstatSync(this.formatFd); regular(stat);
+      const bytes = Buffer.alloc(FORMAT.length);
+      requireValue(stat.size === bytes.length && same(stat, fs.lstatSync(path.join(this.root, 'profile.json'))) &&
+        fs.readSync(this.formatFd, bytes, 0, bytes.length, 0) === bytes.length && bytes.equals(FORMAT), 'service_root_unavailable');
+    }
+  }
+  writeNew(name, bytes) {
+    this.check();
+    const fd = fs.openSync(name, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NOFOLLOW, 0o600);
+    try { regular(fs.fstatSync(fd)); fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
+    this.sync();
+  }
+  sync() { this.check(); for (const fd of [...this.fds].reverse()) fs.fsyncSync(fd); this.check(); }
+  close() { for (const fd of this.fds.splice(0).reverse()) fs.closeSync(fd); this.directories.clear(); }
+}
+
+/** Composition only: no Task reducer, second ledger, model defaults or publication. */
+export async function startTaskService({root, mode, providers, prepare, collect, dispose = () => {},
+  providerFacts, applicationOptions = {}, port = 0, leaseMs = 60000, renewIntervalMs = 10000,
+  requestTimeoutMs = 10000, supervisorOptions = {}, onDiagnostic = () => {}} = {}) {
+  requireValue(typeof root === 'string' && path.isAbsolute(root) && path.normalize(root) === root && root !== path.parse(root).root &&
+    ['create', 'open'].includes(mode) && providers instanceof Map && providers.size > 0 && providers.size <= 32 &&
+    typeof prepare === 'function' && typeof collect === 'function' && typeof dispose === 'function' && typeof onDiagnostic === 'function' &&
+    object(applicationOptions) && Object.keys(applicationOptions).every(key => ['defaultLimits', 'execution'].includes(key)) &&
+    (applicationOptions.execution === undefined || object(applicationOptions.execution)) &&
+    object(supervisorOptions) && Object.keys(supervisorOptions).every(key => ['intervalMs', 'prepareMs', 'collectMs', 'pageSize', 'maxPagesPerTick'].includes(key)) &&
+    Number.isSafeInteger(port) && port >= 0 && port <= 65535 && Number.isSafeInteger(leaseMs) && leaseMs >= 200 && leaseMs <= 300000 &&
+    Number.isSafeInteger(renewIntervalMs) && renewIntervalMs >= 10 && renewIntervalMs * 2 < leaseMs &&
+    Number.isSafeInteger(requestTimeoutMs) && requestTimeoutMs >= 10 && requestTimeoutMs <= 30000);
+  const available = new Map(providers);
+  for (const [id, provider] of available) requireValue(validate(id, 'Id') && provider?.id === id && typeof provider.start === 'function');
+  const facts = providerFacts ?? [...available.keys()].map(id => ({id, displayName: id, availability: 'unknown', coreCapabilities: [], enhancedCapabilities: []}));
+  requireValue(Array.isArray(facts) && facts.length === available.size && facts.every(fact => validate(fact, 'Provider') && available.has(fact.id)) && new Set(facts.map(fact => fact.id)).size === facts.length);
+  const frozenFacts = structuredClone(facts).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const execution = {maxWorkers: 2, providerIds: [...available.keys()], defaultProvider: available.keys().next().value, ...applicationOptions.execution};
+  requireValue(Array.isArray(execution.providerIds) && execution.providerIds.length === available.size && execution.providerIds.every(id => available.has(id)));
+  let files, store, depot, application, supervisor, server, renewal, closing, address, connectionFile;
+  let state = 'starting', failure = null, shutdownClean = null, renewing = false;
+  const instanceId = 'service-' + randomUUID(), token = randomBytes(32).toString('hex');
+  const diagnostic = code => { try { Promise.resolve(onDiagnostic({code})).catch(() => {}); } catch {} };
+  const snapshot = () => ({profile: PROFILE, state, failure, generation: application?.owner.generation.toString() ?? null, shutdownClean});
+  const fail = code => {
+    failure ??= code; state = 'failed'; diagnostic(code);
+    if (supervisor) void shutdown().catch(() => {});
+  };
+  function renew() {
+    if (renewing || !application || state === 'closed' || failure) return;
+    renewing = true;
+    try {
+      files.check();
+      // The returned expiresAt is part of owner identity; update both in one turn.
+      application.owner = store.renewOwner(application.owner, Date.now() + leaseMs);
+      if (supervisor.snapshot().failure) fail('service_supervisor_failed');
+    } catch { fail('service_owner_unavailable'); }
+    finally { renewing = false; }
+  }
+  function observation() {
+    files.check();
+    let queuedTasks = 0, blockedTasks = 0, activeWorkers = 0, recovery = false;
+    // Bound complete scans. If larger than the admitted observation budget,
+    // return unavailable rather than publish fabricated/truncated counters.
+    for (const kind of ['task', 'commands']) {
+      let cursor = '', complete = false;
+      for (let page = 0; page < 100; page++) {
+        const rows = application.transaction(false, tx => kind === 'task' ? tx.projections('task', cursor, 25) : tx.commands(cursor, 25));
+        for (const row of rows) {
+          if (kind === 'task') {
+            const task = JSON.parse(row.bytes.toString('utf8')).task;
+            if (['draft', 'queued'].includes(task.status)) queuedTasks++;
+            if (['intervention', 'awaiting-answer', 'awaiting-approval', 'paused'].includes(task.status)) blockedTasks++;
+            if (task.status === 'intervention') recovery = true;
+          } else if (row.generation !== application.owner.generation && row.status !== 'observed' && ['start', 'verify'].includes(row.kind)) recovery = true;
+        }
+        if (rows.length < 25) { complete = true; break; }
+        cursor = rows.at(-1).id;
+      }
+      if (!complete) throw new TaskApiError('application_unavailable');
+    }
+    activeWorkers = application.transaction(false, tx => application.execution.capacity(tx).value.active.length);
+    const runtime = supervisor.snapshot();
+    const ready = state === 'running' && !failure && !runtime.failure && runtime.state === 'running' && !recovery;
+    return {ready, status: state === 'stopping' || state === 'closed' ? 'stopping' : recovery || failure || runtime.failure ? 'intervention' : activeWorkers ? 'busy' : 'ready',
+      activeWorkers, maxWorkers: execution.maxWorkers, queuedTasks, blockedTasks, observedAt: new Date().toISOString()};
+  }
+  async function dispatch(request, context) {
+    if (request.operation === 'health.get') return {status: 'ok', profile: PROFILE};
+    if (request.operation === 'ready.get') {
+      if (!observation().ready) throw new TaskApiError('not_ready');
+      return {ready: true, profile: PROFILE};
+    }
+    if (request.operation === 'supervisor.get') { const {ready, ...result} = observation(); return result; }
+    if (request.operation === 'provider.list') {
+      const {cursor = '', limit = 50} = request.page ?? {};
+      const selected = frozenFacts.filter(fact => fact.id > (cursor ?? '')).slice(0, limit);
+      return {items: structuredClone(selected), nextCursor: selected.length === limit ? selected.at(-1).id : null};
+    }
+    if (state !== 'running' || failure) throw new TaskApiError('not_ready');
+    // Recovery diagnostics and cancellation remain available, but no new work
+    // may be admitted through HTTP while prior effects are unresolved.
+    if (['task.create', 'task.approve', 'task.resume', 'input.create', 'task.answer'].includes(request.operation) && !observation().ready)
+      throw new TaskApiError('not_ready');
+    return application.dispatch(request, context);
+  }
+  function shutdown() {
+    if (closing) return closing;
+    if (!failure) state = 'stopping';
+    closing = (async () => {
+      let drain = Promise.resolve(), drainTimer;
+      if (server?.listening) {
+        drain = new Promise(resolve => server.close(() => resolve()));
+        server.closeIdleConnections();
+        drainTimer = setTimeout(() => server.closeAllConnections(), requestTimeoutMs + 100);
+      }
+      try {
+        // Keep owner renewal alive until the original owned completions commit.
+        const result = supervisor ? await supervisor.close() : {clean: true};
+        shutdownClean = result.clean === true;
+        if (!shutdownClean) { failure ??= 'service_cleanup_unconfirmed'; diagnostic(failure); }
+      } catch { shutdownClean = false; failure ??= 'service_shutdown_unavailable'; }
+      finally {
+        clearInterval(renewal);
+        await drain; clearTimeout(drainTimer);
+        try { if (supervisor) await dispose(); } catch { failure ??= 'service_dispose_failed'; }
+        for (const component of [depot, store, files]) {
+          try { component?.close(); } catch { failure ??= 'service_close_failed'; }
+        }
+        state = 'closed';
+      }
+      return snapshot();
+    })();
+    return closing;
+  }
+  try {
+    files = new ServiceRoot(root, mode);
+    store = mode === 'create' ? Store.create(path.join(root, 'store')) : Store.openExisting(path.join(root, 'store'));
+    depot = mode === 'create' ? ArtifactDepot.create(path.join(root, 'artifacts')) : ArtifactDepot.openExisting(path.join(root, 'artifacts'));
+    files.sync();
+    const owner = store.claimOwner(store.info().generation, instanceId, Date.now() + leaseMs);
+    application = new TaskApplication({...applicationOptions, execution, store, owner, depot});
+    const context = {depot, executionParent: path.join(root, 'executions')};
+    supervisor = new TaskSupervisor({...supervisorOptions, execution: application.execution, providers: available,
+      prepare: (ticket, wait) => prepare(ticket, {...wait, ...context}),
+      collect: (ticket, result, wait) => collect(ticket, result, {...wait, ...context}),
+      onError: report => { diagnostic(report.code); if (report.code === 'supervisor_failed') fail('service_supervisor_failed'); }});
+    let handler;
+    server = http.createServer((request, response) => {
+      if (!handler) { response.writeHead(503, {'Connection': 'close'}); response.end(); return; }
+      void handler(request, response);
+    });
+    server.requestTimeout = requestTimeoutMs + 1000; server.headersTimeout = requestTimeoutMs;
+    server.keepAliveTimeout = 1000; server.maxRequestsPerSocket = 100;
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, '127.0.0.1', () => { server.off('error', reject); resolve(); });
+    });
+    address = `http://127.0.0.1:${server.address().port}`;
+    handler = createTaskApiHandler({application: dispatch, token, expectedHost: address.slice('http://'.length), requestTimeoutMs});
+    server.on('error', () => fail('service_http_unavailable'));
+    renewal = setInterval(renew, renewIntervalMs);
+    supervisor.start(); state = 'running';
+    await supervisor.tick(); // Inspect prior generation before publishing ready.
+    if (failure) throw new TaskServiceError('service_start_unavailable');
+    connectionFile = path.join(root, 'connections', instanceId + '.json');
+    files.writeNew(connectionFile, Buffer.from(JSON.stringify({profile: PROFILE, url: address, token}) + '\n'));
+    return Object.freeze({address, connectionFile, snapshot, shutdown});
+  } catch (error) {
+    await shutdown();
+    if (error instanceof TaskServiceError) throw error;
+    throw new TaskServiceError('service_start_unavailable');
+  }
+}
