@@ -42,6 +42,8 @@ test('plan freezes two complementary authors and bounded pure-module contracts',
     assert.equal(node.role, 'author');
     assert.ok(node.prompt.includes(node.file));
     assert.ok(node.prompt.includes('sparse array/hole'));
+    assert.ok(node.prompt.includes('quantity 必须是大于 0'));
+    assert.ok(node.prompt.includes('priceCents 必须是大于等于 0'));
     const other = result.nodes.find((value) => value !== node);
     assert.ok(!node.prompt.includes(other.file));
   }
@@ -70,6 +72,7 @@ test('candidate allowlist rejects traversal, duplicate, extra and oversized file
 
 test('plausible code and ordinary clean candidate execution do not replace oracle assertions', async () => {
   for (const candidate of [files('export function normalize() { return []; }'),
+    files(normalize, report.replace(' || row.quantity <= 0', '').replace(' || row.priceCents < 0', '')),
     files(normalize, report.replace("if (!Number.isSafeInteger(quantity) || !Number.isSafeInteger(totalCents)) throw new Error('overflow');", '')),
     files(normalize, report.replace('a.sku < b.sku ? -1 : a.sku > b.sku ? 1 : 0', 'a.sku.localeCompare(b.sku)')),
     files(`${validate}\nexport function normalize(rows) { const result=validate(rows); rows.reverse(); return result; }`),

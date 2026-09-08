@@ -19,6 +19,10 @@
 
 私有结果摘要在 `/private/tmp/mnt-live-1nxDKk/acceptance-summary.json`；原状态在该目录的 `state/`。连接 token、原生配置和原始 Agent 流不进入本文或 Git。
 
+第二候选 `7f5f6c3f743b7733a3a1cfa09d5495173eaffe6a` 显式调整事件传输预算后，Task `task-0d8f5a58-4560-4618-b025-619528fa8157` 两作者均完整 collected，stdout 分别 920,866 和 1,376,473 字节，全部清理成功，但固定 oracle 在第 51 项后拒绝交付。只重放已存源码即可确认 report 漏了数量正数与价格非负的范围检查，无需再调用模型定位。私有目录 `/private/tmp/mnt-live-tcEd1y/` 保留失败，耗时约 88.25 秒。
+
+该失败暴露角色上下文不对称：初始 normalize 提示明写范围，report 提示只有“非法字段”和 safe integer，无法依赖另一角色读过前者提示。后继把两项范围与反例放进两角色各自完整收到的共同契约，计划版本提升为 `node-orders-v2`；oracle 未改变，新增“report 删除范围判断”变异反例验证仍拒绝。没有将已失败 Task 改成成功，也没有静默重用其权限或重置 Attempt。
+
 ## 本轮失败与改进，不删成本
 
 1. 跨模块预检发现裸文件 SHA-256 与带前缀的控制摘要混用、supervisor 白名单漏 HOME/PATH；均在付费调用前统一。后续继续先冻结调用者实际读取的字段和环境，不只对接口名称。

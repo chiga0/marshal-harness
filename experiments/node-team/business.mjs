@@ -16,12 +16,15 @@ export function plan(intent) {
   const common = `本轮是固定订单处理实验。用户意图仅作背景，不得改变下述接口或验收：${JSON.stringify(intent)}。
 只实现指定的一个文件；不要读取文件、运行命令、调用工具或网络。不生成测试、不自报验证通过。
 代码为无依赖纯 JavaScript ES module，不使用 import/dynamic import、Node API、全局副作用、异步函数或外部状态。
+实现保持简洁，不输出大段解释性注释。
 函数同步返回新数组，不修改输入。SKU 原样保留（不 trim、不改大小写）；空白字符串无效。数值必须是 number，禁止隐式字符串转换。
+两个函数都必须独立验证：quantity 必须是大于 0 的 safe integer；priceCents 必须是大于等于 0 的 safe integer。即使参数名叫 normalized，report 也不得假设上游已验证而省略范围检查。
+两个函数的共同反例：quantity 为 0 或 -1、priceCents 为 -1 都必须 throw；只调用 Number.isSafeInteger 不足以拒绝这些输入。
 数组必须稠密：sparse array/hole（如 Array(1) 或 [,]）必须 throw；不得用 map/forEach 静默跳过缺项，需显式检查每个索引或逐项拒绝 undefined。
 所有 quantity、priceCents、quantity*priceCents 及汇总值必须为安全整数，溢出必须同步 throw。
 回复只包含一个 JSON 对象，字段严格为 name 和 content（content 是完整源代码字符串），不要 Markdown fence、解释或其他文件。`;
   return {
-    version: 'node-orders-v1', intent, timeoutMs: 300000,
+    version: 'node-orders-v2', intent, timeoutMs: 300000,
     nodes: [
       {
         id: 'normalize', role: 'author', file: 'normalize.mjs',
