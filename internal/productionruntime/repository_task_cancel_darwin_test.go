@@ -59,6 +59,7 @@ func taskCancelHTTP(t *testing.T, s *RepositorySession, method, path, key string
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer a.Close()
 	h, err := taskhttp.NewHandler(taskhttp.HandlerConfig{Application: s, Host: "127.0.0.1:1234", Token: strings.Repeat("1", 64), Recheck: a.Recheck, Mutation: func(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }})
 	if err != nil {
 		t.Fatal(err)
