@@ -7,6 +7,17 @@ import (
 	"github.com/chiga0/marshal-harness/internal/goal"
 )
 
+// TaskTemplatePort is trusted, process-local template composition. It only
+// produces input bytes and read-only previews; approval, persistence and Run
+// creation remain with the consuming application. InspectTask must describe
+// the supplied frozen inputs, independently of the currently installed draft
+// template, so disabling new submissions cannot erase historical queries.
+type TaskTemplatePort interface {
+	Digest() string
+	RenderTask(string, goal.TaskSubmission) ([]byte, error)
+	InspectTask([]byte) ([]TaskPreviewNode, error)
+}
+
 // TaskDraftPort belongs to the same resident application. IDs select
 // current Goal facts; none of these inputs carry authority or host paths.
 type TaskDraftPort interface {

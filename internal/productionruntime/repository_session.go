@@ -11,9 +11,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/application"
-	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
-	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
@@ -31,8 +29,8 @@ type RepositorySessionInputs struct {
 	// Installed only by trusted composition, never supplied by an HTTP caller.
 	// Nil disables team approval without affecting existing single Run APIs.
 	TeamInputPreflight func([]byte) error
-	// Optional, operator-configured frozen template; never supplied by Task HTTP.
-	TaskTemplateInputs []byte
+	// Optional pure template Port installed by trusted composition, never HTTP.
+	TaskTemplate application.TaskTemplatePort
 	// Trusted, process-local planning composition. Never an HTTP/Worker input.
 	// It returns canonical PreparedInputs without creating a Run.
 	TeamRunPreparer func(context.Context, []byte, []byte, string) ([]byte, error)
@@ -61,7 +59,7 @@ type RepositorySession struct {
 	teamRunPreparer        func(context.Context, []byte, []byte, string) ([]byte, error)
 	teamRunMaterializer    func(context.Context, []byte, func(context.Context, func() error) error) (domain.RunState, error)
 	teamIntegrationBuilder func(context.Context, string, string, [][]byte) (string, string, error)
-	taskTemplate           planning.TaskTemplate
+	taskTemplate           application.TaskTemplatePort
 }
 
 type repositorySessionBorrow struct {
@@ -81,17 +79,6 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		inputs.FixedMarshalPath == "" || inputs.OwnerPrivateControlRoot == nil ||
 		validateCompositionAcquisitionCandidate(inputs.Acquisition) != nil {
 		return nil, application.NewError("repository-session", application.ReasonInvalidRequest)
-	}
-	var taskTemplate planning.TaskTemplate
-	if len(inputs.TaskTemplateInputs) != 0 {
-		validator, err := contract.NewValidator()
-		if err != nil {
-			return nil, err
-		}
-		taskTemplate, err = planning.OpenTaskTemplate(inputs.TaskTemplateInputs, validator)
-		if err != nil {
-			return nil, application.NewError("repository-session", application.ReasonInvalidRequest)
-		}
 	}
 	phase, err := openRepositoryOwnerScopeLock(inputs.OwnerDirectory, inputs.Acquisition.Scope)
 	if err != nil {
@@ -161,7 +148,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		cleanup()
 		return nil, fmt.Errorf("repository session: seal prepared execution: %w", err)
 	}
-	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath, teamInputPreflight: inputs.TeamInputPreflight, teamRunPreparer: inputs.TeamRunPreparer, teamRunMaterializer: inputs.TeamRunMaterializer, teamIntegrationBuilder: inputs.TeamIntegrationBuilder, taskTemplate: taskTemplate}
+	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath, teamInputPreflight: inputs.TeamInputPreflight, teamRunPreparer: inputs.TeamRunPreparer, teamRunMaterializer: inputs.TeamRunMaterializer, teamIntegrationBuilder: inputs.TeamIntegrationBuilder, taskTemplate: inputs.TaskTemplate}
 	if err := session.owner.WithCurrentOwnerLock(ctx, acquisition, func() error {
 		current, found, openErr := ingress.OpenOwner(acquisition.Scope)
 		if openErr != nil || !found || current.Acquisition != acquisition || current.FactDigest != ownerState.FactDigest {

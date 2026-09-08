@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -25,6 +26,8 @@ const orderQuoteOracleLoader = "import hashlib,pathlib,sys; p=pathlib.Path(sys.a
 type TaskTemplate struct {
 	preview TeamInputsPreview
 }
+
+var _ application.TaskTemplatePort = TaskTemplate{}
 
 var ErrTaskTemplate = errors.New("planning: unsupported Task template")
 
@@ -105,6 +108,41 @@ func OpenTaskTemplate(raw []byte, validator *contract.Validator) (TaskTemplate, 
 }
 
 func (t TaskTemplate) Digest() string { return t.preview.Digest }
+
+// RenderTask implements the neutral application Port. Only composition knows
+// this concrete planner; consumers receive canonical bytes, never a planner
+// object with persistence or execution methods.
+func (t TaskTemplate) RenderTask(goalID string, submission goal.TaskSubmission) ([]byte, error) {
+	validator, err := contract.NewValidator()
+	if err != nil {
+		return nil, err
+	}
+	preview, err := t.Preview(goalID, submission, validator)
+	return preview.Canonical, err
+}
+
+// InspectTask validates the exact persisted envelope against its bounded
+// oracle profile, not this process's installed template digest. The zero
+// value can inspect an old draft even when new submissions are disabled.
+func (TaskTemplate) InspectTask(raw []byte) ([]application.TaskPreviewNode, error) {
+	validator, err := contract.NewValidator()
+	if err != nil {
+		return nil, err
+	}
+	frozen, err := OpenTaskTemplate(raw, validator)
+	if err != nil {
+		return nil, err
+	}
+	nodes := make([]application.TaskPreviewNode, 0, len(frozen.preview.Inputs.Nodes))
+	for _, node := range frozen.preview.Inputs.Nodes {
+		var task domain.TaskSpec
+		if err := json.Unmarshal(node.Task, &task); err != nil {
+			return nil, ErrTaskTemplate
+		}
+		nodes = append(nodes, application.TaskPreviewNode{ID: node.NodeID, Role: node.Role, Work: task.Work, Paths: task.Scope.AllowPaths, OracleDigest: "sha256:" + OrderQuoteOracleDigest})
+	}
+	return nodes, nil
+}
 
 // Preview binds new Task/Goal/node identities and public context without
 // altering the installed acceptance, permissions, environment, or budget.

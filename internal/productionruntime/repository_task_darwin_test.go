@@ -37,6 +37,16 @@ func repositoryTaskJSON(t *testing.T, value any) []byte {
 	return raw
 }
 
+type repositoryTaskFailingProducer struct {
+	application.TaskTemplatePort
+	raw []byte
+	err error
+}
+
+func (p repositoryTaskFailingProducer) RenderTask(string, goal.TaskSubmission) ([]byte, error) {
+	return p.raw, p.err
+}
+
 // Complete Task/Policy examples are used as pure input fixtures, not Agent
 // credentials. The session/held owner/RB1 and HTTP methods below are real;
 // actual provider/environment probing and dispatch are deliberately not run.
@@ -129,8 +139,12 @@ func TestRepositoryTaskHTTPHeldOwnerColdReplay(t *testing.T) {
 	}
 	fixture.inputs.Acquisition.Scope.AuthorityNamespaceID = ns
 	fixture.inputs.Acquisition.Scope.RepositoryIdentityDigest = digest
-	fixture.inputs.TaskTemplateInputs = repositoryTaskTemplate(t, fixture)
+	templateInputs := repositoryTaskTemplate(t, fixture)
 	validator, err := contract.NewValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.inputs.TaskTemplate, err = planning.OpenTaskTemplate(templateInputs, validator)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,6 +195,28 @@ func TestRepositoryTaskHTTPHeldOwnerColdReplay(t *testing.T) {
 		return w
 	}
 	submission := goal.TaskSubmission{Template: goal.TaskTemplateOrderQuote, Intent: "构建订单报价 API 和客户端", Context: goal.TaskContext{Text: "保持固定接口与独立验收"}}
+	installed := session.taskTemplate
+	for _, tc := range []struct {
+		name string
+		port application.TaskTemplatePort
+	}{
+		{"missing", nil},
+		{"failed", repositoryTaskFailingProducer{TaskTemplatePort: installed, err: errors.New("producer failed")}},
+		{"malformed", repositoryTaskFailingProducer{TaskTemplatePort: installed, raw: []byte(`{"not":"team inputs"}`)}},
+	} {
+		t.Run("producer-"+tc.name, func(t *testing.T) {
+			session.taskTemplate = tc.port
+			if _, err := session.CreateTask(ctx, application.CreateTaskRequest{IdempotencyKey: "bad-" + tc.name, Submission: submission}); err == nil {
+				t.Fatal("invalid producer created a draft")
+			}
+			ids, err := session.ingress.ListTaskDraftIDs(session.acquisition.Scope, "", 20)
+			if err != nil || len(ids) != 0 {
+				t.Fatal("failed producer mutated draft authority")
+			}
+		})
+	}
+	session.taskTemplate = installed
+	preflights = 0
 	w := call(h, http.MethodPost, "/v1/tasks", "create-order", submission)
 	if w.Code != 201 {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
@@ -254,6 +290,9 @@ func TestRepositoryTaskHTTPHeldOwnerColdReplay(t *testing.T) {
 	if w := call(h, http.MethodGet, "/v1/tasks/"+draft.ID, "", nil); w.Code != 503 {
 		t.Fatal("closed owner remained usable")
 	}
+	// A restart may disable the submission template without preventing exact
+	// existing Task/approval replay or replacing its original preview.
+	fixture.inputs.TaskTemplate = planning.TaskTemplate{}
 	session, err = OpenRepositorySession(ctx, fixture.inputs)
 	if err != nil {
 		t.Fatal(err)

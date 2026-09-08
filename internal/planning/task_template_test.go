@@ -9,10 +9,57 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/goal"
 )
+
+func TestTaskTemplateApplicationPortUsesFrozenInputs(t *testing.T) {
+	validator := newValidator(t)
+	template, err := OpenTaskTemplate(mustMarshal(t, orderQuoteTemplateFixture(t)), validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var port application.TaskTemplatePort = template
+	submission := goal.TaskSubmission{Template: goal.TaskTemplateOrderQuote, Intent: "通过应用接口预览真实报价团队"}
+	raw, err := port.RenderTask("task-port", submission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := template.Preview("task-port", submission, validator)
+	if err != nil || !bytes.Equal(raw, want.Canonical) {
+		t.Fatalf("Port changed canonical producer bytes: %v", err)
+	}
+	// New submissions are disabled, but historical input/oracle projection is
+	// still obtained from its frozen envelope, not an installed template.
+	port = TaskTemplate{}
+	if port.Digest() != "" {
+		t.Fatal("empty composition enabled submissions")
+	}
+	if _, err := port.RenderTask("disabled", submission); err == nil {
+		t.Fatal("empty composition rendered a new draft")
+	}
+	nodes, err := port.InspectTask(raw)
+	if err != nil || len(nodes) != 3 || nodes[0].ID != want.Inputs.Nodes[0].NodeID || nodes[0].OracleDigest != "sha256:"+OrderQuoteOracleDigest {
+		t.Fatalf("frozen oracle inspection: %v", err)
+	}
+	nodes[0].Work.Context[0] = "caller changed projection"
+	again, err := port.InspectTask(raw)
+	if err != nil || again[0].Work.Context[0] == nodes[0].Work.Context[0] {
+		t.Fatal("projection retained mutable caller bytes")
+	}
+	var altered TeamInputs
+	if json.Unmarshal(raw, &altered) != nil {
+		t.Fatal("canonical input fixture")
+	}
+	mutateTeamTask(t, &altered, func(task map[string]any) {
+		task["acceptance"].(map[string]any)["commands"].([]any)[0].(map[string]any)["argv"].([]any)[6] = strings.Repeat("0", 64)
+	})
+	if _, err := port.InspectTask(mustMarshal(t, altered)); err == nil {
+		t.Fatal("inspector fabricated current oracle for changed frozen evidence")
+	}
+}
 
 func orderQuoteTemplateFixture(t *testing.T) TeamInputs {
 	t.Helper()

@@ -10,10 +10,8 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/canonical"
-	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/goal"
-	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
@@ -75,23 +73,24 @@ func (s *RepositorySession) CreateTask(ctx context.Context, request application.
 		}
 		return s.readTaskBorrowed(ctx, id)
 	}
-	if s.taskTemplate.Digest() == "" || s.teamInputPreflight == nil {
+	if s.taskTemplate == nil || s.taskTemplate.Digest() == "" || s.teamInputPreflight == nil {
 		return application.TaskProjection{}, application.NewError("create-task", application.ReasonCompositionIncomplete)
 	}
-	validator, err := contract.NewValidator()
-	if err != nil {
-		return application.TaskProjection{}, err
-	}
-	preview, err := s.taskTemplate.Preview(id, request.Submission, validator)
+	inputs, err := s.taskTemplate.RenderTask(id, request.Submission)
 	if err != nil {
 		return application.TaskProjection{}, application.NewError("create-task", application.ReasonInvalidRequest)
 	}
-	validation := bytes.Clone(preview.Canonical)
-	if s.teamInputPreflight(validation) != nil || canonical.DigestBytes(validation) != preview.Digest {
+	canonicalInputs, err := canonical.JSON(inputs)
+	if err != nil || !bytes.Equal(inputs, canonicalInputs) {
+		return application.TaskProjection{}, application.NewError("create-task", application.ReasonInvalidRequest)
+	}
+	inputsDigest := canonical.DigestBytes(canonicalInputs)
+	validation := bytes.Clone(canonicalInputs)
+	if s.teamInputPreflight(validation) != nil || canonical.DigestBytes(validation) != inputsDigest {
 		return application.TaskProjection{}, application.NewError("create-task", application.ReasonInvalidRequest)
 	}
 	now := time.Now().UTC()
-	draft = goal.TaskDraft{GoalID: id, Revision: 1, RequestKeyDigest: key, RequestDigest: requestDigest, Request: request.Submission, TemplateDigest: s.taskTemplate.Digest(), InputsDigest: preview.Digest, Inputs: preview.Canonical, CreatedAt: now.Format(time.RFC3339Nano), ConfirmBefore: now.Add(30 * time.Minute).Format(time.RFC3339Nano)}
+	draft = goal.TaskDraft{GoalID: id, Revision: 1, RequestKeyDigest: key, RequestDigest: requestDigest, Request: request.Submission, TemplateDigest: s.taskTemplate.Digest(), InputsDigest: inputsDigest, Inputs: canonicalInputs, CreatedAt: now.Format(time.RFC3339Nano), ConfirmBefore: now.Add(30 * time.Minute).Format(time.RFC3339Nano)}
 	if _, err = s.ingress.RecordTaskDraft(ctx, reader, s.acquisition, draft); err != nil {
 		return application.TaskProjection{}, taskError(err)
 	}
@@ -227,7 +226,15 @@ func (s *RepositorySession) readTaskBorrowed(ctx context.Context, id string) (re
 		if json.Unmarshal(draft.Inputs, &inputs) != nil {
 			return application.NewError("read-task", application.ReasonAuthorityConflict)
 		}
+		if s.taskTemplate == nil {
+			return application.NewError("read-task", application.ReasonCompositionIncomplete)
+		}
+		nodes, err := s.taskTemplate.InspectTask(bytes.Clone(draft.Inputs))
+		if err != nil {
+			return application.NewError("read-task", application.ReasonAuthorityConflict)
+		}
 		result = application.TaskProjection{ID: id, Status: "awaiting-confirmation", Revision: draft.Revision, PreviewDigest: draft.FactDigest, Request: draft.Request, CreatedAt: draft.CreatedAt, ConfirmBefore: draft.ConfirmBefore, AllowedActions: []string{"query"}, Workers: []application.TaskWorkerProjection{}, Edges: []application.TaskEdge{}, UsageSource: "unavailable", Preview: application.TaskPreview{TemplateDigest: draft.TemplateDigest, InputsDigest: draft.InputsDigest, Publication: "none", Limits: inputs.Limits, Nodes: []application.TaskPreviewNode{}}}
+		result.Preview.Nodes = nodes
 		deadline, _ := time.Parse(time.RFC3339Nano, draft.ConfirmBefore)
 		if time.Now().Before(deadline) {
 			result.AllowedActions = append(result.AllowedActions, "approve")
@@ -252,11 +259,6 @@ func (s *RepositorySession) readTaskBorrowed(ctx context.Context, id string) (re
 			if e != nil {
 				return e
 			}
-			var task domain.TaskSpec
-			if json.Unmarshal(node.Task, &task) != nil {
-				return application.NewError("read-task", application.ReasonAuthorityConflict)
-			}
-			result.Preview.Nodes = append(result.Preview.Nodes, application.TaskPreviewNode{ID: node.NodeID, Role: node.Role, Work: task.Work, Paths: task.Scope.AllowPaths, OracleDigest: "sha256:" + planning.OrderQuoteOracleDigest})
 			worker := application.TaskWorkerProjection{ID: runID, NodeID: node.NodeID, Role: node.Role, Status: "planned"}
 			creation, created, e := s.ingress.ReadTeamRunCreation(s.acquisition.Scope, id, node.NodeID)
 			if e != nil {

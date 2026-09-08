@@ -148,6 +148,15 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	if err != nil {
 		return nil, fmt.Errorf("sealed repository application: compile contracts: %w", err)
 	}
+	// Concrete template parsing belongs to this existing composition root.
+	// Keep a read-only inspector installed when new Task submission is disabled.
+	var taskTemplate planning.TaskTemplate
+	if len(config.TaskTemplateInputs) != 0 {
+		taskTemplate, err = planning.OpenTaskTemplate(config.TaskTemplateInputs, applicationAdapter.validator)
+		if err != nil {
+			return nil, application.NewError("sealed-repository-application", application.ReasonInvalidRequest)
+		}
+	}
 	defer func() {
 		if err != nil {
 			_ = applicationAdapter.Close()
@@ -213,7 +222,7 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	applicationAdapter.session, err = productionruntime.OpenRepositorySession(ctx, productionruntime.RepositorySessionInputs{
 		HeldIngressDir: heldIngress, HeldRepositoryRoot: repositoryDirectory, OwnerDirectory: ownerDirectory, Acquisition: acquisition,
 		FixedMarshalPath: fixedMarshal, OwnerPrivateControlRoot: controlRoot,
-		TaskTemplateInputs: config.TaskTemplateInputs,
+		TaskTemplate: taskTemplate,
 		TeamInputPreflight: func(raw []byte) error {
 			preview, err := planning.PreviewTeamInputs(raw, applicationAdapter.validator)
 			if err != nil || preview.Inputs.Spec.Repository != applicationAdapter.repositoryRoot || !preview.Inputs.Spec.AuthorityNamespaceId.Equal(applicationAdapter.namespace) {
