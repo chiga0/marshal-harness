@@ -78,6 +78,7 @@ type fakeBridge struct {
 	requestCounts           map[string]int
 	authHeaders             []string
 	observedIdempotencyKeys []string
+	destroyCount            int
 }
 
 // newFakeBridge starts one fixture Bridge over httptest and registers its
@@ -231,6 +232,7 @@ func (fb *fakeBridge) handleDestroy(w http.ResponseWriter, r *http.Request) {
 	box.destroyed = true
 	box.lost = false
 	box.sessions = map[string]bool{}
+	fb.destroyCount++
 	fb.mu.Unlock()
 	fb.respondRaw(w, r, http.StatusNoContent, "application/octet-stream", nil)
 }
@@ -537,6 +539,14 @@ func (fb *fakeBridge) respondRaw(w http.ResponseWriter, r *http.Request, status 
 }
 
 func (fb *fakeBridge) cacheResponse(r *http.Request, status int, body []byte) {
+	// Only a successfully-applied side effect is idempotent. A refusal
+	// (capacity, conflict, not-found, lost, semantic 4xx) produced no remote
+	// side effect, so it must never be replayed as a successful or terminal
+	// outcome: replaying it would block a legitimate retry issued under the
+	// identical allocation-derived Idempotency-Key.
+	if status < 200 || status >= 300 {
+		return
+	}
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
 		fb.mu.Lock()
 		fb.idempotencyCache[r.Method+" "+r.URL.Path+"\x00"+key] = idempotentResponse{status: status, body: body}
@@ -746,11 +756,28 @@ func (fb *fakeBridge) TotalRequests() int {
 	return total
 }
 
+// DestroyCount returns how many times the fixture actually applied a destroy
+// side effect (never counting idempotency-cache replays or not-found reads),
+// so the crash matrix can freeze the destroy-exactly-once invariant.
+func (fb *fakeBridge) DestroyCount() int {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	return fb.destroyCount
+}
+
 // AuthHeaders returns the Authorization headers observed by the fixture.
 func (fb *fakeBridge) AuthHeaders() []string {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	return append([]string(nil), fb.authHeaders...)
+}
+
+// ObservedIdempotencyKeys returns the Idempotency-Key header values the
+// fixture observed on mutating calls, for HTTP-safe key layering assertions.
+func (fb *fakeBridge) ObservedIdempotencyKeys() []string {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	return append([]string(nil), fb.observedIdempotencyKeys...)
 }
 
 // SandboxFile exposes one staged file of the fixture for out-of-band
@@ -772,6 +799,22 @@ func (fb *fakeBridge) sandboxCount() int {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	return len(fb.sandboxes)
+}
+
+// activeSandboxCount returns the number of sandboxes the fixture still holds
+// that have not been destroyed, so the terminate crash matrix can freeze the
+// destroy-leaves-no-leak invariant: a converged destroy leaves zero
+// undestroyed remote sandboxes behind.
+func (fb *fakeBridge) activeSandboxCount() int {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	count := 0
+	for _, box := range fb.sandboxes {
+		if !box.destroyed {
+			count++
+		}
+	}
+	return count
 }
 
 // Wire helpers.
@@ -1370,5 +1413,42 @@ func TestBridgeLostRestoreResponseReconcilesFailClosed(t *testing.T) {
 	}
 	if !orphaned {
 		t.Fatalf("the ambiguous replacement allocation must be reported, got %+v", report)
+	}
+}
+
+// TestFakeBridgeRefusalNotReplayedUnderIdempotencyKey freezes the fixture
+// idempotency semantics: a refusal that produced no remote side effect is
+// never cached under the Idempotency-Key, so a retry issued under the
+// identical allocation-derived key reaches the create handler and succeeds
+// once the refusal clears.
+func TestFakeBridgeRefusalNotReplayedUnderIdempotencyKey(t *testing.T) {
+	fb := newFakeBridge(t, testBridgeToken("refusal-not-replayed"))
+	key := httpIdempotencyKey("alloc-refusal", "create")
+	doCreate := func() (int, string) {
+		req, err := http.NewRequest(http.MethodPost, fb.server.URL+sandboxPath, strings.NewReader("{}"))
+		if err != nil {
+			t.Fatalf("create request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+fb.token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", key)
+		resp, err := fb.server.Client().Do(req)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+
+	fb.CapacityExhaustNext()
+	if status, _ := doCreate(); status != http.StatusInsufficientStorage {
+		t.Fatalf("the capacity refusal must surface as 507, got %d", status)
+	}
+	if status, body := doCreate(); status != http.StatusOK || !strings.Contains(body, `"id":"br-1"`) {
+		t.Fatalf("the retry under the identical key must re-execute and create a sandbox, got %d %s", status, body)
+	}
+	if got := fb.sandboxCount(); got != 1 {
+		t.Fatalf("exactly one remote sandbox must exist after the re-executed create, got %d", got)
 	}
 }

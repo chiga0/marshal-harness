@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +42,151 @@ func failStoreWriteOn(t *testing.T, store *FileStateStore, failOn int) {
 			return errors.New("injected state store write failure")
 		}
 		return original(data)
+	}
+}
+
+// failSinkWriteOn makes the nth effect authority sink persist fail, leaving
+// the first n-1 persists durable.
+func failSinkWriteOn(t *testing.T, sink *FileEffectAuthoritySink, failOn int) {
+	t.Helper()
+	original := sink.write
+	count := 0
+	sink.write = func(data []byte) error {
+		count++
+		if count == failOn {
+			return errors.New("injected effect authority sink write failure")
+		}
+		return original(data)
+	}
+}
+
+// productionTerminateFixture provisions one allocation through a production
+// provider over a file-backed state store and effect authority sink, so the
+// terminate crash matrix reopens the exact durable seams.
+type productionTerminateFixture struct {
+	fb        *fakeBridge
+	provider  *Provider
+	store     *FileStateStore
+	sink      *FileEffectAuthoritySink
+	statePath string
+	sinkPath  string
+	name      string
+	alloc     string
+	bridgeId  string
+}
+
+func newProductionTerminateFixture(t *testing.T, name string) productionTerminateFixture {
+	t.Helper()
+	alloc := "alloc-" + name
+	fb := newFakeBridge(t, testBridgeToken(name))
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	sinkPath := filepath.Join(t.TempDir(), "effects.json")
+	store, err := NewFileStateStore(statePath)
+	if err != nil {
+		t.Fatalf("NewFileStateStore: %v", err)
+	}
+	sink, err := NewFileEffectAuthoritySink(sinkPath)
+	if err != nil {
+		t.Fatalf("NewFileEffectAuthoritySink: %v", err)
+	}
+	provider, err := NewProductionProvider(ProductionProviderConfig{
+		ProviderConfig: ProviderConfig{
+			BridgeBaseURL:  fb.server.URL,
+			BridgeToken:    fb.token,
+			MaxRetries:     2,
+			RetryDelay:     -1,
+			RequestTimeout: 5 * time.Second,
+			StateStore:     store,
+		},
+		AuthoritySink:     sink,
+		AuthorityResolver: staticTestResolver{},
+	})
+	if err != nil {
+		t.Fatalf("NewProductionProvider: %v", err)
+	}
+	identity := scenarioIdentity(name, alloc, "cmd-provision", 1)
+	if _, err := provider.Provision(context.Background(), sandbox.ProvisionRequest{
+		Identity:     identity,
+		Requirements: workspaceRequirements(t),
+	}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	return productionTerminateFixture{
+		fb:        fb,
+		provider:  provider,
+		store:     store,
+		sink:      sink,
+		statePath: statePath,
+		sinkPath:  sinkPath,
+		name:      name,
+		alloc:     alloc,
+		bridgeId:  providerBridgeLocator(t, provider, alloc),
+	}
+}
+
+// terminateIdentity derives the terminate identity of the fixture in the
+// identical (run, attempt) scope as the provision, with a stable command id
+// so every replay derives the identical effect record.
+func (f productionTerminateFixture) terminateIdentity() sandbox.OperationIdentity {
+	return scenarioIdentity(f.name, f.alloc, "cmd-terminate", 1)
+}
+
+// open reopens the production provider from the durable state and sink files.
+func (f productionTerminateFixture) open(t *testing.T) (*Provider, *FileStateStore, *FileEffectAuthoritySink) {
+	t.Helper()
+	store, err := NewFileStateStore(f.statePath)
+	if err != nil {
+		t.Fatalf("reopen state store: %v", err)
+	}
+	sink, err := NewFileEffectAuthoritySink(f.sinkPath)
+	if err != nil {
+		t.Fatalf("reopen effect authority sink: %v", err)
+	}
+	provider, err := NewProductionProvider(ProductionProviderConfig{
+		ProviderConfig: ProviderConfig{
+			BridgeBaseURL:  f.fb.server.URL,
+			BridgeToken:    f.fb.token,
+			MaxRetries:     2,
+			RetryDelay:     -1,
+			RequestTimeout: 5 * time.Second,
+			StateStore:     store,
+		},
+		AuthoritySink:     sink,
+		AuthorityResolver: staticTestResolver{},
+	})
+	if err != nil {
+		t.Fatalf("reopen production provider: %v", err)
+	}
+	return provider, store, sink
+}
+
+// assertTerminateConverged freezes the post-convergence invariants: destroy
+// delivered exactly once, no leak, terminal durable, observation durable and
+// no pending intent.
+func (f productionTerminateFixture) assertTerminateConverged(t *testing.T, store *FileStateStore, sink *FileEffectAuthoritySink) {
+	t.Helper()
+	if got := f.fb.DestroyCount(); got != 1 {
+		t.Fatalf("the destroy must be delivered exactly once, got %d", got)
+	}
+	if got := f.fb.sandboxCount(); got != 1 {
+		t.Fatalf("exactly one remote sandbox must exist (no duplicate create), got %d", got)
+	}
+	if got := f.fb.activeSandboxCount(); got != 0 {
+		t.Fatalf("the destroy must leave no leaked undestroyed remote sandbox, got %d", got)
+	}
+	record, ok := store.Allocation(f.alloc)
+	if !ok || record.Meta.State != sandbox.AllocationTerminated {
+		t.Fatalf("the terminal state must be durable, got %+v ok=%t", record.Meta.State, ok)
+	}
+	if pending := len(store.PendingIntents()); pending != 0 {
+		t.Fatalf("the converged terminate must leave no pending intent, got %d", pending)
+	}
+	records := sink.Records()
+	if len(records) != 2 {
+		t.Fatalf("exactly the provision and terminate effects must be durable, got %d records", len(records))
+	}
+	if records[0].Operation != sandbox.OperationProvision || records[1].Operation != sandbox.OperationTerminate {
+		t.Fatalf("the durable effects must observe provision then terminate, got %q then %q", records[0].Operation, records[1].Operation)
 	}
 }
 
@@ -372,7 +518,8 @@ func TestProviderDuplicateActiveAllocationRejected(t *testing.T) {
 }
 
 // TestProviderCapacityExhaustionFailsClosed freezes that a Bridge capacity
-// refusal fails closed and leaves no local bookkeeping behind.
+// refusal fails closed and leaves no local bookkeeping behind, and that the
+// identical allocation may retry successfully once the capacity clears.
 func TestProviderCapacityExhaustionFailsClosed(t *testing.T) {
 	name := "capacity"
 	alloc := "alloc-" + name
@@ -387,11 +534,18 @@ func TestProviderCapacityExhaustionFailsClosed(t *testing.T) {
 	if !errors.Is(err, ErrCapacityExhausted) {
 		t.Fatalf("capacity exhaustion must fail closed, got %v", err)
 	}
-	if _, err := provider.Provision(ctx, sandbox.ProvisionRequest{
+	receipt, err := provider.Provision(ctx, sandbox.ProvisionRequest{
 		Identity:     scenarioIdentity(name, alloc, "cmd-provision-retry", 1),
 		Requirements: workspaceRequirements(t),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("the retry after cleared capacity must succeed, got %v", err)
+	}
+	if receipt.Allocation.AllocationId != alloc || receipt.Allocation.State != sandbox.AllocationActive {
+		t.Fatalf("the retry must install the active allocation, got %+v", receipt.Allocation)
+	}
+	if got := fb.sandboxCount(); got != 1 {
+		t.Fatalf("exactly one remote sandbox must exist after the retry, got %d", got)
 	}
 }
 
@@ -1490,5 +1644,284 @@ func TestProviderRestoreReopenReplayConverges(t *testing.T) {
 	}
 	if got := fb.sandboxCount(); got != 2 {
 		t.Fatalf("exactly two remote sandboxes must exist (previous + replacement), got %d", got)
+	}
+}
+
+// TestProviderTerminateWritePointFailures freezes the two durable write
+// points of the prepared/delivered terminate protocol: an intent-write
+// failure performs no destroy and leaves no pending intent, while a
+// delivered-write failure destroys remotely but leaves the prepared intent
+// pending and the durable allocation active (the caller must discard the
+// provider).
+func TestProviderTerminateWritePointFailures(t *testing.T) {
+	cases := []struct {
+		name              string
+		failOn            int
+		wantDestroyCalls  int
+		wantPendingIntent bool
+	}{
+		{"intent", 1, 0, false},
+		{"delivered", 2, 1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			name := tc.name
+			alloc := "alloc-" + name
+			fb := newFakeBridge(t, testBridgeToken(name))
+			store := newMemoryStateStore()
+			provider := newTestProviderWithStore(t, fb, store, "")
+			ctx := context.Background()
+			identity := scenarioIdentity(name, alloc, "cmd-provision", 1)
+			if _, err := provider.Provision(ctx, sandbox.ProvisionRequest{
+				Identity:     identity,
+				Requirements: workspaceRequirements(t),
+			}); err != nil {
+				t.Fatalf("Provision: %v", err)
+			}
+			// Arm the write-failure injection for the terminate writes only.
+			failStoreWriteOn(t, store, tc.failOn)
+			bridgeId := providerBridgeLocator(t, provider, alloc)
+			receipt, err := provider.Terminate(ctx, sandbox.TerminateRequest{
+				Identity:     identity,
+				AllocationId: alloc,
+			})
+			if err == nil {
+				t.Fatal("the injected terminate write failure must surface")
+			}
+			if receipt != nil {
+				t.Fatal("a failed terminate must produce no receipt")
+			}
+			if got := fb.RequestCount("DELETE", "/v1/sandbox/"+bridgeId); got != tc.wantDestroyCalls {
+				t.Fatalf("destroy calls = %d, want %d", got, tc.wantDestroyCalls)
+			}
+			pending := false
+			for _, intent := range store.PendingIntents() {
+				if isTerminateIntent(intent) {
+					pending = true
+				}
+			}
+			if pending != tc.wantPendingIntent {
+				t.Fatalf("pending terminate intent = %t, want %t", pending, tc.wantPendingIntent)
+			}
+			if record, ok := store.Allocation(alloc); !ok || record.Meta.State != sandbox.AllocationActive {
+				t.Fatalf("a failed terminate must not durably install a terminal state, got %+v ok=%t", record.Meta.State, ok)
+			}
+		})
+	}
+}
+
+// TestProviderTerminatePreparedDeliveredReopenConverges freezes the crash
+// convergence of the prepared/delivered terminate: a crash after the remote
+// destroy but before the durable delivered write converges on the first and
+// second reopen, with the destroy delivered exactly once and the terminal
+// state durable.
+func TestProviderTerminatePreparedDeliveredReopenConverges(t *testing.T) {
+	name := "terminate-reopen"
+	alloc := "alloc-" + name
+	path := filepath.Join(t.TempDir(), "state.json")
+	fb := newFakeBridge(t, testBridgeToken(name))
+	store, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStateStore: %v", err)
+	}
+	providerA := newTestProviderWithStore(t, fb, store, "")
+	ctx := context.Background()
+	identity := scenarioIdentity(name, alloc, "cmd-provision", 1)
+	if _, err := providerA.Provision(ctx, sandbox.ProvisionRequest{
+		Identity:     identity,
+		Requirements: workspaceRequirements(t),
+	}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	bridgeId := providerBridgeLocator(t, providerA, alloc)
+
+	// Crash the terminate at the delivered write: the destroy succeeds
+	// remotely but the terminal state is not durably committed.
+	failStoreWriteOn(t, store, 2)
+	if _, err := providerA.Terminate(ctx, sandbox.TerminateRequest{
+		Identity:     identity,
+		AllocationId: alloc,
+	}); err == nil {
+		t.Fatal("the delivered write failure must surface")
+	}
+
+	// First reopen: the prepared intent survives and the replay converges,
+	// observing the idempotent destroy and committing the terminal state.
+	reopened, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	providerB := newTestProviderWithStore(t, fb, reopened, "")
+	receipt, err := providerB.Terminate(ctx, sandbox.TerminateRequest{
+		Identity:     identity,
+		AllocationId: alloc,
+	})
+	if err != nil || receipt.State != sandbox.AllocationTerminated {
+		t.Fatalf("the first reopen must converge, got state=%q err=%v", string(receipt.State), err)
+	}
+	if got := fb.RequestCount("DELETE", "/v1/sandbox/"+bridgeId); got != 2 {
+		t.Fatalf("the destroy must be delivered exactly once (one remote destroy plus one idempotent replay), got %d", got)
+	}
+	if pending := len(reopened.PendingIntents()); pending != 0 {
+		t.Fatalf("the converged terminate must resolve the prepared intent, got %d pending", pending)
+	}
+
+	// Second reopen: the terminal state is durable, so terminate is an
+	// idempotent observation with no further destroy.
+	reopened2, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("second reopen: %v", err)
+	}
+	providerC := newTestProviderWithStore(t, fb, reopened2, "")
+	receipt2, err := providerC.Terminate(ctx, sandbox.TerminateRequest{
+		Identity:     identity,
+		AllocationId: alloc,
+	})
+	if err != nil || receipt2.State != sandbox.AllocationTerminated {
+		t.Fatalf("the second reopen must converge idempotently, got state=%q err=%v", string(receipt2.State), err)
+	}
+	if got := fb.RequestCount("DELETE", "/v1/sandbox/"+bridgeId); got != 2 {
+		t.Fatalf("the idempotent second reopen must not destroy again, got %d", got)
+	}
+}
+
+// TestProviderTerminateCrashMatrixProduction freezes the full terminate
+// crash matrix over the production file state store and file effect
+// authority sink: an intent write failure, a prepared-intent crash before
+// the destroy, a delivered write failure after the destroy and an authority
+// observation write failure each discard the provider and converge on the
+// first and second reopen with the destroy delivered exactly once, the
+// terminal state and the observation durable and no leak.
+func TestProviderTerminateCrashMatrixProduction(t *testing.T) {
+	terminate := func(t *testing.T, provider *Provider, identity sandbox.OperationIdentity, alloc string) (*sandbox.TerminateReceipt, error) {
+		t.Helper()
+		return provider.Terminate(context.Background(), sandbox.TerminateRequest{
+			Identity:     identity,
+			AllocationId: alloc,
+		})
+	}
+	reopenConverges := func(t *testing.T, f productionTerminateFixture) {
+		t.Helper()
+		first, store1, sink1 := f.open(t)
+		receipt, err := terminate(t, first, f.terminateIdentity(), f.alloc)
+		if err != nil || receipt.State != sandbox.AllocationTerminated {
+			t.Fatalf("the first reopen must converge, got state=%q err=%v", string(receipt.State), err)
+		}
+		f.assertTerminateConverged(t, store1, sink1)
+
+		second, store2, sink2 := f.open(t)
+		receipt2, err := terminate(t, second, f.terminateIdentity(), f.alloc)
+		if err != nil || receipt2.State != sandbox.AllocationTerminated {
+			t.Fatalf("the second reopen must converge idempotently, got state=%q err=%v", string(receipt2.State), err)
+		}
+		f.assertTerminateConverged(t, store2, sink2)
+	}
+
+	t.Run("intent-write", func(t *testing.T) {
+		f := newProductionTerminateFixture(t, "crash-intent")
+		failStoreWriteOn(t, f.store, 1)
+		if _, err := terminate(t, f.provider, f.terminateIdentity(), f.alloc); err == nil {
+			t.Fatal("the intent write failure must surface")
+		}
+		if got := f.fb.DestroyCount(); got != 0 {
+			t.Fatalf("an intent write failure must perform no destroy, got %d", got)
+		}
+		reopenConverges(t, f)
+	})
+
+	t.Run("prepared-before-destroy", func(t *testing.T) {
+		f := newProductionTerminateFixture(t, "crash-before-destroy")
+		// Simulate a crash after the durable terminate intent but before the
+		// destroy: the prepared intent is durable, the allocation is still
+		// active and no remote destroy has been delivered.
+		record, ok := f.store.Allocation(f.alloc)
+		if !ok {
+			t.Fatal("the fixture must hold the provisioned allocation")
+		}
+		if err := f.store.RecordIntent(CreateIntent{
+			ReplayKey:    terminateIntentKey(f.alloc, record.Meta.Generation),
+			AllocationId: f.alloc,
+			RunId:        record.Meta.RunId,
+			AttemptId:    record.Meta.AttemptId,
+			Generation:   record.Meta.Generation,
+		}); err != nil {
+			t.Fatalf("simulate the prepared intent: %v", err)
+		}
+		if got := f.fb.DestroyCount(); got != 0 {
+			t.Fatalf("the prepared intent must precede the destroy, got %d destroys", got)
+		}
+		reopenConverges(t, f)
+	})
+
+	t.Run("delivered-write", func(t *testing.T) {
+		f := newProductionTerminateFixture(t, "crash-delivered")
+		failStoreWriteOn(t, f.store, 2)
+		if _, err := terminate(t, f.provider, f.terminateIdentity(), f.alloc); err == nil {
+			t.Fatal("the delivered write failure must surface")
+		}
+		if got := f.fb.DestroyCount(); got != 1 {
+			t.Fatalf("the destroy must have been delivered before the terminal write failed, got %d", got)
+		}
+		reopenConverges(t, f)
+	})
+
+	t.Run("observation-write", func(t *testing.T) {
+		f := newProductionTerminateFixture(t, "crash-observation")
+		failSinkWriteOn(t, f.sink, 1)
+		if _, err := terminate(t, f.provider, f.terminateIdentity(), f.alloc); err == nil {
+			t.Fatal("the authority observation write failure must surface")
+		}
+		if got := f.fb.DestroyCount(); got != 1 {
+			t.Fatalf("the destroy must have been delivered before the observation write failed, got %d", got)
+		}
+		if record, ok := f.store.Allocation(f.alloc); !ok || record.Meta.State != sandbox.AllocationTerminated {
+			t.Fatalf("the terminal state must already be durable before the observation write failed, got %+v ok=%t", record.Meta.State, ok)
+		}
+		reopenConverges(t, f)
+	})
+}
+
+// TestProviderHTTPIdempotencyKeyLayered freezes the layering discipline on
+// the wire: the external HTTP Idempotency-Key is allocation-derived,
+// HTTP-safe and never coincides with the internal durable phase key.
+func TestProviderHTTPIdempotencyKeyLayered(t *testing.T) {
+	name := "http-key"
+	alloc := "alloc-" + name
+	fb := newFakeBridge(t, testBridgeToken(name))
+	provider := newTestProvider(t, fb, "")
+	ctx := context.Background()
+	identity := scenarioIdentity(name, alloc, "cmd-provision", 1)
+	if _, err := provider.Provision(ctx, sandbox.ProvisionRequest{
+		Identity:     identity,
+		Requirements: workspaceRequirements(t),
+	}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if _, err := provider.Terminate(ctx, sandbox.TerminateRequest{
+		Identity:     identity,
+		AllocationId: alloc,
+	}); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+
+	keys := fb.ObservedIdempotencyKeys()
+	if len(keys) != 2 {
+		t.Fatalf("exactly the create and destroy keys were expected, got %d: %v", len(keys), keys)
+	}
+	replayKey, err := identity.ReplayKey()
+	if err != nil {
+		t.Fatalf("ReplayKey: %v", err)
+	}
+	want := []string{httpIdempotencyKey(alloc, "create"), httpIdempotencyKey(alloc, "destroy")}
+	for index, key := range keys {
+		if key != want[index] {
+			t.Fatalf("the external key must be the deterministic allocation-derived derivation, got %q want %q", key, want[index])
+		}
+		if !strings.HasPrefix(key, "marshal-") {
+			t.Fatalf("the external key must be HTTP-safe and prefixed, got %q", key)
+		}
+		if key == replayKey {
+			t.Fatal("the external HTTP key must never coincide with the internal durable phase key")
+		}
 	}
 }
