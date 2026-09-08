@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-正式主线是 ADR0088 的 Node-only Task 服务，不再扩充固定订单实验。当前代码集成基线 main=`71e0c1fb06314a5abf73f4f4464e5dea81691605`，已包含正式 HTTP、唯一 SQLite、Task 控制/执行 reducer、受管 ACP、Supervisor、输入上传/制品下载、不可变文件物化和独立 HTTP 客户端。**正式服务入口仍为审查候选，完整自主交付和 API-STABLE 尚未完成**。B1/B2 保持 IN_PROGRESS，B3 保持 PLANNED；实验双 Pi 成功与正式组件证据分开。
+正式主线是 ADR0088 的 Node-only Task 服务，不再扩充固定订单实验。当前代码集成基线 main=`90591d5e37e6e6eac247f6e19efae853232b9ada`，已包含正式 HTTP、唯一 SQLite、Task 控制/执行 reducer、受管 ACP、Supervisor、输入上传/制品下载、不可变文件物化、通用业务文件适配、独立验证命令运行和独立 HTTP 客户端。**正式服务入口仍为审查候选，完整自主交付和 API-STABLE 尚未完成**。B1/B2 保持 IN_PROGRESS，B3 保持 PLANNED；实验双 Pi 成功与正式组件证据分开。
 
 最新已知 origin/main=`ba2196bea33e6f007809f75f9671928c892bfa11`（此前 fetch 结果，本检查点未重新查询远端），pendingRemoteSync=true。本表记录的是本地 merge，不表示远端 main 已同步、CI 已运行或已发行。
 
@@ -21,12 +21,16 @@
 | 文件物化与精确采集 | `8bb6e7ffae8bc75fb8c62cac6806519416a18bde` | `076afef53b02db4de1dad179fa72add1296a92de` | 独立审查无P0/P1，独立与维护者各9/9真实FS/Depot测试通过；仅产候选，需先核实原执行cleanup |
 | HTTP输入/制品接线 | `2f4ff6936e2ce5024f0b600ae6c6fde1fefa3ebd` | `3c9eed9d700f922926bef721f7b3d58d8ab54d30` | 独立审查无P0/P1，维护者33/33 Application测试含真实HTTP通过；输入manifest/原receipt/Task摘要绑定，已提交缺失bytes不修复 |
 | 自驱Supervisor及失败先fence | `ee36d7a5221b8d7dacf6a6246f8dcde3edaced90` | `71e0c1fb06314a5abf73f4f4464e5dea81691605` | 原唯一P1聚合修复，同reviewer37/37通过；cleanup等待中不再派同Task下游，其他Task继续 |
+| 独立验证命令运行 | `9b474bbd6c014e6756972a119488b8635589d071` | `22d536044c557f1a650410fc1627875af23f4857` | 独立review无P0/P1，21/21真实Node运行组合通过；复用原guard，不伪造ACP end_turn或业务通过 |
+| 通用业务文件适配 | `f594271df2f1a1264add304391a316dfb3b4802e` | `90591d5e37e6e6eac247f6e19efae853232b9ada` | root独立逐行审查及39/39 business/files/depot组合通过；作者受git写入限制，由root核对三文件SHA后提交；仍需Core批准布局/执行观察端口 |
 
 ACP Provider 和 ArtifactDepot 的定向测试、diff-check、secret scan、merge-tree 均通过后本地合入。本轮不调用 Marshal 原生二进制，不生成临时原生 checker。统计保留各包/各 source 范围，不把不同快照的测试数相加宣称完整 release 回归。
 
 较早组合 `cb151984`：维护者使用固定 Node 24.15.0 串行运行七包（含既有 `agent-acp`，不含后来客户端）的已列测试入口，**119/119 PASS，24.92秒，零跳过**。包含真实 SQLite/文件 I/O/HTTP/所属 Node 子进程夹具，不含真实模型团队和安装部署；后来合入的执行 reducer/第二客户端不在此119项内。
 
 后续组合 `5f511abe` 的八包验证为 **140/140 PASS，29.734秒，零跳过**。最新 `71e0c1fb` 的十包组合为 **178/179 PASS，44.906秒，零跳过**，不是全绿：ACP Provider期限测试在启动前已合法截止，但测试辅助函数无条件读取不存在的 `started.guardPid`，抛出 TypeError。已保留失败，正在将断言区分实际未启动与已启动清理；不能用增加期限或重复运行把原失败抹掉。该组合不含未合入服务入口、独立命令运行或真实模型团队。
+
+该测试错误在 `9b474bb` 修正为：只有明确观察到立即取消/绝对期限且 `handle.started=null` 才允许没有Agent PID，仍要求原guard退出/组清理事实；正常成功仍必须有原PID。修订时一次机械替换误命中相邻测试，被本地运行的ReferenceError捕获并在提交前纠正，也计为作者错误。随后组合候选 `2bca3a26c1471022a0ddd88d4e92f98a1bdb8f4d` 实跑 **184/184 PASS，39.637秒，零跳过**，含十包加独立command入口，不含后来business/service或真实模型团队；与前次失败分别保留，不跨快照相加。
 
 ## 实机 Qwen 不再只验证握手
 
@@ -44,7 +48,7 @@ ACP Provider 和 ArtifactDepot 的定向测试、diff-check、secret scan、merg
 
 当前并行工作按实际依赖分工：
 
-1. 正式 Node 服务候选 `4e6726d7`：组合root/私有连接文件/owner续租/HTTP/Supervisor/关闭与冷重开，作者11/11真实HTTP/SQLite测试通过，正在独立审查，不是已合入或已部署。
+1. 正式 Node 服务候选原稿 `4e6726d7` 独立审查发现2个P1：旧未派发pending在取消后仍永久阻止ready、ready门禁先于原幂等回放。已一次聚合修正为 `639d3a40b0d872f868ec4b69648200af15dafc69`，作者与维护者各13/13真实HTTP/SQLite通过，原reviewer复核中，不是已合入或已部署。
 2. 通用业务 prepare/collect：使用批准的明确布局、当前ticket输入与上游Depot快照；不从模型自由文本推导文件权限，不采用旧Worker目录。
 3. 独立验收作为批准DAG内受管终点，复用预算/取消/清理；非ACP验证命令复用现guard，随后将精确receipt、Decision和交付引用在同SQLite事务接纳。禁止把Agent end_turn或候选manifest当Task completed。
 
