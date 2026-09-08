@@ -4,6 +4,8 @@
 
 ## 当前唯一状态与关键路径（2026-09-08）
 
+最新验证：PR #276 的 `272aa4c` 在 CI `34195113168` 六项通过、macOS quality 失败。输出超限客户端负例把解释器启动也限制在 150ms，先返回 timeout；后继只给输出/JSON 负例使用原默认 30 秒，超时负例仍 150ms，运行时和精确错误断言不变。独立审查 P0/P1=0、本机 37 项回归通过，完整候选 CI 待重验；保留此前 context 夹具及本次失败成本。PR #276 未合并，B1/B2 不升级。Pi/Qwen 已由用户确认可用；Mac 当前实机阻塞是 AMFI 拒绝固定 Marshal 启动，不是缺少 Agent 配置。
+
 本节是当前进度依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。当前产品要求统一为[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)及 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（2026-09-08 Accepted）；多轮审计见[设计复核](audit-agent-team-service-design-2026-09-07.md)。设计方向、ADR 接纳、runtime enable 与 release 按[合同适用性](design-contract-map.md)分别判断；接受合同不改变下表能力成熟度。
 
 - main 最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；远端集成分支 `feat/team-resident-progress` 为 `a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1`（PR #275 全部检查通过后合并）。取消组合在独立 `feat/task-cancel-integration` 验证。早期 B2/设计分支、旧 CI 与 canary 只保留精确证据，不能挪给新候选；分支合并不等于 main 合并或 stable。

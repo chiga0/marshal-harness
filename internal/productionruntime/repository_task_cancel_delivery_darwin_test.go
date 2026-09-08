@@ -107,11 +107,14 @@ func TestRepositoryTaskCancelDeliveryStopBeforeOutcome(t *testing.T) {
 }
 
 func TestRepositoryTaskCancelDeliveryOutcomeWinsDuringExport(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
 	f := newTaskCancelDeliveryFixture(t)
 	runs := f.accept(t, 3)
 	beforeRuns := f.runHeads(t, runs)
+	// The real Git/Verifier preparation is governed by the package test budget,
+	// not the rendezvous deadline. Slow CI must not spend the scenario's lease
+	// on setup and later misreport an expired context as an owner transition.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
 	if err := f.session.FinalizeReadyInitialTeams(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -201,13 +204,17 @@ func TestRepositoryTaskCancelDeliveryOutcomeWinsDuringExport(t *testing.T) {
 	if err := f.session.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.session, err = OpenRepositorySession(ctx, f.fixture.inputs)
+	// Cold recovery is a separate bounded scenario, using the same original
+	// inputs and persisted bytes; only the caller context is renewed.
+	coldCtx, cancelCold := context.WithTimeout(context.Background(), time.Minute)
+	defer cancelCold()
+	f.session, err = OpenRepositorySession(coldCtx, f.fixture.inputs)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("cold reopen failed: err=%v contextErr=%v", err, coldCtx.Err())
 	}
-	cold, err := f.session.ReadTaskArtifact(ctx, f.task.ID)
+	cold, err := f.session.ReadTaskArtifact(coldCtx, f.task.ID)
 	if err != nil || !bytes.Equal(cold.Content, artifact.Content) || !reflect.DeepEqual(cold.Manifest, artifact.Manifest) || f.exports.Load() != 1 {
-		t.Fatal("cold download rebuilt or changed completed artifact", err)
+		t.Fatalf("cold download rebuilt or changed completed artifact: err=%v contextErr=%v", err, coldCtx.Err())
 	}
 }
 

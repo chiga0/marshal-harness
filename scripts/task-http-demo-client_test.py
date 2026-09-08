@@ -669,12 +669,15 @@ class DeliveryConsumerTests(unittest.TestCase):
             code = "import os,json; assert 'MARSHAL_TEST_SECRET' not in os.environ; print(json.dumps({'checks':34,'scope':'integration'}))"
             with mock.patch.dict(os.environ, {"MARSHAL_TEST_SECRET": TOKEN}):
                 demo.bounded_oracle_process([sys.executable, "-I", "-B", "-c", code], b"x", tmp)
-            for code, reason in [("import time; time.sleep(5)", "business-oracle-timeout"),
-                                 ("print('x'*10000)", "business-oracle-output-limit"),
-                                 ("print('{\"checks\":34.0,\"scope\":\"integration\"}')", "business-oracle-failed"),
-                                 ("import os; os._exit(0)", "invalid-json")]:
+            # Only the deadline case uses a short deadline. Output/JSON cases
+            # must allow interpreter startup under CI load, or they test a
+            # competing timeout instead of their intended rejection boundary.
+            for code, reason, timeout in [("import time; time.sleep(5)", "business-oracle-timeout", 0.15),
+                                          ("print('x'*10000)", "business-oracle-output-limit", 30),
+                                          ("print('{\"checks\":34.0,\"scope\":\"integration\"}')", "business-oracle-failed", 30),
+                                          ("import os; os._exit(0)", "invalid-json", 30)]:
                 with self.subTest(reason=reason), self.assertRaisesRegex(demo.ClientError, reason):
-                    demo.bounded_oracle_process([sys.executable, "-I", "-B", "-c", code], b"x", tmp, timeout=0.15)
+                    demo.bounded_oracle_process([sys.executable, "-I", "-B", "-c", code], b"x", tmp, timeout=timeout)
 
     def test_early_exit_descendant_retaining_pipes_is_killed_before_leader_reap(self):
         code = "import os,time; child=os.fork(); os._exit(0) if child else time.sleep(10)"
