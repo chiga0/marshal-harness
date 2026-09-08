@@ -92,6 +92,39 @@ test('custody permission refusal is clean; allow waits for durable scope and fai
   }
 });
 
+test('failed-only unsafe tools are unknown unless bound to one exact unused session refusal', {timeout: 20000}, async t => {
+  const cases = [
+    ['failed-only-execute', 1], ['failed-only-fetch', 1], ['failed-only-other', 1],
+    ['permission-execute-denied-failed', 0], ['permission-execute-foreign', 1],
+    ['permission-execute-reused-call', 1], ['permission-execute-reused-permission', 1],
+    ['permission-execute-repeated-failed', 1], ['permission-execute-kind-drift', 1], ['permission-execute-started', 2],
+  ];
+  for (const [mode, expected] of cases) {
+    const durable = [], progress = [], executionContext = {
+      launch: (options, callbacks) => launchAcp({...options, onUpdate: callbacks.onUpdate, onPermission: callbacks.onPermission}),
+      extraScope(code) { durable.push(code); },
+    };
+    const handle = provider(mode).start(input(t, {executionContext, onProgress: event => progress.push(event),
+      onPermission: () => ({outcome: {outcome: 'selected', optionId: 'deny'}})}));
+    t.after(() => handle.stop()); const result = await handle.completion; cleaned(result);
+    assert.equal(result.status, 'completed', mode);
+    assert.deepEqual(durable, Array(expected).fill('acp_tool_scope_unproven'), mode);
+    assert.ok(progress.some(event => event.tool?.status === 'failed'), mode);
+    if (mode.startsWith('permission-')) assert.equal(JSON.parse(result.outputText).outcome.optionId, 'deny', mode);
+  }
+});
+
+test('failed-only durable recording failure cannot become a successful provider result', {timeout: 10000}, async t => {
+  let attempts = 0;
+  const executionContext = {
+    launch: (options, callbacks) => launchAcp({...options, onUpdate: callbacks.onUpdate, onPermission: callbacks.onPermission}),
+    extraScope() { attempts++; throw Error('fixture rejected transaction'); },
+  };
+  const handle = provider('failed-only-execute').start(input(t, {executionContext}));
+  t.after(() => handle.stop()); const result = await handle.completion; cleaned(result);
+  assert.equal(attempts, 1); assert.equal(result.status, 'failed'); assert.equal(result.outputText, '');
+});
+
 test('output bound/refusal/deadline remain honest non-delivery terminals and clean owned group', {timeout: 15000}, async t => {
   for (const mode of ['overflow', 'refusal', 'hang-prompt']) {
     const handle = provider(mode).start(input(t, mode === 'hang-prompt' ? {deadline: Date.now() + 1200} : {}));

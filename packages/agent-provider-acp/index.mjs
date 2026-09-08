@@ -41,6 +41,16 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       !text(prompt, 256 * 1024) || !prompt.trim() || onProgress !== undefined && typeof onProgress !== 'function' ||
       onPermission !== undefined && typeof onPermission !== 'function') throw error('provider_invalid_input');
     let runtime, sessionId = null, stopping = false, settled = false, outputText = '', outputBytes = 0, updates = 0, updateFailure;
+    const toolCalls = new Map();
+    function toolState(id) {
+      if (!text(id, 128) || !id) throw error('provider_invalid_progress');
+      if (!toolCalls.has(id)) {
+        if (toolCalls.size >= MAX_UPDATES) throw error('provider_progress_limit');
+        toolCalls.set(id, {seenCall: false, permissionSeen: false, started: false, terminal: false,
+          reused: false, denied: false, kind: null});
+      }
+      return toolCalls.get(id);
+    }
     let resolveStarted; const started = new Promise(resolve => { resolveStarted = resolve; });
     const observation = new AbortController();
     let progress = {phase: 'starting', observedAt: new Date().toISOString(), tool: null};
@@ -59,14 +69,25 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
         if (!text(item.content.text, MAX_OUTPUT_TEXT_BYTES) || outputBytes + Buffer.byteLength(item.content.text) > MAX_OUTPUT_TEXT_BYTES) throw error('provider_output_limit');
         outputText += item.content.text; outputBytes += Buffer.byteLength(item.content.text);
       } else if (['tool_call', 'tool_call_update'].includes(item.sessionUpdate)) {
-        if (!text(item.toolCallId, 128) || !item.toolCallId) throw error('provider_invalid_progress');
+        const call = toolState(item.toolCallId);
         const prior = progress.tool?.id === item.toolCallId ? progress.tool : null;
         const status = item.status ?? prior?.status ?? 'pending';
-        const kind = item.kind ?? prior?.kind ?? 'other';
-        if (executionContext && ['execute', 'fetch', 'other'].includes(kind) && ['in_progress', 'completed'].includes(status))
-          executionContext.extraScope('acp_tool_scope_unproven');
+        const kind = item.kind ?? call.kind ?? 'other';
         if (!['pending', 'in_progress', 'completed', 'failed'].includes(status) ||
           !['read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'other'].includes(kind)) throw error('provider_invalid_progress');
+        if (call.terminal || item.sessionUpdate === 'tool_call' && call.seenCall || call.denied && kind !== call.kind) {
+          call.reused = true; call.denied = false;
+        }
+        if (item.sessionUpdate === 'tool_call') call.seenCall = true;
+        call.kind = kind;
+        // A failed-only event may follow execution. Only one terminal failure
+        // bound to this session's explicit, still-unused refusal is no-start.
+        const refusedFailure = status === 'failed' && call.denied && !call.started && !call.reused;
+        if (executionContext && ['execute', 'fetch', 'other'].includes(kind) &&
+            (['in_progress', 'completed'].includes(status) || status === 'failed' && !refusedFailure))
+          executionContext.extraScope('acp_tool_scope_unproven');
+        if (['in_progress', 'completed'].includes(status)) { call.started = true; call.denied = false; }
+        if (['completed', 'failed'].includes(status)) { call.terminal = true; call.denied = false; }
         progress = {...progress, tool: {id: item.toolCallId, kind, status}};
       } else {
         // Thinking, raw tool inputs/outputs, _meta and provider-specific usage
@@ -79,6 +100,12 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       if (stopping || settled || !onPermission || Date.now() >= deadline) return {outcome: {outcome: 'cancelled'}};
       const toolCall = {};
       for (const key of ['toolCallId', 'title', 'kind', 'status', 'rawInput']) if (Object.hasOwn(params.toolCall, key)) toolCall[key] = structuredClone(params.toolCall[key]);
+      const call = toolState(toolCall.toolCallId);
+      if (call.permissionSeen || call.terminal || call.kind !== null && toolCall.kind !== undefined && call.kind !== toolCall.kind) {
+        call.reused = true; call.denied = false;
+      }
+      call.permissionSeen = true;
+      if (toolCall.kind !== undefined) call.kind = toolCall.kind;
       // This callback is trusted policy, not the progress/UI channel. It needs
       // actual tool input to authorize the bound request. Never forward _meta.
       const response = await onPermission({sessionId: params.sessionId, toolCall, options: structuredClone(params.options)}, context);
@@ -89,6 +116,7 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       if (executionContext && ['allow_once', 'allow_always'].includes(selection?.kind) &&
           !['read', 'edit', 'delete', 'move', 'search', 'think'].includes(toolCall.kind))
         executionContext.extraScope('acp_tool_scope_unproven');
+      call.denied = ['reject_once', 'reject_always'].includes(selection?.kind) && !call.started && !call.terminal && !call.reused;
       return response;
     }
     const completion = (async () => {
