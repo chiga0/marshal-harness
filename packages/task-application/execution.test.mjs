@@ -49,6 +49,7 @@ test('planner reserves original budget and one launch only before confirmed exec
   const f = fixture(t), task = await f.create(), command = f.commands()[0];
   const ticket = f.execution.nextWork(command.id, command.revision);
   assert.equal(ticket.role, 'planner'); assert.equal(ticket.deadline, now + 60000);
+  assert.deepEqual(ticket.input.inputArtifacts, []); // The exact manifest is part of the frozen/hash-bound input.
   assert.equal(ticket.generation, '1'); assert.equal(f.capacity().length, 1);
   assert.equal(f.execution.nextWork(command.id, command.revision), null);
   assert.equal(f.commands()[0].status, 'unknown');
@@ -164,6 +165,51 @@ test('cold recovery retains old worker capacity and never issues a PID-based sto
   assert.equal((await f.get(task.id)).code, 'previous_execution_unresolved');
   assert.equal(f.capacity().length, 1);
   assert.equal(f.execution.nextWork(command.id, 1), null);
+});
+
+test('ticket-bound failure fences before cleanup, preserves capacity and replay adds no facts', async t => {
+  const f = fixture(t), {task} = await planned(f);
+  const commands = f.commands().filter(command => JSON.parse(command.payload).action === 'execute');
+  const find = id => commands.find(command => JSON.parse(command.payload).nodeId === id);
+  const first = f.execution.nextWork(find('first').id, 1), second = f.execution.nextWork(find('second').id, 1);
+  f.execution.started(first, started(first)); assert.equal(f.execution.mayStart(second), true);
+  const revision = (await f.get(task.id)).revision;
+  assert.deepEqual(f.execution.fail(first, 'worker_failed'), {taskId: task.id, status: 'cancelling'});
+  assert.equal((await f.get(task.id)).revision, revision + 1);
+  assert.equal(f.execution.mayStart(second), false); assert.equal(f.execution.nextWork(find('review').id, 1), null);
+  assert.equal(f.capacity().length, 2);
+  const before = await f.app.dispatch({operation: 'task.events', taskId: task.id}, context);
+  f.execution.fail(first, 'worker_failed');
+  assert.deepEqual(await f.app.dispatch({operation: 'task.events', taskId: task.id}, context), before);
+  assert.equal((await f.get(task.id)).revision, revision + 1);
+  const workers = await f.app.dispatch({operation: 'task.workers', taskId: task.id}, context);
+  assert.equal(workers.items.find(worker => worker.id === first.workerId).status, 'running');
+  assert.equal(workers.items.find(worker => worker.id === second.workerId).status, 'queued');
+  assert.equal((await f.app.dispatch({operation: 'task.audit', taskId: task.id}, context)).attempts, 3);
+});
+
+test('failure fence rejects another identity, stale owner and arbitrary reason without partial writes', async t => {
+  const f = fixture(t), task = await f.create(), command = f.commands()[0];
+  const ticket = f.execution.nextWork(command.id, 1), before = await f.get(task.id);
+  assert.throws(() => f.execution.fail({...ticket, taskId: 'other-task'}, 'worker_failed'), error => error.code === 'recovery_required');
+  assert.throws(() => f.execution.fail(ticket, 'arbitrary private error text'), error => error.code === 'invalid_request');
+  assert.deepEqual(await f.get(task.id), before); assert.equal(f.capacity().length, 1);
+  f.reopen();
+  assert.throws(() => f.execution.fail(ticket, 'worker_failed'), error => error.code === 'recovery_required');
+  assert.deepEqual(await f.get(task.id), before); assert.equal(f.capacity().length, 1);
+});
+
+test('earlier user cancel and finished Worker cannot be overwritten by a late failure fence', async t => {
+  const f = fixture(t), task = await f.create(), command = f.commands()[0];
+  const ticket = f.execution.nextWork(command.id, 1); f.execution.started(ticket, started(ticket));
+  const current = await f.get(task.id);
+  await f.app.dispatch({operation: 'task.cancel', taskId: task.id, key: 'cancel', body: {expectedRevision: current.revision}}, context);
+  const cancelled = await f.get(task.id);
+  f.execution.fail(ticket, 'worker_failed'); assert.deepEqual(await f.get(task.id), cancelled);
+  f.execution.finish(ticket, result(ticket));
+  assert.equal(f.execution.reconcile(task.id).status, 'cancelled');
+  const final = await f.get(task.id);
+  f.execution.fail(ticket, 'worker_failed'); assert.deepEqual(await f.get(task.id), final);
 });
 
 test('a reduced plan timeout is frozen from original creation, not refreshed per worker', async t => {
