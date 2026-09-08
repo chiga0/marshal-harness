@@ -4,6 +4,8 @@
 
 ### 22:07 CST Pi 正式 HTTP 团队实机通过
 
+后续独立完整组合已结束：精确`74a239effa975b0ba66b9922b0543227a8a878f1` **374/374 PASS，182.405秒，零失败/取消/跳过，exit0**，运行后HEAD不变且clean。日志 `/private/tmp/marshal-node-combination-74a239e.750O4gfB/results.log`，SHA-256=`2703f3786d1e189ffef651fecf535b05dbe44480e74f87267e310b1a9fd397b9`。这是Pi整合候选的一次完整无模型组合，不与regional候选347项相加；覆盖下文“运行中”的历史时点。
+
 Pi独立整合候选 sourceHead=`74a239effa975b0ba66b9922b0543227a8a878f1`（未合main）完成一次真实HTTP团队验收：Task=`task-93be382b-31e2-4bb8-8d47-8067a2de4847`，`14:06:36.307Z`→`14:07:13.371Z`，**37.064秒**。Pi0.84.4/Node24.15.0，原生planner→一次精确批准→两作者→独立固定Node verifier→下载消费→正常同版本服务实例重开；无自动重试。四个HTTP Worker均completed，两作者原生命周期交叠 **9.403秒**，三个Pi原执行cleanup均确认，独立verifier启动一次。
 
 本次原生工具权限回调 **allowed=5、denied=1**，不是零回调握手。交付184 bytes，独立消费确认4笔/1825 cents，实际下载摘要 `sha256:ee6166dd4ce3e6516262414a5e032dd999083ae50b60825e85f4df5482cf56e8`；正常实例重开保留原create/approve回执和同字节成果、重复启动0。证据 `/private/tmp/marshal-pi-team-20260908-220700/evidence.json`，交付同目录 `regional-report.json`；执行时Git clean/HEAD核对绑定source，JSON本身不含sourceHead，不把它当签名收据。
