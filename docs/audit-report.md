@@ -1,5 +1,15 @@
 # 设计审计报告
 
+## 2026-09-08：Task 取消组合验证与状态字段生命周期
+
+取消初稿 `a59a138` 的聚合审查发现：坏 Task 的局部 Run 读取失败不推进取消游标；取消信号被 finalizer 当成全局调度错误；HTTP 测试 helper 未释放 endpoint borrow，导致冷关闭无限等待。前两项在 `387561e` 修正，helper 在 `eea6e01` 修正。主 Agent 对自己持有的挂起测试进程取 SIGQUIT 栈，确认阻塞于 Session.Close 后停止该次执行，没有重跑未修代码或终止其他 Worker。
+
+组合 `d9cdfa82e0001a3d7a01d42cf36adae0cf257050` 的 Mac 定向测试通过：坏任务不饿死健康任务、停止任务不触发全局 finalizer、draft/approved/READY/reservation 冷恢复、缺目录与缺 cleanup 拒绝、Outcome 前停止的两个真实 Git/Verifier/Importer 场景（19.55 秒）、Outcome 先赢的 export/cancel 竞争（13.34 秒）以及原完整交付链（14.79 秒）。香港 ECS 在专用账号与资源限制下 application/taskhttp/productionruntime 整包 race 通过；resultingress 整包 race 超过 180 秒失败，随后仅取消三项的定向 race 58.114 秒通过。保留整包超时，不能以定向结果替代整包门禁。
+
+复审发现新的明确缺口：原 RunStart projection 只在 READY/RUNNING 填充冻结摘要，取消 consumer 却在 BLOCKED/VERIFYING/REVIEW_PENDING 等状态继续读取同字段，因此真实 cleanup 后仍不能结案。实现 `f4eb0347` 已改为在同一 Run lease 下重读原冻结文件、快照与 journal，并逐项绑定原 Attempt 和合法 completed/stopped 事件；不扩改旧 projection，不接受手填 cleanup 摘要。新增 projection-only 夹具又暴露非法跳状态，`f1474f47` 按原合法状态路径修正；同 reviewer 已复审无剩余代码 P0/P1。完整 Task→真实 CancelRun→cleanup→disposition 正例继续是 B1 实机出口，不因组件通过而关闭。
+
+实际教训：覆盖 producer 字段的**状态生命周期**，不仅比对静态字段名；缺证据负例必须证明拒绝发生在目标 gate，不能在更早的 fixture 错误处假通过。本轮不为测试共享再造协议平台，局部确定性回归与真实 Worker 验收分别留证。并行 CI/审查/后继开发已执行；#274/#275 全绿后分别合入集成分支，不是 main 或正式发布。
+
 ## 2026-09-08：自动验收生产链接缝与流水线修正
 
 核心候选 `064b528` 的唯一 reviewer 发现 P1：objective consumer 漏掉原 Verifier 必定生成的 denial-summary、tool-audit、tool-allowlist，因此手写报告正例通过而真实报告必被拒。修正保持 frozen worker.tools 的必需/可选语义，只允许原 producer 合法 skipped，不放宽未知/缺失/重复/失败 gate。另将实际 sealed Verify 的 ToolAllowlist 接自原冻结 Task，并把 resident 的等待错误映射放回 Application 边界，没有扩架构白名单。
