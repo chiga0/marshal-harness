@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-08 22:42：提交原子性已补证，清理观察与跨代收口继续修复
+
+`2f6c28f` 的 create/result 原 COMMIT 前后四项真实 CLI/HTTP/SQLite 故障测试，经独立审查无 P0/P1、组合9/9通过后合入并推送 `32b353f`。没有伪造 Worker/cleanup 或直接写库；提交前不接纳孤儿成果，提交后精确回执与下载内容保留。这关闭所测事务原子性证据缺口，不关闭 `B2-NODE-CRASH-SETTLEMENT`。
+
+**所测原继承组假阳性已修复：NODE-GROUP-CLEANUP-FALSE-POSITIVE**。实际 `guard.mjs` 先发 `cleaning` 再最终整组 SIGKILL，原 `index.mjs` 只凭消息及 leader SIGKILL 可误判提前单死的 leader 与仍活的继承后代。修复 `c1dd3cde974cf032dfd185754fc9f951e3b582a6` 保留原执行绑定，仅追加 signal 0 的组存在否决，在原清理预算内只有 ESRCH 才确认空组；不向退出后/回放 PID 发停止信号。独立 review 无 P0/P1、固定 Node 20/20 PASS（29.166秒）；真实活后代反例拒绝假清理，已正常合入并推送 `e491339`。此证据不覆盖主动脱组/远端 scope，也不关闭跨代收口缺口。
+
+[ADR 0089](adr/0089-node-execution-custody-and-cleanup-recovery.md) 集中定义原托管观察者、启动许可、清理证据与当前 SQLite owner 的一次性失败/取消收口。旧结果 generation 检查、Provider scopeUnknown、预算/期限、失败现场与 Publisher 分权均保留；不以签名替代实际空组观察，不将所有 Mac 恢复绑到 Linux/systemd。合同审查与实现状态分别报告，避免再把规范增加当作用户出口完成。
+
 ## 2026-09-08 22:22：真实团队交付已成立，完整崩溃恢复仍有实现缺口
 
 正式Node实现已分别完成Qwen必要日期问答团队与Pi原生工具团队的纯HTTP实机交付、独立验收、下载消费和正常实例重开；产品代码已合入并推送`8d48d94`。这取代下文早期“只有组件/未形成团队”的当前性判断，但不抹去旧失败和源码范围，不自动授予B1整体、API-STABLE或production。
