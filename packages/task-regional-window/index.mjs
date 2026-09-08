@@ -87,7 +87,15 @@ export function createRegionalWindowConfig({provider, executable = process.execP
         authorize: (ticket, request) => {const result = filePermission(ticket, byCwd.get(ticket.workerId), request); onPermission(result.outcome.outcome === 'selected'); return result;}});
       return {...business, async prepare(ticket, context) {
         if (ticket.role !== 'planner') {finalValues(ticket.input.task); sourceBytes(ports.depot, ticket);}
-        const result = await business.prepare(ticket, context); byCwd.set(ticket.workerId, result.cwd); onExecution(ticket, result.cwd); return result;
+        const result = await business.prepare(ticket, context);
+        if (ticket.role === 'planner') {
+          // The exact finite policy accepted by bindPlan must be visible to the
+          // actual Planner, not a private answer known only by the test peer.
+          result.prompt = '本业务仅支持下列完整固定提案。请核对原输入后原样返回此 JSON 对象，不改写 goal/scope 或增删字段；不得新增预算、权限、节点或验收规则。不要写文件或自行批准。\n' +
+            'REGIONAL_WINDOW_FIXED_PROPOSAL_V1\n' + encode(proposal()).toString('utf8') + '\nREGIONAL_WINDOW_FIXED_PROPOSAL_END\n' + result.prompt;
+          check(Buffer.byteLength(result.prompt) <= 256 * 1024, 'window_prompt_limit');
+        }
+        byCwd.set(ticket.workerId, result.cwd); onExecution(ticket, result.cwd); return result;
       }, release(ticket) {byCwd.delete(ticket.workerId); business.release(ticket);}, close() {business.close(); activeDepot = null;}};
     }};
 }

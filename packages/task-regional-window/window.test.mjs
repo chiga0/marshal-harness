@@ -12,7 +12,7 @@ import {TaskClient} from '../task-client/index.mjs';
 import {startTaskService} from '../task-service/composition.mjs';
 import {encode} from '../task-store/store.mjs';
 import {createRegionalWindowConfig, filePermission} from './index.mjs';
-import {date, range, finalValues, rowsFrom, expected, taskBody} from './policy.mjs';
+import {date, range, finalValues, rowsFrom, expected, taskBody, proposal} from './policy.mjs';
 import {intake, answer, complete, parseOptions} from './driver.mjs';
 import {consumeDelivery} from './consumer.mjs';
 
@@ -35,7 +35,10 @@ async function fixture(t, mode = 'good') {
   const executions = [], byCwd = new Map(), services = [];
   const native = createAcpProvider({id: 'window-fixture-acp', executable: process.execPath,
     args: [fileURLToPath(new URL('./agent.fixture.mjs', import.meta.url))], env: {WINDOW_FIXTURE: mode}});
-  const provider = {id: native.id, start(input) {const handle = native.start(input); executions.push({ticket: byCwd.get(input.cwd), handle}); return handle;}};
+  const provider = {id: native.id, start(input) {
+    const prompt = mode === 'omit-planner-declaration' ? input.prompt.replace(/^REGIONAL_WINDOW_FIXED_PROPOSAL_V1\n[^\n]+\nREGIONAL_WINDOW_FIXED_PROPOSAL_END\n/m, '') : input.prompt;
+    const handle = native.start({...input, prompt}); executions.push({ticket: byCwd.get(input.cwd), prompt, handle}); return handle;
+  }};
   const config = createRegionalWindowConfig({provider, onExecution: (ticket, cwd) => byCwd.set(cwd, ticket)});
   const start = async mode => {const service = await startTaskService({root, mode, ...config, supervisorOptions: {intervalMs: 10}}); services.push(service);
     const connection = JSON.parse(fs.readFileSync(service.connectionFile)); return {service, client: new TaskClient({baseURL: connection.url, token: connection.token})};};
@@ -149,4 +152,23 @@ test('already supplied dates are not re-asked; one missing slot yields only its 
   await f.client.approveTask(created.id, {expectedRevision: planned.revision, planRevision: planned.plan.revision, planDigest: planned.plan.digest}, 'supplied-approve');
   const completed = await until(() => f.client.getTask(created.id), task => ['completed', 'failed', 'intervention'].includes(task.status));
   assert.equal(completed.status, 'completed'); assert.equal(f.executions.length, 3); assert.equal(f.executions[0].ticket.role, 'planner');
+  const declaration = /^REGIONAL_WINDOW_FIXED_PROPOSAL_V1\n([^\n]+)\nREGIONAL_WINDOW_FIXED_PROPOSAL_END$/m.exec(f.executions[0].prompt);
+  assert.ok(declaration, 'actual Provider prompt includes the whole exact proposal');
+  assert.deepEqual(JSON.parse(declaration[1]), proposal());
+  assert.deepEqual(encode((await f.client.request('task.plan', {path: {taskId: created.id}})).nodes), encode(proposal().nodes));
+});
+
+test('actual Planner cannot use a private fixture answer when the declaration is missing or alter its frozen goal', {timeout: 30000}, async t => {
+  for (const mode of ['omit-planner-declaration', 'alter-planner-goal']) await t.test(mode, async t => {
+    const f = await fixture(t, mode), uploaded = await f.client.request('input.create', {idempotencyKey: mode + '-input',
+      body: {name: 'sales.json', mediaType: 'application/json', contentBase64: bytes.toString('base64')}});
+    const body = taskBody(uploaded.id);
+    const created = await f.client.createTask({...body, context: {...body.context, text: JSON.stringify(values)}}, mode);
+    const task = await until(() => f.client.getTask(created.id), task => ['failed', 'intervention', 'awaiting-approval'].includes(task.status));
+    assert.equal(task.status, 'failed'); assert.equal(task.plan, null); assert.deepEqual(task.artifactIds, []);
+    assert.equal(f.executions.length, 1); assert.equal(f.executions[0].ticket.role, 'planner');
+    assert.equal((await f.executions[0].handle.completion).cleanup.cleaned, true);
+    assert.equal((await f.client.request('task.audit', {path: {taskId: task.id}})).attempts, 1);
+    if (mode === 'omit-planner-declaration') assert.doesNotMatch(f.executions[0].prompt, /REGIONAL_WINDOW_FIXED_PROPOSAL_V1/);
+  });
 });

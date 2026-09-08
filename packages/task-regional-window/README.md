@@ -9,6 +9,7 @@
 - Task intent 为“按日期区间汇总东、西两个地区的已付款流水”，仅一个上传输入；数据是 UTF-8 JSON `{ "rows": [...] }`，不超过 64 KiB、1–512 行。每行恰有 `date/region/status/cents`：日期为 2000–2099 年的严格 `YYYY-MM-DD` UTC 日历日，region 为 east/west，status 为 paid/cancelled，cents 为绝对值不超过 10¹² 的安全整数。重复行分别计作流水，不按未声明的主键去重。
 - 起止日均包含、区间最多 366 日；只计 paid，退款和零额保留。缺哪个日期问哪个，已有日期不重问。已有日期可在原 `context.text` 中以 JSON 对象 `{ "startDate":"…", "endDate":"…" }` 声明；此配置不接受其他 prose 或任意新槽。起止反向或非法日期拒绝，不代猜。
 - 两作者 east/west 各只读 `sales.json`、写自身 JSON；唯一终点 verify 独立验收完整两文件。固定 DAG、路径、整数算法、验收策略、源码身份与原预算不随答案变化。日期只填 Core 冻结的业务 context。初始默认总预算 600 秒、4 Attempts、并发 2；driver 可明确选择 60–900 秒，创建后不可延长。缺日期路径只消耗两作者加验收共 3 Attempts；完整输入保留原零问题 Planner 路径，不补无意义问题。
+- 完整日期的 Planner 实际 prompt 显式给出严格接纳的完整固定 proposal，要求核对输入后原样返回；不能让模型猜私有 goal/scope 文本。测试 ACP peer 只读取这份实际声明，缺声明或改写冻结字段必须失败；不在夹具中私下导入 proposal 作为答案。失败仍保留原 Attempt 成本。
 - 只按原生 Agent **当次提供**的权限请求允许本目录明确文件读写，不允许 shell、跨分支、修改输入、外部发布或永久授权。这不是恶意代码 sandbox，不能撤销 Qwen 配置中已授予的原生权限；服务须使用可信数据和适当隔离的普通用户配置，不能据此证明 Worker/Publisher 分权。
 
 ## 启动现有正式服务
