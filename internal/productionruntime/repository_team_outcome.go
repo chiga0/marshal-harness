@@ -34,6 +34,13 @@ func (v repositoryCompletedTeamVerifier) withCurrentCompletedTeamInputs(ctx cont
 	session := v.session
 	reader := repositoryApprovedTeamVerifier{session: session, approval: approval}
 	return reader.WithCurrentApprovedTeam(ctx, owner, approval, func() error {
+		// Stop is a Task-local disposition, not a broken repository queue.
+		// Check under the current owner before reading any integration inputs;
+		// returning the exact RB1 sentinel lets the finalizer skip this Task
+		// without swallowing owner or ledger read failures.
+		if err := session.ingress.RequireTaskNotStopped(owner.Scope, goalID); err != nil {
+			return err
+		}
 		fail := func() error {
 			return application.NewError("complete-initial-team", application.ReasonAuthorityConflict)
 		}
@@ -158,7 +165,7 @@ func (session *RepositorySession) FinalizeReadyInitialTeams(ctx context.Context)
 			continue
 		}
 		_, err = session.ingress.CompleteTeam(ctx, repositoryCompletedTeamVerifier{session}, session.acquisition, plan.Approval, plan.Revision.GoalId, plan.FactDigest)
-		if errors.Is(err, resultingress.ErrTeamOutcomeNotReady) {
+		if errors.Is(err, resultingress.ErrTeamOutcomeNotReady) || errors.Is(err, resultingress.ErrTaskStopped) {
 			continue
 		}
 		if err != nil {

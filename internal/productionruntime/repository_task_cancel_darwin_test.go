@@ -100,6 +100,106 @@ func taskCancelApprove(t *testing.T, s *RepositorySession, task application.Task
 	return approved
 }
 
+func taskCancelTwoApproved(t *testing.T, s *RepositorySession) (application.TaskProjection, application.TaskProjection) {
+	t.Helper()
+	var tasks []application.TaskProjection
+	for _, key := range []string{"fair-first", "fair-second"} {
+		value, err := s.CreateTask(context.Background(), application.CreateTaskRequest{IdempotencyKey: key, Submission: goal.TaskSubmission{Template: goal.TaskTemplateOrderQuote, Intent: "构建订单报价 API 与客户端"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, err = s.ApproveTask(context.Background(), application.ApproveTaskRequest{TaskID: value.ID, IdempotencyKey: key + "-approve", ExpectedRevision: value.Revision, PreviewDigest: value.PreviewDigest})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tasks = append(tasks, value)
+	}
+	if tasks[0].ID > tasks[1].ID {
+		tasks[0], tasks[1] = tasks[1], tasks[0]
+	}
+	return tasks[0], tasks[1]
+}
+
+func TestRepositoryTaskCancelLocalReadFailureDoesNotHideNextTask(t *testing.T) {
+	ctx := context.Background()
+	fixture, s := taskCancelSessionFixture(t)
+	broken, healthy := taskCancelTwoApproved(t, s)
+	created, err := s.MaterializeApprovedInitialTeamRun(ctx, broken.ID, "service", broken.Approval.FactDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range []application.TaskProjection{broken, healthy} {
+		if _, err := s.CancelTask(ctx, application.CancelTaskRequest{TaskID: task.ID, IdempotencyKey: "stop-" + task.ID, ExpectedRevision: task.Revision}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Only this fixture's Run snapshot is broken; owner and RB1 remain valid.
+	statePath := filepath.Join(fixture.repository, ".marshal", "runs", created.RunID, "state.json")
+	original, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.WriteFile(statePath, original, 0o600); err != nil {
+			t.Error(err)
+		}
+	})
+	id, _, err := s.PendingTaskCancellation(ctx, "")
+	if err == nil || id != broken.ID {
+		t.Fatalf("missing selected local failure: %s %v", id, err)
+	}
+	next, _, err := s.PendingTaskCancellation(ctx, id)
+	if err != nil || next != healthy.ID {
+		t.Fatalf("healthy sibling starved: %s %v", next, err)
+	}
+	if err := s.FinishTaskCancellation(ctx, next); err != nil {
+		t.Fatal("healthy sibling failed disposition", err)
+	}
+	if _, done, _, err := s.ingress.ReadTaskCancellation(s.acquisition.Scope, broken.ID); err != nil || done.FactDigest != "" {
+		t.Fatal("broken Task was falsely closed")
+	}
+}
+
+func TestRepositoryTaskCancelFinalizerSkipsStoppedAndHealthyDispatchContinues(t *testing.T) {
+	ctx := context.Background()
+	_, s := taskCancelSessionFixture(t)
+	stopped, healthy := taskCancelTwoApproved(t, s)
+	if _, err := s.CancelTask(ctx, application.CancelTaskRequest{TaskID: stopped.ID, IdempotencyKey: "stop-finalizer", ExpectedRevision: stopped.Revision}); err != nil {
+		t.Fatal(err)
+	}
+	plan, found, err := s.ingress.ReadTeamPlan(s.acquisition.Scope, stopped.ID)
+	if err != nil || !found {
+		t.Fatal("plan missing", err)
+	}
+	_, err = s.ingress.CompleteTeam(ctx, repositoryCompletedTeamVerifier{s}, s.acquisition, plan.Approval, stopped.ID, plan.FactDigest)
+	if !errors.Is(err, resultingress.ErrTaskStopped) {
+		t.Fatal("current-owner finalizer did not classify the exact stopped Task", err)
+	}
+	stale := s.acquisition
+	stale.OwnerEpoch++
+	err = (repositoryCompletedTeamVerifier{s}).WithCurrentCompletedTeam(ctx, stale, plan.Approval, stopped.ID, plan.FactDigest, func(resultingress.TeamDeliveryOutcome) error { t.Fatal("stale owner callback"); return nil })
+	if err == nil || errors.Is(err, resultingress.ErrTaskStopped) {
+		t.Fatal("owner failure was classified as Task stop", err)
+	}
+	if err := s.FinalizeReadyInitialTeams(ctx); err != nil {
+		t.Fatal("stopped Task poisoned resident finalization", err)
+	}
+	selected, found, err := s.NextInitialTeamDispatch(ctx, 2)
+	if err != nil || !found || selected.GoalID != healthy.ID {
+		t.Fatal("healthy sibling not dispatched", err)
+	}
+	created, err := s.MaterializeApprovedInitialTeamRun(ctx, selected.GoalID, selected.NodeID, selected.PlanFactDigest)
+	if err != nil || created.RunID != selected.RunID {
+		t.Fatal("healthy sibling did not reach original materialization", err)
+	}
+	if _, found, err := s.ingress.ReadTeamOutcome(s.acquisition.Scope, stopped.ID); err != nil || found {
+		t.Fatal("stopped Task gained an Outcome")
+	}
+}
+
 func TestRepositoryTaskCancelHTTPResidentDispositionColdReplay(t *testing.T) {
 	for _, mode := range []string{"draft", "approved", "ready", "reservation", "missing-reservation"} {
 		t.Run(mode, func(t *testing.T) {
@@ -145,7 +245,8 @@ func TestRepositoryTaskCancelHTTPResidentDispositionColdReplay(t *testing.T) {
 					if err := lease.Release(); err != nil {
 						t.Fatal(err)
 					}
-					leaseLedger, err = dispatch.NewLeaseLedger(filepath.Join(fixture.repository, "cancel-dispatch"))
+					_, dispatchPath, _, _ := CompositionPaths(filepath.Join(fixture.repository, ".marshal"))
+					leaseLedger, err = dispatch.NewLeaseLedger(dispatchPath)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -189,7 +290,7 @@ func TestRepositoryTaskCancelHTTPResidentDispositionColdReplay(t *testing.T) {
 			}
 			if mode == "missing-reservation" {
 				runPath := filepath.Join(fixture.repository, ".marshal", "runs", ready.RunID)
-				saved := filepath.Join(fixture.repository, "saved-cancel-run")
+				saved := filepath.Join(fixture.repository, ".marshal", "runs", "saved-cancel-run")
 				if err := os.Rename(runPath, saved); err != nil {
 					t.Fatal(err)
 				}
@@ -198,8 +299,8 @@ func TestRepositoryTaskCancelHTTPResidentDispositionColdReplay(t *testing.T) {
 						t.Error(err)
 					}
 				}()
-				if err := s.FinishTaskCancellation(ctx, id); err == nil {
-					t.Fatal("missing Run with live reservation falsely cancelled")
+				if err := s.FinishTaskCancellation(ctx, id); !application.HasReason(err, application.ReasonRecoveryRequired) {
+					t.Fatal("missing Run with live reservation did not require recovery", err)
 				}
 				_, done, _, err := s.ingress.ReadTaskCancellation(s.acquisition.Scope, id)
 				if err != nil || done.FactDigest != "" {

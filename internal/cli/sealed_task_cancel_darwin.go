@@ -16,13 +16,14 @@ func (a *sealedRepositoryApplication) advanceTaskCancellations(ctx context.Conte
 	var runs []application.RunProjection
 	err := a.withTaskCancellationRead(func() error {
 		var e error
-		id, runs, e = a.session.PendingTaskCancellation(ctx, a.taskCancelCursor)
+		id, runs, e = a.selectTaskCancellation(func(cursor string) (string, []application.RunProjection, error) {
+			return a.session.PendingTaskCancellation(ctx, cursor)
+		})
 		return e
 	})
 	if err != nil || id == "" {
 		return err
 	}
-	a.taskCancelCursor = id
 	var cleanupErr error
 	for _, run := range runs {
 		if run.State != domain.StateRunning && run.State != domain.StateReady {
@@ -54,6 +55,18 @@ func (a *sealedRepositoryApplication) advanceTaskCancellations(ctx context.Conte
 		return cleanupErr
 	} // An admitted Verify is still draining.
 	return errors.Join(cleanupErr, err)
+}
+
+// Selection can identify a Task before one of its local Run reads fails.
+// Advance that scheduling hint even on failure so an intervention does not
+// starve healthy siblings. The error is still returned, including owner/RB1
+// failures; this cursor is never evidence for cleanup or cancellation.
+func (a *sealedRepositoryApplication) selectTaskCancellation(read func(string) (string, []application.RunProjection, error)) (string, []application.RunProjection, error) {
+	id, runs, err := read(a.taskCancelCursor)
+	if id != "" {
+		a.taskCancelCursor = id
+	}
+	return id, runs, err
 }
 
 // Read lifetime guard is released before any mutation takes mu. Holding this
