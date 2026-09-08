@@ -2,6 +2,18 @@
 
 ## 当前结论
 
+### 22:07 CST Pi 正式 HTTP 团队实机通过
+
+Pi独立整合候选 sourceHead=`74a239effa975b0ba66b9922b0543227a8a878f1`（未合main）完成一次真实HTTP团队验收：Task=`task-93be382b-31e2-4bb8-8d47-8067a2de4847`，`14:06:36.307Z`→`14:07:13.371Z`，**37.064秒**。Pi0.84.4/Node24.15.0，原生planner→一次精确批准→两作者→独立固定Node verifier→下载消费→正常同版本服务实例重开；无自动重试。四个HTTP Worker均completed，两作者原生命周期交叠 **9.403秒**，三个Pi原执行cleanup均确认，独立verifier启动一次。
+
+本次原生工具权限回调 **allowed=5、denied=1**，不是零回调握手。交付184 bytes，独立消费确认4笔/1825 cents，实际下载摘要 `sha256:ee6166dd4ce3e6516262414a5e032dd999083ae50b60825e85f4df5482cf56e8`；正常实例重开保留原create/approve回执和同字节成果、重复启动0。证据 `/private/tmp/marshal-pi-team-20260908-220700/evidence.json`，交付同目录 `regional-report.json`；执行时Git clean/HEAD核对绑定source，JSON本身不含sourceHead，不把它当签名收据。
+
+Pi入口摘要 `sha256:5406c369954516fb56879d685e082ff9095cd6e06e41af406f394942377fd4bf`，SDK入口摘要 `sha256:82cb4ea864f3d8816c06bc8f2f2d9a8d82d883297af179dc69d287d042834844`。保留 **ordinaryUser=true、production=false、publisherSeparationProven=false**；不将正常实例重开当宿主崩溃恢复，不将第二Provider单次团队成功当完整API-STABLE。
+
+整合仅含已审Pi修正/显式驱动、五项发行依赖和测试EOF格式修正，未带regional。定向57/58通过，唯一安装HTTP测试受loopback EPERM阻止；正常获准后原测试1/1通过4.145秒，未改断言。该精确候选完整Node组合由非Pi作者独立运行中，未预填通过。
+
+下一项真实B2缺口已定位：当前open可保留旧执行intervention且不重派，但没有合法入口让新owner接纳崩溃后原清理证明；即使所属进程已清净，容量和ready仍可能阻断。开始补同一HTTP/SQLite/guard链的dispatch、取消crash组合测试；不以永久intervention宣称完整恢复，不以脚本改库结清，也不再新增Provider来回避该主线问题。
+
 ### 22:00 CST 真实必要问答团队交付
 
 候选 sourceHead=`538c53494fdaf0715bd5817914c44ace46771471` 上，固定 Node24.15.0 + 原生 Qwen0.22.3 一次完成日期业务：HTTP 缺起止日期→两项必要问题→答案及完整预览→精确批准→双作者→独立验证→下载消费→正常服务实例重开。Task=`task-5fdad69d-2a5f-466a-8a0d-c8ec6a8193c1`，`13:57:42.906Z`→`13:58:04.346Z`，**21.440秒**，无自动重试。批准前启动0；作者生命周期交叠 **14.828秒**，两原执行 cleanup 已确认；3 Attempts 为两作者和 verifier，固定模板不额外调用模型规划。
