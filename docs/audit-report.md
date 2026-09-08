@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-08：SQLite 单事务后端与失败后重新打开
+
+ADR0085 的 SQLite backend 候选实现四类原账本、投影、回执及 outbox 的同事务持久化，不新建业务 reducer 或开启生产 profile。独立审查发现父目录同步 P1：仅同步新根自身不能覆盖其目录项；只修 Create 也不够，失败后 Open 仍可能接纳未结清状态。最终统一 Create/Open 的 held parent 与子→父同步，失败不返回可用 Store、不删状态；回归覆盖失败→重开→Claim→写入→重启的整条路径。同 reviewer 复核关闭该 P1。
+
+维护者独立 Linux 编译包 `9b8148d24647da0049d9a202871c3b46b36e014634894b4a1aa1fc8f612545db` 经香港 ECS 受限账号动态运行，22 组通过；仍非 race/物理掉电/真实 Worker 证据。实现、精确快照与生产接线缺口见 [SQLite 后端说明](sqlite-storage-implementation.md)。经验是把故障后下一次合法打开/继续操作纳入原修复，不只验证首次失败点；不通过不断新增微 PR 代替原完整路径修复。B2 继续 IN_PROGRESS。
+
 ## 2026-09-08：Task 取消组合验证与状态字段生命周期
 
 取消初稿 `a59a138` 的聚合审查发现：坏 Task 的局部 Run 读取失败不推进取消游标；取消信号被 finalizer 当成全局调度错误；HTTP 测试 helper 未释放 endpoint borrow，导致冷关闭无限等待。前两项在 `387561e` 修正，helper 在 `eea6e01` 修正。主 Agent 对自己持有的挂起测试进程取 SIGQUIT 栈，确认阻塞于 Session.Close 后停止该次执行，没有重跑未修代码或终止其他 Worker。
