@@ -30,14 +30,22 @@ function finish(stopReason = 'stop') {
 }
 async function tool(name, input, callId) {
   last = {name, callId};
+  await handlers.get('tool_execution_start')?.({toolName: name, toolCallId: callId, args: input}, context);
   send({type: 'tool_execution_start', toolName: name, toolCallId: callId, args: input});
-  if (mode === 'bypass') { send({type: 'tool_execution_end', toolName: name, toolCallId: callId, isError: false}); return; }
+  if (mode === 'bypass' || mode === 'bypass-error') {
+    await handlers.get('tool_execution_end')?.({toolName: name, toolCallId: callId, isError: mode === 'bypass-error'}, context);
+    send({type: 'tool_execution_end', toolName: name, toolCallId: callId, isError: mode === 'bypass-error'}); return;
+  }
   const event = {toolName: name, toolCallId: callId, input}, blocked = await handlers.get('tool_call')(event, context);
   let failed = blocked?.block === true;
   if (!failed) {
-    try { await registered.get(name).execute(callId, input, controller.signal, () => {}, context); }
+    try { const tool = registered.get(name); input = tool.prepareArguments(input);
+      if (mode === 'invalid-arguments') throw Error('fixture schema rejects missing required content');
+      if (mode === 'cancel-before-execute') controller.abort();
+      await tool.execute(callId, input, controller.signal, () => {}, context); }
     catch { failed = true; }
   }
+  await handlers.get('tool_execution_end')?.({toolName: name, toolCallId: callId, isError: failed}, context);
   send({type: 'tool_execution_end', toolName: name, toolCallId: callId, isError: failed});
 }
 async function prompt(request) {

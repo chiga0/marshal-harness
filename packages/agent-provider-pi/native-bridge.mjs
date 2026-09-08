@@ -11,7 +11,7 @@ export function installNativeBridge(pi, {config, sdk, shell} = {}) {
     !Number.isSafeInteger(config.deadline) || !sdk || typeof shell?.getShellConfig !== 'function' || typeof shell?.getShellEnv !== 'function' ||
     typeof pi?.on !== 'function' || typeof pi?.registerTool !== 'function' || typeof pi?.getActiveTools !== 'function' || typeof pi?.setActiveTools !== 'function')
     throw Error('pi_bridge_invalid_configuration');
-  const wrapped = new Map(), seen = new Set(); let ready = false;
+  const wrapped = new Map(), seen = new Set(), calls = new Map(), truncated = new Map(); let ready = false;
   const validContext = ctx => ready && ctx?.cwd === config.cwd && Date.now() < config.deadline;
   const envelope = (type, details = {}) => ({profile: BRIDGE_PROFILE, nonce: config.nonce, cwd: config.cwd, deadline: config.deadline, type, ...details});
   const notify = (ctx, type, details) => ctx.ui.notify(JSON.stringify(envelope(type, details)), 'info');
@@ -27,7 +27,17 @@ export function installNativeBridge(pi, {config, sdk, shell} = {}) {
       if (typeof sdk[factory] !== 'function') throw Error('pi_bridge_sdk_incompatible');
       const original = sdk[factory](config.cwd, name === 'bash' ? {operations} : undefined);
       if (original?.name !== name || typeof original.execute !== 'function') throw Error('pi_bridge_sdk_incompatible');
-      const tool = {...original, async execute(callId, params, signal, update, toolContext) {
+      const tool = {...original, prepareArguments(params) {
+        // Agent-core has selected this exact Tool object, but has not validated
+        // its arguments or entered execute yet. Match the original in-process
+        // args reference, not model prose or an isError/error-string heuristic.
+        const candidates = [...calls.values()].filter(call => call.name === name && call.args === params && !call.selected && !call.ended);
+        if (candidates.length !== 1) throw Error('pi_bridge_unmatched_preparation');
+        const call = candidates[0]; call.selected = true;
+        notify(call.ctx, 'definition-selected', {toolCallId: call.id, toolName: name});
+        delete call.args; delete call.ctx;
+        return original.prepareArguments ? original.prepareArguments(params) : params;
+      }, async execute(callId, params, signal, update, toolContext) {
         if (!validContext(toolContext) || signal?.aborted || !text(callId, 128) || !callId || seen.has(callId) || seen.size >= 4096)
           throw Error('pi_bridge_invalid_call');
         seen.add(callId);
@@ -48,6 +58,33 @@ export function installNativeBridge(pi, {config, sdk, shell} = {}) {
     // Registration must not silently enable previously disabled native tools.
     pi.setActiveTools(active); ready = true;
     notify(ctx, 'ready', {tools: [...wrapped.keys()].sort(), scope: 'inherited-process-group'});
+  });
+  pi.on('message_end', event => {
+    const message = event.message;
+    if (message?.role !== 'assistant') return;
+    truncated.clear();
+    if (message.stopReason !== 'length' || !Array.isArray(message.content)) return;
+    for (const item of message.content) if (item.type === 'toolCall' && text(item.id, 128) && item.id && text(item.name, 128)) {
+      if (truncated.has(item.id) || truncated.size >= 4096) throw Error('pi_bridge_invalid_truncated_calls');
+      truncated.set(item.id, item.name);
+    }
+  });
+  pi.on('tool_execution_start', (event, ctx) => {
+    if (!ready || !text(event.toolCallId, 128) || !event.toolCallId || !text(event.toolName, 128) || calls.has(event.toolCallId) || calls.size >= 4096)
+      throw Error('pi_bridge_invalid_call');
+    calls.set(event.toolCallId, {id: event.toolCallId, name: event.toolName, args: event.args, ctx, selected: false, ended: false});
+  });
+  pi.on('tool_execution_end', (event, ctx) => {
+    const call = calls.get(event.toolCallId);
+    if (!call || call.name !== event.toolName || call.ended) throw Error('pi_bridge_unmatched_end');
+    call.ended = true;
+    // Native agent-core never selects/executes any tool in a length-truncated
+    // assistant response. Both original producer events and exact IDs are
+    // needed; an arbitrary error from a replacement definition proves nothing.
+    if (!call.selected && !seen.has(call.id) && truncated.get(call.id) === call.name && event.isError === true)
+      notify(ctx, 'not-executed', {toolCallId: call.id, toolName: call.name, disposition: 'truncated-assistant'});
+    delete call.args; delete call.ctx;
+    truncated.delete(call.id);
   });
   pi.on('tool_call', (event, ctx) => {
     if (!validContext(ctx) || !wrapped.has(event.toolName)) {

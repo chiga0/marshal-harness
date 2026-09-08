@@ -36,6 +36,8 @@ test('actual extension wrapper prompts final immutable arguments and preserves o
   installNativeBridge(api, {config, sdk, shell}); await handlers.get('session_start')({}, ctx);
   assert.deepEqual([...tools.keys()], ['write']); assert.equal(tools.get('write').promptSnippet, 'original write');
   const input = {path: 'approved.txt', content: 'approved bytes'}, controller = new AbortController();
+  handlers.get('tool_execution_start')({toolCallId: 'call-one', toolName: 'write', args: input}, ctx);
+  assert.equal(tools.get('write').prepareArguments(input), input);
   const writing = tools.get('write').execute('call-one', input, controller.signal, () => {}, ctx);
   input.path = 'unapproved.txt'; input.content = 'changed after permission';
   assert.deepEqual(observed.input, {path: 'approved.txt', content: 'approved bytes'});
@@ -115,11 +117,59 @@ test('cancel during actual native shell execution waits for original whole-group
 });
 
 test('missing/foreign bridge and bypassed native wrapper cannot manufacture permission or cleanup', {timeout: 20000}, async t => {
-  for (const mode of ['bad-nonce', 'bypass', 'custom', 'no-bridge']) {
+  for (const mode of ['bad-nonce', 'bypass', 'bypass-error', 'custom', 'no-bridge']) {
     const input = options(t, {deadline: Date.now() + (mode === 'no-bridge' ? 1500 : 10000), onPermission: allow});
     const handle = provider(mode).start(input); t.after(() => handle.stop()); const result = await handle.completion;
-    if (mode === 'bad-nonce' || mode === 'bypass') { assert.equal(result.status, 'unknown'); assert.equal(result.cleanup, null); }
+    if (['bad-nonce', 'bypass', 'bypass-error'].includes(mode)) { assert.equal(result.status, 'unknown'); assert.equal(result.cleanup, null); }
     else { clean(result); if (mode === 'no-bridge') assert.notEqual(result.status, 'completed'); }
+    assert.equal(fs.existsSync(path.join(input.cwd, 'output.txt')), false);
+  }
+});
+
+test('selected native definition is safe when schema rejection or cancellation wins before execute', {timeout: 12000}, async t => {
+  for (const mode of ['invalid-arguments', 'cancel-before-execute']) {
+    let permissions = 0;
+    const input = options(t, {onPermission: () => { permissions++; return allow(); }}), handle = provider(mode).start(input);
+    t.after(() => handle.stop()); const result = await handle.completion; clean(result);
+    assert.notEqual(result.status, 'unknown'); assert.equal(permissions, 0);
+    assert.equal(fs.existsSync(path.join(input.cwd, 'output.txt')), false);
+  }
+});
+
+test('truncated assistant evidence binds every native unexecuted call, not error prose', async t => {
+  const cwd = directory(t), handlers = new Map(), tools = new Map(), messages = [];
+  const api = {on: (name, fn) => handlers.set(name, fn), registerTool: tool => tools.set(tool.name, tool), getActiveTools: () => ['write'], setActiveTools() {}};
+  const ctx = {cwd, ui: {notify(value) { messages.push(JSON.parse(value)); }}};
+  installNativeBridge(api, {config: {profile: BRIDGE_PROFILE, nonce: 'b'.repeat(64), cwd, deadline: Date.now() + 10000}, sdk, shell});
+  await handlers.get('session_start')({}, ctx);
+  handlers.get('message_end')({message: {role: 'assistant', stopReason: 'length', content:
+    ['one', 'two'].map(id => ({type: 'toolCall', id, name: 'write', arguments: {path: 'output.txt'}}))}});
+  for (const id of ['one', 'two', 'foreign']) {
+    handlers.get('tool_execution_start')({toolCallId: id, toolName: 'write', args: {}}, ctx);
+    handlers.get('tool_execution_end')({toolCallId: id, toolName: 'write', isError: true}, ctx);
+    handlers.get('message_end')({message: {role: 'toolResult'}});
+  }
+  assert.deepEqual(messages.filter(message => message.type === 'not-executed').map(message => message.toolCallId), ['one', 'two']);
+  assert.equal(fs.existsSync(path.join(cwd, 'output.txt')), false);
+});
+
+// Explicit installed SDK also tests the ORIGINAL agent-core argument validator,
+// truncated-call producer and before-execute cancellation, not hand-built ends.
+if (process.env.MARSHAL_PI_TEST_SDK) test('installed native agent-core rejects invalid/truncated/cancelled calls before execution; replacement remains unknown', {timeout: 25000}, async t => {
+  const coreEntry = path.resolve(path.dirname(sdkEntry), '../node_modules/@earendil-works/pi-agent-core/dist/agent-loop.js');
+  const peer = fileURLToPath(new URL('./native-core.fixture.mjs', import.meta.url));
+  for (const mode of ['invalid-arguments', 'truncated', 'cancel-before-execute', 'bypass-error']) {
+    let permissions = 0;
+    const input = options(t, {onPermission: request => { permissions++; return allow(request); }});
+    const p = createPiProvider({id: 'pi-core', executable: process.execPath, args: [peer, mode, coreEntry], bridge: {sdkEntry}});
+    const handle = p.start(input); t.after(() => handle.stop()); const result = await handle.completion;
+    const proof = JSON.parse(fs.readFileSync(path.join(input.cwd, 'core-proof.json')));
+    assert.deepEqual(proof.ends, [{id: 'write-one', isError: true}]); assert.equal(proof.permission, 0); assert.equal(permissions, 0);
+    assert.equal(proof.definitionSelected, ['invalid-arguments', 'cancel-before-execute'].includes(mode) ? 1 : 0);
+    assert.equal(proof.notExecuted, mode === 'truncated' ? 1 : 0);
+    assert.equal(proof.executeEntered, mode === 'bypass-error' ? 1 : 0);
+    if (mode === 'bypass-error') { assert.equal(result.status, 'unknown'); assert.equal(result.cleanup, null); }
+    else { clean(result); assert.notEqual(result.status, 'unknown'); }
     assert.equal(fs.existsSync(path.join(input.cwd, 'output.txt')), false);
   }
 });

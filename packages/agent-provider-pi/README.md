@@ -18,6 +18,7 @@ const result = await handle.completion;
 - 组合显式选择 `bridge` 时，Provider 添加同包受版本管理的 `native-bridge.mjs` 扩展。每个执行的随机 nonce、cwd、原始期限与 SDK 入口只用于父进程/扩展关联；扩展读完移除配置环境变量。nonce 不是恶意代码沙箱或加密 attestation。
 - 启动须收到当前扩展 ready，再核对原生 session 空闲、无历史消息/待执行队列，之后才发送唯一 prompt。ready 缺失/绑定失配不继续；客户端不能从模型文字中猜测能力。
 - 扩展保留原 active tools 清单，使用原 SDK 的 `read/write/edit/grep/find/ls/bash` definition：参数 schema、prompt metadata、文件操作和原输出格式不重写。权限检查位于最终 `execute` 包装层，晚于可能改写参数的原生 `tool_call` hooks。复制实际参数，交现有 `onPermission`，只接受当前 `allow_once`；取消、期限、拒绝或迟到回答都不执行。
+- 原 SDK 在工具 `start` 后可能因参数校验、截断或取消而不进入 `execute`。受管 definition 的同步 `prepareArguments` 包装按原 args 对象/调用 ID 证明已选中该定义，避免把正常未执行误判为归属未知；截断必须有原 assistant `length` 与精确调用集合及错误结束。只有 `isError` 或错误文字不构成证明，替换工具绕过原包装仍返回 unknown。
 - 回调保持已有请求形状：`sessionId/toolCall/options`；`toolCall.rawInput` 是 Pi 原参数，`toolCall._meta` 给出 `provider:pi/toolName`。业务授权器须理解原生 `path/content/command`，不把自由文本 scope 或一种品牌的 `file_path` 字面量当所有工具权限。默认拒绝；不会吞掉 FileBusiness 已要求的回调。
 - bash 仍由原生工具解析/格式化，通过官方 operations 注入 `detached:false` 子进程；使用同 SDK shell 解析与环境。自定义 shell 可显式传 `bridge.shellPath`。单工具最多 4 MiB 输出，执行内最多 4 个并行 shell，超时不超过原 deadline。保留退出后输出 idle grace；最终继承后代仍由原 Runtime guard 整组清理。
 - 当前 POSIX 适配不支持 Windows powershell。未接入的 custom 工具保留可见，但执行前明确 capability 拒绝；不会无声启用/禁用工具。其他扩展后续替换执行实现、绕过包装而没有当前授权关联时，返回 unknown，不能根据同名工具冒充权限/清理。需要 custom 工具时应增加明确受管实现，而非 allow-all。
@@ -39,3 +40,5 @@ node --test --test-concurrency=1 packages/agent-pi-rpc/client.test.mjs packages/
 ```
 
 默认测试使用受版本管理的无模型 SDK seam；实际加载同一个 extension，并执行原 guard、真实文件读写与继承 shell 子进程。`native-bridge.test.mjs` 另以正式 FileBusiness+Depot 验证原输入不变、实际 Runtime 身份与制品采集。可显式设置 `MARSHAL_PI_TEST_SDK=/absolute/pi-package/dist/index.js`，重复该测试来使用已安装 Pi 的原 SDK definition；只加载工具模块，不启动 Pi/登录/模型。原生 CLI 加载扩展、真实模型工具与取消/整个服务恢复仍要独立实机验收，不能由模拟 peer 代替。
+
+设置该变量时还增加 `native-core.fixture.mjs` 回归：加载同安装包的原 `pi-agent-core` 参数校验/执行循环，注入固定内存流，不调用模型；检查实际参数失败、截断、执行前取消零工具执行且清理成立，以及返回同样错误的替换实现仍不能冒充清理证明。

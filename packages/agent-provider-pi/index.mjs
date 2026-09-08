@@ -68,7 +68,7 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
           let call = calls.get(message.toolCallId);
           if (message.type === 'tool_execution_start') {
             if (call || calls.size >= 4096) { scopeUnknown = true; throw fault('pi_invalid_progress'); }
-            call = {name: message.toolName, authorized: false, safe: false, ended: false}; calls.set(message.toolCallId, call);
+            call = {name: message.toolName, authorized: false, safe: false, selected: false, permission: false, notExecuted: false, ended: false}; calls.set(message.toolCallId, call);
           }
           if (!call || call.name !== message.toolName || call.ended) { scopeUnknown = true; throw fault('pi_invalid_progress'); }
           if (message.type === 'tool_execution_end') {
@@ -76,7 +76,7 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
             call.ended = true;
             // A replacement tool that bypasses the installed wrapper must not
             // inherit its permission/owned-shell guarantee from just a name.
-            if (!call.safe) { scopeUnknown = true; throw fault('pi_execution_scope_unproven'); }
+            if (!call.safe || call.notExecuted && !message.isError) { scopeUnknown = true; throw fault('pi_execution_scope_unproven'); }
           }
         } else {
         // Pi native bash/powershell use detached process groups. Unknown/custom
@@ -106,13 +106,19 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
         supportedTools = new Set(value.tools); bridgeReady = true; resolveReady(); return;
       }
       const call = calls.get(value.toolCallId);
-      if (!bridgeReady || !call || call.name !== value.toolName || call.ended || call.safe) { scopeUnknown = true; throw fault('pi_bridge_unmatched_call'); }
-      if (message.method === 'notify' && value.type === 'blocked') { call.safe = true; return; }
+      if (!bridgeReady || !call || call.name !== value.toolName || call.ended) { scopeUnknown = true; throw fault('pi_bridge_unmatched_call'); }
+      if (message.method === 'notify' && value.type === 'definition-selected' && supportedTools.has(value.toolName) && !call.safe) {
+        call.selected = true; call.safe = true; return;
+      }
+      if (message.method === 'notify' && value.type === 'not-executed' && value.disposition === 'truncated-assistant' && !call.safe) {
+        call.notExecuted = true; call.safe = true; return;
+      }
+      if (message.method === 'notify' && value.type === 'blocked' && !call.permission && !call.notExecuted) { call.safe = true; return; }
       if (message.method !== 'confirm' || value.type !== 'permission' || value.sessionId !== sessionId || !supportedTools.has(value.toolName) ||
-        !object(value.input) || Buffer.byteLength(JSON.stringify(value.input)) > 64 * 1024) { scopeUnknown = true; throw fault('pi_bridge_invalid_permission'); }
+        call.permission || call.notExecuted || !object(value.input) || Buffer.byteLength(JSON.stringify(value.input)) > 64 * 1024) { scopeUnknown = true; throw fault('pi_bridge_invalid_permission'); }
       // Receipt of the execute wrapper's request proves the call has not yet
       // run and can only use that native definition/operations after our reply.
-      call.safe = true;
+      call.safe = true; call.permission = true;
       const reject = {handled: true, confirmed: false};
       if (!onPermission || stopping || observation.signal.aborted || context.signal.aborted || Date.now() >= deadline) return reject;
       const request = {sessionId, toolCall: {toolCallId: value.toolCallId, kind: TOOL_KINDS[value.toolName], title: value.toolName,

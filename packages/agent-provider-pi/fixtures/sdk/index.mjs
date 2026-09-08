@@ -21,4 +21,3 @@ export const createBashToolDefinition = (cwd, {operations}) => definition('bash'
 export const createGrepToolDefinition = () => definition('grep', async () => { throw Error('fixture unused'); });
 export const createFindToolDefinition = () => definition('find', async () => { throw Error('fixture unused'); });
 export const createLsToolDefinition = () => definition('ls', async () => { throw Error('fixture unused'); });
-

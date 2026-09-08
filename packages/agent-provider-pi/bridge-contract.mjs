@@ -7,4 +7,3 @@ export const TOOL_FACTORIES = Object.freeze({read: 'createReadToolDefinition', w
   grep: 'createGrepToolDefinition', find: 'createFindToolDefinition', ls: 'createLsToolDefinition', bash: 'createBashToolDefinition'});
 export const text = (value, max) => typeof value === 'string' && value.isWellFormed() && !value.includes('\0') && Buffer.byteLength(value) <= max;
 export const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-
