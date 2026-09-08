@@ -102,7 +102,8 @@ test('invalid or reverse dates, old preview and different-key consumed answer re
 test('actual author reports for WRONG date range cannot pass final independent ticket-bound oracle', {timeout: 30000}, async t => {
   const f = await fixture(t, 'wrong-window'), session = await intake(f.client, {bytes, key: 'wrong-window'}), preview = await answer(f.client, session, values);
   await assert.rejects(complete(f.client, session, preview.approval), /window_execution_stopped/);
-  const task = await f.client.getTask(session.taskId), audit = await f.client.request('task.audit', {path: {taskId: session.taskId}});
+  const task = await until(() => f.client.getTask(session.taskId), task => ['failed', 'intervention'].includes(task.status));
+  const audit = await f.client.request('task.audit', {path: {taskId: session.taskId}});
   assert.equal(task.status, 'failed'); assert.equal(audit.acceptance.status, 'failed'); assert.deepEqual(task.artifactIds, []);
   assert.equal(f.executions.length, 2);
 });
