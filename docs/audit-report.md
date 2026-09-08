@@ -2,7 +2,7 @@
 
 ## 2026-09-08：关键问答不变成人造等待
 
-B2-A 接缝盘点确认，原 `bounded-task-draft/v1` 是单个不可变草案；0085 的一般交互条款尚未定义问题生产者及答案/新 preview 的原子提交。候选 [ADR 0086](adr/0086-task-preapproval-questions-and-preview-revisions.md) 仅补未批准 Task 的封闭协议，保留旧 draft、原确认期限、同账本和取消优先；它仍为 Proposed，本轮没有启用新 RB1 写入。
+B2-A 接缝盘点确认，原 `bounded-task-draft/v1` 是单个不可变草案；0085 的一般交互条款尚未定义问题生产者及答案/新 preview 的原子提交。[ADR 0086](adr/0086-task-preapproval-questions-and-preview-revisions.md) 仅补未批准 Task 的封闭协议，保留旧 draft、原确认期限、同账本和取消优先。`4f76a2e` 经独立审查无 P0/P1，按反馈一次补齐旧批准 fallback、Decision/delivery 消费者和取消 CAS 的明确边界；维护者在已有 B2 实施授权内接纳，不伪称用户曾逐条确认。接纳时尚无新 RB1/HTTP 实现或运行证据。
 
 当前 `order-quote/v1` 已完整冻结，不存在需要追问的必填槽，应零问题继续 B1；不为测试接口制造“是否继续”或重复方案批准。组件验证将使用显式测试专用模板，真正 B2 还需后续业务模板的实机问答和交付证据。先证明问题影响交付、再决定是否提问，是从历史流程返工中固化的效率约束，不以问题数或接口数宣称进展。
 

@@ -1,6 +1,6 @@
 # ADR 0086：未批准 Task 的关键问答与追加式预览版本
 
-- 状态：Proposed（待独立审查与接受；不授权提前写入新 RB1 事实）
+- 状态：Accepted（2026-09-08，由维护者在已授权 B2 实施目标内接纳；独立审查 `4f76a2e` 无 P0/P1，并补齐消费者迁移及取消 CAS 澄清。不是用户逐条确认记录，不表示实现或实机已通过）
 - 日期：2026-09-08
 - 范围：B2-A 的提交前关键澄清；只处理尚未批准、未创建 Run 的公开 Task。
 - 依据：[ADR 0085 §3、§5](0085-agent-team-service-contract-and-storage.md)、[服务 Milestone](../agent-team-service-milestones.md)。
@@ -9,7 +9,7 @@
 
 0085 已接受问题必须绑定 Task、subject、revision、期限和消费记录，但当前 `bounded-task-draft/v1` 只保存一个不可变 draft，确认绑定该 draft 的精确摘要和 revision=1。它没有定义回答后如何原子保存新 preview、阻止旧 preview 获批，也没有定义谁可以生产问题。
 
-本提案只补上述持久化接缝，不修改旧 draft 的字节、摘要、版本或既有批准含义。新 Task 仍是同一个 Goal，不增加独立 Task 真值、数据库或通用交互平台。已批准 Task、运行中的 Worker steering、人工成果验收和跨进程答案投递不在本次范围。
+本决策只补上述持久化接缝，不修改旧 draft 的字节、摘要、版本或既有批准含义。新 Task 仍是同一个 Goal，不增加独立 Task 真值、数据库或通用交互平台。已批准 Task、运行中的 Worker steering、人工成果验收和跨进程答案投递不在本次范围。
 
 当前 `order-quote/v1` 的业务接口与 oracle 已完整冻结，没有需要用户补充的必填槽，因此必须返回零问题，保持原 B1 提交→一次确认流程。不能为演示问答而增加“是否继续”、按文本长度猜测歧义，或让用户回答本已确定的选项。
 
@@ -55,6 +55,8 @@
 
 取消与新答复/确认沿同一 RB1 线性化：stop 先提交，后续新答复和批准拒绝；答案先提交，后到 stop 仍停止该 Task；批准先提交，后续新答复拒绝且不能改已冻结 Run 输入。已经生效操作的精确 lost-response 重放仍是只读回执，不撤销 stop、不复活 Task。确认到期本身不凭空追加成功/取消事实，也不重置身份重新创建同义任务。
 
+以上取消仍执行原显式 revision CAS：若答案已先提交，持旧 `expectedRevision` 的新 cancel 返回 409，服务不得隐式刷新其 revision 或幂等键。客户端重新查询后，以新的明确取消请求和匹配当前 revision 提交，才可与后续动作竞争；“取消优先”不是绕过 CAS 或覆盖已经提交的答案。
+
 ## 5. 最小 HTTP 和实现接缝
 
 - `GET /v1/tasks/{id}/questions`：只读返回原批、各题 pending/answered 状态、当前 Task revision/previewDigest 和原期限；有授权才返回问题/答案，不触发规划、修复或写入。
@@ -64,6 +66,11 @@
 
 原 v1 Task 查询 questions 返回空，answer 返回无该问题；不开启额外问答，不改变其原确认请求、取消、自动 Decision 或交付行为。
 
+实施必须一次覆盖原事实消费者，不另建平行验证路径：
+
+- 按实际事实族解析同一 Task 的根请求、当前 preview 和已批准的精确 preview，统一供创建重放、按 ID 查询/list、accepted-plan 与原 deadline 检查、cancel revision/scope/fence 使用。原 `validateTaskDraftApproval` 的“无旧 draft 即 AF_UNIX”分支必须先排除 clarification Task；未答问题或遗漏新记录不得借旧入口获批。
+- objective Decision、ReviewPacket 选择及 delivery 继续要求原 `order-quote/v1` 资格与精确原授权。新的测试模板或其他问答模板不因具备 preview/accepted-plan 而继承 `marshal-order-quote-v1` 的 system Decision、固定 ZIP 交付或任何旧业务验收保证。
+
 ## 6. 一次性验收与诚实出口
 
 确定性测试使用明确标注、仅测试组合根安装的模板：缺两项真实必填输入→同批提问→逐项答案验证→两版追加 preview→最终确认→原计划接纳；断线精确重放/冷重开保持同 Task、同原期限、同摘要和零重复事实。它不对外注册为业务模板，也不冒充已支持零 Git 业务。
@@ -72,4 +79,4 @@
 
 上述代码及组件测试只关闭 B2-A 的协议/调用链子条件。真正 B2 仍须为后续零 Git 业务模板或受限需求规划接入明确业务槽，在实际用户任务中证明必要问答→确认→真实团队→独立可消费交付，并完成其余 B2 出口。纯 DTO、手写状态、测试模板或多一次确认都不能关闭 B2，也不改善未测得的业务成功率。
 
-本 ADR 接受前只允许提案及未启用的纯类型/验证准备；接受后才实现新事实族与对应 HTTP 写入。它不重开 Workspace/身份/Skill 平台，不扩已运行 Agent 的交互或生产发布权限。
+本 ADR 接受后允许实现新事实族与对应 HTTP 写入；运行时支持仍须通过本节验收，不自动启用旧实例或授予 B2 完成。它不重开 Workspace/身份/Skill 平台，不扩已运行 Agent 的交互或生产发布权限。
