@@ -40,6 +40,7 @@ type RepositorySessionInputs struct {
 	// Git-only data producer installed by fixed composition, not a Worker or
 	// client executor. No Run/ref/working index mutation or retry is allowed.
 	TeamIntegrationBuilder func(context.Context, string, string, [][]byte) (string, string, error)
+	TeamDeliveryExporter   func(context.Context, string, string, string, string, [][]byte, []byte, []string) (map[string][]byte, error)
 }
 
 // RepositorySession owns one repository owner acquisition and the sealed
@@ -60,6 +61,7 @@ type RepositorySession struct {
 	teamRunMaterializer    func(context.Context, []byte, func(context.Context, func() error) error) (domain.RunState, error)
 	teamIntegrationBuilder func(context.Context, string, string, [][]byte) (string, string, error)
 	taskTemplate           application.TaskTemplatePort
+	teamDeliveryExporter   func(context.Context, string, string, string, string, [][]byte, []byte, []string) (map[string][]byte, error)
 }
 
 type repositorySessionBorrow struct {
@@ -148,7 +150,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		cleanup()
 		return nil, fmt.Errorf("repository session: seal prepared execution: %w", err)
 	}
-	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath, teamInputPreflight: inputs.TeamInputPreflight, teamRunPreparer: inputs.TeamRunPreparer, teamRunMaterializer: inputs.TeamRunMaterializer, teamIntegrationBuilder: inputs.TeamIntegrationBuilder, taskTemplate: inputs.TaskTemplate}
+	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath, teamInputPreflight: inputs.TeamInputPreflight, teamRunPreparer: inputs.TeamRunPreparer, teamRunMaterializer: inputs.TeamRunMaterializer, teamIntegrationBuilder: inputs.TeamIntegrationBuilder, taskTemplate: inputs.TaskTemplate, teamDeliveryExporter: inputs.TeamDeliveryExporter}
 	if err := session.owner.WithCurrentOwnerLock(ctx, acquisition, func() error {
 		current, found, openErr := ingress.OpenOwner(acquisition.Scope)
 		if openErr != nil || !found || current.Acquisition != acquisition || current.FactDigest != ownerState.FactDigest {

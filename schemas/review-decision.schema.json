@@ -35,7 +35,7 @@
       "additionalProperties": false,
       "required": ["type", "id"],
       "properties": {
-        "type": { "type": "string", "enum": ["lead-agent", "human"] },
+        "type": { "type": "string", "enum": ["lead-agent", "human", "system"] },
         "id": { "type": "string", "minLength": 1, "maxLength": 512 },
         "model": { "type": "string", "minLength": 1, "maxLength": 512 }
       }

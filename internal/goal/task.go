@@ -13,6 +13,8 @@ import (
 
 const TaskTemplateOrderQuote = "order-quote/v1"
 
+const MaxTaskDeliveryBytes = 8 << 20
+
 // TaskSubmission is public intent, never an execution/authority document.
 // B1 intentionally supports inline text and one explicitly configured template.
 type TaskSubmission struct {
@@ -119,4 +121,35 @@ type TaskDelivery struct {
 	ContentBytes       int64              `json:"contentBytes"`
 	MediaType          string             `json:"mediaType"`
 	FactDigest         string             `json:"factDigest"`
+}
+
+// Validate checks a bounded immutable delivery reference, not acceptance or
+// publication authority. The store must bind it to the current Team outcome.
+func (v TaskDelivery) Validate() error {
+	fail := errors.New("task: invalid delivery")
+	if domain.ValidateID(v.GoalID) != nil || domain.ValidateID(v.IntegrationRunID) != nil || len(v.IntegrationBaseSHA) != 40 && len(v.IntegrationBaseSHA) != 64 || v.MediaType != "application/zip" || v.ContentBytes < 1 || v.ContentBytes > MaxTaskDeliveryBytes || len(v.Files) != 3 || len(v.CandidateDigests) != 3 || len(v.PatchDigests) != 3 || len(v.DecisionDigests) != 3 {
+		return fail
+	}
+	for _, char := range v.IntegrationBaseSHA {
+		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f') {
+			return fail
+		}
+	}
+	for _, digest := range append(append(append([]string{v.OutcomeFactDigest, v.PlanFactDigest, v.ContentDigest}, v.CandidateDigests...), v.PatchDigests...), v.DecisionDigests...) {
+		if !taskDigest(digest) {
+			return fail
+		}
+	}
+	paths := []string{"quote_api.py", "quote_client.py", "quote_delivery.json"}
+	var total int64
+	for index, file := range v.Files {
+		if file.Path != paths[index] || !taskDigest(file.SHA256) || file.Bytes < 1 || file.Bytes > MaxTaskDeliveryBytes {
+			return fail
+		}
+		total += file.Bytes
+	}
+	if total > MaxTaskDeliveryBytes || v.FactDigest != "" && !taskDigest(v.FactDigest) {
+		return fail
+	}
+	return nil
 }

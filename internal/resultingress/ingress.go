@@ -12,6 +12,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/goal"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
@@ -302,6 +303,7 @@ type Ingress struct {
 	reservationKeys       map[string]string
 	teamPlans             map[string]TeamPlanState
 	taskDrafts            map[string]taskDraftState
+	taskDeliveries        map[string]goal.TaskDelivery
 	teamRunCreations      map[string]TeamRunCreationState
 	teamHalts             map[string]TeamPlanHalt
 	teamOutcomes          map[string]TeamDeliveryOutcome
@@ -370,6 +372,7 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		reservationKeys:             make(map[string]string),
 		teamPlans:                   make(map[string]TeamPlanState),
 		taskDrafts:                  make(map[string]taskDraftState),
+		taskDeliveries:              make(map[string]goal.TaskDelivery),
 		teamRunCreations:            make(map[string]TeamRunCreationState),
 		teamHalts:                   make(map[string]TeamPlanHalt),
 		teamOutcomes:                make(map[string]TeamDeliveryOutcome),
@@ -403,6 +406,7 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 		reservationKeys:             make(map[string]string),
 		teamPlans:                   make(map[string]TeamPlanState),
 		taskDrafts:                  make(map[string]taskDraftState),
+		taskDeliveries:              make(map[string]goal.TaskDelivery),
 		teamRunCreations:            make(map[string]TeamRunCreationState),
 		teamHalts:                   make(map[string]TeamPlanHalt),
 		teamOutcomes:                make(map[string]TeamDeliveryOutcome),
@@ -831,6 +835,7 @@ func (i *Ingress) resetDurableReplayState() {
 	i.reservationKeys = make(map[string]string)
 	i.teamPlans = make(map[string]TeamPlanState)
 	i.taskDrafts = make(map[string]taskDraftState)
+	i.taskDeliveries = make(map[string]goal.TaskDelivery)
 	i.teamRunCreations = make(map[string]TeamRunCreationState)
 	i.teamHalts = make(map[string]TeamPlanHalt)
 	i.teamOutcomes = make(map[string]TeamDeliveryOutcome)

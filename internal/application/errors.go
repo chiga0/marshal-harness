@@ -24,6 +24,7 @@ const (
 	ReasonRunStopped                 ReasonCode = "run-stopped"
 	ReasonTaskNotFound               ReasonCode = "task-not-found"
 	ReasonTaskConfirmationExpired    ReasonCode = "task-confirmation-expired"
+	ReasonTaskArtifactNotReady       ReasonCode = "task-artifact-not-ready"
 	ReasonCapacityBusy               ReasonCode = "capacity-busy"
 )
 
@@ -52,7 +53,7 @@ func HasReason(err error, reason ReasonCode) bool {
 
 func validReason(reason ReasonCode) bool {
 	switch reason {
-	case ReasonInvalidRequest, ReasonPlatformProfileUnavailable, ReasonOwnerUnavailable, ReasonOwnerNotCurrent, ReasonBridgeUnavailable, ReasonCompositionIncomplete, ReasonAuthorityConflict, ReasonRecoveryRequired, ReasonAttemptStillRunning, ReasonStopTooLate, ReasonRunStopped, ReasonTaskNotFound, ReasonTaskConfirmationExpired, ReasonCapacityBusy:
+	case ReasonInvalidRequest, ReasonPlatformProfileUnavailable, ReasonOwnerUnavailable, ReasonOwnerNotCurrent, ReasonBridgeUnavailable, ReasonCompositionIncomplete, ReasonAuthorityConflict, ReasonRecoveryRequired, ReasonAttemptStillRunning, ReasonStopTooLate, ReasonRunStopped, ReasonTaskNotFound, ReasonTaskConfirmationExpired, ReasonCapacityBusy, ReasonTaskArtifactNotReady:
 		return true
 	default:
 		return false

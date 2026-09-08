@@ -26,6 +26,21 @@ func TestCatalogMatchesDomainKinds(t *testing.T) {
 	}
 }
 
+// Schema grants representation only. The review importer separately denies
+// system Decisions without current, process-local objective Task admission.
+func TestTaskObjectiveReviewerSchemaRepresentation(t *testing.T) {
+	validator := mustValidator(t)
+	for _, kind := range []string{"human", "lead-agent", "system", "worker"} {
+		raw := mutateFixture(t, "examples/happy-path/review-decision.json", func(document map[string]any) {
+			document["reviewer"] = map[string]any{"type": kind, "id": "marshal-order-quote-v1"}
+		})
+		err := validator.Validate(domain.KindReviewDecision, raw)
+		if (err == nil) != (kind != "worker") {
+			t.Fatalf("type %s: %v", kind, err)
+		}
+	}
+}
+
 func TestEmbeddedContractFixtures(t *testing.T) {
 	t.Parallel()
 

@@ -174,6 +174,7 @@ func (adapter *sealedRepositoryApplication) VerifyRun(ctx context.Context, reque
 		TaskID: state.TaskID, RunID: state.RunID, AttemptID: request.AttemptID, AuthorityNamespaceID: authorityNamespaceID,
 		SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, Worktree: state.WorktreePath, ExpectedCommonDir: repositoryIdentity.CommonDir,
 		RunDirectory: runDirectory, Scope: scope, Deliverables: deliverables, Commands: commands, BaselinePath: baselinePath,
+		ToolAllowlist:     verification.ToolAllowlistFromTask(task),
 		PatchCaptureBytes: patchCaptureLimit(scope.MaxDiffBytes), LocalSelfIdentity: localVerificationInput,
 	})
 	if err != nil {
@@ -273,14 +274,25 @@ func (adapter *sealedRepositoryApplication) BuildReviewPacket(ctx context.Contex
 }
 
 func (adapter *sealedRepositoryApplication) ApplyReviewDecision(ctx context.Context, request application.ApplyReviewDecisionRequest) (result application.ReviewDecisionProjection, resultErr error) {
+	return adapter.applyReviewDecision(ctx, request, false)
+}
+
+func (adapter *sealedRepositoryApplication) applyReviewDecision(ctx context.Context, request application.ApplyReviewDecisionRequest, objective bool) (result application.ReviewDecisionProjection, resultErr error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
-	if adapter.closed || adapter.validator == nil || request.Validate() != nil {
+	currentRequest := application.CurrentRunRequest{RunID: request.RunID, AttemptID: request.AttemptID, ExpectedSequence: request.ExpectedSequence, ExpectedAuthorityHead: request.ExpectedAuthorityHead}
+	if adapter.closed || adapter.validator == nil || (!objective && request.Validate() != nil) || (objective && application.BuildReviewPacketRequest(currentRequest).Validate() != nil) {
 		return application.ReviewDecisionProjection{}, application.NewError("apply-review-decision", application.ReasonInvalidRequest)
 	}
 	submittedDigest, err := canonical.DigestJSON(request.Decision)
-	if err != nil || submittedDigest != request.DecisionDigest {
+	if !objective && (err != nil || submittedDigest != request.DecisionDigest) {
 		return application.ReviewDecisionProjection{}, application.NewError("apply-review-decision", application.ReasonAuthorityConflict)
+	}
+	if !objective {
+		var external domain.ReviewDecision
+		if json.Unmarshal(request.Decision, &external) != nil || external.Reviewer.Type == "system" {
+			return result, application.NewError("apply-review-decision", application.ReasonInvalidRequest)
+		}
 	}
 	lease, err := adapter.runs.AcquireExisting(request.RunID)
 	if err != nil {
@@ -291,10 +303,10 @@ func (adapter *sealedRepositoryApplication) ApplyReviewDecision(ctx context.Cont
 	if err != nil {
 		return application.ReviewDecisionProjection{}, err
 	}
-	if authorityProjection.Run.Sequence == request.ExpectedSequence+1 && authorityProjection.Run.State != domain.StateReviewPending {
+	if !objective && authorityProjection.Run.Sequence == request.ExpectedSequence+1 && authorityProjection.Run.State != domain.StateReviewPending {
 		return adapter.rehydrateReviewDecisionUnderLease(ctx, lease, request)
 	}
-	state, task, _, report, _, manifest, _, _, err := adapter.loadCurrentReviewInputs(ctx, lease, application.CurrentRunRequest{RunID: request.RunID, AttemptID: request.AttemptID, ExpectedSequence: request.ExpectedSequence, ExpectedAuthorityHead: request.ExpectedAuthorityHead})
+	state, task, taskData, report, _, manifest, _, _, err := adapter.loadCurrentReviewInputs(ctx, lease, currentRequest)
 	if err != nil {
 		return application.ReviewDecisionProjection{}, err
 	}
@@ -302,8 +314,49 @@ func (adapter *sealedRepositoryApplication) ApplyReviewDecision(ctx context.Cont
 	if err != nil {
 		return application.ReviewDecisionProjection{}, err
 	}
+	input := review.DecisionInput{Task: task, TaskID: state.TaskID, RunID: state.RunID, SpecDigest: state.SpecDigest, ReviewRound: state.ReviewRound, AttemptsUsed: state.AttemptsUsed, ReworkRoundsUsed: state.ReworkRoundsUsed, Report: report, Manifest: manifest, LocalSelfIdentityBinding: localBinding}
+	if objective {
+		if adapter.session == nil {
+			return result, application.NewError("task-objective", application.ReasonOwnerUnavailable)
+		}
+		err = adapter.session.WithCurrentTaskObjective(ctx, state.RunID, taskData, func(policy *review.ObjectivePolicy) error {
+			var e error
+			policy.VerificationDigest, policy.ArtifactManifestDigest, e = frozenVerificationDigests(lease)
+			if e != nil {
+				return e
+			}
+			policy.ReadEvidence = func(limit int64, parts ...string) ([]byte, error) {
+				return runstore.ReadFileUnderLease(lease, limit, parts...)
+			}
+			input.Objective = policy
+			packetData, e := runstore.ReadFileUnderLease(lease, 2<<20, "review-packet.json")
+			if e != nil {
+				return e
+			}
+			var packet domain.ReviewPacket
+			if adapter.validator.Validate(domain.KindReviewPacket, packetData) != nil || json.Unmarshal(packetData, &packet) != nil {
+				return application.NewError("task-objective", application.ReasonAuthorityConflict)
+			}
+			request.Decision, e = review.BuildObjectiveDecision(input, packet, packetData, time.Now().UTC())
+			if e != nil {
+				return e
+			}
+			request.DecisionDigest, e = canonical.DigestJSON(request.Decision)
+			if e != nil {
+				return e
+			}
+			result, e = adapter.commitReviewDecisionUnderLease(ctx, lease, state, request, input)
+			return e
+		})
+		return result, err
+	}
+	return adapter.commitReviewDecisionUnderLease(ctx, lease, state, request, input)
+}
+
+func (adapter *sealedRepositoryApplication) commitReviewDecisionUnderLease(ctx context.Context, lease *runstore.Lease, state domain.RunState, request application.ApplyReviewDecisionRequest, input review.DecisionInput) (result application.ReviewDecisionProjection, resultErr error) {
+	task, report := input.Task, input.Report
 	runDirectory := filepath.Join(adapter.stateRoot, "runs", request.RunID)
-	imported, err := (&review.DecisionImporter{RunDirectory: runDirectory, Validator: adapter.validator}).ImportBytes(review.DecisionInput{Task: task, TaskID: state.TaskID, RunID: state.RunID, SpecDigest: state.SpecDigest, ReviewRound: state.ReviewRound, AttemptsUsed: state.AttemptsUsed, ReworkRoundsUsed: state.ReworkRoundsUsed, Report: report, Manifest: manifest, LocalSelfIdentityBinding: localBinding}, request.Decision)
+	imported, err := (&review.DecisionImporter{RunDirectory: runDirectory, Validator: adapter.validator}).ImportBytes(input, request.Decision)
 	if err != nil {
 		return application.ReviewDecisionProjection{}, err
 	}
@@ -337,6 +390,10 @@ func (adapter *sealedRepositoryApplication) ApplyReviewDecision(ctx context.Cont
 	prepared, err := review.PrepareRecords(runDirectory, imported, outcome)
 	if err != nil {
 		return application.ReviewDecisionProjection{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		prepared.Abort()
+		return result, err
 	}
 	if err := adapter.runs.Append(lease, event, state.Sequence); err != nil {
 		prepared.Abort()

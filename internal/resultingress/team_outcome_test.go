@@ -38,12 +38,17 @@ func (v completedTeamFixture) WithCurrentCompletedTeam(_ context.Context, owner 
 func completedTeamFixtureInputs(t *testing.T, store *DurableStore, owner ControlOwnerAcquisition) completedTeamFixture {
 	t.Helper()
 	plan, approval, original := teamCreationFixture(t, store, owner)
+	return completedTaskPlanFixture(t, store, owner, plan, approval, original)
+}
+
+func completedTaskPlanFixture(t *testing.T, store *DurableStore, owner ControlOwnerAcquisition, plan TeamPlanState, approval TeamPlanApproval, original []byte) completedTeamFixture {
+	t.Helper()
 	var input goal.TeamInputs
 	var prepared map[string]json.RawMessage
 	if json.Unmarshal(plan.Inputs, &input) != nil || json.Unmarshal(original, &prepared) != nil {
 		t.Fatal("fixture input decode")
 	}
-	bound := TeamIntegrationInputs{GoalID: "team-1", NodeID: "integration", PlanFactDigest: plan.FactDigest, BaseSHA: input.BaseSHA}
+	bound := TeamIntegrationInputs{GoalID: input.Spec.GoalId, NodeID: "integration", PlanFactDigest: plan.FactDigest, BaseSHA: input.BaseSHA}
 	var integrate goal.TeamNodeInputs
 	for _, node := range input.Nodes {
 		if node.Role == "integrate" {
@@ -55,7 +60,7 @@ func completedTeamFixtureInputs(t *testing.T, store *DurableStore, owner Control
 			t.Fatal(err)
 		}
 		prepared["runId"], prepared["task"], prepared["policy"] = teamTestBytes(t, runID), node.Task, node.Policy
-		creation, err := store.FreezeInitialTeamRun(context.Background(), teamTestApproval{owner, approval, false}, owner, approval, "team-1", node.NodeID, plan.FactDigest, teamTestBytes(t, prepared))
+		creation, err := store.FreezeInitialTeamRun(context.Background(), teamTestApproval{owner, approval, false}, owner, approval, input.Spec.GoalId, node.NodeID, plan.FactDigest, teamTestBytes(t, prepared))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -78,7 +83,7 @@ func completedTeamFixtureInputs(t *testing.T, store *DurableStore, owner Control
 		t.Fatal(err)
 	}
 	prepared["runId"], prepared["baseSha"], prepared["task"], prepared["policy"] = teamTestBytes(t, runID), teamTestBytes(t, base.CommitSHA), task, integrate.Policy
-	creation, err := store.FreezeIntegrationTeamRun(context.Background(), teamAcceptedFixtureVerifier{owner, approval, bound}, owner, approval, "team-1", integrate.NodeID, plan.FactDigest, teamTestBytes(t, prepared), base)
+	creation, err := store.FreezeIntegrationTeamRun(context.Background(), teamAcceptedFixtureVerifier{owner, approval, bound}, owner, approval, input.Spec.GoalId, integrate.NodeID, plan.FactDigest, teamTestBytes(t, prepared), base)
 	if err != nil {
 		t.Fatal("valid integration creation", err)
 	}
@@ -91,7 +96,7 @@ func completedTeamFixtureInputs(t *testing.T, store *DurableStore, owner Control
 		t.Fatal(err)
 	}
 	return completedTeamFixture{owner: owner, approval: approval, value: TeamDeliveryOutcome{
-		Outcome: goal.GoalOutcome{AuthorityNamespaceId: owner.Scope.AuthorityNamespaceID, GoalId: "team-1", State: goal.OutcomeStateCompleted,
+		Outcome: goal.GoalOutcome{AuthorityNamespaceId: owner.Scope.AuthorityNamespaceID, GoalId: input.Spec.GoalId, State: goal.OutcomeStateCompleted,
 			Reason: "verified-team-delivery", FinalPlanDigest: revision, BudgetDigest: plan.Revision.BudgetSnapshotDigest, FinalizedAt: "2026-09-07T06:00:00Z"},
 		PlanFactDigest: plan.FactDigest, Upstreams: bound.Sources, Integration: final, IntegrationBaseSHA: base.CommitSHA, AttemptsUsed: 3, Measurement: "attempt-counts-only"}}
 }
