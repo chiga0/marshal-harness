@@ -74,12 +74,15 @@ class ServiceRoot {
 }
 
 /** Composition only: no Task reducer, second ledger, model defaults or publication. */
-export async function startTaskService({root, mode, providers, prepare, collect, dispose = () => {},
+export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, dispose = () => {},
   providerFacts, applicationOptions = {}, port = 0, leaseMs = 60000, renewIntervalMs = 10000,
   requestTimeoutMs = 10000, supervisorOptions = {}, onDiagnostic = () => {}} = {}) {
   requireValue(typeof root === 'string' && path.isAbsolute(root) && path.normalize(root) === root && root !== path.parse(root).root &&
     ['create', 'open'].includes(mode) && providers instanceof Map && providers.size > 0 && providers.size <= 32 &&
-    typeof prepare === 'function' && typeof collect === 'function' && typeof dispose === 'function' && typeof onDiagnostic === 'function' &&
+    (businessFactory === undefined ? typeof prepare === 'function' && typeof collect === 'function' && (release === undefined || typeof release === 'function') :
+      typeof businessFactory === 'function' && prepare === undefined && collect === undefined && release === undefined) &&
+    (verification === undefined || verification !== null && typeof verification === 'object') &&
+    typeof dispose === 'function' && typeof onDiagnostic === 'function' &&
     object(applicationOptions) && Object.keys(applicationOptions).every(key => ['defaultLimits', 'execution'].includes(key)) &&
     (applicationOptions.execution === undefined || object(applicationOptions.execution)) &&
     object(supervisorOptions) && Object.keys(supervisorOptions).every(key => ['intervalMs', 'prepareMs', 'collectMs', 'pageSize', 'maxPagesPerTick'].includes(key)) &&
@@ -93,7 +96,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
   const frozenFacts = structuredClone(facts).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const execution = {maxWorkers: 2, providerIds: [...available.keys()], defaultProvider: available.keys().next().value, ...applicationOptions.execution};
   requireValue(Array.isArray(execution.providerIds) && execution.providerIds.length === available.size && execution.providerIds.every(id => available.has(id)));
-  let files, store, depot, application, supervisor, server, renewal, closing, address, connectionFile;
+  let files, store, depot, application, supervisor, business, server, renewal, closing, address, connectionFile;
   let state = 'starting', failure = null, shutdownClean = null, renewing = false;
   const instanceId = 'service-' + randomUUID(), token = randomBytes(32).toString('hex');
   const diagnostic = code => { try { Promise.resolve(onDiagnostic({code})).catch(() => {}); } catch {} };
@@ -202,6 +205,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       finally {
         clearInterval(renewal);
         await drain; clearTimeout(drainTimer);
+        try { if (business && typeof business.close === 'function') await business.close(); } catch { failure ??= 'service_dispose_failed'; }
         try { if (supervisor) await dispose(); } catch { failure ??= 'service_dispose_failed'; }
         for (const component of [depot, store, files]) {
           try { component?.close(); } catch { failure ??= 'service_close_failed'; }
@@ -218,9 +222,27 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     depot = mode === 'create' ? ArtifactDepot.create(path.join(root, 'artifacts')) : ArtifactDepot.openExisting(path.join(root, 'artifacts'));
     files.sync();
     const owner = store.claimOwner(store.info().generation, instanceId, Date.now() + leaseMs);
-    application = new TaskApplication({...applicationOptions, execution, store, owner, depot});
-    const context = {depot, executionParent: path.join(root, 'executions')};
+    application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification});
+    const context = Object.freeze({depot, executionParent: path.join(root, 'executions'),
+      approvedLayout: ticket => {
+        requireValue(typeof application.execution.approvedLayout === 'function', 'service_capability_unavailable');
+        return application.execution.approvedLayout(ticket);
+      },
+      observeExecution: ticket => {
+        requireValue(typeof application.execution.observeExecution === 'function', 'service_capability_unavailable');
+        return application.execution.observeExecution(ticket);
+      },
+    });
+    if (businessFactory) {
+      business = businessFactory(context);
+      requireValue(object(business) && typeof business.then !== 'function' &&
+        ['prepare', 'collect', 'release', 'close'].every(key => typeof business[key] === 'function'), 'service_invalid_business');
+      prepare = (ticket, wait) => business.prepare(ticket, wait);
+      collect = (ticket, result, wait) => business.collect(ticket, result, wait);
+      release = ticket => business.release(ticket);
+    }
     supervisor = new TaskSupervisor({...supervisorOptions, execution: application.execution, providers: available,
+      verification, release,
       prepare: (ticket, wait) => prepare(ticket, {...wait, ...context}),
       collect: (ticket, result, wait) => collect(ticket, result, {...wait, ...context}),
       onError: report => { diagnostic(report.code); if (report.code === 'supervisor_failed') fail('service_supervisor_failed'); }});
