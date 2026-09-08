@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-08：正式组件已集成，下一步必须关闭自主交付
+
+正式 Node 的24操作合同不等于24项应用能力：当前代码集成基线 `5f511abe` 实际接通14项，Supervisor/最终验收/服务入口尚未完整。真实 Qwen 已用原生工具读取公开输入并通过独立结果核对，不再只是 initialize；也不能将该证据外推为团队或恢复成功。ACP Provider、ArtifactDepot、HTTP客户端及执行 reducer 已独立审查合入。执行首审发现4项P1，经一次聚合修复、27项定向测试与同 reviewer 复核关闭，失败分母不清零；精确证据见[实施检查点](node-task-service-status-2026-09-08.md)。
+
+Artifact 再次出现 Store 曾发生的 Create 同步失败→Open 遗漏屏障，是未充分复用失败学习造成的返工。原包统一 format/root/parent 屏障并由同 reviewer 复审关闭，无需新建流程平台。并发分配改为共享 reducer 单作者、独立客户端/控制器并行；部署盘点已识别旧 Go installer/release 和实验 CI 不覆盖正式包，随正式入口纵切修正。当前不存在 API-STABLE/production/RELEASED 证据，不用组件数量替代用户交付。
+
 ## 2026-09-08：Node 正式投影与 ACP 真实握手
 
 [ADR 0088](adr/0088-node-task-service-production-projection.md) 将正式 Node 实现与实验、旧 Go profile 分开：产品合同复用，物理入口/存储明确取代，独立空根不迁移旧权威；签名按发行资产分类，不为脚本制造随机 native 文件。独立审查发现原生配置沿用遗漏 Publisher 凭据边界的 P1，已一次聚合修正并由同 reviewer 复核关闭：仅沿用模型和批准的读取/验证鉴权，无法证明 Publisher 分权的 profile 不进入正式支持，普通 ACP 回调不是隔离。Qwen 真实 initialize 及新驱动消费者握手、session/new 已通过，尚未发送 prompt 或验证模型/工具/取消/恢复；它们只关闭接入入口疑点，不能关闭业务交付、恢复或 stable。后继主线是通用业务/ACP 与唯一 SQLite/恢复的并行集成，不继续做固定 Demo 或全量翻译旧 Core。

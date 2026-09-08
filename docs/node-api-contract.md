@@ -1,5 +1,7 @@
 # Node 团队 HTTP 契约候选
 
+> 本文仅保存 ADR0087 固定样例的历史实验契约。当前正式 Node Task-first 机器合同为 [`packages/task-api/openapi.json`](../packages/task-api/openapi.json)，共24操作、39 schemas；实现覆盖与缺口见[当前检查点](node-task-service-status-2026-09-08.md)。正式消费者不得混用下述9操作实验协议；正式接口也尚未达到 API-STABLE。
+
 ## 范围和真值
 
 本合同描述 [ADR0087](adr/0087-node-local-team-feasibility-probe.md) 的 `marshal-node-team-experiment/v1`，基于 `428acb36` 的实际 `main.mjs` HTTP adapter、`supervisor.mjs` 应用与 `store.mjs` 投影。机器合同为 [OpenAPI 3.1](../experiments/node-team/openapi.json)，版本 `0.1.0-experimental`。它是 **experimental contract candidate，不是 API-STABLE 或正式生产 API**；不替代 [ADR0085](adr/0085-agent-team-service-contract-and-storage.md) 的产品目标，也不是 `internal/server/openapi.json` 中旧 `v1alpha1` 协议。
