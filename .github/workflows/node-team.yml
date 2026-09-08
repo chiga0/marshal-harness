@@ -1,0 +1,51 @@
+name: Node team
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/node-team/**'
+      - '.github/workflows/node-team.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'experiments/node-team/**'
+      - '.github/workflows/node-team.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-team-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: Node team (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+
+      # Fixtures only: no provider login, model calls, Go build or Marshal native
+      # executable. Files are serialized; each team still launches two workers.
+      - name: Run deterministic HTTP team and lifecycle regression
+        run: >-
+          node --test --test-concurrency=1
+          experiments/node-team/providers.test.mjs
+          experiments/node-team/business.test.mjs
+          experiments/node-team/runtime.test.mjs
+          experiments/node-team/http.test.mjs

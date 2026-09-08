@@ -1228,7 +1228,7 @@ func TestCaptureJSONLOverflowRecoveryExhaustionIsProviderFailure(t *testing.T) {
 			if result.err != nil {
 				t.Fatalf("capture error = %v", result.err)
 			}
-			if !result.providerFailed {
+			if !result.providerFailed || result.providerStopReason != "length" {
 				t.Fatal("exhausted overflow recovery must preserve the final length failure")
 			}
 		})
@@ -1332,7 +1332,7 @@ func TestCaptureJSONLAutoRetryFailureClosureAndProviderFailure(t *testing.T) {
 			if result.err != nil {
 				t.Fatalf("capture error = %v", result.err)
 			}
-			if !result.providerFailed {
+			if !result.providerFailed || result.providerStopReason != stopReason {
 				t.Fatal("providerFailed must be set for the failed final invocation")
 			}
 			if result.inputTokens != 3 || result.outputTokens != 2 || result.cachedInputTokens != 0 {

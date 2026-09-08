@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const {workerEnvironment, readFile, validateReady, reviewMarker, selectComment} = require('./index.cjs');
+const {workerEnvironment, readFile, validateReady, reviewTargets, publishDecision, reviewMarker, selectComment, reviewPhases} = require('./index.cjs');
 const digest = 'sha256:' + 'a'.repeat(64), head = 'b'.repeat(40);
 const subject = {ownerId: 123, startedAt: Date.parse('2026-09-05T00:00:00Z'),
   marker: reviewMarker('123', head, digest), runId: 'fixed-server-t1-123', packetDigest: digest};
@@ -58,4 +58,126 @@ test('bounded file reader rejects symlinks, hardlinks, directories and excess by
     assert.throws(() => readFile(file, 3), /carrier-file-type-or-size/);
     assert.throws(() => readFile(directory, 1024), /carrier-file-type-or-size/);
   } finally { fs.rmSync(directory, {recursive: true}); }
+});
+
+function teamFixture(check) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-team-review-test-'));
+  const runs = {service: 'team-run-' + 'a'.repeat(64), client: 'team-run-' + 'b'.repeat(64), integration: 'team-run-' + 'c'.repeat(64)};
+  const subject = {runs, sourceHead: head, binarySHA256: 'd'.repeat(64), inputsDigest: digest};
+  const ready = node => ({run: {runId: runs[node], state: 'REVIEW_PENDING'}, packetDigest: 'sha256:' + (node === 'service' ? 'e' : 'f').repeat(64),
+    binarySHA256: subject.binarySHA256, archive: 'review-inputs.tar'});
+  try {
+    fs.writeFileSync(path.join(directory, 'subject.json'), JSON.stringify(subject));
+    for (const node of ['service', 'client']) {
+      fs.mkdirSync(path.join(directory, node));
+      fs.writeFileSync(path.join(directory, node, 'review-ready.json'), JSON.stringify(ready(node)));
+    }
+    check(directory, subject, ready);
+  } finally { fs.rmSync(directory, {recursive: true}); }
+}
+
+test('team carrier has exactly two distinct implement subjects and no integration', () => teamFixture((directory, team) => {
+  const targets = reviewTargets(directory, 'order-quote-team', 'fixed-server-t1-123', head);
+  assert.deepEqual(targets.map(t => t.ready.run.runId), [team.runs.service, team.runs.client]);
+  assert.deepEqual(targets.map(t => t.suffix), ['-service', '-client']);
+  assert.throws(() => reviewTargets(directory, 'other', 'fixed-server-t1-123', head), /carrier-environment/);
+}));
+
+test('team source, run uniqueness and binary drift fail before comment delivery', () => {
+  for (const change of [{sourceHead: '0'.repeat(40)}, {inputsDigest: 'bad'}, {runs: {service: '../other', client: 'x', integration: 'y'}}])
+    teamFixture((directory, team) => {
+      fs.writeFileSync(path.join(directory, 'subject.json'), JSON.stringify({...team, ...change}));
+      assert.throws(() => reviewTargets(directory, 'order-quote-team', 'unused', head), /carrier-team-subject/);
+    });
+  teamFixture((directory, team) => {
+    team.runs.client = team.runs.service;
+    fs.writeFileSync(path.join(directory, 'subject.json'), JSON.stringify(team));
+    assert.throws(() => reviewTargets(directory, 'order-quote-team', 'unused', head), /carrier-team-subject/);
+  });
+  teamFixture((directory, team, ready) => {
+    fs.writeFileSync(path.join(directory, 'client/review-ready.json'), JSON.stringify({...ready('client'), binarySHA256: '0'.repeat(64)}));
+    assert.throws(() => reviewTargets(directory, 'order-quote-team', 'unused', head), /carrier-team-binary-drift/);
+  });
+});
+
+test('client review cannot be confused with service and raw reject bytes publish once', () => teamFixture((directory) => {
+  const targets = reviewTargets(directory, 'order-quote-team', 'unused', head);
+  const subjects = targets.map(target => ({...subject, runId: target.ready.run.runId,
+    packetDigest: target.ready.packetDigest, marker: reviewMarker('123', head, target.ready.packetDigest)}));
+  const raw = JSON.stringify({kind: 'ReviewDecision', runId: subjects[1].runId, reviewPacketDigest: subjects[1].packetDigest, verdict: 'reject'});
+  const clientComment = {...comment(), body: subjects[1].marker + raw};
+  assert.equal(selectComment([clientComment], subjects[0]), null);
+  const selected = selectComment([clientComment], subjects[1]);
+  publishDecision(targets[1], selected, '123', head);
+  assert.equal(fs.readFileSync(path.join(directory, 'client/review-decision.json'), 'utf8'), raw);
+  assert.equal(fs.existsSync(path.join(directory, 'service/review-decision.json')), false);
+  assert.throws(() => publishDecision(targets[1], selected, '123', head), /carrier-decision-already-present/);
+  assert.equal(fs.readFileSync(path.join(directory, 'client/review-decision.json'), 'utf8'), raw);
+}));
+
+test('legacy B1 review layout is unchanged', () => teamFixture((directory, team, ready) => {
+  const targets = reviewTargets(path.join(directory, 'service'), 'order-quote', team.runs.service, head);
+  assert.equal(targets.length, 1);
+  assert.equal(targets[0].suffix, '');
+  assert.deepEqual(targets[0].ready, ready('service'));
+}));
+
+test('integration phase requires its exact third subject and binary, never client evidence', () => teamFixture((directory, team, ready) => {
+  const child = path.join(directory, 'integration');
+  fs.mkdirSync(child);
+  fs.writeFileSync(path.join(child, 'review-ready.json'), JSON.stringify(ready('integration')));
+  const targets = reviewTargets(directory, 'order-quote-team', 'unused', head, 'integration');
+  assert.equal(targets.length, 1);
+  assert.equal(targets[0].ready.run.runId, team.runs.integration);
+  assert.equal(targets[0].suffix, '-integration');
+  fs.writeFileSync(path.join(child, 'review-ready.json'), JSON.stringify(ready('client')));
+  assert.throws(() => reviewTargets(directory, 'order-quote-team', 'unused', head, 'integration'), /ready-mismatch/);
+  assert.throws(() => reviewTargets(directory, 'order-quote-team', 'unused', head, 'other'), /review-phase/);
+  assert.throws(() => reviewTargets(directory, 'order-quote', 'unused', head, 'integration'), /review-phase/);
+}));
+
+function phaseFixture(overrides = {}) {
+  const events = [], delivered = [];
+  const targets = ['service', 'client', 'integration'].map((node, index) => {
+    const packetDigest = 'sha256:' + String(index + 1).repeat(64);
+    return {node, subject: {...subject, runId: node, packetDigest, marker: reviewMarker('123', head, packetDigest)}};
+  });
+  const comments = targets.map(target => ({...comment(), body: target.subject.marker + JSON.stringify({
+    kind: 'ReviewDecision', runId: target.node, reviewPacketDigest: target.subject.packetDigest, verdict: 'reject'})}));
+  const config = {team: true, deadline: 100, now: () => 0, stopped: () => false,
+    waitReady: async limit => { assert.equal(limit, 100); events.push('wait-integration'); },
+    targetsFor: phase => { events.push(phase); return phase === 'implement' ? targets.slice(0, 2) : targets.slice(2); },
+    prepare: async target => { events.push('upload-' + target.node); },
+    comments: async () => comments,
+    deliver: (target, selected) => { events.push('deliver-' + target.node); delivered.push(selected.raw); },
+    wait: async () => assert.fail('no unnecessary wait'), ...overrides};
+  return {config, events, delivered};
+}
+
+test('same-host transport waits for third packet after two decisions without manufacturing acceptance', async () => {
+  const {config, events, delivered} = phaseFixture();
+  await reviewPhases(config);
+  assert.deepEqual(events, ['implement', 'upload-service', 'upload-client', 'deliver-service', 'deliver-client',
+    'wait-integration', 'integration', 'upload-integration', 'deliver-integration']);
+  assert.equal(delivered.length, 3);
+  assert.ok(delivered.every(raw => JSON.parse(raw).verdict === 'reject'));
+});
+
+test('integration uses original deadline, failure never restarts or re-uploads implementations', async () => {
+  let clock = 0;
+  const {config, events} = phaseFixture({now: () => clock, waitReady: async limit => { assert.equal(limit, 100); clock = 100; }});
+  await assert.rejects(reviewPhases(config), /review-wait-expired/);
+  assert.deepEqual(events, ['implement', 'upload-service', 'upload-client', 'deliver-service', 'deliver-client']);
+  const failed = phaseFixture({waitReady: async () => { throw new Error('carrier-canary-exited-before-integration-review'); }});
+  await assert.rejects(reviewPhases(failed.config), /exited-before-integration-review/);
+  assert.equal(failed.delivered.length, 2);
+});
+
+test('B1 keeps one phase; ambiguous delivery stops without progressing to integration', async () => {
+  const single = phaseFixture({team: false});
+  await reviewPhases(single.config);
+  assert.ok(!single.events.includes('wait-integration'));
+  const failed = phaseFixture({deliver: () => { throw new Error('ambiguous'); }});
+  await assert.rejects(reviewPhases(failed.config), /ambiguous/);
+  assert.ok(!failed.events.includes('wait-integration'));
 });

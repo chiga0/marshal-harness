@@ -9,11 +9,131 @@ import os
 from pathlib import Path
 import tarfile
 import tempfile
+import threading
+import time
 import unittest
+from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location("t2drive", Path(__file__).with_name("fixed-server-t2-drive.py"))
 driver = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(driver)
+
+
+class TransportDiagnosticTest(unittest.TestCase):
+    def test_only_exact_allowlisted_labels_are_archived(self):
+        raw = (b"private/path credential\n"
+               b"control-plane request failed: stage=client-recheck reasonCode=transport-failure\n"
+               b"control-plane request failed: stage=client-recheck reasonCode=transport-failure\n"
+               b"control-plane request failed: stage=secret reasonCode=transport-failure\n"
+               b"control-plane request failed: stage=client-dial reasonCode=transport-failure extra-secret\n"
+               b"\xff\n")
+        self.assertEqual(driver.safe_transport_stages(raw), ["client-recheck"])
+
+    def test_unknown_and_generic_failures_do_not_become_retry_admission(self):
+        self.assertEqual(driver.safe_transport_stages(b"reasonCode=transport-failure\n"), [])
+
+
+class TimeoutTaskTest(unittest.TestCase):
+    def test_budget_is_frozen_in_task_without_changing_normal_task(self):
+        task_spec = importlib.util.spec_from_file_location("t2task", Path(__file__).with_name("fixed-server-t2-task.py"))
+        renderer = importlib.util.module_from_spec(task_spec)
+        task_spec.loader.exec_module(renderer)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / ".git").mkdir()
+            (root / "scripts").mkdir()
+            (root / "scripts/order-quote-oracle.py").write_text("# synthetic oracle bytes\n")
+            (root / "doctor.json").write_text(json.dumps({"policyEnvironmentBinding": {"digest": "sha256:" + "a" * 64}}))
+            args = SimpleNamespace(repository=str(root), base_ref="a" * 40, task_id="task-test", run_id="run-test",
+                                   model="provider/model", doctor=str(root / "doctor.json"),
+                                   task_out=str(root / "task.json"), policy_out=str(root / "policy.json"))
+            for scenario, seconds, run_seconds in (("order-quote", 300, 600), ("order-quote-timeout", 60, 600), ("order-quote-run-timeout", 60, 60)):
+                args.scenario = scenario
+                renderer.render(args)
+                task = json.loads((root / "task.json").read_bytes())
+                self.assertEqual(task["budgets"]["attemptTimeoutSeconds"], seconds)
+                self.assertEqual(task["budgets"]["runTimeoutSeconds"], run_seconds)
+                self.assertLessEqual(task["budgets"]["attemptTimeoutSeconds"], task["budgets"]["runTimeoutSeconds"])
+                self.assertEqual(task["budgets"]["maxAttempts"], 1)
+                self.assertEqual(task["budgets"]["maxOperationalRetries"], 0)
+                self.assertEqual(task["scope"]["allowPaths"], ["quote_order.py"])
+                self.assertEqual(task["publication"]["provider"], "none")
+            args.scenario, args.long_verify = "order-quote", True
+            renderer.render(args)
+            peer = json.loads((root / "task.json").read_bytes())
+            self.assertEqual([c["id"] for c in peer["acceptance"]["commands"]],
+                             ["order-quote-business", "cross-run-long-verification"])
+            command = peer["acceptance"]["commands"][-1]
+            self.assertEqual(command["timeoutSeconds"], 120)
+            self.assertEqual(command["argv"][-2:], [str(root / ".marshal/fixed-server-t1-canary/run-test/verification-started.json"), "run-test"])
+            compile(command["argv"][4], "frozen-verifier", "exec")
+            self.assertEqual(peer["budgets"], {**task["budgets"], "attemptTimeoutSeconds": 300, "runTimeoutSeconds": 600})
+            args.scenario = "order-quote-timeout"
+            with self.assertRaises(SystemExit):
+                renderer.render(args)
+
+
+class CrossRunTest(unittest.TestCase):
+    def test_rendezvous_is_bounded_and_subject_bound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "signal.json"
+            done = threading.Event()
+            path.write_text(json.dumps({"runId": "run-peer", "startedAt": 10}))
+            self.assertEqual(driver.await_verifier(path, "run-peer", 20, done, now=lambda: 11)["startedAt"], 10)
+            with self.assertRaises(driver.DriveError):
+                driver.await_verifier(path, "run-other", 20, done, now=lambda: 11)
+            done.set()
+            with self.assertRaises(driver.DriveError):
+                driver.await_verifier(path, "run-peer", 20, done, now=lambda: 11)
+            done.clear()
+            path.unlink()
+            path.symlink_to(Path(tmp) / "missing")
+            with self.assertRaises(OSError):
+                driver.await_verifier(path, "run-peer", 20, done, now=lambda: 11)
+            path.unlink()
+            with self.assertRaises(driver.DriveError):
+                driver.await_verifier(path, "run-peer", 11, done, now=lambda: 11)
+
+    def fixture(self):
+        digest = lambda v: "sha256:" + hashlib.sha256(json.dumps(v, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        task = {"acceptance": {"commands": [{"id": "cross-run-long-verification", "argv": ["/usr/bin/python3", "test"]}]}}
+        report = {"status": "pass", "runId": "run-peer", "specDigest": digest(task), "gates": [
+            {"id": "command:cross-run-long-verification", "status": "pass", "command": {
+                "argv": task["acceptance"]["commands"][0]["argv"], "exitCode": 0,
+                "startedAt": "2026-09-07T00:00:00Z", "completedAt": "2026-09-07T00:01:40Z"}}]}
+        projection = {"reportDigest": digest(report), "run": {"runId": "run-peer"}}
+        return task, report, projection, digest
+
+    def test_overlap_binds_report_task_and_actual_command_interval(self):
+        task, report, projection, _ = self.fixture()
+        stamp = lambda v: driver.datetime.datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+        start = stamp(report["gates"][0]["command"]["startedAt"])
+        self.assertFalse(driver.cross_run_overlap(report, task, projection, start + 65)["accepted"])
+        for stopped in (start - 1, start, start + 100, start + 101):
+            with self.assertRaises(driver.DriveError):
+                driver.cross_run_overlap(report, task, projection, stopped)
+        for mutation in ("digest", "argv", "duration", "spec", "status"):
+            task, report, projection, digest = self.fixture()
+            if mutation == "digest": projection["reportDigest"] = "wrong"
+            if mutation == "argv": report["gates"][0]["command"]["argv"] = ["other"]
+            if mutation == "duration": report["gates"][0]["command"]["completedAt"] = "2026-09-07T00:01:10Z"
+            if mutation == "spec": report["specDigest"] = "wrong"
+            if mutation == "status": report["status"] = "fail"
+            if mutation != "digest": projection["reportDigest"] = digest(report)
+            with self.subTest(mutation=mutation), self.assertRaises(driver.DriveError):
+                driver.cross_run_overlap(report, task, projection, start + 65)
+
+    def test_start_failure_does_not_retry(self):
+        calls, saved = [], {}
+        def call(args, remaining):
+            calls.append(args)
+            if len(calls) == 1:
+                return 0, {"runId": "run-stop", "state": "READY", "sequence": 2, "authorityHead": "sha256:" + "a" * 64}
+            return 1, {}
+        with self.assertRaises(driver.DriveError):
+            driver.start_ready(call, saved.__setitem__, "run-stop", time.time() + 60)
+        self.assertEqual([args[0] for args in calls], ["inspect", "start"])
+        self.assertIn("start-response.json", saved)
 
 
 def run(state, sequence):
@@ -25,6 +145,224 @@ def result(state, sequence, **fields):
     value = run(state, sequence)
     return {"Projection": dict(run=value, **fields), "Receipt": {"runId": value["runId"], "attemptId": value["attemptId"],
                                                               "postRevision": sequence, "postAuthorityHead": value["authorityHead"]}}
+
+
+class BusinessStopObservationTest(unittest.TestCase):
+    def invoke(self, replies, limit=20):
+        calls, saved, clock = [], {}, [0]
+
+        def call(args, remaining):
+            self.assertGreater(remaining, 0)
+            calls.append(list(args))
+            return replies[min(len(calls) - 1, len(replies) - 1)]
+
+        def pause(seconds):
+            clock[0] += seconds
+
+        def drive():
+            return driver.observe_business_stop(call, saved.__setitem__, "run-test", limit,
+                                                now=lambda: clock[0], pause=pause)
+        return drive, calls, saved
+
+    def test_observe_only_until_stopped_then_collect_current_head(self):
+        drive, calls, saved = self.invoke([(0, run("RUNNING", 3)), (0, run("RUNNING", 3)),
+                                          (0, run("BLOCKED", 4)),
+                                          (1, {"disposition": "stopped", "reasonCode": "run-stopped"}),
+                                          (0, run("BLOCKED", 4))])
+        summary = drive()
+        self.assertEqual([c[0] for c in calls], ["inspect", "inspect", "inspect", "collect", "inspect"])
+        self.assertEqual(calls[3][calls[3].index("--expected-sequence") + 1], "4")
+        self.assertFalse(summary["accepted"])
+        self.assertFalse(summary["deadlineWitnessVerified"])
+        self.assertEqual(saved["business-stop-observed.json"]["elapsedSeconds"], 4)
+
+    def test_expiry_is_failure_not_cancel_or_collect(self):
+        drive, calls, saved = self.invoke([(0, run("RUNNING", 3))], limit=3)
+        with self.assertRaisesRegex(driver.DriveError, "observation-deadline"):
+            drive()
+        self.assertTrue(all(c[0] == "inspect" for c in calls))
+        self.assertNotIn("business-stop-summary.json", saved)
+
+    def test_unavailable_wrong_successor_or_completion_is_not_retried(self):
+        for reply in ((1, {}), (3, driver.LIVE_PENDING), (0, run("ACCEPTED", 6)),
+                      (0, run("BLOCKED", 5)), (0, run("RUNNING", 4))):
+            drive, calls, saved = self.invoke([(0, run("RUNNING", 3)), reply])
+            with self.assertRaises(driver.DriveError):
+                drive()
+            self.assertEqual(len(calls), 2)
+            self.assertNotIn("business-stop-summary.json", saved)
+
+    def test_already_blocked_is_only_observation_not_deadline_proof(self):
+        drive, calls, saved = self.invoke([(0, run("BLOCKED", 4)),
+                                          (1, {"disposition": "stopped", "reasonCode": "run-stopped"}),
+                                          (0, run("BLOCKED", 4))])
+        self.assertFalse(drive()["deadlineWitnessVerified"])
+        self.assertFalse(saved["business-stop-observed.json"]["observedRunning"])
+
+    def test_stopped_collect_and_final_head_must_match(self):
+        for replies in ([(0, run("BLOCKED", 4)), (3, driver.LIVE_PENDING)],
+                        [(0, run("BLOCKED", 4)), (1, {"disposition": "stopped", "reasonCode": "run-stopped"}),
+                         (0, run("BLOCKED", 5))]):
+            drive, calls, saved = self.invoke(replies)
+            with self.assertRaises(driver.DriveError):
+                drive()
+            self.assertEqual(len(calls), len(replies))
+            self.assertNotIn("business-stop-summary.json", saved)
+
+
+class BusinessStopRecoveryTest(unittest.TestCase):
+    def previous(self):
+        saved = {}
+        replies = iter([(0, run("BLOCKED", 4)), (1, {"disposition": "stopped", "reasonCode": "run-stopped"}), (0, run("BLOCKED", 4))])
+        driver.observe_business_stop(lambda *a: next(replies), saved.__setitem__, "run-test", 100, now=lambda: 0)
+        saved["driver-subject.json"] = {"binarySHA256": "binary-one", "runId": "run-test"}
+        return saved
+
+    def test_cold_recovery_reuses_exact_request_and_deadline(self):
+        original = self.previous()
+        prior, deadline = driver.business_stop_recovery(original.__getitem__, "binary-one", "run-test", 10, 480)
+        self.assertEqual(deadline, 100)
+        replies = iter([(0, run("BLOCKED", 4)), (1, {"disposition": "stopped", "reasonCode": "run-stopped"}), (0, run("BLOCKED", 4))])
+        calls, saved = [], {}
+        def call(args, remaining):
+            calls.append(list(args))
+            return next(replies)
+        summary = driver.observe_business_stop(call, saved.__setitem__, "run-test", deadline, now=lambda: 10, previous=prior)
+        self.assertFalse(summary["accepted"])
+        self.assertEqual([c[0] for c in calls], ["inspect", "collect", "inspect"])
+        self.assertEqual(saved["business-stop-collect-request.json"], original["business-stop-collect-request.json"])
+
+    def test_identity_expiry_and_unproved_prior_are_rejected(self):
+        for kind in ("binary", "run", "accepted", "stage", "expired", "future"):
+            saved = self.previous(); now = 10
+            if kind == "binary": saved["driver-subject.json"]["binarySHA256"] = "other"
+            if kind == "run": saved["business-stop-summary.json"]["runId"] = "other-run"
+            if kind == "accepted": saved["business-stop-summary.json"]["accepted"] = True
+            if kind == "stage": saved["business-stop-summary.json"]["stage"] = "unproved"
+            if kind == "expired": now = 100
+            if kind == "future": now = -500
+            with self.assertRaises(driver.DriveError):
+                driver.business_stop_recovery(saved.__getitem__, "binary-one", "run-test", now, 480)
+
+    def test_recovery_cannot_wait_for_new_stop_or_change_frozen_arguments(self):
+        for kind in ("running", "head", "deadline", "key", "operation"):
+            prior, deadline = driver.business_stop_recovery(self.previous().__getitem__, "binary-one", "run-test", 10, 480)
+            value = run("BLOCKED", 4)
+            if kind == "running": value = run("RUNNING", 3)
+            if kind == "head": value["authorityHead"] = "sha256:" + "f" * 64
+            if kind == "deadline": deadline = 110
+            if kind == "key": prior["request"]["args"][-1] = "other-key"
+            if kind == "operation": prior["request"]["args"][0] = "cancel"
+            calls = []
+            def call(args, remaining):
+                calls.append(args)
+                return 0, value
+            with self.assertRaises(driver.DriveError):
+                driver.observe_business_stop(call, lambda *a: None, "run-test", deadline, now=lambda: 10, previous=prior)
+            self.assertEqual([c[0] for c in calls], ["inspect"])
+
+
+class CancelRunTest(unittest.TestCase):
+    def replies(self):
+        stopped = result("BLOCKED", 4, protocolRevision="run-stop/v1", terminalReason="aborted-by-operator",
+                         requestDigest="sha256:" + "a" * 64, stopIntentDigest="sha256:" + "b" * 64,
+                         outcomeDigest="sha256:" + "c" * 64)
+        return [(0, run("RUNNING", 3)), (0, stopped), (0, copy.deepcopy(stopped)),
+                (1, {"disposition": "stopped", "reasonCode": "run-stopped"}), (0, run("BLOCKED", 4))]
+
+    def invoke(self, replies):
+        calls, saved = [], {}
+
+        def call(args, remaining):
+            self.assertGreater(remaining, 0)
+            calls.append(list(args))
+            return replies[len(calls) - 1]
+
+        return call, calls, saved
+
+    def test_cancel_replay_and_collect_stop_without_acceptance(self):
+        call, calls, saved = self.invoke(self.replies())
+        summary = driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 0)
+        self.assertFalse(summary["accepted"])
+        self.assertEqual(summary["stage"], "cancelled")
+        self.assertEqual(calls[1], calls[2])
+        self.assertEqual([item[0] for item in calls], ["inspect", "cancel", "cancel", "collect", "inspect"])
+        self.assertEqual(calls[3][calls[3].index("--expected-sequence") + 1], "4")
+        self.assertEqual(calls[3][calls[3].index("--expected-authority-head") + 1], run("BLOCKED", 4)["authorityHead"])
+        self.assertEqual(calls[1][calls[1].index("--expected-sequence") + 1], "3")
+        self.assertEqual(calls[3][calls[3].index("--deadline") + 1], calls[1][calls[1].index("--deadline") + 1])
+        self.assertEqual(saved["cancel-summary.json"]["run"], run("BLOCKED", 4))
+        self.assertNotIn("review-summary.json", saved)
+
+    def test_uncertain_cancel_is_never_retried(self):
+        replies = self.replies()
+        replies[1] = (3, driver.LIVE_PENDING)
+        call, calls, saved = self.invoke(replies)
+        with self.assertRaisesRegex(driver.DriveError, "cancel-unresolved"):
+            driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 0)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("cancel-summary.json", saved)
+
+    def test_rejects_partial_wrong_reason_and_wrong_receipt(self):
+        for kind in ("digest", "reason", "receipt", "attempt"):
+            replies = self.replies()
+            value = replies[1][1]
+            if kind == "digest":
+                del value["Projection"]["outcomeDigest"]
+            elif kind == "reason":
+                value["Projection"]["terminalReason"] = "attempt-deadline-exceeded"
+            elif kind == "receipt":
+                value["Receipt"]["postRevision"] += 1
+            else:
+                value["Projection"]["run"]["attemptId"] = "attempt-other"
+            call, calls, saved = self.invoke(replies)
+            with self.assertRaises(driver.DriveError):
+                driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 0)
+            self.assertEqual(len(calls), 2)
+
+    def test_post_stop_replay_collect_and_query_must_match(self):
+        for index, value in ((2, (1, {})), (3, (3, driver.LIVE_PENDING)), (4, (0, run("RUNNING", 3)))):
+            replies = self.replies()
+            replies[index] = value
+            call, calls, saved = self.invoke(replies)
+            with self.assertRaises(driver.DriveError):
+                driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 0)
+            self.assertEqual(len(calls), index + 1)
+            self.assertNotIn("cancel-summary.json", saved)
+
+    def test_expired_client_deadline_does_not_dispatch_cancel(self):
+        call, calls, saved = self.invoke(self.replies())
+        with self.assertRaisesRegex(driver.DriveError, "cancel-driver-deadline"):
+            driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 100)
+        self.assertEqual(calls, [])
+
+    def test_restart_uses_original_request_receipt_and_deadline(self):
+        call, calls, saved = self.invoke(self.replies())
+        driver.cancel_run(call, saved.__setitem__, "run-test", 100, now=lambda: 0)
+        previous = {"initial": saved["cancel-initial-run.json"], "request": saved["cancel-request.json"],
+                    "response": saved["cancel-response.json"]["response"]}
+        replies = self.replies()
+        replies[0] = (0, run("BLOCKED", 4))
+        recovered, recovery_calls, recovery_saved = self.invoke(replies)
+        driver.cancel_run(recovered, recovery_saved.__setitem__, "run-test", 100, now=lambda: 30, previous=previous)
+        self.assertEqual(recovery_calls[1], calls[1])
+        self.assertEqual(recovery_calls[3], calls[3])
+        self.assertFalse(recovery_saved["cancel-summary.json"]["accepted"])
+        for kind in ("extended-deadline", "new-attempt", "changed-receipt", "injected-args"):
+            altered = copy.deepcopy(previous)
+            answers = copy.deepcopy(replies)
+            if kind == "new-attempt":
+                answers[0] = (0, run("RUNNING", 3))
+            elif kind == "changed-receipt":
+                answers[1][1]["Projection"]["outcomeDigest"] = "sha256:" + "e" * 64
+            elif kind == "injected-args":
+                altered["request"]["args"].extend(["--actor", "forged"])
+            failed, attempted, evidence = self.invoke(answers)
+            with self.assertRaises(driver.DriveError):
+                driver.cancel_run(failed, evidence.__setitem__, "run-test", 101 if kind == "extended-deadline" else 100,
+                                  now=lambda: 30, previous=altered)
+            self.assertLessEqual(len(attempted), 2)
+            self.assertNotIn("cancel-summary.json", evidence)
 
 
 class FinalizeReviewTest(unittest.TestCase):
@@ -64,10 +402,10 @@ class FinalizeReviewTest(unittest.TestCase):
             self.assertEqual(driver.await_external_decision(path, 1, now=lambda: 0),
                              {"kind": "ReviewDecision", "verdict": "reject"})
 
-    def setup_delivery(self, verdict="accept", state="ACCEPTED"):
+    def setup_delivery(self, verdict="accept", state="ACCEPTED", verification_status="pass"):
         packet = {"taskId": "task-test", "reviewRound": 1, "specDigest": "sha256:" + "b" * 64,
                   "evidenceDigest": "sha256:" + "c" * 64}
-        summary = {"run": run("REVIEW_PENDING", 3), "verificationStatus": "pass", "accepted": False,
+        summary = {"run": run("REVIEW_PENDING", 3), "verificationStatus": verification_status, "accepted": False,
                    "packetDigest": "sha256:" + "a" * 64}
         decision = dict(packet, kind="ReviewDecision", runId="run-test", verdict=verdict,
                         reviewer={"type": "human", "id": "independent-reviewer"}, reviewPacketDigest=summary["packetDigest"])
@@ -80,9 +418,9 @@ class FinalizeReviewTest(unittest.TestCase):
             calls.append(args)
             return responses.pop(0)
 
-        def execute():
+        def execute(**kwargs):
             return driver.finalize_review(call, lambda name, value: saved.update({name: value}), summary, packet,
-                                          decision, "/fixed/review-decision.json", 30, now=lambda: 0)
+                                          decision, "/fixed/review-decision.json", 30, now=lambda: 0, **kwargs)
 
         return execute, decision, responses, saved, calls
 
@@ -131,8 +469,51 @@ class FinalizeReviewTest(unittest.TestCase):
         self.assertFalse(saved["decision-summary.json"]["accepted"])
         self.assertEqual([args[0] for args in calls], ["inspect", "decision", "inspect"])
 
+    def test_team_can_record_failed_verification_reject_without_restarting(self):
+        execute, _, _, saved, calls = self.setup_delivery("reject", "REJECTED", "fail")
+        self.assertEqual(execute(require_accepted=False)["state"], "REJECTED")
+        self.assertFalse(saved["decision-summary.json"]["accepted"])
+        self.assertEqual([args[0] for args in calls], ["inspect", "decision", "inspect"])
+
+    def test_team_mode_cannot_accept_failed_verification(self):
+        execute, _, _, saved, calls = self.setup_delivery(verification_status="fail")
+        with self.assertRaisesRegex(driver.DriveError, "failed-verification-cannot-accept"):
+            execute(require_accepted=False)
+        self.assertEqual(calls, [])
+        self.assertEqual(saved, {})
+
+    def test_rework_records_real_core_state_without_starting_an_attempt(self):
+        execute, _, responses, saved, calls = self.setup_delivery("rework", "REWORK_REQUESTED")
+        del responses[1][1]["Projection"]["outcomeDigest"]
+        self.assertEqual(execute(require_accepted=False)["state"], "REWORK_REQUESTED")
+        self.assertIsNone(saved["decision-summary.json"]["outcomeDigest"])
+        self.assertEqual([args[0] for args in calls], ["inspect", "decision", "inspect"])
+
+    def test_rework_cannot_invent_terminal_outcome_or_retry_pending(self):
+        for state in ("REWORK_REQUESTED", "RETRY_PENDING"):
+            execute, _, _, saved, _ = self.setup_delivery("rework", state)
+            with self.assertRaises(driver.DriveError):
+                execute(require_accepted=False)
+            self.assertNotIn("decision-summary.json", saved)
+
 
 class DriverTest(unittest.TestCase):
+    def test_peer_starts_only_after_collection_and_once_before_verify(self):
+        responses = iter(self.happy())
+        operations, hooks = [], []
+        def call(args, remaining):
+            operations.append(args[0])
+            if args[0] == "verify":
+                self.assertEqual(hooks, ["begin"])
+            return next(responses)
+        def hook():
+            self.assertEqual(operations, ["inspect", "collect", "collect"])
+            hooks.append("begin")
+        summary = driver.drive(call, lambda *_: None, "run-test", 30,
+                               now=lambda: 0, pause=lambda _: None, before_verify=hook)
+        self.assertFalse(summary["accepted"])
+        self.assertEqual(hooks, ["begin"])
+
     def test_deadline_is_canonical_rfc3339_for_fractional_and_whole_seconds(self):
         for deadline, expected in ((30.12, "1970-01-01T00:00:30.12Z"), (30, "1970-01-01T00:00:30Z"), (30.123456, "1970-01-01T00:00:30.123456Z")):
             with self.subTest(deadline=deadline):
@@ -211,6 +592,13 @@ class DriverTest(unittest.TestCase):
             execute()
         self.assertIn("review-packet.json", saved)
         self.assertFalse(saved["review-summary.json"]["accepted"])
+
+    def test_team_driver_can_capture_failed_verification_for_independent_reject(self):
+        responses = iter(self.happy(status="fail"))
+        summary = driver.drive(lambda *_: next(responses), lambda *_: None, "run-test", 30,
+                               now=lambda: 0, pause=lambda _: None, require_pass=False)
+        self.assertEqual(summary["verificationStatus"], "fail")
+        self.assertFalse(summary["accepted"])
 
     def test_final_query_drift_rejected(self):
         responses = self.happy()

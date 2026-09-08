@@ -28,7 +28,7 @@ func TestParseProductionWorkerResultExtractsFinalAssistantObject(t *testing.T) {
 				"usage":      map[string]any{"input": 17, "output": 9, "cacheRead": 4, "cost": 0.003},
 				"content": []any{
 					map[string]any{"type": "thinking", "thinking": "omitted"},
-					map[string]any{"type": "text", "text": string(declaredBytes)},
+					map[string]any{"type": "text", "text": "业务示例 {\"total\":12}，输入样例 [1,2]。\n" + string(declaredBytes)},
 				},
 			},
 		},
@@ -145,9 +145,7 @@ func TestProductionFinalCarrierDoesNotImposeAssistantShapeOnHistory(t *testing.T
 	}
 }
 
-// ADR 0075 F3：终态 assistant 文本容忍散文，但全文必须恰好有一个完整
-// JSON 对象且其后只含空白；0 个或多个完整对象、截断与尾随非空白一律
-// fail closed。
+// ADR 0084：只计顶层 WorkerResult 声明，容器边界与唯一性不靠猜测。
 func TestExtractSingleWorkerResultObjectContract(t *testing.T) {
 	valid := `{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult"}`
 	cases := []struct {
@@ -158,7 +156,18 @@ func TestExtractSingleWorkerResultObjectContract(t *testing.T) {
 		{name: "bare-object", text: valid, wantErr: false},
 		{name: "prose-then-single-object", text: "已完成三项交付，证据简述如下。\n" + valid + "\n", wantErr: false},
 		{name: "object-then-trailing-prose", text: valid + "\n以上即最终结果。", wantErr: true},
-		{name: "prose-with-two-objects", text: "先比较样例 {\"a\":1} 的形状，然后给出结果：\n" + valid, wantErr: true},
+		{name: "prose-with-business-object", text: "先比较样例 {\"a\":1} 的形状，然后给出结果：\n" + valid, wantErr: false},
+		{name: "array-prefix", text: `[{"sample":1}]` + valid, wantErr: false},
+		{name: "two-results", text: valid + valid, wantErr: true},
+		{name: "wrong-identity-not-filtered", text: `{"kind":"WorkerResult","taskId":"OTHER"}` + valid, wantErr: true},
+		{name: "wrong-version-not-filtered", text: `{"kind":"WorkerResult","apiVersion":"wrong"}` + valid, wantErr: true},
+		{name: "object-wrapper", text: `{"result":` + valid + `}`, wantErr: true},
+		{name: "array-wrapper", text: `[` + valid + `]`, wantErr: true},
+		{name: "damaged-wrapper", text: `{"result":` + valid, wantErr: true},
+		{name: "duplicate-kind", text: `{"kind":"Other","kind":"WorkerResult"}`, wantErr: true},
+		{name: "escaped-duplicate", text: `{"kind":"WorkerResult","ki\u006ed":"WorkerResult"}`, wantErr: true},
+		{name: "nested-duplicate", text: `{"kind":"WorkerResult","usage":{"input":1,"input":2}}`, wantErr: true},
+		{name: "prefix-hidden-kind", text: `{"kind":"WorkerResult","kind":"Other"}` + valid, wantErr: true},
 		{name: "no-object", text: "只写了总结，没有结果对象。", wantErr: true},
 		{name: "truncated-object", text: `说明 {"apiVersion":"marshal.dev/v1alpha1","kind":`, wantErr: true},
 		{name: "empty", text: "", wantErr: true},
@@ -199,8 +208,8 @@ func TestParseProductionWorkerResultRejectsGuessedResultWrapper(t *testing.T) {
 		TaskID: "TASK-1", RunID: "run-1", AttemptID: "attempt-1", Executable: "/usr/local/bin/pi", Version: "0.84.4",
 		StartedAt: started, CompletedAt: started.Add(time.Second), MaxOutputBytes: 1 << 20,
 	})
-	if err == nil || !strings.Contains(err.Error(), "validate declared production WorkerResult") {
-		t.Fatalf("error = %v, want schema rejection for guessed result wrapper", err)
+	if ProductionResultFailureCode(err) != "pi-result-final-object-missing" {
+		t.Fatalf("error = %v, want missing typed declaration for guessed result wrapper", err)
 	}
 }
 

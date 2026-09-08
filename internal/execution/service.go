@@ -463,6 +463,11 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if task.Metadata.ID != state.TaskID {
 		return Result{}, errors.New("task and run identity do not match")
 	}
+	// The legacy executor has no native terminal collector. Never silently
+	// reinterpret an explicitly selected contract or pay for an unusable run.
+	if task.Worker.ResultContract != "" && task.Worker.ResultContract != domain.ResultContractWorkerJSON {
+		return Result{}, errors.New("result contract is unsupported by the legacy executor")
+	}
 	taskRepository, err := filepath.EvalSymlinks(task.Repository.Path)
 	if err != nil || taskRepository != input.RepositoryRoot {
 		return Result{}, errors.New("TaskSpec repository does not match the active repository")

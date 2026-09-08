@@ -1,5 +1,7 @@
 # ADR 0080：三面分离与业务交付驱动的 Agent Team 路线
 
+> 2026-09-07 适用性：B1→B2→B3、三面逻辑分离、真实业务收益与独立验收继续为方向；首部署 file-backed、暂不扩 Provider/UI 的范围拟由 ADR 0085 调整。SQLite 已由同一 ADR 承载提案，不为落实该目标重复要求一份新 ADR。本文历史检查点不是当前能力证据。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：已接受（Accepted，2026-09-05，维护者明确要求按本轮审计建议更新设计并实施）。接受的是产品范围与实施顺序，不是实现、独立验证或发布证据。
 - 关联：ADR 0019、0052、0062、0079；Issue #186、#195、#205、#212；[业务交付计划](../agent-team-delivery-plan.md)。
 

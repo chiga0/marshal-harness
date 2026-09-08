@@ -4,12 +4,14 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	piadapter "github.com/chiga0/marshal-harness/internal/adapter/pi"
@@ -20,7 +22,9 @@ import (
 	controlplane "github.com/chiga0/marshal-harness/internal/control"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
+	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/runstore"
@@ -30,13 +34,14 @@ import (
 // sealedRepositoryApplication is the fixed-binary application adapter shared
 // by direct CLI mutation and the forthcoming control-plane server mode. It
 // owns repository-wide authority once and composes one short-lived Run runtime
-// for each bounded transaction. Mutations remain serialized; Status only
-// shares a lifetime guard with Close, not the long-running verification lock.
+// for each bounded transaction. Runtime mutations remain serialized; Verify
+// retains only its Run/worktree leases and a Close lifetime guard during
+// execution, allowing unrelated runtime mutations to advance.
 // Run leases remain the durable concurrency fence.
 type sealedRepositoryApplication struct {
 	mu sync.Mutex
-	// Lock order: mu -> statusMu -> session. Status never takes mu. Every write
-	// to closed and teardown of the immutable Status dependencies holds both.
+	// Lock order: mu -> statusMu -> session. Queries never take mu. Every write
+	// to closed and teardown of the immutable query dependencies holds both.
 	statusMu sync.RWMutex
 
 	repositoryRoot  string
@@ -61,18 +66,29 @@ type sealedRepositoryApplication struct {
 	closed        bool
 	statusProfile productionruntime.PiProfile
 	validator     *contract.Validator
+	// Rebuildable scheduling hints only; every tick reloads Run authority.
+	deadlineRuns   map[string]struct{}
+	deadlineCursor string
+	// A local circuit breaker for unknown dispatch/stop-record outcomes only.
+	// Durable team halts remain the authority across process restarts.
+	teamProgressStopped atomic.Bool
+	teamCollectCursor   string
+	teamVerifyCursor    string
+	teamReviewCursor    string
+	taskCancelCursor    string
 }
 
 var _ application.PublicApplicationPort = (*sealedRepositoryApplication)(nil)
 
 type sealedRepositoryApplicationConfig struct {
-	StateRoot       string
-	RepositoryRoot  string
-	PiRuntime       string
-	PiEntrypoint    string
-	EntryIdentity   *selfidentity.LocalSelfIdentityObservationV2
-	ObserveIdentity productionruntime.LocalSelfIdentityObserver
-	RecoveryMode    sealedRepositoryRecoveryMode
+	StateRoot          string
+	RepositoryRoot     string
+	PiRuntime          string
+	PiEntrypoint       string
+	EntryIdentity      *selfidentity.LocalSelfIdentityObservationV2
+	ObserveIdentity    productionruntime.LocalSelfIdentityObserver
+	RecoveryMode       sealedRepositoryRecoveryMode
+	TaskTemplateInputs []byte
 }
 
 type sealedRepositoryRecoveryMode uint8
@@ -116,7 +132,9 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	// identity does not change when those endpoint objects are created, so its
 	// per-session objects are isolated under this stable child.
 	controlRootPath := filepath.Join(runtimeRoot, "control", "supervisor")
-	for _, dir := range []string{ingressDir, ledgerDir, allocationRoot, ownerDir, providerDir, controlRootPath} {
+	// Team materialization creates children of these containers later. Create
+	// the containers before freezing the StateRoot mutation identity.
+	for _, dir := range []string{ingressDir, ledgerDir, allocationRoot, ownerDir, providerDir, controlRootPath, filepath.Join(config.StateRoot, "runs"), filepath.Join(config.StateRoot, "locks"), filepath.Join(config.StateRoot, "worktrees")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("sealed repository application: prepare authority directory: %w", err)
 		}
@@ -131,6 +149,15 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	applicationAdapter.validator, err = contract.NewValidator()
 	if err != nil {
 		return nil, fmt.Errorf("sealed repository application: compile contracts: %w", err)
+	}
+	// Concrete template parsing belongs to this existing composition root.
+	// Keep a read-only inspector installed when new Task submission is disabled.
+	var taskTemplate planning.TaskTemplate
+	if len(config.TaskTemplateInputs) != 0 {
+		taskTemplate, err = planning.OpenTaskTemplate(config.TaskTemplateInputs, applicationAdapter.validator)
+		if err != nil {
+			return nil, application.NewError("sealed-repository-application", application.ReasonInvalidRequest)
+		}
 	}
 	defer func() {
 		if err != nil {
@@ -197,6 +224,68 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 	applicationAdapter.session, err = productionruntime.OpenRepositorySession(ctx, productionruntime.RepositorySessionInputs{
 		HeldIngressDir: heldIngress, HeldRepositoryRoot: repositoryDirectory, OwnerDirectory: ownerDirectory, Acquisition: acquisition,
 		FixedMarshalPath: fixedMarshal, OwnerPrivateControlRoot: controlRoot,
+		TaskTemplate: taskTemplate,
+		TeamInputPreflight: func(raw []byte) error {
+			preview, err := planning.PreviewTeamInputs(raw, applicationAdapter.validator)
+			if err != nil || preview.Inputs.Spec.Repository != applicationAdapter.repositoryRoot || !preview.Inputs.Spec.AuthorityNamespaceId.Equal(applicationAdapter.namespace) {
+				return application.NewError("team-input-preflight", application.ReasonInvalidRequest)
+			}
+			return preflightPiTeamLaunch(applicationAdapter.piRuntime, applicationAdapter.piEntrypoint, preview.Inputs)
+		},
+		TeamIntegrationBuilder: func(ctx context.Context, base, binding string, patches [][]byte) (string, string, error) {
+			repository, err := gitworktree.OpenContext(ctx, applicationAdapter.repositoryRoot)
+			if err != nil {
+				return "", "", err
+			}
+			derived, err := repository.CombineAcceptedPatches(ctx, applicationAdapter.stateRoot, base, binding, patches)
+			return derived.TreeSHA, derived.CommitSHA, err
+		},
+		TeamDeliveryExporter: func(ctx context.Context, base, binding, tree, commit string, upstreams [][]byte, final []byte, paths []string) (map[string][]byte, error) {
+			repository, err := gitworktree.OpenContext(ctx, applicationAdapter.repositoryRoot)
+			if err != nil {
+				return nil, err
+			}
+			return repository.ExportTeamDelivery(ctx, applicationAdapter.stateRoot, base, binding, tree, commit, upstreams, final, paths)
+		},
+		TeamRunPreparer: func(ctx context.Context, task, policy []byte, runID string) ([]byte, error) {
+			// Use only this server's frozen Pi paths; never rediscover a provider
+			// from mutable PATH/environment during Goal reconciliation.
+			workers, err := applicationAdapter.teamPlanningRuntime()
+			if err != nil {
+				return nil, err
+			}
+			prepared, _, err := planning.Prepare(ctx, planning.Input{
+				StateRoot: applicationAdapter.stateRoot, RepositoryRoot: applicationAdapter.repositoryRoot,
+				RunID: runID, TaskSpec: task, PolicySnapshot: policy,
+				Selector: workers.ProductionSelector(), Validator: applicationAdapter.validator,
+				LocalSelfIdentity: applicationAdapter.entryIdentity,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(prepared.Inputs())
+		},
+		TeamRunMaterializer: func(ctx context.Context, raw []byte, guard func(context.Context, func() error) error) (domain.RunState, error) {
+			var frozen planning.PreparedInputs
+			if len(raw) == 0 || len(raw) > 256<<10 || json.Unmarshal(raw, &frozen) != nil {
+				return domain.RunState{}, application.NewError("team-materialization", application.ReasonInvalidRequest)
+			}
+			workers, err := applicationAdapter.teamPlanningRuntime()
+			if err != nil {
+				return domain.RunState{}, err
+			}
+			prepared, err := planning.RestorePrepared(ctx, planning.Input{
+				StateRoot: applicationAdapter.stateRoot, RepositoryRoot: applicationAdapter.repositoryRoot,
+				RunID: frozen.RunID, TaskSpec: frozen.Task, PolicySnapshot: frozen.Policy,
+				Selector: workers.ProductionSelector(), Validator: applicationAdapter.validator,
+				LocalSelfIdentity: applicationAdapter.entryIdentity,
+			}, frozen)
+			if err != nil {
+				return domain.RunState{}, err
+			}
+			result, err := prepared.ReconcileCreation(ctx, planning.CreationGuard(guard))
+			return result.State, err
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sealed repository application: open repository session: %w", err)
@@ -233,6 +322,19 @@ func openSealedRepositoryApplication(ctx context.Context, config sealedRepositor
 		return nil, fmt.Errorf("sealed repository application: recover repository runs: %w", err)
 	}
 	return applicationAdapter, nil
+}
+
+func (adapter *sealedRepositoryApplication) teamPlanningRuntime() (*app.WorkerRuntime, error) {
+	return app.NewWorkerRuntime(func(key string) string {
+		switch key {
+		case "MARSHAL_PI_PATH":
+			return adapter.piEntrypoint
+		case "MARSHAL_PI_NODE_PATH":
+			return adapter.piRuntime
+		default:
+			return ""
+		}
+	})
 }
 
 type sealedRepositoryRecoverFunc func(context.Context) error
@@ -297,11 +399,54 @@ func (adapter *sealedRepositoryApplication) Status(ctx context.Context, _ applic
 	return projection, projection.Validate()
 }
 
+// The authenticated team route uses this same resident application; it must
+// not open another ledger/owner or execute a child CLI.
+func (adapter *sealedRepositoryApplication) ApproveInitialTeam(ctx context.Context, request application.ApproveInitialTeamRequest) (application.InitialTeamApprovalProjection, error) {
+	if adapter == nil || ctx == nil {
+		return application.InitialTeamApprovalProjection{}, application.NewError("approve-initial-team", application.ReasonInvalidRequest)
+	}
+	adapter.statusMu.RLock()
+	defer adapter.statusMu.RUnlock()
+	if adapter.closed || adapter.session == nil {
+		return application.InitialTeamApprovalProjection{}, application.NewError("approve-initial-team", application.ReasonOwnerUnavailable)
+	}
+	return adapter.session.ApproveInitialTeam(ctx, request)
+}
+
+func (adapter *sealedRepositoryApplication) ReconcileInitialTeamApproval(ctx context.Context, request application.ApproveInitialTeamRequest) (application.InitialTeamApprovalProjection, bool, error) {
+	if adapter == nil || ctx == nil {
+		return application.InitialTeamApprovalProjection{}, false, application.NewError("reconcile-team-approval", application.ReasonInvalidRequest)
+	}
+	adapter.statusMu.RLock()
+	defer adapter.statusMu.RUnlock()
+	if adapter.closed || adapter.session == nil {
+		return application.InitialTeamApprovalProjection{}, false, application.NewError("reconcile-team-approval", application.ReasonOwnerUnavailable)
+	}
+	return adapter.session.ReconcileInitialTeamApproval(ctx, request)
+}
+
+func (adapter *sealedRepositoryApplication) ReadInitialTeamOutcome(ctx context.Context, request application.ApproveInitialTeamRequest) (application.InitialTeamOutcomeProjection, bool, error) {
+	if adapter == nil || ctx == nil {
+		return application.InitialTeamOutcomeProjection{}, false, application.NewError("read-team-outcome", application.ReasonInvalidRequest)
+	}
+	adapter.statusMu.RLock()
+	defer adapter.statusMu.RUnlock()
+	if adapter.closed || adapter.session == nil {
+		return application.InitialTeamOutcomeProjection{}, false, application.NewError("read-team-outcome", application.ReasonOwnerUnavailable)
+	}
+	return adapter.session.ReadInitialTeamOutcome(ctx, request)
+}
+
+var _ application.InitialTeamApplicationPort = (*sealedRepositoryApplication)(nil)
+
 // recoverRepositoryRuns enumerates the descriptor-bound Run set while the
 // repository owner session is held, then composes every RUNNING Run once.
 // NewCompositionLedger performs the exact attach/rebind reconciliation. Only
 // after this pass succeeds may Status report the resident port as ready.
 func (adapter *sealedRepositoryApplication) recoverRepositoryRuns(ctx context.Context) error {
+	if err := adapter.session.RecoverInitialTeamCreations(ctx); err != nil {
+		return errors.Join(application.NewError("recover-team-creations", application.ReasonAuthorityConflict), err)
+	}
 	runIDs, err := adapter.runs.ListExistingRunIDs()
 	if err != nil {
 		return errors.Join(application.NewError("recover-list-runs", application.ReasonAuthorityConflict), err)
@@ -319,14 +464,21 @@ func (adapter *sealedRepositoryApplication) recoverRepositoryRuns(ctx context.Co
 		if releaseErr != nil {
 			return errors.Join(application.NewError("recover-release-run", application.ReasonAuthorityConflict), releaseErr)
 		}
+		if authority.Run.State == domain.StateBlocked {
+			if _, _, err := adapter.session.RecoverStoppedRun(ctx, runID); err != nil {
+				return err
+			}
+		}
 		if authority.Run.State != domain.StateRunning {
 			continue
 		}
+		adapter.trackDeadlineRun(runID)
 		run, err := adapter.openRun(ctx, runID)
 		if err != nil {
 			return errors.Join(application.NewError("recover-open-running-run", application.ReasonCompositionIncomplete), err)
 		}
-		if err := run.Close(); err != nil {
+		advanceErr := run.runtime.ReconcileBusinessStop(ctx, runID)
+		if err := errors.Join(advanceErr, run.Close()); err != nil {
 			return errors.Join(application.NewError("recover-close-running-run", application.ReasonAuthorityConflict), err)
 		}
 	}
@@ -339,6 +491,12 @@ func (adapter *sealedRepositoryApplication) recoverRepositoryRuns(ctx context.Co
 func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
+	return adapter.startRunLocked(ctx, request)
+}
+
+// The public operation and resident team controller hold the same write lock
+// and execute the identical preparation/launch/current-ledger path.
+func (adapter *sealedRepositoryApplication) startRunLocked(ctx context.Context, request application.StartRunRequest) (application.RunStartProjection, error) {
 	if adapter.closed || adapter.validator == nil || adapter.entryIdentity == nil {
 		return application.RunStartProjection{}, application.NewError("start-run", application.ReasonBridgeUnavailable)
 	}
@@ -347,11 +505,17 @@ func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, reques
 		return application.RunStartProjection{}, err
 	}
 	if state.State == domain.StateReady {
-		if err := controlplane.Require(controlplane.ApprovalInput{
-			StateRoot: adapter.stateRoot, RunID: request.RunID, Gate: domain.ApprovalGatePlan,
-			Validator: adapter.validator, LocalSelfIdentity: adapter.entryIdentity,
-		}); err != nil {
+		teamMember, err := adapter.session.RequireInitialTeamRunPlan(ctx, request)
+		if err != nil {
 			return application.RunStartProjection{}, application.NewError("start-run-plan-approval", application.ReasonAuthorityConflict)
+		}
+		if !teamMember {
+			if err := controlplane.Require(controlplane.ApprovalInput{
+				StateRoot: adapter.stateRoot, RunID: request.RunID, Gate: domain.ApprovalGatePlan,
+				Validator: adapter.validator, LocalSelfIdentity: adapter.entryIdentity,
+			}); err != nil {
+				return application.RunStartProjection{}, application.NewError("start-run-plan-approval", application.ReasonAuthorityConflict)
+			}
 		}
 	}
 	run, err := adapter.openRun(ctx, request.RunID)
@@ -359,6 +523,9 @@ func (adapter *sealedRepositoryApplication) StartRun(ctx context.Context, reques
 		return application.RunStartProjection{}, err
 	}
 	defer run.Close()
+	// Register before Start: a lost start response must not omit a newly
+	// RUNNING Run from resident deadline processing.
+	adapter.trackDeadlineRun(request.RunID)
 	started, err := run.runtime.StartRun(ctx, request)
 	if err != nil {
 		return application.RunStartProjection{}, err
@@ -646,8 +813,15 @@ func advanceSealedRun(ctx context.Context, runtime sealedRunAdvancer, runID stri
 }
 
 func (adapter *sealedRepositoryApplication) InspectRun(ctx context.Context, request application.InspectRunRequest) (application.RunProjection, error) {
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
+	if adapter == nil || ctx == nil || request.Validate() != nil {
+		return application.RunProjection{}, application.NewError("inspect-run", application.ReasonInvalidRequest)
+	}
+	// Protect the session against Close without waiting for a verification or
+	// stop transaction. Session.InspectRun still acquires the Run lease and
+	// checks current owner/ledger; contention is not permission to read stale
+	// state, and this does not promise a bound on storage/owner-lock latency.
+	adapter.statusMu.RLock()
+	defer adapter.statusMu.RUnlock()
 	if adapter.closed || adapter.session == nil {
 		return application.RunProjection{}, application.NewError("inspect-run", application.ReasonBridgeUnavailable)
 	}
@@ -784,7 +958,7 @@ func (adapter *sealedRepositoryApplication) openRun(ctx context.Context, runID s
 		ExistingWorktreeDescriptorGraph: worktree.graph, ExistingWorktreeTargetWorktree: worktree.target,
 		LaunchArgvBuilder: piProductionLaunchBuilder(adapter.piRuntime, adapter.piEntrypoint, task),
 		ResultParser: func(parserCtx context.Context, input productionruntime.AttemptResultInput) (domain.Record, error) {
-			return parsePiProductionResult(parserCtx, input, task.Worker.Model)
+			return parsePiProductionResult(parserCtx, input, task.Worker.Model, task.Worker.ResultContract)
 		},
 		EntryLocalSelfIdentity: adapter.entryIdentity, ObserveLocalSelfIdentity: adapter.observeIdentity,
 	}, profile)
@@ -795,8 +969,10 @@ func (adapter *sealedRepositoryApplication) openRun(ctx context.Context, runID s
 	return run, nil
 }
 
-func parsePiProductionResult(ctx context.Context, input productionruntime.AttemptResultInput, model string) (domain.Record, error) {
+func parsePiProductionResult(ctx context.Context, input productionruntime.AttemptResultInput, model, resultContract string) (domain.Record, error) {
 	result, err := piadapter.ParseProductionWorkerResult(ctx, piadapter.ProductionResultInput{
+		ResultContract: resultContract, ProcessTerminal: input.ProcessTerminal,
+		ProcessExitCode: input.ProcessExitCode, ProcessSignal: input.ProcessSignal, TranscriptTruncated: input.TranscriptTruncated,
 		Transcript: input.Transcript, Worktree: input.Worktree,
 		TaskID: input.TaskID, RunID: input.RunID, AttemptID: input.AttemptID,
 		Executable: input.Executable, Version: input.Version, Model: model,

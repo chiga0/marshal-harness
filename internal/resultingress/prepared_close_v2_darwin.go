@@ -18,7 +18,7 @@ func (s *DurableStore) closePreparedExecutionV2Locked(ctx context.Context, proje
 	if transport == nil || recoverClose == nil || observe == nil || state.SupervisorStarted.Validate() != nil || state.SupervisorMechanicsAnchor.Validate() != nil || state.SupervisorStarted.V2.Anchor.Generation != state.SupervisorMechanicsAnchor.Generation {
 		return PreparedExecutionClose{}, ErrPreparedExecutionConflict
 	}
-	if state.ControlOwnerBindingRevision < 2 || state.ControlOwnerBindingRevision > state.Revision || state.SupervisorBoundAuthorityHead != state.ControlOwnerBindingDigest {
+	if !AttemptSupervisorBindingCurrent(state) {
 		return PreparedExecutionClose{}, ErrPreparedExecutionConflict
 	}
 	anchor := supervisorSessionAnchorV2(state.SupervisorMechanicsAnchor)

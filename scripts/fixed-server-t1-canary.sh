@@ -13,6 +13,8 @@ RUN_ID=""
 EVIDENCE_ROOT=""
 SCENARIO="t1-marker"
 AWAIT_REVIEW=0
+STOP_CRASH=0
+VERIFY_PEER=0
 
 die() {
   printf '[fixed-server-t1] ERROR: %s\n' "$*" >&2
@@ -24,7 +26,7 @@ usage() {
 usage: scripts/fixed-server-t1-canary.sh \
   --expected-head HEAD --pi-model PROVIDER/MODEL --pi-node PATH --pi-bin PATH \
   --pi-bundle PATH --run-id RUN_ID --evidence-root ABSOLUTE_PATH \
-  [--scenario t1-marker|order-quote] [--await-review]
+  [--scenario t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout|order-quote-team] [--await-review] [--stop-crash|--verify-peer]
 EOF
   exit 2
 }
@@ -40,6 +42,8 @@ while [ "$#" -gt 0 ]; do
     --evidence-root) [ "$#" -ge 2 ] || usage; EVIDENCE_ROOT="$2"; shift 2 ;;
     --scenario) [ "$#" -ge 2 ] || usage; SCENARIO="$2"; shift 2 ;;
     --await-review) AWAIT_REVIEW=1200; shift ;;
+    --stop-crash) STOP_CRASH=1; shift ;;
+    --verify-peer) VERIFY_PEER=1; shift ;;
     *) usage ;;
   esac
 done
@@ -47,8 +51,20 @@ done
 [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || die 'expected-head 必须是 40 位小写 commit'
 [[ "$PI_MODEL" =~ ^[A-Za-z0-9._:-]+/[A-Za-z0-9._:-]+$ ]] || die 'pi-model 必须是 provider/model'
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{2,120}$ ]] || die 'run-id 形态非法'
-case "$SCENARIO" in t1-marker|order-quote) ;; *) die 'scenario 必须为 t1-marker 或 order-quote' ;; esac
-[ "$AWAIT_REVIEW" -eq 0 ] || [ "$SCENARIO" = order-quote ] || die 'await-review 只适用于 order-quote'
+case "$SCENARIO" in t1-marker|order-quote|order-quote-cancel|order-quote-timeout|order-quote-run-timeout|order-quote-team) ;; *) die 'scenario 非法' ;; esac
+if [ "$SCENARIO" = order-quote-team ]; then
+  [ "${#RUN_ID}" -le 112 ] || die 'team run-id 过长'
+fi
+if [ "$AWAIT_REVIEW" -gt 0 ]; then
+  case "$SCENARIO" in order-quote|order-quote-team) ;; *) die 'await-review 只适用于 order-quote/team' ;; esac
+fi
+if [ "$STOP_CRASH" -eq 1 ]; then
+  case "$SCENARIO" in order-quote-timeout|order-quote-run-timeout) ;; *) die 'stop-crash 只适用于业务 timeout' ;; esac
+fi
+if [ "$VERIFY_PEER" -eq 1 ]; then
+  [ "$SCENARIO" = order-quote-timeout ] && [ "$STOP_CRASH" -eq 0 ] && [ "$AWAIT_REVIEW" -eq 0 ] || die 'verify-peer 只允许无 crash/review 的 Attempt-timeout 场景'
+  [ "${#RUN_ID}" -le 114 ] || die 'verify-peer run-id 过长'
+fi
 [ -x "$PI_NODE" ] && [ ! -L "$PI_NODE" ] || die 'pi-node 必须是固定普通 executable'
 [ -x "$PI_BIN" ] || die 'pi-bin 必须是可执行入口'
 [ -f "$PI_BUNDLE" ] && [ ! -L "$PI_BUNDLE" ] || die 'pi-bundle 必须是固定普通文件'
@@ -204,15 +220,26 @@ export MARSHAL_LOCAL_DOGFOOD_ACTIVATION="$EVIDENCE_ROOT/activation.json"
 "$MARSHAL_BIN" doctor --json >"$EVIDENCE_ROOT/doctor.json"
 "$MARSHAL_BIN" version --json >"$EVIDENCE_ROOT/binary-version.json"
 
+if [ "$SCENARIO" = order-quote-team ]; then
+  team_deadline="$($PYTHON_BIN -I -B -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(minutes=8)).replace(microsecond=0).isoformat().replace("+00:00","Z"))')"
+  "$PYTHON_BIN" -I -B scripts/fixed-server-team-inputs.py \
+    --doctor "$EVIDENCE_ROOT/doctor.json" --repository "$ROOT" --base-ref "$EXPECTED_HEAD" \
+    --model "$PI_MODEL" --goal-id "$RUN_ID" --proposal-id "$RUN_ID-plan" \
+    --request-id "$RUN_ID-approve" --deadline "$team_deadline" --out "$EVIDENCE_ROOT/team-request.json"
+else
 task_id="FIXED-SERVER-T1-${EXPECTED_HEAD:0:12}"
 task_renderer=scripts/fixed-server-t1-task.py
 # Keep the array nonempty: macOS Bash 3.2 rejects an empty array expansion
 # under nounset, even when quoted.
 renderer_args=(--doctor "$EVIDENCE_ROOT/doctor.json" --repository "$ROOT" --base-ref "$EXPECTED_HEAD")
-if [ "$SCENARIO" = order-quote ]; then
+if [ "$SCENARIO" != t1-marker ]; then
   task_id="FIXED-SERVER-T2-${EXPECTED_HEAD:0:12}"
   task_renderer=scripts/fixed-server-t2-task.py
-  renderer_args+=(--scenario order-quote)
+  if [ "$SCENARIO" = order-quote-timeout ] || [ "$SCENARIO" = order-quote-run-timeout ]; then
+    renderer_args+=(--scenario "$SCENARIO")
+  else
+    renderer_args+=(--scenario order-quote)
+  fi
 fi
 "$PYTHON_BIN" -I -B "$task_renderer" "${renderer_args[@]}" \
   --task-id "$task_id" --run-id "$RUN_ID" --model "$PI_MODEL" \
@@ -221,6 +248,22 @@ fi
   --run "$RUN_ID" --json >"$EVIDENCE_ROOT/plan.json"
 "$MARSHAL_BIN" task approve --run "$RUN_ID" --gate plan --actor fixed-server-t1-operator \
   --json >"$EVIDENCE_ROOT/approve.json"
+fi
+
+if [ "$VERIFY_PEER" -eq 1 ]; then
+  peer_run="$RUN_ID-verify"
+  peer_root="$ROOT/.marshal/fixed-server-t1-canary/$peer_run"
+  [ ! -e "$peer_root" ] && [ ! -L "$peer_root" ] || die 'peer evidence 已存在'
+  mkdir "$peer_root"
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t2-task.py \
+    --doctor "$EVIDENCE_ROOT/doctor.json" --repository "$ROOT" --base-ref "$EXPECTED_HEAD" \
+    --task-id "$task_id-VERIFY" --run-id "$peer_run" --model "$PI_MODEL" \
+    --scenario order-quote --long-verify --task-out "$peer_root/task.json" --policy-out "$peer_root/policy.json"
+  "$MARSHAL_BIN" task plan --task "$peer_root/task.json" --policy "$peer_root/policy.json" \
+    --run "$peer_run" --json >"$peer_root/plan.json"
+  "$MARSHAL_BIN" task approve --run "$peer_run" --gate plan --actor fixed-server-t1-operator \
+    --json >"$peer_root/approve.json"
+fi
 
 # T1_NO_DIRECT_CLI_MUTATION_AFTER_APPROVAL
 # From this point through evidence closure, every Marshal operation is the
@@ -229,11 +272,49 @@ fi
 "$PYTHON_BIN" -I -B scripts/fixed-server-t1-evidence.py observe-binary \
   --binary "$MARSHAL_BIN" --version-json "$EVIDENCE_ROOT/binary-version.json" \
   --out "$EVIDENCE_ROOT/binary-server1.json"
-"$MARSHAL_BIN" control-plane serve >"$EVIDENCE_ROOT/server1-ready.json" \
+server_options=(serve)
+if [ "$SCENARIO" = order-quote-team ]; then
+  server_options+=(--auto-team-progress)
+fi
+"$MARSHAL_BIN" control-plane "${server_options[@]}" >"$EVIDENCE_ROOT/server1-ready.json" \
   2>"$EVIDENCE_ROOT/server1.stderr" &
 server1_pid=$!
 wait_ready "$server1_pid" "$EVIDENCE_ROOT/server1-ready.json"
 append_audit server1 serve ready
+if [ "$SCENARIO" = order-quote-team ]; then
+  # No task plan/approve or per-node Start. The authenticated team operation
+  # is the only approval; resident Core owns creation and both first Starts.
+  "$PYTHON_BIN" -I -B scripts/fixed-server-team-drive.py --evidence-root "$EVIDENCE_ROOT" --await-review-seconds "$AWAIT_REVIEW"
+  assert_server_pid "$server1_pid"
+  kill -TERM "$server1_pid"
+  set +e
+  wait "$server1_pid"
+  team_server_status=$?
+  set -e
+  [ "$team_server_status" -eq 0 ] || die 'team server 未正常退出'
+  write_process_evidence "$EVIDENCE_ROOT/server1-process.json" "$server1_pid" SIGTERM "$team_server_status"
+  server1_pid=""
+  printf '[fixed-server-team] evidence retained; consult summary for durable GoalOutcome; not production/release authority\n'
+  exit 0
+fi
+if [ "$VERIFY_PEER" -eq 1 ]; then
+  # Both Runs were frozen/approved before serve. All mutations now use the
+  # fixed public surface. This experiment intentionally does not crash the
+  # verifier or manufacture a Decision; it proves cross-Run scheduling only.
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py --run "$peer_run" \
+    --evidence-dir "$peer_root/t2" --concurrent-stop-run "$RUN_ID"
+  assert_server_pid "$server1_pid"
+  kill -TERM "$server1_pid"
+  set +e
+  wait "$server1_pid"
+  peer_server_status=$?
+  set -e
+  [ "$peer_server_status" -eq 0 ] || die 'cross-run server 未正常退出'
+  write_process_evidence "$EVIDENCE_ROOT/server1-process.json" "$server1_pid" SIGTERM "$peer_server_status"
+  server1_pid=""
+  printf '[fixed-server-t2] CROSS_RUN_OBSERVED; independent business Decision still required\n'
+  exit 0
+fi
 "$MARSHAL_BIN" control-plane status >"$EVIDENCE_ROOT/server1-status.json"
 append_audit server1 status received
 "$MARSHAL_BIN" control-plane inspect --run "$RUN_ID" >"$EVIDENCE_ROOT/server1-ready-inspect.json"
@@ -294,7 +375,40 @@ append_start_audit server2 received-replay
 "$MARSHAL_BIN" control-plane inspect --run "$RUN_ID" >"$EVIDENCE_ROOT/server2-final-inspect.json"
 append_audit server2 inspect received-final
 
-if [ "$SCENARIO" = order-quote ]; then
+server2_process_path="$EVIDENCE_ROOT/server2-process.json"
+if [ "$STOP_CRASH" -eq 1 ]; then
+  # The observer never returns a PID or a command. Only the unreaped child
+  # owned by this shell is interrupted; post-wait evidence must still prove
+  # that Run terminalization had not committed. A missed window is a failure.
+  "$PYTHON_BIN" -I -B scripts/fixed-server-stop-fault.py wait --repository "$ROOT" --run "$RUN_ID"
+  assert_server_pid "$server2_pid"
+  kill -KILL "$server2_pid"
+  set +e
+  wait "$server2_pid"
+  server2_status=$?
+  set -e
+  [ "$server2_status" -eq 137 ] || die "stop crash SIGKILL wait status 非 137：$server2_status"
+  write_process_evidence "$server2_process_path" "$server2_pid" SIGKILL "$server2_status"
+  server2_pid=""
+  "$PYTHON_BIN" -I -B scripts/fixed-server-stop-fault.py after --repository "$ROOT" --run "$RUN_ID"
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t1-evidence.py observe-binary \
+    --binary "$MARSHAL_BIN" --version-json "$EVIDENCE_ROOT/binary-version.json" \
+    --out "$EVIDENCE_ROOT/binary-stop-recovery.json"
+  "$MARSHAL_BIN" control-plane serve >"$EVIDENCE_ROOT/stop-recovery-ready.json" \
+    2>"$EVIDENCE_ROOT/stop-recovery.stderr" &
+  server2_pid=$!
+  wait_ready "$server2_pid" "$EVIDENCE_ROOT/stop-recovery-ready.json"
+  append_audit stop-recovery serve ready-after-interrupted-stop
+  server2_process_path="$EVIDENCE_ROOT/stop-recovery-process.json"
+fi
+
+if [ "$SCENARIO" = order-quote-timeout ] || [ "$SCENARIO" = order-quote-run-timeout ]; then
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
+    --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2" --observe-business-stop --timeout-seconds 180
+elif [ "$SCENARIO" = order-quote-cancel ]; then
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
+    --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2" --cancel
+elif [ "$SCENARIO" = order-quote ]; then
   # The same post-restart server owns all T2 mutation. The driver stops at an
   # exact ReviewPacket unless an external reviewer supplies a Decision. The
   # driver cannot author it or replace current-ledger admission.
@@ -309,14 +423,47 @@ wait "$server2_pid"
 server2_status=$?
 set -e
 [ "$server2_status" -eq 0 ] || die "server2 未正常退出：$server2_status"
-write_process_evidence "$EVIDENCE_ROOT/server2-process.json" "$server2_pid" SIGTERM "$server2_status"
+write_process_evidence "$server2_process_path" "$server2_pid" SIGTERM "$server2_status"
 server2_pid=""
+
+if [ "$SCENARIO" = order-quote-cancel ] || [ "$SCENARIO" = order-quote-timeout ] || [ "$SCENARIO" = order-quote-run-timeout ]; then
+  "$PYTHON_BIN" -I -B scripts/fixed-server-t1-evidence.py observe-binary \
+    --binary "$MARSHAL_BIN" --version-json "$EVIDENCE_ROOT/binary-version.json" \
+    --out "$EVIDENCE_ROOT/binary-server3.json"
+  "$MARSHAL_BIN" control-plane serve >"$EVIDENCE_ROOT/server3-ready.json" \
+    2>"$EVIDENCE_ROOT/server3.stderr" &
+  # Reuse the now-empty owned child slot so the existing EXIT trap reaps it.
+  server2_pid=$!
+  wait_ready "$server2_pid" "$EVIDENCE_ROOT/server3-ready.json"
+  if [ "$SCENARIO" = order-quote-cancel ]; then
+    append_audit server3 serve ready-after-cancel
+    "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
+      --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2-recovery" --cancel-recovery
+  else
+    append_audit server3 serve ready-after-business-stop
+    "$PYTHON_BIN" -I -B scripts/fixed-server-t2-drive.py \
+      --run "$RUN_ID" --evidence-dir "$EVIDENCE_ROOT/t2-recovery" --business-stop-recovery
+  fi
+  assert_server_pid "$server2_pid"
+  kill -TERM "$server2_pid"
+  set +e
+  wait "$server2_pid"
+  server3_status=$?
+  set -e
+  [ "$server3_status" -eq 0 ] || die "server3 未正常退出：$server3_status"
+  write_process_evidence "$EVIDENCE_ROOT/server3-process.json" "$server2_pid" SIGTERM "$server3_status"
+  server2_pid=""
+fi
 
 if [ "$SCENARIO" = t1-marker ]; then
   "$PYTHON_BIN" -I -B scripts/fixed-server-t1-evidence.py check \
     --repository "$ROOT" --evidence-root "$EVIDENCE_ROOT" --binary "$MARSHAL_BIN" \
     --expected-head "$EXPECTED_HEAD" --run-id "$RUN_ID" --out "$EVIDENCE_ROOT/summary.json"
   printf '[fixed-server-t1] PASS run=%s evidence=%s\n' "$RUN_ID" "$EVIDENCE_ROOT"
+elif [ "$SCENARIO" = order-quote-timeout ] || [ "$SCENARIO" = order-quote-run-timeout ]; then
+  printf '[fixed-server-t2] RESIDENT_STOP_OBSERVED run=%s; deadline witness requires independent evidence audit, not ACCEPTED\n' "$RUN_ID"
+elif [ "$SCENARIO" = order-quote-cancel ]; then
+  printf '[fixed-server-t2] CANCELLED run=%s; exact replay and stopped Collect verified, not ACCEPTED\n' "$RUN_ID"
 else
   if [ "$AWAIT_REVIEW" -eq 0 ]; then
     printf '[fixed-server-t2] REVIEW_PENDING run=%s; independent Decision required\n' "$RUN_ID"

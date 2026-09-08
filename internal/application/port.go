@@ -2,6 +2,17 @@ package application
 
 import "context"
 
+type InitialTeamOutcomePort interface {
+	ReadInitialTeamOutcome(context.Context, ApproveInitialTeamRequest) (InitialTeamOutcomeProjection, bool, error)
+}
+
+// InitialTeamApplicationPort is an optional capability of the same resident
+// application, not another controller. Missing capability fails closed.
+type InitialTeamApplicationPort interface {
+	ApproveInitialTeam(context.Context, ApproveInitialTeamRequest) (InitialTeamApprovalProjection, error)
+	ReconcileInitialTeamApproval(context.Context, ApproveInitialTeamRequest) (InitialTeamApprovalProjection, bool, error)
+}
+
 // PublicApplicationPort is the only production-shaped entry point exposed to
 // CLI/server input adapters. StartRun owns preparation, execution and durable
 // reconciliation as one bounded application operation so no input adapter
@@ -16,6 +27,7 @@ type PublicApplicationPort interface {
 	ReconcileStartRun(context.Context, StartRunRequest) (RunStartProjection, bool, error)
 	InspectRun(context.Context, InspectRunRequest) (RunProjection, error)
 	CollectRunResult(context.Context, CollectRunResultRequest) (CollectedRunProjection, error)
+	CancelRun(context.Context, CancelRunRequest) (CancelRunProjection, error)
 	VerifyRun(context.Context, VerifyRunRequest) (VerificationProjection, error)
 	BuildReviewPacket(context.Context, BuildReviewPacketRequest) (ReviewPacketProjection, error)
 	ApplyReviewDecision(context.Context, ApplyReviewDecisionRequest) (ReviewDecisionProjection, error)

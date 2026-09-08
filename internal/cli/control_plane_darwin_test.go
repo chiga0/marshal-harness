@@ -13,7 +13,93 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/fixedcontrolplane"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
+
+func TestControlPlaneRequestContextPreservesIdentityAndDrainOwnership(t *testing.T) {
+	identity := selfidentity.LocalSelfIdentityObservationV2{ObservationDigest: "sha256:" + strings.Repeat("a", 64)}
+	parent, stopService := context.WithTimeout(context.WithValue(context.Background(), localDogfoodObservationContextKey{}, identity), time.Minute)
+	defer stopService()
+	request, cancelRequest := newControlPlaneRequestContext(parent)
+	defer cancelRequest()
+	if got := localDogfoodObservation(request); got == nil || *got != identity {
+		t.Fatal("request lost admitted process identity")
+	}
+	if _, ok := request.Deadline(); ok {
+		t.Fatal("request inherited service deadline instead of owning its drain lifetime")
+	}
+	stopService()
+	if request.Err() != nil || request.Done() == nil {
+		t.Fatal("service stop canceled request before drain")
+	}
+	cancelRequest()
+	if request.Err() != context.Canceled {
+		t.Fatal("explicit drain cancellation did not stop request")
+	}
+	if got := localDogfoodObservation(request); got == nil || *got != identity {
+		t.Fatal("drain cancellation discarded identity")
+	}
+	ungated, cancelUngated := newControlPlaneRequestContext(context.Background())
+	defer cancelUngated()
+	if localDogfoodObservation(ungated) != nil {
+		t.Fatal("request context invented an identity")
+	}
+}
+
+func TestControlPlaneCancelDerivesOneStableIntentIdentity(t *testing.T) {
+	input := controlPlaneCurrentInput{
+		current:    application.CurrentRunRequest{RunID: "run:cancel", AttemptID: "attempt:cancel", ExpectedSequence: 3, ExpectedAuthorityHead: "sha256:" + strings.Repeat("a", 64)},
+		requestKey: "client:cancel:stable-key",
+	}
+	first, err := controlPlaneCancelRequest(input)
+	if err != nil || first.Validate() != nil || first.CurrentRunRequest != input.current {
+		t.Fatalf("cancel request: %+v, %v", first, err)
+	}
+	replay, err := controlPlaneCancelRequest(input)
+	if err != nil || replay != first {
+		t.Fatalf("cancel replay: %+v, %v", replay, err)
+	}
+	input.requestKey = "client:cancel:different-key"
+	different, err := controlPlaneCancelRequest(input)
+	if err != nil || different.RequestID == first.RequestID {
+		t.Fatal("different transport keys shared a stop intent identity")
+	}
+	input.current.ExpectedAuthorityHead = "forged"
+	if _, err := controlPlaneCancelRequest(input); err == nil {
+		t.Fatal("invalid current Run binding admitted")
+	}
+}
+
+func TestControlPlaneCancelRejectsAuthorityOverridesBeforeConnection(t *testing.T) {
+	for _, args := range [][]string{nil, {"--pid", "123"}, {"--actor", "root"}, {"--request-id", "free-form"}, {"--reason", "deadline"}} {
+		var stdout, stderr bytes.Buffer
+		if exit := runControlPlaneCancel(context.Background(), args, &stdout, &stderr); exit != ExitUsage || stdout.Len() != 0 {
+			t.Fatalf("cancel %v: exit=%d stdout=%q", args, exit, stdout.String())
+		}
+	}
+}
+
+func TestControlPlaneCollectExportsOnlyVerifiedStoppedClassification(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	stopped := application.NewError("collect-run-result", application.ReasonRunStopped)
+	if exit := writeControlPlaneCollectResult(&stdout, &stderr, fixedcontrolplane.CollectRunClientResult{}, stopped); exit != ExitFailure || stdout.String() != "{\"disposition\":\"stopped\",\"reasonCode\":\"run-stopped\"}\n" || stderr.Len() != 0 {
+		t.Fatalf("stop classification: exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
+	}
+	for _, test := range []struct {
+		result fixedcontrolplane.CollectRunClientResult
+		err    error
+	}{
+		{err: errors.New("run-stopped")},
+		{result: fixedcontrolplane.CollectRunClientResult{Projection: application.CollectedRunProjection{Run: application.RunProjection{RunID: "run:partial"}}}, err: stopped},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		if exit := writeControlPlaneCollectResult(&stdout, &stderr, test.result, test.err); exit != ExitFailure || stdout.Len() != 0 {
+			t.Fatalf("unverified stopped reply emitted: exit=%d stdout=%q", exit, stdout.String())
+		}
+	}
+}
 
 func TestParseControlPlaneDeadlineRequiresCanonicalFrozenUTC(t *testing.T) {
 	now := time.Date(2026, 9, 3, 1, 2, 3, 0, time.UTC)

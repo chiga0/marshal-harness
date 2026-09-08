@@ -2,6 +2,7 @@
 """Drive an already approved/running T2 Run through the fixed server to review."""
 
 import argparse
+import concurrent.futures
 import datetime
 import hashlib
 import io
@@ -12,6 +13,7 @@ import re
 import subprocess
 import stat
 import sys
+import threading
 import tarfile
 import time
 
@@ -23,6 +25,22 @@ LIVE_PENDING = {"disposition": "pending", "reasonCode": "attempt-still-running"}
 
 class DriveError(Exception):
     pass
+
+
+def safe_transport_stages(stderr):
+    """Local diagnostics only; never infer acceptance or retry from these labels."""
+    allowed = {"client-dial", "client-write", "client-response", "client-operation",
+               "client-recheck", "client-half-close", "server-read", "server-admission",
+               "server-precheck", "server-dispatch", "server-postcheck", "server-response",
+               "server-half-close"}
+    stages = []
+    for line in stderr.decode("utf-8", errors="replace").splitlines():
+        match = re.fullmatch(r"control-plane request failed: stage=([a-z-]+) reasonCode=transport-failure", line)
+        if match and match[1] in allowed and match[1] not in stages:
+            stages.append(match[1])
+            if len(stages) == 8:
+                break
+    return stages
 
 
 def capture_review_inputs(root, run_id, packet, archive):
@@ -93,6 +111,9 @@ def capture_review_inputs(root, run_id, packet, archive):
                 member = tarfile.TarInfo(path)
                 member.size, member.mode = len(raw), 0o600
                 bundle.addfile(member, io.BytesIO(raw))
+        # Return the already captured bytes, never reopen a mutable report.
+        # This remains diagnostic material, not independent digest evidence.
+        return payloads["verification-report.json"]
     except (OSError, ValueError, TypeError) as exc:
         raise DriveError("review-input-capture-unavailable") from exc
 
@@ -112,7 +133,7 @@ def run_projection(value, run_id, state, prior=None, advance=False):
     return value
 
 
-def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep):
+def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep, before_verify=None, require_pass=True):
     """Only positive running observations authorize bounded identical polling.
 
     Neither generic pending, timeout nor a failed process is classified as a
@@ -142,6 +163,8 @@ def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep):
                    "--expected-sequence", str(current["sequence"]), "--expected-authority-head", current["authorityHead"],
                    "--request-key", f"t2:{run_id}:{operation}:{current['sequence']}", "--deadline", deadline_text]
         save(f"{operation}-request.json", {"args": request})
+        if operation == "verify" and before_verify is not None:
+            before_verify()
         polls = 0
         while True:
             code, value = invoke(request)
@@ -177,22 +200,232 @@ def drive(call, save, run_id, deadline, now=time.time, pause=time.sleep):
         raise DriveError("final-inspection-mismatch")
     summary.update(stage="review-pending", finishedAt=now(), run=current)
     save("review-summary.json", summary)
-    if summary.get("verificationStatus") != "pass":
+    if summary.get("verificationStatus") not in {"pass", "fail"} or require_pass and summary["verificationStatus"] != "pass":
         raise DriveError("business-verification-failed")
     return summary
 
 
-def finalize_review(call, save, summary, packet, decision, decision_path, deadline, now=time.time):
+def start_ready(call, save, run_id, deadline):
+    code, current = call(["inspect", "--run", run_id], deadline - time.time())
+    if (code != 0 or not isinstance(current, dict) or current.get("runId") != run_id
+            or current.get("state") != "READY" or type(current.get("sequence")) is not int
+            or current["sequence"] <= 0 or not DIGEST.fullmatch(current.get("authorityHead", ""))):
+        raise DriveError("peer-start-not-ready")
+    deadline_text = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="microseconds").rstrip("0").rstrip(".") + "Z"
+    args = ["start", "--run", run_id, "--expected-sequence", str(current["sequence"]),
+            "--expected-authority-head", current["authorityHead"], "--request-key", f"cross:{run_id}:start",
+            "--deadline", deadline_text]
+    save("start-request.json", {"args": args})
+    code, result = call(args, deadline - time.time())
+    save("start-response.json", {"exitCode": code, "response": result})
+    if code != 0:
+        raise DriveError("peer-start-unresolved-no-retry")
+
+
+def await_verifier(signal_path, run_id, deadline, finished, now=time.time):
+    while now() < deadline:
+        if finished.is_set():
+            raise DriveError("verification-finished-before-rendezvous")
+        try:
+            fd = os.open(signal_path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            finished.wait(min(0.05, max(0, deadline - now())))
+            continue
+        with os.fdopen(fd, "rb") as source:
+            meta = os.fstat(source.fileno())
+            if not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1 or meta.st_size > 4096:
+                raise DriveError("verification-rendezvous-boundary")
+            raw = source.read(4097)
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            # The frozen command has just created the file; a bounded partial
+            # diagnostic write is not a new business attempt or authority.
+            finished.wait(min(0.05, max(0, deadline - now())))
+            continue
+        if (not isinstance(value, dict) or value.get("runId") != run_id or type(value.get("startedAt")) not in (int, float)
+                or not 0 <= now() - value["startedAt"] < 120):
+            raise DriveError("verification-rendezvous-subject")
+        return value
+    raise DriveError("verification-rendezvous-timeout")
+
+
+def cross_run_overlap(report, task, projection, stopped_at):
+    digest = lambda v: "sha256:" + hashlib.sha256(json.dumps(v, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if (digest(report) != projection.get("reportDigest") or digest(task) != report.get("specDigest")
+            or report.get("runId") != projection.get("run", {}).get("runId")):
+        raise DriveError("cross-run-evidence-drift")
+    specs = [c for c in task["acceptance"]["commands"] if c["id"] == "cross-run-long-verification"]
+    gates = [g for g in report.get("gates", []) if g.get("id") == "command:cross-run-long-verification"]
+    if report.get("status") != "pass" or len(gates) != 1 or gates[0].get("status") != "pass":
+        raise DriveError("long-verification-not-proved")
+    command = gates[0]["command"]
+    stamp = lambda v: datetime.datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+    if len(specs) != 1 or command["argv"] != specs[0]["argv"] or command.get("exitCode") != 0:
+        raise DriveError("long-verification-command-drift")
+    if (not stamp(command["startedAt"]) < stopped_at < stamp(command["completedAt"])
+            or stamp(command["completedAt"]) - stamp(command["startedAt"]) < 100):
+        raise DriveError("stop-did-not-overlap-verification")
+    return {"commandStartedAt": command["startedAt"], "stopObservedAt": stopped_at,
+            "commandCompletedAt": command["completedAt"], "accepted": False}
+
+
+def cancel_run(call, save, run_id, deadline, now=time.time, previous=None):
+    """Prove an explicit operator stop through fixed-client operations only.
+
+    No retry follows an uncertain response. The second cancel is a deliberate
+    exact replay after a verified receipt, not a retry of unknown side effects.
+    """
+    deadline_text = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="microseconds").rstrip("0").rstrip(".") + "Z"
+
+    def invoke(args):
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise DriveError("cancel-driver-deadline-exceeded")
+        return call(args, remaining)
+
+    code, value = invoke(["inspect", "--run", run_id])
+    if code != 0:
+        raise DriveError("cancel-initial-inspect-unavailable")
+    if previous is None:
+        current = run_projection(value, run_id, "RUNNING")
+    else:
+        current = run_projection(previous["initial"], run_id, "RUNNING")
+        expected = previous["response"]
+        stopped = run_projection(expected["Projection"]["run"], run_id, "BLOCKED", current, True)
+        if value != stopped:
+            raise DriveError("cancel-recovery-query-mismatch")
+    save("cancel-initial-run.json", current)
+    frozen = ["--run", run_id, "--attempt", current["attemptId"], "--expected-sequence", str(current["sequence"]),
+              "--expected-authority-head", current["authorityHead"], "--deadline", deadline_text]
+    request = ["cancel", *frozen, "--request-key", f"t2:{run_id}:cancel:{current['sequence']}"]
+    if previous is not None and previous["request"] != {"args": request}:
+        raise DriveError("cancel-recovery-frozen-request-mismatch")
+    save("cancel-request.json", {"args": request})
+    code, value = invoke(request)
+    save("cancel-response.json", {"exitCode": code, "response": value})
+    if code != 0 or not isinstance(value, dict) or not isinstance(value.get("Projection"), dict) or not isinstance(value.get("Receipt"), dict):
+        raise DriveError("cancel-unresolved-no-automatic-retry")
+    if previous is not None and value != previous["response"]:
+        raise DriveError("cancel-recovery-receipt-mismatch")
+    projection, receipt = value["Projection"], value["Receipt"]
+    stopped = run_projection(projection.get("run"), run_id, "BLOCKED", current, True)
+    if projection.get("protocolRevision") != "run-stop/v1" or projection.get("terminalReason") != "aborted-by-operator":
+        raise DriveError("cancel-reason-mismatch")
+    if any(not isinstance(projection.get(key), str) or not DIGEST.fullmatch(projection[key]) for key in ("requestDigest", "stopIntentDigest", "outcomeDigest")):
+        raise DriveError("cancel-terminal-digests-missing")
+    if receipt.get("runId") != run_id or receipt.get("attemptId") != current["attemptId"] or receipt.get("postRevision") != stopped["sequence"] or receipt.get("postAuthorityHead") != stopped["authorityHead"]:
+        raise DriveError("cancel-receipt-mismatch")
+    code, replay = invoke(request)
+    save("cancel-replay.json", {"exitCode": code, "response": replay})
+    if code != 0 or replay != value:
+        raise DriveError("cancel-replay-mismatch")
+    # This is a new request, not a replay of a pre-stop Collect pending. Its
+    # delivery binding must name the proved current BLOCKED head. The original
+    # cancel request above remains byte-identical, including after restart.
+    collect = ["collect", "--run", run_id, "--attempt", stopped["attemptId"],
+               "--expected-sequence", str(stopped["sequence"]), "--expected-authority-head", stopped["authorityHead"],
+               "--deadline", deadline_text, "--request-key", f"t2:{run_id}:collect-after-cancel:{stopped['sequence']}"]
+    code, collected = invoke(collect)
+    save("collect-after-cancel.json", {"exitCode": code, "response": collected})
+    if code != 1 or collected != {"disposition": "stopped", "reasonCode": "run-stopped"}:
+        raise DriveError("cancel-collect-did-not-stop")
+    code, inspected = invoke(["inspect", "--run", run_id])
+    if code != 0 or inspected != stopped:
+        raise DriveError("cancel-final-inspect-mismatch")
+    summary = {"runId": run_id, "run": stopped, "stage": "cancelled", "accepted": False,
+               "terminalReason": projection["terminalReason"], "outcomeDigest": projection["outcomeDigest"],
+               "stopIntentDigest": projection["stopIntentDigest"], "transport": "fixed-control-plane"}
+    save("cancel-summary.json", summary)
+    return summary
+
+
+def observe_business_stop(call, save, run_id, deadline, now=time.time, pause=time.sleep, previous=None):
+    """Observe resident stopping before any Collect; never issue Cancel.
+
+    This proves the public stopped path, not its reason or deadline witness.
+    Those require a separate check of the retained journal/ingress evidence.
+    """
+    initial = None
+    started = now()
+
+    def invoke(args):
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise DriveError("business-stop-observation-deadline")
+        return call(args, min(30, remaining))
+
+    while True:
+        code, value = invoke(["inspect", "--run", run_id])
+        if code != 0 or not isinstance(value, dict):
+            raise DriveError("business-stop-inspect-unavailable")
+        state = value.get("state")
+        if previous is not None and value != run_projection(previous["run"], run_id, "BLOCKED"):
+            raise DriveError("business-stop-recovery-query-mismatch")
+        if state == "BLOCKED":
+            stopped = run_projection(value, run_id, "BLOCKED", initial, initial is not None)
+            break
+        current = run_projection(value, run_id, "RUNNING", initial)
+        if initial is None:
+            initial = current
+            save("business-stop-initial-run.json", initial)
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise DriveError("business-stop-observation-deadline")
+        pause(min(2, remaining))
+
+    save("business-stop-observed.json", {"run": stopped, "elapsedSeconds": now() - started,
+                                        "observedRunning": initial is not None})
+    deadline_text = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="microseconds").rstrip("0").rstrip(".") + "Z"
+    request = ["collect", "--run", run_id, "--attempt", stopped["attemptId"],
+               "--expected-sequence", str(stopped["sequence"]), "--expected-authority-head", stopped["authorityHead"],
+               "--deadline", deadline_text, "--request-key", f"t2:{run_id}:collect-after-business-stop:{stopped['sequence']}"]
+    if previous is not None and previous["request"] != {"args": request}:
+        raise DriveError("business-stop-recovery-frozen-request-mismatch")
+    save("business-stop-collect-request.json", {"args": request})
+    code, collected = invoke(request)
+    save("collect-after-business-stop.json", {"exitCode": code, "response": collected})
+    if code != 1 or collected != {"disposition": "stopped", "reasonCode": "run-stopped"}:
+        raise DriveError("business-stop-collect-mismatch")
+    code, final = invoke(["inspect", "--run", run_id])
+    if code != 0 or final != stopped:
+        raise DriveError("business-stop-final-inspect-mismatch")
+    summary = {"runId": run_id, "run": stopped, "stage": "resident-stop-observed", "accepted": False,
+               "deadlineWitnessVerified": False, "transport": "fixed-control-plane"}
+    save("business-stop-summary.json", summary)
+    return summary
+
+
+def business_stop_recovery(read_prior, binary_digest, run_id, now, timeout):
+    """Recover diagnostic bindings only; never let a file supply CLI commands."""
+    subject = read_prior("driver-subject.json")
+    summary = read_prior("business-stop-summary.json")
+    request = read_prior("business-stop-collect-request.json")
+    if (subject["binarySHA256"] != binary_digest or subject["runId"] != run_id
+            or summary["runId"] != run_id or summary["accepted"] is not False
+            or summary["stage"] != "resident-stop-observed"):
+        raise DriveError("business-stop-recovery-subject-mismatch")
+    previous = {"run": run_projection(summary["run"], run_id, "BLOCKED"), "request": request}
+    frozen = request["args"]
+    deadline = datetime.datetime.fromisoformat(frozen[frozen.index("--deadline") + 1].replace("Z", "+00:00")).timestamp()
+    if not 0 < deadline - now <= timeout:
+        raise DriveError("business-stop-recovery-deadline")
+    return previous, deadline
+
+
+def finalize_review(call, save, summary, packet, decision, decision_path, deadline, now=time.time, require_accepted=True):
     """Deliver an external review; neither construct one nor retry mutation.
 
     These checks catch transport mistakes. The fixed client and server still
     own canonical digest validation, current-ledger admission and Outcome.
     """
     current = summary["run"]
-    if summary.get("verificationStatus") != "pass" or summary.get("accepted") is not False:
+    if summary.get("verificationStatus") not in {"pass", "fail"} or summary.get("accepted") is not False:
         raise DriveError("review-not-ready")
     if not isinstance(decision, dict) or decision.get("kind") != "ReviewDecision":
         raise DriveError("invalid-external-decision")
+    if summary["verificationStatus"] != "pass" and decision.get("verdict") not in {"reject", "rework"}:
+        raise DriveError("failed-verification-cannot-accept")
     if decision.get("runId") != current["runId"] or decision.get("reviewPacketDigest") != summary["packetDigest"]:
         raise DriveError("external-decision-packet-mismatch")
     for key in ("taskId", "reviewRound", "specDigest", "verificationDigest", "artifactManifestDigest", "evidenceDigest", "localSelfIdentityBindingDigest"):
@@ -223,22 +456,24 @@ def finalize_review(call, save, summary, packet, decision, decision_path, deadli
         raise DriveError("decision-unresolved-no-automatic-retry")
     projection, receipt = value["Projection"], value["Receipt"]
     observed = projection.get("run")
-    if not isinstance(observed, dict) or observed.get("state") not in ("ACCEPTED", "NO_CHANGE", "REJECTED", "BLOCKED", "RETRY_PENDING"):
+    if not isinstance(observed, dict) or observed.get("state") not in ("ACCEPTED", "NO_CHANGE", "REJECTED", "BLOCKED", "REWORK_REQUESTED"):
         raise DriveError("unexpected-decision-state")
     after = run_projection(observed, current["runId"], observed["state"], current, True)
     if any(receipt.get(key) != expected for key, expected in {"runId": after["runId"], "attemptId": after["attemptId"], "postRevision": after["sequence"], "postAuthorityHead": after["authorityHead"]}.items()):
         raise DriveError("decision-receipt-mismatch")
     if projection.get("verdict") != decision.get("verdict") or projection.get("evidenceDigest") != decision.get("evidenceDigest") or not DIGEST.fullmatch(projection.get("decisionDigest", "")):
         raise DriveError("decision-projection-mismatch")
-    if after["state"] != "RETRY_PENDING" and not DIGEST.fullmatch(projection.get("outcomeDigest", "")):
+    if after["state"] != "REWORK_REQUESTED" and not DIGEST.fullmatch(projection.get("outcomeDigest", "")):
         raise DriveError("decision-outcome-missing")
+    if after["state"] == "REWORK_REQUESTED" and projection.get("outcomeDigest"):
+        raise DriveError("nonterminal-decision-outcome")
     code, inspected = invoke(["inspect", "--run", current["runId"]])
     if code != 0 or run_projection(inspected, current["runId"], after["state"], after) != after:
         raise DriveError("decision-final-inspection-mismatch")
     accepted = after["state"] == "ACCEPTED" and decision.get("verdict") == "accept"
     save("decision-summary.json", {"run": after, "accepted": accepted, "decisionDigest": projection["decisionDigest"],
                                    "outcomeDigest": projection.get("outcomeDigest"), "finishedAt": now()})
-    if not accepted:
+    if require_accepted and not accepted:
         raise DriveError("independent-review-not-accepted")
     return after
 
@@ -287,18 +522,29 @@ def main():
     parser.add_argument("--evidence-dir", required=True)
     parser.add_argument("--timeout-seconds", type=int, default=480)
     parser.add_argument("--await-review-seconds", type=int, default=0)
+    parser.add_argument("--cancel", action="store_true", help="verify explicit stop, exact replay and stopped Collect instead of business acceptance")
+    parser.add_argument("--cancel-recovery", action="store_true", help="verify the same proved stop after server restart, without extending its deadline")
+    parser.add_argument("--observe-business-stop", action="store_true", help="observe resident stopping without Cancel or pre-stop Collect")
+    parser.add_argument("--business-stop-recovery", action="store_true", help="recheck the same stopped Run and Collect request after cold server restart")
+    parser.add_argument("--concurrent-stop-run", help="already approved READY Run to stop while this Run verifies")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     binary = root / "bin" / "marshal"
     evidence = Path(args.evidence_dir)
     if not ID.fullmatch(args.run) or not 1 <= args.timeout_seconds <= 480 or not 0 <= args.await_review_seconds <= 1200:
         parser.error("invalid run/deadline")
+    stop_modes = (args.cancel, args.cancel_recovery, args.observe_business_stop, args.business_stop_recovery)
+    if sum(stop_modes) > 1 or any(stop_modes) and args.await_review_seconds:
+        parser.error("cancel cannot request independent business acceptance")
+    if args.concurrent_stop_run and (not ID.fullmatch(args.concurrent_stop_run)
+            or args.run != args.concurrent_stop_run + "-verify" or any(stop_modes) or args.await_review_seconds):
+        parser.error("invalid cross-run subject or mode")
     if binary.is_symlink() or not binary.is_file() or binary.resolve() != binary:
         parser.error("fixed bin/marshal is required")
     if not evidence.is_absolute() or evidence.resolve() != evidence or evidence.parent != root / ".marshal" / "fixed-server-t1-canary" / args.run:
         parser.error("evidence-dir must be the fresh t2 child of this Run's canary evidence")
-    if evidence.name != "t2":
-        parser.error("evidence leaf must be t2")
+    if evidence.name != ("t2-recovery" if args.cancel_recovery or args.business_stop_recovery else "t2"):
+        parser.error("invalid evidence leaf")
     evidence.mkdir(mode=0o700, exist_ok=False)
 
     def save(name, value):
@@ -309,10 +555,13 @@ def main():
     binary_digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     save("driver-subject.json", {"runId": args.run, "binarySHA256": binary_digest, "timeoutSeconds": args.timeout_seconds})
     invocation = 0
+    call_lock = threading.Lock()
 
     def call(command, remaining):
         nonlocal invocation
-        invocation += 1
+        with call_lock:
+            invocation += 1
+            call_index = invocation
         try:
             completed = subprocess.run([str(binary), "control-plane"] + command, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=remaining, check=False)
@@ -324,9 +573,10 @@ def main():
         # Never echo a response/diagnostic into CI logs.
         if len(completed.stdout) > 2 << 20 or len(completed.stderr) > 64 << 10:
             raise DriveError("fixed-cli-output-limit")
-        save(f"call-{invocation}.json", {"operation": command[0], "exitCode": completed.returncode,
+        save(f"call-{call_index}.json", {"operation": command[0], "exitCode": completed.returncode,
                                        "stdoutSHA256": hashlib.sha256(completed.stdout).hexdigest(),
-                                       "stderrSHA256": hashlib.sha256(completed.stderr).hexdigest()})
+                                       "stderrSHA256": hashlib.sha256(completed.stderr).hexdigest(),
+                                       "transportStages": safe_transport_stages(completed.stderr)})
         try:
             value = json.loads(completed.stdout)
         except (ValueError, UnicodeDecodeError):
@@ -334,7 +584,80 @@ def main():
         return completed.returncode, value
 
     try:
-        summary = drive(call, save, args.run, time.time() + args.timeout_seconds)
+        def read_prior(name):
+            prior = evidence.parent / "t2"
+            if prior.is_symlink() or not prior.is_dir() or prior.resolve() != prior:
+                raise DriveError("stop-recovery-evidence-path")
+            path = prior / name
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 << 20:
+                raise DriveError("stop-recovery-evidence-file")
+            return json.loads(path.read_bytes())
+
+        if args.observe_business_stop or args.business_stop_recovery:
+            previous, deadline = None, time.time() + args.timeout_seconds
+            if args.business_stop_recovery:
+                previous, deadline = business_stop_recovery(read_prior, binary_digest, args.run, time.time(), args.timeout_seconds)
+            observe_business_stop(call, save, args.run, deadline, previous=previous)
+            if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
+                raise DriveError("fixed-binary-drift")
+            return 0
+        if args.cancel or args.cancel_recovery:
+            previous = None
+            deadline = time.time() + args.timeout_seconds
+            if args.cancel_recovery:
+                subject = read_prior("driver-subject.json")
+                summary = read_prior("cancel-summary.json")
+                response = read_prior("cancel-response.json")
+                if subject["binarySHA256"] != binary_digest or subject["runId"] != args.run or summary["accepted"] is not False or summary["stage"] != "cancelled" or response["exitCode"] != 0:
+                    raise DriveError("cancel-recovery-subject-mismatch")
+                previous = {"initial": read_prior("cancel-initial-run.json"), "request": read_prior("cancel-request.json"), "response": response["response"]}
+                frozen = previous["request"]["args"]
+                # Reconstruct the complete argument list inside cancel_run;
+                # a local evidence file never supplies arbitrary CLI options.
+                deadline = datetime.datetime.fromisoformat(frozen[frozen.index("--deadline") + 1].replace("Z", "+00:00")).timestamp()
+                if not 0 < deadline - time.time() <= args.timeout_seconds:
+                    raise DriveError("cancel-recovery-deadline")
+            cancel_run(call, save, args.run, deadline, previous=previous)
+            if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
+                raise DriveError("fixed-binary-drift")
+            return 0
+        if args.concurrent_stop_run:
+            deadline = time.time() + args.timeout_seconds
+            signal_path = evidence.parent / "verification-started.json"
+            if signal_path.exists() or signal_path.is_symlink():
+                raise DriveError("preexisting-verification-rendezvous")
+            start_ready(call, save, args.run, deadline)
+            finished = threading.Event()
+
+            def other_run():
+                await_verifier(signal_path, args.run, deadline, finished)
+                other_save = lambda name, value: save("concurrent-stop-" + name, value)
+                start_ready(call, other_save, args.concurrent_stop_run, deadline)
+                observe_business_stop(call, other_save, args.concurrent_stop_run, deadline)
+                return time.time()
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = None
+                def begin_other():
+                    nonlocal future
+                    future = executor.submit(other_run)
+                try:
+                    summary = drive(call, save, args.run, deadline, before_verify=begin_other)
+                finally:
+                    finished.set()
+                if future is None:
+                    raise DriveError("verification-not-started")
+                stopped_at = future.result()
+            report_path = root / ".marshal" / "runs" / args.run / "verification-report.json"
+            if report_path.is_symlink() or report_path.stat().st_size > 8 << 20:
+                raise DriveError("verification-report-boundary")
+            task = json.loads((evidence.parent / "task.json").read_bytes())
+            projection = json.loads((evidence / "verify.json").read_bytes())["Projection"]
+            overlap = cross_run_overlap(json.loads(report_path.read_bytes()), task, projection, stopped_at)
+            overlap.update(verifyingRun=args.run, stoppedRun=args.concurrent_stop_run)
+            save("cross-run-summary.json", overlap)
+        else:
+            summary = drive(call, save, args.run, time.time() + args.timeout_seconds)
         packet = json.loads((evidence / "review-packet.json").read_bytes())["Projection"]["packet"]
         capture_review_inputs(root, args.run, packet, evidence / "review-inputs.tar")
         if hashlib.sha256(binary.read_bytes()).hexdigest() != binary_digest:
@@ -356,6 +679,10 @@ def main():
     except DriveError as exc:
         save("driver-failure.json", {"reasonCode": str(exc), "accepted": False})
         print(f"fixed-server-t2: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError, KeyError, TypeError, IndexError, OverflowError):
+        save("driver-failure.json", {"reasonCode": "driver-evidence-invalid", "accepted": False})
+        print("fixed-server-t2: driver-evidence-invalid", file=sys.stderr)
         return 1
     print("fixed-server-t2: REVIEW_PENDING; independent Decision still required")
     return 0

@@ -14,6 +14,10 @@ import (
 )
 
 func TestCollectStageMappingPreservesSafeStageAndHidesRawFailure(t *testing.T) {
+	stopped := application.NewError("collect-run-result", application.ReasonRunStopped)
+	if mapAuthorityError("collect-run-result", stopped) != stopped {
+		t.Fatal("completed stop lost its typed terminal response")
+	}
 	for _, stage := range []string{"collect-prepared-transcript", "parse-production-worker-result", "observe-collected-worktree", "observe-collected-ingress", "bind-collected-result-authority", "open-collected-result-ingress"} {
 		mapped := mapAuthorityError(stage, errors.New("sensitive worker material"))
 		var detail *application.Error

@@ -48,6 +48,9 @@ if grep -E '^[[:space:]]+(push|pull_request|schedule):' "$WORKFLOW" >/dev/null; 
 fi
 grep -F 'ref: ${{ inputs.expected-head }}' "$WORKFLOW" >/dev/null || fail 'workflow does not exact-checkout input head'
 grep -F 'scripts/release-ci-gate.sh' "$WORKFLOW" >/dev/null || fail 'workflow lacks required-CI pre-gate'
+"/usr/bin/python3" -I -B "$ROOT/scripts/candidate-ci-gate_test.py"
+"/usr/bin/python3" -I -B "$ROOT/scripts/rc1-canary-provider-config_test.py"
+grep -F 'test "$EXPECTED_HEAD" = "$DISPATCH_HEAD"' "$WORKFLOW" >/dev/null || fail 'candidate checkout is not dispatch-bound'
 grep -F 'go1.26.6.darwin-arm64.tar.gz' "$WORKFLOW" >/dev/null || fail 'workflow lacks pinned Go toolchain'
 grep -F 'PHY_PI_VERSION: "0.84.4"' "$WORKFLOW" >/dev/null || fail 'workflow lacks Pi 0.84.4 pin'
 grep -F 'fixed-server-t1-canary.sh' "$WORKFLOW" >/dev/null || fail 'workflow does not use the fixed driver'
@@ -61,9 +64,44 @@ printf '%s\n' "$diagnostics" | grep -F 'name: fixed-server-diagnostics-${{ githu
   || fail 'workflow lacks separate diagnostic artifact'
 printf '%s\n' "$diagnostics" | grep -F '.marshal/runtime-v1/result-ingress/result-ingress.jsonl' >/dev/null \
   || fail 'diagnostic artifact lacks authoritative ledger'
-if printf '%s\n' "$diagnostics" | grep -E 'dist/|review-inputs|/transcript|/task.json|/activation.json|/policy.json' >/dev/null; then
+if printf '%s\n' "$diagnostics" | grep -E 'dist/|review-inputs|/transcript|/activation.json|/policy.json' >/dev/null; then
   fail 'diagnostic artifact includes executable, review archive, transcript or configuration'
 fi
+# The generated frozen Task already belongs to the full artifact. The small
+# copy enables budget/specDigest audit without downloading the executable.
+for leaf in task.json 'stop-crash-*.json' 'stop-recovery-*.json' 'server*-process.json'; do
+  printf '%s\n' "$diagnostics" | grep -F "/$leaf" >/dev/null || fail "missing stop evidence $leaf"
+done
+"/usr/bin/python3" -I -B "$ROOT/scripts/fixed-server-stop-fault_test.py"
+# Both approved Runs share one fixed server; the peer command's rendezvous
+# is diagnostic only and never authorizes a Decision or a Worker restart.
+grep -F -- '--concurrent-stop-run "$RUN_ID"' "$DRIVER" >/dev/null || fail 'missing fixed cross-run driver'
+grep -F -- '--scenario order-quote --long-verify' "$DRIVER" >/dev/null || fail 'peer business verifier was not frozen before approval'
+grep -F 'verify-peer:' "$WORKFLOW" >/dev/null || fail 'missing explicit cross-run opt-in'
+grep -F 'order-quote-team' "$WORKFLOW" >/dev/null || fail 'missing team candidate opt-in'
+grep -F 'scripts/fixed-server-team-drive.py --evidence-root' "$DRIVER" >/dev/null || fail 'missing team client'
+printf '%s\n' "$diagnostics" | grep -F '/team/*.json' >/dev/null || fail 'missing team response evidence'
+# Team mode branches before legacy task plan/approve. Its observer delegates
+# progress observation only; neither helper starts, collects or verifies.
+/usr/bin/python3 -I -B - "$DRIVER" "$ROOT/scripts/fixed-server-team-drive.py" <<'PY'
+import pathlib, sys
+shell, driver = (pathlib.Path(p).read_text() for p in sys.argv[1:])
+team = shell.index('if [ "$SCENARIO" = order-quote-team ]; then')
+legacy = shell.index('task_id="FIXED-SERVER-T1-')
+assert team < legacy and '\nelse\n' in shell[team:legacy]
+assert driver.count('["team-approve",') == 1
+assert '["start",' not in driver and 'start_ready(' not in driver
+assert 'observe_review(' in driver and 't2.drive(' not in driver and 'processOverlapProven' in driver
+assert '["collect",' not in driver and '["verify",' not in driver
+assert 'server_options+=(--auto-team-progress)' in shell
+PY
+printf '%s\n' "$diagnostics" | grep -F '/verification-report.json' >/dev/null || fail 'missing cross-run report evidence'
+for phase in t2 t2-recovery; do
+  for leaf in driver-subject.json 'call-*.json' cancel-request.json; do
+    printf '%s\n' "$diagnostics" | grep -F "/$phase/$leaf" >/dev/null \
+      || fail 'diagnostic artifact omits bounded driver subject/call/request metadata'
+  done
+done
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

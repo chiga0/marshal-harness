@@ -1,5 +1,7 @@
 # ADR 0070：existing-worktree-binding/v1 的 FrozenInputsDigest 澄清
 
+> 2026-09-07 适用性：本文完整保留 existing-worktree-binding/v1 历史字段与摘要派生；新 Store/profile 依 ADR 0085 §4 明确新 schema，不原地重解释旧字节。FrozenInputs、reservation key、Run/Attempt revision 的语义区别与 current-owner 重验保留，旧 RB1 物理锁/投影不是新库的布局规范。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：已接受（Accepted）
 - 日期：2026-08-31
 - 提议基线：`feat/pi-s2-production-composition@d65785d`

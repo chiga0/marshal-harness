@@ -208,7 +208,7 @@ func DecodeActivation(raw []byte, now time.Time) (LocalDogfoodActivationV2, erro
 }
 
 func localDogfoodLifecycleCommands() []string {
-	return []string{CommandDoctor, CommandInit, CommandTaskScaffold, CommandTaskPlan, CommandTaskStatus, CommandTaskApprovePlan, CommandTaskRun, CommandTaskVerify, CommandTaskReview, CommandControlPlaneServe, CommandControlPlaneStatus, CommandControlPlaneInspect, CommandControlPlaneStart, CommandControlPlaneCollect, CommandControlPlaneVerify, CommandControlPlaneReview, CommandControlPlaneDecision}
+	return []string{CommandDoctor, CommandInit, CommandTaskScaffold, CommandTaskPlan, CommandTaskStatus, CommandTaskApprovePlan, CommandTaskRun, CommandTaskVerify, CommandTaskReview, CommandControlPlaneServe, CommandControlPlaneStatus, CommandControlPlaneInspect, CommandControlPlaneStart, CommandControlPlaneCancel, CommandControlPlaneCollect, CommandControlPlaneVerify, CommandControlPlaneReview, CommandControlPlaneDecision, CommandControlPlaneTeamApprove, CommandControlPlaneTeamReconcile}
 }
 
 func digestActivation(activation LocalDogfoodActivationV2) (string, error) {

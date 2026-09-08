@@ -826,6 +826,143 @@ func TestExistingWorktreeProjectionCorruptionFailsClosed(t *testing.T) {
 	}
 }
 
+func TestExistingWorktreeProjectionContainerKeepsRuntimeStable(t *testing.T) {
+	fixture := newExistingWorktreeFixture(t)
+	defer fixture.Close()
+	runtimePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory)
+	container := filepath.Join(runtimePath, ExistingWorktreeProjectionDirectory)
+	if err := os.MkdirAll(container, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var before, after unix.Stat_t
+	if err := unix.Stat(runtimePath, &before); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func() {
+		t.Helper()
+		if err := unix.Stat(runtimePath, &after); err != nil || statMutationDigest(before) != statMutationDigest(after) || !sameDirectoryObject(objectIdentity(before), objectIdentity(after)) {
+			t.Fatalf("projection producer changed fixed transport parent: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(runtimePath, existingWorktreeProjectionStage)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("transaction escaped the fixed container: %v", err)
+		}
+	}
+	check()
+	releaseRun, releaseRequest := fixture.releaseRequest(receipt)
+	if _, err := fixture.controller.Release(context.Background(), releaseRun, releaseRequest); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	graph, err := fixture.authority.DescriptorGraph()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := fixture.authority.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SyncExistingWorktreeProjectionFromGraph(graph, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	projection, err := openExistingWorktreeProjection(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer projection.Close()
+	if err := os.Rename(container, container+"-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(container+"-old", container); err != nil {
+		t.Fatal(err)
+	}
+	if err := projection.Sync(snapshot); err == nil {
+		t.Fatal("container ABA was accepted")
+	}
+}
+
+func TestExistingWorktreeProjectionLegacyPreservedOrRejected(t *testing.T) {
+	for _, scenario := range []string{"valid", "corrupt", "unknown", "symlink", "unfinished-stage"} {
+		t.Run(scenario, func(t *testing.T) {
+			fixture := newExistingWorktreeFixture(t)
+			defer fixture.Close()
+			receipt, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := fixture.projectionPath(receipt.Observation.TargetIdentityDigest)
+			raw := mustReadFile(t, path)
+			current := filepath.Dir(path)
+			container := filepath.Dir(current)
+			entries, err := os.ReadDir(current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if err := os.Rename(filepath.Join(current, entry.Name()), filepath.Join(container, entry.Name())); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Remove(current); err != nil {
+				t.Fatal(err)
+			}
+			legacy := filepath.Join(container, filepath.Base(path))
+			switch scenario {
+			case "corrupt":
+				err = os.WriteFile(legacy, []byte("forged\n"), 0o600)
+			case "unknown":
+				err = os.WriteFile(filepath.Join(container, "unknown"), []byte("unknown"), 0o600)
+			case "symlink":
+				if err = os.Rename(legacy, legacy+"-original"); err == nil {
+					err = os.Symlink(legacy+"-original", legacy)
+				}
+			case "unfinished-stage":
+				err = os.Mkdir(filepath.Join(filepath.Dir(container), existingWorktreeProjectionStage), 0o700)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			graph, err := fixture.authority.DescriptorGraph()
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := fixture.authority.Snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := VerifyExistingWorktreeProjectionFromGraph(graph, snapshot); err == nil {
+				t.Fatal("read-only verifier accepted a missing v2 projection")
+			}
+			if _, err := os.Lstat(current); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("read-only verification created v2 state: %v", err)
+			}
+			err = SyncExistingWorktreeProjectionFromGraph(graph, snapshot)
+			if scenario != "valid" {
+				if err == nil {
+					t.Fatal("invalid legacy layout was hidden")
+				}
+				if _, err := os.Lstat(current); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("rejection created v2 state: %v", err)
+				}
+				return
+			}
+			if err != nil || !bytes.Equal(raw, mustReadFile(t, legacy)) || !bytes.Equal(raw, mustReadFile(t, path)) {
+				t.Fatalf("legacy prefix was not preserved/rebuilt exactly: %v", err)
+			}
+			if err := VerifyExistingWorktreeProjectionFromGraph(graph, snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if err := SyncExistingWorktreeProjectionFromGraph(graph, snapshot); err != nil || len(fixture.authority.facts) != 2 {
+				t.Fatalf("reopen changed authority or failed: %v", err)
+			}
+		})
+	}
+}
+
 func TestVerifyExistingWorktreeProjectionIsReadOnlyAndExact(t *testing.T) {
 	fixture := newExistingWorktreeFixture(t)
 	defer fixture.Close()
@@ -957,7 +1094,7 @@ func TestExistingWorktreeProjectionHeldDirectoryAndLockRejectRenameBackABA(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectionDirectory := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory)
+	projectionDirectory := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory, ExistingWorktreeProjectionCurrentDirectory)
 
 	t.Run("directory", func(t *testing.T) {
 		projection, err := openExistingWorktreeProjection(graph)
@@ -1055,7 +1192,7 @@ func TestExistingWorktreeProjectionDetectsLaterSameFileMutationAfterPreflightBef
 	if after := mustReadFile(t, paths[1]); !bytes.Equal(after, mutated) {
 		t.Fatal("RB1 changed the concurrently-mutated later entry")
 	}
-	stagePath := filepath.Join(first.repository, ".marshal", existingWorktreeRuntimeDirectory, existingWorktreeProjectionStage)
+	stagePath := filepath.Join(first.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory, existingWorktreeProjectionStage)
 	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("pre-commit conflict left projection stage: %v", err)
 	}
@@ -1092,7 +1229,7 @@ func TestExistingWorktreeProjectionPreCommitFailureCleansStageWithoutLiveWrite(t
 		t.Fatal(err)
 	}
 	defer projection.Close()
-	projectionDirectory := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory)
+	projectionDirectory := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory, ExistingWorktreeProjectionCurrentDirectory)
 	lockPath := filepath.Join(projectionDirectory, existingWorktreeProjectionLock)
 	projection.beforeCommit = func() {
 		moved := lockPath + "-aba"
@@ -1109,7 +1246,7 @@ func TestExistingWorktreeProjectionPreCommitFailureCleansStageWithoutLiveWrite(t
 	if after := mustReadFile(t, path); !bytes.Equal(after, behind) {
 		t.Fatal("pre-commit failure changed live projection bytes")
 	}
-	stagePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, existingWorktreeProjectionStage)
+	stagePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory, existingWorktreeProjectionStage)
 	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("pre-commit failure left projection stage: %v", err)
 	}
@@ -1146,7 +1283,7 @@ func TestExistingWorktreeProjectionPostCommitLostStageIsSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer projection.Close()
-	runtimePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory)
+	runtimePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory)
 	stagePath := filepath.Join(runtimePath, existingWorktreeProjectionStage)
 	lostPath := filepath.Join(runtimePath, ".projection-stage-lost")
 	projection.afterCommit = func() {
@@ -1208,7 +1345,7 @@ func TestExistingWorktreeProjectionCrashStageReconcilesAndDoesNotAccumulate(t *t
 	}
 	stage.Close() // simulated crash after a complete stage, before the swap
 	projection.Close()
-	stagePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, existingWorktreeProjectionStage)
+	stagePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory, existingWorktreeProjectionStage)
 	if _, err := os.Lstat(stagePath); err != nil {
 		t.Fatalf("simulated crash stage missing: %v", err)
 	}
@@ -1297,7 +1434,7 @@ func TestExistingWorktreeProjectionInterruptedCleanupLeavesRecoverableStage(t *t
 			if !errors.Is(cleanupErr, sentinel) || !interrupted {
 				t.Fatalf("cleanup phase %q was not interrupted: %v", test.phase, cleanupErr)
 			}
-			stagePath := filepath.Join(first.repository, ".marshal", existingWorktreeRuntimeDirectory, existingWorktreeProjectionStage)
+			stagePath := filepath.Join(first.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory, existingWorktreeProjectionStage)
 			entries, err := os.ReadDir(stagePath)
 			if err != nil {
 				t.Fatal(err)
@@ -1329,7 +1466,7 @@ func TestExistingWorktreeProjectionUnknownStageFailsClosedWithoutDeletion(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	stagePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, existingWorktreeProjectionStage)
+	stagePath := filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory, existingWorktreeProjectionStage)
 	if err := os.Mkdir(stagePath, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1519,7 +1656,7 @@ func (fixture *existingWorktreeFixture) Close() {
 	fixture.authority.Close()
 }
 func (fixture *existingWorktreeFixture) projectionPath(targetDigest string) string {
-	return filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory, strings.TrimPrefix(targetDigest, "sha256:")+".jsonl")
+	return filepath.Join(fixture.repository, ".marshal", existingWorktreeRuntimeDirectory, ExistingWorktreeProjectionDirectory, ExistingWorktreeProjectionCurrentDirectory, strings.TrimPrefix(targetDigest, "sha256:")+".jsonl")
 }
 
 func (fixture *existingWorktreeFixture) releaseRequest(receipt ExistingWorktreeBindReceiptV1) (DescriptorBoundRunV1, ExistingWorktreeReleaseRequestV1) {

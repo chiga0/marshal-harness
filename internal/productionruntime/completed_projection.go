@@ -10,23 +10,32 @@ import (
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
-// adoptCompletedProjectionMutation closes the release half of the same
-// derived-projection mutation already admitted after PrepareRunStart. Release
-// atomically swaps existing-worktree-bindings, changing runtime-v1 timestamps.
-// Do not turn off root validation: join the current terminal ledger and exact
-// projection bytes before updating only that directory's observation.
-func (l *CompositionLedger) adoptCompletedProjectionMutation(ctx context.Context, verifier resultingress.CurrentOwnerLockVerifier, acquisition resultingress.ControlOwnerAcquisition, read runstore.RunStartAuthorityProjection, terminal resultingress.AttemptAuthorityState) error {
+// adoptTerminalProjectionMutation closes the release half of the same
+// derived-projection verification already performed after PrepareRunStart.
+// Release swaps only current-v2 inside the fixed projection container; it
+// cannot authorize any transport-root mutation. Keep the exact terminal
+// ledger/projection join before returning a lifecycle receipt.
+func (l *CompositionLedger) adoptTerminalProjectionMutation(ctx context.Context, verifier resultingress.CurrentOwnerLockVerifier, acquisition resultingress.ControlOwnerAcquisition, read runstore.RunStartAuthorityProjection, terminal resultingress.AttemptAuthorityState) error {
 	if l.sessionBorrow == nil {
 		return nil // Standalone composition has no resident fixed-server root.
 	}
 	conflict := func() error {
-		return application.NewError("adopt-completed-worktree-projection", application.ReasonAuthorityConflict)
+		return application.NewError("adopt-terminal-worktree-projection", application.ReasonAuthorityConflict)
 	}
 	session := l.sessionBorrow.session
 	if ctx == nil || verifier == nil || session == nil || session.ingress != l.ingress || session.acquisition != acquisition ||
-		!l.existingWorktreeEnabled || terminal.CommittedResultFactDigest == "" || terminal.BarrierDigest == "" ||
+		!l.existingWorktreeEnabled || terminal.BarrierDigest == "" ||
 		terminal.ProcessTerminalDigest == "" || terminal.AllocationTerminalDigest == "" || terminal.SupervisorClosedDigest == "" ||
 		terminal.CleanupReleasedDigest == "" || terminal.ExistingWorktreeReleaseReceiptDigest == "" {
+		return conflict()
+	}
+	// A stop has no admitted result. Its sealed intent and closed eligibility
+	// are the alternative proof, never a caller-selected bypass of completion.
+	// Both shapes must still match the durable Attempt under the owner lock.
+	if terminal.StopIntent == (resultingress.AttemptStopIntent{}) && terminal.CommittedResultFactDigest == "" {
+		return conflict()
+	}
+	if _, err := terminalEligibilityProjection(terminal); err != nil {
 		return conflict()
 	}
 	return verifier.WithCurrentOwnerLock(ctx, acquisition, func() error {

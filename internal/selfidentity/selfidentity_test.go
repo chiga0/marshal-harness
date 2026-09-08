@@ -53,6 +53,12 @@ func TestDarwinActivationAndObservationPositivePath(t *testing.T) {
 		t.Fatalf("DecodeActivation: %v", err)
 	}
 	activationPath := writeActivation(t, root, raw)
+	for _, command := range []string{CommandControlPlaneCancel, CommandControlPlaneTeamApprove, CommandControlPlaneTeamReconcile} {
+		if _, err := admit(activationPath, command, root, executable,
+			BuildIdentity{SourceHead: testSourceHead, SelfProfile: LocalProfile}, testNow, nil); err != nil {
+			t.Fatalf("fixed command %q is not in the closed activation: %v", command, err)
+		}
+	}
 	observation, err := admit(activationPath, CommandTaskScaffold, root, executable,
 		BuildIdentity{SourceHead: testSourceHead, SelfProfile: LocalProfile}, testNow, nil)
 	if err != nil {
@@ -113,6 +119,30 @@ func TestDarwinActivationStrictAndIdentityNegativeMatrix(t *testing.T) {
 		_, err := DecodeActivation(append(append([]byte(nil), raw...), '\n'), testNow)
 		assertReason(t, err, ReasonOptInMissing)
 	})
+	t.Run("old command set is not silently expanded", func(t *testing.T) {
+		legacy := activation
+		legacy.Scope.LifecycleCommandClasses = nil
+		for _, command := range activation.Scope.LifecycleCommandClasses {
+			if command != CommandControlPlaneCancel {
+				legacy.Scope.LifecycleCommandClasses = append(legacy.Scope.LifecycleCommandClasses, command)
+			}
+		}
+		_, err := DecodeActivation(marshalActivation(t, legacy), testNow)
+		assertReason(t, err, ReasonOptInMissing)
+	})
+	for _, omitted := range []string{CommandControlPlaneTeamApprove, CommandControlPlaneTeamReconcile} {
+		t.Run("missing team grant "+omitted, func(t *testing.T) {
+			legacy := activation
+			legacy.Scope.LifecycleCommandClasses = nil
+			for _, command := range activation.Scope.LifecycleCommandClasses {
+				if command != omitted {
+					legacy.Scope.LifecycleCommandClasses = append(legacy.Scope.LifecycleCommandClasses, command)
+				}
+			}
+			_, err := DecodeActivation(marshalActivation(t, legacy), testNow)
+			assertReason(t, err, ReasonOptInMissing)
+		})
+	}
 	t.Run("duplicate member", func(t *testing.T) {
 		duplicate := append([]byte(`{"schemaVersion":"marshal.local-dogfood-activation.v2",`), raw[1:]...)
 		_, err := DecodeActivation(duplicate, testNow)

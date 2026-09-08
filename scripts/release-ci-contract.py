@@ -51,6 +51,8 @@ FIXED_FILES = {
     "scripts/fixed-server-t1-evidence.py": "100755",
     "scripts/fixed-server-t1-evidence_test.py": "100755",
     "scripts/fixed-server-t1-task.py": "100755",
+    "scripts/fixed-server-stop-fault.py": "100644",
+    "scripts/fixed-server-stop-fault_test.py": "100644",
     "scripts/fixed-server-t2-drive.py": "100644",
     "scripts/fixed-server-t2-drive_test.py": "100644",
     "scripts/fixed-server-t2-task.py": "100644",
@@ -85,7 +87,7 @@ jobs:
   quality:
     name: Quality (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -168,6 +170,21 @@ jobs:
       - name: Verify modules
         run: go mod verify
 
+      - name: Run bounded-team regression before full quality
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'feat/b2-')
+        run: |
+          regression_failed=0
+          go test -race -count=1 -v ./internal/gitworktree || regression_failed=1
+          go test -race -count=1 -v ./internal/review || regression_failed=1
+          go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v ./internal/cli || regression_failed=1
+          go test -race -count=1 -v ./internal/planning || regression_failed=1
+          go test -race -count=1 -v -run '^TestTeam' ./internal/resultingress || regression_failed=1
+          if [ "$(go env GOOS)" = darwin ]; then
+            go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v -run '^TestRepositoryTeam' ./internal/productionruntime || regression_failed=1
+            go test -race -count=1 -v -run '^(TestAuthenticatedTeam|TestTeam)' ./internal/fixedcontrolplane || regression_failed=1
+          fi
+          exit "$regression_failed"
+
       # RC1 distribution validation builds and ad-hoc signs the real
       # Darwin/arm64 candidate with the fixed /usr/bin/codesign required by
       # the release contract. It therefore runs on macOS after setup-go has
@@ -191,6 +208,15 @@ jobs:
             /bin/bash --noprofile --norc "$GITHUB_WORKSPACE/$test_path"
           done
           run_checker
+
+      - name: Run stop-chain regression before full quality
+        if: matrix.os == 'macos-latest' && github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'feat/b1-')
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v -run '^Test(InspectionLease|StoppedRead|FixedLifecycleStoppedCollect|FixedEndpointClientProjectionContainerMutationBoundary)' ./internal/productionruntime
+          go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v -run '^TestLauncherV2(TerminateUsesDurableBarrierAndRecoversLostReply|SameOwnerContinuesWithoutRestart)$' ./internal/resultingress
+          go test -race -count=1 -ldflags "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(git rev-parse HEAD)" -v -run '^TestResponsePhase' ./internal/fixedcontrolplane
+          go test -race -count=1 -v -run '^TestExistingWorktreeProjection(ContainerKeepsRuntimeStable|LegacyPreservedOrRejected)$' ./internal/allocationcontrol
 
       - name: Run quality gate
         run: make check

@@ -79,21 +79,48 @@ type Result struct {
 // leaves a diagnosable PLANNED state for reconciliation and never fabricates
 // a rollback event. A successful READY also releases the worktree handle so
 // Execution can acquire it immediately.
-func Plan(ctx context.Context, input Input) (result Result, err error) {
+func Plan(ctx context.Context, input Input) (Result, error) {
+	prepared, attempts, err := Prepare(ctx, input)
+	if err != nil {
+		return Result{SelectionAttempts: attempts}, err
+	}
+	return prepared.Create(ctx)
+}
+
+// Prepare performs the exact single-Run validation, admission, baseline and
+// capability selection used by Plan, without acquiring a Run lease, creating a
+// worktree, writing frozen files or appending lifecycle events. Preconditions,
+// interpreter checks and adapter probes may execute as in Plan. The returned
+// process-local handle is not deserializable; durable composition must use
+// RestorePrepared's full revalidation rather than decoding a handle.
+func Prepare(ctx context.Context, input Input) (*PreparedPlan, []adapter.SelectionAttempt, error) {
+	return prepare(ctx, input, nil)
+}
+
+func prepare(ctx context.Context, input Input, frozen *PreparedInputs) (*PreparedPlan, []adapter.SelectionAttempt, error) {
+	if ctx == nil {
+		return nil, nil, errors.New("planning: context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	// Callers retain their buffers; none may remain mutable after preparation.
+	input.TaskSpec = bytes.Clone(input.TaskSpec)
+	input.PolicySnapshot = bytes.Clone(input.PolicySnapshot)
 	if input.Selector == nil {
-		return Result{}, errors.New("planning: selector is required")
+		return nil, nil, errors.New("planning: selector is required")
 	}
 	if input.Validator == nil {
-		return Result{}, errors.New("planning: validator is required")
+		return nil, nil, errors.New("planning: validator is required")
 	}
 	if err := domain.ValidateID(input.RunID); err != nil {
-		return Result{}, fmt.Errorf("planning: invalid run ID: %w", err)
+		return nil, nil, fmt.Errorf("planning: invalid run ID: %w", err)
 	}
 	if len(bytes.TrimSpace(input.TaskSpec)) == 0 {
-		return Result{}, errors.New("planning: task spec is required")
+		return nil, nil, errors.New("planning: task spec is required")
 	}
 	if len(bytes.TrimSpace(input.PolicySnapshot)) == 0 {
-		return Result{}, errors.New("planning: policy snapshot is required")
+		return nil, nil, errors.New("planning: policy snapshot is required")
 	}
 	now := input.Now
 	if now.IsZero() {
@@ -103,11 +130,11 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 
 	// 1. Schema validation and decode of the TaskSpec.
 	if err := input.Validator.Validate(domain.KindTask, input.TaskSpec); err != nil {
-		return Result{}, fmt.Errorf("planning: invalid TaskSpec: %w", err)
+		return nil, nil, fmt.Errorf("planning: invalid TaskSpec: %w", err)
 	}
 	var task domain.TaskSpec
 	if err := json.Unmarshal(input.TaskSpec, &task); err != nil {
-		return Result{}, fmt.Errorf("planning: decode TaskSpec: %w", err)
+		return nil, nil, fmt.Errorf("planning: decode TaskSpec: %w", err)
 	}
 
 	// 2. Validate the PolicySnapshot against its schema and the frozen task,
@@ -117,20 +144,20 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 	// precondition or host interpreter spawn.
 	effective, err := ValidatePolicy(input.PolicySnapshot, task, input.RunID, input.Validator)
 	if err != nil {
-		return Result{}, err
+		return nil, nil, err
 	}
 	if err := validateLocalDogfoodBinding(effective.EnvironmentBinding, input.LocalSelfIdentity); err != nil {
-		return Result{}, err
+		return nil, nil, err
 	}
 	if err := validateLocalDogfoodSurface(effective, task, input.LocalSelfIdentity); err != nil {
-		return Result{}, err
+		return nil, nil, err
 	}
 
 	// 3. Reject malformed verifier builtins before preconditions or any other
 	// planning side effect. The marshal-builtin namespace is permanently
 	// reserved and never falls through to an external acceptance command.
 	if err := verificationbuiltin.Preflight(task); err != nil {
-		return Result{}, fmt.Errorf("planning: %w", err)
+		return nil, nil, fmt.Errorf("planning: %w", err)
 	}
 
 	// 4. TaskSpec admission gate (issue #23): a prepared admission is
@@ -142,7 +169,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 	// effect, so a prohibited policy can never trigger a precondition spawn
 	// and a failing admission leaves no state behind.
 	if err := AdmitTaskSpec(ctx, input.StateRoot, input.RepositoryRoot, task); err != nil {
-		return Result{}, err
+		return nil, nil, err
 	}
 
 	// 5. Syntax-preflight the supported inline Python acceptance scripts.
@@ -157,26 +184,26 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		syntaxChecker = execPythonSyntaxChecker{}
 	}
 	if err := preflightAcceptanceCommands(ctx, task.Acceptance.Commands, syntaxChecker); err != nil {
-		return Result{}, err
+		return nil, nil, err
 	}
 
 	// 6. Canonical repository path must match the TaskSpec repository.
 	repository, err := gitworktree.OpenContext(ctx, input.RepositoryRoot)
 	if err != nil {
-		return Result{}, fmt.Errorf("planning: open repository: %w", err)
+		return nil, nil, fmt.Errorf("planning: open repository: %w", err)
 	}
 	taskRepository, err := canonicalPath(task.Repository.Path)
 	if err != nil {
-		return Result{}, fmt.Errorf("planning: canonicalize TaskSpec repository path: %w", err)
+		return nil, nil, fmt.Errorf("planning: canonicalize TaskSpec repository path: %w", err)
 	}
 	if taskRepository != repository.Root {
-		return Result{}, errors.New("planning: TaskSpec repository does not match active repository")
+		return nil, nil, errors.New("planning: TaskSpec repository does not match active repository")
 	}
 
 	// 7. Resolve the base ref to a unique commit SHA.
 	baseSHA, err := ResolveBase(ctx, repository.Root, task.Repository.BaseRef)
 	if err != nil {
-		return Result{}, fmt.Errorf("planning: %w", err)
+		return nil, nil, fmt.Errorf("planning: %w", err)
 	}
 
 	// 8. Confirm the remote name and, when declared, the exact remote URL.
@@ -184,37 +211,44 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 	// fixed error that never echoes either URL.
 	resolvedURL, err := ResolveRemote(ctx, repository.Root, task.Repository.Remote)
 	if err != nil {
-		return Result{}, fmt.Errorf("planning: %w", err)
+		return nil, nil, fmt.Errorf("planning: %w", err)
 	}
 	if task.Repository.ExpectedRemoteURL != "" && resolvedURL != task.Repository.ExpectedRemoteURL {
-		return Result{}, errors.New(errRemoteURLMismatch)
+		return nil, nil, errors.New(errRemoteURLMismatch)
 	}
 
 	// 8. Select the adapter strictly from the effective policy's explicit
 	// candidate list; when fallback is not allowed it carries none.
-	selection, err := input.Selector.Select(ctx, effective.SelectionRequest())
+	var selection adapter.Selection
+	if frozen == nil {
+		selection, err = input.Selector.Select(ctx, effective.SelectionRequest())
+	} else {
+		selection, err = input.Selector.RestoreSelection(ctx, effective.SelectionRequest(), domain.Record{
+			Kind: domain.KindCapabilitySnapshot, Data: frozen.Capability,
+		}, frozen.SelectionAttempts)
+	}
 	if err != nil {
-		return Result{SelectionAttempts: selection.Attempts}, fmt.Errorf("planning: select adapter: %w", err)
+		return nil, append([]adapter.SelectionAttempt(nil), selection.Attempts...), fmt.Errorf("planning: select adapter: %w", err)
 	}
 	if selection.Adapter == nil {
-		return Result{SelectionAttempts: selection.Attempts}, errors.New("planning: no adapter was selected")
+		return nil, append([]adapter.SelectionAttempt(nil), selection.Attempts...), errors.New("planning: no adapter was selected")
 	}
 
 	// 9. The selected CapabilitySnapshot must pass the schema again and the
 	// provider-neutral capability gate, and its adapterId must exactly match
 	// the selected adapter.
 	if err := input.Validator.Validate(domain.KindCapabilitySnapshot, selection.Capability.Data); err != nil {
-		return Result{SelectionAttempts: selection.Attempts}, fmt.Errorf("planning: selected capability snapshot failed schema: %w", err)
+		return nil, append([]adapter.SelectionAttempt(nil), selection.Attempts...), fmt.Errorf("planning: selected capability snapshot failed schema: %w", err)
 	}
 	adapterID, err := adapter.ValidateCapability(selection.Capability, task)
 	if err != nil {
-		return Result{SelectionAttempts: selection.Attempts}, fmt.Errorf("planning: %w", err)
+		return nil, append([]adapter.SelectionAttempt(nil), selection.Attempts...), fmt.Errorf("planning: %w", err)
 	}
 	if adapterID != selection.Adapter.ID() {
-		return Result{SelectionAttempts: selection.Attempts}, errors.New(errCapabilityAdapterMismatch)
+		return nil, append([]adapter.SelectionAttempt(nil), selection.Attempts...), errors.New(errCapabilityAdapterMismatch)
 	}
 	if err := ValidateLocalDogfoodCapabilityProjection(effective, selection.Capability.Data); err != nil {
-		return Result{SelectionAttempts: selection.Attempts}, err
+		return nil, append([]adapter.SelectionAttempt(nil), selection.Attempts...), err
 	}
 
 	// 10. Canonicalize the three frozen artifacts and compute their digests.
@@ -222,20 +256,65 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 	// embedded policyDigest field.
 	taskCanonical, err := canonical.JSON(input.TaskSpec)
 	if err != nil {
-		return Result{}, fmt.Errorf("planning: canonicalize TaskSpec: %w", err)
+		return nil, nil, fmt.Errorf("planning: canonicalize TaskSpec: %w", err)
 	}
 	policyCanonical, err := canonical.JSON(input.PolicySnapshot)
 	if err != nil {
-		return Result{}, fmt.Errorf("planning: canonicalize PolicySnapshot: %w", err)
+		return nil, nil, fmt.Errorf("planning: canonicalize PolicySnapshot: %w", err)
 	}
 	capabilityCanonical, err := canonical.JSON(selection.Capability.Data)
 	if err != nil {
-		return Result{}, fmt.Errorf("planning: canonicalize CapabilitySnapshot: %w", err)
+		return nil, nil, fmt.Errorf("planning: canonicalize CapabilitySnapshot: %w", err)
 	}
 	specDigest := canonical.DigestBytes(taskCanonical)
 	policyDigest := canonical.DigestBytes(policyCanonical)
 	capabilityDigest := canonical.DigestBytes(capabilityCanonical)
 
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	selection.Attempts = append([]adapter.SelectionAttempt(nil), selection.Attempts...)
+	selection.Capability.Data = bytes.Clone(capabilityCanonical)
+	prepared := &PreparedPlan{
+		input: input, task: task, effective: effective, selection: selection,
+		repositoryRoot: repository.Root, remoteURL: resolvedURL, baseSHA: baseSHA, now: now,
+		taskCanonical: taskCanonical, policyCanonical: policyCanonical, capabilityCanonical: capabilityCanonical,
+		specDigest: specDigest, policyDigest: policyDigest, capabilityDigest: capabilityDigest,
+	}
+	return prepared, append([]adapter.SelectionAttempt(nil), selection.Attempts...), nil
+}
+
+// Create uses only this process's validated preparation. It never probes again
+// or resolves the original mutable base ref again. It is NOT a durable approval
+// or idempotent recovery API: an existing Run is still rejected by the held
+// lease check. Team composition must durably bind Inputs before calling it.
+func (prepared *PreparedPlan) Create(ctx context.Context) (result Result, err error) {
+	if ctx == nil || prepared == nil || prepared.selection.Adapter == nil || prepared.repositoryRoot == "" {
+		return Result{}, errors.New("planning: validated preparation is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	input, task, selection := prepared.input, prepared.task, prepared.selection
+	baseSHA := prepared.baseSHA
+	taskCanonical, policyCanonical, capabilityCanonical := prepared.taskCanonical, prepared.policyCanonical, prepared.capabilityCanonical
+	// Preparation and creation may be separated by a durable owner transaction.
+	// Recheck the repository path and remote before any Run/worktree mutation.
+	repository, err := gitworktree.OpenContext(ctx, input.RepositoryRoot)
+	if err != nil || repository.Root != prepared.repositoryRoot {
+		return Result{}, errors.New("planning: prepared repository changed")
+	}
+	remoteURL, err := ResolveRemote(ctx, repository.Root, task.Repository.Remote)
+	if err != nil || remoteURL != prepared.remoteURL {
+		return Result{}, errors.New(errRemoteURLMismatch)
+	}
+	adapterID, err := adapter.ValidateCapability(selection.Capability, task)
+	if err != nil || adapterID != selection.Adapter.ID() {
+		return Result{}, errors.New(errCapabilityAdapterMismatch)
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	// 11. Acquire the Run lease and refuse to plan over an existing Run.
 	store := runstore.New(input.StateRoot)
 	lease, err := store.Acquire(input.RunID)
@@ -297,74 +376,21 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{}, fmt.Errorf("planning: freeze CapabilitySnapshot: %w", err)
 	}
 
-	// 14. CREATED -> PLANNED under the held lease.
-	state := domain.NewRunState(task.Metadata.ID, input.RunID, now)
-	state.SpecDigest = specDigest
-	state.PolicyDigest = policyDigest
-	plannedEvent, plannedState, err := transition(state, "planning.spec-accepted", domain.StatePlanned, now, map[string]any{
-		"specDigest":       specDigest,
-		"executionProfile": task.Worker.ExecutionProfile,
-		"sessionPolicy":    task.Worker.SessionPolicy,
-	}, lifecycle.Guard{LeaseHeld: true, DraftValid: true})
+	// Both first creation and recovery use exactly these two transitions.
+	events, states, err := prepared.creationTransitions(worktree)
 	if err != nil {
-		return Result{}, fmt.Errorf("planning: build planned transition: %w", err)
+		return Result{}, err
 	}
-	if err := store.Append(lease, plannedEvent, state.Sequence); err != nil {
-		return Result{}, fmt.Errorf("planning: append planned event: %w", err)
+	for index, event := range events {
+		if err := store.Append(lease, event, states[index].Sequence); err != nil {
+			return Result{}, fmt.Errorf("planning: append creation event: %w", err)
+		}
+		committed = true
+		if err := store.WriteSnapshot(lease, states[index+1]); err != nil {
+			return Result{}, fmt.Errorf("planning: write creation snapshot: %w", err)
+		}
 	}
-	committed = true
-	if err := store.WriteSnapshot(lease, plannedState); err != nil {
-		return Result{}, fmt.Errorf("planning: write planned snapshot: %w", err)
-	}
-
-	// 15. PLANNED -> READY with the resolved baseline and frozen inputs.
-	// M8 embedded vertical slice: record the frozen two-dimensional sandbox
-	// requirements derived from the legacy execution profile into the READY
-	// freeze event, on top of the issue-23 admission gate. The mapping is the
-	// single compatibility direction of domain.SandboxRequirementsFromLegacy
-	// and fails closed on an unknown profile; the existing planning
-	// validations are unchanged.
-	sandboxRequirements, err := domain.SandboxRequirementsFromLegacy(task.Worker.ExecutionProfile)
-	if err != nil {
-		return Result{}, fmt.Errorf("planning: %w", err)
-	}
-	readyPayload := map[string]any{
-		"adapterId":         selection.Adapter.ID(),
-		"baseSha":           baseSHA,
-		"specDigest":        specDigest,
-		"policyDigest":      policyDigest,
-		"capabilityDigest":  capabilityDigest,
-		"worktreePath":      worktree.Path,
-		"branch":            worktree.Branch,
-		"fallbackAllowed":   effective.AllowFallbackWorkers,
-		"selectionAttempts": selectionAttemptPayload(selection.Attempts),
-		"maxAttempts":       task.Budgets.MaxAttempts,
-		"sandboxRequirements": map[string]any{
-			"accessMode":            string(sandboxRequirements.AccessMode),
-			"minimumAssuranceLevel": string(sandboxRequirements.MinimumAssuranceLevel),
-		},
-	}
-	readyEvent, readyState, err := transition(plannedState, "planning.inputs-frozen", domain.StateReady, now, readyPayload, lifecycle.Guard{
-		LeaseHeld:     true,
-		BaseResolved:  true,
-		PolicyAllowed: true,
-		AdapterProbed: true,
-		InputsFrozen:  true,
-	})
-	if err != nil {
-		return Result{}, fmt.Errorf("planning: build ready transition: %w", err)
-	}
-	readyState.CapabilityDigest = capabilityDigest
-	readyState.BaseSHA = baseSHA
-	readyState.WorktreePath = worktree.Path
-	if err := store.Append(lease, readyEvent, plannedState.Sequence); err != nil {
-		return Result{}, fmt.Errorf("planning: append ready event: %w", err)
-	}
-	if err := store.WriteSnapshot(lease, readyState); err != nil {
-		return Result{}, fmt.Errorf("planning: write ready snapshot: %w", err)
-	}
-
-	return Result{State: readyState, Adapter: selection.Adapter, SelectionAttempts: selection.Attempts}, nil
+	return Result{State: states[2], Adapter: selection.Adapter, SelectionAttempts: append([]adapter.SelectionAttempt(nil), selection.Attempts...)}, nil
 }
 
 // ValidateLocalDogfoodCapabilityProjection binds the selected adapter fact to

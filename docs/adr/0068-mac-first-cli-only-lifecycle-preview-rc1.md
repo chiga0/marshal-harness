@@ -1,5 +1,7 @@
 # ADR 0068：Mac-first CLI-only 生命周期预览 RC1
 
+> 2026-09-07 适用性：本文是已发布 CLI-only RC1 的精确历史支持合同，不是新 HTTP/SQLite/团队服务的范围。ADR 0085 的独立安装不重签旧 activation、不扩大 RC1 权限；unsigned/ordinary-user 不升级 production、Linux 或 stable。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：已接受（Accepted）
 - 日期：2026-08-29
 - 提议基线：`main@84d2dcd6bb78cb7fa47ed1d3040a1f3bea5a0f11`

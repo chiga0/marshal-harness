@@ -31,6 +31,7 @@ type DecisionInput struct {
 	Report                   verification.Report
 	Manifest                 verification.ArtifactManifest
 	LocalSelfIdentityBinding *selfidentity.LocalReviewBindingV2
+	Objective                *ObjectivePolicy
 }
 
 type DecisionResult struct {
@@ -65,6 +66,23 @@ func (d *DecisionImporter) ImportBytes(input DecisionInput, submittedData []byte
 	if len(submittedData) == 0 || int64(len(submittedData)) > packetByteLimit {
 		return DecisionResult{}, errors.New("review decision exceeds bounded input")
 	}
+	packetData, err := readBounded(filepath.Join(d.RunDirectory, "review-packet.json"), packetByteLimit)
+	if err != nil {
+		return DecisionResult{}, fmt.Errorf("read current review packet: %w", err)
+	}
+	return d.importBytesWithPacket(input, submittedData, packetData)
+}
+
+// Shared by current Decision admission and read-only accepted-result reuse.
+// The latter reads exact files through held Run descriptors, never paths from
+// an exported packet. This function alone does not grant current authority.
+func (d *DecisionImporter) importBytesWithPacket(input DecisionInput, submittedData, packetData []byte) (DecisionResult, error) {
+	if d.Validator == nil {
+		return DecisionResult{}, errors.New("contract validator is required")
+	}
+	if len(submittedData) == 0 || int64(len(submittedData)) > packetByteLimit {
+		return DecisionResult{}, errors.New("review decision exceeds bounded input")
+	}
 	if err := d.Validator.Validate(domain.KindReviewDecision, submittedData); err != nil {
 		return DecisionResult{}, fmt.Errorf("validate review decision: %w", err)
 	}
@@ -72,16 +90,20 @@ func (d *DecisionImporter) ImportBytes(input DecisionInput, submittedData []byte
 	if err := json.Unmarshal(submittedData, &decision); err != nil {
 		return DecisionResult{}, err
 	}
-	packetData, err := readBounded(filepath.Join(d.RunDirectory, "review-packet.json"), packetByteLimit)
-	if err != nil {
-		return DecisionResult{}, fmt.Errorf("read current review packet: %w", err)
-	}
 	if err := d.Validator.Validate(domain.KindReviewPacket, packetData); err != nil {
 		return DecisionResult{}, fmt.Errorf("validate current review packet: %w", err)
 	}
 	var packet domain.ReviewPacket
 	if err := json.Unmarshal(packetData, &packet); err != nil {
 		return DecisionResult{}, err
+	}
+	if decision.Reviewer.Type == "system" {
+		if decision.Reviewer.ID != ObjectiveReviewerID || decision.Verdict != "accept" || decision.PublicationRecommendation != "do-not-publish" || decision.MergeRecommendation != "do-not-merge" || len(decision.BlockingFindings) != 0 || len(decision.NonBlockingFindings) != 0 {
+			return DecisionResult{}, errors.New("review: unsupported system Decision")
+		}
+		if err := validateObjective(input, packet); err != nil {
+			return DecisionResult{}, err
+		}
 	}
 	packetDigest, err := canonical.DigestJSON(packetData)
 	if err != nil {

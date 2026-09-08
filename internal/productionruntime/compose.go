@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 )
@@ -36,6 +37,18 @@ func (bridge *piBridge) VerifyAgentProfile(ctx context.Context, verifier resulti
 func (bridge *piBridge) StartPreparedRun(ctx context.Context, verifier resultingress.CurrentOwnerLockVerifier, acquisition resultingress.ControlOwnerAcquisition, owner OwnerProjection, profile PiProfile, prepared application.PreparedRunStart) error {
 	if err := bridge.VerifyAgentProfile(ctx, verifier, acquisition, owner, profile); err != nil {
 		return err
+	}
+	read, err := bridge.ledger.runs.ReadRunStartAuthorityUnderLease(ctx, bridge.ledger.runLease)
+	if err != nil {
+		return err
+	}
+	// Preparation may have happened well before StartPreparedRun. Recheck the
+	// original budget for a fresh launch, but let the existing sealed outcome
+	// path replay a committed RUNNING result without a new time decision.
+	if read.Run.State == domain.StateReady {
+		if err := bridge.ledger.admitBusinessStart(ctx, read.Run); err != nil {
+			return err
+		}
 	}
 	dispatchObservationDigest, err := bridge.ledger.localDispatchObservationDigest(prepared.AttemptID)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/application"
@@ -25,21 +26,43 @@ type RepositorySessionInputs struct {
 	Acquisition             resultingress.ControlOwnerAcquisition
 	FixedMarshalPath        string
 	OwnerPrivateControlRoot *os.File
+	// Installed only by trusted composition, never supplied by an HTTP caller.
+	// Nil disables team approval without affecting existing single Run APIs.
+	TeamInputPreflight func([]byte) error
+	// Optional pure template Port installed by trusted composition, never HTTP.
+	TaskTemplate application.TaskTemplatePort
+	// Trusted, process-local planning composition. Never an HTTP/Worker input.
+	// It returns canonical PreparedInputs without creating a Run.
+	TeamRunPreparer func(context.Context, []byte, []byte, string) ([]byte, error)
+	// Trusted immutable factory: restore exact RB1 input, then create/recover
+	// only while the supplied current-owner/fact guard admits each mutation.
+	TeamRunMaterializer func(context.Context, []byte, func(context.Context, func() error) error) (domain.RunState, error)
+	// Git-only data producer installed by fixed composition, not a Worker or
+	// client executor. No Run/ref/working index mutation or retry is allowed.
+	TeamIntegrationBuilder func(context.Context, string, string, [][]byte) (string, string, error)
+	TeamDeliveryExporter   func(context.Context, string, string, string, string, [][]byte, []byte, []string) (map[string][]byte, error)
 }
 
 // RepositorySession owns one repository owner acquisition and the sealed
 // ResultIngress store for the lifetime of a fixed Marshal process. Individual
 // Run runtimes borrow these resources and cannot close or reacquire them.
 type RepositorySession struct {
-	mu          sync.RWMutex
-	closed      bool
-	ingress     *resultingress.DurableStore
-	runs        *runstore.Store
-	fixedRoot   fixedServerRoot
-	owner       repositoryOwnerLock
-	ownerState  resultingress.ControlOwnerState
-	acquisition resultingress.ControlOwnerAcquisition
-	fixedPath   string
+	mu                     sync.RWMutex
+	closed                 bool
+	ingress                *resultingress.DurableStore
+	runs                   *runstore.Store
+	fixedRoot              fixedServerRoot
+	owner                  repositoryOwnerLock
+	ownerState             resultingress.ControlOwnerState
+	acquisition            resultingress.ControlOwnerAcquisition
+	fixedPath              string
+	teamInputPreflight     func([]byte) error
+	teamRunPreparer        func(context.Context, []byte, []byte, string) ([]byte, error)
+	teamRunMaterializer    func(context.Context, []byte, func(context.Context, func() error) error) (domain.RunState, error)
+	teamIntegrationBuilder func(context.Context, string, string, [][]byte) (string, string, error)
+	taskTemplate           application.TaskTemplatePort
+	coldTaskVerifications  map[string]bool
+	teamDeliveryExporter   func(context.Context, string, string, string, string, [][]byte, []byte, []string) (map[string][]byte, error)
 }
 
 type repositorySessionBorrow struct {
@@ -128,7 +151,7 @@ func OpenRepositorySession(ctx context.Context, inputs RepositorySessionInputs) 
 		cleanup()
 		return nil, fmt.Errorf("repository session: seal prepared execution: %w", err)
 	}
-	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath}
+	session := &RepositorySession{ingress: ingress, runs: runs, fixedRoot: fixedRoot, owner: owner, ownerState: ownerState, acquisition: acquisition, fixedPath: inputs.FixedMarshalPath, teamInputPreflight: inputs.TeamInputPreflight, teamRunPreparer: inputs.TeamRunPreparer, teamRunMaterializer: inputs.TeamRunMaterializer, teamIntegrationBuilder: inputs.TeamIntegrationBuilder, taskTemplate: inputs.TaskTemplate, teamDeliveryExporter: inputs.TeamDeliveryExporter}
 	if err := session.owner.WithCurrentOwnerLock(ctx, acquisition, func() error {
 		current, found, openErr := ingress.OpenOwner(acquisition.Scope)
 		if openErr != nil || !found || current.Acquisition != acquisition || current.FactDigest != ownerState.FactDigest {
@@ -197,7 +220,7 @@ func (session *RepositorySession) InspectRun(ctx context.Context, request applic
 	}
 	defer func() { resultErr = errors.Join(resultErr, borrow.Close()) }()
 
-	lease, err := session.runs.AcquireExisting(request.RunID)
+	lease, err := acquireInspectionLease(ctx, session.runs, request.RunID)
 	if err != nil {
 		return application.RunProjection{}, err
 	}
@@ -225,6 +248,28 @@ func (session *RepositorySession) InspectRun(ctx context.Context, request applic
 		return application.RunProjection{}, err
 	}
 	return result, nil
+}
+
+// Inspection shares the durable Run lease with resident reconciliation. Busy
+// is transient contention, not a transport failure or permission to read an
+// unlocked snapshot. Only retry that exact error, within the caller's context.
+func acquireInspectionLease(ctx context.Context, runs *runstore.Store, runID string) (*runstore.Lease, error) {
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		lease, err := runs.AcquireExisting(runID)
+		if !errors.Is(err, runstore.ErrLeaseHeld) {
+			return lease, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // ReconcileStartRun reads the exact current PreparedExecution/RUNNING pair

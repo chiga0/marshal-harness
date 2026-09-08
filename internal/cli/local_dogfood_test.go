@@ -116,6 +116,69 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	}
 	t.Setenv(selfidentity.ActivationEnv, activationPath)
 
+	// Exercise the real entry gate with a freshly generated activation, not
+	// just runControlPlaneCancel or the HTTP handler. Invalid arguments stop
+	// before connecting to a server; reaching usage proves both allowlists.
+	if runtime.GOARCH == "arm64" {
+		t.Run("Task HTTP serve passes real activation entry", func(t *testing.T) {
+			// A missing explicitly selected template stops before composition
+			// or model access, after the actual RunContext activation gate.
+			args := []string{"control-plane", "serve", "--task-http-address", "127.0.0.1:0", "--task-template", filepath.Join(root, "missing-task-template.json")}
+			var output, diagnostic bytes.Buffer
+			exit := RunContext(context.Background(), args, strings.NewReader(""), &output, &diagnostic)
+			if exit != ExitUsage || output.Len() != 0 || !strings.HasPrefix(diagnostic.String(), "Task 模板无效：") {
+				t.Fatalf("Task HTTP entry exit=%d stderr=%q", exit, diagnostic.String())
+			}
+			t.Setenv(selfidentity.ActivationEnv, filepath.Join(root, "missing-activation.json"))
+			output.Reset()
+			diagnostic.Reset()
+			exit = RunContext(context.Background(), args, strings.NewReader(""), &output, &diagnostic)
+			if exit != ExitUnavailable || output.Len() != 0 || !strings.Contains(diagnostic.String(), selfidentity.ReasonOptInMissing) {
+				t.Fatalf("Task HTTP bypassed activation: %d %q", exit, diagnostic.String())
+			}
+		})
+		t.Run("automatic team serve reaches composition", func(t *testing.T) {
+			t.Setenv("MARSHAL_PI_RUNTIME", "")
+			t.Setenv("MARSHAL_PI_ENTRYPOINT", "")
+			var output, diagnostic bytes.Buffer
+			exit := RunContext(context.Background(), []string{"control-plane", "serve", "--auto-team-progress"}, strings.NewReader(""), &output, &diagnostic)
+			if exit != ExitUnavailable || output.Len() != 0 || !strings.HasPrefix(diagnostic.String(), "control-plane serve 失败：") {
+				t.Fatalf("serve entry exit=%d stderr=%q", exit, diagnostic.String())
+			}
+		})
+		for _, command := range []string{"start", "cancel", "collect", "verify", "review-packet", "decision", "team-approve", "team-reconcile"} {
+			t.Run("fixed entry "+command, func(t *testing.T) {
+				var output, diagnostic bytes.Buffer
+				exit := RunContext(context.Background(), []string{"control-plane", command}, strings.NewReader(""), &output, &diagnostic)
+				usageCommand := command
+				if command == "team-approve" || command == "team-reconcile" {
+					usageCommand = "<team-approve|team-reconcile>"
+				}
+				if exit != ExitUsage || output.Len() != 0 || !strings.HasPrefix(diagnostic.String(), "用法：marshal control-plane "+usageCommand+" ") {
+					t.Fatalf("fixed entry exit=%d stdout=%q stderr=%q", exit, output.String(), diagnostic.String())
+				}
+			})
+		}
+		for _, command := range []string{"team-approve", "team-reconcile"} {
+			t.Run(command+" still requires activation", func(t *testing.T) {
+				t.Setenv(selfidentity.ActivationEnv, filepath.Join(root, "missing-activation.json"))
+				var output, diagnostic bytes.Buffer
+				exit := RunContext(context.Background(), []string{"control-plane", command}, strings.NewReader(""), &output, &diagnostic)
+				if exit != ExitUnavailable || output.Len() != 0 || !strings.Contains(diagnostic.String(), selfidentity.ReasonOptInMissing) {
+					t.Fatalf("missing activation exit=%d stderr=%q", exit, diagnostic.String())
+				}
+			})
+		}
+		t.Run("cancel still requires activation", func(t *testing.T) {
+			t.Setenv(selfidentity.ActivationEnv, filepath.Join(root, "missing-activation.json"))
+			var output, diagnostic bytes.Buffer
+			exit := RunContext(context.Background(), []string{"control-plane", "cancel"}, strings.NewReader(""), &output, &diagnostic)
+			if exit != ExitUnavailable || output.Len() != 0 || !strings.Contains(diagnostic.String(), selfidentity.ReasonOptInMissing) {
+				t.Fatalf("missing activation exit=%d stderr=%q", exit, diagnostic.String())
+			}
+		})
+	}
+
 	draftRaw, err := os.ReadFile(filepath.Join(originalDirectory, "..", "..", "schemas", "examples", "happy-path", "task-spec.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -372,10 +435,13 @@ func TestLocalDogfoodClassifiesCompleteFixedServerLifecycle(t *testing.T) {
 		command string
 		want    string
 	}{
+		{"cancel", selfidentity.CommandControlPlaneCancel},
 		{"collect", selfidentity.CommandControlPlaneCollect},
 		{"verify", selfidentity.CommandControlPlaneVerify},
 		{"review-packet", selfidentity.CommandControlPlaneReview},
 		{"decision", selfidentity.CommandControlPlaneDecision},
+		{"team-approve", selfidentity.CommandControlPlaneTeamApprove},
+		{"team-reconcile", selfidentity.CommandControlPlaneTeamReconcile},
 	} {
 		t.Run(test.command, func(t *testing.T) {
 			got, reason := localDogfoodCommandClass([]string{"control-plane", test.command}, nil)
@@ -383,6 +449,12 @@ func TestLocalDogfoodClassifiesCompleteFixedServerLifecycle(t *testing.T) {
 				t.Fatalf("class=%q reason=%q, want class=%q", got, reason, test.want)
 			}
 		})
+	}
+	for _, command := range []string{"team-start", "team-publish", "team-approve-extra"} {
+		got, reason := localDogfoodCommandClass([]string{"control-plane", command}, nil)
+		if got != "" || reason != selfidentity.ReasonCommandDenied {
+			t.Fatalf("unknown team command %q admitted: class=%q reason=%q", command, got, reason)
+		}
 	}
 }
 

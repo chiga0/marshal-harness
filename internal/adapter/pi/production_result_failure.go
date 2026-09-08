@@ -27,11 +27,15 @@ func ProductionResultFailureCode(err error) string {
 		return ""
 	}
 	switch failure.code {
-	case "input", "transcript", "output-limit", "provider-terminal", "session-missing",
+	case "input", "result-contract", "process-terminal", "transcript", "output-limit", "provider-terminal", "session-missing",
+		"provider-terminal-error", "provider-terminal-length", "provider-terminal-aborted",
+		"provider-terminal-unconfirmed",
 		"transcript-read", "transcript-json", "transcript-session", "transcript-event", "transcript-agent-end",
 		"transcript-tool", "transcript-compaction", "transcript-retry", "transcript-settled", "transcript-framing", "transcript-closure",
-		"final-message", "final-object-missing", "final-object-trailing", "validator",
-		"final-event-decode", "final-event-empty", "final-role", "final-content-shape", "final-content-type", "final-content-text",
+		"final-message", "final-object-missing", "final-object-trailing", "final-object-multiple", "final-object-invalid", "validator",
+		"final-object-invalid-syntax-before-result", "final-object-invalid-syntax-after-result",
+		"final-object-invalid-canonical-before-result", "final-object-invalid-canonical-after-result",
+		"final-event-decode", "final-event-empty", "final-role", "final-content-missing", "final-content-shape", "final-content-type", "final-content-text",
 		"final-content-container-shape", "final-content-item-shape", "final-content-type-shape", "final-content-text-shape",
 		"declared-schema", "declared-decode", "declared-identity", "declared-session",
 		"normalization", "normalized-schema":
@@ -43,6 +47,22 @@ func ProductionResultFailureCode(err error) string {
 	default:
 		return ""
 	}
+}
+
+// Classify the existing rejection, without returning provider text, keys,
+// offsets or paths. "before" includes the declaration itself: it has not yet
+// passed canonical decoding and been recognized as a WorkerResult.
+func invalidFinalObject(phase string, resultSeen bool, cause error) error {
+	code := "final-object-invalid"
+	if phase == "syntax" || phase == "canonical" {
+		code += "-" + phase
+		if resultSeen {
+			code += "-after-result"
+		} else {
+			code += "-before-result"
+		}
+	}
+	return &productionResultFailure{code: code, cause: cause}
 }
 
 // json.Unmarshal into []productionContentItem can reject either the array

@@ -23,7 +23,7 @@ def utc_now():
     return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def render(args):
+def build(args):
     repository = os.path.realpath(args.repository)
     if repository != args.repository or not os.path.exists(os.path.join(repository, ".git")):
         raise SystemExit("repository 必须是 canonical Git worktree 根")
@@ -118,7 +118,7 @@ def render(args):
             "requiredChecks": [],
         },
     }
-    if getattr(args, "scenario", "marker") == "order-quote":
+    if getattr(args, "scenario", "marker") in ("order-quote", "order-quote-timeout", "order-quote-run-timeout"):
         # Oracle 来自冻结的控制仓库，不进入 Worker 的 allowPaths。
         oracle = os.path.join(repository, "scripts", "order-quote-oracle.py")
         if os.path.islink(oracle) or not os.path.isfile(oracle):
@@ -162,6 +162,31 @@ def render(args):
             "id": "order-quote", "kind": "code", "required": True,
             "pathGlob": "quote_order.py", "minimumCount": 1,
         }]
+    if getattr(args, "scenario", "marker") == "order-quote-timeout":
+        # Frozen before plan/approval. This is not the HTTP client deadline.
+        task["budgets"]["attemptTimeoutSeconds"] = 60
+    if getattr(args, "scenario", "marker") == "order-quote-run-timeout":
+        # Task semantics require attempt <= run. Equal durations still make
+        # the Run expire first because its creation predates process start.
+        task["budgets"]["attemptTimeoutSeconds"] = 60
+        task["budgets"]["runTimeoutSeconds"] = 60
+    if getattr(args, "long_verify", False):
+        if args.scenario != "order-quote":
+            raise SystemExit("long-verify 仅用于真实订单报价 peer")
+        signal_path = os.path.join(repository, ".marshal", "fixed-server-t1-canary", args.run_id, "verification-started.json")
+        # A test rendezvous, not Run authority. The original business oracle
+        # remains required. No candidate program is imported by this command.
+        command = (
+            "import json,sys,time; "
+            "f=open(sys.argv[1],'x'); "
+            "json.dump({'runId':sys.argv[2],'startedAt':time.time()},f); f.close(); "
+            "time.sleep(100)"
+        )
+        task["acceptance"]["commands"].append({
+            "id": "cross-run-long-verification", "argv": ["/usr/bin/python3", "-I", "-B", "-c", command, signal_path, args.run_id],
+            "cwd": ".", "timeoutSeconds": 120, "maxLogBytes": 4000,
+            "required": True, "baselinePolicy": "none",
+        })
     policy = {
         "apiVersion": "marshal.dev/v1alpha1",
         "kind": "PolicySnapshot",
@@ -193,6 +218,11 @@ def render(args):
         "generatedAt": utc_now(),
     }
     policy["policyDigest"] = "sha256:" + hashlib.sha256(canonical_bytes(policy)).hexdigest()
+    return task, policy
+
+
+def render(args):
+    task, policy = build(args)
     for path, value in ((args.task_out, task), (args.policy_out, policy)):
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(canonical_bytes(value).decode("utf-8") + "\n")
@@ -208,7 +238,8 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--task-out", required=True)
     parser.add_argument("--policy-out", required=True)
-    parser.add_argument("--scenario", choices=("marker", "order-quote"), default="marker")
+    parser.add_argument("--scenario", choices=("marker", "order-quote", "order-quote-timeout", "order-quote-run-timeout"), default="marker")
+    parser.add_argument("--long-verify", action="store_true")
     render(parser.parse_args())
 
 

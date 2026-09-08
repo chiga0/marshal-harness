@@ -1,14 +1,16 @@
 # Marshal Agent Team 业务交付计划
 
-更新日期：2026-09-05。依据 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md)。**当前唯一阶段状态见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)**；本文保存目标、验收与操作方法，不另设一份完成状态。
+更新日期：2026-09-07。当前目标是 B1 真实团队交付 PoC→B2 本地 API 可用版→B3 正式支持，完整定义见[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)及 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)。**当前唯一阶段状态见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)**。从“历史业务出口与可复用样例”起保留 ADR 0080 时点的步骤/命令/证据，仅作为操作与回归资产，不是新 Task-first 的排期要求；Workspace、安装身份平台、全面迁库不再作为团队交付前置。
 
 ## 用户承诺与终态
 
 用户给出需求，Marshal 澄清影响行为/范围/权限的关键选择并确认方案，随后持续驱动多 Agent 执行、集成、验证和授权交付。自治是授权与预算内的自动前进，不是取消独立验证或无人负责的自动发布。默认 publication:none，可选 Draft PR；不自动 merge。
 
-控制面管理事实与决策，执行面产生候选和独立验证观察，存储面保留状态与制品。首个实现维持一个固定 server、多个有界执行进程、现有账本和本地对象存储；不要先建存储微服务、HA 或通用 DSL。
+控制面管理事实与决策，执行面产生候选和独立验证观察，存储面保留状态与制品。B1 复用现有合法 fixed server/唯一 Store 与两个 Worker，先补实际交付；B2 使用同一应用接口接 SQLite，并解除零 Git 场景的仓库前置。U1 旧历史导入独立验收，不阻新任务，也不得双写旧库。不建存储微服务、HA 或通用 DSL。
 
-## 三个业务 milestone
+## 历史业务出口与可复用样例
+
+下表是 ADR 0080 时点的业务出口摘要，不是当前排期：旧单任务是新 B1 团队 PoC 的内部步骤，B2 补本地 API/事务存储/交互能力，B3 正式支持；以[完整 Milestone](agent-team-service-milestones.md)为准。下文“不扩 Provider/暂不换 Store”等旧轮次边界不构成当前产品禁令。ADR 0085 仍为 Proposed，设计/启用状态按[合同适用性](design-contract-map.md)区分。
 
 | 阶段 | 用户结果 | 必须在同一支持路径证明的退出条件 |
 | --- | --- | --- |
@@ -24,6 +26,7 @@ B1 优先关闭当前 launcher 与 T2 真实链路阻塞。B2 的业务样例/�
 
 - B1：真实 Agent 在现有 T2 Task 路径实现 `quote_order.py`，提供 `quote_order(items)`；固定参考 oracle 检查正常、边界、非法输入、输入不变和 JSON 类型。
 - B2：扩展成订单报价 API 与客户端。先确认共享输入/错误契约，然后分开实现服务与客户端，集成任务验证从客户端到服务的完整请求；不把两个不相交文件的提交当作团队完成。
+- B2 的 [HTTP 参考契约候选](reference-order-quote-team-contract.md) 和 `scripts/order-quote-team-oracle.py` 预先定义同一服务的直接请求与客户端验收，并加入验证者 HTTP fixture 的请求观察/响应 challenge。它们不是 accepted plan，也不是多 Agent 已完成；真实派发前仍须冻结确认、接入外层有界集成执行，再由同一 B2 控制链执行。
 - 独立 oracle 放在控制仓库的固定脚本，不在 Worker 可修改范围内；Oracle 本身用正确实现和典型错误实现做回归。测试素材全部为合成数据，无客户数据/真实订单。
 - 参考工作区与 Marshal 业务代码隔离。当前 Task renderer 仍绑定 canonical Marshal repository，因此 B1 的文件范围隔离只用于首轮，**不冒充外部参考仓库集成已支持**；后继应用入口允许可信外部仓库后，迁移同一场景到独立小仓库。
 - 保留现有 marker 作为传输诊断模式；marker 通过不能替代本业务验收。
@@ -36,7 +39,17 @@ B1 优先关闭当前 launcher 与 T2 真实链路阻塞。B2 的业务样例/�
 
 业务 verification pass 后，驱动把 packet 引用的 Task、实际 patch、VerificationReport、ArtifactManifest、WorkerResult 及两个候选记录/worker patch 打包到已有上传范围内的 `t2/review-inputs.tar`。仅复制有界普通文件，逐层拒绝符号链接并拒绝硬链接/特殊文件/读取中变化；不复制原始日志、凭据、Git 工作区或整份 authority store。该包标为 `review-only-not-authority-import`：便于独立 reviewer 读取真实输入，但不能代替 Core 的 canonical digest 验证、current-ledger recheck 或跨 runner 恢复协议。打包失败不重跑 Pi、不修改 Run、不宣称可以验收；same-server Decision 和恢复材料仍需按实际状态完成。
 
+## B2 批准操作候选（未构成团队交付）
+
+固定 server 候选接受 `marshal control-plane team-approve --request-file REQUEST.json`；输入文件为 `initial-team-approval/v1`，字段为 `protocolRevision`、稳定 `requestId`、完整 `inputs`（ADR 0083 的 `bounded-team-inputs/v1`）、确认的 `inputsDigest`、初始为空的 `expectedHead`、未来十分钟内的 canonical UTC `deadline`。调用者必须先检查完整方案并确认摘要；不得以 Worker 自称确认代替用户批准。文件必须是有界常规文件，未知/重复字段拒绝，不把部分 Task 读模型序列化成完整模板。
+
+响应丢失或批准过期时，使用同一 REQUEST.json 执行 `marshal control-plane team-reconcile --request-file REQUEST.json`；只读查询自动使用短查询窗口，但不修改原批准 deadline。`found:true` 和原 fact digest 仅代表创建义务已提交，`found:false` 是经只读账本回查的当次不存在；查询错误/未知不等于不存在，不自动重复批准。两条命令只连接已运行的同一 fixed server，不新开 owner、直接派 Pi 或调用子 CLI。Run 幂等物化、独立节点/集成与 Goal Outcome 仍待同路径接通；候选未合入和实机通过前不作为生产使用说明。
+
 ## 每轮最小记录
+
+参考团队输入生成（未发布候选）：`python3 -I -B scripts/fixed-server-team-inputs.py --repository CANONICAL_ROOT --base-ref FULL_SHA --doctor DOCTOR.json --model PROVIDER/MODEL --goal-id GOAL_ID --proposal-id PROPOSAL_ID --request-id REQUEST_ID --deadline UTC_DEADLINE --out REQUEST.json`。仅创建不存在的请求文件，不批准或启动 Worker；调用前先运行 fixed binary 的 doctor 获得真实环境绑定，确认完整输入摘要后才使用上述 `team-approve`。Core 再校验全 Task/Policy/Goal，不信任 Python 自称有效。
+
+首个参考输入固定两个实现加一个集成、并发 2、全 Goal 三次 Attempt、零 operational retry/rework、publication:none；变更业务/模型改变批准摘要，变更 proposal 改变确定性节点 ID。模型 token/compute 的零估算不是测量为零，也不能作为成本收益证据。批准仍只适用于原完整输入，集成与有界 replan 尚未接通前，不把这个生成器当成团队完整交付工具。
 
 任务类型/难度、冻结需求/输入/候选/运行 binary 身份、开始结束时间、各阶段等待/运行时间、Attempt/rework 数、失败分类、人工介入、业务验收和 evidence refs。token 缺失记为 unavailable，不能计为零。样例测试通过仅是测试基础设施证据，不是实机 Agent 成功。
 

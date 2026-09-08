@@ -108,6 +108,20 @@ func (r Repository) Create(stateRoot, taskID, baseSHA string) (*Worktree, error)
 // worktree still admits at most one writer at a time. An empty runID keeps
 // the legacy task-only naming.
 func (r Repository) CreateForRun(stateRoot, taskID, runID, baseSHA string) (*Worktree, error) {
+	return r.prepareForRun(stateRoot, taskID, runID, baseSHA, false)
+}
+
+// RecoverPreparationForRun is only for an unstarted Run whose exact durable
+// creation obligation and Run lease are held by the caller. It preserves any
+// partial worktree/branch on failure and never resets or deletes content.
+func (r Repository) RecoverPreparationForRun(stateRoot, taskID, runID, baseSHA string) (*Worktree, error) {
+	if runID == "" {
+		return nil, errors.New("preparation recovery requires a Run ID")
+	}
+	return r.prepareForRun(stateRoot, taskID, runID, baseSHA, true)
+}
+
+func (r Repository) prepareForRun(stateRoot, taskID, runID, baseSHA string, recoverPreparation bool) (*Worktree, error) {
 	if err := domain.ValidateID(taskID); err != nil {
 		return nil, err
 	}
@@ -127,6 +141,20 @@ func (r Repository) CreateForRun(stateRoot, taskID, runID, baseSHA string) (*Wor
 		return nil, err
 	}
 	locks := filepath.Join(stateRoot, "locks")
+	if recoverPreparation {
+		for _, directory := range []string{locks, filepath.Join(stateRoot, "worktrees")} {
+			info, err := os.Lstat(directory)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return nil, errors.New("preparation container is not a direct directory")
+			}
+		}
+	}
 	if err := os.MkdirAll(locks, 0o700); err != nil {
 		return nil, err
 	}
@@ -141,17 +169,38 @@ func (r Repository) CreateForRun(stateRoot, taskID, runID, baseSHA string) (*Wor
 	}
 	worktreePath := filepath.Join(stateRoot, "worktrees", name)
 	branch := "marshal/" + name
-	if _, err := os.Lstat(worktreePath); !errors.Is(err, os.ErrNotExist) {
+	if info, err := os.Lstat(worktreePath); !errors.Is(err, os.ErrNotExist) {
+		if recoverPreparation && err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			worktree := &Worktree{Path: worktreePath, Branch: branch, BaseSHA: baseSHA, repo: r, stateRoot: stateRoot, taskLock: taskLock}
+			if err := worktree.recoverPreparationLock(); err != nil {
+				_ = taskLock.Unlock()
+				_ = repositoryLock.Unlock()
+				return nil, err
+			}
+			if err := repositoryLock.Unlock(); err != nil {
+				_ = worktree.Release()
+				return nil, err
+			}
+			return worktree, nil
+		}
 		_ = taskLock.Unlock()
 		_ = repositoryLock.Unlock()
 		return nil, fmt.Errorf("worktree path already exists: %s", worktreePath)
 	}
-	if _, err := gitOutput(r.Root, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
-		_ = taskLock.Unlock()
-		_ = repositoryLock.Unlock()
-		return nil, fmt.Errorf("worktree branch already exists: %s", branch)
+	branchExists := false
+	if head, err := gitOutput(r.Root, "rev-parse", "--verify", "refs/heads/"+branch); err == nil {
+		branchExists = true
+		if !recoverPreparation || head != baseSHA {
+			_ = taskLock.Unlock()
+			_ = repositoryLock.Unlock()
+			return nil, fmt.Errorf("worktree branch already exists: %s", branch)
+		}
 	}
-	if err := gitRun(r.Root, "worktree", "add", "-b", branch, worktreePath, baseSHA); err != nil {
+	args := []string{"worktree", "add", "-b", branch, worktreePath, baseSHA}
+	if branchExists {
+		args = []string{"worktree", "add", worktreePath, branch}
+	}
+	if err := gitRun(r.Root, args...); err != nil {
 		_ = taskLock.Unlock()
 		_ = repositoryLock.Unlock()
 		return nil, err
@@ -160,20 +209,26 @@ func (r Repository) CreateForRun(stateRoot, taskID, runID, baseSHA string) (*Wor
 	// 与 admin gitdir 恰好 0700。git worktree add 跟随 operator umask
 	// （umask 022 → 0755），创建时必须显式收敛到已冻结的不变量。
 	if err := setPrivateModeOnWorktreeTargets(worktreePath); err != nil {
-		_ = gitRun(r.Root, "worktree", "remove", "--force", worktreePath)
+		if !recoverPreparation {
+			_ = gitRun(r.Root, "worktree", "remove", "--force", worktreePath)
+		}
 		_ = taskLock.Unlock()
 		_ = repositoryLock.Unlock()
 		return nil, fmt.Errorf("set private mode on worktree targets: %w", err)
 	}
 	if err := gitRun(r.Root, "worktree", "lock", "--reason", "managed by Marshal", worktreePath); err != nil {
-		_ = gitRun(r.Root, "worktree", "remove", "--force", worktreePath)
+		if !recoverPreparation {
+			_ = gitRun(r.Root, "worktree", "remove", "--force", worktreePath)
+		}
 		_ = taskLock.Unlock()
 		_ = repositoryLock.Unlock()
 		return nil, err
 	}
 	if err := repositoryLock.Unlock(); err != nil {
 		_ = gitRun(r.Root, "worktree", "unlock", worktreePath)
-		_ = gitRun(r.Root, "worktree", "remove", "--force", worktreePath)
+		if !recoverPreparation {
+			_ = gitRun(r.Root, "worktree", "remove", "--force", worktreePath)
+		}
 		_ = taskLock.Unlock()
 		return nil, err
 	}

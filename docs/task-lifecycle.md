@@ -1,5 +1,7 @@
 # 任务生命周期
 
+2026-09-07 Task-first 目标见 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）与[服务架构](agent-team-service-architecture.md)：公开 Task 复用 Goal，旧内部 Task 执行规格对外称 WorkItem；没有 Workspace 实体。B1 先明确需求/有限计划确认并完成团队交付，B2 才补完整持久节点问答、SQLite 与同版本恢复。下面身份/状态/转换表是既有 Run/旧工程 Task 合同，不把它复制成第二套公开 Task 生命周期。节点待答不隐式全局暂停，显式 pause/cancel 优先，terminal Run 不复活；新语义须实现/验收后启用，不能由 UI/HTTP PATCH 状态旁路。
+
 ## 目的
 
 生命周期是 Planning、Worker 执行、Verification、Review、Publishing 和 Recovery 之间的持久化契约。自然语言消息不能改变状态；只有通过守卫的应用命令才能追加转换事件并原子更新状态快照。
@@ -38,7 +40,7 @@ Retry 表示基础设施或 Provider 执行失败，因此创建新 Attempt。Re
 
 终态不可复活存在唯一命名例外（[ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) typed reconciliation）：发布后误入 `BLOCKED` 的 Run，在 PR 已被合并且 merged head 的 required checks 全绿时，可经 `marshal task reconcile` 以不可变 `SCMMergeReceipt` + append-only `PublicationReconcileRecord` + current-ledger recheck 共同门禁，安全迁移 `BLOCKED → ACCEPTED`（事件 `publication.reconciled`，actor `system/marshal-reconciliation`）。该例外仅限 accept-after-merge：不开放其他终态、其他状态组合或其他 reconcile 类型，不绕过 required checks 与 ReviewDecision，也不改写既有 PublicationRecord 或 ReviewDecision。若原 block 原因为 `ci-deadline-exceeded`、`ci-completed-at-missing`、`ci-completed-at-exceeds-deadline` 或 `ci-completed-at-inconsistent`，还必须先持久化 fresh identity-bound RemoteCheckRecord，并以全部 required checks 的可信 `completedAt` 证明及时完成；非 CI 时间原因的历史 block 保持 ADR 0026 兼容语义。
 
-M13 的长周期人工等待不改变本表：根据 [ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md)，等待输入、策略或预算审批由 Goal `PAUSED` 承担；Run 不新增 `WAITING_HUMAN_APPROVAL`。Goal resume 可以创建关联的新 Run，但不能复活或改写已终态 Run。
+人工等待不改变本表。旧 ADR 0019 全局暂停路径保留；当前服务目标由 [ADR 0085 §5](adr/0085-agent-team-service-contract-and-storage.md#5-节点交互生命周期与取消)新增持久 UserInteraction：节点待答只阻塞相关依赖，显式 Goal `PAUSED`/cancel 始终优先停止全图新派发。Run 不新增无界 `WAITING_HUMAN_APPROVAL`；活动执行只在原 deadline 内有界等答，超期按合法终态收口，再由批准范围的新 Run 继续，不能因回答复活终态。该扩展仍为 Proposed，旧运行时不提前改变语义；精确取代见[合同适用性](design-contract-map.md)。
 
 ## 转换表
 

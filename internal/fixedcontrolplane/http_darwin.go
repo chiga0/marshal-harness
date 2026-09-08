@@ -52,17 +52,19 @@ type StartRunDelivery interface {
 // authority: mutation is delegated to PublicApplicationPort and its only
 // durable transport state is the injected immutable delivery store.
 type HTTPRouter struct {
-	application application.PublicApplicationPort
-	delivery    StartRunDelivery
-	inflight    chan struct{}
-	queue       chan struct{}
+	application  application.PublicApplicationPort
+	delivery     StartRunDelivery
+	inflight     chan struct{}
+	queue        chan struct{}
+	mutation     chan struct{}
+	runMutations runMutationLanes
 }
 
 func NewHTTPRouter(port application.PublicApplicationPort, delivery StartRunDelivery) (*HTTPRouter, error) {
 	if port == nil || delivery == nil {
 		return nil, ErrInvalid
 	}
-	return &HTTPRouter{application: port, delivery: delivery, inflight: make(chan struct{}, maxRepositoryInflight), queue: make(chan struct{}, maxRepositoryQueue)}, nil
+	return &HTTPRouter{application: port, delivery: delivery, inflight: make(chan struct{}, maxRepositoryInflight), queue: make(chan struct{}, maxRepositoryQueue), mutation: make(chan struct{}, 1)}, nil
 }
 
 type httpRequest struct {
@@ -72,20 +74,23 @@ type httpRequest struct {
 }
 
 type httpResponse struct {
-	SchemaVersion    string                                   `json:"schemaVersion"`
-	ProtocolRevision string                                   `json:"protocolRevision"`
-	Operation        string                                   `json:"operation,omitempty"`
-	Disposition      string                                   `json:"disposition"`
-	ReasonCode       string                                   `json:"reasonCode,omitempty"`
-	Status           *application.StatusProjection            `json:"status,omitempty"`
-	Run              *application.RunProjection               `json:"run,omitempty"`
-	Started          *application.RunStartProjection          `json:"started,omitempty"`
-	DeliveryReceipt  *productionruntime.FixedDeliveryReceipt  `json:"deliveryReceipt,omitempty"`
-	Collected        *application.CollectedRunProjection      `json:"collected,omitempty"`
-	Verification     *application.VerificationProjection      `json:"verification,omitempty"`
-	ReviewPacket     *application.ReviewPacketProjection      `json:"reviewPacket,omitempty"`
-	Decision         *application.ReviewDecisionProjection    `json:"decision,omitempty"`
-	LifecycleReceipt *productionruntime.FixedLifecycleReceipt `json:"lifecycleReceipt,omitempty"`
+	SchemaVersion    string                                     `json:"schemaVersion"`
+	ProtocolRevision string                                     `json:"protocolRevision"`
+	Operation        string                                     `json:"operation,omitempty"`
+	Disposition      string                                     `json:"disposition"`
+	ReasonCode       string                                     `json:"reasonCode,omitempty"`
+	Status           *application.StatusProjection              `json:"status,omitempty"`
+	Run              *application.RunProjection                 `json:"run,omitempty"`
+	Started          *application.RunStartProjection            `json:"started,omitempty"`
+	DeliveryReceipt  *productionruntime.FixedDeliveryReceipt    `json:"deliveryReceipt,omitempty"`
+	Collected        *application.CollectedRunProjection        `json:"collected,omitempty"`
+	Verification     *application.VerificationProjection        `json:"verification,omitempty"`
+	ReviewPacket     *application.ReviewPacketProjection        `json:"reviewPacket,omitempty"`
+	Decision         *application.ReviewDecisionProjection      `json:"decision,omitempty"`
+	Stopped          *application.CancelRunProjection           `json:"stopped,omitempty"`
+	LifecycleReceipt *productionruntime.FixedLifecycleReceipt   `json:"lifecycleReceipt,omitempty"`
+	TeamApproval     *application.InitialTeamApprovalProjection `json:"teamApproval,omitempty"`
+	TeamOutcome      *application.InitialTeamOutcomeProjection  `json:"teamOutcome,omitempty"`
 }
 
 type httpIntent struct {
@@ -105,7 +110,7 @@ func (router *HTTPRouter) ServeAuthenticated(ctx context.Context, connection *Au
 	request, err := readHTTPRequest(connection)
 	if err != nil {
 		_ = writeHTTPResponse(connection, transportHTTPStatus(err), errorHTTPResponse("", err))
-		return err
+		return atRequestStage("server-read", err)
 	}
 	deadline, err := time.Parse(time.RFC3339Nano, connection.Binding.Deadline)
 	requestNow := time.Now().UTC()
@@ -117,11 +122,11 @@ func (router *HTTPRouter) ServeAuthenticated(ctx context.Context, connection *Au
 	defer cancel()
 	disconnected := watchClientDisconnect(connection, cancel)
 	if err := router.admit(applicationContext); err != nil {
-		return errors.Join(err, writeHTTPResponseAndAwaitClient(connection, 503, errorHTTPResponse(request.operation, err), disconnected))
+		return errors.Join(atRequestStage("server-admission", err), writeHTTPResponseAndAwaitClient(connection, 503, errorHTTPResponse(request.operation, err), disconnected))
 	}
 	defer router.release()
 	if err := connection.Recheck(applicationContext); err != nil {
-		return errors.Join(err, writeHTTPResponseAndAwaitClient(connection, 409, errorHTTPResponse(request.operation, err), disconnected))
+		return errors.Join(atRequestStage("server-precheck", err), writeHTTPResponseAndAwaitClient(connection, 409, errorHTTPResponse(request.operation, err), disconnected))
 	}
 
 	// A client close cancels a running application operation. After reading the
@@ -130,11 +135,12 @@ func (router *HTTPRouter) ServeAuthenticated(ctx context.Context, connection *Au
 	// through the response therefore prevents the server from racing that
 	// required recheck by closing its end first.
 	response, statusCode, operationErr := router.dispatch(applicationContext, connection.Binding, request, deadline)
+	operationErr = atRequestStage("server-dispatch", operationErr)
 	recheckContext, recheckCancel := context.WithTimeout(context.Background(), handshakeTimeout)
 	recheckErr := connection.Recheck(recheckContext)
 	recheckCancel()
 	if recheckErr != nil {
-		operationErr = errors.Join(operationErr, recheckErr)
+		operationErr = errors.Join(operationErr, atRequestStage("server-postcheck", recheckErr))
 		statusCode = 409
 		response = errorHTTPResponse(request.operation, ErrConflict)
 	}
@@ -156,16 +162,25 @@ func watchClientDisconnect(connection *AuthenticatedConnection, cancel context.C
 }
 
 func writeHTTPResponseAndAwaitClient(connection *AuthenticatedConnection, statusCode int, response httpResponse, disconnected <-chan struct{}) error {
+	// The client must consume the response and perform a bounded, authenticated
+	// post-response recheck before half-closing. One second is shorter than
+	// the protocol's own recheck budget and races healthy clients.
+	completionDeadline := time.Now().Add(writeTimeout + handshakeTimeout)
+	if requestDeadline, err := time.Parse(time.RFC3339Nano, connection.Binding.Deadline); err == nil && requestDeadline.Before(completionDeadline) {
+		completionDeadline = requestDeadline
+	}
 	if err := writeHTTPResponse(connection, statusCode, response); err != nil {
 		_ = connection.CloseRead()
-		return err
+		return atRequestStage("server-response", err)
 	}
+	timer := time.NewTimer(time.Until(completionDeadline))
+	defer timer.Stop()
 	select {
 	case <-disconnected:
 		return nil
-	case <-time.After(time.Second):
+	case <-timer.C:
 		_ = connection.CloseRead()
-		return ErrUnavailable
+		return atRequestStage("server-half-close", ErrUnavailable)
 	}
 }
 
@@ -195,6 +210,8 @@ func (router *HTTPRouter) release() {
 
 func (router *HTTPRouter) dispatch(ctx context.Context, authenticated RequestBinding, request httpRequest, deadline time.Time) (httpResponse, int, error) {
 	switch request.operation {
+	case "approve-initial-team", "reconcile-team-approval":
+		return router.initialTeam(ctx, authenticated, request, deadline)
 	case "status":
 		var input application.StatusRequest
 		if decodeHTTPBody(request.body, &input) != nil {
@@ -235,6 +252,12 @@ func (router *HTTPRouter) dispatch(ctx context.Context, authenticated RequestBin
 			return httpResponse{}, 400, ErrInvalid
 		}
 		return router.lifecycleOperation(ctx, authenticated, request, deadline, input, application.CurrentRunRequest(input), func(callCtx context.Context) (any, error) { return router.application.CollectRunResult(callCtx, input) })
+	case productionruntime.FixedLifecycleCancelOperation:
+		var input application.CancelRunRequest
+		if decodeHTTPBody(request.body, &input) != nil || input.Validate() != nil {
+			return httpResponse{}, 400, ErrInvalid
+		}
+		return router.lifecycleOperation(ctx, authenticated, request, deadline, input, input.CurrentRunRequest, func(callCtx context.Context) (any, error) { return router.application.CancelRun(callCtx, input) })
 	case productionruntime.FixedLifecycleVerifyOperation:
 		var input application.VerifyRunRequest
 		if decodeHTTPBody(request.body, &input) != nil || input.Validate() != nil {
@@ -268,6 +291,20 @@ func (router *HTTPRouter) lifecycleOperation(ctx context.Context, authenticated 
 	if err != nil || authenticated != (RequestBinding{RequestKeyDigest: binding.RequestKeyDigest, RequestDigest: binding.RequestDigest, IntentDigest: binding.ApplicationIntentDigest, Deadline: binding.Deadline}) {
 		return httpResponse{}, 409, ErrConflict
 	}
+	releaseRun, err := router.runMutations.acquire(ctx, current.RunID)
+	if err != nil {
+		return httpResponse{}, 503, err
+	}
+	defer releaseRun()
+	if err := router.acquireMutation(ctx); err != nil {
+		return httpResponse{}, 503, err
+	}
+	writerHeld := true
+	defer func() {
+		if writerHeld {
+			router.releaseMutation()
+		}
+	}()
 	pending, _, err := router.delivery.BeginLifecycleBound(ctx, request.requestKey, request.operation, input, current, deadline, binding)
 	if err != nil {
 		return httpResponse{}, applicationHTTPStatus(err), err
@@ -277,10 +314,27 @@ func (router *HTTPRouter) lifecycleOperation(ctx context.Context, authenticated 
 	}
 	deliveryContext, cancelDelivery := context.WithDeadline(context.WithoutCancel(ctx), deadline)
 	defer cancelDelivery()
+	if request.operation == productionruntime.FixedLifecycleVerifyOperation {
+		router.releaseMutation()
+		writerHeld = false
+	}
 	projection, applyErr := apply(deliveryContext)
+	if !writerHeld {
+		if err := router.acquireMutation(deliveryContext); err != nil {
+			return httpResponse{}, 503, errors.Join(err, applyErr)
+		}
+		writerHeld = true
+	}
 	result, resultErr := fixedLifecycleResult(request.operation, projection)
 	if resultErr != nil {
+		emptyStop, stopType := projection.(application.CancelRunProjection)
+		if request.operation == productionruntime.FixedLifecycleCancelOperation && stopType && emptyStop == (application.CancelRunProjection{}) && application.HasReason(applyErr, application.ReasonStopTooLate) {
+			return errorHTTPResponse(request.operation, applyErr), 409, applyErr
+		}
 		emptyCollect, collectType := projection.(application.CollectedRunProjection)
+		if request.operation == productionruntime.FixedLifecycleCollectOperation && collectType && emptyCollect == (application.CollectedRunProjection{}) && application.HasReason(applyErr, application.ReasonRunStopped) {
+			return errorHTTPResponse(request.operation, applyErr), 409, applyErr
+		}
 		if request.operation == productionruntime.FixedLifecycleCollectOperation && collectType && emptyCollect == (application.CollectedRunProjection{}) && application.HasReason(applyErr, application.ReasonAttemptStillRunning) {
 			// Keep the existing durable pending. This only distinguishes a
 			// positively observed live Attempt from an unknown delivery failure.
@@ -304,6 +358,11 @@ func fixedLifecycleResult(operation string, projection any) (productionruntime.F
 	var run application.RunProjection
 	var fact string
 	switch value := projection.(type) {
+	case application.CancelRunProjection:
+		if operation != productionruntime.FixedLifecycleCancelOperation || value.Validate() != nil {
+			return productionruntime.FixedLifecycleResult{}, ErrConflict
+		}
+		run, fact = value.Run, value.Run.AuthorityHead
 	case application.CollectedRunProjection:
 		if operation != productionruntime.FixedLifecycleCollectOperation || value.Validate() != nil {
 			return productionruntime.FixedLifecycleResult{}, ErrConflict
@@ -341,6 +400,8 @@ func fixedLifecycleResult(operation string, projection any) (productionruntime.F
 func successLifecycleHTTPResponse(operation string, projection any, receipt *productionruntime.FixedLifecycleReceipt) httpResponse {
 	response := httpResponse{SchemaVersion: httpResponseSchema, ProtocolRevision: httpProtocolRevision, Operation: operation, Disposition: "success", LifecycleReceipt: receipt}
 	switch value := projection.(type) {
+	case application.CancelRunProjection:
+		response.Stopped = &value
 	case application.CollectedRunProjection:
 		response.Collected = &value
 	case application.VerificationProjection:
@@ -362,6 +423,15 @@ func (router *HTTPRouter) startRun(ctx context.Context, authenticated RequestBin
 	if err != nil || authenticated != (RequestBinding{RequestKeyDigest: binding.RequestKeyDigest, RequestDigest: binding.RequestDigest, IntentDigest: binding.ApplicationIntentDigest, Deadline: binding.Deadline}) {
 		return httpResponse{}, 409, ErrConflict
 	}
+	releaseRun, err := router.runMutations.acquire(ctx, input.RunID)
+	if err != nil {
+		return httpResponse{}, 503, err
+	}
+	defer releaseRun()
+	if err := router.acquireMutation(ctx); err != nil {
+		return httpResponse{}, 503, err
+	}
+	defer router.releaseMutation()
 	pending, replay, err := router.delivery.BeginStartRunBound(ctx, request.requestKey, input, deadline, binding)
 	if err != nil {
 		return httpResponse{}, applicationHTTPStatus(err), err
@@ -446,6 +516,10 @@ func readHTTPRequest(connection *AuthenticatedConnection) (httpRequest, error) {
 	}
 	operation := ""
 	switch parts[1] {
+	case "/v1/teams/approve":
+		operation = "approve-initial-team"
+	case "/v1/teams/reconcile-approval":
+		operation = "reconcile-team-approval"
 	case "/v1/status":
 		operation = "status"
 	case "/v1/runs/inspect":
@@ -460,6 +534,8 @@ func readHTTPRequest(connection *AuthenticatedConnection) (httpRequest, error) {
 		operation = productionruntime.FixedLifecycleReviewOperation
 	case "/v1/runs/decision":
 		operation = productionruntime.FixedLifecycleDecisionOperation
+	case "/v1/runs/cancel":
+		operation = productionruntime.FixedLifecycleCancelOperation
 	default:
 		// Consume and validate the complete request before returning an
 		// unsupported-operation response. This lets the authenticated peer use

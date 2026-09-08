@@ -3,6 +3,7 @@
 package fixedcontrolplane
 
 import (
+	"bufio"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -261,7 +262,15 @@ func (endpoint *Endpoint) StopAccept() error {
 }
 
 func (endpoint *Endpoint) authenticate(ctx context.Context, connection *net.UnixConn, peer processsupervisor.CoreIdentity, release func()) (*AuthenticatedConnection, error) {
-	if peer.Binary != endpoint.server.Binary || peer.UID != endpoint.server.UID || peer.GID != endpoint.server.GID || endpoint.recheck(ctx) != nil {
+	stopCancel := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancel()
+	if peer.Binary != endpoint.server.Binary || peer.UID != endpoint.server.UID || peer.GID != endpoint.server.GID {
+		return nil, ErrConflict
+	}
+	queueCtx, cancelQueue := context.WithTimeout(ctx, authorityWaitTimeout)
+	queueErr := endpoint.recheck(queueCtx)
+	cancelQueue()
+	if queueErr != nil {
 		return nil, ErrConflict
 	}
 	now := time.Now().UTC()
@@ -300,8 +309,23 @@ func (endpoint *Endpoint) authenticate(ctx context.Context, connection *net.Unix
 		return nil, ErrConflict
 	}
 	expected, err := proofDigest(endpoint.token[:], challenge, peerDigest, proof.Binding)
-	if err != nil || !hmac.Equal([]byte(expected), []byte(proof.Proof)) || time.Now().UTC().After(now.Add(handshakeTimeout)) || endpoint.recheck(ctx) != nil {
+	if err != nil || !hmac.Equal([]byte(expected), []byte(proof.Proof)) || time.Now().UTC().After(now.Add(handshakeTimeout)) {
 		return nil, ErrConflict
+	}
+	// The proof is consumed while fresh, before any local owner-lock wait.
+	// Rechecking current authority never renews the nonce or request deadline.
+	deadline, _ := time.Parse(time.RFC3339Nano, proof.Binding.Deadline)
+	requestCtx, cancelRequest := context.WithDeadline(ctx, deadline)
+	defer cancelRequest()
+	queueCtx, cancelQueue = context.WithTimeout(requestCtx, authorityWaitTimeout)
+	queueErr = endpoint.recheck(queueCtx)
+	cancelQueue()
+	if queueErr != nil || requestCtx.Err() != nil {
+		return nil, ErrConflict
+	}
+	writeDeadline := earlierDeadline(requestCtx, time.Now().Add(handshakeTimeout))
+	if connection.SetWriteDeadline(writeDeadline) != nil {
+		return nil, ErrUnavailable
 	}
 	accepted := acceptedFrame{SchemaVersion: "fixed-control-accepted/v1", ProtocolRevision: ProtocolRevision, ChallengeDigest: challengeDigest, ProofDigest: canonical.DigestBytes(proofRaw)}
 	acceptedRaw, err := canonicalBytes(accepted)
@@ -323,6 +347,9 @@ func Dial(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	if ctx == nil || authority == nil || binding.Validate(time.Now().UTC()) != nil {
 		return nil, ErrInvalid
 	}
+	deadline, _ := time.Parse(time.RFC3339Nano, binding.Deadline)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	if authority.Recheck(ctx) != nil {
 		return nil, ErrConflict
 	}
@@ -362,6 +389,8 @@ func Dial(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 		_ = raw.Close()
 		return nil, ErrUnavailable
 	}
+	stopCancel := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancel()
 	fail := func(err error) (*AuthenticatedConnection, error) {
 		_ = connection.Close()
 		return nil, err
@@ -371,8 +400,7 @@ func Dial(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	if err != nil || peer != server {
 		return fail(ErrConflict)
 	}
-	_ = connection.SetDeadline(time.Now().Add(handshakeTimeout))
-	challengeRaw, err := readFrame(connection)
+	challengeRaw, err := readAuthorityFrame(ctx, connection)
 	if err != nil {
 		return fail(err)
 	}
@@ -400,10 +428,17 @@ func Dial(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	}
 	proofValue := proofFrame{SchemaVersion: "fixed-control-proof/v1", ProtocolRevision: ProtocolRevision, ChallengeDigest: canonical.DigestBytes(challengeRaw), ClientIdentityDigest: clientDigest, Binding: binding, Proof: proof}
 	proofRaw, err := canonicalBytes(proofValue)
+	proofDeadline := time.Now().Add(handshakeTimeout)
+	if expiresAt.Before(proofDeadline) {
+		proofDeadline = expiresAt
+	}
+	if connection.SetWriteDeadline(earlierDeadline(ctx, proofDeadline)) != nil {
+		return fail(ErrUnavailable)
+	}
 	if err != nil || writeFrame(connection, proofRaw) != nil {
 		return fail(ErrUnavailable)
 	}
-	acceptedRaw, err := readFrame(connection)
+	acceptedRaw, err := readAuthorityFrame(ctx, connection)
 	var accepted acceptedFrame
 	if err != nil || decodeClosed(acceptedRaw, &accepted) != nil || accepted.SchemaVersion != "fixed-control-accepted/v1" || accepted.ProtocolRevision != ProtocolRevision || accepted.ChallengeDigest != canonical.DigestBytes(challengeRaw) || accepted.ProofDigest != canonical.DigestBytes(proofRaw) {
 		return fail(ErrConflict)
@@ -414,7 +449,7 @@ func Dial(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	if current, err := observeNamed(control, tokenName, unix.S_IFREG, 0o600, 32); err != nil || current != tokenObject {
 		return fail(ErrConflict)
 	}
-	if authority.Recheck(ctx) != nil {
+	if authority.Recheck(ctx) != nil || ctx.Err() != nil {
 		return fail(ErrConflict)
 	}
 	_ = connection.SetDeadline(time.Time{})
@@ -425,6 +460,29 @@ func Dial(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 		recheckLifecycle: authenticatedPeerLifecycleRecheck(connection, peer, authority),
 		release:          func() {},
 	}, nil
+}
+
+// Local authority contention is not peer frame transfer time. Both windows
+// remain bounded and inherit the original request/parent deadline.
+func readAuthorityFrame(ctx context.Context, connection *net.UnixConn) ([]byte, error) {
+	if connection.SetReadDeadline(earlierDeadline(ctx, time.Now().Add(authorityWaitTimeout))) != nil {
+		return nil, ErrUnavailable
+	}
+	reader := bufio.NewReaderSize(connection, 1)
+	if _, err := reader.Peek(1); err != nil {
+		return nil, ErrUnavailable
+	}
+	if connection.SetReadDeadline(earlierDeadline(ctx, time.Now().Add(handshakeTimeout))) != nil {
+		return nil, ErrUnavailable
+	}
+	return readFrame(reader)
+}
+
+func earlierDeadline(ctx context.Context, limit time.Time) time.Time {
+	if deadline, ok := ctx.Deadline(); ok && deadline.Before(limit) {
+		return deadline
+	}
+	return limit
 }
 
 func authenticatedPeerLifecycleRecheck(connection *net.UnixConn, expected processsupervisor.CoreIdentity, authority *productionruntime.FixedEndpointAuthority) func(context.Context, productionruntime.FixedLifecycleResult, productionruntime.FixedLifecycleReceipt) error {

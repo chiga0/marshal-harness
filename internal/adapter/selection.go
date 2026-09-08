@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -192,6 +193,54 @@ func (s *Selector) Select(ctx context.Context, request SelectionRequest) (Select
 		return selection, nil
 	}
 	return selection, selectionError(selection.Attempts, admissionErr)
+}
+
+// RestoreSelection resolves a previously frozen, single-candidate selection
+// without probing or falling back. The caller must read the snapshot from its
+// current durable creation authority; this function authenticates no receipt.
+// Registry eligibility and production admission are checked again. Launch-time
+// executable/allocation identity checks remain mandatory at execution.
+func (s *Selector) RestoreSelection(ctx context.Context, request SelectionRequest, snapshot domain.Record, attempts []SelectionAttempt) (Selection, error) {
+	if ctx == nil || s == nil || s.registry == nil {
+		return Selection{}, port.Permanentf("restore selection: missing context or registry")
+	}
+	if err := ctx.Err(); err != nil {
+		return Selection{}, err
+	}
+	candidates, err := validateCandidates(request)
+	if err != nil || len(candidates) != 1 || len(attempts) != 1 ||
+		attempts[0].AdapterID != candidates[0] || attempts[0].Outcome != OutcomeSelected {
+		return Selection{}, port.Permanentf("restore selection: expected exact single selected candidate")
+	}
+	id := candidates[0]
+	allowed := false
+	for _, candidate := range request.AllowedAdapters {
+		allowed = allowed || strings.TrimSpace(candidate) == id
+	}
+	if !allowed {
+		return Selection{}, port.Permanentf("restore selection: policy denied")
+	}
+	worker, err := s.registry.Resolve(id)
+	if err != nil || worker.ID() != id {
+		return Selection{}, port.Permanentf("restore selection: unavailable or changed adapter")
+	}
+	if s.eligibility != nil && !s.eligibility(worker) {
+		return Selection{}, port.Permanentf("restore selection: not launch capable")
+	}
+	if s.admission != nil {
+		if err := s.admission(worker); err != nil {
+			return Selection{}, err
+		}
+	}
+	snapshot.Data = bytes.Clone(snapshot.Data)
+	adapterID, status, err := decodeCapabilitySnapshot(snapshot)
+	if err != nil || adapterID != id || status != "supported" {
+		return Selection{}, port.Permanentf("restore selection: invalid frozen capability")
+	}
+	if err := ctx.Err(); err != nil {
+		return Selection{}, err
+	}
+	return Selection{Adapter: worker, Capability: snapshot, Attempts: slices.Clone(attempts)}, nil
 }
 
 func validateCandidates(request SelectionRequest) ([]string, error) {

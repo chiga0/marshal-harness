@@ -40,7 +40,7 @@ func appendRegularAt(runFD int, name string, data []byte) error {
 }
 
 func readRegularAt(directoryFD int, name string, limit int64) ([]byte, error) {
-	fd, err := unix.Openat(directoryFD, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	fd, err := unix.Openat(directoryFD, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, unix.ENOENT) {
 			return nil, os.ErrNotExist

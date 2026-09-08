@@ -1,5 +1,7 @@
 # ADR 0067：Darwin ordinary-user 启动门禁归位与只读 Attach 恢复
 
+> 2026-09-07 适用性：对 ADR 0065/0066 proof/锁序/AST 的继承及 S1′/S2′封闭文件/顺序拟由 ADR 0085 在新路径替代；source/process 真实观测、no-effect/permanent-intervention 二分和未知归属零 kill/零 release 不变。变更存储不能授权原本不安全的恢复。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：已接受（Accepted，2026-08-29）
 - 提议基线：`main@84d2dcd6bb78cb7fa47ed1d3040a1f3bea5a0f11`
 - 接受记录：提案 `1e05fb831c04a1c87e7f4ecdc677c97beb9d88e6` 经唯一独立 reviewer 复审，`P0=0`、`P1=0`；接受只冻结本文合同，不表示 S1′/S2′、Attach/rebind、terminalization 或 RC1 已实现，也不升级 R2–R6。

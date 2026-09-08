@@ -16,6 +16,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/goal"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
@@ -332,6 +333,7 @@ type AttemptTransition struct {
 	Process                         ProcessObservation          `json:"process,omitempty"`
 	TerminalizationID               string                      `json:"terminalizationId,omitempty"`
 	EligibilityTerminal             EligibilityTerminal         `json:"eligibilityTerminal,omitempty"`
+	StopIntent                      AttemptStopIntent           `json:"stopIntent,omitempty,omitzero"`
 	ProcessTerminalKind             ProcessTerminalKind         `json:"processTerminalKind,omitempty"`
 	ObservationDigest               string                      `json:"terminalObservationDigest,omitempty"`
 	ReceiptDigest                   string                      `json:"receiptDigest,omitempty"`
@@ -401,6 +403,7 @@ type AttemptAuthorityState struct {
 	CommittedResultOutcomeDigest     string                        `json:"committedResultOutcomeDigest,omitempty"`
 	CommittedResultObservation       ResultObservationBinding      `json:"committedResultObservation,omitempty,omitzero"`
 	BarrierDigest                    string                        `json:"barrierDigest,omitempty"`
+	StopIntent                       AttemptStopIntent             `json:"stopIntent,omitempty,omitzero"`
 	TerminalizationID                string                        `json:"terminalizationId,omitempty"`
 	EligibilityTerminal              EligibilityTerminal           `json:"eligibilityTerminal,omitempty"`
 	AdmissionClosed                  bool                          `json:"admissionClosed"`
@@ -715,6 +718,17 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 		if prior.BarrierDigest != "" {
 			return ErrAttemptAuthorityOrder
 		}
+		if t.StopIntent != (AttemptStopIntent{}) {
+			if prior.CommittedResultFactDigest != "" {
+				return ErrStopTooLate
+			}
+			if prior.ProcessStartedDigest == "" || prior.LaunchState != LaunchStarted {
+				return ErrAttemptAuthorityOrder
+			}
+			if t.StopIntent.Category != StopOperatorRequest && (t.StopIntent.Deadline.ProcessStartedFactDigest != prior.ProcessStartedDigest || t.StopIntent.Deadline.ProcessStartedAt != prior.ObservedAt) {
+				return ErrAttemptAuthorityConflict
+			}
+		}
 		// The barrier always closes result admission. Whether it bound an
 		// already-admitted result or closed an empty admission slot is encoded
 		// by AdmissionFactDigest/AdmissionSequence, not by this state bit.
@@ -810,6 +824,9 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 func validateTransitionShape(t AttemptTransition) error {
 	if err := t.Identity.Validate(); err != nil {
 		return err
+	}
+	if t.StopIntent != (AttemptStopIntent{}) && (t.Kind != AttemptTransitionTerminalizationBarrier || t.StopIntent.Validate(t.Identity) != nil || t.StopIntent.Eligibility() != t.EligibilityTerminal || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0) {
+		return ErrAttemptAuthorityConflict
 	}
 	if t.Kind != AttemptTransitionLaunchAuthorized && t.Kind != AttemptTransitionProcessStarted && (!zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "") {
 		return fmt.Errorf("%w: launch identity on unrelated transition", ErrAttemptAuthorityConflict)
@@ -1109,11 +1126,12 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 			return ErrAttemptAuthorityOrder
 		}
 	case processsupervisor.CommandCollect:
-		// A collect Rebuild reanchors the business projection. The supervisor
-		// reconnect fact is the only admitted session-continuity proof, so the
-		// first collect of every attempt must follow it.
-		continuityReanchored := state.SupervisorReconnectFactDigest != "" || boundToCurrentRecoveryHead
-		if !continuityReanchored || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.CommittedResultFactDigest != "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest || rebuild.LastObservationDigest != supervisorLastObservation(state) {
+		// Legacy recovery requires its recorded reconnect/rebind. A v2
+		// initial owner already has a replayed bind/resume chain and an exact
+		// live Attach/journal check; forcing a restart adds no authority.
+		initialV2Continuity := state.SupervisorStarted.V2 != (SupervisorStartedV2{}) && boundToInitialHead && AttemptSupervisorBindingCurrent(state)
+		continuityReanchored := state.SupervisorReconnectFactDigest != "" || boundToCurrentRecoveryHead || initialV2Continuity
+		if !continuityReanchored || state.ProcessStartedDigest == "" || state.BarrierDigest != "" && !stoppedTranscriptCollectible(state) || state.CommittedResultFactDigest != "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest || rebuild.LastObservationDigest != supervisorLastObservation(state) {
 			return ErrAttemptAuthorityOrder
 		}
 	case processsupervisor.CommandInspect, processsupervisor.CommandTerminate:
@@ -1260,7 +1278,44 @@ func closedCheckpointMatches(state AttemptAuthorityState, transition AttemptTran
 			return false
 		}
 	}
-	return found && evidence.Command == processsupervisor.CommandClose && evidence.RequestDigest == closed.CloseIntentDigest && evidence.ReceiptDigest == closed.CloseReceiptDigest && evidence.ObservationDigest == closed.CloseObservationDigest && evidence.CommandHead == closed.FinalCommandHead && terminalReportsEquivalent(state.ProcessTerminalEvidence, evidence)
+	if !found || evidence.Command != processsupervisor.CommandClose || evidence.RequestDigest != closed.CloseIntentDigest || evidence.ReceiptDigest != closed.CloseReceiptDigest || evidence.ObservationDigest != closed.CloseObservationDigest || evidence.CommandHead != closed.FinalCommandHead {
+		return false
+	}
+	if terminalReportsEquivalent(state.ProcessTerminalEvidence, evidence) {
+		return true
+	}
+	return stoppedCloseReportsEquivalent(state, evidence)
+}
+
+// A stop's Collect seals output after the process-terminal observation. Its
+// timestamp/output may advance, but only via an exact intervening v2 receipt;
+// the immutable terminal process identity/status cannot change. Close must
+// repeat that collected report exactly, not invent new transcript fields.
+func stoppedCloseReportsEquivalent(state AttemptAuthorityState, closed SupervisorCommandEvidence) bool {
+	if !stoppedTranscriptCollectible(state) || state.ProcessTerminalEvidence.Validate() != nil || closed.Validate() != nil || closed.Command != processsupervisor.CommandClose || closed.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().ProtocolRevision {
+		return false
+	}
+	terminalSeen := false
+	for _, checkpoint := range state.SupervisorCommandCheckpoints {
+		if checkpoint.FactDigest == state.ProcessTerminalOutcomeDigest {
+			if checkpoint.Evidence != state.ProcessTerminalEvidence {
+				return false
+			}
+			terminalSeen = true
+			continue
+		}
+		collected := checkpoint.Evidence
+		if !terminalSeen || collected.Sequence >= closed.Sequence || collected.Command != processsupervisor.CommandCollect {
+			continue
+		}
+		if collected.Validate() != nil || collected.ProtocolRevision != processsupervisor.DormantV2ProtocolContract().ProtocolRevision || collected.Disposition != "ok" || collected.Outcome.State != SupervisorTranscriptCollected || !terminalReportsEquivalent(collected, closed) {
+			return false
+		}
+		before, after := state.ProcessTerminalEvidence.Outcome, collected.Outcome
+		return sameSupervisorChildEvidence(state.ProcessTerminalEvidence, collected) && before.MechanicsState == "terminal" && after.MechanicsState == "terminal" &&
+			before.ObserverIdentity == after.ObserverIdentity && before.ExitCode == after.ExitCode && before.Signal == after.Signal
+	}
+	return false
 }
 
 func exactSupervisorOutcomeReplay(storedDigest string, storedPreceding []SupervisorCommandEvidence, storedEvidence SupervisorCommandEvidence, transition AttemptTransition) bool {
@@ -1300,7 +1355,7 @@ func exactTransitionReplay(state AttemptAuthorityState, exists bool, t AttemptTr
 	case attemptTransitionResultAdmitted:
 		return state, state.CommittedResultFactDigest == t.AdmissionFactDigest && state.CommittedResultSequence == t.AdmissionSequence && exactSupervisorOutcomeReplay(state.CommittedResultOutcomeDigest, state.CommittedResultPreceding, state.CommittedResultCollect, t)
 	case AttemptTransitionTerminalizationBarrier:
-		return state, state.BarrierDigest != "" && state.TerminalizationID == t.TerminalizationID && state.EligibilityTerminal == t.EligibilityTerminal
+		return state, state.BarrierDigest != "" && state.TerminalizationID == t.TerminalizationID && state.EligibilityTerminal == t.EligibilityTerminal && state.StopIntent == t.StopIntent
 	case AttemptTransitionProcessTerminal:
 		return state, state.ProcessTerminalDigest != "" && state.TerminalizationID == t.TerminalizationID && state.ProcessTerminalKind == t.ProcessTerminalKind && state.ProcessTerminalObservation == t.ObservationDigest && exactSupervisorOutcomeReplay(state.ProcessTerminalOutcomeDigest, state.ProcessTerminalPreceding, state.ProcessTerminalEvidence, t)
 	case AttemptTransitionAllocationTerminated:
@@ -1715,6 +1770,15 @@ func newAuthorityProjection() *Ingress {
 		attempts:                    make(map[string]AttemptAuthorityState),
 		reservations:                make(map[string]AttemptReservationState),
 		reservationKeys:             make(map[string]string),
+		teamPlans:                   make(map[string]TeamPlanState),
+		taskDrafts:                  make(map[string]taskDraftState),
+		taskClarifications:          make(map[string]TaskClarificationState),
+		taskStops:                   make(map[string]TaskStop),
+		taskCancellations:           make(map[string]TaskCancellation),
+		taskDeliveries:              make(map[string]goal.TaskDelivery),
+		teamRunCreations:            make(map[string]TeamRunCreationState),
+		teamHalts:                   make(map[string]TeamPlanHalt),
+		teamOutcomes:                make(map[string]TeamDeliveryOutcome),
 		attemptsByReservation:       make(map[string]AttemptAuthorityState),
 		controlOwners:               make(map[string]ControlOwnerState),
 		controlOwnerHistory:         make(map[string]map[uint64]ControlOwnerState),
@@ -1893,6 +1957,7 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, hist
 			return ErrAttemptAuthorityConflict
 		}
 		state.BarrierDigest, state.TerminalizationID, state.EligibilityTerminal = fact.Digest, t.TerminalizationID, t.EligibilityTerminal
+		state.StopIntent = t.StopIntent
 		state.AdmissionClosed = fact.AdmissionClosed
 		state.BarrierAdmissionFactDigest, state.BarrierAdmissionSequence = t.AdmissionFactDigest, t.AdmissionSequence
 		state.TerminalGeneration, state.CleanupBindingDigest = fact.TerminalGeneration, fact.CleanupBindingDigest

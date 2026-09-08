@@ -13,25 +13,26 @@ import (
 // owner-successor rebind. NewCompositionLedger calls it while the exact phase-B
 // repository owner remains held and before the Runtime can serve operations.
 func (l *CompositionLedger) recoverRunningAttempt(ctx context.Context, verifier resultingress.CurrentOwnerLockVerifier, acquisition resultingress.ControlOwnerAcquisition, owner resultingress.ControlOwnerState) error {
-	_, attempt, running, err := l.currentRunningAttempt(ctx)
+	read, attempt, running, err := l.currentRunningAttempt(ctx)
 	if err != nil || !running {
 		return err
 	}
 	// Once the supervisor is durably closed no further Attach/rebind is legal
 	// or necessary. Cleanup successors and the Run successor are pure ledger
 	// replays under current Run authority.
-	if attempt.SupervisorClosedDigest != "" || attempt.CleanupReleasedDigest != "" {
-		return nil
+	if attempt.SupervisorClosedDigest == "" && attempt.CleanupReleasedDigest == "" && !runningAttemptBoundToOwner(attempt, owner) {
+		rebound, err := l.ingress.RebindOwnerSuccessorForAttachedRecovery(ctx, verifier, acquisition, attempt.Identity)
+		if err != nil {
+			return application.NewError("recover-running-attempt", application.ReasonRecoveryRequired)
+		}
+		if !runningAttemptBoundToOwner(rebound, owner) && !runningAttemptReadyForCloseRecovery(rebound, owner) {
+			return application.NewError("recover-running-attempt", application.ReasonAuthorityConflict)
+		}
+		attempt = rebound
 	}
-	if runningAttemptBoundToOwner(attempt, owner) {
-		return nil
-	}
-	rebound, err := l.ingress.RebindOwnerSuccessorForAttachedRecovery(ctx, verifier, acquisition, attempt.Identity)
-	if err != nil {
-		return application.NewError("recover-running-attempt", application.ReasonRecoveryRequired)
-	}
-	if !runningAttemptBoundToOwner(rebound, owner) && !runningAttemptReadyForCloseRecovery(rebound, owner) {
-		return application.NewError("recover-running-attempt", application.ReasonAuthorityConflict)
+	if attempt.StopIntent != (resultingress.AttemptStopIntent{}) {
+		_, err := l.finishStoppedAttempt(ctx, verifier, acquisition, read, attempt)
+		return err
 	}
 	return nil
 }

@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	maxHandshakeFrame = 16 << 10
-	handshakeTimeout  = 5 * time.Second
+	maxHandshakeFrame    = 16 << 10
+	handshakeTimeout     = 5 * time.Second
+	authorityWaitTimeout = 30 * time.Second
 )
 
 type challengeFrame struct {

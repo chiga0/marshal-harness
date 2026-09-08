@@ -12,6 +12,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/goal"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
@@ -300,6 +301,15 @@ type Ingress struct {
 	attempts              map[string]AttemptAuthorityState
 	reservations          map[string]AttemptReservationState
 	reservationKeys       map[string]string
+	teamPlans             map[string]TeamPlanState
+	taskDrafts            map[string]taskDraftState
+	taskClarifications    map[string]TaskClarificationState
+	taskStops             map[string]TaskStop
+	taskCancellations     map[string]TaskCancellation
+	taskDeliveries        map[string]goal.TaskDelivery
+	teamRunCreations      map[string]TeamRunCreationState
+	teamHalts             map[string]TeamPlanHalt
+	teamOutcomes          map[string]TeamDeliveryOutcome
 	attemptsByReservation map[string]AttemptAuthorityState
 	// controlOwners is the repository/authority-scope owner projection rebuilt
 	// from control-owner-acquired facts in this same physical ledger. It is not
@@ -363,6 +373,15 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		attempts:                    make(map[string]AttemptAuthorityState),
 		reservations:                make(map[string]AttemptReservationState),
 		reservationKeys:             make(map[string]string),
+		teamPlans:                   make(map[string]TeamPlanState),
+		taskDrafts:                  make(map[string]taskDraftState),
+		taskClarifications:          make(map[string]TaskClarificationState),
+		taskStops:                   make(map[string]TaskStop),
+		taskCancellations:           make(map[string]TaskCancellation),
+		taskDeliveries:              make(map[string]goal.TaskDelivery),
+		teamRunCreations:            make(map[string]TeamRunCreationState),
+		teamHalts:                   make(map[string]TeamPlanHalt),
+		teamOutcomes:                make(map[string]TeamDeliveryOutcome),
 		attemptsByReservation:       make(map[string]AttemptAuthorityState),
 		controlOwners:               make(map[string]ControlOwnerState),
 		controlOwnerHistory:         make(map[string]map[uint64]ControlOwnerState),
@@ -391,6 +410,15 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 		attempts:                    make(map[string]AttemptAuthorityState),
 		reservations:                make(map[string]AttemptReservationState),
 		reservationKeys:             make(map[string]string),
+		teamPlans:                   make(map[string]TeamPlanState),
+		taskDrafts:                  make(map[string]taskDraftState),
+		taskClarifications:          make(map[string]TaskClarificationState),
+		taskStops:                   make(map[string]TaskStop),
+		taskCancellations:           make(map[string]TaskCancellation),
+		taskDeliveries:              make(map[string]goal.TaskDelivery),
+		teamRunCreations:            make(map[string]TeamRunCreationState),
+		teamHalts:                   make(map[string]TeamPlanHalt),
+		teamOutcomes:                make(map[string]TeamDeliveryOutcome),
 		attemptsByReservation:       make(map[string]AttemptAuthorityState),
 		controlOwners:               make(map[string]ControlOwnerState),
 		controlOwnerHistory:         make(map[string]map[uint64]ControlOwnerState),
@@ -463,23 +491,38 @@ func (i *Ingress) AdmitWithSupervisorCollectOutcomeAndObservation(ctx context.Co
 }
 
 func (i *Ingress) admitWithSupervisorCollect(ctx context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string, observation ResultObservationBinding) (AdmissionFact, error) {
+	return i.admitWithBusinessDeadline(ctx, drc, envelope, collect, outcomeFactDigest, observation, nil)
+}
+
+// AdmitWithBusinessDeadline is the fixed-server production admission entry.
+// Core reads immutable Task/creation anchors under its held Run lease. This
+// transaction rechecks the Task digest, ProcessStarted binding and deadline
+// against current authority. Exact committed replay survives deadline expiry.
+func (i *Ingress) AdmitWithBusinessDeadline(ctx context.Context, drc DRC, envelope ResultEnvelope, outcomeFactDigest string, observation ResultObservationBinding, deadline BusinessDeadlineWitness) (AdmissionFact, error) {
+	if i == nil || i.store == nil || ctx == nil || ctx.Err() != nil || envelope.Kind != KindWorkerResult || observation.Validate() != nil {
+		return AdmissionFact{}, ErrAttemptAuthorityConflict
+	}
+	return i.admitWithBusinessDeadline(ctx, drc, envelope, SupervisorCommandEvidence{}, outcomeFactDigest, observation, &deadline)
+}
+
+func (i *Ingress) admitWithBusinessDeadline(ctx context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string, observation ResultObservationBinding, deadline *BusinessDeadlineWitness) (AdmissionFact, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.store != nil {
 		var fact AdmissionFact
 		var admitErr error
 		if err := i.store.transact(i, func() error {
-			fact, admitErr = i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest, observation)
+			fact, admitErr = i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest, observation, deadline)
 			return nil
 		}); err != nil {
 			return AdmissionFact{}, err
 		}
 		return fact, admitErr
 	}
-	return i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest, observation)
+	return i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest, observation, deadline)
 }
 
-func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string, observation ResultObservationBinding) (AdmissionFact, error) {
+func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string, observation ResultObservationBinding, deadline *BusinessDeadlineWitness) (AdmissionFact, error) {
 	now := i.clock()
 	if observation != (ResultObservationBinding{}) && (envelope.Kind != KindWorkerResult || observation.Validate() != nil) {
 		return AdmissionFact{}, fmt.Errorf("%w: invalid result observation binding", ErrMalformedEnvelope)
@@ -534,6 +577,22 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 		i.recordQuarantine(ReasonDigestMismatch, drcDigest, envelope.ResultDigest, now)
 		return AdmissionFact{}, fmt.Errorf("%w: idempotency key %q reused with different DRC or result digest",
 			ErrDigestMismatch, replayKey)
+	}
+	if deadline != nil {
+		reservation, found := i.reservations[authorityState.ReservationFactDigest]
+		if !governed || !found || reservation.Reservation.Ready.SpecDigest != deadline.SpecDigest || deadline.ProcessStartedFactDigest != authorityState.ProcessStartedDigest || deadline.ProcessStartedAt != authorityState.ObservedAt {
+			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, ErrAttemptAuthorityConflict
+		}
+		expires, _, err := deadline.Effective()
+		if err != nil {
+			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, err
+		}
+		if !now.Before(expires) {
+			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, ErrBusinessDeadlineExceeded
+		}
 	}
 	// Every result kind participates in the same Attempt barrier. Hot-path
 	// checkpoint/heartbeat/log traffic is not allowed to leak through after
@@ -783,6 +842,15 @@ func (i *Ingress) resetDurableReplayState() {
 	i.attempts = make(map[string]AttemptAuthorityState)
 	i.reservations = make(map[string]AttemptReservationState)
 	i.reservationKeys = make(map[string]string)
+	i.teamPlans = make(map[string]TeamPlanState)
+	i.taskDrafts = make(map[string]taskDraftState)
+	i.taskClarifications = make(map[string]TaskClarificationState)
+	i.taskStops = make(map[string]TaskStop)
+	i.taskCancellations = make(map[string]TaskCancellation)
+	i.taskDeliveries = make(map[string]goal.TaskDelivery)
+	i.teamRunCreations = make(map[string]TeamRunCreationState)
+	i.teamHalts = make(map[string]TeamPlanHalt)
+	i.teamOutcomes = make(map[string]TeamDeliveryOutcome)
 	i.attemptsByReservation = make(map[string]AttemptAuthorityState)
 	i.controlOwners = make(map[string]ControlOwnerState)
 	i.controlOwnerHistory = make(map[string]map[uint64]ControlOwnerState)

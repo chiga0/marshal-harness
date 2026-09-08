@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/chiga0/marshal-harness/internal/application"
@@ -555,10 +556,26 @@ func (physical *darwinRepositoryOwnerPhysicalLock) revalidateLocked() error {
 }
 
 func (physical *darwinRepositoryOwnerPhysicalLock) withHeld(ctx context.Context, requireRuntime bool, fn func() error) error {
-	if physical == nil || fn == nil {
+	if physical == nil || ctx == nil || fn == nil {
 		return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
 	}
-	physical.mu.Lock()
+	// Queries and mutations share this physical identity guard. Do not strand
+	// an expired query behind a long held transaction; cancellation grants no
+	// callback access and never releases the other caller's mutex.
+	if !physical.mu.TryLock() {
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
+			case <-ticker.C:
+			}
+			if physical.mu.TryLock() {
+				break
+			}
+		}
+	}
 	defer physical.mu.Unlock()
 	select {
 	case <-ctx.Done():

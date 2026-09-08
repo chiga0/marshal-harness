@@ -29,7 +29,7 @@ func (s *DurableStore) observeTerminalPreparedExecutionV2Locked(ctx context.Cont
 		state.SupervisorStarted.V2.Anchor.Generation != state.SupervisorMechanicsAnchor.Generation {
 		return PreparedExecutionTerminalObservation{}, ErrPreparedExecutionConflict
 	}
-	if state.ControlOwnerBindingRevision < 2 || state.ControlOwnerBindingRevision > state.Revision || state.SupervisorBoundAuthorityHead != state.ControlOwnerBindingDigest {
+	if !AttemptSupervisorBindingCurrent(state) {
 		return PreparedExecutionTerminalObservation{}, ErrPreparedExecutionConflict
 	}
 	if state.SupervisorPendingIntentDigest == "" && len(state.SupervisorCommandCheckpoints) > 0 {

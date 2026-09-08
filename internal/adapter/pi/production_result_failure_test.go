@@ -58,16 +58,78 @@ func TestProductionContentShapeDiagnosticsKeepEveryRejectionClosed(t *testing.T)
 	}
 }
 
+func TestProductionResultMissingFinalContentNeverBorrowsEarlierMessage(t *testing.T) {
+	declared, err := json.Marshal(validDeclaredResult("worker-claim"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stop := range []string{"stop", "length"} {
+		for _, history := range []bool{false, true} {
+			messages := []any{}
+			if history {
+				messages = append(messages, map[string]any{"role": "assistant", "stopReason": "stop", "content": []any{map[string]any{"type": "text", "text": string(declared)}}})
+			}
+			messages = append(messages, map[string]any{"role": "assistant", "stopReason": stop})
+			end, err := json.Marshal(map[string]any{"type": "agent_end", "willRetry": false, "messages": messages})
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)
+			record, err := ParseProductionWorkerResult(context.Background(), ProductionResultInput{
+				Transcript: []byte(jsonLines(captureSessionHeader("session-1"), `{"type":"agent_start"}`, string(end))),
+				Worktree:   "/worktree", TaskID: "TASK-1", RunID: "run-1", AttemptID: "attempt-1", Executable: "/usr/local/bin/pi", Version: "0.84.4",
+				StartedAt: started, CompletedAt: started.Add(time.Second), MaxOutputBytes: 1 << 20,
+			})
+			want := "pi-result-final-content-missing"
+			if stop == "length" {
+				// Provider failure takes precedence over carrier decoding.
+				want = "pi-result-provider-terminal-length"
+			}
+			if ProductionResultFailureCode(err) != want || len(record.Data) != 0 || (stop == "stop" && !errors.Is(err, ErrProtocol)) {
+				t.Fatalf("missing final content: stop=%s history=%t code=%s", stop, history, ProductionResultFailureCode(err))
+			}
+		}
+	}
+}
+
+func TestProductionResultFinalObjectFailureLocationIsClosed(t *testing.T) {
+	const result = `{"kind":"WorkerResult"}`
+	for _, tc := range []struct{ text, suffix string }{
+		{`[private prose] ` + result, "syntax-before-result"},
+		{`{"private":`, "syntax-before-result"},
+		{`{"private":1,"private":2}` + result, "canonical-before-result"},
+		{result + ` [private prose]`, "syntax-after-result"},
+		{result + ` {"private":1,"private":2}`, "canonical-after-result"},
+	} {
+		t.Run(tc.suffix, func(t *testing.T) {
+			record, err := extractSingleWorkerResultObject(tc.text)
+			want := "pi-result-final-object-invalid-" + tc.suffix
+			if len(record) != 0 || !errors.Is(err, ErrProtocol) || ProductionResultFailureCode(err) != want {
+				t.Fatalf("rejection changed: code=%q expected=%q", ProductionResultFailureCode(err), want)
+			}
+		})
+	}
+	// Arbitrary provider-authored labels cannot become public diagnostics.
+	if got := ProductionResultFailureCode(invalidFinalObject("private provider text", false, ErrProtocol)); got != "pi-result-final-object-invalid" {
+		t.Fatalf("untrusted phase escaped: %q", got)
+	}
+	if ProductionResultFailureCode(errors.New("pi-result-final-object-invalid-syntax-before-result")) != "" {
+		t.Fatal("provider text impersonated a classified failure")
+	}
+}
+
 func TestProductionResultFailureClassificationDoesNotChangeAdmission(t *testing.T) {
 	for _, tc := range []struct {
 		name, want string
 	}{
 		{"valid", ""}, {"trailing", "pi-result-final-object-trailing"},
+		{"multiple", "pi-result-final-object-multiple"}, {"invalid", "pi-result-final-object-invalid-canonical-before-result"},
+		{"business-prefix", ""},
 		{"missing", "pi-result-final-object-missing"}, {"identity", "pi-result-declared-identity"},
 		{"schema", "pi-result-declared-schema-artifacts"}, {"protocol", "pi-result-transcript-json"},
 		{"session", "pi-result-transcript-session"}, {"closure", "pi-result-transcript-closure"},
 		{"limit", "pi-result-output-limit"}, {"input", "pi-result-input"},
-		{"provider", "pi-result-provider-terminal"}, {"normalize", "pi-result-normalized-schema-adapter"},
+		{"provider", "pi-result-provider-terminal-error"}, {"normalize", "pi-result-normalized-schema-adapter"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			declared := validDeclaredResult("worker-claim")
@@ -83,6 +145,12 @@ func TestProductionResultFailureClassificationDoesNotChangeAdmission(t *testing.
 				text += "\n``` sensitive suffix"
 			} else if tc.name == "missing" {
 				text = "sensitive non-result text"
+			} else if tc.name == "multiple" {
+				text = `{"kind":"WorkerResult","taskId":"OTHER"}` + text
+			} else if tc.name == "invalid" {
+				text = `{"kind":"WorkerResult","kind":"Other","private":"sensitive-field-value"}` + text
+			} else if tc.name == "business-prefix" || tc.name == "identity" || tc.name == "schema" {
+				text = `业务示例 {"total":12} ` + text
 			}
 			stop := "stop"
 			if tc.name == "provider" {
@@ -129,6 +197,41 @@ func TestProductionResultFailureClassificationDoesNotChangeAdmission(t *testing.
 				t.Fatal("classification lost original protocol identity")
 			}
 		})
+	}
+}
+
+func TestProductionTerminalDiagnosticsPreserveStopReasonWithoutAdmittingResult(t *testing.T) {
+	data, err := json.Marshal(validDeclaredResult("worker-claim"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stop := range []string{"error", "length", "aborted"} {
+		for _, settled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/settled=%t", stop, settled), func(t *testing.T) {
+				end, err := json.Marshal(map[string]any{"type": "agent_end", "willRetry": false,
+					"messages": []any{map[string]any{"role": "assistant", "stopReason": stop,
+						"errorMessage": "private provider text must never be a diagnostic",
+						"content":      []any{map[string]any{"type": "text", "text": string(data)}}}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				lines := []string{captureSessionHeader("session-1"), `{"type":"agent_start"}`, string(end)}
+				if settled {
+					lines = append(lines, `{"type":"agent_settled"}`)
+				}
+				started := time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)
+				record, err := ParseProductionWorkerResult(context.Background(), ProductionResultInput{
+					Transcript: []byte(jsonLines(lines...)), Worktree: "/worktree", TaskID: "TASK-1", RunID: "run-1", AttemptID: "attempt-1",
+					Executable: "/usr/local/bin/pi", Version: "0.84.4", StartedAt: started, CompletedAt: started.Add(time.Second), MaxOutputBytes: 1 << 20,
+				})
+				if ProductionResultFailureCode(err) != "pi-result-provider-terminal-"+stop || len(record.Data) != 0 {
+					t.Fatalf("terminal diagnostic lost rejection: stop=%s code=%s", stop, ProductionResultFailureCode(err))
+				}
+				if strings.Contains(err.Error(), "private") {
+					t.Fatal("provider error text escaped")
+				}
+			})
+		}
 	}
 }
 

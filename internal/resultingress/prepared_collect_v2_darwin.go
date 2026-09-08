@@ -111,7 +111,7 @@ func (s *DurableStore) collectPreparedExecutionV2Locked(ctx context.Context, pro
 			return PreparedExecutionTranscript{}, err
 		}
 	}
-	if state.ControlOwnerBindingRevision < 2 || state.ControlOwnerBindingRevision > state.Revision || state.SupervisorBoundAuthorityHead != state.ControlOwnerBindingDigest {
+	if !AttemptSupervisorBindingCurrent(state) {
 		return PreparedExecutionTranscript{}, ErrPreparedExecutionConflict
 	}
 	authority := rebindAttachAuthorityV2(state, owner, identity, anchor)

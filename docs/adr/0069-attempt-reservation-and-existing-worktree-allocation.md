@@ -1,5 +1,7 @@
 # ADR 0069：Attempt reservation 与 existing-worktree allocation
 
+> 2026-09-07 适用性：新 Store 的 reservation/budget 与 allocation 事务替代范围见 ADR 0085 §4；旧 RB1/Run/projection 布局、固定锁序与 S1′/S2′仅约束旧路径。creation-once、全仓 target 唯一写绑定、冻结输入、精确 terminal/cleanup/release 后复用与用户 worktree 零擅自清理保留。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：已接受（Accepted）
 - 日期：2026-08-29
 - 提议基线：`main@e1e81f8f4fe9438b54444ade8fca039964205d89`

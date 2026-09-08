@@ -1,7 +1,7 @@
 # ADR 0082：fixed server 实机验证的同宿主独立评审载体
 
 - 状态：已接受（Accepted，2026-09-05，维护者代理在持续实施授权内采纳；不代表实机通过）。
-- 范围：ADR 0080 B1 的 canonical 仓库 hosted macOS canary；不改变产品 Public API、Run Schema 或发布权限。
+- 范围：ADR 0080 B1 及 ADR 0083 首批两个 implement 加原 integrate 节点的 canonical 仓库 hosted macOS canary；不改变产品 Public API、Run Schema 或发布权限。
 
 ## 问题与决策
 
@@ -21,4 +21,20 @@
 
 ## 退出与后继
 
+### 2026-09-07：团队同宿主评审扩展
+
+首轮团队实机暴露出「两个节点到 REVIEW_PENDING 后 runner 结束，独立评审只能离线发现缺陷，不能原地提交 Decision」的交付断点。本次在既有 opt-in 载体中增加封闭 `order-quote-team` 场景：只接收原批准中 `service`、`client` 两个 Run，不通用化 Issue 审批协议，不创建 integration、重试或 successor。
+
+驱动先为两个节点完成 Collect/Verify/ReviewPacket 和各自关闭的 review-only 归档，再发布一个团队 ready 标记。协调器固定读取两个子目录；校验 sourceHead、两个不同的确定性 RunID、同一 binarySHA256，每个评论仍精确绑定 workflow/sourceHead/packet digest，并由原 fixed server 重查当前 Run/Attempt/sequence/head。两个 Decision 可独立到达；统一最多 20 分钟等待预算，不按节点延长等待。一个节点拒绝不能阻止另一个已就绪节点接收独立 Decision；未知 mutation/损坏证据仍停止，绝不猜测成功。
+
+验证失败可以进入独立 reject/rework 评审，但不能被驱动当成 accept；Core 的原始门禁不变。驱动记录每个真实 Decision receipt/Outcome 和最终 Inspect；即使两个 implement 都 ACCEPTED，团队 summary 仍为 `accepted:false`、`integrationExecuted:false`，不能代替集成 GoalOutcome。拒绝只记录终态；有预算的 rework 记录 Core 的 `REWORK_REQUESTED`（非 `RETRY_PENDING`），不伪造终态 Outcome，不启动 Attempt；本团队零 rework 预算下仍由 Core 返回 REJECTED。该扩展没有实现局部 replan、成果接纳后的集成复用或 server 自主 Collect/Verify，关闭这些后继前不允许再用全团队重跑掩盖失败成本。
+
 静态/单元测试不关闭 B1。必须实际观察真实 Pi 业务、独立评审原文、同 server Decision receipt 和 ACCEPTED Outcome。载体是测试设施，不是长期生产审批数据库；正式交互仍通过产品 API。后续通用团队审批不得直接沿用 Issue 评论作为业务权威。
+
+### 2026-09-07：沿原批准继续第三节点（未发布候选）
+
+前述两节点阶段由下列相邻集成阶段承接，不新建审批协议：两个实现 Decision 均由原 Core 接纳为 ACCEPTED 后，resident 自行创建/Start 原 integration；客户端只用有界 Inspect 观察，再沿原 Collect/Verify/ReviewPacket 关闭第三份 review-only 归档。任何实现拒绝或未知 mutation 均不进入该阶段，保存另一节点已有结果；不重新批准、不直接 Start、不启动 successor。
+
+第三份归档就绪后才发布 `integration.review.ready`；载体核对原 subject 中唯一 integration RunID、sourceHead、binary 和其自身 packet，再按原评论规则传输独立 Decision。第一次评审到集成执行、上传和第三次评审共用原最多 20 分钟预算（协调器使用较短的 17 分钟），不得按阶段续期。载体没有裁决权，两个评论已传送不等于两个节点已接纳；创建资格仍由 resident/current-ledger 决定。
+
+集成模板允许无需修改已有正确组合；Core 的 `NO_CHANGE` 保持原含义，不能改写成 ACCEPTED。驱动分别记录第三节点终态、`integrationExecuted`，并保持团队 `accepted:false`、`goalOutcomeAvailable:false`，直到后继真正提交耐久 GoalOutcome。此候选仍依赖第三节点实机、成果交付、局部 replan/reuse 和 server 自主结果处理；测试 transport 完成不关闭 B2。

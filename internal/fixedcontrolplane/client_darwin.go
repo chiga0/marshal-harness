@@ -43,6 +43,22 @@ type ReviewDecisionClientResult struct {
 	Receipt    productionruntime.FixedLifecycleReceipt
 }
 
+type CancelRunClientResult struct {
+	Projection application.CancelRunProjection
+	Receipt    productionruntime.FixedLifecycleReceipt
+}
+
+func CallCancelRun(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, requestKey string, request application.CancelRunRequest, deadline time.Time) (CancelRunClientResult, error) {
+	if request.Validate() != nil {
+		return CancelRunClientResult{}, ErrInvalid
+	}
+	response, err := call(ctx, authority, productionruntime.FixedLifecycleCancelOperation, "/v1/runs/cancel", requestKey, request, deadline)
+	if err != nil || response.Stopped == nil || response.LifecycleReceipt == nil || response.Stopped.Validate() != nil {
+		return CancelRunClientResult{}, errors.Join(ErrConflict, err)
+	}
+	return CancelRunClientResult{Projection: *response.Stopped, Receipt: *response.LifecycleReceipt}, nil
+}
+
 func CallStatus(ctx context.Context, authority *productionruntime.FixedEndpointAuthority, requestKey string, deadline time.Time) (application.StatusProjection, error) {
 	response, err := call(ctx, authority, "status", "/v1/status", requestKey, application.StatusRequest{}, deadline)
 	if err != nil || response.Status == nil || response.Status.Validate() != nil {
@@ -139,33 +155,42 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 	if binding.Validate(time.Now().UTC()) != nil {
 		return httpResponse{}, ErrInvalid
 	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	connection, err := Dial(ctx, authority, binding)
 	if err != nil {
-		return httpResponse{}, err
+		return httpResponse{}, atRequestStage("client-dial", err)
 	}
 	defer connection.Close()
+	// Cancellation must interrupt socket I/O as well as application/recheck
+	// work. Closing this single-use connection cannot affect another request.
+	stopCancellation := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancellation()
 	header := "POST " + path + " HTTP/1.1\r\nHost: marshal.local\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\nMarshal-Request-Key: " + requestKey + "\r\nConnection: close\r\n\r\n"
 	if connection.SetWriteDeadline(time.Now().Add(writeTimeout)) != nil || writeFull(connection, []byte(header)) != nil || writeFull(connection, body) != nil {
-		return httpResponse{}, ErrUnavailable
+		return httpResponse{}, atRequestStage("client-write", ErrUnavailable)
 	}
-	response, responseErr := readClientHTTPResponse(connection)
+	responseDeadline, _ := ctx.Deadline()
+	response, responseErr := readClientHTTPResponseUntil(connection, responseDeadline)
 	// A syntactically valid non-success response still completes the
 	// authenticated request protocol. Recheck the peer and half-close only
 	// after consuming that exact response; otherwise 202/409/503 returns can
 	// make the server mistake an application outcome for a transport failure.
 	if response.SchemaVersion == "" {
-		return httpResponse{}, responseErr
+		return httpResponse{}, atRequestStage("client-response", responseErr)
 	}
 	if response.Operation != operation {
-		return httpResponse{}, ErrConflict
+		return httpResponse{}, atRequestStage("client-operation", ErrConflict)
 	}
+	recheckContext, cancelRecheck := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancelRecheck()
 	var recheckErr error
 	if operation == "start-run" && responseErr == nil && response.Started != nil && response.DeliveryReceipt != nil {
 		startRequest, ok := request.(application.StartRunRequest)
 		if !ok || response.Started.Prepared.RunID != startRequest.RunID || response.Started.Prepared.Sequence != startRequest.ExpectedSequence || response.Started.Prepared.AuthorityHead != startRequest.ExpectedAuthorityHead {
 			return httpResponse{}, ErrConflict
 		}
-		recheckErr = connection.RecheckStartRun(ctx, *response.Started, *response.DeliveryReceipt)
+		recheckErr = connection.RecheckStartRun(recheckContext, *response.Started, *response.DeliveryReceipt)
 	} else if isLifecycleOperation(operation) && responseErr == nil && response.LifecycleReceipt != nil {
 		projection, projectionErr := lifecycleResponseProjection(response, operation)
 		result, resultErr := fixedLifecycleResult(operation, projection)
@@ -173,15 +198,15 @@ func call(ctx context.Context, authority *productionruntime.FixedEndpointAuthori
 		if projectionErr != nil || resultErr != nil || currentErr != nil || validateLifecycleClientResult(current, result) != nil {
 			return httpResponse{}, ErrConflict
 		}
-		recheckErr = connection.RecheckLifecycle(ctx, result, *response.LifecycleReceipt)
+		recheckErr = connection.RecheckLifecycle(recheckContext, result, *response.LifecycleReceipt)
 	} else {
-		recheckErr = connection.Recheck(ctx)
+		recheckErr = connection.Recheck(recheckContext)
 	}
-	if recheckErr != nil {
-		return httpResponse{}, ErrConflict
+	if recheckErr != nil || recheckContext.Err() != nil {
+		return httpResponse{}, atRequestStage("client-recheck", ErrConflict)
 	}
 	if connection.CloseWrite() != nil {
-		return httpResponse{}, ErrUnavailable
+		return httpResponse{}, atRequestStage("client-half-close", ErrUnavailable)
 	}
 	if responseErr != nil {
 		return response, responseErr
@@ -218,7 +243,7 @@ func clientRequestBinding(requestKey string, body []byte, operation string, requ
 
 func isLifecycleOperation(operation string) bool {
 	switch operation {
-	case productionruntime.FixedLifecycleCollectOperation, productionruntime.FixedLifecycleVerifyOperation, productionruntime.FixedLifecycleReviewOperation, productionruntime.FixedLifecycleDecisionOperation:
+	case productionruntime.FixedLifecycleCollectOperation, productionruntime.FixedLifecycleVerifyOperation, productionruntime.FixedLifecycleReviewOperation, productionruntime.FixedLifecycleDecisionOperation, productionruntime.FixedLifecycleCancelOperation:
 		return true
 	default:
 		return false
@@ -227,6 +252,10 @@ func isLifecycleOperation(operation string) bool {
 
 func lifecycleResponseProjection(response httpResponse, operation string) (any, error) {
 	switch operation {
+	case productionruntime.FixedLifecycleCancelOperation:
+		if response.Stopped != nil {
+			return *response.Stopped, nil
+		}
 	case productionruntime.FixedLifecycleCollectOperation:
 		if response.Collected != nil {
 			return *response.Collected, nil
@@ -249,6 +278,8 @@ func lifecycleResponseProjection(response httpResponse, operation string) (any, 
 
 func lifecycleCurrentRequest(request any) (application.CurrentRunRequest, error) {
 	switch value := request.(type) {
+	case application.CancelRunRequest:
+		return value.CurrentRunRequest, nil
 	case application.CollectRunResultRequest:
 		return application.CurrentRunRequest(value), nil
 	case application.VerifyRunRequest:
@@ -279,10 +310,26 @@ func validateLifecycleClientResult(current application.CurrentRunRequest, result
 }
 
 func readClientHTTPResponse(connection *AuthenticatedConnection) (httpResponse, error) {
-	if connection == nil || connection.SetReadDeadline(time.Now().Add(writeTimeout)) != nil {
+	return readClientHTTPResponseUntil(connection, time.Now().Add(writeTimeout))
+}
+
+// Waiting for the application is bounded by the original request, not the
+// byte-transfer timeout. Once the first byte arrives, the entire envelope
+// gets one bounded transfer window (never refreshed by a slow peer).
+func readClientHTTPResponseUntil(connection *AuthenticatedConnection, deadline time.Time) (httpResponse, error) {
+	if connection == nil || !deadline.After(time.Now()) || connection.SetReadDeadline(deadline) != nil {
 		return httpResponse{}, ErrUnavailable
 	}
 	reader := bufio.NewReaderSize(connection, maxHTTPSingleHeader+1)
+	if _, err := reader.Peek(1); err != nil {
+		return httpResponse{}, ErrUnavailable
+	}
+	if transferDeadline := time.Now().Add(writeTimeout); transferDeadline.Before(deadline) {
+		deadline = transferDeadline
+	}
+	if connection.SetReadDeadline(deadline) != nil {
+		return httpResponse{}, ErrUnavailable
+	}
 	statusLine, err := readHTTPLine(reader, maxHTTPSingleHeader)
 	parts := strings.Split(statusLine, " ")
 	if err != nil || len(parts) != 3 || parts[0] != "HTTP/1.1" {
@@ -349,10 +396,16 @@ func readClientHTTPResponse(connection *AuthenticatedConnection) (httpResponse, 
 	if decoder.Decode(&extra) == nil || response.SchemaVersion != httpResponseSchema || response.ProtocolRevision != httpProtocolRevision {
 		return httpResponse{}, ErrInvalid
 	}
+	if response.TeamApproval != nil && (statusCode != 200 || response.Disposition != "success" || (response.Operation != "approve-initial-team" && response.Operation != "reconcile-team-approval")) {
+		return httpResponse{}, ErrConflict
+	}
+	if response.TeamOutcome != nil && (statusCode != 200 || response.Disposition != "success" || response.Operation != "reconcile-team-approval" || response.TeamApproval == nil) {
+		return httpResponse{}, ErrConflict
+	}
 	if statusCode != 200 || response.Disposition != "success" {
 		if statusCode == 202 && response.Disposition == "pending" {
 			if response.ReasonCode == string(application.ReasonAttemptStillRunning) {
-				if response.Operation != productionruntime.FixedLifecycleCollectOperation || response.Status != nil || response.Run != nil || response.Started != nil || response.DeliveryReceipt != nil || response.Collected != nil || response.Verification != nil || response.ReviewPacket != nil || response.Decision != nil || response.LifecycleReceipt != nil {
+				if response.Operation != productionruntime.FixedLifecycleCollectOperation || response.Status != nil || response.Run != nil || response.Started != nil || response.DeliveryReceipt != nil || response.Collected != nil || response.Verification != nil || response.ReviewPacket != nil || response.Decision != nil || response.Stopped != nil || response.LifecycleReceipt != nil {
 					return httpResponse{}, ErrInvalid
 				}
 				return response, ErrAttemptStillRunning
@@ -360,6 +413,18 @@ func readClientHTTPResponse(connection *AuthenticatedConnection) (httpResponse, 
 			return response, errHTTPPending
 		}
 		if statusCode == 409 {
+			if response.ReasonCode == string(application.ReasonRunStopped) {
+				if response.Operation != productionruntime.FixedLifecycleCollectOperation || response.Disposition != "error" || response.Status != nil || response.Run != nil || response.Started != nil || response.DeliveryReceipt != nil || response.Collected != nil || response.Verification != nil || response.ReviewPacket != nil || response.Decision != nil || response.Stopped != nil || response.LifecycleReceipt != nil {
+					return httpResponse{}, ErrInvalid
+				}
+				return response, application.NewError("collect-run-result", application.ReasonRunStopped)
+			}
+			if response.ReasonCode == string(application.ReasonStopTooLate) {
+				if response.Operation != productionruntime.FixedLifecycleCancelOperation || response.Disposition != "error" || response.Status != nil || response.Run != nil || response.Started != nil || response.DeliveryReceipt != nil || response.Collected != nil || response.Verification != nil || response.ReviewPacket != nil || response.Decision != nil || response.Stopped != nil || response.LifecycleReceipt != nil {
+					return httpResponse{}, ErrInvalid
+				}
+				return response, application.NewError("cancel-run", application.ReasonStopTooLate)
+			}
 			return response, ErrConflict
 		}
 		return response, ErrUnavailable

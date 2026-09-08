@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -28,7 +29,22 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 	}
 	var lease dispatch.DispatchLease
+	if err := l.ingress.RequireTaskRunNotStopped(acquisition.Scope.AuthorityNamespaceID, runID); err != nil {
+		return CollectedRunResult{}, taskError(err)
+	}
 	var capability authority.DispatchResultCapability
+	var businessDeadline resultingress.BusinessDeadlineWitness
+	if attempt.CommittedResultFactDigest == "" {
+		if _, stopped, stopErr := l.stopDueAttempt(ctx, verifier, acquisition, read, attempt); stopErr != nil {
+			return CollectedRunResult{}, stopErr
+		} else if stopped {
+			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonRunStopped)
+		}
+		businessDeadline, err = l.currentBusinessDeadline(ctx, read, attempt)
+		if err != nil {
+			return CollectedRunResult{}, err
+		}
+	}
 	if attempt.CommittedResultFactDigest != "" {
 		// Terminal eligibility revokes the active capability. Recovery of an
 		// already committed admission therefore reads the immutable original
@@ -94,7 +110,11 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 		}
 		result, err = l.resultParser(ctx, AttemptResultInput{
-			Transcript: collected.Transcript.Stdout, Worktree: read.WorktreePath,
+			ProcessTerminal:     collected.Transcript.Report.State == "terminal",
+			ProcessExitCode:     collected.Transcript.Report.ExitCode,
+			ProcessSignal:       collected.Transcript.Report.Signal,
+			TranscriptTruncated: collected.Transcript.Report.TranscriptTruncated,
+			Transcript:          collected.Transcript.Stdout, Worktree: read.WorktreePath,
 			TaskID: read.Run.TaskID, RunID: read.Run.RunID, AttemptID: read.Run.AttemptID,
 			Executable: l.closure.Arguments[1], Version: PiProviderVersion, StartedAt: startedAt, CompletedAt: completedAt,
 			MaxOutputBytes: 16 << 20,
@@ -145,12 +165,24 @@ func (l *CompositionLedger) CollectRunResult(ctx context.Context, verifier resul
 		if collectOutcomeDigest == "" {
 			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonAuthorityConflict)
 		}
-		admission, err = ingress.AdmitWithSupervisorCollectOutcomeAndObservation(ctx, drc, envelope, collectOutcomeDigest, observationBinding)
+		admission, err = ingress.AdmitWithBusinessDeadline(ctx, drc, envelope, collectOutcomeDigest, observationBinding, businessDeadline)
 	} else {
 		var replayed bool
 		admission, replayed, err = ingress.ReplayCommitted(drc, envelope)
 		if err == nil && (!replayed || admission.FactDigest != attempt.CommittedResultFactDigest) {
 			err = application.NewError("collect-run-result", application.ReasonAuthorityConflict)
+		}
+	}
+	if errors.Is(err, resultingress.ErrBusinessDeadlineExceeded) {
+		// Drop the directory's Run-guard borrow before the stop barrier takes
+		// the exclusive guard. The same immutable sources are re-read there.
+		if closeErr := attemptDirectory.Close(); closeErr != nil {
+			return CollectedRunResult{}, closeErr
+		}
+		if _, stopped, stopErr := l.stopDueAttempt(ctx, verifier, acquisition, read, attempt); stopErr != nil {
+			return CollectedRunResult{}, stopErr
+		} else if stopped {
+			return CollectedRunResult{}, application.NewError("collect-run-result", application.ReasonRunStopped)
 		}
 	}
 	if err != nil {

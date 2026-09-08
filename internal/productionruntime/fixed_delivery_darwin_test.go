@@ -17,11 +17,13 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"golang.org/x/sys/unix"
 )
 
 type fixedDeliveryFixture struct {
@@ -301,6 +303,10 @@ func fixedDeliveryStarted(request application.StartRunRequest) application.RunSt
 }
 
 func advanceFixedDeliveryRunToRunning(t *testing.T, fixture fixedDeliveryFixture) application.RunProjection {
+	return advanceFixedDeliveryRunToRunningWithBudget(t, fixture, 3)
+}
+
+func advanceFixedDeliveryRunToRunningWithBudget(t *testing.T, fixture fixedDeliveryFixture, maxAttempts uint64) application.RunProjection {
 	t.Helper()
 	lease, err := fixture.session.runs.AcquireExisting(fixture.request.RunID)
 	if err != nil {
@@ -319,7 +325,7 @@ func advanceFixedDeliveryRunToRunning(t *testing.T, fixture fixedDeliveryFixture
 		Payload: map[string]any{
 			"protocolRevision": "run-start-outcome/v2", "taskId": state.TaskID,
 			"preparationDigest": digest("preparation"), "processStartedFactDigest": digest("process-started"), "resumeOutcomeFactDigest": digest("resume"),
-			"reservationFactDigest": digest("reservation"), "attemptOpenedFactDigest": digest("attempt-opened"), "attemptOrdinal": uint64(1), "attemptsUsedBefore": uint64(0), "maxAttempts": uint64(3),
+			"reservationFactDigest": digest("reservation"), "attemptOpenedFactDigest": digest("attempt-opened"), "attemptOrdinal": uint64(1), "attemptsUsedBefore": uint64(0), "maxAttempts": maxAttempts,
 			"readySequence": state.Sequence, "readyAuthorityHead": fixture.request.ExpectedAuthorityHead,
 		},
 	}
@@ -423,7 +429,10 @@ func TestFixedLifecycleDeliveryPublishesAndReplaysExactCollectReceipt(t *testing
 	// worker.completed event and delivery commit. The contents are unchanged
 	// here: this test isolates delivery's root-observation boundary, not RB1
 	// release authorization (which the composition helper must prove).
-	projectionRoot := filepath.Join(fixture.repository, ".marshal", "runtime-v1", "existing-worktree-bindings")
+	projectionRoot := filepath.Join(fixture.repository, ".marshal", "runtime-v1", "existing-worktree-bindings", "current-v2")
+	if err := os.MkdirAll(projectionRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	stageRoot := projectionRoot + "-test-stage"
 	oldRoot := projectionRoot + "-test-old"
 	if err := os.Mkdir(stageRoot, 0o700); err != nil {
@@ -454,9 +463,6 @@ func TestFixedLifecycleDeliveryPublishesAndReplaysExactCollectReceipt(t *testing
 	if err := os.RemoveAll(oldRoot); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.store.CommitLifecycleDelivery(context.Background(), pending, FixedLifecycleCollectOperation, request, current, result); err == nil {
-		t.Fatal("stale runtime observation allowed a receipt")
-	}
 	if err := adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot); err != nil {
 		t.Fatal(err)
 	}
@@ -485,11 +491,27 @@ func TestCompletedProjectionCannotAdoptCallerTerminalWithoutDurableAuthority(t *
 	}
 	verifier := &borrowedOwnerVerifier{acquisition: fixture.session.acquisition, active: true}
 	defer verifier.close()
-	if err := ledger.adoptCompletedProjectionMutation(context.Background(), verifier, fixture.session.acquisition, runstore.RunStartAuthorityProjection{}, terminal); err == nil {
+	if err := ledger.adoptTerminalProjectionMutation(context.Background(), verifier, fixture.session.acquisition, runstore.RunStartAuthorityProjection{}, terminal); err == nil {
 		t.Fatal("caller terminal fields without an exact durable Attempt were adopted")
 	}
 	if fixture.session.fixedRoot.nodes[2].identity != before {
 		t.Fatal("failed terminal join changed the root observation")
+	}
+}
+
+func TestStoppedProjectionCannotAdoptSealedIntentWithoutDurableAuthority(t *testing.T) {
+	fixture := newFixedDeliveryFixture(t)
+	ledger := &CompositionLedger{sessionBorrow: &repositorySessionBorrow{session: fixture.session}, ingress: fixture.session.ingress, existingWorktreeEnabled: true}
+	before := fixture.session.fixedRoot.nodes[2].identity
+	terminal := stoppedAttemptFixture(t)
+	terminal.ExistingWorktreeReleaseReceiptDigest = canonical.DigestBytes([]byte("caller-release"))
+	verifier := &borrowedOwnerVerifier{acquisition: fixture.session.acquisition, active: true}
+	defer verifier.close()
+	if err := ledger.adoptTerminalProjectionMutation(context.Background(), verifier, fixture.session.acquisition, runstore.RunStartAuthorityProjection{}, terminal); err == nil {
+		t.Fatal("sealed but non-durable stop was adopted")
+	}
+	if fixture.session.fixedRoot.nodes[2].identity != before {
+		t.Fatal("failed stop join changed the root observation")
 	}
 }
 
@@ -613,6 +635,77 @@ func TestFixedDeliveryProductionWiringUsesPublicRepositorySession(t *testing.T) 
 	}
 }
 
+// Model the projection filesystem transaction while using a public client.
+// Producer/RB1 correctness is separately exercised by allocation tests; this
+// test proves no query retry or observation adoption is necessary.
+func TestFixedEndpointClientProjectionContainerMutationBoundary(t *testing.T) {
+	fixture := newPublicFixedDeliveryInputs(t)
+	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: fixture.repository}
+	digest, err := namespace.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.inputs.Acquisition.Scope = resultingress.ControlOwnerScope{AuthorityNamespaceID: namespace, RepositoryIdentityDigest: digest}
+	session, err := OpenRepositorySession(context.Background(), fixture.inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	client, err := OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.Recheck(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runtimeFD := int(session.fixedRoot.nodes[2].file.Fd())
+	containerFD := int(session.fixedRoot.runtimeSiblings[len(fixedServerRuntimeSiblingNames)-1].file.Fd())
+	for _, name := range []string{"current-v2", ".projection.stage"} {
+		if err := unix.Mkdirat(containerFD, name, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.Recheck(context.Background()); err != nil {
+			t.Fatalf("projection staging invalidated client: %v", err)
+		}
+	}
+	if err := unix.RenameatxNp(containerFD, ".projection.stage", containerFD, "current-v2", unix.RENAME_SWAP); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Recheck(context.Background()); err != nil {
+		t.Fatalf("projection commit invalidated client: %v", err)
+	}
+	if err := unix.Unlinkat(containerFD, ".projection.stage", unix.AT_REMOVEDIR); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Recheck(context.Background()); err != nil {
+		t.Fatalf("projection cleanup invalidated client: %v", err)
+	}
+	fresh, err := OpenFixedEndpointClientAuthority(context.Background(), fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.Close()
+	if err := fresh.Recheck(context.Background()); err != nil || fresh.snapshot != client.snapshot {
+		t.Fatalf("fresh query identity changed after projection transaction: %v", err)
+	}
+	// Replacing the stable container itself still fails closed, even if the
+	// replacement has the same name and mode. No receipt may wash it through.
+	const stage = ".client-projection-swap-test"
+	if err := unix.Mkdirat(runtimeFD, stage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.RenameatxNp(runtimeFD, stage, runtimeFD, "existing-worktree-bindings", unix.RENAME_SWAP); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Recheck(context.Background()); !errors.Is(err, ErrFixedDeliveryConflict) {
+		t.Fatalf("old client did not reject mutated observation: %v", err)
+	}
+	if err := adoptFixedServerRuntimeMutation(&session.fixedRoot); err == nil {
+		t.Fatal("stable container replacement was adopted")
+	}
+}
+
 func TestFixedServerRootAdoptsOnlyControlledProjectionSwap(t *testing.T) {
 	t.Run("exact-swap", func(t *testing.T) {
 		fixture := newFixedDeliveryFixture(t)
@@ -638,11 +731,8 @@ func TestFixedServerRootAdoptsOnlyControlledProjectionSwap(t *testing.T) {
 		if validateFixedServerRoot(fixture.session.fixedRoot, len(fixture.session.fixedRoot.nodes)) == nil {
 			t.Fatal("projection replacement did not invalidate frozen runtime mutation")
 		}
-		if err := adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot); err != nil {
-			t.Fatalf("controlled projection replacement rejected: %v", err)
-		}
-		if err := validateFixedServerRoot(fixture.session.fixedRoot, len(fixture.session.fixedRoot.nodes)); err != nil {
-			t.Fatalf("adopted root is not current: %v", err)
+		if err := adoptFixedServerRuntimeMutation(&fixture.session.fixedRoot); err == nil {
+			t.Fatal("replacement of the now-stable projection container was adopted")
 		}
 	})
 

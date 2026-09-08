@@ -9,6 +9,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/resultingress"
 )
 
 type Runtime struct {
@@ -290,6 +291,37 @@ func (runtime *Runtime) CollectRunResult(ctx context.Context, runID string) (Col
 	}
 	defer release()
 	return controller.collectRunResult(ctx, runID)
+}
+
+// ReconcileBusinessStop is an internal resident-driver operation, not a
+// worker-provided timer or a new public lifecycle command.
+func (runtime *Runtime) ReconcileBusinessStop(ctx context.Context, runID string) error {
+	controller, _, release, err := runtime.beginOperation("reconcile-business-stop")
+	if err != nil {
+		return err
+	}
+	defer release()
+	if ctx == nil || runID == "" {
+		return application.NewError("reconcile-business-stop", application.ReasonInvalidRequest)
+	}
+	authority, ok := controller.authority.(interface {
+		ReconcileBusinessStop(context.Context, resultingress.CurrentOwnerLockVerifier, resultingress.ControlOwnerAcquisition, string) error
+	})
+	if !ok {
+		return application.NewError("reconcile-business-stop", application.ReasonCompositionIncomplete)
+	}
+	return controller.withOwner(ctx, false, func(verifier resultingress.CurrentOwnerLockVerifier, _ OwnerProjection) error {
+		return mapAuthorityError("reconcile-business-stop", authority.ReconcileBusinessStop(ctx, verifier, controller.acquisition, runID))
+	})
+}
+
+func (runtime *Runtime) CancelRun(ctx context.Context, request application.CancelRunRequest) (application.CancelRunProjection, error) {
+	controller, _, release, err := runtime.beginOperation("cancel-run")
+	if err != nil {
+		return application.CancelRunProjection{}, err
+	}
+	defer release()
+	return controller.cancelRun(ctx, request)
 }
 
 // beginOperation keeps Runtime.Close behind every in-flight operation and

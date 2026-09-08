@@ -21,6 +21,7 @@ const (
 	FixedLifecycleVerifyOperation   = "verify-run"
 	FixedLifecycleReviewOperation   = "build-review-packet"
 	FixedLifecycleDecisionOperation = "apply-review-decision"
+	FixedLifecycleCancelOperation   = "cancel-run"
 )
 
 type FixedLifecycleDeliveryBinding struct {
@@ -313,7 +314,7 @@ func validateFixedLifecycleReceipt(receipt FixedLifecycleReceipt) error {
 
 func validFixedLifecycleOperation(operation string) bool {
 	switch operation {
-	case FixedLifecycleCollectOperation, FixedLifecycleVerifyOperation, FixedLifecycleReviewOperation, FixedLifecycleDecisionOperation:
+	case FixedLifecycleCollectOperation, FixedLifecycleVerifyOperation, FixedLifecycleReviewOperation, FixedLifecycleDecisionOperation, FixedLifecycleCancelOperation:
 		return true
 	default:
 		return false

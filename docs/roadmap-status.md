@@ -1,10 +1,132 @@
 # Roadmap 状态
 
+<a id="业务交付当前表"></a>
+
+## 当前唯一状态与关键路径（2026-09-08）
+
+本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
+
+### 当前研发方式：本地集成优先
+
+2026-09-08 用户明确调整：快速推进期间不再逐切片创建 PR 或等待 CI/E2E；独立本地 review 无阻断后直接合并，继续下一项开发，集中补跑验证。保留单写者、精确 source、未验证项和发布前实际验收，不把本地 merge 当成正式 release。已有远端 CI 可异步完成，不反向阻塞后继开发。
+
+Node 与 SQLite 已在本地候选 `5b50439f79fe55082785b60cea11f09c99c94166` 集成；SQLite 修复 source=`f51ff9a744a84da0e73d6dd358aa1f8110dd5bd2` 经维护者独立代码 review，无生产期限或行为变更，新的动态 race 待集中验证。Node source=`0e1250c` 的 [Node team 34203735967](https://github.com/chiga0/marshal-harness/actions/runs/34203735967) 在 Ubuntu/macOS 均通过确定性回归，本机同组 23/23 通过；不调用真实模型或 Marshal 原生文件。后续直接基于集成代码推进，不继续维护平行功能岛。
+
+当前待补验证：SQLite 新边界/事务回滚的 race、合并候选的全仓回归与真实第二 Provider、完整 supervisor/主机中断恢复；B1/B2/B3 不因本次合并自动升级。香港执行机专用 `marshal-runner`（uid 1000）本轮 SSH 只读核对存在，随后两次连接出现 `Bad file descriptor`，未改宿主策略或循环重试；旧执行机文档的“缺专用用户”不适用于香港此账号，本轮未取得新的远端测试通过证据。
+
+- **Node-only 可行性实验已通过**：`c88410b` 在本机 Node 24.15.0 / Pi 0.84.4 经纯 HTTP 完成真实双 Pi（重叠 13.106 秒）、69 项独立验收、下载后 69 项消费、活跃前端重启及另一真实任务取消/重启保留，全程不调用 Marshal 原生文件；本次约 40.62 秒。前两次真实失败分别为原生事件流预算不足、角色提示未各自完整列明数值范围，均保留并修正，不倒填首轮通过。见 [ADR 0087](adr/0087-node-local-team-feasibility-probe.md) 与[实机记录](node-team-feasibility-2026-09-08.md)。该独立 profile 不修改旧 `.marshal`，不自动授予 Go B1/B2 或 production；下一决策是正式 Node profile 边界，而非继续等待本机原生执行才允许做实验。
+
+- 远端 main 最近核对 `ba2196b`；PR #275 已在完整 CI 全绿后合入功能分支 `feat/team-resident-progress`，merge=`a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1`，pendingRemoteSync=false，**不是 main 合并**。Task HTTP、独立客观 Decision、完整制品链已有原 Store/Verifier 的确定性组合证据，尚无该完整团队的真实下载消费。
+- PR #276 的 `272aa4c` 在 [CI 34195113168](https://github.com/chiga0/marshal-harness/actions/runs/34195113168) 六项通过、macOS quality 失败：输出超限负例的 150ms 预算先触发解释器启动超时。后继 `a97b0f8` 只分离负例预算，超时负例仍 150ms，输出/JSON 负例沿用原默认 30 秒；运行时代码和错误断言不变。独立审查 P0/P1=0，37 项回归及 [CI 34198059195](https://github.com/chiga0/marshal-harness/actions/runs/34198059195) 全部检查通过，2026-09-08 08:07 UTC 已远端合入 `feat/team-resident-progress`：sourceHead=`a97b0f88413f177d2cf5a5cf09dacf91d2916fe9`，remoteMergeSha=`0cc5881e35fe86887cc9b98d7871f7cf8d556440`，pendingRemoteSync=false；不是 main 合并。此前 context 夹具和本次失败成本都保留。
+- **Pi/Qwen 本地可用配置已由用户确认**。Mac 当前实机阻碍是固定 Marshal 二进制启动被 AMFI 拒绝，不是未配置 Agent 或待补额度；不得通过随机换路径、重签或跳过安全策略假报运行。下一条 B1 证据必须来自合法固定候选的真实 Task HTTP 双 Worker→自主验收/集成→下载消费，并验证所属进程重叠、取消/cleanup 及重启。
+- B2-A 问答在接受的 [ADR 0086](adr/0086-task-preapproval-questions-and-preview-revisions.md) 下接通候选代码；`4e8925d` 的三组真实 Session/HTTP 冷恢复及 resultingress/taskhttp 问答 race 通过。独立审查发现 sealed server 漏转发接口，`75af587` 已修复并复审 P0/P1=0。最终 sourceHead=`18b7c785b22b7c66642856442a58efb091b4c21e` 的 [CI 34198304816](https://github.com/chiga0/marshal-harness/actions/runs/34198304816) 包括 Darwin 在内全部检查通过，PR #278 于 2026-09-08 08:11 UTC 远端合入 `feat/task-cancel-integration`，remoteMergeSha=`f17cb1093e5a11260d880be0d642e4e60bd87a07`，pendingRemoteSync=false；尚未进入 main，也未通过此次合并进入 `feat/team-resident-progress`。只处理批准前问题，生产 `order-quote/v1` 保持零问题；不冒充零 Git 业务或运行中交互。客户端 `91ee1935` 已整合，11 项问答及原 37+12 项客户端回归通过。
+- SQLite 候选已推送 PR #277：原子后端和目录恢复修正经独立审查无剩余 P0/P1，最终 Linux 测试包 `9b8148d` 在香港 ECS 专用用户 22 组通过、2.136 秒、非 race。但 `4dc849b` 的 [CI 34198134136](https://github.com/chiga0/marshal-harness/actions/runs/34198134136) 两平台 quality 均在 `TestRecordTransactionAndPageBounds` 失败：期望 `ErrLimit`，实际分别得到 compare-and-append conflict / context deadline exceeded；不得用此前非 race 结果放行或原样重跑。该夹具在 5 秒事务内构造大型规范化记录，需先隔离测试构造成本与事务限制验证，不能放宽生产期限。当前仅 COMPONENT，未接入生产 Session、不双写旧 RB1，不关闭 B2；旧 19 组证据保留不替代新快照。
+- 流水并行保持 CI(N)/问答实现(N+1)/SQLite 独立准备与审查；共享事务一个作者。后继机器门禁前移到真实 producer/consumer，历史失败、CI、人工等待不删分母。目前没有重复业务配对实验，不能宣称相对强 Lead＋SubAgents 的效率优势。
+
+| Milestone | 当前状态 | 当前尚缺的用户出口 |
+| --- | --- | --- |
+| B1 真实团队 PoC | `IN_PROGRESS` | 同一合法固定候选的真实 HTTP 双 Worker 重叠、自主接纳/集成、下载消费、取消与重启证据 |
+| B2 本地 API 可用 | `IN_PROGRESS` | 实际业务关键问答/运行中控制、简启动、SQLite 单写真值、零 Git/多仓库、通用制品、局部修正/恢复与第二真实 Provider |
+| B3 正式可靠发布 | `PLANNED` | B2 同链故障/长时运行、受支持平台实机、签名/公证和受保护 same-bytes stable release |
+
+## 2026-09-08 早期集成记录（历史，不覆盖当前表）
+
+本节保存当时的集成与失败记录；其中“当前”“下一步”“在途”不覆盖顶部唯一状态，也不构成重复实施已接线功能的理由。产品要求见[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)、[ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)与[合同适用性](design-contract-map.md)；原候选证据不转移为后继 release 资格。
+
+- main 最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；远端集成分支 `feat/team-resident-progress` 为 `a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1`（PR #275 全部检查通过后合并）。取消组合在独立 `feat/task-cancel-integration` 验证。早期 B2/设计分支、旧 CI 与 canary 只保留精确证据，不能挪给新候选；分支合并不等于 main 合并或 stable。
+- 798ea39 的精确 [CI 34095940005](https://github.com/chiga0/marshal-harness/actions/runs/34095940005) 五项全绿；先前 34094155668 的结果计数阻断由 [ADR 0084](adr/0084-pi-typed-terminal-result-framing.md) 候选修正。后继 max 实机 34097645547、一次显式 flash 替代 34098369837 均未完成团队；后者 service 通过真实 Collect/Verify 的 33 项检查并形成 ReviewPacket，client 在模型终态失败。没有本轮独立 Decision/ACCEPTED、第三节点或 GoalOutcome。停止模型轮换，后继聚合终态分类与任务上下文/输出收敛，不删失败分母。演示范围和实际证据见 [PoC 交付页](poc-agent-team-delivery.md)。
+- 最终目标不改为“完成更多协议/PR”：交付 fixed server 的完整业务任务与受限团队，并用至少三个代表任务族的重复配对实验，与相同冻结契约、oracle、模型、工具及资源的强 Lead＋SubAgents 比较。源代码返工、失败 CI、失败 Attempt、人工等待全部计入；目前没有效率优势证据。
+- 最新实施候选 `dd8e8ec` 的完整 CI `34156121695` 五项与 Darwin 定向 `34155305960` 的 36 项通过；真实团队 `34157213736` 证明已收集结果→Stop→Close 收口、零重复 Collect 及 cleanup released。但 client 的 Provider `length` 仍触发团队 halt，service 虽已接纳结果进入 VERIFYING，没有 ReviewPacket/Decision/集成/下载。当前补驱动的跨节点失败观测与超时诊断，不自动解除 halt，不原样付费重跑。`a5418f4` 的历史单节点 Verify pass 不替代本候选团队出口；B1/B2/B3 状态不升级，详细证据见[审计报告](audit-report.md)。
+- 用户已创建以 B1→B2→API-STABLE→B3 正式部署为出口的持续 Goal。[Linux 远端验证执行机](remote-linux-validation.md)已安装并校验 Go 1.26.6，实际开始执行旧远端基线 `68e5c8b` 的测试；它不替代 Darwin 测试或授予 Linux server production 能力。系统绝对路径 Python 不兼容导致 CLI renderer 基线失败，保留失败，不通过改 PATH/跳过后假报全绿。
+- 2026-09-08 Task HTTP sourceHead=`8543878cc9cc9b095e94c06c0cc41987611149f2` 的[完整 CI 34184969456](https://github.com/chiga0/marshal-harness/actions/runs/34184969456)五项全部通过，包含 Ubuntu/macOS quality。[PR #271](https://github.com/chiga0/marshal-harness/pull/271) 已远端合入 `feat/team-resident-progress`，remoteMergeSha=`be03e7015be12636b7f2af5aca644039b3558492`，tree 与 source 相同；该 PR pendingRemoteSync=false，**不是 main 合并**。草稿/确认/查询、原 writer lane、CLI 封闭参数及 revision 400/409 已接线。首次 CI 发现的跨层依赖已通过组合根 DI 修正，未扩大白名单。ECS 四包定向 race、Mac held Session 冷重放另有通过证据；本机固定测试受安全检查终止的历史保留，Darwin CI 通过不表示本机策略解除。内网机器不接 GitHub CI，额度不足期间不发起真实 Agent 重试。
+- 下载客户端与纯 HTTP 团队 driver 已分别通过 PR #272/#273 全部 CI 并远端合入 `feat/team-resident-progress`，最新 remoteMergeSha=`aef06e587e70ddd259644f557e8caff1297b8723`；两 PR pendingRemoteSync=false，main 不变。取消客户端 `ec44741` 与只读重叠观测 `cdc9b54` 已独立审查，组合候选 `175cca43cd3d1ac5abb54c5e56c245b5116a76e5` 的 37+12+20 项无模型测试通过，PR #274/CI `34189439463` 在途；已推送但尚未远端合并。
+- 自动客观独立 Decision/完整制品候选 sourceHead=`aa4a82da4a24c8c7e62434752d4d1d7d2f72d398` 经同一 reviewer 聚合修复/复审，原 Verifier 固有安全 gate 不匹配 P1 已关闭。主 Agent 在精确 linker sourceHead、固定二进制及包目录独立执行真实三节点 Verifier→原 Packet/Importer→接纳上游/集成→BuildTaskDelivery→同 RB1→下载→冷恢复，15.80 秒通过，树漂移零追加、重复生成零追加和存储 blob 损坏拒绝也通过；准备/启动/收集及 Worker 输入仍为确定性夹具，无模型。localMergeSha=`ed34ed9b03fa25ca3eb120b46158f654f83255b7`；组合后继 `4564dfe49d916d89291fa99e3c490b21c8b19df4` 已补 CLI tool allowlist 实际接线并独立审查，五组定向测试通过（HTTP held-owner 冷重放、完整交付链、新 Task 批准、旧 Team 不继承、ZIP 边界），其中交付链 14.95 秒。当前 pendingRemoteSync=true，精确组合完整 CI 待提交；这些证据不替代真实 HTTP 双 Worker 重叠及业务交付。
+- Task cancel 后端在独立工作树实现同 RB1 stop/disposition、原进程取消/cleanup、冷启动与提交竞争，不因客户端完成而声明能力可用。早期测试夹具曾依次暴露必需 mediaType、固定根初始化顺序及 transcript-meta 缺失；已补完整生产形状，保留成本。固定 review.test exit 137 与 ECS SSH 连接失败未计通过，未绕过宿主限制；可执行的生产链测试已完成上述复跑。没有新真实团队交付、取消完成或正式发布证据。
+
+| Milestone | 当前状态 | 已有证据 / 实现 | 尚待退出条件 |
+| --- | --- | --- | --- |
+| B1 真实团队交付 PoC（原 B1 单任务为内部步骤，原 B2 团队最小闭环前移） | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；已整合的 `4ace42c` 停止候选在 34067556449 证明长 Verify 期间另一 Run 的 deadline、查询与 Collect 可前进；34082574786 两个真实 Pi 节点到 REVIEW_PENDING，未完成团队交付 | 复用现有合法安装/Store：Task HTTP→计划批准→两个真实 Worker 并行→自主 Collect/Verify/Decision/集成→下载消费；取消/失败有事实，正常重启可查询。不以 Workspace、安装管理或全面迁库为前置 |
+| B2 本地 API 可用版 | `IN_PROGRESS` | 候选已接独立 Decision、上游组合、第三节点及 completed GoalOutcome 查询，完整实机未过；原 B2 实现与失败证据保留，不因重排改成完成 | 简启动、SQLite、零 Git/多仓库、持久 AskUser/答案/确认/验收、详情/审计、同版本恢复与局部 rework/reuse；第二真实 Provider 验证解耦。第三品牌可单列待支持，不阻塞核心 API-STABLE |
+| B3 长期运行与正式支持 | `PLANNED` | 历史故障/恢复组件与 RC1 prerelease 证据保留，不升级成熟度 | B2 同路径故障矩阵、长历史/升级恢复、managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
+
+本轮流水状态：PR #274 sourceHead=`175cca43cd3d1ac5abb54c5e56c245b5116a76e5`，remoteMergeSha=`019cc08228126a6304725f5a36990b8981c42567`，tree 一致，pendingRemoteSync=false。PR #275 sourceHead=`5c13033e3610371e538e3a067266a83c8287d308` 已推送，CI `34190493630` 在途，尚未合并；此前段落的“待提交”已由此记录取代。取消 sourceHead=`a59a1382989235ef9888ad2436ebe8f9f269b5f0` 的本地组合 merge=`66cf5d10d0b51121cf43aed31536d13a5eea36a6`，接线 `767aaee`、测试资源修正 `eea6e01` 均尚未推送。精确 `eea6e01` 的 draft/approved/READY 冷恢复、缺 cleanup 不假结案、原完整交付链（14.73 秒）通过；reservation 两个夹具因创建目录改变 held root 身份失败，整组测试仍为失败。独立审查发现取消误触发全局调度停止、坏 Task 饿死取消队列及 endpoint 测试借用泄漏，共三项 P1，后者已修，前两项聚合修正中。实时原始 facts 提取与取消/交付组合回归在独立 worktree 并行；不让 CI 等待占住开发槽。
+
+后继验证（取代上段对应在途状态）：PR #275 sourceHead=`5c13033e3610371e538e3a067266a83c8287d308` 的 CI `34190493630` 全绿，remoteMergeSha=`a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1`，tree 一致，pendingRemoteSync=false。取消组合代码 `c7ffc519f4bcee0da1e4e1ddff2bb77210468eb2` 已关闭首轮调度问题及复审发现的终态冻结来源错误；同 reviewer 复审包含合法状态夹具修正 `f1474f47`，无剩余代码 P0/P1。Mac 通过取消 HTTP/冷恢复/公平调度、两类 Outcome 前停止及 Outcome 先赢竞争、原完整交付链；终态六状态来源和事件形状属组件验证，不是实机 cleanup。Linux `d9cdfa8` 的 application/taskhttp/productionruntime race 与 resultingress 取消定向 race 通过，后者整包超时保留；`c7ffc51` 的新 ECS 执行连接失败未启动，不能挪用旧 SHA 结果。实时原始记录 collector `8683c94` 已独立审查，18 项新测试两套 Python 与原 20 项回归通过，并接入既有 CI target。取消组合尚待完整 CI 与真实 Worker 验收。
+
+下一步顺序：提交取消/交付/实时观测的组合 CI，同时准备同一固定候选的实机验收。模型配置与额度可用后，执行真实 HTTP 双 Worker 订单团队并下载消费、观测所属进程重叠及完整 Task→CancelRun→cleanup→disposition、重启；不把无模型 fixture 当业务完成。B2 关键问答的可复用接缝已预设计，不提前修改当前共享事务；SQLite、零 Git/多仓库、简启动、问答和第二 Adapter 在 B2。U1 旧历史导入不阻新任务，B3 保留正式故障/平台/发布门禁。没有 Workspace/安装身份平台/三品牌矩阵前置，也不绕过旧 activation 或伪造 Git。结构性失败无事实变化不重复付费，历史失败分母不清零。尚未完成团队交付或正式发布。
+
+并发边界：B1 先两个 scope 互斥的作者，验收/集成也计容量；现有候选仍只证明两个派发接缝，不把新方案写成已完成实机。开发可并行主应用闭环、业务 oracle/API 客户端、当前阻断的 Adapter；共享事务一个 owner，每个作者独立 worktree，不用旧 Marshal skill。UI 只在核心 API-STABLE 后启动。更多并发须依赖、目录、内存/CPU、Provider 与验收队列均允许；不是所有槽满才叫有效率。
+
+本轮设计纠偏：按用户明确指示删除首版 Workspace 实体/API/注册，将账号/安装身份管理、全面迁库和全 Provider 矩阵移出 B1；旧 B1 单任务是新 B1 团队 PoC 的内部步骤，原状态、SHA/CI 与失败事实全部保留。ADR0085 已于 2026-09-08 接受，当前导航据正文同步，不另行扩大权限。AGENTS.md 的 universal 不变量/门禁保留；设计调整不代表产品出口、远端合并或正式发布完成。
+
+## 历史过程记录（不作为当前待办）
+
+2026-09-07 团队终态纵切候选：新增同 RB1 的 completed outcome，current owner 与三 Run lease 内复查原独立接纳/上游/集成 base；resident 自动一次收口、重放不增加 Attempt。已接原 `team-reconcile` 查询、固定客户端独立账本 readback、客户端只读等待，最终 summary 只有看到该事实才置业务 accepted。Outcome 的 budgetDigest 是原 reservation snapshot，实测仅 Attempt 数，token/compute 未测不写零。已添加 store 正常/冷恢复/幂等/拒绝、session 未就绪/越权、HTTP 只读绑定与客户端等待回归；本地编译、vet/staticcheck/架构及脚本回归通过，真实 Go 动态与三节点实机仍待候选 CI/验证，不能把候选实现记为 B2 完成。`55a435e` 的 CI 34089521238 最终四项通过，macOS 超过 20 分钟上限被取消；质量作业改为 30 分钟且保留全部检查。局部 replan/reuse、失败 Goal Outcome、计量与配对收益仍开放。
+
+2026-09-07 当前关键路径修正：在新 Worker 派发前发现参考集成模板的正常成功路径矛盾——允许 `no_change`，却未声明其必需诊断交付物。新 proposal 明确交付绑定最终代码摘要、接口与 HTTP 示例的 `quote_delivery.json`；代码正确时不造无意义修改，固定 oracle 仍执行原真实 HTTP 验收，清单不充当通过证据。本地 5 项输入/20 项 oracle 回归通过（包括真实 loopback、代码不变交付、摘要漂移、重复字段、FIFO 与伪造通过拒绝），没有新增付费 Attempt。当前集成创建/同宿主评审候选 `55a435e` 的完整 CI 仍待终结；GoalOutcome 耐久收口、局部 replan/reuse 和真实第三节点仍未完成，B2 不升级。下一步是把三节点结果耐久聚合并读取，再执行同路径真实验证；不得把本次模板修正或清单当作 GoalOutcome。
+
+2026-09-07 当前增量：`047b170` CI 34087532524 五项已全绿；`10a5edf` CI 34088862794 在两平台前置回归发现集成克隆未先 JCS 规范化，合法输入被拒绝，现已补齐且保留失败成本。继续接通第三节点客户端 Collect/Verify/独立评审载体，共用原等待预算，不重跑整个团队；本地 12+44+17 项客户端/载体测试通过，Go 修复动态结果待后继精确 CI。B1/B2 IN_PROGRESS、B3 PLANNED；没有新真实 integration、GoalOutcome、main merge 或 stable，也没有效率优于基线的证据。
+
+2026-09-07 集成创建接线候选：实现两个 ACCEPTED 上游→原 integrate 调度→精确 Git 组合→仅变 base 的完整 Task→原 Prepare→同 RB1 创建冻结→原物化/首次 Start。新创建域绑定两个原 creation/Run/Attempt/authority head/candidate/patch/Decision/packet/Outcome，冻结和 Start 均重查；不增加预算或刷新已有创建。尚无真实 integration Run/最终 GoalOutcome，当前仍 B2 IN_PROGRESS。`047b170` 的 Git/review/团队前置动态回归已通过，完整 CI 当时仍在运行；本接线的新动态结果待提交后 CI。
+
+2026-09-07 后续校正：接纳读取改为实际 Core producer 的同 round 归档 Decision/packet；已保留两轮 CI 失败的根因与成本。集成 base 的精确 patch 组合已编写，使用私有 index 生成确定性 commit，不触碰用户 HEAD/index 或工作分支。仍未接通 durable integration creation/Start 和 GoalOutcome，B2 继续 IN_PROGRESS；未新增 Worker 或整队重跑，未宣称效率获益。后继回归增加 gitworktree 并聚合全部目标包失败。
+
+2026-09-07 集成准备候选：新增 current-owner/双 Run lease 的已接纳输入读取，复用原 Decision 校验与 Outcome producer，绑定精确 candidate/patch，不消费可变分支或仅凭 ACCEPTED 快照标签。已完成 Darwin/Linux 编译检查、vet/staticcheck；Go 动态测试待候选 CI，不把 `-exec /usr/bin/true` 计为测试通过。该读取尚未接入 resident 的集成创建，局部 replan、集成 Task/派生 base 耐久冻结、最终 GoalOutcome 仍开放；B2 不升级，本轮不再派整队重跑。
+
+2026-09-07 后继实现：按 ADR 0082 扩展同宿主团队评审载体，两个 implement 的审查包全部关闭后才 ready，各自接收独立 Decision；先到先处理，共用有界等待，拒绝不丢弃另一节点成果，不启动新 Attempt。已通过 9 项团队驱动、44 项生命周期驱动、13 项载体测试及原脚本回归；新候选仍待精确 CI/实机，不倒填 34082574786 的 Decision。当前 Goal 保持业务交付及对照收益口径，不重建 Goal 清零失败成本；暂不再派整个团队，先闭环局部 replan/reuse 和集成。B1/B2 IN_PROGRESS、B3 PLANNED，无新 main merge/stable。
+
+2026-09-07 实质进展与限制：`7a4f7d0` CI 34081513199 五项通过，真实团队 34082574786 成功完成两个节点各一次 Attempt、Collect/Verify 和 REVIEW_PENDING；66 条 RB1 记录及审查包绑定已核对。但独立审查以真实 HTTP 反例确认客户端 P1/P2，尚无 Decision/ACCEPTED、integration、Goal Outcome 或效率优势。已补齐原契约的 oracle 盲区与提示澄清，不修改旧 Run、不重跑已完成服务；下一关键路径为正式接纳/聚合客户端修正、局部 replan/reuse 和成果集成。详见[业务审查](audit-b2-first-team-2026-09-07.md)。
+
+2026-09-07 验证纠偏：`5ca49bc` 的 CI 34080540487 前置团队回归通过，但 macOS/Linux quality 均在新 CLI 跨链测试中发现手写 environment-binding 版本错误；该测试此前未包含在前置步骤。现改用正式类型/版本常量及逐节点 Task/Policy Schema 诊断，并前移整个 CLI 包的 race 回归，同步 CI 精确内容契约。实机未派发，不把前置绿灯冒充完整链路通过；此第二次夹具来源返工计入成本。B1/B2 IN_PROGRESS、B3 PLANNED，仍须新 head CI→真实双节点→独立验收与集成交付。
+
+2026-09-07 验证更新：提示/准入修复 `283b19b` 的 CI 34080167668 被前置团队回归拦截，原因是旧 store/session 夹具使用不符合既有 Schema 的字符串 context。已统一修正数组形状及对应反例，不修改生产门禁；没有派发该候选实机。B1/B2/B3 状态不变，下一动作仍是新 head 动态验证。
+
+2026-09-07 最新：`b8dbf3c` 精确 CI 34078286247 五项通过；团队实机 [34079333520](https://github.com/chiga0/marshal-harness/actions/runs/34079333520) 完成批准、两个 Run 创建及一个节点启动，但第二节点在 launch 文本检查失败后耐久停派，最终客户端查询超时，整次失败。26 条 RB1 记录逐条摘要与顺序检查通过，含 2 个 reservation/open、1 个 process-started、1 个 team-plan-halted；没有团队 ACCEPTED/集成。已修候选中的 typed Task context 丢失、完整 Pi 提示传递，并将实际 launch builder 全节点预检移到批准前；HTTP 路由使用完整 URL，保留原路径检查。后继动态 CI/实机尚待完成，失败后的查询超时仍未证明关闭。B1/B2 IN_PROGRESS、B3 PLANNED；无新增 main merge/stable 或效率优势证明。
+
+2026-09-07 最新：`a481f0e` 精确 CI 34076598876 五项通过，但首次团队实机 [34077560755](https://github.com/chiga0/marshal-harness/actions/runs/34077560755) 在顶层 CLI 的 `self-local-command-denied` 短路，未创建 Run/Attempt。已定位 handler 与 closed activation/classifier 接线遗漏，后继同批补 Schema、权限及真实入口回归，不原样重试。B1/B2 IN_PROGRESS、B3 PLANNED，无新增 main merge/stable。当前目标保持 B1→B2→B3 及至少三个任务族的强 Lead＋SubAgents 配对验证；收益尚未证明。以下“尚未执行/在途”为历史时点。
+
+2026-09-07 团队验证入口：在 `4867ff7` 上接入 `order-quote-team` hosted 场景：一次团队批准→resident 自动物化/启动两个实现节点→既有 Collect/Verify/ReviewPacket；不逐个外部 Start，不提前创建 integration。新客户端与既有脚本回归通过，真实团队执行、进程重叠证据、独立接纳及集成交付仍待完成。`4867ff7` 的跨语言输入回归已在 macOS/Linux CI 通过，记录时全量质量作业仍在途；新入口仍需自己的精确 CI。B1/B2 仍 IN_PROGRESS、B3 PLANNED，无新 main merge/stable。
+
+2026-09-07 当前：B1 `4ace42c` 精确 CI 与真实 Pi 跨 Run 验证 [34067556449](https://github.com/chiga0/marshal-harness/actions/runs/34067556449) 通过；同一 server 内约 104 秒 Verify 期间，另一 Run 在原 deadline 后约 5.53 秒到 BLOCKED，15 次 Inspect 和 stopped Collect 均完成。只关闭该候选组合子条件，无新 ACCEPTED/main merge/stable。B2 `00c8351` 的调度组合 CI 34067600918 已五项通过，同时正常整合上述 B1 修复，避免旧依赖进入下一次真实团队实验；合并 head 仍需自己的精确验证。B1/B2 仍 IN_PROGRESS，B3 PLANNED；以下为历史检查点。
+
+2026-09-07 最新：创建恢复 2486b1c、首次 plan gate fc5d479、批准后冷续行 aa230da 的精确 CI 均已五项通过。耐久停派 1f61c2c 已推送；后继将其与 fixed server 初始调度、实际 Start 共用路径接通，自动 busy 上限 2，合法 Verify lease 仅使本轮不派发。代码已编写、本地编译/静态检查通过，halt/调度组合动态 CI 和真实并行仍待验证；自动 Collect、独立接纳、集成、Goal Outcome/暂停/replan 未完成。B1 的 4ace42c PR CI 与精确分支 CI 34066636760 均已五项通过；一次带新诊断的真实 Pi 组合验证 34067556449 已派发，旧实机失败未关闭。B1/B2 仍 IN_PROGRESS、B3 PLANNED，无新 main merge/stable 发布。下方保留历史检查点。
+
+2026-09-07 最新检查点：B1 `80084bb` 的 CI 五项通过，但实机 34059061091 在 peer Collect 的 `pi-result-final-content-shape` 失败，尚未进入跨 Run 组合验收，禁止原样重试。B2 `928b8ab` 的 CI 34062410465 已通过 Linux quality、双架构 conformance 和 secret scan，记录时 macOS quality 在途；后继正接通原冻结输入的无 Probe planning 重建，尚未完成部分 Run 补齐和真实团队。Goal 保持 B1→B2→B3 与至少三个业务族的强 Lead＋SubAgents 重复配对收益验证。main 仍 ba2196b、两候选均未合并；下方旧“当前/在途”段落是历史检查点，不代表最新状态。
+
+2026-09-07 当前：`d0be824` 的精确 CI 34054261338 与 PR CI 均通过；单次跨 Run 实机 34055217240 已在同一 owner、无重启条件下完成 peer Collect 到 VERIFYING，并启动第二个 Run，但整体因客户端响应失败而结束。已确认 15 秒固定响应读取窗口与 100 秒 Verify 不兼容，另有 1 秒 half-close 等待与身份复查预算冲突；后继候选集中修正传输阶段预算、补实际认证客户端回归和缺失的阶段诊断。**B1 仍 IN_PROGRESS，main 仍 ba2196b；PR #268 为 Draft，无停止候选合并、无 stable 发布。** 后续历史段落中的“在途”不代表作业仍活跃。
+
+2026-09-07 最新：`0130465` 的 CI 五项全绿，真实 Pi 中断恢复 [34050602081](https://github.com/chiga0/marshal-harness/actions/runs/34050602081) 通过。已证明 stop barrier 落盘后、Run 仍 RUNNING 时中断 server，原 Attempt/stop intent 在同身份后继恢复为 BLOCKED，并通过原 Collect 请求冷恢复；一 Attempt、零 retry/rework，包含恢复的终态延迟为原 deadline 后 4.334296 秒。仅关闭该进程中断边界，不代表完整故障矩阵。长 Verify 让出全局写锁的后继 `74e8619` 已推送，CI 34050715623 在途，跨 Run 实机尚待验证。**B1 IN_PROGRESS，B2/B3 不升级；main 仍 ba2196b，停止候选未合并、无 stable 发布。** 下列段落保留为历史检查点。
+
+2026-09-07 当前候选：`c61998515512f064fc4b113c229295e5df28e185` 的 CI 34047040755 五项全绿；真实 Pi 的 Attempt-timeout 34047844723 和 Run-first 34048091298 均通过终态查询、stopped Collect、同 bytes server3 冷恢复。稳定投影容器修复首次在两类预算顺序的完整查询路径得到实机正向证据；两次各一 Attempt、零 Cancel/retry/rework，不删除此前失败分母。**B1 IN_PROGRESS：尚缺停止中途故障矩阵、长写事务响应上界与最终组合验收；B2/B3 不升级。候选未合并 main，无 stable 发布。** 证据范围见 [审计报告](audit-report.md#2026-09-07稳定容器修复后的两类自动超时和冷恢复通过)。以下是历史检查点。
+
+2026-09-06 16:19 UTC：诊断候选 `88f9edd` 的 CI 34043986843 全绿，但 Attempt-timeout 34044944162 在第 17 次 Inspect 的客户端 authority 打开阶段失败，未进入 HTTP；RB1 到 worktree release receipt，尚无 stopped Run 终态/Collect/server3。本轮新增公开客户端目录观察切换的确定性回归，冻结同类实机重试，先定位并修复完整接缝。**B1 仍 IN_PROGRESS，B2/B3 未升级；停止候选未合入 main、无 stable 发布。** 前文在途 CI/待派发语句为历史时点，不代表当前仍运行。
+
+2026-09-06 15:19 UTC：`49f745d` 的 Run-first 实机 34041702160 通过，已独立核对原始预算来源和 server3 同字节/原请求/原 deadline 冷恢复；新增关闭一个候选子条件。Attempt-timeout 34041730043 虽已停止到 BLOCKED，但一次 Inspect 出现 `transport-failure`，未进入 Collect/冷恢复，整次失败并保留证据，不原样重跑。B1 当前关键阻塞是停止期间查询的完整并发路径，另有中途故障、长事务响应上界和最终组合验收；B2/B3 状态不变。后继 Outcome/归档候选 `97e448a` 已推送，CI 34041798874 在途。main 未合并停止候选、未发布 stable。
+
+2026-09-06 15:15 UTC：`49f745d` 的 CI 34040876557 五项全绿；已通过精确候选 gate 派发 Run-first/冷恢复 34041702160，以及 Attempt-timeout/冷恢复 34041730043，后者按同 source 并发组排队，不是失联重试。后继 `3c5e734` 补停止 Outcome 部分落盘/冲突/冷 lease 重放组件回归，`7229b30` 修复 canary 未归档原始 Outcome 的清单缺口；本地静态与脚本检查通过，后继动态证据尚待新 source CI。上述实机未完成，B1 仍 IN_PROGRESS，B2/B3 不升级，未合并停止候选或发布 stable。
+
+2026-09-06 14:45 UTC：候选 `dd8178f` 的五项 CI 与自动超时实机 34040069400 通过，原始 60 秒 Attempt deadline 未因 server 重启延长；零 Cancel，停止原因与原始预算来源已独立核对。显式取消/冷恢复和 main 正常业务 ACCEPTED 证据继续保留。B1 尚缺 Run budget 先到期、超时后冷恢复、中途故障与长事务响应上界，仍 IN_PROGRESS；以下为历史检查点，当前汇总以下表为准。
+
+### 2026-09-06 早期检查点（历史）
+
+2026-09-06 10:23 UTC：PR #264 的 source `2244092` 经 CI 34026422197 五项及全部 PR 附加检查通过，已远端合并为 `5bdec88d7161771caa2a556c70bbdef576375ff9`，pendingRemoteSync=false。main CI 34027276856 在途，尚未派新 canary。停止候选 `213e271` 已推送，CI 34027223715 独立在途；本次同步主线修复到停止开发分支，不将其放行。
+2026-09-06 当前增量：停止分支 `20a9999` 的 CI 34026216770 五项全绿，覆盖 preparation 前与 launch 前 READY 原始预算检查。最新未发布候选新增 fixed CLI cancel、明确非成功的 stopped Collect 输出与显式 `order-quote-cancel` canary 驱动；23 项 Python 测试通过，但尚未实机派发。stop 端到端故障矩阵、release/receipt 衔接和截止延迟仍未关闭，不合并放行。主线实机仍是 `4f7311b` 到 VERIFYING，PR #264 待 macOS 检查；B1 IN_PROGRESS，B2/B3 PLANNED。下方为此前检查点。
+
+2026-09-06 最新状态：main `4f7311b` 的 CI 全绿，唯一 canary 34024740089 已到 `VERIFYING/cleanup-released`，尚无 Verify/ReviewPacket/ACCEPTED。receipt 阻塞修复见 PR #264，其精确 source CI 独立推进，不原样重跑旧 canary。停止分支 `a04d76c` 的 CI 34025131805 五项全绿；最新候选补 preparation 前与 launch 前的 READY 原始预算检查，需新 source 动态证据。stop 端到端故障矩阵、release/receipt 衔接和截止延迟仍未关闭，不合并放行。B1 IN_PROGRESS，B2/B3 PLANNED；以下为历史检查点。
+
+2026-09-06 停止纵切后续候选：已补 `run-stopped` 的 Core→fixed HTTP→客户端返回以及原 Collect 请求的终态重放，避免完成取消/超时后仍显示 live pending。只在 stop/cleanup/Outcome 验证后返回；部分结果仍 pending。当前仍在隔离开发分支，尚缺 resident timer、READY 到期准入和全链路 fault matrix；B1 未完成、B2/B3 未升级。主线与最新实机事实见下段；新候选动态证据独立记录，不借用旧 CI。
+
+2026-09-06 09:15 UTC 当前增量：PR #263 已在全部 source 检查通过后远端合并，main 为 `4f7311b08bf59f6fad31aaae6661fc253ab0b0b4`，该 PR 的 pendingRemoteSync=false。main CI 34023916927 在途，尚无新 canary/ACCEPTED。取消分支 macOS CI 的 session 借用关闭死锁已定位并修复测试；继续实现原始业务 deadline 的原子接纳检查与既有 stop 恢复，尚缺 timer/READY 到期准入及完整故障证据，不可合并放行。B1 IN_PROGRESS，B2/B3 PLANNED。以下保留前一检查点，不覆盖本段最新事实。
+
+2026-09-06 最新实机结果：main `5945b68` 的 CI 34008933865 五项全绿；单次 canary 34009508838 已越过历史消息解析并提取最终 assistant 文本，但以 `pi-result-final-object-trailing/authority-conflict` 停止，尚无 Verify/ReviewPacket/ACCEPTED。本候选将机器输出约束明确前移到 Pi prompt，禁止代码围栏/尾随报告，解析器门禁不变；不原样重试、不宣称格式问题已实机解决。取消纵切候选 `feat/b1-stop-lifecycle@f41b3aa` 已推送并运行独立 CI，仍不允许合并放行。B1 为 IN_PROGRESS，B2/B3 仍 PLANNED，详见 [审计记录](audit-report.md)。
+2026-09-06 最新实机结果：main `4f7311b` 的 CI 34023916927 五项全绿；单次 canary 34024740089 已完成真实 Pi 结果接纳与 cleanup-released，并到 `VERIFYING`，随后 fixed delivery receipt 提交失败。候选修复 release 投影交换后 root mutation observation 未衔接的问题，不放宽门禁；尚无 Verify/ReviewPacket/ACCEPTED，不原样重试。取消/业务超时另在 `feat/b1-stop-lifecycle@a04d76c` 运行独立 CI，未放行。B1 为 IN_PROGRESS，B2/B3 仍 PLANNED，详见 [审计记录](audit-report.md)。
 2026-09-06 11:35 UTC：同一 fixed server 的真实 Pi 订单报价链已到 **ACCEPTED**。单次 canary 34030199172 成功：一次 Attempt、零 operational retry、零 rework，经过 Start 丢响应/重启/rebind/replay、Collect、业务 Verify、独立 Decision 和终态查询。B1 的正常业务交付子条件已关闭；取消/业务超时及恢复尚未通过，B1 仍 IN_PROGRESS，B2/B3 仍 PLANNED。详见 [本次验收证据](audit-report.md#2026-09-06fixed-server-真实业务首次独立-accepted)。
 
 更新时间：2026-09-06（ADR 0080 三面分离与业务交付路线；不升级历史成熟度）
 
-## 业务交付当前表
+### 2026-09-06 业务交付状态表（历史）
+
+远端 main 为 `ba2196bea33e6f007809f75f9671928c892bfa11`（含 #266 的正常业务证据文档）。停止候选最新已验证代码 `d0be824` 的精确 CI/PR CI 全绿；其 34055217240 实机证明初始同 owner Collect 已越过 34052534488 的故障，但暴露后续传输阶段预算错配，未证明跨 Run 组合完成。最近完整成功的中断恢复属于前驱 `0130465`。后继修正及回归仍在同一 Draft PR #268，尚未合入 main，不存在 localMergeSha 或 remote merge；分支已推送不等于 main 已启用取消。
 
 当前实机验证的 main 基线为 `c93e31bde15d9dbcd3487dfc1db323eafc4127e1`（[PR #265](https://github.com/chiga0/marshal-harness/pull/265)，sourceHead `e805129fd8b684824f25c6dffbfb9267642bdf65`），远端已合并，pendingRemoteSync=false。main CI 34029534577 五项全绿后，仅派发一次 [34030199172](https://github.com/chiga0/marshal-harness/actions/runs/34030199172)，全部成功。Run `fixed-server-t1-34030199172` 的第 6 条 event 为 `review.accept`，快照 `ACCEPTED/sequence=6`。此前 34027927457 的不合法 Pi content 失败仍保留，分类修复不是放宽解析或保证模型永不违约；本次通过不能删除失败分母。
 
@@ -12,11 +134,11 @@
 
 | Milestone | 状态 | 当前事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | 当前 main 同 bytes 实机 Start/丢响应/重启/rebind/replay→Collect/cleanup/receipt→业务 Verify→独立 Decision→ACCEPTED；一次 Attempt、零 rework | 取消/业务超时 Outcome 与恢复故障矩阵；长写事务的停止/查询响应上界；扩展场景验证不能借单次通过概括可靠性 |
-| B2 受限 Agent Team | `PLANNED` | ADR 0080 目标与 ADR 0019 组件可复用 | approved plan 耐久物化/调度、两个到三个实现节点、集成候选业务验收、局部 replan、暂停恢复 |
+| B1 完整单任务服务 | `IN_PROGRESS` | main 正常业务独立 ACCEPTED；候选取消、两种 deadline 与 barrier 中断恢复通过；4ace42c 精确 CI 及同 server 长 Verify/并行停止/查询/Collect 34067556449 通过 | 最终审查/候选主线合入与组合确认；旧 peer Collect 失败仍计入分母；完整 B2 同路径故障矩阵在 B3 |
+| B2 受限 Agent Team | `IN_PROGRESS`（未完成集成交付） | 7a4f7d0 精确 CI 与 34082574786 双节点实机通过：server 自动物化/Start、外部客户端 Collect/Verify→REVIEW_PENDING；独立审查确认客户端 P1/P2并补 oracle 盲区 | 正式 Decision/客户端聚合修正与服务成果复用、进程重叠证据、server 自动 Collect/Verify、成果集成、Goal Outcome/有界 replan/暂停及恢复；尚无对照收益 |
 | B3 长期运行与正式支持 | `PLANNED` | 历史 I186 组件证据保留，不升级 | B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
-[ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 仍为 Proposed，main 尚未开启 cancel/timeout。隔离取消候选 `5e0a8e3` 的实机 34029737648 在 server 重启后的 Start 重放失败，尚未执行取消；不能称取消失败或通过。`2422d14` 已补完整 delivery 与后台 deadline 的共享写协调通道，CI 34030543935 在途，未合并。关闭这个主线阻塞后继续取消/超时同路径验证；本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。
+[ADR 0081](adr/0081-fixed-server-stop-intent-and-outcome.md) 仍为 Proposed，main 尚未开启 cancel/timeout。下一步验证长 Verify 期间无关 Run 的 deadline 能继续推进，完成停止纵切的组合验收与独立审查，随后进入 B2；不重跑已通过的旧 source，不扩大 Provider 或另起 controller。完整失败样本及证据边界见审计记录。本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。
 
 旧现场 33968513566 的 Run 为 `READY/sequence=2` 且漏收 RB1；#258 已修复诊断和收集路径。新现场 33971611314 的 artifact 9971098258 提供 17 条 RB1 fact：启动链已推进，随后 adoption 错把生产 namespace 限为 `control` 与 `existing-worktree-bindings`。候选改为冻结已存在的五类 composition store descriptor/name/object，保留未知插入、对象替换及 control ABA 拒绝；同步将公开装配测试的 ingress 放回真实 runtime 布局。增设先上传的小型诊断 artifact，避免以后等待整包 candidate 下载才定位失败；原完整 evidence 包继续保留。
 
@@ -62,15 +184,17 @@
 
 2026-09-05 候选增量：`a5a261e` 的 [CI 33947799422](https://github.com/chiga0/marshal-harness/actions/runs/33947799422) 五项全绿，验证 v2 bootstrap→started→bind/spawn→ProcessStarted→resume→cold replay 与 F_GETPATH 修正回归。继续 S3 接线时发现 generic `ReconnectV2` 会推进内存 owner/head，不能替代 ADR 0067 保留的只读 Attach；本轮在 ADR 0079 补足 v2 Attach 编码，新增显式 v2 authority/observation、只读服务端入口和 Unix socket 零副作用测试。尚未接通 callback-scoped prepared continuation，入口不放行任何 command，生产 selector 未切换。本轮动态证据待新 head CI；后继是 borrowed Attach→已耐久 bind/collect/terminal 命令以及固定 bytes 真实 Pi 独立验收，B1 仍为 IN_PROGRESS。
 
-此表是当前 milestone 的唯一汇总入口；下方按日期保留历史 checkpoint，不覆盖本表。目标/验收见 [业务交付计划](agent-team-delivery-plan.md)，范围变化见 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md)。
+以下表格是早期 checkpoint，**不是当前状态**；唯一当前汇总为上方[业务交付当前表](#业务交付当前表)。保留历史以追踪判断变化。目标/验收见 [业务交付计划](agent-team-delivery-plan.md)，范围变化见 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md)。
 
 | Milestone | 状态 | 已有事实 | 未关闭的退出条件 |
 | --- | --- | --- | --- |
-| B1 完整单任务服务 | `IN_PROGRESS` | RC1 已发布；T1 实机恢复已集成；main `0c6d9cd`（PR #254）已有 T2 collect/verify/review/Decision 接口；本轮增加订单报价参考 oracle 与 T2 业务 Task 模式 | 新最终 bytes 的真实 T2 到独立 Decision/ACCEPTED；ADR 0079 launcher production cutover；有界查询、取消/超时与持续推进 |
+| B1 完整单任务服务 | `IN_PROGRESS` | main `c93e31b` 的真实 Pi 订单报价已独立 ACCEPTED（34030199172）；候选显式取消/冷恢复通过；最新 `c619985` 的两类自动超时、终态查询/Collect、冷恢复通过 | 停止中途故障矩阵；长写事务下查询/停止响应上界；独立审查与最终版本正常业务/停止组合验收、主线合入。候选子条件通过不等于 B1 完成 |
 | B2 受限 Agent Team | `PLANNED` | ADR 0019 已有计划接纳组件，ADR 0080 已确认受限产品目标 | approved plan 耐久物化/调度、两个到三个独立实现任务、集成候选业务验收、局部 replan、暂停恢复；不能以子 Run 全绿替代 |
 | B3 长期运行与正式支持 | `PLANNED` | I186-R2–R6 组件和历史测试可复用 | B2 同路径故障与长历史测试、升级/恢复、#212 signing/notarization、Linux server 实机 gate、受保护 stable release |
 
-最近已合入基线：`origin/main@c8ee8dd213eb1c0dea4fce0772318221259bdf46`（PR #256），required CI [33938666374](https://github.com/chiga0/marshal-harness/actions/runs/33938666374) 的 macOS/Ubuntu quality、Linux amd64/arm64 candidate conformance 与 secret scan 全绿。文档、锁修复及参考测试已合入，但不构成真实业务 Agent 或独立发布证据。T2 的 `production-owner-not-current` 仍缺失败现场根因闭环：fsync 后曾复现，后续 CI 绿色不能单独证明已修复。
+2026-09-07 核对远端 `main@ba2196bea33e6f007809f75f9671928c892bfa11`，包含 #266 的正常业务证据；正常业务实机 source 为 `c93e31b`。停止候选 `c619985` 已推送 `feat/b1-stop-lifecycle`，没有 localMergeSha 或远端 merge，不得把其能力说成 main 已启用。两类超时均使用其同一 candidate binary SHA-256 `a55e680713258f357c3846473ba2f1ed53a685764f5d8a52cda5858545883aa3`；历史 source 的成功不替代最终组合验收。
+
+### 历史实施检查点（不覆盖上方当前表）
 
 本轮不改变 Run/Goal 持久化、授权或生产 selector。最先执行参考 oracle 正反例，再沿 B1 的 fixed server 路径收集真实业务证据；不新起另一套 controller。I186-R0 PASSED、R1 IN_PROGRESS/INTEGRATED、R2–R6 IN_PROGRESS/COMPONENT 保持。
 

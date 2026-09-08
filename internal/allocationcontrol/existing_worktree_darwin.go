@@ -1119,6 +1119,10 @@ func runReadOnlyGit(ctx context.Context, graph ExistingWorktreeDescriptorGraphV1
 }
 
 type existingWorktreeProjection struct {
+	runtimeParent        *os.File
+	runtimeMutation      string
+	parentCurrentName    CurrentNameIdentityV1
+	legacySnapshot       *ExistingWorktreeAuthoritySnapshotV1
 	parent               *os.File
 	directory            *os.File
 	directoryCurrentName CurrentNameIdentityV1
@@ -1174,7 +1178,7 @@ func (projection *existingWorktreeProjection) interruptCleanup(phase string) err
 // SyncExistingWorktreeProjectionFromGraph is the reference session projection
 // mechanic. It is valid only after the corresponding RB1 receipt fsync.
 func SyncExistingWorktreeProjectionFromGraph(graph ExistingWorktreeDescriptorGraphV1, snapshot ExistingWorktreeAuthoritySnapshotV1) error {
-	store, err := openExistingWorktreeProjection(graph)
+	store, err := openExistingWorktreeProjectionAtSnapshot(graph, &snapshot, false)
 	if err != nil {
 		return err
 	}
@@ -1188,7 +1192,7 @@ func SyncExistingWorktreeProjectionFromGraph(graph ExistingWorktreeDescriptorGra
 // came from the current RB1 authority; this function only closes the
 // filesystem half of that join.
 func VerifyExistingWorktreeProjectionFromGraph(graph ExistingWorktreeDescriptorGraphV1, snapshot ExistingWorktreeAuthoritySnapshotV1) error {
-	store, err := openExistingWorktreeProjection(graph)
+	store, err := openExistingWorktreeProjectionAtSnapshot(graph, &snapshot, true)
 	if err != nil {
 		return err
 	}
@@ -1197,25 +1201,47 @@ func VerifyExistingWorktreeProjectionFromGraph(graph ExistingWorktreeDescriptorG
 }
 
 func openExistingWorktreeProjection(graph ExistingWorktreeDescriptorGraphV1) (*existingWorktreeProjection, error) {
-	if validateExistingWorktreeDescriptorGraph(graph) != nil {
+	return openExistingWorktreeProjectionAtSnapshot(graph, nil, false)
+}
+
+func openExistingWorktreeProjectionAtSnapshot(graph ExistingWorktreeDescriptorGraphV1, snapshot *ExistingWorktreeAuthoritySnapshotV1, readOnly bool) (*existingWorktreeProjection, error) {
+	if validateExistingWorktreeDescriptorGraph(graph) != nil || snapshot != nil && snapshot.Validate() != nil {
 		return nil, ErrAuthorityConflict
 	}
-	marshalDir, err := openOrCreateProjectionDirectory(graph.RepositoryRoot, ".marshal", false)
+	openDirectory := openOrCreateProjectionDirectory
+	if readOnly {
+		openDirectory = openExistingProjectionDirectory
+	}
+	marshalDir, err := openDirectory(graph.RepositoryRoot, ".marshal", false)
 	if err != nil {
 		return nil, err
 	}
 	defer marshalDir.Close()
-	runtimeDir, err := openOrCreateProjectionDirectory(marshalDir, existingWorktreeRuntimeDirectory, true)
+	runtimeDir, err := openDirectory(marshalDir, existingWorktreeRuntimeDirectory, true)
 	if err != nil {
 		return nil, err
 	}
 	defer runtimeDir.Close()
-	bindings, err := openOrCreateProjectionDirectory(runtimeDir, ExistingWorktreeProjectionDirectory, true)
+	container, err := openDirectory(runtimeDir, ExistingWorktreeProjectionDirectory, true)
+	if err != nil {
+		return nil, err
+	}
+	defer container.Close()
+	// Before creating v2, refuse to hide damaged legacy bytes or an unfinished
+	// legacy transaction. Old entries remain untouched and are never authority.
+	if err := verifyLegacyWorktreeProjection(runtimeDir, container, snapshot); err != nil {
+		return nil, err
+	}
+	bindings, err := openDirectory(container, ExistingWorktreeProjectionCurrentDirectory, true)
 	if err != nil {
 		return nil, err
 	}
 	var lockStat unix.Stat_t
 	if statErr := unix.Fstatat(int(bindings.Fd()), existingWorktreeProjectionLock, &lockStat, unix.AT_SYMLINK_NOFOLLOW); errors.Is(statErr, unix.ENOENT) {
+		if readOnly {
+			bindings.Close()
+			return nil, ErrFilesystemConflict
+		}
 		entries, readErr := bindings.ReadDir(-1)
 		if readErr != nil || len(entries) != 0 {
 			bindings.Close()
@@ -1229,7 +1255,12 @@ func openExistingWorktreeProjection(graph ExistingWorktreeDescriptorGraphV1) (*e
 		bindings.Close()
 		return nil, ErrFilesystemConflict
 	}
-	lock, err := openOrCreateProjectionFile(bindings, existingWorktreeProjectionLock)
+	var lock *os.File
+	if readOnly {
+		lock, err = openExistingWorktreeProjectionFile(bindings, existingWorktreeProjectionLock, unix.O_RDONLY)
+	} else {
+		lock, err = openOrCreateProjectionFile(bindings, existingWorktreeProjectionLock)
+	}
 	if err != nil {
 		bindings.Close()
 		return nil, err
@@ -1239,14 +1270,14 @@ func openExistingWorktreeProjection(graph ExistingWorktreeDescriptorGraphV1) (*e
 		bindings.Close()
 		return nil, ErrFilesystemConflict
 	}
-	parentFD, err := unix.Dup(int(runtimeDir.Fd()))
+	parentFD, err := unix.Dup(int(container.Fd()))
 	if err != nil {
 		lock.Close()
 		bindings.Close()
 		return nil, err
 	}
-	parent := os.NewFile(uintptr(parentFD), existingWorktreeRuntimeDirectory)
-	current, err := observeDirectoryEdge(int(parent.Fd()), int(bindings.Fd()), ExistingWorktreeProjectionDirectory)
+	parent := os.NewFile(uintptr(parentFD), ExistingWorktreeProjectionDirectory)
+	current, err := observeDirectoryEdge(int(parent.Fd()), int(bindings.Fd()), ExistingWorktreeProjectionCurrentDirectory)
 	if err != nil {
 		parent.Close()
 		lock.Close()
@@ -1260,7 +1291,94 @@ func openExistingWorktreeProjection(graph ExistingWorktreeDescriptorGraphV1) (*e
 		bindings.Close()
 		return nil, ErrFilesystemConflict
 	}
-	return &existingWorktreeProjection{parent: parent, directory: bindings, directoryCurrentName: current, lock: lock, lockIdentity: lockIdentity}, nil
+	runtimeFD, err := unix.Dup(int(runtimeDir.Fd()))
+	if err != nil {
+		parent.Close()
+		lock.Close()
+		bindings.Close()
+		return nil, err
+	}
+	runtimeParent := os.NewFile(uintptr(runtimeFD), existingWorktreeRuntimeDirectory)
+	parentCurrent, err := observeDirectoryEdge(runtimeFD, parentFD, ExistingWorktreeProjectionDirectory)
+	var runtimeStat unix.Stat_t
+	if err != nil || unix.Fstat(runtimeFD, &runtimeStat) != nil {
+		runtimeParent.Close()
+		parent.Close()
+		lock.Close()
+		bindings.Close()
+		return nil, ErrFilesystemConflict
+	}
+	return &existingWorktreeProjection{runtimeParent: runtimeParent, runtimeMutation: statMutationDigest(runtimeStat), parentCurrentName: parentCurrent, legacySnapshot: snapshot, parent: parent, directory: bindings, directoryCurrentName: current, lock: lock, lockIdentity: lockIdentity}, nil
+}
+
+// verifyLegacyWorktreeProjection is read-only. A v1 prefix is retained, not
+// migrated or repaired. Missing/behind v2 content is rebuilt from RB1 by Sync.
+func verifyLegacyWorktreeProjection(runtimeDir, container *os.File, snapshot *ExistingWorktreeAuthoritySnapshotV1) error {
+	var stage unix.Stat_t
+	if err := unix.Fstatat(int(runtimeDir.Fd()), existingWorktreeProjectionStage, &stage, unix.AT_SYMLINK_NOFOLLOW); !errors.Is(err, unix.ENOENT) {
+		return ErrFilesystemConflict
+	}
+	before, err := observeDirectoryEdge(int(runtimeDir.Fd()), int(container.Fd()), ExistingWorktreeProjectionDirectory)
+	if err != nil {
+		return err
+	}
+	var expected map[string][]ExistingWorktreeProjectionRecordV1
+	if _, err := container.Seek(0, 0); err != nil {
+		return ErrFilesystemConflict
+	}
+	entries, err := container.ReadDir(-1)
+	if err != nil {
+		return ErrFilesystemConflict
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == ExistingWorktreeProjectionCurrentDirectory || name == existingWorktreeProjectionStage {
+			if !entry.IsDir() {
+				return ErrFilesystemConflict
+			}
+			continue // Current/stage contents have their existing exact verifier.
+		}
+		want := []byte{}
+		if name != existingWorktreeProjectionLock {
+			// Fresh v2 repositories have no legacy data. Do not replay the
+			// entire history for every filesystem recheck on their hot path.
+			if expected == nil {
+				if snapshot == nil || snapshot.Validate() != nil {
+					return ErrAuthorityConflict
+				}
+				expected, err = projectionRecords(*snapshot)
+				if err != nil {
+					return err
+				}
+			}
+			records, found := expected[name]
+			if !found {
+				return ErrAuthorityConflict
+			}
+			want, err = existingWorktreeProjectionBytes(records)
+			if err != nil {
+				return err
+			}
+		}
+		file, err := openExistingWorktreeProjectionFile(container, name, unix.O_RDONLY)
+		if err != nil {
+			return err
+		}
+		identity, identityErr := observeExistingWorktreeProjectionFile(container, name, file)
+		raw, readErr := readExistingWorktreeProjectionFile(file)
+		after, afterErr := observeExistingWorktreeProjectionFile(container, name, file)
+		_ = file.Close()
+		if identityErr != nil || readErr != nil || afterErr != nil || !sameExistingWorktreeProjectionFile(identity, after) ||
+			(name == existingWorktreeProjectionLock && len(raw) != 0) ||
+			(name != existingWorktreeProjectionLock && !validExistingWorktreeProjectionPrefix(raw, want)) {
+			return ErrAuthorityConflict
+		}
+	}
+	after, err := observeDirectoryEdge(int(runtimeDir.Fd()), int(container.Fd()), ExistingWorktreeProjectionDirectory)
+	if err != nil || !equalCanonical(before, after) {
+		return ErrFilesystemConflict
+	}
+	return nil
 }
 
 func (projection *existingWorktreeProjection) Close() error {
@@ -1280,7 +1398,27 @@ func (projection *existingWorktreeProjection) Close() error {
 		result = errors.Join(result, projection.parent.Close())
 		projection.parent = nil
 	}
+	if projection.runtimeParent != nil {
+		result = errors.Join(result, projection.runtimeParent.Close())
+		projection.runtimeParent = nil
+	}
 	return result
+}
+
+func openExistingProjectionDirectory(parent *os.File, name string, private bool) (*os.File, error) {
+	if parent == nil || !validExistingRelativeName(name) {
+		return nil, ErrInvalid
+	}
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, ErrFilesystemConflict
+	}
+	var held, named unix.Stat_t
+	if unix.Fstat(fd, &held) != nil || unix.Fstatat(int(parent.Fd()), name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !sameNamedDirectoryStat(held, named) || held.Uid != uint32(unix.Geteuid()) || held.Mode&0o022 != 0 || private && held.Mode&0o077 != 0 {
+		unix.Close(fd)
+		return nil, ErrFilesystemConflict
+	}
+	return os.NewFile(uintptr(fd), name), nil
 }
 
 func openOrCreateProjectionDirectory(parent *os.File, name string, private bool) (*os.File, error) {
@@ -1537,7 +1675,7 @@ func (projection *existingWorktreeProjection) commitPlans(plans []*existingWorkt
 		return discard(ErrFilesystemConflict)
 	}
 	parentFD := int(projection.parent.Fd())
-	if err := unix.RenameatxNp(parentFD, stage.name, parentFD, ExistingWorktreeProjectionDirectory, unix.RENAME_SWAP); err != nil {
+	if err := unix.RenameatxNp(parentFD, stage.name, parentFD, ExistingWorktreeProjectionCurrentDirectory, unix.RENAME_SWAP); err != nil {
 		return discard(ErrFilesystemConflict)
 	}
 	// COMMIT POINT. No error may escape below this line. The old projection is
@@ -2171,10 +2309,16 @@ func closeExistingWorktreeProjectionPlans(plans []*existingWorktreeProjectionPla
 }
 
 func (projection *existingWorktreeProjection) revalidateAuthority() error {
-	if projection == nil || projection.parent == nil || projection.directory == nil || projection.lock == nil {
+	if projection == nil || projection.runtimeParent == nil || projection.parent == nil || projection.directory == nil || projection.lock == nil {
 		return ErrFilesystemConflict
 	}
-	current, err := observeDirectoryEdge(int(projection.parent.Fd()), int(projection.directory.Fd()), ExistingWorktreeProjectionDirectory)
+	parent, err := observeDirectoryEdge(int(projection.runtimeParent.Fd()), int(projection.parent.Fd()), ExistingWorktreeProjectionDirectory)
+	var runtimeStat unix.Stat_t
+	if err != nil || unix.Fstat(int(projection.runtimeParent.Fd()), &runtimeStat) != nil || statMutationDigest(runtimeStat) != projection.runtimeMutation || !sameExistingWorktreeCurrentNameAnchor(parent, projection.parentCurrentName) || parent.ParentMutationDigest != projection.parentCurrentName.ParentMutationDigest ||
+		verifyLegacyWorktreeProjection(projection.runtimeParent, projection.parent, projection.legacySnapshot) != nil {
+		return ErrFilesystemConflict
+	}
+	current, err := observeDirectoryEdge(int(projection.parent.Fd()), int(projection.directory.Fd()), ExistingWorktreeProjectionCurrentDirectory)
 	if err != nil || !equalCanonical(current, projection.directoryCurrentName) {
 		return ErrFilesystemConflict
 	}

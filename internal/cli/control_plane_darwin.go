@@ -10,16 +10,19 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/fixedcontrolplane"
 	"github.com/chiga0/marshal-harness/internal/productionruntime"
 	"github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
+	"github.com/chiga0/marshal-harness/internal/taskhttp"
 )
 
 const (
@@ -29,16 +32,19 @@ const (
 
 func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "用法：marshal control-plane <serve|status|inspect|start|collect|verify|review-packet|decision>")
+		fmt.Fprintln(stderr, "用法：marshal control-plane <serve|status|inspect|start|cancel|collect|verify|review-packet|decision|team-approve|team-reconcile>")
 		return ExitUsage
 	}
 	switch args[0] {
 	case "serve":
-		if len(args) != 1 {
-			fmt.Fprintln(stderr, "用法：marshal control-plane serve")
-			return ExitUsage
+		if len(args) == 1 {
+			return runControlPlaneServe(ctx, stdout, stderr)
 		}
-		return runControlPlaneServe(ctx, stdout, stderr)
+		auto, options, exit := parseControlPlaneServe(args[1:], stderr)
+		if exit != ExitOK {
+			return exit
+		}
+		return runControlPlaneServeWithTeamProgress(ctx, stdout, stderr, auto, options)
 	case "status":
 		if len(args) != 1 {
 			fmt.Fprintln(stderr, "用法：marshal control-plane status")
@@ -49,6 +55,8 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 		return runControlPlaneInspect(ctx, args[1:], stdout, stderr)
 	case "start":
 		return runControlPlaneStart(ctx, args[1:], stdout, stderr)
+	case "cancel":
+		return runControlPlaneCancel(ctx, args[1:], stdout, stderr)
 	case "collect":
 		return runControlPlaneCollect(ctx, args[1:], stdout, stderr)
 	case "verify":
@@ -57,13 +65,29 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 		return runControlPlaneReviewPacket(ctx, args[1:], stdout, stderr)
 	case "decision":
 		return runControlPlaneDecision(ctx, args[1:], stdout, stderr)
+	case "team-approve", "team-reconcile":
+		return runControlPlaneTeam(ctx, args[0], args[1:], stdout, stderr)
 	default:
-		fmt.Fprintln(stderr, "用法：marshal control-plane <serve|status|inspect|start|collect|verify|review-packet|decision>")
+		fmt.Fprintln(stderr, "用法：marshal control-plane <serve|status|inspect|start|cancel|collect|verify|review-packet|decision|team-approve|team-reconcile>")
 		return ExitUsage
 	}
 }
 
 func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
+	return runControlPlaneServeWithTeamProgress(ctx, stdout, stderr, false)
+}
+
+func runControlPlaneServeWithTeamProgress(ctx context.Context, stdout, stderr io.Writer, autoTeamProgress bool, options ...taskHTTPOptions) int {
+	var taskOptions taskHTTPOptions
+	if len(options) == 1 {
+		taskOptions = options[0]
+	} else if len(options) > 1 {
+		return ExitUsage
+	}
+	serveCtx, cancelServe := context.WithCancel(ctx)
+	defer cancelServe()
+	requestCtx, cancelRequests := newControlPlaneRequestContext(ctx)
+	defer cancelRequests()
 	location, err := repository.Discover(".")
 	if err != nil {
 		fmt.Fprintln(stderr, "control-plane serve 失败：无法验证仓库。")
@@ -78,7 +102,8 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 	applicationAdapter, err := openSealedRepositoryApplication(ctx, sealedRepositoryApplicationConfig{
 		StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot,
 		PiRuntime: piRuntime, PiEntrypoint: piEntrypoint, EntryIdentity: entryIdentity,
-		RecoveryMode: sealedRepositoryRecoveryResident,
+		RecoveryMode:       sealedRepositoryRecoveryResident,
+		TaskTemplateInputs: taskOptions.inputs,
 		ObserveIdentity: func() (selfidentity.LocalSelfIdentityObservationV2, error) {
 			return freshLocalDogfoodObservation(selfidentity.CommandControlPlaneServe)
 		},
@@ -87,6 +112,18 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "control-plane serve 失败：compositionStage=%s。\n", sealedRepositoryOpenStage(err))
 		writeControlPlaneRequestFailure(stderr, err)
 		return ExitFailure
+	}
+	if err := applicationAdapter.session.ObserveColdTaskVerifications(ctx); err != nil {
+		_ = applicationAdapter.Close()
+		fmt.Fprintln(stderr, "control-plane serve 失败：Task 取消恢复观察未完成。")
+		return ExitFailure
+	}
+	if autoTeamProgress {
+		if err := applicationAdapter.session.HaltColdInitialTeamVerifications(ctx); err != nil {
+			_ = applicationAdapter.Close()
+			fmt.Fprintln(stderr, "control-plane serve 失败：team verification cold-start barrier 未完成。")
+			return ExitFailure
+		}
 	}
 	endpointAuthority, err := applicationAdapter.session.OpenFixedEndpointAuthority(ctx)
 	if err != nil {
@@ -116,25 +153,94 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "control-plane serve 失败：authenticated endpoint 不可用。")
 		return ExitFailure
 	}
-	ready, _ := json.Marshal(map[string]any{"availability": "ready", "protocolRevision": fixedcontrolplane.ProtocolRevision})
-	fmt.Fprintln(stdout, string(ready))
-
-	requestCtx, cancelRequests := context.WithCancel(context.Background())
-	defer cancelRequests()
 	var requests sync.WaitGroup
+	var taskServer *taskhttp.Server
+	taskServeFailed := make(chan struct{}, 1)
+	readyFields := map[string]any{"availability": "ready", "protocolRevision": fixedcontrolplane.ProtocolRevision}
+	if taskOptions.address != "" {
+		snapshot := endpointAuthority.Snapshot()
+		taskServer, err = taskhttp.OpenServer(requestCtx, taskhttp.ServerConfig{
+			Application: applicationAdapter, Address: taskOptions.address,
+			RecordName:  "task-http-" + strconv.FormatUint(snapshot.Acquisition.OwnerEpoch, 36) + ".json",
+			ControlPath: snapshot.ControlPath, Authority: endpointAuthority,
+			Mutation: router.WithAvailableMutation, AutomaticDecision: autoTeamProgress,
+		})
+		if err != nil {
+			_ = endpoint.Close()
+			_ = delivery.Close()
+			_ = endpointAuthority.Close()
+			_ = applicationAdapter.Close()
+			fmt.Fprintln(stderr, "control-plane serve 失败：Task HTTP endpoint 不可用。")
+			return ExitFailure
+		}
+		readyFields["taskHTTPURL"] = taskServer.Address
+		readyFields["taskHTTPConnectionFile"] = taskServer.ConnectionFile
+		readyFields["taskHTTPProfile"] = "task-draft/v1"
+		requests.Add(1)
+		go func() {
+			defer requests.Done()
+			_ = taskServer.Serve()
+			if serveCtx.Err() == nil {
+				taskServeFailed <- struct{}{}
+				cancelServe()
+				_ = endpoint.StopAccept()
+			}
+		}()
+	}
+	ready, _ := json.Marshal(readyFields)
+	fmt.Fprintln(stdout, string(ready))
+	deadlineCtx, cancelDeadlines := context.WithCancel(serveCtx)
+	defer cancelDeadlines()
+	// One short-action scheduler prevents same-period TryLock loops from
+	// repeatedly losing to the same expensive reconciliation. Each action
+	// retains its existing authority checks and nonblocking public-writer lane.
+	shortActions := []func(context.Context) error{
+		func(step context.Context) error { return applicationAdapter.advanceTaskCancellations(step, router) },
+		func(step context.Context) error {
+			_, err := router.TryBackgroundMutation(step, applicationAdapter.advanceBusinessDeadlines)
+			return err
+		},
+		func(step context.Context) error {
+			_, err := router.TryBackgroundMutation(step, applicationAdapter.advanceInitialTeams)
+			return err
+		},
+	}
+	if autoTeamProgress {
+		shortActions = append(shortActions, func(step context.Context) error {
+			return applicationAdapter.advanceInitialTeamProgress(step, router, domain.StateRunning)
+		})
+		shortActions = append(shortActions, func(step context.Context) error {
+			return applicationAdapter.advanceInitialTeamProgress(step, router, domain.StateReviewPending)
+		})
+		shortActions = append(shortActions, newResidentLongAction(deadlineCtx, &requests, 10*time.Minute,
+			func(step context.Context, admitted func()) error {
+				return applicationAdapter.advanceInitialTeamProgressAdmitted(step, router, domain.StateVerifying, admitted)
+			}, func(err error) { writeControlPlaneRequestFailure(stderr, err) }))
+		shortActions = append(shortActions, newResidentLongAction(deadlineCtx, &requests, 2*time.Minute, func(step context.Context, admitted func()) error {
+			return applicationAdapter.advanceTaskDelivery(step, router, admitted)
+		}, func(err error) { writeControlPlaneRequestFailure(stderr, err) }))
+	}
+	requests.Add(1)
+	go func() {
+		defer requests.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		driveResidentShortActions(deadlineCtx, ticker.C, shortActions,
+			func(err error) { writeControlPlaneRequestFailure(stderr, err) })
+	}()
 	stop := make(chan struct{})
 	go func() {
 		select {
-		case <-ctx.Done():
+		case <-serveCtx.Done():
 			_ = endpoint.StopAccept()
 		case <-stop:
 		}
 	}()
 	serveFailed := false
-	for ctx.Err() == nil {
-		connection, acceptErr := endpoint.Accept(ctx)
+	for serveCtx.Err() == nil {
+		connection, acceptErr := endpoint.Accept(serveCtx)
 		if acceptErr != nil {
-			if ctx.Err() != nil {
+			if serveCtx.Err() != nil {
 				break
 			}
 			if endpointAuthority.Recheck(ctx) != nil {
@@ -143,7 +249,7 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 			}
 			continue
 		}
-		if ctx.Err() != nil {
+		if serveCtx.Err() != nil {
 			_ = connection.Close()
 			break
 		}
@@ -157,7 +263,19 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 		}()
 	}
 	close(stop)
+	cancelServe()
+	cancelDeadlines()
 	stopErr := endpoint.StopAccept()
+	if taskServer != nil {
+		stopErr = errors.Join(stopErr, taskServer.StopAccept())
+		requests.Add(1)
+		go func() {
+			defer requests.Done()
+			// The common bounded drain owns request cancellation. A callback
+			// ignoring it keeps owner resources held until process fail-stop.
+			_ = taskServer.Shutdown(context.Background())
+		}()
+	}
 	if !drainControlPlaneRequests(&requests, cancelRequests, controlPlaneDrainTimeout, controlPlaneCancelTimeout) {
 		// The process returns without releasing owner resources. main exits the
 		// whole process, so no stuck application goroutine can outlive owner.
@@ -165,7 +283,17 @@ func runControlPlaneServe(ctx context.Context, stdout, stderr io.Writer) int {
 		return ExitFailure
 	}
 	closeErr := errors.Join(stopErr, endpoint.Close())
+	if taskServer != nil {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(requestCtx), controlPlaneDrainTimeout)
+		closeErr = errors.Join(closeErr, taskServer.CloseRecord(cleanupCtx))
+		cancelCleanup()
+	}
 	closeErr = errors.Join(closeErr, delivery.Close(), endpointAuthority.Close(), applicationAdapter.Close())
+	select {
+	case <-taskServeFailed:
+		serveFailed = true
+	default:
+	}
 	if serveFailed || closeErr != nil {
 		fmt.Fprintln(stderr, "control-plane serve 失败：authority 或 shutdown 不完整。")
 		return ExitFailure
@@ -217,6 +345,13 @@ func writeControlPlaneRequestFailure(stderr io.Writer, err error) {
 			return
 		}
 		visited++
+		if stage := fixedcontrolplane.DiagnosticStage(current); stage != "" {
+			label := application.Error{Operation: stage}
+			if !emitted[label] {
+				emitted[label] = true
+				fmt.Fprintf(stderr, "control-plane request failed: stage=%s reasonCode=transport-failure\n", stage)
+			}
+		}
 		if stage, ok := current.(*sealedRunOpenError); ok && stage != nil && validControlPlaneDiagnosticLabel(stage.stage) {
 			label := application.Error{Operation: stage.stage}
 			if !emitted[label] {
@@ -328,6 +463,7 @@ func runControlPlaneInspect(ctx context.Context, args []string, stdout, stderr i
 	defer authority.Close()
 	projection, err := fixedcontrolplane.CallInspectRun(ctx, authority, controlPlaneReadKey("inspect", *runID), application.InspectRunRequest{RunID: *runID}, time.Now().UTC().Add(2*time.Minute))
 	if err != nil {
+		writeControlPlaneRequestFailure(stderr, err)
 		fmt.Fprintln(stderr, "control-plane inspect 失败：authenticated request 未完成。")
 		return ExitFailure
 	}
@@ -359,6 +495,7 @@ func runControlPlaneStart(ctx context.Context, args []string, stdout, stderr io.
 	defer authority.Close()
 	result, err := fixedcontrolplane.CallStartRun(ctx, authority, *requestKey, application.StartRunRequest{RunID: *runID, ExpectedSequence: *sequence, ExpectedAuthorityHead: *head}, deadline)
 	if err != nil {
+		writeControlPlaneRequestFailure(stderr, err)
 		fmt.Fprintln(stderr, "control-plane start 失败：结果未证明成功；请使用同一 request key 与冻结请求重放。")
 		return ExitFailure
 	}
@@ -401,6 +538,40 @@ func parseControlPlaneCurrentInput(command string, args []string, stderr io.Writ
 	return controlPlaneCurrentInput{current: application.CurrentRunRequest{RunID: *runID, AttemptID: *attemptID, ExpectedSequence: *sequence, ExpectedAuthorityHead: *head}, requestKey: *requestKey, deadline: deadline, decisionPath: *decisionPath}, ExitOK
 }
 
+func controlPlaneCancelRequest(input controlPlaneCurrentInput) (application.CancelRunRequest, error) {
+	// One logical request key controls both transport replay and stop intent
+	// identity. Do not accept a second free-form stop ID, PID or actor flag.
+	request := application.CancelRunRequest{CurrentRunRequest: input.current, RequestID: "cancel:" + canonical.DigestBytes([]byte(input.requestKey))[7:]}
+	if input.requestKey == "" || request.Validate() != nil {
+		return application.CancelRunRequest{}, application.NewError("cancel-run", application.ReasonInvalidRequest)
+	}
+	return request, nil
+}
+
+func runControlPlaneCancel(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	input, exit := parseControlPlaneCurrentInput("cancel", args, stderr, false)
+	if exit != ExitOK {
+		return exit
+	}
+	request, err := controlPlaneCancelRequest(input)
+	if err != nil {
+		fmt.Fprintln(stderr, "control-plane cancel 失败：请求身份或当前 Run 绑定无效。")
+		return ExitUsage
+	}
+	authority, err := openControlPlaneClient(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, "control-plane cancel 失败：resident server 不可用。")
+		return ExitUnavailable
+	}
+	defer authority.Close()
+	result, err := fixedcontrolplane.CallCancelRun(ctx, authority, input.requestKey, request, input.deadline)
+	if err != nil {
+		fmt.Fprintln(stderr, "control-plane cancel 未证明完成：请查询当前 Run，并保留同一 request key 与冻结请求。")
+		return ExitFailure
+	}
+	return writeControlPlaneJSON(stdout, stderr, result)
+}
+
 func runControlPlaneCollect(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	input, exit := parseControlPlaneCurrentInput("collect", args, stderr, false)
 	if exit != ExitOK {
@@ -413,6 +584,16 @@ func runControlPlaneCollect(ctx context.Context, args []string, stdout, stderr i
 	}
 	defer authority.Close()
 	result, err := fixedcontrolplane.CallCollectRunResult(ctx, authority, input.requestKey, application.CollectRunResultRequest(input.current), input.deadline)
+	return writeControlPlaneCollectResult(stdout, stderr, result, err)
+}
+
+func writeControlPlaneCollectResult(stdout, stderr io.Writer, result fixedcontrolplane.CollectRunClientResult, err error) int {
+	if application.HasReason(err, application.ReasonRunStopped) && result == (fixedcontrolplane.CollectRunClientResult{}) {
+		if exit := writeControlPlaneJSON(stdout, stderr, map[string]string{"disposition": "stopped", "reasonCode": string(application.ReasonRunStopped)}); exit != ExitOK {
+			return exit
+		}
+		return ExitFailure // A verified stop is not a successful collection.
+	}
 	if errors.Is(err, fixedcontrolplane.ErrAttemptStillRunning) {
 		if exit := writeControlPlaneJSON(stdout, stderr, map[string]string{"disposition": "pending", "reasonCode": string(application.ReasonAttemptStillRunning)}); exit != ExitOK {
 			return exit
@@ -439,6 +620,7 @@ func runControlPlaneVerify(ctx context.Context, args []string, stdout, stderr io
 	defer authority.Close()
 	result, err := fixedcontrolplane.CallVerifyRun(ctx, authority, input.requestKey, application.VerifyRunRequest(input.current), input.deadline)
 	if err != nil {
+		writeControlPlaneRequestFailure(stderr, err)
 		fmt.Fprintln(stderr, "control-plane verify 失败：结果未证明成功；请使用同一 request key 与冻结请求重放。")
 		return ExitFailure
 	}
@@ -494,6 +676,12 @@ func runControlPlaneDecision(ctx context.Context, args []string, stdout, stderr 
 		return ExitFailure
 	}
 	return writeControlPlaneJSON(stdout, stderr, result)
+}
+
+// Keep the admitted process identity while letting the drain phase, rather than
+// service shutdown, own cancellation of requests already in flight.
+func newControlPlaneRequestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.WithoutCancel(ctx))
 }
 
 func parseControlPlaneDeadline(raw string, now time.Time) (time.Time, error) {

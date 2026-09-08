@@ -115,6 +115,9 @@ type Guard struct {
 	AbortAuthorized        bool
 	ChildrenStopped        bool
 	EvidenceFlushed        bool
+	// StopAuthorized requires current stop/barrier and completed cleanup
+	// facts from Core; it is never inferred from request cancellation.
+	StopAuthorized bool
 	// PreAttemptAbsenceProven is set only after the caller affirmatively
 	// proved, against the authoritative storage of the Run, every ADR 0029
 	// negative fact: zero Attempt records, no publication intent, no
@@ -165,6 +168,9 @@ func Reduce(current domain.RunState, event domain.RunEvent, guard Guard) (domain
 	}
 	if !guard.LeaseHeld {
 		return current, fmt.Errorf("%w: run lease is not held", ErrInvalidTransition)
+	}
+	if event.Type == WorkerStoppedEventType && (!guard.StopAuthorized || !guard.ChildrenStopped || !guard.EvidenceCurrent || !guard.EvidenceFlushed || current.CurrentAttemptID != event.AttemptID) {
+		return current, fmt.Errorf("%w: worker stop requires current intent and completed cleanup evidence", ErrInvalidTransition)
 	}
 	if current.State == domain.StateCreated && event.StateTo == domain.StatePlanned && !guard.DraftValid {
 		return current, fmt.Errorf("%w: valid task draft required", ErrInvalidTransition)
@@ -258,6 +264,12 @@ func Reduce(current domain.RunState, event domain.RunEvent, guard Guard) (domain
 // ValidateTransition checks durable structural invariants without re-evaluating
 // ephemeral runtime guards. It is safe for journal replay.
 func ValidateTransition(current domain.State, runID string, sequence uint64, event domain.RunEvent) error {
+	if event.Type == WorkerStoppedEventType {
+		if current != domain.StateRunning || event.RunID != runID || event.Sequence != sequence+1 {
+			return ErrInvalidTransition
+		}
+		return ValidateWorkerStopped(event)
+	}
 	if event.Type == RepairAuditEventType {
 		if event.RunID != runID || event.Sequence != sequence+1 || event.StateFrom != current || event.StateTo != current {
 			return fmt.Errorf("%w: repair audit event identity, sequence or state does not match current state", ErrInvalidTransition)

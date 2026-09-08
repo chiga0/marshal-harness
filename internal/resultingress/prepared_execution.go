@@ -468,6 +468,9 @@ func (s *DurableStore) StartPreparedExecution(ctx context.Context, verifier Curr
 			if err != nil || prepared.AttemptIdentity != identity {
 				return ErrPreparedExecutionConflict
 			}
+			if err := requireTaskRunNotStopped(projection, identity.AuthorityNamespaceID, identity.RunID); err != nil {
+				return err
+			}
 			state, err = s.reconcilePreparedExecutionLocked(ctx, projection, prepared, state)
 			if err != nil {
 				return err

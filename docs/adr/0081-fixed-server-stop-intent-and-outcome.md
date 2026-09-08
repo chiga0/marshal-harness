@@ -1,9 +1,19 @@
 # ADR 0081：fixed server 停止意图与可恢复 Outcome
 
-- 状态：提议（Proposed）。这是 B1 实施前的合同缺口说明；尚未接受、接线或实机验证，不能据本文放行取消/超时。
+> 2026-09-07 适用性：仍为候选提案，不因被新设计引用而 Accepted。其 stop/fence→owned terminate→terminal/cleanup/release→Outcome 的行为资产复用；RB1/projection/Run lane 物理形状拟映射到 ADR 0085 单事务 Store，不能绕过原始 deadline、归属及结果/停止竞争。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
+- 状态：提议（Proposed）。隔离候选已通过显式取消及两类自动业务超时/完成后冷恢复实机；停止中途故障、长写事务响应上界与最终组合验收尚未闭合，仍不能据本文放行正式取消/超时支持。
 - 关联：ADR 0012、0056、0062、0069、0076、0079、0080。
 
+2026-09-07 当前检查点：`c619985` 的 CI 34047040755 五项全绿；Attempt-timeout 34047844723、Run-first 34048091298 均走完终态查询、stopped Collect 与同字节 server3 冷恢复。原始停止意图与事件引用、Outcome 摘要、原 Collect 请求/deadline 已核对；它们是候选子条件，不是停止中途崩溃矩阵，也不授权 main/production/stable。当前范围见 [审计记录](../audit-report.md#2026-09-07稳定容器修复后的两类自动超时和冷恢复通过)；下文历史“尚未实现/验证”以当前表和未关闭退出条件为准。
+
+2026-09-06 实施检查点：`6e87f34` 的 CI 34037704960 五项全绿，实机 34038482097 通过 Start 丢响应/重启、真实 Pi 取消、Outcome/精确重放、停止后 Collect 与同 bytes server3 冷恢复。仅此候选子条件通过，未合入 main、不授予 production 或 stable。下文“尚未实现/验证”的早期检查点保留历史；完整接受条件仍以下述故障矩阵与 Roadmap 当前表为准。
+
 ## 从实际调用链发现的问题
+
+2026-09-07 同 owner 续行纠偏：593eb5d 的跨 Run 实机 34052534488 在首次 Collect 前暴露了此前被 Start 后重启掩盖的缺口。启动 owner 的成功 bind 指向 SupervisorStarted，Resume 后 mechanics/current Attempt 指向 ProcessStarted；它不是 owner 漂移，不能要求再造 owner successor。候选修复必须从 current-owner 下重放的同一 Attempt 识别两种已存在绑定：初始 v2 SupervisorStarted 绑定（原始和当前 mechanics 的 owner epoch 均与 current owner 一致），或已完成的 ControlOwnerBinding 绑定。仍保持 exact owner fact、generation、anchor、Run head、pending intent/receipt 和 Attach 的独立实机校验；不新增 wire/持久记录、不伪造 rebind、不以自动重启规避。Collect、Inspect/Terminate、Close 与 composition 恢复判定必须一起覆盖；只修改一处布尔判断不足以关闭该缺口。
+
+2026-09-06 后继验证：`dd8178f` 已通过真实原始 Attempt deadline 自动停止（34040069400），其来源、预算计算和终态 cleanup 引用已在审计记录中核对；不是客户端 timeout 或显式 Cancel。候选继续用等长 60 秒 Run/Attempt budget 验证更早创建的 Run deadline，并在两类 timeout 后用同 bytes 冷 server 重放原 Collect/原 deadline。它不修改本 ADR 的 runtime 语义，尚未升级正式支持；中途故障、响应上界与最新组合路径仍须完成。
 
 当前 `PublicApplicationPort` 没有取消 operation；历史 `internal/server` 的 task cancel 不属于 fixed server 生产入口。`CompositionLedger.terminalizeCompletedAttempt` 只接纳已完成结果，不能直接用于用户取消。`run.aborted` 的闭集也不接受 `RUNNING`。虽然 v2 `TerminatePreparedExecution` 已有 barrier 后的安全终止实现，直接从 HTTP context cancellation 调用它仍缺业务授权和最终 Outcome。
 
@@ -25,11 +35,20 @@
 
 ### 输入、身份与幂等
 
+- fixed CLI 的封闭 activation 增加 `control-plane-cancel`，只映射 `marshal control-plane cancel`；不是绕过 self identity 的 bootstrap 命令。生成器、解码器、Schema、CLI 分类与真实入口测试必须一起更新。旧 activation 不原地扩权；其命令集合与新 binary 不匹配时继续拒绝，操作者为精确新 bytes/sourceHead 重新生成 activation。未知命令、错误 profile、缺失 activation 与身份漂移仍在连接 server 前拒绝。
 - Public cancel 输入使用现有 `CurrentRunRequest` 四元组，再加有界 `requestId`。首版原因固定为 `operator-request`，不把任意自由文本、actor、PID、generation 或 deadline 当作客户端可授权字段。
 - 请求者是现有 fixed server 本机受信调用边界的操作者；Core 记录从该边界取得的本机身份，不采信 JSON 自报 actor。这仍是单用户 ordinary-user 模式，不增加远程身份或多用户保证。
 - 首次停止意图保存 `schemaRevision`、上述请求及其 canonical `requestDigest`、Core 观察的操作者、停止类别、精确 Attempt identity、原 Run sequence/head。所有字段进入同一 barrier fact 的摘要，零旁路状态文件。现有无 stop intent 的 completion barrier 原始字节和 replay 保持不变。
 - 同 `requestId`、同原四元组与摘要恢复同一个 stop；同 ID 不同内容冲突，不能替换原因。已经存在其他 stop 时返回其只读引用，不追加第二意图、不消费 Attempt/rework 预算。Run 已终态时只允许精确已提交 stop 的只读/Outcome 补齐重放。
 - fresh stop 在 held Run authority 与 ingress transaction 内再次检查当前 head、started authority 和 `CommittedResultFactDigest`。结果先接纳则返回 `stop-too-late`，不得改成取消成功；stop 先提交则原子关闭 admission 并提升 eligibility generation，后到结果 quarantine。
+
+### 实施中的字节合同（尚未 enable）
+
+`AttemptTransition` 的 barrier 增加可选 `stopIntent`，无此字段的历史事实保持原始编码与摘要；其他 transition 禁止携带它。`stopIntent` 使用 `schemaRevision=attempt-stop/v1`，绑定 `requestId`、原 Run `sequence/headDigest`、Core 观察的 `operatorUid`、`observedAt` 与封闭 `category`（`operator-request|attempt-deadline-exceeded|run-deadline-exceeded`）。外层 barrier 的 `AttemptIdentity` 进入意图摘要计算，不接受另一份可替换的 identity。`requestDigest` 由原 public 请求身份和 requestId 派生；`intentDigest` 则绑定全部意图字段及 AttemptIdentity。普通取消不携带 deadline witness，业务超时必须携带完整 witness，不允许混合形状。
+
+deadline witness 保存 `specDigest`、`creationEventDigest`（首条 `planning.spec-accepted`）、`processStartedFactDigest`、`runCreatedAt`、`processStartedAt`、两个正整秒预算及两个计算后的 deadline。Core 加载原始 Task/Run/ProcessStarted 时验证来源；authority 记录重放时重算算法并验证摘要和选择规则，不能只信客户端时间或已存计算结果。上述字段只随同一 barrier CAS 一次提交。fresh stop 遇到已提交结果必须拒绝；原 stop 的精确重放不追加新事实。
+
+此节是实现工作中的合同，取消/超时仍须完整生产接线和故障矩阵通过后，才能接受本 ADR、开启入口并更新 B1 状态。
 
 ### 业务截止点：复用不可变来源，而不是增加计时状态库
 
@@ -41,7 +60,7 @@ attemptDeadline = ProcessStarted.observedAt + TaskSpec.budgets.attemptTimeoutSec
 effectiveDeadline = min(runDeadline, attemptDeadline)
 ```
 
-- 三个来源均从精确 Run lease 下加载并验证：Task 原始 bytes 与 `specDigest` 相同，Run 创建事件与 replay 状态一致，ProcessStarted 是当前 Attempt 已接受的 Core/Supervisor fact。时间解析、正预算和加法溢出失败时拒绝，不从文件 mtime、HTTP deadline 或 WorkerResult 推导。
+- 三个来源均从精确 Run lease 下加载并验证：Task 原始 bytes 的 canonical 摘要与 `specDigest` 相同；Run 没有独立 `run.created` 事件，现有 planning producer 对 `NewRunState` 与首条 `planning.spec-accepted` 使用同一个 `now`，因此必须验证该首条 `CREATED → PLANNED` 事件的 timestamp 与快照 `CreatedAt` 精确相同，并绑定其事件摘要；ProcessStarted 是当前 Attempt 已接受的 Core/Supervisor fact。时间解析、正预算和加法溢出失败时拒绝，不从文件 mtime、HTTP deadline 或 WorkerResult 推导。历史记录若缺少该锚点只能拒绝业务 deadline 授权，不在恢复时补造时间。
 - ProcessStarted 是实际 Resume 前的启动观测，因此该预算包含 exec-stopped/Resume 等待，不能推迟到第一次查询或重启。Run deadline 从创建计时；READY 阶段已耗尽预算时不得放行新的 Worker，但保持原 pre-Attempt 恢复/终态规则，不伪造 started stop。
 - 同时到期时固定优先 `run-deadline-exceeded`。停止意图保存原始来源摘要、两个计算结果和选定类别；Core 在提交前重新计算，拒绝客户端提供截止点和重启延期。
 - 原有两小时 lease expiry 仍是执行资格上限，不是用户 SLA。业务 deadline 通常更早，使用 `cancelled/deadline-exceeded` 屏障收口。即使尚未到内部 lease expiry，也不能继续接纳已过业务截止点的新结果；admission 必须在同一提交边界执行这一检查，不能只依赖 timer 抢先运行。
@@ -55,11 +74,59 @@ effectiveDeadline = min(runDeadline, attemptDeadline)
 - Run 终态事件是提交点，Outcome 用现有可恢复 record 路径物化并绑定该事件。event 后崩溃只补同一 Outcome；Outcome 未就绪时返回 typed pending，不生成第二事件。完成响应必须包含精确 Run、stop、terminal receipt 与 Outcome 摘要。
 - 状态查询在 stop 尚未完成时保留 Run 当前状态并附有界 stop/recovery 投影；投影不是 Run 转换或新授权。重启、客户端断线或 delivery 文件丢失都从 stop fact 继续，不能恢复原执行资格。fresh cancel 超时不等于取消撤销。
 
+Collect 对已完成 stop 使用封闭 `run-stopped` 错误，不伪造 CollectedRunProjection、成功 receipt 或独立 Decision；fixed HTTP 返回 409，客户端据此停止 live polling 并查询 Run/Outcome。返回该类别前必须验证当前 Attempt cleanup、精确 `worker.stopped` 和 Outcome，单纯看到 BLOCKED、原始 deadline 到期或已经发送 TERM 均不足以授权。丢响应后的 Collect 从原 Run/Attempt/sequence/head 与当前存储意图连接，内部取原 stop requestId，再复用同一 terminal verifier；不能用这条读取/物化路径创建停止意图。部分投影、未知故障仍为 pending，不通过错误分类消除不确定性。
+
+新请求与旧 pending 的重放不可混淆：已获知停止成功后首次发起的 Collect，必须绑定精确当前 BLOCKED sequence/head 才能创建 delivery pending；不能拿旧 RUNNING head 新建请求。Core 仅对无显式 cancel requestId 的 Collect 读取，在当前 Run/Attempt/终态 head 完全吻合时，从现有 stop intent 取回原始停止 sequence/head，再沿相同 terminal/Outcome verifier 验证；显式 Cancel 输入不被改写，错误 current head 不转换。停止前已存在的 Collect pending 则继续按原 key/head/deadline 重放，由原停止意图证明其终态。二者都不生成新的 stop、Worker、业务结果或成功 Collect receipt，普通 stale-head delivery 拒绝不变。
+
 ### 接受与 enable 门槛
+
+#### 投影更新不得使正常查询失效
+
+候选 `88f9eddb` 的真实 Attempt timeout 在投影 release 后、终态收口前遇到独立客户端 open 失败；公共客户端回归进一步证明，旧布局的 `RENAME_SWAP` 会改变 transport 冻结的 `runtime-v1` 父目录观察。这不是允许忽略 current-name/ABA 的理由。
+
+本纵切部分替代 ADR 0069 §3.3 的派生投影布局：`existing-worktree-bindings` 成为固定、owner-private 容器，当前投影及事务 stage 位于其内部的 `current-v2`、`.projection.stage`。transport 冻结容器的 held object/name/type/owner/mode，仍精确冻结 `runtime-v1`、`control` 的 mutation；内部投影 swap 不需要重新认证或刷新 transport 根。RB1、Run journal、receipt bytes、锁序与业务权限不迁移，不新增 authority。
+
+旧布局的根部 entry 只作保留历史：开启/验证 v2 前逐项证明它们是当前 RB1 投影的合法前缀；损坏、超前、未知 entry、symlink 或旧 runtime 根部遗留 stage 均拒绝，不删除、不遮蔽。已验证的旧 entry 原样保留；v2 缺失/落后仍只能由 RB1 重建。旧 binary 看见新目录必须拒绝，不允许静默降级。新布局 stage 的崩溃恢复仍复用原有全量 preflight、原子 swap、精确清理；不得把投影切换解释为 binding release。
+
+验证必须覆盖真实 projection producer 的 bind/release 与公共客户端连续重验/新开、stage/commit/cleanup 各边界、冷恢复、旧合法/损坏布局，以及固定容器/runtime/control 替换与 ABA 拒绝。单纯手工 swap 测试或 compile-only 不能关闭实机门槛。
+
+常驻写调度必须覆盖整个 `delivery Begin → application → receipt reconcile/commit`，而非只锁 application。原候选使用全局 writer lane，实际核对发现 Verify 执行验收命令也持有该 lane 和 application mutex，使无关 RUNNING Run 的 deadline 无法推进。后继候选改为：公开写请求先取得精确 Run 的进程内 lane，并持有至 receipt 阶段结束；Start（含重放）、Collect/Cancel/Review/Decision 及后台恢复仍由全局 mutation lane 串行保护，Verify 仅在 Begin/receipt 阶段持有全局 lane，执行阶段保留本 Run lease、独立 worktree lease 与 application 生命周期读保护。Verify 不修改共享调度/运行时资源，验收结果仍经原 Run authority 守卫与 journal 提交，不新增状态或放宽接纳。
+
+Verify 只在当前 Run 已验证为 VERIFYING 后移除其可重建 RUNNING deadline 索引；启动恢复仍从账本重建，不能据索引宣称终态。相同 Run 的后续公开 mutation 不能穿过未提交 receipt；其他 Run 可在验证期间推进。后台 Try 不排队，也不递归发起公开写请求。公开等待受既有 inflight/queue 和原请求 deadline 限制；receipt 阶段重新取得全局 lane 若超时，只保留已有 pending/事实，由精确请求恢复，不重做 Worker 或制造成功。Run lane 无引用时回收，不能按历史 Run 数永久增长。
+
+锁顺序为 Run lane → 全局 lane（适用阶段）→ application mutex（适用阶段）→ 原 Run/owner/ledger；Verify 在 mutex 下取得生命周期读保护，释放 mutex 后不再回取它，Close 等待验证结束后才关闭依赖。Status/Inspect 不经过 lane，Inspect 的真实 Run lease 争用仍在调用 deadline 内返回，不以未锁快照或缓存伪造当前成功。该候选只解除验证对无关 Run 的阻塞，不宣称任意长 Start/Collect/cleanup 都已有实时上界。须验证同 Run 串行、跨 Run deadline、Close/超时/丢响应及原证据重放，再升级支持状态；后台的其他长事务与最终组合仍开放。
+
+跨 Run 实机采用上述 Attempt-timeout 场景的显式 `verify-peer`，不和 crash/live-review 混跑：两个独立 worktree 的真实 Pi Task 在 server 启动前冻结并批准，peer 保留订单报价 oracle，另加有界 100 秒验证命令。命令只在本 canary evidence 写入诊断 rendezvous，然后保持执行；驱动观察后才经 fixed server Start 另一个 60 秒 Attempt Run。最终必须由绑定公开 Verify projection 摘要与原 Task 的验证报告，证明另一 Run 的 stopped Collect 已完成时间严格处于长命令执行区间。诊断信号不是 Run authority、不是 Worker 自报成功，不改变验证接纳；缺信号、错过区间或任一调用失败均保留失败，不自动重试。实验只证明跨 Run 调度，不宣称 Agent Team 集成交付或独立 Decision 已完成。
+
+传输等待必须与应用阶段匹配：客户端从认证后等响应首 byte，以原冻结请求 deadline 与 caller context 的更早截止点为上限，不拿 15 秒字节传输窗口充当 Verify 的业务预算；首 byte 后整份 HTTP envelope 只获得一个最多 15 秒、不随流量刷新的窗口，仍不得越过原截止点。父 context 取消关闭本请求独占连接，服务端沿既有断连取消应用，不据此伪造 Run 停止。消费响应后用最多 5 秒且受原截止点约束的 context 执行完整 current owner/peer/receipt 复查，成功后才 half-close。服务端保留响应连接直到 half-close，最多使用响应传输加复查窗口（20 秒）且不越过原请求 deadline，不能仅 1 秒就抢先关闭。此调整不延长 Run/Attempt 预算、不重发业务、不放宽身份或 receipt 校验；必须由真实认证客户端/HTTP router 的长应用、父取消、原截止点、部分 envelope 与 half-close 回归覆盖。未知响应仍保留不确定性，不自动重试。
+
+实机候选与发布门禁必须分开：停止候选尚未满足本节实机要求时不得先合并 main，也不能被 main-only release CI gate 阻止验证。仅显式 `order-quote-cancel`、`order-quote-timeout`、`order-quote-run-timeout` 的未合入 `feat/` 分支，允许用 canonical 仓库、workflow dispatch SHA 与 expected-head 相等、同精确 SHA/分支最新手动 CI 五项成功的 candidate-only gate 做隔离实机验证；不创建 tag、release、独立 Decision 或 production 声明。main 上的任何场景及其他场景仍走原 main push CI gate，正式发布脚本和权限不变。此候选验证许可不等于接受本 ADR 或开启正式支持。
+
+当前证据补充：`20a9999` 的 CI 34026216770 五项全绿，覆盖下述 READY 准入。后续 fixed CLI cancel 与显式 `order-quote-cancel` 驱动只补测试入口：request key 派生唯一 stop requestId，未知响应不重试，已证明停止的 Collect 返回非成功退出码。驱动必须验证精确 receipt/Outcome、同请求重放与终态查询，不生成独立 Decision；尚未运行真实取消 canary，不能用脚本测试替代 enable 门槛。
+
+停止场景进一步覆盖成功后的冷 server：关闭 server2 后以同一固定 bytes 启动 server3，独立 evidence 目录记录原取消请求、原 deadline、精确 receipt/Outcome 的再次验证与终态 Collect。只读取本 Run 固定目录中的有界证据来重建封闭参数，证据不替代服务端 authority；不延长预算、不重启 Worker，未知响应不再次取消。24 项 Python 回归通过不等于这一场景已实机通过。共享 release 观察也已改为同时接受两类经耐久账本重读的合法终态：已接纳正常结果，或 sealed stop intent 与闭合 eligibility；停止绝不能伪造 CommittedResult 来复用正常完成分支。
+
+READY 原始预算准入候选已在 preparation 的 ReserveAttempt 前和 bridge 进入启动链前接入，使用同一冻结 TaskSpec/首事件与当前 Run head；恰好到期即拒绝。拒绝不创建 started stop；已提交启动结果由既有 replay 先行恢复。两次检查不是整个 launch 的原子 deadline：检查后到 Resume 的窗口、长 public mutation 的调度延迟仍须与同路径停止机制一起验证。`a04d76c` 的 CI 34025131805 五项全绿覆盖此前常驻循环/Outcome 恢复，不覆盖本次新增准入；下文“仍未完成”的历史候选描述以此项和当前 Roadmap 表为准，完整 enable 门槛不变。
+
+常驻调度候选复用 fixed server 自身生命周期：启动恢复时登记 RUNNING Run，StartRun 在可能提交启动结果前登记；索引和轮询游标只存在内存、可由账本重建。每秒最多公平处理三个 Run，每轮 30 秒 context 上限；后台不排队抢占正在执行的 public mutation。每次推进重新读取 Run、当前 owner、原业务预算和 Attempt，调用同一 stop barrier/cleanup，而不是自行构造 deadline 或 PID。server shutdown 先取消并 drain 此循环，再释放 delivery/session/owner。停止事件后 Outcome 未完成的 BLOCKED Run 在启动扫描和活跃项处理中走已存意图恢复；不能因为 Run 已非 RUNNING 就永久漏掉 Outcome。该候选尚需实机故障和容量验证；长 public mutation 的 deadline 响应上界及 READY 阶段准入仍待关闭。
+
+实现核对发现：`ReadRunStartAuthorityUnderLease` 只在 `READY/RUNNING` 返回启动 worktree 等冻结输入，`BLOCKED` 终态不返回这些字段。因此 event 后丢响应的恢复不能再次走 `openRun`，也不能为了恢复响应补造 worktree/launch closure。已提交终态的 Outcome 补齐由 `RepositorySession.ReconcileStoppedRun` 在现有 Run lease、当前 owner 和 ingress 下直接连接原请求、当前 Attempt cleanup 与精确 `worker.stopped` 事件；它不得创建停止意图、启动/Attach Worker 或消费预算。尚未提交 terminal event 的停止仍走原 runtime cleanup 恢复，两条路径不能混用。
+
+当前取消实现仍是未发布的纵切候选：已接入 public `CancelRun`、fixed `/v1/runs/cancel` 与原 delivery pending/receipt，贯穿 barrier 意图模型、terminal eligibility/cleanup、封闭 `worker.stopped` 和终态 Outcome 恢复；原始业务预算读取、deadline admission transaction 检查与已有 stop intent 的恢复 cleanup 已接入候选。READY 到期准入、resident timer、对外停止状态/错误闭环和完整故障矩阵仍未完成。允许在隔离开发分支保存候选并运行 hosted CI，不能合并放行或声称 B1 已完成。当前本地 Go 检查为 compile-only（不执行测试二进制），另有 vet/staticcheck、架构与 diff 检查；新增动态测试和 race 仍需对应 sourceHead 的 hosted CI 证据。f41b3aa 的 Linux contract/metaschema 检查通过不能替代最新候选动态验证；该版本 macOS session 关闭测试死锁另已定位修复，不原样重跑。不得把这些编译结果记作业务通过。
 
 实现必须一次接通 application、Core、barrier、v2 cleanup、Run event/Outcome、fixed transport 与恢复扫描，并补齐下节故障测试，再接受本 ADR 和 enable。不得只提交新类型/handler 就把取消列为可用。与正常 Collect/admission 的竞争必须在同一生产组合路径测试；timer-only 或 mock-only 通过不关闭 B1。
 
+### 握手的本机 authority 等待与 proof 时限（候选澄清）
+
+34056947651 已产生成功的长 Verify 报告，另一个 Run 也在其间停止，但并发 Inspect 在 `client-dial` 失败；已有摘要不能区分具体握手子阶段，不能据此宣称根因已实机确认。代码确认客户端从 connect 后就计算 5 秒，而 server 在 challenge 前和 proof 后均须等待同一个 owner 锁；停止事务可超过该窗口。
+
+本候选部分替代 ADR 0076 §7 的统一 handshake deadline：**nonce 从签发到 proof 校验仍为 5 秒，单 frame 仍为 16 KiB/5 秒**；本机 current-authority 排队单独最多 30 秒，且所有 client 等待仍服从原 RequestBinding deadline 和更早 caller deadline。server 在 challenge 前以独立 30 秒 context 重验 authority；合法 proof 到达后先验证 nonce/HMAC/freshness，再以最多 30 秒且不越过原 binding deadline 的 context 重验 current authority，之后有界写 accepted。不能让过期 proof 因排队变有效，不能缓存或跳过任何 owner/peer/object 检查。
+
+客户端等待 challenge/accepted 的首 byte 使用上述有界 authority 等待；首 byte 后整帧只有一次最多 5 秒、不可按流量刷新的窗口。发送 proof 受 challenge 原 expiry 限制。取消从 Dial 阶段就关闭本次独占 socket，不只在 HTTP 阶段生效。所有等待仍零业务重发、零额外 Attempt；server shutdown context 取消必须传入 authority 等待。回归必须覆盖真实 owner 锁争用、原截止点、父取消和部分帧，并保留已有过期/错误 proof 与 identity 漂移拒绝。动态回归及跨 Run 实机未通过前，不接受本澄清为正式支持。
+
 ## 同一纵切的验证与实施顺序
+
+停止链必须包含证据保存：v2 Terminate → process-terminal → allocation release → **cleanup-only Collect** → Close/独立 absence → cleanup release。真实 mechanics 的 Close 要求先完成有界 transcript 封存，不能以取消为由跳过或放宽。cleanup-only Collect 仅在精确 sealed StopIntent、已关闭 admission、对应 eligibility、process-terminal 与 allocation-terminal 均成立时允许；复用原 v2 command intent/receipt、held object 校验及丢响应恢复，不创建 CommittedResult、Candidate 或成功业务接纳。普通 Collect 的 barrier 拒绝规则不变。Close intent 已存在而无成功 Collect 的旧失败链保留 intervention，不能更换该命令或擦除历史。停止后的 Collect 可以更新观察时间与封存输出，但必须引用 process-terminal 之后、Close 之前的精确成功 v2 receipt；终态进程身份、runtime/workdir、source gate、observer、exit/signal 不变，Close 必须精确复述该 Collect 的完整 report。不得仅忽略输出字段来通过旧的 terminal-report 比较。该规则随本提议纵切一起验证，不独立授予 production authority。
 
 先冻结以上选择，再在一个连贯实现中接通 application→runtime→现有 barrier/Terminate/cleanup→Run event/Outcome→fixed delivery，不把孤立 handler 或新类型标为可用。测试覆盖：错误 current head/owner 零 mutation；admission/stop 两种 CAS 顺序；intent 前后、signal 前后、cleanup 后、event 后及响应丢失；同请求重放；原因替换拒绝；过期原始 deadline 与重启不延期；身份冲突零 kill/零 release；迟到结果；终态 Outcome 重建。
 

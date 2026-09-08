@@ -1,5 +1,7 @@
 # ADR 0019：确定性控制平面、Typed Execution、Goal 计划接纳与补偿语义
 
+> 2026-09-07 适用性：节点级人工问答及 enforced/observed 用量结算拟由 ADR 0085 §5–§6 扩展；确定性 Core、计划接纳、总预算和补偿语义保留。本文全局 pause/全维度 actual 不能被外推为新方案的唯一设计。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：已接受（Accepted；维护者 2026-08-11）
 - 日期：2026-08-11
 - 决策来源：维护者要求基于既有审计重新整理设计与 Roadmap；三路独立只读审计分别复核 Typed Executor 边界、外部副作用补偿与 M13 Goal 编排后，确认 ADR 0016–0018 的耐久 Control Plane 方向正确，但下列契约尚未冻结。本 ADR 在不回退既有不变量的前提下补齐这些边界。

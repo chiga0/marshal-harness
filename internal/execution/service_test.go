@@ -144,6 +144,14 @@ func TestRunRejectsUnsealedReadyStartBeforeAdapter(t *testing.T) {
 	}
 }
 
+func TestRunRejectsNativeResultContractBeforeLegacyAdapter(t *testing.T) {
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+		preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture",
+		resultContract: domain.ResultContractNativeTerminal,
+	})
+	requireFailsBeforeProbe(t, fixture, "result contract is unsupported by the legacy executor")
+}
+
 func TestRunRejectsInvalidPreparedRunStartBeforeSideEffects(t *testing.T) {
 	fixture := newExecutionFixture(t, false)
 	adapter := &countingAdapter{delegate: fixture.input.Adapter.(*fixtureAdapter)}
@@ -1473,6 +1481,7 @@ type executionFixture struct {
 }
 
 type executionFixtureOptions struct {
+	resultContract        string
 	preferredAdapter      string
 	fallbackAdapters      []string
 	capabilityAdapterID   string
@@ -1711,6 +1720,14 @@ func newExecutionFixtureWithOptions(t *testing.T, fail bool, options executionFi
 		"budgets":     map[string]any{"runTimeoutSeconds": 60, "attemptTimeoutSeconds": 10, "maxAttempts": maxAttempts, "maxOperationalRetries": maxOperationalRetries, "maxReworkRounds": maxReworkRounds, "maxOutputBytes": 100000},
 		"publication": map[string]any{"required": false, "provider": "none", "mode": "none", "remote": "origin", "baseBranch": "main", "mergePolicy": "never", "requiredChecks": []string{}},
 	})
+	if options.resultContract != "" {
+		var document map[string]any
+		if err := json.Unmarshal(task, &document); err != nil {
+			t.Fatal(err)
+		}
+		document["worker"].(map[string]any)["resultContract"] = options.resultContract
+		task = mustJSON(t, document)
+	}
 	if err := validator.Validate(domain.KindTask, task); err != nil {
 		t.Fatal(err)
 	}

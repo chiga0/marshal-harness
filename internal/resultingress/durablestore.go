@@ -489,6 +489,38 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		return err
 	}
 	switch head.FactType {
+	case taskQuestionCreatedFact, taskQuestionAnsweredFact:
+		if err := applyTaskQuestionLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
+	case taskStopFactType, taskCancelledFactType:
+		if err := applyTaskCancelLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
+	case taskDeliveryFactType:
+		if err := applyTaskDeliveryLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
+	case taskDraftFactType:
+		if err := applyTaskDraftLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
+	case teamOutcomeFactType:
+		if err := applyTeamOutcomeLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
+	case teamHaltFactType:
+		if err := applyTeamHaltLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
+	case teamRunCreationFactType:
+		if err := applyTeamRunCreationLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
+	case teamPlanFactType:
+		if err := applyTeamPlanLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
 	case attemptReservedFactType, attemptReservationConsumedType, attemptReservationCancelledType:
 		if err := applyAttemptReservationLine(line, in, s.nextSequence); err != nil {
 			return err

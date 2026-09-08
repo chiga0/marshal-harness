@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
@@ -19,17 +20,23 @@ import (
 // The result transport is the held supervisor transcript; no result pathname
 // is trusted or created by the worker.
 type ProductionResultInput struct {
-	Transcript     []byte
-	Worktree       string
-	TaskID         string
-	RunID          string
-	AttemptID      string
-	Executable     string
-	Version        string
-	Model          string
-	StartedAt      time.Time
-	CompletedAt    time.Time
-	MaxOutputBytes int64
+	ResultContract string
+	// These observations come only from the held supervisor Collect report.
+	ProcessTerminal     bool
+	ProcessExitCode     int
+	ProcessSignal       string
+	TranscriptTruncated bool
+	Transcript          []byte
+	Worktree            string
+	TaskID              string
+	RunID               string
+	AttemptID           string
+	Executable          string
+	Version             string
+	Model               string
+	StartedAt           time.Time
+	CompletedAt         time.Time
+	MaxOutputBytes      int64
 }
 
 // ParseProductionWorkerResult validates the complete Pi JSONL protocol and
@@ -48,6 +55,15 @@ func ParseProductionWorkerResult(ctx context.Context, input ProductionResultInpu
 	if err := validateProductionResultInput(input); err != nil {
 		return domain.Record{}, err
 	}
+	native := input.ResultContract == domain.ResultContractNativeTerminal
+	if input.ResultContract != "" && input.ResultContract != domain.ResultContractWorkerJSON && !native {
+		stage = "result-contract"
+		return domain.Record{}, ErrProtocol
+	}
+	if native && (!input.ProcessTerminal || input.ProcessExitCode != 0 || input.ProcessSignal != "" || input.TranscriptTruncated) {
+		stage = "process-terminal"
+		return domain.Record{}, ErrProtocol
+	}
 	stage = "transcript"
 	capture := decodeTranscript(ctx, input.Transcript, input.Worktree, input.MaxOutputBytes)
 	if capture.limitExceeded {
@@ -63,6 +79,10 @@ func ParseProductionWorkerResult(ctx context.Context, input ProductionResultInpu
 	}
 	if capture.providerFailed {
 		stage = "provider-terminal"
+		switch capture.providerStopReason {
+		case "error", "length", "aborted":
+			stage += "-" + capture.providerStopReason
+		}
 		return domain.Record{}, errors.New("pi: provider reported a failed terminal invocation")
 	}
 	if capture.sessionID == "" {
@@ -71,7 +91,24 @@ func ParseProductionWorkerResult(ctx context.Context, input ProductionResultInpu
 	}
 
 	stage = "final-message"
-	declaredBytes, err := extractFinalWorkerResult(input.Transcript)
+	var declaredBytes []byte
+	if native {
+		var report []byte
+		report, err = extractFinalAssistantText(input.Transcript, true)
+		if err == nil {
+			declaredBytes, err = json.Marshal(declaredResult{
+				APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindWorkerResult,
+				TaskID: input.TaskID, RunID: input.RunID, AttemptID: input.AttemptID,
+				Adapter: declaredAdapter{ID: adapterID, Executable: input.Executable, Version: input.Version, Model: input.Model},
+				Status:  "completed", Summary: string(report),
+				DeclaredChangedFiles: []string{}, DeclaredArtifacts: []json.RawMessage{}, DeclaredCommands: []json.RawMessage{},
+				DeclaredRisks: []string{"native-terminal/v1: invocation ended normally; business completion and report claims require independent verification; empty declaration arrays are not proof of no changes or passing tests"},
+				StartedAt:     input.StartedAt.UTC(), CompletedAt: input.CompletedAt.UTC(),
+			})
+		}
+	} else {
+		declaredBytes, err = extractFinalWorkerResult(input.Transcript)
+	}
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -165,8 +202,9 @@ type productionAgentEnd struct {
 }
 
 type productionMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	StopReason json.RawMessage `json:"stopReason"`
 }
 
 type productionContentItem struct {
@@ -174,7 +212,15 @@ type productionContentItem struct {
 	Text string `json:"text"`
 }
 
-func extractFinalWorkerResult(transcript []byte) (result []byte, err error) {
+func extractFinalWorkerResult(transcript []byte) ([]byte, error) {
+	text, err := extractFinalAssistantText(transcript, false)
+	if err != nil {
+		return nil, err
+	}
+	return extractSingleWorkerResultObject(string(text))
+}
+
+func extractFinalAssistantText(transcript []byte, native bool) (result []byte, err error) {
 	stage := "final-event-decode"
 	defer func() {
 		var classified *productionResultFailure
@@ -219,10 +265,24 @@ func extractFinalWorkerResult(transcript []byte) (result []byte, err error) {
 		stage = "final-role"
 		return nil, fmt.Errorf("%w: final production message is not assistant", ErrProtocol)
 	}
+	if native {
+		// Absence of a recognized failure is not positive completion proof.
+		// Require the selected terminal assistant's supported normal reason,
+		// independently of the OS process exit code. Do not change old Runs.
+		var reason string
+		if json.Unmarshal(message.StopReason, &reason) != nil || reason != "stop" {
+			stage = "provider-terminal-unconfirmed"
+			return nil, ErrProtocol
+		}
+	}
 	// Pi user/custom message content may legitimately be a string. Only
 	// the selected terminal assistant is a WorkerResult carrier and must
 	// satisfy the assistant content-array contract. Do not decode earlier
 	// user/tool messages using the assistant-only schema.
+	if len(message.Content) == 0 {
+		stage = "final-content-missing"
+		return nil, fmt.Errorf("%w: final production assistant has no content field", ErrProtocol)
+	}
 	stage = "final-content-shape"
 	var content []productionContentItem
 	if err := json.Unmarshal(message.Content, &content); err != nil {
@@ -247,28 +307,27 @@ func extractFinalWorkerResult(transcript []byte) (result []byte, err error) {
 		stage = "final-content-text"
 		return nil, fmt.Errorf("%w: final production assistant must contain exactly one non-empty text item", ErrProtocol)
 	}
-	return extractSingleWorkerResultObject(text)
+	return []byte(text), nil
 }
 
-// extractSingleWorkerResultObject implements the ADR 0075 final-message
-// contract: plain prose is tolerated, but the text must contain exactly one
-// complete JSON object and everything after that object must be whitespace.
-// Zero or two-or-more decodable objects fail closed.
+// extractSingleWorkerResultObject implements ADR 0084 typed framing. Complete
+// non-result containers may precede one declaration; nested declarations are
+// never selected. Malformed containers and duplicate members fail closed.
 func extractSingleWorkerResultObject(text string) ([]byte, error) {
 	var (
-		matched    map[string]json.RawMessage
+		matched    []byte
 		matchedEnd int
 		candidates int
 		skipUntil  int
 	)
 	for index := 0; index < len(text); index++ {
-		if text[index] != '{' || index < skipUntil {
+		if (text[index] != '{' && text[index] != '[') || index < skipUntil {
 			continue
 		}
 		decoder := json.NewDecoder(strings.NewReader(text[index:]))
-		var object map[string]json.RawMessage
-		if err := decoder.Decode(&object); err != nil || object == nil {
-			continue
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return nil, invalidFinalObject("syntax", candidates > 0, fmt.Errorf("%w: malformed terminal JSON container", ErrProtocol))
 		}
 		// Nested `{"...": {...}}` braces belong to the outer object: skip every
 		// later '{' that falls inside the span just decoded so one complete
@@ -277,11 +336,26 @@ func extractSingleWorkerResultObject(text string) ([]byte, error) {
 		if end > skipUntil {
 			skipUntil = end
 		}
+		encoded, err := canonical.JSON(raw)
+		if err != nil {
+			return nil, invalidFinalObject("canonical", candidates > 0, fmt.Errorf("%w: ambiguous terminal JSON container", ErrProtocol))
+		}
+		if text[index] != '{' {
+			continue
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &object); err != nil {
+			return nil, &productionResultFailure{code: "final-object-invalid", cause: ErrProtocol}
+		}
+		var kind string
+		if json.Unmarshal(object["kind"], &kind) != nil || kind != "WorkerResult" {
+			continue
+		}
 		candidates++
 		if candidates > 1 {
-			return nil, fmt.Errorf("%w: final production assistant text must contain exactly one complete JSON object", ErrProtocol)
+			return nil, &productionResultFailure{code: "final-object-multiple", cause: fmt.Errorf("%w: multiple terminal WorkerResult declarations", ErrProtocol)}
 		}
-		matched = object
+		matched = encoded
 		matchedEnd = end
 	}
 	if candidates != 1 {
@@ -290,5 +364,5 @@ func extractSingleWorkerResultObject(text string) ([]byte, error) {
 	if strings.TrimSpace(text[matchedEnd:]) != "" {
 		return nil, &productionResultFailure{code: "final-object-trailing", cause: fmt.Errorf("%w: final production assistant text contains trailing non-whitespace after the result object", ErrProtocol)}
 	}
-	return json.Marshal(matched)
+	return matched, nil
 }

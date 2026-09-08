@@ -1,5 +1,7 @@
 # 安全模型
 
+2026-09-07 的 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）按 Task-first 收缩：不新增 Workspace、账号/组织/RBAC 或 operator-local 安装收据平台；首版本地服务自动生成受保护 token、校验 Host/Origin，拒绝非 loopback 绑定，后续远程首次启用仍须先具备 TLS/认证授权。B1 复用现有合法安装/执行 profile，不绕过其 gate；B2 简启动与 SQLite 不自动覆盖/接管旧数据。最小执行身份/归属、权限与独立证据不后置。Agent 自带鉴权/Skill 不得让作者取得 Publisher 凭据，包括 publication:none；同 UID 原生配置不是恶意代码隔离。下文保留旧 profile 和各远程/强隔离合同，不把它们的完整平台矩阵变成本机 PoC 前置。精确取代见[合同对照](design-contract-map.md)，实际支持只见 Roadmap。
+
 ## 安全定位
 
 Marshal 是长期运行并持续调度 Agent 工作负载的确定性 Control Plane。它编排能够编辑文件、执行仓库代码和触发外部副作用的进程，因此安全边界必须覆盖权威状态、Provider 身份、执行隔离、Evidence 接纳、凭据与 SideEffect，而不能只依赖 Prompt 或 Worker 自我约束。

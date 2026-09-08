@@ -1,5 +1,654 @@
 # 设计审计报告
 
+## 2026-09-08：Node-only 本机团队闭环实证
+
+[ADR 0087](adr/0087-node-local-team-feasibility-probe.md) 的独立实验候选 `c88410b` 已在 Mac 使用既有 Node/Pi 通过纯 HTTP 双作者、结果收集、69 项固定业务验收、下载后 69 项独立消费、活跃前端重启和另一真实任务取消/重启保留；未调用 Marshal 原生文件。两个实际 Agent 执行区间重叠 13.106 秒。对应有界可行性 finding 关闭，**完整 supervisor 崩溃恢复、任意任务、第二 Provider、生产存储和正式 Node profile 仍开放**，不升级旧 Go B1/B2/stable。
+
+三轮实机共两次失败：先前 1 MiB wire 预算误伤原生事件流，其后独立作者提示未完整给出数值范围而产生真实错误代码。分别以独立有界事件预算、逐角色完整契约与变异负测修正，旧失败保留，未降低文件/终态/oracle 门禁。新候选独立审查无未决 P0/P1。全过程与精确证据见[实机记录](node-team-feasibility-2026-09-08.md)，不从一次通过推导通用效率或生产稳定性。
+
+## 2026-09-08：关键问答不变成人造等待
+
+B2-A 接缝盘点确认，原 `bounded-task-draft/v1` 是单个不可变草案；0085 的一般交互条款尚未定义问题生产者及答案/新 preview 的原子提交。[ADR 0086](adr/0086-task-preapproval-questions-and-preview-revisions.md) 仅补未批准 Task 的封闭协议，保留旧 draft、原确认期限、同账本和取消优先。`4f76a2e` 经独立审查无 P0/P1，按反馈一次补齐旧批准 fallback、Decision/delivery 消费者和取消 CAS 的明确边界；维护者在已有 B2 实施授权内接纳，不伪称用户曾逐条确认。接纳时尚无新 RB1/HTTP 实现或运行证据。
+
+当前 `order-quote/v1` 已完整冻结，不存在需要追问的必填槽，应零问题继续 B1；不为测试接口制造“是否继续”或重复方案批准。组件验证将使用显式测试专用模板，真正 B2 还需后续业务模板的实机问答和交付证据。先证明问题影响交付、再决定是否提问，是从历史流程返工中固化的效率约束，不以问题数或接口数宣称进展。
+
+## 2026-09-08：SQLite 单事务后端与失败后重新打开
+
+ADR0085 的 SQLite backend 候选实现四类原账本、投影、回执及 outbox 的同事务持久化，不新建业务 reducer 或开启生产 profile。独立审查发现父目录同步 P1：仅同步新根自身不能覆盖其目录项；只修 Create 也不够，失败后 Open 仍可能接纳未结清状态。最终统一 Create/Open 的 held parent 与子→父同步，失败不返回可用 Store、不删状态；回归覆盖失败→重开→Claim→写入→重启的整条路径。同 reviewer 复核关闭该 P1。
+
+维护者独立 Linux 编译包 `9b8148d24647da0049d9a202871c3b46b36e014634894b4a1aa1fc8f612545db` 经香港 ECS 受限账号动态运行，22 组通过；仍非 race/物理掉电/真实 Worker 证据。实现、精确快照与生产接线缺口见 [SQLite 后端说明](sqlite-storage-implementation.md)。经验是把故障后下一次合法打开/继续操作纳入原修复，不只验证首次失败点；不通过不断新增微 PR 代替原完整路径修复。B2 继续 IN_PROGRESS。
+
+后继 `f51ff9a` 修正 CI 两平台 race 暴露的测试构造成本：原夹具在生产 5 秒事务内反复生成约 900 KiB 的规范化记录，预期字节限额前先耗尽期限。现以小真实记录走 CompareAppend→超限→全回滚，显式预置计费并补精确字节/记录数上限及 +1 检查；不改生产期限，也不宣称真实 8 MiB 吞吐通过。作者静态检查与维护者独立代码审查完成；本次动态 race 尚未补跑，不能倒填 CI 全绿。用户选择本地审查后合并、集中 CI/E2E 的研发方式，不改变生产发布验收义务。
+
+## 2026-09-08：Task 取消组合验证与状态字段生命周期
+
+取消初稿 `a59a138` 的聚合审查发现：坏 Task 的局部 Run 读取失败不推进取消游标；取消信号被 finalizer 当成全局调度错误；HTTP 测试 helper 未释放 endpoint borrow，导致冷关闭无限等待。前两项在 `387561e` 修正，helper 在 `eea6e01` 修正。主 Agent 对自己持有的挂起测试进程取 SIGQUIT 栈，确认阻塞于 Session.Close 后停止该次执行，没有重跑未修代码或终止其他 Worker。
+
+组合 `d9cdfa82e0001a3d7a01d42cf36adae0cf257050` 的 Mac 定向测试通过：坏任务不饿死健康任务、停止任务不触发全局 finalizer、draft/approved/READY/reservation 冷恢复、缺目录与缺 cleanup 拒绝、Outcome 前停止的两个真实 Git/Verifier/Importer 场景（19.55 秒）、Outcome 先赢的 export/cancel 竞争（13.34 秒）以及原完整交付链（14.79 秒）。香港 ECS 在专用账号与资源限制下 application/taskhttp/productionruntime 整包 race 通过；resultingress 整包 race 超过 180 秒失败，随后仅取消三项的定向 race 58.114 秒通过。保留整包超时，不能以定向结果替代整包门禁。
+
+复审发现新的明确缺口：原 RunStart projection 只在 READY/RUNNING 填充冻结摘要，取消 consumer 却在 BLOCKED/VERIFYING/REVIEW_PENDING 等状态继续读取同字段，因此真实 cleanup 后仍不能结案。实现 `f4eb0347` 已改为在同一 Run lease 下重读原冻结文件、快照与 journal，并逐项绑定原 Attempt 和合法 completed/stopped 事件；不扩改旧 projection，不接受手填 cleanup 摘要。新增 projection-only 夹具又暴露非法跳状态，`f1474f47` 按原合法状态路径修正；同 reviewer 已复审无剩余代码 P0/P1。完整 Task→真实 CancelRun→cleanup→disposition 正例继续是 B1 实机出口，不因组件通过而关闭。
+
+实际教训：覆盖 producer 字段的**状态生命周期**，不仅比对静态字段名；缺证据负例必须证明拒绝发生在目标 gate，不能在更早的 fixture 错误处假通过。本轮不为测试共享再造协议平台，局部确定性回归与真实 Worker 验收分别留证。并行 CI/审查/后继开发已执行；#274/#275 全绿后分别合入集成分支，不是 main 或正式发布。
+
+## 2026-09-08：自动验收生产链接缝与流水线修正
+
+核心候选 `064b528` 的唯一 reviewer 发现 P1：objective consumer 漏掉原 Verifier 必定生成的 denial-summary、tool-audit、tool-allowlist，因此手写报告正例通过而真实报告必被拒。修正保持 frozen worker.tools 的必需/可选语义，只允许原 producer 合法 skipped，不放宽未知/缺失/重复/失败 gate。另将实际 sealed Verify 的 ToolAllowlist 接自原冻结 Task，并把 resident 的等待错误映射放回 Application 边界，没有扩架构白名单。
+
+验收改为实际 Verifier→固定 oracle→原 Packet/Importer，以及三个真实 Git 候选→原接纳/集成→制品 producer/RB1/冷读。新增夹具的 mediaType、固定根布局、Worker transcript-meta 曾先后失败；均修正夹具且保留原门禁，不归咎模型。最终 `aa4a82d` 由同 reviewer 复核，主 Agent 独立固定路径复跑完整 Session 测试 15.80 秒通过。这里的 Worker 输入/启动/收集是明确的确定性模拟，不证明真实 Agent、HTTP 自治或 B1 完成。
+
+可执行的作者自测应在审查前运行完整 producer 链；共享固定测试路径明确唯一写入者并交接，最终由非作者独立复跑。CI(N)、开发(N+1)、设计(N+2) 交错，而非每修一个夹具字段重新等待整轮 CI；B2 预设计不占用 B1 当前共享写入文件。具体候选、同步状态和缺口维护在 Roadmap 当前表，历史失败不清零。
+
+## 2026-09-08：Task HTTP 候选接入与入口遗漏复盘
+
+后续验证：实现 `70ec148` 已经原 reviewer 复核关闭两项 P1；香港 ECS 三包完整测试通过，Mac 的真实 activation 入口和 held Session/HTTP 冷重放通过。独立客户端 `f333dfd` 的 17 项解释型测试经主 Agent 复跑后合入本地候选 `736fcc9`，非 main 合并。详细命令、候选和缺口见入口文档。Mac 共享 lane 测试在测试输出前被 AMFI 以签名问题终止，未记通过、未绕过；该平台回归待合法放行或独立 Darwin CI。无模型调用、自动 Decision 或下载完成声明。
+
+验证流程另有两次可避免的执行错误：主 Agent 初次独立编译测试未注入 Makefile 要求的 sourceHead，随后直接从仓库根启动导致包相对 fixture 路径不成立。按既有构建参数和包工作目录纠正后同测试通过，没有修改产品或测试门禁。后续固定路径测试入口应同时保留精确 linker metadata、包工作目录、测试选择与二进制摘要，不能只固定输出路径。
+
+候选把公开 Task 的创建、精确确认和按 ID 查询接到原 RepositorySession 与同一 RB1；原 accepted plan 仍是预算和三个创建义务唯一提交点，loopback adapter 复用 resident 应用和写入队列。范围与可重复请求方式见 [Task HTTP 候选入口](task-http-preview.md)。自动 Decision、Task cancel 与完整下载尚未实现，B1 不关闭，无模型重试或发布声明。
+
+唯一 reviewer 聚合发现两项 P1：新增 parser/HTTP 测试没有覆盖更外层真实 RunContext 的启动参数 gate；正数陈旧 revision 被过早归为无效输入，导致 Darwin 调用链测试期望冲突时必失败。修正把封闭参数解析复用到真实入口与启动 consumer，增加原 activation 准入和共享 writer lane 回归；revision 正值与当前草稿不符统一为冲突。该经验是验证完整入口，不是增加审批轮次或另建协议。
+
+修正曾被自动工具以 ADR 授权不足拒绝，未换工具绕过。用户随后明确授权“按 ADR0085 放行 Task HTTP 的封闭 CLI 参数、复用现有写入通道，并修正 revision 冲突返回码及相应测试”，才以原工具实施。不改 ADR 历史状态。ECS 旧基线和新源码快照的非模型完整/定向 race 结果与实际边界记录在入口文档；精确最终提交与 Darwin 实机证据仍需后续验证，分层 fixture 不冒充完整业务链。
+
+## 2026-09-08：ADR0085 接受，恢复 Task HTTP 主线实施
+
+用户明确确认“ADR0085 ok，请实施”。据此将 ADR0085 标记 Accepted，解除 Task draft/stop/delivery、HTTP、自动独立 Decision 和完整交付的合同等待；实现复用已验证 resident 候选，不重建平行状态机。B1 仍 IN_PROGRESS，合同接受不是实机或发布证据。
+
+用户同时明确原 ECS 为内网机器，不应接入 GitHub CI；现有 GitHub canary 在 GitHub-hosted runner 上生成 Pi 配置，不是在该 ECS 上执行。后续公网 ECS 的地址及授权尚待提供；不把内网机器注册为 GitHub runner，不把取得公网机器作为 API 编码前置，也不在聊天或日志中索取密钥。
+
+## 2026-09-08：CI 模型配置不等于本机已配置模型元数据
+
+停止盲目重跑后的只读核对发现，`scripts/rc1-canary-provider-config.py` 为每个模型统一写入 `contextWindow=128000`、`maxTokens=16384`，不提供 reasoning/compat；这不是读取用户本机 Pi 配置。本机 Pi 0.84.4 中 `qwen3.8-max` 的两个已配置 Provider 均声明 contextWindow 1000000、maxTokens 131072、reasoning true，其中一个还声明 Qwen thinking 格式及禁用 developer role/store。配置声明不等于服务端能力验证，不能盲目复制到未知 endpoint。
+
+在同版本 Pi `streamSimple` 的 `onPayload` 上执行了零网络构造实验：只使用虚构 endpoint 与测试密钥，在请求发送前终止，并断言 fetch 调用数为 0。旧 CI 元数据实际构造 `max_completion_tokens=16384`，缺少 `enable_thinking`/`reasoning_effort`；本机元数据加显式 low 构造 `max_completion_tokens=131072`、`enable_thinking=true`、`reasoning_effort=low`。后者只是对照夹具，并不证明实机 Worker 当前选择 low。该实验确认配置差异会影响实际请求，不证明历次 length 的唯一根因，也不授权扩预算或改终态接纳。
+
+下一步须先确认 CI secret endpoint 对应的已验证 Provider，再使用显式匹配的非敏感配置；无需索取或输出密钥。在确认前不更改远端 Provider 配置、不启动新的付费团队。候选 `775de21` 的 Darwin 定向 `34158437379` 已成功；现有团队交付、Task HTTP 和正式部署出口仍未完成。
+
+后继实现增加可选 GitHub variable `PI_MODEL_PROFILE_JSON`，仅接受选定 model 的 `id/contextWindow/maxTokens/reasoning` 与受支持的 `compat/thinkingLevelMap`。限额必须为正整数、输出上限不大于 context，拒绝未知字段、重复键、错 model、超大/深层 JSON；显式配置错误在创建模型配置文件前失败，不能静默退回旧值。未设置时旧调用者行为保持，日志明确 `legacy-default`；显式时仅输出规范化配置摘要，绝不输出凭据或 endpoint。该输入不设置实际 reasoning level、不调整 Task 总预算、不证明服务端能力。当前未设置远端变量；须管理员确认 endpoint/profile 后才启用，未知配置不得作为新的实机重试理由。
+
+首稿 `6d9306f` 的 CI `34159224060` 在三个 Linux 作业的 release contract 前置检查失败：新增独立 CI step 不符合既有锁定步骤结构，尚未执行新增测试。该错误属于本轮调用链检查遗漏，不能归咎 Provider。聚合修正撤回新增 CI step，把离线配置测试放入既有 `fixed-server-t1-canary_test.sh` 入口，保留原发布合同与完整断言；以后修改 CI 接线必须在本地先执行现有解释型 release contract gate。动态质量检查与真实业务出口继续分别计量。
+
+## 2026-09-08：停止收口实机通过，团队失败观测仍有盲点
+
+精确候选 `dd8e8eccdd1f2118db92e928996321272aff1fc7` 完整 CI `34156121695` 五项通过，Darwin 定向 `34155305960` 的 36 项必跑检查通过。其唯一实机 `34157213736` 仍失败，诊断 artifact `10031514061` 保留原始证据；固定二进制 SHA-256 为 `3bd2b444e62b009449b47887660f4db666161cc4d877756bb3307d2235d5378d`。没有 ReviewPacket、独立 Decision、集成或下载成功，B1 不升级。
+
+独立核对账本：service 已有 `result-admitted`，事件到 sequence 4 `VERIFYING`；client 因 `pi-result-provider-terminal-length` 触发 sequence 54 `team-plan-halted(stage=collect)`。client 的 Collect 52/53 唯一成功，Terminate 56/57、Close 62/63、supervisor closed 64、cleanup completed/released 65/66 全部闭合，没有第二次 Collect 或结果接纳。此次实机证明上一停止收口修复生效；`VERIFYING` 不证明 Verify 已启动，团队 halt 后禁止新 Verify 是既有合同，不应自动解除。
+
+诊断中 59 个已保存调用全部成功（一次批准、58 次 Inspect），54 次 service 进度查询最后仍成功。最终超时调用在保存前抛错，缺少预算与耗时证据，不能据此外推 HTTP/锁故障。驱动串行先等 service，也看不到 client 已 `BLOCKED`。本轮仅改诊断消费者：等待期间查询同一批准团队的另一节点，精确绑定终态失败即结束等待；保存超时操作、预算、耗时和输出摘要，不输出原文、不增加 Collect/Verify/恢复权限。Provider length 已复发，仍缺少实际输出预算原因，禁止原样付费重试或盲目增额。该改进不等于业务交付修复或生产完成。
+
+## 2026-09-08：结果拒绝后的停止收口仍阻断团队交付
+
+候选 `88883d9c04406fb65fe5b695f80a88bb83fbbfb0` 完整 CI `34152276913` 五项通过，Darwin 定向 `34152276380` 的 33 项必跑检查通过；精确门禁后仅派发一次实机 `34153526402`，结果 failure。诊断 artifact `10030318154` 保留原始证据，没有 Decision、集成或下载成功。本轮未到 ReviewPacket，不能据此宣称上一轮身份传递修复已实机验证。
+
+原日志首个业务拒绝为 `pi-result-provider-terminal-length`，ledger sequence 38 记录 service transcript 已收集，sequence 39 记录 `team-plan-halted(stage=collect)`；并非团队尚未派发。期限终结后 service 已有 `process-terminal` 和 `allocation-terminated`，但后续 collect 在 sequence 48/50/66–88 反复 `process-supervisor-identity-conflict`，缺少其 supervisor closed/cleanup released，最新对外 projection 仍 sequence 3 RUNNING。client 则完成停止清理并投影 `BLOCKED/attempt-deadline-exceeded`。客户端最终 `fixed-cli-response-timeout` 是外层表现，不能替代上述具体失败链，也不能将 service 的旧 RUNNING 投影当成进程仍活跃。
+
+根因已定位：通用 Collect 查找只看最新 checkpoint，后来的 Terminate 遮住旧成功 Collect，而物理 mechanics 明确只允许收集一次。候选仅修停止收口接缝：已有有效耐久 Collect 即继续原 Close；不重发 Collect、不通过历史 anchor 重读，不修改通用结果接纳。Close 仍使用当前 owner/head 校验真实 journal 与 transcript 对象。新增完整耐久链回归覆盖 Collect→Stop→Close、丢回复、独立 absence 与冷重开 CleanupReleased，要求停止后零 Collect、无业务结果接纳；保留原未收集停止与正常 Inspect 路径。本地 vet/staticcheck/diff 检查通过，远端 Darwin 动态结果尚待验证。
+
+Provider length 的具体输出/预算原因仍需证据，不能猜测为用户未配置、直接增预算或修改正常终态准入。保留两次 Attempt 和失败分母，不原样付费重跑，不放宽 `native-terminal/v1` 的正向终态要求。B1/B2/B3 状态不升级。
+
+修复候选 `a003ca7` 的快速检查 `34154916006` 首次失败于测试编排：三组耐久链共用 120 秒总限时；原 Terminate 链及 SameOwner 两分支通过（后者 65.96 秒），新 Collect→Stop 链运行约 17 秒时总限时耗尽，堆栈仍在耐久重放/摘要计算，没有业务断言失败。纠正为三个精确顶层用例各自 120 秒，保留 race、全部断言及必跑成功集合，并让新失败链先运行；不增加 Worker 预算、不以超时当测试通过。原完整 CI `34154917505` 保留运行，不为诊断编排修正取消。
+
+## 2026-09-08：原生结果实机进入独立 Verify，团队仍未交付
+
+`a5418f4acbb1fe3b581a4c6d079510048d82dcee` 的完整 CI `34149966062` 五项全绿，Darwin 定向 `34149938176` 的 30 项必跑检查通过。精确候选 gate 通过后只派发一次真实双 Pi 团队 `34151269983`，其失败证据保存在 diagnostic artifact `10029503062`。service Run `team-run-0189f9bd1f824517f7eb8d01a8b1d5fd5a38150a7b515f9ea39197e055743772` 的事件已到 sequence 4 `worker.completed` 和 sequence 5 `verification.completed`，报告为 pass，包含 `command:quote-team-service`。这首次为本候选原生结果→独立 Verify 接缝提供正向实机证据，但不表示整个团队成功。
+
+随后 `call-21.json` 的 `review-packet` 请求退出 1、stdout 为空；server 仅记录 `stage=server-dispatch reasonCode=transport-failure`，尚不足以确定底层原因。没有独立 Decision、集成或下载消费；另一路的原始 state 快照不能替代 journal/current projection 判断实际状态。保留整次失败和既有预算，不原样重跑，也不把完整 CI 绿或单节点验证通过关闭 B1。下一步沿实际 ReviewPacket 接线定位，同时在独立 worktree 补 Task HTTP 用户出口。
+
+独立接线审计进一步发现确定性 P1：服务 HTTP 请求从 `context.Background()` 建根，丢失入口已 gate 的 local identity；后台 Verify 继承入口 context，故可生成带 local binding 的报告，而 HTTP ReviewPacket 的 `prepareLocalReviewBinding` 必拒绝缺失身份。归档与此阻断吻合，但缺少原始内部错误及 manifest，不能排除更早输入失败，不能称为此次唯一首错。修正仅改为保留值的 `context.WithoutCancel(ctx)` 再建立独立 request cancellation，不跳过身份检查，也不使服务停止立即取消排空中的请求。补身份保留、无身份不伪造、父 deadline/取消隔离及显式排空取消回归，纳入 Darwin 快速必跑清单；本地 vet 通过不替代远端动态回归，更不等于 ReviewPacket 或 B1 已实机通过。
+
+## 2026-09-08：Schema 消费链漏检与前移修正
+
+候选 `2885dcc` 的全量 CI `34148751006` 在 Ubuntu 的 execution 包发现两项失败：新增 `/worker/resultContract` 未加入既有 prompt projection 分类目录，同时使合成未知字段反例出现额外未分类项。这是实现遗漏及定向检查选取不完整，不是模型失败；计入额外修正，不以先前 22 项 Darwin 定向通过掩盖。未启动新的付费团队 canary。
+
+修正把该字段显式列为 Core/Adapter 使用的 hidden 字段，补独立 non-leak oracle 与渲染哨兵；不改变旧 prompt 可见字段或放宽 Schema 覆盖门禁。快速 Darwin 工作流增加 8 项既有 projection/泄漏检查并要求真实 pass。后继先运行 ECS 完整 execution race，再进入精确候选全量 CI；新增持久化字段的前置检查须覆盖既有消费者，不能仅选择新测试名称。本节记录修正范围，动态验证与 B1 实机出口仍须分别取得证据。
+
+## 2026-09-08：从模型控制 JSON 改为显式原生结果候选
+
+针对 `34145704791` 的真实 Collect 拒绝，本轮不再仅改提示词/诊断后重复付费 canary。按 ADR 0085 的 Adapter 责任边界，新增冻结的 `worker.resultContract=native-terminal/v1`：同一 TaskSpec 字段贯穿 Pi launch、真实 Supervisor terminal/exit/signal/truncation、严格 transcript、结果构造与原独立 Verify。模型只负责业务文件及真实报告，不能提供身份/时间/控制证据；报告中的受阻、失败和未完成内容原样保留。旧 JSON 默认语义不变，未知协议和不支持新协议的 legacy executor 在启动前拒绝，不能自动 fallback。
+
+本次候选同时更新订单团队输入，保留原共享业务契约、独立 oracle、一次尝试/零 rework 和成果要求；没有降格验收或扩大工具权限。新增协议兼容、伪造字段、真实退出失败、缺失终态、截断、Provider 失败、报告超限和组合根传递反例。动态 Go 验证交给远端，不在受管 Mac 上执行临时编译程序。此处记录实现范围，不声称 B1、生产启用、远端合并或正式发布完成；须待独立审查、精确候选 CI 与真实交付通过。
+
+首稿 `f9923eb` 的 ECS Pi/contract race、legacy 拒绝和 CLI 接线测试，以及 Darwin `34148180525` 的 21 项必跑用例通过；独立审查仍发现 1 项 P1：原 native 路径只排除已识别失败，缺失/null/空/未知 `stopReason` 仍会被当成正常结束。实机重跑前聚合修正为只接受实际末条 assistant 的明确 `stop`，补完整反例和旧协议兼容；停止首稿尚未完成的 CI，未启动付费 Worker。此项计入真实代码 rework，不把先前测试绿当无缺陷证明。
+
+## 2026-09-08：公平调度候选的实机结果与 Pi 结果拒绝
+
+`495ab02fcae086984407fb92f96fbc65c390ef2f` 完整 CI `34144298657` 全绿，Darwin 定向 `34144087380` 的 11 项检查通过；真实团队 `34145704791` 仍失败。诊断 artifact `10027742173` 中首个业务错误为 `pi-result-final-object-invalid`，当前账本记录 service 的 `team-plan-halted(stage=collect)`、两条 `process-terminal`，另一路 Outcome 为 `BLOCKED/attempt-deadline-exceeded`；driver 最终报 `fixed-cli-response-timeout`。本轮已有 Collect 进入并拒绝结果的证据，与上一轮仅 RUNNING 不同；未提交 Decision、未集成、未重试，不计 B1 通过。
+
+旧分类把终态文本中 JSON 语法错误、canonical 拒绝，以及错误位于已识别结果前/后混为同一标签；上传包又未包含终态内容。下一候选只在原拒绝点输出封闭分类（syntax/canonical、before/after-result），不输出文本、字段名、路径或偏移，不重解码、不更改结果接纳集合。before 包含尚未识别成功的结果声明本身；canonical 也不等同于已证明重复字段。新增确定性拒绝及伪造标签反例，并纳入远端 Darwin 快速反馈。它是诊断补齐，不宣称已修好 Pi 实际输出；获得真实分类前禁止原样付费重试或盲目延长超时。后续仍须完成 Task HTTP、组合验收、下载消费与正式部署出口。
+
+## 2026-09-08：真实团队超时与后台调度公平性
+
+精确候选 `cd19a6d20dcce4ef9eb51ea3cf455f6fd89c76de` 的完整 CI `34140891818` 五项全绿，Darwin 定向 `34140755250` 通过；但真实双 Pi canary `34142425497` 在 360 秒观察期限内未到评审，原因 `team-resident-progress-deadline`，未提交 Decision、未自动重试。两条 `process-started` 已入账，49 次 service 查询仍为同一 RUNNING head。原始 `state.json` 的 READY 不能覆盖 fixed Inspect 的 journal 投影。上传包没有 Worker 终态输出；空 stderr、没有 Collect successor 也不能证明 Collect 从未进入，因为正向 still-running 本来不追加结果事实。因此本次唯一根因尚未确定，不归咎模型速度、不直接扩大时间预算。
+
+独立源码诊断确认四个同周期后台 ticker 缺乏调度公平性：deadline/dispatch 持 writer 与 adapter 锁进行较重扫描，其他入口 TryLock 失败静默跳过；耗时大于周期时积压 tick 可使某循环持续获胜。候选修正为四类短入口轮转，Verify 经原 Run lane 与当前团队准入的显式握手后独立有界执行，保持单个验证槽、原精确重查和 halt/circuit。增加积压 tick、准入前不得让行、长验证期间兄弟继续、重复调度不重复验证与未准入取消测试。此处仅修正已证实的饥饿风险，不宣称真实 canary 已恢复或 B1 完成；后续须同候选动态验证及真实完整团队交付。
+
+效率教训：纯 selector cursor 测试不能证明多个生产循环公平；应测试实际 callback 的有限服务机会。运行证据必须能区分无候选、锁忙、正向存活和结果接纳，不能持续以空日志猜测。正式 Task HTTP、集成下载消费等 B1 出口仍开放。
+
+## 2026-09-07：Darwin 动态验证失败与前移反馈
+
+`3f91d425` 的 CI `34138530708`：Linux 两种架构 conformance、Ubuntu quality 与 secret scan 通过，Darwin quality 失败，不得进入团队实机或标记通过。新增 cold verification/busy sibling 测试未先调用团队批准就物化，触发预期的 authority-conflict；修测试前提，不放宽产品批准。另一失败是 resultingress 全包 race 达到 Go 默认 10 分钟上限，当时栈中单测仅运行 4 秒；ECS 对 `eb480a83` 同名单测独跑 7.014 秒通过，只能排除该 Linux 定向运行的持续卡死，不能替代 Darwin 结论。
+
+发现后取消包含相同测试代码、由本任务启动的 `34140017814`，保留日志，不继续原样全仓重试。补候选分支 push 触发的 Darwin 8 项关键路径诊断（检查实际 pass、拒绝零匹配和任意 test/package fail），先反馈当前调用链；新 workflow 不以尚不存在的默认分支 manual 入口为前提。全仓仍保留全部 race，将包级预算显式设为 20 分钟，原 CI job 30 分钟上限保留。该时间是整个测试包的累计预算，不改变产品期限或准入；若仍超限继续分析，不无限延长或删测试。诊断 workflow 不授予 canary、merge、release 权限。独立审查指出 `go test | tee` 的退出码遮蔽风险，已显式启用 pipefail 并拒绝 JSON 中任意 fail，避免只检查选定成功名而漏掉额外失败。
+
+## 2026-09-07：自动团队推进候选与远端验证边界
+
+后续 canary 修正客户端验真方式：`order-quote-team` 显式启动 `--auto-team-progress`，客户端只观察原 Attempt 的单调状态、获取 ReviewPacket 和传递独立 Decision；禁止客户端 Start/Collect/Verify，诊断记录三者调用为零。原主动驱动的其他场景不变。归档报告 status 仅标记诊断来源，不代替 Core canonical digest/current-ledger 重查或独立审查，也不证明进程重叠。19 项团队客户端、44 项原客户端与 canary 脚本检查通过；这是测试准备，不是实机团队成功。完整 HTTP Task、独立集成及下载消费仍开放。
+
+该客户端独立首审发现 1 项 P1：只读 Inspect 等待 verifier 的 Run lease，却被新增 30 秒子进程上限提前终止。取消这一额外截断，保留 CLI/服务端原操作期限与场景总预算；补 40 秒模拟锁等待、90 秒剩余预算及不重试测试。学习点是读操作同样可能等待执行锁，客户端超时不能脱离服务端锁/phase 契约。
+
+`feat/team-resident-progress` 基于 `00d3749` 复用现有 Collect/Verify/Run lane/current-ledger 路径，避免要求客户端逐节点推动。语义 Decision、任务级 HTTP 与下载消费仍待完成，不将 REVIEW_PENDING 计作团队交付。
+
+独立 reviewer 首审发现三项 P1：新 flag 在更早的 CLI gate 被拒、Verify 硬崩溃后无开始事实而会自动重跑、旧 dispatch circuit 不覆盖新自动推进。集中修正真实 CLI 准入测试、冷启动既存 VERIFYING 团队持久 halt/忙 lease 拒启动、共享 atomic circuit；同一 reviewer 限定复核未见新增 P0/P1。冷启动屏障有意保守，可能同时暂停未真正开始验证的旧 Run，不冒充自动恢复。新增当前账本/冷重开/共享锁测试；新候选仅本地编译与静态检查通过，动态验证转 macOS CI，不挪用旧结果。
+
+效率教训：内部函数通过不代表完整入口可达；幂等结果不等于命令不会重复执行；增加循环必须共享故障控制。这三类检查应一起纳入后续纵切，不再等 reviewer 逐项发现。继续不用 Marshal skill。
+
+用户授权 ECS 已通过 SSH 安装校验过的 Go 工具链并实际执行旧候选基线测试，未用 root/关闭安全防护/开放公网端口。Linux 测试不能证明 Darwin 代码正确，缺测试明确记录；旧 renderer 固定 `/usr/bin/python3` 与该机器系统 Python 不兼容，两次失败保留，停止原样重试。具体配置和证据范围见[远端验证](remote-linux-validation.md)。新 Goal 保持业务出口，不因 runner 配置完成而宣称生产可用。
+
+## 2026-09-07：Task-first，团队交付先于管理平台
+
+按用户要求重新检查首个业务出口，发现上一稿把 Workspace/安装身份/显式初始化/全面 SQLite/三 Provider 放在团队之前。源码有现成 RepositorySession/Store、双节点物化与受控执行接缝，换库不能自动解除 Git 耦合；先补团队闭环更短。本轮删除 Workspace 产品实体，B1 先一个 Provider 两实例真实交付，B2 再简启动/SQLite/零 Git/问答/更多 Provider，B3 保留正式故障和发布门禁。不是把旧失败重新计成完成。
+
+两路对实际三稿只读审查合计 1 项 P1、2 项必要 P2：publication:none 下作者可达发布凭据的歧义、预上传输入尚无 Task 的绑定、恢复失败却承诺在线 HTTP 查询。已一次聚合修订，限定复核见[本轮记录](audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)。仍保留独立验收、受管目录单写、已知结构性失败不原样重试、最小本地保护和持久事实；账号平台后置不等于无保护 HTTP。
+
+ADR 0085 仍 Proposed。本轮只改方案文档，未运行 Agent、修改 .marshal 或发布产品。AGENTS.md 同步被自动审批拒绝，保持原文件并记录待授权事项，不绕过保护。原审计和失败证据全部保留。
+
+## 2026-09-07：旧合同实施形状被误当长期架构
+
+范围：`feat/agent-team-service-blueprint@abc3899` 后续文档审计；两路只读检查分别覆盖 ADR 适用性和当前入口一致性。发现上一轮虽新增服务方案，但旧正文仍用“当前/唯一/禁止/冻结”要求 file-backed、固定 Pi、exact AST、旧切片顺序，并把全部 UI/问答放旧阶段；0085 的 Proposed 与部分入口“冻结”又不一致。根因是只追加新方向、不撤出旧规范入口。
+
+修订：当前[架构](architecture.md)、[Runtime](runtime-architecture.md)、[实施计划](implementation-plan.md)重写为服务目标，原长文同目录归档；[合同适用性](design-contract-map.md)区分目标/接纳/启用/成熟度；19 份 ADR 和四份 Adapter 文档标注旧 profile 范围，0085 扩展精确替代表。README、必读顺序、v1 范围、节点等待、ADR 索引同步修改。0085 保持 Proposed，不擅自追认候选、扩大旧 activation 或修改运行时。
+
+保留独立验证、单写绑定、Worker/Publisher 分权、current owner/lease/CAS、先 intent 后副作用、未知归属不 kill/release、历史字节/失败与正式发布门禁；移除新设计对旧物理布局、函数/文件/AST 和历史排期的依赖。测试要迁移等价行为，不以删测试换通过。文档修订与补充复核见[本轮审计记录](audit-agent-team-service-design-2026-09-07.md#后续专项复核历史合同与当前设计)。这不是新服务已生产可用的结论。
+
+## 既有审计记录
+
+2026-09-07 服务产品方案审计已形成独立[多轮复核记录](audit-agent-team-service-design-2026-09-07.md)：从用户意图、现有实现与反方向事件序列检查，第二轮发现六项 P1（交付消费验收、人工验收出口、跨账本提交取代、旧安装身份续行、Publisher 凭据分权、unknown 用量结算），一次聚合修订到 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)、[服务架构](agent-team-service-architecture.md)及[实施 Milestone](agent-team-service-milestones.md)，第三轮状态见该记录。方案坚持一个服务/单权威存储、有限 Agent Team 与单 Worker 回退；设计闭合不等于实机成功，B1/B2 仍 IN_PROGRESS，B3 仍 PLANNED。本文下方错误、rework 和历史证据继续保留。
+
+2026-09-07 一次替代验证 34098369837 仍未完成团队：相同 798ea39，Pi/qwen3.8-flash；service 已 Collect/Verify pass、33 项验收、ReviewPacket，client 却在 `pi-result-provider-terminal` 退出。服务端 109 行 patch 和原 WorkerResult 已保留；报告 outputTokens=25456，并明确称没有 shell、通过静态逐项模拟 oracle 解释结果。不能把 Verify pass 写成独立 Decision/ACCEPTED；不在已结束 runner 上补签。停止模型轮换，后继一次聚合：保留原 transcript 状态机与 providerFailed 判定，仅在闭合时保留已观察的 length/error/aborted 闭集分类；失败仍拒绝，即使携带合法 WorkerResult。任务提示前移当前 no-shell 工具限制，聚焦批准文件、禁止无关全仓探索和模拟整套验收，建议简短 summary；原独立 oracle、预算、scope 与全部门禁不变。终态码只是观察，不证明上游 HTTP 根因，也不自动授权重试；旧失败分母保留。
+
+2026-09-07 PoC 后继 34097645547：798ea39 的 CI 34095940005 五项全绿（Linux 质量 10m32s，macOS 19m28s），同宿主实机仍在独立评审前失败，闭集诊断为 `pi-result-provider-terminal`。RB1 记录两个真实 resume，service Collect 为 2283223 stdout bytes；不是“未配置”“零执行”，也不能据此认定模型仅仅超时。原始终态未归档且诊断合并了 length/error/aborted，形成可观测性缺口；不对未知具体原因造结论。为 PoC 采取一次显式模型替代：34098369837 保持相同代码/任务验收，将已配置的 qwen3.8-max 换为 qwen3.8-flash；所有失败 Attempt 保留，不能合并成同模型证据或称为零 rework。若替代仍失败，停止模型轮换并补齐终态诊断，不循环尝试 Provider 矩阵。
+
+2026-09-07 三节点 PoC 34094155668 未完成：精确候选 cef2723 的 CI 34092330921 五项成功后单次派发；两个 Run journal 均已有 start-outcome，不能按落后的 READY/AttemptsUsed=0 快照计为零执行。Collect 最终返回非 JSON，server 的闭集诊断为 `pi-result-final-content-shape`；未到独立评审、第三节点或 GoalOutcome。原始终态文本不在归档中，具体模型输出未知。源码可复现的缺陷是“多个完整对象”错误未分类，落入 content-shape；ADR 0075 的计数还把业务示例当作第二份结果。按候选 ADR 0084 一次修正 typed framing、重复字段/损坏容器拒绝和精确诊断，并补完整 parser/生产解析反例；没有为旧 Run 补签或自动重试。候选修复未获实机证明，不关闭 B2，不宣称生产可用。
+
+2026-09-07 B2 最终结果接线：按 ADR 0083 在原 RB1 新增一次 completed outcome，验证器在同 current-owner/三个 Run lease 回调中复用原 Decision/Outcome producer 校验；最终结果绑定全部原创建、候选/patch、独立评审与集成派生 base。resident 仅补终态 append，不补派或重跑；`team-reconcile` 在原认证与固定客户端 held ledger readback 后返回完成投影。查询不写，absence 不解释为重新执行，旧 NO_CHANGE 不冒充完成。原预算 digest 仍代表 reservation，实际只声明三个 Attempt 的计量覆盖，未宣称 token/compute 已结算或获得效率收益。store/session/HTTP/客户端回归已编写，本地编译与静态检查不等于实机通过；缺少生产 session 的完整三 ACCEPTED 正向实机、故障注入、局部 replan 仍明确开放。
+
+同轮 CI 成本：`55a435e` 的 34089521238 四项成功，macOS 注释明确 `The job has exceeded the maximum execution time of 20m0s`；不记绿，也不归咎 Worker。只把质量作业及其精确 CI 内容契约同步调到 30 分钟，不删除断言/平台/race。补入前置的 fixedcontrolplane 团队 HTTP 回归，避免新查询调用链再次漏到最后才发现；完整 CI 仍需候选精确 head 证据。
+
+2026-09-07 B2 交付契约前检：参考 integration Task 允许 `no_change`，但 deliverables 只有 code；既有 DecisionImporter 要求 validated diagnostic，故“两个上游本来就可正确组合”反而没有模板承诺的成功出口。这是任务设计错误，不是模型需要重试。新 proposal 把最终代码摘要、入口与示例清单作为明确交付物，保持代码可不变、正常非空交付/独立 Decision；oracle 另行实际验证 HTTP 并核对清单，拒绝漂移、伪造通过、额外/重复字段和不合规输入。不修改旧批准、不放松 no_change 门禁、不增加任务数或 Attempt。输入与 oracle 共 25 项本地回归通过，Go Core preview 的真实 renderer 回归继续由 hosted CI 覆盖；不宣称完成团队交付、生产可用或相对效率收益。
+
+2026-09-07 集成 CI 与相邻收口：`047b170` 的 34087532524 已五项全绿；`10a5edf` 的 34088862794 在两平台目标回归中拒绝合法集成创建，根因是 `json.Marshal(TeamIntegrationBase)` 的字段顺序不是 JCS，而防御性克隆直接交给要求 canonical bytes 的 `decodeTeamRecord`。在克隆前规范化，保留严格 reader；这是作者生产接线返工，不是 Worker 失败，不应以所有负例通过掩盖正例失败。没有为该候选启动付费 Worker，修复动态结果仍待新 head CI。
+
+同批继续业务关键路径：原团队驱动在两个正式 ACCEPTED 后观察 resident 的第三节点，经原 Collect/Verify 形成独立归档；ADR 0082 载体在同一宿主和总等待预算中传输第三份 Decision，不重新启动两个实现、不生成 accept、不刷新预算。12 项团队驱动、44 项既有驱动、17 项载体测试本地通过；仅为客户端/传输组件证据。NO_CHANGE 不伪装 ACCEPTED，团队仍缺耐久 GoalOutcome、局部 replan/reuse 与完整实机证明，B2 不升级。
+
+2026-09-07 集成创建链：按 ADR 0083 补齐原 resident 选择、可信 Git builder、lossless Task 派生、RB1 集成创建域、原物化/恢复及首次 plan gate。只读上游值不直接授予授权：FreezeIntegrationTeamRun 要求专用 current accepted verifier，在同 current owner 和两个上游 Run lease 内重查并追加；记录复用原 reservation/Run ID，Policy 不变。前置调度仅把 ACCEPTED 投影作为候选提示，实际 Prepare/Start 仍读原归档证据；未就绪/冲突不换 ID 重跑。store fixture 正例只证明记录与模板绑定、单次追加/冷重放，不冒充实际接纳或生产集成；还需同 server 第三节点完整 Collect/Verify/Decision 与 GoalOutcome。上一候选 `047b170` 的前置回归已实际通过，旧两轮失败原因未移除。
+
+2026-09-07 聚合回归结果与集成候选：`f97400b` 的 34087007472 暴露了第二层接缝错误：接纳读取错误地寻找根目录 `review-decision.json`，但真实 producer 写入 `decisions/decision-NNN.json`；现改为消费同 round 的归档 Decision/packet，不依赖临时传输文件或当前 packet 别名。另一个测试误以为正常 WriteSnapshot 可以伪造 ACCEPTED，而真实存储提前拒绝；现先断言该拒绝，再只在临时测试仓库注入损坏，验证读取拒绝。所有负例首先证明原正例可读，防止“原本就失败”造成负例假通过。两次 CI/作者返工均保留，B2 没有因此前进到完成。
+
+同时实现 ADR 0083 的私有 index 组合：只对冻结 base 应用两个精确 patch，生成绑定输入摘要、固定作者/时间的 tree/commit，不修改用户 HEAD/index/worktree、不调用签名/hook/filter、不产生匿名可执行文件。测试覆盖相同输入重算、不同批准摘要、保留用户暂存变更、冲突/越界/取消和输出上限。当前仍是待接到耐久集成创建的 Git 数据操作，不能单独算业务集成；本地只有编译/静态验证，动态回归交由后继 CI。
+
+2026-09-07 候选 CI 纠偏：`5753ca3` 的 34086700262 在 Linux/macOS 的新 review 正例构造失败，原因是本次测试把部分读取模型 `domain.TaskSpec` 重新序列化，令原本省略的 deliverable `mediaType` 变成 Schema 不允许的空串；不是 Worker 失败，也没有执行到接纳读取断言。修正为保留原完整 JSON、仅替换锁定 base，并在 fixture 构造时立即校验 Schema。该成本计一次作者/测试返工，不能把多个同源测试失败计成多个独立业务失败。前置回归改为串行运行全部目标包、聚合退出失败，避免第一个包失败掩盖后续接缝、下一轮才发现；不增加并行负载、不降低失败门禁。动态修复结果仍待后继 CI。
+
+## 2026-09-07：集成输入从已接纳证据读取，不从工作分支取最新值
+
+按 ADR 0083 增加 `RepositorySession.ReadAcceptedTeamInputs`：只接受原 Goal/集成节点/plan fact 选择器，在当前 owner 下同时持有两个原 Run lease，核对创建绑定、原 Task、最终 review.accept 事件、Decision/packet/report/manifest 与 Core Outcome producer，再核对 candidate detached identity、namespace/base/Attempt 及实际 patch。返回值只是只读快照，不是创建授权；后继冻结和 Start 必须重查。占用或未接纳是等待，不触发 Prepare/Worker；损坏、halt 或 owner 失效不猜测重试。
+
+此候选尚未接入 resident 集成创建，不能算 B2 INTEGRATED。组件回归使用原 PacketBuilder、DecisionImporter、PrepareRecords 和 Outcome producer 构造正例，另检查逐个缺失/漂移输入、合法 JSON 内容漂移、真实 Run lease 占用及伪造快照标签；本地仅编译/静态检查，动态结果待 CI。将 review 包 race 提到团队前置步骤，并同步封闭 CI 内容契约，避免遗漏新的调用链接缝。
+
+效率记录：上一候选的 CI 派发曾误用 SHA 作为 workflow ref，API 422、没有创建作业；改用已核对远端 SHA 的分支后创建 34085122738，该作业已在精确 `0f3a48e34effb2b74d2d399d3da1d39869d2f779` 上五项全绿。e4016f9 的旧 CI 34083970829 被同分支并发规则取消，不能计为全绿；本次已等当前在途完成再派同分支新 CI，避免浪费尾部作业。上述操作成本不归咎 Worker，也不从总交付成本中删除。
+
+## 2026-09-07：补齐团队同宿主独立 Decision 传输断点
+
+首轮 hosted 团队在 REVIEW_PENDING 后退出；离线审查包不能恢复原宿主 current-ledger 权威，故不能补签原 Run ACCEPTED。按 ADR 0082 的封闭扩展，在原 server 内为 service/client 分别传送已有 ReviewDecision，节点精确身份/packet/binary/source 绑定不变；统一等待预算，先到先处理，已证明的 reject 不阻止另一节点 Decision，未知 mutation 仍停止且不重试。验证 fail 仅允许独立 reject/rework，不允许 accept。即使两个实现都 ACCEPTED，也明确没有 integration/Goal Outcome，团队 accepted=false。
+
+本轮没有新付费 Worker、没有手改 `.marshal` 或跨 runner 导入 authority。核对实际 DecisionImporter 调用链时同步纠正旧驱动把 rework 后状态误写为 `RETRY_PENDING` 的错误：使用真实 `REWORK_REQUESTED`，非终态无 Outcome，仍不触发 Attempt。9 项团队驱动、44 项生命周期驱动、13 项载体测试及原脚本检查通过；这是可执行的候选入口，不是团队正式接纳证据。下一步仍须局部 replan/reuse、接纳上游的集成与 server 自主推进；不以又一次全团队运行代替缺失的恢复/复用能力。
+
+## 2026-09-07：真实双节点完成原验收，独立审查仍发现业务缺陷
+
+`7a4f7d0` 的 CI 34081513199 五项通过；实机 34082574786 完成同 server 批准→两个真实 Pi 节点各一次 Attempt→Collect/Verify/REVIEW_PENDING，66 条 RB1 摘要/序号与两个审查包的各八份文件绑定已检查。没有逐节点外部 Start，没有 integration、正式 Decision 或 Goal Outcome，进程重叠尚未独立证明。详见[精确候选业务审查与效率复盘](audit-b2-first-team-2026-09-07.md)。
+
+旧 oracle 均 pass，但客户端真实 HTTP 反例暴露 P1 响应结构未校验及 P2 空 userinfo 接受。已将两类问题同批前移至 oracle（组合 33 项、客户端 10 项；15 个回归测试），并澄清原客户端提示；服务候选复查通过，旧客户端被拒绝。这只是审查诊断，不改写旧报告或签发 ACCEPTED。保留服务成果，不原样重跑团队；既有预算 rework=0，后继必须走正式 Decision/局部 replan 与复用，不能靠换 Goal 清零成本。当前 adapter usage 报告很高，未审计去重/计费口径，也无同条件基线比较；一次 Attempt 不能冒充零返工或效率收益。B2 仍未完成。
+
+## 2026-09-07：团队已启动首节点，暴露晚期文本拒绝与需求静默丢失
+
+`5ca49bc` 的 [CI 34080540487](https://github.com/chiga0/marshal-harness/actions/runs/34080540487) 前置 planning/store/session 回归通过，但 Linux 全仓 quality 暴露新增 CLI 跨链测试的另一处夹具错误：手写了不存在的 environment-binding v1，既有 Policy Schema 要求 `marshal.local-dogfood-environment-binding.v2`。这不是 Worker 失败或生产 Schema 变更；该候选实机不派发。修正为正式 `LocalDogfoodEnvironmentBinding` 类型与版本常量，先对 renderer 的全部 Task/Policy 做逐节点 Schema 诊断，再经过原完整 Core preview/launch builder；不跳过任何检查。将整个 CLI 包的 race 回归加入前置团队步骤，避免新公共入口测试漏出前置范围、等全仓结束才发现。此第二次夹具返工计入来源修复与总耗时，前置回归通过不能再表述为完整跨调用链通过；动态新 head 证据仍待验证。
+
+后继 `283b19b` 的 CI [34080167668](https://github.com/chiga0/marshal-harness/actions/runs/34080167668) 在两平台前置团队回归失败，实机未派发。定位到 store/session 测试夹具把 work.context 写成字符串，而已有 Schema 要求字符串数组；旧 typed Task 忽略该字段曾掩盖错误。修正所有同类夹具为数组，变更/伪造反例也保持合法形状，以继续验证真实内容绑定而不是意外依赖类型错误。生产解码与门禁不回退。此来源返工计入交付成本，新提交仍需独立动态结果。
+
+`b8dbf3c` 的 [CI 34078286247](https://github.com/chiga0/marshal-harness/actions/runs/34078286247) 五项全绿。随后条件派发漏填必需的 expected-head，GitHub 返回 HTTP 422，未创建作业；补齐参数并确认无同版本作业后才派发 [34079333520](https://github.com/chiga0/marshal-harness/actions/runs/34079333520)。这次操作错误计入人工介入与总耗时，不归咎 Worker，也不增加虚构 Run。
+
+实机失败诊断 artifact `10003206471`：26 条 RB1 canonical record 的摘要及全局序号均已核对，包含一个 approved plan、两个创建冻结、两个 reservation/open 和两个 worktree bind receipt。服务节点有 process-started、Resume outcome 及公开 Inspect 的 RUNNING/sequence=3；客户端停在 bind receipt 后、launch-authorized 前，原计划追加 client/start halt。磁盘 state.json 仍为 READY 不能覆盖 journal/公开 Inspect。最后 fixed-cli-response-timeout 与 sealed-run-acquire-lease 错误仍需同路径复核，不能声称查询/失败闭环已通过。
+
+确定性根因：客户端 objective 的 `POST /quote` 命中 ADR 0075 的原绝对 POSIX token 检查，实际 reseal launch 才检查，故浪费了已创建 Run/reservation。同期发现第二处业务正确性缺口：Task Schema 已有 work.context，但 domain.TaskWork 未声明该字段；ParseTaskSpec 静默丢弃 context，Pi builder 也仅转发 objective/constraints。服务节点未收到共享的价格/HTTP 错误契约，不能把它成功启动当作可正确交付。
+
+候选按 ADR 0083 同批处理：typed Task 保留既有 context，builder 传递完整 context/nonGoals 且沿用原路径/NUL/argv 长度检查；参考路由用完整 loopback URL 表达，不放宽路径门禁。服务器在完整 preview 后、批准 append 前，对全部三个节点调用实际纯 builder，以最大合法 Attempt ID 长度预检；实际 Start 仍绑定真实预留身份，不复用占位身份或重写历史证据。跨语言回归覆盖真实 renderer→Core preview→同一 production builder，检查完整契约出现并拒绝任一节点的绝对路径、控制路径与超长上下文；另检查空 objective 不能被 context 补成合法任务。现有 Schema 未扩张。
+
+本次保留两次失败实机、一次派发拒绝及所有来源修复，不能报告“零返工/无失败”。本地脚本/格式/架构、双平台 compile-only、vet/staticcheck 检查不等于动态通过；后继须自己的精确 CI，再做一次团队验证。自动结果处理、独立 Decision、集成/Goal Outcome、局部 replan 与对照收益均未完成；B2 不升级。
+
+## 2026-09-07：首次团队实机在 CLI 准入短路，补生产入口回归
+
+`a481f0e` 的精确 CI [34076598876](https://github.com/chiga0/marshal-harness/actions/runs/34076598876) 五项通过后，首次 `order-quote-team` 实机 [34077560755](https://github.com/chiga0/marshal-harness/actions/runs/34077560755) 失败。诊断 artifact `10002598290` 显示 server ready，但第一次 `team-approve` 返回 exit=3、空 stdout；stderr SHA-256 `bb8d1e32fe9bfd6c9b829425e953f6649875f6b436c9a56893a8dec7176fa5e7` 精确匹配封闭 `self-local-command-denied`。RB1 仅一个 `control-owner-acquired`，未创建 Run/Attempt，无付费 Worker 重试；失败计入整个交付分母，不用零 rework 粉饰入口错误。
+
+根因是新团队 handler/HTTP route 已接线，但顶层 CLI classifier 与 activation 的封闭命令集合未接通。输入生成器到 Go preview、模拟客户端以及单独 handler 测试均未经过这个真实门禁；这是生产入口覆盖缺口，不是模型配置、Pi 或 resident server 失联。沿 ADR 0083 明确的权限边界，同批修复命令分类、activation 生成/解码、Schema 与实际 `RunContext` 回归；测试使用新生成且绑定测试 executable/source 的 activation，不走 unprofiled bypass，并覆盖缺授权及未知团队命令拒绝。旧授权不得原地扩权。
+
+本次纠偏不扩大 B2 范围、不补发原失败实验。新精确 head 必须先通过动态回归，再运行一次团队实机；自动 Collect/独立接纳/集成与 Goal Outcome 仍待完成，B1/B2 保持 IN_PROGRESS，B3 PLANNED，无新增 main merge/stable 或对照收益证明。
+
+本地脚本回归、architecture/format、双平台 compile-only/vet/staticcheck、JSON 语法、diff 与 secret scan 已通过；本机 Python 无 jsonschema，Draft 2020-12 与实际 activation 示例验证由现有 Go Schema 测试在 hosted CI 执行。本地 `-exec /usr/bin/true` 只证明编译，不能替代这些动态检查，也没有运行匿名 Go 测试二进制。
+
+## 2026-09-07：团队批准接入 hosted fixed-server 实机路径
+
+在 `4867ff7` 完整输入/业务 oracle 候选之上，新增 `order-quote-team` 显式场景，复用同一个 exact-head CI gate、固定 binary 与 Pi 0.84.4 配置，不另建 server 或生产业务状态库。该模式跳过单任务 `task plan/approve`，只向认证公开入口发送一次原始 `team-approve`；resident Core 自行物化并 Start 两个 implement，客户端只有有界 Inspect 与既有 Collect/Verify/ReviewPacket。未知响应、终态或超时保留失败，不重新批准、不启动替代 Run、不自动 rework。
+
+两条 RUNNING 投影只作为进入结果收集的前提，明确 `processOverlapProven:false`；真实重叠须后续审计原 events/RB1 的进程起止，不能从状态名推导。两节点均须业务验证通过并保留 ReviewPacket/完整 review inputs；integration 在独立接纳前不得出现，脚本不会伪造 Decision、集成成果或 Goal Outcome。成功只表示 `two-implement-review-pending`，并非 B2 完成、生产启用或收益优于 Lead＋SubAgents。
+
+本地新客户端的 5 项确定性回归覆盖精确批准摘要绑定、仅 Inspect 等待、缺节点超时、失败不重试、未批准集成拒绝，以及一次批准复用两个既有结果驱动的完整客户端构造。既有脚本/业务 oracle 回归通过。该路径尚未真实执行；须当前精确提交 CI 通过后只派一次无故障团队 canary，再基于证据接通独立接纳与集成，不扩大 Provider 或故障矩阵。
+
+## 2026-09-07：既有团队业务样例进入同一候选，补完整输入到 Core 的回归
+
+B1 修复已正常整合并推送为 B2 候选 `2ecf8b1`。随后整合已有参考契约/HTTP oracle 分支 `964cba4`，新增待确认的完整三节点输入生成器，复用 B1 Task/Policy 构造，避免再维护一份不一致的 Provider 配置。生成器不批准、不创建 Run 或启动 Agent；摘要由实际 Go application/planning parser 再校验，新增跨语言回归直接运行真实 Python 生成器再执行 `Frozen/PreviewTeamInputs`，不是两套 fixture 各自自洽。
+
+同批把 oracle 接为有界 verification command 的服务、客户端及组合入口；服务生命周期接口先冻结，客户端必须实际消费 HTTP 响应，integration 才检查两个候选组合。新增真实 loopback component 调用及候选 early-exit/异常/缺文件/symlink 拒绝；不输出异常正文、不把同进程候选导入描述为恶意代码隔离。4 项输入脚本、11 项团队 oracle 和 5 项原业务回归本地通过，Go 编译/vet/staticcheck 通过；Go 动态跨语言解析及整合 head 仍需精确 CI。尚未派真实 B2 团队，后继应直接把该输入接入 hosted fixed-server canary，不扩展第二种业务控制器。
+
+## 2026-09-07：同 server 长验证与另一 Run 自动停止组合通过，B2 同步修复依赖
+
+B2 `00c8351c078fc505fa578d8db590dda9a790fc90` 的 CI 34067600918 已五项通过，包含耐久 halt 与 resident 初始调度动态回归。下面的 B1 合并仍是新的候选 head，父提交成功不代替合并验证；尚无真实 B2 团队交付。
+
+`4ace42c476a3d683f7456ac08312ea4a5cc8c944` 的精确 CI 34066636760 五项通过后，仅派发一次真实 Pi 组合验证 [34067556449](https://github.com/chiga0/marshal-harness/actions/runs/34067556449)，作业成功。小型诊断 artifact `9999466068` 的 62 条 RB1 fact 已重新核对 canonical digest；只有一个 owner acquisition、两个 Run 各一 Attempt、零 operational retry/rework。15 次 Inspect 均 exit=0；停止后的 Collect exit=1 是经认证的 `disposition:stopped/reasonCode:run-stopped`，不是传输失败。
+
+peer 的业务 oracle 与长验证均 pass，总 Verify 104.434435 秒，最终 REVIEW_PENDING；另一个 Run 的原始 Attempt deadline 为 23:43:17.165934Z，停止意图延迟 0.180249 秒、BLOCKED 终态延迟 5.532006 秒，均处于长验证区间。已从原 Task/首条创建事件/process-started fact 复算 60 秒 Attempt 与 600 秒 Run deadline，核对 stop intent、terminal barrier、Run event 与 Outcome 引用，不把客户端 summary 中的 `deadlineWitnessVerified:false` 当证明。该样本无重启、无独立 Decision/ACCEPTED，不替代此前冷恢复证据或完整 B3 矩阵。
+
+本次关闭候选的“长 Verify 不阻断其他 Run 自动停止、终态查询及 stopped Collect”组合子条件；不宣称旧 Pi 缺 content 故障已根治，也不删除此前失败分母。B1 尚需最终审查/主线合入与组合确认，B2 尚无团队交付。为避免下次 B2 实机仍携带已知握手等待缺陷，将 B1 `80084bb` 和 `4ace42c` 正常合入 B2 候选；无业务代码冲突，文档保留两侧历史并以当前表为准。该候选合并不是 main merge，父提交 CI 不冒充合并 head 的精确动态证据；不取消在途 `00c8351` 调度 CI，不为单纯文档或每次查询重复派 CI/Pi。
+
+## 2026-09-07：从批准账本接到 resident 的实际 Start 路径
+
+`aa230da` 的精确 CI 34066292363 已五项成功。本轮将耐久停派与初始调度接入 fixed server：单独 timer、同一 router mutation lane、同一应用写锁，每次选取一个原始 implement，复用原 Materialize、Inspect sequence/head 与实际 StartRun。没有 CLI 子进程协调器、内存批准或另建状态库；同时运行的 Worker 不持全局写锁。
+
+自动派发按仓库 busy 容量 2 与原 Goal 更低上限取最小值。计入执行、重试待定、验证/审核、rework 与发布中；非团队 busy 或多个 busy Goal 时不新增，单个 busy Goal 优先继续其已批准的独立节点。该上限只约束自动派发，不宣称新增了全局人工 Start 配额或自适应内存/CPU 调度。集成依赖尚未接通，不提前执行 integration，不自动 rework。
+
+完整调用链检查在提交前发现：Verify 合法持有 Run lease 时，调度器不能把 `ErrLeaseHeld` 当永久结构性失败。候选明确把它作为本轮容量不可判定→不派发；只读观察被取消也不触发永久停派。读取损坏/未知则停本进程派发；物化、Inspect 或 Start 失败只提交一次原计划 halt，halt 提交未决也停本进程派发。既有 deadline timer 和查询不受该本地开关禁用，shutdown 同时等待两个 timer 退出后再释放 owner。
+
+新增 current-ledger 冷选择/READY 复用/停派、合法 lease、容量/审核队列/非团队占用/更低 Goal 上限/陈旧 READY/不提前集成的回归；纯策略输入明确标为合成投影，不作为实机证据。原 Start 的实现抽为同一持锁函数供公开入口与 controller 共用，未复制执行语义。Darwin/Linux compile-only、vet、Darwin staticcheck、架构和 diff 检查通过；halt/调度组合仍待最新精确 head 动态 CI。B1 精确分支 CI 34066636760 已五项通过，并经 candidate-ci-gate 派发一次带新诊断的真实 Pi 组合验证 34067556449，尚无结果；B2 尚缺自动 Collect/独立接纳/集成/Goal Outcome/暂停与 replan 及真实团队，因此状态不升级。
+
+## 2026-09-07：自动调度前先接通耐久停派，不把心跳变成重试器
+
+前驱 `fc5d479` 的精确 CI 34065300476 已五项成功；批准后无原 HTTP 请求续行的 `aa230da` 正由 34066292363 动态验证。本轮发现当前创建接口虽单次返回错误，但若直接挂入 tick，失败会被下轮再次调用，冷重开也没有停派依据。候选依 ADR 0083 在同 RB1 增加封闭 `team-plan-halted` 记录，绑定原 plan、节点、阶段与 current owner；原原因不可覆盖、exact replay 不追加、不改变原计划/预算。Prepare/Freeze 与原首次 Start gate 检查 halt；被阻止的成员不回退到普通人工批准。
+
+新增真实 DurableStore 冷重开/幂等、未知字段值/节点/旧 plan/拒绝 verifier/取消拒绝，以及重新计算 hash 后的 stage/node/plan/owner 伪造和重复 fact 回归；session 夹具验证冷重开后两种物化入口及首次 Start 都不能绕过停派。停派不是取消或成功：原 READY 创建仍可修复，Attempt 仍为零，预算不退回。上述均不冒充真实 Worker 或最终业务验收。
+
+本轮尚未开启自动调度。后继需把一次有容量的启动、失败停派提交与提交未决时本进程停止派发一起接通；不能仅依据新增记录就宣称无人值守已安全。halt 提交前崩溃、原 Start 丢响应/复用及显式 replan 仍需同链路验证。本地 Darwin/Linux 编译及 vet、Darwin staticcheck 通过，动态测试待后继精确 head；B1/B2 状态不升级。
+
+效率证据：B1 `4ace42c` 的 PR CI 34065812558 已五项通过，但现有 canary gate 仅接纳 workflow_dispatch 的精确分支证据，因此又启动 34066636760，尚未重复 Pi 实机。该双重 CI 会增加总等待；优化应验证 PR 合成提交与 sourceHead 的等价范围、保留分支特有回归后统一 gate，不能直接把任何绿色检查当作放行。本轮仍优先推进业务控制链，不额外拆出 CI 清理切片。
+
+## 2026-09-07：批准提交后无需原 HTTP 请求即可继续创建
+
+完整调用链复盘发现，原节点 Prepare 接缝依赖 `ApproveInitialTeamRequest`，而 RB1 批准保存的是请求摘要而非可重新构造的原 HTTP request ID/deadline。若批准成功后客户端丢失请求、server 在首次冻结之前重启，仅恢复已冻结义务无法让这个节点继续。候选新增从 current owner/RB1 按 Goal/Node/精确 PlanFactDigest 定位的内部物化入口，并与原请求入口共享全部 preflight、Prepare、冻结与创建恢复逻辑；不重建 HTTP 请求、不追加另一批准或预算，不改变已有持久化格式。
+
+冷 session 夹具覆盖批准前拒绝、批准后尚未冻结直接续行、再次冷重开不重复 Prepare、陈旧摘要/未知节点/提前集成/取消拒绝；另外覆盖 preflight、Prepare、materializer 三处失败单次返回，原计划和预算义务不变，已冻结值保留。该入口尚未接到自动调度，不宣称客户端已经可以完成团队交付；后继必须一次处理容量、失败止损、Start 事实与两实现并行，不给每秒 tick 加上无界重试。
+
+前驱创建恢复 `2486b1c` 的 CI 34064463717 已五项通过；`fc5d479` 的 CI 34065300476 当前四项通过，macOS quality 仍运行。本候选本地只编译及静态检查，不计动态通过。B1 修复分支已推送 `4ace42c` 的缺 content 诊断，PR CI 34065812558 在途；旧 Pi 实机失败未被抹去。B1/B2 保持 IN_PROGRESS，尚无完整团队交付或对照收益。
+
+## 2026-09-07：团队批准派生首次子 Run 执行门禁，不复制人工审批状态
+
+后继 `71702fc` 的启动恢复接线已推送。完整 Start 调用链检查发现，原单 Run plan gate 尚不识别 RB1 团队批准；本轮把首次 implement READY 的批准从当前 owner 下的原 approved plan/creation 直接派生，核对精确 sequence/head、原准备时间、Task/Policy/Capability bytes 与摘要后，仍进入原 StartRun、reservation 和 launch CAS。没有伪造 human actor、生成额外 ApprovalRecord 或新增持久化协议。成员查找以已批准计划为准；已批准但尚未冻结的节点不能误判为普通 Run 再走人工 fallback。非团队 Run 保留原 gate，团队错误一律拒绝。
+
+补充 session 冷重开、精确首次 READY、无创建/无冻结、head/sequence/Policy 漂移、取消和提前 integration 的回归；复用明确的 RunStore fixture，不声称真实 Pi 启动或团队交付。前驱 `2486b1c` CI 34064463717 记录时四项通过、macOS quality 在途；本轮编译/静态验证仍不代替后继精确 head 的动态 CI。B2 仍缺调度/Start 事实衔接、真实两实现加集成、独立业务验收与有界暂停/replan；B1 格式/组合验收阻塞未被此变更关闭，不能因候选变多宣称收益已经成立。
+
+## 2026-09-07：恢复顺序由“先要求完整 Run”改为“先履行原创建义务”
+
+创建恢复候选 `2486b1c8a44fafc048abcaded2c2eaa1c718fc7d` 已推送，[CI 34064463717](https://github.com/chiga0/marshal-harness/actions/runs/34064463717) 在途；它包含前驱 macOS canonical path 修正，不能提前宣称动态通过。本次沿完整启动调用链补接：resident 在普通 Run 扫描前，以同一 held RB1 枚举 scope 内原 plan/creation；从耐久批准恢复原创建，不依赖已丢失的原 HTTP 请求，不重新 Probe/批准/追加预算。未冻结节点仍不自动准备，已执行 Run 核对完整 authority 与原输入后交原恢复路径，不重置。
+
+新增 store 冷重放/跨 scope 零泄漏及 session 无原请求、部分 Run、原 READY、缺失配置、占用、损坏、取消、已前进 Run 与输入漂移测试。session 使用明确的无 Pi fixture；实际 fixed server 构造已接线，但完整 server 冷启动、真实双 Worker 与业务集成仍需实机验证。该增量未增加协议、未新开付费 Run，避免为了同一启动缺口再产生后继 Run；也不能用新增测试数冲抵此前失败。B1/B2 仍 IN_PROGRESS，B3 PLANNED，不升级 INTEGRATED 或 production。下方“下一步启动接线”的叙述保留为前驱检查点。
+
+## 2026-09-07：同一 Run 的创建恢复接入 fixed server 构造候选
+
+前驱 `928b8ab` 的 CI 34062410465 最终五项通过。`a614acb126b35a82b213f4c1401b1cf0ba5bfba4` 的 [CI 34063169000](https://github.com/chiga0/marshal-harness/actions/runs/34063169000) 四项通过、macOS 前置 planning 失败：冷恢复正向测试返回 invalid frozen preparation。核对 Prepare/Restore 路径发现，前者冻结 canonical repository，后者却直接比较原路径字符串；macOS /var→/private/var 导致同仓库误拒绝。改用同一规范路径校验并补跨平台 symlink alias 正例，不改 frozen repository 或重选输入。该失败计入工程返工，未派付费 Worker；此前 compile-only 仍不代表动态成功。
+
+本轮新增同一 PreparedPlan 的 ReconcileCreation，与原 Plan 共用两条 creation transition producer。恢复核对原 planning 事件、完整快照及三份冻结文件，只补缺失项；零至两条 journal、缺失/落后 snapshot、文件写入后 owner 失效均沿原 Run 接续，不删除目录、不重新 Probe、不加 Attempt。worktree 恢复持 task flock，复用原 base/branch/clean directory，并处理进程锁已释放但 Git 管理锁遗留、仅原分支已创建的中断；脏内容、foreign lock、分支或 HEAD 漂移保留并拒绝。FIFO 读取改用 nonblock 再检查普通文件，避免恢复挂死在 open。
+
+同批把恢复接到真实 RepositorySession/固定 CLI 构造：先读批准和原创建 fact，owner/RB1 guard 包围短写入，Git/probe 不占 owner 锁；返回 READY 前从会话持有的 RunStore 复核状态与冻结输入。server 在冻结 StateRoot 前准备容器，避免首次物化自己改变 parent identity。新增真实 Git/RunStore 边界测试、held session 冷 owner 重用与伪造结果拒绝；session 的 materializer 为明确 fixture，不冒充实际 Pi/完整 HTTP 证据。
+
+候选本地 compile-only、静态与架构检查不等于动态恢复通过，须精确新 head CI。调用链复核还发现 resident startup 先逐个要求完整 Run-start authority，不能直接跨过部分 planning Run；下一步须从 RB1 枚举原创建义务，先恢复再扫描，而不是跳过错误或要求新批准。当前测试的冷 owner 重开只覆盖 RepositorySession，不代表完整 server 冷启动已通。仍缺该启动接线、Core Goal→Run plan approval、生产调度入口、真实并行与集成验收及 B3 故障/发布门禁；不合并或升级 B2 INTEGRATED，不以这批代码关闭 B1 的格式/组合验收阻塞。
+
+## 2026-09-07：沿原 planning 调用链恢复冻结输入，不重新探测 Provider
+
+创建冻结候选 `928b8ab3e72e5867009e6ef0071d50ee0d751034` 的 [CI 34062410465](https://github.com/chiga0/marshal-harness/actions/runs/34062410465) 已通过 Linux quality、双架构 Linux conformance 与 secret scan；记录时 macOS quality 仍在运行，尚不能声称五项全绿。它已越过前驱 immutable-SHA fixture 的早期失败；旧失败继续计入工程返工分母。
+
+本次沿同一 Prepare 实现新增冻结输入重建：保留原始完整 JSON、选定能力与准备时间，重新检查当前环境/仓库/remote/准入，production selector 仍执行当前 registry eligibility/admission，但不重新 Probe 或 fallback。序列化后冷重建到原 Create 的回归同时核对 READY、两个原时间事件、三份冻结文件和原 base；另覆盖输入/时间/能力/remote/adapter 漂移、取消和无配置零 Run，已有 Run 仍拒绝覆盖。测试使用显式 fixture，不冒充真实 Pi 或 RB1 批准。
+
+接线审计发现原模板允许只声明 remote 名字：重启时该名字可能已指向另一 URL。现要求受限团队在 preview 前提供非空 expectedRemoteUrl，恢复复用原 ResolveRemote 核对；不增加持久化字段或放宽单 Run 的既有合同。此问题在 Worker 启动前确定性处理，不启动付费重试。
+
+当前未完成项仍是：当前 owner/RB1 到实际物化入口的写入复查、已有 CREATED/PLANNED/READY 的幂等补齐、Core plan approval、真实并行与业务集成。这个函数本身不认证 receipt、不自动创建或启动 Run。B2 仍是隔离候选而非 INTEGRATED；本次本地编译/静态验证不替代新 head 的动态 CI。B1 原有实机结果格式失败和 B3 门禁不被这项进展关闭。
+
+## 2026-09-07：实现节点冻结义务接到同账本与固定 server 准备器
+
+`99ca8ca53742f001edef8fbfe7b6c9aebfb1473b` 的 [CI 34060885444](https://github.com/chiga0/marshal-harness/actions/runs/34060885444) 五项成功。后继 `091f2ae66b0b439489345e1dbe8bf87c1d99f068` 的 [CI 34061770534](https://github.com/chiga0/marshal-harness/actions/runs/34061770534) 失败：新 fixture 错把 HEAD 当成合法 base，原 ResolveBase 在 probe 前正确拒绝；两平台都在前置 planning/race 结束，未进入完整质量检查，也没有派 Pi。修正为真实不可变 SHA，保留仓库 HEAD 前移时使用原 SHA 的测试，另补 mutable ref 必须零 probe 拒绝。该错误计入工程返工；不能把 compile-only 当成行为验证，也不能只读调用点而遗漏既有 ResolveBase 合同。修正与同链路冻结实现一次验证，不为修 fixture 原样启动付费 Worker。
+
+后继实现将实际 PreparedInputs 以单条创建冻结 fact 接入同一 RB1；重放重新核对已批准模板、确定性身份、base 和 Pi 选择，集成/有依赖节点拒绝提前冻结。same key 的新时间、能力快照或输入均拒绝，不追加第二份 reservation。fixed server 安装不可被请求替换的实际 planning 准备器；会话在 probe 前读取原批准/已有冻结事实，已有值冷重放零 probe，未命中在 owner 锁外准备、提交时复查 owner。没有直接启动 Worker、新增状态库或修改旧 fact。
+
+store 回归覆盖一次追加、冷 owner successor、并发 exact 重放、未批准/错误模板与提前集成/伪造 RunID/重复 fact；真实 held session 回归覆盖批准前零准备、冷恢复不重新探测和失败零创建事实。测试中的模板/probe 为明确 fixture，不冒充真实 Pi；实际构造接线仍需整条 server 调用链验证。当前仅完成本地 compile-only/静态检查，新候选动态结果待 CI；Run 创建到 READY 恢复、Core plan approval、真实并行及集成仍待完成，B2 不升级。B1 的结果格式实机失败保留，不以冻结义务替代其修复。
+
+## 2026-09-07：批准会话 CI 通过，单 Run 创建分离出冻结阶段
+
+`5811572252c9fc80d714528770636bd9156d31dd` 的 [CI 34059842649](https://github.com/chiga0/marshal-harness/actions/runs/34059842649) 五项成功。条件链随后仅派发 `99ca8ca53742f001edef8fbfe7b6c9aebfb1473b` 的 [CI 34060885444](https://github.com/chiga0/marshal-harness/actions/runs/34060885444)，认证批准入口动态结果仍在验证；没有新派 Pi。
+
+现有 Plan 将验证/probe 与 Run 写入揉在一起，无法先把实际选中输入交给同账本创建事务。候选把原生产 Plan 改为同一 `Prepare → Create`，冻结完整原始协议而非有损领域读模型；预检成功之前及冻结之后尚未 Create 时均不写 Run。创建使用原 base 和 capability，不重新探测，并重查 repository/remote/适配器身份。新增测试检验 caller buffer/返回投影篡改、可变 HEAD 前移、取消/漂移零创建和重复创建不覆盖原 journal。新增 B2 前置 planning/race 回归，尽早发现本次调用链错误，完整质量门禁保留。
+
+本次仍仅是幂等物化的必要接缝，不提供冷恢复或 Goal 创建授权；耐久创建绑定、部分 Run 补齐、真实并行节点及集成尚未完成。静态与 compile-only 检查不冒充动态通过，B1/B2/B3 不升级、main 未合并、没有 stable 发布。
+
+## 2026-09-07：B2 批准从固定 CLI 接到认证 HTTP 与原事实查询
+
+在 `5811572` 的会话接缝上继续接通 `team-approve/team-reconcile → authenticated fixed HTTP → 同一 sealed application/RepositorySession → RB1`，没有单独 controller、Worker launcher 或第二批准库。批准输入增加原 canonical UTC deadline 并纳入 request digest；批准与 transport 的 key/deadline 必须相同，查询允许原 deadline 过期但不改写。服务端写后重读 exact fact，客户端在 fixed peer post-check 后用 held read-only ledger 再查 owner/原请求/原 fact；未知提交不自动执行第二次批准，伪造投影与错误“不存在”均拒绝。
+
+回归沿实际 HTTP framing/认证后 router 覆盖读写、key/body/deadline 绑定、未知字段、能力缺失、提交未知和只读查询；实际 held owner/RB1 fixture 覆盖冷重放、客户端只读回查、伪造 fact/错误 absence/owner successor 拒绝。HTTP 的应用对象及 session 的模板预检仍是明确替身，不能把两组测试拼成已经执行真实完整 server/Schema 的证据。另覆盖 CLI 有界常规文件、符号链接/FIFO/未知/重复字段与过期批准在连接前拒绝。当前只完成本地 compile-only/静态验证，本次动态测试待精确 CI，不派付费 Pi。
+
+剩余关键路径是 Run 创建义务到 READY 的幂等物化、完整固定 server 批准实机、实际并行节点及集成交付，B2 不升级 INTEGRATED。B1 最新失败仍按上条完整记录保留，不借批准接口实现回避其结果格式及并发验收缺口。
+
+## 2026-09-07：B2 同账本测试通过，接入真实 owner 会话；B1 新实机未进入并发场景
+
+耐久接纳候选 `ab43a4220e8863d8fe88c4c8c7b0c94f55945312` 的 [CI 34058800862](https://github.com/chiga0/marshal-harness/actions/runs/34058800862) 五项全部成功。后继候选将完整输入预检安装在 fixed server 构造入口，新增封闭批准请求和现有 RepositorySession 接缝：先冻结请求/校验完整输入，再持真实 owner 锁重查 held root/current RB1 owner，追加原有原子 fact。没有让账本反向依赖 planning、暴露 raw store 或新建控制进程。
+
+新增测试覆盖请求摘要/内容冻结、构造缺少校验时拒绝、校验拒绝/篡改/取消零追加、实际 held owner 下同请求重放和冷 owner successor 复用原批准。session 测试的节点正文与 preflight 是明确替身，不冒充完整 HTTP 用户批准；完整 Schema/Policy 校验仍由实际 CLI 构造绑定。团队 route、响应丢失查询、Run 物化与真实集成交付尚未接通，B2 保持 IN_PROGRESS/未集成。这一后继仅完成本地 compile-only、vet/staticcheck/架构检查，动态测试待新 head CI。
+
+B1 `80084bb` 的 [CI 34058120709](https://github.com/chiga0/marshal-harness/actions/runs/34058120709) 五项成功；条件链派发的单次实机 [34059061091](https://github.com/chiga0/marshal-harness/actions/runs/34059061091) 失败。peer 的第 13 次调用（Collect）exit=1、空 stdout，server 记录 `pi-result-final-content-shape`；peer Run event 仅到 RUNNING/3，主 Run 尚未 Start，未产生长 Verify/第二 Run 并发证据。小包 `9996906939` 和完整包 `9996907539` 都没有保存失败 terminal content 的结构材料，故不能据错误码推定具体字段形态，也不能评价新握手修复的实机效果。保留失败分母，不放宽解析、不原样派第三次同类付费重试；后继需把该诊断缺口纳入同一次真实调用链验证，而非另起无关清理。
+
+本轮 main 未合并、无 stable 发布。目标继续围绕 B1→B2→B3 与业务配对收益验证，不因组件 CI 全绿改写产品完成状态。
+
+## 2026-09-07：B2 输入预检动态通过，耐久接纳接入同一 RB1 候选
+
+`c59c0aa97fe165cfb298fabd8c9f052be6234b7a` 的精确 CI [34057248679](https://github.com/chiga0/marshal-harness/actions/runs/34057248679) 五项全部成功；包括此前有损 Task fixture 修正和整个 Goal 预算绑定。没有因此新派 Pi 或宣称团队交付完成。
+
+后继候选沿 ADR 0083 向既有 `result-ingress.jsonl` 接入一个 `team-plan-accepted` 原子 record，完整输入、accepted revision、预算 reservation 与确定性创建义务同时追加/fsync。所有 projection 构造和冷重放入口一起更新；接纳前重读真实 owner/Goal 历史，已存在的 Goal 不通过初始入口重置预算。exact 重放在 owner successor 后仍返回原 fact/RunID，不多 reserve 或另造 Run；错误请求、预算不足和缺少批准 verifier 均零追加。
+
+测试覆盖一次完整 append、冷重放与 owner 更替、过期 owner 拒绝、同批准并发只提交一次、错误批准/超预算/同 Goal 异方案拒绝，以及重算 digest 后仍拒绝伪造 RunID/重复 fact。测试中的 owner/批准和 Task 模板显式为 store fixture；它们不证明真实用户确认，不取代完整 planning Schema/Policy 检查。当前本地仅编译、vet/staticcheck 和架构检查，动态结果待精确 CI。
+
+尚未关闭：固定 API 认证批准 producer、跨 Goal scope/调度、Run 创建到 READY 的恢复、实际并行执行、集成候选、局部 replan/预算结算和独立 Goal Outcome。此提交是同一 B2 纵切的耐久基础，不是可单独启用的团队服务，未合入 main、不升级生产成熟度。B1 另在 80084bb 精确 CI 验证握手排队修正，macOS 前置真实锁争用/race 已通过，尚待整次 CI 与实机；不以 B1 验证等待为由停止 B2 接线。
+
+## 2026-09-07：B2 批准输入的可执行绑定候选
+
+在既有 `internal/planning` 添加完整 Task/Policy 输入束预检，复用 Task Schema 与 `ValidatePolicy`，不执行命令或写入 Run。明确封闭初始模板为两个实现节点加一个集成节点，并绑定 scope、固定 base、Pi/model、publication:none、预算与确定性 Task/Run ID；重复字段、未知字段、串接 JSON、超限输入和跨节点 Policy 均拒绝。前移这些错误可避免在付费 Worker 开始后才发现方案无法物化。
+
+同时修正 ADR 0083 的 ID 循环：身份由批准前的 namespace/Goal/Proposal/node tuple 派生，完整输入摘要随后由 accepted fact 绑定；不从最终 fact digest 反推该 fact 内 Policy 已引用的 RunID。同 key 改内容仍须由后续 durable CAS 拒绝，不以改 ID 实现隐式 retry。候选目前仅编译、vet/staticcheck 与架构检查通过，动态测试待 CI；尚无生产 endpoint、耐久批准、物化或真实团队证据，B2 仍未集成。该工作分支仍基于未合入的 B1，不代表 main 已具备此能力。
+
+接 RB1 前进一步发现，只有节点预算仍不足以绑定用户同意的总成本：输入束现增加整个 Goal 的 Guardrails 与 AdmissionPolicy，预算不足、超出三并发或不满足准入策略在 preview 阶段拒绝；批准摘要随这些字段变化。数据类型和 ID 派生置于既有 Goal 层，避免 planning→runstore→RB1 的导入环。初次可行性复用 Goal 的 canonical proposal 和六步检查，但空历史结果仍不算 current-ledger 接纳。此改动尚未派发 Worker，属于生产接线前发现的设计缺口；不能将预检通过作为耐久批准或团队收益证据。
+
+首个候选 `10264d2` 的 CI [34056632311](https://github.com/chiga0/marshal-harness/actions/runs/34056632311) 在 Linux 的新增正向变更测试失败：测试把完整 Task 解码成部分 `domain.TaskSpec` 再编码，丢掉 Schema 必需的 `work.context`，因此收到正确的输入拒绝而非期待的摘要变化。产品输入束保留 RawMessage，未执行该有损转换。修正测试为保留全 envelope 只修改目标字段；同一教训约束后续物化：不能用局部领域读模型重写完整冻结协议。失败计入工程验证，不启动或重试任何 Pi；修正结果须待新的精确 CI。
+
+## 2026-09-07：B2 计划到真实 Run 的接缝仍未实现
+
+直接核对 `internal/goal`、`internal/outbox`、`internal/planning` 和 TaskSpec：现有计划组件不耐久落账，节点不绑定完整 Task 输入，planning 尚不是幂等 Goal 物化，Task 依赖也不传递或集成成果。不能据此把 B2 提前列为可用。[ADR 0083 提案](adr/0083-bounded-team-plan-materialization.md) 将后继限制为同一 fixed server/RB1 的批准输入束、原子创建义务、现有 Run 创建恢复和真实集成候选，不引入新 controller/DSL。该文档是 B2 的设计准备，不是实施完成；依赖的 B1 候选仍未合入。
+
+## 2026-09-07：Pi 最终结果载体失败，先补确定性诊断而非重复实机
+
+`80084bb8cf7c02e945a4605da51423c6d25239ee` 的精确 CI [34058120709](https://github.com/chiga0/marshal-harness/actions/runs/34058120709) 五项成功；后续唯一跨 Run 实机 [34059061091](https://github.com/chiga0/marshal-harness/actions/runs/34059061091) 整体失败。peer Collect 报 `pi-result-final-content-shape`，尚无 worker.completed、Verify 或第二个 Run 的并发验收。失败保留在总成本中，不将此前传输修复的 CI 当本次实机成功。
+
+审查实际生产链确认 Collect 将 held transcript 原样送入 Pi 解析器；旧通用错误仍包含最终 assistant 未携带 `content` 的情况。失败归档没有这部分 transcript，故目前不能证实该次失败就是缺字段，也不能声称根因已修复。本机已安装 Pi 0.84.4 的 `toJsonEvent` 对 `agent_end` 原样透传；通过固定 Node 执行该纯函数的人工夹具确认 content 保留，无 Worker、无网络、无真实模型调用。该证据不代表云端失败实例或真实业务通过。
+
+本次仅新增封闭 `pi-result-final-content-missing` 诊断：保持缺字段拒绝，覆盖 `stop`/`length` 和存在/不存在此前合法结果四种完整解析输入，禁止回退到旧 assistant 结果。`length` 仍优先报告原 `provider-terminal`，不让内容诊断覆盖 provider 失败；完整调用链自检已在提交前修正对应夹具预期。此前容器、元素、type/text 类型错误和未知异常仍走原封闭分类；不输出模型正文或自定义字段。未改变持久化契约、权限、重试或接纳行为。本地 compile-only、vet、staticcheck、diff 检查通过；动态回归待精确候选 CI，不冒充实机证据。
+
+效率边界：这是当前业务阻塞的诊断补齐，不是新里程碑；不得据此再次盲目付费重试。下一步需要带可判读且不泄密的失败证据完成同一生产路径验证，同时继续 B2 实际团队启动链路；B1/B2 均未关闭，未证明相对 Lead＋SubAgents 的交付收益。
+
+## 2026-09-07：长 Verify 通过、并行停止已发生，但查询握手仍失败
+
+`b1e838014242c8e5b131f72d56c8a57fd1884d85` 的精确 CI [34056176966](https://github.com/chiga0/marshal-harness/actions/runs/34056176966) 五项成功，随后只派发一次真实 Pi [34056947651](https://github.com/chiga0/marshal-harness/actions/runs/34056947651)，整次失败。小诊断 artifact `9996297294` 已读取，完整 executable artifact 未下载或执行。peer 的 VerificationReport 为 `pass`，起止为 20:08:14.590559Z→20:10:01.019362Z，约 106 秒，随后 ReviewPacket 操作成功；其中部分非适用 gate 为 SKIPPED，不能描述为所有 gate 都实际执行通过。未产生独立 Decision 或 ACCEPTED。
+
+另一 Run 的原 Attempt deadline 为 20:09:27.384502Z，停止意图在 20:09:28.405749Z 出现，`worker.stopped` 在 20:09:34.620746Z 写入，分别延迟约 1.02/7.24 秒，均处于上述 Verify 报告区间。两 Run 各一 Attempt，只有一个 owner acquisition。但第 22 次调用 Inspect exit=1、空 stdout，封闭阶段为 `client-dial`；并发线程因此未完成 stopped Collect。不能用停止事件或 peer Verify 的局部成功代替完整跨 Run 验收，也不能排除失败的两个 Attempt 成本。
+
+代码核对确认一种确定的预算错配：client 从 connect 后统一计 5 秒；server 在 challenge 签发前和 proof 之后都要获取 current owner 锁。超过 5 秒的合法停止事务因而可能让认证排队被误算成 proof/传输超时。该结构缺陷与现场相容，但旧 stderr 仅保留摘要和大阶段，**尚不能证明本次具体失败就是这一锁等待**，更不能排除其它身份/连接失败。
+
+候选依 ADR 0081 将本机 authority 等待与 nonce/frame 窗口分离，保持原 request/caller deadline、5 秒 nonce/proof、16 KiB frame、完整 current identity/owner/receipt 复查和零自动重试；新增真实 owner 锁争用超过 5 秒、原 deadline、父取消与部分帧回归，复用既有 hostile/replay 拒绝测试。动态测试先于任何新 Pi 实机；本地 compile-only 不是通过证据。B1 仍 IN_PROGRESS，PR #268 仍 Draft，未合入 main；B2 的冻结输入/总预算候选仍未形成 durable approved plan 或实际团队交付。
+
+效率复盘：两轮实机都暴露阶段预算/交互问题，说明此前回归覆盖偏向单入口而没有充分覆盖端到端等待。后续同类修复必须同时检查认证排队、应用等待、字节传输、复查、关闭与原 deadline，并先用真实锁/transport 的无模型组合测试；不能把每个窗口都留给下一次付费实验发现。此次先聚合 handshake 的排队、proof、取消与截断帧，而不是只调高一个 timeout 常量。
+
+## 2026-09-07：初始续行实机通过后暴露传输阶段预算错配
+
+`d0be824` 精确 CI [34054261338](https://github.com/chiga0/marshal-harness/actions/runs/34054261338) 与 PR CI 34054248613 均通过；条件链仅派发一次实机 [34055217240](https://github.com/chiga0/marshal-harness/actions/runs/34055217240)，整次失败。诊断 artifact `9995784841` 已读取：peer 在唯一 owner 下从 Start 经五次 authenticated live-pending Collect 到成功 Collect，19:34:16.581183Z 写入 `worker.completed/VERIFYING/sequence=4`；对应 admission fact 为 `sha256:99c5ad1d80a3f197cebbbb5e911f0c95941acd302c3b5b518e6c8d3ea6264792`。因此前次初始 owner 故障已在本样本的真实连续链路越过，不是再次停在首次 Collect。
+
+长验证命令已产生 rendezvous（Unix 时间 1788723263.80846），另一个 Run 19:34:31.235692Z 已写入 RUNNING。两个 Run 各一 Attempt，RB1 仅一个 `control-owner-acquired`；但 Verify 与第二次 Start 的客户端均 exit=1、空 stdout，19:34:34.287768Z 驱动报 `fixed-cli-invalid-response`；server 还记录一次 `server-half-close/transport-failure`。没有 verification report、独立 Decision、停止 Outcome 或跨 Run 组合通过，不能把上述局部推进算整次成功。原失败与两次 Attempt 均保留在交付成本中。
+
+代码直接确认传输预算缺陷：`readClientHTTPResponse` 在等应用首个响应前就安装固定 15 秒 read deadline，必然无法支持本次 100 秒验收；server 仅等 1 秒 half-close，而客户端须先复查身份/receipt。后者是已确认的协议预算竞态，但现有 Start stderr 只有泛化文案，不能把其具体失败位置强行归因于某个 recheck。候选按 ADR 0081 分离原请求内的应用等待、字节传输和复查预算，并补 Start/Verify 的既有封闭阶段诊断；不输出原始 error、路径、secret 或放宽错误重试。
+
+先补无模型的实际 authenticated client→HTTP router 长应用回归（超过旧 15 秒）、父取消中断、原 deadline/部分 envelope 限制，以及延迟 half-close/缺失 half-close 的有界回归，再运行一次精确候选 CI/实机。回归中的业务 application 为显式 fixture，不冒充 Pi 或独立验收。当前修正尚未动态/实机通过；B1 仍 IN_PROGRESS，停止候选未合入 main，B2/B3 不升级。
+
+## 2026-09-07：不重启 server 的首次 Collect 暴露初始 owner 续行缺口
+
+`593eb5d` 的精确 CI [34051652443](https://github.com/chiga0/marshal-harness/actions/runs/34051652443) 五项通过后，只派发一次跨 Run 实机 [34052534488](https://github.com/chiga0/marshal-harness/actions/runs/34052534488)。实验失败，未进入长 Verify，不能计作跨 Run 调度通过。诊断 artifact `9994993010` 已保留并读取：peer 的 Start 和 Inspect 返回 RUNNING/sequence=3，首次 Collect 已留下 delivery pending，但客户端无 JSON、退出 1；server 明确记录 `sealed-run-compose-runtime/composition-failure` 与 `recover-running-attempt/recovery-required`。RB1 只有一个 attempt-opened、17 条 fact，最后为初始 Resume 成功；另一 Run 尚未启动。没有业务 Decision、完成 Outcome 或新的业务 retry，不能把这个失败排除出实验分母。
+
+原因不是 Pi 响应速度：初始 bind 绑定 SupervisorStarted（revision 7），Resume 后 mechanics/Attempt head 已到 ProcessStarted（revision 8），owner 仍为同一 epoch 1。`runningAttemptBoundToOwner` 却只认可 bound=head，误入 owner-successor rebind；Collect、Inspect/Terminate、Close 的 v2 gate 又只认可恢复后的 ControlOwnerBinding。这解释了旧 canary 在 Start 后重启、再 Collect 可以成功，却没有证明最普通的同 server 连续执行。
+
+本次候选集中修复上述完整接缝：重放后的绑定分类区分初始同 owner 与已完成恢复绑定；初始分支额外核对 v2 generation、原始/current mechanics owner epoch 与 mechanics authority head，仍由调用方持有 current owner/Run/RB1、认证原 Attach 和 journal。新增同一 durable bootstrap→bind→Spawn→ProcessStarted→Resume 直接到 Collect/Close 或 stop/Terminate/Close 的连续回归，复用原丢响应、坏证据拒绝和冷重放测试；不插入 owner 升级或 server 重启。该候选尚待动态 CI 和原跨 Run 实机，未合并 main，不宣称修复已实机通过。
+
+效率纠偏：每次恢复实验必须同时保留一个**不注入故障、不重启**的正常控制路径，不能以恢复分支覆盖代替基础调用链。先聚合相关入口与连续回归，再运行一次精确候选 CI/实机；已失败的 34052534488 不原样重跑。
+
+后续动态 CI [34053220150](https://github.com/chiga0/marshal-harness/actions/runs/34053220150) 在 `d67e3b7` 的新增 `TestLauncherV2SameOwnerContinuesWithoutRestart` 两个分支失败：普通 Collect 未留下预期 pending，停止后的 cleanup Collect 返回 authority conflict；其余四个 job 成功。已确认底层 `validateSupervisorCommandIntentAgainstState` 仍要求 reconnect/rebind，遗漏同一初始 owner 的 v2 bind/resume 连续证据。补齐该入口，保留 legacy reconnect 限制以及现有 owner、intent、mechanics、journal 与结果校验；不通过强制重启绕过。将该连续回归加入 macOS 前置测试，避免每次等全量约 15 分钟才发现同类错误。条件派发链因 CI 失败退出，未为 `d67e3b7` 新启 Pi；修正后的动态与实机结果仍待验证。
+
+## 2026-09-07：跨 Run 长 Verify 与自动停止组合验证接入
+
+在同一 fixed server 的既有 Attempt-timeout canary 增加显式 `verify-peer`，不新增 Worker launcher 或业务状态库。两个 Task 在 server 启动前冻结并批准：peer 真实 Pi 完成订单报价，保留原业务 oracle，并执行 100 秒有界验证命令；命令的诊断 rendezvous 出现后，驱动才经公开 Start 启动另一个 60 秒 Attempt Run。所有 Start/Collect/Verify/ReviewPacket/Inspect 仍走 fixed control-plane，未知错误不重试，不创建 Decision。
+
+最终判定必须绑定公开 Verify projection 的 reportDigest、冻结 Task specDigest 和精确验收 argv，并证明另一 Run 的终态查询与 stopped Collect 已完成时间严格位于真实长命令执行区间；单纯看到信号不计作通过。并发调用日志使用独立序号，避免两个响应抢写同一文件。新增回归覆盖 rendezvous/模式/身份拒绝、精确报告绑定、重叠区间、失败不重试和 hook 时机；这些是驱动测试，不代表实机跨 Run 或 B2 已通过。实验不与 crash/独立 Decision 混用，以免把多类失败混成一次 rework；中断恢复已有独立的 34050602081 证据。
+
+## 2026-09-07：真实 Pi 在 stop barrier 后中断并恢复通过
+
+候选 `0130465bfb65dd1b947c09113f988714c6952c00` 的 CI [34049622019](https://github.com/chiga0/marshal-harness/actions/runs/34049622019) 五项成功后，仅派发一次 [34050602081](https://github.com/chiga0/marshal-harness/actions/runs/34050602081)，实机成功。诊断 artifact `9994442912` 已核对：中断前后均停在第 22 条 `terminalization-barrier`，Run 仍 RUNNING/sequence=3；两次观察的 journal/ingress 摘要相同，并可由最终归档前缀复算。server2 是驱动自己持有的进程，SIGKILL/wait=137；同身份后继 server 完成停止，之后 server3 再执行原 Collect 请求冷恢复，两者正常退出 0。
+
+最终 RB1 40 条 fact 的封闭摘要逐条复算通过，Run 4 条 event，只有一条 attempt-opened；原 Task 的 Attempt=60 秒、Run=600 秒与 creation event/process-start witness 一致，未延长预算。停止意图在原 Attempt deadline 后 0.458190 秒出现，包含崩溃恢复的终态在 deadline 后 4.334296 秒写入。Outcome 为 `BLOCKED/abort/attempt-deadline-exceeded`，规范摘要 `sha256:cc42602cd37872f42fa4467e88e24fac0fa992390674e29611523f6d02d59565`；同 Run/Attempt/stop intent、终态 authority head 和 Collect request key/deadline 在冷恢复中保持一致，无第二 Attempt、Cancel、retry、rework 或 ACCEPTED。
+
+四次 binary observation 完全一致，SHA-256 `912bc611d9d77ebf480c3d2c76ce229fc220846043810bd4b7941263ea39ef69`、CDHash `7f124dadb114c2bf80078346f6cba10fd3de7c67`；本次本地审计仅下载诊断包，未另行下载完整二进制复算。结论只关闭 **barrier 已落盘、Run 尚未终态时的 server 进程中断恢复** 子条件，不代表断电、任意持久化边界或完整故障矩阵。driver 的 `deadlineWitnessVerified=false` 如实保留；上述预算检查是本次对原始材料的额外核对，不改写 driver 结果。
+
+长 Verify 调度修复 `74e8619fa8168abbc76a7eda3f3f647f6882ed6f` 已推送，精确 CI [34050715623](https://github.com/chiga0/marshal-harness/actions/runs/34050715623) 在途。首次 dispatch 34050684925 遇到分支传播延迟选中旧 SHA，已立即取消，不计作新 source 的 CI 或业务重试；后续 dispatch 须核对解析的 headSha。B1 仍 IN_PROGRESS，跨 Run 实机、最终组合与候选合入尚未关闭；B2/B3 不升级。
+
+## 2026-09-07：验证长事务阻塞其他 Run 的调度修复候选
+
+调用链核对确认：fixed router 的全局 writer lane 覆盖完整 Verify，`sealedRepositoryApplication.VerifyRun` 又把 application mutex 持有到验收命令退出，后台 deadline 的两层 Try 因而只能跳过。Status/Inspect 的旧 mock 测试仅证明绕过调度锁；真实 Inspect 还竞争 Run lease，不能据此声称长验证期间查询都成功。
+
+按 ADR 0081 的同一停止纵切补进程内 Run lane，保护完整 Begin→application→receipt；Verify 执行阶段让出全局 lane，application 在已证明当前 VERIFYING 后只保留该 Run/worktree lease 与 Close 生命周期读保护。其他 runtime mutation 的全局串行及原始 authority/CAS/receipt 规则不变；不新增 RPC、持久化状态或查询缓存。四项新增组件回归覆盖 Run waiter 取消与条目回收、Verify 期间允许后台 writer、Begin/receipt 期间仍互斥、receipt 等待不延长 deadline，以及 preflight 失败不泄漏生命周期锁。本地 Go 结果仅为 compile-only，另有 vet/staticcheck；动态/race 与真实跨 Run 故障验收尚待执行。
+
+这只解除 Verify 对无关 Run 的阻塞：同 Run Inspect 的 lease 等待仍受原 caller deadline 限制，其他长 Start/Collect/cleanup、验证进程故障及完整业务预算/终态覆盖仍需实证，不能据本候选宣称 B1/B2 完成。中途停止 canary 仍使用已推送的 0130465，与本候选分别取证。
+
+## 2026-09-07：停止中途崩溃验证接入（尚待实机）
+
+在同一固定 server canary 增加显式 `stop-crash`：只允许两种业务 timeout 场景；观察到原 RB1 stop intent 且 Run 仍 RUNNING 后，仅中断驱动自己持有、尚未回收的 server 子进程。等待进程退出后再次读取同一 Run/Attempt/意图；若窗口已经错过，明确失败，不把终态冷重启冒充中途恢复，也不自动重试。后继同 bytes server 必须沿既有 owner rebind/stop reconciliation 完成终态查询与 stopped Collect，再做原请求冷恢复。观察器不提供 PID、不调用 Worker、不修改 Run/RB1；这是诊断证据，不是新的接纳 authority。
+
+12 项无模型观察器回归、现有 canary 脚本回归和 release producer 契约回归通过；两份既有真实 RB1 的编码/摘要兼容性检查通过。这些都不代替新场景实机结果。小诊断同时加入完整 artifact 原已有的冻结 Task 与进程退出记录，避免仅为预算来源而下载 executable；仍排除 executable、transcript 与配置文件。没有新增运行时协议，B1 中途故障、长写事务响应上界与组合验收仍开放；只按实际命中的中断阶段记录覆盖，不宣称完整 crash/power-loss 矩阵通过。
+
+## 2026-09-07：稳定容器修复后的两类自动超时和冷恢复通过
+
+精确候选 `c61998515512f064fc4b113c229295e5df28e185` 的 [CI 34047040755](https://github.com/chiga0/marshal-harness/actions/runs/34047040755) 五项全绿，macOS 前置停止链回归先于全量质量检查通过，完整 macOS job 用时 14 分 25 秒。随后分别派发一次真实 Pi 场景，未改变 Provider/模型，未原样重跑失败版本。
+
+| 场景 | 实机与诊断 artifact | 原始业务截止点（UTC） | 停止意图 / Run 终态延迟 | 结果 |
+| --- | --- | --- | --- | --- |
+| Attempt 60 秒先到期 | [34047844723](https://github.com/chiga0/marshal-harness/actions/runs/34047844723)，`9993670793`（45,991 bytes） | `2026-09-06T17:13:48.789964Z` | 0.801903 / 4.524347 秒 | 作业 2 分 11 秒；终态查询/Collect/server3 冷恢复通过 |
+| Run 60 秒先到期 | [34048091298](https://github.com/chiga0/marshal-harness/actions/runs/34048091298)，`9993737275`（46,356 bytes） | `2026-09-06T17:18:23.541713Z`；Attempt 截止点为 `17:18:27.654604Z` | 0.868224 / 3.720027 秒 | 作业 2 分 13 秒；终态查询/Collect/server3 冷恢复通过 |
+
+直接读取原始证据核对，而不只采用 workflow 绿色：两次各 36 条 RB1 fact、4 条 Run event、一次 Attempt、零 operational retry/rework；停止原因分别为 `attempt-deadline-exceeded` / `run-deadline-exceeded`。creation event canonical digest、specDigest、原始 process-started fact/时间与 deadline 计算一致；`worker.stopped` 引用 barrier、process-terminal、allocation-terminated、supervisor-closed、cleanup-released 的精确 fact digest。Outcome 为 `BLOCKED/abort`，绑定 stopped payload 的 canonical digest、原终态时间与原因，不冒充独立 ReviewDecision。两次 Outcome digest 分别为 `sha256:7606aae4cff99e449ee672328d2573a0966006fea3cbd76744d4080bc6545701`、`sha256:d5ae8eadd0dab6c0cdc84282972f97b78bedbaf43294b2bacde863238da0d1f1`。
+
+两次实机的三代 server 均保持完整 binary identity，跨两次 artifact 的 binary SHA-256 也相同：`a55e680713258f357c3846473ba2f1ed53a685764f5d8a52cda5858545883aa3`。Attempt 场景初段 13 次 Inspect、一次 Collect；Run-first 初段 14 次 Inspect、一次 Collect；各自 server3 均两次 Inspect、一次原请求 Collect，零 Cancel。原 Collect key/参数/deadline 与终态投影跨冷重启相同，所有 Inspect 成功，Collect 返回封闭的非成功 `stopped`，没有新增 Attempt 或假 ACCEPTED。完整 artifacts `9993671390`、`9993739378` 均已下载：两份原始 Task canonical digest 与各自 witness specDigest 相同，Attempt/Run 预算分别为 60/600 秒与 60/60 秒；各自完整/小包 Outcome bytes 相同，server2/3 正常退出，实际下载的两个 binary hash 也与上述观察一致。
+
+取证效率缺口：小诊断缺少原始 Task，预算来源复核被迫下载约 19.8 MB 的含 binary 完整包；本轮第二份下载约 7 分钟，长于两次 canary 自身。后继故障矩阵应一并归档必要的冻结业务输入到有界诊断材料；完整 artifact 仍保留，但不再把它作为读取少量预算证据的唯一入口。该改进尚未实施，不另起脱离 B1 验收的微修切片。
+
+结论与后继：旧布局在 34044944162 的客户端打开失败没有再出现在这两次完整样本中，支持稳定容器根因修复有效；不据两个成功样本承诺竞态永不复发或普遍加速。停止中途故障矩阵、长写事务下响应上界、精确最终版本正常业务与停止组合验收、独立审查仍开放。B1 保持 `IN_PROGRESS`，B2/B3 不升级，候选未合并 main、无 stable 发布。历史失败继续计入总交付成本；下一轮应处理上述剩余验收，而非再次派这两个已通过场景。同步纠正文档“唯一当前表”仍停留早期接口阶段的陈旧内容，保留历史检查点但不让它覆盖已有业务进展。
+
+## 2026-09-07：用稳定投影容器消除查询与业务写入的目录耦合
+
+`487bbc243673b8e1c389e0d4e58f235767a3f188` 的 CI 34045694199 五项全绿，公共客户端 characterization 动态确认了旧布局的观察失效；它只证明接缝缺陷，不是修复或实机成功。后继候选按 ADR 0081 的同一纵切，把原子投影和 stage 移入固定容器内的 `current-v2`，transport 不再刷新 `runtime-v1` 观察，容器、runtime、control 的替换/ABA 继续拒绝。旧根部投影先按当前 RB1 合法前缀只读校验并原样保留；未知/损坏/旧中断 stage 不被覆盖或遮蔽。新布局不修改 RB1/Run journal/receipt，不新增业务 authority。
+
+回归覆盖实际 allocation bind/release/reopen 不修改 transport 父目录、旧合法/损坏/符号链接/未知/未完成布局、容器 ABA，以及公共客户端在 stage/commit/cleanup 后原连接观察仍有效且新开身份相同。该客户端测试不冒充 HTTP+RB1 全链路，仍需新 source hosted 动态门禁和真实自动超时/冷恢复。全量发布证据保留，但这组窄回归放在 macOS 全量之前；无模型 canary 原样重试。当前仍为未合并候选，B1 IN_PROGRESS，B2/B3 不升级，无 production/stable 声明。
+
+工程教训：把派生数据更新与 transport 根身份绑定在同一目录 mutation 上，再逐个为 Start/Collect/后台停止补“观察刷新”，会反复遗漏独立客户端。修复应隔离可变存储边界并测试完整 producer/consumer，而不是扩大错误重试集。效率是否优于 Lead+SubAgents 仍待配对业务试验，不能用本次组件通过替代。
+
+## 2026-09-06：前置回归遗漏测试 binary 的 sourceHead
+
+CI 34045483914 在 macOS 前置回归约 17 秒即失败：公开客户端测试的 fixture 在 `ObserveCurrentCore` 返回 identity conflict，尚未执行目录切换。原因是手写的前置 `go test` 漏掉 `Makefile:test` 已明确要求的 buildinfo.commit 注入，测试 binary 使用 `unknown` 而非精确 40-hex sourceHead。此次补齐两条前置命令与封闭 workflow producer；不跳过进程身份检查，不把 compile-only 当成已执行该检查。这是新增测试的启动配置返工，不是实机 Provider 重试，也不是目录竞态已被动态证明；B1 状态不变。后续真实身份测试必须保留同一 sourceHead 构建参数，不能只复制包名和 `-run`。
+
+## 2026-09-06：精确诊断候选仍失败，位置前移到客户端 authority 打开
+
+`88f9eddb856ca0c438ae574a2f8391981f8b2c23` 的 CI 34043986843 五项全绿；单次 Attempt-timeout canary [34044944162](https://github.com/chiga0/marshal-harness/actions/runs/34044944162) 失败。小诊断 artifact `9992827944` 保留全部 17 次 Inspect 摘要：前 16 次成功，第 17 次 exit=3、空 stdout、无 HTTP stage；stderr SHA-256 `f85f116f2ae11c764fec6975425fee1d413fddcc160431808a0649b216b5998f` 精确匹配固定文案“control-plane inspect 失败：resident server 不可用。”加换行，定位到 `openControlPlaneClient`，尚未发送 HTTP。不能据此断言 Provider 配置错误。
+
+RB1 已记录 Attempt deadline barrier、process-terminal、existing-worktree-release-intent/receipt（sequence 22–27），但尚无 allocation-terminal/supervisor-closed/cleanup-completed/released；Run journal 仍为 RUNNING/3。该次不能沿用前次 BLOCKED 结论，也未完成 Collect/server3。server2 的 shutdown 不完整文案没有携带最初 authority 打开失败的内部原因，不能单凭它判断 server 先崩溃。
+
+代码确认一个需要确定性覆盖的窗口：投影 `RENAME_SWAP` 改变 runtime-v1 目录观察；独立客户端持有的观察不会随 server 更新。新增公开 `OpenRepositorySession → OpenFixedEndpointClientAuthority → swap → old Recheck 拒绝 → fresh open` 的组件 characterization，使用真实 local/default/repository namespace、真实 held directory 与原子 swap，不使用 Provider，不冒充 HTTP 全链路或 RB1 合法 release 证明。把它加入 macOS CI 前置回归，先验证这一假设，不第三次原样派实机。没有放宽身份验证、重试集合或接纳条件；根因修复和 B1 仍开放。
+
+反馈周期也有具体证据：前序 CI 34041798874 的 macOS quality 用时约 15 分半，其中 resultingress race 包 523.947 秒。当前需要把接缝复现放在全量之前；不能为节省等待删除全量发布证据，也不立即另起测试框架。
+
+## 2026-09-06：停止后查询失败的诊断缺口（尚未修复根因）
+
+对 34041730043 的原始小诊断复核后，server 仅有通用 transport-failure，客户端也只输出 authenticated request 未完成；驱动只保留 stderr 摘要。现有材料无法区分 request 读取、准入、前后身份复核、dispatch、response 和 half-close，不能断言锁或 timeout 是根因。
+
+本候选在原有 HTTP/client 调用链添加本地封闭 stage 标签，保留原 error 分类、HTTP 结果与拒绝行为；CLI 沿已有有界错误树输出标签，driver 只收集精确 allowlist 标签，不上传原始 stderr，不把标签用于验收或重试。补充分类/脱敏单测、真实 socket router 错误阶段断言与 driver 反例；本机仅 Python 动态测试和 Go compile-only/vet/staticcheck，不执行匿名 Mach-O。前序 97e448a 的 CI 34041798874 已全绿，不覆盖本候选。尚未得到实机根因或关闭 B1，不原样重跑原失败。
+
+## 2026-09-06：Run-first 冷恢复通过；Attempt 停止完成但查询失败
+
+`49f745da10d33a71146afa75528d1f34a691b159` 的 [CI 34040876557](https://github.com/chiga0/marshal-harness/actions/runs/34040876557) 五项全绿，随后 [Run-first 34041702160](https://github.com/chiga0/marshal-harness/actions/runs/34041702160) 成功。独立读取诊断 artifact `9991894362`，重新计算 creation event digest，连接同 Attempt process-started、原始 60/60 秒预算、stop intent、四类 terminal/cleanup 引用及 BLOCKED 事件。Run deadline `15:16:48.357751Z` 早于 Attempt deadline `15:16:52.173736Z`；停止原因精确为 `run-deadline-exceeded`，本样本意图延迟 0.805517 秒、终态延迟 3.340678 秒。server2/server3 binary identity 相同，raw SHA-256 为 `656d53a2b8237a76566db52b469016a7fde5259de3b7556d0a0058a2893215dc`；冷恢复保留原 Collect key/head/deadline、终态投影和响应 SHA-256 `606f11c437c8af004acfcc1e766d73e63ec1b10df913949757d9147d739a6e1e`。没有 Cancel、第二 Attempt 或业务 ACCEPTED，仍是 candidate-only，原始 Outcome 文件不在此旧归档清单中。
+
+同 source 的 [Attempt-timeout 34041730043](https://github.com/chiga0/marshal-harness/actions/runs/34041730043) 在并发组排队后执行，但整次失败：原始账本已于 `15:19:05.43834Z` 形成 `worker.stopped/BLOCKED/sequence=4/attempt-deadline-exceeded`，末端 process-supervisor-closed、cleanup-completed/released 均存在；驱动一次 Inspect 却得到空 stdout、exit=1，stderr SHA-256 为 `abf43c190890f51240c04294f209715a3c0e54b125631cc10d078e0a04d20237`，server 只保留 `reasonCode=transport-failure`，驱动于 `15:19:06.193157Z` 报 `fixed-cli-invalid-response`。未进入 Collect 或 server3，不能把停止事件当成整条恢复验证通过。诊断 `9991926037` 与完整包 `9991926396` 保留，未原样重跑。
+
+复盘：此前只为 Inspect 的 Run lease 竞争增加等待，并没有证明连接鉴权、current owner/root recheck 到完整查询响应的并发路径都可用。本次再次出现查询 transport 类失败，应冻结同类实机重试，先补足可定位且不含路径/secret 的错误阶段证据及真实读写并发回归。现有证据不足以断言是 lease、endpoint recheck 或超时；不扩大可重试错误集合，不用客户端重试掩盖。后继 `97e448a` 的 CI 34041798874 验证 Outcome 物化回归与归档修正，不声称修复这次查询问题。B1 仍 IN_PROGRESS；下一关键动作是关闭该查询接缝，再验证两类超时完整恢复和其余故障窗口。
+
+## 2026-09-06：停止 Outcome 部分落盘恢复回归
+
+后续检查归档清单发现：此前完整包和小诊断都只显式包含 Run state/events，未包含 `outcome.json/result.md`。因此原始 Outcome 缺失不只是下载等待，重下同一包也无用；历史证据仍只支持已记录的 Core stopped-Collect 验证口径。候选为两份 artifact 增加精确 Run 的这两个派生文件，以便后续独立检查 bytes/摘要；不读取或上传新类别的 Worker transcript/secret，不补造历史证据。
+
+停止事件的 current-ledger/cleanup 校验保持在原入口；只把其后既有的 Outcome 和说明文件不可变写入提取为内部函数，未新增停止权限、事件、协议或 Worker 启动路径。回归直接调用这个生产写入函数：第二个文件被测试自有空目录阻断时不得返回成功摘要，已写入的 Outcome 保留；释放并重新取得 lease 后补齐说明文件，两次重放保持原始 bytes、时间、原因和摘要。另覆盖两个目标文件的冲突内容、符号链接及已关闭 lease，均不得覆盖已有内容或报告成功。
+
+这些是合成 Outcome 的文件物化组件测试，不是完整停止授权、实机崩溃或磁盘断电证据，不关闭 signal/cleanup 中途故障矩阵。本地 compile-only、vet、staticcheck、diff-check 通过；动态执行须由新 source 的 hosted CI 验证，不执行本机匿名 Mach-O。Run-first/两类超时冷恢复仍先验证已推送的 `49f745d`，不把后继测试代码混入它的 binary 身份。
+
+## 2026-09-06：Run-first 与两类超时冷恢复候选
+
+`d10cd98` 的 CI 34040123782 五项全部通过，包含 Cancel 排队 deadline/零意图及 Task renderer 的动态 schema 回归。本轮在同一个 canary 增加 `order-quote-run-timeout`，并让两类 timeout 完成后正常关闭 server2、以同 bytes server3 重启、重放原 Collect 请求和原 deadline。冷恢复若看到 RUNNING、不同终态 head、不同 binary/Run、被改写的 key/参数或过期原 deadline，即停止，不等待新一轮执行、不取消或启动 Worker。原取消场景保持。
+
+前置核对发现 Task 语义禁止 Attempt budget 大于 Run budget；因此 Run-first 采用两者均为 60 秒，Run 创建早于 process-started，实际较早 deadline 仍须在实机 witness 中检查。这个配置问题在提交/CI/付费 Worker 前已纠正，没有修改合同门禁。Python 33 项通过；Go 本地只 compile-only/vet，新 source 动态与实机仍待完成。此前 Attempt 超时完整 artifact 的下载仍是已确认存活的同一任务，未重启下载或重复 Worker；小诊断足以推进 deadline 来源审计，但不能冒称已读取未下载的原始 Outcome。
+
+## 2026-09-06：原始 Attempt deadline 自动停止实机通过
+
+精确 `dd8178f096df9503fafa355f19a126105f2e7c76` 经 [CI 34039269163](https://github.com/chiga0/marshal-harness/actions/runs/34039269163) 五项全绿后，单次 [34040069400](https://github.com/chiga0/marshal-harness/actions/runs/34040069400) 成功。server2 binary SHA-256 为 `3488ade9641164f0d7a498e400d55826e10338e3d64a5c9313517e536c0772e5`。真实 Run `fixed-server-t1-34040069400` 一次 Attempt、零 operational retry/rework；驱动只有 19 次 Inspect 与终态后一次 Collect，零 Cancel，不能把它解释成 operator stop。
+
+独立读取诊断 artifact `9991417910`（42,435 bytes），逐项核对 creation event 的 canonical digest、Task specDigest、同 Attempt 的 process-started fact/timestamp、原始 60/600 秒预算及计算结果、barrier/stopIntent 与停止事件的引用、process-terminal/allocation-terminated/supervisor-closed/cleanup-released 链。原 Attempt deadline 为 `14:45:33.642022Z`，stop intent 于 `14:45:33.752306Z` 形成，`worker.stopped/BLOCKED/sequence=4` 于 `14:45:36.212847Z` 形成：本样本意图延迟 0.110284 秒、终态延迟 2.570825 秒。此前 server1 crash/server2 rebind 没有重置 processStartedAt 或延长预算。停止原因精确为 `attempt-deadline-exceeded`，stopIntentDigest 为 `sha256:800125bc9e7bac8fef02d7a6d94c0fcf0059f4093de318740f4e9b3fcbe9a739`。
+
+终态 Collect exit=1、stderr 为空，stdout SHA-256 为 `606f11c437c8af004acfcc1e766d73e63ec1b10df913949757d9147d739a6e1e`，对应 Core 已验证 stop/cleanup/Outcome 的 `stopped/run-stopped`。小诊断不含原始 Outcome，不能说已独立下载并重算 Outcome 摘要；完整 artifact `9991418302` 保留并单独取回。驱动自己的 `deadlineWitnessVerified=false` 保持原样，本段是驱动之外的来源/引用审计，不修改历史证据。
+
+这关闭了隔离候选的一次原始 Attempt 自动超时实机子条件；Run budget 先到期、超时终态后的冷恢复、signal/cleanup 中途故障及长写事务延迟仍须继续验证，不推导普遍 SLA、不关闭 B1。后继 `d10cd98` 的 CI 34040123782 独立运行，只含排队回归/Task schema 枚举与过程记录；不能冒用本次 binary 身份。停止候选仍未合入 main，ADR 0081 仍 Proposed。
+
+## 2026-09-06：等待精确超时候选 CI 时补查排队边界
+
+`dd8178f` 已推送，精确 CI 为 34039269163。紧接 push 的第一次 workflow dispatch 34039237556 在 GitHub 解析到上一 source `86b6553`，已核对并取消该自有 CI；随后确认远端 API head 为 `dd8178f` 才重新派发，未重复 Worker、未把旧 source CI 借给新候选。以后 dispatch 后仍立即核对实际 `headSha`，不能只凭命令成功认定版本正确。
+
+响应上界复核追到 `HTTPRouter.acquireMutation`：它已有 context-aware writer queue，Status/Inspect 绕过该队列；仅看到 application 全局互斥锁不足以断言 HTTP 会无限挂起。因此本次不新增锁或 controller，只补 Cancel 排队的请求 deadline 到期、零 delivery pending/停止意图/receipt、查询可达和不释放他人 writer lane 的定向回归，并将 timeout renderer 加入真实 Task schema 测试枚举。这是 routing/fixture 测试，不证明执行中的 verification 可以被抢占，也不关闭长事务下实际业务停止延迟。新增代码本地 compile-only、vet/staticcheck 通过，动态证据仍需其自身 source CI；不混入已派发的 `dd8178f`。
+
+## 2026-09-06：自动业务停止观察候选，不能把观察当作 deadline 证明
+
+显式取消与完成后冷恢复通过后，本候选在同一 fixed server/Pi/canary 增加 `order-quote-timeout`：审批前 Task 冻结 60 秒 Attempt、600 秒 Run 预算；原业务场景仍为 300/600，不改变 runtime 合同。Start 丢响应/重启后只进行有界 Inspect，直到观察 BLOCKED 才调用当前 head 的 Collect，并要求 `stopped/run-stopped`；不调用 Cancel，不在 RUNNING 时用 Collect 触发停止，不自动重试失败 transport。180 秒是观察器等待上限，不是业务 deadline。
+
+观察成功只记 `resident-stop-observed/deadlineWitnessVerified=false`。须独立检查保留的真实 journal/ingress 的 terminalReason、冻结预算与来源、原 deadline、stop/cleanup/Outcome 链后才能记自动业务超时通过；不能以 BLOCKED 或 CI 绿色替代该检查。新增测试覆盖观察到期不派取消、异常不重试、当前 head、停止后 Collect 失败和普通 Task 预算不变。本候选尚待新 source CI/实机，不关闭 B1。
+
+## 2026-09-06：取消、停止后 Collect 与冷 server 恢复实机通过
+
+停止候选 `6e87f34a68f085384b8eaba09d76d2b5bd682b90` 的 [CI 34037704960](https://github.com/chiga0/marshal-harness/actions/runs/34037704960) 五项全绿后，单次 [canary 34038482097](https://github.com/chiga0/marshal-harness/actions/runs/34038482097) 全部成功。真实 Pi 经 Start 丢响应/server1 crash/server2 rebind/replay 后，取消生成 `worker.stopped/BLOCKED/sequence=4`、完整 cleanup 和 Outcome；原 Cancel 精确重放、当前终态 head 的 Collect 返回 `stopped/run-stopped`，server2 正常退出。相同固定 bytes 的 server3 冷启动后再次验证原 Cancel/receipt/Outcome、终态 Collect 和查询，未重启 Worker、未延长冻结 deadline。
+
+诊断 artifact `9990944385` 已独立取回，完整 evidence `9990944800` 远端保留。server2 首次/重复及 server3 Cancel 的响应 SHA-256 均为 `5d8c04d2b4e57a7cd39a351d40774e5f15842abe9c3b5d84e6a04351d57ebf65`；两次终态 Collect stdout SHA-256 均为 `606f11c437c8af004acfcc1e766d73e63ec1b10df913949757d9147d739a6e1e`，exit=1、stderr 为空（这是预期的非成功业务结果）。Run 从 14:14:21.440921Z 创建，到 14:14:43.124358Z 停止；整个 canary 于 14:15:04Z 完成。不把上述整体时间当作取消请求延迟，也不以单样本推导可靠性。
+
+关闭的是隔离候选的显式取消及完成后冷恢复子条件，不是所有 stop 故障窗口：自动业务 deadline、signal/cleanup 中途崩溃、长写事务下查询/停止响应上界仍开放，ADR 0081 继续 Proposed，B1 IN_PROGRESS。此前失败全部保留。为继续同一路径，开发分支同步 `origin/main@ba2196b` 的已合入正常 Pi 分类/ACCEPTED 文档，保留两侧审计历史；本次同步不是把停止候选合入 main，合并后的新 source 也不能冒用上述实机身份。
+
+## 2026-09-06：真实取消与精确重放成功，停止后新 Collect 误用旧 head
+
+`a553c445928a566874dfdb852e9f6f698ddeac88` 的 [CI 34036324414](https://github.com/chiga0/marshal-harness/actions/runs/34036324414) 五项通过。单次 [canary 34037154719](https://github.com/chiga0/marshal-harness/actions/runs/34037154719) 已越过之前的查询失败，两个 Cancel 调用均 exit=0，响应 SHA-256 同为 `e5b4181fa740ffae94677df66e2e81ff96b94561d9710137293b2f6f995619b1`；journal sequence 4 为 `worker.stopped`，含完整 barrier/process/allocation/supervisor/cleanup 引用及 `aborted-by-operator`。驱动已验证 stop/Outcome/receipt 形状后，在第四次调用 Collect 收到 transport failure。没有取消后 server3 冷恢复证据，整次 canary 仍失败。诊断 artifact 9990541132 已保留，完整包 9990541531 独立留存。
+
+根因核对：该 Collect 是新 key，却使用取消前 RUNNING sequence/head；真实 `BeginLifecycleBound` 必须拒绝非当前 head，而原 injected-call 测试只返回预置结果，漏掉了 delivery 约束。候选使新 Collect 使用已证明的 BLOCKED head；Core 仅将精确当前终态读取连接到耐久 stop intent 的原始 head，再执行完整 terminal/Outcome 验证。旧 pending 重放、显式 Cancel 与通用 stale-head 拒绝不变，合同补入仍为 Proposed 的 ADR 0081。增加真实 delivery store 测试区分新请求与历史 pending，纯映射负例及驱动参数断言；该测试的停止引用是明确 synthetic，不冒充完整 authority 证明。新 source 的动态和实机证据仍待验证，B1 不关闭。
+
+## 2026-09-06：停止候选完整 CI 通过，实机暴露并发查询接缝
+
+精确候选 `e65b7aa0657dbc2d48bd7da9c29145b9d41e45b8` 的 [CI 34035050503](https://github.com/chiga0/marshal-harness/actions/runs/34035050503) 五项全部通过；前置 stop-chain race 回归也通过。随后唯一 [canary 34035979322](https://github.com/chiga0/marshal-harness/actions/runs/34035979322) 完成真实 Pi Start、server2 重启/rebind、原 Start replay，却在随后 Inspect 返回 `transport-failure`，尚未进入 cancel。因此不能把新 Collect/Close 衔接记作实机取消成功，也不原样重试。诊断 artifact 9990188334 已保存，完整 artifact 9990188687 保留。
+
+代码核对发现 Inspect 不再等待 application 长事务后，`RepositorySession.InspectRun` 仍只执行一次 `AcquireExisting`；后台 deadline 检查可同时持有同 Run lease，原始 `ErrLeaseHeld` 会逃逸成 transport failure。现场仅有封闭分类，不能断言该次一定就是此错误。候选只对这个确定的 busy 错误做遵守原请求 context 的等待，其他错误立即返回；取得 lease 后仍重读 current owner/ledger，不读无锁快照、不加入 writer lane、不创建缺失 Run。真实 Run lease 回归验证写者释放后取得、等待取消不改 owner/不释放别人的 lease、预取消和缺失 Run。新增候选仍需动态 CI 与新的单次实机，B1 保持 IN_PROGRESS。
+
+## 2026-09-06：动态回归发现停止后 Collect 的 report 衔接缺口
+
+候选 `c118249` 的 CI 34033879517 结束：Linux quality、双架构 conformance 与 secret scan 通过；macOS 的 `TestLauncherV2TerminateUsesDurableBarrierAndRecoversLostReply` 在追加 SupervisorClosed 时失败。该回归已越过新增 cleanup Collect/丢响应恢复和 Close；不能据此派实机或把失败归为环境问题。旧比较要求 Close 的 report 与 Terminate 原报告完全一致，无法表达中间 Collect 封存输出及更新观察时间的合法事实链。
+
+候选改为只对 sealed v2 stop 识别精确 process-terminal → Collect receipt → Close receipt；终态进程身份、exit/signal、runtime/workdir/source、observer 不变，Close 的完整 report 必须等于该 Collect report。普通完成/历史路径保留旧严格比较，不忽略输出字段或凭空接受新摘要。回归显式采用更新的时间/输出，并拒绝缺失 terminal/Collect 引用、身份或退出状态改变及未收集输出。新精确 CI/实机仍待验证；B1 未完成。
+
+为缩短这类纵切反馈，`feat/b1-*` 的手动 macOS CI 在完整 quality 前先执行该精确 stop-chain race 回归；原五项检查、完整 quality/vulnerability 与实机准入不变。workflow 与 release-ci-contract 的固定白名单同步更新，不加入权限、自动发布或放行例外。前置失败仍会阻止整个 CI，不能用前置单测通过替代后续完整门禁。
+
+## 2026-09-06：取消已终止进程，缺 cleanup transcript 导致 Close 失败
+
+`f9c974d` 的 CI 34032441612 五项通过后，单次 canary 34033184062 已进入真实 cancel：RB1 sequence 22 为 barrier，23–25 为 Terminate intent/outcome 与 process-terminal，26–28 为 existing-worktree release intent/receipt 与 allocation-terminal，29 留下 Close intent，随后 fixed server 返回 `authority-conflict`。尚无 supervisor-closed、cleanup release、worker.stopped 或 Outcome，不能称为取消成功。小诊断包 9989307623 在数秒内返回上述事实，无须等待完整 executable 包才能定位执行阶段。
+
+代码核对发现确定性缺口：真实 `darwinMechanics.Close` 要求 `terminal && collected`，停止 composition 在 Terminate 后直接 Close；正常结果链事先 Collect，停止链没有，而 terminal 测试替身未模拟这一前提。按 ADR 0081 的候选补充 cleanup-only Collect，沿同一 held owner/RB1 transaction 与 v2 intent/receipt/有界 transcript reader，在 Close 前保存证据；barrier 与业务接纳保持关闭，不生成 CommittedResult。测试补 sealed stop 负向矩阵、Collect 丢响应恢复一次、Close 未 Collect 即失败、无业务接纳及冷账本重放。保留旧 pending Close，不插队改写旧命令。该修复尚待新精确 source 的动态 CI/实机证据，不关闭 B1。
+
+## 2026-09-06：查询候选消除 application 长互斥等待
+
+后续调用链核对：`darwinRepositoryOwnerPhysicalLock.withHeld` 仍先执行不可取消的 mutex 等待，再检查 context，可能让到期查询排在长 owner transaction 后。候选采用有界间隔的 TryLock/context 等待；到期不调用 authority callback、不释放其他调用者的锁，取得锁后仍执行全部原始身份/runtime 校验。回归用明确的等待进入信号覆盖排队中取消、预取消、nil context 和锁归属；不是用 sleep 猜测并发时序。该改动仅解决进程内 owner 锁的排队取消，不能宣称正在执行的 filesystem/kernel 校验具有硬实时上界；同路径实机查询时延仍需测量。
+
+`InspectRun` 原先与 Start/Collect/Verify/Cancel 共用 `adapter.mu`，即使 HTTP router 的只读请求不进入 writer lane，仍可能在长验证后排队。候选改为复用 `Status` 的 session lifetime 读锁；Close 仍同时取得 mutation/lifetime 写锁，Inspect 仍由 RepositorySession 获取精确 Run lease 并重新验证 owner/current ledger，不读取陈旧快照兜底。补充 mutation-held、Close 并发与无效输入测试；本地 compile-only/vet/staticcheck 通过，动态/race 尚待后继精确 CI。测试中的未 claim session 只证明不等待 application mutex，不证明有效 session 的全链路时延；底层 owner/storage 等待、同 Run 写冲突响应与实机查询延迟仍是 B1 开放项。
+
+## 2026-09-06：取消失败定位到 fixed CLI activation 漏接线
+
+完整 artifact 9988677757 已取回：34031227675 的 `call-1` 为 inspect/exit=0，`call-2` 为 cancel/exit=3、空 stdout。后者 stderr SHA-256 `bb8d1e32fe9bfd6c9b829425e953f6649875f6b436c9a56893a8dec7176fa5e7` 与固定诊断 `Marshal local dogfood gate 拒绝：self-local-command-denied。`（含换行）精确相等。因此请求在 CLI self gate 被拒绝，尚未进入 server；不是 Pi 未配置，也不是新的 stop runtime 失败。
+
+根因是新增 handler/transport 未同步 CLI command classifier、activation 命令闭集和 Schema。此前 package 测试绕过了真实入口，完整 CI 绿色未覆盖这个调用链接缝。候选按 ADR 0081 补齐封闭 `control-plane-cancel`，并从 `RunContext` 使用真实生成的 activation 验证所有 fixed lifecycle 命令到达参数校验；取消缺 activation、旧命令集合仍拒绝，不增加 bootstrap 豁免。小诊断包已补调用摘要，避免再次为了几百字节诊断下载约 19 MB 完整包。动态 CI 与新的单次实机结果仍待此精确候选验证，B1 未关闭。
+
+## 2026-09-06：取消候选越过 Start 重放，驱动响应诊断仍阻塞
+
+`2422d14` 的 CI 34030543935 五项全绿（macOS fixedcontrolplane/cli 动态测试均通过）后，仅派发一次 34031227675。command-audit 已记录 server2 的 `received-replay` 和随后 `received-final`，越过 34029737648 的旧失败点；随后 T2 driver 报 `fixed-cli-invalid-response`。journal 保留真实 Start outcome（sequence=3），磁盘 state.json 仍是 READY/2 的旧投影，不用它覆盖 journal；无 stop intent、没有取消成功或冷恢复证据。server2.stderr 为空，不能猜测该次原始 CLI 错误。
+
+小型诊断包 9988677224 已保留，但未包含 T2 调用元数据，必须等待完整包 9988677757（约 19 MB）才能区分初始 inspect 与 cancel 调用，这是可避免的诊断延迟。候选将既有 `driver-subject.json`、只含 operation/exitCode/stdoutSHA256/stderrSHA256 的 `call-*.json`、冻结 `cancel-request.json` 加入小型包，覆盖 t2 和 t2-recovery；不上传原始 stdout/stderr、transcript、配置或 executable，完整包保留。仅改善诊断交付，不重试旧 Run、不声称取消根因已修复。
+
+## 2026-09-06：取消实机越过启动准入，但重启后的 Start 重放失败
+
+候选 `5e0a8e30971e7cb89d937adf401317e945c4c5de` 的 CI 34029043931 五项全绿后，单次 [canary 34029737648](https://github.com/chiga0/marshal-harness/actions/runs/34029737648) 已启动真实 Pi，Run journal 到 `run.start-outcome/READY→RUNNING`，server2 重启/rebind 与查询成功；随后 Start 重放出现封闭 `transport-failure`，没有执行到取消、没有 stop intent/Outcome。因此既不是取消通过，也不是 Pi 未配置。诊断 artifact 9988209944 已保留；不原样重跑。
+
+代码确认一个真实竞争窗口：resident deadline 循环在 application mutex 下取得 Run lease，而 HTTP delivery 的 Begin 在进入 application 之前先取得同一个 lease。只锁 application 无法覆盖 Begin/receipt，可能导致重放收到 lease-held/raw transport 错误；当前封闭现场日志不足以断言该次原始错误必为 lease-held。候选把完整 delivery 写事务与后台协调纳入同一 writer lane，保留 Status/Inspect 不阻塞、后台不排队、请求 context 和持久化权限检查。回归覆盖首次/重放 Start、Collect 的 Begin/receipt 阶段互斥与排队取消零意图；动态证据仍待新 source CI 和同路径实机，不用新测试替代业务可用证明。
+
+正常主线不等待该隔离停止候选：PR #265 已合并为 `c93e31b`，main CI 34029534577 五项全绿，已单次派发正常 order-quote canary 34030199172。此时尚无新 ACCEPTED，B1 不升级。
+
+## 2026-09-06：取消候选实机验证在 Worker 启动前被错误的发布准入阻塞
+
+取消候选 `c1daeebb43541371d442e414ba830d59bf262ecd` 的 CI 34027878879 五项全绿。单次 canary 34028776232 却在 `Gate canonical repository and required CI` 失败：原脚本仅查 `event=push/head_branch=main`，而该候选证据来自 `workflow_dispatch`。失败在 candidate build、配置和 Worker 启动之前，零新业务 Attempt；这不是 Pi 配置或取消代码的实机失败，也不能归为实机通过。派发前未核对 gate 的事件合同，是本轮可避免的流程错误。
+
+纠偏保持 release-ci-gate.sh 及正式发布权限原样，只给显式取消候选验证增加独立 candidate-only gate：canonical API、feat 分支、dispatch SHA=expected-head、最新同 SHA/分支手动 CI 已完成，五个必需 job 全部且唯一成功。较新的失败/运行中 CI 不能借旧绿逃逸；错误 head/branch/event、缺 job、重复 job、skip 或未知字段类型拒绝。正常业务/main 场景仍用原 main gate；不先合并未完成取消来满足测试准入。具体边界记入仍为 Proposed 的 ADR 0081。
+
+## 2026-09-06：停止后的冷 server 验证候选
+
+同路径故障测试补充：v2 Terminate 链原先使用普通 `attempt-failed` barrier，不能覆盖取消合同。现改为经公开 producer 提交的 sealed operator stop intent，再沿原真实 durable bootstrap/start/rebind 链验证 signal 丢回复、exact receipt 恢复、Close 丢回复与独立 absence、cleanup 冷重放；末端必须保留原 stop intent、admission closed 且没有 CommittedResult。Supervisor peer/内核观察仍为明确替身，不宣称实机取消；本地 compile-only/vet/staticcheck 通过，新 source 动态证据待 CI。
+
+停止开发分支已推送 `984f45e`，同步 main `5bdec88` 并修正共享 release root adoption：正常完成要求已接纳结果，停止要求 sealed intent 与闭合 eligibility，二者都须在当前 owner 下重读 exact Attempt、release receipt 和 projection bytes。新增非耐久 sealed stop 拒绝反例；compile-only/vet/staticcheck 通过，动态证据待新 source，不借用 #264。
+
+`order-quote-cancel` 场景现延伸至 server2 正常退出、同 bytes server3 冷启动、原请求/原 deadline 的精确取消重放、BLOCKED 查询和 stopped Collect。新 evidence 使用独立 `t2-recovery` 目录，拒绝二进制漂移、deadline 延长、参数注入、终态/receipt 改变；24 项 Python 回归通过。尚未派实机取消，仍缺 signal/cleanup 中途崩溃与业务超时同路径证明；本增量不能关闭 B1。
+
+## 2026-09-06 10:23 UTC：正常 Collect receipt 修复已远端合并
+
+PR #264 的 source `224409272eb9c30762b8b0e15a2fd730d38db0e8` 经 CI 34026422197 五项及全部附加检查通过，远端 merge SHA 为 `5bdec88d7161771caa2a556c70bbdef576375ff9`，pendingRemoteSync=false；main CI 34027276856 尚在途，尚无新 canary 或 ACCEPTED。同步到停止开发分支后，共享 cleanup 入口会调用新的投影观察校验；停止没有 CommittedResult，必须用已耐久的 stop intent/eligibility 证明其合法终态，不能跳过 root 校验。后续实现与 source 验证另记，不借用正常完成 CI。
+## 2026-09-06：READY 准入动态通过，补停止场景的真实入口
+
+`20a9999bdbe11a0eab899737651135e35c5422e5` 的 [CI 34026216770](https://github.com/chiga0/marshal-harness/actions/runs/34026216770) 五项全绿，覆盖原始预算准入及此前停止纵切。新增候选为 fixed CLI `cancel` 派生单一 request-key 绑定的停止请求，拒绝自由 PID/actor/reason；认证、当前 Run 绑定与停止权限仍由原 fixed server 校验。Collect 的已证明停止输出为 `stopped/run-stopped`，退出码 1，不冒充成功收集。
+
+显式 `order-quote-cancel` 驱动复用真实 order-quote 的同一固定 server/启动恢复路径：要求取消后的 BLOCKED、Outcome 摘要、精确 receipt，成功后才执行一次同请求幂等重放，并验证 Collect 不再 pending、查询保持终态。未知响应立即保留证据退出，不自动重新取消；不创建 Decision、不输出 ACCEPTED。23 项注入调用 Python 测试及 shell 回归通过，不是真实 Pi 证据。取消后的重启、stop release/receipt 根绑定和完整故障矩阵仍待实现/实机验证；该选项尚未派发，ADR 0081 继续 Proposed，B1 不升级。
+
+## 2026-09-06：停止纵切 CI 全绿，补 READY 原始预算准入
+
+隔离候选 `a04d76c8239eb0a55822e01f7470ed9ff09a452a` 的 [CI 34025131805](https://github.com/chiga0/marshal-harness/actions/runs/34025131805) 五项全绿，包含两平台动态质量、两个 Linux conformance 和 secret scan。此前测试夹具混合历史 ProcessStarted/v2 reservation 的问题已用完整 Supervisor 启动/Collect 链修正，关闭借用的测试死锁也未再复发。这不替代真实 stop 故障矩阵，分支仍不合并。
+
+本候选继续补 READY 预算门禁：preparation 在 ReserveAttempt 前读取冻结 TaskSpec 和首个 planning.spec-accepted；bridge 在真正进入启动链前再次检查相同 Run deadline，防止 preparation 后长时间等待消耗完预算仍启动。已提交 RUNNING outcome 保持原 exact replay，不因恢复时的新时钟拒绝历史结果。拒绝不创建 StopIntent，不伪造 ProcessStarted/Outcome；受控存储源缺失也不放宽。新增到期前 1ns/恰好到期/到期后、不同 Run head、preparation→launch 间到期的回归，更新旧 composition 夹具为同源 TaskSpec/首事件。该改动另需新 source CI；长 public mutation 的停止延迟、启动检查后到 Resume 的竞态、stop 的 release/receipt 衔接及端到端故障矩阵仍需完成。
+
+## 2026-09-06：真实业务进入 VERIFYING，响应 receipt 尚未闭环
+
+main `4f7311b` 的 CI 34023916927 全绿后，仅派发一次 [34024740089](https://github.com/chiga0/marshal-harness/actions/runs/34024740089)。小型诊断 artifact `9986706443` 已保留：Run event 第四条为 `worker.completed/RUNNING→VERIFYING`，authority 账本有 36 条事实并已到 `cleanup-released`。因此新 prompt 对本次真实输出有效，WorkerResult/接纳/清理已越过旧失败点；不能据此保证未来模型永不违约。随后 server 报 `commit-lifecycle-delivery/authority-conflict`，客户端报 `fixed-cli-invalid-response`。尚无 Verify、ReviewPacket、独立 Decision 或 ACCEPTED。恢复测试中 server1 的 Killed:9 是既有显式故障注入，不拿它替代本次 receipt 问题的根因。后继必须核对 receipt 的当前 Run/owner/目录绑定与提交链，不重新执行已完成业务，也不原样重跑。
+
+取消纵切本轮接入 fixed server 常驻超时推进及 event 后 Outcome 恢复，并补有界公平批次、关闭取消、串行消费和不排队阻塞 public mutation 的测试。608ae0b 的两平台动态 CI 失败于新测试夹具混合 v2 reservation 与历史 ProcessStarted；已改用完整 Supervisor 启动/Collect 证据链。原 session Close 死锁未再出现在该次输出中，但最新常驻候选仍待动态验证；不得把 compile-only 当成故障矩阵通过。停止纵切继续隔离，不合入 main，不升级 B1。
+
+## 2026-09-06：取消/超时后的 Collect 必须停止等待
+
+继续 ADR 0081 纵切时发现：底层停止完成后返回 deadline sentinel，被通用 authority 映射改成 `authority-conflict`，fixed transport 又保留 pending；这会让客户端在已停止 Run 上继续等待。候选新增封闭 `run-stopped`，只在 terminal event、cleanup 和 Outcome 已验证后返回。已终态或 constructor 恢复中完成 stop 的 Collect 重放不重新打开已释放 worktree，而由 repository session 将原 current-request 连接到已存 stop intent，再执行同一终态核验。认证 HTTP 409 与客户端分类同时接通，零成功 receipt、零冒充业务 ACCEPTED。
+
+新增认证 socket 的正常停止/部分投影测试，确保部分 projection 仍是 pending；同时覆盖无停止意图时不能从 Collect 发明 stop。compile-only、vet/staticcheck 已通过，动态证据待本候选 CI；608ae0b 的在途 CI 不覆盖这些后续改动。resident timer、READY 到期准入和全链路 fault matrix 仍未完成，不把该接口修补计作 B1 exit 关闭。
+
+## 2026-09-06：Pi 输出修复已合入，停止纵切补业务接纳截止检查
+
+PR #263 的 source `31b64a8` 经 Linux/macOS quality、两架构 Linux conformance、secret scan 及附加检查全部通过，已远端合并为 `4f7311b08bf59f6fad31aaae6661fc253ab0b0b4`。主线 CI 34023916927 仍在运行，尚未派发该新 head 的真实 canary；最近真实业务结果仍是 34009508838 的尾随文本拒绝，没有 ACCEPTED。该合并不改变严格结果解析门禁。
+
+取消分支 `f41b3aa` 的 CI 34009447676 在 Linux 全部通过，但 macOS `TestReconcileStoppedRunRejectsInvalidInputAndClosedSession` 超时。堆栈显示测试在 delivery store 仍持有 session borrow 时调用 `RepositorySession.Close`，等待自己的读锁；不是 Pi 无响应。修复测试按生产资源顺序先关闭 store，再关闭 session，保留 owner 必须等待借用释放的约束，不增加超时掩盖问题。
+
+本开发候选补充：恢复既有 stop intent 的 cleanup/Run/Outcome；从 frozen Task/首条 planning/ProcessStarted 读取业务 deadline；在 ingress 同一 durable admission transaction 内核对 Task 与 started 摘要及截止点；到期禁止 fresh admission，精确已提交结果仍允许重放。新增截止前 1ns、精确到期、到期后 1ns、冷 ingress 重放和来源漂移负例。这里只证明代码与编译检查进展，新增动态/race 证据待该候选 hosted CI。READY 到期准入、resident timer、完整故障矩阵和对外停止状态/错误闭环仍未完成，ADR 0081 保持 Proposed，禁止合并放行停止纵切或升级 B1 状态。
+
+效率纠偏：在原开发分支保存完整纵切中间结果，CI 可提前发现平台问题；不为通过局部测试另造生产完成结论，也不重试未修复的同源实机失败。
 ## 2026-09-06：fixed server 真实业务首次独立 ACCEPTED
 
 在 main `c93e31bde15d9dbcd3487dfc1db323eafc4127e1` 的 CI 34029534577 五项全绿后，单次 [业务 canary 34030199172](https://github.com/chiga0/marshal-harness/actions/runs/34030199172) 全部成功。真实 Pi 0.84.4 / `openai/qwen3.8-max` 通过 fixed server 完成订单报价纯函数；同 bytes Start 丢响应、server 重启/rebind/replay 后，沿 Collect→cleanup→delivery receipt→Verify→ReviewPacket→独立 Decision→终态查询走通。Run snapshot 为 `ACCEPTED/sequence=6`，第 6 条 event 为 `review.accept`；一次 Attempt、零 operational retry、零 rework。没有手改 `.marshal`、没有假 Decision、没有业务候选发布。
@@ -560,8 +1209,8 @@ cleanup 使用时必须同时经过外部 current Run authority verifier、精�
 
 | Finding | 等级 | 状态 | 处置 |
 | --- | --- | --- | --- |
-| `V1-LOGICAL-PHYSICAL-CONFLATION` | P1 | `CLOSED-DOCS` | [整体架构](architecture.md#逻辑职责不等于物理服务)已明确 v1.0 采用单 Control Plane 进程、唯一 file-backed authority ledger、本地内容寻址对象存储和多个有界 Worker/Verifier runtime；职责默认进程内模块化，只有独立 trust boundary、durable lifecycle 或已测量的扩缩容/故障隔离需要才能拆服务。 |
-| `V1-PREMATURE-PLATFORM-GENERALIZATION` | P1 | `CLOSED-DOCS` | [实施计划](implementation-plan.md#v10-复杂度预算)禁止在 R1–R6 主线新建通用 `WorkflowTemplate` DSL、Goal DAG runtime、跨节点 scheduler、独立 GC service、第二 queue 或第二状态库；新增 seam 必须在同一切片接入真实 composition root。 |
+| `V1-LOGICAL-PHYSICAL-CONFLATION` | P1 | `CLOSED-DOCS` | [当时整体架构](architecture-reference-2026-09-07.md#逻辑职责不等于物理服务)已明确当时 v1.0 采用单 Control Plane 进程、唯一 file-backed authority ledger、本地内容寻址对象存储和多个有界 Worker/Verifier runtime；职责默认进程内模块化，只有独立 trust boundary、durable lifecycle 或已测量的扩缩容/故障隔离需要才能拆服务。 |
+| `V1-PREMATURE-PLATFORM-GENERALIZATION` | P1 | `CLOSED-DOCS` | [当时实施计划](implementation-plan-reference-2026-09-07.md#v10-复杂度预算)禁止在当时 R1–R6 主线新建通用 `WorkflowTemplate` DSL、Goal DAG runtime、跨节点 scheduler、独立 GC service、第二 queue 或第二状态库；新增 seam 必须在同一切片接入真实 composition root。当前排期不据此拒绝0085的有限团队与单库替换。 |
 
 该关闭只表示实现与部署口径已经明确，不升级任何 Milestone 或能力成熟度，也不表示 Goal、WorkflowTemplate、远程 Artifact/Knowledge Store 或 GC 已实现。此次修订不改变 trust boundary、持久化语义、生命周期或发布权限，因此不新增 ADR；未来若拆分引入新的权威写路径、持久对象或跨域授权，仍必须先新增或替代 ADR。
 

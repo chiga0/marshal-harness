@@ -1,5 +1,7 @@
 # ADR 0066：生产组合的两阶段 owner acquisition 与 S2 边界纠正
 
+> 2026-09-07 适用性：§2–§6 的固定 Pi/仓库内 binary、provisional verifier 函数与 AST/文件形状、物理账本和 S1→S2 限制只适用于旧组合；新方案映射见 ADR 0085。先持 scope owner 锁、再验证提交 owner successor、持锁前无业务副作用及单 owner 不变。 新方案取代仍以 [ADR 0085](0085-agent-team-service-contract-and-storage.md) 的 Proposed/接纳及启用状态为准；[合同对照](../design-contract-map.md)不改变本文历史接受记录。
+
 - 状态：已接受（Accepted）
 - 日期：2026-08-29
 - 提议基线：`main@7de2a70cec112df5fbf2b36f85ce5878f227c40c`
