@@ -440,12 +440,21 @@ func TestRepositoryTaskCancelFrozenSourcesAcrossStates(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if state.State != target {
-				event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event-source-projection", RunID: state.RunID, AttemptID: state.CurrentAttemptID, Sequence: state.Sequence + 1, Type: "run.transition", StateFrom: state.State, StateTo: target, Timestamp: time.Now().UTC(), Payload: map[string]any{}}
+			path := []domain.State{target}
+			if target == domain.StateReviewPending {
+				path = []domain.State{domain.StateVerifying, domain.StateReviewPending}
+			} else if target == domain.StateAccepted {
+				path = []domain.State{domain.StateVerifying, domain.StateReviewPending, domain.StateAccepted}
+			}
+			for _, next := range path {
+				if state.State == next {
+					continue
+				}
+				event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event-source-projection-" + strings.ToLower(string(next)), RunID: state.RunID, AttemptID: state.CurrentAttemptID, Sequence: state.Sequence + 1, Type: "run.transition", StateFrom: state.State, StateTo: next, Timestamp: time.Now().UTC(), Payload: map[string]any{}}
 				if err := s.runs.Append(lease, event, state.Sequence); err != nil {
 					t.Fatal(err)
 				}
-				state.Sequence, state.State = event.Sequence, target
+				state.Sequence, state.State = event.Sequence, next
 				if err := s.runs.WriteSnapshot(lease, state); err != nil {
 					t.Fatal(err)
 				}
