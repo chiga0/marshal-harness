@@ -42,6 +42,8 @@
 
 ## 3. B2：把演示变成日常可用的本地 API 服务
 
+**当前并行实施方式**：以 [Node API 候选契约](node-api-contract.md)描述实际可调用形状，独立推进 Schema/兼容负例、HTTP Application Port 的 DI/单元测试和真实 Agent 接入；三者在组合测试处汇合，不互相串行等待。候选已实现的 Task 创建/确认/查询/取消与 Worker/审计/交付不等于全量 B2：问答/图/operations、通用制品、SQLite 单写及完整恢复仍须接线和验证，之后才评定 `API-STABLE`。
+
 ### B2-A：Task 体验与本地简启动
 
 当前有界切片按 [ADR 0086](adr/0086-task-preapproval-questions-and-preview-revisions.md) 先接**未批准 Task** 的关键问答：同 RB1 原子答案/新预览、原期限、精确重放、最终确认及取消 CAS。运行中 Worker 的待答、pause/resume/steering 不在该子切片；`order-quote/v1` 保持零问题。测试专用模板和组件链通过也只能关闭该子条件，不能关闭下列完整 B2-A 或 B2。

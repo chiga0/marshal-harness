@@ -48,4 +48,6 @@ jobs:
           experiments/node-team/providers.test.mjs
           experiments/node-team/business.test.mjs
           experiments/node-team/runtime.test.mjs
+          experiments/node-team/http-handler.test.mjs
           experiments/node-team/http.test.mjs
+          experiments/node-team/openapi.test.mjs

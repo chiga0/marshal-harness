@@ -8,6 +8,12 @@
 
 ### 当前研发方式：本地集成优先
 
+**API/DI 并行检查点**：产品能力设计已有 ADR0085，但不能把旧 `/v1alpha1` OpenAPI 当作当前 Task-first 稳定协议。Node 实际接口候选见 [API 契约与差距](node-api-contract.md)及 `experiments/node-team/openapi.json`，覆盖 8 个路径、9 个操作；它只描述 ADR0087 实验，尚非 `API-STABLE`。HTTP 已抽为注入 Application 的薄适配器，sourceHead=`fb08495`，localMergeSha=`64c28cb5986c0ec424fc0f3aefd7d1565ba3e6c8`；维护者独立审查及 34/34 Node 组合回归通过。Schema/负例与真实无模型 HTTP 响应验证、DI 单测、第二 Provider 接入分别在独立工作树推进，不等待真实模型才写接口或测试。Qwen 接入仍在实施，未新增该 Adapter 的实机通过证据。
+
+本地 main 已通过 `428acb36a2af69bff0b1f94d6f77ada078a8321c` 集成此前开发栈，并继续合入上述 DI；远端 main 最近核对仍为 `ba2196b`，本地增量 `pendingRemoteSync=true`。以下各 PR 的远端功能分支记录是各自历史同步事实，不表示本地仍未集成，也不表示远端 main 已更新。
+
+Schema source=`960292a` 的 18 个 component 已经 Draft 2020-12 metaschema 独立校验；与 DI 合并后六个 Node 测试文件 **37/37 通过，26.69 秒**，包含真实 HTTP 的契约响应、重放、取消和交付（Agent 为确定性替身）。同组新增测试已加入后续集中 CI 清单，本轮没有发新 PR、触发远端 CI 或调用真实模型；这关闭确定性接口接缝，不关闭真实第二 Provider/生产发布。
+
 2026-09-08 用户明确调整：快速推进期间不再逐切片创建 PR 或等待 CI/E2E；独立本地 review 无阻断后直接合并，继续下一项开发，集中补跑验证。保留单写者、精确 source、未验证项和发布前实际验收，不把本地 merge 当成正式 release。已有远端 CI 可异步完成，不反向阻塞后继开发。
 
 Node 与 SQLite 已在本地候选 `5b50439f79fe55082785b60cea11f09c99c94166` 集成；SQLite 修复 source=`f51ff9a744a84da0e73d6dd358aa1f8110dd5bd2` 经维护者独立代码 review，无生产期限或行为变更，新的动态 race 待集中验证。Node source=`0e1250c` 的 [Node team 34203735967](https://github.com/chiga0/marshal-harness/actions/runs/34203735967) 在 Ubuntu/macOS 均通过确定性回归，本机同组 23/23 通过；不调用真实模型或 Marshal 原生文件。后续直接基于集成代码推进，不继续维护平行功能岛。

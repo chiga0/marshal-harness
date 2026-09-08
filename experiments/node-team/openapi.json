@@ -1,0 +1,2443 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Marshal Node 团队实验 HTTP 契约",
+    "version": "0.1.0-experimental",
+    "description": "从 ADR0087 Node profile 实际 handler 提取的候选，不是 ADR0085 全量 API，不授予 API-STABLE/production。只对服务启动打印的实例 URL 使用；不提供远程部署入口。"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:{port}",
+      "description": "port 必须从受保护连接文件读取，不固定默认端口。",
+      "variables": {
+        "port": {
+          "default": "49152",
+          "description": "仅示例；实例实际随机端口。"
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "localBearer": []
+    }
+  ],
+  "x-profile": "marshal-node-team-experiment/v1",
+  "x-implementation-base": "428acb36",
+  "x-request-maxBytes": 16384,
+  "x-rejected-url-syntax": [
+    "query",
+    "percent-encoding",
+    "double-slash"
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "仅前端存活；不代表 Supervisor ready",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host 非本实例、重复 Host 或非空 Origin",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Supervisor、存储、交付完整性或内部失败；不可据此自动重派",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks": {
+      "get": {
+        "operationId": "listTasks",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tasks"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求或 JSON/幂等键非法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer 不存在、错误或重复",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host 非本实例、重复 Host 或非空 Origin",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "未知 Task/路由；query、百分号或双斜线拒绝",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "已匹配 Task 路由使用错误方法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CAS、幂等、状态、容量或交付未就绪冲突",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Supervisor、存储、交付完整性或内部失败；不可据此自动重派",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "最多 100 个存储 Task，返回完整列表，无分页参数；包括原 prompt 的 plan，客户端须按敏感业务数据保护。"
+      },
+      "post": {
+        "operationId": "createTask",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTask"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "草案已创建或精确重放；没有执行授权",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求或 JSON/幂等键非法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer 不存在、错误或重复",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host 非本实例、重复 Host 或非空 Origin",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "未知 Task/路由；query、百分号或双斜线拒绝",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "已匹配 Task 路由使用错误方法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CAS、幂等、状态、容量或交付未就绪冲突",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "请求体超过 16384 bytes",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "仅 application/json 或 charset=utf-8；拒绝 Content-Encoding",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Supervisor、存储、交付完整性或内部失败；不可据此自动重派",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "仅 intent，UTF-8 ≤4096 bytes；完整 JSON 请求≤16384 bytes。key 域为本实验状态根的 create。同 key 同正文返回原 Task 当前投影，不创建替身；同 key 不同正文409。当前固定订单模板，intent不能改变权限/验收。"
+      }
+    },
+    "/v1/tasks/{id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TaskId"
+        }
+      ],
+      "get": {
+        "operationId": "getTask",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求或 JSON/幂等键非法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer 不存在、错误或重复",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host 非本实例、重复 Host 或非空 Origin",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "未知 Task/路由；query、百分号或双斜线拒绝",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "已匹配 Task 路由使用错误方法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CAS、幂等、状态、容量或交付未就绪冲突",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Supervisor、存储、交付完整性或内部失败；不可据此自动重派",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks/{id}/approve": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TaskId"
+        }
+      ],
+      "post": {
+        "operationId": "approveTask",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveTask"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "已受理或精确重放；不证明执行/取消已经完成",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求或 JSON/幂等键非法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer 不存在、错误或重复",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host 非本实例、重复 Host 或非空 Origin",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "未知 Task/路由；query、百分号或双斜线拒绝",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "已匹配 Task 路由使用错误方法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CAS、幂等、状态、容量或交付未就绪冲突",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "请求体超过 16384 bytes",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "仅 application/json 或 charset=utf-8；拒绝 Content-Encoding",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Supervisor、存储、交付完整性或内部失败；不可据此自动重派",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "用户确认已经展示的原 plan/previewDigest；当前 revision CAS。同 Task+approve+key 精确重放先于 CAS，返回当前 Task，不再次启动。最多一个活动 Task、两个作者。"
+      }
+    },
+    "/v1/tasks/{id}/cancel": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TaskId"
+        }
+      ],
+      "post": {
+        "operationId": "cancelTask",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelTask"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "已受理或精确重放；不证明执行/取消已经完成",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求或 JSON/幂等键非法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer 不存在、错误或重复",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host 非本实例、重复 Host 或非空 Origin",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "未知 Task/路由；query、百分号或双斜线拒绝",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "已匹配 Task 路由使用错误方法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CAS、幂等、状态、容量或交付未就绪冲突",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "请求体超过 16384 bytes",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "仅 application/json 或 charset=utf-8；拒绝 Content-Encoding",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Supervisor、存储、交付完整性或内部失败；不可据此自动重派",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "同 Task+cancel+key 精确重放先于 CAS；新 key 重复取消409。同一个 key可分别用于approve与cancel，幂等域不是跨操作全局。202不是已停止，轮询原 Task直到cancelled/failed/intervention；completed不可改写。"
+      }
+    },
+    "/v1/tasks/{id}/workers": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TaskId"
+        }
+      ],
+      "get": {
+        "operationId": "listTaskWorkers",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workers"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求或 JSON/幂等键非法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer 不存在、错误或重复",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host 非本实例、重复 Host 或非空 Origin",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "未知 Task/路由；query、百分号或双斜线拒绝",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "已匹配 Task 路由使用错误方法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CAS、幂等、状态、容量或交付未就绪冲突",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Supervisor、存储、交付完整性或内部失败；不可据此自动重派",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks/{id}/audit": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TaskId"
+        }
+      ],
+      "get": {
+        "operationId": "getTaskAudit",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Audit"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求或 JSON/幂等键非法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer 不存在、错误或重复",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host 非本实例、重复 Host 或非空 Origin",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "未知 Task/路由；query、百分号或双斜线拒绝",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "已匹配 Task 路由使用错误方法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CAS、幂等、状态、容量或交付未就绪冲突",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Supervisor、存储、交付完整性或内部失败；不可据此自动重派",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks/{id}/delivery": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TaskId"
+        }
+      ],
+      "get": {
+        "operationId": "getTaskDelivery",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Delivery"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求或 JSON/幂等键非法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer 不存在、错误或重复",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host 非本实例、重复 Host 或非空 Origin",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "未知 Task/路由；query、百分号或双斜线拒绝",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "已匹配 Task 路由使用错误方法",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CAS、幂等、状态、容量或交付未就绪冲突",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Supervisor、存储、交付完整性或内部失败；不可据此自动重派",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "禁止缓存业务结果。"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "localBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "本地受保护连接文件 token；不能放 URL/日志/Worker prompt。同 UID不是恶意隔离。健康仍检查Host/Origin。"
+      }
+    },
+    "parameters": {
+      "TaskId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Id"
+        }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Id"
+        },
+        "description": "只能有一个该 header；同操作原 key+正文精确重放，无自动模型重试。"
+      }
+    },
+    "schemas": {
+      "Id": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "Digest": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "ArtifactHash": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$",
+        "description": "文件 UTF-8 内容的 SHA-256，裸 hex，不含 sha256:。"
+      },
+      "Revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "CreateTask": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "intent"
+        ],
+        "properties": {
+          "intent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "x-maxUtf8Bytes": 4096,
+            "x-wellFormedUnicode": true,
+            "description": "非空白、无 NUL、合法 Unicode，UTF-8 最多 4096 bytes；maxLength 只是必要的字符上界。"
+          }
+        },
+        "examples": [
+          {
+            "intent": "实现订单处理模块"
+          }
+        ]
+      },
+      "ApproveTask": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedRevision",
+          "previewDigest"
+        ],
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "previewDigest": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        },
+        "examples": [
+          {
+            "expectedRevision": 1,
+            "previewDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      },
+      "CancelTask": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedRevision"
+        ],
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        },
+        "examples": [
+          {
+            "expectedRevision": 2
+          }
+        ]
+      },
+      "Health": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "profile"
+        ],
+        "properties": {
+          "status": {
+            "const": "ok"
+          },
+          "profile": {
+            "const": "marshal-node-team-experiment/v1"
+          }
+        },
+        "examples": [
+          {
+            "status": "ok",
+            "profile": "marshal-node-team-experiment/v1"
+          }
+        ]
+      },
+      "PlanNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "role",
+          "file",
+          "prompt"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "role": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "x-maxUtf8Bytes": 64,
+            "x-wellFormedUnicode": true,
+            "description": "非空白、无 NUL、合法 Unicode，UTF-8 最多 64 bytes；maxLength 只是必要的字符上界。"
+          },
+          "file": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]*\\.mjs$"
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "x-maxUtf8Bytes": 65536,
+            "x-wellFormedUnicode": true,
+            "description": "非空白、无 NUL、合法 Unicode，UTF-8 最多 65536 bytes；maxLength 只是必要的字符上界。"
+          }
+        }
+      },
+      "Plan": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "intent",
+          "nodes",
+          "timeoutMs"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "x-maxUtf8Bytes": 128,
+            "x-wellFormedUnicode": true,
+            "description": "非空白、无 NUL、合法 Unicode，UTF-8 最多 128 bytes；maxLength 只是必要的字符上界。"
+          },
+          "intent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "x-maxUtf8Bytes": 4096,
+            "x-wellFormedUnicode": true,
+            "description": "非空白、无 NUL、合法 Unicode，UTF-8 最多 4096 bytes；maxLength 只是必要的字符上界。"
+          },
+          "nodes": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/components/schemas/PlanNode"
+            }
+          },
+          "timeoutMs": {
+            "const": 300000
+          }
+        }
+      },
+      "Worker": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "nodeId",
+          "role",
+          "status",
+          "pid",
+          "guardPid",
+          "stdoutBytes",
+          "stderrBytes",
+          "cleaned",
+          "usage"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "nodeId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "role": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "x-maxUtf8Bytes": 64,
+            "x-wellFormedUnicode": true,
+            "description": "非空白、无 NUL、合法 Unicode，UTF-8 最多 64 bytes；maxLength 只是必要的字符上界。"
+          },
+          "status": {
+            "enum": [
+              "planned",
+              "queued",
+              "launching",
+              "running",
+              "collecting",
+              "collected",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "guardPid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "agentExitedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finishedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "stdoutBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "stderrBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "lastObservedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "exitCode": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reason": {
+            "enum": [
+              "guard-cleanup-unconfirmed",
+              "agent-failed",
+              "invalid-candidate",
+              "invalid-command",
+              "spawn-failed",
+              "invalid-utf8-output",
+              "output-limit"
+            ]
+          },
+          "cleaned": {
+            "type": "boolean"
+          },
+          "usage": {
+            "type": "null",
+            "description": "当前没有用量采集，不是 0。"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": [
+              "untrusted-request",
+              "unauthorized",
+              "not-found",
+              "method-not-allowed",
+              "invalid-content-type",
+              "invalid-idempotency-key",
+              "request-too-large",
+              "invalid-json",
+              "invalid-request",
+              "task-not-found",
+              "idempotency-conflict",
+              "task-capacity-exceeded",
+              "unsupported-task-intent",
+              "revision-conflict",
+              "preview-conflict",
+              "capacity-busy",
+              "task-already-terminal",
+              "cancel-already-requested",
+              "delivery-not-ready",
+              "delivery-corrupt",
+              "supervisor-closing",
+              "storage-needs-intervention",
+              "state-capacity-exceeded",
+              "invalid-state",
+              "state-drift",
+              "unsafe-private-file",
+              "private-file-too-large",
+              "supervisor-response-too-large",
+              "invalid-supervisor-response",
+              "supervisor-unavailable",
+              "internal-unavailable"
+            ]
+          }
+        },
+        "examples": [
+          {
+            "error": "revision-conflict"
+          }
+        ]
+      },
+      "File": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "content",
+          "sha256"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "normalize.mjs",
+              "report.mjs"
+            ]
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "x-maxUtf8Bytes": 65536,
+            "x-wellFormedUnicode": true,
+            "description": "非空白、无 NUL、合法 Unicode，UTF-8 最多 65536 bytes；maxLength 只是必要的字符上界。"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/ArtifactHash"
+          }
+        }
+      },
+      "Delivery": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "taskId",
+          "files",
+          "checks",
+          "verifiedAt"
+        ],
+        "properties": {
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "files": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/components/schemas/File"
+            },
+            "description": "各文件名恰好一次；sha256 必须等于内容摘要。"
+          },
+          "checks": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "verifiedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "examples": [
+          {
+            "taskId": "task-example",
+            "files": [
+              {
+                "name": "normalize.mjs",
+                "content": "export function normalize(rows) { return rows; }",
+                "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              {
+                "name": "report.mjs",
+                "content": "export function report(rows) { return rows; }",
+                "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              }
+            ],
+            "checks": 69,
+            "verifiedAt": "2026-09-08T00:01:00.000Z"
+          }
+        ],
+        "description": "仅 completed 且已独立验收时可下载；JSON 内联业务模块，不是 ZIP，也没有 Artifact ID。示例只演示 shape，不能充当验收或内容摘要证据。"
+      },
+      "Task": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "status",
+          "revision",
+          "intent",
+          "plan",
+          "previewDigest",
+          "createdAt",
+          "attempts",
+          "usage",
+          "workers"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "status": {
+            "enum": [
+              "awaiting-approval",
+              "approved",
+              "running",
+              "verifying",
+              "completed",
+              "failed",
+              "cancelling",
+              "cancelled",
+              "intervention"
+            ]
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "intent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "x-maxUtf8Bytes": 4096,
+            "x-wellFormedUnicode": true,
+            "description": "非空白、无 NUL、合法 Unicode，UTF-8 最多 4096 bytes；maxLength 只是必要的字符上界。"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/Plan"
+          },
+          "previewDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "approvedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deadline": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finishedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "enum": [
+              "user-cancelled",
+              "deadline-exceeded",
+              "launch-failed",
+              "guard-message-failed",
+              "guard-start-failed",
+              "guard-exit-failed",
+              "guard-cleanup-unconfirmed",
+              "output-limit",
+              "agent-failed",
+              "invalid-candidate",
+              "invalid-command",
+              "spawn-failed",
+              "invalid-utf8-output",
+              "independent-verification-failed",
+              "supervisor-stopped"
+            ]
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "usage": {
+            "type": "null"
+          },
+          "workers": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/components/schemas/Worker"
+            }
+          }
+        },
+        "examples": [
+          {
+            "id": "task-example",
+            "status": "awaiting-approval",
+            "revision": 1,
+            "intent": "实现订单处理模块",
+            "plan": {
+              "version": "node-orders-v2",
+              "intent": "实现订单处理模块",
+              "nodes": [
+                {
+                  "id": "normalize",
+                  "role": "author",
+                  "file": "normalize.mjs",
+                  "prompt": "冻结的规范化接口与反例；示例省略业务正文。"
+                },
+                {
+                  "id": "report",
+                  "role": "author",
+                  "file": "report.mjs",
+                  "prompt": "冻结的汇总接口与反例；示例省略业务正文。"
+                }
+              ],
+              "timeoutMs": 300000
+            },
+            "previewDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "createdAt": "2026-09-08T00:00:00.000Z",
+            "attempts": 0,
+            "usage": null,
+            "workers": [
+              {
+                "id": "worker-example",
+                "nodeId": "normalize",
+                "role": "author",
+                "status": "planned",
+                "pid": null,
+                "guardPid": null,
+                "stdoutBytes": 0,
+                "stderrBytes": 0,
+                "cleaned": true,
+                "usage": null
+              },
+              {
+                "id": "worker-example-report",
+                "nodeId": "report",
+                "role": "author",
+                "status": "planned",
+                "pid": null,
+                "guardPid": null,
+                "stdoutBytes": 0,
+                "stderrBytes": 0,
+                "cleaned": true,
+                "usage": null
+              }
+            ]
+          }
+        ],
+        "description": "当前投影，无 phase、allowedActions、delivery 或 cancellationRequested 字段。省略尚未观察到的时间与 reason；usage 始终 null。revision 并非每次状态改变都增加，进度不更新批准摘要。示例摘要只演示 shape，确认必须使用原服务响应的精确 previewDigest。"
+      },
+      "Tasks": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tasks"
+        ],
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/Task"
+            }
+          }
+        },
+        "examples": [
+          {
+            "tasks": [
+              {
+                "id": "task-example",
+                "status": "awaiting-approval",
+                "revision": 1,
+                "intent": "实现订单处理模块",
+                "plan": {
+                  "version": "node-orders-v2",
+                  "intent": "实现订单处理模块",
+                  "nodes": [
+                    {
+                      "id": "normalize",
+                      "role": "author",
+                      "file": "normalize.mjs",
+                      "prompt": "冻结的规范化接口与反例；示例省略业务正文。"
+                    },
+                    {
+                      "id": "report",
+                      "role": "author",
+                      "file": "report.mjs",
+                      "prompt": "冻结的汇总接口与反例；示例省略业务正文。"
+                    }
+                  ],
+                  "timeoutMs": 300000
+                },
+                "previewDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "createdAt": "2026-09-08T00:00:00.000Z",
+                "attempts": 0,
+                "usage": null,
+                "workers": [
+                  {
+                    "id": "worker-example",
+                    "nodeId": "normalize",
+                    "role": "author",
+                    "status": "planned",
+                    "pid": null,
+                    "guardPid": null,
+                    "stdoutBytes": 0,
+                    "stderrBytes": 0,
+                    "cleaned": true,
+                    "usage": null
+                  },
+                  {
+                    "id": "worker-example-report",
+                    "nodeId": "report",
+                    "role": "author",
+                    "status": "planned",
+                    "pid": null,
+                    "guardPid": null,
+                    "stdoutBytes": 0,
+                    "stderrBytes": 0,
+                    "cleaned": true,
+                    "usage": null
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "Workers": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "taskId",
+          "workers"
+        ],
+        "properties": {
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "workers": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/components/schemas/Worker"
+            }
+          }
+        },
+        "examples": [
+          {
+            "taskId": "task-example",
+            "workers": [
+              {
+                "id": "worker-example",
+                "nodeId": "normalize",
+                "role": "author",
+                "status": "planned",
+                "pid": null,
+                "guardPid": null,
+                "stdoutBytes": 0,
+                "stderrBytes": 0,
+                "cleaned": true,
+                "usage": null
+              },
+              {
+                "id": "worker-example-report",
+                "nodeId": "report",
+                "role": "author",
+                "status": "planned",
+                "pid": null,
+                "guardPid": null,
+                "stdoutBytes": 0,
+                "stderrBytes": 0,
+                "cleaned": true,
+                "usage": null
+              }
+            ]
+          }
+        ]
+      },
+      "Audit": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "status",
+          "revision",
+          "intent",
+          "plan",
+          "previewDigest",
+          "createdAt",
+          "attempts",
+          "usage",
+          "workers",
+          "taskId",
+          "elapsedMs",
+          "reworkCount",
+          "retryCount",
+          "acceptance"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "status": {
+            "enum": [
+              "awaiting-approval",
+              "approved",
+              "running",
+              "verifying",
+              "completed",
+              "failed",
+              "cancelling",
+              "cancelled",
+              "intervention"
+            ]
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "intent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "x-maxUtf8Bytes": 4096,
+            "x-wellFormedUnicode": true,
+            "description": "非空白、无 NUL、合法 Unicode，UTF-8 最多 4096 bytes；maxLength 只是必要的字符上界。"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/Plan"
+          },
+          "previewDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "approvedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deadline": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finishedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "enum": [
+              "user-cancelled",
+              "deadline-exceeded",
+              "launch-failed",
+              "guard-message-failed",
+              "guard-start-failed",
+              "guard-exit-failed",
+              "guard-cleanup-unconfirmed",
+              "output-limit",
+              "agent-failed",
+              "invalid-candidate",
+              "invalid-command",
+              "spawn-failed",
+              "invalid-utf8-output",
+              "independent-verification-failed",
+              "supervisor-stopped"
+            ]
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "usage": {
+            "type": "null"
+          },
+          "workers": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/components/schemas/Worker"
+            }
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "elapsedMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "从 approvedAt 到 finishedAt 或当前时钟；宿主时钟跳变可能使值为负。"
+          },
+          "reworkCount": {
+            "const": 0
+          },
+          "retryCount": {
+            "const": 0
+          },
+          "acceptance": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "passed",
+                  "checks"
+                ],
+                "properties": {
+                  "passed": {
+                    "const": true
+                  },
+                  "checks": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "examples": [
+          {
+            "id": "task-example",
+            "status": "awaiting-approval",
+            "revision": 1,
+            "intent": "实现订单处理模块",
+            "plan": {
+              "version": "node-orders-v2",
+              "intent": "实现订单处理模块",
+              "nodes": [
+                {
+                  "id": "normalize",
+                  "role": "author",
+                  "file": "normalize.mjs",
+                  "prompt": "冻结的规范化接口与反例；示例省略业务正文。"
+                },
+                {
+                  "id": "report",
+                  "role": "author",
+                  "file": "report.mjs",
+                  "prompt": "冻结的汇总接口与反例；示例省略业务正文。"
+                }
+              ],
+              "timeoutMs": 300000
+            },
+            "previewDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "createdAt": "2026-09-08T00:00:00.000Z",
+            "attempts": 0,
+            "usage": null,
+            "workers": [
+              {
+                "id": "worker-example",
+                "nodeId": "normalize",
+                "role": "author",
+                "status": "planned",
+                "pid": null,
+                "guardPid": null,
+                "stdoutBytes": 0,
+                "stderrBytes": 0,
+                "cleaned": true,
+                "usage": null
+              },
+              {
+                "id": "worker-example-report",
+                "nodeId": "report",
+                "role": "author",
+                "status": "planned",
+                "pid": null,
+                "guardPid": null,
+                "stdoutBytes": 0,
+                "stderrBytes": 0,
+                "cleaned": true,
+                "usage": null
+              }
+            ],
+            "taskId": "task-example",
+            "elapsedMs": null,
+            "reworkCount": 0,
+            "retryCount": 0,
+            "acceptance": null
+          }
+        ]
+      }
+    }
+  }
+}

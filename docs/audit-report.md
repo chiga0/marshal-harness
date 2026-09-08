@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-08：实际 API 契约与 DI 前移
+
+旧 `/v1alpha1` OpenAPI 与当前 Task-first 目标、Node 实验不是同一合同，不能用旧文档存在推导新 API 稳定。新增候选逐项描述实际请求/响应/错误及幂等语义，显式列出未实现的目标接口；HTTP 传输只依赖注入的 Application，不启动 Supervisor 或 Agent 即可测试，业务 CAS/状态转换仍保留唯一真值。[契约说明](node-api-contract.md)不授予 API-STABLE。
+
+DI source=`fb08495` 经维护者独立代码审查，无阻塞发现；11 项内存测试及真实无模型 HTTP 集成通过，合并后 Node 组合回归共 34/34 通过。子任务内 Unix socket 的 EPERM 不计作业务失败或通过，主 Agent 已通过合法本机环境复跑。与 Schema 和第二 Provider 接入并行，避免模型/CI 等待阻塞纯确定性工作；不增加协议平台，不用自写有限 Schema 测试器冒充完整 JSON Schema 标准验证。
+
 ## 2026-09-08：Node-only 本机团队闭环实证
 
 [ADR 0087](adr/0087-node-local-team-feasibility-probe.md) 的独立实验候选 `c88410b` 已在 Mac 使用既有 Node/Pi 通过纯 HTTP 双作者、结果收集、69 项固定业务验收、下载后 69 项独立消费、活跃前端重启和另一真实任务取消/重启保留；未调用 Marshal 原生文件。两个实际 Agent 执行区间重叠 13.106 秒。对应有界可行性 finding 关闭，**完整 supervisor 崩溃恢复、任意任务、第二 Provider、生产存储和正式 Node profile 仍开放**，不升级旧 Go B1/B2/stable。
