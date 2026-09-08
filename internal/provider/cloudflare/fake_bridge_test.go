@@ -927,6 +927,8 @@ func newTestProvider(t *testing.T, fb *fakeBridge, evidenceRef string) *Provider
 		MaxRetries:             2,
 		RetryDelay:             -1,
 		RequestTimeout:         5 * time.Second,
+		EffectContextResolver:  testEffectResolver{},
+		EffectAuthoritySink:    newMemoryEffectSink(),
 	})
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)

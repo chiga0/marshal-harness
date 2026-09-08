@@ -51,6 +51,25 @@
 //     outcome. A failed store write never mutates the in-memory state, and
 //     a crash at any write point converges on replay because the create is
 //     idempotent under its idempotency key.
+//   - Provision and Terminate are side-effecting remote mutations, so they
+//     run through the mandatory normalized effect authority seam
+//     (effect_records.go): a put-if-absent SideEffectIntent is durably
+//     acknowledged before the Bridge mutation, and a SideEffectReceipt plus
+//     observation are resolved only after the mutation's terminal outcome is
+//     observed. The effect targetRef is the Marshal allocation id for both
+//     Provision and Terminate — never the Bridge locator — so the Core-owned
+//     authority records never carry a Cloudflare-internal identity. The
+//     Core-injected EffectAuthoritySink is the authority; the provider's
+//     local map is a cache only. Lookup and LookupByTarget fail closed: an
+//     intent must carry the Cloudflare port, a closed provision/terminate
+//     operation, the disposition class consistent with that operation and a
+//     recomputed target digest; a receipt must bind to the exact target and
+//     recomputed intent digest without crossing effects; and an observation
+//     requires a resolved receipt and must bind to both recomputed digests.
+//     A terminate whose durable intent or receipt write fails after a
+//     successful destroy never re-issues a second destroy on reopen+replay:
+//     a pending intent fails closed as ambiguity, a resolved receipt
+//     converges to terminal.
 //
 // The package uses only the Go standard library plus the harness canonical
 // package: no Cloudflare SDK dependency, and no test ever connects to real

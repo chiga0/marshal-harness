@@ -3,6 +3,7 @@ package cloudflare
 import (
 	"context"
 	"errors"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,6 +15,13 @@ import (
 // durable store.
 func newTestProviderWithStore(t *testing.T, fb *fakeBridge, store *FileStateStore, evidenceRef string) *Provider {
 	t.Helper()
+	return newTestProviderWithSink(t, fb, store, newMemoryEffectSink(), evidenceRef)
+}
+
+// newTestProviderWithSink constructs one Bridge provider against a specific
+// durable store and a specific effect authority sink.
+func newTestProviderWithSink(t *testing.T, fb *fakeBridge, store *FileStateStore, sink EffectAuthoritySink, evidenceRef string) *Provider {
+	t.Helper()
 	provider, err := NewProvider(ProviderConfig{
 		BridgeBaseURL:          fb.server.URL,
 		BridgeToken:            fb.token,
@@ -22,6 +30,8 @@ func newTestProviderWithStore(t *testing.T, fb *fakeBridge, store *FileStateStor
 		RetryDelay:             -1,
 		RequestTimeout:         5 * time.Second,
 		StateStore:             store,
+		EffectContextResolver:  testEffectResolver{},
+		EffectAuthoritySink:    sink,
 	})
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
@@ -1490,5 +1500,313 @@ func TestProviderRestoreReopenReplayConverges(t *testing.T) {
 	}
 	if got := fb.sandboxCount(); got != 2 {
 		t.Fatalf("exactly two remote sandboxes must exist (previous + replacement), got %d", got)
+	}
+}
+
+// failSinkWriteAfter fails the (skip+1)-th effect sink persist from the point
+// it is installed, leaving the first skip persists durable, then restores the
+// original writer. It targets one named write point — for example skip=1
+// fails the terminate ResolveIntent persist that immediately follows the
+// terminate PutIntent persist — without depending on the count of any prior
+// Provision-phase persists.
+func failSinkWriteAfter(t *testing.T, sink *FileEffectSink, skip int) {
+	t.Helper()
+	original := sink.write
+	remaining := skip
+	sink.write = func(data []byte) error {
+		if remaining > 0 {
+			remaining--
+			return original(data)
+		}
+		sink.write = original
+		return errors.New("injected effect sink write failure")
+	}
+}
+
+// failStoreWriteAfter is the store analogue of failSinkWriteAfter. skip=0
+// fails the very next store persist (the terminate terminal UpdateAllocation).
+func failStoreWriteAfter(t *testing.T, store *FileStateStore, skip int) {
+	t.Helper()
+	original := store.write
+	remaining := skip
+	store.write = func(data []byte) error {
+		if remaining > 0 {
+			remaining--
+			return original(data)
+		}
+		store.write = original
+		return errors.New("injected state store write failure")
+	}
+}
+
+// TestProviderTerminateSinkResolveWriteFailureNoSecondDestroy freezes that a
+// terminate whose sink resolve write failed (a crash after the remote destroy
+// succeeded) leaves a pending intent as the recoverable fact: reopen+replay
+// reports the ambiguity and never issues a second destroy, and the in-memory
+// state was not polluted.
+func TestProviderTerminateSinkResolveWriteFailureNoSecondDestroy(t *testing.T) {
+	name := "terminate-sink-resolve"
+	alloc := "alloc-" + name
+	path := filepath.Join(t.TempDir(), "state.json")
+	sinkPath := filepath.Join(t.TempDir(), "effect.json")
+	fb := newFakeBridge(t, testBridgeToken(name))
+	store, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStateStore: %v", err)
+	}
+	sink, err := NewFileEffectSink(sinkPath)
+	if err != nil {
+		t.Fatalf("NewFileEffectSink: %v", err)
+	}
+	providerA := newTestProviderWithSink(t, fb, store, sink, "")
+	ctx := context.Background()
+	if _, err := providerA.Provision(ctx, sandbox.ProvisionRequest{
+		Identity:     scenarioIdentity(name, alloc, "cmd-provision", 1),
+		Requirements: workspaceRequirements(t),
+	}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	bridgeId := providerBridgeLocator(t, providerA, alloc)
+
+	// Fail the sink resolve persist specifically: the terminate PutIntent is
+	// the first sink write from here (skip=1) and the ResolveIntent is the
+	// second. The destroy succeeds but its authority receipt never lands, so
+	// the pending intent is the recoverable fact.
+	failSinkWriteAfter(t, sink, 1)
+	terminateIdentity := scenarioIdentity(name, alloc, "cmd-terminate", 1)
+	if _, err := providerA.Terminate(ctx, sandbox.TerminateRequest{
+		Identity:     terminateIdentity,
+		AllocationId: alloc,
+	}); err == nil {
+		t.Fatal("the injected sink resolve write failure must surface")
+	}
+	if got := fb.RequestCount("DELETE", "/v1/sandbox/"+bridgeId); got != 1 {
+		t.Fatalf("exactly one destroy call was expected, got %d", got)
+	}
+	if entry := providerA.allocations[alloc]; entry.meta.State != sandbox.AllocationActive {
+		t.Fatalf("the failed terminate must not pollute the in-memory state, got %q", string(entry.meta.State))
+	}
+
+	reopenedStore, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	reopenedSink, err := NewFileEffectSink(sinkPath)
+	if err != nil {
+		t.Fatalf("reopen sink: %v", err)
+	}
+	providerB := newTestProviderWithSink(t, fb, reopenedStore, reopenedSink, "")
+	if _, err := providerB.Terminate(ctx, sandbox.TerminateRequest{
+		Identity:     terminateIdentity,
+		AllocationId: alloc,
+	}); !errors.Is(err, ErrEffectAmbiguous) {
+		t.Fatalf("the replay must report the pending terminate intent as ambiguous, got %v", err)
+	}
+	if got := fb.RequestCount("DELETE", "/v1/sandbox/"+bridgeId); got != 1 {
+		t.Fatalf("the replay must never issue a second destroy, got %d", got)
+	}
+}
+
+// TestProviderTerminateAllocationWriteFailureNoSecondDestroy freezes that a
+// terminate whose allocation terminal write failed leaves the resolved
+// receipt as the recoverable fact: reopen+replay converges to terminal
+// without a second destroy.
+func TestProviderTerminateAllocationWriteFailureNoSecondDestroy(t *testing.T) {
+	name := "terminate-alloc-write"
+	alloc := "alloc-" + name
+	path := filepath.Join(t.TempDir(), "state.json")
+	sinkPath := filepath.Join(t.TempDir(), "effect.json")
+	fb := newFakeBridge(t, testBridgeToken(name))
+	store, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStateStore: %v", err)
+	}
+	sink, err := NewFileEffectSink(sinkPath)
+	if err != nil {
+		t.Fatalf("NewFileEffectSink: %v", err)
+	}
+	providerA := newTestProviderWithSink(t, fb, store, sink, "")
+	ctx := context.Background()
+	if _, err := providerA.Provision(ctx, sandbox.ProvisionRequest{
+		Identity:     scenarioIdentity(name, alloc, "cmd-provision", 1),
+		Requirements: workspaceRequirements(t),
+	}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	bridgeId := providerBridgeLocator(t, providerA, alloc)
+
+	// Fail the very next store persist (skip=0), which is the terminate
+	// terminal UpdateAllocation: the sink resolve already durably recorded
+	// the applied receipt, so that receipt is the recoverable fact.
+	failStoreWriteAfter(t, store, 0)
+	terminateIdentity := scenarioIdentity(name, alloc, "cmd-terminate", 1)
+	if _, err := providerA.Terminate(ctx, sandbox.TerminateRequest{
+		Identity:     terminateIdentity,
+		AllocationId: alloc,
+	}); err == nil {
+		t.Fatal("the injected allocation write failure must surface")
+	}
+	if got := fb.RequestCount("DELETE", "/v1/sandbox/"+bridgeId); got != 1 {
+		t.Fatalf("exactly one destroy call was expected, got %d", got)
+	}
+	if entry := providerA.allocations[alloc]; entry.meta.State != sandbox.AllocationActive {
+		t.Fatalf("the failed terminate must not pollute the in-memory state, got %q", string(entry.meta.State))
+	}
+
+	reopenedStore, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	reopenedSink, err := NewFileEffectSink(sinkPath)
+	if err != nil {
+		t.Fatalf("reopen sink: %v", err)
+	}
+	providerB := newTestProviderWithSink(t, fb, reopenedStore, reopenedSink, "")
+	receipt, err := providerB.Terminate(ctx, sandbox.TerminateRequest{
+		Identity:     terminateIdentity,
+		AllocationId: alloc,
+	})
+	if err != nil {
+		t.Fatalf("the replay must converge to terminal, got %v", err)
+	}
+	if receipt.State != sandbox.AllocationTerminated {
+		t.Fatalf("the replay must observe the terminal state, got %q", string(receipt.State))
+	}
+	if got := fb.RequestCount("DELETE", "/v1/sandbox/"+bridgeId); got != 1 {
+		t.Fatalf("the replay must never issue a second destroy, got %d", got)
+	}
+}
+
+// TestProviderTerminateTerminalNotFoundContainerLostNoSecondDestroy freezes
+// that a destroy which observes the terminal not-found or container-lost
+// transition resolves the terminate effect as applied: the allocation
+// converges to terminal, and reopen+replay never issues a second destroy.
+func TestProviderTerminateTerminalNotFoundContainerLostNoSecondDestroy(t *testing.T) {
+	cases := []struct {
+		name    string
+		prepare func(t *testing.T, fb *fakeBridge, bridgeId string)
+	}{
+		{
+			name: "not-found",
+			prepare: func(t *testing.T, fb *fakeBridge, bridgeId string) {
+				t.Helper()
+				fb.ForgetSandbox(t, bridgeId)
+			},
+		},
+		{
+			name: "container-lost",
+			prepare: func(t *testing.T, fb *fakeBridge, bridgeId string) {
+				t.Helper()
+				fb.FailPathWithStatusTimes("DELETE", "/v1/sandbox/"+bridgeId, http.StatusGone, 1)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			name := "terminate-terminal-" + tc.name
+			alloc := "alloc-" + name
+			path := filepath.Join(t.TempDir(), "state.json")
+			sinkPath := filepath.Join(t.TempDir(), "effect.json")
+			fb := newFakeBridge(t, testBridgeToken(name))
+			store, err := NewFileStateStore(path)
+			if err != nil {
+				t.Fatalf("NewFileStateStore: %v", err)
+			}
+			sink, err := NewFileEffectSink(sinkPath)
+			if err != nil {
+				t.Fatalf("NewFileEffectSink: %v", err)
+			}
+			providerA := newTestProviderWithSink(t, fb, store, sink, "")
+			ctx := context.Background()
+			if _, err := providerA.Provision(ctx, sandbox.ProvisionRequest{
+				Identity:     scenarioIdentity(name, alloc, "cmd-provision", 1),
+				Requirements: workspaceRequirements(t),
+			}); err != nil {
+				t.Fatalf("Provision: %v", err)
+			}
+			bridgeId := providerBridgeLocator(t, providerA, alloc)
+			tc.prepare(t, fb, bridgeId)
+
+			terminateIdentity := scenarioIdentity(name, alloc, "cmd-terminate", 1)
+			receipt, err := providerA.Terminate(ctx, sandbox.TerminateRequest{
+				Identity:     terminateIdentity,
+				AllocationId: alloc,
+			})
+			if err != nil || receipt.State != sandbox.AllocationTerminated {
+				t.Fatalf("Terminate must converge to terminal on the %s transition, got %+v err=%v", tc.name, receipt, err)
+			}
+			if got := fb.RequestCount("DELETE", "/v1/sandbox/"+bridgeId); got != 1 {
+				t.Fatalf("exactly one destroy call was expected, got %d", got)
+			}
+
+			reopenedStore, err := NewFileStateStore(path)
+			if err != nil {
+				t.Fatalf("reopen store: %v", err)
+			}
+			reopenedSink, err := NewFileEffectSink(sinkPath)
+			if err != nil {
+				t.Fatalf("reopen sink: %v", err)
+			}
+			providerB := newTestProviderWithSink(t, fb, reopenedStore, reopenedSink, "")
+			replay, err := providerB.Terminate(ctx, sandbox.TerminateRequest{
+				Identity:     terminateIdentity,
+				AllocationId: alloc,
+			})
+			if err != nil || replay.State != sandbox.AllocationTerminated {
+				t.Fatalf("the replay must observe the terminal state, got %+v err=%v", replay, err)
+			}
+			if got := fb.RequestCount("DELETE", "/v1/sandbox/"+bridgeId); got != 1 {
+				t.Fatalf("the replay must never issue a second destroy, got %d", got)
+			}
+		})
+	}
+}
+
+// TestProviderTerminatePendingIntentFailsClosed freezes that a durable
+// pending terminate intent (no resolved receipt) fails closed as ambiguity and
+// never re-issues a destroy.
+func TestProviderTerminatePendingIntentFailsClosed(t *testing.T) {
+	name := "terminate-pending"
+	alloc := "alloc-" + name
+	fb := newFakeBridge(t, testBridgeToken(name))
+	sink := newMemoryEffectSink()
+	provider := newTestProviderWithSink(t, fb, newMemoryStateStore(), sink, "")
+	ctx := context.Background()
+	if _, err := provider.Provision(ctx, sandbox.ProvisionRequest{
+		Identity:     scenarioIdentity(name, alloc, "cmd-provision", 1),
+		Requirements: workspaceRequirements(t),
+	}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	bridgeId := providerBridgeLocator(t, provider, alloc)
+
+	// Record a pending terminate intent (no receipt) for the exact target
+	// (the Marshal allocation id), as a prior crashed attempt would have
+	// left it.
+	terminateIdentity := scenarioIdentity(name, alloc, "cmd-terminate", 1)
+	replayKey, err := terminateIdentity.ReplayKey()
+	if err != nil {
+		t.Fatalf("ReplayKey: %v", err)
+	}
+	effectCtx, err := testEffectResolver{}.ResolveEffectContext(ctx, EffectOperationTerminate, terminateIdentity, alloc)
+	if err != nil {
+		t.Fatalf("ResolveEffectContext: %v", err)
+	}
+	intent, err := buildEffectIntent(effectCtx, terminateIdentity, EffectOperationTerminate, alloc, replayKey)
+	if err != nil {
+		t.Fatalf("buildEffectIntent: %v", err)
+	}
+	if err := sink.PutIntent(intent); err != nil {
+		t.Fatalf("PutIntent: %v", err)
+	}
+
+	if _, err := provider.Terminate(ctx, sandbox.TerminateRequest{
+		Identity:     terminateIdentity,
+		AllocationId: alloc,
+	}); !errors.Is(err, ErrEffectAmbiguous) {
+		t.Fatalf("a pending terminate intent must fail closed as ambiguous, got %v", err)
+	}
+	if got := fb.RequestCount("DELETE", "/v1/sandbox/"+bridgeId); got != 0 {
+		t.Fatalf("a pending terminate intent must never re-issue a destroy, got %d", got)
 	}
 }
