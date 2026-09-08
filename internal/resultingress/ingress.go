@@ -303,6 +303,8 @@ type Ingress struct {
 	reservationKeys       map[string]string
 	teamPlans             map[string]TeamPlanState
 	taskDrafts            map[string]taskDraftState
+	taskStops             map[string]TaskStop
+	taskCancellations     map[string]TaskCancellation
 	taskDeliveries        map[string]goal.TaskDelivery
 	teamRunCreations      map[string]TeamRunCreationState
 	teamHalts             map[string]TeamPlanHalt
@@ -372,6 +374,8 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		reservationKeys:             make(map[string]string),
 		teamPlans:                   make(map[string]TeamPlanState),
 		taskDrafts:                  make(map[string]taskDraftState),
+		taskStops:                   make(map[string]TaskStop),
+		taskCancellations:           make(map[string]TaskCancellation),
 		taskDeliveries:              make(map[string]goal.TaskDelivery),
 		teamRunCreations:            make(map[string]TeamRunCreationState),
 		teamHalts:                   make(map[string]TeamPlanHalt),
@@ -406,6 +410,8 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 		reservationKeys:             make(map[string]string),
 		teamPlans:                   make(map[string]TeamPlanState),
 		taskDrafts:                  make(map[string]taskDraftState),
+		taskStops:                   make(map[string]TaskStop),
+		taskCancellations:           make(map[string]TaskCancellation),
 		taskDeliveries:              make(map[string]goal.TaskDelivery),
 		teamRunCreations:            make(map[string]TeamRunCreationState),
 		teamHalts:                   make(map[string]TeamPlanHalt),
@@ -835,6 +841,8 @@ func (i *Ingress) resetDurableReplayState() {
 	i.reservationKeys = make(map[string]string)
 	i.teamPlans = make(map[string]TeamPlanState)
 	i.taskDrafts = make(map[string]taskDraftState)
+	i.taskStops = make(map[string]TaskStop)
+	i.taskCancellations = make(map[string]TaskCancellation)
 	i.taskDeliveries = make(map[string]goal.TaskDelivery)
 	i.teamRunCreations = make(map[string]TeamRunCreationState)
 	i.teamHalts = make(map[string]TeamPlanHalt)

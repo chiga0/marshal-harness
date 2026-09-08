@@ -139,6 +139,9 @@ func (adapter *sealedRepositoryApplication) advanceInitialTeamProgressAdmitted(c
 			progressErr = advanceTeamRun(step, adapter, selection.Run)
 		}
 		if err := progressErr; err != nil {
+			if application.HasReason(err, application.ReasonRunStopped) {
+				return nil
+			}
 			// An operation error is never retried on a fresh tick/timeout. A
 			// stopped Run already has its own Outcome; halt does not replace it.
 			return errors.Join(err, adapter.haltTeamProgress(step, selection, stage))

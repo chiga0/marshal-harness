@@ -93,6 +93,9 @@ func (s *DurableStore) freezeTeamRun(ctx context.Context, verifier CurrentApprov
 				return ErrControlOwnerNotCurrent
 			}
 			plan, ok := projection.teamPlans[teamPlanKey(owner.Scope, goalID)]
+			if _, stopped := projection.taskStops[teamPlanKey(owner.Scope, goalID)]; stopped {
+				return ErrTaskStopped
+			}
 			if !ok || plan.Approval != approval {
 				return ErrTeamRunCreationConflict
 			}
@@ -326,6 +329,9 @@ func applyTeamRunCreationLine(line []byte, in *Ingress, sequence int64) error {
 		return ErrControlOwnerNotCurrent
 	}
 	plan, ok := in.teamPlans[teamPlanKey(fact.Scope, fact.Creation.GoalID)]
+	if _, stopped := in.taskStops[teamPlanKey(fact.Scope, fact.Creation.GoalID)]; stopped {
+		return ErrTaskStopped
+	}
 	if !ok {
 		return ErrTeamRunCreationConflict
 	}

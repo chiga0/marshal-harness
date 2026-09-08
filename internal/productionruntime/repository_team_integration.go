@@ -146,6 +146,9 @@ func (session *RepositorySession) requireAcceptedTeamInputsUnderOwner(ctx contex
 }
 
 func (session *RepositorySession) withCurrentCreationInputsUnderOwner(ctx context.Context, creation resultingress.TeamRunCreationState, fn func() error) error {
+	if err := session.ingress.RequireTaskNotStopped(session.acquisition.Scope, creation.GoalID); err != nil {
+		return taskError(err)
+	}
 	if creation.Integration == nil {
 		return fn()
 	}
