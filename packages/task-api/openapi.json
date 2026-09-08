@@ -1,0 +1,3931 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Marshal Task Service API",
+    "version": "0.1.0-candidate",
+    "description": "ADR0088 node-task-service/v1 的正式实现候选，非 API-STABLE。应用端支持的操作才可执行，缺失能力明确501；HTTP不创建Task第二真值。"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:{port}",
+      "variables": {
+        "port": {
+          "default": "49152",
+          "description": "示例；真实实例端口由连接文件给出。"
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "localBearer": []
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health_get",
+        "x-application-operation": "health.get",
+        "x-success-status": 200,
+        "x-response-schema": "Health",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": []
+      }
+    },
+    "/ready": {
+      "get": {
+        "operationId": "ready_get",
+        "x-application-operation": "ready.get",
+        "x-success-status": 200,
+        "x-response-schema": "Readiness",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/tasks": {
+      "post": {
+        "operationId": "task_create",
+        "x-application-operation": "task.create",
+        "x-success-status": 201,
+        "x-response-schema": "Task",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTask"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "task_list",
+        "x-application-operation": "task.list",
+        "x-success-status": 200,
+        "x-response-schema": "Tasks",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tasks"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}": {
+      "get": {
+        "operationId": "task_get",
+        "x-application-operation": "task.get",
+        "x-success-status": 200,
+        "x-response-schema": "Task",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}/plan": {
+      "get": {
+        "operationId": "task_plan",
+        "x-application-operation": "task.plan",
+        "x-success-status": 200,
+        "x-response-schema": "Plan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Plan"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}/plan/approve": {
+      "post": {
+        "operationId": "task_approve",
+        "x-application-operation": "task.approve",
+        "x-success-status": 202,
+        "x-response-schema": "Operation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "原操作已耐久受理；不代表执行或取消已完成",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveTask"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}/graph": {
+      "get": {
+        "operationId": "task_graph",
+        "x-application-operation": "task.graph",
+        "x-success-status": 200,
+        "x-response-schema": "Graph",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Graph"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}/workers": {
+      "get": {
+        "operationId": "task_workers",
+        "x-application-operation": "task.workers",
+        "x-success-status": 200,
+        "x-response-schema": "Workers",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workers"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/workers/{workerId}": {
+      "get": {
+        "operationId": "worker_get",
+        "x-application-operation": "worker.get",
+        "x-success-status": 200,
+        "x-response-schema": "Worker",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workerId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Worker"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/workers/{workerId}/cancel": {
+      "post": {
+        "operationId": "worker_cancel",
+        "x-application-operation": "worker.cancel",
+        "x-success-status": 202,
+        "x-response-schema": "Operation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workerId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "原操作已耐久受理；不代表执行或取消已完成",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlTask"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}/questions": {
+      "get": {
+        "operationId": "task_questions",
+        "x-application-operation": "task.questions",
+        "x-success-status": 200,
+        "x-response-schema": "Questions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Questions"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}/questions/{questionId}/answers": {
+      "post": {
+        "operationId": "task_answer",
+        "x-application-operation": "task.answer",
+        "x-success-status": 202,
+        "x-response-schema": "Operation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "path",
+            "name": "questionId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "原操作已耐久受理；不代表执行或取消已完成",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnswerQuestion"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/operations/{operationId}": {
+      "get": {
+        "operationId": "operation_get",
+        "x-application-operation": "operation.get",
+        "x-success-status": 200,
+        "x-response-schema": "Operation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}/cancel": {
+      "post": {
+        "operationId": "task_cancel",
+        "x-application-operation": "task.cancel",
+        "x-success-status": 202,
+        "x-response-schema": "Operation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "原操作已耐久受理；不代表执行或取消已完成",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlTask"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}/pause": {
+      "post": {
+        "operationId": "task_pause",
+        "x-application-operation": "task.pause",
+        "x-success-status": 202,
+        "x-response-schema": "Operation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "原操作已耐久受理；不代表执行或取消已完成",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlTask"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}/resume": {
+      "post": {
+        "operationId": "task_resume",
+        "x-application-operation": "task.resume",
+        "x-success-status": 202,
+        "x-response-schema": "Operation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "原操作已耐久受理；不代表执行或取消已完成",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlTask"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inputs": {
+      "post": {
+        "operationId": "input_create",
+        "x-application-operation": "input.create",
+        "x-success-status": 201,
+        "x-response-schema": "Artifact",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Artifact"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/artifacts/{artifactId}": {
+      "get": {
+        "operationId": "artifact_get",
+        "x-application-operation": "artifact.get",
+        "x-success-status": 200,
+        "x-response-schema": "Artifact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Artifact"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/artifacts/{artifactId}/content": {
+      "get": {
+        "operationId": "artifact_content",
+        "x-application-operation": "artifact.content",
+        "x-success-status": 200,
+        "x-response-schema": null,
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "所属不可变制品 bytes；非 Worker 可变路径",
+            "headers": {
+              "Content-Digest": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "sha-256 structured field，客户端复算。"
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "attachment，仅安全 artifact ID 命名。"
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}/audit": {
+      "get": {
+        "operationId": "task_audit",
+        "x-application-operation": "task.audit",
+        "x-success-status": 200,
+        "x-response-schema": "Audit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Audit"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}/events": {
+      "get": {
+        "operationId": "task_events",
+        "x-application-operation": "task.events",
+        "x-success-status": 200,
+        "x-response-schema": "Events",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Events"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/agent-providers": {
+      "get": {
+        "operationId": "provider_list",
+        "x-application-operation": "provider.list",
+        "x-success-status": 200,
+        "x-response-schema": "Providers",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Providers"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/supervisor": {
+      "get": {
+        "operationId": "supervisor_get",
+        "x-application-operation": "supervisor.get",
+        "x-success-status": 200,
+        "x-response-schema": "Supervisor",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；内容来自注入应用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Supervisor"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "localBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "封闭脱敏错误；不把超时当Task失败，不自动重派。",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Id": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+        "maxLength": 128
+      },
+      "Digest": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "Revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "Context": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 32768,
+            "x-maxUtf8Bytes": 32768,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "inputRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "maxItems": 32
+          }
+        },
+        "required": []
+      },
+      "Requirements": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "deliverables": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 4096,
+              "x-maxUtf8Bytes": 4096,
+              "x-wellFormedUnicode": true,
+              "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+              "minLength": 1
+            },
+            "maxItems": 32
+          },
+          "acceptance": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 4096,
+              "x-maxUtf8Bytes": 4096,
+              "x-wellFormedUnicode": true,
+              "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+              "minLength": 1
+            },
+            "maxItems": 32
+          }
+        },
+        "required": []
+      },
+      "Limits": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 604800000
+          },
+          "maxAttempts": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "maxWorkers": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
+          }
+        },
+        "required": [
+          "timeoutMs",
+          "maxAttempts",
+          "maxWorkers"
+        ]
+      },
+      "CreateTask": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "intent": {
+            "type": "string",
+            "maxLength": 8192,
+            "x-maxUtf8Bytes": 8192,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          },
+          "context": {
+            "$ref": "#/components/schemas/Context"
+          },
+          "requirements": {
+            "$ref": "#/components/schemas/Requirements"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          }
+        },
+        "required": [
+          "intent"
+        ],
+        "examples": [
+          {
+            "intent": "生成业务说明文档",
+            "context": {
+              "text": "需求在任务内描述，不需要注册仓库。"
+            },
+            "requirements": {
+              "deliverables": [
+                "说明文档"
+              ],
+              "acceptance": [
+                "覆盖已确认需求"
+              ]
+            }
+          }
+        ]
+      },
+      "ApproveTask": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "planRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "planDigest": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "planRevision",
+          "planDigest"
+        ],
+        "examples": [
+          {
+            "expectedRevision": 2,
+            "planRevision": 1,
+            "planDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      },
+      "ControlTask": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        },
+        "required": [
+          "expectedRevision"
+        ],
+        "examples": [
+          {
+            "expectedRevision": 3
+          }
+        ]
+      },
+      "AnswerQuestion": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "questionRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "answer": {
+            "type": "string",
+            "maxLength": 8192,
+            "x-maxUtf8Bytes": 8192,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "questionRevision",
+          "answer"
+        ],
+        "examples": [
+          {
+            "expectedRevision": 2,
+            "questionRevision": 1,
+            "answer": "zh"
+          }
+        ]
+      },
+      "CreateInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "x-maxUtf8Bytes": 255,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          },
+          "mediaType": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$",
+            "maxLength": 128
+          },
+          "contentBase64": {
+            "type": "string",
+            "maxLength": 349528,
+            "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+          }
+        },
+        "required": [
+          "name",
+          "mediaType",
+          "contentBase64"
+        ],
+        "examples": [
+          {
+            "name": "requirements.txt",
+            "mediaType": "text/plain",
+            "contentBase64": "aGVsbG8="
+          }
+        ]
+      },
+      "PlanRef": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "digest": {
+            "$ref": "#/components/schemas/Digest"
+          }
+        },
+        "required": [
+          "revision",
+          "digest"
+        ]
+      },
+      "Task": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "planning",
+              "awaiting-answer",
+              "awaiting-approval",
+              "queued",
+              "running",
+              "paused",
+              "cancelling",
+              "completed",
+              "failed",
+              "cancelled",
+              "intervention"
+            ]
+          },
+          "phase": {
+            "enum": [
+              "intake",
+              "planning",
+              "execution",
+              "verification",
+              "delivery",
+              "terminal"
+            ]
+          },
+          "intent": {
+            "type": "string",
+            "maxLength": 8192,
+            "x-maxUtf8Bytes": 8192,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "allowedActions": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "approve",
+                "answer",
+                "cancel",
+                "pause",
+                "resume"
+              ]
+            },
+            "maxItems": 5
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "artifactIds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "maxItems": 256
+          },
+          "code": {
+            "type": "string",
+            "maxLength": 128,
+            "x-maxUtf8Bytes": 128,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          },
+          "deadlineAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "status",
+          "phase",
+          "intent",
+          "createdAt",
+          "updatedAt",
+          "allowedActions",
+          "plan",
+          "artifactIds"
+        ],
+        "examples": [
+          {
+            "id": "task-example",
+            "revision": 1,
+            "status": "draft",
+            "phase": "intake",
+            "intent": "生成业务说明文档",
+            "createdAt": "2026-09-08T00:00:00.000Z",
+            "updatedAt": "2026-09-08T00:00:00.000Z",
+            "allowedActions": [
+              "cancel"
+            ],
+            "plan": null,
+            "artifactIds": []
+          }
+        ]
+      },
+      "PlanNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "role": {
+            "enum": [
+              "planner",
+              "author",
+              "reviewer",
+              "integrator",
+              "verifier"
+            ]
+          },
+          "goal": {
+            "type": "string",
+            "maxLength": 8192,
+            "x-maxUtf8Bytes": 8192,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          },
+          "scope": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 4096,
+              "x-maxUtf8Bytes": 4096,
+              "x-wellFormedUnicode": true,
+              "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+              "minLength": 1
+            },
+            "maxItems": 32
+          },
+          "providerId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "goal",
+          "scope",
+          "providerId"
+        ]
+      },
+      "Edge": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "to": {
+            "$ref": "#/components/schemas/Id"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ]
+      },
+      "Plan": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "digest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 8192,
+            "x-maxUtf8Bytes": 8192,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanNode"
+            },
+            "maxItems": 64,
+            "minItems": 1
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Edge"
+            },
+            "maxItems": 256
+          },
+          "budget": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "deliverables": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 4096,
+              "x-maxUtf8Bytes": 4096,
+              "x-wellFormedUnicode": true,
+              "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+              "minLength": 1
+            },
+            "maxItems": 32
+          },
+          "acceptance": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 4096,
+              "x-maxUtf8Bytes": 4096,
+              "x-wellFormedUnicode": true,
+              "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+              "minLength": 1
+            },
+            "maxItems": 32
+          },
+          "assumptions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 4096,
+              "x-maxUtf8Bytes": 4096,
+              "x-wellFormedUnicode": true,
+              "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+              "minLength": 1
+            },
+            "maxItems": 32
+          }
+        },
+        "required": [
+          "taskId",
+          "revision",
+          "digest",
+          "summary",
+          "nodes",
+          "edges",
+          "budget",
+          "deliverables",
+          "acceptance",
+          "assumptions"
+        ],
+        "examples": [
+          {
+            "taskId": "task-example",
+            "revision": 1,
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "summary": "完成文档并验证需求覆盖",
+            "nodes": [
+              {
+                "id": "node-author",
+                "role": "author",
+                "goal": "完成文档",
+                "scope": [
+                  "文档输出"
+                ],
+                "providerId": null
+              }
+            ],
+            "edges": [],
+            "budget": {
+              "timeoutMs": 300000,
+              "maxAttempts": 2,
+              "maxWorkers": 1
+            },
+            "deliverables": [
+              "说明文档"
+            ],
+            "acceptance": [
+              "覆盖已确认需求"
+            ],
+            "assumptions": []
+          }
+        ],
+        "description": "摘要由当前应用/Store按冻结计划规范生成，确认必须使用原响应。示例digest是格式占位，不是可批准的计划证据。"
+      },
+      "Operation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "kind": {
+            "enum": [
+              "task.approve",
+              "task.cancel",
+              "task.pause",
+              "task.resume",
+              "task.answer",
+              "worker.cancel"
+            ]
+          },
+          "status": {
+            "enum": [
+              "accepted",
+              "running",
+              "succeeded",
+              "failed",
+              "unknown"
+            ]
+          },
+          "taskRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "code": {
+            "type": "string",
+            "maxLength": 128,
+            "x-maxUtf8Bytes": 128,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "kind",
+          "status",
+          "taskRevision",
+          "createdAt",
+          "updatedAt"
+        ],
+        "examples": [
+          {
+            "id": "operation-example",
+            "taskId": "task-example",
+            "kind": "task.approve",
+            "status": "accepted",
+            "taskRevision": 3,
+            "createdAt": "2026-09-08T00:00:00.000Z",
+            "updatedAt": "2026-09-08T00:00:00.000Z"
+          }
+        ]
+      },
+      "Usage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 16,
+                "x-maxUtf8Bytes": 16,
+                "x-wellFormedUnicode": true,
+                "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "enum": [
+              "reported",
+              "estimated",
+              "unavailable"
+            ]
+          },
+          "coverage": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "tokens",
+          "cost",
+          "currency",
+          "source",
+          "coverage"
+        ]
+      },
+      "Progress": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "summary": {
+            "type": "string",
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256,
+                "x-maxUtf8Bytes": 256,
+                "x-wellFormedUnicode": true,
+                "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "enum": [
+              "agent",
+              "execution",
+              "supervisor"
+            ]
+          }
+        },
+        "required": [
+          "summary",
+          "tool",
+          "source"
+        ]
+      },
+      "Worker": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "nodeId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "providerId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "role": {
+            "enum": [
+              "planner",
+              "author",
+              "reviewer",
+              "integrator",
+              "verifier"
+            ]
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "awaiting-answer",
+              "stopping",
+              "completed",
+              "failed",
+              "cancelled",
+              "unknown"
+            ]
+          },
+          "phase": {
+            "enum": [
+              "planning",
+              "development",
+              "review",
+              "verification",
+              "integration",
+              "terminal"
+            ]
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "startedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finishedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastObservedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Progress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "nodeId",
+          "providerId",
+          "role",
+          "status",
+          "phase",
+          "attempt",
+          "startedAt",
+          "finishedAt",
+          "lastObservedAt",
+          "progress",
+          "usage"
+        ],
+        "examples": [
+          {
+            "id": "worker-example",
+            "taskId": "task-example",
+            "nodeId": "node-author",
+            "providerId": "provider-example",
+            "role": "author",
+            "status": "queued",
+            "phase": "development",
+            "attempt": 1,
+            "startedAt": null,
+            "finishedAt": null,
+            "lastObservedAt": null,
+            "progress": null,
+            "usage": {
+              "tokens": null,
+              "cost": null,
+              "currency": null,
+              "source": "unavailable",
+              "coverage": 0
+            }
+          }
+        ]
+      },
+      "GraphNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "role": {
+            "enum": [
+              "planner",
+              "author",
+              "reviewer",
+              "integrator",
+              "verifier"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "ready",
+              "running",
+              "waiting",
+              "completed",
+              "failed",
+              "cancelled",
+              "unknown"
+            ]
+          },
+          "workerIds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "status",
+          "workerIds"
+        ]
+      },
+      "Graph": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "planRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GraphNode"
+            },
+            "maxItems": 64
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Edge"
+            },
+            "maxItems": 256
+          }
+        },
+        "required": [
+          "taskId",
+          "planRevision",
+          "nodes",
+          "edges"
+        ],
+        "examples": [
+          {
+            "taskId": "task-example",
+            "planRevision": 1,
+            "nodes": [
+              {
+                "id": "node-author",
+                "role": "author",
+                "status": "pending",
+                "workerIds": []
+              }
+            ],
+            "edges": []
+          }
+        ]
+      },
+      "Question": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "nodeId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 256,
+            "x-maxUtf8Bytes": 256,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "clarification",
+              "permission",
+              "acceptance"
+            ]
+          },
+          "prompt": {
+            "type": "string",
+            "maxLength": 8192,
+            "x-maxUtf8Bytes": 8192,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "maxLength": 1024,
+                  "x-maxUtf8Bytes": 1024,
+                  "x-wellFormedUnicode": true,
+                  "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+                  "minLength": 1
+                },
+                "label": {
+                  "type": "string",
+                  "maxLength": 2048,
+                  "x-maxUtf8Bytes": 2048,
+                  "x-wellFormedUnicode": true,
+                  "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "value",
+                "label"
+              ]
+            },
+            "maxItems": 32
+          },
+          "deadlineAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "answered",
+              "expired",
+              "cancelled"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "nodeId",
+          "revision",
+          "subject",
+          "kind",
+          "prompt",
+          "options",
+          "deadlineAt",
+          "status"
+        ],
+        "examples": [
+          {
+            "id": "question-example",
+            "taskId": "task-example",
+            "nodeId": null,
+            "revision": 1,
+            "subject": "输出语言",
+            "kind": "clarification",
+            "prompt": "输出需要使用哪种语言？",
+            "options": [
+              {
+                "value": "zh",
+                "label": "中文"
+              }
+            ],
+            "deadlineAt": "2026-09-09T00:00:00.000Z",
+            "status": "open"
+          }
+        ]
+      },
+      "Artifact": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "taskId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "x-maxUtf8Bytes": 255,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "input",
+              "candidate",
+              "delivery",
+              "evidence"
+            ]
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "partial",
+              "unavailable"
+            ]
+          },
+          "mediaType": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$",
+            "maxLength": 128
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8388608
+          },
+          "digest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "name",
+          "kind",
+          "status",
+          "mediaType",
+          "bytes",
+          "digest",
+          "createdAt"
+        ],
+        "examples": [
+          {
+            "id": "artifact-example",
+            "taskId": "task-example",
+            "name": "result.txt",
+            "kind": "delivery",
+            "status": "ready",
+            "mediaType": "text/plain",
+            "bytes": 0,
+            "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "createdAt": "2026-09-08T00:00:00.000Z"
+          }
+        ],
+        "description": "输入或不可变成果manifest；知道ID或摘要不等于授权。空文件示例只说明结构，不宣称业务验收。"
+      },
+      "Acceptance": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "pending",
+              "passed",
+              "failed",
+              "unknown"
+            ]
+          },
+          "evidenceIds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "maxItems": 256
+          },
+          "digest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Digest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "evidenceIds",
+          "digest"
+        ]
+      },
+      "Rates": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "passed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "pending": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "passed",
+          "total",
+          "pending"
+        ]
+      },
+      "Prompt": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workerId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 32768,
+            "x-maxUtf8Bytes": 32768,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "contextRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "maxItems": 64
+          },
+          "source": {
+            "enum": [
+              "submitted-redacted",
+              "unavailable"
+            ]
+          }
+        },
+        "required": [
+          "workerId",
+          "text",
+          "contextRefs",
+          "source"
+        ]
+      },
+      "Audit": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "elapsedMs": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "retryCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "reworkCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "firstReview": {
+            "$ref": "#/components/schemas/Rates"
+          },
+          "acceptance": {
+            "$ref": "#/components/schemas/Acceptance"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          },
+          "workers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Worker"
+            },
+            "maxItems": 256
+          },
+          "prompts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Prompt"
+            },
+            "maxItems": 256
+          }
+        },
+        "required": [
+          "taskId",
+          "elapsedMs",
+          "attempts",
+          "retryCount",
+          "reworkCount",
+          "firstReview",
+          "acceptance",
+          "usage",
+          "workers",
+          "prompts"
+        ],
+        "examples": [
+          {
+            "taskId": "task-example",
+            "elapsedMs": null,
+            "attempts": 0,
+            "retryCount": 0,
+            "reworkCount": 0,
+            "firstReview": {
+              "passed": 0,
+              "total": 0,
+              "pending": 0
+            },
+            "acceptance": {
+              "status": "pending",
+              "evidenceIds": [],
+              "digest": null
+            },
+            "usage": {
+              "tokens": null,
+              "cost": null,
+              "currency": null,
+              "source": "unavailable",
+              "coverage": 0
+            },
+            "workers": [],
+            "prompts": []
+          }
+        ]
+      },
+      "Event": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 128,
+            "x-maxUtf8Bytes": 128,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "workerId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "source": {
+            "enum": [
+              "application",
+              "agent",
+              "execution",
+              "verification"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "sequence",
+          "type",
+          "at",
+          "workerId",
+          "summary",
+          "source"
+        ],
+        "examples": [
+          {
+            "id": "event-example",
+            "taskId": "task-example",
+            "sequence": 1,
+            "type": "task_created",
+            "at": "2026-09-08T00:00:00.000Z",
+            "workerId": null,
+            "summary": "草案已提交",
+            "source": "application"
+          }
+        ]
+      },
+      "Provider": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "displayName": {
+            "type": "string",
+            "maxLength": 128,
+            "x-maxUtf8Bytes": 128,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          },
+          "availability": {
+            "enum": [
+              "ready",
+              "unavailable",
+              "unknown"
+            ]
+          },
+          "coreCapabilities": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "input",
+                "execution-identity",
+                "terminal",
+                "artifacts",
+                "owned-stop"
+              ]
+            },
+            "maxItems": 5
+          },
+          "enhancedCapabilities": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "acp",
+                "progress",
+                "tools",
+                "usage",
+                "questions",
+                "permissions",
+                "resume",
+                "steering"
+              ]
+            },
+            "maxItems": 8
+          }
+        },
+        "required": [
+          "id",
+          "displayName",
+          "availability",
+          "coreCapabilities",
+          "enhancedCapabilities"
+        ],
+        "examples": [
+          {
+            "id": "provider-example",
+            "displayName": "示例（非已验证 Provider）",
+            "availability": "unknown",
+            "coreCapabilities": [],
+            "enhancedCapabilities": []
+          }
+        ]
+      },
+      "Supervisor": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "ready",
+              "busy",
+              "recovering",
+              "intervention",
+              "stopping"
+            ]
+          },
+          "activeWorkers": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "maxWorkers": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "queuedTasks": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "blockedTasks": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "status",
+          "activeWorkers",
+          "maxWorkers",
+          "queuedTasks",
+          "blockedTasks",
+          "observedAt"
+        ],
+        "examples": [
+          {
+            "status": "ready",
+            "activeWorkers": 0,
+            "maxWorkers": 2,
+            "queuedTasks": 0,
+            "blockedTasks": 0,
+            "observedAt": "2026-09-08T00:00:00.000Z"
+          }
+        ]
+      },
+      "Health": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "ok"
+          },
+          "profile": {
+            "const": "node-task-service/v1"
+          }
+        },
+        "required": [
+          "status",
+          "profile"
+        ],
+        "examples": [
+          {
+            "status": "ok",
+            "profile": "node-task-service/v1"
+          }
+        ]
+      },
+      "Readiness": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ready": {
+            "const": true
+          },
+          "profile": {
+            "const": "node-task-service/v1"
+          }
+        },
+        "required": [
+          "ready",
+          "profile"
+        ],
+        "examples": [
+          {
+            "ready": true,
+            "profile": "node-task-service/v1"
+          }
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "application_unavailable",
+              "artifact_not_ready",
+              "capacity_exceeded",
+              "forbidden",
+              "idempotency_conflict",
+              "invalid_application_response",
+              "invalid_content_type",
+              "invalid_idempotency_key",
+              "invalid_json",
+              "invalid_request",
+              "method_not_allowed",
+              "not_found",
+              "not_ready",
+              "plan_conflict",
+              "question_expired",
+              "recovery_required",
+              "request_timeout",
+              "request_too_large",
+              "revision_conflict",
+              "state_conflict",
+              "unauthorized",
+              "unsupported_operation",
+              "unsupported_task",
+              "untrusted_request"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 256,
+            "x-maxUtf8Bytes": 256,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+            "minLength": 1
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "allowedActions": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "query",
+                "same-key-replay",
+                "correct-request",
+                "intervention"
+              ]
+            },
+            "maxItems": 4
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "requestId",
+          "allowedActions"
+        ],
+        "examples": [
+          {
+            "code": "revision_conflict",
+            "message": "对象版本已变化。",
+            "requestId": "request-example",
+            "allowedActions": [
+              "query"
+            ]
+          }
+        ]
+      },
+      "Tasks": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Task"
+            },
+            "maxItems": 100
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "examples": [
+          {
+            "items": [
+              {
+                "id": "task-example",
+                "revision": 1,
+                "status": "draft",
+                "phase": "intake",
+                "intent": "生成业务说明文档",
+                "createdAt": "2026-09-08T00:00:00.000Z",
+                "updatedAt": "2026-09-08T00:00:00.000Z",
+                "allowedActions": [
+                  "cancel"
+                ],
+                "plan": null,
+                "artifactIds": []
+              }
+            ],
+            "nextCursor": null
+          }
+        ]
+      },
+      "Workers": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Worker"
+            },
+            "maxItems": 100
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "taskId"
+        ],
+        "examples": [
+          {
+            "items": [
+              {
+                "id": "worker-example",
+                "taskId": "task-example",
+                "nodeId": "node-author",
+                "providerId": "provider-example",
+                "role": "author",
+                "status": "queued",
+                "phase": "development",
+                "attempt": 1,
+                "startedAt": null,
+                "finishedAt": null,
+                "lastObservedAt": null,
+                "progress": null,
+                "usage": {
+                  "tokens": null,
+                  "cost": null,
+                  "currency": null,
+                  "source": "unavailable",
+                  "coverage": 0
+                }
+              }
+            ],
+            "nextCursor": null,
+            "taskId": "task-example"
+          }
+        ]
+      },
+      "Questions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Question"
+            },
+            "maxItems": 100
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "taskId"
+        ],
+        "examples": [
+          {
+            "items": [
+              {
+                "id": "question-example",
+                "taskId": "task-example",
+                "nodeId": null,
+                "revision": 1,
+                "subject": "输出语言",
+                "kind": "clarification",
+                "prompt": "输出需要使用哪种语言？",
+                "options": [
+                  {
+                    "value": "zh",
+                    "label": "中文"
+                  }
+                ],
+                "deadlineAt": "2026-09-09T00:00:00.000Z",
+                "status": "open"
+              }
+            ],
+            "nextCursor": null,
+            "taskId": "task-example"
+          }
+        ]
+      },
+      "Events": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            },
+            "maxItems": 100
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "taskId"
+        ],
+        "examples": [
+          {
+            "items": [
+              {
+                "id": "event-example",
+                "taskId": "task-example",
+                "sequence": 1,
+                "type": "task_created",
+                "at": "2026-09-08T00:00:00.000Z",
+                "workerId": null,
+                "summary": "草案已提交",
+                "source": "application"
+              }
+            ],
+            "nextCursor": null,
+            "taskId": "task-example"
+          }
+        ]
+      },
+      "Providers": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "maxItems": 100
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "examples": [
+          {
+            "items": [
+              {
+                "id": "provider-example",
+                "displayName": "示例（非已验证 Provider）",
+                "availability": "unknown",
+                "coreCapabilities": [],
+                "enhancedCapabilities": []
+              }
+            ],
+            "nextCursor": null
+          }
+        ]
+      }
+    }
+  }
+}
