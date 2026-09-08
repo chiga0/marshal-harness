@@ -13,13 +13,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/authority"
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/goal"
+	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
@@ -349,6 +352,9 @@ func TestRepositoryTaskCancelDoesNotCallVerifyOrInventMissingCleanup(t *testing.
 	ctx := context.Background()
 	fixture, s := taskCancelSessionFixture(t)
 	task := taskCancelApprove(t, s, taskCancelCreate(t, s))
+	if err := s.ObserveColdTaskVerifications(ctx); err != nil {
+		t.Fatal(err)
+	}
 	created, err := s.MaterializeApprovedInitialTeamRun(ctx, task.ID, "service", task.Approval.FactDigest)
 	if err != nil {
 		t.Fatal(err)
@@ -360,6 +366,24 @@ func TestRepositoryTaskCancelDoesNotCallVerifyOrInventMissingCleanup(t *testing.
 	f := fixedDeliveryFixture{repository: fixture.repository, session: s, request: application.StartRunRequest{RunID: ready.RunID, ExpectedSequence: ready.Sequence, ExpectedAuthorityHead: ready.AuthorityHead}}
 	running := advanceFixedDeliveryRunToRunningWithBudget(t, f, 1)
 	advanceFixedDeliveryRunToVerifying(t, f, running) // Run journal only; deliberately no RB1 cleanup receipt.
+	lease, err := s.runs.AcquireExisting(ready.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := s.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creation, _, err := s.ingress.ReadTeamRunCreation(s.acquisition.Scope, task.ID, "service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskCancellationFrozenRun(lease, creation, read.Run); err != nil {
+		t.Fatal("negative failed before cleanup gate", err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
 	_, err = s.CancelTask(ctx, application.CancelTaskRequest{TaskID: task.ID, IdempotencyKey: "cancel-verify", ExpectedRevision: task.Revision})
 	if err != nil {
 		t.Fatal(err)
@@ -368,8 +392,8 @@ func TestRepositoryTaskCancelDoesNotCallVerifyOrInventMissingCleanup(t *testing.
 	if err := s.WithTaskRunNotStopped(ctx, ready.RunID, func() error { called = true; return nil }); !application.HasReason(err, application.ReasonRunStopped) || called {
 		t.Fatalf("late Verify commit admitted: %v", err)
 	}
-	if err := s.FinishTaskCancellation(ctx, task.ID); err == nil {
-		t.Fatal("journal state without cleanup falsely closed")
+	if err := s.FinishTaskCancellation(ctx, task.ID); !application.HasReason(err, application.ReasonRecoveryRequired) {
+		t.Fatal("journal state without cleanup did not reach recovery gate", err)
 	}
 	current, err := s.ReadTask(ctx, task.ID)
 	if err != nil || current.Status != "cancelling" {
@@ -383,5 +407,156 @@ func TestRepositoryTaskCancelDoesNotCallVerifyOrInventMissingCleanup(t *testing.
 	}
 	if !errors.Is(s.ingress.RequireTaskNotStopped(s.acquisition.Scope, task.ID), resultingress.ErrTaskStopped) {
 		t.Fatal("stop fence vanished")
+	}
+}
+
+// This is a source-availability/forgery regression, not an executed Worker or
+// cleanup receipt. Projection-only later states deliberately carry no RB1
+// Attempt and therefore cannot pass FinishTaskCancellation.
+func TestRepositoryTaskCancelFrozenSourcesAcrossStates(t *testing.T) {
+	for _, target := range []domain.State{domain.StateReady, domain.StateRunning, domain.StateBlocked, domain.StateVerifying, domain.StateReviewPending, domain.StateAccepted} {
+		t.Run(string(target), func(t *testing.T) {
+			ctx := context.Background()
+			fixture, s := taskCancelSessionFixture(t)
+			task := taskCancelApprove(t, s, taskCancelCreate(t, s))
+			created, err := s.MaterializeApprovedInitialTeamRun(ctx, task.ID, "service", task.Approval.FactDigest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ready, err := s.InspectRun(ctx, application.InspectRunRequest{RunID: created.RunID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := fixedDeliveryFixture{repository: fixture.repository, session: s, request: application.StartRunRequest{RunID: ready.RunID, ExpectedSequence: ready.Sequence, ExpectedAuthorityHead: ready.AuthorityHead}}
+			if target != domain.StateReady {
+				advanceFixedDeliveryRunToRunningWithBudget(t, f, 1)
+			}
+			lease, err := s.runs.AcquireExisting(created.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Release()
+			state, err := runstore.InspectUnderLease(lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.State != target {
+				event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event-source-projection", RunID: state.RunID, AttemptID: state.CurrentAttemptID, Sequence: state.Sequence + 1, Type: "run.transition", StateFrom: state.State, StateTo: target, Timestamp: time.Now().UTC(), Payload: map[string]any{}}
+				if err := s.runs.Append(lease, event, state.Sequence); err != nil {
+					t.Fatal(err)
+				}
+				state.Sequence, state.State = event.Sequence, target
+				if err := s.runs.WriteSnapshot(lease, state); err != nil {
+					t.Fatal(err)
+				}
+			}
+			read, err := s.runs.ReadRunStartAuthorityUnderLease(ctx, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			creation, _, err := s.ingress.ReadTeamRunCreation(s.acquisition.Scope, task.ID, "service")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if target != domain.StateReady && target != domain.StateRunning && (read.SpecDigest != "" || read.PolicyDigest != "" || read.CapabilityDigest != "" || read.BaseSHA != "") {
+				t.Fatal("test no longer exercises sparse projection")
+			}
+			if err := taskCancellationFrozenRun(lease, creation, read.Run); err != nil {
+				t.Fatal("original frozen source rejected", err)
+			}
+			for _, name := range []string{"task-spec.json", "policy-snapshot.json", "capability-snapshot.json"} {
+				path := filepath.Join(fixture.repository, ".marshal", "runs", created.RunID, name)
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, append(bytes.Clone(raw), '\n'), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := taskCancellationFrozenRun(lease, creation, read.Run); err == nil {
+					t.Fatal("changed frozen bytes accepted", name)
+				}
+				if err := os.WriteFile(path, raw, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			drift := state
+			drift.BaseSHA = strings.Repeat("b", 40)
+			if err := s.runs.WriteSnapshot(lease, drift); err != nil {
+				t.Fatal(err)
+			}
+			if err := taskCancellationFrozenRun(lease, creation, read.Run); err == nil {
+				t.Fatal("changed snapshot accepted")
+			}
+			if err := s.runs.WriteSnapshot(lease, state); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// These values test the exact event-consumer join only. stopEventPayload is
+// the original producer formatter; the state is explicitly synthetic and is
+// never written into RB1 or offered as completed Task cancellation evidence.
+func TestRepositoryTaskCancelCleanupEventProducerShapes(t *testing.T) {
+	attempt := stoppedAttemptFixture(t)
+	current := application.RunProjection{TaskID: attempt.Identity.TaskID, RunID: attempt.Identity.RunID, AttemptID: attempt.Identity.AttemptID, State: domain.StateBlocked}
+	payload, err := stopEventPayload(attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped := domain.RunEvent{RunID: current.RunID, AttemptID: current.AttemptID, Type: lifecycle.WorkerStoppedEventType, StateFrom: domain.StateRunning, StateTo: domain.StateBlocked, Timestamp: time.Now().UTC(), Actor: &domain.Actor{Type: "system", ID: "marshal-core"}, Payload: payload}
+	if !taskCancellationCleanupEvent(stopped, current, attempt) {
+		t.Fatal("original stopped formatter rejected")
+	}
+	completedAttempt := attempt
+	completedAttempt.StopIntent = resultingress.AttemptStopIntent{}
+	completedAttempt.CommittedResultFactDigest = canonical.DigestBytes([]byte("synthetic-admission"))
+	completed := stopped
+	completed.Type, completed.StateTo, completed.Actor = "worker.completed", domain.StateVerifying, &domain.Actor{Type: "system", ID: "marshal-production-runtime"}
+	completed.Payload = map[string]any{"resultAdmissionFactDigest": completedAttempt.CommittedResultFactDigest, "terminalizationBarrierFactDigest": attempt.BarrierDigest, "processTerminalFactDigest": attempt.ProcessTerminalDigest, "allocationTerminatedFactDigest": attempt.AllocationTerminalDigest, "supervisorClosedFactDigest": attempt.SupervisorClosedDigest, "cleanupReleasedFactDigest": attempt.CleanupReleasedDigest}
+	if !taskCancellationCleanupEvent(completed, current, completedAttempt) {
+		t.Fatal("completed producer shape rejected")
+	}
+	for _, example := range []struct {
+		event   domain.RunEvent
+		attempt resultingress.AttemptAuthorityState
+	}{{stopped, attempt}, {completed, completedAttempt}} {
+		for _, key := range []string{"terminalizationBarrierFactDigest", "processTerminalFactDigest", "allocationTerminatedFactDigest", "supervisorClosedFactDigest", "cleanupReleasedFactDigest"} {
+			bad := example.event
+			bad.Payload = map[string]any{}
+			for k, v := range example.event.Payload {
+				bad.Payload[k] = v
+			}
+			delete(bad.Payload, key)
+			if taskCancellationCleanupEvent(bad, current, example.attempt) {
+				t.Fatal("missing joined evidence accepted", key)
+			}
+		}
+		bad := example.event
+		bad.Type = "unrelated.event"
+		if taskCancellationCleanupEvent(bad, current, example.attempt) {
+			t.Fatal("unrelated event accepted")
+		}
+		bad = example.event
+		bad.Actor = &domain.Actor{Type: "worker", ID: "arbitrary"}
+		if taskCancellationCleanupEvent(bad, current, example.attempt) {
+			t.Fatal("worker-authored cleanup event accepted")
+		}
+		bad = example.event
+		bad.RunID = "another-run"
+		if taskCancellationCleanupEvent(bad, current, example.attempt) {
+			t.Fatal("cross-Run event accepted")
+		}
+		badAttempt := example.attempt
+		badAttempt.Identity.TaskID = "another-task"
+		if taskCancellationCleanupEvent(example.event, current, badAttempt) {
+			t.Fatal("cross-Task Attempt accepted")
+		}
+		badAttempt = example.attempt
+		badAttempt.CleanupReleasedDigest = ""
+		if taskCancellationCleanupEvent(example.event, current, badAttempt) {
+			t.Fatal("missing current cleanup accepted")
+		}
 	}
 }

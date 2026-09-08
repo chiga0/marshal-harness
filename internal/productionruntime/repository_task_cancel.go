@@ -1,6 +1,7 @@
 package productionruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
@@ -188,14 +190,8 @@ func (v repositoryTaskCancellationVerifier) WithCurrentTaskCancellation(ctx cont
 			if read.Run.TaskID != node.TaskID || read.Run.RunID != node.RunID {
 				return resultingress.ErrTeamPlanConflict
 			}
-			var frozen struct {
-				Task       json.RawMessage `json:"task"`
-				Policy     json.RawMessage `json:"policy"`
-				Capability json.RawMessage `json:"capability"`
-				BaseSHA    string          `json:"baseSha"`
-			}
-			if json.Unmarshal(creation.Inputs, &frozen) != nil || read.SpecDigest != canonical.DigestBytes(frozen.Task) || read.PolicyDigest != canonical.DigestBytes(frozen.Policy) || read.CapabilityDigest != canonical.DigestBytes(frozen.Capability) || read.BaseSHA != frozen.BaseSHA {
-				return resultingress.ErrTeamPlanConflict
+			if err := taskCancellationFrozenRun(lease, creation, read.Run); err != nil {
+				return err
 			}
 			proof.RunHead, proof.RunSequence, proof.RunState = read.Run.AuthorityHead, read.Run.Sequence, read.Run.State
 			if read.Run.State == domain.StateReady && read.Run.Sequence == 2 && read.Run.AttemptID == "" && read.AttemptsUsed == 0 && len(attempts) == 0 {
@@ -220,7 +216,7 @@ func (v repositoryTaskCancellationVerifier) WithCurrentTaskCancellation(ctx cont
 						return application.NewError("cancel-task", application.ReasonRecoveryRequired)
 					}
 				}
-				if len(attempts) != 1 || attempts[0].Identity.AttemptID != read.Run.AttemptID {
+				if len(attempts) != 1 || attempts[0].Identity.TaskID != read.Run.TaskID || attempts[0].Identity.AttemptID != read.Run.AttemptID {
 					return application.NewError("cancel-task", application.ReasonRecoveryRequired)
 				}
 				proof.Disposition = "execution-cleaned"
@@ -234,8 +230,7 @@ func (v repositoryTaskCancellationVerifier) WithCurrentTaskCancellation(ctx cont
 				}
 				matched := false
 				for _, event := range events {
-					if event.AttemptID == read.Run.AttemptID && event.Payload["cleanupReleasedFactDigest"] == proof.CleanupReleasedDigest && proof.CleanupReleasedDigest != "" &&
-						event.Payload["processTerminalFactDigest"] == attempts[0].ProcessTerminalDigest && event.Payload["allocationTerminatedFactDigest"] == attempts[0].AllocationTerminalDigest && event.Payload["supervisorClosedFactDigest"] == attempts[0].SupervisorClosedDigest {
+					if taskCancellationCleanupEvent(event, read.Run, attempts[0]) {
 						matched = true
 					}
 				}
@@ -247,6 +242,73 @@ func (v repositoryTaskCancellationVerifier) WithCurrentTaskCancellation(ctx cont
 		}
 		return fn(value)
 	})
+}
+
+func taskCancellationCleanupEvent(event domain.RunEvent, current application.RunProjection, attempt resultingress.AttemptAuthorityState) bool {
+	if event.RunID != current.RunID || event.AttemptID != current.AttemptID || attempt.Identity.TaskID != current.TaskID || attempt.Identity.RunID != current.RunID || attempt.Identity.AttemptID != current.AttemptID ||
+		attempt.BarrierDigest == "" || attempt.ProcessTerminalDigest == "" || attempt.AllocationTerminalDigest == "" || attempt.SupervisorClosedDigest == "" || attempt.CleanupReleasedDigest == "" ||
+		event.Payload["terminalizationBarrierFactDigest"] != attempt.BarrierDigest || event.Payload["processTerminalFactDigest"] != attempt.ProcessTerminalDigest ||
+		event.Payload["allocationTerminatedFactDigest"] != attempt.AllocationTerminalDigest || event.Payload["supervisorClosedFactDigest"] != attempt.SupervisorClosedDigest || event.Payload["cleanupReleasedFactDigest"] != attempt.CleanupReleasedDigest {
+		return false
+	}
+	switch event.Type {
+	case lifecycle.WorkerStoppedEventType:
+		return lifecycle.ValidateWorkerStopped(event) == nil && attempt.StopIntent != (resultingress.AttemptStopIntent{}) &&
+			event.Payload["stopIntentDigest"] == attempt.StopIntent.IntentDigest && event.Payload["stopRequestDigest"] == attempt.StopIntent.RequestDigest && event.Payload["originalRunAuthorityHead"] == attempt.StopIntent.ExpectedAuthorityHead
+	case "worker.completed":
+		return event.StateFrom == domain.StateRunning && event.StateTo == domain.StateVerifying && event.Actor != nil && event.Actor.Type == "system" && event.Actor.ID == "marshal-production-runtime" &&
+			attempt.CommittedResultFactDigest != "" && event.Payload["resultAdmissionFactDigest"] == attempt.CommittedResultFactDigest
+	default:
+		return false
+	}
+}
+
+// Start projections populate frozen fields only for READY/RUNNING. Cancellation
+// also closes already-cleaned BLOCKED/VERIFYING/REVIEW_PENDING/ACCEPTED Runs,
+// so read the original snapshot, bytes and freeze journal under the same lease
+// instead of treating an intentionally absent projection field as authority.
+func taskCancellationFrozenRun(lease *runstore.Lease, creation resultingress.TeamRunCreationState, current application.RunProjection) error {
+	fail := func() error { return resultingress.ErrTeamPlanConflict }
+	var frozen struct {
+		Task       json.RawMessage `json:"task"`
+		Policy     json.RawMessage `json:"policy"`
+		Capability json.RawMessage `json:"capability"`
+		BaseSHA    string          `json:"baseSha"`
+	}
+	if json.Unmarshal(creation.Inputs, &frozen) != nil {
+		return fail()
+	}
+	state, err := runstore.InspectUnderLease(lease)
+	if err != nil || state.RunID != current.RunID || state.TaskID != current.TaskID || state.Sequence != current.Sequence || state.State != current.State || state.CurrentAttemptID != current.AttemptID || state.BaseSHA != frozen.BaseSHA {
+		return errors.Join(err, fail())
+	}
+	for _, file := range []struct {
+		name   string
+		raw    []byte
+		digest string
+	}{
+		{"task-spec.json", frozen.Task, state.SpecDigest},
+		{"policy-snapshot.json", frozen.Policy, state.PolicyDigest},
+		{"capability-snapshot.json", frozen.Capability, state.CapabilityDigest},
+	} {
+		if len(file.raw) == 0 || canonical.DigestBytes(file.raw) != file.digest {
+			return fail()
+		}
+		raw, err := runstore.ReadFileUnderLease(lease, int64(len(file.raw)+1), file.name)
+		if err != nil || !bytes.Equal(raw, file.raw) {
+			return errors.Join(err, fail())
+		}
+	}
+	events, truncated, err := runstore.ReadEventsUnderLease(lease)
+	if err != nil || truncated || len(events) < 2 {
+		return errors.Join(err, fail())
+	}
+	freeze := events[1]
+	if freeze.Sequence != 2 || freeze.RunID != current.RunID || freeze.Type != "planning.inputs-frozen" || freeze.StateFrom != domain.StatePlanned || freeze.StateTo != domain.StateReady ||
+		freeze.Payload["specDigest"] != state.SpecDigest || freeze.Payload["policyDigest"] != state.PolicyDigest || freeze.Payload["capabilityDigest"] != state.CapabilityDigest || freeze.Payload["baseSha"] != state.BaseSHA || freeze.Payload["worktreePath"] != state.WorktreePath {
+		return fail()
+	}
+	return nil
 }
 
 // ObserveColdTaskVerifications runs once before publishing the server. It
