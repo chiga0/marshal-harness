@@ -20,19 +20,21 @@ const requireValue = value => { if (!value) throw new SupervisorError('superviso
 
 /** Same Application authority; only live handles, timers and observation queues here. */
 export class TaskSupervisor {
-  #execution; #providers; #prepare; #collect; #onError; #clock; #options;
+  #execution; #providers; #prepare; #collect; #release; #verification; #onError; #clock; #options;
   #owned = new Map(); #works = new Set(); #timer; #tick; #close;
   #running = false; #closing = false; #closed = false; #failure = null;
   #diagnostics = []; #notificationFailures = 0; #rejected = new Set(); #rejectedOverflow = false;
   #scanCursor = ''; #pollCursor = '';
-  constructor({execution, providers, prepare, collect, onError = () => {}, clock = Date.now,
+  constructor({execution, providers, prepare, collect, release = () => {}, verification = null, onError = () => {}, clock = Date.now,
     intervalMs = 100, prepareMs = 30000, collectMs = 30000, pageSize = 25, maxPagesPerTick = 100} = {}) {
     requireValue(execution && PORTS.every(name => typeof execution[name] === 'function') && providers instanceof Map &&
-      typeof prepare === 'function' && typeof collect === 'function' && typeof onError === 'function' && typeof clock === 'function');
+      typeof prepare === 'function' && typeof collect === 'function' && typeof release === 'function' &&
+      (verification === null || typeof verification.start === 'function') && typeof onError === 'function' && typeof clock === 'function');
     for (const [id, provider] of providers) requireValue(typeof id === 'string' && provider?.id === id && typeof provider.start === 'function');
     for (const [value, max] of [[intervalMs, 30000], [prepareMs, 30000], [collectMs, 30000], [pageSize, 100], [maxPagesPerTick, 100]])
       requireValue(Number.isSafeInteger(value) && value >= 1 && value <= max);
     this.#execution = execution; this.#providers = new Map(providers); this.#prepare = prepare; this.#collect = collect;
+    this.#verification = verification; this.#release = release;
     this.#onError = onError; this.#clock = clock; this.#options = {intervalMs, prepareMs, collectMs, pageSize, maxPagesPerTick};
   }
   #call(name, ...args) {
@@ -175,6 +177,11 @@ export class TaskSupervisor {
     this.#owned.set(ticket.workerId, entry);
     const timer = setTimeout(() => this.#deadline(entry), Math.max(1, ticket.deadline - this.#clock()));
     const work = this.#run(entry).catch(() => this.#fault(entry.stage, entry)).finally(() => {
+      try {
+        const released = this.#release(entry.ticket);
+        if (released && typeof released.then === 'function') void Promise.resolve(released).catch(() => {});
+        requireValue(!released || typeof released.then !== 'function');
+      } catch { this.#notify({code: 'worker_release_failed', stage: 'release', taskId: ticket.taskId, workerId: ticket.workerId}); }
       clearTimeout(timer); this.#works.delete(work);
       if (entry.clean && entry.finalized) this.#owned.delete(ticket.workerId);
       this.#schedule(0);
@@ -250,12 +257,14 @@ export class TaskSupervisor {
         entry.wake = deferred(); await entry.wake.promise;
       }
       if (entry.stopping || this.#closing || this.#failure) throw new SupervisorError('supervisor_stopped');
-      const provider = this.#providers.get(entry.ticket.providerId); requireValue(provider);
+      const verifying = entry.ticket.executionType === 'verification';
+      const provider = verifying ? this.#verification : this.#providers.get(entry.ticket.providerId);
+      requireValue(provider && provider.id === entry.ticket.providerId);
       // No await between final current-ledger check and synchronous start.
       if (!this.#call('mayStart', entry.ticket)) throw new SupervisorError('supervisor_stopped');
       entry.invoked = true; entry.stage = 'starting';
-      entry.handle = provider.start({...prepared, deadline: entry.ticket.deadline,
-        onProgress: update => this.#progress(entry, update)});
+      entry.handle = verifying ? provider.start({ticket: entry.ticket, prepared}) :
+        provider.start({...prepared, deadline: entry.ticket.deadline, onProgress: update => this.#progress(entry, update)});
       requireValue(object(entry.handle) && typeof entry.handle.stop === 'function' &&
         typeof entry.handle.started?.then === 'function' && typeof entry.handle.completion?.then === 'function');
       const completion = Promise.resolve(entry.handle.completion);
@@ -268,9 +277,9 @@ export class TaskSupervisor {
       if (!entry.startFact && result?.cleanup?.started) this.#bindStarted(entry, result.cleanup.started);
       entry.acceptStarted = false; entry.startedGate.resolve();
       await entry.progress;
-      requireValue(object(result) && result.providerId === entry.ticket.providerId &&
-        ['completed', 'failed', 'cancelled', 'unknown'].includes(result.status));
-      if (!entry.stopping && !this.#failure && result.status === 'completed' && result.stopReason === 'end_turn' && result.cleanup?.cleaned === true) {
+      requireValue(object(result) && (verifying ? result.type === 'verification' && ['passed', 'failed'].includes(result.status) :
+        result.providerId === entry.ticket.providerId && ['completed', 'failed', 'cancelled', 'unknown'].includes(result.status)));
+      if (!verifying && !entry.stopping && !this.#failure && result.status === 'completed' && result.stopReason === 'end_turn' && result.cleanup?.cleaned === true) {
         entry.stage = 'collecting';
         collected = await this.#bounded(entry, this.#options.collectMs,
           context => this.#collect(entry.ticket, freeze(structuredClone(result)), context));
@@ -303,6 +312,9 @@ export class TaskSupervisor {
     }
     const outcome = {status: failure || entry.failure || entry.stopping || this.#failure ? 'failed' : result?.status ?? 'failed',
       stopReason: result?.stopReason ?? null, cleanup, ...collected};
+    if (entry.ticket.executionType === 'verification') {
+      outcome.type = 'verification'; outcome.receipt = result?.receipt; // Parent-only identity: NEVER structuredClone this capability.
+    }
     const worker = this.#call('finish', entry.ticket, outcome);
     entry.clean = cleanup.cleaned === true; entry.finalized = true;
     entry.stage = worker.status === 'unknown' ? 'unknown' : 'terminal';

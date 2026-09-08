@@ -1,5 +1,5 @@
 import {encode, digest, makeEvent} from '../task-store/store.mjs';
-import {clone, reject, terminal, nextRevision, freezePlan, isText} from './model.mjs';
+import {clone, reject, terminal, nextRevision, isText} from './model.mjs';
 
 const decode = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
 const hash = value => digest(encode(value));
@@ -161,8 +161,10 @@ export class TaskExecution {
         const dependencies = task.plan.edges.filter(edge => edge.to === node.id).map(edge => edge.from);
         if (dependencies.some(id => task.nodes.find(state => state.id === id)?.status !== 'completed')) return null;
       }
-      const providerId = node.providerId ?? this.defaultProvider;
-      if (!this.providers.has(providerId)) reject('unsupported_task', 422);
+      const verification = task.verification && task.verification.nodeId === node.id;
+      if (task.verification) this.app.verification.configured(task.verification);
+      const providerId = verification ? task.verification.providerId : node.providerId ?? this.defaultProvider;
+      if (!verification && !this.providers.has(providerId)) reject('unsupported_task', 422);
       const capacity = this.capacity(tx), taskWorkers = this.workers(tx, task);
       const budget = task.approved ? task.plan.budget : task.limits;
       if (capacity.value.active.length >= this.maxWorkers || taskWorkers.filter(({record}) => live(record.worker)).length >= budget.maxWorkers) return null;
@@ -173,11 +175,24 @@ export class TaskExecution {
         .filter(({record}) => dependencies.has(record.worker.nodeId) && record.ticket.planDigest === task.approved?.planDigest &&
           record.worker.status === 'completed' && record.resultRef !== null)
         .map(({record}) => {
+          if (task.verification) {
+            if (!record.candidate) reject('candidate_manifest_conflict', 422);
+            return {workerId: record.worker.id, nodeId: record.worker.nodeId, result: clone(record.candidate)};
+          }
           const entry = tx.projection('attempt', record.resultRef);
           if (!entry || digest(entry.bytes) !== record.resultDigest) reject('application_unavailable', 503);
           return {workerId: record.worker.id, nodeId: record.worker.nodeId, result: decode(entry)};
         })};
+      if (task.verification) input.fileLayout = this.app.verification.resolve(task, node.id, input.upstream);
+      if (verification) {
+        if (taskWorkers.some(({record}) => live(record.worker))) return null;
+        const producers = taskWorkers.filter(({record}) => record.ticket.planDigest === task.approved.planDigest);
+        if (producers.length !== task.plan.nodes.length - 1 || producers.some(({record}) => record.worker.status !== 'completed' || !record.candidate)) return null;
+        input.verification = {binding: clone(task.verification), manifests: producers.map(({record}) => ({workerId: record.worker.id,
+          nodeId: record.worker.nodeId, resultDigest: record.resultDigest, manifest: clone(record.candidate)})).sort((a, b) => a.nodeId < b.nodeId ? -1 : 1)};
+      }
       const frozen = {workerId: id, taskId: task.task.id, nodeId: node.id, role: node.role, providerId,
+        executionType: verification ? 'verification' : 'agent',
         generation: this.app.owner.generation.toString(), commandId, inputDigest: hash(input),
         planDigest: task.approved?.planDigest ?? null,
         deadline: Math.min(Date.parse(task.task.deadlineAt), this.app.now() + 86400000), input};
@@ -211,6 +226,22 @@ export class TaskExecution {
       const {record, task} = this.ticket(tx, ticket);
       return record.worker.status === 'queued' && !terminal.has(task.task.status) &&
         !['cancelling', 'paused'].includes(task.task.status) && this.app.now() < ticket.deadline;
+    });
+  }
+  approvedLayout(ticket) {
+    return this.app.transaction(false, tx => {
+      const {task} = this.ticket(tx, ticket);
+      if (!task.approved || task.approved.planDigest !== ticket.planDigest || !task.verification) reject('unsupported_task', 422);
+      const layout = this.app.verification.resolve(task, ticket.nodeId, ticket.input.upstream);
+      if (hash(layout) !== hash(ticket.input.fileLayout)) reject('candidate_manifest_conflict', 422);
+      return {planDigest: ticket.planDigest, nodeId: ticket.nodeId, layoutDigest: hash({profile: 'task-file-business/v1', ...layout})};
+    });
+  }
+  observeExecution(ticket) {
+    return this.app.transaction(false, tx => {
+      const {record} = this.ticket(tx, ticket);
+      if (!record.executionId || !record.worker.startedAt) reject('state_conflict', 409);
+      return {executionId: record.executionId, startedAt: record.worker.startedAt};
     });
   }
   started(ticket, started) {
@@ -249,6 +280,9 @@ export class TaskExecution {
     });
   }
   finish(ticket, result) {
+    const verification = ticket.executionType === 'verification';
+    // No files, checker, promises or depot writes inside the Store callback.
+    const verified = verification && result?.type === 'verification' && result.status === 'passed' ? this.app.verification.stage(ticket, result) : null;
     return this.app.transaction(true, tx => {
       const {row, record, task} = this.ticket(tx, ticket);
       if (!live(record.worker)) return clone(record.worker);
@@ -257,12 +291,20 @@ export class TaskExecution {
           !(completion.started === null && record.executionId === null)) reject('recovery_required', 409);
       const clean = completion.cleaned === true;
       const cancelled = task.task.status === 'cancelling';
-      const success = clean && result.status === 'completed' && result.stopReason === 'end_turn' &&
+      let success = clean && (verification ? verified?.data.status === 'passed' && result.status === 'passed' && verified.staged !== null :
+        result.status === 'completed' && result.stopReason === 'end_turn') &&
         !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;
+      let candidate = success && !verification ? clone(result.result ?? null) : null;
+      if (success && verification) {
+        if (completion.started?.startedAt !== record.worker.startedAt) reject('invalid_verification_receipt', 422);
+        this.app.verification.recheck(tx, task, ticket);
+      } else if (success && task.verification && ticket.planDigest !== null) {
+        try { record.candidate = this.app.verification.candidate(ticket, candidate); }
+        catch { success = false; candidate = null; }
+      }
       const failedWorker = record.failureCode === 'worker_failed';
       record.cleanup = clone(completion); record.worker.status = !clean ? 'unknown' : cancelled && !failedWorker ? 'cancelled' : success ? 'completed' : 'failed';
       record.worker.finishedAt = new Date(this.app.now()).toISOString(); record.worker.phase = 'terminal';
-      const candidate = success ? clone(result.result ?? null) : null;
       record.resultRef = candidate === null ? null : this.app.newId('result');
       record.resultDigest = candidate === null ? null : hash(candidate);
       if (!clean) { task.task.status = 'intervention'; task.task.code = 'cleanup_unconfirmed'; }
@@ -271,7 +313,7 @@ export class TaskExecution {
       }
       if (ticket.role === 'planner' && ticket.planDigest === null && success) {
         try {
-          const plan = freezePlan(task, result.plan, value => hash({plan: value, inputDigest: task.inputDigest}));
+          const plan = this.app.freezePlan(task, result.plan);
           if (plan.nodes.length + task.attempts > plan.budget.maxAttempts) reject('plan_budget_exceeded', 400);
           task.plan = plan; task.task.plan = {revision: plan.revision, digest: plan.digest};
           task.task.status = 'awaiting-approval'; task.task.phase = 'planning';
@@ -284,8 +326,26 @@ export class TaskExecution {
         node.status = !clean ? 'unknown' : cancelled && !failedWorker ? 'cancelled' : success ? 'completed' : 'failed';
       }
       task.task.revision = nextRevision(task.task.revision);
+      let decision = null;
+      if (verification && success) {
+        const at = new Date(this.app.now()).toISOString();
+        for (const item of verified.staged) item.artifact = {id: this.app.newId('artifact'), taskId: task.task.id,
+          name: item.name, kind: item.kind, status: 'ready', mediaType: item.mediaType, ...item.ref, createdAt: at};
+        const artifacts = verified.staged.map(item => item.artifact);
+        decision = {id: this.app.newId('decision'), type: 'independent-verification', status: 'accepted', taskId: ticket.taskId,
+          workerId: ticket.workerId, planDigest: ticket.planDigest, reservationDigest: ticket.reservationDigest,
+          inputDigest: ticket.inputDigest, policyDigest: task.verification.policyDigest,
+          manifestsDigest: hash(ticket.input.verification.manifests), cleanupDigest: hash(completion), artifacts, at};
+        task.decision = {id: decision.id, digest: hash(decision)};
+        task.acceptance = {status: 'passed', evidenceIds: artifacts.filter(item => item.kind === 'evidence').map(item => item.id), digest: task.decision.digest};
+        task.task.artifactIds = artifacts.map(item => item.id); task.task.status = 'completed'; task.task.phase = 'terminal';
+      }
       const source = this.app.save(tx, task, 'worker.finished', {workerId: ticket.workerId,
-        status: record.worker.status, resultDigest: record.resultDigest});
+        status: record.worker.status, resultDigest: record.resultDigest, decisionDigest: task.decision?.digest ?? null});
+      if (decision) {
+        this.app.artifacts.commitOutputs(tx, task.task.id, verified.staged, source);
+        tx.putProjection('attempt', decision.id, 0, source, encode(decision));
+      }
       if (record.resultRef) tx.putProjection('attempt', record.resultRef, 0, source, encode(candidate));
       this.putWorker(tx, row, record, source);
       const command = tx.command(ticket.commandId);
