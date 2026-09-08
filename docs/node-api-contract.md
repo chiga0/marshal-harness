@@ -12,7 +12,7 @@
 
 服务仅监听 `127.0.0.1` 的随机端口。所有请求（包括 `/health`）要求 Host 精确匹配实例且只出现一次；非空 Origin 拒绝。业务请求要求唯一、精确的 `Authorization: Bearer …`，无跨域支持。仅前端 `/health` 免 Bearer，它不查询 supervisor，不能当作 `/ready`。同 UID 的 ambient 权限不属于恶意隔离保证。
 
-POST 仅接受 `application/json` 或带 `charset=utf-8`；拒绝 Content-Encoding。JSON 请求体最多 16384 bytes，恰好一个 `Idempotency-Key`，格式为 `[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}`。路径不接受 query、百分号编码或双斜线；不提供分页参数。响应为 JSON、`Cache-Control: no-store`。调用者应私有保存 plan/intent：其中包含实际提示词，不能当成公共日志。
+POST 仅接受 `application/json` 或带 `charset=utf-8`；拒绝 Content-Encoding。JSON 请求体最多 16384 bytes，恰好一个 `Idempotency-Key`，格式为 `[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}`。路径不接受 query、百分号编码或双斜线；不提供分页参数。响应为 JSON、`Cache-Control: no-store`。调用者应私有保存 plan/intent：其中包含批准的原始提示词，不能当成公共日志；Qwen 的传输文本由原提示词与固定源码/config 重建，不声称这里保存了原始 wire 输入。
 
 ## 已实现的 8 条路径、9 个操作
 
@@ -64,7 +64,7 @@ JSON Schema 的 `maxLength` 计 Unicode 字符，不能精确表达 UTF-8 byte �
 | operations、events/SSE、allowedActions | 未实现；只有 Task 轮询与最小 audit |
 | inputs、独立 artifacts/manifest/content | 未实现；当前只有 Task 内联 delivery，无任意上传和发布 |
 | agent-providers、supervisor、ready | 未实现；启动配置/内部控制器不能冒充公开管理 API |
-| 通用 Task、更多 Provider、SQLite 与同版本恢复 | 本实验固定订单/Pi/独立文件状态根；不复用或迁移 Go RB1 |
+| 通用 Task、更多 Provider、SQLite 与同版本恢复 | 本实验固定订单/Pi 或 Qwen Adapter/独立文件状态根；第二 Adapter 实机证据单独记录，不复用或迁移 Go RB1 |
 
 先保留这条能验证的 HTTP 闭环，再随真实业务纵切演进字段和路由、显式兼容策略及故障恢复；不为了完整目标清单提前放置空 endpoint。`API-STABLE` 仍须以目标 API、独立测试和真实业务/恢复出口验收，不能从此 OpenAPI 文件或 Node 实验成功直接升级。
 

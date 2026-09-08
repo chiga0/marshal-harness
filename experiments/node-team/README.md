@@ -6,7 +6,7 @@
 
 ## 形态
 
-由已允许的 Node 24 解释器直接运行 `.mjs` 源码：HTTP 前端 → 内置 Node supervisor → 两个本机 Pi 作者 → 固定组合验收 → 文件交付。没有 Go 编译、Marshal 原生子进程、原生扩展或随机 Mach-O 可执行文件。
+由已允许的 Node 24 解释器直接运行 `.mjs` 源码：HTTP 前端 → 内置 Node supervisor → 两个本机 Agent 作者 → 固定组合验收 → 文件交付。Provider 可选 Pi 或 Qwen；每个实验实例使用一个 Provider 的两个作者。没有 Go 编译、Marshal 原生子进程、原生扩展或随机 Mach-O 可执行文件。
 
 两个作者分别生成 `normalize.mjs` 与 `report.mjs`；它们的输出必须组合通过相同订单接口的正常输入、非法输入及溢出断言。Agent 禁用执行工具，以原生 JSON 事件返回代码；服务不接受模型自报的测试通过。该固定模板证明协作链路，不代表已经实现任意任务的自动规划。
 
@@ -17,6 +17,8 @@
 ```json
 {"provider":"pi","executable":"/absolute/path/to/pi"}
 ```
+
+Qwen 使用同样的封闭配置：`{"provider":"qwen","executable":"/absolute/path/to/qwen"}`。保留 Agent 自己的模型和登录设置，不传模型或凭证。Qwen 通过 safe-mode 关闭隐式上下文、扩展、hooks/MCP，并以零工具调用预算阻止执行；不使用丢失原生设置的 bare 模式。为防止模型前的 `@文件`/slash 展开，Adapter 把原任务编码为可逆 JSON 字符串后经 stdin 传入；原批准计划不变，可由原 prompt 与固定源码/config 重建实际输入。配置不按版本白名单拒绝，但兼容性只以实际验证版本为证，不承诺任意未来版本可用。
 
 使用新的、显式的实验数据目录，不指向旧 `.marshal` 状态目录。macOS 的 Unix socket 路径长度有限，数据目录宜保持短路径。
 
@@ -39,7 +41,7 @@ node experiments/node-team/main.mjs stop --data-dir /private/tmp/mnt-demo
 独立 `Node team` CI 在 Ubuntu/macOS 使用 Node 24.15.0 运行同一组测试，不安装 Agent、不使用模型凭证、不构建或调用 Marshal 原生程序。它只提供跨平台确定性回归证据，不替代下面的真实 Agent 验收；测试文件串行，文件内部的团队仍并行执行两个 Worker。
 
 ```sh
-node --test --test-concurrency=1 experiments/node-team/providers.test.mjs experiments/node-team/business.test.mjs experiments/node-team/runtime.test.mjs experiments/node-team/http.test.mjs
+node --test --test-concurrency=1 experiments/node-team/providers.test.mjs experiments/node-team/business.test.mjs experiments/node-team/runtime.test.mjs experiments/node-team/http-handler.test.mjs experiments/node-team/http.test.mjs experiments/node-team/openapi.test.mjs
 ```
 
 真实验收须显式指定本机 Pi，使用现有账号额度；不自动重试。它先启动两个真实作者，验证活跃前端重启和模块交付，再启动两个作者验证取消。结果摘要留在私有临时目录，失败证据也保留。
@@ -47,6 +49,8 @@ node --test --test-concurrency=1 experiments/node-team/providers.test.mjs experi
 ```sh
 MARSHAL_NODE_LIVE_PI=/absolute/path/to/pi node --test experiments/node-team/live.test.mjs
 ```
+
+Qwen 用 `MARSHAL_NODE_LIVE_QWEN=/absolute/path/to/qwen` 替代上述环境变量；二者不能同时设置。同一测试仍走 HTTP 两作者、下载独立消费和另一任务真实取消，不以解析夹具通过冒充真实 Agent 通过。Qwen 原生结果未暴露 backend finishReason，不能声称精确识别所有 length 停机；完整候选、成功终态、正常退出及独立业务验收缺一不可。
 
 ## 不能混淆的边界
 
