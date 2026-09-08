@@ -1,5 +1,6 @@
 import {encode, digest, makeEvent} from '../task-store/store.mjs';
 import {clone, reject, terminal, nextRevision, isText} from './model.mjs';
+import {TaskCleanup} from './cleanup.mjs';
 
 const decode = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
 const hash = value => digest(encode(value));
@@ -18,7 +19,13 @@ export class TaskExecution {
       reject('invalid_execution_config', 503);
     this.app = application; this.maxWorkers = maxWorkers;
     this.providers = new Set(providerIds); this.defaultProvider = defaultProvider;
+    this.cleanup = new TaskCleanup(this);
   }
+  custodyBinding(ticket, profile) { return this.cleanup.binding(ticket, profile); }
+  bindCustody(ticket, descriptor, profile) { return this.cleanup.bind(ticket, descriptor, profile); }
+  recordExtraScope(ticket, code) { return this.cleanup.extraScope(ticket, code); }
+  pendingCleanup(after = '', limit = 25) { return this.cleanup.pending(after, limit); }
+  reconcileCleanup(workerId, observation) { return this.cleanup.settle(workerId, observation); }
   worker(tx, id) {
     const row = tx.projection('attempt', id); if (!row) reject('not_found', 404);
     return {row, record: decode(row)};
@@ -248,6 +255,7 @@ export class TaskExecution {
     return this.app.transaction(true, tx => {
       const {row, record, task} = this.ticket(tx, ticket);
       if (!started || !isText(started.executionId, 128) || !Number.isFinite(Date.parse(started.startedAt))) reject('invalid_request', 400);
+      if (record.custody && record.custody.descriptor.executionId !== started.executionId) reject('recovery_required', 409);
       if (record.executionId !== null) {
         if (record.executionId !== started.executionId) reject('state_conflict', 409);
         return {stop: task.task.status === 'cancelling' || terminal.has(task.task.status) || this.app.now() >= ticket.deadline};
@@ -290,7 +298,7 @@ export class TaskExecution {
       const completion = result?.cleanup;
       if (!completion || completion.started?.executionId !== record.executionId &&
           !(completion.started === null && record.executionId === null)) reject('recovery_required', 409);
-      const clean = completion.cleaned === true;
+      const clean = completion.cleaned === true && !(record.custody?.extraScopes.length);
       const cancelled = task.task.status === 'cancelling';
       let success = clean && (verification ? verified?.data.status === 'passed' && result.status === 'passed' && verified.staged !== null :
         result.status === 'completed' && result.stopReason === 'end_turn') &&
@@ -306,7 +314,9 @@ export class TaskExecution {
         catch { success = false; candidate = null; }
       }
       const failedWorker = record.failureCode === 'worker_failed';
-      record.cleanup = clone(completion); record.worker.status = !clean ? 'unknown' : cancelled && !failedWorker ? 'cancelled' : success ? 'completed' : 'failed';
+      record.cleanup = clone(completion);
+      if (!clean && completion.cleaned) record.cleanup = {...record.cleanup, cleaned: false, reason: 'extra_scope_unresolved'};
+      record.worker.status = !clean ? 'unknown' : cancelled && !failedWorker ? 'cancelled' : success ? 'completed' : 'failed';
       record.worker.finishedAt = new Date(this.app.now()).toISOString(); record.worker.phase = 'terminal';
       record.resultRef = candidate === null ? null : this.app.newId('result');
       record.resultDigest = candidate === null ? null : hash(candidate);
