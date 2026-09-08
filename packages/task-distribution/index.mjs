@@ -6,7 +6,12 @@ import {execFileSync} from 'node:child_process';
 export const NODE_VERSION = '24.15.0';
 export const SOURCE_FILES = Object.freeze([
   'packages/agent-acp/client.mjs',
+  'packages/agent-pi-rpc/client.mjs',
   'packages/agent-provider-acp/index.mjs',
+  'packages/agent-provider-pi/bridge-contract.mjs',
+  'packages/agent-provider-pi/index.mjs',
+  'packages/agent-provider-pi/native-bridge.mjs',
+  'packages/agent-provider-pi/shell-operations.mjs',
   'packages/agent-runtime/guard.mjs',
   'packages/agent-runtime/index.mjs',
   'packages/agent-runtime/protocol.mjs',
