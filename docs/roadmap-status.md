@@ -11,6 +11,7 @@
 - 最终目标不改为“完成更多协议/PR”：交付 fixed server 的完整业务任务与受限团队，并用至少三个代表任务族的重复配对实验，与相同冻结契约、oracle、模型、工具及资源的强 Lead＋SubAgents 比较。源代码返工、失败 CI、失败 Attempt、人工等待全部计入；目前没有效率优势证据。
 - 最新实施候选 `dd8e8ec` 的完整 CI `34156121695` 五项与 Darwin 定向 `34155305960` 的 36 项通过；真实团队 `34157213736` 证明已收集结果→Stop→Close 收口、零重复 Collect 及 cleanup released。但 client 的 Provider `length` 仍触发团队 halt，service 虽已接纳结果进入 VERIFYING，没有 ReviewPacket/Decision/集成/下载。当前补驱动的跨节点失败观测与超时诊断，不自动解除 halt，不原样付费重跑。`a5418f4` 的历史单节点 Verify pass 不替代本候选团队出口；B1/B2/B3 状态不升级，详细证据见[审计报告](audit-report.md)。
 - 用户已创建以 B1→B2→API-STABLE→B3 正式部署为出口的持续 Goal。[Linux 远端验证执行机](remote-linux-validation.md)已安装并校验 Go 1.26.6，实际开始执行旧远端基线 `68e5c8b` 的测试；它不替代 Darwin 测试或授予 Linux server production 能力。系统绝对路径 Python 不兼容导致 CLI renderer 基线失败，保留失败，不通过改 PATH/跳过后假报全绿。
+- 2026-09-08 后继：Task HTTP 实现 `70ec148` 已接同 RB1 草稿/确认/查询及 resident 写入通道，原 reviewer 复核两项 P1 关闭；香港 ECS 精确三包测试及 Mac activation 入口/held Session 冷重放通过。客户端 `f333dfd` 经独立 17 项测试，合入本地候选 `736fcc9`，不等于 main 合并。Mac 共享 lane 动态被 AMFI 签名检查终止，仍待合法执行。公网 ECS 已使用独立受限账号；内网机器不接 GitHub CI。模型额度不足期间不发起真实 Agent 重试，先完成非模型调用链；证据与开放项见 [Task HTTP 入口](task-http-preview.md)。
 
 | Milestone | 当前状态 | 已有证据 / 实现 | 尚待退出条件 |
 | --- | --- | --- | --- |
@@ -18,7 +19,7 @@
 | B2 本地 API 可用版 | `IN_PROGRESS` | 候选已接独立 Decision、上游组合、第三节点及 completed GoalOutcome 查询，完整实机未过；原 B2 实现与失败证据保留，不因重排改成完成 | 简启动、SQLite、零 Git/多仓库、持久 AskUser/答案/确认/验收、详情/审计、同版本恢复与局部 rework/reuse；第二真实 Provider 验证解耦。第三品牌可单列待支持，不阻塞核心 API-STABLE |
 | B3 长期运行与正式支持 | `PLANNED` | 历史故障/恢复组件与 RC1 prerelease 证据保留，不升级成熟度 | B2 同路径故障矩阵、长历史/升级恢复、managed signing/notarization、Linux server 实机、受保护 same-bytes stable release |
 
-下一步顺序：完成原生结果合同的确定性反例、独立审查与精确 CI 后，再跑真实订单团队；随后补 Task HTTP→批准→双作者→独立 Decision/集成→下载消费闭环。SQLite、零 Git/多仓库、简启动、问答和第二 Adapter 在 B2；U1 旧历史导入不阻新任务，B3 保留正式故障/平台/发布门禁。没有 Workspace/安装身份平台/三品牌矩阵前置，也不绕过旧 activation 或伪造 Git。结构性失败无事实变化不重复付费，历史失败分母不清零。已有真实失败 Run/Collect/halt 证据，尚未完成团队交付或正式发布。
+下一步顺序：闭合 Task HTTP 组合候选的 Darwin/完整 CI 回归；复用原 Verify/DecisionImporter 和集成链，接自动客观独立 Decision、Task cancel、完整制品下载及消费测试。模型配置与额度可用后再以同一候选执行真实双 Worker 订单团队，不把无模型 fixture 当业务完成。SQLite、零 Git/多仓库、简启动、问答和第二 Adapter 在 B2；U1 旧历史导入不阻新任务，B3 保留正式故障/平台/发布门禁。没有 Workspace/安装身份平台/三品牌矩阵前置，也不绕过旧 activation 或伪造 Git。结构性失败无事实变化不重复付费，历史失败分母不清零。已有真实失败 Run/Collect/halt 证据，尚未完成团队交付或正式发布。
 
 并发边界：B1 先两个 scope 互斥的作者，验收/集成也计容量；现有候选仍只证明两个派发接缝，不把新方案写成已完成实机。开发可并行主应用闭环、业务 oracle/API 客户端、当前阻断的 Adapter；共享事务一个 owner，每个作者独立 worktree，不用旧 Marshal skill。UI 只在核心 API-STABLE 后启动。更多并发须依赖、目录、内存/CPU、Provider 与验收队列均允许；不是所有槽满才叫有效率。
 

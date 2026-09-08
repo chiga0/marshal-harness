@@ -5,6 +5,8 @@ package fixedcontrolplane
 import (
 	"context"
 	"sync"
+
+	"github.com/chiga0/marshal-harness/internal/application"
 )
 
 // Run lanes span Begin -> application -> receipt even when verification is
@@ -86,6 +88,16 @@ func (router *HTTPRouter) acquireMutation(ctx context.Context) error {
 }
 
 func (router *HTTPRouter) releaseMutation() { <-router.mutation }
+
+// WithAvailableMutation bridges another authenticated input adapter into this
+// exact router's writer lane. It grants no authentication or durable authority.
+func (router *HTTPRouter) WithAvailableMutation(ctx context.Context, action func(context.Context) error) error {
+	called, err := router.TryBackgroundMutation(ctx, action)
+	if err == nil && !called {
+		return application.NewError("task-http", application.ReasonCapacityBusy)
+	}
+	return err
+}
 
 // TryBackgroundMutation joins the same writer lane without queuing a timer
 // behind a public operation. The callback must not recursively dispatch an

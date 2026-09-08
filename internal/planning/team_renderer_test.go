@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/goal"
 )
 
 // The real reference input adapter must pass Core's parser, not only its own
@@ -57,5 +58,12 @@ func TestTeamReferenceRendererPassesCorePreview(t *testing.T) {
 	}
 	if preview.Digest != frozen.InputsDigest || len(preview.Inputs.Nodes) != 3 {
 		t.Fatal("reference approval binding drift")
+	}
+	template, err := OpenTaskTemplate(frozen.Inputs, newValidator(t))
+	if err != nil {
+		t.Fatalf("real operator renderer failed installed Task template: %v", err)
+	}
+	if _, err := template.Preview("http-task-order", goal.TaskSubmission{Template: goal.TaskTemplateOrderQuote, Intent: "演示订单 API 与客户端交付"}, newValidator(t)); err != nil {
+		t.Fatalf("real renderer failed public Task preview: %v", err)
 	}
 }
