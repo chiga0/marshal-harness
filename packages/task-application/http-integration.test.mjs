@@ -108,7 +108,9 @@ test('real domain failures keep specified HTTP status instead of becoming storag
   assert.equal((await f.request(taskPath + '/graph')).status, 409);
   const conflict = await f.request('/v1/tasks', {...input, intent: '不同任务'}, 'create');
   assert.equal(conflict.status, 409); assert.equal(conflict.body.code, 'idempotency_conflict');
-  const notImplemented = await f.request(taskPath + '/questions');
+  const questions = await f.request(taskPath + '/questions');
+  assert.equal(questions.status, 200); assert.deepEqual(questions.body.items, []); assert.equal(questions.body.preview, null);
+  const notImplemented = await f.request('/v1/workers/missing/cancel', {expectedRevision: 1}, 'worker-cancel');
   assert.equal(notImplemented.status, 501); assert.equal(notImplemented.body.code, 'unsupported_operation');
   assert.equal(f.countCommands(), 1);
 });

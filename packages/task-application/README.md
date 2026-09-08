@@ -15,11 +15,40 @@ const handler = createTaskApiHandler({application: application.dispatch, token, 
 
 目前支持 `task.create/list/get/plan/approve/graph/cancel/pause/resume/events/audit/workers`、`worker.get` 与 `operation.get`；未实现的操作明确 `unsupported_operation`。没有实际执行的审计使用 `tokens:null/source:unavailable`、待验收，不把未知用量或未运行验证计成成功。没有计划的图返回 `plan_conflict`，不编造计划 revision。
 
+## 未批准 Task 的有限问答
+
+ADR0086 的新事实族 `task-clarification/v1` 通过受信 `clarification` 配置接入同一 Application。它支持 `task.questions` 与 `task.answer`，不引入第二个 reducer，也不将任意自然语言判作“信息不足”。只有显式选择的有限模板真正缺少声明槽时才冻结一批最多 3 个问题；未选择模板或已满足全部槽的 Task 保持原 `draft → Planner → awaiting-approval` 路径、原回执和一次确认。
+
+```js
+const clarification = createClarificationPort({
+  template: {id, version, digest},
+  applies(input) { return matchesSupportedTemplate(input); },
+  slots: [{id: slotId, prompt, validator: {id: validatorId, version, digest},
+    read(input) { return declaredValueOrNull(input); },
+    validate(answer) { return isValidDeclaredValue(answer); }}],
+  renderer: {id: rendererId, version, digest,
+    render({input, values, missing, signal, deadline}) { return completeBoundedProposal(input); }},
+});
+const application = new TaskApplication({store, owner, clarification});
+```
+
+这些函数来自可信部署模块，不接受 HTTP/Agent 序列化的函数、validator 或身份。`applies/read/validate` 必须同步；`read` 仅以 `null` 表示真正缺失，已有非法值、无效声明、异步 validator、renderer 失败或超范围均拒绝，不能回退 Planner 掩盖失败。模板、槽、validator 与 renderer 身份在首次 create 冻结。renderer 可以异步纯计算，但不得调用付费规划、文件/网络或创建执行；等待受请求 signal、原期限和 10 秒上限约束，回调应遵守 AbortSignal。有限预览上限 256 KiB，答案非空、合法 Unicode、禁止 NUL，最多 4096 UTF-8 字节。
+
+初始 Task、原输入、整批问题与完整初始 preview 在同一 SQLite 事务保存，状态为 `awaiting-answer`，没有规划 outbox、reservation 或 Attempt。每个答案只填原声明的数据槽；Core 从原输入重新构造 `context.text` 的有界数据投影，不向旧 prompt 无限追加。原 intent、上传清单、limits 及其余请求字段不变；计划去除 revision/digest 后的全部 bytes 和独立 verification 策略/布局必须与初始边界一致，答案不能改 graph、scope、Provider、oracle、验收或权限。不能机械证明这种收敛的模板明确不支持。
+
+答案先查原回执，再校验 Task/question、当前正数 revision、preview 摘要、未消费与原期限。只有 `task.answer` 的新幂等摘要加入路由 questionId，其他操作的旧算法不变。renderer 在短事务外生成下一版，提交时重新查 current owner、完整原投影、CAS、preview、期限和取消；答案、不可变下一 preview、Task revision、Operation 和 receipt 一次提交，失败没有部分消费。旧 preview 与答案保持 revision=1 的独立 interaction 记录；preview 自己的 revision 每答加 1。创建时间、confirmBefore 和预算不延长。
+
+所有问题答完只进入新事实专用 `awaiting-confirmation`，此时可一次确认当前完整计划；旧零问题的 `awaiting-approval` 不改。旧 control predicate 与旧 Task schema 不能把新事实当作可批准旧 draft。客户端应使用 `allowedActions`，不得依据状态字符串隐式批准；确认到期仅关闭答复/批准资格，仍允许取消，不凭查询追加终态。批准绑定当前 preview digest/revision/inputsDigest，再沿原 dispatch/verification 路径运行，不让测试模板继承任何固定业务验收权威。
+
+答案回执返回历史 `task/preview/operation/acceptedRevision/acceptedPreviewDigest` 与单独 `currentTask`；精确重放保留原历史结果并标记 `replayed:true`，即使后来取消也不复活 Task。新答案、批准、取消仍沿同一 revision CAS；cancel 先提交拒绝迟到答案，answer 先提交使旧 revision cancel 冲突，使用当前 revision 的取消仍有效。冷重开只读原事实，缺少或漂移的模板不隐藏问题/答案/预览；新的 answer/approve 拒绝，精确已提交回执继续可重放。
+
+`clarification.test.mjs` 使用仅测试组合安装的两槽模板、真实 SQLite 和 loopback HTTP，覆盖上述原子性、回放/取消/owner 竞争、旧 reader、配置漂移和边界拒绝；Service 测试另贯通正式组合与 resident，证明确认前零 Planner、确认后双作者与原取消清理。这里没有注册新的正式业务模板，也不宣称真实用户关键问答→真实团队交付或 B2 已完成。
+
 ## 受管执行接线端口
 
 ### 输入与制品
 
-注入 `depot` 后，另支持 `input.create`、`artifact.get`、`artifact.content`，共17项 Application 操作。上传上限256KiB，严格 canonical base64；SQLite 保存上传清单、单本地用户归属、原幂等回执与已提交 blob 摘要索引，Depot 先持久化 bytes，随后 SQLite 同事务提交元数据。事务失败只留下无引用孤儿，不返回可下载对象。文件 I/O 不持数据库事务。
+注入 `depot` 后，另支持 `input.create`、`artifact.get`、`artifact.content`；连同有限问答共19项 Application 操作。上传上限256KiB，严格 canonical base64；SQLite 保存上传清单、单本地用户归属、原幂等回执与已提交 blob 摘要索引，Depot 先持久化 bytes，随后 SQLite 同事务提交元数据。事务失败只留下无引用孤儿，不返回可下载对象。文件 I/O 不持数据库事务。
 
 Task 创建会校验 `context.inputRefs` 指向已提交且可读取的 input，并将精确清单绑定原输入摘要。缺文件、损坏或已提交摘要再次上传不能静默修补；原幂等回执仍表示历史受理事实，新的 GET 必须重新核对 bytes。缺失 Depot 时不声称支持这些操作。上传输入的 `ready` 不授予最终交付或独立验收。
 

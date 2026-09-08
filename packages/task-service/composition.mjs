@@ -74,7 +74,7 @@ class ServiceRoot {
 }
 
 /** Composition only: no Task reducer, second ledger, model defaults or publication. */
-export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, dispose = () => {},
+export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, dispose = () => {},
   providerFacts, applicationOptions = {}, port = 0, leaseMs = 60000, renewIntervalMs = 10000,
   requestTimeoutMs = 10000, supervisorOptions = {}, onDiagnostic = () => {}} = {}) {
   requireValue(typeof root === 'string' && path.isAbsolute(root) && path.normalize(root) === root && root !== path.parse(root).root &&
@@ -82,6 +82,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     (businessFactory === undefined ? typeof prepare === 'function' && typeof collect === 'function' && (release === undefined || typeof release === 'function') :
       typeof businessFactory === 'function' && prepare === undefined && collect === undefined && release === undefined) &&
     (verification === undefined || verification !== null && typeof verification === 'object') &&
+    (clarification === undefined || clarification !== null && typeof clarification === 'object') &&
     typeof dispose === 'function' && typeof onDiagnostic === 'function' &&
     object(applicationOptions) && Object.keys(applicationOptions).every(key => ['defaultLimits', 'execution'].includes(key)) &&
     (applicationOptions.execution === undefined || object(applicationOptions.execution)) &&
@@ -129,7 +130,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
           if (kind === 'task') {
             const task = JSON.parse(row.bytes.toString('utf8')).task;
             if (['draft', 'queued'].includes(task.status)) queuedTasks++;
-            if (['intervention', 'awaiting-answer', 'awaiting-approval', 'paused'].includes(task.status)) blockedTasks++;
+            if (['intervention', 'awaiting-answer', 'awaiting-approval', 'awaiting-confirmation', 'paused'].includes(task.status)) blockedTasks++;
             if (task.status === 'intervention') recovery = true;
           } else if (row.generation !== application.owner.generation && row.status !== 'observed' && ['start', 'verify'].includes(row.kind)) {
             // UNKNOWN may already have external effects: never exclude it on
@@ -222,7 +223,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     depot = mode === 'create' ? ArtifactDepot.create(path.join(root, 'artifacts')) : ArtifactDepot.openExisting(path.join(root, 'artifacts'));
     files.sync();
     const owner = store.claimOwner(store.info().generation, instanceId, Date.now() + leaseMs);
-    application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification});
+    application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification, clarification});
     const context = Object.freeze({depot, executionParent: path.join(root, 'executions'),
       approvedLayout: ticket => {
         requireValue(typeof application.execution.approvedLayout === 'function', 'service_capability_unavailable');
