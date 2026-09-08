@@ -26,6 +26,8 @@ const handler = createTaskApiHandler({application: application.dispatch, token, 
 - `scan(after,limit)`、`reconcile(taskId)` 检查期限、取消和 owner 换代；返回的 stopWorkerIds 只能查找当前进程内已持有句柄，禁止由存储 PID 重建 kill 权限。所有已知执行清理后才取消/失败结案；旧代未决执行不退款、不重发。
 - `settleControl(commandId,revision)` 将实际控制观察回填 Operation，原幂等回执不变。暂停仅禁止新增 dispatch，不误杀已运行 Worker；恢复复用原待执行义务，不重置预算或重复展开 DAG。
 
+批准计划降低 timeout 时，实际 deadline 从原 Task createdAt 计算并冻结，不逐节点刷新。Worker progress 只追加观察事件/紧凑 Worker 投影，不改用户控制 CAS；真正状态/控制转换仍推进 Task revision。大输入与候选快照单独持久化，容量和历史查询只读紧凑索引，下游仅加载当前直接依赖，避免完整计划按历史 Attempt 重复读入同一事务。旧 generation 的纯控制义务可由当前 owner 根据已证明状态回填观察，但不因此重新启动旧执行。原 Store 记录/字节/期限上限不变。
+
 上述端口的 SQLite 组合测试不等于 Supervisor 已消费义务；独立验收、最终制品接纳和完整服务部署仍待接线。
 
 ## 验证

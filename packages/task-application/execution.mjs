@@ -92,9 +92,11 @@ export class TaskExecution {
   settleControl(commandId, expectedRevision) {
     return this.app.transaction(true, tx => {
       const command = tx.command(commandId);
-      if (!command || command.status !== 'pending' || command.revision !== BigInt(expectedRevision) ||
-          command.generation !== this.app.owner.generation) return false;
+      if (!command || command.status !== 'pending' || command.revision !== BigInt(expectedRevision)) return false;
       const payload = decode({bytes: command.payload}), task = this.app.get(tx, command.taskId);
+      // Observing a durable control is not replaying an external execution.
+      // Old-generation launches are never made eligible by this exception.
+      if (command.generation !== this.app.owner.generation && !['cancel', 'pause', 'resume'].includes(payload.action)) return false;
       const fenced = terminal.has(task.task.status) || task.task.status === 'cancelling';
       let status = 'succeeded';
       if (payload.action === 'cancel') {
@@ -111,7 +113,9 @@ export class TaskExecution {
   }
   ticket(tx, ticket) {
     const {row, record} = this.worker(tx, ticket.workerId);
-    if (hash(record.ticket) !== hash(ticket) || ticket.generation !== this.app.owner.generation.toString()) reject('recovery_required', 409);
+    const {input, ...identity} = ticket;
+    if (hash(record.ticket) !== hash(identity) || hash(input) !== ticket.inputDigest ||
+        ticket.generation !== this.app.owner.generation.toString()) reject('recovery_required', 409);
     const task = this.app.get(tx, ticket.taskId);
     return {row, record, task};
   }
@@ -149,17 +153,22 @@ export class TaskExecution {
       const dependencies = new Set((task.plan?.edges ?? []).filter(edge => edge.to === node.id).map(edge => edge.from));
       const input = {task: task.input, node, plan: task.plan, upstream: taskWorkers
         .filter(({record}) => dependencies.has(record.worker.nodeId) && record.ticket.planDigest === task.approved?.planDigest &&
-          record.worker.status === 'completed' && record.result !== null)
-        .map(({record}) => ({workerId: record.worker.id, nodeId: record.worker.nodeId, result: record.result}))};
+          record.worker.status === 'completed' && record.resultRef !== null)
+        .map(({record}) => {
+          const entry = tx.projection('attempt', record.resultRef);
+          if (!entry || digest(entry.bytes) !== record.resultDigest) reject('application_unavailable', 503);
+          return {workerId: record.worker.id, nodeId: record.worker.nodeId, result: decode(entry)};
+        })};
       const frozen = {workerId: id, taskId: task.task.id, nodeId: node.id, role: node.role, providerId,
         generation: this.app.owner.generation.toString(), commandId, inputDigest: hash(input),
         planDigest: task.approved?.planDigest ?? null,
         deadline: Math.min(Date.parse(task.task.deadlineAt), this.app.now() + 86400000), input};
       const ticket = {...frozen, reservationDigest: hash(frozen)};
-      const record = {ticket, worker: {id, taskId: task.task.id, nodeId: node.id, providerId, role: node.role,
+      const {input: _input, ...identity} = ticket;
+      const record = {ticket: identity, inputRef: this.app.newId('input'), worker: {id, taskId: task.task.id, nodeId: node.id, providerId, role: node.role,
         status: 'queued', phase: rolePhase(node.role), attempt: task.attempts + 1,
         startedAt: null, finishedAt: null, lastObservedAt: at, progress: null, usage: usage()},
-      executionId: null, cleanup: null, result: null, progressSequence: 0};
+      executionId: null, cleanup: null, resultRef: null, resultDigest: null, progressSequence: 0};
       task.attempts++; task.workerIds ??= []; task.workerIds.push(id);
       task.task.status = payload.action === 'plan' ? 'planning' : 'running';
       task.task.phase = payload.action === 'plan' ? 'planning' : 'execution';
@@ -168,6 +177,10 @@ export class TaskExecution {
       }
       task.task.revision = nextRevision(task.task.revision);
       const source = this.app.save(tx, task, 'worker.reserved', {workerId: id, reservationDigest: ticket.reservationDigest});
+      // Immutable input/result snapshots are separate from compact Worker
+      // observations. Reading capacity/history must not repeatedly load every
+      // prior copy of a large plan into this bounded transaction.
+      tx.putProjection('attempt', record.inputRef, 0, source, encode(input));
       this.putWorker(tx, null, record, source);
       tx.observeCommand(command.id, command.revision, 'unknown', source);
       capacity.value.active.push({workerId: id, taskId: task.task.id, generation: frozen.generation});
@@ -210,8 +223,10 @@ export class TaskExecution {
       record.progressSequence = sequence;
       record.worker.progress = {summary: progress.summary, tool: progress.tool, source: progress.source};
       record.worker.lastObservedAt = new Date(this.app.now()).toISOString();
-      task.task.revision = nextRevision(task.task.revision);
-      const source = this.app.save(tx, task, 'worker.progress', {workerId: ticket.workerId, progressSequence: sequence});
+      const stream = task.task.id, head = tx.head(stream);
+      const event = makeEvent(stream, head.sequence + 1n, {type: 'worker.progress', at: record.worker.lastObservedAt,
+        taskRevision: task.task.revision, workerId: ticket.workerId, progressSequence: sequence});
+      const source = {stream, ...tx.append(stream, head, [event])};
       this.putWorker(tx, row, record, source); return true;
     });
   }
@@ -228,7 +243,9 @@ export class TaskExecution {
         !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;
       record.cleanup = clone(completion); record.worker.status = !clean ? 'unknown' : cancelled ? 'cancelled' : success ? 'completed' : 'failed';
       record.worker.finishedAt = new Date(this.app.now()).toISOString(); record.worker.phase = 'terminal';
-      record.result = success ? clone(result.result ?? null) : null;
+      const candidate = success ? clone(result.result ?? null) : null;
+      record.resultRef = candidate === null ? null : this.app.newId('result');
+      record.resultDigest = candidate === null ? null : hash(candidate);
       if (!clean) { task.task.status = 'intervention'; task.task.code = 'cleanup_unconfirmed'; }
       else if (!cancelled && !success && !terminal.has(task.task.status)) {
         task.task.status = 'cancelling'; task.failureCode = 'worker_failed';
@@ -249,7 +266,8 @@ export class TaskExecution {
       }
       task.task.revision = nextRevision(task.task.revision);
       const source = this.app.save(tx, task, 'worker.finished', {workerId: ticket.workerId,
-        status: record.worker.status, resultDigest: hash(record.result)});
+        status: record.worker.status, resultDigest: record.resultDigest});
+      if (record.resultRef) tx.putProjection('attempt', record.resultRef, 0, source, encode(candidate));
       this.putWorker(tx, row, record, source);
       const command = tx.command(ticket.commandId);
       if (clean && command.status !== 'observed') tx.observeCommand(command.id, command.revision, 'observed', source);
