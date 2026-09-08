@@ -963,7 +963,7 @@
         "operationId": "task_answer",
         "x-application-operation": "task.answer",
         "x-success-status": 202,
-        "x-response-schema": "Operation",
+        "x-response-schema": "AnswerReceipt",
         "parameters": [
           {
             "in": "path",
@@ -996,7 +996,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Operation"
+                  "$ref": "#/components/schemas/AnswerReceipt"
                 }
               }
             }
@@ -2151,12 +2151,16 @@
             "$ref": "#/components/schemas/Revision"
           },
           "questionRevision": {
-            "$ref": "#/components/schemas/Revision"
+            "type": "integer",
+            "const": 1
+          },
+          "previewDigest": {
+            "$ref": "#/components/schemas/Digest"
           },
           "answer": {
             "type": "string",
-            "maxLength": 8192,
-            "x-maxUtf8Bytes": 8192,
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096,
             "x-wellFormedUnicode": true,
             "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
             "minLength": 1
@@ -2165,13 +2169,143 @@
         "required": [
           "expectedRevision",
           "questionRevision",
+          "previewDigest",
           "answer"
         ],
         "examples": [
           {
             "expectedRevision": 2,
             "questionRevision": 1,
+            "previewDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "answer": "zh"
+          }
+        ]
+      },
+      "ClarificationPreview": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "revision": {"$ref": "#/components/schemas/Revision"},
+          "digest": {"$ref": "#/components/schemas/Digest"},
+          "inputsDigest": {"$ref": "#/components/schemas/Digest"},
+          "input": {"$ref": "#/components/schemas/CreateTask"},
+          "plan": {"$ref": "#/components/schemas/Plan"},
+          "missingSlots": {"type": "array", "items": {"$ref": "#/components/schemas/Id"}, "maxItems": 3}
+        },
+        "required": ["revision", "digest", "inputsDigest", "input", "plan", "missingSlots"]
+      },
+      "AnswerReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "原答复/预览及 Operation 不变；重放时 currentTask 明确表示当前投影。",
+        "properties": {
+          "taskId": {"$ref": "#/components/schemas/Id"},
+          "questionId": {"$ref": "#/components/schemas/Id"},
+          "operation": {"$ref": "#/components/schemas/Operation"},
+          "acceptedRevision": {"$ref": "#/components/schemas/Revision"},
+          "acceptedPreviewDigest": {"$ref": "#/components/schemas/Digest"},
+          "preview": {"$ref": "#/components/schemas/ClarificationPreview"},
+          "task": {"$ref": "#/components/schemas/Task"},
+          "currentTask": {"$ref": "#/components/schemas/Task"},
+          "replayed": {"type": "boolean"}
+        },
+        "required": ["taskId", "questionId", "operation", "acceptedRevision", "acceptedPreviewDigest", "preview", "task", "currentTask", "replayed"],
+        "examples": [
+          {
+            "taskId": "task-example",
+            "questionId": "question-example",
+            "operation": {
+              "id": "operation-example",
+              "taskId": "task-example",
+              "kind": "task.answer",
+              "status": "succeeded",
+              "taskRevision": 3,
+              "createdAt": "2026-09-08T00:00:00.000Z",
+              "updatedAt": "2026-09-08T00:00:00.000Z"
+            },
+            "acceptedRevision": 3,
+            "acceptedPreviewDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "preview": {
+              "revision": 3,
+              "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "inputsDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "input": {
+                "intent": "按指定语言输出报告",
+                "context": {
+                  "text": "业务输入 language=zh"
+                }
+              },
+              "plan": {
+                "taskId": "task-example",
+                "revision": 3,
+                "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "summary": "按冻结的业务语言输入输出报告",
+                "nodes": [
+                  {
+                    "id": "author",
+                    "role": "author",
+                    "goal": "按最终业务输入输出报告",
+                    "scope": [
+                      "report.txt"
+                    ],
+                    "providerId": null
+                  }
+                ],
+                "edges": [],
+                "budget": {
+                  "timeoutMs": 300000,
+                  "maxAttempts": 4,
+                  "maxWorkers": 2
+                },
+                "deliverables": [
+                  "report.txt"
+                ],
+                "acceptance": [
+                  "报告语言符合最终确认的业务输入"
+                ],
+                "assumptions": []
+              },
+              "missingSlots": []
+            },
+            "task": {
+              "id": "task-example",
+              "revision": 3,
+              "status": "awaiting-confirmation",
+              "phase": "planning",
+              "intent": "按指定语言输出报告",
+              "createdAt": "2026-09-08T00:00:00.000Z",
+              "updatedAt": "2026-09-08T00:00:00.000Z",
+              "deadlineAt": "2026-09-08T00:05:00.000Z",
+              "allowedActions": [
+                "approve",
+                "cancel"
+              ],
+              "plan": {
+                "revision": 3,
+                "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              "artifactIds": []
+            },
+            "currentTask": {
+              "id": "task-example",
+              "revision": 3,
+              "status": "awaiting-confirmation",
+              "phase": "planning",
+              "intent": "按指定语言输出报告",
+              "createdAt": "2026-09-08T00:00:00.000Z",
+              "updatedAt": "2026-09-08T00:00:00.000Z",
+              "deadlineAt": "2026-09-08T00:05:00.000Z",
+              "allowedActions": [
+                "approve",
+                "cancel"
+              ],
+              "plan": {
+                "revision": 3,
+                "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              "artifactIds": []
+            },
+            "replayed": false
           }
         ]
       },
@@ -2242,6 +2376,7 @@
               "draft",
               "planning",
               "awaiting-answer",
+              "awaiting-confirmation",
               "awaiting-approval",
               "queued",
               "running",
@@ -2962,6 +3097,14 @@
           "taskId": {
             "$ref": "#/components/schemas/Id"
           },
+          "slotId": {"$ref": "#/components/schemas/Id"},
+          "answer": {
+            "anyOf": [
+              {"type": "null"},
+              {"type": "string", "minLength": 1, "maxLength": 4096, "x-maxUtf8Bytes": 4096, "x-wellFormedUnicode": true,
+                "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$"}
+            ]
+          },
           "nodeId": {
             "anyOf": [
               {
@@ -2992,8 +3135,8 @@
           },
           "prompt": {
             "type": "string",
-            "maxLength": 8192,
-            "x-maxUtf8Bytes": 8192,
+            "maxLength": 2048,
+            "x-maxUtf8Bytes": 2048,
             "x-wellFormedUnicode": true,
             "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
             "minLength": 1
@@ -3784,6 +3927,11 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "taskRevision": {"$ref": "#/components/schemas/Revision"},
+          "previewRevision": {"anyOf": [{"$ref": "#/components/schemas/Revision"}, {"type": "null"}]},
+          "previewDigest": {"anyOf": [{"$ref": "#/components/schemas/Digest"}, {"type": "null"}]},
+          "confirmBefore": {"type": "string", "format": "date-time"},
+          "preview": {"anyOf": [{"$ref": "#/components/schemas/ClarificationPreview"}, {"type": "null"}]},
           "items": {
             "type": "array",
             "items": {
@@ -3806,12 +3954,22 @@
           }
         },
         "required": [
+          "taskRevision",
+          "previewRevision",
+          "previewDigest",
+          "confirmBefore",
+          "preview",
           "items",
           "nextCursor",
           "taskId"
         ],
         "examples": [
           {
+            "taskRevision": 1,
+            "previewRevision": null,
+            "previewDigest": null,
+            "confirmBefore": "2026-09-09T00:00:00.000Z",
+            "preview": null,
             "items": [
               {
                 "id": "question-example",

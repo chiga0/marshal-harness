@@ -16,6 +16,7 @@ export const SOURCE_FILES = Object.freeze([
   'packages/task-api/openapi.json',
   'packages/task-application/application.mjs',
   'packages/task-application/artifacts.mjs',
+  'packages/task-application/clarification.mjs',
   'packages/task-application/execution.mjs',
   'packages/task-application/graph.mjs',
   'packages/task-application/model.mjs',

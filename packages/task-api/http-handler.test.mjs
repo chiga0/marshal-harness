@@ -36,7 +36,7 @@ function operation(kind = 'task.approve', status = 'accepted') {
 const fixtures = {
   Task: task, Plan: plan, Worker: worker, Question: question, Operation: operation(), Artifact: artifact,
   Tasks: {items: [task], nextCursor: null}, Workers: {taskId: task.id, items: [worker], nextCursor: null},
-  Questions: {taskId: task.id, items: [question], nextCursor: null},
+  Questions: {taskId: task.id, taskRevision: 1, previewRevision: null, previewDigest: null, confirmBefore: at, preview: null, items: [question], nextCursor: null},
   Graph: {taskId: task.id, planRevision: 1, nodes: [{id: 'node-one', role: 'author', status: 'running', workerIds: [worker.id]}], edges: []},
   Events: {taskId: task.id, items: [{id: 'event-one', taskId: task.id, sequence: 1, type: 'task_created', at, workerId: null, summary: '已受理', source: 'application'}], nextCursor: null},
   Audit: {taskId: task.id, elapsedMs: null, attempts: 1, retryCount: 0, reworkCount: 0,
@@ -48,9 +48,14 @@ const fixtures = {
 const inputs = {
   CreateTask: {intent: task.intent, requirements: {deliverables: ['说明文档'], acceptance: ['有明确结论']}},
   ApproveTask: {expectedRevision: 2, planRevision: 1, planDigest: digest},
-  ControlTask: {expectedRevision: 2}, AnswerQuestion: {expectedRevision: 2, questionRevision: 1, answer: 'zh'},
+  ControlTask: {expectedRevision: 2}, AnswerQuestion: {expectedRevision: 2, questionRevision: 1, previewDigest: digest, answer: 'zh'},
   CreateInput: {name: 'requirements.txt', mediaType: 'text/plain', contentBase64: 'aGVsbG8='},
 };
+fixtures.ClarificationPreview = {revision: 1, digest, inputsDigest: digest, input: {intent: task.intent}, plan, missingSlots: []};
+fixtures.AnswerReceipt = {taskId: task.id, questionId: question.id, operation: {...operation('task.answer', 'succeeded'), taskRevision: 3},
+  acceptedRevision: 3, acceptedPreviewDigest: digest, preview: fixtures.ClarificationPreview,
+  task: {...task, revision: 3, status: 'awaiting-confirmation', plan: {revision: 1, digest}},
+  currentTask: {...task, revision: 3, status: 'awaiting-confirmation', plan: {revision: 1, digest}}, replayed: false};
 
 async function request(application, method, url, body, options = {}) {
   const handler = createTaskApiHandler({application, token, expectedHost: host, requestTimeoutMs: options.timeout ?? 2000});
@@ -123,6 +128,8 @@ test('single contract resolves refs, validates complete independent fixtures and
   assert.equal(contract.jsonSchemaDialect, 'https://json-schema.org/draft/2020-12/schema');
   assert.equal(operations.length, 24);
   assert.equal(new Set(operations.map(o => o.operation)).size, operations.length);
+  for (const entry of operations) if (entry.operation !== 'artifact.content')
+    assert.ok(contract.components.schemas[entry.response].examples?.length, entry.operation + ' response example required by TaskClient');
   function walk(value) { if (!value || typeof value !== 'object') return; if (value.$ref) resolve(value.$ref); for (const v of Object.values(value)) walk(v); }
   walk(contract);
   for (const [name, value] of Object.entries({...fixtures, ...inputs})) assert.ok(validate(value, name), name);
@@ -262,6 +269,22 @@ test('domain failures are closed and unknown response text never leaks', async (
   }
   assert.equal((await request(async () => operation('task.cancel'), 'POST', `/v1/tasks/${task.id}/plan/approve`, inputs.ApproveTask)).status, 503);
   assert.equal((await request(async () => ({...fixtures.Tasks, items: [task, task]}), 'GET', '/v1/tasks?limit=1')).status, 503);
+});
+
+test('answer requires exact new subject and 4096 UTF-8 bytes, and rejects cross-bound receipts', async () => {
+  const route = `/v1/tasks/${task.id}/questions/${question.id}/answers`;
+  for (const answer of ['a'.repeat(4096), '中'.repeat(1365) + 'a'])
+    assert.equal((await request(async () => clone(fixtures.AnswerReceipt), 'POST', route, {...inputs.AnswerQuestion, answer})).status, 202);
+  const {previewDigest: _omitted, ...legacyBody} = inputs.AnswerQuestion;
+  for (const body of [legacyBody, {...inputs.AnswerQuestion, answer: 'a'.repeat(4097)}, {...inputs.AnswerQuestion, answer: '中'.repeat(1366)},
+    {...inputs.AnswerQuestion, answer: '\0'}, {...inputs.AnswerQuestion, questionRevision: 2}, {...inputs.AnswerQuestion, questionRevision: '1'}])
+    assert.equal((await request(async () => {assert.fail('shape must fail before dispatch');}, 'POST', route, body)).status, 400);
+  const changes = [value => {value.questionId = 'foreign-question';}, value => {value.operation.taskId = 'foreign-task';},
+    value => {value.acceptedRevision = 4;}, value => {value.preview.digest = 'sha256:' + 'b'.repeat(64);},
+    value => {value.currentTask.plan.digest = 'sha256:' + 'b'.repeat(64);}, value => {value.currentTask.revision = 2;},
+    value => {value.operation.kind = 'task.cancel';}];
+  for (const change of changes) {const value = clone(fixtures.AnswerReceipt); change(value);
+    assert.equal((await request(async () => value, 'POST', route, inputs.AnswerQuestion)).status, 503);}
 });
 
 test('artifact content is verified against typed metadata before any bytes are emitted', async () => {

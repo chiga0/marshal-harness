@@ -15,6 +15,8 @@ node packages/task-service/main.mjs \
 
 配置模块是受信任部署代码，不是 HTTP 插件或用户提示词。它应默认导出：
 
+可选顶层 `clarification` 接受 `task-application` 的 `createClarificationPort` 原对象，由组合根注入同一 Application。未安装时保持原零问题规划路径；安装后仅匹配且真正缺少声明业务槽的 Task 进入有限问答，不按长度/关键词泛猜缺失。`awaiting-answer/awaiting-confirmation` 计入 blockedTasks，但不凭此派 Planner；真实 answer/approve/cancel、原回执与冷查询都走同一 HTTP/SQLite。模板配置漂移拒绝新答复/确认，历史仍可查。有限测试模板不作为公开业务能力或 B2 完成证据。
+
 ```js
 export default {
   providers: new Map([[provider.id, provider]]),
@@ -93,7 +95,7 @@ const result = await service.shutdown();
 - `shutdownClean` 只说明本控制器当前持有执行已清理并写回，不证明旧 generation 的未知执行已恢复。缺 cleanup 时为 false，持久 intervention 保留。
 - **关闭在途服务不是暂停/无损续跑**：原 Supervisor 会停止当前 Worker，Application 按真实事实失败/取消收口。已终态 Task 和原幂等回执可冷重开；崩溃后的未知执行保留 intervention，不按裸 PID 杀进程、不重派、不复用目录。
 
-四项运行观察通过明确 composition dispatch 处理；其余操作原样交给注入了 depot/verification 的 `TaskApplication`。已接线的输入上传、manifest 与 bytes 下载使用真实 SQLite/depot；尚未接线的问答等操作仍返回原 unsupported，不冒充 24 个接口全部可用。finalization、验收绑定、最终交付制品与 Task completed 只由同一 Application/Store 实现，不放在此入口；没有 verification 的直接回调配置也不自动获得业务完成能力。
+四项运行观察通过明确 composition dispatch 处理；其余操作原样交给注入了 depot/verification/可选 clarification 的 `TaskApplication`。已接线的输入上传、manifest 与 bytes 下载使用真实 SQLite/depot；有限问答已接线，未安装/不匹配模板的原 Task 返回零问题，回答未知问题为 not_found。尚未接线的单 Worker 取消仍返回 unsupported，不冒充 24 个接口全部可用。finalization、验收绑定、最终交付制品与 Task completed 只由同一 Application/Store 实现，不放在此入口；没有 verification 的直接回调配置也不自动获得业务完成能力。
 
 ## 验证
 

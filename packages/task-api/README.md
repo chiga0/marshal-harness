@@ -14,8 +14,10 @@ await application(request, {principal: 'local-operator', requestId, signal});
 
 ## 应用接线
 
-- `task.create` 接收 intent、可选 context/requirements/更低 limits，201 返回 Task 草案；规划通过应用的规划 outbox 异步完成，HTTP 不调用模型等计划。
-- `task.plan` 返回原计划；`task.approve` 请求绑定 expectedRevision、planRevision、planDigest。任何批准/取消/暂停/继续/回答或 Worker cancel 都返回原 Operation，HTTP 为 202，即使原幂等操作已完成也不增加副作用。
+- `task.create` 接收 intent、可选 context/requirements/更低 limits，201 返回 Task；零问题任务通过应用规划 outbox 异步完成。显式有限模板缺少声明输入时，Application 原子返回 `awaiting-answer` 与已冻结完整预览，不产生 Planner 义务。HTTP 不调用模型等计划。
+- `task.plan` 返回原计划；`task.approve` 请求绑定 expectedRevision、planRevision、planDigest。批准/取消/暂停/继续或 Worker cancel 返回原 Operation，HTTP 为 202，即使原幂等操作已完成也不增加副作用。
+- `task.questions` 返回原批及 `taskRevision/previewRevision/previewDigest/confirmBefore/preview`；旧零问题 Task 为 `items:[]` 且 preview 为 null。新 `task.answer` 严格请求四字段 `expectedRevision/previewDigest/questionRevision/answer`，questionRevision 必须为整数 1，answer 最多 4096 UTF-8 字节并禁止 NUL。202 返回 `AnswerReceipt`，不是普通 Operation：历史 `task/preview/operation/acceptedRevision/acceptedPreviewDigest` 与单独 `currentTask/replayed` 明确区分。HTTP 再核对路由 Task/question 及接受 revision/preview 关联；旧请求缺少 previewDigest 或旧 8192 字节答案不再被候选新操作接受，其他操作/旧 receipt 算法不改。
+- `awaiting-confirmation` 仅供 ADR0086 新问答事实的全部问题答完后使用，旧零问题仍为 `awaiting-approval`。两者只表达待确认，不批准、不执行；UI 应按 `allowedActions` 展示显式动作，不能按字符串自动批准。
 - `task.list/get/graph/workers/questions/audit/events`、`worker.get`、`operation.get`、`provider.list`、`supervisor.get` 返回 schema 对应投影。列表一页最多 100，默认 50，cursor 是应用提供的 opaque ID，不能作为路径或版本权威。
 - `artifact.get` 返回有界 manifest。`artifact.content` 返回 `{artifact,content:Uint8Array}`：HTTP 校验 ID、ready、长度、内容 digest 后才发送 octet-stream 与 Content-Digest；不接收宿主路径，不读磁盘。应用仍负责授权与制品所属/验收。
 - `input.create` 使用有界 base64 JSON；应用必须核对 canonical base64、解码后不超过 256 KiB、原操作者临时所有权与后续 Task 引用，不能把上传等同于批准执行。Task、Operation 和 Artifact 不要求 Git 或 Workspace。
@@ -31,4 +33,4 @@ await application(request, {principal: 'local-operator', requestId, signal});
 
 请求最多 256 KiB（input 为 384 KiB 的 base64 包络），响应/制品最多 8 MiB，body 深度最多 32；Task intent 8 KiB、context text 32 KiB。用户请求 limits 不是授权扩大服务限额：Application 必须比较实际 profile 上限。HTTP 等待默认 10 秒、最多 30 秒，不刷新 Task 原期限。请求体未结束时超时/断线会移除读取监听器并关闭该连接；可写错误响应先发出再回收连接，不继续解析剩余请求体，也不转化为 Task cancel。没有流式下载、SSE、HTTP multipart 或任意执行/发布端点。
 
-最短验证命令：`node --test packages/task-api/http-handler.test.mjs`。10 项测试使用 Request/Response 流替身、独立内存 Application fixture，以及 loopback Node HTTP 连接回收 fixture，验证全部 route、create→计划→批准→operation→下载、控制/答复形状、错误、摘要、重放与超时；无 DB/模型。它不能替代真实 SQLite/执行/恢复以及下载后的独立业务验收。后续主链在相同契约下接实际应用，不为测试另建生产状态机。
+最短验证命令：`node --test packages/task-api/http-handler.test.mjs`。11 项测试使用 Request/Response 流替身、独立内存 Application fixture，以及 loopback Node HTTP 连接回收 fixture，验证全部 route、create→计划→批准→operation→下载、控制/答复形状、4096 字节边界、串绑回执拒绝、错误、摘要、重放与超时；无 DB/模型。它不能替代真实 SQLite/执行/恢复以及下载后的独立业务验收。后续主链在相同契约下接实际应用，不为测试另建生产状态机。
