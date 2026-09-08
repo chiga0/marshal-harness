@@ -2,6 +2,14 @@
 
 ## 当前结论
 
+### 21:02 CST 真实取消与安装包增量
+
+正式源码 `0a1deedf704c7ccb6257fcb4389bc0eb44b3b66b` 的显式 `--scenario cancel` 一次实机通过：Task=`task-6e6e93b9-de46-4840-8d9b-165cdcfda6d3`，Qwen0.22.3/Node24.15.0，`13:01:30.489Z`→`13:01:48.720Z`，18.231秒，无自动重试。两个原作者实际启动后于 `13:01:48.257Z` 发HTTP取消，两个原Agent均于 `13:01:48.266Z` 观察退出且cleanup已确认；最终Task取消、取消Operation收口，verifierStarts=0、交付0。正常服务实例重开后原create/approve/cancel回执、完整Task保持，重复启动0。
+
+这是**启动阶段的真实所属进程取消**，不是已证明模型生成或工具执行中取消；两个作者生命周期交叠仅36ms，不用它宣传计算并行收益。它补齐本次PoC的真实活跃取消子证据，不授予权限隔离、完整崩溃恢复或production。脱敏证据 `/private/tmp/marshal-qwen-cancel-20260908-210100/evidence.json`；源码来自实际运行记录，不把JSON当签名发行收据。验收驱动source=`100f61ae1e2a2a83b75ba44405bb6ea5cb225214`、localMergeSha=`0a1deedf704c7ccb6257fcb4389bc0eb44b3b66b`，独立17/17无模型测试包含真实HTTP/SQLite/ACP夹具，2.419秒。
+
+已核验的原目录包（source=`3383e0e`、外置摘要保持下文所列）在本机实际从安装目录启动两个先后独立CLI进程：create→HTTP health/ready→SIGTERM/exit0/clean→open→health/ready→正常退出。状态根 `/private/tmp/marshal-installed-smoke-Cnyp1V/state`，无模型调用、不创建业务Task；不是Linux或安装包内模型交付。该行为已固化为自动回归，10/10发行测试通过33.758秒，独立审查通过，source=`69f0e16c3f9075257e425751af6b42eeb03675da`、localMergeSha=`abbcec4b2fc0b87d6bb372ac615288069798850f`。上述新增合入相对最近已推送 `33929c8` 仍为 pendingRemoteSync=true，后续推送结果另记；B1/B2未因此整体关闭。
+
 ### 20:16 CST 真实模型团队突破
 
 已在正式 Node 源码 `42f95658071e9ce03d38d8926b376b26c82ffd50` 完成一次纯HTTP真实Qwen团队验收；该main已实际推送。驱动source=`f9a567c6feeba6bcc046c89e742bfc22ec5c79e1`，localMergeSha=`636c90d8cef0e0f25b9eb0077f7285ddeb4757a4`。下面 `82b64cf` 为其产品运行代码基线；后继仅增加验收驱动与文档。
@@ -19,7 +27,7 @@
 
 当前并行：批准前有限问答与Pi正式RPC候选；Pi原生shell脱离继承进程组的清理边界尚待解决，不因本机已安装而宣称正式支持。以下为本次实机前的集成检查点，保留其时间范围。
 
-正式主线是 ADR0088 的 Node-only Task 服务，不再扩充固定订单实验。当前代码集成基线 main=`82b64cfa8d0daef0c188f0e296299b6e3aedcc48`，已包含正式 HTTP、唯一 SQLite、Task 控制/执行 reducer、受管 ACP、Supervisor、输入上传/制品下载、不可变文件物化、通用业务文件适配、独立验收/Decision/最终交付、独立 HTTP 客户端、正式服务入口与目录发行包。**正式全链 Node 进程夹具已通过；真实模型团队与 API-STABLE 尚未完成**。B1/B2 保持 IN_PROGRESS，B3 保持 PLANNED；实验双 Pi 成功与正式组件证据分开。
+以下保留实机前检查点：正式主线是 ADR0088 的 Node-only Task 服务，不再扩充固定订单实验。当时代码集成基线 main=`82b64cfa8d0daef0c188f0e296299b6e3aedcc48`，已包含正式 HTTP、唯一 SQLite、Task 控制/执行 reducer、受管 ACP、Supervisor、输入上传/制品下载、不可变文件物化、通用业务文件适配、独立验收/Decision/最终交付、独立 HTTP 客户端、正式服务入口与目录发行包。当时正式全链 Node 进程夹具已通过、真实模型团队尚未执行；后来的实机结果以上文为准。B1/B2 保持 IN_PROGRESS，B3 保持 PLANNED；实验双 Pi 成功与正式组件证据分开。
 
 2026-09-08 20:03 CST 已实际将 main 从 `ba2196b` 推送至 `82b64cfa8d0daef0c188f0e296299b6e3aedcc48`；本机 main 与 origin/main 一致，以上代码 pendingRemoteSync=false。[Node team CI](https://github.com/chiga0/marshal-harness/actions/runs/34223961302)已通过，通用[CI](https://github.com/chiga0/marshal-harness/actions/runs/34223961248)最近查询仍运行中。推送/测试不等于正式发行；以下历史检查点保留原范围。
 
