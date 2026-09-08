@@ -16,6 +16,13 @@
 
 旧 Marshal skill 长期完全退出产品运行依赖、研发准入和验收标准：不读取、加载、派发或执行其流程，不要求每个开发切片一个 Marshal Run。保留历史运行/失败/审计资产，不恢复旧 Skill 的微切片和轮次规范；各 Agent 自带 Skill 仍由 Agent 自行管理。这不豁免以下产品证据、权限和恢复不变量。
 
+## 并行研发调度（2026-09-08 用户明确要求）
+
+- 每次子 Agent 完成、退出、失败或单项任务完成后，主 Agent 立即核对真实运行状态、可用槽位、依赖、审查队列及写入 scope；不等用户提醒或定时心跳再检查。
+- 有空槽且存在依赖满足、互不冲突的高价值工作时，当次补派开发、独立审查、集成测试或紧邻主线的调研/设计。已结束 Agent 必须用能触发新执行的续派调用，单纯消息不等于重新启动；派发后核实实际状态。
+- 并发上限以当前工具实际容量为准（本次为主 Agent 加三个子 Agent），不得把历史已完成 Agent 算作活跃，也不得为了占满槽位制造低价值任务。不能补派时记录具体依赖/冲突/容量理由。
+- 调度检查是轻量的执行动作，不新增审批、Marshal skill、微切片或独立治理平台；保留单写者、独立验证与权限边界。
+
 ## 当前阶段（历史基线，当前排期以上节为准）
 
 本仓库已于 2026-08-03 通过实施门禁，ADR 0001–0011 已接受；2026-08-07 增补接受 ADR 0012–0014；2026-08-10 接受 ADR 0016，把长期目标重置为长寿命 Runtime/Control Plane，并冻结 AgentAdapter 与 SandboxProvider 分层及 M7–M13 路线，ADR 0015 未接受即被 ADR 0016 取代；2026-08-11 接受 ADR 0017–0019，依次冻结 Provider-neutral Sandbox、Control Plane/Provider Port，以及确定性 Supervisor、Typed Execution、Goal admission 与 append-only 补偿语义。Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`；M7 设计与契约已通过；M8/M9 保留当时定义下的 `PASSED` 历史证据，但相关 Runtime 资产尚未整体进入真实生产调用链，不得据此宣称 v1.0 端到端集成完成。2026-08-24 接受 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的 `I186-R0→R6` 纵切路线。2026-08-27 接受 ADR 0051，冻结 `darwin-local-dogfood` 的 ordinary-user/non-production 边界；同日接受 [ADR 0052](docs/adr/0052-v1-release-scope-and-production-reachability.md)，把 v1.0 收敛为单节点、单用户、可信仓库、至少一个真实 AgentProvider 与一个真实 Local/Container SandboxProvider，并增加 `DESIGN→COMPONENT→INTEGRATED→RELEASED` 成熟度和生产可达性门禁。**2026-08-27 维护者主线纠偏结论**：ADR 0052 的 `R1→R2→R3` 顺序不可跳越；审计发现结果接纳的 recheck 是以结果携带 Facts 临时构造 registry/ledger 的自洽验证（`seedRegistry`/`seedSandboxLedger`），不构成真实 durable current-ledger recheck，lease expiry 也是接纳时重新生成而非 dispatch 时冻结——因此 R3–R5 的所有 INTEGRATED 宣称一律撤回为 COMPONENT，真实 Agent 已走通 Local allocation 的 R1 纵切保留为 INTEGRATED 实质进展。2026-09-01 RC1 发布后，当前主线调整为：**保持 R2–R5 的 COMPONENT 诚实口径，先完成 fixed server 与 recovery fault matrix，再完成 managed signing/notarization、Linux stable gate 和受保护 stable candidate；unsigned 构建仍只允许 prerelease tag**。当前权威状态：`I186-R0: PASSED`、`I186-R1: IN_PROGRESS（INTEGRATED）`、`I186-R2–R5: IN_PROGRESS（COMPONENT）`、`I186-R6: IN_PROGRESS（COMPONENT；RC1 prerelease 已发布，stable gate 开放）`。M10–M13 不再阻塞 v1.0，作为 R6 后 1.x 候选重新排期。后续变更仍须按门禁流程：信任边界/持久化契约/生命周期或发布权限的改变必须新增或替代 ADR。
