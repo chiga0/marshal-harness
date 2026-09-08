@@ -39,13 +39,31 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
     assert.deepEqual(fs.readFileSync(path.join(f.target, file)), fs.readFileSync(path.join(f.root, 'second', file)));
     assert.ok(!/fixture|\.test\.|\.marshal|\.git/.test(file));
   }
-  const imports = SOURCE_FILES.filter(file => file.endsWith('.mjs') && !file.endsWith('/main.mjs') && !file.endsWith('/guard.mjs'));
+  // Commands consume stdin; deployment configurations intentionally require
+  // explicit local settings. They remain packaged and are exercised below,
+  // rather than being treated as side-effect-free library imports.
+  const entrypoints = new Set(['packages/task-service/main.mjs', 'packages/agent-runtime/guard.mjs',
+    'packages/task-regional-window/checker.mjs', 'packages/task-regional-window/service-config.mjs']);
+  const imports = SOURCE_FILES.filter(file => file.endsWith('.mjs') && !entrypoints.has(file));
   const script = imports.map(file => `await import(${JSON.stringify(pathToFileURL(path.join(f.target, file)).href)});`).join('\n');
   const loaded = spawnSync(process.execPath, ['--input-type=module', '-e', script], {cwd: f.root, timeout: 10000, encoding: 'utf8'});
   assert.equal(loaded.status, 0, loaded.stderr);
   assert.equal(loaded.stdout, ''); // No server, model, or runtime process is launched by importing dependencies.
   const cli = spawnSync(process.execPath, [path.join(f.target, report.entrypoint)], {cwd: f.root, timeout: 10000, encoding: 'utf8'});
   assert.equal(cli.status, 1); assert.match(cli.stderr, /service_start_unavailable/);
+  const state = path.join(f.root, 'unconfigured-window');
+  const unconfigured = spawnSync(process.execPath, [path.join(f.target, report.entrypoint), '--root', state,
+    '--mode', 'create', '--config', path.join(f.target, 'packages/task-regional-window/service-config.mjs')],
+  {cwd: f.root, env: {}, timeout: 10000, encoding: 'utf8'});
+  assert.equal(unconfigured.status, 1);
+  assert.equal(unconfigured.stdout, '');
+  assert.equal(unconfigured.stderr, '{"code":"service_start_unavailable"}\n');
+  assert.equal(fs.existsSync(state), false); // No configuration fallback or partial service.
+  const checker = spawnSync(process.execPath, [path.join(f.target, 'packages/task-regional-window/checker.mjs')],
+    {cwd: f.root, env: {}, input: '{}\n', timeout: 10000, encoding: 'utf8'});
+  assert.equal(checker.status, 1);
+  assert.equal(checker.stdout, ''); // Invalid input cannot create a successful verification frame.
+  assert.equal(checker.stderr, '');
 });
 test('never overwrite an existing destination and reject source-relative targets', t => {
   const f = fixture(t); f.create();
