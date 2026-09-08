@@ -169,6 +169,11 @@ export class TaskVerification {
       const {record, task} = this.app.execution.ticket(tx, ticket);
       if (record.worker.status === 'completed') return false;
       if (task.task.status === 'cancelling' || ['failed', 'cancelled', 'intervention'].includes(task.task.status) || this.app.now() >= ticket.deadline) return false;
+      // The original managed launcher can prove a failed spawn was cleaned
+      // without ever announcing an execution. This is cleanup, not a checker's
+      // independent negative verdict; do not stage evidence or a Decision.
+      if (data.status === 'failed' && data.cleanup?.cleaned === true && data.cleanup.started === null &&
+          record.executionId === null && record.worker.startedAt === null) return false;
       if (data.cleanup?.cleaned === true)
         check(data.cleanup.started?.executionId === record.executionId && data.cleanup.started?.startedAt === record.worker.startedAt,
           'invalid_verification_receipt');

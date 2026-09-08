@@ -10,6 +10,7 @@ import {TaskApplication, createVerificationPort} from './application.mjs';
 import {TaskSupervisor} from '../task-supervisor/controller.mjs';
 import {validate} from '../task-api/contract.mjs';
 import {createFileBusiness} from '../task-business/index.mjs';
+import {launchCommand} from '../agent-runtime/index.mjs';
 
 const context = {principal: 'local-operator'}, hash = value => digest(encode(value));
 const fileDigest = value => digest(Buffer.from(JSON.stringify(value)));
@@ -49,11 +50,11 @@ function fixture(t, options = {}) {
     capacity: () => store.read(owner, tx => app.execution.capacity(tx).value.active),
     commands: () => store.read(owner, tx => tx.commands()), setSQLFailure(value) {failSQL = value;}, advance(ms) {advance += ms;},
     async cancel(taskId) {const task = await f.get(taskId); return f.call({operation: 'task.cancel', taskId, key: 'cancel', body: {expectedRevision: task.revision}});},
-    async plan() {
-      const task = await f.call({operation: 'task.create', key: 'create', body: {intent: '交付所有要求，不能只返回末 patch', limits: {timeoutMs: 60000, maxAttempts: 8, maxWorkers: 2}}});
+    async plan(key = 'create') {
+      const task = await f.call({operation: 'task.create', key, body: {intent: '交付所有要求，不能只返回末 patch', limits: {timeoutMs: 60000, maxAttempts: 8, maxWorkers: 2}}});
       let plan;
       if (options.planner) {
-        const command = f.commands().find(item => JSON.parse(item.payload).action === 'plan');
+        const command = f.commands().find(item => item.taskId === task.id && JSON.parse(item.payload).action === 'plan');
         const ticket = app.execution.nextWork(command.id, command.revision), started = fact(ticket);
         app.execution.started(ticket, started);
         app.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', cleanup: {started, cleaned: true}, plan: proposal()});
@@ -62,10 +63,11 @@ function fixture(t, options = {}) {
       const current = await f.get(task.id);
       const operation = await f.call({operation: 'task.approve', taskId: task.id, key: 'approve', body: {expectedRevision: current.revision,
         planRevision: plan.revision, planDigest: plan.digest}});
-      const dispatch = f.commands().find(item => JSON.parse(item.payload).action === 'dispatch');
+      const dispatch = f.commands().find(item => item.taskId === task.id && JSON.parse(item.payload).action === 'dispatch');
       app.execution.expandDispatch(dispatch.id, dispatch.revision); return {taskId: task.id, plan, operation};
     },
-    take(nodeId) {const command = f.commands().find(item => JSON.parse(item.payload).nodeId === nodeId); return app.execution.nextWork(command.id, command.revision);},
+    take(nodeId, taskId) {const command = f.commands().find(item => JSON.parse(item.payload).nodeId === nodeId && (!taskId || item.taskId === taskId));
+      return app.execution.nextWork(command.id, command.revision);},
     candidate(ticket) {
       const file = {path: ticket.nodeId + '.txt', ...depot.put(Buffer.from(ticket.nodeId + ' bytes'))};
       return {profile: 'task-file-business/v1', taskId: ticket.taskId, nodeId: ticket.nodeId, workerId: ticket.workerId,
@@ -296,4 +298,63 @@ test('negative checker receipt cannot misclassify prior cancel, deadline, unknow
     assert.equal(f.read(tx => tx.projections('artifact')).length, 0);
     assert.equal(f.capacity().length, ['unknown', 'old-owner'].includes(scenario) ? 1 : 0);
   });
+});
+
+test('original managed-command spawn failure closes only its no-start attempt while another Task continues', {timeout: 10000}, async t => {
+  let failedTaskId, originalCleanup;
+  const f = fixture(t, {start({ticket, prepared}) {
+    if (ticket.taskId === failedTaskId) {
+      // Real checked-in Node guard and launchCommand producer. The deliberately
+      // missing executable cannot start a checker; no synthetic cleanup receipt.
+      const launching = launchCommand({executable: path.join(prepared.cwd, 'missing-checker-executable'), cwd: prepared.cwd,
+        env: {}, deadline: ticket.deadline, input: Buffer.from('{}\n')});
+      const completion = launching.then(async handle => {
+        await handle.stop(); assert.fail('missing executable unexpectedly started');
+      }, error => {
+        assert.equal(error.code, 'runtime_launch_failed'); originalCleanup = error.completion;
+        return {type: 'verification', status: 'failed', cleanup: originalCleanup, evidence: null, delivery: null};
+      });
+      return {started: launching.then(handle => handle.started, () => null), completion,
+        stop: () => launching.then(handle => handle.stop(), () => completion)};
+    }
+    const started = fact(ticket), completion = Promise.resolve({type: 'verification', status: 'passed', cleanup: {started, cleaned: true},
+      evidence: {name: 'evidence.json', mediaType: 'application/json', content: Buffer.from('{}')},
+      delivery: {name: 'delivery.bin', mediaType: 'application/octet-stream', content: Buffer.from('controlled successful peer')}});
+    return {started: Promise.resolve(started), completion, stop: () => completion};
+  }});
+  failedTaskId = (await f.plan('spawn-failure')).taskId; const goodTaskId = (await f.plan('healthy-peer')).taskId;
+  for (const taskId of [failedTaskId, goodTaskId]) for (const nodeId of ['code', 'docs']) f.finishAuthor(f.take(nodeId, taskId));
+  const errors = [], released = [];
+  const supervisor = new TaskSupervisor({execution: f.execution, verification: f.port, providers: new Map(), intervalMs: 5,
+    prepare: () => ({cwd: f.parent, prompt: 'trusted checker only'}), collect() {assert.fail('verification must not use Agent collect');},
+    release: ticket => released.push(ticket.workerId), onError: error => errors.push(error)});
+  t.after(() => supervisor.close()); supervisor.start();
+  const until = Date.now() + 5000;
+  while ((await f.get(failedTaskId)).status !== 'failed' || (await f.get(goodTaskId)).status !== 'completed') {
+    assert.ok(Date.now() < until, JSON.stringify(supervisor.snapshot())); await turn();
+  }
+  assert.equal(originalCleanup.started, null); assert.equal(originalCleanup.cleaned, true);
+  assert.equal(originalCleanup.reason, 'spawn_failed'); assert.equal(originalCleanup.guardExit.signal, 'SIGKILL');
+  assert.equal(supervisor.snapshot().failure, null); assert.equal(f.capacity().length, 0);
+  const failedAudit = await f.call({operation: 'task.audit', taskId: failedTaskId});
+  assert.equal(failedAudit.acceptance.status, 'pending'); assert.deepEqual(failedAudit.firstReview, {passed: 0, total: 0, pending: 0});
+  assert.deepEqual((await f.get(failedTaskId)).artifactIds, []);
+  assert.equal((await f.call({operation: 'task.audit', taskId: goodTaskId})).acceptance.status, 'passed');
+  const failedWorker = failedAudit.workers.find(worker => worker.role === 'verifier');
+  const record = f.read(tx => f.execution.worker(tx, failedWorker.id).record);
+  assert.equal(record.executionId, null); assert.deepEqual(record.cleanup, originalCleanup);
+  assert.equal(errors.length, 1); assert.equal(errors[0].taskId, failedTaskId); assert.equal(errors[0].code, 'worker_failed');
+  assert.equal((await supervisor.close()).clean, true); assert.equal(released.length, 2);
+});
+
+test('no-start exception cannot admit passed, foreign cleanup or a missing started field', async t => {
+  const f = fixture(t), {ticket} = await f.ready();
+  for (const [status, started] of [['passed', null], ['failed', {executionId: 'foreign', startedAt: new Date().toISOString()}], ['failed', undefined]]) {
+    const handle = f.port.start({ticket, prepared: {cwd: f.parent, prompt: 'fixture'}}), item = f.calls.at(-1);
+    const cleanup = started === undefined ? {cleaned: true} : {started, cleaned: true};
+    item.completion.resolve({type: 'verification', status, cleanup, evidence: null, delivery: null});
+    const result = await handle.completion;
+    assert.throws(() => f.execution.finish(ticket, result), error => error.code === 'invalid_verification_receipt');
+  }
+  assert.equal(f.capacity().length, 1);
 });

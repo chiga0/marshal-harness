@@ -68,6 +68,8 @@ Supervisor 不 clone receipt，也不将验收结果送进 Agent 专用 collect�
 
 可信 checker 的 `failed` receipt 同样核对精确 capability/status/ticket、当前 owner、原 execution/cleanup 与冻结 manifest。有效且已清理的负面验收同事务记录 `rejected` Decision、`acceptance.failed` 和**已有** evidence 引用；缺 evidence 时保存无制品的明确失败事实，不制造报告，绝不接纳 delivery 或 Task completed。有界封闭 `reason` 可保存为内部 reasonCode。取消/期限先赢、cleanup 未知、旧 owner 或控制器本地停止/故障，不能冒充独立验收失败；这些路径仍保持原停止/未知语义。`acceptance` 如实呈现独立验收 pass/fail；`firstReview` 是不同维度，没有真实独立代码 review 事实仍为 `{passed:0,total:0,pending:0}`，不能借最终验收成功填为 1/1。
 
+原受管 launcher 的失败也可能确认 `started:null/cleaned:true`：仅在精确 receipt、当前 owner/ticket 与原 Attempt 的 executionId/startedAt 均为空一致时，按已有 Worker 失败/cleanup 路径释放容量，不制造独立验收事实。`passed` 无启动、身份不匹配、缺字段均不因此获得接纳；未知 cleanup 仍保留容量。回归使用真实 checked-in Node guard 的缺 executable 失败，并验证另一 Task 可继续完成。
+
 ## 验证
 
 固定 Node 24.15.0：
