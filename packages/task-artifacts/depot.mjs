@@ -43,10 +43,8 @@ export class ArtifactDepot {
       depot.#check();
       if (create) {
         const fd = fs.openSync(path.join(root, 'format.json'), fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NOFOLLOW, 0o600);
-        try { fs.writeFileSync(fd, FORMAT); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-        fs.fsyncSync(depot.#rootFd); fs.fsyncSync(depot.#parentFd);
+        try { fs.writeFileSync(fd, FORMAT); } finally { fs.closeSync(fd); }
       }
-      requireValue(depot.#read('format.json', FORMAT.length).equals(FORMAT));
       // Unreferenced pending bytes are not authority and do not block unrelated
       // committed artifacts. Preserve them, never adopt/delete them on reopen.
       for (const entry of fs.readdirSync(root)) {
@@ -55,7 +53,9 @@ export class ArtifactDepot {
         const stat = fs.lstatSync(path.join(root, entry));
         requireValue(stat.isFile() && stat.uid === process.getuid() && (stat.mode & 0o777) === 0o600 && stat.size <= MAX_ARTIFACT_BYTES);
       }
-      depot.#check(); return depot;
+      // Existing format bytes can be visible after a failed bootstrap sync.
+      // Both paths must close that obligation before returning a usable depot.
+      depot.#syncBootstrap(); return depot;
     } catch (error) {
       depot.close();
       if (error instanceof ArtifactDepotError) throw error;
@@ -73,18 +73,33 @@ export class ArtifactDepot {
     this.#check();
     const target = path.join(this.#root, name);
     const fd = fs.openSync(target, fs.constants.O_RDONLY | NOFOLLOW);
+    try { return this.#readHeld(name, bytes, fd); } finally { fs.closeSync(fd); }
+  }
+  #readHeld(name, bytes, fd) {
+    this.#check();
+    const target = path.join(this.#root, name);
+    const before = fs.fstatSync(fd); regular(before);
+    requireValue(before.size === bytes && same(before, fs.lstatSync(target)));
+    const result = Buffer.alloc(bytes); let offset = 0;
+    while (offset < bytes) {
+      const count = fs.readSync(fd, result, offset, bytes - offset, offset);
+      requireValue(count > 0); offset += count;
+    }
+    const after = fs.fstatSync(fd); regular(after);
+    requireValue(same(before, after) && after.size === bytes && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs &&
+      same(after, fs.lstatSync(target)));
+    this.#check(); return result;
+  }
+  #syncBootstrap() {
+    this.#check();
+    const fd = fs.openSync(path.join(this.#root, 'format.json'), fs.constants.O_RDONLY | NOFOLLOW);
     try {
-      const before = fs.fstatSync(fd); regular(before);
-      requireValue(before.size === bytes && same(before, fs.lstatSync(target)));
-      const result = Buffer.alloc(bytes); let offset = 0;
-      while (offset < bytes) {
-        const count = fs.readSync(fd, result, offset, bytes - offset, offset);
-        requireValue(count > 0); offset += count;
+      const check = () => requireValue(this.#readHeld('format.json', FORMAT.length, fd).equals(FORMAT));
+      check();
+      for (const held of [fd, this.#rootFd, this.#parentFd]) {
+        fs.fsyncSync(held);
+        check(); // Recheck exact held format, named identities and permissions.
       }
-      const after = fs.fstatSync(fd); regular(after);
-      requireValue(same(before, after) && after.size === bytes && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs &&
-        same(after, fs.lstatSync(target)));
-      this.#check(); return result;
     } finally { fs.closeSync(fd); }
   }
   get(value) {

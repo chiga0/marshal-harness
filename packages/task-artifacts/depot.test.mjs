@@ -11,6 +11,91 @@ function fixture(t) {
   return {parent, root: path.join(parent, 'artifacts')};
 }
 const denied = error => error instanceof ArtifactDepotError;
+const bootstrapOrder = ['format', 'root', 'parent'];
+function bootstrapProbe(t, root, open, {failAt, afterSync} = {}) {
+  const calls = [], original = fs.fsyncSync;
+  const mock = t.mock.method(fs, 'fsyncSync', fd => {
+    const held = fs.fstatSync(fd);
+    const stage = [['format', path.join(root, 'format.json')], ['root', root], ['parent', path.dirname(root)]]
+      .find(([, name]) => { const named = fs.lstatSync(name); return held.dev === named.dev && held.ino === named.ino; })?.[0];
+    assert.ok(stage, 'sync must use the held, named bootstrap object');
+    calls.push(stage);
+    if (stage === failAt) throw new Error('injected bootstrap sync failure');
+    original(fd); afterSync?.(stage);
+  });
+  let depot;
+  try {
+    if (failAt || afterSync) {
+      assert.throws(() => { depot = open(root); }, denied);
+      assert.equal(depot, undefined, 'failed bootstrap must not return a usable instance');
+    } else depot = open(root);
+  } finally { mock.mock.restore(); }
+  assert.deepEqual(calls, failAt ? bootstrapOrder.slice(0, bootstrapOrder.indexOf(failAt) + 1) : bootstrapOrder);
+  return depot;
+}
+
+test('create and every cold reopen sync the held format, root and parent in order', t => {
+  const {root} = fixture(t);
+  let depot = bootstrapProbe(t, root, ArtifactDepot.create); t.after(() => depot.close());
+  const ref = depot.put(Buffer.from('committed before reopen')); depot.close();
+  depot = bootstrapProbe(t, root, ArtifactDepot.openExisting);
+  assert.equal(depot.get(ref).toString(), 'committed before reopen');
+  const next = depot.put(Buffer.from('committed after reopen')); depot.close();
+  depot = bootstrapProbe(t, root, ArtifactDepot.openExisting);
+  assert.equal(depot.get(ref).toString(), 'committed before reopen');
+  assert.equal(depot.get(next).toString(), 'committed after reopen');
+});
+
+test('each failed create sync must be completed on reopen; repeated failures preserve evidence and reject use', async t => {
+  for (const failAt of bootstrapOrder) await t.test(failAt, t => {
+    const {root} = fixture(t), formatPath = path.join(root, 'format.json');
+    bootstrapProbe(t, root, ArtifactDepot.create, {failAt});
+    const format = fs.readFileSync(formatPath), initial = fs.statSync(formatPath), rootInitial = fs.statSync(root);
+    assert.ok(format.length > 0); assert.deepEqual(fs.readdirSync(root), ['format.json']);
+    bootstrapProbe(t, root, ArtifactDepot.openExisting, {failAt});
+    assert.deepEqual(fs.readFileSync(formatPath), format);
+    assert.equal(fs.statSync(formatPath).ino, initial.ino); assert.equal(fs.statSync(root).ino, rootInitial.ino);
+    assert.throws(() => ArtifactDepot.create(root), denied, 'failed initialization is not an empty root to reset');
+    let depot = bootstrapProbe(t, root, ArtifactDepot.openExisting); t.after(() => depot.close());
+    const ref = depot.put(Buffer.from('persisted after bootstrap recovery')); depot.close();
+    // Even a previously usable root must not bypass a new bootstrap sync error.
+    bootstrapProbe(t, root, ArtifactDepot.openExisting, {failAt});
+    assert.deepEqual(fs.readFileSync(formatPath), format);
+    assert.equal(fs.statSync(formatPath).ino, initial.ino);
+    depot = bootstrapProbe(t, root, ArtifactDepot.openExisting);
+    assert.equal(depot.get(ref).toString(), 'persisted after bootstrap recovery');
+    const next = depot.put(Buffer.from('new bytes after second reopen')); depot.close();
+    depot = bootstrapProbe(t, root, ArtifactDepot.openExisting);
+    assert.equal(depot.get(ref).toString(), 'persisted after bootstrap recovery');
+    assert.equal(depot.get(next).toString(), 'new bytes after second reopen');
+  });
+});
+
+test('bootstrap rechecks held identities, format bytes and permissions after the final sync', async t => {
+  for (const mutation of ['format-replaced', 'root-replaced', 'parent-replaced', 'format-mode', 'root-mode', 'format-bytes']) {
+    await t.test(mutation, t => {
+      const {root, parent} = fixture(t), formatPath = path.join(root, 'format.json');
+      const depot = ArtifactDepot.create(root); depot.close();
+      const format = fs.readFileSync(formatPath);
+      bootstrapProbe(t, root, ArtifactDepot.openExisting, {afterSync: stage => {
+        if (stage !== 'parent') return;
+        if (mutation === 'format-replaced') {
+          fs.renameSync(formatPath, path.join(parent, 'old-format'));
+          fs.writeFileSync(formatPath, format, {mode: 0o600});
+        } else if (mutation === 'root-replaced' || mutation === 'parent-replaced') {
+          const target = mutation === 'root-replaced' ? root : parent;
+          fs.renameSync(target, target + '-moved');
+          t.after(() => fs.rmSync(target + '-moved', {recursive: true, force: true}));
+          fs.mkdirSync(target, {mode: 0o700});
+          if (mutation === 'parent-replaced') fs.mkdirSync(root, {mode: 0o700});
+          fs.writeFileSync(formatPath, format, {mode: 0o600});
+        } else if (mutation === 'format-mode') fs.chmodSync(formatPath, 0o644);
+        else if (mutation === 'root-mode') fs.chmodSync(root, 0o755);
+        else fs.writeFileSync(formatPath, Buffer.alloc(format.length, 32));
+      }});
+    });
+  }
+});
 
 test('real bytes are immutable-addressed, private, idempotent and cold-reopen readable', t => {
   const {root} = fixture(t); let depot = ArtifactDepot.create(root); t.after(() => depot.close());
