@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - 'experiments/node-team/**'
+      - 'packages/agent-acp/**'
       - '.github/workflows/node-team.yml'
   push:
     branches: [main]
     paths:
       - 'experiments/node-team/**'
+      - 'packages/agent-acp/**'
       - '.github/workflows/node-team.yml'
   workflow_dispatch:
 
@@ -45,6 +47,7 @@ jobs:
       - name: Run deterministic HTTP team and lifecycle regression
         run: >-
           node --test --test-concurrency=1
+          packages/agent-acp/client.test.mjs
           experiments/node-team/providers.test.mjs
           experiments/node-team/business.test.mjs
           experiments/node-team/runtime.test.mjs

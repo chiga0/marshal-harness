@@ -4,6 +4,9 @@
 
 - 本机 Qwen Code `0.23.0` 的帮助与已安装实现包含 `--acp`。`serve` 当前帮助标注 Stage 1 experimental HTTP bridge；不能因为支持 ACP 就把这个 daemon 宣称为稳定依赖。
 - 另做一次真实 `--acp` initialize-only 探测（`protocolVersion:1`、空 clientCapabilities，无 session/new/prompt，保留原生登录入口）：进程在合法 initialize 响应前退出，尚未完成握手。该探测未保留 stderr，不能判断退出根因，不能据此归咎登录/配置或否定 ACP 支持。所属进程组已确认消失，不原样重复；后继需有界私有诊断并只报告脱敏原因。
+- 后继维护者独立诊断已 **真实 initialize PASS**：同一本机入口与原生配置，发送后保持 stdin 打开，收到合法响应才关闭；返回 `protocolVersion:1`、`agentInfo.name:qwen-code`、`loadSession:true`，stdout 623 bytes、stderr 0、exit 0。未发送 session/new/prompt、未启动模型任务。它证明本机能进入 ACP，不推断上次退出的唯一原因，也不宣称会话/工具/恢复已经验收。
+- 可复用组件 `packages/agent-acp/client.mjs` sourceHead=`90e64841a03d5b0afe35220866bc2f3139d73645` 已独立审查无 P0/P1；维护者定向测试 **21/21 PASS（约 0.34 秒）**、secret scan 和 merge-tree 通过，localMergeSha=`f3d1ab32d17ace2954059124baddebd2b4e1251e`。组件通过注入 streams 提供关联请求、会话绑定、进度、显式权限回调与 cancel；不 spawn/kill、不持久化或接纳业务结果。能力声明中的 load 不等于该组件已经实现恢复。
+- 该组件的真实消费者也完成 initialize；精确 source 上进一步完成 Qwen `session/new`，sessionId=`9268f4c1-c56b-4a6b-8e39-3d2c97f0f2ab`，独立目录 `/private/tmp/marshal-acp-session-kFib0E`，exit 0、stderr 0。未发 prompt，未验证模型/工具/取消/恢复，不升级 B1/B2/B3；下一步必须接实际 Task，而非继续添加握手样例。
 - Node 实验组合候选 `81a83e61fa6cb9fb427ee3ece4e2a40107007f03` 的六文件确定性测试为 **46/46 PASS**。它们覆盖有限 HTTP/DI/Schema/Provider/状态测试，不是正式发布验收。
 - 同候选真实双 Qwen 测试耗时约 38.55 秒，两个作者都启动、返回候选并被收集；Task `task-4f4d5c8a-b175-42a0-b2f6-b92d0041baa7` 最终为 `failed`，原因 `independent-verification-failed`，Attempt 为 1。故障出在已收到的业务候选验收，不应误报成“未配置”或“Qwen 不能启动”。
 - 重新执行本地固定 oracle 仍失败（`checks:6`、`verification_failed`）；没有再次调用模型。该次未走到成功下载及第二任务的真实取消测试，不能复用 Pi 的成功记录填补。
