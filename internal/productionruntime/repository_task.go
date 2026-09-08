@@ -26,6 +26,12 @@ func taskRequestKey(key string) (string, error) {
 }
 
 func taskError(err error) error {
+	if errors.Is(err, resultingress.ErrTaskQuestionNotFound) {
+		return application.NewError("task-question", application.ReasonTaskNotFound)
+	}
+	if errors.Is(err, resultingress.ErrTaskQuestionsPending) {
+		return application.NewError("task-question", application.ReasonAuthorityConflict)
+	}
 	if errors.Is(err, resultingress.ErrTaskStopped) {
 		return application.NewError("task", application.ReasonRunStopped)
 	}
@@ -45,7 +51,7 @@ func taskError(err error) error {
 // regeneration/environment probing. A retry cannot refresh the frozen deadline.
 func (s *RepositorySession) CreateTask(ctx context.Context, request application.CreateTaskRequest) (application.TaskProjection, error) {
 	key, err := taskRequestKey(request.IdempotencyKey)
-	if ctx == nil || err != nil || request.Submission.Validate() != nil {
+	if ctx == nil || err != nil || !s.validTaskSubmission(request.Submission) {
 		return application.TaskProjection{}, application.NewError("create-task", application.ReasonInvalidRequest)
 	}
 	borrow, err := s.borrow()
@@ -62,22 +68,25 @@ func (s *RepositorySession) CreateTask(ctx context.Context, request application.
 	if err != nil {
 		return application.TaskProjection{}, err
 	}
-	var draft goal.TaskDraft
+	var proposal resultingress.TaskProposal
 	var found bool
 	reader := repositoryApprovedTeamVerifier{session: s}
 	err = reader.WithCurrentApprovedTeam(ctx, s.acquisition, resultingress.TeamPlanApproval{}, func() error {
 		var readErr error
-		draft, found, readErr = s.ingress.ReadTaskDraft(s.acquisition.Scope, id)
+		proposal, found, readErr = s.ingress.ReadTaskProposal(s.acquisition.Scope, id)
 		return readErr
 	})
 	if err != nil {
 		return application.TaskProjection{}, err
 	}
 	if found {
-		if draft.RequestDigest != requestDigest {
+		if proposal.RequestDigest != requestDigest {
 			return application.TaskProjection{}, application.NewError("create-task", application.ReasonAuthorityConflict)
 		}
 		return s.readTaskBorrowed(ctx, id)
+	}
+	if request.Submission.Template != goal.TaskTemplateOrderQuote {
+		return s.createTaskClarification(ctx, reader, id, key, requestDigest, request.Submission)
 	}
 	if s.taskTemplate == nil || s.taskTemplate.Digest() == "" || s.teamInputPreflight == nil {
 		return application.TaskProjection{}, application.NewError("create-task", application.ReasonCompositionIncomplete)
@@ -96,7 +105,7 @@ func (s *RepositorySession) CreateTask(ctx context.Context, request application.
 		return application.TaskProjection{}, application.NewError("create-task", application.ReasonInvalidRequest)
 	}
 	now := time.Now().UTC()
-	draft = goal.TaskDraft{GoalID: id, Revision: 1, RequestKeyDigest: key, RequestDigest: requestDigest, Request: request.Submission, TemplateDigest: s.taskTemplate.Digest(), InputsDigest: inputsDigest, Inputs: canonicalInputs, CreatedAt: now.Format(time.RFC3339Nano), ConfirmBefore: now.Add(30 * time.Minute).Format(time.RFC3339Nano)}
+	draft := goal.TaskDraft{GoalID: id, Revision: 1, RequestKeyDigest: key, RequestDigest: requestDigest, Request: request.Submission, TemplateDigest: s.taskTemplate.Digest(), InputsDigest: inputsDigest, Inputs: canonicalInputs, CreatedAt: now.Format(time.RFC3339Nano), ConfirmBefore: now.Add(30 * time.Minute).Format(time.RFC3339Nano)}
 	if _, err = s.ingress.RecordTaskDraft(ctx, reader, s.acquisition, draft); err != nil {
 		return application.TaskProjection{}, taskError(err)
 	}
@@ -161,14 +170,14 @@ func (s *RepositorySession) ApproveTask(ctx context.Context, request application
 		return application.TaskProjection{}, err
 	}
 	defer borrow.Close()
-	var draft goal.TaskDraft
+	var draft resultingress.TaskProposal
 	var plan resultingress.TeamPlanState
 	var approved bool
 	reader := repositoryApprovedTeamVerifier{session: s}
 	err = reader.WithCurrentApprovedTeam(ctx, s.acquisition, resultingress.TeamPlanApproval{}, func() error {
 		var found bool
 		var e error
-		draft, found, e = s.ingress.ReadTaskDraft(s.acquisition.Scope, request.TaskID)
+		draft, found, e = s.ingress.ReadTaskProposal(s.acquisition.Scope, request.TaskID)
 		if e != nil {
 			return e
 		}
@@ -200,6 +209,9 @@ func (s *RepositorySession) ApproveTask(ctx context.Context, request application
 		return s.readTaskBorrowed(ctx, request.TaskID)
 	}
 	deadline, _ := time.Parse(time.RFC3339Nano, draft.ConfirmBefore)
+	if draft.QuestionsPending != 0 {
+		return application.TaskProjection{}, taskError(resultingress.ErrTaskQuestionsPending)
+	}
 	if !time.Now().Before(deadline) {
 		return application.TaskProjection{}, application.NewError("approve-task", application.ReasonTaskConfirmationExpired)
 	}
@@ -221,7 +233,7 @@ func (s *RepositorySession) ApproveTask(ctx context.Context, request application
 func (s *RepositorySession) readTaskBorrowed(ctx context.Context, id string) (result application.TaskProjection, resultErr error) {
 	reader := repositoryApprovedTeamVerifier{session: s}
 	resultErr = reader.WithCurrentApprovedTeam(ctx, s.acquisition, resultingress.TeamPlanApproval{}, func() error {
-		draft, found, err := s.ingress.ReadTaskDraft(s.acquisition.Scope, id)
+		draft, found, err := s.ingress.ReadTaskProposal(s.acquisition.Scope, id)
 		if err != nil {
 			return err
 		}
@@ -232,10 +244,7 @@ func (s *RepositorySession) readTaskBorrowed(ctx context.Context, id string) (re
 		if json.Unmarshal(draft.Inputs, &inputs) != nil {
 			return application.NewError("read-task", application.ReasonAuthorityConflict)
 		}
-		if s.taskTemplate == nil {
-			return application.NewError("read-task", application.ReasonCompositionIncomplete)
-		}
-		nodes, err := s.taskTemplate.InspectTask(bytes.Clone(draft.Inputs))
+		nodes, err := s.inspectTaskProposal(draft)
 		if err != nil {
 			return application.NewError("read-task", application.ReasonAuthorityConflict)
 		}
@@ -243,7 +252,12 @@ func (s *RepositorySession) readTaskBorrowed(ctx context.Context, id string) (re
 		result.Preview.Nodes = nodes
 		deadline, _ := time.Parse(time.RFC3339Nano, draft.ConfirmBefore)
 		if time.Now().Before(deadline) {
-			result.AllowedActions = append(result.AllowedActions, "approve")
+			if draft.QuestionsPending == 0 {
+				result.AllowedActions = append(result.AllowedActions, "approve")
+			} else {
+				result.Status = "awaiting-answer"
+				result.AllowedActions = append(result.AllowedActions, "answer")
+			}
 		} else {
 			result.Status = "confirmation-expired"
 		}

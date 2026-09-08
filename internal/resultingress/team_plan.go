@@ -114,8 +114,8 @@ func (s *DurableStore) AcceptInitialTeamPlan(ctx context.Context, verifier Curre
 			if err := validateTaskDraftApproval(projection, owner.Scope, inputs.Spec.GoalId, approval); err != nil {
 				return err
 			}
-			if draft, exists := projection.taskDrafts[key]; exists {
-				deadline, _ := time.Parse(time.RFC3339Nano, draft.Draft.ConfirmBefore)
+			if draft, exists := currentTaskProposal(projection, key); exists {
+				deadline, _ := time.Parse(time.RFC3339Nano, draft.ConfirmBefore)
 				if !time.Now().Before(deadline) {
 					return ErrTaskDraftExpired
 				}
@@ -134,8 +134,8 @@ func (s *DurableStore) AcceptInitialTeamPlan(ctx context.Context, verifier Curre
 			if err != nil || len(encoded)+100 > goal.MaxTeamInputsBytes+(128<<10) {
 				return ErrTeamPlanConflict
 			}
-			if draft, exists := projection.taskDrafts[key]; exists {
-				deadline, _ := time.Parse(time.RFC3339Nano, draft.Draft.ConfirmBefore)
+			if draft, exists := currentTaskProposal(projection, key); exists {
+				deadline, _ := time.Parse(time.RFC3339Nano, draft.ConfirmBefore)
 				if !time.Now().Before(deadline) {
 					return ErrTaskDraftExpired
 				}

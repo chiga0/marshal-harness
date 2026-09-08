@@ -303,6 +303,7 @@ type Ingress struct {
 	reservationKeys       map[string]string
 	teamPlans             map[string]TeamPlanState
 	taskDrafts            map[string]taskDraftState
+	taskClarifications    map[string]TaskClarificationState
 	taskStops             map[string]TaskStop
 	taskCancellations     map[string]TaskCancellation
 	taskDeliveries        map[string]goal.TaskDelivery
@@ -374,6 +375,7 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		reservationKeys:             make(map[string]string),
 		teamPlans:                   make(map[string]TeamPlanState),
 		taskDrafts:                  make(map[string]taskDraftState),
+		taskClarifications:          make(map[string]TaskClarificationState),
 		taskStops:                   make(map[string]TaskStop),
 		taskCancellations:           make(map[string]TaskCancellation),
 		taskDeliveries:              make(map[string]goal.TaskDelivery),
@@ -410,6 +412,7 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 		reservationKeys:             make(map[string]string),
 		teamPlans:                   make(map[string]TeamPlanState),
 		taskDrafts:                  make(map[string]taskDraftState),
+		taskClarifications:          make(map[string]TaskClarificationState),
 		taskStops:                   make(map[string]TaskStop),
 		taskCancellations:           make(map[string]TaskCancellation),
 		taskDeliveries:              make(map[string]goal.TaskDelivery),
@@ -841,6 +844,7 @@ func (i *Ingress) resetDurableReplayState() {
 	i.reservationKeys = make(map[string]string)
 	i.teamPlans = make(map[string]TeamPlanState)
 	i.taskDrafts = make(map[string]taskDraftState)
+	i.taskClarifications = make(map[string]TaskClarificationState)
 	i.taskStops = make(map[string]TaskStop)
 	i.taskCancellations = make(map[string]TaskCancellation)
 	i.taskDeliveries = make(map[string]goal.TaskDelivery)

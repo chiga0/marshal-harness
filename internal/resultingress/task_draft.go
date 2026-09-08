@@ -89,6 +89,9 @@ func (s *DurableStore) RecordTaskDraft(ctx context.Context, verifier CurrentAppr
 			if _, found := projection.teamPlans[key]; found {
 				return ErrTeamPlanConflict
 			}
+			if _, found := projection.taskClarifications[key]; found {
+				return ErrTeamPlanConflict
+			}
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -145,6 +148,17 @@ func (s *DurableStore) ListTaskDraftIDs(scope ControlOwnerScope, after string, l
 				}
 			}
 		}
+		for _, state := range projection.taskClarifications {
+			if state.Scope == scope && state.Root.TaskID > after {
+				position, _ := slices.BinarySearch(result, state.Root.TaskID)
+				if position < limit {
+					result = slices.Insert(result, position, state.Root.TaskID)
+					if len(result) > limit {
+						result = result[:limit]
+					}
+				}
+			}
+		}
 		return nil
 	})
 	return result, err
@@ -154,14 +168,17 @@ func validateTaskDraftApproval(in *Ingress, scope ControlOwnerScope, taskID stri
 	if _, stopped := in.taskStops[teamPlanKey(scope, taskID)]; stopped {
 		return ErrTaskStopped
 	}
-	state, found := in.taskDrafts[teamPlanKey(scope, taskID)]
+	state, found := currentTaskProposal(in, teamPlanKey(scope, taskID))
 	if !found {
 		if approval.TaskDraftDigest != "" {
 			return ErrTeamPlanConflict
 		}
 		return nil // Existing non-Task AF_UNIX contract is unchanged.
 	}
-	if state.Draft.FactDigest != approval.TaskDraftDigest || state.Draft.InputsDigest != approval.InputsDigest {
+	if state.QuestionsPending != 0 {
+		return ErrTaskQuestionsPending
+	}
+	if state.FactDigest != approval.TaskDraftDigest || state.InputsDigest != approval.InputsDigest {
 		return ErrTeamPlanConflict
 	}
 	return nil
@@ -187,6 +204,9 @@ func applyTaskDraftLine(line []byte, in *Ingress, sequence int64) error {
 	}
 	key := teamPlanKey(fact.Scope, fact.Draft.GoalID)
 	if _, found := in.taskDrafts[key]; found {
+		return ErrTeamPlanConflict
+	}
+	if _, found := in.taskClarifications[key]; found {
 		return ErrTeamPlanConflict
 	}
 	if _, found := in.teamPlans[key]; found {

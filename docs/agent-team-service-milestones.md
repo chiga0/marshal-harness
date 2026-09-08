@@ -42,6 +42,8 @@
 
 ### B2-A：Task 体验与本地简启动
 
+当前有界切片按 [ADR 0086](adr/0086-task-preapproval-questions-and-preview-revisions.md) 先接**未批准 Task** 的关键问答：同 RB1 原子答案/新预览、原期限、精确重放、最终确认及取消 CAS。运行中 Worker 的待答、pause/resume/steering 不在该子切片；`order-quote/v1` 保持零问题。测试专用模板和组件链通过也只能关闭该子条件，不能关闭下列完整 B2-A 或 B2。
+
 - 目标 `marshal serve` 自动处理默认数据目录和本地 token；可选 data-dir 是启动配置，不是 Workspace 实体。新根自动建库，旧根损坏/丢失部分状态/不兼容或仍有 owner 就报错，不重置。
 - 简短需求→仅关键澄清→有限计划→确认→执行；Task 下 questions/answers、pause/resume、图与 allowedActions 完整可用。固定角色模板即可，不开发角色管理平台。
 - 持久问答绑定节点/subject/revision/期限；局部待答不阻断无关分支，全局 pause/cancel 优先。Agent 无原生交互时明确边界，不无限等待或假装支持 steering。

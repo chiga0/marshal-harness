@@ -12,10 +12,20 @@
 | `GET /v1/tasks/{id}` | 当前批准、节点、失败及已存在 Outcome 的投影 |
 | `GET /v1/tasks/{id}/graph`、`/workers` | 原投影中的节点/依赖及 Run 状态；`busy` 表示暂时拿不到 Run lease，不声称进程健康 |
 | `POST /v1/tasks/{id}/approve` | `Idempotency-Key` 加原 `expectedRevision/previewDigest`，批准原三个 Team 义务；既有 resident 调度推进 |
+| `GET /v1/tasks/{id}/questions` | ADR 0086 候选：同 Task 原批问题、已答/未答、当前 revision/preview 及原期限；`order-quote/v1` 返回空 |
+| `POST /v1/tasks/{id}/questions/{qid}/answers` | ADR 0086 候选：原 writer 内一次追加答案及新版 preview，不批准、不创建 Run |
 
 模板仅有 `order-quote/v1`：两个作者分别实现报价 API/客户端，随后集成。自由文本只补充固定契约，预览展示实际 work、scope、oracle 摘要和总限额；这不是任意需求的自动规划器。`context.text` 不解释为宿主路径或权限。模板是 operator 启动配置，HTTP 不接收 Policy、执行程序、环境或 authority 对象。
 
-原 `8543878` 入口中的 Task `cancel`、自动独立 Decision、完整成果下载仍为 pending。后继核心组合 `4564dfe` 已接自动客观独立 Decision 与完整成果下载，原 Task/旧 Team 的适用边界仍精确区分；固定路径五组确定性回归通过，完整 CI 与真实 HTTP Worker 验收尚待完成。使用时以实际 server 的 capabilities 与候选身份为准，不把源码接线当本机旧安装已升级。Task cancel 后端仍在独立实施；B1 的真实自主交付与取消退出条件保持开放。
+自动客观独立 Decision 与完整成果下载已随 PR #275 全绿后合入功能分支 `a2f41c9`，不是 main 或正式发布。取消组合 PR #276 的新候选 `272aa4c` 正在完整 CI；先前 macOS 失败定位为测试夹具把一分钟 context 提前到三次验收准备前启动，修正没有放宽运行时期限。实际状态以 [Roadmap 顶部](roadmap-status.md#业务交付当前表)与 server capabilities 为准，不把接线当本机旧安装已升级。Pi/Qwen 本地配置已由用户确认可用；当前 Mac 实机障碍是 AMFI 拒绝固定 Marshal 启动，不再写成缺配置或额度。B1 真实自主团队交付与受控取消出口仍开放。
+
+### 批准前关键问答候选（ADR 0086）
+
+该切片复用原 RB1、RepositorySession 与 HTTP 写通道，新增显式事实族保存整批问题、不可变答案及追加 preview；旧 `bounded-task-draft/v1` 不改字节或版本。只有组合根受信模板声明的缺失槽可以提问，最多三个，答案只进入冻结 context 槽，不能修改 oracle、Policy、Provider、scope、预算、图或发布权限。当前生产模板仍只有零问题 `order-quote/v1`，本片测试专用模板不注册为生产业务，也不继承自动 Decision 或固定 ZIP 资格。
+
+回答正文为 `expectedRevision`、`previewDigest`、`questionRevision`、`answer` 四个字段；`answer` 是不超过 4096 UTF-8 字节且无 NUL 的非空字符串。返回顶层 Task 投影，以及 `questionId/answerFactDigest/acceptedPreviewDigest/acceptedRevision/replayed` 回执。同 key 同正文重放返回原回执及明确的当前 Task（可能已取消），不延长期限、不重答、不自动确认。回答后旧 revision 的取消或旧 preview 的确认返回 409；用户读取最新版本后明确取消或一次最终确认。
+
+当前准备验证：真实 Store 原子追加、同 key/CAS/取消竞争、损坏或截断冷回放拒绝；完整 Task/Policy schema 的 RepositorySession→HTTP→两题→最终 accepted-plan→冷重开组合测试；边界、架构检查及五包 vet/staticcheck 已通过，**新增 Go 动态测试尚待固定源码验收**。这些测试没有模型，不覆盖运行中 Worker 的问答/pause/resume/steering，不关闭 B2；后续仍须接实际零 Git 业务槽及真实团队可消费交付。独立问题客户端由另一分支实现，合入时以其完整脚本回归共同验证。
 
 ## 启动与访问
 

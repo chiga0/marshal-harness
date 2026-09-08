@@ -31,7 +31,7 @@ func (s *RepositorySession) CancelTask(ctx context.Context, request application.
 	defer borrow.Close()
 	reader := repositoryApprovedTeamVerifier{session: s}
 	if err := reader.WithCurrentApprovedTeam(ctx, s.acquisition, resultingress.TeamPlanApproval{}, func() error {
-		_, found, err := s.ingress.ReadTaskDraft(s.acquisition.Scope, request.TaskID)
+		_, found, err := s.ingress.ReadTaskProposal(s.acquisition.Scope, request.TaskID)
 		if err != nil {
 			return err
 		}

@@ -4,7 +4,24 @@
 
 ## 当前唯一状态与关键路径（2026-09-08）
 
-本节是当前进度依据；下方过程记录中的“当前”“下一步”“在途”仅描述记录当时，不得覆盖本节，也不得据其重复实施已接线的功能。更新进展时修改本节，不再向历史段落之前逐轮堆叠状态。当前产品要求统一为[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)及 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（2026-09-08 Accepted）；多轮审计见[设计复核](audit-agent-team-service-design-2026-09-07.md)。设计方向、ADR 接纳、runtime enable 与 release 按[合同适用性](design-contract-map.md)分别判断；接受合同不改变下表能力成熟度。
+本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
+
+- 远端 main 最近核对 `ba2196b`；PR #275 已在完整 CI 全绿后合入功能分支 `feat/team-resident-progress`，merge=`a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1`，pendingRemoteSync=false，**不是 main 合并**。Task HTTP、独立客观 Decision、完整制品链已有原 Store/Verifier 的确定性组合证据，尚无该完整团队的真实下载消费。
+- PR #276 取消/交付/观测组合最新 source=`272aa4c68706390b767c17f7e9d24c773df2faf1`，[CI 34195113168](https://github.com/chiga0/marshal-harness/actions/runs/34195113168)在途。此前 macOS CI 的夹具 context 提前开始导致到期失败已定点修正，原运行时期限和门禁未改；该失败成本保留，不挪用旧候选的通过结果。
+- **Pi/Qwen 本地可用配置已由用户确认**。Mac 当前实机阻碍是固定 Marshal 二进制启动被 AMFI 拒绝，不是未配置 Agent 或待补额度；不得通过随机换路径、重签或跳过安全策略假报运行。下一条 B1 证据必须来自合法固定候选的真实 Task HTTP 双 Worker→自主验收/集成→下载消费，并验证所属进程重叠、取消/cleanup 及重启。
+- B2-A 问答在接受的 [ADR 0086](adr/0086-task-preapproval-questions-and-preview-revisions.md) 下接通候选代码与测试，等待新增动态验证；只处理批准前问题及追加 preview，生产 `order-quote/v1` 保持零问题，测试模板不冒充零 Git 业务或运行中 Agent 交互。独立 HTTP 问题客户端 `91ee1935` 已推功能分支、11 项问答及原 37+12 项客户端回归通过，尚待同片整合。
+- B2 存储候选是互斥的新数据根 SQLite 路径，不双写旧 RB1；冻结 Linux 测试载体摘要前缀 `4cdb62b` 的 19 项顶层测试已由远端专用用户通过（含真实 crash 子进程），独立审查仍进行。它不是当前 Task API 已切库或 Linux server production 的证据。
+- 流水并行保持 CI(N)/问答实现(N+1)/SQLite 独立准备与审查；共享事务一个作者。后继机器门禁前移到真实 producer/consumer，历史失败、CI、人工等待不删分母。目前没有重复业务配对实验，不能宣称相对强 Lead＋SubAgents 的效率优势。
+
+| Milestone | 当前状态 | 当前尚缺的用户出口 |
+| --- | --- | --- |
+| B1 真实团队 PoC | `IN_PROGRESS` | 同一合法固定候选的真实 HTTP 双 Worker 重叠、自主接纳/集成、下载消费、取消与重启证据 |
+| B2 本地 API 可用 | `IN_PROGRESS` | 实际业务关键问答/运行中控制、简启动、SQLite 单写真值、零 Git/多仓库、通用制品、局部修正/恢复与第二真实 Provider |
+| B3 正式可靠发布 | `PLANNED` | B2 同链故障/长时运行、受支持平台实机、签名/公证和受保护 same-bytes stable release |
+
+## 2026-09-08 早期集成记录（历史，不覆盖当前表）
+
+本节保存当时的集成与失败记录；其中“当前”“下一步”“在途”不覆盖顶部唯一状态，也不构成重复实施已接线功能的理由。产品要求见[服务架构](agent-team-service-architecture.md)、[实施 Milestone](agent-team-service-milestones.md)、[ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)与[合同适用性](design-contract-map.md)；原候选证据不转移为后继 release 资格。
 
 - main 最近核对为 `ba2196bea33e6f007809f75f9671928c892bfa11`；远端集成分支 `feat/team-resident-progress` 为 `a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1`（PR #275 全部检查通过后合并）。取消组合在独立 `feat/task-cancel-integration` 验证。早期 B2/设计分支、旧 CI 与 canary 只保留精确证据，不能挪给新候选；分支合并不等于 main 合并或 stable。
 - 798ea39 的精确 [CI 34095940005](https://github.com/chiga0/marshal-harness/actions/runs/34095940005) 五项全绿；先前 34094155668 的结果计数阻断由 [ADR 0084](adr/0084-pi-typed-terminal-result-framing.md) 候选修正。后继 max 实机 34097645547、一次显式 flash 替代 34098369837 均未完成团队；后者 service 通过真实 Collect/Verify 的 33 项检查并形成 ReviewPacket，client 在模型终态失败。没有本轮独立 Decision/ACCEPTED、第三节点或 GoalOutcome。停止模型轮换，后继聚合终态分类与任务上下文/输出收敛，不删失败分母。演示范围和实际证据见 [PoC 交付页](poc-agent-team-delivery.md)。
