@@ -73,6 +73,14 @@ driver source `6ae76e800319636e491713979c85f3609864c327` 已独立复跑 11 项�
 
 此接线及合成 HTTP 测试不是服务端取消能力或真实 Worker 清理证明；服务端接线和实机验收完成前，B1 取消出口保持开放。
 
+### 2026-09-08 流水线集成状态
+
+- PR #273 的 sourceHead `4d7355da154d387575ad87bb036d045af3771597` 全部检查通过后，已实际远端合并到 `feat/team-resident-progress`，remoteMergeSha `aef06e587e70ddd259644f557e8caff1297b8723`；`pendingRemoteSync=false`。这不是合入 main 或正式发布。
+- 取消消费者 sourceHead `ec44741e9c27741fae475ec2ebcf9de3f0f55822` 经独立审查，无 P0/P1；37 项客户端及 12 项完整 driver 合成 HTTP 测试通过。localMergeSha `f612986e55965e76770099378298ee81b4b373f6`，本地组合时 `pendingRemoteSync=true`。响应类型与中断后取消未知状态已处理，不因 Ctrl-C 宣称取消未发生。
+- 只读重叠观测 sourceHead `cdc9b54f605f1fabbb038905ddbae4855da2f61d` 经独立审查，两套本机 Python 各 20 项测试、secret scan、diff-check 与 merge-tree 通过；localMergeSha `b758d79e65e71ce0c690b7d0e0d76724252d066d`，本地组合时 `pendingRemoteSync=true`。它使用系统 libproc，不生成临时可执行文件；原事实快照须由 operator 私有提取，输出不授予 Core authority。自身探测不证明真实 Provider 并行，也不证明 CPU 同时工作。
+- CI、开发与下一阶段设计准备交错进行：B1 核心真实验证链及取消后端仍在实施，B2 问答只进行可复用接缝的预设计，不插入新的平台前置。当前不能宣称真实 HTTP 团队交付、取消清理或 B1 完成。
+- 动态验证不混证据：早期专项测试夹具缺少必需 mediaType 已修；后继 `074f891` 的原 gate 修复通过独立静态复审，但 Mac 生产链测试暴露固定根夹具冲突，尚在修复。固定 `review.test` 执行 exit 137 无测试输出，香港 ECS 随后 SSH 连续连接失败，均未绕过限制或计为通过；已能运行的固定生产测试继续使用原路径。
+
 服务端开发快照 `sha256:f4baf1fe56f2387ae15e5af32cad105bfc207d4cf9d9b21db55926c7269c85f1` 已提前在受限 ECS 运行五包定向 `Test(Task|TeamOutcome)`，全部通过（非 race，非最终 commit）。其 Go 生产 ZIP 序列化器输出 495 bytes，摘要 `sha256:0010360f529e2099d66c21feb5de1996fefd7e7a18f8304609842722c1531ea8`，已由客户端原 `validate_bundle` 成功消费三个文件。此项只证明跨语言格式兼容；文件为合成内容，不是原完整 Git 导出、HTTP 服务端或真实业务验收证据，后继完整调用链仍需验证。
 
 ## 历史验证记录
