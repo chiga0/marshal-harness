@@ -2,6 +2,22 @@
 
 ## 当前结论
 
+### 22:50 CST 原执行组清理修复已同步
+
+sourceHead=`c1dd3cde974cf032dfd185754fc9f951e3b582a6`，localMergeSha/main/origin/main=`e491339d5e5eb90d52248b9a3f644aad3beab0c5`；正常推送与远端 SHA 已核对，产品 pendingRemoteSync=false。唯一独立 reviewer 无 P0/P1，固定 Node 24.15 的 Runtime 20/20 PASS、零跳过、29.166秒。leader 单死、后代仍活时不再假报清理；存在/EPERM/其他错误或清理预算到期保持未决。完整 Node 组合另行验证，不把定向通过升级为全仓通过。
+
+ADR 0089 已经独立审查，并由维护者按持续实施授权接纳；跨代托管与 cleanup-only 收口尚未实现，仍是当前 B2 阻塞。香港独立账号已确认无 sudo，尚缺该身份原生模型登录；源码包上传被本机 SIGKILL 的原因未明，未重传或绕过策略。B1/B2/API-STABLE/B3 状态不提升。
+
+### 22:42 CST 真实提交边界故障已合入并推送
+
+localMergeSha/main/origin/main=`32b353f2460415fc0b92e3ad784d02ddd1e45f35`，sourceHead=`2f6c28ffef80e181043de7d8a6871429b5dd6905`；正常推送及远端 SHA 已确认，以上代码 pendingRemoteSync=false。仅新增两份原服务 CLI 的测试/配置：create 和最终验证结果各在原 COMMIT 前、后精确 SIGKILL，再经冷 open 验证。独立 reviewer 无 P0/P1，四新例与原 crash/team 组合 **9/9 PASS、零跳过、24.514秒**；作者同组合24.409秒。不把这次定向结果拼成全仓累计通过数。
+
+提交前，任务/回执/命令整体回滚，或 verifier 的孤儿 bytes 不获得 Decision/交付引用；提交后，原幂等回执、Decision、下载 bytes、预算和原期限完整保存。测试不改生产 hook、不手工写 SQLite、不伪造 cleanup，只在服务退出后只读检查数据库。它们证明事务边界，没有解决旧执行的自动清理收口。
+
+下一步集中修两处同一恢复链缺口：原 Runtime 的 `cleaning`＋leader SIGKILL 不足以排除活后代，补原句柄绑定的只读组存在否决；[ADR 0089](adr/0089-node-execution-custody-and-cleanup-recovery.md) 定义独立执行托管和当前 owner 的 cleanup-only 接纳。Runtime 修复在独立工作树开发，ADR 独立审查中，均未冒充完成。
+
+B1 的实际权限分离仍未证明；B2 已有真实必要问答和第二 Pi 团队证据，剩余运行中交互、局部修正、Git/混合任务和完整同版本恢复。API-STABLE/B3 不升级。ECS 传输阻塞状态未变化，本轮未重试上传或调用模型。
+
 ### 22:22 CST 完整整合已推送，转入恢复收口
 
 产品 localMergeSha/main/origin/main=`8d48d9452485f6c753cd074587b2307e683e3129` 已通过正常 `git push origin main` 实际同步，并由 `ls-remote` 核对；**产品代码 pendingRemoteSync=false**。sourceHead=`ce2879fc8c8ff3b0b907e8e81217049f9e63b3a2`，同树合入main。它包含已审Qwen日期问答、Pi RPC/原生工具与显式团队驱动、完整发行依赖、tests-only取消等待修正及真实服务crash组合回归。用户已明确开发阶段review无阻塞且相关本地验证通过后直接merge/push、无需逐次确认/PR；v1正式发布后恢复PR，产品自动merge仍禁用。旧审批阻塞已解除，以下“未合入/未推送”仅保留当时状态。

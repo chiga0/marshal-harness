@@ -8,6 +8,10 @@
 
 ### 最新正式 Node 集成检查点
 
+**22:50 CST 当前代码**：Runtime source=`c1dd3c` 已正常合入并推送 `e491339d5e5eb90d52248b9a3f644aad3beab0c5`，产品 pendingRemoteSync=false。独立20/20测试与审查通过，关闭所测原继承组清理假阳性；完整组合另行验证。ADR 0089 已接纳，尚待执行托管与跨代清理的实际整链实现，不关闭 B2 或正式发布。[当前精确证据](node-task-service-status-2026-09-08.md)。
+
+**22:42 CST 提交边界已同步**：localMergeSha/main/origin/main=`32b353f2460415fc0b92e3ad784d02ddd1e45f35`，source=`2f6c28f`，正常推送已核对、pendingRemoteSync=false。新增原 CLI/HTTP 的 create/result COMMIT 前后四项真实 crash 用例，独立与原 crash/team 组合9/9通过、24.514秒、无P0/P1。未改变生产恢复行为；下一步 Runtime 清理假阳性修复和 [ADR 0089 cleanup-only 恢复](adr/0089-node-execution-custody-and-cleanup-recovery.md)，详见[检查点](node-task-service-status-2026-09-08.md)。
+
 **22:22 CST 当前同步与下一步**：localMergeSha/main/origin/main=`8d48d9452485f6c753cd074587b2307e683e3129`已实际正常推送，产品pendingRemoteSync=false；集成source=`ce2879f`。Qwen日期问答、Pi真实团队候选和crash首批已合入；整合`c576772`完整384/384通过，最终仅新增crash测试的`ce2879f`定向2/2通过，分次范围不合并计数。当前主线转入B2跨代清理收口与create/result故障组合；B1权限分离仍未证，API-STABLE/B3未完成。ECS原scp被SIGKILL且未上传，部署未通过。开发阶段已按用户常驻授权直接review后merge/push，v1正式发布后恢复PR；以下旧阻塞/未推送记录不覆盖本段。[精确证据](node-task-service-status-2026-09-08.md)。
 
 Pi候选完整回归后续确认：`74a239e`独立一次 **374/374 PASS、182.405秒、exit0、零跳过**，HEAD及工作区保持clean；不把它与regional候选347项拼成一个组合，不改变未合main/未发布的状态。
@@ -29,7 +33,7 @@ Pi候选完整回归后续确认：`74a239e`独立一次 **374/374 PASS、182.40
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |
 | B1 真实团队交付 | `IN_PROGRESS` | 七项功能条件已有有界证据；尚缺适用 profile 的 Worker/Publisher 权限分离证明，不能升级production |
-| B2 日常本地 API | `IN_PROGRESS` | 批准前问答已接线，待真实必要问答业务、第二 Adapter、局部修正、完整同版本恢复与 API-STABLE；真实业务矩阵未全验收 |
+| B2 日常本地 API | `IN_PROGRESS` | 真实必要问答及第二 Pi 团队已通过；尚缺运行中交互、局部修正、Git/混合任务、完整同版本恢复与 API-STABLE，真实业务矩阵未全验收 |
 | B3 正式可靠发布 | `PLANNED` | 目录包已准备；声明平台实机/长期故障、权限分离、安装恢复和受保护同资产发行未完成 |
 
 ### 以下为较早本地集成检查点（不覆盖上表）

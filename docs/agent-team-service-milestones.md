@@ -6,6 +6,8 @@
 
 ## 1. 三个用户出口，不再把平台准备当交付
 
+**22:42 CST 同版本恢复增量**：`32b353f` 已将 `2f6c28f` 的真实 create/result COMMIT 前后故障测试正常合入并推送；独立组合9/9通过。它证明提交前后全有或全无及原成果重开，不表示活跃执行已能自动恢复接单。下一项是原 Runtime 清理观察补强与 [ADR 0089](adr/0089-node-execution-custody-and-cleanup-recovery.md) 的跨代 cleanup-only 收口；不新增品牌或 UI 回避此 B2 缺口。真实必要问答与 Pi 第二团队已推进，当前表不再将它们列为“尚未实机”，完整 B1/B2/API-STABLE/B3 状态仍不提升。
+
 **22:22 CST 整合已同步**：产品main/origin/main=`8d48d94`，source=`ce2879f`；Pi+Qwen问答组合384项通过，随后新增两项真实service crash测试通过并合入。当前只关闭对应接线/证据子条件，不提升B1/B2/API-STABLE。优先补活跃执行crash后跨代清理收口与create/result原子性故障组合；权限分离、局部修正与正式部署/发行继续保留。ECS传输被本机SIGKILL，未运行服务。详见[同步及未完成项](node-task-service-status-2026-09-08.md)。
 
 Pi候选`74a239e`的完整Node回归已由非作者独立完成：374/374通过、182.405秒、零跳过；与真实Pi团队证据共同推进第二Adapter子条件，尚未合main，不关闭B2/API-STABLE。
