@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createAcpProvider, MAX_OUTPUT_TEXT_BYTES} from './index.mjs';
+import {launchAcp} from '../agent-runtime/index.mjs';
 
 const fixture = fileURLToPath(new URL('./agent.fixture.mjs', import.meta.url));
 const provider = mode => createAcpProvider({id: 'fixture', executable: process.execPath, args: [fixture, mode]});
@@ -71,6 +72,23 @@ test('native tool permission is denied by default and only exact callback option
     t.after(() => handle.stop()); const result = await handle.completion; cleaned(result);
     const selection = JSON.parse(result.outputText);
     assert.equal(selection.outcome.outcome, allowed ? 'selected' : 'cancelled');
+  }
+});
+
+test('custody permission refusal is clean; allow waits for durable scope and failed SQL never sends allow', {timeout: 15000}, async t => {
+  for (const mode of ['deny', 'allow', 'sql-failure']) {
+    const order = [], executionContext = {
+      launch: (options, callbacks) => launchAcp({...options, onUpdate: callbacks.onUpdate, onPermission: callbacks.onPermission}),
+      extraScope(code) { order.push('durable'); assert.equal(code, 'acp_tool_scope_unproven'); if (mode === 'sql-failure') throw Error('fixture rejected transaction'); },
+    };
+    const handle = provider('permission-execute').start(input(t, {executionContext, onPermission: () => {
+      order.push('policy'); assert.deepEqual(order, ['policy']);
+      return {outcome: {outcome: 'selected', optionId: mode === 'deny' ? 'deny' : 'once'}};
+    }}));
+    t.after(() => handle.stop()); const result = await handle.completion; cleaned(result);
+    assert.deepEqual(order, mode === 'deny' ? ['policy'] : ['policy', 'durable']);
+    const reply = result.outputText ? JSON.parse(result.outputText) : null;
+    assert.equal(reply?.outcome?.optionId === 'once', mode === 'allow');
   }
 });
 

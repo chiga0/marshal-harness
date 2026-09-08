@@ -50,8 +50,8 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
     if (onPermission !== undefined && !bridgeConfig) throw fault('pi_permission_bridge_unavailable');
     let runtime, stopping = false, settled = false, scopeUnknown = false, callbackFailure, sessionId = null, prompting = false;
     const unproven = () => {
-      if (executionContext) executionContext.extraScope('pi_tool_scope_unproven');
       scopeUnknown = true;
+      if (executionContext) executionContext.extraScope('pi_tool_scope_unproven');
     };
     const nonce = bridgeConfig ? randomBytes(32).toString('hex') : null, calls = new Map();
     let bridgeReady = false, supportedTools = new Set(), resolveReady;
@@ -133,15 +133,14 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
         rawInput: structuredClone(value.input), _meta: {provider: 'pi', toolName: value.toolName}},
       options: [{optionId: 'allow-once', name: '允许本次已批准操作', kind: 'allow_once'}, {optionId: 'reject-once', name: '拒绝本次操作', kind: 'reject_once'}]};
       const signal = AbortSignal.any([context.signal, observation.signal]);
-      // The installed bridge owns inherited shell processes; commands can still
-      // create remote/detached effects. Never authorize such an extra obligation
-      // while remembering its existence only in this volatile client.
-      if (executionContext && !['read', 'write', 'edit', 'find', 'grep', 'ls'].includes(value.toolName))
-        executionContext.extraScope('pi_shell_extra_scope');
       let answer;
       try { answer = await onPermission(request, {signal}); } catch { return reject; }
       if (signal.aborted || stopping || Date.now() >= deadline) return reject;
       const selected = answer?.outcome?.outcome === 'selected' && answer.outcome.optionId === 'allow-once';
+      // A rejected request never ran. For an allowed shell/unknown effect, the
+      // original synchronous Store obligation must precede the confirmed reply.
+      if (selected && executionContext && !['read', 'write', 'edit', 'find', 'grep', 'ls'].includes(value.toolName))
+        executionContext.extraScope('pi_shell_extra_scope');
       call.authorized = selected; return {handled: true, confirmed: selected};
     }
     const completion = (async () => {
@@ -195,6 +194,7 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
     const stop = () => {
       if (settled || stopping) return completion;
       stopping = true;
+      if (executionContext?.stop) void executionContext.stop();
       if (runtime) {
         // Give the original protocol at most 250ms to clear queue then abort;
         // unreachable/stuck protocol never blocks the owned guard stop.

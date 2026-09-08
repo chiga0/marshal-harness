@@ -169,7 +169,7 @@ export class TaskSupervisor {
       try { Promise.resolve(entry.handle.stop()).catch(error => this.#failEntry(entry, 'provider-stop', error)); }
       catch (error) { this.#failEntry(entry, 'provider-stop', error); }
     }
-    if (entry.custody && !entry.handle) void entry.custody.stop();
+    if (entry.custody) void entry.custody.stop();
   }
   #admit(value) {
     const ticket = freeze(structuredClone(value));
@@ -273,7 +273,7 @@ export class TaskSupervisor {
         if (entry.stopping || this.#closing || this.#failure) throw new SupervisorError('supervisor_stopped');
         this.#call('bindCustody', entry.ticket, entry.custody.descriptor, profile);
         entry.custody.permit();
-        executionContext = Object.freeze({launch: entry.custody.launch,
+        executionContext = Object.freeze({launch: entry.custody.launch, stop: entry.custody.stop,
           extraScope: code => this.#call('recordExtraScope', entry.ticket, code)});
       }
       // No await between final current-ledger check and synchronous start.
