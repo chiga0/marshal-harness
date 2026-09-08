@@ -44,6 +44,40 @@ export class TaskArtifacts {
     for (const ref of refs) this.bytes(ref);
     return refs;
   }
+  // Bytes precede the final acceptance transaction. A rollback can leave only
+  // unreferenced depot objects, never an externally ready delivery manifest.
+  stageOutputs(outputs) {
+    this.requireDepot();
+    return outputs.map(([kind, output]) => {
+      if (!output || !isText(output.name, 255) || typeof output.mediaType !== 'string' || output.mediaType.length > 128 ||
+          !/^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(output.mediaType) ||
+          !(output.content instanceof Uint8Array) || output.content.byteLength > 8388608) reject('invalid_verification_result', 422);
+      const content = Buffer.from(output.content), ref = {digest: digest(content), bytes: content.length}, id = indexId(ref.digest);
+      const known = this.app.transaction(false, tx => parse(tx.projection('artifact', id)));
+      if (known) {
+        if (known.type !== 'blob' || known.digest !== ref.digest || known.bytes !== ref.bytes) reject('application_unavailable', 503);
+        this.bytes(ref);
+      } else {
+        let stored; try { stored = this.depot.put(content); } catch { reject('application_unavailable', 503); }
+        if (stored?.digest !== ref.digest || stored?.bytes !== ref.bytes) reject('application_unavailable', 503);
+      }
+      return {id, known, kind, name: output.name, mediaType: output.mediaType, ref};
+    });
+  }
+  commitOutputs(tx, taskId, staged, source) {
+    return staged.map(item => {
+      const existing = parse(tx.projection('artifact', item.id));
+      // Two outputs may have identical bytes; both still have distinct, bound
+      // manifests. Existing indexes must always describe the exact object.
+      if (existing && (existing.type !== 'blob' || existing.digest !== item.ref.digest || existing.bytes !== item.ref.bytes) ||
+          item.known && digest(encode(existing)) !== digest(encode(item.known))) reject('application_unavailable', 503);
+      if (!existing) tx.putProjection('artifact', item.id, 0, source, encode({type: 'blob', ...item.ref}));
+      const artifact = item.artifact ?? {id: this.app.newId('artifact'), taskId, name: item.name, kind: item.kind, status: 'ready',
+        mediaType: item.mediaType, ...item.ref, createdAt: new Date(this.app.now()).toISOString()};
+      tx.putProjection('artifact', artifact.id, 0, source, encode({type: 'manifest', owner: 'local-operator', artifact}));
+      return artifact;
+    });
+  }
   dispatch(request) {
     this.requireDepot();
     if (request.operation === 'input.create') return this.upload(request);
