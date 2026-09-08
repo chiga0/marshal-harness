@@ -2,9 +2,9 @@
 
 ## 当前结论
 
-正式主线是 ADR0088 的 Node-only Task 服务，不再扩充固定订单实验。当前代码集成基线 main=`f3e32340208c9e707192c3c0ab622b2e147cd969`，已包含正式 HTTP、唯一 SQLite、Task 控制/执行 reducer、受管 ACP、Supervisor、输入上传/制品下载、不可变文件物化、通用业务文件适配、独立验证命令运行、独立 HTTP 客户端与正式服务入口。**服务组合已合入；完整自主交付和 API-STABLE 尚未完成**。B1/B2 保持 IN_PROGRESS，B3 保持 PLANNED；实验双 Pi 成功与正式组件证据分开。
+正式主线是 ADR0088 的 Node-only Task 服务，不再扩充固定订单实验。当前代码集成基线 main=`82b64cfa8d0daef0c188f0e296299b6e3aedcc48`，已包含正式 HTTP、唯一 SQLite、Task 控制/执行 reducer、受管 ACP、Supervisor、输入上传/制品下载、不可变文件物化、通用业务文件适配、独立验收/Decision/最终交付、独立 HTTP 客户端、正式服务入口与目录发行包。**正式全链 Node 进程夹具已通过；真实模型团队与 API-STABLE 尚未完成**。B1/B2 保持 IN_PROGRESS，B3 保持 PLANNED；实验双 Pi 成功与正式组件证据分开。
 
-最新已知 origin/main=`ba2196bea33e6f007809f75f9671928c892bfa11`（此前 fetch 结果，本检查点未重新查询远端），pendingRemoteSync=true。本表记录的是本地 merge，不表示远端 main 已同步、CI 已运行或已发行。
+2026-09-08 20:03 CST 已实际将 main 从 `ba2196b` 推送至 `82b64cfa8d0daef0c188f0e296299b6e3aedcc48`；本机 main 与 origin/main 一致，以上代码 pendingRemoteSync=false。[Node team CI](https://github.com/chiga0/marshal-harness/actions/runs/34223961302)已通过，通用[CI](https://github.com/chiga0/marshal-harness/actions/runs/34223961248)最近查询仍运行中。推送/测试不等于正式发行；以下历史检查点保留原范围。
 
 ## 已合入的源码与证据
 
@@ -37,6 +37,24 @@ ACP Provider 和 ArtifactDepot 的定向测试、diff-check、secret scan、merg
 
 ## 实机 Qwen 不再只验证握手
 
+### 最新正式同链验证（主线 82b64cf）
+
+| 内容 | sourceHead | localMergeSha | 证据 |
+| --- | --- | --- | --- |
+| 独立验收、Decision、批准布局与最终交付 | `c1800fb6064cc23557746fdfdd13b0b53e91c1e4` | `a7be7624b3d56c19290051db1b4a047604f57d28` | 同 reviewer 聚合复核，71/71真实SQLite/guard定向验证；作者不能自授验收 |
+| 服务业务/验证端口组合 | `bcdf105f9a820189978f0eec2462d42bc24d7be0` | `18fb563219123b83bc70d6ec4926e22bf4a76307` | 独立审查通过，维护者18项真实HTTP验证 |
+| 正式 HTTP 团队全链夹具 | `95786a974056f32dd20ba0ce390b6bd59029a12c` | `e8ffa18159d5f3336c31015e1c23b0f02ebf07b7` | 3/3：双作者实际进程重叠、独立验收/下载消费、错误成果拒绝、取消与正常重启；不是模型 |
+| 确定性目录发行包 | `75316b49bbf42e28147ecf02ac46d60c2ede07be` | `659e18366118b8a28b4d5d20e6df08089fa92334` | 独立9/9及额外fsync故障断言；外置摘要核验，不自授发行信任 |
+| CI全包覆盖及发行依赖接线 | `3383e0ecdc6825aa58148df4bb4e1d114046cb7b` | `82b64cfa8d0daef0c188f0e296299b6e3aedcc48` | 独立审查通过；该source与merge文件树完全一致 |
+
+维护者在 `3383e0e` 实跑正式包测试及原六组 Node 实验回归：**307/307 PASS，128.174秒，零跳过**。命令为 `node --test --test-concurrency=1 packages/*/*.test.mjs experiments/node-team/providers.test.mjs experiments/node-team/business.test.mjs experiments/node-team/runtime.test.mjs experiments/node-team/http-handler.test.mjs experiments/node-team/http.test.mjs experiments/node-team/openapi.test.mjs`。包含真实HTTP、SQLite、文件和所属Node子进程，不含真实模型、Go全仓或生产部署。
+
+同一 source 实际打包并独立核验：24个文件、361336 bytes，manifestDigest=`sha256:735347c6aaa64197e516af78e2ae92b527afe6f284a71c78fe7bd36cd9eceb8f`，本机目录 `/private/tmp/marshal-node-candidate.vbh1cf/package`。manifest 仍准确绑定 `3383e0e`，不倒填 merge SHA；该包不是已签名/stable/实机部署验收产物。
+
+Core 验收发生两轮实际P1修正：第一轮补足失败验收证据并纠正虚假的首审统计；第二轮修正合法未启动路径被当作缺失验收receipt而导致Supervisor失败和容量未释放。最终 `c1800fb` 用真实guard的 no-start事实覆盖该路径；此前测试遗漏和返工成本保留，不把最后71项通过写成首轮通过。
+
+### 较早单会话工具证据
+
 维护者使用上述受管 Runtime、固定 Node 24.15.0、本机 Qwen Code 0.23.0 的原生 `--acp`，在独立目录读取公开 `input.txt`：部门甲17、乙29、丙36以及校验标记。未禁用全部原生工具、未复制登录数据、未偷偷改模型。
 
 一次真实 prompt 返回 `end_turn`；观察到94项更新、1次原生工具调用，独立检查返回包含正确合计82与原标记。permission 请求数为0，只表明这次读取未触发询问，不能据此宣称真实问答已通过。Runtime 执行身份=`5e17942d-c134-4f7b-a313-20bd9fc6be32`，实际开始 `2026-09-08T09:40:49.112Z`，Agent 退出观察 `09:41:00.010Z`，guard 退出观察 `09:41:00.311Z`，`cleaned:true/reason:owner_stop`，stderr 0。该调用已结束，不是仍在后台运行。
@@ -49,13 +67,11 @@ ACP Provider 和 ArtifactDepot 的定向测试、diff-check、secret scan、merg
 
 执行 reducer 原稿 `5a5079d` 的23项测试没有捕获4个实际P1：较低计划期限未落实、历史完整输入导致合法大计划事务溢出、重启后旧取消Operation无法回填、进度推进用户控制CAS。已一次聚合修正为 `dcbcd1b`，27项通过并独立复核合入；其中合法64节点、每goal 8000字节全部完成，不增加Store限额。回合完成仍不等于业务验收。
 
-当前并行工作按实际依赖分工：
+接下来的并行工作是：正式HTTP真实Qwen规划→一次批准→双作者→独立检查/下载消费；B2按ADR0086/0088实现批准前有限关键问答；准备同资产Linux服务验证。共享Application由单一作者修改，验收驱动与发行检查不写其scope。
 
-1. 服务组合作者已在入口合入后当次续派：将同一可信 verification port 注入 Application/Supervisor，组合业务 factory 和 finally release，补完整HTTP集成测试。旧入口原稿 `4e6726d7` 的两项P1及修复证据保留，不以最后通过抹掉返工。
-2. 独立命令验证适配：复用现guard，核对精确配置、输入和原清理事实；业务断言由可信比较器判定，不以exit 0或pass字符串放行。
-3. Core独立验收作为批准DAG内受管终点，复用预算/取消/清理；将精确receipt、Decision和交付引用在同SQLite事务接纳，并提供批准布局与原执行观察给已合入business。禁止把Agent end_turn或候选manifest当Task completed。
+真实Qwen团队驱动是待执行的验收工具，不是新增成功证据。仅按 Mac ordinary-user dogfood 使用已有原生登录；权限回调不是OS隔离，Worker/Publisher凭证分离仍未证明，不能宣称production。问答、单Worker取消、第二Adapter、完整恢复及声明平台发行仍有未完成项。
 
-部署盘点已完成：旧 `scripts/install.sh` 会走 Go，旧 release workflow 面向 RC1/native，不能拿来发行 Node stable；现有 Node CI 仍只覆盖部分实验/ACP，正式包路径与测试须随部署纵切补齐。复用既有 loopback/私有连接文件经验，不另造身份平台；以版本化 JS＋OpenAPI 资产清单、已允许的 Node 启动和安装后同版本恢复验证交付。
+部署盘点已完成：旧 `scripts/install.sh` 会走 Go，旧 release workflow 面向 RC1/native，不能拿来发行 Node stable。新的 Node CI 已纳入正式包路径及全部包测试；远端执行结果另行核对，不拿本地测试替代。发行目录及外置摘要核验已实现，安装后同版本恢复和声明平台实机验证继续推进。
 
 ## 本轮效率教训
 
