@@ -25,7 +25,7 @@
 marshal control-plane serve --task-http-address 127.0.0.1:0 --task-template /absolute/operator/team.json
 ```
 
-`team.json` 来自现有 `scripts/fixed-server-team-inputs.py` 的完整 operator 输入。它是模板，不是批准：旧 requestId/deadline 不授予新 Task 权限，Core 为新 Task 绑定 ID 并冻结 30 分钟确认期。该 flag 启用原 resident Collect/Verify，但不增加自动 Decision。模型额度不足时不启动真实业务，先运行确定性测试。
+`team.json` 来自现有 `scripts/fixed-server-team-inputs.py` 的完整 operator 输入。它是模板，不是批准：旧 requestId/deadline 不授予新 Task 权限，Core 为新 Task 绑定 ID 并冻结 30 分钟确认期。该 flag 启用原 resident Collect/Verify；后继 `4564dfe` 的客观独立 Decision 只适用于经原 Task HTTP 批准的固定模板，旧 Team 不自动继承。模型额度不足时不启动真实业务，先运行确定性测试。
 
 ready 只输出 URL、profile、连接文件路径；随机 token 仅写入当前 owner control 目录内新建的 0600 文件，不输出日志、不交给 Worker。普通客户端读取该文件，在 HTTP `Authorization: Bearer …` 中发送 token；不要将 token 放 URL、命令参数或日志。仅允许显式 `127.0.0.1`，认证及 Host/Origin 检查先于应用调用。连接文件被替换或 owner 漂移即拒绝。这不构成对同 UID 恶意程序的隔离。
 
@@ -50,6 +50,21 @@ ready 只输出 URL、profile、连接文件路径；随机 token 仅写入当�
 下载客户端后继 `b086d1a0d6331ce0cbacf7471d5d8ad5389ec490` 已通过独立复跑的 30 项无模型测试与复审。`download --task-id ID --output-dir NEW_DIR [--run-oracle]` 只接受已完成 Task 的有界 ZIP、固定文件及匹配摘要；明确指定 `--run-oracle` 才执行本地固定 oracle。审查发现的后代进程残留已修复为持有会话 leader、先清理所属进程组再回收，并有两类真实 fork 回归。此时服务端自动 Decision/完整下载仍在开发，不能据客户端 fixture 宣称 HTTP 团队交付已通；下一项组合验证是消费 Go 实产 ZIP，然后验证完整 Task 主链。Task cancel 与真实双 Worker 验收仍开放。
 
 ## 两阶段 HTTP 演示驱动
+
+### 实机重叠观察（与 complete 同时运行）
+
+当前候选新增 `scripts/task-worker-overlap-live.py`，用于在 Worker 仍活跃时自动提取原始记录，避免事后手工补造进程重叠。operator 预建独立 0700 证据目录，显式提供当前私有数据根中的 ledger 与 runs：
+
+```sh
+python3 -I -B scripts/task-worker-overlap-live.py \
+  --ledger /absolute/state/runtime-v1/result-ingress/result-ingress.jsonl \
+  --runs-root /absolute/state/runs --task-id ORIGINAL_TASK_ID \
+  --output-dir /absolute/private-evidence --timeout-seconds 60
+```
+
+在确认 Task 后立即并行启动观察与 `complete`。工具只读原文件，从原计划派生双 Worker 身份，记录齐全即采样；不会启动、重试、停止或修改 Task。超时为 unavailable，不能在 Worker 退出后补称重叠。snapshot 文件含未脱敏原 prompt/context，保持本机私有，不上传到 PR/公开日志；report/stdout 只含脱敏观察。它证明绑定进程的生命周期重叠，不证明 CPU 同时忙，不代替 Core 接纳或完整业务验收。
+
+### 创建和确认
 
 `scripts/task-http-team-drive.py` 复用上述客户端，只连接已启动服务，不启动 Marshal/Worker、不调用逐 Run CLI、不读取内部 RB1，也不代签 Decision。先准备并人工查看原预览，再明确确认该摘要：
 
