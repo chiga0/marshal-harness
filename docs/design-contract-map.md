@@ -1,13 +1,13 @@
 # 当前设计与历史合同适用性
 
-更新：2026-09-07。目标是少流程、少返工，不再让旧产品形状变成新团队交付的前置。
+更新：2026-09-08。目标是少流程、少返工，不再让旧产品形状变成新团队交付的前置。
 
 ## 三个不同结论
 
 | 问题 | 唯一入口 | 含义 |
 | --- | --- | --- |
 | 要实现什么 | [Task-first 架构](agent-team-service-architecture.md)、[Milestone](agent-team-service-milestones.md) | B1 先团队 PoC，B2 本地 API 可用，B3 正式支持；无 Workspace 产品实体 |
-| 哪个合同可启用 | [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md) §1 | 仍为 Proposed；新 profile 接纳并验证后启用，旧 profile 仍守原规则 |
+| 哪个合同可启用 | [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md) §1 | 2026-09-08 已 Accepted，允许按明确范围实施；新 profile 仍须对应验证，旧 profile 仍守原规则 |
 | 什么真的完成 | [Roadmap](roadmap-status.md#业务交付当前表) | 历史证据/候选/实机/发布分别计，不因文档更新提升成熟度 |
 
 用户已明确要求按 Task-first 简化修改设计；它不等于旧 Run/activation 被重新授权。设计审计、ADR 接纳、代码合入、runtime enable 和正式 release 不互相代替。相关取代集中在同一 0085，不每个字段再写 ADR。

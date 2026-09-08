@@ -1,6 +1,6 @@
 # 实施计划
 
-更新：2026-09-07。当前方案见[Task-first 架构](agent-team-service-architecture.md)，详细出口只见[Milestone](agent-team-service-milestones.md)，实际完成状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。合同调整集中于 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed），不提前启用新运行时权限。
+更新：2026-09-08。当前方案见[Task-first 架构](agent-team-service-architecture.md)，详细出口只见[Milestone](agent-team-service-milestones.md)，实际完成状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。合同调整集中于 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Accepted），接受允许实施，不替代运行时与发布验证。
 
 ## 唯一实施顺序
 

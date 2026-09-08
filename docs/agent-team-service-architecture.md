@@ -1,6 +1,6 @@
 # Marshal Agent Team：Task-first 最终方案与架构
 
-更新：2026-09-07。本文是本轮确认方向下的实施方案，不是已实现能力；边界集中记录在 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed），出口见 [Milestone](agent-team-service-milestones.md)，实际完成状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。新稿的审计范围见[审计记录](audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)。旧合同按[适用性](design-contract-map.md)区分，不隐式解除旧运行时检查。
+更新：2026-09-08。本文是已接受合同下的实施方案，不是已实现能力；边界集中记录在 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Accepted），出口见 [Milestone](agent-team-service-milestones.md)，实际完成状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。新稿的审计范围见[审计记录](audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)。旧合同按[适用性](design-contract-map.md)区分，不隐式解除旧运行时检查。
 
 ## 1. 最终产品定义：先交付，不先建管理平台
 
