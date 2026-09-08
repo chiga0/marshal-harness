@@ -72,8 +72,10 @@ func TestRepositoryTaskDeliveryProducerColdReplayAndDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	stateRoot := filepath.Join(fixture.repository, ".marshal")
-	if err := os.MkdirAll(filepath.Join(stateRoot, "locks"), 0700); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"locks", "worktrees"} {
+		if err := os.MkdirAll(filepath.Join(stateRoot, name), 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	validator, err := contract.NewValidator()
 	if err != nil {
@@ -130,6 +132,17 @@ func TestRepositoryTaskDeliveryProducerColdReplayAndDrift(t *testing.T) {
 		}
 		return manager.ExportTeamDelivery(ctx, stateRoot, base, binding, tree, commit, upstreams, final, paths)
 	}
+	// Match the real CLI: initialize the repository and canonical state
+	// containers before opening the frozen root capability. The fixture's
+	// earlier root must correctly reject the Git initialization above.
+	if err := fixture.inputs.HeldRepositoryRoot.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fixture.inputs.HeldRepositoryRoot, err = OpenCanonicalRepositoryRoot(fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fixture.inputs.HeldRepositoryRoot.Close() })
 	session, err := OpenRepositorySession(ctx, fixture.inputs)
 	if err != nil {
 		t.Fatal(err)
@@ -142,6 +155,9 @@ func TestRepositoryTaskDeliveryProducerColdReplayAndDrift(t *testing.T) {
 	approved, err := session.ApproveTask(ctx, application.ApproveTaskRequest{TaskID: draft.ID, IdempotencyKey: "delivery:approve", ExpectedRevision: 1, PreviewDigest: draft.PreviewDigest})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := session.BuildTaskDelivery(ctx, draft.ID); !application.HasReason(err, application.ReasonTaskArtifactNotReady) {
+		t.Fatal("pending delivery leaked an infrastructure error", err)
 	}
 	files := repositoryDeliveryBusinessFiles(t)
 	var integrationID string
@@ -161,6 +177,15 @@ func TestRepositoryTaskDeliveryProducerColdReplayAndDrift(t *testing.T) {
 	if _, err := session.ReadTaskArtifact(ctx, draft.ID); !application.HasReason(err, application.ReasonTaskArtifactNotReady) {
 		t.Fatal("reference absent", err)
 	}
+	ledgerBytes := func() []byte {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(fixture.inputs.HeldIngressDir.Name(), "result-ingress.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	beforeDrift := ledgerBytes()
 	// A tree drift must not publish even an empty or last-patch-only ref.
 	drift = true
 	if _, err := session.BuildTaskDelivery(ctx, draft.ID); err == nil {
@@ -168,6 +193,9 @@ func TestRepositoryTaskDeliveryProducerColdReplayAndDrift(t *testing.T) {
 	}
 	if _, found, err := session.ingress.ReadTaskDelivery(session.acquisition.Scope, draft.ID); err != nil || found {
 		t.Fatal("drift appended delivery", err)
+	}
+	if !bytes.Equal(beforeDrift, ledgerBytes()) {
+		t.Fatal("failed export appended authority")
 	}
 	drift = false
 	delivery, err := session.BuildTaskDelivery(ctx, draft.ID)
@@ -202,9 +230,13 @@ func TestRepositoryTaskDeliveryProducerColdReplayAndDrift(t *testing.T) {
 	if !reflect.DeepEqual(got, files) {
 		t.Fatal("download omitted accepted upstream or changed bytes")
 	}
+	beforeReplay := ledgerBytes()
 	replay, err := session.BuildTaskDelivery(ctx, draft.ID)
 	if err != nil || !reflect.DeepEqual(replay, delivery) {
 		t.Fatal("delivery replay appended", err)
+	}
+	if !bytes.Equal(beforeReplay, ledgerBytes()) {
+		t.Fatal("idempotent delivery appended authority")
 	}
 	if err := session.Close(); err != nil {
 		t.Fatal(err)

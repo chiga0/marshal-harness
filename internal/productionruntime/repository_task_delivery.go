@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"slices"
 	"strings"
@@ -121,7 +122,16 @@ func (session *RepositorySession) NextTaskDelivery(ctx context.Context) (taskID,
 	return
 }
 
-func (session *RepositorySession) BuildTaskDelivery(ctx context.Context, taskID string) (goal.TaskDelivery, error) {
+func (session *RepositorySession) BuildTaskDelivery(ctx context.Context, taskID string) (result goal.TaskDelivery, resultErr error) {
+	// Keep storage/readiness sentinels behind the application boundary. The
+	// resident consumer depends on typed application outcomes, not RB1.
+	defer func() {
+		if errors.Is(resultErr, resultingress.ErrTeamOutcomeNotReady) {
+			resultErr = application.NewError("task-delivery", application.ReasonTaskArtifactNotReady)
+		} else if errors.Is(resultErr, runstore.ErrLeaseHeld) {
+			resultErr = application.NewError("task-delivery", application.ReasonCapacityBusy)
+		}
+	}()
 	if ctx == nil || domain.ValidateID(taskID) != nil {
 		return goal.TaskDelivery{}, application.NewError("task-delivery", application.ReasonInvalidRequest)
 	}

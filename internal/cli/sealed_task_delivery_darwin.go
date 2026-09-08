@@ -4,11 +4,9 @@ package cli
 
 import (
 	"context"
-	"errors"
+
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/fixedcontrolplane"
-	"github.com/chiga0/marshal-harness/internal/resultingress"
-	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
 func (a *sealedRepositoryApplication) advanceTaskDelivery(ctx context.Context, router *fixedcontrolplane.HTTPRouter, admitted func()) error {
@@ -32,7 +30,7 @@ func (a *sealedRepositoryApplication) advanceTaskDelivery(ctx context.Context, r
 			admitted()
 		}
 		_, e := a.session.BuildTaskDelivery(step, taskID)
-		if errors.Is(e, resultingress.ErrTeamOutcomeNotReady) || errors.Is(e, runstore.ErrLeaseHeld) {
+		if application.HasReason(e, application.ReasonTaskArtifactNotReady) || application.HasReason(e, application.ReasonCapacityBusy) {
 			return nil
 		}
 		if e != nil && step.Err() == nil {
