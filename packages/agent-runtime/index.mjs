@@ -26,15 +26,32 @@ export class RuntimeError extends Error {
  */
 export async function launchAcp({ executable, args = [], cwd, env = {}, deadline,
   onUpdate, onPermission, limits = {} } = {}) {
+  return launchManaged({executable, args, cwd, env, deadline, onUpdate, onPermission, limits});
+}
+
+/** Trusted command execution for independent verification, not an ACP session.
+ * stdin is a bounded byte frame; it stays open (use a framed request, not EOF).
+ * Captured stdout is untrusted data; exit/cleanup are not a business Decision.
+ */
+export async function launchCommand({executable, args = [], cwd, env = {}, deadline,
+  input = new Uint8Array(), limits = {}} = {}) {
+  if (!(input instanceof Uint8Array) || input.byteLength > 1024 * 1024) throw new RuntimeError('runtime_invalid_input');
+  return launchManaged({executable, args, cwd, env, deadline,
+    limits: {inputBytes: 1024 * 1024, outputBytes: 1024 * 1024, ...limits}}, Buffer.from(input));
+}
+
+async function launchManaged({executable, args, cwd, env, deadline, onUpdate, onPermission, limits}, commandInput = null) {
   if (!['darwin', 'linux'].includes(process.platform)) throw new RuntimeError('runtime_platform_unsupported');
   if (onUpdate !== undefined && typeof onUpdate !== 'function' || onPermission !== undefined && typeof onPermission !== 'function') throw new RuntimeError('runtime_invalid_callbacks');
   let options;
   try { options = validateOptions({ executable, args, cwd, env, deadline, limits: { ...DEFAULT_LIMITS, ...limits } }); }
   catch { throw new RuntimeError('runtime_invalid_options'); }
+  if (commandInput !== null && commandInput.length > options.limits.inputBytes) throw new RuntimeError('runtime_invalid_input');
   const executionId = randomUUID(), ready = deferred(), agentExit = deferred(), done = deferred();
   let guard, client, started, actualExit, receipt, cleanupError = false, stopping = false, completed = false, bootTimer, deadlineTimer, cleanupTimer;
   let reason = 'launch_failed', resolvedReady = false;
   const counts = { inputBytes: 0, outputBytes: 0, stderrBytes: 0 };
+  const commandChunks = []; let commandBytes = 0;
   const scope = 'inherited-process-group';
 
   function complete(code, signal, observed = true) {
@@ -112,14 +129,31 @@ export async function launchAcp({ executable, args = [], cwd, env = {}, deadline
     else if (message.type === 'spawn_failed') { reason = 'agent_spawn_failed'; requestStop(reason); }
     else requestStop('invalid_guard_message');
   });
-  client = new AcpClient({ readable: guard.stdout, writable: guard.stdin, onUpdate, onPermission,
-    onClose: () => { requestStop('protocol_closed'); } });
+  if (commandInput === null) {
+    client = new AcpClient({ readable: guard.stdout, writable: guard.stdin, onUpdate, onPermission,
+      onClose: () => { requestStop('protocol_closed'); } });
+  } else {
+    guard.stdout.on('data', chunk => {
+      commandBytes += chunk.length;
+      if (commandBytes > Math.min(options.limits.outputBytes, 1024 * 1024)) { requestStop('output_limit'); return; }
+      commandChunks.push(Buffer.from(chunk));
+    });
+  }
   bootTimer = setTimeout(() => requestStop('launch_timeout'), Math.min(BOOT_WAIT_MS, options.deadline - Date.now()));
   deadlineTimer = setTimeout(() => requestStop('deadline'), Math.max(0, options.deadline - Date.now()));
   const observedStart = await ready.promise;
   if (!observedStart) {
     const completion = await done.promise;
     throw new RuntimeError('runtime_launch_failed', completion);
+  }
+  if (commandInput !== null) {
+    if (!stopping && commandInput.length) guard.stdin.write(commandInput);
+    const completion = done.promise.then(cleanup => Object.freeze({cleanup,
+      stdout: Buffer.concat(commandChunks),
+      outputComplete: commandBytes === cleanup.outputBytes && commandBytes <= Math.min(options.limits.outputBytes, 1024 * 1024),
+    }));
+    return Object.freeze({started: observedStart, exited: agentExit.promise, completion,
+      stop: async () => { await requestStop(); return completion; }});
   }
   return Object.freeze({ client, started: observedStart, exited: agentExit.promise, completion: done.promise,
     stop: () => requestStop() });
