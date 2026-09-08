@@ -10,21 +10,23 @@ import {createHash} from 'node:crypto';
 import {verifyFiles} from './business.mjs';
 import {sourceDigest} from './main.mjs';
 
-const executable = process.env.MARSHAL_NODE_LIVE_PI;
+const provider = process.env.MARSHAL_NODE_LIVE_QWEN ? 'qwen' : 'pi';
+const executable = process.env.MARSHAL_NODE_LIVE_QWEN || process.env.MARSHAL_NODE_LIVE_PI;
 const main = join(dirname(fileURLToPath(import.meta.url)), 'main.mjs');
 
-test('real local Pi pair: collection, frontend restart and cancellation without native Marshal', {
+test(`real local ${provider} pair: collection, frontend restart and cancellation without native Marshal`, {
   skip: !executable, timeout: 390000,
 }, async t => {
-  assert.ok(isAbsolute(executable), 'explicit absolute Pi entry point required');
+  assert.ok(!(process.env.MARSHAL_NODE_LIVE_PI && process.env.MARSHAL_NODE_LIVE_QWEN), 'select exactly one real provider');
+  assert.ok(isAbsolute(executable), 'explicit absolute Agent entry point required');
   const root = await mkdtemp(join(process.platform === 'darwin' ? '/private/tmp' : tmpdir(), 'mnt-live-'));
   await chmod(root, 0o700);
   const dataDir = join(root, 'state'), config = join(root, 'config.json');
-  await writeFile(config, JSON.stringify({provider: 'pi', executable}), {mode: 0o600});
+  await writeFile(config, JSON.stringify({provider, executable}), {mode: 0o600});
   let server;
   const fronts = [];
   const summary = {profile: 'node-local-experiment', nativeMarshalInvoked: false,
-    nodeVersion: process.version, provider: 'pi', executable, sourceDigest: await sourceDigest(),
+    nodeVersion: process.version, provider, executable, sourceDigest: await sourceDigest(),
     startedAt: new Date().toISOString(), result: 'incomplete'};
 
   async function start() {

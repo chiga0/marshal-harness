@@ -35,7 +35,7 @@ function checkedPlan(plan, intent) {
   return jsonCopy(plan);
 }
 function checkedCommand(command) {
-  if (!closedObject(command, ['command', 'args', 'env']) || !path.isAbsolute(command.command ?? '') || !Array.isArray(command.args) || command.args.length > 64 || command.args.some(v => typeof v !== 'string' || Buffer.byteLength(v) > 8192 || v.includes('\0')) || !closedObject(command.env, Object.keys(command.env ?? {})) || Object.entries(command.env).some(([k, v]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || typeof v !== 'string' || v.includes('\0')) || Buffer.byteLength(JSON.stringify(command.env)) > 65536) fail('invalid-provider-command', 503);
+  if (!closedObject(command, ['command', 'args', 'env', 'prompt']) || !path.isAbsolute(command.command ?? '') || !Array.isArray(command.args) || command.args.length > 64 || command.args.some(v => typeof v !== 'string' || Buffer.byteLength(v) > 8192 || v.includes('\0')) || !closedObject(command.env, Object.keys(command.env ?? {})) || Object.entries(command.env).some(([k, v]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || typeof v !== 'string' || v.includes('\0')) || Buffer.byteLength(JSON.stringify(command.env)) > 65536 || Object.hasOwn(command, 'prompt') && !text(command.prompt, 65536)) fail('invalid-provider-command', 503);
   return command;
 }
 
@@ -149,7 +149,10 @@ export class Supervisor {
       if (message?.type === 'ready') {
         if (task.cancelRequested || this.closing) { this.cleanGuard(entry); return; }
         await this.change(state => { state.tasks.find(t => t.id === entry.taskId).workers.find(w => w.id === entry.workerId).guardPid = entry.guard.pid; });
-        entry.guard.send({ type: 'launch', ...entry.command, cwd: entry.cwd, prompt: entry.node.prompt });
+        // Adapter transport encoding is deterministic from the persisted original
+        // plan + pinned source/config. Do not overwrite the approved plan prompt.
+        entry.guard.send({ type: 'launch', ...entry.command, cwd: entry.cwd,
+          prompt: Object.hasOwn(entry.command, 'prompt') ? entry.command.prompt : entry.node.prompt });
       } else if (message?.type === 'started' || message?.type === 'progress') {
         await this.change(state => {
           const w = state.tasks.find(t => t.id === entry.taskId).workers.find(w => w.id === entry.workerId);
