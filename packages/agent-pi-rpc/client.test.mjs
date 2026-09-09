@@ -44,6 +44,17 @@ test('early native events wait for exact prompt acknowledgement; one live prompt
   await assert.rejects(f.client.prompt('second'), {code: 'pi_busy'}); ending(f, 'early'); await tick(); assert.equal(finished, false);
   f.reply(f.writes[0]); assert.equal((await result).outputText, 'early');
 });
+test('declared native session chatter passes as progress; undeclared peer events stay terminal failures', async t => {
+  for (const mode of ['bash_execution_update', 'entry_appended', 'thinking_level_changed', 'session_info_changed']) {
+    const f = fixture(t);
+    const result = f.client.prompt('task'); f.reply(f.writes[0]);
+    f.send({type: 'agent_start'}); f.send({type: mode, attempt: 1}); ending(f, 'ok-' + mode);
+    assert.equal((await result).outputText, 'ok-' + mode);
+  }
+  const f = fixture(t), result = f.client.prompt('task');
+  const rejected = assert.rejects(result, {code: 'pi_unexpected_event'}); f.reply(f.writes[0]);
+  f.send({type: 'telemetry_session'}); await rejected; assert.equal(f.client.closed, true);
+});
 test('cancel clears native queue before abort and acknowledgement is not execution cleanup', async t => {
   const f = fixture(t), result = f.client.prompt('task'); f.reply(f.writes[0]);
   await tick(); // Flush the prior prompt write before observing the next write.

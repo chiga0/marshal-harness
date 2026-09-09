@@ -2,9 +2,14 @@
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = (value, max) => typeof value === 'string' && value.isWellFormed() && !value.includes('\0') && Buffer.byteLength(value) <= max;
 const positive = (value, max) => Number.isSafeInteger(value) && value > 0 && value <= max;
+// rpc-forwarded session chatter acknowledged by name; any event outside this
+// closed set terminates the turn rather than being silently consumed. Native
+// 0.84.4 also forwards bash_exec/entry/thinking/session_name events below;
+// auto_compaction_* stay as forward-compat entries it never emits.
 const eventTypes = new Set(['agent_start', 'agent_end', 'agent_settled', 'turn_start', 'turn_end', 'message_start', 'message_update', 'message_end',
   'tool_execution_start', 'tool_execution_update', 'tool_execution_end', 'auto_compaction_start', 'auto_compaction_end', 'compaction_start', 'compaction_end', 'queue_update',
-  'auto_retry_start', 'auto_retry_end', 'summarization_retry_scheduled', 'summarization_retry_attempt_start', 'summarization_retry_finished']);
+  'auto_retry_start', 'auto_retry_end', 'summarization_retry_scheduled', 'summarization_retry_attempt_start', 'summarization_retry_finished',
+  'bash_execution_update', 'entry_appended', 'thinking_level_changed', 'session_info_changed']);
 const dialogs = new Set(['select', 'confirm', 'input', 'editor']);
 export class PiRpcError extends Error { constructor(code) { super(code); this.name = 'PiRpcError'; this.code = code; } }
 const fail = code => new PiRpcError(code);
