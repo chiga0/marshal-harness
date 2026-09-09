@@ -3,20 +3,21 @@ import {clone, nextRevision, publicTask, terminal, reject, isText} from './model
 import {affectedNodes} from './graph.mjs';
 import {LEADER_PROFILE, REVIEW_PROFILE, configuration, receipt, hash, sha, id, closed, check, createEffectPort} from './leader-ports.mjs';
 import {nameFor} from '../task-publication-report/index.mjs';
+import {hasPublicationExpected} from './verification.mjs';
 
 const decode = row => row ? JSON.parse(row.bytes.toString()) : null;
 const live = record => ['queued', 'running', 'awaiting-answer', 'stopping', 'unknown'].includes(record.worker.status);
 const managed = new Set(['leader', 'review', 'publication', 'postverify']);
 export const isManagedExecution = type => managed.has(type);
 
-export function leaderConfiguration(leader, review, publication = null) {
+export function leaderConfiguration(leader, review, publication = null, verification = null) {
   const config = configuration(leader, 'leader'), independent = configuration(review, 'review');
   check(config.policy.review.providerId === independent.providerId && config.policy.review.policyDigest === independent.policyDigest,
     'invalid_leader_config');
   check(config.policy.publication === null ? publication === null : publication &&
     config.policy.publication.targetId === publication.id && config.policy.publication.policyDigest === publication.policyDigest &&
     ['start', 'lookup', 'assertDisjoint'].every(name => typeof publication[name] === 'function') &&
-    typeof publication.postverify?.start === 'function', 'invalid_leader_config');
+    typeof publication.postverify?.start === 'function' && hasPublicationExpected(verification), 'invalid_leader_config');
   return {leader: config, review: independent, publication: publication ? {policy: config.policy.publication,
     configuration: clone(publication.configuration), configurationDigest: publication.configurationDigest} : null};
 }
@@ -29,7 +30,7 @@ export class TaskLeader {
     this.app = app; this.port = leader; this.review = review; this.publication = publication;
     if (leader === null) {check(review === null && publication === null, 'invalid_leader_config'); return;}
     check(app.store.info().format === LEADER_FORMAT && app.execution.maxWorkers >= 3 && app.verification.port !== null, 'invalid_leader_config');
-    this.config = leaderConfiguration(leader, review, publication);
+    this.config = leaderConfiguration(leader, review, publication, app.verification.port);
     this.effects = publication ? {publication: createEffectPort('publication', publication), postverify: createEffectPort('postverify', publication.postverify)} : {};
     check(app.execution.providers.has(leader.providerId) && app.execution.providers.has(review.providerId), 'invalid_leader_config');
   }
@@ -45,7 +46,7 @@ export class TaskLeader {
     check(this.port && task.leader?.profile === LEADER_PROFILE && task.leader.policyDigest === this.port.policyDigest, 'unsupported_task');
   }
   prepareObligation(task) {
-    task.leader.obligationId = this.app.newId('obligation');
+    task.leader.obligationId ??= this.app.newId('obligation');
     return task.leader.obligationId;
   }
   bind(task, plan) {
@@ -100,22 +101,21 @@ export class TaskLeader {
     return this.app.runtimeQuestions.questions(tx, {taskId: task.task.id, page: {limit: 100}}).items;
   }
   selectionDigest(tx, task) {return hash(this.selection(tx, task, true));}
-  obligation(tx, task, source, reason, nodeIds = []) {
+  obligation(tx, task, source, reason, nodeIds = [], inherited = []) {
     this.configured(task);
     if (task.leader.obligationId) {
       const row = tx.projection('interaction', task.leader.obligationId), old = decode(row);
       check(!old || old.taskId === task.task.id, 'application_unavailable');
-      if (old?.status === 'pending') {
+      if (old?.status === 'pending' || old?.status === 'claimed') {
         const item = {event: source.sequence.toString(), reason, nodeIds};
         if (!old.sources.some(value => hash(value) === hash(item))) old.sources.push(item);
         check(old.sources.length <= 64); tx.putProjection('interaction', old.id, row.revision, source, encode(old)); return old.id;
       }
-      if (old?.status === 'claimed') {task.leader.deferred ??= []; task.leader.deferred.push({event: source.sequence.toString(), reason, nodeIds});
-        check(task.leader.deferred.length <= 64); return old.id;}
     }
     const id = task.leader.obligationId ?? this.app.newId('obligation'), commandId = this.app.newId('command');
     const value = {id, taskId: task.task.id, status: 'pending', generation: this.app.owner.generation.toString(), commandId,
-      sources: [{event: source.sequence.toString(), reason, nodeIds}], readSetDigest: null, successor: 0};
+      sources: inherited.length ? clone(inherited) : [{event: source.sequence.toString(), reason, nodeIds}], readSetDigest: null, successor: 0};
+    check(value.sources.length <= 64);
     task.leader.obligationId = id;
     tx.putProjection('interaction', id, 0, source, encode(value));
     this.app.enqueue(tx, source, task.task.id, 'leader', {taskId: task.task.id, obligationId: id}, 'start', commandId);
@@ -128,7 +128,8 @@ export class TaskLeader {
     if (task.leader.review) evidence.push({kind: 'review', ...task.leader.review});
     if (task.acceptance?.digest) evidence.push({kind: 'verification', ...task.acceptance});
     for (const {record} of workers) if (record.worker.status === 'failed') evidence.push({kind: 'execution-failure', workerId: record.worker.id,
-      nodeId: record.worker.nodeId, digest: hash({ticket: record.ticket, cleanup: record.cleanup}), cleanup: record.cleanup, reason: record.failureCode ?? 'worker_failed'});
+      nodeId: record.worker.nodeId, digest: hash({ticket: record.ticket, cleanup: record.cleanup}), cleanup: record.cleanup,
+      reason: record.failureCode ?? 'worker_failed', retryable: record.failureClass === 'ordinary'});
     check(evidence.length <= 64);
     return {profile: LEADER_PROFILE, taskId: task.task.id, callId, obligationId: obligation.id,
       generation: this.app.owner.generation.toString(), cursor: task.leader.cursor,
@@ -175,15 +176,17 @@ export class TaskLeader {
       if (action?.status !== 'pending') return null;
       const obligation = {id: action.id, sources: [{reason: payload.action, nodeIds: action.payload.nodeIds ?? []}]};
       return {command, task, payload, action, input: this.snapshot(tx, task, obligation, action.id),
+        expected: payload.action === 'postverify' ? decode(tx.projection('attempt', action.payload.publicationActionId))?.expected : null,
         artifact: ['publication', 'postverify'].includes(payload.action) ? this.app.artifacts.metadata(tx, task.leader.delivery.artifactId) : null};
     });
     if (!original) return null;
     const expanded = this.expand(original.input);
     let expected;
-    if (original.payload.action === 'postverify') expected = this.app.verification.expectedPublication({taskId: original.task.task.id,
+    if (original.payload.action === 'publication') expected = this.app.verification.expectedPublication({taskId: original.task.task.id,
       planDigest: original.task.plan.digest, input: {task: original.task.input, plan: original.task.plan, inputArtifacts: original.task.inputArtifacts,
         leaderReplies: expanded.snapshot.interactions.replies, leaderReplyRefs: expanded.snapshot.interactions.replies.map(({answer, ...ref}) => ref),
         interactionRefs: this.app.transaction(false, tx => this.app.runtimeQuestions.refs(tx, original.task))}});
+    else if (original.payload.action === 'postverify') {expected = original.expected; check(expected !== undefined, 'candidate_manifest_conflict');}
     return this.app.transaction(true, tx => {
       const command = tx.command(commandId), task = this.app.get(tx, original.task.task.id);
       if (command.status !== 'pending' || command.revision !== BigInt(expectedRevision) || command.generation !== this.app.owner.generation ||
@@ -214,7 +217,8 @@ export class TaskLeader {
           const answer = question?.replyRef ? decode(tx.projection('interaction', question.replyRef)) : null;
           check(question?.status === 'replied' && answer?.decision === 'allow' && question.subject === hash(authorization) &&
             question.replyDigest === hash(answer) && this.app.now() < Date.parse(authorization.expiresAt), 'candidate_manifest_conflict');
-          input.publication = {binding: original.action.binding, authorization}; providerId = this.effects.publication.id;
+          input.publication = {binding: original.action.binding, authorization}; input.publicationExpected = expected;
+          providerId = this.effects.publication.id;
         } else {
           check(task.leader.publication?.receiptArtifactId && ['created', 'matched'].includes(task.leader.publication.status), 'candidate_manifest_conflict');
           const ref = this.app.artifacts.metadata(tx, task.leader.publication.receiptArtifactId);
@@ -231,10 +235,12 @@ export class TaskLeader {
         const row = tx.projection('interaction', original.payload.obligationId), value = decode(row);
         value.status = 'claimed'; value.readSetDigest = hash(original.input.snapshot.readSet); value.workerId = ticket.workerId;
         tx.putProjection('interaction', value.id, row.revision, source, encode(value));
-        task.leader.activeCallId = expanded.callId; task.leader.calls++;
+        task.leader.activeCallId = expanded.callId; task.leader.activeWorkerId = ticket.workerId; task.leader.calls++;
       } else {
         const row = tx.projection('attempt', original.action.id), action = decode(row);
-        action.status = 'running'; action.workerId = ticket.workerId; tx.putProjection('attempt', action.id, row.revision, source, encode(action));
+        action.status = 'running'; action.workerId = ticket.workerId;
+        if (type === 'publication') action.expected = clone(expected);
+        tx.putProjection('attempt', action.id, row.revision, source, encode(action));
       }
       task.task.revision = nextRevision(task.task.revision);
       this.app.save(tx, task, type === 'leader' ? 'leader.call.reserved' : 'leader.stage.changed', {workerId: ticket.workerId, executionType: type});
@@ -304,7 +310,7 @@ export class TaskLeader {
           check(basis.status === 'rejected' && basis.contentRejection && task.decision.digest === action.basis.digest, 'invalid_leader_decision');
           basisArtifact = basis.artifacts.find(value => value.kind === 'evidence');
         } else {
-          const failed = workers.find(({record}) => record.worker.status === 'failed' && record.cleanup?.cleaned && !record.stopIntent &&
+          const failed = workers.find(({record}) => record.worker.status === 'failed' && record.failureClass === 'ordinary' && record.cleanup?.cleaned && !record.stopIntent &&
             record.ticket.executionType === 'agent' && action.nodeIds.includes(record.worker.nodeId) &&
             hash({ticket: record.ticket, cleanup: record.cleanup}) === action.basis.digest);
           check(failed && !task.leader.failureRetried, 'invalid_leader_decision'); task.leader.failureRetried = true; basisArtifact = evidence;
@@ -391,6 +397,7 @@ export class TaskLeader {
       const readSet = ticket.input.leader?.snapshot.readSet ?? ticket.input.review?.snapshot.readSet;
       const current = readSet && hash(readSet) === hash(this.semantic(tx, task));
       let accepted = clean && !cancelled && data?.value && staged.length === 1 && current;
+      let stale = ticket.executionType === 'leader' && clean && !cancelled && !current, successorSources = [];
       const at = new Date(this.app.now()).toISOString();
       let commitActions = () => {}, rejected = data?.reason ?? 'leader_result_rejected';
       const artifact = accepted ? {id: this.app.newId('artifact'), taskId: task.task.id, name: staged[0].name, kind: 'evidence', status: 'ready',
@@ -400,6 +407,8 @@ export class TaskLeader {
         const obligation = decode(tx.projection('interaction', ticket.input.leader.obligationId));
         check(obligation?.status === 'claimed' && obligation.workerId === ticket.workerId && task.leader.activeCallId === ticket.input.leader.callId,
           'invalid_leader_receipt');
+        if (clean && !cancelled && hash(obligation.sources) !== hash(ticket.input.leader.snapshot.obligation)) {stale = true; accepted = false;}
+        if (stale) {successorSources = obligation.sources; rejected = 'leader_readset_stale';}
         if (accepted) {
           const proposed = clone(task);
           try {commitActions = this.actions(tx, proposed, ticket, data.value, artifact); Object.assign(task, proposed);}
@@ -416,12 +425,12 @@ export class TaskLeader {
       record.cleanup = clone(cleanup); record.worker.status = !clean ? 'unknown' : cancelled ? 'cancelled' : accepted ? 'completed' : 'failed';
       record.worker.finishedAt = at; record.worker.phase = 'terminal';
       if (!clean) {task.task.status = 'intervention'; task.task.code = 'cleanup_unconfirmed';}
-      else if (!cancelled && !accepted) {task.task.status = 'cancelling'; task.failureCode = rejected;}
+      else if (!cancelled && !accepted && !stale) {task.task.status = 'cancelling'; task.failureCode = rejected;}
       if (accepted && ticket.executionType === 'leader') {
         const digest = hash(data.value); task.leader.lastDecision = {digest, callId: data.value.callId, evidenceId: artifact.id};
         task.leader.history.push({digest, callId: data.value.callId, evidenceId: artifact.id}); check(task.leader.history.length <= 32);
       }
-      const follow = accepted && (ticket.executionType === 'review' || task.leader.stage === 'finalizing');
+      const follow = stale || accepted && (ticket.executionType === 'review' || task.leader.stage === 'finalizing');
       if (follow) this.prepareObligation(task);
       task.task.revision = nextRevision(task.task.revision);
       const source = this.app.save(tx, task, accepted ? ticket.executionType === 'leader' ? 'leader.decision.accepted' : 'leader.action.settled' :
@@ -444,7 +453,7 @@ export class TaskLeader {
         const capacity = this.app.execution.capacity(tx); capacity.value.active = capacity.value.active.filter(value => value.workerId !== ticket.workerId);
         this.app.execution.putCapacity(tx, capacity.row, capacity.value);
       }
-      if (follow) this.obligation(tx, task, source, ticket.executionType === 'review' ? 'review-finished' : 'delivery-ready');
+      if (follow) this.obligation(tx, task, source, stale ? 'semantic-successor' : ticket.executionType === 'review' ? 'review-finished' : 'delivery-ready', [], successorSources);
       return clone(record.worker);
     });
   }
@@ -452,9 +461,8 @@ export class TaskLeader {
     const data = result?.receipt ? receipt(this.effects[ticket.executionType], ticket, result) : null;
     const eligible = this.app.transaction(false, tx => {
       const {record, task} = this.app.execution.ticket(tx, ticket);
-      return live(record) && data?.cleanup?.cleaned && data.cleanup.started?.executionId === record.executionId &&
-        data.cleanup.started?.startedAt === record.worker.startedAt && this.app.now() < ticket.deadline && !task.cancelIntent &&
-        !record.stopIntent && !terminal.has(task.task.status) && task.task.status !== 'cancelling';
+      return live(record) && data?.cleanup && (data.cleanup.started === null && record.executionId === null ||
+        data.cleanup.started?.executionId === record.executionId && data.cleanup.started?.startedAt === record.worker.startedAt);
     });
     const staged = eligible && data.value.evidence ? this.app.artifacts.stageOutputs([['evidence', data.value.evidence]]) : [];
     if (eligible && ticket.executionType === 'postverify' && data.status === 'completed') {
@@ -468,37 +476,45 @@ export class TaskLeader {
       if (!cleanup || !(cleanup.started === null && record.executionId === null || cleanup.started?.executionId === record.executionId &&
         cleanup.started.startedAt === record.worker.startedAt)) reject('recovery_required', 409);
       const clean = cleanup.cleaned === true && !record.custody?.extraScopes.length;
-      const cancelled = !!task.cancelIntent || !!record.stopIntent || task.task.status === 'cancelling' || terminal.has(task.task.status) || this.app.now() >= ticket.deadline;
+      const cancelled = !!task.cancelIntent || !!record.stopIntent || !!record.failureCode || result?.stopRequested === true ||
+        task.task.status === 'cancelling' || terminal.has(task.task.status) || this.app.now() >= ticket.deadline;
       const actionId = ticket.executionType === 'publication' ? task.leader.publication.actionId : task.leader.postverify.actionId;
       const actionRow = tx.projection('attempt', actionId), action = decode(actionRow);
       check(action?.workerId === ticket.workerId && action.commandId === ticket.commandId && action.status === 'running', 'invalid_leader_receipt');
       const current = hash(ticket.input.managedReadSet) === hash(this.semantic(tx, task));
-      const accepted = eligible && clean && !cancelled && current && staged.length === 1;
-      const success = accepted && data.status === 'completed';
-      const unknown = !clean || accepted && data.status === 'unknown';
-      const artifact = accepted ? {id: this.app.newId('artifact'), taskId: task.task.id, name: staged[0].name, kind: 'evidence', status: 'ready',
+      // Current-owner, ticket-bound observation survives a control fence.
+      // Admission of the NEXT effect remains separately fenced below.
+      const observed = eligible && staged.length === 1, success = observed && data.status === 'completed';
+      const advance = success && clean && !cancelled && current;
+      const noneStarted = clean && cleanup.started === null && record.executionId === null;
+      const unknown = !clean || observed && data.status === 'unknown' || !observed && !noneStarted;
+      const artifact = observed ? {id: this.app.newId('artifact'), taskId: task.task.id, name: staged[0].name, kind: 'evidence', status: 'ready',
         mediaType: staged[0].mediaType, ...staged[0].ref, createdAt: new Date(this.app.now()).toISOString()} : null;
       if (artifact) staged[0].artifact = artifact;
-      record.cleanup = clone(cleanup); record.worker.status = !clean ? 'unknown' : cancelled ? 'cancelled' : success ? 'completed' : 'failed';
+      record.cleanup = clone(cleanup); record.worker.status = !clean ? 'unknown' : cancelled ? 'cancelled' : advance ? 'completed' : 'failed';
       record.worker.phase = 'terminal'; record.worker.finishedAt = new Date(this.app.now()).toISOString();
-      action.status = unknown ? 'unknown' : cancelled ? 'cancelled' : success ? 'succeeded' : 'failed'; action.result = artifact ? {evidenceId: artifact.id, digest: artifact.digest} : null;
+      action.status = unknown ? 'unknown' : ticket.executionType === 'publication' && success ? 'succeeded' : cancelled ? 'cancelled' : advance ? 'succeeded' : 'failed';
+      action.result = artifact ? {evidenceId: artifact.id, digest: artifact.digest, observedStatus: data.value.status} : null;
       let post = null;
       if (ticket.executionType === 'publication') {
-        task.leader.publication.status = unknown ? 'unknown' : success ? data.value.status : 'failed';
+        task.leader.publication.status = unknown ? 'unknown' : observed ? data.value.status : cancelled ? 'cancelled' : 'failed';
         task.leader.publication.receiptArtifactId = artifact?.id ?? null;
-        if (success) {
+        if (advance) {
           const id = 'action-' + hash({publicationActionId: action.id, kind: 'postverify'}).slice(7), commandId = this.app.newId('command');
           post = {id, taskId: task.task.id, sourceDecision: action.sourceDecision, payloadDigest: hash({publication: action.id}),
             payload: {type: 'postverify', publicationActionId: action.id}, status: 'pending', commandId, workerId: null, result: null};
           task.leader.postverify = {actionId: id, status: 'pending', evidenceArtifactId: null};
         }
       } else {
-        task.leader.postverify.status = success ? 'passed' : unknown ? 'unknown' : 'failed';
+        task.leader.postverify.status = advance ? 'passed' : unknown ? 'unknown' : cancelled ? 'cancelled' : 'failed';
         task.leader.postverify.evidenceArtifactId = artifact?.id ?? null;
-        if (success) {task.leader.stage = 'finalizing'; this.prepareObligation(task);}
+        if (advance) {task.leader.stage = 'finalizing'; this.prepareObligation(task);}
       }
       if (unknown) {task.task.status = 'intervention'; task.task.code = 'publication_effect_unresolved';}
-      else if (!success && !cancelled) {task.task.status = 'cancelling'; task.failureCode = 'publication_failed';}
+      else if ((result?.stopRequested || record.failureCode) && !task.cancelIntent && !terminal.has(task.task.status)) {
+        task.task.status = 'cancelling'; task.failureCode = record.failureCode ?? 'publication_stopped';
+      }
+      else if (!advance && !cancelled) {task.task.status = 'cancelling'; task.failureCode = 'publication_failed';}
       task.task.revision = nextRevision(task.task.revision);
       const source = this.app.save(tx, task, 'leader.action.settled', {actionId: action.id, workerId: ticket.workerId, status: action.status});
       tx.putProjection('attempt', action.id, actionRow.revision, source, encode(action));
@@ -510,7 +526,7 @@ export class TaskLeader {
         const command = tx.command(ticket.commandId); if (!unknown && command.status !== 'observed') tx.observeCommand(command.id, command.revision, 'observed', source);
       }
       if (post) {tx.putProjection('attempt', post.id, 0, source, encode(post)); this.app.enqueue(tx, source, task.task.id, 'postverify', {taskId: task.task.id, actionId: post.id}, 'verify', post.commandId);}
-      if (success && ticket.executionType === 'postverify') this.obligation(tx, task, source, 'postverify-finished');
+      if (advance && ticket.executionType === 'postverify') this.obligation(tx, task, source, 'postverify-finished');
       return clone(record.worker);
     });
   }

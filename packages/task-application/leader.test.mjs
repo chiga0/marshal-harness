@@ -15,13 +15,13 @@ const proposal = {summary: '两个原分支完整交付', nodes: ['east', 'west'
 const binding = () => ({nodeId: 'verify', description: '固定两个分支独立核对', layouts: ['east', 'west'].map(nodeId => ({nodeId, inputs: [], allowedPaths: [nodeId + '.json']}))
   .concat({nodeId: 'verify', inputs: ['east', 'west'].map(nodeId => ({path: nodeId + '.json', source: {kind: 'upstream', nodeId, path: nodeId + '.json'}})), allowedPaths: []}),
   deliveries: ['east', 'west'].map(nodeId => ({nodeId, path: nodeId + '.json', targetPath: nodeId + '.json'}))});
-function fixture(t) {
+export function fixture(t, options = {}) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-leader-core-'))), root = path.join(parent, 'store');
   const depot = ArtifactDepot.create(path.join(parent, 'objects'));
   let store = Store.create(root, {format: LEADER_FORMAT}), owner = store.claimOwner(0, 'test', Date.now() + 3600000), serial = 0;
   const reviewPolicy = {id: 'review', version: '1', description: '只读完整选果'}, policy = {profile: 'task-managed-leader/v1', maxCalls: 9,
     maxActions: 4, maxRequests: 3, repair: {nodeIds: ['east', 'west'], maxRounds: 1},
-    review: {providerId: 'fixture', policyDigest: hash(reviewPolicy)}, publication: null};
+    review: {providerId: 'fixture', policyDigest: hash(reviewPolicy)}, publication: options.publication ? {targetId: options.publication.id, policyDigest: options.publication.policyDigest} : null};
   const leader = createLeaderPort({id: 'leader', providerId: 'fixture', policy,
     prepare: ({input}) => ({prompt: renderLeaderPrompt(input)}), parseDecision: parseManagedOutput});
   const review = createReviewPort({id: 'review', providerId: 'fixture', policy: reviewPolicy,
@@ -33,6 +33,7 @@ function fixture(t) {
     return {started: Promise.resolve(fact), stop() {}, completion: Promise.resolve({providerId: 'fixture', status: 'completed', stopReason: 'end_turn',
       outputText: JSON.stringify(response), cleanup: {started: fact, cleaned: true, scope: 'controlled-fixture'}})};}};
   const verification = createVerificationPort({id: 'verify', policy: {id: 'check', version: '1', description: '本测试受控独立断言'}, bindPlan: binding,
+    publicationExpected: options.publicationExpected ?? null,
     start({ticket}) {const fact = {executionId: 'checker-' + ticket.workerId, startedAt: new Date().toISOString()};
       assert.equal(ticket.input.verification.manifests.length, 2);
       assert.equal(ticket.input.leaderReplies[0].answer, 'north');
@@ -40,9 +41,10 @@ function fixture(t) {
         evidence: {name: 'check.json', mediaType: 'application/json', content: encode({actual: 'north', bothBranches: true})},
         delivery: {name: 'delivery.json', mediaType: 'application/json', content: encode({east: 10, west: 20, region: 'north'})}})};}});
   const execution = {maxWorkers: 3, providerIds: ['fixture'], defaultProvider: 'fixture'};
-  let app = new TaskApplication({store, owner, execution, leader, review, verification, depot});
+  let app;
   t.after(() => {store.close(); depot.close(); fs.rmSync(parent, {recursive: true, force: true});});
-  const f = {get app() {return app;}, call: request => app.dispatch(request, context),
+  app = new TaskApplication({store, owner, execution, leader, review, verification, depot, publication: options.publication ?? null});
+  const f = {get app() {return app;}, provider, parent, results: new Map(), call: request => app.dispatch(request, context),
     read: callback => app.transaction(false, callback),
     get: taskId => f.call({operation: 'task.get', taskId}),
     take(action, nodeId) {const command = f.read(tx => tx.commands().find(command => command.status === 'pending' &&
@@ -51,8 +53,8 @@ function fixture(t) {
     async decision(ticket, actions) {response = {profile: 'task-managed-leader/v1', callId: ticket.input.leader.callId,
       inputDigest: ticket.input.leader.inputDigest, summary: '只依据原证据推进', actions}; return f.run(ticket, leader);},
     async run(ticket, port) {const handle = port.start({ticket, provider, prepared: {cwd: parent, prompt: '受控模型夹具'}});
-      app.execution.started(ticket, await handle.started); return app.execution.finish(ticket, await handle.completion);},
-    author(ticket) {const started = {executionId: 'author-' + ticket.workerId, startedAt: new Date().toISOString()}; app.execution.started(ticket, started);
+      app.execution.started(ticket, await handle.started); const result = await handle.completion; f.results.set(ticket.workerId, result); return app.execution.finish(ticket, result);},
+    author(ticket, started = {executionId: 'author-' + ticket.workerId, startedAt: new Date().toISOString()}) {app.execution.started(ticket, started);
       const file = {path: ticket.nodeId + '.json', ...depot.put(encode({value: ticket.nodeId === 'east' ? 10 : 20}))};
       return app.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', cleanup: {started, cleaned: true}, result: {
         profile: 'task-file-business/v1', taskId: ticket.taskId, nodeId: ticket.nodeId, workerId: ticket.workerId,
@@ -63,9 +65,11 @@ function fixture(t) {
     async verify(ticket) {const handle = verification.start({ticket, prepared: {cwd: parent, prompt: '固定受控检查器'}});
       app.execution.started(ticket, await handle.started); return app.execution.finish(ticket, await handle.completion);},
     reopen() {store.close(); store = Store.openExisting(root, {format: LEADER_FORMAT}); owner = store.claimOwner(owner.generation, 'cold', Date.now() + 3600000);
-      app = new TaskApplication({store, owner, execution, leader, review, verification, depot});},
+      app = new TaskApplication({store, owner, execution, leader, review, verification, depot, publication: options.publication ?? null});},
   }; return f;
 }
+
+export {proposal, hash};
 
 test('v7 real SQLite: necessary reply → plan approval → two authors → independent Review → stage verification → deliver/conclude → cold exact bytes', async t => {
   const f = fixture(t), task = await f.call({operation: 'task.create', key: 'create', body: {intent: '交付两区域结果，但区域待用户明确',

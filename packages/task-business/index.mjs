@@ -228,7 +228,7 @@ export function createFileBusiness({parent, depot, layoutFor, approvedLayout, ob
         check(bytes instanceof Uint8Array && bytes.byteLength === ref.bytes && digest(bytes) === ref.digest, 'business_invalid_reference');
         const report = parseJson(bytes);
         check(managed && ticket.input.repair.basis?.kind === 'review' ? report.profile === 'task-independent-review/v1' &&
-          report.report?.verdict === 'rework' && report.report.findings.some(finding => finding.nodeIds.includes(ticket.nodeId)) :
+          report.report?.verdict === 'rework' && report.report.findings.some(finding => finding.nodeIds.some(nodeId => ticket.input.repair.affectedNodes.includes(nodeId))) :
           managed && ticket.input.repair.basis?.kind === 'execution-failure' ? report.profile === 'task-managed-leader/v1' :
           report.profile === 'task-verification-command/v1' && hash(report.reportDigest) && typeof report.originalReport === 'string' &&
           digest(Buffer.from(report.originalReport)) === report.reportDigest && report.binding?.planDigest === ticket.planDigest,

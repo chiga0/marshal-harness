@@ -391,12 +391,17 @@ export class TaskExecutionCoordinator {
       cleanup = {started: entry.startFact, cleaned: false, scope: 'unconfirmed', reason: 'cleanup_unconfirmed'};
     }
     const outcome = {status: failure || entry.failure || entry.stopping || this.#failure ? 'failed' : result?.status ?? 'failed',
-      stopReason: result?.stopReason ?? null, cleanup, ...collected};
+      stopReason: result?.stopReason ?? null, reason: result?.reason ?? null, cleanup, ...collected};
     if (entry.ticket.executionType === 'verification' || ['leader', 'review', 'publication', 'postverify'].includes(entry.ticket.executionType)) {
       outcome.type = entry.ticket.executionType;
       // A local stop/fault is not the checker's independent negative verdict.
       // Keep original cleanup, but only forward an unmodified checker receipt.
-      if (!failure && !entry.failure && !entry.stopping && !this.#failure) outcome.receipt = result?.receipt;
+      if (['publication', 'postverify'].includes(entry.ticket.executionType) && cleanup === result?.cleanup) {
+        // A stop forbids successors, not the original external-effect fact.
+        // Preserve the exact private capability/status for current-owner audit.
+        outcome.status = result.status; outcome.receipt = result.receipt;
+        outcome.stopRequested = !!(failure || entry.failure || entry.stopping || this.#failure);
+      } else if (!failure && !entry.failure && !entry.stopping && !this.#failure) outcome.receipt = result?.receipt;
     }
     const worker = this.#call('finish', entry.ticket, outcome);
     entry.clean = cleanup.cleaned === true && worker.status !== 'unknown'; entry.finalized = true;

@@ -101,7 +101,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     Number.isSafeInteger(renewIntervalMs) && renewIntervalMs >= 10 && renewIntervalMs * 2 < leaseMs &&
     Number.isSafeInteger(requestTimeoutMs) && requestTimeoutMs >= 10 && requestTimeoutMs <= 30000);
   const available = new Map(providers);
-  const leaderConfig = leader === undefined ? null : leaderConfiguration(leader, review, publication ?? null);
+  const leaderConfig = leader === undefined ? null : leaderConfiguration(leader, review, publication ?? null, verification ?? null);
   requireValue(leaderConfig ? custody !== undefined && businessFactory !== undefined && clarification === undefined && auditDisclosure === undefined &&
     (applicationOptions.execution?.maxWorkers ?? 2) >= 3 && (applicationOptions.defaultLimits?.maxWorkers ?? 2) >= 3 :
     review === undefined && publication === undefined);

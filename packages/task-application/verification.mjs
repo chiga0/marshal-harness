@@ -60,6 +60,9 @@ export function createVerificationPort({id, policy, bindPlan, start, interaction
     repairBinding: repairPolicyDigests.length ? clone(start.repairBinding) : null}); return port;
 }
 
+// Inspect the actual private port capability, never a serializable claim.
+export const hasPublicationExpected = port => typeof ports.get(port)?.publicationExpected === 'function';
+
 export class TaskVerification {
   constructor(app, port) {
     check(port === null || ports.has(port), 'invalid_verification_config');
@@ -69,9 +72,11 @@ export class TaskVerification {
   expectedPublication(ticket) {
     const callback = this.port && ports.get(this.port).publicationExpected;
     check(typeof callback === 'function', 'unsupported_task');
-    const value = callback({ticket: clone(ticket)});
-    check(value !== undefined && typeof value?.then !== 'function' && encode(value).length <= 1048576, 'unsupported_task');
-    return clone(value);
+    try {
+      const value = callback({ticket: clone(ticket)});
+      check(value !== undefined && typeof value?.then !== 'function' && encode(value).length <= 1048576, 'unsupported_task');
+      return clone(value);
+    } catch {reject('unsupported_task', 422);}
   }
   repairBinding(policyDigest) {
     const config = this.port && ports.get(this.port), binding = config && config.repairBinding;

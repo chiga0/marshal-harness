@@ -171,7 +171,7 @@ export class TaskExecution {
       // reports append-free. Old completed Workers cannot fail a later phase.
       if (this.app.repair.current(task, ticket) && live(record.worker) && task.task.status !== 'cancelling' && !terminal.has(task.task.status)) {
         if (task.leader && !cleanupUnknown && !record.stopIntent && !task.cancelIntent && this.app.now() < ticket.deadline) {
-          record.failureCode = reasonCode; task.task.revision = nextRevision(task.task.revision);
+          record.failureCode = reasonCode; record.failureClass = 'nonretryable'; task.task.revision = nextRevision(task.task.revision);
           const source = this.app.save(tx, task, 'task.worker-failure-fenced', {workerId: ticket.workerId, reasonCode});
           this.putWorker(tx, row, record, source);
           return {taskId: task.task.id, status: task.task.status, targeted: true};
@@ -385,6 +385,9 @@ export class TaskExecution {
       const currentCycle = this.app.repair.current(task, ticket);
       const targetCancelled = !!this.app.workerCancellation.checked(tx, record);
       const cancelled = targetCancelled || task.task.status === 'cancelling' || !currentCycle;
+      if (task.leader && !record.failureClass) record.failureClass = clean && !cancelled && !record.stopIntent && !task.cancelIntent &&
+        this.app.now() < ticket.deadline && !verification && result.status === 'failed' &&
+        ['provider_failed', 'agent_refusal', 'agent_max_tokens', 'agent_max_turn_requests'].includes(result.reason) ? 'ordinary' : 'nonretryable';
       let success = clean && (verification ? verified?.data.status === 'passed' && result.status === 'passed' && verified.staged !== null :
         result.status === 'completed' && result.stopReason === 'end_turn') &&
         !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;
@@ -393,7 +396,7 @@ export class TaskExecution {
         try {record.interactionRefs = verification ? (task.repair ? this.app.runtimeQuestions.inherited(tx, task,
           this.app.repair.selected(tx, task).flatMap(({record}) => record.interactionRefs ?? [])) : this.app.runtimeQuestions.refs(tx, task)) :
           this.app.runtimeQuestions.resultRefs(tx, task, ticket);}
-        catch {success = false; candidate = null;}
+        catch {success = false; candidate = null; record.failureClass = 'structural';}
       }
       const verificationFailed = clean && verified?.data.status === 'failed' && result.status === 'failed' && verified.staged !== null &&
         !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;
@@ -402,7 +405,7 @@ export class TaskExecution {
         this.app.verification.recheck(tx, task, ticket);
       } else if (success && task.verification && ticket.planDigest !== null) {
         try { record.candidate = this.app.verification.candidate(ticket, candidate); }
-        catch { success = false; candidate = null; }
+        catch { success = false; candidate = null; record.failureClass = 'structural'; }
       }
       const failedWorker = record.failureCode === 'worker_failed';
       record.cleanup = clone(completion);
@@ -461,7 +464,7 @@ export class TaskExecution {
         if (success) { task.task.status = task.leader ? 'running' : 'completed'; task.task.phase = task.leader ? 'delivery' : 'terminal'; }
       }
       const wakeLeader = task.leader && clean && !cancelled && !terminal.has(task.task.status) &&
-        (verification || !success || task.plan.nodes.filter(node => node.id !== task.verification.nodeId).every(node =>
+        (verification || !success || task.nodes.some(node => node.status === 'failed') || task.plan.nodes.filter(node => node.id !== task.verification.nodeId).every(node =>
           task.nodes.find(state => state.id === node.id).status === 'completed'));
       if (wakeLeader) {
         task.task.status = 'running'; task.leader.stage = verification ? 'delivery' : 'work';
