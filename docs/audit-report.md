@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-09：单 Worker 取消合同接受，原归档接纳完成实物验证
+
+[ADR0093](adr/0093-node-worker-cancellation.md) 原提案与格式差量 `6517f850` 经维护者独立审查接受。补齐单 Worker 取消而非转发整个 Task cancel：目标 stop、依赖关闭、兄弟继续、问答/修正兼容和原 Operation 恢复作为同一个完整实现包。持久格式采用后继v6，不改正在验证的v5；取消能力与0092的 staging-only/never-permitted资格分开，正常Git owned执行必须支持，Git unbound不借新格式伪造未执行证明。仍先整合0092再改同一Core；接口当前仍501，不以合同接受宣布上线。
+
+只读发行包接纳源码 `ec2f1e0` 已独立审查无P0/P1，维护者19/19测试通过；原审查环境18/19就绪前退出原因未定，失败保留。随后真实GitHub原artifact `10090976947` 经metadata/双pin核验、原安装器及原CLI团队消费，Darwin双layout **2/2通过、零冷开重复启动**。这关闭接纳工具的原资产消费证据缺口，不授予发布权限，也不外推ECS部署、Linux模型或stable；[实证与摘要](node-task-service-status-2026-09-08.md)保留各自精确来源。
+
 ## 2026-09-09：许可前崩溃恢复方案接受，安装载体独立消费通过
 
 [ADR0092](adr/0092-node-unpermitted-reservation-settlement.md) 已接受实施，解决原 reservation 提交后、custody binding 提交前的两类容量无法收口问题。原始方案一次P1为任意审计回调移至许可后仍可能产生 custody 外部效果；聚合修正为首批v5仅metadata-only、打开/接管前拒绝任意披露回调，并明确原unknown Operation仅由命名例外、全部义务结清后收口投影，原回执不改。独立reviewer对正文摘要 `a8b8958c…` 复核无P0/P1，不记首审全绿。下一步是完整生产调用链与原故障窗口验证；不以协议接纳关闭恢复缺口。
