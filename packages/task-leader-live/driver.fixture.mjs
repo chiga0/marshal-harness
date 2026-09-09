@@ -41,6 +41,56 @@ function save(root, name, bytes) {
   try {fs.writeFileSync(fd, bytes); fs.fsyncSync(fd);} finally {fs.closeSync(fd);}
   const dir = fs.openSync(root, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY); try {fs.fsyncSync(dir);} finally {fs.closeSync(dir);}
 }
+const diagnosticEnum = (value, allowed) => allowed.includes(value) ? value : null;
+const diagnosticId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value) ? value : null;
+const diagnosticTime = value => typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value)) ? value : null;
+function diagnosticCleanup(value) {
+  if (!value) return null;
+  const exit = original => !original ? null : {observed: original.observed === true, at: diagnosticTime(original.at),
+    code: Number.isSafeInteger(original.code) && original.code >= 0 && original.code <= 255 ? original.code : null,
+    signal: diagnosticEnum(original.signal, ['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGABRT', 'SIGSEGV', 'SIGPIPE'])};
+  return {cleaned: value.cleaned === true, executionId: diagnosticId(value.executionId ?? value.started?.executionId),
+    startedAt: diagnosticTime(value.started?.startedAt), scope: diagnosticEnum(value.scope, ['inherited-process-group', 'unconfirmed']),
+    reason: diagnosticEnum(value.reason, ['owner_stop', 'owner_lost', 'deadline', 'cleanup_unconfirmed', 'launch_failed']),
+    agentExit: exit(value.agentExit), guardExit: exit(value.guardExit)};
+}
+/** Local failure forensics only, never Store input/cleanup authority or public
+ * logs. Original received outputText may contain sensitive material: no
+ * redaction/normalization is passed off as the original, no env/stderr is read. */
+export function saveFailureDiagnostics(root, entries) {
+  check(Array.isArray(entries) && entries.length <= 34, 'failure_diagnostics_limit'); // Two original 17-Attempt budgets.
+  const stat = fs.lstatSync(root);
+  check(stat.isDirectory() && !stat.isSymbolicLink() && (stat.mode & 0o077) === 0 &&
+    (typeof process.getuid !== 'function' || stat.uid === process.getuid()) && fs.realpathSync(root) === root, 'failure_diagnostics_root');
+  const directory = path.join(root, 'failure-diagnostics'); fs.mkdirSync(directory, {mode: 0o700});
+  const reasons = ['pi_agent_stop', 'pi_agent_error', 'pi_agent_aborted', 'pi_agent_length', 'pi_agent_toolUse', 'pi_agent_deferred',
+    'pi_provider_stopped', 'pi_provider_deadline', 'pi_provider_failed', 'pi_execution_scope_unproven', 'cleanup_unconfirmed',
+    'pi_session_not_fresh', 'pi_bridge_not_ready', 'pi_invalid_terminal', 'pi_missing_terminal', 'pi_invalid_progress',
+    'pi_progress_timeout', 'pi_progress_failed'];
+  const items = entries.map((entry, index) => {
+    const value = entry.result, output = value?.outputText;
+    let code = entry.failed ? 'completion_rejected' : !entry.settled ? 'completion_unsettled' : 'output_unavailable', file = null, bytes = null, outputDigest = null;
+    if (entry.settled && typeof output === 'string') {
+      code = 'output_over_limit';
+      if (output.length <= 65536) {
+        bytes = Buffer.byteLength(output);
+        if (bytes <= 65536) {
+          file = `output-${String(index).padStart(2, '0')}.txt`; const original = Buffer.from(output);
+          outputDigest = digest(original); save(directory, file, original); code = 'received_output_saved';
+        }
+      }
+    }
+    return {taskId: diagnosticId(entry.identity?.taskId), workerId: diagnosticId(entry.identity?.workerId),
+      executionType: diagnosticEnum(entry.identity?.executionType, ['leader', 'review', 'agent', 'verification', 'publication', 'postverify']),
+      executionId: diagnosticId(entry.started?.executionId), status: diagnosticEnum(value?.status, ['completed', 'failed', 'cancelled', 'unknown', 'passed', 'created', 'matched']),
+      stopReason: diagnosticEnum(value?.stopReason, ['end_turn', 'cancelled', 'error', 'length', 'toolUse', 'deferred', 'max_tokens', 'max_turn_requests', 'refusal']),
+      reason: diagnosticEnum(value?.reason, reasons), code, output: {file, bytes, digest: outputDigest}, cleanup: diagnosticCleanup(value?.cleanup)};
+  });
+  const metadata = {profile: 'leader-live-private-failure/v1', authority: false, mayContainSensitiveOutput: true, items};
+  save(directory, 'metadata.json', encode(metadata));
+  const fd = fs.openSync(root, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY); try {fs.fsyncSync(fd);} finally {fs.closeSync(fd);}
+  return {status: 'saved', path: 'failure-diagnostics/metadata.json', count: items.length, authority: false};
+}
 async function until(read, accept, deadline) {
   for (;;) {check(Date.now() < deadline, 'observation_deadline'); const result = await read(); if (accept(result)) return result; await pause(100);}
 }
@@ -267,6 +317,10 @@ export async function runLive(options) {
     catch {evidence.passed = false; evidence.checkpoint = null; evidence.failure = {stage: 'cleanup', code: 'shutdown_unconfirmed'};}
     try {publication?.close();} catch {evidence.passed = false; evidence.checkpoint = null;}
     try {await reports?.close();} catch {evidence.passed = false; evidence.checkpoint = null;}
+    if (!evidence.passed && !evidence.checkpoint?.passed) {
+      try {evidence.failureDiagnostics = saveFailureDiagnostics(options.runDir, observed);}
+      catch {evidence.failureDiagnostics = {status: 'unavailable', code: 'failure_diagnostics_write_failed', authority: false};}
+    }
     if (!evidence.passed) evidence.fullDelivery = false;
     evidence.finishedAt = new Date().toISOString(); save(options.runDir, 'evidence.json', encode(evidence));
   }

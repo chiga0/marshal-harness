@@ -7,7 +7,8 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {encode, digest} from '../task-store/store.mjs';
 import {contract, leaderRequestDigest, leaderReplyDigest} from '../task-api/contract.mjs';
-import {parseOptions, runLive, workPackage, reviewPolicy, liveApplicationOptions, managedPrompt, createObservedBusiness} from './driver.fixture.mjs';
+import {parseOptions, runLive, workPackage, reviewPolicy, liveApplicationOptions, managedPrompt, createObservedBusiness, saveFailureDiagnostics} from './driver.fixture.mjs';
+import {trackExecution} from '../task-qwen-live/driver.fixture.mjs';
 import {ArtifactDepot} from '../task-artifacts/depot.mjs';
 import {createFileBusiness, isManagedFileBusiness, fileLayoutDigest} from '../task-business/index.mjs';
 import {filePermission} from '../task-pi-live/driver.fixture.mjs';
@@ -30,6 +31,67 @@ function ticket(answer = 'paid') {
   return {taskId, input: {inputArtifacts: [{id: 'input-sales', kind: 'input', name: 'sales.json', digest: hash(data), bytes: encode(data).length}],
     leaderReplyRefs: [ref], leaderReplies: [reply(answer)], verification: {binding: {profile: 'task-verification/v1'}}, fileLayout: {inputs: [], allowedPaths: []}}};
 }
+
+test('private failed-decision forensics preserve original Provider output bytes without changing the opaque result or exposing incidental fields', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-leader-diagnostics-')));
+  t.after(() => fs.rmSync(root, {recursive: true}));
+  const privateMarker = 'SYNTHETIC_PRIVATE_CANARY', incidental = 'SYNTHETIC_ENV_STDERR_CANARY';
+  // Deliberately invalid original output: do not normalize BOM, CRLF, duplicate
+  // keys or non-JSON prose when preserving private failure evidence.
+  const outputText = '\uFEFF```json\r\n{"summary":"' + privateMarker + '","summary":"重复"}\r\n```';
+  const started = {executionId: 'original-parser-fixture', startedAt: new Date().toISOString()};
+  const raw = {providerId: 'pi', status: 'completed', stopReason: 'end_turn', reason: 'pi_agent_stop', outputText,
+    env: {privateValue: incidental}, stderr: incidental, sessionId: incidental,
+    cleanup: {executionId: started.executionId, started, scope: 'inherited-process-group', cleaned: true, reason: 'owner_stop',
+      agentExit: {observed: true, code: 143, signal: null, at: new Date().toISOString()},
+      guardExit: {observed: true, code: null, signal: 'SIGKILL', at: new Date().toISOString()}, unknown: incidental}};
+  const original = structuredClone(raw), entries = [];
+  const provider = {id: 'pi', start() {const handle = {started: Promise.resolve(started), completion: Promise.resolve(raw), stop: async () => raw};
+    entries.push(trackExecution({taskId, workerId: 'worker-leader', executionType: 'leader'}, handle)); return handle;}};
+  const port = createLeaderPort({id: 'diagnostic-fixture', providerId: 'pi', policy: planCase().leader,
+    prepare: () => ({prompt: 'controlled'}), parseDecision: parseManagedOutput});
+  const result = await port.start({ticket: {executionType: 'leader', providerId: 'pi', input: {leader: {callId: 'call-original', inputDigest: sha}}},
+    provider, prepared: {prompt: 'controlled'}}).completion;
+  assert.equal(result.status, 'failed'); assert.equal(result.cleanup.cleaned, true);
+  const receipt = result.receipt, summary = saveFailureDiagnostics(root, entries);
+  assert.equal(summary.authority, false); assert.equal(result.receipt, receipt); assert.deepEqual(raw, original);
+  const directory = path.join(root, 'failure-diagnostics'), text = fs.readFileSync(path.join(root, summary.path), 'utf8');
+  const metadata = JSON.parse(text), item = metadata.items[0], saved = fs.readFileSync(path.join(directory, item.output.file));
+  assert.deepEqual(saved, Buffer.from(outputText)); assert.equal(item.output.bytes, saved.length); assert.equal(item.output.digest, digest(saved));
+  assert.equal(item.status, 'completed'); assert.equal(item.stopReason, 'end_turn'); assert.equal(item.reason, 'pi_agent_stop');
+  assert.equal(item.cleanup.executionId, started.executionId); assert.equal(item.cleanup.agentExit.code, 143);
+  assert.equal(metadata.authority, false); assert.equal(metadata.mayContainSensitiveOutput, true);
+  assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
+  for (const file of fs.readdirSync(directory)) assert.equal(fs.statSync(path.join(directory, file)).mode & 0o777, 0o600);
+  assert.ok(!text.includes(privateMarker) && !text.includes(incidental));
+  assert.ok(!JSON.stringify(summary).includes(privateMarker));
+  assert.throws(() => saveFailureDiagnostics(root, entries), {code: 'EEXIST'}); assert.deepEqual(fs.readFileSync(path.join(directory, item.output.file)), saved);
+});
+test('private failure forensics are bounded and closed; oversized/missing/unsettled output and unrecognized strings never become raw public metadata', t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-leader-diagnostics-bounds-')));
+  t.after(() => fs.rmSync(root, {recursive: true}));
+  const entry = outputText => ({settled: true, failed: false, identity: {taskId}, result: {outputText}});
+  const exact = 'a'.repeat(65536), unicode = '中'.repeat(22000), marker = 'PRIVATE VALUE MUST NOT ENTER METADATA';
+  const values = [entry(exact), entry(unicode), entry('a'.repeat(65537)), {settled: true, failed: true}, {settled: false},
+    {...entry(undefined), identity: {taskId: marker}, result: {status: marker, reason: marker, stopReason: marker,
+      cleanup: {reason: marker, scope: marker, executionId: marker, started: {startedAt: marker}, guardExit: {signal: marker, at: marker}}}}];
+  const summary = saveFailureDiagnostics(root, values), bytes = fs.readFileSync(path.join(root, summary.path));
+  const metadata = JSON.parse(bytes), codes = metadata.items.map(item => item.code);
+  assert.deepEqual(codes, ['received_output_saved', 'output_over_limit', 'output_over_limit', 'completion_rejected', 'completion_unsettled', 'output_unavailable']);
+  assert.equal(metadata.items[0].output.bytes, 65536); assert.equal(metadata.items[1].output.bytes, 66000);
+  assert.equal(fs.readdirSync(path.join(root, 'failure-diagnostics')).length, 2); // One original output + closed metadata.
+  assert.ok(!bytes.includes(marker));
+  assert.throws(() => saveFailureDiagnostics(root, Array(35).fill(entry(''))), {code: 'failure_diagnostics_limit'});
+});
+test('failure evidence never follows a diagnostic directory symlink or accepts a public root', t => {
+  const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-leader-diagnostics-path-')));
+  t.after(() => fs.rmSync(parent, {recursive: true}));
+  const root = path.join(parent, 'run'), outside = path.join(parent, 'outside');
+  fs.mkdirSync(root, {mode: 0o700}); fs.mkdirSync(outside, {mode: 0o700});
+  fs.symlinkSync(outside, path.join(root, 'failure-diagnostics'));
+  assert.throws(() => saveFailureDiagnostics(root, []), {code: 'EEXIST'}); assert.deepEqual(fs.readdirSync(outside), []);
+  fs.chmodSync(root, 0o755); assert.throws(() => saveFailureDiagnostics(root, []), {code: 'failure_diagnostics_root'});
+});
 function question() {
   const task = {...fresh('Task'), id: taskId, status: 'awaiting-answer', plan: null, revision: 2, deadlineAt: deadline()};
   const view = fresh('LeaderView'); view.taskId = taskId; view.taskRevision = task.revision;
