@@ -199,6 +199,9 @@ export function renderLeaderPrompt(input) {
     'conclude.basisDigests只取当前review/acceptance以及snapshot.history各项digest，不取readSet.history聚合digest，也不把publication/postverify聚合digest混入；' +
     'succeeded仍须Core确认完整交付、所需授权及后验，阶段通过不等于完成；wait仅在确有原待答/待批准/在途工作时使用。' +
     'plan.proposal的scope必须为字符串数组，不是权限对象；可选budget={timeoutMs,maxAttempts,maxWorkers}只能减少原限额。' +
+    '用户未明确要求缩减预算时，省略整个proposal.budget，沿用snapshot.task.limits中的原Task限制；不要为省token、猜测调用次数或照搬最小示例而臆减。' +
+    'maxAttempts是整个Task累计执行上限，不是剩余次数，也不是token预算；原问答/Leader已消费的Attempt不能扣除后再把余数写成总上限。' +
+    '用户明确要求合法缩减时仍可提供budget，但必须容纳已消费以及原计划作者、Leader、Review、Verifier、所需发布/后验和总结，原Core继续检查，不足则拒绝。' +
     'proposal.nodes是1至64个{id,role,goal,scope,providerId}对象的数组，role只能为planner/author/reviewer/integrator/verifier，不能用leader/publisher；' +
     'providerId必须显式为null（使用原默认Provider）或原已配置Provider的ID，不可省略/猜测。summary和goal各≤8192 UTF-8 bytes；' +
     '每个scope为0至32个非空字符串，各≤4096 UTF-8 bytes。proposal.edges是0至256个{from,to}对象的数组，引用原节点ID，无自环/重复边/环。' +

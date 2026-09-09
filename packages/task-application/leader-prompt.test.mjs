@@ -214,3 +214,39 @@ test('documented Plan arrays, roles, DAG, verifier sink and v7 budget are still 
     assert.equal(f.read(tx => f.app.get(tx, task.id)).plan, null);
   }
 });
+
+for (const maxAttempts of [undefined, 8, 12]) test('original publication Plan after two Leader attempts: optional budget=' + (maxAttempts ?? 'omitted'), async t => {
+  // No private model output is copied. This is the observed failure shape:
+  // original budget17, question/reply then second Leader, three DAG nodes,
+  // configured publication. Effects must never execute in this admission test.
+  const unexpected = () => {throw new Error('publication must not execute during plan admission');};
+  const publication = {id: 'reports', policyDigest: hash({id: 'test-publication'}), configuration: {profile: 'controlled-plan-admission'},
+    configurationDigest: hash({profile: 'controlled-plan-admission'}), start: unexpected, lookup: unexpected, assertDisjoint: unexpected,
+    postverify: {id: 'reports-postverify', start: unexpected}};
+  const f = fixture(t, {publication, publicationExpected: () => ({original: 'expected'})}), limits = {timeoutMs: 600000, maxAttempts: 17, maxWorkers: 3};
+  const task = await f.call({operation: 'task.create', key: 'budget-create', body: {intent: '完整交付两个地区并明确授权发布；地区尚需答复', limits}});
+  const intake = f.take('leader'); await f.decision(intake, rendered(intake).examples.ask.actions);
+  const question = (await f.call({operation: 'task.leader', taskId: task.id})).pendingRequest;
+  await f.call({operation: 'task.leader.reply', taskId: task.id, requestId: question.id, key: 'budget-answer',
+    body: {expectedRevision: (await f.get(task.id)).revision, requestDigest: question.requestDigest, answer: 'north'}});
+  const ticket = f.take('leader'), before = f.read(tx => f.app.get(tx, task.id)), {prompt, examples} = rendered(ticket);
+  assert.equal(before.attempts, 2); assert.equal(before.leader.calls, 2); assert.equal(proposal.nodes.length, 3);
+  assert.deepEqual(ticket.input.leader.snapshot.task.limits, limits); assert.equal(Object.hasOwn(examples.plan.actions[0].proposal, 'budget'), false);
+  for (const text of ['省略整个proposal.budget', '沿用snapshot.task.limits', '不要为省token', 'maxAttempts是整个Task累计执行上限', '用户明确要求合法缩减时仍可提供budget'])
+    assert.ok(prompt.includes(text));
+  const candidate = structuredClone(proposal);
+  if (maxAttempts !== undefined) candidate.budget = {...limits, maxAttempts};
+  const original = structuredClone(candidate), result = await f.decision(ticket, [{type: 'plan', proposal: candidate}]);
+  assert.deepEqual(candidate, original); // Guidance/parser never rewrites the returned model budget.
+  const after = f.read(tx => f.app.get(tx, task.id));
+  assert.equal(after.attempts, 2); assert.deepEqual(after.limits, limits); assert.equal(after.approved, null);
+  assert.equal(f.read(tx => f.app.execution.capacity(tx).value.active.length), 0);
+  // Original Core minimum: 3 nodes + 2 consumed + 5 following managed calls /
+  // checks + 2 publication/postverify =12. Keep8 rejected;12 is legal reduction.
+  if (maxAttempts === 8) {
+    assert.equal(result.status, 'failed'); assert.equal(after.failureCode, 'capacity_exceeded'); assert.equal(after.plan, null);
+  } else {
+    assert.equal(result.status, 'completed'); assert.equal(after.task.status, 'awaiting-approval');
+    assert.deepEqual(after.plan.budget, {...limits, maxAttempts: maxAttempts ?? 17});
+  }
+});
