@@ -6,6 +6,8 @@
 
 ## 1. 三个用户出口，不再把平台准备当交付
 
+**2026-09-09 12:39 CST 主线增量**：输入审计与简启动已独立审查、最终组合29/29通过，source=`fe04a8a`正常合入并推送`ee3932ffc135f89ce0395f159696f93c6684da1d`；`pendingRemoteSync=false`。原生输入正文默认不保留，显式受信策略才披露；handed-off不等于模型消费，简启动仍需显式配置。下一项为API-STABLE响应上界和事件续读，不重开接口平台或UI。真实修正/分权/完整恢复和发行仍待验收，[精确证据与失败](node-task-service-status-2026-09-08.md)。
+
 **2026-09-09 12:20 CST 主线同步**：已审运行问答和同计划局部修正 source `8f8ff8d` 正常合入并推送 `85fc62a3338fc15c408e941e16a7c882b0be4a6d`，`pendingRemoteSync=false`；精确 source 的 Ubuntu/macOS Node team CI 均通过。实际输入审计、简启动仍在独立实施，OpenAPI 为candidate，不提升阶段状态。此前“待合入/权限阻塞”记录仅代表对应历史时点。[精确范围](node-task-service-status-2026-09-08.md)。
 
 **2026-09-09 12:04 CST 增量**：同计划局部修正完整实现经一次聚合 rework、原独立 reviewer 复审，两项P1关闭；最终集成定向80/80通过。功能分支 `d650238` 真实Pi在修正启用配置下首次完整交付26.288秒、双作者交叠11.788秒、下载7单/1850 cents、正常重开无重复；没有实际触发repair，不把首通冒充修正实机成功。main权限仍阻塞；下一步并行补实际prompt/context审计与原服务简启动。B1/B2/API-STABLE/B3退出条件和完成状态不变，[精确证据](node-task-service-status-2026-09-08.md)。
