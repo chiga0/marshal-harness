@@ -43,7 +43,8 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
   // explicit local settings. They remain packaged and are exercised below,
   // rather than being treated as side-effect-free library imports.
   const entrypoints = new Set(['packages/task-service/main.mjs', 'packages/agent-runtime/guard.mjs', 'packages/agent-runtime/custody-process.mjs',
-    'packages/task-regional-window/checker.mjs', 'packages/task-regional-window/service-config.mjs']);
+    'packages/task-regional-window/checker.mjs', 'packages/task-regional-window/service-config.mjs',
+    'packages/task-publication-report/runner.mjs']);
   const imports = SOURCE_FILES.filter(file => file.endsWith('.mjs') && !entrypoints.has(file));
   const script = imports.map(file => `await import(${JSON.stringify(pathToFileURL(path.join(f.target, file)).href)});`).join('\n');
   const loaded = spawnSync(process.execPath, ['--input-type=module', '-e', script], {cwd: f.root, timeout: 10000, encoding: 'utf8'});
@@ -64,6 +65,11 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
   assert.equal(checker.status, 1);
   assert.equal(checker.stdout, ''); // Invalid input cannot create a successful verification frame.
   assert.equal(checker.stderr, '');
+  const publisher = spawnSync(process.execPath, [path.join(f.target, 'packages/task-publication-report/runner.mjs')],
+    {cwd: f.root, env: {}, input: '{}\n', timeout: 10000, encoding: 'utf8'});
+  assert.equal(publisher.status, 1);
+  assert.equal(publisher.stdout, ''); // Packaged child rejects missing authority; no side effect or secret output.
+  assert.equal(publisher.stderr, '');
 });
 test('never overwrite an existing destination and reject source-relative targets', t => {
   const f = fixture(t); f.create();

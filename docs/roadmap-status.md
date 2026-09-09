@@ -6,6 +6,8 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
+**2026-09-09 17:24 增量**：Leader API 源 `b3910e95a3dcd038d1b2c9ae7b4a19551724d771` 经独立审查无 P0/P1、API/客户端 45/45 与发行包回归 20/20 后，已合入并正常推送 `07e3afc29ed992f17dba857c7c16e4419f43766f`；该批次远端同 SHA，`pendingRemoteSync=false`。新增两项 Leader 子资源，机器合同当前共 27 操作/66 Schema，Ajv2020 的 45 示例通过；原 58 Schema 和 24 路径对象（25 操作）逐对象保持不变。新增接口尚不等于 v7 Core 已接线，既有 API-STABLE 结论仍限原 25 操作。有限本机报告端口源 `47f10417e93ca4bbfc8d3bcdc178a1636cf0b831` 已独立通过 11/11（含真实 HTTP GET 后验与五个所属子进程故障窗口），当前只证明端口，不证明 Task 原授权、完整 Leader 或正式发布。Core 与真实 Leader 驱动仍在实施；B2-L 的整链成熟度保持 DESIGN，不因并行组件通过升级。
+
 **2026-09-09 16:57 后继**：上一代码/证据批次已正常推送并核对 main/origin/main=`3f359fd0fd88987b8ea2f3d3fbb36058834b003b`，该批次 `pendingRemoteSync=false`，覆盖下段记录时的未推送状态。[ADR0095](adr/0095-node-managed-leader-contract.md)/[Leader 机器合同](node-leader-execution-contract.md)已独立审查接纳，按 Core、API/客户端、本机报告端口三个无冲突范围实施；B2-L 仍 DESIGN，未因合同接纳升级。
 
 **当前研发同步**：单Worker取消Core=`070086e9`、整合/实机source=`190171e0`已本地合入main `25ff8315cbf63e907aaaa47f869d76d592c89acc`，记录时`pendingRemoteSync=true`待正常推送。新v6显式profile已支持原HTTP取消，旧格式仍501；一次聚合P1修复经原reviewer独立43/43通过，整合API/客户端/发行包/driver56/56、真实CLI repair/取消15/15与58Schema/35示例通过。真实Pi一次45.843秒仅停止east，west原550候选保留，冷开原回执/零替身，不是独立Task交付。存储有界写失败测试已随f27784dd推送。最近已记录的双平台完整CI仍为旧1a9dc3c/run34323362296，不能替代本源；[精确证据与失败范围](node-task-service-status-2026-09-08.md)。
