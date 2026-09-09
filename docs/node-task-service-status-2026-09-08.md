@@ -2,6 +2,18 @@
 
 ## 当前结论
 
+### 2026-09-09 13:06 CST：当前候选取消、双平台回归及新目录恢复补验
+
+精确产品候选仍是已推送的 `69cfacee2fbea366174744167d5a2c3a3dfeee89`。[Node team CI 34312972893](https://github.com/chiga0/marshal-harness/actions/runs/34312972893) 已通过：macOS **511/511、222.154秒**，Ubuntu **511/511、225.774秒**，均零失败/取消/跳过。不是把上一源510项移作新源证据。
+
+同源真实 Qwen0.23.0 `--scenario cancel` 一次 **14.143秒通过**：Task=`task-6c21a613-7324-4a31-b380-72bd953c6db0`，原 planner 完成后两个作者的原进程/HTTP投影均活跃，发送一次取消，两原进程均在请求后退出并cleanup；3 Attempts、Task cancelled、Operation succeeded、verifier 0、无delivery。正常同版本实例重开保留 create/approve/cancel原回执、相同Task，重复启动0。原证据 `/private/tmp/marshal-current-qwen-cancel.ohj9Di/run/evidence.json`，SHA-256=`822ebf15539c788212b791b483cc98354b4e2563770fda5de0b1ce6728a4e744`；入口为本机已安装 `/Users/gawain/.local/lib/qwen-code/lib/cli-entry.js`，不再用旧README中的不存在路径。没有读取或复制登录文件、改变模型配置或自动重试。
+
+该取消发生在作者启动后的早期窗口，两个原生命周期交叠45ms，不能声明模型已开始token/tool工作；权限回调0/0不证明权限隔离。此原Qwen driver未启用新custody持久化profile，因此是当前代码原layout1的真实HTTP取消/普通进程清理证据，不替代Pi运行中取消、新custody crash或Worker/Publisher分权。本机ordinary-user、production=false口径保留。执行前原取消/驱动无模型回归独立17/17通过2.426秒。
+
+同版本冷备份测试 source=`1c3c4398796e5699448f9e89e17010606dca9940`，集成测试source=`796d40c`（生产字节为69cface；随后9edb637仅补部署README）。主Agent独立运行原CLI/HTTP/SQLite/实际受管协议进程及独立checker，**4/4 PASS、13.066秒**：正常SIGTERM且clean/exit0→完整22文件保权限/摘要/fsync复制→新目录open；原37条事件、SQL事实、回执/下载保持、旧任务零重派，再完成新4 Attempt团队。缺DB拒绝且不新建、缺blob的metadata/content均503且不补造、同物理目录第二writer拒绝。测试作者此前两次夹具假设错误（metadata也验blob、artifact ID非裸UUID）保留，未修改生产合同；这不是在线备份、断电证明、跨版本迁移或克隆副本防分叉。旧根和备份必须保持停用。
+
+这关闭相应API实机失败控制与冷复制恢复测试的证据缺口；API合同冻结结论、备份测试的独立review和后继main同步另按实际结果记录，不预填正式发布。B1实际Publisher分权、B2未覆盖的真实局部修正、B3持续多Task/故障/平台部署与正式资产仍开放。
+
 ### 2026-09-09 12:59 CST：当前候选真实问答交付与规划合同修正
 
 sourceHead=`42426a2ad35e96569b356e283177a93b98ab1fcb`，localMergeSha=`69cfacee2fbea366174744167d5a2c3a3dfeee89`，已正常推送并核对远端一致，`pendingRemoteSync=false`。该候选真实 Pi0.84.4/Node24.15.0 在原 HTTP driver 上完成规划、一次批准、双作者、运行中业务问题/答案 ACK、独立命令验收、成果下载消费与正常实例重开，**29.624秒**、作者生命周期交叠 **10.189秒**、4 Attempts、1次 verifier，原执行全部确认清理。east 等待答案时 west 已完成；原 east Worker/Attempt 消费答案后继续，没有新派替代。下载338 bytes：east cancelled为1单/9000 cents，west paid为2单/550 cents。正常重开保留原回执、相同制品，重复启动0；业务字段 cancelled 不是 Task 取消。
