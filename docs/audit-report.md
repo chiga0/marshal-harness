@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-09 19:23：首个真实 Leader 交付通过，保留第二需求失败与接缝教训
+
+固定 Node/Pi 的首个真实 Task 已经完成问答、计划、双作者、独立 Review/Verification、原授权交付及后验，正常冷开无重复启动；精确 Task/源/制品与范围见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)。这证明一个真实需求可经完整 Leader 链交付，不证明同配置双需求、真实 repair 或 B3；本轮第二需求在审批前失败，整轮仍失败，继续诊断原输出而不是换掉失败需求。
+
+先前实机的 checker 卡住由接缝测试失真导致：checker 等 EOF，原 Runtime 保持 stdin，测试却主动 `stdin.end()`。`e00e9446` 只改 checker 按有界 canonical LF 帧读入，以原 `launchCommand`/guard 替换测试中的 EOF 假设；修前失败、修后完整15/15与独立2/2通过。同类只读核对未发现发行库存其他 checker 有相同 EOF 等待问题。旧运行经原 HTTP 取消并保留现场，不倒填成功。改进是验证实际 producer/consumer 接缝，而非继续添加仅在 helper 输入下成功的测试；不另建治理平台。
+
 ## 2026-09-09 19:02：冷结算问题关闭，真实模型暴露未完整传达的输出合同
 
 源 `93613938` 的 managed 原 custody 结算修复已独立审查及 44/44 回归通过，随主线 `37d2559d` 正常推送；原 DAG 误判 P1 关闭，但同 Task successor、发布 lookup 和后验恢复尚未整体验收。具体合并与验证范围见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)，不把 fail-closed 结算冒充业务自动续接。

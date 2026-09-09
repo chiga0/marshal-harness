@@ -6,6 +6,10 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
+**19:23 最新实机出口（覆盖下述较早检查点的待办口径）**：主线 `1921f8a5e448d6914cfa7259c210ce203b80ae59` 已正常推送，包含已独立审查的提示合同 `7b5cc408` 与 checker LF 读帧修复 `e00e9446`。原实机冻结源 `765b89e9d6d57accccae6567e3247862759d28b5` 与该主线树一致。固定 Node 24.15.0/Pi 0.84.4 下，Task `task-aa7d4dae-6338-480a-a70a-cf69634bcff9` 首次完整真实交付通过：12 Attempts、6 次 Leader、两作者交叠 14246ms、独立 Review/Verification、原明确授权发布与后验、132B 报告实际消费，正常冷开原交付/Leader/收据相同、重复启动 0；rework=0、firstpass=true，usage=null 仍表示未知。原制品/消费摘要同为 `sha256:11c023b25a749fab1487bab6c4db92a376cbad179d7c1f3075c213a113e9b9df`。
+
+同配置第二个不同回答的 Task 在 `leader-1-approval` 失败，原输出已保存；因此整轮 `passed=false/fullDelivery=false`，不能以第一项成功关闭双需求覆盖或 B2-L。原 SQLite 已确认：模型将预算17自行缩为8，而计划最低需要12，Core在用户审批前以 `capacity_exceeded` 拒绝；不降低门禁或改写原回答。证据 `/private/tmp/marshal-leader-pi-frame.ALy8wR/run/evidence.json`，不改写前序失败成本。此前 `marshal-leader-pi-contract.cFe1Fy` 越过 intake/双作者/Review 后因 checker 等待 EOF 卡住，维护者经原 HTTP 取消止损，非自然通过；修前原 guard 回归失败，修后完整 15/15、独立 2/2 通过，Runtime 协议未改。完整恢复源 `5d2dd3c0` 的最终原 CLI/HTTP 三项 3/3（50.204 秒）通过，但独立审查发现无计划恢复漏计发布两次执行的 P1，待同轮修复/复审，尚未合入；部署配置仍在实现。以下 SHA/CI 均保留各自历史范围。
+
 **当前代码与证据**：Core 最终审查源 `40468f343ba53d71b9f2418cf1d970e2ccfa360b`，`localMergeSha`、main 与 origin/main 均为 `2b203cb2f3b08933736dcf0f48774a9d491d4092`，已正常推送，`pendingRemoteSync=false`。原四项 P1 及 Review→verify 闭包问题经聚合修正、独立复审关闭；最终独立分类/生命周期回归 17/17，集成 HTTP/SQLite 17/17 含完整局部修正通过，独立同包安装与驱动 18/18 通过。本地所测包包含 55 文件、821293 bytes，manifest=`sha256:f7eea46b38042b87f8b1d4bfa5d3320a33bbf5e26480949d564ee07ff881d9e9`。这些证据使用受控 peer、modelCalls=0；证明 Core 与安装消费检查点，不等于真实模型或完整故障恢复通过。
 
 **同源 CI**：[Node run 34340458961](https://github.com/chiga0/marshal-harness/actions/runs/34340458961) 的 head 为上述 `2b203cb2`、attempt 1，五个 job 已 `completed/success`：macOS 回归 `102429772105`、Ubuntu 回归 `102429772367`、单次打包 `102432181259`、macOS 同包消费 `102432264130`、Ubuntu 同包消费 `102432264176`。原 candidate artifact=`10099801881`，运输归档 840828 bytes、digest=`sha256:7c828c5add75b429163bcf105193942efb6182cb1b210f456854afa694223179`。维护者独立下载两平台原 JSON，确认都消费这个 artifact 和源 `2b203cb2` 的 55 文件包，manifest=`sha256:6409fe2ac6629b5c003e34d14ec2b12c8273b5ec64286ddd97b6b34b6add0541`；它与上面的本地 `40468f` 包 manifest 分属不同源，运输摘要也不代替 manifest。每平台同配置两个 Task 各 12 Attempts（6 Leader、2作者及 Review/Verifier/Publication/Postverify），交付两份不同 93B 报告；modelCalls=0，正常冷开重复启动/发布均为 0。原 JSON 保留于 `/private/tmp/marshal-v7-ci-evidence.KAONbJ`；不把无模型 CI 或正常冷开当真实模型、冷故障或 production 证据。
@@ -20,7 +24,7 @@
 | --- | --- | --- |
 | B1 真实团队交付 | `PASSED`（可信单用户本机 PoC） | 原七条件独立复核通过；旧 non-production 不改，不外推全程 Leader、生产或 stable |
 | B2 日常本地 API | `IN_PROGRESS` | 原问答、审计及单 Worker 取消已有实机；B2-L 完整模型业务与恢复未过，真实模型局部修正及用量缺失仍明示 |
-| B2-L 全程受管 Leader | `IN_PROGRESS`（Core 已集成，正式发布前必过） | 受控完整链与同包消费已过，冷结算 P1 已修；真实模型交付/修正/授权后验、同 Task 故障续接与产品部署配置仍须验收 |
+| B2-L 全程受管 Leader | `IN_PROGRESS`（首个真实完整交付已通过） | 第一个真实 Task 授权交付/后验/冷开通过；同配置第二需求失败、真实局部修正、完整恢复合入及产品部署配置仍须完成 |
 | API-STABLE 核心接口检查点 | `PASSED`（保留原范围） | 原 25 操作/58 Schema/同包客户端与四出口通过；不自动覆盖新增 Leader 支持面，不等于正式发行或任意版本兼容 |
 | B3 正式可靠发布 | `IN_PROGRESS` | 已有有界冷备份、隔离、v5/v6 故障、EFBIG/SQLite 写失败与安装消费证据；v7 恢复、声明平台部署/长期故障、ENOSPC 与受保护同资产发行仍未完成 |
 
