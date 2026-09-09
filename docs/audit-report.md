@@ -1,6 +1,12 @@
 # 设计审计报告
 
-## 2026-09-09 最新：同配置双需求真实交付通过，恢复 P1 与部署配置审查关闭
+## 2026-09-09 最新：安装真实 Pi 仍失败，先补精确诊断再判断后继
+
+安装消费者首轮的 `evidence_mismatch` 已定位为 JSON 值的 prototype 比较缺陷，修复源 `253ab696` 已合入 `44cd0397`，不降低业务断言。第二轮在 `task-0-awaiting-approval` 出现 `unexpected_terminal/leader_result_rejected`；第二次 Leader 原输出未保存，当前无法精确归因，不把失败猜成账号、模型能力或某字段格式问题。未进行第三次模型盲重试，历史失败与费用保留。
+
+诊断源 `cdf1913c` 经最终独立 14/14（2.223 秒）、无 P0/P1，合入 `d9d6867aabaf46372bfcedd629167af6ce0996c1`。SQLite FULL 源 `4a141846` 经维护者全 diff 独立审阅、与原 EFBIG 测试组合 2/2（23.407 秒），合入 `4633aecc7500bf1c367865aa2a73f67b4276f28d`；两批 diff/secret/merge-tree 通过，已正常推送并核对 main/origin 同 SHA，`pendingRemoteSync=false`。原 SQLite 实际返回 `SQLITE_FULL=13`、页数上限 38，失败上传完整回滚，冷开与原请求重放无重复启动，后继团队 4 次执行通过，零模型调用；不代表 OS `ENOSPC` 或宿主磁盘耗尽，也不代表新的安装模型实测通过。正式安装交付、真实局部修正和完整 B3 门禁仍未关闭，既有双需求成功仅按原源保留。[当前表](roadmap-status.md#业务交付当前表)集中维护来源与后继结果。
+
+## 2026-09-09 既有检查点：同配置双需求真实交付通过，恢复 P1 与部署配置审查关闭
 
 **最新实机与合入检查点**：固定 Node 24.15.0/Pi 0.84.4，同一配置的两个不同需求均完成真实 Leader 全程交付，整轮 217.58 秒，`passed=true/fullDelivery=true`。冻结源 `529136d3` 与主线合并 `501d6d70` 的 Git tree 相同（`f703fedebad2a7421b16f620368cf4eb74e2806a`）；证据 `/private/tmp/marshal-leader-pi-budget.IJKDQw/run/evidence.json`。Task `task-28b4f501-ae25-4830-afb9-a48474cd8b41` 与 `task-33c49346-aaeb-4ee9-8aba-d6d19a74f463` 各 12 Attempts、6 次 Leader，双作者交叠分别 18299/10603ms；独立 Review/Verification、原明确授权发布及后验、132B/137B 两份不同报告的实际消费均通过。两项正常冷开原交付/Leader/收据相同、重复启动 0；均为 `rework=0/firstpass=true`，`usage=null` 仍为未知，不证明真实局部修正，正常实机结果不外推故障恢复。独立核对原 SQLite 完整性、外键及 300 条事件摘要均通过，核对前后库摘要未变；第二项回答 `cancelled` 是业务筛选条件，不是产品 Task 取消。
 

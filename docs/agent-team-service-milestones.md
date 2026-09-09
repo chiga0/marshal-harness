@@ -1,6 +1,6 @@
 # Marshal Agent Team：Task-first 实施 Milestone
 
-2026-09-09：[ADR0095](adr/0095-node-managed-leader-contract.md)及[Leader 机器合同](node-leader-execution-contract.md)的 v7 Core 已集成主线，B2-L 为 IN_PROGRESS。同配置两个真实 Pi Task 的全程交付及正常冷开通过；恢复 P1 已独立关闭，恢复与完整部署配置已合入主线。仍缺正式安装后的真实 Pi、真实局部修正与完整故障恢复及声明支持面的验收；不以正常冷开或无模型安装检查点代替这些出口。既有 B1/API-STABLE 的限定范围不变，精确来源与未闭问题见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)。
+2026-09-09：[ADR0095](adr/0095-node-managed-leader-contract.md)及[Leader 机器合同](node-leader-execution-contract.md)的 v7 Core 已集成主线，B2-L 为 IN_PROGRESS。同配置两个真实 Pi Task 的全程交付及正常冷开通过；恢复 P1 已独立关闭，恢复与完整部署配置已合入主线。安装真实 Pi 两轮未过：消费者 JSON 值比较缺陷已修复，第二轮 Leader 拒绝缺少原输出而未能精确归因，尚未第三次模型盲重试。诊断与 SQLite FULL 已独立审查/验证并合入推送；它们不使安装模型交付通过，页数上限 FULL 不替代真实 ENOSPC。仍缺正式安装后的真实 Pi、真实局部修正、完整故障恢复及声明支持面的验收；不以正常冷开或无模型安装检查点代替这些出口。既有 B1/API-STABLE 的限定范围不变，精确来源与未闭问题见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)。
 
 更新：2026-09-09。最终方案见[服务架构](agent-team-service-architecture.md)，合同由已接受的 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)、[ADR 0088](adr/0088-node-task-service-production-projection.md)、[ADR 0094](adr/0094-trusted-single-user-role-team.md)与上述 ADR0095 按 profile 承载。合同接受允许实施，不表示实现或生产可用；实际事实仍只记 [Roadmap](roadmap-status.md#业务交付当前表)。
 
