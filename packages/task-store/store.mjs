@@ -421,6 +421,11 @@ class Transaction {
   commands(after = '', limit = LIMITS.page) { return this.#guard(() => {
     page(after, limit); return this.#db.prepare('SELECT id FROM outbox WHERE id>? ORDER BY id LIMIT ?').all(after, limit).map(row => this.command(row.id));
   }); }
+  taskCommands(taskId, after = '', limit = LIMITS.page) { return this.#guard(() => {
+    check(id(taskId)); page(after, limit);
+    return this.#db.prepare('SELECT id FROM outbox WHERE task_id=? AND id>? ORDER BY id LIMIT ?')
+      .all(taskId, after, limit).map(row => this.command(row.id));
+  }); }
   enqueue(value) { return this.#guard(() => {
     check(closed(value, ['id', 'taskId', 'nodeId', 'attemptId', 'kind', 'inputDigest', 'payload', 'source']) && id(value.id) && id(value.taskId) && COMMANDS.has(value.kind) && hash(value.inputDigest));
     const nodeId = value.nodeId ?? '', attemptId = value.attemptId ?? '';

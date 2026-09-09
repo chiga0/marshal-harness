@@ -4,13 +4,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
-import {Store, REPAIR_FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, encode, digest} from '../task-store/store.mjs';
+import {Store, FORMAT, REPAIR_FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, encode, digest} from '../task-store/store.mjs';
 import {ArtifactDepot} from '../task-artifacts/depot.mjs';
 import {TaskApplication, createRepairPort, createVerificationPort} from './application.mjs';
 import {createVerificationCommand} from '../task-verification-command/index.mjs';
 import {createFileBusiness} from '../task-business/index.mjs';
 import {TaskClient} from '../task-client/index.mjs';
 import {createTaskApiHandler} from '../task-api/http-handler.mjs';
+import {startTaskService} from '../task-service/composition.mjs';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
 
@@ -48,7 +49,7 @@ function fixture(t) {
   t.after(() => {business.close(); depot.close(); store.close(); fs.rmSync(parent, {recursive: true, force: true});});
   const f = {parent, root, repair, get app() {return app;}, get store() {return store;}, get owner() {return owner;},
     call: request => app.dispatch(request, context), get: taskId => app.dispatch({operation: 'task.get', taskId}, context),
-    commands: () => app.transaction(false, tx => tx.commands()), head: taskId => app.transaction(false, tx => tx.head(taskId)),
+    commands: taskId => app.transaction(false, tx => taskId ? tx.taskCommands(taskId) : tx.commands()), head: taskId => app.transaction(false, tx => tx.head(taskId)),
     setSQLFailure(value) {failSQL = value;}, advance(ms) {advance += ms;},
     take(nodeId) {const c = f.commands().find(c => c.status === 'pending' && JSON.parse(c.payload).nodeId === nodeId); assert.ok(c); return app.execution.nextWork(c.id, c.revision);},
     async setup() {
@@ -136,4 +137,88 @@ test('actual HTTP null-prototype repair body and TaskClient original receipt ide
   const receipt = await client.repairTask(original.taskId, request.body, request.key);
   assert.equal(receipt.replayed, false); assert.equal((await client.repairTask(original.taskId, request.body, request.key)).replayed, true);
   assert.equal((await client.getTask(original.taskId)).status, 'queued');
+});
+
+test('repair startup rejects missing or drifting trusted bindings before any Task, command or Attempt', async t => {
+  const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-repair-config-')));
+  t.after(() => fs.rmSync(parent, {recursive: true, force: true}));
+  const repair = createRepairPort({policy: {id: 'repair', version: '1', description: '原修正策略'}, nodeIds: ['code'], assertions: ['business']});
+  const policy = {id: 'verification', version: '1', description: '原验收策略'}, launches = [];
+  const binding = {policyDigest: repair.policyDigest, checkerDigest: digest(fs.readFileSync(checkerPath)), verificationPolicyDigest: hash(policy), assertions: ['business']};
+  const port = (value, enabled = true, configuredPolicy = policy) => {
+    const start = () => {launches.push('unexpected'); assert.fail('startup must not launch');};
+    if (value !== null) Object.defineProperty(start, 'repairBinding', {value});
+    return createVerificationPort({id: 'checker', policy: configuredPolicy, bindPlan, start, repairPolicyDigests: enabled ? [repair.policyDigest] : []});
+  };
+  const cases = [
+    ['missing-verifier', () => null], ['missing-binding', () => port(null, false)],
+    ['wrong-policy', () => port({...binding, policyDigest: 'sha256:' + 'f'.repeat(64)})],
+    ['changed-verification-policy', () => port(binding, true, {...policy, version: '2'})],
+    ['missing-assertions', () => {const value = {...binding}; delete value.assertions; return port(value);}],
+    ['changed-assertions', () => port({...binding, assertions: ['structure']})],
+    ['missing-checker', () => {const value = {...binding}; delete value.checkerDigest; return port(value);}],
+    ['invalid-checker', () => port({...binding, checkerDigest: 'not-a-digest'})]
+  ];
+  for (const [name, verification] of cases) {
+    const store = Store.create(path.join(parent, name), {format: REPAIR_FORMAT});
+    try {
+      const owner = store.claimOwner(0, 'fixture', Date.now() + 60000), before = store.info();
+      let configured;
+      assert.throws(() => {configured = verification(); return new TaskApplication({store, owner, repair, verification: configured});},
+        error => ['unsupported_task', 'invalid_verification_config'].includes(error.code), name);
+      assert.deepEqual(store.info(), before);
+      store.read(owner, tx => {assert.deepEqual(tx.projections('task'), []); assert.deepEqual(tx.projections('attempt'), []);
+        assert.deepEqual(tx.projections('budget'), []); assert.deepEqual(tx.commands(), []);});
+      if (configured !== undefined) {
+        const serviceRoot = path.join(parent, name + '-service'); let businessCalls = 0;
+        await assert.rejects(startTaskService({root: serviceRoot, mode: 'create', repair, verification: configured ?? undefined,
+          custody: {profile: 'node-execution-custody/v1'},
+          providers: new Map([['fixture', {id: 'fixture', start() {launches.push('unexpected-provider'); assert.fail('no Planner may launch');}}]]),
+          businessFactory() {businessCalls++; assert.fail('invalid configuration must fail before business startup');}}), {code: 'service_start_unavailable'});
+        assert.equal(businessCalls, 0);
+        const persisted = Store.openExisting(path.join(serviceRoot, 'store'), {format: REPAIR_FORMAT});
+        try {
+          const recovered = persisted.claimOwner(persisted.info().generation, 'inspection', Date.now() + 60000);
+          persisted.read(recovered, tx => {assert.deepEqual(tx.projections('task'), []); assert.deepEqual(tx.projections('attempt'), []);
+            assert.deepEqual(tx.projections('budget'), []); assert.deepEqual(tx.commands(), []);});
+        } finally {persisted.close();}
+      }
+    } finally {store.close();}
+  }
+  for (const format of [FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT]) {
+    const store = Store.create(path.join(parent, format.split('/').at(-1)), {format});
+    try {
+      const owner = store.claimOwner(0, 'fixture', Date.now() + 60000), config = {store, owner, repair, verification: port(binding)};
+      if (format === REPAIR_FORMAT) assert.doesNotThrow(() => new TaskApplication(config));
+      else assert.throws(() => new TaskApplication(config), {code: 'unsupported_task'});
+      // The unconfigured legacy profile still starts, with no new capability.
+      assert.doesNotThrow(() => new TaskApplication({...config, repair: null}));
+      store.read(owner, tx => {assert.deepEqual(tx.projections('task'), []); assert.deepEqual(tx.projections('attempt'), []); assert.deepEqual(tx.commands(), []);});
+    } finally {store.close();}
+  }
+  assert.deepEqual(launches, []);
+});
+
+test('over 90 unrelated settled SQLite Tasks do not change the target repair query or acceptance', {timeout: 20000}, async t => {
+  const f = fixture(t), original = await f.rejected(), before = f.head(original.taskId), originalCommands = f.commands(original.taskId);
+  const histories = [];
+  for (let n = 0; n < 91; n++) {
+    const task = await f.call({operation: 'task.create', key: 'unrelated-' + n, body: {intent: '独立历史任务，不启动模型'}});
+    await f.call({operation: 'task.cancel', taskId: task.id, key: 'cancel-' + n, body: {expectedRevision: task.revision}});
+    f.app.execution.reconcile(task.id);
+    for (const command of f.commands(task.id)) assert.equal(f.app.execution.settleControl(command.id, command.revision), true);
+    const commands = f.commands(task.id); assert.equal(commands.length, 2); assert.ok(commands.every(command => command.status === 'observed'));
+    assert.equal((await f.get(task.id)).status, 'cancelled'); histories.push(task.id);
+  }
+  assert.equal(histories.length * 2 + originalCommands.length, 187);
+  assert.deepEqual(f.head(original.taskId), before); assert.deepEqual(f.commands(original.taskId), originalCommands);
+  assert.deepEqual(await f.get(original.taskId), original.task);
+  const receipt = await f.call(f.request(original)); assert.equal(receipt.operation.status, 'accepted');
+  assert.deepEqual(receipt.affectedNodes, ['code', 'verify']);
+  assert.equal((await f.call({operation: 'task.audit', taskId: original.taskId})).attempts, 4);
+  f.reopen();
+  assert.equal(f.app.execution.reconcile(original.taskId).status, 'failed');
+  assert.equal((await f.call({operation: 'operation.get', operationId: receipt.operation.id})).status, 'failed');
+  assert.ok(f.commands(original.taskId).every(command => command.status === 'observed'));
+  assert.equal((await f.call(f.request(original))).replayed, true);
 });

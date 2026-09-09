@@ -66,8 +66,9 @@ export class TaskVerification {
   }
   supportsQuestions(policyDigest) {return this.port !== null && ports.get(this.port).interactionPolicyDigests.includes(policyDigest);}
   repairBinding(policyDigest) {
-    const binding = this.port && ports.get(this.port).repairBinding;
-    check(binding && binding.policyDigest === policyDigest, 'unsupported_task'); return clone(binding);
+    const config = this.port && ports.get(this.port), binding = config && config.repairBinding;
+    check(binding && binding.policyDigest === policyDigest && binding.verificationPolicyDigest === hash(config.policy), 'unsupported_task');
+    return clone(binding);
   }
   bind(record, plan) {
     if (!this.port) return null;

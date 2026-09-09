@@ -27,6 +27,15 @@ export class TaskRepair {
   constructor(app, port) {
     check(port === null || ports.has(port), 'unsupported_task', 422); this.app = app; this.port = port;
     this.format = app.store.info?.().format;
+    if (port) {
+      // Reject an unusable trusted composition before a Task can spend even
+      // its Planner Attempt. Per-plan and persisted bindings are rechecked too.
+      check(this.format === REPAIR_FORMAT, 'unsupported_task', 422);
+      const command = app.verification.repairBinding(port.policyDigest);
+      check(closed(command, ['policyDigest', 'checkerDigest', 'verificationPolicyDigest', 'assertions']) &&
+        sha(command.checkerDigest) && Array.isArray(command.assertions) &&
+        same(command.assertions, ports.get(port).assertions), 'unsupported_task', 422);
+    }
   }
   bind(task, plan, verification) {
     if (!this.port) return null;
@@ -71,7 +80,9 @@ export class TaskRepair {
   commands(tx, task) {
     const result = []; let after = '';
     for (let page = 0; page < 100; page++) {
-      const rows = tx.commands(after, 25); result.push(...rows.filter(row => row.taskId === task.task.id));
+      const rows = tx.taskCommands(task.task.id, after, 25);
+      check(rows.every(row => row.taskId === task.task.id && row.source.stream === task.task.id), 'application_unavailable', 503);
+      result.push(...rows);
       if (rows.length < 25) return result; after = rows.at(-1).id;
     }
     reject('application_unavailable', 503);
