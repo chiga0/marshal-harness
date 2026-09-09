@@ -1,6 +1,10 @@
 # 任务生命周期
 
-当前 Task-first 目标见已接受的 [ADR0085](adr/0085-agent-team-service-contract-and-storage.md)、[ADR0088](adr/0088-node-task-service-production-projection.md)与[服务架构](agent-team-service-architecture.md)：旧Go公开Task复用Goal，Node使用自己的唯一Application/SQLite，没有Workspace实体。下面身份/状态/转换表是既有Run/旧工程Task合同，不复制成第二套公开Task生命周期。[ADR0094](adr/0094-trusted-single-user-role-team.md)只调整可信单用户角色/授权交付目标，不新增当前状态/角色枚举或持久事实；Leader建议不能直接改状态，业务发布/后验须完整接线并明确新旧兼容后启用，既有completed不会被重解释或复活。节点待答不隐式全局暂停，显式pause/cancel优先，旧Run合同保持。
+当前 Task-first 目标见已接受的 [ADR0085](adr/0085-agent-team-service-contract-and-storage.md)、[ADR0088](adr/0088-node-task-service-production-projection.md)与[服务架构](agent-team-service-architecture.md)：旧Go公开Task复用Goal，Node使用唯一Application/SQLite，没有Workspace实体。下面表格是既有Run/旧工程Task合同，不复制第二套Task状态机。[ADR0094](adr/0094-trusted-single-user-role-team.md)与[Leader机制](node-leader-execution-design.md)接受全程受管业务调用，当前DESIGN，不新增本次状态/角色/持久字段。
+
+新profile显式启用后，需求/回答、批次完成失败求助、集中Review、交付/后验进入durable业务义务；Leader读快照提出有限行动，Core同事务接纳决定/动作，Execution锁外执行，Supervisor只观察聚合通知。已批准依赖直接调度；cancel/硬期限/预算/owner规则不等LLM。普通内容/可恢复执行失败封闭受影响后继、保留合法无关分支交Leader；未知清理/权限等硬故障不放松。Store失败仍可按预批准规则停原handles，不能伪造清理事实。
+
+新的整体成功须候选独立验收、Leader汇总及Task所要求授权交付/后验均满足；不沿用现verifier通过即completed，不在旧completed后偷偷追加发布或复活。重开优先原committed决定/action/outbox，未提交调用只按原义务/预算有界重试；外部unknown只对账，不声称跨系统exactly-once。具体格式/接口兼容实施时一次冻结，旧字节/回执不变。节点待答不隐式全局暂停，显式pause/cancel优先，旧Run合同保持。
 
 ## 目的
 

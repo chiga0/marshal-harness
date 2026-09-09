@@ -2,7 +2,7 @@
 
 > Task-first 目标投影。完整行为见[服务架构](agent-team-service-architecture.md)，已接受的 [ADR0085](adr/0085-agent-team-service-contract-and-storage.md)/[ADR0088](adr/0088-node-task-service-production-projection.md)及 [ADR0094](adr/0094-trusted-single-user-role-team.md)分别界定旧Go、Node和可信单用户角色团队；本文不提前启用新权限、数据迁移或生产支持。
 
-Leader先组合已有规划/协调/评审职责，仍通过唯一Application/Core，不取代确定性Supervisor、不增加第二状态机。ADR0094的业务发布及发布后验证尚待完整接线：沿原预算/期限和单库intent→外部执行→当前证据/回执接纳，未知不重发。角色职责分离不证明OS/凭据隔离；本次不改现有HTTP/角色枚举/格式或恢复规则。以下Go/RB1物理映射只属于旧profile，Node仍为自己的唯一SQLite。
+按[Leader机制](node-leader-execution-design.md)，Leader贯穿业务义务、读durable快照并输出有限行动；Supervisor只观察/聚合/通知，Core独占授权/预算/已批准调度与硬规则，Execution操作原handle。现TaskSupervisor混合职责需在原loop中渐进委托，不新增第二状态机/服务。该机制与业务发布/后验仍DESIGN；新profile候选验收不立即整体completed，旧终态/格式不改。职责不证明OS隔离，以下Go/RB1映射仅属于旧profile，Node仍唯一SQLite。
 
 ## 唯一组合与内部数据根
 
@@ -26,9 +26,11 @@ B1 保留原受控提交接缝；B2 SQLite 将相关事件/投影/幂等/预算/
 
 制品先耐久保存并验证摘要，再提交引用；业务记录不可抽样，高频观察可以有界批量且明示丢失。SQLite 使用本地耐久磁盘与短写事务，WAL/同步设置和恢复以故障测试证明。无数据库全量平台建设前置。
 
-## 内置 Supervisor
+## 内置循环与受管 Leader（目标职责）
 
-同一 resident controller 自动推进接纳后计划、Start、Collect、Verify/Review 队列、集成和 Outcome；不需要人逐 Run 调 CLI，不起外部 watchdog 或监督 LLM。
+同一 resident loop 委托 Core 推进已批准依赖/硬规则，Execution 执行 start/stop/collect，Supervisor 收集观察和业务异常，不需要人逐 Run 调 CLI。Leader 是单Task至多一个在途的受管业务调用，不是监督LLM；需求/关键回答、批次结果/求助、集中Review与交付/后验才唤起，heartbeat/token不触发。当前实现尚未完成此职责分离。
+
+cancel/硬期限/预算/owner丢失不等待Leader。失owner或Store失败时Execution仍按预批准规则停止原handles，不伪写成功；普通内容/可恢复执行失败先封闭受影响后继、保留合法无关分支并交Leader，不无条件全队cancel。结构错误/未知清理不能成为无限重试理由。
 
 B1 两作者先跑通；B2 根据目录/依赖、内存/CPU、Provider 限额及验收队列扩容。长 Verify/坏 Run 不拖住查询、取消及其他 deadline。工具事件只是观察，无事件不判定死锁，日志不延长 deadline。取消使用 owned execution ID，不接受任意 PID，stop 未确认不派替身。
 
@@ -48,6 +50,8 @@ B1 两作者先跑通；B2 根据目录/依赖、内存/CPU、Provider 限额及
 - U1：显式旧来源合法收口后持锁导入只读历史，保留原 ID/bytes/digest/预算/namespace；切原根前机械禁止旧 writer，不重签/双写/强杀/复用未知目录。未过不宣称升级支持，也不阻新任务。
 
 备份包含一致 Store 快照和制品 manifest；恢复先只读核对旧 owner/执行/外部效果再开放写。历史 replay 不执行 outbox，DB rollback 不回滚外部 SQL/Git/云。外部写能力默认不启用；以后按单独实测 profile 处理授权/回执/unknown，不提前造通用资源锁。
+
+新Leader机制恢复先重放已committed决定的原动作/outbox，不重规划整队；未committed调用仅沿原义务/真实清理/剩余额度有限重试，费用不抹。相关语义依赖和原owner必须当前，无关进度不制造重规划；外部效果unknown只reconcile、不换key重发，不承诺跨系统exactly-once。新义务/决定/阶段验收与整体终态需一次明确格式和旧reader拒绝后启用，本次没有迁移或新配置。
 
 ## 审计与复用
 

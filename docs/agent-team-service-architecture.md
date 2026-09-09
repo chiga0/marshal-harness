@@ -8,7 +8,7 @@
 
 Marshal 是一个本机优先、可自托管的 Agent Team HTTP 服务。用户给出任务与上下文，确认必要的方案后，服务自己组织有界执行、进度监督、集成和独立验收，交付可下载、可使用、可审计的成果。能由一个 Worker 高效完成时不强制拆分；有互补职责与明确接口时才并行。
 
-当前 `trusted-single-user` 目标由 Leader 理解/分工/协调开发、Reviewer 与验收，并在明确授权内组织业务发布及发布后验证。Leader 先组合已有职责，不是新的 Core 资源或 Supervisor；当前 planner/author/reviewer/integrator/verifier 枚举保留，已有 reviewer 标签不等于发布批准机制。本文只改目标和排期，不改变 HTTP/格式或 API-STABLE 证据；实际授权发布是尚需完整实现的能力。
+当前 `trusted-single-user` 目标要求贯穿全程的[受管 Leader 调用](node-leader-execution-design.md)：需求/回答、批次结果/求助、集中 Review、交付/后验唤起，读取 durable 上下文，输出有限行动；不是现有 Planner 标签组合。Supervisor 观察/聚合/通知，Leader 业务判断，Core 校验与硬规则/已批准调度，Execution 操作所属 handle；不新增角色平台或第二状态机。现有 planner/author/reviewer/integrator/verifier 枚举保留，reviewer 标签不等于独立 ReviewDecision 或发布批准。完整机制为 `B2-L / DESIGN`，本次不改 HTTP/格式或既有 API-STABLE 证据。
 
 **首版删除 Workspace 概念**：没有 Workspace ID、创建、注册、切换或管理 API，也不改名为 Project。数据目录是 server 内部配置，工作目录属于执行实现；二者都不是用户提交任务之前必须创建的业务对象。仓库、表结构、平台说明和操作目标放入 Task prompt/context，Core 不建资源目录，不要求先注册 repository/resource。
 
@@ -47,9 +47,12 @@ marshal serve --data-dir <本机状态目录> --listen 127.0.0.1:0
 flowchart TB
   U[用户 / HTTP 客户端] --> API[Task / Worker / Artifact API]
   API --> APP[唯一应用服务]
-  APP --> CORE[控制面：计划 / 状态 / 预算 / 内置 Supervisor]
+  APP --> CORE[Core：事实 / 授权 / 预算 / 已批准调度 / 硬规则]
+  CORE --> L[受管 Leader：业务判断 / 有限行动建议]
+  L --> CORE
   CORE --> EXEC[执行面：AgentAdapter + 受管进程 + SandboxProvider]
-  EXEC --> C[候选 / 进度 / 终态观察]
+  EXEC --> C[Supervisor：观察 / 聚合 / 通知]
+  EXEC -->|原 result / cleanup / receipt| CORE
   C --> CORE
   CORE --> V[独立验收与成果集成]
   V --> CORE
@@ -58,6 +61,10 @@ flowchart TB
 ```
 
 当前 Node profile 只有一个 Node HTTP server、若干受管执行进程和本地 SQLite/制品；旧 Go server 仅属于历史 profile，不作为新服务依赖。不先建微服务、消息中间件、独立调度器或 GC 平台。控制面决定状态与执行义务；执行面干活并提供观察；存储面保存事实，不裁定业务成功。
+
+上图是目标职责，不是现代码已物理分离。`TaskSupervisor` 现混合调度/handle/失败广播；在同一 loop 内渐进委托 Core 与 Execution，保留唯一 Application/Store。Leader 调用也必须经原预算/许可和受管执行，不能成为第四个外部服务或自己的进程控制器。
+
+Execution 的必需结果/cleanup/回执经原受控接纳接口直接进入 Core；Supervisor 有界聚合的观测/告警不是唯一结果通道，不得因采样、丢弃或通知失败遗漏权威业务事实。
 
 Core 只依赖中立类型与接口。Port 是接口契约（例如 Go interface），Adapter 实现契约，DI 在唯一组合根通过构造函数注入；不引入 DI 框架或动态插件系统。AgentAdapter 负责请求/协议/配置与结果解码，Execution 管进程归属/期限，SandboxProvider 管执行环境。普通 Local 子进程不是恶意代码沙箱。
 
@@ -71,7 +78,7 @@ B1 复用现有唯一权威组合与受控生产调用链；B2 在同一应用�
 4. 收集实际候选和终态，独立验证精确成果；集成消费已接纳的上游，最终验收检查整套交付，不用“两个节点各自绿”代替。
 5. 通过下载 API 获取 manifest/成果，在新目录按声明依赖重建并执行原业务验收；全部必需条件满足才记成功 Outcome，失败保留原因和明确标识的局部成果。
 
-后继代表性闭环在此接上明确授权的测试目标发布→发布后独立检查→Leader 汇总精确回执与业务结果。若请求含发布，下载完成不能冒充目标已完成；已发布但后验失败须保留真实发布事实和失败，未知效果不重发。当前实现尚无这条发布接线，不复活已 completed 的下载 Task 或暗改其成功含义。
+`B2-L` 在此加入独立 Review 后的真实局部修正并保留无关成果、阶段验收后 Leader 再次判断、明确授权的有限目标发布、独立后验与整体汇总。新机制显式 opt-in，验收通过不再立即整体 terminalize，须满足原 Task 的交付/后验及汇总出口；旧 completed/原回执不改也不复活。发布已发生但后验失败保留原效果，unknown 只 reconcile。当前尚无这条完整接线，下载不是已发布。
 
 角色先是少量内置职责模板，不做角色 CRUD 平台：规划、实现、集成、独立验收。计划和语义评审可调用 Agent，但 Supervisor 不由 Agent 实现。独立验收不等于每次都多调用一个 LLM：可执行的业务断言由受控验证器在作者之外运行，需要语义判断时才追加有界 Reviewer。作者不能改验收标准或为自己签发权威通过，最终 Decision 由 Core 绑定当前证据接纳。
 
@@ -145,9 +152,11 @@ pause 只停新派发，不等于进程已停；cancel 必须报告停止进度/
 
 默认仅 loopback，校验 Host/Origin，默认不允许跨域；首版本地 profile 拒绝非 loopback 绑定。健康接口只给最小信息；不以 localhost 为由开无保护命令执行端口。不建设账号、组织、RBAC、安装收据/activation 管理平台。远端访问、TLS/多用户和管理平台以后按真实需求设计，在远程首次开启前完成相应安全基线。
 
-## 6. 内置 Supervisor 与有界返工
+## 6. 内置受管循环、四责边界与有界调整
 
-Supervisor 复用唯一 resident controller，依据持久事实处理调度、Collect、独立验收队列、集成、Outcome、deadline 与取消；不依赖聊天任务定时唤醒或一个监督 Agent。
+复用唯一 resident loop，不依赖聊天任务定时唤醒。按0094，Supervisor 仅观察/聚合异常与证据并通知，不业务换人/重试/改计划/判成败，也不因疑似 stuck kill。Core 根据原批准 DAG 调度并处理 cancel/硬期限/预算/owner fence；Execution 操作原 handle。硬规则立即执行不等 Leader；普通内容/执行失败保留业务决策窗口，不无条件全队取消。Store/owner 不可用时原安全停止仍执行，但不能写虚假 cleanup。
+
+Leader 按业务义务读语义快照/manifest+cursor，集中处理一批意见并提出有限行动；每 Task 最多一个在途，progress/heartbeat 不触发调用。相关候选/授权/答案改变才触发必要重验，无关进度不导致失效风暴。已 committed 决定恢复原动作/outbox，未 committed 按原义务/预算有界重试，成本不抹。原0091 HTTP repair 保留；新自治范围内修正请求须独立绑定来源，不能自签旧负 Decision。详细接缝与六类验收统一见[Leader 机制](node-leader-execution-design.md)。
 
 - B1 两个作者槽；验证/集成也计资源。B2 按依赖、互斥目录、内存/CPU、Provider 限额及待审容量增加并发，不因 CPU 空闲就盲派。
 - 显示阶段、来源与最后观察时间；工具事件可选，沉默不直接判死锁，日志活跃不能刷新硬 deadline。

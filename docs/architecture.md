@@ -4,7 +4,7 @@
 
 ## 产品目标与最少概念
 
-Marshal 是单节点、单用户、可信任务的 Agent Team HTTP 服务：需求与上下文→必要方案确认→有界执行→集成与独立验收→可下载成果。用户可查看 DAG/Worker 进展、回答问题、取消并审计。[ADR0094](adr/0094-trusted-single-user-role-team.md) 接受当前 `trusted-single-user` 目标：Leader 先组合已有规划/协调/评审职责，B2 补一个明确授权的业务发布→发布后验证闭环；不新增 Core 角色平台、不把下载当发布。现有协议和数据格式不因本次文档改变。
+Marshal 是单节点、单用户、可信任务的 Agent Team HTTP 服务：需求与上下文→必要方案确认→有界执行→集成与独立验收→可下载成果。用户可查看 DAG/Worker 进展、回答问题、取消并审计。[ADR0094](adr/0094-trusted-single-user-role-team.md) 接受当前 `trusted-single-user` 目标：[受管 Leader](node-leader-execution-design.md) 全程按业务义务唤起、读 durable 上下文并输出有限行动；Supervisor 仅观察/聚合/通知，Core 授权/预算/已批准调度/硬规则，Execution 原 handle 操作。现混合实现需渐进委托，不是四服务或第二状态机。B2-L 仍 DESIGN，包含集中 Review、局部修正、授权交付/后验和延迟整体结束；当前 Planner/下载不能冒充。现协议和格式不因文档改变，新机制须显式兼容，旧 completed 不复活。
 
 用户只需理解 Task、Worker、Artifact。删除 Workspace 产品实体、ID、注册/切换及管理 API，不改名为 Project；数据目录是服务内部配置，Git/表/平台作为 Task 上下文，不进入通用资源目录。计划、问题、执行尝试和异步回执是任务的子记录，不要求用户先创建一串平台对象。
 

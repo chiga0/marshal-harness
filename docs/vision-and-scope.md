@@ -2,7 +2,7 @@
 
 ## 当前产品投影（2026-09-07）
 
-2026-09-09 当前范围由 [ADR0094](adr/0094-trusted-single-user-role-team.md) 补充为 `trusted-single-user` 角色团队：Leader 组织理解/分工/独立评审验收，B2 增补一个明确授权的业务发布与发布后验证闭环；强 OS/凭据隔离后置加固。不是引入新角色实体或重写 Core，不改当前 HTTP/持久格式与 API-STABLE 证据；旧 Go/hardened 及历史 non-production 证据不变。软件自身受保护发行仍保留 B3，不以角色团队设计宣布完成。
+2026-09-09 当前范围由 [ADR0094](adr/0094-trusted-single-user-role-team.md) 补充为 `trusted-single-user` 角色团队：[Leader](node-leader-execution-design.md) 是全程受管业务调用，不是一次性 Planner 别名；Supervisor 观察/聚合，Core 授权/硬规则与已批准调度，Execution 操作所属执行。B2-L 补集中 Review、局部调整保留成果、授权业务发布与后验，当前 DESIGN；强 OS/凭据隔离后置。不引入角色实体平台，不改当前 HTTP/格式或 API-STABLE 证据；旧 Go/hardened 及 non-production 不变。B1 本机 PoC 单独核验通过，不代表 B2-L 或 B3 软件发行完成。
 
 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 将受限 Agent Team 前移：用户意图→澄清/确认→有界任务→集成候选→独立验证→授权交付，按 B1→B2→B3 验收。下文旧排期中“Goal DAG 延期”仍适用于通用/复杂编排，不再排除这个受限 profile。控制面、执行面、存储面分离不意味着每个模块独立部署。能力现状只见 [Roadmap](roadmap-status.md#业务交付当前表)。
 
@@ -80,7 +80,7 @@ Runtime 长期稳定运行，持续接受新 Task 并分发；Sandbox、Agent �
 
 ### G8：确定性控制与有界复杂任务
 
-Marshal Core 是唯一 Supervisor 与权威状态机；Plan/Implement/Verify/Review/Publish 作为 typed execution 共享基础调度机制，但不共享权限或通用协议。复杂 Goal 的计划、重规划、预算预留、证据适用性和人工暂停/恢复必须可回放且有界，Planner 不能直接创建权威 Run 或执行副作用。
+Marshal Core 是唯一权威状态机，负责授权/预算/依赖与硬规则；当前Node目标中的Supervisor只观察/聚合/通知，Leader业务判断，Execution操作所属执行。Plan/Implement/Verify/Review/Publish作为typed execution可复用基础受管机制，但不共享权限或通用协议。计划、局部调整、预算、证据及暂停/恢复必须可回放且有界，Leader/Planner不能直接创建权威Run或执行副作用；未实施机制保持DESIGN，旧profile语义不重解释。
 
 ## v1.0 发布范围
 

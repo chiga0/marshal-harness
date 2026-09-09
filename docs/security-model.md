@@ -6,7 +6,7 @@
 
 `trusted-single-user` 信任操作者及选定 Agent/模型、组合代码与业务材料；Leader、开发、Reviewer、验收和发布是产品职责，不是OS安全主体。按ADR0094，强OS账号/凭据不可达证明转后继加固；同UID可触达原生登录/文件/发布工具的风险必须明示，不能用角色名、工具回调、环境过滤或本地token宣称隔离。默认 publication:none，开发者不得自授发布，原生登录也不构成授权；秘密不进入prompt/日志/制品，不为验收复制HOME、搜集凭据或改变宿主安全策略。
 
-Leader可提出分工、汇总独立证据并在明确授权内请求发布，但Core独占状态/证据接纳及命令授权；参与编写的成果仍由其他执行独立验收。高风险/超目标操作缺明确批准就停，丢响应或外部效果未知先对账，不盲重发。代表性受控业务发布/后验尚待实施，不把当前下载当已发布；Marshal自身的软件发行仍走B3受保护门禁。
+Leader按[受管机制](node-leader-execution-design.md)读durable上下文并输出有限建议，不直接发布/启动/停止或写Store。Supervisor只观察聚合通知，Core独占授权/预算/当前证据与硬规则，Execution仅操作所属handle；现混合实现不冒充已拆分。参与编写者不能成为自身唯一独立Reviewer/验收，reviewer标签不是Decision。高风险/超目标/成本超限缺明确批准就停，普通答案不授发布权；unknown先对账不盲重发。无owner/Store时按预批准规则停原handle仍允许，但不伪写cleanup成功。代表性业务发布/后验为DESIGN，下载不是已发布，Marshal软件发行仍走B3。
 
 本次只改目标/profile和排期，不改HTTP、角色枚举或持久格式，也不把旧ordinary-user/non-production证据升级。恶意代码、多租户、强凭据隔离和无人值守敌对工作负载不在该profile支持范围；只有后继独立强制与实测证据才能获得相应保证。以下各节保留旧Local MVP、Go及远程/hardened合同，其强边界不被0094扩展为已实现，也不反向成为当前trusted-single-user全部前置；适用性见[合同对照](design-contract-map.md)。
 

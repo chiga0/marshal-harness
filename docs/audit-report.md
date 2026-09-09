@@ -1,12 +1,14 @@
 # 设计审计报告
 
-## 2026-09-09：可信单用户角色团队的目标收敛（设计接受，非实现通过）
+## 2026-09-09：可信单用户全程 Leader 与四责边界（设计接受，非实现通过）
 
 用户本轮明确要求以Leader＋开发/Reviewer/验收团队理解、分工、独立检查、在明确授权内发布并组织发布后验证，强OS账号/凭据隔离证明后置。新增Accepted [ADR0094](adr/0094-trusted-single-user-role-team.md)，精确调整0085/0088在Node可信单用户profile中的ambient凭据可达阻断；不改旧Go/hardened合同、不把角色职责当OS隔离。默认不发布、作者不自证、精确证据、高风险授权、发布幂等/unknown不重试及原预算/恢复继续保留。
 
-本切片锁定31afe269，仅文档/导航变更；现有HTTP请求响应、角色枚举、持久格式与历史数据不变，API-STABLE已验证范围不撤回。Leader先组合已有职责；当前reviewer标签不是发布批准，受控业务发布/后验是B2待实现的新完整闭环，未来机器增量须明确严格客户端/旧reader兼容。成功重复流程以后再模板化，不建角色/Workspace/Skill/Workflow平台，也不把全部未来高风险流程加到首发前置。
+本切片锁定31afe269，聚合修订6d1aeead文档；用户进一步明确Leader须贯穿需求/关键回答、批次完成失败求助、集中Review、交付与后验，不能只当Planner等标签组合。新增[Leader执行机制](node-leader-execution-design.md)：Supervisor仅观察聚合通知，Leader业务判断，Core校验/已批准调度及硬规则，Execution实际操作所属handle。现TaskSupervisor混合职责、Planner一次性、普通失败全队cancel、唯一verifier通过直接completed、reviewer普通candidate、repair仅显式用户请求，均作为真实接线缺口，不倒填已实现。0094精确调整0085 §6/0088 §2与0091对应新profile的职责/自治来源，旧HTTP/字节保持。
 
-Marshal软件发行与产品业务发布分开：B3同资产/平台/故障/备份恢复与受保护stable门禁保留，签名按实际发行资产类别适用。本次未运行模型或新增发布/恢复证据，旧ordinary-user/non-production不重标、B1/B2/B3不整体升级。本文作者自检不等于独立设计审查；独立review由维护者在冻结差量上另行完成。
+机制为B2-L/DESIGN：聚合事件与单在途Leader、语义快照/相关currentness、有限动作、同库决定/outbox/结果、原预算/清理和外部unknown对账；hard控制不等LLM，普通业务失败保留合法分支与Leader待决，Store失效停止不伪造cleanup。新profile须显式启用并延迟整体结束至授权交付/后验，旧completed不改或复活。文档未改HTTP、枚举、格式或数据，API-STABLE范围不撤回；未来机器变更一次明确严格客户端/旧reader兼容。完整六类验收待实现，不造角色/Workspace/Skill/Workflow平台，成功重复后再模板化。
+
+Marshal软件发行与产品业务发布分开：B3同资产/平台/故障/备份恢复与受保护stable保留，签名按实际资产适用。维护者另行独立复核原Pi成功/同生产代码取消实物、库完整性/原Decision/下载和原回执，再跑当前生产等价团队3/3与driver23/23，关闭B1七条件，仅trusted-single-user本机PoC PASSED；[当前表](roadmap-status.md#业务交付当前表)列精确来源与范围。这不是仅改目标自动通过，不是今天新跑模型，旧non-production/未知usage不改；B2-L DESIGN，B2/B3仍IN_PROGRESS。文档作者未运行模型；作者自检不等于独立设计审查，维护者另审冻结差量。
 
 ## 2026-09-09：新文件业务根的许可前恢复缺口闭合
 

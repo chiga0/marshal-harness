@@ -8,7 +8,7 @@
 
 Marshal 是一个可自托管的 Agent Team HTTP 服务：接收需求和上下文，确认方案后组织有界执行、集成与独立验收，交付可使用的成果并保留审计。用户只需理解 Task、Worker、Artifact；没有 Workspace/Project 注册。Git、表结构或平台信息是任务上下文，不是 Core 资源目录。
 
-当前目标按已接受的 [ADR0094](docs/adr/0094-trusted-single-user-role-team.md) 收敛为可信单用户角色团队：Leader 组织开发、Reviewer 与独立验收，后续在明确授权内完成业务发布和发布后验证。角色职责分离不是 OS/凭据隔离；强隔离后置加固，不适用恶意任务。现有 API/数据格式与已核验 API-STABLE 范围不变；Leader 完整协调及业务发布仍待实现，不能把当前下载叫作已发布，也不因此宣布 B1 或 stable 完成。
+当前目标按已接受的 [ADR0094](docs/adr/0094-trusted-single-user-role-team.md) 收敛为可信单用户角色团队：[受管 Leader](docs/node-leader-execution-design.md) 贯穿需求、批次结果、独立 Review、局部修正、授权交付与后验。Supervisor 观察，Leader 业务判断，Core 校验/硬规则，Execution 操作所属进程；当前 Planner 不代表此机制已完成。B1 本机 PoC 经独立核验通过，B2-L 仍为 DESIGN、正式发布前必验，B2/B3 未完成。角色职责不是 OS/凭据隔离；现有 API/数据与 API-STABLE 范围不变，旧 non-production 不重标，下载不叫已发布。
 
 当前 Local MVP 已有执行、独立验证、审查和 Draft PR 的历史能力，RC1 支持面仍是下述 CLI-only local-dogfood。当前目标为 B1 真实团队 PoC、B2 本地 API 可用、B3 正式可靠发布；旧单任务与团队证据继续保留，尚未整体完成。
 

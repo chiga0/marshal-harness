@@ -6,6 +6,8 @@
 
 [ADR0094](adr/0094-trusted-single-user-role-team.md) 已按用户本轮范围要求接受：Node `trusted-single-user` 以 Leader＋开发/Reviewer/验收职责及 Core 授权分离组织交付，精确取代0085 §3/0088 §3在此 profile 中把 ambient Publisher 凭据可达作为支持阻断的要求，强 OS/凭据隔离后置加固。默认不发布、作者不自证、明确高风险授权、幂等/恢复与秘密保护仍保留；旧 Go/hardened 合同不变。B2 新增一个授权业务发布及后验闭环，不豁免 B3 的 Marshal 软件发行。仅目标/排期变化，没有 HTTP/角色枚举/持久格式变更或迁移，不撤回 API-STABLE；未来机器语义变化须显式兼容，不把本次设计当已实现。
 
+0094同时精确调整0085 §6/0088 §2在新Leader目标profile的职责分配：Supervisor观察聚合通知，Leader业务判断，Core校验/硬规则/已批准调度，Execution所属handle操作；原loop渐进委托而非四服务。对0091 §1/§3新增批准自治内的内部局部调整来源，旧HTTP显式repair与负Decision规则不变，不伪造用户命令。全程[受管Leader](node-leader-execution-design.md)为B2-L/DESIGN，当前Planner、reviewer标签、唯一verifier后completed均不足；新阶段/整体结束/决定动作事实须显式兼容后启用，旧completed不复活。
+
 2026-09-08 Node-only 正式实现的取代范围集中在 [ADR 0088](adr/0088-node-task-service-production-projection.md)：保留 0085 产品/安全语义，替换其 Go/RB1 专属物理投影；0087 仍只是实验。后文“B1 原 Store”“Task 映射 Go Goal”和原生资产 signing 均按 profile/资产类型理解，不自动约束新 Node 包必须执行 Go，也不自动放宽安全或发布合同。ADR 状态以该文件为准，代码完成仍以 Roadmap 为准。
 
 [ADR 0089](adr/0089-node-execution-custody-and-cleanup-recovery.md) 补 Node 执行托管与跨代 **cleanup-only** 收口；状态以 ADR 原文为准，未实测前不启用、不把旧 generation 的业务结果变成可接纳。它不改变旧 Go 恢复合同，不把 Linux 平台建设前置到 Mac 服务单进程崩溃恢复。

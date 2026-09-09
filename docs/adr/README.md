@@ -4,6 +4,8 @@
 
 当前 Node 服务合同以已接受的 [0085](0085-agent-team-service-contract-and-storage.md)、[0088](0088-node-task-service-production-projection.md)、[0089](0089-node-execution-custody-and-cleanup-recovery.md)、[0090](0090-node-runtime-business-questions.md)、[0091](0091-node-same-plan-local-repair.md)、[0092](0092-node-unpermitted-reservation-settlement.md)、[0093](0093-node-worker-cancellation.md) 为准。[0094](0094-trusted-single-user-role-team.md) 已接受当前可信单用户角色团队目标与强隔离后置，默认发布拒绝/独立证据/恢复不变；不修改现有机器协议、不代替B3软件发行。下方编号历史不恢复原生二进制或旧Skill作为新Node产品前置。合同接纳与实现完成分别判断。
 
+0094的[Leader执行机制](../node-leader-execution-design.md)明确全程受管调用及Supervisor/Leader/Core/Execution四责；新profile自治修正、阶段验收与整体交付后验为B2-L/DESIGN。旧Planner不代表已实现，旧HTTP/格式/终态不自动改解释，具体兼容需与完整实现冻结。
+
 新增 [ADR 0086](0086-task-preapproval-questions-and-preview-revisions.md)（Accepted，2026-09-08 维护者接纳）：冻结未批准 Task 的关键问答、同 RB1 原子答案/预览版本和确认/取消顺序；当前 `order-quote/v1` 保持零问题。本次独立审查与接纳允许实施，不代表新事实族已接线或 B2 业务出口完成。
 
 先读[合同适用性](../design-contract-map.md)，再读命中范围的 ADR，不按编号顺序把全部历史决策重做一遍。
