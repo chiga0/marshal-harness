@@ -21,6 +21,43 @@ export function candidateInputs(env) {
   if (result.artifactId !== null || env.GITHUB_ACTIONS === 'true') assert.match(result.artifactId ?? '', /^[1-9][0-9]*$/);
   return result;
 }
+// Export only the successful bounded summary, never the private journal, HTTP
+// credentials, stdout/stderr of Agents, or a directory selected by TAP text.
+// This records supplied artifact identity; it does not re-query GitHub or mint
+// release approval. The workflow supplies the original producer's exact pins.
+export function v7ResultFromTap(tap, expected) {
+  assert.equal(typeof tap, 'string'); assert.ok(Buffer.byteLength(tap) <= 128 * 1024);
+  const lines = tap.split(/\r?\n/);
+  for (const line of ['# tests 2', '# pass 2', '# fail 0', '# cancelled 0', '# skipped 0']) {
+    assert.equal(lines.filter(value => value === line).length, 1, 'incomplete v7 test result');
+  }
+  const observations = lines.filter(line => line.startsWith('# {')).map(line => JSON.parse(line.slice(2)));
+  assert.equal(observations.length, 1); const result = observations[0];
+  assert.deepEqual(Object.keys(result).sort(), ['sourceHead', 'manifestDigest', 'artifactId', 'files', 'node', 'platform', 'arch', 'uid',
+    'layout', 'sameConfiguration', 'tasks', 'modelCalls', 'coldReplayDuplicateStarts', 'coldReplayDuplicatePublications', 'proofScope'].sort());
+  for (const key of ['sourceHead', 'manifestDigest', 'artifactId']) assert.equal(result[key], expected[key], 'v7 candidate pin mismatch');
+  assert.equal(result.node, NODE_VERSION); assert.equal(result.layout, 7); assert.equal(result.sameConfiguration, true);
+  assert.ok(Number.isSafeInteger(result.files) && result.files > 0 && result.files <= 256);
+  assert.ok(Number.isSafeInteger(result.uid) && result.uid > 0);
+  assert.ok(['darwin-arm64', 'linux-x64'].includes(result.platform + '-' + result.arch));
+  assert.equal(result.modelCalls, 0); assert.equal(result.coldReplayDuplicateStarts, 0); assert.equal(result.coldReplayDuplicatePublications, 0);
+  assert.equal(result.proofScope, 'installed-v7-fixture-consumption-not-model-or-release-approval');
+  assert.equal(result.tasks.length, 2); assert.equal(new Set(result.tasks.map(item => item.taskId)).size, 2);
+  for (const task of result.tasks) {
+    assert.deepEqual(Object.keys(task).sort(), ['taskId', 'attempts', 'overlapMs', 'deliveryDigest', 'deliveryBytes', 'executions',
+      'reviewDigest', 'publicationReceiptArtifactId', 'postverifyEvidenceArtifactId'].sort());
+    for (const key of ['taskId', 'publicationReceiptArtifactId', 'postverifyEvidenceArtifactId']) assert.match(task[key], /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/);
+    for (const key of ['deliveryDigest', 'reviewDigest']) assert.match(task[key], /^sha256:[a-f0-9]{64}$/);
+    assert.ok(Number.isSafeInteger(task.deliveryBytes) && task.deliveryBytes > 0 && task.deliveryBytes <= 1048576);
+    assert.ok(Number.isSafeInteger(task.attempts) && task.attempts > 0 && task.attempts <= 17 && Number.isFinite(task.overlapMs) && task.overlapMs > 0);
+    assert.deepEqual(Object.keys(task.executions).sort(), ['leader', 'agent', 'review', 'verification', 'publication', 'postverify'].sort());
+    assert.ok(Number.isSafeInteger(task.executions.leader) && task.executions.leader > 0 && task.executions.leader <= 9);
+    assert.equal(task.executions.agent, 2);
+    for (const type of ['review', 'verification', 'publication', 'postverify']) assert.equal(task.executions[type], 1);
+    assert.equal(Object.values(task.executions).reduce((sum, value) => sum + value, 0), task.attempts);
+  }
+  return result;
+}
 async function until(read, predicate, label, milliseconds = 60000) {
   const deadline = Date.now() + milliseconds;
   for (;;) {const value = await read(); if (predicate(value)) return value;
@@ -222,7 +259,7 @@ export async function exerciseInstalledV7(t, options) {
   const afterOpen = observations(), config = afterOpen.filter(item => item.type === 'configuration'); assert.equal(config.length, 2); same(config[0], config[1]);
   same(afterOpen.filter(item => item.type !== 'configuration'), beforeOpen.filter(item => item.type !== 'configuration'));
   assert.equal(fs.readdirSync(reportRoot).length, 2); assert.deepEqual(verify({root: installed, manifestDigest}), originalPackage);
-  const result = {sourceHead, manifestDigest, files: originalPackage.files, node: process.versions.node, platform: process.platform, arch: process.arch,
+  const result = {sourceHead, manifestDigest, artifactId: options.artifactId ?? null, files: originalPackage.files, node: process.versions.node, platform: process.platform, arch: process.arch,
     uid: process.getuid(), layout: 7, sameConfiguration: true, tasks: completed.map(({taskId, attempts, overlapMs, deliveryDigest, deliveryBytes,
       executions, reviewDigest, publicationReceiptArtifactId, postverifyEvidenceArtifactId}) =>
       ({taskId, attempts, overlapMs, deliveryDigest, deliveryBytes, executions, reviewDigest, publicationReceiptArtifactId, postverifyEvidenceArtifactId})),

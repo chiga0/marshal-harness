@@ -163,3 +163,31 @@ jobs:
             if (!text.split(/\r?\n/).includes(expected)) throw Error('candidate_consumer_incomplete');
           }
           NODE
+
+      # Keep the original layout1/2 consumer above. This additional v7 consumer
+      # uses the same installed bytes and pins; it never creates another package.
+      - name: Consume v7 Leader teams and publication from the same installed candidate
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          node --test --test-concurrency=1 --test-reporter=tap \
+            packages/task-distribution/v7-candidate-consumer.mjs | tee "$RUNNER_TEMP/node-v7-consumer.tap"
+          node --input-type=module - "$RUNNER_TEMP/node-v7-consumer.tap" "$RUNNER_TEMP/node-v7-consumer-result.json" <<'NODE'
+          import fs from 'node:fs';
+          import {candidateInputs, v7ResultFromTap} from './packages/task-distribution/v7-installed.fixture.mjs';
+          const [input, output] = process.argv.slice(2);
+          if (fs.statSync(input).size > 128 * 1024) throw Error('v7_consumer_output_limit');
+          const result = v7ResultFromTap(fs.readFileSync(input, 'utf8'), candidateInputs(process.env));
+          const fd = fs.openSync(output, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
+          try {fs.writeFileSync(fd, JSON.stringify(result, null, 2) + '\n'); fs.fsyncSync(fd);} finally {fs.closeSync(fd);}
+          NODE
+
+      # Only the closed safe summary is archived. Private service roots, journals,
+      # connection files and raw process output are never upload inputs.
+      - name: Archive v7 same-candidate consumption summary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-v7-consumption-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/node-v7-consumer-result.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
