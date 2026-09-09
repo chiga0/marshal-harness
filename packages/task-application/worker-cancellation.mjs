@@ -38,8 +38,11 @@ export class TaskWorkerCancellation {
       check(record.worker.taskId === task.task.id && task.workerIds.includes(record.worker.id));
       const affected = ticket.planDigest === null ? [] : affectedNodes(task.plan.nodes, task.plan.edges, [ticket.nodeId]);
       const descendants = affected.filter(nodeId => nodeId !== ticket.nodeId);
+      // One current transaction snapshot: re-reading every Worker for each
+      // descendant exhausts the Store read budget for otherwise legal plans.
+      const workers = descendants.length ? this.app.execution.workers(tx, task) : [];
       check(descendants.every(nodeId => {const node = task.nodes.find(value => value.id === nodeId);
-        return node && ['pending', 'cancelled'].includes(node.status) && !this.app.execution.workers(tx, task).some(({record: other}) =>
+        return node && ['pending', 'cancelled'].includes(node.status) && !workers.some(({record: other}) =>
           other.worker.nodeId === nodeId && this.app.repair.current(task, other.ticket) && live(other));}));
       const {key, requestDigest} = this.app.receiptKey(request), revision = nextRevision(task.task.revision);
       record.stopIntent = {profile: PROFILE, workerId: ticket.workerId, taskId: ticket.taskId, nodeId: ticket.nodeId,
