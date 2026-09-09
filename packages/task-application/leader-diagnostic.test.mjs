@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {createLeaderPort, parseManagedOutput, receipt, safeManagedDiagnostic, safeRejectedOutputDiagnostic} from './leader-ports.mjs';
 import {diagnosticCollector} from '../task-leader-report/live-consumer.fixture.mjs';
@@ -55,11 +58,18 @@ test('diagnostic projection and consumer bound both fields and bytes; no raw or 
   assert.equal(safeManagedDiagnostic({...shape, workerId: '/PRIVATE/path'}), null);
   assert.equal(safeManagedDiagnostic({...shape, status: 'PRIVATE'}).status, null);
   assert.equal(safeManagedDiagnostic({...shape, parseCode: 'PRIVATE'}).parseCode, null);
+  for (const reason of ['pi_prompt_timeout', 'pi_bridge_shell_output_limit', 'acp_request_timeout', 'provider_failed',
+    'agent_end_turn', 'agent_spawn_failed', 'provider_invalid_progress', 'acp_remote_error', 'runtime_launch_failed',
+    'custody_launch_failed', 'pi_business_answer_unacknowledged', 'pi_remote_rejected'])
+    assert.equal(safeManagedDiagnostic({...shape, reason}).reason, reason);
+  for (const reason of ['pi_future_unlisted', 'agent_future', 'agent_stop', 'pi_agent_refusal', 'acp_', 'PROVIDER_FAILED']) assert.equal(safeManagedDiagnostic({...shape, reason}).reason, null);
   const items = [], collect = diagnosticCollector(items), bytes = Buffer.from(JSON.stringify(shape) + '\n');
   collect(bytes.subarray(0, 20)); collect(bytes.subarray(20)); assert.deepEqual(items, [shape]);
   for (const value of [{...shape, raw: 'PRIVATE'}, {...shape, reason: 'PRIVATE'}, {...shape, authority: true}, {...shape, workerId: '/PRIVATE'}])
     collect(Buffer.from(JSON.stringify(value) + '\n'));
   collect(Buffer.from('x'.repeat(4096))); collect(Buffer.from('\n')); assert.equal(items.length, 1);
+  collect(Buffer.from(JSON.stringify({...shape, reason: 'acp_request_timeout'}) + '\n'));
+  assert.equal(items.length, 2); assert.equal(items[1].reason, 'acp_request_timeout');
   for (let i = 0; i < 40; i++) collect(bytes); assert.equal(items.length, 32);
   assert.ok(Buffer.byteLength(JSON.stringify(items)) <= 32 * 2048);
   assert.doesNotMatch(JSON.stringify(items), /PRIVATE|raw/);
@@ -127,4 +137,31 @@ test('consumer collector retains bounded rejected-output records under separate 
   assert.equal(items.filter(value => value.code === 'managed_provider_rejected_output').length, 8);
   assert.equal(items.filter(value => value.code === 'managed_provider_failure').length, 32);
   assert.doesNotMatch(JSON.stringify(items), /PRIVATE/);
+});
+test('reason whitelist covers every compile-time constant the providers can settle with', () => {
+  const here = file => fileURLToPath(new URL(file, import.meta.url)), read = file => fs.readFileSync(file, 'utf8');
+  const extract = (file, pattern) => [...pattern.exec(read(file))[1].matchAll(/'([A-Za-z_0-9]+)'/g)].map(match => match[1]);
+  const authority = extract(here('./leader-ports.mjs'), /reason: \[([\s\S]*?)\],\n  stage/);
+  for (const [file, pattern] of [
+    ['../task-leader-report/live-consumer.fixture.mjs', /reason: \[([\s\S]*?)\],\n    stage/],
+    ['../task-leader-live/driver.fixture.mjs', /const reasons = \[([\s\S]*?)\];/]])
+    assert.deepEqual(extract(here(file), pattern), authority, file);
+  const listed = new Set(authority);
+  for (const code of ['custody_unavailable', 'custody_invalid_permit', 'custody_launch_denied', 'custody_client_invalid',
+    'custody_launch_failed', 'custody_prepare_failed', 'custody_invalid_descriptor', 'custody_ack_conflict']) assert.ok(listed.has(code), code);
+  // Protocol/event type names and the dynamic reason prefix are not error codes.
+  const ignore = new Set(['agent_start', 'agent_end', 'agent_settled', 'agent_message_chunk', 'agent_exit', 'cleanup_error', 'pi_agent_']);
+  // Recursive walk: nested production directories must not be silently skipped;
+  // only test and fixture trees are excluded.
+  const walk = directory => fs.readdirSync(directory, {withFileTypes: true}).flatMap(entry => {
+    const file = path.join(directory, entry.name);
+    if (entry.isDirectory()) return entry.name === 'fixtures' ? [] : walk(file);
+    return entry.name.endsWith('.mjs') && !entry.name.includes('test') && !entry.name.includes('fixture') ? [file] : [];
+  });
+  const candidates = new Set();
+  for (const directory of ['../agent-acp', '../agent-pi-rpc', '../agent-provider-acp', '../agent-provider-pi', '../agent-runtime'])
+    for (const file of walk(here(directory)))
+      for (const match of read(file).matchAll(/'((?:pi|acp|agent|provider|runtime|cleanup|custody|worker)_[A-Za-z_0-9]+)'/g))
+        candidates.add(match[1]);
+  assert.deepEqual([...candidates].filter(code => !listed.has(code) && !ignore.has(code)).sort(), []);
 });
