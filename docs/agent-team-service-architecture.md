@@ -1,12 +1,14 @@
 # Marshal Agent Team：Task-first 最终方案与架构
 
-更新：2026-09-08。本文是已接受合同下的实施方案，不是已实现能力；边界集中记录在 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Accepted），出口见 [Milestone](agent-team-service-milestones.md)，实际完成状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。新稿的审计范围见[审计记录](audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)。旧合同按[适用性](design-contract-map.md)区分，不隐式解除旧运行时检查。
+更新：2026-09-09。本文是已接受合同下的实施方案，不是已实现能力；边界由 [ADR0085](adr/0085-agent-team-service-contract-and-storage.md)、[ADR0088](adr/0088-node-task-service-production-projection.md) 与 [ADR0094](adr/0094-trusted-single-user-role-team.md) 的精确 profile 取代范围承载，出口见 [Milestone](agent-team-service-milestones.md)，实际完成状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。旧合同按[适用性](design-contract-map.md)区分，不隐式解除旧运行时检查。
 
 ## 1. 最终产品定义：先交付，不先建管理平台
 
 当前正式实现投影见 [ADR 0088](adr/0088-node-task-service-production-projection.md)：Node-only 服务承接下述完整产品合同，不以 ADR 0087 实验代替产品。本文历史 Go/Goal/RB1 的物理映射仅适用于旧 Go profile；新 Node profile 在独立空根中用唯一 SQLite 权威，不调用 Marshal 原生进程、不导入旧根。以下的公开 API、确认、独立验收和 B2/B3 出口继续有效；ADR 接纳与实际支持分开判断。
 
 Marshal 是一个本机优先、可自托管的 Agent Team HTTP 服务。用户给出任务与上下文，确认必要的方案后，服务自己组织有界执行、进度监督、集成和独立验收，交付可下载、可使用、可审计的成果。能由一个 Worker 高效完成时不强制拆分；有互补职责与明确接口时才并行。
+
+当前 `trusted-single-user` 目标要求贯穿全程的[受管 Leader 调用](node-leader-execution-design.md)：需求/回答、批次结果/求助、集中 Review、交付/后验唤起，读取 durable 上下文，输出有限行动；不是现有 Planner 标签组合。Supervisor 观察/聚合/通知，Leader 业务判断，Core 校验与硬规则/已批准调度，Execution 操作所属 handle；不新增角色平台或第二状态机。现有 planner/author/reviewer/integrator/verifier 枚举保留，reviewer 标签不等于独立 ReviewDecision 或发布批准。完整机制为 `B2-L / DESIGN`，本次不改 HTTP/格式或既有 API-STABLE 证据。
 
 **首版删除 Workspace 概念**：没有 Workspace ID、创建、注册、切换或管理 API，也不改名为 Project。数据目录是 server 内部配置，工作目录属于执行实现；二者都不是用户提交任务之前必须创建的业务对象。仓库、表结构、平台说明和操作目标放入 Task prompt/context，Core 不建资源目录，不要求先注册 repository/resource。
 
@@ -37,7 +39,7 @@ marshal serve --data-dir <本机状态目录> --listen 127.0.0.1:0
 - Pi、Qwen Code、OpenCode 是首批适配目标；先用其中一个的两个实例完成 B1，再逐个验证更多 Provider，不等三家全部完成。
 - Agent 自行管理模型配置、登录和原生 Skill；不建设统一 Skill、身份、计费或 Agent 登录平台。
 - 旧 Marshal skill 完全退出运行、研发准入和验收，不读取/加载/执行；历史失败和审计保留。
-- 默认只交付成果，不自动发布 PR、deploy、release、执行生产 SQL 或补数。未来发布能力需独立 Publisher、明确授权与单独实测支持。
+- 默认只交付成果，不自动发布 PR、deploy、release、执行生产 SQL 或补数。B2 按 ADR0094 接一个明确授权、可观察回执的业务发布及发布后验证闭环；其他高风险外部流程按需求另行支持，不全部成为首发前置。
 
 ## 2. 一个部署单元，三面逻辑分离
 
@@ -45,9 +47,12 @@ marshal serve --data-dir <本机状态目录> --listen 127.0.0.1:0
 flowchart TB
   U[用户 / HTTP 客户端] --> API[Task / Worker / Artifact API]
   API --> APP[唯一应用服务]
-  APP --> CORE[控制面：计划 / 状态 / 预算 / 内置 Supervisor]
+  APP --> CORE[Core：事实 / 授权 / 预算 / 已批准调度 / 硬规则]
+  CORE --> L[受管 Leader：业务判断 / 有限行动建议]
+  L --> CORE
   CORE --> EXEC[执行面：AgentAdapter + 受管进程 + SandboxProvider]
-  EXEC --> C[候选 / 进度 / 终态观察]
+  EXEC --> C[Supervisor：观察 / 聚合 / 通知]
+  EXEC -->|原 result / cleanup / receipt| CORE
   C --> CORE
   CORE --> V[独立验收与成果集成]
   V --> CORE
@@ -56,6 +61,10 @@ flowchart TB
 ```
 
 当前 Node profile 只有一个 Node HTTP server、若干受管执行进程和本地 SQLite/制品；旧 Go server 仅属于历史 profile，不作为新服务依赖。不先建微服务、消息中间件、独立调度器或 GC 平台。控制面决定状态与执行义务；执行面干活并提供观察；存储面保存事实，不裁定业务成功。
+
+上图是目标职责，不是现代码已物理分离。`TaskSupervisor` 现混合调度/handle/失败广播；在同一 loop 内渐进委托 Core 与 Execution，保留唯一 Application/Store。Leader 调用也必须经原预算/许可和受管执行，不能成为第四个外部服务或自己的进程控制器。
+
+Execution 的必需结果/cleanup/回执经原受控接纳接口直接进入 Core；Supervisor 有界聚合的观测/告警不是唯一结果通道，不得因采样、丢弃或通知失败遗漏权威业务事实。
 
 Core 只依赖中立类型与接口。Port 是接口契约（例如 Go interface），Adapter 实现契约，DI 在唯一组合根通过构造函数注入；不引入 DI 框架或动态插件系统。AgentAdapter 负责请求/协议/配置与结果解码，Execution 管进程归属/期限，SandboxProvider 管执行环境。普通 Local 子进程不是恶意代码沙箱。
 
@@ -68,6 +77,8 @@ B1 复用现有唯一权威组合与受控生产调用链；B2 在同一应用�
 3. 两个互补作者在独立目录执行；Git 任务各用锁定 base 的独立 worktree。Core 不解析业务表或要求零 Git 任务造 dummy commit。
 4. 收集实际候选和终态，独立验证精确成果；集成消费已接纳的上游，最终验收检查整套交付，不用“两个节点各自绿”代替。
 5. 通过下载 API 获取 manifest/成果，在新目录按声明依赖重建并执行原业务验收；全部必需条件满足才记成功 Outcome，失败保留原因和明确标识的局部成果。
+
+`B2-L` 在此加入独立 Review 后的真实局部修正并保留无关成果、阶段验收后 Leader 再次判断、明确授权的有限目标发布、独立后验与整体汇总。新机制显式 opt-in，验收通过不再立即整体 terminalize，须满足原 Task 的交付/后验及汇总出口；旧 completed/原回执不改也不复活。发布已发生但后验失败保留原效果，unknown 只 reconcile。当前尚无这条完整接线，下载不是已发布。
 
 角色先是少量内置职责模板，不做角色 CRUD 平台：规划、实现、集成、独立验收。计划和语义评审可调用 Agent，但 Supervisor 不由 Agent 实现。独立验收不等于每次都多调用一个 LLM：可执行的业务断言由受控验证器在作者之外运行，需要语义判断时才追加有界 Reviewer。作者不能改验收标准或为自己签发权威通过，最终 Decision 由 Core 绑定当前证据接纳。
 
@@ -88,7 +99,7 @@ Core 不写品牌分支或版本白名单。实际 binary/version/config 来源�
 
 结构化控制结果尽量由 Adapter 从实际终态/transcript/成果生成，不要求模型在末尾伪装完整控制面证据。旧 Pi parser/profile 的迁移必须同步生产者与行为测试，不用宽松解析掩盖失败。
 
-原生模型/批准数据读取验证工具可沿用已配置鉴权，不复制 HOME 或登录秘密。作者不获得 Publisher 权限/凭据；作者可达 Publisher 凭据或已登录发布入口的配置不进入支持范围，**包括 publication:none**。同 UID 原生配置可能有 ambient credential，不能只报告风险或靠提示词声称分权成立。B1 复用已有合法 profile，不因此前置统一身份平台或完整恶意代码隔离矩阵，也不擅自删除用户登录。
+原生模型/批准工具可沿用已配置鉴权，不复制 HOME 或登录秘密。ADR0094 的可信单用户 profile 不再把证明 Publisher 凭据/已登录入口完全不可达作为前置，必须明确同 UID ambient credential 风险；角色和工具回调不是 OS 隔离证明。开发者没有产品发布授权，默认 publication:none，原生登录不能扩大批准范围；秘密不进入提示、日志或制品。旧 Go/hardened profile 的原强分权合同不变，强隔离支持以后单独验收，不擅自删除登录凑通过。
 
 ## 5. HTTP API：直接围绕 Task
 
@@ -141,9 +152,11 @@ pause 只停新派发，不等于进程已停；cancel 必须报告停止进度/
 
 默认仅 loopback，校验 Host/Origin，默认不允许跨域；首版本地 profile 拒绝非 loopback 绑定。健康接口只给最小信息；不以 localhost 为由开无保护命令执行端口。不建设账号、组织、RBAC、安装收据/activation 管理平台。远端访问、TLS/多用户和管理平台以后按真实需求设计，在远程首次开启前完成相应安全基线。
 
-## 6. 内置 Supervisor 与有界返工
+## 6. 内置受管循环、四责边界与有界调整
 
-Supervisor 复用唯一 resident controller，依据持久事实处理调度、Collect、独立验收队列、集成、Outcome、deadline 与取消；不依赖聊天任务定时唤醒或一个监督 Agent。
+复用唯一 resident loop，不依赖聊天任务定时唤醒。按0094，Supervisor 仅观察/聚合异常与证据并通知，不业务换人/重试/改计划/判成败，也不因疑似 stuck kill。Core 根据原批准 DAG 调度并处理 cancel/硬期限/预算/owner fence；Execution 操作原 handle。硬规则立即执行不等 Leader；普通内容/执行失败保留业务决策窗口，不无条件全队取消。Store/owner 不可用时原安全停止仍执行，但不能写虚假 cleanup。
+
+Leader 按业务义务读语义快照/manifest+cursor，集中处理一批意见并提出有限行动；每 Task 最多一个在途，progress/heartbeat 不触发调用。相关候选/授权/答案改变才触发必要重验，无关进度不导致失效风暴。已 committed 决定恢复原动作/outbox，未 committed 按原义务/预算有界重试，成本不抹。原0091 HTTP repair 保留；新自治范围内修正请求须独立绑定来源，不能自签旧负 Decision。详细接缝与六类验收统一见[Leader 机制](node-leader-execution-design.md)。
 
 - B1 两个作者槽；验证/集成也计资源。B2 按依赖、互斥目录、内存/CPU、Provider 限额及待审容量增加并发，不因 CPU 空闲就盲派。
 - 显示阶段、来源与最后观察时间；工具事件可选，沉默不直接判死锁，日志活跃不能刷新硬 deadline。
@@ -187,7 +200,7 @@ B1 先明确需求和一次计划确认；不承诺原生 Agent 中途双向交�
 
 预算先强制墙钟、Attempt、并发和输出；不为计费平台阻断 B1。保留 token 预留的旧合同需以版本化 schema/producer 支持 unknown 与保守 debit，不能假退款或永久占用“活 Worker”。隐藏推理与不可见 Skill 展开不要求采集。
 
-外部生产写、SQL 发布/补数、Draft PR 是后续按授权和实测能力开放的独立交付方式，不是首个团队验收前置。不能以本地生成文件替代用户要求的真实业务效果，也不因原生工具已登录宣称其可恢复/可取消。
+外部业务发布按 ADR0094 在 B2 补最薄的完整授权交付，先只选一个有限、可检查目标，不把生产 SQL/补数、任意云写入或全部 Draft PR 流程作为前置。发布与发布后检查必须绑定原授权、成果和回执，不因原生工具已登录宣称其可恢复/可取消。Marshal 软件自身的 tag/release、签名和受保护资产发行仍按 B3，不能与业务发布混用权限。
 
 ## 9. 实施顺序、可复用资产与终态
 
@@ -201,7 +214,7 @@ B1 先明确需求和一次计划确认；不承诺原生 Agent 中途双向交�
 | RB1/Run store 与恢复/故障案例 | B1 复用；B2 按 Store 接缝替换为 SQLite，U1 独立处理旧历史 |
 | 旧鉴权/安装与 process mechanics | B1 使用合法现有配置；新本机 profile 去新增安装流程，保留 OS 规则和所属执行控制 |
 
-最终架构仍是可插拔的三面分离与有界自治，不是多租户控制平台。后续只有真实需求证明必要才增加远端执行、组织权限、PostgreSQL、统一 Skill 或复杂 DAG。正式支持限定实测平台/profile，不承诺任意任务都成功、所有 Agent 内部可干预或团队一定比强 Lead＋SubAgents 更快。
+最终架构仍是可插拔的三面分离与有界自治，不是多租户控制平台。后续只有真实需求证明必要才增加远端执行、组织权限、PostgreSQL、统一 Skill 或复杂 DAG；成功流程重复后再固化 Workflow Template，不先造模板市场或动态角色平台。正式支持限定实测平台/profile，不承诺任意任务都成功、所有 Agent 内部可干预或团队一定比强 Lead＋SubAgents 更快。
 
 收益以用户可用成果、端到端耗时、人工介入、失败/返工与可恢复性衡量；B1 先取一组基线，B2/B3 再做代表任务族重复配对，不把大规模 benchmark 变成第一次演示前提。详细退出条件和并行分工集中在 [Milestone](agent-team-service-milestones.md)。
 

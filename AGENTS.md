@@ -10,9 +10,11 @@
 
 ## 2026-09-07 当前产品路线
 
-维护者已接受 [ADR 0080](docs/adr/0080-three-plane-business-delivery-roadmap.md) 的三面分离与 B1→B2→B3 路线。当前目标进一步按 B1 真实团队交付 PoC→B2 本地 API/SQLite/交互与审计→`API-STABLE`→B3 长期运行与正式 API 支持推进；UI-1 仅在 API-STABLE 后启动，不阻塞 API 正式发布。它不恢复通用 M13、HA、多租户作为发布前置。唯一当前完成状态见 [Roadmap 当前表](docs/roadmap-status.md#业务交付当前表)，目标退出条件见 [实施 Milestone](docs/agent-team-service-milestones.md)。此调整不削减独立验证、单写者、发布分权、恢复与签名/Linux/stable 门禁，不表示能力已生产可用。
+维护者已接受 [ADR 0080](docs/adr/0080-three-plane-business-delivery-roadmap.md) 的三面分离与 B1→B2→B3 路线。当前目标进一步按 B1 真实团队交付 PoC→B2 本地 API/SQLite/交互与审计→`API-STABLE`→B3 长期运行与正式 API 支持推进；UI-1 仅在 API-STABLE 后启动，不阻塞 API 正式发布。它不恢复通用 M13、HA、多租户作为发布前置。唯一当前完成状态见 [Roadmap 当前表](docs/roadmap-status.md#业务交付当前表)，目标退出条件见 [实施 Milestone](docs/agent-team-service-milestones.md)。独立验证、单写者、受控发布与恢复继续保留；软件签名按发行资产类别适用，Linux/stable 门禁仍属 B3，不表示能力已生产可用。
 
-当前目标设计统一见 [Task-first Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)：删除 Workspace/Project 业务对象与注册流程，仓库/表/平台通过 Task prompt/context 提供。公开 Task 映射既有 Goal，内部执行规格对外称 WorkItem。B1 复用合法固定安装/当前 Store，用一个 Provider 的两个实例先交付；B2 完成本地简启动、SQLite、零 Git/多仓库、问答与更多 Adapter。账号/安装身份平台和 U1 历史导入不作为 B1 前置。0085 的合同状态与运行时启用分别判断；[合同适用性](docs/design-contract-map.md)明确旧 repository profile 仍执行原合同，新设计不自动迁移旧 `.marshal`。本轮只同步目标导航，以下不变量原文保持；其中旧 Workspace 状态布局按旧提案作用域理解，不成为新的注册前置。
+2026-09-09 用户明确收敛为可信单用户角色团队，设计接受 [ADR0094](docs/adr/0094-trusted-single-user-role-team.md)及[受管 Leader 执行机制](docs/node-leader-execution-design.md)：Leader 贯穿需求/回答、批次结果/求助、集中 Review、授权交付及后验，读 durable 上下文、输出有限行动，不以现有 Planner 冒充。Supervisor 仅观察/聚合/通知，Core 授权/预算/已批准调度及硬规则，Execution 操作所属 handle；现实现混合职责尚待渐进接线，不造四服务/第二状态机。`trusted-single-user` 的职责分离不等于 OS/凭据隔离，强隔离后置；旧 Go/hardened、API/枚举/格式和历史 non-production 不变。B1 经独立七条件核验为本机 PoC PASSED，非本次改目标自动通过；B2-L 为 DESIGN、正式发布前必验，B2/B3 仍 IN_PROGRESS，API-STABLE 原范围保留。业务发布不是 Marshal 软件发行，不豁免 B3；不增加 Leader/Workspace/Skill 或 Workflow 管理平台。
+
+当前目标设计统一见 [Task-first Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)：删除 Workspace/Project 业务对象与注册流程，仓库/表/平台通过 Task prompt/context 提供。公开 Task 在旧 Go profile 映射 Goal，Node 按 ADR0088 使用自己的唯一 Application/SQLite。B1 用一个 Provider 的两个实例先交付；B2 保留本地简启动、零 Git/多仓库、问答与更多 Adapter，按0094补完整受管 Leader 与授权交付/后验。账号/安装身份平台和 U1 历史导入不作为 B1 前置。合同状态与运行时启用分别判断；[合同适用性](docs/design-contract-map.md)明确旧 repository profile 仍执行原合同，新设计不自动迁移旧 `.marshal`。以下分权条款仅按0094明确作用域，其余不变量保留；旧 Workspace 状态布局按旧提案作用域理解，不成为新的注册前置。
 
 旧 Marshal skill 长期完全退出产品运行依赖、研发准入和验收标准：不读取、加载、派发或执行其流程，不要求每个开发切片一个 Marshal Run。保留历史运行/失败/审计资产，不恢复旧 Skill 的微切片和轮次规范；各 Agent 自带 Skill 仍由 Agent 自行管理。这不豁免以下产品证据、权限和恢复不变量。
 
@@ -47,7 +49,7 @@
 - 本仓库的每个开发写任务必须使用锁定基线和独立 Git worktree；产品中的 Git 写节点同样锁定 base 并使用独立 worktree。该要求不扩展为非 Git 产品 Task 必须初始化仓库或提供 commit。
 - 本仓库开发与旧 repository profile 的 Run、Log、Cache 与任务 worktree 默认位于被 Git 忽略的 `.marshal/`。新 Workspace 目标使用 `<workspace>/.marshal/` 保存状态、制品和独立执行目录；Workspace 可不在 Git 中，若位于 Git 中则必须被忽略，运行数据均不得进入业务提交。新旧状态根不能自动互相接管。
 - 每个任务 worktree 或非 Git 独立执行目录同时最多有一个写入者；归属或停止状态未知时不得复用目录。
-- Worker 与 Publisher 权限必须分离。
+- Worker 与 Publisher 权限必须分离：Node `trusted-single-user` 按 ADR0094 保留职责、命令准入与证据权威分离，不宣称 OS 账号/凭据强隔离；旧 Go/hardened profile 继续执行原强边界。默认无业务发布授权，角色名和原生登录不能扩权。
 - ReviewDecision 必须绑定到精确的证据摘要。
 - 失败或阻塞任务必须保存 Outcome 证据，不得创建虚假 PR。
 - 普通宿主机子进程不得被描述成恶意代码沙箱。

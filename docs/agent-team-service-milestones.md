@@ -2,7 +2,9 @@
 
 更新：2026-09-09。最终方案见[服务架构](agent-team-service-architecture.md)，合同变化集中在 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Accepted）。合同接受允许实施，不表示实现或生产可用；实际事实仍只记 [Roadmap](roadmap-status.md#业务交付当前表)。
 
-**当前检查点**：API-STABLE 四项出口已独立核验通过，范围为当前 Node profile、25操作/58 Schema和同包客户端。Pi/custody问答交付与同配置取消均有实机，原API反例/客户端/响应上界与事件续读通过；正式版本、Publisher分权、真实局部修正及完整平台恢复/发行不随之通过。B3已开始冷备份恢复和三波多Task隔离验证，尚未完成。[精确证据与剩余出口](node-task-service-status-2026-09-08.md)。以下带时间的增量和Node形态试验保留历史，不作为当前待办。
+**当前检查点**：API-STABLE 四项出口已独立核验通过，范围为当前 Node profile、25操作/58 Schema和同包客户端。Pi/custody问答交付与同配置取消均有实机，原API反例/客户端/响应上界与事件续读通过；正式版本、真实局部修正及完整平台恢复/发行不随之通过。B3 冷备份恢复、多Task隔离、v5许可前恢复和事件洪泛已有有界证据，尚未完成。[精确证据与剩余出口](node-task-service-status-2026-09-08.md)。以下带时间的增量和Node形态试验保留历史，不作为当前待办。
+
+**2026-09-09 当前目标调整**：[ADR0094](adr/0094-trusted-single-user-role-team.md) 设计已接受。[受管 Leader](node-leader-execution-design.md) 必须全程按业务义务唤起，不是现有 Planner 组合标签；Supervisor 观察/聚合/通知，Core 校验/硬规则/已批准调度，Execution 所属 handle 操作。当前混合实现需渐进接线。B1 经本轮独立七条件复核为可信单用户本机 PoC `PASSED`，旧 non-production 不重标；B2/B3 仍 `IN_PROGRESS`，新增 `B2-L / DESIGN` 为正式发布前必验。强 OS/凭据隔离后置，不放松独立证据、授权、预算/恢复。文档无 API/角色/格式修改或迁移，API-STABLE 原范围保留；未来新终态/副作用等机器语义必须明确兼容。
 
 **Node 形态可行性检查点已通过（不升级生产阶段）**：[ADR 0087](adr/0087-node-local-team-feasibility-probe.md) 的独立 Node-only profile 在本机完成真实双 Pi→HTTP 活跃重启→69 项独立验收→下载再验收，以及第二任务取消/重启保留。它解决本机此次必须执行 Marshal 原生文件的实验障碍，不代替下面 ADR 0085 的完整 B1/B2/B3 合同。下一步优先决定正式 Node profile 的合同与迁移边界，然后推进局部修正、第二 Provider 和完整恢复；不先全量翻译旧 Core。证据、失败与限制见[实机记录](node-team-feasibility-2026-09-08.md)。
 
@@ -47,10 +49,10 @@ Pi候选`74a239e`的完整Node回归已由非作者独立完成：374/374通过�
 | 阶段 | 用户实际得到什么 | 完成的硬证据 | 不等待 |
 | --- | --- | --- | --- |
 | **B1：真实团队 PoC** | HTTP 提交/确认明确任务，两个真实 Worker 并行，整套成果独立验收并下载 | 同一候选、真实进程重叠、精确集成成果、独立 Decision、下载后业务检查通过；取消/失败可见 | Workspace、安装身份平台、SQLite 全面切换、旧历史迁移、自动规划平台、三 Provider、UI |
-| **B2：本地 API 可用** | 简短需求的问答/计划、通用制品、持续进度/审计、同版本恢复与简启动 | 零 Git 和 Git/多仓库真实交付；SQLite 单写真值；关键问答/取消/恢复行为；更多 Provider 独立兼容证据 | 多租户、远端鉴权平台、全部 Agent 增强能力、PostgreSQL、U1 历史导入 |
+| **B2：本地 API 可用** | 保留问答/计划、制品/审计/恢复与简启动；B2-L 接全程受管 Leader、局部调整、授权交付/后验 | 原业务/API 证据保留；新增闭环有独立 Review、保留无关成果、原决定/回执与整体结束，取消/崩溃不重规划整队或盲重发 | 强 OS/凭据隔离证明、动态角色/Workflow 平台、任意高风险流程、全部 Agent 增强、U1 |
 | **B3：正式可靠发布** | 已声明平台/profile 上可安装、长期运行、故障可处置的正式版本 | 同路径故障/长期业务验证、签名/公证、Linux 实机、支持矩阵及受保护 same-bytes stable release | UI、HA、通用工作流、统一 Skill、未声明支持的 Provider/外部发布能力 |
 
-**与历史编号的映射**：旧 B1 的单任务纵切成为本稿 B1 的内部步骤；旧 B2 的最小团队闭环前移到 B1，完整体验进入 B2；B3 保留正式支持。原 B1/B2 仍 IN_PROGRESS、B3 PLANNED，历史 SHA、失败次数和未完成证据不改写。重排出口不是宣布完成或另建 Goal 清零成本。
+**与历史编号的映射**：旧 B1 的单任务纵切成为本稿 B1 的内部步骤；旧 B2 的最小团队闭环前移到 B1，完整体验进入 B2；B3 保留正式支持。历史重排时 B1/B2 IN_PROGRESS、B3 PLANNED 的记录不改写，当前状态只见上文与 Roadmap。重排本身不是完成或另建 Goal 清零成本。
 
 不是每个检查点一个 PR/Run/ADR。每个实现切片应穿过完整 producer→consumer→业务验收；仅在当前出口被阻断时修复底层，不把历史所有 cleanup 重新排成必做项。旧 Marshal skill 不使用；本轮文档任务也未调用它。
 
@@ -77,6 +79,8 @@ Pi候选`74a239e`的完整Node回归已由非作者独立完成：374/374通过�
 - 没有 UI、Marshal skill、SQLite 全面迁移或三品牌齐全仍能演示。当前未支持的零 Git/复杂交互必须明示，不能以此伪造通用能力。
 
 这是受限本机 PoC，不是正式 v1.0。没有下载消费和独立验收，不能用 PR、组件测试或 Worker 正常退出关闭此阶段。
+
+当前可信单用户 profile 按 ADR0094 以职责与权威分离解释分权，不要求先完成 OS/凭据强隔离证明。本轮维护者独立复核七条件后，B1 本机 PoC 记 `PASSED`：原真实 Pi `69cface` 团队29.624秒、作者交叠10189ms、精确独立 Decision 与338B成果下载后再消费；同生产代码 `37df` 取消13.046秒、原 owned stops/零验收与替身/冷开原回执。原 SQLite 完整性/外键/source-event 摘要及下载复核通过，两个库前后摘要不变；当前生产等价源的独立团队3/3还覆盖两组件各自合法但组合错误拒绝/无delivery、重复请求与冷开零重派。[当前证据索引](roadmap-status.md#业务交付当前表)保留范围。此为复核旧实物，不是今天新跑模型；未知用量仍null、旧non-production不改，不覆盖B2-L或B3。
 
 ## 3. B2：把演示变成日常可用的本地 API 服务
 
@@ -109,6 +113,12 @@ Pi候选`74a239e`的完整Node回归已由非作者独立完成：374/374通过�
 
 退出：目标 Task HTTP 体验在同一应用/SQLite/执行链可用；第二真实 Adapter 的解耦证据、通用制品、问答/暂停取消、局部修正与同版本恢复通过。第三 Provider 或可选增强未过时单独列 pending/unsupported，不能宣称三家均支持，也不反向阻止核心 API 完成。
 
+### B2-L：全程受管 Leader 与授权交付（DESIGN，正式发布前必过）
+
+按[Leader机制](node-leader-execution-design.md)一个完整纵切实施：需求→必要确认→两个互补 Worker→独立 Review→基于真实问题的局部修正且保留无关成果→独立整体验收→授权交付→独立后验→Leader汇总/Core整体结束。Leader由业务事实重复唤起，读持久快照、提出有限动作；现有一次性Planner/reviewer标签不代表此链已实现。默认未授权只交付成果，不建Leader资源平台。
+
+出口包含机制文档六类组合反例：聚合事件/单在途/无heartbeat调用风暴、相关当前性、独立证据与权限、硬取消/期限、决定及动作各COMMIT恢复/外部unknown对账、旧协议与后继任务。普通业务失败保留Leader决策窗口和合法无关分支；未知清理/预算/权限故障仍硬规则。新profile须延迟整体结束至所需交付/后验，不能改旧completed或复活旧Task；格式/API兼容一次冻结后显式启用。实际闭环未过不得以设计或B1 PoC替代。任意高风险业务、动态角色/Workflow平台不作首发前置，成功重复后再模板化。
+
 ### API-STABLE：核心接口稳定检查点，不是所有扩展齐备
 
 满足以下条件后可开发 UI-1，不要求三 Provider/全部增强、旧库迁移或 B3 全故障矩阵提前完成：
@@ -124,9 +134,9 @@ API-STABLE 只是接口相对稳定，不授予正式平台支持。开发 UI �
 
 - 在同一已通过业务链验证 crash/丢响应/重复与迟到结果/旧 owner、问答与 cancel 竞态、磁盘满、Agent 无响应、长 Verify、事件洪泛与关闭恢复；未知副作用不自动重试。
 - 多 Task 长期运行、有限容量、坏任务故障隔离、长历史查询、一致备份/恢复/安全 GC；不会无限增加 Worker 或无限保留假活执行。
-- 实际待发布 bytes 完成业务交付与恢复；Darwin 稳定安装、签名/notarization，Linux server 实机，受保护 same-bytes stable release。沿用已有正式门禁，不用 PoC 或旧 RC1 替代。
+- 实际待发布 bytes 完成业务交付与恢复；Darwin 稳定安装，签名/notarization 按 ADR0088 §6 的资产类别适用，Linux server 实机，受保护 same-bytes stable release。纯 JS 包不伪称 notarized。此为 Marshal 软件发行，不因 Leader 业务发布授权而豁免，不用 PoC 或旧 RC1 替代。
 - 支持矩阵分别列平台、Agent/profile、可见能力、版本兼容、取消/恢复、数据格式及安装/升级范围；只承诺实测者，未过的第三 Provider 不冒充已支持。
-- 首版可先承诺干净安装及已验证的新格式升级。U1 旧账本升级未过时明确不支持导入；不静默丢历史。外部生产写、Draft PR 另按权限与实测声明，非本地成果交付前置。
+- 首版可先承诺干净安装及已验证的新格式升级。U1 旧账本升级未过时明确不支持导入；不静默丢历史。ADR0094 的代表性业务发布按 B2 单独验证，其他生产写/高风险发布按授权与实测声明，不全部成为前置；强隔离 profile 是后继加固，不借 trusted-single-user 宣称已覆盖。
 - 用代表任务族积累重复交付和配对实验，包含失败/准备/人工等待；未证明优势就不宣称多 Agent 普遍更快。
 
 退出：精确 sourceHead/资产摘要/平台/profile/同路径业务及恢复证据齐备，无未处置 P0/P1、未知写入者或未说明恢复风险，正式发行与故障处置文档可由新用户复现。仅打 v1.0.0 标签不算完成。
