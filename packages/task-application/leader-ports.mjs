@@ -119,7 +119,20 @@ export const createReviewPort = config => create('review', config);
 // model or returned JSON can mint/clone the capability.
 export function createEffectPort(type, native) {
   check(['publication', 'postverify'].includes(type) && id(native?.id) && typeof native.start === 'function', 'invalid_leader_config');
-  const port = Object.freeze({id: native.id, custodyProfile: clone(native.custodyProfile), start(options) {
+  const port = Object.freeze({id: native.id, custodyProfile: clone(native.custodyProfile), lookup(ticket, context) {
+    // An unreserved action has no execution ticket. Its original command/action
+    // subject is separately hashed; this never mints a reservation or cleanup.
+    check(type === 'publication' && typeof native.lookup === 'function' &&
+      (ticket.executionType === type || ticket.profile === 'publication-action-lookup'), 'invalid_leader_receipt');
+    const binding = ticket.profile === 'publication-action-lookup' ? ticket.binding : ticket.input.publication.binding;
+    const raw = native.lookup(clone(binding), context);
+    check(raw && typeof raw.then !== 'function' && ['matched', 'absent', 'conflict', 'unknown'].includes(raw.status) &&
+      hash(raw.binding) === hash(binding) && raw.evidence?.content instanceof Uint8Array &&
+      raw.evidence.content.length <= 65536, 'invalid_leader_receipt');
+    const data = {type: 'publication-lookup', status: raw.status, cleanup: null, value: clone(raw)};
+    const token = Object.freeze(Object.create(null)); receipts.set(token, {port, binding: hash(ticket), data});
+    return Object.freeze({type: data.type, status: data.status, cleanup: null, receipt: token});
+  }, start(options) {
     const binding = hash(options.ticket), handle = native.start(options);
     check(handle && typeof handle.stop === 'function' && typeof handle.started?.then === 'function' && typeof handle.completion?.then === 'function', 'invalid_leader_result');
     return Object.freeze({started: handle.started, stop: (...args) => handle.stop(...args), completion: Promise.resolve(handle.completion).then(raw => {

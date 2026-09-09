@@ -156,7 +156,7 @@ export class TaskCleanup {
         obligation.workerId === worker.id && obligation.generation === ticket.generation && obligation.commandId === command.id &&
         payload.obligationId === obligation.id && obligation.readSetDigest === hash(original.snapshot.readSet));
       task.leader.activeCallId = null; task.leader.activeWorkerId = null; task.leader.obligationId = null;
-      return {effectUnknown: false, close: source => {
+      return {effectUnknown: false, recovery: {type, obligation: clone(obligation)}, close: source => {
         obligation.status = 'closed'; tx.putProjection('interaction', obligation.id, row.revision, source, encode(obligation));
       }};
     }
@@ -185,7 +185,7 @@ export class TaskCleanup {
     const effectUnknown = type === 'publication' && record.cleanup.started !== null;
     action.status = effectUnknown ? 'unknown' : worker.status === 'cancelled' ? 'cancelled' : 'failed';
     if (type !== 'review') task.leader[type].status = action.status;
-    return {effectUnknown, close: source => {
+    return {effectUnknown, recovery: {type, action: clone(action)}, close: source => {
       tx.putProjection('attempt', action.id, row.revision, source, encode(action));
     }};
   }
@@ -356,11 +356,13 @@ export class TaskCleanup {
       }
       const remaining = this.execution.workers(tx, task).some(({record: other}) => other.worker.id !== workerId && live(other));
       const taskCancelled = !!task.cancelIntent && !task.failureCode;
+      const recovery = attached && this.app.leader.interrupted(task, record, attached.recovery, observationDigest);
       if (!taskCancelled) task.failureCode ??= targeted ? 'worker_cancelled' : 'service_interrupted';
       const effectUnknown = attached?.effectUnknown || task.leader?.publication?.status === 'unknown';
-      task.task.status = remaining || effectUnknown ? 'intervention' : taskCancelled ? 'cancelled' : 'failed';
-      task.task.code = effectUnknown ? 'publication_effect_unresolved' : remaining ? 'previous_execution_unresolved' : taskCancelled ? 'task_cancelled' : targeted ? task.failureCode : 'service_interrupted';
-      if (!remaining && !effectUnknown) { task.task.phase = 'terminal'; if (task.leader) task.leader.stage = 'terminal';
+      task.task.status = remaining || effectUnknown || recovery ? 'intervention' : taskCancelled ? 'cancelled' : 'failed';
+      task.task.code = effectUnknown ? 'publication_effect_unresolved' : remaining ? 'previous_execution_unresolved' : recovery ? 'leader_recovery_pending' : taskCancelled ? 'task_cancelled' : targeted ? task.failureCode : 'service_interrupted';
+      if (recovery && task.failureCode === 'service_interrupted') delete task.failureCode;
+      if (!remaining && !effectUnknown && !recovery) { task.task.phase = 'terminal'; if (task.leader) task.leader.stage = 'terminal';
         for (const node of task.nodes) if (['pending', 'ready', 'waiting'].includes(node.status)) node.status = 'cancelled'; }
       const closedQuestions = this.app.runtimeQuestions.close(task, 'cancelled', workerId);
       task.task.revision = nextRevision(task.task.revision);

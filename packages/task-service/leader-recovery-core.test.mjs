@@ -21,9 +21,9 @@ function publication() {
         cleanup: {started, cleaned: true, scope: 'controlled-fixture'}, evidence: {name: 'receipt.json', mediaType: 'application/json',
           content: encode({status: 'created', binding: ticket.input.publication.binding})}})};}};
 }
-async function setup(t, type) {
-  const f = fixture(t, ['publication', 'postverify'].includes(type) ? {publication: publication(), publicationExpected: () => ({original: 'expected'})} : {});
-  const task = await f.call({operation: 'task.create', key: 'create', body: {intent: '附属执行原义务恢复', limits: {timeoutMs: 120000, maxAttempts: 17, maxWorkers: 3}}});
+export async function setup(t, type, options = {}) {
+  const f = fixture(t, ['publication', 'postverify'].includes(type) ? {publication: publication(), publicationExpected: () => ({original: 'expected'}), ...options} : options);
+  const task = await f.call({operation: 'task.create', key: 'create', body: {intent: '附属执行原义务恢复', limits: {timeoutMs: 120000, maxAttempts: options.maxAttempts ?? 17, maxWorkers: 3}}});
   await f.decision(f.take('leader'), [{type: 'ask', kind: 'business', prompt: '请确认地区', options: [], subject: readTask(f, task).inputDigest, nodeIds: []}]);
   const question = (await f.call({operation: 'task.leader', taskId: task.id})).pendingRequest;
   await f.call({operation: 'task.leader.reply', taskId: task.id, requestId: question.id, key: 'answer',
@@ -44,12 +44,13 @@ async function setup(t, type) {
   const authorization = (await f.call({operation: 'task.leader', taskId: task.id})).pendingRequest;
   await f.call({operation: 'task.leader.reply', taskId: task.id, requestId: authorization.id, key: 'allow',
     body: {expectedRevision: (await f.get(task.id)).revision, requestDigest: authorization.requestDigest, decision: 'allow'}});
+  if (type === 'publication' && options.unreserved) return {f, task};
   ticket = f.take('publication'); if (type === 'publication') return {f, task, ticket};
   const handle = f.app.leader.effects.publication.start({ticket, provider: f.provider, prepared: {cwd: f.parent, prompt: 'controlled publication'}});
   f.app.execution.started(ticket, await handle.started); f.app.execution.finish(ticket, await handle.completion);
-  return {f, task, ticket: f.take('postverify')};
+  return {f, task, ...(options.unreserved ? {} : {ticket: f.take('postverify')})};
 }
-async function bound(f, ticket, start) {
+export async function bound(f, ticket, start) {
   const root = path.join(f.parent, 'custody'); fs.mkdirSync(root, {mode: 0o700});
   const manager = createExecutionCustody({root}), profile = {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true};
   try {
@@ -69,7 +70,8 @@ const snapshot = (f, task) => f.read(tx => ({head: tx.head(task.id), task: f.app
 
 for (const type of ['leader', 'review', 'publication', 'postverify']) test('attached ' + type + ': original signed cleanup, no DAG fiction or retry', {timeout: 20000}, async t => {
   const {f, task, ticket} = await setup(t, type), observation = await bound(f, ticket, true), before = readTask(f, task);
-  f.reopen(); const result = f.app.execution.reconcileCleanup(ticket.workerId, observation), after = readTask(f, task);
+  f.reopen(); f.app.now = () => ticket.deadline + 1;
+  const result = f.app.execution.reconcileCleanup(ticket.workerId, observation), after = readTask(f, task);
   assert.equal(result.status, 'failed'); assert.equal(after.task.status, type === 'publication' ? 'intervention' : 'failed');
   assert.equal(after.attempts, before.attempts); assert.deepEqual(after.plan, before.plan); assert.deepEqual(after.selectedResults, before.selectedResults);
   assert.deepEqual(after.leader.history, before.leader.history); assert.equal(f.read(tx => f.app.execution.capacity(tx).value.active.length), 0);
@@ -83,13 +85,13 @@ for (const type of ['leader', 'review', 'publication', 'postverify']) test('atta
   f.reopen(); assert.deepEqual(f.app.execution.reconcileCleanup(ticket.workerId, observation), result); assert.deepEqual(snapshot(f, task), settled);
 });
 test('attached publication original signed none-start is not an unknown created effect', {timeout: 20000}, async t => {
-  const {f, task, ticket} = await setup(t, 'publication'), observation = await bound(f, ticket, false); f.reopen();
+  const {f, task, ticket} = await setup(t, 'publication'), observation = await bound(f, ticket, false); f.reopen(); f.app.now = () => ticket.deadline + 1;
   assert.equal(f.app.execution.reconcileCleanup(ticket.workerId, observation).status, 'failed');
   const record = readTask(f, task); assert.equal(record.task.status, 'failed'); assert.equal(record.leader.publication.status, 'failed');
   assert.equal(record.leader.publication.receiptArtifactId, null); assert.equal(f.read(tx => tx.command(ticket.commandId)).status, 'observed');
 });
 test('attached Leader mismatched obligation/call/input/command stays unresolved; original signed proof remains usable', {timeout: 20000}, async t => {
-  const {f, task, ticket} = await setup(t, 'leader'), observation = await bound(f, ticket, false); f.reopen();
+  const {f, task, ticket} = await setup(t, 'leader'), observation = await bound(f, ticket, false); f.reopen(); f.app.now = () => ticket.deadline + 1;
   const before = snapshot(f, task), originalTransaction = f.app.transaction.bind(f.app);
   // Transparent read-fault injection only. No private Store bytes are edited;
   // every rejected settlement still executes through the actual SQLite TX.

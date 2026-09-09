@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
@@ -41,9 +42,20 @@ function durable(f) {
       outbox: rows('SELECT * FROM outbox ORDER BY id')};
   } finally {db.close();}
 }
-async function fixture(t) {
+async function fixture(t, publishing = false) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-leader-recovery-')));
-  const f = {root: path.join(parent, 'data'), services: [], passed: false};
+  const f = {root: path.join(parent, 'data'), services: [], passed: false, reportRoot: path.join(parent, 'reports')};
+  let reader, readBaseURL;
+  if (publishing) {
+    fs.mkdirSync(f.reportRoot, {mode: 0o700});
+    reader = http.createServer((request, response) => {
+      if (!/^\/[A-Za-z0-9_-]+\.json$/.test(request.url)) {response.writeHead(404); response.end(); return;}
+      try {const content = fs.readFileSync(path.join(f.reportRoot, request.url.slice(1))); response.writeHead(200, {'Content-Type': 'application/json'}); response.end(content);}
+      catch {response.writeHead(404); response.end();}
+    });
+    await new Promise((resolve, reject) => {reader.once('error', reject); reader.listen(0, '127.0.0.1', resolve);});
+    readBaseURL = `http://127.0.0.1:${reader.address().port}/`;
+  }
   f.observations = () => lines(path.join(parent, 'leader-recovery-observations.jsonl'));
   f.gone = async () => {
     const pids = new Set(f.observations().filter(row => row.type === 'started' && row.started).flatMap(row => [row.started.guardPid, row.started.agentPid]));
@@ -56,11 +68,13 @@ async function fixture(t) {
   t.after(async () => {
     if (!f.passed) t.diagnostic('Preserved original Leader recovery evidence: ' + parent);
     for (const service of f.services) await service.stop('SIGKILL');
+    if (reader) await new Promise(resolve => reader.close(resolve));
     await f.gone(); if (f.passed) fs.rmSync(parent, {recursive: true, force: true});
   });
   f.launch = async mode => {
     const child = spawn(process.execPath, [cli, '--root', f.root, '--mode', mode, '--config', config], {
-      cwd: parent, env: {MARSHAL_LEADER_RECOVERY_FIXTURE: '1'}, stdio: ['ignore', 'pipe', 'pipe']});
+      cwd: parent, env: {MARSHAL_LEADER_RECOVERY_FIXTURE: '1', ...(publishing ?
+        {MARSHAL_LEADER_RECOVERY_PUBLICATION: '1', MARSHAL_LEADER_RECOVERY_READ_URL: readBaseURL} : {})}, stdio: ['ignore', 'pipe', 'pipe']});
     let stdout = '', stderr = '', exited = false, closed = false, token, spawnCode = null;
     child.once('error', error => {spawnCode = error.code;}); child.once('exit', () => {exited = true;});
     const done = new Promise(resolve => child.once('close', (code, signal) => {closed = true; resolve({code, signal});}));
@@ -89,6 +103,9 @@ async function fixture(t) {
 async function approve(client, intent, key, values = {east: 10, west: 20}) {
   const body = {intent, context: {text: JSON.stringify(values)}, requirements: {
     deliverables: ['east报告', 'west报告'], acceptance: ['保留east原业务值', '保留west原业务值']}};
+  // Original ten-attempt budget fits first-pass delivery, but cannot fund an
+  // interrupted fifth execution plus the entire remaining recovery path.
+  if (intent === 'leader recovery interrupted') body.limits = {timeoutMs: 120000, maxAttempts: 10, maxWorkers: 3};
   const created = await client.createTask(body, key + '-create');
   let current = await until(async () => {const value = await client.getTask(created.id);
     assert.ok(!['failed', 'intervention'].includes(value.status), JSON.stringify(value)); return value.status === 'awaiting-answer' && value;}, 'Leader business request');
@@ -170,4 +187,81 @@ test('v7 original in-flight Leader service death: original custody, same-root op
   await third.stop('SIGTERM'); const repeated = durable(f);
   for (const key of ['events', 'heads', 'projections', 'receipts', 'outbox']) assert.deepEqual(repeated[key], settled[key], 'cold replay without additional facts: ' + key);
   assert.deepEqual(f.observations().filter(row => row.type === 'started'), starts); f.passed = true;
+});
+
+test('v7 successor HTTP: original Leader dies, one current-generation call completes the SAME Task and cold replay', {timeout: 100000}, async t => {
+  const f = await fixture(t), first = await f.launch('create'), old = await approve(first.client, 'leader recovery resumable', 'resume');
+  const held = await until(() => f.observations().find(row => row.type === 'prompt-held' && row.taskId === old.created.id), 'original held Leader');
+  assert.deepEqual(await first.stop('SIGKILL'), {code: null, signal: 'SIGKILL'});
+  const before = durable(f), record = taskRecord(before, old.created.id), oldWorker = attempts(before, old.created.id).find(row => row.worker.id === held.workerId);
+  assert.equal(record.attempts, 5); assert.equal(capacity(before).length, 1);
+  const second = await f.launch('open');
+  const completed = await until(async () => {const value = await second.client.getTask(old.created.id);
+    assert.ok(!['failed', 'cancelled', 'intervention'].includes(value.status), JSON.stringify(value)); return value.status === 'completed' && value;}, 'same Task successor delivery', 45000);
+  await replay(second.client, old);
+  const audit = await second.client.request('task.audit', {path: {taskId: old.created.id}});
+  assert.equal(audit.attempts, 11); assert.equal(audit.acceptance.status, 'passed');
+  const view = await second.client.request('task.leader', {path: {taskId: old.created.id}}); assert.equal(view.review.verdict, 'accept'); assert.ok(view.summaryArtifactId);
+  const downloads = await Promise.all(completed.artifactIds.map(id => second.client.downloadArtifact(id))), delivery = downloads.find(item => item.artifact.kind === 'delivery');
+  assert.deepEqual(JSON.parse(delivery.content), [{nodeId: 'east', region: 'north', value: 10}, {nodeId: 'west', region: 'north', value: 20}]);
+  await second.stop('SIGTERM'); await f.gone(); const settled = durable(f), closed = attempts(settled, old.created.id).find(row => row.worker.id === held.workerId);
+  assert.equal(closed.worker.status, 'failed'); assert.equal(closed.cleanup.cleaned, true); assert.equal(closed.recovery.status, 'resumed');
+  const observation = JSON.parse(fs.readFileSync(path.join(f.root, 'custody', oldWorker.custody.descriptor.custodyId + '.observation.json')));
+  assert.equal(verifyObservation(oldWorker.custody.descriptor, observation), true); assert.equal(closed.custody.settledDigest, custodyDigest(observation));
+  assert.deepEqual(taskRecord(settled, old.created.id).selectedResults, record.selectedResults); assert.equal(capacity(settled).length, 0);
+  assert.equal(f.observations().filter(row => row.type === 'started' && row.workerId === held.workerId).length, 1);
+  for (const row of before.receipts) assert.deepEqual(settled.receipts.find(item => item.scope === row.scope && item.operation === row.operation && item.key_digest === row.key_digest), row);
+  const starts = f.observations().filter(row => row.type === 'started'), third = await f.launch('open');
+  assert.deepEqual(encode(await third.client.getTask(old.created.id)), encode(completed)); await replay(third.client, old);
+  assert.deepEqual(Buffer.from((await third.client.downloadArtifact(delivery.artifact.id)).content), Buffer.from(delivery.content));
+  await third.stop('SIGTERM'); const repeated = durable(f);
+  for (const key of ['events', 'heads', 'projections', 'receipts', 'outbox']) assert.deepEqual(repeated[key], settled[key]);
+  assert.deepEqual(f.observations().filter(row => row.type === 'started'), starts); f.passed = true;
+});
+
+test('v7 original CLI publication created before receipt COMMIT: crash, exact lookup, real postverify and cold download', {timeout: 100000}, async t => {
+  const f = await fixture(t, true), first = await f.launch('create'), original = await approve(first.client, 'leader publication recovery', 'publish');
+  const taskId = original.created.id;
+  const confirmation = await until(async () => {const task = await first.client.getTask(taskId);
+    assert.ok(!['failed', 'intervention'].includes(task.status), JSON.stringify(task)); return task.status === 'awaiting-confirmation' && task;}, 'precise publication consent', 45000);
+  const view = await first.client.request('task.leader', {path: {taskId}}); assert.equal(view.pendingRequest.kind, 'publication');
+  assert.deepEqual(fs.readdirSync(f.reportRoot), []);
+  const permission = {path: {taskId, requestId: view.pendingRequest.id}, idempotencyKey: 'publication-allow',
+    body: {expectedRevision: confirmation.revision, requestDigest: view.pendingRequest.requestDigest, decision: 'allow'}};
+  const receipt = await first.client.request('task.leader.reply', permission);
+  const held = await until(() => f.observations().find(value => value.type === 'publication-created-held' && value.taskId === taskId), 'actual publication result before SQL receipt');
+  const target = path.join(f.reportRoot, held.binding.name), bytes = fs.readFileSync(target), identity = fs.statSync(target);
+  assert.equal(digest(bytes), held.binding.artifactDigest); assert.equal(bytes.length, held.binding.bytes);
+  assert.deepEqual(JSON.parse(bytes), [{nodeId: 'east', region: 'north', value: 10}, {nodeId: 'west', region: 'north', value: 20}]);
+  assert.deepEqual(await first.stop('SIGKILL'), {code: null, signal: 'SIGKILL'});
+  const before = durable(f), taskBefore = taskRecord(before, taskId), worker = attempts(before, taskId).find(value => value.worker.id === held.workerId);
+  assert.equal(taskBefore.attempts, 10); assert.equal(taskBefore.leader.publication.receiptArtifactId, null);
+  assert.equal(taskBefore.leader.postverify, null); assert.equal(worker.worker.status, 'running'); assert.equal(worker.cleanup, null);
+  const second = await f.launch('open');
+  const complete = await until(async () => {const task = await second.client.getTask(taskId);
+    assert.ok(!['failed', 'cancelled', 'intervention'].includes(task.status), JSON.stringify(task)); return task.status === 'completed' && task;}, 'lookup, independent HTTP postverify, original conclude', 45000);
+  const finalView = await second.client.request('task.leader', {path: {taskId}});
+  assert.equal(finalView.publication.status, 'succeeded'); assert.equal(finalView.postverify.status, 'succeeded'); assert.ok(finalView.summaryArtifactId);
+  const audit = await second.client.request('task.audit', {path: {taskId}}); assert.equal(audit.attempts, 12); assert.equal(audit.acceptance.status, 'passed');
+  await replay(second.client, original); assert.deepEqual(encode(await second.client.request('task.leader.reply', permission)), encode({...receipt, replayed: true}));
+  const downloads = await Promise.all(complete.artifactIds.map(id => second.client.downloadArtifact(id))), delivery = downloads.find(value => value.artifact.kind === 'delivery');
+  assert.deepEqual(Buffer.from(delivery.content), bytes); assert.equal(fs.statSync(target).ino, identity.ino); assert.deepEqual(fs.readFileSync(target), bytes);
+  await second.stop('SIGTERM'); await f.gone(); const settled = durable(f), record = taskRecord(settled, taskId);
+  assert.equal(record.leader.publication.status, 'matched'); assert.equal(capacity(settled).length, 0);
+  const lookup = records(settled, 'artifact').map(value => value.artifact).find(value => value?.id === record.leader.publication.receiptArtifactId);
+  assert.ok(lookup); const old = attempts(settled, taskId).find(value => value.worker.id === held.workerId);
+  const observation = JSON.parse(fs.readFileSync(path.join(f.root, 'custody', worker.custody.descriptor.custodyId + '.observation.json')));
+  assert.equal(verifyObservation(worker.custody.descriptor, observation), true); assert.equal(old.custody.settledDigest, custodyDigest(observation));
+  assert.deepEqual(old.cleanup, observation.payload.cleanup); assert.equal(old.worker.status, 'failed'); assert.equal(old.recovery.status, 'resumed');
+  assert.deepEqual(record.selectedResults, taskBefore.selectedResults);
+  assert.equal(f.observations().filter(value => value.type === 'publication-start').length, 1);
+  for (const row of before.receipts) assert.deepEqual(settled.receipts.find(item => item.scope === row.scope && item.operation === row.operation && item.key_digest === row.key_digest), row);
+  const third = await f.launch('open'); assert.deepEqual(encode(await third.client.getTask(taskId)), encode(complete));
+  assert.deepEqual(Buffer.from((await third.client.downloadArtifact(delivery.artifact.id)).content), bytes);
+  const receiptBytes = await third.client.downloadArtifact(lookup.id), evidence = JSON.parse(receiptBytes.content);
+  assert.equal(evidence.status, 'matched'); assert.equal(evidence.createdByThisExecution, false);
+  await third.stop('SIGTERM'); const repeated = durable(f);
+  for (const key of ['events', 'heads', 'projections', 'receipts', 'outbox']) assert.deepEqual(repeated[key], settled[key]);
+  assert.equal(f.observations().filter(value => value.type === 'publication-start').length, 1);
+  assert.equal(fs.statSync(target).ino, identity.ino); f.passed = true;
 });

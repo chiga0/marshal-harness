@@ -330,6 +330,15 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       }
       requireValue(complete, 'service_custody_scan_limit');
     }
+    if (leader && mode === 'open') {
+      let after = '';
+      for (let page = 0; ; page++) {
+        requireValue(page < 100, 'service_custody_scan_limit');
+        const tasks = application.execution.scan(after);
+        for (const taskId of tasks.items) application.leader.recover(taskId);
+        if (tasks.nextCursor === null) break; after = tasks.nextCursor;
+      }
+    }
     if (repair && mode === 'open') {
       let after = '';
       for (let page = 0; ; page++) {
