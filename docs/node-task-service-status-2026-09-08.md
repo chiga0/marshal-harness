@@ -2,6 +2,12 @@
 
 ## 当前结论
 
+### 2026-09-09 12:20 CST：已审代码合入并同步 main
+
+sourceHead=`8f8ff8dfe57852e6b383fbd2bb7c70fb75a1d552`，localMergeSha=`85fc62a3338fc15c408e941e16a7c882b0be4a6d`；正常推送后远端 main 核对为同一 SHA，`pendingRemoteSync=false`。已审运行中问答、同计划局部修正及上述实机证据进入 main，未使用 force push。该 source 的 [Node team CI 34310020140](https://github.com/chiga0/marshal-harness/actions/runs/34310020140) Ubuntu/macOS 两项均 success；这是 Node 测试矩阵，不替代真实 Linux 部署、模型修正或权限分离证明。此前相关本地定向80项及真实 Pi 首轮交付的范围不扩大。
+
+当前 OpenAPI 为3.1.0、合同版本 `0.1.0-candidate`，25个操作、55个 Schema；不是 API-STABLE。实际输入审计与简启动仍在独立工作区实施，未纳入本次 merge。B1/B2继续 IN_PROGRESS，API-STABLE 未完成、B3 PLANNED。以下带时间的“未合 main/待同步”保留为历史事实，不覆盖本检查点。
+
 ### 2026-09-09 12:04 CST：修正启用配置下真实 Pi 首轮交付成功
 
 执行源 `d6502386f1be840096dcf002e9bb2eb551801765` 已正常推送至 `feat/node-custody-integration`；远端 main 仍为 `7250ec9`，不是 main 合并。真实 Pi 0.84.4 在 Node 24.15.0 下经 HTTP 创建、固定完整业务计划核验后一次确认、双作者、原独立 checker、下载消费与正常服务实例重开，得到 `natural-first-pass`、`validObservation=true`。总观察时间 **26.288秒**，作者执行生命周期交叠 **11.788秒**，共4 Attempts；这不等于 CPU 同时忙，也不代表任意需求自动规划。

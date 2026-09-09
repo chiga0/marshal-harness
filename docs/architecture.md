@@ -1,6 +1,6 @@
 # 整体架构
 
-> 当前目标设计，2026-09-07。完整方案见[Task-first 服务架构](agent-team-service-architecture.md)，合同集中于 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed），实际完成状态见 [Roadmap](roadmap-status.md#业务交付当前表)。草案不启用新运行时，旧合同适用性见[对照表](design-contract-map.md)。
+> 当前目标设计。完整方案见[Task-first 服务架构](agent-team-service-architecture.md)，合同为已接受的 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)与 [ADR 0088](adr/0088-node-task-service-production-projection.md)，实际完成状态见 [Roadmap](roadmap-status.md#业务交付当前表)。合同接受不等于生产完成，旧合同适用性见[对照表](design-contract-map.md)。
 
 ## 产品目标与最少概念
 
@@ -8,7 +8,7 @@ Marshal 是单节点、单用户、可信任务的 Agent Team HTTP 服务：需�
 
 用户只需理解 Task、Worker、Artifact。删除 Workspace 产品实体、ID、注册/切换及管理 API，不改名为 Project；数据目录是服务内部配置，Git/表/平台作为 Task 上下文，不进入通用资源目录。计划、问题、执行尝试和异步回执是任务的子记录，不要求用户先创建一串平台对象。
 
-目标启动入口是 `marshal serve`，复用原 control-plane serve 的唯一应用组合；默认本地数据目录/访问 token 自动准备，无用户注册、安装身份收据或单独 init 向导。B1 先用既有合法固定安装和真实 Git 样例；新环境简启动与零 Git 任务在 B2 验证。服务依然受 OS/企业安全机制管理，不能借 server 绕过匿名二进制拦截。
+目标启动入口是 `marshal serve`；当前 Node profile 由固定 Node 执行脚本入口、组合唯一 Application/SQLite，不启动旧 Go server 或子 CLI。默认本地数据目录/访问 token 自动准备，无用户注册、安装身份收据或单独 init 向导；简启动的实际进度以 Roadmap 为准。服务依然受 OS/企业安全机制管理，不能借 server 绕过匿名二进制拦截。
 
 <a id="v10-物理投影"></a>
 <a id="逻辑职责不等于物理服务"></a>
@@ -21,9 +21,9 @@ Marshal 是单节点、单用户、可信任务的 Agent Team HTTP 服务：需�
 | 执行面 | AgentAdapter、受管进程/deadline/cancel、SandboxProvider、独立验证、后续 Publisher | 作者不自证，不拥有发布权限；普通 Local 不宣称恶意代码隔离 |
 | 存储面 | 唯一 Store、事件/投影/幂等/预算/命令、内容寻址制品和审计 | 不以缓存/日志/第二数据库决定业务成功 |
 
-一个 server、多个受管执行进程、一个选定 Store 与本地制品；不先拆调度/GC/数据库微服务。B1 复用现有权威组合，B2 切 SQLite，新旧不双写。Core 只依赖接口/领域类型，组合根用普通构造函数 DI 注入 Agent/执行/存储实现；Port 是 interface 契约，不是网络端口或独立生命周期。
+一个 server、多个受管执行进程、一个选定 Store 与本地制品；不先拆调度/GC/数据库微服务。当前 Node profile 从独立新根使用唯一 SQLite，旧 Go profile 不迁移或双写。Core 只依赖接口/领域类型，组合根用普通构造函数 DI 注入 Agent/执行/存储实现；Port 是 interface 契约，不是网络端口或独立生命周期。
 
-公开 Task 复用既有 Goal ID/revision/预算/事件，旧内部 Task 执行规格对外投影为 WorkItem，不复制状态机。HTTP/CLI 都调用同一 Application Port，不从 legacy server/child CLI 回落。原有物化、上游组合和 Outcome 候选可复用，但没有实际消费验收不能记为完成。
+每个 profile 内公开 Task 只有一套 ID/revision/预算/事件；旧 Go profile 复用 Goal，Node profile 不为沿用旧类型名再建立平行权威。HTTP 与启动入口使用同一 Application，不从 legacy server/child CLI 回落。旧行为合同和回归案例可复用，但没有实际消费验收不能记为完成。
 
 ## 最短交付链
 
@@ -45,6 +45,6 @@ HTTP 提交并确认有限计划→两个 scope 不冲突的真实作者→自�
 
 **B1 真实团队 PoC → B2 本地 API 可用 → B3 正式可靠发布。** 旧 B1 单任务成为内部步骤，不改历史状态和失败分母。B2 的核心 API-STABLE 后才启动 UI-1，UI 不阻 API 正式发布；U1 旧历史迁移不阻新任务。Pi/Qwen Code/OpenCode 逐个按实测声明支持，不以全部增强能力拖住已支持路径。
 
-PostgreSQL、HA、多租户/远端身份平台、统一 Skill、动态任意 DAG、通用资源注册与自动发布都不作为初版前置。SQLite 仍为 B2 目标，但不为换库先重写整套系统。正式签名、公证、Linux 与 stable gate 保留在 B3。详细实现与验收只维护在[Milestone](agent-team-service-milestones.md)。
+PostgreSQL、HA、多租户/远端身份平台、统一 Skill、动态任意 DAG、通用资源注册与自动发布都不作为初版前置。Node 的 SQLite 已有实现，不等于完整恢复验收。签名/公证按 ADR0088 的发行资产类别适用，Linux 与 stable gate 保留在 B3。详细实现与验收只维护在[Milestone](agent-team-service-milestones.md)。
 
 [历史整体架构](architecture-reference-2026-09-07.md)保留原证据和长期设计参考，不构成第二套当前待办。旧 Marshal skill 完全退出运行/研发/验收，不加载或执行。

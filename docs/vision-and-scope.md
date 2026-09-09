@@ -6,7 +6,7 @@
 
 [服务产品方案](agent-team-service-architecture.md)与 [Milestone](agent-team-service-milestones.md)明确 Task-first：用户只需 Task、Worker、Artifact；没有 Workspace/Project 实体或资源注册。data-dir 只是服务内部配置，仓库/表/平台通过 prompt/context 提供。目标一个 marshal serve 启动本地 HTTP，自动初始数据与访问保护；账号/安装身份平台/统一 Agent 登录后置。Core 的内置监督、独立验收与执行归属保留。
 
-API-first 顺序为 B1 真实团队 PoC→B2 本地 API 可用→B3 正式可靠发布。B1 复用现有合法安装/Store，一个 Provider 两实例先交付；SQLite、零 Git/多仓库、问答和更多 Adapter 在 B2，旧库导入 U1 单列。核心 API-STABLE 后才 UI-1，UI 不阻 API 发布。旧 Marshal skill 不读取/加载/执行，各 Agent 原生 Skill 自管。ADR 0085 仍为 Proposed，边界启用和实机完成分别计证。
+API-first 顺序为 B1 真实团队 PoC→B2 本地 API 可用→B3 正式可靠发布。B1 复用现有合法安装/Store，一个 Provider 两实例先交付；SQLite、零 Git/多仓库、问答和更多 Adapter 在 B2，旧库导入 U1 单列。核心 API-STABLE 后才 UI-1，UI 不阻 API 发布。旧 Marshal skill 不读取/加载/执行，各 Agent 原生 Skill 自管。ADR 0085 已 Accepted；已接受的 [ADR 0088](adr/0088-node-task-service-production-projection.md)将当前实现确定为 Node-only 的唯一 Application/SQLite，取代必须复用 Go Goal/fixed server 的实现约束，边界启用和实机完成分别计证。
 
 ## 愿景
 
@@ -24,7 +24,7 @@ Marshal 让 Agent 工作成为受控工程执行，而不是无结构的终端�
 
 Marshal 在这张地图上的差异化不是“更好的 harness”或“更全的入口”，而是三条结构性差异：
 
-1. **开源自托管与数据不出域**：Marshal 可完整运行在自有基础设施上，事件账本、Evidence、凭据与审计不依赖任何外部托管控制面；这是企业采用的硬条件，也是托管产品无法让渡的性质；
+1. **开源与控制面自托管**：Marshal 的权威状态、制品与审计可保存在自有基础设施，不依赖外部托管控制面；这不保证模型输入不出域。Agent 向其配置的模型、工具或业务服务发送哪些数据取决于相应 Provider 与部署配置，须单独核验数据边界；
 2. **可验证且高效的交付**：Worker 不自证、独立验证、精确证据和权限边界用于降低错误交付与恢复成本；治理深度不是独立的产品产出，不能替代业务完成率、人工介入和交付耗时。尚未有数据的竞品优劣不作事实声明；
 3. **Provider 中立**：核心生命周期不根据 Provider 名称分叉，更换 Agent、Sandbox 或 durable backend 不改变任务含义与验收标准；当最好的 Agent 快速换代时，中立控制面是跨周期资产。
 
@@ -50,7 +50,7 @@ Marshal 必须统一这些问题，同时不能假装所有 Provider 具有相�
 
 ### G1：契约优先的委派
 
-公开 Task 从需求与上下文开始，经确认冻结带版本的计划、输入摘要、验收标准、必需交付物、预算和执行/发布策略。内部 Goal 保持唯一权威；WorkItem 的冻结执行规格复用原 TaskSpec，不要求用户手写它。Git base 只属于 Git 执行路径，非 Git 任务以输入和制品摘要锁定可检查的起点。
+公开 Task 从需求与上下文开始，经确认冻结带版本的计划、输入摘要、验收标准、必需交付物、预算和执行/发布策略。每个 profile 内保持一套 Task 权威；旧 Go profile 复用 Goal/TaskSpec，Node profile 不复制 Go 真值，不要求用户手写内部执行规格。Git base 只属于 Git 执行路径，非 Git 任务以输入和制品摘要锁定可检查的起点。
 
 ### G2：Provider 无关的 Worker
 
@@ -82,7 +82,7 @@ Marshal Core 是唯一 Supervisor 与权威状态机；Plan/Implement/Verify/Rev
 
 ## v1.0 发布范围
 
-正式目标是单用户、单节点、可信业务任务的 Agent Team HTTP 服务，不交付终态全部平台能力。没有 Workspace ID/注册；公开 Task 复用 Goal，用户通过任务上下文提供业务信息。默认数据目录和本地 token 自动建立，损坏/不兼容旧数据不覆盖；不建设账号/组织/安装收据/统一 Agent 登录平台。
+正式目标是单用户、单节点、可信业务任务的 Agent Team HTTP 服务，不交付终态全部平台能力。没有 Workspace ID/注册；用户通过 Task 上下文提供业务信息，每个 profile 只保留自身权威。默认数据目录和本地 token 自动建立，损坏/不兼容旧数据不覆盖；不建设账号/组织/安装收据/统一 Agent 登录平台。
 
 - B1 先真实团队 PoC：现有合法安装与受控 Store、一个真实 Provider 两个实例、独立目录/Git worktree、一次计划确认、并行实现、集成和独立消费验收。
 - B2 完成本地 API 体验：简短需求澄清/问答、DAG/Worker 进展、暂停取消、SQLite 单写真值、同版本恢复、零 Git 制品与多仓库上下文、审计及第二真实 Adapter；第三 Provider 和增强能力按单独支持项推进。
@@ -95,7 +95,7 @@ Marshal Core 是唯一 Supervisor 与权威状态机；Plan/Implement/Verify/Rev
 
 HA、多租户/远端身份平台、通用工作流编辑器、动态任意 DAG、PostgreSQL、统一 Skill/资源治理、跨系统原子发布不在首版前置。U1 旧历史导入独立验证，不双写或重签，未过就只声明已验证的新格式/干净安装支持。
 
-本节是目标，实际成熟度只见 [Roadmap](roadmap-status.md#业务交付当前表)；边界依据 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）及其对应验收启用，原 profile 不自动变更。文档/Fake/组件测试不等于 INTEGRATED，版本标签不等于 RELEASED。
+本节是目标，实际成熟度只见 [Roadmap](roadmap-status.md#业务交付当前表)；边界依据已接受的 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)与 [ADR 0088](adr/0088-node-task-service-production-projection.md)及对应验收启用，旧 profile 不自动变更。文档/Fake/组件测试不等于 INTEGRATED，版本标签不等于 RELEASED。
 
 ## 当前交付基线：Local MVP
 
