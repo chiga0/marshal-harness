@@ -25,7 +25,7 @@ export function resolve(reference) {
 // keywords are programming errors, not silently accepted validation rules.
 const keywords = new Set(['$ref', 'type', 'const', 'enum', 'required', 'properties',
   'additionalProperties', 'items', 'minItems', 'maxItems', 'minimum', 'maximum',
-  'minLength', 'maxLength', 'pattern', 'format', 'anyOf', 'description', 'examples',
+  'minLength', 'maxLength', 'pattern', 'format', 'anyOf', 'oneOf', 'description', 'examples',
   'x-maxUtf8Bytes', 'x-wellFormedUnicode']);
 export function validate(value, schema, depth = 0) {
   if (typeof schema === 'string') schema = contract.components.schemas[schema];
@@ -33,6 +33,7 @@ export function validate(value, schema, depth = 0) {
   for (const key of Object.keys(schema)) if (!keywords.has(key)) throw new TypeError('unsupported-schema-keyword');
   if (schema.$ref && !validate(value, resolve(schema.$ref), depth + 1)) return false;
   if (schema.anyOf && !schema.anyOf.some(s => validate(value, s, depth + 1))) return false;
+  if (schema.oneOf && schema.oneOf.filter(s => validate(value, s, depth + 1)).length !== 1) return false;
   if (schema.type) {
     const types = Array.isArray(schema.type) ? schema.type : [schema.type];
     const type = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
@@ -64,6 +65,30 @@ export function validate(value, schema, depth = 0) {
     }
   }
   return true;
+}
+
+// Public producer/consumer binding only. It does not decide whether a question
+// exists, is authorized, has expired or has been consumed by the original Agent.
+export function validAnswerResponse(request, value) {
+  const runtime = Object.hasOwn(request.body, 'questionDigest');
+  if (!validate(value, runtime ? 'RuntimeAnswerReceipt' : 'AnswerReceipt') ||
+      value.taskId !== request.taskId || value.questionId !== request.questionId || value.operation.kind !== 'task.answer' ||
+      value.operation.taskId !== request.taskId || value.task.id !== request.taskId || value.currentTask.id !== request.taskId ||
+      value.acceptedRevision !== request.body.expectedRevision + 1 || value.task.revision !== value.acceptedRevision ||
+      value.operation.taskRevision !== value.acceptedRevision || value.currentTask.revision < value.acceptedRevision ||
+      value.currentTask.revision === value.acceptedRevision && (value.currentTask.plan?.digest !== value.task.plan?.digest ||
+        value.currentTask.plan?.revision !== value.task.plan?.revision)) return false;
+  if (runtime) return value.questionDigest === request.body.questionDigest;
+  return value.preview.digest === value.acceptedPreviewDigest && value.preview.plan.taskId === request.taskId &&
+    value.task.plan?.digest === value.preview.plan.digest && value.task.plan?.revision === value.preview.plan.revision;
+}
+
+export function validQuestionItems(value, taskId) {
+  return value.items.every(question => question.taskId === taskId && (question.kind !== 'business' ||
+    question.subject === question.questionDigest && new Set(question.options.map(option => option.value)).size === question.options.length &&
+    (question.status !== 'open' || question.deliveryStatus === null) && (question.status !== 'answered' || question.deliveryStatus !== null) &&
+    (question.answer === undefined || (question.deliveryStatus === null ? question.answer === null : typeof question.answer === 'string')) &&
+    (question.answer === undefined || question.answer === null || question.options.length === 0 || question.options.some(option => option.value === question.answer))));
 }
 
 const descriptions = {
