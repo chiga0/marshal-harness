@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {fixture, proposal, hash} from './leader.test.mjs';
-import {createLeaderPort, parseManagedOutput, renderLeaderPrompt} from './application.mjs';
+import {createLeaderPort, createReviewPort, parseManagedOutput, renderLeaderPrompt, renderReviewPrompt} from './application.mjs';
 
 // The original fixture uses real SQLite/Depot and explicit fake Provider facts.
 // These tests prove renderer/parse/admission compatibility, not model/OS behavior.
@@ -38,8 +38,8 @@ async function authors(t) {
   f.app.execution.expandDispatch(command.id, command.revision);
   return {f, task, east: f.take('execute', 'east'), west: f.take('execute', 'west')};
 }
-async function parseExample(ticket, value) {
-  const port = createLeaderPort({id: 'renderer-test', providerId: ticket.providerId, policy: {...ticket.input.leader.snapshot.policy, maxActions: 1},
+async function parseExample(ticket, value, maxActions = 1) {
+  const port = createLeaderPort({id: 'renderer-test', providerId: ticket.providerId, policy: {...ticket.input.leader.snapshot.policy, maxActions},
     prepare: ({input}) => ({prompt: renderLeaderPrompt(input)}), parseDecision: parseManagedOutput});
   const started = {executionId: 'controlled-parser', startedAt: new Date().toISOString()};
   const provider = {id: ticket.providerId, start() {return {started: Promise.resolve(started), stop() {},
@@ -125,4 +125,92 @@ test('review/content-rejection and conclusion mappings copy producer fields, nev
   assert.deepEqual(examples.conclude.actions[0].basisDigests, [review, acceptance, history]);
   assert.equal(examples.work.actions[0].selectionDigest, selected);
   assert.equal(typeof examples.deliver, 'string');
+});
+
+for (const valid of [false, true]) test('observed string-options rejection shape through original SQLite/port: objectOptions=' + valid, async t => {
+  const {f, task, ticket} = await initial(t), {examples, prompt} = rendered(ticket);
+  // The real 686-byte output was privately replayed with digest 14583515…c9af.
+  // Do not commit that private model prose/session input: reproduce its precise
+  // failure shape with synthetic business values and a fresh original ticket.
+  const value = structuredClone(examples.ask); value.actions[0].options = ['option-a', 'option-b'];
+  assert.equal((await parseExample(ticket, value)).status, 'failed');
+  const sample = JSON.parse(prompt.split('非空形状是')[1].split('，')[0]);
+  assert.deepEqual(sample.map(option => Object.keys(option)), [['value', 'label'], ['value', 'label']]);
+  if (valid) value.actions[0].options = sample;
+  const result = await f.decision(ticket, value.actions), view = await f.call({operation: 'task.leader', taskId: task.id});
+  assert.equal(result.status, valid ? 'completed' : 'failed');
+  if (valid) assert.deepEqual(view.pendingRequest.options, sample);
+  else {assert.equal(view.pendingRequest, null); assert.equal(f.read(tx => f.app.get(tx, task.id)).failureCode, 'invalid_leader_decision');}
+});
+test('nonempty option objects obey original closed shape, UTF-8 bounds and uniqueness without normalization', async t => {
+  const {ticket} = await initial(t), value = rendered(ticket).examples.ask;
+  const choices = [{value: 'a'.repeat(256), label: '中'.repeat(341)}, {value: 'other', label: '另一个选项'}];
+  value.actions[0].options = choices; assert.equal((await parseExample(ticket, value)).status, 'completed');
+  for (const options of [['first', 'second'], [null], [{value: 'a'}], [{value: 'a', label: 'A', selected: true}],
+    [{value: 'a', label: 'A'}, {value: 'a', label: 'B'}], [{value: 'a'.repeat(257), label: 'A'}],
+    [{value: 'a', label: '中'.repeat(342)}], [{value: '', label: 'A'}], [{value: 'a', label: '\0'}],
+    Array.from({length: 17}, (_, i) => ({value: 'v' + i, label: '选项'}))]) {
+    const candidate = structuredClone(value); candidate.actions[0].options = options;
+    assert.equal((await parseExample(ticket, candidate)).status, 'failed');
+    assert.deepEqual(candidate.actions[0].options, options); // Parser did not coerce/mutate the candidate.
+  }
+});
+test('all action array and enum guidance matches original parser; strings/objects and enum aliases remain rejected', async t => {
+  const {ticket} = await initial(t), {examples, prompt} = rendered(ticket), value = examples.ask;
+  for (const text of ['planner/author/reviewer/integrator/verifier', 'providerId必须显式为null', 'proposal.edges是0至256个{from,to}对象',
+    'proposal.deliverables/acceptance分别为1至32个字符串', 'nodeIds均为唯一节点ID字符串数组', 'conclude.basisDigests是0至64个唯一摘要字符串数组']) assert.ok(prompt.includes(text));
+  const work = {type: 'work', kind: 'review', nodeIds: ['east'], selectionDigest: hash('selected')};
+  const repair = {type: 'repair', nodeIds: ['east'], basis: {kind: 'review', digest: hash('review')}, feedback: '原负面证据'};
+  const conclude = {type: 'conclude', outcome: 'failed', summary: '原业务失败', basisDigests: []};
+  for (const action of [work, repair, conclude]) assert.equal((await parseExample(ticket, {...value, actions: [action]})).status, 'completed');
+  for (const action of [{...work, nodeIds: [{id: 'east'}]}, {...work, nodeIds: 'east'}, {...work, nodeIds: ['east', 'east']},
+    {...work, kind: 'integrate'}, {...repair, basis: [{kind: 'review', digest: hash('review')}]},
+    {...repair, basis: {kind: 'rejection', digest: hash('review')}}, {...conclude, outcome: 'success'},
+    {...conclude, basisDigests: [{digest: hash('review')}]}, {...conclude, basisDigests: [hash('review'), hash('review')]}])
+    assert.equal((await parseExample(ticket, {...value, actions: [action]})).status, 'failed');
+  const deliver = {type: 'deliver', artifactId: 'artifact-original', acceptanceDigest: hash('acceptance'), reviewDigest: hash('review')};
+  for (const actions of [[repair, deliver], [work, {...work, kind: 'verify'}], [work, work], [value.actions[0], work]])
+    assert.equal((await parseExample(ticket, {...value, actions}, 4)).status, 'failed');
+  for (const candidate of [{...value, summary: ''}, {...value, summary: '\0'}, {...value, summary: '\ud800'},
+    {...value, extra: 'unrecognized'}, {...value, summary: 'a'.repeat(65537)}]) assert.equal((await parseExample(ticket, candidate)).status, 'failed');
+  assert.throws(() => parseManagedOutput({completion: {outputText: '\uFEFF' + JSON.stringify(value)}}));
+});
+test('nonempty Review findings are explicitly described and retain exact original report parser limits', async t => {
+  const {f, east, west} = await authors(t); f.author(east); f.author(west);
+  const leader = f.take('leader'); await f.decision(leader, rendered(leader).examples.work.actions);
+  const ticket = f.take('review'), input = ticket.input.review, prompt = renderReviewPrompt(input);
+  const finding = JSON.parse(prompt.split('非空元素形状是')[1].split('。')[0]); finding.nodeIds = [input.selection[0].nodeId];
+  assert.deepEqual(Object.keys(finding), ['id', 'nodeIds', 'requirement', 'observation', 'requestedChange']);
+  const value = {profile: 'task-independent-review/v1', inputDigest: input.inputDigest, selectionDigest: input.selectionDigest,
+    verdict: 'rework', summary: '受控负面报告，仅测试形状', findings: [finding]};
+  const port = createReviewPort({id: 'renderer-review', providerId: ticket.providerId, policy: {id: 'review', version: '1', description: '受控形状'},
+    prepare: ({input}) => ({prompt: renderReviewPrompt(input)}), parseReport: parseManagedOutput});
+  const run = candidate => {
+    const fact = {executionId: 'controlled-review-parser', startedAt: new Date().toISOString()};
+    const provider = {id: ticket.providerId, start() {return {started: Promise.resolve(fact), stop() {}, completion: Promise.resolve({
+      providerId: ticket.providerId, status: 'completed', stopReason: 'end_turn', outputText: JSON.stringify(candidate),
+      cleanup: {started: fact, cleaned: true, scope: 'controlled-fixture'}})};}};
+    return port.start({ticket, provider, prepared: {prompt}}).completion;
+  };
+  assert.equal((await run(value)).status, 'completed');
+  assert.equal((await run({...value, verdict: 'accept', findings: []})).status, 'completed');
+  for (const candidate of [{...value, findings: ['problem']}, {...value, verdict: 'accepted'}, {...value, verdict: 'accept'},
+    {...value, findings: [{...finding, nodeIds: [{id: finding.nodeIds[0]}]}]}, {...value, findings: [{...finding, nodeIds: ['foreign']}]},
+    {...value, findings: [{...finding, requirement: '中'.repeat(683)}]}, {...value, findings: [{...finding, pass: false}]},
+    {...value, findings: [finding, finding]}, {...value, findings: [{...finding, id: '非法ID'}]},
+    {...value, findings: [{...finding, nodeIds: []}]}, {...value, findings: [{...finding, observation: ''}]},
+    {...value, summary: 'a'.repeat(4097)}, {...value, findings: Array.from({length: 17}, (_, i) => ({...finding, id: 'finding-' + i}))}])
+    assert.equal((await run(candidate)).status, 'failed');
+});
+test('documented Plan arrays, roles, DAG, verifier sink and v7 budget are still enforced by original Core', async t => {
+  for (const mutate of [v => {v.nodes[0].scope = {write: ['east.json']};}, v => {v.nodes[0].role = 'leader';},
+    v => {delete v.nodes[0].providerId;}, v => {v.nodes[0].id = '非法ID';}, v => {v.edges = ['east->verify'];},
+    v => {v.edges.push({from: 'verify', to: 'east'});}, v => {v.edges = [];},
+    v => {v.deliverables = [{name: 'report'}];}, v => {v.acceptance = [];}, v => {v.assumptions = [{value: 'none'}];},
+    v => {v.nodes[0].role = 'reviewer';}, v => {v.budget = {timeoutMs: 60000, maxAttempts: 17, maxWorkers: 2};},
+    v => {v.budget = {timeoutMs: 60000, maxAttempts: 3, maxWorkers: 3};}]) {
+    const {f, task, ticket} = await initial(t), value = structuredClone(proposal); mutate(value);
+    assert.equal((await f.decision(ticket, [{type: 'plan', proposal: value}])).status, 'failed');
+    assert.equal(f.read(tx => f.app.get(tx, task.id)).plan, null);
+  }
 });
