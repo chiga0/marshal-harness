@@ -1,6 +1,8 @@
 # Marshal Agent Team：Task-first 实施 Milestone
 
-更新：2026-09-09。最终方案见[服务架构](agent-team-service-architecture.md)，合同由已接受的 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)、[ADR 0088](adr/0088-node-task-service-production-projection.md)与[ADR 0094](adr/0094-trusted-single-user-role-team.md)按 profile 承载。合同接受允许实施，不表示实现或生产可用；实际事实仍只记 [Roadmap](roadmap-status.md#业务交付当前表)。
+2026-09-09：[ADR0095](adr/0095-node-managed-leader-contract.md)及[Leader 机器合同](node-leader-execution-contract.md)已独立审查接纳。B2-L 保持 DESIGN，接下来同链实现并验收，不以新增合同代替完整 Leader 业务交付；既有 B1/API-STABLE 的限定范围不变。
+
+更新：2026-09-09。最终方案见[服务架构](agent-team-service-architecture.md)，合同由已接受的 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)、[ADR 0088](adr/0088-node-task-service-production-projection.md)、[ADR 0094](adr/0094-trusted-single-user-role-team.md)与上述 ADR0095 按 profile 承载。合同接受允许实施，不表示实现或生产可用；实际事实仍只记 [Roadmap](roadmap-status.md#业务交付当前表)。
 
 **当前检查点**：API-STABLE 四项出口已独立核验通过，范围为当前 Node profile、25操作/58 Schema和同包客户端。Pi/custody问答交付与同配置取消均有实机，原API反例/客户端/响应上界与事件续读通过；正式版本、真实局部修正及完整平台恢复/发行不随之通过。B3 冷备份恢复、多Task隔离、v5许可前恢复和事件洪泛已有有界证据，尚未完成。[精确证据与剩余出口](node-task-service-status-2026-09-08.md)。带时间的增量和Node形态试验已归档，不作为当前待办。
 

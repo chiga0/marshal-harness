@@ -1,6 +1,8 @@
 # 实施计划
 
-更新：2026-09-09。当前方案见[Task-first 架构](agent-team-service-architecture.md)，详细出口只见[Milestone](agent-team-service-milestones.md)，实际完成状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。合同由已接受的ADR0085/0088/0094按profile承载，接受允许实施，不替代运行时与发布验证。
+2026-09-09 [ADR0095](adr/0095-node-managed-leader-contract.md)机器合同已独立审查接纳，B2-L 按[唯一执行合同](node-leader-execution-contract.md)进入 Core、API/客户端、有限本机报告端口三个互斥范围的同链实现。当前尚未接线，不能按文档通过升级成熟度；已确定后继与授权动作直接执行，不额外调用 Leader 重复批准。
+
+更新：2026-09-09。当前方案见[Task-first 架构](agent-team-service-architecture.md)，详细出口只见[Milestone](agent-team-service-milestones.md)，实际完成状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。合同由已接受的 ADR0085/0088/0094/0095 按 profile 承载，接受允许实施，不替代运行时与发布验证。
 
 2026-09-09 按已接受 [ADR0094](adr/0094-trusted-single-user-role-team.md)实施可信单用户角色团队。B1本机PoC经独立核验通过，保留B2已有资产；新增[全程受管Leader](node-leader-execution-design.md)为B2-L/DESIGN，而非Planner别名。Supervisor观察、Leader业务判断、Core校验/已批准调度/硬规则、Execution原handle操作；在现loop中委托，不另造平台。强OS隔离后置，B3可靠性/受保护软件发行保留。当前HTTP/角色/格式无改动或迁移，API-STABLE保留；新机制实际机器语义一次明确兼容再启用。
 
