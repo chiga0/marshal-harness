@@ -2,6 +2,14 @@
 
 ## 当前结论
 
+### 2026-09-09：候选原归档与 Linux 独立账号复核
+
+在主线 `c296226a157b89582195e102c5bc08b738756bd9` 重新执行 API/客户端合同测试，**32/32 PASS、1.379秒**，无失败/取消/跳过；生产代码仍为下节 `8f97ba23`。这不是25项业务均已实现，单Worker取消仍501。
+
+从 canonical GitHub 原下载接口取得下节 run `34318148089`、attempt1、artifact `10090976947` 的原 ZIP：663850 bytes，归档 SHA-256=`4fba5780b2a74325d3ae17bed6e401d813a36e653210da8b2b249ec3c812342f`。已核对原 run 成功、sourceHead、artifact 归属、未过期、长度与服务端归档摘要；归档保留在 `/private/tmp/marshal-original-candidate.23FT3Q/candidate.zip`，尚未由本次新准入工具解包或执行。归档摘要与下节目录 manifest pin 是不同对象，不能互换，也不是永久发行凭证。
+
+香港 ECS 的只读 SSH 检查确认 `marshal-runner` 为 UID/GID1000、仅其本组；home 与既有安装目录均0700。该账号对 `/root` 下检查的 SSH、GitHub、Git、AWS、Pi、Qwen 路径不可读；自身常规 GitHub/Git 凭据路径及 Pi `auth.json`、Qwen 配置目录不存在。没有读取任何凭据内容。这只证明所查路径的访问边界，不证明所有发布入口隔离，也不据此断言 Provider 必定无法鉴权。独立账号使用的固定 Node24.15.0 路径仍由 root 持有0755；尚未安装本候选、调用远端模型或证明生产部署。此前 SCP 的 SIGKILL 原因仍未确认，替代 HTTPS 传输的用户选择待答，不改安全策略、不复制本机登录。
+
 ### 2026-09-09：精确同包双平台消费通过
 
 精确 `8f97ba233081e00de01a2e1e054d510ea8ec36f2` 的 [Node team CI 34318148089](https://github.com/chiga0/marshal-harness/actions/runs/34318148089) 五项job全部成功：Ubuntu/macOS原组合回归、单次打包、两平台同artifact消费。生产者仅生成一份47文件/647188 bytes目录包，包外 pin=`sha256:88b5e71f31c61ffaf7cb64ae518fb6d525ca97b4dc0685e7ef42e213002bcf68`，原artifact ID=`10090976947`；两个消费者没有重新打包。
