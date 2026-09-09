@@ -2,6 +2,24 @@
 
 ## 当前结论
 
+### 2026-09-09 16:42 CST：单 Worker 取消已本地合入，原 Pi 实机一次通过
+
+Core source=`070086e991b65b81f1765ec78ec1a9772fc01102`，整合/实机 source=`190171e0be204b680bdfadbaac5fdac48f03c6ad`，localMergeSha=`25ff8315cbf63e907aaaa47f869d76d592c89acc`；记录时尚待正常推送，`pendingRemoteSync=true`。ADR0093 新空根 `layout:6`、`task-worker-cancellation/v1` 明确启用后，原 HTTP `worker.cancel` 进入同一个 Application/SQLite/Execution 收口；旧格式仍拒绝该能力，不迁移旧根或追认未绑定执行。操作绑定原 Worker 与 Task revision，不扩大为用户提交 PID、任意 stop 或自动重试。
+
+唯一 reviewer 在 `acbcfee` 发现一个 P1：合法28/48节点计划对每个依赖后继重读全体Worker，耗尽原 Store 读取预算，取消事务回滚。一次聚合修复只把 Worker 集合读取移到同事务循环外，保留当前周期/归属检查和512记录限额。新增原SQLite回归修前两例均 `application_unavailable`，修后作者完整组件14/14；同一 reviewer 对冻结070086独立 **43/43 PASS、3.364726458秒**，无剩余P0/P1。此前作者330/331的唯一CAS时序断言失败、随后repair7/7，以及 reviewer 执行环境中的CLI启动失败均保留；不重写成首次全绿或全仓331/331。
+
+当前整合源固定 Node24.15.0：API/客户端/发行包/实机驱动组合 **56/56 PASS、57.526552083秒**，原CLI repair/单Worker取消组合 **15/15 PASS、89.729782208秒**，均零失败/取消/跳过。后者覆盖原repair保留兄弟、Git未绑定unknown、stop/settle四个COMMIT前后原服务SIGKILL与随后新团队交付。显式完整v6 HTTP/SQLite/custody/Pi-bridge无模型夹具也通过，不用模拟worker.cancel或降级task.cancel。独立标准Ajv Draft2020-12校验58 Schema/35示例/25操作通过，OpenAPI SHA-256=`def9cfc42e41fd6c821ce90970f556332aff2a9e7ed08d8f562be37c4ef7ab1d`；语法、diff、secret及merge-tree检查通过。本机证据不替代此新源的Linux或完整CI。
+
+真实 Pi0.84.4、原SDK/登录、固定Node与custody配置只调用一次，Task=`task-f7ea4368-abf2-4ecb-829e-bf60a0640774`，总耗时 **45.843秒**。原east收到一次精确取消并cleaned；原west继续完成，59B `west.json`摘要=`sha256:ee65dbf5390be5d13f248f8265cd2958c866fb8ade0b3bb7dba6b62b99f87dea`，原合成输入重算为2笔/550 cents。最终Task=`failed`、code=`worker_cancelled`，原取消Operation=`operation-d62ae95e-a580-4d55-9b6a-124c9971900c`为succeeded；只有planner和两作者共3次执行，零verifier/Decision/delivery，正常停服与冷开后原回执/Task/兄弟结果保持，零替身启动。west只是保留候选，**不是已独立验收的Task交付**；两作者仅45ms进程交叠，目标east的模型/工具消费未证明，不当作计算并行证据。用量未知不写0。
+
+原证据 `/private/tmp/marshal-v6-worker-cancel.ne34oK/run/evidence.json`，SHA-256=`657a15187a42962ae8c11ed093b647aaebe4aa566ccf7dae2f8a2119fbb9316b`；Pi入口/SDK摘要仍为前述固定5406c369…/82cb4ea8…。原记录 `production=false`、`publisherSeparationProven=false` 不改，实机是正常冷开、不是本次真实模型崩溃测试。B2的单Worker控制缺口闭合，真实模型局部修正、B2-L全程Leader、声明平台部署/长期故障与受保护stable仍未完成。
+
+独立 reviewer 随后只读复核原SQLite、stop来源事件、创建/批准/取消三个原回执、原result/manifest/blob及公开安装Pi哈希，全部匹配：generation2、outbox均observed、容量0。source190171来自原冻结源码启动记录，证据JSON本身没有源码签名字段，不能声称已自证源码身份。审计诊断初次以普通对象与协议null-prototype做deepStrictEqual出现假红，改用原canonical encode精确比较后通过；未修改源、证据或数据库。协议/HTTP比较应复用规范字节比较，避免将对象原型差异反复误判为业务缺陷。
+
+### 2026-09-09：有限存储写失败测试已合入，不冒充磁盘满
+
+测试 source=`d36c1b8fdfec88657aee656a4b928af9c317a3b2`，localMergeSha=`fe304bd662129553ee042eca9a79ac35eade8905`，已随main `f27784dd`正常推送。维护者独立审查及原固定Node测试 **1/1 PASS、11.9726175秒**：仅所属CLI子进程的文件大小限额触发真实 `EFBIG` 和 SQLite COMMIT `SQLITE_IOERR_WRITE`，原请求全提交或全回滚；冷开查原回执，原4次执行不重复，新4次团队执行及下载通过。Store/制品边界和原退出事实保留，未全盘填充、修改宿主安全策略或调用模型。它不证明ENOSPC、活动Worker期间I/O故障、断电或长期SLO；B3仍开放。
+
 ### 2026-09-09 15:32 CST：原协议洪泛的有界失败与随后接单验证
 
 仅测试 source=`303dda739967e218ca6d70de8133e88f8b05bcdc`，锁定上述产品main，唯一独立review无P0/P1；固定Node24.15.0独立 **1/1 PASS、14.608秒、0失败/取消/跳过**，542次成功公开查询最大64ms。原CLI/HTTP/SQLite/custody下，受管ACP进程分别发4100个被忽略的thought更新、超过64KiB正文、超过1MiB无换行帧，按原限额失败；紧随的end_turn不成为成功，没有Verifier/交付或伪造内容拒收。原executionId与cleanup匹配后结清，未知用量不填零；原回执不变、容量归零，随后一个新团队经原独立checker下载消费通过，最终SQL integrity/foreign-key检查通过。

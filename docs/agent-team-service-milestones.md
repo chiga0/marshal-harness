@@ -4,6 +4,8 @@
 
 **当前检查点**：API-STABLE 四项出口已独立核验通过，范围为当前 Node profile、25操作/58 Schema和同包客户端。Pi/custody问答交付与同配置取消均有实机，原API反例/客户端/响应上界与事件续读通过；正式版本、真实局部修正及完整平台恢复/发行不随之通过。B3 冷备份恢复、多Task隔离、v5许可前恢复和事件洪泛已有有界证据，尚未完成。[精确证据与剩余出口](node-task-service-status-2026-09-08.md)。以下带时间的增量和Node形态试验保留历史，不作为当前待办。
 
+2026-09-09 16:42 CST 增量：ADR0093新v6的单Worker取消经独立聚合审查、实际HTTP/SQLite/原CLI故障与真实Pi验收，已本地合入`25ff8315`；仅取消目标、保留原兄弟候选与冷开原回执，旧格式仍501，不算Task交付或完整Leader。一个合法大计划读取限额P1已根因修复并固化28/48节点回归；B2该控制子项闭合，B2-L/真实模型修正/正式发布仍开放。B3新增有限EFBIG/SQLite写失败与恢复后接单证据，不冒充ENOSPC或长期运行。
+
 **2026-09-09 当前目标调整**：[ADR0094](adr/0094-trusted-single-user-role-team.md) 设计已接受。[受管 Leader](node-leader-execution-design.md) 必须全程按业务义务唤起，不是现有 Planner 组合标签；Supervisor 观察/聚合/通知，Core 校验/硬规则/已批准调度，Execution 所属 handle 操作。当前混合实现需渐进接线。B1 经本轮独立七条件复核为可信单用户本机 PoC `PASSED`，旧 non-production 不重标；B2/B3 仍 `IN_PROGRESS`，新增 `B2-L / DESIGN` 为正式发布前必验。强 OS/凭据隔离后置，不放松独立证据、授权、预算/恢复。文档无 API/角色/格式修改或迁移，API-STABLE 原范围保留；未来新终态/副作用等机器语义必须明确兼容。
 
 **Node 形态可行性检查点已通过（不升级生产阶段）**：[ADR 0087](adr/0087-node-local-team-feasibility-probe.md) 的独立 Node-only profile 在本机完成真实双 Pi→HTTP 活跃重启→69 项独立验收→下载再验收，以及第二任务取消/重启保留。它解决本机此次必须执行 Marshal 原生文件的实验障碍，不代替下面 ADR 0085 的完整 B1/B2/B3 合同。下一步优先决定正式 Node profile 的合同与迁移边界，然后推进局部修正、第二 Provider 和完整恢复；不先全量翻译旧 Core。证据、失败与限制见[实机记录](node-team-feasibility-2026-09-08.md)。
