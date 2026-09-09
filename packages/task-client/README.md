@@ -52,6 +52,6 @@ const observed = await client.request('operation.get', {path: {operationId: oper
 
 ## 验证口径
 
-`node --test --test-concurrency=1 packages/task-client/*.test.mjs`：测试包含正式 HTTP handler 的真实 loopback 服务、OpenAPI 操作消费、独立消费端下载摘要、显式批准响应丢失/回执、冲突、恶意响应、Unicode 转义 token 反射、超时/abort 和资源回收；专项测试覆盖局部修正、运行答复的两族互斥、恶意 transport 题目串绑、丢响应后的显式原 key/body 重放及不自动继续。Application 是清楚标记的 DI fixture，而非 SQLite 或真实 Agent；这些结果只证明客户端/HTTP 合同，不证明真实规划、执行、同执行 ACK、取消、重启恢复或业务验收。
+`node --test --test-concurrency=1 packages/task-client/*.test.mjs`：测试包含正式 HTTP handler 的真实 loopback 服务、OpenAPI 全操作消费（含局部修正）、独立消费端下载摘要、显式批准响应丢失/回执、冲突、恶意响应、Unicode 转义 token 反射、超时/abort 和资源回收；专项测试覆盖运行答复的两族互斥、恶意 transport 题目串绑、丢响应后的显式原 key/body 重放及不自动继续。Application 是清楚标记的 DI fixture，而非 SQLite 或真实 Agent；这些结果只证明客户端/HTTP 合同，不证明真实规划、执行、同执行 ACK、取消、重启恢复或业务验收。
 
 现有 Python demo/question clients 服务旧 Go profile 的批准/固定订单制品协议，不替换它们、不声称自动兼容。后续同一 Node SDK 可直接对接正式 Application/SQLite/Supervisor 的真实服务完成独立客户端验收。
