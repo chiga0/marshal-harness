@@ -2,6 +2,18 @@
 
 ## 当前结论
 
+### 2026-09-09 15:13 CST：v5 许可前恢复独立通过，原资产接纳双平台通过
+
+ADR0092实现 source=`dd3d1900c41a69fef2ad6bb5f749aa3050a72b33`，集成候选=`5e60f283`。维护者完整审查20文件真实diff无确认P0/P1，并在冻结源码、固定Node24.15.0独立运行17文件定向组合：**182/182 PASS、217.698秒、零失败/取消/跳过**；前后工作树clean。作者另一次同源182/182、273.400秒仅作为作者证据，不替代独立验证。syntax、diff-check、secret scan与merge-tree均通过，集成的五个产品包与原冻结源逐文件无差异。
+
+新v5覆盖reservation、binding、cancel全部六个COMMIT前后原服务SIGKILL，以及原repair负Decision/保留兄弟、同Worker问答ACK、混合已绑定/未绑定、超过100条合法progress后的签名恢复、SQL回滚及冲突反例。每个故障停点后均跑新HTTP团队、独立验收/下载及第三次open零追加；reservation-before尚无原Worker，仍通过原显式Task取消关闭旧命令，不称无条件自动续跑。旧v2六例和原问答/repair回归一同保留；旧未绑定现场继续未决，不被新格式追认。
+
+这关闭**新根、可信staging-only文件准备**在reservation-after/binding-before窗口的安全失败/取消收口与重新接单缺口：原ticket已冻结资格、原许可三事实全不存在时才能结算，cleanup保持null，预算不退、旧任务不重派。Git/custom prepare不继承该例外；不证明所有崩溃/模型会话可继续，也不是新v5的Linux实机或正式发行。审查前发现全量Worker事件上限会阻断超过100条合法progress后的已绑定恢复，已改为原许可类型精确查询并加入真实受管进程反例；未绑定负证明仍完整有界，不能截断当作不存在。首批构造对象/嵌套事务错误的失败记录保留。
+
+另 [Node candidate admission 34322419104](https://github.com/chiga0/marshal-harness/actions/runs/34322419104) 在 workflow head=`10c05cea704f627a05285c88aff87347cf3ea40b` 一次dispatch、attempt1完成四job：Ubuntu/macOS边界测试分别19/19（6.840秒/8.420秒），两平台均完整接纳并消费原artifact `10090976947`。消费对象仍是下节8f97ba23/原ZIP与manifest双pin，不是新v5替身；各平台两layout各4次原执行、零冷开重复启动、相同下载摘要，模型调用0。新增原接纳工具的Linux与Darwin实证，不等于香港部署/真实模型Linux/分权或stable。
+
+下一项是已接受ADR0093的完整Worker取消纵切；不重新开启旧skill，不等本轮CI才开发。B1/B2/B3其余出口保持开放，当前worker.cancel仍501。
+
 ### 2026-09-09 15:04 CST：原 GitHub 归档完整接纳与安装消费
 
 只读接纳工具 source=`ec2f1e096150a8183fbc2e0554c8b78ed7a5c98c`，集成=`115719b7`，唯一独立 reviewer 完整审查五文件无确认P0/P1。维护者按相同冻结源码/固定Node24.15.0运行 **19/19 PASS、20.119秒**；原审查者受限执行为18/19，两个layout服务ready前退出，原因未定，现场保留，不能改称所有环境首次通过。diff-check、merge-tree与secret scan通过。该工具只读取GitHub run/job/artifact，不创建tag/release、不修改发布权限；原旧RC1发布通道不变。

@@ -1,5 +1,9 @@
 # 设计审计报告
 
+## 2026-09-09：新文件业务根的许可前恢复缺口闭合
+
+ADR0092 source=`dd3d1900` 经完整独立审查无确认P0/P1，原Node定向182/182通过217.698秒；新v5六个COMMIT窗口、混合原签名清理、原repair/question及旧回归均在同轮。关闭的是受信staging-only新根reservation已提交而启动许可未提交时的失败/取消收口与新任务接单，不是旧根自动迁移、Git任意prepare或透明模型续跑。旧未知根/费用/预算/回执不改写。预审发现已绑定Worker超过100条progress会误撞事件上限，修正为精确查询所需许可事件；未绑定否定证明不截断。后继单Worker取消按已接受0093统一推进，不为不同业务复制状态机。[完整边界与证据](node-task-service-status-2026-09-08.md)。
+
 ## 2026-09-09：单 Worker 取消合同接受，原归档接纳完成实物验证
 
 [ADR0093](adr/0093-node-worker-cancellation.md) 原提案与格式差量 `6517f850` 经维护者独立审查接受。补齐单 Worker 取消而非转发整个 Task cancel：目标 stop、依赖关闭、兄弟继续、问答/修正兼容和原 Operation 恢复作为同一个完整实现包。持久格式采用后继v6，不改正在验证的v5；取消能力与0092的 staging-only/never-permitted资格分开，正常Git owned执行必须支持，Git unbound不借新格式伪造未执行证明。仍先整合0092再改同一Core；接口当前仍501，不以合同接受宣布上线。
