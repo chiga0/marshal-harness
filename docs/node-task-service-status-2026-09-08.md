@@ -2,6 +2,22 @@
 
 ## 当前结论
 
+### 2026-09-09 15:32 CST：原协议洪泛的有界失败与随后接单验证
+
+仅测试 source=`303dda739967e218ca6d70de8133e88f8b05bcdc`，锁定上述产品main，唯一独立review无P0/P1；固定Node24.15.0独立 **1/1 PASS、14.608秒、0失败/取消/跳过**，542次成功公开查询最大64ms。原CLI/HTTP/SQLite/custody下，受管ACP进程分别发4100个被忽略的thought更新、超过64KiB正文、超过1MiB无换行帧，按原限额失败；紧随的end_turn不成为成功，没有Verifier/交付或伪造内容拒收。原executionId与cleanup匹配后结清，未知用量不填零；原回执不变、容量归零，随后一个新团队经原独立checker下载消费通过，最终SQL integrity/foreign-key检查通过。
+
+这是既有custody profile的有限故障组合，不改生产Core；不证明洪泛期间独立Task继续运行、任意并发取消、RSS上界、长期SLO、真实模型或磁盘满。作者初次两次预检分别误写无验收的pending状态、忽略客户端null-prototype，修正测试断言后通过；原失败私有根 `marshal-event-flood-MSptIR`/`marshal-event-flood-oJdehu` 保留，不计首次全绿或生产缺陷修复。剩余B3矩阵不因本测试关闭。
+
+### 2026-09-09 15:30 CST：v5 主线已同步，双平台同源回归与同资产消费通过
+
+sourceHead=`dd3d1900c41a69fef2ad6bb5f749aa3050a72b33`，localMergeSha=`1a9dc3cb672a36bc976de52ef0ef7b9efbc83dc6`；正常推送后已按远端 refs/heads/main 核对同一SHA，`pendingRemoteSync=false`。下节独立182项及审查证据对应这次整合，不是仍待合并。
+
+该精确main的 [Node team 34323362296](https://github.com/chiga0/marshal-harness/actions/runs/34323362296)，push/attempt1，五job均success。Ubuntu共564项、563通过、0失败、1跳过（仅Darwin瞬时EPERM专项），385.331秒；macOS **564/564**、0失败/跳过，398.094秒。原 `packages/*/*.test.mjs` 组合包含0092新v5配置/许可前恢复、原问答/repair/custody/COMMIT故障，不再使用旧8f97结果代替新v5源码回归。
+
+原producer仅一次打包出artifact **10092972643**，47生产文件/666553 bytes，manifest=`sha256:7b1524b928e0baf3183eb963382fb2e3822f1e11231a6a0175164b51b329a70c`；归档683215 bytes、GitHub digest=`sha256:5888b4b61631ea27d05c64fb48784f1d644091fde7dcefef2183b4fd3a1b9abc`。Linux x64/UID1001与Darwin arm64/UID501分别消费同一原artifact、固定Node24.15.0；两平台各2/2、8.863秒/6.877秒，layout1/2各4个原执行、4 Attempts、冷开重复0，下载摘要均为下节3055d214…。**安装消费者仍只覆盖layout1/2**；包含新v5不等于安装后的v5故障专项，后者本轮来自同源回归。原归档有限保留期，不是永久release资产。
+
+单Worker取消的Core/API与实机验收驱动已分别在独立worktree从该基线开工，不等待CI；冻结前不计实现通过。香港替代传输、真实受限账号模型部署、Publisher分权、长期SLO及正式发行仍未完成。本段不提升B1/B2/B3整体状态。
+
 ### 2026-09-09 15:13 CST：v5 许可前恢复独立通过，原资产接纳双平台通过
 
 ADR0092实现 source=`dd3d1900c41a69fef2ad6bb5f749aa3050a72b33`，集成候选=`5e60f283`。维护者完整审查20文件真实diff无确认P0/P1，并在冻结源码、固定Node24.15.0独立运行17文件定向组合：**182/182 PASS、217.698秒、零失败/取消/跳过**；前后工作树clean。作者另一次同源182/182、273.400秒仅作为作者证据，不替代独立验证。syntax、diff-check、secret scan与merge-tree均通过，集成的五个产品包与原冻结源逐文件无差异。
