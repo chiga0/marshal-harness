@@ -1,6 +1,7 @@
 import {pathToFileURL} from 'node:url';
 import {startTaskService} from './composition.mjs';
 import {parseLaunchArguments, prepareLaunch} from './launch.mjs';
+import {safeManagedDiagnostic} from '../task-application/leader-ports.mjs';
 
 // The module is trusted deployment code, never an HTTP-provided plugin/argv.
 async function main(argv) {
@@ -12,11 +13,13 @@ async function main(argv) {
   }
   const configuration = (await import(pathToFileURL(args.config).href)).default;
   if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) throw new Error('configuration');
-  const target = prepareLaunch(args); let service;
+  const target = prepareLaunch(args); let service, managedDiagnostics = 0;
   try {
     target.check();
     service = await startTaskService({...configuration, root: target.root, mode: target.mode, port: args.port,
       onDiagnostic: report => {
+        const diagnostic = safeManagedDiagnostic(report);
+        if (diagnostic && managedDiagnostics < 32) {managedDiagnostics++; process.stderr.write(JSON.stringify(diagnostic) + '\n');}
         if (report.code.startsWith('service_')) process.exitCode = 1;
         return configuration.onDiagnostic?.(report);
       }});

@@ -13,6 +13,7 @@ import {TaskApplication} from '../task-application/application.mjs';
 import {TaskSupervisor} from '../task-supervisor/controller.mjs';
 import {TaskExecutionCoordinator} from '../task-execution/controller.mjs';
 import {leaderConfiguration} from '../task-application/leader.mjs';
+import {safeManagedDiagnostic} from '../task-application/leader-ports.mjs';
 import {createTaskApiHandler} from '../task-api/http-handler.mjs';
 import {PROFILE, TaskApiError, validate} from '../task-api/contract.mjs';
 
@@ -128,6 +129,13 @@ export async function startTaskService({root, mode, providers, prepare, collect,
   let state = 'starting', failure = null, shutdownClean = null, renewing = false;
   const instanceId = 'service-' + randomUUID(), token = randomBytes(32).toString('hex');
   const diagnostic = code => { try { Promise.resolve(onDiagnostic({code})).catch(() => {}); } catch {} };
+  let managedDiagnosticCount = 0;
+  const managedDiagnostic = value => {
+    const report = safeManagedDiagnostic(value);
+    if (!report || managedDiagnosticCount >= 32) return;
+    managedDiagnosticCount++;
+    try {Promise.resolve(onDiagnostic(report)).catch(() => {});} catch {}
+  };
   const snapshot = () => ({profile: PROFILE, state, failure, generation: application?.owner.generation.toString() ?? null, shutdownClean});
   const fail = code => {
     failure ??= code; state = 'failed'; diagnostic(code);
@@ -359,7 +367,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       validate: ticket => business.validateManaged(ticket),
       provider: ticket => application.leader.effects[ticket.executionType] ?? available.get(ticket.providerId),
       start: options => (application.leader.effects[options.ticket.executionType] ?? (options.ticket.executionType === 'leader' ? leader : review))
-        .start({...options, provider: available.get(options.ticket.providerId)}),
+        .start({...options, provider: available.get(options.ticket.providerId), onDiagnostic: managedDiagnostic}),
     } : null;
     const Coordinator = leader ? TaskExecutionCoordinator : TaskSupervisor;
     supervisor = new Coordinator({...supervisorOptions, execution: application.execution, providers: available, managed,
