@@ -102,6 +102,27 @@ export function validRepairResponse(request, value) {
     new Set(value.affectedNodes).size === value.affectedNodes.length && request.body.nodeIds.every(id => value.affectedNodes.includes(id));
 }
 
+export function validAuditResponse(value, taskId) {
+  if (!validate(value, 'Audit') || value.taskId !== taskId || new Set(value.workers.map(worker => worker.id)).size !== value.workers.length ||
+      value.workers.some(worker => worker.taskId !== taskId) || new Set(value.prompts.map(prompt => prompt.workerId)).size !== value.prompts.length) return false;
+  return value.prompts.every(prompt => {
+    if (!value.workers.some(worker => worker.id === prompt.workerId) || new Set(prompt.contextRefs).size !== prompt.contextRefs.length) return false;
+    const observed = prompt.observation;
+    if (!observed) return true; // Original API examples/older producers remain valid.
+    if (observed.stage === 'unavailable') return prompt.source === 'unavailable' && prompt.text === '' && prompt.contextRefs.length === 0 &&
+      observed.coverage === 'unavailable' && observed.promptDigest === null && observed.promptBytes === null &&
+      observed.preparedAt === null && observed.handedOffAt === null && observed.policy === null && observed.snapshot === null && !observed.previewTruncated;
+    if (observed.promptDigest === null || observed.promptBytes === null || observed.preparedAt === null ||
+      (observed.stage === 'prepared' ? observed.handedOffAt !== null : observed.handedOffAt === null)) return false;
+    if (observed.coverage !== 'policy-redacted') return prompt.source === 'unavailable' && prompt.text === '' &&
+      observed.snapshot === null && !observed.previewTruncated && (observed.coverage !== 'metadata-only' || observed.policy === null);
+    const snapshot = observed.snapshot;
+    return observed.policy !== null && prompt.source === observed.stage + '-redacted' && snapshot !== null && snapshot.taskId === taskId &&
+      snapshot.name === prompt.workerId + '.input.txt' && snapshot.kind === 'evidence' && snapshot.status === 'ready' && snapshot.mediaType === 'text/plain' && snapshot.bytes <= 262144 &&
+      Buffer.byteLength(prompt.text) <= 2048 && (observed.previewTruncated ? Buffer.byteLength(prompt.text) < snapshot.bytes : Buffer.byteLength(prompt.text) === snapshot.bytes);
+  });
+}
+
 const descriptions = {
   'invalid_request': [400, '请求不符合接口合同。', ['correct-request']],
   'invalid_json': [400, '请求必须是合法且无重复字段的 JSON。', ['correct-request']],

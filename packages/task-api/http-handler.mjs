@@ -1,5 +1,5 @@
 import {randomUUID, createHash} from 'node:crypto';
-import {operations, validate, validAnswerResponse, validQuestionItems, validRepairResponse, TaskApiError, errorPayload} from './contract.mjs';
+import {operations, validate, validAnswerResponse, validQuestionItems, validRepairResponse, validAuditResponse, TaskApiError, errorPayload} from './contract.mjs';
 import {protect, mutationHeaders, readJson, sendJson, closeIncompleteRequest} from './http-boundary.mjs';
 
 const MAX_RESPONSE = 8 * 1024 * 1024;
@@ -36,6 +36,7 @@ function boundResponse(entry, request, value) {
   if (entry.response === 'Operation' && entry.operation !== 'operation.get' && value.kind !== entry.operation) throw new TaskApiError('invalid_application_response');
   if (entry.operation === 'task.answer' && !validAnswerResponse(request, value) ||
       entry.operation === 'task.repair' && !validRepairResponse(request, value) ||
+      entry.operation === 'task.audit' && !validAuditResponse(value, request.taskId) ||
       entry.operation === 'task.questions' && !validQuestionItems(value, request.taskId))
     throw new TaskApiError('invalid_application_response');
 }

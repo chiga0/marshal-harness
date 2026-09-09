@@ -7,10 +7,12 @@ import {TaskVerification} from './verification.mjs';
 import {TaskClarification} from './clarification.mjs';
 import {TaskRuntimeQuestions} from './runtime-questions.mjs';
 import {TaskRepair} from './repair.mjs';
+import {TaskInputAudit} from './input-audit.mjs';
 export {createVerificationPort} from './verification.mjs';
 export {createClarificationPort} from './clarification.mjs';
 export {createRuntimeQuestionPort} from './runtime-questions.mjs';
 export {createRepairPort} from './repair.mjs';
+export {createAuditDisclosure} from './input-audit.mjs';
 
 const hash = value => digest(encode(value));
 const parse = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
@@ -29,7 +31,7 @@ const idOK = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,
  */
 export class TaskApplication {
   constructor({store, owner, clock = Date.now, makeId = prefix => prefix + '-' + randomUUID(),
-    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null, runtimeQuestions = null, repair = null}) {
+    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null, runtimeQuestions = null, repair = null, auditDisclosure = null}) {
     this.store = store; this.owner = owner; this.clock = clock; this.makeId = makeId;
     this.defaultLimits = limits(defaultLimits);
     this.execution = new TaskExecution(this, execution);
@@ -38,6 +40,7 @@ export class TaskApplication {
     this.clarification = new TaskClarification(this, clarification);
     this.runtimeQuestions = new TaskRuntimeQuestions(this, runtimeQuestions);
     this.repair = new TaskRepair(this, repair);
+    this.inputAudit = new TaskInputAudit(this, auditDisclosure);
     this.dispatch = this.dispatch.bind(this);
   }
   now() {
@@ -299,13 +302,17 @@ export class TaskApplication {
       });
       return {taskId: task.id, items, nextCursor: entries.length === limit ? entries.at(-1).sequence.toString() : null};
     }
-    if (request.operation === 'task.audit') return {taskId: task.id,
+    if (request.operation === 'task.audit') {
+      const records = this.execution.workers(tx, record).map(({record}) => record);
+      return {taskId: task.id,
       elapsedMs: Math.max(0, (terminal.has(task.status) ? Date.parse(task.updatedAt) : this.now()) - Date.parse(task.createdAt)),
       attempts: record.attempts, retryCount: record.retryCount, reworkCount: record.reworkCount,
       // Final verification is not an independently observed first code review.
       firstReview: {passed: 0, total: 0, pending: 0},
       acceptance: clone(record.acceptance ?? {status: 'pending', evidenceIds: [], digest: null}),
-      usage: unavailableUsage(), workers: this.execution.workers(tx, record).map(({record}) => clone(record.worker)), prompts: [], ...this.repair.audit(tx, record)};
+      usage: unavailableUsage(), workers: this.inputAudit.workers(records), prompts: this.inputAudit.prompts(records),
+      measurement: {elapsedSource: 'task-lifecycle', firstReviewSource: 'unavailable', usageSource: 'unavailable'}, ...this.repair.audit(tx, record)};
+    }
     // Never implement the remaining surface with fabricated success/empty
     // records. Execution, interactions and artifacts must bind actual facts.
     reject('unsupported_operation', 501);

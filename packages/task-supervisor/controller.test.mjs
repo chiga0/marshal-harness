@@ -96,6 +96,23 @@ async function approved(f, supervisor) {
   const operation = await f.approve(task.id); return {task, operation};
 }
 
+test('optional input audit failure does not authorize, block or retry the original execution', async t => {
+  const f = fixture(t), observations = [];
+  const execution = new Proxy(f.app.execution, {get(target, name) {
+    if (name === 'observeInput') return (ticket, stage) => {observations.push({workerId: ticket.workerId, stage}); throw Error('private-audit-store-failure');};
+    const value = target[name]; return typeof value === 'function' ? value.bind(target) : value;
+  }});
+  const supervisor = f.makeController({execution}), task = await f.create(); await supervisor.tick();
+  await until(() => f.provider.records.length === 1);
+  f.provider.records[0].finish(); await until(async () => (await f.get(task.id)).status === 'awaiting-approval');
+  assert.deepEqual(observations.map(item => item.stage), ['prepared', 'handed-off']);
+  assert.equal(new Set(observations.map(item => item.workerId)).size, 1); assert.equal(f.provider.records.length, 1);
+  const audit = await f.app.dispatch({operation: 'task.audit', taskId: task.id}, context);
+  assert.equal(audit.attempts, 1); assert.equal(audit.prompts[0].observation.stage, 'unavailable'); assert.equal(f.capacity().length, 0);
+  assert.equal(f.errors.filter(error => error.code === 'worker_input_audit_unavailable').length, 2);
+  assert.equal(JSON.stringify(f.errors).includes('private-audit-store-failure'), false);
+});
+
 test('real SQLite/Application: two Workers overlap, fan-in waits and repeated poll never redispatches', async t => {
   const f = fixture(t); let filteredPages = 0;
   const execution = new Proxy(f.app.execution, {get(target, name) {

@@ -51,6 +51,22 @@ const inputs = {
   ControlTask: {expectedRevision: 2}, AnswerQuestion: {expectedRevision: 2, questionRevision: 1, previewDigest: digest, answer: 'zh'},
   CreateInput: {name: 'requirements.txt', mediaType: 'text/plain', contentBase64: 'aGVsbG8='},
 };
+
+test('audit endpoint rejects foreign worker/snapshot and inconsistent handoff without mutating the application', async () => {
+  const value = clone(fixtures.Audit), snapshot = {...artifact, kind: 'evidence', name: worker.id + '.input.txt'};
+  value.prompts = [{workerId: worker.id, text: content.toString(), contextRefs: [], source: 'prepared-redacted', observation: {
+    stage: 'prepared', promptDigest: snapshot.digest, promptBytes: content.length, inputDigest: digest, reservationDigest: digest,
+    preparedAt: at, handedOffAt: null, coverage: 'policy-redacted', policy: {id: 'public-fixture', version: '1'}, snapshot, previewTruncated: false}}];
+  let calls = 0;
+  assert.equal((await request(async req => {calls++; assert.equal(req.operation, 'task.audit'); return value;}, 'GET', '/v1/tasks/task-one/audit')).status, 200);
+  for (const mutate of [value => value.workers[0].taskId = 'foreign', value => value.prompts[0].observation.snapshot.taskId = 'foreign',
+    value => value.prompts[0].observation.stage = 'handed-off', value => value.prompts[0].observation.snapshot.name = 'foreign.input.txt']) {
+    const changed = clone(value); mutate(changed);
+    const response = await request(async () => {calls++; return changed;}, 'GET', '/v1/tasks/task-one/audit');
+    assert.equal(response.status, 503); assert.equal(response.body.code, 'invalid_application_response');
+  }
+  assert.equal(calls, 5);
+});
 fixtures.ClarificationPreview = {revision: 1, digest, inputsDigest: digest, input: {intent: task.intent}, plan, missingSlots: []};
 fixtures.AnswerReceipt = {taskId: task.id, questionId: question.id, operation: {...operation('task.answer', 'succeeded'), taskRevision: 3},
   acceptedRevision: 3, acceptedPreviewDigest: digest, preview: fixtures.ClarificationPreview,

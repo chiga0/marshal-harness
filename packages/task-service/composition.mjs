@@ -79,7 +79,7 @@ class ServiceRoot {
 }
 
 /** Composition only: no Task reducer, second ledger, model defaults or publication. */
-export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, custody, runtimeQuestions, repair, dispose = () => {},
+export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, custody, runtimeQuestions, repair, auditDisclosure, dispose = () => {},
   providerFacts, applicationOptions = {}, port = 0, leaseMs = 60000, renewIntervalMs = 10000,
   requestTimeoutMs = 10000, supervisorOptions = {}, onDiagnostic = () => {}} = {}) {
   requireValue(typeof root === 'string' && path.isAbsolute(root) && path.normalize(root) === root && root !== path.parse(root).root &&
@@ -257,7 +257,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       }
     }
     const owner = store.claimOwner(store.info().generation, instanceId, Date.now() + leaseMs);
-    application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification, clarification, runtimeQuestions, repair});
+    application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification, clarification, runtimeQuestions, repair, auditDisclosure});
     if (custody) {
       let after = '', complete = false;
       for (let page = 0; page < 100; page++) {
