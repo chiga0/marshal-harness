@@ -1,4 +1,6 @@
 // External, explicitly authorized real-Pi consumer. Not a distribution asset.
+// The .fixture suffix only excludes this developer tool from package inventory;
+// this consumer does not inject a fake Provider or fixture configuration.
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawn} from 'node:child_process';

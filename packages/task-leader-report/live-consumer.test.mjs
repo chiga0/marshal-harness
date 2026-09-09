@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import fs from 'node:fs';
-import {parseOptions, expectedReport, waitPhase, checkAuthorization} from './live-consumer.mjs';
+import {parseOptions, expectedReport, waitPhase, checkAuthorization} from './live-consumer.fixture.mjs';
 const args = ['--package', '/package', '--manifest-digest', 'sha256:' + 'a'.repeat(64), '--source-head', 'b'.repeat(40),
   '--node', '/node', '--pi-entry', '/pi/dist/bundle/cli.js', '--pi-sdk', '/pi/dist/index.js', '--run-dir', '/private/new', '--execute-real', '--allow-local-publication'];
 test('explicit finite arguments; neither execution nor publication is implicit', () => {
@@ -40,7 +40,7 @@ test('publication authorization is exact and acceptance/expiry bound', () => {
   assert.throws(() => checkAuthorization(authorization, {...context, leader: {review: {verdict: 'reject'}}}));
 });
 test('consumer does not import source Core, call pack, or use fixture configuration', () => {
-  const source = fs.readFileSync(new URL('./live-consumer.mjs', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('./live-consumer.fixture.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /\bpack\s*\(|startTaskService|\.fixture\.mjs|import\(['"]\.\.\/task-(?:application|service|store)/);
   assert.match(source, /packages\/task-leader-report\/service-config\.mjs/);
 });
