@@ -35,6 +35,8 @@ export const SOURCE_FILES = Object.freeze([
   'packages/task-business/index.mjs',
   'packages/task-client/index.mjs',
   'packages/task-files/index.mjs',
+  'packages/task-git-business/git.mjs',
+  'packages/task-git-business/index.mjs',
   'packages/task-regional-window/checker.mjs',
   'packages/task-regional-window/consumer.mjs',
   'packages/task-regional-window/driver.mjs',
