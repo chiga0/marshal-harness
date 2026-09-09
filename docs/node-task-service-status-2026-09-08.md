@@ -2,6 +2,16 @@
 
 ## 当前结论
 
+### 2026-09-09 12:04 CST：修正启用配置下真实 Pi 首轮交付成功
+
+执行源 `d6502386f1be840096dcf002e9bb2eb551801765` 已正常推送至 `feat/node-custody-integration`；远端 main 仍为 `7250ec9`，不是 main 合并。真实 Pi 0.84.4 在 Node 24.15.0 下经 HTTP 创建、固定完整业务计划核验后一次确认、双作者、原独立 checker、下载消费与正常服务实例重开，得到 `natural-first-pass`、`validObservation=true`。总观察时间 **26.288秒**，作者执行生命周期交叠 **11.788秒**，共4 Attempts；这不等于 CPU 同时忙，也不代表任意需求自动规划。
+
+公开合成业务先按订单取最新 revision，再按 paid 状态统计，包含取消、零额与负退款。下载182 bytes：east为3单/1175 cents，west为4单/675 cents，总计7单/1850 cents；在作者之外的原命令验证及不同算法的下载消费均通过。原清理完成，正常重开保留原回执和同字节制品，重复启动0。独立审查者核对原输入、manifest、driver/checker摘要及公开证据一致；证据 SHA-256=`a678d6ab0821a1bd1ae236cabb73b639851bffcbd38978a2b1420923eed74d90`，交付 SHA-256=`bad4d08cffbd30c44ab25d443917a78b1491cb5c57122cb53d6454dae9f34fcd`。source 归属来自执行记录，JSON不是签名 source receipt。
+
+**没有发生真实 repair**：模型首次正确，因此不人为制造错误或追加付费尝试寻找失败样本。此前80项确定性组合及实机工具10项无模型回归覆盖修正接缝，但不替代自然内容拒收后的真实模型修正证据。此次正常重开不是 crash 测试；ordinary-user、`production=false`、Publisher分权未证，token/cost保持 unavailable。B1/B2/API-STABLE/B3不升级。
+
+下一完整纵切并行推进实际 prompt/context 审计与原入口简启动；仍复用同一 Application、Store、Supervisor及受信业务配置，不新增控制平台或为了占满槽位扩品牌。真实修正机会出现时按原负面证据、原预算和期限处理，不重跑无关成功分支。
+
 ### 2026-09-09：同计划局部修正通过独立复审与最终组合回归
 
 完整实现候选 `e4ee99f3de6b66809d725774a57e143410d61821` 已接线 ADR0091 的修正入口、父验证内容拒收/原负面报告、明确结果选择、原文件业务诊断输入、HTTP/client、v4-repair 状态与发行清单。后继聚合修正 `bc519e6a0d8c704424ae1f4d98ac7f22f63cb370` 由原 reviewer 复审：两项 P1 均关闭，无新增 P0/P1。尚无真实模型局部修正验收，不提升 B2/API-STABLE。
