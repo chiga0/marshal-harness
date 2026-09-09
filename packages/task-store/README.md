@@ -1,6 +1,6 @@
 # Node Task SQLite Store
 
-依据 Accepted ADR0088 的内部事务后端，当前为 COMPONENT 候选。未接生产 Application、未运行 Agent、未完成 API-STABLE 或发布验收。只使用 Node 内置 `node:sqlite`，不编译 Go、安装 addon 或加载 SQLite 扩展；运行时 gate 为 Node 24.x 且至少 24.15，首批实际验证仅 Node 24.15.0；平台仅 Darwin/Linux 的本地文件系统，各平台仍须分别验证。
+依据 Accepted ADR0088 的内部事务后端，已接同一正式 Node Application/Service 调用链；本包不独立授予发布权限。只使用 Node 内置 `node:sqlite`，不编译 Go、安装 addon 或加载 SQLite 扩展；运行时 gate 为 Node 24.x 且至少 24.15，发行包固定 Node 24.15.0；平台仅 Darwin/Linux 的本地文件系统，各平台仍须分别验证。
 
 ## 打开与 owner
 
@@ -15,6 +15,8 @@ const owner = store.claimOwner(store.info().generation, 'service-instance-id', D
 格式为 `marshal-node-task-sqlite/v1`，仅独立新空根；旧 `.marshal`、实验 JSON、未知/缺少文件、坏格式或不兼容 schema 拒绝，不初始化或迁移。`format` 文件只是不可变初始化标识，不保存业务/owner 状态；全部业务权威在 `authority.sqlite`。Create/Open 持有并复查路径/文件对象，返回前都执行子目录→父目录同步。同步失败不删除不确定状态；后续 Open 必须再次同步，不能绕过。这里不承诺防御同 UID 恶意程序，也不把进程中断测试称为物理断电实验。
 
 显式新 profile 另提供 `CUSTODY_FORMAT`（v2-custody，ADR0089）与 `INTERACTION_FORMAT`（v3-interaction，ADR0090）；v3 保留 v2 的 preclaim 封闭观察/cleanup-only 语义，增加同库运行中问题、答案/投递/ACK 事实。调用者必须选择精确格式，旧 reader 在 SQLite 打开/claim 前拒绝不同 sentinel；没有自动迁移或依据磁盘输入重造旧权威。
+
+`REPAIR_FORMAT`（v4-repair，ADR0091）与 `UNPERMITTED_FORMAT`（v5-unpermitted，ADR0092）同样只用于原精确新根。v5 的 sentinel、metadata、SQLite user_version 均为独立版本；它不是 v4 reader 可忽略的字段。原 `inspectRecovery` 保留物理排他锁下、claim 前的只读边界。Store 只提供事实查询，不从没有事件直接判断进程未运行。
 
 单个 SQLite 连接使用 EXCLUSIVE locking mode，物理锁跨短事务保持至关闭。第二进程不能因 lease 到期抢占仍持锁的进程；原连接关闭/退出后才可打开，再显式 Claim 新 generation。此锁只证明数据库 writer 互斥，不能证明旧 Worker 停止、执行目录可复用或旧结果已被接纳。`info()` 仅返回 `{format, storeId, generation}`；重新打开不继承旧 owner，`renewOwner(owner, expiresAtMs)` 不能代替首次 Claim。
 
@@ -31,11 +33,13 @@ Owner 为 `{storeId, generation, instanceId, expiresAt}`。序号、revision、g
 | `makeEvent(stream, sequence, payload)` | 返回 `{sequence, digest, bytes}`；规范 envelope 绑定 stream 与十进制 sequence |
 | `tx.head(stream)` | `{sequence, digest}`，空 head 为 `{sequence:0n,digest:''}` |
 | `tx.events(stream, after=0n, limit=100)` | 原始 event 数组，bytes 为独立 Buffer |
+| `tx.eventsWithField(stream,field,value,limit=100,types=null)` | 单 stream 的精确 payload 字段选择，可限原 event type；返回原 event 与 generation。完整匹配超过 limit 则拒绝，不能当截断尾页或否定证明 |
 | `tx.append(stream, expectedHead, events)` | 原子追加，返回最终 Head |
 | `tx.projection(kind,id)` | null 或 `{kind,id,revision,source,bytes}` |
 | `tx.projections(kind,afterId='',limit=100)` | 按 ID 分页，返回上述 projection 数组 |
 | `tx.putProjection(kind,id,expectedRevision,source,bytes)` | 返回新 revision；0 仅创建不存在的 projection |
 | `tx.receipt(scope,operation,keyDigest,requestDigest)` | null 或 `{scope,operation,keyDigest,requestDigest,source,bytes}` |
+| `tx.receiptByKey(scope,operation,keyDigest)` | 同一闭集三元键读取原 receipt；即使请求摘要不匹配仍返回原事实，恢复不能 catch conflict 后当作不存在 |
 | `tx.putReceipt({scope,operation,keyDigest},requestDigest,source,responseBytes)` | 原回执不可覆盖；完全相同写入无变化 |
 | `tx.enqueue(command)` | 返回完整 Command；同 ID 精确重放不重置状态 |
 | `tx.command(id)` / `tx.commands(afterId='',limit=100)` | null/单 Command 或分页数组；只读取，不发送 |

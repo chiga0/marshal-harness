@@ -1,4 +1,4 @@
-import {encode, digest, REPAIR_FORMAT} from '../task-store/store.mjs';
+import {encode, digest, REPAIR_FORMAT, UNPERMITTED_FORMAT} from '../task-store/store.mjs';
 import {affectedNodes} from './graph.mjs';
 import {clone, isText, nextRevision, publicTask, reject, terminal} from './model.mjs';
 
@@ -30,7 +30,7 @@ export class TaskRepair {
     if (port) {
       // Reject an unusable trusted composition before a Task can spend even
       // its Planner Attempt. Per-plan and persisted bindings are rechecked too.
-      check(this.format === REPAIR_FORMAT, 'unsupported_task', 422);
+      check([REPAIR_FORMAT, UNPERMITTED_FORMAT].includes(this.format), 'unsupported_task', 422);
       const command = app.verification.repairBinding(port.policyDigest);
       check(closed(command, ['policyDigest', 'checkerDigest', 'verificationPolicyDigest', 'assertions']) &&
         sha(command.checkerDigest) && Array.isArray(command.assertions) &&
@@ -39,7 +39,7 @@ export class TaskRepair {
   }
   bind(task, plan, verification) {
     if (!this.port) return null;
-    check(this.format === REPAIR_FORMAT && verification, 'unsupported_task', 422);
+    check([REPAIR_FORMAT, UNPERMITTED_FORMAT].includes(this.format) && verification, 'unsupported_task', 422);
     const descriptor = clone(ports.get(this.port)), command = this.app.verification.repairBinding(this.port.policyDigest);
     check(descriptor.nodeIds.every(id => plan.nodes.some(node => node.id === id && ['author', 'integrator'].includes(node.role))) &&
       same(command.assertions, descriptor.assertions) && command.verificationPolicyDigest === verification.policyDigest, 'unsupported_task', 422);

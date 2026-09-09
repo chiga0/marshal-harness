@@ -6,7 +6,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Store, encode, digest} from '../task-store/store.mjs';
 import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
+import {createFileBusiness, createStagingOnlyBusinessFactory} from '../task-business/index.mjs';
 import {createVerificationPort, createRepairPort} from '../task-application/application.mjs';
 import {createVerificationCommand} from '../task-verification-command/index.mjs';
 import {policy, bindPlan, proposal} from '../task-team-integration/scenario.fixture.mjs';
@@ -17,6 +17,7 @@ if (process.env.MARSHAL_REPAIR_FIXTURE !== '1' || !path.isAbsolute(root ?? '') |
   !['positive', 'structure', 'bad-frame', 'cancel', 'before', 'after'].includes(scenario)) throw Error('test-only configuration');
 const here = name => fileURLToPath(new URL(name, import.meta.url));
 const journal = path.join(path.dirname(root), 'repair-observations.jsonl'), tickets = new Map();
+const v5 = process.env.MARSHAL_REPAIR_V5 === '1';
 const parse = row => row && JSON.parse(row.bytes.toString('utf8'));
 function record(value) {
   const fd = fs.openSync(journal, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
@@ -27,10 +28,19 @@ function record(value) {
 // it never continues a half-transaction or signals a PID loaded from disk.
 let armed = ['before', 'after'].includes(scenario) && process.argv[process.argv.indexOf('--mode') + 1] === 'create';
 const write = Store.prototype.write;
+let v5Cut = v5 && process.env.MARSHAL_REPAIR_V5_CUT === '1';
+function remember(result) {
+  if (!v5 || !result?.reservationDigest || !result.input) return;
+  tickets.set(path.join(root, 'executions', result.workerId), result);
+  if (v5Cut && result.repairId !== null) {
+    v5Cut = false; record({type: 'v5-barrier', workerId: result.workerId, taskId: result.taskId, repairId: result.repairId});
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000); process.exit(79);
+  }
+}
 function barrier(value) {armed = false; record({type: 'barrier', point: scenario, ...value});
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000); process.exit(79);}
 Store.prototype.write = function(owner, callback) {
-  if (!armed) return write.call(this, owner, callback);
+  if (!armed) {const result = write.call(this, owner, callback); remember(result); return result;}
   let target;
   const value = write.call(this, owner, tx => {
     const result = callback(tx);
@@ -44,7 +54,7 @@ Store.prototype.write = function(owner, callback) {
     return result;
   });
   if (armed && target && scenario === 'after') barrier(target);
-  return value;
+  remember(value); return value;
 };
 const repair = createRepairPort({policy: {id: 'regional-local-repair-fixture', version: '1',
   description: '允许显式选择一个地区修正内容，保留未选分支；必须按原输入和完整集合重新独立验证，不增加原预算。'},
@@ -66,11 +76,12 @@ const good = agent('good'), wrong = agent('corrupt'), hanging = agent('hang');
 const author = {id: good.id, custodyProfile: good.custodyProfile, start(input) {
   const ticket = tickets.get(input.cwd); assert.ok(ticket);
   const native = ticket.repairId !== null && scenario === 'cancel' ? hanging :
-    ticket.nodeId === 'west' && ticket.repairId === null ? wrong : good;
+    ticket.nodeId === 'west' && ticket.repairId === null && (!v5 || ticket.input.task.intent === 'v5 repair interruption') ? wrong : good;
   return observed(native.start(input), ticket);
 }};
 const planning = {id: planner.id, custodyProfile: planner.custodyProfile, start(input) {
-  const ticket = tickets.get(input.cwd); assert.ok(ticket); return observed(planner.start(input), ticket);
+  const ticket = tickets.get(input.cwd); assert.ok(ticket);
+  return observed(planner.start(v5 ? {...input, prompt: input.prompt + '\nFIXTURE_PLAN=' + JSON.stringify(declared)} : input), ticket);
 }};
 const declared = proposal(); for (const node of declared.nodes) if (node.role === 'author') node.providerId = author.id;
 const checkerPath = here('./same-plan-repair-checker.fixture.mjs');
@@ -101,9 +112,10 @@ startVerification.repairBinding = command.start.repairBinding;
 const verification = createVerificationPort({id: 'repair-independent-checker', policy, bindPlan,
   repairPolicyDigests: [repair.policyDigest], start: startVerification});
 export default {custody: {profile: 'node-execution-custody/v1'}, repair, verification,
+  ...(v5 ? {unpermitted: {profile: 'node-unpermitted-reservation/v1'}} : {}),
   providers: new Map([[planning.id, planning], [author.id, author]]), supervisorOptions: {intervalMs: 10},
   onDiagnostic: value => record({type: 'diagnostic', code: value.code}),
-  businessFactory: ({depot, executionParent, approvedLayout, observeExecution}) => {
+  businessFactory: v5 ? createStagingOnlyBusinessFactory() : ({depot, executionParent, approvedLayout, observeExecution}) => {
     const business = createFileBusiness({parent: executionParent, depot, approvedLayout, observeExecution,
       layoutFor: ticket => ticket.planDigest === null ? {inputs: [], allowedPaths: []} : ticket.input.fileLayout});
     return {...business, async prepare(ticket, context) {

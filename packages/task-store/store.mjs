@@ -9,6 +9,7 @@ export const FORMAT = 'marshal-node-task-sqlite/v1';
 export const CUSTODY_FORMAT = 'marshal-node-task-sqlite/v2-custody';
 export const INTERACTION_FORMAT = 'marshal-node-task-sqlite/v3-interaction';
 export const REPAIR_FORMAT = 'marshal-node-task-sqlite/v4-repair';
+export const UNPERMITTED_FORMAT = 'marshal-node-task-sqlite/v5-unpermitted';
 // A maximum page of observed commands needs three validated accesses per row.
 // Leave room for its enclosing read/CAS while keeping aggregate work bounded.
 export const LIMITS = Object.freeze({ recordBytes: 1 << 20, transactionBytes: 8 << 20, records: 512, page: 100, transactionMs: 5000 });
@@ -209,8 +210,8 @@ export class Store {
   static #open(root, options, create) {
     const [major, minor] = process.versions.node.split('.').map(Number);
     check(['darwin', 'linux'].includes(process.platform) && major === 24 && minor >= 15, 'unsupported');
-    check(closed(options, ['format', 'clock', 'monotonic', 'syncDirectory']) && (options.format === undefined || [FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT].includes(options.format)));
-    const format = options.format ?? FORMAT, version = format === REPAIR_FORMAT ? 4 : format === INTERACTION_FORMAT ? 3 : format === CUSTODY_FORMAT ? 2 : 1;
+    check(closed(options, ['format', 'clock', 'monotonic', 'syncDirectory']) && (options.format === undefined || [FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT].includes(options.format)));
+    const format = options.format ?? FORMAT, version = format === UNPERMITTED_FORMAT ? 5 : format === REPAIR_FORMAT ? 4 : format === INTERACTION_FORMAT ? 3 : format === CUSTODY_FORMAT ? 2 : 1;
     for (const key of ['clock', 'monotonic', 'syncDirectory']) check(options[key] === undefined || typeof options[key] === 'function');
     let files, db;
     try {
@@ -261,7 +262,7 @@ export class Store {
   inspectRecovery(callback) {
     this.#enter(); let tx;
     try {
-      check(this.#active === null && [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT].includes(this.#metadata().format) && typeof callback === 'function', 'owner');
+      check(this.#active === null && [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT].includes(this.#metadata().format) && typeof callback === 'function', 'owner');
       check(Object.prototype.toString.call(callback) !== '[object AsyncFunction]', 'async-transaction');
       const until = this.#monotonic() + LIMITS.transactionMs;
       this.#transaction = true; this.#db.exec('BEGIN');
@@ -356,6 +357,21 @@ class Transaction {
     const rows = this.#db.prepare('SELECT sequence,digest,bytes FROM events WHERE stream=? AND sequence>? ORDER BY sequence LIMIT ?').all(stream, after, limit);
     return rows.map((row, n) => { check(row.sequence === after + BigInt(n) + 1n, 'unavailable'); const value = record(stream, row); this.#charge(value.bytes.length); return value; });
   }); }
+  // Complete, bounded selection in ONE stream, not a global first-page scan.
+  // This is an original-event query, not another business projection. Overrun
+  // rejects rather than presenting a truncated result as proof of absence.
+  eventsWithField(stream, field, value, limit = LIMITS.page, types = null) { return this.#guard(() => {
+    check(id(stream) && typeof field === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(field) && id(value)); page('', limit);
+    check(types === null || Array.isArray(types) && types.length > 0 && types.length <= 16 && types.every(id) && new Set(types).size === types.length);
+    const filter = types === null ? '' : " AND json_extract(CAST(bytes AS TEXT),'$.payload.type') IN (" + types.map(() => '?').join(',') + ')';
+    const rows = this.#db.prepare('SELECT sequence,digest,bytes,generation FROM events WHERE stream=? AND json_extract(CAST(bytes AS TEXT),?)=?' + filter + ' ORDER BY sequence LIMIT ?')
+      .all(stream, '$.payload.' + field, value, ...(types ?? []), limit + 1);
+    check(rows.length <= limit, 'limit');
+    return rows.map(row => { const event = record(stream, {sequence: row.sequence, digest: row.digest, bytes: row.bytes}); this.#charge(event.bytes.length);
+      const payload = JSON.parse(event.bytes).payload;
+      check(payload?.[field] === value && (types === null || types.includes(payload.type)), 'unavailable');
+      return {...event, generation: row.generation}; });
+  }); }
   append(stream, expected, events) { return this.#guard(() => {
     expected = head(expected); check(Array.isArray(events) && events.length > 0 && events.length <= LIMITS.records);
     let current = this.head(stream); check(current.sequence === expected.sequence && current.digest === expected.digest, 'conflict');
@@ -389,12 +405,20 @@ class Transaction {
   }, true); }
   receipt(scope, operation, keyDigest, requestDigest) { return this.#guard(() => {
     check(id(scope) && id(operation) && hash(keyDigest) && hash(requestDigest));
+    const receipt = this.receiptByKey(scope, operation, keyDigest);
+    if (receipt) check(receipt.requestDigest === requestDigest, 'conflict');
+    return receipt;
+  }); }
+  // Recovery must detect even a mismatching receipt; callers must not invent a
+  // request digest, catch conflict, and mistake it for absence.
+  receiptByKey(scope, operation, keyDigest) { return this.#guard(() => {
+    check(id(scope) && id(operation) && hash(keyDigest));
     const row = this.#db.prepare('SELECT * FROM receipts WHERE scope=? AND operation=? AND key_digest=?').get(scope, operation, keyDigest);
     if (!row) return null;
-    check(row.request_digest === requestDigest, 'conflict');
+    check(hash(row.request_digest), 'unavailable');
     const ref = { stream: row.source_stream, sequence: row.source_sequence, digest: row.source_digest };
     this.#reference(ref); const bytes = canonical(row.bytes); this.#charge(bytes.length);
-    return { scope, operation, keyDigest, requestDigest, source: ref, bytes };
+    return { scope, operation, keyDigest, requestDigest: row.request_digest, source: ref, bytes };
   }); }
   putReceipt(key, requestDigest, refValue, bytesValue) { return this.#guard(() => {
     check(closed(key, ['scope', 'operation', 'keyDigest']));

@@ -19,6 +19,8 @@ const supervisor = new TaskSupervisor({
 
 `parent` 和 `depot` 沿用 `task-files` 的已有私有目录、只创建新执行目录、普通文件/路径/链接/大小与失败保留约束。`prepare` 只返回 `{cwd,prompt,onPermission}`，不额外改变 Supervisor 的准备 DTO。
 
+ADR0092 的 v5 服务使用 `createStagingOnlyBusinessFactory({authorize?})`，而非上述任意布局工厂。它复用同一文件准备主体，但布局固定来自原 ticket（Planner 明确空布局），Depot、父目录与批准/执行查询由 composition 注入，时钟使用原实现。`isStagingOnlyBusiness(factory,business?)` 只读检查私有 WeakMap 内的原工厂、原对象及实际 prepare 身份，不能登记任意回调；属性复制/包装均不合格。`authorize` 仍只在许可后的原生权限请求中执行。原宽接口不删除，也不被追认为 v5；这不是同 UID 恶意 JavaScript 的安全沙箱。
+
 ## 必须由可信组合提供的两个事实
 
 `layoutFor(ticket,{signal,deadline})` 返回显式布局：

@@ -4,10 +4,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {encode, digest} from '../task-store/store.mjs';
+import {Store, encode, digest} from '../task-store/store.mjs';
 import {createAcpProvider} from '../agent-provider-acp/index.mjs';
 import {createPiProvider} from '../agent-provider-pi/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
+import {createFileBusiness, createStagingOnlyBusinessFactory} from '../task-business/index.mjs';
 import {createVerificationPort, createRuntimeQuestionPort} from '../task-application/application.mjs';
 import {createVerificationCommand} from '../task-verification-command/index.mjs';
 
@@ -16,6 +16,13 @@ if (process.env.MARSHAL_QUESTION_FIXTURE !== '1' || !path.isAbsolute(root ?? '')
     !['positive', 'cancel', 'dispatch-crash', 'ack-crash'].includes(scenario)) throw Error('test-only configuration');
 const here = name => fileURLToPath(new URL(name, import.meta.url));
 const journal = path.join(path.dirname(root), 'question-observations.jsonl'), tickets = new Map();
+const v5 = process.env.MARSHAL_QUESTION_V5 === '1';
+if (v5) {
+  const write = Store.prototype.write;
+  Store.prototype.write = function(owner, callback) {const result = write.call(this, owner, callback);
+    if (result?.reservationDigest && result.input) tickets.set(path.join(root, 'executions', result.workerId), result);
+    return result;};
+}
 function record(value) {
   const fd = fs.openSync(journal, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
   try {fs.writeFileSync(fd, JSON.stringify(value) + '\n'); fs.fsyncSync(fd);} finally {fs.closeSync(fd);}
@@ -68,7 +75,8 @@ const provider = {id: native.id, custodyProfile: native.custodyProfile, runtimeQ
   return observed((!east ? west : held && ['cancel', 'dispatch-crash'].includes(scenario) ? missing : native).start(request), ticket);
 }};
 const plannerProvider = {id: planner.id, custodyProfile: planner.custodyProfile, start(input) {
-  const ticket = tickets.get(input.cwd); assert.ok(ticket); return observed(planner.start(input), ticket);
+  const ticket = tickets.get(input.cwd); assert.ok(ticket);
+  return observed(planner.start(v5 ? {...input, prompt: input.prompt + '\nFIXTURE_PLAN=' + JSON.stringify(proposal)} : input), ticket);
 }};
 const checkerPath = here('./runtime-question-recovery.worker.fixture.mjs');
 const command = createVerificationCommand({executable: process.execPath, checkerPath, checkerDigest: digest(fs.readFileSync(checkerPath)),
@@ -91,9 +99,13 @@ const verification = createVerificationPort({id: 'question-checker', policy, int
       deliveries: ['east', 'west'].map(nodeId => ({nodeId, path: 'output.txt', targetPath: nodeId + '.txt'}))};
   }});
 export default {custody: {profile: 'node-execution-custody/v1'}, runtimeQuestions, verification,
+  ...(v5 ? {unpermitted: {profile: 'node-unpermitted-reservation/v1'}} : {}),
   providers: new Map([[plannerProvider.id, plannerProvider], [provider.id, provider]]), supervisorOptions: {intervalMs: 10},
   onDiagnostic: value => record({type: 'diagnostic', code: value.code}),
-  businessFactory: ({depot, executionParent, approvedLayout, observeExecution}) => {
+  businessFactory: v5 ? createStagingOnlyBusinessFactory({authorize: (_ticket, request) => {
+    const allowed = request.toolCall?._meta?.toolName === 'write' && request.toolCall.rawInput?.path === 'output.txt';
+    return {outcome: allowed ? {outcome: 'selected', optionId: request.options.find(option => option.kind === 'allow_once').optionId} : {outcome: 'cancelled'}};
+  }}) : ({depot, executionParent, approvedLayout, observeExecution}) => {
     const business = createFileBusiness({parent: executionParent, depot, approvedLayout, observeExecution,
       layoutFor: ticket => ticket.planDigest === null ? {inputs: [], allowedPaths: []} : ticket.input.fileLayout,
       authorize: (ticket, request) => {

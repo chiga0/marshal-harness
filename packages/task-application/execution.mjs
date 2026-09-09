@@ -1,4 +1,4 @@
-import {encode, digest, makeEvent} from '../task-store/store.mjs';
+import {encode, digest, makeEvent, UNPERMITTED_FORMAT} from '../task-store/store.mjs';
 import {clone, reject, terminal, nextRevision, isText} from './model.mjs';
 import {TaskCleanup} from './cleanup.mjs';
 
@@ -8,17 +8,21 @@ const live = worker => ['queued', 'running', 'awaiting-answer', 'stopping', 'unk
 const usage = () => ({tokens: null, cost: null, currency: null, source: 'unavailable', coverage: 0});
 const rolePhase = role => ({planner: 'planning', author: 'development', reviewer: 'review',
   integrator: 'integration', verifier: 'verification'})[role];
+const START_PROTOCOL = Object.freeze({profile: 'node-unpermitted-reservation/v1', preparation: 'file-staging-only/v1'});
 
 // A reducer over the SAME Application/SQLite authority. No timers, subprocess,
 // Agent brands, runtime handles or filesystem side effects live in this class.
 export class TaskExecution {
-  constructor(application, {maxWorkers = 2, providerIds = [], defaultProvider = null, questionProviderIds = []} = {}) {
+  constructor(application, {maxWorkers = 2, providerIds = [], defaultProvider = null, questionProviderIds = [], startProtocol = null} = {}) {
     if (!Number.isSafeInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 64 || !Array.isArray(providerIds) ||
         providerIds.length > 32 || providerIds.some(id => !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)) ||
         new Set(providerIds).size !== providerIds.length || defaultProvider !== null && !providerIds.includes(defaultProvider) ||
         !Array.isArray(questionProviderIds) || questionProviderIds.some(id => !providerIds.includes(id)) || new Set(questionProviderIds).size !== questionProviderIds.length)
       reject('invalid_execution_config', 503);
     this.app = application; this.maxWorkers = maxWorkers;
+    const v5 = application.store.info?.().format === UNPERMITTED_FORMAT;
+    if (v5 ? hash(startProtocol) !== hash(START_PROTOCOL) : startProtocol !== null) reject('invalid_execution_config', 503);
+    this.startProtocol = v5 ? START_PROTOCOL : null;
     this.providers = new Set(providerIds); this.defaultProvider = defaultProvider;
     this.questionProviders = new Set(questionProviderIds);
     this.cleanup = new TaskCleanup(this);
@@ -28,6 +32,8 @@ export class TaskExecution {
   recordExtraScope(ticket, code) { return this.cleanup.extraScope(ticket, code); }
   pendingCleanup(after = '', limit = 25) { return this.cleanup.pending(after, limit); }
   reconcileCleanup(workerId, observation) { return this.cleanup.settle(workerId, observation); }
+  pendingUnpermitted(after = '', limit = 25) { return this.cleanup.pendingUnpermitted(after, limit); }
+  settleUnpermitted(workerId) { return this.cleanup.settleUnpermitted(workerId); }
   registerQuestion(ticket, request) {return this.app.runtimeQuestions.register(ticket, request);}
   dispatchAnswer(ticket, questionId) {return this.app.runtimeQuestions.dispatch(ticket, questionId);}
   acknowledgeAnswer(ticket, questionId, receipt) {return this.app.runtimeQuestions.acknowledge(ticket, questionId, receipt);}
@@ -232,6 +238,7 @@ export class TaskExecution {
         generation: this.app.owner.generation.toString(), commandId, inputDigest: hash(input),
         planDigest: task.approved?.planDigest ?? null,
         deadline: Math.min(Date.parse(task.task.deadlineAt), this.app.now() + 86400000), input,
+        ...(this.startProtocol ? {startProtocol: this.startProtocol} : {}),
         ...(this.app.repair.port ? {repairId: task.activeRepair?.repairId ?? null} : {})};
       const ticket = {...frozen, reservationDigest: hash(frozen)};
       const {input: _input, ...identity} = ticket;
