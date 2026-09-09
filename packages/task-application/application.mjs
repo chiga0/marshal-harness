@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {encode, digest, makeEvent, UNPERMITTED_FORMAT} from '../task-store/store.mjs';
 import {TaskError, reject, limits, freezePlan, publicTask, nextRevision, terminal, isText, clone} from './model.mjs';
 import {TaskExecution} from './execution.mjs';
+import {TaskWorkerCancellation} from './worker-cancellation.mjs';
 import {TaskArtifacts} from './artifacts.mjs';
 import {TaskVerification} from './verification.mjs';
 import {TaskClarification} from './clarification.mjs';
@@ -33,9 +34,10 @@ export class TaskApplication {
   constructor({store, owner, clock = Date.now, makeId = prefix => prefix + '-' + randomUUID(),
     defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null, runtimeQuestions = null, repair = null, auditDisclosure = null}) {
     this.store = store; this.owner = owner; this.clock = clock; this.makeId = makeId;
-    if (store.info?.().format === UNPERMITTED_FORMAT && auditDisclosure !== null) reject('unsupported_task', 422);
+    if ((store.info?.().format === UNPERMITTED_FORMAT || execution.startProtocol != null) && auditDisclosure !== null) reject('unsupported_task', 422);
     this.defaultLimits = limits(defaultLimits);
     this.execution = new TaskExecution(this, execution);
+    this.workerCancellation = new TaskWorkerCancellation(this);
     this.artifacts = new TaskArtifacts(this, depot);
     this.verification = new TaskVerification(this, verification);
     this.clarification = new TaskClarification(this, clarification);
@@ -91,9 +93,9 @@ export class TaskApplication {
     tx.putProjection('task', task.id, task.revision - 1, source, encode(record));
     return source;
   }
-  operation(tx, task, source, kind, status, id = this.newId('operation')) {
+  operation(tx, task, source, kind, status, id = this.newId('operation'), workerId = null) {
     const now = new Date(this.now()).toISOString();
-    const op = {id, taskId: task.id, kind, status,
+    const op = {id, taskId: task.id, kind, status, ...(kind === 'worker.cancel' ? {workerId} : {}),
       taskRevision: task.revision, createdAt: now, updatedAt: now};
     tx.putProjection('operation', op.id, 0, source, encode(op));
     return op;
@@ -106,8 +108,9 @@ export class TaskApplication {
   // previously accepted operation consume another budget or dispatch twice.
   receiptKey(request) {
     if (!idOK(request.key)) reject('invalid_request', 400);
-    const scope = request.taskId ?? 'tasks', key = {scope, operation: request.operation, keyDigest: hash(request.key)};
+    const scope = request.operation === 'worker.cancel' ? request.workerId : request.taskId ?? 'tasks', key = {scope, operation: request.operation, keyDigest: hash(request.key)};
     const input = {operation: request.operation, taskId: request.taskId ?? null, body: request.body};
+    if (request.operation === 'worker.cancel') {this.workerCancellation.shape(request); input.workerId = request.workerId;}
     // Only the new answer operation adds its route subject. Keep every old
     // operation's exact digest algorithm and historical receipt bytes unchanged.
     if (request.operation === 'task.answer') {
@@ -126,6 +129,10 @@ export class TaskApplication {
     return previous ? parse(previous) : null;
   }
   replay(request) { return this.transaction(false, tx => {
+    if (request.operation === 'worker.cancel') {
+      if (!this.workerCancellation.enabled) return null;
+      request = this.workerCancellation.request(tx, request);
+    }
     const previous = this.receipt(tx, request);
     return previous && request.operation === 'task.answer' ? this.clarification.replay(tx, previous) :
       previous && request.operation === 'task.repair' ? this.repair.replay(tx, previous) : previous;
@@ -149,6 +156,7 @@ export class TaskApplication {
     if (request.operation === 'task.repair') return this.repair.repair(request);
     if (request.operation === 'task.answer') return (Object.hasOwn(request.body ?? {}, 'questionDigest') ? this.runtimeQuestions : this.clarification).answer(request, context);
     if (['task.approve', 'task.cancel', 'task.pause', 'task.resume'].includes(request.operation)) return this.control(request);
+    if (request.operation === 'worker.cancel') return this.workerCancellation.cancel(request);
     return this.transaction(false, tx => this.query(tx, request));
   }
   newTaskRecord(body, budget, inputArtifacts) {

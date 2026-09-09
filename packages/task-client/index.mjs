@@ -51,6 +51,7 @@ function boundIdentity(entry, options, value) {
   const taskId = value.taskId ?? (entry.operation === 'task.get' ? value.id : undefined);
   if (options.paths.taskId && taskId !== options.paths.taskId ||
     options.paths.workerId && entry.operation === 'worker.get' && value.id !== options.paths.workerId ||
+    entry.operation === 'worker.cancel' && value.workerId !== options.paths.workerId ||
     options.paths.operationId && value.id !== options.paths.operationId || options.paths.artifactId && value.id !== options.paths.artifactId ||
     entry.paged && value.items.length > (options.query.limit ?? 50) ||
     entry.response === 'Operation' && entry.operation !== 'operation.get' && value.kind !== entry.operation) throw fail('client_invalid_response');
@@ -156,6 +157,7 @@ export class TaskClient {
   }
   createTask(body, idempotencyKey, options = {}) { return this.request('task.create', {...options, body, idempotencyKey}); }
   getTask(taskId, options = {}) { return this.request('task.get', {...options, path: {taskId}}); }
+  cancelWorker(workerId, body, idempotencyKey, options = {}) {return this.request('worker.cancel', {...options, path: {workerId}, body, idempotencyKey});}
   approveTask(taskId, body, idempotencyKey, options = {}) { return this.request('task.approve', {...options, path: {taskId}, body, idempotencyKey}); }
   repairTask(taskId, body, idempotencyKey, options = {}) { return this.request('task.repair', {...options, path: {taskId}, body, idempotencyKey}); }
   getAudit(taskId, options = {}) { return this.request('task.audit', {...options, path: {taskId}}); }

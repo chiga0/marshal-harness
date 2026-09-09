@@ -34,6 +34,7 @@ export const SOURCE_FILES = Object.freeze([
   'packages/task-application/repair.mjs',
   'packages/task-application/runtime-questions.mjs',
   'packages/task-application/verification.mjs',
+  'packages/task-application/worker-cancellation.mjs',
   'packages/task-artifacts/depot.mjs',
   'packages/task-business/index.mjs',
   'packages/task-client/index.mjs',

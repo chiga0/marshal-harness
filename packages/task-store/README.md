@@ -18,6 +18,8 @@ const owner = store.claimOwner(store.info().generation, 'service-instance-id', D
 
 `REPAIR_FORMAT`（v4-repair，ADR0091）与 `UNPERMITTED_FORMAT`（v5-unpermitted，ADR0092）同样只用于原精确新根。v5 的 sentinel、metadata、SQLite user_version 均为独立版本；它不是 v4 reader 可忽略的字段。原 `inspectRecovery` 保留物理排他锁下、claim 前的只读边界。Store 只提供事实查询，不从没有事件直接判断进程未运行。
 
+`WORKER_CANCELLATION_FORMAT` 为 `marshal-node-task-sqlite/v6-worker-cancellation`（ADR0093），sentinel/metadata/user_version 精确为6；同一原 Store 承载目标 stop，不另建账本。v1–v5 reader 在 claim 前拒绝 v6，v6 不迁移旧根。格式识别不授予0092准备资格，也不把未知执行当已停止。
+
 单个 SQLite 连接使用 EXCLUSIVE locking mode，物理锁跨短事务保持至关闭。第二进程不能因 lease 到期抢占仍持锁的进程；原连接关闭/退出后才可打开，再显式 Claim 新 generation。此锁只证明数据库 writer 互斥，不能证明旧 Worker 停止、执行目录可复用或旧结果已被接纳。`info()` 仅返回 `{format, storeId, generation}`；重新打开不继承旧 owner，`renewOwner(owner, expiresAtMs)` 不能代替首次 Claim。
 
 Owner 为 `{storeId, generation, instanceId, expiresAt}`。序号、revision、generation 输出 BigInt；输入可为 BigInt 或安全整数，时间为安全整数 Unix 毫秒。HTTP 编码由 Application 明确处理，不隐式丢精度。

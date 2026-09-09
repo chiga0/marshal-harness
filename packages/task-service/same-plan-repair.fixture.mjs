@@ -112,6 +112,7 @@ startVerification.repairBinding = command.start.repairBinding;
 const verification = createVerificationPort({id: 'repair-independent-checker', policy, bindPlan,
   repairPolicyDigests: [repair.policyDigest], start: startVerification});
 export default {custody: {profile: 'node-execution-custody/v1'}, repair, verification,
+  ...(process.env.MARSHAL_WORKER_CANCELLATION === '1' ? {workerCancellation: {profile: 'task-worker-cancellation/v1'}} : {}),
   ...(v5 ? {unpermitted: {profile: 'node-unpermitted-reservation/v1'}} : {}),
   providers: new Map([[planning.id, planning], [author.id, author]]), supervisorOptions: {intervalMs: 10},
   onDiagnostic: value => record({type: 'diagnostic', code: value.code}),

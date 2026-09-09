@@ -88,6 +88,16 @@ const result = await service.shutdown();
 
 ## 可选 custody v2 与恢复边界
 
+### 单 Worker 取消：显式 v6 新根
+
+[ADR0093](../../docs/adr/0093-node-worker-cancellation.md) 沿原组合增加 `workerCancellation: {profile:'task-worker-cancellation/v1'}`；必须同时配置原 `custody`。只有显式新根选择 `layout:6` / `marshal-node-task-sqlite/v6-worker-cancellation`，不迁移或重标记已有根，旧 v1–v5 reader 在 claim 前拒绝。缺省配置保留原格式与 `worker.cancel` 的 501，不因客户端认识新响应字段而自动启用。
+
+`POST /v1/workers/{workerId}/cancel` 继续使用 `{expectedRevision}`，比较所属 **Task revision**；202 返回带原 `workerId` 的 Operation，仅表示受理。原 key/body 可精确重放，客户端不自动刷新 CAS。原目标清理已证实后该 Operation 可 succeeded，不等待无关兄弟；兄弟仍按原图、预算和期限继续。未执行的后继取消，不伪造 Worker；全部剩余义务结束后 Task 为 failed/worker_cancelled，除非原全局取消/期限/未知效果等安全处置先赢。不产生独立 rejected Decision，不使用户取消自动变成 repair。
+
+这与 `unpermitted` **正交**：普通文件与 Git 业务拥有原受管句柄时均可目标取消；不配置 `unpermitted` 的 v6 reservation 没有0092资格。若另启用 `unpermitted`，仍须原受限工厂与 metadata-only 检查，Git/任意 prepare/披露回调在打开/claim 前拒绝。冷恢复只检查原 ticket 的已绑定资格；后来打开该配置不能给旧 Git reservation 补资格，关闭它也不能删除原合格事实。Git prepare 后、custody bind 前崩溃仍保留未知容量与原目录，不凭无进程记录或三许可缺失制造 cleanup。
+
+`worker-cancellation.test.mjs` 使用原 CLI/HTTP/SQLite、受管无模型协议进程，覆盖目标角色、两个作者隔离、stop/结算 COMMIT 前后 SIGKILL、下一团队独立验证下载和冷重放；配套 Git、问答与 repair 测试验证原分支/答案/结果保留。它们不代表模型实机或部署验收通过。目标取消只查当前 owned handle；停止失败/cleanup 未知保留占用，禁止通过存储 PID 杀进程或重派。
+
 ### 新文件业务根：v5 许可前中断结算
 
 依据 [ADR0092](../../docs/adr/0092-node-unpermitted-reservation-settlement.md)，部署模块可以在**全新根**显式选择：

@@ -13,7 +13,7 @@ const handler = createTaskApiHandler({application: application.dispatch, token, 
 
 读写命令按 `task-api` 的 Application Port 接入。幂等查找先于当前 revision CAS，原回执返回原 accepted response，不重复创建任务/Operation/执行义务。Store 内部隐藏异常，Application 只在整个事务回滚后恢复自己的封闭业务错误，未知存储故障仍返回不可用。
 
-目前支持 `task.create/list/get/plan/approve/graph/cancel/pause/resume/events/audit/workers`、`worker.get` 与 `operation.get`；未实现的操作明确 `unsupported_operation`。没有实际执行的审计使用 `tokens:null/source:unavailable`、待验收，不把未知用量或未运行验证计成成功。没有计划的图返回 `plan_conflict`，不编造计划 revision。
+基础控制支持 `task.create/list/get/plan/approve/graph/cancel/pause/resume/events/audit/workers`、`worker.get` 与 `operation.get`；`worker.cancel` 仅在下述显式 v6 新根启用，其他格式仍为 `unsupported_operation`。问答、制品与 repair 见相应接线说明。没有实际执行的审计使用 `tokens:null/source:unavailable`、待验收，不把未知用量或未运行验证计成成功。没有计划的图返回 `plan_conflict`，不编造计划 revision。
 
 ## 未批准 Task 的有限问答
 
@@ -132,6 +132,14 @@ v5 由已验证的 Service 组合注入 `execution.startProtocol`；原 `nextWor
 `pendingUnpermitted` 只是有界选择，`settleUnpermitted(workerId)` 必须在当前 owner 的同一短事务重读原 ticket/input/reserved event、对应命令/预算/容量，并同时否定 custody 字段、不可变许可 receipt、许可 event 和执行冲突事实。已有绑定路径仅查询所需许可事件，不因该 Worker 超过100条合法进度而挡住原签名恢复；未绑定负证明依然要求完整有界事实集，超限拒绝而非截断。
 
 结算只追加 `worker.unpermitted-settled`，保留 cleanup=null 和原费用未知；只释放该 Worker/原 generation 一次占用。原取消获胜则 cancelled，否则 failed/service_interrupted；未知兄弟保持 intervention。原 unknown Operation 的例外只属于这条完整结算链，不放宽通用 `settleOperation`，也不改问答 ACK 或原 HTTP 回执。旧结果、旧目录、旧预算不能借此重用。重复调用/冷重开零追加；SQL 回滚保留原占用。详见服务 README 的真实无模型故障组合。
+
+### v6 单 Worker 取消（ADR0093）
+
+`worker.cancel` 在原短事务按 Worker 解析 Task，新增操作专属 scope/requestDigest 绑定 workerId/taskId/body，先精确 receipt 再 Task CAS；旧操作摘要与回执不改。原 stop 事实绑定 reservation/input/plan/generation/repair 周期，和 Task revision、Operation.workerId、stop outbox 一次提交。只关闭该 Worker 的待答问题和未执行后继；无关问题、ACK、已完成结果与分支不重写。
+
+`mayStart/bind/started/dispatchAnswer/acknowledgeAnswer/finish` 重查目标 fence；晚到成果不得接纳。`fail` 对已赢的目标 stop 返回命名 `targeted` 分支，避免其旧回调升级为兄弟故障；第三参数 `cleanupUnknown=true` 仅供原控制器停止/清理故障保留安全处理。真正其他失败仍原 fail-fast。目标实际 cleanup、签名 cleanup 或原资格严格成立的 never-permitted，统一由 `worker-cancellation.mjs` 复核原 stop/event/receipt/command、一次释放容量后结清目标 Operation；兄弟未知不一起清除。初始 202 字节始终不变。
+
+v6 恢复可读原有或没有0092协议的 ticket，执行资格仍由原 reservation 摘要决定。目标 cancelled、Operation succeeded 与 Task 最终 failed/worker_cancelled 是不同结论；用户在兄弟结束前仍可全局 task.cancel。取消不生成 contentRejection，不自动开启修正。真实 Git unbound 仍未知，开启配置不追认资格。
 
 ### 同计划局部修正（ADR0091）的原接口
 
