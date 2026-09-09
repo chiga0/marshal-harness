@@ -1,6 +1,6 @@
 # ADR 0092：Node 从未获执行许可的预留中断结算
 
-- 状态：Proposed（2026-09-09；仅供独立审查，不授权改变生产接纳或旧根恢复规则）。
+- 状态：Accepted（2026-09-09；维护者依据持续发布授权，在独立反向审查及唯一P1聚合修正、同reviewer复核无剩余P0/P1后接纳实施。已审正文SHA-256=`a8b8958ce3bdbd965e6fe9258933278df4084f43064678f17eeb58e9f6bf2713`，指本状态更新前的完整草案；不表示运行时已实现或旧根可恢复）。
 - 解决问题：B2 同版本恢复中，reservation 已提交而 custody 许可未提交的两个窗口会保留容量并封闭 ready；本决策只为可证明从未获准执行的新记录增加中断结算。
 - 基线：`ce55eed6fc01ae7b533e73d8fefc1bd14754dfbd`；继承 [ADR 0088](0088-node-task-service-production-projection.md)、[ADR 0089](0089-node-execution-custody-and-cleanup-recovery.md)，不改变单节点、单用户、可信任务的正式发布目标。
 
@@ -20,7 +20,7 @@
 
 1. 为现有 FileBusiness 提供受版本管理的窄构造入口，仍复用其文件/引用/提示词实现；合格对象及**实际 prepare 函数身份**由模块私有 WeakMap/不可伪造句柄登记。只读资格解析只认可该原对象和函数，不提供“认证任意回调”的公开 setter；复制属性、包装/替换 prepare、HTTP/模型/Provider 自报均不能取得资格。该内存身份只用于原始组合核验，不序列化为恢复证据。
 2. 合格构造的准备阶段不接受任意 `layoutFor`、Depot、时钟或权限读取回调。布局直接来自原 Core 冻结的 `ticket.input.fileLayout` 并经同一 Application 的原 `approvedLayout` 核对；Planner 使用原明确空执行布局。Depot、执行父目录和只读 Application 包装由同一 composition 注入原实例，不从业务工厂返回值取信。不把自由文本 scope 解析成权限。
-3. 全部 reservation→许可之间的调用都在这项约束内，不只检查 FileBusiness 名称。原输入审计默认元数据路径可保留；若启用受信披露回调，其执行必须移至原许可提交之后且仍在真实 Provider handoff 之前，或启动时拒绝该不受覆盖的组合。不得以同步函数、无 await 或正则脱敏宣称没有外部效果。原 prepared/handed-off 观察强度、实际时间和秘密披露规则不改变。
+3. 全部 reservation→许可之间的调用都在这项约束内，不只检查 FileBusiness 名称。首批 v5 仅使用原输入审计默认 metadata-only 路径，必须在打开/接管数据根或首个 Attempt 前拒绝配置任意 `auditDisclosure` 回调。把回调移到原许可提交之后仍不足够：回调在服务进程中产生的子进程/网络效果不一定受原 custody 管理，不能据原 none-start/cleaned 结清。不得以同步函数、无 await 或正则脱敏宣称没有外部效果。旧格式已有披露功能不改，不追认为新恢复例外；原 prepared/handed-off 观察强度、实际时间和秘密披露规则不改变。
 4. `authorize`、原生工具/Skill/登录和业务 checker 不因此被禁止；它们仍在许可之后执行，继续使用原权限、scope 登记、custody 和独立验收规则。合格 FileBusiness 的 collect/release 不提前执行。自定义 prepare、Git 准备及不能证明上述实际接线的包装默认不具备新例外；它们可以继续使用原受支持格式，不能被本决策自动升级。
 
 这不是防恶意宿主配置的沙箱：受信组合代码仍属于部署信任边界，私有句柄只防误接线/数据自报，不能认证任意恶意 JavaScript。若未来需要另一准备实现，必须提供其完整无外部执行 producer 证据及同链测试，不能仅添加一个 capability 字符串。
@@ -55,7 +55,7 @@ v5 启动时缺少该受信组合、数据描述不支持或实际 prepare 被�
 
 同事务完成 §4 全部重验后，追加 `worker.unpermitted-settled`，内容绑定原 reservation 摘要、协议、当前结算 generation 和 `disposition:'never-permitted'`。这是一项 Core 结算事实，不是 Runtime receipt；Worker 的 `cleanup` 保持 null，不造 `cleaned:true`、started/exit/guard/进程 ID，也不把实际 token/工具使用量写成零。
 
-只结清该原命令与占用：Worker 中断失败；若原取消意图依原规则获胜，则按原取消状态收口。没有剩余未决义务时 Task 才进入 `failed/service_interrupted` 或原 `cancelled`，原 Operation 据实失败/成功，未知兄弟仍 intervention。复用原问答关闭与修正 Operation 收口，不投递旧答案，不接纳旧业务结果，不生成 Decision；已完成节点/已接纳成果及旧失败历史不改写。已经因该义务进入 intervention 的 Task 仅允许这一命名例外转失败/取消，不复活为 queued/completed。
+只结清该原命令与占用：Worker 中断失败；若原取消意图依原规则获胜，则按原取消状态收口。没有剩余未决义务时 Task 才进入 `failed/service_interrupted` 或原 `cancelled`，原 Operation 据实失败/成功，未知兄弟仍 intervention。复用原问答关闭与修正 Operation 收口，不投递旧答案，不接纳旧业务结果，不生成 Decision；已完成节点/已接纳成果及旧失败历史不改写。已经因该义务进入 intervention 的 Task 仅允许这一命名例外转失败/取消，不复活为 queued/completed。若对应原 Operation 已因该义务成为 unknown，只允许本命名例外在全部义务结清后精确收口其投影；原幂等回执保持不变，不放宽通用 Operation 终态转换，也不清除未知兄弟。
 
 原 execute outbox 由 unknown 一次变 observed，原 capacity 精确移除对应 Worker/generation；Attempt/重试/返工及任何未知费用不退款，deadline 不刷新。未 reservation 的旧代命令仍沿原中断处置，不重放 prompt，不派替身，不隐式新建 Task。暂存目录保留且不得复用，本例外不授予 GC 权限。
 

@@ -2,13 +2,15 @@
 
 ## 当前阅读入口与适用性
 
+当前 Node 服务合同以已接受的 [0085](0085-agent-team-service-contract-and-storage.md)、[0088](0088-node-task-service-production-projection.md)、[0089](0089-node-execution-custody-and-cleanup-recovery.md)、[0090](0090-node-runtime-business-questions.md)、[0091](0091-node-same-plan-local-repair.md) 为准；[0092](0092-node-unpermitted-reservation-settlement.md) 的接纳状态见原文。下方编号历史不恢复原生二进制或旧 Skill 作为新 Node 产品前置。合同接纳与实现完成分别判断。
+
 新增 [ADR 0086](0086-task-preapproval-questions-and-preview-revisions.md)（Accepted，2026-09-08 维护者接纳）：冻结未批准 Task 的关键问答、同 RB1 原子答案/预览版本和确认/取消顺序；当前 `order-quote/v1` 保持零问题。本次独立审查与接纳允许实施，不代表新事实族已接线或 B2 业务出口完成。
 
 先读[合同适用性](../design-contract-map.md)，再读命中范围的 ADR，不按编号顺序把全部历史决策重做一遍。
 
 | 范围 | 当前目标/保留合同 | 应如何使用 |
 | --- | --- | --- |
-| 业务路线 | 0080 的三面方向；0085 的 B1 团队 PoC→B2 本地 API→B3 正式支持提案 | [新 Milestone](../agent-team-service-milestones.md)是当前目标出口；0085 仍为 Proposed，不表示已接纳或启用 |
+| 业务路线 | 0080 的三面方向；已接受0085 的 B1 团队 PoC→B2 本地 API→B3 正式支持 | [新 Milestone](../agent-team-service-milestones.md)是当前目标出口；0085于2026-09-08获用户明确接纳，运行支持仍以实测状态为准 |
 | Adapter/身份 | 0058/0063/0075/0084→0085 §2 | 旧 Pi 版本/材料/文本只限旧 profile；新 DI/核心增强能力仍保留实际身份、输入和独立验收 |
 | 服务/安装 | 0051/0062/0066/0068/0073/0076→0085 §3 | B1 复用合法安装，目标简启动不新增 Workspace/安装身份平台；本地 token 与单 owner 保留，旧 activation 不跨路径扩权 |
 | 存储/恢复 | 0065/0066/0067/0069/0070/0081→0085 §4 | B1 复用原权威 Store，B2 SQLite 替换物理形状，U1 历史导入独立；currentness/单写/幂等/未知不重试保留 |

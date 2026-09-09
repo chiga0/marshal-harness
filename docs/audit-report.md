@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-09：许可前崩溃恢复方案接受，安装载体独立消费通过
+
+[ADR0092](adr/0092-node-unpermitted-reservation-settlement.md) 已接受实施，解决原 reservation 提交后、custody binding 提交前的两类容量无法收口问题。原始方案一次P1为任意审计回调移至许可后仍可能产生 custody 外部效果；聚合修正为首批v5仅metadata-only、打开/接管前拒绝任意披露回调，并明确原unknown Operation仅由命名例外、全部义务结清后收口投影，原回执不改。独立reviewer对正文摘要 `a8b8958c…` 复核无P0/P1，不记首审全绿。下一步是完整生产调用链与原故障窗口验证；不以协议接纳关闭恢复缺口。
+
+安装载体源码 `4d0b833e` 独立审查无P0/P1；维护者精确 `d42f437a` 一次打包→传输权限载体→私有安装→原CLI团队/下载/冷开2/2通过。主线 `2d178b4` 双平台回归已绿，新同artifact跨平台消费仍待实际CI，ECS未因此部署。[精确记录](node-task-service-status-2026-09-08.md)区分本地证据与正式发布，不改变B1/B2/B3未完成状态。
+
 ## 2026-09-09：未绑定恢复缺口与 Darwin 清理观察
 
 新增原 CLI/SQLite 六个 dispatch/cancel COMMIT 窗口独立6/6通过，同时实证 reservation 已提交而 custody 未绑定的两个窗口仍占用容量、intervention且ready封闭，没有现成HTTP解除入口。这是待解决的正式恢复缺口，不以“安全拒绝”代替用户可恢复。后继必须通过耐久启动协议证明未获许可，不能凭无目录/PID补造cleanup；Git prepare可有子进程，不能直接复用只在本进程暂存文件的推断。
