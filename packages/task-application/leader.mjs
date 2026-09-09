@@ -53,7 +53,13 @@ export class TaskLeader {
     // Include the minimum unfinished delivery path, not just the replacement
     // invocation. Recovery never raises original attempts/call/deadline limits.
     let calls, attempts;
-    if (!task.plan) {calls = 5; attempts = 8;}
+    if (!task.plan) {
+      calls = 5;
+      // Even the smallest future Plan needs its mandatory author nodes, one
+      // Review and verifier, then the configured publication/postverification.
+      // These are additional to the interrupted Attempt already charged.
+      attempts = calls + Math.max(1, this.config.leader.policy.repair.nodeIds.length) + 2 + (this.publication ? 2 : 0);
+    }
     else if (task.leader.stage === 'finalizing') {calls = 1; attempts = 1;}
     else if (task.leader.postverify) {calls = 1; attempts = task.leader.postverify.status === 'passed' ? 1 : 2;}
     else if (task.leader.publication) {calls = 1; attempts = lookupStatus === 'matched' ? 2 : 3;}

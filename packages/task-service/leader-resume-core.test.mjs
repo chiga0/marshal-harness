@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {setup, bound} from './leader-recovery-core.test.mjs';
-import {hash} from '../task-application/leader.test.mjs';
+import {fixture, proposal, hash} from '../task-application/leader.test.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -202,3 +202,51 @@ test('actual local publication created before SQL receipt: exact lookup preserve
   assert.equal(evidence.status, 'matched'); assert.equal(evidence.createdByThisExecution, false);
   const head = f.read(tx => tx.head(task.id)); f.app.leader.recover(task.id); assert.deepEqual(f.read(tx => tx.head(task.id)), head); assert.equal(starts, 1);
 });
+
+for (const [budget, answered, allowed] of [[10, false, false], [12, true, false], [13, true, true]])
+  test('unplanned publication recovery includes original complete cost: budget=' + budget + ', answered=' + answered, {timeout: 20000}, async t => {
+    const port = controlledEffects(), f = fixture(t, effectOptions(port));
+    const task = await f.call({operation: 'task.create', key: 'create', body: {intent: '保留原两作者、独立审查与授权发布的完整义务',
+      limits: {timeoutMs: 120000, maxAttempts: budget, maxWorkers: 3}}});
+    let ticket = f.take('leader');
+    if (answered) {
+      await f.decision(ticket, [{type: 'ask', kind: 'business', prompt: '请确认地区', options: [], subject: current(f, task).inputDigest, nodeIds: []}]);
+      const question = (await f.call({operation: 'task.leader', taskId: task.id})).pendingRequest;
+      await f.call({operation: 'task.leader.reply', taskId: task.id, requestId: question.id, key: 'answer',
+        body: {expectedRevision: (await f.get(task.id)).revision, requestDigest: question.requestDigest, answer: 'north'}});
+      ticket = f.take('leader');
+    }
+    const before = current(f, task), observation = await bound(f, ticket, false);
+    assert.equal(before.plan, null); assert.equal(before.attempts, answered ? 2 : 1);
+    f.reopen(); f.app.execution.reconcileCleanup(ticket.workerId, observation); f.app.leader.recover(task.id);
+    const resumed = current(f, task); assert.equal(resumed.attempts, before.attempts); assert.deepEqual(resumed.limits, before.limits);
+    assert.equal(resumed.task.deadlineAt, before.task.deadlineAt); assert.equal(f.read(tx => f.app.execution.capacity(tx).value.active.length), 0);
+    if (!allowed) {
+      assert.equal(resumed.task.status, 'failed'); assert.equal(resumed.plan, null);
+      assert.equal(f.read(tx => tx.taskCommands(task.id).filter(c => c.status === 'pending' && JSON.parse(c.payload).action === 'leader')).length, 0);
+    } else {
+      assert.equal(resumed.task.status, 'running'); const successor = f.take('leader');
+      assert.notEqual(successor.generation, ticket.generation); assert.equal(successor.input.leaderReplies[0].answer, 'north');
+      assert.equal((await f.decision(successor, [{type: 'plan', proposal}])).status, 'completed');
+      const plan = await f.call({operation: 'task.plan', taskId: task.id}); assert.equal(plan.budget.maxAttempts, budget);
+      await f.call({operation: 'task.approve', taskId: task.id, key: 'approve', body: {expectedRevision: (await f.get(task.id)).revision,
+        planRevision: plan.revision, planDigest: plan.digest}});
+      const dispatch = f.read(tx => tx.taskCommands(task.id).find(c => c.status === 'pending' && JSON.parse(c.payload).action === 'dispatch'));
+      f.app.execution.expandDispatch(dispatch.id, dispatch.revision); f.author(f.take('execute', 'east')); f.author(f.take('execute', 'west'));
+      let leader = f.take('leader');
+      await f.decision(leader, [{type: 'work', kind: 'review', nodeIds: ['east', 'west'], selectionDigest: hash(leader.input.leader.snapshot.selection)}]);
+      await f.review(f.take('review')); leader = f.take('leader');
+      await f.decision(leader, [{type: 'work', kind: 'verify', nodeIds: ['verify'], selectionDigest: hash(leader.input.leader.snapshot.selection)}]);
+      await f.verify(f.take('execute', 'verify')); const record = current(f, task);
+      const artifact = f.read(tx => record.task.artifactIds.map(id => f.app.artifacts.metadata(tx, id)).find(value => value.kind === 'delivery'));
+      await f.decision(f.take('leader'), [{type: 'deliver', artifactId: artifact.id, acceptanceDigest: record.acceptance.digest, reviewDigest: record.leader.review.digest}]);
+      const authorization = (await f.call({operation: 'task.leader', taskId: task.id})).pendingRequest;
+      await f.call({operation: 'task.leader.reply', taskId: task.id, requestId: authorization.id, key: 'allow',
+        body: {expectedRevision: (await f.get(task.id)).revision, requestDigest: authorization.requestDigest, decision: 'allow'}});
+      const publication = f.take('publication'), handle = f.app.leader.effects.publication.start({ticket: publication, prepared: {cwd: f.parent, prompt: '受控原授权发布'}});
+      f.app.execution.started(publication, await handle.started); f.app.execution.finish(publication, await handle.completion);
+      await finishPostverify(f, task, f.take('postverify')); assert.equal(current(f, task).attempts, 13); assert.equal(port.starts, 1);
+    }
+    const done = current(f, task), head = f.read(tx => tx.head(task.id));
+    f.reopen(); f.app.leader.recover(task.id); assert.deepEqual(current(f, task), done); assert.deepEqual(f.read(tx => tx.head(task.id)), head);
+  });
