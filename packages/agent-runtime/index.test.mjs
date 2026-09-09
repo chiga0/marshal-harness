@@ -36,7 +36,7 @@ async function gone(pid, deadline = Date.now() + 5000) {
   assert.fail('owned fixture process still exists');
 }
 function cleanFact(fact) {
-  assert.equal(fact.cleaned, true);
+  assert.equal(fact.cleaned, true, JSON.stringify({cleanup: fact}));
   assert.equal(fact.scope, 'inherited-process-group');
   assert.equal(fact.guardExit.signal, 'SIGKILL');
   assert.equal(fact.guardExit.observed, true);
@@ -216,6 +216,22 @@ test('read-only group probe tolerates brief exit observation lag within the exis
   assert.equal(await runtime.stop(), fact);
 });
 
+test('Darwin transient group EPERM stays unresolved until original group actually disappears', {skip: process.platform !== 'darwin', timeout: 10000}, async t => {
+  const {runtime} = await launch(t), kill = process.kill; let probes = 0, absent = false;
+  t.mock.method(process, 'kill', function (pid, signal) {
+    if (pid === -runtime.started.guardPid) {
+      assert.equal(signal, 0, 'an exited group is only observed, never signalled');
+      if (++probes <= 2) throw Object.assign(new Error('fixture transient group state'), {code: 'EPERM'});
+      try { return Reflect.apply(kill, process, [pid, signal]); }
+      catch (error) { absent = error.code === 'ESRCH'; throw error; }
+    }
+    return Reflect.apply(kill, process, [pid, signal]);
+  });
+  const fact = await runtime.stop(); cleanFact(fact);
+  assert.ok(probes >= 3); assert.equal(absent, true);
+  assert.equal(await runtime.stop(), fact);
+});
+
 test('group probe permission and unexpected errors fail closed instead of proving absence', {skip: !posix, timeout: 15000}, async t => {
   for (const code of ['EPERM', 'EINVAL']) {
     const {runtime} = await launch(t), kill = process.kill; let probes = 0;
@@ -226,8 +242,13 @@ test('group probe permission and unexpected errors fail closed instead of provin
       }
       return Reflect.apply(kill, process, [pid, signal]);
     });
-    const fact = await runtime.stop(); mock.mock.restore();
-    assert.equal(probes, 1); assert.equal(fact.cleaned, false); assert.equal(fact.reason, 'cleanup_unconfirmed');
+    const began = performance.now(), fact = await runtime.stop(); mock.mock.restore();
+    if (process.platform === 'darwin' && code === 'EPERM') {
+      assert.ok(probes > 1);
+      assert.ok(performance.now() - began >= CLEANUP_WAIT_MS - 100);
+      assert.ok(performance.now() - began < CLEANUP_WAIT_MS + 1500);
+    } else assert.equal(probes, 1);
+    assert.equal(fact.cleaned, false); assert.equal(fact.reason, 'cleanup_unconfirmed');
     assert.equal(fact.guardExit.observed, true); assert.equal(fact.guardExit.signal, 'SIGKILL');
     assert.equal(JSON.stringify(fact).includes('PRIVATE_PROBE_FAILURE'), false);
     await gone(runtime.started.guardPid); await gone(runtime.started.agentPid);

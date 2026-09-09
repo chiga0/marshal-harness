@@ -41,7 +41,7 @@ test('cancel/deadline owned command waits for inherited-group cleanup without su
     if (cause === 'deadline') config.deadline = Date.now() + 1200;
     const runtime = await launchCommand(config); t.after(() => runtime.stop());
     const result = await (cause === 'cancel' ? runtime.stop() : runtime.completion);
-    assert.equal(result.cleanup.cleaned, true);
+    assert.equal(result.cleanup.cleaned, true, JSON.stringify({cause, cleanup: result.cleanup}));
     assert.notEqual(result.cleanup.agentExit.code, 0);
     await gone(runtime.started.agentPid); await gone(runtime.started.guardPid);
   }

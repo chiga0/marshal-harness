@@ -2,6 +2,16 @@
 
 ## 当前结论
 
+### 2026-09-09：提交窗口恢复补验与 Darwin 清理观察修正
+
+新增恢复测试 source=`8ceea577747fce9b2b2f7ac279ad7fec880c1c91`，集成=`3b36343`；维护者独立审查无阻塞，原 CLI/HTTP/SQLite/custodian 六项 **6/6 PASS、39.179秒**。覆盖 reservation、custody binding、cancel 的 COMMIT 前后实际服务 SIGKILL。原预算、期限、回执和失败事实保持；绑定已提交但许可未发送时，由原签名 none-start 观察收口；cancel 已提交但202丢失时精确重放原回执。可结清路径均完成下一新团队、独立验收/下载和第三次 open 零追加，无真实模型调用。
+
+**未绑定恢复仍是发布缺口**：reservation-after/binding-before 保留占用与 intervention，ready 封闭；没有安全的现成 HTTP 解除入口。测试通过仅证明没有错误释放，不代表可自动恢复。两份未决现场保留，后继必须以可信、耐久的“从未获得启动许可”协议证明解决，不能用目录为空、PID 消失或手改账本清占用。Git prepare 在绑定前可能启动子进程，不能照搬只做本进程文件准备的结论。首轮作者5/6中的唯一失败是 SQL 普通对象与客户端 null-prototype 对象的比较错误，改为规范字节比较，未修改生产行为。
+
+精确 `ce55eed` 的 [Node team CI 34315167189](https://github.com/chiga0/marshal-harness/actions/runs/34315167189) 为 **macOS 519/521通过、2失败；Ubuntu通过**。两失败都在取消/期限清理的 cleaned 断言，不能拿前一源CI或本机通过覆盖。独立实机诊断确认 Darwin 自有退出组可出现 `EPERM → waitpid回收 → ESRCH`；[Apple 内核路径](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c#L1612)支持该机制，但原 CI 缺 errno，尚不能断言就是本次失败分支。
+
+修正 source=`285a3516c43dee8c1b3c62b56a5bfb9a2ef75b64` 仅在 Darwin 的原5秒清理预算内重观测 EPERM，始终视作未决；必须取得后续真实 ESRCH及原回执/guard退出才成功。持续EPERM到期、其他错误、后代仍活仍拒绝；不续期、不补停止信号、不改持久合同。新瞬时错误用例修前1/1失败，修后作者定向18/18通过31.100秒；唯一独立 reviewer 无P0/P1，独立18/18通过34.668秒、零失败/跳过，合并同步另按实际记录。测试诊断仅输出有界原清理事实，无原始日志或凭证。B1/B2/B3不因本节升级，API-STABLE仍仅为当前接口检查点。
+
 ### 2026-09-09 13:25 CST：API-STABLE 检查点通过，正式发布仍未完成
 
 已审集成 sourceHead=`5657a7d`，localMergeSha=`94795f37e37863d0fddb003874b6fac5f7f8a082`，已正常推送、核对远端相同，`pendingRemoteSync=false`。该批仅增加 Pi/custody 取消验收、连续任务隔离测试及文档导航修正，不改变生产 Core/Provider/Store；生产实现仍与 `69cface` 相同。前一 main `9700adec` 的 [Node team CI 34313835232](https://github.com/chiga0/marshal-harness/actions/runs/34313835232) Ubuntu/macOS 均通过，新合并的 CI 异步另记。本文后续时间段是历史事实，不覆盖本节。
