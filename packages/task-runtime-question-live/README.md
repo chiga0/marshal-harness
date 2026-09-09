@@ -41,3 +41,31 @@
 ```
 
 无模型测试只证明驱动、预声明答案隔离、原计划合同、一次答案/取消请求、两族停止原因反例、实际固定 Node 检查器，以及原 Pi bridge/guard/custody/layout3 的 HTTP 取消与冷开。确定性取消 fixture 的作者停留在未批准的原生权限请求，不将这种测试等待加入实机配置；不冒充真实 Pi 模型团队或服务崩溃验收。实机由维护者在审查固定 source 后显式执行。普通用户 dogfood 不证明 Worker/Publisher 分权或恶意代码隔离，`production=false`。
+
+## 显式单 Worker 取消场景（需已集成 ADR 0093 的 Core）
+
+`--scenario worker-cancel` 与上述两种场景独立，不接受 `--answer`。配置是 `workerCancellation:{profile:'task-worker-cancellation/v1'}` 加原 custody/runtimeQuestions，使用新空 `layout:6` 状态根，**不开 `unpermitted`**，不把 prepare wrapper 声称成 staging-only。
+
+```sh
+/绝对路径/node-24.15.0 packages/task-runtime-question-live/driver.fixture.mjs \
+  --execute-real --scenario worker-cancel \
+  --run-dir /private/tmp/新的单Worker取消目录 \
+  --node /绝对路径/node-24.15.0 \
+  --pi-entry /原安装/pi-coding-agent/dist/bundle/cli.js \
+  --pi-sdk /原安装/pi-coding-agent/dist/index.js
+```
+
+一次真实 planner/精确批准后，同时看到原 east/west 作者 started 和 HTTP Worker 身份，立即用 **Task revision** 发送一次 `worker.cancel`，目标只为 east。允许自然出现的 east `awaiting-answer`，但不回答问题。east 必须以原 `pi_provider_stopped` 和原 cleanup 收口；west 必须继续原执行并完成，不能随 east 停止。原 Operation 必须带同 Task/目标 Worker，最终 `succeeded`；最终 Task 为 `failed`/`code:worker_cancelled`，west 原结果保留，共同 verify 节点无 Worker，零 verifier/Decision/delivery、仅 3 Attempts、容量归零，原 deadline 不变。
+
+服务原 shutdown 确认后，驱动只读自建状态根中这个 Task、west Worker、其精确 `resultRef` 的 SQLite 投影与来源事件，以及引用的原 Depot blob；核验原 reservation/plan/execution、摘要和实际 west 业务数值（2 笔、550 cents）。只输出身份/摘要及合成数据汇总，**不把未独立接纳的 west 候选称为 Task 交付**，不输出原报告/prompt/连接 token。正常 open 后精确重放原创建、批准、目标取消回执，原 Task/Operation/Workers/Graph 不变，停止后再次读回同结果和 bytes，零重复启动。这不是崩溃或权限分离证明。
+
+仍限制 4 Attempts/2 Workers，默认且最大 10 分钟。窗口错过、原作者已完成、CAS 冲突、丢响应、非原停止原因或 unknown 均保留失败，不重试、不改发 Task.cancel、不延长模型工作。观察轮询不会阻塞 Provider；清理仅使用本次原句柄。
+
+```sh
+# 可在原基线执行：观察/身份反例、合成只读 SQLite、原 Pi bridge/guard 的无模型工具执行
+/绝对路径/node-24.15.0 --test packages/task-runtime-question-live/worker-cancel.test.mjs
+# 必须先集成冻结 v6 Core：完整真实 HTTP/SQLite/custody/Pi-bridge 夹具（无模型）
+/绝对路径/node-24.15.0 packages/task-runtime-question-live/worker-cancel-http.fixture.mjs
+```
+
+第二条是显式无模型集成入口，未支持 v6 的基线会拒绝启动，不降级为模拟 API，也不 `skip` 后冒称通过。该夹具使用 checked-in SDK seam，原 read/write 真正生成 west 文件；仅夹具把 west 的原权限请求保持到 target HTTP 202，构成可重复的先后顺序。实机驱动不加载该 peer 或 gate。无模型结果与真实 Pi 结果分别记录，真实模型验收由维护者独立审查后执行。

@@ -14,6 +14,7 @@ import {parseJson} from '../task-api/http-boundary.mjs';
 import {parseOptions as parsePiOptions, filePermission} from '../task-pi-live/driver.fixture.mjs';
 import {executionFact, assertTeam, trackExecution, cancelActiveTeam, DriverError} from '../task-qwen-live/driver.fixture.mjs';
 import {data, choices, policy, questionPolicyDigest, questions, taskBody, bindPlan, expectedReports, answerFromRefs, consumeDelivery, equal, verificationRequest} from './scenario.fixture.mjs';
+import {cancelPiWorker, workerCancellation, readRetainedResult} from './worker-cancel.fixture.mjs';
 
 const checkerPath = fileURLToPath(new URL('./checker.fixture.mjs', import.meta.url));
 const text = value => typeof value === 'string' && value.isWellFormed() && !value.includes('\0');
@@ -24,12 +25,14 @@ export function parseOptions(argv) {
   const scenarios = argv.flatMap((value, index) => value === '--scenario' ? [index] : []);
   check(scenarios.length <= 1, 'invalid_scenario');
   const scenario = scenarios.length ? argv[scenarios[0] + 1] : 'question';
-  check(['question', 'cancel'].includes(scenario), 'invalid_scenario');
+  check(['question', 'cancel', 'worker-cancel'].includes(scenario), 'invalid_scenario');
   if (scenarios.length) argv = [...argv.slice(0, scenarios[0]), ...argv.slice(scenarios[0] + 2)];
   const indexes = argv.flatMap((value, index) => value === '--answer' ? [index] : []);
-  if (scenario === 'cancel') {
-    check(indexes.length === 0, 'task_cancel_does_not_take_business_answer');
-    return {...parsePiOptions(argv), scenario};
+  if (scenario !== 'question') {
+    check(indexes.length === 0, scenario === 'cancel' ? 'task_cancel_does_not_take_business_answer' : 'worker_cancel_does_not_take_business_answer');
+    const parsed = parsePiOptions(argv);
+    check(scenario !== 'worker-cancel' || parsed.timeoutMs <= 600000, 'worker_cancel_budget_limit');
+    return {...parsed, scenario};
   }
   check(indexes.length === 1 && choices.includes(argv[indexes[0] + 1]), 'explicit_business_answer_required');
   const at = indexes[0], answer = argv[at + 1];
@@ -77,8 +80,9 @@ function environment(node) {
 }
 export async function runLive(options) {
   const scenario = options?.scenario ?? 'question';
-  check(options?.executeReal === true && ['question', 'cancel'].includes(scenario) &&
-    (scenario === 'cancel' ? options.answer === undefined : choices.includes(options.answer)), 'explicit_real_execution_required');
+  check(options?.executeReal === true && ['question', 'cancel', 'worker-cancel'].includes(scenario) &&
+    (scenario !== 'question' ? options.answer === undefined : choices.includes(options.answer)), 'explicit_real_execution_required');
+  check(scenario !== 'worker-cancel' || Number.isSafeInteger(options.timeoutMs) && options.timeoutMs > 0 && options.timeoutMs <= 600000, 'worker_cancel_budget_limit');
   check(process.versions.node === '24.15.0' && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
   const packageRoot = path.resolve(path.dirname(options.piEntry), '../..');
   check(options.piEntry === path.join(packageRoot, 'dist/bundle/cli.js') && options.sdkEntry === path.join(packageRoot, 'dist/index.js') &&
@@ -89,7 +93,8 @@ export async function runLive(options) {
   fs.mkdirSync(options.runDir, {mode: 0o700});
   const observed = [], byCwd = new Map(), byWorker = new Map(); let service, verifierStarts = 0, stage = 'starting';
   const evidence = {profile: 'pi-runtime-question-live/v1', passed: false, ordinaryUser: true, production: false, publisherSeparationProven: false,
-    ...(scenario === 'cancel' ? {scenario, custodyProfile: 'node-execution-custody/v1', providerCustodyProfile: 'pi-native-file-question-v1'} : {}),
+    ...(scenario !== 'question' ? {scenario, custodyProfile: 'node-execution-custody/v1', providerCustodyProfile: 'pi-native-file-question-v1'} : {}),
+    ...(scenario === 'worker-cancel' ? {workerCancellationProfile: workerCancellation.profile, layout: 6, unpermitted: false} : {}),
     startedAt: new Date().toISOString(), piVersion: metadata.version, nodeVersion: process.versions.node,
     piEntryDigest: digest(fs.readFileSync(options.piEntry)), sdkEntryDigest: digest(fs.readFileSync(options.sdkEntry)),
     checkerDigest: digest(fs.readFileSync(checkerPath)), policyDigest: questionPolicyDigest, answer: options.answer ?? null, permission: {allowed: 0, denied: 0}, executions: []};
@@ -109,6 +114,7 @@ export async function runLive(options) {
       interactionPolicyDigests: [questionPolicyDigest], start: startChecker});
     const config = {root: path.join(options.runDir, 'data'), providers: new Map([[provider.id, provider]]), verification, runtimeQuestions: questions(),
       custody: {profile: 'node-execution-custody/v1'}, supervisorOptions: {intervalMs: 50},
+      ...(scenario === 'worker-cancel' ? {workerCancellation} : {}),
       businessFactory: ({depot, executionParent, approvedLayout, observeExecution}) => {
         const business = createFileBusiness({parent: executionParent, depot, approvedLayout, observeExecution,
           layoutFor: ticket => ticket.planDigest === null ? {inputs: [], allowedPaths: []} : ticket.input.fileLayout,
@@ -118,7 +124,9 @@ export async function runLive(options) {
           const identity = {taskId: ticket.taskId, workerId: ticket.workerId, nodeId: ticket.nodeId, role: ticket.role};
           byCwd.set(prepared.cwd, identity); byWorker.set(ticket.workerId, {...identity, cwd: prepared.cwd}); return prepared;}};
       }};
-    const start = async mode => {service = await startTaskService({...config, mode}); const connection = JSON.parse(fs.readFileSync(service.connectionFile));
+    const start = async mode => {service = await startTaskService({...config, mode});
+      if (scenario === 'worker-cancel') check(JSON.parse(fs.readFileSync(path.join(config.root, 'profile.json'))).layout === 6, 'worker_cancel_profile_unavailable');
+      const connection = JSON.parse(fs.readFileSync(service.connectionFile));
       return new TaskClient({baseURL: connection.url, token: connection.token});};
     let client = await start('create'); stage = 'planning';
     const input = await client.request('input.create', {idempotencyKey: 'runtime-sales', body: {name: 'sales.json', mediaType: 'application/json', contentBase64: encode(data).toString('base64')}});
@@ -128,6 +136,35 @@ export async function runLive(options) {
       check(!['failed', 'cancelled', 'intervention'].includes(value.status), 'planning_failed'); return value.status === 'awaiting-approval';}, deadline);
     const plan = await client.request('task.plan', {path: {taskId: task.id}}), approval = validatePlan(task, plan, body, input.id);
     evidence.planDigest = plan.digest; const operation = await client.approveTask(task.id, approval, 'runtime-approve'); stage = 'waiting-question';
+    if (scenario === 'worker-cancel') {
+      stage = 'cancelling-worker';
+      const cancelled = await cancelPiWorker({client, taskId: task.id, observations: observed, getVerifierStarts: () => verifierStarts, end: deadline});
+      evidence.executions = cancelled.executions; evidence.overlapMs = cancelled.overlapMs; evidence.verifierStarts = verifierStarts;
+      evidence.workers = cancelled.workers.map(worker => ({id: worker.id, nodeId: worker.nodeId, role: worker.role, status: worker.status}));
+      evidence.workerCancel = {requestedAt: cancelled.requestedAt, confirmedAt: new Date().toISOString(), operationId: cancelled.operation.id,
+        workerId: cancelled.operation.workerId, taskId: task.id, operationStatus: cancelled.terminalOperation.status,
+        taskStatus: cancelled.done.status, taskCode: cancelled.done.code, noVerifier: true, noDelivery: true,
+        modelConsumptionProven: false, toolExecutionProven: false};
+      evidence.artifacts = [];
+      check((await service.shutdown()).shutdownClean === true, 'shutdown_unconfirmed'); service = null;
+      const expected = {taskId: task.id, workerId: cancelled.siblingWorkerId, planDigest: plan.digest,
+        executionId: cancelled.executions.find(entry => entry.workerId === cancelled.siblingWorkerId).executionId};
+      const retained = readRetainedResult(config.root, expected);
+      // This is an unaccepted sibling candidate, NOT a Task delivery or Decision.
+      evidence.retainedSibling = {...retained, independentAcceptance: false, taskDelivery: false};
+      stage = 'reopening'; client = await start('open');
+      check(equal(await client.createTask(body, 'runtime-create'), created) && equal(await client.approveTask(task.id, approval, 'runtime-approve'), operation), 'original_receipt_changed');
+      check(equal(await client.request('worker.cancel', cancelled.request), cancelled.operation), 'worker_cancel_receipt_changed');
+      check(equal(await client.getTask(task.id), cancelled.done) && equal(await client.request('operation.get',
+        {path: {operationId: cancelled.operation.id}}), cancelled.terminalOperation), 'worker_cancel_changed_after_restart');
+      check(equal((await client.request('task.workers', {path: {taskId: task.id}})).items, cancelled.workers) &&
+        equal(await client.request('task.graph', {path: {taskId: task.id}}), cancelled.graph) && observed.length === 3 && verifierStarts === 0 &&
+        (await client.request('supervisor.get')).activeWorkers === 0, 'reopen_drift_or_duplicate');
+      check((await service.shutdown()).shutdownClean === true, 'shutdown_unconfirmed'); service = null;
+      check(equal(readRetainedResult(config.root, expected), retained), 'worker_cancel_retained_result_changed');
+      evidence.restart = {originalReceipts: true, sameFailedTask: true, sameRetainedResult: true, duplicateStarts: 0};
+      evidence.passed = true; stage = 'complete'; return evidence;
+    }
     if (scenario === 'cancel') {
       stage = 'cancelling';
       const cancelled = await cancelPiActiveTeam({client, taskId: task.id, observations: observed, getVerifierStarts: () => verifierStarts, end: deadline});
@@ -192,7 +229,7 @@ export async function runLive(options) {
     const reopened = await client.downloadArtifact(delivery[0].artifact.id);
     check(equal(reopened.artifact, delivery[0].artifact) && reopened.content.equals(delivery[0].content) && observed.length === 3 && verifierStarts === 1, 'reopen_drift_or_duplicate');
     evidence.restart = {originalReceipts: true, sameArtifact: true, duplicateStarts: 0}; evidence.passed = true; stage = 'complete';
-  } catch (error) {evidence.failure = {stage, code: error instanceof LiveError ? error.code : 'runtime_live_dependency_failed'};}
+  } catch (error) {evidence.failure = {stage, code: error instanceof LiveError || error instanceof DriverError ? error.code : 'runtime_live_dependency_failed'};}
   finally {
     if (service) try {check((await service.shutdown()).shutdownClean === true, 'shutdown_unconfirmed');} catch {evidence.passed = false; evidence.failure = {stage: 'shutdown', code: 'shutdown_unconfirmed'};}
     for (const {identity, handle} of observed) try {const result = await handle.stop(); if (!result?.cleanup?.cleaned) evidence.passed = false;
@@ -205,7 +242,7 @@ export async function runLive(options) {
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {const options = parseOptions(process.argv.slice(2));
-    if (options.help) process.stdout.write('--execute-real [--scenario question --answer paid|cancelled | --scenario cancel] --run-dir ABS_NEW_PRIVATE_DIR --node ABS_NODE_24_15 --pi-entry ABS_dist/bundle/cli.js --pi-sdk ABS_dist/index.js [--timeout-ms 600000]\n默认 question；cancel 不接受 --answer。一次 Task/批准/答案或取消，无重试；默认不启动模型。\n');
+    if (options.help) process.stdout.write('--execute-real [--scenario question --answer paid|cancelled | --scenario cancel | --scenario worker-cancel] --run-dir ABS_NEW_PRIVATE_DIR --node ABS_NODE_24_15 --pi-entry ABS_dist/bundle/cli.js --pi-sdk ABS_dist/index.js [--timeout-ms 600000]\n默认 question；两种 cancel 不接受 --answer。一次 Task/批准/答案或取消，无重试；默认不启动模型。\n');
     else {const result = await runLive(options); process.stdout.write(JSON.stringify({passed: result.passed, taskId: result.taskId ?? null,
       failure: result.failure ?? null, evidence: path.join(options.runDir, 'evidence.json')}) + '\n'); if (!result.passed) process.exitCode = 1;}
   } catch (error) {process.stderr.write(JSON.stringify({code: error instanceof LiveError ? error.code : 'runtime_live_preflight_failed'}) + '\n'); process.exitCode = 1;}
