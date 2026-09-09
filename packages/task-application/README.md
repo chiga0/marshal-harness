@@ -125,7 +125,15 @@ Supervisor 不 clone receipt，也不将验收结果送进 Agent 专用 collect�
 
 ## 验证
 
-### 同计划局部修正（ADR0091）
+### v5 从未获执行许可的中断结算（ADR0092）
+
+v5 由已验证的 Service 组合注入 `execution.startProtocol`；原 `nextWork` 将 `{profile:'node-unpermitted-reservation/v1',preparation:'file-staging-only/v1'}` 放进原 reservation 摘要。v1–v4 不加字段，v5 缺协议/带 auditDisclosure 拒绝。原问答与修正可以同时使用 v5，不改变其公开请求和回执字节。
+
+`pendingUnpermitted` 只是有界选择，`settleUnpermitted(workerId)` 必须在当前 owner 的同一短事务重读原 ticket/input/reserved event、对应命令/预算/容量，并同时否定 custody 字段、不可变许可 receipt、许可 event 和执行冲突事实。已有绑定路径仅查询所需许可事件，不因该 Worker 超过100条合法进度而挡住原签名恢复；未绑定负证明依然要求完整有界事实集，超限拒绝而非截断。
+
+结算只追加 `worker.unpermitted-settled`，保留 cleanup=null 和原费用未知；只释放该 Worker/原 generation 一次占用。原取消获胜则 cancelled，否则 failed/service_interrupted；未知兄弟保持 intervention。原 unknown Operation 的例外只属于这条完整结算链，不放宽通用 `settleOperation`，也不改问答 ACK 或原 HTTP 回执。旧结果、旧目录、旧预算不能借此重用。重复调用/冷重开零追加；SQL 回滚保留原占用。详见服务 README 的真实无模型故障组合。
+
+### 同计划局部修正（ADR0091）的原接口
 
 `createRepairPort({policy:{id,version,description},nodeIds,assertions})` 仅由可信组合根创建，默认不启用。`startTaskService({repair,custody,businessFactory,...})` 使用新的 `marshal-node-task-sqlite/v4-repair` 根；旧格式不迁移，旧 reader 在 owner claim 前拒绝。首版只接明确声明 `repairProfile:'task-local-repair/v1'` 的 FileBusiness，不给 Git/custom business 静默继承能力。VerificationPort 的 `repairPolicyDigests` 必须匹配原 Command start 的固定 checker/验证策略/业务断言绑定，完整策略写进原批准摘要。
 

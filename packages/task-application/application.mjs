@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {encode, digest, makeEvent} from '../task-store/store.mjs';
+import {encode, digest, makeEvent, UNPERMITTED_FORMAT} from '../task-store/store.mjs';
 import {TaskError, reject, limits, freezePlan, publicTask, nextRevision, terminal, isText, clone} from './model.mjs';
 import {TaskExecution} from './execution.mjs';
 import {TaskArtifacts} from './artifacts.mjs';
@@ -33,6 +33,7 @@ export class TaskApplication {
   constructor({store, owner, clock = Date.now, makeId = prefix => prefix + '-' + randomUUID(),
     defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null, runtimeQuestions = null, repair = null, auditDisclosure = null}) {
     this.store = store; this.owner = owner; this.clock = clock; this.makeId = makeId;
+    if (store.info?.().format === UNPERMITTED_FORMAT && auditDisclosure !== null) reject('unsupported_task', 422);
     this.defaultLimits = limits(defaultLimits);
     this.execution = new TaskExecution(this, execution);
     this.artifacts = new TaskArtifacts(this, depot);

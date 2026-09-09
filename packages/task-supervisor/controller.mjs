@@ -36,6 +36,7 @@ export class TaskSupervisor {
     for (const [value, max] of [[intervalMs, 30000], [prepareMs, 30000], [collectMs, 30000], [pageSize, 100], [maxPagesPerTick, 100]])
       requireValue(Number.isSafeInteger(value) && value >= 1 && value <= max);
     this.#execution = execution; this.#providers = new Map(providers); this.#prepare = prepare; this.#collect = collect;
+    requireValue(!execution.startProtocol || custody !== null);
     this.#verification = verification; this.#release = release; this.#custody = custody;
     this.#onError = onError; this.#clock = clock; this.#options = {intervalMs, prepareMs, collectMs, pageSize, maxPagesPerTick};
   }

@@ -4,6 +4,33 @@ import {parseJson} from '../task-api/http-boundary.mjs';
 
 const PROFILE = 'task-file-business/v1';
 const MAX_PROMPT = 256 * 1024, MAX_REPORT = 64 * 1024;
+const stagingFactories = new WeakMap(), stagingBusinesses = new WeakMap();
+export const START_PROTOCOL = Object.freeze({profile: 'node-unpermitted-reservation/v1', preparation: 'file-staging-only/v1'});
+
+/** Narrow deployment constructor. Only permission authorization (AFTER permit)
+ * is configurable. Layout, Depot, clock and Core observation ports are not
+ * caller callbacks in the pre-permit preparation path. */
+export function createStagingOnlyBusinessFactory(options = {}) {
+  check(keys(options, Object.hasOwn(options, 'authorize') ? ['authorize'] : []) &&
+    (options.authorize === undefined || typeof options.authorize === 'function'), 'business_unsupported_preparation');
+  const authorize = options.authorize;
+  const factory = Object.freeze(context => {
+    const business = createFileBusiness({parent: context.executionParent, depot: context.depot,
+      approvedLayout: context.approvedLayout, observeExecution: context.observeExecution, authorize,
+      layoutFor: ticket => ticket.planDigest === null ? {inputs: [], allowedPaths: []} : ticket.input.fileLayout});
+    stagingBusinesses.set(business, {factory, prepare: business.prepare});
+    return business;
+  });
+  stagingFactories.set(factory, true); return factory;
+}
+// Read-only identity check; copying properties/wrapping a factory or prepare
+// cannot register anything. This is not a same-process malicious-JS sandbox.
+export function isStagingOnlyBusiness(factory, business) {
+  if (!stagingFactories.has(factory)) return false;
+  if (business === undefined) return true;
+  const entry = stagingBusinesses.get(business);
+  return entry?.factory === factory && entry.prepare === business.prepare;
+}
 // This is a shape example, not a preapproved plan or an execution layout.
 const plannerExample = {summary: '按用户需求交付可验证成果',
   nodes: [{id: 'work', role: 'author', goal: '完成需求指定成果', scope: ['业务工作范围描述'], providerId: null}],

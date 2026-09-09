@@ -1,5 +1,5 @@
 import {randomBytes} from 'node:crypto';
-import {encode, digest, INTERACTION_FORMAT, REPAIR_FORMAT} from '../task-store/store.mjs';
+import {encode, digest, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT} from '../task-store/store.mjs';
 import {clone, isText, nextRevision, publicTask, reject, terminal} from './model.mjs';
 
 const PROFILE = 'task-runtime-question/v1', ports = new WeakMap(), hash = value => digest(encode(value));
@@ -30,7 +30,7 @@ export class TaskRuntimeQuestions {
     if (!this.port) return null;
     const config = ports.get(this.port), applies = sync(() => config.applies(clone(record.input)));
     requireValue(typeof applies === 'boolean'); if (!applies) return null;
-    requireValue([INTERACTION_FORMAT, REPAIR_FORMAT].includes(this.storeInfo?.format));
+    requireValue([INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT].includes(this.storeInfo?.format));
     const descriptor = clone(config.descriptor);
     requireValue(descriptor.nodeIds.every(id => plan.nodes.some(node => node.id === id && node.role !== 'verifier' && node.role !== 'planner')));
     const state = {descriptor, policyDigest: hash(descriptor), questions: []};

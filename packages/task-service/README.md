@@ -1,6 +1,6 @@
 # 正式 Node 服务组合根
 
-这是 ADR0088 的 Node-only 组合入口：复用同一个 `TaskApplication`、SQLite `Store`、`ArtifactDepot`、`TaskSupervisor` 和 HTTP handler。不执行 Marshal 原生文件，不创建另一套 Task 状态或决策控制器。当前是可测试的服务组合候选，**不是完整业务交付、API-STABLE 或 RELEASED**。
+这是 ADR0088 的 Node-only 组合入口：复用同一个 `TaskApplication`、SQLite `Store`、`ArtifactDepot`、`TaskSupervisor` 和 HTTP handler。不执行 Marshal 原生文件，不创建另一套 Task 状态或决策控制器。API/client 检查点已 `PASSED`；逐接口实现和模型/夹具验证范围见[支持矩阵](../../docs/node-api-support-matrix.md)。这不等于整体 B2/B3、正式部署或 `RELEASED` 已完成。
 
 ## 一条命令启动
 
@@ -87,6 +87,34 @@ const result = await service.shutdown();
 默认 v1 根布局为 `profile.json`、`store/`、`artifacts/`、`executions/`、`connections/`。profile 仅是不可变组合格式标识；owner、任务、预算和命令全在 SQLite。初始化会同步文件/目录，失败留下的部分根不自动修复。重开要求完整布局和各组件原格式验证；未知根文件拒绝。执行与历史连接文件不自动 GC。
 
 ## 可选 custody v2 与恢复边界
+
+### 新文件业务根：v5 许可前中断结算
+
+依据 [ADR0092](../../docs/adr/0092-node-unpermitted-reservation-settlement.md)，部署模块可以在**全新根**显式选择：
+
+```js
+import {createStagingOnlyBusinessFactory} from '../task-business/index.mjs';
+export default {
+  providers, verification, // 部署方原受信 Provider / 独立 Verification Port，仍须明确配置。
+  custody: {profile: 'node-execution-custody/v1'},
+  unpermitted: {profile: 'node-unpermitted-reservation/v1'},
+  businessFactory: createStagingOnlyBusinessFactory({authorize}),
+};
+```
+
+`authorize` 可以省略（默认拒绝原生权限请求），只在原许可之后调用。工厂不接收 `layoutFor`、Depot、clock、自定义 prepare；同一 composition 注入原 Depot/执行父目录及只读批准布局端口。原对象和实际 prepare 函数由私有身份登记，复制/包装/替换无法取得 v5 资格。Git/custom prepare 继续原受支持配置，不能通过 profile 字符串升级。
+
+v5 创建 `layout:5` / `marshal-node-task-sqlite/v5-unpermitted`。任何 `auditDisclosure` 回调在打开/claim 根前被拒绝，整个 v5 只保留原 metadata-only 输入审计；并非将回调挪到许可后。旧格式已有披露不改。可同时配置原 `runtimeQuestions` / `repair`，仍按原显式策略启用，不增加问题或返工。
+
+恢复先取得全部已绑定执行的原签名封闭观察，再 claim 新 owner。只有原 reservation 已绑定完整协议、同事务验证原输入/命令/预算/容量并证明三项许可事实均不存在，才追加 `worker.unpermitted-settled`。原 Worker 失败或原取消获胜；`cleanup` 保持 null、Attempt/返工/未知费用不退、期限不延、旧目录保留、不重派。命名例外只在所有义务结清后收口原 unknown 取消/修正 Operation 投影，原幂等回执不改；有绑定/冲突/未知兄弟仍按原签名或缺证据拒绝路径。它不证明尚未许可的辅助 custodian 已退出。
+
+旧 v1–v4 根/reader 与 v5 互相拒绝，不改 marker、不补资格、不迁移或重新初始化。新根只有该受限文件准备路径支持此例外；旧六个 COMMIT 故障用例保留原行为。`unpermitted-recovery.test.mjs` 通过真实原 CLI/HTTP/SQLite、无模型 ACP/Pi 协议进程和独立 checker 验证新格式全部六个 COMMIT 停点（reservation、binding、cancel 各自提交前后）、修正/问答、每个停点后新 Task 下载和冷重开；不是模型或 Linux 部署实证。
+
+固定 Node 的最小组合命令：
+
+```sh
+node --test --test-concurrency=1 packages/task-application/unpermitted.test.mjs packages/task-service/unpermitted-config.test.mjs packages/task-service/unpermitted-recovery.test.mjs packages/task-service/control-commit-recovery.test.mjs
+```
 
 ADR0089 的执行托管由受信配置显式启用，不接受 HTTP 选择 profile、提交清理证明或加载模块：
 
