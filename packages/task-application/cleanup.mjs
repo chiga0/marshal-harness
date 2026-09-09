@@ -11,6 +11,7 @@ const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,12
 const check = value => { if (!value) reject('recovery_required', 409); };
 const receiptKey = workerId => ({scope: workerId, operation: 'execution.custody-binding', keyDigest: hash('binding')});
 const START_PROTOCOL = {profile: 'node-unpermitted-reservation/v1', preparation: 'file-staging-only/v1'};
+const attachedRoles = {leader: 'planner', review: 'reviewer', publication: 'integrator', postverify: 'verifier'};
 function permitFacts(tx, record, complete = false) {
   const key = receiptKey(record.worker.id);
   const events = tx.eventsWithField(record.ticket.taskId, 'workerId', record.worker.id, 100, complete ? null : ['worker.custody-permitted']);
@@ -28,6 +29,7 @@ function profile(value) {
 export class TaskCleanup {
   constructor(execution) {
     this.execution = execution; this.app = execution.app;
+    this.managed = this.app.store.info?.().format === LEADER_FORMAT;
     this.unpermitted = [UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(this.app.store.info?.().format);
     this.supported = [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(this.app.store.info?.().format);
   }
@@ -119,12 +121,80 @@ export class TaskCleanup {
         .map(record => record.worker.id), nextCursor: rows.length === limit ? rows.at(-1).id : null};
     });
   }
+  // Attached v7 executions have no DAG node. Reconstruct their ORIGINAL
+  // reservation/call/action inside this same settlement TX instead of treating
+  // a missing DAG node as permission to skip identity checks. This is cleanup
+  // only: no old output, replacement call, action retry or new decision.
+  attached(tx, record, task) {
+    const ticket = record.ticket, worker = record.worker, type = ticket.executionType;
+    if (!Object.hasOwn(attachedRoles, type)) return null;
+    check(this.managed && this.app.leader.port &&
+      task.leader?.policyDigest === this.app.leader.port.policyDigest && ticket.taskId === task.task.id && worker.taskId === task.task.id &&
+      ticket.workerId === worker.id && ticket.nodeId === worker.nodeId && ticket.role === worker.role && ticket.role === attachedRoles[type] &&
+      ticket.providerId === worker.providerId && task.workerIds?.filter(id => id === worker.id).length === 1 &&
+      ticket.nodeId.startsWith('managed-' + type + '-') && !task.nodes.some(node => node.id === ticket.nodeId));
+    const inputRow = tx.projection('attempt', record.inputRef), input = decode(inputRow), {reservationDigest, ...identity} = ticket;
+    check(inputRow?.revision === 1n && digest(inputRow.bytes) === ticket.inputDigest && hash({...identity, input}) === reservationDigest &&
+      same(input.task, task.input) && same(input.inputArtifacts, task.inputArtifacts ?? []) &&
+      input.node.id === ticket.nodeId && input.node.role === ticket.role &&
+      (ticket.planDigest === null ? input.plan === null && task.approved === null :
+        task.approved?.planDigest === ticket.planDigest && task.plan?.digest === ticket.planDigest && same(input.plan, task.plan)));
+    const reserved = tx.eventsWithField(task.task.id, 'workerId', worker.id, 2, ['worker.reserved']);
+    check(reserved.length === 1 && reserved[0].generation.toString() === ticket.generation &&
+      decode(reserved[0]).payload.reservationDigest === reservationDigest && inputRow.source.stream === task.task.id &&
+      inputRow.source.sequence === reserved[0].sequence && inputRow.source.digest === reserved[0].digest);
+    const command = tx.command(ticket.commandId), payload = command && decode({bytes: command.payload});
+    check(command?.status === 'unknown' && command.taskId === task.task.id && command.generation.toString() === ticket.generation &&
+      command.kind === (type === 'postverify' ? 'verify' : 'start') && command.inputDigest === digest(command.payload) &&
+      payload.taskId === task.task.id && payload.action === type);
+    if (type === 'leader') {
+      const original = input.leader; check(id(original?.obligationId));
+      const row = tx.projection('interaction', original.obligationId), obligation = decode(row);
+      check(original?.profile === 'task-managed-leader/v1' && original.taskId === task.task.id &&
+        task.leader.activeCallId === original.callId && task.leader.activeWorkerId === worker.id && task.leader.obligationId === original.obligationId &&
+        obligation?.id === original.obligationId && obligation.taskId === task.task.id && obligation.status === 'claimed' &&
+        obligation.workerId === worker.id && obligation.generation === ticket.generation && obligation.commandId === command.id &&
+        payload.obligationId === obligation.id && obligation.readSetDigest === hash(original.snapshot.readSet));
+      task.leader.activeCallId = null; task.leader.activeWorkerId = null; task.leader.obligationId = null;
+      return {effectUnknown: false, close: source => {
+        obligation.status = 'closed'; tx.putProjection('interaction', obligation.id, row.revision, source, encode(obligation));
+      }};
+    }
+    const actionId = type === 'review' ? task.leader.reviewAction : task.leader[type]?.actionId;
+    check(id(actionId));
+    const row = tx.projection('attempt', actionId), action = decode(row);
+    check(action?.id === actionId && action.taskId === task.task.id && action.status === 'running' && action.workerId === worker.id &&
+      action.commandId === command.id && payload.actionId === actionId && (type === 'publication' ?
+        same(action.result, {artifactId: input.publicationArtifact?.id, acceptanceDigest: action.authorization?.acceptanceDigest, reviewDigest: action.authorization?.reviewDigest}) : action.result === null));
+    const decision = task.leader.history.find(item => item.digest === action.sourceDecision), accepted = decision && decode(tx.projection('attempt', decision.callId));
+    check(accepted && hash(accepted) === decision.digest);
+    if (type !== 'postverify') check(accepted.actions.some((value, index) =>
+      action.id === 'action-' + hash({callId: decision.callId, decisionDigest: decision.digest, index}).slice(7) && same(value, action.payload)));
+    if (type === 'review') check(action.payload.type === 'work' && action.payload.kind === 'review' &&
+      input.review?.profile === 'task-independent-review/v1' && input.review.taskId === task.task.id &&
+      input.review.selectionDigest === action.payload.selectionDigest && hash(action.payload) === action.payloadDigest);
+    else if (type === 'publication') check(action.payload.type === 'deliver' && hash(action.payload) === action.payloadDigest &&
+      same(action.binding, input.publication?.binding) && same(action.authorization, input.publication?.authorization) &&
+      task.leader.publication.receiptArtifactId === null);
+    else check(action.payload.type === 'postverify' && action.payload.publicationActionId === task.leader.publication?.actionId &&
+      action.payloadDigest === hash({publication: task.leader.publication.actionId}) && task.leader.publication.receiptArtifactId &&
+      this.app.artifacts.metadata(tx, task.leader.publication.receiptArtifactId).digest === input.postverify?.publicationReceiptDigest &&
+      task.leader.postverify.evidenceArtifactId === null);
+    // A signed none-start observation proves this publication did not run.
+    // Otherwise cleanup cannot prove whether an external effect happened.
+    const effectUnknown = type === 'publication' && record.cleanup.started !== null;
+    action.status = effectUnknown ? 'unknown' : worker.status === 'cancelled' ? 'cancelled' : 'failed';
+    if (type !== 'review') task.leader[type].status = action.status;
+    return {effectUnknown, close: source => {
+      tx.putProjection('attempt', action.id, row.revision, source, encode(action));
+    }};
+  }
   // Reconstruct the ORIGINAL reservation, including its immutable input and
   // original event generation. Called inside the current owner's settlement
   // TX; neither preclaim scans nor the current deployment supply this proof.
   unpermittedProof(tx, record, task) {
     const ticket = record.ticket, worker = record.worker;
-    check(this.unpermitted && ticket?.startProtocol && same(ticket.startProtocol, START_PROTOCOL) &&
+    check(this.unpermitted && ['agent', 'verification'].includes(ticket?.executionType) && ticket?.startProtocol && same(ticket.startProtocol, START_PROTOCOL) &&
       /^[1-9][0-9]*$/.test(ticket.generation) && BigInt(ticket.generation) < this.app.owner.generation &&
       ticket.taskId === task.task.id && ticket.workerId === worker.id && worker.taskId === task.task.id &&
       ticket.nodeId === worker.nodeId && ticket.role === worker.role && ticket.providerId === worker.providerId &&
@@ -217,13 +287,15 @@ export class TaskCleanup {
       record.unpermittedSettlement = settlement; record.failureCode = 'service_interrupted';
       record.worker.status = cancelled ? 'cancelled' : 'failed'; record.worker.phase = 'terminal';
       record.worker.finishedAt = new Date(this.app.now()).toISOString();
-      if (ticket.planDigest !== null) task.nodes.find(node => node.id === ticket.nodeId).status = record.worker.status;
+      if (ticket.planDigest !== null) {const node = task.nodes.find(node => node.id === ticket.nodeId); check(node); node.status = record.worker.status;}
       const remaining = this.execution.workers(tx, task).some(({record: other}) => other.worker.id !== workerId && live(other));
       const taskCancelled = !!task.cancelIntent && !task.failureCode;
       if (!taskCancelled) task.failureCode ??= targeted ? 'worker_cancelled' : 'service_interrupted';
-      task.task.status = remaining ? 'intervention' : taskCancelled ? 'cancelled' : 'failed';
-      task.task.code = remaining ? 'previous_execution_unresolved' : taskCancelled ? 'task_cancelled' : targeted ? task.failureCode : 'service_interrupted';
-      if (!remaining) { task.task.phase = 'terminal'; for (const node of task.nodes) if (['pending', 'ready', 'waiting'].includes(node.status)) node.status = 'cancelled'; }
+      const effectUnknown = task.leader?.publication?.status === 'unknown';
+      task.task.status = remaining || effectUnknown ? 'intervention' : taskCancelled ? 'cancelled' : 'failed';
+      task.task.code = effectUnknown ? 'publication_effect_unresolved' : remaining ? 'previous_execution_unresolved' : taskCancelled ? 'task_cancelled' : targeted ? task.failureCode : 'service_interrupted';
+      if (!remaining && !effectUnknown) { task.task.phase = 'terminal'; if (task.leader) task.leader.stage = 'terminal';
+        for (const node of task.nodes) if (['pending', 'ready', 'waiting'].includes(node.status)) node.status = 'cancelled'; }
       // A never-permitted Worker cannot have produced its own question/ACK.
       check(!(task.runtimeQuestions?.questions ?? []).some(question => question.workerId === workerId));
       const questions = remaining ? [] : this.app.runtimeQuestions.close(task);
@@ -237,7 +309,7 @@ export class TaskCleanup {
       this.app.repair.settle(tx, task, source);
       this.settleUnpermittedOperations(tx, task, source);
       this.app.workerCancellation.settle(tx, task, record, source);
-      if (!remaining && task.cancelIntent) {
+      if (!remaining && !effectUnknown && task.cancelIntent) {
         const stop = tx.command(task.cancelIntent.commandId); check(stop?.kind === 'stop' && stop.taskId === task.task.id);
         if (stop.status !== 'observed') tx.observeCommand(stop.id, stop.revision, 'observed', source);
       }
@@ -277,31 +349,35 @@ export class TaskCleanup {
       custody.settledDigest = observationDigest; record.cleanup = clone(c);
       record.worker.status = cancelled ? 'cancelled' : 'failed'; record.worker.phase = 'terminal';
       record.worker.finishedAt = new Date(this.app.now()).toISOString(); record.failureCode = 'service_interrupted';
-      if (record.ticket.planDigest !== null) {
+      const attached = this.attached(tx, record, task);
+      if (!attached && record.ticket.planDigest !== null) {
         const node = task.nodes.find(item => item.id === record.ticket.nodeId); check(node);
         if (node.status !== 'completed') node.status = cancelled ? 'cancelled' : 'failed';
       }
       const remaining = this.execution.workers(tx, task).some(({record: other}) => other.worker.id !== workerId && live(other));
       const taskCancelled = !!task.cancelIntent && !task.failureCode;
       if (!taskCancelled) task.failureCode ??= targeted ? 'worker_cancelled' : 'service_interrupted';
-      task.task.status = remaining ? 'intervention' : taskCancelled ? 'cancelled' : 'failed';
-      task.task.code = remaining ? 'previous_execution_unresolved' : taskCancelled ? 'task_cancelled' : targeted ? task.failureCode : 'service_interrupted';
-      if (!remaining) { task.task.phase = 'terminal'; for (const node of task.nodes) if (['pending', 'ready', 'waiting'].includes(node.status)) node.status = 'cancelled'; }
+      const effectUnknown = attached?.effectUnknown || task.leader?.publication?.status === 'unknown';
+      task.task.status = remaining || effectUnknown ? 'intervention' : taskCancelled ? 'cancelled' : 'failed';
+      task.task.code = effectUnknown ? 'publication_effect_unresolved' : remaining ? 'previous_execution_unresolved' : taskCancelled ? 'task_cancelled' : targeted ? task.failureCode : 'service_interrupted';
+      if (!remaining && !effectUnknown) { task.task.phase = 'terminal'; if (task.leader) task.leader.stage = 'terminal';
+        for (const node of task.nodes) if (['pending', 'ready', 'waiting'].includes(node.status)) node.status = 'cancelled'; }
       const closedQuestions = this.app.runtimeQuestions.close(task, 'cancelled', workerId);
       task.task.revision = nextRevision(task.task.revision);
       const source = this.app.save(tx, task, 'worker.cleanup-reconciled', {workerId, observationDigest, status: record.worker.status});
+      attached?.close(source);
       this.app.runtimeQuestions.settleClosed(tx, task, source, closedQuestions);
       this.app.runtimeQuestions.cleanupConfirmed(tx, task, source, workerId);
       this.app.repair.settle(tx, task, source);
       this.execution.putWorker(tx, row, record, source);
-      if (!remaining && task.cancelIntent) {
+      if (!remaining && !effectUnknown && task.cancelIntent) {
         const stop = tx.command(task.cancelIntent.commandId);
         check(stop && stop.taskId === task.task.id && stop.kind === 'stop');
         this.execution.settleOperation(tx, task.cancelIntent.operationId, 'succeeded', source, task);
         if (stop.status !== 'observed') tx.observeCommand(stop.id, stop.revision, 'observed', source);
       }
       const command = tx.command(record.ticket.commandId); check(command && command.status === 'unknown');
-      tx.observeCommand(command.id, command.revision, 'observed', source);
+      if (!attached?.effectUnknown) tx.observeCommand(command.id, command.revision, 'observed', source);
       const capacity = this.execution.capacity(tx);
       check(capacity.value.active.filter(item => item.workerId === workerId && item.generation === record.ticket.generation).length === 1);
       capacity.value.active = capacity.value.active.filter(item => item.workerId !== workerId);
