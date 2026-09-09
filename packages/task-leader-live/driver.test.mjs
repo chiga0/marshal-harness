@@ -7,7 +7,12 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {encode, digest} from '../task-store/store.mjs';
 import {contract, leaderRequestDigest, leaderReplyDigest} from '../task-api/contract.mjs';
-import {parseOptions, runLive, workPackage, reviewPolicy} from './driver.fixture.mjs';
+import {parseOptions, runLive, workPackage, reviewPolicy, liveApplicationOptions, managedPrompt, createObservedBusiness} from './driver.fixture.mjs';
+import {ArtifactDepot} from '../task-artifacts/depot.mjs';
+import {createFileBusiness, isManagedFileBusiness, fileLayoutDigest} from '../task-business/index.mjs';
+import {filePermission} from '../task-pi-live/driver.fixture.mjs';
+import {createLeaderPort, createReviewPort, createVerificationPort, parseManagedOutput, renderLeaderPrompt, renderReviewPrompt} from '../task-application/application.mjs';
+import {startTaskService} from '../task-service/composition.mjs';
 import {data, choices, policy, taskBody, bindPlan, reportFor} from './scenario.fixture.mjs';
 import {equal, businessReply, verificationRequest, validatePlan, replyOnce, assertReplyReplay, verifyAcceptance, authorizeReport, authorOverlap} from './proof.fixture.mjs';
 import {checkRequest} from './checker.fixture.mjs';
@@ -144,6 +149,77 @@ test('actual prepared work package includes full Task, shared plan, node and rep
   }
   assert.throws(() => authorOverlap([{role: 'author', nodeId: 'east', workerId: 'a', executionId: 'a', startedAt: '2026-01-01T00:00:01Z', agentExitedAt: '2026-01-01T00:00:02Z'},
     {role: 'author', nodeId: 'west', workerId: 'b', executionId: 'b', startedAt: '2026-01-01T00:00:03Z', agentExitedAt: '2026-01-01T00:00:04Z'}]));
+});
+test('observed FileBusiness retains original private identity, real allocation and scoped permission; managed callbacks capture original cwd', async t => {
+  const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-leader-identity-')));
+  const executionParent = path.join(parent, 'executions'); fs.mkdirSync(executionParent, {mode: 0o700});
+  const depot = ArtifactDepot.create(path.join(parent, 'depot')), byCwd = new Map(), byWorker = new Map();
+  const capture = (ticket, cwd) => {byCwd.set(cwd, ticket); byWorker.set(ticket.workerId, {...ticket, cwd});};
+  const layout = {inputs: [{path: 'sales.json', source: {kind: 'input', id: 'input-sales'}}], allowedPaths: ['east.json']};
+  const started = {executionId: 'controlled-author', startedAt: new Date().toISOString()};
+  const business = createObservedBusiness(createFileBusiness, {executionParent, depot,
+    approvedLayout: ticket => ({planDigest: ticket.planDigest, nodeId: ticket.nodeId, layoutDigest: fileLayoutDigest(layout)}),
+    observeExecution: () => started}, {capture, authorize: (ticket, request) => filePermission(byWorker.get(ticket.workerId), request)});
+  t.after(() => {business.close(); depot.close(); fs.rmSync(parent, {recursive: true});});
+  assert.equal(isManagedFileBusiness(business), true); assert.equal(isManagedFileBusiness({...business}), false);
+  const {plan, body} = planCase(), originalInput = ticket().input;
+  const seal = ({reservationDigest: _previous, ...value}) => {
+    const original = {...value, inputDigest: hash(value.input)}; return {...original, reservationDigest: hash(original)};
+  };
+  const author = seal({taskId, workerId: 'worker-author', nodeId: 'east', role: 'author', providerId: 'pi', commandId: 'command-author',
+    executionType: 'agent', generation: '1', planDigest: plan.digest, deadline: Date.now() + 60000,
+    input: {...originalInput, task: body, plan, node: plan.nodes[0], upstream: [], fileLayout: layout,
+      inputArtifacts: [{id: 'input-sales', kind: 'input', taskId: null, status: 'ready', name: 'sales.json', ...depot.put(encode(data))}]}});
+  const context = value => ({signal: new AbortController().signal, deadline: value.deadline});
+  const prepared = await business.prepare(author, context(author));
+  assert.equal(prepared.cwd, path.join(executionParent, author.workerId));
+  assert.deepEqual(encode(byCwd.get(prepared.cwd)), encode(author));
+  assert.deepEqual(fs.readFileSync(path.join(prepared.cwd, 'sales.json')), encode(data));
+  assert.equal(workPackage(byCwd.get(prepared.cwd), prepared).requiredContextPresent, true);
+  const permission = name => ({toolCall: {kind: 'edit', rawInput: {path: name, content: '{}'}, _meta: {provider: 'pi', toolName: 'write'}},
+    options: [{kind: 'allow_once', optionId: 'allow-once'}]});
+  assert.equal((await prepared.onPermission(permission('east.json'))).outcome.outcome, 'selected');
+  assert.equal((await prepared.onPermission(permission('west.json'))).outcome.outcome, 'cancelled');
+  fs.writeFileSync(path.join(prepared.cwd, 'east.json'), encode(reportFor('paid').reports[0]), {mode: 0o600});
+  const collected = await business.collect(author, {providerId: 'pi', status: 'completed', stopReason: 'end_turn', outputText: '受控文件候选',
+    cleanup: {started, cleaned: true}}, context(author));
+  assert.equal(collected.result.files[0].path, 'east.json');
+  for (const [type, create, render] of [['leader', createLeaderPort, renderLeaderPrompt], ['review', createReviewPort, renderReviewPrompt]]) {
+    const input = {...author.input, upstream: [], node: {id: 'managed-' + type, role: type === 'leader' ? 'planner' : 'reviewer'},
+      [type]: {taskId, callId: 'call-example', inputDigest: sha, selectionDigest: sha, snapshot: {task: {input: body}}, materials: []}};
+    const value = seal({...author, workerId: 'worker-' + type, nodeId: input.node.id, role: input.node.role, executionType: type, input});
+    const port = create({id: type, providerId: 'pi', policy: type === 'leader' ? planCase().leader : reviewPolicy,
+      prepare: managedPrompt(capture, render), ...(type === 'leader' ? {parseDecision: parseManagedOutput} : {parseReport: parseManagedOutput})});
+    const staged = await business.prepareManaged(value, context(value));
+    assert.equal(byCwd.has(staged.cwd), false);
+    const prompt = await port.prepare(value, staged, context(value));
+    assert.deepEqual(encode(byCwd.get(staged.cwd)), encode(value));
+    assert.equal(workPackage(byCwd.get(staged.cwd), prompt).requiredContextPresent, true);
+    assert.equal((await prompt.onPermission(permission('east.json'))).outcome.outcome, 'cancelled');
+    business.validateManaged(value); business.release(value);
+  }
+});
+test('live composition preflight creates and reopens v7 with original business identity and explicit three-slot defaults, without a Task/model', async t => {
+  const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-leader-preflight-'))), root = path.join(parent, 'service');
+  let service, starts = 0, factories = 0;
+  t.after(async () => {if (service) await service.shutdown(); fs.rmSync(parent, {recursive: true});});
+  const native = {id: 'pi', start() {starts++; throw Error('model_start_forbidden');}};
+  const leaderPolicy = {...planCase().leader, review: {providerId: native.id, policyDigest: hash(reviewPolicy)}, publication: null};
+  const leader = createLeaderPort({id: 'leader', providerId: native.id, policy: leaderPolicy,
+    prepare: managedPrompt(() => {}, renderLeaderPrompt), parseDecision: parseManagedOutput});
+  const review = createReviewPort({id: 'review', providerId: native.id, policy: reviewPolicy,
+    prepare: managedPrompt(() => {}, renderReviewPrompt), parseReport: parseManagedOutput});
+  const verification = createVerificationPort({id: 'checker', policy, bindPlan, start() {throw Error('checker_start_forbidden');}});
+  const config = {root, providers: new Map([[native.id, native]]), leader, review, verification,
+    custody: {profile: 'node-execution-custody/v1'}, applicationOptions: liveApplicationOptions(60000),
+    businessFactory: context => {factories++; return createObservedBusiness(createFileBusiness, context, {capture: () => {}, authorize: () => {throw Error('permission_without_task');}});}};
+  assert.deepEqual(config.applicationOptions.defaultLimits, taskBody('input-preflight', 60000).limits);
+  for (const mode of ['create', 'open']) {
+    service = await startTaskService({...config, mode});
+    assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'profile.json'))).layout, 7);
+    assert.equal((await service.shutdown()).shutdownClean, true); service = null;
+  }
+  assert.equal(factories, 2); assert.equal(starts, 0);
 });
 test('fixed Node checker reads real bounded files and rejects plausible wrong total and wrong source', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-leader-checker-')); t.after(() => fs.rmSync(root, {recursive: true}));

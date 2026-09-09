@@ -59,7 +59,8 @@ function frame(bytes) {
 /** Trusted composition only. Neither this adapter nor a checker signs Decisions. */
 export function createVerificationCommand({executable, checkerPath, checkerDigest, policyDigest, assertions,
   env = {}, request = ({ticket}) => ({verification: ticket.input.verification, fileLayout: ticket.input.fileLayout ?? null,
-    ...(ticket.input.interactionRefs ? {interactionRefs: ticket.input.interactionRefs} : {})}), delivery, repair} = {}) {
+    ...(ticket.input.interactionRefs ? {interactionRefs: ticket.input.interactionRefs} : {}),
+    ...(ticket.input.leaderReplyRefs ? {leaderReplyRefs: ticket.input.leaderReplyRefs, leaderReplies: ticket.input.leaderReplies} : {})}), delivery, repair} = {}) {
   if (!text(executable) || !path.isAbsolute(executable) || !text(checkerPath) || !path.isAbsolute(checkerPath) ||
       path.normalize(checkerPath) !== checkerPath || !hash(checkerDigest) || !hash(policyDigest) ||
       !object(env) || Object.keys(env).length > 128 || Object.entries(env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) || !text(value)) ||
@@ -95,6 +96,8 @@ export function createVerificationCommand({executable, checkerPath, checkerDiges
           inputDigest: frozenTicket.inputDigest, checkerDigest, policyDigest});
         const nonce = randomUUID();
         const requested = synchronous(request, context);
+        if (frozenTicket.input.leaderReplyRefs && (!object(requested) || !encode(requested.leaderReplyRefs).equals(encode(frozenTicket.input.leaderReplyRefs)) ||
+          !encode(requested.leaderReplies).equals(encode(frozenTicket.input.leaderReplies)))) fail('verification_leader_reply_omitted');
         if (frozenTicket.input.interactionRefs && (!object(requested) ||
           !encode(requested.interactionRefs).equals(encode(frozenTicket.input.interactionRefs)))) fail('verification_interaction_omitted');
         const input = encode({profile: PROFILE, nonce, binding, input: requested});

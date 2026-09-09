@@ -34,7 +34,7 @@ const fileDigest = files => digest(Buffer.from(JSON.stringify(files.map(({path, 
 /** Parent-only capability. No public mint/deserialize operation exists. The
  * trusted start closure must launch the independent, bounded checker and retain
  * its ORIGINAL cleanup. A model's role/provider/status is never this capability. */
-export function createVerificationPort({id, policy, bindPlan, start, interactionPolicyDigests = [], repairPolicyDigests = []}) {
+export function createVerificationPort({id, policy, bindPlan, start, interactionPolicyDigests = [], repairPolicyDigests = [], publicationExpected = null}) {
   check(typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id) &&
     keys(policy, ['id', 'version', 'description']) && isText(policy.id, 128) && isText(policy.version, 128) &&
     isText(policy.description, 4096) && typeof bindPlan === 'function' && typeof start === 'function', 'invalid_verification_config');
@@ -43,6 +43,7 @@ export function createVerificationPort({id, policy, bindPlan, start, interaction
   check(Array.isArray(repairPolicyDigests) && repairPolicyDigests.length <= 1 && repairPolicyDigests.every(sha) &&
     (!repairPolicyDigests.length || start.repairBinding?.policyDigest === repairPolicyDigests[0] &&
       start.repairBinding.verificationPolicyDigest === hash(policy)), 'invalid_verification_config');
+  check(publicationExpected === null || typeof publicationExpected === 'function', 'invalid_verification_config');
   const port = Object.freeze({id, ...(start.custodyProfile ? {custodyProfile: clone(start.custodyProfile)} : {}), start({ticket, prepared, executionContext}) {
     const binding = hash(ticket), handle = start({ticket, prepared, executionContext});
     check(handle && typeof handle.stop === 'function' && typeof handle.started?.then === 'function' &&
@@ -55,9 +56,12 @@ export function createVerificationPort({id, policy, bindPlan, start, interaction
         return Object.freeze({type: 'verification', status: data.status, cleanup: clone(data.cleanup), receipt});
       })});
   }});
-  ports.set(port, {policy: clone(policy), bindPlan, interactionPolicyDigests: [...interactionPolicyDigests],
+  ports.set(port, {policy: clone(policy), bindPlan, publicationExpected, interactionPolicyDigests: [...interactionPolicyDigests],
     repairBinding: repairPolicyDigests.length ? clone(start.repairBinding) : null}); return port;
 }
+
+// Inspect the actual private port capability, never a serializable claim.
+export const hasPublicationExpected = port => typeof ports.get(port)?.publicationExpected === 'function';
 
 export class TaskVerification {
   constructor(app, port) {
@@ -65,6 +69,15 @@ export class TaskVerification {
     this.app = app; this.port = port;
   }
   supportsQuestions(policyDigest) {return this.port !== null && ports.get(this.port).interactionPolicyDigests.includes(policyDigest);}
+  expectedPublication(ticket) {
+    const callback = this.port && ports.get(this.port).publicationExpected;
+    check(typeof callback === 'function', 'unsupported_task');
+    try {
+      const value = callback({ticket: clone(ticket)});
+      check(value !== undefined && typeof value?.then !== 'function' && encode(value).length <= 1048576, 'unsupported_task');
+      return clone(value);
+    } catch {reject('unsupported_task', 422);}
+  }
   repairBinding(policyDigest) {
     const config = this.port && ports.get(this.port), binding = config && config.repairBinding;
     check(binding && binding.policyDigest === policyDigest && binding.verificationPolicyDigest === hash(config.policy), 'unsupported_task');
@@ -165,7 +178,7 @@ export class TaskVerification {
     check(task.approved?.planDigest === ticket.planDigest && task.plan?.digest === ticket.planDigest &&
       task.verification.nodeId === ticket.nodeId && ticket.executionType === 'verification', 'candidate_manifest_conflict');
     check(this.app.repair.current(task, ticket), 'candidate_manifest_conflict');
-    const workers = task.repair ? this.app.repair.selected(tx, task) :
+    const workers = task.repair || task.leader ? this.app.repair.selected(tx, task) :
       this.app.execution.workers(tx, task).filter(({record}) => record.worker.id !== ticket.workerId);
     check(workers.every(({record}) => record.worker.status === 'completed' && record.cleanup?.cleaned === true), 'candidate_manifest_conflict');
     const current = workers.filter(({record}) => record.ticket.planDigest === ticket.planDigest);
@@ -173,6 +186,8 @@ export class TaskVerification {
     const manifest = current.map(({record}) => ({workerId: record.worker.id, nodeId: record.worker.nodeId,
       resultDigest: record.resultDigest, manifest: record.candidate})).sort((a, b) => a.nodeId < b.nodeId ? -1 : 1);
     check(same(manifest, ticket.input.verification.manifests) && same(task.verification, ticket.input.verification.binding), 'candidate_manifest_conflict');
+    if (task.leader) check(task.leader.review?.verdict === 'accept' && task.leader.review.selectionDigest === this.app.leader.selectionDigest(tx, task) &&
+      same(this.app.leader.replies(tx, task).refs, ticket.input.leaderReplyRefs), 'candidate_manifest_conflict');
     if (task.runtimeQuestions) check(this.supportsQuestions(task.runtimeQuestions.policyDigest) &&
       same(task.repair ? this.app.runtimeQuestions.inherited(tx, task, workers.flatMap(({record}) => record.interactionRefs ?? [])) :
         this.app.runtimeQuestions.refs(tx, task), ticket.input.interactionRefs), 'candidate_manifest_conflict');

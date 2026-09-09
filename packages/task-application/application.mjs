@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {encode, digest, makeEvent, UNPERMITTED_FORMAT} from '../task-store/store.mjs';
+import {encode, digest, makeEvent, UNPERMITTED_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
 import {TaskError, reject, limits, freezePlan, publicTask, nextRevision, terminal, isText, clone} from './model.mjs';
 import {TaskExecution} from './execution.mjs';
 import {TaskWorkerCancellation} from './worker-cancellation.mjs';
@@ -9,6 +9,8 @@ import {TaskClarification} from './clarification.mjs';
 import {TaskRuntimeQuestions} from './runtime-questions.mjs';
 import {TaskRepair} from './repair.mjs';
 import {TaskInputAudit} from './input-audit.mjs';
+import {TaskLeader} from './leader.mjs';
+export {createLeaderPort, createReviewPort, renderLeaderPrompt, renderReviewPrompt, parseManagedOutput} from './leader-ports.mjs';
 export {createVerificationPort} from './verification.mjs';
 export {createClarificationPort} from './clarification.mjs';
 export {createRuntimeQuestionPort} from './runtime-questions.mjs';
@@ -32,9 +34,9 @@ const idOK = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,
  */
 export class TaskApplication {
   constructor({store, owner, clock = Date.now, makeId = prefix => prefix + '-' + randomUUID(),
-    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null, runtimeQuestions = null, repair = null, auditDisclosure = null}) {
+    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null, runtimeQuestions = null, repair = null, auditDisclosure = null, leader = null, review = null, publication = null}) {
     this.store = store; this.owner = owner; this.clock = clock; this.makeId = makeId;
-    if ((store.info?.().format === UNPERMITTED_FORMAT || execution.startProtocol != null) && auditDisclosure !== null) reject('unsupported_task', 422);
+    if (([UNPERMITTED_FORMAT, LEADER_FORMAT].includes(store.info?.().format) || execution.startProtocol != null) && auditDisclosure !== null) reject('unsupported_task', 422);
     this.defaultLimits = limits(defaultLimits);
     this.execution = new TaskExecution(this, execution);
     this.workerCancellation = new TaskWorkerCancellation(this);
@@ -44,6 +46,7 @@ export class TaskApplication {
     this.runtimeQuestions = new TaskRuntimeQuestions(this, runtimeQuestions);
     this.repair = new TaskRepair(this, repair);
     this.inputAudit = new TaskInputAudit(this, auditDisclosure);
+    this.leader = new TaskLeader(this, leader, review, publication);
     this.dispatch = this.dispatch.bind(this);
   }
   now() {
@@ -118,6 +121,9 @@ export class TaskApplication {
       input.questionId = request.questionId;
     }
     if (request.operation === 'task.repair') this.repair.shape(request);
+    if (request.operation === 'task.leader.reply') {
+      this.leader.shape(request); key.scope = request.taskId + ':' + request.requestId; input.requestId = request.requestId;
+    }
     const requestDigest = hash(input);
     return {key, requestDigest};
   }
@@ -135,13 +141,15 @@ export class TaskApplication {
     }
     const previous = this.receipt(tx, request);
     return previous && request.operation === 'task.answer' ? this.clarification.replay(tx, previous) :
-      previous && request.operation === 'task.repair' ? this.repair.replay(tx, previous) : previous;
+      previous && request.operation === 'task.repair' ? this.repair.replay(tx, previous) :
+      previous && request.operation === 'task.leader.reply' ? {...previous, replayed: true} : previous;
   }); }
   mutate(request, callback) {
     const {key, requestDigest} = this.receiptKey(request);
     return this.transaction(true, tx => {
       const previous = this.receipt(tx, request);
-      if (previous) return request.operation === 'task.repair' ? this.repair.replay(tx, previous) : previous;
+      if (previous) return request.operation === 'task.repair' ? this.repair.replay(tx, previous) :
+        request.operation === 'task.leader.reply' ? {...previous, replayed: true} : previous;
       const {result, source} = callback(tx);
       tx.putReceipt(key, requestDigest, source, encode(result));
       return clone(result);
@@ -154,6 +162,7 @@ export class TaskApplication {
     if (['input.create', 'artifact.get', 'artifact.content'].includes(request.operation)) return this.artifacts.dispatch(request);
     if (request.operation === 'task.create') return this.create(request, context);
     if (request.operation === 'task.repair') return this.repair.repair(request);
+    if (request.operation === 'task.leader.reply') return this.leader.reply(request);
     if (request.operation === 'task.answer') return (Object.hasOwn(request.body ?? {}, 'questionDigest') ? this.runtimeQuestions : this.clarification).answer(request, context);
     if (['task.approve', 'task.cancel', 'task.pause', 'task.resume'].includes(request.operation)) return this.control(request);
     if (request.operation === 'worker.cancel') return this.workerCancellation.cancel(request);
@@ -183,10 +192,15 @@ export class TaskApplication {
         if (this.now() >= Date.parse(record.clarification.confirmBefore)) reject('question_expired', 410);
         if (context?.signal?.aborted) reject('application_unavailable', 503);
       }
+      if (this.leader.port) {
+        if (prepared) reject('unsupported_task', 422);
+        this.leader.initial(record); this.leader.prepareObligation(record);
+      }
       const source = this.save(tx, record, prepared ? 'task.clarification-created' : 'task.created', {inputDigest: record.inputDigest});
       // Planning is a distinct read/clarification obligation; it grants no
       // unapproved implementation, file edits or publication authority.
       if (prepared) this.clarification.persist(tx, record, prepared.preview, source);
+      else if (record.leader) this.leader.obligation(tx, record, source, 'task-created');
       else this.enqueue(tx, source, taskId, 'plan', {taskId, expectedRevision: 1, inputDigest: record.inputDigest});
       return {source, result: publicTask(record, this.now())};
     });
@@ -225,6 +239,7 @@ export class TaskApplication {
     } else delete record.runtimeQuestions;
     if (binding) {
       record.verification = binding;
+      this.leader.bind(record, body);
       return {...body, digest: hash({plan: body, inputDigest: record.inputDigest, verification: binding,
         ...(interaction ? {runtimeQuestions: interaction.descriptor} : {}), ...(repair ? {repair} : {})})};
     }
@@ -280,6 +295,10 @@ export class TaskApplication {
     });
   }
   query(tx, request) {
+    if (request.operation === 'task.leader') {
+      if (!this.leader.port) reject('unsupported_operation', 501);
+      return this.leader.view(tx, this.get(tx, request.taskId));
+    }
     if (request.operation === 'task.questions') return this.runtimeQuestions.questions(tx, request);
     if (['worker.get', 'task.workers'].includes(request.operation)) return this.execution.query(tx, request);
     const page = request.page ?? {}, limit = page.limit ?? 50, after = page.cursor ?? '';

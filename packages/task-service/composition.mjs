@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import {randomBytes, randomUUID} from 'node:crypto';
-import {Store, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
-import {isStagingOnlyBusiness, START_PROTOCOL} from '../task-business/index.mjs';
+import {Store, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
+import {isStagingOnlyBusiness, isManagedFileBusiness, START_PROTOCOL} from '../task-business/index.mjs';
 import {TaskCleanup} from '../task-application/cleanup.mjs';
 import {createExecutionCustody} from '../agent-runtime/custody.mjs';
 import {CUSTODY_PROFILE, verifyObservation} from '../agent-runtime/custody-contract.mjs';
@@ -11,10 +11,13 @@ import {setTimeout as wait} from 'node:timers/promises';
 import {ArtifactDepot} from '../task-artifacts/depot.mjs';
 import {TaskApplication} from '../task-application/application.mjs';
 import {TaskSupervisor} from '../task-supervisor/controller.mjs';
+import {TaskExecutionCoordinator} from '../task-execution/controller.mjs';
+import {leaderConfiguration} from '../task-application/leader.mjs';
 import {createTaskApiHandler} from '../task-api/http-handler.mjs';
 import {PROFILE, TaskApiError, validate} from '../task-api/contract.mjs';
 
-const format = (custody, questions, repair, unpermitted, workerCancellation) => Buffer.from(JSON.stringify({profile: PROFILE, layout: workerCancellation ? 6 : unpermitted ? 5 : repair ? 4 : questions ? 3 : custody ? 2 : 1}) + '\n');
+const format = (custody, questions, repair, unpermitted, workerCancellation, leader = null) => Buffer.from(JSON.stringify({profile: PROFILE,
+  layout: leader ? 7 : workerCancellation ? 6 : unpermitted ? 5 : repair ? 4 : questions ? 3 : custody ? 2 : 1, ...(leader ? {leader} : {})}) + '\n');
 const NOFOLLOW = fs.constants.O_NOFOLLOW;
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -30,9 +33,9 @@ function regular(stat) {
 }
 class ServiceRoot {
   fds = []; directories = new Map();
-  constructor(root, mode, custody, questions, repair, unpermitted, workerCancellation) {
+  constructor(root, mode, custody, questions, repair, unpermitted, workerCancellation, leader) {
     this.root = root; this.parent = path.dirname(root);
-    this.format = format(custody, questions, repair, unpermitted, workerCancellation);
+    this.format = format(custody, questions, repair, unpermitted, workerCancellation, leader);
     try {
       requireValue(fs.realpathSync(this.parent) === this.parent, 'service_root_unavailable');
       this.hold(this.parent); // Explicit private parent, no recursive mkdir/adoption.
@@ -80,7 +83,7 @@ class ServiceRoot {
 }
 
 /** Composition only: no Task reducer, second ledger, model defaults or publication. */
-export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, custody, runtimeQuestions, repair, unpermitted, workerCancellation, auditDisclosure, dispose = () => {},
+export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, custody, runtimeQuestions, repair, unpermitted, workerCancellation, auditDisclosure, leader, review, publication, dispose = () => {},
   providerFacts, applicationOptions = {}, port = 0, leaseMs = 60000, renewIntervalMs = 10000,
   requestTimeoutMs = 10000, supervisorOptions = {}, onDiagnostic = () => {}} = {}) {
   requireValue(typeof root === 'string' && path.isAbsolute(root) && path.normalize(root) === root && root !== path.parse(root).root &&
@@ -98,6 +101,11 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     Number.isSafeInteger(renewIntervalMs) && renewIntervalMs >= 10 && renewIntervalMs * 2 < leaseMs &&
     Number.isSafeInteger(requestTimeoutMs) && requestTimeoutMs >= 10 && requestTimeoutMs <= 30000);
   const available = new Map(providers);
+  const leaderConfig = leader === undefined ? null : leaderConfiguration(leader, review, publication ?? null, verification ?? null);
+  requireValue(leaderConfig ? custody !== undefined && businessFactory !== undefined && clarification === undefined && auditDisclosure === undefined &&
+    (applicationOptions.execution?.maxWorkers ?? 2) >= 3 && (applicationOptions.defaultLimits?.maxWorkers ?? 2) >= 3 :
+    review === undefined && publication === undefined);
+  if (publication) publication.assertDisjoint([root, path.join(root, 'store'), path.join(root, 'artifacts'), path.join(root, 'executions')]);
   for (const [id, provider] of available) requireValue(validate(id, 'Id') && provider?.id === id && typeof provider.start === 'function');
   const facts = providerFacts ?? [...available.keys()].map(id => ({id, displayName: id, availability: 'unknown', coreCapabilities: [], enhancedCapabilities: []}));
   requireValue(Array.isArray(facts) && facts.length === available.size && facts.every(fact => validate(fact, 'Provider') && available.has(fact.id)) && new Set(facts.map(fact => fact.id)).size === facts.length);
@@ -238,8 +246,8 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     return closing;
   }
   try {
-    files = new ServiceRoot(root, mode, !!custody, !!runtimeQuestions, !!repair, !!unpermitted, !!workerCancellation);
-    const storeOptions = workerCancellation ? {format: WORKER_CANCELLATION_FORMAT} : unpermitted ? {format: UNPERMITTED_FORMAT} : repair ? {format: REPAIR_FORMAT} : runtimeQuestions ? {format: INTERACTION_FORMAT} : custody ? {format: CUSTODY_FORMAT} : {};
+    files = new ServiceRoot(root, mode, !!custody, !!runtimeQuestions, !!repair, !!unpermitted, !!workerCancellation, leaderConfig);
+    const storeOptions = leader ? {format: LEADER_FORMAT} : workerCancellation ? {format: WORKER_CANCELLATION_FORMAT} : unpermitted ? {format: UNPERMITTED_FORMAT} : repair ? {format: REPAIR_FORMAT} : runtimeQuestions ? {format: INTERACTION_FORMAT} : custody ? {format: CUSTODY_FORMAT} : {};
     store = mode === 'create' ? Store.create(path.join(root, 'store'), storeOptions) : Store.openExisting(path.join(root, 'store'), storeOptions);
     depot = mode === 'create' ? ArtifactDepot.create(path.join(root, 'artifacts')) : ArtifactDepot.openExisting(path.join(root, 'artifacts'));
     files.sync();
@@ -262,11 +270,12 @@ export async function startTaskService({root, mode, providers, prepare, collect,
         ['prepare', 'collect', 'release', 'close'].every(key => typeof business[key] === 'function'), 'service_invalid_business');
       requireValue(!unpermitted || isStagingOnlyBusiness(businessFactory, business), 'service_unsupported_preparation');
       requireValue(!repair || business.repairProfile === 'task-local-repair/v1', 'service_capability_unavailable');
+      requireValue(!leader || isManagedFileBusiness(business), 'service_capability_unavailable');
       prepare = (ticket, wait) => business.prepare(ticket, wait);
       collect = (ticket, result, wait) => business.collect(ticket, result, wait);
       release = ticket => business.release(ticket);
     };
-    if (unpermitted) createBusiness();
+    if (unpermitted || leader) createBusiness();
     if (custody) {
       custodian = createExecutionCustody({root: path.join(root, 'custody')});
       // Do not claim a new generation while an old queued permit might still
@@ -291,7 +300,8 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       }
     }
     const owner = store.claimOwner(store.info().generation, instanceId, Date.now() + leaseMs);
-    application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification, clarification, runtimeQuestions, repair, auditDisclosure});
+    application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification, clarification, runtimeQuestions, repair, auditDisclosure,
+      leader: leader ?? null, review: review ?? null, publication: publication ?? null});
     if (custody) {
       let after = '', complete = false;
       for (let page = 0; page < 100; page++) {
@@ -308,7 +318,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       }
       requireValue(complete, 'service_custody_scan_limit');
     }
-    if ((unpermitted || workerCancellation) && mode === 'open') {
+    if ((unpermitted || workerCancellation || leader) && mode === 'open') {
       let after = '', complete = false;
       for (let page = 0; page < 100; page++) {
         const value = application.execution.pendingUnpermitted(after);
@@ -329,8 +339,21 @@ export async function startTaskService({root, mode, providers, prepare, collect,
         if (tasks.nextCursor === null) break; after = tasks.nextCursor;
       }
     }
-    if (businessFactory && !unpermitted) createBusiness();
-    supervisor = new TaskSupervisor({...supervisorOptions, execution: application.execution, providers: available,
+    if (businessFactory && !unpermitted && !leader) createBusiness();
+    const managed = leader ? {
+      prepare: async (ticket, wait) => {
+        const prepared = await business.prepareManaged(ticket, wait);
+        if (ticket.executionType === 'leader') return leader.prepare(ticket, prepared, wait);
+        if (ticket.executionType === 'review') return review.prepare(ticket, prepared, wait);
+        return prepared;
+      },
+      validate: ticket => business.validateManaged(ticket),
+      provider: ticket => application.leader.effects[ticket.executionType] ?? available.get(ticket.providerId),
+      start: options => (application.leader.effects[options.ticket.executionType] ?? (options.ticket.executionType === 'leader' ? leader : review))
+        .start({...options, provider: available.get(options.ticket.providerId)}),
+    } : null;
+    const Coordinator = leader ? TaskExecutionCoordinator : TaskSupervisor;
+    supervisor = new Coordinator({...supervisorOptions, execution: application.execution, providers: available, managed,
       verification, release, custody: custodian ?? null,
       prepare: (ticket, wait) => prepare(ticket, {...wait, ...context}),
       collect: (ticket, result, wait) => collect(ticket, result, {...wait, ...context}),

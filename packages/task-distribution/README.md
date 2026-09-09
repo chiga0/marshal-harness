@@ -4,7 +4,7 @@
 
 本文核对基线为 `0f86804140546b9e4593ba39d1a98dcb70db18bc`，该版本 [SOURCE_FILES](index.mjs) 为 **47 个运行文件**。具体候选始终以其配套清单及核验输出为准，不再使用旧 23 文件清单。manifest 中的 `darwin-arm64 / linux-x64` 是声明的验收目标，不代表两平台同资产部署已通过；当前完成状态见[主线实证](../../docs/node-task-service-status-2026-09-08.md)。
 
-ADR0093 的 v6 候选在上述库存增加原 `task-application/worker-cancellation.mjs`，当前为 **48 个运行文件**；打包、外置 pin、carrier 和已安装消费者均按同一实际库存核验，不复用旧包的摘要。包含模块不自动开启取消，部署配置和新根格式仍须显式选择。
+ADR0093 的 v6 候选曾增加原 `task-application/worker-cancellation.mjs`，后继还包含受管 Leader、Execution 和报告发布模块。当前库存以配套 [SOURCE_FILES](index.mjs) 与精确源码的打包输出为准；打包、外置 pin、carrier 和已安装消费者均按同一实际库存核验，不复用旧包的摘要。包含模块不自动开启新能力，部署配置和新根格式仍须显式选择；旧 layout1/2 消费者通过不等于 v7 Leader 团队交付通过。
 
 ## 1. 从受信任源码生成目录包
 

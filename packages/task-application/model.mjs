@@ -29,6 +29,7 @@ export function actions(task) {
 export function publicTask(record, now = Date.now()) {
   const task = clone(record.task);
   task.allowedActions = actions(task);
+  if (record.leader && ['awaiting-answer', 'awaiting-confirmation'].includes(task.status)) task.allowedActions = ['cancel', ...(record.approved ? ['pause'] : [])];
   if (record.clarification && !record.approved && task.status === 'awaiting-answer') task.allowedActions = ['answer', 'cancel'];
   if (record.clarification && !record.approved && ['awaiting-answer', 'awaiting-confirmation'].includes(task.status) &&
     now >= Date.parse(record.clarification.confirmBefore)) task.allowedActions = ['cancel'];

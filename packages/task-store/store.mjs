@@ -10,6 +10,7 @@ export const CUSTODY_FORMAT = 'marshal-node-task-sqlite/v2-custody';
 export const INTERACTION_FORMAT = 'marshal-node-task-sqlite/v3-interaction';
 export const REPAIR_FORMAT = 'marshal-node-task-sqlite/v4-repair';
 export const UNPERMITTED_FORMAT = 'marshal-node-task-sqlite/v5-unpermitted';
+export const LEADER_FORMAT = 'marshal-node-task-sqlite/v7-managed-leader';
 export const WORKER_CANCELLATION_FORMAT = 'marshal-node-task-sqlite/v6-worker-cancellation';
 // A maximum page of observed commands needs three validated accesses per row.
 // Leave room for its enclosing read/CAS while keeping aggregate work bounded.
@@ -211,8 +212,8 @@ export class Store {
   static #open(root, options, create) {
     const [major, minor] = process.versions.node.split('.').map(Number);
     check(['darwin', 'linux'].includes(process.platform) && major === 24 && minor >= 15, 'unsupported');
-    check(closed(options, ['format', 'clock', 'monotonic', 'syncDirectory']) && (options.format === undefined || [FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT].includes(options.format)));
-    const format = options.format ?? FORMAT, version = format === WORKER_CANCELLATION_FORMAT ? 6 : format === UNPERMITTED_FORMAT ? 5 : format === REPAIR_FORMAT ? 4 : format === INTERACTION_FORMAT ? 3 : format === CUSTODY_FORMAT ? 2 : 1;
+    check(closed(options, ['format', 'clock', 'monotonic', 'syncDirectory']) && (options.format === undefined || [FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(options.format)));
+    const format = options.format ?? FORMAT, version = format === LEADER_FORMAT ? 7 : format === WORKER_CANCELLATION_FORMAT ? 6 : format === UNPERMITTED_FORMAT ? 5 : format === REPAIR_FORMAT ? 4 : format === INTERACTION_FORMAT ? 3 : format === CUSTODY_FORMAT ? 2 : 1;
     for (const key of ['clock', 'monotonic', 'syncDirectory']) check(options[key] === undefined || typeof options[key] === 'function');
     let files, db;
     try {
@@ -263,7 +264,7 @@ export class Store {
   inspectRecovery(callback) {
     this.#enter(); let tx;
     try {
-      check(this.#active === null && [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT].includes(this.#metadata().format) && typeof callback === 'function', 'owner');
+      check(this.#active === null && [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(this.#metadata().format) && typeof callback === 'function', 'owner');
       check(Object.prototype.toString.call(callback) !== '[object AsyncFunction]', 'async-transaction');
       const until = this.#monotonic() + LIMITS.transactionMs;
       this.#transaction = true; this.#db.exec('BEGIN');
