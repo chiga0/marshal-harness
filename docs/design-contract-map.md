@@ -10,6 +10,8 @@
 
 [ADR 0090](adr/0090-node-runtime-business-questions.md) 已由维护者独立审查接纳，允许实施原 Worker 的运行中业务问答、一次答案投递/消费和最终验收引用；它不修改 0086 的批准前 preview/回答语义，也不把业务回答当工具授权。新持久事实须在明确的新格式启用，旧根不隐式迁移；合同接受与运行时实现/实机验证分开，当前尚不宣布该增强可用。
 
+[ADR 0091](adr/0091-node-same-plan-local-repair.md) 已接受同计划局部修正合同：真实父验证内容拒收、用户显式选择修正根、Core 计算完整影响闭包、保留无关精确成果并重新独立验收；原预算/期限不刷新，结构失败不可借此重试。它仅授权 Node 新 v4-repair 格式的后继实施，不追认旧失败、不迁移旧根，不表示 `task.repair` 已可调用。
+
 | 问题 | 唯一入口 | 含义 |
 | --- | --- | --- |
 | 要实现什么 | [Task-first 架构](agent-team-service-architecture.md)、[Milestone](agent-team-service-milestones.md) | B1 先团队 PoC，B2 本地 API 可用，B3 正式支持；无 Workspace 产品实体 |
