@@ -8,6 +8,8 @@
 
 ### 最新正式 Node 集成检查点
 
+**2026-09-09 12:39 CST 已合入并推送**：输入审计/简启动source=`fe04a8a`，localMergeSha=`ee3932ffc135f89ce0395f159696f93c6684da1d`，远端一致、`pendingRemoteSync=false`。独立最终29/29通过，58Schema/34示例/25操作通过；简启动一次P1聚合修正后复审关闭。下一项为API-STABLE响应上界及事件续读。香港runner/固定Node可执行，SCP137后未收到安装包、不记部署成功。B1/B2/API-STABLE/B3不升级，[精确证据与边界](node-task-service-status-2026-09-08.md)。
+
 **2026-09-09 12:20 CST 已合入并推送**：sourceHead=`8f8ff8dfe57852e6b383fbd2bb7c70fb75a1d552`，localMergeSha=`85fc62a3338fc15c408e941e16a7c882b0be4a6d`，远端 main 已核对一致、`pendingRemoteSync=false`；精确 source 的 Ubuntu/macOS Node team CI 均通过。运行中问答和局部修正进入主线；实际输入审计、简启动仍在途，OpenAPI仍为candidate，B1/B2/API-STABLE/B3不升级。[验证范围及未完成项](node-task-service-status-2026-09-08.md)。以下未合 main 记录是历史时点。
 
 **2026-09-09 12:04 CST 增量**：已审局部修正及证据正常推送至功能分支 `d650238`，不是main合并；原两P1聚合关闭，最终定向80/80通过。真实Pi首轮交付26.288秒、双作者交叠11.788秒，下载7单/1850 cents和正常重开通过，无实际repair、不造错寻找失败。局部修正实现/确定性证据前进，真实模型修正仍未证明；实际prompt/context审计和简启动开始并行实施。下表状态不升级，[精确证据与边界](node-task-service-status-2026-09-08.md)。
@@ -43,7 +45,7 @@ Pi候选完整回归后续确认：`74a239e`独立一次 **374/374 PASS、182.40
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |
 | B1 真实团队交付 | `IN_PROGRESS` | 七项功能条件已有有界证据；尚缺适用 profile 的 Worker/Publisher 权限分离证明，不能升级production |
-| B2 日常本地 API | `IN_PROGRESS` | 真实批准前必要问答、Pi/Qwen 团队、固定双仓库混合交付及运行中问答交付已通过；局部修正、完整提示词/用量审计、简启动、完整同版本恢复与 API-STABLE 仍未完成 |
+| B2 日常本地 API | `IN_PROGRESS` | 问答/真实团队交付、局部修正实现、实际输入审计与简启动已有限定证据；真实模型局部修正、用量覆盖、完整同版本恢复及 API-STABLE 的响应上界/事件续读仍待验收 |
 | B3 正式可靠发布 | `PLANNED` | 目录包已准备；声明平台实机/长期故障、权限分离、安装恢复和受保护同资产发行未完成 |
 
 ### 以下为较早本地集成检查点（不覆盖上表）

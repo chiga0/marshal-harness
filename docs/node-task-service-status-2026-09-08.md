@@ -2,6 +2,16 @@
 
 ## 当前结论
 
+### 2026-09-09 12:39 CST：输入审计与简启动合入并同步
+
+sourceHead=`fe04a8a2f884e42afc5a7f1ad7a62e6d56a4b930`，localMergeSha=`ee3932ffc135f89ce0395f159696f93c6684da1d`；远端 main 已核对同一 SHA，`pendingRemoteSync=false`。实际 prepared prompt 的摘要/长度、有效 Provider 句柄返回后的 handed-off 观察、原 SQLite 审计引用与 Depot 快照下载已接线；默认不存正文，只有显式受信同步披露策略返回的内容可留存。handed-off 不证明模型消费，缺失用量仍 unavailable。原 CLI 增加默认私有数据目录和自动 create/open，仍必须提供受信业务/Provider/独立验证配置，不是任意任务零配置。
+
+输入审计首审无 P0/P1；简启动首审发现多层目录 fsync 失败后重试缩短祖先同步链的一项 P1，聚合修正后由原 reviewer 确认关闭，不记首审通过。最终冻结集成源独立 **29/29 PASS、57.395365167秒、零失败/取消/跳过**，覆盖 Application/HTTP 输入审计、原 CLI 启动重开与目录拒绝/耐久失败、发行清单/安装目录冷导入。日志 SHA-256=`016f01f93c57df6b3a8cb52e2584c71b27214ed13f438ee545325b6a5e790878`。Draft2020-12 独立检查58个Schema、34个示例、25操作通过，OpenAPI SHA-256=`c41c0995f3e9030a1ca7ad237f20116d5207c1e68e789fa8f45d1da785b6b0ae`；diff、merge-tree及4提交秘密扫描通过。该组合无真实模型；前一轮8f8ff8d的远端CI不冒充本源CI。
+
+香港 Linux 只读检查已确认既有专用用户 UID1000、固定 Node24.15.0及SQLite3.51.3可执行。旧源85fc62a的45文件目录包已在本机生成，但SCP再次exit137，远端新安装目录核对为空，具体终止原因未知；未启动产品服务或模型，未换通道重传，不记部署通过。本地包与观察保留于 `/private/tmp/marshal-linux-install-85fc62a.qGdfih/`，它不含本次新功能，不能用于证明本源部署。
+
+下一项为 API-STABLE 的成功查询/取消响应上界及断连/正常重开后原事件cursor续读验收；已有原始HTTP与TaskClient消费者，不新增SDK。真实模型局部修正、Publisher分权、完整支持矩阵/长期故障及正式发行仍未证明，B1/B2保持IN_PROGRESS、API-STABLE未完成、B3 PLANNED。
+
 ### 2026-09-09 12:20 CST：已审代码合入并同步 main
 
 sourceHead=`8f8ff8dfe57852e6b383fbd2bb7c70fb75a1d552`，localMergeSha=`85fc62a3338fc15c408e941e16a7c882b0be4a6d`；正常推送后远端 main 核对为同一 SHA，`pendingRemoteSync=false`。已审运行中问答、同计划局部修正及上述实机证据进入 main，未使用 force push。该 source 的 [Node team CI 34310020140](https://github.com/chiga0/marshal-harness/actions/runs/34310020140) Ubuntu/macOS 两项均 success；这是 Node 测试矩阵，不替代真实 Linux 部署、模型修正或权限分离证明。此前相关本地定向80项及真实 Pi 首轮交付的范围不扩大。
