@@ -6,11 +6,27 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
+**最新实机与合入检查点**：固定 Node 24.15.0/Pi 0.84.4，同一配置的两个不同需求均完成真实 Leader 全程交付，整轮 217.58 秒，`passed=true/fullDelivery=true`。冻结源 `529136d3` 与主线合并 `501d6d70` 的 Git tree 相同（`f703fedebad2a7421b16f620368cf4eb74e2806a`）；证据 `/private/tmp/marshal-leader-pi-budget.IJKDQw/run/evidence.json`。Task `task-28b4f501-ae25-4830-afb9-a48474cd8b41` 与 `task-33c49346-aaeb-4ee9-8aba-d6d19a74f463` 各 12 Attempts、6 次 Leader，双作者交叠分别 18299/10603ms；独立 Review/Verification、原明确授权发布及后验、132B/137B 两份不同报告的实际消费均通过。两项正常冷开原交付/Leader/收据相同、重复启动 0；均为 `rework=0/firstpass=true`，`usage=null` 仍为未知，不证明真实局部修正，正常实机结果不外推故障恢复。独立核对原 SQLite 完整性、外键及 300 条事件摘要均通过，核对前后库摘要未变；第二项回答 `cancelled` 是业务筛选条件，不是产品 Task 取消。
+
+恢复源 `32bd5558` 的无计划恢复漏计发布执行 P1 经独立复审关闭，已合入 `c735654f`；已有原 CLI SIGKILL/SQLite 与受控 Agent 的恢复证据，仍须按声明范围完成完整验收，不新增所有恢复必须调用真实模型的门禁。非 fixture 的完整 Leader 部署配置源 `2dde183f` 经独立审查无 P0/P1，已合入主线 `9a014b7858b5ae0f3dd9c120941761945646caa0`。维护者在该主线运行安装/单元/reader 六项，6/6 通过（33.529 秒），`modelCalls=0`。安装测试自身将临时源 `5b0db4e` 打包消费，并非把 `9a014b78` 作为包 source；不混同上述实机冻结源、测试入口与包来源，也不将无模型安装检查提升为正式安装后的真实 Pi 验收。
+
+**当前未闭问题**：仍须正式安装后的真实 Pi 全程验收、真实局部修正及保留无关成果的业务证据、完整故障恢复及声明支持面的验收，以及完整 B3 平台/长期运行/发行门禁。先前 intake、第二需求预算拒绝及恢复 P1 保留为历史失败和成本，不再作为当前未解决问题。B2-L 仍 `IN_PROGRESS`；不重做 B1，不改变 API-STABLE 原范围，不把业务交付当 Marshal 软件正式发行。
+
+| Milestone | 当前状态 | 尚缺用户出口 |
+| --- | --- | --- |
+| B1 真实团队交付 | `PASSED`（可信单用户本机 PoC） | 原七条件独立复核通过；旧 non-production 不改，不外推全程 Leader、生产或 stable |
+| B2 日常本地 API | `IN_PROGRESS` | 原问答、审计及单 Worker 取消已有实机；B2-L 同配置双需求已通过；正式安装真实 Pi、真实模型局部修正与故障恢复仍待验证，用量缺失明示 |
+| B2-L 全程受管 Leader | `IN_PROGRESS`（同配置双需求真实交付通过） | 恢复与产品部署配置已合入；仍缺正式安装真实 Pi、真实局部修正及完整故障恢复及声明支持面的验收 |
+| API-STABLE 核心接口检查点 | `PASSED`（保留原范围） | 原 25 操作/58 Schema/同包客户端与四出口通过；不自动覆盖新增 Leader 支持面，不等于正式发行或任意版本兼容 |
+| B3 正式可靠发布 | `IN_PROGRESS` | 已有有界冷备份、隔离、v5/v6 故障、EFBIG/SQLite 写失败与安装消费证据；v7 完整故障验收、声明平台部署/长期故障、ENOSPC 与受保护同资产发行仍未完成 |
+
+### 19:23 及更早检查点（历史，不覆盖当前表）
+
 **19:23 最新实机出口（覆盖下述较早检查点的待办口径）**：主线 `1921f8a5e448d6914cfa7259c210ce203b80ae59` 已正常推送，包含已独立审查的提示合同 `7b5cc408` 与 checker LF 读帧修复 `e00e9446`。原实机冻结源 `765b89e9d6d57accccae6567e3247862759d28b5` 与该主线树一致。固定 Node 24.15.0/Pi 0.84.4 下，Task `task-aa7d4dae-6338-480a-a70a-cf69634bcff9` 首次完整真实交付通过：12 Attempts、6 次 Leader、两作者交叠 14246ms、独立 Review/Verification、原明确授权发布与后验、132B 报告实际消费，正常冷开原交付/Leader/收据相同、重复启动 0；rework=0、firstpass=true，usage=null 仍表示未知。原制品/消费摘要同为 `sha256:11c023b25a749fab1487bab6c4db92a376cbad179d7c1f3075c213a113e9b9df`。
 
 同配置第二个不同回答的 Task 在 `leader-1-approval` 失败，原输出已保存；因此整轮 `passed=false/fullDelivery=false`，不能以第一项成功关闭双需求覆盖或 B2-L。原 SQLite 已确认：模型将预算17自行缩为8，而计划最低需要12，Core在用户审批前以 `capacity_exceeded` 拒绝；不降低门禁或改写原回答。证据 `/private/tmp/marshal-leader-pi-frame.ALy8wR/run/evidence.json`，不改写前序失败成本。此前 `marshal-leader-pi-contract.cFe1Fy` 越过 intake/双作者/Review 后因 checker 等待 EOF 卡住，维护者经原 HTTP 取消止损，非自然通过；修前原 guard 回归失败，修后完整 15/15、独立 2/2 通过，Runtime 协议未改。完整恢复源 `5d2dd3c0` 的最终原 CLI/HTTP 三项 3/3（50.204 秒）通过，但独立审查发现无计划恢复漏计发布两次执行的 P1，待同轮修复/复审，尚未合入；部署配置仍在实现。以下 SHA/CI 均保留各自历史范围。
 
-**当前代码与证据**：Core 最终审查源 `40468f343ba53d71b9f2418cf1d970e2ccfa360b`，`localMergeSha`、main 与 origin/main 均为 `2b203cb2f3b08933736dcf0f48774a9d491d4092`，已正常推送，`pendingRemoteSync=false`。原四项 P1 及 Review→verify 闭包问题经聚合修正、独立复审关闭；最终独立分类/生命周期回归 17/17，集成 HTTP/SQLite 17/17 含完整局部修正通过，独立同包安装与驱动 18/18 通过。本地所测包包含 55 文件、821293 bytes，manifest=`sha256:f7eea46b38042b87f8b1d4bfa5d3320a33bbf5e26480949d564ee07ff881d9e9`。这些证据使用受控 peer、modelCalls=0；证明 Core 与安装消费检查点，不等于真实模型或完整故障恢复通过。
+**历史代码与证据**：Core 最终审查源 `40468f343ba53d71b9f2418cf1d970e2ccfa360b`，`localMergeSha`、main 与 origin/main 均为 `2b203cb2f3b08933736dcf0f48774a9d491d4092`，已正常推送，`pendingRemoteSync=false`。原四项 P1 及 Review→verify 闭包问题经聚合修正、独立复审关闭；最终独立分类/生命周期回归 17/17，集成 HTTP/SQLite 17/17 含完整局部修正通过，独立同包安装与驱动 18/18 通过。本地所测包包含 55 文件、821293 bytes，manifest=`sha256:f7eea46b38042b87f8b1d4bfa5d3320a33bbf5e26480949d564ee07ff881d9e9`。这些证据使用受控 peer、modelCalls=0；证明 Core 与安装消费检查点，不等于真实模型或完整故障恢复通过。
 
 **同源 CI**：[Node run 34340458961](https://github.com/chiga0/marshal-harness/actions/runs/34340458961) 的 head 为上述 `2b203cb2`、attempt 1，五个 job 已 `completed/success`：macOS 回归 `102429772105`、Ubuntu 回归 `102429772367`、单次打包 `102432181259`、macOS 同包消费 `102432264130`、Ubuntu 同包消费 `102432264176`。原 candidate artifact=`10099801881`，运输归档 840828 bytes、digest=`sha256:7c828c5add75b429163bcf105193942efb6182cb1b210f456854afa694223179`。维护者独立下载两平台原 JSON，确认都消费这个 artifact 和源 `2b203cb2` 的 55 文件包，manifest=`sha256:6409fe2ac6629b5c003e34d14ec2b12c8273b5ec64286ddd97b6b34b6add0541`；它与上面的本地 `40468f` 包 manifest 分属不同源，运输摘要也不代替 manifest。每平台同配置两个 Task 各 12 Attempts（6 Leader、2作者及 Review/Verifier/Publication/Postverify），交付两份不同 93B 报告；modelCalls=0，正常冷开重复启动/发布均为 0。原 JSON 保留于 `/private/tmp/marshal-v7-ci-evidence.KAONbJ`；不把无模型 CI 或正常冷开当真实模型、冷故障或 production 证据。
 
@@ -18,15 +34,7 @@
 
 **后继 CI 查询**：`37d2559d` 的 Node run `34342752062` 五项全部成功，包含 Darwin/Linux 回归、单次打包和双平台同包消费；普通 CI `34342752002` 的 secret scan 与两种 Linux candidate conformance 已通过，双平台 Quality 仍运行。此处未重新下载本次 candidate，不借用上一候选摘要，不声称全 CI 或实机模型通过。
 
-**当前未闭问题**：两次真实 Pi 0.84.4 均停在 intake；首次 `/private/tmp/marshal-leader-pi.kkYHsH/run/evidence.json` 未保留原输出，不能倒推精确原因。后继 `/private/tmp/marshal-leader-pi-bindings.9rxRcF/run/evidence.json` 已保留私有原输出：`ask.options` 返回字符串数组，而原解析器要求 `{value,label}`；原 port 无模型回放拒绝，仅在内存转换该字段即接纳，原 DB/WAL/SHM 摘要不变。提示仅展示空数组，正在聚合修正，不放宽解析器、不原样付费重试。同 Task successor、发布精确 lookup 与后验恢复仍在实现；在途候选的两项原 HTTP 测试通过（31.049 秒）不替代冻结源独立审查。另缺随产品包交付的非 fixture 完整 v7 部署配置，测试驱动不等于开箱即用服务。最短后继是关闭接入与恢复阻断、补齐部署入口，再做真实完整业务验收；不重新做 B1、不重置历史成本。
-
-| Milestone | 当前状态 | 尚缺用户出口 |
-| --- | --- | --- |
-| B1 真实团队交付 | `PASSED`（可信单用户本机 PoC） | 原七条件独立复核通过；旧 non-production 不改，不外推全程 Leader、生产或 stable |
-| B2 日常本地 API | `IN_PROGRESS` | 原问答、审计及单 Worker 取消已有实机；B2-L 完整模型业务与恢复未过，真实模型局部修正及用量缺失仍明示 |
-| B2-L 全程受管 Leader | `IN_PROGRESS`（首个真实完整交付已通过） | 第一个真实 Task 授权交付/后验/冷开通过；同配置第二需求失败、真实局部修正、完整恢复合入及产品部署配置仍须完成 |
-| API-STABLE 核心接口检查点 | `PASSED`（保留原范围） | 原 25 操作/58 Schema/同包客户端与四出口通过；不自动覆盖新增 Leader 支持面，不等于正式发行或任意版本兼容 |
-| B3 正式可靠发布 | `IN_PROGRESS` | 已有有界冷备份、隔离、v5/v6 故障、EFBIG/SQLite 写失败与安装消费证据；v7 恢复、声明平台部署/长期故障、ENOSPC 与受保护同资产发行仍未完成 |
+**历史时点未闭问题**：两次真实 Pi 0.84.4 均停在 intake；首次 `/private/tmp/marshal-leader-pi.kkYHsH/run/evidence.json` 未保留原输出，不能倒推精确原因。后继 `/private/tmp/marshal-leader-pi-bindings.9rxRcF/run/evidence.json` 已保留私有原输出：`ask.options` 返回字符串数组，而原解析器要求 `{value,label}`；原 port 无模型回放拒绝，仅在内存转换该字段即接纳，原 DB/WAL/SHM 摘要不变。提示仅展示空数组，正在聚合修正，不放宽解析器、不原样付费重试。同 Task successor、发布精确 lookup 与后验恢复仍在实现；在途候选的两项原 HTTP 测试通过（31.049 秒）不替代冻结源独立审查。另缺随产品包交付的非 fixture 完整 v7 部署配置，测试驱动不等于开箱即用服务。最短后继是关闭接入与恢复阻断、补齐部署入口，再做真实完整业务验收；不重新做 B1、不重置历史成本。
 
 ### 本轮早期集成记录（历史，不覆盖上表）
 
