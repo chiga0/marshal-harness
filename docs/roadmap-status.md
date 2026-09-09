@@ -6,7 +6,9 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
-**最新实机与合入检查点**：固定 Node 24.15.0/Pi 0.84.4，同一配置的两个不同需求均完成真实 Leader 全程交付，整轮 217.58 秒，`passed=true/fullDelivery=true`。冻结源 `529136d3` 与主线合并 `501d6d70` 的 Git tree 相同（`f703fedebad2a7421b16f620368cf4eb74e2806a`）；证据 `/private/tmp/marshal-leader-pi-budget.IJKDQw/run/evidence.json`。Task `task-28b4f501-ae25-4830-afb9-a48474cd8b41` 与 `task-33c49346-aaeb-4ee9-8aba-d6d19a74f463` 各 12 Attempts、6 次 Leader，双作者交叠分别 18299/10603ms；独立 Review/Verification、原明确授权发布及后验、132B/137B 两份不同报告的实际消费均通过。两项正常冷开原交付/Leader/收据相同、重复启动 0；均为 `rework=0/firstpass=true`，`usage=null` 仍为未知，不证明真实局部修正，正常实机结果不外推故障恢复。独立核对原 SQLite 完整性、外键及 300 条事件摘要均通过，核对前后库摘要未变；第二项回答 `cancelled` 是业务筛选条件，不是产品 Task 取消。
+**最新安装实测检查点**：安装消费者首轮在 `evidence_mismatch` 失败，已确认是消费者对 JSON 值的 prototype 比较缺陷，修复源 `253ab696` 已合入 `44cd0397`，不改业务验收标准。第二轮仍失败：`task-0-awaiting-approval` 观察到 `unexpected_terminal`，产品原因码为 `leader_result_rejected`；第二次 Leader 的原输出未保存，不能倒推精确拒绝原因。未进行第三次模型盲重试。诊断源 `cdf1913c` 最终独立 14/14（2.223 秒）、无 P0/P1，已合入 `d9d6867aabaf46372bfcedd629167af6ce0996c1`。SQLite FULL 源 `4a141846` 经维护者全 diff 独立审阅及与原 EFBIG 测试组合 2/2（23.407 秒），已合入 `4633aecc7500bf1c367865aa2a73f67b4276f28d`；两批 diff/secret/merge-tree 检查通过，已正常推送并核对远端 main 同 SHA，`pendingRemoteSync=false`。FULL 实际观察 `errcode=13/pages=38`，一项上传完整回滚、零重复启动、后继团队 4 次执行；这是数据库页数上限，不是 OS ENOSPC。诊断与无模型恢复测试通过不代表新安装实机通过。
+
+**既有双需求真实交付证据（不替代安装实测）**：固定 Node 24.15.0/Pi 0.84.4，同一配置的两个不同需求均完成真实 Leader 全程交付，整轮 217.58 秒，`passed=true/fullDelivery=true`。冻结源 `529136d3` 与主线合并 `501d6d70` 的 Git tree 相同（`f703fedebad2a7421b16f620368cf4eb74e2806a`）；证据 `/private/tmp/marshal-leader-pi-budget.IJKDQw/run/evidence.json`。Task `task-28b4f501-ae25-4830-afb9-a48474cd8b41` 与 `task-33c49346-aaeb-4ee9-8aba-d6d19a74f463` 各 12 Attempts、6 次 Leader，双作者交叠分别 18299/10603ms；独立 Review/Verification、原明确授权发布及后验、132B/137B 两份不同报告的实际消费均通过。两项正常冷开原交付/Leader/收据相同、重复启动 0；均为 `rework=0/firstpass=true`，`usage=null` 仍为未知，不证明真实局部修正，正常实机结果不外推故障恢复。独立核对原 SQLite 完整性、外键及 300 条事件摘要均通过，核对前后库摘要未变；第二项回答 `cancelled` 是业务筛选条件，不是产品 Task 取消。
 
 恢复源 `32bd5558` 的无计划恢复漏计发布执行 P1 经独立复审关闭，已合入 `c735654f`；已有原 CLI SIGKILL/SQLite 与受控 Agent 的恢复证据，仍须按声明范围完成完整验收，不新增所有恢复必须调用真实模型的门禁。非 fixture 的完整 Leader 部署配置源 `2dde183f` 经独立审查无 P0/P1，已合入主线 `9a014b7858b5ae0f3dd9c120941761945646caa0`。维护者在该主线运行安装/单元/reader 六项，6/6 通过（33.529 秒），`modelCalls=0`。安装测试自身将临时源 `5b0db4e` 打包消费，并非把 `9a014b78` 作为包 source；不混同上述实机冻结源、测试入口与包来源，也不将无模型安装检查提升为正式安装后的真实 Pi 验收。
 
@@ -16,9 +18,9 @@
 | --- | --- | --- |
 | B1 真实团队交付 | `PASSED`（可信单用户本机 PoC） | 原七条件独立复核通过；旧 non-production 不改，不外推全程 Leader、生产或 stable |
 | B2 日常本地 API | `IN_PROGRESS` | 原问答、审计及单 Worker 取消已有实机；B2-L 同配置双需求已通过；正式安装真实 Pi、真实模型局部修正与故障恢复仍待验证，用量缺失明示 |
-| B2-L 全程受管 Leader | `IN_PROGRESS`（同配置双需求真实交付通过） | 恢复与产品部署配置已合入；仍缺正式安装真实 Pi、真实局部修正及完整故障恢复及声明支持面的验收 |
+| B2-L 全程受管 Leader | `IN_PROGRESS`（同配置双需求真实交付通过） | 恢复与产品部署配置已合入；安装真实 Pi 两轮失败，第二轮 Leader 拒绝原因待精确诊断；另缺真实局部修正、完整故障恢复及声明支持面的验收 |
 | API-STABLE 核心接口检查点 | `PASSED`（保留原范围） | 原 25 操作/58 Schema/同包客户端与四出口通过；不自动覆盖新增 Leader 支持面，不等于正式发行或任意版本兼容 |
-| B3 正式可靠发布 | `IN_PROGRESS` | 已有有界冷备份、隔离、v5/v6 故障、EFBIG/SQLite 写失败与安装消费证据；v7 完整故障验收、声明平台部署/长期故障、ENOSPC 与受保护同资产发行仍未完成 |
+| B3 正式可靠发布 | `IN_PROGRESS` | 已有有界冷备份、隔离、v5/v6 故障、EFBIG/SQLite IOERR_WRITE 及页数上限 FULL、安装消费证据；v7 完整故障验收、声明平台部署/长期故障、ENOSPC 与受保护同资产发行仍未完成 |
 
 ### 19:23 及更早检查点（历史，不覆盖当前表）
 
