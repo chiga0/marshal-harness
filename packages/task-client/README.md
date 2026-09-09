@@ -27,6 +27,7 @@ const observed = await client.request('operation.get', {path: {operationId: oper
 | 同计划局部修正 | `task.repair`；仅原独立内容拒收及已启用策略满足时受理，保留原预算/期限，不是通用重试 |
 | DAG、Workers、Worker 详情/取消 | `task.graph/workers`、`worker.get/cancel` |
 | 问题、回答 | `task.questions/answer`；答案携带原 questionRevision/expectedRevision 和互斥的 previewDigest 或 questionDigest |
+| Leader 子投影/显式回复 | `task.leader/leader.reply`；仅新子资源，未启用501，不改原 Worker ACK/Operation |
 | Operation | `operation.get` |
 | 制品 metadata、下载、input 上传 | `artifact.get/content`、`input.create` |
 | 事件、审计、Provider、Supervisor | `task.events/audit`、`provider.list`、`supervisor.get` |
@@ -41,6 +42,21 @@ const observed = await client.request('operation.get', {path: {operationId: oper
 运行答复 202 返回 `RuntimeAnswerReceipt`，只有原接纳事实与单独 currentTask，不能据此宣布 Agent 已消费。客户端同时核对题目/Task/Operation、请求摘要族与 accepted revision；外部 transport 也不能用另一题或旧 preview 回执替代。查询原 Operation/问题可见 pending/dispatched/acknowledged/cancelled/expired/unknown；未接纳答案的问题 deliveryStatus 为 null。丢响应不会自动重发；调用者可用原 key/body 显式重放，客户端不 resume/approve、不把投递 unknown 当可重试。
 
 可选 `Plan.interaction` 仅转发已批准的有限策略字段，不因 schema 支持而报告运行时能力。是否启用由实际服务端完整 Provider/Store/Supervisor/验证链决定，本包不访问内部账本或创建另一套问答状态机。
+
+ADR0095 的 `getLeader(taskId,options)` 一次只读请求，最多接收 64 KiB，重算 pendingRequest 完整正文与 Task 绑定摘要，publication 必须展示原授权正文。`replyLeader(taskId,requestId,body,idempotencyKey,options)` 必须由调用者明确传入原请求摘要、Task revision 和业务 answer 或 publication decision，不能混用。客户端不自动查询新 revision、回答、授予权限或重复发布；不新增 profile header。
+
+```js
+const leader = await client.getLeader(task.id);
+// 先展示 pendingRequest；下列 answer、revision、key 必须由调用者确认/保留。
+const receipt = await client.replyLeader(task.id, leader.pendingRequest.id, {
+  expectedRevision: confirmedTaskRevision,
+  requestDigest: leader.pendingRequest.requestDigest,
+  answer: confirmedBusinessAnswer,
+}, 'caller-leader-reply-key');
+// publication 请求使用 decision: confirmedAllowOrDeny，不能同时提交 answer。
+```
+
+202 仅是 `LeaderReplyReceipt`，不是原 Worker delivery ACK 或旧 Operation。客户端复核 route requestId、原摘要、replyDigest 与 acceptedRevision；丢响应只允许调用者显式重放原 key/body，原接纳版本不随当前 Task 改变。receiptId 不送往旧 operation.get，当前情况查询 Leader 子投影/原 events。这里的 DI/HTTP 证明不等于真实 Leader、持久授权或发布接纳已完成。
 
 ## 下载与 HTTP 限制
 

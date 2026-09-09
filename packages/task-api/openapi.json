@@ -23,6 +23,170 @@
     }
   ],
   "paths": {
+    "/v1/tasks/{taskId}/leader": {
+      "get": {
+        "operationId": "task_leader",
+        "x-application-operation": "task.leader",
+        "x-success-status": 200,
+        "x-response-schema": "LeaderView",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "只读 Leader 子投影，最大 64 KiB。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaderView"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{taskId}/leader/requests/{requestId}/reply": {
+      "post": {
+        "operationId": "task_leader_reply",
+        "x-application-operation": "task.leader.reply",
+        "x-success-status": 202,
+        "x-response-schema": "LeaderReplyReceipt",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "path",
+            "name": "requestId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "回复已接纳，不代表动作执行成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaderReplyReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaderReply"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/tasks/{taskId}/repair": {
       "post": {
         "operationId": "task_repair",
@@ -2055,6 +2219,717 @@
       }
     },
     "schemas": {
+      "LeaderAuthorization": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "taskId",
+          "planDigest",
+          "artifactId",
+          "artifactDigest",
+          "bytes",
+          "acceptanceDigest",
+          "reviewDigest",
+          "targetId",
+          "targetPolicyDigest",
+          "name",
+          "operation",
+          "expiresAt"
+        ],
+        "properties": {
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "planDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "artifactId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "artifactDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1048576
+          },
+          "acceptanceDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "reviewDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "targetId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "targetPolicyDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "x-maxUtf8Bytes": 255,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*[.]json$"
+          },
+          "operation": {
+            "const": "create-if-absent"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 64
+          }
+        },
+        "description": "Core 构造的精确本机报告授权正文；仅展示不代表已经批准，客户端不得替换目标。",
+        "examples": [
+          {
+            "taskId": "task-example",
+            "planDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifactId": "artifact-example",
+            "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bytes": 18,
+            "acceptanceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reviewDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "targetId": "local-reports",
+            "targetPolicyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "name": "task-example-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+            "operation": "create-if-absent",
+            "expiresAt": "2026-09-10T00:00:00.000Z"
+          }
+        ]
+      },
+      "LeaderRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "requestDigest",
+          "subject",
+          "nodeIds",
+          "prompt",
+          "options",
+          "authorization",
+          "deadlineAt",
+          "status",
+          "replyDigest"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "business",
+              "publication"
+            ]
+          },
+          "requestDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "nodeIds": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$"
+          },
+          "options": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value",
+                "label"
+              ],
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024,
+                  "x-maxUtf8Bytes": 1024,
+                  "x-wellFormedUnicode": true,
+                  "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$"
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048,
+                  "x-maxUtf8Bytes": 2048,
+                  "x-wellFormedUnicode": true,
+                  "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$"
+                }
+              }
+            }
+          },
+          "authorization": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LeaderAuthorization"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deadlineAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 64
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "replied",
+              "closed"
+            ]
+          },
+          "replyDigest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Digest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "description": "Task 级 Leader 请求，不是原 Worker delivery/ACK；requestDigest 覆盖同 Task 的完整不变正文。publication 必须完整展示授权、固定 allow/deny，业务请求 authorization 为 null。",
+        "examples": [
+          {
+            "id": "request-example",
+            "kind": "business",
+            "subject": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "nodeIds": [],
+            "prompt": "报告采用哪个地区的数据？",
+            "options": [
+              {
+                "value": "north",
+                "label": "北区"
+              }
+            ],
+            "authorization": null,
+            "deadlineAt": "2026-09-10T00:00:00.000Z",
+            "status": "pending",
+            "replyDigest": null,
+            "requestDigest": "sha256:0c57023789abb02551ac7837838ae3cb9dcd86ff0f3c58b4db372999eab51a7c"
+          },
+          {
+            "id": "request-publication",
+            "kind": "publication",
+            "subject": "sha256:67ac695038cba4163cd5b162003485226fdf62b7e0429e5cc9b40785010fa427",
+            "nodeIds": [],
+            "prompt": "是否允许在本机目标新增该精确报告？",
+            "options": [
+              {
+                "value": "allow",
+                "label": "允许"
+              },
+              {
+                "value": "deny",
+                "label": "拒绝"
+              }
+            ],
+            "authorization": {
+              "taskId": "task-example",
+              "planDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "artifactId": "artifact-example",
+              "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "bytes": 18,
+              "acceptanceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "reviewDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "targetId": "local-reports",
+              "targetPolicyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "name": "task-example-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+              "operation": "create-if-absent",
+              "expiresAt": "2026-09-10T00:00:00.000Z"
+            },
+            "deadlineAt": "2026-09-10T00:00:00.000Z",
+            "status": "pending",
+            "replyDigest": null,
+            "requestDigest": "sha256:a7746241ea731d38a3df543177dc7ee2dde7cc559d94aa9f1da9c38b6ad28c00"
+          }
+        ]
+      },
+      "LeaderReview": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "digest",
+          "verdict",
+          "selectionDigest",
+          "policyDigest",
+          "workerId",
+          "evidenceIds"
+        ],
+        "properties": {
+          "digest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "rework",
+              "reject"
+            ]
+          },
+          "selectionDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "policyDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "workerId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "evidenceIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        },
+        "description": "有来源的独立意见引用，不由 HTTP 认定其资格，也不代替客观验收。"
+      },
+      "LeaderView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "taskId",
+          "taskRevision",
+          "profile",
+          "stage",
+          "policyDigest",
+          "activeWorkerId",
+          "pendingRequest",
+          "lastDecision",
+          "review",
+          "publication",
+          "postverify",
+          "summaryArtifactId"
+        ],
+        "properties": {
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "taskRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "profile": {
+            "const": "task-managed-leader/v1"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "intake",
+              "work",
+              "review",
+              "verification",
+              "delivery",
+              "finalizing",
+              "terminal"
+            ]
+          },
+          "policyDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "activeWorkerId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pendingRequest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LeaderRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastDecision": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "digest",
+                  "callId",
+                  "evidenceId"
+                ],
+                "properties": {
+                  "digest": {
+                    "$ref": "#/components/schemas/Digest"
+                  },
+                  "callId": {
+                    "$ref": "#/components/schemas/Id"
+                  },
+                  "evidenceId": {
+                    "$ref": "#/components/schemas/Id"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LeaderReview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publication": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "actionId",
+                  "status",
+                  "authorizationDigest",
+                  "receiptArtifactId"
+                ],
+                "properties": {
+                  "actionId": {
+                    "$ref": "#/components/schemas/Id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "running",
+                      "succeeded",
+                      "failed",
+                      "unknown",
+                      "cancelled"
+                    ]
+                  },
+                  "authorizationDigest": {
+                    "$ref": "#/components/schemas/Digest"
+                  },
+                  "receiptArtifactId": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/Id"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "postverify": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "actionId",
+                  "status",
+                  "evidenceArtifactId"
+                ],
+                "properties": {
+                  "actionId": {
+                    "$ref": "#/components/schemas/Id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "running",
+                      "succeeded",
+                      "failed",
+                      "unknown",
+                      "cancelled"
+                    ]
+                  },
+                  "evidenceArtifactId": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/Id"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summaryArtifactId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "description": "只读有界 Leader 子投影，整个 UTF-8 JSON 响应最多 65536 bytes。旧 Task/Worker/Operation/Audit 响应不增加字段，历史沿原 events/Artifact。",
+        "examples": [
+          {
+            "taskId": "task-example",
+            "taskRevision": 2,
+            "profile": "task-managed-leader/v1",
+            "stage": "intake",
+            "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "activeWorkerId": null,
+            "pendingRequest": {
+              "id": "request-example",
+              "kind": "business",
+              "subject": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "nodeIds": [],
+              "prompt": "报告采用哪个地区的数据？",
+              "options": [
+                {
+                  "value": "north",
+                  "label": "北区"
+                }
+              ],
+              "authorization": null,
+              "deadlineAt": "2026-09-10T00:00:00.000Z",
+              "status": "pending",
+              "replyDigest": null,
+              "requestDigest": "sha256:0c57023789abb02551ac7837838ae3cb9dcd86ff0f3c58b4db372999eab51a7c"
+            },
+            "lastDecision": null,
+            "review": null,
+            "publication": null,
+            "postverify": null,
+            "summaryArtifactId": null
+          },
+          {
+            "taskId": "task-example",
+            "taskRevision": 2,
+            "profile": "task-managed-leader/v1",
+            "stage": "delivery",
+            "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "activeWorkerId": null,
+            "pendingRequest": {
+              "id": "request-publication",
+              "kind": "publication",
+              "subject": "sha256:67ac695038cba4163cd5b162003485226fdf62b7e0429e5cc9b40785010fa427",
+              "nodeIds": [],
+              "prompt": "是否允许在本机目标新增该精确报告？",
+              "options": [
+                {
+                  "value": "allow",
+                  "label": "允许"
+                },
+                {
+                  "value": "deny",
+                  "label": "拒绝"
+                }
+              ],
+              "authorization": {
+                "taskId": "task-example",
+                "planDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "artifactId": "artifact-example",
+                "artifactDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 18,
+                "acceptanceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "reviewDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "targetId": "local-reports",
+                "targetPolicyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "task-example-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+                "operation": "create-if-absent",
+                "expiresAt": "2026-09-10T00:00:00.000Z"
+              },
+              "deadlineAt": "2026-09-10T00:00:00.000Z",
+              "status": "pending",
+              "replyDigest": null,
+              "requestDigest": "sha256:a7746241ea731d38a3df543177dc7ee2dde7cc559d94aa9f1da9c38b6ad28c00"
+            },
+            "lastDecision": null,
+            "review": null,
+            "publication": null,
+            "postverify": null,
+            "summaryArtifactId": null
+          }
+        ]
+      },
+      "LeaderBusinessReply": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedRevision",
+          "requestDigest",
+          "answer"
+        ],
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "requestDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$"
+          }
+        },
+        "description": "原 Task revision CAS 与精确待答摘要；普通业务答案不授予工具或发布权限。",
+        "examples": [
+          {
+            "expectedRevision": 2,
+            "requestDigest": "sha256:0c57023789abb02551ac7837838ae3cb9dcd86ff0f3c58b4db372999eab51a7c",
+            "answer": "north"
+          }
+        ]
+      },
+      "LeaderPublicationReply": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedRevision",
+          "requestDigest",
+          "decision"
+        ],
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "requestDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ]
+          }
+        },
+        "description": "仅针对原完整 publication 请求 allow/deny，不接受替换授权正文、目标或期限。",
+        "examples": [
+          {
+            "expectedRevision": 2,
+            "requestDigest": "sha256:a7746241ea731d38a3df543177dc7ee2dde7cc559d94aa9f1da9c38b6ad28c00",
+            "decision": "allow"
+          }
+        ]
+      },
+      "LeaderReply": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/LeaderBusinessReply"
+          },
+          {
+            "$ref": "#/components/schemas/LeaderPublicationReply"
+          }
+        ],
+        "description": "互斥闭集两个回复分支；非 Worker ACK，不自动更新 key/revision/批准。",
+        "examples": [
+          {
+            "expectedRevision": 2,
+            "requestDigest": "sha256:0c57023789abb02551ac7837838ae3cb9dcd86ff0f3c58b4db372999eab51a7c",
+            "answer": "north"
+          },
+          {
+            "expectedRevision": 2,
+            "requestDigest": "sha256:a7746241ea731d38a3df543177dc7ee2dde7cc559d94aa9f1da9c38b6ad28c00",
+            "decision": "allow"
+          }
+        ]
+      },
+      "LeaderReplyReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "taskId",
+          "requestId",
+          "receiptId",
+          "requestDigest",
+          "replyDigest",
+          "acceptedRevision",
+          "replayed"
+        ],
+        "properties": {
+          "taskId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "receiptId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "requestDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "replyDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "acceptedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "replayed": {
+            "type": "boolean"
+          }
+        },
+        "description": "仅证明原回复耐久接纳，202 不表示模型已消费或已发布。replyDigest 精确绑定 taskId/requestId/requestDigest 与 answer 或 decision，acceptedRevision=expectedRevision+1；只 replayed 可随原 key 重放变化。",
+        "examples": [
+          {
+            "taskId": "task-example",
+            "requestId": "request-example",
+            "receiptId": "receipt-example",
+            "requestDigest": "sha256:0c57023789abb02551ac7837838ae3cb9dcd86ff0f3c58b4db372999eab51a7c",
+            "replyDigest": "sha256:89e4df837bf48dbdde035e345fd8abf2ef761e17964161e63fd229b8c64a0701",
+            "acceptedRevision": 3,
+            "replayed": false
+          }
+        ]
+      },
       "Id": {
         "type": "string",
         "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
