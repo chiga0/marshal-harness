@@ -8,6 +8,8 @@
 
 [ADR 0089](adr/0089-node-execution-custody-and-cleanup-recovery.md) 补 Node 执行托管与跨代 **cleanup-only** 收口；状态以 ADR 原文为准，未实测前不启用、不把旧 generation 的业务结果变成可接纳。它不改变旧 Go 恢复合同，不把 Linux 平台建设前置到 Mac 服务单进程崩溃恢复。
 
+[ADR 0090](adr/0090-node-runtime-business-questions.md) 已由维护者独立审查接纳，允许实施原 Worker 的运行中业务问答、一次答案投递/消费和最终验收引用；它不修改 0086 的批准前 preview/回答语义，也不把业务回答当工具授权。新持久事实须在明确的新格式启用，旧根不隐式迁移；合同接受与运行时实现/实机验证分开，当前尚不宣布该增强可用。
+
 | 问题 | 唯一入口 | 含义 |
 | --- | --- | --- |
 | 要实现什么 | [Task-first 架构](agent-team-service-architecture.md)、[Milestone](agent-team-service-milestones.md) | B1 先团队 PoC，B2 本地 API 可用，B3 正式支持；无 Workspace 产品实体 |
