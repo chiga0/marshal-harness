@@ -177,3 +177,29 @@ test('manifest and content share the original deadline signal instead of startin
   await assert.rejects(client.downloadArtifact(artifact.id), {code: 'client_timeout'});
   assert.equal(signals.length, 2); assert.equal(signals[0], signals[1]); assert.equal(signals[0].aborted, true);
 });
+
+test('audit client binds snapshot to original worker/task and exact audit manifest, with no writes or retries', async () => {
+  const audit = example('Audit'), worker = example('Worker'); audit.workers = [worker];
+  const snapshot = {...artifact, kind: 'evidence', name: worker.id + '.input.txt'};
+  const prompt = {workerId: worker.id, text: bytes.toString(), contextRefs: [], source: 'handed-off-redacted', observation: {
+    stage: 'handed-off', promptDigest: digest, promptBytes: bytes.length, inputDigest: digest, reservationDigest: digest,
+    preparedAt: at, handedOffAt: at, coverage: 'policy-redacted', policy: {id: 'public-fixture', version: '1'}, snapshot, previewTruncated: false}};
+  audit.prompts = [prompt];
+  for (const mode of ['ok', 'foreign-audit', 'changed-manifest', 'changed-preview']) {
+    const calls = [], client = new TaskClient({baseURL: 'http://127.0.0.1:39999', token, fetch: async (url, init) => {
+      calls.push(url); assert.equal(init.method, 'GET');
+      if (url.endsWith('/audit')) {
+        const response = structuredClone(audit); if (mode === 'foreign-audit') response.prompts[0].observation.snapshot.taskId = 'foreign';
+        return new Response(JSON.stringify(response), {headers: {'Content-Type': 'application/json'}});
+      }
+      if (!url.endsWith('/content')) return new Response(JSON.stringify({...snapshot, ...(mode === 'changed-manifest' ? {createdAt: '2026-09-09T00:00:00.000Z'} : {})}),
+        {headers: {'Content-Type': 'application/json'}});
+      return new Response(bytes, {headers: {'Content-Type': 'application/octet-stream', 'Content-Digest': 'sha-256=:' + createHash('sha256').update(bytes).digest('base64') + ':'}});
+    }});
+    if (mode === 'foreign-audit') {await assert.rejects(client.getAudit('task-example'), {code: 'client_invalid_response'}); assert.equal(calls.length, 1); continue;}
+    const read = await client.getAudit('task-example'); if (mode === 'changed-preview') read.prompts[0].text = 'x'.repeat(bytes.length);
+    if (mode === 'ok') assert.deepEqual((await client.downloadInputSnapshot('task-example', read.prompts[0])).content, bytes);
+    else await assert.rejects(client.downloadInputSnapshot('task-example', read.prompts[0]), {code: 'client_artifact_integrity'});
+    assert.equal(calls.length, 3);
+  }
+});

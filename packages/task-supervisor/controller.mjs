@@ -276,6 +276,15 @@ export class TaskSupervisor {
     if (entry.question?.questionId === questionId) {clearTimeout(entry.answerTimer); entry.question = null;}
     return result;
   }
+  #observeInput(entry, stage, prompt) {
+    // Optional telemetry cannot grant or revoke launch/cleanup/verification.
+    // Current-owner failures still face the original mayStart/finish gates.
+    if (typeof this.#execution.observeInput !== 'function') return;
+    try {
+      const result = this.#execution.observeInput(entry.ticket, stage, prompt);
+      if (result && typeof result.then === 'function') {void Promise.resolve(result).catch(() => {}); throw new Error();}
+    } catch {this.#notify({code: 'worker_input_audit_unavailable', stage, taskId: entry.ticket.taskId, workerId: entry.ticket.workerId});}
+  }
   async #run(entry) {
     let result, collected = {}, failure = false;
     try {
@@ -284,6 +293,7 @@ export class TaskSupervisor {
         text(prepared.cwd, 8192) && path.isAbsolute(prepared.cwd) && text(prepared.prompt, 256 * 1024) && prepared.prompt.trim() &&
         (prepared.onPermission === undefined || typeof prepared.onPermission === 'function'));
       entry.stage = 'prepared';
+      if (entry.ticket.executionType !== 'verification') this.#observeInput(entry, 'prepared', prepared.prompt);
       while (!entry.stopping && !this.#closing && !this.#failure) {
         if (this.#call('mayStart', entry.ticket)) break;
         // A pause is an admission fence, not an execution failure or new attempt.
@@ -318,6 +328,9 @@ export class TaskSupervisor {
         provider.start({...prepared, deadline: entry.ticket.deadline, executionContext, questionContext, onProgress: update => this.#progress(entry, update)});
       requireValue(object(entry.handle) && typeof entry.handle.stop === 'function' &&
         typeof entry.handle.started?.then === 'function' && typeof entry.handle.completion?.then === 'function');
+      // This records only handoff to the original Provider, not protocol delivery
+      // or model consumption. A crash in this gap leaves the weaker prepared fact.
+      if (!verifying) this.#observeInput(entry, 'handed-off');
       const completion = Promise.resolve(entry.handle.completion);
       // Retain the ORIGINAL completion even when progress/start observations fail.
       entry.completion = completion.catch(error => { this.#failEntry(entry, 'provider-completion', error); return null; });

@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {operations, validate, validAnswerResponse, validQuestionItems, validRepairResponse, TaskApiError} from '../task-api/contract.mjs';
+import {operations, validate, validAnswerResponse, validQuestionItems, validRepairResponse, validAuditResponse, TaskApiError} from '../task-api/contract.mjs';
 import {parseJson} from '../task-api/http-boundary.mjs';
 
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -56,6 +56,7 @@ function boundIdentity(entry, options, value) {
     entry.response === 'Operation' && entry.operation !== 'operation.get' && value.kind !== entry.operation) throw fail('client_invalid_response');
   if (entry.operation === 'task.answer' && !validAnswerResponse({...options.paths, body: JSON.parse(options.body)}, value) ||
       entry.operation === 'task.repair' && !validRepairResponse({...options.paths, body: JSON.parse(options.body)}, value) ||
+      entry.operation === 'task.audit' && !validAuditResponse(value, options.paths.taskId) ||
       entry.operation === 'task.questions' && !validQuestionItems(value, options.paths.taskId)) throw fail('client_invalid_response');
 }
 async function readBounded(response, signal) {
@@ -157,5 +158,16 @@ export class TaskClient {
   getTask(taskId, options = {}) { return this.request('task.get', {...options, path: {taskId}}); }
   approveTask(taskId, body, idempotencyKey, options = {}) { return this.request('task.approve', {...options, path: {taskId}, body, idempotencyKey}); }
   repairTask(taskId, body, idempotencyKey, options = {}) { return this.request('task.repair', {...options, path: {taskId}, body, idempotencyKey}); }
+  getAudit(taskId, options = {}) { return this.request('task.audit', {...options, path: {taskId}}); }
+  async downloadInputSnapshot(taskId, prompt, options = {}) {
+    const snapshot = prompt?.observation?.snapshot;
+    if (!validate(taskId, 'Id') || !validate(prompt, 'Prompt') || !snapshot || snapshot.taskId !== taskId ||
+      snapshot.name !== prompt.workerId + '.input.txt' || snapshot.kind !== 'evidence' || snapshot.mediaType !== 'text/plain' ||
+      prompt.observation.coverage !== 'policy-redacted') throw fail('client_invalid_request');
+    const downloaded = await this.downloadArtifact(snapshot.id, options);
+    if (['id', 'taskId', 'name', 'kind', 'status', 'mediaType', 'digest', 'bytes', 'createdAt'].some(key => downloaded.artifact[key] !== snapshot[key]) ||
+      !downloaded.content.subarray(0, Buffer.byteLength(prompt.text)).equals(Buffer.from(prompt.text))) throw fail('client_artifact_integrity');
+    return downloaded;
+  }
   downloadArtifact(artifactId, options = {}) { return this.request('artifact.content', {...options, path: {artifactId}}); }
 }

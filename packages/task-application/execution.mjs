@@ -31,6 +31,7 @@ export class TaskExecution {
   registerQuestion(ticket, request) {return this.app.runtimeQuestions.register(ticket, request);}
   dispatchAnswer(ticket, questionId) {return this.app.runtimeQuestions.dispatch(ticket, questionId);}
   acknowledgeAnswer(ticket, questionId, receipt) {return this.app.runtimeQuestions.acknowledge(ticket, questionId, receipt);}
+  observeInput(ticket, stage, prompt) {return this.app.inputAudit.observe(ticket, stage, prompt);}
   worker(tx, id) {
     const row = tx.projection('attempt', id); if (!row) reject('not_found', 404);
     return {row, record: decode(row)};
