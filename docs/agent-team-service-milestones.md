@@ -78,7 +78,7 @@ Pi候选`74a239e`的完整Node回归已由非作者独立完成：374/374通过�
 
 ## 3. B2：把演示变成日常可用的本地 API 服务
 
-**当前并行实施方式**：以 [Node API 候选契约](node-api-contract.md)描述实际可调用形状，独立推进 Schema/兼容负例、HTTP Application Port 的 DI/单元测试和真实 Agent 接入；三者在组合测试处汇合，不互相串行等待。候选已实现的 Task 创建/确认/查询/取消与 Worker/审计/交付不等于全量 B2：问答/图/operations、通用制品、SQLite 单写及完整恢复仍须接线和验证，之后才评定 `API-STABLE`。
+**当前并行实施方式**：以 [Task API OpenAPI](../packages/task-api/openapi.json)与[当前接口说明](../packages/task-api/README.md)描述实际可调用形状；`node-api-contract.md` 仅保留旧实验协议，不用于当前接入。独立推进 Schema/兼容负例、HTTP Application Port 的 DI/单元测试和真实 Agent 接入，三者在组合测试处汇合，不互相串行等待。接口存在不等于 B2 全部通过；问答、DAG、operations、制品、SQLite 与恢复的当前完成状态只见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)，`API-STABLE` 按下列四项独立判断。
 
 ### B2-A：Task 体验与本地简启动
 
