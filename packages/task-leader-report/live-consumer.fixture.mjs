@@ -1,0 +1,205 @@
+// External, explicitly authorized real-Pi consumer. Not a distribution asset.
+// The .fixture suffix only excludes this developer tool from package inventory;
+// this consumer does not inject a fake Provider or fixture configuration.
+import fs from 'node:fs';
+import path from 'node:path';
+import {spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
+import {isDeepStrictEqual} from 'node:util';
+import {fileURLToPath, pathToFileURL} from 'node:url';
+import {setTimeout as pause} from 'node:timers/promises';
+import {verify} from '../task-distribution/index.mjs';
+
+const check = (ok, code) => {if (!ok) throw new Error(code);};
+const same = (a, b) => check(isDeepStrictEqual(a, b), 'evidence_mismatch');
+const digest = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
+export function parseOptions(argv) {
+  const names = ['package', 'manifest-digest', 'source-head', 'node', 'pi-entry', 'pi-sdk', 'run-dir'];
+  const options = {};
+  for (let i = 0; i < argv.length; i++) {
+    const name = argv[i].slice(2);
+    check(argv[i].startsWith('--') && !Object.hasOwn(options, name), 'invalid_arguments');
+    if (['execute-real', 'allow-local-publication'].includes(name)) options[name] = true;
+    else {check(names.includes(name) && argv[i + 1] && !argv[i + 1].startsWith('--'), 'invalid_arguments'); options[name] = argv[++i];}
+  }
+  check(options['execute-real'] === true && options['allow-local-publication'] === true && names.every(name => typeof options[name] === 'string'), 'explicit_authorization_required');
+  check(/^[a-f0-9]{40}$/.test(options['source-head']) && /^sha256:[a-f0-9]{64}$/.test(options['manifest-digest']), 'invalid_pin');
+  check(names.filter(name => !['source-head', 'manifest-digest'].includes(name)).every(name => path.isAbsolute(options[name])), 'absolute_paths_required');
+  return options;
+}
+export function expectedReport(data, window, sourceDigest) {
+  return {profile: 'leader-regional-window/v1', window, sourceDigest, reports: ['east', 'west'].map(region => {
+    const rows = data.rows.filter(row => row.region === region && row.status === 'paid' && row.date >= window.startDate && row.date <= window.endDate);
+    return {region, ...window, count: rows.length, netCents: rows.reduce((sum, row) => sum + row.cents, 0)};
+  })};
+}
+export async function waitPhase(read, wanted, deadline, sleep = pause) {
+  while (Date.now() < deadline) {
+    const task = await read();
+    if (task.status === wanted) return task;
+    check(!['failed', 'cancelled', 'intervention', 'completed'].includes(task.status), 'unexpected_terminal');
+    await sleep(150);
+  }
+  throw new Error('phase_deadline');
+}
+export function checkAuthorization(authorization, {taskId, plan, report, audit, leader, now = Date.now()}) {
+  check(audit.acceptance.status === 'passed' && leader.review.verdict === 'accept', 'acceptance_required');
+  const artifactDigest = digest(report.content);
+  same(authorization, {taskId, planDigest: plan.digest, artifactId: report.artifact.id, artifactDigest, bytes: report.content.length,
+    acceptanceDigest: audit.acceptance.digest, reviewDigest: leader.review.digest, targetId: 'local-window-report',
+    targetPolicyDigest: authorization.targetPolicyDigest, operation: 'create-if-absent',
+    name: taskId + '-' + artifactDigest.slice(7) + '.json', expiresAt: authorization.expiresAt});
+  check(/^sha256:[a-f0-9]{64}$/.test(authorization.targetPolicyDigest) && Date.parse(authorization.expiresAt) > now, 'authorization_expired');
+}
+function privateDirectory(directory) {
+  const stat = fs.lstatSync(directory);
+  check(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid() && (stat.mode & 0o777) === 0o700 && fs.realpathSync(directory) === directory, 'private_directory_required');
+}
+function launch(node, args, env, cwd) {
+  const child = spawn(node, args, {env, cwd, stdio: ['ignore', 'pipe', 'pipe']});
+  let stdout = '', stderrBytes = 0, closed = false, ended, stopping, resolveReady, rejectReady;
+  const ready = new Promise((resolve, reject) => {resolveReady = resolve; rejectReady = reject;});
+  const exit = new Promise(resolve => {
+    child.once('error', () => rejectReady(new Error('service_spawn_failed')));
+    child.once('close', (code, signal) => {closed = true; ended = {code, signal, stderrBytes}; rejectReady(new Error('service_closed')); resolve(ended);});
+  });
+  child.stdout.on('data', bytes => {
+    stdout += bytes.toString();
+    if (stdout.length > 8192) {rejectReady(new Error('service_output_bound')); child.kill('SIGTERM');}
+    else if (stdout.includes('\n')) {try {resolveReady(JSON.parse(stdout.split('\n')[0]));} catch {rejectReady(new Error('service_ready_invalid'));}}
+  });
+  child.stderr.on('data', bytes => {stderrBytes += bytes.length; if (stderrBytes > 65536) child.kill('SIGTERM');});
+  const timer = setTimeout(() => rejectReady(new Error('service_ready_deadline')), 10000);
+  return {ready: ready.finally(() => clearTimeout(timer)), stop() {
+    stopping ??= (async () => {
+      if (!closed) child.kill('SIGTERM');
+      const killTimer = setTimeout(() => {if (!closed) child.kill('SIGKILL');}, 15000);
+      let deadlineTimer;
+      try {
+        await Promise.race([exit, new Promise((_, reject) => {deadlineTimer = setTimeout(() => reject(new Error('service_stop_deadline')), 20000);})]);
+        check(ended.code === 0 && ended.signal === null && JSON.parse(stdout.trim().split('\n').at(-1)).clean === true, 'service_unclean');
+        return ended;
+      } finally {clearTimeout(killTimer); clearTimeout(deadlineTimer);}
+    })(); return stopping;
+  }};
+}
+export async function run(options) {
+  // Revalidate even programmatic callers before any execution.
+  const o = parseOptions(Object.entries(options).flatMap(([key, value]) => value === true ? ['--' + key] : ['--' + key, value]));
+  check(process.versions.node === '24.15.0' && fs.realpathSync(o.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
+  const manifest = verify({root: o.package, manifestDigest: o['manifest-digest']});
+  check(manifest.sourceHead === o['source-head'], 'source_pin_mismatch');
+  privateDirectory(path.dirname(o['run-dir']));
+  const piRoot = path.resolve(path.dirname(o['pi-entry']), '../..');
+  check(o['pi-entry'] === path.join(piRoot, 'dist/bundle/cli.js') && o['pi-sdk'] === path.join(piRoot, 'dist/index.js') &&
+    fs.realpathSync(o['pi-entry']) === o['pi-entry'] && fs.realpathSync(o['pi-sdk']) === o['pi-sdk'], 'pi_identity');
+  const pi = JSON.parse(fs.readFileSync(path.join(piRoot, 'package.json')));
+  check(pi.name === '@earendil-works/pi-coding-agent' && typeof pi.version === 'string' && path.isAbsolute(process.env.HOME ?? ''), 'pi_identity');
+  fs.mkdirSync(o['run-dir'], {mode: 0o700});
+  const root = o['run-dir'], reportRoot = path.join(root, 'reports'), state = path.join(root, 'data');
+  const evidence = {profile: 'installed-pi-leader-report-live/v1', passed: false, production: false, trueProcessOverlapProven: false,
+    sourceHead: manifest.sourceHead, manifestDigest: o['manifest-digest'], nodeVersion: process.versions.node, piVersion: pi.version,
+    piEntryDigest: digest(fs.readFileSync(o['pi-entry'])), piSdkDigest: digest(fs.readFileSync(o['pi-sdk'])), tasks: [], stage: 'loading'};
+  const save = (name, value) => fs.writeFileSync(path.join(root, name), JSON.stringify(value), {mode: 0o600, flag: 'wx'});
+  const handles = []; let reader;
+  let interrupted = false;
+  const interrupt = () => {interrupted = true; for (const handle of handles) void handle.stop().catch(() => {});};
+  process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt);
+  try {
+    const load = file => import(pathToFileURL(path.join(o.package, 'packages', file)).href);
+    const [{TaskClient}, {taskBody}, {startReportServer}] = await Promise.all([load('task-client/index.mjs'), load('task-leader-report/policy.mjs'), load('task-leader-report/report-server.mjs')]);
+    fs.mkdirSync(reportRoot, {mode: 0o700}); reader = await startReportServer({root: reportRoot, port: 0});
+    const env = {PATH: path.dirname(o.node) + ':' + (process.env.PATH ?? '/usr/bin:/bin'), HOME: process.env.HOME,
+      MARSHAL_PI_ENTRY: o['pi-entry'], MARSHAL_PI_SDK: o['pi-sdk'], MARSHAL_REPORT_ROOT: reportRoot, MARSHAL_REPORT_URL: reader.url};
+    for (const key of ['LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR']) if (process.env[key]) env[key] = process.env[key];
+    async function start(mode) {
+      check(!interrupted, 'interrupted');
+      same(verify({root: o.package, manifestDigest: o['manifest-digest']}), manifest);
+      const handle = launch(o.node, [path.join(o.package, manifest.entrypoint), '--root', state, '--mode', mode,
+        '--port', '0', '--config', path.join(o.package, 'packages/task-leader-report/service-config.mjs')], env, root);
+      handles.push(handle); const ready = await handle.ready;
+      check((fs.statSync(ready.connectionFile).mode & 0o777) === 0o600, 'connection_mode');
+      const connection = JSON.parse(fs.readFileSync(ready.connectionFile));
+      return {handle, client: new TaskClient({baseURL: connection.url, token: connection.token, timeoutMs: 10000})};
+    }
+    let {handle, client} = await start('create'); const completed = [];
+    for (const index of [0, 1]) {
+      evidence.stage = 'task-' + index;
+      const window = index === 0 ? {startDate: '2026-09-01', endDate: '2026-09-01'} : {startDate: '2026-09-02', endDate: '2026-09-03'};
+      const data = {rows: [{date: '2026-09-01', region: 'east', status: 'paid', cents: index ? 300 : 100},
+        {date: '2026-09-02', region: 'east', status: 'paid', cents: -20}, {date: '2026-09-02', region: 'east', status: 'paid', cents: 0},
+        {date: '2026-09-03', region: 'west', status: 'paid', cents: index ? 350 : 150}, {date: '2026-09-03', region: 'west', status: 'cancelled', cents: 999999}]};
+      const bytes = Buffer.from(JSON.stringify(data));
+      const uploaded = await client.request('input.create', {idempotencyKey: 'live-input-' + index, body: {name: 'sales.json', mediaType: 'application/json', contentBase64: bytes.toString('base64')}});
+      const create = {idempotencyKey: 'live-task-' + index, body: taskBody(uploaded.id)};
+      const created = await client.request('task.create', create), taskId = created.id, deadline = Date.parse(created.deadlineAt);
+      const phase = status => {evidence.stage = 'task-' + index + '-' + status; return waitPhase(() => {check(!interrupted, 'interrupted'); return client.getTask(taskId);}, status, deadline);};
+      let task = await phase('awaiting-answer'), leader = await client.getLeader(taskId);
+      check(leader.pendingRequest.kind === 'business' && task.plan === null, 'business_question_required');
+      const answer = {path: {taskId, requestId: leader.pendingRequest.id}, idempotencyKey: 'live-answer-' + index,
+        body: {expectedRevision: task.revision, requestDigest: leader.pendingRequest.requestDigest, answer: JSON.stringify(window)}};
+      const answerReceipt = await client.request('task.leader.reply', answer);
+      task = await phase('awaiting-approval'); const plan = await client.request('task.plan', {path: {taskId}});
+      same(plan.edges, [{from: 'east', to: 'verify'}, {from: 'west', to: 'verify'}]); same(plan.budget, create.body.limits);
+      same(plan.nodes.map(node => [node.id, node.role]), [['east', 'author'], ['west', 'author'], ['verify', 'verifier']]);
+      const approve = {path: {taskId}, idempotencyKey: 'live-approve-' + index,
+        body: {expectedRevision: task.revision, planRevision: plan.revision, planDigest: plan.digest}};
+      const approval = await client.request('task.approve', approve);
+      task = await phase('awaiting-confirmation'); leader = await client.getLeader(taskId);
+      check(leader.pendingRequest.kind === 'publication', 'publication_request_required');
+      const authorization = leader.pendingRequest.authorization, report = await client.downloadArtifact(authorization.artifactId), audit = await client.getAudit(taskId);
+      same(JSON.parse(report.content), expectedReport(data, window, digest(bytes)));
+      checkAuthorization(authorization, {taskId, plan, report, audit, leader});
+      check(Date.parse(authorization.expiresAt) <= deadline && fs.readdirSync(reportRoot).length === index, 'publication_boundary');
+      save('task-' + index + '-authorization.json', authorization);
+      const allow = {path: {taskId, requestId: leader.pendingRequest.id}, idempotencyKey: 'live-allow-' + index,
+        body: {expectedRevision: task.revision, requestDigest: leader.pendingRequest.requestDigest, decision: 'allow'}};
+      const allowReceipt = await client.request('task.leader.reply', allow);
+      const done = await phase('completed'), final = await client.getLeader(taskId), finalAudit = await client.getAudit(taskId);
+      check(final.review.verdict === 'accept' && final.publication.status === 'succeeded' && final.postverify.status === 'succeeded' && final.stage === 'terminal', 'delivery_incomplete');
+      check(done.deadlineAt === created.deadlineAt && finalAudit.acceptance.status === 'passed' && finalAudit.attempts <= 17, 'budget_or_acceptance');
+      for (const id of [final.summaryArtifactId, ...final.review.evidenceIds, final.publication.receiptArtifactId, final.postverify.evidenceArtifactId, ...finalAudit.acceptance.evidenceIds])
+        check((await client.downloadArtifact(id)).artifact.taskId === taskId, 'artifact_binding');
+      const response = await fetch(new URL(authorization.name, reader.url), {redirect: 'error', signal: AbortSignal.timeout(5000)});
+      check(response.status === 200 && Number(response.headers.get('content-length')) === report.content.length, 'published_get');
+      same(Buffer.from(await response.arrayBuffer()), Buffer.from(report.content));
+      fs.writeFileSync(path.join(root, 'task-' + index + '-report.json'), report.content, {mode: 0o600, flag: 'wx'});
+      const workers = await client.request('task.workers', {path: {taskId}, query: {limit: 100}});
+      check(workers.nextCursor === null && (await client.request('supervisor.get')).activeWorkers === 0, 'workers_unsettled');
+      completed.push({taskId, create, created, approve, approval, answer, answerReceipt, allow, allowReceipt, done, final, audit: finalAudit, workers, report});
+      evidence.tasks.push({taskId, status: done.status, artifactDigest: digest(report.content), attempts: finalAudit.attempts,
+        reworkCount: finalAudit.reworkCount, retryCount: finalAudit.retryCount, measurement: finalAudit.measurement,
+        reviewDigest: final.review.digest, summaryArtifactId: final.summaryArtifactId,
+        publicationReceiptArtifactId: final.publication.receiptArtifactId, postverifyEvidenceArtifactId: final.postverify.evidenceArtifactId});
+    }
+    evidence.stage = 'cold-replay'; await handle.stop();
+    const files = fs.readdirSync(reportRoot).map(name => {const stat = fs.statSync(path.join(reportRoot, name)); return {name, ino: stat.ino, mtimeMs: stat.mtimeMs};});
+    ({handle, client} = await start('open'));
+    for (const item of completed) {
+      same(await client.request('task.create', item.create), item.created); same(await client.request('task.approve', item.approve), item.approval);
+      for (const [request, receipt] of [[item.answer, item.answerReceipt], [item.allow, item.allowReceipt]]) {
+        const replay = await client.request('task.leader.reply', request); check(replay.replayed === true, 'replay_required'); same({...replay, replayed: false}, receipt);
+      }
+      same(await client.getTask(item.taskId), item.done); same(await client.getLeader(item.taskId), item.final); same(await client.getAudit(item.taskId), item.audit);
+      same(await client.request('task.workers', {path: {taskId: item.taskId}, query: {limit: 100}}), item.workers);
+      same(Buffer.from((await client.downloadArtifact(item.report.artifact.id)).content), Buffer.from(item.report.content));
+    }
+    await handle.stop();
+    same(fs.readdirSync(reportRoot).map(name => {const stat = fs.statSync(path.join(reportRoot, name)); return {name, ino: stat.ino, mtimeMs: stat.mtimeMs};}), files);
+    same(verify({root: o.package, manifestDigest: o['manifest-digest']}), manifest);
+    evidence.passed = true; evidence.stage = 'completed';
+  } catch (error) {evidence.failure = error?.code && /^[a-z_]{1,64}$/.test(error.code) ? error.code :
+    /^[a-z_]{1,64}$/.test(error?.message ?? '') ? error.message : 'live_acceptance_failed';}
+  finally {
+    for (const handle of handles) try {await handle.stop();} catch {evidence.passed = false; evidence.cleanupFailure = true;}
+    try {await reader?.close();} catch {evidence.passed = false; evidence.readerFailure = true;}
+    if (interrupted) {evidence.passed = false; evidence.interrupted = true;}
+    process.off('SIGINT', interrupt); process.off('SIGTERM', interrupt);
+    save('evidence.json', evidence);
+  }
+  return evidence;
+}
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {const result = await run(parseOptions(process.argv.slice(2))); process.stdout.write(JSON.stringify(result) + '\n'); if (!result.passed) process.exitCode = 1;}
+  catch {process.stderr.write('{"code":"live_preflight_failed"}\n'); process.exitCode = 1;}
+}
