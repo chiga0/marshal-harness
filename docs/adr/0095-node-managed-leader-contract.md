@@ -1,16 +1,16 @@
 # ADR 0095：Node 受管 Leader 的最小机器合同
 
 - 状态：Proposed（2026-09-09）。ADR0094 已接受行为目标；本稿是一次实施前合同冻结，待维护者独立审查接纳，不代表实现、验收或发布授权。
-- 文档基线：`f27784ddea738c3d095ad11c184d60fbf67ad162`；生产接缝同时核对 Worker 取消候选 `acbcfee9960557215328590f7b97bc1af3884d43`，不把未合候选当 main 已实施。
+- 文档工作树基线：`f27784ddea738c3d095ad11c184d60fbf67ad162`；生产接缝最初核对 Worker 取消候选 `acbcfee9960557215328590f7b97bc1af3884d43`，其聚合修复 `070086e991b65b81f1765ec78ec1a9772fc01102` 已进入当前 main `3f359fd0fd88987b8ea2f3d3fbb36058834b003b`。这是追溯补充，不重新变基，也不把 Leader 设计记为已有实现。
 - 依据：[ADR0094](0094-trusted-single-user-role-team.md)、[Leader 行为设计](../node-leader-execution-design.md)。唯一实施字段、边界和验收清单见 [机器合同](../node-leader-execution-contract.md)。本稿不修改现有导航、代码或 OpenAPI。
 
 ## 1. 决定
 
 采用一个显式启用的 `task-managed-leader/v1` 内部执行 profile，使用新空根格式 `marshal-node-task-sqlite/v7-managed-leader`、service layout 7。已有 v1–v6 根、终态、回执及默认启动选择不变，不自动迁移或追认。新 reader 必须按根格式选择 reducer；旧 reader 在 owner claim 前拒绝 v7。新格式的必要性是阶段验收不再直接整体结束、反复 Leader 决定/动作及外部效果有恢复义务，而不是为角色名称换一个版本。
 
-仍用唯一 Application/SQLite、原短事务、Depot、预算/Attempt、outbox、Provider、guard/custody 和受控执行。Leader 的内部 `executionType` 不增加公开 role；Supervisor 只聚合观测，Core 决定准入/调度/硬规则，Execution 操作原 handle。必需结果直接回 Core。普通可恢复失败封闭受影响后继并唤起 Leader，不全队无差别取消；未知清理/权限和硬期限不降级成业务重试。
+仍用唯一 Application/SQLite、原短事务、Depot、预算/Attempt、outbox、Provider、guard/custody 和受控执行。Leader 的内部 `executionType` 不增加公开 role；Supervisor observer 只聚合观测，不持有可变命令端口或执行 handle；Core 决定许可/调度/硬规则，Execution coordinator 持有原 handle 并承担 start/stop/collect。现混合 loop 只作为兼容组合入口逐步委托，不要求四个服务或全仓重命名。必需结果直接回 Core。普通可恢复失败封闭受影响后继并唤起 Leader，不全队无差别取消；未知清理/权限和硬期限不降级成业务重试。
 
-六类闭集建议为 `ask`、`plan`、`work`、`repair`、`deliver`、`conclude`，没有通用 shell、URL、SQL 或状态 PATCH。调用原预算内单 Task 串行，业务事件合并；相关语义快照决定结果是否仍适用，不因无关 heartbeat 废弃。Task 和全局原并发内保留一个决策席位，不免费、不提额；代表双作者流程在任何付费前校验至少能容纳两个作者和 Leader。
+六类闭集建议为 `ask`、`plan`、`work`、`repair`、`deliver`、`conclude`，没有通用 shell、URL、SQL 或状态 PATCH。调用原预算内单 Task 串行，业务事件合并；相关语义快照决定结果是否仍适用，不因无关 heartbeat 废弃。Task 和全局原并发内保留一个决策席位，不免费、不提额；代表双作者流程在任何付费前校验至少能容纳两个作者和 Leader。机器合同中的 17 Attempts/9 次调用仅是一次修正及相关故障验收场景的预算配置，不是必须消费的固定流程；既定 DAG 后继、合并通知和精确授权动作继续不额外索要 Leader 批准，不制造返工或空调用凑次数。
 
 ## 2. 证据与事务
 

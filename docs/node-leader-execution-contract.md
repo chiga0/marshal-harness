@@ -1,6 +1,6 @@
 # Node 受管 Leader：最小执行机器合同
 
-状态：随 [ADR0095](adr/0095-node-managed-leader-contract.md) 提案冻结，**Proposed / 未实施**。行为依据是已接受的 [ADR0094](adr/0094-trusted-single-user-role-team.md) 与 [机制设计](node-leader-execution-design.md)；代码基线 `f27784dd`，取消接缝参考 `acbcfee9`。下文函数名为明确的新增/调整接缝，不声称当前已有。只选一个实现方案，不建立第二 scheduler、权限平台或 Workflow 编辑器。
+状态：随 [ADR0095](adr/0095-node-managed-leader-contract.md) 提案冻结，**Proposed / 未实施**。行为依据是已接受的 [ADR0094](adr/0094-trusted-single-user-role-team.md) 与 [机制设计](node-leader-execution-design.md)；文档工作树锁定 `f27784dd`，取消接缝最初参考 `acbcfee9`，其聚合修复 `070086e9` 已进入当前 main `3f359fd0`。后两者仅补充实际追溯，不重新变基本工作树，也不代表 Leader 已实现。下文函数名为明确的新增/调整接缝，不声称当前已有。只选一个实现方案，不建立第二 scheduler、权限平台或 Workflow 编辑器。
 
 ## 1. 根配置、版本与固定边界
 
@@ -45,7 +45,7 @@
 | `plan {proposal}` | proposal 沿现 `proposePlan` 的有界节点/边/预算/交付结构；只在尚未批准时创建/替换 preview，Core 加入可信条款，必须原 `task.approve` 精确确认。批准后不悄改 DAG/目标；本版有限调整走 repair，超范围说明限制并等待用户明确新请求，不擅自重建 Task |
 | `work {kind,nodeIds,selectionDigest}` | `kind=execute|review|verify`；nodeIds 1–64、去重、同计划。execute 仅请求推进已批准未执行节点；review 只能是当前完整可审选果；verify 必须是原 verifier sink 且当前独立 Review 满足。原相同义务存在就引用它，不创建替身 |
 | `repair {nodeIds,basis,feedback}` | 原计划可修节点子集、feedback ≤8192 bytes；`basis={kind,digest}`，kind 为 `review|content-rejection|execution-failure`，来源规则见 §3；不能传新目标、预算、checker、权限或任意命令 |
-| `deliver {artifactId,acceptanceDigest,reviewDigest}` | 仅精确已验收 delivery Artifact。默认只准备下载；有 publication 配置也须原精确授权，才建立一个发布动作。后验是可信策略的必需义务，不能由 Leader 选择跳过或降低 |
+| `deliver {artifactId,acceptanceDigest,reviewDigest}` | 仅精确已验收 delivery Artifact。默认只准备下载；有 publication 配置但缺精确授权时，Core 同库保存原待授权动作与完整确认请求，尚不授予启动许可；allow 回复后按原绑定继续，不再次让 Leader 批准同一动作。后验是可信策略的必需义务，不能由 Leader 选择跳过或降低 |
 | `conclude {outcome,summary,basisDigests}` | outcome 为 `wait|succeeded|failed`，summary ≤4096 bytes，basisDigests ≤64；wait 只等具体未结原义务，不建定时付费循环。succeeded 必须满足整体出口；failed 保留原事实并按 Core 收口，不能覆盖已发生效果 |
 
 同一决定最多一个 ask，ask/plan/conclude 不能与可能执行的其他 action 混合；同一选果最多一个 review/verify/repair/deliver，互斥动作或前后依赖猜测整份拒绝。work-execute 可合并节点，后继仍按原 DAG 自动调度。Core 不解释自然语言中的额外指令。批准内自治是同计划选果/修正和已允许执行；任意换 Provider、拓扑、增加预算、不可逆业务写不在本版执行集，不能把确认文本当解释器开启。
@@ -84,7 +84,7 @@ v7 ticket.input 增加内部 `leaderReplyRefs`，每项 `{requestId,requestDiges
 1. **冻结输入/调用**：短只读事务取得精确语义引用，锁外读/校验 Depot 并构造有界输入；短写事务重查这些引用、owner、取消/期限/预算/headroom，唯一 claim 义务、预留原 Attempt/capacity 和输入引用/outbox。任何副作用前原 custody 公钥/许可提交。输入 bytes 先耐久再 SQL，失败孤立 blob 不是权威。
 2. **接纳决定**：原 managed result/cleanup 与私有解析端口通过；短写事务核对 active call、原 inputDigest、相关 readSet 和硬 fence。一次提交原决定、义务 consumed、全部 action 和其 outbox/source；部分动作校验失败整份不提交。拒绝输出留下原失败和有限重试依据，不执行其中“看起来安全”的一半。
 3. **消费动作**：原 owner 在短事务重查 action、授权与硬规则，绑定原执行 reservation/command。锁外 prepare/start/collect；完成后按原 ticket 和当前事实一次接纳结果、结清原动作/容量并产生下一业务义务。同 action 精确重复只读原结果，不重新创建目标。同步无 I/O 的 plan/request/conclude 直接同事务结清，不制造空 Worker。
-4. **回复**：认证→原 key 精确 replay→当前 Task revision/requestDigest/未答/期限/取消检查→原 reply+request consumed+下一业务义务及回执同事务；暂停可以保存合法回复，但不派新调用。不能把接纳回复记为模型已消费。
+4. **回复**：认证→原 key 精确 replay→当前 Task revision/requestDigest/未答/期限/取消检查→原 reply+request consumed+相应后继义务及回执同事务。business 回复产生下一次需要理解答案的业务义务；publication allow 若对应已提交的精确待授权动作，则同事务解封该原动作的执行义务，不凭授权确认再造一次 Leader 批准调用。暂停可以保存合法回复，但不派新调用/动作；deny 保留拒绝并形成需业务取舍的原义务。不能把接纳回复记为模型已消费或发布已成功。
 5. **整体结束**：新 profile verifier 通过写原独立 acceptance/Artifact 后，Task 继续 running、phase=delivery；保留当前 Review 和 selected 版本。交付/必需后验通过、全部影响成功义务已结、无未知执行/效果，且当前 Leader conclude=succeeded 被接纳，才同事务写 completed。Leader 无法把缺证据的失败“汇总成成功”。
 
 语义 readSet 重查计划、用到的 selected/原结果、相关答案/ACK、Review/验收、授权和先前决定；另总是检查 owner/control/deadline。cursor 只界定读到的位置，不用整 Task revision 拒绝内部决定；另一分支 heartbeat/usage 不废弃它。剩余预算是观察值，接纳时检查实际动作仍可承担，不因合法并行执行消耗一次 Attempt 就要求整个输入快照数值完全相同。新相关业务事件合并进下一义务，不覆盖当前调用输入。公开写请求仍原 revision CAS，不因此自动刷新用户 revision。
@@ -93,7 +93,9 @@ v7 ticket.input 增加内部 `leaderReplyRefs`，每项 `{requestId,requestDiges
 
 Task/global 各保留一个 Leader 决策 headroom：非 Leader 新准入最多分别占各自 maxWorkers−1，Leader 使用同一原 capacity ledger 中余下真实席位。所有 Leader/Review/verifier/发布/后验仍计原 maxAttempts/deadline；总量不加一。Task leader policy 要求双作者并行时，Task 与全局 maxWorkers 均至少 3，且初次付费前证明完整最短路径的最低 Attempt 数可装入预算；默认 maxWorkers=2 不静默改为 3。等待的作者/长 Reviewer 占实际席位，不能假释放；多个 Task 的 Leader 按原待决顺序公平选唯一全局预留席位，不让普通新任务抢占该位。
 
-本稿的代表验收配置显式给至少 17 Attempts、9 次 Leader 调用：一次缺项、两个作者、一次真实局部修正、两次完整 Review、一次 verifier、一次精确发布授权、发布与后验、最终总结。它不是为所有 Task 强制提额；调用者必须主动提供足够原预算。更小的无修正/不发布任务按实际最短路径检查；未知 usage 不当零，也不对外声称预留 Attempts 等于实际 token 成本。
+本稿一次缺项/一次真实局部修正及相关故障验收的代表配置为 `maxAttempts=17`、`policy.maxCalls=9`：它们是本场景获批预算上限/可用余量，**不是必须耗满的次数、每 Task 固定九次调用或逐事件付费要求**。两个作者、两轮完整 Review、独立 verifier、精确发布与后验及总结按实际业务义务运行；approve 后已经确定的 DAG 后继由 Core 推进，批次通知合并，授权回复后已提交的精确动作直接按原门禁继续，均不为凑九次调用再问 Leader。实际少于该上限就是实际消费，不补空调用、不制造 rework；首轮正确记 firstpass。
+
+该示例不替所有 Task 提额或承诺足以覆盖任意数量故障重试；调用者必须主动提供本次原预算，实际恢复/重试仍受剩余 Attempts/maxCalls/deadline 限制。更小的无修正/不发布任务按实际最短路径检查；未知 usage 不当零，也不对外声称预留 Attempts 等于实际 token 成本。
 
 新格式局部可恢复失败把受影响后继封闭、原工作标失败并产生待决义务；仍合法的无关分支继续。用户 worker.cancel 保留其取消及后继禁止语义，Leader不得自动派替身；Task cancel/硬期限/权限故障立即按 Core 停止新执行并由 Execution 停原 handles，不等 Leader。疑似 stuck 仅观测，不 kill。Store/owner 丢失依旧执行预批准的原 handle 停止，不能补写虚假 cleanup。
 
@@ -171,7 +173,7 @@ Task 状态仍旧枚举：待业务答复用 awaiting-answer，待精确发布�
 | [execution.mjs](../packages/task-application/execution.mjs) `nextWork/finish/reconcile/expandDispatch` | 原 ticket/预算上增加内部类型、决策 headroom、阶段验收、有限失败待决和当前代安全 successor；真实结果不经观察采样 |
 | 新 `task-application/leader.mjs` | `snapshot/acceptDecision/consumeAction/reply/view/recover`；同原 transaction 与 Store，不导入 Provider 品牌、持有进程或建立新 scheduler |
 | [verification.mjs](../packages/task-application/verification.mjs)、[repair.mjs](../packages/task-application/repair.mjs) | 独立 Review 受信封装、当前选果/原 ACK 重查、同计划内部 repair provenance、候选验收与后验区分；不放宽旧 WeakMap/负报告门禁 |
-| [controller.mjs](../packages/task-supervisor/controller.mjs) | 原 loop 委托 Core 派发/硬控制，执行原 start/stop/collect；观测聚合只生成业务通知，不自己重试改计划/判成功 |
+| [controller.mjs](../packages/task-supervisor/controller.mjs) | 现混合 loop 保留为兼容组合入口：许可/已批准调度/硬规则委托 Core，原 handle 持有及 start/stop/collect 委托 Execution coordinator；Supervisor observer 只聚合观测/通知，不持有可变命令端口或执行 handle，不业务重试改计划/判成功。不要求四个服务或全仓重命名 |
 | [业务适配](../packages/task-business/index.mjs)、[命令适配](../packages/task-verification-command/index.mjs)、新增 `packages/task-publication-report/` | 精确输入、集中 Review/原负反馈进入实际 prompt，固定发布/后验命令与私有 receipt；命令端口显式接纳 postverify 内部类型，不把现仅 verification 的校验当已支持；不得弃反馈或使用可变目录取上游 |
 | [store.mjs](../packages/task-store/store.mjs)、[composition.mjs](../packages/task-service/composition.mjs) | v7/layout7 claim 前校验、可信 DI/原准备资格、恢复准入；复用原 outbox kind/source/预算，不涨全局事务上限 |
 | [HTTP](../packages/task-api/http-handler.mjs)、[OpenAPI](../packages/task-api/openapi.json)、[客户端](../packages/task-client/index.mjs)、发行清单 | 两个真实新端点/绑定，旧 bytes 回归；所有新增生产模块进入原 same-bytes 清单，不把 live fixtures 包成生产依赖 |
