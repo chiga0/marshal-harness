@@ -108,7 +108,13 @@ async function launchManaged({executable, args, cwd, env, deadline, onUpdate, on
     // Never stop an exited/replayed PID. Reuse/presence/EPERM is not evidence of
     // emptiness; only ESRCH can close this already identity-bound observation.
     try { process.kill(-guard.pid, 0); }
-    catch (error) { finish(error?.code === 'ESRCH'); return; }
+    catch (error) {
+      if (error?.code === 'ESRCH') { finish(true); return; }
+      // Darwin can report EPERM while an exited group still contains zombies.
+      // It remains unresolved, never evidence of emptiness. Observe again only
+      // within the ORIGINAL cleanup budget; permanent denial still fails closed.
+      if (process.platform !== 'darwin' || error?.code !== 'EPERM') { finish(false); return; }
+    }
     groupTimer = setTimeout(observeGroupEmpty, Math.min(25, Math.max(1, cleanupUntil - performance.now())));
   }
   function observeGuardExit(code, signal) {

@@ -19,4 +19,6 @@ stdout 最多收集1MiB；`outputComplete` 只表明所收字节数和 guard 观
 
 业务验证层必须检查原执行身份、正常退出、实际 cleanup、完整输出帧、nonce、批准策略/候选摘要与所有必要断言。Runtime 不给 stdout 签业务验收，不保存 Decision、不释放 Application 的容量，也不把退出0当 Task 完成。输出不完整或清理未知必须失败或保留未知，不重跑未知效果。
 
+Darwin 原组退出后仍有待回收成员时，signal `0` 可能短暂返回 `EPERM`（[Apple 实现](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c#L1612)）。该结果始终是未决；Runtime 只在原有5秒清理总预算内继续只读观察，不重置预算、不补发停止信号。必须后续取得原组的真实 `ESRCH`、原清理回执和原 guard 的 `SIGKILL` 退出才可确认；持续拒绝到期仍为 `cleanup_unconfirmed`，其他错误仍立即拒绝。此项不改变业务期限、持久合同或隔离等级，也不把缺少 errno 的历史 CI 失败断言为已确诊。
+
 定向验证：`node --test --test-concurrency=1 packages/agent-runtime/command.test.mjs packages/agent-runtime/index.test.mjs`。测试使用固定 Node 和仓库内夹具，覆盖双向 ACP、独立命令、取消/期限、非零退出和继承子进程、字节限制、父 owner 实际退出；不是实际业务 verifier 或正式部署验收。
