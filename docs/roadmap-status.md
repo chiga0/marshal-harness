@@ -8,6 +8,8 @@
 
 ### 最新正式 Node 集成检查点
 
+**2026-09-09 12:59 CST 已合入并推送**：规划提示合同修正source=`42426a2`，localMergeSha=`69cfacee2fbea366174744167d5a2c3a3dfeee89`，远端一致、`pendingRemoteSync=false`。原reviewer复审与独立24项通过；当前候选真实Pi HTTP运行问答→双作者交付→独立验收/下载→正常重开29.624秒通过、交叠10.189秒、零重复派发。前一候选一次真实规划失败保留：未说明scope类型导致对象/数组不匹配；补提示而非放宽Core。上一源0f86804 Ubuntu/macOS各510项全过，API响应上界和事件续读测试已合入，不再待开发。当前补同候选失败控制/接口证据与完整快照新目录恢复；仍非生产发布，[精确证据及剩余边界](node-task-service-status-2026-09-08.md)。
+
 **2026-09-09 12:39 CST 已合入并推送**：输入审计/简启动source=`fe04a8a`，localMergeSha=`ee3932ffc135f89ce0395f159696f93c6684da1d`，远端一致、`pendingRemoteSync=false`。独立最终29/29通过，58Schema/34示例/25操作通过；简启动一次P1聚合修正后复审关闭。下一项为API-STABLE响应上界及事件续读。香港runner/固定Node可执行，SCP137后未收到安装包、不记部署成功。B1/B2/API-STABLE/B3不升级，[精确证据与边界](node-task-service-status-2026-09-08.md)。
 
 **2026-09-09 12:20 CST 已合入并推送**：sourceHead=`8f8ff8dfe57852e6b383fbd2bb7c70fb75a1d552`，localMergeSha=`85fc62a3338fc15c408e941e16a7c882b0be4a6d`，远端 main 已核对一致、`pendingRemoteSync=false`；精确 source 的 Ubuntu/macOS Node team CI 均通过。运行中问答和局部修正进入主线；实际输入审计、简启动仍在途，OpenAPI仍为candidate，B1/B2/API-STABLE/B3不升级。[验证范围及未完成项](node-task-service-status-2026-09-08.md)。以下未合 main 记录是历史时点。
