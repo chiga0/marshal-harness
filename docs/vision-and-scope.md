@@ -2,6 +2,8 @@
 
 ## 当前产品投影（2026-09-07）
 
+2026-09-09 当前范围由 [ADR0094](adr/0094-trusted-single-user-role-team.md) 补充为 `trusted-single-user` 角色团队：Leader 组织理解/分工/独立评审验收，B2 增补一个明确授权的业务发布与发布后验证闭环；强 OS/凭据隔离后置加固。不是引入新角色实体或重写 Core，不改当前 HTTP/持久格式与 API-STABLE 证据；旧 Go/hardened 及历史 non-production 证据不变。软件自身受保护发行仍保留 B3，不以角色团队设计宣布完成。
+
 [ADR 0080](adr/0080-three-plane-business-delivery-roadmap.md) 将受限 Agent Team 前移：用户意图→澄清/确认→有界任务→集成候选→独立验证→授权交付，按 B1→B2→B3 验收。下文旧排期中“Goal DAG 延期”仍适用于通用/复杂编排，不再排除这个受限 profile。控制面、执行面、存储面分离不意味着每个模块独立部署。能力现状只见 [Roadmap](roadmap-status.md#业务交付当前表)。
 
 [服务产品方案](agent-team-service-architecture.md)与 [Milestone](agent-team-service-milestones.md)明确 Task-first：用户只需 Task、Worker、Artifact；没有 Workspace/Project 实体或资源注册。data-dir 只是服务内部配置，仓库/表/平台通过 prompt/context 提供。目标一个 marshal serve 启动本地 HTTP，自动初始数据与访问保护；账号/安装身份平台/统一 Agent 登录后置。Core 的内置监督、独立验收与执行归属保留。
@@ -62,7 +64,7 @@ Marshal 独立观察真实制品与执行结果、运行验收、计算交付物
 
 ### G4：职责与权威分离
 
-Implement 产出 Candidate，Verify 产出 Evidence，Review 产出 Assessment，Publication 产出 Receipt；Marshal Core 校验并物化权威事实。发布凭据与 merge 权限位于 Worker 信任边界之外，任何执行者都不能凭自己的“完成”声明越过 Core gate。
+Implement 产出 Candidate，Verify 产出 Evidence，Review 产出 Assessment，Publication 产出 Receipt；Marshal Core 校验并物化权威事实。可信单用户目标保留产品发布授权与开发职责分离，但不证明同 UID 的凭据不可达；旧强隔离 profile 仍要求其原边界。任何执行者都不能凭自己的“完成”声明越过 Core gate。
 
 ### G5：可恢复执行
 
@@ -88,7 +90,7 @@ Marshal Core 是唯一 Supervisor 与权威状态机；Plan/Implement/Verify/Rev
 - B2 完成本地 API 体验：简短需求澄清/问答、DAG/Worker 进展、暂停取消、SQLite 单写真值、同版本恢复、零 Git 制品与多仓库上下文、审计及第二真实 Adapter；第三 Provider 和增强能力按单独支持项推进。
 - B3 才以同路径业务/故障/长期运行、备份恢复、Darwin 签名/notarization、Linux 实机、最终 same-bytes release gate 证明正式支持。
 - Pi、Qwen Code、OpenCode 是首批适配目标；一个尚未通过者不能冒充支持，也不阻止已验证 profile 的交付。Agent 自管模型登录/Skill，Core 只消费中立接口/能力，不限定精确品牌版本。
-- 默认只交付可使用成果，外部 SQL 发布/执行/补数或 Draft PR 以后按独立授权与实测能力开放；不自动 merge。生成文件不等于用户要求的生产效果。
+- 默认只交付可使用成果；按 ADR0094 在 B2 补最薄授权业务发布/发布后验证，不把所有外部 SQL/补数/云平台作为前置，不默认 merge。生成文件不等于用户要求的生产效果。
 - 核心 API-STABLE 后才开发 UI，不以三品牌全部增强或 U1 历史迁移阻挡接口稳定；UI 不阻 API release。
 
 保留批准范围、有限预算、状态持久、单写目录、重复请求幂等、当前结果接纳、独立验证和 Publisher 分权。B1 不确定恢复可需介入，但不能宣传透明自动恢复；完整保证分 B2/B3 实测。普通宿主进程永不冒充恶意代码隔离。
@@ -158,7 +160,7 @@ MVP 包含：
 
 ## 信任边界
 
-首版面向单用户可信任务和已配置可信 Worker。data-dir 不是资源所有权或业务授权；Task prompt/context 中的仓库路径、表名或 URL 不触发 HTTP 自动读取、执行或扩权。独立目录、Git worktree、环境/工具权限、输入绑定与明确批准降低误操作，但不构成同 UID 敌对隔离。作者仍不得得到 Publisher 权限/凭据，原生登录不豁免该边界。
+首版面向单用户可信任务和已配置可信 Worker。data-dir 不是资源所有权或业务授权；Task prompt/context 中的仓库路径、表名或 URL 不触发 HTTP 自动读取、执行或扩权。独立目录、Git worktree、环境/工具权限、输入绑定与明确批准降低误操作，但不构成同 UID 敌对隔离。ADR0094 允许本 profile 不以前置强凭据隔离证明阻断交付，剩余风险必须明示；开发者仍无产品发布授权，原生登录不能代替它，秘密仍不进入提示/日志/制品。
 
 不可信仓库、不可信依赖或多用户执行必须使用容器、VM 或同等可强制执行的沙箱，才能成为受支持的安全配置。
 

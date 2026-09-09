@@ -2,12 +2,14 @@
 
 更新：2026-09-08。当前方案见[Task-first 架构](agent-team-service-architecture.md)，详细出口只见[Milestone](agent-team-service-milestones.md)，实际完成状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。合同调整集中于 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Accepted），接受允许实施，不替代运行时与发布验证。
 
+2026-09-09 按已接受 [ADR0094](adr/0094-trusted-single-user-role-team.md) 收敛为可信单用户角色团队：复用已完成 B1/B2 和现有规划/协调/评审职责，不新增 Leader 实体。强 OS/凭据隔离证明转后继加固；B2 补一个明确授权的业务发布→发布后独立检查闭环，B3 仍保留可靠性与受保护软件发行。当前 HTTP/角色枚举/持久格式不变，无迁移，API-STABLE 已验证范围保留；未来新增机器语义须显式处理严格客户端和旧 reader 兼容。
+
 ## 唯一实施顺序
 
 | 阶段 | 优先实现 | 复用资产 | 不得成为前置 |
 | --- | --- | --- | --- |
 | B1 真实团队 PoC | Task HTTP/确认→两个真实作者并行→自主收集/独立验收→集成/下载消费→Outcome | fixed server、Application Port、现有 Store/RepositorySession、受管进程、B2 物化/集成候选 | Workspace/注册、安装身份平台、完整 SQLite 迁移、三 Provider、通用规划器、UI |
-| B2 本地 API 可用 | 简启动、关键澄清/问答/暂停、SQLite、零 Git/多仓库、同版本恢复、审计与第二 Adapter | B1 同一业务入口/状态机、既有预算/恢复测试 | 历史导入 U1、PostgreSQL、全部 Provider 增强能力、远端权限平台 |
+| B2 本地 API 可用 | 保留简启动/交互/SQLite/通用制品/恢复/审计与第二 Adapter；增补有限角色协调、明确授权的单一业务发布及发布后验证 | B1 同一应用/状态机、既有执行/独立验收/预算/回执接缝 | 历史导入 U1、全部 Provider 增强、强 OS 隔离证明、动态角色/Workflow 平台及所有高风险发布流程 |
 | API-STABLE | 核心 OpenAPI/handler/客户端一致、真实 HTTP 交付和已提供接口的关键反例 | B1/B2 业务验收 | 三品牌全部齐备、B3 全故障矩阵 |
 | B3 正式可靠发布 | 长任务/故障/备份恢复、支持矩阵、签名/公证、Linux、same-bytes stable | 现有发行/故障资产与同路径真实业务证据 | UI、HA、多租户、自动发布或通用工作流 |
 | UI-1 | 核心 API 稳定后提交/详情/DAG/问答/审计 | 公开 HTTP API | 不读私有 DB，不阻 API release |
@@ -24,6 +26,8 @@
 3. 两作者真实重叠执行；客户端只经 HTTP 查状态/取消/下载，独立环境消费结果，保留失败与实际耗时。通过才关闭 B1 团队 PoC。
 4. 再沿同一接口完善 B2：自动简启动、最小 SQLite、零 Git/多仓库、问答与局部恢复；第二 Provider 独立接入，第三 Provider 不阻已支持主路径。
 5. 核心 API-STABLE 后可开 UI；B3 在最终同路径资产上验证正式支持，不重做一套演示或绕过 OS 安全。
+
+以上已通过的子链不重新实施。当前新增方向只做 ADR0094 的一个完整代表性业务授权交付：Leader 组合职责→已验收精确成果→明确授权→有限目标发布/原回执→发布后验证；未实现前保持默认不发布。只有流程重复成功后才抽成模板，原取消/局部修正/恢复继续同链收口，不为目标调整新增第二控制器。
 
 Workspace 不再是实体/API/初始化前提，不能改名为 Project 保留注册流程。data-dir 仅是启动配置；Task 上下文提供仓库/表/平台，权限由允许的执行配置约束。内部 Task/Goal 类型先映射而不是全仓重命名。用户不手写 lease、identity 或每个 Run。
 

@@ -8,6 +8,8 @@
 
 Marshal 是一个可自托管的 Agent Team HTTP 服务：接收需求和上下文，确认方案后组织有界执行、集成与独立验收，交付可使用的成果并保留审计。用户只需理解 Task、Worker、Artifact；没有 Workspace/Project 注册。Git、表结构或平台信息是任务上下文，不是 Core 资源目录。
 
+当前目标按已接受的 [ADR0094](docs/adr/0094-trusted-single-user-role-team.md) 收敛为可信单用户角色团队：Leader 组织开发、Reviewer 与独立验收，后续在明确授权内完成业务发布和发布后验证。角色职责分离不是 OS/凭据隔离；强隔离后置加固，不适用恶意任务。现有 API/数据格式与已核验 API-STABLE 范围不变；Leader 完整协调及业务发布仍待实现，不能把当前下载叫作已发布，也不因此宣布 B1 或 stable 完成。
+
 当前 Local MVP 已有执行、独立验证、审查和 Draft PR 的历史能力，RC1 支持面仍是下述 CLI-only local-dogfood。当前目标为 B1 真实团队 PoC、B2 本地 API 可用、B3 正式可靠发布；旧单任务与团队证据继续保留，尚未整体完成。
 
 2026-09-07 方案收缩为 [Task-first Agent Team 架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)和[审计记录](docs/audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)：先用一个可用 Provider 的两个实例走通真实交付，不先做 Workspace、安装身份平台或全面迁库。目标一命令启动本地 HTTP，原生 Agent 自管登录/Skill，Supervisor 内置；SQLite/零 Git/问答在 B2，正式平台支持在 B3。边界由已接受的 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)承载；[ADR 0088](docs/adr/0088-node-task-service-production-projection.md)进一步接受 Node-only 正式实现路线，文档不代表功能已发布。
@@ -60,7 +62,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 控制/执行/存储三面逻辑分离，初期一个服务，Core 通过接口 DI 与 Agent/Sandbox/Store 解耦。旧 Go profile 的 Task 复用既有 Goal；当前 Node profile 使用自己的唯一 Application/SQLite，不调用 Go 或为兼容名称另造 Goal 真值。新旧数据根不混用。Agent 使用自身已配置模型和 Skill，不建设统一登录/Skill 平台；独立验证、受管目录单写、所属进程取消、最小持久事实与本地访问保护仍保留。
 
-默认仅交付成果，不自动生产写/发布/merge。SQL 文件生成不等于生产执行/补数；可选 Draft PR 和其他外部写以后按独立权限与实测 profile 开放。旧 repository .marshal 不自动接管，不双写或清空。详细目标见[架构](docs/agent-team-service-architecture.md)，实施顺序见[计划](docs/implementation-plan.md)，真实完成情况只见 [Roadmap](docs/roadmap-status.md#业务交付当前表)。
+默认仅交付成果，不自动生产写/发布/merge。SQL 文件生成不等于生产执行/补数；B2 按 ADR0094 补一个明确授权、可观察回执的代表性业务发布及发布后验证闭环，不先支持任意高风险外部写。Marshal 软件自身的受保护发行仍保留 B3 gate。旧 repository .marshal 不自动接管，不双写或清空。详细目标见[架构](docs/agent-team-service-architecture.md)，实施顺序见[计划](docs/implementation-plan.md)，真实完成情况只见 [Roadmap](docs/roadmap-status.md#业务交付当前表)。
 
 ### 2026-09-01 RC1 发布检查点
 
@@ -75,7 +77,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 ## 当前 Node 服务与 API 候选入口
 
-当前研发主线使用固定 Node `24.15.0`，通过 [Task 服务启动说明](packages/task-service/README.md)配置原生 Agent、业务与独立验证并运行 HTTP；无需编译或执行 Marshal 原生程序。受信启动配置仍需提供，尚不承诺任意任务零配置。原生 Agent 的登录沿用与发布凭据分离是不同问题，不能因本机可运行就声称生产支持。
+当前研发主线使用固定 Node `24.15.0`，通过 [Task 服务启动说明](packages/task-service/README.md)配置原生 Agent、业务与独立验证并运行 HTTP；无需编译或执行 Marshal 原生程序。受信启动配置仍需提供，尚不承诺任意任务零配置。原生登录不授予业务发布权限；可信单用户下可能存在 ambient credential，不能因本机可运行就声称强隔离或正式支持。
 
 - [OpenAPI 3.1 定义](packages/task-api/openapi.json)是 HTTP 请求/响应的唯一机器契约；[接口说明](packages/task-api/README.md)与[客户端](packages/task-client/README.md)解释使用方式。
 - [逐接口支持矩阵](docs/node-api-support-matrix.md)区分25项合同、实际实现和实机范围：24项有条件或直接接线，单Worker取消仍501；暂停只阻止新执行，token/费用仍不可测。请先核对矩阵，不把路由示例当作功能完成。

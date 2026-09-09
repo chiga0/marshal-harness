@@ -1,6 +1,8 @@
 # Runtime 架构
 
-> 2026-09-07 Task-first 目标投影。完整行为见[服务架构](agent-team-service-architecture.md)，边界由 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）承载；本文不提前启用新权限、数据迁移或生产支持。
+> Task-first 目标投影。完整行为见[服务架构](agent-team-service-architecture.md)，已接受的 [ADR0085](adr/0085-agent-team-service-contract-and-storage.md)/[ADR0088](adr/0088-node-task-service-production-projection.md)及 [ADR0094](adr/0094-trusted-single-user-role-team.md)分别界定旧Go、Node和可信单用户角色团队；本文不提前启用新权限、数据迁移或生产支持。
+
+Leader先组合已有规划/协调/评审职责，仍通过唯一Application/Core，不取代确定性Supervisor、不增加第二状态机。ADR0094的业务发布及发布后验证尚待完整接线：沿原预算/期限和单库intent→外部执行→当前证据/回执接纳，未知不重发。角色职责分离不证明OS/凭据隔离；本次不改现有HTTP/角色枚举/格式或恢复规则。以下Go/RB1物理映射只属于旧profile，Node仍为自己的唯一SQLite。
 
 ## 唯一组合与内部数据根
 

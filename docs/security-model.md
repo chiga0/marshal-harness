@@ -1,6 +1,14 @@
 # 安全模型
 
-2026-09-07 的 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Proposed）按 Task-first 收缩：不新增 Workspace、账号/组织/RBAC 或 operator-local 安装收据平台；首版本地服务自动生成受保护 token、校验 Host/Origin，拒绝非 loopback 绑定，后续远程首次启用仍须先具备 TLS/认证授权。B1 复用现有合法安装/执行 profile，不绕过其 gate；B2 简启动与 SQLite 不自动覆盖/接管旧数据。最小执行身份/归属、权限与独立证据不后置。Agent 自带鉴权/Skill 不得让作者取得 Publisher 凭据，包括 publication:none；同 UID 原生配置不是恶意代码隔离。下文保留旧 profile 和各远程/强隔离合同，不把它们的完整平台矩阵变成本机 PoC 前置。精确取代见[合同对照](design-contract-map.md)，实际支持只见 Roadmap。
+当前 Task-first 合同为已接受的 [ADR0085](adr/0085-agent-team-service-contract-and-storage.md)、[ADR0088](adr/0088-node-task-service-production-projection.md) 与 [ADR0094](adr/0094-trusted-single-user-role-team.md) 的精确取代范围。不新增 Workspace、账号/组织/RBAC 或安装身份平台；本地 token、Host/Origin、loopback、单写者、执行归属、独立证据和秘密保护保留，远程首次开放仍先具备对应认证/TLS要求。旧根不被新设计自动接管。
+
+## 当前 Node：可信单用户角色团队
+
+`trusted-single-user` 信任操作者及选定 Agent/模型、组合代码与业务材料；Leader、开发、Reviewer、验收和发布是产品职责，不是OS安全主体。按ADR0094，强OS账号/凭据不可达证明转后继加固；同UID可触达原生登录/文件/发布工具的风险必须明示，不能用角色名、工具回调、环境过滤或本地token宣称隔离。默认 publication:none，开发者不得自授发布，原生登录也不构成授权；秘密不进入prompt/日志/制品，不为验收复制HOME、搜集凭据或改变宿主安全策略。
+
+Leader可提出分工、汇总独立证据并在明确授权内请求发布，但Core独占状态/证据接纳及命令授权；参与编写的成果仍由其他执行独立验收。高风险/超目标操作缺明确批准就停，丢响应或外部效果未知先对账，不盲重发。代表性受控业务发布/后验尚待实施，不把当前下载当已发布；Marshal自身的软件发行仍走B3受保护门禁。
+
+本次只改目标/profile和排期，不改HTTP、角色枚举或持久格式，也不把旧ordinary-user/non-production证据升级。恶意代码、多租户、强凭据隔离和无人值守敌对工作负载不在该profile支持范围；只有后继独立强制与实测证据才能获得相应保证。以下各节保留旧Local MVP、Go及远程/hardened合同，其强边界不被0094扩展为已实现，也不反向成为当前trusted-single-user全部前置；适用性见[合同对照](design-contract-map.md)。
 
 ## 安全定位
 
