@@ -73,7 +73,7 @@ export class TaskRuntimeQuestions {
   }
   register(ticket, request) {
     if (!closed(request, ['sessionId', 'nativeRequestId', 'toolCallId', 'questionNonce', 'kind', 'prompt', 'options']) ||
-      !isText(request.sessionId, 256) || !id(request.nativeRequestId) || !id(request.toolCallId) || !/^[a-f0-9]{64}$/.test(request.questionNonce ?? '') ||
+      !isText(request.sessionId, 256) || !isText(request.nativeRequestId, 256) || !isText(request.toolCallId, 128) || !/^[a-f0-9]{64}$/.test(request.questionNonce ?? '') ||
       !['input', 'select'].includes(request.kind) || !isText(request.prompt, 2048) || !Array.isArray(request.options) ||
       request.kind === 'input' && request.options.length !== 0 || request.kind === 'select' && (request.options.length < 1 || request.options.length > 16) ||
       request.options.some(value => !isText(value, 4096)) || new Set(request.options).size !== request.options.length) reject('invalid_request', 400);
