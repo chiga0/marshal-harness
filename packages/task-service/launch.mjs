@@ -84,7 +84,23 @@ export function prepareLaunch(options) {
       }
       // Explicit paths require an existing private owned anchor. In particular
       // /tmp, another user's directory or a shared 0755 parent is not adopted.
-      hold(anchor);
+      requireValue(valid(inspect(anchor), true), 'unsafe_data_parent');
+      // A previous failed mkdir bootstrap may have left every child present.
+      // Rebuild the contiguous private ancestor chain, rather than treating the
+      // deepest existing child as evidence that its parents are already durable.
+      // The first non-private boundary is only inspected, never held or adopted.
+      const privateParents = []; let ancestor = anchor;
+      for (;;) {
+        requireValue(privateParents.length < 64, 'data_parent_limit');
+        privateParents.unshift(ancestor);
+        const above = path.dirname(ancestor), stat = inspect(above);
+        if (above === ancestor || !stat || !valid(stat, true)) break;
+        ancestor = above;
+      }
+      // Use one limit before and after mkdir, so a successfully prepared chain
+      // is not rejected on its next call merely because missing became present.
+      requireValue(privateParents.length + missing.length <= 64, 'data_parent_limit');
+      for (const name of privateParents) hold(name);
     }
     for (const name of missing) {
       requireValue(mode === 'create', 'data_parent_missing'); check();

@@ -171,6 +171,58 @@ test('parent fsync failure retains new private directory, and a later attempt mu
   try {target = prepareLaunch(options); assert.equal(target.mode, 'create'); target.check();} finally {fs.fsyncSync = original; target?.close();}
   assert.deepEqual(successful, [inode, fs.statSync(f.home).ino]); f.complete = true;
 });
+test('explicit multi-parent bootstrap repeats every failed ancestor barrier even after all child directories exist', t => {
+  const f = fixture(t), original = fs.fsyncSync;
+  for (const failureAt of [0, 1, 2]) {
+    const anchor = path.join(f.directory, `anchor-${failureAt}`); fs.mkdirSync(anchor, {mode: 0o700});
+    const first = path.join(anchor, 'first'), second = path.join(first, 'second'), root = path.join(second, 'data');
+    const options = {root, mode: 'auto', homeAnchor: null}, required = [second, first, anchor];
+    let inodes;
+    for (const attempt of ['initial', 'retry']) {
+      const called = []; fs.fsyncSync = fd => {
+        const observed = required.map(name => fs.statSync(name).ino);
+        inodes ??= observed; assert.deepEqual(observed, inodes);
+        const inode = fs.fstatSync(fd).ino; called.push(inode);
+        if (inode === inodes[failureAt]) throw new Error(`fixture_${attempt}_ancestor_sync_failure`);
+        original(fd);
+      };
+      try {assert.throws(() => prepareLaunch(options), new RegExp(`fixture_${attempt}_ancestor_sync_failure`));}
+      finally {fs.fsyncSync = original;}
+      assert.deepEqual(called, inodes.slice(0, failureAt + 1));
+      assert.equal(fs.existsSync(root), false);
+      for (let at = 0; at < required.length; at++) {
+        const stat = fs.statSync(required[at]); assert.equal(stat.ino, inodes[at]); assert.equal(stat.mode & 0o7777, 0o700);
+      }
+    }
+    const called = []; fs.fsyncSync = fd => {called.push(fs.fstatSync(fd).ino); original(fd);};
+    let target;
+    try {target = prepareLaunch(options); assert.equal(target.mode, 'create'); target.check();}
+    finally {fs.fsyncSync = original; target?.close();}
+    assert.deepEqual(called.slice(0, 3), inodes); // second -> first -> original private anchor, never only second.
+    assert.equal(called[3], fs.statSync(f.directory).ino); // Continue the original private chain, not just the former anchor.
+    assert.equal(fs.existsSync(root), false); // Only original composition may create the service root.
+  }
+  f.complete = true;
+});
+test('private chain limit counts new and existing parents identically before mkdir and on retry', t => {
+  const f = fixture(t); let count = 0, current = f.directory;
+  for (;;) {
+    const stat = fs.lstatSync(current);
+    if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o7777) !== 0o700) break;
+    count++; const parent = path.dirname(current); if (parent === current) break; current = parent;
+  }
+  let anchor = f.directory;
+  while (count < 33) {anchor = path.join(anchor, 'existing'); fs.mkdirSync(anchor, {mode: 0o700}); count++;}
+  const missing = Array.from({length: 31}, (_, at) => `new-${at}`), root = path.join(anchor, ...missing, 'data');
+  assert.throws(() => prepareLaunch({root: path.join(anchor, ...missing, 'one-too-many', 'data'), mode: 'auto'}), errorCode('data_parent_limit'));
+  assert.equal(fs.existsSync(path.join(anchor, missing[0])), false);
+  for (const attempt of ['initial', 'retry']) {
+    const target = prepareLaunch({root, mode: 'auto'});
+    try {assert.equal(target.mode, 'create', attempt); target.check();} finally {target.close();}
+    assert.equal(fs.existsSync(root), false);
+  }
+  f.complete = true;
+});
 test('held parent replacement is rejected before handoff and closed targets cannot be reused', t => {
   const f = fixture(t), target = prepareLaunch(parseLaunchArguments(base, {home: f.home})), parent = path.dirname(f.root);
   fs.renameSync(parent, path.join(f.home, 'preserved-old-parent')); fs.mkdirSync(parent, {mode: 0o700});
