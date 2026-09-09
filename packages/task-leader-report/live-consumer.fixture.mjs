@@ -236,6 +236,39 @@ export function launchService(node, args, env, cwd, diagnostics = []) {
     })(); return stopping;
   }};
 }
+export async function gracefulApprovalRestart({client, handle, start, taskId, task, plan, answer, answerReceipt, save}) {
+  const before = {task: await client.getTask(taskId), plan: await client.request('task.plan', {path: {taskId}}),
+    leader: await client.getLeader(taskId), audit: await client.getAudit(taskId),
+    workers: await client.request('task.workers', {path: {taskId}, query: {limit: 100}}), answerReceipt};
+  check(before.task.status === 'awaiting-approval' && before.workers.nextCursor === null &&
+    (await client.request('supervisor.get')).activeWorkers === 0, 'approval_restart_not_quiescent');
+  same(before.task, task, 'approval_restart_task_changed'); same(before.plan, plan, 'approval_restart_plan_changed');
+  save('graceful-approval-restart-before.json', before);
+  // launchService.stop only resolves after original CLI exit0 + clean:true.
+  await handle.stop();
+  const next = await start('open'), reopened = next.client;
+  const after = {task: await reopened.getTask(taskId), plan: await reopened.request('task.plan', {path: {taskId}}),
+    leader: await reopened.getLeader(taskId), audit: await reopened.getAudit(taskId),
+    workers: await reopened.request('task.workers', {path: {taskId}, query: {limit: 100}})};
+  same(after.task, before.task, 'approval_restart_task_changed');
+  same(after.plan, before.plan, 'approval_restart_plan_changed');
+  same(after.leader, before.leader, 'approval_restart_leader_changed');
+  same(after.workers, before.workers, 'approval_restart_workers_changed');
+  // Nonterminal elapsedMs is wall-clock time by the original Audit contract.
+  const {elapsedMs: elapsedBefore, ...auditBefore} = before.audit, {elapsedMs: elapsedAfter, ...auditAfter} = after.audit;
+  check(Number.isFinite(elapsedBefore) && Number.isFinite(elapsedAfter) && elapsedAfter >= elapsedBefore, 'approval_restart_elapsed_invalid');
+  same(auditAfter, auditBefore, 'approval_restart_audit_changed');
+  check((await reopened.request('supervisor.get')).activeWorkers === 0, 'approval_restart_new_worker');
+  const replay = await reopened.request('task.leader.reply', answer);
+  check(replay.replayed === true, 'approval_restart_reply_not_replayed');
+  same({...replay, replayed: false}, answerReceipt, 'approval_restart_receipt_changed');
+  after.answerReceipt = replay;
+  save('graceful-approval-restart-after.json', after);
+  return {...next, evidence: {passed: true, kind: 'graceful-approval-restart', activeFault: false, taskId,
+    attemptsBefore: before.audit.attempts, attemptsAfter: after.audit.attempts, deadlineAt: after.task.deadlineAt,
+    planDigest: plan.digest, budget: plan.budget, answerReplyDigest: replay.replyDigest, newWorkers: 0,
+    before: 'graceful-approval-restart-before.json', after: 'graceful-approval-restart-after.json'}};
+}
 export async function run(options) {
   // Revalidate even programmatic callers before any execution.
   const o = parseOptions(Object.entries(options).flatMap(([key, value]) => value === true ? ['--' + key] : ['--' + key, value]));
@@ -297,6 +330,12 @@ export async function run(options) {
       const answerReceipt = await client.request('task.leader.reply', answer);
       task = await phase('awaiting-approval'); const plan = await client.request('task.plan', {path: {taskId}});
       checkPlan(plan, create.body.limits);
+      if (index === 0) {
+        evidence.stage = 'graceful-approval-restart';
+        evidence.gracefulApprovalRestart = {passed: false, kind: 'graceful-approval-restart', activeFault: false, taskId};
+        const restarted = await gracefulApprovalRestart({client, handle, start, taskId, task, plan, answer, answerReceipt, save});
+        ({client, handle} = restarted); evidence.gracefulApprovalRestart = restarted.evidence;
+      }
       const approve = {path: {taskId}, idempotencyKey: 'live-approve-' + index,
         body: {expectedRevision: task.revision, planRevision: plan.revision, planDigest: plan.digest}};
       const approval = await client.request('task.approve', approve);
