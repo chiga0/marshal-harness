@@ -2,6 +2,24 @@
 
 ## 当前结论
 
+### 2026-09-09 10:12 CST：恢复、安装包与 Git 交付已合并推送
+
+sourceHead=`db57d45c7b8a951eb3adddafd2f649ad165cd068`，localMergeSha=`0057dd1b7c5b259f238600bacbc3abb346d770ca`；正常推送后远端 main 已核对，产品 `pendingRemoteSync=false`。最终完整 Node 组合 **418/418 PASS、319.688秒、零失败/取消/跳过**，冻结树不变且 clean；日志 SHA-256=`47b7d7ceb5c01fa5611ab93e2fc5f3c08ea4c51d8672de6f3a8204aaecd7d63f`。 本次汇合正式执行托管、SQLite cleanup-only 接纳、ACP/Pi scope 修正、真实进程故障测试、已安装目录包团队交付和 Git 多仓库业务插件。更早记录仅保留当时结论。
+
+独立诊断已经确认唯一失败模式：`custom` 在776ms结束为 `unknown/pi_execution_scope_unproven`，但原 `runtimeCleanup.cleaned=true`、guard SIGKILL、没有输出文件；`no-bridge` 保持原1500ms deadline，正确失败且清理完成。诊断 `/private/tmp/marshal-pi-cleanup-diagnostic.6U6mey`；不延长生产/测试期限、不把原 clean 断言改成 unknown 放行。根因是 unsupported start 的提前永久标记压过后续原 bridge 的精确 blocked 事实；修正保持 v2 在缺少安全证据前崩溃时的保守义务。全套原失败日志 SHA-256=`36520df971642c9631e4804c4ee4424e85d6b8c4be9f68a74e6bf987f0d62cb1`，原失败不删分母。最小修复 `ed8df718452762a2eafa8080a52af9ba5dacb75c` 与 Git/发行清单最终汇合到上述 `db57d45`，原失败和新增 v2 反例已在418项通过。
+
+- **恢复生产链**：`5bec263`→`26e5677`→`96afc05`。原独立托管者持有原 guard，启动许可先绑定唯一 SQLite；新 owner 只接受原库公钥对应的签名清理观察。准备/许可未封闭或有效签名观察缺失时不 claim 新代，不凭裸 PID 杀进程。签名有效但 cleanup/scope 不足时仍保留未决、拒绝 ready。恢复只结清失败/取消，绝不接纳旧业务结果、退款或重放 prompt。旧 v1 根不迁移；v2 自动跨代结清仅适用于明确声明并验证覆盖范围的继承进程组 profile，未证明者仍为 unknown。
+- **独立真实崩溃验证**：测试 source=`89e4796d6d80edf5aa812d175c378f8602423647`，针对 `5bec263` 生产树，三项 **3/3 PASS、36.382秒、零跳过**：活跃作者、原取消意图提交后、活跃 Verifier 时只 SIGKILL 原服务进程。原证据合法结清占用后，同服务可接新 Task 并交付；第三次冷开没有重复收口/启动，原回执、预算和期限保持。日志 SHA-256=`2b9440b62a0422d808f92e8581709e076f5fc209f5674150a365b4ace40baa10`。它们使用真实 HTTP/SQLite/受管进程和确定性 ACP 子进程，不是付费模型或宿主掉电证据；后继修正已在最终418项全套再次通过。
+- **真实安装目录包**：source=`ac4b13704bce72948ab3d2da03aeede960dda77d`，独立 **12/12 PASS、76.929秒、零跳过**，包含 v1/v2 的安装后 CLI→HTTP→双作者→原独立 checker→Decision/下载→CLI 退出再 open；原回执和下载 bytes 不变。生产模块全部从已核验目录包加载，只有业务 Agent 与 oracle 是外置测试夹具。日志 SHA-256=`b36d0c27e61f48e6d60af55369f5a13970582b5db7965e72e64a8733b1e1cb4b`。不是香港同包部署或 stable 发行。
+- **前次完整组合失败（保留分母）**：冻结 `d6833d5` 后按 Node team workflow 原命令运行，一次 serial、37个 packages 测试文件和6个指定实验测试文件，结果 **409项／408通过／1失败、345.235秒、零跳过/取消、exit1**。唯一失败是 Pi `native-bridge.test.mjs` 的 missing/foreign/bypass 组合在 line143 期望清理为 true 却未取得该值；原日志没有标注内部具体 mode，当时先做有界诊断，现已确认上述 legacy custom 原因；未归因负载或放宽断言。三项 custody 与两项已安装团队测试均在此完整组合通过，但不报全套绿。日志保留 `/private/tmp/marshal-node-full-d6833d5.jdFAXe/results.log`，不原样重跑 full。旧 `e491339` 完整 **393/393 PASS、206.934秒、零跳过**，日志 SHA-256=`c3110480e3f27cef45ed628d03a91537d65847d2aefcad0aae66c6038b9aca96`；它不代替新树。main `0ff64ff` 远端 CI `34241562015` 成功；`e491339` Node team `34240887971` 的 Linux/macOS 均成功，不代替 ECS 实机发行。
+- **Git 跨仓库交付**：`8e418f4a1bb908191b0e29a1f4f8ac6debbe4744` 仅新增解耦业务插件。两个真实锁定 worktree 产生 patch，原 cleanup 后形成候选，在另外工作区 apply/组合验收后才交付；下载后第三组工作区能消费。维护者独立审查无 P0/P1，7/7定向通过、37.325秒、零跳过。原仓库/HEAD不变，错误组合/越界改动拒绝，未知执行保留现场且不释放容量。范围仅已有跟踪文件修改，不支持新增/删除/NO_CHANGE/自动回收，不是通用 Git 服务或真实模型证据；已连同发行清单合并，真实 Pi＋Qwen 混合 Git 验收仍在途。
+
+本轮保留的失败学习：拒绝 shell 的权限请求不能先写入“已批准额外 scope”导致永远未决；反向也不能将 failed-only 工具事件当成“未执行”。原会话/原 toolCallId 的明确拒绝只允许消费一次，复用、漂移或已启动状态继续 unknown。安装验证夹具曾错误地用普通 JSON 序列化代替原 canonical `encode`，在独立审查前修正，未改产品门禁。两类问题都通过原 producer→consumer 正反例处理，不通过重试模型修复。
+
+**当前出口**：B1 的真实 Qwen/Pi 团队证据保持，但适用 profile 的 Worker/Publisher 分权仍未证；B2 正在关闭上述限定恢复、Git/跨仓库交付与运行中问答，局部修正、混合真实 Provider、完整同版本矩阵仍未完成。API-STABLE/B3 不升级。香港传输被本机 SIGKILL、独立身份尚缺原生模型登录，未原样重试或换通道绕过。
+
+### 以下为已保存的历史检查点
+
 ### 22:50 CST 原执行组清理修复已同步
 
 sourceHead=`c1dd3cde974cf032dfd185754fc9f951e3b582a6`，localMergeSha/main/origin/main=`e491339d5e5eb90d52248b9a3f644aad3beab0c5`；正常推送与远端 SHA 已核对，产品 pendingRemoteSync=false。唯一独立 reviewer 无 P0/P1，固定 Node 24.15 的 Runtime 20/20 PASS、零跳过、29.166秒。leader 单死、后代仍活时不再假报清理；存在/EPERM/其他错误或清理预算到期保持未决。完整 Node 组合另行验证，不把定向通过升级为全仓通过。

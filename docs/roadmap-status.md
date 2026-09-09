@@ -8,6 +8,10 @@
 
 ### 最新正式 Node 集成检查点
 
+**2026-09-09 10:12 CST 已合并并推送**：sourceHead=`db57d45c7b8a951eb3adddafd2f649ad165cd068`，localMergeSha=`0057dd1b7c5b259f238600bacbc3abb346d770ca`；正常推送后远端 main 已核对为同一 SHA，产品 `pendingRemoteSync=false`。最终完整 Node 组合 **418/418 PASS、319.688秒、零失败/取消/跳过**，运行前后冻结树不变且 clean；日志 SHA-256=`47b7d7ceb5c01fa5611ab93e2fc5f3c08ea4c51d8672de6f3a8204aaecd7d63f`。 限定执行托管/cleanup-only 恢复、安装包 v1/v2 团队闭环及 Git 双仓库 patch 业务插件已进入主线，均经独立审查。此前 `d6833d5` 的409项中1项 Pi legacy 回归保留为失败记录，由 `ed8df71` 最小修复并通过最终全套，不放宽 v2 未知 scope 门禁。后继三个并行方向为运行中业务问答、其 API/schema/客户端、Git/Pi＋Qwen 混合实机驱动；[ADR 0090](adr/0090-node-runtime-business-questions.md) 已接纳但不等于运行时已完成。B1/B2/API-STABLE/B3 不升级，[精确范围与剩余出口](node-task-service-status-2026-09-08.md)。
+
+以下时间检查点为历史事实，不覆盖上述同步状态。
+
 **22:50 CST 当前代码**：Runtime source=`c1dd3c` 已正常合入并推送 `e491339d5e5eb90d52248b9a3f644aad3beab0c5`，产品 pendingRemoteSync=false。独立20/20测试与审查通过，关闭所测原继承组清理假阳性；完整组合另行验证。ADR 0089 已接纳，尚待执行托管与跨代清理的实际整链实现，不关闭 B2 或正式发布。[当前精确证据](node-task-service-status-2026-09-08.md)。
 
 **22:42 CST 提交边界已同步**：localMergeSha/main/origin/main=`32b353f2460415fc0b92e3ad784d02ddd1e45f35`，source=`2f6c28f`，正常推送已核对、pendingRemoteSync=false。新增原 CLI/HTTP 的 create/result COMMIT 前后四项真实 crash 用例，独立与原 crash/team 组合9/9通过、24.514秒、无P0/P1。未改变生产恢复行为；下一步 Runtime 清理假阳性修复和 [ADR 0089 cleanup-only 恢复](adr/0089-node-execution-custody-and-cleanup-recovery.md)，详见[检查点](node-task-service-status-2026-09-08.md)。

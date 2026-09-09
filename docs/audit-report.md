@@ -1,5 +1,23 @@
 # 设计审计报告
 
+## 2026-09-09：legacy 回归已修复，恢复与 Git 交付已推送
+
+`d6833d5` 一次完整Node组合409项中408通过、1失败、零跳过/取消，未合main。独立保留原期限诊断确认 custom 工具已经被原 bridge 精确阻止且原进程清理完成，Provider 却因提前永久 scopeUnknown 返回 unknown/null cleanup；no-bridge 的1500ms期限负例正常。`PI-BLOCKED-LEGACY-CLEANUP` 因此是确定性兼容错误，不是模型/CPU不足。最小修复保留原v1最终 blocked/cleanup门禁，并保留v2在未知操作安全证据前崩溃的耐久义务；不以删除负例/撤销全局scope或放宽deadline处理。
+
+修复 `ed8df71` 已独立审查，`PI-BLOCKED-LEGACY-CLEANUP` 在所测范围关闭。sourceHead=`db57d45c7b8a951eb3adddafd2f649ad165cd068`，localMergeSha=`0057dd1b7c5b259f238600bacbc3abb346d770ca`；正常推送后远端 main 已核对，产品 `pendingRemoteSync=false`。最终完整 Node 组合 **418/418 PASS、319.688秒、零失败/取消/跳过**，冻结树不变且 clean；日志 SHA-256=`47b7d7ceb5c01fa5611ab93e2fc5f3c08ea4c51d8672de6f3a8204aaecd7d63f`。 保留前次409项/1失败及原诊断，不将修复后成功写成首轮成功。
+
+运行中问答后继已前置到真实producer/consumer：原答案接口原本为202，继续保留；未接纳答案不制造pending投递，deliveryStatus为null。Core/Provider与API/schema/客户端依冻结合同在独立目录并行，而不是最后才合并发现形状不一致。Git实机驱动另路复用已有节点Provider分配，不为第二品牌改Core。详见[当前事实](node-task-service-status-2026-09-08.md)。
+
+## 2026-09-09：恢复完整纵切与 Git 插件进入主线
+
+候选 `d6833d5` 按 ADR 0089 实现原托管者→启动前原库绑定→签名清理观察→新 owner 同库结清。`B2-NODE-CRASH-SETTLEMENT` 的“没有合法接纳入口”实现缺口已补，所测单服务 SIGKILL 范围已独立通过作者/取消/Verifier 三项及新 Task 交付；最终418项组合与 main 合并已完成；所测单服务故障恢复出口关闭，全部故障矩阵仍开放。多重故障、未知额外 scope 继续保留未决，不靠重放 PID、旧结果或手工改库恢复。
+
+同 reviewer 聚合审查纠正了两个相反的 scope 错误：明确拒绝不应注册已执行义务；无明确原始拒绝的 failed-only 工具状态却可能发生于实际执行后，不能作为未启动证明。最终 `96afc05` 绑定单会话/单 toolCallId 的一次拒绝例外，重复、漂移、已经启动及 SQL 写失败均有原接缝负例。完整回归使用最终冻结树；未把作者自测算独立验证，未通过模型重试处理结构性错误。
+
+Git 业务候选 `8e418f4` 经独立真实7/7测试及审查无 P0/P1：多仓库只在业务插件中处理，Core 没有新增 Workspace/资源注册；交付真实 patch，独立应用组合，取消/未知保留真实锁定现场。它只验证有限已有文件修改，尚非真实模型 Git 团队或通用发布。安装目录包 `ac4b137` 的独立12/12证明消费完整生产模块链；二者均不代替权限分离、Linux 同包安装或 B3。
+
+并发使用共享 Core 一个作者、独立故障/发行验证、Git 业务插件三个有用方向；最终全套期间继续问答合同和发行接线，不要求每个任务一个 Run/PR。当前剩余主线明确为运行中交互、局部修正、真实 Git/混合业务及正式权限/平台验证；历史 skill 和治理微切片不重启。
+
 ## 2026-09-08 22:42：提交原子性已补证，清理观察与跨代收口继续修复
 
 `2f6c28f` 的 create/result 原 COMMIT 前后四项真实 CLI/HTTP/SQLite 故障测试，经独立审查无 P0/P1、组合9/9通过后合入并推送 `32b353f`。没有伪造 Worker/cleanup 或直接写库；提交前不接纳孤儿成果，提交后精确回执与下载内容保留。这关闭所测事务原子性证据缺口，不关闭 `B2-NODE-CRASH-SETTLEMENT`。
