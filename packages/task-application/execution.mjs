@@ -387,7 +387,8 @@ export class TaskExecution {
       const cancelled = targetCancelled || task.task.status === 'cancelling' || !currentCycle;
       if (task.leader && !record.failureClass) record.failureClass = clean && !cancelled && !record.stopIntent && !task.cancelIntent &&
         this.app.now() < ticket.deadline && !verification && result.status === 'failed' &&
-        ['provider_failed', 'agent_refusal', 'agent_max_tokens', 'agent_max_turn_requests'].includes(result.reason) ? 'ordinary' : 'nonretryable';
+        ['refusal', 'max_tokens', 'max_turn_requests'].includes(result.stopReason) &&
+        result.reason === 'agent_' + result.stopReason ? 'ordinary' : 'nonretryable';
       let success = clean && (verification ? verified?.data.status === 'passed' && result.status === 'passed' && verified.staged !== null :
         result.status === 'completed' && result.stopReason === 'end_turn') &&
         !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;

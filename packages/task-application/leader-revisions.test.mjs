@@ -16,8 +16,8 @@ const record = (f, task) => f.read(tx => f.app.get(tx, task.id));
 const head = (f, task) => f.read(tx => tx.head(task.id));
 const start = (f, ticket) => {const fact = {executionId: 'author-' + ticket.workerId, startedAt: new Date().toISOString()};
   f.app.execution.started(ticket, fact); return fact;};
-const failAuthor = (f, ticket, fact, extra = {}) => f.app.execution.finish(ticket, {status: 'failed', reason: 'provider_failed',
-  stopReason: null, cleanup: {started: fact, cleaned: true, scope: 'controlled-fixture'}, ...extra});
+const failAuthor = (f, ticket, fact, extra = {}) => f.app.execution.finish(ticket, {status: 'failed', reason: 'agent_max_tokens',
+  stopReason: 'max_tokens', cleanup: {started: fact, cleaned: true, scope: 'controlled-fixture'}, ...extra});
 async function setup(t, options) {
   const f = fixture(t, options), task = await f.call({operation: 'task.create', key: 'create', body: {intent: '完整原两分支',
     limits: {timeoutMs: 120000, maxAttempts: 17, maxWorkers: 3}}});
@@ -50,16 +50,19 @@ for (const stale of [false, true]) test('Leader wait and claimed obligation pres
   const before = head(f, task); f.app.execution.finish(leader, f.results.get(leader.workerId)); assert.deepEqual(head(f, task), before);
   assert.equal(f.read(tx => tx.commands().filter(value => value.status === 'pending' && JSON.parse(value.payload).action === 'leader')).length, 0);
 });
-for (const reason of ['structure', 'permission_denied', 'provider_failed', 'missing']) test('only classified ordinary execution failure may repair: ' + reason, async t => {
+for (const reason of ['structure', 'permission_denied', 'provider_failed', 'missing', 'mismatched', 'agent_max_tokens', 'agent_max_turn_requests', 'agent_refusal']) test('only classified ordinary execution failure may repair: ' + reason, async t => {
   const {f, task, east, west} = await setup(t); f.author(west);
-  failAuthor(f, east, start(f, east), reason === 'structure' ? {status: 'completed', stopReason: 'end_turn', result: null} : {reason: reason === 'missing' ? undefined : reason});
+  const ordinary = ['agent_max_tokens', 'agent_max_turn_requests', 'agent_refusal'].includes(reason);
+  failAuthor(f, east, start(f, east), reason === 'structure' ? {status: 'completed', stopReason: 'end_turn', result: null} :
+    {reason: reason === 'missing' ? undefined : reason === 'mismatched' ? 'agent_max_tokens' : reason,
+      stopReason: ordinary ? reason.slice('agent_'.length) : null});
   const leader = f.take('leader'), basis = leader.input.leader.snapshot.evidence.find(value => value.kind === 'execution-failure');
-  assert.equal(basis.retryable, reason === 'provider_failed');
+  assert.equal(basis.retryable, ordinary);
   const before = record(f, task).attempts;
   const result = await f.decision(leader, [{type: 'repair', nodeIds: ['east'], basis: {kind: 'execution-failure', digest: basis.digest}, feedback: '依据原普通失败重做该节点'}]);
-  assert.equal(result.status, reason === 'provider_failed' ? 'completed' : 'failed');
+  assert.equal(result.status, ordinary ? 'completed' : 'failed');
   assert.equal(record(f, task).attempts, before);
-  if (reason === 'provider_failed') assert.ok(f.take('execute', 'east'));
+  if (ordinary) assert.ok(f.take('execute', 'east'));
   else {assert.equal(record(f, task).activeRepair, undefined); assert.equal((await f.get(task.id)).status, 'cancelling');}
 });
 function publicationFixture() {
