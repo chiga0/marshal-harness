@@ -2,6 +2,16 @@
 
 ## 当前结论
 
+### 2026-09-09 15:04 CST：原 GitHub 归档完整接纳与安装消费
+
+只读接纳工具 source=`ec2f1e096150a8183fbc2e0554c8b78ed7a5c98c`，集成=`115719b7`，唯一独立 reviewer 完整审查五文件无确认P0/P1。维护者按相同冻结源码/固定Node24.15.0运行 **19/19 PASS、20.119秒**；原审查者受限执行为18/19，两个layout服务ready前退出，原因未定，现场保留，不能改称所有环境首次通过。diff-check、merge-tree与secret scan通过。该工具只读取GitHub run/job/artifact，不创建tag/release、不修改发布权限；原旧RC1发布通道不变。
+
+随后在独立干净源码 `8f97ba233081e00de01a2e1e054d510ea8ec36f2` 上，实际通过新工具消费下节的原run `34318148089` / attempt1 / artifact `10090976947` ZIP。先后重读canonical仓库、精确source/run/attempt、五job成功集合及artifact元数据；验证原归档摘要、封闭文件清单和包外manifest pin后，调用原 `restoreCarrier`/`verify` 安装，再使用包内原CLI/HTTP/SQLite/客户端完成两种layout团队、独立验收、下载及冷重开。不是另打包替身或仅静态解包。
+
+Darwin arm64、UID501、Node24.15.0，**2/2 PASS、25.328秒、零失败/取消/跳过**；layout1/layout2各4次原执行，冷开重复启动均0，下载摘要仍为 `sha256:3055d2141868fed0c8abbf628e50fa959a623fd93474a928318a802efa7b6fb0`。原ZIP仍663850 bytes / `sha256:4fba5780b2a74325d3ae17bed6e401d813a36e653210da8b2b249ec3c812342f`；47生产文件/647188 bytes，manifest pin仍 `sha256:88b5e71f31c61ffaf7cb64ae518fb6d525ca97b4dc0685e7ef42e213002bcf68`。运行前后matching-source保持clean，未调用真实模型。
+
+证据目录 `/private/tmp/marshal-candidate-admission-independent.KT5HcO/admitted`：`result.json` SHA-256=`2a11a7096cd1663feb15f77bff8b31fbec73499be0395288c3f235b54e481a73`，`consumer.tap` SHA-256=`2ad4b7005dd457c4dc88b6533d7ee3f59e712f0b972d6a9e5bf20becabb6dfad`。这新增原GitHub资产经接纳工具完成本机消费的证据，不是香港部署、真实模型Linux验收、长期SLO或正式stable发行；B1/B2/B3仍按原出口判断。下节“尚未由新工具执行”是本次之前的历史状态。
+
 ### 2026-09-09：候选原归档与 Linux 独立账号复核
 
 在主线 `c296226a157b89582195e102c5bc08b738756bd9` 重新执行 API/客户端合同测试，**32/32 PASS、1.379秒**，无失败/取消/跳过；生产代码仍为下节 `8f97ba23`。这不是25项业务均已实现，单Worker取消仍501。
