@@ -55,6 +55,24 @@ export function workPackage(ticket, prepared) {
     taskDigest: digest(encode(ticket.input.task)), inputDigest: ticket.inputDigest, reservationDigest: ticket.reservationDigest,
     originalTaskPresent: true, requiredContextPresent: true, observed: 'handed-off', agentConsumptionProven: false};
 }
+export function liveApplicationOptions(timeoutMs) {
+  return {defaultLimits: {timeoutMs, maxAttempts: 17, maxWorkers: 3}, execution: {maxWorkers: 3}};
+}
+export function managedPrompt(capture, render) {
+  return ({ticket, input, prepared}) => {capture(ticket, prepared.cwd); return {prompt: render(input)};};
+}
+export function createObservedBusiness(createFileBusiness, context, {capture, authorize}) {
+  const business = createFileBusiness({parent: context.executionParent, depot: context.depot, approvedLayout: context.approvedLayout,
+    observeExecution: context.observeExecution, layoutFor: ticket => {
+      // The original task-files allocation fixes this path. Observation does
+      // not claim preparation/start succeeded; workPackage is checked at handoff.
+      capture(ticket, path.join(context.executionParent, ticket.workerId));
+      return ticket.input.fileLayout ?? {inputs: [], allowedPaths: []};
+    }, authorize});
+  check(typeof business.prepareManaged === 'function', 'managed_business_unavailable');
+  // Core's private factory identity belongs to this exact object, not a spread.
+  return business;
+}
 function terminalFact(entry) {
   const result = entry.result, cleanup = result?.cleanup, started = entry.started;
   check(entry.settled && !entry.failed && cleanup?.cleaned === true && cleanup.agentExit?.observed === true &&
@@ -95,6 +113,7 @@ export async function runLive(options) {
     const record = (identity, handle) => {observed.push(trackExecution(identity, handle)); return handle;};
     const identity = ticket => ({taskId: ticket.taskId, workerId: ticket.workerId, nodeId: ticket.nodeId, role: ticket.role,
       executionType: ticket.executionType, inputDigest: ticket.inputDigest, reservationDigest: ticket.reservationDigest, planDigest: ticket.planDigest});
+    const capture = (ticket, cwd) => {byCwd.set(cwd, {ticket}); byWorker.set(ticket.workerId, {...identity(ticket), cwd});};
     const native = createPiProvider({id: 'pi', executable: options.node, args: [options.piEntry, '--mode', 'rpc', '--no-session'], env: environment(options.node),
       bridge: {sdkEntry: options.sdkEntry}, custodyProfile: {id: 'pi-native-file-v1', scope: 'inherited-process-group', eligible: true}});
     const provider = {...native, start(input) {
@@ -120,22 +139,16 @@ export async function runLive(options) {
       repair: {nodeIds: ['east', 'west'], maxRounds: 1}, review: {providerId: provider.id, policyDigest: digest(encode(reviewPolicy))},
       publication: {targetId: publication.id, policyDigest: publication.policyDigest}};
     const leader = core.createLeaderPort({id: 'regional-leader', providerId: provider.id, policy: leaderPolicy,
-      prepare: ({input}) => ({prompt: core.renderLeaderPrompt(input)}), parseDecision: core.parseManagedOutput});
+      prepare: managedPrompt(capture, core.renderLeaderPrompt), parseDecision: core.parseManagedOutput});
     const review = core.createReviewPort({id: 'regional-review', providerId: provider.id, policy: reviewPolicy,
-      prepare: ({input}) => ({prompt: core.renderReviewPrompt(input)}), parseReport: core.parseManagedOutput});
+      prepare: managedPrompt(capture, core.renderReviewPrompt), parseReport: core.parseManagedOutput});
     const config = {root, providers: new Map([[provider.id, provider]]), leader, review, publication, verification,
-      custody: {profile: 'node-execution-custody/v1'}, applicationOptions: {execution: {maxWorkers: 3}}, supervisorOptions: {intervalMs: 50},
+      custody: {profile: 'node-execution-custody/v1'}, applicationOptions: liveApplicationOptions(options.timeoutMs), supervisorOptions: {intervalMs: 50},
       businessFactory: context => {
         depot = context.depot;
-        const business = createFileBusiness({parent: context.executionParent, depot, approvedLayout: context.approvedLayout,
-          observeExecution: context.observeExecution, layoutFor: ticket => ticket.input.fileLayout ?? {inputs: [], allowedPaths: []},
+        return createObservedBusiness(createFileBusiness, context, {capture,
           authorize: (ticket, request) => {const result = filePermission(byWorker.get(ticket.workerId), request);
             evidence.permission[result.outcome.outcome === 'selected' ? 'allowed' : 'denied']++; return result;}});
-        check(typeof business.prepareManaged === 'function', 'managed_business_unavailable');
-        const capture = async (method, ticket, context) => {const prepared = await business[method](ticket, context);
-          byCwd.set(prepared.cwd, {ticket}); byWorker.set(ticket.workerId, {...identity(ticket), cwd: prepared.cwd}); return prepared;};
-        return {...business, prepare: (ticket, context) => capture('prepare', ticket, context),
-          prepareManaged: (ticket, context) => capture('prepareManaged', ticket, context)};
       }};
     evidence.configuration = {leaderPolicyDigest: digest(encode(leaderPolicy)), reviewPolicyDigest: review.policyDigest,
       verificationPolicyDigest: digest(encode(policy)), publicationPolicyDigest: publication.policyDigest,
