@@ -2,6 +2,20 @@
 
 ## 当前结论
 
+### 2026-09-09：同计划局部修正通过独立复审与最终组合回归
+
+完整实现候选 `e4ee99f3de6b66809d725774a57e143410d61821` 已接线 ADR0091 的修正入口、父验证内容拒收/原负面报告、明确结果选择、原文件业务诊断输入、HTTP/client、v4-repair 状态与发行清单。后继聚合修正 `bc519e6a0d8c704424ae1f4d98ac7f22f63cb370` 由原 reviewer 复审：两项 P1 均关闭，无新增 P0/P1。尚无真实模型局部修正验收，不提升 B2/API-STABLE。
+
+独立测试提交 `7829114498b217a95abee88ca526d6425443ee31` 仅增加三个完整服务场景文件，绑定原 e4ee 生产字节：先正向 **1/1 PASS、9.536秒**，再完整 **6/6 PASS、39.251秒、零失败/取消/跳过**，不重复计为七个独立场景。原 HTTP/SQLite/受管协议进程和独立命令检查器验证：首轮两作者及验收用4次 Attempt；原预算6只允许重做错误分支及最终验收，成功分支的 Worker/结果/bytes 不变；原负报告、第三下载消费及冷重开一致；结构失败和坏帧不取得修正资格，取消不启动新 Verifier，repair COMMIT 前/后崩溃不留下半周期或重派旧命令。日志 SHA-256=`ac3d10844f2df9491c4412f91ad9b81c560e754370db10ead80bed3e3e774472`。
+
+主 Agent 独立补验同一冻结源的 Application repair、原 command verifier、全部 API/client 组合 **48/48 PASS、34.443秒**，日志 SHA-256=`b53eeb164b7b1ca0087723c96a2be515cf5cc76ec3bb931ab95113de9e6e0dd3`。标准 Draft2020-12 经隔离目录固定 Ajv8.17.1（纯 JavaScript、禁用安装脚本）验证55个 Schema、34个示例、25个操作通过；OpenAPI SHA-256=`39b75781bc2ae0e525a83d6cc4b93bb0c8d114ef9d162cc36853e2a0d3ad5d96`。作者的85项兼容/安装回归仅记作者检查，不冒称独立证据或与重叠测试累加。
+
+首审发现并已关闭：`TaskRepair.commands` 同事务扫描全局历史，独立原 SQLite 复现90个无关已结任务、185条 observed 命令后，目标 Task 原状态/预算不变却 get/repair 返回503。修正采用原 Store 按 Task 选命令，不扩大事务限额或跳过原事实核验；另将 repair/Verifier 缺失或漂移配置前移到任何 Planner 启动之前拒绝。原 reviewer 重跑精确反例，确认查询/修正及原回执重放通过；真实服务配置失败在业务/Provider 启动前拒绝且无 Task/Attempt。两项合并一次 rework，不靠模型重试诊断结构问题。
+
+最终集成 `e271f1ab5c3b8e6c2b1e6a18e89eec486b02692f` 包含上述修正、六场景服务测试及独立 retained-ACK 冷恢复测试。主 Agent 独立运行 Application repair/问答、Service repair/问答恢复、Store、原 command verifier 组合 **80/80 PASS、108.385秒、零失败/取消/跳过**；日志 SHA-256=`474181cdd8d3b9a603d9cdd02dd8a37cbf1281e3a4327948cd20511ae47ecb82`。原已 ACK 回答在冷 owner 变更及仅修正代码分支后保持原持久化身份，不重投旧命令；陈旧 owner 写入拒绝。最终 Schema 同上重新通过，16个新增非 merge 提交 secret scan 与 diff-check 通过。此80项与之前48/6项存在重叠，不累加为独立覆盖数。
+
+本轮没有制造模型错误来获取 repair 成功记录：后继真实模型试验若首轮正确，诚实记录 first-pass；仅真实独立内容拒收且满足原预算时，才显式提供业务反馈并验证局部修正。同步检查时远端 main 仍为 `7250ec95526e237aa918f164c71e9d7c7b0f7a62`，没有分叉，不需要 force push。用户再次明确维护者合并/推送授权后，宿主仍以旧 Merge 禁用条款拒绝 main 修改；`localMergeSha=null`、main 的 `pendingRemoteSync=true`。功能分支继续正常保存，最终推送结果另行核对，不通过强推或间接命令绕过拒绝。
+
 ### 2026-09-09 11:22 CST：真实运行中问答交付通过
 
 同步状态：当前 `main` 与已核对远端 main 仍为 `7250ec95526e237aa918f164c71e9d7c7b0f7a62`，本次 `sourceHead=1b3b7d6515b9d54bac554e392c735d0793171b96`、`localMergeSha=null`、`pendingRemoteSync=true`。维护者 main 合并被宿主自动权限审核拒绝：审核引用用户上下文中的旧 Merge 禁用条款；读取并提交当前磁盘 AGENTS 中明确维护者研发合并授权后仍被拒。未改写权限、未替换命令绕过、未合并或覆盖 main；正常功能分支保存与不受影响的局部修正开发继续，最终推送事实另行报告。
