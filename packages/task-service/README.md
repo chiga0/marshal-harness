@@ -16,6 +16,10 @@ node --test --test-concurrency=1 packages/task-service/leader.test.mjs
 
 可选 `publication` 使用原本地报告端口；受信 `createVerificationPort({..., publicationExpected({ticket})})` 从冻结原输入/回答生成完整后验期望，禁止从 Leader 的 pass 字段生成。原始 `created/matched/passed` 事实保留，公开 LeaderView 映射为 `succeeded`。本检查点的发布端口由配置拥有者在 `shutdown().shutdownClean === true` 后 `close()`；冷开必须重新构造同目标身份/配置的端口，不复用失效 FD。
 
+后验期望的私有能力在 root create/open/claim 前校验；本 Task 的具体期望在 publication reservation 和外部 create 之前同步生成，随原 ticket/action 冻结，后验不再次读取可变配置。构造失败不消耗 publication Attempt，也不启动原发布端口。取消或原期限先赢时，已产生的原绑定发布回执仍保存；只禁止后继，并不把已发生的效果改写为未发生。缺效果证明即使进程已清理也保持 unknown。
+
+`leader-revisions.test.mjs` 是真实 SQLite/Depot 加明确受控 Provider 事实的聚合反例：等待/陈旧决定保留聚合义务、取消/期限保留原发布事实、启动前期望校验以及 ordinary/structural/nonretryable 失败分类。它不是外部发布或 OS cleanup 证明。`leader-followup.test.mjs` 另使用真实 HTTP/原 guard，覆盖答复批准后取消和独立 Review→仅错误分支修正；确定性 peer 主动写入的测试错误不是自然模型错误证据。
+
 这是 ADR0088 的 Node-only 组合入口：复用同一个 `TaskApplication`、SQLite `Store`、`ArtifactDepot`、`TaskSupervisor` 和 HTTP handler。不执行 Marshal 原生文件，不创建另一套 Task 状态或决策控制器。API/client 检查点已 `PASSED`；逐接口实现和模型/夹具验证范围见[支持矩阵](../../docs/node-api-support-matrix.md)。这不等于整体 B2/B3、正式部署或 `RELEASED` 已完成。
 
 ## 一条命令启动
