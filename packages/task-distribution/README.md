@@ -82,10 +82,29 @@ MARSHAL_QWEN_ENTRY=/absolute/canonical/qwen-code/cli-entry.js \
 ```sh
 "$MARSHAL_NODE" --test --test-concurrency=1 \
   packages/task-distribution/index.test.mjs \
+  packages/task-distribution/carrier.test.mjs \
   packages/task-distribution/team.test.mjs
 ```
 
 `index.test.mjs` 包含10项：same-bytes、冷导入、缺配置拒绝、源码/清单/权限/链接漂移及真实安装 CLI 的 HTTP health/ready→正常退出→新进程打开原 SQLite。`team.test.mjs` 包含 v1/v2-custody 两例：生产模块与客户端均来自核验后的目录包，真实 CLI/HTTP/SQLite/受管 ACP 进程、两作者交叠、独立 checker、下载消费和冷重开原回执/bytes；业务 Agent/checker 是明确外置夹具，不调用模型。它们不是香港同包部署、真实模型验收或所有数据 layout 的安装验证，精确通过记录仍以对应 source 的实证为准。
+
+### 同一 CI 候选的两平台消费
+
+`node-team.yml` 在原回归成功后，由一个 producer 对精确 workflow source **只 pack 一次**。同一 workflow 的 Linux/macOS 普通 runner 按 producer 输出的唯一 artifact ID 下载，使用包外的 `sourceHead / manifestDigest` 核验；消费者不会自行生成摘要后信任，也不重新 pack。核验工具与外置夹具从同一精确 source checkout 获得，运行用的 Core、CLI 和客户端只来自恢复后的包。
+
+目录 artifact 可能把权限变成 `0755/0644`，因此下载目录只作 carrier，不直接运行、不原地 chmod。候选辅助命令在完整原清单、无链接/硬链接、类型、大小及全部摘要检查成功后，才向当前用户所属且 `0700` 的已有父目录下独占创建新安装树，写 `0700/0600`、逐层同步并调用原严格 `verify`。不覆盖既有目标；同步失败保留现场并拒绝成功。没有新增包格式或发布权威。
+
+```sh
+"$MARSHAL_NODE" "$MARSHAL_TOOLS" restore-carrier \
+  --carrier /absolute/downloaded-carrier \
+  --target /absolute/private-parent/new-package \
+  --manifest-digest "$MARSHAL_PACKAGE_DIGEST" \
+  --source-head FULL_40_HEX_PRODUCER_COMMIT
+```
+
+共享 `installed-team.fixture.mjs` 保留原两种 layout 的完整团队消费者；显式 `candidate-consumer.mjs` 必须收到 `MARSHAL_CANDIDATE_ROOT / MARSHAL_CANDIDATE_MANIFEST / MARSHAL_CANDIDATE_SOURCE`，CI 另记录原 artifact ID。缺参失败，无 pack fallback。两例须实际 pass、零跳过，并在原进程 pipe 排空后确认 `clean=true / exit=0`。`carrier.test.mjs` 另覆盖传输权限、精确摘要、无 Git 恢复、非法载荷（含非阻塞拒绝 FIFO manifest）、既有目标、同步失败及父目录替换。
+
+此 workflow 仍只有 `contents:read`：不创建 tag/release，不申请 OIDC 或发布写权限，不接触模型登录。CI artifact 是有限保留期的测试候选，不是受保护 stable 资产；两平台实际结果、香港部署和真实模型验收仍分别记录，不能由新增 workflow 文本预填通过。
 
 [API-STABLE 四条件](../../docs/agent-team-service-milestones.md#api-stable核心接口稳定检查点不是所有扩展齐备)是：合同/handler/示例/客户端一致且无未处置核心 API P0/P1；至少一个支持的真实 Provider 完成纯 HTTP 确认/交付/下载审计和主要失败控制；已提供功能的幂等、旧版本、认证/Origin、路径、取消迟到、事件续读/gap 等反例通过；HTTP 脚本及独立客户端共用契约，查询/取消在并行与长 Verify 下有实测响应上界。**不要求 B3 全平台部署与完整长期故障矩阵提前完成**，但本工具或安装测试也不自动授予 API-STABLE。
 
