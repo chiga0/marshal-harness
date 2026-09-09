@@ -2,7 +2,7 @@
 
 此包实现 ADR0085/0088 的正式 Node profile HTTP 适配层，**不是 API-STABLE 或生产完成声明**。它不导入实验 Store/Supervisor、固定订单业务或具体 Agent，不启动 socket、模型、进程或数据库。旧九操作实验协议保持独立。
 
-`createTaskApiHandler({application,token,expectedHost,requestTimeoutMs})` 返回 Node HTTP handler；所有 24 个操作调用同一个异步注入函数：
+`createTaskApiHandler({application,token,expectedHost,requestTimeoutMs})` 返回 Node HTTP handler；所有 25 个操作（含同计划局部修正）调用同一个异步注入函数：
 
 ```js
 await application(request, {principal: 'local-operator', requestId, signal});
@@ -27,6 +27,8 @@ await application(request, {principal: 'local-operator', requestId, signal});
 
 ## ADR0090 运行中业务问答合同
 
+同计划局部修正另由 ADR0091 定义：`POST /v1/tasks/{taskId}/repair` 绑定原 `expectedRevision/planDigest/decisionDigest/nodeIds/feedback` 与幂等键；只在应用已启用并且原独立验证内容拒收满足政策时受理，不能从通用失败推断可重试。保留原预算/期限、未受影响结果和历史回执，不重启整个 Task；入口存在不意味着真实模型局部修正已验收。具体支持与错误以 OpenAPI 和 Application 为准。
+
 此差量只提供 schema/HTTP/客户端边界，不创建问题、持久化答案、投递或 ACK，也不自行报告运行能力。真实 Provider、业务、Supervisor、Store 和最终验收全部支持时，Application 才能启用；缺能力仍由原应用明确拒绝。
 
 - 原 `Plan` 可选增加闭集 `interaction:{profile:'task-runtime-question/v1',policyDigest,maxQuestions,maxWaitMs}`，最多 3 题和 120000 毫秒；它必须来自原批准计划摘要，HTTP 不生成或更新该摘要。没有该字段的旧计划仍保留原字节与状态。
@@ -43,4 +45,4 @@ await application(request, {principal: 'local-operator', requestId, signal});
 
 请求最多 256 KiB（input 为 384 KiB 的 base64 包络），响应/制品最多 8 MiB，body 深度最多 32；Task intent 8 KiB、context text 32 KiB。用户请求 limits 不是授权扩大服务限额：Application 必须比较实际 profile 上限。HTTP 等待默认 10 秒、最多 30 秒，不刷新 Task 原期限。请求体未结束时超时/断线会移除读取监听器并关闭该连接；可写错误响应先发出再回收连接，不继续解析剩余请求体，也不转化为 Task cancel。没有流式下载、SSE、HTTP multipart 或任意执行/发布端点。
 
-最短验证命令：`node --test --test-concurrency=1 packages/task-api/*.test.mjs packages/task-client/*.test.mjs`。原 24 操作和新增运行问答测试使用 Request/Response 流替身、独立内存 Application fixture，以及真实 loopback HTTP；覆盖两族答复、oneOf 精确互斥、4096 字节边界、请求/回执串绑、有限选项、错误、丢回复与显式同 key 重放。标准 Draft 2020-12 metaschema/示例另用真实 jsonschema 校验器验证。无 DB/模型；不能替代实际 SQLite、同执行投递/ACK、恢复或独立业务验收。
+最短验证命令：`node --test --test-concurrency=1 packages/task-api/*.test.mjs packages/task-client/*.test.mjs`。25 个操作的合同（含局部修正）和运行问答测试使用 Request/Response 流替身、独立内存 Application fixture，以及真实 loopback HTTP；覆盖两族答复、oneOf 精确互斥、4096 字节边界、请求/回执串绑、有限选项、错误、丢回复与显式同 key 重放。标准 Draft 2020-12 metaschema/示例另用真实 jsonschema 校验器验证。无 DB/模型；不能替代实际 SQLite、同执行投递/ACK、恢复或独立业务验收。

@@ -10,7 +10,7 @@ Marshal 是一个可自托管的 Agent Team HTTP 服务：接收需求和上下�
 
 当前 Local MVP 已有执行、独立验证、审查和 Draft PR 的历史能力，RC1 支持面仍是下述 CLI-only local-dogfood。当前目标为 B1 真实团队 PoC、B2 本地 API 可用、B3 正式可靠发布；旧单任务与团队证据继续保留，尚未整体完成。
 
-2026-09-07 方案收缩为 [Task-first Agent Team 架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)和[审计记录](docs/audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)：先用一个可用 Provider 的两个实例走通真实交付，不先做 Workspace、安装身份平台或全面迁库。目标一命令启动本地 HTTP，原生 Agent 自管登录/Skill，Supervisor 内置；SQLite/零 Git/问答在 B2，正式平台支持在 B3。边界由 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)（Proposed）承载，文档不代表功能已发布。
+2026-09-07 方案收缩为 [Task-first Agent Team 架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)和[审计记录](docs/audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)：先用一个可用 Provider 的两个实例走通真实交付，不先做 Workspace、安装身份平台或全面迁库。目标一命令启动本地 HTTP，原生 Agent 自管登录/Skill，Supervisor 内置；SQLite/零 Git/问答在 B2，正式平台支持在 B3。边界由已接受的 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)承载；[ADR 0088](docs/adr/0088-node-task-service-production-projection.md)进一步接受 Node-only 正式实现路线，文档不代表功能已发布。
 
 旧 Marshal skill 不再是产品运行依赖、研发准入或验收标准，不读取、加载或执行其流程；保留历史运行、失败和审计资产。Pi/Qwen Code/OpenCode 自带的 Skill、模型配置与登录仍由各 Agent 自行管理。
 
@@ -58,7 +58,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 - **B2 本地 API 可用**：简短需求问答/确认、SQLite、零 Git 与多仓库、同版本恢复、任务图/Worker 详情/审计和更多 Adapter。Pi、Qwen Code、OpenCode 逐个声明实测支持；全部增强能力不作前置。
 - **B3 正式发布**：同路径长期/故障与恢复验证、Darwin 签名/notarization、Linux 实机及受保护 stable release。U1 旧历史导入单独证明，不挡新任务；UI 仅核心 API-STABLE 后开发，不阻 API 发布。
 
-控制/执行/存储三面逻辑分离，初期一个服务，Core 通过接口 DI 与 Agent/Sandbox/Store 解耦。Task 复用既有 Goal；计划、WorkItem、Run/Attempt 是内部记录，不新建两套权威。Agent 使用自身已配置模型和 Skill，不建设统一登录/Skill 平台；独立验证、受管目录单写、所属进程取消、最小持久事实与本地访问保护仍保留。
+控制/执行/存储三面逻辑分离，初期一个服务，Core 通过接口 DI 与 Agent/Sandbox/Store 解耦。旧 Go profile 的 Task 复用既有 Goal；当前 Node profile 使用自己的唯一 Application/SQLite，不调用 Go 或为兼容名称另造 Goal 真值。新旧数据根不混用。Agent 使用自身已配置模型和 Skill，不建设统一登录/Skill 平台；独立验证、受管目录单写、所属进程取消、最小持久事实与本地访问保护仍保留。
 
 默认仅交付成果，不自动生产写/发布/merge。SQL 文件生成不等于生产执行/补数；可选 Draft PR 和其他外部写以后按独立权限与实测 profile 开放。旧 repository .marshal 不自动接管，不双写或清空。详细目标见[架构](docs/agent-team-service-architecture.md)，实施顺序见[计划](docs/implementation-plan.md)，真实完成情况只见 [Roadmap](docs/roadmap-status.md#业务交付当前表)。
 
@@ -73,7 +73,15 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 [ADR 0067](docs/adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 与 [ADR 0068](docs/adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 定义的 Mac-first same-bytes RC1 路径已经走通并发布。RC1 的 tag 名不等于 stable v1.0：fixed server、managed signing/notarization、Linux stable 和 ADR 0052 的 `RELEASED` 门禁仍属于后继。
 
-## 安装
+## 当前 Node 服务与 API 候选入口
+
+当前研发主线使用固定 Node `24.15.0`，通过 [Task 服务启动说明](packages/task-service/README.md)配置原生 Agent、业务与独立验证并运行 HTTP；无需编译或执行 Marshal 原生程序。受信启动配置仍需提供，尚不承诺任意任务零配置。原生 Agent 的登录沿用与发布凭据分离是不同问题，不能因本机可运行就声称生产支持。
+
+- [OpenAPI 3.1 定义](packages/task-api/openapi.json)是 HTTP 请求/响应的唯一机器契约；[接口说明](packages/task-api/README.md)与[客户端](packages/task-client/README.md)解释使用方式。
+- [架构](docs/agent-team-service-architecture.md)、[目标用户与适用范围](docs/vision-and-scope.md)、[Milestone](docs/agent-team-service-milestones.md)与[实际进展](docs/roadmap-status.md#业务交付当前表)分别说明目标和完成情况。
+- API 当前为 `0.1.0-candidate`，不是 API-STABLE；[目录发行包](packages/task-distribution/README.md)也不等于 stable 安装包或正式部署。
+
+## 历史 Go RC1 安装（不是 Node 服务入口）
 
 Darwin arm64 用户可以显式安装已发布的 RC1；安装器不会请求 sudo、不会自动生成 activation，也不会修改 Gatekeeper、SIP 或 EDR。非 Darwin arm64、缺少精确资产、manifest/checksum/tag 漂移或缺少 preview opt-in 均 fail closed，不会回退源码或其它平台资产：
 
@@ -97,7 +105,7 @@ make build
 
 升级、回滚（固定旧版本重装）与卸载的完整说明见 [docs/install-and-upgrade.md](docs/install-and-upgrade.md)。
 
-## 最小使用流程
+## 历史 Go profile 最小使用流程
 
 在准备交给 Coding Agent 的 Git 仓库中：
 

@@ -8,6 +8,8 @@
 
 ### 最新正式 Node 集成检查点
 
+**2026-09-09 12:20 CST 已合入并推送**：sourceHead=`8f8ff8dfe57852e6b383fbd2bb7c70fb75a1d552`，localMergeSha=`85fc62a3338fc15c408e941e16a7c882b0be4a6d`，远端 main 已核对一致、`pendingRemoteSync=false`；精确 source 的 Ubuntu/macOS Node team CI 均通过。运行中问答和局部修正进入主线；实际输入审计、简启动仍在途，OpenAPI仍为candidate，B1/B2/API-STABLE/B3不升级。[验证范围及未完成项](node-task-service-status-2026-09-08.md)。以下未合 main 记录是历史时点。
+
 **2026-09-09 12:04 CST 增量**：已审局部修正及证据正常推送至功能分支 `d650238`，不是main合并；原两P1聚合关闭，最终定向80/80通过。真实Pi首轮交付26.288秒、双作者交叠11.788秒，下载7单/1850 cents和正常重开通过，无实际repair、不造错寻找失败。局部修正实现/确定性证据前进，真实模型修正仍未证明；实际prompt/context审计和简启动开始并行实施。下表状态不升级，[精确证据与边界](node-task-service-status-2026-09-08.md)。
 
 **2026-09-09 10:23 CST**：真实 Pi＋Qwen 双仓库 patch 团队一次通过，56.914秒、作者真实重叠11.631秒、4 Attempts、独立验收与下载消费23检查/12负例通过、正常重开零再启动。source=`76f9c36` 已合并并推送 `7294878e68c59a592b4c8cd1236da34bad038fe2`，pendingRemoteSync=false；新增API/驱动独立组合48/48通过。只关闭固定业务混合交付子条件，不把 Qwen 零权限回调或普通宿主执行当分权证明；运行问答合同已接线，Core实际投递/ACK、局部修正和正式 profile 仍在途。[精确证据与边界](node-task-service-status-2026-09-08.md)。
