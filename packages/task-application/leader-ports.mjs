@@ -12,6 +12,24 @@ export const closed = (value, names) => value !== null && typeof value === 'obje
   [null, Object.prototype].includes(Object.getPrototypeOf(value)) && Object.keys(value).length === names.length &&
   names.every(name => Object.hasOwn(value, name));
 export const check = (value, code = 'unsupported_task') => {if (!value) reject(code, 422);};
+const diagnosticEnums = Object.freeze({executionType: ['leader', 'review'], status: ['completed', 'failed', 'cancelled', 'unknown'],
+  stopReason: ['end_turn', 'cancelled', 'error', 'length', 'toolUse', 'deferred', 'max_tokens', 'max_turn_requests', 'refusal'],
+  reason: ['pi_agent_stop', 'pi_agent_error', 'pi_agent_aborted', 'pi_agent_length', 'pi_agent_toolUse', 'pi_agent_deferred',
+    'pi_provider_stopped', 'pi_provider_deadline', 'pi_provider_failed', 'pi_execution_scope_unproven', 'cleanup_unconfirmed',
+    'pi_session_not_fresh', 'pi_bridge_not_ready', 'pi_invalid_terminal', 'pi_missing_terminal', 'pi_invalid_progress',
+    'pi_progress_timeout', 'pi_progress_failed'], stage: ['provider-result', 'cleanup', 'parse'],
+  parseCode: ['invalid_json', 'invalid_leader_result', 'invalid_leader_decision', 'invalid_review_report']});
+// Non-authoritative metadata only. Unknown provider strings never enter logs.
+export function safeManagedDiagnostic(value) {
+  try {
+    if (!closed(value, ['code', 'authority', 'taskId', 'workerId', 'providerId', 'executionType', 'status', 'stopReason', 'reason', 'stage', 'parseCode']) ||
+      value.code !== 'managed_provider_failure' || value.authority !== false ||
+      !['taskId', 'workerId', 'providerId'].every(key => id(value[key]))) return null;
+    const result = {code: 'managed_provider_failure', authority: false, taskId: value.taskId, workerId: value.workerId, providerId: value.providerId};
+    for (const [key, allowed] of Object.entries(diagnosticEnums)) result[key] = allowed.includes(value[key]) ? value[key] : null;
+    return Buffer.byteLength(JSON.stringify(result)) <= 2048 ? Object.freeze(result) : null;
+  } catch {return null;}
+}
 const distinct = (values, max, test = id) => Array.isArray(values) && values.length <= max && values.every(test) && new Set(values).size === values.length;
 const integer = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
 
@@ -93,7 +111,7 @@ function create(type, {id: identifier, providerId, policy, prepare, parseDecisio
       check(closed(result, ['prompt']) && isText(result.prompt, 262144), 'invalid_leader_result');
       return {...prepared, prompt: result.prompt};
     },
-    start({ticket, prepared, provider, executionContext, onProgress}) {
+    start({ticket, prepared, provider, executionContext, onProgress, onDiagnostic}) {
       check(provider?.id === providerId && typeof provider.start === 'function' && ticket.executionType === type &&
         ticket.providerId === providerId, 'invalid_leader_result');
       const binding = hash(ticket), handle = provider.start({...prepared, deadline: ticket.deadline, executionContext, onProgress});
@@ -101,9 +119,23 @@ function create(type, {id: identifier, providerId, policy, prepare, parseDecisio
       return Object.freeze({started: handle.started, stop: (...args) => handle.stop(...args),
         completion: Promise.resolve(handle.completion).then(raw => {
           check(raw?.providerId === providerId && ['completed', 'failed', 'cancelled', 'unknown'].includes(raw.status), 'invalid_leader_result');
-          let value = null, reason = null;
+          let value = null, reason = null, parseCode = null;
           if (raw.status === 'completed' && raw.stopReason === 'end_turn' && raw.cleanup?.cleaned === true && raw.cleanup.started !== null) {
-            try {value = parse(type, config, ticket, raw);} catch {reason = type === 'leader' ? 'invalid_leader_decision' : 'invalid_review_report';}
+            try {value = parse(type, config, ticket, raw);} catch (error) {
+              reason = type === 'leader' ? 'invalid_leader_decision' : 'invalid_review_report';
+              parseCode = diagnosticEnums.parseCode.includes(error?.code) ? error.code : null;
+            }
+          }
+          if (!value && typeof onDiagnostic === 'function') {
+            // Never await observer callbacks or allow them to affect receipts,
+            // cleanup, original rejection codes, or completion settlement.
+            try {
+              const report = safeManagedDiagnostic({code: 'managed_provider_failure', authority: false,
+                taskId: ticket.taskId, workerId: ticket.workerId, providerId: ticket.providerId, executionType: type,
+                status: raw.status, stopReason: raw.stopReason, reason: raw.reason,
+                stage: reason ? 'parse' : raw.cleanup?.cleaned !== true ? 'cleanup' : 'provider-result', parseCode});
+              if (report) Promise.resolve(onDiagnostic(report)).catch(() => {});
+            } catch {}
           }
           const data = {type, status: value ? 'completed' : 'failed', cleanup: clone(raw.cleanup), value, reason};
           const receipt = Object.freeze(Object.create(null)); receipts.set(receipt, {port, binding, data});

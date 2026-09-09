@@ -94,8 +94,38 @@ function privateDirectory(directory) {
   const stat = fs.lstatSync(directory);
   check(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid() && (stat.mode & 0o777) === 0o700 && fs.realpathSync(directory) === directory, 'private_directory_required');
 }
-function launch(node, args, env, cwd) {
+// Only this closed metadata shape is retained. All other stderr is counted,
+// never logged; chunks and lines are bounded before decoding.
+export function diagnosticCollector(items = []) {
+  const enums = {executionType: ['leader', 'review'], status: ['completed', 'failed', 'cancelled', 'unknown'],
+    stopReason: ['end_turn', 'cancelled', 'error', 'length', 'toolUse', 'deferred', 'max_tokens', 'max_turn_requests', 'refusal'],
+    reason: ['pi_agent_stop', 'pi_agent_error', 'pi_agent_aborted', 'pi_agent_length', 'pi_agent_toolUse', 'pi_agent_deferred',
+      'pi_provider_stopped', 'pi_provider_deadline', 'pi_provider_failed', 'pi_execution_scope_unproven', 'cleanup_unconfirmed',
+      'pi_session_not_fresh', 'pi_bridge_not_ready', 'pi_invalid_terminal', 'pi_missing_terminal', 'pi_invalid_progress',
+      'pi_progress_timeout', 'pi_progress_failed'], stage: ['provider-result', 'cleanup', 'parse'],
+    parseCode: ['invalid_json', 'invalid_leader_result', 'invalid_leader_decision', 'invalid_review_report']};
+  const keys = ['code', 'authority', 'taskId', 'workerId', 'providerId', ...Object.keys(enums)].sort();
+  let line = [], length = 0, dropping = false;
+  return bytes => {
+    for (const byte of bytes) {
+      if (byte !== 10) {
+        if (++length > 2048) {dropping = true; line = [];} else if (!dropping) line.push(byte);
+        continue;
+      }
+      if (!dropping && items.length < 32) try {
+        const value = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(Uint8Array.from(line)));
+        if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).sort().join(',') === keys.join(',') &&
+          value.code === 'managed_provider_failure' && value.authority === false &&
+          ['taskId', 'workerId', 'providerId'].every(key => /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value[key]) && typeof value[key] === 'string') &&
+          Object.entries(enums).every(([key, values]) => value[key] === null || values.includes(value[key]))) items.push(value);
+      } catch {}
+      line = []; length = 0; dropping = false;
+    }
+  };
+}
+export function launchService(node, args, env, cwd, diagnostics = []) {
   const child = spawn(node, args, {env, cwd, stdio: ['ignore', 'pipe', 'pipe']});
+  const collectDiagnostic = diagnosticCollector(diagnostics);
   let stdout = '', stderrBytes = 0, closed = false, ended, stopping, resolveReady, rejectReady;
   const ready = new Promise((resolve, reject) => {resolveReady = resolve; rejectReady = reject;});
   const exit = new Promise(resolve => {
@@ -107,7 +137,7 @@ function launch(node, args, env, cwd) {
     if (stdout.length > 8192) {rejectReady(new Error('service_output_bound')); child.kill('SIGTERM');}
     else if (stdout.includes('\n')) {try {resolveReady(JSON.parse(stdout.split('\n')[0]));} catch {rejectReady(new Error('service_ready_invalid'));}}
   });
-  child.stderr.on('data', bytes => {stderrBytes += bytes.length; if (stderrBytes > 65536) child.kill('SIGTERM');});
+  child.stderr.on('data', bytes => {stderrBytes += bytes.length; collectDiagnostic(bytes); if (stderrBytes > 65536) child.kill('SIGTERM');});
   const timer = setTimeout(() => rejectReady(new Error('service_ready_deadline')), 10000);
   return {ready: ready.finally(() => clearTimeout(timer)), stop() {
     stopping ??= (async () => {
@@ -138,7 +168,7 @@ export async function run(options) {
   const root = o['run-dir'], reportRoot = path.join(root, 'reports'), state = path.join(root, 'data');
   const evidence = {profile: 'installed-pi-leader-report-live/v1', passed: false, production: false, trueProcessOverlapProven: false,
     sourceHead: manifest.sourceHead, manifestDigest: o['manifest-digest'], nodeVersion: process.versions.node, piVersion: pi.version,
-    piEntryDigest: digest(fs.readFileSync(o['pi-entry'])), piSdkDigest: digest(fs.readFileSync(o['pi-sdk'])), tasks: [], stage: 'loading'};
+    piEntryDigest: digest(fs.readFileSync(o['pi-entry'])), piSdkDigest: digest(fs.readFileSync(o['pi-sdk'])), diagnostics: [], tasks: [], stage: 'loading'};
   const save = (name, value) => fs.writeFileSync(path.join(root, name), JSON.stringify(value), {mode: 0o600, flag: 'wx'});
   const handles = []; let reader;
   let interrupted = false;
@@ -154,8 +184,8 @@ export async function run(options) {
     async function start(mode) {
       check(!interrupted, 'interrupted');
       same(verify({root: o.package, manifestDigest: o['manifest-digest']}), manifest);
-      const handle = launch(o.node, [path.join(o.package, manifest.entrypoint), '--root', state, '--mode', mode,
-        '--port', '0', '--config', path.join(o.package, 'packages/task-leader-report/service-config.mjs')], env, root);
+      const handle = launchService(o.node, [path.join(o.package, manifest.entrypoint), '--root', state, '--mode', mode,
+        '--port', '0', '--config', path.join(o.package, 'packages/task-leader-report/service-config.mjs')], env, root, evidence.diagnostics);
       handles.push(handle); const ready = await handle.ready;
       check((fs.statSync(ready.connectionFile).mode & 0o777) === 0o600, 'connection_mode');
       const connection = JSON.parse(fs.readFileSync(ready.connectionFile));
