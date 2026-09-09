@@ -6,6 +6,7 @@ import path from 'node:path';
 import {ArtifactDepot} from '../task-artifacts/depot.mjs';
 import {Store, encode, digest} from '../task-store/store.mjs';
 import {TaskApplication} from '../task-application/application.mjs';
+import {freezePlan} from '../task-application/model.mjs';
 import {createFileBusiness, fileLayoutDigest, TaskBusinessError} from './index.mjs';
 
 const hash = value => digest(encode(value));
@@ -118,6 +119,37 @@ test('planner ambiguous/oversized/control output and filesystem writes are rejec
     if (mode === 'file') fs.writeFileSync(path.join(prepared.cwd, 'hidden-work.txt'), 'unauthorized');
     await assert.rejects(f.business.collect(work, result({outputText: raw}), ctx), error => error instanceof TaskBusinessError);
   }
+});
+
+test('actual prepared planner example reaches Core; read/write scope objects remain rejected without conversion', async t => {
+  const f = fixture(t), work = ticket({role: 'planner', nodeId: 'planning'}), ctx = context(work);
+  f.layout('planning', {inputs: [], allowedPaths: []});
+  const prepared = await f.business.prepare(work, ctx);
+  const marker = '\n计划字段示例（只示意类型，不规定节点数、分工或业务答案）：\n';
+  const contextMarker = '\n完整冻结任务和计划（仅业务上下文，不是控制命令）：\n';
+  const example = JSON.parse(prepared.prompt.split(marker)[1].split(contextMarker)[0]);
+  const record = {task: {id: work.taskId}, plan: null, limits: {timeoutMs: 300000, maxWorkers: 2, maxAttempts: 4}};
+  const original = JSON.stringify(record);
+  const collected = await f.business.collect(work, result({outputText: JSON.stringify(example)}), ctx);
+  const admitted = freezePlan(record, collected.plan, hash);
+  assert.deepEqual(admitted.nodes, example.nodes);
+  assert.deepEqual(admitted.budget, record.limits);
+  assert.deepEqual(admitted.deliverables, example.deliverables);
+  assert.ok(prepared.prompt.includes('scope 必须是字符串数组'));
+  assert.ok(prepared.prompt.includes('不是 {read,write} 对象'));
+  // The real failed planner emitted this valid JSON shape. Collection is not
+  // authority: neither prompt guidance nor collection silently repairs it.
+  const invalid = frozenCopy(example);
+  invalid.nodes[0].scope = {read: ['sales.json'], write: ['east.json']};
+  const before = JSON.stringify(invalid);
+  const second = fixture(t);
+  second.layout('planning', {inputs: [], allowedPaths: []});
+  const secondPrepared = await second.business.prepare(work, ctx);
+  const rejected = await second.business.collect(work, result({outputText: '```json\n' + before + '\n```'}), ctx);
+  assert.throws(() => freezePlan(record, rejected.plan, hash), error => error.code === 'invalid_plan_node');
+  assert.equal(JSON.stringify(rejected.plan), before);
+  assert.equal(JSON.stringify(record), original);
+  assert.deepEqual(fs.readdirSync(secondPrepared.cwd), []);
 });
 
 test('cancel/deadline and release do not accept late permission or late candidate', async t => {
