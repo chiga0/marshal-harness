@@ -1,9 +1,9 @@
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {randomBytes} from 'node:crypto';
+import {randomBytes, createHash} from 'node:crypto';
 import {launchProtocol, RuntimeError} from '../agent-runtime/index.mjs';
 import {PiRpcClient, PiRpcError} from '../agent-pi-rpc/client.mjs';
-import {BRIDGE_PROFILE, BRIDGE_ENV, BRIDGE_TITLE, TOOL_KINDS} from './bridge-contract.mjs';
+import {BRIDGE_PROFILE, BRIDGE_ENV, BRIDGE_TITLE, TOOL_KINDS, QUESTION_TOOL, QUESTION_PROFILE} from './bridge-contract.mjs';
 
 const text = (value, max) => typeof value === 'string' && value.isWellFormed() && !value.includes('\0') && Buffer.byteLength(value) <= max;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -43,11 +43,17 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
       Object.keys(custodyProfile).sort().join(',') !== 'eligible,id,scope' || !id(custodyProfile.id) ||
       custodyProfile.scope !== 'inherited-process-group' || typeof custodyProfile.eligible !== 'boolean')) throw fault('pi_invalid_configuration');
   if (Buffer.byteLength(JSON.stringify(config)) > 100 * 1024) throw fault('pi_invalid_configuration');
-  function start({cwd, deadline, prompt, onProgress, onPermission, executionContext} = {}) {
+  function start({cwd, deadline, prompt, onProgress, onPermission, executionContext, questionContext} = {}) {
     if (!text(cwd, 8192) || !path.isAbsolute(cwd) || !Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline - Date.now() > 86400000 ||
       !text(prompt, 256 * 1024) || !prompt.trim() || onProgress !== undefined && typeof onProgress !== 'function') throw fault('pi_invalid_input');
     if (onPermission !== undefined && typeof onPermission !== 'function') throw fault('pi_invalid_input');
     if (onPermission !== undefined && !bridgeConfig) throw fault('pi_permission_bridge_unavailable');
+    if (questionContext !== undefined && (!bridgeConfig || !object(questionContext) || typeof questionContext.ask !== 'function' ||
+      typeof questionContext.acknowledge !== 'function' || questionContext.configuration?.profile !== QUESTION_PROFILE ||
+      !/^sha256:[a-f0-9]{64}$/.test(questionContext.configuration.policyDigest ?? '') ||
+      !Number.isSafeInteger(questionContext.configuration.maxWaitMs) || questionContext.configuration.maxWaitMs < 1 ||
+      questionContext.configuration.maxWaitMs > 120000)) throw fault('pi_question_bridge_unavailable');
+    const questionConfig = questionContext ? structuredClone(questionContext.configuration) : null, businessQuestions = new Map();
     let runtime, stopping = false, settled = false, scopeUnknown = false, callbackFailure, sessionId = null, prompting = false;
     const unproven = () => {
       scopeUnknown = true;
@@ -107,14 +113,16 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
     }
     async function interaction(message, context) {
       if (!bridgeConfig) return;
-      if (message.method !== 'notify' && !(message.method === 'confirm' && message.title === BRIDGE_TITLE)) return;
+      const businessDialog = questionConfig && ['input', 'select'].includes(message.method);
+      if (message.method !== 'notify' && !(message.method === 'confirm' && message.title === BRIDGE_TITLE) && !businessDialog) return;
       let value;
-      try { value = JSON.parse(message.message); } catch { return; }
+      try { value = JSON.parse(businessDialog ? message.title : message.message); } catch { return; }
       if (value?.profile !== BRIDGE_PROFILE) return;
       if (value.nonce !== nonce || value.cwd !== cwd || value.deadline !== deadline) { unproven(); throw fault('pi_bridge_binding_mismatch'); }
       if (message.method === 'notify' && value.type === 'ready') {
-        if (bridgeReady || prompting || value.scope !== 'inherited-process-group' || !Array.isArray(value.tools) || value.tools.length > 7 ||
-          value.tools.some(name => !Object.hasOwn(TOOL_KINDS, name)) || new Set(value.tools).size !== value.tools.length) throw fault('pi_bridge_invalid_ready');
+        if (bridgeReady || prompting || value.scope !== 'inherited-process-group' || !Array.isArray(value.tools) || value.tools.length > 8 ||
+          value.tools.some(name => !Object.hasOwn(TOOL_KINDS, name)) || new Set(value.tools).size !== value.tools.length ||
+          value.tools.includes(QUESTION_TOOL) !== !!questionConfig) throw fault('pi_bridge_invalid_ready');
         supportedTools = new Set(value.tools); bridgeReady = true; resolveReady(); return;
       }
       const call = calls.get(value.toolCallId);
@@ -127,6 +135,36 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
       }
       if (message.method === 'notify' && value.type === 'blocked' && !call.safe && !call.permission && !call.notExecuted) {
         call.notExecuted = true; call.safe = true; return;
+      }
+      if (value.type === 'business-question' || value.type === 'business-answer-ack') {
+        if (!questionConfig || value.toolName !== QUESTION_TOOL || !supportedTools.has(QUESTION_TOOL) || !call.selected ||
+          call.notExecuted || value.sessionId !== sessionId || value.policyDigest !== questionConfig.policyDigest ||
+          !/^[a-f0-9]{64}$/.test(value.questionNonce ?? '') || context?.signal?.aborted || stopping || Date.now() >= deadline)
+          throw fault('pi_business_question_binding');
+        if (value.type === 'business-question') {
+          if (!businessDialog || message.method !== value.kind || businessQuestions.has(value.questionNonce) || businessQuestions.size >= 3 ||
+              !text(value.prompt, 2048) || !value.prompt.trim() || !Array.isArray(value.options) ||
+              value.kind === 'input' && value.options.length !== 0 || value.kind === 'select' && (value.options.length < 1 || value.options.length > 16 ||
+                JSON.stringify(message.options) !== JSON.stringify(value.options))) throw fault('pi_business_question_invalid');
+          const entry = {nativeRequestId: message.id, callId: value.toolCallId, delivery: null, acknowledged: false};
+          businessQuestions.set(value.questionNonce, entry);
+          const delivery = await questionContext.ask({sessionId, nativeRequestId: message.id, toolCallId: value.toolCallId,
+            questionNonce: value.questionNonce, kind: value.kind, prompt: value.prompt, options: structuredClone(value.options)}, context);
+          if (!delivery || !id(delivery.questionId) || !text(delivery.answer, 4096) || !delivery.answer.trim() ||
+            !/^sha256:[a-f0-9]{64}$/.test(delivery.questionDigest ?? '') || !/^sha256:[a-f0-9]{64}$/.test(delivery.answerDigest ?? '') ||
+            !/^[a-f0-9]{64}$/.test(delivery.deliveryNonce ?? '') || !Number.isFinite(Date.parse(delivery.deadlineAt)) ||
+            Date.parse(delivery.deadlineAt) > deadline || Date.now() >= Date.parse(delivery.deadlineAt) || context.signal.aborted || stopping ||
+            value.kind === 'select' && !value.options.includes(delivery.answer)) throw fault('pi_business_answer_invalid');
+          entry.delivery = structuredClone(delivery); return {handled: true, value: delivery.answer};
+        }
+        const entry = businessQuestions.get(value.questionNonce), delivery = entry?.delivery;
+        if (message.method !== 'confirm' || !delivery || entry.callId !== value.toolCallId ||
+          Date.now() >= Date.parse(delivery.deadlineAt) || value.answerDigest !== 'sha256:' + createHash('sha256').update(delivery.answer).digest('hex'))
+          throw fault('pi_business_answer_ack_invalid');
+        const accepted = await questionContext.acknowledge(delivery.questionId, {questionDigest: delivery.questionDigest,
+          answerDigest: delivery.answerDigest, deliveryNonce: delivery.deliveryNonce});
+        if (accepted !== true || context.signal.aborted || stopping || Date.now() >= Date.parse(delivery.deadlineAt)) throw fault('pi_business_answer_ack_invalid');
+        entry.acknowledged = true; return {handled: true, confirmed: true};
       }
       if (message.method !== 'confirm' || value.type !== 'permission' || value.sessionId !== sessionId || !supportedTools.has(value.toolName) ||
         call.permission || call.notExecuted || !object(value.input) || Buffer.byteLength(JSON.stringify(value.input)) > 64 * 1024) { unproven(); throw fault('pi_bridge_invalid_permission'); }
@@ -155,10 +193,12 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
         const launch = structuredClone(config);
         if (bridgeConfig) {
           launch.args.push('--extension', fileURLToPath(new URL('./native-bridge.mjs', import.meta.url)));
-          launch.env[BRIDGE_ENV] = JSON.stringify({profile: BRIDGE_PROFILE, ...bridgeConfig, nonce, cwd, deadline});
+          launch.env[BRIDGE_ENV] = JSON.stringify({profile: BRIDGE_PROFILE, ...bridgeConfig, nonce, cwd, deadline,
+            ...(questionConfig ? {runtimeQuestions: questionConfig} : {})});
         }
         runtime = await launchProtocol({...launch, cwd, deadline, executionContext, createClient: connection => new PiRpcClient({...connection, onEvent: event,
           onInteraction: interaction,
+          businessInteractionTimeoutMs: questionConfig ? Math.max(1, Math.min(questionConfig.maxWaitMs, deadline - Date.now())) : 10000,
           requestTimeoutMs: Math.max(1, Math.min(10000, deadline - Date.now()))})});
         resolveStarted(runtime.started); if (stopping) throw fault('pi_provider_stopped');
         await publish('initializing');
@@ -176,6 +216,7 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
         const terminal = await runtime.client.prompt(prompt, {timeoutMs: remaining});
         if (Date.now() >= deadline) throw fault('pi_provider_deadline');
         stopReason = terminal.stopReason === 'stop' ? 'end_turn' : terminal.stopReason === 'aborted' ? 'cancelled' : terminal.stopReason;
+        if ([...businessQuestions.values()].some(entry => !entry.acknowledged)) throw fault('pi_business_answer_unacknowledged');
         status = stopReason === 'end_turn' ? 'completed' : stopReason === 'cancelled' ? 'cancelled' : 'failed';
         reason = 'pi_agent_' + terminal.stopReason; outputText = terminal.outputText;
       } catch (error) {
@@ -215,6 +256,7 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
     return Object.freeze({started, completion, stop, snapshot});
   }
   return Object.freeze({id: providerId, profile: 'ordinary-user', maturity: 'COMPONENT',
+    ...(bridgeConfig ? {runtimeQuestions: QUESTION_PROFILE} : {}),
     ...(custodyProfile === undefined ? {} : {custodyProfile: Object.freeze(structuredClone(custodyProfile))}),
     capabilities: Object.freeze({transport: 'pi-rpc', permission: bridgeConfig ? 'native-extension' : 'unavailable', cleanup: 'inherited-process-group'}), start});
 }
