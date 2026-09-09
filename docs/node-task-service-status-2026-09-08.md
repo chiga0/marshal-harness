@@ -12,7 +12,7 @@
 
 同版本冷备份测试 source=`1c3c4398796e5699448f9e89e17010606dca9940`，集成测试source=`796d40c`（生产字节为69cface；随后9edb637仅补部署README）。主Agent独立运行原CLI/HTTP/SQLite/实际受管协议进程及独立checker，**4/4 PASS、13.066秒**：正常SIGTERM且clean/exit0→完整22文件保权限/摘要/fsync复制→新目录open；原37条事件、SQL事实、回执/下载保持、旧任务零重派，再完成新4 Attempt团队。缺DB拒绝且不新建、缺blob的metadata/content均503且不补造、同物理目录第二writer拒绝。测试作者此前两次夹具假设错误（metadata也验blob、artifact ID非裸UUID）保留，未修改生产合同；这不是在线备份、断电证明、跨版本迁移或克隆副本防分叉。旧根和备份必须保持停用。
 
-这关闭相应API实机失败控制与冷复制恢复测试的证据缺口；API合同冻结结论、备份测试的独立review和后继main同步另按实际结果记录，不预填正式发布。B1实际Publisher分权、B2未覆盖的真实局部修正、B3持续多Task/故障/平台部署与正式资产仍开放。
+这关闭当前Qwen/layout1取消子证据与冷复制恢复测试缺口；原reviewer已确认备份测试无P0/P1。API-STABLE第2条仍待Pi/custody同一profile的取消控制，不能拼接两个不同profile宣布通过；当前两作者分别补这一实机驱动及连续多Task/坏任务隔离验证。后继main同步另按实际结果记录，不预填正式发布。B1实际Publisher分权、B2未覆盖的真实局部修正、B3持续多Task/故障/平台部署与正式资产仍开放。
 
 ### 2026-09-09 12:59 CST：当前候选真实问答交付与规划合同修正
 
