@@ -31,7 +31,7 @@ const content = Buffer.from('fixture delivery, not model output\n');
 const artifact = {id: 'artifact-one', taskId: task.id, name: 'result.txt', kind: 'delivery', status: 'ready',
   mediaType: 'text/plain', bytes: content.length, digest: 'sha256:' + createHash('sha256').update(content).digest('hex'), createdAt: at};
 function operation(kind = 'task.approve', status = 'accepted') {
-  return {id: 'operation-one', taskId: task.id, kind, status, taskRevision: 2, createdAt: at, updatedAt: at};
+  return {id: 'operation-one', taskId: task.id, kind, status, ...(kind === 'worker.cancel' ? {workerId: worker.id} : {}), taskRevision: 2, createdAt: at, updatedAt: at};
 }
 const fixtures = {
   Task: task, Plan: plan, Worker: worker, Question: question, Operation: operation(), Artifact: artifact,
@@ -309,6 +309,9 @@ test('domain failures are closed and unknown response text never leaks', async (
   }
   assert.equal((await request(async () => operation('task.cancel'), 'POST', `/v1/tasks/${task.id}/plan/approve`, inputs.ApproveTask)).status, 503);
   assert.equal((await request(async () => ({...fixtures.Tasks, items: [task, task]}), 'GET', '/v1/tasks?limit=1')).status, 503);
+  for (const wrong of [{...operation('worker.cancel'), workerId: 'foreign-worker'}, {...operation('worker.cancel'), workerId: undefined},
+    {...operation('task.cancel'), workerId: worker.id}])
+    assert.equal((await request(async () => wrong, 'POST', `/v1/workers/${worker.id}/cancel`, inputs.ControlTask)).status, 503);
 });
 
 test('answer requires exact new subject and 4096 UTF-8 bytes, and rejects cross-bound receipts', async () => {

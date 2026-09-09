@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
+import {DatabaseSync} from 'node:sqlite';
 import {startTaskService} from '../task-service/composition.mjs';
 import {createAcpProvider} from '../agent-provider-acp/index.mjs';
 import {createVerificationPort} from '../task-application/application.mjs';
@@ -47,16 +48,20 @@ async function fixture(t, mode = 'good') {
   const repos = await repositories(t), root = path.join(repos.parent, 'data');
   const verificationParent = path.join(repos.parent, 'verification'); fs.mkdirSync(verificationParent, {mode: 0o700});
   const handles = [], services = [], executions = []; let verifierStarts = 0, verificationActual = null, verificationOutcome = null;
+  const targetCancellation = mode === 'worker-cancel', releaseParent = path.join(repos.parent, 'release');
+  if (targetCancellation) fs.mkdirSync(releaseParent, {mode: 0o700});
   const native = createAcpProvider({id: 'git-fixture-acp', executable: process.execPath, args: [here('./agent.fixture.mjs')],
-    env: {GIT_BUSINESS_FIXTURE_MODE: mode}});
-  const provider = {id: native.id, start(input) {
+    env: {GIT_BUSINESS_FIXTURE_MODE: mode, ...(targetCancellation ? {GIT_RELEASE_PARENT: releaseParent} : {})},
+    custodyProfile: {id: 'git-inherited-fixture', scope: 'inherited-process-group', eligible: true}});
+  const stops = [];
+  const provider = {id: native.id, custodyProfile: native.custodyProfile, start(input) {
     const handle = native.start(input); handles.push(handle); executions.push(input.cwd);
     if (mode === 'unconfirmed' && input.cwd.includes(path.sep + 'git-worktrees' + path.sep)) {
       // Fault injection removes an observation; it NEVER manufactures cleanup.
       // Test teardown still waits for the original managed fixture handle.
       return {...handle, completion: handle.completion.then(value => ({...value, status: 'unknown', cleanup: null}))};
     }
-    return handle;
+    return {...handle, stop() {stops.push(path.basename(input.cwd)); return handle.stop();}};
   }};
   const command = createVerificationCommand({executable: process.execPath, checkerPath: checker, checkerDigest: digest(fs.readFileSync(checker)),
     policyDigest: digest(encode(policy)),
@@ -82,6 +87,7 @@ async function fixture(t, mode = 'good') {
     return handle;
   }});
   const config = {root, providers: new Map([[provider.id, provider]]), verification,
+    ...(targetCancellation ? {custody: {profile: 'node-execution-custody/v1'}, workerCancellation: {profile: 'task-worker-cancellation/v1'}} : {}),
     businessFactory: ({depot, executionParent, approvedLayout, observeExecution}) => createGitBusiness({parent: executionParent, depot,
       approvedLayout, observeExecution, repositoryFor: (_ticket, request) => repos.roots[request.repositoryId],
       layoutFor: ticket => ticket.planDigest === null ? {inputs: [], allowedPaths: []} : ticket.input.fileLayout}),
@@ -93,7 +99,8 @@ async function fixture(t, mode = 'good') {
     return {service, client: new TaskClient({baseURL: connection.url, token: connection.token})};
   }
   const live = await start('create');
-  return {...repos, ...live, start, handles, executions, get verifierStarts() {return verifierStarts;}, get verificationActual() {return verificationActual;},
+  return {...repos, ...live, start, handles, executions, root, stops, release(workerId) {fs.writeFileSync(path.join(releaseParent, workerId), 'release', {flag: 'wx', mode: 0o600});},
+    get verifierStarts() {return verifierStarts;}, get verificationActual() {return verificationActual;},
     get diagnostic() {return {verificationActual, verificationOutcome, verifierStarts};}};
 }
 async function approve(f) {
@@ -176,6 +183,30 @@ test('HTTP cancellation preserves locked worktrees after original cleanup and ha
   for (const handle of f.handles) assert.equal((await handle.completion).cleanup.cleaned, true);
   for (const cwd of f.executions.slice(1)) {assert.equal(fs.existsSync(cwd), true); assert.match(await git(cwd, ['worktree', 'list', '--porcelain']), /locked marshal-owned-/);}
   assert.equal(f.verifierStarts, 0); await unchangedSources(f);
+});
+
+test('Git original owned Worker.cancel preserves unrelated worktree/patch without requiring unpermitted preparation', {timeout: 60000}, async t => {
+  const f = await fixture(t, 'worker-cancel'), {task} = await approve(f);
+  const pair = (await until(() => f.client.request('task.workers', {path: {taskId: task.id}}),
+    value => value.items.filter(worker => worker.role === 'author' && worker.startedAt).length === 2)).items;
+  const a = pair.find(worker => worker.nodeId === 'library'), b = pair.find(worker => worker.nodeId === 'client');
+  const body = {expectedRevision: (await f.client.getTask(task.id)).revision}, stop = await f.client.cancelWorker(a.id, body, 'git-target');
+  await until(() => f.client.request('operation.get', {path: {operationId: stop.id}}), value => value.status === 'succeeded');
+  assert.equal((await f.client.request('worker.get', {path: {workerId: b.id}})).status, 'running'); assert.equal(f.stops.includes(b.id), false);
+  assert.equal((await f.handles[f.executions.findIndex(cwd => path.basename(cwd) === a.id)].completion).cleanup.cleaned, true);
+  f.release(b.id); const final = await until(() => f.client.getTask(task.id), value => value.status === 'failed');
+  assert.equal(final.code, 'worker_cancelled'); assert.equal(f.verifierStarts, 0); assert.equal(f.stops.includes(b.id), false);
+  assert.equal((await f.client.getAudit(task.id)).attempts, 3); await unchangedSources(f);
+  assert.equal((await f.client.request('supervisor.get')).activeWorkers, 0); await f.service.shutdown();
+  // Query-only, after the service and original handles have all cleaned up.
+  const db = new DatabaseSync(path.join(f.root, 'store/authority.sqlite'), {readOnly: true, allowExtension: false}); let original;
+  try {db.exec('PRAGMA query_only=ON'); original = JSON.parse(Buffer.from(db.prepare("SELECT bytes FROM projections WHERE kind='attempt' AND id=?").get(b.id).bytes));}
+  finally {db.close();}
+  assert.equal(original.ticket.startProtocol, undefined); assert.equal(original.cleanup.cleaned, true); assert.ok(original.resultRef);
+  const retainedCwd = f.executions.find(cwd => path.basename(cwd) === b.id);
+  assert.match(await git(retainedCwd, ['diff', '--', 'invoice.mjs']), /return \{lines, total\}/);
+  const reopened = await f.start('open'); equal(await reopened.client.cancelWorker(a.id, body, 'git-target'), stop);
+  equal(await reopened.client.getTask(task.id), final); assert.equal(f.handles.length, 3); assert.equal(f.verifierStarts, 0); await unchangedSources(f);
 });
 
 test('unconfirmed execution retains real dirty worktree/lock and cannot manufacture a patch or release capacity', {timeout: 60000}, async t => {

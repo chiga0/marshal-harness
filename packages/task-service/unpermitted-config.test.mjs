@@ -3,13 +3,35 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {Store, UNPERMITTED_FORMAT} from '../task-store/store.mjs';
+import {Store, FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
 import {createStagingOnlyBusinessFactory, isStagingOnlyBusiness} from '../task-business/index.mjs';
 import {createAuditDisclosure} from '../task-application/application.mjs';
 import {startTaskService} from './composition.mjs';
 
 const custody = {profile: 'node-execution-custody/v1'}, unpermitted = {profile: 'node-unpermitted-reservation/v1'};
 const providers = new Map([['fixture', {id: 'fixture', start() {throw Error('no task in configuration tests');}}]]);
+test('v6 opt-in is orthogonal to preparation qualification; old readers reject before claim and config does not rewrite history', async t => {
+  const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-v6-config-'))), root = path.join(parent, 'data');
+  const workerCancellation = {profile: 'task-worker-cancellation/v1'}, factory = createStagingOnlyBusinessFactory(); let service;
+  t.after(async () => {await service?.shutdown(); fs.rmSync(parent, {recursive: true, force: true});});
+  const config = {root, providers, custody, workerCancellation, businessFactory: factory};
+  for (const extra of [{custody: undefined}, {workerCancellation: {...workerCancellation, arbitrary: true}}]) {
+    await assert.rejects(startTaskService({...config, mode: 'create', ...extra})); assert.equal(fs.existsSync(root), false);
+  }
+  service = await startTaskService({...config, mode: 'create'}); assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'profile.json'))).layout, 6);
+  await service.shutdown(); const storePath = path.join(root, 'store');
+  for (const format of [FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT])
+    assert.throws(() => Store.openExisting(storePath, {format}), {code: 'unavailable'});
+  const generation = () => {const store = Store.openExisting(storePath, {format: WORKER_CANCELLATION_FORMAT}); try {return store.info().generation;} finally {store.close();}};
+  const before = generation();
+  for (const extra of [{workerCancellation: undefined}, {unpermitted, businessFactory: value => factory(value)},
+    {unpermitted, auditDisclosure: createAuditDisclosure({id: 'bad', version: '1', redact() {throw Error('must not call');}})},
+    {applicationOptions: {execution: {startProtocol: {profile: 'node-unpermitted-reservation/v1', preparation: 'file-staging-only/v1'}}}}]) {
+    await assert.rejects(startTaskService({...config, mode: 'open', ...extra})); assert.equal(generation(), before);
+  }
+  service = await startTaskService({...config, unpermitted, mode: 'open'}); await service.shutdown(); assert.equal(generation(), before + 1n);
+  service = await startTaskService({...config, mode: 'open'}); await service.shutdown(); assert.equal(generation(), before + 2n);
+});
 test('v5 original narrow factory identity, arbitrary callbacks and wrappers reject before touching root', async t => {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-v5-config-'))), root = path.join(parent, 'data');
   t.after(() => fs.rmSync(parent, {recursive: true, force: true}));

@@ -13,10 +13,11 @@ import {createVerificationCommand} from '../task-verification-command/index.mjs'
 
 const root = process.argv[process.argv.indexOf('--root') + 1], scenario = process.env.MARSHAL_QUESTION_SCENARIO;
 if (process.env.MARSHAL_QUESTION_FIXTURE !== '1' || !path.isAbsolute(root ?? '') ||
-    !['positive', 'cancel', 'dispatch-crash', 'ack-crash'].includes(scenario)) throw Error('test-only configuration');
+    !['positive', 'cancel', 'dispatch-crash', 'ack-crash', 'worker-before', 'worker-dispatched', 'worker-ack', 'worker-pair'].includes(scenario)) throw Error('test-only configuration');
 const here = name => fileURLToPath(new URL(name, import.meta.url));
 const journal = path.join(path.dirname(root), 'question-observations.jsonl'), tickets = new Map();
 const v5 = process.env.MARSHAL_QUESTION_V5 === '1';
+const targetCancellation = scenario.startsWith('worker-'), pair = scenario === 'worker-pair';
 if (v5) {
   const write = Store.prototype.write;
   Store.prototype.write = function(owner, callback) {const result = write.call(this, owner, callback);
@@ -37,8 +38,8 @@ const proposal = {summary: '两个原生文件作者并行，只有东分支缺�
   edges: [{from: 'east', to: 'verify'}, {from: 'west', to: 'verify'}],
   deliverables: ['east.txt', 'west.txt'], acceptance: [policy.description], assumptions: []};
 const runtimeQuestions = createRuntimeQuestionPort({policy: {id: 'regional-choice-question', version: '1', description: '只有东分支需要明确的 north 或 south 地区输入，不扩大原图、权限或验收。'},
-  nodeIds: ['east'], maxQuestions: 1, maxWaitMs: 30000, applies: () => true,
-  validateQuestion: (request, input) => input.node.id === 'east' && request.kind === 'select' &&
+  nodeIds: pair ? ['east', 'west'] : ['east'], maxQuestions: pair ? 2 : 1, maxWaitMs: 30000, applies: () => true,
+  validateQuestion: (request, input) => (input.node.id === 'east' || pair && input.node.id === 'west') && request.kind === 'select' &&
     request.prompt === '请确定本次业务区域' && JSON.stringify(request.options) === '["north","south"]',
   validateAnswer: answer => ['north', 'south'].includes(answer)});
 function observed(handle, ticket) {
@@ -68,11 +69,11 @@ const provider = {id: native.id, custodyProfile: native.custodyProfile, runtimeQ
       record({type: 'ack-committed', taskId: ticket.taskId, workerId: ticket.workerId});
       // Real ACK transaction already won. This test-only barrier delays only
       // its response; no synthetic ACK, cleanup, result or disk queue is created.
-      if (held && scenario === 'ack-crash') await new Promise(resolve => setTimeout(resolve, 10000));
+      if (held && ['ack-crash', 'worker-ack'].includes(scenario)) await new Promise(resolve => setTimeout(resolve, 10000));
       return result;
     }}};
   }
-  return observed((!east ? west : held && ['cancel', 'dispatch-crash'].includes(scenario) ? missing : native).start(request), ticket);
+  return observed((!east ? pair ? native : west : held && ['cancel', 'dispatch-crash', 'worker-dispatched'].includes(scenario) ? missing : native).start(request), ticket);
 }};
 const plannerProvider = {id: planner.id, custodyProfile: planner.custodyProfile, start(input) {
   const ticket = tickets.get(input.cwd); assert.ok(ticket);
@@ -99,6 +100,7 @@ const verification = createVerificationPort({id: 'question-checker', policy, int
       deliveries: ['east', 'west'].map(nodeId => ({nodeId, path: 'output.txt', targetPath: nodeId + '.txt'}))};
   }});
 export default {custody: {profile: 'node-execution-custody/v1'}, runtimeQuestions, verification,
+  ...(targetCancellation ? {workerCancellation: {profile: 'task-worker-cancellation/v1'}} : {}),
   ...(v5 ? {unpermitted: {profile: 'node-unpermitted-reservation/v1'}} : {}),
   providers: new Map([[plannerProvider.id, plannerProvider], [provider.id, provider]]), supervisorOptions: {intervalMs: 10},
   onDiagnostic: value => record({type: 'diagnostic', code: value.code}),

@@ -31,6 +31,7 @@ function boundResponse(entry, request, value) {
   if (!validate(value, entry.response)) throw new TaskApiError('invalid_application_response');
   const taskId = value.taskId ?? (['task.get'].includes(entry.operation) ? value.id : undefined);
   if (request.taskId && taskId !== request.taskId || request.workerId && entry.operation === 'worker.get' && value.id !== request.workerId ||
+      entry.operation === 'worker.cancel' && value.workerId !== request.workerId ||
       request.operationId && value.id !== request.operationId || request.artifactId && value.id !== request.artifactId ||
       request.page && value.items.length > request.page.limit) throw new TaskApiError('invalid_application_response');
   if (entry.response === 'Operation' && entry.operation !== 'operation.get' && value.kind !== entry.operation) throw new TaskApiError('invalid_application_response');

@@ -32,7 +32,9 @@ const observed = await client.request('operation.get', {path: {operationId: oper
 | 事件、审计、Provider、Supervisor | `task.events/audit`、`provider.list`、`supervisor.get` |
 | 存活与就绪 | `health.get/ready.get` |
 
-分页只接受显式 limit/cursor，一次只取一页，不自动轮询。便利方法仅 `createTask/getTask/approveTask/downloadArtifact`；其余使用通用入口。不存在自动批准、生成幂等键、读取新版本重写 CAS、自动 retry 或自动 cancel。409/501/503/504 均暴露为有界错误，调用者决定查询/原请求重放或停止。
+分页只接受显式 limit/cursor，一次只取一页，不自动轮询。便利方法包括 `createTask/getTask/approveTask/cancelWorker/downloadArtifact`；其余使用通用入口。不存在自动批准、生成幂等键、读取新版本重写 CAS、自动 retry 或自动 cancel。409/501/503/504 均暴露为有界错误，调用者决定查询/原请求重放或停止。
+
+`cancelWorker(workerId,{expectedRevision},idempotencyKey)` 使用所属 Task 的 revision；调用者先查询 Worker.taskId 和 Task 后作明确选择。仅显式 v6 服务实现该命令，旧根 501 不降级为 task.cancel。202 Operation 必须 kind=worker.cancel 且 workerId 与路由完全相同；查询其 succeeded 只证明该目标结清，不表示整个 Task 已取消或交付。丢响应保留原 key/body，不自动重复调用。
 
 运行中业务问答按 ADR0090 的新闭集分支传输，原预批准问答不改：从受保护 `task.questions` 取得 `kind:'business'` 的原 questionId/questionDigest/revision，再由用户明确给出 answer 字符串。请求为 `{expectedRevision,questionDigest,questionRevision:1,answer}`；不得混入 previewDigest、工具 permission option、对象或新版本。原 4096 UTF-8 字节/NUL/Unicode 边界保持。
 

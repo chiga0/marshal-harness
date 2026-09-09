@@ -1,5 +1,5 @@
 import {createPublicKey, verify} from 'node:crypto';
-import {encode, digest, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT} from '../task-store/store.mjs';
+import {encode, digest, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
 import {clone, reject, nextRevision} from './model.mjs';
 
 const PROFILE = 'node-execution-custody/v1', hash = value => digest(encode(value));
@@ -27,12 +27,13 @@ function profile(value) {
  * Provider, issues a new ticket or signals a persisted PID. */
 export class TaskCleanup {
   constructor(execution) {
-    this.execution = execution; this.app = execution.app; this.unpermitted = this.app.store.info?.().format === UNPERMITTED_FORMAT;
-    this.supported = [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT].includes(this.app.store.info?.().format);
+    this.execution = execution; this.app = execution.app;
+    this.unpermitted = [UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT].includes(this.app.store.info?.().format);
+    this.supported = [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT].includes(this.app.store.info?.().format);
   }
   enabled() { return this.supported; }
   static inspectBeforeClaim(store, after = '', limit = 25) {
-    const unpermitted = store.info().format === UNPERMITTED_FORMAT;
+    const unpermitted = [UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT].includes(store.info().format);
     return store.inspectRecovery(tx => {
       const rows = tx.projections('attempt', after, limit), items = [];
       for (const row of rows) {
@@ -74,6 +75,7 @@ export class TaskCleanup {
         Number.isSafeInteger(binding.ownerExpiresAt) && binding.ownerExpiresAt > this.app.now() && binding.ownerExpiresAt <= this.app.owner.expiresAt);
       let publicKey; try { publicKey = createPublicKey({key: Buffer.from(descriptor.publicKey, 'base64'), format: 'der', type: 'spki'}); } catch { check(false); }
       check(publicKey.asymmetricKeyType === 'ed25519');
+      check(!record.stopIntent);
       if (record.custody) { check(same(record.custody.descriptor, descriptor)); return clone(record.custody.descriptor); }
       check(record.worker.status === 'queued' && record.executionId === null &&
         !['cancelling', 'paused', 'completed', 'failed', 'cancelled', 'intervention'].includes(task.task.status) && this.app.now() < ticket.deadline);
@@ -122,7 +124,7 @@ export class TaskCleanup {
   // TX; neither preclaim scans nor the current deployment supply this proof.
   unpermittedProof(tx, record, task) {
     const ticket = record.ticket, worker = record.worker;
-    check(this.unpermitted && ticket && same(ticket.startProtocol, START_PROTOCOL) &&
+    check(this.unpermitted && ticket?.startProtocol && same(ticket.startProtocol, START_PROTOCOL) &&
       /^[1-9][0-9]*$/.test(ticket.generation) && BigInt(ticket.generation) < this.app.owner.generation &&
       ticket.taskId === task.task.id && ticket.workerId === worker.id && worker.taskId === task.task.id &&
       ticket.nodeId === worker.nodeId && ticket.role === worker.role && ticket.providerId === worker.providerId &&
@@ -147,6 +149,7 @@ export class TaskCleanup {
     check(reserved.generation.toString() === ticket.generation && JSON.parse(reserved.bytes).payload.reservationDigest === reservationDigest &&
       input.source.stream === ticket.taskId && input.source.sequence === reserved.sequence && input.source.digest === reserved.digest);
     const allowed = new Set(['worker.reserved', 'worker.input-prepared', 'worker.unpermitted-settled']);
+    if (this.app.workerCancellation.checked(tx, record)) allowed.add('worker.cancel-requested');
     check(facts.events.every(event => allowed.has(JSON.parse(event.bytes).payload.type)));
     const prepared = facts.events.filter(event => JSON.parse(event.bytes).payload.type === 'worker.input-prepared');
     const observation = this.app.inputAudit.checked(record);
@@ -207,7 +210,8 @@ export class TaskCleanup {
         !['completed', 'failed', 'cancelled'].includes(task.task.status) && command.status === 'unknown' &&
         command.observation.stream === ticket.taskId && command.observation.sequence === reserved.sequence && command.observation.digest === reserved.digest &&
         occupied.length === 1 && occupied[0].taskId === ticket.taskId && occupied[0].generation === ticket.generation);
-      const cancelled = !!task.cancelIntent && !task.failureCode;
+      const targeted = !!this.app.workerCancellation.checked(tx, record);
+      const cancelled = targeted || !!task.cancelIntent && !task.failureCode;
       const settlement = {reservationDigest: ticket.reservationDigest, startProtocol: clone(ticket.startProtocol),
         generation: this.app.owner.generation.toString(), disposition: 'never-permitted'};
       record.unpermittedSettlement = settlement; record.failureCode = 'service_interrupted';
@@ -215,9 +219,10 @@ export class TaskCleanup {
       record.worker.finishedAt = new Date(this.app.now()).toISOString();
       if (ticket.planDigest !== null) task.nodes.find(node => node.id === ticket.nodeId).status = record.worker.status;
       const remaining = this.execution.workers(tx, task).some(({record: other}) => other.worker.id !== workerId && live(other));
-      if (!cancelled) task.failureCode ??= 'service_interrupted';
-      task.task.status = remaining ? 'intervention' : cancelled ? 'cancelled' : 'failed';
-      task.task.code = remaining ? 'previous_execution_unresolved' : cancelled ? 'task_cancelled' : 'service_interrupted';
+      const taskCancelled = !!task.cancelIntent && !task.failureCode;
+      if (!taskCancelled) task.failureCode ??= targeted ? 'worker_cancelled' : 'service_interrupted';
+      task.task.status = remaining ? 'intervention' : taskCancelled ? 'cancelled' : 'failed';
+      task.task.code = remaining ? 'previous_execution_unresolved' : taskCancelled ? 'task_cancelled' : targeted ? task.failureCode : 'service_interrupted';
       if (!remaining) { task.task.phase = 'terminal'; for (const node of task.nodes) if (['pending', 'ready', 'waiting'].includes(node.status)) node.status = 'cancelled'; }
       // A never-permitted Worker cannot have produced its own question/ACK.
       check(!(task.runtimeQuestions?.questions ?? []).some(question => question.workerId === workerId));
@@ -231,6 +236,7 @@ export class TaskCleanup {
       this.execution.putCapacity(tx, capacity.row, capacity.value);
       this.app.repair.settle(tx, task, source);
       this.settleUnpermittedOperations(tx, task, source);
+      this.app.workerCancellation.settle(tx, task, record, source);
       if (!remaining && task.cancelIntent) {
         const stop = tx.command(task.cancelIntent.commandId); check(stop?.kind === 'stop' && stop.taskId === task.task.id);
         if (stop.status !== 'observed') tx.observeCommand(stop.id, stop.revision, 'observed', source);
@@ -266,7 +272,8 @@ export class TaskCleanup {
         (record.executionId === null || record.executionId === d.executionId) && c.guardExit?.observed === true && c.guardExit.signal === 'SIGKILL');
       // Unknown siblings remain live. An earlier cancel intent is retained even
       // after old-generation observation changed the public Task to intervention.
-      const cancelled = !!task.cancelIntent && !task.failureCode;
+      const targeted = !!this.app.workerCancellation.checked(tx, record);
+      const cancelled = targeted || !!task.cancelIntent && !task.failureCode;
       custody.settledDigest = observationDigest; record.cleanup = clone(c);
       record.worker.status = cancelled ? 'cancelled' : 'failed'; record.worker.phase = 'terminal';
       record.worker.finishedAt = new Date(this.app.now()).toISOString(); record.failureCode = 'service_interrupted';
@@ -275,9 +282,10 @@ export class TaskCleanup {
         if (node.status !== 'completed') node.status = cancelled ? 'cancelled' : 'failed';
       }
       const remaining = this.execution.workers(tx, task).some(({record: other}) => other.worker.id !== workerId && live(other));
-      if (!cancelled) task.failureCode ??= 'service_interrupted';
-      task.task.status = remaining ? 'intervention' : cancelled ? 'cancelled' : 'failed';
-      task.task.code = remaining ? 'previous_execution_unresolved' : cancelled ? 'task_cancelled' : 'service_interrupted';
+      const taskCancelled = !!task.cancelIntent && !task.failureCode;
+      if (!taskCancelled) task.failureCode ??= targeted ? 'worker_cancelled' : 'service_interrupted';
+      task.task.status = remaining ? 'intervention' : taskCancelled ? 'cancelled' : 'failed';
+      task.task.code = remaining ? 'previous_execution_unresolved' : taskCancelled ? 'task_cancelled' : targeted ? task.failureCode : 'service_interrupted';
       if (!remaining) { task.task.phase = 'terminal'; for (const node of task.nodes) if (['pending', 'ready', 'waiting'].includes(node.status)) node.status = 'cancelled'; }
       const closedQuestions = this.app.runtimeQuestions.close(task, 'cancelled', workerId);
       task.task.revision = nextRevision(task.task.revision);
@@ -299,6 +307,7 @@ export class TaskCleanup {
       capacity.value.active = capacity.value.active.filter(item => item.workerId !== workerId);
       this.execution.putCapacity(tx, capacity.row, capacity.value);
       this.settleUnpermittedOperations(tx, task, source);
+      this.app.workerCancellation.settle(tx, task, record, source);
       return {observationDigest, status: record.worker.status};
     });
   }

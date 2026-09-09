@@ -79,7 +79,7 @@ async function fixture(t, scenario) {
     // turn a failed/unknown startup into a blind reopen loop.
     await until(() => {assert.equal(exited, false, 'original CLI startup failed: ' + stderr); return stdout.includes('\n');}, 20000);
     const output = JSON.parse(stdout.slice(0, stdout.indexOf('\n'))), connection = JSON.parse(fs.readFileSync(output.connectionFile));
-    assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, 'profile.json'))).layout, 3);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, 'profile.json'))).layout, scenario.startsWith('worker-') ? 6 : 3);
     token = connection.token; service.client = new TaskClient({baseURL: connection.url, token});
     assert.equal((await service.client.request('ready.get')).ready, true); return service;
   };
@@ -154,6 +154,61 @@ async function complete(client, original, accepted, f) {
   assert.equal(f.observations().filter(row => row.type === 'completion' && row.taskId === completed.id && row.cleanup?.cleaned).length, 4);
   await replay(client, original, accepted); return {completed, delivery, question};
 }
+
+for (const scenario of ['worker-before', 'worker-dispatched', 'worker-ack']) test('worker cancellation of original native question ' + scenario + ' preserves exact answer/ACK ordering', {timeout: 60000}, async t => {
+  const f = await fixture(t, scenario), first = await f.launch('create');
+  const old = await approved(first.client, 'question interrupted ' + scenario, 'target'); let accepted;
+  if (scenario !== 'worker-before') {
+    accepted = await answer(first.client, old, 'north');
+    await until(async () => (await get(first.client, 'task.questions', old.created.id)).items[0].deliveryStatus ===
+      (scenario === 'worker-ack' ? 'acknowledged' : 'dispatched'));
+  }
+  const body = {expectedRevision: (await first.client.getTask(old.created.id)).revision};
+  const stop = await first.client.cancelWorker(old.question.workerId, body, 'stop-east');
+  const final = await until(async () => {const value = await first.client.getTask(old.created.id); return value.status === 'failed' && value;});
+  assert.equal(final.code, 'worker_cancelled'); assert.deepEqual([...final.artifactIds], []);
+  assert.equal((await first.client.request('operation.get', {path: {operationId: stop.id}})).status, 'succeeded');
+  const closed = (await get(first.client, 'task.questions', old.created.id)).items[0];
+  assert.equal(closed.status, scenario === 'worker-before' ? 'cancelled' : 'answered');
+  assert.equal(closed.deliveryStatus, scenario === 'worker-before' ? null : scenario === 'worker-ack' ? 'acknowledged' : 'unknown');
+  if (accepted) await replay(first.client, old, accepted);
+  else await assert.rejects(first.client.request('task.answer', {path: {taskId: final.id, questionId: closed.id}, idempotencyKey: 'late-answer',
+    body: {expectedRevision: final.revision, questionRevision: 1, questionDigest: closed.questionDigest, answer: 'south'}}), {code: 'state_conflict'});
+  const visible = (await get(first.client, 'task.workers', final.id)).items;
+  assert.equal(visible.find(worker => worker.nodeId === 'west').status, 'completed');
+  assert.equal(visible.find(worker => worker.id === closed.workerId).status, 'cancelled');
+  assert.equal((await first.client.getAudit(final.id)).attempts, 3);
+  assert.equal((await first.client.getAudit(final.id)).acceptance.status, 'pending');
+  await first.stop('SIGTERM'); await f.gone(); const before = durable(f);
+  const next = await f.launch('open'); assert.deepEqual(await next.client.cancelWorker(closed.workerId, body, 'stop-east'), stop);
+  if (accepted) await replay(next.client, old, accepted);
+  assert.deepEqual(await next.client.getTask(final.id), final); await next.stop('SIGTERM');
+  const after = durable(f); for (const key of ['events', 'heads', 'projections', 'receipts', 'outbox']) assert.deepEqual(after[key], before[key]);
+  f.complete = true;
+});
+
+test('worker cancellation leaves a sibling native question answerable on its original Worker', {timeout: 60000}, async t => {
+  const f = await fixture(t, 'worker-pair'), service = await f.launch('create'), client = service.client;
+  const task = await client.createTask({intent: '两个作者各自询问地区，取消东分支仍允许西分支原问答', limits: {timeoutMs: 45000, maxAttempts: 4, maxWorkers: 2}}, 'pair');
+  const ready = await until(async () => {const value = await client.getTask(task.id); return value.status === 'awaiting-approval' && value;});
+  await client.approveTask(task.id, {expectedRevision: ready.revision, planRevision: ready.plan.revision, planDigest: ready.plan.digest}, 'pair-approve');
+  const questions = await until(async () => {const page = await get(client, 'task.questions', task.id); return page.items.length === 2 && page.items;});
+  const a = questions.find(q => q.nodeId === 'east'), b = questions.find(q => q.nodeId === 'west');
+  const body = {expectedRevision: (await client.getTask(task.id)).revision}, stop = await client.cancelWorker(a.workerId, body, 'pair-stop');
+  await until(async () => (await client.request('operation.get', {path: {operationId: stop.id}})).status === 'succeeded');
+  const remaining = (await get(client, 'task.questions', task.id)).items.find(q => q.id === b.id);
+  assert.equal(remaining.status, 'open'); assert.equal(remaining.deliveryStatus, null);
+  const answerBody = {expectedRevision: (await client.getTask(task.id)).revision, questionDigest: b.questionDigest, questionRevision: 1, answer: 'south'};
+  await client.request('task.answer', {path: {taskId: task.id, questionId: b.id}, idempotencyKey: 'pair-answer', body: answerBody});
+  await until(async () => (await client.getTask(task.id)).status === 'failed');
+  const finalQuestions = (await get(client, 'task.questions', task.id)).items;
+  assert.equal(finalQuestions.find(q => q.id === b.id).deliveryStatus, 'acknowledged');
+  assert.equal(finalQuestions.find(q => q.id === a.id).deliveryStatus, null);
+  const finalWorkers = (await get(client, 'task.workers', task.id)).items;
+  assert.equal(finalWorkers.find(w => w.id === b.workerId).status, 'completed');
+  assert.equal(finalWorkers.filter(w => w.role === 'verifier').length, 0);
+  assert.equal((await client.request('supervisor.get')).activeWorkers, 0); await service.stop('SIGTERM'); await f.gone(); f.complete = true;
+});
 
 test('runtime question: original HTTP answer/ACK continues the same native Worker and binds independent delivery through cold reopen', {timeout: 60000}, async t => {
   const f = await fixture(t, 'positive'), first = await f.launch('create');

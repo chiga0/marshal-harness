@@ -2217,6 +2217,7 @@
         ]
       },
       "ControlTask": {
+        "description": "所属 Task 的当前控制 revision；用于 worker.cancel 时先由 Worker.taskId 查询 Task，不使用 Worker Attempt ordinal，不自动刷新 CAS。",
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -3156,8 +3157,13 @@
       },
       "Operation": {
         "type": "object",
+        "oneOf": [
+          {"properties": {"kind": {"const": "worker.cancel"}}, "required": ["workerId"]},
+          {"properties": {"kind": {"enum": ["task.approve", "task.cancel", "task.pause", "task.resume", "task.answer", "task.repair"]}, "workerId": {"type": "null"}}}
+        ],
         "additionalProperties": false,
         "properties": {
+          "workerId": {"$ref": "#/components/schemas/Id"},
           "id": {
             "$ref": "#/components/schemas/Id"
           },
@@ -3218,6 +3224,16 @@
             "id": "operation-example",
             "taskId": "task-example",
             "kind": "task.approve",
+            "status": "accepted",
+            "taskRevision": 3,
+            "createdAt": "2026-09-08T00:00:00.000Z",
+            "updatedAt": "2026-09-08T00:00:00.000Z"
+          },
+          {
+            "id": "operation-worker-example",
+            "taskId": "task-example",
+            "workerId": "worker-example",
+            "kind": "worker.cancel",
             "status": "accepted",
             "taskRevision": 3,
             "createdAt": "2026-09-08T00:00:00.000Z",
