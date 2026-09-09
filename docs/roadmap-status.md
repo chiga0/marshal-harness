@@ -10,13 +10,17 @@
 
 **同源 CI**：[Node run 34340458961](https://github.com/chiga0/marshal-harness/actions/runs/34340458961) 的 head 为上述 `2b203cb2`、attempt 1，五个 job 已 `completed/success`：macOS 回归 `102429772105`、Ubuntu 回归 `102429772367`、单次打包 `102432181259`、macOS 同包消费 `102432264130`、Ubuntu 同包消费 `102432264176`。原 candidate artifact=`10099801881`，运输归档 840828 bytes、digest=`sha256:7c828c5add75b429163bcf105193942efb6182cb1b210f456854afa694223179`。维护者独立下载两平台原 JSON，确认都消费这个 artifact 和源 `2b203cb2` 的 55 文件包，manifest=`sha256:6409fe2ac6629b5c003e34d14ec2b12c8273b5ec64286ddd97b6b34b6add0541`；它与上面的本地 `40468f` 包 manifest 分属不同源，运输摘要也不代替 manifest。每平台同配置两个 Task 各 12 Attempts（6 Leader、2作者及 Review/Verifier/Publication/Postverify），交付两份不同 93B 报告；modelCalls=0，正常冷开重复启动/发布均为 0。原 JSON 保留于 `/private/tmp/marshal-v7-ci-evidence.KAONbJ`；不把无模型 CI 或正常冷开当真实模型、冷故障或 production 证据。
 
-**当前未闭问题**：真实 Pi 0.84.4 首次 intake 一次 `FAILED / task_not_progressing`，证据保留于 `/private/tmp/marshal-leader-pi.kkYHsH/run/evidence.json`，正在诊断，未自动重试。冷故障场景 `marshal-leader-recovery-aqsgag` 中，原 owned CLI 经 SIGKILL 后原签名 cleanup 已验证，但同根重开 `GET task` 返回 `503 / not_ready`；已定位 managed Leader 附属节点被错误按 DAG 节点校验，结算事务回滚并保留 `service_custody_unresolved`，正在修复，不能将清理成功记成恢复通过。最短后继是关闭这两个实际阻断，再继续同链真实业务与有限恢复验收；不重新做 B1、不重置原预算或失败成本。
+**19:02 已合入检查点**：冷结算修复源 `936139387300c78c9645992bb3cb65dd4eb17865` 经独立 44/44 回归及原 HTTP 故障验证通过，`localMergeSha=c65193bf253f6e677fdad427666fe67671472735`；它关闭 managed 附属节点被误当 DAG 节点、结算事务回滚的 P1，只证明诚实结算，不等于同 Task 完整续接。提示绑定与私有失败诊断源 `c52f9c8916543b64d1ab6ddb377687a4fa3c5216` 经独立审查、维护者完整 22/22 通过后，合入 `37d2559dc67d08191f5710b4a736b080cf1d28e9`；已正常推送并核对远端同 SHA，`pendingRemoteSync=false`。上述开头 `2b203cb2` 包/CI 是前一检查点，不外推此后变更；`37d2559d` 的 Node run `34342752062` 与 CI `34342752002` 在本次查询时仍运行。
+
+**后继 CI 查询**：`37d2559d` 的 Node run `34342752062` 五项全部成功，包含 Darwin/Linux 回归、单次打包和双平台同包消费；普通 CI `34342752002` 的 secret scan 与两种 Linux candidate conformance 已通过，双平台 Quality 仍运行。此处未重新下载本次 candidate，不借用上一候选摘要，不声称全 CI 或实机模型通过。
+
+**当前未闭问题**：两次真实 Pi 0.84.4 均停在 intake；首次 `/private/tmp/marshal-leader-pi.kkYHsH/run/evidence.json` 未保留原输出，不能倒推精确原因。后继 `/private/tmp/marshal-leader-pi-bindings.9rxRcF/run/evidence.json` 已保留私有原输出：`ask.options` 返回字符串数组，而原解析器要求 `{value,label}`；原 port 无模型回放拒绝，仅在内存转换该字段即接纳，原 DB/WAL/SHM 摘要不变。提示仅展示空数组，正在聚合修正，不放宽解析器、不原样付费重试。同 Task successor、发布精确 lookup 与后验恢复仍在实现；在途候选的两项原 HTTP 测试通过（31.049 秒）不替代冻结源独立审查。另缺随产品包交付的非 fixture 完整 v7 部署配置，测试驱动不等于开箱即用服务。最短后继是关闭接入与恢复阻断、补齐部署入口，再做真实完整业务验收；不重新做 B1、不重置历史成本。
 
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |
 | B1 真实团队交付 | `PASSED`（可信单用户本机 PoC） | 原七条件独立复核通过；旧 non-production 不改，不外推全程 Leader、生产或 stable |
 | B2 日常本地 API | `IN_PROGRESS` | 原问答、审计及单 Worker 取消已有实机；B2-L 完整模型业务与恢复未过，真实模型局部修正及用量缺失仍明示 |
-| B2-L 全程受管 Leader | `IN_PROGRESS`（Core 已集成，正式发布前必过） | 受控完整链与同包消费已过；真实 Pi intake 失败、v7 冷结算 P1 待修，完整模型交付/修正/授权后验及故障不重复仍须验收 |
+| B2-L 全程受管 Leader | `IN_PROGRESS`（Core 已集成，正式发布前必过） | 受控完整链与同包消费已过，冷结算 P1 已修；真实模型交付/修正/授权后验、同 Task 故障续接与产品部署配置仍须验收 |
 | API-STABLE 核心接口检查点 | `PASSED`（保留原范围） | 原 25 操作/58 Schema/同包客户端与四出口通过；不自动覆盖新增 Leader 支持面，不等于正式发行或任意版本兼容 |
 | B3 正式可靠发布 | `IN_PROGRESS` | 已有有界冷备份、隔离、v5/v6 故障、EFBIG/SQLite 写失败与安装消费证据；v7 恢复、声明平台部署/长期故障、ENOSPC 与受保护同资产发行仍未完成 |
 
