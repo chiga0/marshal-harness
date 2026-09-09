@@ -40,6 +40,55 @@ function fixture(t, qualified = false, format = WORKER_CANCELLATION_FORMAT) {
 // Component-level deterministic Execution ports, not Runtime cleanup proof.
 const started = ticket => ({executionId: 'run-' + ticket.workerId, startedAt: new Date().toISOString()});
 const result = fact => ({status: 'completed', stopReason: 'end_turn', cleanup: {started: fact, cleaned: true}, result: {value: 'original'}});
+test('legal large plans cancel with bounded reads and retain completed independent branches', async t => {
+  for (const {chain, siblings} of [{chain: 13, siblings: 13}, {chain: 30, siblings: 16}])
+    await t.test(`${chain + siblings + 2} nodes`, async t => {
+      const f = fixture(t), descendants = Array.from({length: chain}, (_, i) => 'c' + i),
+        independent = Array.from({length: siblings}, (_, i) => 'b' + i);
+      const proposed = {...plan, nodes: ['a', ...descendants, ...independent, 'check'].map(id => ({id,
+        role: id === 'check' ? 'reviewer' : 'author', goal: id, scope: [], providerId: null})),
+        edges: [{from: 'a', to: descendants[0]}, ...descendants.slice(1).map((to, i) => ({from: descendants[i], to})),
+          {from: descendants.at(-1), to: 'check'}, ...independent.map(from => ({from, to: 'check'}))]};
+      const task = await f.query('task.create', {key: 'large', body: {intent: '取消长依赖链，保留已完成分支',
+        limits: {timeoutMs: 45000, maxAttempts: 60, maxWorkers: 2}}});
+      const plannerCommand = f.commands().find(c => c.taskId === task.id),
+        planner = f.app.execution.nextWork(plannerCommand.id, plannerCommand.revision), sp = started(planner);
+      f.app.execution.started(planner, sp); f.app.execution.finish(planner, {...result(sp), plan: proposed});
+      const frozen = await f.query('task.plan', {taskId: task.id}), current = await f.query('task.get', {taskId: task.id});
+      assert.equal(current.status, 'awaiting-approval');
+      await f.query('task.approve', {taskId: task.id, key: 'approve-large', body: {
+        expectedRevision: current.revision, planRevision: frozen.revision, planDigest: frozen.digest}});
+      const dispatch = f.commands().find(c => JSON.parse(c.payload).action === 'dispatch');
+      assert.equal(f.app.execution.expandDispatch(dispatch.id, dispatch.revision), true);
+      const reserve = nodeId => {const c = f.commands().find(c => JSON.parse(c.payload).nodeId === nodeId);
+        const ticket = f.app.execution.nextWork(c.id, c.revision); assert.ok(ticket); return ticket;};
+      const a = reserve('a'), sa = started(a); f.app.execution.started(a, sa);
+      for (const nodeId of independent) {
+        const ticket = reserve(nodeId), fact = started(ticket); f.app.execution.started(ticket, fact);
+        assert.equal(f.app.execution.finish(ticket, result(fact)).status, 'completed');
+      }
+      const before = f.snapshot(task.id), retained = before.workers.filter(w => independent.includes(w.worker.nodeId));
+      assert.equal(before.workers.length, siblings + 2); assert.equal(before.capacity.active.length, 1);
+      // Real Store limits apply; no mock transaction, enlarged budget or fake stop receipt.
+      const {request, receipt} = await f.cancel(a);
+      assert.deepEqual(f.app.execution.reconcile(task.id).stopWorkerIds, [a.workerId]);
+      const cancelling = f.snapshot(task.id);
+      assert.deepEqual(cancelling.workers.filter(w => independent.includes(w.worker.nodeId)), retained);
+      assert.deepEqual(cancelling.capacity, before.capacity);
+      for (const node of cancelling.task.nodes) if ([...descendants, 'check'].includes(node.id)) {
+        assert.equal(node.status, 'cancelled'); assert.deepEqual(node.workerIds, []);
+      }
+      assert.equal(f.app.execution.finish(a, result(sa)).status, 'cancelled');
+      const final = f.snapshot(task.id);
+      assert.equal(final.task.task.status, 'failed'); assert.equal(final.task.task.code, 'worker_cancelled');
+      assert.equal(final.capacity.active.length, 0); assert.equal(final.task.attempts, before.task.attempts);
+      assert.equal(final.task.task.deadlineAt, before.task.task.deadlineAt);
+      assert.deepEqual(final.workers.filter(w => independent.includes(w.worker.nodeId)), retained);
+      assert.equal((await f.query('operation.get', {operationId: receipt.id})).status, 'succeeded');
+      f.reopen(); assert.deepEqual(await f.app.dispatch(request, context), receipt);
+      assert.deepEqual(f.snapshot(task.id), final);
+    });
+});
 test('target receipt/CAS, late result, retained sibling and dependency close use one original reducer', async t => {
   const f = fixture(t), {task, a, b} = await f.pair(), sa = started(a), sb = started(b);
   f.app.execution.started(a, sa); f.app.execution.started(b, sb);
