@@ -4,7 +4,7 @@
   "info": {
     "title": "Marshal Task Service API",
     "version": "0.1.0-candidate",
-    "description": "ADR0088 node-task-service/v1 的正式实现候选，非 API-STABLE。应用端支持的操作才可执行，缺失能力明确501；HTTP不创建Task第二真值。"
+    "description": "ADR0088 node-task-service/v1 的实现契约。接口检查点与平台正式支持状态分别见配套Roadmap；候选版本不是正式发行。应用端支持的操作才可执行，缺失能力明确501；HTTP不创建Task第二真值。"
   },
   "servers": [
     {

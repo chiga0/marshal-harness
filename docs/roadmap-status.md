@@ -2,11 +2,20 @@
 
 <a id="业务交付当前表"></a>
 
-## 当前唯一状态与关键路径（2026-09-08）
+## 当前唯一状态与关键路径（2026-09-09）
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
-### 最新正式 Node 集成检查点
+**2026-09-09 13:25 CST 当前出口**：API-STABLE 核心接口检查点通过，范围仅当前 Node profile 的25操作/58 Schema与同包客户端，不授予正式 v1/生产/全平台支持。已审源码 `5657a7d` 正常合并推送至 `94795f37e37863d0fddb003874b6fac5f7f8a082`，远端一致、`pendingRemoteSync=false`。同 Pi/custody 配置的真实取消一次13.046秒通过；原20项定向与三波14Task/55执行的独立隔离测试通过。旧 main `9700ade` 双平台CI全绿，新提交CI另记，不冒充本源通过。[完整四项证据、失败成本与下一步](node-task-service-status-2026-09-08.md)。
+
+| Milestone | 当前状态 | 尚缺用户出口 |
+| --- | --- | --- |
+| B1 真实团队交付 | `IN_PROGRESS` | 七项功能条件已有有界证据；尚缺适用 profile 的 Worker/Publisher 权限分离证明，不能升级production |
+| B2 日常本地 API | `IN_PROGRESS` | 当前候选问答/团队交付/审计及同Pi/custody取消已实机；真实模型局部修正、用量覆盖及完整同版本故障恢复仍待验收 |
+| API-STABLE 核心接口检查点 | `PASSED` | 当前25操作/58Schema/同包客户端与四条出口通过；候选版本不等于正式发行，不承诺旧协议/任意未来版本或全Provider兼容 |
+| B3 正式可靠发布 | `IN_PROGRESS` | 冷复制恢复、三波多Task/坏任务隔离已有有界证据；声明平台部署/长期故障、权限分离和受保护同资产发行未完成 |
+
+### 历史 Node 集成检查点（不覆盖上表）
 
 **2026-09-09 12:59 CST 已合入并推送**：规划提示合同修正source=`42426a2`，localMergeSha=`69cfacee2fbea366174744167d5a2c3a3dfeee89`，远端一致、`pendingRemoteSync=false`。原reviewer复审与独立24项通过；当前候选真实Pi HTTP运行问答→双作者交付→独立验收/下载→正常重开29.624秒通过、交叠10.189秒、零重复派发。前一候选一次真实规划失败保留：未说明scope类型导致对象/数组不匹配；补提示而非放宽Core。上一源0f86804 Ubuntu/macOS各510项全过，API响应上界和事件续读测试已合入，不再待开发。当前补同候选失败控制/接口证据与完整快照新目录恢复；仍非生产发布，[精确证据及剩余边界](node-task-service-status-2026-09-08.md)。
 
@@ -43,13 +52,6 @@ Pi候选完整回归后续确认：`74a239e`独立一次 **374/374 PASS、182.40
 **20:16 CST新增真实团队证据**：正式源码 `42f95658071e9ce03d38d8926b376b26c82ffd50` 已推送；纯HTTP真实Qwen 0.22.3完成planner→一次批准→双作者（重叠16.799秒）→独立验收→下载消费→正常重启原回执/成果不变，总计32.620秒。本次无自动重试，交付为两地区报告、4笔/1825 cents，精确Task/摘要见[实机检查点](node-task-service-status-2026-09-08.md)。这是正式同链的Mac ordinary-user dogfood成功，不是仅实验或进程夹具；仍不证明Worker/Publisher分权、真实运行中取消、崩溃恢复或stable，B1/B2继续IN_PROGRESS。下面82b64cf是此次运行代码基线，不覆盖本段新增实机事实。
 
 当前代码集成基线 main/origin/main=`82b64cfa8d0daef0c188f0e296299b6e3aedcc48`，已实际推送，以上代码 pendingRemoteSync=false。正式HTTP→SQLite→Supervisor→双作者→独立验收/Decision→交付下载及取消/正常重启已有真实Node进程夹具证明；不是模型团队通过。维护者在文件树相同的source `3383e0e` 完成307/307组合测试；[远端 Node team CI](https://github.com/chiga0/marshal-harness/actions/runs/34223961302)通过，通用CI最近查询仍运行中。目录发行包24文件已核验，不代表部署或stable。真实Qwen原生工具单会话证据保留，当前正在准备正式同链团队实机验收，B2问答并行开发；API-STABLE和正式发行尚未完成。精确source/merge、Core两轮P1修正及旧失败记录见[当前实施检查点](node-task-service-status-2026-09-08.md)。
-
-| Milestone | 当前状态 | 尚缺用户出口 |
-| --- | --- | --- |
-| B1 真实团队交付 | `IN_PROGRESS` | 七项功能条件已有有界证据；尚缺适用 profile 的 Worker/Publisher 权限分离证明，不能升级production |
-| B2 日常本地 API | `IN_PROGRESS` | 当前候选问答/团队交付/审计及独立取消已有实机，局部修正实现、简启动与冷复制恢复已有有界测试；真实模型局部修正、用量覆盖、完整同版本故障恢复仍待验收 |
-| API-STABLE 核心接口检查点 | `IN_PROGRESS` | 25操作/Schema/客户端、反例、响应上界/事件续读已验证；Pi新custody交付与Qwen旧layout取消分别记证，完整单一支持profile及兼容声明仍须收口，不拼接成全Provider保证 |
-| B3 正式可靠发布 | `PLANNED` | 目录包/安装说明已准备，停服全目录新位置恢复测试通过，持续多Task验证正在准备；声明平台部署/长期故障、权限分离和受保护同资产发行未完成 |
 
 ### 以下为较早本地集成检查点（不覆盖上表）
 

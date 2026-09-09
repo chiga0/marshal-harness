@@ -1,6 +1,8 @@
 # Marshal Agent Team：Task-first 实施 Milestone
 
-更新：2026-09-08。最终方案见[服务架构](agent-team-service-architecture.md)，合同变化集中在 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Accepted）。合同接受允许实施，不表示实现或生产可用；实际事实仍只记 [Roadmap](roadmap-status.md#业务交付当前表)。
+更新：2026-09-09。最终方案见[服务架构](agent-team-service-architecture.md)，合同变化集中在 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Accepted）。合同接受允许实施，不表示实现或生产可用；实际事实仍只记 [Roadmap](roadmap-status.md#业务交付当前表)。
+
+**当前检查点**：API-STABLE 四项出口已独立核验通过，范围为当前 Node profile、25操作/58 Schema和同包客户端。Pi/custody问答交付与同配置取消均有实机，原API反例/客户端/响应上界与事件续读通过；正式版本、Publisher分权、真实局部修正及完整平台恢复/发行不随之通过。B3已开始冷备份恢复和三波多Task隔离验证，尚未完成。[精确证据与剩余出口](node-task-service-status-2026-09-08.md)。以下带时间的增量和Node形态试验保留历史，不作为当前待办。
 
 **Node 形态可行性检查点已通过（不升级生产阶段）**：[ADR 0087](adr/0087-node-local-team-feasibility-probe.md) 的独立 Node-only profile 在本机完成真实双 Pi→HTTP 活跃重启→69 项独立验收→下载再验收，以及第二任务取消/重启保留。它解决本机此次必须执行 Marshal 原生文件的实验障碍，不代替下面 ADR 0085 的完整 B1/B2/B3 合同。下一步优先决定正式 Node profile 的合同与迁移边界，然后推进局部修正、第二 Provider 和完整恢复；不先全量翻译旧 Core。证据、失败与限制见[实机记录](node-team-feasibility-2026-09-08.md)。
 

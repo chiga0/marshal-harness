@@ -2,6 +2,31 @@
 
 ## 当前结论
 
+### 2026-09-09 13:25 CST：API-STABLE 检查点通过，正式发布仍未完成
+
+已审集成 sourceHead=`5657a7d`，localMergeSha=`94795f37e37863d0fddb003874b6fac5f7f8a082`，已正常推送、核对远端相同，`pendingRemoteSync=false`。该批仅增加 Pi/custody 取消验收、连续任务隔离测试及文档导航修正，不改变生产 Core/Provider/Store；生产实现仍与 `69cface` 相同。前一 main `9700adec` 的 [Node team CI 34313835232](https://github.com/chiga0/marshal-harness/actions/runs/34313835232) Ubuntu/macOS 均通过，新合并的 CI 异步另记。本文后续时间段是历史事实，不覆盖本节。
+
+**接口检查点不是正式发行**：原独立 reviewer 已按 Milestone 的四项条件复核，当前 `node-task-service/v1`、25操作/58 Schema与同包严格客户端记为 `API-STABLE: PASSED`。OpenAPI `info.version` 仍为 `0.1.0-candidate`；本次只将描述中的旧阶段声明改为指向 Roadmap，不改变任何请求/响应、路径、枚举或校验规则。兼容范围不包含旧 Go、九操作实验协议、任意未来版本或全 Provider；不能把候选接口检查点当 v1 stable 资产。
+
+元数据更新后 OpenAPI SHA-256=`c8fe689c950821be3f284cfd6df8606da608bf353bc2db9e9cd965ab70f5a13d`。与原JSON机械比较仅`info.description`不同；标准 Draft2020-12 验证58 Schema及34示例通过，原API/client组合 **32/32 PASS、1.367秒、零失败/取消/跳过**。上一描述版本的`c41c0995…`摘要保留为历史，不伪装整个JSON字节未变化，也不因此重新调用模型。
+
+| 原退出条件 | 本次证据与边界 |
+| --- | --- |
+| 合同/handler/示例/客户端一致，无未处置核心API P0/P1 | 原58 Schema、34示例及25操作验证；同包客户端、原revision/digest、精确receipt重放与严格拒绝规则；本批元数据说明不改变合同结构 |
+| 至少一个真实Provider的纯HTTP交付与主要失败控制 | `69cface` 原Pi/custody问答→双作者→独立验收→下载/审计通过；`37df1e7` 同生产字节、同Pi/SDK/checker/policy下取消通过。不是拼接Qwen layout1，也不需要客户端手改账本 |
+| 已提供功能的幂等、CAS、授权/对象/路径/迟到取消/事件续读反例 | 原API/Application/client回归及已合入事件断连/正常重开后原cursor续读通过；不宣称SSE、任意崩溃或未来接口兼容 |
+| 原HTTP脚本和独立客户端；并行/长Verify查询取消有界 | 原TaskClient与raw HTTP共同消费；两个行为用例独立2/2、9.730秒，6成功查询及2取消各小于2秒。是限定回归，不是生产SLO |
+
+**同配置真实 Pi 取消**：原 driver source=`b1badbb39d432ca58ffa1b78364cae91c2e493d7`，独立集成测试 source=`89e7da1`，20/20 PASS、5.642秒；包含真实无模型 Pi bridge/custody/layout3 HTTP取消/冷开及原Qwen默认取消。随后只执行一次真实 Pi0.84.4、Node24.15.0，运行前后冻结 source=`37df1e7a57d7b356ec385113f8c76e74c1f2f5a8`且clean：Task=`task-d2a44c9b-93fe-4942-8db8-d2d682a88546`，13.046秒，原planner加2作者共3 Attempts、作者生命周期交叠55ms，取消后39ms两原进程均退出且cleanup确认。Task cancelled、Operation succeeded、0验收器/制品/容量；正常open保留原create/approve/cancel回执、相同Task/Workers，零重复派发。
+
+证据 `/private/tmp/marshal-pi-custody-cancel.f9LwIv/run/evidence.json`，SHA-256=`1eb946185b73f2106fd4942d3879008baee5492d4239c6d0d0948e33b56928c3`。原 reviewer 对精确SQLite作query_only核验：三个原custody descriptor、receipt bytes与bindingDigest，以及Task/Worker/reservation/input/generation对应；原4 Attempts/2 Workers/600000ms上限不变。source绑定来自冻结运行记录，JSON不是签名source收据。此为早期running进程取消；权限回调0/0、modelConsumptionProven=false、toolExecutionProven=false，不扩大成工具执行中取消、恶意隔离或crash证明。ordinary-user、production=false、Publisher分权未证。
+
+**连续多Task与坏任务隔离**：source=`bd75a8ef652db1bde695c130f9219ae9f83005eb`，集成独立测试 source=`e7f2878dff11e8d1ca511ed3d2e526b4b5b630c1`，1/1 PASS、46.317秒。一个原CLI/custody/layout2实例，三波12个健康团队下载并独立重算；原ACP进程产生错误内容被独立checker拒收1Task，另一原挂起Task被HTTP取消。55次原执行、峰值4/单Task最多2、最终容量0，13个独立Decision为12 accepted加1 rejected，原失败摘要/通知、55累计预算不退款，幂等回执重放不产生执行；原CLI clean/exit0。无模型、不是24小时soak或生产SLO。
+
+保留测试作者的两次夹具假红：先误要求无diagnostic，再误认为Service转发stage/Task字段；实际上composition只转发code，最终断言唯一`worker_failed`，身份由原completion及持久Decision/digest独立绑定。生产行为未改，未抹去真实拒收；另改等待原child `close`排空stdout，避免`exit`先到造成假红。以后新增观测断言先核对真实producer，再跑完整场景，不逐项猜测和重试。
+
+**下一步按真实缺口推进**：B1部署分权、B2真实局部内容修正/未覆盖恢复、B3声明平台安装与长期故障/正式发行继续开放。局部修正工具已具备，只在真实原独立内容拒收且原预算/期限有效时使用；已成功Task不能用追加反馈重开，不重复付费寻找失败。香港现成独立runner可复用，但安装包仍未传入，SCP137原因未明；替代传输待用户确认，runner自己的Agent/模型授权范围未验证而非已确认缺失，不复制登录或绕过策略。暂无UI任务；先完成受支持部署和既有主线缺口。
+
 ### 2026-09-09 13:06 CST：当前候选取消、双平台回归及新目录恢复补验
 
 精确产品候选仍是已推送的 `69cfacee2fbea366174744167d5a2c3a3dfeee89`。[Node team CI 34312972893](https://github.com/chiga0/marshal-harness/actions/runs/34312972893) 已通过：macOS **511/511、222.154秒**，Ubuntu **511/511、225.774秒**，均零失败/取消/跳过。不是把上一源510项移作新源证据。
