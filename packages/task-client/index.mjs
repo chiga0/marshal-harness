@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {operations, validate, validAnswerResponse, validQuestionItems, TaskApiError} from '../task-api/contract.mjs';
+import {operations, validate, validAnswerResponse, validQuestionItems, validRepairResponse, TaskApiError} from '../task-api/contract.mjs';
 import {parseJson} from '../task-api/http-boundary.mjs';
 
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -55,6 +55,7 @@ function boundIdentity(entry, options, value) {
     entry.paged && value.items.length > (options.query.limit ?? 50) ||
     entry.response === 'Operation' && entry.operation !== 'operation.get' && value.kind !== entry.operation) throw fail('client_invalid_response');
   if (entry.operation === 'task.answer' && !validAnswerResponse({...options.paths, body: JSON.parse(options.body)}, value) ||
+      entry.operation === 'task.repair' && !validRepairResponse({...options.paths, body: JSON.parse(options.body)}, value) ||
       entry.operation === 'task.questions' && !validQuestionItems(value, options.paths.taskId)) throw fail('client_invalid_response');
 }
 async function readBounded(response, signal) {
@@ -155,5 +156,6 @@ export class TaskClient {
   createTask(body, idempotencyKey, options = {}) { return this.request('task.create', {...options, body, idempotencyKey}); }
   getTask(taskId, options = {}) { return this.request('task.get', {...options, path: {taskId}}); }
   approveTask(taskId, body, idempotencyKey, options = {}) { return this.request('task.approve', {...options, path: {taskId}, body, idempotencyKey}); }
+  repairTask(taskId, body, idempotencyKey, options = {}) { return this.request('task.repair', {...options, path: {taskId}, body, idempotencyKey}); }
   downloadArtifact(artifactId, options = {}) { return this.request('artifact.content', {...options, path: {artifactId}}); }
 }

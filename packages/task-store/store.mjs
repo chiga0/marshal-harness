@@ -8,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 export const FORMAT = 'marshal-node-task-sqlite/v1';
 export const CUSTODY_FORMAT = 'marshal-node-task-sqlite/v2-custody';
 export const INTERACTION_FORMAT = 'marshal-node-task-sqlite/v3-interaction';
+export const REPAIR_FORMAT = 'marshal-node-task-sqlite/v4-repair';
 // A maximum page of observed commands needs three validated accesses per row.
 // Leave room for its enclosing read/CAS while keeping aggregate work bounded.
 export const LIMITS = Object.freeze({ recordBytes: 1 << 20, transactionBytes: 8 << 20, records: 512, page: 100, transactionMs: 5000 });
@@ -208,8 +209,8 @@ export class Store {
   static #open(root, options, create) {
     const [major, minor] = process.versions.node.split('.').map(Number);
     check(['darwin', 'linux'].includes(process.platform) && major === 24 && minor >= 15, 'unsupported');
-    check(closed(options, ['format', 'clock', 'monotonic', 'syncDirectory']) && (options.format === undefined || [FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT].includes(options.format)));
-    const format = options.format ?? FORMAT, version = format === INTERACTION_FORMAT ? 3 : format === CUSTODY_FORMAT ? 2 : 1;
+    check(closed(options, ['format', 'clock', 'monotonic', 'syncDirectory']) && (options.format === undefined || [FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT].includes(options.format)));
+    const format = options.format ?? FORMAT, version = format === REPAIR_FORMAT ? 4 : format === INTERACTION_FORMAT ? 3 : format === CUSTODY_FORMAT ? 2 : 1;
     for (const key of ['clock', 'monotonic', 'syncDirectory']) check(options[key] === undefined || typeof options[key] === 'function');
     let files, db;
     try {
@@ -260,7 +261,7 @@ export class Store {
   inspectRecovery(callback) {
     this.#enter(); let tx;
     try {
-      check(this.#active === null && [CUSTODY_FORMAT, INTERACTION_FORMAT].includes(this.#metadata().format) && typeof callback === 'function', 'owner');
+      check(this.#active === null && [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT].includes(this.#metadata().format) && typeof callback === 'function', 'owner');
       check(Object.prototype.toString.call(callback) !== '[object AsyncFunction]', 'async-transaction');
       const until = this.#monotonic() + LIMITS.transactionMs;
       this.#transaction = true; this.#db.exec('BEGIN');

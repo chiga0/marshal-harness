@@ -113,6 +113,16 @@ Supervisor 不 clone receipt，也不将验收结果送进 Agent 专用 collect�
 
 ## 验证
 
+### 同计划局部修正（ADR0091）
+
+`createRepairPort({policy:{id,version,description},nodeIds,assertions})` 仅由可信组合根创建，默认不启用。`startTaskService({repair,custody,businessFactory,...})` 使用新的 `marshal-node-task-sqlite/v4-repair` 根；旧格式不迁移，旧 reader 在 owner claim 前拒绝。首版只接明确声明 `repairProfile:'task-local-repair/v1'` 的 FileBusiness，不给 Git/custom business 静默继承能力。VerificationPort 的 `repairPolicyDigests` 必须匹配原 Command start 的固定 checker/验证策略/业务断言绑定，完整策略写进原批准摘要。
+
+`POST /v1/tasks/{taskId}/repair` 接收闭集 `{expectedRevision,planDigest,decisionDigest,nodeIds,feedback}`。仅当前真实内容拒绝、原证据完整、所有执行已清理、原期限和剩余预算允许时，显式受理一次根节点及全部后继闭包；不重跑 planner、不改变计划/权限/预算。HTTP 202 `RepairReceipt` 保留原 `task/operation/acceptedRevision`，重放仅另列 `currentTask`。最终成功/失败收口原修正 Operation，不自动再次修正。
+
+`selectedResults` 是同 Store 的当前节点选择索引，不是另一套验收真值。保留分支必须重新核对原 Worker/结果/manifest/bytes；被修正节点清空选择、取得新 Attempt 和目录。真实文件准备按原 Depot 读取 `ticket.input.repair.evidence`，将完整负报告、失败断言和用户 feedback 作为诊断输入，原任务上下文和验收条件不变。最终验收只消费当前完整选择及这些分支实际 ACK 的问答引用，不混入旧失效尝试。
+
+`task.audit` 在启用修正的 Task 上增加 `decision`（含原 `digest/artifacts/contentRejection`）及 `repairs`。`acceptance.digest` 仍为最近完成验收的同一 Decision；新修正周期为 pending/null，历史负 Decision 保留。旧无修正 Task 的持久化和响应字节不加这些字段。提交后未 reservation 的旧代修正命令只能按原事实收为中断失败，不能在冷开时重派；已启动仍由原 custody cleanup-only 收口。
+
 固定 Node 24.15.0：
 
 ```sh

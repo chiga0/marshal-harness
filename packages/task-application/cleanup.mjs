@@ -1,5 +1,5 @@
 import {createPublicKey, verify} from 'node:crypto';
-import {encode, digest, CUSTODY_FORMAT, INTERACTION_FORMAT} from '../task-store/store.mjs';
+import {encode, digest, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT} from '../task-store/store.mjs';
 import {clone, reject, nextRevision} from './model.mjs';
 
 const PROFILE = 'node-execution-custody/v1', hash = value => digest(encode(value));
@@ -19,7 +19,7 @@ function profile(value) {
  * binding receipt. This class never accepts a candidate/result/Decision, calls a
  * Provider, issues a new ticket or signals a persisted PID. */
 export class TaskCleanup {
-  constructor(execution) { this.execution = execution; this.app = execution.app; this.supported = [CUSTODY_FORMAT, INTERACTION_FORMAT].includes(this.app.store.info?.().format); }
+  constructor(execution) { this.execution = execution; this.app = execution.app; this.supported = [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT].includes(this.app.store.info?.().format); }
   enabled() { return this.supported; }
   static inspectBeforeClaim(store, after = '', limit = 25) {
     return store.inspectRecovery(tx => {
@@ -132,6 +132,7 @@ export class TaskCleanup {
       const source = this.app.save(tx, task, 'worker.cleanup-reconciled', {workerId, observationDigest, status: record.worker.status});
       this.app.runtimeQuestions.settleClosed(tx, task, source, closedQuestions);
       this.app.runtimeQuestions.cleanupConfirmed(tx, task, source, workerId);
+      this.app.repair.settle(tx, task, source);
       this.execution.putWorker(tx, row, record, source);
       if (!remaining && task.cancelIntent) {
         const stop = tx.command(task.cancelIntent.commandId);

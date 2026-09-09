@@ -1,5 +1,5 @@
 import {randomBytes} from 'node:crypto';
-import {encode, digest, INTERACTION_FORMAT} from '../task-store/store.mjs';
+import {encode, digest, INTERACTION_FORMAT, REPAIR_FORMAT} from '../task-store/store.mjs';
 import {clone, isText, nextRevision, publicTask, reject, terminal} from './model.mjs';
 
 const PROFILE = 'task-runtime-question/v1', ports = new WeakMap(), hash = value => digest(encode(value));
@@ -30,7 +30,7 @@ export class TaskRuntimeQuestions {
     if (!this.port) return null;
     const config = ports.get(this.port), applies = sync(() => config.applies(clone(record.input)));
     requireValue(typeof applies === 'boolean'); if (!applies) return null;
-    requireValue(this.storeInfo?.format === INTERACTION_FORMAT);
+    requireValue([INTERACTION_FORMAT, REPAIR_FORMAT].includes(this.storeInfo?.format));
     const descriptor = clone(config.descriptor);
     requireValue(descriptor.nodeIds.every(id => plan.nodes.some(node => node.id === id && node.role !== 'verifier' && node.role !== 'planner')));
     const state = {descriptor, policyDigest: hash(descriptor), questions: []};
@@ -209,10 +209,11 @@ export class TaskRuntimeQuestions {
       const candidate = tx.projection('attempt', record.resultRef);
       if (record.worker.id !== input.workerId || record.worker.nodeId !== input.nodeId || record.worker.taskId !== ticket.taskId ||
         record.worker.status !== 'completed' || record.cleanup?.cleaned !== true || record.cleanup.started?.executionId !== record.executionId ||
-        record.ticket.generation !== ticket.generation || record.ticket.planDigest !== ticket.planDigest || record.ticket.taskId !== ticket.taskId ||
+        !task.repair && record.ticket.generation !== ticket.generation || record.ticket.planDigest !== ticket.planDigest || record.ticket.taskId !== ticket.taskId ||
         task.nodes.find(node => node.id === input.nodeId)?.status !== 'completed' || !candidate ||
         record.resultDigest !== hash({candidate: decode(candidate), interactionRefs: record.interactionRefs}) ||
         !exact(record.candidate, input.result) || !exact(record.interactionRefs, input.interactionRefs)) reject('recovery_required', 409);
+      if (task.repair && this.app.repair.selected(tx, task, [input.nodeId])[0].record.worker.id !== input.workerId) reject('recovery_required', 409);
     }
     const inherited = this.inherited(tx, task, upstream.flatMap(item => item.interactionRefs));
     if (!exact(inherited, ticket.input.interactionRefs)) reject('recovery_required', 409);
