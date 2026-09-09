@@ -29,6 +29,7 @@ export const SOURCE_FILES = Object.freeze([
   'packages/task-application/cleanup.mjs',
   'packages/task-application/execution.mjs',
   'packages/task-application/graph.mjs',
+  'packages/task-application/input-audit.mjs',
   'packages/task-application/model.mjs',
   'packages/task-application/repair.mjs',
   'packages/task-application/runtime-questions.mjs',
