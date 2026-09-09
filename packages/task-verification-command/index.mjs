@@ -48,7 +48,7 @@ function artifact(value) {
 function frame(bytes) {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength < 2 || bytes.byteLength > MAX_FRAME) fail('verification_frame_invalid');
   const raw = new TextDecoder('utf-8', {fatal: true}).decode(bytes);
-  if (!raw.endsWith('\n') || raw.includes('\0')) fail('verification_frame_invalid');
+  if (!Buffer.from(raw).equals(bytes) || !raw.endsWith('\n') || raw.includes('\0')) fail('verification_frame_invalid');
   const parsed = JSON.parse(raw);
   // One canonical frame rejects duplicate keys, extra whitespace/frames and
   // malformed Unicode without introducing a second permissive JSON dialect.
@@ -58,7 +58,8 @@ function frame(bytes) {
 
 /** Trusted composition only. Neither this adapter nor a checker signs Decisions. */
 export function createVerificationCommand({executable, checkerPath, checkerDigest, policyDigest, assertions,
-  env = {}, request = ({ticket}) => ({verification: ticket.input.verification, fileLayout: ticket.input.fileLayout ?? null}), delivery} = {}) {
+  env = {}, request = ({ticket}) => ({verification: ticket.input.verification, fileLayout: ticket.input.fileLayout ?? null,
+    ...(ticket.input.interactionRefs ? {interactionRefs: ticket.input.interactionRefs} : {})}), delivery, repair} = {}) {
   if (!text(executable) || !path.isAbsolute(executable) || !text(checkerPath) || !path.isAbsolute(checkerPath) ||
       path.normalize(checkerPath) !== checkerPath || !hash(checkerDigest) || !hash(policyDigest) ||
       !object(env) || Object.keys(env).length > 128 || Object.entries(env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) || !text(value)) ||
@@ -67,6 +68,11 @@ export function createVerificationCommand({executable, checkerPath, checkerDiges
       new Set(assertions.map(item => item.name)).size !== assertions.length || typeof request !== 'function' || typeof delivery !== 'function') fail('verification_config_invalid');
   // Copy the trusted policy so later caller mutation cannot replace validators/env.
   const validators = assertions.map(({name, validate}) => ({name, validate})), environment = {...env};
+  if (repair !== undefined && (!keys(repair, ['policyDigest', 'assertions']) || !hash(repair.policyDigest) ||
+    !Array.isArray(repair.assertions) || repair.assertions.length < 1 || repair.assertions.length > 64 ||
+    repair.assertions.some(name => !validators.some(item => item.name === name)) || new Set(repair.assertions).size !== repair.assertions.length)) fail('verification_config_invalid');
+  const repairBinding = repair ? freeze({policyDigest: repair.policyDigest, checkerDigest, verificationPolicyDigest: policyDigest,
+    assertions: [...repair.assertions].sort()}) : null;
 
   function start({ticket, prepared, executionContext} = {}) {
     const started = deferred();
@@ -88,7 +94,10 @@ export function createVerificationCommand({executable, checkerPath, checkerDiges
         const binding = freeze({reservationDigest: frozenTicket.reservationDigest, planDigest: frozenTicket.planDigest,
           inputDigest: frozenTicket.inputDigest, checkerDigest, policyDigest});
         const nonce = randomUUID();
-        const input = encode({profile: PROFILE, nonce, binding, input: synchronous(request, context)});
+        const requested = synchronous(request, context);
+        if (frozenTicket.input.interactionRefs && (!object(requested) ||
+          !encode(requested.interactionRefs).equals(encode(frozenTicket.input.interactionRefs)))) fail('verification_interaction_omitted');
+        const input = encode({profile: PROFILE, nonce, binding, input: requested});
         if (input.length + 1 > MAX_FRAME) fail('verification_input_limit');
         if (stopped || Date.now() >= frozenTicket.deadline) fail('verification_stopped');
         runtime = await launchCommand({executable, args: [checkerPath], cwd, env: environment, deadline: frozenTicket.deadline, executionContext,
@@ -107,9 +116,27 @@ export function createVerificationCommand({executable, checkerPath, checkerDiges
             report.assertions.some(item => !keys(item, ['name', 'actual'])) ||
             new Set(report.assertions.map(item => item.name)).size !== validators.length) fail('verification_report_mismatch');
         freeze(report);
+        const conclusions = [];
         for (const {name, validate} of validators) {
           const assertion = report.assertions.find(item => item.name === name);
-          if (!assertion || synchronous(validate, assertion.actual, context) !== true) fail('verification_assertion_failed');
+          if (!assertion) fail('verification_report_mismatch');
+          const passed = synchronous(validate, assertion.actual, context);
+          if (typeof passed !== 'boolean') fail('verification_assertion_failed');
+          conclusions.push({name, passed});
+          if (!repairBinding && !passed) fail('verification_assertion_failed');
+        }
+        const failedAssertions = conclusions.filter(item => !item.passed).map(item => item.name).sort();
+        if (failedAssertions.length) {
+          if (!repairBinding || frozenTicket.input.plan?.repair?.policyDigest !== repairBinding.policyDigest ||
+            failedAssertions.some(name => !repairBinding.assertions.includes(name))) fail('verification_assertion_failed');
+          if (stopped || Date.now() >= frozenTicket.deadline) fail('verification_stopped');
+          const rejection = {policyDigest: repairBinding.policyDigest, failedAssertions, reportDigest: digest(result.stdout)};
+          const evidence = encode({profile: PROFILE, binding, nonce, requestDigest: digest(input), reportDigest: rejection.reportDigest,
+            originalReport: new TextDecoder('utf-8', {fatal: true}).decode(result.stdout), parentAssertions: conclusions,
+            executionId: cleanup.executionId, started: cleanup.started, agentExit: cleanup.agentExit});
+          if (evidence.length > MAX_FRAME) fail('verification_evidence_limit');
+          return {type: 'verification', status: 'failed', reason: 'verification_content_rejected', cleanup, contentRejection: rejection,
+            evidence: {name: 'verification-rejected.json', mediaType: 'application/json', content: evidence}, delivery: null};
         }
         const output = artifact(synchronous(delivery, {...context, report}));
         if (stopped || Date.now() >= frozenTicket.deadline) fail('verification_stopped');
@@ -136,5 +163,6 @@ export function createVerificationCommand({executable, checkerPath, checkerDiges
     }});
   }
   Object.defineProperty(start, 'custodyProfile', {value: Object.freeze({id: 'managed-checker-v1', scope: 'inherited-process-group', eligible: true})});
+  if (repairBinding) Object.defineProperty(start, 'repairBinding', {value: repairBinding});
   return Object.freeze({start, custodyProfile: start.custodyProfile});
 }

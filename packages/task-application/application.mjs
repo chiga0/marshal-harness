@@ -5,8 +5,12 @@ import {TaskExecution} from './execution.mjs';
 import {TaskArtifacts} from './artifacts.mjs';
 import {TaskVerification} from './verification.mjs';
 import {TaskClarification} from './clarification.mjs';
+import {TaskRuntimeQuestions} from './runtime-questions.mjs';
+import {TaskRepair} from './repair.mjs';
 export {createVerificationPort} from './verification.mjs';
 export {createClarificationPort} from './clarification.mjs';
+export {createRuntimeQuestionPort} from './runtime-questions.mjs';
+export {createRepairPort} from './repair.mjs';
 
 const hash = value => digest(encode(value));
 const parse = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
@@ -25,13 +29,15 @@ const idOK = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,
  */
 export class TaskApplication {
   constructor({store, owner, clock = Date.now, makeId = prefix => prefix + '-' + randomUUID(),
-    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null}) {
+    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null, runtimeQuestions = null, repair = null}) {
     this.store = store; this.owner = owner; this.clock = clock; this.makeId = makeId;
     this.defaultLimits = limits(defaultLimits);
     this.execution = new TaskExecution(this, execution);
     this.artifacts = new TaskArtifacts(this, depot);
     this.verification = new TaskVerification(this, verification);
     this.clarification = new TaskClarification(this, clarification);
+    this.runtimeQuestions = new TaskRuntimeQuestions(this, runtimeQuestions);
+    this.repair = new TaskRepair(this, repair);
     this.dispatch = this.dispatch.bind(this);
   }
   now() {
@@ -69,6 +75,8 @@ export class TaskApplication {
     const record = parse(entry);
     if (record.task.id !== taskId || record.task.revision !== integer(entry.revision)) reject('application_unavailable', 503);
     if (record.clarification && record.clarification.profile !== 'task-clarification/v1') reject('recovery_required', 409);
+    if (record.runtimeQuestions && record.runtimeQuestions.descriptor?.profile !== 'task-runtime-question/v1') reject('recovery_required', 409);
+    if (record.repair && record.repair.descriptor?.profile !== 'task-local-repair/v1') reject('recovery_required', 409);
     return record;
   }
   save(tx, record, type, detail = {}) {
@@ -98,7 +106,11 @@ export class TaskApplication {
     const input = {operation: request.operation, taskId: request.taskId ?? null, body: request.body};
     // Only the new answer operation adds its route subject. Keep every old
     // operation's exact digest algorithm and historical receipt bytes unchanged.
-    if (request.operation === 'task.answer') { this.clarification.shape(request); input.questionId = request.questionId; }
+    if (request.operation === 'task.answer') {
+      (Object.hasOwn(request.body ?? {}, 'questionDigest') ? this.runtimeQuestions : this.clarification).shape(request);
+      input.questionId = request.questionId;
+    }
+    if (request.operation === 'task.repair') this.repair.shape(request);
     const requestDigest = hash(input);
     return {key, requestDigest};
   }
@@ -111,13 +123,14 @@ export class TaskApplication {
   }
   replay(request) { return this.transaction(false, tx => {
     const previous = this.receipt(tx, request);
-    return previous && request.operation === 'task.answer' ? this.clarification.replay(tx, previous) : previous;
+    return previous && request.operation === 'task.answer' ? this.clarification.replay(tx, previous) :
+      previous && request.operation === 'task.repair' ? this.repair.replay(tx, previous) : previous;
   }); }
   mutate(request, callback) {
     const {key, requestDigest} = this.receiptKey(request);
     return this.transaction(true, tx => {
       const previous = this.receipt(tx, request);
-      if (previous) return previous;
+      if (previous) return request.operation === 'task.repair' ? this.repair.replay(tx, previous) : previous;
       const {result, source} = callback(tx);
       tx.putReceipt(key, requestDigest, source, encode(result));
       return clone(result);
@@ -129,7 +142,8 @@ export class TaskApplication {
     if (!request || typeof request.operation !== 'string') reject('invalid_request', 400);
     if (['input.create', 'artifact.get', 'artifact.content'].includes(request.operation)) return this.artifacts.dispatch(request);
     if (request.operation === 'task.create') return this.create(request, context);
-    if (request.operation === 'task.answer') return this.clarification.answer(request, context);
+    if (request.operation === 'task.repair') return this.repair.repair(request);
+    if (request.operation === 'task.answer') return (Object.hasOwn(request.body ?? {}, 'questionDigest') ? this.runtimeQuestions : this.clarification).answer(request, context);
     if (['task.approve', 'task.cancel', 'task.pause', 'task.resume'].includes(request.operation)) return this.control(request);
     return this.transaction(false, tx => this.query(tx, request));
   }
@@ -185,9 +199,22 @@ export class TaskApplication {
     const plan = freezePlan(record, proposal, value => hash({plan: value, inputDigest: record.inputDigest}));
     const {digest: _digest, ...body} = plan;
     const binding = this.verification.bind(record, body);
+    const interaction = this.runtimeQuestions.bind(record, body);
+    const repair = this.repair.bind(record, body, binding);
+    if (repair) {
+      record.repair = repair;
+      body.repair = {profile: repair.descriptor.profile, policyDigest: repair.policyDigest};
+      record.selectedResults = Object.fromEntries(body.nodes.filter(node => node.id !== binding.nodeId).map(node => [node.id, null]));
+    }
+    if (interaction) {
+      record.runtimeQuestions = interaction;
+      body.interaction = {profile: interaction.descriptor.profile, policyDigest: interaction.policyDigest,
+        maxQuestions: interaction.descriptor.maxQuestions, maxWaitMs: interaction.descriptor.maxWaitMs};
+    } else delete record.runtimeQuestions;
     if (binding) {
       record.verification = binding;
-      return {...body, digest: hash({plan: body, inputDigest: record.inputDigest, verification: binding})};
+      return {...body, digest: hash({plan: body, inputDigest: record.inputDigest, verification: binding,
+        ...(interaction ? {runtimeQuestions: interaction.descriptor} : {}), ...(repair ? {repair} : {})})};
     }
     delete record.verification; return plan;
   }
@@ -203,6 +230,8 @@ export class TaskApplication {
         if (original !== (record.clarification ? 'awaiting-confirmation' : 'awaiting-approval') || !record.plan || body.planRevision !== record.plan.revision ||
             body.planDigest !== record.plan.digest) reject('plan_conflict', 409);
         if (record.verification) this.verification.configured(record.verification);
+        if (record.runtimeQuestions) this.runtimeQuestions.configured(record.runtimeQuestions, record.plan);
+        if (record.repair) this.repair.configured(record);
         const deadline = Math.min(Date.parse(task.deadlineAt), Date.parse(task.createdAt) + record.plan.budget.timeoutMs);
         if (this.now() >= deadline) reject('state_conflict', 409);
         task.deadlineAt = new Date(deadline).toISOString();
@@ -214,6 +243,7 @@ export class TaskApplication {
         // Draft planning also has an obligation. Cancellation always emits a
         // stop/fence; completion must be established by execution reconciliation.
         task.status = 'cancelling'; status = 'accepted'; action = 'cancel';
+        if (record.repair) record.userCancelled = true;
         if (this.execution.cleanup.enabled()) record.cancelIntent = {revision: nextRevision(task.revision), at: new Date(this.now()).toISOString(),
           operationId: this.newId('operation'), commandId: this.newId('command')};
       } else if (request.operation === 'task.pause') {
@@ -226,7 +256,9 @@ export class TaskApplication {
         task.status = record.pausedFrom; delete record.pausedFrom; status = 'accepted'; action = 'resume';
       }
       task.revision = nextRevision(task.revision);
+      const closedQuestions = action === 'cancel' ? this.runtimeQuestions.close(record) : [];
       const source = this.save(tx, record, request.operation, {from: original, to: task.status});
+      this.runtimeQuestions.settleClosed(tx, record, source, closedQuestions);
       const cancellation = action === 'cancel' ? record.cancelIntent : null;
       const op = this.operation(tx, task, source, request.operation, status, cancellation?.operationId);
       if (action) this.enqueue(tx, source, task.id, action,
@@ -236,12 +268,12 @@ export class TaskApplication {
     });
   }
   query(tx, request) {
-    if (request.operation === 'task.questions') return this.clarification.questions(tx, request);
+    if (request.operation === 'task.questions') return this.runtimeQuestions.questions(tx, request);
     if (['worker.get', 'task.workers'].includes(request.operation)) return this.execution.query(tx, request);
     const page = request.page ?? {}, limit = page.limit ?? 50, after = page.cursor ?? '';
     if (request.operation === 'task.list') {
       const entries = tx.projections('task', after, limit);
-      return {items: entries.map(entry => publicTask(this.taskRecord(entry), this.now())), nextCursor: entries.length === limit ? entries.at(-1).id : null};
+      return {items: entries.map(entry => this.repair.view(tx, this.taskRecord(entry))), nextCursor: entries.length === limit ? entries.at(-1).id : null};
     }
     if (request.operation === 'operation.get') {
       const op = parse(tx.projection('operation', request.operationId));
@@ -250,7 +282,7 @@ export class TaskApplication {
     }
     if (!request.operation.startsWith('task.')) reject('unsupported_operation', 501);
     const record = this.get(tx, request.taskId), task = record.task;
-    if (request.operation === 'task.get') return publicTask(record, this.now());
+    if (request.operation === 'task.get') return this.repair.view(tx, record);
     if (request.operation === 'task.plan') { if (!record.plan) reject('plan_conflict', 409); return clone(record.plan); }
     if (request.operation === 'task.graph') {
       if (!record.plan) reject('plan_conflict', 409);
@@ -273,7 +305,7 @@ export class TaskApplication {
       // Final verification is not an independently observed first code review.
       firstReview: {passed: 0, total: 0, pending: 0},
       acceptance: clone(record.acceptance ?? {status: 'pending', evidenceIds: [], digest: null}),
-      usage: unavailableUsage(), workers: this.execution.workers(tx, record).map(({record}) => clone(record.worker)), prompts: []};
+      usage: unavailableUsage(), workers: this.execution.workers(tx, record).map(({record}) => clone(record.worker)), prompts: [], ...this.repair.audit(tx, record)};
     // Never implement the remaining surface with fabricated success/empty
     // records. Execution, interactions and artifacts must bind actual facts.
     reject('unsupported_operation', 501);

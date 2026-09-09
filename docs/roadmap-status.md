@@ -8,6 +8,8 @@
 
 ### 最新正式 Node 集成检查点
 
+**2026-09-09 12:04 CST 增量**：已审局部修正及证据正常推送至功能分支 `d650238`，不是main合并；原两P1聚合关闭，最终定向80/80通过。真实Pi首轮交付26.288秒、双作者交叠11.788秒，下载7单/1850 cents和正常重开通过，无实际repair、不造错寻找失败。局部修正实现/确定性证据前进，真实模型修正仍未证明；实际prompt/context审计和简启动开始并行实施。下表状态不升级，[精确证据与边界](node-task-service-status-2026-09-08.md)。
+
 **2026-09-09 10:23 CST**：真实 Pi＋Qwen 双仓库 patch 团队一次通过，56.914秒、作者真实重叠11.631秒、4 Attempts、独立验收与下载消费23检查/12负例通过、正常重开零再启动。source=`76f9c36` 已合并并推送 `7294878e68c59a592b4c8cd1236da34bad038fe2`，pendingRemoteSync=false；新增API/驱动独立组合48/48通过。只关闭固定业务混合交付子条件，不把 Qwen 零权限回调或普通宿主执行当分权证明；运行问答合同已接线，Core实际投递/ACK、局部修正和正式 profile 仍在途。[精确证据与边界](node-task-service-status-2026-09-08.md)。
 
 **2026-09-09 10:12 CST 已合并并推送**：sourceHead=`db57d45c7b8a951eb3adddafd2f649ad165cd068`，localMergeSha=`0057dd1b7c5b259f238600bacbc3abb346d770ca`；正常推送后远端 main 已核对为同一 SHA，产品 `pendingRemoteSync=false`。最终完整 Node 组合 **418/418 PASS、319.688秒、零失败/取消/跳过**，运行前后冻结树不变且 clean；日志 SHA-256=`47b7d7ceb5c01fa5611ab93e2fc5f3c08ea4c51d8672de6f3a8204aaecd7d63f`。 限定执行托管/cleanup-only 恢复、安装包 v1/v2 团队闭环及 Git 双仓库 patch 业务插件已进入主线，均经独立审查。此前 `d6833d5` 的409项中1项 Pi legacy 回归保留为失败记录，由 `ed8df71` 最小修复并通过最终全套，不放宽 v2 未知 scope 门禁。后继三个并行方向为运行中业务问答、其 API/schema/客户端、Git/Pi＋Qwen 混合实机驱动；[ADR 0090](adr/0090-node-runtime-business-questions.md) 已接纳但不等于运行时已完成。B1/B2/API-STABLE/B3 不升级，[精确范围与剩余出口](node-task-service-status-2026-09-08.md)。
@@ -39,7 +41,7 @@ Pi候选完整回归后续确认：`74a239e`独立一次 **374/374 PASS、182.40
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |
 | B1 真实团队交付 | `IN_PROGRESS` | 七项功能条件已有有界证据；尚缺适用 profile 的 Worker/Publisher 权限分离证明，不能升级production |
-| B2 日常本地 API | `IN_PROGRESS` | 真实必要问答及第二 Pi 团队已通过；尚缺运行中交互、局部修正、Git/混合任务、完整同版本恢复与 API-STABLE，真实业务矩阵未全验收 |
+| B2 日常本地 API | `IN_PROGRESS` | 真实批准前必要问答、Pi/Qwen 团队、固定双仓库混合交付及运行中问答交付已通过；局部修正、完整提示词/用量审计、简启动、完整同版本恢复与 API-STABLE 仍未完成 |
 | B3 正式可靠发布 | `PLANNED` | 目录包已准备；声明平台实机/长期故障、权限分离、安装恢复和受保护同资产发行未完成 |
 
 ### 以下为较早本地集成检查点（不覆盖上表）

@@ -12,6 +12,12 @@ const checkerPath = fileURLToPath(new URL('./checker.fixture.mjs', import.meta.u
 const checkerDigest = digest(readFileSync(checkerPath));
 const policyDigest = digest(Buffer.from('fixture-sum-policy/v1'));
 const planDigest = digest(Buffer.from('approved-fixture-plan'));
+const repairDigest = digest(Buffer.from('explicit-test-content-repair-policy'));
+function repairTicket() {
+  const value = ticket(); value.input.plan = {repair: {profile: 'task-local-repair/v1', policyDigest: repairDigest}};
+  value.inputDigest = digest(encode(value.input)); delete value.reservationDigest;
+  return {...value, reservationDigest: digest(encode(value))};
+}
 function ticket(deadline = Date.now() + 15000) {
   const input = {task: {goal: '求和交付'}, verification: {binding: {profile: 'task-verification/v1', policyDigest,
     providerId: 'fixture-independent', policy: 'sum/v1', nodeId: 'verify', description: 'sum and count', layouts: {}, deliveries: ['sum.json']}, manifests: []}};
@@ -47,6 +53,36 @@ test('real fixed Node checker, exact original cleanup and complete required asse
   assert.equal(result.receipt, undefined); assert.equal(result.decision, undefined);
 });
 
+test('content rejection evaluates every parent assertion and preserves exact original bytes without delivery', {timeout: 12000}, async t => {
+  const called = []; let deliveryCalls = 0;
+  const f = await setup(t, 'good', {repair: {policyDigest: repairDigest, assertions: ['sum', 'count']},
+    assertions: ['sum', 'count'].map(name => ({name, validate() {called.push(name); return false;}})),
+    delivery() {deliveryCalls++; throw Error('must not construct a failed delivery');}});
+  const handle = f.adapter.start({ticket: repairTicket(), prepared: f.prepared}); t.after(() => handle.stop());
+  const result = await handle.completion; assert.equal(result.status, 'failed'); assert.equal(result.cleanup.cleaned, true);
+  assert.deepEqual(called, ['sum', 'count']); assert.equal(deliveryCalls, 0); assert.equal(result.delivery, null);
+  assert.deepEqual(result.contentRejection.failedAssertions, ['count', 'sum']);
+  const evidence = JSON.parse(result.evidence.content), report = JSON.parse(evidence.originalReport);
+  assert.equal(digest(Buffer.from(evidence.originalReport)), evidence.reportDigest);
+  assert.equal(result.contentRejection.reportDigest, evidence.reportDigest);
+  assert.deepEqual(evidence.parentAssertions, [{name: 'sum', passed: false}, {name: 'count', passed: false}]);
+  assert.deepEqual(report.binding, evidence.binding); assert.equal(report.nonce, evidence.nonce);
+});
+
+test('repair never classifies protocol, operational, nonboolean, exception or structural failures as content', {timeout: 25000}, async t => {
+  const variants = ['nonce', 'missing', 'duplicate', 'unknown', 'nonzero', 'bom', 'unconfirmed'].map(mode => ({mode}));
+  variants.push(...[() => undefined, () => Promise.resolve(false), () => {throw Error('private fixture');}, () => false]
+    .map(validate => ({mode: 'good', assertions: [{name: 'sum', validate: () => false}, {name: 'count', validate}]})));
+  for (const variant of variants) {
+    const f = await setup(t, variant.mode, {repair: {policyDigest: repairDigest, assertions: ['sum']},
+      assertions: variant.assertions ?? [{name: 'sum', validate: () => false}, {name: 'count', validate: () => true}]});
+    const handle = f.adapter.start({ticket: repairTicket(), prepared: f.prepared}); t.after(() => handle.stop());
+    const result = await handle.completion;
+    assert.equal(result.status, 'failed'); assert.equal(result.contentRejection, undefined, variant.mode);
+    assert.equal(result.evidence, null); assert.equal(result.delivery, null);
+  }
+});
+
 test('report nonce/binding and exact closed assertion set reject replay, omissions and pass labels', {timeout: 20000}, async t => {
   for (const mode of ['nonce', 'binding', 'missing', 'duplicate', 'unknown', 'extra']) {
     const {result} = await run(t, mode);
@@ -62,7 +98,7 @@ test('malicious assertion body remains data, no evaluation and no raw text in er
 });
 
 test('strict byte frame rejects duplicate JSON keys, invalid UTF8 and extra frames', {timeout: 15000}, async t => {
-  for (const mode of ['duplicate-key', 'utf8', 'trailing']) {
+  for (const mode of ['duplicate-key', 'utf8', 'trailing', 'bom']) {
     const {result} = await run(t, mode); assert.equal(result.status, 'failed', mode); assert.equal(result.delivery, null);
   }
 });

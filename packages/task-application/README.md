@@ -48,6 +48,16 @@ const application = new TaskApplication({store, owner, clarification});
 
 ## 受管执行接线端口
 
+### 运行中业务问答（ADR0090）
+
+新根显式配置 `runtimeQuestions:createRuntimeQuestionPort({policy,nodeIds,maxQuestions,maxWaitMs,applies,validateQuestion,validateAnswer})`，并采用 `INTERACTION_FORMAT`（v3-interaction）。策略只持久化数据描述/摘要；函数由受信组合按摘要解析，不由 HTTP 或 Worker 安装。默认不启用；原无交互计划字节和 ADR0086 的批准前问答保留。`createVerificationPort` 的 `interactionPolicyDigests` 必须明确包含同一策略摘要，缺少受信答案验证器、Provider 能力或验收 consumer 时拒绝批准/派发。
+
+同一 `execution` 提供 `registerQuestion(ticket,request)`、`dispatchAnswer(ticket,questionId)`、`acknowledgeAnswer(ticket,questionId,receipt)`。原运行票据不改写；最多三题，单题最多 120 秒且不超过原 deadline，等待占用原容量/Attempt。答案、Operation、不可变 HTTP 回执和一次 outbox 在同事务接纳；原 session/原句柄一次投递，匹配 ACK 后才允许成功结果。权限请求不是业务问题，问题创建不开放 HTTP。
+
+未答 `deliveryStatus=null`；接纳后 pending→dispatched→acknowledged，取消/到期及丢 ACK 按实际消费进度关闭。暂停不延期限，取消优先于尚未授权的投递。清理已证实但答案消费 unknown 时，Operation 保留 unknown，原投递义务结案，不永久占槽；服务换代只沿 ADR0089 清理旧执行，不重发旧答案/prompt。Worker 候选摘要与最终 Verification 输入绑定同库 `interactionRefs` 和原答案，checker 请求遗漏它们立即失败。
+
+`runtime-questions.test.mjs` 是真实 SQLite/Depot 组件测试；`task-service/native-business-question.test.mjs` 进一步经过正式 HTTP、实际 Pi 原生 bridge/工具定义及 Node 受管进程、custody、独立 checker、下载和冷重开。其协议 Agent 使用显式无模型 fixture，不代表真实模型业务、全部故障矩阵或 B2/API-STABLE 已完成。
+
 ### 输入与制品
 
 注入 `depot` 后，另支持 `input.create`、`artifact.get`、`artifact.content`；连同有限问答共19项 Application 操作。上传上限256KiB，严格 canonical base64；SQLite 保存上传清单、单本地用户归属、原幂等回执与已提交 blob 摘要索引，Depot 先持久化 bytes，随后 SQLite 同事务提交元数据。事务失败只留下无引用孤儿，不返回可下载对象。文件 I/O 不持数据库事务。
@@ -102,6 +112,16 @@ Supervisor 不 clone receipt，也不将验收结果送进 Agent 专用 collect�
 原受管 launcher 的失败也可能确认 `started:null/cleaned:true`：仅在精确 receipt、当前 owner/ticket 与原 Attempt 的 executionId/startedAt 均为空一致时，按已有 Worker 失败/cleanup 路径释放容量，不制造独立验收事实。`passed` 无启动、身份不匹配、缺字段均不因此获得接纳；未知 cleanup 仍保留容量。回归使用真实 checked-in Node guard 的缺 executable 失败，并验证另一 Task 可继续完成。
 
 ## 验证
+
+### 同计划局部修正（ADR0091）
+
+`createRepairPort({policy:{id,version,description},nodeIds,assertions})` 仅由可信组合根创建，默认不启用。`startTaskService({repair,custody,businessFactory,...})` 使用新的 `marshal-node-task-sqlite/v4-repair` 根；旧格式不迁移，旧 reader 在 owner claim 前拒绝。首版只接明确声明 `repairProfile:'task-local-repair/v1'` 的 FileBusiness，不给 Git/custom business 静默继承能力。VerificationPort 的 `repairPolicyDigests` 必须匹配原 Command start 的固定 checker/验证策略/业务断言绑定，完整策略写进原批准摘要。
+
+`POST /v1/tasks/{taskId}/repair` 接收闭集 `{expectedRevision,planDigest,decisionDigest,nodeIds,feedback}`。仅当前真实内容拒绝、原证据完整、所有执行已清理、原期限和剩余预算允许时，显式受理一次根节点及全部后继闭包；不重跑 planner、不改变计划/权限/预算。HTTP 202 `RepairReceipt` 保留原 `task/operation/acceptedRevision`，重放仅另列 `currentTask`。最终成功/失败收口原修正 Operation，不自动再次修正。
+
+`selectedResults` 是同 Store 的当前节点选择索引，不是另一套验收真值。保留分支必须重新核对原 Worker/结果/manifest/bytes；被修正节点清空选择、取得新 Attempt 和目录。真实文件准备按原 Depot 读取 `ticket.input.repair.evidence`，将完整负报告、失败断言和用户 feedback 作为诊断输入，原任务上下文和验收条件不变。最终验收只消费当前完整选择及这些分支实际 ACK 的问答引用，不混入旧失效尝试。
+
+`task.audit` 在启用修正的 Task 上增加 `decision`（含原 `digest/artifacts/contentRejection`）及 `repairs`。`acceptance.digest` 仍为最近完成验收的同一 Decision；新修正周期为 pending/null，历史负 Decision 保留。旧无修正 Task 的持久化和响应字节不加这些字段。提交后未 reservation 的旧代修正命令只能按原事实收为中断失败，不能在冷开时重派；已启动仍由原 custody cleanup-only 收口。
 
 固定 Node 24.15.0：
 

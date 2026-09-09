@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import {randomBytes, randomUUID} from 'node:crypto';
-import {Store, CUSTODY_FORMAT} from '../task-store/store.mjs';
+import {Store, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT} from '../task-store/store.mjs';
 import {TaskCleanup} from '../task-application/cleanup.mjs';
 import {createExecutionCustody} from '../agent-runtime/custody.mjs';
 import {CUSTODY_PROFILE, verifyObservation} from '../agent-runtime/custody-contract.mjs';
@@ -13,7 +13,7 @@ import {TaskSupervisor} from '../task-supervisor/controller.mjs';
 import {createTaskApiHandler} from '../task-api/http-handler.mjs';
 import {PROFILE, TaskApiError, validate} from '../task-api/contract.mjs';
 
-const format = custody => Buffer.from(JSON.stringify({profile: PROFILE, layout: custody ? 2 : 1}) + '\n');
+const format = (custody, questions, repair) => Buffer.from(JSON.stringify({profile: PROFILE, layout: repair ? 4 : questions ? 3 : custody ? 2 : 1}) + '\n');
 const NOFOLLOW = fs.constants.O_NOFOLLOW;
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -29,9 +29,9 @@ function regular(stat) {
 }
 class ServiceRoot {
   fds = []; directories = new Map();
-  constructor(root, mode, custody) {
+  constructor(root, mode, custody, questions, repair) {
     this.root = root; this.parent = path.dirname(root);
-    this.format = format(custody);
+    this.format = format(custody, questions, repair);
     try {
       requireValue(fs.realpathSync(this.parent) === this.parent, 'service_root_unavailable');
       this.hold(this.parent); // Explicit private parent, no recursive mkdir/adoption.
@@ -79,7 +79,7 @@ class ServiceRoot {
 }
 
 /** Composition only: no Task reducer, second ledger, model defaults or publication. */
-export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, custody, dispose = () => {},
+export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, custody, runtimeQuestions, repair, dispose = () => {},
   providerFacts, applicationOptions = {}, port = 0, leaseMs = 60000, renewIntervalMs = 10000,
   requestTimeoutMs = 10000, supervisorOptions = {}, onDiagnostic = () => {}} = {}) {
   requireValue(typeof root === 'string' && path.isAbsolute(root) && path.normalize(root) === root && root !== path.parse(root).root &&
@@ -101,7 +101,10 @@ export async function startTaskService({root, mode, providers, prepare, collect,
   const facts = providerFacts ?? [...available.keys()].map(id => ({id, displayName: id, availability: 'unknown', coreCapabilities: [], enhancedCapabilities: []}));
   requireValue(Array.isArray(facts) && facts.length === available.size && facts.every(fact => validate(fact, 'Provider') && available.has(fact.id)) && new Set(facts.map(fact => fact.id)).size === facts.length);
   const frozenFacts = structuredClone(facts).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  const execution = {maxWorkers: 2, providerIds: [...available.keys()], defaultProvider: available.keys().next().value, ...applicationOptions.execution};
+  requireValue(runtimeQuestions === undefined || custody !== undefined && runtimeQuestions?.profile === 'task-runtime-question/v1');
+  requireValue(repair === undefined || custody !== undefined && repair?.profile === 'task-local-repair/v1' && typeof businessFactory === 'function');
+  const execution = {maxWorkers: 2, providerIds: [...available.keys()], defaultProvider: available.keys().next().value, ...applicationOptions.execution,
+    questionProviderIds: [...available].filter(([, provider]) => provider.runtimeQuestions === 'task-runtime-question/v1').map(([id]) => id)};
   requireValue(Array.isArray(execution.providerIds) && execution.providerIds.length === available.size && execution.providerIds.every(id => available.has(id)));
   let files, store, depot, application, supervisor, business, custodian, server, renewal, closing, address, connectionFile;
   let state = 'starting', failure = null, shutdownClean = null, renewing = false;
@@ -189,7 +192,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     if (state !== 'running' || failure) throw new TaskApiError('not_ready');
     // Recovery diagnostics and cancellation remain available, but no new work
     // may be admitted through HTTP while prior effects are unresolved.
-    if (['task.create', 'task.approve', 'task.resume', 'input.create', 'task.answer'].includes(request.operation) && !observation().ready)
+    if (['task.create', 'task.approve', 'task.resume', 'input.create', 'task.answer', 'task.repair'].includes(request.operation) && !observation().ready)
       throw new TaskApiError('not_ready');
     return application.dispatch(request, context);
   }
@@ -225,8 +228,8 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     return closing;
   }
   try {
-    files = new ServiceRoot(root, mode, !!custody);
-    const storeOptions = custody ? {format: CUSTODY_FORMAT} : {};
+    files = new ServiceRoot(root, mode, !!custody, !!runtimeQuestions, !!repair);
+    const storeOptions = repair ? {format: REPAIR_FORMAT} : runtimeQuestions ? {format: INTERACTION_FORMAT} : custody ? {format: CUSTODY_FORMAT} : {};
     store = mode === 'create' ? Store.create(path.join(root, 'store'), storeOptions) : Store.openExisting(path.join(root, 'store'), storeOptions);
     depot = mode === 'create' ? ArtifactDepot.create(path.join(root, 'artifacts')) : ArtifactDepot.openExisting(path.join(root, 'artifacts'));
     files.sync();
@@ -254,7 +257,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       }
     }
     const owner = store.claimOwner(store.info().generation, instanceId, Date.now() + leaseMs);
-    application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification, clarification});
+    application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification, clarification, runtimeQuestions, repair});
     if (custody) {
       let after = '', complete = false;
       for (let page = 0; page < 100; page++) {
@@ -271,6 +274,15 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       }
       requireValue(complete, 'service_custody_scan_limit');
     }
+    if (repair && mode === 'open') {
+      let after = '';
+      for (let page = 0; ; page++) {
+        requireValue(page < 100, 'service_custody_scan_limit');
+        const tasks = application.execution.scan(after);
+        for (const taskId of tasks.items) application.execution.reconcile(taskId);
+        if (tasks.nextCursor === null) break; after = tasks.nextCursor;
+      }
+    }
     const context = Object.freeze({depot, executionParent: path.join(root, 'executions'),
       approvedLayout: ticket => {
         requireValue(typeof application.execution.approvedLayout === 'function', 'service_capability_unavailable');
@@ -285,6 +297,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       business = businessFactory(context);
       requireValue(object(business) && typeof business.then !== 'function' &&
         ['prepare', 'collect', 'release', 'close'].every(key => typeof business[key] === 'function'), 'service_invalid_business');
+      requireValue(!repair || business.repairProfile === 'task-local-repair/v1', 'service_capability_unavailable');
       prepare = (ticket, wait) => business.prepare(ticket, wait);
       collect = (ticket, result, wait) => business.collect(ticket, result, wait);
       release = ticket => business.release(ticket);

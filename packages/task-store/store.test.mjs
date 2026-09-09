@@ -358,6 +358,40 @@ test('bounds: default full pages of projections and pending/observed commands su
   });
 });
 
+test('bounds: task command pages exclude unrelated history and retain original reference/access limits across reopen', t => {
+  const {root, store, owner} = fixture(t), target = 'task-target', expected = [];
+  for (let n = 0; n < 228; n++) {
+    const commandId = `command-${String(n).padStart(4, '0')}`, taskId = n < 137 ? target : 'unrelated-' + n;
+    store.write(owner, tx => {
+      const head = tx.head(taskId), event = makeEvent(taskId, head.sequence + 1n, {commandId, fixtureOnly: true});
+      const source = {stream: taskId, ...tx.append(taskId, head, [event])};
+      tx.enqueue({id: commandId, taskId, kind: 'start', inputDigest: digest(encode(commandId)), payload: encode({taskId, commandId}), source});
+      tx.observeCommand(commandId, 1, 'observed', source);
+    });
+    if (taskId === target) expected.push(commandId);
+  }
+  store.close(); const next = Store.openExisting(root, {clock: () => NOW}); t.after(() => next.close());
+  const nextOwner = next.claimOwner(owner.generation, 'task-page-reader', NOW + 60000), result = [], sizes = [];
+  let after = '';
+  for (;;) {
+    const rows = next.read(nextOwner, tx => tx.taskCommands(target, after)); sizes.push(rows.length);
+    for (const row of rows) {
+      assert.equal(row.taskId, target); assert.equal(row.source.stream, target); assert.equal(row.status, 'observed');
+      assert.equal(row.generation, owner.generation); assert.deepEqual(row.payload, encode({taskId: target, commandId: row.id}));
+    }
+    result.push(...rows.map(row => row.id)); if (!rows.length) break; after = rows.at(-1).id;
+  }
+  assert.deepEqual(sizes, [100, 37, 0]); assert.deepEqual(result, expected);
+  next.read(nextOwner, tx => assert.deepEqual(tx.taskCommands('missing-task'), []));
+  for (const args of [['', '', 1], [target, 'bad cursor', 1], [target, '', LIMITS.page + 1]])
+    assert.throws(() => next.read(nextOwner, tx => tx.taskCommands(...args)), code('invalid'));
+  assert.throws(() => next.write(nextOwner, tx => {
+    tx.append('task-page-prefix', empty(), [makeEvent('task-page-prefix', 1, {})]);
+    try {tx.taskCommands(target); tx.taskCommands(target);} catch (error) {assert.equal(error.code, 'limit');}
+  }), code('limit'));
+  next.read(nextOwner, tx => assert.deepEqual(tx.head('task-page-prefix'), empty()));
+});
+
 test('bounds: aggregate bytes are enforced independently of count; oversize poisons prefix', t => {
   const { store, owner } = fixture(t);
   // Prebuild one 128 KiB canonical record. Repeated genuine reference reads

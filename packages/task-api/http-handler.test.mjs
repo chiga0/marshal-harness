@@ -57,6 +57,11 @@ fixtures.AnswerReceipt = {taskId: task.id, questionId: question.id, operation: {
   task: {...task, revision: 3, status: 'awaiting-confirmation', plan: {revision: 1, digest}},
   currentTask: {...task, revision: 3, status: 'awaiting-confirmation', plan: {revision: 1, digest}}, replayed: false};
 fixtures.AnswerResponse = fixtures.AnswerReceipt;
+inputs.RepairTask = {expectedRevision: 2, planDigest: digest, decisionDigest: digest, nodeIds: ['node-one'], feedback: '修正计算结果'};
+fixtures.RepairReceipt = {taskId: task.id, repairId: 'repair-one', operation: {...operation('task.repair'), taskRevision: 3},
+  acceptedRevision: 3, planDigest: digest, decisionDigest: digest, affectedNodes: ['node-one', 'verify'],
+  task: {...task, revision: 3, status: 'queued', plan: {revision: 1, digest}},
+  currentTask: {...task, revision: 3, status: 'queued', plan: {revision: 1, digest}}, replayed: false};
 
 async function request(application, method, url, body, options = {}) {
   const handler = createTaskApiHandler({application, token, expectedHost: host, requestTimeoutMs: options.timeout ?? 2000});
@@ -127,7 +132,7 @@ function pathFor(entry) {
 test('single contract resolves refs, validates complete independent fixtures and closed schemas', () => {
   assert.equal(contract.openapi, '3.1.0');
   assert.equal(contract.jsonSchemaDialect, 'https://json-schema.org/draft/2020-12/schema');
-  assert.equal(operations.length, 24);
+  assert.equal(operations.length, 25);
   assert.equal(new Set(operations.map(o => o.operation)).size, operations.length);
   for (const entry of operations) if (entry.operation !== 'artifact.content')
     assert.ok(contract.components.schemas[entry.response].examples?.length, entry.operation + ' response example required by TaskClient');
@@ -150,7 +155,7 @@ test('single contract resolves refs, validates complete independent fixtures and
   }
 });
 
-test('all 24 operations dispatch to the same injected port with validated shape and identifiers', async () => {
+test('all 25 operations dispatch to the same injected port with validated shape and identifiers', async () => {
   for (const entry of operations) {
     let received, context;
     const app = async (value, ctx) => {
@@ -173,6 +178,24 @@ test('all 24 operations dispatch to the same injected port with validated shape 
       assert.deepEqual(result.bytes, content); assert.equal(result.headers['Content-Type'], 'application/octet-stream');
     }
   }
+});
+
+test('repair closed request and original acceptance bindings cannot be refreshed by the HTTP adapter', async () => {
+  for (const edit of [value => value.taskId = 'foreign', value => value.decisionDigest = 'sha256:' + 'f'.repeat(64),
+    value => value.acceptedRevision++, value => value.operation.kind = 'task.approve', value => value.task.status = 'completed',
+    value => value.affectedNodes = ['verify'], value => value.affectedNodes.push(value.affectedNodes[0]),
+    value => value.currentTask.plan.digest = 'sha256:' + 'f'.repeat(64)]) {
+    const value = clone(fixtures.RepairReceipt); edit(value);
+    const response = await request(async () => value, 'POST', '/v1/tasks/task-one/repair', inputs.RepairTask);
+    assert.equal(response.status, 503); assert.equal(response.body.code, 'invalid_application_response');
+  }
+  let writes = 0;
+  for (const body of [{...inputs.RepairTask, feedback: '\0'}, {...inputs.RepairTask, feedback: '中'.repeat(1366)},
+    {...inputs.RepairTask, nodeIds: []}, {...inputs.RepairTask, executable: '/bin/sh'}]) {
+    const response = await request(async () => {writes++; return fixtures.RepairReceipt;}, 'POST', '/v1/tasks/task-one/repair', body);
+    assert.equal(response.status, 400);
+  }
+  assert.equal(writes, 0);
 });
 
 test('in-memory application fixture completes create, external plan, approve, operation and download without HTTP state', async () => {

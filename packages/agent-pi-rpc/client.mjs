@@ -19,16 +19,17 @@ export class PiRpcClient {
   #readable; #writable; #onEvent; #onClose; #onInteraction; #listeners; #failure; #closed = false;
   #frame; #used = 0; #queue = []; #queuedBytes = 0; #pumping = false; #ended = false;
   #writes = []; #writeBytes = 0; #writing = false; #pending = new Map(); #sequence = 0;
-  #turn = null; #cancelling = null; #peerIds = new Set(); #interactions = new Map(); #limits; #requestMs; #callbackMs; #interactionMs;
+  #turn = null; #cancelling = null; #peerIds = new Set(); #interactions = new Map(); #limits; #requestMs; #callbackMs; #interactionMs; #businessMs;
   constructor({readable, writable, onEvent = () => {}, onClose = () => {}, onInteraction, maxFrameBytes = 1024 * 1024,
-    maxQueueBytes = 4 * 1024 * 1024, maxEvents = 4096, requestTimeoutMs = 10000, callbackTimeoutMs = 1000, interactionTimeoutMs = 10000} = {}) {
+    maxQueueBytes = 4 * 1024 * 1024, maxEvents = 4096, requestTimeoutMs = 10000, callbackTimeoutMs = 1000, interactionTimeoutMs = 10000,
+    businessInteractionTimeoutMs = 10000} = {}) {
     if (!readable?.on || !readable?.off || !writable?.write || !writable?.on || !writable?.off ||
       typeof onEvent !== 'function' || typeof onClose !== 'function' || onInteraction !== undefined && typeof onInteraction !== 'function' || !positive(maxFrameBytes, 4 * 1024 * 1024) ||
       !positive(maxQueueBytes, 16 * 1024 * 1024) || !positive(maxEvents, 16384) || !positive(requestTimeoutMs, 86400000) ||
-      !positive(callbackTimeoutMs, 30000) || !positive(interactionTimeoutMs, 30000)) throw fail('pi_invalid_options');
+      !positive(callbackTimeoutMs, 30000) || !positive(interactionTimeoutMs, 30000) || !positive(businessInteractionTimeoutMs, 120000)) throw fail('pi_invalid_options');
     this.#readable = readable; this.#writable = writable; this.#onEvent = onEvent; this.#onClose = onClose;
     this.#limits = {frame: maxFrameBytes, queue: maxQueueBytes, events: maxEvents}; this.#requestMs = requestTimeoutMs; this.#callbackMs = callbackTimeoutMs;
-    this.#onInteraction = onInteraction; this.#interactionMs = interactionTimeoutMs;
+    this.#onInteraction = onInteraction; this.#interactionMs = interactionTimeoutMs; this.#businessMs = businessInteractionTimeoutMs;
     this.#frame = Buffer.allocUnsafe(maxFrameBytes);
     this.#listeners = {data: chunk => this.#receive(chunk), end: () => { this.#ended = true;
       if (this.#used) this.#fail('pi_truncated_frame'); else if (!this.#pumping && !this.#queue.length) this.#fail('pi_disconnected'); },
@@ -136,10 +137,12 @@ export class PiRpcClient {
   #answer(entry, result) {
     if (this.#closed || this.#interactions.get(entry.id) !== entry) return;
     this.#interactions.delete(entry.id); clearTimeout(entry.timer); entry.controller.abort();
-    const handled = result?.handled === true && entry.method === 'confirm' && typeof result.confirmed === 'boolean';
+    const confirmed = entry.method === 'confirm' && typeof result?.confirmed === 'boolean';
+    const value = ['input', 'select'].includes(entry.method) && text(result?.value, 4096) && result.value.trim().length > 0;
+    const handled = result?.handled === true && (confirmed || value);
     if (!handled && this.#turn) this.#turn.interaction = true;
     void this.#send({type: 'extension_ui_response', id: entry.id,
-      ...(handled && !this.#turn?.cancelled ? {confirmed: result.confirmed} : {cancelled: true})}).catch(() => this.#fail('pi_write_failed'));
+      ...(handled && !this.#turn?.cancelled ? confirmed ? {confirmed: result.confirmed} : {value: result.value} : {cancelled: true})}).catch(() => this.#fail('pi_write_failed'));
   }
   async #handle(message) {
     if (message.type === 'response') {
@@ -158,7 +161,7 @@ export class PiRpcClient {
         if (!this.#turn) throw fail('pi_unsolicited_interaction');
         if (this.#interactions.size >= 16) throw fail('pi_interaction_limit');
         const entry = {id: message.id, method: message.method, controller: new AbortController()};
-        entry.timer = setTimeout(() => this.#answer(entry, undefined), this.#interactionMs);
+        entry.timer = setTimeout(() => this.#answer(entry, undefined), ['input', 'select'].includes(message.method) ? this.#businessMs : this.#interactionMs);
         this.#interactions.set(entry.id, entry);
         if (!this.#onInteraction || this.#turn.cancelled) this.#answer(entry, undefined);
         else Promise.resolve().then(() => entry.controller.signal.aborted ? undefined :

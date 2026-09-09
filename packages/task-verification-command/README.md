@@ -34,6 +34,8 @@ canonical 编码复用 Store 的纯编码函数：对象键排序、无多余空
 
 ## 验证边界
 
+ADR0091 的可选 `repair:{policyDigest,assertions:[name]}` 只标识预先冻结的业务内容断言。原报告完整且精确绑定、真实执行清理且退出 0 后，父进程运行全部必需验证器；每项必须返回严格 boolean，所有 false 都在允许清单内才形成 `contentRejection:{policyDigest,failedAssertions,reportDigest}`。此分支绝不调用 delivery 构造器；evidence 保存原 stdout 字符串 `originalReport`、原报告/请求摘要、binding 和全量 `{name,passed}` 父结论。BOM、畸形输出、缺断言、异常/Promise、未知清理、非零退出和结构性错误均不分类为可修内容失败；未启用时保持原失败语义。负 evidence 总限额仍为 256 KiB，不截断或重签原报告。
+
 `checker.fixture.mjs` 是仅测试的文件求和 checker，不注册生产业务。测试运行固定已安装 Node 及原 guard，覆盖真实退出/清理、nonce/输入绑定、断言缺失、恶意正文、取消、超时、输出限额与失败不产生制品。不调用模型，不证明实际生产业务或完整 Task HTTP 交付已经完成。
 
 ```sh

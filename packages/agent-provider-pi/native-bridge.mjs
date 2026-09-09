@@ -1,6 +1,7 @@
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {BRIDGE_PROFILE, BRIDGE_ENV, BRIDGE_TITLE, TOOL_FACTORIES, text, object} from './bridge-contract.mjs';
+import {randomBytes, createHash} from 'node:crypto';
+import {BRIDGE_PROFILE, BRIDGE_ENV, BRIDGE_TITLE, TOOL_FACTORIES, QUESTION_TOOL, QUESTION_PROFILE, text, object} from './bridge-contract.mjs';
 import {createInheritedShellOperations} from './shell-operations.mjs';
 
 /** A checked-in, explicitly selected Pi extension, loaded by native Pi itself.
@@ -15,6 +16,34 @@ export function installNativeBridge(pi, {config, sdk, shell} = {}) {
   const validContext = ctx => ready && ctx?.cwd === config.cwd && Date.now() < config.deadline;
   const envelope = (type, details = {}) => ({profile: BRIDGE_PROFILE, nonce: config.nonce, cwd: config.cwd, deadline: config.deadline, type, ...details});
   const notify = (ctx, type, details) => ctx.ui.notify(JSON.stringify(envelope(type, details)), 'info');
+  const questions = config.runtimeQuestions;
+  if (questions !== undefined && (!object(questions) || questions.profile !== QUESTION_PROFILE ||
+      !/^sha256:[a-f0-9]{64}$/.test(questions.policyDigest ?? '') || !Number.isSafeInteger(questions.maxWaitMs) ||
+      questions.maxWaitMs < 1 || questions.maxWaitMs > 120000)) throw Error('pi_bridge_invalid_questions');
+  const askDefinition = () => ({name: QUESTION_TOOL, label: 'Ask user',
+    description: '仅在已批准业务缺少必要输入时向用户提问，等待明确答案后继续原任务；不得借此请求工具权限或改变验收。',
+    parameters: {type: 'object', properties: {prompt: {type: 'string', minLength: 1, maxLength: 2048},
+      kind: {type: 'string', enum: ['input', 'select']}, options: {type: 'array', items: {type: 'string'}, maxItems: 16}},
+      required: ['prompt', 'kind', 'options'], additionalProperties: false},
+    async execute(callId, params, signal, _update, ctx) {
+      if (!questions || !validContext(ctx) || signal?.aborted || !text(params.prompt, 2048) || !params.prompt.trim() ||
+        !['input', 'select'].includes(params.kind) || !Array.isArray(params.options) || params.options.length > 16 ||
+        params.options.some(option => !text(option, 4096) || !option.trim()) || new Set(params.options).size !== params.options.length ||
+        params.kind === 'input' && params.options.length !== 0 || params.kind === 'select' && params.options.length === 0)
+        throw Error('pi_business_question_invalid');
+      const questionNonce = randomBytes(32).toString('hex'), sessionId = ctx.sessionManager.getSessionId();
+      const binding = {toolName: QUESTION_TOOL, toolCallId: callId, sessionId, questionNonce, policyDigest: questions.policyDigest};
+      const title = JSON.stringify(envelope('business-question', {...binding, ...structuredClone(params)}));
+      const timeout = Math.max(1, Math.min(questions.maxWaitMs, config.deadline - Date.now())), options = {signal, timeout};
+      const answer = params.kind === 'input' ? await ctx.ui.input(title, '', options) : await ctx.ui.select(title, params.options, options);
+      if (signal?.aborted || !validContext(ctx) || !text(answer, 4096) || !answer.trim() || params.kind === 'select' && !params.options.includes(answer))
+        throw Error('pi_business_answer_missing');
+      const answerDigest = 'sha256:' + createHash('sha256').update(answer).digest('hex');
+      const acknowledged = await ctx.ui.confirm(BRIDGE_TITLE, JSON.stringify(envelope('business-answer-ack', {...binding, answerDigest})),
+        {signal, timeout: Math.max(1, Math.min(5000, config.deadline - Date.now()))});
+      if (acknowledged !== true || signal?.aborted || !validContext(ctx)) throw Error('pi_business_answer_unacknowledged');
+      return {content: [{type: 'text', text: answer}], details: {businessAnswer: true}};
+    }});
   pi.on('session_start', async (_event, ctx) => {
     if (ready || ctx?.cwd !== config.cwd || Date.now() >= config.deadline) throw Error('pi_bridge_invalid_session');
     const active = pi.getActiveTools();
@@ -22,10 +51,12 @@ export function installNativeBridge(pi, {config, sdk, shell} = {}) {
       throw Error('pi_bridge_invalid_tools');
     const operations = createInheritedShellOperations({cwd: config.cwd, deadline: config.deadline,
       resolveShell: () => shell.getShellConfig(config.shellPath), environment: () => shell.getShellEnv()});
-    for (const name of active) {
-      const factory = TOOL_FACTORIES[name]; if (!factory) continue;
-      if (typeof sdk[factory] !== 'function') throw Error('pi_bridge_sdk_incompatible');
-      const original = sdk[factory](config.cwd, name === 'bash' ? {operations} : undefined);
+    if (active.includes(QUESTION_TOOL)) throw Error('pi_bridge_question_tool_collision');
+    const selected = questions ? [...active, QUESTION_TOOL] : active;
+    for (const name of selected) {
+      const factory = TOOL_FACTORIES[name]; if (!factory && name !== QUESTION_TOOL) continue;
+      if (factory && typeof sdk[factory] !== 'function') throw Error('pi_bridge_sdk_incompatible');
+      const original = name === QUESTION_TOOL ? askDefinition() : sdk[factory](config.cwd, name === 'bash' ? {operations} : undefined);
       if (original?.name !== name || typeof original.execute !== 'function') throw Error('pi_bridge_sdk_incompatible');
       const tool = {...original, prepareArguments(params) {
         // Agent-core has selected this exact Tool object, but has not validated
@@ -45,6 +76,7 @@ export function installNativeBridge(pi, {config, sdk, shell} = {}) {
         if (!object(input) || Buffer.byteLength(JSON.stringify(input)) > 64 * 1024) throw Error('pi_bridge_invalid_arguments');
         const sessionId = toolContext.sessionManager.getSessionId();
         if (!text(sessionId, 256) || !sessionId) throw Error('pi_bridge_invalid_session');
+        if (name === QUESTION_TOOL) return original.execute(callId, input, signal, update, toolContext);
         const allowed = await toolContext.ui.confirm(BRIDGE_TITLE,
           JSON.stringify(envelope('permission', {sessionId, toolCallId: callId, toolName: name, input})),
           {signal, timeout: Math.max(1, Math.min(10000, config.deadline - Date.now()))});
@@ -56,7 +88,7 @@ export function installNativeBridge(pi, {config, sdk, shell} = {}) {
       wrapped.set(name, tool); pi.registerTool(tool);
     }
     // Registration must not silently enable previously disabled native tools.
-    pi.setActiveTools(active); ready = true;
+    pi.setActiveTools(selected); ready = true;
     notify(ctx, 'ready', {tools: [...wrapped.keys()].sort(), scope: 'inherited-process-group'});
   });
   pi.on('message_end', event => {
