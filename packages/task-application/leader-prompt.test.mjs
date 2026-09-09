@@ -179,6 +179,7 @@ test('nonempty Review findings are explicitly described and retain exact origina
   const {f, east, west} = await authors(t); f.author(east); f.author(west);
   const leader = f.take('leader'); await f.decision(leader, rendered(leader).examples.work.actions);
   const ticket = f.take('review'), input = ticket.input.review, prompt = renderReviewPrompt(input);
+  for (const text of ['首字符为{、末字符为}', '无Markdown/代码围栏/前后任何解释或标题', '无重复键、无注释或尾逗号']) assert.ok(prompt.includes(text));
   const finding = JSON.parse(prompt.split('非空元素形状是')[1].split('。')[0]); finding.nodeIds = [input.selection[0].nodeId];
   assert.deepEqual(Object.keys(finding), ['id', 'nodeIds', 'requirement', 'observation', 'requestedChange']);
   const value = {profile: 'task-independent-review/v1', inputDigest: input.inputDigest, selectionDigest: input.selectionDigest,
