@@ -1,5 +1,5 @@
 import {createPublicKey, verify} from 'node:crypto';
-import {encode, digest, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
+import {encode, digest, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
 import {clone, reject, nextRevision} from './model.mjs';
 
 const PROFILE = 'node-execution-custody/v1', hash = value => digest(encode(value));
@@ -28,12 +28,12 @@ function profile(value) {
 export class TaskCleanup {
   constructor(execution) {
     this.execution = execution; this.app = execution.app;
-    this.unpermitted = [UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT].includes(this.app.store.info?.().format);
-    this.supported = [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT].includes(this.app.store.info?.().format);
+    this.unpermitted = [UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(this.app.store.info?.().format);
+    this.supported = [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(this.app.store.info?.().format);
   }
   enabled() { return this.supported; }
   static inspectBeforeClaim(store, after = '', limit = 25) {
-    const unpermitted = [UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT].includes(store.info().format);
+    const unpermitted = [UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(store.info().format);
     return store.inspectRecovery(tx => {
       const rows = tx.projections('attempt', after, limit), items = [];
       for (const row of rows) {

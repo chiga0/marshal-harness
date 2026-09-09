@@ -1,5 +1,21 @@
 # 正式 Node 服务组合根
 
+## v7 受管 Leader：可运行检查点，尚非完整出口
+
+显式配置 `leader`、`review`、原 `verification`、`custody` 和真实 `createFileBusiness` 工厂后，新根采用 layout 7 / `marshal-node-task-sqlite/v7-managed-leader`。旧配置继续沿原格式，已有根不能原位迁移；配置与发布目标身份在 claim 前比对。v7 的原句柄、定时调度和停止属于 `TaskExecutionCoordinator`，Core 保留同一 SQLite 准入/预算/结果事务；独立 Review 与客观 Verification 不是作者自签，阶段验收也不直接完成 Task。
+
+端口由 `task-application/application.mjs` 导出 `createLeaderPort`、`createReviewPort` 及固定 `renderLeaderPrompt` / `renderReviewPrompt` / `parseManagedOutput`。端口 `prepare({ticket,input,prepared},context)` 只返回 `{prompt}`；原私有 cwd 由 FileBusiness 的受限准备创建，不由模型或自由回调指定。业务作者实际 prompt 包含原需求、批准 Plan、验收与原 Leader 回答/引用。`task.leader`、`task.leader.reply` 沿正式 HTTP 和 TaskClient，不读取私有 Ledger 扮演用户。
+
+`leader.test.mjs` 在同一业务/验收配置下处理两个不同需求，经过真实 HTTP、SQLite、原 ACP/Node guard/custody、双作者文件、独立 Review、原受管 checker、Leader deliver/conclude、下载独立复算和正常关闭后同根重开；分别执行无发布和原本地报告发布/实际 HTTP 后验两种配置。Agent 是显式确定性协议夹具，不调用模型。运行入口：
+
+```sh
+node --test --test-concurrency=1 packages/task-service/leader.test.mjs
+```
+
+当前冻结只交付可独立复跑的集成检查点：v7 的在途 SIGKILL 恢复、混合未决义务、独立意见触发 repair、运行中 Worker 问答的交叉故障矩阵尚未验收；不得将旧格式通过或这里的正常 cold open 替代这些门禁，也不得据此宣称 B2-L 完成、真实模型或 production。首次 HTTP 夹具错误使用了非合同 Context/Requirements，客户端在发送前拒绝、零 Worker；已改用原 Schema 的 `context.text` 与 `requirements.deliverables/acceptance`，未放宽接口。
+
+可选 `publication` 使用原本地报告端口；受信 `createVerificationPort({..., publicationExpected({ticket})})` 从冻结原输入/回答生成完整后验期望，禁止从 Leader 的 pass 字段生成。原始 `created/matched/passed` 事实保留，公开 LeaderView 映射为 `succeeded`。本检查点的发布端口由配置拥有者在 `shutdown().shutdownClean === true` 后 `close()`；冷开必须重新构造同目标身份/配置的端口，不复用失效 FD。
+
 这是 ADR0088 的 Node-only 组合入口：复用同一个 `TaskApplication`、SQLite `Store`、`ArtifactDepot`、`TaskSupervisor` 和 HTTP handler。不执行 Marshal 原生文件，不创建另一套 Task 状态或决策控制器。API/client 检查点已 `PASSED`；逐接口实现和模型/夹具验证范围见[支持矩阵](../../docs/node-api-support-matrix.md)。这不等于整体 B2/B3、正式部署或 `RELEASED` 已完成。
 
 ## 一条命令启动

@@ -1,4 +1,4 @@
-import {encode, digest, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
+import {encode, digest, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
 import {affectedNodes} from './graph.mjs';
 import {clone, isText, nextRevision, publicTask, reject, terminal} from './model.mjs';
 
@@ -30,7 +30,7 @@ export class TaskRepair {
     if (port) {
       // Reject an unusable trusted composition before a Task can spend even
       // its Planner Attempt. Per-plan and persisted bindings are rechecked too.
-      check([REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT].includes(this.format), 'unsupported_task', 422);
+      check([REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(this.format), 'unsupported_task', 422);
       const command = app.verification.repairBinding(port.policyDigest);
       check(closed(command, ['policyDigest', 'checkerDigest', 'verificationPolicyDigest', 'assertions']) &&
         sha(command.checkerDigest) && Array.isArray(command.assertions) &&
@@ -39,7 +39,7 @@ export class TaskRepair {
   }
   bind(task, plan, verification) {
     if (!this.port) return null;
-    check([REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT].includes(this.format) && verification, 'unsupported_task', 422);
+    check([REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(this.format) && verification, 'unsupported_task', 422);
     const descriptor = clone(ports.get(this.port)), command = this.app.verification.repairBinding(this.port.policyDigest);
     check(descriptor.nodeIds.every(id => plan.nodes.some(node => node.id === id && ['author', 'integrator'].includes(node.role))) &&
       same(command.assertions, descriptor.assertions) && command.verificationPolicyDigest === verification.policyDigest, 'unsupported_task', 422);
@@ -50,9 +50,9 @@ export class TaskRepair {
       same(task.repair.descriptor, ports.get(this.port)) && same(task.repair.command, this.app.verification.repairBinding(this.port.policyDigest)) &&
       task.plan.repair?.policyDigest === this.port.policyDigest, 'unsupported_task', 422);
   }
-  current(task, ticket) {return !task.repair || ticket.planDigest === null || (ticket.repairId ?? null) === (task.activeRepair?.repairId ?? null);}
+  current(task, ticket) {return !task.repair && !task.leader || ticket.planDigest === null || (ticket.repairId ?? null) === (task.activeRepair?.repairId ?? null);}
   selected(tx, task, nodeIds = task.plan.nodes.filter(node => node.id !== task.verification.nodeId).map(node => node.id)) {
-    check(task.repair && task.selectedResults, 'candidate_manifest_conflict', 422);
+    check((task.repair || task.leader) && task.selectedResults, 'candidate_manifest_conflict', 422);
     return nodeIds.map(nodeId => {
       const selected = task.selectedResults[nodeId]; check(selected, 'candidate_manifest_conflict', 422);
       const row = tx.projection('attempt', selected.workerId), record = decode(row);
@@ -63,7 +63,8 @@ export class TaskRepair {
         !record.custody?.extraScopes.length && record.executionId === record.cleanup.started?.executionId &&
         task.nodes.find(node => node.id === nodeId)?.status === 'completed' && record.candidate && original?.revision === 1n && input?.revision === 1n &&
         record.resultDigest === selected.resultDigest && hash(record.candidate) === selected.candidateManifestDigest &&
-        hash(task.runtimeQuestions ? {candidate: decode(original), interactionRefs: record.interactionRefs} : decode(original)) === record.resultDigest,
+        hash(task.leader ? {candidate: decode(original), interactionRefs: record.interactionRefs ?? [], leaderReplyRefs: record.leaderReplyRefs ?? []} :
+          task.runtimeQuestions ? {candidate: decode(original), interactionRefs: record.interactionRefs} : decode(original)) === record.resultDigest,
       'candidate_manifest_conflict', 422);
       check(digest(input.bytes) === record.ticket.inputDigest &&
         same(this.app.verification.candidate({...record.ticket, input: decode(input)}, decode(original)), record.candidate),
@@ -73,7 +74,8 @@ export class TaskRepair {
     });
   }
   recordSelection(task, record) {
-    if (!task.repair || record.ticket.planDigest === null || record.worker.nodeId === task.verification.nodeId || record.worker.status !== 'completed') return;
+    if ((!task.repair && !task.leader) || record.ticket.planDigest === null || !task.plan.nodes.some(node => node.id === record.worker.nodeId) ||
+      record.worker.nodeId === task.verification.nodeId || record.worker.status !== 'completed') return;
     check(this.current(task, record.ticket) && !task.selectedResults[record.worker.nodeId], 'candidate_manifest_conflict', 422);
     task.selectedResults[record.worker.nodeId] = {workerId: record.worker.id, resultDigest: record.resultDigest, candidateManifestDigest: hash(record.candidate)};
   }
@@ -186,7 +188,8 @@ export class TaskRepair {
     const fact = decode(tx.projection('attempt', task.activeRepair.repairId)); check(same(fact, task.activeRepair));
     this.app.artifacts.recheck(tx, [fact.evidence]);
     return {repairId: fact.repairId, decisionDigest: fact.decisionDigest, policyDigest: fact.policyDigest,
-      failedAssertions: clone(fact.failedAssertions), feedback: fact.feedback, affectedNodes: clone(fact.affectedNodes), evidence: clone(fact.evidence)};
+      failedAssertions: clone(fact.failedAssertions), feedback: fact.feedback, affectedNodes: clone(fact.affectedNodes), evidence: clone(fact.evidence),
+      ...(fact.profile === 'task-managed-leader/v1' ? {profile: fact.profile, basis: clone(fact.basis)} : {})};
   }
   settle(tx, task, source) {
     if (!task.activeRepair || !terminal.has(task.task.status)) return;
