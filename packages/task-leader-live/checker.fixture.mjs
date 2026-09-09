@@ -27,7 +27,12 @@ function read(name) {
 }
 export async function main(input = process.stdin) {
   const chunks = []; let total = 0;
-  for await (const chunk of input) {total += chunk.length; check(total <= 262144, 'checker_input_limit'); chunks.push(chunk);}
+  // Runtime keeps stdin open for custody. A single canonical LF frame, not
+  // EOF, completes this request; breaking also closes the owned read iterator.
+  for await (const chunk of input) {
+    total += chunk.length; check(total <= 262144, 'checker_input_limit'); chunks.push(chunk);
+    if (chunk.includes(10)) break;
+  }
   const frame = Buffer.concat(chunks); check(frame.length > 1 && frame.at(-1) === 10, 'checker_frame');
   const request = parseJson(frame); check(encode(request).toString() + '\n' === frame.toString(), 'checker_frame');
   return encode(checkRequest(request, read)).toString() + '\n';
