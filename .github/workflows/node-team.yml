@@ -25,7 +25,8 @@ jobs:
   regression:
     name: Node team (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    # macOS 实测 750/750 通过耗时 578.752s，加 setup/cleanup 超过原 10m job 上限；不调整测试本身。
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
