@@ -106,6 +106,25 @@ MARSHAL_QWEN_ENTRY=/absolute/canonical/qwen-code/cli-entry.js \
 
 此 workflow 仍只有 `contents:read`：不创建 tag/release，不申请 OIDC 或发布写权限，不接触模型登录。CI artifact 是有限保留期的测试候选，不是受保护 stable 资产；两平台实际结果、香港部署和真实模型验收仍分别记录，不能由新增 workflow 文本预填通过。
 
+### 独立候选接纳：原 GitHub 身份→原 ZIP→原 CLI 消费
+
+[`node-candidate-admit.py`](../../scripts/node-candidate-admit.py) 是维护者侧的只读候选工具，要求合法 Python 3.10+、GitHub CLI、匹配的受信源码 checkout，以及固定 Node24.15.0；这些运输工具不打入产品包，不成为服务运行依赖。CLI 只重新读取固定 canonical 仓库的 GitHub API，不接受本地 metadata 文件替代原 API。必须显式给出独立记录的原 source/run/attempt/artifact 身份，以及**原 ZIP 摘要和内部 manifest 摘要两个不同 pin**。
+
+```sh
+python3 -I -B /absolute/reviewed/tools/scripts/node-candidate-admit.py \
+  --source /absolute/trusted/matching-source --source-head FULL_40_HEX_SOURCE \
+  --run-id ORIGINAL_RUN_ID --attempt ORIGINAL_ATTEMPT --artifact-id ORIGINAL_ARTIFACT_ID \
+  --archive-digest sha256:ORIGINAL_ZIP_DIGEST --manifest-digest sha256:ORIGINAL_MANIFEST_DIGEST \
+  --node /absolute/node-24.15.0/bin/node --gh /absolute/gh \
+  --target /absolute/existing-private-parent/new-admission
+```
+
+目标父目录须为当前 UID/canonical/0700，目标不得存在。可显式追加 `--archive /absolute/original.zip` 复用已下载的**原 ZIP**，仍完整重读原 GitHub API、校验 raw ZIP 摘要与大小，不信任本地附带 metadata。精确 main push run 的五项 job、原 attempt 全页与空尾页必须全部通过；消费前后重读当前 run，发现重跑、过期、跨源或归属漂移就拒绝。ZIP 先有界检查完整清单、类型/路径、CRC、长度、全部文件摘要与原 manifest 字节，再新建私有载体并调用原 `restoreCarrier→verify`；不 repack、不执行未验包、不改旧目录或 RC1 行为。
+
+随后使用匹配源码的原 `candidate-consumer.mjs`，Core、CLI 和客户端只来自新安装包；原 layout1/layout2 团队、独立 checker、完整下载及冷重开各须真实通过。消费者不接收 GitHub token、用户登录或完整父环境，输出只列绑定摘要、两个无模型消费结果与 `proofScope`，**不输出 stableApproved，不授予发布权限**。失败不覆盖/清理目标；有限原 ZIP、私有 `consumer.tap` 与已写现场保留，不自动重试。不要把私有失败日志直接上传或作为新的权威证据。
+
+[`node-candidate-admission.yml`](../../.github/workflows/node-candidate-admission.yml) 运行无模型边界测试，并仅在显式 workflow_dispatch/main 上执行同候选接纳；只有 `contents:read/actions:read`，没有 release/tag/OIDC/环境规则变更。工具成功不是新的发布 receipt；受保护发布、精确 tag 权限、真实模型部署与分权门禁仍按 ADR0088 单独满足。
+
 [API-STABLE 四条件](../../docs/agent-team-service-milestones.md#api-stable核心接口稳定检查点不是所有扩展齐备)是：合同/handler/示例/客户端一致且无未处置核心 API P0/P1；至少一个支持的真实 Provider 完成纯 HTTP 确认/交付/下载审计和主要失败控制；已提供功能的幂等、旧版本、认证/Origin、路径、取消迟到、事件续读/gap 等反例通过；HTTP 脚本及独立客户端共用契约，查询/取消在并行与长 Verify 下有实测响应上界。**不要求 B3 全平台部署与完整长期故障矩阵提前完成**，但本工具或安装测试也不自动授予 API-STABLE。
 
 B3 另要求声明平台/profile 的同一待发布资产完成实际业务、取消/故障恢复、长期多 Task、备份与升级验收、受保护来源及 same-bytes stable release。Darwin 与 Linux 分别取证；原生资产才按类别适用签名/notarization，纯脚本不伪称 Apple 公证，也不豁免运行时合法性与安装验证。当前不声明 Linux 部署、B3 完成、production 或 stable；不以标签、包核验或一次安装测试替代这些出口。
