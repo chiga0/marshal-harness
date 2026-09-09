@@ -6,6 +6,10 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
+**2026-09-09 18:03 检查点**：main/origin/main 为 `3beafe17c1874c42d0fed8e25a3f0c9a811c9bc0`，已推送的 API、有限报告端口和实机驱动批次 `pendingRemoteSync=false`；该 SHA 的 Node team CI `34336243004` 五项通过，资产 `10098074531` 不含后继 v7 Core。后继整合 `da2e9bd2719929e94c25fbed553d0a1819b0e9ad` 保持候选，未合 main：API/客户端/驱动 57/57、真实 HTTP/SQLite/所属进程正向 2/2（46.249 秒）通过；发行清单 55 文件、独立安装冷导入通过，不等于安装后 v7 执行通过。以上使用受控 ACP，不是新真实模型验收。
+
+Core 冻结源 `236ce0173dc797daa753e734ee9d31083078d5d3` 首审确认四个 P1：等待/陈旧 Leader 的业务义务续接、取消后的原发布收据保留、发布后验能力前置、结构失败不可自动重试。现交同一作者聚合修正，未放行。后继测试源 `0e9886bc` 在维护者普通权限运行：HTTP 双作者取消 1/1（3.616 秒）通过，独立 Review→仅 east 修正→第二次 Review 接纳已走到原 verify，但 verify 失败导致 Task failed，完整修正用例未通过；原状态与失败成本保留，不能据局部成功关闭 B2-L。当前同时推进独立安装包 v7 消费；B2-L 整链仍 DESIGN，B2/B3 不升级。[当前实施 Goal](agent-team-service-milestones.md#当前持续实施-goal)取代 ECS-first 的执行前置，不重置历史成本。
+
 **2026-09-09 17:24 增量**：Leader API 源 `b3910e95a3dcd038d1b2c9ae7b4a19551724d771` 经独立审查无 P0/P1、API/客户端 45/45 与发行包回归 20/20 后，已合入并正常推送 `07e3afc29ed992f17dba857c7c16e4419f43766f`；该批次远端同 SHA，`pendingRemoteSync=false`。新增两项 Leader 子资源，机器合同当前共 27 操作/66 Schema，Ajv2020 的 45 示例通过；原 58 Schema 和 24 路径对象（25 操作）逐对象保持不变。新增接口尚不等于 v7 Core 已接线，既有 API-STABLE 结论仍限原 25 操作。有限本机报告端口源 `47f10417e93ca4bbfc8d3bcdc178a1636cf0b831` 已独立通过 11/11（含真实 HTTP GET 后验与五个所属子进程故障窗口），当前只证明端口，不证明 Task 原授权、完整 Leader 或正式发布。Core 与真实 Leader 驱动仍在实施；B2-L 的整链成熟度保持 DESIGN，不因并行组件通过升级。
 
 **2026-09-09 16:57 后继**：上一代码/证据批次已正常推送并核对 main/origin/main=`3f359fd0fd88987b8ea2f3d3fbb36058834b003b`，该批次 `pendingRemoteSync=false`，覆盖下段记录时的未推送状态。[ADR0095](adr/0095-node-managed-leader-contract.md)/[Leader 机器合同](node-leader-execution-contract.md)已独立审查接纳，按 Core、API/客户端、本机报告端口三个无冲突范围实施；B2-L 仍 DESIGN，未因合同接纳升级。
