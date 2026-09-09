@@ -75,7 +75,11 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
           let call = calls.get(message.toolCallId);
           if (message.type === 'tool_execution_start') {
             if (call || calls.size >= 4096) { unproven(); throw fault('pi_invalid_progress'); }
-            if (!supportedTools.has(message.toolName)) unproven();
+            // Custody must retain an obligation if the service dies BEFORE
+            // the exact bridge refusal arrives. Legacy live-handle cleanup
+            // can instead wait for that refusal; missing proof still vetoes it
+            // below. No late refusal erases a durable custody scope obligation.
+            if (executionContext && !supportedTools.has(message.toolName)) unproven();
             call = {name: message.toolName, authorized: false, safe: false, selected: false, permission: false, notExecuted: false, ended: false}; calls.set(message.toolCallId, call);
           }
           if (!call || call.name !== message.toolName || call.ended) { unproven(); throw fault('pi_invalid_progress'); }
@@ -121,7 +125,9 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
       if (message.method === 'notify' && value.type === 'not-executed' && value.disposition === 'truncated-assistant' && !call.safe) {
         call.notExecuted = true; call.safe = true; return;
       }
-      if (message.method === 'notify' && value.type === 'blocked' && !call.permission && !call.notExecuted) { call.safe = true; return; }
+      if (message.method === 'notify' && value.type === 'blocked' && !call.safe && !call.permission && !call.notExecuted) {
+        call.notExecuted = true; call.safe = true; return;
+      }
       if (message.method !== 'confirm' || value.type !== 'permission' || value.sessionId !== sessionId || !supportedTools.has(value.toolName) ||
         call.permission || call.notExecuted || !object(value.input) || Buffer.byteLength(JSON.stringify(value.input)) > 64 * 1024) { unproven(); throw fault('pi_bridge_invalid_permission'); }
       // Receipt of the execute wrapper's request proves the call has not yet

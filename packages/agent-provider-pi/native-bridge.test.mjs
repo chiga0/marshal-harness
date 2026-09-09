@@ -145,6 +145,49 @@ test('missing/foreign bridge and bypassed native wrapper cannot manufacture perm
   }
 });
 
+test('legacy custom refusal needs exact unexecuted proof; custody retains its earlier unknown obligation', {timeout: 15000}, async t => {
+  for (const custody of [false, true]) {
+    const durable = [], input = options(t, {onPermission: allow});
+    if (custody) input.executionContext = {
+      launch: (options, callbacks) => launchProtocol({...options, createClient: callbacks.createClient}),
+      extraScope(code) { durable.push(code); },
+    };
+    const handle = provider('custom').start(input); t.after(() => handle.stop());
+    const result = await handle.completion;
+    assert.equal(fs.existsSync(path.join(input.cwd, 'output.txt')), false);
+    if (!custody) { clean(result); assert.equal(result.status, 'completed'); assert.deepEqual(durable, []); }
+    else {
+      assert.equal(result.status, 'unknown'); assert.equal(result.reason, 'pi_execution_scope_unproven');
+      assert.equal(result.cleanup, null); assert.equal(result.runtimeCleanup.cleaned, true);
+      assert.deepEqual(durable, ['pi_tool_scope_unproven']);
+    }
+  }
+  for (const mode of ['custom-missing-block', 'custom-foreign-block', 'custom-success-end']) {
+    const input = options(t), handle = provider(mode).start(input); t.after(() => handle.stop());
+    const result = await handle.completion;
+    assert.equal(result.status, 'unknown', mode); assert.equal(result.cleanup, null, mode);
+    assert.equal(result.runtimeCleanup.cleaned, true, mode);
+    assert.equal(fs.existsSync(path.join(input.cwd, 'output.txt')), false, mode);
+  }
+});
+
+test('custody persists unknown custom scope before a late refusal can be observed', {timeout: 10000}, async t => {
+  const durable = []; let observe; const entered = new Promise(resolve => { observe = resolve; });
+  const input = options(t, {
+    executionContext: {
+      launch: (options, callbacks) => launchProtocol({...options, createClient: callbacks.createClient}),
+      extraScope(code) { durable.push(code); },
+    },
+    onProgress(event) { if (event.tool?.id === 'custom-one') { assert.deepEqual(durable, ['pi_tool_scope_unproven']); observe(); } },
+  });
+  const handle = provider('custom-await-block').start(input); t.after(() => handle.stop()); await entered;
+  const result = await handle.stop();
+  // An interrupted call may conservatively report the same obligation again
+  // at terminal cleanup; the Store deduplicates its scope code, never erases it.
+  assert.deepEqual([...new Set(durable)], ['pi_tool_scope_unproven']); assert.equal(result.status, 'unknown');
+  assert.equal(result.cleanup, null); assert.equal(result.runtimeCleanup.cleaned, true);
+});
+
 test('selected native definition is safe when schema rejection or cancellation wins before execute', {timeout: 12000}, async t => {
   for (const mode of ['invalid-arguments', 'cancel-before-execute']) {
     let permissions = 0;

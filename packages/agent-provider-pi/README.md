@@ -31,6 +31,8 @@ const result = await handle.completion;
 
 `stop()` 原句柄幂等；bootstrap 期间可停止。运行中先给 `clear_queue→abort` 最多 250ms，再调用原 owned stop。取消期间仍保留工具安全义务观察；没有明确包装/拒绝关联的工具返回 `status:unknown/cleanup:null`，原继承组观测可保存为 `runtimeCleanup`，不能释放整个目录。所有清理事实来自原 guard，不按磁盘 PID 杀进程，不提供 `cleanupProven:true` 配置。
 
+未启用 custody 的原 live-handle 路径，可以在精确 `blocked` 调用证据、未执行错误结束和原 Runtime 清理均成立后结清 unsupported custom 工具；缺失、错 ID 或矛盾终态仍拒绝。启用 `executionContext` 的 custody 路径则在未知 custom 的 `start` 时先耐久登记额外 scope，保护“拒绝证据到达前服务崩溃”的窗口；迟到的 `blocked` 不撤销该义务，当前仍返回 unknown，不宣称这类 custom 已支持自动跨代清理。
+
 不选择 bridge 的 transport 模式只供底层兼容诊断：传入 `onPermission` 立即拒绝，观察到未证明的 shell/custom 工具返回 unknown，不能注册为正式文件业务。选择 bridge 后也仅是可信同 UID、继承进程组；故意自行脱离组、具有外部效果的扩展或 ambient Publisher 凭据不在清理/分权证明内，正式支持仍须部署验收。未改 Core/Store/Decision authority，没有新增插件平台。
 
 ## 验证
