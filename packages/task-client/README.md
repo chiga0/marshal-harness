@@ -1,6 +1,6 @@
 # 正式 Task API Node 客户端
 
-`TaskClient` 是 `node-task-service/v1` 的 HTTP 消费者实现候选，不代表 API-STABLE 或业务验收已通过。它只导入已有 OpenAPI operation/schema 与严格 JSON 解析工具，不导入 Application、Store、Supervisor 或固定订单业务，不启动进程，也不写状态。
+`TaskClient` 是 `node-task-service/v1` 的 HTTP 消费者实现，已纳入当前候选的 API-STABLE 核心接口检查点，兼容范围见[接口说明](../task-api/README.md)。这不表示所有业务、Provider 或正式平台验收已通过。它只导入已有 OpenAPI operation/schema 与严格 JSON 解析工具，不导入 Application、Store、Supervisor 或固定订单业务，不启动进程，也不写状态。
 
 ```js
 import {TaskClient} from './index.mjs';

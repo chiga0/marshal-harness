@@ -1,6 +1,8 @@
 # Task Service HTTP 实现候选
 
-此包实现 ADR0085/0088 的正式 Node profile HTTP 适配层，**不是 API-STABLE 或生产完成声明**。它不导入实验 Store/Supervisor、固定订单业务或具体 Agent，不启动 socket、模型、进程或数据库。旧九操作实验协议保持独立。
+此包实现 ADR0085/0088 的 Node profile HTTP 适配层。2026-09-09 已通过当前契约与同包客户端的 **API-STABLE 核心接口检查点**；这不是正式 v1、stable 资产或生产完成声明，[四项出口及精确证据](../../docs/node-task-service-status-2026-09-08.md)分别记录。它不导入实验 Store/Supervisor、固定订单业务或具体 Agent，不启动 socket、模型、进程或数据库。旧九操作实验协议保持独立。
+
+本次兼容范围是 `node-task-service/v1`、OpenAPI `0.1.0-candidate` 与配套严格客户端；不是旧 Go、九操作实验协议或任意未来版本的兼容承诺。控制仍绑定原 revision/digest，丢响应按原 key/body 重放；未知字段、枚举或未接线能力不能静默接受。API 检查点不改变数据根 layout、迁移规则或 Provider 实机支持范围，后续契约改动仍须同时更新 producer、consumer、示例和对应测试。
 
 `createTaskApiHandler({application,token,expectedHost,requestTimeoutMs})` 返回 Node HTTP handler；所有 25 个操作（含同计划局部修正）调用同一个异步注入函数：
 

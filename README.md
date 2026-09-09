@@ -79,7 +79,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 - [OpenAPI 3.1 定义](packages/task-api/openapi.json)是 HTTP 请求/响应的唯一机器契约；[接口说明](packages/task-api/README.md)与[客户端](packages/task-client/README.md)解释使用方式。
 - [架构](docs/agent-team-service-architecture.md)、[目标用户与适用范围](docs/vision-and-scope.md)、[Milestone](docs/agent-team-service-milestones.md)与[实际进展](docs/roadmap-status.md#业务交付当前表)分别说明目标和完成情况。
-- API 当前为 `0.1.0-candidate`，不是 API-STABLE；[目录发行包](packages/task-distribution/README.md)也不等于 stable 安装包或正式部署。
+- API 的 `0.1.0-candidate` 已通过当前 Node profile 与同包客户端的 API-STABLE 核心接口检查点；这不是正式 v1 或全平台支持，[精确证据与剩余出口](docs/node-task-service-status-2026-09-08.md)单独列明。[目录发行包](packages/task-distribution/README.md)也不等于 stable 安装包或正式部署。
 
 ## 历史 Go RC1 安装（不是 Node 服务入口）
 
