@@ -1,6 +1,6 @@
 # ADR 0095：Node 受管 Leader 的最小机器合同
 
-- 状态：Proposed（2026-09-09）。ADR0094 已接受行为目标；本稿是一次实施前合同冻结，待维护者独立审查接纳，不代表实现、验收或发布授权。
+- 状态：Accepted（2026-09-09）。维护者独立审查源 `66e98c1147887dbc8c692686806b5ce97ae40591` 后接纳；ADR0094 行为目标与本机器合同据此进入实施，不代表实现、验收或业务发布授权。
 - 文档工作树基线：`f27784ddea738c3d095ad11c184d60fbf67ad162`；生产接缝最初核对 Worker 取消候选 `acbcfee9960557215328590f7b97bc1af3884d43`，其聚合修复 `070086e991b65b81f1765ec78ec1a9772fc01102` 已进入当前 main `3f359fd0fd88987b8ea2f3d3fbb36058834b003b`。这是追溯补充，不重新变基，也不把 Leader 设计记为已有实现。
 - 依据：[ADR0094](0094-trusted-single-user-role-team.md)、[Leader 行为设计](../node-leader-execution-design.md)。唯一实施字段、边界和验收清单见 [机器合同](../node-leader-execution-contract.md)。本稿不修改现有导航、代码或 OpenAPI。
 

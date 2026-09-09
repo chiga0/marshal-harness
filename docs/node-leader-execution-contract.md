@@ -1,6 +1,6 @@
 # Node 受管 Leader：最小执行机器合同
 
-状态：随 [ADR0095](adr/0095-node-managed-leader-contract.md) 提案冻结，**Proposed / 未实施**。行为依据是已接受的 [ADR0094](adr/0094-trusted-single-user-role-team.md) 与 [机制设计](node-leader-execution-design.md)；文档工作树锁定 `f27784dd`，取消接缝最初参考 `acbcfee9`，其聚合修复 `070086e9` 已进入当前 main `3f359fd0`。后两者仅补充实际追溯，不重新变基本工作树，也不代表 Leader 已实现。下文函数名为明确的新增/调整接缝，不声称当前已有。只选一个实现方案，不建立第二 scheduler、权限平台或 Workflow 编辑器。
+状态：随 [ADR0095](adr/0095-node-managed-leader-contract.md) 独立审查接纳，**Accepted / 未实施**。行为依据是已接受的 [ADR0094](adr/0094-trusted-single-user-role-team.md) 与 [机制设计](node-leader-execution-design.md)；文档工作树锁定 `f27784dd`，取消接缝最初参考 `acbcfee9`，其聚合修复 `070086e9` 已进入当前 main `3f359fd0`。后两者仅补充实际追溯，不重新变基本工作树，也不代表 Leader 已实现。下文函数名为明确的新增/调整接缝，不声称当前已有。只选一个实现方案，不建立第二 scheduler、权限平台或 Workflow 编辑器。
 
 ## 1. 根配置、版本与固定边界
 
@@ -193,4 +193,4 @@ Task 状态仍旧枚举：待业务答复用 awaiting-answer，待精确发布�
 5. **COMMIT/外部窗口恢复**：Leader reservation/许可/输出未提交、决定提交后动作未派、发布创建后回执未提交、postverify 后总结前逐点 SIGKILL；原 custody/never-permitted 合法结清或明确 unknown。预算/原决定/无关成果不丢、无重复整队/覆盖发布；同名异 bytes/错误 origin/lookup 不可用不成功，丢 reply 202 精确恢复。
 6. **兼容与下一任务**：旧 v1–v6 根/终态/严格 TaskClient/旧两个 AnswerReceipt/repair/WorkerOperation bytes 不变；旧 reader claim 前拒 v7；新合法收口容量归零、冷开可查原效果且下一 Task 可交付；正常停服备份沿原完整快照，不宣称防分叉。
 
-固定 Node 确定性 Core/真实 SQLite→原受管 CLI/HTTP→原 Provider 显式单次实机，按风险递进；安装包同源码执行/同版本恢复最后验证。当前只是文档提案，无新模型、生产或 stable 实证。
+固定 Node 确定性 Core/真实 SQLite→原受管 CLI/HTTP→原 Provider 显式单次实机，按风险递进；安装包同源码执行/同版本恢复最后验证。当前仅合同已接纳，无新模型、生产或 stable 实证。

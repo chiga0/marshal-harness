@@ -6,6 +6,8 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
+**2026-09-09 16:57 后继**：上一代码/证据批次已正常推送并核对 main/origin/main=`3f359fd0fd88987b8ea2f3d3fbb36058834b003b`，该批次 `pendingRemoteSync=false`，覆盖下段记录时的未推送状态。[ADR0095](adr/0095-node-managed-leader-contract.md)/[Leader 机器合同](node-leader-execution-contract.md)已独立审查接纳，按 Core、API/客户端、本机报告端口三个无冲突范围实施；B2-L 仍 DESIGN，未因合同接纳升级。
+
 **当前研发同步**：单Worker取消Core=`070086e9`、整合/实机source=`190171e0`已本地合入main `25ff8315cbf63e907aaaa47f869d76d592c89acc`，记录时`pendingRemoteSync=true`待正常推送。新v6显式profile已支持原HTTP取消，旧格式仍501；一次聚合P1修复经原reviewer独立43/43通过，整合API/客户端/发行包/driver56/56、真实CLI repair/取消15/15与58Schema/35示例通过。真实Pi一次45.843秒仅停止east，west原550候选保留，冷开原回执/零替身，不是独立Task交付。存储有界写失败测试已随f27784dd推送。最近已记录的双平台完整CI仍为旧1a9dc3c/run34323362296，不能替代本源；[精确证据与失败范围](node-task-service-status-2026-09-08.md)。
 
 **当前目标/profile**：[ADR0094](adr/0094-trusted-single-user-role-team.md)及[受管Leader机制](node-leader-execution-design.md)按用户本轮要求设计Accepted，机制为`DESIGN`未实现：Supervisor观察聚合、Leader业务判断、Core校验/硬规则和已批准调度、Execution原handle操作，现混合实现尚待接线。全程Leader/集中Review/局部调整保留成果/授权交付后验单列B2-L正式发布前出口，不以Planner或下载替代。强OS/凭据隔离后置，独立证据/授权/恢复与B3软件发行不变；文档不改HTTP/枚举/格式或数据，不撤回API-STABLE，未来新终态/副作用需显式兼容，旧non-production不重标。
