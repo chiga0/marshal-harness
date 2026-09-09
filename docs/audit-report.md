@@ -1,6 +1,12 @@
 # 设计审计报告
 
-## 2026-09-09 最新：安装真实 Pi 仍失败，先补精确诊断再判断后继
+## 2026-09-09 最新：原候选接纳与安装 Qwen 问答交付通过，Pi 首项通过、第二项 Review 解析失败
+
+源 `623692475c166289043f4bbb4d26cc91eb508a21` 的 Node run `34356644704` 五个 job 通过；原 artifact `10106433664` 下载后完成精确来源、运输 ZIP 与包 manifest 核验及接纳，没有重建替代资产。此前两次 CI 中止由实际 annotation 确认为 job 的 10 分钟总限额，`f8fe8bc7`→`62369247` 仅将 job 调为 15 分钟，不放宽单测。它是同资产候选检查点，不等于受保护 stable 发布或完整 B3。
+
+同一原包、原 regional-window 配置的 Qwen 0.23.0 实机一次通过：28.545 秒、3 Attempts、零 retry/rework，477B 交付经独立验收与原始流水再消费，east 3 笔/75 cents、west 1 笔/50 cents。维护者独立检查原 773 条事件、SQLite 完整性/外键/事件摘要及前后库摘要不变；正常冷开保持原 Task、audit、workers、原请求回执及交付，不外推故障恢复。该 layout 1 配置不是 v7 Leader/授权发布后验，模型用量未知，HTTP 时间不证明进程交叠。新原包 Pi 首项完整交付与审批前正常重启通过，第二项在独立 Review 返回解析处失败，原库 code=invalid_review_report、非权威诊断 parseCode=invalid_json；原失败输出未保存，不能猜具体文本错误。全部 18 次执行 cleanup 已确认，241 条事件摘要与原库完整性/外键通过且核验前后摘要不变。整轮仍未通过，不能凭第一项完成升级 B2-L；真实局部修正与完整 B3 仍未完成。精确源、包和证据摘要集中见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)。
+
+## 2026-09-09 先前检查点（历史）：安装 Pi 失败，补精确诊断
 
 安装消费者首轮的 `evidence_mismatch` 已定位为 JSON 值的 prototype 比较缺陷，修复源 `253ab696` 已合入 `44cd0397`，不降低业务断言。第二轮在 `task-0-awaiting-approval` 出现 `unexpected_terminal/leader_result_rejected`；第二次 Leader 原输出未保存，当前无法精确归因，不把失败猜成账号、模型能力或某字段格式问题。未进行第三次模型盲重试，历史失败与费用保留。
 
