@@ -1,0 +1,119 @@
+name: Node candidate admission
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/node-candidate-*'
+      - 'packages/task-distribution/**'
+      - '.github/workflows/node-candidate-admission.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/node-candidate-*'
+      - 'packages/task-distribution/**'
+      - '.github/workflows/node-candidate-admission.yml'
+  workflow_dispatch:
+    inputs:
+      source-head:
+        description: 已审 canonical main push 候选的完整 40 位 sourceHead
+        required: true
+        type: string
+      run-id:
+        description: 原 Node team 成功 run ID
+        required: true
+        type: string
+      run-attempt:
+        description: 原 run 的精确 attempt；发生重跑则拒绝旧值
+        required: true
+        type: string
+      artifact-id:
+        description: 原 producer 的唯一 artifact ID
+        required: true
+        type: string
+      archive-digest:
+        description: '包外记录的原 ZIP sha256 摘要（sha256: 前缀）'
+        required: true
+        type: string
+      manifest-digest:
+        description: '包外记录的原 manifest sha256 摘要（sha256: 前缀）'
+        required: true
+        type: string
+
+# This is an admission/consumption check, NOT release approval. There is no
+# publication job, tag operation, OIDC, deployment environment or model login.
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Admission boundaries (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+      - name: Offline hostile metadata/ZIP and original installed CLI consumer
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          MARSHAL_NODE="$(command -v node)" python3 -I -B scripts/node-candidate-admit_test.py
+
+  admit:
+    name: Consume exact admitted candidate (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'chiga0/marshal-harness' && github.ref == 'refs/heads/main'
+    needs: tests
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      CANDIDATE_SOURCE: ${{ inputs.source-head }}
+      CANDIDATE_RUN: ${{ inputs.run-id }}
+      CANDIDATE_ATTEMPT: ${{ inputs.run-attempt }}
+      CANDIDATE_ARTIFACT: ${{ inputs.artifact-id }}
+      CANDIDATE_ARCHIVE: ${{ inputs.archive-digest }}
+      CANDIDATE_MANIFEST: ${{ inputs.manifest-digest }}
+    steps:
+      - name: Checkout reviewed admission tools from workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: tools
+          persist-credentials: false
+      - name: Validate source syntax before matching checkout
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: '[[ "$CANDIDATE_SOURCE" =~ ^[0-9a-f]{40}$ ]]'
+      - name: Checkout matching trusted inventory and external consumer fixtures
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source-head }}
+          path: candidate-source
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+      - name: Reread original GitHub facts, validate original ZIP, restore and consume
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          candidate_parent="$(mktemp -d "$RUNNER_TEMP/marshal-node-admission.XXXXXX")"
+          python3 -I -B tools/scripts/node-candidate-admit.py \
+            --source "$GITHUB_WORKSPACE/candidate-source" --source-head "$CANDIDATE_SOURCE" \
+            --run-id "$CANDIDATE_RUN" --attempt "$CANDIDATE_ATTEMPT" --artifact-id "$CANDIDATE_ARTIFACT" \
+            --archive-digest "$CANDIDATE_ARCHIVE" --manifest-digest "$CANDIDATE_MANIFEST" \
+            --node "$(command -v node)" --gh "$(command -v gh)" --target "$candidate_parent/admitted"
