@@ -6,7 +6,7 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
-**当前研发同步**：本次锁定 main `31afe269f25241c4ff9fde19c03478cbfddb85a7`，已包含 v5 许可前恢复、候选接纳及原协议洪泛测试/证据。v5 source=`dd3d1900` 独立182/182通过，已合入并推送 `1a9dc3cb672a36bc976de52ef0ef7b9efbc83dc6`；该精确源 [Node team 34323362296](https://github.com/chiga0/marshal-harness/actions/runs/34323362296) 五job成功，Ubuntu564项/563通过/1 Darwin专属跳过、macOS564/564。同一artifact=`10092972643`两平台安装消费各2/2、旧任务冷开重复0；安装消费者仍只覆盖layout1/2，新v5故障来自同源回归，不称安装后的v5故障或Linux模型通过。当前基线上的单Worker取消仍501，后继0093候选独立实施，费用不可测；API-STABLE不覆盖尚未实现能力。[精确证据](node-task-service-status-2026-09-08.md)。
+**当前研发同步**：单Worker取消Core=`070086e9`、整合/实机source=`190171e0`已本地合入main `25ff8315cbf63e907aaaa47f869d76d592c89acc`，记录时`pendingRemoteSync=true`待正常推送。新v6显式profile已支持原HTTP取消，旧格式仍501；一次聚合P1修复经原reviewer独立43/43通过，整合API/客户端/发行包/driver56/56、真实CLI repair/取消15/15与58Schema/35示例通过。真实Pi一次45.843秒仅停止east，west原550候选保留，冷开原回执/零替身，不是独立Task交付。存储有界写失败测试已随f27784dd推送。最近已记录的双平台完整CI仍为旧1a9dc3c/run34323362296，不能替代本源；[精确证据与失败范围](node-task-service-status-2026-09-08.md)。
 
 **当前目标/profile**：[ADR0094](adr/0094-trusted-single-user-role-team.md)及[受管Leader机制](node-leader-execution-design.md)按用户本轮要求设计Accepted，机制为`DESIGN`未实现：Supervisor观察聚合、Leader业务判断、Core校验/硬规则和已批准调度、Execution原handle操作，现混合实现尚待接线。全程Leader/集中Review/局部调整保留成果/授权交付后验单列B2-L正式发布前出口，不以Planner或下载替代。强OS/凭据隔离后置，独立证据/授权/恢复与B3软件发行不变；文档不改HTTP/枚举/格式或数据，不撤回API-STABLE，未来新终态/副作用需显式兼容，旧non-production不重标。
 
@@ -19,10 +19,10 @@
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |
 | B1 真实团队交付 | `PASSED`（可信单用户本机 PoC） | 上述七条件独立复核通过；旧non-production不改，不外推全程Leader、生产或stable |
-| B2 日常本地 API | `IN_PROGRESS` | 问答/团队/审计/同Pi取消与限定同版本恢复已有证据；单Worker取消后继候选、真实模型局部修正、用量缺失仍明示；B2-L尚待完整接线 |
+| B2 日常本地 API | `IN_PROGRESS` | 问答/团队/审计/同Pi取消及新v6单Worker取消已有实机；真实模型局部修正、用量缺失仍明示；B2-L尚待完整接线 |
 | B2-L 全程受管 Leader | `DESIGN`（正式发布前必过） | 需求/确认→2互补Worker→独立Review→真实局部调整保留无关成果→授权交付→后验；含取消/失败/重开原决定与动作不重复、无虚假成功；当前Planner不等价 |
 | API-STABLE 核心接口检查点 | `PASSED` | 当前25操作/58Schema/同包客户端与四条出口通过；候选版本不等于正式发行，不承诺旧协议/任意未来版本或全Provider兼容 |
-| B3 正式可靠发布 | `IN_PROGRESS` | 冷备份、多Task、v5恢复、洪泛和同资产安装消费已有有界证据；声明平台部署/长期故障、写失败/磁盘满及受保护同资产发行仍未完成；强隔离单列后继加固 |
+| B3 正式可靠发布 | `IN_PROGRESS` | 冷备份、多Task、v5/v6故障、洪泛、有限EFBIG/SQLite写失败和旧同资产安装消费已有有界证据；声明平台部署/长期故障、ENOSPC及受保护同资产发行仍未完成；强隔离单列后继加固 |
 
 ### 历史 Node 集成检查点（不覆盖上表）
 

@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-09：单Worker取消整链与合法大计划读取预算修正
+
+ADR0093实现保持同一Application/Store/Execution：新v6空根显式启用，取消绑定原Worker/Task revision，未知清理不释放，未启动后继不制造Worker，原兄弟成果和原回执不变。冻结acbcfee唯一reviewer发现一个P1：依赖循环反复全读Workers导致合法28/48节点计划取消耗尽事务限额。一次聚合修复070086e9只预读一次同TX集合，不增Store512限额、不放松周期/归属；原复现修前失败、修后独立43/43通过，无剩余P0/P1。该失败说明小图单元绿不足以证明合法预算上界可用，后续状态机组合测试保留合法较大图，不把限额错误推给用户重试。
+
+整合190171e0的API/客户端/安装/driver56/56、真实CLI repair/取消15/15、标准schema及完整v6HTTP夹具通过；真实Pi单次45.843秒仅停east、west原550候选保留，Task诚实failed/worker_cancelled、无verifier/交付、冷开原回执零替身。localMergeSha=25ff8315，详细摘要和历史失败见[检查点](node-task-service-status-2026-09-08.md)。目标east仅45ms进程交叠且未证明模型消费，不能宣传为计算并行或完整团队交付。B2-L四责/Leader仍DESIGN，现TaskSupervisor混合实现没有借本功能改名冒充分离。
+
 ## 2026-09-09：可信单用户全程 Leader 与四责边界（设计接受，非实现通过）
 
 用户本轮明确要求以Leader＋开发/Reviewer/验收团队理解、分工、独立检查、在明确授权内发布并组织发布后验证，强OS账号/凭据隔离证明后置。新增Accepted [ADR0094](adr/0094-trusted-single-user-role-team.md)，精确调整0085/0088在Node可信单用户profile中的ambient凭据可达阻断；不改旧Go/hardened合同、不把角色职责当OS隔离。默认不发布、作者不自证、精确证据、高风险授权、发布幂等/unknown不重试及原预算/恢复继续保留。
