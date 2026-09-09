@@ -154,9 +154,9 @@ export function trackExecution(identity, handle) {
   handle.completion.then(value => { entry.result = value; entry.settled = true; }, () => { entry.failed = true; entry.settled = true; });
   return entry;
 }
-export function cancelledExecutionFact(identity, result, requestedAt, started) {
+export function cancelledExecutionFact(identity, result, requestedAt, started, expectedStopReason = 'provider_stopped') {
   const cleanup = result?.cleanup;
-  check(result?.status === 'cancelled' && result.reason === 'provider_stopped' && cleanup?.cleaned === true &&
+  check(['provider_stopped', 'pi_provider_stopped'].includes(expectedStopReason) && result?.status === 'cancelled' && result.reason === expectedStopReason && cleanup?.cleaned === true &&
     cleanup.agentExit?.observed === true && text(started?.executionId) && started.executionId.length > 0 &&
     equal(cleanup.started, started) && Number.isFinite(Date.parse(started.startedAt)) &&
     Date.parse(started.startedAt) <= Date.parse(requestedAt) && Date.parse(cleanup.agentExit.at) > Date.parse(requestedAt),
@@ -166,7 +166,9 @@ export function cancelledExecutionFact(identity, result, requestedAt, started) {
 }
 
 /** One explicit HTTP cancellation, with no model delay, mutation retry or substitute execution. */
-export async function cancelActiveTeam({client, taskId, observations, getVerifierStarts, end}) {
+export async function cancelActiveTeam({client, taskId, observations, getVerifierStarts, end,
+  expectedStopReason = 'provider_stopped', idempotencyKey = 'qwen-cancel-task'}) {
+  check(['provider_stopped', 'pi_provider_stopped'].includes(expectedStopReason), 'cancel_execution_unproven');
   const authors = () => observations.filter(entry => entry.identity.role === 'author');
   const live = () => {
     check(getVerifierStarts() === 0 && observations.length <= 3 && authors().every(entry => !entry.failed && !entry.settled &&
@@ -193,7 +195,7 @@ export async function cancelActiveTeam({client, taskId, observations, getVerifie
   live(); check(Date.now() < end, 'cancel_window_timeout');
   const active = authors().map(entry => ({entry, started: structuredClone(entry.started)}));
   const requestedAt = new Date().toISOString();
-  const request = {path: {taskId}, idempotencyKey: 'qwen-cancel-task', body: {expectedRevision: task.revision}};
+  const request = {path: {taskId}, idempotencyKey, body: {expectedRevision: task.revision}};
   let operation;
   try { operation = await client.request('task.cancel', request); }
   catch (error) { if (error.status === 409) throw new DriverError('cancel_window_missed'); throw error; }
@@ -210,7 +212,7 @@ export async function cancelActiveTeam({client, taskId, observations, getVerifie
   const executions = await Promise.all(observations.map(async entry => {
     const result = await entry.handle.completion;
     return entry.identity.role === 'planner' ? executionFact(entry.identity, result) :
-      cancelledExecutionFact(entry.identity, result, requestedAt, active.find(item => item.entry === entry)?.started);
+      cancelledExecutionFact(entry.identity, result, requestedAt, active.find(item => item.entry === entry)?.started, expectedStopReason);
   }));
   workers = await client.request('task.workers', {path: {taskId}});
   check(workers.nextCursor === null && workers.items.length === 3 && executions.every(item => workers.items.some(worker =>

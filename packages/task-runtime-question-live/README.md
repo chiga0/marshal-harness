@@ -4,7 +4,7 @@
 
 业务：east 作者尚不知道统计状态，必须调用原生 `marshal_ask_user`，在 `paid` 与 `cancelled` 间向用户明确选择；west 同时独立统计 `paid`。两者从相同冻结合成销售输入产生各自文件。`--answer` 是操作者运行前明确提供的答案，仅在真实问题到达后经 HTTP 发送，不进入 Task 或模型提示。原检查器先核验 Core 的问题/答案/ACK 引用和 Worker 绑定，再从原输入重算，不相信作者的验收标签。
 
-唯一主链：真实 planner → 一次精确批准 → 两作者并行、east 等答时 west 完成 → 一次 HTTP 答案 → 原 east Worker/Attempt 继续 → 独立验收 → 下载消费 → 正常关机及同版本冷开，原创建/批准/答案回执与成果可查且无重复启动。任何 CAS、超时、缺 ACK 或失败均保存失败证据，不重试、延长期限、换模型或额外批准工具。
+默认 `question` 主链：真实 planner → 一次精确批准 → 两作者并行、east 等答时 west 完成 → 一次 HTTP 答案 → 原 east Worker/Attempt 继续 → 独立验收 → 下载消费 → 正常关机及同版本冷开，原创建/批准/答案回执与成果可查且无重复启动。任何 CAS、超时、缺 ACK 或失败均保存失败证据，不重试、延长期限、换模型或额外批准工具。
 
 ```sh
 /绝对路径/node-24.15.0 packages/task-runtime-question-live/driver.fixture.mjs \
@@ -17,10 +17,27 @@
 
 `--run-dir` 必须不存在且父目录为真实路径。默认 Task 总期限 600000ms、4 Attempts（planner+2作者+checker）、2 个并发槽；题目至多 1 个、最多等待 120000ms，仍受原 Task 期限约束。只接受原 Pi 文件读写/编辑参数的一次授权，默认拒绝 shell、外部发布、越界文件和未知工具，不关闭原工具/Skill，不复制 HOME 或读取登录文件。
 
+## 显式 Task 取消场景
+
+同一 Pi 原生权限、业务计划、问答配置与 `node-execution-custody/v1` profile 支持显式 `--scenario cancel`，不接受 `--answer`。这与业务答案 `--answer cancelled`（统计取消订单）完全不同；没有 `--scenario` 时仍运行原问答交付链。
+
+```sh
+/绝对路径/node-24.15.0 packages/task-runtime-question-live/driver.fixture.mjs \
+  --execute-real --scenario cancel \
+  --run-dir /private/tmp/另一个新的私有运行目录 \
+  --node /绝对路径/node-24.15.0 \
+  --pi-entry /原安装/pi-coding-agent/dist/bundle/cli.js \
+  --pi-sdk /原安装/pi-coding-agent/dist/index.js
+```
+
+取消链：真实 planner → 一次精确批准 → 两个原 author 进程的 started 与 HTTP `running` 投影一致 → 一次原 revision 的 `task.cancel` → 两个原句柄 `pi_provider_stopped`、cleanup、Task `cancelled` 与 Operation `succeeded` → 无 verifier/制品、容量归零 → 正常停服、同版本 open 后原创建/批准/取消回执及 Task 不变、零替身启动。冷开只精确重放原回执，不另发新 key 或 revision。
+
+如果窗口内作者已完成、Task 已等答、期限已过或 CAS 冲突，记录失败而不是人为延迟模型、抑制原生提问、追加任务或重试。该场景只证明两个原作者进程被停止，不声称已消费 token、已调用工具或已发生业务问答；问答成功证据仍由默认场景提供。驱动复用已有取消 helper，仅显式区分 Pi 与 Qwen 的原停止原因，不能把两类原因混为兼容通过。
+
 成功或失败只向 stdout 输出安全摘要；私有目录保存 `evidence.json`、下载成果及正式服务状态。证据包含实际 execution ID/时间、原组 cleanup、问答摘要、权限计数、独立验收和冷开结果，不保存原始模型日志、prompt 或鉴权配置。目录保留供诊断，不自动清理。
 
 ```sh
-/绝对路径/node-24.15.0 --test packages/task-runtime-question-live/driver.test.mjs
+/绝对路径/node-24.15.0 --test --test-concurrency=1 packages/task-runtime-question-live/driver.test.mjs packages/task-runtime-question-live/cancel.test.mjs
 ```
 
-无模型测试只证明驱动、预声明答案隔离、原计划合同、一次答案请求、反例与实际固定 Node 检查器；不冒充真实 Pi 团队或服务崩溃验收。实机由维护者在审查固定 source 后显式执行。普通用户 dogfood 不证明 Worker/Publisher 分权或恶意代码隔离，`production=false`。
+无模型测试只证明驱动、预声明答案隔离、原计划合同、一次答案/取消请求、两族停止原因反例、实际固定 Node 检查器，以及原 Pi bridge/guard/custody/layout3 的 HTTP 取消与冷开。确定性取消 fixture 的作者停留在未批准的原生权限请求，不将这种测试等待加入实机配置；不冒充真实 Pi 模型团队或服务崩溃验收。实机由维护者在审查固定 source 后显式执行。普通用户 dogfood 不证明 Worker/Publisher 分权或恶意代码隔离，`production=false`。

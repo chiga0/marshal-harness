@@ -12,7 +12,7 @@ import {TaskClient} from '../task-client/index.mjs';
 import {encode, digest} from '../task-store/store.mjs';
 import {parseJson} from '../task-api/http-boundary.mjs';
 import {parseOptions as parsePiOptions, filePermission} from '../task-pi-live/driver.fixture.mjs';
-import {executionFact, assertTeam} from '../task-qwen-live/driver.fixture.mjs';
+import {executionFact, assertTeam, trackExecution, cancelActiveTeam, DriverError} from '../task-qwen-live/driver.fixture.mjs';
 import {data, choices, policy, questionPolicyDigest, questions, taskBody, bindPlan, expectedReports, answerFromRefs, consumeDelivery, equal, verificationRequest} from './scenario.fixture.mjs';
 
 const checkerPath = fileURLToPath(new URL('./checker.fixture.mjs', import.meta.url));
@@ -21,10 +21,23 @@ export class LiveError extends Error {constructor(code) {super(code); this.code 
 const check = (value, code) => {if (!value) throw new LiveError(code);};
 export function parseOptions(argv) {
   if (equal(argv, ['--help'])) return {help: true};
+  const scenarios = argv.flatMap((value, index) => value === '--scenario' ? [index] : []);
+  check(scenarios.length <= 1, 'invalid_scenario');
+  const scenario = scenarios.length ? argv[scenarios[0] + 1] : 'question';
+  check(['question', 'cancel'].includes(scenario), 'invalid_scenario');
+  if (scenarios.length) argv = [...argv.slice(0, scenarios[0]), ...argv.slice(scenarios[0] + 2)];
   const indexes = argv.flatMap((value, index) => value === '--answer' ? [index] : []);
+  if (scenario === 'cancel') {
+    check(indexes.length === 0, 'task_cancel_does_not_take_business_answer');
+    return {...parsePiOptions(argv), scenario};
+  }
   check(indexes.length === 1 && choices.includes(argv[indexes[0] + 1]), 'explicit_business_answer_required');
   const at = indexes[0], answer = argv[at + 1];
-  return {...parsePiOptions([...argv.slice(0, at), ...argv.slice(at + 2)]), answer};
+  return {...parsePiOptions([...argv.slice(0, at), ...argv.slice(at + 2)]), answer, scenario};
+}
+export async function cancelPiActiveTeam(options) {
+  try {return await cancelActiveTeam({...options, expectedStopReason: 'pi_provider_stopped', idempotencyKey: 'pi-runtime-cancel-task'});}
+  catch (error) {if (error instanceof DriverError) throw new LiveError(error.code); throw error;}
 }
 export function validatePlan(task, plan, body, inputId) {
   check(task.status === 'awaiting-approval' && plan.taskId === task.id && plan.revision === task.plan?.revision && plan.digest === task.plan.digest, 'plan_identity_mismatch');
@@ -63,7 +76,9 @@ function environment(node) {
   check(path.isAbsolute(env.HOME ?? ''), 'native_home_missing'); return env;
 }
 export async function runLive(options) {
-  check(options?.executeReal === true && choices.includes(options.answer), 'explicit_real_execution_required');
+  const scenario = options?.scenario ?? 'question';
+  check(options?.executeReal === true && ['question', 'cancel'].includes(scenario) &&
+    (scenario === 'cancel' ? options.answer === undefined : choices.includes(options.answer)), 'explicit_real_execution_required');
   check(process.versions.node === '24.15.0' && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
   const packageRoot = path.resolve(path.dirname(options.piEntry), '../..');
   check(options.piEntry === path.join(packageRoot, 'dist/bundle/cli.js') && options.sdkEntry === path.join(packageRoot, 'dist/index.js') &&
@@ -74,14 +89,15 @@ export async function runLive(options) {
   fs.mkdirSync(options.runDir, {mode: 0o700});
   const observed = [], byCwd = new Map(), byWorker = new Map(); let service, verifierStarts = 0, stage = 'starting';
   const evidence = {profile: 'pi-runtime-question-live/v1', passed: false, ordinaryUser: true, production: false, publisherSeparationProven: false,
+    ...(scenario === 'cancel' ? {scenario, custodyProfile: 'node-execution-custody/v1', providerCustodyProfile: 'pi-native-file-question-v1'} : {}),
     startedAt: new Date().toISOString(), piVersion: metadata.version, nodeVersion: process.versions.node,
     piEntryDigest: digest(fs.readFileSync(options.piEntry)), sdkEntryDigest: digest(fs.readFileSync(options.sdkEntry)),
-    checkerDigest: digest(fs.readFileSync(checkerPath)), policyDigest: questionPolicyDigest, answer: options.answer, permission: {allowed: 0, denied: 0}, executions: []};
+    checkerDigest: digest(fs.readFileSync(checkerPath)), policyDigest: questionPolicyDigest, answer: options.answer ?? null, permission: {allowed: 0, denied: 0}, executions: []};
   try {
     const native = createPiProvider({id: 'pi', executable: options.node, args: [options.piEntry, '--mode', 'rpc', '--no-session'], env: environment(options.node),
       bridge: {sdkEntry: options.sdkEntry}, custodyProfile: {id: 'pi-native-file-question-v1', scope: 'inherited-process-group', eligible: true}});
     const provider = {...native, start(input) {const identity = byCwd.get(input.cwd); check(identity, 'missing_original_identity');
-      const handle = native.start(input); observed.push({identity, handle}); return handle;}};
+      const handle = native.start(input); observed.push(trackExecution(identity, handle)); return handle;}};
     const command = createVerificationCommand({executable: options.node, checkerPath, checkerDigest: evidence.checkerDigest, policyDigest: digest(encode(policy)), request: verificationRequest,
       assertions: [{name: 'answered-regions', validate: (actual, {ticket}) => {
         const refs = ticket.input.interactionRefs, answer = answerFromRefs(refs, ticket.input.verification, ticket.planDigest);
@@ -112,6 +128,29 @@ export async function runLive(options) {
       check(!['failed', 'cancelled', 'intervention'].includes(value.status), 'planning_failed'); return value.status === 'awaiting-approval';}, deadline);
     const plan = await client.request('task.plan', {path: {taskId: task.id}}), approval = validatePlan(task, plan, body, input.id);
     evidence.planDigest = plan.digest; const operation = await client.approveTask(task.id, approval, 'runtime-approve'); stage = 'waiting-question';
+    if (scenario === 'cancel') {
+      stage = 'cancelling';
+      const cancelled = await cancelPiActiveTeam({client, taskId: task.id, observations: observed, getVerifierStarts: () => verifierStarts, end: deadline});
+      evidence.executions = cancelled.executions; evidence.overlapMs = assertTeam(cancelled.executions); evidence.verifierStarts = verifierStarts;
+      evidence.workers = cancelled.workers.map(worker => ({id: worker.id, nodeId: worker.nodeId, role: worker.role, status: worker.status}));
+      const audit = await client.getAudit(task.id);
+      check(audit.attempts === 3 && audit.retryCount === 0 && audit.reworkCount === 0 && audit.acceptance.status !== 'passed', 'cancel_unexpected_acceptance');
+      check((await client.request('supervisor.get')).activeWorkers === 0, 'cancel_capacity_unsettled');
+      evidence.cancel = {requestedAt: cancelled.requestedAt, confirmedAt: new Date().toISOString(), operationId: cancelled.operation.id,
+        originalAuthorsStopped: true, noVerifier: true, noDelivery: true, modelConsumptionProven: false, toolExecutionProven: false};
+      evidence.artifacts = [];
+      check((await service.shutdown()).shutdownClean === true, 'shutdown_unconfirmed'); service = null; stage = 'reopening'; client = await start('open');
+      check(equal(await client.createTask(body, 'runtime-create'), created) && equal(await client.approveTask(task.id, approval, 'runtime-approve'), operation), 'original_receipt_changed');
+      // Exact old-key receipt replay is readback of the accepted command, not
+      // another cancellation attempt or a new revision/key after a conflict.
+      check(equal(await client.request('task.cancel', cancelled.request), cancelled.operation), 'cancel_receipt_changed');
+      check(equal(await client.getTask(task.id), cancelled.done), 'task_changed_after_restart');
+      check((await client.request('operation.get', {path: {operationId: cancelled.operation.id}})).status === 'succeeded', 'cancel_not_reconciled');
+      check(equal((await client.request('task.workers', {path: {taskId: task.id}})).items, cancelled.workers) &&
+        observed.length === 3 && verifierStarts === 0 && (await client.request('supervisor.get')).activeWorkers === 0, 'reopen_drift_or_duplicate');
+      evidence.restart = {originalReceipts: true, sameCancelledTask: true, duplicateStarts: 0}; evidence.passed = true; stage = 'complete';
+      return evidence;
+    }
     const list = await until(async () => {
       const current = await client.getTask(task.id); check(!['failed', 'cancelled', 'completed', 'intervention'].includes(current.status), 'missing_business_question');
       return client.request('task.questions', {path: {taskId: task.id}});
@@ -166,7 +205,7 @@ export async function runLive(options) {
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {const options = parseOptions(process.argv.slice(2));
-    if (options.help) process.stdout.write('--execute-real --answer paid|cancelled --run-dir ABS_NEW_PRIVATE_DIR --node ABS_NODE_24_15 --pi-entry ABS_dist/bundle/cli.js --pi-sdk ABS_dist/index.js [--timeout-ms 600000]\n一次 Task/批准/答案，无重试；默认不启动模型。\n');
+    if (options.help) process.stdout.write('--execute-real [--scenario question --answer paid|cancelled | --scenario cancel] --run-dir ABS_NEW_PRIVATE_DIR --node ABS_NODE_24_15 --pi-entry ABS_dist/bundle/cli.js --pi-sdk ABS_dist/index.js [--timeout-ms 600000]\n默认 question；cancel 不接受 --answer。一次 Task/批准/答案或取消，无重试；默认不启动模型。\n');
     else {const result = await runLive(options); process.stdout.write(JSON.stringify({passed: result.passed, taskId: result.taskId ?? null,
       failure: result.failure ?? null, evidence: path.join(options.runDir, 'evidence.json')}) + '\n'); if (!result.passed) process.exitCode = 1;}
   } catch (error) {process.stderr.write(JSON.stringify({code: error instanceof LiveError ? error.code : 'runtime_live_preflight_failed'}) + '\n'); process.exitCode = 1;}
