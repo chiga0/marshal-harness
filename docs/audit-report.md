@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-09：Leader 接口与有限报告端口独立验证，完整业务链仍开放
+
+API 源 `b3910e95` 的真实差量经维护者独立审查无 P0/P1；固定 Node 24.15.0 下 API/客户端 45/45（2.034 秒）、发行包 20/20（99.861 秒），Ajv2020 的 66 Schema/45 示例/27 操作通过，旧 58 Schema/24 路径逐对象不变，diff、secret scan 与 merge-tree 通过。已正常推送 localMergeSha `07e3afc29ed992f17dba857c7c16e4419f43766f`，该批次 `pendingRemoteSync=false`。新回复只证明原请求正文与回执绑定；Core 必须继续负责原幂等回执、取消、期限、权限及耐久接纳，不能将 HTTP 202 当成 Worker ACK 或发布完成。
+
+报告端口源 `47f10417` 已独立审阅七文件，完整 11/11（14.460 秒）通过，包括实际 loopback GET 的完整业务后验、输出篡改/跳转/超界/超时拒绝，以及五个原所属子进程故障窗口。固定 Node、空环境、持有输入文件、原子 create-if-absent、只删除本次已成功发布的临时文件、unknown 保留与只读对账均有界；不提供任意 shell/URL/SQL，也不把同 UID 当恶意代码沙箱。作者此前的 HTTP listen EPERM、git index EPERM 及一次测试语法错误保留；维护者在已有普通权限下运行，没有提升权限或关闭安全策略。发行清单必须包含全部四个生产模块，stdin runner 不作为无副作用库导入，并验证安装后的无授权输入拒绝；不等发布后才发现漏包。
+
+完整 Task 的授权来源、独立 Review、Leader 再唤起及同库恢复不由上述端口测试证明。B2-L 继续开放，后继优先做完整纵切与真实场景；只读业务 oracle 已独立 3/3，不泄露预期总数给模型、不制造返工，也不替代 Core 证据。
+
 ## 2026-09-09：Leader 机器合同接纳，进入同链实施
 
 [ADR0095](adr/0095-node-managed-leader-contract.md) 与[机器合同](node-leader-execution-contract.md)源 `66e98c11` 经维护者独立审查接纳，无剩余 P0/P1。Supervisor observer 不持有命令端口或执行句柄；Core 许可/硬规则、Execution 原句柄操作、Leader 业务决策在同进程内分离。仅新空根 v7 启用，旧根/响应不改；六类行动、同库决定与动作、独立 Review、有限授权报告/后验一次接线，不建第二平台。
