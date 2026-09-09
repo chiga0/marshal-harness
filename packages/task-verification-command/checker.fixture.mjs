@@ -32,6 +32,7 @@ process.stdin.on('data', chunk => {
   if (mode === 'body') report.assertions[0].actual = 'process.env.PRIVATE_VERIFIER_TOKEN; passed=true';
   if (mode === 'extra') report.status = 'passed';
   let output = canonical(report) + '\n';
+  if (mode === 'bom') output = '\uFEFF' + output;
   if (mode === 'duplicate-key') output = output.replace('"nonce":', '"nonce":"fake","nonce":');
   if (mode === 'trailing') output += '{}\n';
   if (mode === 'utf8') { process.stdout.write(Buffer.from([0xff, 0xfe])); process.exit(0); }

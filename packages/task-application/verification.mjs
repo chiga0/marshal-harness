@@ -34,12 +34,15 @@ const fileDigest = files => digest(Buffer.from(JSON.stringify(files.map(({path, 
 /** Parent-only capability. No public mint/deserialize operation exists. The
  * trusted start closure must launch the independent, bounded checker and retain
  * its ORIGINAL cleanup. A model's role/provider/status is never this capability. */
-export function createVerificationPort({id, policy, bindPlan, start, interactionPolicyDigests = []}) {
+export function createVerificationPort({id, policy, bindPlan, start, interactionPolicyDigests = [], repairPolicyDigests = []}) {
   check(typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id) &&
     keys(policy, ['id', 'version', 'description']) && isText(policy.id, 128) && isText(policy.version, 128) &&
     isText(policy.description, 4096) && typeof bindPlan === 'function' && typeof start === 'function', 'invalid_verification_config');
   check(Array.isArray(interactionPolicyDigests) && interactionPolicyDigests.length <= 32 && interactionPolicyDigests.every(sha) &&
     new Set(interactionPolicyDigests).size === interactionPolicyDigests.length, 'invalid_verification_config');
+  check(Array.isArray(repairPolicyDigests) && repairPolicyDigests.length <= 1 && repairPolicyDigests.every(sha) &&
+    (!repairPolicyDigests.length || start.repairBinding?.policyDigest === repairPolicyDigests[0] &&
+      start.repairBinding.verificationPolicyDigest === hash(policy)), 'invalid_verification_config');
   const port = Object.freeze({id, ...(start.custodyProfile ? {custodyProfile: clone(start.custodyProfile)} : {}), start({ticket, prepared, executionContext}) {
     const binding = hash(ticket), handle = start({ticket, prepared, executionContext});
     check(handle && typeof handle.stop === 'function' && typeof handle.started?.then === 'function' &&
@@ -52,7 +55,8 @@ export function createVerificationPort({id, policy, bindPlan, start, interaction
         return Object.freeze({type: 'verification', status: data.status, cleanup: clone(data.cleanup), receipt});
       })});
   }});
-  ports.set(port, {policy: clone(policy), bindPlan, interactionPolicyDigests: [...interactionPolicyDigests]}); return port;
+  ports.set(port, {policy: clone(policy), bindPlan, interactionPolicyDigests: [...interactionPolicyDigests],
+    repairBinding: repairPolicyDigests.length ? clone(start.repairBinding) : null}); return port;
 }
 
 export class TaskVerification {
@@ -61,6 +65,10 @@ export class TaskVerification {
     this.app = app; this.port = port;
   }
   supportsQuestions(policyDigest) {return this.port !== null && ports.get(this.port).interactionPolicyDigests.includes(policyDigest);}
+  repairBinding(policyDigest) {
+    const binding = this.port && ports.get(this.port).repairBinding;
+    check(binding && binding.policyDigest === policyDigest, 'unsupported_task'); return clone(binding);
+  }
   bind(record, plan) {
     if (!this.port) return null;
     this.app.artifacts.requireDepot();
@@ -155,7 +163,9 @@ export class TaskVerification {
     this.configured(task.verification);
     check(task.approved?.planDigest === ticket.planDigest && task.plan?.digest === ticket.planDigest &&
       task.verification.nodeId === ticket.nodeId && ticket.executionType === 'verification', 'candidate_manifest_conflict');
-    const workers = this.app.execution.workers(tx, task).filter(({record}) => record.worker.id !== ticket.workerId);
+    check(this.app.repair.current(task, ticket), 'candidate_manifest_conflict');
+    const workers = task.repair ? this.app.repair.selected(tx, task) :
+      this.app.execution.workers(tx, task).filter(({record}) => record.worker.id !== ticket.workerId);
     check(workers.every(({record}) => record.worker.status === 'completed' && record.cleanup?.cleaned === true), 'candidate_manifest_conflict');
     const current = workers.filter(({record}) => record.ticket.planDigest === ticket.planDigest);
     check(current.length === task.plan.nodes.length - 1 && current.every(({record}) => record.worker.status === 'completed' && record.candidate), 'candidate_manifest_conflict');
@@ -163,7 +173,8 @@ export class TaskVerification {
       resultDigest: record.resultDigest, manifest: record.candidate})).sort((a, b) => a.nodeId < b.nodeId ? -1 : 1);
     check(same(manifest, ticket.input.verification.manifests) && same(task.verification, ticket.input.verification.binding), 'candidate_manifest_conflict');
     if (task.runtimeQuestions) check(this.supportsQuestions(task.runtimeQuestions.policyDigest) &&
-      same(this.app.runtimeQuestions.refs(tx, task), ticket.input.interactionRefs), 'candidate_manifest_conflict');
+      same(task.repair ? this.app.runtimeQuestions.inherited(tx, task, workers.flatMap(({record}) => record.interactionRefs ?? [])) :
+        this.app.runtimeQuestions.refs(tx, task), ticket.input.interactionRefs), 'candidate_manifest_conflict');
     return manifest;
   }
   stage(ticket, result) {
@@ -172,7 +183,7 @@ export class TaskVerification {
     // or cancelled evidence to create ready metadata. Orphan bytes are harmless.
     const eligible = this.app.transaction(false, tx => {
       const {record, task} = this.app.execution.ticket(tx, ticket);
-      if (record.worker.status === 'completed') return false;
+      if (record.worker.status === 'completed' || !this.app.repair.current(task, ticket)) return false;
       if (task.task.status === 'cancelling' || ['failed', 'cancelled', 'intervention'].includes(task.task.status) || this.app.now() >= ticket.deadline) return false;
       // The original managed launcher can prove a failed spawn was cleaned
       // without ever announcing an execution. This is cleanup, not a checker's
@@ -185,6 +196,15 @@ export class TaskVerification {
       this.recheck(tx, task, ticket); return true;
     });
     if (!eligible || data.cleanup?.cleaned !== true) return {data, staged: null};
+    if (data.contentRejection != null) {
+      const rejection = data.contentRejection, policy = ticket.input.plan.repair;
+      const command = this.repairBinding(policy?.policyDigest);
+      check(data.status === 'failed' && data.evidence?.content instanceof Uint8Array && data.delivery == null &&
+        keys(rejection, ['policyDigest', 'failedAssertions', 'reportDigest']) && rejection.policyDigest === policy.policyDigest &&
+        sha(rejection.reportDigest) && Array.isArray(rejection.failedAssertions) && rejection.failedAssertions.length > 0 &&
+        rejection.failedAssertions.every(name => command.assertions.includes(name)) && new Set(rejection.failedAssertions).size === rejection.failedAssertions.length,
+      'invalid_verification_receipt');
+    }
     check(data.cleanup.started && Number.isFinite(Date.parse(data.cleanup.started.startedAt)), 'invalid_verification_receipt');
     if (data.status === 'passed') {
       for (const producer of ticket.input.verification.manifests) for (const file of producer.manifest.files) this.app.artifacts.bytes(file);

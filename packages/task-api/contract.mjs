@@ -91,6 +91,17 @@ export function validQuestionItems(value, taskId) {
     (question.answer === undefined || question.answer === null || question.options.length === 0 || question.options.some(option => option.value === question.answer))));
 }
 
+export function validRepairResponse(request, value) {
+  return validate(value, 'RepairReceipt') && value.taskId === request.taskId && value.task.id === request.taskId &&
+    value.currentTask.id === request.taskId && value.operation.taskId === request.taskId && value.operation.kind === 'task.repair' &&
+    value.operation.status === 'accepted' && value.planDigest === request.body.planDigest && value.decisionDigest === request.body.decisionDigest &&
+    value.acceptedRevision === request.body.expectedRevision + 1 && value.task.revision === value.acceptedRevision &&
+    value.operation.taskRevision === value.acceptedRevision && value.currentTask.revision >= value.acceptedRevision &&
+    value.task.status === 'queued' && value.task.plan?.digest === value.planDigest && value.currentTask.plan?.digest === value.planDigest &&
+    value.task.plan.revision === value.currentTask.plan.revision &&
+    new Set(value.affectedNodes).size === value.affectedNodes.length && request.body.nodeIds.every(id => value.affectedNodes.includes(id));
+}
+
 const descriptions = {
   'invalid_request': [400, '请求不符合接口合同。', ['correct-request']],
   'invalid_json': [400, '请求必须是合法且无重复字段的 JSON。', ['correct-request']],
