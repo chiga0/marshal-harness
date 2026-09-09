@@ -14,7 +14,7 @@ API-first 顺序为 B1 真实团队 PoC→B2 本地 API 可用→B3 正式可靠
 
 Marshal 是面向 Agent Team 真实业务交付的长寿命、可自托管、确定性 Control Plane。它持续接收用户 Task 与上下文，内部复用 Goal/计划和 WorkItem 执行模型，把需求接纳为有界的 typed workload，调度可替换的 Agent 与 Sandbox Provider，并让环境、状态、Evidence 与 SideEffect 在进程或 Provider 故障后仍可恢复、可审计、可验证。软件工程是首批业务之一，而不是所有 Task 必须有 Git 仓库的理由。
 
-Marshal 让 Agent 工作成为受控工程执行，而不是无结构的终端对话。LLM 可以规划、实现和评估，但不能成为第二业务权威；只有确定性 Core 能接纳输入、推进生命周期并授权副作用。
+Marshal让Agent工作成为受控工程执行：Leader对业务目标负责，Agent发挥专业能力，Core保证执行边界与事实可靠，最终交付接受独立且贴近真实需求的检查。Leader承担业务判断，但不能成为第二套持久状态或执行权威；Core接纳决定、推进生命周期并校验副作用授权，不宣称能确定性理解任意自然语言需求。
 
 当 Runtime 可以长期稳定接收新任务，且更换 Agent、Sandbox 或 durable backend 不会改变任务含义、验收标准和发布所需证据时，Marshal 才算实现目标。
 
@@ -53,6 +53,8 @@ Marshal 必须统一这些问题，同时不能假装所有 Provider 具有相�
 ### G1：契约优先的委派
 
 公开 Task 从需求与上下文开始，经确认冻结带版本的计划、输入摘要、验收标准、必需交付物、预算和执行/发布策略。每个 profile 内保持一套 Task 权威；旧 Go profile 复用 Goal/TaskSpec，Node profile 不复制 Go 真值，不要求用户手写内部执行规格。Git base 只属于 Git 执行路径，非 Git 任务以输入和制品摘要锁定可检查的起点。
+
+原始需求、确认后的交付约定与可调整实现计划分开；在现有Task/Plan内把必需要求对应到工作包、成果和独立证据，不新增需求管理平台。独立Review检查验收覆盖，关键业务歧义/主观结果由用户确认；记录完整不等于业务必然正确，测试全绿也不能掩盖已确认需求漏项。可信验证机制固定权限与执行边界，任务验收内容在支持能力内提议、检查与冻结；同一业务族的不同需求不应每次要求修改Core或专用服务配置程序。
 
 ### G2：Provider 无关的 Worker
 
@@ -149,14 +151,18 @@ MVP 包含：
 
 | 决策 | 负责人 | 必需证据 |
 | --- | --- | --- |
-| 任务目标与范围 | 用户确认，Planner 提案，Core 接纳 | Task 需求/上下文与冻结计划/验收 |
-| Worker 选择 | Core Supervisor，依据允许的配置与建议 | CapabilitySnapshot、执行 profile 与策略 |
+| 任务目标与范围 | Leader提出交付约定，用户必要确认，Core接纳 | 原始需求、关键回答、必需要求/非目标与验收覆盖 |
+| 分工与Worker选择 | Leader提出业务分工/允许配置内的选择，Core按能力、容量和依赖调度 | 批准范围、实际能力/配置、原预算与输入绑定 |
+| 执行进展与异常 | Supervisor观察聚合上报，Leader判断业务纠偏；Core立即处理已批准硬规则 | 实际进度/失败来源、当前计划和受影响成果，不把沉默当失败 |
 | 业务成果实现 | Worker | 实际制品与执行记录；Git 类型另含 worktree diff |
-| 验证通过或失败 | Harness | 真实命令与交付物结果 |
-| 语义评估提案 | 主 Agent / Review Executor | Candidate、Diff 与 VerificationReport |
+| 验证通过或失败 | 作者之外的受控验收执行，Core接纳 | 冻结的业务要求、实际执行、精确集成成果与覆盖证据 |
+| 语义评估与局部调整 | 独立Reviewer提供集中意见，Leader在批准自治范围内请求调整，Core校验 | 原始需求、当前成果、独立意见/失败；不降低标准或抹预算 |
 | 物化 ReviewDecision | Marshal Core | 当前 Evidence、Assessment、Policy 与 sequence 校验 |
-| 发布 PR/MR | Harness Publisher（执行）/ Marshal Core（授权与接纳） | ReviewDecision、Evidence、SideEffectIntent/Receipt 与发布策略 |
+| 有界业务交付及后验 | Leader提出获授权动作，Core校验，发布/后验执行职责落实 | 当前独立证据、精确目标/成果、授权、真实回执/后验；无授权默认仅交付成果 |
+| 整体完成 | Leader逐项汇总，Core按全部必需出口接纳 | 交付约定、独立验收和必要发布/后验，无未决必需项；总结不是自签证据 |
 | Merge | 仓库策略 / 维护者 | Accept 决策、CI 和所需审批 |
+
+此表为ADR0094的Node目标职责，完整Leader仍DESIGN；旧Go/hardened合同不重新解释。验收/进程/发布的实际支持只按Roadmap与精确候选判断。
 
 ## 信任边界
 
