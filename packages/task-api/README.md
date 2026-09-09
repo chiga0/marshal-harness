@@ -4,13 +4,13 @@
 
 本次兼容范围是 `node-task-service/v1`、OpenAPI `0.1.0-candidate` 与配套严格客户端；不是旧 Go、九操作实验协议或任意未来版本的兼容承诺。控制仍绑定原 revision/digest，丢响应按原 key/body 重放；未知字段、枚举或未接线能力不能静默接受。API 检查点不改变数据根 layout、迁移规则或 Provider 实机支持范围，后续契约改动仍须同时更新 producer、consumer、示例和对应测试。
 
-`createTaskApiHandler({application,token,expectedHost,requestTimeoutMs})` 返回 Node HTTP handler；所有 25 个操作（含同计划局部修正）调用同一个异步注入函数：
+`createTaskApiHandler({application,token,expectedHost,requestTimeoutMs})` 返回 Node HTTP handler；所有 27 个操作（含同计划局部修正与两个 Leader 子资源）调用同一个异步注入函数：
 
 ```js
 await application(request, {principal: 'local-operator', requestId, signal});
 ```
 
-`request` 包含 `operation`、路由绑定的 `taskId/workerId/questionId/operationId/artifactId`、写操作的 `key/body`，分页操作的 `page:{limit,cursor}`。应用不得把 HTTP signal 当作 Task cancel；断线/504 后命令可能已提交，客户端只能查询原对象或用原 key/正文重放。业务权限、原回执优先于 CAS、预算、计划批准、问题期限、对象归属、状态转换和持久化都由 Application/Store 唯一处理，HTTP 不新增真值。
+`request` 包含 `operation`、路由绑定的 `taskId/workerId/questionId/operationId/artifactId/requestId`、写操作的 `key/body`，分页操作的 `page:{limit,cursor}`。Leader 路由 requestId 是业务请求 ID，第二参数 context.requestId 仍是独立 HTTP trace ID，两者不能混用。应用不得把 HTTP signal 当作 Task cancel；断线/504 后命令可能已提交，客户端只能查询原对象或用原 key/正文重放。业务权限、原回执优先于 CAS、预算、计划批准、问题期限、对象归属、状态转换和持久化都由 Application/Store 唯一处理，HTTP 不新增真值。
 
 [openapi.json](openapi.json) 是请求、响应和路由的唯一机器合同，`contract.mjs` 从它读取并执行所用 schema 子集的严格校验（不强转、补默认值、删除未知字段或解析远程引用）。未知验证关键字失败；`maxLength` 外另检查 `x-maxUtf8Bytes` 与合法 Unicode。不是通用 JSON Schema 产品。标准 Draft 2020-12 metaschema 与独立示例/真实 Application 接线验证分别执行。
 
@@ -42,10 +42,14 @@ await application(request, {principal: 'local-operator', requestId, signal});
 
 ## 错误、安全与限制
 
+ADR0095 新增 `task.leader`（GET `/v1/tasks/{taskId}/leader`）与 `task.leader.reply`（POST `/v1/tasks/{taskId}/leader/requests/{requestId}/reply`）的严格边界。view 最多 64 KiB，完整展示原请求/发布授权正文，重算其 Task 绑定摘要；新 API 不改变原 Task/Worker/Operation/Answer/Repair 字段或角色，不要求 profile header。未启用的应用仍返回501；这些 DI 测试不证明 v7 Core/Store/Leader 或真实发布已经接线。
+
+reply 为互斥闭集 `{expectedRevision,requestDigest,answer}` 或 `{expectedRevision,requestDigest,decision:'allow'|'deny'}`，必须原 key。202 `LeaderReplyReceipt` 绑定原 Task、路由 requestId、摘要、answer/decision 和 `acceptedRevision=expectedRevision+1`；不携带旧 Operation，不宣称 Worker ACK 或发布已成功。精确 replay/CAS、原请求有效性、授权与取消优先仍只由 Core 判断。`replyDigest=hash(encode({taskId,requestId,requestDigest,answer|decision}))`，不含 key/CAS；HTTP/Client 的摘要检查不是新的权限来源。
+
 应用可抛普通 DomainError `{code,status}`，不用依赖 HTTP 包；code/status 必须匹配 `contract.mjs` 的封闭映射。`TaskApiError` 是测试/组合可用的同形工具。未知 code、错误 status、异常 message/stack 均不回显。统一错误是 `{code,message,requestId,allowedActions}`，code 使用 snake_case。`same-key-replay` 只指原幂等请求，不授权自动重派 Worker 或创建新 Task。
 
 只允许 composition 声明 `127.0.0.1:PORT`，唯一 Host/Bearer/JSON 媒体头/幂等键；拒绝非空 Origin、压缩体、未知字段、非法 UTF-8、重复 JSON 键、深层 JSON、路径编码/逃逸和多值分页参数。token 只留 HTTP 闭包，不进入 Application、正文、日志或 Worker；应用的可公开 prompt/context 必须预先脱敏。普通同 UID 不构成恶意 sandbox。
 
 请求最多 256 KiB（input 为 384 KiB 的 base64 包络），响应/制品最多 8 MiB，body 深度最多 32；Task intent 8 KiB、context text 32 KiB。用户请求 limits 不是授权扩大服务限额：Application 必须比较实际 profile 上限。HTTP 等待默认 10 秒、最多 30 秒，不刷新 Task 原期限。请求体未结束时超时/断线会移除读取监听器并关闭该连接；可写错误响应先发出再回收连接，不继续解析剩余请求体，也不转化为 Task cancel。没有流式下载、SSE、HTTP multipart 或任意执行/发布端点。
 
-最短验证命令：`node --test --test-concurrency=1 packages/task-api/*.test.mjs packages/task-client/*.test.mjs`。25 个操作的合同（含局部修正）和运行问答测试使用 Request/Response 流替身、独立内存 Application fixture，以及真实 loopback HTTP；覆盖两族答复、oneOf 精确互斥、4096 字节边界、请求/回执串绑、有限选项、错误、丢回复与显式同 key 重放。标准 Draft 2020-12 metaschema/示例另用真实 jsonschema 校验器验证。无 DB/模型；不能替代实际 SQLite、同执行投递/ACK、恢复或独立业务验收。
+最短验证命令：`node --test --test-concurrency=1 packages/task-api/*.test.mjs packages/task-client/*.test.mjs`。27 个操作的合同（含局部修正、Leader 子资源）和运行问答测试使用 Request/Response 流替身、独立内存 Application fixture，以及真实 loopback HTTP；覆盖两族答复、oneOf 精确互斥、4096 字节边界、请求/回执串绑、授权正文替换、64 KiB view、有限选项、错误、丢回复与显式同 key 重放。标准 Draft 2020-12 metaschema/示例另用真实 Ajv 2020 校验器验证。无 DB/模型；不能替代实际 SQLite、同执行投递/ACK、恢复或独立业务验收。

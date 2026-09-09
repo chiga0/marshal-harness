@@ -24,11 +24,11 @@ async function loopback(t, application) {
 function example(schema) { return structuredClone((typeof schema === 'string' ? contract.components.schemas[schema] : resolve(schema.$ref)).examples[0]); }
 function options(entry) {
   const paths = Object.fromEntries([...entry.path.matchAll(/{([^}]+)}/g)].map(([, name]) => [name, name.replace('Id', '') + '-example']));
-  return {path: paths, ...(entry.request ? {body: example(entry.request), idempotencyKey: 'key-' + entry.operation.replace('.', '-')} : {}),
+  return {path: paths, ...(entry.request ? {body: example(entry.request), idempotencyKey: 'key-' + entry.operation.replaceAll('.', '-')} : {}),
     ...(entry.paged ? {query: {limit: 2}} : {})};
 }
 
-test('all 25 contract operations traverse real loopback HTTP and one injected Application', {timeout: 10000}, async t => {
+test('all 27 contract operations traverse real loopback HTTP and one injected Application', {timeout: 10000}, async t => {
   const received = [];
   const {client} = await loopback(t, async (request, context) => {
     assert.equal(context.principal, 'local-operator'); received.push(request);
@@ -44,9 +44,9 @@ test('all 25 contract operations traverse real loopback HTTP and one injected Ap
     const result = await client.request(entry.operation, options(entry));
     if (entry.operation === 'artifact.content') assert.deepEqual(result.content, bytes);
   }
-  assert.equal(received.length, 26); // Download includes a fresh manifest GET.
+  assert.equal(received.length, 28); // Download includes a fresh manifest GET.
   for (const entry of operations) assert.ok(received.some(request => request.operation === entry.operation), entry.operation);
-  for (const request of received.filter(request => request.body)) assert.equal(request.key, 'key-' + request.operation.replace('.', '-'));
+  for (const request of received.filter(request => request.body)) assert.equal(request.key, 'key-' + request.operation.replaceAll('.', '-'));
 });
 
 test('explicit create/plan approval preserves original key/revision through conflict and response loss', {timeout: 10000}, async t => {

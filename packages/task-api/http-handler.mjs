@@ -1,5 +1,6 @@
 import {randomUUID, createHash} from 'node:crypto';
-import {operations, validate, validAnswerResponse, validQuestionItems, validRepairResponse, validAuditResponse, TaskApiError, errorPayload} from './contract.mjs';
+import {operations, validate, validAnswerResponse, validQuestionItems, validRepairResponse, validAuditResponse,
+  validLeaderView, validLeaderReplyResponse, MAX_LEADER_VIEW_BYTES, TaskApiError, errorPayload} from './contract.mjs';
 import {protect, mutationHeaders, readJson, sendJson, closeIncompleteRequest} from './http-boundary.mjs';
 
 const MAX_RESPONSE = 8 * 1024 * 1024;
@@ -38,6 +39,8 @@ function boundResponse(entry, request, value) {
   if (entry.operation === 'task.answer' && !validAnswerResponse(request, value) ||
       entry.operation === 'task.repair' && !validRepairResponse(request, value) ||
       entry.operation === 'task.audit' && !validAuditResponse(value, request.taskId) ||
+      entry.operation === 'task.leader' && !validLeaderView(value, request.taskId) ||
+      entry.operation === 'task.leader.reply' && !validLeaderReplyResponse(request, value) ||
       entry.operation === 'task.questions' && !validQuestionItems(value, request.taskId))
     throw new TaskApiError('invalid_application_response');
 }
@@ -88,7 +91,8 @@ export function createTaskApiHandler({application, token, expectedHost, requestT
         res.end(bytes);
       } else {
         const raw = JSON.stringify(value);
-        if (typeof raw !== 'string' || Buffer.byteLength(raw) > MAX_RESPONSE || raw.includes(token)) throw new TaskApiError('invalid_application_response');
+        const limit = entry.operation === 'task.leader' ? MAX_LEADER_VIEW_BYTES : MAX_RESPONSE;
+        if (typeof raw !== 'string' || Buffer.byteLength(raw) > limit || raw.includes(token)) throw new TaskApiError('invalid_application_response');
         // Serialize once into plain data before checking: getters/toJSON cannot
         // supply one checked value and a different value to the response writer.
         const safe = JSON.parse(raw); boundResponse(entry, request, safe);
