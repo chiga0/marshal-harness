@@ -8,6 +8,7 @@ import {hasPublicationExpected} from './verification.mjs';
 const decode = row => row ? JSON.parse(row.bytes.toString()) : null;
 const live = record => ['queued', 'running', 'awaiting-answer', 'stopping', 'unknown'].includes(record.worker.status);
 const managed = new Set(['leader', 'review', 'publication', 'postverify']);
+const ended = new Set(['completed', 'failed', 'cancelled']);
 export const isManagedExecution = type => managed.has(type);
 
 export function leaderConfiguration(leader, review, publication = null, verification = null) {
@@ -44,6 +45,299 @@ export class TaskLeader {
   }
   configured(task) {
     check(this.port && task.leader?.profile === LEADER_PROFILE && task.leader.policyDigest === this.port.policyDigest, 'unsupported_task');
+  }
+  recoveryAllowed(task, record, count = 0, lookupStatus = null) {
+    if (!task.leader || ended.has(task.task.status) || task.cancelIntent || task.failureCode || task.workerCancelled || record?.stopIntent ||
+      task.task.status === 'intervention' && !['leader_recovery_pending', 'publication_effect_unresolved', 'previous_execution_unresolved'].includes(task.task.code) ||
+      this.app.now() >= Date.parse(task.task.deadlineAt) || count >= 1) return false;
+    // Include the minimum unfinished delivery path, not just the replacement
+    // invocation. Recovery never raises original attempts/call/deadline limits.
+    let calls, attempts;
+    if (!task.plan) {
+      calls = 5;
+      // Even the smallest future Plan needs its mandatory author nodes, one
+      // Review and verifier, then the configured publication/postverification.
+      // These are additional to the interrupted Attempt already charged.
+      attempts = calls + Math.max(1, this.config.leader.policy.repair.nodeIds.length) + 2 + (this.publication ? 2 : 0);
+    }
+    else if (task.leader.stage === 'finalizing') {calls = 1; attempts = 1;}
+    else if (task.leader.postverify) {calls = 1; attempts = task.leader.postverify.status === 'passed' ? 1 : 2;}
+    else if (task.leader.publication) {calls = 1; attempts = lookupStatus === 'matched' ? 2 : 3;}
+    else if (task.acceptance?.status === 'passed') {calls = 2; attempts = 2 + (this.publication ? 2 : 0);}
+    else if (task.leader.review?.verdict === 'accept') {calls = 3; attempts = 4 + (this.publication ? 2 : 0);}
+    else {calls = record?.ticket.executionType === 'review' ? 3 : 4;
+      attempts = calls + 2 + task.nodes.filter(node => node.role === 'author' && node.status !== 'completed').length + (this.publication ? 2 : 0);}
+    return task.attempts + attempts <= (task.plan?.budget ?? task.limits).maxAttempts && task.leader.calls + calls <= this.config.leader.policy.maxCalls;
+  }
+  recoveryStatus(task, continuing, unresolved = false) {
+    if (unresolved) {task.task.status = 'intervention'; task.task.code = 'publication_effect_unresolved'; return;}
+    if (continuing) {
+      task.task.status = task.pausedFrom ? 'paused' : 'running'; delete task.task.code; delete task.failureCode; return;
+    }
+    task.task.status = task.cancelIntent && !task.failureCode ? 'cancelled' : 'failed';
+    task.task.code = task.task.status === 'cancelled' ? 'task_cancelled' : task.failureCode ?? 'service_interrupted';
+    task.task.phase = 'terminal'; task.leader.stage = 'terminal'; task.leader.obligationId = null;
+    for (const node of task.nodes) if (['pending', 'ready', 'waiting'].includes(node.status)) node.status = 'cancelled';
+  }
+  settleRecoveryControl(tx, task, source) {
+    if (!ended.has(task.task.status) || !task.cancelIntent) return;
+    if (this.app.execution.workers(tx, task).some(({record}) => live(record)) ||
+      this.app.execution.capacity(tx).value.active.some(item => item.taskId === task.task.id)) return;
+    const stop = tx.command(task.cancelIntent.commandId), row = tx.projection('operation', task.cancelIntent.operationId), operation = decode(row);
+    check(stop?.taskId === task.task.id && stop.kind === 'stop' && operation?.taskId === task.task.id && operation.kind === 'task.cancel', 'recovery_required');
+    if (['accepted', 'running', 'unknown'].includes(operation.status)) {
+      operation.status = 'succeeded'; operation.taskRevision = task.task.revision; operation.updatedAt = new Date(this.app.now()).toISOString();
+      tx.putProjection('operation', row.id, row.revision, source, encode(operation));
+    }
+    if (stop.status !== 'observed') tx.observeCommand(stop.id, stop.revision, 'observed', source);
+  }
+  interrupted(task, record, original, observationDigest) {
+    const type = record.ticket.executionType, origin = original.obligation ?? original.action, count = origin.successor ?? origin.recoveryCount ?? 0;
+    // A publication's effect still needs read-only lookup after cancellation or
+    // expiry. No such lookup grants a new publication permission.
+    if ((type !== 'publication' || record.cleanup.started === null) && !this.recoveryAllowed(task, record, count)) return false;
+    record.recovery = {type, originId: origin.id, commandId: record.ticket.commandId, count, observationDigest,
+      status: 'pending', sourceGeneration: record.ticket.generation};
+    return true;
+  }
+  recover(taskId) {
+    if (!this.port) return;
+    const pending = this.app.transaction(false, tx => {
+      const task = this.app.get(tx, taskId); if (!task.leader || ended.has(task.task.status)) return [];
+      const workers = this.app.execution.workers(tx, task);
+      if (workers.some(({record}) => live(record) && record.ticket.generation !== this.app.owner.generation.toString())) return [];
+      return workers.filter(({record}) => record.recovery?.status === 'pending' && record.recovery.lookupGeneration !== this.app.owner.generation.toString())
+        .map(({record}) => ({workerId: record.worker.id, recovery: clone(record.recovery)}));
+    });
+    for (const entry of pending) this.recoverExecution(taskId, entry);
+    this.recoverPublicationAction(taskId);
+    this.recoverUnreserved(taskId);
+  }
+  recoverExecution(taskId, entry) {
+    const original = this.app.transaction(false, tx => {
+      const {record} = this.app.execution.worker(tx, entry.workerId), task = this.app.get(tx, taskId);
+      check(hash(record.recovery) === hash(entry.recovery) && record.cleanup?.cleaned && record.custody?.settledDigest === entry.recovery.observationDigest,
+        'recovery_required');
+      const inputRow = tx.projection('attempt', record.inputRef), input = decode(inputRow);
+      check(inputRow?.revision === 1n && digest(inputRow.bytes) === record.ticket.inputDigest, 'recovery_required');
+      return {ticket: {...record.ticket, input}, task, record, readSet: hash(this.semantic(tx, task))};
+    });
+    const lookup = entry.recovery.type === 'publication' ? this.effects.publication.lookup(original.ticket, {deadline: this.app.now() + 1000}) : null;
+    const data = lookup ? receipt(this.effects.publication, original.ticket, lookup) : null;
+    const staged = data ? this.app.artifacts.stageOutputs([['evidence', data.value.evidence]]) : [];
+    this.app.transaction(true, tx => {
+      const {row, record} = this.app.execution.worker(tx, entry.workerId), task = this.app.get(tx, taskId), recovery = record.recovery;
+      if (ended.has(task.task.status) || hash(recovery) !== hash(entry.recovery)) return;
+      check(record.cleanup?.cleaned && record.custody?.settledDigest === recovery.observationDigest &&
+        hash(record.ticket) === hash(original.record.ticket), 'recovery_required');
+      if (this.app.execution.workers(tx, task).some(({record: other}) => live(other) && other.ticket.generation !== this.app.owner.generation.toString())) return;
+      const allowed = this.recoveryAllowed(task, record, recovery.count, data?.status) && (!data || original.readSet === hash(this.semantic(tx, task))) &&
+        (!data || this.app.now() < Date.parse(original.ticket.input.publication.authorization.expiresAt)), command = tx.command(recovery.commandId);
+      check(command && command.taskId === taskId && command.generation.toString() === recovery.sourceGeneration, 'recovery_required');
+      let enqueue = null, projection = null, unresolved = false;
+      if (recovery.type === 'leader') {
+        const old = decode(tx.projection('interaction', recovery.originId));
+        check(old?.status === 'closed' && old.workerId === record.worker.id && old.commandId === command.id &&
+          old.generation === recovery.sourceGeneration && (old.successor ?? 0) === recovery.count, 'recovery_required');
+        if (allowed) {
+          const id = this.app.newId('obligation'), commandId = this.app.newId('command');
+          const value = {...old, id, commandId, status: 'pending', generation: this.app.owner.generation.toString(),
+            readSetDigest: null, successor: recovery.count + 1, predecessor: {obligationId: old.id, workerId: record.worker.id, commandId: command.id}};
+          delete value.workerId;
+          task.leader.obligationId = id; projection = {kind: 'interaction', id, revision: 0, value};
+          enqueue = {id: commandId, type: 'leader', kind: 'start', payload: {taskId, obligationId: id}};
+        }
+      } else {
+        const actionRow = tx.projection('attempt', recovery.originId), action = decode(actionRow);
+        check(action?.workerId === record.worker.id && action.commandId === command.id && (action.recoveryCount ?? 0) === recovery.count,
+          'recovery_required');
+        if (data) {
+          check(hash(action.binding) === hash(data.value.binding) && hash(action.authorization) === hash(original.ticket.input.publication.authorization), 'recovery_required');
+          const artifact = {id: this.app.newId('artifact'), taskId, name: staged[0].name, kind: 'evidence', status: 'ready',
+            mediaType: staged[0].mediaType, ...staged[0].ref, createdAt: new Date(this.app.now()).toISOString()};
+          staged[0].artifact = artifact;
+          action.lookup = {status: data.status, evidenceId: artifact.id, digest: artifact.digest};
+          if (data.status === 'matched') {
+            action.status = 'succeeded'; action.result = {evidenceId: artifact.id, digest: artifact.digest, observedStatus: 'matched'};
+            task.leader.publication.status = 'matched'; task.leader.publication.receiptArtifactId = artifact.id;
+            if (allowed) {
+              const id = 'action-' + hash({publicationActionId: action.id, kind: 'postverify'}).slice(7), commandId = this.app.newId('command');
+              check(!task.leader.postverify && !tx.projection('attempt', id), 'recovery_required');
+              projection = {kind: 'attempt', id, revision: 0, value: {id, taskId, sourceDecision: action.sourceDecision,
+                payloadDigest: hash({publication: action.id}), payload: {type: 'postverify', publicationActionId: action.id},
+                status: 'pending', commandId, workerId: null, result: null}};
+              task.leader.postverify = {actionId: id, status: 'pending', evidenceArtifactId: null};
+              enqueue = {id: commandId, type: 'postverify', kind: 'verify', payload: {taskId, actionId: id}};
+            }
+          } else if (data.status === 'conflict') {action.status = 'failed'; task.leader.publication.status = 'failed';}
+          else if (data.status === 'absent' && record.cleanup.started === null && allowed) {
+            action.status = 'pending'; task.leader.publication.status = 'pending';
+          } else {unresolved = true; action.status = 'unknown'; task.leader.publication.status = 'unknown';}
+        }
+        if (allowed && (!data || data.status === 'absent' && record.cleanup.started === null)) {
+          const predecessor = {workerId: action.workerId, commandId: action.commandId};
+          action.commandId = this.app.newId('command'); action.workerId = null; action.status = 'pending';
+          action.recoveryCount = recovery.count + 1; action.predecessor = predecessor;
+          enqueue = {id: action.commandId, type: recovery.type, kind: recovery.type === 'postverify' ? 'verify' : 'start', payload: {taskId, actionId: action.id}};
+          if (recovery.type === 'postverify') task.leader.postverify.status = 'pending';
+        }
+        projection ??= {kind: 'attempt', id: action.id, revision: actionRow.revision, value: action};
+        if (projection.id !== action.id) projection.additional = {kind: 'attempt', id: action.id, revision: actionRow.revision, value: action};
+      }
+      recovery.status = unresolved ? 'pending' : enqueue ? 'resumed' : 'closed';
+      if (data) recovery.lookupGeneration = this.app.owner.generation.toString();
+      if (enqueue) recovery.successorCommandId = enqueue.id;
+      this.recoveryStatus(task, !!enqueue, unresolved);
+      task.task.revision = nextRevision(task.task.revision);
+      const source = this.app.save(tx, task, 'leader.stage.changed', {workerId: record.worker.id, recovery: clone(recovery)});
+      if (projection) for (const item of [projection, ...(projection.additional ? [projection.additional] : [])])
+        tx.putProjection(item.kind, item.id, item.revision, source, encode(item.value));
+      if (staged.length) this.app.artifacts.commitOutputs(tx, taskId, staged, source);
+      if (!unresolved && command.status !== 'observed') tx.observeCommand(command.id, command.revision, 'observed', source);
+      if (enqueue) this.app.enqueue(tx, source, taskId, enqueue.type, enqueue.payload, enqueue.kind, enqueue.id);
+      this.app.execution.putWorker(tx, row, record, source);
+      this.settleRecoveryControl(tx, task, source);
+    });
+  }
+  unreservedPublication(tx, task) {
+    if (!task.leader?.publication || task.leader.publication.receiptArtifactId || ended.has(task.task.status)) return null;
+    const row = tx.projection('attempt', task.leader.publication.actionId), action = decode(row), command = action && tx.command(action.commandId);
+    if (!command || command.generation === this.app.owner.generation || action.lookupGeneration === this.app.owner.generation.toString()) return null;
+    const workers = this.app.execution.workers(tx, task);
+    if (workers.some(({record}) => record.ticket.commandId === command.id || live(record))) return null;
+    const payload = decode({bytes: command.payload});
+    check(['pending', 'unknown'].includes(command.status) && command.attemptId === '' && command.kind === 'start' && command.taskId === task.task.id &&
+      command.inputDigest === digest(command.payload) && payload.action === 'publication' && payload.actionId === action.id && payload.taskId === task.task.id &&
+      action.taskId === task.task.id && ['pending', 'unknown'].includes(action.status) && action.workerId === null, 'recovery_required');
+    const history = task.leader.history.find(item => item.digest === action.sourceDecision), decision = history && decode(tx.projection('attempt', history.callId));
+    check(decision && hash(decision) === history.digest && action.payloadDigest === hash(action.payload) && action.payload.type === 'deliver' &&
+      decision.actions.some((value, index) => action.id === 'action-' + hash({callId: history.callId, decisionDigest: history.digest, index}).slice(7) &&
+        hash(value) === hash(action.payload)), 'recovery_required');
+    const authorization = action.authorization, question = this.request(tx, task).find(value => value.actionId === action.id);
+    const answer = question?.replyRef && decode(tx.projection('interaction', question.replyRef));
+    const artifact = this.app.artifacts.metadata(tx, authorization.artifactId);
+    check(question?.status === 'replied' && answer?.decision === 'allow' && question.subject === hash(authorization) && question.replyDigest === hash(answer) &&
+      authorization.taskId === task.task.id && authorization.planDigest === task.plan.digest && authorization.targetId === this.publication.id &&
+      authorization.targetPolicyDigest === this.publication.policyDigest && artifact.digest === authorization.artifactDigest && artifact.bytes === authorization.bytes &&
+      action.binding.authorizationDigest === hash(authorization) && action.binding.actionId === action.id, 'recovery_required');
+    const replies = this.replies(tx, task);
+    return {row, action, command, readSet: hash(this.semantic(tx, task)), expectedInput: {taskId: task.task.id, planDigest: task.plan.digest,
+      input: {task: clone(task.input), plan: clone(task.plan), inputArtifacts: clone(task.inputArtifacts), leaderReplies: replies.answers,
+        leaderReplyRefs: replies.refs, interactionRefs: this.app.runtimeQuestions.refs(tx, task)}},
+      subject: {profile: 'publication-action-lookup', taskId: task.task.id, commandId: command.id,
+        generation: command.generation.toString(), actionDigest: hash(action), binding: clone(action.binding), authorization: clone(authorization)}};
+  }
+  recoverPublicationAction(taskId) {
+    if (!this.publication) return;
+    const original = this.app.transaction(false, tx => this.unreservedPublication(tx, this.app.get(tx, taskId)));
+    if (!original) return;
+    const lookup = this.effects.publication.lookup(original.subject, {deadline: this.app.now() + 1000});
+    const data = receipt(this.effects.publication, original.subject, lookup);
+    const expected = data.status === 'matched' ? this.app.verification.expectedPublication(original.expectedInput) : null;
+    const staged = this.app.artifacts.stageOutputs([['evidence', data.value.evidence]]);
+    this.app.transaction(true, tx => {
+      const task = this.app.get(tx, taskId), current = this.unreservedPublication(tx, task);
+      if (!current) return;
+      check(hash(current.subject) === hash(original.subject), 'recovery_required');
+      const {row, action, command} = current;
+      const allowed = this.recoveryAllowed(task, null, action.recoveryCount ?? 0, data.status) && this.app.now() < Date.parse(action.authorization.expiresAt) &&
+        current.readSet === original.readSet;
+      const artifact = {id: this.app.newId('artifact'), taskId, name: staged[0].name, kind: 'evidence', status: 'ready', mediaType: staged[0].mediaType,
+        ...staged[0].ref, createdAt: new Date(this.app.now()).toISOString()}; staged[0].artifact = artifact;
+      action.lookup = {status: data.status, evidenceId: artifact.id, digest: artifact.digest}; action.lookupGeneration = this.app.owner.generation.toString();
+      let enqueue = null, post = null;
+      if (data.status === 'matched') {
+        action.status = 'succeeded'; action.result = {evidenceId: artifact.id, digest: artifact.digest, observedStatus: 'matched'};
+        task.leader.publication.status = 'matched'; task.leader.publication.receiptArtifactId = artifact.id;
+        if (allowed) {
+          action.expected = clone(expected);
+          const id = 'action-' + hash({publicationActionId: action.id, kind: 'postverify'}).slice(7), commandId = this.app.newId('command');
+          check(!task.leader.postverify && !tx.projection('attempt', id), 'recovery_required');
+          post = {id, taskId, sourceDecision: action.sourceDecision, payloadDigest: hash({publication: action.id}),
+            payload: {type: 'postverify', publicationActionId: action.id}, status: 'pending', commandId, workerId: null, result: null};
+          task.leader.postverify = {actionId: id, status: 'pending', evidenceArtifactId: null};
+          enqueue = {id: commandId, type: 'postverify', payload: {taskId, actionId: id}};
+        }
+      } else if (data.status === 'absent' && allowed) {
+        action.commandId = this.app.newId('command'); action.recoveryCount = (action.recoveryCount ?? 0) + 1;
+        action.predecessor = {commandId: command.id, workerId: null}; action.status = 'pending'; task.leader.publication.status = 'pending';
+        enqueue = {id: action.commandId, type: 'publication', payload: {taskId, actionId: action.id}};
+      } else if (data.status === 'unknown') {action.status = 'unknown'; task.leader.publication.status = 'unknown';}
+      else {action.status = task.cancelIntent ? 'cancelled' : 'failed'; task.leader.publication.status = action.status;}
+      this.recoveryStatus(task, !!enqueue, data.status === 'unknown');
+      task.task.revision = nextRevision(task.task.revision);
+      const source = this.app.save(tx, task, 'leader.action.settled', {actionId: action.id, lookup: clone(action.lookup), unreservedCommandId: command.id});
+      tx.putProjection('attempt', action.id, row.revision, source, encode(action));
+      if (post) tx.putProjection('attempt', post.id, 0, source, encode(post));
+      this.app.artifacts.commitOutputs(tx, taskId, staged, source);
+      if (command.status !== (data.status === 'unknown' ? 'unknown' : 'observed'))
+        tx.observeCommand(command.id, command.revision, data.status === 'unknown' ? 'unknown' : 'observed', source);
+      if (enqueue) this.app.enqueue(tx, source, taskId, enqueue.type, enqueue.payload, enqueue.type === 'postverify' ? 'verify' : 'start', enqueue.id);
+      this.settleRecoveryControl(tx, task, source);
+    });
+  }
+  recoverUnreserved(taskId) {
+    this.app.transaction(true, tx => {
+      const task = this.app.get(tx, taskId); if (!task.leader || ended.has(task.task.status)) return;
+      const workers = this.app.execution.workers(tx, task);
+      if (workers.some(({record}) => live(record) && record.ticket.generation !== this.app.owner.generation.toString()) ||
+        task.leader.publication?.status === 'unknown') return;
+      const commands = tx.taskCommands(taskId, '', 100); check(commands.length < 100, 'recovery_required');
+      const prior = task.leader.commandSuccessors ?? [], priorCount = prior.length, updates = []; let cannotContinue = false;
+      for (const command of commands) {
+        if (command.status !== 'pending' || command.generation === this.app.owner.generation) continue;
+        const payload = decode({bytes: command.payload});
+        if (!['leader', 'review', 'postverify', 'execute', 'dispatch'].includes(payload.action)) continue;
+        check(command.attemptId === '' && command.inputDigest === digest(command.payload) && payload.taskId === taskId &&
+          !workers.some(({record}) => record.ticket.commandId === command.id), 'recovery_required');
+        const permitted = this.recoveryAllowed(task, null, 0) && !prior.some(item => item.to === command.id);
+        cannotContinue ||= !permitted;
+        const commandId = this.app.newId('command'); let projection;
+        if (payload.action === 'leader') {
+          const row = tx.projection('interaction', payload.obligationId), value = decode(row);
+          check(value?.status === 'pending' && value.commandId === command.id && !value.workerId &&
+            value.id === task.leader.obligationId && value.generation === command.generation.toString(), 'recovery_required');
+          if (permitted) {value.commandId = commandId; value.generation = this.app.owner.generation.toString();}
+          else value.status = 'closed';
+          projection = {kind: 'interaction', row, value};
+        } else if (['review', 'postverify'].includes(payload.action)) {
+          const row = tx.projection('attempt', payload.actionId), value = decode(row);
+          check(value?.status === 'pending' && value.commandId === command.id && value.workerId === null && value.taskId === taskId, 'recovery_required');
+          if (permitted) value.commandId = commandId; else value.status = task.cancelIntent ? 'cancelled' : 'failed';
+          projection = {kind: 'attempt', row, value};
+        } else {
+          check(task.approved?.planDigest === payload.planDigest, 'recovery_required');
+          if (payload.action === 'execute') check(task.nodes.some(node => node.id === payload.nodeId &&
+            ['pending', 'ready', 'waiting'].includes(node.status)) &&
+            (payload.repairId ?? null) === (task.activeRepair?.repairId ?? null), 'recovery_required');
+        }
+        updates.push({command, commandId, payload, projection, permitted});
+        if (permitted) prior.push({from: command.id, to: commandId});
+      }
+      if (!updates.length) return;
+      check(prior.length <= 64, 'recovery_required'); task.leader.commandSuccessors = prior;
+      if (cannotContinue) {
+        // A pending command is not an execution. Exhausted finite recovery must
+        // close it, rather than leave an unreachable old-generation outbox.
+        if (workers.some(({record}) => live(record))) {task.failureCode ??= 'service_interrupted'; task.task.status = 'cancelling';}
+        else this.recoveryStatus(task, false);
+        prior.length = priorCount;
+        for (const {command, projection} of updates) if (projection) {
+          projection.value.commandId = command.id;
+          projection.value.status = projection.kind === 'interaction' ? 'closed' : task.cancelIntent ? 'cancelled' : 'failed';
+          if (projection.kind === 'interaction') projection.value.generation = command.generation.toString();
+        }
+      }
+      task.task.revision = nextRevision(task.task.revision);
+      const source = this.app.save(tx, task, 'leader.stage.changed', {unreservedSuccessors: cannotContinue ? [] : updates.map(item => ({from: item.command.id, to: item.commandId})),
+        closedCommands: cannotContinue ? updates.map(item => item.command.id) : []});
+      for (const {command, commandId, payload, projection} of updates) {
+        if (projection) tx.putProjection(projection.kind, projection.row.id, projection.row.revision, source, encode(projection.value));
+        tx.observeCommand(command.id, command.revision, 'observed', source);
+        if (!cannotContinue) {const {action, ...body} = payload; this.app.enqueue(tx, source, taskId, action, body, command.kind, commandId);}
+      }
+      this.settleRecoveryControl(tx, task, source);
+    });
   }
   prepareObligation(task) {
     task.leader.obligationId ??= this.app.newId('obligation');
