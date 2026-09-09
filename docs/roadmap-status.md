@@ -6,6 +6,10 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
+**2026-09-09 18:14 后继验收**：独立安装消费者源 `1657f6cc0299f5bfe863765b7899e5ea9655a905` 六文件经维护者审查无 P0/P1；独立 4/4（29.934 秒）消费原 `da2e9bd2` 的 55 文件包，manifest=`sha256:2d71de964b15b8be000a1b6022feb4ae8dbfbd26990b24a52d06a0b382401e56`。同配置两 Task 各 12 Attempts，均含 6 Leader、2作者及独立 Review/Verifier/Publication/Postverify；原作者进程交叠399/404ms、两份不同93B成果经过授权发布与真实GET后验，冷开原回执/事件/成果不变、零重复启动或发布。此为Darwin ordinary-user受控ACP，modelCalls=0；不覆盖异常恢复、真实模型或release。已合整合分支 `9fa5cd12`，不是 main 合并。原状态/修正/SQLite兼容独立84/84（15.745秒）通过仍只证明基线范围。
+
+真实 Pi 驱动后继源 `8eec88e5` 经独立14/14（1.198秒），修正复制FileBusiness对象丢私有身份与服务默认2槽不符合原Task3槽的启动问题；保留原factory对象及原预算，增加真实目录/权限/采集与零Task的服务create/open前置检查，不降低Core门禁、不消耗模型。Pi CLI 当前实际版本0.84.4，固定Node可执行；完整模型任务尚未运行。Core聚合修复与双平台同包消费者接线在途，main仍为3beafe17；不将新候选标记可发布。
+
 **2026-09-09 18:03 检查点**：main/origin/main 为 `3beafe17c1874c42d0fed8e25a3f0c9a811c9bc0`，已推送的 API、有限报告端口和实机驱动批次 `pendingRemoteSync=false`；该 SHA 的 Node team CI `34336243004` 五项通过，资产 `10098074531` 不含后继 v7 Core。后继整合 `da2e9bd2719929e94c25fbed553d0a1819b0e9ad` 保持候选，未合 main：API/客户端/驱动 57/57、真实 HTTP/SQLite/所属进程正向 2/2（46.249 秒）通过；发行清单 55 文件、独立安装冷导入通过，不等于安装后 v7 执行通过。以上使用受控 ACP，不是新真实模型验收。
 
 Core 冻结源 `236ce0173dc797daa753e734ee9d31083078d5d3` 首审确认四个 P1：等待/陈旧 Leader 的业务义务续接、取消后的原发布收据保留、发布后验能力前置、结构失败不可自动重试。现交同一作者聚合修正，未放行。后继测试源 `0e9886bc` 在维护者普通权限运行：HTTP 双作者取消 1/1（3.616 秒）通过，独立 Review→仅 east 修正→第二次 Review 接纳已走到原 verify，但 verify 失败导致 Task failed，完整修正用例未通过；原状态与失败成本保留，不能据局部成功关闭 B2-L。当前同时推进独立安装包 v7 消费；B2-L 整链仍 DESIGN，B2/B3 不升级。[当前实施 Goal](agent-team-service-milestones.md#当前持续实施-goal)取代 ECS-first 的执行前置，不重置历史成本。
