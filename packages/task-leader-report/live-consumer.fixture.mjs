@@ -5,13 +5,52 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {isDeepStrictEqual} from 'node:util';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
 import {verify} from '../task-distribution/index.mjs';
 
 const check = (ok, code) => {if (!ok) throw new Error(code);};
-const same = (a, b) => check(isDeepStrictEqual(a, b), 'evidence_mismatch');
+// HTTP JSON has null-prototype records. Compare JSON values, not prototypes;
+// never erase extra fields, sort arrays, invoke toJSON, or coerce scalar types.
+export function sameJSON(a, b, code = 'evidence_mismatch') {
+  let nodes = 0;
+  function canonical(value, depth = 0) {
+    check(++nodes <= 200000 && depth <= 64, 'comparison_limit');
+    if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
+    if (typeof value === 'number') {check(Number.isFinite(value), 'comparison_not_json'); return JSON.stringify(value);}
+    check(value && typeof value === 'object' && (Array.isArray(value) || [null, Object.prototype].includes(Object.getPrototypeOf(value))), 'comparison_not_json');
+    check(Object.getOwnPropertySymbols(value).length === 0, 'comparison_not_json');
+    const names = Object.getOwnPropertyNames(value);
+    if (Array.isArray(value)) {
+      check(names.length === value.length + 1 && names.includes('length'), 'comparison_not_json');
+      return '[' + Array.from({length: value.length}, (_, index) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        check(descriptor && Object.hasOwn(descriptor, 'value') && descriptor.enumerable, 'comparison_not_json');
+        return canonical(descriptor.value, depth + 1);
+      }).join(',') + ']';
+    }
+    return '{' + names.sort().map(name => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, name);
+      check(Object.hasOwn(descriptor, 'value') && descriptor.enumerable, 'comparison_not_json');
+      return JSON.stringify(name) + ':' + canonical(descriptor.value, depth + 1);
+    }).join(',') + '}';
+  }
+  check(canonical(a) === canonical(b), code);
+}
+const same = (a, b, code = 'evidence_mismatch') => {
+  if (Buffer.isBuffer(a) || Buffer.isBuffer(b)) check(Buffer.isBuffer(a) && Buffer.isBuffer(b) && a.equals(b), code);
+  else sameJSON(a, b, code);
+};
+export function checkPlan(plan, limits) {
+  check(Array.isArray(plan.nodes) && plan.nodes.length === 3 && Array.isArray(plan.edges) && plan.edges.length === 2, 'plan_members_mismatch');
+  const nodes = plan.nodes.map(node => [node.id, node.role]).sort((a, b) => a[0].localeCompare(b[0]));
+  same(nodes, [['east', 'author'], ['verify', 'verifier'], ['west', 'author']], 'plan_nodes_mismatch');
+  // Sort copies of the original edge records, retaining every field. Exact
+  // membership rejects duplicates/missing/extra edges; original Plan is intact.
+  const edges = [...plan.edges].sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
+  same(edges, [{from: 'east', to: 'verify'}, {from: 'west', to: 'verify'}], 'plan_edges_mismatch');
+  same(plan.budget, limits, 'plan_budget_mismatch');
+}
 const digest = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 export function parseOptions(argv) {
   const names = ['package', 'manifest-digest', 'source-head', 'node', 'pi-entry', 'pi-sdk', 'run-dir'];
@@ -48,7 +87,7 @@ export function checkAuthorization(authorization, {taskId, plan, report, audit, 
   same(authorization, {taskId, planDigest: plan.digest, artifactId: report.artifact.id, artifactDigest, bytes: report.content.length,
     acceptanceDigest: audit.acceptance.digest, reviewDigest: leader.review.digest, targetId: 'local-window-report',
     targetPolicyDigest: authorization.targetPolicyDigest, operation: 'create-if-absent',
-    name: taskId + '-' + artifactDigest.slice(7) + '.json', expiresAt: authorization.expiresAt});
+    name: taskId + '-' + artifactDigest.slice(7) + '.json', expiresAt: authorization.expiresAt}, 'authorization_mismatch');
   check(/^sha256:[a-f0-9]{64}$/.test(authorization.targetPolicyDigest) && Date.parse(authorization.expiresAt) > now, 'authorization_expired');
 }
 function privateDirectory(directory) {
@@ -140,8 +179,7 @@ export async function run(options) {
         body: {expectedRevision: task.revision, requestDigest: leader.pendingRequest.requestDigest, answer: JSON.stringify(window)}};
       const answerReceipt = await client.request('task.leader.reply', answer);
       task = await phase('awaiting-approval'); const plan = await client.request('task.plan', {path: {taskId}});
-      same(plan.edges, [{from: 'east', to: 'verify'}, {from: 'west', to: 'verify'}]); same(plan.budget, create.body.limits);
-      same(plan.nodes.map(node => [node.id, node.role]), [['east', 'author'], ['west', 'author'], ['verify', 'verifier']]);
+      checkPlan(plan, create.body.limits);
       const approve = {path: {taskId}, idempotencyKey: 'live-approve-' + index,
         body: {expectedRevision: task.revision, planRevision: plan.revision, planDigest: plan.digest}};
       const approval = await client.request('task.approve', approve);
@@ -173,7 +211,7 @@ export async function run(options) {
         publicationReceiptArtifactId: final.publication.receiptArtifactId, postverifyEvidenceArtifactId: final.postverify.evidenceArtifactId});
     }
     evidence.stage = 'cold-replay'; await handle.stop();
-    const files = fs.readdirSync(reportRoot).map(name => {const stat = fs.statSync(path.join(reportRoot, name)); return {name, ino: stat.ino, mtimeMs: stat.mtimeMs};});
+    const files = fs.readdirSync(reportRoot).sort().map(name => {const stat = fs.statSync(path.join(reportRoot, name)); return {name, ino: stat.ino, mtimeMs: stat.mtimeMs};});
     ({handle, client} = await start('open'));
     for (const item of completed) {
       same(await client.request('task.create', item.create), item.created); same(await client.request('task.approve', item.approve), item.approval);
@@ -185,7 +223,7 @@ export async function run(options) {
       same(Buffer.from((await client.downloadArtifact(item.report.artifact.id)).content), Buffer.from(item.report.content));
     }
     await handle.stop();
-    same(fs.readdirSync(reportRoot).map(name => {const stat = fs.statSync(path.join(reportRoot, name)); return {name, ino: stat.ino, mtimeMs: stat.mtimeMs};}), files);
+    same(fs.readdirSync(reportRoot).sort().map(name => {const stat = fs.statSync(path.join(reportRoot, name)); return {name, ino: stat.ino, mtimeMs: stat.mtimeMs};}), files, 'publication_files_changed');
     same(verify({root: o.package, manifestDigest: o['manifest-digest']}), manifest);
     evidence.passed = true; evidence.stage = 'completed';
   } catch (error) {evidence.failure = error?.code && /^[a-z_]{1,64}$/.test(error.code) ? error.code :
