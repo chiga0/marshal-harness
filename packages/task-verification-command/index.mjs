@@ -58,7 +58,8 @@ function frame(bytes) {
 
 /** Trusted composition only. Neither this adapter nor a checker signs Decisions. */
 export function createVerificationCommand({executable, checkerPath, checkerDigest, policyDigest, assertions,
-  env = {}, request = ({ticket}) => ({verification: ticket.input.verification, fileLayout: ticket.input.fileLayout ?? null}), delivery} = {}) {
+  env = {}, request = ({ticket}) => ({verification: ticket.input.verification, fileLayout: ticket.input.fileLayout ?? null,
+    ...(ticket.input.interactionRefs ? {interactionRefs: ticket.input.interactionRefs} : {})}), delivery} = {}) {
   if (!text(executable) || !path.isAbsolute(executable) || !text(checkerPath) || !path.isAbsolute(checkerPath) ||
       path.normalize(checkerPath) !== checkerPath || !hash(checkerDigest) || !hash(policyDigest) ||
       !object(env) || Object.keys(env).length > 128 || Object.entries(env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) || !text(value)) ||
@@ -88,7 +89,10 @@ export function createVerificationCommand({executable, checkerPath, checkerDiges
         const binding = freeze({reservationDigest: frozenTicket.reservationDigest, planDigest: frozenTicket.planDigest,
           inputDigest: frozenTicket.inputDigest, checkerDigest, policyDigest});
         const nonce = randomUUID();
-        const input = encode({profile: PROFILE, nonce, binding, input: synchronous(request, context)});
+        const requested = synchronous(request, context);
+        if (frozenTicket.input.interactionRefs && (!object(requested) ||
+          !encode(requested.interactionRefs).equals(encode(frozenTicket.input.interactionRefs)))) fail('verification_interaction_omitted');
+        const input = encode({profile: PROFILE, nonce, binding, input: requested});
         if (input.length + 1 > MAX_FRAME) fail('verification_input_limit');
         if (stopped || Date.now() >= frozenTicket.deadline) fail('verification_stopped');
         runtime = await launchCommand({executable, args: [checkerPath], cwd, env: environment, deadline: frozenTicket.deadline, executionContext,

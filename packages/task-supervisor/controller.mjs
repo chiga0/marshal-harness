@@ -46,6 +46,8 @@ export class TaskSupervisor {
       return result;
     } catch (error) {
       if (name === 'nextWork' && ['unsupported_task', 'capacity_exceeded'].includes(error?.code)) throw new WorkRejected(error.code);
+      if (['registerQuestion', 'dispatchAnswer', 'acknowledgeAnswer'].includes(name) &&
+        ['unsupported_task', 'invalid_request', 'state_conflict', 'question_expired', 'not_found'].includes(error?.code)) throw new WorkRejected(error.code);
       throw new ExecutionPortError(name);
     }
   }
@@ -163,6 +165,7 @@ export class TaskSupervisor {
     this.#failEntry(entry, 'deadline', new SupervisorError('supervisor_deadline'));
   }
   #stop(entry) {
+    clearTimeout(entry.answerTimer);
     entry.stopping = true; entry.abort.abort(); entry.wake.resolve();
     if (entry.handle && !entry.stopSent) {
       entry.stopSent = true;
@@ -176,7 +179,7 @@ export class TaskSupervisor {
     requireValue(!this.#owned.has(ticket.workerId) && Number.isSafeInteger(ticket.deadline));
     const entry = {ticket, abort: new AbortController(), wake: deferred(), startedGate: deferred(), stage: 'preparing',
       handle: null, invoked: false, startFact: null, acceptStarted: true, progress: Promise.resolve(), sequence: 0, pendingProgress: 0,
-      stopping: false, stopSent: false, clean: false, finalized: false};
+      stopping: false, stopSent: false, clean: false, finalized: false, answerAcknowledged: new Set()};
     this.#owned.set(ticket.workerId, entry);
     const timer = setTimeout(() => this.#deadline(entry), Math.max(1, ticket.deadline - this.#clock()));
     const work = this.#run(entry).catch(() => this.#fault(entry.stage, entry)).finally(() => {
@@ -246,6 +249,33 @@ export class TaskSupervisor {
     entry.progress = observed.catch(error => { this.#failEntry(entry, 'progress', error); return false; }).finally(() => { entry.pendingProgress--; });
     return observed;
   }
+  async #question(entry, request, context) {
+    await entry.startedGate.promise;
+    if (!entry.startFact || entry.stopping || context?.signal?.aborted) throw new SupervisorError('supervisor_stopped');
+    const question = this.#call('registerQuestion', entry.ticket, request);
+    entry.question = question;
+    const waitMs = Math.min(120000, Date.parse(question.deadlineAt) - this.#clock());
+    const delivery = await this.#bounded(entry, waitMs, async () => {
+      while (!entry.stopping && !context?.signal?.aborted) {
+        const value = this.#call('dispatchAnswer', entry.ticket, question.questionId);
+        if (value) return value;
+        entry.wake = deferred(); await entry.wake.promise;
+      }
+      throw new SupervisorError('supervisor_stopped');
+    });
+    // Original SDK response has no ACK. A bounded second bridge roundtrip must
+    // commit before the native tool exposes the business answer to its model.
+    entry.answerTimer = setTimeout(() => this.#failEntry(entry, 'answer-ack', new SupervisorError('supervisor_answer_ack_timeout')),
+      Math.max(1, Math.min(5000, Date.parse(question.deadlineAt) - this.#clock())));
+    return delivery;
+  }
+  #answerAck(entry, questionId, receipt) {
+    if (entry.stopping || entry.finalized || entry.question?.questionId !== questionId && !entry.answerAcknowledged.has(questionId)) throw new SupervisorError('supervisor_stopped');
+    const result = this.#call('acknowledgeAnswer', entry.ticket, questionId, receipt);
+    entry.answerAcknowledged.add(questionId);
+    if (entry.question?.questionId === questionId) {clearTimeout(entry.answerTimer); entry.question = null;}
+    return result;
+  }
   async #run(entry) {
     let result, collected = {}, failure = false;
     try {
@@ -279,8 +309,13 @@ export class TaskSupervisor {
       // No await between final current-ledger check and synchronous start.
       if (!this.#call('mayStart', entry.ticket)) throw new SupervisorError('supervisor_stopped');
       entry.invoked = true; entry.stage = 'starting';
+      const questionContext = entry.ticket.input.runtimeQuestions?.enabled ? {
+        configuration: entry.ticket.input.runtimeQuestions,
+        ask: (request, context) => this.#question(entry, request, context),
+        acknowledge: (questionId, receipt) => this.#answerAck(entry, questionId, receipt),
+      } : undefined;
       entry.handle = verifying ? provider.start({ticket: entry.ticket, prepared, executionContext}) :
-        provider.start({...prepared, deadline: entry.ticket.deadline, executionContext, onProgress: update => this.#progress(entry, update)});
+        provider.start({...prepared, deadline: entry.ticket.deadline, executionContext, questionContext, onProgress: update => this.#progress(entry, update)});
       requireValue(object(entry.handle) && typeof entry.handle.stop === 'function' &&
         typeof entry.handle.started?.then === 'function' && typeof entry.handle.completion?.then === 'function');
       const completion = Promise.resolve(entry.handle.completion);

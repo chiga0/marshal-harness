@@ -48,6 +48,16 @@ const application = new TaskApplication({store, owner, clarification});
 
 ## 受管执行接线端口
 
+### 运行中业务问答（ADR0090）
+
+新根显式配置 `runtimeQuestions:createRuntimeQuestionPort({policy,nodeIds,maxQuestions,maxWaitMs,applies,validateQuestion,validateAnswer})`，并采用 `INTERACTION_FORMAT`（v3-interaction）。策略只持久化数据描述/摘要；函数由受信组合按摘要解析，不由 HTTP 或 Worker 安装。默认不启用；原无交互计划字节和 ADR0086 的批准前问答保留。`createVerificationPort` 的 `interactionPolicyDigests` 必须明确包含同一策略摘要，缺少受信答案验证器、Provider 能力或验收 consumer 时拒绝批准/派发。
+
+同一 `execution` 提供 `registerQuestion(ticket,request)`、`dispatchAnswer(ticket,questionId)`、`acknowledgeAnswer(ticket,questionId,receipt)`。原运行票据不改写；最多三题，单题最多 120 秒且不超过原 deadline，等待占用原容量/Attempt。答案、Operation、不可变 HTTP 回执和一次 outbox 在同事务接纳；原 session/原句柄一次投递，匹配 ACK 后才允许成功结果。权限请求不是业务问题，问题创建不开放 HTTP。
+
+未答 `deliveryStatus=null`；接纳后 pending→dispatched→acknowledged，取消/到期及丢 ACK 按实际消费进度关闭。暂停不延期限，取消优先于尚未授权的投递。清理已证实但答案消费 unknown 时，Operation 保留 unknown，原投递义务结案，不永久占槽；服务换代只沿 ADR0089 清理旧执行，不重发旧答案/prompt。Worker 候选摘要与最终 Verification 输入绑定同库 `interactionRefs` 和原答案，checker 请求遗漏它们立即失败。
+
+`runtime-questions.test.mjs` 是真实 SQLite/Depot 组件测试；`task-service/native-business-question.test.mjs` 进一步经过正式 HTTP、实际 Pi 原生 bridge/工具定义及 Node 受管进程、custody、独立 checker、下载和冷重开。其协议 Agent 使用显式无模型 fixture，不代表真实模型业务、全部故障矩阵或 B2/API-STABLE 已完成。
+
 ### 输入与制品
 
 注入 `depot` 后，另支持 `input.create`、`artifact.get`、`artifact.content`；连同有限问答共19项 Application 操作。上传上限256KiB，严格 canonical base64；SQLite 保存上传清单、单本地用户归属、原幂等回执与已提交 blob 摘要索引，Depot 先持久化 bytes，随后 SQLite 同事务提交元数据。事务失败只留下无引用孤儿，不返回可下载对象。文件 I/O 不持数据库事务。

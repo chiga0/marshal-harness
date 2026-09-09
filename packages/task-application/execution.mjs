@@ -12,13 +12,15 @@ const rolePhase = role => ({planner: 'planning', author: 'development', reviewer
 // A reducer over the SAME Application/SQLite authority. No timers, subprocess,
 // Agent brands, runtime handles or filesystem side effects live in this class.
 export class TaskExecution {
-  constructor(application, {maxWorkers = 2, providerIds = [], defaultProvider = null} = {}) {
+  constructor(application, {maxWorkers = 2, providerIds = [], defaultProvider = null, questionProviderIds = []} = {}) {
     if (!Number.isSafeInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 64 || !Array.isArray(providerIds) ||
         providerIds.length > 32 || providerIds.some(id => !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)) ||
-        new Set(providerIds).size !== providerIds.length || defaultProvider !== null && !providerIds.includes(defaultProvider))
+        new Set(providerIds).size !== providerIds.length || defaultProvider !== null && !providerIds.includes(defaultProvider) ||
+        !Array.isArray(questionProviderIds) || questionProviderIds.some(id => !providerIds.includes(id)) || new Set(questionProviderIds).size !== questionProviderIds.length)
       reject('invalid_execution_config', 503);
     this.app = application; this.maxWorkers = maxWorkers;
     this.providers = new Set(providerIds); this.defaultProvider = defaultProvider;
+    this.questionProviders = new Set(questionProviderIds);
     this.cleanup = new TaskCleanup(this);
   }
   custodyBinding(ticket, profile) { return this.cleanup.binding(ticket, profile); }
@@ -26,6 +28,9 @@ export class TaskExecution {
   recordExtraScope(ticket, code) { return this.cleanup.extraScope(ticket, code); }
   pendingCleanup(after = '', limit = 25) { return this.cleanup.pending(after, limit); }
   reconcileCleanup(workerId, observation) { return this.cleanup.settle(workerId, observation); }
+  registerQuestion(ticket, request) {return this.app.runtimeQuestions.register(ticket, request);}
+  dispatchAnswer(ticket, questionId) {return this.app.runtimeQuestions.dispatch(ticket, questionId);}
+  acknowledgeAnswer(ticket, questionId, receipt) {return this.app.runtimeQuestions.acknowledge(ticket, questionId, receipt);}
   worker(tx, id) {
     const row = tx.projection('attempt', id); if (!row) reject('not_found', 404);
     return {row, record: decode(row)};
@@ -67,17 +72,20 @@ export class TaskExecution {
       const before = hash(task), active = workers.filter(({record}) => live(record.worker));
       if (active.some(({record}) => record.ticket.generation !== this.app.owner.generation.toString())) {
         task.task.status = 'intervention'; task.task.code = 'previous_execution_unresolved';
-      } else if (!terminal.has(task.task.status) && this.app.now() >= Date.parse(task.task.deadlineAt)) {
-        task.task.status = 'cancelling'; task.failureCode ??= 'task_deadline';
+      } else if (!terminal.has(task.task.status) && (this.app.now() >= Date.parse(task.task.deadlineAt) || this.app.runtimeQuestions.expired(task))) {
+        task.task.status = 'cancelling'; task.failureCode ??= this.app.runtimeQuestions.expired(task) ? 'question_expired' : 'task_deadline';
       }
       if (task.task.status === 'cancelling' && active.length === 0) {
         task.task.status = task.failureCode ? 'failed' : 'cancelled'; task.task.phase = 'terminal';
         if (task.failureCode) task.task.code = task.failureCode;
         for (const node of task.nodes) if (['pending', 'ready', 'waiting', 'running'].includes(node.status)) node.status = 'cancelled';
       }
+      const closedQuestions = ['cancelling', 'intervention', 'failed', 'cancelled'].includes(task.task.status) ?
+        this.app.runtimeQuestions.close(task, task.failureCode === 'question_expired' ? 'expired' : 'cancelled') : [];
       if (hash(task) !== before) {
         task.task.revision = nextRevision(task.task.revision);
-        this.app.save(tx, task, 'task.execution-reconciled', {status: task.task.status});
+        const source = this.app.save(tx, task, 'task.execution-reconciled', {status: task.task.status});
+        this.app.runtimeQuestions.settleClosed(tx, task, source, closedQuestions);
       }
       return {taskId, status: task.task.status,
         stopWorkerIds: task.task.status === 'cancelling' || terminal.has(task.task.status) ? active
@@ -101,6 +109,7 @@ export class TaskExecution {
       const command = tx.command(commandId);
       if (!command || command.status !== 'pending' || command.revision !== BigInt(expectedRevision)) return false;
       const payload = decode({bytes: command.payload}), task = this.app.get(tx, command.taskId);
+      if (payload.action === 'answer') return false; // Runtime question reducer owns this obligation.
       // Observing a durable control is not replaying an external execution.
       // Old-generation launches are never made eligible by this exception.
       if (command.generation !== this.app.owner.generation && !['cancel', 'pause', 'resume'].includes(payload.action)) return false;
@@ -137,7 +146,9 @@ export class TaskExecution {
       if (live(record.worker) && task.task.status !== 'cancelling' && !terminal.has(task.task.status)) {
         task.task.status = 'cancelling'; task.failureCode = reasonCode;
         task.task.revision = nextRevision(task.task.revision);
+        const closedQuestions = this.app.runtimeQuestions.close(task);
         const source = this.app.save(tx, task, 'task.worker-failure-fenced', {workerId: ticket.workerId, reasonCode});
+        this.app.runtimeQuestions.settleClosed(tx, task, source, closedQuestions);
         record.failureCode = reasonCode;
         this.putWorker(tx, row, record, source);
       }
@@ -160,7 +171,7 @@ export class TaskExecution {
         if (task.task.status !== 'draft' || task.plan) return null;
         node = {id: 'planning', role: 'planner', goal: task.task.intent, scope: [], providerId: null};
       } else {
-        if (!['queued', 'running'].includes(task.task.status) || !task.approved || !task.plan ||
+        if (!['queued', 'running', 'awaiting-answer'].includes(task.task.status) || !task.approved || !task.plan ||
             task.approved.planDigest !== task.plan.digest || payload.planDigest !== task.plan.digest) return null;
         node = task.plan.nodes.find(node => node.id === payload.nodeId);
         const state = task.nodes.find(state => state.id === payload.nodeId);
@@ -170,6 +181,7 @@ export class TaskExecution {
       }
       const verification = task.verification && task.verification.nodeId === node.id;
       if (task.verification) this.app.verification.configured(task.verification);
+      if (task.runtimeQuestions) this.app.runtimeQuestions.configured(task.runtimeQuestions, task.plan);
       const providerId = verification ? task.verification.providerId : node.providerId ?? this.defaultProvider;
       if (!verification && !this.providers.has(providerId)) reject('unsupported_task', 422);
       const capacity = this.capacity(tx), taskWorkers = this.workers(tx, task);
@@ -184,13 +196,19 @@ export class TaskExecution {
         .map(({record}) => {
           if (task.verification) {
             if (!record.candidate) reject('candidate_manifest_conflict', 422);
-            return {workerId: record.worker.id, nodeId: record.worker.nodeId, result: clone(record.candidate)};
+            return {workerId: record.worker.id, nodeId: record.worker.nodeId, result: clone(record.candidate),
+              ...(task.runtimeQuestions ? {interactionRefs: clone(record.interactionRefs ?? [])} : {})};
           }
           const entry = tx.projection('attempt', record.resultRef);
           if (!entry || digest(entry.bytes) !== record.resultDigest) reject('application_unavailable', 503);
           return {workerId: record.worker.id, nodeId: record.worker.nodeId, result: decode(entry)};
         })};
       if (task.verification) input.fileLayout = this.app.verification.resolve(task, node.id, input.upstream);
+      if (task.runtimeQuestions) {
+        input.runtimeQuestions = {profile: task.runtimeQuestions.descriptor.profile, policyDigest: task.runtimeQuestions.policyDigest,
+          maxWaitMs: task.runtimeQuestions.descriptor.maxWaitMs, enabled: task.runtimeQuestions.descriptor.nodeIds.includes(node.id)};
+        input.interactionRefs = verification ? this.app.runtimeQuestions.refs(tx, task) : input.upstream.flatMap(item => item.interactionRefs ?? []);
+      }
       if (verification) {
         if (taskWorkers.some(({record}) => live(record.worker))) return null;
         const producers = taskWorkers.filter(({record}) => record.ticket.planDigest === task.approved.planDigest);
@@ -210,7 +228,7 @@ export class TaskExecution {
         startedAt: null, finishedAt: null, lastObservedAt: at, progress: null, usage: usage()},
       executionId: null, cleanup: null, resultRef: null, resultDigest: null, progressSequence: 0};
       task.attempts++; task.workerIds ??= []; task.workerIds.push(id);
-      task.task.status = payload.action === 'plan' ? 'planning' : 'running';
+      task.task.status = payload.action === 'plan' ? 'planning' : task.task.status === 'awaiting-answer' ? 'awaiting-answer' : 'running';
       task.task.phase = payload.action === 'plan' ? 'planning' : 'execution';
       if (payload.action === 'execute') {
         const state = task.nodes.find(state => state.id === node.id); state.status = 'running'; state.workerIds.push(id);
@@ -304,6 +322,10 @@ export class TaskExecution {
         result.status === 'completed' && result.stopReason === 'end_turn') &&
         !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;
       let candidate = success && !verification ? clone(result.result ?? null) : null;
+      if (success && task.runtimeQuestions) {
+        try {record.interactionRefs = this.app.runtimeQuestions.refs(tx, task, verification ? null : ticket.workerId);}
+        catch {success = false; candidate = null;}
+      }
       const verificationFailed = clean && verified?.data.status === 'failed' && result.status === 'failed' && verified.staged !== null &&
         !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;
       if (verification && (success || verificationFailed)) {
@@ -319,7 +341,7 @@ export class TaskExecution {
       record.worker.status = !clean ? 'unknown' : cancelled && !failedWorker ? 'cancelled' : success ? 'completed' : 'failed';
       record.worker.finishedAt = new Date(this.app.now()).toISOString(); record.worker.phase = 'terminal';
       record.resultRef = candidate === null ? null : this.app.newId('result');
-      record.resultDigest = candidate === null ? null : hash(candidate);
+      record.resultDigest = candidate === null ? null : hash(task.runtimeQuestions ? {candidate, interactionRefs: record.interactionRefs} : candidate);
       if (!clean) { task.task.status = 'intervention'; task.task.code = 'cleanup_unconfirmed'; }
       else if (!cancelled && !success && !terminal.has(task.task.status)) {
         task.task.status = 'cancelling'; task.failureCode = 'worker_failed';
@@ -338,6 +360,7 @@ export class TaskExecution {
         const node = task.nodes.find(node => node.id === ticket.nodeId);
         node.status = !clean ? 'unknown' : cancelled && !failedWorker ? 'cancelled' : success ? 'completed' : 'failed';
       }
+      const closedQuestions = this.app.runtimeQuestions.close(task, 'cancelled', ticket.workerId);
       task.task.revision = nextRevision(task.task.revision);
       let decision = null;
       if (verification && (success || verificationFailed)) {
@@ -358,6 +381,7 @@ export class TaskExecution {
       }
       const source = this.app.save(tx, task, 'worker.finished', {workerId: ticket.workerId,
         status: record.worker.status, resultDigest: record.resultDigest, decisionDigest: task.decision?.digest ?? null});
+      this.app.runtimeQuestions.settleClosed(tx, task, source, closedQuestions);
       if (decision) {
         this.app.artifacts.commitOutputs(tx, task.task.id, verified.staged, source);
         tx.putProjection('attempt', decision.id, 0, source, encode(decision));
@@ -367,6 +391,7 @@ export class TaskExecution {
       const command = tx.command(ticket.commandId);
       if (clean && command.status !== 'observed') tx.observeCommand(command.id, command.revision, 'observed', source);
       if (clean) {
+        this.app.runtimeQuestions.cleanupConfirmed(tx, task, source, ticket.workerId);
         const capacity = this.capacity(tx); capacity.value.active = capacity.value.active.filter(item => item.workerId !== ticket.workerId);
         this.putCapacity(tx, capacity.row, capacity.value);
       }

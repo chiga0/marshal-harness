@@ -14,6 +14,8 @@ const owner = store.claimOwner(store.info().generation, 'service-instance-id', D
 
 格式为 `marshal-node-task-sqlite/v1`，仅独立新空根；旧 `.marshal`、实验 JSON、未知/缺少文件、坏格式或不兼容 schema 拒绝，不初始化或迁移。`format` 文件只是不可变初始化标识，不保存业务/owner 状态；全部业务权威在 `authority.sqlite`。Create/Open 持有并复查路径/文件对象，返回前都执行子目录→父目录同步。同步失败不删除不确定状态；后续 Open 必须再次同步，不能绕过。这里不承诺防御同 UID 恶意程序，也不把进程中断测试称为物理断电实验。
 
+显式新 profile 另提供 `CUSTODY_FORMAT`（v2-custody，ADR0089）与 `INTERACTION_FORMAT`（v3-interaction，ADR0090）；v3 保留 v2 的 preclaim 封闭观察/cleanup-only 语义，增加同库运行中问题、答案/投递/ACK 事实。调用者必须选择精确格式，旧 reader 在 SQLite 打开/claim 前拒绝不同 sentinel；没有自动迁移或依据磁盘输入重造旧权威。
+
 单个 SQLite 连接使用 EXCLUSIVE locking mode，物理锁跨短事务保持至关闭。第二进程不能因 lease 到期抢占仍持锁的进程；原连接关闭/退出后才可打开，再显式 Claim 新 generation。此锁只证明数据库 writer 互斥，不能证明旧 Worker 停止、执行目录可复用或旧结果已被接纳。`info()` 仅返回 `{format, storeId, generation}`；重新打开不继承旧 owner，`renewOwner(owner, expiresAtMs)` 不能代替首次 Claim。
 
 Owner 为 `{storeId, generation, instanceId, expiresAt}`。序号、revision、generation 输出 BigInt；输入可为 BigInt 或安全整数，时间为安全整数 Unix 毫秒。HTTP 编码由 Application 明确处理，不隐式丢精度。

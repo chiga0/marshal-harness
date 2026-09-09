@@ -34,10 +34,12 @@ const fileDigest = files => digest(Buffer.from(JSON.stringify(files.map(({path, 
 /** Parent-only capability. No public mint/deserialize operation exists. The
  * trusted start closure must launch the independent, bounded checker and retain
  * its ORIGINAL cleanup. A model's role/provider/status is never this capability. */
-export function createVerificationPort({id, policy, bindPlan, start}) {
+export function createVerificationPort({id, policy, bindPlan, start, interactionPolicyDigests = []}) {
   check(typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id) &&
     keys(policy, ['id', 'version', 'description']) && isText(policy.id, 128) && isText(policy.version, 128) &&
     isText(policy.description, 4096) && typeof bindPlan === 'function' && typeof start === 'function', 'invalid_verification_config');
+  check(Array.isArray(interactionPolicyDigests) && interactionPolicyDigests.length <= 32 && interactionPolicyDigests.every(sha) &&
+    new Set(interactionPolicyDigests).size === interactionPolicyDigests.length, 'invalid_verification_config');
   const port = Object.freeze({id, ...(start.custodyProfile ? {custodyProfile: clone(start.custodyProfile)} : {}), start({ticket, prepared, executionContext}) {
     const binding = hash(ticket), handle = start({ticket, prepared, executionContext});
     check(handle && typeof handle.stop === 'function' && typeof handle.started?.then === 'function' &&
@@ -50,7 +52,7 @@ export function createVerificationPort({id, policy, bindPlan, start}) {
         return Object.freeze({type: 'verification', status: data.status, cleanup: clone(data.cleanup), receipt});
       })});
   }});
-  ports.set(port, {policy: clone(policy), bindPlan}); return port;
+  ports.set(port, {policy: clone(policy), bindPlan, interactionPolicyDigests: [...interactionPolicyDigests]}); return port;
 }
 
 export class TaskVerification {
@@ -58,6 +60,7 @@ export class TaskVerification {
     check(port === null || ports.has(port), 'invalid_verification_config');
     this.app = app; this.port = port;
   }
+  supportsQuestions(policyDigest) {return this.port !== null && ports.get(this.port).interactionPolicyDigests.includes(policyDigest);}
   bind(record, plan) {
     if (!this.port) return null;
     this.app.artifacts.requireDepot();
@@ -159,6 +162,8 @@ export class TaskVerification {
     const manifest = current.map(({record}) => ({workerId: record.worker.id, nodeId: record.worker.nodeId,
       resultDigest: record.resultDigest, manifest: record.candidate})).sort((a, b) => a.nodeId < b.nodeId ? -1 : 1);
     check(same(manifest, ticket.input.verification.manifests) && same(task.verification, ticket.input.verification.binding), 'candidate_manifest_conflict');
+    if (task.runtimeQuestions) check(this.supportsQuestions(task.runtimeQuestions.policyDigest) &&
+      same(this.app.runtimeQuestions.refs(tx, task), ticket.input.interactionRefs), 'candidate_manifest_conflict');
     return manifest;
   }
   stage(ticket, result) {

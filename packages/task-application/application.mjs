@@ -5,8 +5,10 @@ import {TaskExecution} from './execution.mjs';
 import {TaskArtifacts} from './artifacts.mjs';
 import {TaskVerification} from './verification.mjs';
 import {TaskClarification} from './clarification.mjs';
+import {TaskRuntimeQuestions} from './runtime-questions.mjs';
 export {createVerificationPort} from './verification.mjs';
 export {createClarificationPort} from './clarification.mjs';
+export {createRuntimeQuestionPort} from './runtime-questions.mjs';
 
 const hash = value => digest(encode(value));
 const parse = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
@@ -25,13 +27,14 @@ const idOK = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,
  */
 export class TaskApplication {
   constructor({store, owner, clock = Date.now, makeId = prefix => prefix + '-' + randomUUID(),
-    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null}) {
+    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null, runtimeQuestions = null}) {
     this.store = store; this.owner = owner; this.clock = clock; this.makeId = makeId;
     this.defaultLimits = limits(defaultLimits);
     this.execution = new TaskExecution(this, execution);
     this.artifacts = new TaskArtifacts(this, depot);
     this.verification = new TaskVerification(this, verification);
     this.clarification = new TaskClarification(this, clarification);
+    this.runtimeQuestions = new TaskRuntimeQuestions(this, runtimeQuestions);
     this.dispatch = this.dispatch.bind(this);
   }
   now() {
@@ -69,6 +72,7 @@ export class TaskApplication {
     const record = parse(entry);
     if (record.task.id !== taskId || record.task.revision !== integer(entry.revision)) reject('application_unavailable', 503);
     if (record.clarification && record.clarification.profile !== 'task-clarification/v1') reject('recovery_required', 409);
+    if (record.runtimeQuestions && record.runtimeQuestions.descriptor?.profile !== 'task-runtime-question/v1') reject('recovery_required', 409);
     return record;
   }
   save(tx, record, type, detail = {}) {
@@ -98,7 +102,10 @@ export class TaskApplication {
     const input = {operation: request.operation, taskId: request.taskId ?? null, body: request.body};
     // Only the new answer operation adds its route subject. Keep every old
     // operation's exact digest algorithm and historical receipt bytes unchanged.
-    if (request.operation === 'task.answer') { this.clarification.shape(request); input.questionId = request.questionId; }
+    if (request.operation === 'task.answer') {
+      (Object.hasOwn(request.body ?? {}, 'questionDigest') ? this.runtimeQuestions : this.clarification).shape(request);
+      input.questionId = request.questionId;
+    }
     const requestDigest = hash(input);
     return {key, requestDigest};
   }
@@ -129,7 +136,7 @@ export class TaskApplication {
     if (!request || typeof request.operation !== 'string') reject('invalid_request', 400);
     if (['input.create', 'artifact.get', 'artifact.content'].includes(request.operation)) return this.artifacts.dispatch(request);
     if (request.operation === 'task.create') return this.create(request, context);
-    if (request.operation === 'task.answer') return this.clarification.answer(request, context);
+    if (request.operation === 'task.answer') return (Object.hasOwn(request.body ?? {}, 'questionDigest') ? this.runtimeQuestions : this.clarification).answer(request, context);
     if (['task.approve', 'task.cancel', 'task.pause', 'task.resume'].includes(request.operation)) return this.control(request);
     return this.transaction(false, tx => this.query(tx, request));
   }
@@ -185,9 +192,16 @@ export class TaskApplication {
     const plan = freezePlan(record, proposal, value => hash({plan: value, inputDigest: record.inputDigest}));
     const {digest: _digest, ...body} = plan;
     const binding = this.verification.bind(record, body);
+    const interaction = this.runtimeQuestions.bind(record, body);
+    if (interaction) {
+      record.runtimeQuestions = interaction;
+      body.interaction = {profile: interaction.descriptor.profile, policyDigest: interaction.policyDigest,
+        maxQuestions: interaction.descriptor.maxQuestions, maxWaitMs: interaction.descriptor.maxWaitMs};
+    } else delete record.runtimeQuestions;
     if (binding) {
       record.verification = binding;
-      return {...body, digest: hash({plan: body, inputDigest: record.inputDigest, verification: binding})};
+      return {...body, digest: hash({plan: body, inputDigest: record.inputDigest, verification: binding,
+        ...(interaction ? {runtimeQuestions: interaction.descriptor} : {})})};
     }
     delete record.verification; return plan;
   }
@@ -203,6 +217,7 @@ export class TaskApplication {
         if (original !== (record.clarification ? 'awaiting-confirmation' : 'awaiting-approval') || !record.plan || body.planRevision !== record.plan.revision ||
             body.planDigest !== record.plan.digest) reject('plan_conflict', 409);
         if (record.verification) this.verification.configured(record.verification);
+        if (record.runtimeQuestions) this.runtimeQuestions.configured(record.runtimeQuestions, record.plan);
         const deadline = Math.min(Date.parse(task.deadlineAt), Date.parse(task.createdAt) + record.plan.budget.timeoutMs);
         if (this.now() >= deadline) reject('state_conflict', 409);
         task.deadlineAt = new Date(deadline).toISOString();
@@ -226,7 +241,9 @@ export class TaskApplication {
         task.status = record.pausedFrom; delete record.pausedFrom; status = 'accepted'; action = 'resume';
       }
       task.revision = nextRevision(task.revision);
+      const closedQuestions = action === 'cancel' ? this.runtimeQuestions.close(record) : [];
       const source = this.save(tx, record, request.operation, {from: original, to: task.status});
+      this.runtimeQuestions.settleClosed(tx, record, source, closedQuestions);
       const cancellation = action === 'cancel' ? record.cancelIntent : null;
       const op = this.operation(tx, task, source, request.operation, status, cancellation?.operationId);
       if (action) this.enqueue(tx, source, task.id, action,
@@ -236,7 +253,7 @@ export class TaskApplication {
     });
   }
   query(tx, request) {
-    if (request.operation === 'task.questions') return this.clarification.questions(tx, request);
+    if (request.operation === 'task.questions') return this.runtimeQuestions.questions(tx, request);
     if (['worker.get', 'task.workers'].includes(request.operation)) return this.execution.query(tx, request);
     const page = request.page ?? {}, limit = page.limit ?? 50, after = page.cursor ?? '';
     if (request.operation === 'task.list') {
