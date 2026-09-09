@@ -52,6 +52,90 @@ export function checkPlan(plan, limits) {
   same(plan.budget, limits, 'plan_budget_mismatch');
 }
 const digest = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
+const jsonDigest = value => digest(Buffer.from(JSON.stringify((function sorted(item) {
+  if (Array.isArray(item)) return item.map(sorted);
+  if (item !== null && typeof item === 'object') return Object.fromEntries(Object.keys(item).sort().map(key => [key, sorted(item[key])]));
+  return item;
+})(value))));
+const observationId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
+// Optional observations do not authorize repair, retry reads, gate success, or
+// claim atomic HTTP snapshots / node-level selected-result preservation.
+export function repairObserver(taskId, {clock = Date.now, maxSamples = 128, maxSnapshots = 64, maxArtifacts = 16, intervalMs = 750} = {}) {
+  const evidence = {taskId, authority: false, atomic: false, repairObserved: null, reworkCount: null,
+    unaffectedBranchPreserved: null, independentTerminalSQLiteRequired: true, samples: 0, truncated: false,
+    observationError: false, snapshots: [], negativeReviews: [], repairs: [], finalSelectionDigest: null};
+  const seen = new Set(); let nextAt = 0, disabled = false, previous = null;
+  const workersView = workers => workers.items.slice(0, 17).map(worker => ({id: worker.id, nodeId: worker.nodeId,
+    role: worker.role, attempt: worker.attempt, status: worker.status})).sort((a, b) => a.id.localeCompare(b.id));
+  async function artifact(client, id, timeoutMs, signal) {
+    if (seen.has(id)) return null;
+    if (seen.size >= maxArtifacts) {evidence.truncated = true; return null;}
+    seen.add(id);
+    const file = await client.downloadArtifact(id, {timeoutMs, signal});
+    check(file.artifact.taskId === taskId && file.artifact.id === id && file.content.length <= 65536 && digest(file.content) === file.artifact.digest, 'observation_artifact_binding');
+    return {artifactId: id, artifactDigest: file.artifact.digest, value: JSON.parse(file.content)};
+  }
+  return {evidence,
+    async sample(client, task, deadline) {
+      if (disabled || clock() < nextAt || deadline - clock() < 1500) return;
+      if (evidence.samples >= maxSamples) {evidence.truncated = true; return;}
+      nextAt = clock() + intervalMs; evidence.samples++;
+      try {
+        const timeoutMs = Math.min(1000, deadline - clock());
+        const signal = AbortSignal.timeout(timeoutMs);
+        const [leader, workers] = await Promise.all([client.getLeader(taskId, {timeoutMs, signal}),
+          client.request('task.workers', {path: {taskId}, query: {limit: 100}, timeoutMs, signal})]);
+        check(task.id === taskId && leader.taskId === taskId && workers.taskId === taskId, 'observation_identity');
+        if (workers.nextCursor !== null || workers.items.length > 17) evidence.truncated = true;
+        const snapshot = {taskRevision: task.revision, leaderTaskRevision: leader.taskRevision, planDigest: task.plan?.digest ?? null, stage: leader.stage,
+          decisionDigest: leader.lastDecision?.digest ?? null, reviewDigest: leader.review?.digest ?? null,
+          reviewVerdict: leader.review?.verdict ?? null, selectionDigest: leader.review?.selectionDigest ?? null, workers: workersView(workers)};
+        const key = JSON.stringify(snapshot);
+        if (previous !== key) {
+          previous = key;
+          if (evidence.snapshots.length < maxSnapshots) evidence.snapshots.push(snapshot); else evidence.truncated = true;
+        }
+        const review = leader.review;
+        if (review?.verdict === 'rework') for (const id of review.evidenceIds) {
+          const original = await artifact(client, id, timeoutMs, signal); if (!original) continue;
+          const report = original.value.report;
+          check(report?.profile === 'task-independent-review/v1' && report.verdict === 'rework' && report.selectionDigest === review.selectionDigest &&
+            Array.isArray(report.findings) && report.findings.length <= 16 && report.findings.every(item => Array.isArray(item.nodeIds) && item.nodeIds.every(observationId)), 'observation_review_binding');
+          check(jsonDigest({verdict: review.verdict, selectionDigest: review.selectionDigest, policyDigest: review.policyDigest,
+            workerId: review.workerId, evidenceIds: review.evidenceIds}) === review.digest, 'observation_review_digest');
+          evidence.negativeReviews.push({reviewDigest: review.digest, selectionDigest: review.selectionDigest, reviewerWorkerId: review.workerId,
+            artifactId: original.artifactId, artifactDigest: original.artifactDigest,
+            affectedAuthorNodeIds: [...new Set(report.findings.flatMap(item => item.nodeIds))].sort()});
+        }
+        if (leader.lastDecision) {
+          const original = await artifact(client, leader.lastDecision.evidenceId, timeoutMs, signal);
+          if (original) {
+            const report = original.value.report;
+            check(report?.profile === 'task-managed-leader/v1' && report.callId === leader.lastDecision.callId &&
+              jsonDigest(report) === leader.lastDecision.digest && Array.isArray(report.actions) && report.actions.length <= 4, 'observation_decision_binding');
+            for (const action of report.actions.filter(item => item.type === 'repair')) {
+              check(Array.isArray(action.nodeIds) && action.nodeIds.length <= 64 && action.nodeIds.every(observationId) &&
+                ['review', 'content-rejection', 'execution-failure'].includes(action.basis?.kind) && /^sha256:[a-f0-9]{64}$/.test(action.basis.digest), 'observation_repair_binding');
+              evidence.repairs.push({decisionDigest: leader.lastDecision.digest, callId: report.callId, planDigest: snapshot.planDigest, artifactId: original.artifactId,
+                artifactDigest: original.artifactDigest, basisKind: action.basis.kind, basisDigest: action.basis.digest,
+                requestedNodeIds: [...action.nodeIds], affectedNodes: null,
+                beforeSelectionDigest: evidence.negativeReviews.find(item => item.reviewDigest === action.basis.digest)?.selectionDigest ?? null,
+                afterSelectionDigest: null, selectedWorkerBinding: 'unknown-requires-independent-terminal-sqlite'});
+              evidence.repairObserved = true;
+            }
+          }
+        }
+      } catch {evidence.observationError = true; disabled = true;}
+    },
+    finish(audit, leader, workers) {
+      evidence.reworkCount = audit.reworkCount;
+      evidence.finalSelectionDigest = leader.review?.selectionDigest ?? null;
+      evidence.finalWorkers = workersView(workers);
+      if (evidence.repairs.length) evidence.repairObserved = true;
+      else evidence.repairObserved = audit.reworkCount === 0 ? false : null;
+      for (const repair of evidence.repairs) repair.afterSelectionDigest = evidence.finalSelectionDigest;
+    }};
+}
 export function parseOptions(argv) {
   const names = ['package', 'manifest-digest', 'source-head', 'node', 'pi-entry', 'pi-sdk', 'run-dir'];
   const options = {};
@@ -168,7 +252,7 @@ export async function run(options) {
   const root = o['run-dir'], reportRoot = path.join(root, 'reports'), state = path.join(root, 'data');
   const evidence = {profile: 'installed-pi-leader-report-live/v1', passed: false, production: false, trueProcessOverlapProven: false,
     sourceHead: manifest.sourceHead, manifestDigest: o['manifest-digest'], nodeVersion: process.versions.node, piVersion: pi.version,
-    piEntryDigest: digest(fs.readFileSync(o['pi-entry'])), piSdkDigest: digest(fs.readFileSync(o['pi-sdk'])), diagnostics: [], tasks: [], stage: 'loading'};
+    piEntryDigest: digest(fs.readFileSync(o['pi-entry'])), piSdkDigest: digest(fs.readFileSync(o['pi-sdk'])), diagnostics: [], repairObservations: [], tasks: [], stage: 'loading'};
   const save = (name, value) => fs.writeFileSync(path.join(root, name), JSON.stringify(value), {mode: 0o600, flag: 'wx'});
   const handles = []; let reader;
   let interrupted = false;
@@ -202,7 +286,10 @@ export async function run(options) {
       const uploaded = await client.request('input.create', {idempotencyKey: 'live-input-' + index, body: {name: 'sales.json', mediaType: 'application/json', contentBase64: bytes.toString('base64')}});
       const create = {idempotencyKey: 'live-task-' + index, body: taskBody(uploaded.id)};
       const created = await client.request('task.create', create), taskId = created.id, deadline = Date.parse(created.deadlineAt);
-      const phase = status => {evidence.stage = 'task-' + index + '-' + status; return waitPhase(() => {check(!interrupted, 'interrupted'); return client.getTask(taskId);}, status, deadline);};
+      const observer = repairObserver(taskId); evidence.repairObservations.push(observer.evidence);
+      const phase = status => {evidence.stage = 'task-' + index + '-' + status; return waitPhase(async () => {
+        check(!interrupted, 'interrupted'); const task = await client.getTask(taskId); await observer.sample(client, task, deadline); return task;
+      }, status, deadline);};
       let task = await phase('awaiting-answer'), leader = await client.getLeader(taskId);
       check(leader.pendingRequest.kind === 'business' && task.plan === null, 'business_question_required');
       const answer = {path: {taskId, requestId: leader.pendingRequest.id}, idempotencyKey: 'live-answer-' + index,
@@ -233,6 +320,7 @@ export async function run(options) {
       same(Buffer.from(await response.arrayBuffer()), Buffer.from(report.content));
       fs.writeFileSync(path.join(root, 'task-' + index + '-report.json'), report.content, {mode: 0o600, flag: 'wx'});
       const workers = await client.request('task.workers', {path: {taskId}, query: {limit: 100}});
+      observer.finish(finalAudit, final, workers);
       check(workers.nextCursor === null && (await client.request('supervisor.get')).activeWorkers === 0, 'workers_unsettled');
       completed.push({taskId, create, created, approve, approval, answer, answerReceipt, allow, allowReceipt, done, final, audit: finalAudit, workers, report});
       evidence.tasks.push({taskId, status: done.status, artifactDigest: digest(report.content), attempts: finalAudit.attempts,
