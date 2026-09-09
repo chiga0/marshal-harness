@@ -2,6 +2,34 @@
 
 ## 当前结论
 
+### 2026-09-09 11:22 CST：真实运行中问答交付通过
+
+同步状态：当前 `main` 与已核对远端 main 仍为 `7250ec95526e237aa918f164c71e9d7c7b0f7a62`，本次 `sourceHead=1b3b7d6515b9d54bac554e392c735d0793171b96`、`localMergeSha=null`、`pendingRemoteSync=true`。维护者 main 合并被宿主自动权限审核拒绝：审核引用用户上下文中的旧 Merge 禁用条款；读取并提交当前磁盘 AGENTS 中明确维护者研发合并授权后仍被拒。未改写权限、未替换命令绕过、未合并或覆盖 main；正常功能分支保存与不受影响的局部修正开发继续，最终推送事实另行报告。
+
+冻结源码 `1b3b7d6515b9d54bac554e392c735d0793171b96`，首次失败后完成有证据的兼容修复，再进行一次实机尝试，**50.938秒通过**。Task=`task-bcbae0f3-e649-47d7-8c65-146646dfb147`，Pi0.84.4、Node24.15.0，原规划、两个作者及一次独立 verifier；作者实际交叠18.979秒。east 在原 Worker/Attempt 中提出过滤状态问题，west 在发送答案前已独立完成；答案 `cancelled` 未预填入 Task prompt，而由工具在真实问题出现后经一次 HTTP 写入，原 east Worker 消费并继续交付。此处 cancelled 是业务订单状态，不是取消 Task。
+
+下载338 bytes，两个地区报告经下载后再次独立核验，摘要=`sha256:9a211808c246fbb25c011c637ac352daf929820abe556b2ce3d12873f9dece4e`；所有原执行清理确认。正常服务重开保留原回执、同字节成果，重复启动0。原证据 `/private/tmp/marshal-question-live-fixed.bOvp75/run/evidence.json`，SHA-256=`e5b790ce7d7826d9f8571c9f5dbb9ed07f1957e3e8aba87316ada4c333f3ab9f`。这是 ordinary-user 的真实固定业务问答证据，`production=false`、`publisherSeparationProven=false`；不是任意规划质量、模型运行中 crash 或 stable 发布证明。首次失败记录保留如下，两次真实尝试为一失败一成功，不宣称首轮通过。
+
+兼容修复 source=`de382cd1066df5c79e4acc307246e1499173bacb`：同一独立 reviewer 无剩余 P0/P1，Core/Provider/真实HTTP **13/13 PASS、9.646秒**；再使用原安装 Pi SDK 验证其中 **4/4 PASS、12.406秒**，不重复计为17个唯一测试。原 SDK 复合 ID 可精确登记/replay；NFC/NFD 不被规范化，旧 ACK 不能串用到下一问题。集成相对 main 的 merge-tree、diff-check 和完整差异 secret scan 通过。尚未在此段预填 main 合并/远端同步结果。
+
+### 2026-09-09：运行中问答整链集成与独立恢复验证
+
+冻结集成 `1b7427c98bb1270490a4dc7ee4b869277ec61112` 的完整 Node 回归 **447/447 PASS、376.515秒、零失败/取消/跳过**，运行结束 HEAD 不变且 clean。日志 `/private/tmp/marshal-question-final-20260909.CcnSHX/results.log`，SHA-256=`a45c2d37929b2e0a4726505c148d9863fec5166f1214a76a92c13edcb90b70b9`。该版本包括运行中问答实现 `9cb066e` 和独立恢复测试 `73e2249`；不把后来增加的实机工具或修复计入这次全套。
+
+独立恢复四场景先单独 **4/4 PASS、29.111秒**：正常原 Worker 回答/ACK/交付、投递后取消、投递后服务 SIGKILL、ACK 事务提交后服务 SIGKILL。未确认消费继续显示 unknown，不重投旧答案、不新建旧 Worker；原 custody 结清后同一重开服务可交付另一任务，第三次正常重开保持五类原权威表及回执/成果，无重复派发。这是原 CLI/HTTP/SQLite/受管协议进程的故障证据，不是模型崩溃实测。单组日志 SHA-256=`1fee89ed07d20717e2198e2a0c526c99a6dc8e522dcaa209626d27caab383faf`。
+
+首审发现一个真实 P1：中间节点完成只保存自身问题引用，丢掉已消费的祖先答案，使 A→B→C 的 C 收不到原业务信息；另有暂停期间登记问题后 resume 状态显示错误。它们由同一作者聚合修正、原 reviewer 复核，不能因为旧447项通过就忽略覆盖缺口。两次较早恢复测试失败来自测试对 HTTP null-prototype 和 Task-wide Attempt ordinal 的错误假设，已修正并保留日志；不计作生产失败或首轮成功。学习应固化为多级依赖/状态组合测试及复用真实公共值语义，不增加审批轮次。
+
+聚合修复 `cfaba043c55529c78911e59688e33b3801b3722b` 经原 reviewer 复审，原 P1/P2 均关闭，无剩余确定 P0/P1；独立8/8通过，原三级复现引用数由1→0修为1→1，实际 prepared prompt 保留原答案。修复同事务重读直接上游 Worker/candidate/resultDigest/cleanup/原 generation/plan，继承答案再与原 question/answer/dispatch/ACK 对齐，稳定去重并合入自身答案，不吸入无关待答问题。最终集成 `f129ce20d65650252d1dee363766aed1fbe999cc` 独立定向 **108/108 PASS、67.888秒、零失败/取消/跳过**，包括 Application、独立 Verifier、真实 HTTP 问答、四恢复场景和实机工具；日志 SHA-256=`40871eccd628d0d44f8fac0d39f589bfa16739cc2269d91d12140556352e734e`。这是修复后相关组合，不将前一源码的447项改称最终全套。
+
+显式真实 Pi 问答工具 `3bec5e3` 经非作者审查无 P0/P1；集成后的独立无模型 **9/9 PASS、0.808秒**。工具不进入生产清单，答案只在真实问题出现且另一作者完成后经 HTTP 发送，不预先填入模型 prompt。上述记录不预填实机成功、main 合并或正式可用。
+
+下一关键路径为已接受 [ADR 0091](adr/0091-node-same-plan-local-repair.md) 的完整同计划局部修正，而非重跑整队。其后补真实 prepared/input 快照及 Pi 原生用量：现有 reservation input 可复用，但不能把重新渲染文本当历史实际 prompt，也不能把进程 started 当协议已提交。未知 token/cost 保持不可用，失败/取消/修正 Attempt 不从分母删除，Provider 成本实报不冒充已对账扣费；不新建第二审计库。
+
+首次真实 Pi 问答试验在 `f129ce20` 上失败，不能宣称问答实机通过：Task=`task-33286d0f-9ab8-45d8-81ff-1e5d8e3c2ae5`，03:03:49.784Z→03:04:12.537Z，共22.753秒；规划完成，east 发起问题工具后失败、west 取消，原执行清理全部确认，问题列表为空，未发送业务答案。原证据 `/private/tmp/marshal-question-live.erHFtX/run/evidence.json`，SHA-256=`891d22d8390030dca987e60079618d2924598f8808b09e979f003e0cb752b0a7`。该次工具仅保存 `missing_business_question`，不足以反推丢失的原生 ID 字节。
+
+独立诊断使用公开安装 Pi0.84.4 的原 Responses producer，在无模型条件下复现：原生产函数产生 `call_id|item_id`，原样进入 Core 后被内部主键正则误拒，原 SQLite ledger 不变；只换为简单 ID 即成功。明确修复接缝为外部 correlation ID 的有界 opaque 文本，不截断、不拆分或规范化；内部 questionId、原 nonce/摘要/Worker/ACK 绑定均不放宽。新增边界测试及完整 HTTP 问答的复合 ID 夹具；修复独立通过后才进行新的实机尝试，保留第一次失败在分母。此问题说明测试需覆盖真实 producer 的输出形态，不应靠反复模型重试暴露接缝。
+
 ### 2026-09-09 10:23 CST：真实 Pi＋Qwen 双仓库交付已推送
 
 sourceHead=`76f9c3612ae0af1bfb8bb437e21cbbaabf0f1666`，localMergeSha=`7294878e68c59a592b4c8cd1236da34bad038fe2`；正常推送及远端 SHA 已核对，产品 pendingRemoteSync=false。新问答 API/client 与显式 Git 混合验收驱动经独立审查，无 P0/P1，最终定向组合 **48/48 PASS、20.930秒、零跳过**。API 单候选独立42/42通过2.292秒；此前一次沙箱内执行的13项 HTTP listen EPERM 保留为环境拒绝，使用合法 loopback 权限复跑后通过，没有改测试。实际 Draft2020-12 验证49个Schema/32个示例通过；只支持合同/传输，运行问答 Core/Pi 尚在实现。
