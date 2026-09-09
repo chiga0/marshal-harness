@@ -1,6 +1,6 @@
 # ADR 0090：Node 运行中业务问答与同执行答案消费
 
-- 状态：Proposed（2026-09-08；待维护者独立审查接纳，不代表实现或实机通过）。
+- 状态：Accepted（2026-09-09；维护者在持续实施授权内完成独立审查并接纳，不表示用户逐项签署，不代表实现或实机通过）。
 - 解决问题：B2 的运行中业务问答必须继续原 Worker，而非重新规划、另派 Attempt 或借权限请求放行工具。
 - 范围：ADR 0088 的单节点 Node 服务，复用 ADR 0089 的执行托管与 cleanup-only 恢复。首个真实 Adapter 为 Pi 原生 RPC；其他 Adapter 没有通过同链验证时明确不支持该增强能力。
 
@@ -18,6 +18,8 @@
 
 策略在 Task 计划形成时冻结并进入该新计划的摘要：公开 `Plan.interaction` 为可选闭集 `{profile, policyDigest, maxQuestions, maxWaitMs}`，其中 profile=`task-runtime-question/v1`；原无交互计划仍保留原字节/摘要。受信完整策略及节点范围由同一 Task 记录保存，不能仅凭 HTTP/模型回显摘要证明策略存在。默认不启用；缺少 Provider、业务验证器或最终验收消费能力时在批准/派发前明确拒绝需要此能力的计划，不临时放宽。
 
+持久策略只序列化数据描述与摘要，不序列化函数。启动时的受信 DI 验证器与最终验收 consumer 按冻结摘要解析；配置缺失或摘要不匹配须 fail closed，不能用新的同名函数替代旧批准。原生业务询问工具必须真实进入注册、definition 选择、工具能力和 ready 范围链；不能把它当成 unknown custom 后再旁路 scope 或权限保护。
+
 - 每 Worker 同时最多一个问题，整 Task 累计最多三个运行中问题；重复协议消息不是新问题，已消耗次数不退款。策略可以更低，不能运行中增加。
 - 问题文本最多 2048 UTF-8 字节，答案最多 4096 字节且非空；禁止 NUL/非法 Unicode。选择最多 16 项、值唯一，答案必须精确属于原选项。表述/答案仅作业务数据，不接受 executable、Policy、凭据、任意文件读取或发布指令。
 - `deadlineAt = min(原 ticket.deadline, 登记时刻 + maxWaitMs)`；`maxWaitMs` 最多 120000 毫秒。原 Task/Worker 绝对期限、Attempt、预留预算和目录不变，等待计入实际耗时与容量，不能靠进度或答案续期。
@@ -34,7 +36,7 @@
 
 有效答复同事务保存不可变答案、答案摘要、`task.answer` Operation、原 HTTP 幂等回执及一次答案投递义务。先认证/对象授权、查精确原回执，再核新请求 CAS、题目摘要/版本、未消费/未停止/未过期及当前原执行；同 key 异内容、改答、陈旧正数 revision 返回 409，非法形状返回 400，到期返回 410。精确旧请求重放只返回原接纳事实和明确的当前投影，不再次唤醒/发送。
 
-登记答案不是 Agent 消费：题目 `status=answered` 表示用户答案已接纳；`deliveryStatus` 单独为 `pending|dispatched|acknowledged|cancelled|expired|unknown`。Operation 初始 accepted；只有匹配 ACK 被当前 owner 接纳才 succeeded，失败/取消/unknown 按事实结清。原 HTTP 回执不随 Operation 后续改变而覆盖。
+登记答案不是 Agent 消费：题目 `status=answered` 表示用户答案已接纳；未接纳答案/不存在投递义务时 `deliveryStatus=null`（未答即取消或过期也保留 null，由 question status 表示关闭），接纳后才进入 `pending|dispatched|acknowledged|cancelled|expired|unknown`。Operation 初始 accepted；只有匹配 ACK 被当前 owner 接纳才 succeeded，失败/取消/unknown 按事实结清。原 HTTP 回执不随 Operation 后续改变而覆盖。
 
 ## 4. 一次投递、ACK 与失效顺序
 
