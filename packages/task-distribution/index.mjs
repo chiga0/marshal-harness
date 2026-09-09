@@ -47,6 +47,7 @@ export const SOURCE_FILES = Object.freeze([
   'packages/task-regional-window/policy.mjs',
   'packages/task-regional-window/service-config.mjs',
   'packages/task-service/composition.mjs',
+  'packages/task-service/launch.mjs',
   'packages/task-service/main.mjs',
   'packages/task-store/store.mjs',
   'packages/task-supervisor/controller.mjs',

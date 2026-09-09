@@ -6,12 +6,16 @@
 
 ```sh
 node packages/task-service/main.mjs \
-  --root /absolute/private-parent/task-data \
-  --mode create \
   --config /absolute/trusted/service-config.mjs
 ```
 
-运行环境是已允许的固定 Node 24.15.0；父目录必须已存在、canonical、当前 UID 所有且 `0700`。`create` 只创建全新根，重复启动使用 `--mode open`。端口默认 `0`，仅监听 `127.0.0.1`，可显式 `--port`。不自动创建父目录、不把已有空目录初始化成另一格式，也不从旧 Go/实验根导入。
+运行环境是已允许的固定 Node 24.15.0。默认数据目录为当前用户 `HOME/.marshal-node/task-service`，独立于旧 `.marshal`。HOME 只作为 canonical、当前 UID 所有、不可由其他用户写入的路径锚点；不扫描或复制其中内容，不改变 HOME 环境、登录或现有权限。缺失的 `.marshal-node` 父目录自动建立为 `0700`，再由原 composition 创建全新服务根、SQLite 和私有 token。
+
+可选 `--data-dir /absolute/private-parent/task-data` 选择本机内部数据位置；与旧 `--root` 互斥。显式目录的最近已存在锚点必须 canonical、当前 UID 所有且为 `0700`；从该私有锚点向下仅创建缺失父目录（最多32层），不自动采用共享 `/tmp`、他人目录或宽权限父目录。新目录及其父项在交给原组合根前完成子→父同步与身份重查；失败保留目录、拒绝启动，不删除不确定现场。两次启动都重验该边界，不以“目录已经存在”略过上次失败的耐久屏障。
+
+省略 `--mode` 等同 `--mode auto`：根不存在才 `create`，已经存在则只 `open`。旧 `--root ... --mode create|open` 保持可用；`create` 永不覆盖已有根，`open` 永不创建缺失目录。已存在空根、部分初始化、损坏/未知格式、符号链接、非所属或宽权限目录均拒绝，不 chmod、不重新初始化、不从旧 Go/实验根导入。并发 owner 仍由原 SQLite 独占锁拒绝，不删锁或抢占。自动模式不根据失败原因再次切换模式，不重试。
+
+端口默认 `0`，仅监听 `127.0.0.1`，可显式 `--port`。启动输出仍只有 profile、监听地址和受保护连接文件位置，token 由原 composition 每次自动生成且不回显。`--config` 始终必需：不猜 Provider、模型、登录或默认成功业务，缺少有效配置仍返回原 `service_start_unavailable`。薄启动入口只负责路径/模式，不拥有 Task 真值或恢复权限。
 
 配置模块是受信任部署代码，不是 HTTP 插件或用户提示词。它应默认导出：
 
@@ -127,8 +131,11 @@ export default {
 ```sh
 node --test --test-concurrency=1 packages/task-service/composition.test.mjs
 node --test --test-concurrency=1 packages/task-service/business-integration.test.mjs
+node --test --test-concurrency=1 packages/task-service/launch.test.mjs
 ```
 
 测试使用真实 loopback、真实 SQLite/depot 和受控 Fake Provider；覆盖输入上传/下载与冷重开、续租跨初始期限、计划批准双 Worker、取消、真实等待 completion、冷重开原回执、持锁竞争、根漂移、旧代未知义务、缺 cleanup，以及独立 Node CLI 的 SIGTERM。这两组测试里的 cleanup 是明确夹具事实，不代表实机 OS 清理或模型/业务通过；不能替代真实 Provider、活跃 crash、Linux 和同资产部署的各自证据。
+
+简启动专用测试使用独立固定 Node CLI 和仅子进程可见的临时 HOME，验证首次自动创建、SIGTERM、第二进程打开同一 SQLite、原回执/输入字节与新 token，以及并发 owner/坏根/路径拒绝和旧显式参数。它不改真实 HOME、不调用模型；正常重开不是活跃模型 crash 恢复。
 
 业务组合测试另外使用真实 FileBusiness 与原 Core verification capability，从纯 HTTP 计划批准到完整制品下载，覆盖验收中取消的迟到结果 fence，以及失败后及时释放 FD。模型和 checker 的进程完成/cleanup 明确为受控夹具，不能用该测试代替实机原生工具或独立外部命令验收。
