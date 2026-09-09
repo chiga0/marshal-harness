@@ -55,7 +55,7 @@ flowchart TB
   CORE <--> STORE[(存储面：一个权威 Store + 制品)]
 ```
 
-初期只有一个 Go server、若干受管执行进程和本地状态/制品，不先建微服务、消息中间件、独立调度器或 GC 平台。控制面决定状态与执行义务；执行面干活并提供观察；存储面保存事实，不裁定业务成功。
+当前 Node profile 只有一个 Node HTTP server、若干受管执行进程和本地 SQLite/制品；旧 Go server 仅属于历史 profile，不作为新服务依赖。不先建微服务、消息中间件、独立调度器或 GC 平台。控制面决定状态与执行义务；执行面干活并提供观察；存储面保存事实，不裁定业务成功。
 
 Core 只依赖中立类型与接口。Port 是接口契约（例如 Go interface），Adapter 实现契约，DI 在唯一组合根通过构造函数注入；不引入 DI 框架或动态插件系统。AgentAdapter 负责请求/协议/配置与结果解码，Execution 管进程归属/期限，SandboxProvider 管执行环境。普通 Local 子进程不是恶意代码沙箱。
 
