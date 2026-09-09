@@ -6,6 +6,7 @@ import path from 'node:path';
 import {TaskApplication, createRuntimeQuestionPort, createVerificationPort} from './application.mjs';
 import {Store, INTERACTION_FORMAT, CUSTODY_FORMAT, digest, encode} from '../task-store/store.mjs';
 import {ArtifactDepot} from '../task-artifacts/depot.mjs';
+import {createFileBusiness} from '../task-business/index.mjs';
 
 const context = {principal: 'local-operator'}, hash = value => digest(encode(value));
 const proposal = {summary: '业务输入明确后并行产出和独立验收', nodes: ['code', 'docs', 'verify'].map(id => ({id,
@@ -21,16 +22,16 @@ const cleanFact = ticket => ({executionId: 'fixture-' + ticket.workerId, started
 
 // Real SQLite/Depot/reducers. Process observations and checker below are explicit
 // controlled fixtures; full native/HTTP/custody proof is tested at composition.
-function fixture(t, {consumer = true, validator = () => true} = {}) {
+function fixture(t, {consumer = true, validator = () => true, proposalValue = proposal, layoutValue = layout, nodeIds = ['code']} = {}) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-question-'))), root = path.join(parent, 'store');
   let now = Date.parse('2026-09-09T00:00:00Z'), failSQL = false;
   let store = Store.create(root, {format: INTERACTION_FORMAT, clock: () => now});
   let owner = store.claimOwner(0, 'first', now + 3600000);
   const depot = ArtifactDepot.create(path.join(parent, 'objects'));
-  const runtimeQuestions = createRuntimeQuestionPort({policy: {id: 'region', version: '1', description: '区域只能选择 north 或 south'}, nodeIds: ['code'],
+  const runtimeQuestions = createRuntimeQuestionPort({policy: {id: 'region', version: '1', description: '区域只能选择 north 或 south'}, nodeIds,
     maxQuestions: 3, maxWaitMs: 10000, applies: () => true, validateQuestion: value => value.prompt === '请选择当前业务区域', validateAnswer: validator});
   const verification = createVerificationPort({id: 'checker', policy: {id: 'exact-files', version: '1', description: '独立检查器测试替身'},
-    interactionPolicyDigests: consumer ? [runtimeQuestions.policyDigest] : [], bindPlan: layout,
+    interactionPolicyDigests: consumer ? [runtimeQuestions.policyDigest] : [], bindPlan: layoutValue,
     start({ticket}) {const raw = {type: 'verification', status: 'passed', cleanup: {started: cleanFact(ticket), cleaned: true},
       evidence: {name: 'verification.json', mediaType: 'application/json', content: Buffer.from('{}')},
       delivery: {name: 'delivery.txt', mediaType: 'text/plain', content: Buffer.from('controlled fixture') }};
@@ -47,9 +48,15 @@ function fixture(t, {consumer = true, validator = () => true} = {}) {
     call: request => app.dispatch(request, context), read: fn => store.read(owner, fn), now: () => now,
     advance: ms => {now += ms;}, failSQL: value => {failSQL = value;},
     get: taskId => app.dispatch({operation: 'task.get', taskId}, context),
+    async prompt(ticket) {
+      const business = createFileBusiness({parent, depot, clock: () => now, layoutFor: value => value.input.fileLayout,
+        approvedLayout: value => app.execution.approvedLayout(value), observeExecution: value => app.execution.observeExecution(value)});
+      try {return (await business.prepare(ticket, {signal: new AbortController().signal, deadline: ticket.deadline})).prompt;}
+      finally {business.close();}
+    },
     async start() {
       const task = await f.call({operation: 'task.create', key: 'create', body: {intent: '业务分析交付', limits: {timeoutMs: 60000, maxAttempts: 8, maxWorkers: 2}}});
-      const plan = app.proposePlan(task.id, task.revision, proposal), current = await f.get(task.id);
+      const plan = app.proposePlan(task.id, task.revision, proposalValue), current = await f.get(task.id);
       await f.call({operation: 'task.approve', taskId: task.id, key: 'approve', body: {expectedRevision: current.revision, planRevision: plan.revision, planDigest: plan.digest}});
       const dispatch = f.read(tx => tx.commands()).find(row => JSON.parse(row.payload).action === 'dispatch');
       app.execution.expandDispatch(dispatch.id, dispatch.revision); return task.id;
@@ -159,4 +166,73 @@ test('missing final consumer rejects proposal and old v1/v2 readers reject new r
   f.closeStore(); // Isolate format rejection from the live connection lock.
   assert.throws(() => Store.openExisting(f.root), error => error.code === 'unavailable');
   assert.throws(() => Store.openExisting(f.root, {format: CUSTODY_FORMAT}), error => error.code === 'unavailable');
+});
+
+test('three-level and diamond dependencies preserve exactly original inherited answer in actual prepared prompt and final receipt', async t => {
+  const names = ['code', 'middle', 'docs'], plan = {...proposal,
+    nodes: [...names, 'verify'].map(id => ({id, role: id === 'verify' ? 'verifier' : 'author', goal: '完成' + id, scope: [id], providerId: null})),
+    edges: [{from: 'code', to: 'middle'}, {from: 'middle', to: 'docs'}, {from: 'code', to: 'docs'}, ...names.map(from => ({from, to: 'verify'}))]};
+  const layouts = () => ({nodeId: 'verify', description: '三级依赖与菱形汇合保留原答案',
+    layouts: names.map(nodeId => ({nodeId, inputs: [], allowedPaths: [nodeId + '.txt']})).concat({nodeId: 'verify', allowedPaths: [],
+      inputs: names.map(nodeId => ({path: nodeId + '.txt', source: {kind: 'upstream', nodeId, path: nodeId + '.txt'}}))}),
+    deliveries: names.map(nodeId => ({nodeId, path: nodeId + '.txt', targetPath: nodeId + '.txt'}))});
+  const f = fixture(t, {proposalValue: plan, layoutValue: layouts, nodeIds: ['code', 'middle']}), taskId = await f.start(), code = f.take('code'); f.started(code);
+  const q = f.execution.registerQuestion(code, question()); await f.call(await f.answer(taskId, q));
+  const d = f.execution.dispatchAnswer(code, q.questionId); f.execution.acknowledgeAnswer(code, q.questionId,
+    {questionDigest: d.questionDigest, answerDigest: d.answerDigest, deliveryNonce: d.deliveryNonce});
+  assert.equal(f.finish(code).status, 'completed');
+  const middle = f.take('middle'); f.started(middle); assert.equal(middle.input.interactionRefs.length, 1);
+  const middleQ = f.execution.registerQuestion(middle, question({nativeRequestId: 'middle-ui', questionNonce: 'b'.repeat(64)}));
+  const middleAnswer = await f.answer(taskId, middleQ); middleAnswer.key = 'middle-answer'; await f.call(middleAnswer);
+  const middleD = f.execution.dispatchAnswer(middle, middleQ.questionId);
+  f.execution.acknowledgeAnswer(middle, middleQ.questionId, {questionDigest: middleD.questionDigest, answerDigest: middleD.answerDigest, deliveryNonce: middleD.deliveryNonce});
+  assert.equal(f.finish(middle).status, 'completed');
+  const docs = f.take('docs'); f.started(docs);
+  assert.equal(docs.input.upstream.length, 2); assert.equal(docs.input.interactionRefs.length, 2);
+  assert.deepEqual(docs.input.upstream.map(item => item.interactionRefs.length), [1, 2]);
+  const prepared = await f.prompt(docs); assert.match(prepared, /"answer":"north"/);
+  assert.equal(docs.input.interactionRefs[0].questionDigest, q.questionDigest);
+  const before = f.read(tx => tx.head(taskId));
+  for (const change of [ticket => ticket.input.interactionRefs[0].ackDigest = 'sha256:' + 'f'.repeat(64),
+    ticket => ticket.input.upstream[0].workerId = docs.workerId,
+    ticket => ticket.input.upstream[0].nodeId = 'non-dependency',
+    ticket => ticket.input.upstream[0].result.manifestDigest = 'sha256:' + 'e'.repeat(64),
+    ticket => ticket.input.upstream[0].interactionRefs = [],
+    ticket => ticket.input.interactionRefs[0].question.generation = '0']) {
+    const wrong = structuredClone(docs); change(wrong);
+    assert.throws(() => f.app.transaction(false, tx => f.app.runtimeQuestions.resultRefs(tx, f.app.get(tx, taskId), wrong)), error => error.code === 'recovery_required');
+  }
+  assert.deepEqual(f.read(tx => tx.head(taskId)), before);
+  assert.equal(f.finish(docs).status, 'completed');
+  const verify = f.take('verify'); assert.deepEqual(verify.input.interactionRefs.map(ref => ref.questionDigest), [q.questionDigest, middleQ.questionDigest]); f.started(verify);
+  const handle = f.verification.start({ticket: verify, prepared: {cwd: '/controlled-fixture'}});
+  assert.equal(f.execution.finish(verify, await handle.completion).status, 'completed');
+  assert.equal((await f.get(taskId)).status, 'completed');
+});
+
+test('own acknowledged refs merge without leaking another branch pending question; unACKed inheritance refuses', async t => {
+  const f = fixture(t, {nodeIds: ['code', 'docs']}), taskId = await f.start(), code = f.take('code'), docs = f.take('docs');
+  f.started(code); f.started(docs);
+  const first = f.execution.registerQuestion(code, question()), other = f.execution.registerQuestion(docs, question({nativeRequestId: 'ui-2', questionNonce: 'b'.repeat(64)}));
+  await f.call(await f.answer(taskId, first)); const d = f.execution.dispatchAnswer(code, first.questionId);
+  f.execution.acknowledgeAnswer(code, first.questionId, {questionDigest: d.questionDigest, answerDigest: d.answerDigest, deliveryNonce: d.deliveryNonce});
+  const values = f.read(tx => f.app.runtimeQuestions.resultRefs(tx, f.app.get(tx, taskId), code));
+  assert.equal(values.length, 1); assert.equal(values[0].questionDigest, first.questionDigest);
+  assert.throws(() => f.app.transaction(false, tx => f.app.runtimeQuestions.inherited(tx, f.app.get(tx, taskId), [{questionDigest: other.questionDigest}])),
+    error => error.code === 'state_conflict');
+  assert.equal(f.finish(code).status, 'completed');
+  assert.equal((await f.call({operation: 'task.questions', taskId})).items.find(item => item.id === other.questionId).status, 'open');
+});
+
+test('question registered while paused resumes awaiting-answer; pause never dispatches an answer', async t => {
+  const f = fixture(t), taskId = await f.start(), code = f.take('code'); f.started(code);
+  let current = await f.get(taskId); await f.call({operation: 'task.pause', taskId, key: 'pause-before-question', body: {expectedRevision: current.revision}});
+  const q = f.execution.registerQuestion(code, question()); current = await f.get(taskId);
+  assert.equal(current.status, 'paused'); assert.equal(f.execution.dispatchAnswer(code, q.questionId), null);
+  await assert.rejects(f.call(await f.answer(taskId, q)), error => error.code === 'state_conflict');
+  await f.call({operation: 'task.resume', taskId, key: 'resume-after-question', body: {expectedRevision: current.revision}});
+  current = await f.get(taskId); assert.equal(current.status, 'awaiting-answer'); assert.ok(current.allowedActions.includes('answer'));
+  await f.call(await f.answer(taskId, q)); const d = f.execution.dispatchAnswer(code, q.questionId);
+  f.execution.acknowledgeAnswer(code, q.questionId, {questionDigest: d.questionDigest, answerDigest: d.answerDigest, deliveryNonce: d.deliveryNonce});
+  assert.equal((await f.get(taskId)).status, 'running'); assert.equal(f.finish(code).status, 'completed');
 });

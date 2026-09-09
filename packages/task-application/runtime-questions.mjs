@@ -98,6 +98,7 @@ export class TaskRuntimeQuestions {
         answerId: null, answerDigest: null, dispatchId: null, dispatchDigest: null, ackId: null, ackDigest: null, operationId: null, commandId: null};
       state.questions.push(q); record.runtimeSession = request.sessionId; record.worker.status = 'awaiting-answer';
       if (task.task.status !== 'paused') task.task.status = 'awaiting-answer';
+      else task.pausedFrom = 'awaiting-answer';
       task.task.revision = nextRevision(task.task.revision);
       const source = this.app.save(tx, task, 'worker.question-opened', {workerId: ticket.workerId, questionId, questionDigest: q.questionDigest});
       tx.putProjection('interaction', questionId, 0, source, encode(fact)); this.app.execution.putWorker(tx, row, record, source);
@@ -197,16 +198,58 @@ export class TaskRuntimeQuestions {
     }
   }
   expired(task) {return (task.runtimeQuestions?.questions ?? []).some(q => pending(q) && this.app.now() >= Date.parse(q.deadlineAt));}
+  resultRefs(tx, task, ticket) {
+    const dependencies = task.plan.edges.filter(edge => edge.to === ticket.nodeId).map(edge => edge.from), upstream = ticket.input.upstream;
+    if (!Array.isArray(upstream) || upstream.length !== dependencies.length || new Set(upstream.map(item => item.nodeId)).size !== upstream.length)
+      reject('recovery_required', 409);
+    for (const input of upstream) {
+      if (!dependencies.includes(input.nodeId)) reject('recovery_required', 409);
+      const {record} = this.app.execution.worker(tx, input.workerId);
+      if (!id(record.resultRef) || !Array.isArray(record.interactionRefs) || !record.candidate) reject('recovery_required', 409);
+      const candidate = tx.projection('attempt', record.resultRef);
+      if (record.worker.id !== input.workerId || record.worker.nodeId !== input.nodeId || record.worker.taskId !== ticket.taskId ||
+        record.worker.status !== 'completed' || record.cleanup?.cleaned !== true || record.cleanup.started?.executionId !== record.executionId ||
+        record.ticket.generation !== ticket.generation || record.ticket.planDigest !== ticket.planDigest || record.ticket.taskId !== ticket.taskId ||
+        task.nodes.find(node => node.id === input.nodeId)?.status !== 'completed' || !candidate ||
+        record.resultDigest !== hash({candidate: decode(candidate), interactionRefs: record.interactionRefs}) ||
+        !exact(record.candidate, input.result) || !exact(record.interactionRefs, input.interactionRefs)) reject('recovery_required', 409);
+    }
+    const inherited = this.inherited(tx, task, upstream.flatMap(item => item.interactionRefs));
+    if (!exact(inherited, ticket.input.interactionRefs)) reject('recovery_required', 409);
+    return this.inherited(tx, task, inherited, ticket.workerId);
+  }
+  inherited(tx, task, values, workerId = null) {
+    if (!Array.isArray(values)) reject('recovery_required', 409);
+    const selected = new Map();
+    for (const value of values) {
+      if (!sha(value?.questionDigest) || !task.runtimeQuestions.questions.some(q => q.questionDigest === value.questionDigest) ||
+        selected.has(value.questionDigest) && !exact(selected.get(value.questionDigest), value)) reject('recovery_required', 409);
+      selected.set(value.questionDigest, value);
+    }
+    const result = [];
+    // Stable original question order, not the order/depth of the DAG's fan-in.
+    // Only selected ancestors and this Worker's own questions are consumed;
+    // another branch may still legitimately be awaiting an answer.
+    for (const q of task.runtimeQuestions.questions) if (selected.has(q.questionDigest) || q.workerId === workerId) {
+      const current = this.reference(tx, q);
+      if (selected.has(q.questionDigest) && !exact(selected.get(q.questionDigest), current)) reject('recovery_required', 409);
+      result.push(current);
+    }
+    return result;
+  }
+  reference(tx, q) {
+    if (q.deliveryStatus !== 'acknowledged') reject('state_conflict', 409);
+    const question = this.fact(tx, q), answer = tx.projection('interaction', q.answerId), dispatched = tx.projection('interaction', q.dispatchId), ack = tx.projection('interaction', q.ackId);
+    if (!answer || !dispatched || !ack || answer.revision !== 1n || dispatched.revision !== 1n || ack.revision !== 1n ||
+      digest(answer.bytes) !== q.answerDigest || digest(dispatched.bytes) !== q.dispatchDigest || digest(ack.bytes) !== q.ackDigest) reject('recovery_required', 409);
+    return {question, questionDigest: q.questionDigest, answer: decode(answer), answerDigest: q.answerDigest,
+      dispatchDigest: q.dispatchDigest, ackDigest: q.ackDigest};
+  }
   refs(tx, task, workerId = null) {
     const refs = [];
     for (const q of task.runtimeQuestions?.questions ?? []) {
       if (workerId !== null && q.workerId !== workerId) continue;
-      if (q.deliveryStatus !== 'acknowledged') reject('state_conflict', 409);
-      const question = this.fact(tx, q), answer = tx.projection('interaction', q.answerId), dispatched = tx.projection('interaction', q.dispatchId), ack = tx.projection('interaction', q.ackId);
-      if (!answer || !dispatched || !ack || digest(answer.bytes) !== q.answerDigest || digest(dispatched.bytes) !== q.dispatchDigest || digest(ack.bytes) !== q.ackDigest)
-        reject('recovery_required', 409);
-      refs.push({question, questionDigest: q.questionDigest, answer: decode(answer), answerDigest: q.answerDigest,
-        dispatchDigest: q.dispatchDigest, ackDigest: q.ackDigest});
+      refs.push(this.reference(tx, q));
     }
     return refs;
   }

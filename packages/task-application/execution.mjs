@@ -207,7 +207,8 @@ export class TaskExecution {
       if (task.runtimeQuestions) {
         input.runtimeQuestions = {profile: task.runtimeQuestions.descriptor.profile, policyDigest: task.runtimeQuestions.policyDigest,
           maxWaitMs: task.runtimeQuestions.descriptor.maxWaitMs, enabled: task.runtimeQuestions.descriptor.nodeIds.includes(node.id)};
-        input.interactionRefs = verification ? this.app.runtimeQuestions.refs(tx, task) : input.upstream.flatMap(item => item.interactionRefs ?? []);
+        input.interactionRefs = verification ? this.app.runtimeQuestions.refs(tx, task) :
+          this.app.runtimeQuestions.inherited(tx, task, input.upstream.flatMap(item => item.interactionRefs ?? []));
       }
       if (verification) {
         if (taskWorkers.some(({record}) => live(record.worker))) return null;
@@ -323,7 +324,8 @@ export class TaskExecution {
         !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;
       let candidate = success && !verification ? clone(result.result ?? null) : null;
       if (success && task.runtimeQuestions) {
-        try {record.interactionRefs = this.app.runtimeQuestions.refs(tx, task, verification ? null : ticket.workerId);}
+        try {record.interactionRefs = verification ? this.app.runtimeQuestions.refs(tx, task) :
+          this.app.runtimeQuestions.resultRefs(tx, task, ticket);}
         catch {success = false; candidate = null;}
       }
       const verificationFailed = clean && verified?.data.status === 'failed' && result.status === 'failed' && verified.staged !== null &&
