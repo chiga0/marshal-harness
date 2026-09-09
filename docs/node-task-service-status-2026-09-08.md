@@ -2,6 +2,32 @@
 
 ## 当前结论
 
+### 2026-09-09 13:06 CST：当前候选取消、双平台回归及新目录恢复补验
+
+精确产品候选仍是已推送的 `69cfacee2fbea366174744167d5a2c3a3dfeee89`。[Node team CI 34312972893](https://github.com/chiga0/marshal-harness/actions/runs/34312972893) 已通过：macOS **511/511、222.154秒**，Ubuntu **511/511、225.774秒**，均零失败/取消/跳过。不是把上一源510项移作新源证据。
+
+同源真实 Qwen0.23.0 `--scenario cancel` 一次 **14.143秒通过**：Task=`task-6c21a613-7324-4a31-b380-72bd953c6db0`，原 planner 完成后两个作者的原进程/HTTP投影均活跃，发送一次取消，两原进程均在请求后退出并cleanup；3 Attempts、Task cancelled、Operation succeeded、verifier 0、无delivery。正常同版本实例重开保留 create/approve/cancel原回执、相同Task，重复启动0。原证据 `/private/tmp/marshal-current-qwen-cancel.ohj9Di/run/evidence.json`，SHA-256=`822ebf15539c788212b791b483cc98354b4e2563770fda5de0b1ce6728a4e744`；入口为本机已安装 `/Users/gawain/.local/lib/qwen-code/lib/cli-entry.js`，不再用旧README中的不存在路径。没有读取或复制登录文件、改变模型配置或自动重试。
+
+该取消发生在作者启动后的早期窗口，两个原生命周期交叠45ms，不能声明模型已开始token/tool工作；权限回调0/0不证明权限隔离。此原Qwen driver未启用新custody持久化profile，因此是当前代码原layout1的真实HTTP取消/普通进程清理证据，不替代Pi运行中取消、新custody crash或Worker/Publisher分权。本机ordinary-user、production=false口径保留。执行前原取消/驱动无模型回归独立17/17通过2.426秒。
+
+同版本冷备份测试 source=`1c3c4398796e5699448f9e89e17010606dca9940`，集成测试source=`796d40c`（生产字节为69cface；随后9edb637仅补部署README）。主Agent独立运行原CLI/HTTP/SQLite/实际受管协议进程及独立checker，**4/4 PASS、13.066秒**：正常SIGTERM且clean/exit0→完整22文件保权限/摘要/fsync复制→新目录open；原37条事件、SQL事实、回执/下载保持、旧任务零重派，再完成新4 Attempt团队。缺DB拒绝且不新建、缺blob的metadata/content均503且不补造、同物理目录第二writer拒绝。测试作者此前两次夹具假设错误（metadata也验blob、artifact ID非裸UUID）保留，未修改生产合同；这不是在线备份、断电证明、跨版本迁移或克隆副本防分叉。旧根和备份必须保持停用。
+
+这关闭当前Qwen/layout1取消子证据与冷复制恢复测试缺口；原reviewer已确认备份测试无P0/P1。API-STABLE第2条仍待Pi/custody同一profile的取消控制，不能拼接两个不同profile宣布通过；当前两作者分别补这一实机驱动及连续多Task/坏任务隔离验证。后继main同步另按实际结果记录，不预填正式发布。B1实际Publisher分权、B2未覆盖的真实局部修正、B3持续多Task/故障/平台部署与正式资产仍开放。
+
+### 2026-09-09 12:59 CST：当前候选真实问答交付与规划合同修正
+
+sourceHead=`42426a2ad35e96569b356e283177a93b98ab1fcb`，localMergeSha=`69cfacee2fbea366174744167d5a2c3a3dfeee89`，已正常推送并核对远端一致，`pendingRemoteSync=false`。该候选真实 Pi0.84.4/Node24.15.0 在原 HTTP driver 上完成规划、一次批准、双作者、运行中业务问题/答案 ACK、独立命令验收、成果下载消费与正常实例重开，**29.624秒**、作者生命周期交叠 **10.189秒**、4 Attempts、1次 verifier，原执行全部确认清理。east 等待答案时 west 已完成；原 east Worker/Attempt 消费答案后继续，没有新派替代。下载338 bytes：east cancelled为1单/9000 cents，west paid为2单/550 cents。正常重开保留原回执、相同制品，重复启动0；业务字段 cancelled 不是 Task 取消。
+
+原证据 `/private/tmp/marshal-typed-planner-pi.efuLbd/run/evidence.json`，SHA-256=`f20cf8aec82d716874d458dfee28148904027aa1126545d10737860d8a923979`；下载 SHA-256=`584a06f86d5db240769b975bfa2aafe1771c50aa63d046a9dfc51508600de50c`。source 来自运行前后冻结树检查，观察 JSON 不是签名 source receipt。原生权限回调允许5次、拒绝2次不构成同 UID 恶意隔离；ordinary-user、production=false、Publisher分权未证。本次是受限公开业务及正常重开，不证明任意需求规划、实际 repair 或活跃模型 crash 恢复。
+
+**保留一次真实失败及原因**：前一个精确源 `0f86804140546b9e4593ba39d1a98dcb70db18bc` 的12.365秒试验在规划阶段失败，1 Attempt、无作者/验收/交付；Pi回合 completed、原cleanup=true，不等于业务成功。原提示只列 scope 字段名，模型三个节点均返回 `{read,write}`，Core 要求 `string[]`，因此 Task 为 `failed/invalid_plan`。独立只读重放原报告得到 `invalid_plan_node`；仅诊断内存副本改数组就通过，原库/报告不改。失败证据 SHA-256=`2b77d054d1ee74143f87f89c4d80128cbd4530d0a9e7dddd9f0ee95ef06642a8`，路径 `/private/tmp/marshal-current-pi-http.Mjl88N/run/evidence.json`。
+
+修复仅补完整 Planner 输出类型、角色/ID、数组/DAG/预算说明和字段示例，不转换模型结果、不放宽 Core 或自动重试。原 reviewer 确认1项P1关闭，独立 **24/24 PASS、1.770秒**；测试从真实 prepared prompt 的示例，经原 collect→freezePlan 正向，错误对象 scope 仍拒绝。作者首次新增测试复用了已释放 ticket 而失败1项，改为独立 fixture 后24/24通过，生产 collect/release不变；该测试错误与实机失败分别保留，不把本轮说成首轮全绿。
+
+上一源 `0f86804` 的 [Node team CI 34312082617](https://github.com/chiga0/marshal-harness/actions/runs/34312082617) 已终结：Ubuntu **510/510、230.166秒**，macOS **510/510、261.149秒**，均零失败/取消/跳过。两平台覆盖数不相加冒充1020个不同场景；新修复源的CI另行核对。已合入的API-STABLE两项行为测试独立2/2通过9.730秒：并行执行/长Verify下6次成功查询、2次202取消各自小于2秒，以及分页事件在断连和正常重开后原cursor续读无重漏。它们使用真实Node协议进程与SQLite，不是模型、SSE或生产SLO证明。
+
+下一步收口当前候选的API证据及停服完整快照→新目录恢复；不把B3全平台/Publisher分权新增为API-STABLE前置，也不把API候选测试当正式发布。ECS替代传输方式尚待用户确认，未部署的事实不变。
+
 ### 2026-09-09 12:39 CST：输入审计与简启动合入并同步
 
 sourceHead=`fe04a8a2f884e42afc5a7f1ad7a62e6d56a4b930`，localMergeSha=`ee3932ffc135f89ce0395f159696f93c6684da1d`；远端 main 已核对同一 SHA，`pendingRemoteSync=false`。实际 prepared prompt 的摘要/长度、有效 Provider 句柄返回后的 handed-off 观察、原 SQLite 审计引用与 Depot 快照下载已接线；默认不存正文，只有显式受信同步披露策略返回的内容可留存。handed-off 不证明模型消费，缺失用量仍 unavailable。原 CLI 增加默认私有数据目录和自动 create/open，仍必须提供受信业务/Provider/独立验证配置，不是任意任务零配置。
