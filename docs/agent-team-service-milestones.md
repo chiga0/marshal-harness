@@ -6,6 +6,8 @@
 
 ## 1. 三个用户出口，不再把平台准备当交付
 
+**2026-09-09 10:23 CST 增量**：真实 Pi＋Qwen 已在两个锁定仓库并行修改、形成 patch、独立验收/下载应用并正常重开；56.914秒、交叠11.631秒、无模型重试。已正常推送 `7294878`。这关闭 B2 真实混合 Git 交付的有界子条件，不关闭通用规划、运行中问答/局部修正、完整故障矩阵或 Worker/Publisher 分权。新增问答 API/客户端仅证明合同，不冒充原 Worker 已消费答案。[证据](node-task-service-status-2026-09-08.md)。
+
 **2026-09-09 10:12 CST 当前检查点**：sourceHead=`db57d45c7b8a951eb3adddafd2f649ad165cd068`，localMergeSha=`0057dd1b7c5b259f238600bacbc3abb346d770ca`；正常推送后远端 main 已核对为同一 SHA，产品 `pendingRemoteSync=false`。最终完整 Node 组合 **418/418 PASS、319.688秒、零失败/取消/跳过**，运行前后冻结树不变且 clean；日志 SHA-256=`47b7d7ceb5c01fa5611ab93e2fc5f3c08ea4c51d8672de6f3a8204aaecd7d63f`。 本轮关闭限定服务崩溃后 cleanup-only 恢复/再接单、安装目录包团队闭环、Git 多仓库 patch 交付的实现与确定性证据缺口；不是全平台、真实模型恢复或 Worker/Publisher 分权完成。原409项/1失败的 Pi 回归已定位修复，失败分母保留。下一完整纵切按已接纳 [ADR 0090](adr/0090-node-runtime-business-questions.md) 并行实现运行中问答 Core/Pi 与 API/client，另一方向验证真实 Pi＋Qwen Git 团队。B1/B2/API-STABLE/B3退出条件不变，见[实施记录](node-task-service-status-2026-09-08.md)。下述时间记录仅保留历史。
 
 **22:42 CST 同版本恢复增量**：`32b353f` 已将 `2f6c28f` 的真实 create/result COMMIT 前后故障测试正常合入并推送；独立组合9/9通过。它证明提交前后全有或全无及原成果重开，不表示活跃执行已能自动恢复接单。下一项是原 Runtime 清理观察补强与 [ADR 0089](adr/0089-node-execution-custody-and-cleanup-recovery.md) 的跨代 cleanup-only 收口；不新增品牌或 UI 回避此 B2 缺口。真实必要问答与 Pi 第二团队已推进，当前表不再将它们列为“尚未实机”，完整 B1/B2/API-STABLE/B3 状态仍不提升。

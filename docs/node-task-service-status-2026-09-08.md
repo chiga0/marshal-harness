@@ -2,6 +2,16 @@
 
 ## 当前结论
 
+### 2026-09-09 10:23 CST：真实 Pi＋Qwen 双仓库交付已推送
+
+sourceHead=`76f9c3612ae0af1bfb8bb437e21cbbaabf0f1666`，localMergeSha=`7294878e68c59a592b4c8cd1236da34bad038fe2`；正常推送及远端 SHA 已核对，产品 pendingRemoteSync=false。新问答 API/client 与显式 Git 混合验收驱动经独立审查，无 P0/P1，最终定向组合 **48/48 PASS、20.930秒、零跳过**。API 单候选独立42/42通过2.292秒；此前一次沙箱内执行的13项 HTTP listen EPERM 保留为环境拒绝，使用合法 loopback 权限复跑后通过，没有改测试。实际 Draft2020-12 验证49个Schema/32个示例通过；只支持合同/传输，运行问答 Core/Pi 尚在实现。
+
+真实单次 Task=`task-4710f0d9-66b2-4f89-81d2-5193cc794b7f`，02:21:38.108Z→02:22:35.022Z，**56.914秒**。Pi0.84.4 负责原规划和 library，Qwen0.22.3 负责 client；两作者实际执行交叠 **11.631秒**。固定完整业务计划、一次批准、4 Attempts、两作者、独立 command verifier；没有模型自动重试。两个新建公开合成 Git 仓库的已有文件由原生 Agent 实际修改，原锁定 base/无关文件保持，输出真实 patch/context。它证明固定完整计划的混合交付，不证明任意自然语言自动拆解质量。
+
+原独立验收与下载后第三组真实工作区应用均通过23检查（含12负例），两笔金额合计1350；下载4285 bytes，摘要 `sha256:6b9c14916420a8d0ac6d247cf3dafa08d8114cbabac70cbaff51b39b57e1e959`。全部原执行清理被确认，正常同版本服务重开保留 create/approve 回执和同字节成果，重复启动0。原始受保护证据 `/private/tmp/marshal-git-mixed-live.kN1T7f/run/evidence.json`，SHA-256=`f8ce2bec4560fc443f1cc23e31d5fe9a469fdbb679cf1546274013f39f5fb0ba`；观察记录不是签名权威收据。
+
+权限观察：Pi allowed=3/denied=1；**Qwen allowed=0/denied=0，仅未触发回调，不能据此宣称本次强制授权或越界拒绝通过**。沿用本机原生配置，ordinary-user、production=false、publisherSeparationProven=false；正常重开不是模型执行中 crash 恢复。B2 的真实混合 Git 业务子条件已有这次证据；运行中问答、局部修正、完整同版本故障矩阵和实际分权/平台发行仍开放，B1/B2/API-STABLE/B3整体不升级。
+
 ### 2026-09-09 10:12 CST：恢复、安装包与 Git 交付已合并推送
 
 sourceHead=`db57d45c7b8a951eb3adddafd2f649ad165cd068`，localMergeSha=`0057dd1b7c5b259f238600bacbc3abb346d770ca`；正常推送后远端 main 已核对，产品 `pendingRemoteSync=false`。最终完整 Node 组合 **418/418 PASS、319.688秒、零失败/取消/跳过**，冻结树不变且 clean；日志 SHA-256=`47b7d7ceb5c01fa5611ab93e2fc5f3c08ea4c51d8672de6f3a8204aaecd7d63f`。 本次汇合正式执行托管、SQLite cleanup-only 接纳、ACP/Pi scope 修正、真实进程故障测试、已安装目录包团队交付和 Git 多仓库业务插件。更早记录仅保留当时结论。
