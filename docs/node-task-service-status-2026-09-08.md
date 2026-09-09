@@ -2,6 +2,16 @@
 
 ## 当前结论
 
+### 2026-09-09：同一安装包消费与双平台回归
+
+已推送主线 `2d178b4f96caeb2708d861b837160de5cf758f78` 的 [CI 34316647809](https://github.com/chiga0/marshal-harness/actions/runs/34316647809) Ubuntu/macOS 均成功；它覆盖前述 Darwin 修正，不抹去 `ce55eed` 的两项失败。
+
+安装载体实现 source=`4d0b833e90946fc131a0a45f21a2d9c67b9c0322`，集成=`413e92dd`；唯一 reviewer 无P0/P1，独立8/8通过32.594秒，维护者聚合20/20通过102.275秒。载体不是可直接执行的安装目录：先以包外固定 sourceHead/manifestDigest 核验全量内容，再排他创建0700目录/0600文件；不覆盖旧目录、不信任载体自身重算的摘要、不修改载体权限凑通过。
+
+维护者另将精确干净源码 `d42f437af1b68c304c1267d156c92f2ccd1e9b0e` **只打包一次**（47文件、647188 bytes），模拟755/644传输权限后还原到全新私有目录。包外 pin=`sha256:aed4c43d143ace9efb75f2eb9c4a3a69e4d34d051bca6e92baeebe9173effc6a`。没有 Git 的 PATH 下，同包原CLI/HTTP客户端在 Darwin arm64、Node24.15.0、UID501 完成 layout1/layout2 团队→独立验收→下载→冷重开，**2/2 PASS、10.866秒、零跳过**；各4次原执行，冷重开旧任务重复启动0。原记录保存在 `/private/tmp/marshal-carrier-independent.GxzlZy/report.json` 与 `results.log`。这是无模型安装消费验证，不是 Pi/Qwen 模型证据或ECS部署成功。
+
+新CI将在原双平台回归后仅生成一份目录包，再由 Ubuntu/macOS 按同一 artifact ID 和包外 pin 分别安装、消费；此段尚未记录新流程运行成功，不能用旧CI替代。ADR0092仍按其状态单独判断；安装工具不修复未绑定执行，也不关闭B1/B2/B3。
+
 ### 2026-09-09：提交窗口恢复补验与 Darwin 清理观察修正
 
 新增恢复测试 source=`8ceea577747fce9b2b2f7ac279ad7fec880c1c91`，集成=`3b36343`；维护者独立审查无阻塞，原 CLI/HTTP/SQLite/custodian 六项 **6/6 PASS、39.179秒**。覆盖 reservation、custody binding、cancel 的 COMMIT 前后实际服务 SIGKILL。原预算、期限、回执和失败事实保持；绑定已提交但许可未发送时，由原签名 none-start 观察收口；cancel 已提交但202丢失时精确重放原回执。可结清路径均完成下一新团队、独立验收/下载和第三次 open 零追加，无真实模型调用。

@@ -8,7 +8,7 @@
 
 **2026-09-09 13:25 CST 当前出口**：API-STABLE 核心接口检查点通过，范围仅当前 Node profile 的25操作/58 Schema与同包客户端，不授予正式 v1/生产/全平台支持。已审源码 `5657a7d` 正常合并推送至 `94795f37e37863d0fddb003874b6fac5f7f8a082`，远端一致、`pendingRemoteSync=false`。同 Pi/custody 配置的真实取消一次13.046秒通过；原20项定向与三波14Task/55执行的独立隔离测试通过。旧 main `9700ade` 双平台CI全绿，新提交CI另记，不冒充本源通过。[完整四项证据、失败成本与下一步](node-task-service-status-2026-09-08.md)。
 
-**后续恢复/平台增量**：六个 dispatch/cancel COMMIT 窗口已独立6/6通过；其中两个未绑定窗口仍为intervention且不能恢复接单，属于待修发布缺口，不以负例通过冒充自动恢复。`ce55eed` macOS CI有2项清理失败，Ubuntu通过；Darwin瞬时EPERM原预算内重观测修正与精确验证记录见[当前实施检查点](node-task-service-status-2026-09-08.md)。没有宣称新CI已绿或正式发布。
+**后续恢复/平台增量**：六个 dispatch/cancel COMMIT 窗口已独立6/6通过；其中两个未绑定窗口仍为intervention且不能恢复接单，属于待修发布缺口，不以负例通过冒充自动恢复。Darwin清理观察修正已合并推送至 `2d178b4`，该源Ubuntu/macOS CI均通过，保留前一源两项失败。安装载体已独立审查，精确 `d42f437a` 同包Darwin安装→团队交付→冷开2/2通过；新的双平台同artifact消费流程尚待实际运行。详见[当前实施检查点](node-task-service-status-2026-09-08.md)，不代表正式发布。
 
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |

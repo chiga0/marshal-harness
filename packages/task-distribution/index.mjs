@@ -75,10 +75,14 @@ function canonicalDirectory(root) {
 function read(root, relative, limit = MAX_FILE) {
   if (!/^[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*$/.test(relative) || relative.split('/').some(s => s === '.' || s === '..')) fail('unsafe_path');
   canonicalDirectory(path.dirname(path.join(root, relative)));
-  const fd = fs.openSync(path.join(root, relative), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  const named = fs.lstatSync(path.join(root, relative));
+  if (!named.isFile() || named.nlink !== 1 || named.size > limit) fail('unsafe_file');
+  // The manifest is read before the inventory walk. Reject a FIFO/device before
+  // opening it; nonblocking also bounds a regular-file-to-FIFO replacement race.
+  const fd = fs.openSync(path.join(root, relative), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   try {
     const before = fs.fstatSync(fd);
-    if (!before.isFile() || before.nlink !== 1 || before.size > limit) fail('unsafe_file');
+    if (!before.isFile() || before.nlink !== 1 || before.size > limit || before.dev !== named.dev || before.ino !== named.ino) fail('unsafe_file');
     const buffer = Buffer.alloc(before.size + 1);
     let length = 0;
     while (length < buffer.length) {
@@ -164,9 +168,9 @@ export function pack({sourceRoot, target, sourceHead}) {
   });
 }
 
-/** manifestDigest must come from trusted release evidence, never from this directory. */
-export function verify({root, manifestDigest}) {
-  return wrap(() => {
+// Same manifest/content checks for a private installed package and an untrusted
+// read-only CI carrier. Only the latter's transport permission bits may differ.
+function inspect(root, manifestDigest, privateModes, capture = false) {
     if (!/^sha256:[a-f0-9]{64}$/.test(manifestDigest ?? '')) fail('invalid_manifest_digest');
     canonicalDirectory(root);
     const bytes = read(root, MANIFEST, 65536);
@@ -184,23 +188,73 @@ export function verify({root, manifestDigest}) {
       const parts = file.split('/'); return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'));
     }));
     function walk(directory, prefix = '') {
-      if ((fs.lstatSync(directory).mode & 0o777) !== 0o700) fail('unsafe_permissions');
-      for (const entry of fs.readdirSync(directory, {withFileTypes: true})) {
+      if (privateModes && (fs.lstatSync(directory).mode & 0o777) !== 0o700) fail('unsafe_permissions');
+      // Read one name at a time: an unexpected huge directory is not buffered.
+      const reader = fs.opendirSync(directory);
+      try { for (let entry; (entry = reader.readSync()) !== null;) {
         const relative = prefix + entry.name;
         if (entry.isDirectory() && wantedDirs.delete(relative)) walk(path.join(directory, entry.name), relative + '/');
         else if (!entry.isFile() || !wantedFiles.delete(relative)) fail('unexpected_entry');
-        else if ((fs.lstatSync(path.join(directory, entry.name)).mode & 0o777) !== 0o600) fail('unsafe_permissions');
-      }
+        else if (privateModes && (fs.lstatSync(path.join(directory, entry.name)).mode & 0o777) !== 0o600) fail('unsafe_permissions');
+      }} finally {reader.closeSync();}
     }
     walk(root);
     if (wantedFiles.size || wantedDirs.size) fail('missing_entry');
-    let total = 0;
+    if (manifest.files.reduce((total, file) => total + file.bytes, 0) > MAX_TOTAL) fail('package_too_large');
+    let total = 0; const contents = [];
     for (const file of manifest.files) {
       const content = read(root, file.path);
       if (content.length !== file.bytes || hash(content) !== file.digest) fail('file_digest_mismatch');
       total += content.length;
       if (total > MAX_TOTAL) fail('package_too_large');
+      if (capture) contents.push({path: file.path, bytes: content});
     }
-    return Object.freeze({sourceHead: manifest.sourceHead, manifestDigest, node: NODE_VERSION, entrypoint: ENTRYPOINT, files: manifest.files.length, bytes: total});
+    return {report: Object.freeze({sourceHead: manifest.sourceHead, manifestDigest, node: NODE_VERSION, entrypoint: ENTRYPOINT, files: manifest.files.length, bytes: total}),
+      contents: capture ? [...contents, {path: MANIFEST, bytes}] : []};
+}
+
+/** manifestDigest must come from trusted release evidence, never from this directory. */
+export function verify({root, manifestDigest}) {
+  return wrap(() => inspect(root, manifestDigest, true).report);
+}
+
+/** Candidate transport helper, not a new package format or release authority.
+ * Downloaded artifact modes are not installed modes. Validate ALL names, types,
+ * sizes and bytes before exclusively creating a fresh private tree. Never chmod
+ * the carrier, execute it, repack it or repair/overwrite an existing target.
+ */
+export function restoreCarrier({carrier, target, manifestDigest, sourceHead}) {
+  return wrap(() => {
+    if (!/^[a-f0-9]{40}$/.test(sourceHead ?? '')) fail('invalid_source_head');
+    if (typeof target !== 'string' || !path.isAbsolute(target) || path.resolve(target) !== target ||
+        target === carrier || target.startsWith(carrier + '/')) fail('invalid_target');
+    const {report, contents} = inspect(carrier, manifestDigest, false, true);
+    if (report.sourceHead !== sourceHead) fail('source_drift');
+    const parent = path.dirname(target); canonicalDirectory(parent);
+    const held = new Map(), same = (a, b) => a.dev === b.dev && a.ino === b.ino;
+    function check() {
+      for (const [name, fd] of held) {
+        const stat = fs.fstatSync(fd);
+        if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o7777) !== 0o700 ||
+            !same(stat, fs.lstatSync(name)) || fs.realpathSync(name) !== name) fail('unsafe_target');
+      }
+    }
+    function hold(name) {
+      const fd = fs.openSync(name, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+      held.set(name, fd); check();
+    }
+    try {
+      hold(parent); check(); fs.mkdirSync(target, {mode: 0o700}); hold(target);
+      for (const file of contents) {
+        let directory = target;
+        for (const part of file.path.split('/').slice(0, -1)) {
+          directory = path.join(directory, part);
+          if (!held.has(directory)) {check(); fs.mkdirSync(directory, {mode: 0o700}); hold(directory);}
+        }
+        check(); writeNew(path.join(target, file.path), file.bytes); check();
+      }
+      for (const fd of [...held.values()].reverse()) {check(); fs.fsyncSync(fd); check();}
+      const verified = verify({root: target, manifestDigest}); check(); return verified;
+    } finally {for (const fd of [...held.values()].reverse()) fs.closeSync(fd);}
   });
 }
