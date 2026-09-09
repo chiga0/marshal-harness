@@ -6,18 +6,23 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
-**当前研发同步**：已审安装载体与ADR0092正常合入并推送 `8f97ba233081e00de01a2e1e054d510ea8ec36f2`，sourceHead=`16472aff3bfa8a715d4938a629bfb7cd9344e1ce`、`pendingRemoteSync=false`；[CI 34318148089](https://github.com/chiga0/marshal-harness/actions/runs/34318148089)五项job已全部成功。同一artifact=`10090976947`在Ubuntu x64/macOS arm64安装消费各2/2通过，原团队/下载/冷开零重复，非模型/ECS验收。此前安装工具独立8项、维护者聚合20项及本机精确包消费2项范围分别保留，不相加冒充全仓；ADR接受不等于v5恢复已实现。[逐接口支持矩阵](node-api-support-matrix.md)明确24项已接线/条件接线、单Worker取消501、费用计量缺失，API-STABLE不覆盖尚未实现能力。
+**当前研发同步**：本次锁定 main `31afe269f25241c4ff9fde19c03478cbfddb85a7`，已包含 v5 许可前恢复、候选接纳及原协议洪泛测试/证据。v5 source=`dd3d1900` 独立182/182通过，已合入并推送 `1a9dc3cb672a36bc976de52ef0ef7b9efbc83dc6`；该精确源 [Node team 34323362296](https://github.com/chiga0/marshal-harness/actions/runs/34323362296) 五job成功，Ubuntu564项/563通过/1 Darwin专属跳过、macOS564/564。同一artifact=`10092972643`两平台安装消费各2/2、旧任务冷开重复0；安装消费者仍只覆盖layout1/2，新v5故障来自同源回归，不称安装后的v5故障或Linux模型通过。当前基线上的单Worker取消仍501，后继0093候选独立实施，费用不可测；API-STABLE不覆盖尚未实现能力。[精确证据](node-task-service-status-2026-09-08.md)。
+
+**当前目标/profile**：[ADR0094](adr/0094-trusted-single-user-role-team.md)及[受管Leader机制](node-leader-execution-design.md)按用户本轮要求设计Accepted，机制为`DESIGN`未实现：Supervisor观察聚合、Leader业务判断、Core校验/硬规则和已批准调度、Execution原handle操作，现混合实现尚待接线。全程Leader/集中Review/局部调整保留成果/授权交付后验单列B2-L正式发布前出口，不以Planner或下载替代。强OS/凭据隔离后置，独立证据/授权/恢复与B3软件发行不变；文档不改HTTP/枚举/格式或数据，不撤回API-STABLE，未来新终态/副作用需显式兼容，旧non-production不重标。
+
+**B1 独立结论（2026-09-09）**：维护者按七条件复核原实物后记`PASSED`，仅`trusted-single-user`本机PoC。原真实Pi `69cface` Task `task-70cb4ab2…`29.624秒、作者交叠10189ms；原独立Decision `decision-5b561070…`绑定计划`2ea310…`，338B下载`584a06…`重新独立消费仍2 reports。相同生产代码`37df`取消Task `task-d2a44c9b…`13.046秒，owned停止/零verifier与替身/冷开原回执。两个原SQLite的完整性、外键、source-event哈希检查通过，复核前后库SHA不变。当前`31afe269`生产等价源独立团队3/3通过10.140948375秒，含组件各自合法而组合wrong-total拒收/无delivery及重复approve/cancel/冷开零重派，原driver23/23通过。此为独立复核旧模型实物和无模型组合，不是今天重跑模型，不含v6/Leader/B3，usage仍null；原完整记录见[状态证据](node-task-service-status-2026-09-08.md)。不是仅因放宽隔离而自动通过。
 
 **2026-09-09 13:25 CST 当前出口**：API-STABLE 核心接口检查点通过，范围仅当前 Node profile 的25操作/58 Schema与同包客户端，不授予正式 v1/生产/全平台支持。已审源码 `5657a7d` 正常合并推送至 `94795f37e37863d0fddb003874b6fac5f7f8a082`，远端一致、`pendingRemoteSync=false`。同 Pi/custody 配置的真实取消一次13.046秒通过；原20项定向与三波14Task/55执行的独立隔离测试通过。旧 main `9700ade` 双平台CI全绿，新提交CI另记，不冒充本源通过。[完整四项证据、失败成本与下一步](node-task-service-status-2026-09-08.md)。
 
-**恢复缺口与此前平台检查点**：六个 dispatch/cancel COMMIT 窗口已独立6/6通过；其中两个未绑定窗口仍为intervention且不能恢复接单，属于待修发布缺口，不以负例通过冒充自动恢复。Darwin清理观察修正已合并推送至 `2d178b4`，该源Ubuntu/macOS CI均通过，保留前一源两项失败。精确 `d42f437a` 的本机同包安装→团队交付→冷开2/2通过；随后 `8f97ba23` 的双平台同artifact消费结果见上段，不再待运行。详见[当前实施检查点](node-task-service-status-2026-09-08.md)，不代表正式发布。
+**恢复与平台范围**：0092 新 v5 仅对已冻结资格的可信 staging-only 文件准备，结清 reservation-after/binding-before 两个无许可窗口；六个原 CLI/SQLite COMMIT 故障窗口后均验证新团队下载与再次冷开，无旧任务重派。旧根、Git/custom prepare 未绑定义务不被追认，原 unknown 仍保留。事件洪泛的独立1/1证明有界失败、原cleanup及随后新团队可用，不证明洪泛期间并行健康、SLO或磁盘满。已有旧8f97安装消费和失败成本保留，不再用它替代新v5；[当前实施检查点](node-task-service-status-2026-09-08.md)区分平台/模型/故障范围，正式发布仍未完成。
 
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |
-| B1 真实团队交付 | `IN_PROGRESS` | 七项功能条件已有有界证据；尚缺适用 profile 的 Worker/Publisher 权限分离证明，不能升级production |
-| B2 日常本地 API | `IN_PROGRESS` | 当前候选问答/团队交付/审计及同Pi/custody任务取消已实机；单Worker取消尚未实现，真实模型局部修正、用量覆盖及完整同版本故障恢复仍待验收 |
+| B1 真实团队交付 | `PASSED`（可信单用户本机 PoC） | 上述七条件独立复核通过；旧non-production不改，不外推全程Leader、生产或stable |
+| B2 日常本地 API | `IN_PROGRESS` | 问答/团队/审计/同Pi取消与限定同版本恢复已有证据；单Worker取消后继候选、真实模型局部修正、用量缺失仍明示；B2-L尚待完整接线 |
+| B2-L 全程受管 Leader | `DESIGN`（正式发布前必过） | 需求/确认→2互补Worker→独立Review→真实局部调整保留无关成果→授权交付→后验；含取消/失败/重开原决定与动作不重复、无虚假成功；当前Planner不等价 |
 | API-STABLE 核心接口检查点 | `PASSED` | 当前25操作/58Schema/同包客户端与四条出口通过；候选版本不等于正式发行，不承诺旧协议/任意未来版本或全Provider兼容 |
-| B3 正式可靠发布 | `IN_PROGRESS` | 冷复制恢复、三波多Task/坏任务隔离已有有界证据；声明平台部署/长期故障、权限分离和受保护同资产发行未完成 |
+| B3 正式可靠发布 | `IN_PROGRESS` | 冷备份、多Task、v5恢复、洪泛和同资产安装消费已有有界证据；声明平台部署/长期故障、写失败/磁盘满及受保护同资产发行仍未完成；强隔离单列后继加固 |
 
 ### 历史 Node 集成检查点（不覆盖上表）
 
