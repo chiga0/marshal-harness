@@ -1,4 +1,5 @@
 import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 
 export const PROFILE = 'node-task-service/v1';
 export const contract = JSON.parse(readFileSync(new URL('./openapi.json', import.meta.url), 'utf8'));
@@ -121,6 +122,49 @@ export function validAuditResponse(value, taskId) {
       snapshot.name === prompt.workerId + '.input.txt' && snapshot.kind === 'evidence' && snapshot.status === 'ready' && snapshot.mediaType === 'text/plain' && snapshot.bytes <= 262144 &&
       Buffer.byteLength(prompt.text) <= 2048 && (observed.previewTruncated ? Buffer.byteLength(prompt.text) < snapshot.bytes : Buffer.byteLength(prompt.text) === snapshot.bytes);
   });
+}
+
+export const MAX_LEADER_VIEW_BYTES = 64 * 1024;
+// Public data binding only, using the same canonical JSON byte order as Store.
+// These helpers do not grant permission, decide CAS, or authenticate Evidence.
+function canonical(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+  if (value !== null && typeof value === 'object') return '{' + Object.keys(value).sort()
+    .map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}';
+  return JSON.stringify(value);
+}
+const publicDigest = value => 'sha256:' + createHash('sha256').update(canonical(value)).digest('hex');
+export function leaderRequestDigest(taskId, question) {
+  const {id, kind, subject, nodeIds, prompt, options, authorization, deadlineAt} = question;
+  return publicDigest({taskId, id, kind, subject, nodeIds, prompt, options, authorization, deadlineAt});
+}
+export function leaderReplyDigest(taskId, requestId, body) {
+  return publicDigest({taskId, requestId, requestDigest: body.requestDigest,
+    ...(Object.hasOwn(body, 'answer') ? {answer: body.answer} : {decision: body.decision})});
+}
+export function validLeaderView(value, taskId) {
+  if (!validate(value, 'LeaderView') || value.taskId !== taskId ||
+      Buffer.byteLength(JSON.stringify(value)) > MAX_LEADER_VIEW_BYTES ||
+      value.review && new Set(value.review.evidenceIds).size !== value.review.evidenceIds.length) return false;
+  const question = value.pendingRequest;
+  if (question === null) return true;
+  if (new Set(question.nodeIds).size !== question.nodeIds.length ||
+      new Set(question.options.map(option => option.value)).size !== question.options.length ||
+      question.requestDigest !== leaderRequestDigest(taskId, question) ||
+      question.status === 'pending' && question.replyDigest !== null ||
+      question.status === 'replied' && question.replyDigest === null) return false;
+  if (question.kind === 'business') return question.authorization === null;
+  const authorization = question.authorization;
+  return authorization !== null && authorization.taskId === taskId &&
+    question.subject === publicDigest(authorization) && question.nodeIds.length === 0 &&
+    question.options.length === 2 && question.options.some(option => option.value === 'allow') && question.options.some(option => option.value === 'deny') &&
+    Date.parse(authorization.expiresAt) <= Date.parse(question.deadlineAt);
+}
+export function validLeaderReplyResponse(request, value) {
+  return validate(request.body, 'LeaderReply') && validate(value, 'LeaderReplyReceipt') &&
+    value.taskId === request.taskId && value.requestId === request.requestId &&
+    value.requestDigest === request.body.requestDigest && value.acceptedRevision === request.body.expectedRevision + 1 &&
+    value.replyDigest === leaderReplyDigest(request.taskId, request.requestId, request.body);
 }
 
 const descriptions = {

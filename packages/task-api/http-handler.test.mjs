@@ -7,7 +7,7 @@ import {connect} from 'node:net';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {createTaskApiHandler} from './http-handler.mjs';
-import {contract, operations, validate, resolve, TaskApiError} from './contract.mjs';
+import {contract, operations, validate, resolve, leaderRequestDigest, leaderReplyDigest, TaskApiError} from './contract.mjs';
 import {parseJson} from './http-boundary.mjs';
 
 const token = 'fixture-only-local-access-token-not-a-secret';
@@ -78,6 +78,11 @@ fixtures.RepairReceipt = {taskId: task.id, repairId: 'repair-one', operation: {.
   acceptedRevision: 3, planDigest: digest, decisionDigest: digest, affectedNodes: ['node-one', 'verify'],
   task: {...task, revision: 3, status: 'queued', plan: {revision: 1, digest}},
   currentTask: {...task, revision: 3, status: 'queued', plan: {revision: 1, digest}}, replayed: false};
+fixtures.LeaderView = {...clone(contract.components.schemas.LeaderView.examples[0]), taskId: task.id};
+fixtures.LeaderView.pendingRequest.requestDigest = leaderRequestDigest(task.id, fixtures.LeaderView.pendingRequest);
+inputs.LeaderReply = {expectedRevision: 2, requestDigest: fixtures.LeaderView.pendingRequest.requestDigest, answer: 'north'};
+fixtures.LeaderReplyReceipt = {...clone(contract.components.schemas.LeaderReplyReceipt.examples[0]), taskId: task.id,
+  requestDigest: inputs.LeaderReply.requestDigest, replyDigest: leaderReplyDigest(task.id, 'request-example', inputs.LeaderReply)};
 
 async function request(application, method, url, body, options = {}) {
   const handler = createTaskApiHandler({application, token, expectedHost: host, requestTimeoutMs: options.timeout ?? 2000});
@@ -142,13 +147,14 @@ test('real HTTP incomplete body receives complete 504 and cannot reuse the conne
 });
 function pathFor(entry) {
   return entry.path.replace('{taskId}', task.id).replace('{workerId}', worker.id)
-    .replace('{questionId}', question.id).replace('{operationId}', 'operation-one').replace('{artifactId}', artifact.id);
+    .replace('{questionId}', question.id).replace('{operationId}', 'operation-one').replace('{artifactId}', artifact.id)
+    .replace('{requestId}', 'request-example');
 }
 
 test('single contract resolves refs, validates complete independent fixtures and closed schemas', () => {
   assert.equal(contract.openapi, '3.1.0');
   assert.equal(contract.jsonSchemaDialect, 'https://json-schema.org/draft/2020-12/schema');
-  assert.equal(operations.length, 25);
+  assert.equal(operations.length, 27);
   assert.equal(new Set(operations.map(o => o.operation)).size, operations.length);
   for (const entry of operations) if (entry.operation !== 'artifact.content')
     assert.ok(contract.components.schemas[entry.response].examples?.length, entry.operation + ' response example required by TaskClient');
@@ -171,7 +177,7 @@ test('single contract resolves refs, validates complete independent fixtures and
   }
 });
 
-test('all 25 operations dispatch to the same injected port with validated shape and identifiers', async () => {
+test('all 27 operations dispatch to the same injected port with validated shape and identifiers', async () => {
   for (const entry of operations) {
     let received, context;
     const app = async (value, ctx) => {

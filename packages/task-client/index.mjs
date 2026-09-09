@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
-import {operations, validate, validAnswerResponse, validQuestionItems, validRepairResponse, validAuditResponse, TaskApiError} from '../task-api/contract.mjs';
+import {operations, validate, validAnswerResponse, validQuestionItems, validRepairResponse, validAuditResponse,
+  validLeaderView, validLeaderReplyResponse, MAX_LEADER_VIEW_BYTES, TaskApiError} from '../task-api/contract.mjs';
 import {parseJson} from '../task-api/http-boundary.mjs';
 
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -58,11 +59,13 @@ function boundIdentity(entry, options, value) {
   if (entry.operation === 'task.answer' && !validAnswerResponse({...options.paths, body: JSON.parse(options.body)}, value) ||
       entry.operation === 'task.repair' && !validRepairResponse({...options.paths, body: JSON.parse(options.body)}, value) ||
       entry.operation === 'task.audit' && !validAuditResponse(value, options.paths.taskId) ||
+      entry.operation === 'task.leader' && !validLeaderView(value, options.paths.taskId) ||
+      entry.operation === 'task.leader.reply' && !validLeaderReplyResponse({...options.paths, body: JSON.parse(options.body)}, value) ||
       entry.operation === 'task.questions' && !validQuestionItems(value, options.paths.taskId)) throw fail('client_invalid_response');
 }
-async function readBounded(response, signal) {
+async function readBounded(response, signal, limit = MAX_BYTES) {
   const length = response.headers.get('content-length');
-  if (length !== null && (!/^(0|[1-9][0-9]*)$/.test(length) || Number(length) > MAX_BYTES)) throw fail('client_response_limit');
+  if (length !== null && (!/^(0|[1-9][0-9]*)$/.test(length) || Number(length) > limit)) throw fail('client_response_limit');
   if (!response.body?.getReader) throw fail('client_invalid_response');
   const reader = response.body.getReader(), chunks = []; let count = 0;
   const cancel = () => { void reader.cancel().catch(() => {}); };
@@ -72,7 +75,7 @@ async function readBounded(response, signal) {
       if (signal.aborted) throw fail('client_aborted');
       const {done, value} = await reader.read(); if (done) break;
       if (!(value instanceof Uint8Array)) throw fail('client_invalid_response');
-      count += value.length; if (count > MAX_BYTES) throw fail('client_response_limit');
+      count += value.length; if (count > limit) throw fail('client_response_limit');
       chunks.push(Buffer.from(value));
     }
     if (length !== null && Number(length) !== count) throw fail('client_invalid_response');
@@ -101,7 +104,7 @@ export class TaskClient {
     if (!response || response.redirected || response.status >= 300 && response.status < 400 || response.url && response.url !== new URL(url).href) throw fail('client_redirect_rejected');
     const encoding = response.headers.get('content-encoding');
     if (encoding && encoding !== 'identity') throw fail('client_invalid_response');
-    const bytes = await readBounded(response, signal);
+    const bytes = await readBounded(response, signal, entry.operation === 'task.leader' ? MAX_LEADER_VIEW_BYTES : MAX_BYTES);
     if (response.status === entry.status && entry.operation === 'artifact.content') {
       if (response.headers.get('content-type') !== 'application/octet-stream') throw fail('client_invalid_response');
       return {bytes, contentDigest: response.headers.get('content-digest')};
@@ -161,6 +164,10 @@ export class TaskClient {
   approveTask(taskId, body, idempotencyKey, options = {}) { return this.request('task.approve', {...options, path: {taskId}, body, idempotencyKey}); }
   repairTask(taskId, body, idempotencyKey, options = {}) { return this.request('task.repair', {...options, path: {taskId}, body, idempotencyKey}); }
   getAudit(taskId, options = {}) { return this.request('task.audit', {...options, path: {taskId}}); }
+  getLeader(taskId, options = {}) {return this.request('task.leader', {...options, path: {taskId}});}
+  replyLeader(taskId, requestId, body, idempotencyKey, options = {}) {
+    return this.request('task.leader.reply', {...options, path: {taskId, requestId}, body, idempotencyKey});
+  }
   async downloadInputSnapshot(taskId, prompt, options = {}) {
     const snapshot = prompt?.observation?.snapshot;
     if (!validate(taskId, 'Id') || !validate(prompt, 'Prompt') || !snapshot || snapshot.taskId !== taskId ||
