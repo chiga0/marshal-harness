@@ -56,6 +56,7 @@ fixtures.AnswerReceipt = {taskId: task.id, questionId: question.id, operation: {
   acceptedRevision: 3, acceptedPreviewDigest: digest, preview: fixtures.ClarificationPreview,
   task: {...task, revision: 3, status: 'awaiting-confirmation', plan: {revision: 1, digest}},
   currentTask: {...task, revision: 3, status: 'awaiting-confirmation', plan: {revision: 1, digest}}, replayed: false};
+fixtures.AnswerResponse = fixtures.AnswerReceipt;
 
 async function request(application, method, url, body, options = {}) {
   const handler = createTaskApiHandler({application, token, expectedHost: host, requestTimeoutMs: options.timeout ?? 2000});

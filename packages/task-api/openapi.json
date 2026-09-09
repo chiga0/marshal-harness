@@ -963,7 +963,7 @@
         "operationId": "task_answer",
         "x-application-operation": "task.answer",
         "x-success-status": 202,
-        "x-response-schema": "AnswerReceipt",
+        "x-response-schema": "AnswerResponse",
         "parameters": [
           {
             "in": "path",
@@ -996,7 +996,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AnswerReceipt"
+                  "$ref": "#/components/schemas/AnswerResponse"
                 }
               }
             }
@@ -2144,6 +2144,29 @@
         ]
       },
       "AnswerQuestion": {
+        "oneOf": [
+          {"$ref": "#/components/schemas/PreapprovalAnswerQuestion"},
+          {"$ref": "#/components/schemas/RuntimeAnswerQuestion"}
+        ],
+        "description": "两个闭集答复合同互斥：原预览摘要或原运行问题摘要，不得混用或改写幂等键。",
+        "examples": [
+          {"expectedRevision": 2, "questionRevision": 1, "previewDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "answer": "zh"},
+          {"expectedRevision": 2, "questionRevision": 1, "questionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "answer": "2026-09-01"}
+        ]
+      },
+      "RuntimeAnswerQuestion": {
+        "type": "object", "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {"$ref": "#/components/schemas/Revision"},
+          "questionRevision": {"type": "integer", "const": 1},
+          "questionDigest": {"$ref": "#/components/schemas/Digest"},
+          "answer": {"type": "string", "minLength": 1, "maxLength": 4096, "x-maxUtf8Bytes": 4096, "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$"}
+        },
+        "required": ["expectedRevision", "questionRevision", "questionDigest", "answer"],
+        "examples": [{"expectedRevision": 2, "questionRevision": 1, "questionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "answer": "2026-09-01"}]
+      },
+      "PreapprovalAnswerQuestion": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -2308,6 +2331,55 @@
             "replayed": false
           }
         ]
+      },
+      "RuntimeAnswerReceipt": {
+        "type": "object", "additionalProperties": false,
+        "description": "原运行中答案接纳事实，不等于 Agent 消费或 Task 完成；currentTask 是另列的当前投影，原 Operation 回执不随 ACK 覆盖。",
+        "properties": {
+          "taskId": {"$ref": "#/components/schemas/Id"},
+          "questionId": {"$ref": "#/components/schemas/Id"},
+          "operation": {"$ref": "#/components/schemas/Operation"},
+          "acceptedRevision": {"$ref": "#/components/schemas/Revision"},
+          "questionDigest": {"$ref": "#/components/schemas/Digest"},
+          "deliveryStatus": {"$ref": "#/components/schemas/QuestionDeliveryStatus"},
+          "task": {"$ref": "#/components/schemas/Task"},
+          "currentTask": {"$ref": "#/components/schemas/Task"},
+          "replayed": {"type": "boolean"}
+        },
+        "required": ["taskId", "questionId", "operation", "acceptedRevision", "questionDigest", "deliveryStatus", "task", "currentTask", "replayed"],
+        "examples": [{
+          "taskId": "task-example", "questionId": "question-example", "acceptedRevision": 3,
+          "questionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "deliveryStatus": "pending", "replayed": false,
+          "operation": {"id": "operation-example", "taskId": "task-example", "kind": "task.answer", "status": "accepted", "taskRevision": 3,
+            "createdAt": "2026-09-08T00:00:00.000Z", "updatedAt": "2026-09-08T00:00:00.000Z"},
+          "task": {"id": "task-example", "revision": 3, "status": "awaiting-answer", "phase": "execution", "intent": "按批准范围继续地区报告",
+            "createdAt": "2026-09-08T00:00:00.000Z", "updatedAt": "2026-09-08T00:00:00.000Z", "allowedActions": ["cancel", "pause"],
+            "plan": {"revision": 1, "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "artifactIds": []},
+          "currentTask": {"id": "task-example", "revision": 3, "status": "awaiting-answer", "phase": "execution", "intent": "按批准范围继续地区报告",
+            "createdAt": "2026-09-08T00:00:00.000Z", "updatedAt": "2026-09-08T00:00:00.000Z", "allowedActions": ["cancel", "pause"],
+            "plan": {"revision": 1, "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "artifactIds": []}
+        }]
+      },
+      "AnswerResponse": {
+        "oneOf": [{"$ref": "#/components/schemas/AnswerReceipt"}, {"$ref": "#/components/schemas/RuntimeAnswerReceipt"}],
+        "description": "HTTP 202 的两个互斥回执；原预批准回执字节不因新增运行问答改变。",
+        "examples": [{
+          "taskId": "task-example", "questionId": "question-example", "acceptedRevision": 3,
+          "acceptedPreviewDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "replayed": false,
+          "operation": {"id": "operation-example", "taskId": "task-example", "kind": "task.answer", "status": "succeeded", "taskRevision": 3,
+            "createdAt": "2026-09-08T00:00:00.000Z", "updatedAt": "2026-09-08T00:00:00.000Z"},
+          "preview": {"revision": 3, "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "inputsDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "input": {"intent": "按指定语言输出报告", "context": {"text": "业务输入 language=zh"}}, "missingSlots": [],
+            "plan": {"taskId": "task-example", "revision": 3, "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "summary": "按冻结的业务语言输入输出报告", "nodes": [{"id": "author", "role": "author", "goal": "按最终业务输入输出报告", "scope": ["report.txt"], "providerId": null}],
+              "edges": [], "budget": {"timeoutMs": 300000, "maxAttempts": 4, "maxWorkers": 2}, "deliverables": ["report.txt"], "acceptance": ["报告语言符合最终确认的业务输入"], "assumptions": []}},
+          "task": {"id": "task-example", "revision": 3, "status": "awaiting-confirmation", "phase": "planning", "intent": "按指定语言输出报告",
+            "createdAt": "2026-09-08T00:00:00.000Z", "updatedAt": "2026-09-08T00:00:00.000Z", "deadlineAt": "2026-09-08T00:05:00.000Z", "allowedActions": ["approve", "cancel"],
+            "plan": {"revision": 3, "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}, "artifactIds": []},
+          "currentTask": {"id": "task-example", "revision": 3, "status": "awaiting-confirmation", "phase": "planning", "intent": "按指定语言输出报告",
+            "createdAt": "2026-09-08T00:00:00.000Z", "updatedAt": "2026-09-08T00:00:00.000Z", "deadlineAt": "2026-09-08T00:05:00.000Z", "allowedActions": ["approve", "cancel"],
+            "plan": {"revision": 3, "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}, "artifactIds": []}
+        }]
       },
       "CreateInput": {
         "type": "object",
@@ -2568,6 +2640,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "interaction": {"$ref": "#/components/schemas/PlanInteraction"},
           "taskId": {
             "$ref": "#/components/schemas/Id"
           },
@@ -2685,6 +2758,18 @@
           }
         ],
         "description": "摘要由当前应用/Store按冻结计划规范生成，确认必须使用原响应。示例digest是格式占位，不是可批准的计划证据。"
+      },
+      "PlanInteraction": {
+        "type": "object", "additionalProperties": false,
+        "description": "原批准摘要中的受信有限交互策略。字段存在不代表当前 Provider、Store、Supervisor 或验收链支持运行问答。",
+        "properties": {
+          "profile": {"const": "task-runtime-question/v1"},
+          "policyDigest": {"$ref": "#/components/schemas/Digest"},
+          "maxQuestions": {"type": "integer", "minimum": 1, "maximum": 3},
+          "maxWaitMs": {"type": "integer", "minimum": 1, "maximum": 120000}
+        },
+        "required": ["profile", "policyDigest", "maxQuestions", "maxWaitMs"],
+        "examples": [{"profile": "task-runtime-question/v1", "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "maxQuestions": 3, "maxWaitMs": 120000}]
       },
       "Operation": {
         "type": "object",
@@ -3086,6 +3171,43 @@
             "edges": []
           }
         ]
+      },
+      "QuestionDeliveryStatus": {
+        "enum": ["pending", "dispatched", "acknowledged", "cancelled", "expired", "unknown"]
+      },
+      "QuestionItem": {
+        "oneOf": [{"$ref": "#/components/schemas/Question"}, {"$ref": "#/components/schemas/RunningQuestion"}]
+      },
+      "RunningQuestion": {
+        "type": "object", "additionalProperties": false,
+        "description": "原活跃 Worker 的有限业务问题。subject 必须等于 questionDigest；空 options 表示 input，非空为最多16项 select。未接纳答案时 deliveryStatus 为 null。",
+        "properties": {
+          "id": {"$ref": "#/components/schemas/Id"}, "taskId": {"$ref": "#/components/schemas/Id"},
+          "workerId": {"$ref": "#/components/schemas/Id"}, "nodeId": {"$ref": "#/components/schemas/Id"},
+          "revision": {"type": "integer", "const": 1}, "kind": {"const": "business"},
+          "subject": {"$ref": "#/components/schemas/Digest"}, "questionDigest": {"$ref": "#/components/schemas/Digest"},
+          "prompt": {"type": "string", "minLength": 1, "maxLength": 2048, "x-maxUtf8Bytes": 2048, "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$"},
+          "options": {"type": "array", "maxItems": 16, "items": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "value": {"type": "string", "minLength": 1, "maxLength": 4096, "x-maxUtf8Bytes": 4096, "x-wellFormedUnicode": true,
+                "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$"},
+              "label": {"type": "string", "minLength": 1, "maxLength": 2048, "x-maxUtf8Bytes": 2048, "x-wellFormedUnicode": true,
+                "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$"}
+            }, "required": ["value", "label"]
+          }},
+          "answer": {"anyOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 4096,
+            "x-maxUtf8Bytes": 4096, "x-wellFormedUnicode": true, "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$"}]},
+          "deadlineAt": {"type": "string", "format": "date-time"},
+          "status": {"enum": ["open", "answered", "expired", "cancelled"]},
+          "deliveryStatus": {"anyOf": [{"type": "null"}, {"$ref": "#/components/schemas/QuestionDeliveryStatus"}]}
+        },
+        "required": ["id", "taskId", "workerId", "nodeId", "revision", "subject", "questionDigest", "kind", "prompt", "options", "deadlineAt", "status", "deliveryStatus"],
+        "examples": [{"id": "question-example", "taskId": "task-example", "workerId": "worker-example", "nodeId": "author", "revision": 1,
+          "kind": "business", "subject": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "questionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "prompt": "请填写本次已批准分析的起始日期", "options": [],
+          "deadlineAt": "2026-09-09T00:00:00.000Z", "status": "open", "deliveryStatus": null, "answer": null}]
       },
       "Question": {
         "type": "object",
@@ -3935,7 +4057,7 @@
           "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Question"
+              "$ref": "#/components/schemas/QuestionItem"
             },
             "maxItems": 100
           },
