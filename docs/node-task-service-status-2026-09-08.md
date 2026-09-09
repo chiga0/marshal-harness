@@ -2,6 +2,14 @@
 
 ## 当前结论
 
+### 2026-09-09：精确同包双平台消费通过
+
+精确 `8f97ba233081e00de01a2e1e054d510ea8ec36f2` 的 [Node team CI 34318148089](https://github.com/chiga0/marshal-harness/actions/runs/34318148089) 五项job全部成功：Ubuntu/macOS原组合回归、单次打包、两平台同artifact消费。生产者仅生成一份47文件/647188 bytes目录包，包外 pin=`sha256:88b5e71f31c61ffaf7cb64ae518fb6d525ca97b4dc0685e7ef42e213002bcf68`，原artifact ID=`10090976947`；两个消费者没有重新打包。
+
+Ubuntu x64/UID1001 **2/2 PASS、5.952秒**，macOS arm64/UID501 **2/2 PASS、5.648秒**，均Node24.15.0、零失败/取消/跳过。各自layout1/layout2使用原安装包CLI、HTTP、SQLite与所属无模型协议进程，完成团队、独立验收、成果下载、冷重开；每队原4次执行，旧任务重复启动0，下载摘要均为 `sha256:3055d2141868fed0c8abbf628e50fa959a623fd93474a928318a802efa7b6fb0`。原job分别为 `102360061655`、`102360061554`，生产者job=`102360005595`。
+
+这关闭该候选在两声明平台的**同资产安装消费测试**子条件，不等于真实模型在Linux验收、香港ECS部署、升级迁移、长期SLO、Publisher分权或正式stable发行。artifact保留期7天，不是永久release资产；正式发行仍需受保护发行入口与受支持部署实证。下一节“尚未运行”的叙述保留为前一时点。
+
 ### 2026-09-09：同一安装包消费与双平台回归
 
 已推送主线 `2d178b4f96caeb2708d861b837160de5cf758f78` 的 [CI 34316647809](https://github.com/chiga0/marshal-harness/actions/runs/34316647809) Ubuntu/macOS 均成功；它覆盖前述 Darwin 修正，不抹去 `ce55eed` 的两项失败。

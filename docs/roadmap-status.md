@@ -6,14 +6,16 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
+**当前研发同步**：已审安装载体与ADR0092正常合入并推送 `8f97ba233081e00de01a2e1e054d510ea8ec36f2`，sourceHead=`16472aff3bfa8a715d4938a629bfb7cd9344e1ce`、`pendingRemoteSync=false`；[CI 34318148089](https://github.com/chiga0/marshal-harness/actions/runs/34318148089)五项job已全部成功。同一artifact=`10090976947`在Ubuntu x64/macOS arm64安装消费各2/2通过，原团队/下载/冷开零重复，非模型/ECS验收。此前安装工具独立8项、维护者聚合20项及本机精确包消费2项范围分别保留，不相加冒充全仓；ADR接受不等于v5恢复已实现。[逐接口支持矩阵](node-api-support-matrix.md)明确24项已接线/条件接线、单Worker取消501、费用计量缺失，API-STABLE不覆盖尚未实现能力。
+
 **2026-09-09 13:25 CST 当前出口**：API-STABLE 核心接口检查点通过，范围仅当前 Node profile 的25操作/58 Schema与同包客户端，不授予正式 v1/生产/全平台支持。已审源码 `5657a7d` 正常合并推送至 `94795f37e37863d0fddb003874b6fac5f7f8a082`，远端一致、`pendingRemoteSync=false`。同 Pi/custody 配置的真实取消一次13.046秒通过；原20项定向与三波14Task/55执行的独立隔离测试通过。旧 main `9700ade` 双平台CI全绿，新提交CI另记，不冒充本源通过。[完整四项证据、失败成本与下一步](node-task-service-status-2026-09-08.md)。
 
-**后续恢复/平台增量**：六个 dispatch/cancel COMMIT 窗口已独立6/6通过；其中两个未绑定窗口仍为intervention且不能恢复接单，属于待修发布缺口，不以负例通过冒充自动恢复。Darwin清理观察修正已合并推送至 `2d178b4`，该源Ubuntu/macOS CI均通过，保留前一源两项失败。安装载体已独立审查，精确 `d42f437a` 同包Darwin安装→团队交付→冷开2/2通过；新的双平台同artifact消费流程尚待实际运行。详见[当前实施检查点](node-task-service-status-2026-09-08.md)，不代表正式发布。
+**恢复缺口与此前平台检查点**：六个 dispatch/cancel COMMIT 窗口已独立6/6通过；其中两个未绑定窗口仍为intervention且不能恢复接单，属于待修发布缺口，不以负例通过冒充自动恢复。Darwin清理观察修正已合并推送至 `2d178b4`，该源Ubuntu/macOS CI均通过，保留前一源两项失败。精确 `d42f437a` 的本机同包安装→团队交付→冷开2/2通过；随后 `8f97ba23` 的双平台同artifact消费结果见上段，不再待运行。详见[当前实施检查点](node-task-service-status-2026-09-08.md)，不代表正式发布。
 
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |
 | B1 真实团队交付 | `IN_PROGRESS` | 七项功能条件已有有界证据；尚缺适用 profile 的 Worker/Publisher 权限分离证明，不能升级production |
-| B2 日常本地 API | `IN_PROGRESS` | 当前候选问答/团队交付/审计及同Pi/custody取消已实机；真实模型局部修正、用量覆盖及完整同版本故障恢复仍待验收 |
+| B2 日常本地 API | `IN_PROGRESS` | 当前候选问答/团队交付/审计及同Pi/custody任务取消已实机；单Worker取消尚未实现，真实模型局部修正、用量覆盖及完整同版本故障恢复仍待验收 |
 | API-STABLE 核心接口检查点 | `PASSED` | 当前25操作/58Schema/同包客户端与四条出口通过；候选版本不等于正式发行，不承诺旧协议/任意未来版本或全Provider兼容 |
 | B3 正式可靠发布 | `IN_PROGRESS` | 冷复制恢复、三波多Task/坏任务隔离已有有界证据；声明平台部署/长期故障、权限分离和受保护同资产发行未完成 |
 

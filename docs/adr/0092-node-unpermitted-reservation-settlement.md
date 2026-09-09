@@ -1,6 +1,6 @@
 # ADR 0092：Node 从未获执行许可的预留中断结算
 
-- 状态：Accepted（2026-09-09；维护者依据持续发布授权，在独立反向审查及唯一P1聚合修正、同reviewer复核无剩余P0/P1后接纳实施。已审正文SHA-256=`a8b8958ce3bdbd965e6fe9258933278df4084f43064678f17eeb58e9f6bf2713`，指本状态更新前的完整草案；不表示运行时已实现或旧根可恢复）。
+- 状态：Accepted（2026-09-09；维护者依据持续研发实施授权，在独立反向审查及唯一P1聚合修正、同reviewer复核无剩余P0/P1后接纳实施。已审正文SHA-256=`a8b8958ce3bdbd965e6fe9258933278df4084f43064678f17eeb58e9f6bf2713`，指本状态更新前的完整草案；不表示运行时已实现或旧根可恢复）。
 - 解决问题：B2 同版本恢复中，reservation 已提交而 custody 许可未提交的两个窗口会保留容量并封闭 ready；本决策只为可证明从未获准执行的新记录增加中断结算。
 - 基线：`ce55eed6fc01ae7b533e73d8fefc1bd14754dfbd`；继承 [ADR 0088](0088-node-task-service-production-projection.md)、[ADR 0089](0089-node-execution-custody-and-cleanup-recovery.md)，不改变单节点、单用户、可信任务的正式发布目标。
 
