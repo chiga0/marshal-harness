@@ -1,6 +1,6 @@
 # Node 受管 Leader：最小执行机器合同
 
-状态：随 [ADR0095](adr/0095-node-managed-leader-contract.md) 独立审查接纳，**Accepted / 未实施**。行为依据是已接受的 [ADR0094](adr/0094-trusted-single-user-role-team.md) 与 [机制设计](node-leader-execution-design.md)；文档工作树锁定 `f27784dd`，取消接缝最初参考 `acbcfee9`，其聚合修复 `070086e9` 已进入当前 main `3f359fd0`。后两者仅补充实际追溯，不重新变基本工作树，也不代表 Leader 已实现。下文函数名为明确的新增/调整接缝，不声称当前已有。只选一个实现方案，不建立第二 scheduler、权限平台或 Workflow 编辑器。
+状态：随 [ADR0095](adr/0095-node-managed-leader-contract.md) 独立审查接纳，**Accepted / Core 已部分集成**。`2b203cb2` 检查点已有受控业务链与安装消费，完整真实模型以及 §5 的有限 successor、发布 lookup 恢复尚未完成；当前事实以 [Roadmap](roadmap-status.md#业务交付当前表) 为准，不把单项失败收口当作本合同全部恢复通过。行为依据仍是已接受的 [ADR0094](adr/0094-trusted-single-user-role-team.md) 与 [机制设计](node-leader-execution-design.md)。原设计基线保留：文档工作树锁定 `f27784dd`，取消接缝最初参考 `acbcfee9`，修复 `070086e9` 当时已进入 `3f359fd0`；当时状态为“未实施”，下文函数名用于规定新增/调整接缝，而非逐项实现证明。只选一个实现方案，不建立第二 scheduler、权限平台或 Workflow 编辑器。
 
 ## 1. 根配置、版本与固定边界
 

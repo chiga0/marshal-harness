@@ -6,6 +6,22 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
+**当前代码与证据**：Core 最终审查源 `40468f343ba53d71b9f2418cf1d970e2ccfa360b`，`localMergeSha`、main 与 origin/main 均为 `2b203cb2f3b08933736dcf0f48774a9d491d4092`，已正常推送，`pendingRemoteSync=false`。原四项 P1 及 Review→verify 闭包问题经聚合修正、独立复审关闭；最终独立分类/生命周期回归 17/17，集成 HTTP/SQLite 17/17 含完整局部修正通过，独立同包安装与驱动 18/18 通过。本地所测包包含 55 文件、821293 bytes，manifest=`sha256:f7eea46b38042b87f8b1d4bfa5d3320a33bbf5e26480949d564ee07ff881d9e9`。这些证据使用受控 peer、modelCalls=0；证明 Core 与安装消费检查点，不等于真实模型或完整故障恢复通过。
+
+**同源 CI**：[Node run 34340458961](https://github.com/chiga0/marshal-harness/actions/runs/34340458961) 的 head 为上述 `2b203cb2`、attempt 1，五个 job 已 `completed/success`：macOS 回归 `102429772105`、Ubuntu 回归 `102429772367`、单次打包 `102432181259`、macOS 同包消费 `102432264130`、Ubuntu 同包消费 `102432264176`。原 candidate artifact=`10099801881`，运输归档 840828 bytes、digest=`sha256:7c828c5add75b429163bcf105193942efb6182cb1b210f456854afa694223179`。维护者独立下载两平台原 JSON，确认都消费这个 artifact 和源 `2b203cb2` 的 55 文件包，manifest=`sha256:6409fe2ac6629b5c003e34d14ec2b12c8273b5ec64286ddd97b6b34b6add0541`；它与上面的本地 `40468f` 包 manifest 分属不同源，运输摘要也不代替 manifest。每平台同配置两个 Task 各 12 Attempts（6 Leader、2作者及 Review/Verifier/Publication/Postverify），交付两份不同 93B 报告；modelCalls=0，正常冷开重复启动/发布均为 0。原 JSON 保留于 `/private/tmp/marshal-v7-ci-evidence.KAONbJ`；不把无模型 CI 或正常冷开当真实模型、冷故障或 production 证据。
+
+**当前未闭问题**：真实 Pi 0.84.4 首次 intake 一次 `FAILED / task_not_progressing`，证据保留于 `/private/tmp/marshal-leader-pi.kkYHsH/run/evidence.json`，正在诊断，未自动重试。冷故障场景 `marshal-leader-recovery-aqsgag` 中，原 owned CLI 经 SIGKILL 后原签名 cleanup 已验证，但同根重开 `GET task` 返回 `503 / not_ready`；已定位 managed Leader 附属节点被错误按 DAG 节点校验，结算事务回滚并保留 `service_custody_unresolved`，正在修复，不能将清理成功记成恢复通过。最短后继是关闭这两个实际阻断，再继续同链真实业务与有限恢复验收；不重新做 B1、不重置原预算或失败成本。
+
+| Milestone | 当前状态 | 尚缺用户出口 |
+| --- | --- | --- |
+| B1 真实团队交付 | `PASSED`（可信单用户本机 PoC） | 原七条件独立复核通过；旧 non-production 不改，不外推全程 Leader、生产或 stable |
+| B2 日常本地 API | `IN_PROGRESS` | 原问答、审计及单 Worker 取消已有实机；B2-L 完整模型业务与恢复未过，真实模型局部修正及用量缺失仍明示 |
+| B2-L 全程受管 Leader | `IN_PROGRESS`（Core 已集成，正式发布前必过） | 受控完整链与同包消费已过；真实 Pi intake 失败、v7 冷结算 P1 待修，完整模型交付/修正/授权后验及故障不重复仍须验收 |
+| API-STABLE 核心接口检查点 | `PASSED`（保留原范围） | 原 25 操作/58 Schema/同包客户端与四出口通过；不自动覆盖新增 Leader 支持面，不等于正式发行或任意版本兼容 |
+| B3 正式可靠发布 | `IN_PROGRESS` | 已有有界冷备份、隔离、v5/v6 故障、EFBIG/SQLite 写失败与安装消费证据；v7 恢复、声明平台部署/长期故障、ENOSPC 与受保护同资产发行仍未完成 |
+
+### 本轮早期集成记录（历史，不覆盖上表）
+
 **2026-09-09 18:14 后继验收**：独立安装消费者源 `1657f6cc0299f5bfe863765b7899e5ea9655a905` 六文件经维护者审查无 P0/P1；独立 4/4（29.934 秒）消费原 `da2e9bd2` 的 55 文件包，manifest=`sha256:2d71de964b15b8be000a1b6022feb4ae8dbfbd26990b24a52d06a0b382401e56`。同配置两 Task 各 12 Attempts，均含 6 Leader、2作者及独立 Review/Verifier/Publication/Postverify；原作者进程交叠399/404ms、两份不同93B成果经过授权发布与真实GET后验，冷开原回执/事件/成果不变、零重复启动或发布。此为Darwin ordinary-user受控ACP，modelCalls=0；不覆盖异常恢复、真实模型或release。已合整合分支 `9fa5cd12`，不是 main 合并。原状态/修正/SQLite兼容独立84/84（15.745秒）通过仍只证明基线范围。
 
 真实 Pi 驱动后继源 `8eec88e5` 经独立14/14（1.198秒），修正复制FileBusiness对象丢私有身份与服务默认2槽不符合原Task3槽的启动问题；保留原factory对象及原预算，增加真实目录/权限/采集与零Task的服务create/open前置检查，不降低Core门禁、不消耗模型。Pi CLI 当前实际版本0.84.4，固定Node可执行；完整模型任务尚未运行。Core聚合修复与双平台同包消费者接线在途，main仍为3beafe17；不将新候选标记可发布。
@@ -27,14 +43,6 @@ Core 冻结源 `236ce0173dc797daa753e734ee9d31083078d5d3` 首审确认四个 P1�
 **2026-09-09 13:25 CST 当前出口**：API-STABLE 核心接口检查点通过，范围仅当前 Node profile 的25操作/58 Schema与同包客户端，不授予正式 v1/生产/全平台支持。已审源码 `5657a7d` 正常合并推送至 `94795f37e37863d0fddb003874b6fac5f7f8a082`，远端一致、`pendingRemoteSync=false`。同 Pi/custody 配置的真实取消一次13.046秒通过；原20项定向与三波14Task/55执行的独立隔离测试通过。旧 main `9700ade` 双平台CI全绿，新提交CI另记，不冒充本源通过。[完整四项证据、失败成本与下一步](node-task-service-status-2026-09-08.md)。
 
 **恢复与平台范围**：0092 新 v5 仅对已冻结资格的可信 staging-only 文件准备，结清 reservation-after/binding-before 两个无许可窗口；六个原 CLI/SQLite COMMIT 故障窗口后均验证新团队下载与再次冷开，无旧任务重派。旧根、Git/custom prepare 未绑定义务不被追认，原 unknown 仍保留。事件洪泛的独立1/1证明有界失败、原cleanup及随后新团队可用，不证明洪泛期间并行健康、SLO或磁盘满。已有旧8f97安装消费和失败成本保留，不再用它替代新v5；[当前实施检查点](node-task-service-status-2026-09-08.md)区分平台/模型/故障范围，正式发布仍未完成。
-
-| Milestone | 当前状态 | 尚缺用户出口 |
-| --- | --- | --- |
-| B1 真实团队交付 | `PASSED`（可信单用户本机 PoC） | 上述七条件独立复核通过；旧non-production不改，不外推全程Leader、生产或stable |
-| B2 日常本地 API | `IN_PROGRESS` | 问答/团队/审计/同Pi取消及新v6单Worker取消已有实机；真实模型局部修正、用量缺失仍明示；B2-L尚待完整接线 |
-| B2-L 全程受管 Leader | `DESIGN`（正式发布前必过） | 需求/确认→2互补Worker→独立Review→真实局部调整保留无关成果→授权交付→后验；含取消/失败/重开原决定与动作不重复、无虚假成功；当前Planner不等价 |
-| API-STABLE 核心接口检查点 | `PASSED` | 当前25操作/58Schema/同包客户端与四条出口通过；候选版本不等于正式发行，不承诺旧协议/任意未来版本或全Provider兼容 |
-| B3 正式可靠发布 | `IN_PROGRESS` | 冷备份、多Task、v5/v6故障、洪泛、有限EFBIG/SQLite写失败和旧同资产安装消费已有有界证据；声明平台部署/长期故障、ENOSPC及受保护同资产发行仍未完成；强隔离单列后继加固 |
 
 ### 历史 Node 集成检查点（不覆盖上表）
 

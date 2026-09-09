@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-09：Leader Core 已集成，真实 intake 与冷故障仍阻断完整验收
+
+Core `40468f343ba53d71b9f2418cf1d970e2ccfa360b` 已完成原四项 P1 与 Review→verify 闭包的聚合修正及独立复审：最后的 `provider_failed` catch-all 不再作为普通失败，只有一致的明确协议终态可进入有限修正。独立最终 17/17、集成 HTTP/SQLite 17/17（含原局部修正）、同包安装与驱动 18/18 通过，均无模型调用；已合入并正常推送 main/origin `2b203cb2f3b08933736dcf0f48774a9d491d4092`，`pendingRemoteSync=false`。B2-L 据实际 Core 集成改为 IN_PROGRESS，不把受控正向和正常冷开提升为完整实机/故障通过。[精确包摘要、CI 与当前表](roadmap-status.md#业务交付当前表)集中维护，以下首审和失败记录保留原时点。
+
+新实证仍有阻断：真实 Pi 0.84.4 首次 intake 为 `FAILED / task_not_progressing`，原证据保留、诊断中且不自动重试；v7 原 owned CLI 被 SIGKILL 后，原签名 cleanup 虽已通过，但重开因 `service_custody_unresolved` 保持 not_ready，`GET task` 返回 503。后者已确认为 cleanup 按非空 planDigest 强查 DAG 节点、错误拒绝不在 DAG 的 managed Leader 附属节点，导致结算事务回滚的 P1，正做最小修复。不能伪造 cleanup、改原回执或抹除失败以宣称恢复；完整模型业务、修正和冷故障仍是后继出口，B2/B3 未完成，旧 API-STABLE 不扩范围。
+
 ## 2026-09-09：全程 Leader 首审四项阻塞，集中修正而非新增治理流程
 
 冻结 Core `236ce0173dc797daa753e734ee9d31083078d5d3` 独立首审无 P0、四项确认 P1，未放行：普通分支失败后 Leader 等待兄弟完成可能丢失下一义务，相关结果先到还会把陈旧决定拒绝扩成整队失败；取消/期限路径可能丢弃原已发生发布的收据；缺少独立发布期望能力直到发布之后才拒绝；候选结构拒绝可被 generic failed 错误准入为普通 repair。均有原 SQLite 定向复现；发布取消负例为受控私有端口，不冒称外部发布实机证明。

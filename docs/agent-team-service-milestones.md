@@ -1,12 +1,12 @@
 # Marshal Agent Team：Task-first 实施 Milestone
 
-2026-09-09：[ADR0095](adr/0095-node-managed-leader-contract.md)及[Leader 机器合同](node-leader-execution-contract.md)已独立审查接纳。B2-L 保持 DESIGN，接下来同链实现并验收，不以新增合同代替完整 Leader 业务交付；既有 B1/API-STABLE 的限定范围不变。
+2026-09-09：[ADR0095](adr/0095-node-managed-leader-contract.md)及[Leader 机器合同](node-leader-execution-contract.md)的 v7 Core 已集成主线，B2-L 为 IN_PROGRESS。受控 HTTP 团队、局部修正及授权发布/后验通过；真实 Pi 首次 intake 失败、冷故障结算问题尚未关闭，不以无模型检查点代替完整实机验收。既有 B1/API-STABLE 的限定范围不变，精确来源与未闭问题见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)。
 
 更新：2026-09-09。最终方案见[服务架构](agent-team-service-architecture.md)，合同由已接受的 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)、[ADR 0088](adr/0088-node-task-service-production-projection.md)、[ADR 0094](adr/0094-trusted-single-user-role-team.md)与上述 ADR0095 按 profile 承载。合同接受允许实施，不表示实现或生产可用；实际事实仍只记 [Roadmap](roadmap-status.md#业务交付当前表)。
 
 **当前检查点**：API-STABLE 四项出口已独立核验通过，范围为当前 Node profile、25操作/58 Schema和同包客户端。Pi/custody问答交付与同配置取消均有实机，原API反例/客户端/响应上界与事件续读通过；正式版本、真实局部修正及完整平台恢复/发行不随之通过。B3 冷备份恢复、多Task隔离、v5许可前恢复和事件洪泛已有有界证据，尚未完成。[精确证据与剩余出口](node-task-service-status-2026-09-08.md)。带时间的增量和Node形态试验已归档，不作为当前待办。
 
-**2026-09-09 当前目标调整**：[ADR0094](adr/0094-trusted-single-user-role-team.md) 设计已接受。[受管 Leader](node-leader-execution-design.md) 必须全程按业务义务唤起，不是现有 Planner 组合标签；Supervisor 观察/聚合/通知，Core 校验/硬规则/已批准调度，Execution 所属 handle 操作。当前混合实现需渐进接线。B1 经本轮独立七条件复核为可信单用户本机 PoC `PASSED`，旧 non-production 不重标；B2/B3 仍 `IN_PROGRESS`，新增 `B2-L / DESIGN` 为正式发布前必验。强 OS/凭据隔离后置，不放松独立证据、授权、预算/恢复。文档无 API/角色/格式修改或迁移，API-STABLE 原范围保留；未来新终态/副作用等机器语义必须明确兼容。
+**2026-09-09 当前目标调整**：[ADR0094](adr/0094-trusted-single-user-role-team.md) 设计已接受。[受管 Leader](node-leader-execution-design.md) 必须全程按业务义务唤起，不是现有 Planner 组合标签；Supervisor 观察/聚合/通知，Core 校验/硬规则/已批准调度，Execution 所属 handle 操作。当前 v7 Core 已按此边界接线，完整支持面仍待实机与故障验收。B1 经本轮独立七条件复核为可信单用户本机 PoC `PASSED`，旧 non-production 不重标；B2/B3 仍 `IN_PROGRESS`，`B2-L / IN_PROGRESS` 为正式发布前必验。强 OS/凭据隔离后置，不放松独立证据、授权、预算/恢复。本次仅同步状态，不修改 API/角色/格式或迁移数据，API-STABLE 原范围保留；未来新终态/副作用等机器语义必须明确兼容。
 
 历史实施日志已原文移至[2026-09-09归档](agent-team-service-milestones-history-2026-09-09.md)，源为`3f359fd0`；原SHA、失败及当时结论不改写。此页集中维护当前出口、依赖和验收方式，不再逐次追加执行日志；最新证据只见Roadmap及其状态记录。
 
@@ -16,7 +16,7 @@
 
 不重做已有 B1；不再将 ECS 配置、原生 Marshal 签名、强 OS 隔离或旧 Skill 作为 Node 本机业务验证前置。Linux 部署证据仍须在声明支持该平台时完成；不把 Mac 结果替代 Linux。禁止 Marshal skill。每个可运行检查点立即集成验证，同一配置处理不同需求；保留真实失败成本，不为证明修正而污染正常任务。并行围绕 Core 主链、独立验收/安装消费和审查组织，机器失败先定位，审查问题一次聚合修正，不按 PR 数量衡量推进。完成标准仍为实际业务、恢复、发布资产证据齐备且无未解决 P0/P1，不以改写 Goal 宣称完成。
 
-此段是仓库可追溯的实施目标。任务应用中的旧 Goal 描述若仍为 ECS-first，不能据此恢复旧前置；本次没有将旧 Goal 标记完成或另建目标来清零累计成本。
+此段是仓库可追溯的实施目标。任务应用的工具目前不能修改 objective，旧 Goal 仍 active；其旧描述不能恢复 ECS-first 前置。本次没有将旧 Goal 标记完成或另建目标来清零累计成本。
 
 ## 1. 三个用户出口，不再把平台准备当交付
 
@@ -89,7 +89,7 @@
 
 退出：目标 Task HTTP 体验在同一应用/SQLite/执行链可用；第二真实 Adapter 的解耦证据、通用制品、问答/暂停取消、局部修正与同版本恢复通过。第三 Provider 或可选增强未过时单独列 pending/unsupported，不能宣称三家均支持，也不反向阻止核心 API 完成。
 
-### B2-L：全程受管 Leader 与授权交付（DESIGN，正式发布前必过）
+### B2-L：全程受管 Leader 与授权交付（IN_PROGRESS，Core 已集成，正式发布前必过）
 
 按[Leader机制](node-leader-execution-design.md)一个完整纵切实施：需求→必要确认→两个互补Worker→独立Review→需要时局部修正且保留无关成果→独立整体验收→授权交付→独立后验→Leader汇总/Core整体结束。Leader由业务事实重复唤起，读持久快照、提出有限动作；现有一次性Planner/reviewer标签不代表此链已实现。默认未授权只交付成果，不建Leader资源平台。
 
