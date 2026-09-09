@@ -28,6 +28,8 @@ const shutdown = await supervisor.close();
 
 取消先由 Application 持久化 fence。控制器只查找当前内存中已持有的 Worker 句柄并调用原 `stop()`，绝不从存储 PID 重建发信号权限。Provider bootstrap/started 尚未完成时也保留原句柄；协议取消或 stop 返回的通知不替代原 completion 的 cleanup。
 
+显式 v6 的 `worker.cancel` 只停止目标 owned 句柄，其他分支不广播。异步 custodian.prepare 后再次沿原 mayStart 检查才 bind/permit；准备或 bootstrap 期间取消不会丢原句柄。目标 stop 先 COMMIT 时，其迟到进度/采集/ACK timer 经同票据的命名 fence 只停止该目标；原 stop 调用失败、completion/cleanup 未确认仍按安全失败处理。目标问题关闭后没有其他待答时复用原 running/pausedFrom 投影规则，不留下虚假的可答入口。
+
 只有确定尚未调用 `Provider.start` 的路径，才产生明确的 `scope:none-start/started:null/cleaned:true` 本地观察。已调用 start 后，缺少或身份不匹配的 cleanup 只能记为 unconfirmed，原 completion 仍保留在所属句柄上；不会凭 `null` 推定已清理、退款或重派。有效 cleanup 原样传给 Application，即使准备之后的回调失败、结果收集失败或取消抢先，也不丢弃实际清理事实。
 
 可归属 Worker 的准备、采集、Provider/进度格式故障，先同步调用 `execution.fail(ticket,'worker_failed')`：按完整 ticket/current owner 持久化 Task cancelling/failureCode 和已知失败 Worker 的内部标记，成功后才停止同 Task 的当前 owned 句柄；不会因此停掉另一个 Task。不等待 cleanup 才封住下游准入，也不凭 fence 释放容量或宣称清理。重复报告不追加事件，已先赢的用户取消与终态不被覆写；实际 finish 时已知失败 Worker 保留 failed，因 Task 停止的 siblings 为 cancelled，清理未知仍为 unknown。只有 owner/执行端口不可用、全局扫描等不变量无法确认时才停止全局接单和所有当前句柄。`onError` 每个失败 Worker 或全局失败只通知一次，字段限定为错误码、阶段和对象 ID；最近诊断最多保存 32 项，不输出异常正文、路径或模型内容。通知消费者自身失败可从 `notificationFailures` 观察，不触发执行重试。

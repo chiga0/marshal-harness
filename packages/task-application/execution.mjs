@@ -1,4 +1,4 @@
-import {encode, digest, makeEvent, UNPERMITTED_FORMAT} from '../task-store/store.mjs';
+import {encode, digest, makeEvent, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
 import {clone, reject, terminal, nextRevision, isText} from './model.mjs';
 import {TaskCleanup} from './cleanup.mjs';
 
@@ -20,9 +20,10 @@ export class TaskExecution {
         !Array.isArray(questionProviderIds) || questionProviderIds.some(id => !providerIds.includes(id)) || new Set(questionProviderIds).size !== questionProviderIds.length)
       reject('invalid_execution_config', 503);
     this.app = application; this.maxWorkers = maxWorkers;
-    const v5 = application.store.info?.().format === UNPERMITTED_FORMAT;
-    if (v5 ? hash(startProtocol) !== hash(START_PROTOCOL) : startProtocol !== null) reject('invalid_execution_config', 503);
-    this.startProtocol = v5 ? START_PROTOCOL : null;
+    const format = application.store.info?.().format, v5 = format === UNPERMITTED_FORMAT, v6 = format === WORKER_CANCELLATION_FORMAT;
+    const requiresProtocol = v5 || v6 && startProtocol !== null;
+    if (requiresProtocol ? hash(startProtocol) !== hash(START_PROTOCOL) : startProtocol !== null) reject('invalid_execution_config', 503);
+    this.startProtocol = startProtocol === null ? null : START_PROTOCOL;
     this.providers = new Set(providerIds); this.defaultProvider = defaultProvider;
     this.questionProviders = new Set(questionProviderIds);
     this.cleanup = new TaskCleanup(this);
@@ -88,6 +89,7 @@ export class TaskExecution {
         if (task.failureCode) task.task.code = task.failureCode;
         for (const node of task.nodes) if (['pending', 'ready', 'waiting', 'running'].includes(node.status)) node.status = 'cancelled';
       }
+      this.app.workerCancellation.aggregate(task, workers.map(value => value.record));
       const closedQuestions = ['cancelling', 'intervention', 'failed', 'cancelled'].includes(task.task.status) ?
         this.app.runtimeQuestions.close(task, task.failureCode === 'question_expired' ? 'expired' : 'cancelled') : [];
       if (hash(task) !== before) {
@@ -96,10 +98,10 @@ export class TaskExecution {
         this.app.runtimeQuestions.settleClosed(tx, task, source, closedQuestions);
         this.app.repair.settle(tx, task, source);
       }
-      return {taskId, status: task.task.status,
-        stopWorkerIds: task.task.status === 'cancelling' || terminal.has(task.task.status) ? active
-          .filter(({record}) => record.ticket.generation === this.app.owner.generation.toString())
-          .map(({record}) => record.worker.id) : []};
+      return {taskId, status: task.task.status, stopWorkerIds: active
+        .filter(({record}) => record.ticket.generation === this.app.owner.generation.toString() &&
+          (task.task.status === 'cancelling' || terminal.has(task.task.status) || record.stopIntent))
+        .map(({record}) => record.worker.id)};
     });
   }
   settleOperation(tx, operationId, status, source, task) {
@@ -119,6 +121,13 @@ export class TaskExecution {
       if (!command || command.status !== 'pending' || command.revision !== BigInt(expectedRevision)) return false;
       const payload = decode({bytes: command.payload}), task = this.app.get(tx, command.taskId);
       if (payload.action === 'answer') return false; // Runtime question reducer owns this obligation.
+      if (payload.action === 'worker-cancel') {
+        const {record} = this.worker(tx, payload.workerId);
+        this.app.workerCancellation.checked(tx, record);
+        const source = {stream: task.task.id, ...tx.head(task.task.id)};
+        this.app.workerCancellation.settle(tx, task, record, source);
+        return tx.command(command.id).status !== 'pending';
+      }
       // Observing a durable control is not replaying an external execution.
       // Old-generation launches are never made eligible by this exception.
       if (command.generation !== this.app.owner.generation && !['cancel', 'pause', 'resume'].includes(payload.action)) return false;
@@ -146,10 +155,18 @@ export class TaskExecution {
   }
   // A known local Worker failure fences the entire Task BEFORE external stop or
   // cleanup can finish. It is not a cleanup, refund, new attempt or acceptance.
-  fail(ticket, reasonCode) {
-    if (reasonCode !== 'worker_failed') reject('invalid_request', 400);
+  fail(ticket, reasonCode, cleanupUnknown = false) {
+    if (reasonCode !== 'worker_failed' || typeof cleanupUnknown !== 'boolean') reject('invalid_request', 400);
     return this.app.transaction(true, tx => {
       const {row, record, task} = this.ticket(tx, ticket);
+      // A target stop that already COMMITted wins against its own pending
+      // question/progress/collect callbacks. It is not a sibling failure. A
+      // genuinely failed stop/unknown cleanup retains the original safety path.
+      if (!cleanupUnknown && record.stopIntent && !task.cancelIntent &&
+        (!task.failureCode || task.failureCode === 'worker_cancelled') && this.app.now() < ticket.deadline) {
+        this.app.workerCancellation.checked(tx, record);
+        return {taskId: task.task.id, status: task.task.status, targeted: true};
+      }
       // Preserve an earlier user cancel/terminal conclusion and make repeated
       // reports append-free. Old completed Workers cannot fail a later phase.
       if (this.app.repair.current(task, ticket) && live(record.worker) && task.task.status !== 'cancelling' && !terminal.has(task.task.status)) {
@@ -269,7 +286,7 @@ export class TaskExecution {
     return this.app.transaction(false, tx => {
       const {record, task} = this.ticket(tx, ticket);
       return this.app.repair.current(task, ticket) && record.worker.status === 'queued' && !terminal.has(task.task.status) &&
-        !['cancelling', 'paused'].includes(task.task.status) && this.app.now() < ticket.deadline;
+        !record.stopIntent && !['cancelling', 'paused'].includes(task.task.status) && this.app.now() < ticket.deadline;
     });
   }
   approvedLayout(ticket) {
@@ -295,11 +312,11 @@ export class TaskExecution {
       if (record.custody && record.custody.descriptor.executionId !== started.executionId) reject('recovery_required', 409);
       if (record.executionId !== null) {
         if (record.executionId !== started.executionId) reject('state_conflict', 409);
-        return {stop: task.task.status === 'cancelling' || terminal.has(task.task.status) || this.app.now() >= ticket.deadline};
+        return {stop: !!record.stopIntent || task.task.status === 'cancelling' || terminal.has(task.task.status) || this.app.now() >= ticket.deadline};
       }
       if (record.worker.status !== 'queued') reject('state_conflict', 409);
       record.executionId = started.executionId; record.worker.startedAt = started.startedAt;
-      const stop = task.task.status === 'cancelling' || terminal.has(task.task.status) || this.app.now() >= ticket.deadline;
+      const stop = !!record.stopIntent || task.task.status === 'cancelling' || terminal.has(task.task.status) || this.app.now() >= ticket.deadline;
       record.worker.status = stop ? 'stopping' : 'running';
       task.task.revision = nextRevision(task.task.revision);
       const source = this.app.save(tx, task, 'worker.started', {workerId: ticket.workerId, executionId: record.executionId});
@@ -311,7 +328,7 @@ export class TaskExecution {
     return this.app.transaction(true, tx => {
       const {row, record, task} = this.ticket(tx, ticket);
       if (!this.app.repair.current(task, ticket) || !Number.isSafeInteger(sequence) || sequence <= record.progressSequence || !live(record.worker) ||
-          task.task.status === 'cancelling' || terminal.has(task.task.status)) return false;
+          record.stopIntent || task.task.status === 'cancelling' || terminal.has(task.task.status)) return false;
       if (!progress || !isText(progress.summary, 2048) || progress.tool !== null && !isText(progress.tool, 256) ||
           !['agent', 'execution'].includes(progress.source)) reject('invalid_request', 400);
       record.progressSequence = sequence;
@@ -337,7 +354,8 @@ export class TaskExecution {
           !(completion.started === null && record.executionId === null)) reject('recovery_required', 409);
       const clean = completion.cleaned === true && !(record.custody?.extraScopes.length);
       const currentCycle = this.app.repair.current(task, ticket);
-      const cancelled = task.task.status === 'cancelling' || !currentCycle;
+      const targetCancelled = !!this.app.workerCancellation.checked(tx, record);
+      const cancelled = targetCancelled || task.task.status === 'cancelling' || !currentCycle;
       let success = clean && (verification ? verified?.data.status === 'passed' && result.status === 'passed' && verified.staged !== null :
         result.status === 'completed' && result.stopReason === 'end_turn') &&
         !cancelled && !terminal.has(task.task.status) && this.app.now() < ticket.deadline;
@@ -383,6 +401,7 @@ export class TaskExecution {
         node.status = !clean ? 'unknown' : cancelled && !failedWorker ? 'cancelled' : success ? 'completed' : 'failed';
       }
       this.app.repair.recordSelection(task, record);
+      this.app.workerCancellation.aggregate(task, this.workers(tx, task).map(value => value.record.worker.id === record.worker.id ? record : value.record));
       const closedQuestions = this.app.runtimeQuestions.close(task, 'cancelled', ticket.workerId);
       task.task.revision = nextRevision(task.task.revision);
       let decision = null;
@@ -423,6 +442,7 @@ export class TaskExecution {
         const capacity = this.capacity(tx); capacity.value.active = capacity.value.active.filter(item => item.workerId !== ticket.workerId);
         this.putCapacity(tx, capacity.row, capacity.value);
       }
+      this.app.workerCancellation.settle(tx, task, record, source);
       return clone(record.worker);
     });
   }

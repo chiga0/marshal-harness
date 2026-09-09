@@ -147,13 +147,15 @@ export class TaskSupervisor {
     catch { this.#notificationFailures++; }
   }
   #failEntry(entry, stage, error) {
-    if (error instanceof ExecutionPortError) { this.#fault(stage, entry); return; }
     if (!entry.failure) {
-      entry.failure = true;
       // This is a synchronous same-owner transaction, before any stop callback
       // can run or delayed cleanup can leave a downstream admission window.
-      try { this.#call('fail', entry.ticket, 'worker_failed'); }
+      let fence;
+      try { fence = this.#call('fail', entry.ticket, 'worker_failed', ['provider-stop', 'provider-cleanup', 'provider-completion'].includes(stage)); }
       catch { this.#fault('failure-fence', entry); return; }
+      if (fence?.targeted === true) {this.#stop(entry); return;}
+      if (error instanceof ExecutionPortError) {this.#fault(stage, entry); return;}
+      entry.failure = true;
       this.#notify({code: 'worker_failed', stage, taskId: entry.ticket.taskId, workerId: entry.ticket.workerId});
     }
     for (const owned of this.#owned.values()) if (owned.ticket.taskId === entry.ticket.taskId) this.#stop(owned);
@@ -311,6 +313,12 @@ export class TaskSupervisor {
         // This prepare creates an observer, never an Agent. Its original handle
         // is retained even if the Task is stopped while creation is in flight.
         entry.custody = await this.#custody.prepare(binding);
+        // The original target stop/pause may commit while observer preparation
+        // is pending. Reuse the admission wait, never reinterpret a failed bind
+        // (wrong owner/descriptor) as an ordinary cancellation.
+        while (!entry.stopping && !this.#closing && !this.#failure && !this.#call('mayStart', entry.ticket)) {
+          entry.wake = deferred(); await entry.wake.promise;
+        }
         if (entry.stopping || this.#closing || this.#failure) throw new SupervisorError('supervisor_stopped');
         this.#call('bindCustody', entry.ticket, entry.custody.descriptor, profile);
         entry.custody.permit();

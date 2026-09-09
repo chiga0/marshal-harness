@@ -44,7 +44,7 @@ function durable(f) {
   } finally {db.close();}
 }
 function unchanged(a, b) {for (const key of ['events', 'heads', 'projections', 'receipts', 'outbox']) assert.deepEqual(b[key], a[key], key);}
-async function fixture(t, scenario) {
+async function fixture(t, scenario, targetCancellation = false) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-same-plan-repair-')));
   const f = {root: path.join(parent, 'data'), services: [], complete: false,
     observations: () => lines(path.join(parent, 'repair-observations.jsonl'))};
@@ -63,7 +63,7 @@ async function fixture(t, scenario) {
   });
   f.launch = async mode => {
     const child = spawn(process.execPath, [cli, '--root', f.root, '--mode', mode, '--config', config], {cwd: parent,
-      env: {MARSHAL_REPAIR_FIXTURE: '1', MARSHAL_REPAIR_SCENARIO: scenario}, stdio: ['ignore', 'pipe', 'pipe']});
+      env: {MARSHAL_REPAIR_FIXTURE: '1', MARSHAL_REPAIR_SCENARIO: scenario, MARSHAL_WORKER_CANCELLATION: targetCancellation ? '1' : '0'}, stdio: ['ignore', 'pipe', 'pipe']});
     let stdout = '', stderr = '', exited = false, token;
     const done = new Promise(resolve => {
       child.once('error', () => {exited = true; resolve({code: null, signal: 'spawn-error'});});
@@ -80,7 +80,7 @@ async function fixture(t, scenario) {
     // One open, bounded beyond the production 15s custody observation limit.
     await until(() => {assert.equal(exited, false, 'original CLI failed: ' + stderr); return stdout.includes('\n');});
     const output = JSON.parse(stdout.slice(0, stdout.indexOf('\n'))), connection = JSON.parse(fs.readFileSync(output.connectionFile));
-    assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, 'profile.json'))).layout, 4);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, 'profile.json'))).layout, targetCancellation ? 6 : 4);
     token = connection.token; service.client = new TaskClient({baseURL: connection.url, token});
     assert.equal((await service.client.request('ready.get')).ready, true); return service;
   };
@@ -250,6 +250,36 @@ test('same-plan repair: cancel after admission fences the new A, retains B and n
   const reopened = await f.launch('open'); assert.equal((await reopened.client.getTask(old.created.id)).status, 'cancelled');
   await replay(reopened.client, old, accepted); assert.deepEqual(await request(reopened.client, 'task.cancel', cancellation), operation);
   assert.deepEqual(await reopened.stop('SIGTERM'), {code: 0, signal: null}); unchanged(before, durable(f)); f.complete = true;
+});
+
+test('worker cancellation of repair west retains selected east and original negative Decision without forging a new rejection', {timeout: 60000}, async t => {
+  const f = await fixture(t, 'cancel', true), service = await f.launch('create'), old = await rejected(service.client, f);
+  const accepted = await acceptRepair(service.client, old);
+  const launched = await until(() => f.observations().find(row => row.type === 'started' && row.repairId === accepted.repairId && row.nodeId === 'west'));
+  await until(async () => (await service.client.request('worker.get', {path: {workerId: launched.workerId}})).status === 'running');
+  // The real new Worker is held after original started COMMIT. Only now is
+  // Task CAS stable enough to isolate old-cycle rejection from admission.
+  const oldWest = old.workers.find(worker => worker.nodeId === 'west');
+  await assert.rejects(service.client.cancelWorker(oldWest.id, {expectedRevision: (await service.client.getTask(old.created.id)).revision}, 'old-cycle'), {code: 'state_conflict'});
+  const body = {expectedRevision: (await service.client.getTask(old.created.id)).revision};
+  const cancellation = await service.client.cancelWorker(launched.workerId, body, 'only-repair-west');
+  const final = await until(async () => {const value = await service.client.getTask(old.created.id); return value.status === 'failed' && value;});
+  assert.equal(final.code, 'worker_cancelled'); assert.equal(final.allowedActions.includes('repair'), false);
+  const audit = await get(service.client, 'task.audit', final.id);
+  assert.equal(audit.attempts, 5); assert.equal(audit.reworkCount, 1); assert.deepEqual(audit.decision, old.audit.decision);
+  assert.equal(audit.acceptance.status, 'pending'); assert.equal(audit.acceptance.digest, null); assert.deepEqual(audit.acceptance.evidenceIds, []);
+  assert.equal((await service.client.request('operation.get', {path: {operationId: cancellation.id}})).status, 'succeeded');
+  assert.equal((await service.client.request('operation.get', {path: {operationId: accepted.operation.id}})).status, 'failed');
+  assert.equal(f.observations().filter(row => row.type === 'verification-input').length, 1);
+  assert.equal(f.observations().filter(row => row.type === 'started' && row.nodeId === 'east').length, 1);
+  await replay(service.client, old, accepted); await service.stop('SIGTERM'); await f.gone();
+  const before = durable(f), task = taskRecord(before, final.id), east = records(before, 'attempt').find(value => value.worker?.nodeId === 'east');
+  assert.equal(east.worker.status, 'completed'); assert.ok(east.resultRef); assert.ok(task.selectedResults.east);
+  assert.equal(records(before, 'budget').flatMap(value => value.active).length, 0);
+  const reopened = await f.launch('open');
+  assert.deepEqual(await reopened.client.cancelWorker(launched.workerId, body, 'only-repair-west'), cancellation);
+  await replay(reopened.client, old, accepted); assert.deepEqual(await reopened.client.getTask(final.id), final);
+  await reopened.stop('SIGTERM'); unchanged(before, durable(f)); f.complete = true;
 });
 
 for (const point of ['before', 'after']) test(`same-plan repair: ${point} COMMIT service crash preserves atomic receipt/choices/budget and never respawns old commands`, {timeout: 60000}, async t => {

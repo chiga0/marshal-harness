@@ -1,5 +1,5 @@
 import {randomBytes} from 'node:crypto';
-import {encode, digest, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT} from '../task-store/store.mjs';
+import {encode, digest, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
 import {clone, isText, nextRevision, publicTask, reject, terminal} from './model.mjs';
 
 const PROFILE = 'task-runtime-question/v1', ports = new WeakMap(), hash = value => digest(encode(value));
@@ -30,7 +30,7 @@ export class TaskRuntimeQuestions {
     if (!this.port) return null;
     const config = ports.get(this.port), applies = sync(() => config.applies(clone(record.input)));
     requireValue(typeof applies === 'boolean'); if (!applies) return null;
-    requireValue([INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT].includes(this.storeInfo?.format));
+    requireValue([INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT].includes(this.storeInfo?.format));
     const descriptor = clone(config.descriptor);
     requireValue(descriptor.nodeIds.every(id => plan.nodes.some(node => node.id === id && node.role !== 'verifier' && node.role !== 'planner')));
     const state = {descriptor, policyDigest: hash(descriptor), questions: []};
@@ -60,7 +60,7 @@ export class TaskRuntimeQuestions {
     const current = this.app.execution.ticket(tx, ticket), {record, task} = current;
     if (!task.runtimeQuestions || !task.approved || ticket.planDigest !== task.approved.planDigest || ticket.executionType !== 'agent' ||
       !record.executionId || !record.worker.startedAt || !['running', 'awaiting-answer'].includes(record.worker.status) ||
-      terminal.has(task.task.status) || task.task.status === 'cancelling' || !allowPaused && task.task.status === 'paused') reject('state_conflict', 409);
+      record.stopIntent || terminal.has(task.task.status) || task.task.status === 'cancelling' || !allowPaused && task.task.status === 'paused') reject('state_conflict', 409);
     this.configured(task.runtimeQuestions, task.plan);
     if (this.app.now() >= ticket.deadline) reject('question_expired', 410);
     if (!task.runtimeQuestions.descriptor.nodeIds.includes(ticket.nodeId)) reject('unsupported_task', 422);
@@ -179,6 +179,12 @@ export class TaskRuntimeQuestions {
       if (q.status === 'open') q.status = reason === 'expired' ? 'expired' : 'cancelled';
       else q.deliveryStatus = q.deliveryStatus === 'dispatched' ? 'unknown' : reason;
       changed.push(q);
+    }
+    // Target-only closure leaves unrelated work live. Reuse the original ACK
+    // projection rule when no remaining question requires an answer.
+    if (workerId !== null && task.runtimeQuestions && !task.runtimeQuestions.questions.some(pending)) {
+      if (task.task.status === 'awaiting-answer') task.task.status = 'running';
+      if (task.task.status === 'paused' && task.pausedFrom === 'awaiting-answer') task.pausedFrom = 'running';
     }
     return changed;
   }

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import {randomBytes, randomUUID} from 'node:crypto';
-import {Store, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT} from '../task-store/store.mjs';
+import {Store, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
 import {isStagingOnlyBusiness, START_PROTOCOL} from '../task-business/index.mjs';
 import {TaskCleanup} from '../task-application/cleanup.mjs';
 import {createExecutionCustody} from '../agent-runtime/custody.mjs';
@@ -14,7 +14,7 @@ import {TaskSupervisor} from '../task-supervisor/controller.mjs';
 import {createTaskApiHandler} from '../task-api/http-handler.mjs';
 import {PROFILE, TaskApiError, validate} from '../task-api/contract.mjs';
 
-const format = (custody, questions, repair, unpermitted) => Buffer.from(JSON.stringify({profile: PROFILE, layout: unpermitted ? 5 : repair ? 4 : questions ? 3 : custody ? 2 : 1}) + '\n');
+const format = (custody, questions, repair, unpermitted, workerCancellation) => Buffer.from(JSON.stringify({profile: PROFILE, layout: workerCancellation ? 6 : unpermitted ? 5 : repair ? 4 : questions ? 3 : custody ? 2 : 1}) + '\n');
 const NOFOLLOW = fs.constants.O_NOFOLLOW;
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -30,9 +30,9 @@ function regular(stat) {
 }
 class ServiceRoot {
   fds = []; directories = new Map();
-  constructor(root, mode, custody, questions, repair, unpermitted) {
+  constructor(root, mode, custody, questions, repair, unpermitted, workerCancellation) {
     this.root = root; this.parent = path.dirname(root);
-    this.format = format(custody, questions, repair, unpermitted);
+    this.format = format(custody, questions, repair, unpermitted, workerCancellation);
     try {
       requireValue(fs.realpathSync(this.parent) === this.parent, 'service_root_unavailable');
       this.hold(this.parent); // Explicit private parent, no recursive mkdir/adoption.
@@ -80,7 +80,7 @@ class ServiceRoot {
 }
 
 /** Composition only: no Task reducer, second ledger, model defaults or publication. */
-export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, custody, runtimeQuestions, repair, unpermitted, auditDisclosure, dispose = () => {},
+export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, custody, runtimeQuestions, repair, unpermitted, workerCancellation, auditDisclosure, dispose = () => {},
   providerFacts, applicationOptions = {}, port = 0, leaseMs = 60000, renewIntervalMs = 10000,
   requestTimeoutMs = 10000, supervisorOptions = {}, onDiagnostic = () => {}} = {}) {
   requireValue(typeof root === 'string' && path.isAbsolute(root) && path.normalize(root) === root && root !== path.parse(root).root &&
@@ -104,6 +104,8 @@ export async function startTaskService({root, mode, providers, prepare, collect,
   const frozenFacts = structuredClone(facts).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   requireValue(runtimeQuestions === undefined || custody !== undefined && runtimeQuestions?.profile === 'task-runtime-question/v1');
   requireValue(repair === undefined || custody !== undefined && repair?.profile === 'task-local-repair/v1' && typeof businessFactory === 'function');
+  requireValue(workerCancellation === undefined || object(workerCancellation) && Object.keys(workerCancellation).join(',') === 'profile' &&
+    workerCancellation.profile === 'task-worker-cancellation/v1' && custody !== undefined);
   // Reject BEFORE opening/claiming any root. A v5 configuration can neither
   // certify arbitrary preparation nor run a disclosure callback under custody.
   requireValue(unpermitted === undefined || object(unpermitted) && Object.keys(unpermitted).join(',') === 'profile' &&
@@ -236,8 +238,8 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     return closing;
   }
   try {
-    files = new ServiceRoot(root, mode, !!custody, !!runtimeQuestions, !!repair, !!unpermitted);
-    const storeOptions = unpermitted ? {format: UNPERMITTED_FORMAT} : repair ? {format: REPAIR_FORMAT} : runtimeQuestions ? {format: INTERACTION_FORMAT} : custody ? {format: CUSTODY_FORMAT} : {};
+    files = new ServiceRoot(root, mode, !!custody, !!runtimeQuestions, !!repair, !!unpermitted, !!workerCancellation);
+    const storeOptions = workerCancellation ? {format: WORKER_CANCELLATION_FORMAT} : unpermitted ? {format: UNPERMITTED_FORMAT} : repair ? {format: REPAIR_FORMAT} : runtimeQuestions ? {format: INTERACTION_FORMAT} : custody ? {format: CUSTODY_FORMAT} : {};
     store = mode === 'create' ? Store.create(path.join(root, 'store'), storeOptions) : Store.openExisting(path.join(root, 'store'), storeOptions);
     depot = mode === 'create' ? ArtifactDepot.create(path.join(root, 'artifacts')) : ArtifactDepot.openExisting(path.join(root, 'artifacts'));
     files.sync();
@@ -306,7 +308,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       }
       requireValue(complete, 'service_custody_scan_limit');
     }
-    if (unpermitted && mode === 'open') {
+    if ((unpermitted || workerCancellation) && mode === 'open') {
       let after = '', complete = false;
       for (let page = 0; page < 100; page++) {
         const value = application.execution.pendingUnpermitted(after);

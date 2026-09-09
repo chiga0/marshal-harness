@@ -4,9 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {setImmediate as turn} from 'node:timers/promises';
-import {Store} from '../task-store/store.mjs';
-import {TaskApplication} from '../task-application/application.mjs';
+import {Store, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
+import {TaskApplication, createRuntimeQuestionPort, createVerificationPort} from '../task-application/application.mjs';
 import {TaskSupervisor} from './controller.mjs';
+import {ArtifactDepot} from '../task-artifacts/depot.mjs';
+import {createExecutionCustody} from '../agent-runtime/custody.mjs';
 
 const context = {principal: 'local-operator'};
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return {promise, resolve}; };
@@ -49,16 +51,27 @@ class FakeProvider {
 }
 function fixture(t, options = {}) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-supervisor-test-'))), root = path.join(parent, 'state');
-  let store = Store.create(root), owner = store.claimOwner(0, 'supervisor-test', Date.now() + 3600000);
+  const storeOptions = options.targetCancellation ? {format: WORKER_CANCELLATION_FORMAT} : {};
+  let store = Store.create(root, storeOptions), owner = store.claimOwner(0, 'supervisor-test', Date.now() + 3600000);
   const execution = {maxWorkers: options.maxWorkers ?? 2, providerIds: ['fixture'], defaultProvider: 'fixture'};
+  const questions = options.questions ? createRuntimeQuestionPort({policy: {id: 'test-input', version: '1', description: '原问题'},
+    nodeIds: ['first'], maxQuestions: 1, maxWaitMs: 5000, applies: () => true, validateQuestion: () => true, validateAnswer: () => true}) : undefined;
+  const proposal = plan(); if (questions) {proposal.nodes[2].role = 'verifier'; execution.questionProviderIds = ['fixture'];}
+  const verification = questions ? createVerificationPort({id: 'test-verifier', policy: {id: 'test-files', version: '1', description: '独立检查原文件'},
+    interactionPolicyDigests: [questions.policyDigest], start() {throw Error('cancelled dependency must not verify');}, bindPlan: () => ({nodeId: 'review', description: '独立检查原文件',
+      layouts: ['first', 'second'].map(nodeId => ({nodeId, inputs: [], allowedPaths: [nodeId + '.txt']})).concat({nodeId: 'review', allowedPaths: [],
+        inputs: ['first', 'second'].map(nodeId => ({path: nodeId + '.txt', source: {kind: 'upstream', nodeId, path: nodeId + '.txt'}}))}),
+      deliveries: ['first', 'second'].map(nodeId => ({nodeId, path: nodeId + '.txt', targetPath: nodeId + '.txt'}))})}) : undefined;
   let ids = 0, offset = 0;
   const clock = () => Date.now() + offset, makeId = prefix => prefix + '-' + String(++ids).padStart(6, '0');
-  let app = new TaskApplication({store, owner, execution, clock, makeId});
+  const depot = questions ? ArtifactDepot.create(path.join(parent, 'objects')) : null;
+  let app = new TaskApplication({store, owner, execution, clock, makeId, runtimeQuestions: questions, verification, depot});
   const provider = new FakeProvider(), errors = [], controllers = [];
   const makeController = extra => {
     const supervisor = new TaskSupervisor({execution: app.execution, providers: new Map([[provider.id, provider]]),
       prepare: ticket => ({cwd: parent, prompt: JSON.stringify({workerId: ticket.workerId, role: ticket.role, nodeId: ticket.nodeId})}),
-      collect: ticket => ticket.role === 'planner' ? {plan: plan()} : {result: {nodeId: ticket.nodeId, candidate: true}},
+      collect: ticket => ticket.role === 'planner' ? {plan: proposal} : {result: {nodeId: ticket.nodeId, candidate: true}},
+      verification,
       onError: error => errors.push(error), clock, ...extra});
     controllers.push(supervisor); return supervisor;
   };
@@ -66,7 +79,7 @@ function fixture(t, options = {}) {
     provider.autoStop = true;
     for (const record of provider.records) if (!record.done) { record.announce(); record.finish({status: 'cancelled', stopReason: 'cancelled'}); }
     for (const controller of controllers) await controller.close();
-    store.close(); fs.rmSync(parent, {recursive: true, force: true});
+    store.close(); depot?.close(); fs.rmSync(parent, {recursive: true, force: true});
   });
   return {parent, provider, errors, makeController, advance(milliseconds) {offset += milliseconds;},
     get app() { return app; }, get store() { return store; },
@@ -85,8 +98,8 @@ function fixture(t, options = {}) {
     },
     capacity() {return store.read(owner, tx => app.execution.capacity(tx).value.active);},
     reopen() {
-      store.close(); store = Store.openExisting(root); owner = store.claimOwner(owner.generation, 'reopened-supervisor', Date.now() + 3600000);
-      app = new TaskApplication({store, owner, execution, clock, makeId});
+      store.close(); store = Store.openExisting(root, storeOptions); owner = store.claimOwner(owner.generation, 'reopened-supervisor', Date.now() + 3600000);
+      app = new TaskApplication({store, owner, execution, clock, makeId, runtimeQuestions: questions, verification, depot});
     }};
 }
 async function approved(f, supervisor) {
@@ -180,6 +193,76 @@ test('cancel during Provider bootstrap retains handle until original cleanup; cl
   record.finish(); const result = await close;
   assert.equal(result.clean, true); assert.equal(f.capacity().length, 0);
   assert.equal((await f.get(task.id)).status, 'cancelled'); assert.equal((await f.get(task.id)).plan, null);
+});
+
+for (const stage of ['prepare', 'bootstrap', 'late-progress', 'late-collect', 'stop-unknown']) test('target cancellation ' + stage + ' keeps original ownership and does not broadcast known cancellation', async t => {
+  const f = fixture(t, {targetCancellation: true}), preparation = deferred(), collection = deferred();
+  const supervisor = f.makeController({prepare: ticket => stage === 'prepare' && ticket.nodeId === 'first' ? preparation.promise :
+    {cwd: f.parent, prompt: JSON.stringify({workerId: ticket.workerId, nodeId: ticket.nodeId, role: ticket.role})},
+    collect: ticket => ticket.role === 'planner' ? {plan: plan()} : stage === 'late-collect' && ticket.nodeId === 'first' ? collection.promise : {result: {candidate: true}}});
+  const {task} = await approved(f, supervisor);
+  if (stage === 'bootstrap') f.provider.autoStarted = false;
+  await until(async () => {await supervisor.tick(); return f.capacity().length === 2 && f.provider.records.length === (stage === 'prepare' ? 2 : 3);});
+  const visible = (await f.app.dispatch({operation: 'task.workers', taskId: task.id}, context)).items;
+  const target = visible.find(w => w.nodeId === 'first'), sibling = f.provider.records.find(r => r.data.nodeId === 'second');
+  const original = f.provider.records.find(r => r.data.nodeId === 'first');
+  if (stage === 'late-collect') {original.finish(); await until(() => supervisor.snapshot().owned.some(item => item.workerId === target.id && item.stage === 'collecting'));}
+  const stop = await f.app.dispatch({operation: 'worker.cancel', workerId: target.id, key: 'target-stop', body: {expectedRevision: (await f.get(task.id)).revision}}, context);
+  // Before the next tick: a malformed old callback must not turn this known
+  // target stop into a new Task failure fence or stop the unrelated sibling.
+  if (stage === 'late-progress') await assert.rejects(original.options.onProgress({private: 'malformed late callback'}));
+  if (stage === 'stop-unknown') {f.provider.autoStop = false; f.provider.onStop = () => {throw Error('original stop failed');};}
+  await supervisor.tick();
+  if (stage !== 'stop-unknown') {
+    assert.equal(sibling.stopCount, 0);
+    if (stage === 'prepare') preparation.resolve({cwd: f.parent, prompt: 'late prepare'});
+    if (stage === 'late-collect') collection.resolve({result: {late: true}});
+    if (stage === 'bootstrap') {original.announce(); sibling.announce();}
+    await until(async () => (await f.app.dispatch({operation: 'operation.get', operationId: stop.id}, context)).status === 'succeeded');
+    assert.equal(f.capacity().length, 1); assert.equal(sibling.stopCount, 0); sibling.finish();
+    await until(() => f.capacity().length === 0); assert.equal((await f.get(task.id)).code, 'worker_cancelled');
+    assert.equal(f.provider.records.some(r => r.data.nodeId === 'review'), false); assert.deepEqual(f.errors, []);
+  } else {
+    assert.ok(sibling.stopCount > 0); original.announce(); original.finish({cleanup: null}); sibling.announce(); sibling.finish();
+    await until(async () => (await f.app.dispatch({operation: 'operation.get', operationId: stop.id}, context)).status === 'unknown');
+    assert.ok(f.capacity().some(value => value.workerId === target.id)); assert.equal((await f.get(task.id)).status, 'intervention');
+  }
+});
+
+test('target cancel while original custodian preparation awaits cannot bind or launch a delayed observer', {timeout: 15000}, async t => {
+  const f = fixture(t, {targetCancellation: true}), gate = deferred(), directory = path.join(f.parent, 'custody'); fs.mkdirSync(directory, {mode: 0o700});
+  const manager = createExecutionCustody({root: directory}); t.after(() => manager.close()); let original;
+  f.provider.custodyProfile = {id: 'original-fixture', scope: 'inherited-process-group', eligible: true};
+  const supervisor = f.makeController({custody: {...manager, async prepare(binding) {
+    original = await manager.prepare(binding); await gate.promise; return original;
+  }}}), task = await f.create(); await supervisor.tick(); await until(() => original);
+  const worker = (await f.app.dispatch({operation: 'task.workers', taskId: task.id}, context)).items[0];
+  const stop = await f.app.dispatch({operation: 'worker.cancel', workerId: worker.id, key: 'pending-bind',
+    body: {expectedRevision: (await f.get(task.id)).revision}}, context);
+  gate.resolve(); await turn(); await supervisor.tick(); await until(() => f.capacity().length === 0);
+  assert.equal(f.provider.records.length, 0); assert.equal((await f.get(task.id)).code, 'worker_cancelled');
+  assert.equal((await f.app.dispatch({operation: 'operation.get', operationId: stop.id}, context)).status, 'succeeded');
+  assert.equal(f.read(tx => tx.eventsWithField(task.id, 'workerId', worker.id, 100, ['worker.custody-permitted']).length), 0);
+  assert.equal(manager.read(original.descriptor).payload.permitReceived, false); assert.deepEqual(f.errors, []);
+});
+
+test('target cancel COMMIT before original ACK timer fires does not stop sibling before the next tick', async t => {
+  const f = fixture(t, {targetCancellation: true, questions: true}), supervisor = f.makeController(), {task} = await approved(f, supervisor);
+  await until(async () => {await supervisor.tick(); return f.provider.records.length === 3;});
+  const a = f.provider.records.find(row => row.data.nodeId === 'first'), b = f.provider.records.find(row => row.data.nodeId === 'second');
+  const waiting = a.options.questionContext.ask({sessionId: 'session', nativeRequestId: 'question-request', toolCallId: 'tool', questionNonce: 'a'.repeat(64),
+    kind: 'input', prompt: '原输入', options: []}, {signal: new AbortController().signal});
+  const question = await (async () => {let q; await until(async () => {q = (await f.app.dispatch({operation: 'task.questions', taskId: task.id}, context)).items[0]; return q;}); return q;})();
+  await f.app.dispatch({operation: 'task.answer', taskId: task.id, questionId: question.id, key: 'answer', body: {
+    expectedRevision: (await f.get(task.id)).revision, questionRevision: 1, questionDigest: question.questionDigest, answer: 'north'}}, context);
+  f.advance(4900); await supervisor.tick(); await waiting;
+  const stop = await f.app.dispatch({operation: 'worker.cancel', workerId: a.data.workerId, key: 'cancel-after-dispatch',
+    body: {expectedRevision: (await f.get(task.id)).revision}}, context);
+  // No tick, no external callback injection: the original short ACK timer fires.
+  await until(() => a.stopCount === 1); assert.equal(b.stopCount, 0);
+  await until(async () => (await f.app.dispatch({operation: 'operation.get', operationId: stop.id}, context)).status === 'succeeded');
+  assert.equal((await f.get(task.id)).status, 'running'); assert.equal(f.capacity().length, 1); assert.equal(supervisor.snapshot().failure, null);
+  assert.deepEqual(f.errors, []);
 });
 
 test('cold owner unresolved obligations never synthesize handles, free capacity or launch again', async t => {

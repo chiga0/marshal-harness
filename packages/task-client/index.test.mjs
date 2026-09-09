@@ -37,6 +37,7 @@ test('all 25 contract operations traverse real loopback HTTP and one injected Ap
     if (entry.operation === 'artifact.get' || entry.operation === 'input.create') return artifact;
     const value = example(entry.response);
     if (entry.response === 'Operation' && entry.operation !== 'operation.get') value.kind = entry.operation;
+    if (entry.operation === 'worker.cancel') value.workerId = request.workerId;
     return value;
   });
   for (const entry of operations) {
@@ -80,6 +81,20 @@ test('explicit create/plan approval preserves original key/revision through conf
   const replay = await client.approveTask(draft.id, approval, 'approve-original'); assert.equal(replay.taskRevision, 2); assert.equal(writes, 2);
   await assert.rejects(client.approveTask(draft.id, approval, 'another-key'), {code: 'revision_conflict', status: 409});
   assert.equal(writes, 2);
+});
+
+test('worker.cancel response is route-bound and rejects old/missing/foreign Worker operations without retry', async () => {
+  for (const variation of ['foreign', 'missing', 'old']) {
+    let calls = 0;
+    const value = {...example('Operation'), kind: 'worker.cancel', workerId: variation === 'foreign' ? 'worker-other' : 'worker-example'};
+    if (variation === 'missing') delete value.workerId;
+    if (variation === 'old') value.kind = 'task.cancel';
+    const client = new TaskClient({baseURL: 'http://127.0.0.1:39999', token, fetch: async () => {
+      calls++; return new Response(JSON.stringify(value), {status: 202, headers: {'Content-Type': 'application/json'}});
+    }});
+    await assert.rejects(client.cancelWorker('worker-example', {expectedRevision: 1}, 'target-key'), {code: 'client_invalid_response'});
+    assert.equal(calls, 1);
+  }
 });
 
 test('local validation rejects unsafe routes/configuration and never invents write keys or confirmation', async () => {

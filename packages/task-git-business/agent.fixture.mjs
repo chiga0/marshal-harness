@@ -1,6 +1,8 @@
 // An actual ACP child process that edits a real Git worktree. No model or
 // authoritative acceptance is simulated; only candidate implementation is fixed.
 import fs from 'node:fs';
+import path from 'node:path';
+import {setTimeout as pause} from 'node:timers/promises';
 import {createInterface} from 'node:readline';
 import {execFileSync} from 'node:child_process';
 import {proposal} from './scenario.fixture.mjs';
@@ -38,6 +40,10 @@ for await (const line of createInterface({input: process.stdin})) {
     const base = execFileSync('/usr/bin/git', ['rev-parse', 'HEAD'], {encoding: 'utf8', timeout: 3000, env: {PATH: '/usr/bin:/bin', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null'}}).trim();
     if (base !== data.git.base || !fs.statSync('.git').isFile()) throw Error('not_the_bound_worktree');
     if (process.env.GIT_BUSINESS_FIXTURE_MODE === 'hang') continue;
+    if (process.env.GIT_BUSINESS_FIXTURE_MODE === 'worker-cancel') {
+      const release = path.join(process.env.GIT_RELEASE_PARENT, path.basename(process.cwd())), end = Date.now() + 45000;
+      while (!fs.existsSync(release)) {if (Date.now() > end) throw Error('fixture_release_timeout'); await pause(10);}
+    }
     setTimeout(() => {
       let content = source[data.node.id];
       if (process.env.GIT_BUSINESS_FIXTURE_MODE === 'wrong' && data.node.id === 'library') content = content.replace('cents - discount', 'cents');
