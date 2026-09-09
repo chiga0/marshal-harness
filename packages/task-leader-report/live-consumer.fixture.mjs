@@ -189,19 +189,43 @@ export function diagnosticCollector(items = []) {
       'pi_progress_timeout', 'pi_progress_failed'], stage: ['provider-result', 'cleanup', 'parse'],
     parseCode: ['invalid_json', 'invalid_leader_result', 'invalid_leader_decision', 'invalid_review_report']};
   const keys = ['code', 'authority', 'taskId', 'workerId', 'providerId', ...Object.keys(enums)].sort();
+  const rejectedKeys = ['authority', 'bytes', 'code', 'digest', 'encoding', 'executionType', 'head', 'providerId', 'tail',
+    'taskId', 'truncated', 'wellformed', 'workerId'];
+  const identity = value => ['taskId', 'workerId', 'providerId'].every(key => typeof value[key] === 'string' &&
+    /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value[key]));
+  const base64 = (value, maxBytes) => typeof value === 'string' &&
+    (value.length === 0 || /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) &&
+    Buffer.from(value, 'base64').length <= maxBytes && Buffer.from(value, 'base64').toString('base64') === value;
+  // Bounded parse-stage raw-output copy: same closed-shape rule, separately
+  // capped; arbitrary provider text stays base64 and never enters other fields.
+  // Envelope invariant: reachable lines (failure ≤ ~800B enumeration/ids,
+  // rejected ≤ ~3500B with 1536+512 payload) keep 32 + 8 records under the
+  // 65536-byte stderr budget that launchService enforces with SIGTERM.
+  const counts = {failure: 0, rejected: 0};
   let line = [], length = 0, dropping = false;
   return bytes => {
     for (const byte of bytes) {
       if (byte !== 10) {
-        if (++length > 2048) {dropping = true; line = [];} else if (!dropping) line.push(byte);
+        if (++length > 4096) {dropping = true; line = [];} else if (!dropping) line.push(byte);
         continue;
       }
-      if (!dropping && items.length < 32) try {
+      if (!dropping) try {
         const value = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(Uint8Array.from(line)));
-        if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).sort().join(',') === keys.join(',') &&
-          value.code === 'managed_provider_failure' && value.authority === false &&
-          ['taskId', 'workerId', 'providerId'].every(key => /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value[key]) && typeof value[key] === 'string') &&
-          Object.entries(enums).every(([key, values]) => value[key] === null || values.includes(value[key]))) items.push(value);
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          if (value.code === 'managed_provider_failure' && length <= 2048 && counts.failure < 32 &&
+            Object.keys(value).sort().join(',') === keys.join(',') && value.authority === false && identity(value) &&
+            Object.entries(enums).every(([key, values]) => value[key] === null || values.includes(value[key]))) {
+            counts.failure++; items.push(value);
+          } else if (value.code === 'managed_provider_rejected_output' && counts.rejected < 8 &&
+            Object.keys(value).sort().join(',') === rejectedKeys.join(',') && value.authority === false && identity(value) &&
+            enums.executionType.includes(value.executionType) && value.encoding === 'utf8-base64' &&
+            typeof value.wellformed === 'boolean' &&
+            (value.bytes === null || Number.isSafeInteger(value.bytes) && value.bytes >= 0) &&
+            (value.digest === null || /^sha256:[a-f0-9]{64}$/.test(value.digest)) && typeof value.truncated === 'boolean' &&
+            base64(value.head, 1536) && base64(value.tail, 512) && Buffer.byteLength(JSON.stringify(value)) <= 4096) {
+            counts.rejected++; items.push(value);
+          }
+        }
       } catch {}
       line = []; length = 0; dropping = false;
     }

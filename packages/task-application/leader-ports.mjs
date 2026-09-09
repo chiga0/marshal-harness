@@ -30,6 +30,47 @@ export function safeManagedDiagnostic(value) {
     return Buffer.byteLength(JSON.stringify(result)) <= 2048 ? Object.freeze(result) : null;
   } catch {return null;}
 }
+// Parse-stage rejections used to discard the raw model output, leaving real
+// failures undiagnosable. This bounded base64 copy stays on the same private
+// operator channel (stderr collector): arbitrary provider text cannot inject
+// log lines, and bytes/digest/truncated pin exactly what was retained. It is
+// non-authoritative and never enters task state, receipts, or verdicts.
+const base64 = (value, maxBytes) => typeof value === 'string' &&
+  (value.length === 0 || /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) &&
+  Buffer.from(value, 'base64').length <= maxBytes && Buffer.from(value, 'base64').toString('base64') === value;
+export function safeRejectedOutputDiagnostic(value) {
+  try {
+    if (!closed(value, ['code', 'authority', 'taskId', 'workerId', 'providerId', 'executionType', 'encoding', 'wellformed',
+      'bytes', 'digest', 'truncated', 'head', 'tail']) || value.code !== 'managed_provider_rejected_output' ||
+      value.authority !== false || !['taskId', 'workerId', 'providerId'].every(key => id(value[key])) ||
+      !diagnosticEnums.executionType.includes(value.executionType) || value.encoding !== 'utf8-base64' ||
+      typeof value.wellformed !== 'boolean' ||
+      !(value.bytes === null || Number.isSafeInteger(value.bytes) && value.bytes >= 0) ||
+      !(value.digest === null || sha(value.digest)) || typeof value.truncated !== 'boolean' ||
+      !base64(value.head, 1536) || !base64(value.tail, 512)) return null;
+    const result = {code: value.code, authority: false, taskId: value.taskId, workerId: value.workerId, providerId: value.providerId,
+      executionType: value.executionType, encoding: 'utf8-base64', wellformed: value.wellformed, bytes: value.bytes, digest: value.digest,
+      truncated: value.truncated, head: value.head, tail: value.tail};
+    return Buffer.byteLength(JSON.stringify(result)) <= 4096 ? Object.freeze(result) : null;
+  } catch {return null;}
+}
+function rejectedOutput(ticket, type, outputText) {
+  const record = {code: 'managed_provider_rejected_output', authority: false, taskId: ticket.taskId, workerId: ticket.workerId,
+    providerId: ticket.providerId, executionType: type, encoding: 'utf8-base64', wellformed: false, bytes: null, digest: null,
+    truncated: false, head: '', tail: ''};
+  if (typeof outputText === 'string') {
+    // Malformed Unicode re-encodes as U+FFFD: head/bytes/digest then describe
+    // the sanitized encoding, which wellformed=false explicitly flags.
+    const buffer = Buffer.from(outputText, 'utf8');
+    record.wellformed = outputText.isWellFormed() && !outputText.includes('\0');
+    record.bytes = buffer.length;
+    if (buffer.length <= 1048576) record.digest = digest(buffer);
+    record.head = buffer.subarray(0, 1536).toString('base64');
+    record.tail = buffer.length > 1536 ? buffer.subarray(Math.max(1536, buffer.length - 512)).toString('base64') : '';
+    record.truncated = buffer.length > 2048;
+  }
+  return record;
+}
 const distinct = (values, max, test = id) => Array.isArray(values) && values.length <= max && values.every(test) && new Set(values).size === values.length;
 const integer = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
 
@@ -134,6 +175,10 @@ function create(type, {id: identifier, providerId, policy, prepare, parseDecisio
                 taskId: ticket.taskId, workerId: ticket.workerId, providerId: ticket.providerId, executionType: type,
                 status: raw.status, stopReason: raw.stopReason, reason: raw.reason,
                 stage: reason ? 'parse' : raw.cleanup?.cleaned !== true ? 'cleanup' : 'provider-result', parseCode});
+              if (report) Promise.resolve(onDiagnostic(report)).catch(() => {});
+            } catch {}
+            if (reason) try {
+              const report = safeRejectedOutputDiagnostic(rejectedOutput(ticket, type, raw.outputText));
               if (report) Promise.resolve(onDiagnostic(report)).catch(() => {});
             } catch {}
           }
@@ -261,7 +306,8 @@ export function renderLeaderPrompt(input) {
 }
 export function renderReviewPrompt(input) {
   return '独立只读 Review：按原需求和验收检查全部冻结选果，不修改文件，不把作者声称pass当作证据，不启动额外进程。' +
-    '只返回一个JSON对象，verdict为accept/rework/reject；accept的findings必须为空，其余意见必须指向实际选果节点。' +
+    '只返回一个JSON对象：首字符为{、末字符为}，无Markdown/代码围栏/前后任何解释或标题，UTF-8无BOM、无重复键、无注释或尾逗号；' +
+    'verdict为accept/rework/reject；accept的findings必须为空，其余意见必须指向实际选果节点。' +
     '每个finding包含唯一id、nodeIds以及每段≤2048 UTF-8 bytes的requirement/observation/requestedChange；最多16项。' +
     '返回对象必须且只能含profile/inputDigest/selectionDigest/verdict/summary/findings，不可省略/增加；summary≤4096 UTF-8 bytes，整个返回无BOM且≤65536 UTF-8 bytes；' +
     'verdict必须逐字为accept/rework/reject。findings必须是对象数组，不是字符串数组，每个对象只能含下面五字段；' +
