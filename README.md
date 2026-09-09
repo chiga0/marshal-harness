@@ -10,6 +10,8 @@ Marshal 是一个可自托管的 Agent Team HTTP 服务：接收需求和上下�
 
 当前目标按已接受的 [ADR0094](docs/adr/0094-trusted-single-user-role-team.md) 收敛为可信单用户角色团队：[受管 Leader](docs/node-leader-execution-design.md) 贯穿需求、批次结果、独立 Review、局部修正、授权交付与后验。Supervisor 观察，Leader 业务判断，Core 校验/硬规则，Execution 操作所属进程；当前 Planner 不代表此机制已完成。B1 本机 PoC 经独立核验通过，B2-L 仍为 DESIGN、正式发布前必验，B2/B3 未完成。角色职责不是 OS/凭据隔离；现有 API/数据与 API-STABLE 范围不变，旧 non-production 不重标，下载不叫已发布。
 
+设计原则是：**Leader 对业务目标负责，Agent 发挥专业能力，Core 保证执行边界与事实可靠，最终交付接受独立且贴近真实需求的检查。** 原始需求、确认的交付约定与可调整实现计划分开，避免只证明“流程跑完”，却遗漏用户真正需要的成果。
+
 当前 Local MVP 已有执行、独立验证、审查和 Draft PR 的历史能力，RC1 支持面仍是下述 CLI-only local-dogfood。当前目标为 B1 真实团队 PoC、B2 本地 API 可用、B3 正式可靠发布；旧单任务与团队证据继续保留，尚未整体完成。
 
 2026-09-07 方案收缩为 [Task-first Agent Team 架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)和[审计记录](docs/audit-agent-team-service-design-2026-09-07.md#task-first-收缩审计)：先用一个可用 Provider 的两个实例走通真实交付，不先做 Workspace、安装身份平台或全面迁库。目标一命令启动本地 HTTP，原生 Agent 自管登录/Skill，Supervisor 内置；SQLite/零 Git/问答在 B2，正式平台支持在 B3。边界由已接受的 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)承载；[ADR 0088](docs/adr/0088-node-task-service-production-projection.md)进一步接受 Node-only 正式实现路线，文档不代表功能已发布。
@@ -80,7 +82,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 当前研发主线使用固定 Node `24.15.0`，通过 [Task 服务启动说明](packages/task-service/README.md)配置原生 Agent、业务与独立验证并运行 HTTP；无需编译或执行 Marshal 原生程序。受信启动配置仍需提供，尚不承诺任意任务零配置。原生登录不授予业务发布权限；可信单用户下可能存在 ambient credential，不能因本机可运行就声称强隔离或正式支持。
 
 - [OpenAPI 3.1 定义](packages/task-api/openapi.json)是 HTTP 请求/响应的唯一机器契约；[接口说明](packages/task-api/README.md)与[客户端](packages/task-client/README.md)解释使用方式。
-- [逐接口支持矩阵](docs/node-api-support-matrix.md)区分25项合同、实际实现和实机范围：24项有条件或直接接线，单Worker取消仍501；暂停只阻止新执行，token/费用仍不可测。请先核对矩阵，不把路由示例当作功能完成。
+- [逐接口支持矩阵](docs/node-api-support-matrix.md)保留其标注源码的25项合同、实际实现和实机范围；[后继状态](docs/roadmap-status.md#业务交付当前表)已记录显式v6 profile支持单Worker取消，旧格式仍501。暂停只阻止新执行，token/费用仍不可测；矩阵快照与最新增量分开，不把路由示例当作功能完成。
 - [架构](docs/agent-team-service-architecture.md)、[目标用户与适用范围](docs/vision-and-scope.md)、[Milestone](docs/agent-team-service-milestones.md)与[实际进展](docs/roadmap-status.md#业务交付当前表)分别说明目标和完成情况。
 - API 的 `0.1.0-candidate` 已通过当前 Node profile 与同包客户端的 API-STABLE 核心接口检查点；这不是正式 v1 或全平台支持，[精确证据与剩余出口](docs/node-task-service-status-2026-09-08.md)单独列明。[目录发行包](packages/task-distribution/README.md)也不等于 stable 安装包或正式部署。
 

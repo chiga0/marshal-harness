@@ -39,7 +39,7 @@ export default {
 };
 ```
 
-示例中的变量由实际业务组合提供，不是可直接执行的假实现；`service.fixture.mjs` 只供无模型测试。Provider 可由已有 `createAcpProvider({id,executable,args,env})` 构造，CLI 不推断品牌、登录状态或默认工具权限。没有 `prepare/collect` 且没有有效 `businessFactory`、或没有 Provider 时启动前拒绝，不用空成功实现占位。原生登录和 Publisher 分权仍由部署方证明，不复制 HOME/凭据、不宣称同 UID 是恶意沙箱。
+示例中的变量由实际业务组合提供，不是可直接执行的假实现；`service.fixture.mjs` 只供无模型测试。Provider 可由已有 `createAcpProvider({id,executable,args,env})` 构造，CLI 不推断品牌、登录状态或默认工具权限。没有 `prepare/collect` 且没有有效 `businessFactory`、或没有 Provider 时启动前拒绝，不用空成功实现占位。Agent 原生登录由部署方配置；[ADR0094](../../docs/adr/0094-trusted-single-user-role-team.md) 的 Node 可信单用户目标保留职责、发布授权和独立证据边界，强 OS 账号/凭据隔离证明后置，明确接受 ambient credential 风险。不复制 HOME/凭据、不主动发现或输出秘密、不宣称同 UID 是恶意沙箱；登录不自动授予产品外部写权限。旧 Go/hardened profile 不适用该调整。
 
 ## 可信业务工厂与唯一 verification 实例
 
@@ -62,6 +62,8 @@ export default {
 ```
 
 `trustedVerificationPort` 由同 Core 导出的 `createVerificationPort({id,policy,bindPlan,start})` 在可信配置中构造。service 将**同一个对象**传给 Application 与 Supervisor，不复制、重建或反序列化原 receipt 能力。政策、完整文件布局与交付映射由 Core 在计划确认前冻结；独立执行与证据由原端口提供，service 不造 Decision。
+
+[Leader 目标设计](../../docs/node-leader-execution-design.md#任务验收内容与可信验证机制)进一步区分可信验证机制与任务验收内容：后者来自已确认需求，独立检查其覆盖，不要求每个任务重写 Core/部署配置，也不接受 Agent 任意生成并执行验证代码。本段不改变当前 port 或启用动态配置；该目标仍随 B2-L 实现和验证。
 
 工厂只收到 `{depot,executionParent,approvedLayout,observeExecution}`，不暴露 Store、owner 或写 reducer。后两个函数在调用时进入当前 Application `execution.approvedLayout(ticket)` 与 `execution.observeExecution(ticket)` 只读端口，不能把当前 layout 现算成批准事实。方法尚未接入时拒绝，不返回伪造绑定。
 

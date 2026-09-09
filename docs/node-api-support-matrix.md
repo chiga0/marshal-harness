@@ -2,15 +2,19 @@
 
 核对源码：`2d178b4f96caeb2708d861b837160de5cf758f78`（2026-09-09）。本表记录这一源码的实现和已有验证范围，不把历史实机结果改绑到新提交，也不以路由存在代替功能可用。本次编写只读核对源码与已记录证据，没有重新调用模型或重跑测试。
 
+**后继状态提示（2026-09-09）**：下方实现/测试表保留上述源码快照，不是最新 main 的完整矩阵。后继 `25ff8315` 已合入显式 v6 profile 的单 Worker 取消，旧格式仍为 501；最新完成状态和精确证据见 [Roadmap](roadmap-status.md#业务交付当前表)及[服务说明](../packages/task-service/README.md#单-worker-取消显式-v6-新根)。Leader 全程协调、授权交付和后验仍为 DESIGN，不能借已有接口检查点声明完成。
+
 ## 使用入口与适用人群
 
 正式文档导航：[产品入口](../README.md) → [服务配置与简启动](../packages/task-service/README.md) → [目录包核验/安装](../packages/task-distribution/README.md) → [OpenAPI](../packages/task-api/openapi.json) / [HTTP 约束](../packages/task-api/README.md) → [独立客户端](../packages/task-client/README.md)。目标和当前完成状态分别看[实施 Milestone](agent-team-service-milestones.md)、[Roadmap](roadmap-status.md)与[实证记录](node-task-service-status-2026-09-08.md)。
 
 适合需要本地 Task 提交、一次精确确认、有限团队执行、业务问答、独立验收与制品下载的部署者和客户端作者。当前是固定 Node `24.15.0`、单节点/单用户/可信任务、显式受信 Provider 与业务/验收配置；没有 Workspace 注册前置，非 Git 制品不要求初始化仓库。服务默认 loopback，自动生成私有连接凭据；`--config` 仍必须明确提供，不默认猜模型、登录或业务。
 
-不适合把它当成任意自然语言业务的零配置服务、多租户/公网 API、敌对代码沙箱、自动发布系统或无条件崩溃续跑服务。Worker 可达 Publisher 凭据/已登录发布入口的部署不在正式支持范围；本机 ordinary-user 实证尚未证明该分权。Linux 同资产部署、正式 stable 发行和生产 SLO 不由此表授予，参见 [ADR 0088](adr/0088-node-task-service-production-projection.md)。
+不适合把它当成任意自然语言业务的零配置服务、多租户/公网 API、敌对代码沙箱、自动发布系统或无条件崩溃续跑服务。权限按 profile 判断：[ADR0094](adr/0094-trusted-single-user-role-team.md) 对 Node `trusted-single-user` 接受 ambient credential 风险，保留职责、授权与独立证据边界，不再以前置 OS 账号/凭据不可达证明阻断本机团队目标；原生登录仍不授权外部写，也不构成强隔离。旧 Go/hardened profile 保持原合同，旧实证不重新标记。Linux 同资产部署、正式 stable 发行和生产 SLO 不由此表授予，参见 [ADR 0088](adr/0088-node-task-service-production-projection.md)。
 
 **接口检查点与产品完成分开**：已有独立评审记录为 `API-STABLE: PASSED`，适用于 `node-task-service/v1` 的当前合同/同包客户端；OpenAPI 仍标 `0.1.0-candidate`，不等于正式 v1/stable/production。当前 25 个操作、58 个 Schema；旧 Go、九操作实验协议及未来版本不在这个兼容声明内。
+
+新增 Leader 决定、确认、阶段结果与整体结束语义时，须随实际启用范围更新 OpenAPI、客户端和真实行为验证；正式候选重新核验新的支持面，不撤回原检查点，也不把它外推为未来语义已稳定。
 
 ## 如何读表
 
@@ -92,4 +96,4 @@ Task 与 Worker 的 `usage` 仍固定为 `{tokens:null,cost:null,currency:null,s
 
 当前精确基线 `2d178b4…` 的 [Node team CI 34316647809](https://github.com/chiga0/marshal-harness/actions/runs/34316647809) 已由维护者核对 Ubuntu/macOS 均 success；同源 API/client 独立重跑32/32、1.361秒。原[CI 测试入口](../.github/workflows/node-team.yml)包含无模型协议进程，不是两平台同资产部署或模型验收。前源 `ce55eed` 的 macOS 519/521、两个清理失败仍保留为失败记录；本基线已包含随后审查/验证的 Darwin 修正，不把旧失败说成当前仍红，也不删除原原因尚未被 CI errno 直接确认的边界。
 
-尚未实现或本表未找到实机证据的事项：单 Worker 取消；真实 token/费用与独立首审/等待计量；自然内容拒收后的模型局部修正；pause/resume 的单独真实模型观察；尚未闭合的执行许可前恢复窗口；声明平台的同资产部署、Worker/Publisher 分权和 stable 发行。当前未核验的 Provider 登录/能力不能说成“已缺失”，列表 unknown 也不能说成“已就绪”。本表记录限制，不新增前置门禁、更改已接受合同或撤回已记录的 API-STABLE 检查点。
+在 `2d178b4…` 快照中尚未实现或未找到实机证据的事项：单 Worker 取消；真实 token/费用与独立首审/等待计量；自然内容拒收后的模型局部修正；pause/resume 的单独真实模型观察；尚未闭合的执行许可前恢复窗口；声明平台的同资产部署与 stable 发行。单 Worker 取消的后继进展见页首；Worker/Publisher 权限按上述 profile 区分，不将强 OS 隔离重新加入可信单用户的前置条件。未核验的 Provider 登录/能力不能说成“已缺失”，列表 unknown 也不能说成“已就绪”。本表记录限制，不新增前置门禁或撤回已记录的 API-STABLE 检查点。

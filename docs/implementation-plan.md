@@ -2,7 +2,7 @@
 
 2026-09-09 [ADR0095](adr/0095-node-managed-leader-contract.md)机器合同已独立审查接纳，B2-L 按[唯一执行合同](node-leader-execution-contract.md)进入 Core、API/客户端、有限本机报告端口三个互斥范围的同链实现。当前尚未接线，不能按文档通过升级成熟度；已确定后继与授权动作直接执行，不额外调用 Leader 重复批准。
 
-更新：2026-09-08。当前方案见[Task-first 架构](agent-team-service-architecture.md)，详细出口只见[Milestone](agent-team-service-milestones.md)，实际完成状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。合同调整集中于 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)（Accepted），接受允许实施，不替代运行时与发布验证。
+更新：2026-09-09。当前方案见[Task-first 架构](agent-team-service-architecture.md)，详细出口只见[Milestone](agent-team-service-milestones.md)，实际完成状态只见 [Roadmap](roadmap-status.md#业务交付当前表)。合同由已接受的 ADR0085/0088/0094/0095 按 profile 承载，接受允许实施，不替代运行时与发布验证。
 
 2026-09-09 按已接受 [ADR0094](adr/0094-trusted-single-user-role-team.md)实施可信单用户角色团队。B1本机PoC经独立核验通过，保留B2已有资产；新增[全程受管Leader](node-leader-execution-design.md)为B2-L/DESIGN，而非Planner别名。Supervisor观察、Leader业务判断、Core校验/已批准调度/硬规则、Execution原handle操作；在现loop中委托，不另造平台。强OS隔离后置，B3可靠性/受保护软件发行保留。当前HTTP/角色/格式无改动或迁移，API-STABLE保留；新机制实际机器语义一次明确兼容再启用。
 
@@ -21,15 +21,15 @@
 
 ## 具体下一步
 
-**Node 正式主线优先**（[ADR 0088](adr/0088-node-task-service-production-projection.md)）：先通过可复用 ACP 驱动与真实 Qwen，再并行接通通用业务/Application 和 SQLite/恢复，在同一候选关闭 API-STABLE 与 B3。下面原 Go producer 名称仅为复用资产索引，不要求先恢复本机 Go 原生执行或全量翻译旧 Core；不继续扩展固定订单无工具实验。SQLite 接缝的确定性实现可与 ACP 并行，但同一状态根永远只启用一个已声明格式的权威 Store。
+**Node正式主线继续，已通过的B1与原API-STABLE不重做。** 复用现有Provider、Application/SQLite、业务与独立验证、HTTP/客户端；同一状态根永远只启用一个已声明格式的权威Store，不恢复Go原生执行或另造演示链。
 
-1. 冻结一个真实小业务的接口、输入、整体 oracle/反例与下载内容；确认现有合法安装/Provider 可执行。结构性失败在付费调用前发现，不再轮换模型试运气。
-2. 同一应用入口接 Task 请求与一次计划确认，连接已有 team materialization、Start、Collect、Verify/Decision、集成与 Outcome。优先补缺失接线，不重建 scheduler。
-3. 两作者真实重叠执行；客户端只经 HTTP 查状态/取消/下载，独立环境消费结果，保留失败与实际耗时。通过才关闭 B1 团队 PoC。
-4. 再沿同一接口完善 B2：自动简启动、最小 SQLite、零 Git/多仓库、问答与局部恢复；第二 Provider 独立接入，第三 Provider 不阻已支持主路径。
-5. 核心 API-STABLE 后可开 UI；B3 在最终同路径资产上验证正式支持，不重做一套演示或绕过 OS 安全。
+1. 一次对齐B2-L最小行动、原始需求/交付约定/实现计划、需求到验收覆盖、原预算、决定/动作事实和兼容边界；可信验证机制与任务验收内容分开，结构性前提在付费前检查。
+2. 在原HTTP/Application/SQLite链完成Leader需求理解与必要确认，沿既有调度执行；共享约定进入真实工作包，完成该检查点的对应故障/兼容及有界实机。
+3. 接入结果驱动的集中Review与有界自主局部调整，保留无关有效成果；同时验证同一业务配置处理两个不同需求，不为每个任务改Core或人工补验收。
+4. 接一个明确授权、目标有限且效果可查询的交付适配及独立后验，Leader逐项汇总/Core整体结束；下载默认保留。每步持续集成及验证，不等全部写完再首次运行。
+5. 对最终同一候选核验完整Leader接口支持面和旧响应/回执兼容，再完成B3同资产平台/长期故障/备份恢复/正式发行；B3准备可以并行，最终证明不能来自另一套实现。
 
-以上已通过子链不重新实施。当前唯一新增顺序按ADR0094与机制文档：一次冻结有限行动/语义快照/预算/决定与动作事实/兼容→同链接受管Leader及集中Review/保留无关成果的局部调整→授权发布/后验及新profile整体结束→原HTTP确定性故障/旧协议回归/真实Provider全链。原`proposePlan`批准前限定、`finish`立即completed/失败全队取消、唯一verifier sink和显式用户repair都需明确接缝调整，不能靠配置冒充。未实施默认不发布；成功重复才模板化，不新增第二控制器/Store。
+以上是一个B2-L纵切内的可运行检查点，不按字段/每个检查点强制PR或ADR。原`proposePlan`批准前限定、`finish`立即completed/失败全队取消、唯一verifier sink和显式用户repair仍须明确调整接缝，不能靠配置冒充。正常任务可一次通过；真实局部修正使用有限、如实标注的业务问题/缺陷修复场景证明，确定性故障另计，不无限付费等模型犯错。未实现能力不启用，状态仍按Roadmap，不新增第二控制器/Store。
 
 Workspace 不再是实体/API/初始化前提，不能改名为 Project 保留注册流程。data-dir 仅是启动配置；Task 上下文提供仓库/表/平台，权限由允许的执行配置约束。内部 Task/Goal 类型先映射而不是全仓重命名。用户不手写 lease、identity 或每个 Run。
 
