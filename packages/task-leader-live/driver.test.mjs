@@ -1,0 +1,176 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {encode, digest} from '../task-store/store.mjs';
+import {contract, leaderRequestDigest, leaderReplyDigest} from '../task-api/contract.mjs';
+import {parseOptions, runLive, workPackage, reviewPolicy} from './driver.fixture.mjs';
+import {data, choices, policy, taskBody, bindPlan, reportFor} from './scenario.fixture.mjs';
+import {equal, businessReply, verificationRequest, validatePlan, replyOnce, assertReplyReplay, verifyAcceptance, authorizeReport, authorOverlap} from './proof.fixture.mjs';
+import {checkRequest} from './checker.fixture.mjs';
+import {startReportServer, consumePublished} from './report-server.fixture.mjs';
+
+const hash = value => digest(encode(value)), sha = 'sha256:' + 'a'.repeat(64), taskId = 'task-example';
+const fresh = name => structuredClone(contract.components.schemas[name].examples[0]);
+const deadline = () => new Date(Date.now() + 60000).toISOString();
+function reply(answer = 'paid') {
+  const ref = {requestId: 'request-example', requestDigest: sha};
+  return {...ref, answer, replyDigest: leaderReplyDigest(taskId, ref.requestId, {...ref, answer})};
+}
+function ticket(answer = 'paid') {
+  const {answer: _answer, ...ref} = reply(answer);
+  return {taskId, input: {inputArtifacts: [{id: 'input-sales', kind: 'input', name: 'sales.json', digest: hash(data), bytes: encode(data).length}],
+    leaderReplyRefs: [ref], leaderReplies: [reply(answer)], verification: {binding: {profile: 'task-verification/v1'}}, fileLayout: {inputs: [], allowedPaths: []}}};
+}
+function question() {
+  const task = {...fresh('Task'), id: taskId, status: 'awaiting-answer', plan: null, revision: 2, deadlineAt: deadline()};
+  const view = fresh('LeaderView'); view.taskId = taskId; view.taskRevision = task.revision;
+  view.pendingRequest = {...view.pendingRequest, kind: 'business', nodeIds: [], authorization: null, subject: sha,
+    prompt: 'east 需要 paid 还是 cancelled？', options: choices.map(value => ({value, label: value})),
+    deadlineAt: task.deadlineAt, status: 'pending', replyDigest: null};
+  view.pendingRequest.requestDigest = leaderRequestDigest(taskId, view.pendingRequest); return {task, view};
+}
+function publication() {
+  const {task, view} = question(); task.status = 'awaiting-confirmation';
+  const content = encode(reportFor('paid')), artifact = {...fresh('Artifact'), taskId, kind: 'delivery', status: 'ready',
+    mediaType: 'application/json', digest: digest(content), bytes: content.length};
+  const plan = {digest: sha}, audit = {acceptance: {status: 'passed', digest: sha}}, target = {id: 'local-report', policyDigest: sha};
+  const nameFor = ({taskId, artifactDigest}) => `${taskId}-${artifactDigest.slice(7)}.json`;
+  view.review = {digest: sha, verdict: 'accept', selectionDigest: sha, policyDigest: hash(reviewPolicy), workerId: 'worker-review', evidenceIds: ['artifact-review']};
+  view.pendingRequest.kind = 'publication'; view.pendingRequest.options = ['allow', 'deny'].map(value => ({value, label: value}));
+  view.pendingRequest.authorization = {taskId, planDigest: plan.digest, artifactId: artifact.id, artifactDigest: artifact.digest, bytes: artifact.bytes,
+    acceptanceDigest: sha, reviewDigest: sha, targetId: target.id, targetPolicyDigest: target.policyDigest,
+    name: nameFor({taskId, artifactDigest: artifact.digest}), operation: 'create-if-absent', expiresAt: task.deadlineAt};
+  rebind(view);
+  return {task, view, artifact, content, answer: 'paid', publication: target, nameFor, plan, audit};
+}
+function rebind(view) {
+  if (view.pendingRequest.authorization) view.pendingRequest.subject = hash(view.pendingRequest.authorization);
+  view.pendingRequest.requestDigest = leaderRequestDigest(view.taskId, view.pendingRequest);
+}
+function planCase() {
+  const body = taskBody('input-sales', 60000), task = {...fresh('Task'), id: taskId, status: 'awaiting-approval', revision: 5,
+    plan: {revision: 1, digest: sha}};
+  const leader = {profile: 'task-managed-leader/v1', maxCalls: 9, maxActions: 1, maxRequests: 4,
+    repair: {nodeIds: ['east', 'west'], maxRounds: 1}, review: {providerId: 'pi', policyDigest: sha}, publication: {targetId: 'local-report', policyDigest: sha}};
+  const plan = {taskId, revision: 1, digest: sha, nodes: ['east', 'west', 'verify'].map((id, i) =>
+    ({id, role: i === 2 ? 'verifier' : 'author', providerId: null, goal: '真实业务目标', scope: []})),
+    edges: [{from: 'east', to: 'verify'}, {from: 'west', to: 'verify'}], budget: body.limits, deliverables: body.requirements.deliverables, assumptions: []};
+  const binding = bindPlan({inputArtifacts: [{id: 'input-sales'}], proposal: plan});
+  plan.acceptance = ['合理改述而非固定中文复述', ...[{policy, description: binding.description}, ...binding.layouts.map(layout => ({layout})),
+    ...binding.deliveries.map(delivery => ({delivery})), {profile: leader.profile, policyDigest: hash(leader), repair: leader.repair,
+      review: leader.review, publication: leader.publication, completion: 'leader-delivery'}].map(JSON.stringify)];
+  return {task, plan, body, leader};
+}
+
+test('opt-in is explicit, two requirements share one configuration, first-workers is not full delivery', async () => {
+  const args = ['--execute-real', '--answers', 'paid,cancelled', '--allow-local-publication', '--run-dir', '/private/tmp/new-leader',
+    '--node', '/fixed/node', '--pi-entry', '/fixed/dist/bundle/cli.js', '--pi-sdk', '/fixed/dist/index.js'];
+  assert.deepEqual(parseOptions(args).answers, choices); assert.equal(parseOptions(args).checkpoint, 'complete');
+  assert.equal(parseOptions([...args, '--checkpoint', 'first-workers']).checkpoint, 'first-workers');
+  for (const invalid of [args.filter(x => x !== '--execute-real'), args.filter(x => x !== '--allow-local-publication'),
+    args.map(x => x === 'paid,cancelled' ? 'paid,paid' : x), [...args, '--answer', 'paid'], [...args, '--checkpoint', 'publish-anything']])
+    assert.throws(() => parseOptions(invalid));
+  await assert.rejects(runLive({}), {code: 'explicit_real_execution_required'});
+});
+test('Core reply and original Depot input are required; caller answer, stale/foreign refs and byte drift cannot substitute', () => {
+  for (const answer of choices) {
+    const original = ticket(answer), request = verificationRequest(original, () => encode(data));
+    assert.equal(businessReply(taskId, original.input).answer, answer); assert.equal(request.reply.answer, answer);
+    assert.deepEqual(reportFor(answer), reportFor(request.reply.answer));
+  }
+  for (const mutate of [v => {v.input.leaderReplyRefs = [];}, v => {v.input.leaderReplies[0].answer = 'cancelled';},
+    v => {v.input.leaderReplyRefs[0].requestId = 'foreign';}, v => {v.taskId = 'task-foreign';},
+    v => {v.input.inputArtifacts[0].digest = sha;}, v => {v.input.leaderReplies.push(reply());}]) {
+    const original = ticket(); mutate(original); assert.throws(() => verificationRequest(original, () => encode(data)));
+  }
+  assert.throws(() => verificationRequest(ticket(), () => Buffer.from('wrong')));
+});
+test('plan keeps Core policy/layout and original limits but tolerates natural-language paraphrase', () => {
+  const {task, plan, body, leader} = planCase(); assert.equal(validatePlan(task, plan, body, 'input-sales', leader).expectedRevision, 5);
+  for (const mutate of [v => {v.acceptance.pop();}, v => {v.acceptance.push(v.acceptance.at(-1));}, v => {v.nodes[0].role = 'reviewer';},
+    v => {v.nodes[0].scope = {write: ['east.json']};}, v => {v.edges.push({from: 'east', to: 'west'});}, v => {v.budget.maxAttempts++;}]) {
+    const value = structuredClone(plan); mutate(value); assert.throws(() => validatePlan(task, value, body, 'input-sales', leader));
+  }
+});
+test('reply exact CAS/key/body is one write; lost response never retries; replay cannot become fresh authorization', async () => {
+  const {task, view} = question(); let count = 0;
+  const client = {request: async (operation, request) => {count++; assert.equal(operation, 'task.leader.reply');
+    return {taskId, requestId: request.path.requestId, receiptId: 'receipt-original', requestDigest: request.body.requestDigest,
+      replyDigest: leaderReplyDigest(taskId, request.path.requestId, request.body), acceptedRevision: task.revision + 1, replayed: false};}};
+  const original = await replyOnce(client, task, view, 'paid', 'original-key'); assert.equal(count, 1);
+  assert.equal(original.request.idempotencyKey, 'original-key'); assert.equal(original.request.body.expectedRevision, task.revision);
+  assertReplyReplay(original, {...original.receipt, replayed: true});
+  assert.throws(() => assertReplyReplay(original, {...original.receipt, acceptedRevision: 999, replayed: true}));
+  await assert.rejects(replyOnce({request: async () => {count++; throw Error('response_lost');}}, task, view, 'paid', 'original-key'));
+  assert.equal(count, 2);
+  await assert.rejects(replyOnce(client, {...task, revision: 999}, view, 'paid', 'new-key'));
+  assert.equal(count, 2);
+});
+test('publication allow checks full original evidence and business bytes, not a model description or mere checksum', () => {
+  const original = publication(); assert.equal(authorizeReport(original).targetId, 'local-report');
+  for (const mutate of [v => {v.view.pendingRequest.authorization.targetId = 'foreign'; rebind(v.view);},
+    v => {v.view.pendingRequest.authorization.artifactId = 'other'; rebind(v.view);},
+    v => {v.view.pendingRequest.authorization.acceptanceDigest = 'sha256:' + 'b'.repeat(64); rebind(v.view);},
+    v => {v.view.review.verdict = 'rework';}, v => {v.answer = 'cancelled';}, v => {v.content = encode({reports: []});},
+    v => {v.view.pendingRequest.authorization.operation = 'overwrite'; rebind(v.view);}]) {
+    const value = publication(); mutate(value); assert.throws(() => authorizeReport(value));
+  }
+});
+test('verification evidence must bind the original HTTP reply receipt, task, policy and downloaded delivery', () => {
+  const pub = publication(), originalReply = reply();
+  const answered = {receipt: {requestId: originalReply.requestId, requestDigest: originalReply.requestDigest, replyDigest: originalReply.replyDigest}};
+  const value = {profile: 'task-verification-command/v1', binding: {planDigest: sha, policyDigest: hash(policy), inputDigest: sha, reservationDigest: sha},
+    executionId: 'original-verifier', delivery: {digest: pub.artifact.digest, bytes: pub.artifact.bytes},
+    assertions: [{name: 'leader-regions', actual: {report: reportFor('paid'), reply: originalReply}}]};
+  const checkValue = (value, answer = 'paid') => verifyAcceptance({taskId, planDigest: sha, delivery: {artifact: pub.artifact, content: pub.content},
+    proofs: [{artifact: {id: 'original-evidence', taskId, kind: 'evidence', digest: hash(value)}, content: encode(value)}], answered, answer});
+  assert.equal(checkValue(value).executionId, 'original-verifier');
+  for (const mutate of [v => {v.assertions[0].actual.reply.requestId = 'foreign';}, v => {v.binding.policyDigest = sha;},
+    v => {v.delivery.digest = sha;}, v => {v.assertions[0].actual.report = reportFor('cancelled');}]) {
+    const next = structuredClone(value); mutate(next); assert.throws(() => checkValue(next));
+  }
+});
+test('actual prepared work package includes full Task, shared plan, node and replies without asserting Agent consumption', () => {
+  const original = {...ticket(), executionType: 'agent', inputDigest: sha, reservationDigest: sha, workerId: 'worker-a', nodeId: 'east', role: 'author'};
+  Object.assign(original.input, {task: taskBody('input-sales', 60000), plan: planCase().plan, node: {id: 'east', goal: '原需求'}});
+  const prompt = JSON.stringify(original.input), observed = workPackage(original, {prompt});
+  assert.equal(observed.agentConsumptionProven, false); assert.equal(observed.promptDigest, digest(Buffer.from(prompt)));
+  for (const field of ['task', 'plan', 'node', 'leaderReplies']) {
+    const value = {...original.input}; delete value[field]; assert.throws(() => workPackage(original, {prompt: JSON.stringify(value)}));
+  }
+  assert.throws(() => authorOverlap([{role: 'author', nodeId: 'east', workerId: 'a', executionId: 'a', startedAt: '2026-01-01T00:00:01Z', agentExitedAt: '2026-01-01T00:00:02Z'},
+    {role: 'author', nodeId: 'west', workerId: 'b', executionId: 'b', startedAt: '2026-01-01T00:00:03Z', agentExitedAt: '2026-01-01T00:00:04Z'}]));
+});
+test('fixed Node checker reads real bounded files and rejects plausible wrong total and wrong source', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-leader-checker-')); t.after(() => fs.rmSync(root, {recursive: true}));
+  const requested = verificationRequest(ticket(), () => encode(data));
+  const frame = {profile: 'task-verification-command/v1', nonce: 'original-nonce', binding: {inputDigest: sha}, input: requested};
+  const reports = reportFor('paid').reports;
+  for (const report of reports) fs.writeFileSync(path.join(root, report.region + '.json'), encode(report), {mode: 0o600});
+  const run = async () => {
+    const child = spawn(process.execPath, [fileURLToPath(new URL('./checker.fixture.mjs', import.meta.url))], {cwd: root, env: {}, timeout: 5000, stdio: ['pipe', 'pipe', 'pipe']});
+    const chunks = []; child.stdout.on('data', chunk => chunks.push(chunk)); child.stderr.resume();
+    const done = new Promise((resolve, reject) => {child.on('error', reject); child.on('close', (code, signal) => resolve({code, signal, bytes: Buffer.concat(chunks)}));});
+    child.stdin.end(Buffer.concat([encode(frame), Buffer.from('\n')])); return done;
+  };
+  const first = await run(); assert.equal(first.code, 0); assert.equal(first.signal, null);
+  assert.deepEqual(JSON.parse(first.bytes).assertions[0].actual, {report: reportFor('paid'), reply: reply()});
+  fs.writeFileSync(path.join(root, 'west.json'), encode({...reports[1], netCents: 800})); assert.notEqual((await run()).code, 0);
+  assert.throws(() => checkRequest({...frame, input: {...requested, source: {...requested.source, digest: sha}}}, name => fs.readFileSync(path.join(root, name))));
+});
+test('read-only report target serves exact bytes and rejects unknown names, symlinks and foreign origin', async t => {
+  const parent = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'marshal-leader-report-')), root = path.join(parent, 'reports');
+  fs.mkdirSync(root, {mode: 0o700}); t.after(() => fs.rmSync(parent, {recursive: true}));
+  const bytes = encode(reportFor('paid')), name = `${taskId}-${digest(bytes).slice(7)}.json`;
+  fs.writeFileSync(path.join(root, name), bytes, {mode: 0o600});
+  const server = await startReportServer(root); t.after(() => server.close());
+  assert.deepEqual(await consumePublished(server.url, name, Date.now() + 5000), bytes);
+  for (const [url, options] of [[server.url + name, {method: 'POST'}], [server.url + '../private', {}],
+    [server.url + name, {headers: {Origin: 'http://foreign.invalid'}}]]) assert.equal((await fetch(url, options)).status, 404);
+  fs.unlinkSync(path.join(root, name)); fs.symlinkSync(path.join(parent, 'missing'), path.join(root, name));
+  await assert.rejects(consumePublished(server.url, name, Date.now() + 5000));
+});
