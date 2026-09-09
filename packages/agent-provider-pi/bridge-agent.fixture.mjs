@@ -31,7 +31,7 @@ const context = {cwd: process.cwd(), sessionManager: {getSessionId: () => 'nativ
     select(title, options, {signal} = {}) {return dialog('select', title, options, signal);},
   }};
 function dialog(method, title, options, signal) {
-  const id = 'ui-' + ++sequence;
+  const id = (mode === 'business-opaque-ids' ? 'ui:opaque|' : 'ui-') + ++sequence;
   return new Promise(resolve => {const abort = () => {questions.delete(id); resolve(undefined);};
     questions.set(id, value => {signal?.removeEventListener('abort', abort); resolve(value);});
     signal?.addEventListener('abort', abort, {once: true});
@@ -84,7 +84,8 @@ async function prompt(request) {
   }
   if (mode.startsWith('custom')) await tool('custom', {}, 'custom-one');
   else if (mode.startsWith('business')) {
-    const reply = await tool('marshal_ask_user', {prompt: '请确定本次业务区域', kind: 'select', options: ['north', 'south']}, 'question-one');
+    const reply = await tool('marshal_ask_user', {prompt: '请确定本次业务区域', kind: 'select', options: ['north', 'south']},
+      mode === 'business-opaque-ids' ? 'call_deterministic_call|fc_deterministic_item' : 'question-one');
     if (reply) await tool('write', {path: 'output.txt', content: reply.content[0].text}, 'write-answer');
   }
   else if (mode === 'shell' || mode === 'shell-child' || mode === 'shell-timeout' || mode === 'shell-hang') {

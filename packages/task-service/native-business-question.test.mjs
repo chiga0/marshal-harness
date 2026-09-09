@@ -27,7 +27,7 @@ test('real HTTP/SQLite/Pi native tools/owned custody/independent command deliver
   const services = [], observed = [];
   t.after(async () => {for (const service of services) await service.shutdown(); for (const handle of observed) await handle.stop();
     fs.rmSync(parent, {recursive: true, force: true});});
-  const providers = new Map([['planner', 'business-plan'], ['pi-code', 'business'], ['pi-docs', 'normal']].map(([id, mode]) => {
+  const providers = new Map([['planner', 'business-plan'], ['pi-code', 'business-opaque-ids'], ['pi-docs', 'normal']].map(([id, mode]) => {
     const native = createPiProvider({id, executable: process.execPath, args: [peer, mode], bridge: {sdkEntry},
       custodyProfile: {id: 'native-file-fixture-v1', scope: 'inherited-process-group', eligible: true}});
     return [id, {...native, start(input) {const handle = native.start(input); observed.push(handle); return handle;}}];

@@ -77,6 +77,30 @@ function fixture(t, {consumer = true, validator = () => true, proposalValue = pr
   }; return f;
 }
 
+test('native correlation IDs preserve opaque bytes, reject malformed bounds, and remain bound to the original question', async t => {
+  const f = fixture(t), taskId = await f.start(), code = f.take('code'); f.started(code);
+  const before = f.read(tx => tx.head(taskId));
+  for (const [field, limit] of [['nativeRequestId', 256], ['toolCallId', 128]]) {
+    for (const invalid of ['', ' ', null, 12, '\u0000', '\ud800', 'x'.repeat(limit + 1), '界'.repeat(Math.floor(limit / 3) + 1)]) {
+      assert.throws(() => f.execution.registerQuestion(code, question({[field]: invalid})), error => error.code === 'invalid_request');
+      assert.deepEqual(f.read(tx => tx.head(taskId)), before);
+    }
+  }
+  const request = question({nativeRequestId: 'ui:opaque|' + 'x'.repeat(246),
+    toolCallId: 'call_deterministic_call|fc_deterministic_item'.padEnd(128, 'x')});
+  assert.equal(Buffer.byteLength(request.nativeRequestId), 256);
+  assert.equal(Buffer.byteLength(request.toolCallId), 128);
+  const q = f.execution.registerQuestion(code, request), head = f.read(tx => tx.head(taskId));
+  const fact = f.read(tx => JSON.parse(tx.projection('interaction', q.questionId).bytes.toString('utf8')));
+  assert.equal(fact.nativeRequestId, request.nativeRequestId); assert.equal(fact.toolCallId, request.toolCallId);
+  assert.deepEqual(f.execution.registerQuestion(code, request), q);
+  assert.throws(() => f.execution.registerQuestion(code, {...request, toolCallId: request.toolCallId.replace('|', ':')}), error => error.code === 'state_conflict');
+  assert.deepEqual(f.read(tx => tx.head(taskId)), head);
+  const answer = await f.answer(taskId, q);
+  await assert.rejects(f.call({...answer, questionId: 'question|foreign'}), error => error.code === 'invalid_request');
+  assert.deepEqual(f.read(tx => tx.head(taskId)), head);
+});
+
 test('same Task/Worker answer is durable, exact-once dispatched/ACKed and reaches independent verification input', async t => {
   const f = fixture(t), taskId = await f.start(), code = f.take('code'); f.started(code);
   const originalInput = code.inputDigest, originalDeadline = code.deadline;
