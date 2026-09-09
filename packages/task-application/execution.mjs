@@ -1,4 +1,4 @@
-import {encode, digest, makeEvent, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
+import {encode, digest, makeEvent, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
 import {clone, reject, terminal, nextRevision, isText} from './model.mjs';
 import {TaskCleanup} from './cleanup.mjs';
 
@@ -21,7 +21,7 @@ export class TaskExecution {
       reject('invalid_execution_config', 503);
     this.app = application; this.maxWorkers = maxWorkers;
     const format = application.store.info?.().format, v5 = format === UNPERMITTED_FORMAT, v6 = format === WORKER_CANCELLATION_FORMAT;
-    const requiresProtocol = v5 || v6 && startProtocol !== null;
+    const requiresProtocol = v5 || (v6 || format === LEADER_FORMAT) && startProtocol !== null;
     if (requiresProtocol ? hash(startProtocol) !== hash(START_PROTOCOL) : startProtocol !== null) reject('invalid_execution_config', 503);
     this.startProtocol = startProtocol === null ? null : START_PROTOCOL;
     this.providers = new Set(providerIds); this.defaultProvider = defaultProvider;
@@ -170,6 +170,12 @@ export class TaskExecution {
       // Preserve an earlier user cancel/terminal conclusion and make repeated
       // reports append-free. Old completed Workers cannot fail a later phase.
       if (this.app.repair.current(task, ticket) && live(record.worker) && task.task.status !== 'cancelling' && !terminal.has(task.task.status)) {
+        if (task.leader && !cleanupUnknown && !record.stopIntent && !task.cancelIntent && this.app.now() < ticket.deadline) {
+          record.failureCode = reasonCode; task.task.revision = nextRevision(task.task.revision);
+          const source = this.app.save(tx, task, 'task.worker-failure-fenced', {workerId: ticket.workerId, reasonCode});
+          this.putWorker(tx, row, record, source);
+          return {taskId: task.task.id, status: task.task.status, targeted: true};
+        }
         task.task.status = 'cancelling'; task.failureCode = reasonCode;
         task.task.revision = nextRevision(task.task.revision);
         const closedQuestions = this.app.runtimeQuestions.close(task);
@@ -184,6 +190,10 @@ export class TaskExecution {
   // null means a current dependency/capacity/fence prevents launch. A ticket is
   // returned exactly once: reservation + command UNKNOWN commit before spawn.
   nextWork(commandId, expectedRevision) {
+    if (this.app.leader?.port) {
+      const typed = this.app.transaction(false, tx => {const command = tx.command(commandId); return command ? decode({bytes: command.payload}).action : null;});
+      if (['leader', 'review', 'publication', 'postverify'].includes(typed)) return this.app.leader.nextWork(commandId, expectedRevision);
+    }
     return this.app.transaction(true, tx => {
       const command = tx.command(commandId);
       if (!command || command.revision !== BigInt(expectedRevision) || command.status !== 'pending' ||
@@ -218,7 +228,7 @@ export class TaskExecution {
       if (task.attempts >= budget.maxAttempts) reject('capacity_exceeded', 429);
       const id = this.app.newId('worker'), at = new Date(this.app.now()).toISOString();
       const dependencies = new Set((task.plan?.edges ?? []).filter(edge => edge.to === node.id).map(edge => edge.from));
-      const upstreamWorkers = task.repair ? this.app.repair.selected(tx, task, [...dependencies]) : taskWorkers;
+      const upstreamWorkers = task.repair || task.leader ? this.app.repair.selected(tx, task, [...dependencies]) : taskWorkers;
       const input = {task: task.input, inputArtifacts: task.inputArtifacts ?? [], node, plan: task.plan, upstream: upstreamWorkers
         .filter(({record}) => dependencies.has(record.worker.nodeId) && record.ticket.planDigest === task.approved?.planDigest &&
           record.worker.status === 'completed' && record.resultRef !== null)
@@ -226,7 +236,8 @@ export class TaskExecution {
           if (task.verification) {
             if (!record.candidate) reject('candidate_manifest_conflict', 422);
             return {workerId: record.worker.id, nodeId: record.worker.nodeId, result: clone(record.candidate),
-              ...(task.runtimeQuestions ? {interactionRefs: clone(record.interactionRefs ?? [])} : {})};
+              ...(task.runtimeQuestions ? {interactionRefs: clone(record.interactionRefs ?? [])} : {}),
+              ...(task.leader ? {leaderReplyRefs: clone(record.leaderReplyRefs ?? [])} : {})};
           }
           const entry = tx.projection('attempt', record.resultRef);
           if (!entry || digest(entry.bytes) !== record.resultDigest) reject('application_unavailable', 503);
@@ -241,22 +252,40 @@ export class TaskExecution {
       }
       if (verification) {
         if (taskWorkers.some(({record}) => live(record.worker))) return null;
-        const producers = task.repair ? this.app.repair.selected(tx, task) : taskWorkers.filter(({record}) => record.ticket.planDigest === task.approved.planDigest);
+        const producers = task.repair || task.leader ? this.app.repair.selected(tx, task) : taskWorkers.filter(({record}) => record.ticket.planDigest === task.approved.planDigest);
         if (producers.length !== task.plan.nodes.length - 1 || producers.some(({record}) => record.worker.status !== 'completed' || !record.candidate)) return null;
         input.verification = {binding: clone(task.verification), manifests: producers.map(({record}) => ({workerId: record.worker.id,
           nodeId: record.worker.nodeId, resultDigest: record.resultDigest, manifest: clone(record.candidate)})).sort((a, b) => a.nodeId < b.nodeId ? -1 : 1)};
         if (task.repair && task.runtimeQuestions) input.interactionRefs = this.app.runtimeQuestions.inherited(tx, task,
           producers.flatMap(({record}) => record.interactionRefs ?? []));
       }
-      const repair = task.repair ? this.app.repair.input(tx, task, node.id) : null;
+      const repair = task.repair || task.leader ? this.app.repair.input(tx, task, node.id) : null;
       if (repair) input.repair = repair;
+      if (task.leader) {
+        const replies = this.app.leader.replies(tx, task, node.id, input.upstream);
+        input.leaderReplyRefs = replies.refs; input.leaderReplies = replies.answers;
+        if (verification && (!task.leader.verifyRequested || !task.leader.review || task.leader.review.verdict !== 'accept' ||
+          task.leader.review.selectionDigest !== this.app.leader.selectionDigest(tx, task))) return null;
+      }
+      return this.reserve(tx, task, command, {node, input, providerId, executionType: verification ? 'verification' : 'agent'});
+    });
+  }
+  reserve(tx, task, command, {node, input, providerId, executionType}) {
+    const capacity = this.capacity(tx), taskWorkers = this.workers(tx, task), budget = task.approved ? task.plan.budget : task.limits;
+    const leader = executionType === 'leader', headroom = this.app.leader?.port ? 1 : 0;
+    const serviceUsed = leader ? capacity.value.active.length : capacity.value.active.filter(item => item.executionType !== 'leader').length;
+    const taskUsed = taskWorkers.filter(({record}) => live(record.worker) && (leader || record.ticket.executionType !== 'leader')).length;
+    if (capacity.value.active.length >= this.maxWorkers || serviceUsed >= this.maxWorkers - (leader ? 0 : headroom) ||
+      taskWorkers.filter(({record}) => live(record.worker)).length >= budget.maxWorkers || taskUsed >= budget.maxWorkers - (leader ? 0 : task.leader ? 1 : 0)) return null;
+    if (task.attempts >= budget.maxAttempts) reject('capacity_exceeded', 429);
+    const id = this.app.newId('worker'), at = new Date(this.app.now()).toISOString(), planning = executionType === 'agent' && node.id === 'planning';
       const frozen = {workerId: id, taskId: task.task.id, nodeId: node.id, role: node.role, providerId,
-        executionType: verification ? 'verification' : 'agent',
-        generation: this.app.owner.generation.toString(), commandId, inputDigest: hash(input),
+        executionType,
+        generation: this.app.owner.generation.toString(), commandId: command.id, inputDigest: hash(input),
         planDigest: task.approved?.planDigest ?? null,
         deadline: Math.min(Date.parse(task.task.deadlineAt), this.app.now() + 86400000), input,
-        ...(this.startProtocol ? {startProtocol: this.startProtocol} : {}),
-        ...(this.app.repair.port ? {repairId: task.activeRepair?.repairId ?? null} : {})};
+        ...(this.startProtocol && ['agent', 'verification'].includes(executionType) ? {startProtocol: this.startProtocol} : {}),
+        ...(this.app.repair.port || task.leader ? {repairId: task.activeRepair?.repairId ?? null} : {})};
       const ticket = {...frozen, reservationDigest: hash(frozen)};
       const {input: _input, ...identity} = ticket;
       const record = {ticket: identity, inputRef: this.app.newId('input'), worker: {id, taskId: task.task.id, nodeId: node.id, providerId, role: node.role,
@@ -264,9 +293,9 @@ export class TaskExecution {
         startedAt: null, finishedAt: null, lastObservedAt: at, progress: null, usage: usage()},
       executionId: null, cleanup: null, resultRef: null, resultDigest: null, progressSequence: 0};
       task.attempts++; task.workerIds ??= []; task.workerIds.push(id);
-      task.task.status = payload.action === 'plan' ? 'planning' : task.task.status === 'awaiting-answer' ? 'awaiting-answer' : 'running';
-      task.task.phase = payload.action === 'plan' ? 'planning' : 'execution';
-      if (payload.action === 'execute') {
+      task.task.status = planning ? 'planning' : task.task.status === 'awaiting-answer' ? 'awaiting-answer' : 'running';
+      task.task.phase = planning ? 'planning' : 'execution';
+      if (executionType === 'agent' && !planning || executionType === 'verification') {
         const state = task.nodes.find(state => state.id === node.id); state.status = 'running'; state.workerIds.push(id);
       }
       task.task.revision = nextRevision(task.task.revision);
@@ -277,10 +306,9 @@ export class TaskExecution {
       tx.putProjection('attempt', record.inputRef, 0, source, encode(input));
       this.putWorker(tx, null, record, source);
       tx.observeCommand(command.id, command.revision, 'unknown', source);
-      capacity.value.active.push({workerId: id, taskId: task.task.id, generation: frozen.generation});
+      capacity.value.active.push({workerId: id, taskId: task.task.id, generation: frozen.generation, ...(task.leader ? {executionType} : {})});
       this.putCapacity(tx, capacity.row, capacity.value);
       return clone(ticket);
-    });
   }
   mayStart(ticket) {
     return this.app.transaction(false, tx => {
@@ -342,6 +370,7 @@ export class TaskExecution {
     });
   }
   finish(ticket, result) {
+    if (['leader', 'review', 'publication', 'postverify'].includes(ticket.executionType)) return this.app.leader.finish(ticket, result);
     const verification = ticket.executionType === 'verification';
     // No files, checker, promises or depot writes inside the Store callback.
     const verified = verification && result?.type === 'verification' && (result.status === 'passed' || result.receipt !== undefined) ?
@@ -381,9 +410,15 @@ export class TaskExecution {
       record.worker.status = !clean ? 'unknown' : cancelled && !failedWorker ? 'cancelled' : success ? 'completed' : 'failed';
       record.worker.finishedAt = new Date(this.app.now()).toISOString(); record.worker.phase = 'terminal';
       record.resultRef = candidate === null ? null : this.app.newId('result');
-      record.resultDigest = candidate === null ? null : hash(task.runtimeQuestions ? {candidate, interactionRefs: record.interactionRefs} : candidate);
+      if (success && task.leader) {
+        const currentReplies = this.app.leader.replies(tx, task, ticket.nodeId, ticket.input.upstream);
+        if (hash(currentReplies.refs) !== hash(ticket.input.leaderReplyRefs)) reject('candidate_manifest_conflict', 422);
+        record.leaderReplyRefs = currentReplies.refs;
+      }
+      record.resultDigest = candidate === null ? null : hash(task.leader ? {candidate, interactionRefs: record.interactionRefs ?? [],
+        leaderReplyRefs: record.leaderReplyRefs ?? []} : task.runtimeQuestions ? {candidate, interactionRefs: record.interactionRefs} : candidate);
       if (!clean) { task.task.status = 'intervention'; task.task.code = 'cleanup_unconfirmed'; }
-      else if (!cancelled && !success && !terminal.has(task.task.status)) {
+      else if (!cancelled && !success && !terminal.has(task.task.status) && !task.leader) {
         task.task.status = 'cancelling'; task.failureCode = 'worker_failed';
       }
       if (ticket.role === 'planner' && ticket.planDigest === null && success) {
@@ -423,7 +458,14 @@ export class TaskExecution {
         task.decision = {id: decision.id, digest: hash(decision)};
         task.acceptance = {status: success ? 'passed' : 'failed', evidenceIds: artifacts.filter(item => item.kind === 'evidence').map(item => item.id), digest: task.decision.digest};
         task.task.artifactIds = artifacts.map(item => item.id);
-        if (success) { task.task.status = 'completed'; task.task.phase = 'terminal'; }
+        if (success) { task.task.status = task.leader ? 'running' : 'completed'; task.task.phase = task.leader ? 'delivery' : 'terminal'; }
+      }
+      const wakeLeader = task.leader && clean && !cancelled && !terminal.has(task.task.status) &&
+        (verification || !success || task.plan.nodes.filter(node => node.id !== task.verification.nodeId).every(node =>
+          task.nodes.find(state => state.id === node.id).status === 'completed'));
+      if (wakeLeader) {
+        task.task.status = 'running'; task.leader.stage = verification ? 'delivery' : 'work';
+        if (!task.leader.activeCallId) this.app.leader.prepareObligation(task);
       }
       const source = this.app.save(tx, task, 'worker.finished', {workerId: ticket.workerId,
         status: record.worker.status, resultDigest: record.resultDigest, decisionDigest: task.decision?.digest ?? null});
@@ -443,6 +485,7 @@ export class TaskExecution {
         this.putCapacity(tx, capacity.row, capacity.value);
       }
       this.app.workerCancellation.settle(tx, task, record, source);
+      if (wakeLeader) this.app.leader.obligation(tx, task, source, verification ? 'verification-finished' : success ? 'selection-ready' : 'execution-failed', [ticket.nodeId]);
       return clone(record.worker);
     });
   }

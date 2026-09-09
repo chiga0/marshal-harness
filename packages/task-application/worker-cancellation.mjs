@@ -1,4 +1,4 @@
-import {WORKER_CANCELLATION_FORMAT, encode, digest} from '../task-store/store.mjs';
+import {WORKER_CANCELLATION_FORMAT, LEADER_FORMAT, encode, digest} from '../task-store/store.mjs';
 import {affectedNodes} from './graph.mjs';
 import {clone, nextRevision, reject, terminal} from './model.mjs';
 
@@ -11,7 +11,7 @@ const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,12
 // A target-specific branch of the SAME execution/cleanup reducer. No handles,
 // callbacks, replacement attempts, generic unknown-operation rewrite or SQL side ledger.
 export class TaskWorkerCancellation {
-  constructor(app) {this.app = app; this.enabled = app.store.info?.().format === WORKER_CANCELLATION_FORMAT;}
+  constructor(app) {this.app = app; this.enabled = [WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(app.store.info?.().format);}
   shape(request) {
     const body = request.body;
     if (!id(request.workerId) || !body || ![Object.prototype, null].includes(Object.getPrototypeOf(body)) ||
