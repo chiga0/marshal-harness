@@ -6,11 +6,11 @@ import { DatabaseSync } from 'node:sqlite';
 
 // Internal storage, not a Task reducer, execution supervisor, or public SQL API.
 export const FORMAT = 'marshal-node-task-sqlite/v1';
+export const CUSTODY_FORMAT = 'marshal-node-task-sqlite/v2-custody';
 // A maximum page of observed commands needs three validated accesses per row.
 // Leave room for its enclosing read/CAS while keeping aggregate work bounded.
 export const LIMITS = Object.freeze({ recordBytes: 1 << 20, transactionBytes: 8 << 20, records: 512, page: 100, transactionMs: 5000 });
 const DATABASE = 'authority.sqlite';
-const FORMAT_BYTES = Buffer.from(FORMAT + '\n');
 const APP_ID = 1297305934;
 const MAX_INT = (1n << 63n) - 1n;
 const KINDS = new Set(['task', 'node', 'attempt', 'budget', 'interaction', 'artifact', 'provider', 'operation']);
@@ -119,7 +119,8 @@ function page(after, limit) { check(typeof after === 'string' && (after === '' |
 
 function sameFile(a, b) { return a.dev === b.dev && a.ino === b.ino && a.mode === b.mode && a.uid === b.uid && a.nlink === b.nlink; }
 class PrivateFiles {
-  constructor(root, create) {
+  constructor(root, create, format) {
+    this.formatBytes = Buffer.from(format + '\n');
     this.root = root; this.fds = []; this.registered = false;
     try {
       check(typeof root === 'string' && path.isAbsolute(root) && path.normalize(root) === root && root !== path.parse(root).root && !root.split(path.sep).includes('.marshal'));
@@ -141,7 +142,12 @@ class PrivateFiles {
       // database is lost, Create must not mistake its directory for a new root.
       this.format = path.join(root, 'format');
       this.formatFd = this.open(this.format, fs.constants.O_RDWR | fs.constants.O_NOFOLLOW | (create ? fs.constants.O_CREAT | fs.constants.O_EXCL : 0), 0o600);
-      if (create) { fs.writeFileSync(this.formatFd, FORMAT_BYTES); fs.fsyncSync(this.formatFd); }
+      if (create) { fs.writeFileSync(this.formatFd, this.formatBytes); fs.fsyncSync(this.formatFd); }
+      // Reject a different reader profile before opening SQLite or claiming an
+      // owner. No automatic upgrade or reconstruction of old custody bindings.
+      const sentinel = Buffer.alloc(this.formatBytes.length + 1);
+      check(fs.readSync(this.formatFd, sentinel, 0, sentinel.length, 0) === this.formatBytes.length &&
+        sentinel.subarray(0, this.formatBytes.length).equals(this.formatBytes), 'unavailable');
       this.database = path.join(root, DATABASE);
       this.dbFd = this.open(this.database, fs.constants.O_RDWR | fs.constants.O_NOFOLLOW | (create ? fs.constants.O_CREAT | fs.constants.O_EXCL : 0), 0o600);
       this.check();
@@ -154,9 +160,9 @@ class PrivateFiles {
   check() {
     this.checkParent();
     check(sameFile(fs.fstatSync(this.rootFd), fs.lstatSync(this.root)) && fs.realpathSync(this.root) === this.root, 'unavailable');
-    const format = fs.fstatSync(this.formatFd), marker = Buffer.alloc(FORMAT_BYTES.length);
+    const format = fs.fstatSync(this.formatFd), marker = Buffer.alloc(this.formatBytes.length);
     check(sameFile(format, fs.lstatSync(this.format)) && format.isFile() && format.uid === process.getuid() && (format.mode & 0o7777) === 0o600 && format.nlink === 1 && format.size === marker.length, 'unavailable');
-    check(fs.readSync(this.formatFd, marker, 0, marker.length, 0) === marker.length && marker.equals(FORMAT_BYTES), 'unavailable');
+    check(fs.readSync(this.formatFd, marker, 0, marker.length, 0) === marker.length && marker.equals(this.formatBytes), 'unavailable');
     const db = fs.fstatSync(this.dbFd);
     check(sameFile(db, fs.lstatSync(this.database)), 'unavailable');
     for (const suffix of ['', '-wal', '-shm', '-journal']) {
@@ -201,11 +207,12 @@ export class Store {
   static #open(root, options, create) {
     const [major, minor] = process.versions.node.split('.').map(Number);
     check(['darwin', 'linux'].includes(process.platform) && major === 24 && minor >= 15, 'unsupported');
-    check(closed(options, ['format', 'clock', 'monotonic', 'syncDirectory']) && (options.format === undefined || options.format === FORMAT));
+    check(closed(options, ['format', 'clock', 'monotonic', 'syncDirectory']) && (options.format === undefined || [FORMAT, CUSTODY_FORMAT].includes(options.format)));
+    const format = options.format ?? FORMAT, version = format === CUSTODY_FORMAT ? 2 : 1;
     for (const key of ['clock', 'monotonic', 'syncDirectory']) check(options[key] === undefined || typeof options[key] === 'function');
     let files, db;
     try {
-      files = new PrivateFiles(root, create);
+      files = new PrivateFiles(root, create, format);
       db = new DatabaseSync(files.database, { timeout: 100, enableForeignKeyConstraints: true, allowExtension: false, defensive: true, readBigInts: true });
       // One connection holds SQLite's physical lock until close, including
       // between short transactions. This says nothing about live Workers.
@@ -214,9 +221,10 @@ export class Store {
       db.exec('BEGIN EXCLUSIVE');
       if (create) {
         db.exec(SCHEMA);
-        db.prepare('INSERT INTO metadata VALUES(1,?,?,?,?,?,?)').run(FORMAT, 1, crypto.randomUUID(), 0, '', 0);
+        db.exec('PRAGMA user_version=' + version);
+        db.prepare('INSERT INTO metadata VALUES(1,?,?,?,?,?,?)').run(format, version, crypto.randomUUID(), 0, '', 0);
       }
-      check(db.prepare('PRAGMA application_id').get().application_id === BigInt(APP_ID) && db.prepare('PRAGMA user_version').get().user_version === 1n, 'unavailable');
+      check(db.prepare('PRAGMA application_id').get().application_id === BigInt(APP_ID) && db.prepare('PRAGMA user_version').get().user_version === BigInt(version), 'unavailable');
       check(db.prepare('PRAGMA journal_mode').get().journal_mode === 'wal' && db.prepare('PRAGMA locking_mode').get().locking_mode === 'exclusive', 'unavailable');
       check(db.prepare('PRAGMA quick_check(1)').get().quick_check === 'ok', 'unavailable');
       const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all().map(row => row.name);
@@ -225,7 +233,7 @@ export class Store {
       check(encode(schema).equals(encode(EXPECTED_SCHEMA)), 'unavailable');
       check(db.prepare('PRAGMA foreign_key_check').all().length === 0, 'unavailable');
       const metadata = db.prepare('SELECT * FROM metadata WHERE singleton=1').get();
-      check(metadata?.format === FORMAT && metadata.version === 1n && id(metadata.store_id) && metadata.generation >= 0n && metadata.generation <= MAX_INT, 'unavailable');
+      check(metadata?.format === format && metadata.version === BigInt(version) && id(metadata.store_id) && metadata.generation >= 0n && metadata.generation <= MAX_INT, 'unavailable');
       check(metadata.generation === 0n ? metadata.instance_id === '' && metadata.expires_at === 0n : id(metadata.instance_id) && metadata.expires_at > 0n && metadata.expires_at <= BigInt(Number.MAX_SAFE_INTEGER), 'unavailable');
       files.check(); db.exec('COMMIT'); files.sync(options.syncDirectory);
       return new Store(INTERNAL, db, files, options);
@@ -244,6 +252,23 @@ export class Store {
   info() {
     try { this.#enter(); const row = this.#metadata(); return Object.freeze({ format: row.format, storeId: row.store_id, generation: row.generation }); }
     catch (error) { throw normalize(error); }
+  }
+  // Narrow startup inspection while THIS connection holds the physical writer
+  // lock but before a new logical owner exists. Only the v2 recovery consumer
+  // uses this read-only snapshot; no Task mutation or owner token is returned.
+  inspectRecovery(callback) {
+    this.#enter(); let tx;
+    try {
+      check(this.#active === null && this.#metadata().format === CUSTODY_FORMAT && typeof callback === 'function', 'owner');
+      check(Object.prototype.toString.call(callback) !== '[object AsyncFunction]', 'async-transaction');
+      const until = this.#monotonic() + LIMITS.transactionMs;
+      this.#transaction = true; this.#db.exec('BEGIN');
+      tx = new Transaction(this.#db, null, false, () => check(this.#monotonic() <= until, 'deadline')); this.#currentTx = tx;
+      const value = callback(tx);
+      check(!value || typeof value.then !== 'function', 'async-transaction');
+      tx.finish(); this.#files.check(); this.#db.exec('COMMIT'); return value;
+    } catch (error) { this.#rollback(); throw normalize(error); }
+    finally { tx?.expire(); this.#currentTx = null; this.#transaction = false; }
   }
   #owner(owner) {
     check(this.#active !== null && closed(owner, ['storeId', 'generation', 'instanceId', 'expiresAt']), 'owner');

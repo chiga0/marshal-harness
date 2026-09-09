@@ -12,6 +12,7 @@ import * as shell from './fixtures/sdk/utils/shell.js';
 import {createFileBusiness, fileLayoutDigest} from '../task-business/index.mjs';
 import {ArtifactDepot} from '../task-artifacts/depot.mjs';
 import {digest, encode} from '../task-store/store.mjs';
+import {launchProtocol} from '../agent-runtime/index.mjs';
 
 const fixture = fileURLToPath(new URL('./bridge-agent.fixture.mjs', import.meta.url));
 // Opt-in repeat with an installed native SDK exercises the same extension and
@@ -25,6 +26,24 @@ function directory(t) {
 }
 const options = (t, extra = {}) => ({cwd: directory(t), deadline: Date.now() + 15000, prompt: 'approved native fixture', ...extra});
 const clean = result => { assert.equal(result.cleanup?.cleaned, true); assert.equal(result.cleanup.scope, 'inherited-process-group'); };
+
+test('custody Pi denied shell adds no obligation; allowed shell records before effect and SQL failure refuses', {timeout: 15000}, async t => {
+  for (const mode of ['deny', 'allow', 'sql-failure']) {
+    const input = options(t), order = [];
+    input.executionContext = {
+      launch: (options, callbacks) => launchProtocol({...options, createClient: callbacks.createClient}),
+      extraScope(code) { order.push('durable'); assert.equal(code, 'pi_shell_extra_scope');
+        assert.equal(fs.existsSync(path.join(input.cwd, 'output.txt')), false);
+        if (mode === 'sql-failure') throw Error('fixture rejected transaction'); },
+    };
+    input.onPermission = request => { order.push('policy'); assert.deepEqual(order, ['policy']);
+      return mode === 'deny' ? {outcome: {outcome: 'cancelled'}} : allow(request); };
+    const handle = provider('shell').start(input); t.after(() => handle.stop());
+    const result = await handle.completion; clean(result);
+    assert.deepEqual(order, mode === 'deny' ? ['policy'] : ['policy', 'durable']);
+    assert.equal(fs.existsSync(path.join(input.cwd, 'output.txt')), mode === 'allow');
+  }
+});
 
 test('actual extension wrapper prompts final immutable arguments and preserves originally active tools', async t => {
   const cwd = directory(t), handlers = new Map(), tools = new Map(), active = ['write', 'custom']; let observed, reply;
@@ -124,6 +143,49 @@ test('missing/foreign bridge and bypassed native wrapper cannot manufacture perm
     else { clean(result); if (mode === 'no-bridge') assert.notEqual(result.status, 'completed'); }
     assert.equal(fs.existsSync(path.join(input.cwd, 'output.txt')), false);
   }
+});
+
+test('legacy custom refusal needs exact unexecuted proof; custody retains its earlier unknown obligation', {timeout: 15000}, async t => {
+  for (const custody of [false, true]) {
+    const durable = [], input = options(t, {onPermission: allow});
+    if (custody) input.executionContext = {
+      launch: (options, callbacks) => launchProtocol({...options, createClient: callbacks.createClient}),
+      extraScope(code) { durable.push(code); },
+    };
+    const handle = provider('custom').start(input); t.after(() => handle.stop());
+    const result = await handle.completion;
+    assert.equal(fs.existsSync(path.join(input.cwd, 'output.txt')), false);
+    if (!custody) { clean(result); assert.equal(result.status, 'completed'); assert.deepEqual(durable, []); }
+    else {
+      assert.equal(result.status, 'unknown'); assert.equal(result.reason, 'pi_execution_scope_unproven');
+      assert.equal(result.cleanup, null); assert.equal(result.runtimeCleanup.cleaned, true);
+      assert.deepEqual(durable, ['pi_tool_scope_unproven']);
+    }
+  }
+  for (const mode of ['custom-missing-block', 'custom-foreign-block', 'custom-success-end']) {
+    const input = options(t), handle = provider(mode).start(input); t.after(() => handle.stop());
+    const result = await handle.completion;
+    assert.equal(result.status, 'unknown', mode); assert.equal(result.cleanup, null, mode);
+    assert.equal(result.runtimeCleanup.cleaned, true, mode);
+    assert.equal(fs.existsSync(path.join(input.cwd, 'output.txt')), false, mode);
+  }
+});
+
+test('custody persists unknown custom scope before a late refusal can be observed', {timeout: 10000}, async t => {
+  const durable = []; let observe; const entered = new Promise(resolve => { observe = resolve; });
+  const input = options(t, {
+    executionContext: {
+      launch: (options, callbacks) => launchProtocol({...options, createClient: callbacks.createClient}),
+      extraScope(code) { durable.push(code); },
+    },
+    onProgress(event) { if (event.tool?.id === 'custom-one') { assert.deepEqual(durable, ['pi_tool_scope_unproven']); observe(); } },
+  });
+  const handle = provider('custom-await-block').start(input); t.after(() => handle.stop()); await entered;
+  const result = await handle.stop();
+  // An interrupted call may conservatively report the same obligation again
+  // at terminal cleanup; the Store deduplicates its scope code, never erases it.
+  assert.deepEqual([...new Set(durable)], ['pi_tool_scope_unproven']); assert.equal(result.status, 'unknown');
+  assert.equal(result.cleanup, null); assert.equal(result.runtimeCleanup.cleaned, true);
 });
 
 test('selected native definition is safe when schema rejection or cancellation wins before execute', {timeout: 12000}, async t => {

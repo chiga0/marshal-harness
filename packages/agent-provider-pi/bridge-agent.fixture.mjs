@@ -10,6 +10,10 @@ const api = {on: (name, fn) => handlers.set(name, fn), registerTool: tool => reg
 const context = {cwd: process.cwd(), sessionManager: {getSessionId: () => 'native-session', getSessionFile: () => undefined},
   ui: {notify(message) {
       if (mode === 'bad-nonce') { const value = JSON.parse(message); value.nonce = 'a'.repeat(64); message = JSON.stringify(value); }
+      if (mode === 'custom-missing-block' && JSON.parse(message).type === 'blocked') return;
+      if (mode === 'custom-foreign-block' && JSON.parse(message).type === 'blocked') {
+        const value = JSON.parse(message); value.toolCallId = 'foreign-call'; message = JSON.stringify(value);
+      }
       send({type: 'extension_ui_request', id: 'ui-' + ++sequence, method: 'notify', message}); },
     confirm(title, message, {signal} = {}) {
       const id = 'ui-' + ++sequence;
@@ -32,12 +36,17 @@ async function tool(name, input, callId) {
   last = {name, callId};
   await handlers.get('tool_execution_start')?.({toolName: name, toolCallId: callId, args: input}, context);
   send({type: 'tool_execution_start', toolName: name, toolCallId: callId, args: input});
+  if (mode === 'custom-await-block') await new Promise(resolve => controller.signal.addEventListener('abort', resolve, {once: true}));
   if (mode === 'bypass' || mode === 'bypass-error') {
     await handlers.get('tool_execution_end')?.({toolName: name, toolCallId: callId, isError: mode === 'bypass-error'}, context);
     send({type: 'tool_execution_end', toolName: name, toolCallId: callId, isError: mode === 'bypass-error'}); return;
   }
   const event = {toolName: name, toolCallId: callId, input}, blocked = await handlers.get('tool_call')(event, context);
   let failed = blocked?.block === true;
+  if (mode === 'custom-success-end') {
+    await handlers.get('tool_execution_end')?.({toolName: name, toolCallId: callId, isError: false}, context);
+    send({type: 'tool_execution_end', toolName: name, toolCallId: callId, isError: false}); return;
+  }
   if (!failed) {
     try { const tool = registered.get(name); input = tool.prepareArguments(input);
       if (mode === 'invalid-arguments') throw Error('fixture schema rejects missing required content');
@@ -50,7 +59,7 @@ async function tool(name, input, callId) {
 }
 async function prompt(request) {
   response(request); controller = new AbortController(); send({type: 'agent_start'});
-  if (mode === 'custom') await tool('custom', {}, 'custom-one');
+  if (mode.startsWith('custom')) await tool('custom', {}, 'custom-one');
   else if (mode === 'shell' || mode === 'shell-child' || mode === 'shell-timeout' || mode === 'shell-hang') {
     const command = mode === 'shell' ? "printf 'actual-shell-output' > output.txt" :
       mode === 'shell-hang' ? "printf '%s' \"$$\" > shell.pid; trap '' TERM; while :; do sleep 1; done" :

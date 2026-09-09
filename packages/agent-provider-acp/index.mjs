@@ -27,17 +27,30 @@ function bounded(callback, value, signal) {
 }
 
 /** Trusted composition only; no brand switch, ambient env copy or Task authority. */
-export function createAcpProvider({id, executable, args = [], env = {}} = {}) {
+export function createAcpProvider({id, executable, args = [], env = {}, custodyProfile} = {}) {
   if (!text(id, 128) || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id) || !text(executable, 8192) || !path.isAbsolute(executable) ||
     !Array.isArray(args) || args.length > 128 || args.some(value => !text(value, 32768)) || !object(env) || Object.keys(env).length > 128 ||
     Object.entries(env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || !text(value, 65536))) throw error('provider_invalid_configuration');
   const config = structuredClone({executable, args, env});
+  if (custodyProfile !== undefined && (!object(custodyProfile) || Object.keys(custodyProfile).sort().join(',') !== 'eligible,id,scope' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(custodyProfile.id) || custodyProfile.scope !== 'inherited-process-group' ||
+      typeof custodyProfile.eligible !== 'boolean')) throw error('provider_invalid_configuration');
   if (Buffer.byteLength(JSON.stringify(config)) > 100 * 1024) throw error('provider_invalid_configuration');
-  function start({cwd, deadline, prompt, onProgress, onPermission} = {}) {
+  function start({cwd, deadline, prompt, onProgress, onPermission, executionContext} = {}) {
     if (!text(cwd, 8192) || !path.isAbsolute(cwd) || !Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline - Date.now() > 86400000 ||
       !text(prompt, 256 * 1024) || !prompt.trim() || onProgress !== undefined && typeof onProgress !== 'function' ||
       onPermission !== undefined && typeof onPermission !== 'function') throw error('provider_invalid_input');
     let runtime, sessionId = null, stopping = false, settled = false, outputText = '', outputBytes = 0, updates = 0, updateFailure;
+    const toolCalls = new Map();
+    function toolState(id) {
+      if (!text(id, 128) || !id) throw error('provider_invalid_progress');
+      if (!toolCalls.has(id)) {
+        if (toolCalls.size >= MAX_UPDATES) throw error('provider_progress_limit');
+        toolCalls.set(id, {seenCall: false, permissionSeen: false, started: false, terminal: false,
+          reused: false, denied: false, kind: null});
+      }
+      return toolCalls.get(id);
+    }
     let resolveStarted; const started = new Promise(resolve => { resolveStarted = resolve; });
     const observation = new AbortController();
     let progress = {phase: 'starting', observedAt: new Date().toISOString(), tool: null};
@@ -56,12 +69,25 @@ export function createAcpProvider({id, executable, args = [], env = {}} = {}) {
         if (!text(item.content.text, MAX_OUTPUT_TEXT_BYTES) || outputBytes + Buffer.byteLength(item.content.text) > MAX_OUTPUT_TEXT_BYTES) throw error('provider_output_limit');
         outputText += item.content.text; outputBytes += Buffer.byteLength(item.content.text);
       } else if (['tool_call', 'tool_call_update'].includes(item.sessionUpdate)) {
-        if (!text(item.toolCallId, 128) || !item.toolCallId) throw error('provider_invalid_progress');
+        const call = toolState(item.toolCallId);
         const prior = progress.tool?.id === item.toolCallId ? progress.tool : null;
         const status = item.status ?? prior?.status ?? 'pending';
-        const kind = item.kind ?? prior?.kind ?? 'other';
+        const kind = item.kind ?? call.kind ?? 'other';
         if (!['pending', 'in_progress', 'completed', 'failed'].includes(status) ||
           !['read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'other'].includes(kind)) throw error('provider_invalid_progress');
+        if (call.terminal || item.sessionUpdate === 'tool_call' && call.seenCall || call.denied && kind !== call.kind) {
+          call.reused = true; call.denied = false;
+        }
+        if (item.sessionUpdate === 'tool_call') call.seenCall = true;
+        call.kind = kind;
+        // A failed-only event may follow execution. Only one terminal failure
+        // bound to this session's explicit, still-unused refusal is no-start.
+        const refusedFailure = status === 'failed' && call.denied && !call.started && !call.reused;
+        if (executionContext && ['execute', 'fetch', 'other'].includes(kind) &&
+            (['in_progress', 'completed'].includes(status) || status === 'failed' && !refusedFailure))
+          executionContext.extraScope('acp_tool_scope_unproven');
+        if (['in_progress', 'completed'].includes(status)) { call.started = true; call.denied = false; }
+        if (['completed', 'failed'].includes(status)) { call.terminal = true; call.denied = false; }
         progress = {...progress, tool: {id: item.toolCallId, kind, status}};
       } else {
         // Thinking, raw tool inputs/outputs, _meta and provider-specific usage
@@ -70,20 +96,35 @@ export function createAcpProvider({id, executable, args = [], env = {}} = {}) {
       }
       await bounded(onProgress, snapshot(), observation.signal);
     }
-    function permission(params, context) {
+    async function permission(params, context) {
       if (stopping || settled || !onPermission || Date.now() >= deadline) return {outcome: {outcome: 'cancelled'}};
       const toolCall = {};
       for (const key of ['toolCallId', 'title', 'kind', 'status', 'rawInput']) if (Object.hasOwn(params.toolCall, key)) toolCall[key] = structuredClone(params.toolCall[key]);
+      const call = toolState(toolCall.toolCallId);
+      if (call.permissionSeen || call.terminal || call.kind !== null && toolCall.kind !== undefined && call.kind !== toolCall.kind) {
+        call.reused = true; call.denied = false;
+      }
+      call.permissionSeen = true;
+      if (toolCall.kind !== undefined) call.kind = toolCall.kind;
       // This callback is trusted policy, not the progress/UI channel. It needs
       // actual tool input to authorize the bound request. Never forward _meta.
-      return onPermission({sessionId: params.sessionId, toolCall, options: structuredClone(params.options)}, context);
+      const response = await onPermission({sessionId: params.sessionId, toolCall, options: structuredClone(params.options)}, context);
+      if (stopping || settled || context.signal.aborted || Date.now() >= deadline) return {outcome: {outcome: 'cancelled'}};
+      const selection = response?.outcome?.outcome === 'selected' ? params.options.find(option => option.optionId === response.outcome.optionId) : null;
+      // Refusal creates no execution obligation. The synchronous durable fence
+      // must commit AFTER policy selects allow but BEFORE any allow is sent.
+      if (executionContext && ['allow_once', 'allow_always'].includes(selection?.kind) &&
+          !['read', 'edit', 'delete', 'move', 'search', 'think'].includes(toolCall.kind))
+        executionContext.extraScope('acp_tool_scope_unproven');
+      call.denied = ['reject_once', 'reject_always'].includes(selection?.kind) && !call.started && !call.terminal && !call.reused;
+      return response;
     }
     const completion = (async () => {
       let status = 'failed', reason = 'provider_failed', stopReason = null, cleanup = null;
       try {
         runtime = await launchAcp({...config, cwd, deadline, onUpdate: async event => {
           try { await update(event); } catch (failure) { updateFailure = failure; throw failure; }
-        }, onPermission: permission});
+        }, onPermission: permission, executionContext});
         resolveStarted(runtime.started);
         if (stopping) throw error('provider_stopped');
         await phase('initializing');
@@ -119,6 +160,7 @@ export function createAcpProvider({id, executable, args = [], env = {}} = {}) {
     const stop = () => {
       if (settled) return completion;
       stopping = true; observation.abort();
+      if (executionContext?.stop) void executionContext.stop();
       if (runtime) {
         if (sessionId && !runtime.client.closed) void runtime.client.cancel(sessionId).catch(() => {});
         void runtime.stop();
@@ -127,5 +169,6 @@ export function createAcpProvider({id, executable, args = [], env = {}} = {}) {
     };
     return Object.freeze({started, completion, stop, snapshot});
   }
-  return Object.freeze({id, profile: 'ordinary-user', start});
+  return Object.freeze({id, profile: 'ordinary-user', start,
+    ...(custodyProfile === undefined ? {} : {custodyProfile: Object.freeze(structuredClone(custodyProfile))})});
 }

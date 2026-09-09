@@ -2,14 +2,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import {randomBytes, randomUUID} from 'node:crypto';
-import {Store} from '../task-store/store.mjs';
+import {Store, CUSTODY_FORMAT} from '../task-store/store.mjs';
+import {TaskCleanup} from '../task-application/cleanup.mjs';
+import {createExecutionCustody} from '../agent-runtime/custody.mjs';
+import {CUSTODY_PROFILE, verifyObservation} from '../agent-runtime/custody-contract.mjs';
+import {setTimeout as wait} from 'node:timers/promises';
 import {ArtifactDepot} from '../task-artifacts/depot.mjs';
 import {TaskApplication} from '../task-application/application.mjs';
 import {TaskSupervisor} from '../task-supervisor/controller.mjs';
 import {createTaskApiHandler} from '../task-api/http-handler.mjs';
 import {PROFILE, TaskApiError, validate} from '../task-api/contract.mjs';
 
-const FORMAT = Buffer.from(JSON.stringify({profile: PROFILE, layout: 1}) + '\n');
+const format = custody => Buffer.from(JSON.stringify({profile: PROFILE, layout: custody ? 2 : 1}) + '\n');
 const NOFOLLOW = fs.constants.O_NOFOLLOW;
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -25,20 +29,21 @@ function regular(stat) {
 }
 class ServiceRoot {
   fds = []; directories = new Map();
-  constructor(root, mode) {
+  constructor(root, mode, custody) {
     this.root = root; this.parent = path.dirname(root);
+    this.format = format(custody);
     try {
       requireValue(fs.realpathSync(this.parent) === this.parent, 'service_root_unavailable');
       this.hold(this.parent); // Explicit private parent, no recursive mkdir/adoption.
       if (mode === 'create') fs.mkdirSync(root, {mode: 0o700});
       this.hold(root);
-      if (mode === 'create') this.writeNew(path.join(root, 'profile.json'), FORMAT);
+      if (mode === 'create') this.writeNew(path.join(root, 'profile.json'), this.format);
       const fd = fs.openSync(path.join(root, 'profile.json'), fs.constants.O_RDONLY | NOFOLLOW);
       this.fds.push(fd); this.formatFd = fd; this.check();
       if (mode === 'open') {
-        requireValue(fs.readdirSync(root).sort().join(',') === 'artifacts,connections,executions,profile.json,store', 'service_root_unavailable');
+        requireValue(fs.readdirSync(root).sort().join(',') === (custody ? 'artifacts,connections,custody,executions,profile.json,store' : 'artifacts,connections,executions,profile.json,store'), 'service_root_unavailable');
       }
-      for (const name of ['executions', 'connections']) {
+      for (const name of ['executions', 'connections', ...(custody ? ['custody'] : [])]) {
         const target = path.join(root, name);
         if (mode === 'create') fs.mkdirSync(target, {mode: 0o700});
         this.hold(target);
@@ -57,9 +62,9 @@ class ServiceRoot {
     }
     if (this.formatFd !== undefined) {
       const stat = fs.fstatSync(this.formatFd); regular(stat);
-      const bytes = Buffer.alloc(FORMAT.length);
+      const bytes = Buffer.alloc(this.format.length);
       requireValue(stat.size === bytes.length && same(stat, fs.lstatSync(path.join(this.root, 'profile.json'))) &&
-        fs.readSync(this.formatFd, bytes, 0, bytes.length, 0) === bytes.length && bytes.equals(FORMAT), 'service_root_unavailable');
+        fs.readSync(this.formatFd, bytes, 0, bytes.length, 0) === bytes.length && bytes.equals(this.format), 'service_root_unavailable');
     }
   }
   writeNew(name, bytes) {
@@ -74,7 +79,7 @@ class ServiceRoot {
 }
 
 /** Composition only: no Task reducer, second ledger, model defaults or publication. */
-export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, dispose = () => {},
+export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, custody, dispose = () => {},
   providerFacts, applicationOptions = {}, port = 0, leaseMs = 60000, renewIntervalMs = 10000,
   requestTimeoutMs = 10000, supervisorOptions = {}, onDiagnostic = () => {}} = {}) {
   requireValue(typeof root === 'string' && path.isAbsolute(root) && path.normalize(root) === root && root !== path.parse(root).root &&
@@ -83,6 +88,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       typeof businessFactory === 'function' && prepare === undefined && collect === undefined && release === undefined) &&
     (verification === undefined || verification !== null && typeof verification === 'object') &&
     (clarification === undefined || clarification !== null && typeof clarification === 'object') &&
+    (custody === undefined || object(custody) && Object.keys(custody).join(',') === 'profile' && custody.profile === CUSTODY_PROFILE) &&
     typeof dispose === 'function' && typeof onDiagnostic === 'function' &&
     object(applicationOptions) && Object.keys(applicationOptions).every(key => ['defaultLimits', 'execution'].includes(key)) &&
     (applicationOptions.execution === undefined || object(applicationOptions.execution)) &&
@@ -97,7 +103,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
   const frozenFacts = structuredClone(facts).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const execution = {maxWorkers: 2, providerIds: [...available.keys()], defaultProvider: available.keys().next().value, ...applicationOptions.execution};
   requireValue(Array.isArray(execution.providerIds) && execution.providerIds.length === available.size && execution.providerIds.every(id => available.has(id)));
-  let files, store, depot, application, supervisor, business, server, renewal, closing, address, connectionFile;
+  let files, store, depot, application, supervisor, business, custodian, server, renewal, closing, address, connectionFile;
   let state = 'starting', failure = null, shutdownClean = null, renewing = false;
   const instanceId = 'service-' + randomUUID(), token = randomBytes(32).toString('hex');
   const diagnostic = code => { try { Promise.resolve(onDiagnostic({code})).catch(() => {}); } catch {} };
@@ -208,6 +214,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
         await drain; clearTimeout(drainTimer);
         try { if (business && typeof business.close === 'function') await business.close(); } catch { failure ??= 'service_dispose_failed'; }
         try { if (supervisor) await dispose(); } catch { failure ??= 'service_dispose_failed'; }
+        try { await custodian?.close(); } catch { failure ??= 'service_custody_close_failed'; }
         for (const component of [depot, store, files]) {
           try { component?.close(); } catch { failure ??= 'service_close_failed'; }
         }
@@ -218,12 +225,52 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     return closing;
   }
   try {
-    files = new ServiceRoot(root, mode);
-    store = mode === 'create' ? Store.create(path.join(root, 'store')) : Store.openExisting(path.join(root, 'store'));
+    files = new ServiceRoot(root, mode, !!custody);
+    const storeOptions = custody ? {format: CUSTODY_FORMAT} : {};
+    store = mode === 'create' ? Store.create(path.join(root, 'store'), storeOptions) : Store.openExisting(path.join(root, 'store'), storeOptions);
     depot = mode === 'create' ? ArtifactDepot.create(path.join(root, 'artifacts')) : ArtifactDepot.openExisting(path.join(root, 'artifacts'));
     files.sync();
+    if (custody) {
+      custodian = createExecutionCustody({root: path.join(root, 'custody')});
+      // Do not claim a new generation while an old queued permit might still
+      // spawn. A signed CLOSED observer (including unknown cleanup) is required
+      // for every original live binding. Physical SQLite exclusion freezes this
+      // snapshot; no wall clock, PID existence or file absence substitutes it.
+      const pending = []; let after = '', complete = false;
+      for (let page = 0; page < 100; page++) {
+        const value = TaskCleanup.inspectBeforeClaim(store, after); pending.push(...value.items);
+        if (value.nextCursor === null) { complete = true; break; } after = value.nextCursor;
+      }
+      requireValue(complete, 'service_custody_scan_limit');
+      const until = Date.now() + 15000;
+      while (pending.length) {
+        for (let i = pending.length - 1; i >= 0; i--) {
+          const observation = custodian.read(pending[i]);
+          if (observation && verifyObservation(pending[i], observation)) pending.splice(i, 1);
+        }
+        if (!pending.length) break;
+        requireValue(Date.now() < until, 'service_custody_unresolved');
+        await wait(25);
+      }
+    }
     const owner = store.claimOwner(store.info().generation, instanceId, Date.now() + leaseMs);
     application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification, clarification});
+    if (custody) {
+      let after = '', complete = false;
+      for (let page = 0; page < 100; page++) {
+        const value = application.execution.pendingCleanup(after);
+        for (const entry of value.items) {
+          const observation = custodian.read(entry.descriptor);
+          if (!observation) continue;
+          try {
+            const result = application.execution.reconcileCleanup(entry.workerId, observation);
+            custodian.acknowledge(entry.descriptor, result.observationDigest);
+          } catch (error) { if (error.code !== 'recovery_required') throw error; diagnostic('service_custody_unresolved'); }
+        }
+        if (value.nextCursor === null) { complete = true; break; } after = value.nextCursor;
+      }
+      requireValue(complete, 'service_custody_scan_limit');
+    }
     const context = Object.freeze({depot, executionParent: path.join(root, 'executions'),
       approvedLayout: ticket => {
         requireValue(typeof application.execution.approvedLayout === 'function', 'service_capability_unavailable');
@@ -243,7 +290,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       release = ticket => business.release(ticket);
     }
     supervisor = new TaskSupervisor({...supervisorOptions, execution: application.execution, providers: available,
-      verification, release,
+      verification, release, custody: custodian ?? null,
       prepare: (ticket, wait) => prepare(ticket, {...wait, ...context}),
       collect: (ticket, result, wait) => collect(ticket, result, {...wait, ...context}),
       onError: report => { diagnostic(report.code); if (report.code === 'supervisor_failed') fail('service_supervisor_failed'); }});

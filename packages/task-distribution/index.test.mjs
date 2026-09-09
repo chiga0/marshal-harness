@@ -42,7 +42,7 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
   // Commands consume stdin; deployment configurations intentionally require
   // explicit local settings. They remain packaged and are exercised below,
   // rather than being treated as side-effect-free library imports.
-  const entrypoints = new Set(['packages/task-service/main.mjs', 'packages/agent-runtime/guard.mjs',
+  const entrypoints = new Set(['packages/task-service/main.mjs', 'packages/agent-runtime/guard.mjs', 'packages/agent-runtime/custody-process.mjs',
     'packages/task-regional-window/checker.mjs', 'packages/task-regional-window/service-config.mjs']);
   const imports = SOURCE_FILES.filter(file => file.endsWith('.mjs') && !entrypoints.has(file));
   const script = imports.map(file => `await import(${JSON.stringify(pathToFileURL(path.join(f.target, file)).href)});`).join('\n');

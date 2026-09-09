@@ -71,7 +71,7 @@ export default {
 const service = await startTaskService({
   root, mode: 'create', providers, prepare, collect,
   // 或：businessFactory + verification，替代直接 prepare/collect/release。
-  // 可选：release、dispose、providerFacts、applicationOptions、supervisorOptions、
+  // 可选：release、dispose、providerFacts、applicationOptions、supervisorOptions、custody、
   // port、leaseMs、renewIntervalMs、requestTimeoutMs、onDiagnostic。
 });
 // {address, connectionFile, snapshot(), shutdown()}
@@ -80,7 +80,32 @@ const result = await service.shutdown();
 
 服务不返回 token 字段；启动输出只含地址、profile 和私有连接文件路径。连接文件为 `0600`，位于 `0700` 的 `connections/`，内容为 `{profile,url,token}`。每次启动生成不同文件和 token，重启客户端读取新的 connection，再对原 Task ID 使用原请求 key/正文；旧文件保留供定位，不覆盖、不续用旧 token。它不是 owner 权威或 Worker 输入，不能放进 Agent prompt/env/日志。
 
-根布局为 `profile.json`、`store/`、`artifacts/`、`executions/`、`connections/`。profile 仅是不可变组合格式标识；owner、任务、预算和命令全在 SQLite。初始化会同步文件/目录，失败留下的部分根不自动修复。重开要求完整布局和各组件原格式验证；未知根文件拒绝。执行与历史连接文件不自动 GC。
+默认 v1 根布局为 `profile.json`、`store/`、`artifacts/`、`executions/`、`connections/`。profile 仅是不可变组合格式标识；owner、任务、预算和命令全在 SQLite。初始化会同步文件/目录，失败留下的部分根不自动修复。重开要求完整布局和各组件原格式验证；未知根文件拒绝。执行与历史连接文件不自动 GC。
+
+## 可选 custody v2 与恢复边界
+
+ADR0089 的执行托管由受信配置显式启用，不接受 HTTP 选择 profile、提交清理证明或加载模块：
+
+```js
+import {CUSTODY_PROFILE} from '../agent-runtime/custody-contract.mjs';
+
+export default {
+  ...trustedServiceConfiguration, // 已配置的原 providers、业务工厂和同一 verification。
+  custody: {profile: CUSTODY_PROFILE}, // node-execution-custody/v1
+};
+```
+
+此配置在全新根创建 `profile.json` 的 `layout:2`、`marshal-node-task-sqlite/v2-custody` Store 和额外 `custody/` 私有目录。重开必须保留同一配置；省略 `custody` 仍使用原 v1。两种格式互相拒绝，不原地迁移旧 v1，不向历史未决根补签名、公钥或许可，不通过删除状态重置任务。首次启用须选新根；旧根继续保留并使用其原受支持模式。
+
+执行前由原创建 IPC 准备托管实例；公钥、原 reservation 和执行 profile 同库提交后才允许原实例启动。服务断连时托管进程封闭许可、停止自己持有的原 guard，耐久保存签名观察；新服务不连接旧 Agent、重放 prompt 或按存储 PID 发信号。
+
+- v2 重开先持有 SQLite 物理锁，在 claim 新 generation 前有限扫描原 live binding。最多等待 **15 秒**取得并验证全部原签名关闭观察；缺失、签名不匹配或扫描超限会拒绝启动，不开放 HTTP/ready。JavaScript 调用返回稳定错误（缺观察为 `service_custody_unresolved`），CLI 只输出 `service_start_unavailable`。失败保留原数据，不补造“未启动”或重派。
+- 有效关闭观察不等于 `cleaned:true`。若原观察存在但清理/作用域不足，新 owner 仍不能结清相应占用，Task 保持 `intervention`、`/ready` 不可用；已启动的 HTTP 保留原查询和取消入口。不要把缺关闭证据的启动失败与已关闭但未证清理的 not-ready 混为一谈。
+- Provider 的 `custodyProfile` 是受信构造配置 `{id,scope:'inherited-process-group',eligible}`，不是品牌能力推断或用户自报。省略它默认不 eligible；只有该部署实际执行面已证明全在继承组内，才可设 `eligible:true`。Pi 还要求原受管 bridge，`scopeUnknown`/额外作用域未决继续否决；不能靠 Runtime 签名覆盖。
+- 原 command verifier 共用同一托管入口和固定 managed-checker profile。其受信 checker 配置仍须满足继承组边界；`setsid/setpgid`、detached、远端 job 不因此受覆盖，也不把任意 Qwen/Pi 原生配置或同 UID 宿主升级成恶意代码沙箱。
+- 仅在当前 owner 重验原绑定和真实清理后，才在同一 SQLite 事务一次结清原 Worker、outbox、Operation 和对应容量。Attempt/预算不退款，原 deadline/批准/幂等回执不改写；只失败/取消收口，不接纳崩溃前遗留业务输出、不生成成功 Decision、不自动重派。原期限已过不妨碍接纳其后真实清理证据。
+
+当前证据限于明确的 Node 进程夹具与 SQLite 恢复测试。服务单进程崩溃、原托管实例/已耐久观察仍存活是此接线的目标范围；托管进程同时丢失、原观察未落盘或 scope 不明继续未决，不能凭操作者一句“已停止”结清。这不声明全部 Provider 的实机 crash、Git 工作树跨代接管、完整 B2、Linux 部署或 production 已通过。
 
 ## Owner、就绪和关闭
 
@@ -93,7 +118,7 @@ const result = await service.shutdown();
 - `supervisor.get` 从当前 SQLite Task、outbox、容量与当前控制器状态计算只读观察，不把内存 Worker 数当作全库容量。观察扫描每类最多 2500 条，超出返回 unavailable，而非发布截断数字。`queuedTasks` 统计 draft/queued；`blockedTasks` 统计 intervention/awaiting-answer/awaiting-approval/paused。
 - 正常 `shutdown()` 幂等：关闭接单、等原 Supervisor completion/cleanup、保持续租让结果写回、关闭 HTTP 连接，再调用 dispose 和关闭 depot/Store/目录 FD。HTTP drain 有界；Provider 违反原有界停止合同时仍可能等待，不用超时假造 cleanup。
 - `shutdownClean` 只说明本控制器当前持有执行已清理并写回，不证明旧 generation 的未知执行已恢复。缺 cleanup 时为 false，持久 intervention 保留。
-- **关闭在途服务不是暂停/无损续跑**：原 Supervisor 会停止当前 Worker，Application 按真实事实失败/取消收口。已终态 Task 和原幂等回执可冷重开；崩溃后的未知执行保留 intervention，不按裸 PID 杀进程、不重派、不复用目录。
+- **关闭在途服务不是暂停/无损续跑**：原 Supervisor 会停止当前 Worker，Application 按真实事实失败/取消收口。已终态 Task 和原幂等回执可冷重开；崩溃后的未知执行保留 intervention，只有上述 v2 原证据满足时才做 cleanup-only 收口，不按裸 PID 杀进程、不重派、不复用目录。
 
 四项运行观察通过明确 composition dispatch 处理；其余操作原样交给注入了 depot/verification/可选 clarification 的 `TaskApplication`。已接线的输入上传、manifest 与 bytes 下载使用真实 SQLite/depot；有限问答已接线，未安装/不匹配模板的原 Task 返回零问题，回答未知问题为 not_found。尚未接线的单 Worker 取消仍返回 unsupported，不冒充 24 个接口全部可用。finalization、验收绑定、最终交付制品与 Task completed 只由同一 Application/Store 实现，不放在此入口；没有 verification 的直接回调配置也不自动获得业务完成能力。
 
@@ -104,6 +129,6 @@ node --test --test-concurrency=1 packages/task-service/composition.test.mjs
 node --test --test-concurrency=1 packages/task-service/business-integration.test.mjs
 ```
 
-测试使用真实 loopback、真实 SQLite/depot 和受控 Fake Provider；覆盖输入上传/下载与冷重开、续租跨初始期限、计划批准双 Worker、取消、真实等待 completion、冷重开原回执、持锁竞争、根漂移、旧代未知义务、缺 cleanup，以及独立 Node CLI 的 SIGTERM。测试里的 cleanup 是明确夹具事实，既不是实机 OS 清理，也不是模型/业务通过。真实双 Qwen、独立验证后下载消费、活跃 crash 恢复、Linux 和同资产部署仍须另行验收。
+测试使用真实 loopback、真实 SQLite/depot 和受控 Fake Provider；覆盖输入上传/下载与冷重开、续租跨初始期限、计划批准双 Worker、取消、真实等待 completion、冷重开原回执、持锁竞争、根漂移、旧代未知义务、缺 cleanup，以及独立 Node CLI 的 SIGTERM。这两组测试里的 cleanup 是明确夹具事实，不代表实机 OS 清理或模型/业务通过；不能替代真实 Provider、活跃 crash、Linux 和同资产部署的各自证据。
 
 业务组合测试另外使用真实 FileBusiness 与原 Core verification capability，从纯 HTTP 计划批准到完整制品下载，覆盖验收中取消的迟到结果 fence，以及失败后及时释放 FD。模型和 checker 的进程完成/cleanup 明确为受控夹具，不能用该测试代替实机原生工具或独立外部命令验收。
