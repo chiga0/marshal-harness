@@ -1,5 +1,5 @@
 import {randomUUID, createHash} from 'node:crypto';
-import {operations, validate, TaskApiError, errorPayload} from './contract.mjs';
+import {operations, validate, validAnswerResponse, validQuestionItems, TaskApiError, errorPayload} from './contract.mjs';
 import {protect, mutationHeaders, readJson, sendJson, closeIncompleteRequest} from './http-boundary.mjs';
 
 const MAX_RESPONSE = 8 * 1024 * 1024;
@@ -34,13 +34,8 @@ function boundResponse(entry, request, value) {
       request.operationId && value.id !== request.operationId || request.artifactId && value.id !== request.artifactId ||
       request.page && value.items.length > request.page.limit) throw new TaskApiError('invalid_application_response');
   if (entry.response === 'Operation' && entry.operation !== 'operation.get' && value.kind !== entry.operation) throw new TaskApiError('invalid_application_response');
-  if (entry.operation === 'task.answer' && (value.questionId !== request.questionId || value.operation.kind !== 'task.answer' ||
-      value.operation.taskId !== request.taskId || value.task.id !== request.taskId || value.currentTask.id !== request.taskId ||
-      value.acceptedRevision !== request.body.expectedRevision + 1 || value.task.revision !== value.acceptedRevision ||
-      value.operation.taskRevision !== value.acceptedRevision || value.currentTask.revision < value.acceptedRevision ||
-      value.currentTask.revision === value.acceptedRevision && (value.currentTask.plan?.digest !== value.task.plan?.digest || value.currentTask.plan?.revision !== value.task.plan?.revision) ||
-      value.preview.digest !== value.acceptedPreviewDigest || value.preview.plan.taskId !== request.taskId ||
-      value.task.plan?.digest !== value.preview.plan.digest || value.task.plan?.revision !== value.preview.plan.revision))
+  if (entry.operation === 'task.answer' && !validAnswerResponse(request, value) ||
+      entry.operation === 'task.questions' && !validQuestionItems(value, request.taskId))
     throw new TaskApiError('invalid_application_response');
 }
 /**

@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {operations, validate, TaskApiError} from '../task-api/contract.mjs';
+import {operations, validate, validAnswerResponse, validQuestionItems, TaskApiError} from '../task-api/contract.mjs';
 import {parseJson} from '../task-api/http-boundary.mjs';
 
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -54,6 +54,8 @@ function boundIdentity(entry, options, value) {
     options.paths.operationId && value.id !== options.paths.operationId || options.paths.artifactId && value.id !== options.paths.artifactId ||
     entry.paged && value.items.length > (options.query.limit ?? 50) ||
     entry.response === 'Operation' && entry.operation !== 'operation.get' && value.kind !== entry.operation) throw fail('client_invalid_response');
+  if (entry.operation === 'task.answer' && !validAnswerResponse({...options.paths, body: JSON.parse(options.body)}, value) ||
+      entry.operation === 'task.questions' && !validQuestionItems(value, options.paths.taskId)) throw fail('client_invalid_response');
 }
 async function readBounded(response, signal) {
   const length = response.headers.get('content-length');
