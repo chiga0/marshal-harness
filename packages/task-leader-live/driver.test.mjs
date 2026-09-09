@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawn} from 'node:child_process';
+import {Readable} from 'node:stream';
 import {fileURLToPath} from 'node:url';
 import {encode, digest} from '../task-store/store.mjs';
 import {contract, leaderRequestDigest, leaderReplyDigest} from '../task-api/contract.mjs';
@@ -16,8 +16,9 @@ import {createLeaderPort, createReviewPort, createVerificationPort, parseManaged
 import {startTaskService} from '../task-service/composition.mjs';
 import {data, choices, policy, taskBody, bindPlan, reportFor} from './scenario.fixture.mjs';
 import {equal, businessReply, verificationRequest, validatePlan, replyOnce, assertReplyReplay, verifyAcceptance, authorizeReport, authorOverlap} from './proof.fixture.mjs';
-import {checkRequest} from './checker.fixture.mjs';
+import {checkRequest, main as checkerMain} from './checker.fixture.mjs';
 import {startReportServer, consumePublished} from './report-server.fixture.mjs';
+import {launchCommand} from '../agent-runtime/index.mjs';
 
 const hash = value => digest(encode(value)), sha = 'sha256:' + 'a'.repeat(64), taskId = 'task-example';
 const fresh = name => structuredClone(contract.components.schemas[name].examples[0]);
@@ -283,6 +284,11 @@ test('live composition preflight creates and reopens v7 with original business i
   }
   assert.equal(factories, 2); assert.equal(starts, 0);
 });
+test('checker frame remains bounded and canonical before any candidate read', async () => {
+  for (const bytes of [Buffer.from('{}'), Buffer.from('{}\n{}\n'), Buffer.from('{ "a":1}\n'), Buffer.alloc(262145, 32)]) {
+    await assert.rejects(checkerMain(Readable.from([bytes])));
+  }
+});
 test('fixed Node checker reads real bounded files and rejects plausible wrong total and wrong source', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-leader-checker-')); t.after(() => fs.rmSync(root, {recursive: true}));
   const requested = verificationRequest(ticket(), () => encode(data));
@@ -290,10 +296,15 @@ test('fixed Node checker reads real bounded files and rejects plausible wrong to
   const reports = reportFor('paid').reports;
   for (const report of reports) fs.writeFileSync(path.join(root, report.region + '.json'), encode(report), {mode: 0o600});
   const run = async () => {
-    const child = spawn(process.execPath, [fileURLToPath(new URL('./checker.fixture.mjs', import.meta.url))], {cwd: root, env: {}, timeout: 5000, stdio: ['pipe', 'pipe', 'pipe']});
-    const chunks = []; child.stdout.on('data', chunk => chunks.push(chunk)); child.stderr.resume();
-    const done = new Promise((resolve, reject) => {child.on('error', reject); child.on('close', (code, signal) => resolve({code, signal, bytes: Buffer.concat(chunks)}));});
-    child.stdin.end(Buffer.concat([encode(frame), Buffer.from('\n')])); return done;
+    // Original runtime retains stdin for ownership/liveness: EOF is not the
+    // command frame delimiter. Exercise the real guard, not stdin.end().
+    const runtime = await launchCommand({executable: process.execPath,
+      args: [fileURLToPath(new URL('./checker.fixture.mjs', import.meta.url))], cwd: root,
+      deadline: Date.now() + 5000, input: Buffer.concat([encode(frame), Buffer.from('\n')])});
+    t.after(() => runtime.stop());
+    const result = await runtime.completion;
+    assert.equal(result.cleanup.cleaned, true);
+    return {code: result.cleanup.agentExit.code, signal: result.cleanup.agentExit.signal, bytes: result.stdout};
   };
   const first = await run(); assert.equal(first.code, 0); assert.equal(first.signal, null);
   assert.deepEqual(JSON.parse(first.bytes).assertions[0].actual, {report: reportFor('paid'), reply: reply()});
