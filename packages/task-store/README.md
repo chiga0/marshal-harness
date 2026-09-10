@@ -1,6 +1,8 @@
 # Node Task SQLite Store
 
-依据 Accepted ADR0088 的内部事务后端，已接同一正式 Node Application/Service 调用链；本包不独立授予发布权限。只使用 Node 内置 `node:sqlite`，不编译 Go、安装 addon 或加载 SQLite 扩展；运行时 gate 为 Node 24.x 且至少 24.15，发行包固定 Node 24.15.0；平台仅 Darwin/Linux 的本地文件系统，各平台仍须分别验证。
+依据 Accepted ADR0088 的内部事务后端，已接同一正式 Node Application/Service 调用链；本包不独立授予发布权限。只使用 Node 内置 `node:sqlite`，不编译 Go、安装 addon 或加载 SQLite 扩展。按 [ADR0097](../../docs/adr/0097-node-capability-based-runtime-admission.md)，后继源码接受 Node 主版本至少22，并在触碰业务数据前检查 SQLite 必需能力；不限定未来大版本，但不表示所有版本已测试。平台仍仅 Darwin/Linux 本地文件系统。已发布 v1.0.0 原包及其 Node24.15.0 基线不重写。
+
+Node22.22.1 缺少 SQLite `defensive` 增强，检测后明确警告；支持它的运行时保持启用。数据库句柄不向业务开放任意SQL，外键、BigInt与事务能力不是可选项，缺失时拒绝。该兼容不提供同UID恶意代码防护或跨Node版本数据库迁移保证。
 
 ## 打开与 owner
 

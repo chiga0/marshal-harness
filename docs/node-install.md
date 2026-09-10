@@ -1,5 +1,7 @@
 # Node v1.0.0 下载部署
 
+> Node22兼容正在作为后继源码按 [ADR0097](adr/0097-node-capability-based-runtime-admission.md) 实施。此页面和 `install-node.sh` 目前仍下载已签名v1.0.0，内部有Node24门禁；新兼容包发布并更新摘要前，不应删除安装检查后运行旧包，也不能称一键安装已经支持22。
+
 本入口安装 [v1.0.0 正式发行](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0) 的 Node Agent Team 文件，不安装历史 Go CLI，不编译或执行 Marshal 原生二进制，不请求 sudo，不修改系统安全设置。
 
 ## 一键安装

@@ -1,5 +1,9 @@
 # 设计审计报告
 
+## 2026-09-10：Node22+ 运行环境兼容纠偏
+
+用户实际Ubuntu22.04 Sandbox 已有Node22.22.1，强制另装24.15.0造成多次网络与依赖等待。诊断分支仅接纳22后Store40项、HTTP组合16项通过（Mac、无模型），说明版本白名单不等于功能必需；但22忽略SQLite `defensive:true`是实测差异，不得隐藏。按[ADR0097](adr/0097-node-capability-based-runtime-admission.md)改为主版本>=22、实际必需能力预检、可选防御增强透明报告；不新增任意SQL入口，不改变事务/恢复/发布契约。实现与双版本验证在后继提交完成，现有签名v1.0.0不热修改，新包发布前安装支持仍未改变。学习：版本标签用于记录证据，运行准入应检查实际能力，不能用精确补丁号替代兼容验证。
+
 ## 2026-09-10 最新：v1.0.0 受保护 stable 已发布（ADR 0096 minisign、三级互证全绿）
 
 `v1.0.0` 首个受保护 stable 发行已上线：[发布页](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0)。身份：annotated tag object `b9b7c6b7e6a398c0915bb38476cc5920d2c713d7` → sourceHead `fc2cdc9298c3e1aaf47615373bb24e6d80e4c719`（发布的独立 Decision、ADR 0096 minisign 签名 trusted comment `timestamp:1789017236` 由维护者在其密钥下执行，`minisign -V` 与 `shasum -a 256 -c` 均通过）。资产 6 项：候选 ZIP、`manifest.json`、签名清单 `SHA256SUMS` 与其签名 `SHA256SUMS.minisig`、公钥原文、dossier。
