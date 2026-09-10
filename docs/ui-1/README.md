@@ -8,7 +8,7 @@
 2. [设计规范](design-system.md)：布局、组件、主题、无障碍与内容。
 3. [技术与并行交付](delivery-plan.md)：工作包、接口归属、执行模式及发行。
 4. [验收与 E2E 场景](acceptance.md)：需求对应、样本和通过条件。本轮仅列样例，未运行测试。
-5. [ADR0098 浏览器访问边界](../adr/0098-local-browser-ui-boundary.md)：Proposed，必须评审接受后才实现边界变化。
+5. [ADR0098 浏览器访问边界](../adr/0098-local-browser-ui-boundary.md)：已接受；边界变化按其后实施。
 6. [审查记录](review.md)：独立意见、处置与剩余事项。
 
 ## 已定默认值
@@ -19,4 +19,4 @@ UI-1 的承诺是服务已配置业务能力内的任务全流程，不是任意
 
 ## 交付状态
 
-当前仅设计文档。尚未实现页面、浏览器 transport、安全模式、静态资产发行或 E2E 自动化。后续开发以审查完成的设计提交 SHA 为输入，再锁定当时实现基线；两者分别记录。不得把早期 API-STABLE 或本设计审查当成 UI 验收。
+2026-09-10 实现基线：页面、浏览器 transport（对齐 `packages/task-api/openapi.json` 合同）、安全模式（token 仅内存、`--ui` 同源边界）、静态资产发行纳入与 e2e 自动化已交付于 `feat/ui-1-develop`（实现基线随该分支 HEAD）；运行时的浏览器矩阵（E24/E25/E28）与真实 Provider 完整交付仍待实测，自动化通过项与剩余人工项的逐项状态见 `acceptance-run-2026-09-10.md`。不得把早期 API-STABLE、设计审查或组件/e2e 通过当成 UI 验收完成。

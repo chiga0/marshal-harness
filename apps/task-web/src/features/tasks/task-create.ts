@@ -1,6 +1,6 @@
-// 创建任务的纯逻辑层：客户端校验与 OpenAPI createTask/input_create 合同一致，并定义创建能力 seam。
-// 背景：冻结的浏览器 Transport（W3 范围）尚未暴露 createTask/createInput，本文件按 OpenAPI 形状定义
-// CreateTaskApi，页面经 resolveCreateTaskApi 探测；未接入时显式禁用提交，不假称成功（见 prd P03/E04/E05）。
+// 创建任务的纯逻辑层：客户端校验与 OpenAPI createTask/input_create 合同一致。
+// 冻结 Transport 已暴露 createTask/createInput，页面经 resolveCreateTaskApi 探测后直连；
+// 探测失败（换乘其他 Transport 形态）时显式禁用提交，不假称成功（见 prd P03/E04/E05）。
 // 幂等：每个逻辑提交动作用 newIdempotencyKey 生成一次 key 并随会话持有到完结；显式重放复用同一 key/同一 body。
 import {newIdempotencyKey} from '../../lib/transport/types';
 

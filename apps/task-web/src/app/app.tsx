@@ -1,10 +1,11 @@
 // 应用装配：连接 → 路由 → 页面。hash 路由避免静态回退歧义。
 
 import {QueryClientProvider} from '@tanstack/react-query';
-import {useMemo} from 'react';
+import {useEffect, useMemo} from 'react';
 import {HashRouter, Route, Routes} from 'react-router-dom';
 import {createQueryClientWorker} from '../lib/queries/client';
 import {useTheme} from '../lib/theme/useTheme';
+import {installBeforeUnloadGuard} from '../features/tasks/detail/shared/logical-action';
 import {ConnectionProvider, useConnection} from '../features/connection/connection';
 import {ShellLayout} from './layout';
 import {ConnectPage} from '../features/connection/connect-page';
@@ -20,6 +21,7 @@ function DidConnectGate({children}: {children: React.ReactNode}) {
 
 export function App() {
   useTheme();
+  useEffect(() => installBeforeUnloadGuard(), []); // ADR0098 §8：未决写操作时离开/刷新前提示（尽力而为）
   const queryClient = useMemo(() => createQueryClientWorker(), []);
   return (
     <QueryClientProvider client={queryClient}>

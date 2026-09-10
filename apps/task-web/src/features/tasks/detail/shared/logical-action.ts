@@ -42,6 +42,34 @@ function depsChanged(previous: readonly string[], next: readonly string[]): bool
   return false;
 }
 
+// ---- ADR0098 §8：有未决写操作时离开/刷新前提示（尽力而为，崩溃不保证触发） ----
+
+let inFlightWrites = 0;
+let guardTarget: Window | null = null;
+
+function onBeforeUnload(event: BeforeUnloadEvent): void {
+  if (inFlightWrites > 0) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+}
+
+/** 应用根调用一次；返回解除函数（测试用）。尽力而为，不承诺浏览器崩溃前必然触发。 */
+export function installBeforeUnloadGuard(target: Window = window): () => void {
+  if (guardTarget !== null) return () => {};
+  guardTarget = target;
+  target.addEventListener('beforeunload', onBeforeUnload);
+  return () => {
+    target.removeEventListener('beforeunload', onBeforeUnload);
+    guardTarget = null;
+  };
+}
+
+/** 测试/诊断读数。 */
+export function inFlightWriteCount(): number {
+  return inFlightWrites;
+}
+
 /**
  * deps 标识逻辑动作的输入（taskId/questionId/revision/选择值等）。
  * deps 变化 => 视为新逻辑动作，自动换新键并回到 idle（保留 UI 草稿）。
@@ -63,6 +91,7 @@ export function useLogicalAction(deps: readonly unknown[]): LogicalAction {
   const execute = useCallback(async (run: (key: string) => Promise<unknown>) => {
     if (submittingRef.current) return;
     submittingRef.current = true;
+    inFlightWrites += 1;
     setPhase({kind: 'submitting'});
     try {
       await run(keyRef.current);
@@ -70,6 +99,7 @@ export function useLogicalAction(deps: readonly unknown[]): LogicalAction {
     } catch (error) {
       setPhase(isAmbiguousFailure(error) ? {kind: 'unknown', error} : {kind: 'rejected', error});
     } finally {
+      inFlightWrites = Math.max(0, inFlightWrites - 1);
       submittingRef.current = false;
     }
   }, []);

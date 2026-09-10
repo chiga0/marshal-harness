@@ -1,5 +1,5 @@
-// 活动事件：字段对齐 packages/task-api/openapi.json 的 Event/Events schema（冻结 Transport 尚未声明 getEvents，
-// 由本模块防御性探测；缺接口时如实显示「不可用」，不伪造事件流）。
+// 活动事件：字段对齐 packages/task-api/openapi.json 的 Event/Events schema。
+// Transport.getEvents 已冻结；本模块保留防御性探测入口（测试可注入 null），缺接口时如实显示「不可用」，不伪造事件流。
 
 import type {Transport} from '@/lib/transport/types';
 
@@ -22,7 +22,7 @@ export interface EventsPage {
 
 export type EventsLoader = (taskId: string, options: {cursor: string | null; limit: number}) => Promise<EventsPage>;
 
-/** 冻结 Transport 未声明 getEvents：探测到才接线，否则返回 null（视图显示不可用）。 */
+/** 冻结 Transport 已声明 getEvents；仍保留探测以便宿主换乘其他 Transport 形态时如实降级。 */
 export function resolveEventsLoader(transport: Transport): EventsLoader | null {
   const candidate = (transport as unknown as {getEvents?: unknown}).getEvents;
   if (typeof candidate !== 'function') return null;

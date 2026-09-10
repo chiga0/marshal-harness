@@ -222,7 +222,8 @@ export interface RunningQuestion {
   questionDigest: Sha256;
   prompt: string;
   options: QuestionOption[];
-  answer: string | null;
+  /** 合同 required 不含此键；未接纳答案时可能缺省。 */
+  answer?: string | null;
   deadlineAt: string;
   status: QuestionStatus;
   deliveryStatus: QuestionDeliveryStatus | null;

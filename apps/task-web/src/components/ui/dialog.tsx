@@ -23,8 +23,28 @@ export function Dialog({open, onClose, title, description, children, footer, cla
   useEffect(() => {
     if (!open) return;
     previousFocus.current = document.activeElement;
+    const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
+      if (event.key !== 'Tab') return;
+      // Tab 圈禁：焦点不得逸出到背景层；仅键盘操作可达（E25）
+      const root = dialogRef.current;
+      if (!root) return;
+      const items = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(el => el.offsetParent !== null || el === root);
+      if (items.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const firstItem = items[0]!;
+      const lastItem = items[items.length - 1]!;
+      const active = document.activeElement;
+      if (event.shiftKey && (active === firstItem || active === root || !root.contains(active))) {
+        event.preventDefault();
+        lastItem.focus();
+      } else if (!event.shiftKey && active === lastItem) {
+        event.preventDefault();
+        firstItem.focus();
+      }
     };
     document.addEventListener('keydown', onKey);
     const first = dialogRef.current?.querySelector<HTMLElement>('[data-dialog-initial]') ?? dialogRef.current;

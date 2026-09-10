@@ -73,7 +73,7 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
   // 问题流加载失败同样容忍：概览以 questions:null 如实降级
   const questionsQuery = useQuery<QuestionsResponse>({
     queryKey: taskKeys.questions(taskId),
-    queryFn: () => transport.getQuestions(taskId),
+    queryFn: () => transport.getQuestions(taskId, {limit: 100}), // 合同 items 上限 100；单页取齐（合同本身限同期开放问题 ≤3）
     refetchInterval,
     retry: false,
   });
