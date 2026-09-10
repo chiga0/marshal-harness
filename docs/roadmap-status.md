@@ -6,6 +6,8 @@
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
+**2026-09-10 正式发行记录（B3 收口）**：`v1.0.0` 首个受保护 stable 已发布，页面 [marshal v1.0.0](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0)、annotated tag object `b9b7c6b7e6a398c0915bb38476cc5920d2c713d7` → sourceHead `fc2cdc9298c3e1aaf47615373bb24e6d80e4c719`（[ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 类同的 annotated-first 认证方式）。资产 6 项：候选 ZIP、`manifest.json`、签名清单 `SHA256SUMS`、签名 `SHA256SUMS.minisig`、公钥原文、dossier；按 [ADR 0096](adr/0096-node-stable-asset-signing-minisign.md) 由维护者 minisign 签名（trusted comment `timestamp:1789017236`，`shasum -a 256 -c` 通过、`minisign -V` 通过）。同日由维护者按其既定授权在仓库 rules 页删去 ruleset `block-v1-tags-until-rc1-evidence`（远端 rules 当前仅保留默认分支保护），该防护的删除属维护者受控动作，不在本表记录为能力扩展。过夜 soak 在本表落笔时仍按既定 ≤12h 有界序列进行，终态数值由当场收尾记录替代。
+
 **2026-09-10 主线检查点：B2-L 剩余出口闭合、Linux 实机验收通过、same-bytes 候选材料就绪**。四个修复全部经独立 review 无 P0/P1、`--no-ff` 合入并推送，远端 main 同 SHA：`f05bd316`（parse 拒绝时保留有界 base64 原始输出诊断 + Review 提示格式收紧，CI run 34374934057 五 job）、`6f2d7f97`（受管诊断 reason 枚举扩展为 171 项白名单并加机器守卫防漂移，CI run 34381876994）、`b5aa5261`（Pi RPC 事件闭集扩展 `bash_execution_update/entry_appended/thinking_level_changed/session_info_changed`，修复 pi 0.84.4 SDK 漂移导致的 review 阶段 `pi_unexpected_event`，CI run 34386217286）、`fc2cdc92`（修复场景数据扩至普通业务量 168 行且规则逐字节不变，CI run 34425993716 五 job 全绿）。
 
 **真实模型失败证据链（修复效果）**：`b5aa5261` 首次真实 Pi 双 Task 整轮 `passed=true`（各 12 Attempts、零 rework/retry/诊断、审批前正常重启通过）；`fc2cdc92` 最终候选再次整轮 `passed=true`（两 Task 各 12 Attempts、零 rework/retry、诊断空、重启通过）。早前三轮失败全部保留原证据：`f05bd316` 轮 review provider-result、reason 为 null（诊断枚举缺口）；`6f2d7f97` 轮命名 `pi_unexpected_event`；`fc2cdc92` 首轮 `fc2cdc92.final/pi-live` 失败但新增了被拒绝输出的 base64 保留并可解密（Leader 决策一旦引用摘录性依据即按 `invalid_leader_decision` 正当拒收，重跑通过，非系统性缺陷）。真实 Qwen 布局 1 同一安装根 `fc2cdc92` 复验通过：`task-52ad5eb4`、38.249 秒、3 Attempts 零 retry/rework、east 3 笔/75、west 1 笔/50、cold replay 一致。
@@ -38,7 +40,7 @@
 | B2 日常本地 API | `PASSED` | 安装后真实 Qwen（第二次 fc2cdc92 38.249 秒复验）与真实 Pi 双 Task 整轮两次通过、审批前正常重启通过、问答/审计/单 Worker 取消与声明面故障恢复/局部修正证据齐备；用量缺失项如实留空不外推 |
 | B2-L 全程受管 Leader | `PASSED` | 安装后真实 Pi 双 Task 整轮两次 passed=true（12 Attempts×2 零 rework/retry，审批前重启通过）；真实局部修正 fog4 保留无关成果通过；诊断与 RPC 闭集缺陷链全部经独立 review 修复合入；B2 出口证据随本表 2026-09-10 检查点记录 |
 | API-STABLE 核心接口检查点 | `PASSED`（保留原范围） | 原 25 操作/58 Schema/同包客户端与四出口通过；不自动覆盖新增 Leader 支持面，不等于正式发行或任意版本兼容 |
-| B3 正式可靠发布 | `IN_PROGRESS`（stable 候选材料就绪） | fc2cdc92 候选与 artifact 10132869579、包 manifest=`sha256:828b3ada…`、Mac/CI/Linux 三处字节等价、Linux 实机部署与长期运行样本通过；正式受保护发行与签名/notarized 仍未执行，不据本轮声称 B3 通过 |
+| B3 正式可靠发布 | `PASSED` | `v1.0.0` 已发布（annotated tag、GitHub Release、ADR 0096 minisign 签名三级互证全绿、安装恢复公式自述）；ENOSPC 按既有 EFBIG 证据边界归档、Mach-O/notarized 不适用、usage=null 与 `trueProcessOverlapProven=false` 如实留空 |
 
 ### 19:23 及更早检查点（历史，不覆盖当前表）
 

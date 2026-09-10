@@ -1,5 +1,13 @@
 # 设计审计报告
 
+## 2026-09-10 最新：v1.0.0 受保护 stable 已发布（ADR 0096 minisign、三级互证全绿）
+
+`v1.0.0` 首个受保护 stable 发行已上线：[发布页](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0)。身份：annotated tag object `b9b7c6b7e6a398c0915bb38476cc5920d2c713d7` → sourceHead `fc2cdc9298c3e1aaf47615373bb24e6d80e4c719`（发布的独立 Decision、ADR 0096 minisign 签名 trusted comment `timestamp:1789017236` 由维护者在其密钥下执行，`minisign -V` 与 `shasum -a 256 -c` 均通过）。资产 6 项：候选 ZIP、`manifest.json`、签名清单 `SHA256SUMS` 与其签名 `SHA256SUMS.minisig`、公钥原文、dossier。
+
+发行通关路径：维护者在仓库 rules 页删除 ruleset `block-v1-tags-until-rc1-evidence`（曾把 refs/tags/v1.* 全部拦截）；该 ruleset 的删除是维护者受控动作，不在报告中诊断为能力扩展。维护者公钥写入 `docs/RELEASE-PUBLIC-KEY.minisign.txt` 并随 release 附原文。
+
+历史与现场收窄维持：候选圆点 `fc2cdc92` 的用户边仍为 `trusted-single-user` 角色团队 Node profile；旧 `v1.0.0-rc1` 未被重写或回签；`usage=null`、`trueProcessOverlapProven=false`、`/usr/bin/git` 写死用例的部署假设与 ENOSPC（按既有 EFBIG 边界）如实留档不变。
+
 ## 2026-09-10 最新：B2-L 剩余出口闭合，真实局部修正保留无关成果，Linux 实机验收与 same-bytes 候选就绪
 
 主线四个缺陷链经独立 review 无 P0/P1 后逐段合入：`f05bd316` 把 parse 阶段被拒的原始输出以有界 base64（head≤1536B/tail≤512B/digest/截断标志/Unicode wellformed）保留到既有 stderr 诊断通道（限流 8 条/进程、单行 ≤4096B、闭集校验、stored/receipt/verdict/结算路径不变），并把 Review 提示收紧到"首字符 `{`、末字符 `}`、无 Markdown/围栏/重复键/尾逗号"；`6f2d7f97` 把受管诊断 reason 枚举扩为 171 项**白名单 ⊇ 可达集**（含 custody/ACP/RPC/pi_bridge/runtime 全部编译期常量），并新增机器守卫测试静态扫描五个 agent 包防漂移、三副本相等断言、递归 walk；`b5aa5261` 定位并修复真实失败根因——pi 0.84.4 rpc 会转发 `bash_execution_update/entry_appended/thinking_level_changed/session_info_changed` 而客户端闭集未收，导致 review 阶段 `pi_unexpected_event` 终结 turn；`fc2cdc92` 把"诚实"修复场景从 28 轮零自然失误的状态恢复为可接受设计：规则一字不改、数据达 168 行普通业务量。
