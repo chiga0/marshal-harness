@@ -18,7 +18,24 @@ const {run, connectLocal} = await load('task-local/main.mjs');
 const hash = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 const save = (name, value) => fs.writeFileSync(path.join(root, name), JSON.stringify(value, null, 2), {mode: 0o600, flag: 'wx'});
 const evidence = {passed: false, model: true, externalEffects: false, installation, tasks: []};
-let handle;
+let handle, client, currentTaskId;
+// Best-effort independent public snapshots. A failed read must not hide the
+// original failure or prevent the other available evidence from being saved.
+async function saveFailureSnapshots() {
+  if (!client || !currentTaskId) return;
+  const reads = {
+    task: () => client.getTask(currentTaskId),
+    leader: () => client.getLeader(currentTaskId),
+    audit: () => client.getAudit(currentTaskId),
+    plan: () => client.request('task.plan', {path: {taskId: currentTaskId}}),
+    workers: () => client.request('task.workers', {path: {taskId: currentTaskId}, query: {limit: 100}}),
+  };
+  evidence.failureSnapshotErrors = {};
+  for (const [name, read] of Object.entries(reads)) {
+    try {save(currentTaskId + '-failure-' + name + '.json', await read());}
+    catch (error) {evidence.failureSnapshotErrors[name] = error.code ?? 'snapshot_unavailable';}
+  }
+}
 async function start() {
   const child = spawn(process.execPath, [path.join(installation, 'packages/task-local/main.mjs'), 'serve', '--settings-dir', settingsDir],
     {stdio: ['ignore', 'pipe', 'pipe']});
@@ -55,7 +72,7 @@ async function until(client, taskId, wanted, deadline) {
     if (task.status !== last) {console.log(JSON.stringify({taskId, status: task.status})); last = task.status;}
     if (task.status === wanted) return task;
     if (['failed', 'cancelled', 'intervention', 'awaiting-answer', 'awaiting-confirmation', 'completed'].includes(task.status)) {
-      save(taskId + '-unexpected.json', {task, leader: await client.getLeader(taskId), audit: await client.getAudit(taskId)});
+      save(taskId + '-unexpected.json', {task});
       throw new Error('unexpected_task_status_' + task.status);
     }
     await pause(500);
@@ -64,7 +81,7 @@ async function until(client, taskId, wanted, deadline) {
 }
 try {
   await run(['init', '--install-root', installation, '--settings-dir', settingsDir], {home: root, output: value => save('init.json', value)});
-  let client = await start();
+  client = await start();
   assert.equal((await client.request('ready.get')).ready, true);
   const cases = [
     {intent: '为读书会准备两份互补的中文活动材料', topics: ['主持流程', '讨论问题'],
@@ -73,16 +90,22 @@ try {
       detail: '开店清单至少列出卫生、设备和备料三类检查；问卷至少包含口味、服务和改善建议三个问题。'},
   ];
   for (const [index, item] of cases.entries()) {
+    currentTaskId = undefined;
     const body = {intent: item.intent,
       context: {inputRefs: [], text: item.detail + ' 这是只交付文件的合成测试，不执行外部动作、不访问网络、不需要用户追加信息。' +
         '请组织两个互补作者并行，分别负责所述两份材料。每人只输出自己的 result.md。独立审查与文件核验后完成下载交付，不发布。'},
       requirements: {deliverables: item.topics, acceptance: [item.detail, '两份文件分别包含对应中文主题；不声称实际举行活动或执行经营操作。']},
       limits: {timeoutMs: 600000, maxAttempts: 17, maxWorkers: 3}};
-    const task = await client.createTask(body, 'generic-live-task-' + index);
+    const idempotencyKey = 'generic-live-task-' + index;
+    save('task-' + index + '-create-request.json', {body, idempotencyKey});
+    const task = await client.createTask(body, idempotencyKey);
+    currentTaskId = task.id;
+    save('task-' + index + '-create-response.json', task);
     const entry = {taskId: task.id, intent: item.intent, startedAt: Date.now()}; evidence.tasks.push(entry);
     const deadline = Date.parse(task.deadlineAt);
     const preview = await until(client, task.id, 'awaiting-approval', deadline);
     const plan = await client.request('task.plan', {path: {taskId: task.id}});
+    save('task-' + index + '-plan.json', {preview, plan});
     assert.equal(plan.nodes.filter(node => node.role === 'author').length, 2);
     assert.equal(plan.nodes.filter(node => node.role === 'verifier').length, 1);
     await client.approveTask(task.id, {expectedRevision: preview.revision, planRevision: plan.revision, planDigest: plan.digest}, 'generic-live-approve-' + index);
@@ -113,7 +136,10 @@ try {
     entry.coldReplayUnchanged = true;
   }
   evidence.passed = true;
-} catch (error) {evidence.error = error.code ?? error.message; process.exitCode = 1;}
+} catch (error) {
+  evidence.error = error.code ?? error.message; process.exitCode = 1;
+  await saveFailureSnapshots();
+}
 finally {
   try {if (handle) evidence.stop = await handle.stop();} catch (error) {evidence.passed = false; evidence.stopError = error.message; process.exitCode = 1;}
   save('evidence.json', evidence); console.log(JSON.stringify(evidence));
