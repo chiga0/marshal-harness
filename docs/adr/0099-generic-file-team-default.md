@@ -26,3 +26,9 @@
 ## 验收出口
 
 同一默认配置至少完成两种不同文件需求的真实 HTTP/Qwen 团队交付及下载；覆盖内容拒收、摘要漂移、越界/多余文件、取消和冷开无重复执行。机器测试与真实模型证据分别记录。未完成前不得宣称新版开箱即用或 DataAgent ETL 生产验收通过。
+
+## 实机反馈：收尾事实必须可见
+
+第二次实测发现：Core 已保存 `leader.delivery` 与 `stage=finalizing`，但 Leader 冻结输入只含历史摘要、不含这些现有事实，后续通知仍为 `delivery-ready`，导致重复 `deliver`。本决定补充 ADR0095 的内部 Leader 输入：新调用的 snapshot 显式携带当前 stage 与 delivery，二者仍来自唯一 durable Core，不接受 Agent 自报或新增状态机。它们与完整输入一同绑定摘要；原已冻结 ticket、输入摘要和历史证据不回写、不重算。
+
+Leader 在交付已记录后应根据原 Review/验收总结 `conclude`，不是再次交付；Core 对新发起的重复 `deliver` 拒绝。原命令的耐久幂等查找与恢复语义不变，不把相同命令恢复误判为新的重复动作。提示文本只是解释事实，不替代授权、currentness、独立审查及验收检查。
