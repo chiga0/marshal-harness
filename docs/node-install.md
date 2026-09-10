@@ -1,6 +1,6 @@
 # Node v1.0.2 下载部署
 
-> v1.0.2 正在签名发行准备中；下列新版本地址在发行及 OSS 镜像完成前不可用于安装。实际状态见 [v1.0.2 发行记录](v1.0.2-release-dossier-2026-09-10.md)。旧 v1.0.0/v1.0.1 的字节和安装不变。
+> [v1.0.2 已发布](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.2)，OSS 六项资产已同步并公开下载验签通过。实际证据见 [v1.0.2 发行记录](v1.0.2-release-dossier-2026-09-10.md)。旧 v1.0.0/v1.0.1 的字节和安装不变。
 
 本入口安装 v1.0.2 的 Node Agent Team 文件，不安装历史 Go CLI，不编译或执行 Marshal 原生二进制，不请求 sudo，不修改系统安全设置。精确证据与发布状态见 [v1.0.2 发行记录](v1.0.2-release-dossier-2026-09-10.md)。
 
