@@ -1,4 +1,3 @@
-import {supportsNode} from '../task-store/runtime.mjs';
 // External installed-package consumer; excluded from the runtime inventory.
 // The only configuration is the ORIGINAL installed regional-window config.
 import assert from 'node:assert/strict';
@@ -80,7 +79,7 @@ function launch(node, args, env, cwd) {
 }
 export async function run(options) {
   const o = parseOptions(Object.entries(options).flatMap(([key, value]) => value === true ? ['--' + key] : ['--' + key, value]));
-  assert.ok(supportsNode()); assert.ok(process.getuid() > 0);
+  assert.ok(Number(process.versions.node.split('.')[0]) >= 22); assert.ok(process.getuid() > 0);
   assert.equal(fs.realpathSync(o.node), fs.realpathSync(process.execPath));
   const manifest = verify({root: o.package, manifestDigest: o['manifest-digest']});
   assert.equal(manifest.sourceHead, o['source-head'], 'source_pin_mismatch');

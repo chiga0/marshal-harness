@@ -1,4 +1,3 @@
-import {supportsNode} from '../task-store/runtime.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,7 +16,7 @@ async function until(observe, predicate, milliseconds = 15000) {
 }
 
 export async function exerciseInstalledTeam(t, {installed, manifestDigest, sourceHead, custody}) {
-  assert.ok(supportsNode());
+  assert.ok(Number(process.versions.node.split('.')[0]) >= 22);
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-installed-team-')));
   const state = path.join(parent, 'state');
   const journal = path.join(parent, 'observations.jsonl'), children = [];
