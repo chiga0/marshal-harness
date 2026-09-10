@@ -37,10 +37,14 @@ MAX_OUTPUT = 256 << 10
 SHA = re.compile(r"[a-f0-9]{40}\Z")
 DIGEST = re.compile(r"sha256:[a-f0-9]{64}\Z")
 DECIMAL = re.compile(r"[1-9][0-9]{0,15}\Z")
-JOBS = frozenset({"Node team (ubuntu-latest)", "Node team (macos-latest)",
-                  "Freeze one Node candidate", "Consume the same Node candidate (ubuntu-latest)",
-                  "Consume the same Node candidate (macos-latest)"})
+JOBS = frozenset({"Freeze one Node candidate"} | {
+    f"{name} ({platform}, Node {version})"
+    for name in ("Node team", "Consume the same Node candidate")
+    for platform in ("ubuntu-latest", "macos-latest")
+    for version in ("22.22.1", "24.15.0")
+})
 VALIDATORS = (
+    "packages/task-store/runtime.mjs",
     "packages/task-distribution/index.mjs", "packages/task-distribution/main.mjs",
     "packages/task-distribution/candidate-consumer.mjs", "packages/task-distribution/installed-team.fixture.mjs",
     "packages/task-distribution/team-service.fixture.mjs", "packages/task-team-integration/agent.fixture.mjs",
@@ -190,10 +194,10 @@ def github_snapshot(api, expected):
     page_path = run_path + f'/attempts/{expected["attempt"]}/jobs?per_page=100&page='
     first, tail = api.get(page_path + "1"), api.get(page_path + "2")
     jobs = first.get("jobs")
-    need(type(first.get("total_count")) is int and first["total_count"] == 5 and type(jobs) is list and len(jobs) == 5 and
-         type(tail.get("total_count")) is int and tail["total_count"] == 5 and tail.get("jobs") == [], "incomplete_jobs")
+    need(type(first.get("total_count")) is int and first["total_count"] == len(JOBS) and type(jobs) is list and len(jobs) == len(JOBS) and
+         type(tail.get("total_count")) is int and tail["total_count"] == len(JOBS) and tail.get("jobs") == [], "incomplete_jobs")
     need(all(type(job) is dict for job in jobs), "invalid_jobs")
-    need({job.get("name") for job in jobs} == JOBS and len({job.get("id") for job in jobs}) == 5, "invalid_jobs")
+    need({job.get("name") for job in jobs} == JOBS and len({job.get("id") for job in jobs}) == len(JOBS), "invalid_jobs")
     for job in jobs:
         need(integer(job.get("id")) and integer(job.get("run_id")) and integer(job.get("run_attempt")) and
              all(job.get(key) == value for key, value in {"run_id": expected["runId"], "run_attempt": expected["attempt"],
@@ -248,7 +252,8 @@ def read_regular(filename, maximum):
 def trusted_source(root, source_head, node):
     canonical_directory(root)
     need(os.path.isabs(node) and os.access(node, os.X_OK), "invalid_node")
-    need(command([node, "--version"]).strip() == b"v24.15.0", "unsupported_node")
+    version = command([node, "--version"]).strip()
+    need(re.fullmatch(rb"v\d+\.\d+\.\d+", version) is not None and int(version.split(b".")[0][1:]) >= 22, "unsupported_node")
     need(command(["git", "-C", root, "rev-parse", "--show-toplevel"]).decode().strip() == root and
          command(["git", "-C", root, "rev-parse", "HEAD"]).decode().strip() == source_head, "validator_source_mismatch")
     for name in VALIDATORS:
@@ -364,7 +369,7 @@ class PrivateOutput:
         self.held.clear()
 
 
-def consumer_result(raw, expected):
+def consumer_result(raw, expected, runtime_version=NODE_VERSION):
     lines = raw.decode("utf-8", "strict").splitlines()
     for item in ("# tests 2", "# pass 2", "# fail 0", "# cancelled 0", "# skipped 0"):
         need(lines.count(item) == 1, "consumer_incomplete")
@@ -375,7 +380,7 @@ def consumer_result(raw, expected):
             if "layout" in item:
                 need(set(item) == {"sourceHead", "manifestDigest", "node", "platform", "arch", "uid", "layout", "originalExecutions", "attempts", "deliveryDigest", "coldReplayDuplicateStarts"} and
                      item["sourceHead"] == expected["sourceHead"] and item["manifestDigest"] == expected["manifestDigest"] and
-                     item["node"] == NODE_VERSION and item["platform"] + "-" + item["arch"] in ("darwin-arm64", "linux-x64") and
+                     item["node"] == runtime_version and item["platform"] + "-" + item["arch"] in ("darwin-arm64", "linux-x64") and
                      integer(item["uid"]) and item["layout"] in (1, 2) and item["originalExecutions"] == item["attempts"] == 4 and
                      item["coldReplayDuplicateStarts"] == 0 and DIGEST.fullmatch(item["deliveryDigest"]), "consumer_binding_mismatch")
                 summaries.append(item)
@@ -431,7 +436,8 @@ def admit(expected, *, api, source, node, target, archive=None):
             output.sync()
             raise
         output.write(os.path.join(target, "consumer.tap"), tap)
-        summaries = consumer_result(tap, expected)
+        runtime_version = command([node, "--version"]).decode().strip().removeprefix("v")
+        summaries = consumer_result(tap, expected, runtime_version)
         need(github_snapshot(api, expected) == before, "github_observation_drift")
         trusted_source(source, expected["sourceHead"], node)
         final = parse(command([node, os.path.join(source, "packages/task-distribution/main.mjs"), "verify", "--root", installed,

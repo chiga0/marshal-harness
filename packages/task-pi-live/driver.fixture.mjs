@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 // Explicit, test-only Pi HTTP team driver; never included in default release.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -95,7 +96,7 @@ async function until(client, id, expected, deadline) {
 /** No model is launched before the explicit flag and native identity checks. */
 export async function runLive(options) {
   check(options?.executeReal === true, 'explicit_real_execution_required');
-  check(process.versions.node === '24.15.0' && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
+  check(supportsNode() && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
   const packageRoot = path.resolve(path.dirname(options.piEntry), '../..');
   check(options.piEntry === path.join(packageRoot, 'dist/bundle/cli.js') && options.sdkEntry === path.join(packageRoot, 'dist/index.js') &&
     fs.realpathSync(options.piEntry) === options.piEntry && fs.realpathSync(options.sdkEntry) === options.sdkEntry, 'pi_entry_identity');

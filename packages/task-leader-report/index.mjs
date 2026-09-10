@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -16,7 +17,7 @@ const checkerPath = here('../task-regional-window/checker.mjs');
 /** Trusted deployment DI, not HTTP input. Returning the original FileBusiness
  * object preserves its private managed identity; no prepare wrapper/claim. */
 export function createLeaderReportConfig({provider, reportRoot, readBaseURL, executable = process.execPath}) {
-  check(process.versions.node === '24.15.0' && path.isAbsolute(executable) && fs.realpathSync(executable) === fs.realpathSync(process.execPath) &&
+  check(supportsNode() && path.isAbsolute(executable) && fs.realpathSync(executable) === fs.realpathSync(process.execPath) &&
     provider?.id && typeof provider.start === 'function', 'report_configuration');
   const code = digest(encode(['./policy.mjs', './permission.mjs', './index.mjs', '../task-regional-window/policy.mjs', '../task-regional-window/checker.mjs']
     .map(file => ({file, digest: digest(fs.readFileSync(here(file)))}))));
@@ -72,7 +73,7 @@ export function createLeaderReportConfig({provider, reportRoot, readBaseURL, exe
 /** Only the original Pi reads its native login/configuration. No auth copying,
  * fallback, no-tools or replacement HOME. HTTP cannot select these paths. */
 export function createPiLeaderReportConfig({piEntry, sdkEntry, reportRoot, readBaseURL, node = process.execPath}) {
-  check(process.versions.node === '24.15.0' && path.isAbsolute(piEntry ?? '') && path.isAbsolute(sdkEntry ?? '') &&
+  check(supportsNode() && path.isAbsolute(piEntry ?? '') && path.isAbsolute(sdkEntry ?? '') &&
     fs.realpathSync(node) === fs.realpathSync(process.execPath), 'report_pi_configuration');
   const root = path.resolve(path.dirname(piEntry), '../..');
   check(piEntry === path.join(root, 'dist/bundle/cli.js') && sdkEntry === path.join(root, 'dist/index.js') &&

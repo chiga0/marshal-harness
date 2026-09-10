@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 // Explicit real-model acceptance tool. Not distributed and never run by default CI.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -83,7 +84,7 @@ export async function runLive(options) {
   check(options?.executeReal === true && ['question', 'cancel', 'worker-cancel'].includes(scenario) &&
     (scenario !== 'question' ? options.answer === undefined : choices.includes(options.answer)), 'explicit_real_execution_required');
   check(scenario !== 'worker-cancel' || Number.isSafeInteger(options.timeoutMs) && options.timeoutMs > 0 && options.timeoutMs <= 600000, 'worker_cancel_budget_limit');
-  check(process.versions.node === '24.15.0' && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
+  check(supportsNode() && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
   const packageRoot = path.resolve(path.dirname(options.piEntry), '../..');
   check(options.piEntry === path.join(packageRoot, 'dist/bundle/cli.js') && options.sdkEntry === path.join(packageRoot, 'dist/index.js') &&
     fs.realpathSync(options.piEntry) === options.piEntry && fs.realpathSync(options.sdkEntry) === options.sdkEntry, 'pi_entry_identity');

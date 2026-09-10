@@ -2,6 +2,7 @@ import {pathToFileURL} from 'node:url';
 import {startTaskService} from './composition.mjs';
 import {parseLaunchArguments, prepareLaunch} from './launch.mjs';
 import {safeManagedDiagnostic, safeRejectedOutputDiagnostic} from '../task-application/leader-ports.mjs';
+import {sqliteRuntimeCapabilities} from '../task-store/store.mjs';
 
 // The module is trusted deployment code, never an HTTP-provided plugin/argv.
 async function main(argv) {
@@ -13,6 +14,7 @@ async function main(argv) {
   }
   const configuration = (await import(pathToFileURL(args.config).href)).default;
   if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) throw new Error('configuration');
+  sqliteRuntimeCapabilities();
   const target = prepareLaunch(args); let service, managedDiagnostics = 0, rejectedDiagnostics = 0;
   try {
     target.check();

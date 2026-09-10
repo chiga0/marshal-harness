@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 // Explicit, test-only real-model driver. Never a default service configuration.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -247,7 +248,7 @@ function nativeEnvironment(node) {
  * model output fixture, arbitrary shell or direct Application mutation. */
 export async function runLive(options) {
   const scenario = options.scenario ?? 'team'; check(['team', 'cancel'].includes(scenario), 'invalid_scenario');
-  check(process.versions.node === '24.15.0' && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
+  check(supportsNode() && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
   check(fs.realpathSync(options.qwenEntry) === options.qwenEntry && path.basename(options.qwenEntry) === 'cli-entry.js', 'qwen_entry_identity');
   const qwenPackage = JSON.parse(fs.readFileSync(path.join(path.dirname(options.qwenEntry), 'package.json')));
   check(qwenPackage.name === '@qwen-code/qwen-code', 'qwen_entry_identity');

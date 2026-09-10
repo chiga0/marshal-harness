@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -14,7 +15,7 @@ async function until(read, predicate, label, ms = 60000) {
   for (;;) {const value = await read(); if (predicate(value)) return value; assert.ok(Date.now() < deadline, label); await pause(25);}
 }
 test('installed production report configuration: same config, two original HTTP inputs/answers, owned team, explicit publication, real GET and cold replay', {timeout: 150000}, async t => {
-  assert.equal(process.versions.node, '24.15.0');
+  assert.ok(supportsNode());
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-leader-report-installed-'))), source = path.join(root, 'source'), installed = path.join(root, 'package');
   fs.mkdirSync(source, {mode: 0o700});
   for (const name of SOURCE_FILES) {fs.mkdirSync(path.dirname(path.join(source, name)), {recursive: true, mode: 0o700}); fs.copyFileSync(path.join(repository, name), path.join(source, name));}

@@ -16,7 +16,7 @@ test('v7 consumer does not manufacture artifact identity for local evidence', ()
 });
 const pins = candidateInputs({...valid, MARSHAL_CANDIDATE_ARTIFACT_ID: '123'});
 const result = () => ({sourceHead: pins.sourceHead, manifestDigest: pins.manifestDigest, artifactId: pins.artifactId, files: 55,
-  node: '24.15.0', platform: 'linux', arch: 'x64', uid: 1001, layout: 7, sameConfiguration: true,
+  node: process.versions.node, platform: 'linux', arch: 'x64', uid: 1001, layout: 7, sameConfiguration: true,
   tasks: ['task-one', 'task-two'].map(taskId => ({taskId, attempts: 12, overlapMs: 400, deliveryDigest: 'sha256:' + 'c'.repeat(64), deliveryBytes: 93,
     executions: {leader: 6, agent: 2, review: 1, verification: 1, publication: 1, postverify: 1}, reviewDigest: 'sha256:' + 'd'.repeat(64),
     publicationReceiptArtifactId: 'artifact-publication-' + taskId, postverifyEvidenceArtifactId: 'artifact-postverify-' + taskId})),

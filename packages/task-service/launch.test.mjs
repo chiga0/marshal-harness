@@ -7,6 +7,7 @@ import {spawn, spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
+import {withoutSQLiteRuntimeNotices} from '../task-store/runtime-notices.fixture.mjs';
 import {TaskClient} from '../task-client/index.mjs';
 import {parseLaunchArguments, prepareLaunch} from './launch.mjs';
 
@@ -54,7 +55,7 @@ function fixture(t) {
 }
 function rejectCLI(f, args) {
   const result = f.run(args); assert.equal(result.error, undefined); assert.equal(result.status, 1);
-  assert.equal(result.stdout, ''); assert.equal(result.stderr, '{"code":"service_start_unavailable"}\n'); return result;
+  assert.equal(result.stdout, ''); assert.equal(withoutSQLiteRuntimeNotices(result.stderr), '{"code":"service_start_unavailable"}\n'); return result;
 }
 // Own temporary SQLite only, after every original service process has exited.
 function durable(f, root = f.root) {
@@ -234,5 +235,5 @@ test('CLI errors keep the old safe envelope and do not create a default root wit
   for (const args of [[], ['--root', '/secret-do-not-echo'], [...base, '--data-dir', '/secret-do-not-echo', '--root', '/other'],
     ['--config', '/secret-do-not-echo/missing.mjs'], [...base, '--port', '65536']]) rejectCLI(f, args);
   assert.deepEqual(fs.readdirSync(f.home), []);
-  const help = f.run(['--help']); assert.equal(help.status, 0); assert.match(help.stdout, /HOME\/\.marshal-node\/task-service/); assert.equal(help.stderr, ''); f.complete = true;
+  const help = f.run(['--help']); assert.equal(help.status, 0); assert.match(help.stdout, /HOME\/\.marshal-node\/task-service/); assert.equal(withoutSQLiteRuntimeNotices(help.stderr), ''); f.complete = true;
 });

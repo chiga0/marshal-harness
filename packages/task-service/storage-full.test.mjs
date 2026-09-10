@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -46,7 +47,7 @@ async function originalFacts(client, original, history, input) {
 }
 
 test('original SQLite page-limit FULL rolls back HTTP authority and cold reopen preserves receipts without OS ENOSPC', {timeout: 65000}, async t => {
-  assert.equal(process.versions.node, '24.15.0');
+  assert.ok(supportsNode());
   const f = await fixture(t), root = path.join(f.parent, 'data'), initial = await f.launch(root, 'create');
   const input = await upload(initial.client), original = await completeTeam(initial.client, input.id, 'before-sqlite-full');
   const history = await events(initial.client, original.created.id); await initial.stop();

@@ -1,5 +1,7 @@
 # 正式 Node 服务组合根
 
+后继源码运行环境按 [ADR0097](../../docs/adr/0097-node-capability-based-runtime-admission.md) 接受 Node22及以上，并检查必需SQLite能力；CI验证具体版本，不把大版本准入当作所有未来版本的稳定性证明。下文固定24.15.0的实证及已签名v1.0.0包保留原范围，兼容源码需要新发行包，不能只修改旧安装器来启用。
+
 ## v7 受管 Leader：可运行检查点，尚非完整出口
 
 显式配置 `leader`、`review`、原 `verification`、`custody` 和真实 `createFileBusiness` 工厂后，新根采用 layout 7 / `marshal-node-task-sqlite/v7-managed-leader`。旧配置继续沿原格式，已有根不能原位迁移；配置与发布目标身份在 claim 前比对。v7 的原句柄、定时调度和停止属于 `TaskExecutionCoordinator`，Core 保留同一 SQLite 准入/预算/结果事务；独立 Review 与客观 Verification 不是作者自签，阶段验收也不直接完成 Task。

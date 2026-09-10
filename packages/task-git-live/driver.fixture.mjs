@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 // Explicit operator acceptance tool, not production inventory/default business.
 // Real execution requires --execute-real and a clean exact source checkout.
 import fs from 'node:fs';
@@ -19,7 +20,7 @@ import {LIMITS, NODES, MARKER, END, policy, proposal, taskBody, bindPlan, valida
 
 const here = name => fileURLToPath(new URL(name, import.meta.url));
 const SOURCE = fs.realpathSync(here('../..')), CHECKER = here('./checker.fixture.mjs');
-const GIT = '/usr/bin/git', NODE_VERSION = '24.15.0';
+const GIT = '/usr/bin/git';
 const git = async (cwd, args, extra) => (await runGit(GIT, cwd, args, extra)).toString();
 const text = value => typeof value === 'string' && value.isWellFormed() && !value.includes('\0');
 const safePath = value => text(value) && path.isAbsolute(value) && path.normalize(value) === value && value !== path.parse(value).root;
@@ -52,7 +53,7 @@ export function parseOptions(argv) {
 }
 async function native(options) {
   check(options?.executeReal === true && ownKeys(options, ['executeReal', 'runDir', 'node', 'piEntry', 'sdkEntry', 'qwenEntry', 'sourceHead']), 'explicit_real_execution_required');
-  check(process.versions.node === NODE_VERSION && safePath(options.node) && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
+  check(supportsNode() && safePath(options.node) && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
   check(/^[a-f0-9]{40}$/.test(options.sourceHead ?? '') && (await git(SOURCE, ['rev-parse', 'HEAD'])).trim() === options.sourceHead &&
     (await git(SOURCE, ['status', '--porcelain', '--untracked-files=all'])).trim() === '', 'source_not_clean_exact');
   const piRoot = path.resolve(path.dirname(options.piEntry), '../..'), qwenRoot = path.dirname(options.qwenEntry);

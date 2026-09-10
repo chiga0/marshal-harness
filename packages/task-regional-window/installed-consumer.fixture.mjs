@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {verify, NODE_VERSION} from '../task-distribution/index.mjs';
+import {verify} from '../task-distribution/index.mjs';
 
 const hash = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 const same = (a, b) => assert.deepEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)));
@@ -79,7 +79,7 @@ function launch(node, args, env, cwd) {
 }
 export async function run(options) {
   const o = parseOptions(Object.entries(options).flatMap(([key, value]) => value === true ? ['--' + key] : ['--' + key, value]));
-  assert.equal(process.versions.node, NODE_VERSION); assert.ok(process.getuid() > 0);
+  assert.ok(Number(process.versions.node.split('.')[0]) >= 22); assert.ok(process.getuid() > 0);
   assert.equal(fs.realpathSync(o.node), fs.realpathSync(process.execPath));
   const manifest = verify({root: o.package, manifestDigest: o['manifest-digest']});
   assert.equal(manifest.sourceHead, o['source-head'], 'source_pin_mismatch');

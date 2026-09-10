@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 // Manual opt-in only: real Pi, original Core and explicit local report target.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -172,7 +173,7 @@ const healthy = task => {check(!['failed', 'cancelled', 'intervention', 'cancell
 export async function runLive(options) {
   check(options?.executeReal === true && options.allowLocalPublication === true && equal(options.answers, choices) &&
     ['complete', 'first-workers'].includes(options.checkpoint), 'explicit_real_execution_required');
-  check(process.versions.node === '24.15.0' && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
+  check(supportsNode() && fs.realpathSync(options.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
   const packageRoot = path.resolve(path.dirname(options.piEntry), '../..');
   check(options.piEntry === path.join(packageRoot, 'dist/bundle/cli.js') && options.sdkEntry === path.join(packageRoot, 'dist/index.js') &&
     fs.realpathSync(options.piEntry) === options.piEntry && fs.realpathSync(options.sdkEntry) === options.sdkEntry, 'pi_entry_identity');

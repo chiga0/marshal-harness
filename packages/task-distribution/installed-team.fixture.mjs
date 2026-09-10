@@ -6,7 +6,7 @@ import {fileURLToPath, pathToFileURL} from 'node:url';
 import {spawn} from 'node:child_process';
 import {setTimeout as pause} from 'node:timers/promises';
 import {createHash} from 'node:crypto';
-import {verify, NODE_VERSION} from './index.mjs';
+import {verify} from './index.mjs';
 
 const hash = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 async function until(observe, predicate, milliseconds = 15000) {
@@ -16,7 +16,7 @@ async function until(observe, predicate, milliseconds = 15000) {
 }
 
 export async function exerciseInstalledTeam(t, {installed, manifestDigest, sourceHead, custody}) {
-  assert.equal(process.versions.node, NODE_VERSION);
+  assert.ok(Number(process.versions.node.split('.')[0]) >= 22);
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-installed-team-')));
   const state = path.join(parent, 'state');
   const journal = path.join(parent, 'observations.jsonl'), children = [];
