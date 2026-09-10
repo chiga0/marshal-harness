@@ -6,7 +6,7 @@ import path from 'node:path';
 try {
   const [command, source, extra] = process.argv.slice(2);
   if (command !== 'inventory' || extra !== undefined || !path.isAbsolute(source ?? '') || path.resolve(source) !== source ||
-      process.versions.node !== '24.15.0') throw Error();
+      !/^\d+\.\d+\.\d+$/.test(process.versions.node) || Number(process.versions.node.split('.')[0]) < 22) throw Error();
   const {SOURCE_FILES, NODE_VERSION} = await import(pathToFileURL(path.join(source, 'packages/task-distribution/index.mjs')).href);
   process.stdout.write(JSON.stringify({files: SOURCE_FILES, node: NODE_VERSION}) + '\n');
 } catch {
