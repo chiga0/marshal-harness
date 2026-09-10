@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import {randomBytes, randomUUID} from 'node:crypto';
-import {Store, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
+import {Store, sqliteRuntimeCapabilities, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
 import {isStagingOnlyBusiness, isManagedFileBusiness, START_PROTOCOL} from '../task-business/index.mjs';
 import {TaskCleanup} from '../task-application/cleanup.mjs';
 import {createExecutionCustody} from '../agent-runtime/custody.mjs';
@@ -260,6 +260,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     return closing;
   }
   try {
+    sqliteRuntimeCapabilities();
     files = new ServiceRoot(root, mode, !!custody, !!runtimeQuestions, !!repair, !!unpermitted, !!workerCancellation, leaderConfig);
     const storeOptions = leader ? {format: LEADER_FORMAT} : workerCancellation ? {format: WORKER_CANCELLATION_FORMAT} : unpermitted ? {format: UNPERMITTED_FORMAT} : repair ? {format: REPAIR_FORMAT} : runtimeQuestions ? {format: INTERACTION_FORMAT} : custody ? {format: CUSTODY_FORMAT} : {};
     store = mode === 'create' ? Store.create(path.join(root, 'store'), storeOptions) : Store.openExisting(path.join(root, 'store'), storeOptions);
