@@ -275,6 +275,12 @@ export function renderLeaderPrompt(input) {
   // digest, infer authorization or repair/normalize a returned model action.
   const snapshot = input.snapshot ?? {}, read = kind => snapshot.readSet?.find(item => item.kind === kind)?.digest ?? null;
   const selection = snapshot.selection ?? [], evidence = snapshot.evidence ?? [], plan = snapshot.plan;
+  // Only new reservations carry these durable facts. Never infer/backfill them
+  // into an old frozen input, whose renderer and input digest remain historical.
+  const completionFacts = Object.hasOwn(snapshot, 'stage') && Object.hasOwn(snapshot, 'delivery');
+  const reviewed = evidence.some(item => item.kind === 'review' && item.verdict === 'accept');
+  const verified = evidence.some(item => item.kind === 'verification' && item.status === 'passed');
+  const delivered = completionFacts && snapshot.delivery !== null;
   const references = {
     askSubjects: [{source: 'snapshot.readSet[input].digest', digest: read('input')},
       {source: 'snapshot.readSet[plan].digest', digest: read('plan')},
@@ -291,6 +297,7 @@ export function renderLeaderPrompt(input) {
     deliveries: (input.materials ?? []).filter(item => item.kind === 'delivery' && item.status === 'ready').map(item => ({artifactId: item.id, digest: item.digest})),
     acceptanceDigest: read('acceptance'), reviewDigest: read('review'),
     conclusionBasisDigests: [read('review'), read('acceptance'), ...(snapshot.history ?? []).map(item => item.digest)].filter(sha),
+    ...(completionFacts ? {completion: {stage: snapshot.stage, delivery: snapshot.delivery}} : {}),
   };
   const missing = '当前冻结输入无此引用：不得输出此动作或自行生成摘要';
   const example = action => ({profile: LEADER_PROFILE, callId: input.callId, inputDigest: input.inputDigest, summary: '按原需求说明本次业务理由', actions: [action]});
@@ -298,12 +305,16 @@ export function renderLeaderPrompt(input) {
     ask: references.askSubjects.length ? example({type: 'ask', kind: 'business', prompt: '说明真实缺少的业务信息，不预填答案', options: [],
       subject: references.askSubjects[0].digest, nodeIds: plan ? references.planNodeIds.slice(0, 1) : []}) : missing,
     plan: example({type: 'plan', proposal}),
-    work: references.selectedNodeIds.length && sha(references.selectionDigest) ? example({type: 'work', kind: 'review', nodeIds: references.selectedNodeIds, selectionDigest: references.selectionDigest}) : missing,
+    work: references.selectedNodeIds.length && sha(references.selectionDigest) && (!completionFacts || !verified && !delivered) ?
+      example({type: 'work', kind: completionFacts && reviewed ? 'verify' : 'review',
+        nodeIds: completionFacts && reviewed ? references.verifierNodeIds : references.selectedNodeIds, selectionDigest: references.selectionDigest}) : missing,
     repair: references.repairBases.length ? example({type: 'repair', nodeIds: references.repairBases[0].nodeId ? [references.repairBases[0].nodeId] : references.selectedNodeIds,
       basis: {kind: references.repairBases[0].kind, digest: references.repairBases[0].digest}, feedback: '依据原负面证据说明精确修正要求'}) : missing,
-    deliver: references.deliveries.length && sha(references.acceptanceDigest) && sha(references.reviewDigest) ? example({type: 'deliver',
+    deliver: references.deliveries.length && sha(references.acceptanceDigest) && sha(references.reviewDigest) &&
+      (!completionFacts || reviewed && verified && !delivered) ? example({type: 'deliver',
       artifactId: references.deliveries[0].artifactId, acceptanceDigest: references.acceptanceDigest, reviewDigest: references.reviewDigest}) : missing,
-    conclude: example({type: 'conclude', outcome: 'succeeded', summary: '依据已完成的交付及后验说明整体结果', basisDigests: references.conclusionBasisDigests}),
+    conclude: !completionFacts || delivered && snapshot.stage === 'finalizing' ?
+      example({type: 'conclude', outcome: 'succeeded', summary: '依据已完成的交付及后验说明整体结果', basisDigests: references.conclusionBasisDigests}) : missing,
   };
   return '你是受管 Leader，只决定原任务的业务推进，不能启动进程、写文件、批准计划或提升权限。只返回一个 JSON 对象，无 Markdown。' +
     '回显 profile/callId/inputDigest，summary≤4096 UTF-8 bytes，actions 为1至 snapshot.policy.maxActions项。下列每项是单独的返回示例，绝不能合并为六动作决定。' +
@@ -338,6 +349,13 @@ export function renderLeaderPrompt(input) {
     '验收绑定还需保留Core追加合同项的原容量；这些仅为形状上界，不保证业务/布局/预算准入。' +
     'plan示例仅解释字段，必须按完整原需求、回复、共享上下文制定实际分工，不能照抄示例业务。只在真实缺项时ask，独立Review先于客观Verification。' +
     '机器引用/示例不是可执行授权清单，不表示当前阶段可做；缺少引用时不得编造，所有动作仍经Core原currentness/授权/预算/依赖检查。' +
+    (completionFacts ? '当前snapshot.stage与snapshot.delivery是Core已记录的只读事实，不是你的推测或用户授权。' +
+      '独立Review已accept而客观验收尚未passed时，下一步请求work.kind=verify，仅列原verifier节点。' +
+      'Review和验收均通过、snapshot.delivery为null时才首次deliver；materials中的ready delivery只代表制品已准备，不代表deliver已被接纳。' +
+      'snapshot.delivery非null证明Core已接纳交付，禁止重复deliver，也不要重复review/verify。' +
+      'snapshot.stage=finalizing且delivery非null时，应基于原Review/验收及要求的后验conclude.succeeded，不再请求交付。' +
+      'delivery-ready只是唤醒原因，同名通知不等于要求再次deliver；history仅有摘要，不需猜测历史动作。' +
+      '若publication已配置而stage尚非finalizing，交付记录不能代替明确授权和后验；仍由Core检查整体完成条件。' : '') +
     '\n冻结机器引用：' + JSON.stringify(references) + '\n独立返回示例：' + JSON.stringify(examples) +
     '\n完整冻结输入：' + JSON.stringify(input);
 }

@@ -77,18 +77,73 @@ test('original frozen selected/review/acceptance/delivery/history refs traverse 
   assert.equal((await f.decision(ticket, value.examples.work.actions)).status, 'completed');
   assert.equal((await f.review(f.take('review'))).status, 'completed');
   ticket = f.take('leader'); value = rendered(ticket);
+  assert.equal(ticket.input.leader.snapshot.delivery, null);
+  assert.equal(value.examples.work.actions[0].kind, 'verify');
+  assert.deepEqual(value.examples.work.actions[0].nodeIds, ['verify']);
   const verification = {...value.examples.work.actions[0], kind: 'verify', nodeIds: value.references.verifierNodeIds};
   assert.equal((await f.decision(ticket, [verification])).status, 'completed');
   assert.equal((await f.verify(f.take('execute', 'verify'))).status, 'completed');
   ticket = f.take('leader'); value = rendered(ticket);
   const delivery = ticket.input.leader.materials.find(item => item.kind === 'delivery');
+  assert.equal(value.references.completion.delivery, null);
+  assert.equal(typeof value.examples.work, 'string');
+  assert.equal(typeof value.examples.conclude, 'string');
   assert.equal(value.examples.deliver.actions[0].artifactId, delivery.id);
   assert.notEqual(value.examples.deliver.actions[0].acceptanceDigest, delivery.digest);
   assert.equal((await f.decision(ticket, value.examples.deliver.actions)).status, 'completed');
   ticket = f.take('leader'); value = rendered(ticket);
+  assert.equal(value.references.completion.stage, 'finalizing');
+  assert.deepEqual(value.references.completion.delivery, {artifactId: delivery.id,
+    acceptanceDigest: value.references.acceptanceDigest, reviewDigest: value.references.reviewDigest});
+  assert.equal(typeof value.examples.deliver, 'string');
+  assert.equal(typeof value.examples.work, 'string');
+  assert.match(value.prompt, /delivery-ready只是唤醒原因/);
+  assert.match(value.prompt, /禁止重复deliver/);
   assert.ok(!value.examples.conclude.actions[0].basisDigests.includes(ticket.input.leader.snapshot.readSet.find(item => item.kind === 'history').digest));
   assert.equal((await f.decision(ticket, value.examples.conclude.actions)).status, 'completed');
   assert.equal((await f.get(task.id)).status, 'completed');
+});
+test('new repeated deliver is rejected once; original completed command replay stays idempotent without a followup loop', async t => {
+  const {f, task, east, west} = await authors(t); f.author(east); f.author(west);
+  let ticket = f.take('leader'); await f.decision(ticket, rendered(ticket).examples.work.actions);
+  await f.review(f.take('review'));
+  ticket = f.take('leader'); await f.decision(ticket, rendered(ticket).examples.work.actions);
+  await f.verify(f.take('execute', 'verify'));
+  const deliveryTicket = f.take('leader'), actions = rendered(deliveryTicket).examples.deliver.actions;
+  assert.equal((await f.decision(deliveryTicket, actions)).status, 'completed');
+  const original = f.read(tx => f.app.get(tx, task.id)), head = f.read(tx => tx.head(task.id));
+  f.app.execution.finish(deliveryTicket, f.results.get(deliveryTicket.workerId));
+  assert.deepEqual(f.read(tx => tx.head(task.id)), head, 'same receipt is a no-op, not a new deliver');
+  ticket = f.take('leader');
+  assert.deepEqual(ticket.input.leader.snapshot.delivery, original.leader.delivery);
+  assert.equal((await f.decision(ticket, actions)).status, 'failed');
+  const failed = f.read(tx => f.app.get(tx, task.id));
+  assert.equal(failed.failureCode, 'invalid_leader_decision');
+  assert.deepEqual(failed.leader.delivery, original.leader.delivery);
+  assert.deepEqual(failed.leader.history, original.leader.history);
+  assert.equal(f.read(tx => tx.commands().filter(command => command.status === 'pending' && JSON.parse(command.payload).action === 'leader')).length, 0);
+  const stoppedHead = f.read(tx => tx.head(task.id));
+  f.app.execution.finish(ticket, f.results.get(ticket.workerId)); assert.deepEqual(f.read(tx => tx.head(task.id)), stoppedHead);
+});
+test('old frozen snapshot missing completion facts retains exact persisted bytes and historical rendering across cold open', async t => {
+  const f = fixture(t), task = await f.call({operation: 'task.create', key: 'old-create', body: {intent: '旧输入兼容，不回填',
+    limits: {timeoutMs: 60000, maxAttempts: 17, maxWorkers: 3}}});
+  // Simulate the previous producer BEFORE its immutable reservation is made.
+  // Never edit a stored ticket or manufacture an old-owner receipt.
+  const snapshot = f.app.leader.snapshot;
+  f.app.leader.snapshot = function(...args) {const value = snapshot.apply(this, args); delete value.snapshot.stage; delete value.snapshot.delivery; return value;};
+  const ticket = f.take('leader'); f.app.leader.snapshot = snapshot;
+  const before = structuredClone(ticket.input), prompt = renderLeaderPrompt(ticket.input.leader), observed = rendered(ticket);
+  assert.equal(Object.hasOwn(observed.references, 'completion'), false);
+  assert.doesNotMatch(prompt, /当前snapshot.stage与snapshot.delivery/);
+  const row = f.read(tx => tx.projection('attempt', ticket.workerId));
+  const record = JSON.parse(Buffer.from(row.bytes)), inputRow = f.read(tx => tx.projection('attempt', record.inputRef));
+  assert.equal(hash(before), ticket.inputDigest);
+  f.reopen();
+  assert.deepEqual(f.read(tx => tx.projection('attempt', record.inputRef)).bytes, inputRow.bytes);
+  assert.deepEqual(f.read(tx => tx.projection('attempt', ticket.workerId)).bytes, row.bytes);
+  assert.deepEqual(ticket.input, before); assert.equal(renderLeaderPrompt(ticket.input.leader), prompt);
+  assert.equal((await f.get(task.id)).id, task.id);
 });
 for (const wrong of [false, true]) test('execution-failure repair copies original evidence and wrong digest is refused: wrong=' + wrong, async t => {
   const {f, task, east, west} = await authors(t); f.author(west);

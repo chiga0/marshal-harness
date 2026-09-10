@@ -429,6 +429,7 @@ export class TaskLeader {
       generation: this.app.owner.generation.toString(), cursor: task.leader.cursor,
       snapshot: {task: {input: clone(task.input), inputArtifacts: clone(task.inputArtifacts), deadlineAt: task.task.deadlineAt,
         remainingAttempts: (task.plan?.budget ?? task.limits).maxAttempts - task.attempts, limits: clone(task.plan?.budget ?? task.limits), usage: null},
+      stage: task.leader.stage, delivery: clone(task.leader.delivery),
       plan: clone(task.plan), policy: clone(this.config.leader.policy), selection: task.plan ? this.selection(tx, task) : [],
       interactions: {replies: replies.answers, requests: requests.map(({replyRef, ...value}) => value),
         worker: this.workerInteractions(tx, task)}, evidence,
@@ -623,7 +624,7 @@ export class TaskLeader {
           for (const nodeId of affected) this.app.enqueue(tx, source, task.task.id, 'execute', {taskId: task.task.id, nodeId, planDigest: task.plan.digest, repairId});});
         task.task.status = 'running'; delete task.failureCode; delete task.task.code; record.result = {repairId};
       } else if (action.type === 'deliver') {
-        check(task.acceptance?.status === 'passed' && action.acceptanceDigest === task.acceptance.digest &&
+        check(!task.leader.delivery && task.acceptance?.status === 'passed' && action.acceptanceDigest === task.acceptance.digest &&
           task.leader.review?.verdict === 'accept' && action.reviewDigest === task.leader.review.digest &&
           task.leader.review.selectionDigest === selectionDigest, 'invalid_leader_decision');
         const artifact = this.app.artifacts.metadata(tx, action.artifactId);
