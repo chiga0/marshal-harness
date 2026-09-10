@@ -55,21 +55,23 @@ async function toError(response: Response, fallbackCode: string): Promise<ApiErr
 
 interface JsonOptions<Body = unknown> extends Omit<RequestInit, 'body'> {
   body?: Body;
+  idempotencyKey?: string;
 }
 
 async function requestJson<T>(config: Required<TransportConfig>, path: string, init?: JsonOptions<unknown>): Promise<T> {
   const token = currentToken;
   if (!token) throw new ApiError(401, 'token_missing', '未连接服务', null);
-  const {body: jsonBody, ...rest} = init ?? {};
-  const options: RequestInit = {
-    ...(rest as Omit<JsonOptions<unknown>, 'body'>),
-    headers: {
-      'Accept': 'application/json',
-      'Authorization': 'Bearer ' + token,
-      ...(jsonBody !== undefined ? {'Content-Type': 'application/json'} : {}),
-      ...(rest.headers ?? {}),
-    },
+  const {body: jsonBody, idempotencyKey, ...rest} = init ?? {};
+  const options: RequestInit = {};
+  if (rest.method !== undefined) options.method = rest.method;
+  options.headers = {
+    'Accept': 'application/json',
+    'Authorization': 'Bearer ' + token,
+    ...(jsonBody !== undefined ? {'Content-Type': 'application/json'} : {}),
+    ...(idempotencyKey ? {'Idempotency-Key': idempotencyKey} : {}),
+    ...(rest.headers ?? {}),
   };
+  if (rest.signal !== undefined) options.signal = rest.signal;
   if (jsonBody !== undefined) options.body = JSON.stringify(jsonBody);
   const response = await config.fetchLike(config.baseURL + path, options);
   if (!response.ok) throw await toError(response, 'api_error');
