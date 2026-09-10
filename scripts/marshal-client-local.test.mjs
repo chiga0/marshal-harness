@@ -173,3 +173,49 @@ test('startup timeout kills only own unresponsive service and preserves old conn
   await assert.rejects(run(['serve'], {home, startupTimeoutMs: 500, stopTimeoutMs: 100, output() {assert.fail('must not report connected');}}), /service_start_failed/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, '.marshal-client/local.json'))).connectionFile, oldConnection);
 });
+
+const managedDiagnostic = {code: 'managed_provider_failure', authority: false, taskId: 'task-diagnostic', workerId: 'worker-diagnostic', providerId: 'qwen',
+  executionType: 'leader', status: 'completed', stopReason: 'end_turn', reason: 'agent_end_turn', stage: 'parse', parseCode: 'invalid_leader_decision'};
+const rejectedDiagnostic = {code: 'managed_provider_rejected_output', authority: false, taskId: 'task-diagnostic', workerId: 'worker-diagnostic', providerId: 'qwen',
+  executionType: 'leader', encoding: 'utf8-base64', wellformed: true, bytes: 14, digest: 'sha256:' + 'a'.repeat(64), truncated: false,
+  head: Buffer.from('PRIVATE_RESULT').toString('base64'), tail: ''};
+async function diagnosticChild(t, source, options = {}) {
+  const home = fixture(t), config = path.join(home, 'config.mjs'); fs.writeFileSync(config, '{}');
+  const installed = fakeInstall(home, source);
+  await assert.rejects(run(['serve', '--install-root', installed, '--config', config], {
+    home, startupTimeoutMs: 2000, output() {assert.fail('diagnostics are not readiness');}, ...options}), /service_start_failed/);
+}
+test('trusted diagnostic observer receives only existing safe closed metadata; base64 rejection is opt-in', async t => {
+  const source = `const m=${JSON.stringify(managedDiagnostic)},r=${JSON.stringify(rejectedDiagnostic)};
+    process.stderr.write('PRIVATE_CONFIG_CREDENTIAL\\n');
+    process.stderr.write(JSON.stringify({...m,raw:'PRIVATE_RAW'})+'\\n');
+    process.stderr.write(JSON.stringify({...m,authority:true})+'\\n');
+    const bytes=Buffer.from(JSON.stringify(m)+'\\n');process.stderr.write(bytes.subarray(0,23));
+    setTimeout(()=>{process.stderr.write(bytes.subarray(23));process.stderr.write(JSON.stringify(r)+'\\n');},10);`;
+  await diagnosticChild(t, source);
+  const metadata = []; await diagnosticChild(t, source, {onDiagnostic: report => metadata.push(report)});
+  assert.deepEqual(metadata, [managedDiagnostic]); assert.doesNotMatch(JSON.stringify(metadata), /PRIVATE|head|raw/);
+  const opted = []; await diagnosticChild(t, source, {onDiagnostic: report => opted.push(report), includeRejectedOutput: true});
+  assert.deepEqual(opted, [managedDiagnostic, rejectedDiagnostic]);
+});
+test('diagnostic stream bounds line, report count and total bytes without changing service failure', async t => {
+  const source = `const m=${JSON.stringify(managedDiagnostic)},r=${JSON.stringify(rejectedDiagnostic)};
+    process.stderr.write('x'.repeat(4097)+'\\n');
+    for(let i=0;i<40;i++)process.stderr.write(JSON.stringify(m)+'\\n');
+    for(let i=0;i<12;i++)process.stderr.write(JSON.stringify(r)+'\\n');
+    process.stderr.write(JSON.stringify(m));`;
+  const reports = []; await diagnosticChild(t, source, {onDiagnostic: report => reports.push(report), includeRejectedOutput: true});
+  assert.equal(reports.filter(report => report.code === managedDiagnostic.code).length, 32);
+  assert.equal(reports.filter(report => report.code === rejectedDiagnostic.code).length, 8);
+  const exhausted = []; await diagnosticChild(t, `process.stderr.write('x'.repeat(65536)+'\\n'+${JSON.stringify(JSON.stringify(managedDiagnostic) + '\n')});`, {
+    onDiagnostic: report => exhausted.push(report)}); assert.deepEqual(exhausted, []);
+  const partial = []; await diagnosticChild(t, `process.stderr.write(${JSON.stringify(JSON.stringify(managedDiagnostic))});`, {
+    onDiagnostic: report => partial.push(report)}); assert.deepEqual(partial, []);
+});
+test('diagnostic observer exceptions, rejected promises and pending promises never alter shutdown or escape', async t => {
+  const source = `process.stderr.write(${JSON.stringify(JSON.stringify(managedDiagnostic) + '\n')});`;
+  for (const onDiagnostic of [() => {throw Error('PRIVATE_EXCEPTION');}, () => Promise.reject(Error('PRIVATE_EXCEPTION')), () => new Promise(() => {})])
+    await diagnosticChild(t, source, {onDiagnostic});
+  await assert.rejects(run(['--help'], {onDiagnostic: 'not a callback'}), /invalid_arguments/);
+  await assert.rejects(run(['--help'], {includeRejectedOutput: 'true'}), /invalid_arguments/);
+});

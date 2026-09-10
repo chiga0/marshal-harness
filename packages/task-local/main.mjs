@@ -89,7 +89,43 @@ export async function connectLocal({settingsDir = path.join(fs.realpathSync(os.h
   if (!settings || settings.version !== 1) fail('unsafe_settings');
   return connect(settings);
 }
-export async function run(argv, {home = os.homedir(), pathValue = process.env.PATH, output = value => console.log(JSON.stringify(value)), startupTimeoutMs = 30000, stopTimeoutMs = 5000} = {}) {
+// Trusted observer only, not a CLI disclosure switch or an authoritative log.
+// Base64 rejected output may contain private business text: it is NOT redacted.
+// No observer means no parsing/copying. Arbitrary stderr is always discarded.
+async function diagnosticReader(onDiagnostic, includeRejectedOutput) {
+  if (!onDiagnostic) return () => {};
+  // Keep init/help/default silent startup free of the optional Core/SQLite import.
+  const {safeManagedDiagnostic, safeRejectedOutputDiagnostic} = await import('../task-application/leader-ports.mjs');
+  const {parseJson} = await import('../task-api/http-boundary.mjs');
+  const line = Buffer.alloc(4096); let length = 0, overflow = false, consumed = 0, metadata = 0, rejected = 0;
+  return chunk => {
+    if (!(chunk instanceof Uint8Array) || consumed >= 65536 || metadata >= 32 && (!includeRejectedOutput || rejected >= 8)) return;
+    const count = Math.min(chunk.length, 65536 - consumed); consumed += count;
+    for (let index = 0; index < count; index++) {
+      const byte = chunk[index];
+      if (byte !== 10) {
+        if (length < line.length && !overflow) line[length++] = byte;
+        else overflow = true;
+        continue;
+      }
+      if (!overflow && length) try {
+        const value = parseJson(line.subarray(0, length));
+        let report = metadata < 32 ? safeManagedDiagnostic(value) : null;
+        if (report) metadata++;
+        else if (includeRejectedOutput && rejected < 8) {
+          report = safeRejectedOutputDiagnostic(value); if (report) rejected++;
+        }
+        if (report) try {Promise.resolve(onDiagnostic(report)).catch(() => {});} catch {}
+      } catch {}
+      length = 0; overflow = false;
+    }
+    // Discard an unterminated tail on exhaustion. It is never a complete report.
+    if (consumed >= 65536) {length = 0; overflow = false;}
+  };
+}
+export async function run(argv, {home = os.homedir(), pathValue = process.env.PATH, output = value => console.log(JSON.stringify(value)), startupTimeoutMs = 30000, stopTimeoutMs = 5000,
+  onDiagnostic, includeRejectedOutput = false} = {}) {
+  if (onDiagnostic !== undefined && typeof onDiagnostic !== 'function' || typeof includeRejectedOutput !== 'boolean') fail('invalid_arguments');
   const command = argv[0] ?? '--help', options = {};
   if (command === '--help') {
     output({commands: ['init', 'status', 'serve'], options: ['--install-root', '--config', '--connection-file', '--settings-dir'],
@@ -131,6 +167,7 @@ export async function run(argv, {home = os.homedir(), pathValue = process.env.PA
   const c = fs.lstatSync(selected.config);
   if (!c.isFile() || c.uid !== process.getuid() || (c.mode & 0o022)) fail('unsafe_settings');
   save(file, settings);
+  const observeDiagnostic = await diagnosticReader(onDiagnostic, includeRejectedOutput);
   const child = spawn(process.execPath, [path.join(settings.installRoot, 'packages/task-service/main.mjs'), '--config', selected.config,
     ...(selected.dataDir ? ['--data-dir', selected.dataDir] : [])],
     {stdio: ['ignore', 'pipe', 'pipe']});
@@ -145,7 +182,7 @@ export async function run(argv, {home = os.homedir(), pathValue = process.env.PA
   };
   const terminate = () => {failed = true; stop();};
   const timer = setTimeout(terminate, startupTimeoutMs);
-  child.stderr.on('data', () => {}); // Do not copy trusted-config diagnostics or credentials to the chat.
+  child.stderr.on('data', observeDiagnostic);
   child.stdout.on('data', chunk => {
     if (probing || admitted || failed) return;
     pending += chunk.toString('utf8');
