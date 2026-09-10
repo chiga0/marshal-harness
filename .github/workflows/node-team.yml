@@ -83,7 +83,7 @@ jobs:
 
       - name: Install pinned UI dependencies
         working-directory: apps/task-web
-        run: npm ci --no-audit --no-fund
+        run: npm ci --no-audit --no-fund --ignore-scripts
 
       - name: Typecheck, build dist, then run unit + same-origin e2e suites
         working-directory: apps/task-web
@@ -118,7 +118,7 @@ jobs:
       - name: Build task-web dist from the tested commit
         working-directory: apps/task-web
         run: |
-          npm ci --no-audit --no-fund
+          npm ci --no-audit --no-fund --ignore-scripts
           npm run build
 
       - name: Pack exactly once from the tested commit

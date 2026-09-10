@@ -10,9 +10,10 @@ import {Card} from '@/components/ui/card';
 import {Badge} from '@/components/ui/badge';
 import type {AnswerBody, QuestionItem, Revision, Transport} from '@/lib/transport/types';
 import {taskKeys} from '../query-keys';
-import {isPast, questionStageBadge} from '../shared/derive';
+import {isPastAt, questionStageBadge} from '../shared/derive';
 import {ErrorNotice} from '../shared/error-notice';
 import {useLogicalAction} from '../shared/logical-action';
+import {useNow} from '../shared/use-now';
 import {deliveryStatusLabel, formatDateTime} from '../shared/format';
 
 export interface QuestionCardProps {
@@ -30,7 +31,9 @@ export function QuestionCard({taskId, expectedRevision, question, previewDigest,
   const queryClient = useQueryClient();
   const [selection, setSelection] = useState<string | null>(null);
   const [freeText, setFreeText] = useState('');
-  const expired = question.status === 'expired' || isPast(question.deadlineAt);
+  // 到期即时反馈：不能只依赖轮询重渲染（数据不变时不重渲染），与 Leader 请求同一个 useNow 模型（UI-10）
+  const now = useNow(10000);
+  const expired = question.status === 'expired' || isPastAt(question.deadlineAt, now);
   const open = question.status === 'open' && !expired;
 
   const answer = question.options.length > 0 ? selection : (freeText.trim() === '' ? null : freeText.trim());

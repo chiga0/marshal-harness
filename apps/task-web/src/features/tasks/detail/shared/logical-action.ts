@@ -105,13 +105,16 @@ export function useLogicalAction(deps: readonly unknown[]): LogicalAction {
     // submitting/unknown/rejected：完全保留原键、在途锁与错误证据，等待用户显式核对（reset/replay）。
   }
 
-  const execute = useCallback(async (run: (key: string) => Promise<unknown>) => {
+  const execute = useCallback(async (run: (key: string) => Promise<unknown>, options?: {refreeze?: boolean}) => {
     if (flightRef.current !== null) return;
     const generation = generationRef.current + 1;
     generationRef.current = generation;
     flightRef.current = generation;
-    frozenDepsRef.current = currentDepsRef.current;
-    frozenRunRef.current = run;
+    // replay 是同一逻辑动作的同键重放：不刷新冻结快照（depsStale 证据保留到用户明确 reset）
+    if (options?.refreeze !== false) {
+      frozenDepsRef.current = currentDepsRef.current;
+      frozenRunRef.current = run;
+    }
     const key = keyRef.current;
     inFlightWrites += 1;
     setPhase({kind: 'submitting'});
@@ -130,7 +133,7 @@ export function useLogicalAction(deps: readonly unknown[]): LogicalAction {
 
   const replay = useCallback(async (run: (key: string) => Promise<unknown>) => {
     // 原键重放：不换新键、不自动触发、且必须使用冻结的原始请求（同键不同 body 会触发 idempotency_conflict）
-    await execute(frozenRunRef.current ?? run);
+    await execute(frozenRunRef.current ?? run, {refreeze: false});
   }, [execute]);
 
   const reset = useCallback(() => {
