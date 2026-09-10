@@ -2,9 +2,21 @@
 
 <a id="业务交付当前表"></a>
 
-## 当前唯一状态与关键路径（2026-09-09）
+## 当前唯一状态与关键路径（2026-09-10）
 
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
+
+**2026-09-10 主线检查点：B2-L 剩余出口闭合、Linux 实机验收通过、same-bytes 候选材料就绪**。四个修复全部经独立 review 无 P0/P1、`--no-ff` 合入并推送，远端 main 同 SHA：`f05bd316`（parse 拒绝时保留有界 base64 原始输出诊断 + Review 提示格式收紧，CI run 34374934057 五 job）、`6f2d7f97`（受管诊断 reason 枚举扩展为 171 项白名单并加机器守卫防漂移，CI run 34381876994）、`b5aa5261`（Pi RPC 事件闭集扩展 `bash_execution_update/entry_appended/thinking_level_changed/session_info_changed`，修复 pi 0.84.4 SDK 漂移导致的 review 阶段 `pi_unexpected_event`，CI run 34386217286）、`fc2cdc92`（修复场景数据扩至普通业务量 168 行且规则逐字节不变，CI run 34425993716 五 job 全绿）。
+
+**真实模型失败证据链（修复效果）**：`b5aa5261` 首次真实 Pi 双 Task 整轮 `passed=true`（各 12 Attempts、零 rework/retry/诊断、审批前正常重启通过）；`fc2cdc92` 最终候选再次整轮 `passed=true`（两 Task 各 12 Attempts、零 rework/retry、诊断空、重启通过）。早前三轮失败全部保留原证据：`f05bd316` 轮 review provider-result、reason 为 null（诊断枚举缺口）；`6f2d7f97` 轮命名 `pi_unexpected_event`；`fc2cdc92` 首轮 `fc2cdc92.final/pi-live` 失败但新增了被拒绝输出的 base64 保留并可解密（Leader 决策一旦引用摘录性依据即按 `invalid_leader_decision` 正当拒收，重跑通过，非系统性缺陷）。真实 Qwen 布局 1 同一安装根 `fc2cdc92` 复验通过：`task-52ad5eb4`、38.249 秒、3 Attempts 零 retry/rework、east 3 笔/75、west 1 笔/50、cold replay 一致。
+
+**真实局部修正（fog4）**：初始 west 分支真实内容断言拒收（模型真实失误，注入为零）→ 唯一分支精确反馈 → 显式 repair 修复执行完成：最终交付 west `46/-1237` 修正为独立重算值，east `71/3515` 原样保留（制品 digest `sha256:bd6baaa608b986f0471a1e4aeeaea81c881d53f65257226d7607d95276866c36` 不变），repair `repair-8a35e70f-916d-4469-acf5-8b9b06a1c3b3` accepted、acceptance passed、`modelErrorInjected=false`、冷开零重复启动；独立重算与 SQLite integrity 核验通过，61 事件流 tail digest=`sha256:eeb3db673b5d7a5214a0c3d2cf700d338e9462ac76e37f36e3fb27e985ed266c`；fog1 因修复请求错过截止的历史失败原样保留。
+
+**声明支持面故障恢复（Done#3）**：main `b5aa5261` 上 16 个声明面套件 **99/99 通过**（storage-full 的 SQLite 页数上限 FULL、storage-write-failure、backup-restore、服务与应用两层 worker-cancellation、recovery-commit/crash、custody、control-commit、leader-recovery（+core）、runtime-question-recovery、managed-diagnostic、installed recovery、git-live SIGKILL 冷回放）；此前并发扰动引起的瞬时失败已逐项隔离复跑证明，历史运行原始证据均未改写。
+
+**Linux 实机验收（Done#4）**：固定 Node 24.15.0（fnm，用户级），fc2cdc92 codeload 包两端 SHA-256 一致=`d90bbd94144c05d426f5af469c56db138e99d14e87c099b5cb7a4539c5748dc7`；完整回归 715 通过 + 4 平台条件跳过 + **仅 12 个把 `/usr/bin/git` 写死在 fixture 的用例**因该主机无 `/usr/bin/git` 且 sudo 不可得而失败——该 12 例由每次 `ubuntu-latest` CI（当前 run 34425993716 ubuntu job）承接同一字节集。**Linux 本机 pack manifest 与 Mac/CI 完全一致**（`sha256:828b3ada02fd7a4f857ad527a13ac31664ed56a8d01a9bc5996170c96fa4955d`，60 文件/896368 bytes），restore-carrier 通过；零模型安装后生产报告配置完整生命周期（同配置双输入/自有团队/显式发布/真实 GET/冷回放）14.7 秒通过；soak 首波 23.4 秒通过且 200 波重复长系列在题。部署机已知边界：`/usr/bin/git` 假设不通用（要求配置既有 git 路径）；对该机 `/usr/bin/scp` 出口 137 曾现、改走拉回式获取，不作为产品验收项。
+
+**same-bytes stable 候选材料（Done#4 尾部）**：候选源 `fc2cdc9298c3e1aaf47615373bb24e6d80e4c719`，CI artifact `10132869579`（run 34425993716），运输 ZIP SHA-256=`d46277e0c00acb4c78ae6200cebb48ae74dab52af8d1bc4a192937408ef5a766`，包 manifest=`sha256:828b3ada02fd7a4f857ad527a13ac31664ed56a8d01a9bc5996170c96fa4955d`（60 文件/896368B），**Mac、CI（ubuntu/macOS）、Alinux 实机三处字节等价已由 manifest 一致证明**；受保护发行（tag/发布）未执行——本轮 Goal 明确不执行真实发布动作；企业签名/notarized 仍属 B3 线外既有事项，不据本轮声称就绪。
 
 **最新候选与安装检查点**：源 `623692475c166289043f4bbb4d26cc91eb508a21` 的 [Node run 34356644704](https://github.com/chiga0/marshal-harness/actions/runs/34356644704) 五个 job 全部通过，包含双平台回归、单次打包与双平台同包消费。原 artifact `10106433664` 已下载接纳，运输 ZIP SHA-256=`66baa4d56a86cd1de868109559577d412c06590c0256bb01fab28f06e1939384`，包 manifest=`sha256:fb02d33c96948102b2af1c1d8e7daa87848f620458d8abde858ea6f2336f48c1`；二者不是同一摘要。原安装根 `/private/tmp/marshal-candidate-62369247.XVvFtS/admitted/installed` 未重建替换。此前两次 CI 中止已由实际超时 annotation 确认为 job 的 10 分钟总限额，修复源 `f8fe8bc7` 已合入 `62369247`，仅调为 15 分钟，不放宽各单测限制；候选通过不授予 stable 发布权限。
 
@@ -23,10 +35,10 @@
 | Milestone | 当前状态 | 尚缺用户出口 |
 | --- | --- | --- |
 | B1 真实团队交付 | `PASSED`（可信单用户本机 PoC） | 原七条件独立复核通过；旧 non-production 不改，不外推全程 Leader、生产或 stable |
-| B2 日常本地 API | `IN_PROGRESS` | 原问答、审计及单 Worker 取消已有实机；原候选安装 Qwen 问答交付通过；正式安装 Pi 整轮、真实模型局部修正与故障恢复仍待验证，用量缺失明示 |
-| B2-L 全程受管 Leader | `IN_PROGRESS`（既有同配置双需求真实交付通过） | 新原候选 Pi 首 Task 完整交付/审批前重启通过，第二 Task 的独立 Review JSON 解析拒绝，整轮失败；先前失败保留原未知原因；另缺真实局部修正、完整故障恢复及声明支持面的验收 |
+| B2 日常本地 API | `PASSED` | 安装后真实 Qwen（第二次 fc2cdc92 38.249 秒复验）与真实 Pi 双 Task 整轮两次通过、审批前正常重启通过、问答/审计/单 Worker 取消与声明面故障恢复/局部修正证据齐备；用量缺失项如实留空不外推 |
+| B2-L 全程受管 Leader | `PASSED` | 安装后真实 Pi 双 Task 整轮两次 passed=true（12 Attempts×2 零 rework/retry，审批前重启通过）；真实局部修正 fog4 保留无关成果通过；诊断与 RPC 闭集缺陷链全部经独立 review 修复合入；B2 出口证据随本表 2026-09-10 检查点记录 |
 | API-STABLE 核心接口检查点 | `PASSED`（保留原范围） | 原 25 操作/58 Schema/同包客户端与四出口通过；不自动覆盖新增 Leader 支持面，不等于正式发行或任意版本兼容 |
-| B3 正式可靠发布 | `IN_PROGRESS` | 已有有界冷备份、隔离、v5/v6 故障、EFBIG/SQLite IOERR_WRITE 及页数上限 FULL、安装消费证据；v7 完整故障验收、声明平台部署/长期故障、ENOSPC 与受保护同资产发行仍未完成 |
+| B3 正式可靠发布 | `IN_PROGRESS`（stable 候选材料就绪） | fc2cdc92 候选与 artifact 10132869579、包 manifest=`sha256:828b3ada…`、Mac/CI/Linux 三处字节等价、Linux 实机部署与长期运行样本通过；正式受保护发行与签名/notarized 仍未执行，不据本轮声称 B3 通过 |
 
 ### 19:23 及更早检查点（历史，不覆盖当前表）
 

@@ -1,5 +1,19 @@
 # 设计审计报告
 
+## 2026-09-10 最新：B2-L 剩余出口闭合，真实局部修正保留无关成果，Linux 实机验收与 same-bytes 候选就绪
+
+主线四个缺陷链经独立 review 无 P0/P1 后逐段合入：`f05bd316` 把 parse 阶段被拒的原始输出以有界 base64（head≤1536B/tail≤512B/digest/截断标志/Unicode wellformed）保留到既有 stderr 诊断通道（限流 8 条/进程、单行 ≤4096B、闭集校验、stored/receipt/verdict/结算路径不变），并把 Review 提示收紧到"首字符 `{`、末字符 `}`、无 Markdown/围栏/重复键/尾逗号"；`6f2d7f97` 把受管诊断 reason 枚举扩为 171 项**白名单 ⊇ 可达集**（含 custody/ACP/RPC/pi_bridge/runtime 全部编译期常量），并新增机器守卫测试静态扫描五个 agent 包防漂移、三副本相等断言、递归 walk；`b5aa5261` 定位并修复真实失败根因——pi 0.84.4 rpc 会转发 `bash_execution_update/entry_appended/thinking_level_changed/session_info_changed` 而客户端闭集未收，导致 review 阶段 `pi_unexpected_event` 终结 turn；`fc2cdc92` 把"诚实"修复场景从 28 轮零自然失误的状态恢复为可接受设计：规则一字不改、数据达 168 行普通业务量。
+
+**真实失败与修复证据链完整保留**：`f05bd316` 轮 review provider-result、reason 为空（枚举缺口）；`6f2d7f97` 轮命名 `pi_unexpected_event`；`b5aa5261` 轮整轮首次全绿；`fc2cdc92` 首完整一轮因 Leader 决策引用摘录性依据被正当拒收（`invalid_leader_decision`），这回被拒输出经 base64 保留可直接解密，重跑通过，判断为模型侧非系统性行为。最终 `fc2cdc92` 候选真实 Pi 双 Task 整轮 `passed=true`（12 Attempts×2、零 rework/retry、诊断空、审批前正常重启通过），真实 Qwen 同根复验 `passed=true`（38.249 秒、3 Attempts 零 retry/rework、east 3/75 west 1/50）。
+
+**真实局部修正按诚实合同完成**：场景诚实性（不预设错误、不透露预期答案、提示侧零泄露）经独立 review 再次确认；fog4 轮模型自然失误在 west 分支触发内容拒收，唯一分支精确反馈后原 Core 接纳显式 repair：最终 delivery 中 east 原值（`{"region":"east","count":71,"netCents":3515}`，digest 不变）保留、west 修正至独立重算值（46/-1237），SQLite integrity 与 61 事件流 tail digest 核验通过。fog1 错过截止的历史失败保持原样。这同时关闭了 B2-L 此前所有实机证据缺口；`usage=null` 的一致性未知仍如实留空。
+
+**声明支持面故障恢复**：main `b5aa5261` 上声明面套件 99/99 通过，单机并发引发的时限扰动全部经隔离复跑逐项证明，未把套件失败改写或重新归因。
+
+**Linux 实机验收留意边界**：Linux 主线 `fc2cdc92` 上回归 715 通过 + 4 平台条件跳过 + 12 失败；失败恰为 `/usr/bin/git` 写死入 fixture 的 12 例——该主机 git 位于 conda 路径且 sudo 不可得。这暴露了 fixture 可执行路径假设对平台环境的依赖：产品运行同样默认 `gitExecutable='/usr/bin/git'`，部署 Linux 时须配置既有 git 路径；这 12 例由 ubuntu-latest CI 每轮承接（同一字节集），不减轻门禁。Linux 本机 pack manifest 与 Mac/CI 完全一致，同字节等价第三次跨环境证明成立；安装后生产报告完整生命周期与 soak 首波通过，200 波重复长系列续行在案但不先称长期达标。
+
+**same-bytes stable 候选材料就绪，不执行发行**：source `fc2cdc9298c3e1aaf47615373bb24e6d80e4c719`、CI artifact `10132869579`、运输 ZIP SHA-256=`d46277e0c00acb4c78ae6200cebb48ae74dab52af8d1bc4a192937408ef5a766`、包 manifest=`sha256:828b3ada02fd7a4f857ad527a13ac31664ed56a8d01a9bc5996170c96fa4955d`（60 文件/896368B）。本轮 Goal 明确不执行 tag/发布/force-push；签名与 notarized 为既有 B3 线外事项未声称。文档记录以上事实于 [Roadmap 当前表](roadmap-status.md#业务交付当前表)。
+
 ## 2026-09-09 最新：原候选接纳与安装 Qwen 问答交付通过，Pi 首项通过、第二项 Review 解析失败
 
 源 `623692475c166289043f4bbb4d26cc91eb508a21` 的 Node run `34356644704` 五个 job 通过；原 artifact `10106433664` 下载后完成精确来源、运输 ZIP 与包 manifest 核验及接纳，没有重建替代资产。此前两次 CI 中止由实际 annotation 确认为 job 的 10 分钟总限额，`f8fe8bc7`→`62369247` 仅将 job 调为 15 分钟，不放宽单测。它是同资产候选检查点，不等于受保护 stable 发布或完整 B3。
