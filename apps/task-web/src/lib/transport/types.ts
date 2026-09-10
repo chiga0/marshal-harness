@@ -265,15 +265,19 @@ export interface Transport {
   getTask(taskId: TaskId): Promise<TaskDetail>;
   getWorkers(taskId: TaskId): Promise<{workers: WorkerRecord[]}>;
   getPlan(taskId: TaskId): Promise<PlanRecord>;
-  freezePlan(taskId: TaskId, body: {revision: Revision; decisionDigest: Sha256}): Promise<unknown>;
-  approveTask(taskId: TaskId, body: {revision: Revision; decisionDigest?: Sha256}): Promise<unknown>;
-  answerTask(taskId: TaskId, body: {questionId: string; revision: Revision; value: string}): Promise<unknown>;
-  cancelTask(taskId: TaskId, body: {revision: Revision}): Promise<unknown>;
-  pauseTask(taskId: TaskId, body: {revision: Revision}): Promise<unknown>;
-  resumeTask(taskId: TaskId, body: {revision: Revision}): Promise<unknown>;
-  cancelWorker(taskId: TaskId, workerId: WorkerId, body: {revision: Revision}): Promise<unknown>;
+  freezePlan(taskId: TaskId, body: {revision: Revision; decisionDigest: Sha256; idempotencyKey: string}): Promise<unknown>;
+  approveTask(taskId: TaskId, body: {revision: Revision; decisionDigest?: Sha256; idempotencyKey: string}): Promise<unknown>;
+  answerTask(taskId: TaskId, body: {questionId: string; revision: Revision; value: string; idempotencyKey: string}): Promise<unknown>;
+  cancelTask(taskId: TaskId, body: {revision: Revision; idempotencyKey: string}): Promise<unknown>;
+  pauseTask(taskId: TaskId, body: {revision: Revision; idempotencyKey: string}): Promise<unknown>;
+  resumeTask(taskId: TaskId, body: {revision: Revision; idempotencyKey: string}): Promise<unknown>;
+  cancelWorker(taskId: TaskId, workerId: WorkerId, body: {revision: Revision; idempotencyKey: string}): Promise<unknown>;
   getLeader(taskId: TaskId): Promise<LeaderRecord>;
-  leaderReply(taskId: TaskId, body: {requestId: string; revision: Revision; outcome: 'accepted' | 'rejected' | 'unknown'}): Promise<unknown>;
+  leaderReply(taskId: TaskId, body: {requestId: string; revision: Revision; outcome: 'accepted' | 'rejected' | 'unknown'; idempotencyKey: string}): Promise<unknown>;
   getPublications(taskId: TaskId): Promise<{publications: PublicationRecord[]}>;
   getArtifactBearer(digestRef: string): Promise<Blob>;
+}
+
+export function newIdempotencyKey(): string {
+  return crypto.randomUUID();
 }
