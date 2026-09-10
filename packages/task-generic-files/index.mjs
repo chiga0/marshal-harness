@@ -49,7 +49,11 @@ export function createGenericFileTeamConfig({executable, env} = {}) {
   const environment = {PATH: process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin'};
   for (const key of ['HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR']) if (typeof process.env[key] === 'string') environment[key] = process.env[key];
   check(path.isAbsolute(environment.HOME ?? ''), 'generic_files_native_home_missing');
-  return {...createGenericConfig({provider: createAcpProvider({id: 'qwen', executable, args: ['--acp'], env: env ?? environment,
+  // Restrict the native core registry and known delegation/MCP surfaces before
+  // the model chooses tools. Non-core tools may still exist: permission checks
+  // and ACP extraScope remain mandatory, not replaced by these CLI settings.
+  return {...createGenericConfig({provider: createAcpProvider({id: 'qwen', executable,
+    args: ['--acp', '--approval-mode', 'default', '--core-tools', 'read_file', 'write_file', 'edit', '--exclude-tools', 'agent', 'mcp__*'], env: env ?? environment,
     custodyProfile: {id: 'qwen-native-files-v1', scope: 'inherited-process-group', eligible: true}})}),
     providerFacts: [{id: 'qwen', displayName: 'Qwen ACP', availability: 'unknown',
       coreCapabilities: ['input', 'execution-identity', 'terminal', 'artifacts', 'owned-stop'],

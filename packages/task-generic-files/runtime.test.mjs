@@ -112,3 +112,20 @@ test('default wrapper builds without starting a model and rejects missing or rel
   assert.throws(() => createGenericFileTeamConfig({executable: 'qwen'}), /generic_files_executable/);
   assert.equal(createGenericFileTeamConfig({executable: '/not-started/qwen'}).providers.get('qwen').id, 'qwen');
 });
+test('default Qwen launch selects native file tools without permission bypass; explicit deployment DI is unchanged', async t => {
+  const cwd = temp(t), env = {HOME: '/native-home-not-read', PATH: '/native-path-not-searched'};
+  const config = createGenericFileTeamConfig({executable: '/not-started/qwen', env});
+  let observed, launches = 0;
+  const handle = config.providers.get('qwen').start({cwd, deadline: Date.now() + 5000, prompt: '仅验证可信启动参数，不调用模型',
+    executionContext: {async launch(options) {launches++; observed = options; throw Error('fixture_no_process');}}});
+  await handle.completion;
+  assert.equal(launches, 1); assert.equal(observed.executable, '/not-started/qwen');
+  assert.deepEqual(observed.args, ['--acp', '--approval-mode', 'default', '--core-tools', 'read_file', 'write_file', 'edit',
+    '--exclude-tools', 'agent', 'mcp__*']);
+  assert.deepEqual(observed.env, env);
+  assert.ok(!observed.args.includes('--allowed-tools')); assert.ok(!observed.args.includes('--safe-mode'));
+  assert.ok(!observed.args.includes('--yolo')); assert.equal(await handle.started, null);
+  const provider = {id: 'explicit-deployment', start() {assert.fail('configuration must not start explicit provider');}};
+  const explicit = createGenericConfig({provider}); assert.equal(explicit.providers.get(provider.id), provider);
+  assert.equal(config.providerFacts[0].availability, 'unknown');
+});
