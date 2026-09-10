@@ -63,6 +63,7 @@ export const SOURCE_FILES = Object.freeze([
   'packages/task-service/launch.mjs',
   'packages/task-service/main.mjs',
   'packages/task-store/store.mjs',
+  'packages/task-store/runtime.mjs',
   'packages/task-supervisor/controller.mjs',
   'packages/task-verification-command/index.mjs',
 ]);

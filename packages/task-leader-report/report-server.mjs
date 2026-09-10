@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
@@ -43,7 +44,7 @@ export async function startReportServer({root, port}) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     // Fixed URL/port survives service and reader restarts; no implicit port choice.
-    check(process.versions.node === '24.15.0' && process.argv.length === 6 && process.argv[2] === '--root' && process.argv[4] === '--port' &&
+    check(supportsNode() && process.argv.length === 6 && process.argv[2] === '--root' && process.argv[4] === '--port' &&
       /^[1-9][0-9]{0,4}$/.test(process.argv[5]), 'report_reader_arguments');
     const reader = await startReportServer({root: process.argv[3], port: Number(process.argv[5])});
     process.stdout.write(JSON.stringify({url: reader.url, readOnly: true}) + '\n');

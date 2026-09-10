@@ -1,12 +1,13 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 // Trusted external fixture configuration. Validate the original package pins
 // before importing ANY installed production module. No source Core imports.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
-import {verify, NODE_VERSION} from './index.mjs';
+import {verify} from './index.mjs';
 assert.equal(process.env.MARSHAL_INSTALLED_V7, '1');
-assert.equal(process.versions.node, NODE_VERSION);
+assert.ok(supportsNode());
 const installed = process.env.MARSHAL_CANDIDATE_ROOT, sourceHead = process.env.MARSHAL_CANDIDATE_SOURCE;
 const report = verify({root: installed, manifestDigest: process.env.MARSHAL_CANDIDATE_MANIFEST});
 assert.equal(report.sourceHead, sourceHead);

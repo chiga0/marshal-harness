@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 // External, explicitly authorized real-Pi consumer. Not a distribution asset.
 // The .fixture suffix only excludes this developer tool from package inventory;
 // this consumer does not inject a fake Provider or fixture configuration.
@@ -332,7 +333,7 @@ export async function gracefulApprovalRestart({client, handle, start, taskId, ta
 export async function run(options) {
   // Revalidate even programmatic callers before any execution.
   const o = parseOptions(Object.entries(options).flatMap(([key, value]) => value === true ? ['--' + key] : ['--' + key, value]));
-  check(process.versions.node === '24.15.0' && fs.realpathSync(o.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
+  check(supportsNode() && fs.realpathSync(o.node) === fs.realpathSync(process.execPath), 'fixed_node_required');
   const manifest = verify({root: o.package, manifestDigest: o['manifest-digest']});
   check(manifest.sourceHead === o['source-head'], 'source_pin_mismatch');
   privateDirectory(path.dirname(o['run-dir']));

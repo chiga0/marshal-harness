@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -102,7 +103,7 @@ export function createRegionalWindowConfig({provider, executable = process.execP
 
 /** Explicit trusted Qwen deployment. Reading model credentials is Qwen's job. */
 export function createQwenWindowConfig({node = process.execPath, qwenEntry}) {
-  check(process.versions.node === '24.15.0' && fs.realpathSync(node) === fs.realpathSync(process.execPath) && path.isAbsolute(qwenEntry) &&
+  check(supportsNode() && fs.realpathSync(node) === fs.realpathSync(process.execPath) && path.isAbsolute(qwenEntry) &&
     fs.realpathSync(qwenEntry) === qwenEntry && path.basename(qwenEntry) === 'cli-entry.js', 'window_runtime_configuration');
   const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(qwenEntry), 'package.json')));
   check(pkg.name === '@qwen-code/qwen-code', 'window_qwen_identity');

@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 // Explicit same-package v7 consumer. No pack, fallback, private receipt, model,
 // source Core import or mutation of the supplied installed package.
 import assert from 'node:assert/strict';
@@ -9,7 +10,7 @@ import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {verify, NODE_VERSION} from './index.mjs';
+import {verify} from './index.mjs';
 const hash = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 const here = relative => fileURLToPath(new URL(relative, import.meta.url));
 const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -36,7 +37,7 @@ export function v7ResultFromTap(tap, expected) {
   assert.deepEqual(Object.keys(result).sort(), ['sourceHead', 'manifestDigest', 'artifactId', 'files', 'node', 'platform', 'arch', 'uid',
     'layout', 'sameConfiguration', 'tasks', 'modelCalls', 'coldReplayDuplicateStarts', 'coldReplayDuplicatePublications', 'proofScope'].sort());
   for (const key of ['sourceHead', 'manifestDigest', 'artifactId']) assert.equal(result[key], expected[key], 'v7 candidate pin mismatch');
-  assert.equal(result.node, NODE_VERSION); assert.equal(result.layout, 7); assert.equal(result.sameConfiguration, true);
+  assert.equal(result.node, process.versions.node); assert.ok(supportsNode(result.node)); assert.equal(result.layout, 7); assert.equal(result.sameConfiguration, true);
   assert.ok(Number.isSafeInteger(result.files) && result.files > 0 && result.files <= 256);
   assert.ok(Number.isSafeInteger(result.uid) && result.uid > 0);
   assert.ok(['darwin-arm64', 'linux-x64'].includes(result.platform + '-' + result.arch));
@@ -97,7 +98,7 @@ async function downloadReport(url, name) {
   assert.equal(size, expected); return Buffer.concat(chunks);
 }
 export async function exerciseInstalledV7(t, options) {
-  assert.equal(process.versions.node, NODE_VERSION); assert.ok(process.getuid() > 0);
+  assert.ok(supportsNode()); assert.ok(process.getuid() > 0);
   const {installed, manifestDigest, sourceHead} = options;
   // All bytes and the caller's independent source pin precede any package import.
   const originalPackage = verify({root: installed, manifestDigest}); assert.equal(originalPackage.sourceHead, sourceHead);

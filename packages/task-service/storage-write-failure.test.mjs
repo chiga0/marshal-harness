@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -55,7 +56,7 @@ async function originalFacts(client, original, history, input) {
 }
 
 test('kernel EFBIG and SQLite I/O under child-only file limit preserve whole authority and recover new HTTP delivery', {timeout: 65000}, async t => {
-  assert.equal(process.versions.node, '24.15.0'); assert.ok(['darwin', 'linux'].includes(process.platform));
+  assert.ok(supportsNode()); assert.ok(['darwin', 'linux'].includes(process.platform));
   const f = await fixture(t), root = path.join(f.parent, 'data'), initial = await f.launch(root, 'create');
   const input = await upload(initial.client), original = await completeTeam(initial.client, input.id, 'before-io-failure');
   const history = await events(initial.client, original.created.id);

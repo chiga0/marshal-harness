@@ -1,3 +1,4 @@
+import {supportsNode} from '../task-store/runtime.mjs';
 // Explicit full HTTP/v6 fixture. Run after integrating the frozen Core v6 source.
 // Not a model test or fallback implementation for worker.cancel's production API.
 import assert from 'node:assert/strict';
@@ -20,7 +21,7 @@ import {validatePlan} from './driver.fixture.mjs';
 import {cancelPiWorker, workerCancellation, readRetainedResult} from './worker-cancel.fixture.mjs';
 
 export async function runWorkerCancelFixture() {
-  assert.equal(process.versions.node, '24.15.0');
+  assert.ok(supportsNode());
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pi-worker-cancel-http-fixture-')));
   const here = name => fileURLToPath(new URL(name, import.meta.url)), observed = [], tickets = new Map(), services = [];
   let complete = false, verifierStarts = 0, releaseWest;

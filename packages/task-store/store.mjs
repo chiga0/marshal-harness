@@ -3,6 +3,17 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { DatabaseSync } from 'node:sqlite';
+import {requireNodeRuntime, inspectSQLiteRuntime} from './runtime.mjs';
+
+let runtimeCapabilities;
+export function sqliteRuntimeCapabilities() {
+  requireNodeRuntime();
+  if (!runtimeCapabilities) {
+    runtimeCapabilities = inspectSQLiteRuntime(DatabaseSync);
+    if (!runtimeCapabilities.defensive) process.emitWarning('SQLite defensive mode unavailable; trusted-single-user fixed-SQL Store only', {code: 'MARSHAL_SQLITE_DEFENSIVE_UNAVAILABLE'});
+  }
+  return runtimeCapabilities;
+}
 
 // Internal storage, not a Task reducer, execution supervisor, or public SQL API.
 export const FORMAT = 'marshal-node-task-sqlite/v1';
@@ -210,8 +221,8 @@ export class Store {
   static create(root, options = {}) { return Store.#open(root, options, true); }
   static openExisting(root, options = {}) { return Store.#open(root, options, false); }
   static #open(root, options, create) {
-    const [major, minor] = process.versions.node.split('.').map(Number);
-    check(['darwin', 'linux'].includes(process.platform) && major === 24 && minor >= 15, 'unsupported');
+    check(['darwin', 'linux'].includes(process.platform), 'unsupported');
+    sqliteRuntimeCapabilities();
     check(closed(options, ['format', 'clock', 'monotonic', 'syncDirectory']) && (options.format === undefined || [FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(options.format)));
     const format = options.format ?? FORMAT, version = format === LEADER_FORMAT ? 7 : format === WORKER_CANCELLATION_FORMAT ? 6 : format === UNPERMITTED_FORMAT ? 5 : format === REPAIR_FORMAT ? 4 : format === INTERACTION_FORMAT ? 3 : format === CUSTODY_FORMAT ? 2 : 1;
     for (const key of ['clock', 'monotonic', 'syncDirectory']) check(options[key] === undefined || typeof options[key] === 'function');
@@ -221,7 +232,7 @@ export class Store {
       db = new DatabaseSync(files.database, { timeout: 100, enableForeignKeyConstraints: true, allowExtension: false, defensive: true, readBigInts: true });
       // One connection holds SQLite's physical lock until close, including
       // between short transactions. This says nothing about live Workers.
-      db.exec('PRAGMA locking_mode=EXCLUSIVE; PRAGMA synchronous=FULL;');
+      db.exec('PRAGMA busy_timeout=100; PRAGMA locking_mode=EXCLUSIVE; PRAGMA synchronous=FULL;');
       if (create) check(db.prepare('PRAGMA journal_mode=WAL').get().journal_mode === 'wal', 'unavailable');
       db.exec('BEGIN EXCLUSIVE');
       if (create) {

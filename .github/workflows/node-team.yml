@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   regression:
-    name: Node team (${{ matrix.os }})
+    name: Node team (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     # macOS 实测 750/750 通过耗时 578.752s，加 setup/cleanup 超过原 10m job 上限；不调整测试本身。
     timeout-minutes: 15
@@ -31,6 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        node: ['22.22.1', '24.15.0']
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,7 +41,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '24.15.0'
+          node-version: ${{ matrix.node }}
           package-manager-cache: false
 
       # Fixtures only: no provider login, model calls, Go build or Marshal native
@@ -108,7 +109,7 @@ jobs:
           compression-level: 0
 
   consume:
-    name: Consume the same Node candidate (${{ matrix.os }})
+    name: Consume the same Node candidate (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
@@ -116,6 +117,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        node: ['22.22.1', '24.15.0']
     env:
       MARSHAL_CANDIDATE_SOURCE: ${{ needs.package.outputs.source-head }}
       MARSHAL_CANDIDATE_MANIFEST: ${{ needs.package.outputs.manifest-digest }}
@@ -130,7 +132,7 @@ jobs:
       - name: Set up declared Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '24.15.0'
+          node-version: ${{ matrix.node }}
           package-manager-cache: false
 
       - name: Download only the original producer artifact ID
@@ -144,7 +146,7 @@ jobs:
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           test "$(id -u)" -ne 0
-          test "$(node --version)" = v24.15.0
+          test "$(node --version)" = "v${{ matrix.node }}"
           test "$(git rev-parse HEAD)" = "$MARSHAL_CANDIDATE_SOURCE"
           install_parent="$(mktemp -d "$RUNNER_TEMP/marshal-node-installed.XXXXXX")"
           node packages/task-distribution/main.mjs restore-carrier \
@@ -187,7 +189,7 @@ jobs:
       - name: Archive v7 same-candidate consumption summary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: node-v7-consumption-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.os }}
+          name: node-v7-consumption-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.os }}-node${{ matrix.node }}
           path: ${{ runner.temp }}/node-v7-consumer-result.json
           if-no-files-found: error
           retention-days: 7
