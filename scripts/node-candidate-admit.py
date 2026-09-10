@@ -44,6 +44,7 @@ JOBS = frozenset({"Freeze one Node candidate"} | {
     for version in ("22.22.1", "24.15.0")
 })
 VALIDATORS = (
+    "packages/task-store/runtime.mjs",
     "packages/task-distribution/index.mjs", "packages/task-distribution/main.mjs",
     "packages/task-distribution/candidate-consumer.mjs", "packages/task-distribution/installed-team.fixture.mjs",
     "packages/task-distribution/team-service.fixture.mjs", "packages/task-team-integration/agent.fixture.mjs",
