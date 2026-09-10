@@ -6,22 +6,31 @@
 
 ## 一键安装
 
-支持平台为 macOS Apple Silicon（`darwin-arm64`）和 Linux x64（`linux-x64`）。前置工具：Node `>=22`、Python 3、`curl` 和 `minisign`；服务启动还会检查实际 SQLite 能力。已验证 Node22.22.1/24.15.0，不声称所有未来版本已经测试。Node22 缺少 `defensive` 时明确警告，不开放任意SQL；细节见 [ADR0097](adr/0097-node-capability-based-runtime-admission.md)。目标环境需能访问 GitHub 的发行下载及源码地址；缺工具时安装器给出错误，不自动安装系统软件。
+支持平台为 macOS Apple Silicon（`darwin-arm64`）和 Linux x64（`linux-x64`）。前置工具：Node `>=22`、Python 3、`curl` 和 `minisign`（离线模式无需 curl）；服务启动还会检查实际 SQLite 能力。已验证 Node22.22.1/24.15.0，不声称所有未来版本已经测试。Node22 缺少 `defensive` 时明确警告，不开放任意SQL；细节见 [ADR0097](adr/0097-node-capability-based-runtime-admission.md)。默认下载走杭州 OSS；显式镜像模式只访问指定 HTTPS 目录，离线模式不联网。缺工具时安装器给出错误，不自动安装系统软件。
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/chiga0/marshal-harness/main/scripts/install-node.sh | bash
+(
+  set -eu
+  setup_dir="$(mktemp -d)"
+  curl -q -fL --proto '=https' --proto-redir '=https' \
+    --connect-timeout 15 --max-time 120 --retry 2 --retry-all-errors \
+    https://github-releases.oss-cn-hangzhou.aliyuncs.com/marshal-harness/v1.0.1/install-node.sh \
+    -o "$setup_dir/install-node.sh"
+  bash "$setup_dir/install-node.sh"
+)
 ```
 
 默认安装到 `$HOME/.local/share/marshal-node/v1.0.1`，不改 PATH。需要部署到 Sandbox 的持久化挂载盘时：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/chiga0/marshal-harness/main/scripts/install-node.sh \
-  | bash -s -- --prefix /absolute/private-parent/marshal-v1.0.1
+bash /absolute/downloaded/install-node.sh --prefix /absolute/private-parent/marshal-v1.0.1
 ```
 
-安装目标必须是新目录，已有安装或失败现场不会被覆盖；自定义目标的父目录必须已存在、属于当前用户且权限为 `0700`，不跟随符号链接。脚本不自动放宽或修改既有目录的权限。需要先审阅脚本时，可从仓库下载 `scripts/install-node.sh`，检查后执行 `bash install-node.sh --prefix ...`。上面 `main` 是维护者更新的安装脚本入口；本次新载荷精确固定为 v1.0.1，旧安装不被改写。需要固定安装器本身时，使用审查过的完整 commit 替换 URL 中的 `main`。
+安装目标必须是新目录，已有安装或失败现场不会被覆盖；自定义目标的父目录必须已存在、属于当前用户且权限为 `0700`，不跟随符号链接。脚本不自动放宽或修改既有目录的权限。需要先审阅脚本时，可从仓库下载 `scripts/install-node.sh`，检查后执行。本次载荷精确固定为 v1.0.1，旧安装不被改写；OSS 版本目录禁止覆盖。GitHub 继续保留原发行资产，但安装器不隐式回退 GitHub。
 
 ## 范围
+
+GitHub 网络不稳定时可使用 [OSS 镜像或完整离线安装](node-oss-distribution.md)。发布者需先配置并完成镜像同步；不能把尚未上传的示例地址当成可用入口。
 
 - 新入口只安装冻结的 v1.0.1，不自动选择 latest、不回退源码编译。
 - Qwen/Pi、模型登录、Skill 和业务配置由部署者提供，本脚本不读取或复制凭据。
