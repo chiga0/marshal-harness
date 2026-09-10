@@ -1,0 +1,53 @@
+/* UI-1 设计主题 token（docs/ui-1/design-system.md 的锁定色板；深色 accent 按钮必须为深色文字）。 */
+
+:root {
+  --app-bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-muted: #f0f2f5;
+  --text-primary: #17202e;
+  --text-secondary: #536174;
+  --border: #dde2e9;
+  --accent: #1d4ed8;
+  --accent-foreground: #ffffff;
+  --success: #166534;
+  --success-foreground: #ffffff;
+  --warning: #92400e;
+  --warning-foreground: #ffffff;
+  --danger: #b91c1c;
+  --danger-foreground: #ffffff;
+  --shadow: 0 12px 32px rgba(16, 24, 40, 0.12);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  color-scheme: light;
+}
+
+.dark {
+  --app-bg: #111318;
+  --surface: #191d24;
+  --surface-muted: #222833;
+  --text-primary: #f1f4f8;
+  --text-secondary: #aeb9c8;
+  --border: #394352;
+  --accent: #93b4ff;
+  --accent-foreground: #0c1220;
+  --success: #86efac;
+  --success-foreground: #0c1220;
+  --warning: #fcd34d;
+  --warning-foreground: #0c1220;
+  --danger: #fca5a5;
+  --danger-foreground: #0c1220;
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
