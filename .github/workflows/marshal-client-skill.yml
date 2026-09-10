@@ -1,0 +1,35 @@
+name: Marshal client skill
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'skills/marshal-client/**'
+      - 'scripts/marshal-client-skill.test.mjs'
+      - 'packages/task-client/**'
+      - 'packages/task-api/**'
+      - '.github/workflows/marshal-client-skill.yml'
+  pull_request:
+    paths:
+      - 'skills/marshal-client/**'
+      - 'scripts/marshal-client-skill.test.mjs'
+      - 'packages/task-client/**'
+      - 'packages/task-api/**'
+      - '.github/workflows/marshal-client-skill.yml'
+permissions:
+  contents: read
+jobs:
+  examples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    strategy:
+      matrix:
+        node: ['22.22.1', '24.15.0']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - run: node --test scripts/marshal-client-skill.test.mjs

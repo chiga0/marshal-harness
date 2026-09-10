@@ -81,6 +81,8 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 ## 当前 Node 服务与 API 候选入口
 
+对话接入可使用新的 [marshal-client 薄 Skill](skills/marshal-client/SKILL.md)：将 `skills/marshal-client` 整个目录复制到 DataAgent 或其他宿主所支持的 Skill 发现目录，并提供已运行 Marshal 的安装根与连接文件路径。此 Skill 仅说明如何调用发行包 HTTP 客户端、转达确认和展示结果，不启动 Worker、不恢复历史 Marshal 研发治理流程，也不自动配置业务。安装 Skill 不等于服务已经运行或任意 ETL 已接线。
+
 当前 Node 服务从 `v1.0.1` 起接纳 Node `>=22` 并检查实际 SQLite 能力；已验证22.22.1和24.15.0。[一键安装](docs/node-install.md)不再要求升级到固定24版本。通过 [Task 服务启动说明](packages/task-service/README.md)配置原生 Agent、业务与独立验证并运行 HTTP；无需编译或执行 Marshal 原生程序。受信启动配置仍需提供，尚不承诺任意任务零配置。原生登录不授予业务发布权限；可信单用户下可能存在 ambient credential，不提供恶意代码强隔离。
 
 - [OpenAPI 3.1 定义](packages/task-api/openapi.json)是 HTTP 请求/响应的唯一机器契约；[接口说明](packages/task-api/README.md)与[客户端](packages/task-client/README.md)解释使用方式。
