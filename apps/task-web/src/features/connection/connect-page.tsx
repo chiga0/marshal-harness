@@ -14,6 +14,9 @@ interface ConnectFailure {
   detail: string;
 }
 
+/** 连接文件 token 是 64 位十六进制（sha256 摘要形状）；本地预校验只为更早给出定位准确的错误文案。 */
+const TOKEN_PATTERN = /^[0-9a-fA-F]{64}$/;
+
 function describeConnectFailure(error: unknown): ConnectFailure {
   if (error instanceof ApiError && error.isUnauthorized) {
     return {
@@ -29,10 +32,22 @@ function describeConnectFailure(error: unknown): ConnectFailure {
         + (error.requestId ? ' requestId：' + error.requestId : ''),
     };
   }
+  if (error instanceof TypeError && /invalid value|invalid header|header/i.test(error.message)) {
+    return {
+      title: '请求构造失败：token 含非法字符',
+      detail: '浏览器拒绝用该内容构造请求头，请求未发出。常见原因：复制时夹带中文引号/冒号/换行。直接用「从剪贴板获取」按钮填干净 token。',
+    };
+  }
   return {
     title: '无法连接本机服务（网络层不可达）',
     detail: '请求没有到达服务。请确认服务已在本机启动并监听其绑定端口；具体原因以服务端原始启动输出为准，本页不做猜测。',
   };
+}
+
+/** 从任意复制的文本里提取 64 位十六进制 token（免疫说明文字/中文标点夹带）。 */
+export function extractToken(text: string): string | null {
+  const match = text.match(/[0-9a-fA-F]{64}/);
+  return match ? match[0] : null;
 }
 
 const LOCAL_GUIDE = [
@@ -49,14 +64,40 @@ export function ConnectPage() {
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setFailure(null);
-    if (!token.trim()) {
+    const trimmed = token.trim();
+    if (!trimmed) {
       setFailure({title: '缺少 token', detail: '请输入本机既有 Bearer token。'});
       return;
     }
+    if (!TOKEN_PATTERN.test(trimmed)) {
+      setFailure({
+        title: 'token 格式不对',
+        detail: '连接文件 token 应为 64 位十六进制字符。复制时混入说明文字/符号就会触发此错误——用「从剪贴板获取」按钮自动提取干净 token。',
+      });
+      return;
+    }
     try {
-      await connect(token);
+      await connect(trimmed);
     } catch (error) {
       setFailure(describeConnectFailure(error));
+    }
+  };
+
+  const onPasteFromClipboard = async () => {
+    setFailure(null);
+    try {
+      const text = await navigator.clipboard.readText();
+      const extracted = extractToken(text);
+      if (extracted === null) {
+        setFailure({title: '剪贴板里没有 token', detail: '未在剪贴板文本中找到 64 位十六进制 token。请先复制连接文件或通知里的 token。'});
+        return;
+      }
+      setToken(extracted);
+    } catch (error) {
+      setFailure({
+        title: '读不到剪贴板',
+        detail: '浏览器拒绝了剪贴板读取（需要本页面授权读取剪贴板）。可手动复制 token 粘贴。' + (error instanceof Error ? '（' + error.message + '）' : ''),
+      });
     }
   };
 
@@ -92,9 +133,14 @@ export function ConnectPage() {
             <p className="text-xs leading-[18px] text-text-secondary" role="status">
               {state === 'connecting' ? '正在连接并就绪探测…' : '连接成功后会自动进入任务列表。'}
             </p>
-            <Button type="submit" loading={state === 'connecting'} disabled={state === 'connecting'}>
-              连接
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" onClick={() => void onPasteFromClipboard()} disabled={state === 'connecting'}>
+                从剪贴板获取
+              </Button>
+              <Button type="submit" loading={state === 'connecting'} disabled={state === 'connecting'}>
+                连接
+              </Button>
+            </div>
           </div>
         </form>
 
