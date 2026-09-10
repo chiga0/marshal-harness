@@ -4,6 +4,8 @@
 
 ## 当前唯一状态与关键路径（2026-09-10）
 
+**Node22兼容补丁 v1.0.1 已发布**：source `b90d7e72`，四组 Node22.22.1/24.15.0 × Linux/macOS 回归及四组同包消费通过；维护者签名、公钥验签及原始CI字节核对通过。Node22.22.1 已从公开发行下载安装成功，不自动启动服务或配置 Agent。详情见 [发行记录](v1.0.1-release-dossier-2026-09-10.md)和[一键安装](node-install.md)。旧 v1.0.0 不被重写，本轮不冒充新的模型或 ETL 实机验收。
+
 本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。
 
 **2026-09-10 正式发行记录（B3 收口）**：`v1.0.0` 首个受保护 stable 已发布，页面 [marshal v1.0.0](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0)、annotated tag object `b9b7c6b7e6a398c0915bb38476cc5920d2c713d7` → sourceHead `fc2cdc9298c3e1aaf47615373bb24e6d80e4c719`（[ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 类同的 annotated-first 认证方式）。资产 6 项：候选 ZIP、`manifest.json`、签名清单 `SHA256SUMS`、签名 `SHA256SUMS.minisig`、公钥原文、dossier；按 [ADR 0096](adr/0096-node-stable-asset-signing-minisign.md) 由维护者 minisign 签名（trusted comment `timestamp:1789017236`，`shasum -a 256 -c` 通过、`minisign -V` 通过）。同日由维护者按其既定授权在仓库 rules 页删去 ruleset `block-v1-tags-until-rc1-evidence`（远端 rules 当前仅保留默认分支保护），该防护的删除属维护者受控动作，不在本表记录为能力扩展。过夜 soak 在本表落笔时仍按既定 ≤12h 有界序列进行，终态数值由当场收尾记录替代。
