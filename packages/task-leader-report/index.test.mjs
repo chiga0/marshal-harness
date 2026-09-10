@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {withoutSQLiteRuntimeNotices} from '../task-store/runtime-notices.fixture.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -79,5 +80,5 @@ test('packaged independent checker recomputes original arbitrary rows; valid JSO
   for (const report of reports) fs.writeFileSync(path.join(root, report.region + '.json'), JSON.stringify(report), {mode: 0o600});
   const good = run(); assert.equal(good.status, 0); assert.deepEqual(JSON.parse(good.stdout).assertions[1].actual, reports);
   fs.writeFileSync(path.join(root, 'east.json'), JSON.stringify({...reports[0], netCents: 0})); const bad = run();
-  assert.equal(bad.status, 1); assert.equal(bad.stdout, ''); assert.equal(bad.stderr, '');
+  assert.equal(bad.status, 1); assert.equal(bad.stdout, ''); assert.equal(withoutSQLiteRuntimeNotices(bad.stderr), '');
 });
