@@ -100,7 +100,7 @@ function argumentsFrom(argv) {
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    if (Number(process.versions.node.split('.')[0]) < 24) fail('node-24-required', 400);
+    if (Number(process.versions.node.split('.')[0]) < 22) fail('node-22-required', 400);
     const options = argumentsFrom(process.argv.slice(2));
     if (options.stop) {
       await fs.lstat(options.directory); await privateRoot(options.directory);
