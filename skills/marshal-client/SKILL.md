@@ -11,12 +11,16 @@ description: 通过已有 Marshal Node HTTP 服务提交和跟踪团队任务、
 
 ## 连接与实际能力
 
-需要已安装的 Marshal Node（建议 v1.0.1+）、Node22+、已配置并运行的服务，以及部署者提供的：
+新版发行若包含 `packages/task-local/main.mjs`，优先调用产品的 `init`、`serve`、`status`，不在 Skill 中实现探测或进程管理。`init` 自动识别自身安装根和本机 Agent 路径；`serve` 保存本次启动连接，后续通过产品导出的 `connectLocal()` 获取 TaskClient。服务配置首次提供后复用。这些命令属于后继源码，v1.0.1 不包含它们；旧发行使用下述兼容方式，不伪造新命令可用。没有受信业务配置时，不把检测到的 Agent 当成已启用的通用执行服务。
+
+需要已安装的 Marshal Node（建议 v1.0.1+）、Node22+、已配置并运行的服务。连接初始化只做一次，复用以下两项：
 
 - `MARSHAL_INSTALL_ROOT`：可信发行安装根，含 `packages/task-client/index.mjs`。
 - `MARSHAL_CONNECTION_FILE`：本次服务启动输出的 `connectionFile` 路径，内容为连接信息；仅在客户端进程内读取，不打印、不放进 Task prompt、Worker 环境或聊天记录。
 
-这两个变量是下面示例的客户端约定，不是新增服务配置接口。不扫描 HOME 寻找连接文件或 Agent 凭据。重启后连接信息可能变化，应取得部署者提供的新连接文件。缺少服务/配置时说明缺项，不擅自启动另一份服务、修改 Provider 或伪造业务配置。
+**环境变量是可选的传参方式，不是准入条件。** 用户已在对话中提供安装位置，或安装器/启动器已返回可信路径时，直接通过下面的位置参数使用，不再要求用户 export。不要因环境变量为空而忽略已有信息。连接文件属于一个 Marshal 服务，不是每个业务系统或每个 Worker 都要配置；多个任务复用同一服务。它保存地址和认证信息，不是 Agent 登录配置。
+
+不扫描 HOME 寻找连接文件或 Agent 凭据，不按修改时间猜历史连接。重启后使用本次启动输出的 `connectionFile`。缺少信息时只列真正缺少的一项：安装成功但没有启动记录，应说明“尚缺服务启动”，不要让用户反复设置空变量。未配置的通用业务能力不能由 Skill 伪造；不擅自启动另一份服务或修改 Provider。
 
 优先使用安装包内的 `TaskClient`，它校验请求/响应、对象绑定、下载摘要并拒绝重定向；只支持显式 `http://127.0.0.1:PORT`。远端 Sandbox 应在同一个 Sandbox 内调用，不能直接把 token 发给任意公网 URL。
 
@@ -24,19 +28,29 @@ description: 通过已有 Marshal Node HTTP 服务提交和跟踪团队任务、
 
 ## 最小调用方式
 
-用部署者提供的实际路径设置上述两个变量（变量值不包含 token），然后执行以下只读检查。其余调用复用同样的客户端初始化，操作名和参数见下节。
+下面代码兼容已有发行 SDK，不依赖新增服务器接口。已有环境变量时原样运行；否则在 `node --input-type=module -` 后追加两个带引号的位置参数：可信安装根、启动器返回的连接文件绝对路径（不要把占位符当真实路径）。路径来自已有上下文时由客户端 Agent 填入，无需用户再操作。其余调用复用初始化得到的 `client`。
 
 ```sh
-node --input-type=module <<'NODE'
+node --input-type=module - <<'NODE'
 import fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 try {
-  const root = process.env.MARSHAL_INSTALL_ROOT;
-  const connectionFile = process.env.MARSHAL_CONNECTION_FILE;
+  const root = process.argv[2] ?? process.env.MARSHAL_INSTALL_ROOT;
+  const connectionFile = process.argv[3] ?? process.env.MARSHAL_CONNECTION_FILE;
+  if (process.argv.length > 4) throw Error();
   if (!root || !connectionFile || !path.isAbsolute(root) || !path.isAbsolute(connectionFile)) throw Error();
   const {TaskClient} = await import(pathToFileURL(path.join(root, 'packages/task-client/index.mjs')));
-  const connection = JSON.parse(fs.readFileSync(connectionFile, 'utf8'));
+  const fd = fs.openSync(connectionFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  let connection;
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > 16384 || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0) throw Error();
+    const bytes = Buffer.alloc(16385);
+    const length = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    if (length > 16384) throw Error();
+    connection = JSON.parse(bytes.subarray(0, length).toString('utf8'));
+  } finally { fs.closeSync(fd); }
   const client = new TaskClient({baseURL: connection.url, token: connection.token});
   console.log(JSON.stringify(await client.request('ready.get')));
 } catch {
@@ -54,7 +68,7 @@ NODE
 2. 用 `client.createTask(body, key)` 提交；保存返回的 `task.id`。body 示例：
 
    ```json
-   {"intent":"按已确认需求交付 ETL SQL 和校验结果","context":{"text":"使用用户指定的表结构与日期范围；本次只交付 SQL，不授权发布、执行或补数据。"},"requirements":{"deliverables":["ETL SQL","校验结果"],"acceptance":["符合已确认字段映射和数据范围"]}}
+   {"intent":"完成用户已确认的任务","context":{"text":"在此补充相关资源、输入与操作边界；只授权本次约定的工作，不隐含外部发布权限。"},"requirements":{"deliverables":["约定的交付物","独立检查结果"],"acceptance":["满足用户确认的验收要求"]}}
    ```
 
    这是请求格式示例，不是该业务已接线的保证。已有 taskId 时先查询原任务，不为“继续”重复创建。
