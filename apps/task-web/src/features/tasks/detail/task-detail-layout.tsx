@@ -52,34 +52,35 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
   const refetchInterval = intervalMs ?? false;
 
   // GET /v1/tasks/{taskId} 直接返回 Task；乱序由 preferFreshTask（数值 revision）拦截
+  // signal 贯通：卸载/查询作废即取消在途读；另有 transport 默认 READ deadline 兜底悬挂（UI-06）
   const taskQuery = useQuery<TaskRecord>({
     queryKey: taskKeys.detail(taskId),
-    queryFn: () => transport.getTask(taskId),
+    queryFn: ({signal}) => transport.getTask(taskId, {signal}),
     refetchInterval,
     structuralSharing: preferFreshTask,
   });
   const workersQuery = useQuery<WorkersResponse>({
     queryKey: taskKeys.workers(taskId),
-    queryFn: () => transport.getWorkers(taskId),
+    queryFn: ({signal}) => transport.getWorkers(taskId, {signal}),
     refetchInterval,
   });
   // 计划首次冻结前服务端返回 404：容忍，不下发为页面错误，概览如实显示「尚未冻结计划」
   const planQuery = useQuery<PlanRecord>({
     queryKey: taskKeys.plan(taskId),
-    queryFn: () => transport.getPlan(taskId),
+    queryFn: ({signal}) => transport.getPlan(taskId, {signal}),
     refetchInterval,
     retry: false,
   });
   // 问题流加载失败同样容忍：概览以 questions:null 如实降级
   const questionsQuery = useQuery<QuestionsResponse>({
     queryKey: taskKeys.questions(taskId),
-    queryFn: () => transport.getQuestions(taskId, {limit: 100}), // 合同 items 上限 100；单页取齐（合同本身限同期开放问题 ≤3）
+    queryFn: ({signal}) => transport.getQuestions(taskId, {limit: 100, signal}), // 合同 items 上限 100；单页取齐（合同本身限同期开放问题 ≤3）
     refetchInterval,
     retry: false,
   });
   const leaderQuery = useQuery<LeaderRecord>({
     queryKey: taskKeys.leader(taskId),
-    queryFn: () => transport.getLeader(taskId),
+    queryFn: ({signal}) => transport.getLeader(taskId, {signal}),
     refetchInterval,
     retry: false, // Leader 未启用/未提供时不反复重试；以展示不可用为准
   });

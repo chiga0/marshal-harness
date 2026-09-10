@@ -105,7 +105,7 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
   const query = useInfiniteQuery({
     queryKey: ['tasks', 'list'],
     initialPageParam: null as string | null,
-    queryFn: ({pageParam}) => transport.listTasks({limit: TASK_LIST_PAGE_SIZE, cursor: pageParam}),
+    queryFn: ({pageParam, signal}) => transport.listTasks({limit: TASK_LIST_PAGE_SIZE, cursor: pageParam, signal}),
     getNextPageParam: lastPage => lastPage.nextCursor ?? undefined,
     refetchInterval: pollIntervalMs ?? false,
     refetchIntervalInBackground: true,

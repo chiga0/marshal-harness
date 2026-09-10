@@ -22,8 +22,28 @@ export function intervalFor(mode: PollMode): number | null {
   return null;
 }
 
+type UnauthorizedListener = () => void;
+
+const unauthorizedListeners = new Set<UnauthorizedListener>();
+
+/** 连接层订阅「凭据已被服务端拒绝」；返回解除函数。监听器异常不阻断其余通知。 */
+export function onUnauthorized(listener: UnauthorizedListener): () => void {
+  unauthorizedListeners.add(listener);
+  return () => {
+    unauthorizedListeners.delete(listener);
+  };
+}
+
 export function signalUnauthorized(): void {
   clearToken();
+  // UI-07：401 不只清 token——连接状态、缓存与收口的 UI 由监听者同步（停轮询、禁写、要求重连）。
+  for (const listener of [...unauthorizedListeners]) {
+    try {
+      listener();
+    } catch {
+      // 单个监听器失败不影响其余通知；不作进一步处理（连接层保证自身幂等）。
+    }
+  }
 }
 
 export function createQueryClientWorker(config: Partial<QueryClientConfig> = {}): QueryClient {

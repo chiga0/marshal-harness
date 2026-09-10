@@ -1,6 +1,6 @@
 // 新建任务（P03）：客户端边界校验与 OpenAPI createTask/input_create 一致（intent 8192B、context.text 32768B、
 // 单 input 解码后 256 KiB、最多 32 个 inputRefs）；提交中防重复；失败保留草稿与错误码/requestId；
-// 结果未知（网络层失败）只在页面存活时提供「同一请求重试」的显式同键重放，绝不自动发送、不乐观成功。
+// 结果未知（网络层失败、超时、5xx 错误应答）只在页面存活时提供「同一请求重试」的显式同键重放，绝不自动发送、不乐观成功（UI-01）。
 import {useMemo, useRef, useState} from 'react';
 import type {ChangeEvent, FormEvent} from 'react';
 import {Link} from 'react-router-dom';
@@ -20,6 +20,7 @@ import {
   utf8Bytes, validateIntentText, validateSelectedFiles,
 } from './task-create';
 import type {ComposerFile, CreateTaskApi, CreateTaskDraft, SubmissionSession} from './task-create';
+import {isAmbiguousFailure} from './detail/shared/logical-action';
 import {formatBytes} from './format';
 
 interface SubmissionError {
@@ -36,6 +37,19 @@ function describeSubmissionError(error: unknown): SubmissionError {
         title: '服务端记录了相同幂等键但内容不同的请求（idempotency_conflict）',
         detail: '说明同一请求曾被受理过。请到任务列表核对原任务及其回执；本页不会用相同键再发，也不会自动新建替代任务。'
           + (error.requestId ? ' requestId：' + error.requestId : ''),
+      };
+    }
+    // UI-01：5xx（除 501）/网关类应答不证明服务端未创建——属结果未知，保留会话、body、上传状态与幂等键。
+    if (isAmbiguousFailure(error)) {
+      const parts = ['服务端返回 ' + error.code + '（HTTP ' + error.status + '）'];
+      if (error.message && error.message !== error.code) parts.push(error.message);
+      if (error.requestId) parts.push('requestId：' + error.requestId);
+      return {
+        kind: 'unknown',
+        title: '提交结果未知：服务端错误应答不证明创建未被受理',
+        detail: parts.join('；') + '。请求可能已被受理并创建了任务，请不要凭猜测再建。页面存活期间可用下方「同一请求重试」'
+          + '按相同幂等键与相同内容重放（不自动发送）：服务端按幂等键去重，重放后仍只存在一个任务；'
+          + '已上传完成的附件按会话记录跳过，不会重复上传。也可以先到任务列表核对回执再决定。',
       };
     }
     const parts = ['错误码 ' + error.code + '（HTTP ' + error.status + '）'];
@@ -105,7 +119,7 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
       setUploadProgress(null);
       const described = describeSubmissionError(error);
       setSubmitError(described);
-      // 只有结果未知（网络层、无回执）才保留会话供显式同键重放；ApiError 已有服务端答复，不保留。
+      // 只有结果未知（网络层无回执、超时、5xx）才保留会话供显式同键重放；明确拒绝的 ApiError 不保留。
       if (described.kind === 'unknown') {
         failedSessionRef.current = {
           session: variables.session,

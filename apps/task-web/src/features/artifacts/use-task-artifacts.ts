@@ -22,11 +22,11 @@ export function useTaskArtifacts({taskId, artifactIds, transport, refetchInterva
   return useQuery<ArtifactEntry[]>({
     // idsKey 进查询键：产物集合变化即视为新数据；前缀仍在 ['task', taskId] 之下，组键失效可覆盖
     queryKey: [...taskKeys.artifacts(taskId), idsKey],
-    queryFn: async () => {
+    queryFn: async ({signal}) => {
       const entries = await Promise.all(
         artifactIds.map(async (id): Promise<ArtifactEntry> => {
           try {
-            return {status: 'ok', artifact: await transport.getArtifact(id)};
+            return {status: 'ok', artifact: await transport.getArtifact(id, {signal})};
           } catch (error) {
             return {status: 'failed', id, error};
           }

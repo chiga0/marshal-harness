@@ -133,6 +133,12 @@ export function QuestionCard({taskId, expectedRevision, question, previewDigest,
           <div className="mt-2"><Button size="sm" variant="outline" onClick={onChanged}>刷新任务查看进展</Button></div>
         </div>
       ) : null}
+      {action.depsStale && (action.phase.kind === 'unknown' || action.phase.kind === 'rejected') ? (
+        <p className="text-xs leading-[18px] text-text-secondary" data-testid="question-deps-stale">
+          检测到任务已推进到新版本（轮询 revision 已变化）。本次提交的键与状态保持不变；
+          请先刷新核对服务端进展，再决定原键重放或重新编辑。
+        </p>
+      ) : null}
       {action.phase.kind === 'rejected' ? (
         <ErrorNotice
           error={action.phase.error}

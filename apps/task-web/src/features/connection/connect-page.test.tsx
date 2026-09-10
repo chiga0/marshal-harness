@@ -103,14 +103,15 @@ describe('ConnectPage', () => {
     expect(alert).toHaveTextContent('not_ready');
   });
 
-  it('网络层失败：区分展示本机不可达且不猜测原因', async () => {
+  it('网络层失败：只说「未取得有效响应」，不声称请求没有到达服务、不猜测原因', async () => {
     const user = userEvent.setup();
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed'); }));
     renderConnect();
     await user.type(screen.getByLabelText('Bearer token'), VALID_TOKEN);
     await user.click(screen.getByRole('button', {name: '连接'}));
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('无法连接本机服务（网络层不可达）');
+    expect(alert).toHaveTextContent('无法连接本机服务（未取得有效响应）');
+    expect(alert).toHaveTextContent('不能证明请求没有到达服务');
     expect(alert).toHaveTextContent('本页不做猜测');
   });
 
@@ -122,7 +123,7 @@ describe('ConnectPage', () => {
     await user.click(screen.getByRole('button', {name: '连接'}));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('请求构造失败：token 含非法字符');
-    expect(alert).not.toHaveTextContent('网络层不可达');
+    expect(alert).not.toHaveTextContent('未取得有效响应');
   });
 });
 

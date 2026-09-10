@@ -1,12 +1,13 @@
 // 连接上下文：token 仅在内存，断开清除全部缓存；不在 URL/Web Storage/构建产物保存。
 // 每个视图拿到的 transport 由 createTransport 每次新建轻实例（fetch 原样），token 由模块单例读；连接失败统一区分 401/不可达/就绪失败。
-import {createContext, useCallback, useContext, useMemo, useState} from 'react';
+import {createContext, useCallback, useContext, useEffect, useMemo, useState} from 'react';
 import type {ReactNode} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import type {QueryClient} from '@tanstack/react-query';
 import {ApiError} from '../../lib/transport/types';
 import type {Transport} from '../../lib/transport/types';
 import {clearToken, createTransport, installToken} from '../../lib/transport/client';
+import {onUnauthorized} from '../../lib/queries/client';
 
 export type ConnectState = 'idle' | 'connecting' | 'ready' | 'unauthorized' | 'unreachable' | 'api-down';
 
@@ -35,6 +36,17 @@ export function ConnectionProvider({children}: {children: ReactNode}) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [stage, setStage] = useState(0);
   const queryClient = useOptionalQueryClient();
+
+  // UI-07：轮询/写操作收到服务端 401 时，连接立即失效——清缓存（重连不闪现上一连接数据）、
+  // 状态离开 ready（应用门据此卸载业务视图、停轮询并禁用写），要求用户明确重连。
+  useEffect(() => onUnauthorized(() => {
+    queryClient?.clear();
+    setState(previous => {
+      if (previous !== 'ready') return previous;
+      setErrorMessage('服务端拒绝了当前凭据（401），连接已失效；缓存已清空，不会显示上次会话数据。请从本机连接信息取最新 token 重新连接。');
+      return 'unauthorized';
+    });
+  }), [queryClient]);
 
   const connect = useCallback(async (token: string) => {
     setState('connecting');

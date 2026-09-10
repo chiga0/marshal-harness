@@ -221,6 +221,53 @@ describe('TaskNewComposer 提交流程', () => {
     expect(createTask.mock.calls[0]?.[0]).toEqual(createTask.mock.calls[1]?.[0]);
   });
 
+  it('UI-01：提交后服务端返回 504 视为结果未知（不当拒绝丢弃会话），同键重放后只存在一个任务', async () => {
+    const user = userEvent.setup();
+    // 服务端实际已创建，但回执是 504——客户端不得据此丢弃提交会话
+    const createTask = vi
+      .fn<CreateTaskApi['createTask']>()
+      .mockRejectedValueOnce(new ApiError(504, 'upstream_timeout', '网关超时', 'req-504'))
+      .mockResolvedValueOnce({id: 'task-dedup-1'});
+    const api = makeApi({createTask});
+    renderComposer(api);
+
+    await user.type(screen.getByLabelText(/需求内容/), '汇总两地区销售清单');
+    await user.click(screen.getByRole('button', {name: '创建任务'}));
+
+    const alert = await screen.findByRole('alert');
+    // 结论必须是「结果未知」而非「服务端拒绝」；保留幂等键、body 与上传状态
+    expect(alert).toHaveTextContent('提交结果未知');
+    expect(alert).toHaveTextContent('不证明创建未被受理');
+    expect(alert).toHaveTextContent('HTTP 504');
+    expect(alert).toHaveTextContent('upstream_timeout');
+    expect(alert).toHaveTextContent('req-504');
+    expect(screen.getByLabelText(/需求内容/)).toHaveValue('汇总两地区销售清单');
+
+    // 显式同键重放：相同幂等键 + 相同 body；服务端按键去重，仍只存在一个任务
+    await user.click(screen.getByRole('button', {name: /同一请求重试/}));
+    expect(await screen.findByRole('status')).toHaveTextContent('任务 ID：task-dedup-1');
+    expect(createTask).toHaveBeenCalledTimes(2);
+    expect(createTask.mock.calls[0]?.[0]).toEqual(createTask.mock.calls[1]?.[0]);
+    expect(api.createInput).not.toHaveBeenCalled();
+  });
+
+  it('UI-01：501 unsupported_operation 是明确拒绝，不提供同键重放', async () => {
+    const user = userEvent.setup();
+    const createTask = vi
+      .fn<CreateTaskApi['createTask']>()
+      .mockRejectedValueOnce(new ApiError(501, 'unsupported_operation', '不支持', 'req-501'));
+    const api = makeApi({createTask});
+    renderComposer(api);
+
+    await user.type(screen.getByLabelText(/需求内容/), '生成对账报告');
+    await user.click(screen.getByRole('button', {name: '创建任务'}));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('服务端拒绝了本次创建');
+    expect(alert).toHaveTextContent('HTTP 501');
+    expect(screen.queryByRole('button', {name: /同一请求重试/})).toBeNull();
+  });
+
   it('草稿修改后不再提供同键重放，再提交使用新幂等键与新内容', async () => {
     const user = userEvent.setup();
     const createTask = vi

@@ -191,7 +191,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, transport, onC
         </>
       ) : null}
 
-      <LeaderReplyOutcome phase={action.phase} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} />
+      <LeaderReplyOutcome phase={action.phase} depsStale={action.depsStale} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} />
 
       <ConfirmDialog
         open={dialogOpen && answer !== null && action.phase.kind === 'idle'}
@@ -258,7 +258,7 @@ function PublicationReplyActions({taskId, expectedRevision, request, transport, 
         </>
       ) : null}
 
-      <LeaderReplyOutcome phase={action.phase} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} />
+      <LeaderReplyOutcome phase={action.phase} depsStale={action.depsStale} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} />
 
       <ConfirmDialog
         open={dialogOpen && decision !== null && action.phase.kind === 'idle'}
@@ -282,7 +282,13 @@ function PublicationReplyActions({taskId, expectedRevision, request, transport, 
   );
 }
 
-function LeaderReplyOutcome({phase, onReplay, onRefresh}: {phase: ActionPhase; onReplay: () => void; onRefresh: () => void}) {
+function LeaderReplyOutcome({phase, depsStale, onReplay, onRefresh}: {phase: ActionPhase; depsStale: boolean; onReplay: () => void; onRefresh: () => void}) {
+  const staleNote = depsStale && (phase.kind === 'unknown' || phase.kind === 'rejected') ? (
+    <p className="text-xs leading-[18px] text-text-secondary" data-testid="leader-reply-deps-stale">
+      检测到任务已推进到新版本（轮询 revision 已变化）。本次提交的键与状态保持不变；
+      请先刷新核对 Leader 投影，再决定原键重放或重新开始。
+    </p>
+  ) : null;
   if (phase.kind === 'submitting') return <p className="text-sm text-text-secondary" role="status">正在提交 Leader 答复…</p>;
   if (phase.kind === 'accepted') {
     return (
@@ -296,17 +302,25 @@ function LeaderReplyOutcome({phase, onReplay, onRefresh}: {phase: ActionPhase; o
     );
   }
   if (phase.kind === 'rejected') {
-    return <ErrorNotice error={phase.error} title="Leader 答复失败" onRefresh={onRefresh} />;
+    return (
+      <>
+        {staleNote}
+        <ErrorNotice error={phase.error} title="Leader 答复失败" onRefresh={onRefresh} />
+      </>
+    );
   }
   if (phase.kind === 'unknown') {
     return (
-      <ErrorNotice
-        error={phase.error}
-        title="Leader 答复结果未知"
-        outcomeNote="请求可能已被服务端接纳。可显式原键重放一次（不重新执行），或先刷新核对 Leader 投影与任务回执。"
-        onReplay={onReplay}
-        onRefresh={onRefresh}
-      />
+      <>
+        {staleNote}
+        <ErrorNotice
+          error={phase.error}
+          title="Leader 答复结果未知"
+          outcomeNote="请求可能已被服务端接纳。可显式原键重放一次（不重新执行），或先刷新核对 Leader 投影与任务回执。"
+          onReplay={onReplay}
+          onRefresh={onRefresh}
+        />
+      </>
     );
   }
   return null;

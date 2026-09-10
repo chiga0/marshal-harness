@@ -74,4 +74,52 @@ describe('transport', () => {
     const body = JSON.parse(String(call?.[1]?.body));
     expect(body).toEqual({expectedRevision: 3, questionRevision: 1, questionDigest: 'sha256:bb', answer: '2026-09-01'});
   });
+
+  it('UI-03：默认 fetch 经闭包调用，receiver 为 undefined（模拟严格浏览器）', async () => {
+    installToken('t-123');
+    let receiver: unknown = 'not-called';
+    const original = globalThis.fetch;
+    // 严格浏览器语义：window.fetch 以非 Window 接收者调用即抛 TypeError
+    globalThis.fetch = function (this: unknown, ...args: Parameters<typeof fetch>) {
+      receiver = this;
+      if (this !== undefined && this !== globalThis) {
+        return Promise.reject(new TypeError('Illegal invocation'));
+      }
+      return Promise.resolve(mockResponse(200, {items: [], nextCursor: null}));
+    } as typeof fetch;
+    try {
+      const transport = createTransport({token: 't-123'});
+      const response = await transport.listTasks({limit: 1});
+      expect(response.items).toEqual([]);
+      expect(receiver).toBeUndefined();
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('UI-06：读请求默认携带 deadline 信号，且与调用方取消 signal 合并', async () => {
+    installToken('t-123');
+    const controller = new AbortController();
+    const spy = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      controller.abort();
+      // 合并后：调用方中止必须传导到实际发出的 signal
+      if (typeof AbortSignal.any === 'function') expect(init?.signal?.aborted).toBe(true);
+      return mockResponse(200, {id: 'task-x'});
+    });
+    const transport = createTransport({token: 't-123', fetchLike: spy as unknown as typeof fetch});
+    await transport.getTask('task-x', {signal: controller.signal});
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('UI-06：写请求也携带时限信号（到期中止只代表未收到回执）', async () => {
+    installToken('t-123');
+    const spy = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return mockResponse(202, {accepted: true});
+    });
+    const transport = createTransport({token: 't-123', fetchLike: spy as unknown as typeof fetch});
+    await transport.pauseTask('task-x', {expectedRevision: 1, idempotencyKey: 'ikey-w'});
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
 });

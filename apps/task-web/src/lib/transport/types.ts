@@ -459,26 +459,31 @@ export class ApiError extends Error {
 
 // ---- Transport 访问面 ----
 
+/** 读方法的可选调用参数：signal 贯通取消（卸载/查询作废）与默认 deadline。 */
+export interface ReadOptions {
+  signal?: AbortSignal;
+}
+
 export interface Transport {
   createTask(body: CreateTaskBody & {idempotencyKey: string}): Promise<TaskRecord>;
   createInput(body: CreateInputBody & {idempotencyKey: string}): Promise<ArtifactRecord>;
-  listTasks(options: {limit?: number; cursor?: string | null}): Promise<TasksResponse>;
-  getTask(taskId: TaskId): Promise<TaskRecord>;
-  getWorkers(taskId: TaskId): Promise<WorkersResponse>;
-  getPlan(taskId: TaskId): Promise<PlanRecord>;
+  listTasks(options: {limit?: number; cursor?: string | null; signal?: AbortSignal}): Promise<TasksResponse>;
+  getTask(taskId: TaskId, options?: ReadOptions): Promise<TaskRecord>;
+  getWorkers(taskId: TaskId, options?: ReadOptions): Promise<WorkersResponse>;
+  getPlan(taskId: TaskId, options?: ReadOptions): Promise<PlanRecord>;
   approvePlan(taskId: TaskId, body: PlanApproveBody): Promise<unknown>;
-  getQuestions(taskId: TaskId, options?: {cursor?: string | null; limit?: number}): Promise<QuestionsResponse>;
+  getQuestions(taskId: TaskId, options?: {cursor?: string | null; limit?: number; signal?: AbortSignal}): Promise<QuestionsResponse>;
   answerTask(taskId: TaskId, questionId: string, body: AnswerBody): Promise<unknown>;
   cancelTask(taskId: TaskId, body: ControlBody): Promise<unknown>;
   pauseTask(taskId: TaskId, body: ControlBody): Promise<unknown>;
   resumeTask(taskId: TaskId, body: ControlBody): Promise<unknown>;
   cancelWorker(workerId: WorkerId, body: ControlBody): Promise<unknown>;
-  getLeader(taskId: TaskId): Promise<LeaderRecord>;
+  getLeader(taskId: TaskId, options?: ReadOptions): Promise<LeaderRecord>;
   leaderReply(taskId: TaskId, requestId: string, body: LeaderReplyBody): Promise<unknown>;
   repair(taskId: TaskId, body: RepairBody): Promise<unknown>;
-  getEvents(taskId: TaskId, options?: {cursor?: string | null; limit?: number}): Promise<Events>;
-  getArtifact(artifactId: ArtifactId): Promise<ArtifactRecord>;
-  getArtifactContent(artifactId: ArtifactId): Promise<Blob>;
+  getEvents(taskId: TaskId, options?: {cursor?: string | null; limit?: number; signal?: AbortSignal}): Promise<Events>;
+  getArtifact(artifactId: ArtifactId, options?: ReadOptions): Promise<ArtifactRecord>;
+  getArtifactContent(artifactId: ArtifactId, options?: ReadOptions): Promise<Blob>;
 }
 
 export function newIdempotencyKey(): string {

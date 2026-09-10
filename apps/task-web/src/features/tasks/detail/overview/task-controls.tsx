@@ -125,7 +125,7 @@ function ControlAttempt({taskId, action, revision, transport, onClose, onChanged
         onConfirm={() => void logical.submit(run)}
         onCancel={onClose}
       />
-      <ControlPhase phase={logical.phase} action={action}
+      <ControlPhase phase={logical.phase} depsStale={logical.depsStale} action={action}
         onReplay={() => void logical.replay(run)}
         onRefresh={() => { void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)}); onChanged(); }}
         onClose={onClose} />
@@ -133,7 +133,7 @@ function ControlAttempt({taskId, action, revision, transport, onClose, onChanged
   );
 }
 
-function ControlPhase({phase, action, onReplay, onRefresh, onClose}: {phase: ActionPhase; action: ControlAction; onReplay: () => void; onRefresh: () => void; onClose: () => void}) {
+function ControlPhase({phase, depsStale, action, onReplay, onRefresh, onClose}: {phase: ActionPhase; depsStale: boolean; action: ControlAction; onReplay: () => void; onRefresh: () => void; onClose: () => void}) {
   if (phase.kind === 'submitting') return <p className="mt-2 text-sm text-text-secondary" role="status">正在提交{action === 'cancel' ? '取消' : action === 'pause' ? '暂停' : '恢复'}请求…</p>;
   if (phase.kind === 'accepted') {
     return (
@@ -156,6 +156,7 @@ function ControlPhase({phase, action, onReplay, onRefresh, onClose}: {phase: Act
   if (phase.kind === 'rejected') {
     return (
       <div className="mt-2">
+        {depsStale ? <StaleNote /> : null}
         <ErrorNotice error={phase.error} title="控制操作失败" onRefresh={onRefresh} />
       </div>
     );
@@ -163,6 +164,7 @@ function ControlPhase({phase, action, onReplay, onRefresh, onClose}: {phase: Act
   if (phase.kind === 'unknown') {
     return (
       <div className="mt-2">
+        {depsStale ? <StaleNote /> : null}
         <ErrorNotice
           error={phase.error}
           title="控制操作结果未知"
@@ -174,4 +176,14 @@ function ControlPhase({phase, action, onReplay, onRefresh, onClose}: {phase: Act
     );
   }
   return null;
+}
+
+/** 轮询推进 revision 时的未决动作保护提示（UI-02）：原键与状态保留，先核对再决定。 */
+function StaleNote() {
+  return (
+    <p className="mb-1 text-xs leading-[18px] text-text-secondary" data-testid="control-deps-stale">
+      检测到任务已推进到新版本（轮询 revision 已变化）。本次提交的键与状态保持不变；
+      请先刷新核对任务状态，再决定原键重放或重新发起。
+    </p>
+  );
 }
