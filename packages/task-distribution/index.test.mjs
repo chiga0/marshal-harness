@@ -11,6 +11,16 @@ import {pack, verify, SOURCE_FILES, NODE_VERSION} from './index.mjs';
 const repository = fs.realpathSync(fileURLToPath(new URL('../..', import.meta.url)));
 const git = (root, ...args) => execFileSync('git', ['-C', root, ...args], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}).trim();
 const hash = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+// Node 22 emits this built-in SQLite import warning even before configuration
+// validation. Ignore only the exact public runtime notice, never arbitrary
+// stderr (which could hide a private-data leak or a different startup failure).
+const withoutSQLiteImportWarning = text => text.replace(/^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature and might change at any time\r?\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\r?\n/gm, '');
+test('SQLite import notice normalization does not discard other diagnostics or private output', () => {
+  const notice = '(node:123) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\n';
+  assert.equal(withoutSQLiteImportWarning('error\n' + notice), 'error\n');
+  assert.equal(withoutSQLiteImportWarning('secret\n' + notice), 'secret\n');
+  assert.equal(withoutSQLiteImportWarning(notice.replace('SQLite', 'Other')), notice.replace('SQLite', 'Other'));
+});
 function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-script-package-')));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
@@ -58,11 +68,11 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
   {cwd: f.root, env: {}, timeout: 10000, encoding: 'utf8'});
   assert.equal(unconfigured.status, 1);
   assert.equal(unconfigured.stdout, '');
-  assert.equal(unconfigured.stderr, '{"code":"service_start_unavailable"}\n');
+  assert.equal(withoutSQLiteImportWarning(unconfigured.stderr), '{"code":"service_start_unavailable"}\n');
   assert.equal(fs.existsSync(state), false); // No configuration fallback or partial service.
   const leader = spawnSync(process.execPath, [path.join(f.target, report.entrypoint), '--root', path.join(f.root, 'unconfigured-leader'),
     '--config', path.join(f.target, 'packages/task-leader-report/service-config.mjs')], {cwd: f.root, env: {}, timeout: 10000, encoding: 'utf8'});
-  assert.equal(leader.status, 1); assert.equal(leader.stdout, ''); assert.equal(leader.stderr, '{"code":"service_start_unavailable"}\n');
+  assert.equal(leader.status, 1); assert.equal(leader.stdout, ''); assert.equal(withoutSQLiteImportWarning(leader.stderr), '{"code":"service_start_unavailable"}\n');
   assert.equal(fs.existsSync(path.join(f.root, 'unconfigured-leader')), false);
   const checker = spawnSync(process.execPath, [path.join(f.target, 'packages/task-regional-window/checker.mjs')],
     {cwd: f.root, env: {}, input: '{}\n', timeout: 10000, encoding: 'utf8'});
