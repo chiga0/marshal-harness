@@ -2,7 +2,7 @@
 # 固定 Node stable 安装器；不构建、不提权、不覆盖、不启动服务。
 set -euo pipefail
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  printf '%s\n' '用法：bash install-node.sh [--prefix /absolute/private-parent/install-dir] [--base-url https://host/path/v1.0.1/ | --offline-dir /path/to/v1.0.1]' '安装固定 v1.0.1。依赖：Node >=22、python3、minisign；联网模式另需 curl；服务启动另检 SQLite 必需能力。' '默认：$HOME/.local/share/marshal-node/v1.0.1。仅安装，不配置 Agent 或启动 HTTP。' '自定义目标的父目录须已存在、当前用户所有、0700；目标必须不存在。' '镜像 URL 直接指向版本目录，仅接受 HTTPS，无凭据、查询或片段；失败不回退 GitHub。' '离线目录包含 SHA256SUMS、SHA256SUMS.minisig、固定 ZIP、manifest.json、distribution.mjs；仍完整验签和验摘要。'
+  printf '%s\n' '用法：bash install-node.sh [--prefix /absolute/private-parent/install-dir] [--base-url https://host/path/v1.0.1/ | --offline-dir /path/to/v1.0.1]' '安装固定 v1.0.1。依赖：Node >=22、python3、minisign；联网模式另需 curl；服务启动另检 SQLite 必需能力。' '默认：$HOME/.local/share/marshal-node/v1.0.1。仅安装，不配置 Agent 或启动 HTTP。' '默认下载目录：https://github-releases.oss-cn-hangzhou.aliyuncs.com/marshal-harness/v1.0.1/' '自定义目标的父目录须已存在、当前用户所有、0700；目标必须不存在。' '镜像 URL 直接指向版本目录，仅接受 HTTPS，无凭据、查询或片段；失败不回退 GitHub。' '离线目录包含 SHA256SUMS、SHA256SUMS.minisig、固定 ZIP、manifest.json、distribution.mjs；仍完整验签和验摘要。'
   exit 0
 fi
 command -v python3 >/dev/null || { printf '%s\n' '缺少 python3，请先安装。' >&2; exit 1; }
@@ -16,7 +16,7 @@ ZIP_SHA = 'a94f53073c96f813a7fbd24edc15a77c32130329a3fbef877d8371e9ec17a2a1'
 MANIFEST_SHA = '10c747d2f25dce6c085a736c2ed3e55f19ed9f0517e25a3b8e8561f08f9240f7'
 HELPER_SHA = '61446c045da5af78434967ae851781a9581b3de4cd820e30b2173256d593bd80'
 PUBLIC_KEY = 'RWQAYJ7SGGbem0iFIm1Hjh8837yNiXVQajajH8efRf3E2ziZi7itc1Nq'
-BASE = 'https://github.com/chiga0/marshal-harness/releases/download/' + VERSION + '/'
+BASE = 'https://github-releases.oss-cn-hangzhou.aliyuncs.com/marshal-harness/' + VERSION + '/'
 MAX = 16 * 1024 * 1024
 stage = None
 
@@ -149,8 +149,8 @@ try:
     require(digest(archive.read_bytes()) == ZIP_SHA, 'ZIP 摘要错误')
     manifest = download(BASE + 'manifest.json', 'manifest.json', 65536)
     require(digest(manifest.read_bytes()) == MANIFEST_SHA, 'manifest 摘要错误')
-    # 验证器不是发行包中的运行时文件；取固定 source 文件并在执行前校验内置摘要。
-    helper = download(BASE + 'distribution.mjs' if mirror is not None else 'https://raw.githubusercontent.com/chiga0/marshal-harness/' + SOURCE + '/packages/task-distribution/index.mjs', 'distribution.mjs', 65536)
+    # 验证器不是发行包中的运行时文件；与其他资产取同一版本目录，执行前校验固定 source 的内置摘要。
+    helper = download(BASE + 'distribution.mjs', 'distribution.mjs', 65536)
     require(digest(helper.read_bytes()) == HELPER_SHA, '固定恢复器摘要错误')
     metadata = json.loads(manifest.read_bytes())
     require(metadata['sourceHead'] == SOURCE, 'sourceHead 错误')

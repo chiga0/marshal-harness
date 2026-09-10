@@ -118,10 +118,8 @@ class InstallerTests(unittest.TestCase):
                 name = Path(call[call.index('--output') + 1]).name
                 if base:
                     self.assertEqual(call[-1], base + '/' + name)
-                elif name == 'distribution.mjs':
-                    self.assertIn('raw.githubusercontent.com/chiga0/marshal-harness/b90d7e7247a690db2af740078c285331569aa496/packages/task-distribution/index.mjs', call[-1])
                 else:
-                    self.assertEqual(call[-1], 'https://github.com/chiga0/marshal-harness/releases/download/v1.0.1/' + name)
+                    self.assertEqual(call[-1], 'https://github-releases.oss-cn-hangzhou.aliyuncs.com/marshal-harness/v1.0.1/' + name)
                 self.assertEqual(call[call.index('--proto') + 1], '=https')
                 self.assertEqual(call[call.index('--proto-redir') + 1], '=https')
 
