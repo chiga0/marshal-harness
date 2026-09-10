@@ -1,0 +1,54 @@
+name: Node OSS mirror
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已发布且与安装器固定版本一致的 Node stable tag
+        required: true
+        default: v1.0.1
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-oss-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    if: >-
+      github.repository == 'chiga0/marshal-harness' &&
+      vars.MARSHAL_OSS_ENABLED == 'true' &&
+      (github.event_name == 'release' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    environment: oss-release
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Install transport dependencies (no OSS credentials)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          python3 -m venv "$RUNNER_TEMP/oss-venv"
+          "$RUNNER_TEMP/oss-venv/bin/pip" install oss2==2.19.1
+      - name: Prepare existing published assets (no rebuild)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: python3 scripts/prepare-node-mirror.py "$RELEASE_TAG" "$RUNNER_TEMP" "$RUNNER_TEMP/oss-stage-path"
+      - name: Verify, mirror without overwrite, and read back
+        env:
+          MARSHAL_OSS_ACCESS_KEY_ID: ${{ secrets.MARSHAL_OSS_ACCESS_KEY_ID }}
+          MARSHAL_OSS_ACCESS_KEY_SECRET: ${{ secrets.MARSHAL_OSS_ACCESS_KEY_SECRET }}
+          MARSHAL_OSS_BUCKET: ${{ vars.MARSHAL_OSS_BUCKET }}
+          MARSHAL_OSS_ENDPOINT: ${{ vars.MARSHAL_OSS_ENDPOINT }}
+          MARSHAL_OSS_PREFIX: ${{ vars.MARSHAL_OSS_PREFIX }}
+        run: |
+          "$RUNNER_TEMP/oss-venv/bin/python" scripts/sync-node-oss.py --stage "$(< "$RUNNER_TEMP/oss-stage-path")"
