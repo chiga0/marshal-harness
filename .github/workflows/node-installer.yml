@@ -1,0 +1,34 @@
+name: Node installer
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/install-node*'
+      - '.github/workflows/node-installer.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/install-node*'
+      - '.github/workflows/node-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    name: Installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check shell syntax and offline installer guards
+        run: |
+          bash -n scripts/install-node.sh
+          python3 -I -B scripts/install-node.test.py

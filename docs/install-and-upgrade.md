@@ -1,5 +1,7 @@
 # 安装、升级、回滚与卸载
 
+> **Node v1.0.0 用户请使用 [Node 一键部署](node-install.md)。** 本文以下内容属于历史 Go CLI 安装流程，`scripts/install.sh` 不用于 Node Agent Team 服务。Node 安装器不迁移旧 Go 数据，也不自动配置 Agent。
+
 本文覆盖 Marshal CLI 面向用户的生命周期操作：安装、升级、回滚与卸载。支持平台为 `darwin|linux` × `amd64|arm64`，全程不请求 sudo。安装脚本自身的契约与手工验证步骤（面向维护者）见 [docs/development.md「安装」](https://github.com/chiga0/marshal-harness/blob/main/docs/development.md#安装)。
 
 > **RC1 状态（2026-09-01）**：[`v1.0.0-rc1`](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0-rc1) 已发布并完成外部下载、same-bytes SHA-256 与临时目录安装验证。它只允许 Darwin arm64、精确 tag 和显式 `MARSHAL_LOCAL_DOGFOOD_PREVIEW=1`；缺少精确 RC1 资产时必须 fail closed，不得回退源码、其它平台资产或 stable/latest，也不得由安装器自动生成、重签发或激活 activation。RC1 是 unsigned local-dogfood prerelease，不是 production、managed、notarized、hardened、server、Linux 或 stable release。

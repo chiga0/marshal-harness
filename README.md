@@ -43,6 +43,8 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 ## 当前可用版本
 
+**2026-09-10：Node Agent Team `v1.0.0` 已正式发布。** 当前安装请使用 [Node 一键部署说明](docs/node-install.md)，不要使用下文的历史 Go RC1 安装器。Node 安装不包含 Qwen/Pi、登录、业务配置或自动启动；正式发布状态以 [Roadmap 当前表](docs/roadmap-status.md#业务交付当前表)为准，下文 RC1 段落保留历史范围。
+
 历史 Local MVP 曾在 macOS/Linux 本地单用户路径验证以下能力；这是旧实现的能力清单，不是新服务或 RC1 的统一支持矩阵：
 
 - OpenCode、Qwen Code 和 Pi；

@@ -1,5 +1,7 @@
 # Node 服务目录包：核验、启动与支持边界
 
+> **安装正式 Node v1.0.0：** 请使用 [Node 一键部署](../../docs/node-install.md)。以下为目录包工具及早期证据的技术说明，不需要普通安装用户手工执行 pack 或候选接纳流程；最新发布状态见 [Roadmap](../../docs/roadmap-status.md#业务交付当前表)。
+
 这是 [ADR 0088 §6](../../docs/adr/0088-node-task-service-production-projection.md) 的 **same-bytes 发行前置工具**，不是 stable 发布或平台支持凭证。产物是确定性目录树，包含清单内的服务模块及显式业务配置入口，不包含 Node runtime、新原生启动器、native addon、第三方 npm 依赖、Agent 本体、用户登录或用户部署配置。目标机须已有合法可执行的固定 Node `24.15.0`，以及所选 Provider 的原生安装和授权；工具不会安装它们。
 
 本文核对基线为 `0f86804140546b9e4593ba39d1a98dcb70db18bc`，该版本 [SOURCE_FILES](index.mjs) 为 **47 个运行文件**。具体候选始终以其配套清单及核验输出为准，不再使用旧 23 文件清单。manifest 中的 `darwin-arm64 / linux-x64` 是声明的验收目标，不代表两平台同资产部署已通过；当前完成状态见[主线实证](../../docs/node-task-service-status-2026-09-08.md)。
