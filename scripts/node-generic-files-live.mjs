@@ -18,7 +18,10 @@ const {run, connectLocal} = await load('task-local/main.mjs');
 const hash = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 const save = (name, value) => fs.writeFileSync(path.join(root, name), JSON.stringify(value, null, 2), {mode: 0o600, flag: 'wx'});
 const evidence = {passed: false, model: true, externalEffects: false, installation, tasks: []};
-let handle, client, currentTaskId;
+const recordWriteFailure = (name, error) => {
+  (evidence.evidenceWriteErrors ??= []).push({name, code: ['EACCES', 'EPERM', 'ENOSPC', 'EIO', 'EEXIST', 'ENOENT', 'EROFS'].includes(error.code) ? error.code : 'evidence_write_failed'});
+};
+let handle, client, currentTaskId, launchSequence = 0;
 // Best-effort independent public snapshots. A failed read must not hide the
 // original failure or prevent the other available evidence from being saved.
 async function saveFailureSnapshots() {
@@ -37,7 +40,34 @@ async function saveFailureSnapshots() {
   }
 }
 async function start() {
-  const child = spawn(process.execPath, [path.join(installation, 'packages/task-local/main.mjs'), 'serve', '--settings-dir', settingsDir],
+  const launch = ++launchSequence;
+  // Trusted consumer code, not a deployment/business configuration. The
+  // default init/serve assembly and its authority checks remain unchanged.
+  // Rejected-output base64 is private diagnostic content, NOT redaction.
+  const wrapper = `
+    import fs from 'node:fs';
+    import path from 'node:path';
+    import {run} from ${JSON.stringify(pathToFileURL(path.join(installation, 'packages/task-local/main.mjs')).href)};
+    let metadata = 0, rejected = 0, sequence = 0, diagnosticFailed = false;
+    try {
+      await run(['serve', '--settings-dir', ${JSON.stringify(settingsDir)}], {
+        includeRejectedOutput: true,
+        onDiagnostic(report) {
+          const isRejected = report.code === 'managed_provider_rejected_output';
+          if (isRejected ? rejected >= 8 : report.code !== 'managed_provider_failure' || metadata >= 32) return;
+          const bytes = JSON.stringify(report);
+          if (Buffer.byteLength(bytes) > 4096) return;
+          if (isRejected) rejected++; else metadata++;
+          try {
+            fs.writeFileSync(path.join(${JSON.stringify(root)}, 'diagnostic-start-${launch}-' + (++sequence) + '.json'),
+              bytes + '\\n', {mode: 0o600, flag: 'wx'});
+          } catch {diagnosticFailed = true;}
+        },
+      });
+    } catch {process.exitCode = 1;}
+    if (diagnosticFailed) process.exitCode = 1;
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', wrapper],
     {stdio: ['ignore', 'pipe', 'pipe']});
   let output = '', errorBytes = 0, ended = false, readyResolve, readyReject;
   const ready = new Promise((resolve, reject) => {readyResolve = resolve; readyReject = reject;});
@@ -72,7 +102,8 @@ async function until(client, taskId, wanted, deadline) {
     if (task.status !== last) {console.log(JSON.stringify({taskId, status: task.status})); last = task.status;}
     if (task.status === wanted) return task;
     if (['failed', 'cancelled', 'intervention', 'awaiting-answer', 'awaiting-confirmation', 'completed'].includes(task.status)) {
-      save(taskId + '-unexpected.json', {task});
+      const name = taskId + '-unexpected.json';
+      try {save(name, {task});} catch (error) {recordWriteFailure(name, error);}
       throw new Error('unexpected_task_status_' + task.status);
     }
     await pause(500);
@@ -142,5 +173,9 @@ try {
 }
 finally {
   try {if (handle) evidence.stop = await handle.stop();} catch (error) {evidence.passed = false; evidence.stopError = error.message; process.exitCode = 1;}
-  save('evidence.json', evidence); console.log(JSON.stringify(evidence));
+  try {save('evidence.json', evidence);} catch (error) {
+    recordWriteFailure('evidence.json', error); evidence.passed = false; process.exitCode = 1;
+    evidence.error ??= 'evidence_write_failed';
+  }
+  console.log(JSON.stringify(evidence));
 }
