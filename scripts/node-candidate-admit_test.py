@@ -95,7 +95,7 @@ class MetadataTest(unittest.TestCase):
     def test_complete_exact_attempt_and_tail_page(self):
         api = FixtureGitHub(expected())
         result = candidate.github_snapshot(api, expected())
-        self.assertEqual(result["jobs"], [501, 502, 503, 504, 505])
+        self.assertEqual(result["jobs"], list(range(501, 501 + len(candidate.JOBS))))
         self.assertTrue(any(value.endswith("page=2") for value in api.queries))
         self.assertEqual(sum(value.endswith("/runs/101") for value in api.queries), 2)
 
