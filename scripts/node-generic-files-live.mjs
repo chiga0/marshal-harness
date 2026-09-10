@@ -65,7 +65,7 @@ async function until(client, taskId, wanted, deadline) {
 try {
   await run(['init', '--install-root', installation, '--settings-dir', settingsDir], {home: root, output: value => save('init.json', value)});
   let client = await start();
-  assert.ok(await client.request('ready.get'));
+  assert.equal((await client.request('ready.get')).ready, true);
   const cases = [
     {intent: '为读书会准备两份互补的中文活动材料', topics: ['主持流程', '讨论问题'],
       detail: '主题是时间管理。主持流程列开场、讨论和总结三个阶段；讨论问题至少包含三个开放式问题。'},
