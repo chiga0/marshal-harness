@@ -20,3 +20,11 @@
 独立检查中 onboarding 16 项、通用团队 11 项通过；相邻回归最初在宿主高负载期间出现 3 项超时，随后按原时限逐项串行通过，没有提高超时参数。打包验证覆盖 69 个运行文件及独立安装启动/冷开。上述结果不能代替真实模型交付。
 
 后续出口仍是两种真实文件任务完成、下载核对，以及取消和冷恢复无重复执行；生产发布、SQL 执行与补数据不在本默认团队证明范围内。
+
+## 第二次实测：定位收尾循环
+
+诊断留存改进候选 `747a75de` 已经独立审查及 11 项本地接入测试，默认仍静默，显式诊断只进入私有文件。此前冻结上下文的一次非权威 Qwen 诊断返回合法 `work.verify`，没有恢复或解释第一次原始返回。
+
+第二个 Task `task-a7dbfbb0-a800-4fde-ae1d-b5a1d0139af4` 实际通过作者、独立 Review 与固定文件核验，但在 `finalizing` 连续提出相同 `deliver`，最终为 `failed/invalid_leader_decision`，累计 16 次执行，rework 为 0。不能将文件制品已存在等同于 Task 成功；终止原因以该错误码为准，不推断为 `budget_exhausted`。
+
+独立源码核对发现：Core 存在 stage/delivery 事实，但新 Leader snapshot 不提供它们，只提供 history 摘要；重复 deliver 又被接受并产生另一个 delivery-ready 通知。ADR0099 已补充内部输入与重复交付约束，实施修复中。私有证据为 `/private/tmp/marshal-generic-files-live-747a75de`，原 Task 不回写，修复后需新候选实测。
