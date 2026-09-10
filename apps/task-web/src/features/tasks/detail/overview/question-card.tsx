@@ -13,7 +13,7 @@ import {taskKeys} from '../query-keys';
 import {isPast, questionStageBadge} from '../shared/derive';
 import {ErrorNotice} from '../shared/error-notice';
 import {useLogicalAction} from '../shared/logical-action';
-import {formatDateTime} from '../shared/format';
+import {deliveryStatusLabel, formatDateTime} from '../shared/format';
 
 export interface QuestionCardProps {
   taskId: string;
@@ -68,6 +68,13 @@ export function QuestionCard({taskId, expectedRevision, question, previewDigest,
         <p className="text-xs font-medium text-text-secondary">主题：{question.subject}</p>
       ) : null}
       <p className="whitespace-pre-wrap text-sm leading-[22px]">{question.prompt}</p>
+
+      {question.kind === 'business' ? (
+        <p className="text-xs leading-[18px] text-text-secondary" data-testid="question-delivery-status">
+          Worker 消费状态：{deliveryStatusLabel(question.deliveryStatus ?? 'unknown')}
+          （区分已受理/已投递/已消费；「受理」不是 Worker ACK，只有 acknowledged 才是 Worker 已确认消费）
+        </p>
+      ) : null}
 
       {expired ? (
         <p className="text-sm text-danger" data-testid="question-expired">该问题已超过答复期限，无法作答；请刷新查看任务最新等待项。</p>

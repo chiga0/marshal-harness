@@ -11,9 +11,10 @@ import {Badge} from '@/components/ui/badge';
 import {ConfirmDialog} from '@/components/ui/dialog';
 import type {LeaderAuthorization, LeaderReplyBody, LeaderRequestDTO, Revision, Transport} from '@/lib/transport/types';
 import {taskKeys} from '../query-keys';
-import {isPast} from '../shared/derive';
+import {isPast, isPastAt} from '../shared/derive';
 import {ErrorNotice} from '../shared/error-notice';
 import {useLogicalAction, type ActionPhase} from '../shared/logical-action';
+import {useNow} from '../shared/use-now';
 import {formatBytes, formatDateTime} from '../shared/format';
 
 export interface LeaderRequestCardProps {
@@ -27,7 +28,9 @@ export interface LeaderRequestCardProps {
 
 export function LeaderRequestCard({taskId, expectedRevision, request, transport, onChanged}: LeaderRequestCardProps) {
   const actionable = request.status === 'pending';
-  const expired = isPast(request.deadlineAt);
+  // UI-10：到期必须即时反馈（不能只靠轮询重渲染），到期立即禁用回答/授权
+  const now = useNow(5000);
+  const expired = isPastAt(request.deadlineAt, now);
   return (
     <Card aria-label="Leader 待处理请求" className="space-y-2" data-testid="leader-request-card" data-request-kind={request.kind}>
       <div className="flex flex-wrap items-center gap-2">
@@ -59,9 +62,9 @@ export function LeaderRequestCard({taskId, expectedRevision, request, transport,
           该请求已答复或已关闭{request.replyDigest ? <>，答复摘要：<code className="break-all text-xs">{request.replyDigest}</code></> : null}。
         </p>
       ) : request.kind === 'publication' ? (
-        <PublicationReplyActions taskId={taskId} expectedRevision={expectedRevision} request={request} transport={transport} onChanged={onChanged} />
+        <PublicationReplyActions taskId={taskId} expectedRevision={expectedRevision} request={request} expired={expired} transport={transport} onChanged={onChanged} />
       ) : (
-        <BusinessReplyActions taskId={taskId} expectedRevision={expectedRevision} request={request} transport={transport} onChanged={onChanged} />
+        <BusinessReplyActions taskId={taskId} expectedRevision={expectedRevision} request={request} expired={expired} transport={transport} onChanged={onChanged} />
       )}
     </Card>
   );
@@ -108,13 +111,15 @@ interface ReplyActionsProps {
   taskId: string;
   expectedRevision: Revision;
   request: LeaderRequestDTO;
+  /** UI-10：到期立即禁用回答/授权；确认框提交时仍再校验一次。 */
+  expired: boolean;
   transport: Transport;
   onChanged: () => void;
 }
 
 /** 业务请求：options 非空时选项即答复按钮；否则自由文本 + 答复按钮。answer 为选项 value 或文本原文。
  *  答复值保存在稳定 state（选择/文本不随确认清空），保证提交中原键重放仍用同一逻辑动作键。 */
-function BusinessReplyActions({taskId, expectedRevision, request, transport, onChanged}: ReplyActionsProps) {
+function BusinessReplyActions({taskId, expectedRevision, request, expired, transport, onChanged}: ReplyActionsProps) {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<string | null>(null);
   const [freeText, setFreeText] = useState('');
@@ -150,6 +155,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, transport, onC
                   key={option.value}
                   size="sm"
                   variant={selected === option.value ? 'default' : 'outline'}
+                  disabled={expired}
                   onClick={() => {
                     setSelected(option.value);
                     setDialogOpen(true);
@@ -175,26 +181,30 @@ function BusinessReplyActions({taskId, expectedRevision, request, transport, onC
               <div>
                 <Button
                   size="sm"
-                  disabled={answer === null}
+                  disabled={answer === null || expired}
                   onClick={() => setDialogOpen(true)}
                   data-testid="leader-answer-open"
                 >
                   答复
                 </Button>
-                {answer === null ? <span className="ml-2 text-xs text-text-secondary">请先填写答复内容</span> : null}
+                {answer === null && !expired ? <span className="ml-2 text-xs text-text-secondary">请先填写答复内容</span> : null}
               </div>
             </div>
           )}
-          <p className="text-xs text-text-secondary">
-            答复走 leader.reply（绑定任务 revision 与请求摘要），不走 task.answer；不回改 revision/批准状态。
-          </p>
+          {expired ? (
+            <p className="text-xs text-danger" data-testid="leader-request-expired-block">该请求已过答复期限，回答已禁用；请刷新查看最新待处理请求。</p>
+          ) : (
+            <p className="text-xs text-text-secondary">
+              答复走 leader.reply（绑定任务 revision 与请求摘要），不走 task.answer；不回改 revision/批准状态。
+            </p>
+          )}
         </>
       ) : null}
 
       <LeaderReplyOutcome phase={action.phase} depsStale={action.depsStale} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} />
 
       <ConfirmDialog
-        open={dialogOpen && answer !== null && action.phase.kind === 'idle'}
+        open={dialogOpen && answer !== null && !expired && action.phase.kind === 'idle'}
         title="确认提交该 Leader 答复？"
         description={
           answer !== null
@@ -203,7 +213,8 @@ function BusinessReplyActions({taskId, expectedRevision, request, transport, onC
         }
         confirmText="确认答复"
         onConfirm={() => {
-          if (answer !== null) void action.submit(doSubmit);
+          // UI-10：确认框打开期间到期的，一律不发请求（后端拒绝仍是兜底）
+          if (!expired && answer !== null && !isPast(request.deadlineAt)) void action.submit(doSubmit);
           setDialogOpen(false);
         }}
         onCancel={() => setDialogOpen(false)}
@@ -213,7 +224,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, transport, onC
 }
 
 /** 发布授权请求：允许/拒绝各有二次确认；缺授权正文时允许被禁用。decision 保持稳定，重放复用同一逻辑动作键。 */
-function PublicationReplyActions({taskId, expectedRevision, request, transport, onChanged}: ReplyActionsProps) {
+function PublicationReplyActions({taskId, expectedRevision, request, expired, transport, onChanged}: ReplyActionsProps) {
   const queryClient = useQueryClient();
   const [decision, setDecision] = useState<'allow' | 'deny' | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -242,26 +253,30 @@ function PublicationReplyActions({taskId, expectedRevision, request, transport, 
       {action.phase.kind === 'idle' ? (
         <>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={!hasAuthorization} onClick={() => openDialog('allow')} data-testid="leader-reply-allow">
+            <Button size="sm" disabled={!hasAuthorization || expired} onClick={() => openDialog('allow')} data-testid="leader-reply-allow">
               允许发布
             </Button>
-            <Button size="sm" variant="destructive" onClick={() => openDialog('deny')} data-testid="leader-reply-deny">
+            <Button size="sm" variant="destructive" disabled={expired} onClick={() => openDialog('deny')} data-testid="leader-reply-deny">
               拒绝发布
             </Button>
           </div>
-          {!hasAuthorization ? (
+          {expired ? (
+            <p className="text-xs text-danger" data-testid="leader-request-expired-block">该请求已过答复期限，允许/拒绝已禁用；请刷新查看最新待处理请求。</p>
+          ) : !hasAuthorization ? (
             <p className="text-xs text-danger">授权正文缺失，「允许发布」已禁用；可以拒绝或刷新等待服务修正。</p>
           ) : null}
-          <p className="text-xs text-text-secondary">
-            决定走 leader.reply（绑定任务 revision 与请求摘要）；允许只授权这一份授权正文，不会替换目标。
-          </p>
+          {!expired ? (
+            <p className="text-xs text-text-secondary">
+              决定走 leader.reply（绑定任务 revision 与请求摘要）；允许只授权这一份授权正文，不会替换目标。
+            </p>
+          ) : null}
         </>
       ) : null}
 
       <LeaderReplyOutcome phase={action.phase} depsStale={action.depsStale} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} />
 
       <ConfirmDialog
-        open={dialogOpen && decision !== null && action.phase.kind === 'idle'}
+        open={dialogOpen && decision !== null && !expired && action.phase.kind === 'idle'}
         title={decision === 'allow' ? '确认允许该发布？' : '确认拒绝该发布？'}
         description={
           decision === 'allow'
@@ -273,7 +288,8 @@ function PublicationReplyActions({taskId, expectedRevision, request, transport, 
         destructive={decision === 'deny'}
         confirmText={decision === 'allow' ? '确认允许' : '确认拒绝'}
         onConfirm={() => {
-          if (decision !== null) void action.submit(doSubmit);
+          // UI-10：确认框打开期间到期的，一律不发请求（后端拒绝仍是兜底）
+          if (!expired && decision !== null && !isPast(request.deadlineAt)) void action.submit(doSubmit);
           setDialogOpen(false);
         }}
         onCancel={() => setDialogOpen(false)}

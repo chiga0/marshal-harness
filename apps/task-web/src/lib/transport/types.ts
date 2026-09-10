@@ -431,6 +431,21 @@ export interface CreateInputBody {
   contentBase64: string;
 }
 
+// ---- 验收（GET /v1/tasks/{taskId}/audit 的 acceptance 子投影；UI 只消费 acceptance，不消费的不建模）----
+
+export type AcceptanceStatus = 'pending' | 'passed' | 'failed' | 'unknown';
+
+export interface AcceptanceRecord {
+  status: AcceptanceStatus;
+  evidenceIds: string[];
+  digest: Sha256 | null;
+}
+
+export interface TaskAuditRecord {
+  taskId: TaskId;
+  acceptance: AcceptanceRecord;
+}
+
 // ---- 错误合同 ----
 
 export interface ApiErrorBody {
@@ -469,7 +484,7 @@ export interface Transport {
   createInput(body: CreateInputBody & {idempotencyKey: string}): Promise<ArtifactRecord>;
   listTasks(options: {limit?: number; cursor?: string | null; signal?: AbortSignal}): Promise<TasksResponse>;
   getTask(taskId: TaskId, options?: ReadOptions): Promise<TaskRecord>;
-  getWorkers(taskId: TaskId, options?: ReadOptions): Promise<WorkersResponse>;
+  getWorkers(taskId: TaskId, options?: {cursor?: string | null; limit?: number; signal?: AbortSignal}): Promise<WorkersResponse>;
   getPlan(taskId: TaskId, options?: ReadOptions): Promise<PlanRecord>;
   approvePlan(taskId: TaskId, body: PlanApproveBody): Promise<unknown>;
   getQuestions(taskId: TaskId, options?: {cursor?: string | null; limit?: number; signal?: AbortSignal}): Promise<QuestionsResponse>;
@@ -479,6 +494,7 @@ export interface Transport {
   resumeTask(taskId: TaskId, body: ControlBody): Promise<unknown>;
   cancelWorker(workerId: WorkerId, body: ControlBody): Promise<unknown>;
   getLeader(taskId: TaskId, options?: ReadOptions): Promise<LeaderRecord>;
+  getAudit(taskId: TaskId, options?: ReadOptions): Promise<TaskAuditRecord>;
   leaderReply(taskId: TaskId, requestId: string, body: LeaderReplyBody): Promise<unknown>;
   repair(taskId: TaskId, body: RepairBody): Promise<unknown>;
   getEvents(taskId: TaskId, options?: {cursor?: string | null; limit?: number; signal?: AbortSignal}): Promise<Events>;

@@ -218,6 +218,7 @@ export function makeFakeTransport(overrides: Partial<Transport> = {}): {transpor
     resumeTask: async () => ({}),
     cancelWorker: async () => ({}),
     getLeader: async () => makeLeader(),
+    getAudit: async () => ({taskId: TASK_ID, acceptance: {status: 'pending', evidenceIds: [], digest: null}}),
     leaderReply: async () => ({}),
     repair: async () => ({}),
     getEvents: async () => ({items: [], nextCursor: null, taskId: TASK_ID}),

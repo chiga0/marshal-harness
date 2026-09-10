@@ -58,7 +58,8 @@ describe('任务详情装配（四个子视图 + 数据装载）', () => {
   it('概览默认渲染：标题、状态徽标（中文+机器名）、计划确认入口', async () => {
     renderAt(`/tasks/${TASK_ID}`);
     expect(await screen.findByRole('heading', {name: '按窗口汇总东、西两个地区的销售清单'})).toBeInTheDocument();
-    expect(screen.getByTestId('machine-state')).toHaveTextContent('awaiting-confirmation');
+    // 任务状态徽标在页头（验收面板等也会渲染各自的 machine-state，故限定首个）
+    expect(screen.getAllByTestId('machine-state')[0]).toHaveTextContent('awaiting-confirmation');
     expect(await screen.findByTestId('plan-approve-open')).toBeInTheDocument();
     // 四个子视图导航
     for (const label of ['概览', '团队', '成果', '活动']) {
@@ -97,13 +98,13 @@ describe('任务详情装配（四个子视图 + 数据装载）', () => {
     await waitFor(() => expect(callsOf(fakeCalls, 'getLeader')).not.toHaveLength(0));
   });
 
-  it('刷新按钮按组键全部失效：五个投影都会重拉', async () => {
+  it('刷新按钮按组键全部失效：六个投影都会重拉（含 audit 验收）', async () => {
     const user = userEvent.setup();
     renderAt(`/tasks/${TASK_ID}`);
     await screen.findByTestId('plan-approve-open');
     await user.click(screen.getByTestId('detail-refresh'));
     await waitFor(() => {
-      for (const method of ['getTask', 'getWorkers', 'getPlan', 'getQuestions', 'getLeader']) {
+      for (const method of ['getTask', 'getWorkers', 'getPlan', 'getQuestions', 'getLeader', 'getAudit']) {
         expect(callsOf(fakeCalls, method).length).toBeGreaterThanOrEqual(2);
       }
     });

@@ -4,15 +4,25 @@
 
 import {Link, Route, Routes, useNavigate, useParams} from 'react-router-dom';
 import {Badge} from '@/components/ui/badge';
+import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import type {TaskRecord, Transport, Usage, WorkerRecord} from '@/lib/transport/types';
 import {formatDateTime, formatRelative, workerPhaseLabel, workerRoleLabel, workerStatusLabel} from '../tasks/detail/shared/format';
 import {StatusBadge, toneForWorker} from '../tasks/detail/shared/status-badge';
 import {WorkerDrawer} from './worker-drawer';
 
+/** UI-05：Worker 列表分页状态（服务端默认页 50）；nextCursor 非空表示还有更多。 */
+export interface WorkersPagination {
+  nextCursor: string | null;
+  loadingMore: boolean;
+  onLoadMore: () => void;
+}
+
 export interface WorkersViewProps {
   task: TaskRecord;
   workers: WorkerRecord[] | null;
+  /** 未提供时按单页数据展示（测试/旧调用面）。 */
+  pagination?: WorkersPagination;
   transport: Transport;
   onChanged: () => void;
 }
@@ -26,11 +36,11 @@ export function usageSummary(usage: Usage): string {
   return parts.length > 0 ? `${parts.join(' / ')}（来源：${usage.source}）` : `暂无数值（来源：${usage.source}）`;
 }
 
-export function WorkersView({task, workers, transport, onChanged}: WorkersViewProps) {
+export function WorkersView({task, workers, pagination, transport, onChanged}: WorkersViewProps) {
   return (
     <Routes>
-      <Route index element={<WorkersList task={task} workers={workers} transport={transport} onChanged={onChanged} drawerId={null} />} />
-      <Route path=":workerId" element={<WorkersListWithDrawer task={task} workers={workers} transport={transport} onChanged={onChanged} />} />
+      <Route index element={<WorkersList task={task} workers={workers} pagination={pagination} transport={transport} onChanged={onChanged} drawerId={null} />} />
+      <Route path=":workerId" element={<WorkersListWithDrawer task={task} workers={workers} pagination={pagination} transport={transport} onChanged={onChanged} />} />
     </Routes>
   );
 }
@@ -43,12 +53,13 @@ function WorkersListWithDrawer(props: Omit<WorkersListProps, 'drawerId'>) {
 interface WorkersListProps {
   task: TaskRecord;
   workers: WorkerRecord[] | null;
+  pagination?: WorkersPagination | undefined;
   transport: Transport;
   onChanged: () => void;
   drawerId: string | null;
 }
 
-function WorkersList({task, workers, transport, onChanged, drawerId}: WorkersListProps) {
+function WorkersList({task, workers, pagination, transport, onChanged, drawerId}: WorkersListProps) {
   const navigate = useNavigate();
   const base = `/tasks/${encodeURIComponent(task.id)}/team`;
   const openWorker = drawerId !== null ? (workers ?? []).find(worker => worker.id === drawerId) ?? null : null;
@@ -65,7 +76,9 @@ function WorkersList({task, workers, transport, onChanged, drawerId}: WorkersLis
   return (
     <div className="space-y-3" data-testid="workers-view">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-base font-semibold leading-6">团队（{workers.length} 个 Worker）</h2>
+        <h2 className="text-base font-semibold leading-6">
+          团队（已加载 {workers.length} 个 Worker{pagination?.nextCursor ? '，服务端还有更多' : ''}）
+        </h2>
       </div>
       {workers.length === 0 ? (
         <Card><p className="text-sm text-text-secondary">暂无 Worker（尚未调度或该服务未提供）。</p></Card>
@@ -116,6 +129,14 @@ function WorkersList({task, workers, transport, onChanged, drawerId}: WorkersLis
       <p className="text-xs text-text-secondary">
         「最近观察」是服务端最近一次看到该 Worker 状态的时间，不代表模型仍在持续工作；不展示进度百分比。
       </p>
+      {pagination?.nextCursor ? (
+        <div className="flex items-center gap-2" data-testid="workers-load-more">
+          <Button size="sm" variant="outline" onClick={pagination.onLoadMore} loading={pagination.loadingMore} disabled={pagination.loadingMore}>
+            加载更多 Worker
+          </Button>
+          <span className="text-xs text-text-secondary">当前显示前 {workers.length} 条；服务端按页返回（默认每页 50 条）。</span>
+        </div>
+      ) : null}
       {openWorker ? (
         <WorkerDrawer taskRevision={task.revision} worker={openWorker} transport={transport} onClose={() => navigate(base)} onChanged={onChanged} />
       ) : null}

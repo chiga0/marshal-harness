@@ -21,6 +21,20 @@ function wrap(node: ReactNode) {
 }
 
 describe('待回答问题（P06 / E10 / E11）', () => {
+  it('UI-08：运行问题展示 Worker 消费状态（受理/投递/消费三分，受理≠ACK）', () => {
+    const {transport} = makeFakeTransport();
+    wrap(<QuestionCard taskId={TASK_ID} expectedRevision={7} question={makeRunningQuestion({deliveryStatus: 'dispatched'})} previewDigest={null} transport={transport} onChanged={() => {}} />);
+    const line = screen.getByTestId('question-delivery-status');
+    expect(line).toHaveTextContent('Worker 消费状态：已投递（Worker 未确认消费）');
+    expect(line).toHaveTextContent('只有 acknowledged 才是 Worker 已确认消费');
+  });
+
+  it('预批准问题不展示 Worker 消费状态行（Leader 问答不伪造 Worker ACK）', () => {
+    const {transport} = makeFakeTransport();
+    wrap(<QuestionCard taskId={TASK_ID} expectedRevision={7} question={makePreapprovalQuestion()} previewDigest={PREVIEW_DIGEST} transport={transport} onChanged={() => {}} />);
+    expect(screen.queryByTestId('question-delivery-status')).toBeNull();
+  });
+
   it('预批准问题选项提交走 task.answer：questionId 入路由、body=preapproval 分支（previewDigest+原 value+幂等键），绝不走 leader.reply', async () => {
     const {transport, calls} = makeFakeTransport();
     const user = userEvent.setup();

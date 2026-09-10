@@ -3,7 +3,7 @@
 import {ApiError} from './types';
 import type {
   Transport, TasksResponse, TaskRecord, WorkersResponse, PlanRecord,
-  LeaderRecord, Events, QuestionsResponse, ArtifactRecord, ControlBody,
+  LeaderRecord, TaskAuditRecord, Events, QuestionsResponse, ArtifactRecord, ControlBody,
 } from './types';
 
 export interface TransportConfig {
@@ -125,7 +125,12 @@ export function createTransport(config: TransportConfig): Transport {
       return json<TasksResponse>(`/v1/tasks${params.size ? '?' + params.toString() : ''}`, readInit(options.signal));
     },
     getTask: (taskId, options = {}) => json<TaskRecord>(`/v1/tasks/${encodeURIComponent(taskId)}`, readInit(options.signal)),
-    getWorkers: (taskId, options = {}) => json<WorkersResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/workers`, readInit(options.signal)),
+    getWorkers: (taskId, options = {}) => {
+      const params = new URLSearchParams();
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      if (options.cursor) params.set('cursor', options.cursor);
+      return json<WorkersResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/workers${params.size ? '?' + params.toString() : ''}`, readInit(options.signal));
+    },
     getPlan: (taskId, options = {}) => json<PlanRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/plan`, readInit(options.signal)),
     approvePlan: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/plan/approve`, withKey(body).init),
     getQuestions: (taskId, options = {}) => {
@@ -143,6 +148,7 @@ export function createTransport(config: TransportConfig): Transport {
     resumeTask: (taskId, body) => control(`/v1/tasks/${encodeURIComponent(taskId)}/resume`, body),
     cancelWorker: (workerId, body) => control(`/v1/workers/${encodeURIComponent(workerId)}/cancel`, body),
     getLeader: (taskId, options = {}) => json<LeaderRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/leader`, readInit(options.signal)),
+    getAudit: (taskId, options = {}) => json<TaskAuditRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/audit`, readInit(options.signal)),
     leaderReply: (taskId, requestId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/leader/requests/${encodeURIComponent(requestId)}/reply`, withKey(body).init),
     repair: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/repair`, withKey(body).init),
     getEvents: (taskId, options = {}) => {

@@ -50,6 +50,15 @@ export function toneForAcceptance(status: string): Tone {
   return 'secondary';
 }
 
+/** 独立验收 Acceptance.status（pending/passed/failed/unknown）。 */
+export function toneForAcceptanceStatus(status: string): Tone {
+  if (status === 'passed') return 'success';
+  if (status === 'failed') return 'danger';
+  if (status === 'unknown') return 'outline';
+  if (status === 'pending') return 'default';
+  return 'secondary';
+}
+
 /** Leader 动作状态（publication/postverify）。 */
 export function toneForLeaderAction(status: string): Tone {
   if (status === 'succeeded') return 'success';

@@ -3,7 +3,7 @@
 // 仅用于组件测试，不作为真实服务验收。
 
 import type {
-  ArtifactRecord, LeaderRecord, PlanRecord, Question, QuestionsResponse, RunningQuestion, TaskRecord, Transport,
+  ArtifactRecord, LeaderRecord, PlanRecord, Question, QuestionsResponse, RunningQuestion, TaskAuditRecord, TaskRecord, Transport,
   WorkerRecord,
 } from '@/lib/transport/types';
 import {
@@ -50,6 +50,14 @@ export function makeLeader(overrides: Partial<LeaderRecord> = {}): LeaderRecord 
   return {...sampleLeader, taskId: TASK_ID, ...overrides};
 }
 
+export function makeAudit(overrides: Partial<TaskAuditRecord> = {}): TaskAuditRecord {
+  return {
+    taskId: TASK_ID,
+    acceptance: {status: 'pending', evidenceIds: [], digest: null},
+    ...overrides,
+  };
+}
+
 export function makeArtifact(overrides: Partial<ArtifactRecord> = {}): ArtifactRecord {
   return {...sampleArtifacts[0]!, id: ARTIFACT_ID, taskId: TASK_ID, ...overrides};
 }
@@ -77,6 +85,7 @@ export function makeFakeTransport(overrides: Partial<Transport> = {}): {transpor
     resumeTask: async () => ({}),
     cancelWorker: async () => ({}),
     getLeader: async () => makeLeader(),
+    getAudit: async () => makeAudit(),
     leaderReply: async () => ({}),
     repair: async () => ({}),
     getEvents: async taskId => ({items: [], nextCursor: null, taskId}),

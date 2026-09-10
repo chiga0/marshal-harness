@@ -114,6 +114,26 @@ export const ACCEPTANCE_LABELS: Record<string, string> = {
 };
 export const acceptanceLabel = pairs(ACCEPTANCE_LABELS);
 
+// 独立验收 Acceptance.status（GET /v1/tasks/{taskId}/audit；contract 闭集 4 值）
+export const ACCEPTANCE_STATUS_LABELS: Record<string, string> = {
+  'pending': '验收待定',
+  'passed': '验收通过',
+  'failed': '验收未通过',
+  'unknown': '验收状态未知',
+};
+export const acceptanceStatusLabel = pairs(ACCEPTANCE_STATUS_LABELS);
+
+// 运行中 Worker 问题的消费状态 deliveryStatus（contract 闭集 6 值；null 视为未知）
+export const DELIVERY_STATUS_LABELS: Record<string, string> = {
+  'pending': '已受理（待投递 Worker）',
+  'dispatched': '已投递（Worker 未确认消费）',
+  'acknowledged': '已消费（Worker 已确认）',
+  'cancelled': '已取消',
+  'expired': '已过期',
+  'unknown': '消费状态未知',
+};
+export const deliveryStatusLabel = pairs(DELIVERY_STATUS_LABELS);
+
 // Leader 动作状态（publication/postverify；contract 闭集 6 值）
 export const LEADER_ACTION_STATUS_LABELS: Record<string, string> = {
   'pending': '待执行',

@@ -51,6 +51,7 @@ function transportWith(listTasks: Transport['listTasks']): Transport {
     resumeTask: async () => { throw new Error('not used'); },
     cancelWorker: async () => { throw new Error('not used'); },
     getLeader: async () => { throw new Error('not used'); },
+    getAudit: async () => { throw new Error('not used'); },
     leaderReply: async () => { throw new Error('not used'); },
     repair: async () => { throw new Error('not used'); },
     getEvents: async () => { throw new Error('not used'); },

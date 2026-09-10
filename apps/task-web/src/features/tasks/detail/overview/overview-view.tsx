@@ -7,11 +7,12 @@ import type {
   LeaderRecord,
   PlanRecord,
   QuestionsResponse,
+  TaskAuditRecord,
   TaskRecord,
   Transport,
   WorkerRecord,
 } from '@/lib/transport/types';
-import {casRevisionOf, leaderPendingRequest} from '../shared/derive';
+import {casRevisionOf, leaderPendingRequest, questionNeedsAttention} from '../shared/derive';
 import {formatDateTime} from '../shared/format';
 import {AcceptancePanel} from './acceptance-panel';
 import {LeaderProjection} from './leader-projection';
@@ -20,7 +21,7 @@ import {PlanCard} from './plan-card';
 import {QuestionCard} from './question-card';
 import {TaskControls} from './task-controls';
 
-// 详情布局按此接口接线：task/plan/questions/workers/leader/transport/onChanged，字段名固定。
+// 详情布局按此接口接线：task/plan/questions/workers/leader/audit/transport/onChanged，字段名固定。
 export interface OverviewViewProps {
   task: TaskRecord;
   /** null = 计划未生成、未加载或该服务未提供计划内容。 */
@@ -31,17 +32,20 @@ export interface OverviewViewProps {
   workers: WorkerRecord[] | null;
   /** null = Leader 未启用/端点不可用。 */
   leader: LeaderRecord | null;
+  /** null = audit 投影未加载/不可用；独立验收不能以评审推导（UI-04）。 */
+  audit: TaskAuditRecord | null;
   transport: Transport;
   onChanged: () => void;
 }
 
-export function OverviewView({task, plan, questions, workers, leader, transport, onChanged}: OverviewViewProps) {
+export function OverviewView({task, plan, questions, workers, leader, audit, transport, onChanged}: OverviewViewProps) {
   const expectedRevision = casRevisionOf(task);
   const pendingRequest = leaderPendingRequest(leader);
   const awaitingRequest = pendingRequest !== null && pendingRequest.status === 'pending' ? pendingRequest : null;
-  const openQuestions = (questions?.items ?? []).filter(question => question.status === 'open');
+  // UI-08：除 open 外，已答但 Worker ACK 未落定的运行问题保留供核对
+  const attentionQuestions = (questions?.items ?? []).filter(questionNeedsAttention);
   const planNeedsApproval = plan !== null && task.allowedActions.includes('approve');
-  const waitingCount = openQuestions.length + (awaitingRequest ? 1 : 0) + (planNeedsApproval ? 1 : 0);
+  const waitingCount = attentionQuestions.length + (awaitingRequest ? 1 : 0) + (planNeedsApproval ? 1 : 0);
 
   return (
     <div className="space-y-4" data-testid="overview-view">
@@ -56,7 +60,7 @@ export function OverviewView({task, plan, questions, workers, leader, transport,
             {leader === null ? '（Leader 投影不可用，无法确认是否有 Leader 待处理请求。）' : ''}
           </p>
         ) : null}
-        {openQuestions.map(question => (
+        {attentionQuestions.map(question => (
           <QuestionCard
             key={question.id}
             taskId={task.id}
@@ -74,7 +78,7 @@ export function OverviewView({task, plan, questions, workers, leader, transport,
 
       <section aria-label="当前进展" className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <LeaderProjection leader={leader} workers={workers ?? []} />
-        <AcceptancePanel leader={leader} />
+        <AcceptancePanel leader={leader} audit={audit} />
       </section>
 
       <section aria-label="原需求">

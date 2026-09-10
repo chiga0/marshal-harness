@@ -5,6 +5,7 @@ export const taskKeys = {
   detail: (taskId: string) => ['task', taskId, 'detail'] as const,
   workers: (taskId: string) => ['task', taskId, 'workers'] as const,
   leader: (taskId: string) => ['task', taskId, 'leader'] as const,
+  audit: (taskId: string) => ['task', taskId, 'audit'] as const,
   plan: (taskId: string) => ['task', taskId, 'plan'] as const,
   questions: (taskId: string) => ['task', taskId, 'questions'] as const,
   artifacts: (taskId: string) => ['task', taskId, 'artifacts'] as const,

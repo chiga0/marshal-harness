@@ -4,12 +4,13 @@
 // plan（首次冻结前 404）、questions、leader 的加载失败如实降级为对应视图的「不可用/尚未提供」，
 // 不冒充整页错误；成果清单整体失败才显示 ErrorNotice。
 
-import {useQuery, useQueryClient} from '@tanstack/react-query';
+import {useInfiniteQuery, useQuery, useQueryClient} from '@tanstack/react-query';
 import {Link, NavLink, Route, Routes, useParams} from 'react-router-dom';
+import {useMemo} from 'react';
 import {Button} from '@/components/ui/button';
 import {useConnection} from '@/features/connection/connection';
 import {usePollMode} from '@/lib/queries/polling';
-import type {LeaderRecord, PlanRecord, QuestionsResponse, TaskRecord, Transport, WorkersResponse} from '@/lib/transport/types';
+import type {LeaderRecord, PlanRecord, QuestionsResponse, TaskAuditRecord, TaskRecord, Transport, WorkersResponse} from '@/lib/transport/types';
 import {cn} from '@/lib/cn';
 import {ActivityView} from './activity/activity-view';
 import {OverviewView} from './overview/overview-view';
@@ -59,11 +60,33 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
     refetchInterval,
     structuralSharing: preferFreshTask,
   });
-  const workersQuery = useQuery<WorkersResponse>({
+  // UI-05：Worker 列表分页（服务端默认页 50）；首屏第一页，超出显式「加载更多」并显示已加载范围
+  const workersQuery = useInfiniteQuery<WorkersResponse>({
     queryKey: taskKeys.workers(taskId),
-    queryFn: ({signal}) => transport.getWorkers(taskId, {signal}),
+    queryFn: ({pageParam, signal}) => transport.getWorkers(taskId, {cursor: pageParam as string | null, signal}),
+    initialPageParam: null as string | null,
+    // 页与页可能因轮询重叠（首页重取含新项），getNextPageParam 仅负责游标，去重在扁平化时做
+    getNextPageParam: lastPage => lastPage.nextCursor ?? undefined,
     refetchInterval,
   });
+  const workerItems = useMemo(() => {
+    const seen = new Set<string>();
+    const items: WorkersResponse['items'] = [];
+    for (const page of workersQuery.data?.pages ?? []) {
+      for (const worker of page.items) {
+        if (seen.has(worker.id)) continue;
+        seen.add(worker.id);
+        items.push(worker);
+      }
+    }
+    return items;
+  }, [workersQuery.data]);
+  const workersNextCursor = workersQuery.data ? (workersQuery.data.pages[workersQuery.data.pages.length - 1]?.nextCursor ?? null) : null;
+  const workersPagination = useMemo(() => ({
+    nextCursor: workersNextCursor,
+    loadingMore: workersQuery.isFetchingNextPage,
+    onLoadMore: () => { void workersQuery.fetchNextPage(); },
+  }), [workersNextCursor, workersQuery.isFetchingNextPage, workersQuery.fetchNextPage]);
   // 计划首次冻结前服务端返回 404：容忍，不下发为页面错误，概览如实显示「尚未冻结计划」
   const planQuery = useQuery<PlanRecord>({
     queryKey: taskKeys.plan(taskId),
@@ -84,6 +107,13 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
     refetchInterval,
     retry: false, // Leader 未启用/未提供时不反复重试；以展示不可用为准
   });
+  // UI-04：独立验收只来自 audit 投影（acceptance）；加载失败如实降级，不以 review 推导验收
+  const auditQuery = useQuery<TaskAuditRecord>({
+    queryKey: taskKeys.audit(taskId),
+    queryFn: ({signal}) => transport.getAudit(taskId, {signal}),
+    refetchInterval,
+    retry: false,
+  });
 
   const task = taskQuery.data ?? null;
   // 成果元数据由 task.artifactIds 逐 id 并行拉取；单项失败保留占位，全部失败转整体错误
@@ -98,10 +128,11 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
     void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)});
   };
 
-  const workers = workersQuery.data?.items ?? (workersQuery.isError ? null : []);
+  const workers = workersQuery.data ? workerItems : (workersQuery.isError ? null : []);
   const plan = planQuery.data ?? null;
   const questions = questionsQuery.data ?? null;
   const leader = leaderQuery.data ?? null;
+  const audit = auditQuery.data ?? null;
   const artifacts = artifactsQuery.data ?? null;
 
   return (
@@ -154,11 +185,11 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
             ))}
           </nav>
           <Routes>
-            <Route index element={<OverviewView task={task} plan={plan} questions={questions} workers={workers} leader={leader} transport={transport} onChanged={onChanged} />} />
-            <Route path="team/*" element={<WorkersView task={task} workers={workers} transport={transport} onChanged={onChanged} />} />
+            <Route index element={<OverviewView task={task} plan={plan} questions={questions} workers={workers} leader={leader} audit={audit} transport={transport} onChanged={onChanged} />} />
+            <Route path="team/*" element={<WorkersView task={task} workers={workers} pagination={workersPagination} transport={transport} onChanged={onChanged} />} />
             <Route path="artifacts" element={<ArtifactsView task={task} leader={leader} artifacts={artifacts} transport={transport} />} />
             <Route path="activity" element={<ActivityView taskId={taskId} transport={transport} />} />
-            <Route path="*" element={<OverviewView task={task} plan={plan} questions={questions} workers={workers} leader={leader} transport={transport} onChanged={onChanged} />} />
+            <Route path="*" element={<OverviewView task={task} plan={plan} questions={questions} workers={workers} leader={leader} audit={audit} transport={transport} onChanged={onChanged} />} />
           </Routes>
         </>
       ) : taskQuery.isPending ? (

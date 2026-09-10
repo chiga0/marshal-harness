@@ -98,3 +98,55 @@ describe('团队视图（P08 / E23）', () => {
     expect(within(drawer).queryByTestId('cancel-worker-open')).toBeNull();
   });
 });
+
+describe('分页（UI-05）', () => {
+  function renderPaginated(workers: ReturnType<typeof makeWorker>[], pagination: {nextCursor: string | null; loadingMore: boolean; onLoadMore: () => void}) {
+    const {transport, calls} = makeFakeTransport();
+    const client = new QueryClient({defaultOptions: {queries: {retry: false}, mutations: {retry: 0}}});
+    const task = makeTask({revision: 7});
+    const utils = render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[`/tasks/${TASK_ID}/team`]}>
+          <Routes>
+            <Route path="/tasks/:taskId/team/*" element={<WorkersView task={task} workers={workers} pagination={pagination} transport={transport} onChanged={() => {}} />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return {transport, calls, ...utils};
+  }
+
+  it('至少 51 条 Worker：最后一条可查看并操作，显示已加载范围而非把首批当总量', async () => {
+    const workers = Array.from({length: 51}, (_, index) => makeWorker({
+      id: `worker-${String(index + 1).padStart(3, '0')}`,
+      nodeId: `node-${index + 1}`,
+    }));
+    const onLoadMore = vi.fn();
+    renderPaginated(workers, {nextCursor: 'cursor-2', loadingMore: false, onLoadMore});
+
+    // 不把首批数量当总量：如实标注还有更多
+    expect(screen.getByText(/已加载 51 个 Worker，服务端还有更多/)).toBeInTheDocument();
+    const rows = screen.getAllByTestId('worker-row');
+    expect(rows).toHaveLength(51);
+
+    // 第 51 条有「明细」入口直达该 Worker 抽屉路由（抽屉明细与取消操作由本文件上文用例覆盖）
+    const detail = within(rows[50]!).getByText('明细');
+    expect(detail.closest('a')).toHaveAttribute('href', `/tasks/${TASK_ID}/team/worker-051`);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', {name: '加载更多 Worker'}));
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it('加载更多进行中：按钮禁用防重复点击', () => {
+    const onLoadMore = vi.fn();
+    renderPaginated([makeWorker()], {nextCursor: 'cursor-2', loadingMore: true, onLoadMore});
+    expect(screen.getByRole('button', {name: '加载更多 Worker'})).toBeDisabled();
+  });
+
+  it('无更多页：不提供加载更多', () => {
+    renderPaginated([makeWorker()], {nextCursor: null, loadingMore: false, onLoadMore: () => {}});
+    expect(screen.queryByTestId('workers-load-more')).toBeNull();
+    expect(screen.getByText(/已加载 1 个 Worker/)).toBeInTheDocument();
+  });
+});

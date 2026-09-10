@@ -75,8 +75,25 @@ export function preferFreshTask(oldData: unknown, newData: unknown): unknown {
   return fresh;
 }
 
-export function isPast(iso: string | null | undefined): boolean {
+export function isPastAt(iso: string | null | undefined, now: number): boolean {
   if (!iso) return false;
   const time = Date.parse(iso);
-  return !Number.isNaN(time) && time < Date.now();
+  return !Number.isNaN(time) && time < now;
+}
+
+export function isPast(iso: string | null | undefined): boolean {
+  return isPastAt(iso, Date.now());
+}
+
+/**
+ * 概览需要你处理/可核对的问题（UI-08）：
+ * - open：等待作答；
+ * - 运行中 Worker 问题已答但 ACK 未落定（pending/dispatched/unknown/无读数）：保留在概览供核对，不因离开 open 而消失。
+ */
+export function questionNeedsAttention(question: QuestionItem): boolean {
+  if (question.status === 'open') return true;
+  if (question.kind === 'business' && question.status === 'answered') {
+    return question.deliveryStatus !== 'acknowledged' && question.deliveryStatus !== 'cancelled' && question.deliveryStatus !== 'expired';
+  }
+  return false;
 }

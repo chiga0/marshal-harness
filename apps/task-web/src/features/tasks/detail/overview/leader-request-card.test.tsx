@@ -1,5 +1,5 @@
 import {describe, expect, it, vi} from 'vitest';
-import {render, screen, waitFor} from '@testing-library/react';
+import {act, fireEvent, render, screen, waitFor} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import type {ReactNode} from 'react';
@@ -131,5 +131,45 @@ describe('Leader 答复（P06 / E31 / P10）', () => {
     const second = callsOf(calls, 'leaderReply')[1]!.args[2] as LeaderBusinessReplyBody;
     expect(second.idempotencyKey).toBe(first.idempotencyKey);
     expect(callsOf(calls, 'answerTask')).toHaveLength(0);
+  });
+});
+
+describe('到期禁用（UI-10）', () => {
+  it('到期的业务请求：回答按钮禁用并明确提示，不只提示仍放行', () => {
+    const {transport} = makeFakeTransport();
+    wrap(<LeaderRequestCard taskId={TASK_ID} expectedRevision={7} request={makeLeaderRequest({deadlineAt: '2026-09-09T00:00:00.000Z'})} transport={transport} onChanged={() => {}} />);
+    expect(screen.getByTestId('leader-answer-option-north')).toBeDisabled();
+    expect(screen.getByTestId('leader-request-expired-block')).toBeInTheDocument();
+  });
+
+  it('到期的发布授权请求：允许与拒绝均禁用', () => {
+    const {transport} = makeFakeTransport();
+    wrap(<LeaderRequestCard taskId={TASK_ID} expectedRevision={7} request={makeLeaderRequest({id: 'req-pub-1', kind: 'publication', options: [], authorization: makeAuthorization(), deadlineAt: '2026-09-09T00:00:00.000Z'})} transport={transport} onChanged={() => {}} />);
+    expect(screen.getByTestId('leader-reply-allow')).toBeDisabled();
+    expect(screen.getByTestId('leader-reply-deny')).toBeDisabled();
+    expect(screen.getByTestId('leader-request-expired-block')).toBeInTheDocument();
+  });
+
+  it('确认框打开期间到期：确认框关闭且绝不发送请求（后端拒绝仍是兜底）', () => {
+    vi.useFakeTimers({now: Date.now()});
+    try {
+      const {transport, calls} = makeFakeTransport();
+      const deadlineAt = new Date(Date.now() + 7000).toISOString();
+      wrap(<LeaderRequestCard taskId={TASK_ID} expectedRevision={7} request={makeLeaderRequest({deadlineAt})} transport={transport} onChanged={() => {}} />);
+
+      fireEvent.click(screen.getByTestId('leader-answer-option-north'));
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+      // 越过答复期限：useNow 的 5s tick 触发重渲染，到期后确认框必须关闭
+      act(() => {
+        vi.advanceTimersByTime(11000);
+      });
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.getByTestId('leader-request-expired-block')).toBeInTheDocument();
+      expect(screen.getByTestId('leader-answer-option-north')).toBeDisabled();
+      expect(callsOf(calls, 'leaderReply')).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
