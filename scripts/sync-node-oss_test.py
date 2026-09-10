@@ -69,6 +69,14 @@ class SyncTests(unittest.TestCase):
         self.run_sync()
         self.assertEqual(len(self.bucket.writes), 6)
 
+    def test_v102_uses_separate_immutable_prefix(self):
+        self.run_sync()
+        syncer.sync(self.bucket, 'marshal/node', 'v1.0.2', self.assets, SDK)
+        self.assertEqual(len(self.bucket.writes), 12)
+        self.assertEqual(self.bucket.writes[-1], 'marshal/node/v1.0.2/install-node.sh')
+        syncer.sync(self.bucket, 'marshal/node', 'v1.0.2', self.assets, SDK)
+        self.assertEqual(len(self.bucket.writes), 12)
+
     def test_conflict_preflight_before_any_write(self):
         self.bucket.objects['marshal/node/v1.0.1/install-node.sh'] = b'wrong'
         with self.assertRaises(syncer.Rejected):
@@ -141,8 +149,8 @@ class ValidationTests(unittest.TestCase):
 
     def test_real_installer_ast(self):
         constants = syncer.installer_constants(Path(__file__).with_name('install-node.sh').read_bytes())
-        self.assertEqual(constants['VERSION'], 'v1.0.1')
-        self.assertEqual(constants['SOURCE'], 'b90d7e7247a690db2af740078c285331569aa496')
+        self.assertEqual(constants['VERSION'], 'v1.0.2')
+        self.assertEqual(constants['SOURCE'], 'f9a93cd678cac40bcd04ff9d0c1672612f184701')
 
     def fixture(self, directory):
         stage = Path(directory) / 'stage'

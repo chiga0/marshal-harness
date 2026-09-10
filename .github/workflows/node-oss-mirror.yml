@@ -8,7 +8,7 @@ on:
       tag:
         description: 已发布且与安装器固定版本一致的 Node stable tag
         required: true
-        default: v1.0.1
+        default: v1.0.2
         type: string
 
 permissions:
