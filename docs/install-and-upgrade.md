@@ -113,6 +113,16 @@ marshal version   # 确认已回到期望版本
 
 Marshal 不写其他系统路径，无后台常驻进程需要停止（`marshal-server` 尚不属于本地 MVP 调用链）。
 
+## Node 服务的可选同包浏览器 UI（main 分支候选）
+
+> 本节只涉及 Node 服务目录包（安装见 [Node 部署](node-install.md)）将随后继版本携带的 UI 静态资产；上文 Go 单一二进制安装链与 `v1.0.0-rc1` 流程均不改变。
+
+- **随包**：`apps/task-web/dist` 若存在于候选，与运行文件共用同一 manifestDigest、同一 `0700/0600` 安装树；核验、carrier 恢复与多余/缺失条目检查完全同构，不引入第二 manifest 或浏览器发布通道。缺失/空 dist 的候选与旧清单逐字节一致。
+- **开启/关闭**：`--ui <安装目录>/apps/task-web/dist` 为每次启动的显式选择；去掉该参数即回 API-only，两种模式共用同一 SQLite 数据目录，开关不改写任务、回执与恢复事实。
+- **升级**：UI 资产版本=包版本，升级后必须重启服务并整页刷新浏览器再连接；静态目录在启动时一次性冻结读入，运行期混放/替换文件无法生效，旧 HTML 也不会指向新包资产。
+- **回滚**：固定重装上一版本发行包后，`--ui` 指向的就是旧包内旧资产（或旧包未携带 UI 时启动失败、按原错误路径拒绝）；数据目录不被清空或迁移，UI 开/关与包版本切换不需要新建 Task 或导入历史。
+- token 仍来自每次启动的私有连接文件，不写入 URL、Web Storage、日志或包内文件；UI 不缓存 HTML（content-hash 资产可长期缓存）。
+
 ## macOS 未签名资产说明（Issue #212）
 
 在 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 解决、签名身份与 notarization 凭据完成 provision 之前，release 的 darwin 资产为未签名构建（release notes 会明确标注 unsigned build）：

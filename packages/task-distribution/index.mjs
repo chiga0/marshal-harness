@@ -71,6 +71,14 @@ const ENTRYPOINT = 'packages/task-service/main.mjs';
 const MANIFEST = 'manifest.json';
 const MAX_FILE = 2 * 1024 * 1024;
 const MAX_TOTAL = 16 * 1024 * 1024;
+// Optional same-origin browser UI static assets (ADR0098): a locally built
+// apps/task-web/dist is folded into the locked manifest with the same hardened
+// read rules. Not in Git and never in npm/node_modules form; an absent or empty
+// dist keeps the package byte-identical to the old SOURCE_FILES-only shape.
+const UI_STATIC_ROOT = 'apps/task-web/dist';
+const UI_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const UI_EXTENSIONS = new Set(['html', 'js', 'css', 'json', 'map', 'svg', 'png', 'jpg', 'jpeg', 'ico', 'webmanifest', 'txt', 'woff', 'woff2']);
+const UI_MAX_FILES = 512;
 const hash = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const encode = value => Buffer.from(JSON.stringify(value, null, 2) + '\n');
 const fail = code => { throw new DistributionError(code); };
@@ -122,6 +130,31 @@ function inventory(root, sourceHead) {
   const names = git(root, ['ls-tree', '-r', '--name-only', '-z', sourceHead, '--', 'packages']).toString('utf8').split('\0').filter(Boolean).filter(runtimePath).sort();
   if (JSON.stringify(names) !== JSON.stringify(SOURCE_FILES)) fail('source_inventory_changed');
 }
+/** Built UI assets are untracked release input: same name/type/size locking as
+ * the static edge in task-service. Absent/empty dist publishes no UI entries. */
+function uiStaticFiles(root) {
+  const base = path.join(root, UI_STATIC_ROOT);
+  let baseStat;
+  try { baseStat = fs.lstatSync(base); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  if (!baseStat.isDirectory()) fail('unsafe_directory');
+  canonicalDirectory(base);
+  const names = [];
+  const walk = (directory, relative, depth) => {
+    if (depth > 16 || names.length >= UI_MAX_FILES) fail('unsafe_file');
+    for (const name of fs.readdirSync(directory).sort()) {
+      const relativePath = relative ? relative + '/' + name : name;
+      const stat = fs.lstatSync(path.join(directory, name));
+      if (!UI_FILE_NAME.test(name)) fail('unsafe_path');
+      if (stat.isDirectory()) { walk(path.join(directory, name), relativePath, depth + 1); continue; }
+      const extension = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+      if (!stat.isFile() || !UI_EXTENSIONS.has(extension)) fail('unsafe_file');
+      names.push(UI_STATIC_ROOT + '/' + relativePath);
+    }
+  };
+  walk(base, '', 1);
+  if (names.length && !names.includes(UI_STATIC_ROOT + '/index.html')) fail('missing_entry');
+  return names.sort();
+}
 function manifestFor(sourceHead, files) {
   return {format: 'marshal-node-script-package/v1', sourceHead, node: NODE_VERSION,
     platforms: ['darwin-arm64', 'linux-x64'], entrypoint: ENTRYPOINT, files};
@@ -160,6 +193,12 @@ export function pack({sourceRoot, target, sourceHead}) {
       if (total > MAX_TOTAL) fail('package_too_large');
       return {path: file, bytes};
     });
+    for (const file of uiStaticFiles(sourceRoot)) {
+      const bytes = read(sourceRoot, file);
+      total += bytes.length;
+      if (total > MAX_TOTAL) fail('package_too_large');
+      contents.push({path: file, bytes});
+    }
     // This mkdir is the exclusive claim; no existing directory is reused or overwritten.
     fs.mkdirSync(target, {mode: 0o700});
     const directories = new Set([target]);
@@ -191,15 +230,29 @@ function inspect(root, manifestDigest, privateModes, capture = false) {
     if (hash(bytes) !== manifestDigest) fail('manifest_digest_mismatch');
     let manifest;
     try { manifest = JSON.parse(bytes.toString('utf8')); } catch { fail('invalid_manifest'); }
-    if (!manifest || !/^[a-f0-9]{40}$/.test(manifest.sourceHead ?? '') || !Array.isArray(manifest.files) || manifest.files.length !== SOURCE_FILES.length) fail('invalid_manifest');
+    if (!manifest || !/^[a-f0-9]{40}$/.test(manifest.sourceHead ?? '') || !Array.isArray(manifest.files) ||
+        manifest.files.length < SOURCE_FILES.length || manifest.files.length > SOURCE_FILES.length + UI_MAX_FILES) fail('invalid_manifest');
     for (let i = 0; i < SOURCE_FILES.length; i++) {
       const file = manifest.files[i];
       if (!file || file.path !== SOURCE_FILES[i] || !/^sha256:[a-f0-9]{64}$/.test(file.digest ?? '') || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > MAX_FILE || Object.keys(file).join(',') !== 'path,digest,bytes') fail('invalid_manifest');
     }
+    // Optional UI entries only ever follow the locked source files, strictly
+    // sorted below apps/task-web/dist with the same name/type locking as pack.
+    for (let i = SOURCE_FILES.length; i < manifest.files.length; i++) {
+      const file = manifest.files[i];
+      const relative = typeof file?.path === 'string' && file.path.startsWith(UI_STATIC_ROOT + '/') ? file.path.slice(UI_STATIC_ROOT.length + 1) : null;
+      if (!file || relative === null || i > SOURCE_FILES.length && file.path <= manifest.files[i - 1].path ||
+          !relative.split('/').every(name => UI_FILE_NAME.test(name)) ||
+          !UI_EXTENSIONS.has(relative.includes('.') ? relative.split('.').pop().toLowerCase() : '') ||
+          !/^sha256:[a-f0-9]{64}$/.test(file.digest ?? '') || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > MAX_FILE ||
+          Object.keys(file).join(',') !== 'path,digest,bytes') fail('invalid_manifest');
+    }
     if (!encode(manifestFor(manifest.sourceHead, manifest.files)).equals(bytes)) fail('invalid_manifest');
-    const wantedFiles = new Set([MANIFEST, ...SOURCE_FILES]);
-    const wantedDirs = new Set(SOURCE_FILES.flatMap(file => {
-      const parts = file.split('/'); return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'));
+    const uiPaths = manifest.files.slice(SOURCE_FILES.length).map(file => file.path);
+    if (uiPaths.length && !uiPaths.includes(UI_STATIC_ROOT + '/index.html')) fail('missing_entry');
+    const wantedFiles = new Set([MANIFEST, ...manifest.files.map(file => file.path)]);
+    const wantedDirs = new Set(manifest.files.flatMap(file => {
+      const parts = file.path.split('/'); return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'));
     }));
     function walk(directory, prefix = '') {
       if (privateModes && (fs.lstatSync(directory).mode & 0o777) !== 0o700) fail('unsafe_permissions');
