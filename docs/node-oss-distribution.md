@@ -17,25 +17,24 @@ OSS 是现有签名发行资产的运输镜像，不是新的发行批准者。�
 
 | 名称 | 示例/要求 |
 | --- | --- |
-| `MARSHAL_OSS_ENABLED` | `true`，配置完成后再打开；未开启不上传 |
-| `MARSHAL_OSS_BUCKET` | `your-release-bucket` |
-| `MARSHAL_OSS_ENDPOINT` | `https://oss-cn-hangzhou.aliyuncs.com`，GitHub runner 可达的标准外网 Endpoint |
-| `MARSHAL_OSS_PREFIX` | `marshal`，不带首尾斜杠；版本由安装器追加 |
+| `MARSHAL_OSS_REGION` | `cn-hangzhou` |
+| `MARSHAL_OSS_BUCKET` | `github-releases` |
+| `MARSHAL_OSS_PREFIX` | `marshal-harness`，不带首尾斜杠；实际发行版本由安装器追加，例如 `marshal-harness/v1.0.1/` |
 
-本实现使用专用 AK，不要求提供到聊天。尚未实现 OIDC/STS 自动换证；不要把短期凭据误当长期 AK 配置。Region 从标准 Endpoint 得到，不需要另配。下载端使用 Bucket HTTPS 地址或可信自定义 HTTPS 域名，不需要 AK。
+不设启用开关，Node 正式发行始终保留 GitHub 并同步 OSS；缺配置时失败而非静默跳过。Endpoint 按 Region 自动生成，本配置为 `https://oss-cn-hangzhou.aliyuncs.com`，不用另填。本实现使用专用 AK，不要求提供到聊天。尚未实现 OIDC/STS 自动换证；不要把短期凭据误当长期 AK 配置。下载端不需要 AK。同步是后置步骤，OSS 失败不会撤回已发布的 GitHub Release，须重跑同步，不得把部分成功宣称双端就绪。
 
 ## 最小 RAM 权限及 Bucket
 
-以下替换 `your-release-bucket` 与前缀后授予专用 RAM 用户。不给删除、ACL 修改、列表或整个账号管理权限。上传程序不修改 Bucket/对象公开权限。
+以下为本次 Bucket/前缀的专用 RAM 用户权限。不给删除、ACL 修改、列表或整个账号管理权限。上传程序不修改 Bucket/对象公开权限。
 
 ```json
 {
   "Version": "1",
   "Statement": [
     {"Effect": "Allow", "Action": ["oss:PutObject", "oss:GetObject"],
-     "Resource": ["acs:oss:*:*:your-release-bucket/marshal/*"]},
+     "Resource": ["acs:oss:*:*:github-releases/marshal-harness/*"]},
     {"Effect": "Allow", "Action": ["oss:GetBucketVersioning"],
-     "Resource": ["acs:oss:*:*:your-release-bucket"]}
+     "Resource": ["acs:oss:*:*:github-releases"]}
   ]
 }
 ```
@@ -54,12 +53,12 @@ OSS 是现有签名发行资产的运输镜像，不是新的发行批准者。�
 
 ## 用户安装
 
-将示例地址换成实际公开下载目录：
+默认安装与发行文件均从以下 OSS 目录读取（需先同步完成并配置公开读取）：
 
 ```bash
 (
   set -eu
-  mirror=https://your-release-bucket.oss-cn-hangzhou.aliyuncs.com/marshal/v1.0.1
+  mirror=https://github-releases.oss-cn-hangzhou.aliyuncs.com/marshal-harness/v1.0.1
   setup_dir="$(mktemp -d)"
   curl -q -fL --proto '=https' --proto-redir '=https' \
     --connect-timeout 15 --max-time 120 --retry 2 --retry-all-errors \

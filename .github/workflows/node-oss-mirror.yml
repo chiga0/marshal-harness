@@ -22,7 +22,6 @@ jobs:
   mirror:
     if: >-
       github.repository == 'chiga0/marshal-harness' &&
-      vars.MARSHAL_OSS_ENABLED == 'true' &&
       (github.event_name == 'release' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     environment: oss-release
@@ -48,7 +47,7 @@ jobs:
           MARSHAL_OSS_ACCESS_KEY_ID: ${{ secrets.MARSHAL_OSS_ACCESS_KEY_ID }}
           MARSHAL_OSS_ACCESS_KEY_SECRET: ${{ secrets.MARSHAL_OSS_ACCESS_KEY_SECRET }}
           MARSHAL_OSS_BUCKET: ${{ vars.MARSHAL_OSS_BUCKET }}
-          MARSHAL_OSS_ENDPOINT: ${{ vars.MARSHAL_OSS_ENDPOINT }}
+          MARSHAL_OSS_REGION: ${{ vars.MARSHAL_OSS_REGION }}
           MARSHAL_OSS_PREFIX: ${{ vars.MARSHAL_OSS_PREFIX }}
         run: |
           "$RUNNER_TEMP/oss-venv/bin/python" scripts/sync-node-oss.py --stage "$(< "$RUNNER_TEMP/oss-stage-path")"

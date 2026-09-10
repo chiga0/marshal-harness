@@ -81,11 +81,10 @@ def validate_stage(stage, installer):
 
 
 def destination(env):
-    endpoint = env.get('MARSHAL_OSS_ENDPOINT', '')
-    match = re.fullmatch(r'https://oss-([a-z0-9]+(?:-[a-z0-9]+)+)\.aliyuncs\.com', endpoint)
-    require(match is not None, 'invalid_oss_endpoint')
-    region = match[1]
+    region = env.get('MARSHAL_OSS_REGION', '')
+    require(re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)+', region), 'invalid_oss_region')
     require(not region.endswith('-internal'), 'public_endpoint_required')
+    endpoint = 'https://oss-' + region + '.aliyuncs.com'
     bucket = env.get('MARSHAL_OSS_BUCKET', '')
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{1,61}[a-z0-9]', bucket), 'invalid_oss_bucket')
     prefix = env.get('MARSHAL_OSS_PREFIX', '')

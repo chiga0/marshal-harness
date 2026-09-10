@@ -129,11 +129,12 @@ class ValidationTests(unittest.TestCase):
         self.assertFalse(request.call_args.kwargs['allow_redirects'])
 
     def test_endpoint_restrictions(self):
-        env = {'MARSHAL_OSS_ENDPOINT': 'https://oss-cn-hangzhou.aliyuncs.com', 'MARSHAL_OSS_BUCKET': 'marshal-releases', 'MARSHAL_OSS_PREFIX': 'marshal/node'}
+        env = {'MARSHAL_OSS_REGION': 'cn-hangzhou', 'MARSHAL_OSS_BUCKET': 'github-releases', 'MARSHAL_OSS_PREFIX': 'marshal-harness'}
         self.assertEqual(syncer.destination(env)[1], 'cn-hangzhou')
-        for endpoint in ('http://oss-cn-hangzhou.aliyuncs.com', 'https://evil.test', 'https://oss-cn-hangzhou.aliyuncs.com.evil.test', 'https://key@oss-cn-hangzhou.aliyuncs.com', 'https://oss-cn-hangzhou.aliyuncs.com/path', 'https://oss-cn-hangzhou.aliyuncs.com:443', 'https://oss-cn-hangzhou-internal.aliyuncs.com'):
-            with self.subTest(endpoint=endpoint), self.assertRaises(syncer.Rejected):
-                syncer.destination(dict(env, MARSHAL_OSS_ENDPOINT=endpoint))
+        self.assertEqual(syncer.destination(env)[0], 'https://oss-cn-hangzhou.aliyuncs.com')
+        for region in ('', 'https://evil.test', 'cn-hangzhou.evil.test', 'key@cn-hangzhou', 'cn-hangzhou/path', 'cn-hangzhou:443', 'cn-hangzhou-internal'):
+            with self.subTest(region=region), self.assertRaises(syncer.Rejected):
+                syncer.destination(dict(env, MARSHAL_OSS_REGION=region))
         for prefix in ('', '../foo', '/foo', 'foo/', 'foo//bar', 'foo/../bar', 'foo?bar'):
             with self.assertRaises(syncer.Rejected):
                 syncer.destination(dict(env, MARSHAL_OSS_PREFIX=prefix))
