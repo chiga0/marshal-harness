@@ -1,107 +1,132 @@
 // 浏览器与 Node HTTP 客户端之间唯一的 Task API 访问面。
-// 字段与 packages/task-api/openapi.json 保持一致；本模块不进入浏览器静态资产产物以外的任何地方，
-// 不 imoprt node:crypto/http-boundary（浏览器按 Web Crypto 或后端生产的摘要复验）。
+// 字段逐一对齐 packages/task-api/openapi.json：字段名/枚举/可空性都以该合同为准，
+// 不添加服务端未投影字段，也不收窄服务端必返字段。
 
 export type Revision = number;
 export type TaskId = string;
 export type WorkerId = string;
 export type NodeId = string;
+export type ArtifactId = string;
 export type Sha256 = string;
 
+// ---- Task（GET /v1/tasks、/v1/tasks/{taskId}）----
+
 export type TaskStatus =
-  | 'running'
+  | 'draft'
+  | 'planning'
   | 'awaiting-answer'
   | 'awaiting-confirmation'
-  | 'awaiting-decision'
+  | 'awaiting-approval'
+  | 'queued'
+  | 'running'
+  | 'paused'
+  | 'cancelling'
   | 'completed'
   | 'failed'
   | 'cancelled'
-  | 'unknown'
-  | 'confirmed';
+  | 'intervention';
+
+export type TaskPhase = 'intake' | 'planning' | 'execution' | 'verification' | 'delivery' | 'terminal';
+
+export type TaskAllowedAction = 'approve' | 'answer' | 'cancel' | 'pause' | 'resume' | 'repair';
+
+export interface PlanRef {
+  revision: Revision;
+  digest: Sha256;
+}
+
+export interface TaskRecord {
+  id: TaskId;
+  revision: Revision;
+  status: TaskStatus;
+  phase: TaskPhase;
+  intent: string;
+  createdAt: string;
+  updatedAt: string;
+  allowedActions: TaskAllowedAction[];
+  plan: PlanRef | null;
+  artifactIds: ArtifactId[];
+  /** 失败时的 machine failure code；成功任务可能缺省。 */
+  code?: string;
+  deadlineAt?: string | null;
+}
+
+export interface TasksResponse {
+  items: TaskRecord[];
+  nextCursor: string | null;
+}
+
+// ---- Worker（GET /v1/tasks/{taskId}/workers、/v1/workers/{workerId}）----
+
+export type WorkerRole = 'planner' | 'author' | 'reviewer' | 'integrator' | 'verifier';
 
 export type WorkerStatus =
   | 'queued'
   | 'running'
+  | 'awaiting-answer'
+  | 'stopping'
   | 'completed'
   | 'failed'
   | 'cancelled'
-  | 'stopping'
   | 'unknown';
 
-export type WorkerRole = 'author' | 'reviewer' | 'verifier' | 'leader' | 'unknown';
-
-export type WorkerPhase = 'intake' | 'working' | 'verify' | 'review' | 'conclude' | 'terminal' | 'unknown';
+export type WorkerPhase = 'planning' | 'development' | 'review' | 'verification' | 'integration' | 'terminal';
 
 export interface Usage {
   tokens: number | null;
   cost: number | null;
   currency: string | null;
-  source: string;
+  source: 'reported' | 'estimated' | 'unavailable';
   coverage: number;
 }
 
 export interface Progress {
-  source: string;
   summary: string;
   tool: string | null;
+  source: 'agent' | 'execution' | 'supervisor';
 }
 
 export interface WorkerAudit {
   repairId: string | null;
   elapsedMs: number | null;
-  elapsedSource: string;
-  waitingMs: number | null;
-  waitingSource: string;
-}
-
-export interface TaskRecord {
-  id: TaskId;
-  intent: string;
-  status: TaskStatus;
-  contextRefs: string[];
-  createdAt: string;
-  deadlineAt: string | null;
-  statusAt: string;
-  attempts: number;
-  retryCount: number;
-  reworkCount: number;
-  allowedActions: string[];
-  elapsedMs: number | null;
-  usage: Usage | null;
-  failureCode: string | null;
-  revision: Revision | null;
-}
-
-export interface TaskCursorTask extends TaskRecord {
-  updatedAt: string;
-}
-
-export interface TasksResponse {
-  tasks: TaskCursorTask[];
-  nextCursor: string | null;
+  elapsedSource: 'started-to-settlement';
+  waitingMs: null;
+  waitingSource: 'unavailable';
 }
 
 export interface WorkerRecord {
   id: WorkerId;
   taskId: TaskId;
   nodeId: NodeId;
+  providerId: string;
   role: WorkerRole;
   status: WorkerStatus;
   phase: WorkerPhase;
-  providerId: string;
-  progress: Progress | null;
-  startedAt: string;
+  attempt: number;
+  startedAt: string | null;
   finishedAt: string | null;
-  lastObservedAt: string;
-  attempts: number;
-  usage: Usage | null;
-  audit: WorkerAudit | null;
+  lastObservedAt: string | null;
+  progress: Progress | null;
+  usage: Usage;
+  audit?: WorkerAudit;
 }
 
+export interface WorkersResponse {
+  items: WorkerRecord[];
+  nextCursor: string | null;
+  taskId: TaskId;
+}
+
+// ---- Plan（GET /v1/tasks/{taskId}/plan；POST /v1/tasks/{taskId}/plan/approve）----
+
+export type PlanNodeRole = 'planner' | 'author' | 'reviewer' | 'integrator' | 'verifier';
+
 export interface PlanNode {
-  nodeId: NodeId;
-  role: string;
-  description: string;
+  id: NodeId;
+  role: PlanNodeRole;
+  goal: string;
+  scope: string[];
+  providerId: string | null;
 }
 
 export interface PlanEdge {
@@ -109,112 +134,230 @@ export interface PlanEdge {
   to: NodeId;
 }
 
+export interface Limits {
+  timeoutMs: number;
+  maxAttempts: number;
+  maxWorkers: number;
+}
+
+export interface PlanInteraction {
+  profile: 'task-runtime-question/v1';
+  policyDigest: Sha256;
+  maxQuestions: number;
+  maxWaitMs: number;
+}
+
+export interface PlanRepairPolicy {
+  profile: 'task-local-repair/v1';
+  policyDigest: Sha256;
+}
+
 export interface PlanRecord {
-  revision: Revision;
+  interaction?: PlanInteraction;
+  repair?: PlanRepairPolicy;
   taskId: TaskId;
+  revision: Revision;
+  digest: Sha256;
+  summary: string;
   nodes: PlanNode[];
   edges: PlanEdge[];
-  frozenAt: string;
-  expiresAt: string | null;
-  budgetMs: number | null;
-  deadlineAt: string | null;
-  planDigest: Sha256;
-  decisionDigest: Sha256;
-  acceptedAt: string | null;
-  rejectedAt: string | null;
-  digest?: Sha256;
+  budget: Limits;
+  deliverables: string[];
+  acceptance: string[];
+  assumptions: string[];
 }
+
+export interface PlanApproveBody {
+  expectedRevision: Revision;
+  planRevision: Revision;
+  planDigest: Sha256;
+  idempotencyKey: string;
+}
+
+// ---- 控制端点（POST cancel/pause/resume、POST /v1/workers/{workerId}/cancel；body = ControlTask）----
+
+export interface ControlBody {
+  expectedRevision: Revision;
+  idempotencyKey: string;
+}
+
+// ---- 问题（GET /v1/tasks/{taskId}/questions）----
 
 export interface QuestionOption {
   value: string;
   label: string;
 }
 
-export interface PendingQuestion {
+export type QuestionKind = 'clarification' | 'permission' | 'acceptance';
+export type QuestionStatus = 'open' | 'answered' | 'expired' | 'cancelled';
+
+/** 预批准问题（审批前的澄清/许可/验收口径，答复绑定 previewDigest）。 */
+export interface Question {
   id: string;
   taskId: TaskId;
-  slotId: string;
-  subject: string;
-  answer: string | null;
+  slotId?: string;
+  answer?: string | null;
   nodeId: NodeId | null;
   revision: Revision;
+  subject: string;
+  kind: QuestionKind;
+  prompt: string;
   options: QuestionOption[];
   deadlineAt: string;
+  status: QuestionStatus;
 }
 
-export interface Review {
-  passed: number;
-  total: number;
-  pending: number;
-}
+export type QuestionDeliveryStatus = 'pending' | 'dispatched' | 'acknowledged' | 'cancelled' | 'expired' | 'unknown';
 
-export interface Acceptance {
-  status: 'passed' | 'failed' | 'pending' | 'unknown';
-  digest: Sha256 | null;
-  evidenceIds: string[];
-}
-
-export interface DeliveryFile {
-  path: string;
-  digest: Sha256;
-  bytes: number;
-}
-
-export interface Delivery {
-  digest: Sha256;
-  bytes: number;
-  isLocalRecipient: boolean;
-  files?: DeliveryFile[];
-}
-
-export interface TaskDetail extends TaskRecord {
-  plan?: PlanRecord | null;
-  latestDelivery?: Delivery | null;
-  latestReview?: Review | null;
-  acceptance?: Acceptance | null;
-  pendingQuestions?: PendingQuestion[];
-}
-
-export interface LeaderReplyBase {
-  expectedRevision: Revision;
-  requestDigest: Sha256;
-}
-
-export interface LeaderBusinessReply extends LeaderReplyBase {
+/** 运行中 Worker 的有限业务问题（答复绑定 questionDigest；subject 恒等于 questionDigest）。 */
+export interface RunningQuestion {
+  id: string;
+  taskId: TaskId;
+  workerId: WorkerId;
+  nodeId: NodeId;
+  /** 合同固定 1。 */
+  revision: 1;
   kind: 'business';
+  subject: Sha256;
+  questionDigest: Sha256;
+  prompt: string;
+  options: QuestionOption[];
+  answer: string | null;
+  deadlineAt: string;
+  status: QuestionStatus;
+  deliveryStatus: QuestionDeliveryStatus | null;
+}
+
+export type QuestionItem = Question | RunningQuestion;
+
+export interface QuestionsResponse {
+  taskRevision: Revision;
+  previewRevision: Revision | null;
+  previewDigest: Sha256 | null;
+  confirmBefore: string;
+  preview: unknown | null;
+  items: QuestionItem[];
+  nextCursor: string | null;
+  taskId: TaskId;
+}
+
+// POST /v1/tasks/{taskId}/questions/{questionId}/answers（两个互斥闭集分支）
+export interface PreapprovalAnswerBody {
+  branch: 'preapproval';
+  expectedRevision: Revision;
+  /** 合同固定 1。 */
+  questionRevision: 1;
+  previewDigest: Sha256;
   answer: string;
+  idempotencyKey: string;
 }
 
-export interface LeaderPublicationReply extends LeaderReplyBase {
-  kind: 'publication';
-  decision: 'allow' | 'deny';
+export interface RuntimeAnswerBody {
+  branch: 'runtime';
+  expectedRevision: Revision;
+  /** 合同固定 1。 */
+  questionRevision: 1;
+  questionDigest: Sha256;
+  answer: string;
+  idempotencyKey: string;
 }
 
-export type LeaderReplyBody = (LeaderBusinessReply | LeaderPublicationReply) & {idempotencyKey: string};
+export type AnswerBody = PreapprovalAnswerBody | RuntimeAnswerBody;
+
+// ---- Leader（GET /v1/tasks/{taskId}/leader）----
+
+export interface LeaderAuthorization {
+  taskId: TaskId;
+  planDigest: Sha256;
+  artifactId: ArtifactId;
+  artifactDigest: Sha256;
+  bytes: number;
+  acceptanceDigest: Sha256;
+  reviewDigest: Sha256;
+  targetId: string;
+  targetPolicyDigest: Sha256;
+  name: string;
+  operation: string;
+  expiresAt: string;
+}
+
+export type LeaderRequestStatus = 'pending' | 'replied' | 'closed';
 
 export interface LeaderRequestDTO {
   id: string;
   kind: 'business' | 'publication';
   requestDigest: Sha256;
   subject: Sha256;
-  nodeIds: string[];
+  nodeIds: NodeId[];
   prompt: string;
   options: QuestionOption[];
-  authorization: unknown;
+  authorization: LeaderAuthorization | null;
   deadlineAt: string;
-  status: string;
+  status: LeaderRequestStatus;
   replyDigest: Sha256 | null;
 }
 
-export interface LeaderRecord {
-  status: string;
-  attempts: number;
-  workers: string[];
-  requestedVersion: Revision | null;
-  deadlineAt: string | null;
-  decisionDigest: Sha256 | null;
-  pendingRequest?: LeaderRequestDTO | null;
+export interface LeaderReview {
+  digest: Sha256;
+  verdict: 'accept' | 'rework' | 'reject';
+  selectionDigest: Sha256;
+  policyDigest: Sha256;
+  workerId: WorkerId;
+  evidenceIds: string[];
 }
+
+export type LeaderActionStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'unknown' | 'cancelled';
+
+export interface LeaderPublication {
+  actionId: string;
+  status: LeaderActionStatus;
+  authorizationDigest: Sha256;
+  receiptArtifactId: ArtifactId | null;
+}
+
+export interface LeaderPostverify {
+  actionId: string;
+  status: LeaderActionStatus;
+  evidenceArtifactId: ArtifactId | null;
+}
+
+export type LeaderStage = 'intake' | 'work' | 'review' | 'verification' | 'delivery' | 'finalizing' | 'terminal';
+
+export interface LeaderRecord {
+  taskId: TaskId;
+  taskRevision: Revision;
+  profile: 'task-managed-leader/v1';
+  stage: LeaderStage;
+  policyDigest: Sha256;
+  activeWorkerId: WorkerId | null;
+  pendingRequest: LeaderRequestDTO | null;
+  lastDecision: {digest: Sha256; callId: string; evidenceId: string} | null;
+  review: LeaderReview | null;
+  publication: LeaderPublication | null;
+  postverify: LeaderPostverify | null;
+  summaryArtifactId: ArtifactId | null;
+}
+
+// POST /v1/tasks/{taskId}/leader/requests/{requestId}/reply（两个互斥闭集分支）
+export interface LeaderBusinessReplyBody {
+  expectedRevision: Revision;
+  requestDigest: Sha256;
+  answer: string;
+  idempotencyKey: string;
+}
+
+export interface LeaderPublicationReplyBody {
+  expectedRevision: Revision;
+  requestDigest: Sha256;
+  decision: 'allow' | 'deny';
+  idempotencyKey: string;
+}
+
+export type LeaderReplyBody = LeaderBusinessReplyBody | LeaderPublicationReplyBody;
+
+// ---- 事件（GET /v1/tasks/{taskId}/events）----
+
+export type EventSource = 'application' | 'agent' | 'execution' | 'verification';
 
 export interface EventRecord {
   id: string;
@@ -222,9 +365,9 @@ export interface EventRecord {
   sequence: number;
   type: string;
   at: string;
-  workerId: string | null;
+  workerId: WorkerId | null;
   summary: string;
-  source: 'application' | 'agent' | 'execution' | 'verification';
+  source: EventSource;
 }
 
 export interface Events {
@@ -233,68 +376,61 @@ export interface Events {
   taskId: TaskId;
 }
 
-export interface QuestionsResponse {
-  taskRevision: Revision;
-  previewRevision: Revision | null;
-  previewDigest: Sha256 | null;
-  confirmBefore: string | null;
-  preview: unknown | null;
-  items: PendingQuestion[];
-  nextCursor: string | null;
-  taskId: TaskId;
-}
+// ---- 修复（POST /v1/tasks/{taskId}/repair；body = RepairTask）----
 
-export interface SelectionEntry {
-  nodeId: NodeId;
-  path: string;
-  digest: Sha256;
-  bytes: number;
-}
-
-export interface Selection {
-  entries: SelectionEntry[];
-  selectionDigest: Sha256;
-}
-
-export interface RepairReceipt {
-  repairId: string;
-  status: string;
+export interface RepairBody {
+  expectedRevision: Revision;
+  planDigest: Sha256;
+  decisionDigest: Sha256;
   nodeIds: NodeId[];
-  startedAt: string;
+  feedback: string;
+  idempotencyKey: string;
 }
 
-export interface PublicationExpected {
-  snapshotDigest: Sha256;
-  configurationDigest: Sha256;
-}
+// ---- 成果（GET /v1/artifacts/{artifactId}、/v1/artifacts/{artifactId}/content）----
 
-export type PublicationStatus =
-  | 'created'
-  | 'publishing'
-  | 'published'
-  | 'postverify-passed'
-  | 'postverify-failed'
-  | 'unknown';
+export type ArtifactKind = 'input' | 'candidate' | 'delivery' | 'evidence';
+export type ArtifactStatus = 'ready' | 'partial' | 'unavailable';
 
-export interface PublicationRecord {
-  id: string;
-  taskId: TaskId;
-  status: PublicationStatus;
-  authorizationDigest: Sha256;
-  snapshotDigest: Sha256;
-  configurationDigest: Sha256;
-  expected: PublicationExpected | null;
+export interface ArtifactRecord {
+  id: ArtifactId;
+  taskId: TaskId | null;
+  name: string;
+  kind: ArtifactKind;
+  status: ArtifactStatus;
+  mediaType: string;
+  bytes: number;
+  digest: Sha256;
   createdAt: string;
-  updatedAt: string;
 }
 
-export interface ModerationRecord {
-  taskId: TaskId;
-  pausedAt: string | null;
-  pausedBy: string | null;
-  resumedAt: string | null;
-  cancelledAt: string | null;
+// ---- 创建任务（POST /v1/tasks；body = CreateTask）与输入（POST /v1/inputs；body = CreateInput）----
+
+export interface Context {
+  text?: string;
+  inputRefs?: string[];
 }
+
+export interface Requirements {
+  deliverables?: string[];
+  acceptance?: string[];
+}
+
+export interface CreateTaskBody {
+  intent: string;
+  context?: Context;
+  requirements?: Requirements;
+  limits?: Limits;
+}
+
+export interface CreateInputBody {
+  name: string;
+  mediaType: string;
+  /** 解码后 ≤256 KiB 的 base64 内容。 */
+  contentBase64: string;
+}
+
+// ---- 错误合同 ----
 
 export interface ApiErrorBody {
   code: string;
@@ -320,23 +456,28 @@ export class ApiError extends Error {
   }
 }
 
+// ---- Transport 访问面 ----
+
 export interface Transport {
-  listTasks(options: {limit?: number; cursor?: string | null; filter?: {text?: string; status?: TaskStatus | 'any'}}): Promise<TasksResponse>;
-  getTask(taskId: TaskId): Promise<TaskDetail>;
-  getWorkers(taskId: TaskId): Promise<{workers: WorkerRecord[]}>;
+  createTask(body: CreateTaskBody & {idempotencyKey: string}): Promise<TaskRecord>;
+  createInput(body: CreateInputBody & {idempotencyKey: string}): Promise<ArtifactRecord>;
+  listTasks(options: {limit?: number; cursor?: string | null}): Promise<TasksResponse>;
+  getTask(taskId: TaskId): Promise<TaskRecord>;
+  getWorkers(taskId: TaskId): Promise<WorkersResponse>;
   getPlan(taskId: TaskId): Promise<PlanRecord>;
-  approvePlan(taskId: TaskId, body: {expectedRevision: Revision; decisionDigest: Sha256; idempotencyKey: string}): Promise<unknown>;
-  answerTask(taskId: TaskId, questionId: string, body: {expectedRevision: Revision; answer: string; idempotencyKey: string}): Promise<unknown>;
-  cancelTask(taskId: TaskId, body: {revision: Revision; idempotencyKey: string}): Promise<unknown>;
-  pauseTask(taskId: TaskId, body: {revision: Revision; idempotencyKey: string}): Promise<unknown>;
-  resumeTask(taskId: TaskId, body: {revision: Revision; idempotencyKey: string}): Promise<unknown>;
-  cancelWorker(workerId: WorkerId, body: {revision: Revision; idempotencyKey: string}): Promise<unknown>;
+  approvePlan(taskId: TaskId, body: PlanApproveBody): Promise<unknown>;
+  getQuestions(taskId: TaskId, options?: {cursor?: string | null; limit?: number}): Promise<QuestionsResponse>;
+  answerTask(taskId: TaskId, questionId: string, body: AnswerBody): Promise<unknown>;
+  cancelTask(taskId: TaskId, body: ControlBody): Promise<unknown>;
+  pauseTask(taskId: TaskId, body: ControlBody): Promise<unknown>;
+  resumeTask(taskId: TaskId, body: ControlBody): Promise<unknown>;
+  cancelWorker(workerId: WorkerId, body: ControlBody): Promise<unknown>;
   getLeader(taskId: TaskId): Promise<LeaderRecord>;
   leaderReply(taskId: TaskId, requestId: string, body: LeaderReplyBody): Promise<unknown>;
+  repair(taskId: TaskId, body: RepairBody): Promise<unknown>;
   getEvents(taskId: TaskId, options?: {cursor?: string | null; limit?: number}): Promise<Events>;
-  getQuestions(taskId: TaskId, options?: {cursor?: string | null; limit?: number}): Promise<QuestionsResponse>;
-  repair(taskId: TaskId, body: {nodeIds: NodeId[]; feedback: string; expectedRevision: Revision; planDigest: Sha256; decisionDigest: Sha256; idempotencyKey: string}): Promise<unknown>;
-  getArtifactBearer(digestRef: string): Promise<Blob>;
+  getArtifact(artifactId: ArtifactId): Promise<ArtifactRecord>;
+  getArtifactContent(artifactId: ArtifactId): Promise<Blob>;
 }
 
 export function newIdempotencyKey(): string {

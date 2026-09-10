@@ -5,7 +5,7 @@ import {Link} from 'react-router-dom';
 import {useInfiniteQuery} from '@tanstack/react-query';
 import {Plus, RefreshCw, Search} from 'lucide-react';
 import {ApiError} from '../../lib/transport/types';
-import type {TaskCursorTask, TaskStatus, Transport} from '../../lib/transport/types';
+import type {TaskRecord, TaskStatus, Transport} from '../../lib/transport/types';
 import {usePollMode} from '../../lib/queries/polling';
 import {useConnection} from '../connection/connection';
 import {Badge} from '../../components/ui/badge';
@@ -20,8 +20,8 @@ import {formatDateTime, isAwaitingStatus, statusMeta} from './format';
 export const TASK_LIST_PAGE_SIZE = 24;
 
 const STATUS_OPTIONS: (TaskStatus | 'any')[] = [
-  'any', 'running', 'awaiting-answer', 'awaiting-confirmation', 'awaiting-decision',
-  'completed', 'confirmed', 'failed', 'cancelled', 'unknown',
+  'any', 'draft', 'planning', 'awaiting-answer', 'awaiting-confirmation', 'awaiting-approval',
+  'queued', 'running', 'paused', 'cancelling', 'completed', 'failed', 'cancelled', 'intervention',
 ];
 
 function isUnauthorizedError(error: unknown): boolean {
@@ -58,7 +58,7 @@ function TaskListSkeleton() {
   );
 }
 
-function TaskRow({task}: {task: TaskCursorTask}) {
+function TaskRow({task}: {task: TaskRecord}) {
   const meta = statusMeta(task.status);
   return (
     <li className="rounded-md border border-border bg-surface p-4">
@@ -76,8 +76,8 @@ function TaskRow({task}: {task: TaskCursorTask}) {
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <Badge variant={meta.variant} title={'status: ' + task.status}>{meta.label}</Badge>
         {meta.awaiting ? <Badge variant="warning">待处理</Badge> : null}
-        {task.status === 'failed' && task.failureCode ? (
-          <span className="text-xs leading-[18px] text-danger">失败码：{task.failureCode}</span>
+        {task.status === 'failed' && task.code ? (
+          <span className="text-xs leading-[18px] text-danger">失败码：{task.code}</span>
         ) : null}
         {isAwaitingStatus(task.status) && task.deadlineAt ? (
           <span className="text-xs leading-[18px] text-text-secondary" title={task.deadlineAt}>
@@ -124,9 +124,9 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
   const refetch = query.refetch;
 
   const items = useMemo(() => {
-    const byId = new Map<string, TaskCursorTask>();
+    const byId = new Map<string, TaskRecord>();
     for (const page of data?.pages ?? []) {
-      for (const task of page.tasks) byId.set(task.id, task);
+      for (const task of page.items) byId.set(task.id, task);
     }
     return [...byId.values()];
   }, [data]);

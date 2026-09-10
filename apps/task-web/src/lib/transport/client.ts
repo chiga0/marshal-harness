@@ -2,8 +2,8 @@
 // 断开/刷新清除；连接只指向当前 origin，不接收任意远程 baseURL。
 import {ApiError} from './types';
 import type {
-  Transport, TasksResponse, TaskDetail, WorkerRecord, PlanRecord, Revision, Sha256,
-  LeaderRecord, PublicationRecord, WorkerId, TaskId, Events, QuestionsResponse,
+  Transport, TasksResponse, TaskRecord, WorkersResponse, PlanRecord,
+  LeaderRecord, Events, QuestionsResponse, ArtifactRecord, ControlBody,
 } from './types';
 
 export interface TransportConfig {
@@ -90,41 +90,48 @@ export function createTransport(config: TransportConfig): Transport {
     fetchLike: config.fetchLike ?? fetch,
   };
   const json = <T>(path: string, init?: JsonOptions<unknown>) => requestJson<T>(cfg, path, init);
+  const control = (path: string, body: ControlBody) => json(path, withKey(body).init);
   return {
+    createTask: body => json('/v1/tasks', withKey(body).init),
+    createInput: body => json<ArtifactRecord>('/v1/inputs', withKey(body).init),
     listTasks: options => {
       const params = new URLSearchParams();
       if (options.limit !== undefined) params.set('limit', String(options.limit));
       if (options.cursor) params.set('cursor', options.cursor);
       return json<TasksResponse>(`/v1/tasks${params.size ? '?' + params.toString() : ''}`);
     },
-    getTask: taskId => json<TaskDetail>(`/v1/tasks/${encodeURIComponent(taskId)}`),
-    getWorkers: taskId => json<{workers: WorkerRecord[]}>(`/v1/tasks/${encodeURIComponent(taskId)}/workers`),
+    getTask: taskId => json<TaskRecord>(`/v1/tasks/${encodeURIComponent(taskId)}`),
+    getWorkers: taskId => json<WorkersResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/workers`),
     getPlan: taskId => json<PlanRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/plan`),
     approvePlan: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/plan/approve`, withKey(body).init),
-    answerTask: (taskId, questionId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/questions/${encodeURIComponent(questionId)}/answers`, withKey(body).init),
-    cancelTask: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, withKey(body).init),
-    pauseTask: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/pause`, withKey(body).init),
-    resumeTask: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/resume`, withKey(body).init),
-    cancelWorker: (workerId, body) => json(`/v1/workers/${encodeURIComponent(workerId)}/cancel`, withKey(body).init),
-    getLeader: taskId => json<LeaderRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/leader`),
-    leaderReply: (taskId, requestId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/leader/requests/${encodeURIComponent(requestId)}/reply`, withKey(body).init),
-    getEvents: (taskId, options = {}) => {
-      const params = new URLSearchParams();
-      if (options.limit !== undefined) params.set('limit', String(options.limit));
-      if (options.cursor) params.set('cursor', options.cursor);
-      return json<Events>(`/v1/tasks/${encodeURIComponent(taskId)}/events${params.size ? '?' + params.toString() : ''}`);
-    },
     getQuestions: (taskId, options = {}) => {
       const params = new URLSearchParams();
       if (options.limit !== undefined) params.set('limit', String(options.limit));
       if (options.cursor) params.set('cursor', options.cursor);
       return json<QuestionsResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/questions${params.size ? '?' + params.toString() : ''}`);
     },
+    answerTask: (taskId, questionId, body) => {
+      const {branch: _branch, ...rest} = body;
+      return json(`/v1/tasks/${encodeURIComponent(taskId)}/questions/${encodeURIComponent(questionId)}/answers`, withKey(rest).init);
+    },
+    cancelTask: (taskId, body) => control(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, body),
+    pauseTask: (taskId, body) => control(`/v1/tasks/${encodeURIComponent(taskId)}/pause`, body),
+    resumeTask: (taskId, body) => control(`/v1/tasks/${encodeURIComponent(taskId)}/resume`, body),
+    cancelWorker: (workerId, body) => control(`/v1/workers/${encodeURIComponent(workerId)}/cancel`, body),
+    getLeader: taskId => json<LeaderRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/leader`),
+    leaderReply: (taskId, requestId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/leader/requests/${encodeURIComponent(requestId)}/reply`, withKey(body).init),
     repair: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/repair`, withKey(body).init),
-    getArtifactBearer: async ref => {
+    getEvents: (taskId, options = {}) => {
+      const params = new URLSearchParams();
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      if (options.cursor) params.set('cursor', options.cursor);
+      return json<Events>(`/v1/tasks/${encodeURIComponent(taskId)}/events${params.size ? '?' + params.toString() : ''}`);
+    },
+    getArtifact: artifactId => json<ArtifactRecord>(`/v1/artifacts/${encodeURIComponent(artifactId)}`),
+    getArtifactContent: async artifactId => {
       const token = currentToken;
       if (!token) throw new ApiError(401, 'token_missing', '未连接服务', null);
-      const response = await cfg.fetchLike(cfg.baseURL + ref, {headers: {Authorization: 'Bearer ' + token}});
+      const response = await cfg.fetchLike(cfg.baseURL + `/v1/artifacts/${encodeURIComponent(artifactId)}/content`, {headers: {Authorization: 'Bearer ' + token}});
       if (!response.ok) throw await toError(response, 'api_error');
       return response.blob();
     },

@@ -18,11 +18,11 @@ describe('transport', () => {
     installToken('t-123');
     const spy = vi.fn(async (input: RequestInfo | URL) => {
       expect(String(input)).toBe('/v1/tasks?limit=2');
-      return mockResponse(200, {tasks: [], nextCursor: null});
+      return mockResponse(200, {items: [], nextCursor: null});
     });
     const transport = createTransport({token: 't-123', fetchLike: spy as unknown as typeof fetch});
     const response = await transport.listTasks({limit: 2});
-    expect(response.tasks).toEqual([]);
+    expect(response.items).toEqual([]);
     expect(spy).toHaveBeenCalledTimes(1);
     const init = (spy.mock.calls[0] as unknown as [unknown, RequestInit | undefined] | undefined)?.[1];
     expect((init?.headers as Record<string, string> | undefined)?.Authorization).toBe('Bearer t-123');
@@ -44,21 +44,34 @@ describe('transport', () => {
     installToken('t-123');
     const spy = vi.fn(async () => mockResponse(202, {accepted: true}));
     const transport = createTransport({token: 't-123', fetchLike: spy as unknown as typeof fetch});
-    await transport.cancelTask('task-x', {revision: 4, idempotencyKey: 'ikey-abc'});
+    await transport.cancelTask('task-x', {expectedRevision: 4, idempotencyKey: 'ikey-abc'});
     const init = (spy.mock.calls[0] as unknown as [unknown, RequestInit | undefined] | undefined)?.[1];
     expect((init?.headers as Record<string, string> | undefined)?.['Idempotency-Key']).toBe('ikey-abc');
-    expect(JSON.parse(String(init?.body))).toEqual({revision: 4});
+    expect(JSON.parse(String(init?.body))).toEqual({expectedRevision: 4});
   });
 
   it('leaderReply 只向 requests/:id/reply 提交合同字段', async () => {
     installToken('t-123');
     const spy = vi.fn(async () => mockResponse(202, {accepted: true}));
     const transport = createTransport({token: 't-123', fetchLike: spy as unknown as typeof fetch});
-    await transport.leaderReply('task-x', 'req-1', {kind: 'business', expectedRevision: 2, requestDigest: 'sha256:aa', answer: 'north', idempotencyKey: 'ikey-b'});
+    await transport.leaderReply('task-x', 'req-1', {expectedRevision: 2, requestDigest: 'sha256:aa', answer: 'north', idempotencyKey: 'ikey-b'});
     const call = spy.mock.calls[0] as unknown as [unknown, RequestInit | undefined] | undefined;
     expect(String(call?.[0])).toBe('/v1/tasks/task-x/leader/requests/req-1/reply');
     const body = JSON.parse(String(call?.[1]?.body));
-    expect(body).toMatchObject({expectedRevision: 2, requestDigest: 'sha256:aa', kind: 'business', answer: 'north'});
+    expect(body).toMatchObject({expectedRevision: 2, requestDigest: 'sha256:aa', answer: 'north'});
     expect(body).not.toHaveProperty('idempotencyKey');
+  });
+
+  it('answerTask 运行时分支：branch 不下送、questionDigest 保留', async () => {
+    installToken('t-123');
+    const spy = vi.fn(async () => mockResponse(202, {accepted: true}));
+    const transport = createTransport({token: 't-123', fetchLike: spy as unknown as typeof fetch});
+    await transport.answerTask('task-x', 'question-1', {
+      branch: 'runtime', expectedRevision: 3, questionRevision: 1, questionDigest: 'sha256:bb', answer: '2026-09-01', idempotencyKey: 'ikey-c',
+    });
+    const call = spy.mock.calls[0] as unknown as [unknown, RequestInit | undefined] | undefined;
+    expect(String(call?.[0])).toBe('/v1/tasks/task-x/questions/question-1/answers');
+    const body = JSON.parse(String(call?.[1]?.body));
+    expect(body).toEqual({expectedRevision: 3, questionRevision: 1, questionDigest: 'sha256:bb', answer: '2026-09-01'});
   });
 });

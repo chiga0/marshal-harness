@@ -5,24 +5,18 @@ import {MemoryRouter} from 'react-router-dom';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import {TaskListView} from './task-list-page';
 import {ApiError} from '../../lib/transport/types';
-import type {TaskCursorTask, Transport, TasksResponse} from '../../lib/transport/types';
+import type {TaskRecord, Transport, TasksResponse} from '../../lib/transport/types';
 
-function makeTask(partial: {id: string; intent: string} & Partial<TaskCursorTask>): TaskCursorTask {
+function makeTask(partial: {id: string; intent: string} & Partial<TaskRecord>): TaskRecord {
   return {
+    revision: 1,
     status: 'running',
-    contextRefs: [],
+    phase: 'execution',
     createdAt: '2026-09-10T01:00:00.000Z',
-    deadlineAt: null,
-    statusAt: '2026-09-10T01:00:00.000Z',
-    attempts: 1,
-    retryCount: 0,
-    reworkCount: 0,
-    allowedActions: [],
-    elapsedMs: null,
-    usage: null,
-    failureCode: null,
-    revision: null,
     updatedAt: '2026-09-10T02:00:00.000Z',
+    allowedActions: [],
+    plan: null,
+    artifactIds: [],
     ...partial,
   };
 }
@@ -43,11 +37,14 @@ function renderList(transport: Transport, onReconnect?: () => void) {
 
 function transportWith(listTasks: Transport['listTasks']): Transport {
   return {
+    createTask: async () => { throw new Error('not used'); },
+    createInput: async () => { throw new Error('not used'); },
     listTasks,
     getTask: async () => { throw new Error('not used'); },
-    getWorkers: async () => ({workers: []}),
+    getWorkers: async () => { throw new Error('not used'); },
     getPlan: async () => { throw new Error('not used'); },
     approvePlan: async () => { throw new Error('not used'); },
+    getQuestions: async () => { throw new Error('not used'); },
     answerTask: async () => { throw new Error('not used'); },
     cancelTask: async () => { throw new Error('not used'); },
     pauseTask: async () => { throw new Error('not used'); },
@@ -55,10 +52,10 @@ function transportWith(listTasks: Transport['listTasks']): Transport {
     cancelWorker: async () => { throw new Error('not used'); },
     getLeader: async () => { throw new Error('not used'); },
     leaderReply: async () => { throw new Error('not used'); },
-    getEvents: async () => { throw new Error('not used'); },
-    getQuestions: async () => { throw new Error('not used'); },
     repair: async () => { throw new Error('not used'); },
-    getArtifactBearer: async () => new Blob(),
+    getEvents: async () => { throw new Error('not used'); },
+    getArtifact: async () => { throw new Error('not used'); },
+    getArtifactContent: async () => { throw new Error('not used'); },
   };
 }
 
@@ -82,7 +79,7 @@ describe('TaskListView', () => {
       makeTask({id: 'task-002', intent: '生成两地区对账报告', status: 'awaiting-answer', deadlineAt: '2026-09-11T00:00:00.000Z'}),
       makeTask({id: 'task-003', intent: '归档上月交付', status: 'completed'}),
     ];
-    renderList(transportWith(async () => ({tasks, nextCursor: null})));
+    renderList(transportWith(async () => ({items: tasks, nextCursor: null})));
 
     await screen.findByText('汇总东地区销售清单');
     expect(screen.getByText('生成两地区对账报告')).toBeInTheDocument();
@@ -110,7 +107,7 @@ describe('TaskListView', () => {
   });
 
   it('空集合展示空状态与新建入口', async () => {
-    renderList(transportWith(async () => ({tasks: [], nextCursor: null})));
+    renderList(transportWith(async () => ({items: [], nextCursor: null})));
     await screen.findByText('还没有任务。');
     expect(screen.getByRole('link', {name: '新建第一个任务'})).toHaveAttribute('href', '/tasks/new');
   });
@@ -122,8 +119,8 @@ describe('TaskListView', () => {
     const t2Refresh = makeTask({id: 'task-002', intent: '任务乙', status: 'completed'});
     const t3 = makeTask({id: 'task-003', intent: '任务丙'});
     const listTasks = vi.fn(async (options: {cursor?: string | null}) => {
-      if (!options.cursor) return {tasks: [t1, t2], nextCursor: 'cursor-2'};
-      return {tasks: [t2Refresh, t3], nextCursor: null};
+      if (!options.cursor) return {items: [t1, t2], nextCursor: 'cursor-2'};
+      return {items: [t2Refresh, t3], nextCursor: null};
     });
     renderList(transportWith(listTasks));
 
@@ -144,7 +141,7 @@ describe('TaskListView', () => {
       makeTask({id: 'task-001', intent: '汇总东地区销售清单', status: 'running'}),
       makeTask({id: 'task-002', intent: '生成两地区对账报告', status: 'awaiting-answer'}),
     ];
-    renderList(transportWith(async () => ({tasks, nextCursor: 'cursor-2'})));
+    renderList(transportWith(async () => ({items: tasks, nextCursor: 'cursor-2'})));
     await screen.findByText('汇总东地区销售清单');
 
     await user.type(screen.getByLabelText('筛选已加载任务'), '不存在的词');
@@ -176,7 +173,7 @@ describe('TaskListView', () => {
     expect(alert).toHaveTextContent('HTTP 500');
     expect(alert).toHaveTextContent('req-42');
 
-    listTasks.mockResolvedValueOnce({tasks: [makeTask({id: 'task-001', intent: '恢复后的任务'})], nextCursor: null});
+    listTasks.mockResolvedValueOnce({items: [makeTask({id: 'task-001', intent: '恢复后的任务'})], nextCursor: null});
     await user.click(screen.getByRole('button', {name: '重试'}));
     await screen.findByText('恢复后的任务');
   });
@@ -197,7 +194,7 @@ describe('TaskListView', () => {
   it('后台刷新失败保留已加载内容并显示局部警告', async () => {
     const user = userEvent.setup();
     const listTasks = vi.fn()
-      .mockResolvedValueOnce({tasks: [makeTask({id: 'task-001', intent: '保留中的任务'})], nextCursor: null})
+      .mockResolvedValueOnce({items: [makeTask({id: 'task-001', intent: '保留中的任务'})], nextCursor: null})
       .mockRejectedValueOnce(new ApiError(503, 'temporarily_unavailable', '暂时不可用', 'req-77'));
     renderList(transportWith(listTasks as Transport['listTasks']));
 
@@ -213,9 +210,9 @@ describe('TaskListView', () => {
   it('状态播报汇总已加载/待处理/命中数量', async () => {
     const tasks = [
       makeTask({id: 'task-001', intent: '甲', status: 'awaiting-confirmation'}),
-      makeTask({id: 'task-002', intent: '乙', status: 'failed', failureCode: 'verify_failed'}),
+      makeTask({id: 'task-002', intent: '乙', status: 'failed', code: 'verify_failed'}),
     ];
-    renderList(transportWith(async () => ({tasks, nextCursor: null})));
+    renderList(transportWith(async () => ({items: tasks, nextCursor: null})));
     await screen.findByText('甲');
     await waitFor(() => {
       expect(screen.getByRole('status')).toHaveTextContent('已加载 2 项，其中待处理 1 项；当前筛选命中 2 项');
