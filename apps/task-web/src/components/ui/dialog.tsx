@@ -1,10 +1,10 @@
-// 轻量模态 Dialog（不引 Radix 依赖）：Escape 关闭、覆盖层点击默认不关闭（确认动作由内容决定）、焦点归还给触发者由调用方管理。
-// 提示性提示 vs 破坏性确认分开：后五条专用 ConfirmDialog 派生自本组件。
-import {useEffect, useRef} from 'react';
+// 轻量模态 Dialog（不引 Radix 依赖）：Escape 关闭、覆盖层点击默认不关闭（确认动作由内容决定）。
+// 焦点/Escape/层叠统一由 useModalLayer 提供（UI-09）；提示性提示 vs 破坏性确认分开：ConfirmDialog 派生自本组件。
 import type {ReactNode} from 'react';
 import {createPortal} from 'react-dom';
 import {cn} from '../../lib/cn';
 import {Button} from './button';
+import {useModalLayer} from './modal-layer';
 
 export interface DialogProps {
   open: boolean;
@@ -17,47 +17,7 @@ export interface DialogProps {
 }
 
 export function Dialog({open, onClose, title, description, children, footer, className}: DialogProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const previousFocus = useRef<Element | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    previousFocus.current = document.activeElement;
-    const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-      if (event.key !== 'Tab') return;
-      // Tab 圈禁：焦点不得逸出到背景层；仅键盘操作可达（E25）
-      const root = dialogRef.current;
-      if (!root) return;
-      const items = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(el => el.offsetParent !== null || el === root);
-      if (items.length === 0) {
-        event.preventDefault();
-        return;
-      }
-      const firstItem = items[0]!;
-      const lastItem = items[items.length - 1]!;
-      const active = document.activeElement;
-      if (event.shiftKey && (active === firstItem || active === root || !root.contains(active))) {
-        event.preventDefault();
-        lastItem.focus();
-      } else if (!event.shiftKey && active === lastItem) {
-        event.preventDefault();
-        firstItem.focus();
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    const first = dialogRef.current?.querySelector<HTMLElement>('[data-dialog-initial]') ?? dialogRef.current;
-    first?.focus?.();
-    const body = document.body;
-    const previousOverflow = body.style.overflow;
-    body.style.overflow = 'hidden';
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      body.style.overflow = previousOverflow;
-      (previousFocus.current as HTMLElement | null)?.focus?.();
-    };
-  }, [open, onClose]);
+  const dialogRef = useModalLayer<HTMLDivElement>({open, onEscape: onClose, initialSelector: '[data-dialog-initial]', lockBodyScroll: true});
 
   if (!open) return null;
 

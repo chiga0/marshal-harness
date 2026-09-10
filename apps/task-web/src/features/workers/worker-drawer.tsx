@@ -1,10 +1,11 @@
 // Worker 明细抽屉（side sheet，URL 可定位）：全部可观察字段如实展示；用量/审计不可用显示「不可用/暂无数据」；
 // 内含单 Worker 取消 flow（permission-free：无额外权限模型，仅按所属任务 revision CAS + 二次确认）。
+// 焦点/Escape/层叠由 useModalLayer 统一（UI-09）：Tab 圈禁在本抽屉，嵌套确认框打开时 Escape 只关闭确认框。
 
-import {useEffect, useRef} from 'react';
 import {createPortal} from 'react-dom';
 import {Badge} from '@/components/ui/badge';
 import {Button} from '@/components/ui/button';
+import {useModalLayer} from '@/components/ui/modal-layer';
 import type {Revision, Transport, WorkerRecord} from '@/lib/transport/types';
 import {formatDateTime, formatDuration, workerPhaseLabel, workerRoleLabel, workerStatusLabel} from '../tasks/detail/shared/format';
 import {StatusBadge, toneForWorker} from '../tasks/detail/shared/status-badge';
@@ -20,22 +21,7 @@ export interface WorkerDrawerProps {
 }
 
 export function WorkerDrawer({taskRevision, worker, transport, onClose, onChanged}: WorkerDrawerProps) {
-  const panelRef = useRef<HTMLDivElement>(null);
-  const previousFocus = useRef<Element | null>(null);
-
-  useEffect(() => {
-    previousFocus.current = document.activeElement;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    const first = panelRef.current?.querySelector<HTMLElement>('[data-drawer-initial]') ?? panelRef.current;
-    first?.focus?.();
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      (previousFocus.current as HTMLElement | null)?.focus?.();
-    };
-  }, [onClose]);
+  const panelRef = useModalLayer<HTMLDivElement>({open: true, onEscape: onClose, initialSelector: '[data-drawer-initial]', lockBodyScroll: true});
 
   const terminal = worker.status === 'completed' || worker.status === 'failed' || worker.status === 'cancelled';
 

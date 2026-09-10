@@ -5,12 +5,14 @@ on:
     paths:
       - 'experiments/node-team/**'
       - 'packages/**'
+      - 'apps/task-web/**'
       - '.github/workflows/node-team.yml'
   push:
     branches: [main]
     paths:
       - 'experiments/node-team/**'
       - 'packages/**'
+      - 'apps/task-web/**'
       - '.github/workflows/node-team.yml'
   workflow_dispatch:
 
@@ -57,11 +59,44 @@ jobs:
           experiments/node-team/http.test.mjs
           experiments/node-team/openapi.test.mjs
 
+  # UI-11：UI-only 改动也必须触发 typecheck/build/test（含 e2e 同源验收），干净 checkout 证明 dist 可由源码构建。
+  ui:
+    name: task-web (typecheck, build, test + e2e, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ['22.22.1', '24.15.0']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+
+      - name: Install pinned UI dependencies
+        working-directory: apps/task-web
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck, build dist, then run unit + same-origin e2e suites
+        working-directory: apps/task-web
+        run: |
+          npm run typecheck
+          npm run build
+          npx vitest run
+
   package:
     name: Freeze one Node candidate
-    needs: regression
+    needs: [regression, ui]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     outputs:
       source-head: ${{ steps.pack.outputs.source-head }}
       manifest-digest: ${{ steps.pack.outputs.manifest-digest }}
@@ -78,6 +113,14 @@ jobs:
           node-version: '24.15.0'
           package-manager-cache: false
 
+      # UI-11：本 workflow 产出的候选声明携带 UI——先构建 dist 再打包，
+      # 防止干净 checkout（dist 被 .gitignore）静默产出无 UI 的候选。
+      - name: Build task-web dist from the tested commit
+        working-directory: apps/task-web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
       - name: Pack exactly once from the tested commit
         id: pack
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
@@ -89,6 +132,7 @@ jobs:
           node packages/task-distribution/main.mjs pack \
             --source "$GITHUB_WORKSPACE" --source-head "$GITHUB_SHA" \
             --target "$candidate_parent/package" > "$candidate_parent/report.json"
+          test -f "$candidate_parent/package/apps/task-web/dist/index.html"
           node --input-type=module - "$candidate_parent" <<'NODE'
           import fs from 'node:fs';
           const parent = process.argv[2], report = JSON.parse(fs.readFileSync(parent + '/report.json'));
@@ -152,6 +196,8 @@ jobs:
           node packages/task-distribution/main.mjs restore-carrier \
             --carrier "$RUNNER_TEMP/node-candidate-carrier" --target "$install_parent/package" \
             --manifest-digest "$MARSHAL_CANDIDATE_MANIFEST" --source-head "$MARSHAL_CANDIDATE_SOURCE"
+          # UI-11：安装树必须携带 UI 入口（同源 /ui/ 的静态资产字节经 manifest 摘要校验后落盘）
+          test -f "$install_parent/package/apps/task-web/dist/index.html"
           echo "MARSHAL_CANDIDATE_ROOT=$install_parent/package" >> "$GITHUB_ENV"
 
       - name: Consume original installed CLI and client without repacking or models
