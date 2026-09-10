@@ -2,7 +2,7 @@
 # 固定 Node stable 安装器；不构建、不提权、不覆盖、不启动服务。
 set -euo pipefail
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  printf '%s\n' '用法：bash install-node.sh [--prefix /absolute/private-parent/install-dir]' '安装固定 v1.0.0。依赖：Node 24.15.0、python3、curl、minisign。' '默认：$HOME/.local/share/marshal-node/v1.0.0。仅安装，不配置 Agent 或启动 HTTP。' '自定义目标的父目录须已存在、当前用户所有、0700；目标必须不存在。'
+  printf '%s\n' '用法：bash install-node.sh [--prefix /absolute/private-parent/install-dir]' '安装固定 v1.0.0。依赖：Node >=22、python3、curl、minisign；服务启动另检 SQLite 必需能力。' '默认：$HOME/.local/share/marshal-node/v1.0.0。仅安装，不配置 Agent 或启动 HTTP。' '自定义目标的父目录须已存在、当前用户所有、0700；目标必须不存在。'
   exit 0
 fi
 command -v python3 >/dev/null || { printf '%s\n' '缺少 python3，请先安装。' >&2; exit 1; }
@@ -45,7 +45,9 @@ try:
     tools = {name: shutil.which(name) for name in ('node', 'curl', 'minisign')}
     for name, command in tools.items():
         require(command is not None, '缺少 ' + name + '；请先安装，安装器不会自动安装依赖')
-    require(subprocess.check_output([tools['node'], '--version'], timeout=10).strip() == b'v24.15.0', '需要已验证的 Node 24.15.0')
+    node_version = subprocess.check_output([tools['node'], '--version'], timeout=10).strip()
+    node_match = re.fullmatch(rb'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', node_version)
+    require(node_match is not None and int(node_match[1]) >= 22, '需要 Node >=22；无法识别或不支持当前 Node 版本')
     require((sys.platform, os.uname().machine) in [('darwin', 'arm64'), ('linux', 'x86_64')], 'v1.0.0 已验证平台为 darwin-arm64 / linux-x64')
     os.umask(0o077)
     if args:

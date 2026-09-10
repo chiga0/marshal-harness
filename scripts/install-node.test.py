@@ -49,8 +49,25 @@ class InstallerTests(unittest.TestCase):
     def test_missing_dependency(self):
         self.assertIn('缺少 minisign', self.invoke(which=lambda n: None if n == 'minisign' else '/test/' + n))
 
-    def test_wrong_node(self):
-        self.assertIn('Node 24.15.0', self.invoke(version=b'v22.0.0'))
+    def test_wrong_or_malformed_node_rejected_before_paths_or_network(self):
+        for version in (b'v20.20.0', b'v21.7.3', b'v022.22.1', b'22.22.1', b'v22', b'v22.22',
+                        b'v22.22.1-extra', b'v22.22.1\nextra', b'', b'garbage'):
+            with self.subTest(version=version):
+                self.assertIn('Node >=22', self.invoke(version=version))
+                self.assertEqual(self.calls, [])
+                self.assertFalse(self.target.exists())
+                self.assertEqual(list(self.parent.iterdir()), [])
+
+    def test_node_22_and_newer_pass_initial_version_gate(self):
+        # An existing destination deliberately stops after version admission,
+        # before any download or runtime execution; this is not a compatibility
+        # claim for every SQLite build or an actual installation of old assets.
+        self.target.mkdir()
+        for version in (b'v22.0.0', b'v22.22.1', b'v23.1.0', b'v24.15.0', b'v26.0.0'):
+            with self.subTest(version=version):
+                self.assertIn('拒绝覆盖', self.invoke(version=version))
+                self.assertEqual(self.calls, [])
+                self.assertTrue(self.target.is_dir())
 
     def test_existing_target_preserved(self):
         self.target.mkdir()
