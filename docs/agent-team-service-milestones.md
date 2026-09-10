@@ -1,5 +1,9 @@
 # Marshal Agent Team：Task-first 实施 Milestone
 
+## v1.0.2 后继：默认通用文件交付（实施中）
+
+依[ADR0099](adr/0099-generic-file-team-default.md)补齐实际安装后的接入缺口，不重做已有 B1/B2/B3。出口为：无需手写业务配置，`init` 记录本机 Qwen，`serve` 启动专用默认根并自动记录连接；同一配置通过两种文件需求的受管 Leader、互补作者、独立 Review、真实文件核验与下载，取消和冷开不重复执行。既有显式配置和旧根不自动迁移。外部 SQL、生产发布和补数不在此出口内，仍须配置独立授权与可验证效果。实现、实机、合并和后继发行分别记录，已发布 v1.0.2 不被热改写。
+
 2026-09-09：[ADR0095](adr/0095-node-managed-leader-contract.md)及[Leader 机器合同](node-leader-execution-contract.md)的 v7 Core 已集成主线，B2-L 为 IN_PROGRESS。源 `62369247` 的 Node CI 五个 job 通过，原 artifact `10106433664` 已接纳安装，未重建替换；此前两次 job 10 分钟超时已修为 15 分钟，各单测限制不变。同一原包的 Qwen 0.23.0 一次问答交付及正常冷开重放通过：28.545 秒、3 Attempts、零 retry/rework、477B 原流水报告，独立核对 773 条事件与原 SQLite 摘要不变；仅 layout 1，不证明全程 Leader 或故障恢复。新原包 Pi 双 Task 整轮失败：首项完整交付及审批前正常重启通过，第二项在独立 Review 返回解析处以 invalid_review_report 终止，非权威诊断为 invalid_json；不以首项成功关闭 B2-L；此前两次安装失败保留历史成本及未知原因。诊断与 SQLite FULL 已独立审查/验证并合入，页数上限 FULL 不替代真实 ENOSPC。仍缺完整安装 Pi 整轮通过、真实局部修正、完整故障恢复及声明支持面的验收和完整 B3；既有 B1/API-STABLE 限定范围不变，精确来源与未闭问题见 [Roadmap 当前表](roadmap-status.md#业务交付当前表)。
 
 更新：2026-09-09。最终方案见[服务架构](agent-team-service-architecture.md)，合同由已接受的 [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md)、[ADR 0088](adr/0088-node-task-service-production-projection.md)、[ADR 0094](adr/0094-trusted-single-user-role-team.md)与上述 ADR0095 按 profile 承载。合同接受允许实施，不表示实现或生产可用；实际事实仍只记 [Roadmap](roadmap-status.md#业务交付当前表)。
