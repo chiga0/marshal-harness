@@ -83,6 +83,28 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn('仅安装', result.stdout)
 
+    def test_postinstall_only_executes_manifest_listed_entry_and_redacts_failure(self):
+        namespace = {}
+        text = SCRIPT.read_text().split("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+        exec(text.split('try:\n    args', 1)[0], namespace)
+        initialize = namespace['initialize_local']
+        output = io.StringIO()
+        with patch('subprocess.run') as runner, contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            self.assertFalse(initialize(self.target, {'files': []}, '/test/node'))
+            runner.assert_not_called()
+            runner.return_value = subprocess.CompletedProcess([], 0, stdout=json.dumps({
+                'state': 'initialized', 'launcher': {'state': 'installed'}}))
+            metadata = {'files': [{'path': 'packages/task-local/main.mjs'}]}
+            self.assertTrue(initialize(self.target, metadata, '/test/node'))
+            self.assertEqual(runner.call_args.args[0], ['/test/node', str(self.target / 'packages/task-local/main.mjs'),
+                                                     'init', '--install-root', str(self.target)])
+            self.assertEqual(runner.call_args.kwargs['timeout'], 30)
+            runner.side_effect = subprocess.CalledProcessError(1, ['SECRET'], stderr='SECRET')
+            self.assertTrue(initialize(self.target, metadata, '/test/node'))
+        self.assertIn('本地初始化完成', output.getvalue())
+        self.assertIn('发行安装成功；本地初始化未完成', output.getvalue())
+        self.assertNotIn('SECRET', output.getvalue())
+
     def test_unknown_arguments(self):
         self.assertIn('参数错误', self.invoke(['--version', 'latest']))
 

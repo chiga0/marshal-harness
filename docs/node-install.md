@@ -51,6 +51,22 @@ GitHub 网络不稳定时可使用 [OSS 镜像或完整离线安装](node-oss-di
 
 ## 启动与数据
 
+### 后继候选：产品内初始化与统一命令
+
+包含 `packages/task-local/main.mjs` 的后继签名发行会在验签恢复成功后自动执行 `init`：从安装位置识别自身，发现 PATH 中的 Qwen/Pi/OpenCode，保存本机设置并安装 `~/.local/bin/marshal` 文本启动器。它调用已用来安装的 Node，不创建或执行临时原生二进制；不修改 Agent 登录、Shell 配置或现有同名命令。当前固定 v1.0.1 不包含此模块，因此不会执行这一步。
+
+```sh
+~/.local/bin/marshal init
+~/.local/bin/marshal serve --config /absolute/trusted/config.mjs
+# 之后可复用已记录配置，无需再次填写连接文件或环境变量：
+~/.local/bin/marshal status
+~/.local/bin/marshal serve
+```
+
+`init` 可重复执行；同名命令冲突时保留原程序，并使用安装根下的 `node packages/task-local/main.mjs` 等价入口。安装成功但初始化失败时会单独提示，已验签安装资产不会删除。`serve` 前台运行，连接已就绪时直接复用；不自动关闭旧进程或清空状态。具体行为见[本地命令说明](../packages/task-local/README.md)。
+
+**尚未完成的接缝**：检测到可执行文件还不等于完成 Adapter/通用业务装配，目前首次服务启动仍须受信配置。通用独立验收及原生 Skill 的工具/外部效果支持不能靠放宽文件权限或复用登录替代。本候选没有证明 DataWorks 发布与补数已经可运行。
+
 完成安装、准备好实际业务配置后，通过安装器输出的固定 Node 入口运行服务；启动参数及配置接口见 [服务说明](../packages/task-service/README.md)。可以指定 `--data-dir` 和 `--port`，默认仅监听 `127.0.0.1`，不自动暴露公网端口。
 
 服务配置、数据库、日志及运行制品均放在发行包外。不要修改发行文件、把数据写进安装树、删除未知锁或用重新初始化代替恢复。停止并重开沿用同一配置和数据目录；不将本次安装能力扩大为跨版本数据迁移承诺。

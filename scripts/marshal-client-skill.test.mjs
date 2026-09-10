@@ -12,15 +12,16 @@ import {createTaskApiHandler} from '../packages/task-api/http-handler.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const skill = fs.readFileSync(path.join(root, 'skills/marshal-client/SKILL.md'), 'utf8');
-const snippet = skill.match(/node --input-type=module <<'NODE'\n([\s\S]*?)\nNODE/)[1];
+const snippet = skill.match(/node --input-type=module - <<'NODE'\n([\s\S]*?)\nNODE/)[1];
 const token = 'fixture-client-skill-private-token-001';
 
-function invoke(connectionFile) {
+function invoke(connectionFile, positional = false) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['--input-type=module', '-e', snippet], {
-      env: {MARSHAL_INSTALL_ROOT: root, MARSHAL_CONNECTION_FILE: connectionFile},
-      stdio: ['ignore', 'pipe', 'pipe'], timeout: 15000,
+    const child = spawn(process.execPath, ['--input-type=module', '-', ...(positional ? [root, connectionFile] : [])], {
+      env: positional ? {} : {MARSHAL_INSTALL_ROOT: root, MARSHAL_CONNECTION_FILE: connectionFile},
+      stdio: ['pipe', 'pipe', 'pipe'], timeout: 15000,
     });
+    child.stdin.end(snippet);
     let stdout = '', stderr = '';
     child.stdout.on('data', b => { stdout += b; });
     child.stderr.on('data', b => { stderr += b; });
@@ -29,7 +30,7 @@ function invoke(connectionFile) {
   });
 }
 
-test('documented task body validates against shipped API, no invented ETL fields', () => {
+test('business-neutral task body validates against shipped API', () => {
   const examples = [...skill.matchAll(/```json\n([\s\S]*?)\n\s*```/g)];
   assert.equal(examples.length, 1);
   assert.equal(validate(JSON.parse(examples[0][1]), 'CreateTask'), true);
@@ -55,10 +56,25 @@ test('exact documented snippet uses real SDK/HTTP read-only and does not expose 
   assert.deepEqual(JSON.parse(result.stdout), ready);
   assert.deepEqual(calls, ['ready.get']);
   assert.ok(!(result.stdout + result.stderr).includes(token));
+  const explicit = await invoke(connectionFile, true);
+  assert.equal(explicit.code, 0, explicit.stderr);
+  assert.deepEqual(JSON.parse(explicit.stdout), ready);
+  assert.ok(!(explicit.stdout + explicit.stderr).includes(token));
+  assert.deepEqual(calls, ['ready.get', 'ready.get']);
+  fs.chmodSync(connectionFile, 0o644);
+  const exposed = await invoke(connectionFile, true);
+  assert.equal(exposed.code, 1);
+  assert.equal(exposed.stdout, '');
+  fs.chmodSync(connectionFile, 0o600);
+  const link = path.join(dir, 'link.json');
+  fs.symlinkSync(connectionFile, link);
+  assert.equal((await invoke(link, true)).code, 1);
+  fs.writeFileSync(connectionFile, ' '.repeat(16385));
+  assert.equal((await invoke(connectionFile, true)).code, 1);
   fs.writeFileSync(connectionFile, JSON.stringify({url: 'https://example.invalid', token}));
   const bad = await invoke(connectionFile);
   assert.equal(bad.code, 1);
   assert.equal(bad.stdout, '');
   assert.ok(!bad.stderr.includes(token));
-  assert.deepEqual(calls, ['ready.get']);
+  assert.deepEqual(calls, ['ready.get', 'ready.get']);
 });
