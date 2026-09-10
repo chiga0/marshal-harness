@@ -1,0 +1,23 @@
+name: Node OSS transport tests
+on:
+  pull_request:
+    paths: ['scripts/*node*mirror*', 'scripts/sync-node-oss*', 'scripts/install-node*', '.github/workflows/node-oss*']
+  push:
+    branches: [main]
+    paths: ['scripts/*node*mirror*', 'scripts/sync-node-oss*', 'scripts/install-node*', '.github/workflows/node-oss*']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/oss-test-venv"
+          "$RUNNER_TEMP/oss-test-venv/bin/pip" install oss2==2.19.1
+          "$RUNNER_TEMP/oss-test-venv/bin/python" -B scripts/prepare-node-mirror.test.py
+          "$RUNNER_TEMP/oss-test-venv/bin/python" -B scripts/sync-node-oss_test.py
+          "$RUNNER_TEMP/oss-test-venv/bin/python" -B scripts/install-node.test.py
