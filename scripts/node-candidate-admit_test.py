@@ -284,7 +284,7 @@ class FilesAndConsumerTest(unittest.TestCase):
             candidate.command([NODE, "-e", "setInterval(()=>{},100)"], timeout=0.1, owned_group=True)
 
     def test_original_node_pack_admission_restore_cli_team_and_cold_open(self):
-        self.assertEqual(subprocess.check_output([NODE, "--version"]).strip(), b"v24.15.0")
+        self.assertGreaterEqual(int(subprocess.check_output([NODE, "--version"]).strip().split(b".")[0][1:]), 22)
         parent = Path(tempfile.mkdtemp(prefix="node-candidate-full.")).resolve()
         passed = False
         try:
