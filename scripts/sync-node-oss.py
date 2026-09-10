@@ -37,7 +37,7 @@ def installer_constants(data):
                     require(target.id not in values, 'duplicate_installer_constant')
                     values[target.id] = ast.literal_eval(node.value)
     require(set(values) == wanted and all(isinstance(v, str) for v in values.values()), 'invalid_installer_constants')
-    require(values['VERSION'] == 'v1.0.1', 'unsupported_release')
+    require(values['VERSION'] in ('v1.0.1', 'v1.0.2'), 'unsupported_release')
     require(re.fullmatch(r'[a-f0-9]{40}', values['SOURCE']), 'invalid_source')
     require(re.fullmatch(r'[a-zA-Z0-9_.-]+\.zip', values['ZIP']), 'invalid_archive_name')
     return values
@@ -128,7 +128,7 @@ def same_object(bucket, key, data, sdk):
 def sync(bucket, prefix, version, assets, sdk):
     # OSS 在曾启用版本控制的 bucket 上可能忽略 forbid-overwrite。
     require(bucket.get_bucket_versioning().status in (None, ''), 'bucket_versioning_must_be_unconfigured')
-    require(version == 'v1.0.1', 'unsupported_release')
+    require(version in ('v1.0.1', 'v1.0.2'), 'unsupported_release')
     keys = {name: prefix + '/' + version + '/' + name for name in assets}
     # 先检查整个集合，再进行任何写入；安装器始终最后发布。
     existing = {name: same_object(bucket, keys[name], data, sdk) for name, data in assets.items()}
@@ -158,7 +158,7 @@ def main():
         # SDK 错误可能包含签名 URL、请求头或服务端内容，不能回显原始异常。
         print('OSS 镜像失败；未授权覆盖。请检查固定发行资产、OSS 配置、权限和网络。', file=sys.stderr)
         return 1
-    print('固定 v1.0.1 六项资产已同字节镜像并回读校验；未更新 latest。')
+    print('固定 ' + version + ' 六项资产已同字节镜像并回读校验；未更新 latest。')
     return 0
 
 

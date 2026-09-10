@@ -130,7 +130,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_mirror_and_default_all_five_asset_urls(self):
         program, assets = self.fixture()
-        for base in (None, 'https://mirror.example/releases/v1.0.1'):
+        for base in (None, 'https://mirror.example/releases/v1.0.2'):
             self.calls = []
             args = ['--prefix', str(self.target)] + (['--base-url', base] if base else [])
             self.invoke(args, program=program, success=True, run=self.source_run(assets))
@@ -141,7 +141,7 @@ class InstallerTests(unittest.TestCase):
                 if base:
                     self.assertEqual(call[-1], base + '/' + name)
                 else:
-                    self.assertEqual(call[-1], 'https://github-releases.oss-cn-hangzhou.aliyuncs.com/marshal-harness/v1.0.1/' + name)
+                    self.assertEqual(call[-1], 'https://github-releases.oss-cn-hangzhou.aliyuncs.com/marshal-harness/v1.0.2/' + name)
                 self.assertEqual(call[call.index('--proto') + 1], '=https')
                 self.assertEqual(call[call.index('--proto-redir') + 1], '=https')
 

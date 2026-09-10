@@ -1,8 +1,8 @@
-# Node v1.0.1 下载部署
+# Node v1.0.2 下载部署
 
-> [v1.0.1 已发布](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.1)，支持 Node22 及以上按实际 SQLite 能力运行；旧 v1.0.0 的字节和安装不变。
+> [v1.0.2 已发布](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.2)，OSS 六项资产已同步并公开下载验签通过。实际证据见 [v1.0.2 发行记录](v1.0.2-release-dossier-2026-09-10.md)。旧 v1.0.0/v1.0.1 的字节和安装不变。
 
-本入口安装 v1.0.1 的 Node Agent Team 文件，不安装历史 Go CLI，不编译或执行 Marshal 原生二进制，不请求 sudo，不修改系统安全设置。精确证据与发布状态见 [v1.0.1 发行记录](v1.0.1-release-dossier-2026-09-10.md)。
+本入口安装 v1.0.2 的 Node Agent Team 文件，不安装历史 Go CLI，不编译或执行 Marshal 原生二进制，不请求 sudo，不修改系统安全设置。精确证据与发布状态见 [v1.0.2 发行记录](v1.0.2-release-dossier-2026-09-10.md)。
 
 ## 一键安装
 
@@ -14,25 +14,25 @@
   setup_dir="$(mktemp -d)"
   curl -q -fL --proto '=https' --proto-redir '=https' \
     --connect-timeout 15 --max-time 120 --retry 2 --retry-all-errors \
-    https://github-releases.oss-cn-hangzhou.aliyuncs.com/marshal-harness/v1.0.1/install-node.sh \
+    https://github-releases.oss-cn-hangzhou.aliyuncs.com/marshal-harness/v1.0.2/install-node.sh \
     -o "$setup_dir/install-node.sh"
   bash "$setup_dir/install-node.sh"
 )
 ```
 
-默认安装到 `$HOME/.local/share/marshal-node/v1.0.1`，不改 PATH。需要部署到 Sandbox 的持久化挂载盘时：
+默认安装到 `$HOME/.local/share/marshal-node/v1.0.2`，不改 PATH。需要部署到 Sandbox 的持久化挂载盘时：
 
 ```sh
-bash /absolute/downloaded/install-node.sh --prefix /absolute/private-parent/marshal-v1.0.1
+bash /absolute/downloaded/install-node.sh --prefix /absolute/private-parent/marshal-v1.0.2
 ```
 
-安装目标必须是新目录，已有安装或失败现场不会被覆盖；自定义目标的父目录必须已存在、属于当前用户且权限为 `0700`，不跟随符号链接。脚本不自动放宽或修改既有目录的权限。需要先审阅脚本时，可从仓库下载 `scripts/install-node.sh`，检查后执行。本次载荷精确固定为 v1.0.1，旧安装不被改写；OSS 版本目录禁止覆盖。GitHub 继续保留原发行资产，但安装器不隐式回退 GitHub。
+安装目标必须是新目录，已有安装或失败现场不会被覆盖；自定义目标的父目录必须已存在、属于当前用户且权限为 `0700`，不跟随符号链接。脚本不自动放宽或修改既有目录的权限。需要先审阅脚本时，可从仓库下载 `scripts/install-node.sh`，检查后执行。本次载荷精确固定为 v1.0.2，旧安装不被改写；OSS 版本目录禁止覆盖。GitHub 继续保留原发行资产，但安装器不隐式回退 GitHub。
 
 ## 范围
 
 GitHub 网络不稳定时可使用 [OSS 镜像或完整离线安装](node-oss-distribution.md)。发布者需先配置并完成镜像同步；不能把尚未上传的示例地址当成可用入口。
 
-- 新入口只安装冻结的 v1.0.1，不自动选择 latest、不回退源码编译。
+- 新入口只安装冻结的 v1.0.2，不自动选择 latest、不回退源码编译。
 - Qwen/Pi、模型登录、Skill 和业务配置由部署者提供，本脚本不读取或复制凭据。
 - 安装完成不等于服务已运行。当前服务仍要求显式业务配置；缺配置时不启动一个假成功服务。
 - 只适用于可信单用户部署，不提供恶意代码隔离。Sandbox 中安装目录与服务数据目录应选择平台提供的持久化存储；环境销毁后不能依赖临时磁盘恢复。
@@ -41,19 +41,19 @@ GitHub 网络不稳定时可使用 [OSS 镜像或完整离线安装](node-oss-di
 
 脚本使用仓库固定的维护者 minisign 公钥核验 `SHA256SUMS`，并核对冻结版本的来源与资产摘要。不把随下载文件附带的任意公钥作为新的信任根。签名口径见 [ADR0096](adr/0096-node-stable-asset-signing-minisign.md)。
 
-| 身份 | v1.0.1 |
+| 身份 | v1.0.2 |
 | --- | --- |
-| sourceHead | `b90d7e7247a690db2af740078c285331569aa496` |
-| ZIP SHA-256 | `a94f53073c96f813a7fbd24edc15a77c32130329a3fbef877d8371e9ec17a2a1` |
-| manifest SHA-256 | `10c747d2f25dce6c085a736c2ed3e55f19ed9f0517e25a3b8e8561f08f9240f7` |
+| sourceHead | `f9a93cd678cac40bcd04ff9d0c1672612f184701` |
+| ZIP SHA-256 | `be4a8b6198769f1199b09d69faed91301ca99bc1632e2742fb174f764dc43e12` |
+| manifest SHA-256 | `94b2a036ea4b61e869ee0fd02e9b5a257db88b820c8677f5f09573c7320ee8d3` |
 
 安装器和 Node 解释器本身属于部署者信任的执行工具。企业策略仍可能限制 Node、网络或 shell；脚本不绕过此类限制。发行包不包含 Node runtime。
 
 ## 启动与数据
 
-### 后继候选：产品内初始化与统一命令
+### 产品内初始化与统一命令
 
-包含 `packages/task-local/main.mjs` 的后继签名发行会在验签恢复成功后自动执行 `init`：从安装位置识别自身，发现 PATH 中的 Qwen/Pi/OpenCode，保存本机设置并安装 `~/.local/bin/marshal` 文本启动器。它调用已用来安装的 Node，不创建或执行临时原生二进制；不修改 Agent 登录、Shell 配置或现有同名命令。当前固定 v1.0.1 不包含此模块，因此不会执行这一步。
+v1.0.2 包含 `packages/task-local/main.mjs`，在验签恢复成功后自动执行 `init`：从安装位置识别自身，发现 PATH 中的 Qwen/Pi/OpenCode，保存本机设置并安装 `~/.local/bin/marshal` 文本启动器。它调用已用来安装的 Node，不创建或执行临时原生二进制；不修改 Agent 登录、Shell 配置或现有同名命令。旧 v1.0.1 不包含此模块。
 
 ```sh
 ~/.local/bin/marshal init
@@ -73,7 +73,7 @@ GitHub 网络不稳定时可使用 [OSS 镜像或完整离线安装](node-oss-di
 
 ### 可选本机浏览器 UI（随包预览，默认关闭）
 
-> 本节描述 main 分支候选内实现、将随后继发行包携带的能力（[ADR0098](adr/0098-local-browser-ui-boundary.md) 与 [UI-1 设计包](ui-1/README.md)）；已安装的 v1.0.1 不含 UI 资产与 `--ui` 参数，传入未知参数仍按原错误路径拒绝。
+> 本节描述可选 UI 装配能力（[ADR0098](adr/0098-local-browser-ui-boundary.md) 与 [UI-1 设计包](ui-1/README.md)）。本次 v1.0.2 发行包没有构建后的 UI 资产，不能据此使用以下 UI 示例；只有明确携带并核验 UI 资产的后继包才适用。
 
 发行包如包含 `apps/task-web/dist`（与运行文件同一 manifest 核验、同一安装树、同一权限检查），可显式开启同源浏览器 UI：
 
@@ -86,5 +86,5 @@ node <安装目录>/packages/task-service/main.mjs \
 
 - `--ui` 不放在安装树内数据目录外的其他位置；目录缺失、含符号链接、缺 `index.html`、含未知扩展名或非常规文件时启动失败且不留数据现场。启动输出中的地址（`http://127.0.0.1:<端口>`）即唯一浏览器入口，打开 `http://127.0.0.1:<端口>/ui/` 使用；token 仍从本次启动的私有连接文件读取，只输入页面内存，不写 URL/存储/日志。
 - 静态全部为只读 GET/HEAD；HTML 不缓存、content-hash 资产可长期缓存；不种 cookie、不启用 CORS、不绑定 `127.0.0.1` 之外的地址。升级后旧浏览器标签页必须整体刷新再连接，不混用旧 HTML 与新包资产。
-- **关闭**：去掉 `--ui` 参数重新启动同一配置与数据目录即回到 API-only；`/ui/` 恢复 404，非空 Origin 一律拒绝，旧 Node 客户端行为不变。未启用时私有连接文件中的 `{url,token}` 及全部 CLI 用法与v1.0.1 完全一致。
+- **关闭**：去掉 `--ui` 参数重新启动同一配置与数据目录即回到 API-only；`/ui/` 恢复 404，非空 Origin 一律拒绝，旧 Node 客户端行为不变。未启用时私有连接文件中的 `{url,token}` 及全部 CLI 用法与v1.0.2 完全一致。
 - 服务数据根（`store`/SQLite）与 `--ui` 无关：开/关 UI 不改变任务、回执与恢复事实，也不会向浏览器暴露 SQLite 或宿主任意文件。
