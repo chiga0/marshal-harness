@@ -45,3 +45,21 @@ curl -fsSL https://raw.githubusercontent.com/chiga0/marshal-harness/main/scripts
 完成安装、准备好实际业务配置后，通过安装器输出的固定 Node 入口运行服务；启动参数及配置接口见 [服务说明](../packages/task-service/README.md)。可以指定 `--data-dir` 和 `--port`，默认仅监听 `127.0.0.1`，不自动暴露公网端口。
 
 服务配置、数据库、日志及运行制品均放在发行包外。不要修改发行文件、把数据写进安装树、删除未知锁或用重新初始化代替恢复。停止并重开沿用同一配置和数据目录；不将本次安装能力扩大为跨版本数据迁移承诺。
+
+### 可选本机浏览器 UI（随包预览，默认关闭）
+
+> 本节描述 main 分支候选内实现、将随后继发行包携带的能力（[ADR0098](adr/0098-local-browser-ui-boundary.md) 与 [UI-1 设计包](ui-1/README.md)）；已安装的 v1.0.1 不含 UI 资产与 `--ui` 参数，传入未知参数仍按原错误路径拒绝。
+
+发行包如包含 `apps/task-web/dist`（与运行文件同一 manifest 核验、同一安装树、同一权限检查），可显式开启同源浏览器 UI：
+
+```sh
+node <安装目录>/packages/task-service/main.mjs \
+  --config /absolute/trusted/service-config.mjs \
+  --data-dir /absolute/private-parent/task-data \
+  --ui <安装目录>/apps/task-web/dist
+```
+
+- `--ui` 不放在安装树内数据目录外的其他位置；目录缺失、含符号链接、缺 `index.html`、含未知扩展名或非常规文件时启动失败且不留数据现场。启动输出中的地址（`http://127.0.0.1:<端口>`）即唯一浏览器入口，打开 `http://127.0.0.1:<端口>/ui/` 使用；token 仍从本次启动的私有连接文件读取，只输入页面内存，不写 URL/存储/日志。
+- 静态全部为只读 GET/HEAD；HTML 不缓存、content-hash 资产可长期缓存；不种 cookie、不启用 CORS、不绑定 `127.0.0.1` 之外的地址。升级后旧浏览器标签页必须整体刷新再连接，不混用旧 HTML 与新包资产。
+- **关闭**：去掉 `--ui` 参数重新启动同一配置与数据目录即回到 API-only；`/ui/` 恢复 404，非空 Origin 一律拒绝，旧 Node 客户端行为不变。未启用时私有连接文件中的 `{url,token}` 及全部 CLI 用法与v1.0.1 完全一致。
+- 服务数据根（`store`/SQLite）与 `--ui` 无关：开/关 UI 不改变任务、回执与恢复事实，也不会向浏览器暴露 SQLite 或宿主任意文件。

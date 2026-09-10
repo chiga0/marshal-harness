@@ -134,3 +134,11 @@ python3 -I -B /absolute/reviewed/tools/scripts/node-candidate-admit.py \
 [API-STABLE 四条件](../../docs/agent-team-service-milestones.md#api-stable核心接口稳定检查点不是所有扩展齐备)是：合同/handler/示例/客户端一致且无未处置核心 API P0/P1；至少一个支持的真实 Provider 完成纯 HTTP 确认/交付/下载审计和主要失败控制；已提供功能的幂等、旧版本、认证/Origin、路径、取消迟到、事件续读/gap 等反例通过；HTTP 脚本及独立客户端共用契约，查询/取消在并行与长 Verify 下有实测响应上界。**不要求 B3 全平台部署与完整长期故障矩阵提前完成**，但本工具或安装测试也不自动授予 API-STABLE。
 
 B3 另要求声明平台/profile 的同一待发布资产完成实际业务、取消/故障恢复、长期多 Task、备份与升级验收、受保护来源及 same-bytes stable release。Darwin 与 Linux 分别取证；原生资产才按类别适用签名/notarization，纯脚本不伪称 Apple 公证，也不豁免运行时合法性与安装验证。当前不声明 Linux 部署、B3 完成、production 或 stable；不以标签、包核验或一次安装测试替代这些出口。
+
+## 可选同包 UI 静态资产（ADR0098）
+
+当源码树存在本地构建的 `apps/task-web/dist` 时，上述同一套 `pack / verify / restore-carrier` 流程把该目录原样纳入同一 manifest：文件路径在 `apps/task-web/dist/` 前缀下按字典序追加在锁定 `SOURCE_FILES` 之后，与运行文件共用一个 `manifestDigest`；安装树、权限（`0700/0600`）、多余/缺失条目、链接与摘要漂移检查完全同构。`index.html` 是固定入口，缺失它而提交其他 UI 文件时拒绝打包。
+
+约束与服务 `--ui` 边界的运行时锁定使用同一名称/类型规则：单级文件名只允许 `[A-Za-z0-9][A-Za-z0-9._-]*`，扩展名限 `html/js/css/json/map/svg/png/jpg/jpeg/ico/webmanifest/txt/woff/woff2`，文件数上限 512、单文件与总量沿用原上限；目录或文件为符号链接、非常规类型或含其他名字/扩展时整体拒绝打包。dist 是未入 Git 的构建产物，不由 `inventory` 的 `ls-tree` 覆盖，但其字节与摘要仍进入 manifest；同一精确源码+同一 dist 重打包得到同一 manifest 摘要。dist 缺失或为空时打包结果与原 `SOURCE_FILES` 清单逐字节一致，旧消费者、旧 CI 与既有候选流程不产生任何漂移。
+
+发布侧含义不变：UI 资产随包发行（ADR0098 与 UI-1 设计包的发行交接约定），不建立新的包格式、第二 manifest 或浏览器专用发布通道；安装后不修改或补写 dist 中的文件（多余条目即破坏下一次核验）。未构建 dist 的候选即不携带 UI，此时 `--ui` 启动参数按原错误路径拒绝启动。
