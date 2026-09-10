@@ -2258,3 +2258,8 @@ RC1 completion 复审发现：`result-admitted` 已提交后，terminalization �
 `main@46e0054` 是当前本地权威基线（父提交 `054789c`，`origin/main` 尚未同步）。本次以维护者指示直接合入 `ac5fd20`，新增 `NewFromStateRootDescriptor`/`NewAt`，让 existing-only acquisition 沿 held StateRoot descriptor 打开 `runs/<runID>`，并将描述符保留到 Lease 生命周期结束。该切片通过 `go test -race ./internal/runstore`、`go vet ./internal/runstore`、`git diff --check` 与 architecture check。
 
 独立 reviewer 随后发现 descriptor Store 的 pathname API 空根路径风险与 Close/acquisition 竞态；`main@109f35d` 已增加哨兵根路径、descriptor-only `Acquire` 拒绝和互斥保护，并通过 runstore race/vet/diff 定向门禁。本次仍未等待独立 reviewer，故记录为审计风险而非“已独立验收”；Store.root 等兼容字段仍需在 production composition 接线前完成全调用链审计，不得把该 component 合入解释为 S2′ 完成。ResultIngress/Execution/App 现有 sealed Run-start fixture 仍失败，CI 质量门禁不绿；Qoder/Codex 生产配置、真实 Pi→独立 Decision→`ACCEPTED`、RC1 同字节 canary、签名/公证和远端发布均未完成。
+
+
+## 2026-09-10：UI-1 浏览器入口设计审计
+
+登记 `UI1-BROWSER-BOUNDARY` 为 OPEN-DESIGN：现 API 拒绝非空 Origin，浏览器直连与 Node 客户端复用存在接缝。[ADR0098](adr/0098-local-browser-ui-boundary.md)提出显式同源 UI 模式与原 Bearer、精确 Host/Origin、令牌内存和静态资产边界。提案未接受/未实现；原保护不放宽。关闭需合同审查与实现后的浏览器、安全反例和同包消费证据。[UI-1 设计包](ui-1/README.md)另列产品、视觉、验收与并行交付；文档审查不升级运行成熟度。
