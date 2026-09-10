@@ -8,6 +8,8 @@
 
 新增 [ADR 0086](0086-task-preapproval-questions-and-preview-revisions.md)（Accepted，2026-09-08 维护者接纳）：冻结未批准 Task 的关键问答、同 RB1 原子答案/预览版本和确认/取消顺序；当前 `order-quote/v1` 保持零问题。本次独立审查与接纳允许实施，不代表新事实族已接线或 B2 业务出口完成。
 
+新增 [ADR 0096](0096-node-stable-asset-signing-minisign.md)（Accepted，2026-09-10 维护者接纳）：Node stable 发行资产采用 minisign（Ed25519 分离签名），签名对象为 SHA256SUMS 清单（内文同时包含候选 sourceHead、annotated tag、独立 Decision 摘要、包 manifest 摘要与运输 ZIP 摘要行，身份信息以 `#` 注释承载，其余行保持标准摘要格式）；私钥维护者持有不入仓，公钥随发行附；sourceHead/tag、manifestDigest、运输 ZIP 三级互证。旧 unsigned RC1 不变；签名不对未经验证的资产背书。
+
 先读[合同适用性](../design-contract-map.md)，再读命中范围的 ADR，不按编号顺序把全部历史决策重做一遍。
 
 | 范围 | 当前目标/保留合同 | 应如何使用 |
