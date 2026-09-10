@@ -4,7 +4,7 @@
 
 ## 一键安装
 
-前置工具：可运行的 Node `24.15.0`、Python 3、`curl` 和 `minisign`。目标环境需能访问 GitHub 的发行下载及源码地址；缺工具时安装器给出错误，不自动安装系统软件。`node --version` 可先检查 Node。
+支持平台为 macOS Apple Silicon（`darwin-arm64`）和 Linux x64（`linux-x64`）。前置工具：可运行的 Node `24.15.0`、Python 3、`curl` 和 `minisign`。目标环境需能访问 GitHub 的发行下载及源码地址；缺工具时安装器给出错误，不自动安装系统软件。`node --version` 可先检查 Node。
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/chiga0/marshal-harness/main/scripts/install-node.sh | bash
