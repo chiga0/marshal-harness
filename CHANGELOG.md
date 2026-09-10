@@ -4,7 +4,15 @@
 
 ## [Unreleased]
 
-## [Unreleased v1.0-candidate] - 2026-08-27
+### 修复（Node 主线，2026-09-10）
+- UI 工作台（apps/task-web）按 2026-09-10 交接审计完成 11 项必修修复（UI-01–UI-11，提交 5b21e11c/a837902f/2574b0cf/e4053f92）：创建任务 5xx 不再误判为拒绝（结果未知 + 保留幂等键显式同键重放）；逻辑动作输入冻结与异步代际隔离（轮询推进 revision 不解锁/换键/覆盖未决动作）；默认 fetch 闭包包装修复严格 receiver 浏览器「网络层不可达」误报；评审/独立验收/交付/后验分开呈现（新增 `GET /v1/tasks/{taskId}/audit` 消费，`acceptance=passed` 才是验收通过）；Worker 列表无限分页与已加载范围标注；请求默认 deadline 与 AbortSignal 贯通；服务端 401 即时连接失效并清缓存；运行中 Worker 问题展示 deliveryStatus（受理≠投递≠消费）且已答未 ACK 保留待核对；Leader 请求到期即时禁用（确认框打开后到期不发请求）；统一模态层原语（一次 Escape 只关最上层、Tab 圈禁、焦点不被轮询重置）；
+- CI：node-team workflow 纳入 `apps/task-web` 路径触发，新增 `ui` job（typecheck/build/test+e2e）；pack 前先构建 UI dist 并断言候选与安装树含 `apps/task-web/dist/index.html`，干净 checkout 不再静默产出无 UI 候选。
+
+## [v1.0.2] - 2026-09-10（Node 主线）
+
+Node Agent Team 正式发行（macOS arm64 / Linux x64）：task-service 本地服务 + v7 受管 Leader 可运行检查点 + `task-local` 的 `marshal init/serve/status` 统一命令 + minisign 验签的一键安装（OSS 镜像 / HTTPS 镜像 / 离线三模式）。证据与身份摘要见 `docs/v1.0.2-release-dossier-2026-09-10.md`，使用入口见 `docs/node-install.md`。旧 v1.0.0/v1.0.1 为同一主线的前序候选；历史 Go RC1（`v1.0.0-rc1`，unsigned darwin-arm64 CLI-only）是另一条已冻结的历史线，与本条目无关。
+
+## [Unreleased v1.0-candidate] - 2026-08-27（历史 Go 线）
 
 注意：本节不是 v1.0 发布声明。v1.0 范围与生产可达性门禁已由 [ADR 0052](docs/adr/0052-v1-release-scope-and-production-reachability.md)（2026-08-27 接受）冻结为单节点生产纵切；当前主表状态为 `I186-R0: PASSED`、`I186-R1: IN_PROGRESS`、`I186-R2–R6: PLANNED`，v1.0 未发布。下列为 I186 快速收敛线路（单 Lead + 多 Sub-Agent 高并发）已合入 main 的交付资产（component checkpoint），同时增收 0.1.0 之后已合入交付。
 

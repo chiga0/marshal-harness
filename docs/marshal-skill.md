@@ -1,5 +1,7 @@
 # 在 Codex 中使用 Marshal
 
+> **历史文档**：本页描述的旧研发治理 Skill（Go 时代）已**长期完全退出产品运行依赖、研发准入和验收标准**（见仓库根 AGENTS.md）：不读取、加载、派发或执行其流程，不要求每个开发切片一个 Marshal Run。历史运行/失败/审计资产保留，但不恢复其微切片与轮次规范。当前产品客户端 Skill 是 [`skills/marshal-client/SKILL.md`](../skills/marshal-client/SKILL.md)（Node HTTP 服务客户端，不是研发治理 Skill）。以下为历史资料。
+
 Marshal 仓库包含一个 Codex Skill，帮助 Codex 按正确顺序提交任务、调用 Coding Agent、检查结果并处理发布。你不需要记住内部状态或文件名称。
 
 ## 怎样开始

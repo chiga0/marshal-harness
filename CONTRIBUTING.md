@@ -16,6 +16,18 @@
 
 ## 开发环境
 
+### Node 主线（packages/ + apps/task-web）
+
+当前产品主线是 Node：`packages/`（30 个纯 ESM `.mjs` 包，无 npm workspace、无第三方运行时依赖）+ `apps/task-web`（React 19 + Vite 浏览器 UI）。
+
+- Node ≥ 22（CI 实测 22.22.1 / 24.15.0 双版本矩阵）；
+- packages 测试命令与 CI 完全一致：`node --test --test-concurrency=1 packages/*/*.test.mjs`；
+- apps/task-web：`npm ci` 后在其目录下执行 `npm run typecheck`、`npm run build`、`npx vitest run`（组件/单测 + e2e；e2e 起真实 task-service 子进程并依赖已构建的 `dist/`，先 build 再跑）；
+- CI：`.github/workflows/node-team.yml`（packages 回归 + `ui` job[typecheck/build/test+e2e] + pack 冻结 + 候选消费，ubuntu/macOS × Node 22/24 矩阵）。
+
+### 历史 Go（legacy，冻结维护）
+
+- Go 代码（`cmd/`、`internal/`、`schemas/`、旧 `web/` 控制台）属历史世界：`ci.yml` 的 required 门禁仍在其 sourceHead 范围内运行，只有改动它们时才需要下列命令；新功能开发一律不在 Go 侧进行，适用边界见 [设计合同地图](docs/design-contract-map.md)；
 - Go 版本以 `go.mod` 为准；`make check` 还需要 Python 3 运行仓库内的确定性架构检查（均不需要额外安装第三方包）；
 - 常用目标：
   - `make check`：format-check + package-layer architecture-check + vet + staticcheck + 全仓 race 测试 + build；

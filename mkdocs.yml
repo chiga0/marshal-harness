@@ -77,13 +77,13 @@ markdown_extensions:
 nav:
   - 开始:
       - 首页: index.md
+      - 快速开始（Node 主线）: getting-started.md
+      - 下载部署（Node 一键安装）: node-install.md
+  - 历史资料（Go 时代，已退出产品运行依赖）:
+      - 当前可用能力（历史摘要）: current-status.md
       - Marshal 是什么: concepts.md
-      - 当前可用能力: current-status.md
-      - 快速开始: getting-started.md
-  - 使用 Marshal:
+      - 工作原理: how-it-works.md
       - 安装、升级与回滚: install-and-upgrade.md
       - 日常使用: usage.md
       - 在 Codex 中使用: marshal-skill.md
-  - 了解设计:
-      - 工作原理: how-it-works.md
       - 安全与隐私: security.md
