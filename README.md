@@ -81,7 +81,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 
 ## 当前 Node 服务与 API 候选入口
 
-当前研发主线使用固定 Node `24.15.0`，通过 [Task 服务启动说明](packages/task-service/README.md)配置原生 Agent、业务与独立验证并运行 HTTP；无需编译或执行 Marshal 原生程序。受信启动配置仍需提供，尚不承诺任意任务零配置。原生登录不授予业务发布权限；可信单用户下可能存在 ambient credential，不能因本机可运行就声称强隔离或正式支持。
+当前 Node 服务从 `v1.0.1` 起接纳 Node `>=22` 并检查实际 SQLite 能力；已验证22.22.1和24.15.0。[一键安装](docs/node-install.md)不再要求升级到固定24版本。通过 [Task 服务启动说明](packages/task-service/README.md)配置原生 Agent、业务与独立验证并运行 HTTP；无需编译或执行 Marshal 原生程序。受信启动配置仍需提供，尚不承诺任意任务零配置。原生登录不授予业务发布权限；可信单用户下可能存在 ambient credential，不提供恶意代码强隔离。
 
 - [OpenAPI 3.1 定义](packages/task-api/openapi.json)是 HTTP 请求/响应的唯一机器契约；[接口说明](packages/task-api/README.md)与[客户端](packages/task-client/README.md)解释使用方式。
 - [逐接口支持矩阵](docs/node-api-support-matrix.md)保留其标注源码的25项合同、实际实现和实机范围；[后继状态](docs/roadmap-status.md#业务交付当前表)已记录显式v6 profile支持单Worker取消，旧格式仍501。暂停只阻止新执行，token/费用仍不可测；矩阵快照与最新增量分开，不把路由示例当作功能完成。

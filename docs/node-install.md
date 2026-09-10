@@ -1,8 +1,8 @@
 # Node v1.0.1 下载部署
 
-> v1.0.1 候选已通过 Node22/24 双平台验证，正在等待维护者签名与发布。本分支安装器未切换到 main；在发布完成前，公开安装入口仍为 v1.0.0，不能删除旧包的 Node24 检查冒充兼容。
+> [v1.0.1 已发布](https://github.com/chiga0/marshal-harness/releases/tag/v1.0.1)，支持 Node22 及以上按实际 SQLite 能力运行；旧 v1.0.0 的字节和安装不变。
 
-本入口准备安装 v1.0.1 的 Node Agent Team 文件，不安装历史 Go CLI，不编译或执行 Marshal 原生二进制，不请求 sudo，不修改系统安全设置。精确证据与发布状态见 [v1.0.1 发行记录](v1.0.1-release-dossier-2026-09-10.md)。
+本入口安装 v1.0.1 的 Node Agent Team 文件，不安装历史 Go CLI，不编译或执行 Marshal 原生二进制，不请求 sudo，不修改系统安全设置。精确证据与发布状态见 [v1.0.1 发行记录](v1.0.1-release-dossier-2026-09-10.md)。
 
 ## 一键安装
 
