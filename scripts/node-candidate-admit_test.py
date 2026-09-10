@@ -50,7 +50,7 @@ class FixtureGitHub:
         if endpoint.endswith("/actions/workflows/node-team.yml"):
             value = {"id": 99, "path": candidate.WORKFLOW}
         elif "/jobs?" in endpoint:
-            value = {"total_count": 5, "jobs": [] if endpoint.endswith("page=2") else [
+            value = {"total_count": len(candidate.JOBS), "jobs": [] if endpoint.endswith("page=2") else [
                 {"id": 501 + i, "run_id": b["runId"], "run_attempt": b["attempt"], "head_sha": b["sourceHead"],
                  "name": name, "status": "completed", "conclusion": "success"} for i, name in enumerate(sorted(candidate.JOBS))]}
         elif "/actions/artifacts/" in endpoint:

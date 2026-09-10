@@ -193,8 +193,8 @@ def github_snapshot(api, expected):
     page_path = run_path + f'/attempts/{expected["attempt"]}/jobs?per_page=100&page='
     first, tail = api.get(page_path + "1"), api.get(page_path + "2")
     jobs = first.get("jobs")
-    need(type(first.get("total_count")) is int and first["total_count"] == 5 and type(jobs) is list and len(jobs) == 5 and
-         type(tail.get("total_count")) is int and tail["total_count"] == 5 and tail.get("jobs") == [], "incomplete_jobs")
+    need(type(first.get("total_count")) is int and first["total_count"] == len(JOBS) and type(jobs) is list and len(jobs) == len(JOBS) and
+         type(tail.get("total_count")) is int and tail["total_count"] == len(JOBS) and tail.get("jobs") == [], "incomplete_jobs")
     need(all(type(job) is dict for job in jobs), "invalid_jobs")
     need({job.get("name") for job in jobs} == JOBS and len({job.get("id") for job in jobs}) == len(JOBS), "invalid_jobs")
     for job in jobs:
