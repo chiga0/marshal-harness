@@ -49,10 +49,10 @@ test('recorded connection supports env-free status and client; no server/agent s
   assert.ok(!JSON.stringify(output).includes(token));
   assert.ok(!fs.readFileSync(path.join(home, '.marshal-client/local.json'), 'utf8').includes(token));
 });
-test('missing business config is explicit; unsafe settings rejected; own install root needs no search', async t => {
+test('missing Qwen is explicit; unsafe settings rejected; own install root needs no search', async t => {
   const home = fixture(t);
-  await run(['init', '--install-root', root], {home, output() {}});
-  await assert.rejects(run(['serve'], {home}), /configuration_required/);
+  await run(['init', '--install-root', root], {home, pathValue: '', output() {}});
+  await assert.rejects(run(['serve'], {home}), /qwen_executable_required/);
   const file = path.join(home, '.marshal-client/local.json');
   fs.chmodSync(file, 0o644);
   await assert.rejects(run(['status'], {home}), /unsafe_settings/);
@@ -60,6 +60,74 @@ test('missing business config is explicit; unsafe settings rejected; own install
   const output = [];
   await run(['init'], {home: otherHome, output: x => output.push(x)});
   assert.equal(output[0].installRoot, root);
+});
+
+function genericInstall(t) {
+  const home = fixture(t), installed = path.join(home, 'installed');
+  fs.mkdirSync(installed, {mode: 0o700});
+  fs.cpSync(path.join(root, 'packages'), path.join(installed, 'packages'), {recursive: true});
+  fs.mkdirSync(path.join(installed, 'packages/task-generic-files'), {recursive: true});
+  // Only assembly is a controlled fixture. The child is the real service main,
+  // launch, Application, SQLite and HTTP; no model or business success is claimed.
+  fs.writeFileSync(path.join(installed, 'packages/task-generic-files/index.mjs'), `
+    import assert from 'node:assert/strict';
+    import config from '../task-service/service.fixture.mjs';
+    export function createGenericFileTeamConfig({executable}) {
+      assert.equal(executable, ${JSON.stringify(path.join(home, 'qwen'))});
+      return config;
+    }
+  `);
+  fs.writeFileSync(path.join(home, 'qwen'), '#!/bin/sh\nexit 99\n', {mode: 0o700});
+  return {home, installed};
+}
+test('default bridge starts real HTTP/SQLite and cold reopens its dedicated root without migrating legacy state', {timeout: 30000}, async t => {
+  const {home, installed} = genericInstall(t), output = [];
+  const legacy = path.join(home, '.marshal-node/task-service');
+  fs.mkdirSync(legacy, {recursive: true}); fs.writeFileSync(path.join(legacy, 'unknown'), 'do not adopt');
+  await run(['init', '--install-root', installed], {home, pathValue: home, output: value => output.push(value)});
+  assert.equal(output[0].next, 'serve'); assert.equal(output[0].defaultTeam.authentication, 'unchecked');
+  let priorConfig, priorInode;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await run(['serve'], {home, output(value) {
+      assert.equal(value.state, 'connected');
+      assert.ok(value.connectionFile.startsWith(path.join(home, '.marshal-client/generic-files-v1/')));
+      const configFile = path.join(home, '.marshal-client/generic-files-config.mjs');
+      const config = fs.readFileSync(configFile, 'utf8');
+      const inode = fs.statSync(path.join(home, '.marshal-client/generic-files-v1/store/authority.sqlite')).ino;
+      if (attempt) {assert.equal(config, priorConfig); assert.equal(inode, priorInode);}
+      priorConfig = config; priorInode = inode;
+      assert.equal(fs.statSync(configFile).mode & 0o777, 0o600);
+      process.emit('SIGTERM');
+    }});
+  }
+  const settings = JSON.parse(fs.readFileSync(path.join(home, '.marshal-client/local.json')));
+  assert.equal(settings.config, undefined);
+  assert.equal(settings.defaultTeam.executable, path.join(home, 'qwen'));
+  assert.equal(fs.readFileSync(path.join(legacy, 'unknown'), 'utf8'), 'do not adopt');
+});
+test('default config foreign bytes and unsafe executable fail closed before starting a service', async t => {
+  const {home, installed} = genericInstall(t);
+  await run(['init', '--install-root', installed], {home, pathValue: home, output() {}});
+  const config = path.join(home, '.marshal-client/generic-files-config.mjs');
+  fs.writeFileSync(config, 'throw new Error("foreign")', {mode: 0o600});
+  await assert.rejects(run(['serve'], {home}), /default_configuration_conflict/);
+  assert.equal(fs.readFileSync(config, 'utf8'), 'throw new Error("foreign")');
+  fs.chmodSync(path.join(home, 'qwen'), 0o600);
+  await assert.rejects(run(['serve'], {home}), /qwen_executable_required/);
+  assert.equal(fs.existsSync(path.join(home, '.marshal-client/generic-files-v1')), false);
+});
+test('unknown default data root is preserved and installation change cannot reuse the old generated import', {timeout: 10000}, async t => {
+  const {home, installed} = genericInstall(t);
+  await run(['init', '--install-root', installed], {home, pathValue: home, output() {}});
+  const data = path.join(home, '.marshal-client/generic-files-v1');
+  fs.mkdirSync(data, {mode: 0o700}); fs.writeFileSync(path.join(data, 'legacy'), 'unknown format');
+  await assert.rejects(run(['serve'], {home}), /service_start_failed/);
+  assert.deepEqual(fs.readdirSync(data), ['legacy']);
+  const config = path.join(home, '.marshal-client/generic-files-config.mjs'), original = fs.readFileSync(config, 'utf8');
+  await run(['init', '--install-root', root], {home, pathValue: home, output() {}});
+  await assert.rejects(run(['serve'], {home}), /default_configuration_conflict/);
+  assert.equal(fs.readFileSync(config, 'utf8'), original);
+  assert.deepEqual(fs.readdirSync(data), ['legacy']);
 });
 
 function fakeInstall(home, program) {

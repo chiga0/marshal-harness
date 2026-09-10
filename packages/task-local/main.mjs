@@ -9,7 +9,8 @@ import {installCommand} from './install-command.mjs';
 
 const fail = code => { throw new Error(code); };
 const codes = new Set(['invalid_arguments', 'unsafe_settings', 'installation_missing_or_ambiguous',
-  'configuration_required', 'connection_unavailable', 'service_start_failed', 'settings_missing', 'command_install_conflict']);
+  'configuration_required', 'connection_unavailable', 'service_start_failed', 'settings_missing', 'command_install_conflict',
+  'qwen_executable_required', 'default_configuration_conflict']);
 function absolute(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value) || /[\x00-\x1f\x7f]/.test(value)) fail('invalid_arguments');
   return path.resolve(value);
@@ -34,6 +35,33 @@ function save(file, value) {
   const fd = fs.openSync(temporary, 'wx', 0o600);
   try {fs.writeFileSync(fd, JSON.stringify(value) + '\n'); fs.fsyncSync(fd);} finally {fs.closeSync(fd);}
   fs.renameSync(temporary, file);
+}
+function defaultConfiguration(settings, dir) {
+  const executable = settings.defaultTeam?.executable ?? settings.agents?.find(agent => agent.id === 'qwen')?.executable;
+  if (typeof executable !== 'string' || !path.isAbsolute(executable) || /[\x00-\x1f\x7f]/.test(executable)) fail('qwen_executable_required');
+  try {
+    if (!fs.statSync(executable).isFile()) fail('qwen_executable_required');
+    fs.accessSync(executable, fs.constants.X_OK);
+  } catch {fail('qwen_executable_required');}
+  const moduleURL = pathToFileURL(path.join(settings.installRoot, 'packages/task-generic-files/index.mjs')).href;
+  const source = `// Marshal managed generic-files configuration v1\nimport {createGenericFileTeamConfig} from ${JSON.stringify(moduleURL)};\nexport default createGenericFileTeamConfig({executable: ${JSON.stringify(executable)}});\n`;
+  const config = path.join(dir, 'generic-files-config.mjs'), dataDir = path.join(dir, 'generic-files-v1');
+  // Never adopt or overwrite another deployment module. Installation/path changes
+  // require an explicit operator decision, rather than importing stale code.
+  try {
+    const fd = fs.openSync(config, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    try {
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) || stat.nlink !== 1 || stat.size > 65536 ||
+          fs.readFileSync(fd, 'utf8') !== source) fail('default_configuration_conflict');
+    } finally {fs.closeSync(fd);}
+  } catch (error) {
+    if (error.code !== 'ENOENT') fail('default_configuration_conflict');
+    const fd = fs.openSync(config, 'wx', 0o600);
+    try {fs.writeFileSync(fd, source); fs.fsyncSync(fd);} finally {fs.closeSync(fd);}
+  }
+  settings.defaultTeam = {version: 1, executable};
+  return {config, dataDir};
 }
 function installation(root) {
   root = absolute(root);
@@ -61,11 +89,11 @@ export async function connectLocal({settingsDir = path.join(fs.realpathSync(os.h
   if (!settings || settings.version !== 1) fail('unsafe_settings');
   return connect(settings);
 }
-export async function run(argv, {home = os.homedir(), output = value => console.log(JSON.stringify(value)), startupTimeoutMs = 30000, stopTimeoutMs = 5000} = {}) {
+export async function run(argv, {home = os.homedir(), pathValue = process.env.PATH, output = value => console.log(JSON.stringify(value)), startupTimeoutMs = 30000, stopTimeoutMs = 5000} = {}) {
   const command = argv[0] ?? '--help', options = {};
   if (command === '--help') {
     output({commands: ['init', 'status', 'serve'], options: ['--install-root', '--config', '--connection-file', '--settings-dir'],
-      note: 'init 检测并记录；serve 复用连接或以前台进程运行现有受信服务配置，不自动授权业务。'}); return;
+      note: 'init 仅发现入口，不验证登录；serve 复用连接或前台启动，显式配置优先，否则使用 Qwen 通用文件团队，不授权外部业务写入。'}); return;
   }
   if (!['init', 'status', 'serve'].includes(command)) fail('invalid_arguments');
   for (let i = 1; i < argv.length; i += 2) {
@@ -82,7 +110,7 @@ export async function run(argv, {home = os.homedir(), output = value => console.
   if (options['--config']) settings.config = options['--config'];
   if (options['--connection-file']) settings.connectionFile = options['--connection-file'];
   if (command === 'init') {
-    settings.agents = await discoverAgents();
+    settings.agents = await discoverAgents({pathValue});
     save(file, settings);
     let launcher;
     try {launcher = {...installCommand({installRoot: settings.installRoot, home: fs.realpathSync(home)}), state: 'installed'};}
@@ -90,18 +118,21 @@ export async function run(argv, {home = os.homedir(), output = value => console.
     let connected = false; try {await connect(settings); connected = true;} catch {}
     output({state: connected ? 'connected' : 'initialized', installRoot: settings.installRoot,
       agents: settings.agents, launcher, settingsFile: file, serviceConfigured: Boolean(settings.config),
-      next: connected ? null : settings.config ? 'serve' : 'configuration_required'});
+      defaultTeam: settings.config ? null : {provider: 'qwen', capability: 'generic-files', authentication: 'unchecked'},
+      next: connected ? null : settings.config || settings.agents.some(agent => agent.id === 'qwen') ? 'serve' : 'qwen_executable_required'});
     return;
   }
   try {await connect(settings); output({state: 'connected', settingsFile: file}); return;} catch {
     if (command === 'status') fail('connection_unavailable');
   }
-  if (!settings.config) fail('configuration_required');
+  if (!settings.config && !settings.agents) settings.agents = await discoverAgents({pathValue});
+  const selected = settings.config ? {config: settings.config} : defaultConfiguration(settings, dir);
   // Configuration remains trusted local deployment code; detection is not an adapter/permission policy.
-  const c = fs.lstatSync(settings.config);
+  const c = fs.lstatSync(selected.config);
   if (!c.isFile() || c.uid !== process.getuid() || (c.mode & 0o022)) fail('unsafe_settings');
   save(file, settings);
-  const child = spawn(process.execPath, [path.join(settings.installRoot, 'packages/task-service/main.mjs'), '--config', settings.config],
+  const child = spawn(process.execPath, [path.join(settings.installRoot, 'packages/task-service/main.mjs'), '--config', selected.config,
+    ...(selected.dataDir ? ['--data-dir', selected.dataDir] : [])],
     {stdio: ['ignore', 'pipe', 'pipe']});
   let pending = '', admitted = false, failed = false, stopping = false, killTimer, probing = false;
   let probe = Promise.resolve();
