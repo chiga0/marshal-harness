@@ -2,12 +2,12 @@
 # 固定 Node stable 安装器；不构建、不提权、不覆盖、不启动服务。
 set -euo pipefail
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  printf '%s\n' '用法：bash install-node.sh [--prefix /absolute/private-parent/install-dir]' '安装固定 v1.0.1。依赖：Node >=22、python3、curl、minisign；服务启动另检 SQLite 必需能力。' '默认：$HOME/.local/share/marshal-node/v1.0.1。仅安装，不配置 Agent 或启动 HTTP。' '自定义目标的父目录须已存在、当前用户所有、0700；目标必须不存在。'
+  printf '%s\n' '用法：bash install-node.sh [--prefix /absolute/private-parent/install-dir] [--base-url https://host/path/v1.0.1/ | --offline-dir /path/to/v1.0.1]' '安装固定 v1.0.1。依赖：Node >=22、python3、minisign；联网模式另需 curl；服务启动另检 SQLite 必需能力。' '默认：$HOME/.local/share/marshal-node/v1.0.1。仅安装，不配置 Agent 或启动 HTTP。' '自定义目标的父目录须已存在、当前用户所有、0700；目标必须不存在。' '镜像 URL 直接指向版本目录，仅接受 HTTPS，无凭据、查询或片段；失败不回退 GitHub。' '离线目录包含 SHA256SUMS、SHA256SUMS.minisig、固定 ZIP、manifest.json、distribution.mjs；仍完整验签和验摘要。'
   exit 0
 fi
 command -v python3 >/dev/null || { printf '%s\n' '缺少 python3，请先安装。' >&2; exit 1; }
 python3 -I -B - "$@" <<'PY'
-import hashlib, json, os, pathlib, re, shlex, shutil, stat, subprocess, sys, tempfile, zipfile
+import hashlib, json, os, pathlib, re, shlex, shutil, stat, subprocess, sys, tempfile, time, urllib.parse, zipfile
 
 VERSION = 'v1.0.1'
 SOURCE = 'b90d7e7247a690db2af740078c285331569aa496'
@@ -41,8 +41,31 @@ def digest(data):
 
 try:
     args = sys.argv[1:]
-    require(not args or (len(args) == 2 and args[0] == '--prefix'), '参数错误；使用 --help')
-    tools = {name: shutil.which(name) for name in ('node', 'curl', 'minisign')}
+    options = {}
+    require(len(args) % 2 == 0, '参数错误；使用 --help')
+    for key, value in zip(args[::2], args[1::2]):
+        require(key in ('--prefix', '--base-url', '--offline-dir') and key not in options and value and not value.startswith('--'), '参数错误；使用 --help')
+        options[key] = value
+    require(not ('--base-url' in options and '--offline-dir' in options), '--base-url 与 --offline-dir 互斥')
+    mirror = options.get('--base-url')
+    offline = options.get('--offline-dir')
+    if mirror is not None:
+        # 不回显用户 URL，包括解析异常；拒绝所有可携带凭据的 URL 形式。
+        try:
+            parsed = urllib.parse.urlsplit(mirror)
+            valid_url = (parsed.scheme == 'https' and parsed.hostname and parsed.port != 0
+                         and not parsed.username and not parsed.password and '@' not in parsed.netloc
+                         and '?' not in mirror and '#' not in mirror and '\\' not in mirror
+                         and not any(ord(c) <= 32 or ord(c) == 127 for c in mirror)
+                         and re.fullmatch(r'[A-Za-z0-9.\[\]:-]+', parsed.netloc) is not None)
+        except ValueError:
+            valid_url = False
+        require(valid_url, '镜像地址无效：须为无凭据、查询或片段的 HTTPS 目录 URL')
+        BASE = mirror.rstrip('/') + '/'
+    if offline is not None:
+        offline = pathlib.Path(offline)
+        require(offline.is_dir() and not offline.is_symlink(), '离线目录必须是非符号链接目录')
+    tools = {name: shutil.which(name) for name in (('node', 'minisign') if offline is not None else ('node', 'curl', 'minisign'))}
     for name, command in tools.items():
         require(command is not None, '缺少 ' + name + '；请先安装，安装器不会自动安装依赖')
     node_version = subprocess.check_output([tools['node'], '--version'], timeout=10).strip()
@@ -50,8 +73,8 @@ try:
     require(node_match is not None and int(node_match[1]) >= 22, '需要 Node >=22；无法识别或不支持当前 Node 版本')
     require((sys.platform, os.uname().machine) in [('darwin', 'arm64'), ('linux', 'x86_64')], '已验证平台为 darwin-arm64 / linux-x64')
     os.umask(0o077)
-    if args:
-        target = pathlib.Path(args[1])
+    if '--prefix' in options:
+        target = pathlib.Path(options['--prefix'])
         canonical(target)
         private(target.parent)
     else:
@@ -72,10 +95,41 @@ try:
 
     def download(url, name, limit):
         dest = stage / name
-        subprocess.run([tools['curl'], '-q', '--fail', '--silent', '--show-error', '--location',
-                        '--proto', '=https', '--proto-redir', '=https', '--connect-timeout', '20',
-                        '--max-time', '180', '--retry', '2', '--max-filesize', str(limit),
-                        '--output', str(dest), url], check=True, timeout=570)
+        if offline is not None:
+            # O_NOFOLLOW 防止检查后替换为链接；O_NONBLOCK 避免 FIFO 阻塞。
+            # 对打开的 fd 验类型/大小，有限读取后只复制到私有 stage 再执行原核验。
+            try:
+                directory_fd = os.open(offline, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+                finally:
+                    os.close(directory_fd)
+                with os.fdopen(fd, 'rb') as stream:
+                    info = os.fstat(stream.fileno())
+                    require(stat.S_ISREG(info.st_mode) and info.st_size <= limit, '离线文件类型或大小无效：' + name)
+                    data = stream.read(limit + 1)
+                require(len(data) <= limit, '离线文件超过大小上限：' + name)
+                with dest.open('xb') as stream:
+                    stream.write(data)
+            except OSError:
+                raise ValueError('离线文件读取失败：' + name) from None
+            return dest
+        # 单次传输有超时；最多三次，只重试临时网络错误（含 curl 56）。
+        # 不输出 curl stderr，重定向/服务端错误可能包含 URL 凭据。
+        for attempt in range(3):
+            print('下载 ' + name + '（' + str(attempt + 1) + '/3）', flush=True)
+            try:
+                subprocess.run([tools['curl'], '-q', '--fail', '--silent', '--location',
+                            '--proto', '=https', '--proto-redir', '=https', '--connect-timeout', '20',
+                            '--max-time', '180', '--max-filesize', str(limit),
+                            '--output', str(dest), url], check=True, timeout=190,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                break
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                code = error.returncode if isinstance(error, subprocess.CalledProcessError) else 28
+                if code not in (5, 6, 7, 18, 28, 52, 55, 56) or attempt == 2:
+                    raise ValueError('下载失败：' + name + '（curl ' + str(code) + '）') from None
+                time.sleep(attempt + 1)
         require(dest.stat().st_size <= limit, '下载文件超过大小上限')
         return dest
 
@@ -96,7 +150,7 @@ try:
     manifest = download(BASE + 'manifest.json', 'manifest.json', 65536)
     require(digest(manifest.read_bytes()) == MANIFEST_SHA, 'manifest 摘要错误')
     # 验证器不是发行包中的运行时文件；取固定 source 文件并在执行前校验内置摘要。
-    helper = download('https://raw.githubusercontent.com/chiga0/marshal-harness/' + SOURCE + '/packages/task-distribution/index.mjs', 'distribution.mjs', 65536)
+    helper = download(BASE + 'distribution.mjs' if mirror is not None else 'https://raw.githubusercontent.com/chiga0/marshal-harness/' + SOURCE + '/packages/task-distribution/index.mjs', 'distribution.mjs', 65536)
     require(digest(helper.read_bytes()) == HELPER_SHA, '固定恢复器摘要错误')
     metadata = json.loads(manifest.read_bytes())
     require(metadata['sourceHead'] == SOURCE, 'sourceHead 错误')
