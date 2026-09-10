@@ -19,6 +19,7 @@ export const sampleTaskList: TaskCursorTask[] = [
     elapsedMs: 120000,
     usage: null,
     failureCode: null,
+    revision: 3,
     updatedAt: '2026-09-10T01:02:00.000Z',
   },
   {
@@ -36,6 +37,7 @@ export const sampleTaskList: TaskCursorTask[] = [
     elapsedMs: 240000,
     usage: null,
     failureCode: null,
+    revision: 1,
     updatedAt: '2026-09-10T00:34:00.000Z',
   },
 ];
@@ -85,7 +87,7 @@ export const sampleWorkers: WorkerRecord[] = [
 ];
 
 export const samplePlan: PlanRecord = {
-  revision: '3',
+  revision: 3,
   taskId: sampleTaskList[0]!.id,
   nodes: [
     {nodeId: 'east', role: 'author', description: '报告东侧已付款流水'},

@@ -3,7 +3,7 @@
 import {ApiError} from './types';
 import type {
   Transport, TasksResponse, TaskDetail, WorkerRecord, PlanRecord, Revision, Sha256,
-  LeaderRecord, PublicationRecord, WorkerId, TaskId,
+  LeaderRecord, PublicationRecord, WorkerId, TaskId, Events, QuestionsResponse,
 } from './types';
 
 export interface TransportConfig {
@@ -78,6 +78,11 @@ async function requestJson<T>(config: Required<TransportConfig>, path: string, i
   return (await response.json()) as T;
 }
 
+function withKey<Body extends {idempotencyKey: string}>(body: Body): {init: JsonOptions<unknown>} {
+  const {idempotencyKey, ...rest} = body;
+  return {init: {method: 'POST', idempotencyKey, body: rest}};
+}
+
 export function createTransport(config: TransportConfig): Transport {
   const cfg: Required<TransportConfig> = {
     token: config.token,
@@ -95,16 +100,27 @@ export function createTransport(config: TransportConfig): Transport {
     getTask: taskId => json<TaskDetail>(`/v1/tasks/${encodeURIComponent(taskId)}`),
     getWorkers: taskId => json<{workers: WorkerRecord[]}>(`/v1/tasks/${encodeURIComponent(taskId)}/workers`),
     getPlan: taskId => json<PlanRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/plan`),
-    freezePlan: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/plan:freeze`, {method: 'POST', body}),
-    approveTask: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}:approve`, {method: 'POST', body}),
-    answerTask: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}:answer`, {method: 'POST', body}),
-    cancelTask: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}:cancel`, {method: 'POST', body}),
-    pauseTask: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}:pause`, {method: 'POST', body}),
-    resumeTask: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}:resume`, {method: 'POST', body}),
-    cancelWorker: (taskId, workerId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/workers/${encodeURIComponent(workerId)}:cancel`, {method: 'POST', body}),
+    approvePlan: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/plan/approve`, withKey(body).init),
+    answerTask: (taskId, questionId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/questions/${encodeURIComponent(questionId)}/answers`, withKey(body).init),
+    cancelTask: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, withKey(body).init),
+    pauseTask: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/pause`, withKey(body).init),
+    resumeTask: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/resume`, withKey(body).init),
+    cancelWorker: (workerId, body) => json(`/v1/workers/${encodeURIComponent(workerId)}/cancel`, withKey(body).init),
     getLeader: taskId => json<LeaderRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/leader`),
-    leaderReply: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/leader:reply`, {method: 'POST', body}),
-    getPublications: taskId => json<{publications: PublicationRecord[]}>(`/v1/tasks/${encodeURIComponent(taskId)}/publications`),
+    leaderReply: (taskId, requestId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/leader/requests/${encodeURIComponent(requestId)}/reply`, withKey(body).init),
+    getEvents: (taskId, options = {}) => {
+      const params = new URLSearchParams();
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      if (options.cursor) params.set('cursor', options.cursor);
+      return json<Events>(`/v1/tasks/${encodeURIComponent(taskId)}/events${params.size ? '?' + params.toString() : ''}`);
+    },
+    getQuestions: (taskId, options = {}) => {
+      const params = new URLSearchParams();
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      if (options.cursor) params.set('cursor', options.cursor);
+      return json<QuestionsResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/questions${params.size ? '?' + params.toString() : ''}`);
+    },
+    repair: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/repair`, withKey(body).init),
     getArtifactBearer: async ref => {
       const token = currentToken;
       if (!token) throw new ApiError(401, 'token_missing', '未连接服务', null);
