@@ -38,9 +38,10 @@ test('the actual Task input declares the complete enforced proposal and rule, wi
   assert.ok(body.context.text.includes(encode(declared).toString()));
   assert.equal(body.limits.maxAttempts, 6); assert.equal(body.limits.maxWorkers, 2);
   assert.equal(Object.hasOwn(body, 'feedback'), false);
-  assert.equal(body.context.text.includes('1175'), false); assert.equal(body.context.text.includes('675'), false);
-  assert.equal(data.rows.length, 12);
-  assert.deepEqual(expectedReports(), [{region: 'east', count: 3, netCents: 1175}, {region: 'west', count: 4, netCents: 675}]);
+  assert.equal(body.context.text.includes('3515'), false); assert.equal(body.context.text.includes('-1237'), false);
+  assert.equal(body.context.text.includes(':71'), false); assert.equal(body.context.text.includes(':46'), false);
+  assert.equal(data.rows.length, 168);
+  assert.deepEqual(expectedReports(), [{region: 'east', count: 71, netCents: 3515}, {region: 'west', count: 46, netCents: -1237}]);
   const changed = proposal(); changed.nodes[0].goal = '近似但没有相同规则';
   assert.throws(() => bindPlan({inputArtifacts: [{id: 'input-original'}], proposal: changed}));
 });

@@ -1,12 +1,17 @@
 // Public synthetic business. No expected error, hidden requirement, answer or
 // precomputed report is sent to an author. A correct first attempt is valid.
+// 2026-09-10: 28 consecutive honest real-model rounds showed zero natural
+// single-branch defects, leaving the repair exit without a live object. The
+// dataset grows to ordinary business volume with a deterministic spread; the
+// rules stay byte-identical and nothing is planted — full correctness remains
+// the expected outcome, while ordinary arithmetic drift becomes observable.
 import {encode, digest} from '../task-store/store.mjs';
 import {parseJson} from '../task-api/http-boundary.mjs';
 import {createRepairPort} from '../task-application/application.mjs';
 
 export const equal = (a, b) => {try {return encode(a).equals(encode(b));} catch {return false;}};
 export const regions = Object.freeze(['east', 'west']);
-export const data = Object.freeze({rows: [
+const baseRows = [
   {orderId: 'e1', revision: 1, region: 'east', status: 'paid', cents: 1250},
   {orderId: 'w1', revision: 1, region: 'west', status: 'paid', cents: 600},
   {orderId: 'e2', revision: 1, region: 'east', status: 'paid', cents: -75},
@@ -18,8 +23,19 @@ export const data = Object.freeze({rows: [
   {orderId: 'w3', revision: 1, region: 'west', status: 'paid', cents: -50},
   {orderId: 'w4', revision: 1, region: 'west', status: 'paid', cents: 0},
   {orderId: 'w5', revision: 1, region: 'west', status: 'cancelled', cents: 100},
-  {orderId: 'w5', revision: 2, region: 'west', status: 'paid', cents: 100},
-]});
+  {orderId: 'w5', revision: 2, region: 'west', status: 'paid', cents: 100}];
+const spreadRows = [];
+// index starts at 10 on purpose: base rows occupy e1..e4/w1..w5, and a smaller
+// start would silently collide with their orderIds and break the declared
+// "no same orderId same revision" input fact.
+for (const [prefix, region, count, cadence] of [['e', 'east', 92, 7], ['w', 'west', 61, 5]])
+  for (let index = 10; index < count; index++) {
+    spreadRows.push({orderId: prefix + index, revision: 1, region,
+      status: index % 9 === 0 ? 'cancelled' : 'paid', cents: ((index * 7919) % 1997) - 998});
+    if (index % cadence === 0) spreadRows.push({orderId: prefix + index, revision: 2, region,
+      status: index % (cadence * 2) === 0 ? 'paid' : 'cancelled', cents: ((index * 104729) % 2143) - 1071});
+  }
+export const data = Object.freeze({rows: [...baseRows, ...spreadRows]});
 export const rules = '先按 orderId 取 revision 最大的唯一记录，再筛选本地区 status=paid；不是先筛选 paid。' +
   '同 orderId 的 region 不变，输入不存在同 revision 冲突。count 计算去重后 paid 订单数，包括零额和负数；' +
   'netCents 对 cents 整数求和，保留负退款，不转浮点金额。输出恰有 region、count、netCents 三字段的 JSON。';
