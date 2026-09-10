@@ -5,10 +5,11 @@ import {pathToFileURL, fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {discoverAgents} from './discovery.mjs';
+import {installCommand} from './install-command.mjs';
 
 const fail = code => { throw new Error(code); };
 const codes = new Set(['invalid_arguments', 'unsafe_settings', 'installation_missing_or_ambiguous',
-  'configuration_required', 'connection_unavailable', 'service_start_failed', 'settings_missing']);
+  'configuration_required', 'connection_unavailable', 'service_start_failed', 'settings_missing', 'command_install_conflict']);
 function absolute(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value) || /[\x00-\x1f\x7f]/.test(value)) fail('invalid_arguments');
   return path.resolve(value);
@@ -83,9 +84,12 @@ export async function run(argv, {home = os.homedir(), output = value => console.
   if (command === 'init') {
     settings.agents = await discoverAgents();
     save(file, settings);
+    let launcher;
+    try {launcher = {...installCommand({installRoot: settings.installRoot, home: fs.realpathSync(home)}), state: 'installed'};}
+    catch {launcher = {state: 'conflict', code: 'command_install_conflict'};}
     let connected = false; try {await connect(settings); connected = true;} catch {}
     output({state: connected ? 'connected' : 'initialized', installRoot: settings.installRoot,
-      agents: settings.agents, settingsFile: file, serviceConfigured: Boolean(settings.config),
+      agents: settings.agents, launcher, settingsFile: file, serviceConfigured: Boolean(settings.config),
       next: connected ? null : settings.config ? 'serve' : 'configuration_required'});
     return;
   }

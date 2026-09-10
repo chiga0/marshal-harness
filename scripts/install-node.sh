@@ -39,6 +39,27 @@ def private(p):
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
+def initialize_local(target, metadata, node):
+    # Only invoke an entry listed in the already verified release manifest.
+    # v1.0.1 has no local command; never download an unsigned substitute.
+    entry = 'packages/task-local/main.mjs'
+    if not any(item.get('path') == entry for item in metadata.get('files', [])):
+        return False
+    try:
+        result = subprocess.run([node, str(target / entry), 'init', '--install-root', str(target)],
+                                check=True, timeout=30, capture_output=True, text=True)
+        report = json.loads(result.stdout)
+        if report.get('state') not in ('initialized', 'connected'):
+            raise ValueError('init failed')
+        if report.get('launcher', {}).get('state') == 'installed':
+            print('本地初始化完成；marshal 命令位于 ~/.local/bin（未修改 shell 配置）。')
+        else:
+            print('本地配置已记录；marshal 命令路径冲突，原命令未覆盖。请用安装根中的 Node 入口。')
+        print('未启动服务或 Agent；使用 marshal serve 复用已记录的服务配置。')
+    except (ValueError, OSError, subprocess.SubprocessError):
+        print('发行安装成功；本地初始化未完成。安装资产已保留，可重新运行安装根中的 init 命令。', file=sys.stderr)
+    return True
+
 try:
     args = sys.argv[1:]
     options = {}
@@ -183,7 +204,8 @@ try:
     runner = "import {pathToFileURL} from 'node:url'; const [helper,carrier,target,manifestDigest,sourceHead]=process.argv.slice(1); const {restoreCarrier}=await import(pathToFileURL(helper)); console.log(JSON.stringify(restoreCarrier({carrier,target,manifestDigest,sourceHead})));"
     subprocess.run([tools['node'], '--input-type=module', '-e', runner, str(helper), str(carrier), str(target), 'sha256:' + MANIFEST_SHA, SOURCE], check=True, timeout=30)
     print('安装完成（未启动，未配置 Provider）：' + str(target))
-    print('配置准备好后启动：\n' + ' '.join(shlex.quote(arg) for arg in [tools['node'], str(target / metadata['entrypoint']), '--config', '/absolute/trusted/config.mjs']))
+    if not initialize_local(target, metadata, tools['node']):
+        print('配置准备好后启动：\n' + ' '.join(shlex.quote(arg) for arg in [tools['node'], str(target / metadata['entrypoint']), '--config', '/absolute/trusted/config.mjs']))
     print('下载、签名及恢复证据保留于：' + str(stage))
 except (ValueError, OSError, KeyError, TypeError, zipfile.BadZipFile, subprocess.SubprocessError):
     print('安装失败；未覆盖旧安装、未启动服务。请检查依赖、路径、网络及验签输出。', file=sys.stderr)

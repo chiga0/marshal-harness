@@ -8,6 +8,7 @@ on:
       - 'packages/task-client/**'
       - 'packages/task-local/**'
       - 'scripts/marshal-client-*.test.mjs'
+      - 'scripts/marshal-command-install.test.mjs'
       - 'packages/task-api/**'
       - '.github/workflows/marshal-client-skill.yml'
   pull_request:
@@ -17,6 +18,7 @@ on:
       - 'packages/task-client/**'
       - 'packages/task-local/**'
       - 'scripts/marshal-client-*.test.mjs'
+      - 'scripts/marshal-command-install.test.mjs'
       - 'packages/task-api/**'
       - '.github/workflows/marshal-client-skill.yml'
 permissions:
@@ -36,4 +38,4 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           package-manager-cache: false
-      - run: node --test scripts/marshal-client-skill.test.mjs scripts/marshal-client-local.test.mjs scripts/marshal-client-discovery.test.mjs
+      - run: node --test scripts/marshal-client-skill.test.mjs scripts/marshal-client-local.test.mjs scripts/marshal-client-discovery.test.mjs scripts/marshal-command-install.test.mjs
