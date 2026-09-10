@@ -78,12 +78,12 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
     {cwd: f.root, env: {}, input: '{}\n', timeout: 10000, encoding: 'utf8'});
   assert.equal(checker.status, 1);
   assert.equal(checker.stdout, ''); // Invalid input cannot create a successful verification frame.
-  assert.equal(checker.stderr, '');
+  assert.equal(withoutSQLiteImportWarning(checker.stderr), '');
   const publisher = spawnSync(process.execPath, [path.join(f.target, 'packages/task-publication-report/runner.mjs')],
     {cwd: f.root, env: {}, input: '{}\n', timeout: 10000, encoding: 'utf8'});
   assert.equal(publisher.status, 1);
   assert.equal(publisher.stdout, ''); // Packaged child rejects missing authority; no side effect or secret output.
-  assert.equal(publisher.stderr, '');
+  assert.equal(withoutSQLiteImportWarning(publisher.stderr), '');
 });
 test('never overwrite an existing destination and reject source-relative targets', t => {
   const f = fixture(t); f.create();
