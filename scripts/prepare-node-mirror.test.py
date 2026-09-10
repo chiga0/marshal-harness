@@ -20,18 +20,18 @@ class PreparationTests(unittest.TestCase):
             call.assert_not_called()
 
     def test_draft_or_prerelease_no_download(self):
-        for metadata in (b'{"tagName":"v1.0.1","isDraft":true,"isPrerelease":false}',
-                         b'{"tagName":"v1.0.1","isDraft":false,"isPrerelease":true}'):
+        for metadata in (b'{"tagName":"v1.0.2","isDraft":true,"isPrerelease":false}',
+                         b'{"tagName":"v1.0.2","isDraft":false,"isPrerelease":true}'):
             with patch('subprocess.check_output', return_value=metadata), patch('subprocess.run') as call:
                 with self.assertRaises(ValueError):
-                    module.prepare('v1.0.1', '/unused')
+                    module.prepare('v1.0.2', '/unused')
                 call.assert_not_called()
 
     def test_fixed_sources_and_installer_copy(self):
         with tempfile.TemporaryDirectory() as parent, \
-             patch('subprocess.check_output', return_value=b'{"tagName":"v1.0.1","isDraft":false,"isPrerelease":false}'), \
+             patch('subprocess.check_output', return_value=b'{"tagName":"v1.0.2","isDraft":false,"isPrerelease":false}'), \
              patch('subprocess.run') as call:
-            stage = module.prepare('v1.0.1', parent)
+            stage = module.prepare('v1.0.2', parent)
             self.assertEqual(call.call_count, 5)
             for args in call.call_args_list:
                 command = args.args[0]

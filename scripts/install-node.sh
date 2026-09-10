@@ -2,19 +2,19 @@
 # 固定 Node stable 安装器；不构建、不提权、不覆盖、不启动服务。
 set -euo pipefail
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  printf '%s\n' '用法：bash install-node.sh [--prefix /absolute/private-parent/install-dir] [--base-url https://host/path/v1.0.1/ | --offline-dir /path/to/v1.0.1]' '安装固定 v1.0.1。依赖：Node >=22、python3、minisign；联网模式另需 curl；服务启动另检 SQLite 必需能力。' '默认：$HOME/.local/share/marshal-node/v1.0.1。仅安装，不配置 Agent 或启动 HTTP。' '默认下载目录：https://github-releases.oss-cn-hangzhou.aliyuncs.com/marshal-harness/v1.0.1/' '自定义目标的父目录须已存在、当前用户所有、0700；目标必须不存在。' '镜像 URL 直接指向版本目录，仅接受 HTTPS，无凭据、查询或片段；失败不回退 GitHub。' '离线目录包含 SHA256SUMS、SHA256SUMS.minisig、固定 ZIP、manifest.json、distribution.mjs；仍完整验签和验摘要。'
+  printf '%s\n' '用法：bash install-node.sh [--prefix /absolute/private-parent/install-dir] [--base-url https://host/path/v1.0.2/ | --offline-dir /path/to/v1.0.2]' '安装固定 v1.0.2。依赖：Node >=22、python3、minisign；联网模式另需 curl；服务启动另检 SQLite 必需能力。' '默认：$HOME/.local/share/marshal-node/v1.0.2。仅安装，不配置 Agent 或启动 HTTP。' '默认下载目录：https://github-releases.oss-cn-hangzhou.aliyuncs.com/marshal-harness/v1.0.2/' '自定义目标的父目录须已存在、当前用户所有、0700；目标必须不存在。' '镜像 URL 直接指向版本目录，仅接受 HTTPS，无凭据、查询或片段；失败不回退 GitHub。' '离线目录包含 SHA256SUMS、SHA256SUMS.minisig、固定 ZIP、manifest.json、distribution.mjs；仍完整验签和验摘要。'
   exit 0
 fi
 command -v python3 >/dev/null || { printf '%s\n' '缺少 python3，请先安装。' >&2; exit 1; }
 python3 -I -B - "$@" <<'PY'
 import hashlib, json, os, pathlib, re, shlex, shutil, stat, subprocess, sys, tempfile, time, urllib.parse, zipfile
 
-VERSION = 'v1.0.1'
-SOURCE = 'b90d7e7247a690db2af740078c285331569aa496'
-ZIP = 'marshal-node-candidate-b90d7e72.zip'
-ZIP_SHA = 'a94f53073c96f813a7fbd24edc15a77c32130329a3fbef877d8371e9ec17a2a1'
-MANIFEST_SHA = '10c747d2f25dce6c085a736c2ed3e55f19ed9f0517e25a3b8e8561f08f9240f7'
-HELPER_SHA = '61446c045da5af78434967ae851781a9581b3de4cd820e30b2173256d593bd80'
+VERSION = 'v1.0.2'
+SOURCE = 'f9a93cd678cac40bcd04ff9d0c1672612f184701'
+ZIP = 'marshal-node-candidate-f9a93cd6.zip'
+ZIP_SHA = 'be4a8b6198769f1199b09d69faed91301ca99bc1632e2742fb174f764dc43e12'
+MANIFEST_SHA = '94b2a036ea4b61e869ee0fd02e9b5a257db88b820c8677f5f09573c7320ee8d3'
+HELPER_SHA = '60ed1edfb01bd4dee8bc3304e142dc6080c88611362599c260065a51e97d534d'
 PUBLIC_KEY = 'RWQAYJ7SGGbem0iFIm1Hjh8837yNiXVQajajH8efRf3E2ziZi7itc1Nq'
 BASE = 'https://github-releases.oss-cn-hangzhou.aliyuncs.com/marshal-harness/' + VERSION + '/'
 MAX = 16 * 1024 * 1024
