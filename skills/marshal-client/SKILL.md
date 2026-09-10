@@ -11,6 +11,8 @@ description: 通过已有 Marshal Node HTTP 服务提交和跟踪团队任务、
 
 ## 连接与实际能力
 
+新版发行若包含 `packages/task-local/main.mjs`，优先调用产品的 `init`、`serve`、`status`，不在 Skill 中实现探测或进程管理。`init` 自动识别自身安装根和本机 Agent 路径；`serve` 保存本次启动连接，后续通过产品导出的 `connectLocal()` 获取 TaskClient。服务配置首次提供后复用。这些命令属于后继源码，v1.0.1 不包含它们；旧发行使用下述兼容方式，不伪造新命令可用。没有受信业务配置时，不把检测到的 Agent 当成已启用的通用执行服务。
+
 需要已安装的 Marshal Node（建议 v1.0.1+）、Node22+、已配置并运行的服务。连接初始化只做一次，复用以下两项：
 
 - `MARSHAL_INSTALL_ROOT`：可信发行安装根，含 `packages/task-client/index.mjs`。

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, chmod, symlink, rm, access, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { discoverAgents } from '../skills/marshal-client/scripts/discovery.mjs';
+import { discoverAgents } from '../packages/task-local/discovery.mjs';
 
 async function fixture(t) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'marshal-discovery-')));

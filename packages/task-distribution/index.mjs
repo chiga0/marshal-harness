@@ -49,6 +49,8 @@ export const SOURCE_FILES = Object.freeze([
   'packages/task-leader-report/policy.mjs',
   'packages/task-leader-report/report-server.mjs',
   'packages/task-leader-report/service-config.mjs',
+  'packages/task-local/discovery.mjs',
+  'packages/task-local/main.mjs',
   'packages/task-publication-report/command.mjs',
   'packages/task-publication-report/index.mjs',
   'packages/task-publication-report/io.mjs',
