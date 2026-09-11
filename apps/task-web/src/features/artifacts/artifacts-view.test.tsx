@@ -1,11 +1,11 @@
 import {afterEach, beforeAll, describe, expect, it, vi} from 'vitest';
 import {render, screen, within} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import {ApiError, type LeaderRecord, type TaskRecord} from '@/lib/transport/types';
+import {ApiError, type LeaderRecord, type TaskAuditRecord, type TaskRecord} from '@/lib/transport/types';
 import {ArtifactsView} from './artifacts-view';
 import {sha256Hex} from './downloader';
 import type {ArtifactEntry} from './use-task-artifacts';
-import {ARTIFACT_ID, makeArtifact, makeFakeTransport, makeLeader, makeTask, TASK_ID} from '../tasks/detail/testing/fixtures';
+import {ARTIFACT_ID, makeArtifact, makeAudit, makeFakeTransport, makeLeader, makeTask, TASK_ID} from '../tasks/detail/testing/fixtures';
 
 const CONTENT = 'report-body';
 let DIGEST: string;
@@ -37,6 +37,7 @@ function ok(artifact = makeArtifact()): ArtifactEntry {
 function renderView(options: {
   task?: TaskRecord;
   leader?: LeaderRecord | null;
+  audit?: TaskAuditRecord | null;
   artifacts?: ArtifactEntry[] | null;
   transportOverrides?: Parameters<typeof makeFakeTransport>[0];
 }) {
@@ -45,6 +46,7 @@ function renderView(options: {
     <ArtifactsView
       task={options.task ?? makeTask()}
       leader={options.leader === undefined ? makeLeader() : options.leader}
+      audit={options.audit === undefined ? makeAudit() : options.audit}
       artifacts={options.artifacts === undefined ? [] : options.artifacts}
       transport={transport}
     />,
@@ -164,11 +166,40 @@ describe('成果页（P09 / E15–E19）', () => {
     expect(note).toHaveTextContent('不重复发布、不标整体成功');
   });
 
-  it('leader 不可用：发布/后验与验收读数如实不可用，无发布记录不误报成功', () => {
+  it('leader 不可用：发布/后验与评审读数如实不可用，无发布记录不误报成功', () => {
     renderView({leader: null});
     expect(screen.getByTestId('publication-unavailable')).toHaveTextContent('Leader 投影不可用');
     expect(screen.getByTestId('verification-unavailable')).toHaveTextContent('Leader 投影不可用');
     expect(screen.queryByTestId('publication-line')).toBeNull();
+  });
+
+  it.each(['pending', 'failed', 'passed', 'unknown'] as const)('Leader 不可用仍显示独立验收 %s 的真实摘要与证据', status => {
+    renderView({leader: null, audit: makeAudit({acceptance: {status, digest: 'sha256:acceptance-only', evidenceIds: ['acceptance-evidence']}})});
+    const acceptance = screen.getByTestId('acceptance-readout');
+    expect(within(acceptance).getByTestId('machine-state')).toHaveTextContent(status);
+    expect(acceptance).toHaveTextContent('sha256:acceptance-only');
+    expect(acceptance).toHaveTextContent('acceptance-evidence');
+    expect(screen.getByTestId('verification-unavailable')).toBeInTheDocument();
+  });
+
+  it.each(['pending', 'failed', 'unknown', null] as const)('评审 accept 不会覆盖独立验收 %s', status => {
+    const leader = makeLeader();
+    renderView({
+      leader: {...leader, review: {digest: 'sha256:review-only', verdict: 'accept', selectionDigest: 'sha256:selection', policyDigest: 'sha256:policy', workerId: 'reviewer', evidenceIds: ['review-evidence']}},
+      audit: status === null ? null : makeAudit({acceptance: {status, digest: null, evidenceIds: []}}),
+    });
+    expect(screen.getByTestId('review-verdict')).toHaveTextContent('评审通过');
+    const acceptance = screen.getByTestId('acceptance-readout');
+    expect(acceptance).not.toHaveTextContent('review-evidence');
+    expect(acceptance).not.toHaveTextContent('sha256:review-only');
+    if (status === null) {
+      expect(within(acceptance).getByTestId('acceptance-unloaded')).toHaveTextContent('audit 投影不可用');
+      expect(within(acceptance).queryByTestId('machine-state')).toBeNull();
+    } else {
+      expect(within(acceptance).getByTestId('machine-state')).toHaveTextContent(status);
+      expect(acceptance).toHaveTextContent('暂无摘要');
+      expect(acceptance).toHaveTextContent('暂无数据');
+    }
   });
 
   it('集中评审 verdict 如实展示；清单整体失败显示占位而非旁造清单', () => {

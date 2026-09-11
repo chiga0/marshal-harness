@@ -187,7 +187,7 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
           <Routes>
             <Route index element={<OverviewView task={task} plan={plan} questions={questions} workers={workers} leader={leader} audit={audit} transport={transport} onChanged={onChanged} />} />
             <Route path="team/*" element={<WorkersView task={task} workers={workers} pagination={workersPagination} transport={transport} onChanged={onChanged} />} />
-            <Route path="artifacts" element={<ArtifactsView task={task} leader={leader} artifacts={artifacts} transport={transport} />} />
+            <Route path="artifacts" element={<ArtifactsView task={task} leader={leader} audit={audit} artifacts={artifacts} transport={transport} />} />
             <Route path="activity" element={<ActivityView taskId={taskId} transport={transport} />} />
             <Route path="*" element={<OverviewView task={task} plan={plan} questions={questions} workers={workers} leader={leader} audit={audit} transport={transport} onChanged={onChanged} />} />
           </Routes>
