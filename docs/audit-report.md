@@ -6,6 +6,8 @@
 
 初步调用链显示 composition 的失败路径关闭内部服务，而 CLI 的 `service_*` 诊断只设置 `process.exitCode`，尚须核验外层监听的故障联动及根因诊断保留。当前只证明内部失败和外层滞留，不知道此次 Supervisor 最初失败的原因，不将其臆定为休眠、租约或数据损坏。下一步是独立根因检查、确定性复现，再决定最小修复及适用 ADR；关闭前不得声称此候选的长期 UI 服务验收通过。现场为 `/private/tmp/marshal-ui-final.MUfhL2/`，截图 `view-toggle-unavailable.png`，原数据与已完成交付证据保留。
 
+已按既有 ADR0088/0098 单服务关闭语义修复为 `db8aa08c`（源 `9e09b537`）：signal/fatal 共用幂等关闭，启动资源交接完成后再收尾，edge.close 失败仍执行 service.shutdown，失败不得改写为成功；诊断仅保留闭集 code/stage/port。先以隔离 root 身份漂移复现旧 CLI 不退出，修后相关 65 项测试通过，独立 reviewer 18 项 CLI/关闭及 1 项 Supervisor 测试通过；主侧整合后再执行 18 项通过。未改 Task、owner、lease、持久化或自动恢复策略，无新 ADR。该修复关闭已确认的外层滞留代码缺口，不证明原事故由身份漂移触发。原根只读 integrity_check=ok、Task 仍 completed；内部最初触发原因无法从已有诊断恢复，仍 OPEN，后续用新增安全诊断补长期运行证据。详见 [故障回归记录](../apps/task-web/e2e/service-failure-report.md)。
+
 ## 2026-09-11：报告配置升级兼容性缺口（OPEN）
 
 UI 发行候选验收发现：`packages/task-leader-report/index.mjs` 将整个 `policy.mjs` 源码摘要纳入 review 与 Leader 持久配置身份。仅增加 GUIDANCE 提示也改变该身份，候选 `8ff4c386` 无法 `open` 原真实测试数据根，原根与失败证据保持不变。独立只读比较确认 profile 字节不同；门禁拒绝是预期安全行为，但尚无对应升级操作路径。
