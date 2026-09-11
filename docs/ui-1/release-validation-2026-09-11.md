@@ -179,6 +179,10 @@ E18 历史拒绝已证明安全事实，不把它重新列为完全未测。后�
 
 ### 可复用浏览器异常交互
 
+main `9852e4da` 的原 Node team run `34598484218`、attempt1、push 事件已13项全部通过。原 artifact=`10262833820`，ZIP大小1515081字节、SHA-256=`a7e76d1a6bfa49c14c74a473f914d6f7ffc7be2600d4e16fcf7efaaf30ed4cc6`，下载后实际匹配GitHub API摘要；原producer日志给定 manifest=`sha256:025c4ea96b076ded7154d59792f455ba85791530e65abe806e3cd20fcf8344a2`，本地原manifest字节摘要一致（70文件/1490309字节）。原包保留 `/private/tmp/marshal-main-9852.RiUeEa/candidate.zip`，独立准入/安装消费另记结果；未签名、未发布，不包含后继暂停恢复修复。
+
+500事件限定性能补验 `/private/tmp/ui-events-perf.QX14y6/report.md`：独立受控ACP driver按原协议产生合法工具通知，经原Execution/SQLite持久553条事件（530条progress），冷开只读浏览器实际保留500条。Darwin25.6/Node24.15/Chrome152、M5 Pro、1440×1000浅色，原 `CZg1Rmd8` 资产；实际section滚动先验证位移，再采样16次滚轮，长任务0、最大帧间隔16.8ms；活动路由可见92.4ms不是冷TTI，点击至第二帧31.4ms仅响应代理。历史尾页7.6ms缺“目标行原先不存在”的单独落证，不关闭新生成事件显示延迟；不代替持续负载、100Task＋500事件组合或最终包。Task/Workers/553事件前后不变、POST0、自有服务退出0。三次测试脚本前提错误（批准路径、分页参数、滚动容器）均保留FAIL；最终复用原数据根，不再次生成负载，不把测试错误归为产品缺陷。
+
 浏览器安全限定补验 `/private/tmp/ui-security.MAIG8n/report.md`：原真实 HTTP/SQLite fixture 上传 HTML115B、SVG122B、Markdown130B，含脚本/事件处理器/远程图/危险链接测试字符串；列表/详情按文本呈现，危险类型只显式下载，摘要匹配，未打开文件。观测无脚本执行标记、弹窗、远程节点或外部请求尝试；网络护栏阻止任何实际外传。断开后旧内容消失、请求停止，URL/localStorage/sessionStorage/cookie 未见 token；同 origin 重连等待600ms不闪旧内容，第二空服务无原 Task。原脚本误等“返回列表”而实际回原详情，FAIL 保留；正常冷开两个原根补测通过，无新任务/模型，服务均退出0。不证明同 origin 后端替换、IndexedDB、堆内存擦除或全面渗透测试。
 
 创建/认证限定补验 `/private/tmp/ui-create401.vmbfxe/report.md`：创建真实201被服务受理后丢弃浏览器响应，UI明确未知、不自动重发；显式原请求重放仍201、同key/body/Task ID，仅1 Task。原脚本误比较原始JSON属性顺序导致raw摘要不同，FAIL保留；结构字段严格相等，原根冷开核对仍1 Task，不声称raw字节相同。精确详情GET注入一次合法401后退回连接页、旧内容消失；排空300ms后6秒请求计数23→23，无轮询风暴。属于受控401，不冒充自然鉴权失效，服务均退出0。两组实际资产均 `CZg1Rmd8`／`--K1WoSHw`，不外推Safari、真人、全部竞态或附件上传恢复。
