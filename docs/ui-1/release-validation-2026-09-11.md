@@ -2,6 +2,10 @@
 
 ## 当前结论
 
+2026-09-11 20:21:16（Asia/Shanghai），PR #293 的精确 head `93ed5468` 经独立审查和 CI `34597445153` 全13项、准入 `34597445154` 双平台与 secret scan 通过后，实际合并为 main `9852e4da487c0c0f0a36c3ec99de62d5d71b55a9`；本地主分支已正常快进，用户未跟踪文件保留。main push `34598484218` 正在产生后继原始候选包，不复用 PR 包冒充该 main 包。本条仅为研发合并，不是 UI 完整验收或软件发行。
+
+后继运行控制补验确认 P2：暂停 Operation 已 succeeded，公开 Task paused 且允许 resume/cancel，但页面 `pendingAction` 仍锁住后续操作，必须先点含义不明确的“关闭”。这不是单纯脚本遗漏；存在可见绕行路径、未证数据/权限损害，但 E12 自然操作仍未通过，后继独立分支修复。unknown/submitting 的冻结锁必须保留，不按202自动解锁。原失败及聚合复验报告 `/private/tmp/ui-controls-fixed.diiOfo/report.md` 保留；E13单Worker取消后兄弟继续和E14真实运行取消的限定子场景已通过，不重复整批。
+
 **尚不可声明完整验收通过，尚未发布新版。** 本记录补充三条验收，不以组件测试替代实际交付、视觉操作或目标用户测试。
 
 | 验收线 | 当前状态 | 证据与缺口 |
@@ -174,6 +178,12 @@ E18 历史拒绝已证明安全事实，不把它重新列为完全未测。后�
 主侧在 `aa93f1be` 的 UI 默认测试通过：42 文件、464 项 Vitest 加 4 项浏览器测试护栏，退出 0。随后 CI `34596493181` 两平台发行准入失败：新增服务模块未同步进显式发行清单，严格库存检查返回 `source_inventory_changed`；独立机械对照确认只缺 `cli-shutdown.mjs`、`service-diagnostic.mjs`。修复只补入这两个运行依赖，保持拒绝额外/遗漏库存的规则；最终同包检查与持续观察另行记录，不用 UI 测试代替发行验证。学习：任何新增运行模块都必须在同次本地验证中覆盖真实仓库打包/安装消费，不能只测从清单构造的 fixture。
 
 ### 可复用浏览器异常交互
+
+浏览器安全限定补验 `/private/tmp/ui-security.MAIG8n/report.md`：原真实 HTTP/SQLite fixture 上传 HTML115B、SVG122B、Markdown130B，含脚本/事件处理器/远程图/危险链接测试字符串；列表/详情按文本呈现，危险类型只显式下载，摘要匹配，未打开文件。观测无脚本执行标记、弹窗、远程节点或外部请求尝试；网络护栏阻止任何实际外传。断开后旧内容消失、请求停止，URL/localStorage/sessionStorage/cookie 未见 token；同 origin 重连等待600ms不闪旧内容，第二空服务无原 Task。原脚本误等“返回列表”而实际回原详情，FAIL 保留；正常冷开两个原根补测通过，无新任务/模型，服务均退出0。不证明同 origin 后端替换、IndexedDB、堆内存擦除或全面渗透测试。
+
+创建/认证限定补验 `/private/tmp/ui-create401.vmbfxe/report.md`：创建真实201被服务受理后丢弃浏览器响应，UI明确未知、不自动重发；显式原请求重放仍201、同key/body/Task ID，仅1 Task。原脚本误比较原始JSON属性顺序导致raw摘要不同，FAIL保留；结构字段严格相等，原根冷开核对仍1 Task，不声称raw字节相同。精确详情GET注入一次合法401后退回连接页、旧内容消失；排空300ms后6秒请求计数23→23，无轮询风暴。属于受控401，不冒充自然鉴权失效，服务均退出0。两组实际资产均 `CZg1Rmd8`／`--K1WoSHw`，不外推Safari、真人、全部竞态或附件上传恢复。
+
+本批测试驱动复盘：手拼API路径/分页参数、凭印象等待状态/路由、比较语义回执的raw JSON顺序造成额外失败；并非都属产品rework。后继脚本改用既有TaskClient与OpenAPI，先校验请求序列和返回字段、以实际URL/revision及稳定渲染作定位；优先冷开原隔离根继续读验证，不重造任务或覆盖FAIL。运行控制中的已成功回执仍锁按钮另经查码确认为真实P2，不能以“脚本错误”一概抹去。
 
 本地测试安全摘要（来源为主侧工具执行记录，独立 reviewer 未重跑）：`node --test packages/task-distribution/index.test.mjs`，原 session56683，11/11、0失败、退出0、62044.79325ms；`python3 -I -B scripts/node-candidate-admit_test.py` 在提交 `93ed5468` 后运行，原 session34478，31项、20.247秒、OK、退出0；`node --test packages/task-distribution/*.test.mjs`，原 session30594，29/29、0失败、退出0、75498.05975ms。已结束句柄后续不可重读，不据此声称另外一次独立执行；下文 CI 为独立远端证据。
 

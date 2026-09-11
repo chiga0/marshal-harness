@@ -4,7 +4,7 @@
 
 ## 当前唯一状态与关键路径（2026-09-11）
 
-**UI 完整候选验收进行中，尚未发布**：[PR #293](https://github.com/chiga0/marshal-harness/pull/293) 为独立候选分支，不是已发布 main。第三轮真实 Pi 团队已从 UI 完成问答/确认、双作者并行、独立检查、授权本地文件交付及后验；前两轮失败仍留存。UI 431 项回归、Chrome/WebKit 已记录范围及原生 200% 缩放检查通过，同配置旧 v1.0.2→本地未签名候选→旧版的受控升级/回滚通过。三条验收线仍为功能 PARTIAL、视觉交互 PARTIAL、真人可用性 NOT_RUN；剩余聚合异常交互、真实 Safari、产品可用性及最终签名发行包消费。精确版本/范围/证据统一见 [本轮验收记录](ui-1/release-validation-2026-09-11.md)。以下已发布 API 状态不被 UI 待验撤销，不把候选代码或模拟测试算作新版已发布。
+**UI 完整验收进行中，尚未发布新版**：[PR #293](https://github.com/chiga0/marshal-harness/pull/293) 已于 20:21（Asia/Shanghai）合入 main `9852e4da`，不是软件发行。第三轮真实 Pi 团队从 UI 完成问答/确认、双作者并行、独立检查、授权本地文件交付及后验，原输入/交付/发布回执/后验证据四下载已核对；前两轮失败仍留存。UI 464 项加 4 项护栏、本地发行 29 项与 PR 的四平台组合回归/同包消费通过；main 原始安装包验收仍在推进。Chrome/WebKit 的已记录范围、原生 200% 缩放、列表/卡片八种稳定状态与15分钟只读观察通过，不外推长期稳定。运行控制补验发现“暂停成功仍须关闭提示才能恢复”的 P2，后继独立分支修复。三线仍为功能 PARTIAL、视觉交互 PARTIAL、真人可用性 NOT_RUN；剩余控制/安全/性能聚合补验、真实 Safari、目标用户及最终签名资产消费。精确版本/范围/失败与修复证据见 [本轮验收记录](ui-1/release-validation-2026-09-11.md)。以下已发布 API 状态不被 UI 待验撤销。
 
 **本地接入补丁 v1.0.2 已发布**：source `f9a93cd6`，完整 Node 矩阵和常规 CI 通过，Node22/24 原包恢复及独立审查通过；维护者签名后已发布 GitHub，并完成 OSS 同字节镜像与公开下载验签。新增安装后初始化、固定 Node 文本命令及连接复用；首次服务仍需可信配置，不包含 UI 构建产物，不代表 DataAgent ETL/发布/补数已验证。详情见 [v1.0.2 发行记录](v1.0.2-release-dossier-2026-09-10.md)及[安装说明](node-install.md)。
 
@@ -47,7 +47,7 @@
 | B2-L 全程受管 Leader | `PASSED` | 安装后真实 Pi 双 Task 整轮两次 passed=true（12 Attempts×2 零 rework/retry，审批前重启通过）；真实局部修正 fog4 保留无关成果通过；诊断与 RPC 闭集缺陷链全部经独立 review 修复合入；B2 出口证据随本表 2026-09-10 检查点记录 |
 | API-STABLE 核心接口检查点 | `PASSED`（保留原范围） | 原 25 操作/58 Schema/同包客户端与四出口通过；不自动覆盖新增 Leader 支持面，不等于正式发行或任意版本兼容 |
 | B3 正式可靠发布 | `PASSED` | `v1.0.0` 已发布（annotated tag、GitHub Release、ADR 0096 minisign 签名三级互证全绿、安装恢复公式自述）；ENOSPC 按既有 EFBIG 证据边界归档、Mach-O/notarized 不适用、usage=null 与 `trueProcessOverlapProven=false` 如实留空 |
-| UI-1 完整界面交付 | `IN_PROGRESS`（独立候选，未发布） | 按三条验收线补齐剩余范围及最终同包发行；不重新打开已发布 API 的 B1–B3 出口。详见本轮 UI 验收记录 |
+| UI-1 完整界面交付 | `IN_PROGRESS`（首批修复已合入 main，未发布新版） | 按三条验收线补齐剩余范围及最终同包发行；不重新打开已发布 API 的 B1–B3 出口。详见本轮 UI 验收记录 |
 
 ### 19:23 及更早检查点（历史，不覆盖当前表）
 
