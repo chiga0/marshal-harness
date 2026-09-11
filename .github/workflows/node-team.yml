@@ -91,7 +91,7 @@ jobs:
         run: |
           npm run typecheck
           npm run build
-          npx vitest run
+          npm test
 
   package:
     name: Freeze one Node candidate

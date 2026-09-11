@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc -b",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:browser-guards",
+    "test:browser-guards": "node --test e2e/browser-fault-guards.checks.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

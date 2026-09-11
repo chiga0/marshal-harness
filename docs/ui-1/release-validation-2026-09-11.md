@@ -104,6 +104,8 @@ CI `34583578954` 的 Ubuntu/Node22 密度测试超过默认 5 秒（5119ms），
 
 ## 数据密度与有界性补充
 
+独立 Agent 后续用真实 Chrome 152、HTTP/SQLite 与专用受控 Provider 完成 100 Task 密度检查，未启动模型，未修改原真实业务服务。构建 JS 为 `index-CpLIqAu5.js`，逐资产清单摘要 `67942c314fa92181cedf44d278b49d9d4c05769de15f6744c3cc012fa15e463b`。首页 24 项，四次分页到 100 个唯一任务，分页均 HTTP 200；列表/卡片切换、已加载范围内搜索 50 项、清空恢复、末项滚动与进入精确 Task 路由通过。证据 `/private/tmp/marshal-density.6J1nP1/evidence.json`，所属浏览器和服务已关闭、服务退出 0。单轮首批 94ms、分页 60–64ms 只含该本机自动化样本，不是 SLO；100 个短标题、同质 fixture 失败状态不替代真实业务、多状态、长标题或持续事件压力验收。
+
 候选 `b887cecd` 增加真实 React 组件的隔离 fixture 回归：100 条任务分页、卡片切换与筛选；事件持续读到 600 条，DOM 保留最近 500 条，后继合并输入不超过 550 条、两页。独立代码审查无阻塞问题。子 Agent 四轮 jsdom 观测中，100 任务载入为 141–145ms，500 事件载入为 332–364ms；这些只包含隔离组件执行，不含真实网络、浏览器布局/绘制或模型耗时，不作为性能 SLO 或视觉通过证据。
 
 ## 发布前仍须完成
@@ -145,6 +147,10 @@ CI `34583578954` 的 Ubuntu/Node22 密度测试超过默认 5 秒（5119ms），
 整合 `374ca333` 的 distribution 全套回归由子 Agent 重跑：29/29、退出码 0、97232.973ms；后继 `50f4bc51` 分页补丁在主侧定向回归 4/4、退出码 0、12965.817ms。后者包括原受控双包消费及空页新 cursor 上限反例，不把同源码 fixture 记为上述跨版证明。
 
 ### 可复用浏览器异常交互
+
+另一独立单次 Chrome 152 测试补充经典问答与陈旧批准：第二公开 HTTP 客户端先批准成功后，原浏览器旧正文收到真实 `409 revision_conflict`，错误可见且没有自动刷新摘要重提；经典 `/questions/{id}/answers` 首次真实 202 丢响应后，显式重放保持原键、正文及 Operation ID，最终问题 `deliveryStatus=acknowledged`。使用既有受控 question fixture，原 30 秒问题期限未改，无真实模型或业务发布，服务退出 0。证据 `/private/tmp/marshal-classic-browser.EO7Scq/evidence.json`，脚本摘要 `f404de6483b31ebb1b20313e5a70d2e69e5ec065fabde88ae6daa0d4d89445b1`，UI 同为 `index-CpLIqAu5.js`。本次点击设置后未等路由稳定，截图仍为概览，故不计跨设置保留通过、不推断导航故障；只关闭明确断言的子场景，不代表全 Task 完成或完整验收矩阵。
+
+浏览器测试的四项超时、清理与回执保护负测纳入默认 `npm test`（Vitest 后执行 `test:browser-guards`），使已有 Node team 的 UI 作业自动覆盖，不需安装浏览器。实际浏览器异常交互仍为单独执行，两类证据不可替代。
 
 已整合测试源 `9a51a098` / `42b19128` 为 `d9c4fa07` / `80d20e10`，不改产品代码。Chromium 152、WebKit 26.5 对真实 HTTP/SQLite 与既有受控 ACP 实测：Leader 答复、批准、取消已取得真实 202 后丢弃浏览器响应；跨设置页不自动重发，显式原键/原正文重放保持批准与取消的非空 Operation ID；取消框 Escape 不提交，取消重放前后 Task/audit 不变。原 reviewer 一次提出三个测试级 P2，聚合修复超时、清理兜底及缺 ID 断言后复审关闭；主侧四项负测亦通过。独立 Agent 另运行修前同场景 Chromium 一次通过；修后双引擎证据与脚本摘要由 reviewer 核对。详细范围与命令见 [受控浏览器记录](../../apps/task-web/e2e/browser-fault-report.md)。
 
