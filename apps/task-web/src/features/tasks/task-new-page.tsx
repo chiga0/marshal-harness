@@ -1,10 +1,9 @@
 // 新建任务（P03）：客户端边界校验与 OpenAPI createTask/input_create 一致（intent 8192B、context.text 32768B、
 // 单 input 解码后 256 KiB、最多 32 个 inputRefs）；提交中防重复；失败保留草稿与错误码/requestId；
-// 结果未知（网络层失败、超时、5xx 错误应答）只在页面存活时提供「同一请求重试」的显式同键重放，绝不自动发送、不乐观成功（UI-01）。
-import {useMemo, useRef, useState} from 'react';
+// 结果未知时在本次连接内保留草稿和原请求，SPA 切换不丢同键重放；刷新或断开不承诺保留。
+import {useMemo, useState} from 'react';
 import type {ChangeEvent, FormEvent} from 'react';
 import {Link} from 'react-router-dom';
-import {useMutation} from '@tanstack/react-query';
 import {Paperclip, X} from 'lucide-react';
 import {ApiError} from '../../lib/transport/types';
 import {useConnection} from '../connection/connection';
@@ -20,7 +19,7 @@ import {
   utf8Bytes, validateIntentText, validateSelectedFiles,
 } from './task-create';
 import type {ComposerFile, CreateTaskApi, CreateTaskDraft, SubmissionSession} from './task-create';
-import {isAmbiguousFailure} from './detail/shared/logical-action';
+import {isAmbiguousFailure, useLogicalAction, useLogicalActionMemory} from './detail/shared/logical-action';
 import {formatBytes} from './format';
 
 interface SubmissionError {
@@ -68,22 +67,10 @@ function describeSubmissionError(error: unknown): SubmissionError {
   return {kind: 'unknown', title: '提交结果未知', detail: '未收到服务端回执；请先核对任务列表。'};
 }
 
-interface DraftSnapshot {
-  intent: string;
-  contextRaw: string;
-  files: ComposerFile[];
-}
-
 interface FieldErrors {
   intent?: string | undefined;
   context?: string | undefined;
   files?: string | undefined;
-}
-
-function snapshotMatches(current: DraftSnapshot, saved: DraftSnapshot): boolean {
-  if (current.intent !== saved.intent || current.contextRaw !== saved.contextRaw) return false;
-  if (current.files.length !== saved.files.length) return false;
-  return current.files.every((f, index) => f.file === saved.files[index]?.file);
 }
 
 export interface TaskNewComposerProps {
@@ -92,46 +79,31 @@ export interface TaskNewComposerProps {
 }
 
 export function TaskNewComposer({api}: TaskNewComposerProps) {
-  const [intent, setIntent] = useState('');
-  const [contextRaw, setContextRaw] = useState('');
-  const [files, setFiles] = useState<ComposerFile[]>([]);
+  const [intent, setIntent] = useLogicalActionMemory(['task.create', 'intent'], () => '');
+  const [contextRaw, setContextRaw] = useLogicalActionMemory(['task.create', 'context'], () => '');
+  const [files, setFiles] = useLogicalActionMemory<ComposerFile[]>(['task.create', 'files'], () => []);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [submitError, setSubmitError] = useState<SubmissionError | null>(null);
-  const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<{index: number; total: number} | null>(null);
-  const failedSessionRef = useRef<{session: SubmissionSession; snapshot: DraftSnapshot} | null>(null);
+  const [createdTaskId, setCreatedTaskId] = useLogicalActionMemory<string | null>(['task.create', 'receipt'], () => null);
+  const [uploadProgress, setUploadProgress] = useLogicalActionMemory<{index: number; total: number} | null>(['task.create', 'upload'], () => null);
+  const action = useLogicalAction(['task.create'], ['task.create']);
+  const submitError = action.phase.kind === 'unknown' || action.phase.kind === 'rejected'
+    ? describeSubmissionError(action.phase.error) : null;
 
   const intentBytes = useMemo(() => utf8Bytes(intent), [intent]);
 
-  const mutation = useMutation({
-    retry: 0,
-    mutationFn: ({draft, session}: {draft: CreateTaskDraft; session: SubmissionSession}) => {
+  const execute = (draft: CreateTaskDraft, session: SubmissionSession) => async () => {
       if (!api) throw new Error('当前传输未接入创建能力');
-      return runSubmission(api, draft, session, progress => setUploadProgress(progress.uploading));
-    },
-    onSuccess: ({taskId}) => {
-      failedSessionRef.current = null;
-      setUploadProgress(null);
-      setSubmitError(null);
-      setCreatedTaskId(taskId);
-    },
-    onError: (error, variables) => {
-      setUploadProgress(null);
-      const described = describeSubmissionError(error);
-      setSubmitError(described);
-      // 只有结果未知（网络层无回执、超时、5xx）才保留会话供显式同键重放；明确拒绝的 ApiError 不保留。
-      if (described.kind === 'unknown') {
-        failedSessionRef.current = {
-          session: variables.session,
-          snapshot: {intent: variables.draft.intent, contextRaw, files: variables.draft.files},
-        };
-      } else {
-        failedSessionRef.current = null;
+      try {
+        const result = await runSubmission(api, draft, session, progress => setUploadProgress(progress.uploading));
+        setCreatedTaskId(result.taskId);
+        return result;
+      } finally {
+        setUploadProgress(null);
       }
-    },
-  });
+  };
 
-  const busy = mutation.isPending;
+  const busy = action.phase.kind === 'submitting';
+  const unresolved = busy || action.phase.kind === 'unknown';
 
   const addFiles = (event: ChangeEvent<HTMLInputElement>) => {
     const picked = event.target.files;
@@ -155,15 +127,13 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
     setContextRaw('');
     setFiles([]);
     setFieldErrors({});
-    setSubmitError(null);
     setCreatedTaskId(null);
-    failedSessionRef.current = null;
+    action.reset();
   };
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
-    if (!api || busy) return;
-    setSubmitError(null);
+    if (!api || unresolved) return;
     setCreatedTaskId(null);
 
     const errors: FieldErrors = {};
@@ -181,31 +151,18 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
       context: parsed.ok ? parsed.context : {},
       files,
     };
-    const snapshot: DraftSnapshot = {intent, contextRaw, files};
-    const failed = failedSessionRef.current;
-    const session = failed && snapshotMatches(snapshot, failed.snapshot)
-      ? failed.session
-      : newSubmissionSession(files.length);
-    if (failed && !snapshotMatches(snapshot, failed.snapshot)) failedSessionRef.current = null;
-    mutation.mutate({draft, session});
+    const session = newSubmissionSession(files.length);
+    if (action.phase.kind === 'rejected') action.reset();
+    void action.submit(execute(draft, session));
   };
 
   const replaySameRequest = () => {
-    const failed = failedSessionRef.current;
-    if (!failed || !api || busy) return;
-    const parsed = parseContextJson(failed.snapshot.contextRaw);
-    const draft: CreateTaskDraft = {
-      intent: failed.snapshot.intent,
-      context: parsed.ok ? parsed.context : {},
-      files: failed.snapshot.files,
-    };
-    mutation.mutate({draft, session: failed.session});
+    if (!api || busy || action.phase.kind !== 'unknown') return;
+    // registry 仅重放第一次提交时冻结的闭包（含上传进度与原始幂等键）。
+    void action.replay(async () => { throw new Error('缺少原请求，不允许重新构造'); });
   };
 
-  // 草稿被修改后不再提供同键重放：避免发出与界面所见不一致的旧内容。
-  const failed = failedSessionRef.current;
-  const canReplay = submitError?.kind === 'unknown' && failed !== null
-    && snapshotMatches({intent, contextRaw, files}, failed.snapshot);
+  const canReplay = action.phase.kind === 'unknown';
 
   if (createdTaskId !== null) {
     return (
@@ -257,16 +214,11 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
               </Button>
             </div>
           ) : null}
-          {submitError.kind === 'unknown' && !canReplay && failedSessionRef.current ? (
-            <p className="mt-2 text-xs leading-[18px] text-text-secondary">
-              草稿已修改：原请求的同键重放不再适用；再次提交将使用新的幂等键。
-            </p>
-          ) : null}
         </Alert>
       ) : null}
 
       <form onSubmit={onSubmit} noValidate>
-        <fieldset disabled={busy} className="min-w-0 space-y-5 disabled:opacity-90">
+        <fieldset disabled={unresolved} className="min-w-0 space-y-5 disabled:opacity-90">
           <Card>
             <Label
               htmlFor="task-intent"
@@ -356,7 +308,7 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
           </Card>
 
           <div className="flex flex-wrap items-center gap-3">
-            <Button type="submit" loading={busy} disabled={!api || busy}>
+            <Button type="submit" loading={busy} disabled={!api || unresolved}>
               {busy
                 ? uploadProgress
                   ? '上传附件 ' + uploadProgress.index + '/' + uploadProgress.total + '…'

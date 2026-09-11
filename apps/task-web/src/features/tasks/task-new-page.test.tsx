@@ -5,6 +5,7 @@ import {MemoryRouter} from 'react-router-dom';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import {ApiError} from '../../lib/transport/types';
 import {TaskNewComposer} from './task-new-page';
+import {LogicalActionScope} from './detail/shared/logical-action';
 import type {CreateTaskApi} from './task-create';
 
 vi.mock('../../lib/transport/types', async importOriginal => {
@@ -148,12 +149,12 @@ describe('TaskNewComposer 提交流程', () => {
       name: 'a.txt',
       mediaType: 'text/plain',
       contentBase64: 'aGVsbG8=',
-      idempotencyKey: 'key-2',
+      idempotencyKey: expect.any(String),
     });
     expect(createTask.mock.calls[0]?.[0]).toEqual({
       intent: '生成对账报告',
       context: {inputRefs: ['input-a.txt']},
-      idempotencyKey: 'key-1',
+      idempotencyKey: expect.any(String),
     });
 
     // 在途期间按钮禁用，重复点击不产生第二次调用
@@ -268,7 +269,7 @@ describe('TaskNewComposer 提交流程', () => {
     expect(screen.queryByRole('button', {name: /同一请求重试/})).toBeNull();
   });
 
-  it('草稿修改后不再提供同键重放，再提交使用新幂等键与新内容', async () => {
+  it('结果未知时锁住原草稿，不允许改正文换键造成重复任务', async () => {
     const user = userEvent.setup();
     const createTask = vi
       .fn<CreateTaskApi['createTask']>()
@@ -283,14 +284,68 @@ describe('TaskNewComposer 提交流程', () => {
     expect(screen.getByRole('button', {name: /同一请求重试/})).toBeInTheDocument();
 
     await user.type(screen.getByLabelText(/需求内容/), '并补充复核');
-    expect(screen.queryByRole('button', {name: /同一请求重试/})).toBeNull();
-    expect(screen.getByText(/草稿已修改：原请求的同键重放不再适用/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/需求内容/)).toHaveValue('生成对账报告');
+    expect(screen.getByLabelText(/需求内容/)).toBeDisabled();
 
     await user.click(screen.getByRole('button', {name: '创建任务'}));
+    expect(createTask).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', {name: /同一请求重试/}));
     await waitFor(() => expect(createTask).toHaveBeenCalledTimes(2));
     const keys = createTask.mock.calls.map(call => call[0].idempotencyKey);
-    expect(keys[0]).not.toEqual(keys[1]);
-    expect(createTask.mock.calls[1]?.[0].intent).toBe('生成对账报告并补充复核');
+    expect(keys[0]).toEqual(keys[1]);
+    expect(createTask.mock.calls[1]?.[0].intent).toBe('生成对账报告');
+  });
+
+  it('SPA 离开后返回保留未知创建与附件会话，原键重放且不重复上传', async () => {
+    const user = userEvent.setup();
+    const api = makeApi({createTask: vi.fn<CreateTaskApi['createTask']>()
+      .mockRejectedValueOnce(new TypeError('lost response')).mockResolvedValueOnce({id: 'task-recovered'})});
+    const shell = (visible: boolean) => <MemoryRouter><LogicalActionScope session={api}>
+      {visible ? <TaskNewComposer api={api} /> : <p>其他页面</p>}
+    </LogicalActionScope></MemoryRouter>;
+    const view = render(shell(true));
+    await user.type(screen.getByLabelText(/需求内容/), '恢复创建请求');
+    await user.upload(screen.getByLabelText('附件输入'), new File(['hello'], 'a.txt'));
+    await user.click(screen.getByRole('button', {name: '创建任务'}));
+    await screen.findByRole('alert');
+    view.rerender(shell(false));
+    expect(screen.getByRole('status', {name: '本次连接未决操作'})).toHaveTextContent('结果未知');
+    view.rerender(shell(true));
+    expect(screen.getByLabelText(/需求内容/)).toHaveValue('恢复创建请求');
+    await user.click(screen.getByRole('button', {name: /同一请求重试/}));
+    expect(await screen.findByText(/任务 ID：task-recovered/)).toBeInTheDocument();
+    expect(api.createInput).toHaveBeenCalledTimes(1);
+    expect(api.createTask).toHaveBeenCalledTimes(2);
+    expect(api.createTask.mock.calls[0]?.[0]).toEqual(api.createTask.mock.calls[1]?.[0]);
+  });
+
+  it('提交中切页后回执仍保留；切换连接清草稿且旧响应不写新连接', async () => {
+    const user = userEvent.setup();
+    let finish: (value: {id: string}) => void = () => {};
+    const api = makeApi({createTask: vi.fn(() => new Promise<{id: string}>(resolve => { finish = resolve; }))});
+    const other = makeApi();
+    const shell = (connection: CreateTaskApi, visible: boolean) => <MemoryRouter><LogicalActionScope session={connection}>
+      {visible ? <TaskNewComposer api={connection} /> : <p>其他页面</p>}
+    </LogicalActionScope></MemoryRouter>;
+    const view = render(shell(api, true));
+    await user.type(screen.getByLabelText(/需求内容/), '进行中的请求');
+    await user.click(screen.getByRole('button', {name: '创建任务'}));
+    await waitFor(() => expect(api.createTask).toHaveBeenCalledTimes(1));
+    view.rerender(shell(api, false));
+    finish({id: 'task-in-flight'});
+    await waitFor(() => expect(screen.queryByRole('status', {name: '本次连接未决操作'})).toBeNull());
+    view.rerender(shell(api, true));
+    expect(screen.getByText(/任务 ID：task-in-flight/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: '再新建一个任务'}));
+    await user.type(screen.getByLabelText(/需求内容/), '旧连接第二个请求');
+    await user.click(screen.getByRole('button', {name: '创建任务'}));
+    await waitFor(() => expect(api.createTask).toHaveBeenCalledTimes(2));
+    view.rerender(shell(other, true));
+    expect(screen.getByLabelText(/需求内容/)).toHaveValue('');
+    finish({id: 'task-old-session'});
+    await waitFor(() => expect(screen.getByRole('button', {name: '创建任务'})).toBeEnabled());
+    expect(screen.queryByText(/task-old-session/)).toBeNull();
+    expect(other.createTask).not.toHaveBeenCalled();
   });
 
   it('当前通道未接入创建能力时明确说明并禁用提交', async () => {
