@@ -25,7 +25,7 @@ def load(name, path):
 
 
 oracle = load("oracle", ROOT / "scripts/order-quote-oracle.py")
-renderer = load("renderer", ROOT / "scripts/fixed-server-t2-task.py")
+renderer = load("renderer", ROOT / "scripts/order-quote-task-renderer.py")
 
 
 def correct(items):

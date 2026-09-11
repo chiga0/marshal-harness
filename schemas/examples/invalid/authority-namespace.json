@@ -1,5 +1,0 @@
-{
-  "tenantNamespace": "default",
-  "trustDomainKind": "execution",
-  "isolationDomainId": "isolation-local"
-}

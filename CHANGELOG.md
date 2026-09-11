@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 移除（2026-09-11，ADR 0099）
+- Go 历史线整体退役并从 main 移除：`cmd/`、`internal/`、`schemas/`、`web/`、`sdk/`、`go.mod`/`go.sum`/`Makefile`、7 个 Go 专属 workflow（ci/release/rc1-canary/m10-bridge-smoke/m13-e2e-dogfood/fixed-server-t1-canary/team-progress-regression）、`.github/actions/live-review/` 与 Go 专用 scripts；历史字节与 `v1.0.0-rc1` 经 git 历史与 tag 完整追溯，见 [ADR 0099](docs/adr/0099-go-legacy-line-retirement-and-removal.md)。
+- 同步变化：`ci.yml` 内 secret scan（gitleaks）提取为独立 workflow `secret-scan.yml`；`CODEOWNERS` 信任边界收敛为 `docs/adr/` 与 `packages/task-api/`；`README`/`CONTRIBUTING`/`AGENTS.md`/mkdocs 导航按 ADR 0099 更新。
+
 ### 修复（Node 主线，2026-09-10）
 - UI 工作台（apps/task-web）按 2026-09-10 交接审计完成 11 项必修修复（UI-01–UI-11，提交 5b21e11c/a837902f/2574b0cf/e4053f92）：创建任务 5xx 不再误判为拒绝（结果未知 + 保留幂等键显式同键重放）；逻辑动作输入冻结与异步代际隔离（轮询推进 revision 不解锁/换键/覆盖未决动作）；默认 fetch 闭包包装修复严格 receiver 浏览器「网络层不可达」误报；评审/独立验收/交付/后验分开呈现（新增 `GET /v1/tasks/{taskId}/audit` 消费，`acceptance=passed` 才是验收通过）；Worker 列表无限分页与已加载范围标注；请求默认 deadline 与 AbortSignal 贯通；服务端 401 即时连接失效并清缓存；运行中 Worker 问题展示 deliveryStatus（受理≠投递≠消费）且已答未 ACK 保留待核对；Leader 请求到期即时禁用（确认框打开后到期不发请求）；统一模态层原语（一次 Escape 只关最上层、Tab 圈禁、焦点不被轮询重置）；
 - CI：node-team workflow 纳入 `apps/task-web` 路径触发，新增 `ui` job（typecheck/build/test+e2e）；pack 前先构建 UI dist 并断言候选与安装树含 `apps/task-web/dist/index.html`，干净 checkout 不再静默产出无 UI 候选。

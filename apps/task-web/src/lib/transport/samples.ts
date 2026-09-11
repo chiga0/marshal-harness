@@ -6,6 +6,10 @@ import type {
 
 const DIGEST = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
+// 到期字段必须始终是「未来」：样例写绝对时间会随墙钟过期（曾写死 2026-09-11，当日运行 CI 即全部过期）。
+// 统一用相对未来时间（模块加载即冻结，测试内一致性足够）。
+const FUTURE = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+
 export const sampleTaskList: TaskRecord[] = [
   {
     id: 'task-11111111-1111-4111-8111-111111111111',
@@ -18,7 +22,7 @@ export const sampleTaskList: TaskRecord[] = [
     allowedActions: ['cancel', 'pause'],
     plan: null,
     artifactIds: [],
-    deadlineAt: '2026-09-11T00:00:00.000Z',
+    deadlineAt: FUTURE,
   },
   {
     id: 'task-22222222-2222-4222-8222-222222222222',
@@ -98,7 +102,7 @@ export const samplePreapprovalQuestion: Question = {
   kind: 'clarification',
   prompt: '输出需要使用哪种语言？',
   options: [{value: 'zh', label: '中文'}, {value: 'en', label: 'English'}],
-  deadlineAt: '2026-09-11T00:00:00.000Z',
+  deadlineAt: FUTURE,
   status: 'open',
 };
 
@@ -114,7 +118,7 @@ export const sampleRunningQuestion: RunningQuestion = {
   prompt: '请填写本次已批准分析的起始日期',
   options: [],
   answer: null,
-  deadlineAt: '2026-09-11T00:00:00.000Z',
+  deadlineAt: FUTURE,
   status: 'open',
   deliveryStatus: null,
 };
@@ -123,7 +127,7 @@ export const sampleQuestions: QuestionsResponse = {
   taskRevision: 1,
   previewRevision: null,
   previewDigest: null,
-  confirmBefore: '2026-09-11T00:00:00.000Z',
+  confirmBefore: FUTURE,
   preview: null,
   items: [samplePreapprovalQuestion],
   nextCursor: null,

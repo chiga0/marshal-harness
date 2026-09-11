@@ -23,6 +23,9 @@ export const PLAN_DIGEST = 'sha256:b540509e80a56fc5686acb543b8c52798cec6a97f5288
 export const REQUEST_DIGEST = 'sha256:0c57023789abb02551ac7837838ae3cb9dcd86ff0f3c58b4db372999eab51a7c';
 export const QUESTION_DIGEST = 'sha256:6666666666666666666666666666666666666666666666666666666666666666';
 
+// 到期字段必须始终是「未来」（绝对字面量会随墙钟过期，曾让当日 CI 全红）；模块加载即冻结，测试内一致。
+const FUTURE = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+
 export function makeTask(overrides: Partial<TaskRecord> & {status?: TaskStatus; revision?: Revision} = {}): TaskRecord {
   return {
     id: TASK_ID,
@@ -70,7 +73,7 @@ export function makePreapprovalQuestion(overrides: Partial<Question> = {}): Ques
     kind: 'clarification',
     prompt: '输出需要使用哪种语言？',
     options: [{value: 'zh', label: '中文'}, {value: 'en', label: '英文'}],
-    deadlineAt: '2026-09-11T00:00:00.000Z',
+    deadlineAt: FUTURE,
     status: 'open',
     ...overrides,
   };
@@ -89,7 +92,7 @@ export function makeRunningQuestion(overrides: Partial<RunningQuestion> = {}): R
     prompt: '请填写本次已批准分析的起始日期',
     options: [],
     answer: null,
-    deadlineAt: '2026-09-11T00:00:00.000Z',
+    deadlineAt: FUTURE,
     status: 'open',
     deliveryStatus: null,
     ...overrides,
@@ -101,7 +104,7 @@ export function makeQuestions(overrides: Partial<QuestionsResponse> = {}): Quest
     taskRevision: 7,
     previewRevision: 1,
     previewDigest: PREVIEW_DIGEST,
-    confirmBefore: '2026-09-11T00:00:00.000Z',
+    confirmBefore: FUTURE,
     preview: null,
     items: [],
     nextCursor: null,
@@ -140,7 +143,7 @@ export function makeLeaderRequest(overrides: Partial<LeaderRequestDTO> = {}): Le
     prompt: '报告采用哪个地区的数据？',
     options: [{value: 'north', label: '北区'}, {value: 'south', label: '南区'}],
     authorization: null,
-    deadlineAt: '2026-09-11T00:00:00.000Z',
+    deadlineAt: FUTURE,
     status: 'pending',
     replyDigest: null,
     ...overrides,
@@ -160,7 +163,7 @@ export function makeAuthorization(overrides: Partial<LeaderAuthorization> = {}):
     targetPolicyDigest: 'sha256:5555555555555555555555555555555555555555555555555555555555555555',
     name: 'task-1-aaaa.json',
     operation: 'create-if-absent',
-    expiresAt: '2026-09-11T00:00:00.000Z',
+    expiresAt: FUTURE,
     ...overrides,
   };
 }

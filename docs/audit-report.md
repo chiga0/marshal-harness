@@ -2263,3 +2263,7 @@ RC1 completion 复审发现：`result-admitted` 已提交后，terminalization �
 ## 2026-09-10：UI-1 浏览器入口设计审计
 
 登记 `UI1-BROWSER-BOUNDARY` 为 PER-IMPLEMENTATION：现 API 拒绝非空 Origin，浏览器直连与 Node 客户端复用存在接缝。[ADR0098](adr/0098-local-browser-ui-boundary.md)已接受并给出显式同源 UI 模式与原 Bearer、精确 Host/Origin、令牌内存和静态资产边界。2026-09-10 契约态：实现已在 `feat/ui-1-develop` 分支完成（`--ui` 同源边界、发行资产纳入、组件与 e2e 测试），服务侧边界事实（E26/E27/E29/E32、重启重连 E22）经真实进程 e2e 通过；浏览器矩阵（E24/E25/E28）与真实 Provider 完整交付仍待实测，不构成 UI 验收或发行资格。[UI-1 设计包](ui-1/README.md)另列产品、视觉、验收与并行交付；文档审查不升级运行成熟度。
+
+## 2026-09-11：Go 历史线退役移除（GO-LEGACY-REMOVAL）
+
+按维护者指示（2026-09-10，开发阶段快速迭代授权）新增 [ADR 0099](adr/0099-go-legacy-line-retirement-and-removal.md) 并执行一次性移除：`cmd/`、`internal/`、`schemas/`、`web/`、`sdk/`、`go.mod`/`go.sum`/`Makefile` 及 7 个 Go 专属 workflow（ci/release/rc1-canary/m10-bridge-smoke/m13-e2e-dogfood/fixed-server-t1-canary/team-progress-regression）、`.github/actions/live-review/` 与 Go 专用 scripts。移除前独立盘点核实 Node 侧对 Go 资产零引用；`ci.yml` 内 secret scan 提取为独立 workflow `secret-scan.yml`，门禁能力不降级；`CODEOWNERS` 信任边界收敛为 `docs/adr/` 与 `packages/task-api/`（openapi 合同目录）；`.gitleaks.toml` 的 `*_test.go` allowlist 因历史扫描需要保留。历史字节与 `v1.0.0-rc1`（tag `e99326f`→`c1407bd`）经 git 历史完整追溯；不涉及 Node 合同、SQLite 布局、发行 manifest 白名单或 ADR0096/0097 签名与运行时身份。遗留：分支保护若将旧 `ci.yml` job 列为 required check，需仓库管理员在 GitHub 设置中同步移除（仓库外操作）。

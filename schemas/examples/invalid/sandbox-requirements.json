@@ -1,6 +1,0 @@
-{
-  "apiVersion": "marshal.dev/v1alpha1",
-  "kind": "SandboxRequirements",
-  "accessMode": "hardened",
-  "minimumAssuranceLevel": "workspace-write"
-}

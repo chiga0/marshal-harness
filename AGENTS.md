@@ -12,9 +12,9 @@
 
 维护者已接受 [ADR 0080](docs/adr/0080-three-plane-business-delivery-roadmap.md) 的三面分离与 B1→B2→B3 路线。当前目标进一步按 B1 真实团队交付 PoC→B2 本地 API/SQLite/交互与审计→`API-STABLE`→B3 长期运行与正式 API 支持推进；UI-1 仅在 API-STABLE 后启动，不阻塞 API 正式发布。它不恢复通用 M13、HA、多租户作为发布前置。唯一当前完成状态见 [Roadmap 当前表](docs/roadmap-status.md#业务交付当前表)，目标退出条件见 [实施 Milestone](docs/agent-team-service-milestones.md)。独立验证、单写者、受控发布与恢复继续保留；软件签名按发行资产类别适用，Linux/stable 门禁仍属 B3，不表示能力已生产可用。
 
-2026-09-09 用户明确收敛为可信单用户角色团队，设计接受 [ADR0094](docs/adr/0094-trusted-single-user-role-team.md)及[受管 Leader 执行机制](docs/node-leader-execution-design.md)：Leader 贯穿需求/回答、批次结果/求助、集中 Review、授权交付及后验，读 durable 上下文、输出有限行动，不以现有 Planner 冒充。Supervisor 仅观察/聚合/通知，Core 授权/预算/已批准调度及硬规则，Execution 操作所属 handle；后继 v7 Core 已按 ADR0095 集成到主线，受控完整链通过，真实模型与冷故障恢复仍待完成，不造四服务/第二状态机。`trusted-single-user` 的职责分离不等于 OS/凭据隔离，强隔离后置；旧 Go/hardened、旧 API/格式和历史 non-production 不被隐式改写。B1 经独立七条件核验为本机 PoC PASSED，非本次改目标自动通过；B2-L 为 IN_PROGRESS（Core 已集成、正式发布前必验），B2/B3 仍 IN_PROGRESS，API-STABLE 原范围保留。业务发布不是 Marshal 软件发行，不豁免 B3；不增加 Leader/Workspace/Skill 或 Workflow 管理平台。
+2026-09-09 用户明确收敛为可信单用户角色团队，设计接受 [ADR0094](docs/adr/0094-trusted-single-user-role-team.md)及[受管 Leader 执行机制](docs/node-leader-execution-design.md)：Leader 贯穿需求/回答、批次结果/求助、集中 Review、授权交付及后验，读 durable 上下文、输出有限行动，不以现有 Planner 冒充。Supervisor 仅观察/聚合/通知，Core 授权/预算/已批准调度及硬规则，Execution 操作所属 handle；后继 v7 Core 已按 ADR0095 集成到主线，受控完整链通过，真实模型与冷故障恢复仍待完成，不造四服务/第二状态机。`trusted-single-user` 的职责分离不等于 OS/凭据隔离，强隔离后置；历史 Go 线 2026-09-10 起随 ADR0099 退役移除，涉及历史 API/格式的表述一律以 git 历史为准，不再要求 main 内并存保护。B1 经独立七条件核验为本机 PoC PASSED，非本次改目标自动通过；B2-L 为 IN_PROGRESS（Core 已集成、正式发布前必验），B2/B3 仍 IN_PROGRESS，API-STABLE 原范围保留。业务发布不是 Marshal 软件发行，不豁免 B3；不增加 Leader/Workspace/Skill 或 Workflow 管理平台。
 
-当前目标设计统一见 [Task-first Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)：删除 Workspace/Project 业务对象与注册流程，仓库/表/平台通过 Task prompt/context 提供。公开 Task 在旧 Go profile 映射 Goal，Node 按 ADR0088 使用自己的唯一 Application/SQLite。B1 用一个 Provider 的两个实例先交付；B2 保留本地简启动、零 Git/多仓库、问答与更多 Adapter，按0094补完整受管 Leader 与授权交付/后验。账号/安装身份平台和 U1 历史导入不作为 B1 前置。合同状态与运行时启用分别判断；[合同适用性](docs/design-contract-map.md)明确旧 repository profile 仍执行原合同，新设计不自动迁移旧 `.marshal`。以下分权条款仅按0094明确作用域，其余不变量保留；旧 Workspace 状态布局按旧提案作用域理解，不成为新的注册前置。
+当前目标设计统一见 [Task-first Agent Team 服务架构](docs/agent-team-service-architecture.md)、[实施 Milestone](docs/agent-team-service-milestones.md)与 [ADR 0085](docs/adr/0085-agent-team-service-contract-and-storage.md)：删除 Workspace/Project 业务对象与注册流程，仓库/表/平台通过 Task prompt/context 提供。Node 按 ADR0088 使用自己的唯一 Application/SQLite。B1 用一个 Provider 的两个实例先交付；B2 保留本地简启动、零 Git/多仓库、问答与更多 Adapter，按0094补完整受管 Leader 与授权交付/后验。账号/安装身份平台和 U1 历史导入不作为 B1 前置。合同状态与运行时启用分别判断；[合同适用性](docs/design-contract-map.md)承载历史合同与新设计的退位边界，新设计不自动迁移历史资产。以下分权条款仅按0094明确作用域，其余不变量保留；旧 Workspace 状态布局按旧提案作用域理解，不成为新的注册前置。
 
 旧 Marshal skill 长期完全退出产品运行依赖、研发准入和验收标准：不读取、加载、派发或执行其流程，不要求每个开发切片一个 Marshal Run。保留历史运行/失败/审计资产，不恢复旧 Skill 的微切片和轮次规范；各 Agent 自带 Skill 仍由 Agent 自行管理。这不豁免以下产品证据、权限和恢复不变量。
 
@@ -27,9 +27,9 @@
 
 ## 当前阶段（历史基线，当前排期以上节为准）
 
-本仓库已于 2026-08-03 通过实施门禁，ADR 0001–0011 已接受；2026-08-07 增补接受 ADR 0012–0014；2026-08-10 接受 ADR 0016，把长期目标重置为长寿命 Runtime/Control Plane，并冻结 AgentAdapter 与 SandboxProvider 分层及 M7–M13 路线，ADR 0015 未接受即被 ADR 0016 取代；2026-08-11 接受 ADR 0017–0019，依次冻结 Provider-neutral Sandbox、Control Plane/Provider Port，以及确定性 Supervisor、Typed Execution、Goal admission 与 append-only 补偿语义。Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`；M7 设计与契约已通过；M8/M9 保留当时定义下的 `PASSED` 历史证据，但相关 Runtime 资产尚未整体进入真实生产调用链，不得据此宣称 v1.0 端到端集成完成。2026-08-24 接受 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的 `I186-R0→R6` 纵切路线。2026-08-27 接受 ADR 0051，冻结 `darwin-local-dogfood` 的 ordinary-user/non-production 边界；同日接受 [ADR 0052](docs/adr/0052-v1-release-scope-and-production-reachability.md)，把 v1.0 收敛为单节点、单用户、可信仓库、至少一个真实 AgentProvider 与一个真实 Local/Container SandboxProvider，并增加 `DESIGN→COMPONENT→INTEGRATED→RELEASED` 成熟度和生产可达性门禁。**2026-08-27 维护者主线纠偏结论**：ADR 0052 的 `R1→R2→R3` 顺序不可跳越；审计发现结果接纳的 recheck 是以结果携带 Facts 临时构造 registry/ledger 的自洽验证（`seedRegistry`/`seedSandboxLedger`），不构成真实 durable current-ledger recheck，lease expiry 也是接纳时重新生成而非 dispatch 时冻结——因此 R3–R5 的所有 INTEGRATED 宣称一律撤回为 COMPONENT，真实 Agent 已走通 Local allocation 的 R1 纵切保留为 INTEGRATED 实质进展。2026-09-01 RC1 发布后，当前主线调整为：**保持 R2–R5 的 COMPONENT 诚实口径，先完成 fixed server 与 recovery fault matrix，再完成 managed signing/notarization、Linux stable gate 和受保护 stable candidate；unsigned 构建仍只允许 prerelease tag**。当前权威状态：`I186-R0: PASSED`、`I186-R1: IN_PROGRESS（INTEGRATED）`、`I186-R2–R5: IN_PROGRESS（COMPONENT）`、`I186-R6: IN_PROGRESS（COMPONENT；RC1 prerelease 已发布，stable gate 开放）`。M10–M13 不再阻塞 v1.0，作为 R6 后 1.x 候选重新排期。后续变更仍须按门禁流程：信任边界/持久化契约/生命周期或发布权限的改变必须新增或替代 ADR。
+Go 历史线（I186/RC1/M0–M13、ADR0001–0079 的实现载体）已于 2026-09-10 按 [ADR 0099](docs/adr/0099-go-legacy-line-retirement-and-removal.md) 退役并从 main 移除：历史接受事实、状态证据与 `v1.0.0-rc1`（tag `e99326f` → `c1407bd`）完整保留在 git 历史，本节不再承载排期。当前权威状态只看 [Roadmap 当前表](docs/roadmap-status.md#业务交付当前表)。后续变更仍须按门禁流程：信任边界/持久化契约/生命周期或发布权限的改变必须新增或替代 ADR。
 
-2026-08-29 接受 ADR 0066，冻结 S2 的两阶段 owner acquisition、canonical repository `.marshal` 与 fixed `cmd/marshal` 本地 CLI production composition 边界；同日接受 [ADR 0067](docs/adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 与 [ADR 0068](docs/adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md)，把 Mac ordinary-user 主线固定为 `S1′ → S2′ → Attach/rebind → terminalization → fixed CLI 真实 Pi + 独立 Decision ACCEPTED → same-bytes RC1`；随后接受 [ADR 0069](docs/adr/0069-attempt-reservation-and-existing-worktree-allocation.md)，冻结 creation-once Attempt reservation、dispatch lookup-before-claim、sealed successor 单次预算消费与 RB1-authoritative existing-worktree binding/release。2026-09-01，`v1.0.0-rc1` 已按 [ADR 0068](docs/adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 发布为 unsigned Darwin arm64 CLI-only local-dogfood prerelease：annotated tag `e99326f` 精确指向 `c1407bd`，candidate SHA-256 为 `f9ed7fa59d05f5e71fef7164b8015240497e1d18e25ef1d3f8e199c1378a3774`，真实 Pi canary/finalize 与 no-rebuild release workflow 均完成，外部下载和临时目录安装后 bytes 仍相同。该结果只关闭 local-dogfood prerelease distribution exit；ADR 0068 明确不授予 `RELEASED`、production、managed、notarized、hardened、server、Linux 或 stable authority。当前 `I186-R2–R5` 继续为 `COMPONENT`，`I186-R6` 为 `IN_PROGRESS/COMPONENT`；fixed server、managed signing/notarization、Linux stable 与 ADR 0052 的正式 v1.0 release gate 仍是后继。
+（压缩保留）2026-09-01 的 `v1.0.0-rc1`（unsigned Darwin arm64 CLI-only local-dogfood prerelease）是该历史线的最后一个 prerelease：tag `e99326f` 精确指向 `c1407bd`，candidate SHA-256 为 `f9ed7fa59d05f5e71fef7164b8015240497e1d18e25ef1d3f8e199c1378a3774`；只关闭 local-dogfood prerelease distribution exit，不构成 production/RELEASED。
 
 ## 修改设计前必读
 
@@ -38,18 +38,18 @@
 1. `README.md`
 2. `docs/vision-and-scope.md`
 3. `docs/design-contract-map.md`（先区分目标、合同状态、旧 profile 与实际成熟度）
-4. `docs/architecture.md`、`docs/agent-team-service-architecture.md`（Task-first 与 API-first 目标）
-5. `docs/implementation-plan.md`、`docs/agent-team-service-milestones.md`、`docs/roadmap-status.md` 当前表（目标出口与实机完成状态分开）
-6. `docs/task-lifecycle.md`、`docs/security-model.md`、`docs/runtime-architecture.md`
-7. `docs/adr/0085-agent-team-service-contract-and-storage.md` 与命中接缝的原 ADR；`*-reference-*` 只用于历史追溯，不形成第二套强制排期
+4. `docs/agent-team-service-architecture.md`（Task-first 与 API-first 目标）；`packages/task-api/openapi.json` 与 `docs/node-api-contract.md`（HTTP 合同唯一权威）
+5. `docs/agent-team-service-milestones.md`、`docs/roadmap-status.md` 当前表（目标出口与实机完成状态分开）
+6. `docs/task-lifecycle.md`、`docs/security-model.md`
+7. [ADR 0099](docs/adr/0099-go-legacy-line-retirement-and-removal.md)（Go 历史线已于 2026-09-10 退役移除；旧 `docs/architecture.md`、`docs/implementation-plan.md`、`docs/runtime-architecture.md` 为历史资料）与命中接缝的原 ADR；`*-reference-*` 只用于历史追溯，不形成第二套强制排期
 
 ## 不可破坏的不变量（universal）
 
 - Worker 不能为自己的工作提供权威验证证据。
 - 本仓库的每个开发写任务必须使用锁定基线和独立 Git worktree；产品中的 Git 写节点同样锁定 base 并使用独立 worktree。该要求不扩展为非 Git 产品 Task 必须初始化仓库或提供 commit。
-- 本仓库开发与旧 repository profile 的 Run、Log、Cache 与任务 worktree 默认位于被 Git 忽略的 `.marshal/`。新 Workspace 目标使用 `<workspace>/.marshal/` 保存状态、制品和独立执行目录；Workspace 可不在 Git 中，若位于 Git 中则必须被忽略，运行数据均不得进入业务提交。新旧状态根不能自动互相接管。
+- 本仓库的本地研发运行态（任务 worktree、日志、缓存）默认位于被 Git 忽略的 `.marshal/`；运行数据均不得进入业务提交。Node 服务运行数据默认在 `$HOME/.marshal-node/`（产品侧），与仓库 `.marshal/` 互不接管。
 - 每个任务 worktree 或非 Git 独立执行目录同时最多有一个写入者；归属或停止状态未知时不得复用目录。
-- Worker 与 Publisher 权限必须分离：Node `trusted-single-user` 按 ADR0094 保留职责、命令准入与证据权威分离，不宣称 OS 账号/凭据强隔离；旧 Go/hardened profile 继续执行原强边界。默认无业务发布授权，角色名和原生登录不能扩权。
+- Worker 与 Publisher 权限必须分离：Node `trusted-single-user` 按 ADR0094 保留职责、命令准入与证据权威分离，不宣称 OS 账号/凭据强隔离。默认无业务发布授权，角色名和原生登录不能扩权。
 - ReviewDecision 必须绑定到精确的证据摘要。
 - 失败或阻塞任务必须保存 Outcome 证据，不得创建虚假 PR。
 - 普通宿主机子进程不得被描述成恶意代码沙箱。
@@ -61,16 +61,16 @@
 - 所有文档与 Schema 中的术语和状态名必须一致。
 - 打开或关闭重大架构问题时更新 `docs/audit-report.md`。
 - 改变信任边界、持久化契约、生命周期或发布权限时，必须新增或替代 ADR。
-- 修改 Schema 后必须验证 JSON 语法、Draft 2020-12 metaschema、示例和 `git diff --check`。
+- 修改合同 `packages/task-api/openapi.json` 后必须验证 JSON 语法、示例和 `git diff --check`。
 - 不得为了简化 Adapter 而静默放宽强制门禁。
 
 ## 实施门禁（universal）
 
 维护者已明确接受设计。实施期间必须：
 
-1. 按 `docs/implementation-plan.md` 顺序实施；
-2. 在真实 Agent 集成前先完成 Fake Adapter 与确定性核心；
-3. 状态转换、路径边界、陈旧证据、崩溃恢复和发布幂等性测试通过前，不得宣称 MVP 可用。
+1. 按 `docs/agent-team-service-milestones.md` 顺序实施；
+2. 在真实模型接入前先完成确定性核心与受控 fixture；
+3. 状态转换、崩溃恢复、幂等性与同包安装的测试通过前，不得宣称对应能力可用。
 
 ## 维护者工作流（maintainer-only）
 
@@ -91,6 +91,6 @@
 
 - **fork 工作**：从 canonical 仓库 fork，在自己的 fork 中创建分支，一律通过 PR 回流 canonical 仓库；
 - **PR 必须 CI 绿**：CI（Linux + macOS + secret scan）全绿后才进入评审，见 [CONTRIBUTING.md](CONTRIBUTING.md)；
-- **不触碰信任边界目录**：`.github/CODEOWNERS` 覆盖区（`internal/lifecycle/`、`internal/publication/`、`internal/publisher/`、`internal/adapter/`、`schemas/`、`docs/adr/`）内的变更需要维护者显式批准；
+- **不触碰信任边界目录**：`.github/CODEOWNERS` 覆盖区（`docs/adr/`、`packages/task-api/`）内的变更需要维护者显式批准；
 - **文档中文规则**：面向人的 Markdown 文档统一使用中文，协议字段、状态名、CLI 命令和代码标识保留英文；
 - **ADR 触发条件**：改变信任边界、持久化契约、生命周期或发布权限时，必须先新增或替代 ADR。

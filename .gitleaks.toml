@@ -1,8 +1,9 @@
 # Marshal Harness gitleaks 配置（gitleaks 8.x 语法）。
 #
 # 本文件只做一件事：为 *_test.go 测试文件添加路径级 allowlist。
-# 测试 fixture 大量使用公开的假凭据/假摘要字面量（假 sha256 digest、
-# registrationId、idempotencyKey、trustRootKeyId 等），属已知误报源。
+# Go 历史线（ADR 0099）已移除出 main，但 gitleaks 按完整 git 历史扫描，
+# 历史 Go 测试 fixture 大量使用公开的假凭据/假摘要字面量（假 sha256 digest、
+# registrationId、idempotencyKey、trustRootKeyId 等），属已知误报源，规则须保留。
 #
 # 注意：该 allowlist 仅覆盖 *_test.go 路径；在测试文件中提交真实凭据
 # 仍属违规，由 review 门禁负责。

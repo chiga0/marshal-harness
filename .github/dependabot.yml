@@ -4,7 +4,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "gomod"
-    directory: "/"
+  - package-ecosystem: "npm"
+    directory: "/apps/task-web"
     schedule:
       interval: "weekly"

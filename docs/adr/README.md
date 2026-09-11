@@ -124,8 +124,10 @@
 | [0035](0035-supervisor-lease-owner-v2-and-orphan-recovery.md) | `LeaseOwnerRecordV2` legacy migration、descriptor-bound owner acquisition epoch/high-water 与 `SupervisorDispatcher` append-only orphan recovery | 提议（Proposed，2026-08-21；仅契约设计，未实现） |
 | [0036](0036-adapter-run-boundary-fail-closed.md) | `Adapter.Run` 边界无类型错误确定性归一化为 typed `do-not-retry`，不授权盲目 operational retry | 已接受（Accepted，2026-08-20） |
 | [0037](0037-codex-cli-production-authority.md) | Codex CLI production authority、TPM-backed host identity、authenticated fd-exec 与可撤销准入 | 接受（Accepted，2026-08-18；未实现且未获得真实 credentialed live evidence，不表示当前部署 supported） |
+| [0038](0038-agent-production-authority-provider.md) | 共享 Agent Production Authority Provider 与原子准入交付 | 已接受（Accepted，2026-08-18）——仅冻结实现合同；未经实现、独立 conformance 与真实宿主 provision，不得把 Qoder CLI 或 Codex CLI 报告为 `supported` |
 | [0039](0039-apap-peer-exec-barrier.md) | APAP control peer USER_NOTIF 单次初始 fd-exec、永久 exec deny、双对象签名与 helper bootstrap | 已接受（Accepted，2026-08-18；接受只冻结合同，未实现前不得启用） |
 | [0040](0040-darwin-codex-authenticated-launcher.md) | Darwin Codex authenticated launcher、Mach-O held identity、child barrier 与 Mac-first conformance | 提议（Proposed，2026-08-19；未经接受与真实 evidence 不得启用） |
+| [0041](0041-darwin-apap-stream-transport.md) | Darwin APAP 长度帧传输（提案） | 提议（Proposed，2026-08-19；未经维护者接受，不启用生产准入） |
 | [0042](0042-mac-ordinary-user-adapter-mode.md) | Mac 上 Qoder/Codex 显式 opt-in 普通用户模式（不提供 hardened authority） | 用户明确授权实现；严格 authority 默认关闭 |
 | [0043](0043-worker-executor-profile-and-dual-binding.md) | WorkerExecutor、WorkerRuntimeProfile 与 Agent/Sandbox 双 binding（per-Attempt binding set 分别 current-ledger recheck、AgentLaunchSpec immutable、production profile 禁止宿主 bypass，Issue #186/#187） | 已接受（Accepted，2026-08-24；接受只冻结合同，未实现，不升级 milestone 状态） |
 | [0044](0044-result-ingress-and-cold-hot-paths.md) | DRC-bound ResultIngress 唯一外部结果接纳路径与冷热双路径（replay 幂等、伪造/撤销/晚到 fail closed 入 quarantine、接纳事务原子提交，Issue #186/#187） | 已接受（Accepted，2026-08-24；接受只冻结合同，未实现，不升级 milestone 状态） |
@@ -163,3 +165,23 @@
 | [0077](0077-local-dogfood-read-only-task-spec-validation.md) | Darwin local dogfood fixed Marshal 的 exact、repository-bound、只读 TaskSpec 契约验证 command class | 已取代（Superseded by ADR 0078，2026-09-03；public CLI/self-admission 是错误的验证层，不再授权实现） |
 | [0078](0078-verifier-builtin-task-spec-contract-gate.md) | candidate isolate 内 pathless verifier builtin 的 TaskSpec契约门禁、held artifact读取、Core唯一validator与closed evidence | 已接受（Accepted，2026-09-03；只冻结Darwin verifier builtin，不修改schema/selfidentity/activation/lifecycle/publication，不升级M13或I186成熟度） |
 | [0079](0079-darwin-posix-spawn-setexec-barrier.md) | fixed Marshal `internal process-supervisor` inherited child 的 Darwin SETEXEC/START_SUSPENDED 屏障、双端runtime身份核验与完整Supervisor v2代际 | 已接受（Accepted，2026-09-04；部分取代 ADR 0059/0060/0064/0067 受影响合同，v1 bytes只读；只冻结合同，不表示实现，不改变上层lifecycle/authority，不关闭Issue #212或升级I186成熟度） |
+| [0080](0080-three-plane-business-delivery-roadmap.md) | 三面分离与业务交付驱动的 Agent Team 路线 | 已接受（Accepted，2026-09-05，维护者明确要求按本轮审计建议更新设计并实施）。接受的是产品范围与实施顺序，不是实现、独立验证或发布证据。 |
+| [0081](0081-fixed-server-stop-intent-and-outcome.md) | fixed server 停止意图与可恢复 Outcome | 提议（Proposed）。隔离候选已通过显式取消及两类自动业务超时/完成后冷恢复实机；停止中途故障、长写事务响应上界与最终组合验收尚未闭合，仍不能据本文放行正式取消/超时支持。 |
+| [0082](0082-fixed-server-live-review-carrier.md) | fixed server 实机验证的同宿主独立评审载体 | 已接受（Accepted，2026-09-05，维护者代理在持续实施授权内采纳；不代表实机通过）。 |
+| [0083](0083-bounded-team-plan-materialization.md) | 受限团队计划接纳与 Run 幂等物化 | 提议（Proposed），仅未发布候选含接线，未在 main/正式产品启用。初始设计基线为 d67e3b7，B1 依赖现整合到 4ace42c；该 B1 候选的同 server 长 Verify/并行停止组合实机已通过，但尚未合入 main，不能作为 main 的能力声明。 |
+| [0084](0084-pi-typed-terminal-result-framing.md) | Pi 终态按结果类型定界，保留唯一声明与独立验收 | 候选（Proposed；仅随当前 B2 PoC 候选验证，不宣称 main 已接受） |
+| [0085](0085-agent-team-service-contract-and-storage.md) | Task-first Agent Team、本地简启动与分阶段事务存储 | Accepted（2026-09-08 用户明确确认“ADR0085 ok，请实施”；授权按本合同实施，不等于运行时已通过验证或已生产发布） |
+| [0086](0086-task-preapproval-questions-and-preview-revisions.md) | 未批准 Task 的关键问答与追加式预览版本 | Accepted（2026-09-08，由维护者在已授权 B2 实施目标内接纳；独立审查 `4f76a2e` 无 P0/P1，并补齐消费者迁移及取消 CAS 澄清。不是用户逐条确认记录，不表示实现或实机已通过） |
+| [0087](0087-node-local-team-feasibility-probe.md) | 无 Marshal 原生依赖的 Node 本地团队实验 | Accepted（2026-09-08 用户明确要求按 Node HTTP→两个本机 Agent→收集/取消/重启恢复方向实施；仅授权本文实验，不批准全面迁移或 production） |
+| [0088](0088-node-task-service-production-projection.md) | Node Task 服务正式实现投影与 ACP 接入 | Accepted（2026-09-08；依据用户持续要求 Node-only 运行和完整 stable 正式发行，维护者在独立审查及唯一 P1 聚合修正、同 reviewer 复核无剩余 P0/P1 后接纳）。 |
+| [0089](0089-node-execution-custody-and-cleanup-recovery.md) | Node 执行托管与跨代清理收口 | Accepted（2026-09-08；独立审查无阻塞意见后，维护者按用户持续实施授权接纳；不是用户逐项签署，不表示运行时已启用）。 |
+| [0090](0090-node-runtime-business-questions.md) | Node 运行中业务问答与同执行答案消费 | Accepted（2026-09-09；维护者在持续实施授权内完成独立审查并接纳，不表示用户逐项签署，不代表实现或实机通过）。 |
+| [0091](0091-node-same-plan-local-repair.md) | Node 同计划局部修正与精确成果选择 | Accepted（2026-09-09；维护者对独立作者候选 `5c2d82e` 完整审查后接受；允许实施，不表示实现、实机或发布出口已经完成）。 |
+| [0092](0092-node-unpermitted-reservation-settlement.md) | Node 从未获执行许可的预留中断结算 | Accepted（2026-09-09；维护者依据持续研发实施授权，在独立反向审查及唯一P1聚合修正、同reviewer复核无剩余P0/P1后接纳实施。已审正文SHA-256=`a8b8958ce3bdbd965e6fe9258933278df4084f43064678f17eeb58e9f6bf2713`，指本状态更新前的完整草案；不表示运行时已实现或旧根可恢复）。 |
+| [0093](0093-node-worker-cancellation.md) | Node 单 Worker 取消与依赖收口 | Accepted（2026-09-09；维护者独立审查原提案及格式差量 `6517f850` 无阻塞问题后接受实施。先整合并验证0092纵切，再实施本合同；接受不表示接口已启用或正式可用）。 |
+| [0094](0094-trusted-single-user-role-team.md) | 可信单用户角色团队与有界授权交付 | Accepted（2026-09-09；依据用户本轮明确要求可信单用户角色团队，以及随后对全程受管 Leader、Supervisor/Core/Execution 四责边界的明确确认，强 OS 账号/凭据隔离证明后置。此为设计接受，不是实现审查通过或运行许可回执）。 |
+| [0095](0095-node-managed-leader-contract.md) | Node 受管 Leader 的最小机器合同 | Accepted（2026-09-09）。维护者独立审查源 `66e98c1147887dbc8c692686806b5ce97ae40591` 后接纳；ADR0094 行为目标与本机器合同据此进入实施，不代表实现、验收或业务发布授权。 |
+| [0096](0096-node-stable-asset-signing-minisign.md) | Node stable 发行资产的 minisign 签名口径 | Accepted（2026-09-10；依据维护者本轮对 Node Agent-Team stable 资产签名方案的明确决议（minisign），不是实现审查完成或运行许可回执）。 |
+| [0097](0097-node-capability-based-runtime-admission.md) | Node 22 及以上按实际能力接纳 | Accepted（2026-09-10，依据用户在已知 Node22 SQLite defensive 差异后明确要求实施 Node22 及以上兼容）。 |
+| [0098](0098-local-browser-ui-boundary.md) | 可选本机浏览器 UI 访问边界 | Accepted（2026-09-10 维护者接受；依据两路设计审查回审零 P0/P1 与设计包审查记录，接受记录锚定本文提交所处分支 SHA） |
+| [0099](0099-go-legacy-line-retirement-and-removal.md) | Go 历史线（cmd/internal/schemas/web/sdk/go.mod/Makefile 及专属 workflow/脚本）退役并一次性移出 main，历史字节经 git 历史与 tag `v1.0.0-rc1` 追溯；secret scan 提取为独立 workflow；Node 合同/发布身份不变 | 已接受（Accepted，2026-09-10 维护者接受并指示执行；只退役历史实现与自动化，不触碰 Node 合同与签名身份） |
