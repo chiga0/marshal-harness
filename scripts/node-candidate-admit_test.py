@@ -5,11 +5,13 @@ Metadata below is a deterministic transport fixture, not GitHub or model proof.
 The CLI has no switch accepting caller-produced metadata as GitHub authority.
 """
 import copy
+import ast
 import hashlib
 import importlib.util
 import io
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import stat
@@ -79,7 +81,7 @@ class FixtureGitHub:
         return self.archive
 
 
-def zip_bytes(contents, *, additions=(), mode=stat.S_IFREG | 0o644, extra=b"", compression=zipfile.ZIP_STORED):
+def zip_bytes(contents, *, additions=(), mode=stat.S_IFREG | 0o644, modes=None, extra=b"", compression=zipfile.ZIP_STORED):
     target = io.BytesIO()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
@@ -87,7 +89,7 @@ def zip_bytes(contents, *, additions=(), mode=stat.S_IFREG | 0o644, extra=b"", c
             for name, value in list(contents.items()) + list(additions):
                 entry = zipfile.ZipInfo(name)
                 entry.create_system = 3
-                entry.external_attr = mode << 16
+                entry.external_attr = (modes or {}).get(name, mode) << 16
                 entry.compress_type = compression
                 entry.extra = extra
                 archive.writestr(entry, value)
@@ -294,6 +296,92 @@ class ArchiveTest(unittest.TestCase):
             self.assertFalse(os.path.exists(target))
 
 
+class UiArchiveTest(unittest.TestCase):
+    def setUp(self):
+        self.files, self.contents = package_fixture()
+        self.contents.update({"apps/task-web/dist/index.html": b"<!doctype html><p>controlled UI fixture</p>",
+                              "apps/task-web/dist/assets/app.js": b"export const fixture = true;"})
+        self.remanifest()
+
+    def remanifest(self, names=None):
+        manifest = json.loads(self.contents["manifest.json"])
+        names = names if names is not None else self.files + sorted(name for name in self.contents if name.startswith("apps/"))
+        manifest["files"] = [{"path": name, "digest": candidate.sha(self.contents[name]), "bytes": len(self.contents[name])} for name in names]
+        self.contents["manifest.json"] = (json.dumps(manifest, indent=2) + "\n").encode()
+
+    def validate(self, contents=None, **options):
+        contents = self.contents if contents is None else contents
+        raw = zip_bytes(contents, **options)
+        return candidate.validate_archive(raw, expected(archive=candidate.sha(raw), manifest=candidate.sha(contents["manifest.json"])), self.files, require_ui=True)
+
+    def test_pinned_ui_bytes_admitted_without_rebuild(self):
+        self.assertEqual(self.validate(), self.contents)
+
+    def test_ui_allowlist_stays_aligned_with_trusted_node_distribution(self):
+        source = (ROOT / "packages/task-distribution/index.mjs").read_text()
+        self.assertEqual(candidate.UI_ROOT, re.search(r"const UI_STATIC_ROOT = '([^']+)';", source)[1] + "/")
+        self.assertEqual(candidate.UI_MAX_FILES, int(re.search(r"const UI_MAX_FILES = (\d+);", source)[1]))
+        extensions = ast.literal_eval(re.search(r"const UI_EXTENSIONS = new Set\((\[[^\n]+\])\);", source)[1])
+        self.assertEqual(candidate.UI_EXTENSIONS, frozenset(extensions))
+        self.assertIn("const UI_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;", source)
+
+    def test_outside_root_traversal_unknown_extension_and_wide_name_rejected(self):
+        for name in ("apps/task-web/private.js", "apps/task-web/dist/../outside.js", "apps/task-web/dist/.hidden.js",
+                     "apps/task-web/dist/a\\b.js", "apps/task-web/dist/tool.mjs", "apps/task-web/dist/secret.pem",
+                     "apps/task-web/dist/" + "a" * 129 + ".js", "/apps/task-web/dist/absolute.js"):
+            with self.subTest(name=name):
+                contents = dict(self.contents, **{name: b"untrusted"})
+                manifest = json.loads(contents["manifest.json"])
+                manifest["files"].append({"path": name, "digest": candidate.sha(b"untrusted"), "bytes": 9})
+                contents["manifest.json"] = (json.dumps(manifest, indent=2) + "\n").encode()
+                with self.assertRaises(candidate.CandidateError): self.validate(contents)
+
+    def test_ui_symlink_fifo_and_duplicate_members_rejected(self):
+        name = "apps/task-web/dist/index.html"
+        for kind in (stat.S_IFLNK, stat.S_IFIFO):
+            with self.subTest(kind=kind), self.assertRaisesRegex(candidate.CandidateError, "unsafe_zip_member"):
+                self.validate(modes={name: kind | 0o644})
+        with self.assertRaisesRegex(candidate.CandidateError, "zip_inventory_mismatch"):
+            self.validate(additions=[(name, self.contents[name])])
+
+    def test_extra_or_missing_ui_bytes_and_digest_drift_rejected(self):
+        for mode in ("extra", "missing", "drift"):
+            with self.subTest(mode=mode):
+                contents = dict(self.contents)
+                if mode == "extra": contents["apps/task-web/dist/extra.js"] = b"extra"
+                if mode == "missing": del contents["apps/task-web/dist/assets/app.js"]
+                if mode == "drift": contents["apps/task-web/dist/assets/app.js"] = b"tampered"
+                with self.assertRaises(candidate.CandidateError): self.validate(contents)
+
+    def test_manifest_ui_order_duplicates_and_missing_index_rejected(self):
+        ui = sorted(name for name in self.contents if name.startswith("apps/"))
+        for names in (self.files + list(reversed(ui)), self.files + ui + [ui[-1]], self.files + [ui[0]]):
+            with self.subTest(names=names):
+                self.remanifest(names)
+                with self.assertRaises(candidate.CandidateError): self.validate()
+
+    def test_ui_file_and_member_count_bounds(self):
+        self.contents["apps/task-web/dist/assets/app.js"] = b"x" * (candidate.MAX_FILE + 1)
+        self.remanifest()
+        with self.assertRaisesRegex(candidate.CandidateError, "unsafe_zip_member"):
+            self.validate(compression=zipfile.ZIP_DEFLATED)
+        self.setUp()
+        self.contents.update({f"apps/task-web/dist/{i}.js": b"x" for i in range(candidate.UI_MAX_FILES)})
+        self.remanifest()
+        with self.assertRaisesRegex(candidate.CandidateError, "unsupported_zip"): self.validate()
+
+    def test_current_ui_candidate_cannot_omit_ui_or_create_output(self):
+        files, contents = package_fixture()
+        raw = zip_bytes(contents)
+        binding = expected(archive=candidate.sha(raw), manifest=candidate.sha(contents["manifest.json"]))
+        # 底层Node发行合同仍允许API-only；但当前13-job UI候选不能冒用旧无UI包。
+        self.assertEqual(candidate.validate_archive(raw, binding, files), contents)
+        with patch.object(candidate, "trusted_source", return_value=files), patch.object(candidate, "PrivateOutput") as output:
+            with self.assertRaisesRegex(candidate.CandidateError, "missing_ui_entry"):
+                candidate.admit(binding, api=FixtureGitHub(binding, raw), source="unused", node=NODE, target="unused")
+            output.assert_not_called()
+
+
 class FilesAndConsumerTest(unittest.TestCase):
     def test_exclusive_private_target_and_child_parent_sync_failure_preserved(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -370,6 +458,10 @@ class FilesAndConsumerTest(unittest.TestCase):
             self.assertEqual([item["layout"] for item in result["consumer"]["observations"]], [1, 2])
             self.assertEqual((parent / "admitted/candidate.zip").read_bytes(), raw)
             self.assertEqual((parent / "admitted/installed/manifest.json").read_bytes(), contents["manifest.json"])
+            self.assertIn("apps/task-web/dist/index.html", names)
+            for name in names:
+                if name.startswith("apps/task-web/dist/"):
+                    self.assertEqual((parent / "admitted/installed" / name).read_bytes(), contents[name])
             self.assertGreaterEqual(sum(endpoint.endswith("page=2") for endpoint in api.queries), 3)
             passed = True
         finally:
