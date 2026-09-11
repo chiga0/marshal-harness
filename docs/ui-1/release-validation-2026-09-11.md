@@ -113,6 +113,24 @@ CI `34583578954` 的 Ubuntu/Node22 密度测试超过默认 5 秒（5119ms），
 
 200% 浏览器缩放仍未验证：独立 headless Chrome 内发送五次 Meta+= 后宽度/DPR 未变化（1440/1），不把该操作或 viewport 缩小冒充浏览器缩放通过。
 
+### 独立浏览器与跨版消费增量（2026-09-11）
+
+独立 Agent 实际操作 Chrome `152.0.7977.84`，加载 `/ui/assets/index-CpLIqAu5.js`：终态成员抽屉 Tab/Shift+Tab 首尾环绕、Escape 归还原入口焦点通过；此抽屉仅有一个可聚焦控件，不外推多控件环绕。375×812 导航打开、Escape/关闭按钮关闭、设置返回精确原团队 URL 通过。证据位于 `/private/tmp/marshal-ui-independent-browser.V5T5ax/evidence.json` 及同目录四张截图。这是有指导的独立 Agent 测试，不是真人或无指导测试。
+
+主侧另实际执行 WebKit `26.5` 的任务链接 Enter、团队链接 Enter、成员抽屉各一步 Tab/Shift+Tab、Escape 归还焦点，均通过；实际 script src 同为 `index-CpLIqAu5.js`，截图 `/private/tmp/marshal-ui-final.MUfhL2/webkit-keyboard-team-e21353aa.png`。初始入口由程序聚焦，不证明纯 Tab 可发现性；WebKit 不替代真实 Safari，且不覆盖问答/批准与缩放。
+
+新增双安装包消费器已独立审查并整合于 `374ca333`，分页空页上限补丁 `50f4bc51` 同样通过独立审查：最多 100 页，禁止唯一 cursor 空页无限循环。实测旧 OSS 签名 v1.0.2 → 本地固定候选 → 旧版，在同一数据根完成：
+
+- 旧 sourceHead=`f9a93cd678cac40bcd04ff9d0c1672612f184701`，manifest=`sha256:94b2a036ea4b61e869ee0fd02e9b5a257db88b820c8677f5f09573c7320ee8d3`。
+- 新 sourceHead=`1f455e35933c8a7ce1a5b25c3c6bc2ea2098d1cc`，manifest=`sha256:abf1f3d07b7708a6027c4cc828acdd55a57dddb09fc680e4c99bec9b808e7fc6`。这是本地未签名、非 CI 发行包，不是最终发布资产。
+- Task=`task-c4fa72e8-5a0a-490b-8814-180bb7d3bca6`；旧版 API-only 完成任务，升级包提供 UI，回滚后恢复 API-only。三次退出均 code=0、signal=null、stderrBytes=0。
+- 原 Agent 启动 2 次、Attempts=3；升级及回滚新增启动 0。三阶段完整快照 SHA-256 均为 `b655ef329cf8c964653e62a9a1706441c18e5787b0039604338a39ba8c1600d1`，由独立 reviewer 另行核对。
+- 结果 476 字节，SHA-256=`baa6814d88c7b7fa1dd6b93ee9737cae53a0056f94c0e908b4a0eef2c5e89840`，east 2/1200、west 1/-50。证据 `/private/tmp/marshal-ui-upgrade-assets.4Xopg0/upgrade-v102-to-local-1f455e35/evidence.json`。
+
+该测试使用受控 ACP 与原固定 checker，modelCalls=0、publication=false，仅证明配置身份不变的 regional-window profile 同根升级/回滚。它不解决前述报告 GUIDANCE 改动导致的配置身份迁移，不代表真实模型跨版恢复，也不代替最终签名 CI 包消费。UI 三线整体结论仍为 PARTIAL / PARTIAL / NOT_RUN（真人）。
+
+整合 `374ca333` 的 distribution 全套回归由子 Agent 重跑：29/29、退出码 0、97232.973ms；后继 `50f4bc51` 分页补丁在主侧定向回归 4/4、退出码 0、12965.817ms。后者包括原受控双包消费及空页新 cursor 上限反例，不把同源码 fixture 记为上述跨版证明。
+
 - 候选所有变更独立审查及全量回归，关闭跨连接和 Operation 结果追踪缺口。
 - 第三轮真实模型团队链及正常终态重启已通过；继续验证取消、故障中途恢复与最终冻结发行资产的同包消费，不重复不确定的写入。
 - 实际浏览器补齐桌面/窄屏/缩放/键盘/错误状态/大量任务与事件；截图必须绑定候选代码。
