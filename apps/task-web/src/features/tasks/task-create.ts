@@ -219,6 +219,13 @@ export interface SubmissionProgress {
  * 完整执行一次逻辑提交：逐个上传附件（已知成功的跳过）、合并 inputRefs、创建任务。
  * 不做任何自动重试；结果未知（网络层失败）由调用方保留 session 供显式同键重放。
  */
+export function validateInputReferenceCount(existingRefs: number, files: number): string | null {
+  const total = existingRefs + files;
+  return total > TASK_INPUT_MAX_COUNT
+    ? 'inputRefs 合计 ' + total + ' 个，超过服务端合同上限 ' + TASK_INPUT_MAX_COUNT + ' 个。'
+    : null;
+}
+
 export async function runSubmission(
   api: CreateTaskApi,
   draft: CreateTaskDraft,
@@ -227,6 +234,8 @@ export async function runSubmission(
 ): Promise<{taskId: string}> {
   const refs: string[] = draft.context.inputRefs ? [...draft.context.inputRefs] : [];
   const total = draft.files.length;
+  const countError = validateInputReferenceCount(refs.length, total);
+  if (countError) throw new Error(countError);
   for (let index = 0; index < total; index += 1) {
     const known = session.inputRefs[index];
     if (known !== null && known !== undefined) {
@@ -248,9 +257,6 @@ export async function runSubmission(
   onProgress?.({uploading: null});
   const context: CreateTaskContext = {...draft.context};
   if (refs.length > 0) {
-    if (refs.length > TASK_INPUT_MAX_COUNT) {
-      throw new Error('inputRefs 合计 ' + refs.length + ' 个，超过服务端合同上限 ' + TASK_INPUT_MAX_COUNT + ' 个。');
-    }
     context.inputRefs = refs;
   }
   const body: CreateTaskBody = {intent: draft.intent, idempotencyKey: session.keys.taskKey};

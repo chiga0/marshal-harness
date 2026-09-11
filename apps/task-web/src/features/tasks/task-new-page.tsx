@@ -16,7 +16,7 @@ import {Textarea} from '../../components/ui/textarea';
 import {
   TASK_CONTEXT_TEXT_MAX_BYTES, TASK_INPUT_MAX_COUNT, TASK_INPUT_MAX_BYTES, TASK_INTENT_MAX_BYTES,
   newSubmissionSession, parseContextJson, resolveCreateTaskApi, runSubmission,
-  utf8Bytes, validateIntentText, validateSelectedFiles,
+  utf8Bytes, validateIntentText, validateSelectedFiles, validateInputReferenceCount,
 } from './task-create';
 import type {ComposerFile, CreateTaskApi, CreateTaskDraft, SubmissionSession} from './task-create';
 import {isAmbiguousFailure, useLogicalAction, useLogicalActionMemory} from './detail/shared/logical-action';
@@ -152,6 +152,10 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
     if (!parsed.ok) errors.context = parsed.error;
     const filesError = validateSelectedFiles(files);
     if (filesError) errors.files = filesError;
+    if (parsed.ok) {
+      const countError = validateInputReferenceCount(parsed.context.inputRefs?.length ?? 0, files.length);
+      if (countError) errors.context = countError;
+    }
     setFieldErrors(errors);
     if (errors.intent || errors.context || errors.files) return;
 

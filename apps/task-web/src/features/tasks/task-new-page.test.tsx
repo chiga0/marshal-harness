@@ -1,5 +1,5 @@
 import {beforeEach, describe, expect, it, vi} from 'vitest';
-import {act, render, screen, waitFor} from '@testing-library/react';
+import {act, fireEvent, render, screen, waitFor} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {MemoryRouter} from 'react-router-dom';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
@@ -58,6 +58,36 @@ beforeEach(() => {
 });
 
 describe('TaskNewComposer 客户端校验', () => {
+  it.each([0, 1])('合计33引用（含%i附件）提交前拒绝且可修改至合法32项', async fileCount => {
+    const user = userEvent.setup();
+    const api = makeApi();
+    renderComposer(api);
+    const intent = screen.getByLabelText(/需求内容/);
+    const context = screen.getByLabelText(/附加上下文/);
+    await user.type(intent, '保留的需求');
+    const refs = Array.from({length: 33 - fileCount}, (_, index) => 'input-' + index);
+    const raw = JSON.stringify({text: '保留的上下文', inputRefs: refs});
+    fireEvent.change(context, {target: {value: raw}});
+    if (fileCount) await user.upload(screen.getByLabelText('附件输入'), new File(['a'], 'a.txt'));
+    const keysBeforeSubmit = (globalThis as {__idemKeyState?: {seq: number}}).__idemKeyState?.seq;
+    await user.click(screen.getByRole('button', {name: '创建任务'}));
+    expect(await screen.findByText(/inputRefs 合计 33 个/)).toBeInTheDocument();
+    expect(api.createInput).not.toHaveBeenCalled();
+    expect(api.createTask).not.toHaveBeenCalled();
+    expect(intent).toBeEnabled();
+    expect(intent).toHaveValue('保留的需求');
+    expect(context).toBeEnabled();
+    expect(context).toHaveValue(raw);
+    expect(screen.queryByText(/提交结果未知/)).not.toBeInTheDocument();
+    expect((globalThis as {__idemKeyState?: {seq: number}}).__idemKeyState?.seq).toBe(keysBeforeSubmit);
+    fireEvent.change(context, {target: {value: JSON.stringify({text: '保留的上下文', inputRefs: refs.slice(1)})}});
+    await user.click(screen.getByRole('button', {name: '创建任务'}));
+    await screen.findByText('任务已创建，服务端返回受理回执');
+    expect(api.createInput).toHaveBeenCalledTimes(fileCount);
+    expect(api.createTask).toHaveBeenCalledTimes(1);
+    expect(api.createTask.mock.calls[0]![0].context?.inputRefs).toHaveLength(32);
+  });
+
   it.each([1, 2])('独立审查：%i个附件时连接销毁后迟到上传成功不得启动后续写', async fileCount => {
     const user = userEvent.setup();
     let finishInput!: (value: {id: string}) => void;
