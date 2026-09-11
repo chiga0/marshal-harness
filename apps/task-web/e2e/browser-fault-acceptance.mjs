@@ -7,6 +7,7 @@ import {pathToFileURL} from 'node:url';
 import {createHash, randomUUID} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {WORKTREE, ensureDist, spawnService, FIXTURE_LEADER} from './helpers.mjs';
+import {bounded, readJSON, until, assertReplay, finish} from './browser-fault-guards.mjs';
 
 const modulePath = process.env.PLAYWRIGHT_MODULE;
 assert.ok(modulePath && path.isAbsolute(modulePath), '提供已安装 Playwright 的绝对 PLAYWRIGHT_MODULE');
@@ -21,12 +22,9 @@ const runtime = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ui-fault-
 const hash = value => createHash('sha256').update(value).digest('hex');
 const evidence = {head: execFileSync('git', ['rev-parse', 'HEAD'], {cwd: WORKTREE, encoding: 'utf8'}).trim(), engine,
   nodeVersion: process.version, scriptSha256: hash(fs.readFileSync(new URL(import.meta.url))),
+  guardsSha256: hash(fs.readFileSync(new URL('./browser-fault-guards.mjs', import.meta.url))),
   boundary: '真实浏览器 + HTTP/SQLite + 既有受控 ACP，无真实模型、无业务发布、非目标用户可用性验收', checks: []};
 let service, browser, page;
-const until = async (read, accept) => {
-  for (let i = 0; i < 240; i++) { const value = await read(); if (accept(value)) return value; await new Promise(resolve => setTimeout(resolve, 250)); }
-  throw new Error('受控状态等待超时');
-};
 try {
   ensureDist();
   evidence.uiIndexSha256 = hash(fs.readFileSync(path.join(WORKTREE, 'apps/task-web/dist/index.html')));
@@ -34,9 +32,8 @@ try {
   service = spawnService({root: path.join(runtime, 'data'), config: FIXTURE_LEADER, env: {MARSHAL_LEADER_RECOVERY_FIXTURE: '1'}});
   const {address, token} = await service.ready;
   const api = async (route, body) => {
-    const response = await fetch(address + route, {method: body ? 'POST' : 'GET', headers: {Authorization: 'Bearer ' + token,
+    return readJSON(address + route, {method: body ? 'POST' : 'GET', headers: {Authorization: 'Bearer ' + token,
       Origin: address, ...(body ? {'Content-Type': 'application/json', 'Idempotency-Key': randomUUID()} : {})}, ...(body ? {body: JSON.stringify(body)} : {})});
-    assert.ok(response.ok, `fixture HTTP ${response.status}`); return response.json();
   };
   const create = async intent => {
     const task = await api('/v1/tasks', {intent, context: {text: JSON.stringify({east: 10, west: 20})}, requirements: {
@@ -61,8 +58,8 @@ try {
     const handler = async route => {
       if (route.request().method() !== 'POST') return route.continue();
       const request = route.request();
-      const response = await route.fetch();
-      const value = await response.json();
+      const response = await route.fetch({timeout: 10000});
+      const value = await bounded(() => response.json(), 10000);
       observed.push({body: request.postData(), key: request.headers()['idempotency-key'], status: response.status(), id: value.id});
       if (observed.length === 1) await route.abort('failed'); else await route.fulfill({response});
     };
@@ -82,11 +79,7 @@ try {
     await pending.getByRole('button', {name: '显式原键重放', exact: true}).press('Enter');
     await until(async () => observed.length, value => value === 2);
     await pending.waitFor({state: 'hidden'});
-    assert.ok(observed[0].status >= 200 && observed[0].status < 300);
-    assert.equal(observed[1].status, observed[0].status);
-    assert.equal(observed[1].body, observed[0].body);
-    assert.ok(observed[0].key); assert.equal(observed[1].key, observed[0].key);
-    assert.equal(observed[1].id, observed[0].id);
+    assertReplay(name, observed);
     if (stableCancel) {
       const after = {task: await api('/v1/tasks/' + cancelTask.id), audit: await api('/v1/tasks/' + cancelTask.id + '/audit')};
       assert.deepEqual(after, stableCancel, '取消原键重放不得再改变 Task 或审计');
@@ -133,11 +126,9 @@ try {
   evidence.failure = {name: error.name, message: String(error.message).split('\n')[0]};
   process.exitCode = 1;
 } finally {
-  await browser?.close();
-  if (service) {
-    evidence.serviceExit = await service.stop();
-    if (evidence.serviceExit.code !== 0) { evidence.result = 'FAIL'; process.exitCode = 1; }
-  }
-  fs.writeFileSync(path.join(output, 'evidence.json'), JSON.stringify(evidence, null, 2) + '\n', {mode: 0o600});
+  const failed = await finish({evidence, closeBrowser: browser ? () => browser.close() : undefined,
+    stopService: service ? () => service.stop() : undefined,
+    persist: value => fs.writeFileSync(path.join(output, 'evidence.json'), JSON.stringify(value, null, 2) + '\n', {mode: 0o600})});
+  if (failed) process.exitCode = 1;
   console.log(JSON.stringify({output, ...evidence}));
 }

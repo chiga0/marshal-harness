@@ -31,3 +31,13 @@
 - 私有短路径运行根由各 evidence.json 指出，SQLite 与原 fixture 日志保留；不得发布连接文件或原日志。证据摘要只记录正文/键哈希、状态、Task/Operation ID，无 token/请求头，不生成 HAR/trace。
 
 早期试跑保留两个失败证据：深层 worktree 运行根导致服务启动失败，改用短路径；设置页无主导航导致测试定位失败，改为实际「返回工作台」。均为测试运行环境/定位修正，不计入通过，不据此修改产品。最终双引擎运行使用同一上述脚本摘要。
+
+## 独立审查后三项测试保护加固
+
+在 `9a51a098629b9cd705ff713620934c1b73989bcf` 上只调整测试保护，不改变产品或增加业务场景：HTTP/响应体超时、等待墙钟截止；浏览器清理失败仍尽力停止所属服务并写 FAIL；批准/取消严格 202 且非空一致 Operation ID。旧成功证据完整保留。
+
+- `node --test apps/task-web/e2e/browser-fault-guards.checks.mjs`：4/4 通过、退出 0，含实际 HTTP 响应头/正文挂起、挂起 read/清理、清理与落盘失败、缺失/空 ID 与非 202 反例。
+- `node --check apps/task-web/e2e/browser-fault-acceptance.mjs`、`git diff --check` 通过。
+- 同两引擎原脚本复跑均退出 0，服务退出 0；Chromium 152 / WebKit 26.5，产品与 UI 构建不变。
+- 新证据：`.marshal/evidence/browser-fault-chromium-PAwnfJ/evidence.json` 与 `.marshal/evidence/browser-fault-webkit-nKLJad/evidence.json`。
+- 脚本 SHA-256 `b6d3f08d7d526845be37bb861f13c28ab0ee19d9040ae5b6b2c08ac971822d66`；保护函数 SHA-256 `e95c6dc6cd6a8127bf22f3a212d65fe7e105c3999386cb4a4fffe07346b8539e`，二者均绑定进新证据。原有三线结论与缺口不变。

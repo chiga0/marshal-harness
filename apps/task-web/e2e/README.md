@@ -51,6 +51,8 @@ PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs BROWSER_ENGINE=webkit n
 
 可选 `BROWSER_EXECUTABLE` 指定独立 headless 浏览器可执行文件，绝不接管用户浏览器。每次启动原 `main.mjs --ui`、新 SQLite 与既有受控 ACP Provider。Task 准备走公开 HTTP；答复、批准、取消、跨设置路由和原键重放通过真实点击/Enter，取消确认 Escape 后核对未提交。拦截器先取得真实 HTTP 响应，再丢弃首个响应；不伪造业务状态。每动作断言两次请求原键/原正文相同，批准与取消还绑定相同 Operation ID；取消重放前后 Task 与公开 audit 完全不变。
 
+保护接缝可独立运行 `node --test apps/task-web/e2e/browser-fault-guards.checks.mjs`（仓库根）。HTTP 请求及响应体 10 秒超时，状态等待总墙钟 60 秒；浏览器清理失败不跳过所属服务清理与 FAIL 证据的尽力落盘。两次响应必须严格为 202，批准/取消都必须有非空且一致的 Operation ID；缺失 ID 不能因两个 `undefined` 相等而通过。
+
 截图与脱敏摘要保留在当前 worktree 的 `.marshal/evidence/browser-fault-*`；短路径私有运行根保留在 `os.tmpdir()/ui-fault-*`，路径见 evidence.json（避免 Darwin Unix socket 路径过长）。服务正常停止后仍保留证据，不自动删除 SQLite/连接文件；这些目录包含测试凭据，不得发布。脚本不录 HAR、trace、token 或请求头；截图仅在连接后。执行前必须显式重建，build-if-missing 不检查资产是否陈旧。
 
 范围是 E20 的三个 mutation 未知结果跨路由/原键重放，以及 E31 业务答复、E07 计划预览批准、E14 取消与 E25 部分键盘行为。不是经典 `task.answer` 全链、409、取消运行中竞态、发布授权、Safari 人工测试或真人产品可用性验收；不把 202、fixture 或脚本 PASS 当作整 Task/版本验收完成。
