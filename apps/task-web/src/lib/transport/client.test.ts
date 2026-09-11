@@ -9,6 +9,19 @@ const operation = (kind: string) => ({id: 'op-1', taskId: 'task-x', kind, status
 
 describe('transport', () => {
   afterEach(() => clearToken());
+  it('成果元数据绑定原ID与期望Task，错绑时拒绝且不请求内容', async () => {
+    installToken('t-123');
+    let response = {id: 'artifact-one', taskId: 'task-one'};
+    const spy = vi.fn(async () => mockResponse(200, response));
+    const transport = createTransport({token: 't-123', fetchLike: spy as typeof fetch});
+    expect(await transport.getArtifact('artifact-one', {expectedTaskId: 'task-one'})).toEqual(response);
+    response = {...response, id: 'artifact-other'};
+    await expect(transport.getArtifact('artifact-one', {expectedTaskId: 'task-one'})).rejects.toMatchObject({code: 'artifact_binding_mismatch'});
+    response = {id: 'artifact-one', taskId: 'task-other'};
+    await expect(transport.getArtifact('artifact-one', {expectedTaskId: 'task-one'})).rejects.toMatchObject({code: 'artifact_binding_mismatch'});
+    expect(spy.mock.calls).toHaveLength(3);
+    for (const call of spy.mock.calls as unknown as [string, unknown][]) expect(call[0]).toBe('/v1/artifacts/artifact-one');
+  });
   it('按原Operation ID查询并拒绝串绑或无效状态', async () => {
     installToken('t-123');
     const operation = {id: 'op-1', taskId: 'task-1', kind: 'task.cancel', status: 'accepted', taskRevision: 7, createdAt: '2026-09-11T00:00:00Z', updatedAt: '2026-09-11T00:00:00Z'};

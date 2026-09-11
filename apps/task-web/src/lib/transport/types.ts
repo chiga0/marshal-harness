@@ -569,6 +569,11 @@ export interface ReadOptions {
   signal?: AbortSignal;
 }
 
+export interface ArtifactReadOptions extends ReadOptions {
+  /** Task成果入口的期望归属；仅用于客户端校验，不作为HTTP授权参数。 */
+  expectedTaskId?: TaskId;
+}
+
 export interface Transport {
   createTask(body: CreateTaskBody & {idempotencyKey: string}): Promise<TaskRecord>;
   createInput(body: CreateInputBody & {idempotencyKey: string}): Promise<ArtifactRecord>;
@@ -590,7 +595,7 @@ export interface Transport {
   leaderReply(taskId: TaskId, requestId: string, body: LeaderReplyBody): Promise<unknown>;
   repair(taskId: TaskId, body: RepairBody): Promise<unknown>;
   getEvents(taskId: TaskId, options?: {cursor?: string | null; limit?: number; signal?: AbortSignal}): Promise<Events>;
-  getArtifact(artifactId: ArtifactId, options?: ReadOptions): Promise<ArtifactRecord>;
+  getArtifact(artifactId: ArtifactId, options?: ArtifactReadOptions): Promise<ArtifactRecord>;
   getArtifactContent(artifactId: ArtifactId, options?: ReadOptions): Promise<Blob>;
 }
 

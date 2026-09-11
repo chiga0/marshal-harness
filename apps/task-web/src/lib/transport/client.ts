@@ -174,7 +174,13 @@ export function createTransport(config: TransportConfig): Transport {
       if (options.cursor) params.set('cursor', options.cursor);
       return json<Events>(`/v1/tasks/${encodeURIComponent(taskId)}/events${params.size ? '?' + params.toString() : ''}`, readInit(options.signal));
     },
-    getArtifact: (artifactId, options = {}) => json<ArtifactRecord>(`/v1/artifacts/${encodeURIComponent(artifactId)}`, readInit(options.signal)),
+    getArtifact: async (artifactId, options = {}) => {
+      const artifact = await json<ArtifactRecord>(`/v1/artifacts/${encodeURIComponent(artifactId)}`, readInit(options.signal));
+      if (!artifact || artifact.id !== artifactId || (options.expectedTaskId !== undefined && artifact.taskId !== options.expectedTaskId)) {
+        throw new ApiError(502, 'artifact_binding_mismatch', '成果元数据与原ID或Task归属不符，已拒绝展示和下载', null);
+      }
+      return artifact;
+    },
     getArtifactContent: async (artifactId, options = {}) => {
       const token = currentToken;
       if (!token) throw new ApiError(401, 'token_missing', '未连接服务', null);

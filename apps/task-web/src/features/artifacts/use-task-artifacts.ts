@@ -4,6 +4,7 @@
 
 import {useQuery, type UseQueryResult} from '@tanstack/react-query';
 import type {ArtifactId, ArtifactRecord, Transport} from '@/lib/transport/types';
+import {ApiError} from '@/lib/transport/types';
 import {taskKeys} from '../tasks/detail/query-keys';
 
 export type ArtifactEntry =
@@ -26,7 +27,10 @@ export function useTaskArtifacts({taskId, artifactIds, transport, refetchInterva
       const entries = await Promise.all(
         artifactIds.map(async (id): Promise<ArtifactEntry> => {
           try {
-            return {status: 'ok', artifact: await transport.getArtifact(id, {signal})};
+            const artifact = await transport.getArtifact(id, {signal, expectedTaskId: taskId});
+            // 即便宿主提供其他Transport实现，也不得把串ID/串Task成果放入本Task可下载清单。
+            if (artifact.id !== id || artifact.taskId !== taskId) throw new ApiError(502, 'artifact_binding_mismatch', '成果归属不符，已拒绝展示和下载', null);
+            return {status: 'ok', artifact};
           } catch (error) {
             return {status: 'failed', id, error};
           }
