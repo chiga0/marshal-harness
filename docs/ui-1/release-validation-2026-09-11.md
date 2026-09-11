@@ -264,10 +264,16 @@ run `34605383372` attempt1 的13项均成功，原候选 artifact `10267051634`�
 
 接纳前两次私有识别前提错误保留：新版gh拒绝带转义序列的日志，改为只在内存解析；误认为run只有一个artifact，改按原接纳合同核对精确候选名称唯一（其余4项是消费证据）。未因此重复下载ZIP或启动产品Task。
 
+最终同根升级/回滚也已完成：`/private/tmp/marshal-main-61a0048.kDLlpM/upgrade/evidence.json`，session69644 exit0；固定旧 v1.0.2 → 原 main61a0048e安装包/UI → 旧 API-only，三次服务退出0/stderr0，Task `task-a403f16b-a1fe-456f-82ee-cdbca70ea4dd` 与原快照保持，root dev16777231/ino246885725不变，originalAgentStarts2/Attempts3、新启动0。原交付476字节，SHA-256 `baa6814d88c7b7fa1dd6b93ee9737cae53a0056f94c0e908b4a0eef2c5e89840`，east2/1200、west1/-50。主侧已独立读取完整报告与原JSON核对；执行者为升级消费者作者，既有独立验证器审查由主侧完成，不称新一次独立作者外执行。限同 regional-window 身份，零模型、无业务发布、无任意profile迁移；不是签名发行。
+
 安装包交互首轮 `/private/tmp/ui-installed-controls.rlEOOw/report.md` 仍FAIL：真实E09等待问题截图已取得，但测试要求团队状态使用英文，实际UI是中文等待答复/已完成，导致E12之前超时；session98282 exit1、service正常退出0，未发UI写请求。此为测试定位假设错误，不是产品失败；暂停/恢复未验不能记通过。已停止修改该脚本，E12改为仅复用最初成功的双问题流程并适配安装包，不再混入Graph/团队状态或键盘前置。
 
 E09/E12 后继脚本失败（`/private/tmp/ui-controls-keyboard.oJ4sW3/report.md`）保留：首次在零 Task 时错误地 Tab 到未选中原生 radio，修正为 Tab 进入当前选项后方向键切换；同根第二次仅创建 Task `task-2405f184-2553-4f33-98f8-7d232c010aaf`，公开 east Worker awaiting-answer、west completed，但脚本硬等 Graph east waiting 而失败。独立追溯原生产链确认 Graph 返回 record.nodes，运行问题修改 Task/Worker 而不改节点 running，因此不是已证产品缺陷。前检只核枚举而漏查生产链，属于测试前检遗漏。两次所属服务均退出0；未执行 pause/resume，原期限已过，不重开旧任务、延长预算或补记双回执通过。后续仅复用原已成功 E12 主链，在最终安装资产上合并一次验收；按各实体真实字段分别断言，不为截图继续重造源码样例。
 
 E14 限定补证（`9cdfc074`，`/private/tmp/ui-terminal-cancel.7Badza/report.md`）：原 E10 Task 已 completed/rev23，Chrome 实际滚入控制区后无取消入口。唯一一次正式客户端使用此前真实观察的 rev15 取消，返回409 `revision_conflict`；原 Task/Questions/Workers/Events/audit及两项制品元数据、字节与摘要不变，新增执行0，客户端POST1/浏览器POST0。session6647及所属服务均退出0。由于 Core 先检查 revision，此证据仅证明终态展示与陈旧 CAS 拒绝，不关闭同时竞争或同revision终态guard，不追加重复请求凑覆盖。
+
+最终原安装包 E12 补验已完成：`/private/tmp/ui-installed-e12.sNDh0a/report.md`，session27110 exit0，所属服务 exit0。唯一原 Task `task-a4aa1bc1-de8e-4473-8d7d-fa3da1c2bf99` 在 Chrome152/1440×1000 下经历 awaiting-answer rev15 → pause202/paused17 → resume202/awaiting-answer19。显式注入两次 Operation GET unknown 时控制保持锁定，撤销注入后读取原回执恢复控制；两个不同的原 Operation GET 均 succeeded，并绑定原 Task。实际详情 SECTION 中双回执整体高332像素、y627，完整处于1000像素视口；截图 `pause-resume/two-original-receipts.png`，未用全页截图冒充视口可见。两个原问题真实回答/ACK、两个原作者 completed，无替代 Worker；4个所属handle均清理，8个相关PID均已不存在。
+
+以上只关闭暂停/恢复与双回执可见性的限定范围。最后作者完成快照为 Task running rev28，随后原 journal 中 verifier failed，归因待核对；不得称整个 Task 交付通过。沿用最初成功脚本，仅适配精确安装包和回执定位，不重建安装树，不覆盖前两轮测试假设错误的失败记录。实际 Safari、真实目标用户及其他明确未测范围仍保持待验，不因本项 PASS 自动关闭三线验收。
 
 执行顺序：按增量研发规则，在独立代码审查及相关本地/CI 检查通过后合并 PR，并继续保留上面的 UI 验收缺口；再取得该 main push 的原始 CI 包进行最终同包验收。不能要求先取得尚未产生的 main 包才允许研发合并，也不能用研发合并关闭 UI-1 或直接发版。Safari 工具探测本轮返回 `Browser is not available: Safari`，未创建标签或改变权限；这是当前浏览器控制入口的限制，不表示 Safari 产品兼容性失败，实际 Safari 仍待验。
