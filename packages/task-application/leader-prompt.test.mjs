@@ -8,7 +8,10 @@ import {createLeaderPort, createReviewPort, parseManagedOutput, renderLeaderProm
 function rendered(ticket) {
   const input = ticket.input.leader, before = structuredClone(input), prompt = renderLeaderPrompt(input);
   const references = JSON.parse(prompt.split('\n冻结机器引用：')[1].split('\n独立返回示例：')[0]);
-  const examples = JSON.parse(prompt.split('\n独立返回示例：')[1].split('\n完整冻结输入：')[0]);
+  const section = prompt.split('\n独立返回示例：')[1].split('\n完整冻结输入：')[0];
+  const examples = Object.fromEntries(section.split('\n示例名称（不是返回字段）：').slice(1).map(block => {
+    const newline = block.indexOf('\n'); return [block.slice(0, newline), JSON.parse(block.slice(newline + 1))];
+  }));
   assert.deepEqual(input, before); assert.ok(prompt.endsWith(JSON.stringify(input)));
   for (const example of Object.values(examples)) if (typeof example === 'object') {
     assert.equal(example.actions.length, 1); assert.equal(example.callId, input.callId); assert.equal(example.inputDigest, input.inputDigest);
@@ -38,14 +41,14 @@ async function authors(t) {
   f.app.execution.expandDispatch(command.id, command.revision);
   return {f, task, east: f.take('execute', 'east'), west: f.take('execute', 'west')};
 }
-async function parseExample(ticket, value, maxActions = 1) {
+async function parseExample(ticket, value, maxActions = 1, diagnostics = []) {
   const port = createLeaderPort({id: 'renderer-test', providerId: ticket.providerId, policy: {...ticket.input.leader.snapshot.policy, maxActions},
     prepare: ({input}) => ({prompt: renderLeaderPrompt(input)}), parseDecision: parseManagedOutput});
   const started = {executionId: 'controlled-parser', startedAt: new Date().toISOString()};
   const provider = {id: ticket.providerId, start() {return {started: Promise.resolve(started), stop() {},
     completion: Promise.resolve({providerId: ticket.providerId, status: 'completed', stopReason: 'end_turn', outputText: JSON.stringify(value),
       cleanup: {started, cleaned: true, scope: 'controlled-fixture'}})};}};
-  return port.start({ticket, provider, prepared: {prompt: renderLeaderPrompt(ticket.input.leader)}}).completion;
+  return port.start({ticket, provider, prepared: {prompt: renderLeaderPrompt(ticket.input.leader)}, onDiagnostic: value => diagnostics.push(value)}).completion;
 }
 test('original intake input yields one parseable ask, exact distinct envelope/subject and no six-action max1 example', async t => {
   const {f, task, ticket} = await initial(t), {examples, references, prompt} = rendered(ticket);
@@ -84,6 +87,17 @@ test('original frozen selected/review/acceptance/delivery/history refs traverse 
   const delivery = ticket.input.leader.materials.find(item => item.kind === 'delivery');
   assert.equal(value.examples.deliver.actions[0].artifactId, delivery.id);
   assert.notEqual(value.examples.deliver.actions[0].acceptanceDigest, delivery.digest);
+  // 真实 UI Task 的 event-102：模型 completed/end_turn，却把完整信封包装为 {deliver: ...}。
+  // 仅复现形状；不用原业务正文，不放宽原 parser，也不复活失败任务。
+  assert.ok(value.prompt.includes('返回顶层必须且只能是profile、callId、inputDigest、summary、actions五个字段'));
+  assert.ok(value.prompt.includes('不得用ask/plan/work/repair/deliver/conclude作外层包装键'));
+  assert.ok(value.prompt.includes('\n示例名称（不是返回字段）：deliver\n' + JSON.stringify(value.examples.deliver)));
+  assert.ok(!value.prompt.includes('\n独立返回示例：{"ask":'));
+  const diagnostics = [], rejected = await parseExample(ticket, {deliver: value.examples.deliver}, 1, diagnostics);
+  assert.equal(rejected.status, 'failed');
+  const failure = diagnostics.find(item => item.code === 'managed_provider_failure');
+  assert.equal(failure.stage, 'parse'); assert.equal(failure.parseCode, 'invalid_leader_decision');
+  assert.equal((await parseExample(ticket, value.examples.deliver)).status, 'completed');
   assert.equal((await f.decision(ticket, value.examples.deliver.actions)).status, 'completed');
   ticket = f.take('leader'); value = rendered(ticket);
   assert.ok(!value.examples.conclude.actions[0].basisDigests.includes(ticket.input.leader.snapshot.readSet.find(item => item.kind === 'history').digest));

@@ -306,6 +306,8 @@ export function renderLeaderPrompt(input) {
     conclude: example({type: 'conclude', outcome: 'succeeded', summary: '依据已完成的交付及后验说明整体结果', basisDigests: references.conclusionBasisDigests}),
   };
   return '你是受管 Leader，只决定原任务的业务推进，不能启动进程、写文件、批准计划或提升权限。只返回一个 JSON 对象，无 Markdown。' +
+    '返回顶层必须且只能是profile、callId、inputDigest、summary、actions五个字段；动作类型放在actions数组元素的type字段。' +
+    '下面的示例名称只是说明标题，不是JSON字段；只返回所选示例的对象本身，不得用ask/plan/work/repair/deliver/conclude作外层包装键，也不得返回示例目录。' +
     '回显 profile/callId/inputDigest，summary≤4096 UTF-8 bytes，actions 为1至 snapshot.policy.maxActions项。下列每项是单独的返回示例，绝不能合并为六动作决定。' +
     '输出对象和各action必须且只能含相应示例列出的字段，不可省略/增加；所有业务文本须非空、合法Unicode、无NUL，整个返回无BOM且≤65536 UTF-8 bytes。' +
     'ask、plan、conclude必须独占该决定；work.kind为execute/review/verify；直接ask.kind只能为business，publication授权问题由Core在deliver后生成，Leader不能自授allow；' +
@@ -338,7 +340,8 @@ export function renderLeaderPrompt(input) {
     '验收绑定还需保留Core追加合同项的原容量；这些仅为形状上界，不保证业务/布局/预算准入。' +
     'plan示例仅解释字段，必须按完整原需求、回复、共享上下文制定实际分工，不能照抄示例业务。只在真实缺项时ask，独立Review先于客观Verification。' +
     '机器引用/示例不是可执行授权清单，不表示当前阶段可做；缺少引用时不得编造，所有动作仍经Core原currentness/授权/预算/依赖检查。' +
-    '\n冻结机器引用：' + JSON.stringify(references) + '\n独立返回示例：' + JSON.stringify(examples) +
+    '\n冻结机器引用：' + JSON.stringify(references) + '\n独立返回示例：' +
+    Object.entries(examples).map(([name, value]) => '\n示例名称（不是返回字段）：' + name + '\n' + JSON.stringify(value)).join('') +
     '\n完整冻结输入：' + JSON.stringify(input);
 }
 export function renderReviewPrompt(input) {
