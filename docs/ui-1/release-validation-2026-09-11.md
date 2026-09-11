@@ -12,11 +12,19 @@
 
 原 main 包独立消费结果 `/private/tmp/marshal-main-9852.RiUeEa/independent-admission/result.json`：两种布局均通过，每种原执行4次、Attempts4、冷恢复重复启动0、modelCalls0。升级预检另于 `independent-upgrade-preflight.json` 返回 `invalid_manifest`：测试消费者用当前67文件库存校验旧版65文件，运行尚未开始、未创建业务根；四个共同 profile 摘要相同。不把工具兼容缺口当作运行时数据迁移失败，也不声称升级通过。后继仅修测试消费者的固定旧验证器选择，不放宽生产库存验证；此前报告 profile 身份迁移的独立缺口仍保留。
 
+上述升级工具缺口后续修复源 `44913c3a`，整合为 `3ed0d3ed`。仅测试消费者按固定 v1.0.2 source、18240字节及 SHA-256 `60ed1edfb01bd4dee8bc3304e142dc6080c88611362599c260065a51e97d534d` 选择包外旧验证器；验证文件身份与摘要后执行冻结字节，不从待测包导入验证器，生产 verify/库存不变。主侧使用 code-review-helper 独立审查，8项独立定向测试通过（session7896），作者完整发行回归33项通过（session28445）。原旧版签名清单只签 ZIP/manifest，不称 helper 被直接 minisign 签名。
+
+固定旧 v1.0.2 → 原 main `9852e4da` CI 安装资产 → 旧 API-only 同根实测通过：`/private/tmp/marshal-main-9852.RiUeEa/independent-upgrade-validated/evidence.json`，Task `task-9d012e40-0062-44f4-9f96-ba87f6d0ca1b`，原 starts2/Attempts3、升级及回滚新增 starts0、三次退出0/stderr0，原快照完全一致、root dev/ino不变；east2/1200、west1/-50。执行者为测试消费者修复作者，主侧独立检查源码、定向回归与原结果，未独立重跑该固定资产完整链。此限定 regional-window profile、modelCalls0、publication=false、migrationClaim=false；不覆盖报告 profile 迁移，不冒充含后继UI修复的最终签名资产或发行批准。原 BLOCKED 证据不覆盖。
+
+E24/E25 问题／方案／授权页面限定补验 `/private/tmp/ui-question-keyboard.2kJlxA/followup/report.md`：独立冻结 `8598f1f4`、自有 `CByOpyRS` 构建，Chrome152，375px及原生200%（outer1440/inner720/DPR2/CSS zoom1）。真实HTTP/SQLite受控Task，六组合均用Tab发现入口、Enter打开确认框、Escape返回原入口；十二张可见窗口截图前先让实际SECTION滚入目标，无整页横溢。仅业务答复及方案批准各202，发布授权仅打开退出、目标目录为空，服务与两浏览器均退出。浅色Leader自由文本范围，不覆盖经典选项、深色、Shift+Tab/首尾环绕、实际Safari或从启动起完整纯键盘；原0755测试目录启动错误在Task前发生、修0700后同根继续，FAIL保留，不记产品缺陷。
+
+只读异常聚合 `/private/tmp/ui-read-anomaly.ZsfpWv/report.md`：独立冻结 `13f04cf8`／`BNLSYH6U`，原 completed Task 的61版本响应未覆盖已见62及正文；原782字节制品等长翻转一字节被拒存，串Task metadata被拒展示和读取内容；375px深色错误换行，无整页横溢。断开后排空再观察2.3秒无新增请求，重连原成果恢复。157个浏览器API请求、POST0、download0，原Task/Workers/Leader/audit完全不变，所属服务退出0。主侧另直接查看错误摘要375深色截图，制品表有局部横向滚动，不声称所有列同时可见。切换另一独立页面时原页仍visible，没有真正触发隐藏生命周期，因此隐藏退避未通过也未证明产品失败；8MiB及全部分页竞态未在本批覆盖。
+
 **尚不可声明完整验收通过，尚未发布新版。** 本记录补充三条验收，不以组件测试替代实际交付、视觉操作或目标用户测试。
 
 | 验收线 | 当前状态 | 证据与缺口 |
 | --- | --- | --- |
-| 功能与可靠性 | PARTIAL | 第三轮真实 Pi 团队完成独立审查、验收、授权发布和后验；原输入/成果/发布回执/后验证据四项浏览器下载复验通过。UI 464 项及 4 项测试护栏通过；`93ed5468` 补齐发行依赖后，发行测试 11/11、原仓库安装消费准入 31/31 通过。最终 CI 包、取消/故障全范围与持续稳定性仍待补齐。 |
+| 功能与可靠性 | PARTIAL | 第三轮真实 Pi 团队完成独立审查、验收、授权发布和后验；原输入/成果/发布回执/后验证据四项浏览器下载复验通过。整合 `13f04cf8` 的 UI 483 项及 4 项测试护栏通过；`9852e4da` 原 CI 包独立安装消费及同根旧→新→旧验证通过，后继精确资产仍须验证。取消/故障全范围与持续稳定性仍待补齐。 |
 | 视觉与交互 | PARTIAL | 已实测创建、问答、批准、DAG/团队、桌面/375px、浅深主题、Chrome 原生 200% 缩放、抽屉键盘及受控异常回执。成果列宽/错误换行已修复复验；完整必需矩阵与实际 Safari 仍未全部完成，具体版本和限定范围见下文。 |
 | 产品可用性 | NOT_RUN（真人）；无指导 Agent 模拟已完成 | 早期只有参与开发者的截图观察；后续新增未继承开发历史的独立 Agent，完成无点击指导的限定只读任务并发现追溯缺口，修复后原业务四下载已独立复验。模拟不替代真人，也未覆盖全部新建与授权用户路径。 |
 
