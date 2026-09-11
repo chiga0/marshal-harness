@@ -322,19 +322,21 @@ function ArtifactFacts({artifact}: {artifact: ArtifactRecord}) {
 function ArtifactRow({artifact, transport, sources = [], readyOnly = false}: {artifact: ArtifactRecord; transport: Transport; sources?: string[]; readyOnly?: boolean}) {
   return (
     <tr className="border-t border-border" data-testid="artifact-row" data-artifact-id={artifact.id}>
-      <td className="break-all px-3 py-2"><code className="text-xs">{artifact.name}</code>{sources.map(source => <p key={source} className="text-xs text-text-secondary">来源：{source}</p>)}</td>
+      <td className="min-w-40 break-all px-3 py-2"><code className="text-xs">{artifact.name}</code>{sources.map(source => <p key={source} className="text-xs text-text-secondary">来源：{source}</p>)}</td>
       <td className="px-3 py-2"><code className="text-xs">{artifact.mediaType}</code></td>
-      <td className="px-3 py-2">{formatBytes(artifact.bytes)}</td>
-      <td className="max-w-[220px] break-all px-3 py-2"><code className="text-xs">{artifact.digest}</code></td>
-      <td className="px-3 py-2">
+      <td className="whitespace-nowrap px-3 py-2">{formatBytes(artifact.bytes)}</td>
+      <td className="min-w-40 max-w-[220px] break-all px-3 py-2"><code className="text-xs">{artifact.digest}</code></td>
+      <td className="whitespace-nowrap px-3 py-2">
         <StatusBadge machine={artifact.status} label={ARTIFACT_STATUS_LABELS[artifact.status]} tone={artifactStatusTone(artifact.status)} showMachine={false} />
       </td>
       <td className="px-3 py-2">
+        <div className="w-56">
         {artifact.status === 'unavailable' || readyOnly && artifact.status !== 'ready' ? (
           <span className="text-xs text-text-secondary">{artifact.status === 'unavailable' ? '内容不可用，不提供下载' : '内容未就绪，不提供下载'}</span>
         ) : (
           <ArtifactDownload artifact={artifact} transport={transport} />
         )}
+        </div>
       </td>
     </tr>
   );
@@ -366,20 +368,20 @@ function ArtifactDownload({artifact, transport}: {artifact: ArtifactRecord; tran
   };
 
   return (
-    <span className="inline-flex flex-wrap items-center gap-2">
-      <Button size="sm" variant="outline" onClick={() => void onDownload()} loading={busy} data-testid="download-button">
+    <span className="inline-flex w-full min-w-0 flex-wrap items-center gap-2">
+      <Button className="shrink-0 whitespace-nowrap" size="sm" variant="outline" onClick={() => void onDownload()} loading={busy} data-testid="download-button">
         下载
       </Button>
       {saved !== null ? (
-        <span className="text-sm text-success" role="status" data-testid="download-success">
+        <span className="w-full break-all text-sm text-success" role="status" data-testid="download-success">
           已保存 {saved}（SHA-256 复验通过）。下载不等于发布。
         </span>
       ) : null}
       {error instanceof DownloadRejection ? (
-        <span className="text-sm text-danger" role="alert" data-testid="download-rejected">{error.message}</span>
+        <span className="w-full break-all text-sm text-danger" role="alert" data-testid="download-rejected">{error.message}</span>
       ) : null}
       {error !== null && !(error instanceof DownloadRejection) ? (
-        <span className="block w-full"><ErrorNotice error={error} title="下载失败" onRefresh={() => void onDownload()} /></span>
+        <span className="block w-full min-w-0 break-all"><ErrorNotice error={error} title="下载失败" onRefresh={() => void onDownload()} /></span>
       ) : null}
     </span>
   );
