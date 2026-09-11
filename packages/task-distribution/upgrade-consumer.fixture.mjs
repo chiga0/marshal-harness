@@ -71,8 +71,9 @@ for await(const line of createInterface({input:process.stdin})) {
 `;
 
 export async function readPages(client, operation, taskId) {
-  const items = [], cursors = new Set(); let cursor;
+  const items = [], cursors = new Set(); let cursor, pages = 0;
   do {
+    assert.ok(++pages <= 100, 'snapshot_page_count_bound');
     const page = await client.request(operation, {path: {taskId}, query: {limit: 100, ...(cursor ? {cursor} : {})}});
     assert.equal(page.taskId, taskId);
     assert.ok(page.items.every(item => item.taskId === taskId), 'snapshot_item_task_mismatch');

@@ -54,6 +54,9 @@ test('complete pagination has exact task binding and rejects cursor loops, dupli
     {taskId: 'task-a', items: [{id: 'same', taskId: 'task-a'}, {id: 'same', taskId: 'task-a'}], nextCursor: null},
     {taskId: 'task-a', items: [{id: 'foreign', taskId: 'task-b'}], nextCursor: null},
   ]) await assert.rejects(readPages({request: async () => page}, 'task.events', 'task-a'));
+  let emptyPages = 0;
+  await assert.rejects(readPages({request: async () => ({taskId: 'task-a', items: [], nextCursor: 'fresh-' + ++emptyPages})}, 'task.events', 'task-a'), /snapshot_page_count_bound/);
+  assert.equal(emptyPages, 100, 'empty pages with fresh cursors cannot extend the observation forever');
 });
 test('answer replay changes only contract replay/currentTask fields, never the frozen receipt', () => {
   const original = {taskId: 'task-a', acceptedRevision: 2, acceptedPreviewDigest: 'original', replayed: false, currentTask: {revision: 2}};
