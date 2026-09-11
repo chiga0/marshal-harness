@@ -151,6 +151,9 @@ function EventRow({event}: {event: TaskEvent}) {
         {event.workerId ? <span>Worker <code>{truncateMiddle(event.workerId, 6, 4)}</code></span> : null}
         <span className="ml-auto" title={`事件 ID：${event.id}`}>ID <code>{truncateMiddle(event.id, 6, 4)}</code></span>
       </div>
+      {event.type === 'worker.answer-acknowledged' ? (
+        <p className="mt-1 text-sm font-medium">Worker 已确认消费原答复；这不代表执行完成或验收通过。</p>
+      ) : null}
       <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-[22px]">
         {long && !expanded ? `${event.summary.slice(0, EXPAND_THRESHOLD)}…` : event.summary}
       </p>

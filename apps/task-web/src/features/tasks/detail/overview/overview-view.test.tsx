@@ -125,10 +125,10 @@ describe('概览（P04/P05）：等待、进展、验收、计划', () => {
     expect(screen.getByTestId('waiting-empty')).toHaveTextContent('问题投影未加载');
   });
 
-  it('UI-08：运行问题已答复但 Worker ACK 未落定时保留待核对，已 ACK 的不再占位', () => {
+  it.each(['pending', 'dispatched', 'unknown', null] as const)('UI-08：运行问题消费状态%s保留待核对，ACK进入只读历史不再占位', deliveryStatus => {
     const {transport} = makeFakeTransport();
     const task = makeTask({status: 'awaiting-answer', allowedActions: ['answer']});
-    const unacked = makeRunningQuestion({id: 'q-run-1', status: 'answered', answer: '北', deliveryStatus: 'pending'});
+    const unacked = makeRunningQuestion({id: 'q-run-1', status: 'answered', answer: '北', deliveryStatus});
     const acked = makeRunningQuestion({id: 'q-run-2', status: 'answered', answer: '南', deliveryStatus: 'acknowledged'});
     const questions = makeQuestions({items: [unacked, acked]});
     wrap(<OverviewView task={task} plan={null} questions={questions} workers={[]} leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />);
@@ -137,6 +137,11 @@ describe('概览（P04/P05）：等待、进展、验收、计划', () => {
     const cards = screen.getAllByTestId('question-card');
     expect(cards).toHaveLength(1);
     expect(cards[0]).toHaveAttribute('data-question-id', 'q-run-1');
-    expect(cards[0]).toHaveTextContent('Worker 消费状态：已受理（待投递 Worker）');
+    expect(cards[0]).toHaveTextContent('Worker 消费状态：');
+    expect(cards[0]).not.toHaveTextContent('已消费（Worker 已确认）');
+    const history = screen.getByTestId('question-history-item');
+    expect(history).toHaveAttribute('data-question-id', 'q-run-2');
+    expect(history).toHaveTextContent('已消费（Worker 已确认）');
+    expect(within(history).queryByTestId('question-submit')).toBeNull();
   });
 });

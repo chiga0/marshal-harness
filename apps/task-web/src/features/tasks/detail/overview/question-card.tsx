@@ -140,7 +140,7 @@ export function QuestionCard({taskId, expectedRevision, question, previewDigest,
       {action.phase.kind === 'accepted' ? (
         <div className="rounded-md border border-success/40 bg-success/5 p-3" role="status" data-testid="question-accepted">
           <p className="text-sm font-medium text-success">答复已受理（受理不等于已被执行方消费）。</p>
-          <p className="mt-1 text-sm text-text-secondary">任务进展以轮询到的服务端状态为准；此视图不显示 Worker 投递/ACK。</p>
+          <p className="mt-1 text-sm text-text-secondary">任务进展以轮询到的服务端状态为准。{runtime ? '运行问题的投递与消费状态见本卡片；确认消费后，可在概览的「已处理的运行问题」中核对原记录。' : '这是预批准问题，不代表 Worker 已消费运行答复。'}</p>
           <OperationReceipt result={action.phase.result} taskId={taskId} kind="task.answer" transport={transport} />
           <div className="mt-2"><Button size="sm" variant="outline" onClick={onChanged}>刷新任务查看进展</Button></div>
         </div>

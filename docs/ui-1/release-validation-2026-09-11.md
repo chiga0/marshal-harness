@@ -2,6 +2,8 @@
 
 ## 当前结论
 
+后继 [PR #294](https://github.com/chiga0/marshal-harness/pull/294) 已于 2026-09-11 21:06:16（Asia/Shanghai）合并：精确 source `3ed0d3ed992f88583f232acdb798e85186f7e800`，merge/main=`0549aa82efc0858fac0c8c07e887a9c696e9a647`。Node run `34601260031` 的13项全部成功，准入 `34601259985` 双平台成功（PR不执行手动原包接纳job），secret `34601259904` 及外部安全检查成功。已正常快进本地主分支并保留用户未跟踪文件；main 原包生产 run `34602433748` 另行验证，不把 PR 包冒充 main 包，不因代码合并宣称 UI 正式发行。
+
 2026-09-11 20:21:16（Asia/Shanghai），PR #293 的精确 head `93ed5468` 经独立审查和 CI `34597445153` 全13项、准入 `34597445154` 双平台与 secret scan 通过后，实际合并为 main `9852e4da487c0c0f0a36c3ec99de62d5d71b55a9`；本地主分支已正常快进，用户未跟踪文件保留。main push `34598484218` 已13项通过，原始候选包独立安装消费通过，精确绑定见下文；不复用 PR 包冒充该 main 包。本条仅为研发合并，不是 UI 完整验收或软件发行。
 
 后继运行控制补验确认 P2：暂停 Operation 已 succeeded，公开 Task paused 且允许 resume/cancel，但页面 `pendingAction` 仍锁住后续操作，必须先点含义不明确的“关闭”。这不是单纯脚本遗漏；存在可见绕行路径、未证数据/权限损害，但 E12 自然操作仍未通过，后继独立分支修复。unknown/submitting 的冻结锁必须保留，不按202自动解锁。原失败及聚合复验报告 `/private/tmp/ui-controls-fixed.diiOfo/report.md` 保留；E13单Worker取消后兄弟继续和E14真实运行取消的限定子场景已通过，不重复整批。
@@ -12,11 +14,27 @@
 
 原 main 包独立消费结果 `/private/tmp/marshal-main-9852.RiUeEa/independent-admission/result.json`：两种布局均通过，每种原执行4次、Attempts4、冷恢复重复启动0、modelCalls0。升级预检另于 `independent-upgrade-preflight.json` 返回 `invalid_manifest`：测试消费者用当前67文件库存校验旧版65文件，运行尚未开始、未创建业务根；四个共同 profile 摘要相同。不把工具兼容缺口当作运行时数据迁移失败，也不声称升级通过。后继仅修测试消费者的固定旧验证器选择，不放宽生产库存验证；此前报告 profile 身份迁移的独立缺口仍保留。
 
+上述升级工具缺口后续修复源 `44913c3a`，整合为 `3ed0d3ed`。仅测试消费者按固定 v1.0.2 source、18240字节及 SHA-256 `60ed1edfb01bd4dee8bc3304e142dc6080c88611362599c260065a51e97d534d` 选择包外旧验证器；验证文件身份与摘要后执行冻结字节，不从待测包导入验证器，生产 verify/库存不变。主侧使用 code-review-helper 独立审查，8项独立定向测试通过（session7896），作者完整发行回归33项通过（session28445）。原旧版签名清单只签 ZIP/manifest，不称 helper 被直接 minisign 签名。
+
+固定旧 v1.0.2 → 原 main `9852e4da` CI 安装资产 → 旧 API-only 同根实测通过：`/private/tmp/marshal-main-9852.RiUeEa/independent-upgrade-validated/evidence.json`，Task `task-9d012e40-0062-44f4-9f96-ba87f6d0ca1b`，原 starts2/Attempts3、升级及回滚新增 starts0、三次退出0/stderr0，原快照完全一致、root dev/ino不变；east2/1200、west1/-50。执行者为测试消费者修复作者，主侧独立检查源码、定向回归与原结果，未独立重跑该固定资产完整链。此限定 regional-window profile、modelCalls0、publication=false、migrationClaim=false；不覆盖报告 profile 迁移，不冒充含后继UI修复的最终签名资产或发行批准。原 BLOCKED 证据不覆盖。
+
+E24/E25 问题／方案／授权页面限定补验 `/private/tmp/ui-question-keyboard.2kJlxA/followup/report.md`：独立冻结 `8598f1f4`、自有 `CByOpyRS` 构建，Chrome152，375px及原生200%（outer1440/inner720/DPR2/CSS zoom1）。真实HTTP/SQLite受控Task，六组合均用Tab发现入口、Enter打开确认框、Escape返回原入口；十二张可见窗口截图前先让实际SECTION滚入目标，无整页横溢。仅业务答复及方案批准各202，发布授权仅打开退出、目标目录为空，服务与两浏览器均退出。浅色Leader自由文本范围，不覆盖经典选项、深色、Shift+Tab/首尾环绕、实际Safari或从启动起完整纯键盘；原0755测试目录启动错误在Task前发生、修0700后同根继续，FAIL保留，不记产品缺陷。
+
+只读异常聚合 `/private/tmp/ui-read-anomaly.ZsfpWv/report.md`：独立冻结 `13f04cf8`／`BNLSYH6U`，原 completed Task 的61版本响应未覆盖已见62及正文；原782字节制品等长翻转一字节被拒存，串Task metadata被拒展示和读取内容；375px深色错误换行，无整页横溢。断开后排空再观察2.3秒无新增请求，重连原成果恢复。157个浏览器API请求、POST0、download0，原Task/Workers/Leader/audit完全不变，所属服务退出0。主侧另直接查看错误摘要375深色截图，制品表有局部横向滚动，不声称所有列同时可见。切换另一独立页面时原页仍visible，没有真正触发隐藏生命周期，因此隐藏退避未通过也未证明产品失败；8MiB及全部分页竞态未在本批覆盖。
+
+组合性能 `/private/tmp/ui-combined-perf.5ps0VT/report.md`：冻结 `8598f1f4`／`CByOpyRS` 的单一受控服务正式创建100Task，仅批准1个产生实际事件，无真实模型或外部发布。首轮定位断言失败保留；“卡片链接名包含状态”的具体归因经查源码撤回，原错误缺栈，异步路由即时count仅为候选原因。同根后继只读复验先按实际href等待路由，载入100Task后在同会话进入原详情，实际显示500条事件（公开545条），真实SECTION预检及16次滚轮有位移、长任务0；不称两页面同时在DOM。冷导航至连接字段可填76.4ms、连接至首批可用112.6ms、卡片状态反馈1.4ms均为原有限测量，不冒充完整冷TTI/绘制结束。原Task均终态，未取消或新建替代，新事实≤3秒仍未测。所属服务和浏览器关闭，原FAIL不覆盖。
+
+E09/E11/E12 部分证据 `/private/tmp/ui-active.ieXUTd/report.md`：冻结 `13f04cf8`／`BNLSYH6U`。east等待问题、west完成有公开事实，概览问题可见但兄弟区未展开，不能称完整双分支视觉；串另一真实Task的questionDigest由服务409拒绝，前后两Task/问题/Workers/Events严格不变。原pause/resume均succeeded且二次确认截图取得，但双回执截图未取得。脚本重复把resume后的状态假定为running，实际既有成功脚本与Core均恢复awaiting-answer，超时属于已知前提未复用，原FAIL保留；后续仅补未发生的E10，不重造已有通过子场景。
+
+E10 单Task限定补验 `/private/tmp/ui-active-fixed.j4F9Ru/report.md`：冻结 `13f04cf8`／`BNLSYH6U`，原45秒Task/30秒问题预算，私有driver仅在原业务ACK请求前加入最长20秒gate，放行后沿原Pi adapter→Runtime/Core→Store路径确认，未自行写ACK或伪造浏览器响应。浏览器实际看到202受理、dispatched未消费；原问题随后acknowledged，活动页自动出现对应event-37。公开ACK读数到DOM1786.70ms，gate到DOM2044.77ms为本次真实ACK持久提交到显示的保守上界，小于3秒；不覆盖100Task/500事件负载，也不是包含gate等待的用户答复POST到显示时间。主侧另直接查看ACK事件截图。概览ACK后问题消失、活动只有英文原事件名，另有过时“此视图不显示ACK”文案，确认中文消费状态可追溯性的P2，正在修复。所属服务退出0；不把受控Task终态当业务成果消费通过。
+
+受支持Git patch样例 `/private/tmp/ui-git-patch.NTj21t/report.md`：冻结 `13f04cf8`／`BNLSYH6U`，原受控Pi桥/ACP、真实HTTP/SQLite、自有两个各2文件仓库，未扩大Git支持面或调用模型。Task `task-f0df4afe-0ef4-472e-9290-ec07889f3671` 由浏览器批准202后completed/revision19，公开4Workers/4Attempts均完成。实际下载 `git-mixed-patches.json` 3586字节，SHA-256 `6cee4892b6c5444e2c6b387f0b8c354994584116058ad6da7e7ae3872fb58eaa` 与metadata一致；原consumer在第三组独立worktree应用浏览器下载包并通过23检查（含12负例），desk900/lamp450/total1350，两原仓HEAD/工作树不变、无remote，Task下载前后不变。交付是双patch与上下文的JSON包，不是独立.patch文件，不是远端发布。团队截图仍为中间帧，完整终态来自API，下载截图显示完成及文件保存；不外推完整视觉矩阵。脚本启动前独立预检纠正接口/定位/等待与非空完整性断言，唯一实际运行退出0，服务/浏览器/consumer均关闭。
+
 **尚不可声明完整验收通过，尚未发布新版。** 本记录补充三条验收，不以组件测试替代实际交付、视觉操作或目标用户测试。
 
 | 验收线 | 当前状态 | 证据与缺口 |
 | --- | --- | --- |
-| 功能与可靠性 | PARTIAL | 第三轮真实 Pi 团队完成独立审查、验收、授权发布和后验；原输入/成果/发布回执/后验证据四项浏览器下载复验通过。UI 464 项及 4 项测试护栏通过；`93ed5468` 补齐发行依赖后，发行测试 11/11、原仓库安装消费准入 31/31 通过。最终 CI 包、取消/故障全范围与持续稳定性仍待补齐。 |
+| 功能与可靠性 | PARTIAL | 第三轮真实 Pi 团队完成独立审查、验收、授权发布和后验；原输入/成果/发布回执/后验证据四项浏览器下载复验通过。整合 `13f04cf8` 的 UI 483 项及 4 项测试护栏通过；`9852e4da` 原 CI 包独立安装消费及同根旧→新→旧验证通过，后继精确资产仍须验证。取消/故障全范围与持续稳定性仍待补齐。 |
 | 视觉与交互 | PARTIAL | 已实测创建、问答、批准、DAG/团队、桌面/375px、浅深主题、Chrome 原生 200% 缩放、抽屉键盘及受控异常回执。成果列宽/错误换行已修复复验；完整必需矩阵与实际 Safari 仍未全部完成，具体版本和限定范围见下文。 |
 | 产品可用性 | NOT_RUN（真人）；无指导 Agent 模拟已完成 | 早期只有参与开发者的截图观察；后续新增未继承开发历史的独立 Agent，完成无点击指导的限定只读任务并发现追溯缺口，修复后原业务四下载已独立复验。模拟不替代真人，也未覆盖全部新建与授权用户路径。 |
 
@@ -222,5 +240,16 @@ E18/E19 单次受控 Chrome 152 实测记录于 `/private/tmp/ui-pub.PV5WYZ/repo
 - 实际浏览器补齐桌面/窄屏/缩放/键盘/错误状态/大量任务与事件；截图必须绑定候选代码。
 - 模拟可用性按能力边界记录；需要真实用户结果时保持 NOT_RUN，不以 Agent 截图观察替代。
 - 冻结同包候选，验证安装、独立消费和恢复/回滚后，再执行签名及 GitHub/OSS 发布流程。
+
+### 最后修复与制品边界补验（2026-09-11）
+
+- main `0549aa82efc0858fac0c8c07e887a9c696e9a647` 的 CI `34602433748` 已完成：13 项均 SUCCESS，包含四种平台/Node 组合的同包消费；不等于新版 UI 已发行。
+- 已消费记录修复源 `93ae96a48e14c09d3bc655acf29d32f231b6118b`，整合提交 `2ca440fc`。唯一独立 reviewer 完整审查 8 文件，无阻塞问题，独立 42 项测试及构建通过。复用原 E10 根冷开，在 Chrome 1440/375 下核对只读历史与 event-37 中文说明；POST=0、新执行=0、原 Task/Questions/Workers/Events/audit 不变。报告 `/private/tmp/ui-ack-review.ktAYdF/report.md`。仅关闭 ACK 后无可见核对入口的 P2，不重计实时延迟，也不代表真人可用性通过。
+- 整合后主侧全量回归实际通过 43 个文件、496 项 Vitest 测试及 4 项 browser guards（session1840）；不以 reviewer 的 42 项替代全量。
+- E17 制品边界：冻结 `13f04cf8afea1aa5e5cb3a89ff8990f44d2e96ea`、实际 UI `index-BNLSYH6U.js`。原受控验证器/Application/SQLite/depot/HTTP 路径产生 8,388,608 字节 ready 制品，Chrome 下载 SHA-256 为 `8915466a89b7008e77f6094e4d6abde067cf87f4e06a9c095e3d8c55ac33ecac`，与公开元数据一致；Task `task-a8227cf4-9cbf-402e-b39c-b3c7dd01d6d7` completed rev19。超出 1 字节的 Task `task-088173f2-4c0b-46bf-b16f-210eaae3741c` failed rev20，唯一 verifier 明确拒绝 `verification_delivery_invalid`，无制品/下载入口。报告 `/private/tmp/ui-8mib.gKVlsM/report.md`，最终 session26179 exit0，自有服务关闭。
+- 上项使用同步 delivery 回调的确定性测试字节，不冒称真实模型/业务交付、8 MiB 输入上传或流式内存上限。Chrome 超限 wire 注入仍未测；原 handler/jsdom 证据与本次真实浏览器证据分开。
+- 两次私有脚本前置失败（幂等键含空格、空列表错误使用搜索框 locator）均保留，发生时尚未创建 Task；修正后同根复用输入，两个实际 Task 各一次。今后键值先按客户端合同规范化，连接断言必须同时覆盖空态与有数据态。不得将脚本重试隐去或算作产品失败。
+
+三线结论仍分别记录：功能/视觉为限定范围补充证据，目标用户可用性 NOT_RUN；Agent 模拟不能替代真人。最终发行资产仍需在新 main 冻结后复验，未发布新版本。
 
 执行顺序：按增量研发规则，在独立代码审查及相关本地/CI 检查通过后合并 PR，并继续保留上面的 UI 验收缺口；再取得该 main push 的原始 CI 包进行最终同包验收。不能要求先取得尚未产生的 main 包才允许研发合并，也不能用研发合并关闭 UI-1 或直接发版。Safari 工具探测本轮返回 `Browser is not available: Safari`，未创建标签或改变权限；这是当前浏览器控制入口的限制，不表示 Safari 产品兼容性失败，实际 Safari 仍待验。
