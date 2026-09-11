@@ -5,11 +5,13 @@ Metadata below is a deterministic transport fixture, not GitHub or model proof.
 The CLI has no switch accepting caller-produced metadata as GitHub authority.
 """
 import copy
+import ast
 import hashlib
 import importlib.util
 import io
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import stat
@@ -27,6 +29,19 @@ candidate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(candidate)
 NODE = os.environ.get("MARSHAL_NODE", shutil.which("node"))
 HEAD = "a" * 40
+# 独立固定workflow期望，不从被测JOBS生成成功样本，防止旧9项清单自证通过。
+UI_JOBS = {
+    "task-web (typecheck, build, test + e2e, ubuntu-latest, Node 22.22.1)",
+    "task-web (typecheck, build, test + e2e, ubuntu-latest, Node 24.15.0)",
+    "task-web (typecheck, build, test + e2e, macos-latest, Node 22.22.1)",
+    "task-web (typecheck, build, test + e2e, macos-latest, Node 24.15.0)",
+}
+EXPECTED_JOBS = {"Freeze one Node candidate"} | {
+    f"{name} ({platform}, Node {version})"
+    for name in ("Node team", "Consume the same Node candidate")
+    for platform in ("ubuntu-latest", "macos-latest")
+    for version in ("22.22.1", "24.15.0")
+} | UI_JOBS
 
 
 def expected(head=HEAD, archive="sha256:" + "b" * 64, manifest="sha256:" + "c" * 64):
@@ -50,9 +65,9 @@ class FixtureGitHub:
         if endpoint.endswith("/actions/workflows/node-team.yml"):
             value = {"id": 99, "path": candidate.WORKFLOW}
         elif "/jobs?" in endpoint:
-            value = {"total_count": len(candidate.JOBS), "jobs": [] if endpoint.endswith("page=2") else [
+            value = {"total_count": len(EXPECTED_JOBS), "jobs": [] if endpoint.endswith("page=2") else [
                 {"id": 501 + i, "run_id": b["runId"], "run_attempt": b["attempt"], "head_sha": b["sourceHead"],
-                 "name": name, "status": "completed", "conclusion": "success"} for i, name in enumerate(sorted(candidate.JOBS))]}
+                 "name": name, "status": "completed", "conclusion": "success"} for i, name in enumerate(sorted(EXPECTED_JOBS))]}
         elif "/actions/artifacts/" in endpoint:
             value = {"id": b["artifactId"], "name": f'node-candidate-{b["sourceHead"]}-{b["attempt"]}', "expired": False,
                      "digest": b["archiveDigest"], "size_in_bytes": len(self.archive) or 100,
@@ -66,7 +81,7 @@ class FixtureGitHub:
         return self.archive
 
 
-def zip_bytes(contents, *, additions=(), mode=stat.S_IFREG | 0o644, extra=b"", compression=zipfile.ZIP_STORED):
+def zip_bytes(contents, *, additions=(), mode=stat.S_IFREG | 0o644, modes=None, extra=b"", compression=zipfile.ZIP_STORED):
     target = io.BytesIO()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
@@ -74,7 +89,7 @@ def zip_bytes(contents, *, additions=(), mode=stat.S_IFREG | 0o644, extra=b"", c
             for name, value in list(contents.items()) + list(additions):
                 entry = zipfile.ZipInfo(name)
                 entry.create_system = 3
-                entry.external_attr = mode << 16
+                entry.external_attr = (modes or {}).get(name, mode) << 16
                 entry.compress_type = compression
                 entry.extra = extra
                 archive.writestr(entry, value)
@@ -92,6 +107,69 @@ def package_fixture():
 
 
 class MetadataTest(unittest.TestCase):
+    def test_admission_ci_builds_ui_before_offline_pack_only(self):
+        workflow = (ROOT / ".github/workflows/node-candidate-admission.yml").read_text()
+        tests, admit = workflow.split("\n  tests:\n", 1)[1].split("\n  admit:\n", 1)
+        build = "      - name: Build UI for offline installed-candidate fixture\n        working-directory: apps/task-web\n        run: |\n          npm ci --no-audit --no-fund --ignore-scripts\n          npm run build\n"
+        self.assertIn(build, tests)
+        self.assertLess(tests.index(build), tests.index("python3 -I -B scripts/node-candidate-admit_test.py"))
+        self.assertIn("os: [ubuntu-latest, macos-latest]", tests)
+        # 真正接纳步骤只消费原ZIP，不能靠重建源码替换其UI字节。
+        self.assertNotIn("npm run build", admit)
+        self.assertNotIn("npm ci", admit)
+
+    def test_closed_jobs_match_actual_ui_workflow_matrix(self):
+        self.assertEqual(candidate.JOBS, EXPECTED_JOBS)
+        self.assertEqual(len(candidate.JOBS), 13)
+        workflow = (ROOT / candidate.WORKFLOW).read_text()
+        ui = workflow.split("\n  ui:\n", 1)[1].split("\n  package:\n", 1)[0]
+        self.assertIn("name: task-web (typecheck, build, test + e2e, ${{ matrix.os }}, Node ${{ matrix.node }})", ui)
+        self.assertIn("os: [ubuntu-latest, macos-latest]", ui)
+        self.assertIn("node: ['22.22.1', '24.15.0']", ui)
+
+    def test_each_ui_job_is_required_successful_unique_and_same_head(self):
+        for name in sorted(UI_JOBS):
+            for mode, code in (("missing", "incomplete_jobs"), ("failure", "job_binding_mismatch"),
+                               ("skipped", "job_binding_mismatch"), ("duplicate_name", "invalid_jobs"),
+                               ("duplicate_id", "invalid_jobs"), ("old_head", "job_binding_mismatch")):
+                with self.subTest(job=name, mode=mode):
+                    api = FixtureGitHub(expected())
+                    def mutate(endpoint, value):
+                        if "/jobs?" not in endpoint:
+                            return value
+                        if mode == "missing": value["total_count"] -= 1
+                        if endpoint.endswith("page=1"):
+                            job = next(item for item in value["jobs"] if item["name"] == name)
+                            other = next(item for item in value["jobs"] if item is not job)
+                            if mode == "missing": value["jobs"].remove(job)
+                            if mode in ("failure", "skipped"): job["conclusion"] = mode
+                            if mode == "duplicate_name": job["name"] = other["name"]
+                            if mode == "duplicate_id": job["id"] = other["id"]
+                            if mode == "old_head": job["head_sha"] = "d" * 40
+                        return value
+                    api.transform = mutate
+                    with self.assertRaisesRegex(candidate.CandidateError, code):
+                        candidate.github_snapshot(api, expected())
+
+    def test_old_nine_job_snapshot_extra_and_unknown_replacement_rejected(self):
+        for mode, code in (("old_nine", "incomplete_jobs"), ("extra", "incomplete_jobs"), ("replacement", "invalid_jobs")):
+            with self.subTest(mode=mode):
+                api = FixtureGitHub(expected())
+                def mutate(endpoint, value):
+                    if "/jobs?" not in endpoint:
+                        return value
+                    if mode == "old_nine":
+                        value["total_count"] = 9
+                        value["jobs"] = [job for job in value["jobs"] if job["name"] not in UI_JOBS]
+                    if mode == "extra": value["total_count"] = 14
+                    if endpoint.endswith("page=1"):
+                        if mode == "extra": value["jobs"].append(dict(value["jobs"][0], id=999, name="unreviewed job"))
+                        if mode == "replacement": value["jobs"][-1]["name"] = "unreviewed job"
+                    return value
+                api.transform = mutate
+                with self.assertRaisesRegex(candidate.CandidateError, code):
+                    candidate.github_snapshot(api, expected())
+
     def test_complete_exact_attempt_and_tail_page(self):
         api = FixtureGitHub(expected())
         result = candidate.github_snapshot(api, expected())
@@ -229,6 +307,92 @@ class ArchiveTest(unittest.TestCase):
             self.assertFalse(os.path.exists(target))
 
 
+class UiArchiveTest(unittest.TestCase):
+    def setUp(self):
+        self.files, self.contents = package_fixture()
+        self.contents.update({"apps/task-web/dist/index.html": b"<!doctype html><p>controlled UI fixture</p>",
+                              "apps/task-web/dist/assets/app.js": b"export const fixture = true;"})
+        self.remanifest()
+
+    def remanifest(self, names=None):
+        manifest = json.loads(self.contents["manifest.json"])
+        names = names if names is not None else self.files + sorted(name for name in self.contents if name.startswith("apps/"))
+        manifest["files"] = [{"path": name, "digest": candidate.sha(self.contents[name]), "bytes": len(self.contents[name])} for name in names]
+        self.contents["manifest.json"] = (json.dumps(manifest, indent=2) + "\n").encode()
+
+    def validate(self, contents=None, **options):
+        contents = self.contents if contents is None else contents
+        raw = zip_bytes(contents, **options)
+        return candidate.validate_archive(raw, expected(archive=candidate.sha(raw), manifest=candidate.sha(contents["manifest.json"])), self.files, require_ui=True)
+
+    def test_pinned_ui_bytes_admitted_without_rebuild(self):
+        self.assertEqual(self.validate(), self.contents)
+
+    def test_ui_allowlist_stays_aligned_with_trusted_node_distribution(self):
+        source = (ROOT / "packages/task-distribution/index.mjs").read_text()
+        self.assertEqual(candidate.UI_ROOT, re.search(r"const UI_STATIC_ROOT = '([^']+)';", source)[1] + "/")
+        self.assertEqual(candidate.UI_MAX_FILES, int(re.search(r"const UI_MAX_FILES = (\d+);", source)[1]))
+        extensions = ast.literal_eval(re.search(r"const UI_EXTENSIONS = new Set\((\[[^\n]+\])\);", source)[1])
+        self.assertEqual(candidate.UI_EXTENSIONS, frozenset(extensions))
+        self.assertIn("const UI_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;", source)
+
+    def test_outside_root_traversal_unknown_extension_and_wide_name_rejected(self):
+        for name in ("apps/task-web/private.js", "apps/task-web/dist/../outside.js", "apps/task-web/dist/.hidden.js",
+                     "apps/task-web/dist/a\\b.js", "apps/task-web/dist/tool.mjs", "apps/task-web/dist/secret.pem",
+                     "apps/task-web/dist/" + "a" * 129 + ".js", "/apps/task-web/dist/absolute.js"):
+            with self.subTest(name=name):
+                contents = dict(self.contents, **{name: b"untrusted"})
+                manifest = json.loads(contents["manifest.json"])
+                manifest["files"].append({"path": name, "digest": candidate.sha(b"untrusted"), "bytes": 9})
+                contents["manifest.json"] = (json.dumps(manifest, indent=2) + "\n").encode()
+                with self.assertRaises(candidate.CandidateError): self.validate(contents)
+
+    def test_ui_symlink_fifo_and_duplicate_members_rejected(self):
+        name = "apps/task-web/dist/index.html"
+        for kind in (stat.S_IFLNK, stat.S_IFIFO):
+            with self.subTest(kind=kind), self.assertRaisesRegex(candidate.CandidateError, "unsafe_zip_member"):
+                self.validate(modes={name: kind | 0o644})
+        with self.assertRaisesRegex(candidate.CandidateError, "zip_inventory_mismatch"):
+            self.validate(additions=[(name, self.contents[name])])
+
+    def test_extra_or_missing_ui_bytes_and_digest_drift_rejected(self):
+        for mode in ("extra", "missing", "drift"):
+            with self.subTest(mode=mode):
+                contents = dict(self.contents)
+                if mode == "extra": contents["apps/task-web/dist/extra.js"] = b"extra"
+                if mode == "missing": del contents["apps/task-web/dist/assets/app.js"]
+                if mode == "drift": contents["apps/task-web/dist/assets/app.js"] = b"tampered"
+                with self.assertRaises(candidate.CandidateError): self.validate(contents)
+
+    def test_manifest_ui_order_duplicates_and_missing_index_rejected(self):
+        ui = sorted(name for name in self.contents if name.startswith("apps/"))
+        for names in (self.files + list(reversed(ui)), self.files + ui + [ui[-1]], self.files + [ui[0]]):
+            with self.subTest(names=names):
+                self.remanifest(names)
+                with self.assertRaises(candidate.CandidateError): self.validate()
+
+    def test_ui_file_and_member_count_bounds(self):
+        self.contents["apps/task-web/dist/assets/app.js"] = b"x" * (candidate.MAX_FILE + 1)
+        self.remanifest()
+        with self.assertRaisesRegex(candidate.CandidateError, "unsafe_zip_member"):
+            self.validate(compression=zipfile.ZIP_DEFLATED)
+        self.setUp()
+        self.contents.update({f"apps/task-web/dist/{i}.js": b"x" for i in range(candidate.UI_MAX_FILES)})
+        self.remanifest()
+        with self.assertRaisesRegex(candidate.CandidateError, "unsupported_zip"): self.validate()
+
+    def test_current_ui_candidate_cannot_omit_ui_or_create_output(self):
+        files, contents = package_fixture()
+        raw = zip_bytes(contents)
+        binding = expected(archive=candidate.sha(raw), manifest=candidate.sha(contents["manifest.json"]))
+        # 底层Node发行合同仍允许API-only；但当前13-job UI候选不能冒用旧无UI包。
+        self.assertEqual(candidate.validate_archive(raw, binding, files), contents)
+        with patch.object(candidate, "trusted_source", return_value=files), patch.object(candidate, "PrivateOutput") as output:
+            with self.assertRaisesRegex(candidate.CandidateError, "missing_ui_entry"):
+                candidate.admit(binding, api=FixtureGitHub(binding, raw), source="unused", node=NODE, target="unused")
+            output.assert_not_called()
+
+
 class FilesAndConsumerTest(unittest.TestCase):
     def test_exclusive_private_target_and_child_parent_sync_failure_preserved(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -305,6 +469,10 @@ class FilesAndConsumerTest(unittest.TestCase):
             self.assertEqual([item["layout"] for item in result["consumer"]["observations"]], [1, 2])
             self.assertEqual((parent / "admitted/candidate.zip").read_bytes(), raw)
             self.assertEqual((parent / "admitted/installed/manifest.json").read_bytes(), contents["manifest.json"])
+            self.assertIn("apps/task-web/dist/index.html", names)
+            for name in names:
+                if name.startswith("apps/task-web/dist/"):
+                    self.assertEqual((parent / "admitted/installed" / name).read_bytes(), contents[name])
             self.assertGreaterEqual(sum(endpoint.endswith("page=2") for endpoint in api.queries), 3)
             passed = True
         finally:

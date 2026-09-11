@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {render, screen} from '@testing-library/react';
+import {render, screen, within} from '@testing-library/react';
 import {MemoryRouter} from 'react-router-dom';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import type {ReactNode} from 'react';
@@ -16,6 +16,43 @@ function wrap(node: ReactNode) {
 }
 
 describe('概览（P04/P05）：等待、进展、验收、计划', () => {
+  it('批准权限消失后保留同一计划 DOM，仅折叠详情', () => {
+    const {transport} = makeFakeTransport();
+    const client = new QueryClient();
+    const plan = makePlan();
+    const view = (allowed: boolean) => <QueryClientProvider client={client}><MemoryRouter>
+      <OverviewView task={makeTask({status: allowed ? 'awaiting-approval' : 'running', allowedActions: allowed ? ['approve', 'cancel'] : ['cancel']})}
+        plan={plan} questions={makeQuestions()} workers={[]} leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />
+    </MemoryRouter></QueryClientProvider>;
+    const {rerender} = render(view(true));
+    const card = screen.getByTestId('plan-card');
+    const details = card.closest('details');
+    expect(details).toHaveAttribute('open');
+    rerender(view(false));
+    expect(screen.getByTestId('plan-card')).toBe(card);
+    expect(card.closest('details')).toBe(details);
+    expect(details).not.toHaveAttribute('open');
+    expect(screen.queryByTestId('plan-approve-open')).toBeNull();
+    expect(screen.getByText('查看执行计划与批准回执')).toBeInTheDocument();
+  });
+
+  it('问题按期限升序、无期限末尾，同期限和无期限保持输入次序且不修改投影', () => {
+    const {transport} = makeFakeTransport();
+    const questions = makeQuestions({items: [
+      // 合同正常要求字符串；显式注入旧/缺失投影，覆盖排序的防御性空值分支。
+      {...makePreapprovalQuestion({id: 'no-date-a'}), deadlineAt: null} as unknown as ReturnType<typeof makePreapprovalQuestion>,
+      makePreapprovalQuestion({id: 'later', deadlineAt: '2099-09-02T00:00:00Z'}),
+      makePreapprovalQuestion({id: 'equal-a', deadlineAt: '2099-09-01T00:00:00Z'}),
+      {...makePreapprovalQuestion({id: 'no-date-b'}), deadlineAt: null} as unknown as ReturnType<typeof makePreapprovalQuestion>,
+      makePreapprovalQuestion({id: 'equal-b', deadlineAt: '2099-09-01T00:00:00Z'}),
+    ]});
+    const original = questions.items.map(question => question.id);
+    wrap(<OverviewView task={makeTask()} plan={null} questions={questions} workers={[]} leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />);
+    expect(screen.getAllByTestId('question-card').map(card => card.getAttribute('data-question-id')))
+      .toEqual(['equal-a', 'equal-b', 'later', 'no-date-a', 'no-date-b']);
+    expect(questions.items.map(question => question.id)).toEqual(original);
+  });
+
   it('聚齐三类待处理：预批准问题走 task.answer、Leader 请求走 leader.reply、计划走 approvePlan，入口互不串用', () => {
     const {transport} = makeFakeTransport();
     const task = makeTask({status: 'awaiting-answer', allowedActions: ['answer', 'approve', 'cancel']});
@@ -60,6 +97,8 @@ describe('概览（P04/P05）：等待、进展、验收、计划', () => {
     wrap(<OverviewView task={task} plan={makePlan()} questions={makeQuestions()} workers={[]} leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />);
     expect(screen.getByText('需要你的处理（1 项）')).toBeInTheDocument();
     expect(screen.getByTestId('plan-approve-open')).toBeInTheDocument();
+    expect(within(screen.getByRole('region', {name: '需要处理'})).getByTestId('plan-approve-open')).toBeInTheDocument();
+    expect(screen.getAllByTestId('plan-card')).toHaveLength(1);
     expect(screen.getByTestId('plan-digest')).toHaveTextContent('sha256:b540509e80a56fc5686acb543b8c52798cec6a97f528829d268bd5ec0d269890');
   });
 

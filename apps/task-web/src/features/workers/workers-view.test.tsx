@@ -24,6 +24,37 @@ function renderView(workers = [makeWorker()], overrides: Partial<Transport> = {}
 }
 
 describe('团队视图（P08 / E23）', () => {
+  it.each(['completed', 'failed', 'cancelled'] as const)('%s 的 agent.running 是历史观察而非当前进展', status => {
+    renderView([makeWorker({status, phase: 'terminal', progress: {summary: 'agent.running', source: 'agent', tool: null}})]);
+    expect(screen.getByRole('columnheader', {name: '最后收到的进展'})).toBeInTheDocument();
+    const row = screen.getByTestId('worker-row');
+    expect(row).toHaveTextContent('执行已结束；以下为历史观察');
+    expect(within(row).getByText('agent.running')).toHaveAttribute('title', 'agent.running');
+  });
+
+  it('路由抽屉关闭后保留原列表DOM，焦点返回同一明细入口', async () => {
+    renderView();
+    const user = userEvent.setup();
+    const trigger = screen.getByRole('link', {name: '明细'});
+    trigger.focus();
+    await user.keyboard('{Enter}');
+    await screen.findByTestId('worker-drawer');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('worker-drawer')).toBeNull());
+    expect(screen.getByRole('link', {name: '明细'})).toBe(trigger);
+    expect(trigger).toHaveFocus();
+  });
+
+  it('未加载成员的深链明确提示，不把空白当作不存在或完成', () => {
+    const {transport} = makeFakeTransport();
+    render(<MemoryRouter initialEntries={[`/tasks/${TASK_ID}/team/worker-unloaded`]}>
+      <Routes><Route path="/tasks/:taskId/team/*" element={<WorkersView task={makeTask()} workers={[]} transport={transport} onChanged={() => {}} />} /></Routes>
+    </MemoryRouter>);
+    expect(screen.getByRole('status')).toHaveTextContent('成员 worker-unloaded 的详情尚不可用');
+    expect(screen.getByRole('button', {name: '刷新团队'})).toBeEnabled();
+    expect(screen.getByRole('link', {name: '返回团队列表'})).toHaveAttribute('href', `/tasks/${TASK_ID}/team`);
+  });
+
   it('列表展示节点/角色/状态/阶段/尝试/最近观察/进展摘要/用量，无进度百分比假数据', () => {
     renderView();
     const row = screen.getByTestId('worker-row');
@@ -31,6 +62,7 @@ describe('团队视图（P08 / E23）', () => {
     expect(row).toHaveTextContent('执行');
     expect(row).toHaveTextContent('运行中');
     expect(row).toHaveTextContent('agent.running');
+    expect(row).not.toHaveTextContent('执行已结束');
     // attempt=1 单独成列
     expect(row).toHaveTextContent('1');
     // usage.source=unavailable 如实「不可用」（E23）

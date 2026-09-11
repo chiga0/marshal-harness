@@ -39,8 +39,7 @@ export function usageSummary(usage: Usage): string {
 export function WorkersView({task, workers, pagination, transport, onChanged}: WorkersViewProps) {
   return (
     <Routes>
-      <Route index element={<WorkersList task={task} workers={workers} pagination={pagination} transport={transport} onChanged={onChanged} drawerId={null} />} />
-      <Route path=":workerId" element={<WorkersListWithDrawer task={task} workers={workers} pagination={pagination} transport={transport} onChanged={onChanged} />} />
+      <Route path=":workerId?" element={<WorkersListWithDrawer task={task} workers={workers} pagination={pagination} transport={transport} onChanged={onChanged} />} />
     </Routes>
   );
 }
@@ -93,7 +92,7 @@ function WorkersList({task, workers, pagination, transport, onChanged, drawerId}
                 <th className="px-3 py-2 font-medium">阶段</th>
                 <th className="px-3 py-2 font-medium">尝试</th>
                 <th className="px-3 py-2 font-medium">最近观察</th>
-                <th className="px-3 py-2 font-medium">进展摘要</th>
+                <th className="px-3 py-2 font-medium">最后收到的进展</th>
                 <th className="px-3 py-2 font-medium">用量</th>
                 <th className="px-3 py-2 font-medium">操作</th>
               </tr>
@@ -113,8 +112,9 @@ function WorkersList({task, workers, pagination, transport, onChanged, drawerId}
                   <td className="px-3 py-2 text-text-secondary">{workerPhaseLabel(worker.phase)}</td>
                   <td className="px-3 py-2 text-text-secondary">{worker.attempt}</td>
                   <td className="px-3 py-2 text-text-secondary" title={formatDateTime(worker.lastObservedAt)}>{formatRelative(worker.lastObservedAt)}</td>
-                  <td className="max-w-[220px] truncate px-3 py-2 text-text-secondary" title={worker.progress?.summary ?? ''}>
-                    {worker.progress ? worker.progress.summary : '暂无数据'}
+                  <td className="max-w-[220px] px-3 py-2 text-text-secondary">
+                    {['completed', 'failed', 'cancelled'].includes(worker.status) ? <p className="text-xs">执行已结束；以下为历史观察</p> : null}
+                    <p className="truncate" title={worker.progress?.summary ?? ''}>{worker.progress ? worker.progress.summary : '暂无数据'}</p>
                   </td>
                   <td className="max-w-[180px] truncate px-3 py-2 text-text-secondary" data-testid="worker-usage-cell">{usageSummary(worker.usage)}</td>
                   <td className="px-3 py-2" onClick={event => event.stopPropagation()}>
@@ -139,7 +139,11 @@ function WorkersList({task, workers, pagination, transport, onChanged, drawerId}
       ) : null}
       {openWorker ? (
         <WorkerDrawer taskRevision={task.revision} worker={openWorker} transport={transport} onClose={() => navigate(base)} onChanged={onChanged} />
-      ) : null}
+      ) : drawerId !== null ? <Card className="space-y-2" role="status">
+        <h3 className="break-all font-medium">成员 {drawerId} 的详情尚不可用</h3>
+        <p className="text-sm text-text-secondary">{pagination?.nextCursor ? '该成员不在已加载的分页中，请加载更多成员后查看。' : '当前列表没有该成员；请刷新核对，不能据此判断它已完成或已删除。'}</p>
+        <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={onChanged}>刷新团队</Button><Link to={base} className="inline-flex min-h-11 items-center text-accent underline">返回团队列表</Link></div>
+      </Card> : null}
     </div>
   );
 }

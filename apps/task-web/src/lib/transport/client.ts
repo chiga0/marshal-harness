@@ -1,15 +1,16 @@
 // Token 只存放在内存（service/transport 模块层单例）——URL、Web Storage、IndexedDB、日志、构建产物均不存放。
 // 断开/刷新清除；连接只指向当前 origin，不接收任意远程 baseURL。
-import {ApiError, parseGraph} from './types';
+import {ApiError, parseGraph, parseOperation} from './types';
 import type {
   Transport, TasksResponse, TaskRecord, WorkersResponse, PlanRecord,
-  LeaderRecord, TaskAuditRecord, Events, QuestionsResponse, ArtifactRecord, ControlBody,
+  LeaderRecord, TaskAuditRecord, Events, QuestionsResponse, ArtifactRecord, OperationRecord,
 } from './types';
 
 export interface TransportConfig {
   token: string;
   baseURL?: string;
   fetchLike?: typeof fetch;
+  onOperation?: (operation: OperationRecord) => void;
 }
 
 const BASE_DEFAULT: string = '';
@@ -112,9 +113,19 @@ export function createTransport(config: TransportConfig): Transport {
     // 必须以闭包包装再调用：原生 window.fetch 被存进对象后作为方法调用时 this 不再是 Window，
     // Safari/Chrome 会抛 TypeError（UI-03 真机「网络层不可达」的候选根因）。
     fetchLike: config.fetchLike ?? ((input, init) => fetch(input, init)),
+    onOperation: config.onOperation ?? (() => {}),
   };
   const json = <T>(path: string, init?: JsonOptions<unknown>) => requestJson<T>(cfg, path, init);
-  const control = (path: string, body: ControlBody) => json(path, withKey(body).init);
+  const operationWrite = async (path: string, body: {idempotencyKey: string}, taskId: string | null, kind: OperationRecord['kind'], workerId?: string) => {
+    const result = await json<unknown>(path, withKey(body).init);
+    const envelope = result as {operation?: unknown} | null;
+    const operation = parseOperation(envelope && typeof envelope === 'object' && 'operation' in envelope ? envelope.operation : result);
+    if ((taskId !== null && operation.taskId !== taskId) || operation.kind !== kind || (workerId !== undefined && operation.workerId !== workerId)) {
+      throw new ApiError(502, 'operation_binding_mismatch', '返回回执与原操作归属不符', null);
+    }
+    cfg.onOperation(operation);
+    return result;
+  };
   return {
     createTask: body => json('/v1/tasks', withKey(body).init),
     createInput: body => json<ArtifactRecord>('/v1/inputs', withKey(body).init),
@@ -125,6 +136,11 @@ export function createTransport(config: TransportConfig): Transport {
       return json<TasksResponse>(`/v1/tasks${params.size ? '?' + params.toString() : ''}`, readInit(options.signal));
     },
     getTask: (taskId, options = {}) => json<TaskRecord>(`/v1/tasks/${encodeURIComponent(taskId)}`, readInit(options.signal)),
+    getOperation: async (operationId, options = {}) => {
+      const operation = parseOperation(await json<unknown>(`/v1/operations/${encodeURIComponent(operationId)}`, readInit(options.signal)));
+      if (operation.id !== operationId) throw new ApiError(502, 'operation_binding_mismatch', '回执 ID 与原请求不符', null);
+      return operation;
+    },
     getWorkers: (taskId, options = {}) => {
       const params = new URLSearchParams();
       if (options.limit !== undefined) params.set('limit', String(options.limit));
@@ -133,7 +149,7 @@ export function createTransport(config: TransportConfig): Transport {
     },
     getPlan: (taskId, options = {}) => json<PlanRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/plan`, readInit(options.signal)),
     getGraph: async (taskId, options = {}) => parseGraph(await json<unknown>(`/v1/tasks/${encodeURIComponent(taskId)}/graph`, readInit(options.signal)), taskId),
-    approvePlan: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/plan/approve`, withKey(body).init),
+    approvePlan: (taskId, body) => operationWrite(`/v1/tasks/${encodeURIComponent(taskId)}/plan/approve`, body, taskId, 'task.approve'),
     getQuestions: (taskId, options = {}) => {
       const params = new URLSearchParams();
       if (options.limit !== undefined) params.set('limit', String(options.limit));
@@ -142,23 +158,29 @@ export function createTransport(config: TransportConfig): Transport {
     },
     answerTask: (taskId, questionId, body) => {
       const {branch: _branch, ...rest} = body;
-      return json(`/v1/tasks/${encodeURIComponent(taskId)}/questions/${encodeURIComponent(questionId)}/answers`, withKey(rest).init);
+      return operationWrite(`/v1/tasks/${encodeURIComponent(taskId)}/questions/${encodeURIComponent(questionId)}/answers`, rest, taskId, 'task.answer');
     },
-    cancelTask: (taskId, body) => control(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, body),
-    pauseTask: (taskId, body) => control(`/v1/tasks/${encodeURIComponent(taskId)}/pause`, body),
-    resumeTask: (taskId, body) => control(`/v1/tasks/${encodeURIComponent(taskId)}/resume`, body),
-    cancelWorker: (workerId, body) => control(`/v1/workers/${encodeURIComponent(workerId)}/cancel`, body),
+    cancelTask: (taskId, body) => operationWrite(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, body, taskId, 'task.cancel'),
+    pauseTask: (taskId, body) => operationWrite(`/v1/tasks/${encodeURIComponent(taskId)}/pause`, body, taskId, 'task.pause'),
+    resumeTask: (taskId, body) => operationWrite(`/v1/tasks/${encodeURIComponent(taskId)}/resume`, body, taskId, 'task.resume'),
+    cancelWorker: (workerId, body) => operationWrite(`/v1/workers/${encodeURIComponent(workerId)}/cancel`, body, null, 'worker.cancel', workerId),
     getLeader: (taskId, options = {}) => json<LeaderRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/leader`, readInit(options.signal)),
     getAudit: (taskId, options = {}) => json<TaskAuditRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/audit`, readInit(options.signal)),
     leaderReply: (taskId, requestId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/leader/requests/${encodeURIComponent(requestId)}/reply`, withKey(body).init),
-    repair: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/repair`, withKey(body).init),
+    repair: (taskId, body) => operationWrite(`/v1/tasks/${encodeURIComponent(taskId)}/repair`, body, taskId, 'task.repair'),
     getEvents: (taskId, options = {}) => {
       const params = new URLSearchParams();
       if (options.limit !== undefined) params.set('limit', String(options.limit));
       if (options.cursor) params.set('cursor', options.cursor);
       return json<Events>(`/v1/tasks/${encodeURIComponent(taskId)}/events${params.size ? '?' + params.toString() : ''}`, readInit(options.signal));
     },
-    getArtifact: (artifactId, options = {}) => json<ArtifactRecord>(`/v1/artifacts/${encodeURIComponent(artifactId)}`, readInit(options.signal)),
+    getArtifact: async (artifactId, options = {}) => {
+      const artifact = await json<ArtifactRecord>(`/v1/artifacts/${encodeURIComponent(artifactId)}`, readInit(options.signal));
+      if (!artifact || artifact.id !== artifactId || (options.expectedTaskId !== undefined && artifact.taskId !== options.expectedTaskId)) {
+        throw new ApiError(502, 'artifact_binding_mismatch', '成果元数据与原ID或Task归属不符，已拒绝展示和下载', null);
+      }
+      return artifact;
+    },
     getArtifactContent: async (artifactId, options = {}) => {
       const token = currentToken;
       if (!token) throw new ApiError(401, 'token_missing', '未连接服务', null);

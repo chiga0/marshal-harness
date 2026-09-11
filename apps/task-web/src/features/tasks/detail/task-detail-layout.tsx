@@ -15,13 +15,15 @@ import {cn} from '@/lib/cn';
 import {ActivityView} from './activity/activity-view';
 import {OverviewView} from './overview/overview-view';
 import {taskKeys} from './query-keys';
-import {preferFreshTask} from './shared/derive';
+import {preferFreshTask, questionNeedsAttention} from './shared/derive';
+import {useLeaderReplyReceipt} from './shared/leader-reply-receipt';
 import {ErrorNotice} from './shared/error-notice';
 import {formatRelative, taskStatusLabel} from './shared/format';
 import {StatusBadge, toneForTask} from './shared/status-badge';
 import {WorkersView} from '../../workers/workers-view';
 import {ArtifactsView} from '../../artifacts/artifacts-view';
 import {useTaskArtifacts} from '../../artifacts/use-task-artifacts';
+import {useObservedInputs} from '../../artifacts/use-observed-inputs';
 import {TaskGraph} from './graph/task-graph';
 
 // 注意：本路由是 splat（tasks/:taskId/*），其内部的相对链接会按完整当前 URL 解析（React Router 规则）。
@@ -122,6 +124,7 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
   const artifactsQuery = useTaskArtifacts({
     taskId,
     artifactIds: task?.artifactIds ?? [],
+    leader: leaderQuery.isError ? null : leaderQuery.data ?? null,
     transport,
     refetchInterval,
   });
@@ -134,8 +137,12 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
   const plan = planQuery.data ?? null;
   const questions = questionsQuery.data ?? null;
   const leader = leaderQuery.data ?? null;
-  const audit = auditQuery.data ?? null;
-  const artifacts = artifactsQuery.data ?? null;
+  const audit = auditQuery.isError ? null : auditQuery.data ?? null;
+  const artifacts = artifactsQuery.isError ? null : artifactsQuery.data ?? null;
+  const observedInputs = useObservedInputs({taskId, audit, transport, refetchInterval});
+  const [leaderReplyAccepted] = useLeaderReplyReceipt(taskId, leader?.pendingRequest ?? null);
+  const waitingForLeader = task?.status === 'awaiting-answer' && leader?.pendingRequest?.status === 'pending'
+    && leaderReplyAccepted && questions !== null && !questions.items.some(questionNeedsAttention);
 
   return (
     <section aria-label="任务详情" className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6" data-testid="task-detail">
@@ -148,7 +155,7 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
           <h1 className="mt-1 break-words text-[22px] font-semibold leading-[30px]">{task ? task.intent : '任务详情'}</h1>
           {task ? (
             <div className="mt-1 flex flex-wrap items-center gap-3">
-              <StatusBadge machine={task.status} label={taskStatusLabel(task.status)} tone={toneForTask(task.status)} />
+              <StatusBadge machine={task.status} label={waitingForLeader ? '答复已受理，等待 Leader 更新' : taskStatusLabel(task.status)} tone={toneForTask(task.status)} />
               <span className="text-xs text-text-secondary">最近状态变化：{formatRelative(task.updatedAt)}</span>
               <span className="text-xs text-text-secondary">轮询节奏：{intervalMs === null ? '已停止（页面隐藏）' : `${Math.round(intervalMs / 1000)} 秒`}</span>
             </div>
@@ -190,7 +197,7 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
             <Route index element={<OverviewView task={task} plan={plan} questions={questions} workers={workers} leader={leader} audit={audit} transport={transport} onChanged={onChanged} graph={<TaskGraph taskId={taskId} plan={plan} workers={workers} transport={transport} />} />} />
             <Route path="graph" element={<TaskGraph taskId={taskId} plan={plan} workers={workers} transport={transport} />} />
             <Route path="team/*" element={<WorkersView task={task} workers={workers} pagination={workersPagination} transport={transport} onChanged={onChanged} />} />
-            <Route path="artifacts" element={<ArtifactsView task={task} leader={leader} audit={audit} artifacts={artifacts} transport={transport} />} />
+            <Route path="artifacts" element={<ArtifactsView task={task} leader={leader} audit={audit} artifacts={artifacts} observedInputs={observedInputs} transport={transport} />} />
             <Route path="activity" element={<ActivityView taskId={taskId} transport={transport} />} />
             <Route path="*" element={<OverviewView task={task} plan={plan} questions={questions} workers={workers} leader={leader} audit={audit} transport={transport} onChanged={onChanged} />} />
           </Routes>

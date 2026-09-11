@@ -1,11 +1,13 @@
 // 成果下载：GET /v1/artifacts/{artifactId}/content 拉流 → 本机 SHA-256 复验（浏览器 Web Crypto）→ 落盘为浏览器下载。
 // 摘要或大小不一致一律拒绝保存（E17 防假冒/防损坏）；文件名去掉路径穿越；下载不等于发布，也不冒充发布。
-// 合同承诺单个成果 ≤8388608 字节（8 MiB 为服务端上限，本机不重复设限，仅以服务端清单做复验）。
+// 合同单个成果 ≤8388608 字节；下载前复核清单上限，读取后再次校验实际字节数。
 
 import type {ArtifactId, Transport} from '@/lib/transport/types';
 
+export const MAX_ARTIFACT_DOWNLOAD_BYTES = 8388608;
+
 export class DownloadRejection extends Error {
-  readonly reason: 'digest_mismatch' | 'size_mismatch' | 'unverifiable' | 'empty_ref';
+  readonly reason: 'digest_mismatch' | 'size_mismatch' | 'size_limit' | 'unverifiable' | 'empty_ref';
 
   constructor(reason: DownloadRejection['reason'], message: string) {
     super(message);
@@ -55,11 +57,17 @@ export async function downloadArtifact(transport: Transport, spec: DownloadSpec)
   if (spec.artifactId.trim() === '') {
     throw new DownloadRejection('empty_ref', '缺少产物 ID，已拒绝。');
   }
+  if (spec.expectedBytes !== null && spec.expectedBytes > MAX_ARTIFACT_DOWNLOAD_BYTES) {
+    throw new DownloadRejection('size_limit', '成果超过合同的 8 MiB 上限，已拒绝下载。');
+  }
   const expected = parseSha256(spec.expectedDigest);
   if (expected === null) {
     throw new DownloadRejection('unverifiable', '交付摘要不是可复验的 sha256 形式，为避免冒充成果已拒绝保存。');
   }
   const blob = await transport.getArtifactContent(spec.artifactId);
+  if (blob.size > MAX_ARTIFACT_DOWNLOAD_BYTES) {
+    throw new DownloadRejection('size_limit', '实际下载内容超过合同的 8 MiB 上限，已拒绝保存。');
+  }
   if (spec.expectedBytes !== null && blob.size !== spec.expectedBytes) {
     throw new DownloadRejection('size_mismatch', `下载大小（${blob.size} B）与产物清单（${spec.expectedBytes} B）不一致，已拒绝保存。`);
   }

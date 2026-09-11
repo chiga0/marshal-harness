@@ -1,5 +1,21 @@
 # 设计审计报告
 
+## 2026-09-11：UI 外层仍存活、内部服务已失败（OPEN）
+
+真实 UI 验收服务在完成团队交付后的只读检查中返回 `503 application_unavailable`。主侧核对原所属 PID 69841 仍存活且没有子进程，但其 TCP 监听仅剩 UI 外层 63819；浏览器仍可加载 `index-CpLIqAu5.js`。不以静态页可达或 PID 存活宣称服务正常。保留现场后，对该自有 PID 发送 SIGTERM，原执行会话返回 `{"state":"closed","clean":true,"code":"service_supervisor_failed"}`，退出码 1；未修改数据根、未重启或重复业务发布。
+
+初步调用链显示 composition 的失败路径关闭内部服务，而 CLI 的 `service_*` 诊断只设置 `process.exitCode`，尚须核验外层监听的故障联动及根因诊断保留。当前只证明内部失败和外层滞留，不知道此次 Supervisor 最初失败的原因，不将其臆定为休眠、租约或数据损坏。下一步是独立根因检查、确定性复现，再决定最小修复及适用 ADR；关闭前不得声称此候选的长期 UI 服务验收通过。现场为 `/private/tmp/marshal-ui-final.MUfhL2/`，截图 `view-toggle-unavailable.png`，原数据与已完成交付证据保留。
+
+已按既有 ADR0088/0098 单服务关闭语义修复为 `db8aa08c`（源 `9e09b537`）：signal/fatal 共用幂等关闭，启动资源交接完成后再收尾，edge.close 失败仍执行 service.shutdown，失败不得改写为成功；诊断仅保留闭集 code/stage/port。先以隔离 root 身份漂移复现旧 CLI 不退出，修后相关 65 项测试通过，独立 reviewer 18 项 CLI/关闭及 1 项 Supervisor 测试通过；主侧整合后再执行 18 项通过。未改 Task、owner、lease、持久化或自动恢复策略，无新 ADR。该修复关闭已确认的外层滞留代码缺口，不证明原事故由身份漂移触发。原根只读 integrity_check=ok、Task 仍 completed；内部最初触发原因无法从已有诊断恢复，仍 OPEN，后续用新增安全诊断补长期运行证据。详见 [故障回归记录](../apps/task-web/e2e/service-failure-report.md)。
+
+## 2026-09-11：报告配置升级兼容性缺口（OPEN）
+
+UI 发行候选验收发现：`packages/task-leader-report/index.mjs` 将整个 `policy.mjs` 源码摘要纳入 review 与 Leader 持久配置身份。仅增加 GUIDANCE 提示也改变该身份，候选 `8ff4c386` 无法 `open` 原真实测试数据根，原根与失败证据保持不变。独立只读比较确认 profile 字节不同；门禁拒绝是预期安全行为，但尚无对应升级操作路径。
+
+不能简单使用新 Core 加旧安装目录配置规避：旧配置相对导入并构造旧模块的受管端口，新 Core 的模块内 WeakMap/WeakSet 不接纳这些跨副本对象。原版同根恢复、新版新根运行以及原 Core 搭配新 UI 的兼容探索均不能证明新 Core 的同包升级。
+
+待解决出口：明确兼容配置装配或正式迁移设计，保留旧策略与证据身份，并在旧数据的未决、终态及发布回执上实测升级/回滚。涉及持久契约或能力身份改变时先 ADR；禁止编辑 profile、清库、弱化品牌检查或摘要绑定。该项阻止宣称新版可无损升级既有报告服务，不撤销旧发行在原验证范围内的事实。具体记录见 [本轮验收](ui-1/release-validation-2026-09-11.md)。
+
 ## 2026-09-10：Node22+ 运行环境兼容纠偏
 
 用户实际Ubuntu22.04 Sandbox 已有Node22.22.1，强制另装24.15.0造成多次网络与依赖等待。诊断分支仅接纳22后Store40项、HTTP组合16项通过（Mac、无模型），说明版本白名单不等于功能必需；但22忽略SQLite `defensive:true`是实测差异，不得隐藏。按[ADR0097](adr/0097-node-capability-based-runtime-admission.md)改为主版本>=22、实际必需能力预检、可选防御增强透明报告；不新增任意SQL入口，不改变事务/恢复/发布契约。实现与双版本验证在后继提交完成，现有签名v1.0.0不热修改，新包发布前安装支持仍未改变。学习：版本标签用于记录证据，运行准入应检查实际能力，不能用精确补丁号替代兼容验证。

@@ -23,6 +23,36 @@ function loaderOf(pages: EventsPage[]): {loader: EventsLoader; calls: Array<{cur
 }
 
 describe('活动事件（P11 / E20-E22）', () => {
+  it('按真实升序 after 合同追赶分页，末页为空游标后仍发现新增事件', async () => {
+    const {loader, calls} = loaderOf([
+      {items: Array.from({length: 50}, (_, i) => event(i + 1)), nextCursor: '50', taskId: 'task-1'},
+      {items: [event(51)], nextCursor: null, taskId: 'task-1'},
+      {items: [event(51), event(52)], nextCursor: null, taskId: 'task-1'},
+    ]);
+    const {transport} = makeFakeTransport();
+    const user = userEvent.setup();
+    render(<ActivityView taskId="task-1" transport={transport} eventsLoader={loader} />);
+    await screen.findByText('条目 50');
+    await user.click(screen.getByTestId('activity-load-more'));
+    await screen.findByText('条目 51');
+    await user.click(screen.getByRole('button', {name: '刷新'}));
+    await screen.findByText('条目 52');
+    expect(screen.getAllByTestId('activity-event')).toHaveLength(52);
+    expect(calls.map(call => call.cursor)).toEqual([null, '50', '50']);
+  });
+
+  it('切换任务清空事件且忽略旧任务迟到响应', async () => {
+    let finish!: (page: EventsPage) => void;
+    const loader: EventsLoader = taskId => taskId === 'old'
+      ? new Promise(resolve => { finish = resolve; })
+      : Promise.resolve({taskId, items: [event(2)], nextCursor: null});
+    const {transport} = makeFakeTransport();
+    const view = render(<ActivityView taskId="old" transport={transport} eventsLoader={loader} />);
+    view.rerender(<ActivityView taskId="new" transport={transport} eventsLoader={loader} />);
+    await screen.findByText('条目 2');
+    finish({taskId: 'old', items: [event(1)], nextCursor: null});
+    await waitFor(() => expect(screen.queryByText('条目 1')).toBeNull());
+  });
   it('分页加载：首页自动加载，加载更多携带 nextCursor，跨页去重', async () => {
     const {loader, calls} = loaderOf([
       {items: [event(3), event(2)], nextCursor: 'cursor-older', taskId: 'task-1'},

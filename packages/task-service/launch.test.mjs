@@ -57,6 +57,32 @@ function rejectCLI(f, args) {
   const result = f.run(args); assert.equal(result.error, undefined); assert.equal(result.status, 1);
   assert.equal(result.stdout, ''); assert.equal(withoutSQLiteRuntimeNotices(result.stderr), '{"code":"service_start_unavailable"}\n'); return result;
 }
+for (const raceSignal of [false, true]) test('UI CLI exits on internal root identity failure; signal race=' + raceSignal, {timeout: 25000}, async t => {
+  const f = fixture(t), ui = path.join(f.directory, 'ui');
+  fs.mkdirSync(ui); fs.writeFileSync(path.join(ui, 'index.html'), '<!doctype html><title>controlled fixture</title>');
+  const raceConfig = path.join(f.directory, 'race-config.mjs');
+  fs.writeFileSync(raceConfig, `import config from ${JSON.stringify(new URL('./service.fixture.mjs', import.meta.url).href)};
+    export default {...config, onDiagnostic(report) {
+      if (${raceSignal} && ['service_owner_unavailable','service_supervisor_failed'].includes(report.code)) process.kill(process.pid, 'SIGTERM');
+    }};`);
+  const service = await f.launch(['--config', raceConfig, '--ui', ui]);
+  const address = JSON.parse(service.stdout.split('\n')[0]).address;
+  assert.equal((await fetch(address + '/ui/', {signal: AbortSignal.timeout(2000)})).status, 200);
+  fs.renameSync(f.root, f.root + '-original'); fs.mkdirSync(f.root, {mode: 0o700});
+  await until(() => service.exited, 4000);
+  assert.deepEqual(await service.stop(), {code: 1, signal: null});
+  await assert.rejects(fetch(address + '/ui/', {signal: AbortSignal.timeout(2000)}));
+  const final = JSON.parse(service.stdout.trim().split('\n').at(-1));
+  assert.equal(final.state, 'closed'); assert.equal(final.clean, true);
+  assert.ok(['service_owner_unavailable', 'service_supervisor_failed'].includes(final.code));
+  assert.equal(service.stdout.trim().split('\n').length, 2);
+  const diagnostics = withoutSQLiteRuntimeNotices(service.stderr).trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(diagnostics.some(item => item.code === final.code));
+  assert.ok(diagnostics.every(item => Object.keys(item).every(key => ['code', 'stage', 'port'].includes(key))));
+  assert.ok(fs.existsSync(path.join(f.root + '-original', 'store/authority.sqlite')));
+  assert.deepEqual(fs.readdirSync(f.root), []);
+  durable(f, f.root + '-original'); service.checkOutput(); f.complete = true;
+});
 // Own temporary SQLite only, after every original service process has exited.
 function durable(f, root = f.root) {
   assert.ok(f.active.every(service => service.exited));

@@ -34,12 +34,22 @@ MAX_FILE = 2 << 20
 MAX_TOTAL = 16 << 20
 MAX_MANIFEST = 65536
 MAX_OUTPUT = 256 << 10
+# 与受信 packages/task-distribution/index.mjs 的 inspect 静态资产规则一致。
+# Python仅约束ZIP传输；落盘后仍必须通过原Node restore/verify，不执行下载代码。
+UI_ROOT = "apps/task-web/dist/"
+UI_MAX_FILES = 512
+UI_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+UI_EXTENSIONS = frozenset(("html", "js", "css", "json", "map", "svg", "png", "jpg", "jpeg", "ico", "webmanifest", "txt", "woff", "woff2"))
 SHA = re.compile(r"[a-f0-9]{40}\Z")
 DIGEST = re.compile(r"sha256:[a-f0-9]{64}\Z")
 DECIMAL = re.compile(r"[1-9][0-9]{0,15}\Z")
 JOBS = frozenset({"Freeze one Node candidate"} | {
     f"{name} ({platform}, Node {version})"
     for name in ("Node team", "Consume the same Node candidate")
+    for platform in ("ubuntu-latest", "macos-latest")
+    for version in ("22.22.1", "24.15.0")
+} | {
+    f"task-web (typecheck, build, test + e2e, {platform}, Node {version})"
     for platform in ("ubuntu-latest", "macos-latest")
     for version in ("22.22.1", "24.15.0")
 })
@@ -268,24 +278,32 @@ def trusted_source(root, source_head, node):
     return files
 
 
-def validate_archive(raw, expected, files):
+def ui_path(name):
+    if type(name) is not str or not name.startswith(UI_ROOT):
+        return False
+    relative = name[len(UI_ROOT):]
+    return all(UI_NAME.fullmatch(part) for part in relative.split("/")) and \
+        "." in relative and relative.rsplit(".", 1)[1].lower() in UI_EXTENSIONS
+
+
+def validate_archive(raw, expected, files, *, require_ui=False):
     need(type(raw) is bytes and 0 < len(raw) <= MAX_ARCHIVE and sha(raw) == expected["archiveDigest"], "archive_digest_mismatch")
     # Bound member count BEFORE ZipFile allocates a central-directory object per
     # entry. Reject ZIP64, multi-disk, trailers and unexplained archive comments.
     need(len(raw) >= 22 and raw[-22:-18] == b"PK\x05\x06", "unsupported_zip")
     disk, start_disk, disk_count, count, central_bytes, offset, comment = struct.unpack_from("<4H2IH", raw, len(raw) - 18)
-    need(disk == start_disk == 0 and disk_count == count == len(files) + 1 and comment == 0 and
+    need(disk == start_disk == 0 and disk_count == count and len(files) + 1 <= count <= len(files) + UI_MAX_FILES + 1 and comment == 0 and
          central_bytes < MAX_MANIFEST and offset + central_bytes == len(raw) - 22, "unsupported_zip")
     wanted = set(files) | {"manifest.json"}
     contents = {}
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             members = archive.infolist()
-            need(len(members) == len(wanted), "zip_inventory_mismatch")
+            need(len(members) == count, "zip_inventory_mismatch")
             total = 0
             for member in members:
                 name = member.filename
-                need(name == member.orig_filename and name in wanted and name not in contents and not member.is_dir(), "zip_inventory_mismatch")
+                need(name == member.orig_filename and (name in wanted or ui_path(name)) and name not in contents and not member.is_dir(), "zip_inventory_mismatch")
                 kind = stat.S_IFMT(member.external_attr >> 16)
                 maximum = MAX_MANIFEST if name == "manifest.json" else MAX_FILE
                 need(kind in (0, stat.S_IFREG) and not member.flag_bits & ~(0x8 | 0x800) and not member.extra and not member.comment and
@@ -299,17 +317,24 @@ def validate_archive(raw, expected, files):
                 contents[name] = value
     except (zipfile.BadZipFile, NotImplementedError, RuntimeError, OSError, ValueError):
         raise CandidateError("invalid_zip") from None
-    need(set(contents) == wanted and sha(contents["manifest.json"]) == expected["manifestDigest"], "manifest_digest_mismatch")
+    need("manifest.json" in contents and sha(contents["manifest.json"]) == expected["manifestDigest"], "manifest_digest_mismatch")
     manifest = parse(contents["manifest.json"])
     entries = manifest.get("files")
-    need(type(entries) is list and len(entries) == len(files), "invalid_manifest")
-    for name, entry in zip(files, entries):
+    need(type(entries) is list and len(files) <= len(entries) <= len(files) + UI_MAX_FILES, "invalid_manifest")
+    ui_entries = entries[len(files):]
+    need(all(type(entry) is dict and ui_path(entry.get("path")) for entry in ui_entries), "invalid_manifest")
+    ui_files = [entry["path"] for entry in ui_entries]
+    need(ui_files == sorted(set(ui_files)), "invalid_manifest")
+    need((not ui_files and not require_ui) or UI_ROOT + "index.html" in ui_files, "missing_ui_entry")
+    all_files = files + ui_files
+    need(set(contents) == set(all_files) | {"manifest.json"}, "zip_inventory_mismatch")
+    for name, entry in zip(all_files, entries):
         need(type(entry) is dict and list(entry) == ["path", "digest", "bytes"] and entry["path"] == name and
              type(entry["bytes"]) is int and entry["bytes"] == len(contents[name]) and entry["digest"] == sha(contents[name]), "manifest_file_mismatch")
     canonical = {"format": "marshal-node-script-package/v1", "sourceHead": expected["sourceHead"], "node": NODE_VERSION,
                  "platforms": ["darwin-arm64", "linux-x64"], "entrypoint": "packages/task-service/main.mjs", "files": entries}
     need((json.dumps(canonical, ensure_ascii=False, indent=2) + "\n").encode() == contents["manifest.json"], "invalid_manifest")
-    need(sum(len(contents[name]) for name in files) <= MAX_TOTAL, "package_size_limit")
+    need(sum(len(contents[name]) for name in all_files) <= MAX_TOTAL, "package_size_limit")
     return contents
 
 
@@ -400,7 +425,8 @@ def admit(expected, *, api, source, node, target, archive=None):
     files = trusted_source(source, expected["sourceHead"], node)
     raw = read_regular(archive, MAX_ARCHIVE) if archive else api.raw(API_ROOT + f'/actions/artifacts/{expected["artifactId"]}/zip', MAX_ARCHIVE)
     need(len(raw) == before["archiveBytes"], "archive_size_mismatch")
-    contents = validate_archive(raw, expected, files)
+    # 当前workflow强制4项UI测试并打包UI；不能用合法API-only旧包冒充本UI候选。
+    contents = validate_archive(raw, expected, files, require_ui=True)
     need(github_snapshot(api, expected) == before, "github_observation_drift")
     output = PrivateOutput(target)
     try:
@@ -421,7 +447,7 @@ def admit(expected, *, api, source, node, target, archive=None):
         restored = parse(command([node, os.path.join(source, "packages/task-distribution/main.mjs"), "restore-carrier",
             "--carrier", carrier, "--target", installed, "--manifest-digest", expected["manifestDigest"], "--source-head", expected["sourceHead"]]))
         need(restored.get("sourceHead") == expected["sourceHead"] and restored.get("manifestDigest") == expected["manifestDigest"] and
-             restored.get("files") == len(files), "restore_binding_mismatch")
+             restored.get("files") == len(contents) - 1, "restore_binding_mismatch")
         temporary = os.path.join(target, "consumer-tmp")
         output.mkdir(temporary)
         environment = {"PATH": str(Path(node).parent), "TMPDIR": temporary,

@@ -9,6 +9,8 @@ import {safeManagedDiagnostic, safeRejectedOutputDiagnostic} from '../task-appli
 import {sqliteRuntimeCapabilities} from '../task-store/store.mjs';
 import {TaskApiError, errorPayload} from '../task-api/contract.mjs';
 import {headerCount} from '../task-api/http-boundary.mjs';
+import {cliShutdown} from './cli-shutdown.mjs';
+import {safeServiceDiagnostic, terminalServiceDiagnostic} from './service-diagnostic.mjs';
 
 // 可选本机浏览器 UI（ADR0098）。默认不启用；启用后本入口在 127.0.0.1 上多监听
 // 一个唯一公开端口，同时承担 /ui/ 冻结静态清单与精确 Origin 边界，其余请求
@@ -209,7 +211,13 @@ async function main(argv) {
   sqliteRuntimeCapabilities();
   // Admit the frozen UI assets before any data root exists; failures leave no state.
   const snapshotUi = uiOption.buildDir ? uiSnapshot(uiOption.buildDir) : null;
-  const target = prepareLaunch(args); let service, edge, managedDiagnostics = 0, rejectedDiagnostics = 0;
+  const target = prepareLaunch(args); let service, edge, managedDiagnostics = 0, rejectedDiagnostics = 0, serviceDiagnostics = 0;
+  const closing = cliShutdown(() => ({service, edge}), (result, code) => {
+    if (result) process.stdout.write(JSON.stringify(result) + '\n');
+    process.exitCode = code;
+  });
+  const stop = () => {void closing.stop();};
+  process.on('SIGTERM', stop); process.on('SIGINT', stop);
   try {
     target.check();
     service = await startTaskService({...configuration, root: target.root, mode: target.mode, port: snapshotUi ? 0 : args.port,
@@ -220,30 +228,25 @@ async function main(argv) {
           const rejected = safeRejectedOutputDiagnostic(report);
           if (rejected && rejectedDiagnostics < 8) {rejectedDiagnostics++; process.stderr.write(JSON.stringify(rejected) + '\n');}
         }
-        if (report.code.startsWith('service_')) process.exitCode = 1;
+        const safe = safeServiceDiagnostic(report);
+        if (safe && serviceDiagnostics++ < 32) process.stderr.write(JSON.stringify(safe) + '\n');
+        if (terminalServiceDiagnostic(report)) {process.exitCode = 1; void closing.stop(report.code);}
         return configuration.onDiagnostic?.(report);
       }});
     target.check(); // Composition now owns the same named private root graph.
-    if (snapshotUi) {
+    if (snapshotUi && !closing.requested) {
       edge = await startUiEdge({snapshot: snapshotUi, innerAddress: service.address, port: args.port,
         requestTimeoutMs: configuration.requestTimeoutMs ?? 10000});
     }
   } catch (error) {
-    if (edge) await edge.close();
-    if (service) await service.shutdown();
+    void closing.stop('service_start_unavailable');
     throw error;
-  } finally {target.close();}
+  } finally {
+    try {target.close();} finally {closing.started(); if (closing.requested) await closing.stop();}
+  }
+  if (closing.requested) return;
   const address = edge ? edge.address : service.address;
   process.stdout.write(JSON.stringify({profile: service.snapshot().profile, address, connectionFile: service.connectionFile}) + '\n');
-  let stopping = false;
-  const stop = async () => {
-    if (stopping) return; stopping = true;
-    if (edge) await edge.close();
-    const result = await service.shutdown();
-    process.stdout.write(JSON.stringify({state: result.state, clean: result.shutdownClean, code: result.failure}) + '\n');
-    process.exitCode = result.failure || !result.shutdownClean ? 1 : 0;
-  };
-  process.once('SIGTERM', stop); process.once('SIGINT', stop);
 }
 
 main(process.argv.slice(2)).catch(() => {

@@ -1,4 +1,4 @@
-# UI-1 浏览器接入 e2e（不使用模型/浏览器驱动）
+# UI-1 接入与独立浏览器 e2e（不使用模型）
 
 本目录是 UI-1 第三工作包（ADR0098 同源接入、发行资产与基础验收）的服务侧 e2e。全部用例通过**真实 `packages/task-service/main.mjs` 子进程**（锁定生产入口本身，而非开发 Vite/代理）验证：
 
@@ -33,5 +33,32 @@ npx vitest run e2e/real-http.test.mjs     # 只跑真实往返套件
 ## 固定证据与限制
 
 - 真实往返用例使用仓库既有的零模型受管 fixture `packages/task-service/leader-recovery.fixture.mjs`（设 `MARSHAL_LEADER_RECOVERY_FIXTURE=1`，fake ACP 真实 HTTP/SQLite/托管边界，与 `packages/task-service/leader.test.mjs` 同一机制）。`managed-diagnostic.fixture.mjs` 是显式失败注入包装，不用于正路径。
-- 本套件刻意不引入 Playwright/真实浏览器进程与模型；浏览器渲染/键盘/视觉类场景（E24/E25/E28 等）与设计包层次 2/3 的浏览器矩阵已由正式验收另行覆盖，本目录只锁定可由 HTTP 层判定的边界事实。
-- 中断核对提示（E22 用户可见面）、token 内存持有与刷新清除（E01 客户端面）由 W1/W2 的浏览器层测试负责；本套件覆盖其后端的可考核部分。
+- 默认 Vitest 套件不引入 Playwright/真实浏览器进程与模型；独立浏览器脚本见下节，必须显式执行。是否完成以对应候选的验收记录为准，不能从本目录或 CI 中的 `e2e` 名称推断浏览器矩阵通过。
+- 中断核对提示（E22 用户可见面）、token 内存持有与刷新清除（E01 客户端面）由相应客户端测试及真实浏览器验收分别负责；本套件覆盖其后端的可考核部分。
+
+## 独立浏览器异常交互
+
+`browser-fault-acceptance.mjs` 不进入默认测试/CI，不新增项目依赖。需要先安装 Playwright 与所需浏览器，再显式指定模块绝对路径（不绑定开发者本机路径）：
+
+```sh
+cd apps/task-web
+npm ci
+npm run build
+cd ../..
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs BROWSER_ENGINE=chromium node apps/task-web/e2e/browser-fault-acceptance.mjs
+PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs BROWSER_ENGINE=webkit node apps/task-web/e2e/browser-fault-acceptance.mjs
+```
+
+可选 `BROWSER_EXECUTABLE` 指定独立 headless 浏览器可执行文件，绝不接管用户浏览器。每次启动原 `main.mjs --ui`、新 SQLite 与既有受控 ACP Provider。Task 准备走公开 HTTP；答复、批准、取消、跨设置路由和原键重放通过真实点击/Enter，取消确认 Escape 后核对未提交。拦截器先取得真实 HTTP 响应，再丢弃首个响应；不伪造业务状态。每动作断言两次请求原键/原正文相同，批准与取消还绑定相同 Operation ID；取消重放前后 Task 与公开 audit 完全不变。
+
+保护接缝可独立运行 `node --test apps/task-web/e2e/browser-fault-guards.checks.mjs`（仓库根）。HTTP 请求及响应体 10 秒超时，状态等待总墙钟 60 秒；浏览器清理失败不跳过所属服务清理与 FAIL 证据的尽力落盘。两次响应必须严格为 202，批准/取消都必须有非空且一致的 Operation ID；缺失 ID 不能因两个 `undefined` 相等而通过。
+
+截图与脱敏摘要保留在当前 worktree 的 `.marshal/evidence/browser-fault-*`；短路径私有运行根保留在 `os.tmpdir()/ui-fault-*`，路径见 evidence.json（避免 Darwin Unix socket 路径过长）。服务正常停止后仍保留证据，不自动删除 SQLite/连接文件；这些目录包含测试凭据，不得发布。脚本不录 HAR、trace、token 或请求头；截图仅在连接后。执行前必须显式重建，build-if-missing 不检查资产是否陈旧。
+
+范围是 E20 的三个 mutation 未知结果跨路由/原键重放，以及 E31 业务答复、E07 计划预览批准、E14 取消与 E25 部分键盘行为。不是经典 `task.answer` 全链、409、取消运行中竞态、发布授权、Safari 人工测试或真人产品可用性验收；不把 202、fixture 或脚本 PASS 当作整 Task/版本验收完成。
+
+## 成果追溯受控浏览器验证
+
+在仓库根先完成 UI 安装与构建，再使用相同 Playwright 模块/引擎参数运行 `node apps/task-web/e2e/browser-traceability-acceptance.mjs`。这会创建新的私有短路径运行根，复用原 Leader/ACP/发布 fixture，经公开 API 准备输入、回答、批准和仅该隔离目标的发布，然后实际浏览器点击/Enter 下载输入、发布回执、后验证据。三者必须真实不在 Task.artifactIds 中，UI 必须从既有公开关联读到；落盘后复验字节、摘要，输入还与原上传字节逐一比较，原 Task 不变。
+
+这是显式受控配置，包含仅测试目录内的本地发布与只读目标入口，不启动真实模型，不冒充 sales.json 实际业务；截图/下载/脱敏摘要在 `.marshal/evidence/traceability-*`，私有服务数据保留在 evidence.json 指出的临时根。不得发布连接文件或原日志。不进入默认 CI，不能取代真人可用性或正式包验收。

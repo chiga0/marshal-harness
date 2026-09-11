@@ -14,6 +14,7 @@ import {TaskSupervisor} from '../task-supervisor/controller.mjs';
 import {TaskExecutionCoordinator} from '../task-execution/controller.mjs';
 import {leaderConfiguration} from '../task-application/leader.mjs';
 import {safeManagedDiagnostic, safeRejectedOutputDiagnostic} from '../task-application/leader-ports.mjs';
+import {safeServiceDiagnostic} from './service-diagnostic.mjs';
 import {createTaskApiHandler} from '../task-api/http-handler.mjs';
 import {PROFILE, TaskApiError, validate} from '../task-api/contract.mjs';
 
@@ -128,7 +129,8 @@ export async function startTaskService({root, mode, providers, prepare, collect,
   let files, store, depot, application, supervisor, business, custodian, server, renewal, closing, address, connectionFile;
   let state = 'starting', failure = null, shutdownClean = null, renewing = false;
   const instanceId = 'service-' + randomUUID(), token = randomBytes(32).toString('hex');
-  const diagnostic = code => { try { Promise.resolve(onDiagnostic({code})).catch(() => {}); } catch {} };
+  const diagnostic = value => { try { Promise.resolve(onDiagnostic(typeof value === 'string' ? {code: value} :
+    safeServiceDiagnostic(value) ?? {code: value.code})).catch(() => {}); } catch {} };
   let managedDiagnosticCount = 0, rejectedDiagnosticCount = 0;
   const managedDiagnostic = value => {
     let report = safeManagedDiagnostic(value);
@@ -381,7 +383,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       verification, release, custody: custodian ?? null,
       prepare: (ticket, wait) => prepare(ticket, {...wait, ...context}),
       collect: (ticket, result, wait) => collect(ticket, result, {...wait, ...context}),
-      onError: report => { diagnostic(report.code); if (report.code === 'supervisor_failed') fail('service_supervisor_failed'); }});
+      onError: report => { diagnostic(report); if (report.code === 'supervisor_failed') fail('service_supervisor_failed'); }});
     let handler;
     server = http.createServer((request, response) => {
       if (!handler) { response.writeHead(503, {'Connection': 'close'}); response.end(); return; }

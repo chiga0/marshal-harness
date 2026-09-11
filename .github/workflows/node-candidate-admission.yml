@@ -61,6 +61,12 @@ jobs:
         with:
           node-version: '24.15.0'
           package-manager-cache: false
+      # 离线边界测试会本机pack一个受控UI包；仅准备测试构建，不重建待接纳的原候选。
+      - name: Build UI for offline installed-candidate fixture
+        working-directory: apps/task-web
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm run build
       - name: Offline hostile metadata/ZIP and original installed CLI consumer
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |

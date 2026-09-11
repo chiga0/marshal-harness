@@ -9,6 +9,7 @@ import {ConfirmDialog} from '@/components/ui/dialog';
 import {ApiError, type Revision, type Transport, type WorkerRecord} from '@/lib/transport/types';
 import {taskKeys} from '../tasks/detail/query-keys';
 import {ErrorNotice} from '../tasks/detail/shared/error-notice';
+import {OperationReceipt} from '../tasks/detail/shared/operation-receipt';
 import {useLogicalAction} from '../tasks/detail/shared/logical-action';
 
 export interface CancelWorkerFlowProps {
@@ -23,10 +24,11 @@ export interface CancelWorkerFlowProps {
 export function CancelWorkerFlow({taskId, taskRevision, worker, transport, onChanged}: CancelWorkerFlowProps) {
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
-  const action = useLogicalAction([taskId, 'worker.cancel', worker.id, String(taskRevision)]);
+  const [confirmedRevision, setConfirmedRevision] = useState(taskRevision);
+  const action = useLogicalAction([taskId, 'worker.cancel', worker.id, String(taskRevision)], [taskId, 'worker.cancel', worker.id]);
 
   const doCancel = (key: string) =>
-    transport.cancelWorker(worker.id, {expectedRevision: taskRevision, idempotencyKey: key});
+    transport.cancelWorker(worker.id, {expectedRevision: confirmedRevision, idempotencyKey: key});
 
   const isUnsupported = action.phase.kind === 'rejected' && action.phase.error instanceof ApiError && action.phase.error.status === 501;
 
@@ -36,7 +38,8 @@ export function CancelWorkerFlow({taskId, taskRevision, worker, transport, onCha
         <Button
           variant="destructive"
           size="sm"
-          onClick={() => setConfirming(true)}
+          disabled={action.phase.kind !== 'idle'}
+          onClick={() => { setConfirmedRevision(taskRevision); setConfirming(true); }}
           data-testid="cancel-worker-open"
         >
           取消该 Worker
@@ -47,7 +50,7 @@ export function CancelWorkerFlow({taskId, taskRevision, worker, transport, onCha
       <ConfirmDialog
         open={confirming && action.phase.kind === 'idle'}
         title={`取消 Worker（节点 ${worker.nodeId}）？`}
-        description={`只请求取消这一个 Worker（${worker.id}），不会取消整个任务。取消以所属任务 revision ${taskRevision} 提交；受理不代表已停止，以服务端 Worker 状态为准。`}
+        description={`只请求取消这一个 Worker（${worker.id}），不会取消整个任务。取消以所属任务 revision ${confirmedRevision} 提交；受理不代表已停止，以服务端 Worker 状态为准。`}
         destructive
         confirmText="确认取消该 Worker"
         onConfirm={() => {
@@ -62,6 +65,7 @@ export function CancelWorkerFlow({taskId, taskRevision, worker, transport, onCha
         <div className="rounded-md border border-success/40 bg-success/5 p-3" role="status" data-testid="cancel-worker-accepted">
           <p className="text-sm font-medium text-success">取消请求已受理。</p>
           <p className="mt-1 text-sm text-text-secondary">受理不代表该 Worker 已停止；以轮询到的服务端状态为准。</p>
+          <OperationReceipt result={action.phase.result} taskId={taskId} kind="worker.cancel" workerId={worker.id} transport={transport} />
         </div>
       ) : null}
       {action.phase.kind === 'rejected' ? (
@@ -71,6 +75,7 @@ export function CancelWorkerFlow({taskId, taskRevision, worker, transport, onCha
             title="取消 Worker 失败"
             onRefresh={() => { void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)}); onChanged(); }}
           />
+          {!isUnsupported ? <Button size="sm" variant="outline" onClick={action.reset}>已核对 Worker 状态，重新开始取消</Button> : null}
           {isUnsupported ? (
             <p className="rounded border border-warning/40 bg-warning/5 p-2 text-sm text-text-primary" data-testid="cancel-worker-unsupported">
               当前服务不支持单 Worker 取消（501）。不会用「取消整个任务」代替执行。

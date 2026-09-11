@@ -70,8 +70,9 @@ export function WorkerDrawer({taskRevision, worker, transport, onClose, onChange
           <p className="text-xs text-text-secondary">最近观察时间不代表模型仍在持续工作。</p>
         </section>
 
-        <section aria-label="进展" className="space-y-1 text-sm leading-[22px]">
-          <h3 className="text-sm font-medium">进展</h3>
+        <section aria-label="最后收到的进展" className="space-y-1 text-sm leading-[22px]">
+          <h3 className="text-sm font-medium">最后收到的进展</h3>
+          {terminal ? <p className="text-xs text-text-secondary">执行已结束；以下为历史观察，不代表当前仍在运行。</p> : null}
           {worker.progress ? (
             <dl className="grid grid-cols-1 gap-y-1">
               <Row label="摘要" value={worker.progress.summary} />

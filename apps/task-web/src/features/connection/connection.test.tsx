@@ -5,6 +5,8 @@ import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import {clearToken, installToken} from '../../lib/transport/client';
 import {signalUnauthorized} from '../../lib/queries/client';
 import {ConnectionProvider, useConnection} from './connection';
+import type {ConnectionValue} from './connection';
+import {SESSION_OPERATIONS_KEY} from '../../lib/queries/operations';
 
 function DisconnectProbe({onDisconnect}: {onDisconnect: () => void}) {
   const {disconnect} = useConnection();
@@ -40,6 +42,29 @@ describe('服务端 401 后连接失效（UI-07）', () => {
   afterEach(() => {
     clearToken();
     vi.unstubAllGlobals();
+  });
+  it('动作卡片不在场也记录原Operation，断开和重新连接后旧响应不得写回', async () => {
+    let resolveWrite!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST'
+      ? new Promise<Response>(resolve => { resolveWrite = resolve; })
+      : new Response(JSON.stringify({items: [], nextCursor: null}), {status: 200})));
+    const client = new QueryClient();
+    let connection!: ConnectionValue;
+    function Probe() { connection = useConnection(); return null; }
+    render(<QueryClientProvider client={client}><ConnectionProvider><Probe /></ConnectionProvider></QueryClientProvider>);
+    await act(async () => { await connection.connect('token-one'); });
+    const original = {id: 'op-1', taskId: 'task-1', kind: 'task.cancel', status: 'accepted', taskRevision: 1, createdAt: '2026-09-11T00:00:00Z', updatedAt: '2026-09-11T00:00:00Z'};
+    let first!: Promise<unknown>;
+    act(() => { first = connection.transport!.cancelTask('task-1', {expectedRevision: 1, idempotencyKey: 'first'}); });
+    await act(async () => { resolveWrite(new Response(JSON.stringify(original), {status: 202})); await first; });
+    expect(client.getQueryData(SESSION_OPERATIONS_KEY)).toEqual([original]);
+    let late!: Promise<unknown>;
+    act(() => { late = connection.transport!.cancelTask('task-1', {expectedRevision: 1, idempotencyKey: 'late'}); });
+    act(() => { connection.disconnect(); });
+    expect(client.getQueryData(SESSION_OPERATIONS_KEY)).toBeUndefined();
+    await act(async () => { await connection.connect('token-two'); });
+    await act(async () => { resolveWrite(new Response(JSON.stringify({...original, id: 'op-late'}), {status: 202})); await late; });
+    expect(client.getQueryData(SESSION_OPERATIONS_KEY)).toBeUndefined();
   });
 
   function ReadyProbe() {

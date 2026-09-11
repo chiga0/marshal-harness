@@ -12,6 +12,7 @@ import type {AnswerBody, QuestionItem, Revision, Transport} from '@/lib/transpor
 import {taskKeys} from '../query-keys';
 import {isPastAt, questionStageBadge} from '../shared/derive';
 import {ErrorNotice} from '../shared/error-notice';
+import {OperationReceipt} from '../shared/operation-receipt';
 import {useLogicalAction} from '../shared/logical-action';
 import {useNow} from '../shared/use-now';
 import {deliveryStatusLabel, formatDateTime} from '../shared/format';
@@ -41,7 +42,7 @@ export function QuestionCard({taskId, expectedRevision, question, previewDigest,
   // 分支所需绑定摘要：运行问题用自身 questionDigest（合同必返）；预批准问题用投影的 previewDigest（可能未提供）。
   const branchDigest = runtime ? question.questionDigest : previewDigest;
   // 逻辑动作：同问题同分支同摘要同答复值 => 同键可重放；改答复 => 新键。
-  const action = useLogicalAction([taskId, 'answer', question.id, expectedRevision, branchDigest ?? '', answer ?? '']);
+  const action = useLogicalAction([taskId, 'answer', question.id, expectedRevision, branchDigest ?? '', answer ?? ''], [taskId, 'answer', question.id]);
   const canSubmit = answer !== null && branchDigest !== null && open && action.phase.kind === 'idle';
 
   const doSubmit = (key: string): Promise<unknown> => {
@@ -92,7 +93,7 @@ export function QuestionCard({taskId, expectedRevision, question, previewDigest,
       {action.phase.kind === 'idle' && open ? (
         <div className="space-y-2">
           {question.options.length > 0 ? (
-            <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="可选项">
+            <div className="flex flex-wrap gap-2" role="group" aria-label="可选项（选择一个）">
               {question.options.map(option => (
                 <Button
                   key={option.value}
@@ -140,6 +141,7 @@ export function QuestionCard({taskId, expectedRevision, question, previewDigest,
         <div className="rounded-md border border-success/40 bg-success/5 p-3" role="status" data-testid="question-accepted">
           <p className="text-sm font-medium text-success">答复已受理（受理不等于已被执行方消费）。</p>
           <p className="mt-1 text-sm text-text-secondary">任务进展以轮询到的服务端状态为准；此视图不显示 Worker 投递/ACK。</p>
+          <OperationReceipt result={action.phase.result} taskId={taskId} kind="task.answer" transport={transport} />
           <div className="mt-2"><Button size="sm" variant="outline" onClick={onChanged}>刷新任务查看进展</Button></div>
         </div>
       ) : null}

@@ -3,7 +3,7 @@
 // body 绑定 expectedRevision=任务 revision + requestDigest=请求摘要 + 幂等键（闭集两分支，无 outcome/requestId/revision 字段）。
 // 与 task.answer 严格分开；2xx 仅证明该 Leader 请求被接纳，不代表已继续/已发布，也不显示 Worker 投递/ACK。
 
-import {useState} from 'react';
+import {useEffect, useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
@@ -15,6 +15,7 @@ import {taskKeys} from '../query-keys';
 import {isPast, isPastAt} from '../shared/derive';
 import {ErrorNotice} from '../shared/error-notice';
 import {useLogicalAction, type ActionPhase} from '../shared/logical-action';
+import {useLeaderReplyReceipt} from '../shared/leader-reply-receipt';
 import {useNow} from '../shared/use-now';
 import {formatBytes, formatDateTime} from '../shared/format';
 
@@ -28,6 +29,7 @@ export interface LeaderRequestCardProps {
 }
 
 export function LeaderRequestCard({taskId, expectedRevision, request, transport, onChanged}: LeaderRequestCardProps) {
+  const [replyAccepted, setReplyAccepted] = useLeaderReplyReceipt(taskId, request);
   const actionable = request.status === 'pending';
   // UI-10：到期必须即时反馈（不能只靠轮询重渲染），到期立即禁用回答/授权
   const now = useNow(5000);
@@ -39,7 +41,7 @@ export function LeaderRequestCard({taskId, expectedRevision, request, transport,
           {request.kind === 'publication' ? 'Leader 发布授权请求' : 'Leader 业务请求'}
         </Badge>
         <code className="text-xs text-text-secondary">{request.id}</code>
-        <span className="text-xs text-text-secondary">状态：<code>{request.status}</code></span>
+        <span className="text-xs text-text-secondary">{replyAccepted && actionable ? '答复已受理，等待 Leader 更新。服务端投影：' : '状态：'}<code>{request.status}</code></span>
         <span className={`text-xs ${expired ? 'text-danger' : 'text-text-secondary'}`}>
           期限：{formatDateTime(request.deadlineAt)}{expired && request.status === 'pending' ? '（已过，服务端可能拒绝答复）' : ''}
         </span>
@@ -62,10 +64,10 @@ export function LeaderRequestCard({taskId, expectedRevision, request, transport,
         <p className="text-sm text-text-secondary" data-testid="leader-request-closed">
           该请求已答复或已关闭{request.replyDigest ? <>，答复摘要：<code className="break-all text-xs">{request.replyDigest}</code></> : null}。
         </p>
-      ) : request.kind === 'publication' ? (
-        <PublicationReplyActions taskId={taskId} expectedRevision={expectedRevision} request={request} expired={expired} transport={transport} onChanged={onChanged} />
+      ) : replyAccepted ? <AcceptedReplyNotice onRefresh={onChanged} /> : request.kind === 'publication' ? (
+        <PublicationReplyActions key={request.id} taskId={taskId} expectedRevision={expectedRevision} request={request} expired={expired} transport={transport} onChanged={onChanged} onAccepted={() => setReplyAccepted(true)} />
       ) : (
-        <BusinessReplyActions taskId={taskId} expectedRevision={expectedRevision} request={request} expired={expired} transport={transport} onChanged={onChanged} />
+        <BusinessReplyActions key={request.id} taskId={taskId} expectedRevision={expectedRevision} request={request} expired={expired} transport={transport} onChanged={onChanged} onAccepted={() => setReplyAccepted(true)} />
       )}
     </Card>
   );
@@ -116,22 +118,46 @@ interface ReplyActionsProps {
   expired: boolean;
   transport: Transport;
   onChanged: () => void;
+  onAccepted: () => void;
+}
+
+interface ConfirmationVersion {revision: Revision; id: string; digest: string}
+function sameConfirmation(version: ConfirmationVersion | null, request: LeaderRequestDTO, revision: Revision): boolean {
+  return version !== null && version.revision === revision && version.id === request.id && version.digest === request.requestDigest;
+}
+
+function useLeaderReplyAction(deps: readonly unknown[], identity: readonly unknown[]) {
+  const action = useLogicalAction(deps, identity);
+  const {phase, depsStale, reset} = action;
+  useEffect(() => {
+    // 正文在 flight 中变化时，通用 hook 已观察到新 deps，迟到受理不会再次触发它的 deps effect。
+    // 仅释放已明确受理的旧操作；unknown/submitting 必须继续保留原键、原正文。
+    // 原请求的受理提示由父卡片按 id + digest 的独立 receipt 展示。
+    if (phase.kind === 'accepted' && depsStale) reset();
+  }, [phase.kind, depsStale, reset]);
+  return action;
 }
 
 /** 业务请求：options 非空时选项即答复按钮；否则自由文本 + 答复按钮。answer 为选项 value 或文本原文。
  *  答复值保存在稳定 state（选择/文本不随确认清空），保证提交中原键重放仍用同一逻辑动作键。 */
-function BusinessReplyActions({taskId, expectedRevision, request, expired, transport, onChanged}: ReplyActionsProps) {
+function BusinessReplyActions({taskId, expectedRevision, request, expired, transport, onChanged, onAccepted}: ReplyActionsProps) {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<string | null>(null);
   const [freeText, setFreeText] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [confirmation, setConfirmation] = useState<ConfirmationVersion | null>(null);
+  const confirmationCurrent = sameConfirmation(confirmation, request, expectedRevision);
+  const openConfirmation = () => {
+    setConfirmation({revision: expectedRevision, id: request.id, digest: request.requestDigest});
+    setDialogOpen(true);
+  };
   const trimmed = freeText.trim();
   const hasOptions = request.options.length > 0;
   const answer = hasOptions ? selected : (trimmed === '' ? null : trimmed);
   const answerLabel = hasOptions
     ? (request.options.find(option => option.value === selected)?.label ?? selected ?? '')
     : '自由文本答复';
-  const action = useLogicalAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, answer ?? '']);
+  const action = useLeaderReplyAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, answer ?? ''], [taskId, 'leader.reply', request.id]);
   const refresh = () => { void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)}); onChanged(); };
 
   const doSubmit = (key: string): Promise<unknown> => {
@@ -142,7 +168,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
       answer,
       idempotencyKey: key,
     };
-    return transport.leaderReply(taskId, request.id, body);
+    return transport.leaderReply(taskId, request.id, body).then(result => { onAccepted(); return result; });
   };
 
   return (
@@ -159,7 +185,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
                   disabled={expired}
                   onClick={() => {
                     setSelected(option.value);
-                    setDialogOpen(true);
+                    openConfirmation();
                   }}
                   data-testid={`leader-answer-option-${option.value}`}
                 >
@@ -183,7 +209,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
                 <Button
                   size="sm"
                   disabled={answer === null || expired}
-                  onClick={() => setDialogOpen(true)}
+                  onClick={openConfirmation}
                   data-testid="leader-answer-open"
                 >
                   答复
@@ -203,9 +229,10 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
       ) : null}
 
       <LeaderReplyOutcome phase={action.phase} depsStale={action.depsStale} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} onRestart={action.reset} expired={expired} />
+      {dialogOpen && !confirmationCurrent ? <p role="alert" className="text-sm text-warning">请求版本已变化，原确认已关闭。请核对最新正文并重新打开确认；尚未提交答复。</p> : null}
 
       <ConfirmDialog
-        open={dialogOpen && answer !== null && !expired && action.phase.kind === 'idle'}
+        open={dialogOpen && confirmationCurrent && answer !== null && !expired && action.phase.kind === 'idle'}
         title="确认提交该 Leader 答复？"
         description={
           answer !== null
@@ -215,7 +242,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
         confirmText="确认答复"
         onConfirm={() => {
           // UI-10：确认框打开期间到期的，一律不发请求（后端拒绝仍是兜底）
-          if (!expired && answer !== null && !isPast(request.deadlineAt)) void action.submit(doSubmit);
+          if (confirmationCurrent && !expired && answer !== null && !isPast(request.deadlineAt)) void action.submit(doSubmit);
           setDialogOpen(false);
         }}
         onCancel={() => setDialogOpen(false)}
@@ -225,11 +252,13 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
 }
 
 /** 发布授权请求：允许/拒绝各有二次确认；缺授权正文时允许被禁用。decision 保持稳定，重放复用同一逻辑动作键。 */
-function PublicationReplyActions({taskId, expectedRevision, request, expired, transport, onChanged}: ReplyActionsProps) {
+function PublicationReplyActions({taskId, expectedRevision, request, expired, transport, onChanged, onAccepted}: ReplyActionsProps) {
   const queryClient = useQueryClient();
   const [decision, setDecision] = useState<'allow' | 'deny' | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const action = useLogicalAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, decision ?? '']);
+  const [confirmation, setConfirmation] = useState<ConfirmationVersion | null>(null);
+  const confirmationCurrent = sameConfirmation(confirmation, request, expectedRevision);
+  const action = useLeaderReplyAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, decision ?? ''], [taskId, 'leader.reply', request.id]);
   const refresh = () => { void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)}); onChanged(); };
   const hasAuthorization = request.authorization !== null;
 
@@ -241,11 +270,12 @@ function PublicationReplyActions({taskId, expectedRevision, request, expired, tr
       decision,
       idempotencyKey: key,
     };
-    return transport.leaderReply(taskId, request.id, body);
+    return transport.leaderReply(taskId, request.id, body).then(result => { onAccepted(); return result; });
   };
 
   const openDialog = (value: 'allow' | 'deny') => {
     setDecision(value);
+    setConfirmation({revision: expectedRevision, id: request.id, digest: request.requestDigest});
     setDialogOpen(true);
   };
 
@@ -275,9 +305,10 @@ function PublicationReplyActions({taskId, expectedRevision, request, expired, tr
       ) : null}
 
       <LeaderReplyOutcome phase={action.phase} depsStale={action.depsStale} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} onRestart={action.reset} expired={expired} />
+      {dialogOpen && !confirmationCurrent ? <p role="alert" className="text-sm text-warning">授权请求版本已变化，原确认已关闭。请核对最新授权正文并重新打开确认；尚未提交授权。</p> : null}
 
       <ConfirmDialog
-        open={dialogOpen && decision !== null && !expired && action.phase.kind === 'idle'}
+        open={dialogOpen && confirmationCurrent && decision !== null && !expired && action.phase.kind === 'idle'}
         title={decision === 'allow' ? '确认允许该发布？' : '确认拒绝该发布？'}
         description={
           decision === 'allow'
@@ -290,7 +321,7 @@ function PublicationReplyActions({taskId, expectedRevision, request, expired, tr
         confirmText={decision === 'allow' ? '确认允许' : '确认拒绝'}
         onConfirm={() => {
           // UI-10：确认框打开期间到期的，一律不发请求（后端拒绝仍是兜底）
-          if (!expired && decision !== null && !isPast(request.deadlineAt)) void action.submit(doSubmit);
+          if (confirmationCurrent && !expired && decision !== null && !isPast(request.deadlineAt)) void action.submit(doSubmit);
           setDialogOpen(false);
         }}
         onCancel={() => setDialogOpen(false)}
@@ -308,15 +339,7 @@ function LeaderReplyOutcome({phase, depsStale, onReplay, onRefresh, onRestart, e
   ) : null;
   if (phase.kind === 'submitting') return <p className="text-sm text-text-secondary" role="status">正在提交 Leader 答复…</p>;
   if (phase.kind === 'accepted') {
-    return (
-      <div className="rounded-md border border-success/40 bg-success/5 p-3" role="status" data-testid="leader-reply-accepted">
-        <p className="text-sm font-medium text-success">答复已受理（受理仅证明该 Leader 请求被接纳）。</p>
-        <p className="mt-1 text-sm text-text-secondary">
-          这不代表任务已继续、已发布或后验通过，也不是 Worker 的投递/ACK；后续以 Leader 与任务投影为准。
-        </p>
-        <div className="mt-2"><Button size="sm" variant="outline" onClick={onRefresh}>刷新查看投影</Button></div>
-      </div>
-    );
+    return depsStale ? null : <AcceptedReplyNotice onRefresh={onRefresh} />;
   }
   if (phase.kind === 'rejected') {
     return (
@@ -351,4 +374,13 @@ function LeaderReplyOutcome({phase, depsStale, onReplay, onRefresh, onRestart, e
     );
   }
   return null;
+}
+
+function AcceptedReplyNotice({onRefresh}: {onRefresh: () => void}) {
+  return <div className="rounded-md border border-success/40 bg-success/5 p-3" role="status" data-testid="leader-reply-accepted">
+    <p className="text-sm font-medium text-success">答复已受理（受理仅证明该 Leader 请求被接纳）。</p>
+    <p className="mt-1 text-sm text-text-secondary">无需重复答复，正在等待 Leader 更新。服务端投影尚未更新不代表需要你再次操作。</p>
+    <p className="mt-1 text-sm text-text-secondary">这不代表任务已继续、已发布或后验通过，也不是 Worker 的投递/ACK；后续以 Leader 与任务投影为准。</p>
+    <div className="mt-2"><Button size="sm" variant="outline" onClick={onRefresh}>刷新查看投影</Button></div>
+  </div>;
 }

@@ -11,6 +11,7 @@ import type {Revision, TaskRecord, Transport} from '@/lib/transport/types';
 import {taskKeys} from '../query-keys';
 import {casRevisionOf, isTerminalStatus} from '../shared/derive';
 import {ErrorNotice} from '../shared/error-notice';
+import {OperationReceipt} from '../shared/operation-receipt';
 import {useLogicalAction, type ActionPhase} from '../shared/logical-action';
 
 type ControlAction = 'pause' | 'resume' | 'cancel';
@@ -68,6 +69,7 @@ export function TaskControls({task, transport, onChanged}: TaskControlsProps) {
                 key={name}
                 size="sm"
                 variant={CONTROL_COPY[name].destructive ? 'destructive' : 'outline'}
+                disabled={pendingAction !== null}
                 onClick={() => setPendingAction(name)}
                 data-testid={`control-${name}`}
               >
@@ -106,9 +108,11 @@ interface ControlAttemptProps {
 
 function ControlAttempt({taskId, action, revision, transport, onClose, onChanged}: ControlAttemptProps) {
   const queryClient = useQueryClient();
-  const logical = useLogicalAction([taskId, `task.${action}`, revision]);
+  // 二次确认冻结所见 CAS；轮询不得替换用户正在确认的版本。
+  const [confirmedRevision] = useState(revision);
+  const logical = useLogicalAction([taskId, `task.${action}`, confirmedRevision], [taskId, `task.${action}`]);
   const run = (key: string): Promise<unknown> => {
-    const body = {expectedRevision: revision, idempotencyKey: key};
+    const body = {expectedRevision: confirmedRevision, idempotencyKey: key};
     if (action === 'pause') return transport.pauseTask(taskId, body);
     if (action === 'resume') return transport.resumeTask(taskId, body);
     return transport.cancelTask(taskId, body);
@@ -125,10 +129,11 @@ function ControlAttempt({taskId, action, revision, transport, onClose, onChanged
         onConfirm={() => void logical.submit(run)}
         onCancel={onClose}
       />
-      <ControlPhase phase={logical.phase} depsStale={logical.depsStale} action={action}
+      <ControlPhase phase={logical.phase} depsStale={logical.depsStale || revision !== confirmedRevision} action={action}
         onReplay={() => void logical.replay(run)}
         onRefresh={() => { void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)}); onChanged(); }}
         onClose={onClose} />
+      {logical.phase.kind === 'accepted' ? <OperationReceipt result={logical.phase.result} taskId={taskId} kind={`task.${action}`} transport={transport} /> : null}
     </>
   );
 }
@@ -158,6 +163,7 @@ function ControlPhase({phase, depsStale, action, onReplay, onRefresh, onClose}: 
       <div className="mt-2">
         {depsStale ? <StaleNote /> : null}
         <ErrorNotice error={phase.error} title="控制操作失败" onRefresh={onRefresh} />
+        <Button size="sm" variant="outline" onClick={onClose}>已核对结果，关闭并重新选择操作</Button>
       </div>
     );
   }

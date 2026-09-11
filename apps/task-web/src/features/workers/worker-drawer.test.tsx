@@ -1,7 +1,7 @@
 // UI-09：抽屉与嵌套确认框的焦点/层叠回归——
 // 一次 Escape 只关闭最上层；Tab 圈禁在抽屉内；轮询重渲染（回调 identity 变化）不重置焦点。
 import {describe, expect, it, vi} from 'vitest';
-import {fireEvent, render, screen} from '@testing-library/react';
+import {fireEvent, render, screen, within} from '@testing-library/react';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import type {ReactNode} from 'react';
 import {WorkerDrawer} from './worker-drawer';
@@ -12,6 +12,16 @@ function wrap(node: ReactNode, client = new QueryClient({defaultOptions: {querie
 }
 
 describe('Worker 抽屉焦点与层叠（UI-09）', () => {
+  it.each(['completed', 'failed', 'cancelled'] as const)('%s 保留原始进展与来源并明确它是历史观察', status => {
+    const {transport} = makeFakeTransport();
+    wrap(<WorkerDrawer taskRevision={7} worker={makeWorker({status, phase: 'terminal', progress: {summary: 'agent.running', source: 'agent', tool: 'read:completed'}})} transport={transport} onClose={() => {}} onChanged={() => {}} />);
+    const observation = screen.getByRole('region', {name: '最后收到的进展'});
+    expect(observation).toHaveTextContent('执行已结束；以下为历史观察，不代表当前仍在运行。');
+    expect(within(observation).getByText('agent.running')).toBeInTheDocument();
+    expect(within(observation).getByText('agent')).toBeInTheDocument();
+    expect(within(observation).getByText('read:completed')).toBeInTheDocument();
+  });
+
   it('嵌套确认框打开时：一次 Escape 只关闭确认框，再一次 Escape 才关闭抽屉', () => {
     const onClose = vi.fn();
     const {transport} = makeFakeTransport();

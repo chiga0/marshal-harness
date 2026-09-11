@@ -9,8 +9,9 @@ import {spawnSync} from 'node:child_process';
 import {encode, digest} from '../task-store/store.mjs';
 import {leaderReplyDigest} from '../task-api/contract.mjs';
 import {isManagedFileBusiness} from '../task-business/index.mjs';
+import {TaskVerification} from '../task-application/verification.mjs';
 import {createLeaderReportConfig, createPiLeaderReportConfig} from './index.mjs';
-import {PROFILE, taskBody, finalWindow, originalReport, verificationRequest, expected, initial} from './policy.mjs';
+import {PROFILE, GUIDANCE, taskBody, finalWindow, originalReport, verificationRequest, expected, initial} from './policy.mjs';
 import {filePermission} from './permission.mjs';
 const bytes = encode({rows: [{date: '2026-09-01', region: 'east', status: 'paid', cents: 100}, {date: '2026-09-02', region: 'east', status: 'paid', cents: -20},
   {date: '2026-09-02', region: 'east', status: 'paid', cents: 0}, {date: '2026-09-02', region: 'west', status: 'cancelled', cents: 999},
@@ -24,6 +25,29 @@ function ticket(window, answer) {
     replyDigest: leaderReplyDigest(value.taskId, requestId, {requestDigest, answer})}; value.input.leaderReplyRefs.push(ref); value.input.leaderReplies.push({...ref, answer});}
   return value;
 }
+test('report profile rejects an added Review DAG node and accepts only the original three-node/two-edge binding', t => {
+  const root = fixture(t), reports = path.join(root, 'reports'); fs.mkdirSync(reports, {mode: 0o700});
+  const config = createLeaderReportConfig({provider: {id: 'pi', start() {throw Error('must not start');}},
+    reportRoot: reports, readBaseURL: 'http://127.0.0.1:19999/reports/'});
+  t.after(() => config.dispose());
+  const verification = new TaskVerification({artifacts: {requireDepot() {}}}, config.verification);
+  const record = {input: taskBody('input-example', {startDate: '2026-09-01', endDate: '2026-09-02'}), inputArtifacts: [{id: 'input-example'}]};
+  const proposal = {nodes: ['east', 'west'].map(id => ({id, role: 'author', providerId: null})).concat({id: 'verify', role: 'verifier', providerId: null}),
+    edges: [{from: 'east', to: 'verify'}, {from: 'west', to: 'verify'}], acceptance: []};
+  // Synthetic structure of the second live failure; no private candidate text.
+  const rejected = structuredClone(proposal);
+  rejected.nodes.splice(2, 0, {id: 'review', role: 'reviewer', providerId: 'pi'});
+  rejected.edges.push({from: 'east', to: 'review'}, {from: 'west', to: 'review'}, {from: 'review', to: 'verify'});
+  assert.equal(rejected.nodes.length, 4); assert.equal(rejected.edges.length, 5);
+  assert.throws(() => verification.bind(record, rejected), {message: 'report_plan_boundary'});
+  assert.equal(verification.bind(record, structuredClone(proposal)).nodeId, 'verify');
+  const wrongProvider = structuredClone(proposal); wrongProvider.nodes[2].providerId = 'pi';
+  assert.throws(() => verification.bind(record, wrongProvider), {message: 'report_plan_boundary'});
+  for (const text of ['必须恰为三个节点', 'providerId 必须为 null', JSON.stringify(proposal.edges),
+    'Review 是 Core 受管阶段，不属于业务 DAG', '省略整个 proposal.budget', '沿用 snapshot.task.limits', '不要自行压缩 maxAttempts'])
+    assert.ok(GUIDANCE.includes(text), text);
+  assert.ok(record.input.requirements.acceptance.includes(GUIDANCE));
+});
 test('original Task dates or exact bound answer drive reports; missing/foreign/changed answers and malformed rows fail closed', () => {
   const one = {startDate: '2026-09-01', endDate: '2026-09-01'}, two = {startDate: '2026-09-02', endDate: '2026-09-02'};
   const a = ticket({startDate: null, endDate: null}, JSON.stringify(one)), b = ticket(two), depot = {get: () => bytes};
