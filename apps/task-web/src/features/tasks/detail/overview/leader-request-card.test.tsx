@@ -2,7 +2,8 @@ import {describe, expect, it, vi} from 'vitest';
 import {act, fireEvent, render, screen, waitFor} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
-import type {ReactNode} from 'react';
+import {useState, type ReactNode} from 'react';
+import {ApiError} from '@/lib/transport/types';
 import type {LeaderBusinessReplyBody, LeaderPublicationReplyBody, Transport} from '@/lib/transport/types';
 import {LeaderRequestCard} from './leader-request-card';
 import {REQUEST_DIGEST, TASK_ID, callsOf, makeAuthorization, makeFakeTransport, makeLeaderRequest} from '../shared/test-fakes';
@@ -13,6 +14,68 @@ function wrap(node: ReactNode) {
 }
 
 describe('Leader 答复（P06 / E31 / P10）', () => {
+  it.each(['business', 'publication'] as const)('%s：409 刷新后显式核对重开，保留草稿并以新键/CAS 再确认', async kind => {
+    const leaderReply = vi.fn().mockRejectedValueOnce(new ApiError(409, 'revision_conflict', '版本冲突', 'req-conflict')).mockResolvedValueOnce({});
+    const {transport, calls} = makeFakeTransport({leaderReply: leaderReply as Transport['leaderReply']});
+    const user = userEvent.setup();
+    const nextDigest = `sha256:${'b'.repeat(64)}`;
+    function RefreshedCard() {
+      const [revision, setRevision] = useState(7);
+      return <LeaderRequestCard taskId={TASK_ID} expectedRevision={revision} transport={transport} onChanged={() => setRevision(8)} request={makeLeaderRequest({
+        kind, options: [], requestDigest: revision === 7 ? REQUEST_DIGEST : nextDigest,
+        prompt: revision === 7 ? '原请求' : '最新请求正文',
+        authorization: kind === 'publication' ? makeAuthorization({targetId: revision === 7 ? 'old-target' : 'new-target'}) : null,
+      })} />;
+    }
+    wrap(<RefreshedCard />);
+    if (kind === 'business') await user.type(screen.getByLabelText('答复内容'), '保留的答复草稿');
+    await user.click(screen.getByTestId(kind === 'business' ? 'leader-answer-open' : 'leader-reply-allow'));
+    await user.click(screen.getByRole('button', {name: kind === 'business' ? '确认答复' : '确认允许'}));
+    expect(await screen.findByTestId('leader-reply-restart')).toBeDisabled();
+    await user.click(screen.getByRole('button', {name: /刷新/}));
+    expect(screen.getByText('最新请求正文')).toBeInTheDocument();
+    expect(screen.getByTestId('leader-reply-restart')).toBeEnabled();
+    expect(callsOf(calls, 'leaderReply')).toHaveLength(1);
+    expect(screen.queryByTestId('leader-answer-open')).toBeNull();
+    await user.click(screen.getByTestId('leader-reply-restart'));
+    expect(callsOf(calls, 'leaderReply')).toHaveLength(1);
+    if (kind === 'business') expect(screen.getByLabelText('答复内容')).toHaveValue('保留的答复草稿');
+    else expect(screen.getByTestId('publication-authorization')).toHaveTextContent('new-target');
+    await user.click(screen.getByTestId(kind === 'business' ? 'leader-answer-open' : 'leader-reply-allow'));
+    expect(screen.getByRole('dialog')).toHaveTextContent(kind === 'business' ? 'revision 8' : 'new-target');
+    await user.click(screen.getByRole('button', {name: kind === 'business' ? '确认答复' : '确认允许'}));
+    await screen.findByTestId('leader-reply-accepted');
+    const first = callsOf(calls, 'leaderReply')[0]!.args[2] as LeaderBusinessReplyBody | LeaderPublicationReplyBody;
+    const second = callsOf(calls, 'leaderReply')[1]!.args[2] as typeof first;
+    expect(second).toEqual({...first, expectedRevision: 8, requestDigest: nextDigest, idempotencyKey: expect.any(String)});
+    expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
+    expect(callsOf(calls, 'leaderReply')).toHaveLength(2);
+  });
+
+  it('未知结果刷新到新版仍不能重开；连击重放仅提交一次且冻结原 body', async () => {
+    let finish!: (value: unknown) => void;
+    const leaderReply = vi.fn().mockRejectedValueOnce(new TypeError('fetch failed')).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const {transport, calls} = makeFakeTransport({leaderReply: leaderReply as Transport['leaderReply']});
+    const user = userEvent.setup();
+    function RefreshedCard() {
+      const [revision, setRevision] = useState(7);
+      return <LeaderRequestCard taskId={TASK_ID} expectedRevision={revision} request={makeLeaderRequest()} transport={transport} onChanged={() => setRevision(8)} />;
+    }
+    wrap(<RefreshedCard />);
+    await user.click(screen.getByTestId('leader-answer-option-north'));
+    await user.click(screen.getByRole('button', {name: '确认答复'}));
+    await screen.findByText(/Leader 答复结果未知/);
+    await user.click(screen.getByRole('button', {name: /刷新/}));
+    expect(screen.getByTestId('leader-reply-deps-stale')).toBeInTheDocument();
+    expect(screen.queryByTestId('leader-reply-restart')).toBeNull();
+    expect(callsOf(calls, 'leaderReply')).toHaveLength(1);
+    const replay = screen.getByRole('button', {name: /原键重放/});
+    act(() => { fireEvent.click(replay); fireEvent.click(replay); });
+    expect(callsOf(calls, 'leaderReply')).toHaveLength(2);
+    expect(callsOf(calls, 'leaderReply')[1]!.args).toEqual(callsOf(calls, 'leaderReply')[0]!.args);
+    await act(async () => finish({}));
+  });
+
   it('业务请求走 leader.reply：requestId 入路由、body={expectedRevision,requestDigest,answer=选项 value,幂等键}，绝不走 task.answer', async () => {
     const {transport, calls} = makeFakeTransport();
     const user = userEvent.setup();
