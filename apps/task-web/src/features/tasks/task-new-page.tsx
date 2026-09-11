@@ -83,7 +83,7 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
   const [contextRaw, setContextRaw] = useLogicalActionMemory(['task.create', 'context'], () => '');
   const [files, setFiles] = useLogicalActionMemory<ComposerFile[]>(['task.create', 'files'], () => []);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [createdTaskId, setCreatedTaskId] = useLogicalActionMemory<string | null>(['task.create', 'receipt'], () => null);
+  const [createdTaskId, setCreatedTaskId, isSessionActive] = useLogicalActionMemory<string | null>(['task.create', 'receipt'], () => null);
   const [uploadProgress, setUploadProgress] = useLogicalActionMemory<{index: number; total: number} | null>(['task.create', 'upload'], () => null);
   const action = useLogicalAction(['task.create'], ['task.create']);
   const submitError = action.phase.kind === 'unknown' || action.phase.kind === 'rejected'
@@ -93,8 +93,17 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
 
   const execute = (draft: CreateTaskDraft, session: SubmissionSession) => async () => {
       if (!api) throw new Error('当前传输未接入创建能力');
+      // 上传是一串异步请求。旧连接消失后，不只禁止写回 UI，还须禁止后续上传/创建。
+      // 检查放在每次实际 API 调用前，覆盖读取附件与前一上传等待期间的连接切换。
+      const assertSession = () => {
+        if (!isSessionActive()) throw new Error('原连接已断开；未继续发送后续请求，请核对已发送请求的结果');
+      };
+      const scopedApi: CreateTaskApi = {
+        createInput: body => { assertSession(); return api.createInput(body); },
+        createTask: body => { assertSession(); return api.createTask(body); },
+      };
       try {
-        const result = await runSubmission(api, draft, session, progress => setUploadProgress(progress.uploading));
+        const result = await runSubmission(scopedApi, draft, session, progress => setUploadProgress(progress.uploading));
         setCreatedTaskId(result.taskId);
         return result;
       } finally {
