@@ -109,6 +109,10 @@ CI `34583578954` 的 Ubuntu/Node22 密度测试超过默认 5 秒（5119ms），
 
 后继 `e21353aa` 关闭终态 Worker 历史观察文案 P2：保留原 `agent.running`，明确“执行已结束；以下为历史观察”，不改状态或 Provider 事实。独立 reviewer 和主侧分别跑 19 项定向测试通过，主侧构建通过（JS `index-CpLIqAu5.js`）。真实服务正常关闭后加载新 UI，Chrome 实际重新连接、从设置返回原团队页，在 1440×900 深色视图复验新文案，截图 `chrome-team-history-e21353aa.png`；临时 viewport 已恢复。此证据只覆盖新文案的团队展示，不冒充抽屉、全部键盘或其他主题/尺寸复验。
 
+主侧全量 UI 回归随后为 41 文件 431 项通过（4.70 秒）。另使用已安装 Chrome `152.0.7977.84` 的独立 headless 进程，通过 Playwright 原生键盘事件验证真实终态任务：任务链接 Enter、团队导航 Enter、成员抽屉内各一步 Tab/Shift+Tab、Escape 关闭后焦点返回原明细入口均通过。页面实际 script src 为 `/ui/assets/index-CpLIqAu5.js`；证据 `keyboard-team-e21353aa.png`。独立 reviewer 审核了脚本断言范围，未亲自执行浏览器。入口由程序先聚焦，尚不证明仅 Tab 可发现入口或首尾焦点环绕；不覆盖问答、批准、嵌套确认或 WebKit/Safari。此前 locator Enter 未导航不能据此判定产品键盘缺陷。
+
+200% 浏览器缩放仍未验证：独立 headless Chrome 内发送五次 Meta+= 后宽度/DPR 未变化（1440/1），不把该操作或 viewport 缩小冒充浏览器缩放通过。
+
 - 候选所有变更独立审查及全量回归，关闭跨连接和 Operation 结果追踪缺口。
 - 第三轮真实模型团队链及正常终态重启已通过；继续验证取消、故障中途恢复与最终冻结发行资产的同包消费，不重复不确定的写入。
 - 实际浏览器补齐桌面/窄屏/缩放/键盘/错误状态/大量任务与事件；截图必须绑定候选代码。

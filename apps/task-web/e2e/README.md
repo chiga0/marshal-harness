@@ -33,5 +33,5 @@ npx vitest run e2e/real-http.test.mjs     # 只跑真实往返套件
 ## 固定证据与限制
 
 - 真实往返用例使用仓库既有的零模型受管 fixture `packages/task-service/leader-recovery.fixture.mjs`（设 `MARSHAL_LEADER_RECOVERY_FIXTURE=1`，fake ACP 真实 HTTP/SQLite/托管边界，与 `packages/task-service/leader.test.mjs` 同一机制）。`managed-diagnostic.fixture.mjs` 是显式失败注入包装，不用于正路径。
-- 本套件刻意不引入 Playwright/真实浏览器进程与模型；浏览器渲染/键盘/视觉类场景（E24/E25/E28 等）与设计包层次 2/3 的浏览器矩阵已由正式验收另行覆盖，本目录只锁定可由 HTTP 层判定的边界事实。
-- 中断核对提示（E22 用户可见面）、token 内存持有与刷新清除（E01 客户端面）由 W1/W2 的浏览器层测试负责；本套件覆盖其后端的可考核部分。
+- 本套件刻意不引入 Playwright/真实浏览器进程与模型；浏览器渲染/键盘/视觉类场景（E24/E25/E28 等）必须在正式验收中另行执行。是否完成以对应候选的验收记录为准，不能从本目录或 CI 中的 `e2e` 名称推断浏览器矩阵通过；本目录只锁定可由 HTTP 层判定的边界事实。
+- 中断核对提示（E22 用户可见面）、token 内存持有与刷新清除（E01 客户端面）由相应客户端测试及真实浏览器验收分别负责；本套件覆盖其后端的可考核部分。
