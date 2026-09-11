@@ -41,6 +41,7 @@ function transportWith(listTasks: Transport['listTasks']): Transport {
     createInput: async () => { throw new Error('not used'); },
     listTasks,
     getTask: async () => { throw new Error('not used'); },
+    getGraph: async () => { throw new Error('not used'); },
     getWorkers: async () => { throw new Error('not used'); },
     getPlan: async () => { throw new Error('not used'); },
     approvePlan: async () => { throw new Error('not used'); },
@@ -67,6 +68,86 @@ function rowOf(text: string): HTMLElement {
 }
 
 describe('TaskListView', () => {
+  it('两种视图只展示注入数据，切换不请求、不丢文本/状态/待处理筛选及分页', async () => {
+    const user = userEvent.setup();
+    const first = makeTask({id: 'task-injected-a', intent: '匹配甲', status: 'awaiting-answer'});
+    const second = makeTask({id: 'task-injected-b', intent: '匹配乙', status: 'awaiting-answer'});
+    const listTasks = vi.fn(async ({cursor}: {cursor?: string | null}) => ({
+      items: cursor ? [second] : [first, makeTask({id: 'task-other', intent: '无关任务'})], nextCursor: cursor ? null : 'next-real-page',
+    }));
+    renderList(transportWith(listTasks));
+    await screen.findByText('匹配甲');
+    const ids = () => [...screen.getByRole('list', {name: '任务条目'}).querySelectorAll('[data-task-id]')].map(row => row.getAttribute('data-task-id'));
+    expect(ids()).toEqual(['task-injected-a', 'task-other']);
+    await user.click(screen.getByRole('button', {name: '卡片'}));
+    expect(ids()).toEqual(['task-injected-a', 'task-other']);
+    expect(screen.getByRole('list', {name: '任务条目'})).toHaveAttribute('data-view', 'cards');
+    await user.type(screen.getByLabelText('筛选已加载任务'), '匹配');
+    await user.selectOptions(screen.getByLabelText('状态'), 'awaiting-answer');
+    await user.click(screen.getByRole('button', {name: /只看待处理/}));
+    await user.click(screen.getByRole('button', {name: /加载更多（还有下一页/}));
+    await screen.findByText('匹配乙');
+    expect(ids()).toEqual(['task-injected-a', 'task-injected-b']);
+    await user.click(screen.getByRole('button', {name: '列表'}));
+    expect(ids()).toEqual(['task-injected-a', 'task-injected-b']);
+    expect(screen.getByLabelText('筛选已加载任务')).toHaveValue('匹配');
+    expect(screen.getByLabelText('状态')).toHaveValue('awaiting-answer');
+    expect(screen.getByRole('button', {name: /只看待处理/})).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', {name: '列表'})).toHaveAttribute('aria-pressed', 'true');
+    expect(listTasks).toHaveBeenCalledTimes(2);
+    expect(listTasks.mock.calls[1]?.[0]).toMatchObject({cursor: 'next-real-page'});
+  });
+
+  it('空响应切换后仍无任何演示任务或虚构进度', async () => {
+    const user = userEvent.setup();
+    const listTasks = vi.fn(async () => ({items: [], nextCursor: null}));
+    renderList(transportWith(listTasks));
+    await screen.findByText('还没有任务。');
+    for (const name of ['卡片', '列表']) {
+      await user.click(screen.getByRole('button', {name}));
+      expect(screen.queryByRole('list', {name: '任务条目'})).toBeNull();
+      expect(document.querySelector('[data-task-id]')).toBeNull();
+      expect(screen.getByText('还没有任务。')).toBeInTheDocument();
+    }
+    expect(listTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it('下一页失败保留条目、错误和原游标，切换后可以重试', async () => {
+    const user = userEvent.setup();
+    const listTasks = vi.fn()
+      .mockResolvedValueOnce({items: [makeTask({id: 'kept', intent: '保留分页任务'})], nextCursor: 'cursor-kept'})
+      .mockRejectedValueOnce(new ApiError(503, 'page_failed', '分页暂不可用', 'req-page'))
+      .mockResolvedValueOnce({items: [makeTask({id: 'next', intent: '恢复分页任务'})], nextCursor: null});
+    renderList(transportWith(listTasks));
+    await screen.findByText('保留分页任务');
+    await user.click(screen.getByRole('button', {name: /加载更多（还有下一页/}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('加载下一页失败');
+    await user.click(screen.getByRole('button', {name: '卡片'}));
+    expect(screen.getByText('保留分页任务')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('req-page');
+    await user.click(screen.getByRole('button', {name: '重试加载更多'}));
+    await screen.findByText('恢复分页任务');
+    expect(listTasks.mock.calls[2]?.[0]).toMatchObject({cursor: 'cursor-kept'});
+  });
+
+  it('长标题/ID/失败码完整保留，两视图有窄屏换行布局而非截断', async () => {
+    const user = userEvent.setup();
+    const intent = '连续长内容'.repeat(60), id = 'task-' + 'x'.repeat(180), code = 'failure_' + 'y'.repeat(180);
+    renderList(transportWith(async () => ({items: [makeTask({id, intent, status: 'failed', code})], nextCursor: null})));
+    await screen.findByText(intent);
+    for (const name of ['列表', '卡片']) {
+      await user.click(screen.getByRole('button', {name}));
+      const row = rowOf(intent);
+      expect(row).toHaveClass('min-w-0');
+      expect(within(row).getByRole('link')).toHaveClass('[overflow-wrap:anywhere]');
+      expect(within(row).getByRole('link')).toHaveAttribute('href', '/tasks/' + id);
+      expect(within(row).getByText('ID：' + id)).toHaveClass('[overflow-wrap:anywhere]');
+      expect(within(row).getByText('失败码：' + code)).toHaveClass('[overflow-wrap:anywhere]');
+    }
+    expect(screen.getByRole('list', {name: '任务条目'})).toHaveClass('grid-cols-1', 'md:grid-cols-2');
+    // JSDOM 无布局引擎；此处只核对完整内容和响应式约束，真实375px视觉验收由浏览器另做。
+  });
+
   it('首次加载展示骨架行与状态播报', () => {
     const transport = transportWith(async () => new Promise<TasksResponse>(() => {}));
     renderList(transport);
@@ -111,6 +192,12 @@ describe('TaskListView', () => {
     renderList(transportWith(async () => ({items: [], nextCursor: null})));
     await screen.findByText('还没有任务。');
     expect(screen.getByRole('link', {name: '新建第一个任务'})).toHaveAttribute('href', '/tasks/new');
+    expect(screen.getAllByRole('link')).toHaveLength(1);
+    expect(screen.queryByLabelText('筛选已加载任务')).toBeNull();
+    expect(screen.queryByRole('button', {name: /只看待处理/})).toBeNull();
+    expect(screen.getByRole('heading', {name: '还没有任务。'})).toHaveProperty('tagName', 'H2');
+    expect(screen.getByTestId('task-empty')).not.toHaveClass('border-dashed');
+    expect(screen.getByTestId('task-empty')).toHaveClass('w-full', 'max-w-lg');
   });
 
   it('按 nextCursor 加载更多并按 id 去重，翻页到底给出说明', async () => {
@@ -148,6 +235,9 @@ describe('TaskListView', () => {
     await user.type(screen.getByLabelText('筛选已加载任务'), '不存在的词');
     expect(await screen.findByText('已加载范围内没有匹配项')).toBeInTheDocument();
     expect(screen.getByText(/筛选只作用于已加载的 2 项；服务端可能还有更多任务/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: '卡片'}));
+    expect(screen.getByText('已加载范围内没有匹配项')).toBeInTheDocument();
+    expect(screen.getByLabelText('筛选已加载任务')).toHaveValue('不存在的词');
 
     await user.clear(screen.getByLabelText('筛选已加载任务'));
     await user.type(screen.getByLabelText('筛选已加载任务'), '东地区');
@@ -206,6 +296,10 @@ describe('TaskListView', () => {
     expect(alert).toHaveTextContent('自动刷新失败，已保留已加载内容');
     expect(alert).toHaveTextContent('req-77');
     expect(screen.getByText('保留中的任务')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', {name: '卡片'}));
+    expect(screen.getByRole('alert')).toHaveTextContent('内容可能已陈旧');
+    expect(screen.getByText('保留中的任务')).toBeInTheDocument();
+    expect(listTasks).toHaveBeenCalledTimes(2);
   });
 
   it('状态播报汇总已加载/待处理/命中数量', async () => {

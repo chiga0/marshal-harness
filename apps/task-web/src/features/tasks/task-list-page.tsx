@@ -3,7 +3,7 @@
 import {useMemo, useState} from 'react';
 import {Link} from 'react-router-dom';
 import {useInfiniteQuery} from '@tanstack/react-query';
-import {Plus, RefreshCw, Search} from 'lucide-react';
+import {ClipboardList, LayoutGrid, List, Plus, RefreshCw, Search} from 'lucide-react';
 import {ApiError} from '../../lib/transport/types';
 import type {TaskRecord, TaskStatus, Transport} from '../../lib/transport/types';
 import {usePollMode} from '../../lib/queries/polling';
@@ -58,33 +58,37 @@ function TaskListSkeleton() {
   );
 }
 
-function TaskRow({task}: {task: TaskRecord}) {
+type ViewMode = 'list' | 'cards';
+
+function TaskRow({task, mode}: {task: TaskRecord; mode: ViewMode}) {
   const meta = statusMeta(task.status);
   return (
-    <li className="rounded-md border border-border bg-surface p-4">
-      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+    <li data-task-id={task.id} className={mode === 'cards'
+      ? 'flex min-w-0 flex-col gap-4 rounded-lg border border-border bg-surface p-4'
+      : 'grid min-w-0 gap-2 border-b border-border px-4 py-3 last:border-b-0 md:grid-cols-[minmax(0,1fr)_minmax(0,20rem)] md:items-center md:gap-6'}>
+      <div className="flex min-w-0 flex-col gap-1">
         <Link
           to={'/tasks/' + encodeURIComponent(task.id)}
-          className="min-w-0 break-words text-sm font-medium leading-[22px] text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          className="min-w-0 [overflow-wrap:anywhere] text-sm font-medium leading-[22px] text-text-primary underline-offset-4 hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           {task.intent}
         </Link>
-        <span className="shrink-0 text-xs leading-[18px] text-text-secondary" title={task.updatedAt}>
+        <span className="text-xs leading-[18px] text-text-secondary" title={task.updatedAt}>
           更新于 {formatDateTime(task.updatedAt)}
         </span>
       </div>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+      <div className={mode === 'cards' ? 'mt-auto flex min-w-0 flex-wrap items-center gap-2 border-t border-border pt-3' : 'flex min-w-0 flex-wrap items-center gap-2'}>
         <Badge variant={meta.variant} title={'status: ' + task.status}>{meta.label}</Badge>
         {meta.awaiting ? <Badge variant="warning">待处理</Badge> : null}
         {task.status === 'failed' && task.code ? (
-          <span className="text-xs leading-[18px] text-danger">失败码：{task.code}</span>
+          <span className="min-w-0 [overflow-wrap:anywhere] text-xs leading-[18px] text-danger">失败码：{task.code}</span>
         ) : null}
         {isAwaitingStatus(task.status) && task.deadlineAt ? (
           <span className="text-xs leading-[18px] text-text-secondary" title={task.deadlineAt}>
             期限 {formatDateTime(task.deadlineAt)}
           </span>
         ) : null}
-        <span className="text-xs leading-[18px] text-text-secondary">ID：{task.id}</span>
+        <span className="w-full min-w-0 [overflow-wrap:anywhere] text-xs leading-[18px] text-text-secondary">ID：{task.id}</span>
       </div>
     </li>
   );
@@ -101,6 +105,8 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
   const [textFilter, setTextFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<TaskStatus | 'any'>('any');
   const [pendingOnly, setPendingOnly] = useState(false);
+  // 两种展示共用同一个查询和筛选结果，偏好仅在当前页面内存中。
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
 
   const query = useInfiniteQuery({
     queryKey: ['tasks', 'list'],
@@ -114,7 +120,6 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
   const data = query.data;
   const error: unknown = query.error;
   const isPending: boolean = query.isPending;
-  const isSuccess: boolean = query.isSuccess;
   const isError: boolean = query.isError;
   const isRefetching: boolean = query.isRefetching;
   const hasNextPage: boolean = query.hasNextPage;
@@ -142,8 +147,7 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
       return true;
     });
   }, [items, textFilter, statusFilter, pendingOnly]);
-
-  const filtersActive = textFilter.trim() !== '' || statusFilter !== 'any' || pendingOnly;
+  const empty = data !== undefined && items.length === 0;
 
   if (isError && !data && isUnauthorizedError(error)) {
     return (
@@ -160,26 +164,29 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
   }
 
   return (
-    <section aria-label="任务列表" className="flex min-w-0 flex-col gap-4 p-6">
+    <section aria-label="任务列表" className="flex min-w-0 flex-col gap-4 p-4 sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-[22px] font-semibold leading-[30px]">任务</h1>
+        <div>
+          <h1 className="text-[22px] font-semibold leading-[30px]">任务</h1>
+          {!empty ? <p className="mt-1 text-sm text-text-secondary">跟进执行，处理等待，查看交付。</p> : null}
+        </div>
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={() => void refetch()} disabled={isRefetching} aria-label="立即刷新列表">
             <RefreshCw aria-hidden className={isRefetching ? 'animate-spin' : undefined} />
             刷新
           </Button>
-          <Link
+          {!empty ? <Link
             to="/tasks/new"
             className="inline-flex h-9 select-none items-center justify-center gap-2 rounded-md bg-accent px-3 text-[13px] font-medium leading-5 text-accent-foreground transition-colors hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
           >
             <Plus aria-hidden className="h-4 w-4" />
             新建任务
-          </Link>
+          </Link> : null}
         </div>
       </div>
 
-      <div className="flex flex-wrap items-end gap-3 rounded-md border border-border bg-surface p-3">
-        <div className="min-w-56 flex-1">
+      {!empty ? <div className="flex flex-wrap items-end gap-2">
+        <div className="min-w-0 basis-56 flex-1">
           <Label htmlFor="task-filter-text">筛选已加载任务</Label>
           <div className="relative">
             <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-secondary" />
@@ -218,20 +225,27 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
         >
           只看待处理（已加载 {pendingCount} 项）
         </Button>
+      </div> : null}
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p role="status" aria-live="polite" className="sr-only">
+          {isPending
+            ? '正在加载任务列表…'
+            : '已加载 ' + items.length + ' 项，其中待处理 ' + pendingCount + ' 项；当前筛选命中 ' + filtered.length + ' 项。'}
+        </p>
+        {!empty ? <p id="task-filter-scope" className="min-w-0 flex-1 text-xs leading-[18px] text-text-secondary">
+          搜索与筛选只作用于已加载的 {items.length} 项任务，不是全局检索；当前显示 {filtered.length} 项。
+        </p> : null}
+        <div role="group" aria-label="任务展示方式" className="ml-auto flex shrink-0 gap-1 rounded-md border border-border bg-surface p-1">
+          <Button variant={viewMode === 'list' ? 'secondary' : 'ghost'} className="min-h-11" aria-pressed={viewMode === 'list'} onClick={() => setViewMode('list')}><List aria-hidden />列表</Button>
+          <Button variant={viewMode === 'cards' ? 'secondary' : 'ghost'} className="min-h-11" aria-pressed={viewMode === 'cards'} onClick={() => setViewMode('cards')}><LayoutGrid aria-hidden />卡片</Button>
+        </div>
       </div>
-      <p id="task-filter-scope" className="text-xs leading-[18px] text-text-secondary">
-        搜索与筛选只作用于已加载的 {items.length} 项任务，不是全局检索；更多任务请使用下方「加载更多」。
-      </p>
 
-      <p role="status" aria-live="polite" className="text-xs leading-[18px] text-text-secondary">
-        {isPending
-          ? '正在加载任务列表…'
-          : '已加载 ' + items.length + ' 项，其中待处理 ' + pendingCount + ' 项；当前筛选命中 ' + filtered.length + ' 项。'}
-      </p>
-
-      {isError && data ? (
+      {isError && data && !isFetchNextPageError ? (
         <Alert variant="warning" title="自动刷新失败，已保留已加载内容">
           {describeTaskApiError(error)}
+          <p>内容可能已陈旧，请刷新后核对最新状态。</p>
           <div className="mt-2">
             <Button variant="outline" size="sm" onClick={() => void refetch()}>重试刷新</Button>
           </div>
@@ -249,22 +263,24 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
         </Alert>
       ) : null}
 
-      {isSuccess && items.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border bg-surface p-8 text-center">
-          <p className="text-sm leading-[22px] text-text-primary">还没有任务。</p>
-          <p className="mt-1 text-sm leading-[22px] text-text-secondary">提交业务需求后，会在这里看到执行状态与待处理项。</p>
-          <div className="mt-4">
+      {empty ? (
+        <div data-testid="task-empty" className="mx-auto flex min-h-72 w-full max-w-lg flex-col items-center justify-center px-4 py-8 text-center sm:py-12">
+          <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-lg bg-surface-muted text-text-secondary"><ClipboardList aria-hidden className="h-7 w-7" /></div>
+          <h2 className="text-[22px] font-semibold leading-[30px] text-text-primary">还没有任务。</h2>
+          <p className="mt-2 max-w-xs [overflow-wrap:anywhere] text-sm leading-[22px] text-text-secondary">从一个明确的需求开始。执行进展、待处理问题和交付成果，都会汇集在这里。</p>
+          <div className="mt-6">
             <Link
               to="/tasks/new"
-              className="inline-flex h-9 select-none items-center justify-center gap-2 rounded-md bg-accent px-3 text-[13px] font-medium leading-5 text-accent-foreground transition-colors hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
+              className="inline-flex min-h-11 select-none items-center justify-center gap-2 rounded-md bg-accent px-4 text-sm font-medium leading-5 text-accent-foreground transition-colors hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
             >
+              <Plus aria-hidden className="h-4 w-4" />
               新建第一个任务
             </Link>
           </div>
         </div>
       ) : null}
 
-      {isSuccess && items.length > 0 && filtered.length === 0 ? (
+      {data && items.length > 0 && filtered.length === 0 ? (
         <Alert variant="info" title="已加载范围内没有匹配项" role="status">
           筛选只作用于已加载的 {items.length} 项；服务端可能还有更多任务。
           <div className="mt-2 flex flex-wrap gap-2">
@@ -281,12 +297,14 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
       ) : null}
 
       {filtered.length > 0 ? (
-        <ul aria-label="任务条目" className="space-y-2">
-          {filtered.map(task => <TaskRow key={task.id} task={task} />)}
+        <ul aria-label="任务条目" data-view={viewMode} className={viewMode === 'cards'
+          ? 'grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3'
+          : 'min-w-0 overflow-hidden rounded-md border border-border bg-surface'}>
+          {filtered.map(task => <TaskRow key={task.id} task={task} mode={viewMode} />)}
         </ul>
       ) : null}
 
-      {isSuccess && items.length > 0 ? (
+      {data && items.length > 0 ? (
         <div className="flex flex-col items-start gap-2">
           {isFetchNextPageError ? (
             <Alert variant="danger" title="加载下一页失败">

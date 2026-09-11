@@ -134,6 +134,57 @@ export interface PlanEdge {
   to: NodeId;
 }
 
+// GET /v1/tasks/{taskId}/graph：执行投影，不以 Plan 或 Worker 状态推算。
+export type GraphNodeStatus = 'pending' | 'ready' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'unknown';
+export interface GraphNode {
+  id: NodeId;
+  role: PlanNodeRole;
+  status: GraphNodeStatus;
+  workerIds: WorkerId[];
+}
+export interface GraphRecord {
+  taskId: TaskId;
+  planRevision: Revision;
+  nodes: GraphNode[];
+  edges: PlanEdge[];
+}
+
+/** 当前 Graph 合同的闭集校验，拒绝坏投影而非补造节点或状态。 */
+export function parseGraph(value: unknown, taskId: string): GraphRecord {
+  const closed = (v: unknown, keys: string[]): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v) &&
+    Object.keys(v).length === keys.length && keys.every(key => Object.hasOwn(v, key));
+  const id = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(v);
+  const fail = (): never => { throw new ApiError(502, 'invalid_graph_response', '任务图响应不符合合同，未展示不可信投影', null); };
+  if (!closed(value, ['taskId', 'planRevision', 'nodes', 'edges']) || !id(value.taskId) || value.taskId !== taskId ||
+    !Number.isSafeInteger(value.planRevision) || (value.planRevision as number) < 1 ||
+    !Array.isArray(value.nodes) || value.nodes.length > 64 || !Array.isArray(value.edges) || value.edges.length > 256) return fail();
+  const ids = new Set<string>();
+  for (const node of value.nodes) {
+    if (!closed(node, ['id', 'role', 'status', 'workerIds']) || !id(node.id) || ids.has(node.id) ||
+      typeof node.role !== 'string' || !['planner', 'author', 'reviewer', 'integrator', 'verifier'].includes(node.role) ||
+      typeof node.status !== 'string' || !['pending', 'ready', 'running', 'waiting', 'completed', 'failed', 'cancelled', 'unknown'].includes(node.status) ||
+      !Array.isArray(node.workerIds) || node.workerIds.length > 100 || !node.workerIds.every(id) ||
+      new Set(node.workerIds).size !== node.workerIds.length) return fail();
+    ids.add(node.id);
+  }
+  const incoming = new Map([...ids].map(key => [key, 0]));
+  const outgoing = new Map([...ids].map(key => [key, new Set<string>()]));
+  for (const edge of value.edges) {
+    if (!closed(edge, ['from', 'to']) || !id(edge.from) || !id(edge.to) || !ids.has(edge.from) || !ids.has(edge.to) ||
+      edge.from === edge.to || outgoing.get(edge.from)!.has(edge.to)) return fail();
+    outgoing.get(edge.from)!.add(edge.to);
+    incoming.set(edge.to, incoming.get(edge.to)! + 1);
+  }
+  const ready = [...ids].filter(key => incoming.get(key) === 0);
+  for (let i = 0; i < ready.length; i++) for (const next of outgoing.get(ready[i]!)!) {
+    incoming.set(next, incoming.get(next)! - 1);
+    if (incoming.get(next) === 0) ready.push(next);
+  }
+  if (ready.length !== ids.size) return fail();
+  return value as unknown as GraphRecord;
+}
+
 export interface Limits {
   timeoutMs: number;
   maxAttempts: number;
@@ -486,6 +537,7 @@ export interface Transport {
   getTask(taskId: TaskId, options?: ReadOptions): Promise<TaskRecord>;
   getWorkers(taskId: TaskId, options?: {cursor?: string | null; limit?: number; signal?: AbortSignal}): Promise<WorkersResponse>;
   getPlan(taskId: TaskId, options?: ReadOptions): Promise<PlanRecord>;
+  getGraph(taskId: TaskId, options?: ReadOptions): Promise<GraphRecord>;
   approvePlan(taskId: TaskId, body: PlanApproveBody): Promise<unknown>;
   getQuestions(taskId: TaskId, options?: {cursor?: string | null; limit?: number; signal?: AbortSignal}): Promise<QuestionsResponse>;
   answerTask(taskId: TaskId, questionId: string, body: AnswerBody): Promise<unknown>;

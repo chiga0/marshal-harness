@@ -9,6 +9,21 @@ function mockResponse(status: number, body: unknown): Response {
 describe('transport', () => {
   afterEach(() => clearToken());
 
+  it('任务图使用原 graph 端点、Bearer 与取消 signal，并拒绝串 Task 响应', async () => {
+    installToken('t-123');
+    const graph = {taskId: 'task-x', planRevision: 1, nodes: [], edges: []};
+    const controller = new AbortController();
+    const spy = vi.fn(async () => mockResponse(200, graph));
+    const transport = createTransport({token: 't-123', fetchLike: spy as typeof fetch});
+    expect(await transport.getGraph('task-x', {signal: controller.signal})).toEqual(graph);
+    const call = spy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe('/v1/tasks/task-x/graph');
+    expect(call[1].headers).toMatchObject({Authorization: 'Bearer t-123'});
+    controller.abort();
+    expect(call[1].signal?.aborted).toBe(true);
+    await expect(transport.getGraph('task-other')).rejects.toMatchObject({code: 'invalid_graph_response'});
+  });
+
   it('拒绝无 token 的请求', async () => {
     const transport = createTransport({token: ''});
     await expect(transport.listTasks({limit: 1})).rejects.toMatchObject({status: 401, code: 'token_missing'});

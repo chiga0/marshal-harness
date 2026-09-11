@@ -28,18 +28,23 @@ export function App() {
       <ConnectionProvider>
         <HashRouter>
           <DidConnectGate>
-            <ShellLayout>
-              <Routes>
-                <Route index element={<TaskListPage />} />
-                <Route path="tasks/new" element={<TaskNewPage />} />
-                <Route path="tasks/:taskId/*" element={<TaskDetailLayout />} />
-                <Route path="settings" element={<SettingsPage />} />
-                <Route path="*" element={<TaskListPage />} />
-              </Routes>
-            </ShellLayout>
+            <AppRoutes />
           </DidConnectGate>
         </HashRouter>
       </ConnectionProvider>
     </QueryClientProvider>
   );
+}
+
+/** 设置替换工作台外壳，不与主导航叠放。 */
+export function AppRoutes() {
+  return <Routes>
+    <Route path="settings/*" element={<SettingsPage />} />
+    <Route path="*" element={<ShellLayout><Routes>
+      <Route index element={<TaskListPage />} />
+      <Route path="tasks/new" element={<TaskNewPage />} />
+      <Route path="tasks/:taskId/*" element={<TaskDetailLayout />} />
+      <Route path="*" element={<TaskListPage />} />
+    </Routes></ShellLayout>} />
+  </Routes>;
 }

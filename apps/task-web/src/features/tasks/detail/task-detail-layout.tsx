@@ -22,6 +22,7 @@ import {StatusBadge, toneForTask} from './shared/status-badge';
 import {WorkersView} from '../../workers/workers-view';
 import {ArtifactsView} from '../../artifacts/artifacts-view';
 import {useTaskArtifacts} from '../../artifacts/use-task-artifacts';
+import {TaskGraph} from './graph/task-graph';
 
 // 注意：本路由是 splat（tasks/:taskId/*），其内部的相对链接会按完整当前 URL 解析（React Router 规则）。
 // 因此 tab 一律使用绝对路径，避免从子页再导航时出现 team/activity 这类错误叠加。
@@ -29,6 +30,7 @@ function tabsFor(taskId: string) {
   const base = `/tasks/${encodeURIComponent(taskId)}`;
   return [
     {to: base, end: true, label: '概览', key: 'overview'},
+    {to: `${base}/graph`, end: false, label: '任务图', key: 'graph'},
     {to: `${base}/team`, end: false, label: '团队', key: 'team'},
     {to: `${base}/artifacts`, end: false, label: '成果', key: 'artifacts'},
     {to: `${base}/activity`, end: false, label: '活动', key: 'activity'},
@@ -169,7 +171,7 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
 
       {task ? (
         <>
-          <nav className="mb-4 flex gap-1 border-b border-border" aria-label="详情子视图">
+          <nav className="mb-4 flex flex-wrap gap-1 border-b border-border" aria-label="详情子视图">
             {tabsFor(taskId).map(tab => (
               <NavLink
                 key={tab.key}
@@ -185,7 +187,8 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
             ))}
           </nav>
           <Routes>
-            <Route index element={<OverviewView task={task} plan={plan} questions={questions} workers={workers} leader={leader} audit={audit} transport={transport} onChanged={onChanged} />} />
+            <Route index element={<OverviewView task={task} plan={plan} questions={questions} workers={workers} leader={leader} audit={audit} transport={transport} onChanged={onChanged} graph={<TaskGraph taskId={taskId} plan={plan} workers={workers} transport={transport} />} />} />
+            <Route path="graph" element={<TaskGraph taskId={taskId} plan={plan} workers={workers} transport={transport} />} />
             <Route path="team/*" element={<WorkersView task={task} workers={workers} pagination={workersPagination} transport={transport} onChanged={onChanged} />} />
             <Route path="artifacts" element={<ArtifactsView task={task} leader={leader} audit={audit} artifacts={artifacts} transport={transport} />} />
             <Route path="activity" element={<ActivityView taskId={taskId} transport={transport} />} />
