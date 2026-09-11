@@ -3,7 +3,7 @@
 // body 绑定 expectedRevision=任务 revision + requestDigest=请求摘要 + 幂等键（闭集两分支，无 outcome/requestId/revision 字段）。
 // 与 task.answer 严格分开；2xx 仅证明该 Leader 请求被接纳，不代表已继续/已发布，也不显示 Worker 投递/ACK。
 
-import {useState} from 'react';
+import {useEffect, useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
@@ -126,6 +126,18 @@ function sameConfirmation(version: ConfirmationVersion | null, request: LeaderRe
   return version !== null && version.revision === revision && version.id === request.id && version.digest === request.requestDigest;
 }
 
+function useLeaderReplyAction(deps: readonly unknown[], identity: readonly unknown[]) {
+  const action = useLogicalAction(deps, identity);
+  const {phase, depsStale, reset} = action;
+  useEffect(() => {
+    // 正文在 flight 中变化时，通用 hook 已观察到新 deps，迟到受理不会再次触发它的 deps effect。
+    // 仅释放已明确受理的旧操作；unknown/submitting 必须继续保留原键、原正文。
+    // 原请求的受理提示由父卡片按 id + digest 的独立 receipt 展示。
+    if (phase.kind === 'accepted' && depsStale) reset();
+  }, [phase.kind, depsStale, reset]);
+  return action;
+}
+
 /** 业务请求：options 非空时选项即答复按钮；否则自由文本 + 答复按钮。answer 为选项 value 或文本原文。
  *  答复值保存在稳定 state（选择/文本不随确认清空），保证提交中原键重放仍用同一逻辑动作键。 */
 function BusinessReplyActions({taskId, expectedRevision, request, expired, transport, onChanged, onAccepted}: ReplyActionsProps) {
@@ -145,7 +157,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
   const answerLabel = hasOptions
     ? (request.options.find(option => option.value === selected)?.label ?? selected ?? '')
     : '自由文本答复';
-  const action = useLogicalAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, answer ?? ''], [taskId, 'leader.reply', request.id]);
+  const action = useLeaderReplyAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, answer ?? ''], [taskId, 'leader.reply', request.id]);
   const refresh = () => { void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)}); onChanged(); };
 
   const doSubmit = (key: string): Promise<unknown> => {
@@ -246,7 +258,7 @@ function PublicationReplyActions({taskId, expectedRevision, request, expired, tr
   const [dialogOpen, setDialogOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<ConfirmationVersion | null>(null);
   const confirmationCurrent = sameConfirmation(confirmation, request, expectedRevision);
-  const action = useLogicalAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, decision ?? ''], [taskId, 'leader.reply', request.id]);
+  const action = useLeaderReplyAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, decision ?? ''], [taskId, 'leader.reply', request.id]);
   const refresh = () => { void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)}); onChanged(); };
   const hasAuthorization = request.authorization !== null;
 
@@ -327,7 +339,7 @@ function LeaderReplyOutcome({phase, depsStale, onReplay, onRefresh, onRestart, e
   ) : null;
   if (phase.kind === 'submitting') return <p className="text-sm text-text-secondary" role="status">正在提交 Leader 答复…</p>;
   if (phase.kind === 'accepted') {
-    return <AcceptedReplyNotice onRefresh={onRefresh} />;
+    return depsStale ? null : <AcceptedReplyNotice onRefresh={onRefresh} />;
   }
   if (phase.kind === 'rejected') {
     return (

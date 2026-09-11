@@ -6,7 +6,7 @@ import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import {ApiError, type Transport} from '@/lib/transport/types';
 import {LogicalActionScope} from './shared/logical-action';
 import {TaskDetailLayout} from './task-detail-layout';
-import {makeFakeTransport, makeLeader, makeLeaderRequest, makeQuestions, makeRunningQuestion, makeTask, TASK_ID} from './shared/test-fakes';
+import {makeAuthorization, makeFakeTransport, makeLeader, makeLeaderRequest, makeQuestions, makeRunningQuestion, makeTask, TASK_ID} from './shared/test-fakes';
 
 let transport: Transport;
 vi.mock('@/features/connection/connection', () => ({useConnection: () => ({transport})}));
@@ -77,20 +77,48 @@ describe('Leader 原请求受理后的统一等待提示', () => {
     expect(screen.queryByText('答复已受理，等待 Leader 更新')).not.toBeInTheDocument();
   });
 
-  it('旧请求的迟到受理不能抹掉期间出现的新请求', async () => {
-    let request = makeLeaderRequest();
+  it.each([['business', 'id'], ['business', 'digest'], ['publication', 'digest']] as const)('%s旧请求的迟到受理不能抹掉期间出现的新请求（更换%s）', async (kind, change) => {
+    let request = makeLeaderRequest({kind, authorization: kind === 'publication' ? makeAuthorization() : null});
     let finish!: () => void;
     transport = makeFakeTransport({getTask: async () => makeTask({status: 'awaiting-answer', allowedActions: ['answer']}),
       getQuestions: async () => makeQuestions(), getLeader: async () => makeLeader({pendingRequest: request}),
       leaderReply: () => new Promise<void>(resolve => { finish = resolve; })}).transport;
     renderDetail();
-    const user = await answer();
-    request = {...request, id: 'next-request', requestDigest: `sha256:${'d'.repeat(64)}`, prompt: '另一个真正待答的问题'};
+    const user = userEvent.setup();
+    const button = kind === 'business' ? 'leader-answer-option-north' : 'leader-reply-allow';
+    await user.click(await screen.findByTestId(button));
+    await user.click(screen.getByRole('button', {name: kind === 'business' ? '确认答复' : '确认允许'}));
+    request = {...request, ...(change === 'id' ? {id: 'next-request'} : {requestDigest: `sha256:${'d'.repeat(64)}`}), prompt: '另一个真正待答的问题'};
     await user.click(screen.getByTestId('detail-refresh'));
     await screen.findByText('另一个真正待答的问题');
+    if (change === 'digest') expect(screen.queryByTestId(button)).not.toBeInTheDocument();
     await act(async () => { finish(); });
     expect(screen.getByText('需要你的处理（1 项）')).toBeInTheDocument();
-    expect(screen.getByTestId('leader-answer-option-north')).toBeEnabled();
+    expect(screen.getByTestId(button)).toBeEnabled();
+    expect(screen.queryByTestId('leader-reply-accepted')).not.toBeInTheDocument();
+  });
+
+  it('同ID新摘要不能释放未知旧答复；显式重放冻结原键正文，明确受理后才恢复新入口', async () => {
+    let request = makeLeaderRequest();
+    const originalDigest = request.requestDigest;
+    const reply = vi.fn<Transport['leaderReply']>().mockRejectedValueOnce(new TypeError('回执丢失')).mockResolvedValue({});
+    transport = makeFakeTransport({getTask: async () => makeTask({status: 'awaiting-answer', allowedActions: ['answer']}),
+      getQuestions: async () => makeQuestions(), getLeader: async () => makeLeader({pendingRequest: request}), leaderReply: reply}).transport;
+    renderDetail();
+    const user = await answer();
+    await screen.findByText(/Leader 答复结果未知/);
+    request = {...request, requestDigest: `sha256:${'e'.repeat(64)}`, prompt: '需要重新核对的新正文'};
+    await user.click(screen.getByTestId('detail-refresh'));
+    await screen.findByText('需要重新核对的新正文');
+    expect(screen.queryByTestId('leader-answer-option-north')).not.toBeInTheDocument();
+    expect(screen.getByText('需要你的处理（1 项）')).toBeInTheDocument();
+    expect(reply).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', {name: '原键重放（不重新执行）'}));
+    expect(await screen.findByTestId('leader-answer-option-north')).toBeEnabled();
+    expect(reply).toHaveBeenCalledTimes(2);
+    expect(reply.mock.calls[1]).toEqual(reply.mock.calls[0]);
+    expect(reply.mock.calls[1]?.[2].requestDigest).toBe(originalDigest);
+    expect(screen.getByText('需要你的处理（1 项）')).toBeInTheDocument();
     expect(screen.queryByTestId('leader-reply-accepted')).not.toBeInTheDocument();
   });
 
