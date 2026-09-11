@@ -154,6 +154,14 @@ CI `34583578954` 的 Ubuntu/Node22 密度测试超过默认 5 秒（5119ms），
 
 整合 `374ca333` 的 distribution 全套回归由子 Agent 重跑：29/29、退出码 0、97232.973ms；后继 `50f4bc51` 分页补丁在主侧定向回归 4/4、退出码 0、12965.817ms。后者包括原受控双包消费及空页新 cursor 上限反例，不把同源码 fixture 记为上述跨版证明。
 
+### 原真实任务修后追溯复验
+
+独立浏览器观察者在实际服务加载 `index-CZg1Rmd8.js` 后，对原 `task-04ba8301-3721-43c5-872a-fb1b73a63d97` 完成四项下载：原输入 sales.json 347 字节、发布回执 796 字节、后验证据 1088 字节、交付 regional-window.json 382 字节。全部匹配公开 metadata 的大小、SHA-256 和归属；原输入按日期/paid 条件独立重算 east 2/1200 cents、west 1/-50 cents，与交付一致，输入→交付→发布回执→后验摘要链一致。修复前“原输入/回执不可从页面找到”的 P1 在此真实任务范围内复验关闭。
+
+全过程仅公开 GET/HEAD，浏览器没有尝试 POST；前后 ready、Task、Workers、Leader、audit 完整对象严格相等，Task completed/revision62、12 Workers、12 Attempts，没有重新调用模型或重复发布。证据 `/private/tmp/ui-original.SfJrLH/report.md`、`evidence.json` 及输入/回执截图。服务启动源码 `db8aa08c`，采集时 HEAD `aa93f1be` 仅多文档；实际 HTML SHA-256 为 `3b3b2c93476fa674b21fea1463b1fd5ac3fa790f87a2fba921202c2397899aa2`。不把该只读复验记为新增真实模型任务、长期运行或真人验收通过。
+
+主侧在 `aa93f1be` 的 UI 默认测试通过：42 文件、464 项 Vitest 加 4 项浏览器测试护栏，退出 0。随后 CI `34596493181` 两平台发行准入失败：新增服务模块未同步进显式发行清单，严格库存检查返回 `source_inventory_changed`；独立机械对照确认只缺 `cli-shutdown.mjs`、`service-diagnostic.mjs`。修复只补入这两个运行依赖，保持拒绝额外/遗漏库存的规则；最终同包检查与持续观察另行记录，不用 UI 测试代替发行验证。学习：任何新增运行模块都必须在同次本地验证中覆盖真实仓库打包/安装消费，不能只测从清单构造的 fixture。
+
 ### 可复用浏览器异常交互
 
 E18/E19 单次受控 Chrome 152 实测记录于 `/private/tmp/ui-pub.PV5WYZ/report.md`，UI 资产清单摘要同为 `67942c314fa92181cedf44d278b49d9d4c05769de15f6744c3cc012fa15e463b`，两个隔离服务均正常退出 0，无真实模型或外部业务发布。E19 在授权前关闭自有 reader 后，真实 publisher 写出 93 字节文件，publication=succeeded、postverify=failed、Task=failed；原回执与文件保留，刷新前后发布启动仍 1 次、文件摘要不变，成果页不冒充整体成功，限定子场景通过。E18 拒绝得到真实 202，但脚本误等 `answered` 而合同实际是 `replied`，原自动化 FAIL 保留；同次停止后只读 SQLite 核对原 deny/digest 与回执一致，零发布启动、目录空。未执行 E18 显式刷新检查，且受控 Leader 随后为 `invalid_leader_decision`，不能写完整拒绝流程通过。学习：浏览器等待状态直接取既有合同，避免凭印象另造状态名；后核对不覆盖失败原记录。
