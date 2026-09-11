@@ -145,7 +145,7 @@ jobs:
       # bits; consumers never execute it or chmod it into an installed package.
       - name: Upload the one digest-bound candidate
         id: upload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: node-candidate-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ steps.pack.outputs.package-root }}
@@ -234,7 +234,7 @@ jobs:
       # Only the closed safe summary is archived. Private service roots, journals,
       # connection files and raw process output are never upload inputs.
       - name: Archive v7 same-candidate consumption summary
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: node-v7-consumption-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.os }}-node${{ matrix.node }}
           path: ${{ runner.temp }}/node-v7-consumer-result.json
