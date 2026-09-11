@@ -16,6 +16,42 @@ function wrap(node: ReactNode) {
 }
 
 describe('概览（P04/P05）：等待、进展、验收、计划', () => {
+  it('批准权限消失后保留同一计划 DOM，仅折叠详情', () => {
+    const {transport} = makeFakeTransport();
+    const client = new QueryClient();
+    const plan = makePlan();
+    const view = (allowed: boolean) => <QueryClientProvider client={client}><MemoryRouter>
+      <OverviewView task={makeTask({status: allowed ? 'awaiting-approval' : 'running', allowedActions: allowed ? ['approve', 'cancel'] : ['cancel']})}
+        plan={plan} questions={makeQuestions()} workers={[]} leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />
+    </MemoryRouter></QueryClientProvider>;
+    const {rerender} = render(view(true));
+    const card = screen.getByTestId('plan-card');
+    const details = card.closest('details');
+    expect(details).toHaveAttribute('open');
+    rerender(view(false));
+    expect(screen.getByTestId('plan-card')).toBe(card);
+    expect(card.closest('details')).toBe(details);
+    expect(details).not.toHaveAttribute('open');
+    expect(screen.queryByTestId('plan-approve-open')).toBeNull();
+    expect(screen.getByText('查看执行计划与批准回执')).toBeInTheDocument();
+  });
+
+  it('问题按期限升序、无期限末尾，同期限和无期限保持输入次序且不修改投影', () => {
+    const {transport} = makeFakeTransport();
+    const questions = makeQuestions({items: [
+      makePreapprovalQuestion({id: 'no-date-a', deadlineAt: null}),
+      makePreapprovalQuestion({id: 'later', deadlineAt: '2099-09-02T00:00:00Z'}),
+      makePreapprovalQuestion({id: 'equal-a', deadlineAt: '2099-09-01T00:00:00Z'}),
+      makePreapprovalQuestion({id: 'no-date-b', deadlineAt: null}),
+      makePreapprovalQuestion({id: 'equal-b', deadlineAt: '2099-09-01T00:00:00Z'}),
+    ]});
+    const original = questions.items.map(question => question.id);
+    wrap(<OverviewView task={makeTask()} plan={null} questions={questions} workers={[]} leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />);
+    expect(screen.getAllByTestId('question-card').map(card => card.getAttribute('data-question-id')))
+      .toEqual(['equal-a', 'equal-b', 'later', 'no-date-a', 'no-date-b']);
+    expect(questions.items.map(question => question.id)).toEqual(original);
+  });
+
   it('聚齐三类待处理：预批准问题走 task.answer、Leader 请求走 leader.reply、计划走 approvePlan，入口互不串用', () => {
     const {transport} = makeFakeTransport();
     const task = makeTask({status: 'awaiting-answer', allowedActions: ['answer', 'approve', 'cancel']});
