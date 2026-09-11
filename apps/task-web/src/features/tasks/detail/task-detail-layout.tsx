@@ -15,7 +15,8 @@ import {cn} from '@/lib/cn';
 import {ActivityView} from './activity/activity-view';
 import {OverviewView} from './overview/overview-view';
 import {taskKeys} from './query-keys';
-import {preferFreshTask} from './shared/derive';
+import {preferFreshTask, questionNeedsAttention} from './shared/derive';
+import {useLeaderReplyReceipt} from './shared/leader-reply-receipt';
 import {ErrorNotice} from './shared/error-notice';
 import {formatRelative, taskStatusLabel} from './shared/format';
 import {StatusBadge, toneForTask} from './shared/status-badge';
@@ -136,6 +137,9 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
   const leader = leaderQuery.data ?? null;
   const audit = auditQuery.data ?? null;
   const artifacts = artifactsQuery.data ?? null;
+  const [leaderReplyAccepted] = useLeaderReplyReceipt(taskId, leader?.pendingRequest ?? null);
+  const waitingForLeader = task?.status === 'awaiting-answer' && leader?.pendingRequest?.status === 'pending'
+    && leaderReplyAccepted && questions !== null && !questions.items.some(questionNeedsAttention);
 
   return (
     <section aria-label="任务详情" className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6" data-testid="task-detail">
@@ -148,7 +152,7 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
           <h1 className="mt-1 break-words text-[22px] font-semibold leading-[30px]">{task ? task.intent : '任务详情'}</h1>
           {task ? (
             <div className="mt-1 flex flex-wrap items-center gap-3">
-              <StatusBadge machine={task.status} label={taskStatusLabel(task.status)} tone={toneForTask(task.status)} />
+              <StatusBadge machine={task.status} label={waitingForLeader ? '答复已受理，等待 Leader 更新' : taskStatusLabel(task.status)} tone={toneForTask(task.status)} />
               <span className="text-xs text-text-secondary">最近状态变化：{formatRelative(task.updatedAt)}</span>
               <span className="text-xs text-text-secondary">轮询节奏：{intervalMs === null ? '已停止（页面隐藏）' : `${Math.round(intervalMs / 1000)} 秒`}</span>
             </div>

@@ -5,6 +5,7 @@ import {Badge} from '@/components/ui/badge';
 import {Card} from '@/components/ui/card';
 import type {LeaderRecord, WorkerRecord} from '@/lib/transport/types';
 import {formatRelative, leaderStageLabel, workerRoleLabel} from '../shared/format';
+import {useLeaderReplyReceipt} from '../shared/leader-reply-receipt';
 
 export interface LeaderProjectionProps {
   leader: LeaderRecord | null;
@@ -12,6 +13,7 @@ export interface LeaderProjectionProps {
 }
 
 export function LeaderProjection({leader, workers}: LeaderProjectionProps) {
+  const [replyAccepted] = useLeaderReplyReceipt(leader?.taskId ?? '', leader?.pendingRequest ?? null);
   const activeWorker = leader?.activeWorkerId ? workers.find(worker => worker.id === leader.activeWorkerId) : null;
   const requestStatus = {pending: '待处理', replied: '已答复', closed: '已关闭'};
   return (
@@ -39,7 +41,7 @@ export function LeaderProjection({leader, workers}: LeaderProjectionProps) {
             <dt className="shrink-0 text-text-secondary">待处理请求</dt>
             <dd className="min-w-0 break-words">
               {leader.pendingRequest
-                ? <>{leader.pendingRequest.kind === 'publication' ? '发布授权' : '业务问答'} · {requestStatus[leader.pendingRequest.status]}{leader.pendingRequest.status === 'pending' ? '。请在需要处理区域核对原文并决定。' : ''}</>
+                ? <>{leader.pendingRequest.kind === 'publication' ? '发布授权' : '业务问答'} · {replyAccepted && leader.pendingRequest.status === 'pending' ? '答复已受理，等待 Leader 更新，无需重复答复。' : <>{requestStatus[leader.pendingRequest.status]}{leader.pendingRequest.status === 'pending' ? '。请在需要处理区域核对原文并决定。' : ''}</>}</>
                 : '无'}
             </dd>
           </div>

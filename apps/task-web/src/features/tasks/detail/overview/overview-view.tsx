@@ -21,6 +21,7 @@ import {LeaderRequestCard} from './leader-request-card';
 import {PlanCard} from './plan-card';
 import {QuestionCard} from './question-card';
 import {TaskControls} from './task-controls';
+import {useLeaderReplyReceipt} from '../shared/leader-reply-receipt';
 
 // 详情布局按此接口接线：task/plan/questions/workers/leader/audit/transport/onChanged，字段名固定。
 export interface OverviewViewProps {
@@ -44,11 +45,12 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
   const expectedRevision = casRevisionOf(task);
   const pendingRequest = leaderPendingRequest(leader);
   const awaitingRequest = pendingRequest !== null && pendingRequest.status === 'pending' ? pendingRequest : null;
+  const [replyAccepted] = useLeaderReplyReceipt(task.id, awaitingRequest);
   // UI-08：除 open 外，已答但 Worker ACK 未落定的运行问题保留供核对
   const attentionQuestions = (questions?.items ?? []).filter(questionNeedsAttention)
     .sort((a, b) => (a.deadlineAt ? Date.parse(a.deadlineAt) : Infinity) - (b.deadlineAt ? Date.parse(b.deadlineAt) : Infinity));
   const planNeedsApproval = plan !== null && task.allowedActions.includes('approve');
-  const waitingCount = attentionQuestions.length + (awaitingRequest ? 1 : 0) + (planNeedsApproval ? 1 : 0);
+  const waitingCount = attentionQuestions.length + (awaitingRequest && !replyAccepted ? 1 : 0) + (planNeedsApproval ? 1 : 0);
 
   return (
     <div className="space-y-4" data-testid="overview-view">
@@ -58,7 +60,7 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
         </h2>
         {waitingCount === 0 ? (
           <p className="rounded-md border border-border bg-surface p-3 text-sm text-text-secondary" data-testid="waiting-empty">
-            当前没有等待你处理的事项。
+            {replyAccepted ? '你的本次答复已受理，正在等待 Leader 更新；无需重复答复。' : '当前没有等待你处理的事项。'}
             {questions === null ? '（问题投影未加载，无法确认是否有待答问题。）' : ''}
             {leader === null ? '（Leader 投影不可用，无法确认是否有 Leader 待处理请求。）' : ''}
           </p>
