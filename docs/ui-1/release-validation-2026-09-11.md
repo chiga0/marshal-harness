@@ -241,4 +241,15 @@ E18/E19 单次受控 Chrome 152 实测记录于 `/private/tmp/ui-pub.PV5WYZ/repo
 - 模拟可用性按能力边界记录；需要真实用户结果时保持 NOT_RUN，不以 Agent 截图观察替代。
 - 冻结同包候选，验证安装、独立消费和恢复/回滚后，再执行签名及 GitHub/OSS 发布流程。
 
+### 最后修复与制品边界补验（2026-09-11）
+
+- main `0549aa82efc0858fac0c8c07e887a9c696e9a647` 的 CI `34602433748` 已完成：13 项均 SUCCESS，包含四种平台/Node 组合的同包消费；不等于新版 UI 已发行。
+- 已消费记录修复源 `93ae96a48e14c09d3bc655acf29d32f231b6118b`，整合提交 `2ca440fc`。唯一独立 reviewer 完整审查 8 文件，无阻塞问题，独立 42 项测试及构建通过。复用原 E10 根冷开，在 Chrome 1440/375 下核对只读历史与 event-37 中文说明；POST=0、新执行=0、原 Task/Questions/Workers/Events/audit 不变。报告 `/private/tmp/ui-ack-review.ktAYdF/report.md`。仅关闭 ACK 后无可见核对入口的 P2，不重计实时延迟，也不代表真人可用性通过。
+- 整合后主侧全量回归实际通过 43 个文件、496 项 Vitest 测试及 4 项 browser guards（session1840）；不以 reviewer 的 42 项替代全量。
+- E17 制品边界：冻结 `13f04cf8afea1aa5e5cb3a89ff8990f44d2e96ea`、实际 UI `index-BNLSYH6U.js`。原受控验证器/Application/SQLite/depot/HTTP 路径产生 8,388,608 字节 ready 制品，Chrome 下载 SHA-256 为 `8915466a89b7008e77f6094e4d6abde067cf87f4e06a9c095e3d8c55ac33ecac`，与公开元数据一致；Task `task-a8227cf4-9cbf-402e-b39c-b3c7dd01d6d7` completed rev19。超出 1 字节的 Task `task-088173f2-4c0b-46bf-b16f-210eaae3741c` failed rev20，唯一 verifier 明确拒绝 `verification_delivery_invalid`，无制品/下载入口。报告 `/private/tmp/ui-8mib.gKVlsM/report.md`，最终 session26179 exit0，自有服务关闭。
+- 上项使用同步 delivery 回调的确定性测试字节，不冒称真实模型/业务交付、8 MiB 输入上传或流式内存上限。Chrome 超限 wire 注入仍未测；原 handler/jsdom 证据与本次真实浏览器证据分开。
+- 两次私有脚本前置失败（幂等键含空格、空列表错误使用搜索框 locator）均保留，发生时尚未创建 Task；修正后同根复用输入，两个实际 Task 各一次。今后键值先按客户端合同规范化，连接断言必须同时覆盖空态与有数据态。不得将脚本重试隐去或算作产品失败。
+
+三线结论仍分别记录：功能/视觉为限定范围补充证据，目标用户可用性 NOT_RUN；Agent 模拟不能替代真人。最终发行资产仍需在新 main 冻结后复验，未发布新版本。
+
 执行顺序：按增量研发规则，在独立代码审查及相关本地/CI 检查通过后合并 PR，并继续保留上面的 UI 验收缺口；再取得该 main push 的原始 CI 包进行最终同包验收。不能要求先取得尚未产生的 main 包才允许研发合并，也不能用研发合并关闭 UI-1 或直接发版。Safari 工具探测本轮返回 `Browser is not available: Safari`，未创建标签或改变权限；这是当前浏览器控制入口的限制，不表示 Safari 产品兼容性失败，实际 Safari 仍待验。
