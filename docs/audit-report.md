@@ -1,5 +1,11 @@
 # 设计审计报告
 
+## 2026-09-11：UI 外层仍存活、内部服务已失败（OPEN）
+
+真实 UI 验收服务在完成团队交付后的只读检查中返回 `503 application_unavailable`。主侧核对原所属 PID 69841 仍存活且没有子进程，但其 TCP 监听仅剩 UI 外层 63819；浏览器仍可加载 `index-CpLIqAu5.js`。不以静态页可达或 PID 存活宣称服务正常。保留现场后，对该自有 PID 发送 SIGTERM，原执行会话返回 `{"state":"closed","clean":true,"code":"service_supervisor_failed"}`，退出码 1；未修改数据根、未重启或重复业务发布。
+
+初步调用链显示 composition 的失败路径关闭内部服务，而 CLI 的 `service_*` 诊断只设置 `process.exitCode`，尚须核验外层监听的故障联动及根因诊断保留。当前只证明内部失败和外层滞留，不知道此次 Supervisor 最初失败的原因，不将其臆定为休眠、租约或数据损坏。下一步是独立根因检查、确定性复现，再决定最小修复及适用 ADR；关闭前不得声称此候选的长期 UI 服务验收通过。现场为 `/private/tmp/marshal-ui-final.MUfhL2/`，截图 `view-toggle-unavailable.png`，原数据与已完成交付证据保留。
+
 ## 2026-09-11：报告配置升级兼容性缺口（OPEN）
 
 UI 发行候选验收发现：`packages/task-leader-report/index.mjs` 将整个 `policy.mjs` 源码摘要纳入 review 与 Leader 持久配置身份。仅增加 GUIDANCE 提示也改变该身份，候选 `8ff4c386` 无法 `open` 原真实测试数据根，原根与失败证据保持不变。独立只读比较确认 profile 字节不同；门禁拒绝是预期安全行为，但尚无对应升级操作路径。

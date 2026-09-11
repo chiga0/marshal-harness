@@ -110,6 +110,8 @@ CI `34583578954` 的 Ubuntu/Node22 密度测试超过默认 5 秒（5119ms），
 
 ## 发布前仍须完成
 
+最新长期服务观察出现阻塞：原真实任务服务的静态页仍可加载，但 API 503，原所属 PID 仅监听外层 UI 端口。主侧保留截图并正常停止该自有服务，得到 `closed/clean=true/service_supervisor_failed`、退出码 1，未重启或改数据。原交付、正常重启及下载证明不被抹除，但不能据它们证明长期运行无故障。独立诊断进行中，详见 [审计 OPEN 项](../audit-report.md#2026-09-11ui-外层仍存活内部服务已失败open)。该状态也解释本次按钮切换检查为何未进入列表；未将其计为切换通过或按钮缺陷。
+
 ### Chrome 响应式增量（运行文件集 `9e5e49e0`）
 
 在真实服务原第三轮任务上补测，不新增模拟任务：Chrome 375×812 的列表与详情、1440×900 的十二成员团队表格、1024×768 的设置深色页，浏览器读取的 `innerWidth` 与 `documentElement.scrollWidth` 分别相等，所测页面无整页横滚。截图为 `chrome-list-375.png`、`chrome-detail-375.png`、`chrome-team-1440.png`、`chrome-settings-dark-1024.png`，保留于同一私有验收目录；已实际点击列表/详情/团队/设置并切换主题，临时 viewport 已恢复。此前 IAB 375 尺寸证据不用于此结论。
@@ -147,6 +149,8 @@ CI `34583578954` 的 Ubuntu/Node22 密度测试超过默认 5 秒（5119ms），
 整合 `374ca333` 的 distribution 全套回归由子 Agent 重跑：29/29、退出码 0、97232.973ms；后继 `50f4bc51` 分页补丁在主侧定向回归 4/4、退出码 0、12965.817ms。后者包括原受控双包消费及空页新 cursor 上限反例，不把同源码 fixture 记为上述跨版证明。
 
 ### 可复用浏览器异常交互
+
+E18/E19 单次受控 Chrome 152 实测记录于 `/private/tmp/ui-pub.PV5WYZ/report.md`，UI 资产清单摘要同为 `67942c314fa92181cedf44d278b49d9d4c05769de15f6744c3cc012fa15e463b`，两个隔离服务均正常退出 0，无真实模型或外部业务发布。E19 在授权前关闭自有 reader 后，真实 publisher 写出 93 字节文件，publication=succeeded、postverify=failed、Task=failed；原回执与文件保留，刷新前后发布启动仍 1 次、文件摘要不变，成果页不冒充整体成功，限定子场景通过。E18 拒绝得到真实 202，但脚本误等 `answered` 而合同实际是 `replied`，原自动化 FAIL 保留；同次停止后只读 SQLite 核对原 deny/digest 与回执一致，零发布启动、目录空。未执行 E18 显式刷新检查，且受控 Leader 随后为 `invalid_leader_decision`，不能写完整拒绝流程通过。学习：浏览器等待状态直接取既有合同，避免凭印象另造状态名；后核对不覆盖失败原记录。
 
 另一独立单次 Chrome 152 测试补充经典问答与陈旧批准：第二公开 HTTP 客户端先批准成功后，原浏览器旧正文收到真实 `409 revision_conflict`，错误可见且没有自动刷新摘要重提；经典 `/questions/{id}/answers` 首次真实 202 丢响应后，显式重放保持原键、正文及 Operation ID，最终问题 `deliveryStatus=acknowledged`。使用既有受控 question fixture，原 30 秒问题期限未改，无真实模型或业务发布，服务退出 0。证据 `/private/tmp/marshal-classic-browser.EO7Scq/evidence.json`，脚本摘要 `f404de6483b31ebb1b20313e5a70d2e69e5ec065fabde88ae6daa0d4d89445b1`，UI 同为 `index-CpLIqAu5.js`。本次点击设置后未等路由稳定，截图仍为概览，故不计跨设置保留通过、不推断导航故障；只关闭明确断言的子场景，不代表全 Task 完成或完整验收矩阵。
 
