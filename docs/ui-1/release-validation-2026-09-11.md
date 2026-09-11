@@ -2,6 +2,10 @@
 
 ## 当前结论
 
+**已合并更新**：PR #295 于 2026-09-11 21:37:33（Asia/Shanghai）合并为 `61a0048ee40a24d5b44568312a280e4e24bbc94a`，本地 main 正常快进并与 origin/main 一致。精确源 `9cdfc074` 的 Node run `34604147735` 全13项与安全检查均通过，合并采用精确 head 校验；以下候选在途表述保留历史时点。最终 main 包由 run `34605383372` 生成，本次查询仍在运行，不借用 PR 包或旧 main 包宣布新版验收通过。
+
+**最新后继**：[PR #295](https://github.com/chiga0/marshal-harness/pull/295) 精确源 `9cdfc074b60149c81ad73f2cb878d5d7971155b5` 已完成独立产品/安全审查，无阻塞问题；ACK 源与整合差异的 stable patch-id 均为 `09e5f34de5b21e9028be6f0af8b8689880eb0cc2`。整合全量496项测试、4项护栏及构建通过。远端 Node run `34604147735` 尚在运行，未合并或发行。下列“后继修复/待补”段落是历史过程，最新 ACK、Git、8 MiB 等限定结论见末节，不能把已验证项重新排为完整重跑任务。
+
 后继 [PR #294](https://github.com/chiga0/marshal-harness/pull/294) 已于 2026-09-11 21:06:16（Asia/Shanghai）合并：精确 source `3ed0d3ed992f88583f232acdb798e85186f7e800`，merge/main=`0549aa82efc0858fac0c8c07e887a9c696e9a647`。Node run `34601260031` 的13项全部成功，准入 `34601259985` 双平台成功（PR不执行手动原包接纳job），secret `34601259904` 及外部安全检查成功。已正常快进本地主分支并保留用户未跟踪文件；main 原包生产 run `34602433748` 另行验证，不把 PR 包冒充 main 包，不因代码合并宣称 UI 正式发行。
 
 2026-09-11 20:21:16（Asia/Shanghai），PR #293 的精确 head `93ed5468` 经独立审查和 CI `34597445153` 全13项、准入 `34597445154` 双平台与 secret scan 通过后，实际合并为 main `9852e4da487c0c0f0a36c3ec99de62d5d71b55a9`；本地主分支已正常快进，用户未跟踪文件保留。main push `34598484218` 已13项通过，原始候选包独立安装消费通过，精确绑定见下文；不复用 PR 包冒充该 main 包。本条仅为研发合并，不是 UI 完整验收或软件发行。
@@ -251,5 +255,25 @@ E18/E19 单次受控 Chrome 152 实测记录于 `/private/tmp/ui-pub.PV5WYZ/repo
 - 两次私有脚本前置失败（幂等键含空格、空列表错误使用搜索框 locator）均保留，发生时尚未创建 Task；修正后同根复用输入，两个实际 Task 各一次。今后键值先按客户端合同规范化，连接断言必须同时覆盖空态与有数据态。不得将脚本重试隐去或算作产品失败。
 
 三线结论仍分别记录：功能/视觉为限定范围补充证据，目标用户可用性 NOT_RUN；Agent 模拟不能替代真人。最终发行资产仍需在新 main 冻结后复验，未发布新版本。
+
+### 最终 main 原包接纳（61a0048e）
+
+run `34605383372` attempt1 的13项均成功，原候选 artifact `10267051634`、运输ZIP 1519237字节；SHA-256 `7943ccaf53aae86df5ea9a0afa6afc1b3b4a063f3c84c941ed79fb4eed0a8725` 已由主侧复算并与GitHub一致。producer job `103285757208` 的 manifest 为 `sha256:f7e8f3f5d531f29df33f7ead4b2521836eef01d7519b7f66daa944d97830ca67`，70文件/1494465字节（67运行库存及3UI文件，不混同文件计数）。
+
+独立原包接纳 session17135 exit0，结果 `/private/tmp/marshal-main-61a0048.kDLlpM/admitted/result.json`，安装树同目录 `installed`。Darwin arm64/Node24.15.0 两种布局各4次原执行、4 Attempts、冷恢复重复启动0，modelCalls0；严格恢复及最终verify通过。这里只证明同包消费，不代替真实模型、完整UI或正式签名发行。
+
+接纳前两次私有识别前提错误保留：新版gh拒绝带转义序列的日志，改为只在内存解析；误认为run只有一个artifact，改按原接纳合同核对精确候选名称唯一（其余4项是消费证据）。未因此重复下载ZIP或启动产品Task。
+
+最终同根升级/回滚也已完成：`/private/tmp/marshal-main-61a0048.kDLlpM/upgrade/evidence.json`，session69644 exit0；固定旧 v1.0.2 → 原 main61a0048e安装包/UI → 旧 API-only，三次服务退出0/stderr0，Task `task-a403f16b-a1fe-456f-82ee-cdbca70ea4dd` 与原快照保持，root dev16777231/ino246885725不变，originalAgentStarts2/Attempts3、新启动0。原交付476字节，SHA-256 `baa6814d88c7b7fa1dd6b93ee9737cae53a0056f94c0e908b4a0eef2c5e89840`，east2/1200、west1/-50。主侧已独立读取完整报告与原JSON核对；执行者为升级消费者作者，既有独立验证器审查由主侧完成，不称新一次独立作者外执行。限同 regional-window 身份，零模型、无业务发布、无任意profile迁移；不是签名发行。
+
+安装包交互首轮 `/private/tmp/ui-installed-controls.rlEOOw/report.md` 仍FAIL：真实E09等待问题截图已取得，但测试要求团队状态使用英文，实际UI是中文等待答复/已完成，导致E12之前超时；session98282 exit1、service正常退出0，未发UI写请求。此为测试定位假设错误，不是产品失败；暂停/恢复未验不能记通过。已停止修改该脚本，E12改为仅复用最初成功的双问题流程并适配安装包，不再混入Graph/团队状态或键盘前置。
+
+E09/E12 后继脚本失败（`/private/tmp/ui-controls-keyboard.oJ4sW3/report.md`）保留：首次在零 Task 时错误地 Tab 到未选中原生 radio，修正为 Tab 进入当前选项后方向键切换；同根第二次仅创建 Task `task-2405f184-2553-4f33-98f8-7d232c010aaf`，公开 east Worker awaiting-answer、west completed，但脚本硬等 Graph east waiting 而失败。独立追溯原生产链确认 Graph 返回 record.nodes，运行问题修改 Task/Worker 而不改节点 running，因此不是已证产品缺陷。前检只核枚举而漏查生产链，属于测试前检遗漏。两次所属服务均退出0；未执行 pause/resume，原期限已过，不重开旧任务、延长预算或补记双回执通过。后续仅复用原已成功 E12 主链，在最终安装资产上合并一次验收；按各实体真实字段分别断言，不为截图继续重造源码样例。
+
+E14 限定补证（`9cdfc074`，`/private/tmp/ui-terminal-cancel.7Badza/report.md`）：原 E10 Task 已 completed/rev23，Chrome 实际滚入控制区后无取消入口。唯一一次正式客户端使用此前真实观察的 rev15 取消，返回409 `revision_conflict`；原 Task/Questions/Workers/Events/audit及两项制品元数据、字节与摘要不变，新增执行0，客户端POST1/浏览器POST0。session6647及所属服务均退出0。由于 Core 先检查 revision，此证据仅证明终态展示与陈旧 CAS 拒绝，不关闭同时竞争或同revision终态guard，不追加重复请求凑覆盖。
+
+最终原安装包 E12 补验已完成：`/private/tmp/ui-installed-e12.sNDh0a/report.md`，session27110 exit0，所属服务 exit0。唯一原 Task `task-a4aa1bc1-de8e-4473-8d7d-fa3da1c2bf99` 在 Chrome152/1440×1000 下经历 awaiting-answer rev15 → pause202/paused17 → resume202/awaiting-answer19。显式注入两次 Operation GET unknown 时控制保持锁定，撤销注入后读取原回执恢复控制；两个不同的原 Operation GET 均 succeeded，并绑定原 Task。实际详情 SECTION 中双回执整体高332像素、y627，完整处于1000像素视口；截图 `pause-resume/two-original-receipts.png`，未用全页截图冒充视口可见。两个原问题真实回答/ACK、两个原作者 completed，无替代 Worker；4个所属handle均清理，8个相关PID均已不存在。
+
+以上只关闭暂停/恢复与双回执可见性的限定范围，不得称整个 Task 交付通过。后续只读归因确认测试 fixture 不匹配：原持久 inputRef `input-781a3934-c775-41bc-acad-379a6e4ea69d` 含两条 interactionRefs，east/west 两文件均为 north；而原 worker.mjs:30 与 config.mjs:87 仍要求单条 interactionRef，且 worker 要求 west 为 independent native candidate，故验证断言不成立。`verification_assertion_failed` 是按原输入和精确源码推导，不冒充 journal 中直接保存的 reason。清理前 pageText 已显示失败，原 Task failed rev32，verifier agentExit0/signalnull、reason=agent_exit，非 owner_stop；没有证据将本次失败归为提前清理或产品缺陷。限定控制测试通过与完整交付失败同时保留，不为补一个绿色结果重跑。沿用最初成功脚本，仅适配精确安装包和回执定位，不重建安装树，不覆盖前两轮测试假设错误的失败记录。实际 Safari、真实目标用户及其他明确未测范围仍保持待验，不因本项 PASS 自动关闭三线验收。
 
 执行顺序：按增量研发规则，在独立代码审查及相关本地/CI 检查通过后合并 PR，并继续保留上面的 UI 验收缺口；再取得该 main push 的原始 CI 包进行最终同包验收。不能要求先取得尚未产生的 main 包才允许研发合并，也不能用研发合并关闭 UI-1 或直接发版。Safari 工具探测本轮返回 `Browser is not available: Safari`，未创建标签或改变权限；这是当前浏览器控制入口的限制，不表示 Safari 产品兼容性失败，实际 Safari 仍待验。
