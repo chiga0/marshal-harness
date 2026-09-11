@@ -111,7 +111,9 @@ CI `34583578954` 的 Ubuntu/Node22 密度测试超过默认 5 秒（5119ms），
 
 主侧全量 UI 回归随后为 41 文件 431 项通过（4.70 秒）。另使用已安装 Chrome `152.0.7977.84` 的独立 headless 进程，通过 Playwright 原生键盘事件验证真实终态任务：任务链接 Enter、团队导航 Enter、成员抽屉内各一步 Tab/Shift+Tab、Escape 关闭后焦点返回原明细入口均通过。页面实际 script src 为 `/ui/assets/index-CpLIqAu5.js`；证据 `keyboard-team-e21353aa.png`。独立 reviewer 审核了脚本断言范围，未亲自执行浏览器。入口由程序先聚焦，尚不证明仅 Tab 可发现入口或首尾焦点环绕；不覆盖问答、批准、嵌套确认或 WebKit/Safari。此前 locator Enter 未导航不能据此判定产品键盘缺陷。
 
-200% 浏览器缩放仍未验证：独立 headless Chrome 内发送五次 Meta+= 后宽度/DPR 未变化（1440/1），不把该操作或 viewport 缩小冒充浏览器缩放通过。
+早期 200% 浏览器缩放尝试未成功：独立 headless Chrome 内发送五次 Meta+= 后宽度/DPR 未变化（1440/1），不把该操作或 viewport 缩小冒充浏览器缩放通过。后续有效结果如下。
+
+独立 Agent 在私有 Chrome 152 profile 使用原生外观设置 `zoomLevel=2` 完成 200% 实测，加载 `index-CpLIqAu5.js`。窗口固定 1440×1000，页面 innerWidth=720、DPR=2、visualViewport.scale=1、CSS zoom=1，不是 CSS/viewport/设备缩放模拟。列表、概览、团队、抽屉、设置浅深主题十处 document/body 宽度均 720，无页面级横溢；团队表格局部 670/720 横滚，明细入口经聚焦滚入后 Enter 可达，单控件双向环绕、Escape 焦点归还及设置返回原团队通过。十张截图使用原始 CDP 截图避免默认截图裁切，证据 `/private/tmp/marshal-ui-zoom200.2N5VfD/evidence.json`。主侧读取测量并查看深色团队截图；长标题需要纵向滚动，内部内容未全部逐屏核验，不外推问答批准、纯 Tab 发现性或完整 E24/E25。所属浏览器已关闭，真实 Safari 仍待验。
 
 ### 独立浏览器与跨版消费增量（2026-09-11）
 
