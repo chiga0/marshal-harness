@@ -142,3 +142,31 @@ B3 另要求声明平台/profile 的同一待发布资产完成实际业务、�
 约束与服务 `--ui` 边界的运行时锁定使用同一名称/类型规则：单级文件名只允许 `[A-Za-z0-9][A-Za-z0-9._-]*`，扩展名限 `html/js/css/json/map/svg/png/jpg/jpeg/ico/webmanifest/txt/woff/woff2`，文件数上限 512、单文件与总量沿用原上限；目录或文件为符号链接、非常规类型或含其他名字/扩展时整体拒绝打包。dist 是未入 Git 的构建产物，不由 `inventory` 的 `ls-tree` 覆盖，但其字节与摘要仍进入 manifest；同一精确源码+同一 dist 重打包得到同一 manifest 摘要。dist 缺失或为空时打包结果与原 `SOURCE_FILES` 清单逐字节一致，旧消费者、旧 CI 与既有候选流程不产生任何漂移。
 
 发布侧含义不变：UI 资产随包发行（ADR0098 与 UI-1 设计包的发行交接约定），不建立新的包格式、第二 manifest 或浏览器专用发布通道；安装后不修改或补写 dist 中的文件（多余条目即破坏下一次核验）。未构建 dist 的候选即不携带 UI，此时 `--ui` 启动参数按原错误路径拒绝启动。
+
+## 双安装包同根升级/回滚消费者（测试，不是迁移承诺）
+
+`upgrade-consumer.test.mjs` 先打包两个**同源码**受控样本：旧样本为 API-only，新样本仅增加明确标记的静态 fixture。它验证测试路径，不等于旧 v1.0.2 → 新发行版已经通过。实际跨版验收另需提供两个经过独立核验的固定安装目录及包外 source/manifest pins；不能用这里临时打的包替换发行资产，不能把本测试通过改写成普遍跨版本兼容承诺。
+
+```sh
+node --test packages/task-distribution/upgrade-consumer.test.mjs
+```
+
+固定资产准备完毕后，在受信工具源码中运行显式入口（以下变量必须来自独立资产证据，不从待测 manifest 自行生成）：
+
+```sh
+node /absolute/reviewed-source/packages/task-distribution/upgrade-consumer.mjs \
+  --old-package /absolute/verified-v1.0.2 \
+  --old-source "$OLD_SOURCE" --old-manifest "$OLD_MANIFEST" \
+  --new-package /absolute/verified-new-candidate \
+  --new-source "$NEW_SOURCE" --new-manifest "$NEW_MANIFEST" \
+  --run-dir /absolute/private-parent/new-upgrade-evidence \
+  --asset-kind fixed-assets
+```
+
+要求普通用户、Node ≥22、父目录 `0700`、全新证据目录。旧包必须无 UI，新包必须包含已核验 `index.html`；两包的 regional-window `index/policy/checker/service-config` 摘要必须相同，变化则停止，不用修改根的格式或配置摘要“修复”兼容性。`fixed-assets` 拒绝同 sourceHead，避免同源码 fixture 被标成真实跨版；该标签本身不代替签名/来源核验。消费者只读核验安装树，不重打包，不读私钥，不更新版本 pin、不创建发布。
+
+流程在专属证据目录中创建一个数据根：旧包的**原 service-config/client/driver** 配合无网络、无模型 ACP 对端，公开 HTTP 完成答复、批准及独立 checker 验收。停止并确认 `clean=true/exit=0` 后，新包以自己的原 config/client 在**同一个根** `open --ui`；再次清停后，旧包以自己的原 config/client 同根 API-only `open`。不把新根、备份副本或跨安装树导入的端口品牌当作原根升级。新阶段通过 ready 输出的公开 edge 地址核对全部 UI 字节；回滚阶段认证后 `/ui/` 必须 404（API-only 未认证请求会先返回 401）。
+
+`original.json / upgraded-ui.json / rollback-api-only.json` 保存并精确比较 Task、Plan、Questions、Audit、完整分页 Worker/事件、input/交付/证据 Artifact 清单及原 bytes、Operation 终态。原创建/批准回执与回答回执另存；原 key/body 显式重放时，只容许回答合同中的 `replayed/currentTask` 变化，其他原受理字段不变。ACP 启动独立记账；第一阶段后封口，升级/回滚不得增加 Agent 启动、attempt、事件或改变原证据。连接 token 只在运行内存使用，不输出或复制进快照。
+
+所有阶段证据及失败现场保留，既有目录拒绝重用，不自动删除锁、改 SQLite 或回滚数据。当前范围仅为 layout1、已完成受控 Task、清洁停止的同根开关包及 UI；不覆盖在途升级、崩溃恢复、其他配置/layout、真实模型交付或业务 publication。固定 v1.0.2 与新资产的实际结果须另记录；未执行就是待验。

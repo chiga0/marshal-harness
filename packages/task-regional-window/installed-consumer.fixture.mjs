@@ -52,7 +52,7 @@ function privateDirectory(root) {
   const stat = fs.lstatSync(root);
   assert.ok(stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o777) === 0o700 && fs.realpathSync(root) === root, 'private_directory_required');
 }
-function launch(node, args, env, cwd) {
+export function launch(node, args, env, cwd) {
   const child = spawn(node, args, {env, cwd, stdio: ['ignore', 'pipe', 'pipe']});
   let output = '', stderrBytes = 0, closed = false, stopping, resolveReady, rejectReady;
   const ready = new Promise((resolve, reject) => {resolveReady = resolve; rejectReady = reject;});
