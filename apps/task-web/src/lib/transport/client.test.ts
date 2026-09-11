@@ -5,9 +5,26 @@ import {clearToken, createTransport, installToken} from './client';
 function mockResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {status, headers: {'Content-Type': 'application/json'}});
 }
+const operation = (kind: string) => ({id: 'op-1', taskId: 'task-x', kind, status: 'accepted', taskRevision: 4, createdAt: '2026-09-11T00:00:00Z', updatedAt: '2026-09-11T00:00:00Z'});
 
 describe('transport', () => {
   afterEach(() => clearToken());
+  it('按原Operation ID查询并拒绝串绑或无效状态', async () => {
+    installToken('t-123');
+    const operation = {id: 'op-1', taskId: 'task-1', kind: 'task.cancel', status: 'accepted', taskRevision: 7, createdAt: '2026-09-11T00:00:00Z', updatedAt: '2026-09-11T00:00:00Z'};
+    const spy = vi.fn(async () => mockResponse(200, operation));
+    const transport = createTransport({token: 't-123', fetchLike: spy as typeof fetch});
+    const controller = new AbortController();
+    expect(await transport.getOperation('op-1', {signal: controller.signal})).toEqual(operation);
+    const call = spy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe('/v1/operations/op-1');
+    expect(call[1].headers).toMatchObject({Authorization: 'Bearer t-123'});
+    controller.abort();
+    expect(call[1].signal?.aborted).toBe(true);
+    await expect(transport.getOperation('op-other')).rejects.toMatchObject({code: 'operation_binding_mismatch'});
+    operation.status = 'completed';
+    await expect(transport.getOperation('op-1')).rejects.toMatchObject({code: 'invalid_operation_response'});
+  });
 
   it('任务图使用原 graph 端点、Bearer 与取消 signal，并拒绝串 Task 响应', async () => {
     installToken('t-123');
@@ -57,7 +74,7 @@ describe('transport', () => {
 
   it('mutation 把 idempotencyKey 提升到头部且不出现在 JSON body 中', async () => {
     installToken('t-123');
-    const spy = vi.fn(async () => mockResponse(202, {accepted: true}));
+    const spy = vi.fn(async () => mockResponse(202, operation('task.cancel')));
     const transport = createTransport({token: 't-123', fetchLike: spy as unknown as typeof fetch});
     await transport.cancelTask('task-x', {expectedRevision: 4, idempotencyKey: 'ikey-abc'});
     const init = (spy.mock.calls[0] as unknown as [unknown, RequestInit | undefined] | undefined)?.[1];
@@ -79,7 +96,7 @@ describe('transport', () => {
 
   it('answerTask 运行时分支：branch 不下送、questionDigest 保留', async () => {
     installToken('t-123');
-    const spy = vi.fn(async () => mockResponse(202, {accepted: true}));
+    const spy = vi.fn(async () => mockResponse(202, {operation: operation('task.answer')}));
     const transport = createTransport({token: 't-123', fetchLike: spy as unknown as typeof fetch});
     await transport.answerTask('task-x', 'question-1', {
       branch: 'runtime', expectedRevision: 3, questionRevision: 1, questionDigest: 'sha256:bb', answer: '2026-09-01', idempotencyKey: 'ikey-c',
@@ -131,7 +148,7 @@ describe('transport', () => {
     installToken('t-123');
     const spy = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(init?.signal).toBeInstanceOf(AbortSignal);
-      return mockResponse(202, {accepted: true});
+      return mockResponse(202, operation('task.pause'));
     });
     const transport = createTransport({token: 't-123', fetchLike: spy as unknown as typeof fetch});
     await transport.pauseTask('task-x', {expectedRevision: 1, idempotencyKey: 'ikey-w'});

@@ -8,6 +8,7 @@ import {ApiError} from '../../lib/transport/types';
 import type {Transport} from '../../lib/transport/types';
 import {clearToken, createTransport, installToken} from '../../lib/transport/client';
 import {onUnauthorized} from '../../lib/queries/client';
+import {rememberOperation} from '../../lib/queries/operations';
 
 export type ConnectState = 'idle' | 'connecting' | 'ready' | 'unauthorized' | 'unreachable' | 'api-down';
 
@@ -37,11 +38,14 @@ export function ConnectionProvider({children}: {children: ReactNode}) {
   const [stage, setStage] = useState(0);
   const queryClient = useOptionalQueryClient();
   const stateRef = useRef(state);
+  const connectionEpoch = useRef(0);
+  useEffect(() => () => { connectionEpoch.current += 1; }, []);
   stateRef.current = state;
 
   // UI-07：轮询/写操作收到服务端 401 时，连接立即失效——清缓存（重连不闪现上一连接数据）、
   // 状态离开 ready（应用门据此卸载业务视图、停轮询并禁用写），要求用户明确重连。
   useEffect(() => onUnauthorized(() => {
+    connectionEpoch.current += 1;
     queryClient?.clear();
     if (stateRef.current !== 'ready') return;
     setState('unauthorized');
@@ -49,15 +53,19 @@ export function ConnectionProvider({children}: {children: ReactNode}) {
   }), [queryClient]);
 
   const connect = useCallback(async (token: string) => {
+    const epoch = ++connectionEpoch.current;
+    queryClient?.clear();
     setState('connecting');
     setErrorMessage(null);
     try {
       installToken(token.trim());
       const transport = createTransport({token: token.trim()});
       await transport.listTasks({limit: 1});
+      if (epoch !== connectionEpoch.current) return;
       setState('ready');
       setStage(value => value + 1);
     } catch (error) {
+      if (epoch !== connectionEpoch.current) return;
       installToken(null);
       if (error instanceof ApiError) {
         if (error.isUnauthorized) setState('unauthorized');
@@ -68,9 +76,10 @@ export function ConnectionProvider({children}: {children: ReactNode}) {
       setErrorMessage(error instanceof Error ? error.message : '无法连接');
       throw error;
     }
-  }, []);
+  }, [queryClient]);
 
   const disconnect = useCallback(() => {
+    connectionEpoch.current += 1;
     clearToken();
     queryClient?.clear(); // E27：断开清理缓存，不容许串服务数据经 stale 缓存先渲染
     setState('idle');
@@ -80,15 +89,18 @@ export function ConnectionProvider({children}: {children: ReactNode}) {
 
   const value = useMemo<ConnectionValue>(() => {
     const connected = state === 'ready';
+    const epoch = connectionEpoch.current;
     return {
       connected,
       state,
       errorMessage,
       connect,
       disconnect,
-      transport: connected ? createTransport({token: '__internal__'}) : null,
+      transport: connected ? createTransport({token: '__internal__', onOperation: operation => {
+        if (queryClient && connectionEpoch.current === epoch && stateRef.current === 'ready') rememberOperation(queryClient, operation);
+      }}) : null,
     };
-  }, [state, errorMessage, connect, disconnect, stage]);
+  }, [state, errorMessage, connect, disconnect, stage, queryClient]);
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>;
 }
 

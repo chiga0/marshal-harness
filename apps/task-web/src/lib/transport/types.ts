@@ -232,6 +232,34 @@ export interface ControlBody {
   idempotencyKey: string;
 }
 
+/** 现有 Operation 回执；其成功不等于 Task 交付成功或 Worker ACK。 */
+export interface OperationRecord {
+  id: string;
+  taskId: TaskId;
+  workerId?: WorkerId | null;
+  kind: 'task.approve' | 'task.cancel' | 'task.pause' | 'task.resume' | 'task.answer' | 'task.repair' | 'worker.cancel';
+  status: 'accepted' | 'running' | 'succeeded' | 'failed' | 'unknown';
+  taskRevision: Revision;
+  createdAt: string;
+  updatedAt: string;
+  code?: string;
+}
+
+export function parseOperation(raw: unknown): OperationRecord {
+  const op = raw as Partial<OperationRecord> | null;
+  if (!op || typeof op !== 'object' || typeof op.id !== 'string' || !op.id || typeof op.taskId !== 'string' || !op.taskId ||
+    !['task.approve', 'task.cancel', 'task.pause', 'task.resume', 'task.answer', 'task.repair', 'worker.cancel'].includes(op.kind ?? '') ||
+    !['accepted', 'running', 'succeeded', 'failed', 'unknown'].includes(op.status ?? '') ||
+    !Number.isSafeInteger(op.taskRevision) || (op.taskRevision ?? 0) < 1 ||
+    typeof op.createdAt !== 'string' || !Number.isFinite(Date.parse(op.createdAt)) ||
+    typeof op.updatedAt !== 'string' || !Number.isFinite(Date.parse(op.updatedAt)) ||
+    (op.kind === 'worker.cancel' ? typeof op.workerId !== 'string' || !op.workerId : op.workerId != null) ||
+    (op.code !== undefined && (typeof op.code !== 'string' || !op.code.trim()))) {
+    throw new ApiError(502, 'invalid_operation_response', '操作回执不符合合同，不能确认结果', null);
+  }
+  return op as OperationRecord;
+}
+
 // ---- 问题（GET /v1/tasks/{taskId}/questions）----
 
 export interface QuestionOption {
@@ -535,6 +563,7 @@ export interface Transport {
   createInput(body: CreateInputBody & {idempotencyKey: string}): Promise<ArtifactRecord>;
   listTasks(options: {limit?: number; cursor?: string | null; signal?: AbortSignal}): Promise<TasksResponse>;
   getTask(taskId: TaskId, options?: ReadOptions): Promise<TaskRecord>;
+  getOperation(operationId: string, options?: ReadOptions): Promise<OperationRecord>;
   getWorkers(taskId: TaskId, options?: {cursor?: string | null; limit?: number; signal?: AbortSignal}): Promise<WorkersResponse>;
   getPlan(taskId: TaskId, options?: ReadOptions): Promise<PlanRecord>;
   getGraph(taskId: TaskId, options?: ReadOptions): Promise<GraphRecord>;

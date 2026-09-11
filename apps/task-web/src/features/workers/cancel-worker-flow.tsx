@@ -9,6 +9,7 @@ import {ConfirmDialog} from '@/components/ui/dialog';
 import {ApiError, type Revision, type Transport, type WorkerRecord} from '@/lib/transport/types';
 import {taskKeys} from '../tasks/detail/query-keys';
 import {ErrorNotice} from '../tasks/detail/shared/error-notice';
+import {OperationReceipt} from '../tasks/detail/shared/operation-receipt';
 import {useLogicalAction} from '../tasks/detail/shared/logical-action';
 
 export interface CancelWorkerFlowProps {
@@ -64,6 +65,7 @@ export function CancelWorkerFlow({taskId, taskRevision, worker, transport, onCha
         <div className="rounded-md border border-success/40 bg-success/5 p-3" role="status" data-testid="cancel-worker-accepted">
           <p className="text-sm font-medium text-success">取消请求已受理。</p>
           <p className="mt-1 text-sm text-text-secondary">受理不代表该 Worker 已停止；以轮询到的服务端状态为准。</p>
+          <OperationReceipt result={action.phase.result} taskId={taskId} kind="worker.cancel" workerId={worker.id} transport={transport} />
         </div>
       ) : null}
       {action.phase.kind === 'rejected' ? (

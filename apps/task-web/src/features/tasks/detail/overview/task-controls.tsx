@@ -11,6 +11,7 @@ import type {Revision, TaskRecord, Transport} from '@/lib/transport/types';
 import {taskKeys} from '../query-keys';
 import {casRevisionOf, isTerminalStatus} from '../shared/derive';
 import {ErrorNotice} from '../shared/error-notice';
+import {OperationReceipt} from '../shared/operation-receipt';
 import {useLogicalAction, type ActionPhase} from '../shared/logical-action';
 
 type ControlAction = 'pause' | 'resume' | 'cancel';
@@ -132,6 +133,7 @@ function ControlAttempt({taskId, action, revision, transport, onClose, onChanged
         onReplay={() => void logical.replay(run)}
         onRefresh={() => { void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)}); onChanged(); }}
         onClose={onClose} />
+      {logical.phase.kind === 'accepted' ? <OperationReceipt result={logical.phase.result} taskId={taskId} kind={`task.${action}`} transport={transport} /> : null}
     </>
   );
 }

@@ -10,6 +10,8 @@ import {randomUUID} from 'node:crypto';
 import {setTimeout as pause} from 'node:timers/promises';
 import {TaskClient} from '../../../packages/task-client/index.mjs';
 import {DIST, FIXTURE_LEADER, ensureDist, spawnService, tempParent} from './helpers.mjs';
+import {createTransport, installToken, clearToken} from '../src/lib/transport/client';
+import {parseOperation} from '../src/lib/transport/types';
 
 const LEADER_ENV = {MARSHAL_LEADER_RECOVERY_FIXTURE: '1'};
 async function until(read, predicate, label, deadlineMs = 90000) {
@@ -73,6 +75,26 @@ describe('real-http: E01 最小同源往返 + E22 正常重启重连（零模型
     expect(body.code).toBe('unauthorized');
     expect(denied.headers.get('cache-control')).toBe('no-store');
   }, 30000);
+
+  test('E20: UI transport保留真实取消Operation并按原ID读取结果', async () => {
+    installToken(token);
+    try {
+      const transport = createTransport({token, baseURL: address});
+      const created = await transport.createTask({intent: 'Operation受控取消回执', context: {text: JSON.stringify({east: 10, west: 20})}, requirements: {deliverables: ['east报告', 'west报告'], acceptance: ['必须保留east原业务值', '必须保留west原业务值']}, idempotencyKey: randomUUID()});
+      const waiting = await until(() => transport.getTask(created.id), value => ['awaiting-answer', 'failed'].includes(value.status), 'operation fixture waiting');
+      expect(waiting.status).toBe('awaiting-answer');
+      const body = {expectedRevision: waiting.revision, idempotencyKey: randomUUID()};
+      const receipt = parseOperation(await transport.cancelTask(created.id, body));
+      expect(receipt.taskId).toBe(created.id);
+      expect(receipt.kind).toBe('task.cancel');
+      const result = await until(() => transport.getOperation(receipt.id), value => ['succeeded', 'failed'].includes(value.status), 'cancel operation terminal');
+      expect(result.id).toBe(receipt.id);
+      expect(result.status).toBe('succeeded');
+      expect((await transport.getTask(created.id)).status).toBe('cancelled');
+      const replay = parseOperation(await transport.cancelTask(created.id, body));
+      expect(replay.id).toBe(receipt.id);
+    } finally { clearToken(); }
+  }, 180000);
 
   test('E22: 正常关闭后重开同根，事实可重查且换发新连接/token', async () => {
     const stopped = await first.stop();

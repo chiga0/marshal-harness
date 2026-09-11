@@ -8,6 +8,7 @@ import {Card} from '@/components/ui/card';
 import type {Transport} from '@/lib/transport/types';
 import {usePollMode} from '@/lib/queries/polling';
 import {ErrorNotice} from '../shared/error-notice';
+import {TaskOperationReceipts} from '../shared/operation-receipt';
 import {formatDateTime, truncateMiddle} from '../shared/format';
 import {ACTIVITY_CAP, mergeEventPages, resolveEventsLoader, type EventsLoader, type EventsPage, type TaskEvent} from './events';
 
@@ -25,16 +26,16 @@ export function ActivityView({taskId, transport, eventsLoader: injectedLoader}: 
   const loader = useMemo(() => injectedLoader !== undefined ? injectedLoader : resolveEventsLoader(transport), [injectedLoader, transport]);
   if (loader === null) {
     return (
-      <Card className="space-y-2" data-testid="activity-unavailable">
+      <div><TaskOperationReceipts taskId={taskId} transport={transport} /><Card className="space-y-2" data-testid="activity-unavailable">
         <h2 className="text-base font-semibold leading-6">活动</h2>
         <p className="text-sm text-text-secondary">
           事件流需要服务端事件接口（GET /v1/tasks/{'{taskId}'}/events），当前 transport 未提供该查询；不编造事件。
           待 transport 补齐后本视图自动可用。
         </p>
-      </Card>
+      </Card></div>
     );
   }
-  return <ActivityStream key={taskId} taskId={taskId} loader={loader} />;
+  return <div><TaskOperationReceipts taskId={taskId} transport={transport} /><ActivityStream key={taskId} taskId={taskId} loader={loader} /></div>;
 }
 
 function ActivityStream({taskId, loader}: {taskId: string; loader: EventsLoader}) {

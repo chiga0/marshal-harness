@@ -11,6 +11,7 @@ import type {PlanRecord, Revision, TaskRecord, Transport} from '@/lib/transport/
 import {ApiError} from '@/lib/transport/types';
 import {taskKeys} from '../query-keys';
 import {ErrorNotice} from '../shared/error-notice';
+import {OperationReceipt} from '../shared/operation-receipt';
 import {useLogicalAction} from '../shared/logical-action';
 import {formatDuration, workerRoleLabel} from '../shared/format';
 
@@ -181,6 +182,7 @@ export function ApproveAttempt({taskId, target, transport, onClose, onAccepted, 
             <div className="rounded-md border border-success/40 bg-success/5 p-3" role="status">
               <p className="text-sm font-medium text-success">批准已受理（受理不等于已开始执行）。</p>
               <p className="mt-1 text-sm text-text-secondary">稍后由任务状态反映结果；如上次操作中断，请先核对任务与回执后手动再操作。</p>
+              <OperationReceipt result={phase.result} taskId={taskId} kind="task.approve" transport={transport} />
               <div className="mt-2"><Button size="sm" variant="outline" onClick={() => { onAccepted(); onClose(); }}>关闭并刷新任务</Button></div>
             </div>
           ) : null}

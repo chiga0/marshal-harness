@@ -87,6 +87,7 @@ export function makeFakeTransport(overrides: Partial<Transport> = {}): {transpor
     cancelWorker: async () => ({}),
     getLeader: async () => makeLeader(),
     getAudit: async () => makeAudit(),
+    getOperation: async () => { throw new Error('fixture未提供Operation'); },
     leaderReply: async () => ({}),
     repair: async () => ({}),
     getEvents: async taskId => ({items: [], nextCursor: null, taskId}),
