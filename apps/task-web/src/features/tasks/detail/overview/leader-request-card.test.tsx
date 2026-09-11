@@ -14,6 +14,24 @@ function wrap(node: ReactNode) {
 }
 
 describe('Leader 答复（P06 / E31 / P10）', () => {
+  it.each(['business', 'publication'] as const)('%s：确认打开期间版本变化必须重新核对，不能提交替换后的请求', async kind => {
+    const {transport, calls} = makeFakeTransport();
+    const client = new QueryClient();
+    const node = (revision: number) => <QueryClientProvider client={client}><LeaderRequestCard taskId={TASK_ID} expectedRevision={revision} transport={transport} onChanged={() => {}} request={makeLeaderRequest({kind, options: [], requestDigest: revision === 7 ? REQUEST_DIGEST : `sha256:${'b'.repeat(64)}`, authorization: kind === 'publication' ? makeAuthorization({targetId: revision === 7 ? 'old-target' : 'new-target'}) : null})} /></QueryClientProvider>;
+    const view = render(node(7));
+    const user = userEvent.setup();
+    if (kind === 'business') await user.type(screen.getByLabelText('答复内容'), '原答复');
+    await user.click(screen.getByTestId(kind === 'business' ? 'leader-answer-open' : 'leader-reply-allow'));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    view.rerender(node(8));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('alert')).toHaveTextContent('原确认已关闭');
+    expect(callsOf(calls, 'leaderReply')).toHaveLength(0);
+    await user.click(screen.getByTestId(kind === 'business' ? 'leader-answer-open' : 'leader-reply-allow'));
+    await user.click(screen.getByRole('button', {name: kind === 'business' ? '确认答复' : '确认允许'}));
+    await screen.findByTestId('leader-reply-accepted');
+    expect((callsOf(calls, 'leaderReply')[0]!.args[2] as LeaderBusinessReplyBody).expectedRevision).toBe(8);
+  });
   it.each(['business', 'publication'] as const)('%s：409 刷新后显式核对重开，保留草稿并以新键/CAS 再确认', async kind => {
     const leaderReply = vi.fn().mockRejectedValueOnce(new ApiError(409, 'revision_conflict', '版本冲突', 'req-conflict')).mockResolvedValueOnce({});
     const {transport, calls} = makeFakeTransport({leaderReply: leaderReply as Transport['leaderReply']});

@@ -118,6 +118,11 @@ interface ReplyActionsProps {
   onChanged: () => void;
 }
 
+interface ConfirmationVersion {revision: Revision; id: string; digest: string}
+function sameConfirmation(version: ConfirmationVersion | null, request: LeaderRequestDTO, revision: Revision): boolean {
+  return version !== null && version.revision === revision && version.id === request.id && version.digest === request.requestDigest;
+}
+
 /** 业务请求：options 非空时选项即答复按钮；否则自由文本 + 答复按钮。answer 为选项 value 或文本原文。
  *  答复值保存在稳定 state（选择/文本不随确认清空），保证提交中原键重放仍用同一逻辑动作键。 */
 function BusinessReplyActions({taskId, expectedRevision, request, expired, transport, onChanged}: ReplyActionsProps) {
@@ -125,6 +130,12 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
   const [selected, setSelected] = useState<string | null>(null);
   const [freeText, setFreeText] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [confirmation, setConfirmation] = useState<ConfirmationVersion | null>(null);
+  const confirmationCurrent = sameConfirmation(confirmation, request, expectedRevision);
+  const openConfirmation = () => {
+    setConfirmation({revision: expectedRevision, id: request.id, digest: request.requestDigest});
+    setDialogOpen(true);
+  };
   const trimmed = freeText.trim();
   const hasOptions = request.options.length > 0;
   const answer = hasOptions ? selected : (trimmed === '' ? null : trimmed);
@@ -159,7 +170,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
                   disabled={expired}
                   onClick={() => {
                     setSelected(option.value);
-                    setDialogOpen(true);
+                    openConfirmation();
                   }}
                   data-testid={`leader-answer-option-${option.value}`}
                 >
@@ -183,7 +194,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
                 <Button
                   size="sm"
                   disabled={answer === null || expired}
-                  onClick={() => setDialogOpen(true)}
+                  onClick={openConfirmation}
                   data-testid="leader-answer-open"
                 >
                   答复
@@ -203,9 +214,10 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
       ) : null}
 
       <LeaderReplyOutcome phase={action.phase} depsStale={action.depsStale} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} onRestart={action.reset} expired={expired} />
+      {dialogOpen && !confirmationCurrent ? <p role="alert" className="text-sm text-warning">请求版本已变化，原确认已关闭。请核对最新正文并重新打开确认；尚未提交答复。</p> : null}
 
       <ConfirmDialog
-        open={dialogOpen && answer !== null && !expired && action.phase.kind === 'idle'}
+        open={dialogOpen && confirmationCurrent && answer !== null && !expired && action.phase.kind === 'idle'}
         title="确认提交该 Leader 答复？"
         description={
           answer !== null
@@ -215,7 +227,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
         confirmText="确认答复"
         onConfirm={() => {
           // UI-10：确认框打开期间到期的，一律不发请求（后端拒绝仍是兜底）
-          if (!expired && answer !== null && !isPast(request.deadlineAt)) void action.submit(doSubmit);
+          if (confirmationCurrent && !expired && answer !== null && !isPast(request.deadlineAt)) void action.submit(doSubmit);
           setDialogOpen(false);
         }}
         onCancel={() => setDialogOpen(false)}
@@ -229,6 +241,8 @@ function PublicationReplyActions({taskId, expectedRevision, request, expired, tr
   const queryClient = useQueryClient();
   const [decision, setDecision] = useState<'allow' | 'deny' | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [confirmation, setConfirmation] = useState<ConfirmationVersion | null>(null);
+  const confirmationCurrent = sameConfirmation(confirmation, request, expectedRevision);
   const action = useLogicalAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, decision ?? '']);
   const refresh = () => { void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)}); onChanged(); };
   const hasAuthorization = request.authorization !== null;
@@ -246,6 +260,7 @@ function PublicationReplyActions({taskId, expectedRevision, request, expired, tr
 
   const openDialog = (value: 'allow' | 'deny') => {
     setDecision(value);
+    setConfirmation({revision: expectedRevision, id: request.id, digest: request.requestDigest});
     setDialogOpen(true);
   };
 
@@ -275,9 +290,10 @@ function PublicationReplyActions({taskId, expectedRevision, request, expired, tr
       ) : null}
 
       <LeaderReplyOutcome phase={action.phase} depsStale={action.depsStale} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} onRestart={action.reset} expired={expired} />
+      {dialogOpen && !confirmationCurrent ? <p role="alert" className="text-sm text-warning">授权请求版本已变化，原确认已关闭。请核对最新授权正文并重新打开确认；尚未提交授权。</p> : null}
 
       <ConfirmDialog
-        open={dialogOpen && decision !== null && !expired && action.phase.kind === 'idle'}
+        open={dialogOpen && confirmationCurrent && decision !== null && !expired && action.phase.kind === 'idle'}
         title={decision === 'allow' ? '确认允许该发布？' : '确认拒绝该发布？'}
         description={
           decision === 'allow'
@@ -290,7 +306,7 @@ function PublicationReplyActions({taskId, expectedRevision, request, expired, tr
         confirmText={decision === 'allow' ? '确认允许' : '确认拒绝'}
         onConfirm={() => {
           // UI-10：确认框打开期间到期的，一律不发请求（后端拒绝仍是兜底）
-          if (!expired && decision !== null && !isPast(request.deadlineAt)) void action.submit(doSubmit);
+          if (confirmationCurrent && !expired && decision !== null && !isPast(request.deadlineAt)) void action.submit(doSubmit);
           setDialogOpen(false);
         }}
         onCancel={() => setDialogOpen(false)}
