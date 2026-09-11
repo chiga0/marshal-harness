@@ -1,11 +1,11 @@
 import {beforeEach, describe, expect, it, vi} from 'vitest';
-import {render, screen, waitFor} from '@testing-library/react';
+import {act, render, screen, waitFor} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {MemoryRouter} from 'react-router-dom';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import {ApiError} from '../../lib/transport/types';
 import {TaskNewComposer} from './task-new-page';
-import {LogicalActionScope} from './detail/shared/logical-action';
+import {inFlightWriteCount, LogicalActionScope} from './detail/shared/logical-action';
 import type {CreateTaskApi} from './task-create';
 
 vi.mock('../../lib/transport/types', async importOriginal => {
@@ -58,6 +58,50 @@ beforeEach(() => {
 });
 
 describe('TaskNewComposer 客户端校验', () => {
+  it.each([1, 2])('独立审查：%i个附件时连接销毁后迟到上传成功不得启动后续写', async fileCount => {
+    const user = userEvent.setup();
+    let finishInput!: (value: {id: string}) => void;
+    const oldApi = makeApi({createInput: vi.fn(() => new Promise<{id: string}>(resolve => { finishInput = resolve; }))});
+    const newApi = makeApi();
+    const shell = (api: CreateTaskApi) => <MemoryRouter><LogicalActionScope session={api}><TaskNewComposer api={api} /></LogicalActionScope></MemoryRouter>;
+    const view = render(shell(oldApi));
+    await user.type(screen.getByLabelText(/需求内容/), '旧连接草稿');
+    await user.upload(screen.getByLabelText('附件输入'), Array.from({length: fileCount}, (_, index) => new File(['old'], `old-${index}.txt`)));
+    await user.click(screen.getByRole('button', {name: '创建任务'}));
+    await waitFor(() => expect(oldApi.createInput).toHaveBeenCalledTimes(1));
+    view.rerender(shell(newApi));
+    await act(async () => { finishInput({id: 'old-input'}); });
+    await waitFor(() => expect(inFlightWriteCount()).toBe(0));
+    expect(oldApi.createInput).toHaveBeenCalledTimes(1);
+    expect(oldApi.createTask).not.toHaveBeenCalled();
+    expect(newApi.createTask).not.toHaveBeenCalled();
+  });
+
+  it('独立审查：附件读取期间连接切换，读取完成后不得借新会话发送旧附件', async () => {
+    const user = userEvent.setup();
+    let reader!: FileReader;
+    const read = vi.spyOn(FileReader.prototype, 'readAsArrayBuffer').mockImplementation(function(this: FileReader) { reader = this; });
+    const oldApi = makeApi();
+    const newApi = makeApi();
+    const shell = (api: CreateTaskApi) => <MemoryRouter><LogicalActionScope session={api}><TaskNewComposer api={api} /></LogicalActionScope></MemoryRouter>;
+    try {
+      const view = render(shell(oldApi));
+      await user.type(screen.getByLabelText(/需求内容/), '旧连接草稿');
+      await user.upload(screen.getByLabelText('附件输入'), new File(['old'], 'old.txt'));
+      await user.click(screen.getByRole('button', {name: '创建任务'}));
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+      view.rerender(shell(newApi));
+      await act(async () => {
+        Object.defineProperty(reader, 'result', {value: new ArrayBuffer(3)});
+        reader.onload?.(new ProgressEvent('load') as ProgressEvent<FileReader>);
+      });
+      expect(oldApi.createInput).not.toHaveBeenCalled();
+      expect(oldApi.createTask).not.toHaveBeenCalled();
+      expect(newApi.createInput).not.toHaveBeenCalled();
+      expect(newApi.createTask).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); }
+  });
+
   it('需求为空时不调用服务端', async () => {
     const user = userEvent.setup();
     const api = makeApi();
