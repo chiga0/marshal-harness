@@ -24,6 +24,29 @@ function renderView(workers = [makeWorker()], overrides: Partial<Transport> = {}
 }
 
 describe('团队视图（P08 / E23）', () => {
+  it('路由抽屉关闭后保留原列表DOM，焦点返回同一明细入口', async () => {
+    renderView();
+    const user = userEvent.setup();
+    const trigger = screen.getByRole('link', {name: '明细'});
+    trigger.focus();
+    await user.keyboard('{Enter}');
+    await screen.findByTestId('worker-drawer');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('worker-drawer')).toBeNull());
+    expect(screen.getByRole('link', {name: '明细'})).toBe(trigger);
+    expect(trigger).toHaveFocus();
+  });
+
+  it('未加载成员的深链明确提示，不把空白当作不存在或完成', () => {
+    const {transport} = makeFakeTransport();
+    render(<MemoryRouter initialEntries={[`/tasks/${TASK_ID}/team/worker-unloaded`]}>
+      <Routes><Route path="/tasks/:taskId/team/*" element={<WorkersView task={makeTask()} workers={[]} transport={transport} onChanged={() => {}} />} /></Routes>
+    </MemoryRouter>);
+    expect(screen.getByRole('status')).toHaveTextContent('成员 worker-unloaded 的详情尚不可用');
+    expect(screen.getByRole('button', {name: '刷新团队'})).toBeEnabled();
+    expect(screen.getByRole('link', {name: '返回团队列表'})).toHaveAttribute('href', `/tasks/${TASK_ID}/team`);
+  });
+
   it('列表展示节点/角色/状态/阶段/尝试/最近观察/进展摘要/用量，无进度百分比假数据', () => {
     renderView();
     const row = screen.getByTestId('worker-row');

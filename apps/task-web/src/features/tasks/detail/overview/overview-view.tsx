@@ -45,7 +45,8 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
   const pendingRequest = leaderPendingRequest(leader);
   const awaitingRequest = pendingRequest !== null && pendingRequest.status === 'pending' ? pendingRequest : null;
   // UI-08：除 open 外，已答但 Worker ACK 未落定的运行问题保留供核对
-  const attentionQuestions = (questions?.items ?? []).filter(questionNeedsAttention);
+  const attentionQuestions = (questions?.items ?? []).filter(questionNeedsAttention)
+    .sort((a, b) => (a.deadlineAt ? Date.parse(a.deadlineAt) : Infinity) - (b.deadlineAt ? Date.parse(b.deadlineAt) : Infinity));
   const planNeedsApproval = plan !== null && task.allowedActions.includes('approve');
   const waitingCount = attentionQuestions.length + (awaitingRequest ? 1 : 0) + (planNeedsApproval ? 1 : 0);
 
@@ -76,6 +77,23 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
         {awaitingRequest ? (
           <LeaderRequestCard taskId={task.id} expectedRevision={expectedRevision} request={awaitingRequest} transport={transport} onChanged={onChanged} />
         ) : null}
+        <section aria-label="计划" id="plan-card-anchor">
+          {plan ? (
+            <details open={planNeedsApproval}>
+              <summary className="cursor-pointer text-sm text-text-secondary">{planNeedsApproval ? '待批准的执行计划' : '查看执行计划与批准回执'}</summary>
+              <PlanCard task={task} plan={plan} transport={transport} onViewLatest={onChanged} />
+            </details>
+          ) : (
+            <Card className="space-y-1">
+              <h2 className="text-base font-semibold leading-6">当前计划</h2>
+              <p className="text-sm text-text-secondary" data-testid="plan-unavailable">
+                {task.plan
+                  ? `服务端已给出计划引用（revision ${task.plan.revision}），但计划内容未加载。`
+                  : '暂无计划（计划未生成或该服务未提供）。'}
+              </p>
+            </Card>
+          )}
+        </section>
       </section>
 
       <section aria-label="当前进展" className="grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -99,21 +117,6 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
             <p className="text-sm text-danger">失败代码：<code>{task.code}</code></p>
           ) : null}
         </Card>
-      </section>
-
-      <section aria-label="计划" id="plan-card-anchor">
-        {plan ? (
-          <PlanCard task={task} plan={plan} transport={transport} onViewLatest={onChanged} />
-        ) : (
-          <Card className="space-y-1">
-            <h2 className="text-base font-semibold leading-6">当前计划</h2>
-            <p className="text-sm text-text-secondary" data-testid="plan-unavailable">
-              {task.plan
-                ? `服务端已给出计划引用（revision ${task.plan.revision}），但计划内容未加载。`
-                : '暂无计划（计划未生成或该服务未提供）。'}
-            </p>
-          </Card>
-        )}
       </section>
 
       <section aria-label="成果摘要">

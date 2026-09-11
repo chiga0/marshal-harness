@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {render, screen} from '@testing-library/react';
+import {render, screen, within} from '@testing-library/react';
 import {MemoryRouter} from 'react-router-dom';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import type {ReactNode} from 'react';
@@ -60,6 +60,8 @@ describe('概览（P04/P05）：等待、进展、验收、计划', () => {
     wrap(<OverviewView task={task} plan={makePlan()} questions={makeQuestions()} workers={[]} leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />);
     expect(screen.getByText('需要你的处理（1 项）')).toBeInTheDocument();
     expect(screen.getByTestId('plan-approve-open')).toBeInTheDocument();
+    expect(within(screen.getByRole('region', {name: '需要处理'})).getByTestId('plan-approve-open')).toBeInTheDocument();
+    expect(screen.getAllByTestId('plan-card')).toHaveLength(1);
     expect(screen.getByTestId('plan-digest')).toHaveTextContent('sha256:b540509e80a56fc5686acb543b8c52798cec6a97f528829d268bd5ec0d269890');
   });
 
