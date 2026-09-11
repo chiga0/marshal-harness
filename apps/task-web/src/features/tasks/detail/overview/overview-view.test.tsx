@@ -39,10 +39,11 @@ describe('概览（P04/P05）：等待、进展、验收、计划', () => {
   it('问题按期限升序、无期限末尾，同期限和无期限保持输入次序且不修改投影', () => {
     const {transport} = makeFakeTransport();
     const questions = makeQuestions({items: [
-      makePreapprovalQuestion({id: 'no-date-a', deadlineAt: null}),
+      // 合同正常要求字符串；显式注入旧/缺失投影，覆盖排序的防御性空值分支。
+      {...makePreapprovalQuestion({id: 'no-date-a'}), deadlineAt: null} as unknown as ReturnType<typeof makePreapprovalQuestion>,
       makePreapprovalQuestion({id: 'later', deadlineAt: '2099-09-02T00:00:00Z'}),
       makePreapprovalQuestion({id: 'equal-a', deadlineAt: '2099-09-01T00:00:00Z'}),
-      makePreapprovalQuestion({id: 'no-date-b', deadlineAt: null}),
+      {...makePreapprovalQuestion({id: 'no-date-b'}), deadlineAt: null} as unknown as ReturnType<typeof makePreapprovalQuestion>,
       makePreapprovalQuestion({id: 'equal-b', deadlineAt: '2099-09-01T00:00:00Z'}),
     ]});
     const original = questions.items.map(question => question.id);
