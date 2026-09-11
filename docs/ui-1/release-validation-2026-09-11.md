@@ -2,6 +2,8 @@
 
 ## 当前结论
 
+后继 [PR #294](https://github.com/chiga0/marshal-harness/pull/294) 已于 2026-09-11 21:06:16（Asia/Shanghai）合并：精确 source `3ed0d3ed992f88583f232acdb798e85186f7e800`，merge/main=`0549aa82efc0858fac0c8c07e887a9c696e9a647`。Node run `34601260031` 的13项全部成功，准入 `34601259985` 双平台成功（PR不执行手动原包接纳job），secret `34601259904` 及外部安全检查成功。已正常快进本地主分支并保留用户未跟踪文件；main 原包生产 run `34602433748` 另行验证，不把 PR 包冒充 main 包，不因代码合并宣称 UI 正式发行。
+
 2026-09-11 20:21:16（Asia/Shanghai），PR #293 的精确 head `93ed5468` 经独立审查和 CI `34597445153` 全13项、准入 `34597445154` 双平台与 secret scan 通过后，实际合并为 main `9852e4da487c0c0f0a36c3ec99de62d5d71b55a9`；本地主分支已正常快进，用户未跟踪文件保留。main push `34598484218` 已13项通过，原始候选包独立安装消费通过，精确绑定见下文；不复用 PR 包冒充该 main 包。本条仅为研发合并，不是 UI 完整验收或软件发行。
 
 后继运行控制补验确认 P2：暂停 Operation 已 succeeded，公开 Task paused 且允许 resume/cancel，但页面 `pendingAction` 仍锁住后续操作，必须先点含义不明确的“关闭”。这不是单纯脚本遗漏；存在可见绕行路径、未证数据/权限损害，但 E12 自然操作仍未通过，后继独立分支修复。unknown/submitting 的冻结锁必须保留，不按202自动解锁。原失败及聚合复验报告 `/private/tmp/ui-controls-fixed.diiOfo/report.md` 保留；E13单Worker取消后兄弟继续和E14真实运行取消的限定子场景已通过，不重复整批。
@@ -19,6 +21,10 @@
 E24/E25 问题／方案／授权页面限定补验 `/private/tmp/ui-question-keyboard.2kJlxA/followup/report.md`：独立冻结 `8598f1f4`、自有 `CByOpyRS` 构建，Chrome152，375px及原生200%（outer1440/inner720/DPR2/CSS zoom1）。真实HTTP/SQLite受控Task，六组合均用Tab发现入口、Enter打开确认框、Escape返回原入口；十二张可见窗口截图前先让实际SECTION滚入目标，无整页横溢。仅业务答复及方案批准各202，发布授权仅打开退出、目标目录为空，服务与两浏览器均退出。浅色Leader自由文本范围，不覆盖经典选项、深色、Shift+Tab/首尾环绕、实际Safari或从启动起完整纯键盘；原0755测试目录启动错误在Task前发生、修0700后同根继续，FAIL保留，不记产品缺陷。
 
 只读异常聚合 `/private/tmp/ui-read-anomaly.ZsfpWv/report.md`：独立冻结 `13f04cf8`／`BNLSYH6U`，原 completed Task 的61版本响应未覆盖已见62及正文；原782字节制品等长翻转一字节被拒存，串Task metadata被拒展示和读取内容；375px深色错误换行，无整页横溢。断开后排空再观察2.3秒无新增请求，重连原成果恢复。157个浏览器API请求、POST0、download0，原Task/Workers/Leader/audit完全不变，所属服务退出0。主侧另直接查看错误摘要375深色截图，制品表有局部横向滚动，不声称所有列同时可见。切换另一独立页面时原页仍visible，没有真正触发隐藏生命周期，因此隐藏退避未通过也未证明产品失败；8MiB及全部分页竞态未在本批覆盖。
+
+组合性能 `/private/tmp/ui-combined-perf.5ps0VT/report.md`：冻结 `8598f1f4`／`CByOpyRS` 的单一受控服务正式创建100Task，仅批准1个产生实际事件，无真实模型或外部发布。首轮定位断言失败保留；“卡片链接名包含状态”的具体归因经查源码撤回，原错误缺栈，异步路由即时count仅为候选原因。同根后继只读复验先按实际href等待路由，载入100Task后在同会话进入原详情，实际显示500条事件（公开545条），真实SECTION预检及16次滚轮有位移、长任务0；不称两页面同时在DOM。冷导航至连接字段可填76.4ms、连接至首批可用112.6ms、卡片状态反馈1.4ms均为原有限测量，不冒充完整冷TTI/绘制结束。原Task均终态，未取消或新建替代，新事实≤3秒仍未测。所属服务和浏览器关闭，原FAIL不覆盖。
+
+E09/E11/E12 部分证据 `/private/tmp/ui-active.ieXUTd/report.md`：冻结 `13f04cf8`／`BNLSYH6U`。east等待问题、west完成有公开事实，概览问题可见但兄弟区未展开，不能称完整双分支视觉；串另一真实Task的questionDigest由服务409拒绝，前后两Task/问题/Workers/Events严格不变。原pause/resume均succeeded且二次确认截图取得，但双回执截图未取得。脚本重复把resume后的状态假定为running，实际既有成功脚本与Core均恢复awaiting-answer，超时属于已知前提未复用，原FAIL保留；后续仅补未发生的E10，不重造已有通过子场景。
 
 **尚不可声明完整验收通过，尚未发布新版。** 本记录补充三条验收，不以组件测试替代实际交付、视觉操作或目标用户测试。
 
