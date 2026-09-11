@@ -23,6 +23,24 @@ function loaderOf(pages: EventsPage[]): {loader: EventsLoader; calls: Array<{cur
 }
 
 describe('活动事件（P11 / E20-E22）', () => {
+  it('ACK给中文消费解释并保留原类型摘要；未知事件不猜消费', async () => {
+    const {transport} = makeFakeTransport();
+    const {loader} = loaderOf([{taskId: 'task-1', nextCursor: null, items: [
+      {...event(1, '原始ACK摘要'), type: 'worker.answer-acknowledged'},
+      {...event(2, '原始未知摘要'), type: 'worker.new-event'},
+    ]}]);
+    render(<ActivityView taskId="task-1" transport={transport} eventsLoader={loader} />);
+    await screen.findByText('原始ACK摘要');
+    const rows = screen.getAllByTestId('activity-event');
+    const ack = rows.find(row => row.getAttribute('data-event-id') === 'ev-1')!;
+    const unknown = rows.find(row => row.getAttribute('data-event-id') === 'ev-2')!;
+    expect(ack).toHaveTextContent('Worker 已确认消费原答复');
+    expect(ack).toHaveTextContent('worker.answer-acknowledged');
+    expect(ack).toHaveTextContent('这不代表执行完成或验收通过');
+    expect(unknown).toHaveTextContent('原始未知摘要');
+    expect(unknown).not.toHaveTextContent('已确认消费');
+  });
+
   it('按真实升序 after 合同追赶分页，末页为空游标后仍发现新增事件', async () => {
     const {loader, calls} = loaderOf([
       {items: Array.from({length: 50}, (_, i) => event(i + 1)), nextCursor: '50', taskId: 'task-1'},

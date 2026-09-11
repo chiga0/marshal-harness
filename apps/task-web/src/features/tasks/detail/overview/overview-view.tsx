@@ -20,6 +20,7 @@ import {LeaderProjection} from './leader-projection';
 import {LeaderRequestCard} from './leader-request-card';
 import {PlanCard} from './plan-card';
 import {QuestionCard} from './question-card';
+import {QuestionHistory} from './question-history';
 import {TaskControls} from './task-controls';
 import {useLeaderReplyReceipt} from '../shared/leader-reply-receipt';
 
@@ -97,6 +98,8 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
           )}
         </section>
       </section>
+
+      <QuestionHistory taskId={task.id} questions={questions} />
 
       <section aria-label="当前进展" className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <LeaderProjection leader={leader} workers={workers ?? []} />

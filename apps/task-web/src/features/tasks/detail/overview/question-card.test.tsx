@@ -95,6 +95,8 @@ describe('待回答问题（P06 / E10 / E11）', () => {
     expect('questionDigest' in body && body.questionDigest).toBe(QUESTION_DIGEST);
     expect(body.answer).toBe('2026-09-01');
     expect('previewDigest' in body).toBe(false);
+    expect(await screen.findByTestId('question-accepted')).toHaveTextContent('已处理的运行问题');
+    expect(screen.getByTestId('question-accepted')).not.toHaveTextContent('此视图不显示');
   });
 
   it('预批准问题缺 previewDigest 时禁用提交并说明原因', () => {
@@ -104,7 +106,7 @@ describe('待回答问题（P06 / E10 / E11）', () => {
     expect(screen.getByText(/previewDigest/)).toBeInTheDocument();
   });
 
-  it('受理后如实叙事：受理不等于已被执行方消费，无 Worker ACK 展示', async () => {
+  it('预批准受理不等于Worker消费，不指向运行问题历史', async () => {
     const {transport} = makeFakeTransport();
     const user = userEvent.setup();
     wrap(<QuestionCard taskId={TASK_ID} expectedRevision={7} question={makePreapprovalQuestion()} previewDigest={PREVIEW_DIGEST} transport={transport} onChanged={() => {}} />);
@@ -113,7 +115,9 @@ describe('待回答问题（P06 / E10 / E11）', () => {
     const accepted = await screen.findByTestId('question-accepted');
     expect(accepted).toHaveTextContent('答复已受理');
     expect(accepted).toHaveTextContent('受理不等于已被执行方消费');
-    expect(accepted).toHaveTextContent('不显示 Worker 投递/ACK');
+    expect(accepted).not.toHaveTextContent('此视图不显示 Worker 投递/ACK');
+    expect(accepted).toHaveTextContent('这是预批准问题');
+    expect(accepted).not.toHaveTextContent('已处理的运行问题');
   });
 
   it('过期问题不可作答（期限已过）', () => {
