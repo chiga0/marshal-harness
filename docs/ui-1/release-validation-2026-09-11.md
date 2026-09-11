@@ -256,6 +256,16 @@ E18/E19 单次受控 Chrome 152 实测记录于 `/private/tmp/ui-pub.PV5WYZ/repo
 
 三线结论仍分别记录：功能/视觉为限定范围补充证据，目标用户可用性 NOT_RUN；Agent 模拟不能替代真人。最终发行资产仍需在新 main 冻结后复验，未发布新版本。
 
+### 最终 main 原包接纳（61a0048e）
+
+run `34605383372` attempt1 的13项均成功，原候选 artifact `10267051634`、运输ZIP 1519237字节；SHA-256 `7943ccaf53aae86df5ea9a0afa6afc1b3b4a063f3c84c941ed79fb4eed0a8725` 已由主侧复算并与GitHub一致。producer job `103285757208` 的 manifest 为 `sha256:f7e8f3f5d531f29df33f7ead4b2521836eef01d7519b7f66daa944d97830ca67`，70文件/1494465字节（67运行库存及3UI文件，不混同文件计数）。
+
+独立原包接纳 session17135 exit0，结果 `/private/tmp/marshal-main-61a0048.kDLlpM/admitted/result.json`，安装树同目录 `installed`。Darwin arm64/Node24.15.0 两种布局各4次原执行、4 Attempts、冷恢复重复启动0，modelCalls0；严格恢复及最终verify通过。这里只证明同包消费，不代替真实模型、完整UI或正式签名发行。
+
+接纳前两次私有识别前提错误保留：新版gh拒绝带转义序列的日志，改为只在内存解析；误认为run只有一个artifact，改按原接纳合同核对精确候选名称唯一（其余4项是消费证据）。未因此重复下载ZIP或启动产品Task。
+
+安装包交互首轮 `/private/tmp/ui-installed-controls.rlEOOw/report.md` 仍FAIL：真实E09等待问题截图已取得，但测试要求团队状态使用英文，实际UI是中文等待答复/已完成，导致E12之前超时；session98282 exit1、service正常退出0，未发UI写请求。此为测试定位假设错误，不是产品失败；暂停/恢复未验不能记通过。已停止修改该脚本，E12改为仅复用最初成功的双问题流程并适配安装包，不再混入Graph/团队状态或键盘前置。
+
 E09/E12 后继脚本失败（`/private/tmp/ui-controls-keyboard.oJ4sW3/report.md`）保留：首次在零 Task 时错误地 Tab 到未选中原生 radio，修正为 Tab 进入当前选项后方向键切换；同根第二次仅创建 Task `task-2405f184-2553-4f33-98f8-7d232c010aaf`，公开 east Worker awaiting-answer、west completed，但脚本硬等 Graph east waiting 而失败。独立追溯原生产链确认 Graph 返回 record.nodes，运行问题修改 Task/Worker 而不改节点 running，因此不是已证产品缺陷。前检只核枚举而漏查生产链，属于测试前检遗漏。两次所属服务均退出0；未执行 pause/resume，原期限已过，不重开旧任务、延长预算或补记双回执通过。后续仅复用原已成功 E12 主链，在最终安装资产上合并一次验收；按各实体真实字段分别断言，不为截图继续重造源码样例。
 
 E14 限定补证（`9cdfc074`，`/private/tmp/ui-terminal-cancel.7Badza/report.md`）：原 E10 Task 已 completed/rev23，Chrome 实际滚入控制区后无取消入口。唯一一次正式客户端使用此前真实观察的 rev15 取消，返回409 `revision_conflict`；原 Task/Questions/Workers/Events/audit及两项制品元数据、字节与摘要不变，新增执行0，客户端POST1/浏览器POST0。session6647及所属服务均退出0。由于 Core 先检查 revision，此证据仅证明终态展示与陈旧 CAS 拒绝，不关闭同时竞争或同revision终态guard，不追加重复请求凑覆盖。
