@@ -22,8 +22,8 @@ function renderRoutes(entry: string | {pathname: string; state: unknown}, compac
 afterEach(() => vi.unstubAllGlobals());
 
 describe('独立设置外壳与工作台返回', () => {
-  it('从任务子页进入设置，跨分组后返回原任务和 Worker 查询，不回退到历史记录', async () => {
-    renderRoutes('/tasks/task-1/team?worker=worker-2');
+  it.each(['/tasks/task-1/team?worker=worker-2', '/tasks/task-1/graph'])('从 %s 进入设置，跨分组后返回原任务子页，不回退到历史记录', async path => {
+    renderRoutes(path);
     const user = userEvent.setup();
     await user.click(screen.getByRole('link', {name: '设置'}));
     expect(screen.queryByRole('navigation', {name: '主导航'})).toBeNull();
@@ -33,7 +33,7 @@ describe('独立设置外壳与工作台返回', () => {
     await user.click(screen.getByRole('link', {name: '关于'}));
     expect(screen.getByRole('heading', {name: '配置管理尚未开放'})).toBeInTheDocument();
     await user.click(screen.getByRole('link', {name: '返回工作台'}));
-    expect(screen.getByTestId('location')).toHaveTextContent('/tasks/task-1/team?worker=worker-2');
+    expect(screen.getByTestId('location')).toHaveTextContent(path);
     expect(screen.getByRole('heading', {name: '原任务详情'})).toBeInTheDocument();
     expect(screen.queryByTestId('settings-shell')).toBeNull();
   });
