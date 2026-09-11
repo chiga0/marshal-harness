@@ -191,6 +191,12 @@ describe('TaskListView', () => {
     renderList(transportWith(async () => ({items: [], nextCursor: null})));
     await screen.findByText('还没有任务。');
     expect(screen.getByRole('link', {name: '新建第一个任务'})).toHaveAttribute('href', '/tasks/new');
+    expect(screen.getAllByRole('link')).toHaveLength(1);
+    expect(screen.queryByLabelText('筛选已加载任务')).toBeNull();
+    expect(screen.queryByRole('button', {name: /只看待处理/})).toBeNull();
+    expect(screen.getByRole('heading', {name: '还没有任务。'})).toHaveProperty('tagName', 'H2');
+    expect(screen.getByTestId('task-empty')).not.toHaveClass('border-dashed');
+    expect(screen.getByTestId('task-empty')).toHaveClass('w-full', 'max-w-lg');
   });
 
   it('按 nextCursor 加载更多并按 id 去重，翻页到底给出说明', async () => {
