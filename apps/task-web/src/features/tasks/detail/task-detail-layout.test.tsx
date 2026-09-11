@@ -39,6 +39,21 @@ function renderAt(path: string) {
 }
 
 describe('任务详情装配（四个子视图 + 数据装载）', () => {
+  it.each(['长需求。'.repeat(150), 'unbrokentext'.repeat(150)])('长标题有界且原文可展开：%#', async intent => {
+    const fake = makeFakeTransport({getTask: async () => makeTask({intent})});
+    fakeTransport = fake.transport;
+    const user = userEvent.setup();
+    renderAt(`/tasks/${TASK_ID}/team`);
+    const heading = await screen.findByRole('heading', {name: intent});
+    expect(heading).toHaveClass('line-clamp-2', 'break-words');
+    expect(heading.textContent).toBe(intent);
+    const disclosure = screen.getByTestId('header-original-intent');
+    expect(disclosure).not.toHaveAttribute('open');
+    await user.click(screen.getByText('查看完整原需求'));
+    expect(disclosure).toHaveAttribute('open');
+    expect(disclosure.querySelector('p')?.textContent).toBe(intent);
+    expect(callsOf(fake.calls, 'approveTask')).toHaveLength(0);
+  });
   it('任务图路由消费 graph 投影，不以当前计划推导执行状态', async () => {
     const fake = makeFakeTransport({getGraph: async taskId => ({taskId, planRevision: 1,
       nodes: [{id: 'actual-node', role: 'verifier', status: 'unknown', workerIds: []}], edges: []})});

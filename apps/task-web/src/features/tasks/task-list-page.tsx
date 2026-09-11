@@ -69,7 +69,7 @@ function TaskRow({task, mode}: {task: TaskRecord; mode: ViewMode}) {
       <div className="flex min-w-0 flex-col gap-1">
         <Link
           to={'/tasks/' + encodeURIComponent(task.id)}
-          className="min-w-0 [overflow-wrap:anywhere] text-sm font-medium leading-[22px] text-text-primary underline-offset-4 hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          className="line-clamp-3 min-w-0 [overflow-wrap:anywhere] text-sm font-medium leading-[22px] text-text-primary underline-offset-4 hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           {task.intent}
         </Link>

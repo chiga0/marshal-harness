@@ -147,12 +147,18 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
   return (
     <section aria-label="任务详情" className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6" data-testid="task-detail">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <Link to="/" className="text-sm text-accent underline-offset-4 hover:underline">← 任务列表</Link>
             <code className="text-xs text-text-secondary">{taskId}</code>
           </div>
-          <h1 className="mt-1 break-words text-[22px] font-semibold leading-[30px]">{task ? task.intent : '任务详情'}</h1>
+          <h1 className="mt-1 line-clamp-2 break-words text-[22px] font-semibold leading-[30px]" data-testid="task-heading">{task ? task.intent : '任务详情'}</h1>
+          {task ? (
+            <details key={taskId} className="mt-1 text-sm" data-testid="header-original-intent">
+              <summary className="w-fit cursor-pointer rounded text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">查看完整原需求</summary>
+              <p className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border p-3 text-text-secondary" tabIndex={0}>{task.intent}</p>
+            </details>
+          ) : null}
           {task ? (
             <div className="mt-1 flex flex-wrap items-center gap-3">
               <StatusBadge machine={task.status} label={waitingForLeader ? '答复已受理，等待 Leader 更新' : taskStatusLabel(task.status)} tone={toneForTask(task.status)} />
