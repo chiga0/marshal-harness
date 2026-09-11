@@ -2,6 +2,7 @@
 // 数据来自 task/plan/questions/workers/leader 五个合同投影（null=未加载/未提供），不互相借用、不据执行结束推断成功。
 
 import {Link} from 'react-router-dom';
+import type {ReactNode} from 'react';
 import {Card} from '@/components/ui/card';
 import type {
   LeaderRecord,
@@ -36,9 +37,10 @@ export interface OverviewViewProps {
   audit: TaskAuditRecord | null;
   transport: Transport;
   onChanged: () => void;
+  graph?: ReactNode;
 }
 
-export function OverviewView({task, plan, questions, workers, leader, audit, transport, onChanged}: OverviewViewProps) {
+export function OverviewView({task, plan, questions, workers, leader, audit, transport, onChanged, graph}: OverviewViewProps) {
   const expectedRevision = casRevisionOf(task);
   const pendingRequest = leaderPendingRequest(leader);
   const awaitingRequest = pendingRequest !== null && pendingRequest.status === 'pending' ? pendingRequest : null;
@@ -80,6 +82,8 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
         <LeaderProjection leader={leader} workers={workers ?? []} />
         <AcceptancePanel leader={leader} audit={audit} />
       </section>
+
+      {graph}
 
       <section aria-label="原需求">
         <Card className="space-y-2">

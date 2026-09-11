@@ -77,6 +77,7 @@ export function makeFakeTransport(overrides: Partial<Transport> = {}): {transpor
     getTask: async () => makeTask(),
     getWorkers: async taskId => ({items: [], nextCursor: null, taskId}),
     getPlan: async () => makePlan(),
+    getGraph: async taskId => ({taskId, planRevision: 1, nodes: [], edges: []}),
     approvePlan: async () => ({}),
     getQuestions: async taskId => ({...makeQuestions(), taskId}),
     answerTask: async () => ({}),

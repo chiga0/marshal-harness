@@ -39,6 +39,15 @@ function renderAt(path: string) {
 }
 
 describe('任务详情装配（四个子视图 + 数据装载）', () => {
+  it('任务图路由消费 graph 投影，不以当前计划推导执行状态', async () => {
+    const fake = makeFakeTransport({getGraph: async taskId => ({taskId, planRevision: 1,
+      nodes: [{id: 'actual-node', role: 'verifier', status: 'unknown', workerIds: []}], edges: []})});
+    fakeTransport = fake.transport;
+    renderAt(`/tasks/${TASK_ID}/graph`);
+    expect(await screen.findByRole('button', {name: '查看节点 actual-node，校验，状态未知'})).toBeInTheDocument();
+    expect(callsOf(fake.calls, 'getGraph')[0]!.args[0]).toBe(TASK_ID);
+    expect(screen.getByRole('link', {name: '任务图'})).toHaveAttribute('aria-current', 'page');
+  });
   beforeEach(() => {
     const fake = makeFakeTransport({
       getTask: async () => makeTask({

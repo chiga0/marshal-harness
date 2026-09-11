@@ -1,6 +1,6 @@
 // Token 只存放在内存（service/transport 模块层单例）——URL、Web Storage、IndexedDB、日志、构建产物均不存放。
 // 断开/刷新清除；连接只指向当前 origin，不接收任意远程 baseURL。
-import {ApiError} from './types';
+import {ApiError, parseGraph} from './types';
 import type {
   Transport, TasksResponse, TaskRecord, WorkersResponse, PlanRecord,
   LeaderRecord, TaskAuditRecord, Events, QuestionsResponse, ArtifactRecord, ControlBody,
@@ -132,6 +132,7 @@ export function createTransport(config: TransportConfig): Transport {
       return json<WorkersResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/workers${params.size ? '?' + params.toString() : ''}`, readInit(options.signal));
     },
     getPlan: (taskId, options = {}) => json<PlanRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/plan`, readInit(options.signal)),
+    getGraph: async (taskId, options = {}) => parseGraph(await json<unknown>(`/v1/tasks/${encodeURIComponent(taskId)}/graph`, readInit(options.signal)), taskId),
     approvePlan: (taskId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/plan/approve`, withKey(body).init),
     getQuestions: (taskId, options = {}) => {
       const params = new URLSearchParams();
