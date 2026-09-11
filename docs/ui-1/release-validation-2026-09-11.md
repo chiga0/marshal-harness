@@ -2,6 +2,8 @@
 
 ## 当前结论
 
+**已合并更新**：PR #295 于 2026-09-11 21:37:33（Asia/Shanghai）合并为 `61a0048ee40a24d5b44568312a280e4e24bbc94a`，本地 main 正常快进并与 origin/main 一致。精确源 `9cdfc074` 的 Node run `34604147735` 全13项与安全检查均通过，合并采用精确 head 校验；以下候选在途表述保留历史时点。最终 main 包由 run `34605383372` 生成，本次查询仍在运行，不借用 PR 包或旧 main 包宣布新版验收通过。
+
 **最新后继**：[PR #295](https://github.com/chiga0/marshal-harness/pull/295) 精确源 `9cdfc074b60149c81ad73f2cb878d5d7971155b5` 已完成独立产品/安全审查，无阻塞问题；ACK 源与整合差异的 stable patch-id 均为 `09e5f34de5b21e9028be6f0af8b8689880eb0cc2`。整合全量496项测试、4项护栏及构建通过。远端 Node run `34604147735` 尚在运行，未合并或发行。下列“后继修复/待补”段落是历史过程，最新 ACK、Git、8 MiB 等限定结论见末节，不能把已验证项重新排为完整重跑任务。
 
 后继 [PR #294](https://github.com/chiga0/marshal-harness/pull/294) 已于 2026-09-11 21:06:16（Asia/Shanghai）合并：精确 source `3ed0d3ed992f88583f232acdb798e85186f7e800`，merge/main=`0549aa82efc0858fac0c8c07e887a9c696e9a647`。Node run `34601260031` 的13项全部成功，准入 `34601259985` 双平台成功（PR不执行手动原包接纳job），secret `34601259904` 及外部安全检查成功。已正常快进本地主分支并保留用户未跟踪文件；main 原包生产 run `34602433748` 另行验证，不把 PR 包冒充 main 包，不因代码合并宣称 UI 正式发行。
