@@ -14,6 +14,20 @@ function show(result: unknown, getOperation: (id: string) => Promise<OperationRe
 }
 
 describe('原 Operation 回执查询（E20）', () => {
+  it.each(['accepted', 'unknown', 'succeeded'] as const)('terminal initial/cache + stale GET %s只保留显示，不作为新确认', async status => {
+    const terminal: OperationRecord = {...receipt, status: 'succeeded', updatedAt: '2026-09-11T00:00:02Z'};
+    const read = vi.fn(async () => ({...terminal, status, updatedAt: '2026-09-11T00:00:01Z'}));
+    const {transport} = makeFakeTransport({getOperation: read}); const client = new QueryClient(); const confirmed = vi.fn();
+    client.setQueryData(operationQueryKey(terminal), terminal);
+    const view = render(<QueryClientProvider client={client}><OperationReceipt result={terminal} taskId={terminal.taskId} kind={terminal.kind} transport={transport} onConfirmed={confirmed} /></QueryClientProvider>);
+    await waitFor(() => expect(read).toHaveBeenCalledOnce());await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(screen.getByTestId('operation-receipt')).toHaveTextContent('操作成功');expect(confirmed).not.toHaveBeenCalled();
+    read.mockResolvedValue({...terminal, status: 'succeeded', updatedAt: '2026-09-11T00:00:03Z'});
+    await userEvent.setup().click(screen.getByRole('button', {name: '刷新原操作回执'}));
+    await waitFor(() => expect(confirmed).toHaveBeenCalled());
+    expect(confirmed.mock.calls.at(-1)?.[0].updatedAt).toBe('2026-09-11T00:00:03Z');
+    view.unmount(); client.clear();
+  });
   it.each(['succeeded', 'failed'] as const)('unknown每2秒只读轮询，%s后停止定时读取', async status => {
     vi.useFakeTimers();
     const read = vi.fn().mockResolvedValueOnce({...receipt, status: 'unknown'}).mockResolvedValue({...receipt, status});
