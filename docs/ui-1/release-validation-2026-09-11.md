@@ -2,9 +2,15 @@
 
 ## 当前结论
 
-2026-09-11 20:21:16（Asia/Shanghai），PR #293 的精确 head `93ed5468` 经独立审查和 CI `34597445153` 全13项、准入 `34597445154` 双平台与 secret scan 通过后，实际合并为 main `9852e4da487c0c0f0a36c3ec99de62d5d71b55a9`；本地主分支已正常快进，用户未跟踪文件保留。main push `34598484218` 正在产生后继原始候选包，不复用 PR 包冒充该 main 包。本条仅为研发合并，不是 UI 完整验收或软件发行。
+2026-09-11 20:21:16（Asia/Shanghai），PR #293 的精确 head `93ed5468` 经独立审查和 CI `34597445153` 全13项、准入 `34597445154` 双平台与 secret scan 通过后，实际合并为 main `9852e4da487c0c0f0a36c3ec99de62d5d71b55a9`；本地主分支已正常快进，用户未跟踪文件保留。main push `34598484218` 已13项通过，原始候选包独立安装消费通过，精确绑定见下文；不复用 PR 包冒充该 main 包。本条仅为研发合并，不是 UI 完整验收或软件发行。
 
 后继运行控制补验确认 P2：暂停 Operation 已 succeeded，公开 Task paused 且允许 resume/cancel，但页面 `pendingAction` 仍锁住后续操作，必须先点含义不明确的“关闭”。这不是单纯脚本遗漏；存在可见绕行路径、未证数据/权限损害，但 E12 自然操作仍未通过，后继独立分支修复。unknown/submitting 的冻结锁必须保留，不按202自动解锁。原失败及聚合复验报告 `/private/tmp/ui-controls-fixed.diiOfo/report.md` 保留；E13单Worker取消后兄弟继续和E14真实运行取消的限定子场景已通过，不重复整批。
+
+该控制 P2 的功能修复已整合至 `5c417aa2`，随 [PR #294](https://github.com/chiga0/marshal-harness/pull/294) 推送。独立 reviewer 对源 `53884e40` 发现陈旧 GET 与显示缓存混淆的 P2，由 `569ab716` 集中修复；50项定向及1项独立反例通过，主侧整合479项前端测试、4项护栏及构建通过。独立 Chrome 实操 E12 原 pause/resume Operation 均 succeeded，注入 unknown 时仍禁用，恢复原响应后无需关闭回执即可继续，两原作者恢复完成；Task 后续 verify 失败仍如实显示。报告 `/private/tmp/ui-e12.8o0cz6/report.md`。控制区处于应用滚动容器下方，截图没有完整覆盖双回执，视觉范围仍待补验，DOM/点击不替代截图。
+
+新增 E04 P2：33个 JSON inputRefs 在零 POST 时被误分为未知请求并冻结草稿；原失败 `/private/tmp/ui-create-boundary.BXRPia/followup/report.md` 保留。修复源 `60fef546` 经独立审查、57项定向测试及 Chrome 复验通过，整合为 `13f04cf8`；33引用及32引用加1附件均零POST、本地错误可见、草稿可编辑，原根唯一Task前后完全一致。合法32提交由组件测试覆盖，浏览器未重复创建。报告 `/private/tmp/ui-e04-fixed.3tsf5g/report.md`；真实网络未知冻结及原键重放不放宽。整合后42文件483项前端测试、4项护栏及构建通过，实际 JS `index-BNLSYH6U.js`；截图仅桌面浅色，不替代完整主题/缩放或真人验收。
+
+原 main 包独立消费结果 `/private/tmp/marshal-main-9852.RiUeEa/independent-admission/result.json`：两种布局均通过，每种原执行4次、Attempts4、冷恢复重复启动0、modelCalls0。升级预检另于 `independent-upgrade-preflight.json` 返回 `invalid_manifest`：测试消费者用当前67文件库存校验旧版65文件，运行尚未开始、未创建业务根；四个共同 profile 摘要相同。不把工具兼容缺口当作运行时数据迁移失败，也不声称升级通过。后继仅修测试消费者的固定旧验证器选择，不放宽生产库存验证；此前报告 profile 身份迁移的独立缺口仍保留。
 
 **尚不可声明完整验收通过，尚未发布新版。** 本记录补充三条验收，不以组件测试替代实际交付、视觉操作或目标用户测试。
 
