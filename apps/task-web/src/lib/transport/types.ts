@@ -236,7 +236,7 @@ export interface ControlBody {
 export interface OperationRecord {
   id: string;
   taskId: TaskId;
-  workerId?: WorkerId | null;
+  workerId?: WorkerId;
   kind: 'task.approve' | 'task.cancel' | 'task.pause' | 'task.resume' | 'task.answer' | 'task.repair' | 'worker.cancel';
   status: 'accepted' | 'running' | 'succeeded' | 'failed' | 'unknown';
   taskRevision: Revision;
@@ -247,14 +247,25 @@ export interface OperationRecord {
 
 export function parseOperation(raw: unknown): OperationRecord {
   const op = raw as Partial<OperationRecord> | null;
-  if (!op || typeof op !== 'object' || typeof op.id !== 'string' || !op.id || typeof op.taskId !== 'string' || !op.taskId ||
+  // 与 task-api/contract.mjs 的 Id、Revision、date-time 和 code 规则相同；
+  // 不用 Date.parse 单独接受非合同日期，也不默许额外字段。
+  const required = ['id', 'taskId', 'kind', 'status', 'taskRevision', 'createdAt', 'updatedAt'];
+  const allowed = [...required, 'workerId', 'code'];
+  const id = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(value) && [...value].length <= 128;
+  const dateTime = (value: unknown): boolean => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
+  const code = (value: unknown): boolean => typeof value === 'string' && [...value].length >= 1 && [...value].length <= 128 &&
+    new TextEncoder().encode(value).byteLength <= 128 && /^[^\u0000]*[^\s\u0000][^\u0000]*$/u.test(value) &&
+    [...value].every(character => { const point = character.codePointAt(0)!; return point < 0xd800 || point > 0xdfff; });
+  if (!op || typeof op !== 'object' || Array.isArray(op) || !required.every(key => Object.hasOwn(op, key)) ||
+    Object.keys(op).some(key => !allowed.includes(key)) || !id(op.id) || !id(op.taskId) ||
     !['task.approve', 'task.cancel', 'task.pause', 'task.resume', 'task.answer', 'task.repair', 'worker.cancel'].includes(op.kind ?? '') ||
     !['accepted', 'running', 'succeeded', 'failed', 'unknown'].includes(op.status ?? '') ||
     !Number.isSafeInteger(op.taskRevision) || (op.taskRevision ?? 0) < 1 ||
-    typeof op.createdAt !== 'string' || !Number.isFinite(Date.parse(op.createdAt)) ||
-    typeof op.updatedAt !== 'string' || !Number.isFinite(Date.parse(op.updatedAt)) ||
-    (op.kind === 'worker.cancel' ? typeof op.workerId !== 'string' || !op.workerId : op.workerId != null) ||
-    (op.code !== undefined && (typeof op.code !== 'string' || !op.code.trim()))) {
+    !dateTime(op.createdAt) || !dateTime(op.updatedAt) ||
+    // Operation.properties.workerId 是 Id；oneOf 又只允许 worker.cancel 携带它。
+    // 非worker分支虽然写了null分支，null仍不满足外层Id，因此当前合同只允许省略。
+    (op.kind === 'worker.cancel' ? !id(op.workerId) : Object.hasOwn(op, 'workerId')) ||
+    (Object.hasOwn(op, 'code') && !code(op.code))) {
     throw new ApiError(502, 'invalid_operation_response', '操作回执不符合合同，不能确认结果', null);
   }
   return op as OperationRecord;

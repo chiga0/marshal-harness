@@ -44,7 +44,7 @@ function OperationStatus({receipt, transport}: {receipt: OperationRecord; transp
   const query = useQuery({
     queryKey: operationQueryKey(receipt),
     queryFn: async ({signal}) => {
-      const current = await transport.getOperation(receipt.id, {signal});
+      const current = parseOperation(await transport.getOperation(receipt.id, {signal}));
       if (current.id !== receipt.id || current.taskId !== receipt.taskId || current.kind !== receipt.kind || (current.workerId ?? null) !== (receipt.workerId ?? null)) {
         throw new ApiError(502, 'operation_binding_mismatch', '操作回执归属不符，保留原回执', null);
       }
