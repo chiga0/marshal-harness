@@ -2,6 +2,22 @@
 
 ## 当前结论
 
+PR #296 已合并为 `f3a8cf960520317d3997be1773d642692b9e1185`，仅变更两份证据文档；产品代码仍为 `61a0048e`。该产品版本的原 CI 包已完成接纳、同根升级/回退及 E12 控制补验，见末节。以下带具体时间的“尚在运行/待合并”描述是历史记录，不代表当前状态。新版 UI 尚未发行。
+
+### 当前剩余出口（独立核对后收敛）
+
+| 范围 | 真正需要补齐的证据 | 已有证据不重复运行 |
+| --- | --- | --- |
+| E14 运行控制 | 完成与取消竞争的缺失分支 | E13旧profile真实501已补证，单 Worker 取消、兄弟继续、取消先赢可复用；已完成任务旧revision的409不是并发竞争 |
+| E21 与性能 | 真实隐藏退避、明确重复页去重；同100 Task/500事件样本的可交互和新事实显示指标 | 陈旧revision保护、断开重连、500事件滚动；单Task ACK延迟不替代组合样本 |
+| E24/E25 交互 | 经典选项问答和确认的纯键盘路径、其深色长内容及焦点归还 | 已验尺寸/200%缩放、抽屉及浅色Leader表单，不重跑所有页面的笛卡尔组合 |
+| 实际 Safari | 安装包人工完整冒烟 | Chromium/WebKit不能替代；当前自动控制入口不可用 |
+| 真实目标用户 | 至少一位非开发参与者无指导完成关键任务并记录理解/误操作 | Agent模拟仅作补充，不冒充真人 |
+
+E21 空白页预检已停止当前 Chrome152 自动化路径：同窗标签切换能交换 focus，但两页仍 visible；随后自有窗口真实 normal→minimized→normal，页面仍 visible。证据 `/private/tmp/ui-visibility.QGINeC/evidence.json` 与 `/private/tmp/ui-minimize.O8F2ml/evidence.json`。两次均正常关闭自有浏览器，无产品服务、Task或POST，也未覆写 visibility 属性/合成事件；这是工具路径限制，不是已证产品退避缺陷，不能据此记通过。
+
+E13 原安装包自然501补证：`/private/tmp/ui-worker-501.P79ADI/report.md`。唯一 Task `task-6cc3deff-7e24-4485-82d8-32f26010cbda`，原 positive/V5=0 profile 经实际抽屉入口取消 east Worker，浏览器唯一写请求返回501 `unsupported_operation`，requestId `2133005b-d561-4e76-b0b5-7e40912454ec`；界面明确不回退整任务取消。主侧独立读取原JSON、请求记录与截图，复算仅排除自然耗时字段 audit.elapsedMs 后的整个前后快照完全一致，确认限定反例成立。原脚本session6163 exit1/FAIL仍保留：末尾误要求 elapsedMs 3069与3208相等；不是产品写入副作用，不重新创建Task凑绿色。所属服务exit0，执行者记录3个handle清理、6个PID均不存在。此项不证明完整交付或真人可用性。
+
 **已合并更新**：PR #295 于 2026-09-11 21:37:33（Asia/Shanghai）合并为 `61a0048ee40a24d5b44568312a280e4e24bbc94a`，本地 main 正常快进并与 origin/main 一致。精确源 `9cdfc074` 的 Node run `34604147735` 全13项与安全检查均通过，合并采用精确 head 校验；以下候选在途表述保留历史时点。最终 main 包由 run `34605383372` 生成，本次查询仍在运行，不借用 PR 包或旧 main 包宣布新版验收通过。
 
 **最新后继**：[PR #295](https://github.com/chiga0/marshal-harness/pull/295) 精确源 `9cdfc074b60149c81ad73f2cb878d5d7971155b5` 已完成独立产品/安全审查，无阻塞问题；ACK 源与整合差异的 stable patch-id 均为 `09e5f34de5b21e9028be6f0af8b8689880eb0cc2`。整合全量496项测试、4项护栏及构建通过。远端 Node run `34604147735` 尚在运行，未合并或发行。下列“后继修复/待补”段落是历史过程，最新 ACK、Git、8 MiB 等限定结论见末节，不能把已验证项重新排为完整重跑任务。
