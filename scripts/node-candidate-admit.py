@@ -42,6 +42,10 @@ JOBS = frozenset({"Freeze one Node candidate"} | {
     for name in ("Node team", "Consume the same Node candidate")
     for platform in ("ubuntu-latest", "macos-latest")
     for version in ("22.22.1", "24.15.0")
+} | {
+    f"task-web (typecheck, build, test + e2e, {platform}, Node {version})"
+    for platform in ("ubuntu-latest", "macos-latest")
+    for version in ("22.22.1", "24.15.0")
 })
 VALIDATORS = (
     "packages/task-store/runtime.mjs",

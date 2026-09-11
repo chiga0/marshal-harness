@@ -27,6 +27,19 @@ candidate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(candidate)
 NODE = os.environ.get("MARSHAL_NODE", shutil.which("node"))
 HEAD = "a" * 40
+# 独立固定workflow期望，不从被测JOBS生成成功样本，防止旧9项清单自证通过。
+UI_JOBS = {
+    "task-web (typecheck, build, test + e2e, ubuntu-latest, Node 22.22.1)",
+    "task-web (typecheck, build, test + e2e, ubuntu-latest, Node 24.15.0)",
+    "task-web (typecheck, build, test + e2e, macos-latest, Node 22.22.1)",
+    "task-web (typecheck, build, test + e2e, macos-latest, Node 24.15.0)",
+}
+EXPECTED_JOBS = {"Freeze one Node candidate"} | {
+    f"{name} ({platform}, Node {version})"
+    for name in ("Node team", "Consume the same Node candidate")
+    for platform in ("ubuntu-latest", "macos-latest")
+    for version in ("22.22.1", "24.15.0")
+} | UI_JOBS
 
 
 def expected(head=HEAD, archive="sha256:" + "b" * 64, manifest="sha256:" + "c" * 64):
@@ -50,9 +63,9 @@ class FixtureGitHub:
         if endpoint.endswith("/actions/workflows/node-team.yml"):
             value = {"id": 99, "path": candidate.WORKFLOW}
         elif "/jobs?" in endpoint:
-            value = {"total_count": len(candidate.JOBS), "jobs": [] if endpoint.endswith("page=2") else [
+            value = {"total_count": len(EXPECTED_JOBS), "jobs": [] if endpoint.endswith("page=2") else [
                 {"id": 501 + i, "run_id": b["runId"], "run_attempt": b["attempt"], "head_sha": b["sourceHead"],
-                 "name": name, "status": "completed", "conclusion": "success"} for i, name in enumerate(sorted(candidate.JOBS))]}
+                 "name": name, "status": "completed", "conclusion": "success"} for i, name in enumerate(sorted(EXPECTED_JOBS))]}
         elif "/actions/artifacts/" in endpoint:
             value = {"id": b["artifactId"], "name": f'node-candidate-{b["sourceHead"]}-{b["attempt"]}', "expired": False,
                      "digest": b["archiveDigest"], "size_in_bytes": len(self.archive) or 100,
@@ -92,6 +105,58 @@ def package_fixture():
 
 
 class MetadataTest(unittest.TestCase):
+    def test_closed_jobs_match_actual_ui_workflow_matrix(self):
+        self.assertEqual(candidate.JOBS, EXPECTED_JOBS)
+        self.assertEqual(len(candidate.JOBS), 13)
+        workflow = (ROOT / candidate.WORKFLOW).read_text()
+        ui = workflow.split("\n  ui:\n", 1)[1].split("\n  package:\n", 1)[0]
+        self.assertIn("name: task-web (typecheck, build, test + e2e, ${{ matrix.os }}, Node ${{ matrix.node }})", ui)
+        self.assertIn("os: [ubuntu-latest, macos-latest]", ui)
+        self.assertIn("node: ['22.22.1', '24.15.0']", ui)
+
+    def test_each_ui_job_is_required_successful_unique_and_same_head(self):
+        for name in sorted(UI_JOBS):
+            for mode, code in (("missing", "incomplete_jobs"), ("failure", "job_binding_mismatch"),
+                               ("skipped", "job_binding_mismatch"), ("duplicate_name", "invalid_jobs"),
+                               ("duplicate_id", "invalid_jobs"), ("old_head", "job_binding_mismatch")):
+                with self.subTest(job=name, mode=mode):
+                    api = FixtureGitHub(expected())
+                    def mutate(endpoint, value):
+                        if "/jobs?" not in endpoint:
+                            return value
+                        if mode == "missing": value["total_count"] -= 1
+                        if endpoint.endswith("page=1"):
+                            job = next(item for item in value["jobs"] if item["name"] == name)
+                            other = next(item for item in value["jobs"] if item is not job)
+                            if mode == "missing": value["jobs"].remove(job)
+                            if mode in ("failure", "skipped"): job["conclusion"] = mode
+                            if mode == "duplicate_name": job["name"] = other["name"]
+                            if mode == "duplicate_id": job["id"] = other["id"]
+                            if mode == "old_head": job["head_sha"] = "d" * 40
+                        return value
+                    api.transform = mutate
+                    with self.assertRaisesRegex(candidate.CandidateError, code):
+                        candidate.github_snapshot(api, expected())
+
+    def test_old_nine_job_snapshot_extra_and_unknown_replacement_rejected(self):
+        for mode, code in (("old_nine", "incomplete_jobs"), ("extra", "incomplete_jobs"), ("replacement", "invalid_jobs")):
+            with self.subTest(mode=mode):
+                api = FixtureGitHub(expected())
+                def mutate(endpoint, value):
+                    if "/jobs?" not in endpoint:
+                        return value
+                    if mode == "old_nine":
+                        value["total_count"] = 9
+                        value["jobs"] = [job for job in value["jobs"] if job["name"] not in UI_JOBS]
+                    if mode == "extra": value["total_count"] = 14
+                    if endpoint.endswith("page=1"):
+                        if mode == "extra": value["jobs"].append(dict(value["jobs"][0], id=999, name="unreviewed job"))
+                        if mode == "replacement": value["jobs"][-1]["name"] = "unreviewed job"
+                    return value
+                api.transform = mutate
+                with self.assertRaisesRegex(candidate.CandidateError, code):
+                    candidate.github_snapshot(api, expected())
+
     def test_complete_exact_attempt_and_tail_page(self):
         api = FixtureGitHub(expected())
         result = candidate.github_snapshot(api, expected())
