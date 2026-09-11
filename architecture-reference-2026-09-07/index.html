@@ -1,0 +1,1436 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="面向 Agent 软件工程的长寿命确定性 Control Plane / Durable deterministic control plane for agentic software engineering">
+      
+      
+      
+        <link rel="canonical" href="https://chiga0.github.io/marshal-harness/architecture-reference-2026-09-07/">
+      
+      
+      
+      
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/" hreflang="zh">
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/en/" hreflang="en">
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>整体架构历史参考（2026-09-07 归档） - Marshal Harness</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#2026-09-07" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href=".." title="Marshal Harness" class="md-header__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Marshal Harness
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              整体架构历史参考（2026-09-07 归档）
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换暗色"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换暗色" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换亮色"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换亮色" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="选择当前语言">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/en/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Marshal Harness" class="md-nav__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Marshal Harness
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开始
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    开始
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始（Node 主线）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    下载部署（Node 一键安装）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    历史资料（Go 时代，已退出产品运行依赖）
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    历史资料（Go 时代，已退出产品运行依赖）
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../current-status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    当前可用能力（历史摘要）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Marshal 是什么
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-it-works/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    工作原理
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install-and-upgrade/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安装、升级与回滚
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    日常使用
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../marshal-skill/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    在 Codex 中使用
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安全与隐私
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-07_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        三面分离与产品交付投影（2026-09-07）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        架构目标
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        当前交付映射
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="当前交付映射">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        成熟度与生产可达性
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        逻辑职责不等于物理服务
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="逻辑职责不等于物理服务">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#v10" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v1.0 物理投影
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        系统上下文
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        逻辑分层
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="逻辑分层">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-client" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Client 与交互层
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-control-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 确定性 Control Plane
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-durable-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Durable Execution 层
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-execution-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Execution Plane
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-data-capability-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Data / Capability Plane
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-publication-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Publication Plane
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#typed-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Typed Execution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        权威与身份
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        核心对象
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        一次写任务的主流程
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_10" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        恢复与一致性
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="恢复与一致性">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#merge-adr-0033proposed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        受控 merge 的目标权威事务（ADR 0033，Proposed）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        可插拔边界
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        阅读下一层
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="2026-09-07">整体架构历史参考（2026-09-07 归档）<a class="headerlink" href="#2026-09-07" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p>本文保留归档前的完整设计与实现映射，不再定义当前目标架构或排期。下文“当前”“终态”“冻结”“唯一”均限原记录时点及对应旧 profile。请先读<a href="../architecture/">当前架构</a>与<a href="../design-contract-map/">合同适用性</a>；旧 Accepted ADR 在旧运行路径仍有效，不能用归档删除证据门禁，也不能用历史实现形状否定新方案。</p>
+<p>规范状态：Marshal 终态整体架构，更新于 2026-08-29；依据已接受的 <a href="../adr/">ADR 0016–0019</a>、<a href="../adr/">ADR 0043–0045</a> 与 <a href="../adr/0052-v1-release-scope-and-production-reachability/">ADR 0052</a>。标注 <strong>Proposed</strong> 的组件或接缝尚未被接受，不构成合同，也不进入 required path。当前实现与计划状态以 <a href="../roadmap-status/">Roadmap</a> 为准。</p>
+<p>2026-08-31 的产品可行性、真实 dogfood 效率、多 Agent 并发边界和 GoalLite 建议见 <a href="../production-agent-team-architecture-audit/">《Marshal 生产级 Agent Team 架构终审》</a>。该审计不修改本文合同；它明确区分当前 single-task kernel、RC1 发布链与 RC1 后的 Agent Team 产品纵切。</p>
+</blockquote>
+<p>本文定义 Marshal 的整体产品架构：系统由哪些部分组成、权威在哪里、Executor 如何协作，以及 embedded/local 与 C/S 如何共享同一业务语义。Local MVP 仅在“当前交付映射”中说明，不定义系统边界。字段级契约与故障语义见 <a href="../runtime-architecture/">Runtime 架构</a>。</p>
+<h2 id="2026-09-07_1">三面分离与产品交付投影（2026-09-07）<a class="headerlink" href="#2026-09-07_1" title="Permanent link">&para;</a></h2>
+<p>依据 <a href="../adr/0080-three-plane-business-delivery-roadmap/">ADR 0080</a>，控制面负责计划/预算/调度/接纳，执行面负责有界 Agent 与独立验证，存储面负责权威事实与制品持久化。Core 是权威写入唯一入口；Verifier 与 Publisher 的凭据/证据权限不因部署同机而合并。现有部署使用文件账本；<a href="../adr/0085-agent-team-service-contract-and-storage/">ADR 0085</a> 的目标部署改为一个 fixed server、多执行进程、SQLite 单一权威库与本地制品，不增加存储微服务或双写真值。</p>
+<p>终态业务路径是需求澄清与确认→有界执行→集成候选→独立验收→交付。受限团队 profile 按 B1→B2→B3 前移，通用 Goal DAG/HA 仍延期；下文的 1.x Goal 标记指通用扩展，不覆盖该受限计划。具体退出条件见 <a href="../agent-team-delivery-plan/">业务交付计划</a>，实时状态只见 <a href="../roadmap-status/#业务交付当前表">Roadmap</a>。长任务恢复计划与制品，不保证原 Agent 会话永久存活。长锁、单 Run 恢复隔离与历史重放优化是待实现项目，不是本段已经实现的能力。</p>
+<p>本轮可实施的 v1 投影统一见 <a href="../agent-team-service-architecture/">Agent Team 服务架构</a>及 <a href="../agent-team-service-milestones/">Milestone</a>：HTTP/CLI 共用应用组合；Adapter 通过 DI 接入核心/增强能力；内置 Supervisor、节点级问答、任务图与审计不产生第二控制权威。本文下方长期构件不要求首版分别部署。旧 AF_UNIX、固定 Pi 和物理 RB1 假设的精确迁移边界以 ADR 0085 为准，不能只加 HTTP 壳或 SQLite 索引冒充完成。</p>
+<h2 id="_1">架构目标<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
+<p>Marshal 的目标不是让一个 Agent 或进程连续运行数月，而是提供一个可以长期稳定运行的 Control Plane：持续接受新的 Task，将其分发为有界 Attempt，在进程、机器或 Provider 故障后恢复，并保留可审计的状态、Evidence 和 SideEffect 记录。</p>
+<p>核心原则：</p>
+<ul>
+<li>Marshal Core 是唯一业务权威；</li>
+<li>LLM、Worker、Verifier、Reviewer、Provider 和 durable backend 只能提供输入或传输；</li>
+<li>Sandbox、Agent 和 Runtime 进程可以丢弃，权威账本不能依赖它们；</li>
+<li>安全与质量来自确定性门禁、独立 Evidence、最小权限和可重放状态，而不是 Agent 自我声明；</li>
+<li>Cloudflare Sandbox、Temporal、OpenHands、ACP 或 A2A 都只能是可替换集成，不成为 Core 定义。</li>
+</ul>
+<h2 id="_2">当前交付映射<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>能力层</th>
+<th>状态</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Local MVP（M0–M6）</td>
+<td><code>USABLE</code></td>
+<td>CLI-first 模块化单体、独立 worktree、Worker Adapter、Verification、Review/Rework、GitHub Draft Publisher、恢复与审计</td>
+</tr>
+<tr>
+<td>Runtime 设计（M7）</td>
+<td><code>PASSED</code></td>
+<td>C/S、SandboxProvider、Provider Port、权威/actor 分离、Typed Execution 与 Goal admission 已冻结</td>
+</tr>
+<tr>
+<td>Runtime 组件资产（历史 M8/M9）</td>
+<td><code>PASSED</code> / <code>COMPONENT</code></td>
+<td>保留当时退出证据；Sandbox SPI、legacy <code>marshal-server</code>、lease、transport 与 ResultIngress 相关组件尚未共同进入真实 Agent 生产链；独立 server executable 不属于当前 production topology</td>
+</tr>
+<tr>
+<td>v1.0 生产纵切（I186-R0→R6）</td>
+<td><code>IN_PROGRESS</code></td>
+<td>R0 <code>PASSED</code>；R1 <code>IN_PROGRESS / INTEGRATED</code>；R2–R5 <code>IN_PROGRESS / COMPONENT</code>；R6 <code>IN_PROGRESS / COMPONENT</code>。目标是一条单节点、单用户、可信仓库的可恢复真实执行链</td>
+</tr>
+<tr>
+<td>1.x 平台扩展（原 M10–M13）</td>
+<td><code>PLANNED</code></td>
+<td>Cloudflare 完整生产拓扑、HA、多用户、SDK 与 Goal DAG 在 v1.0 后重排</td>
+</tr>
+</tbody>
+</table>
+<p>上表只把已交付代码映射到终态架构，不以当前实现反向定义产品。本文不会把 <code>PLANNED</code> 能力描述成已交付；实时状态以 <a href="../roadmap-status/">Roadmap</a> 为准。</p>
+<h3 id="_3">成熟度与生产可达性<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h3>
+<p>Milestone 状态描述阶段是否通过；能力成熟度描述代码是否真实可用，两者不能混用：</p>
+<ul>
+<li><code>DESIGN</code>：只有合同；</li>
+<li><code>COMPONENT</code>：实现和测试存在，但真实 composition root 不可达；</li>
+<li><code>INTEGRATED</code>：fixed <code>cmd/marshal</code> 的 CLI 或 <code>marshal control-plane serve</code> 可达，真实 Agent 与结果 bytes 穿过该路径；</li>
+<li><code>RELEASED</code>：该集成路径通过 release gate 并进入受支持产物。</li>
+</ul>
+<p>v1.0 的唯一支持链为：</p>
+<div class="highlight"><pre><span></span><code>marshal / marshal control-plane serve
+  → durable Run journal
+  → Core-owned WorkerExecutor
+  → Local/Container Sandbox allocation
+  → Core launch authorization / fixed Process Supervisor
+  → real AgentRuntime
+  → ResultIngress
+  → independent Verification / Review
+  → Outcome
+</code></pre></div>
+<p>任何平行 memory-only authority、直接 host <code>Adapter.Run</code> bypass 或不经 ResultIngress 的结果写入都不能进入 v1.0 supported path。Local ordinary-user profile 可以受支持，但其 assurance 明确止于 trusted single-user，不宣称 hardened。</p>
+<p><code>ProcessBridge</code> 目前仍缺一份从 durable current facts 产生、可在启动前精确重放的 authority closure。<a href="../adr/0063-prepared-execution-authority-and-production-chain/">ADR 0063</a> 已接受并冻结：用 creation-once、secret-safe <code>PreparedExecutionV1</code> 引用 held Attempt authority 中完整的 Attempt/Run、owner、Allocation receipt 与 <code>launch-authorized</code>/<code>StoredClosureV1</code> 原件，以静态 <code>Pi0843IdentityV1</code> 绑定安装 bytes、以独立 <code>agentLaunchSpecDigest</code> 绑定 per-Run argv/environment/cwd，并把唯一 <code>READY → RUNNING</code> 提交点收敛到 exact successful <code>resume(state=running)</code> 之后的 <code>CommitRunStartOutcome</code>。交付顺序只能是已接受合同 → 一个 bounded authority component → 立即相邻的 fixed Marshal composition；在相邻 composition 完成前，这仍是开放接缝，不能作为 <code>INTEGRATED</code> 证据。</p>
+<h2 id="_4">逻辑职责不等于物理服务<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
+<p>终态架构首先是一张<strong>职责与权威边界地图</strong>，不是要求把每个方框部署成独立服务。Marshal 长期需要保留下图中的职责，因为它们分别关闭陈旧结果、重复副作用、权限越界、崩溃恢复和 Worker 自证等真实故障；但除非存在独立的持久状态、信任边界、故障域或扩缩容需求，否则这些职责默认作为同一进程内的模块实现。</p>
+<pre class="mermaid"><code>flowchart TB
+    Client["User / API Client / Skill"] --&gt; API["Public API&lt;br/&gt;GoalSpec + versioned workflow profile"]
+    API --&gt; Kernel["Deterministic Control Kernel"]
+    Kernel --&gt; Ledger[("Append-only Authority Ledger")]
+    Kernel --&gt; Goal["Goal reconcile / budget / critical path&lt;br/&gt;(1.x)"]
+    Goal --&gt; Schedule["Schedule + Allocation"]
+    Schedule --&gt; Sandbox["Sandbox Provider&lt;br/&gt;Local / Container / VM / Remote"]
+    Sandbox --&gt; Runtime["Agent Runtime"]
+    Runtime --&gt; Agent["Agent Provider&lt;br/&gt;Qoder / Qwen / Codex / Pi"]
+    Runtime --&gt; Candidate["Candidate / Transcript / ArtifactRef"]
+    Candidate --&gt; Ingress["ResultIngress&lt;br/&gt;current-ledger recheck"]
+    Ingress --&gt; Verify["Independent Verification"]
+    Verify --&gt; Decision["Decision"]
+    Decision --&gt; Kernel
+    Kernel --&gt; Effect["Effect Reconciler&lt;br/&gt;intent / receipt / reconcile"]
+    Effect --&gt; External["Git / CI / Cloud / other systems"]
+    Ledger --&gt; Projection["Status / Explain / Audit projection"]
+    Ledger --&gt; GC["Retention / GC"]
+    Artifact[("Content-addressed Artifact Store")] &lt;--&gt; Runtime
+    Artifact --&gt; Ingress</code></pre>
+<p>图中的边界按以下方式理解：</p>
+<ul>
+<li><code>Kernel</code>、Goal reconcile、Scheduler 与 Allocation 在 v1.0 中属于同一 Control Plane 进程内的确定性模块；Goal DAG 与通用 <code>WorkflowTemplate</code> 仍是 1.x 候选，v1.0 只使用少量固定、版本化 workflow profile；</li>
+<li><code>ResultIngress</code>、Verification 与 Decision 保持不同的输入、身份和权威语义，但不要求成为三个网络服务；Worker 不能验证自己这一不变量保持不变；</li>
+<li>Status、Explain 与 Audit 直接从 authority ledger 投影，不建设第二套事实数据库；</li>
+<li>Artifact Store 只保存内容寻址 bytes，Candidate、Transcript、Evidence 与 Knowledge Snapshot 通过 digest 引用进入 ledger；Artifact bytes 或 Agent 自报不能反向改变 authority；</li>
+<li>Retention/GC 在 v1.0 采用保守保留策略，只有引用关系、终态与审计保留期都可证明时才删除对象。</li>
+</ul>
+<h3 id="v10">v1.0 物理投影<a class="headerlink" href="#v10" title="Permanent link">&para;</a></h3>
+<p>v1.0 默认只形成三类运行单元，而不是按上图拆成微服务：</p>
+<pre class="mermaid"><code>flowchart TB
+    Client["CLI / loopback client"] --&gt; Marshal["marshal / marshal control-plane serve&lt;br/&gt;single Control Plane process"]
+    Marshal --&gt; Ledger[("file-backed authority ledger")]
+    Marshal --&gt; Objects[("local content-addressed objects")]
+    Marshal --&gt; Workers["N bounded Worker / Verifier runtimes"]
+    Workers --&gt; Providers["Agent + Sandbox adapters"]
+    Workers --&gt; Marshal
+    Marshal --&gt; Effects["GitHub / CI / external effects"]</code></pre>
+<p>默认部署规则：</p>
+<ol>
+<li>使用一个固定、可发布和可签名的 <code>marshal</code> binary；生产 server 由 <code>marshal control-plane serve</code> 承载。Control Plane 模块进程内调用，不为模块边界引入网络协议；</li>
+<li>authority ledger 保持唯一，内存结构、queue、registry、SSE 与状态页都只是可重建 projection/cache；</li>
+<li>Worker 与 Verifier 可以是多个受控子进程或远程 runtime，但只通过冻结 command 和 ResultIngress 与 Core 交互；</li>
+<li>Provider-specific 行为留在 Adapter/Provider 实现内，不能让 Core 按 Qoder、Qwen、Codex 或 Pi 名称分叉；</li>
+<li>v1.0 先贯通至少一条真实 <code>AgentProvider → Sandbox allocation → ResultIngress → Verification → Outcome</code> 纵切，再增加 Provider 数量或横向平台能力。</li>
+</ol>
+<p>只有满足下列至少一项，逻辑模块才允许拆成独立进程或服务：</p>
+<ul>
+<li>需要独立凭据或隔离才能维持既有 trust boundary；</li>
+<li>拥有独立的 durable state、恢复周期或 fencing 生命周期；</li>
+<li>已有测量证明其吞吐、故障域或扩缩容需求无法由单体 Control Plane 满足；</li>
+<li>拆分后仍能保持一个 authority ledger 和一条写入/接纳路径，不产生第二业务权威。</li>
+</ul>
+<p>任何新增抽象都必须说明它关闭的具体故障、拥有的独立生命周期，以及不引入它会破坏的现有不变量。无法回答这三项时，不进入 v1.0 required path。</p>
+<h2 id="_5">系统上下文<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<pre class="mermaid"><code>flowchart TB
+    subgraph Client["Client / Interaction Plane"]
+        User["维护者 / API Client / Lead Agent"]
+        API["Public application Port"]
+        User --&gt; API
+    end
+
+    subgraph Control["Deterministic Control Plane"]
+        Core["Marshal Core\n唯一业务权威"]
+        Policy["Policy / Admission / Budget"]
+        Engine["DurableExecutionEngine\ndelivery / timer / recovery"]
+        Registry["Provider Registry\nCapabilitySnapshot / ConformanceEvidence"]
+        ResultIngress["Core Result Ingress\ncapability + current-ledger recheck"]
+        WorkerPort["WorkerExecutor\nCore-owned orchestration seam"]
+        Composed["WorkerRuntimeComposer (Proposed)\nWorkerRuntimeProfile"]
+        Ledger[("Authority Ledger")]
+        Objects[("Content-addressed Objects")]
+
+        Core --&gt; Policy
+        Core --&gt; Engine
+        Core --&gt; Registry
+        Core --&gt; Ledger
+        Core --&gt; Objects
+        Engine --&gt;|"ledger-derived command"| WorkerPort
+        WorkerPort --&gt;|"selected runtime profile"| Composed
+    end
+
+    subgraph Execution["Execution Plane"]
+        Remote["RemoteWorkerGateway (Proposed)\nlogical Agent + Sandbox identities"]
+        Agent["AgentProvider\nprepare / decode / capability"]
+        Sandbox["SandboxProvider\nprovision / stage / exec / restore"]
+        Verify["VerificationProvider\nindependent verification workload"]
+        ImplementWorkload["Implement Workload\nallocation + lease + actor identity"]
+        VerifierWorkload["Verifier Workload\nindependent allocation + actor identity"]
+
+        WorkerPort --&gt;|"gateway runtime profile"| Remote
+        Composed --&gt;|"dispatch-bound Agent lease / per-Port AuthZ"| Agent
+        Composed --&gt;|"dispatch-bound Sandbox lease / per-Port AuthZ"| Sandbox
+        Remote --&gt;|"registered Agent identity"| Agent
+        Remote --&gt;|"registered Sandbox identity"| Sandbox
+        Agent --&gt;|"invoke"| ImplementWorkload
+        Sandbox --&gt;|"host / isolate"| ImplementWorkload
+        Verify --&gt;|"independent verifier lease / per-Port AuthZ"| VerifierWorkload
+        Sandbox --&gt;|"host / isolate"| VerifierWorkload
+    end
+
+    subgraph Data["Data / Capability Plane"]
+        Artifact["ArtifactProvider"]
+        Secret["SecretProvider"]
+    end
+
+    subgraph Publication["Publication Plane"]
+        Publisher["SCM / PublisherProvider\n独立 principal 与 credential"]
+    end
+
+    API --&gt; Core
+    Engine --&gt;|"independent verify command"| Verify
+    Core --&gt;|"issue MaterialAccessGrant"| ImplementWorkload
+    Core --&gt;|"issue MaterialAccessGrant"| VerifierWorkload
+    Core --&gt;|"issue DispatchResultCapability"| ImplementWorkload
+    Core --&gt;|"issue DispatchResultCapability"| VerifierWorkload
+    ImplementWorkload --&gt;|"scoped material access"| Artifact
+    ImplementWorkload --&gt;|"scoped secret access"| Secret
+    VerifierWorkload --&gt;|"scoped material access"| Artifact
+    VerifierWorkload --&gt;|"scoped secret access"| Secret
+    Core --&gt;|"PublicationAuthorization"| Publisher
+    ImplementWorkload --&gt;|"Candidate / WorkerResult + DispatchResultCapability"| ResultIngress
+    VerifierWorkload --&gt;|"Evidence + DispatchResultCapability"| ResultIngress
+    ResultIngress --&gt;|"admitted identity-preserving observation"| Core
+    Publisher --&gt;|"Receipt / remote observation"| Core</code></pre>
+<p>Local MVP 中，Public application Port、Core 和多数 Adapter 编译在同一 <code>marshal</code> 进程；Worker 与验证命令是受控子进程。当前 C/S 投影中，同一 Core 由固定 <code>marshal control-plane serve</code> 常驻承载，CLI、Web、CI 或 GitHub App 只是客户端，Execution Plane 和 Provider 可以远程运行；独立 <code>marshal-server</code> executable 只保留历史/测试兼容，不是 production composition root。</p>
+<p>两种部署形态共享同一生命周期、Policy、Evidence 和 SideEffect 接纳规则，不允许出现第二条写路径。</p>
+<h2 id="_6">逻辑分层<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h2>
+<h3 id="1-client">1. Client 与交互层<a class="headerlink" href="#1-client" title="Permanent link">&para;</a></h3>
+<p>维护者、CLI、Lead Agent、未来 Web UI 或 CI 通过 Public application Port 提交 Task、Goal proposal、审批和 Review assessment。客户端不直接写 Store，也不持有 Provider DispatchLease。</p>
+<p>当前 Local MVP 的文件 Review Bridge 是该 Port 的一种适配形态，不是第二个状态机。</p>
+<h3 id="2-control-plane">2. 确定性 Control Plane<a class="headerlink" href="#2-control-plane" title="Permanent link">&para;</a></h3>
+<p>Marshal Core 独占：</p>
+<ul>
+<li>Task/Run/Attempt/Goal 生命周期；</li>
+<li>Policy、预算、retry/rework 与终态判断；</li>
+<li>DispatchLease、generation、fencing 与 Provider eligibility；</li>
+<li>Candidate、Evidence、Assessment 与 Receipt 接纳；</li>
+<li>ReviewDecision、SideEffectIntent 与 PublicationAuthorization；</li>
+<li>append-only authority ledger、幂等和审计。</li>
+</ul>
+<p><code>WorkerExecutor</code> 是 Control Plane 内 Attempt 执行的唯一编排 seam：它只消费 Kernel transaction 产生的 durable command，并按冻结的 runtime profile 跨 Port 驱动 Agent 与 Sandbox。<code>WorkerRuntimeComposer</code> 是 <strong>Proposed</strong> 的 Core-owned profile 组合组件，尚无 ADR 出处、不构成合同；两者都不注册 Provider 身份，也不形成可远程部署的第二权威。</p>
+<p>“Supervisor”只是 Core 的产品心智模型，不是一个维护全局聊天上下文的 LLM。</p>
+<h3 id="3-durable-execution">3. Durable Execution 层<a class="headerlink" href="#3-durable-execution" title="Permanent link">&para;</a></h3>
+<p><code>DurableExecutionEngine</code> 负责 command 的 at-least-once delivery、timer、signal 和 crash recovery。Local Engine 与 Temporal 都只是 backend。</p>
+<p>backend 不创建业务 Attempt，不决定 retry/rework，不宣布 ReviewDecision，也不把 workflow state 变成第二业务权威。command 出站必须使用同事务 outbox 或 ledger-derived command journal 之一。</p>
+<h3 id="4-execution-plane">4. Execution Plane<a class="headerlink" href="#4-execution-plane" title="Permanent link">&para;</a></h3>
+<p>Execution Plane 执行有界 workload：</p>
+<ul>
+<li>Agent Provider 只处理 Agent prepare/decode/capability，可以独立接入 Codex、Qoder、Qwen、OpenCode 或 A2A Agent；</li>
+<li>Sandbox Provider 只管理 Provision/Stage/Exec/Inspect/Checkpoint/Restore/Terminate/Reconcile，可以独立接入 Local、Aone、Cloudflare 或 Kubernetes；</li>
+<li>完全托管、物理实现上无法拆分 Agent 与 Sandbox 的外部 Worker 通过 <code>RemoteWorkerGateway</code>（<strong>Proposed，尚无 ADR 出处，不构成合同</strong>；它与 <a href="https://github.com/chiga0/marshal-harness/issues/186">Issue #186</a> 冻结边界 1「WorkerProvider 不是第七 Port」的关系必须由 ADR 论证后才能进入 required path）接入，但必须映射为 Agent 与 Sandbox 两类逻辑 Provider registration，并分别提供 allocation、security domain、capability、conformance 与 result transport 证据；</li>
+<li>Verification Provider 运行独立验证 workload。</li>
+</ul>
+<p>这些 workload 只接收 Control Plane 通过 <code>WorkerExecutor</code> 或 Verification command 投影出的有界操作；它们不拥有 lifecycle、retry/rework、ReviewDecision 或发布权威。Agent、Sandbox 与 Verification 仍是 ADR 0018 冻结的独立 Provider Port；相同 <code>securityDomainId</code> 不自动授权，每次调用仍须匹配各自 Port 的 principal、registration、scope、operation 与 DispatchLease。现有 Sandbox <code>workloadRole</code> 只允许 <code>worker|verifier</code>。Planner、Reviewer 和 Publisher 不会被塞入该枚举。</p>
+<h3 id="5-data-capability-plane">5. Data / Capability Plane<a class="headerlink" href="#5-data-capability-plane" title="Permanent link">&para;</a></h3>
+<p>Artifact 与 Secret Provider 只提供内容寻址对象和有界短期能力。Secret 明文不进入 TaskSpec、Prompt、事件、日志或 digest。</p>
+<p>Execution workload 不能直接解析跨信任域 raw handle；访问必须由 Core 签发精确绑定的 <code>MaterialAccessGrant</code>。</p>
+<h3 id="6-publication-plane">6. Publication Plane<a class="headerlink" href="#6-publication-plane" title="Permanent link">&para;</a></h3>
+<p>Publisher 使用独立 principal 和 credential 执行 Draft branch/PR 等 SideEffect。它永不成为 Sandbox workload，也不拥有 Review 或 merge 决策权。</p>
+<p>发布必须经过 <code>SideEffectIntent → Execute → Receipt → Reconcile</code>。Merge 默认禁用。</p>
+<h2 id="typed-execution">Typed Execution<a class="headerlink" href="#typed-execution" title="Permanent link">&para;</a></h2>
+<pre class="mermaid"><code>flowchart LR
+    Source["人 / LLM / Provider"] --&gt; Typed["Typed input"]
+    Typed --&gt; Core["Core admission"]
+    Core --&gt;|"accepted authority fact"| Ledger[("Ledger")]
+
+    Plan["Plan"] --&gt;|"GoalPlanProposal"| Typed
+    Impl["Implement"] --&gt;|"Candidate"| Typed
+    Verify["Verify"] --&gt;|"Evidence"| Typed
+    Review["Review"] --&gt;|"Assessment"| Typed
+    Publish["Publish"] --&gt;|"Receipt"| Typed</code></pre>
+<p>Plan、Implement、Verify、Review 和 Publish 可以共享 queue、deadline、heartbeat、cancel、日志、Artifact 与 checkpoint 基座，但不共享 universal Executor RPC、Schema、credential、token 或 conformance suite。</p>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>结果</th>
+<th>Core 接纳重点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Plan</td>
+<td><code>GoalPlanProposal</code></td>
+<td>scope、完整 DAG、Policy、approval、累计预算；接纳后才 materialize Run</td>
+</tr>
+<tr>
+<td>Implement</td>
+<td>Candidate</td>
+<td>current lease generation/fencing/sequence、base、内容 digest、scope</td>
+</tr>
+<tr>
+<td>Verify</td>
+<td>Evidence</td>
+<td>独立 principal/allocation、subject/environment/Policy/dependency digest</td>
+</tr>
+<tr>
+<td>Review</td>
+<td>Assessment</td>
+<td>actor、scope、ReviewPacket、Candidate/Evidence、Policy 与 sequence；拒绝 workload lease 字段</td>
+</tr>
+<tr>
+<td>Publish</td>
+<td>Receipt</td>
+<td>SideEffectIntent、authorization、target identity、request digest 与 reconcile identity</td>
+</tr>
+</tbody>
+</table>
+<p>Provider 的 <code>completed</code> 只表示一次执行或观察结束，不等于 Run <code>ACCEPTED</code> 或 safe-to-publish。</p>
+<h2 id="_7">权威与身份<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h2>
+<p>Control Plane 权威对象由：</p>
+<div class="highlight"><pre><span></span><code>authorityNamespaceId = tenantNamespace + controlPlaneId + authorityScopeId
+</code></pre></div>
+<p>拥有，并且只允许 Core 写入。<code>controlPlaneId</code> 是 HA/灾备期间保持稳定的逻辑权威身份，不是单个进程 ID。</p>
+<p>Provider actor 使用：</p>
+<div class="highlight"><pre><span></span><code>securityDomainId = tenantNamespace + trustDomainKind + isolationDomainId
+</code></pre></div>
+<p>其中 <code>trustDomainKind</code> 为 <code>execution|publication|data-capability</code>。相同 <code>securityDomainId</code> 也不自动产生授权；每次请求仍须匹配所属 Port 的 principal、registration、scope、operation 和 lease/intent 身份。</p>
+<p>Provider actor 跨信任域默认拒绝，只允许 Core 签发的：</p>
+<ul>
+<li><code>DispatchResultCapability</code>；</li>
+<li><code>MaterialAccessGrant</code>；</li>
+<li><code>PublicationAuthorization</code>。</li>
+</ul>
+<p>这些 typed edge 是 authority ledger 记录，派生 token/handle 不能成为第二权威。</p>
+<h2 id="_8">核心对象<a class="headerlink" href="#_8" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>Project / Goal
+└── TaskSubmission
+    └── Task / Run
+        └── Attempt
+            ├── DispatchLease
+            ├── SandboxAllocation
+            ├── Candidate / Evidence / Artifact
+            └── Outcome
+</code></pre></div>
+<ul>
+<li><code>TaskSubmission</code> 提供 scope-bound 幂等入口；</li>
+<li>Run 冻结 spec、base、Policy 与最低环境要求；</li>
+<li>Attempt 短命、可丢弃；</li>
+<li><code>DispatchLease</code> 绑定 registration、capability snapshot、generation 和 fencing；</li>
+<li>Candidate/Evidence/Checkpoint bytes 使用 immutable、digest-verified key；</li>
+<li>Goal 在 M13 驱动多个 Run，而不是让单 Run 永久存活。</li>
+</ul>
+<h2 id="_9">一次写任务的主流程<a class="headerlink" href="#_9" title="Permanent link">&para;</a></h2>
+<pre class="mermaid"><code>sequenceDiagram
+    participant C as Client / Lead
+    participant M as Marshal Core
+    participant W as Implement Worker
+    participant V as Independent Verifier
+    participant R as Reviewer
+    participant P as Publisher
+
+    C-&gt;&gt;M: TaskSubmission + frozen inputs
+    M-&gt;&gt;M: validate, lock base, create Run/Attempt
+    M-&gt;&gt;W: dispatch bounded workload
+    W--&gt;&gt;M: Candidate + claims
+    M-&gt;&gt;V: verify exact Candidate
+    V--&gt;&gt;M: Evidence
+    M-&gt;&gt;R: bounded ReviewPacket
+    R--&gt;&gt;M: Assessment
+    M-&gt;&gt;M: materialize ReviewDecision
+    M-&gt;&gt;P: SideEffectIntent + PublicationAuthorization
+    P--&gt;&gt;M: Receipt / observation
+    M-&gt;&gt;M: reconcile and persist Outcome</code></pre>
+<p>Rework 会创建新的 Evidence 与 ReviewDecision 绑定；旧 Evidence 不会被原地改写。失败、阻塞、abort 和 no-change 都保存 Outcome。</p>
+<h2 id="_10">恢复与一致性<a class="headerlink" href="#_10" title="Permanent link">&para;</a></h2>
+<ul>
+<li>authority ledger 是唯一业务权威；snapshot、queue、registry 和 SSE 都是可重建投影；</li>
+<li>同一 Attempt 任何时刻最多一个 current allocation；</li>
+<li>Restore 默认创建 replacement allocation，并先 fence 旧 generation；</li>
+<li>陈旧或冲突 bytes 只进入 quarantine，不覆盖当前对象；</li>
+<li>SideEffect ambiguous 时先 Inspect/Reconcile，不盲目重试；</li>
+<li>compensation 是新的、可失败的 SideEffect，不回滚历史；</li>
+<li>Sandbox、Agent 或 Runtime crash 后，恢复结论只来自 ledger 与外部真实状态对账。</li>
+</ul>
+<h3 id="merge-adr-0033proposed">受控 merge 的目标权威事务（ADR 0033，Proposed）<a class="headerlink" href="#merge-adr-0033proposed" title="Permanent link">&para;</a></h3>
+<p><a href="../adr/0033-journal-bound-merge-authority-and-delivery/">ADR 0033</a> 提议把 prepared intent+authorization 与 delivery pending/result 绑定到 Run 的同一权威 journal：<code>MergeAuthorityTransaction</code> 以单次 append 原子冻结授权与 intent；<code>MergeDeliveryAnchor</code> 在 mutation 前先持久化 pending 并同步 snapshot，随后强制执行 mutation-adjacent journal/current/expiry recheck <strong>AND</strong> single-use fence。fence consumption 是 Core-only <code>publication.merge-mutation-fence-consumed</code> 对应的 journal-bound authority fact，具有 closed payload、canonical replay identity、journal/anchor lineage 与 reducer hydration；其 journal commit 和 fence snapshot 均 durable 后才可 handoff，restart 看到 consumption 只能 Inspect/Reconcile。authorization revoke/authority append 与 fence→Provider handoff 共享同一线性化顺序：revoke 先则零 mutation，handoff 先则本次 mutation 先获授权、后到 revoke 只阻止后续 mutation。Publisher 只返回 typed observation，Core 校验后 CAS append；unknown/lag 保持 pending unresolved，可重复 Inspect，不能盲重放。deadline 后匹配 late receipt 必须经 ADR 0026 唯一 <code>BLOCKED → ACCEPTED</code> 例外，在同一事务关闭 pending 并收敛 Outcome。独立 sidecar head 只能作为可重建投影，不能证明整体存储未回滚；M11 production storage 还必须提供 external rollback witness。</p>
+<p>该节是目标契约，不是当前能力。ADR 0033 未接受且 A–D 实现/conformance 未全部通过前，<code>mergePolicy=policy</code> 不得注册为 supported；A–D 通过后也只允许显式 opt-in 的 local/non-production 受限 profile，production supported 仍须等待 M11 external rollback witness 与跨节点 fence 恢复演练。默认 <code>mergePolicy=never</code> 不变。</p>
+<h2 id="_11">可插拔边界<a class="headerlink" href="#_11" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>WorkerExecutor</code> 是 Core-owned 的 Implement workload 编排 seam，不是 Provider Port；下游 Provider 的 <code>completed</code> 只表示执行或观察结束；</li>
+<li><code>WorkerRuntimeComposer</code>（Proposed）通过不可变 <code>WorkerRuntimeProfile</code> 绑定 <code>agentBindingDigest + sandboxBindingDigest + compatibilityDigest</code> 并派生 <code>profileDigest</code>，随 <code>DispatchLease</code> 一起冻结；binding digest 覆盖 registration 与 snapshot 身份，与 capability 内容摘要不是同一对象；</li>
+<li><code>AgentProvider</code> 只处理 Agent prepare/decode/capability；当前 Local MVP 的 legacy <code>WorkerAdapter</code> 仅可作为迁移期 compatibility source 映射到这些操作，不等同于 production <code>AgentProvider</code>，也不具备 durable AgentProvider registration、attestation、conformance 或 production eligibility；上述资格必须等待 R3 Exit Gate；</li>
+<li><code>SandboxProvider</code> 只处理执行环境生命周期；</li>
+<li>接入新 Agent 时只实现 <code>AgentProvider</code> 并复用既有 Sandbox；接入新执行环境时只实现 <code>SandboxProvider</code> 并复用既有 Agent；完全托管的 Worker 通过 <code>RemoteWorkerGateway</code>（Proposed）映射到两类既有逻辑 Provider registration；</li>
+<li>下层六类 Provider Port 各自拥有独立 protocol family、AuthZ、Schema 和 conformance；<code>WorkerExecutor</code> 仅编排这些 Port，不单独注册 Provider 身份或签发能力；</li>
+<li>embedded、Push HTTP 和 Pull runner 只是同一 Port 的 transport/topology adapter；</li>
+<li>ACP 可以作为 AgentProvider transport，A2A 可以作为 <code>RemoteWorkerGateway</code>（Proposed）transport，OpenHands 可以映射为 Agent Provider 与 Sandbox Provider 的组合实现；它们都不能绕过 Core admission。</li>
+</ul>
+<h2 id="_12">阅读下一层<a class="headerlink" href="#_12" title="Permanent link">&para;</a></h2>
+<ul>
+<li>字段、租约、恢复、SideEffect 和 Goal admission：<a href="../runtime-architecture/">Runtime 架构</a></li>
+<li>威胁模型与安全验收：<a href="../security-model/">安全模型</a></li>
+<li>Run 状态机：<a href="../task-lifecycle/">任务生命周期</a></li>
+<li>实施顺序：<a href="../implementation-plan/">实施计划</a></li>
+<li>ADR 与专项契约：<a href="../reference/">参考索引</a></li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.suggest", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

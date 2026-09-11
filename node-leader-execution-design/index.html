@@ -1,0 +1,1150 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="面向 Agent 软件工程的长寿命确定性 Control Plane / Durable deterministic control plane for agentic software engineering">
+      
+      
+      
+        <link rel="canonical" href="https://chiga0.github.io/marshal-harness/node-leader-execution-design/">
+      
+      
+      
+      
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/" hreflang="zh">
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/en/" hreflang="en">
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Node 受管 Leader：完整任务闭环的最小执行机制 - Marshal Harness</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#node-leader" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href=".." title="Marshal Harness" class="md-header__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Marshal Harness
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Node 受管 Leader：完整任务闭环的最小执行机制
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换暗色"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换暗色" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换亮色"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换亮色" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="选择当前语言">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/en/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Marshal Harness" class="md-nav__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Marshal Harness
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开始
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    开始
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始（Node 主线）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    下载部署（Node 一键安装）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    历史资料（Go 时代，已退出产品运行依赖）
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    历史资料（Go 时代，已退出产品运行依赖）
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../current-status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    当前可用能力（历史摘要）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Marshal 是什么
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-it-works/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    工作原理
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install-and-upgrade/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安装、升级与回滚
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    日常使用
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../marshal-skill/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    在 Codex 中使用
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安全与隐私
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. 一个任务权威，四种职责
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 何时唤起，读什么
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. 何时唤起，读什么">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        需求、交付约定与实现计划
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        任务验收内容与可信验证机制
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#worker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Worker 工作包与上下文完整性
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 最小行动集与有界自治
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. 决定、执行结果与恢复
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. 整体结束与公开接口接缝
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 当前真实接缝与缺口
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. 统一实施顺序与正式发布前验收
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="node-leader">Node 受管 Leader：完整任务闭环的最小执行机制<a class="headerlink" href="#node-leader" title="Permanent link">&para;</a></h1>
+<p>状态：<code>DESIGN</code>，依据已接受的 <a href="../adr/0094-trusted-single-user-role-team/">ADR0094</a> 与用户对全程 Leader、四责边界的明确要求。代码核对基线为 <code>31afe269</code>；当前一次性 Planner、Supervisor、Reviewer 标签均不代表本机制已经实现。本文冻结行为和职责，不分配新 API 字段、角色枚举、存储格式号或迁移工具。</p>
+<p>2026-09-09 业务交付审计补充（文档基线 <code>3f359fd0</code>）：<strong>让 Leader 对业务目标负责，让 Agent 发挥专业能力，让 Core 保证执行边界与事实可靠，让最终交付接受独立且贴近真实需求的检查。</strong> 本次细化0094已有需求、验收与自治边界，保留B2-L和原支持范围；不是新增运行许可、已实现声明或第二套状态机。</p>
+<p>后继 <a href="../adr/0095-node-managed-leader-contract/">ADR0095</a>及<a href="../node-leader-execution-contract/">机器合同</a>已在主线 <code>5ac6d33d</code> 接纳：本页为行为目标，具体字段、v7 格式、两个 Task 子资源与可执行动作以机器合同为准，不重新冻结一套协议。下文“已支持替换/调整”不授予 v7 任意换 Provider、批准后改 DAG 或提高原预算的能力；覆盖说明复用原需求/acceptance、Review 报告与总结制品，不新增闭集字段。</p>
+<h2 id="1">1. 一个任务权威，四种职责<a class="headerlink" href="#1" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>职责</th>
+<th>决定与操作</th>
+<th>不得承担</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Leader</td>
+<td>受管、按需的业务判断：理解需求、必要澄清、分工、集中评审意见、选择有界局部调整、提出授权交付及后验、汇总成功或失败</td>
+<td>自签独立证据、改预算/权限/事实、直接启动或杀进程、直接发布</td>
+</tr>
+<tr>
+<td>Supervisor</td>
+<td>观察进展，聚合批次完成/失败/求助及异常，整理证据引用，通知待处理业务义务</td>
+<td>业务换人/重试/改计划、判定业务成败、因疑似 stuck 或无日志直接 kill</td>
+</tr>
+<tr>
+<td>Core</td>
+<td>唯一 Application/Store 权威：接纳事实、批准与决策；检查权限/预算/依赖/当前证据；调度已批准 DAG；执行取消、硬期限及 owner fence 等确定规则</td>
+<td>用业务猜测替代 Leader，接纳作者自证，借恢复重置预算或重派整队</td>
+</tr>
+<tr>
+<td>Execution</td>
+<td>经 Core 许可实际 start/stop/collect 原所属 handle，提供可验证的进程/输出/cleanup 观察</td>
+<td>从磁盘 PID 构造停止权、把进程结束当业务通过、替 Core 写第二套真值</td>
+</tr>
+</tbody>
+</table>
+<p>这不是四个微服务，也不是第二 scheduler/Store。当前 <code>TaskSupervisor</code> 混合观察、循环调度、调用原 handle 和失败广播；目标是在原受管 loop 中渐进委托 Core/Execution 接口，不要求全仓改历史名称。独立 Reviewer 与验收执行提供证据；Leader 读取并判断业务意义，Core 检查其来源、绑定和当前性，三者不能互相代签。</p>
+<p>必需 result/cleanup/receipt 通过原受控结果接口直接交 Core 接纳，不以 Supervisor 的有界聚合/采样通知为唯一传输通道；通知失败不能丢弃业务事实或把它当未发生。</p>
+<p>用户 cancel、已冻结硬期限/预算规则、owner 失去导致的停止新派发及所属执行停止、已退出事实记录立即按 Core 规则处理，不等待 LLM。已有批准 DAG 的依赖就绪由 Core 直接派发，普通节点无需再询问 Leader。停下之后是否修正/换方案才需要 Leader；未知 cleanup 不因其建议而释放容量。</p>
+<p>失去 owner 或 Store 写失败时，Execution 仍按预批准安全规则停止其原 live handles，但不得补写虚假的停止成功/cleanup。普通内容问题或已清理的执行失败应保留 Leader 的业务决策窗口，不沿用当前 <code>finish</code> 的“一次 clean 失败即全队 cancelling”作为新 profile 通用策略；相关危险后继先由 Core 硬门禁封闭，无关安全分支可继续，不能为了等 Leader 放行不满足依赖的工作。</p>
+<h2 id="2">2. 何时唤起，读什么<a class="headerlink" href="#2" title="Permanent link">&para;</a></h2>
+<p>Leader 是可重复唤起的受管语义执行，进程无需常驻，会话/聊天记忆不是恢复真值。唤起来源必须是同库已接纳的业务事实：</p>
+<ul>
+<li>新需求或影响计划的关键回答、需要确认的范围变化；</li>
+<li>Worker 批次完成、失败或明确求助，足以需要业务取舍；</li>
+<li>针对精确候选收齐的独立 Review/验收结果，集中处理一轮意见；</li>
+<li>交付/发布前条件满足、授权回答或原发布回执/后验结果需要汇总。</li>
+</ul>
+<p>每 Task 最多一个在途 Leader 调用；同一业务义务去重，进行中的新事件聚合为下一次有效上下文。raw token、逐条工具 progress、heartbeat 和一次无变化 poll 不触发 Leader，不按每个事件重规划。疑似迟缓只能成为有来源的观察，不自动成为失败或停止事实。有效变化、原剩余预算与有限调度策略决定是否调用；无变化/结构错误不循环付费，预算不足或无法决策形成可审计的等待/非成功处置。</p>
+<p><strong>容量活性也是准入条件</strong>：Core 在 Task 与全局原硬并发/资源额度内为受管业务决策保留可用 headroom，或减少作者/其他执行并发，Leader 仍计原容量和预算，不免费豁免。要求两个作者并行的代表 profile 必须在付费前证明还能容纳必要 Leader；上限不足就明确拒绝/请求用户选择，不静默提额。两个作者同时待答或长 Reviewer 占槽时仍须有界唤起 Leader，不能等占槽作者自行结束、假释放待答席位或停止未知执行凑容量。沿原 capacity 准入与优先级实现，不另建调度器。</p>
+<p>一次调用读取受信组合生成的有界快照：原需求与可披露上下文、批准范围/原期限和剩余预算、计划与依赖、当前选中候选 manifest/摘要、相关问题/答案/ACK、集中 Review/验收证据、历史 Leader 决定/动作结果、待办外部效果及事件 cursor。大内容从原 Depot 精确引用读取，不扫描旧 Worker 目录；摘要不能替代必需全文，无权限/缺内容不能猜。输入审计沿默认 metadata-only 及当前格式的披露限制，未知 token/cost 标 unavailable，不记 0。</p>
+<p>快照同时绑定业务语义依赖与读取 cursor。Core 接纳建议时重读<strong>相关</strong>计划、候选选择、答案/ACK、授权、原决定及 owner/cancel/期限；无关 heartbeat、另一分支的普通进度不使整个建议自动失效。相关事实漂移则拒绝/重新聚合该义务，不默默刷新输入摘要或用旧建议作用于新成果。公开写请求原 revision CAS 保持，不把内部语义检查偷换成外部 CAS 豁免。</p>
+<h3 id="_1">需求、交付约定与实现计划<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h3>
+<p>三者属于现有 Task/Plan 的业务内容，不新增需求管理平台或用户需注册的对象：</p>
+<ul>
+<li><strong>原始需求</strong>：保留用户实际描述和后续澄清的来源，不能被规划摘要覆盖；用户显式变更保留前后依据。</li>
+<li><strong>确认后的交付约定</strong>：说明预期成果、必需业务要求、约束、非目标、关键假设、验收方式及交付/后验范围。只追问影响结果、权限、成本或风险的歧义，可逆小选择记录假设，不逐项制造审批。</li>
+<li><strong>实现计划</strong>：分工、依赖和执行策略服务于交付约定；在已批准自治范围内调整实现，不等于可以改变目标或删掉必需验收。</li>
+</ul>
+<p>Leader 在派发前建立有界的需求覆盖说明：每条必需要求对应负责节点、预期成果与检查方式；整体结束时对应精确成果、实际证据和未完成项。一个检查可以覆盖多条要求，不按要求数制造节点。覆盖说明沿现有计划/制品/审计接缝承载，具体机器表示随B2-L整链接线冻结，不先增加新API。</p>
+<p>覆盖检查融入已有计划确认和独立 Review，不新增逐要求审批或固定额外 LLM 轮次；客观结构/契约检查由程序完成。简单任务用简短交付约定即可，只有影响结果的遗漏或歧义才阻断执行。</p>
+<p>Core 只检查已确认要求的记录完整性、适用性和当前证据，不用关键字匹配或模型一句“全部满足”证明自然语言理解正确。Leader负责需求解释与整体判断；独立Reviewer检查原始需求到交付约定的遗漏、歧义及验收充分性，需要用户判断的业务口径或主观结果由用户明确确认。作者不能自签通过，Leader的覆盖总结也不是独立Evidence。测试全部通过但遗漏已确认必需要求、或仍有影响成功的争议，不能整体成功；框架不承诺任意自然语言任务必然正确。</p>
+<h3 id="_2">任务验收内容与可信验证机制<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h3>
+<p>可信验证机制限定执行程序/工具、资源/权限、结果来源与证据接纳；任务验收内容表达本次业务断言、样例/反例和预期结果。二者分离：Leader可在已支持的业务能力内提出验收内容，必要时由独立Reviewer检查覆盖与非循环自证，再随交付约定冻结；不能修改可信机制或凭生成的Shell/SQL扩大执行权。</p>
+<p>客观断言由作者之外的受控程序执行，必要的语义/用户判断独立计证。补充检查若仅证明原要求，仍需绑定来源、精确候选和原预算；改变目标、放宽/删除必需标准必须重新确认，不能事后按作者产物改答案。现有可信VerificationPort仍是实现接缝，不因本文自动接受动态代码。不能表达或执行的验收在付费开发前明确限制或请求必要补充，不运行到末尾才宣称可验证。</p>
+<p>通用性先限定为<strong>同一受支持业务族的不同需求</strong>：服务及业务/验证能力配置固定，用户只通过Task输入/问答/批准改变需求；不为每次验收修改Core、配置程序或手工介入内部状态。新增业务能力可以由部署方显式安装，不把“任意领域零配置”变成首发承诺。</p>
+<h3 id="worker">Worker 工作包与上下文完整性<a class="headerlink" href="#worker" title="Permanent link">&para;</a></h3>
+<p>每次工作包包含相关原始需求和交付约定、当前子目标/非目标、输入版本/上游成果、接口与验收要求、允许资源和预算、预期输出及求助方式。共享约定不能只保留在Leader聊天记忆中；完整传递通过真实生产builder和Adapter输入契约验证。按需引用Depot正文，不广播所有Agent历史；正文不可披露、缺失或超过受支持上界时明确处理，不静默截断必需要求。结构和输入接缝错误应在付费调用前发现，不能靠Worker多次返工补齐。</p>
+<h2 id="3">3. 最小行动集与有界自治<a class="headerlink" href="#3" title="Permanent link">&para;</a></h2>
+<p>以下是内部 typed actions 的行为分类，名称不是新 wire enum。每次输出有限条结构化建议及其依据，不接纳任意 shell、HTTP URL、数据库语句或解释执行的控制代码。</p>
+<table>
+<thead>
+<tr>
+<th>行动</th>
+<th>Core 的准入条件与结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>请求业务澄清/范围确认</td>
+<td>只询问影响结果或授权的缺项；问题进入原 Task 的持久义务，业务答案不变成工具/发布授权</td>
+</tr>
+<tr>
+<td>提出计划或有限调整</td>
+<td>首次展示并确认；批准自治范围内可选择已允许分工/策略，目标、成果、验收、依赖合法性与权限边界仍重验；超目标/成本/高风险先确认</td>
+</tr>
+<tr>
+<td>请求工作或独立评审/验收</td>
+<td>只形成原受管执行义务；未批准节点不得启动，作者不可承担自身唯一独立审查，验收程序由可信组合决定；依赖已就绪的正常工作由 Core 自动调度</td>
+</tr>
+<tr>
+<td>请求局部修正/替代方案</td>
+<td>绑定具体意见或失败事实、原候选和受影响 closure；不清空无关有效成果，不降低验收、不抹旧 Attempt；不支持的调整先确认或明确失败</td>
+</tr>
+<tr>
+<td>请求交付/业务发布及后验</td>
+<td>精确成果和必需独立证据当前、目标/动作获授权、预算/期限有效；发布先耐久意图，后验也是受管有界执行</td>
+</tr>
+<tr>
+<td>汇总、等待或建议结束</td>
+<td>引用原动作/证据与未完成项；只有 Core 的整体出口成立才成功。等待不能延长期限，建议不能删除失败/unknown</td>
+</tr>
+</tbody>
+</table>
+<p>自治额度在原批准时有明确边界，不能解释成“Leader 认为合理即允许”。Worker 替换/重试仍用原预算，必须先满足原清理与依赖规则；无关成果只有其输入、合同与证据仍有效时才保留。越过原目标、增加成本上限或高风险副作用要新明确确认，不能用普通业务答案绕过。</p>
+<p>以下是新Leader机制的默认决策规则，不扩大现HTTP或Provider能力：</p>
+<table>
+<thead>
+<tr>
+<th>情况</th>
+<th>处理方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>已批准范围内的实现细节、已有节点的内容修正</td>
+<td>Leader自主判断，Core按当前候选、独立意见/失败来源、依赖、预算和权限接纳，不逐次请求用户批准</td>
+</tr>
+<tr>
+<td>已声明支持的Worker替换或执行重试</td>
+<td>仅可选择原允许能力/配置；原执行安全收口、输入仍有效且原额度足够才执行，不私自模型fallback</td>
+</tr>
+<tr>
+<td>改变目标/成果、删除或放宽必需验收、提高预算、增加外部写权限</td>
+<td>先形成精确变更及影响说明，由用户明确确认；普通答案不扩权，旧证据不自动继承</td>
+</tr>
+<tr>
+<td>未支持的拓扑调整、配置/协议结构错误、未知cleanup/外部效果</td>
+<td>明示限制并封闭相关动作；用户批准本身不能创造未实现能力，禁止伪装支持、原样重试或重启整队</td>
+</tr>
+</tbody>
+</table>
+<p>返工针对已确认要求和集中阻塞意见；建议性润色不自动成为新必做范围。不把修正机会用来不断加验收标准；已满足全部必需要求时进入交付，不无限打磨。语义意见冲突由Leader依据原要求和证据整理，必需独立检查的失败不能被它覆盖，无法解开的业务取舍再请求用户。</p>
+<p>现有 <a href="../adr/0091-node-same-plan-local-repair/">ADR0091</a> 的 <code>task.repair</code> 只接受显式用户请求及独立验收的精确内容拒收；当前 Leader 没有内部调用权限，语义 Reviewer 意见也不能伪造成该拒收。新机制须在同一版本化实现中接入两种可区分来源：保留原 HTTP repair 回执/规则；新增批准自治范围内、绑定独立 Review 或原内容失败证据的内部修正请求。复用原 selected-results/closure 算法和当前性检查，不冒用操作者 key，不自签负 Decision，不把任意意见硬塞入旧 repair 协议。批准后拓扑/目标变化若超出现有合同，先形成精确变更确认；本轮不做任意动态工作流。</p>
+<h2 id="4">4. 决定、执行结果与恢复<a class="headerlink" href="#4" title="Permanent link">&para;</a></h2>
+<p>所有新事实仍进唯一 SQLite。实现前一次明确新格式与旧 reader 拒绝/旧根处理，不回填旧记录。最小耐久含义是：业务唤起义务与消费位置、Leader 调用及原输入/预算绑定、接纳的决定及有限动作、各动作的原执行义务和结果引用。它们不是用户需管理的新资源，也不保存隐藏推理链。</p>
+<ol>
+<li>在短事务中选定义务、冻结输入引用、预留原任务额度和唯一 Leader Attempt；事务外通过原 Provider/Execution 运行。未知是否已调用仍保留成本，不造“免费重试”。</li>
+<li>Leader 输出经结构/数量/大小限制和相关当前性检查后，<strong>决定、消费该义务、动作及 outbox 同事务提交</strong>。拒绝的输出保留原因；没有 committed 决定不能执行建议。</li>
+<li>Core 根据 committed 动作取得执行许可；Execution 在锁外工作。每个动作身份绑定原决定、目标和输入，结果回同库按当前 owner/原命令接纳；重放查询原事实，不生成新动作 key。</li>
+<li>恢复先处理 owner/custody/未结义务。已 committed 的决定先恢复原 action/outbox，不重新询问 Leader 再做一套；未 committed 的调用只能在原义务、真实 cleanup 和剩余额度允许下有限重试，保留已消费费用。旧代输出不得补成新决定，不重规划整队。</li>
+<li>外部副作用存在“执行了但回执未提交”的窗口。恢复只能按原目标、原幂等身份及独立可查询事实 reconcile；有明确未执行/安全幂等证据才可继续原命令，否则 unknown、封闭相关后继。SQLite 的一次提交不等于跨系统 exactly-once，不能盲重发、换 key 或用新 Task 隐藏歧义。</li>
+</ol>
+<p>取消/硬期限优先于未执行的 Leader 动作；暂停不投递需要运行的新动作。已发生的发布不能通过取消撤销；补偿必须另有授权并保留原效果。Leader、Reviewer、验收与发布后的检查都计原预算/期限和容量，未确认清理不能被“业务已结束”释放。支持面沿0089/0092的原证明边界，不扩大 never-permitted 资格或用 Leader 结论替代 cleanup。</p>
+<h2 id="5">5. 整体结束与公开接口接缝<a class="headerlink" href="#5" title="Permanent link">&para;</a></h2>
+<p>现实现把唯一 verifier sink 的通过直接写为 Task <code>completed</code>。<strong>新的完整 Leader profile 必须显式 opt-in，并延迟整体 terminalization</strong>：候选验收通过只是一个阶段；还须接纳 Leader 对目标的汇总，并完成该 Task 明确要求的授权交付/后验，无待决影响成功的义务，Core 才能提交整体成功。无发布授权的任务仍只交付成果；已授权发布但后验失败/unknown必须保留原发布回执和真实非全成功结果。Leader 总结本身不是新的验收证明。</p>
+<p>整体汇总逐项对应已确认必需要求、精确交付物和独立证据；阶段验收、授权交付、发布后结果和整体结论分别可见。漏项、明确失败和必需人工验收未完成不因日志活跃或测试总数全绿消失。新支持面的公开查询应能解释“正在等谁、Leader为何采取该行动、哪些要求未完成、外部效果是否已发生”，不依赖私有SQLite或原始终端记录。</p>
+<p>旧 Task 的 <code>completed</code> 与原字节/回执不改、不复活。当前唯一 verifier sink、<code>proposePlan</code> 仅批准前和失败收口规则不能靠配置绕过；新流程必须一次冻结 profile/持久解释及旧 reader 拒绝，再接入阶段验收与整体结束，不能把当前 v5/v6 名称直接重新解释。</p>
+<p>公开接口继续以 <a href="../packages/task-api/openapi.json">正式 OpenAPI</a> 为唯一机器合同。现有 Task/plan/questions/answer/approve/repair/cancel/operations/audit/events/artifact 查询是可复用的接缝，Leader 不另建 HTTP 控制 API 或用户可 PATCH 的状态。运行中题目当前只绑定非 planner 的既有 Worker，不能冒称已支持 Leader 确认/授权。所需的确认、授权、决定及动作状态可见性须随实现与 handler/客户端/示例一起明确；本稿不先造 JSON 字段，也不能把普通答案当发布授权。</p>
+<p>本次文档无 breaking change、无迁移，已有 API-STABLE 证据保留。未来新状态/枚举/终态含义/副作用事实可能影响严格客户端与旧 reader，必须明确新 API/profile/格式兼容和不支持升级范围，验证旧响应/幂等 bytes 不变；不承诺整个未来实现天然向后兼容。查询只读，断线后重查原 Operation/动作，不隐式 approve/repair/publish。</p>
+<p>原API-STABLE只证明原已核验范围。正式发布候选必须再核验包含Leader行为的OpenAPI、handler、客户端、示例和支持矩阵：新决定/授权/阶段与整体完成可观察，旧响应和幂等回执回归通过。不撤销历史检查点，也不把它直接继承为新支持面已通过。</p>
+<h2 id="6">6. 当前真实接缝与缺口<a class="headerlink" href="#6" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>当前文件/方法</th>
+<th>可复用内容</th>
+<th>本纵切确实新增或需调整</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="../packages/task-application/application.mjs">application.mjs</a> <code>create/proposePlan/freezePlan/mutate</code></td>
+<td>Task 输入、批准、短事务、原幂等/Operation</td>
+<td>反复 Leader 义务/决定接纳；当前 <code>proposePlan</code> 只允许未批准任务，不是运行中重规划入口</td>
+</tr>
+<tr>
+<td><a href="../packages/task-application/execution.mjs">execution.mjs</a> <code>nextWork/finish/reconcile</code></td>
+<td>Attempt、预算、依赖、当前 ticket、停止/结果</td>
+<td>Planner 成功一次性进入 awaiting-approval；Verifier 成功直接 completed，均需新 profile 内的阶段性处理</td>
+</tr>
+<tr>
+<td><a href="../packages/task-supervisor/controller.mjs">controller.mjs</a> <code>#cycle/#failEntry/#stop</code></td>
+<td>原观察循环、异步执行与所属 handle</td>
+<td>当前循环混合调度/停止、失败广播；逐步委托 Core 硬规则和 Execution 操作，新增聚合通知，不加监督 LLM 或另一个 scheduler</td>
+</tr>
+<tr>
+<td><a href="../packages/task-application/verification.mjs">verification.mjs</a> <code>bind/recheck/stage</code></td>
+<td>私有可信验收端口、精确全候选/结果与 Depot</td>
+<td>当前唯一 verifier sink；新增精确 Review 消费、阶段验收与发布后证据，Reviewer role 现仅普通 Agent 标签，未有发布批准机制</td>
+</tr>
+<tr>
+<td><a href="../packages/task-application/repair.mjs">repair.mjs</a> 与 <a href="../packages/task-application/runtime-questions.mjs">runtime-questions.mjs</a></td>
+<td>原选果/closure、反馈、答案/ACK、原代拒绝</td>
+<td>Leader 授权内局部决定入口与集中意见来源、Leader 澄清/授权处理；不放松旧显式 repair 或原 ACK</td>
+</tr>
+<tr>
+<td><a href="../packages/task-service/composition.mjs">composition.mjs</a>、<a href="../packages/task-business/index.mjs">业务适配</a>、<a href="../packages/task-store/store.mjs">Store</a></td>
+<td>唯一组合/SQLite/Depot、可信业务 policy、原生 Provider 与 custody</td>
+<td>注入 Leader 输入/输出契约和有限发布/查询/后验适配；当前没有通用受控业务发布实现</td>
+</tr>
+<tr>
+<td><a href="../packages/task-api/http-handler.mjs">HTTP handler</a> 与 <a href="../packages/task-client/index.mjs">客户端</a></td>
+<td>有界认证/请求、原 CAS/回执绑定/下载</td>
+<td>新行为可观察性与严格兼容测试，不能靠私有 SQL 或 UI 补步骤假称公开闭环</td>
+</tr>
+</tbody>
+</table>
+<h2 id="7">7. 统一实施顺序与正式发布前验收<a class="headerlink" href="#7" title="Permanent link">&para;</a></h2>
+<p>仍按一个B2-L完整纵切交付，不按字段拆微功能或重新建设平台。先一次对齐最小行动、交付约定/语义快照、原预算、决定/outbox/结果与兼容边界；随后按下列可运行检查点持续集成，不等全部完成才第一次实测：</p>
+<table>
+<thead>
+<tr>
+<th>检查点（不是新增Milestone/强制PR）</th>
+<th>同一HTTP/Application/SQLite链上的可运行结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>需求与首次执行</td>
+<td>Leader提出交付约定/覆盖说明，用户必要确认后沿原调度执行；生产工作包完整，原取消/预算和持久决定可验证</td>
+</tr>
+<tr>
+<td>结果驱动协调</td>
+<td>原Worker结果触发Leader，集中独立Review和局部修正保留无关成果；普通失败不无条件全队cancel，决策在原容量内可运行</td>
+</tr>
+<tr>
+<td>授权交付与整体结束</td>
+<td>只接一个有界可观察目标，独立后验与逐项业务汇总完成，未授权或unknown不虚假成功</td>
+</tr>
+<tr>
+<td>最终支持面</td>
+<td>每步已有的故障/兼容测试在同一发行候选整体验证，真实Provider、独立客户端和声明平台消费同一实现</td>
+</tr>
+</tbody>
+</table>
+<p>每个检查点同步相应Fake/结构负例、原API回归和有界真实验证；未实现能力保持显式不支持，不用人工SQL或独立演示脚本补齐来冒充。先前B1/B2资产复用，历史证据不改绑，新候选补受影响回归，B3可靠性/软件发行准备可以并行；最终同资产验收仍须等待完整候选。</p>
+<p>正式发布前证明真实代表性Leader闭环：需求→必要确认→两个互补Worker→独立Review→需要时局部修正并保留无关成果→独立整体验收→明确授权的有限目标交付→独立后验→Leader汇总及Core整体结束。正常任务可以首轮通过，不以出现返工作为每条成功任务的前提；修正能力仍须实证，但不能反复付费等模型犯错。证据分为三类：</p>
+<ul>
+<li><strong>正常真实任务</strong>：按真实需求完成交付，记录实际首轮质量，不人为加入拒收。</li>
+<li><strong>明确标注的缺陷修复实机</strong>：可使用执行前已存在、可复现业务缺陷的真实输入项目；由独立检查定位，再由真实Agent完成局部修复及重新验收。若需证明一次交付后的repair，必须实际存在当前独立拒收及对应修正链；只修改输入项目不算已验证该接缝。不得要求作者故意犯错、篡改候选或伪造Decision，测试安排与自然出现的失败分开记。</li>
+<li><strong>确定性故障/反例</strong>：可明确注入失败、迟到、取消、崩溃及缺陷候选以验证机制，标注夹具来源，不冒充真实模型业务通过。</li>
+</ul>
+<p>三个类别分别报告，不用正常任务首通替代repair，也不用修复案例宣称自然任务首轮成功。有限案例仍未走到真实局部修正时保持该出口未通过，不无限换任务/重试。该机制仍DESIGN，B1原实证不代表本机制通过。</p>
+<p>同一候选至少包含六类组合验收：</p>
+<ol>
+<li>正向全链与需求覆盖：所有Leader唤起、相关快照、真实执行/Review/验收、局部修正保留分支、发布/后验回执可经HTTP审计；下载不冒充发布。同一固定服务及业务/验证能力配置完成同业务族两个不同需求，只经Task输入/问答/批准变化，不临时修改Core/配置程序或手工验收。反例包括测试全绿却遗漏必需要求、共享上下文未进入真实工作包、验收内容按产物放宽；识别后不得整体成功。</li>
+<li>少调用、容量活性与当前性：同 Task 并发事件合并、最多一个 Leader；两作者同时待答/长 Reviewer 占槽仍有界响应，容量不足付费前拒绝且不提额/假释；洪泛/heartbeat 不触发付费或重规划；相关候选/授权改变拒旧建议，无关进度不废弃它；原成本不清零。</li>
+<li>权威与越界：作者自证、Leader 改标准/预算、错任务/错候选 Review、用普通答案授权发布、超目标/高风险未确认均零越权执行；合法自治不多次打断用户。</li>
+<li>取消/期限/失败：Leader 或长验收在途时硬控制及时处理；stuck 观察不私自 kill，停止后无替身；发布后检查失败保留已发生效果，无虚假成功。</li>
+<li>崩溃/丢 ACK：Leader reservation、决定 COMMIT 前后、动作启动/回执提交及发布后验窗口重开；原决定/预算/无关成果不丢、不重规划整队；外部 unknown 只 reconcile，不能宣称无条件 exactly-once。</li>
+<li>兼容与后继：旧根/旧 completed/原幂等回执语义不变，不支持格式在 claim 前拒绝；新 profile 合法收口后下一 Task 可运行，未知义务不虚释容量。</li>
+</ol>
+<p>只选一个受控业务发布目标，不要求所有生产 SQL/云写入/动态角色；发布软件自身仍走 B3 受保护资产门禁。成功流程重复后才抽成 Workflow Template，首发不建编辑器、市场、身份/角色管理或新 Skill 平台。角色职责分离不等于 OS/凭据隔离，旧 non-production 证据不改标。</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.suggest", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,1139 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="面向 Agent 软件工程的长寿命确定性 Control Plane / Durable deterministic control plane for agentic software engineering">
+      
+      
+      
+        <link rel="canonical" href="https://chiga0.github.io/marshal-harness/node-api-support-matrix/">
+      
+      
+      
+      
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/" hreflang="zh">
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/en/" hreflang="en">
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Node Task API 逐接口支持矩阵 - Marshal Harness</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#node-task-api" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href=".." title="Marshal Harness" class="md-header__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Marshal Harness
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Node Task API 逐接口支持矩阵
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换暗色"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换暗色" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换亮色"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换亮色" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="选择当前语言">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/en/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Marshal Harness" class="md-nav__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Marshal Harness
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开始
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    开始
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始（Node 主线）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    下载部署（Node 一键安装）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    历史资料（Go 时代，已退出产品运行依赖）
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    历史资料（Go 时代，已退出产品运行依赖）
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../current-status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    当前可用能力（历史摘要）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Marshal 是什么
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-it-works/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    工作原理
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install-and-upgrade/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安装、升级与回滚
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    日常使用
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../marshal-skill/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    在 Codex 中使用
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安全与隐私
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        使用入口与适用人群
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        如何读表
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#25" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        25 个公开操作
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        必须保留的语义区别
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="必须保留的语义区别">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        写入、暂停与恢复
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        问答不是权限自动批准
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        审计：已有的输入观察与仍缺失的费用
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        实机证据索引与未确定项
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="node-task-api">Node Task API 逐接口支持矩阵<a class="headerlink" href="#node-task-api" title="Permanent link">&para;</a></h1>
+<p>核对源码：<code>2d178b4f96caeb2708d861b837160de5cf758f78</code>（2026-09-09）。本表记录这一源码的实现和已有验证范围，不把历史实机结果改绑到新提交，也不以路由存在代替功能可用。本次编写只读核对源码与已记录证据，没有重新调用模型或重跑测试。</p>
+<p><strong>后继状态提示（2026-09-09）</strong>：下方实现/测试表保留上述源码快照，不是最新 main 的完整矩阵。后继 <code>25ff8315</code> 已合入显式 v6 profile 的单 Worker 取消，旧格式仍为 501；最新完成状态和精确证据见 <a href="../roadmap-status/#业务交付当前表">Roadmap</a>及<a href="../packages/task-service/README.md#单-worker-取消显式-v6-新根">服务说明</a>。Leader 全程协调、授权交付和后验仍为 DESIGN，不能借已有接口检查点声明完成。</p>
+<h2 id="_1">使用入口与适用人群<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
+<p>正式文档导航：<a href="../README.md">产品入口</a> → <a href="../packages/task-service/README.md">服务配置与简启动</a> → <a href="../packages/task-distribution/README.md">目录包核验/安装</a> → <a href="../packages/task-api/openapi.json">OpenAPI</a> / <a href="../packages/task-api/README.md">HTTP 约束</a> → <a href="../packages/task-client/README.md">独立客户端</a>。目标和当前完成状态分别看<a href="../agent-team-service-milestones/">实施 Milestone</a>、<a href="../roadmap-status/">Roadmap</a>与<a href="../node-task-service-status-2026-09-08/">实证记录</a>。</p>
+<p>适合需要本地 Task 提交、一次精确确认、有限团队执行、业务问答、独立验收与制品下载的部署者和客户端作者。当前是固定 Node <code>24.15.0</code>、单节点/单用户/可信任务、显式受信 Provider 与业务/验收配置；没有 Workspace 注册前置，非 Git 制品不要求初始化仓库。服务默认 loopback，自动生成私有连接凭据；<code>--config</code> 仍必须明确提供，不默认猜模型、登录或业务。</p>
+<p>不适合把它当成任意自然语言业务的零配置服务、多租户/公网 API、敌对代码沙箱、自动发布系统或无条件崩溃续跑服务。权限按 profile 判断：<a href="../adr/0094-trusted-single-user-role-team/">ADR0094</a> 对 Node <code>trusted-single-user</code> 接受 ambient credential 风险，保留职责、授权与独立证据边界，不再以前置 OS 账号/凭据不可达证明阻断本机团队目标；原生登录仍不授权外部写，也不构成强隔离。旧 Go/hardened profile 保持原合同，旧实证不重新标记。Linux 同资产部署、正式 stable 发行和生产 SLO 不由此表授予，参见 <a href="../adr/0088-node-task-service-production-projection/">ADR 0088</a>。</p>
+<p><strong>接口检查点与产品完成分开</strong>：已有独立评审记录为 <code>API-STABLE: PASSED</code>，适用于 <code>node-task-service/v1</code> 的当前合同/同包客户端；OpenAPI 仍标 <code>0.1.0-candidate</code>，不等于正式 v1/stable/production。当前 25 个操作、58 个 Schema；旧 Go、九操作实验协议及未来版本不在这个兼容声明内。</p>
+<p>新增 Leader 决定、确认、阶段结果与整体结束语义时，须随实际启用范围更新 OpenAPI、客户端和真实行为验证；正式候选重新核验新的支持面，不撤回原检查点，也不把它外推为未来语义已稳定。</p>
+<h2 id="_2">如何读表<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<ul>
+<li>“已接线”表示原 HTTP handler 确实调用 Service/Application 的实现，不是只返回 Schema 示例。它仍受状态、认证、CAS、预算、配置和恢复门禁约束。</li>
+<li>“条件接线”表示必须安装并冻结指定可信能力；接口本身不能代替部署配置。历史查询和新写入的适用条件可能不同。</li>
+<li>“合同测试”只证明形状、路由和客户端绑定；“核心测试”使用真实 SQLite、受控执行事实；“服务测试”经过真实 HTTP/文件/所属 Node 协议进程或独立 checker，仍不等于真实模型。</li>
+<li>“实机”仅指下方列明的真实 Provider/源码/profile。表中测试链接是可定位的现有用例，不声称本表编写时又执行了一次全部测试。</li>
+</ul>
+<p>统一生产调用链是 <a href="../packages/task-api/http-handler.mjs">HTTP handler</a> → <a href="../packages/task-service/composition.mjs">Service dispatch</a> → <a href="../packages/task-application/application.mjs">TaskApplication</a> 及其原执行/问答/制品 reducer → 同一 SQLite。Service 自己提供四个运行观察接口。<strong>25 操作的注入式 loopback 测试不是 25 项业务实现证明</strong>：它为未实现操作也提供示例响应；必须再看下表实际分支。</p>
+<h2 id="25">25 个公开操作<a class="headerlink" href="#25" title="Permanent link">&para;</a></h2>
+<p><code>操作</code>列使用 OpenAPI 的 <code>x-application-operation</code>（同包客户端名称）；HTTP 路径及方法逐项对应原 <code>operationId</code>，没有新增接口。</p>
+<table>
+<thead>
+<tr>
+<th>操作</th>
+<th>HTTP</th>
+<th>合同 / 实际实现</th>
+<th>已有验证范围</th>
+<th>限制或未证明部分</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>health.get</code></td>
+<td><code>GET /health</code></td>
+<td>已定义 / 已接线：Service 返回当前 profile 的存活响应</td>
+<td><a href="../packages/task-service/composition.test.mjs">Service loopback/私有 token 测试</a>、原 CLI/安装测试</td>
+<td>只说明 HTTP 活着；不证明 owner、模型登录或任务可接纳。无需 Bearer，但仍受 Host/Origin 边界约束</td>
+</tr>
+<tr>
+<td><code>ready.get</code></td>
+<td><code>GET /ready</code></td>
+<td>已定义 / 已接线：当前 owner、Supervisor、旧执行义务共同决定就绪</td>
+<td><a href="../packages/task-service/composition.test.mjs">Service owner/恢复测试</a>、<a href="../packages/task-service/custody-recovery.test.mjs">custody 恢复</a></td>
+<td>未决返回 <code>503 not_ready</code>；启动阶段缺必要证明时服务可能根本不能打开，不承诺失败时 HTTP 在线；不探测模型账号</td>
+</tr>
+<tr>
+<td><code>task.create</code></td>
+<td><code>POST /v1/tasks</code></td>
+<td>已定义 / 已接线：Task、输入引用、初始预算、receipt 和规划/澄清义务同库提交，返回 201</td>
+<td><a href="../packages/task-application/http-integration.test.mjs">HTTP+SQLite 并发重放</a>、<a href="../packages/task-service/recovery-commit.test.mjs">COMMIT 窗口</a>；实机 P、Q</td>
+<td>创建不是批准。正常输入先规划；仅命中可信有限模板且确有缺项时问答。重复 key 不产生新 Task/预算</td>
+</tr>
+<tr>
+<td><code>task.list</code></td>
+<td><code>GET /v1/tasks</code></td>
+<td>已定义 / 已接线：读取原 Task projection，按 ID 分页</td>
+<td><a href="../packages/task-application/application.test.mjs">Application 查询</a>、<a href="../packages/task-application/http-integration.test.mjs">HTTP+SQLite</a></td>
+<td>不是跨用户目录、全文搜索或排序查询；不返回另一个服务根的任务</td>
+</tr>
+<tr>
+<td><code>task.get</code></td>
+<td><code>GET /v1/tasks/{taskId}</code></td>
+<td>已定义 / 已接线：读取当前 Task、revision、allowedActions、成果引用</td>
+<td><a href="../packages/task-service/business-integration.test.mjs">Service 团队/冷重开</a>；实机 P、Q、C</td>
+<td>客户端按 <code>allowedActions</code> 和精确 revision 操作；单个 Worker completed 不等于 Task 已验收</td>
+</tr>
+<tr>
+<td><code>task.plan</code></td>
+<td><code>GET /v1/tasks/{taskId}/plan</code></td>
+<td>已定义 / 已接线：返回原冻结计划及 digest/revision</td>
+<td><a href="../packages/task-application/http-integration.test.mjs">HTTP 确认</a>、<a href="../packages/task-application/clarification.test.mjs">有限澄清</a>；实机 P、Q</td>
+<td>尚无计划返回 <code>409 plan_conflict</code>；不能从 GET 生成/更新计划。完整澄清预览另在 questions 响应中</td>
+</tr>
+<tr>
+<td><code>task.approve</code></td>
+<td><code>POST /v1/tasks/{taskId}/plan/approve</code></td>
+<td>已定义 / 已接线：精确 Task revision、plan revision/digest 和原配置重验后提交批准及 outbox，返回 202 Operation</td>
+<td><a href="../packages/task-application/http-integration.test.mjs">并发确认/重放</a>、<a href="../packages/task-distribution/team.test.mjs">原 CLI 团队</a>；实机 P、Q</td>
+<td>未回答完不能批准；旧零问题为 awaiting-approval，澄清最终版为 awaiting-confirmation。202/批准 Operation 成功都不是业务已完成</td>
+</tr>
+<tr>
+<td><code>task.graph</code></td>
+<td><code>GET /v1/tasks/{taskId}/graph</code></td>
+<td>已定义 / 已接线：原计划 edges 与当前 node/Worker 关联投影</td>
+<td><a href="../packages/task-application/application.test.mjs">DAG/分页事实测试</a>、<a href="../packages/task-application/http-integration.test.mjs">HTTP DAG</a></td>
+<td>未有计划时 409；只读图，不提供任意编辑 DAG、重绑输入或新增 Worker 接口</td>
+</tr>
+<tr>
+<td><code>task.workers</code></td>
+<td><code>GET /v1/tasks/{taskId}/workers</code></td>
+<td>已定义 / 已接线：原 Task 关联 Worker/Attempt 分页</td>
+<td><a href="../packages/task-application/execution.test.mjs">Execution 查询及并行</a>、<a href="../packages/task-service/api-stable-behavior.test.mjs">服务行为测试</a>；实机 P、C</td>
+<td>包含 planner/verifier 等真实执行，不是只列作者；状态/进度不代表最终验收，用量仍 unavailable</td>
+</tr>
+<tr>
+<td><code>worker.get</code></td>
+<td><code>GET /v1/workers/{workerId}</code></td>
+<td>已定义 / 已接线：读取原执行身份和当前 Worker 投影</td>
+<td><a href="../packages/task-application/execution.test.mjs">Execution</a>、<a href="../packages/task-client/index.test.mjs">25 操作客户端传输</a>；服务/实机中的 Worker 观察</td>
+<td>不是操作系统进程管理 API；不暴露可用于接管的 PID 权威，不提供完整原生 transcript 或计费</td>
+</tr>
+<tr>
+<td><code>worker.cancel</code></td>
+<td><code>POST /v1/workers/{workerId}/cancel</code></td>
+<td><strong>已定义 / 未实现</strong>：合法请求到 Application 返回 <code>501 unsupported_operation</code></td>
+<td><a href="../packages/task-application/http-integration.test.mjs">真实 HTTP 501 且零新增命令反例</a></td>
+<td>不能把 OpenAPI 的 202 示例当可用能力。当前停止出口是整个 <code>task.cancel</code>，不能用它假装取消一个 Worker</td>
+</tr>
+<tr>
+<td><code>task.questions</code></td>
+<td><code>GET /v1/tasks/{taskId}/questions</code></td>
+<td>已定义 / 已接线：合并原批准前澄清及运行中 business 问题，统一分页，保留历史</td>
+<td><a href="../packages/task-application/clarification.test.mjs">澄清 HTTP/SQLite</a>、<a href="../packages/task-service/runtime-question-recovery.test.mjs">原 Worker 问答/恢复</a>；实机 Q、P</td>
+<td>没有事实时返回空列表/空 preview 是真实“无问题”，不是问答能力探测。不是所有 Provider 工具权限询问的通用审批 UI</td>
+</tr>
+<tr>
+<td><code>task.answer</code></td>
+<td><code>POST /v1/tasks/{taskId}/questions/{questionId}/answers</code></td>
+<td>已定义 / <strong>条件接线</strong>：澄清答案→新 preview；运行中答案→原 Worker 投递/ACK 义务，各自原 receipt，均 202</td>
+<td><a href="../packages/task-application/clarification.test.mjs">旧 preview/路由/取消竞争</a>、<a href="../packages/task-service/runtime-question-recovery.test.mjs">运行中 ACK/取消/crash</a>、<a href="../packages/task-client/runtime-questions.test.mjs">客户端 oneOf</a>；实机 Q、P</td>
+<td>需各自可信 port；两个请求分支不能混用。202 只表示答案接纳，不表示 Agent 已消费；看 deliveryStatus。配置漂移拒绝新写，不抹历史</td>
+</tr>
+<tr>
+<td><code>operation.get</code></td>
+<td><code>GET /v1/operations/{operationId}</code></td>
+<td>已定义 / 已接线：读取原 Operation 的当前持久观察</td>
+<td><a href="../packages/task-application/execution.test.mjs">原 receipt 与取消收口</a>、<a href="../packages/task-service/composition.test.mjs">服务取消</a>；实机 P、C</td>
+<td>原写回执不会被改写成最新状态。approve/pause/resume 是控制操作；repair 的最终结果绑定后续验收；不统一等同 Task completed</td>
+</tr>
+<tr>
+<td><code>task.cancel</code></td>
+<td><code>POST /v1/tasks/{taskId}/cancel</code></td>
+<td>已定义 / 已接线：先提交 Task fence/Operation，再由 resident 停原句柄，按真实 cleanup 收口</td>
+<td><a href="../packages/task-service/composition.test.mjs">cancel/cleanup</a>、<a href="../packages/task-service/control-commit-recovery.test.mjs">COMMIT/crash</a>、<a href="../packages/task-service/api-stable-behavior.test.mjs">长 Verify 下取消</a>；实机 C</td>
+<td>202 不是已停止；不得退款、接纳迟到成果或重派。未知 cleanup 保留未决；已终态/不允许的状态可 409，无“强制清除占用”接口</td>
+</tr>
+<tr>
+<td><code>task.pause</code></td>
+<td><code>POST /v1/tasks/{taskId}/pause</code></td>
+<td>已定义 / 已接线：持久 paused 与控制义务，阻止新 reservation/mayStart</td>
+<td><a href="../packages/task-application/application.test.mjs">SQLite pause/resume</a>、<a href="../packages/task-application/execution.test.mjs">执行 fence</a>、<a href="../packages/task-application/runtime-questions.test.mjs">待答暂停</a></td>
+<td><strong>只暂停新准入，不暂停/杀死正在运行的 Agent/Verifier</strong>；原期限继续。现有核心测试和通用 HTTP 合同覆盖，未单独记录真实模型 pause→resume 实机</td>
+</tr>
+<tr>
+<td><code>task.resume</code></td>
+<td><code>POST /v1/tasks/{taskId}/resume</code></td>
+<td>已定义 / 已接线：从原 pausedFrom 恢复准入，由同 outbox/调度继续</td>
+<td><a href="../packages/task-application/execution.test.mjs">原预算/期限/无重复执行</a>、<a href="../packages/task-application/runtime-questions.test.mjs">原答案暂停后投递</a></td>
+<td>只适用于合法 paused，受 ready/CAS/原期限约束；不是 crash attach、重启旧 Worker、延长预算或解除 intervention 的 API</td>
+</tr>
+<tr>
+<td><code>input.create</code></td>
+<td><code>POST /v1/inputs</code></td>
+<td>已定义 / 已接线：Depot 原字节先耐久，SQLite 原输入 manifest/receipt 原子提交，返回 201</td>
+<td><a href="../packages/task-service/composition.test.mjs">上传/下载/重开</a>、<a href="../packages/task-application/artifacts.test.mjs">Artifacts 负例</a>；实机 P、Q</td>
+<td>有界 Base64 JSON 上传，原始 bytes ≤256 KiB；输入 ready 仅表示可读，不能充当最终成果。<code>context.inputRefs</code> 只引用已存在的输入 ID</td>
+</tr>
+<tr>
+<td><code>artifact.get</code></td>
+<td><code>GET /v1/artifacts/{artifactId}</code></td>
+<td>已定义 / 已接线：查询原 owner/task 绑定 manifest；ready 对象同时校验 Depot bytes</td>
+<td><a href="../packages/task-application/artifacts.test.mjs">Artifacts</a>、<a href="../packages/task-service/backup-restore.test.mjs">缺 blob 冷备份反例</a>；实机 P、Q</td>
+<td>缺失/损坏对象不补造，ready 元数据读取也可能 503；input/evidence/delivery 三种含义不能混为“已交付”</td>
+</tr>
+<tr>
+<td><code>artifact.content</code></td>
+<td><code>GET /v1/artifacts/{artifactId}/content</code></td>
+<td>已定义 / 已接线：按 manifest 重验长度/摘要后输出 bytes 与 Content-Digest</td>
+<td><a href="../packages/task-client/index.test.mjs">独立客户端下载</a>、<a href="../packages/task-service/business-integration.test.mjs">实际 checker/完整成果</a>；实机 P、Q</td>
+<td>单次响应 ≤8 MiB，不是任意路径文件下载；客户端须验证 manifest+Content-Digest。没有公开制品删除/改写或流式大文件协议</td>
+</tr>
+<tr>
+<td><code>task.audit</code></td>
+<td><code>GET /v1/tasks/{taskId}/audit</code></td>
+<td>已定义 / 已接线：原 Attempts/期限计量、acceptance、Worker 输入观察及可选 repair Decision 历史</td>
+<td><a href="../packages/task-service/input-audit.test.mjs">真实 HTTP 输入审计</a>、<a href="../packages/task-service/same-plan-repair.test.mjs">负验收/修正</a>；实机 P 的验收/Attempts</td>
+<td><strong>token/cost、独立 firstReview、waitingMs 仍无可信计量</strong>；正文仅受显式披露策略控制，见下节。最终验收不能冒充首审通过</td>
+</tr>
+<tr>
+<td><code>task.events</code></td>
+<td><code>GET /v1/tasks/{taskId}/events</code></td>
+<td>已定义 / 已接线：原 append-only 事件的有界公开摘要，按 sequence cursor 轮询</td>
+<td><a href="../packages/task-service/api-stable-behavior.test.mjs">断连/正常重开后原 cursor 续读</a>、<a href="../packages/task-application/application.test.mjs">事件分页</a></td>
+<td>不是 SSE/WebSocket，也不是完整 token/tool/transcript 流；正常重开续读证据不证明所有故障恢复路径</td>
+</tr>
+<tr>
+<td><code>provider.list</code></td>
+<td><code>GET /v1/agent-providers</code></td>
+<td>已定义 / 已接线：Service 冻结的可信配置事实分页</td>
+<td><a href="../packages/task-service/composition.test.mjs">Service 配置/查询</a>、<a href="../packages/task-client/index.test.mjs">25 操作合同/客户端</a></td>
+<td>默认 availability=unknown、能力数组空；不是模型登录/余量探测。没有 Provider 注册、安装或凭据上传接口</td>
+</tr>
+<tr>
+<td><code>supervisor.get</code></td>
+<td><code>GET /v1/supervisor</code></td>
+<td>已定义 / 已接线：当前控制器与 SQLite 任务/outbox/容量的只读汇总</td>
+<td><a href="../packages/task-service/api-stable-behavior.test.mjs">并行/长 Verify 查询</a>、<a href="../packages/task-service/soak.test.mjs">多 Task 隔离</a></td>
+<td>不提供控制器管理/自动修库；有界扫描超限返回 unavailable，不截断计数冒充完整。性能测试不是生产 SLO</td>
+</tr>
+<tr>
+<td><code>task.repair</code></td>
+<td><code>POST /v1/tasks/{taskId}/repair</code></td>
+<td>已定义 / <strong>条件接线</strong>：同计划、原 negative Decision/报告、明确节点与反馈、剩余预算重验后原子选择保留成果及修正义务，202</td>
+<td><a href="../packages/task-service/same-plan-repair.test.mjs">真实 HTTP 六场景</a>、<a href="../packages/task-application/repair.test.mjs">Core 原报告/预算/旧事实</a></td>
+<td>仅显式 repair profile 的有限文件业务；结构失败/unknown/用户取消/过期/已成功不能修。真实模型目前只有启用该配置的首轮成功，<strong>没有自然内容拒收后二轮修正实机</strong></td>
+</tr>
+</tbody>
+</table>
+<p>统计：25 项均有合同；24 项有实际读取/执行分支，其中 answer、repair 的新写入需要专用可信 port，1 项未实现（worker.cancel）。questions 可读取原历史，但空列表不代表问答写入能力已配置；以每行边界为准，不用总数掩盖差异。</p>
+<h2 id="_3">必须保留的语义区别<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<h3 id="_4">写入、暂停与恢复<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h3>
+<p>除 health/ready 外需要原私有 Bearer；所有请求仍做 Host/Origin、路径、大小和 deadline 校验。写请求要求原 <code>Idempotency-Key</code>，确认/控制携带精确版本及相应摘要。HTTP 断连或 504 结束的是本次观察，不自动取消 Task；先查原对象/Operation，必要时用原 key 与原正文重放，不能换 key 或增加预算重试。</p>
+<p>pause/resume 已进入 <code>Application.control → outbox → TaskExecution.settleControl/nextWork/mayStart</code>，不是占位端点。pause 不会让已启动工作或绝对期限停表；resume 也不会启动新一代替身。要停止原工作使用 Task cancel，并观察原 Operation、Task/Workers、真实清理结果。</p>
+<p>同版本正常 open、明确 custody 绑定后服务崩溃的 cleanup-only 恢复，与“继续原模型会话”不同。缺原签名观察时 open 可拒绝；签名存在但 cleanup 未证明、以及 reservation-after/binding-before 等尚未闭合窗口，仍可能 intervention/not-ready。<strong>没有公开“强制恢复/退款/清空锁”接口</strong>。现有故障测试证明安全拒绝的分支不能写成恢复可用；详见<a href="../node-task-service-status-2026-09-08/">当前恢复缺口</a>。</p>
+<h3 id="_5">问答不是权限自动批准<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h3>
+<p>批准前使用可信有限 <code>ClarificationPort</code>：真正缺少的声明输入才问，最多一批3题；答案≤4096 UTF-8 bytes、禁 NUL，原 confirmBefore/预算/图/权限/验收策略不因回答扩大。<code>previewDigest</code> 分支产生新完整 preview，最终只确认一次；完整输入仍走零问题路径。</p>
+<p>运行中使用 <code>RuntimeQuestionPort</code>、原 Provider bridge 和被独立验证消费的 interaction 绑定，启用新 layout3（repair 组合为 layout4）。<code>questionDigest</code> 与 <code>previewDigest</code> 是互斥请求分支；问题绑定原 Task/Worker/node/Attempt、原期限与有限策略。接纳前 deliveryStatus=null；接纳后查询其真实投递/ACK 状态。丢 ACK 或 crash 不允许客户端重派 Worker/偷偷重答。不是任意 Agent 品牌已有通用问答能力，也不把工具权限询问自动变成业务答案。</p>
+<h3 id="_6">审计：已有的输入观察与仍缺失的费用<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h3>
+<p><a href="../packages/task-application/input-audit.mjs">input-audit</a> 已替代早期固定 <code>prompts:[]</code> 的占位说明：每个有原 Worker 的记录可返回 inputDigest/reservationDigest、prepared prompt 摘要/长度，以及 prepared/handed-off 时间和 coverage。默认只存元数据，正文为空、无 snapshot；旧记录仍 unavailable，不后台补造历史。</p>
+<p>只有可信 <code>auditDisclosure</code> 同步策略返回的文本才存为证据制品，HTTP preview 最多2048 UTF-8 bytes，完整披露结果通过原 Artifact 下载并重验。策略拒绝/抛错/异步返回不代表任务失败，也不保留未经披露的正文。handed-off 只证明有效 Provider handle 已返回，不证明模型实际消费；Agent 自带隐藏 prompt、Skill、provider context 不在“完整 prompt”承诺内。</p>
+<p>Task 与 Worker 的 <code>usage</code> 仍固定为 <code>{tokens:null,cost:null,currency:null,source:'unavailable',coverage:0}</code>。<code>firstReview</code> 为零且 measurement 的 firstReviewSource=unavailable；最后一次独立 verification 只记 acceptance，不借作首审。Worker elapsed 是 started 到 settlement（含收口）的差值，waitingMs=null，不推算模型耗时/价格。此表不把字段存在写成费用审计已完成。</p>
+<h2 id="_7">实机证据索引与未确定项<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h2>
+<p>以下只引用已记录实证的精确源和边界，不复制长历史，也不声称本表基线重新跑过这些模型：</p>
+<table>
+<thead>
+<tr>
+<th>标记</th>
+<th>精确实证</th>
+<th>能证明 / 不能证明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P</td>
+<td><code>69cfacee2fbea366174744167d5a2c3a3dfeee89</code>，Pi 0.84.4，29.624秒；<a href="../node-task-service-status-2026-09-08/">12:59 实证段</a></td>
+<td>原 HTTP 规划/批准、双作者、同 Worker 业务问答/ACK、独立验收、下载/审计、正常实例重开。不是任意规划、自然 repair 或模型 crash</td>
+</tr>
+<tr>
+<td>Q</td>
+<td><code>538c53494fdaf0715bd5817914c44ace46771471</code>，Qwen 0.22.3，21.440秒；<a href="../node-task-service-status-2026-09-08/">区域业务实证</a>、<a href="../packages/task-regional-window/README.md">可运行窄业务说明</a></td>
+<td>两项必要日期问答→最终预览/批准→两作者/独立下载。是历史窄 profile 实机；不是把旧源写成当前候选完整验收</td>
+</tr>
+<tr>
+<td>C</td>
+<td><code>37df1e7a57d7b356ec385113f8c76e74c1f2f5a8</code>，Pi/custody 13.046秒；另 <code>69cfacee…</code> Qwen/layout1 14.143秒；<a href="../node-task-service-status-2026-09-08/">当前取消证据</a></td>
+<td>原活跃作者的早期取消、原 cleanup、Operation、零 verifier/delivery、正常重开原回执。未证明已经进入模型 token/tool 阶段，两个 profile 的恢复资格不可拼接</td>
+</tr>
+<tr>
+<td>R</td>
+<td><code>d6502386f1be840096dcf002e9bb2eb551801765</code>，修正启用配置下 Pi 首轮26.288秒成功；<a href="../node-task-service-status-2026-09-08/">12:04 实证段</a>、<a href="../packages/task-repair-live/README.md">显式修正驱动</a></td>
+<td>只证明 natural-first-pass；没有执行 repair API 的模型后继，不能为补证人为制造原错误或付费循环寻找失败</td>
+</tr>
+</tbody>
+</table>
+<p>当前精确基线 <code>2d178b4…</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34316647809">Node team CI 34316647809</a> 已由维护者核对 Ubuntu/macOS 均 success；同源 API/client 独立重跑32/32、1.361秒。原<a href="../.github/workflows/node-team.yml">CI 测试入口</a>包含无模型协议进程，不是两平台同资产部署或模型验收。前源 <code>ce55eed</code> 的 macOS 519/521、两个清理失败仍保留为失败记录；本基线已包含随后审查/验证的 Darwin 修正，不把旧失败说成当前仍红，也不删除原原因尚未被 CI errno 直接确认的边界。</p>
+<p>在 <code>2d178b4…</code> 快照中尚未实现或未找到实机证据的事项：单 Worker 取消；真实 token/费用与独立首审/等待计量；自然内容拒收后的模型局部修正；pause/resume 的单独真实模型观察；尚未闭合的执行许可前恢复窗口；声明平台的同资产部署与 stable 发行。单 Worker 取消的后继进展见页首；Worker/Publisher 权限按上述 profile 区分，不将强 OS 隔离重新加入可信单用户的前置条件。未核验的 Provider 登录/能力不能说成“已缺失”，列表 unknown 也不能说成“已就绪”。本表记录限制，不新增前置门禁或撤回已记录的 API-STABLE 检查点。</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.suggest", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
