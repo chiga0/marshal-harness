@@ -230,7 +230,7 @@ test('documented Plan arrays, roles, DAG, verifier sink and v7 budget are still 
   }
 });
 
-for (const maxAttempts of [undefined, 8, 12]) test('original publication Plan after two Leader attempts: optional budget=' + (maxAttempts ?? 'omitted'), async t => {
+for (const maxAttempts of [undefined, 8, 10, 12]) test('original publication Plan after two Leader attempts: optional budget=' + (maxAttempts ?? 'omitted'), async t => {
   // No private model output is copied. This is the observed failure shape:
   // original budget17, question/reply then second Leader, three DAG nodes,
   // configured publication. Effects must never execute in this admission test.
@@ -257,8 +257,8 @@ for (const maxAttempts of [undefined, 8, 12]) test('original publication Plan af
   assert.equal(after.attempts, 2); assert.deepEqual(after.limits, limits); assert.equal(after.approved, null);
   assert.equal(f.read(tx => f.app.execution.capacity(tx).value.active.length), 0);
   // Original Core minimum: 3 nodes + 2 consumed + 5 following managed calls /
-  // checks + 2 publication/postverify =12. Keep8 rejected;12 is legal reduction.
-  if (maxAttempts === 8) {
+  // checks + 2 publication/postverify =12. Keep8/10 rejected;12 is legal reduction.
+  if (maxAttempts === 8 || maxAttempts === 10) {
     assert.equal(result.status, 'failed'); assert.equal(after.failureCode, 'capacity_exceeded'); assert.equal(after.plan, null);
   } else {
     assert.equal(result.status, 'completed'); assert.equal(after.task.status, 'awaiting-approval');
