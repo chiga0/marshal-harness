@@ -112,6 +112,22 @@ describe('resolveCreateTaskApi', () => {
 });
 
 describe('runSubmission', () => {
+  it.each([0, 1])('合计超限在附件读取及任何API调用前拒绝（%i附件）', async fileCount => {
+    const api: CreateTaskApi = {createInput: vi.fn(), createTask: vi.fn()};
+    const draft = {
+      intent: 'x',
+      context: {inputRefs: Array.from({length: 33 - fileCount}, (_, index) => 'input-' + index)},
+      files: fileCount ? [composerFile('a.txt', 1)] : [],
+    };
+    const progress = vi.fn();
+    const session = newSubmissionSession(fileCount);
+    await expect(runSubmission(api, draft, session, progress)).rejects.toThrow('inputRefs 合计 33 个');
+    expect(api.createInput).not.toHaveBeenCalled();
+    expect(api.createTask).not.toHaveBeenCalled();
+    expect(progress).not.toHaveBeenCalled();
+    expect(session.inputRefs.every(ref => ref === null)).toBe(true);
+  });
+
   it('逐个上传附件、合并 inputRefs、用会话 key 创建任务', async () => {
     const createInput = vi.fn<CreateTaskApi['createInput']>(async body => ({id: 'ref-' + body.name}));
     const createTask = vi.fn<CreateTaskApi['createTask']>(async () => ({id: 'task-1'}));

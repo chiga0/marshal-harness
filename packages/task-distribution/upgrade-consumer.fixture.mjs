@@ -5,6 +5,7 @@ import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 import {verify} from './index.mjs';
+import {verifyLegacyPackage, LEGACY_HELPER_SHA} from './upgrade-validator.fixture.mjs';
 import {launch, checkDelivery} from '../task-regional-window/installed-consumer.fixture.mjs';
 
 const hash = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
@@ -14,15 +15,15 @@ function privateDirectory(root) {
   assert.ok(stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o777) === 0o700 && fs.realpathSync(root) === root, 'private_directory_required');
 }
 function absolute(root) {assert.ok(typeof root === 'string' && path.isAbsolute(root) && path.resolve(root) === root, 'absolute_path_required');}
-function validatePackage(input) {
+function validatePackage(input, oldValidator = null, packageRoots = []) {
   absolute(input.root);
   assert.match(input.sourceHead ?? '', /^[a-f0-9]{40}$/);
   assert.match(input.manifestDigest ?? '', /^sha256:[a-f0-9]{64}$/);
-  const report = verify({root: input.root, manifestDigest: input.manifestDigest});
+  const report = oldValidator === null ? verify({root: input.root, manifestDigest: input.manifestDigest}) : verifyLegacyPackage(input, oldValidator, packageRoots);
   assert.equal(report.sourceHead, input.sourceHead, 'source_pin_mismatch');
   return report;
 }
-export function validatePair({oldPackage, newPackage, runDir, assetKind}) {
+export function validatePair({oldPackage, newPackage, runDir, assetKind, oldValidator = null}) {
   assert.ok(['controlled-fixture', 'fixed-assets'].includes(assetKind), 'explicit_asset_kind_required');
   absolute(runDir); privateDirectory(path.dirname(runDir));
   assert.equal(fs.existsSync(runDir), false, 'new_evidence_directory_required');
@@ -31,7 +32,7 @@ export function validatePair({oldPackage, newPackage, runDir, assetKind}) {
     assert.ok(runDir !== pkg.root && !runDir.startsWith(pkg.root + path.sep), 'evidence_inside_installation');
   }
   assert.notEqual(oldPackage.root, newPackage.root, 'distinct_installations_required');
-  const oldReport = validatePackage(oldPackage), newReport = validatePackage(newPackage);
+  const oldReport = validatePackage(oldPackage, oldValidator, [oldPackage.root, newPackage.root]), newReport = validatePackage(newPackage);
   if (assetKind === 'fixed-assets') assert.notEqual(oldPackage.sourceHead, newPackage.sourceHead, 'distinct_fixed_sources_required');
   const oldFiles = JSON.parse(fs.readFileSync(path.join(oldPackage.root, 'manifest.json'))).files;
   const newFiles = JSON.parse(fs.readFileSync(path.join(newPackage.root, 'manifest.json'))).files;
@@ -122,12 +123,14 @@ export async function runUpgrade(options) {
   fs.writeFileSync(path.join(peer, 'cli-entry.js'), controlledPeer, {flag: 'wx', mode: 0o600});
   const starts = () => fs.existsSync(path.join(peer, 'starts.jsonl')) ? fs.readFileSync(path.join(peer, 'starts.jsonl'), 'utf8') : '';
   const evidence = {profile: 'dual-installed-same-root-test/v1', assetKind, oldPackage, newPackage,
+    oldValidatorDigest: options.oldValidator ? 'sha256:' + LEGACY_HELPER_SHA : null,
     passed: false, modelCalls: 0, publication: false, migrationClaim: false, state, stages: [], exits: []};
   let interrupted = false;
   const stopAll = () => {interrupted = true; for (const handle of handles) void handle.stop().catch(() => {});};
   process.on('SIGINT', stopAll); process.on('SIGTERM', stopAll);
   async function start(pkg, mode, ui) {
-    assert.equal(interrupted, false); validatePackage(pkg);
+    assert.equal(interrupted, false);
+    validatePackage(pkg, pkg === oldPackage ? options.oldValidator ?? null : null, [oldPackage.root, newPackage.root]);
     const env = {PATH: path.dirname(process.execPath) + ':/usr/bin:/bin:/usr/sbin:/sbin', HOME: runDir,
       MARSHAL_QWEN_ENTRY: path.join(peer, 'cli-entry.js')};
     const handle = launch(process.execPath, [path.join(pkg.root, 'packages/task-service/main.mjs'), '--root', state,
@@ -207,7 +210,7 @@ export async function runUpgrade(options) {
       assert.equal(starts(), journal, 'upgrade_or_rollback_started_new_agent');
       evidence.stages.push(label);
     }
-    validatePackage(oldPackage); validatePackage(newPackage);
+    validatePackage(oldPackage, options.oldValidator ?? null, [oldPackage.root, newPackage.root]); validatePackage(newPackage);
     evidence.rootIdentity = rootIdentity; evidence.originalAgentStarts = 2; evidence.newAgentStarts = 0;
     evidence.originalAttempts = original.audit.attempts; evidence.sameSnapshots = true; evidence.passed = true;
   } catch (error) {

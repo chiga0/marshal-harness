@@ -125,7 +125,7 @@ python3 -I -B /absolute/reviewed/tools/scripts/node-candidate-admit.py \
   --target /absolute/existing-private-parent/new-admission
 ```
 
-目标父目录须为当前 UID/canonical/0700，目标不得存在。可显式追加 `--archive /absolute/original.zip` 复用已下载的**原 ZIP**，仍完整重读原 GitHub API、校验 raw ZIP 摘要与大小，不信任本地附带 metadata。精确 main push run 的五项 job、原 attempt 全页与空尾页必须全部通过；消费前后重读当前 run，发现重跑、过期、跨源或归属漂移就拒绝。ZIP 先有界检查完整清单、类型/路径、CRC、长度、全部文件摘要与原 manifest 字节，再新建私有载体并调用原 `restoreCarrier→verify`；不 repack、不执行未验包、不改旧目录或 RC1 行为。
+目标父目录须为当前 UID/canonical/0700，目标不得存在。可显式追加 `--archive /absolute/original.zip` 复用已下载的**原 ZIP**，仍完整重读原 GitHub API、校验 raw ZIP 摘要与大小，不信任本地附带 metadata。精确 main push run 的13项 job（四组 Node 回归、四组 UI 检查、一次打包、四组同包消费）、原 attempt 全页与空尾页必须全部通过；消费前后重读当前 run，发现重跑、过期、跨源或归属漂移就拒绝。ZIP 先有界检查完整清单、类型/路径、CRC、长度、全部文件摘要与原 manifest 字节，再新建私有载体并调用原 `restoreCarrier→verify`；不 repack、不执行未验包、不改旧目录或 RC1 行为。
 
 随后使用匹配源码的原 `candidate-consumer.mjs`，Core、CLI 和客户端只来自新安装包；原 layout1/layout2 团队、独立 checker、完整下载及冷重开各须真实通过。消费者不接收 GitHub token、用户登录或完整父环境，输出只列绑定摘要、两个无模型消费结果与 `proofScope`，**不输出 stableApproved，不授予发布权限**。失败不覆盖/清理目标；有限原 ZIP、私有 `consumer.tap` 与已写现场保留，不自动重试。不要把私有失败日志直接上传或作为新的权威证据。
 

@@ -2,13 +2,23 @@
 
 ## 当前结论
 
+2026-09-11 20:21:16（Asia/Shanghai），PR #293 的精确 head `93ed5468` 经独立审查和 CI `34597445153` 全13项、准入 `34597445154` 双平台与 secret scan 通过后，实际合并为 main `9852e4da487c0c0f0a36c3ec99de62d5d71b55a9`；本地主分支已正常快进，用户未跟踪文件保留。main push `34598484218` 已13项通过，原始候选包独立安装消费通过，精确绑定见下文；不复用 PR 包冒充该 main 包。本条仅为研发合并，不是 UI 完整验收或软件发行。
+
+后继运行控制补验确认 P2：暂停 Operation 已 succeeded，公开 Task paused 且允许 resume/cancel，但页面 `pendingAction` 仍锁住后续操作，必须先点含义不明确的“关闭”。这不是单纯脚本遗漏；存在可见绕行路径、未证数据/权限损害，但 E12 自然操作仍未通过，后继独立分支修复。unknown/submitting 的冻结锁必须保留，不按202自动解锁。原失败及聚合复验报告 `/private/tmp/ui-controls-fixed.diiOfo/report.md` 保留；E13单Worker取消后兄弟继续和E14真实运行取消的限定子场景已通过，不重复整批。
+
+该控制 P2 的功能修复已整合至 `5c417aa2`，随 [PR #294](https://github.com/chiga0/marshal-harness/pull/294) 推送。独立 reviewer 对源 `53884e40` 发现陈旧 GET 与显示缓存混淆的 P2，由 `569ab716` 集中修复；50项定向及1项独立反例通过，主侧整合479项前端测试、4项护栏及构建通过。独立 Chrome 实操 E12 原 pause/resume Operation 均 succeeded，注入 unknown 时仍禁用，恢复原响应后无需关闭回执即可继续，两原作者恢复完成；Task 后续 verify 失败仍如实显示。报告 `/private/tmp/ui-e12.8o0cz6/report.md`。控制区处于应用滚动容器下方，截图没有完整覆盖双回执，视觉范围仍待补验，DOM/点击不替代截图。
+
+新增 E04 P2：33个 JSON inputRefs 在零 POST 时被误分为未知请求并冻结草稿；原失败 `/private/tmp/ui-create-boundary.BXRPia/followup/report.md` 保留。修复源 `60fef546` 经独立审查、57项定向测试及 Chrome 复验通过，整合为 `13f04cf8`；33引用及32引用加1附件均零POST、本地错误可见、草稿可编辑，原根唯一Task前后完全一致。合法32提交由组件测试覆盖，浏览器未重复创建。报告 `/private/tmp/ui-e04-fixed.3tsf5g/report.md`；真实网络未知冻结及原键重放不放宽。整合后42文件483项前端测试、4项护栏及构建通过，实际 JS `index-BNLSYH6U.js`；截图仅桌面浅色，不替代完整主题/缩放或真人验收。
+
+原 main 包独立消费结果 `/private/tmp/marshal-main-9852.RiUeEa/independent-admission/result.json`：两种布局均通过，每种原执行4次、Attempts4、冷恢复重复启动0、modelCalls0。升级预检另于 `independent-upgrade-preflight.json` 返回 `invalid_manifest`：测试消费者用当前67文件库存校验旧版65文件，运行尚未开始、未创建业务根；四个共同 profile 摘要相同。不把工具兼容缺口当作运行时数据迁移失败，也不声称升级通过。后继仅修测试消费者的固定旧验证器选择，不放宽生产库存验证；此前报告 profile 身份迁移的独立缺口仍保留。
+
 **尚不可声明完整验收通过，尚未发布新版。** 本记录补充三条验收，不以组件测试替代实际交付、视觉操作或目标用户测试。
 
 | 验收线 | 当前状态 | 证据与缺口 |
 | --- | --- | --- |
-| 功能与可靠性 | PARTIAL | `9e5e49e0` 关闭答复迟到 P1，41 文件 425 项测试及构建通过；第三轮真实 Pi 团队完成独立审查、验收、授权发布和后验，见下文。取消、故障及同发行包全范围验收仍待补齐。 |
-| 视觉与交互 | PARTIAL | 实际浏览器完成创建、附件上传、Leader 答复、计划批准、DAG 与团队查看；窄屏、缩放、键盘、完整错误/恢复矩阵尚未全部完成。 |
-| 产品可用性 | NOT_RUN（真人）；Agent 截图观察已完成 | 用户选择子 Agent 模拟；实际观察者参与过 UI 实现且无法访问主侧浏览器，只有截图观察，主侧负责操作。不能称为独立可用性测试、盲测或真人验收；其独立验证范围仅为未参与实现的报告内容与后端交付 GET。 |
+| 功能与可靠性 | PARTIAL | 第三轮真实 Pi 团队完成独立审查、验收、授权发布和后验；原输入/成果/发布回执/后验证据四项浏览器下载复验通过。UI 464 项及 4 项测试护栏通过；`93ed5468` 补齐发行依赖后，发行测试 11/11、原仓库安装消费准入 31/31 通过。最终 CI 包、取消/故障全范围与持续稳定性仍待补齐。 |
+| 视觉与交互 | PARTIAL | 已实测创建、问答、批准、DAG/团队、桌面/375px、浅深主题、Chrome 原生 200% 缩放、抽屉键盘及受控异常回执。成果列宽/错误换行已修复复验；完整必需矩阵与实际 Safari 仍未全部完成，具体版本和限定范围见下文。 |
+| 产品可用性 | NOT_RUN（真人）；无指导 Agent 模拟已完成 | 早期只有参与开发者的截图观察；后续新增未继承开发历史的独立 Agent，完成无点击指导的限定只读任务并发现追溯缺口，修复后原业务四下载已独立复验。模拟不替代真人，也未覆盖全部新建与授权用户路径。 |
 
 候选锁定起点：`976ddc00c74018601a1b8e14c52d7a532f7c029d`。当前已发布安装器版本仍为 `v1.0.2`；研发候选合入或构建成功不等于安装发行资产已更新。
 
@@ -92,6 +102,17 @@ CI `34583578954` 的 Ubuntu/Node22 密度测试超过默认 5 秒（5119ms），
 
 ## 模拟观察意见
 
+### 剩余验收按用户路径聚合
+
+独立核对 `93ed5468` 后，后续不逐个场景重复已有测试，而按以下批次补齐：
+
+1. 运行控制/问答：E09 单分支等待、E10 延迟 ACK 中间展示、E12 暂停恢复、E13 单 Worker 取消及旧 profile 501、E14 运行中取消/完成竞态；复用既有受控真实 HTTP fixture，不必付费等待模型产生竞态。
+2. 浏览器边界/会话安全：E04/E05 草稿边界与创建丢响应，E11 到期/串绑，E21 乱序/隐藏页/重连，E27/E28 会话隔离与恶意内容；服务和组件反例已有，缺的是实际浏览器行为，不能重复后端测试冒充补齐。
+3. 最终原始 CI 包的安装/旧 API/回滚、实际 Safari 与未参与开发的目标用户验收。由主侧负责最终资产，真人缺口仍需用户或代表参与，不用 Agent 模拟替代。
+4. 把剩余问答/批准/运行中页面的尺寸/主题/纯键盘检查并入上面操作；另补 500 条已载入事件的浏览器性能。100 Task 分页/筛选已有，600→500 的 jsdom 留存测试不能代替浏览器性能。
+
+E18 历史拒绝已证明安全事实，不把它重新列为完全未测。后续补验见下文；E19 发布后验失败及刷新不重复也已有限定证据。上述是待验排期，不表示已发现同等数量的产品缺陷，不撤销已发布 API/B3。
+
 后续新增一位未继承开发历史、未参与 UI 实现的 Agent，约三分钟完成限定只读目标：从列表找到已完成任务，理解日期/两作者及校验分工，区分 review、acceptance、发布和后验状态，下载最终 JSON/验收 JSON，并从设置返回原成果页。未读源码、API 或 SQLite，也未收到点击指导；两次各约 30 秒的等待来自把团队误当按钮、假定设置页仍有工作台任务链接，不能归为业务失败。证据 `/private/tmp/marshal-observer-enS74O/observation.md` 及同目录页面截图/下载文件。这是按用户选择执行的无点击指导 Agent 模拟，仍不替代真人测试。
 
 该观察者仍难理解多个 managed-leader ID 与尝试编号，且在页面未找到原输入或实际发布目标回执，不能自行重算或验证目标物理落盘。上述为后续核对的可用性线索，不从一次未找到推断服务丢数据；之前独立原输入/实际目标核验事实继续保留。
@@ -163,6 +184,26 @@ CI `34583578954` 的 Ubuntu/Node22 密度测试超过默认 5 秒（5119ms），
 主侧在 `aa93f1be` 的 UI 默认测试通过：42 文件、464 项 Vitest 加 4 项浏览器测试护栏，退出 0。随后 CI `34596493181` 两平台发行准入失败：新增服务模块未同步进显式发行清单，严格库存检查返回 `source_inventory_changed`；独立机械对照确认只缺 `cli-shutdown.mjs`、`service-diagnostic.mjs`。修复只补入这两个运行依赖，保持拒绝额外/遗漏库存的规则；最终同包检查与持续观察另行记录，不用 UI 测试代替发行验证。学习：任何新增运行模块都必须在同次本地验证中覆盖真实仓库打包/安装消费，不能只测从清单构造的 fixture。
 
 ### 可复用浏览器异常交互
+
+main `9852e4da` 的原 Node team run `34598484218`、attempt1、push 事件已13项全部通过。原 artifact=`10262833820`，ZIP大小1515081字节、SHA-256=`a7e76d1a6bfa49c14c74a473f914d6f7ffc7be2600d4e16fcf7efaaf30ed4cc6`，下载后实际匹配GitHub API摘要；原producer日志给定 manifest=`sha256:025c4ea96b076ded7154d59792f455ba85791530e65abe806e3cd20fcf8344a2`，本地原manifest字节摘要一致（70文件/1490309字节）。原包保留 `/private/tmp/marshal-main-9852.RiUeEa/candidate.zip`，独立准入/安装消费另记结果；未签名、未发布，不包含后继暂停恢复修复。
+
+500事件限定性能补验 `/private/tmp/ui-events-perf.QX14y6/report.md`：独立受控ACP driver按原协议产生合法工具通知，经原Execution/SQLite持久553条事件（530条progress），冷开只读浏览器实际保留500条。Darwin25.6/Node24.15/Chrome152、M5 Pro、1440×1000浅色，原 `CZg1Rmd8` 资产；实际section滚动先验证位移，再采样16次滚轮，长任务0、最大帧间隔16.8ms；活动路由可见92.4ms不是冷TTI，点击至第二帧31.4ms仅响应代理。历史尾页7.6ms缺“目标行原先不存在”的单独落证，不关闭新生成事件显示延迟；不代替持续负载、100Task＋500事件组合或最终包。Task/Workers/553事件前后不变、POST0、自有服务退出0。三次测试脚本前提错误（批准路径、分页参数、滚动容器）均保留FAIL；最终复用原数据根，不再次生成负载，不把测试错误归为产品缺陷。
+
+浏览器安全限定补验 `/private/tmp/ui-security.MAIG8n/report.md`：原真实 HTTP/SQLite fixture 上传 HTML115B、SVG122B、Markdown130B，含脚本/事件处理器/远程图/危险链接测试字符串；列表/详情按文本呈现，危险类型只显式下载，摘要匹配，未打开文件。观测无脚本执行标记、弹窗、远程节点或外部请求尝试；网络护栏阻止任何实际外传。断开后旧内容消失、请求停止，URL/localStorage/sessionStorage/cookie 未见 token；同 origin 重连等待600ms不闪旧内容，第二空服务无原 Task。原脚本误等“返回列表”而实际回原详情，FAIL 保留；正常冷开两个原根补测通过，无新任务/模型，服务均退出0。不证明同 origin 后端替换、IndexedDB、堆内存擦除或全面渗透测试。
+
+创建/认证限定补验 `/private/tmp/ui-create401.vmbfxe/report.md`：创建真实201被服务受理后丢弃浏览器响应，UI明确未知、不自动重发；显式原请求重放仍201、同key/body/Task ID，仅1 Task。原脚本误比较原始JSON属性顺序导致raw摘要不同，FAIL保留；结构字段严格相等，原根冷开核对仍1 Task，不声称raw字节相同。精确详情GET注入一次合法401后退回连接页、旧内容消失；排空300ms后6秒请求计数23→23，无轮询风暴。属于受控401，不冒充自然鉴权失效，服务均退出0。两组实际资产均 `CZg1Rmd8`／`--K1WoSHw`，不外推Safari、真人、全部竞态或附件上传恢复。
+
+本批测试驱动复盘：手拼API路径/分页参数、凭印象等待状态/路由、比较语义回执的raw JSON顺序造成额外失败；并非都属产品rework。后继脚本改用既有TaskClient与OpenAPI，先校验请求序列和返回字段、以实际URL/revision及稳定渲染作定位；优先冷开原隔离根继续读验证，不重造任务或覆盖FAIL。运行控制中的已成功回执仍锁按钮另经查码确认为真实P2，不能以“脚本错误”一概抹去。
+
+本地测试安全摘要（来源为主侧工具执行记录，独立 reviewer 未重跑）：`node --test packages/task-distribution/index.test.mjs`，原 session56683，11/11、0失败、退出0、62044.79325ms；`python3 -I -B scripts/node-candidate-admit_test.py` 在提交 `93ed5468` 后运行，原 session34478，31项、20.247秒、OK、退出0；`node --test packages/task-distribution/*.test.mjs`，原 session30594，29/29、0失败、退出0、75498.05975ms。已结束句柄后续不可重读，不据此声称另外一次独立执行；下文 CI 为独立远端证据。
+
+后继 E18 限定补验 `/private/tmp/ui-deny.IusDKj/report.md`、`evidence.json` 使用 `93ed5468`／`CZg1Rmd8` 与新隔离原受控 fixture：deny 202、原摘要匹配、请求 replied；Task 实际 failed/invalid_leader_decision，成果页明确整体失败，publication pending、无回执。刷新再观察2.2秒后 publication-start 仍0、浏览器 POST 仍3、目录为空，服务正常退出0。补齐原脚本错误等待导致中断的成果页/刷新范围，不覆盖历史 FAIL、不将受控 Leader 的失败改为成功；“拒绝后仍 pending”的解释性仍有限，保留体验改进项。
+
+服务修复后原业务数据根的单次只读观察：2026-09-11 20:00:05.899–20:15:05.910（Asia/Shanghai），单调时长900001ms，60轮/240次公开 GET 全部200，ready/supervisor ready、activeWorkers0、原 Task completed/revision62/12 Workers及完整事实摘要均不变，异常0；原观察进程自然退出0，主侧服务未停止。证据位于独立 worktree `ui-service-failure-close/.marshal/soak-readonly.9oMhbH/summary.json`、`observations.jsonl`，脚本 SHA-256=`21b0465c36e98447adfde8db27edd54d7df282b47caecb60000d22f658c2ce4e`。只证明15分钟只读窗口，不覆盖原约1.5小时故障窗口、活跃模型或长期生产稳定，原未知触发原因仍 OPEN。
+
+`93ed5468` 修复后的本地完整发行回归为 29/29、退出 0、75498ms，含安装包 HTTP 启动、冷打开不重复执行、受控同源码双包回滚与拒绝不完整证据；不冒充最终 CI/签名资产。CI `34597445154` 的 macOS 与 Ubuntu Admission boundaries 均通过，后续独立接纳作业按 PR 事件预期跳过，尚不构成 main 原包接纳。
+
+列表/卡片稳定态补验 `/private/tmp/ui-toggle.TkVxDZ/report.md`：Chrome152、1440/375、浅深主题，八个模式状态均在移开 hover 并等待500ms后截图（实际过渡150ms）；ARIA、选中背景与真实 grid/list 布局一致，无整页横溢。使用原完成 Task，仅 GET 与本地展示切换，前后 Task 不变；实际资产 `CZg1Rmd8`／`--K1WoSHw`。关闭旧截图对应的稳定态未核验缺口，不把历史两帧截图武断解释为唯一原因，不替代真人、Safari或长期稳定性。
 
 E18/E19 单次受控 Chrome 152 实测记录于 `/private/tmp/ui-pub.PV5WYZ/report.md`，UI 资产清单摘要同为 `67942c314fa92181cedf44d278b49d9d4c05769de15f6744c3cc012fa15e463b`，两个隔离服务均正常退出 0，无真实模型或外部业务发布。E19 在授权前关闭自有 reader 后，真实 publisher 写出 93 字节文件，publication=succeeded、postverify=failed、Task=failed；原回执与文件保留，刷新前后发布启动仍 1 次、文件摘要不变，成果页不冒充整体成功，限定子场景通过。E18 拒绝得到真实 202，但脚本误等 `answered` 而合同实际是 `replied`，原自动化 FAIL 保留；同次停止后只读 SQLite 核对原 deny/digest 与回执一致，零发布启动、目录空。未执行 E18 显式刷新检查，且受控 Leader 随后为 `invalid_leader_decision`，不能写完整拒绝流程通过。学习：浏览器等待状态直接取既有合同，避免凭印象另造状态名；后核对不覆盖失败原记录。
 

@@ -6,14 +6,15 @@ try {
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i]?.slice(2), value = args[i + 1];
-    if (!args[i]?.startsWith('--') || !names.includes(key) || Object.hasOwn(options, key) || !value || value.startsWith('--')) throw Error();
+    if (!args[i]?.startsWith('--') || ![...names, 'old-validator'].includes(key) || Object.hasOwn(options, key) || !value || value.startsWith('--')) throw Error();
     options[key] = value;
   }
-  if (Object.keys(options).length !== names.length) throw Error();
+  if (names.some(name => !Object.hasOwn(options, name))) throw Error();
   const result = await runUpgrade({
     oldPackage: {root: options['old-package'], sourceHead: options['old-source'], manifestDigest: options['old-manifest']},
     newPackage: {root: options['new-package'], sourceHead: options['new-source'], manifestDigest: options['new-manifest']},
     runDir: options['run-dir'], assetKind: options['asset-kind'],
+    oldValidator: options['old-validator'] ?? null,
   });
   process.stdout.write(JSON.stringify(result) + '\n');
 } catch {
