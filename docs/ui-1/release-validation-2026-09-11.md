@@ -26,6 +26,10 @@ E24/E25 问题／方案／授权页面限定补验 `/private/tmp/ui-question-key
 
 E09/E11/E12 部分证据 `/private/tmp/ui-active.ieXUTd/report.md`：冻结 `13f04cf8`／`BNLSYH6U`。east等待问题、west完成有公开事实，概览问题可见但兄弟区未展开，不能称完整双分支视觉；串另一真实Task的questionDigest由服务409拒绝，前后两Task/问题/Workers/Events严格不变。原pause/resume均succeeded且二次确认截图取得，但双回执截图未取得。脚本重复把resume后的状态假定为running，实际既有成功脚本与Core均恢复awaiting-answer，超时属于已知前提未复用，原FAIL保留；后续仅补未发生的E10，不重造已有通过子场景。
 
+E10 单Task限定补验 `/private/tmp/ui-active-fixed.j4F9Ru/report.md`：冻结 `13f04cf8`／`BNLSYH6U`，原45秒Task/30秒问题预算，私有driver仅在原业务ACK请求前加入最长20秒gate，放行后沿原Pi adapter→Runtime/Core→Store路径确认，未自行写ACK或伪造浏览器响应。浏览器实际看到202受理、dispatched未消费；原问题随后acknowledged，活动页自动出现对应event-37。公开ACK读数到DOM1786.70ms，gate到DOM2044.77ms为本次真实ACK持久提交到显示的保守上界，小于3秒；不覆盖100Task/500事件负载，也不是包含gate等待的用户答复POST到显示时间。主侧另直接查看ACK事件截图。概览ACK后问题消失、活动只有英文原事件名，另有过时“此视图不显示ACK”文案，确认中文消费状态可追溯性的P2，正在修复。所属服务退出0；不把受控Task终态当业务成果消费通过。
+
+受支持Git patch样例 `/private/tmp/ui-git-patch.NTj21t/report.md`：冻结 `13f04cf8`／`BNLSYH6U`，原受控Pi桥/ACP、真实HTTP/SQLite、自有两个各2文件仓库，未扩大Git支持面或调用模型。Task `task-f0df4afe-0ef4-472e-9290-ec07889f3671` 由浏览器批准202后completed/revision19，公开4Workers/4Attempts均完成。实际下载 `git-mixed-patches.json` 3586字节，SHA-256 `6cee4892b6c5444e2c6b387f0b8c354994584116058ad6da7e7ae3872fb58eaa` 与metadata一致；原consumer在第三组独立worktree应用浏览器下载包并通过23检查（含12负例），desk900/lamp450/total1350，两原仓HEAD/工作树不变、无remote，Task下载前后不变。交付是双patch与上下文的JSON包，不是独立.patch文件，不是远端发布。团队截图仍为中间帧，完整终态来自API，下载截图显示完成及文件保存；不外推完整视觉矩阵。脚本启动前独立预检纠正接口/定位/等待与非空完整性断言，唯一实际运行退出0，服务/浏览器/consumer均关闭。
+
 **尚不可声明完整验收通过，尚未发布新版。** 本记录补充三条验收，不以组件测试替代实际交付、视觉操作或目标用户测试。
 
 | 验收线 | 当前状态 | 证据与缺口 |
