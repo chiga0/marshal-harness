@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import type {ReactNode} from 'react';
 import type {ControlBody} from '@/lib/transport/types';
+import {ApiError} from '@/lib/transport/types';
 import {TaskControls} from './task-controls';
 import {callsOf, makeFakeTransport, makeTask} from '../shared/test-fakes';
 
@@ -16,6 +17,48 @@ function wrap(node: ReactNode) {
 const WITH_REVISION = makeTask({allowedActions: ['pause', 'cancel']});
 
 describe('任务控制（P07 / E12 / E14）', () => {
+  it('未知取消不允许新操作或换键，轮询推进后显式重放仍用原 CAS', async () => {
+    const {transport, calls} = makeFakeTransport({cancelTask: async () => { throw new TypeError('lost response'); }});
+    const client = new QueryClient();
+    const node = (revision: number) => <QueryClientProvider client={client}><TaskControls task={{...WITH_REVISION, revision}} transport={transport} onChanged={() => {}} /></QueryClientProvider>;
+    const view = render(node(7));
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('control-cancel'));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', {name: '取消任务'}));
+    await screen.findByTestId('error-notice');
+    view.rerender(node(8));
+    expect(screen.getByTestId('control-pause')).toBeDisabled();
+    expect(screen.queryByText('已核对结果，关闭并重新选择操作')).toBeNull();
+    await user.click(screen.getByRole('button', {name: /原键重放/}));
+    await waitFor(() => expect(callsOf(calls, 'cancelTask')).toHaveLength(2));
+    expect(callsOf(calls, 'cancelTask')[0]!.args).toEqual(callsOf(calls, 'cancelTask')[1]!.args);
+  });
+  it('409 后显式核对重开采用新键/新 CAS，确认期间不会偷换版本', async () => {
+    let first = true;
+    const {transport, calls} = makeFakeTransport({cancelTask: async () => {
+      if (first) { first = false; throw new ApiError(409, 'revision_conflict', '版本冲突', null); }
+      return {};
+    }});
+    const client = new QueryClient();
+    const node = (revision: number) => <QueryClientProvider client={client}><TaskControls task={{...WITH_REVISION, revision}} transport={transport} onChanged={() => {}} /></QueryClientProvider>;
+    const view = render(node(7));
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('control-cancel'));
+    view.rerender(node(8));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', {name: '取消任务'}));
+    await screen.findByText('已核对结果，关闭并重新选择操作');
+    expect(screen.getByTestId('control-cancel')).toBeDisabled();
+    await user.click(screen.getByText('已核对结果，关闭并重新选择操作'));
+    await user.click(screen.getByTestId('control-cancel'));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', {name: '取消任务'}));
+    await screen.findByTestId('control-cancel-accepted');
+    const bodies = callsOf(calls, 'cancelTask').map(call => call.args[1] as ControlBody);
+    expect(bodies.map(body => body.expectedRevision)).toEqual([7, 8]);
+    expect(bodies[0]!.idempotencyKey).not.toBe(bodies[1]!.idempotencyKey);
+    view.rerender(node(9));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByTestId('control-cancel-accepted')).toBeInTheDocument();
+  });
   it('按 allowedActions 控制按钮可见性', () => {
     const {transport} = makeFakeTransport();
     wrap(<TaskControls task={WITH_REVISION} transport={transport} onChanged={() => {}} />);

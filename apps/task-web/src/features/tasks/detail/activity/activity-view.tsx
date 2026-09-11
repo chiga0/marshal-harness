@@ -1,4 +1,4 @@
-// 活动（P11）：有界分页事件流，「加载更多」按已加载最旧页的 nextCursor 翻页；最新页轮询合并且按 id 去重；
+// 活动（P11）：服务端按 sequence 升序、after cursor 向后分页；轮询从当前尾页继续，不能把首页当最新页。
 // 断线/请求失败保留已加载内容并显示错误与 requestId；长内容可展开；终态仍可手动刷新。
 
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
@@ -22,7 +22,7 @@ export interface ActivityViewProps {
 }
 
 export function ActivityView({taskId, transport, eventsLoader: injectedLoader}: ActivityViewProps) {
-  const loader = injectedLoader !== undefined ? injectedLoader : resolveEventsLoader(transport);
+  const loader = useMemo(() => injectedLoader !== undefined ? injectedLoader : resolveEventsLoader(transport), [injectedLoader, transport]);
   if (loader === null) {
     return (
       <Card className="space-y-2" data-testid="activity-unavailable">
@@ -34,7 +34,7 @@ export function ActivityView({taskId, transport, eventsLoader: injectedLoader}: 
       </Card>
     );
   }
-  return <ActivityStream taskId={taskId} loader={loader} />;
+  return <ActivityStream key={taskId} taskId={taskId} loader={loader} />;
 }
 
 function ActivityStream({taskId, loader}: {taskId: string; loader: EventsLoader}) {
@@ -44,18 +44,24 @@ function ActivityStream({taskId, loader}: {taskId: string; loader: EventsLoader}
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const inFlight = useRef(false);
+  // nextCursor=null 仅表示本次读到末尾；继续重读该尾页可发现稍后新增事件。
+  const cursor = useRef<string | null>(null);
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
 
   const loadNewest = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      const page = await loader(taskId, {cursor: null, limit: PAGE_SIZE});
-      // 最新页总是替换第 0 页；更早分页保留，由 mergeEventPages 按 id 去重
-      setPages(previous => (previous.length === 0 ? [page] : [page, ...previous.slice(1)]));
+      const page = await loader(taskId, {cursor: cursor.current, limit: PAGE_SIZE});
+      if (!active.current) return;
+      if (page.nextCursor !== null) cursor.current = page.nextCursor;
+      // 合并后即裁剪内存，不只裁剪 DOM；重复尾页不会持续累积。
+      setPages(previous => [{...page, items: mergeEventPages([...previous, page]).items}]);
       setError(null);
       setLastLoadedAt(new Date().toISOString());
     } catch (cause) {
-      setError(cause);
+      if (active.current) setError(cause);
     } finally {
       inFlight.current = false;
     }
@@ -68,25 +74,18 @@ function ActivityStream({taskId, loader}: {taskId: string; loader: EventsLoader}
     return () => clearInterval(timer);
   }, [loadNewest, intervalMs]);
 
-  // 「加载更多」游标 = 当前已加载最旧页的 nextCursor；覆盖最旧可见事件之前的内容
+  // 「加载更多」和轮询都沿服务端 nextCursor 追赶后续事件。
   const olderCursor = pages.length > 0 ? (pages[pages.length - 1]?.nextCursor ?? null) : null;
 
   const loadMore = useCallback(async () => {
     if (olderCursor === null || inFlight.current) return;
-    inFlight.current = true;
     setLoadingMore(true);
     try {
-      const page = await loader(taskId, {cursor: olderCursor, limit: PAGE_SIZE});
-      setPages(previous => [...previous, page]);
-      setError(null);
-      setLastLoadedAt(new Date().toISOString());
-    } catch (cause) {
-      setError(cause);
+      await loadNewest();
     } finally {
-      inFlight.current = false;
-      setLoadingMore(false);
+      if (active.current) setLoadingMore(false);
     }
-  }, [loader, taskId, olderCursor]);
+  }, [loadNewest, olderCursor]);
 
   const merged = useMemo(() => mergeEventPages(pages), [pages]);
 
@@ -131,7 +130,7 @@ function ActivityStream({taskId, loader}: {taskId: string; loader: EventsLoader}
           </Button>
         ) : null}
         <span className="text-xs text-text-secondary">
-          已载入 {merged.items.length} 条{merged.capped ? `（已达单次上限 ${ACTIVITY_CAP} 条，最早的事件未再展示）` : ''}。
+          已载入 {merged.items.length} 条{merged.items.length >= ACTIVITY_CAP ? `（最多保留最近 ${ACTIVITY_CAP} 条已取得事件）` : ''}。{olderCursor !== null ? '正在按顺序追赶后续事件，尚未取得全部事件。' : ''}
         </span>
       </div>
     </div>
