@@ -12,6 +12,8 @@
 
 候选锁定起点：`976ddc00c74018601a1b8e14c52d7a532f7c029d`。当前已发布安装器版本仍为 `v1.0.2`；研发候选合入或构建成功不等于安装发行资产已更新。
 
+最新增量：`9e5e49e0` 已关闭上述答复迟到 P1，原 reviewer 复审无新增 P0/P1、39 项定向通过；主侧整合构建及 41 文件 425 项测试通过，JS `index-BESzNDyL.js`。新私有根正常关闭 clean=true 后，同配置 `open` 成功并加载新 UI，尚未创建第三轮模型 Task。当前 PARTIAL 不变，仍须真实团队交付、浏览器全矩阵及升级出口。
+
 证据版本分别记录，不能混用：第一轮实机与 `intake.png`、`team-review.png`、`failed-team.png` 使用基线 `976ddc00`；第二轮使用代码等价于 `c41e8732` 的冻结构建（CSS `index-DnldHR2s.css`、JS `index-CskjiGYd.js`），包含信封示例和主要 UI 修复，但不含后续 Operation 展示与观察 fallback。`candidate-intake.png` 属于第二轮。后续候选均须重新绑定构建验收，不能复用为通过证明。
 
 ## 真实业务链：第一轮
