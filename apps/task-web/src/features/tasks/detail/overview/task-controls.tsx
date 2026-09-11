@@ -7,7 +7,7 @@ import {useQueryClient} from '@tanstack/react-query';
 import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import {ConfirmDialog} from '@/components/ui/dialog';
-import type {Revision, TaskRecord, Transport} from '@/lib/transport/types';
+import type {OperationRecord, Revision, TaskRecord, Transport} from '@/lib/transport/types';
 import {taskKeys} from '../query-keys';
 import {casRevisionOf, isTerminalStatus} from '../shared/derive';
 import {ErrorNotice} from '../shared/error-notice';
@@ -43,6 +43,7 @@ export interface TaskControlsProps {
 
 export function TaskControls({task, transport, onChanged}: TaskControlsProps) {
   const [pendingAction, setPendingAction] = useState<ControlAction | null>(null);
+  const [confirmedOperations, setConfirmedOperations] = useState<OperationRecord[]>([]);
   const revision = casRevisionOf(task);
   const terminal = isTerminalStatus(task.status);
 
@@ -86,27 +87,38 @@ export function TaskControls({task, transport, onChanged}: TaskControlsProps) {
       {pendingAction !== null ? (
         <ControlAttempt
           taskId={task.id}
+          task={task}
           action={pendingAction}
           revision={revision}
           transport={transport}
           onClose={() => setPendingAction(null)}
           onChanged={onChanged}
+          onConfirmed={operation => {
+            setConfirmedOperations(previous => [...previous.filter(item => item.id !== operation.id), operation].slice(-20));
+            setPendingAction(null);
+          }}
         />
       ) : null}
+      {confirmedOperations.length ? <section aria-label="已核对的任务控制回执" className="space-y-2">
+        <p className="text-xs text-text-secondary">已核对操作结果；可按任务当前状态选择下一步。保留本页最近 20 条控制回执，操作成功不代表任务交付成功。</p>
+        {confirmedOperations.map(operation => <OperationReceipt key={operation.id} result={operation} taskId={task.id} kind={operation.kind} transport={transport} />)}
+      </section> : null}
     </Card>
   );
 }
 
 interface ControlAttemptProps {
   taskId: string;
+  task: TaskRecord;
   action: ControlAction;
   revision: Revision;
   transport: Transport;
   onClose: () => void;
   onChanged: () => void;
+  onConfirmed: (operation: OperationRecord) => void;
 }
 
-function ControlAttempt({taskId, action, revision, transport, onClose, onChanged}: ControlAttemptProps) {
+function ControlAttempt({taskId, task, action, revision, transport, onClose, onChanged, onConfirmed}: ControlAttemptProps) {
   const queryClient = useQueryClient();
   // 二次确认冻结所见 CAS；轮询不得替换用户正在确认的版本。
   const [confirmedRevision] = useState(revision);
@@ -133,7 +145,13 @@ function ControlAttempt({taskId, action, revision, transport, onClose, onChanged
         onReplay={() => void logical.replay(run)}
         onRefresh={() => { void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)}); onChanged(); }}
         onClose={onClose} />
-      {logical.phase.kind === 'accepted' ? <OperationReceipt result={logical.phase.result} taskId={taskId} kind={`task.${action}`} transport={transport} /> : null}
+      {logical.phase.kind === 'accepted' ? <OperationReceipt result={logical.phase.result} taskId={taskId} kind={`task.${action}`} transport={transport}
+        onConfirmed={operation => {
+          if (operation.taskRevision <= confirmedRevision || operation.taskRevision > task.revision) return;
+          if (operation.status === 'succeeded' && !isTerminalStatus(task.status) &&
+              (action === 'pause' ? task.status !== 'paused' : action === 'resume' ? task.status === 'paused' : true)) return;
+          onConfirmed(operation);
+        }} /> : null}
     </>
   );
 }
@@ -153,8 +171,8 @@ function ControlPhase({phase, depsStale, action, onReplay, onRefresh, onClose}: 
         </p>
         <div className="mt-2 flex gap-2">
           <Button size="sm" variant="outline" onClick={onRefresh}>刷新任务状态</Button>
-          <Button size="sm" variant="ghost" onClick={onClose}>关闭</Button>
         </div>
+        <p className="mt-1 text-xs text-text-secondary">正在核对原操作回执与任务状态；确认结果前暂不开放其他控制操作。无需关闭提示，核对完成后自动恢复可用操作。</p>
       </div>
     );
   }

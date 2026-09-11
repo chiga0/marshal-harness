@@ -1,9 +1,9 @@
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
 import {render, screen, waitFor, within} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import type {ReactNode} from 'react';
-import type {ControlBody} from '@/lib/transport/types';
+import type {ControlBody, OperationRecord} from '@/lib/transport/types';
 import {ApiError} from '@/lib/transport/types';
 import {TaskControls} from './task-controls';
 import {callsOf, makeFakeTransport, makeTask} from '../shared/test-fakes';
@@ -17,6 +17,95 @@ function wrap(node: ReactNode) {
 const WITH_REVISION = makeTask({allowedActions: ['pause', 'cancel']});
 
 describe('任务控制（P07 / E12 / E14）', () => {
+  const original: OperationRecord = {id: 'pause-receipt', taskId: WITH_REVISION.id, kind: 'task.pause', status: 'accepted', taskRevision: 8,
+    createdAt: '2026-09-11T00:00:00Z', updatedAt: '2026-09-11T00:00:00Z'};
+  const paused = {...WITH_REVISION, status: 'paused' as const, revision: 8, allowedActions: ['resume', 'cancel'] as const};
+  async function controlFixture(read: () => Promise<OperationRecord>) {
+    const {transport, calls} = makeFakeTransport({pauseTask: async () => original, getOperation: read});
+    const client = new QueryClient({defaultOptions: {queries: {retry: false}}});
+    const node = (task: typeof WITH_REVISION) => <QueryClientProvider client={client}><TaskControls task={task} transport={transport} onChanged={() => {}} /></QueryClientProvider>;
+    const view = render(node(WITH_REVISION)); const user = userEvent.setup();
+    await user.click(screen.getByTestId('control-pause'));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', {name: '暂停任务'}));
+    await screen.findByTestId('control-pause-accepted');
+    view.rerender(node({...paused, allowedActions: [...paused.allowedActions]}));
+    return {view, node, user, calls, transport, client};
+  }
+  it.each(['accepted', 'running', 'unknown'] as const)('Operation %s 即便Task已paused也不解锁，不能用关闭提示绕过', async status => {
+    const read = vi.fn(async () => ({...original, status}));
+    const {calls, client} = await controlFixture(read);
+    await waitFor(() => expect(read).toHaveBeenCalled());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(screen.getByTestId('control-resume')).toBeDisabled();
+    expect(screen.getByTestId('control-cancel')).toBeDisabled();
+    expect(within(screen.getByTestId('control-pause-accepted')).queryByRole('button', {name: '关闭'})).toBeNull();
+    expect(screen.getByText(/无需关闭提示/)).toBeInTheDocument();
+    expect(callsOf(calls, 'pauseTask')).toHaveLength(1);
+  });
+  it.each([
+    {id: 'foreign'}, {taskId: 'other-task'}, {kind: 'task.resume' as const},
+    {taskRevision: 7}, {updatedAt: '2026-09-10T00:00:00Z'},
+  ])('错误归属或陈旧Operation不解锁 %j', async changed => {
+    const read = vi.fn(async () => ({...original, status: 'succeeded' as const, ...changed}));
+    const {client} = await controlFixture(read); await waitFor(() => expect(read).toHaveBeenCalled());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(screen.getByTestId('control-resume')).toBeDisabled();
+  });
+  it('暂停Operation成功但当前Task尚非paused不解锁；失败Operation经Task版本核对后可继续', async () => {
+    const {view, node, client} = await controlFixture(async () => ({...original, status: 'succeeded', taskRevision: 9}));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    view.rerender(node({...WITH_REVISION, revision: 9}));
+    expect(screen.getByTestId('control-pause')).toBeDisabled();
+    view.unmount(); client.clear();
+    const failed = await controlFixture(async () => ({...original, status: 'failed', code: 'state_conflict'}));
+    await waitFor(() => expect(screen.getByTestId('control-resume')).toBeEnabled());
+    expect(screen.getByRole('region', {name: '已核对的任务控制回执'})).toHaveTextContent('操作失败');
+    failed.view.unmount(); failed.client.clear();
+  });
+  it('submitting即便轮询得到paused也保持锁，不发送第二个控制请求', async () => {
+    let resolve!: (value: unknown) => void;
+    const {transport, calls} = makeFakeTransport({pauseTask: () => new Promise(done => {resolve = done;})});
+    const client = new QueryClient(); const user = userEvent.setup();
+    const node = (task: typeof WITH_REVISION) => <QueryClientProvider client={client}><TaskControls task={task} transport={transport} onChanged={() => {}} /></QueryClientProvider>;
+    const view = render(node(WITH_REVISION));
+    await user.click(screen.getByTestId('control-pause')); await user.click(within(screen.getByRole('dialog')).getByRole('button', {name: '暂停任务'}));
+    view.rerender(node({...paused, allowedActions: [...paused.allowedActions]}));
+    expect(screen.getByTestId('control-resume')).toBeDisabled();expect(callsOf(calls, 'pauseTask')).toHaveLength(1);
+    resolve(original);await screen.findByTestId('control-pause-accepted');
+  });
+  it('取消成功回执等待Task终态，保留原回执且不开放终态控制', async () => {
+    const receipt = {...original, id: 'cancel-receipt', kind: 'task.cancel' as const};
+    const {transport} = makeFakeTransport({cancelTask: async () => receipt, getOperation: async () => ({...receipt, status: 'succeeded'})});
+    const client = new QueryClient(); const user = userEvent.setup();
+    const node = (task: typeof WITH_REVISION) => <QueryClientProvider client={client}><TaskControls task={task} transport={transport} onChanged={() => {}} /></QueryClientProvider>;
+    const view = render(node(WITH_REVISION));await user.click(screen.getByTestId('control-cancel'));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', {name: '取消任务'}));
+    await screen.findByTestId('control-cancel-accepted');await waitFor(() => expect(client.isFetching()).toBe(0));
+    view.rerender(node({...WITH_REVISION, revision: 8, status: 'cancelling'}));
+    expect(screen.getByTestId('control-pause')).toBeDisabled();
+    view.rerender(node({...WITH_REVISION, revision: 8, status: 'cancelled', allowedActions: []}));
+    await screen.findByRole('region', {name: '已核对的任务控制回执'});
+    expect(screen.getByTestId('controls-terminal')).toHaveTextContent('cancelled');
+    expect(screen.queryByTestId('control-cancel')).toBeNull();
+  });
+  it('精确成功回执仍等待Task事实，暂停成功后直接恢复且保留两次回执', async () => {
+    const resume: OperationRecord = {...original, id: 'resume-receipt', kind: 'task.resume', taskRevision: 9};
+    const {view, node, user, transport, calls} = await controlFixture(async () => ({...original, status: 'succeeded', taskRevision: 9}));
+    await waitFor(() => expect(callsOf(calls, 'getOperation').length).toBeGreaterThan(0));
+    expect(screen.getByTestId('control-resume')).toBeDisabled(); // Task rev8 < terminal operation rev9
+    view.rerender(node({...paused, revision: 9, allowedActions: [...paused.allowedActions]}));
+    await waitFor(() => expect(screen.getByTestId('control-resume')).toBeEnabled());
+    expect(screen.getByRole('region', {name: '已核对的任务控制回执'})).toHaveTextContent('pause-receipt');
+    transport.resumeTask = async () => ({...resume, taskRevision: 10});
+    transport.getOperation = async id => ({...(id === resume.id ? {...resume, taskRevision: 10} : original), status: 'succeeded'});
+    await user.click(screen.getByTestId('control-resume'));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', {name: '恢复任务'}));
+    await screen.findByTestId('control-resume-accepted');
+    view.rerender(node({...WITH_REVISION, revision: 10}));
+    await waitFor(() => expect(screen.getByTestId('control-pause')).toBeEnabled());
+    const history = screen.getByRole('region', {name: '已核对的任务控制回执'});
+    expect(history).toHaveTextContent('pause-receipt'); expect(history).toHaveTextContent('resume-receipt');
+  });
   it('未知取消不允许新操作或换键，轮询推进后显式重放仍用原 CAS', async () => {
     const {transport, calls} = makeFakeTransport({cancelTask: async () => { throw new TypeError('lost response'); }});
     const client = new QueryClient();

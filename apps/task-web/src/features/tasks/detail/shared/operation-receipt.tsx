@@ -1,3 +1,4 @@
+import {useEffect} from 'react';
 import {skipToken, useQuery, useQueryClient} from '@tanstack/react-query';
 import {Button} from '@/components/ui/button';
 import {ApiError, parseOperation, type OperationRecord, type Transport} from '@/lib/transport/types';
@@ -25,8 +26,9 @@ function SessionReceipts({taskId, transport}: {taskId: string; transport: Transp
   </section>;
 }
 
-export function OperationReceipt({result, taskId, kind, workerId, transport}: {
+export function OperationReceipt({result, taskId, kind, workerId, transport, onConfirmed}: {
   result: unknown; taskId: string; kind: OperationRecord['kind']; workerId?: string; transport: Transport;
+  onConfirmed?: (operation: OperationRecord) => void;
 }) {
   let receipt: OperationRecord;
   try {
@@ -36,10 +38,10 @@ export function OperationReceipt({result, taskId, kind, workerId, transport}: {
   } catch {
     return <p role="alert" className="text-sm text-warning">未取得可核对的原 Operation 回执；不能确认操作结果。请核对任务、问题或 Worker 状态，不要新建替代操作。</p>;
   }
-  return <OperationStatus key={receipt.id} receipt={receipt} transport={transport} />;
+  return <OperationStatus key={receipt.id} receipt={receipt} transport={transport} {...(onConfirmed ? {onConfirmed} : {})} />;
 }
 
-function OperationStatus({receipt, transport}: {receipt: OperationRecord; transport: Transport}) {
+function OperationStatus({receipt, transport, onConfirmed}: {receipt: OperationRecord; transport: Transport; onConfirmed?: (operation: OperationRecord) => void}) {
   const interval = usePollMode('detail');
   const query = useQuery({
     queryKey: operationQueryKey(receipt),
@@ -60,6 +62,13 @@ function OperationStatus({receipt, transport}: {receipt: OperationRecord; transp
     },
   });
   const operation = query.data;
+  useEffect(() => {
+    // Initial 202/cached data is not a new confirmation. A failed or stale read
+    // must never release a caller's unresolved-action lock.
+    if (query.isFetchedAfterMount && !query.isFetching && !query.isError &&
+        ['succeeded', 'failed'].includes(operation.status) && operation.taskRevision >= receipt.taskRevision &&
+        Date.parse(operation.updatedAt) >= Date.parse(receipt.updatedAt)) onConfirmed?.(operation);
+  }, [operation, receipt, query.isFetchedAfterMount, query.isFetching, query.isError, onConfirmed]);
   return <section aria-label="操作回执" className="mt-2 space-y-1 rounded border border-border p-2 text-sm" data-testid="operation-receipt">
     <p>操作回执：<code className="break-all">{operation.id}</code></p>
     <p role="status">{LABEL[operation.status]}（<code>{operation.status}</code>）{query.isError ? '；读数可能陈旧' : ''}</p>
