@@ -56,3 +56,9 @@ PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs BROWSER_ENGINE=webkit n
 截图与脱敏摘要保留在当前 worktree 的 `.marshal/evidence/browser-fault-*`；短路径私有运行根保留在 `os.tmpdir()/ui-fault-*`，路径见 evidence.json（避免 Darwin Unix socket 路径过长）。服务正常停止后仍保留证据，不自动删除 SQLite/连接文件；这些目录包含测试凭据，不得发布。脚本不录 HAR、trace、token 或请求头；截图仅在连接后。执行前必须显式重建，build-if-missing 不检查资产是否陈旧。
 
 范围是 E20 的三个 mutation 未知结果跨路由/原键重放，以及 E31 业务答复、E07 计划预览批准、E14 取消与 E25 部分键盘行为。不是经典 `task.answer` 全链、409、取消运行中竞态、发布授权、Safari 人工测试或真人产品可用性验收；不把 202、fixture 或脚本 PASS 当作整 Task/版本验收完成。
+
+## 成果追溯受控浏览器验证
+
+在仓库根先完成 UI 安装与构建，再使用相同 Playwright 模块/引擎参数运行 `node apps/task-web/e2e/browser-traceability-acceptance.mjs`。这会创建新的私有短路径运行根，复用原 Leader/ACP/发布 fixture，经公开 API 准备输入、回答、批准和仅该隔离目标的发布，然后实际浏览器点击/Enter 下载输入、发布回执、后验证据。三者必须真实不在 Task.artifactIds 中，UI 必须从既有公开关联读到；落盘后复验字节、摘要，输入还与原上传字节逐一比较，原 Task 不变。
+
+这是显式受控配置，包含仅测试目录内的本地发布与只读目标入口，不启动真实模型，不冒充 sales.json 实际业务；截图/下载/脱敏摘要在 `.marshal/evidence/traceability-*`，私有服务数据保留在 evidence.json 指出的临时根。不得发布连接文件或原日志。不进入默认 CI，不能取代真人可用性或正式包验收。

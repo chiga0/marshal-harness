@@ -122,14 +122,14 @@ describe('成果页（P09 / E15–E19）', () => {
     const inventory = screen.getByTestId('artifact-inventory');
     expect(inventory).toHaveTextContent('候选成果');
     expect(inventory).toHaveTextContent('验收/后验证据');
-    expect(inventory).toHaveTextContent('输入');
+    expect(screen.getByTestId('observed-inputs')).toHaveTextContent('输入');
     const candidateRow = within(inventory).getAllByTestId('artifact-row')
       .find(row => row.getAttribute('data-artifact-id') === 'art-c1')!;
     expect(candidateRow).toBeDefined();
     expect(candidateRow).toHaveTextContent('部分');
     expect(inventory).toHaveTextContent('region-a.csv');
     expect(inventory).toHaveTextContent('verify-report.json');
-    expect(screen.getByTestId('artifact-group-empty-input')).toHaveTextContent('暂无输入');
+    expect(screen.getByTestId('input-association-unavailable')).toHaveTextContent('输入关联未提供');
   });
 
   it('单个产物元数据加载失败：那条如实不可用，不静默丢弃', () => {
