@@ -61,7 +61,7 @@ jobs:
 
   # UI-11：UI-only 改动也必须触发 typecheck/build/test（含 e2e 同源验收），干净 checkout 证明 dist 可由源码构建。
   ui:
-    name: task-web (typecheck, build, test + e2e, Node ${{ matrix.node }})
+    name: task-web (typecheck, build, test + e2e, ${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:

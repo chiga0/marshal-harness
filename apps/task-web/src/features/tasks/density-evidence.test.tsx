@@ -114,5 +114,7 @@ describe('已加载数据密度与分页有界性基准', () => {
       expect(merge.mock.calls.every(([pages]) => pages.length <= 2)).toBe(true);
       metrics('events-500-cap', started, commits, {load500Ms, requestedEvents: 600, rendered: rows.length, readCalls: loader.mock.calls.length, maxMergeInputItems: maxInputItems});
     } finally { merge.mockRestore(); }
-  });
+  // 容量 fixture 含 18 次组件驱动读取；CI 共机负载下默认 5 秒不足。
+  // 仅限定本用例执行上限，不改变容量断言，也不把时限当产品性能 SLO。
+  }, 15_000);
 });
