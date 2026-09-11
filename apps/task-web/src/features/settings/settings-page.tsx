@@ -5,6 +5,11 @@ import {useConnection} from '../connection/connection';
 import type {ConnectState} from '../connection/connection';
 import {Button} from '../../components/ui/button';
 import {Card, CardHeader, CardTitle} from '../../components/ui/card';
+import {Link, NavLink, Navigate, Route, Routes, useLocation} from 'react-router-dom';
+import {ArrowLeft, Info, Palette, ShieldCheck, Settings} from 'lucide-react';
+import {cn} from '../../lib/cn';
+import {settingsReturnTo} from './settings-navigation';
+import {useEffect, useRef} from 'react';
 
 const THEME_OPTIONS: {value: ThemePreference; label: string}[] = [
   {value: 'light', label: '浅色'},
@@ -30,13 +35,54 @@ const USAGE_NOTES = [
 ];
 
 export function SettingsPage() {
-  const {preference, resolved, set} = useTheme();
-  const {state, disconnect} = useConnection();
-
+  const location = useLocation();
+  const backRef = useRef<HTMLAnchorElement>(null);
+  // 替换外壳后原抽屉触发点已卸载，明确把键盘起点交给设置返回入口。
+  useEffect(() => { backRef.current?.focus({preventScroll: true}); }, []);
+  const returnTo = settingsReturnTo(location.state);
+  const state = {returnTo};
+  const groups = [
+    {path: 'general', label: '通用', icon: Palette},
+    {path: 'connection', label: '连接与安全', icon: ShieldCheck},
+    {path: 'about', label: '关于', icon: Info},
+  ];
   return (
-    <section aria-label="设置" className="flex min-w-0 max-w-3xl flex-col gap-4 p-6">
-      <h1 className="text-[22px] font-semibold leading-[30px]">设置</h1>
+    <div className="flex h-screen min-w-0 flex-col bg-app-bg text-text-primary lg:flex-row" data-testid="settings-shell">
+      <aside className="shrink-0 border-b border-border bg-surface p-4 lg:w-56 lg:border-b-0 lg:border-r lg:p-4" aria-label="设置导航">
+        <Link ref={backRef} to={returnTo} replace className="mb-4 flex min-h-11 items-center gap-2 rounded-md px-3 py-2 text-sm text-text-secondary hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+          <ArrowLeft aria-hidden className="h-4 w-4" />{returnTo === '/' ? '返回任务列表' : '返回工作台'}
+        </Link>
+        <div className="mb-4 flex items-center gap-2 px-3 text-base font-semibold"><Settings aria-hidden className="h-5 w-5 text-accent" />设置</div>
+        <nav aria-label="设置分组" className="flex flex-wrap gap-1 lg:flex-col">
+          {groups.map(({path, label, icon: Icon}) => <NavLink key={path} to={`/settings/${path}`} state={state}
+            className={({isActive}) => cn('flex min-h-11 items-center gap-2 rounded-md px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent', isActive ? 'bg-surface-muted font-medium text-text-primary' : 'text-text-secondary hover:bg-surface-muted')}>
+            <Icon aria-hidden className="h-4 w-4 shrink-0" />{label}
+          </NavLink>)}
+        </nav>
+      </aside>
+      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 sm:p-8 lg:p-12">
+        <div className="mx-auto w-full max-w-3xl">
+          <Routes>
+            <Route path="general" element={<GeneralSettings />} />
+            <Route path="connection" element={<ConnectionSettings />} />
+            <Route path="about" element={<AboutSettings />} />
+            <Route path="*" element={<Navigate to="/settings/general" state={state} replace />} />
+          </Routes>
+        </div>
+      </main>
+    </div>
+  );
+}
 
+function SectionHeading({title, description}: {title: string; description: string}) {
+  return <header className="mb-8 space-y-2"><h1 className="text-[22px] font-semibold leading-[30px]">{title}</h1><p className="text-sm leading-[22px] text-text-secondary">{description}</p></header>;
+}
+
+function GeneralSettings() {
+  const {preference, resolved, set} = useTheme();
+  return (
+    <section aria-label="通用设置">
+      <SectionHeading title="通用" description="调整工作台的显示偏好，仅对当前浏览器会话生效。" />
       <Card>
         <CardHeader>
           <CardTitle>主题</CardTitle>
@@ -60,7 +106,14 @@ export function SettingsPage() {
           当前生效：{resolved === 'dark' ? '深色' : '浅色'}。偏好只保存在会话存储（sessionStorage），不保存 token。
         </p>
       </Card>
+    </section>
+  );
+}
 
+function ConnectionSettings() {
+  const {state, disconnect} = useConnection();
+  return (<section aria-label="连接与安全设置" className="space-y-4">
+      <SectionHeading title="连接与安全" description="管理当前本机服务连接，了解凭据与中断恢复边界。" />
       <Card>
         <CardHeader>
           <CardTitle>连接</CardTitle>
@@ -84,4 +137,17 @@ export function SettingsPage() {
       </Card>
     </section>
   );
+}
+
+function AboutSettings() {
+  return <section aria-label="关于 Marshal">
+    <SectionHeading title="关于" description="Marshal · Task-first Agent Team" />
+    <div className="space-y-4 border-t border-border pt-6 text-sm leading-[22px]">
+      <p>围绕任务组织需求、计划确认、团队执行与成果核验。界面只展示当前本机服务提供的事实，不把受理当作执行或交付成功。</p>
+      <div className="rounded-lg bg-surface-muted p-4">
+        <h2 className="mb-2 text-base font-medium">配置管理尚未开放</h2>
+        <p className="text-text-secondary">此设置中心目前仅提供主题和连接管理。Agent、Sandbox 与服务运行配置仍由本机服务侧管理，这里不提供配置表单，也不推断当前配置是否可用。</p>
+      </div>
+    </div>
+  </section>;
 }

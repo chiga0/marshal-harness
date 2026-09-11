@@ -4,7 +4,7 @@
 import {useEffect, useRef, useState} from 'react';
 import type {ReactNode} from 'react';
 import {Link, NavLink, useLocation} from 'react-router-dom';
-import {Menu, Plus, X} from 'lucide-react';
+import {Menu, Plus, X, Settings, Layers, ListTodo} from 'lucide-react';
 import {cn} from '../lib/cn';
 import {useConnection} from '../features/connection/connection';
 import {Button} from '../components/ui/button';
@@ -12,10 +12,11 @@ import {useModalLayer} from '../components/ui/modal-layer';
 
 const NAV_ITEMS = [
   {to: '/', label: '任务', key: 'tasks'},
-  {to: '/settings', label: '设置', key: 'settings'},
 ] as const;
 
 function NavMenu({onNavigate}: {onNavigate?: () => void}) {
+  const location = useLocation();
+  const taskRoute = location.pathname === '/' || location.pathname.startsWith('/tasks/');
   return (
     <nav className="space-y-1" aria-label="主导航">
       {NAV_ITEMS.map(item => (
@@ -23,17 +24,33 @@ function NavMenu({onNavigate}: {onNavigate?: () => void}) {
           key={item.key}
           to={item.to}
           end={item.to === '/'}
+          aria-current={taskRoute ? 'page' : undefined}
           onClick={onNavigate}
           className={({isActive}) => cn(
-            'block rounded-md px-3 py-2 text-sm leading-[22px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-            isActive ? 'bg-accent text-accent-foreground' : 'text-text-secondary hover:bg-surface-muted hover:text-text-primary',
+            'flex min-h-11 items-center gap-2 rounded-md px-3 py-2 text-sm leading-[22px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+            isActive || taskRoute ? 'bg-surface-muted font-medium text-text-primary' : 'text-text-secondary hover:bg-surface-muted hover:text-text-primary',
           )}
         >
-          {item.label}
+          <ListTodo aria-hidden className="h-4 w-4" />{item.label}
         </NavLink>
       ))}
     </nav>
   );
+}
+
+function SettingsLink({onNavigate}: {onNavigate?: () => void}) {
+  const location = useLocation();
+  return <Link to="/settings/general" state={{returnTo: location.pathname + location.search}} onClick={onNavigate}
+    className="flex min-h-11 items-center gap-2 rounded-md px-3 py-2 text-sm text-text-secondary hover:bg-surface-muted hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+    <Settings aria-hidden className="h-4 w-4" />设置
+  </Link>;
+}
+
+function Brand() {
+  return <div className="flex items-center gap-2 text-base font-semibold leading-6">
+    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-surface-muted text-accent"><Layers aria-hidden className="h-5 w-5" /></span>
+    Marshal
+  </div>;
 }
 
 function DisconnectButton({className}: {className?: string}) {
@@ -95,7 +112,7 @@ export function ShellLayout({children, rightPanel}: {children: ReactNode; rightP
           >
             <Menu aria-hidden />
           </Button>
-          <span className="text-base font-semibold leading-6">Marshal</span>
+          <Brand />
           <span className="flex-1" />
           <Link
             to="/tasks/new"
@@ -111,10 +128,13 @@ export function ShellLayout({children, rightPanel}: {children: ReactNode; rightP
         {!compact ? (
           <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-surface" aria-label="一级导航">
             <div className="px-4 py-4">
-              <div className="mb-4 text-base font-semibold leading-6">Marshal</div>
+              <div className="mb-6"><Brand /></div>
+              <Link to="/tasks/new" className="mb-6 flex min-h-11 items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"><Plus aria-hidden className="h-4 w-4" />新建任务</Link>
+              <p className="mb-2 px-3 text-xs text-text-secondary">工作台</p>
               <NavMenu />
             </div>
             <div className="mt-auto border-t border-border px-4 py-3">
+              <SettingsLink />
               <DisconnectButton className="w-full" />
             </div>
           </aside>
@@ -144,7 +164,7 @@ export function ShellLayout({children, rightPanel}: {children: ReactNode; rightP
             className="absolute inset-y-0 left-0 flex w-64 max-w-[85vw] flex-col border-r border-border bg-surface focus:outline-none"
           >
             <div className="flex items-center justify-between border-b border-border px-4 py-3">
-              <span className="text-base font-semibold leading-6">Marshal</span>
+              <Brand />
               <Button variant="ghost" size="icon" className="h-9 w-9" onClick={closeDrawer} aria-label="关闭导航">
                 <X aria-hidden />
               </Button>
@@ -153,6 +173,7 @@ export function ShellLayout({children, rightPanel}: {children: ReactNode; rightP
               <NavMenu onNavigate={closeDrawer} />
             </div>
             <div className="mt-auto border-t border-border px-4 py-3">
+              <SettingsLink onNavigate={closeDrawer} />
               <DisconnectButton className="w-full" />
             </div>
           </aside>
