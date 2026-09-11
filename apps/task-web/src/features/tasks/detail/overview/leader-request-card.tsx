@@ -10,6 +10,7 @@ import {Card} from '@/components/ui/card';
 import {Badge} from '@/components/ui/badge';
 import {ConfirmDialog} from '@/components/ui/dialog';
 import type {LeaderAuthorization, LeaderReplyBody, LeaderRequestDTO, Revision, Transport} from '@/lib/transport/types';
+import {ApiError} from '@/lib/transport/types';
 import {taskKeys} from '../query-keys';
 import {isPast, isPastAt} from '../shared/derive';
 import {ErrorNotice} from '../shared/error-notice';
@@ -201,7 +202,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
         </>
       ) : null}
 
-      <LeaderReplyOutcome phase={action.phase} depsStale={action.depsStale} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} />
+      <LeaderReplyOutcome phase={action.phase} depsStale={action.depsStale} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} onRestart={action.reset} expired={expired} />
 
       <ConfirmDialog
         open={dialogOpen && answer !== null && !expired && action.phase.kind === 'idle'}
@@ -273,7 +274,7 @@ function PublicationReplyActions({taskId, expectedRevision, request, expired, tr
         </>
       ) : null}
 
-      <LeaderReplyOutcome phase={action.phase} depsStale={action.depsStale} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} />
+      <LeaderReplyOutcome phase={action.phase} depsStale={action.depsStale} onReplay={() => void action.replay(doSubmit)} onRefresh={refresh} onRestart={action.reset} expired={expired} />
 
       <ConfirmDialog
         open={dialogOpen && decision !== null && !expired && action.phase.kind === 'idle'}
@@ -298,11 +299,11 @@ function PublicationReplyActions({taskId, expectedRevision, request, expired, tr
   );
 }
 
-function LeaderReplyOutcome({phase, depsStale, onReplay, onRefresh}: {phase: ActionPhase; depsStale: boolean; onReplay: () => void; onRefresh: () => void}) {
+function LeaderReplyOutcome({phase, depsStale, onReplay, onRefresh, onRestart, expired}: {phase: ActionPhase; depsStale: boolean; onReplay: () => void; onRefresh: () => void; onRestart: () => void; expired: boolean}) {
   const staleNote = depsStale && (phase.kind === 'unknown' || phase.kind === 'rejected') ? (
     <p className="text-xs leading-[18px] text-text-secondary" data-testid="leader-reply-deps-stale">
       检测到任务已推进到新版本（轮询 revision 已变化）。本次提交的键与状态保持不变；
-      请先刷新核对 Leader 投影，再决定原键重放或重新开始。
+      {phase.kind === 'unknown' ? '结果仍未知，请先刷新核对 Leader 投影；重放仍使用原键与原提交内容。' : '请先核对当前 Leader 请求正文、摘要及发布授权，再显式重新开始。'}
     </p>
   ) : null;
   if (phase.kind === 'submitting') return <p className="text-sm text-text-secondary" role="status">正在提交 Leader 答复…</p>;
@@ -322,6 +323,16 @@ function LeaderReplyOutcome({phase, depsStale, onReplay, onRefresh}: {phase: Act
       <>
         {staleNote}
         <ErrorNotice error={phase.error} title="Leader 答复失败" onRefresh={onRefresh} />
+        {phase.error instanceof ApiError && phase.error.status === 409 ? (
+          <div className="space-y-2" data-testid="leader-reply-conflict-recovery">
+            <p className="text-xs text-text-secondary">
+              请刷新查看新版请求。核对上方最新正文后可保留草稿重新开始；下次确认使用新幂等键和当前 revision、请求摘要，不会自动提交。
+            </p>
+            <Button size="sm" variant="outline" disabled={!depsStale || expired} onClick={onRestart} data-testid="leader-reply-restart">
+              已核对最新请求，重新开始
+            </Button>
+          </div>
+        ) : null}
       </>
     );
   }

@@ -1,5 +1,5 @@
 // 成果（P09）：Task.artifactIds → 服务端产物元数据清单（候选/最终/证据/输入分组，逐项可用性如实，E15 事实层）；
-// 独立验收/集中评审读数来自 leader.review；发布/后验状态来自 leader.publication/postverify（只读，E18/E19）；
+// 独立验收来自 audit.acceptance，集中评审来自 leader.review；发布/后验来自 leader.publication/postverify；
 // 下载经 getArtifactContent 拉流 + 本机 SHA-256 复验（E17），任何不一致拒绝保存；下载不等于发布（E16）。
 
 import {useState} from 'react';
@@ -7,16 +7,17 @@ import {Badge} from '@/components/ui/badge';
 import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import {ApiError} from '@/lib/transport/types';
-import type {ArtifactKind, ArtifactRecord, LeaderActionStatus, LeaderRecord, LeaderReview, TaskRecord, Transport} from '@/lib/transport/types';
+import type {ArtifactKind, ArtifactRecord, LeaderActionStatus, LeaderRecord, LeaderReview, TaskAuditRecord, TaskRecord, Transport} from '@/lib/transport/types';
 import {ErrorNotice} from '../tasks/detail/shared/error-notice';
-import {formatBytes} from '../tasks/detail/shared/format';
-import {StatusBadge} from '../tasks/detail/shared/status-badge';
+import {acceptanceStatusLabel, formatBytes} from '../tasks/detail/shared/format';
+import {StatusBadge, toneForAcceptanceStatus} from '../tasks/detail/shared/status-badge';
 import {downloadArtifact, DownloadRejection} from './downloader';
 import type {ArtifactEntry} from './use-task-artifacts';
 
 export interface ArtifactsViewProps {
   task: TaskRecord;
   leader: LeaderRecord | null;
+  audit: TaskAuditRecord | null;
   /** null=清单未加载或整体加载失败；数组逐项 ok/failed（failed 项如实显示不可用，不静默丢弃）。 */
   artifacts: ArtifactEntry[] | null;
   transport: Transport;
@@ -45,9 +46,9 @@ const ACTION_STATUS_LABELS: Record<LeaderActionStatus, string> = {
 };
 
 const REVIEW_VERDICT_LABELS: Record<LeaderReview['verdict'], string> = {
-  accept: '通过',
-  rework: '返工',
-  reject: '拒绝',
+  accept: '评审通过',
+  rework: '评审返工',
+  reject: '评审拒绝',
 };
 
 function artifactStatusTone(status: ArtifactRecord['status']): 'success' | 'warning' | 'danger' {
@@ -71,7 +72,8 @@ function describeLoadError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function ArtifactsView({task, leader, artifacts, transport}: ArtifactsViewProps) {
+export function ArtifactsView({task, leader, audit, artifacts, transport}: ArtifactsViewProps) {
+  const acceptance = audit?.acceptance ?? null;
   const entries = artifacts ?? [];
   const okArtifacts = entries
     .filter((entry): entry is Extract<ArtifactEntry, {status: 'ok'}> => entry.status === 'ok')
@@ -177,11 +179,11 @@ export function ArtifactsView({task, leader, artifacts, transport}: ArtifactsVie
         <h2 className="text-base font-semibold leading-6">独立验收/集中评审读数</h2>
         {leader === null ? (
           <p className="text-sm text-text-secondary" data-testid="verification-unavailable">
-            Leader 投影不可用，验收读数暂不可用；不以执行结束推断验收通过。
+            Leader 投影不可用，集中评审读数暂不可用。
           </p>
         ) : leader.review === null ? (
           <p className="text-sm text-text-secondary" data-testid="verification-empty">
-            暂无集中评审/验收读数（评审未完成或该服务未提供）；验收/后验证据见上方对应产物分组。
+            暂无集中评审读数（评审未完成或该服务未提供）。
           </p>
         ) : (
           <div className="space-y-1" data-testid="review-verdict">
@@ -197,7 +199,21 @@ export function ArtifactsView({task, leader, artifacts, transport}: ArtifactsVie
             </dl>
           </div>
         )}
-        <p className="text-xs text-text-secondary">验收由独立校验产生；执行结束不代表验收通过。</p>
+        <div className="space-y-1 border-t border-border pt-2" data-testid="acceptance-readout">
+          <h3 className="text-sm font-medium">独立验收（task.audit.acceptance）</h3>
+          {acceptance === null ? (
+            <p className="text-sm text-text-secondary" data-testid="acceptance-unloaded">验收读数未加载或 audit 投影不可用；不能以评审结果代替验收。</p>
+          ) : (
+            <>
+              <StatusBadge machine={acceptance.status} label={acceptanceStatusLabel(acceptance.status)} tone={toneForAcceptanceStatus(acceptance.status)} />
+              <dl className="grid grid-cols-1 gap-y-1 text-sm leading-[22px]">
+                <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">验收摘要</dt><dd className="break-all">{acceptance.digest !== null ? <code className="text-xs">{acceptance.digest}</code> : '暂无摘要'}</dd></div>
+                <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">验收证据</dt><dd className="break-all">{acceptance.evidenceIds.length > 0 ? `${acceptance.evidenceIds.length} 条（${acceptance.evidenceIds.join('，')}）` : '暂无数据'}</dd></div>
+              </dl>
+            </>
+          )}
+        </div>
+        <p className="text-xs text-text-secondary">评审通过不等于验收通过；只有独立验收 acceptance=passed 才是验收通过。执行结束不代表验收通过。</p>
       </Card>
 
       <Card aria-label="发布与后验" className="space-y-2" data-testid="publications-card">

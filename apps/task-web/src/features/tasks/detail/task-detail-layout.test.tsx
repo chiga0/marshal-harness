@@ -6,7 +6,7 @@ import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import {ApiError, type Transport} from '@/lib/transport/types';
 import {TaskDetailLayout} from './task-detail-layout';
 import {
-  callsOf, makeFakeTransport, makeLeader, makePlan, makeQuestions, makeTask, makeWorker, TASK_ID,
+  callsOf, makeAudit, makeFakeTransport, makeLeader, makePlan, makeQuestions, makeTask, makeWorker, TASK_ID,
   type TransportCalls,
 } from './testing/fixtures';
 
@@ -122,5 +122,26 @@ describe('任务详情装配（四个子视图 + 数据装载）', () => {
     const notice = await screen.findByTestId('error-notice');
     expect(notice).toHaveTextContent('加载任务详情失败');
     expect(screen.getByTestId('error-request-id')).toHaveTextContent('req-detail-1');
+  });
+
+  it('成果路由使用 audit 独立验收，Leader 请求失败不遮蔽通过证据', async () => {
+    const fake = makeFakeTransport({
+      getLeader: async () => { throw new ApiError(503, 'leader_unavailable', '不可用', 'req-leader'); },
+      getAudit: async () => makeAudit({acceptance: {status: 'passed', digest: 'sha256:audit-proof', evidenceIds: ['ev-acceptance']}}),
+    });
+    fakeTransport = fake.transport;
+    renderAt(`/tasks/${TASK_ID}/artifacts`);
+    await waitFor(() => expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('sha256:audit-proof'));
+    expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('passed');
+    expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('ev-acceptance');
+    expect(screen.getByTestId('verification-unavailable')).toBeInTheDocument();
+  });
+
+  it('成果路由 audit 请求失败如实显示不可用，不推断验收状态', async () => {
+    const fake = makeFakeTransport({getAudit: async () => { throw new ApiError(503, 'audit_unavailable', '不可用', 'req-audit'); }});
+    fakeTransport = fake.transport;
+    renderAt(`/tasks/${TASK_ID}/artifacts`);
+    expect(await screen.findByTestId('acceptance-unloaded')).toHaveTextContent('audit 投影不可用');
+    await waitFor(() => expect(callsOf(fake.calls, 'getAudit')).toHaveLength(1));
   });
 });
