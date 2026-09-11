@@ -41,6 +41,7 @@ function transportWith(listTasks: Transport['listTasks']): Transport {
     createInput: async () => { throw new Error('not used'); },
     listTasks,
     getTask: async () => { throw new Error('not used'); },
+    getGraph: async () => { throw new Error('not used'); },
     getWorkers: async () => { throw new Error('not used'); },
     getPlan: async () => { throw new Error('not used'); },
     approvePlan: async () => { throw new Error('not used'); },
