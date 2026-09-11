@@ -81,20 +81,10 @@ jobs:
           node-version: ${{ matrix.node }}
           package-manager-cache: false
 
+      # lockfile resolved 与项目 .npmrc 一律 registry.npmjs.org（开源可复现；内网 mirror 不进仓库）
       - name: Install pinned UI dependencies
         working-directory: apps/task-web
-        env:
-          NODE_OPTIONS: --dns-result-order=ipv4first
-        run: |
-          # 诊断（2026-09-11 挂死排查；修定后回退为单行 npm ci）
-          npm config get proxy https-proxy registry
-          curl -sSfsS -o /dev/null -w 'registry-metadata %{http_code} in %{time_total}s\n' --connect-timeout 5 --max-time 60 https://registry.npmjs.org/react
-          npm ci --no-audit --no-fund --ignore-scripts --loglevel http 2>&1 | tail -80
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            tail -120 "$HOME/.npm/_logs/"*.log 2>/dev/null || true
-            exit "$status"
-          fi
+        run: npm ci --no-audit --no-fund --ignore-scripts
 
       - name: Typecheck, build dist, then run unit + same-origin e2e suites
         working-directory: apps/task-web
@@ -128,8 +118,6 @@ jobs:
       # 防止干净 checkout（dist 被 .gitignore）静默产出无 UI 的候选。
       - name: Build task-web dist from the tested commit
         working-directory: apps/task-web
-        env:
-          NODE_OPTIONS: --dns-result-order=ipv4first
         run: |
           npm ci --no-audit --no-fund --ignore-scripts
           npm run build
