@@ -92,7 +92,7 @@ function WorkersList({task, workers, pagination, transport, onChanged, drawerId}
                 <th className="px-3 py-2 font-medium">阶段</th>
                 <th className="px-3 py-2 font-medium">尝试</th>
                 <th className="px-3 py-2 font-medium">最近观察</th>
-                <th className="px-3 py-2 font-medium">进展摘要</th>
+                <th className="px-3 py-2 font-medium">最后收到的进展</th>
                 <th className="px-3 py-2 font-medium">用量</th>
                 <th className="px-3 py-2 font-medium">操作</th>
               </tr>
@@ -112,8 +112,9 @@ function WorkersList({task, workers, pagination, transport, onChanged, drawerId}
                   <td className="px-3 py-2 text-text-secondary">{workerPhaseLabel(worker.phase)}</td>
                   <td className="px-3 py-2 text-text-secondary">{worker.attempt}</td>
                   <td className="px-3 py-2 text-text-secondary" title={formatDateTime(worker.lastObservedAt)}>{formatRelative(worker.lastObservedAt)}</td>
-                  <td className="max-w-[220px] truncate px-3 py-2 text-text-secondary" title={worker.progress?.summary ?? ''}>
-                    {worker.progress ? worker.progress.summary : '暂无数据'}
+                  <td className="max-w-[220px] px-3 py-2 text-text-secondary">
+                    {['completed', 'failed', 'cancelled'].includes(worker.status) ? <p className="text-xs">执行已结束；以下为历史观察</p> : null}
+                    <p className="truncate" title={worker.progress?.summary ?? ''}>{worker.progress ? worker.progress.summary : '暂无数据'}</p>
                   </td>
                   <td className="max-w-[180px] truncate px-3 py-2 text-text-secondary" data-testid="worker-usage-cell">{usageSummary(worker.usage)}</td>
                   <td className="px-3 py-2" onClick={event => event.stopPropagation()}>
