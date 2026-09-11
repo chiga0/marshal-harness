@@ -256,6 +256,8 @@ E18/E19 单次受控 Chrome 152 实测记录于 `/private/tmp/ui-pub.PV5WYZ/repo
 
 三线结论仍分别记录：功能/视觉为限定范围补充证据，目标用户可用性 NOT_RUN；Agent 模拟不能替代真人。最终发行资产仍需在新 main 冻结后复验，未发布新版本。
 
+E09/E12 后继脚本失败（`/private/tmp/ui-controls-keyboard.oJ4sW3/report.md`）保留：首次在零 Task 时错误地 Tab 到未选中原生 radio，修正为 Tab 进入当前选项后方向键切换；同根第二次仅创建 Task `task-2405f184-2553-4f33-98f8-7d232c010aaf`，公开 east Worker awaiting-answer、west completed，但脚本硬等 Graph east waiting 而失败。独立追溯原生产链确认 Graph 返回 record.nodes，运行问题修改 Task/Worker 而不改节点 running，因此不是已证产品缺陷。前检只核枚举而漏查生产链，属于测试前检遗漏。两次所属服务均退出0；未执行 pause/resume，原期限已过，不重开旧任务、延长预算或补记双回执通过。后续仅复用原已成功 E12 主链，在最终安装资产上合并一次验收；按各实体真实字段分别断言，不为截图继续重造源码样例。
+
 E14 限定补证（`9cdfc074`，`/private/tmp/ui-terminal-cancel.7Badza/report.md`）：原 E10 Task 已 completed/rev23，Chrome 实际滚入控制区后无取消入口。唯一一次正式客户端使用此前真实观察的 rev15 取消，返回409 `revision_conflict`；原 Task/Questions/Workers/Events/audit及两项制品元数据、字节与摘要不变，新增执行0，客户端POST1/浏览器POST0。session6647及所属服务均退出0。由于 Core 先检查 revision，此证据仅证明终态展示与陈旧 CAS 拒绝，不关闭同时竞争或同revision终态guard，不追加重复请求凑覆盖。
 
 执行顺序：按增量研发规则，在独立代码审查及相关本地/CI 检查通过后合并 PR，并继续保留上面的 UI 验收缺口；再取得该 main push 的原始 CI 包进行最终同包验收。不能要求先取得尚未产生的 main 包才允许研发合并，也不能用研发合并关闭 UI-1 或直接发版。Safari 工具探测本轮返回 `Browser is not available: Safari`，未创建标签或改变权限；这是当前浏览器控制入口的限制，不表示 Safari 产品兼容性失败，实际 Safari 仍待验。
