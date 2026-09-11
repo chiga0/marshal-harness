@@ -30,4 +30,20 @@ describe('团队协调进展的业务优先展示', () => {
     view.rerender(<LeaderProjection leader={null} workers={[]} />);
     expect(screen.getByTestId('leader-unavailable')).toBeVisible();
   });
+
+  it('Leader 投影不可用时，已加载成员的观察读数仍独立可展开核对', async () => {
+    const user = userEvent.setup();
+    const workers = [makeWorker({id: 'worker-a', nodeId: 'author-a', lastObservedAt: '2026-09-10T10:00:00.000Z'}), makeWorker({id: 'worker-b', nodeId: 'reviewer-b', lastObservedAt: '2026-09-10T11:00:00.000Z'})];
+    render(<LeaderProjection leader={null} workers={workers} />);
+    expect(screen.getByTestId('leader-unavailable')).toBeVisible();
+    expect(screen.queryByTestId('leader-technical-details')).not.toBeInTheDocument();
+    const details = screen.getByTestId('worker-observation-details');
+    await user.click(within(details).getByText('执行成员最近观察（2 个）'));
+    expect(details).toHaveAttribute('open');
+    for (const worker of workers) {
+      expect(within(details).getByText(new RegExp(worker.nodeId))).toBeVisible();
+      expect(within(details).getByTitle(worker.lastObservedAt!)).toHaveAttribute('datetime', worker.lastObservedAt);
+    }
+    expect(screen.getByText(/最后观察时间不代表模型仍在持续工作/)).toBeVisible();
+  });
 });

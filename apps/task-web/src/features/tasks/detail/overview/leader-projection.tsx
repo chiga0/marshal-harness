@@ -58,7 +58,6 @@ export function LeaderProjection({leader, workers}: LeaderProjectionProps) {
             <div><dt className="text-text-secondary">最近决定摘要 / callId</dt><dd>{leader.lastDecision ? <code>{leader.lastDecision.digest} / {leader.lastDecision.callId}</code> : '暂无数据'}</dd></div>
             <div><dt className="text-text-secondary">待处理请求引用 / kind / status</dt><dd>{leader.pendingRequest ? <code>{leader.pendingRequest.id} / {leader.pendingRequest.kind} / {leader.pendingRequest.status}</code> : '无'}</dd></div>
             <div><dt className="text-text-secondary">概要成果引用</dt><dd><code>{leader.summaryArtifactId ?? '暂无数据'}</code></dd></div>
-            {workers.length > 0 ? <div><dt className="text-text-secondary">成员最近观察</dt><dd><ul className="space-y-1">{workers.map(worker => <li key={worker.id}>{worker.nodeId}（{formatRelative(worker.lastObservedAt)}）</li>)}</ul></dd></div> : null}
           </dl>
         </details>
         </>
@@ -66,10 +65,13 @@ export function LeaderProjection({leader, workers}: LeaderProjectionProps) {
         <p className="text-sm text-text-secondary" data-testid="leader-unavailable">暂无 Leader 投影（Leader 未启用或该服务未提供）。</p>
       )}
       {workers.length > 0 ? (
-        <p className="text-xs text-text-secondary">
-          已加载 {workers.length} 个执行成员，最近观察读数见技术与审计详情。
-          最后观察时间不代表模型仍在持续工作。
-        </p>
+        <div className="space-y-2 text-xs text-text-secondary">
+          <details className="rounded border border-border p-2" data-testid="worker-observation-details">
+            <summary className="min-h-11 cursor-pointer py-3 font-medium focus-visible:outline focus-visible:outline-2">执行成员最近观察（{workers.length} 个）</summary>
+            <ul className="space-y-1 break-all">{workers.map(worker => <li key={worker.id}>{worker.nodeId}（{worker.lastObservedAt ? <time dateTime={worker.lastObservedAt} title={worker.lastObservedAt}>{formatRelative(worker.lastObservedAt)}</time> : '暂无观察读数'}）</li>)}</ul>
+          </details>
+          <p>已加载 {workers.length} 个执行成员。最后观察时间不代表模型仍在持续工作。</p>
+        </div>
       ) : null}
     </Card>
   );
