@@ -22,7 +22,7 @@ function renderRoutes(entry: string | {pathname: string; state: unknown}, compac
 afterEach(() => vi.unstubAllGlobals());
 
 describe('独立设置外壳与工作台返回', () => {
-  it.each(['/tasks/task-1/team?worker=worker-2', '/tasks/task-1/graph'])('从 %s 进入设置，跨分组后返回原任务子页，不回退到历史记录', async path => {
+  it.each(['/tasks/task-1/team?worker=worker-2', '/tasks/task-1/graph', '/tasks/task-1/team/worker-2'])('从 %s 进入设置，跨分组后返回原任务子页，不回退到历史记录', async path => {
     renderRoutes(path);
     const user = userEvent.setup();
     await user.click(screen.getByRole('link', {name: '设置'}));
