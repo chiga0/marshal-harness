@@ -107,6 +107,17 @@ def package_fixture():
 
 
 class MetadataTest(unittest.TestCase):
+    def test_admission_ci_builds_ui_before_offline_pack_only(self):
+        workflow = (ROOT / ".github/workflows/node-candidate-admission.yml").read_text()
+        tests, admit = workflow.split("\n  tests:\n", 1)[1].split("\n  admit:\n", 1)
+        build = "      - name: Build UI for offline installed-candidate fixture\n        working-directory: apps/task-web\n        run: |\n          npm ci --no-audit --no-fund --ignore-scripts\n          npm run build\n"
+        self.assertIn(build, tests)
+        self.assertLess(tests.index(build), tests.index("python3 -I -B scripts/node-candidate-admit_test.py"))
+        self.assertIn("os: [ubuntu-latest, macos-latest]", tests)
+        # 真正接纳步骤只消费原ZIP，不能靠重建源码替换其UI字节。
+        self.assertNotIn("npm run build", admit)
+        self.assertNotIn("npm ci", admit)
+
     def test_closed_jobs_match_actual_ui_workflow_matrix(self):
         self.assertEqual(candidate.JOBS, EXPECTED_JOBS)
         self.assertEqual(len(candidate.JOBS), 13)
