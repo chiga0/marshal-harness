@@ -2,6 +2,8 @@
 
 ## 当前结论
 
+**最新后继**：[PR #295](https://github.com/chiga0/marshal-harness/pull/295) 精确源 `9cdfc074b60149c81ad73f2cb878d5d7971155b5` 已完成独立产品/安全审查，无阻塞问题；ACK 源与整合差异的 stable patch-id 均为 `09e5f34de5b21e9028be6f0af8b8689880eb0cc2`。整合全量496项测试、4项护栏及构建通过。远端 Node run `34604147735` 尚在运行，未合并或发行。下列“后继修复/待补”段落是历史过程，最新 ACK、Git、8 MiB 等限定结论见末节，不能把已验证项重新排为完整重跑任务。
+
 后继 [PR #294](https://github.com/chiga0/marshal-harness/pull/294) 已于 2026-09-11 21:06:16（Asia/Shanghai）合并：精确 source `3ed0d3ed992f88583f232acdb798e85186f7e800`，merge/main=`0549aa82efc0858fac0c8c07e887a9c696e9a647`。Node run `34601260031` 的13项全部成功，准入 `34601259985` 双平台成功（PR不执行手动原包接纳job），secret `34601259904` 及外部安全检查成功。已正常快进本地主分支并保留用户未跟踪文件；main 原包生产 run `34602433748` 另行验证，不把 PR 包冒充 main 包，不因代码合并宣称 UI 正式发行。
 
 2026-09-11 20:21:16（Asia/Shanghai），PR #293 的精确 head `93ed5468` 经独立审查和 CI `34597445153` 全13项、准入 `34597445154` 双平台与 secret scan 通过后，实际合并为 main `9852e4da487c0c0f0a36c3ec99de62d5d71b55a9`；本地主分支已正常快进，用户未跟踪文件保留。main push `34598484218` 已13项通过，原始候选包独立安装消费通过，精确绑定见下文；不复用 PR 包冒充该 main 包。本条仅为研发合并，不是 UI 完整验收或软件发行。
@@ -251,5 +253,7 @@ E18/E19 单次受控 Chrome 152 实测记录于 `/private/tmp/ui-pub.PV5WYZ/repo
 - 两次私有脚本前置失败（幂等键含空格、空列表错误使用搜索框 locator）均保留，发生时尚未创建 Task；修正后同根复用输入，两个实际 Task 各一次。今后键值先按客户端合同规范化，连接断言必须同时覆盖空态与有数据态。不得将脚本重试隐去或算作产品失败。
 
 三线结论仍分别记录：功能/视觉为限定范围补充证据，目标用户可用性 NOT_RUN；Agent 模拟不能替代真人。最终发行资产仍需在新 main 冻结后复验，未发布新版本。
+
+E14 限定补证（`9cdfc074`，`/private/tmp/ui-terminal-cancel.7Badza/report.md`）：原 E10 Task 已 completed/rev23，Chrome 实际滚入控制区后无取消入口。唯一一次正式客户端使用此前真实观察的 rev15 取消，返回409 `revision_conflict`；原 Task/Questions/Workers/Events/audit及两项制品元数据、字节与摘要不变，新增执行0，客户端POST1/浏览器POST0。session6647及所属服务均退出0。由于 Core 先检查 revision，此证据仅证明终态展示与陈旧 CAS 拒绝，不关闭同时竞争或同revision终态guard，不追加重复请求凑覆盖。
 
 执行顺序：按增量研发规则，在独立代码审查及相关本地/CI 检查通过后合并 PR，并继续保留上面的 UI 验收缺口；再取得该 main push 的原始 CI 包进行最终同包验收。不能要求先取得尚未产生的 main 包才允许研发合并，也不能用研发合并关闭 UI-1 或直接发版。Safari 工具探测本轮返回 `Browser is not available: Safari`，未创建标签或改变权限；这是当前浏览器控制入口的限制，不表示 Safari 产品兼容性失败，实际 Safari 仍待验。
