@@ -74,7 +74,7 @@ export class TaskExecutionCoordinator {
   tick() {
     if (this.#tick) return this.#tick;
     if (this.#closing || this.#closed || this.#failure) return Promise.resolve(this.snapshot());
-    this.#tick = this.#cycle(true).catch(() => this.#fault('reconcile-or-dispatch'))
+    this.#tick = this.#cycle(true).catch(error => this.#fault('reconcile-or-dispatch', undefined, error))
       .then(() => this.snapshot()).finally(() => { this.#tick = undefined; });
     return this.#tick;
   }
@@ -131,9 +131,10 @@ export class TaskExecutionCoordinator {
     requireValue(object(page) && Array.isArray(page.items) &&
       (page.nextCursor === null || typeof page.nextCursor === 'string' && page.nextCursor > after));
   }
-  #fault(stage, entry) {
+  #fault(stage, entry, error) {
     if (!this.#failure) {
       this.#failure = {code: 'supervisor_failed', stage,
+        ...(error instanceof ExecutionPortError ? {port: error.method} : {}),
         ...(entry ? {taskId: entry.ticket.taskId, workerId: entry.ticket.workerId} : {})};
       this.#running = false; clearTimeout(this.#timer); this.#timer = undefined;
       for (const owned of this.#owned.values()) this.#stop(owned);
@@ -153,9 +154,9 @@ export class TaskExecutionCoordinator {
       // can run or delayed cleanup can leave a downstream admission window.
       let fence;
       try { fence = this.#call('fail', entry.ticket, 'worker_failed', ['provider-stop', 'provider-cleanup', 'provider-completion'].includes(stage)); }
-      catch { this.#fault('failure-fence', entry); return; }
+      catch (error) { this.#fault('failure-fence', entry, error); return; }
       if (fence?.targeted === true) {this.#stop(entry); return;}
-      if (error instanceof ExecutionPortError) {this.#fault(stage, entry); return;}
+      if (error instanceof ExecutionPortError) {this.#fault(stage, entry, error); return;}
       entry.failure = true;
       this.#notify({code: 'worker_failed', stage, taskId: entry.ticket.taskId, workerId: entry.ticket.workerId});
     }
@@ -165,7 +166,7 @@ export class TaskExecutionCoordinator {
     // Prefer the original Task deadline's durable reason where it has expired;
     // a shorter execution deadline still needs a Worker failure admission fence.
     try { this.#call('reconcile', entry.ticket.taskId); }
-    catch { this.#fault('deadline-reconcile', entry); return; }
+    catch (error) { this.#fault('deadline-reconcile', entry, error); return; }
     this.#failEntry(entry, 'deadline', new SupervisorError('supervisor_deadline'));
   }
   #stop(entry) {
@@ -186,7 +187,7 @@ export class TaskExecutionCoordinator {
       stopping: false, stopSent: false, clean: false, finalized: false, answerAcknowledged: new Set()};
     this.#owned.set(ticket.workerId, entry);
     const timer = setTimeout(() => this.#deadline(entry), Math.max(1, ticket.deadline - this.#clock()));
-    const work = this.#run(entry).catch(() => this.#fault(entry.stage, entry)).finally(() => {
+    const work = this.#run(entry).catch(error => this.#fault(entry.stage, entry, error)).finally(() => {
       try {
         const released = this.#release(entry.ticket);
         if (released && typeof released.then === 'function') void Promise.resolve(released).catch(() => {});
@@ -420,7 +421,7 @@ export class TaskExecutionCoordinator {
       // Existing provider obligations, including bootstrap, retain their handles
       // until original completion. No timer fabricates a cleanup on shutdown.
       while (this.#works.size) await Promise.all([...this.#works]);
-      try { await this.#cycle(false); } catch { this.#fault('close-reconcile'); }
+      try { await this.#cycle(false); } catch (error) { this.#fault('close-reconcile', undefined, error); }
       this.#closed = true; this.#closing = false;
       return {...this.snapshot(), clean: this.#owned.size === 0};
     })();

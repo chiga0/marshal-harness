@@ -301,7 +301,9 @@ test('progress waits for started and callback failure stops once, retaining orig
   await turn(); assert.equal(progressCalls, 0);
   record.announce(); await rejected; await until(() => f.capacity().length === 0);
   assert.equal(record.stopCount, 1); assert.equal(progressCalls, 1); assert.equal(f.errors.length, 1);
-  assert.deepEqual(Object.keys(f.errors[0]).sort(), ['code', 'stage', 'taskId', 'workerId']);
+  assert.deepEqual(Object.keys(f.errors[0]).sort(), ['code', 'port', 'stage', 'taskId', 'workerId']);
+  assert.equal(f.errors[0].port, 'progress');
+  assert.equal(JSON.stringify(f.errors[0]).includes('private callback body'), false);
   assert.equal(f.errors[0].stage, 'progress');
   const worker = (await f.app.dispatch({operation: 'task.workers', taskId: task.id}, context)).items[0];
   const stored = f.read(tx => JSON.parse(tx.projection('attempt', worker.id).bytes));
