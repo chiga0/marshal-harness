@@ -21,6 +21,28 @@ function wrap(node: ReactNode) {
 }
 
 describe('待回答问题（P06 / E10 / E11）', () => {
+  it('选项使用按钮组语义，键盘选择只切换选中项，不自动提交', async () => {
+    const {transport, calls} = makeFakeTransport();
+    const user = userEvent.setup();
+    wrap(<QuestionCard taskId={TASK_ID} expectedRevision={7} question={makePreapprovalQuestion()} previewDigest={PREVIEW_DIGEST} transport={transport} onChanged={() => {}} />);
+    expect(screen.getByRole('group', {name: '可选项（选择一个）'})).toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+    const chinese = screen.getByRole('button', {name: '中文', pressed: false});
+    const english = screen.getByRole('button', {name: '英文', pressed: false});
+    await user.tab();
+    expect(chinese).toHaveFocus();
+    await user.keyboard(' ');
+    expect(chinese).toHaveAttribute('aria-pressed', 'true');
+    await user.tab();
+    expect(english).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(english).toHaveAttribute('aria-pressed', 'true');
+    expect(chinese).toHaveAttribute('aria-pressed', 'false');
+    expect(callsOf(calls, 'answerTask')).toHaveLength(0);
+    await user.tab();
+    expect(screen.getByRole('button', {name: '提交答复'})).toHaveFocus();
+  });
+
   it('UI-08：运行问题展示 Worker 消费状态（受理/投递/消费三分，受理≠ACK）', () => {
     const {transport} = makeFakeTransport();
     wrap(<QuestionCard taskId={TASK_ID} expectedRevision={7} question={makeRunningQuestion({deliveryStatus: 'dispatched'})} previewDigest={null} transport={transport} onChanged={() => {}} />);

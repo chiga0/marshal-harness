@@ -92,7 +92,7 @@ export function QuestionCard({taskId, expectedRevision, question, previewDigest,
       {action.phase.kind === 'idle' && open ? (
         <div className="space-y-2">
           {question.options.length > 0 ? (
-            <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="可选项">
+            <div className="flex flex-wrap gap-2" role="group" aria-label="可选项（选择一个）">
               {question.options.map(option => (
                 <Button
                   key={option.value}
