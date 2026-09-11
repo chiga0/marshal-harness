@@ -142,7 +142,7 @@ function BusinessReplyActions({taskId, expectedRevision, request, expired, trans
   const answerLabel = hasOptions
     ? (request.options.find(option => option.value === selected)?.label ?? selected ?? '')
     : '自由文本答复';
-  const action = useLogicalAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, answer ?? '']);
+  const action = useLogicalAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, answer ?? ''], [taskId, 'leader.reply', request.id]);
   const refresh = () => { void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)}); onChanged(); };
 
   const doSubmit = (key: string): Promise<unknown> => {
@@ -243,7 +243,7 @@ function PublicationReplyActions({taskId, expectedRevision, request, expired, tr
   const [dialogOpen, setDialogOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<ConfirmationVersion | null>(null);
   const confirmationCurrent = sameConfirmation(confirmation, request, expectedRevision);
-  const action = useLogicalAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, decision ?? '']);
+  const action = useLogicalAction([taskId, 'leader.reply', request.id, expectedRevision, request.requestDigest, decision ?? ''], [taskId, 'leader.reply', request.id]);
   const refresh = () => { void queryClient.invalidateQueries({queryKey: taskKeys.all(taskId)}); onChanged(); };
   const hasAuthorization = request.authorization !== null;
 

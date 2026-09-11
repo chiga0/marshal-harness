@@ -24,7 +24,7 @@ export function CancelWorkerFlow({taskId, taskRevision, worker, transport, onCha
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const [confirmedRevision, setConfirmedRevision] = useState(taskRevision);
-  const action = useLogicalAction([taskId, 'worker.cancel', worker.id, String(taskRevision)]);
+  const action = useLogicalAction([taskId, 'worker.cancel', worker.id, String(taskRevision)], [taskId, 'worker.cancel', worker.id]);
 
   const doCancel = (key: string) =>
     transport.cancelWorker(worker.id, {expectedRevision: confirmedRevision, idempotencyKey: key});

@@ -109,7 +109,7 @@ function ControlAttempt({taskId, action, revision, transport, onClose, onChanged
   const queryClient = useQueryClient();
   // 二次确认冻结所见 CAS；轮询不得替换用户正在确认的版本。
   const [confirmedRevision] = useState(revision);
-  const logical = useLogicalAction([taskId, `task.${action}`, confirmedRevision]);
+  const logical = useLogicalAction([taskId, `task.${action}`, confirmedRevision], [taskId, `task.${action}`]);
   const run = (key: string): Promise<unknown> => {
     const body = {expectedRevision: confirmedRevision, idempotencyKey: key};
     if (action === 'pause') return transport.pauseTask(taskId, body);

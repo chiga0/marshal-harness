@@ -41,7 +41,7 @@ export function QuestionCard({taskId, expectedRevision, question, previewDigest,
   // 分支所需绑定摘要：运行问题用自身 questionDigest（合同必返）；预批准问题用投影的 previewDigest（可能未提供）。
   const branchDigest = runtime ? question.questionDigest : previewDigest;
   // 逻辑动作：同问题同分支同摘要同答复值 => 同键可重放；改答复 => 新键。
-  const action = useLogicalAction([taskId, 'answer', question.id, expectedRevision, branchDigest ?? '', answer ?? '']);
+  const action = useLogicalAction([taskId, 'answer', question.id, expectedRevision, branchDigest ?? '', answer ?? ''], [taskId, 'answer', question.id]);
   const canSubmit = answer !== null && branchDigest !== null && open && action.phase.kind === 'idle';
 
   const doSubmit = (key: string): Promise<unknown> => {

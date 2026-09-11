@@ -134,7 +134,7 @@ interface ApproveAttemptProps {
 export function ApproveAttempt({taskId, target, transport, onClose, onAccepted, onViewLatest}: ApproveAttemptProps) {
   const queryClient = useQueryClient();
   // 逻辑动作键绑定快照：同一计划内容重放复用同键；查看新内容后重新批准 => 新键。
-  const action = useLogicalAction([taskId, 'approve', target.expectedRevision, target.planRevision, target.planDigest]);
+  const action = useLogicalAction([taskId, 'approve', target.expectedRevision, target.planRevision, target.planDigest], [taskId, 'approve']);
 
   const doSubmit = (key: string) =>
     transport.approvePlan(taskId, {
