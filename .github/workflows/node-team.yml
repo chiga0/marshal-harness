@@ -81,13 +81,20 @@ jobs:
           node-version: ${{ matrix.node }}
           package-manager-cache: false
 
-      # GH-hosted runner 偶发 IPv6 黑洞（npm fetch 挂 ~8min 后 "Exit handler never called"）：
-      # 强制 DNS 优先 IPv4，避免 npm ci 假死（2026-09-11 main 两次全矩阵复现）。
       - name: Install pinned UI dependencies
         working-directory: apps/task-web
         env:
           NODE_OPTIONS: --dns-result-order=ipv4first
-        run: npm ci --no-audit --no-fund --ignore-scripts
+        run: |
+          # 诊断（2026-09-11 挂死排查；修定后回退为单行 npm ci）
+          npm config get proxy https-proxy registry
+          curl -sSfsS -o /dev/null -w 'registry-metadata %{http_code} in %{time_total}s\n' --connect-timeout 5 --max-time 60 https://registry.npmjs.org/react
+          npm ci --no-audit --no-fund --ignore-scripts --loglevel http 2>&1 | tail -80
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            tail -120 "$HOME/.npm/_logs/"*.log 2>/dev/null || true
+            exit "$status"
+          fi
 
       - name: Typecheck, build dist, then run unit + same-origin e2e suites
         working-directory: apps/task-web
