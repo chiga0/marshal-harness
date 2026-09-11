@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-PR #296 已合并为 `f3a8cf960520317d3997be1773d642692b9e1185`，仅变更两份证据文档；产品代码仍为 `61a0048e`。该产品版本的原 CI 包已完成接纳、同根升级/回退及 E12 控制补验，见末节。以下带具体时间的“尚在运行/待合并”描述是历史记录，不代表当前状态。新版 UI 尚未发行。
+[PR #297](https://github.com/chiga0/marshal-harness/pull/297) 已合并为 `67317d7b8d08c59b82d7fffc4ad934666c8e3ca8`，精确候选的13项 Node/UI/同包消费及安全检查通过；长需求标题密度修复已进入产品主线。`61a0048e` 原 CI 包的接纳、同根升级/回退及 E12 控制补验仍有效，但不包含本次标题修复，不再代表当前产品代码。新 main 原始资产尚待接纳及最终同包验收，不能用下面的源码构建浏览器证据替代。功能与可靠性、视觉交互仍为 PARTIAL，真实目标用户 NOT_RUN，新版 UI 尚未发行。以下带具体时间的“尚在运行/待合并”描述保留为历史记录。
 
 ### 当前剩余出口（独立核对后收敛）
 
@@ -10,17 +10,24 @@ PR #296 已合并为 `f3a8cf960520317d3997be1773d642692b9e1185`，仅变更两�
 | --- | --- | --- |
 | E13/E14 运行控制 | 本批限定范围已补证，无须重造Task | 真实501无回退、单 Worker 取消、兄弟继续、取消先赢及完成先赢传输竞争；不扩为Core同时commit实验 |
 | E21 与性能 | 真实隐藏退避、明确重复页去重；同100 Task/500事件样本的可交互和新事实显示指标 | 陈旧revision保护、断开重连、500事件滚动；单Task ACK延迟不替代组合样本 |
-| E24/E25 交互 | 长标题密度修复后的实际布局/键盘复验 | 经典选项与确认纯键盘、深色长需求已补验；已验尺寸/200%缩放、抽屉及浅色Leader表单，不重跑所有页面的笛卡尔组合 |
+| E24/E25 交互 | 长标题受影响范围已补证；原单Task样本未覆盖跨另Task原文隔离 | 经典选项与确认纯键盘、标题六组、列表/卡片四组及完整200%视口四图；不重跑所有页面的笛卡尔组合 |
 | 实际 Safari | 安装包人工完整冒烟 | Chromium/WebKit不能替代；当前自动控制入口不可用 |
 | 真实目标用户 | 至少一位非开发参与者无指导完成关键任务并记录理解/误操作 | Agent模拟仅作补充，不冒充真人 |
+| 新 main 资产 | `67317d7b` 原 CI 包接纳及最终同包发行验收 | `61a0048e` 原包结论与本次源码构建截图分别保留，不互相替代 |
 
 E21 空白页预检已停止当前 Chrome152 自动化路径：同窗标签切换能交换 focus，但两页仍 visible；随后自有窗口真实 normal→minimized→normal，页面仍 visible。证据 `/private/tmp/ui-visibility.QGINeC/evidence.json` 与 `/private/tmp/ui-minimize.O8F2ml/evidence.json`。两次均正常关闭自有浏览器，无产品服务、Task或POST，也未覆写 visibility 属性/合成事件；这是工具路径限制，不是已证产品退避缺陷，不能据此记通过。
+
+组合性能仍待验。新增原件 `/private/tmp/ui-perf-final.OQZJjC/gated-evidence.json` 与 `public-gated-evidence.json` 保留FAIL：前者为观测脚本只读SQLite遇到 `database is locked`，后者误用降序活动DOM末项变化判断分页进展；均服务exit0、未释放gate、未测得新事实显示延迟，不能冒充UI性能失败或通过。已停止新增Task，后继仅在原终态数据上核分页；静态重读不能代替新事实测量。
 
 E13 原安装包自然501补证：`/private/tmp/ui-worker-501.P79ADI/report.md`。唯一 Task `task-6cc3deff-7e24-4485-82d8-32f26010cbda`，原 positive/V5=0 profile 经实际抽屉入口取消 east Worker，浏览器唯一写请求返回501 `unsupported_operation`，requestId `2133005b-d561-4e76-b0b5-7e40912454ec`；界面明确不回退整任务取消。主侧独立读取原JSON、请求记录与截图，复算仅排除自然耗时字段 audit.elapsedMs 后的整个前后快照完全一致，确认限定反例成立。原脚本session6163 exit1/FAIL仍保留：末尾误要求 elapsedMs 3069与3208相等；不是产品写入副作用，不重新创建Task凑绿色。所属服务exit0，执行者记录3个handle清理、6个PID均不存在。此项不证明完整交付或真人可用性。
 
 经典键盘补验 `/private/tmp/ui-e24-final.XkB3hX/report.md`：原61a0048e安装包，Chrome152/1440×1000深色，session40445/服务exit0。一个原positive单问Task，Tab/Enter打开批准、Escape归还原入口且零POST、再Enter批准202；经典选项实际为Button，Tab+Space选择north、Tab/Enter提交202，原问题真实ACK。主题单选组才使用方向键，不对按钮强加radio语义。正式需求1824字节，四张视口截图，主侧已查看选项截图；仅批准和回答两次POST，不宣称从安装起全键盘或Task完整交付。
 
-该截图同时发现P2密度问题：完整长intent作为H1占约350像素，不能因无横溢便判视觉合格。修复 `0d4d2a6d` 使标题默认两行，原生details提供可键盘展开/聚焦滚动的完整原文，按taskId重置展开，概览权威原文不变。唯一独立reviewer无P0/P1，独立10项定向测试通过；主侧498项/4项护栏、typecheck/build通过，资产 `index-BTzO3cvS.js` / `index-CEd3ro4a.css`。实际新构建布局复验尚待结果，原包不含本修复，不能直接用于新版发行。
+该截图同时发现P2密度问题：完整长intent作为H1占约350像素，不能因无横溢便判视觉合格。修复使标题默认两行，原生details提供可键盘展开/聚焦滚动的完整原文，按taskId重置展开，概览权威原文不变；后继 `c14df00e` 同时限制列表需求链接三行。唯一独立reviewer与相关测试通过后随 PR #297 合并。浏览器证据绑定修复源 `c14df00e0462458accc7fd10af0fd9f87eba848b`，实际 HTTP 资产 `index-QsUk_BZZ.js` / `index-DtMTqvw_.css`，HTML SHA-256 `b0c1f0c7aaae4d22b87b33e33277b8f26f9bf18af05d02182cc0592ef40b084c`；CLI/Core/client仍为61a原安装包，不称新main同包验收。
+
+标题六组原证据 `/private/tmp/ui-title-layout.Lhnl6k/evidence.json`：主侧 session86093/服务exit0，1440/375/真实Chrome200%各浅深，标题均60px两行；375原文190px内滚、End后614px，200%原文190px内滚、End后134px。原文与公开Task一致，Tab/Enter展开、聚焦滚动、收起及离开列表等待详情卸载后返回关闭通过。独立观察者已核原脚本/JSON及代表截图，不冒称独立重跑六组。
+
+独立列表补验 `/private/tmp/ui-title-list.My2ewM/report.md`：session27044/服务exit0，1440/375各列表与卡片四组，需求链接66px三行（不是整卡高度），稳定态aria-pressed与grid/flex布局一致，Tab/Enter可进入原Task，无页面横溢。六组原200%截图曾被工具裁为720×456，该缺口由 `/private/tmp/ui-title-200.rI8uMx/report.md` 单独补齐：session92176/服务exit0，沿用原流程只测200%浅深，CDP截图四张均为完整1440×913物理视口，已独立查看确认无异常裁切。以上仅复用原1824字节长需求的failed/rev22终态Task，零POST/新Task、Task与Workers前后不变、浏览器关闭；单Task不能证明跨另Task不串原文。先前设置路由与组件卸载等待遗漏的脚本FAIL仍存 `/private/tmp/ui-title-final.fgWYvq`，旧裁切图保留，不因后继通过覆盖。
 
 E14 完成先赢补验 `/private/tmp/ui-cancel-race.s0QMkT/report.md`：原61a0048e包、positive单问题匹配校验器，唯一Task `task-f87bff81-3de3-4926-8a1c-b4e98a2bfe98`；浏览器先发出取消rev15，受控扣留1569ms期间正式客户端答south，原Task自然completed rev23/验收passed，再原body/key放行到Core返回409。独立reviewer核对完整时序、原请求和前后快照（含两项制品实际摘要），无字段剔除而完全相等。限定传输延迟竞争成立，不冒称Core同时commit。截图仍为下一轮询前旧rev15但明确显示409及刷新提示，不冒充最终completed画面；复用已有终态展示，不再新建Task。session54428/服务exit0，4个handle清理/8个PID不存在。
 
