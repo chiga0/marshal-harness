@@ -81,6 +81,7 @@
 - 最终成果 `artifact-e1efb904-17c7-4ba3-acbb-65b2c8ff2fef`，`regional-window.json`，382 字节，SHA-256=`b652504bda6eda554da2d00a3f1d66b3fbc87512de3236b4dbfb5baa906d2534`。
 - publication 与 postverify 均 `succeeded`，回执分别为 `artifact-e347485c-4c45-4a45-bb38-ddcdd3970e94`、`artifact-1a515ac0-1304-409f-b3d1-76c1fd6340fd`。这是隔离本地目标的业务发布，不是 Marshal 软件发行。
 - 独立观察 Agent 单次 HTTP GET 返回 200，核对 382 字节、SHA、原输入 sourceDigest 以及 east 2/1200、west 1/-50 一致；零金额和退款保留，取消和窗口外记录排除。浏览器实际触发下载并显示 SHA 复验通过，但未另行查找浏览器落盘文件，不冒充该层验证。
+- 后续独立 Agent 已补浏览器落盘消费：Chrome 152、`index-CpLIqAu5.js`，在成果页点击下载，捕获真实 download 事件并保存到新私有目录；`download.failure=null`，落盘 382 字节及 SHA 与上述最终成果一致，JSON 的日期窗口、east 2/1200、west 1/-50 全部核对通过。证据 `/private/tmp/marshal-ui-download.NKPC5b/evidence.json`、原文件 `regional-window.json` 和 `download-ui.png`；不是用 API GET 代替 UI 下载。此项覆盖原真实任务成果，不等同最终发行包消费者。
 - Audit 返回 12 Attempts、retryCount=0、reworkCount=0，12 Workers 全部 completed；这是该任务内统计，不隐去前两轮失败及后续修复。tokens/cost/coverage 分别为 null/null/0，不把未知计为零消耗。`firstReviewSource=unavailable`，不能从该字段声称首审通过率；本轮 accept 来自 Leader 的精确 Review 证据。
 - 当前截图 `third-reply.png`、`third-dag.png`、`third-publication-request.png`、`third-delivery.png` 保留于私有验收目录，绑定 JS `index-BESzNDyL.js`。已操作移动导航，但 375 截图尺寸与渲染比例仍需重新核对，不记为窄屏视觉通过；键盘和 200% 缩放尚待完成。
 - 同版本正常恢复已实测：确认 12 Workers 全终态后，对本轮所属服务执行 TERM，得到 `closed/clean=true`；同一 root、配置和 UI 以 `open` 重启。独立 Agent 经新连接执行 5 个只读 GET，Task revision/updatedAt、12 Attempts、全部 Worker、原 publication/postverify action 与回执、最终 Artifact 及报告字节/SHA 均保持。未发现新增执行或替换回执；仅覆盖正常终态重启，不证明崩溃中途恢复。
@@ -142,3 +143,5 @@ CI `34583578954` 的 Ubuntu/Node22 密度测试超过默认 5 秒（5119ms），
 - 实际浏览器补齐桌面/窄屏/缩放/键盘/错误状态/大量任务与事件；截图必须绑定候选代码。
 - 模拟可用性按能力边界记录；需要真实用户结果时保持 NOT_RUN，不以 Agent 截图观察替代。
 - 冻结同包候选，验证安装、独立消费和恢复/回滚后，再执行签名及 GitHub/OSS 发布流程。
+
+执行顺序：按增量研发规则，在独立代码审查及相关本地/CI 检查通过后合并 PR，并继续保留上面的 UI 验收缺口；再取得该 main push 的原始 CI 包进行最终同包验收。不能要求先取得尚未产生的 main 包才允许研发合并，也不能用研发合并关闭 UI-1 或直接发版。Safari 工具探测本轮返回 `Browser is not available: Safari`，未创建标签或改变权限；这是当前浏览器控制入口的限制，不表示 Safari 产品兼容性失败，实际 Safari 仍待验。
