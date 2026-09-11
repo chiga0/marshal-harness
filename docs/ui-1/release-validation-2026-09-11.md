@@ -119,6 +119,10 @@ CI `34583578954` 的 Ubuntu/Node22 密度测试超过默认 5 秒（5119ms），
 
 主侧另实际执行 WebKit `26.5` 的任务链接 Enter、团队链接 Enter、成员抽屉各一步 Tab/Shift+Tab、Escape 归还焦点，均通过；实际 script src 同为 `index-CpLIqAu5.js`，截图 `/private/tmp/marshal-ui-final.MUfhL2/webkit-keyboard-team-e21353aa.png`。初始入口由程序聚焦，不证明纯 Tab 可发现性；WebKit 不替代真实 Safari，且不覆盖问答/批准与缩放。
 
+独立 Agent 再补 WebKit 26.5 的 375×812 列表/详情概览/设置浅深主题六张截图，document/body 宽度均为 375，无页面级横溢。证据 `/private/tmp/marshal-ui-webkit.Nutphr/evidence.json`；主侧另查看浅深详情截图确认主题实际变化。详情有 291/560 像素的局部横滚容器，未逐屏核验内部内容，不据此声称完整响应式矩阵通过。长需求作为标题在窄屏占据较大首屏面积，列为后续产品可用性观察点，不从“无横溢”推导布局已最优。
+
+主侧截图初见团队内容但概览仍有蓝线；独立查码确认概览已有精确路由匹配。随后等待导航颜色动画结束再取证，只有团队 `aria-current=page` 且边框为蓝色，其余四项无 current 且透明。未复现稳定状态双激活，不进行无依据的路由修改；截图需等过渡完成，避免把中间帧误判为缺陷。
+
 新增双安装包消费器已独立审查并整合于 `374ca333`，分页空页上限补丁 `50f4bc51` 同样通过独立审查：最多 100 页，禁止唯一 cursor 空页无限循环。实测旧 OSS 签名 v1.0.2 → 本地固定候选 → 旧版，在同一数据根完成：
 
 - 旧 sourceHead=`f9a93cd678cac40bcd04ff9d0c1672612f184701`，manifest=`sha256:94b2a036ea4b61e869ee0fd02e9b5a257db88b820c8677f5f09573c7320ee8d3`。
