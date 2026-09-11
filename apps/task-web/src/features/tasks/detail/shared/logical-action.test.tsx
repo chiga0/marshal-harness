@@ -1,8 +1,134 @@
 // 逻辑动作控制器回归：幂等语义 + ADR0098 §8 离开前提示（有未决写操作时阻止静默离开）。
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {act, renderHook} from '@testing-library/react';
+import {act, render, renderHook, screen} from '@testing-library/react';
+import {StrictMode} from 'react';
+import userEvent from '@testing-library/user-event';
 import {ApiError} from '@/lib/transport/types';
-import {installBeforeUnloadGuard, inFlightWriteCount, useLogicalAction} from './logical-action';
+import {installBeforeUnloadGuard, inFlightWriteCount, LogicalActionScope, useLogicalAction, useLogicalActionMemory, type LogicalAction} from './logical-action';
+
+describe('会话级原请求保留（SPA 导航）', () => {
+  let action: LogicalAction;
+  function Consumer({revision = 3}: {revision?: number}) {
+    action = useLogicalAction(['task-1', 'answer', revision], ['task-1', 'answer', 'question-1']);
+    return <p>{action.phase.kind}</p>;
+  }
+
+  it('unknown 卸载重挂保留键和原闭包；新 revision 不替换原 body；始终需要显式重放', async () => {
+    const stop = installBeforeUnloadGuard();
+    const requests: string[] = [];
+    const run = vi.fn(async (key: string) => { requests.push(`${key}:original-body`); throw new TypeError('lost'); });
+    const view = render(<LogicalActionScope><Consumer /></LogicalActionScope>);
+    try {
+      await act(async () => { await action.submit(run); });
+      const key = action.idempotencyKey;
+      expect(inFlightWriteCount()).toBe(0);
+      const event = new Event('beforeunload', {cancelable: true});
+      window.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      view.rerender(<LogicalActionScope><p>其他路由</p></LogicalActionScope>);
+      expect(screen.getByRole('status')).toHaveTextContent('刷新、关闭页面或断开连接会丢失');
+      expect(run).toHaveBeenCalledTimes(1);
+      view.rerender(<LogicalActionScope><Consumer revision={4} /></LogicalActionScope>);
+      expect(action.phase.kind).toBe('unknown');
+      expect(action.idempotencyKey).toBe(key);
+      expect(action.depsStale).toBe(true);
+      const replacement = vi.fn(async () => 'new-body');
+      await act(async () => { await action.submit(replacement); });
+      expect(replacement).not.toHaveBeenCalled();
+      await act(async () => { await action.replay(replacement); });
+      expect(requests).toEqual([`${key}:original-body`, `${key}:original-body`]);
+      expect(replacement).not.toHaveBeenCalled();
+    } finally { view.unmount(); stop(); }
+  });
+
+  it('submitting 卸载重挂仍锁定；卸载期间的晚失败在会话提示可见，并可显式原键重放', async () => {
+    const user = userEvent.setup();
+    let reject!: (reason: unknown) => void;
+    const pending = new Promise<void>((_, fail) => { reject = fail; });
+    let first = true;
+    const run = vi.fn(async () => { if (first) { first = false; await pending; } });
+    const view = render(<LogicalActionScope><Consumer /></LogicalActionScope>);
+    let submission!: Promise<void>;
+    await act(async () => { submission = action.submit(run); });
+    const key = action.idempotencyKey;
+    view.rerender(<LogicalActionScope><p>其他路由</p></LogicalActionScope>);
+    view.rerender(<LogicalActionScope><Consumer revision={7} /></LogicalActionScope>);
+    expect(action.idempotencyKey).toBe(key);
+    expect(action.phase.kind).toBe('submitting');
+    await act(async () => { await action.submit(run); });
+    expect(run).toHaveBeenCalledTimes(1);
+    view.rerender(<LogicalActionScope><p>其他路由</p></LogicalActionScope>);
+    await act(async () => { reject(new TypeError('response lost')); await submission; });
+    await user.click(screen.getByRole('button', {name: '显式原键重放'}));
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[0]).toEqual(run.mock.calls[1]);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('会话销毁阻止旧操作重放；晚响应不写入新会话，unknown 离开提示随会话清理', async () => {
+    const stop = installBeforeUnloadGuard();
+    const oldRun = vi.fn(async () => { throw new TypeError('old connection'); });
+    const view = render(<LogicalActionScope session="first"><Consumer /></LogicalActionScope>);
+    try {
+      await act(async () => { await action.submit(oldRun); });
+      const old = action;
+      view.rerender(<LogicalActionScope session="second"><Consumer /></LogicalActionScope>);
+      expect(action.phase.kind).toBe('idle');
+      expect(action.idempotencyKey).not.toBe(old.idempotencyKey);
+      await act(async () => { await old.replay(oldRun); });
+      expect(oldRun).toHaveBeenCalledTimes(1);
+      const event = new Event('beforeunload', {cancelable: true});
+      window.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+      let resolve!: () => void;
+      const pending = new Promise<void>(done => { resolve = done; });
+      let submission!: Promise<void>;
+      await act(async () => { submission = action.submit(() => pending); });
+      view.rerender(<p>已断开或401</p>);
+      view.rerender(<LogicalActionScope session="third"><Consumer /></LogicalActionScope>);
+      await act(async () => { resolve(); await submission; });
+      expect(action.phase.kind).toBe('idle');
+      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    } finally { view.unmount(); stop(); }
+  });
+
+  it('StrictMode effect 重演后仍可提交并保留 unknown', async () => {
+    render(<StrictMode><LogicalActionScope><Consumer /></LogicalActionScope></StrictMode>);
+    await act(async () => { await action.submit(async () => { throw new TypeError('lost'); }); });
+    expect(action.phase.kind).toBe('unknown');
+  });
+
+  it('受理结果跨卸载重挂保留，供原 Operation 回执核对', async () => {
+    const view = render(<LogicalActionScope><Consumer /></LogicalActionScope>);
+    const result = {operationId: 'operation-1'};
+    await act(async () => { await action.submit(async () => result); });
+    view.rerender(<LogicalActionScope><p>其他路由</p></LogicalActionScope>);
+    view.rerender(<LogicalActionScope><Consumer /></LogicalActionScope>);
+    expect(action.phase).toEqual({kind: 'accepted', result});
+  });
+});
+
+describe('同一注册表的会话草稿内存', () => {
+  it('SPA 保留草稿；新连接重置，旧 setter 与晚回调不能污染新连接', () => {
+    let state!: ReturnType<typeof useLogicalActionMemory<{draft: string}>>;
+    function Draft() {
+      state = useLogicalActionMemory(['create-draft'], () => ({draft: ''}));
+      return <p>{state[0].draft}</p>;
+    }
+    const view = render(<StrictMode><LogicalActionScope session="first"><Draft /></LogicalActionScope></StrictMode>);
+    act(() => state[1]({draft: '原草稿'}));
+    view.rerender(<StrictMode><LogicalActionScope session="first"><p>其他路由</p></LogicalActionScope></StrictMode>);
+    view.rerender(<StrictMode><LogicalActionScope session="first"><Draft /></LogicalActionScope></StrictMode>);
+    expect(state[0].draft).toBe('原草稿');
+    const old = state;
+    view.rerender(<StrictMode><LogicalActionScope session="second"><Draft /></LogicalActionScope></StrictMode>);
+    expect(state[0].draft).toBe('');
+    expect(old[2]()).toBe(false);
+    act(() => old[1]({draft: '迟到旧连接结果'}));
+    expect(state[0].draft).toBe('');
+    expect(state[2]()).toBe(true);
+  });
+});
 
 describe('beforeunload 守卫（ADR0098 §8）', () => {
   let stop: (() => void) | null = null;

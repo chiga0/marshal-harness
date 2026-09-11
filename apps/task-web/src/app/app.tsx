@@ -5,7 +5,7 @@ import {useEffect, useMemo} from 'react';
 import {HashRouter, Route, Routes} from 'react-router-dom';
 import {createQueryClientWorker} from '../lib/queries/client';
 import {useTheme} from '../lib/theme/useTheme';
-import {installBeforeUnloadGuard} from '../features/tasks/detail/shared/logical-action';
+import {installBeforeUnloadGuard, LogicalActionScope} from '../features/tasks/detail/shared/logical-action';
 import {ConnectionProvider, useConnection} from '../features/connection/connection';
 import {ShellLayout} from './layout';
 import {ConnectPage} from '../features/connection/connect-page';
@@ -15,8 +15,8 @@ import {TaskDetailLayout} from '../features/tasks/detail/task-detail-layout';
 import {SettingsPage} from '../features/settings/settings-page';
 
 function DidConnectGate({children}: {children: React.ReactNode}) {
-  const {connected} = useConnection();
-  return connected ? <>{children}</> : <ConnectPage />;
+  const {connected, transport} = useConnection();
+  return connected ? <LogicalActionScope session={transport}>{children}</LogicalActionScope> : <ConnectPage />;
 }
 
 export function App() {
