@@ -2,22 +2,42 @@
 
 ## 当前结论
 
-[PR #297](https://github.com/chiga0/marshal-harness/pull/297) 已合并为 `67317d7b8d08c59b82d7fffc4ad934666c8e3ca8`，精确候选的13项 Node/UI/同包消费及安全检查通过；长需求标题密度修复已进入产品主线。`61a0048e` 原 CI 包的接纳、同根升级/回退及 E12 控制补验仍有效，但不包含本次标题修复，不再代表当前产品代码。新 main 原始资产尚待接纳及最终同包验收，不能用下面的源码构建浏览器证据替代。功能与可靠性、视觉交互仍为 PARTIAL，真实目标用户 NOT_RUN，新版 UI 尚未发行。以下带具体时间的“尚在运行/待合并”描述保留为历史记录。
+更新日期：2026-09-13。本次为既有证据与缺口归档，不修改产品行为；不以文档合并关闭 UI 三条验收线。
+
+[PR #297](https://github.com/chiga0/marshal-harness/pull/297) 已合并为 `67317d7b8d08c59b82d7fffc4ad934666c8e3ca8`，精确候选的13项 Node/UI/同包消费及安全检查通过；长需求标题密度修复已进入产品主线。后继 PR #298 合并为 `b999607b`，仅更新文档，产品仍为673版本。该原 CI 包于9月11日已完成接纳与限定同根升级/回退；9月13日本机临时原件不可获取，已从同一CI资产恢复原包并新执行消费2/2 PASS，历史通过与当前证据可获取性分开记录。`61a0048e` 原包与源码构建证据各自保留范围，不替代673原包。功能与可靠性、视觉交互仍为 PARTIAL，真实目标用户 NOT_RUN；真实隐藏退避、实际Safari、真人及最终签名发行仍未完成，新版UI尚未发行。以下带具体时间的“尚在运行/待合并”描述保留为历史记录。
 
 ### 当前剩余出口（独立核对后收敛）
 
 | 范围 | 真正需要补齐的证据 | 已有证据不重复运行 |
 | --- | --- | --- |
 | E13/E14 运行控制 | 本批限定范围已补证，无须重造Task | 真实501无回退、单 Worker 取消、兄弟继续、取消先赢及完成先赢传输竞争；不扩为Core同时commit实验 |
-| E21 与性能 | 真实隐藏退避、明确重复页去重；同100 Task/500事件样本的可交互和新事实显示指标 | 陈旧revision保护、断开重连、500事件滚动；单Task ACK延迟不替代组合样本 |
+| E21 与性能 | 真实隐藏退避仍待验；其他性能指标按原样本范围判断，不外推持续负载或通用SLO | 真实尾页复读去重、103Task缓存＋500事件的新进度显示≤3秒已限定通过；陈旧revision保护、断开重连及滚动证据保留 |
 | E24/E25 交互 | 长标题受影响范围已补证；原单Task样本未覆盖跨另Task原文隔离 | 经典选项与确认纯键盘、标题六组、列表/卡片四组及完整200%视口四图；不重跑所有页面的笛卡尔组合 |
-| 实际 Safari | 安装包人工完整冒烟 | Chromium/WebKit不能替代；当前自动控制入口不可用 |
+| 实际 Safari | 安装包完整任务冒烟仍待执行；由主侧恢复自有服务后继续浏览器实操 | Chromium/WebKit不能替代；9月13日曾实际打开原包服务连接页、服务HTTP200，未登录或创建Task；后续主侧确认原进程/会话不存在且HTTP000，服务已停止，原因未证，不声称后台仍运行 |
 | 真实目标用户 | 至少一位非开发参与者无指导完成关键任务并记录理解/误操作 | Agent模拟仅作补充，不冒充真人 |
-| 新 main 资产 | `67317d7b` 原 CI 包接纳及最终同包发行验收 | `61a0048e` 原包结论与本次源码构建截图分别保留，不互相替代 |
+| 原包证据与发行 | 最终签名发行尚未执行；由维护者在必需出口满足后执行 | 673原CI包已恢复并完成9月13日新消费2/2 PASS；9月11日原包接纳与限定升级/回退历史通过，旧临时原件当前不可获取，不伪造旧JSON |
+
+### 673原包历史验收与当前可获取性（9月13日更新）
+
+原包绑定 source `67317d7b8d08c59b82d7fffc4ad934666c8e3ca8`、run `34613104390` / attempt1、artifact `10269822117`；归档1519920字节，SHA-256 `07ab43c2f67390c5c84869999380428f65d7218e06421ada93cad9595ce76908`，manifest `sha256:163b19cbfb6dad1ca9cca11d08125ee144e631ecdac859abbea2f5f998ece359`，70文件/1495148字节。该身份来自9月11日已读取的 `identity.json`，不是9月13日新接纳结果。
+
+9月11日接纳 session11661 exit0：执行者实际运行，主侧全文读取 `admitted/result.json` 与 `consumer.tap`，确认 candidateVerified=true、layout1/2各4次执行/4 Attempts、冷恢复重复启动0、modelCalls0。升级 session96791 exit0：old-api-only-completed→upgraded-ui→rollback-api-only三阶段均exit0/stderr0，原Task `task-5827d502-c94f-4dae-95ee-2ed102523d3f`，原starts2/Attempts3、新启动0。主侧全文读取 `upgrade/evidence.json` 并用Node对三份完整原快照deepEqual通过；UI字节与候选匹配。仅证明原受支持profile同根升级/回退与原包消费，不外推任意profile迁移、真实模型或签名发行。
+
+此前获取失败同样保留：首次admit session9266为command_timeout；gh下载session53451在120秒ETIMEDOUT，仅取得1014800/1519920字节；stream前检session12630未取得Location而停止。后继stream session53673用57.56秒取得完整原包后才完成接纳。以上摘要由9月11日执行记录及本轮执行者交接核对，不冒充9月13日重读已丢失原件，不用成功覆盖失败，也不归为产品运行失败。
+
+原路径 `/private/tmp/marshal-main-67317.4Cdm9J` 于9月13日只读检查返回不存在。上述为当日主侧及执行者已完成的核对，不声称当前原JSON仍可读取；文档作者未独立重跑接纳/升级。其他本页9月11日 `/private/tmp` 截图与性能报告同样属于历史核验记录，原件当前不可获取，不能重建旧JSON冒充原件。
+
+9月13日重新核实同run/attempt/artifact未过期，下载session37872 exit0，39.214779秒，原ZIP大小及SHA-256与上述pins一致。首次接纳session1566 exit1、消费0/2（启动前退出）保留：测试工具误把产品数据放入仓库 `.marshal/` 路径，而原Store明确禁止数据根含精确 `.marshal` 路径段。底层stderr未被fixture保存，归因来自精确源码和现场，不冒称读到了原始reason，也不归为socket限制或包损坏。随后仅换为独占0700产品目录 `/Users/gawain/.marshal-ui-qa/recover-673.NA5OjN/admitted`，未修改包、门禁或工具；session93036 exit0，candidateVerified=true，layout1/2各originalExecutions4、attempts4、coldReplayDuplicateStarts0、modelCalls0；TAP为2通过、0失败/跳过/取消。交付摘要 `sha256:3055d2141868fed0c8abbf628e50fa959a623fd93474a928318a802efa7b6fb0`，Darwin arm64、Node24.15.0。仅为原包受控消费与冷恢复的新证据，不替代真人或真实模型验收，也未重跑旧版升级链。
+
+持久归档位于仓库忽略目录 `.marshal/recovered-candidate-673-20260913/`：`candidate.zip`、`result-20260913.json`、`consumer-20260913.tap`、`report.md`；首次失败仍在其 `admitted/consumer.tap` 与 `failure.json`，不被成功覆盖。结果JSON摘要 `fa5582da90f7b7d99f7d09a0dfd060aa8b35b4751add3f0f568276a0228ea3b3`。文档作者已读取本次JSON/TAP/报告核对字段，主侧另行核验；这不是作者提供产品权威验证。教训固化为后续执行约定：仓库 `.marshal/` 只存研发证据/缓存，产品SQLite与服务运行目录使用独立产品路径，不复用前者。Safari接续使用恢复的原安装树，只记录连接页已打开，尚不记登录或任务闭环通过。
 
 E21 空白页预检已停止当前 Chrome152 自动化路径：同窗标签切换能交换 focus，但两页仍 visible；随后自有窗口真实 normal→minimized→normal，页面仍 visible。证据 `/private/tmp/ui-visibility.QGINeC/evidence.json` 与 `/private/tmp/ui-minimize.O8F2ml/evidence.json`。两次均正常关闭自有浏览器，无产品服务、Task或POST，也未覆写 visibility 属性/合成事件；这是工具路径限制，不是已证产品退避缺陷，不能据此记通过。
 
-组合性能仍待验。新增原件 `/private/tmp/ui-perf-final.OQZJjC/gated-evidence.json` 与 `public-gated-evidence.json` 保留FAIL：前者为观测脚本只读SQLite遇到 `database is locked`，后者误用降序活动DOM末项变化判断分页进展；均服务exit0、未释放gate、未测得新事实显示延迟，不能冒充UI性能失败或通过。已停止新增Task，后继仅在原终态数据上核分页；静态重读不能代替新事实测量。
+组合性能后继限定通过，原件 `/private/tmp/ui-perf-final.OQZJjC/realtime-evidence.json`，session42956/服务exit0。同一Chrome152会话先加载103个Task，保持同文档缓存后查看目标最新500事件（不是两种列表同时占DOM）；公开549个事件稳定，原east运行、523条进度与新ready共同确认后，释放原受控fixture gate一次，真实新增同Task/Worker的event550，east进度523→524。原公开/DOM均不含该ID，更新后DOM仍500个唯一有序ID。gate→测量客户端首次HTTP读到51.500791ms，HTTP完成→DOM可见布局1842.707584ms，gate→DOM保守上界1894.208375ms，低于本次3000ms目标。主侧与独立观察者复算身份/计数/数组/计时并查看 `realtime-new-real-event.png`，不冒称像素绘制、自动滚入视口时间或通用SLO。此为installed61a Core/CLI＋c14 UI、Darwin/M5 Pro/1440浅色的一次受控新Task样本，不是零业务写、真实模型或673main最终同包。
+
+真实重复尾页另见同目录 `readonly-pagination-evidence.json` / `pagination-review.md`：原终态Task公开553事件，完整分页至null后DOM精确为最新500降序；刷新真实cursor550尾页重返3条，DOM500有序ID不变，Task不变、POST0、服务exit0。独立复算通过，仅证明实际尾页复读去重，不扩大为任意重复非空页注入矩阵；realtime中的该附加注入明确NOT_RUN。
+
+此前 `gated-evidence.json` 的只读SQLite `database is locked` 与 `public-gated-evidence.json` 的降序DOM末项等待错误均保留FAIL，不据后继成功覆盖，也不归为已证UI性能故障。流程学习：返工源于私有脚本未复用现有API投影、分页排序及空尾语义；成功方案先用既有终态Task零写入验证完整后半，再测唯一新事实。后继同类直接复用已验证helper/脚本并集中核前置，不逐条修后新建Task；这是既有执行流程学习，不增加门禁或预算。
 
 E13 原安装包自然501补证：`/private/tmp/ui-worker-501.P79ADI/report.md`。唯一 Task `task-6cc3deff-7e24-4485-82d8-32f26010cbda`，原 positive/V5=0 profile 经实际抽屉入口取消 east Worker，浏览器唯一写请求返回501 `unsupported_operation`，requestId `2133005b-d561-4e76-b0b5-7e40912454ec`；界面明确不回退整任务取消。主侧独立读取原JSON、请求记录与截图，复算仅排除自然耗时字段 audit.elapsedMs 后的整个前后快照完全一致，确认限定反例成立。原脚本session6163 exit1/FAIL仍保留：末尾误要求 elapsedMs 3069与3208相等；不是产品写入副作用，不重新创建Task凑绿色。所属服务exit0，执行者记录3个handle清理、6个PID均不存在。此项不证明完整交付或真人可用性。
 
