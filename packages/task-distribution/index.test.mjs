@@ -232,3 +232,8 @@ test('write durability failure preserves partial target and does not claim succe
   assert.ok(!fs.existsSync(path.join(f.target, 'manifest.json')));
   assert.throws(f.create, /package_io_failed/);
 });
+
+test('observation runtime and reliable profile are included in the exact distribution inventory',()=>{
+  for(const file of ['packages/agent-observation/normalization.mjs','packages/task-application/observation.mjs','packages/task-generic-files/review-wire.mjs','packages/task-generic-files/qwen-review-service-config.mjs']) assert.ok(SOURCE_FILES.includes(file));
+  assert.deepEqual([...SOURCE_FILES].sort(),SOURCE_FILES);
+});
