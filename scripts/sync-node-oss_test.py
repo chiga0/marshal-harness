@@ -151,8 +151,9 @@ class SyncTests(unittest.TestCase):
 class ValidationTests(unittest.TestCase):
     def test_rc2_installer_version_requires_explicit_preview_channel(self):
         original = Path(__file__).with_name('install-node-preview.sh').read_text()
+        current = syncer.installer_constants(original.encode(), 'preview')['VERSION']
         for version in ('v1.1.0-rc.1', 'v1.1.0-rc.2'):
-            candidate = original.replace("VERSION = 'v1.1.0-rc.1'", 'VERSION = ' + repr(version)).encode()
+            candidate = original.replace('VERSION = ' + repr(current), 'VERSION = ' + repr(version)).encode()
             self.assertEqual(syncer.installer_constants(candidate, 'preview')['VERSION'], version)
             with self.assertRaises(syncer.Rejected):
                 syncer.installer_constants(candidate, 'stable')
