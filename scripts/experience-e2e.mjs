@@ -9,6 +9,7 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 import {verify} from '../packages/task-distribution/index.mjs';
 import {cases,validateDelivery,hasInvitationDate,SemanticReviewRequired} from './experience-cases.mjs';
 import {captureFailureProjections} from './experience-failure-evidence.mjs';
+import {staticInvitationControls} from './experience-static-invitation.mjs';
 
 const opts={};for(let i=2;i<process.argv.length;i+=2){assert.ok(['--installed','--manifest','--case','--output'].includes(process.argv[i]));opts[process.argv[i]]=process.argv[i+1];}
 const installed=opts['--installed'],caseId=opts['--case'],spec=cases[caseId];
@@ -229,6 +230,9 @@ try {
       .filter(attr=>/^on/i.test(attr.name)||/^(?:href|src|action|formaction|xlink:href)$/i.test(attr.name)&&/^\s*javascript:/i.test(attr.value))
       .map(attr=>({tag:element.tagName,name:attr.name}))));
     assert.deepEqual(activeAttributes,[],'邀请页不得携带内联脚本入口');
+    evidence.staticInvitationControls=await staticInvitationControls(html);
+    assert.deepEqual(evidence.staticInvitationControls,[],
+      '此静态邀请页未授权接收或保存；不能保留可填写或可提交的表单并仅靠底注声称演示');
     await consumer.close();evidence.steps.push('独立禁脚本/无网络HTML消费/可见正文/按钮/宽窄布局；不宣称JS运行验收');
   }
   assert.deepEqual(browserErrors,[],'浏览器未捕获异常');
