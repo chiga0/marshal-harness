@@ -25,7 +25,7 @@ bash scripts/marshal.sh status
 
 ## 当前限制
 
-新安装默认使用 `qwen-review-service-config.mjs`、`genericProfile:2` 设置与 `~/.marshal-node/generic-team-v2` 数据目录；已有 generic 设置没有新标记时保持原配置与 `~/.marshal-node/generic-team` 默认目录，不接管旧 `~/.marshal-node/task-service`；`--data-dir` 可指定独立私有目录，原 Store 继续决定创建/打开及兼容性，不清空或迁移旧数据。重复启动保留记录的配置和数据目录。
+新安装默认使用 `qwen-review-service-config.mjs`、`genericProfile:2` 设置与 `~/.marshal-node/generic-team-v2` 数据目录；已有 generic 设置没有新标记时保持原配置与 `~/.marshal-node/generic-team` 默认目录，不接管旧 `~/.marshal-node/task-service`；`--data-dir` 可指定独立私有目录，原 Store 继续决定创建/打开及兼容性，不清空或迁移旧数据。重复启动保留记录的配置语义和数据目录；安装升级后 generic 配置按既有 profile 重定位到新安装包，避免新服务导入旧包模块，显式部署配置的路径则保持。
 
 已有 generic 设置再次 `--generic` 不升级其配置。要试用新版且保留旧数据，使用新 `--settings-dir` 和新不存在的 `--data-dir`；新根采用新版配置，不修改旧任务或配置摘要。新默认只接受名为 `qwen`/`qwen-code` 的入口或官方 Qwen 包内入口，其他 Agent 或自定义包装器使用显式 `--config`，不套用 Qwen 参数；路径约定不是品牌认证。
 

@@ -26,7 +26,7 @@ mapper 只从本次原 `ticket.input.review` 补入原 `task-independent-review/
 
 新安装默认 Qwen 文件团队选新配置，同时使用新的 `generic-team-v2` 默认数据目录和持久化 `genericProfile:2` 的本地启动设置。仅该默认产品路径面向 Qwen；其他 ACP Agent 继续显式指定自己的配置。
 
-已有 generic 设置无新标记时保持原配置与原 `generic-team` 默认根；再次 `--generic` 不升级旧 generic 配置。显式 `--config` 仍优先，启动器不修改既有 Store 的配置摘要、不迁移根、不重签终态。需要切换的部署者使用新 settings 目录和新不存在的数据根，或者显式新配置及新根；同一 live 连接禁止重配置。
+已有 generic 设置无新标记时保持原配置语义与原 `generic-team` 默认根；再次 `--generic` 不升级旧 generic 配置。安装包升级后，generic 配置按已冻结 profile 从新 installRoot 重新定位，禁止新服务混用旧包模块；显式 `--config` 仍优先并保留部署者路径，启动器不修改既有 Store 的配置摘要、不迁移根、不重签终态。需要切换的部署者使用新 settings 目录和新不存在的数据根，或者显式新配置及新根；同一 live 连接禁止重配置。
 
 新配置显式启用 `observability={profile:'task-observation/v1',retainPrompts:true}`，由观测合同限定真实交接输入、脱敏、存储与披露；新组合策略冻结该设置，不改变旧配置。配置已启用不等于任意旧执行都存在正文。
 

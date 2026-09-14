@@ -198,7 +198,7 @@ export async function run(argv, {home = os.homedir(), output = value => console.
     if (settings.genericProfile === undefined && settings.generic !== true) settings.genericProfile = 2;
     if (settings.genericProfile !== undefined && settings.genericProfile !== 2) fail('unsafe_settings');
     const modern = settings.genericProfile === 2;
-    settings.config ??= path.join(settings.installRoot, modern
+    settings.config = path.join(settings.installRoot, modern
       ? 'packages/task-generic-files/qwen-review-service-config.mjs'
       : 'packages/task-generic-files/service-config.mjs');
     settings.generic = true;

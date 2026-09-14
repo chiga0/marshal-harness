@@ -138,13 +138,14 @@ test('damaged recorded connection cannot authorize replacing settings or launche
   assert.deepEqual(fs.readFileSync(file), before);
 });
 
-for (const legacy of [false, true]) test('generic default selects exact agent and private root, forwards UI port and preserves API connection; legacy='+legacy, {timeout: 10000}, async t => {
+for (const {legacy,upgrade} of [{legacy:false,upgrade:false},{legacy:true,upgrade:false},{legacy:false,upgrade:true},{legacy:true,upgrade:true}]) test('generic default and install upgrade consume same-package configuration; legacy='+legacy+' upgrade='+upgrade, {timeout: 10000}, async t => {
   const home = fixture(t), capture = path.join(home, 'launch.json');
   const connectionFile = path.join(home, 'live.json');
   const installed = fakeInstall(home, `
     import fs from 'node:fs'; import {createServer} from 'node:http';
     import {createTaskApiHandler} from '../task-api/http-handler.mjs';
     import {contract} from '../task-api/contract.mjs';
+    await import(process.argv[process.argv.indexOf('--config')+1]);
     fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify({argv:process.argv.slice(2),agent:process.env.MARSHAL_AGENT_EXECUTABLE}));
     const token='fixture-generic-service-token-001';let handler;
     const server=createServer((req,res)=>handler(req,res));
@@ -165,9 +166,12 @@ for (const legacy of [false, true]) test('generic default selects exact agent an
   const originalPath = process.env.PATH;
   process.env.PATH = bin;
   t.after(() => {if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;});
-  if (legacy) {
+  if (legacy || upgrade) {
     fs.mkdirSync(path.join(home,'.marshal-client'), {mode:0o700});
-    fs.writeFileSync(path.join(home,'.marshal-client/local.json'),JSON.stringify({version:1,generic:true,config}),{mode:0o600});
+    const previousRoot=upgrade ? path.join(home,'old-install') : installed;
+    const previousConfig=upgrade ? path.join(previousRoot,'packages/task-generic-files',path.basename(config)) : config;
+    if(upgrade) {fs.mkdirSync(path.dirname(previousConfig),{recursive:true});fs.writeFileSync(previousConfig,'throw Error(\"old configuration must never load\");');}
+    fs.writeFileSync(path.join(home,'.marshal-client/local.json'),JSON.stringify({version:1,installRoot:previousRoot,generic:true,config:previousConfig,...(!legacy?{genericProfile:2}:{})}),{mode:0o600});
   }
   let connected = false;
   await run(['serve', '--install-root', installed, '--ui', ui, '--port', '34567'], {
