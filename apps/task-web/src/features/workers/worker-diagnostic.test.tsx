@@ -3,6 +3,10 @@ import {describe,it,expect} from 'vitest';
 import {makeWorker} from '../tasks/detail/testing/fixtures';
 import {diagnosticReason,WorkerDiagnostic} from './worker-diagnostic';
 describe('有来源的成员诊断',()=>{
+  it.each([['task_files_missing_output','缺少约定的输出文件'],['task_files_input_changed','输入文件内容已改变'],['task_files_identity_changed','文件身份或属性已改变'],['task_files_changed','采集期间文件发生变化'],['task_files_unallowed_output','发现未授权的输出文件'],['task_files_depot_integrity','制品存储校验失败'],['task_files_limit','文件数量或大小超过限制'],['task_files_unavailable','文件采集条件不满足'],['business_cleanup_required','缺少确认清理的证据'],['business_execution_mismatch','执行身份不匹配'],['business_unapproved_layout','输出布局绑定不匹配'],['business_report_limit','最终报告格式或大小不符合限制']] as const)('采集细因%s映射准确且不暴露文件路径', (code,label)=>{
+    expect(diagnosticReason({stage:'collecting',code,source:'controller'})).toBe(label);
+  });
+
   it.each([['permission_denied','工具请求未获授权'],['permission_shape_denied','工具授权请求格式不符合要求'],['permission_kind_denied','该类工具操作未获授权'],['permission_path_denied','请求访问的路径未获授权']] as const)('权限诊断%s只映射固定类别', (code,label)=>{
     expect(diagnosticReason({stage:'permission',code,source:'provider-permission'})).toBe(label);
   });
