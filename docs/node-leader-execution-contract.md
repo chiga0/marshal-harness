@@ -65,7 +65,7 @@
 - `content-rejection`：原可信 verifier 的精确负报告及必需断言，沿 ADR0091；仍重读 Depot bytes/原 Decision/选果。
 - `execution-failure`：仅 Core 已确认原 cleanup、当前节点的普通非结构性执行失败；原未知、权限失败、用户 worker.cancel/Task cancel 不能被当作可重试失败。此来源最多一次替代 Attempt，不隐式换 Provider；重试费用计原预算。
 
-三者均以原 planDigest、当前输入/ACK、精确负事实和剩余预算重查，修正 closure 的陈旧 Review/验收失效，无关选果仅在依赖未变时保留；下一 Reviewer 与 verifier 消费最终组合。旧 HTTP repair 仍只接受原显式用户合同。缺 business 消费能力启动前拒绝，不能先耗 Attempt 再丢 feedback；本版选原 FileBusiness，Git/custom只有证明同样输入与反馈消费能力才能启用本Leader profile。
+三者均以原 planDigest、当前输入/ACK、精确负事实和剩余预算重查，修正 closure 的陈旧 Review/验收失效，无关选果仅在依赖未变时保留；下一 Reviewer 与 verifier 消费最终组合。旧 HTTP repair 仍只接受原显式用户合同。缺 business 消费能力启动前拒绝，不能先耗 Attempt 再丢 feedback；本版选原 FileBusiness，Git/custom只有证明同样输入与反馈消费能力，并通过受信工厂/Port准入与合同兼容验证，才能启用本Leader profile；同形对象或行为测试不能绕过私有身份门禁。
 
 Leader 的 ask 是已结束语义调用留下的 Task 义务；答案由下一次原义务调用读取，不伪造原 Worker 的 delivery ACK。原 Pi `marshal_ask_user` 和 ACP 权限路径照旧：原 Worker 业务问题继续精确 worker/question/dispatch/ACK，权限不能通过本回复放行。普通用户答案只能填原缺项；答案改变批准范围/权限时 Core 封闭相关后继并要求新的精确批准，不能追认旧验收。原期限不延长。
 

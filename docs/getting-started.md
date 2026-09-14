@@ -57,7 +57,7 @@ node <安装目录>/packages/task-local/main.mjs init --install-root <安装目�
 
 ## API 和自定义业务接入
 
-自己的客户端通过[标准 API](standard-api.md)接入；[HTTP 参考](api/http-reference.md)与原始 [OpenAPI](../packages/task-api/openapi.json)定义准确请求、响应及错误。业务配置属于部署方受信代码，不接受 HTTP 上传可执行配置。更多业务和 Agent 按[扩展契约](extension-contracts.md)接入。
+自己的客户端通过[标准 API](standard-api.md)接入；[HTTP 参考](https://chiga0.github.io/marshal-harness/api/http-reference/)与原始 [OpenAPI](../packages/task-api/openapi.json)定义准确请求、响应及错误。业务配置属于部署方受信代码，不接受 HTTP 上传可执行配置。更多业务和 Agent 按[扩展契约](extension-contracts.md)接入。
 
 ## 常见阻塞
 
