@@ -19,7 +19,7 @@ export function fixture(t, options = {}) {
   const parent = options.existingParent ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-leader-core-'))), root = path.join(parent, 'store');
   const depot = options.existingParent ? ArtifactDepot.openExisting(path.join(parent, 'objects')) : ArtifactDepot.create(path.join(parent, 'objects'));
   let store = options.existingParent ? Store.openExisting(root, {format: LEADER_FORMAT}) : Store.create(root, {format: LEADER_FORMAT}), owner = store.claimOwner(store.info().generation, 'test', Date.now() + 3600000), serial = 0;
-  const reviewPolicy = {id: 'review', version: '1', description: '只读完整选果'}, policy = {profile: 'task-managed-leader/v1', maxCalls: 9,
+  const reviewPolicy = {id: 'review', version: '1', description: '只读完整选果'}, policy = {profile: 'task-managed-leader/v1', maxCalls: options.maxCalls ?? 9,
     maxActions: 4, maxRequests: 3, repair: options.leaderRepair ?? {nodeIds: ['east', 'west'], maxRounds: 1},
     review: {providerId: 'fixture', policyDigest: hash(reviewPolicy)}, publication: options.publication ? {targetId: options.publication.id, policyDigest: options.publication.policyDigest} : null};
   const leader = createLeaderPort({id: 'leader', providerId: 'fixture', policy,
@@ -33,11 +33,11 @@ export function fixture(t, options = {}) {
   const provider = {id: 'fixture', start() {const fact = {executionId: 'fake-' + ++serial, startedAt: new Date().toISOString()};
     return {started: Promise.resolve(fact), stop() {}, completion: Promise.resolve({providerId: 'fixture', status: 'completed', stopReason: 'end_turn',
       outputText: typeof response==='string'?response:JSON.stringify(response), cleanup: {started: fact, cleaned: true, scope: 'controlled-fixture'}})};}};
-  const verification = createVerificationPort({id: 'verify', policy: {id: 'check', version: '1', description: '本测试受控独立断言'}, bindPlan: binding,
+  const verification = createVerificationPort({id: 'verify', policy: {id: 'check', version: '1', description: '本测试受控独立断言'}, bindPlan: options.binding ?? binding,
     publicationExpected: options.publicationExpected ?? null,
     start({ticket}) {const fact = {executionId: 'checker-' + ticket.workerId, startedAt: new Date().toISOString()};
-      assert.equal(ticket.input.verification.manifests.length, 2);
-      assert.equal(ticket.input.leaderReplies[0].answer, 'north');
+      if (options.verificationCheck) options.verificationCheck(ticket);
+      else {assert.equal(ticket.input.verification.manifests.length, 2);assert.equal(ticket.input.leaderReplies[0].answer, 'north');}
       return {started: Promise.resolve(fact), stop() {}, completion: Promise.resolve({type: 'verification', status: 'passed', cleanup: {started: fact, cleaned: true},
         evidence: {name: 'check.json', mediaType: 'application/json', content: encode({actual: 'north', bothBranches: true})},
         delivery: {name: 'delivery.json', mediaType: 'application/json', content: encode({east: 10, west: 20, region: 'north'})}})};}});
@@ -65,8 +65,8 @@ export function fixture(t, options = {}) {
         profile: 'task-file-business/v1', taskId: ticket.taskId, nodeId: ticket.nodeId, workerId: ticket.workerId,
         planDigest: ticket.planDigest, reservationDigest: ticket.reservationDigest, layoutDigest: hash({profile: 'task-file-business/v1', ...ticket.input.fileLayout}),
         files: [file], inputDigest: fileDigest([]), manifestDigest: fileDigest([file])}});},
-    async review(ticket) {response = {profile: 'task-independent-review/v1', inputDigest: ticket.input.review.inputDigest,
-      selectionDigest: ticket.input.review.selectionDigest, verdict: 'accept', summary: '独立审阅两原分支', findings: []}; return f.run(ticket, review);},
+    async review(ticket, extra = {}) {response = {profile: 'task-independent-review/v1', inputDigest: ticket.input.review.inputDigest,
+      selectionDigest: ticket.input.review.selectionDigest, verdict: 'accept', summary: '独立审阅两原分支', findings: [], ...extra}; return f.run(ticket, review);},
     async verify(ticket) {const handle = verification.start({ticket, prepared: {cwd: parent, prompt: '固定受控检查器'}});
       app.execution.started(ticket, await handle.started); return app.execution.finish(ticket, await handle.completion);},
     reopen() {store.close(); store = Store.openExisting(root, {format: LEADER_FORMAT}); owner = store.claimOwner(owner.generation, 'cold', Date.now() + 3600000);
