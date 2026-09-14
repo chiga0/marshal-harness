@@ -146,11 +146,12 @@ try {
     const prompt=drawer.getByTestId('worker-prompt');await prompt.waitFor();
     const expand=prompt.getByTestId('worker-prompt-expand');if(await expand.count())await expand.click();
     const full=prompt.getByRole('button',{name:'展开完整留存输入（当前为节选）',exact:true});
-    if(await full.count()) {await full.click();await full.waitFor({state:'hidden'});}
+    if(await full.count()) await full.click();
     const stored=audit.prompts.find(p=>p.workerId===worker.id)?.observation.snapshot;assert.ok(stored);
     const inputResponse=await fetch(address+'/v1/artifacts/'+stored.id+'/content',{headers:{Authorization:'Bearer '+token,Origin:address},signal:AbortSignal.timeout(12000)});
     assert.ok(inputResponse.ok);const inputBytes=Buffer.from(await inputResponse.arrayBuffer());
     assert.equal(sha(inputBytes),stored.digest);assert.equal(inputBytes.length,stored.bytes);
+    await page.waitForFunction(expected=>document.querySelector('[data-testid="worker-prompt-text"]')?.textContent===expected,inputBytes.toString('utf8'),{timeout:15000});
     assert.equal(await prompt.locator('pre').textContent(),inputBytes.toString('utf8'),'页面必须呈现原留存输入，不是计划目标替身');
     const history=drawer.locator('summary').filter({hasText:'公开活动历史'});await history.click();
     assert.ok(await drawer.getByRole('list',{name:'最近活动时间线'}).isVisible());
@@ -174,7 +175,7 @@ try {
     for(const width of [1440,1024,375]) {await page.setViewportSize({width,height:1000});await checkNoOverflow('任务'+colorScheme+width);await snapshot('overview-'+colorScheme+'-'+width);}
   }
   await page.emulateMedia({colorScheme:'light'});await page.setViewportSize({width:1440,height:1000});
-  await page.locator('a[href$="/artifacts"]').click();
+  await page.locator('nav[aria-label="详情子视图"] a[href$="/artifacts"]').click();
   const downloadPromise=page.waitForEvent('download');
   await page.getByTestId('final-delivery').getByTestId('download-button').click();
   const download=await downloadPromise;const savedPath=path.join(output,'deliverables.json');await download.saveAs(savedPath);
