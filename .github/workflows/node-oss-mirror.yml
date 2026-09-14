@@ -6,10 +6,16 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 已发布且与安装器固定版本一致的 Node stable tag
+        description: 已发布且与所选通道安装器固定版本一致的 Node tag
         required: true
         default: v1.0.2
         type: string
+      channel:
+        description: 显式分发通道；preview 不更新 stable
+        required: true
+        default: stable
+        type: choice
+        options: [stable, preview]
 
 permissions:
   contents: read
@@ -41,13 +47,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
-        run: python3 scripts/prepare-node-mirror.py "$RELEASE_TAG" "$RUNNER_TEMP" "$RUNNER_TEMP/oss-stage-path"
+          RELEASE_CHANNEL: ${{ inputs.channel || (github.event.release.prerelease && 'preview' || 'stable') }}
+        run: python3 scripts/prepare-node-mirror.py "$RELEASE_TAG" "$RUNNER_TEMP" "$RUNNER_TEMP/oss-stage-path" "$RELEASE_CHANNEL"
       - name: Verify, mirror without overwrite, and read back
         env:
+          RELEASE_CHANNEL: ${{ inputs.channel || (github.event.release.prerelease && 'preview' || 'stable') }}
           MARSHAL_OSS_ACCESS_KEY_ID: ${{ secrets.MARSHAL_OSS_ACCESS_KEY_ID }}
           MARSHAL_OSS_ACCESS_KEY_SECRET: ${{ secrets.MARSHAL_OSS_ACCESS_KEY_SECRET }}
           MARSHAL_OSS_BUCKET: ${{ vars.MARSHAL_OSS_BUCKET }}
           MARSHAL_OSS_REGION: ${{ vars.MARSHAL_OSS_REGION }}
           MARSHAL_OSS_PREFIX: ${{ vars.MARSHAL_OSS_PREFIX }}
         run: |
-          "$RUNNER_TEMP/oss-venv/bin/python" scripts/sync-node-oss.py --stage "$(< "$RUNNER_TEMP/oss-stage-path")"
+          "$RUNNER_TEMP/oss-venv/bin/python" scripts/sync-node-oss.py --stage "$(< "$RUNNER_TEMP/oss-stage-path")" --channel "$RELEASE_CHANNEL"
