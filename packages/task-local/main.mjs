@@ -10,7 +10,7 @@ import {installCommand} from './install-command.mjs';
 const fail = code => { throw new Error(code); };
 const codes = new Set(['invalid_arguments', 'unsafe_settings', 'installation_missing_or_ambiguous',
   'configuration_required', 'connection_unavailable', 'service_start_failed', 'settings_missing', 'command_install_conflict',
-  'agent_unavailable', 'running_configuration_conflict']);
+  'agent_unavailable', 'running_configuration_conflict', 'service_not_ready']);
 const optionFields = {'--config': 'config', '--connection-file': 'connectionFile', '--data-dir': 'dataDir',
   '--ui': 'ui', '--port': 'port', '--agent-executable': 'agentExecutable', '--install-root': 'installRoot'};
 function executable(value) {
@@ -72,7 +72,16 @@ async function connect(settings) {
   const {TaskClient} = await import(pathToFileURL(path.join(installation(settings.installRoot), 'packages/task-client/index.mjs')));
   const connection = readPrivate(absolute(settings.connectionFile));
   const client = new TaskClient({baseURL: connection.url, token: connection.token});
-  await client.request('ready.get', {timeoutMs: 2000});
+  try {await client.request('ready.get', {timeoutMs: 2000});}
+  catch (readyError) {
+    // Readiness is not liveness: an authenticated service may still own data
+    // and executions while rejecting work. Never start a replacement then.
+    let live = false;
+    try {await client.request('health.get', {timeoutMs: 2000}); live = true;}
+    catch (healthError) {live = readyError.status === 503 || healthError.status === 503;}
+    if (live) fail('service_not_ready');
+    throw readyError;
+  }
   return client;
 }
 export async function connectLocal({settingsDir = path.join(fs.realpathSync(os.homedir()), '.marshal-client')} = {}) {
@@ -115,7 +124,9 @@ export async function run(argv, {home = os.homedir(), output = value => console.
   const ownRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const selectedRoot = options['--install-root'] ?? (command === 'init' ? ownRoot : settings.installRoot ?? ownRoot);
   if (['serve', 'init'].includes(command) && previous.connectionFile) {
-    let live = false; try {await connect(previous); live = true;} catch {}
+    let live = false; try {await connect(previous); live = true;} catch (error) {
+      if (error.message === 'service_not_ready') throw error;
+    }
     if (live) {
       const changed = options['--replace-launcher'] || selectedRoot !== previous.installRoot ||
         options['--generic'] && previous.generic !== true || options['--no-ui'] && previous.ui !== undefined ||
@@ -147,14 +158,17 @@ export async function run(argv, {home = os.homedir(), output = value => console.
     if (launcher.state === 'installed') {settings.launcherNodePath = process.execPath; save(file, settings);}
     else if (!fs.existsSync(file)) save(file, settings);
     if (launcher.state === 'conflict' && options['--replace-launcher']) fail('command_install_conflict');
-    let connected = false; try {await connect(settings); connected = true;} catch {}
+    let connected = false; try {await connect(settings); connected = true;} catch (error) {
+      if (error.message === 'service_not_ready') throw error;
+    }
     output({state: connected ? 'connected' : 'initialized', installRoot: settings.installRoot,
       agents: settings.agents, launcher, settingsFile: file, serviceConfigured: Boolean(settings.config),
       next: connected ? null : 'serve'});
     return;
   }
   try {await connect(settings); output({state: 'connected', settingsFile: file,
-    ...(settings.address ? {address: settings.address} : {}), ...(settings.ui && settings.address ? {uiUrl: settings.address + '/ui/'} : {})}); return;} catch {
+    ...(settings.address ? {address: settings.address} : {}), ...(settings.ui && settings.address ? {uiUrl: settings.address + '/ui/'} : {})}); return;} catch (error) {
+    if (error.message === 'service_not_ready') throw error;
     if (command === 'status') fail('connection_unavailable');
   }
   if (!settings.config || settings.generic === true) {

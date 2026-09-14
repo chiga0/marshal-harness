@@ -8,6 +8,8 @@
 
 `init` 未给 `--install-root` 时取当前命令自身安装根。升级不会静默覆盖旧命令：停止旧服务后，从新安装包执行 `node /absolute/new/packages/task-local/main.mjs init --replace-launcher`。显式替换仅接受与原设置中安装根、记录 Node 路径及完整生成格式一致的旧 launcher，采用临时文件同步和 inode 复查后原子替换；修改过的命令、链接或未知身份一律保留并报冲突。历史设置没有 Node 记录时仅接受当前 Node 的完整旧格式，不能猜测旧执行路径。普通冲突保留旧设置；活跃旧连接阻止配置或 launcher 升级，不自动停止旧服务。
 
+服务返回 `503 not_ready` 不等于已经停止：命令会通过原连接查询 health，返回 `service_not_ready`，不启动第二个服务、不更改配置或替换 launcher。旧版 launcher 的 Node 路径如果已变化且没有可信记录，精确身份验证失败时继续拒绝，不通过猜路径或只看注释强行升级。
+
 配置位置默认为 `~/.marshal-client/local.json`（0700目录、0600文件），可用 `--settings-dir` 指定。它只是可重建的本机启动设置，不是 Task/执行/恢复的第二权威；SQLite、原服务 owner acquisition 与数据根均不变。旧连接失效不会授权关闭未知服务、清空状态或重派任务。`serve` 是前台程序，应使用宿主支持的长运行终端或服务管理器；本包不是常驻 watchdog。
 
 ```sh

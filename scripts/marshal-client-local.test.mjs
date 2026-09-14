@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
 import {run, connectLocal} from '../packages/task-local/main.mjs';
-import {contract} from '../packages/task-api/contract.mjs';
+import {contract, TaskApiError} from '../packages/task-api/contract.mjs';
 import {createTaskApiHandler} from '../packages/task-api/http-handler.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 function fixture(t) {
@@ -80,6 +80,30 @@ test('live service cannot be reported as a newly requested configuration', async
     assert.deepEqual(fs.readFileSync(file), before);
   }
   await assert.rejects(run(['init', '--replace-launcher'], {home, output() {}}), /running_configuration_conflict/);
+});
+
+test('live 503 readiness blocks launch, reconfiguration and launcher replacement', async t => {
+  const home = fixture(t), token = 'local-live-not-ready-fixture-token-001';
+  let handler, ready = true, healthCalls = 0;
+  const server = createServer((req, res) => handler(req, res));
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => {server.closeAllConnections(); server.close();});
+  const url = `http://127.0.0.1:${server.address().port}`;
+  handler = createTaskApiHandler({token, expectedHost: new URL(url).host, application: async request => {
+    if (request.operation === 'health.get') {healthCalls++; return contract.components.schemas.Health.examples[0];}
+    if (!ready) throw new TaskApiError('not_ready');
+    return contract.components.schemas.Readiness.examples[0];
+  }});
+  const connection = path.join(home, 'connection.json');
+  fs.writeFileSync(connection, JSON.stringify({url, token}), {mode: 0o600});
+  await run(['init', '--install-root', root, '--connection-file', connection], {home, output() {}});
+  const settings = path.join(home, '.marshal-client/local.json'), launcher = path.join(home, '.local/bin/marshal');
+  const before = fs.readFileSync(settings), beforeLauncher = fs.readFileSync(launcher); ready = false;
+  for (const args of [['serve'], ['status'], ['serve', '--generic'], ['init', '--replace-launcher'], ['init', '--config', path.join(home, 'other.mjs')]]) {
+    await assert.rejects(run(args, {home, output() {assert.fail('not connected');}}), /service_not_ready/);
+    assert.deepEqual(fs.readFileSync(settings), before); assert.deepEqual(fs.readFileSync(launcher), beforeLauncher);
+  }
+  assert.equal(healthCalls, 5);
 });
 
 test('generic default selects exact agent and private root, forwards UI port and preserves API connection', {timeout: 10000}, async t => {
