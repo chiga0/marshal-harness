@@ -1,5 +1,6 @@
 // Deterministic test-only ACP peer; never shipped as a production Agent.
 import fs from 'node:fs';
+import path from 'node:path';
 import {createInterface} from 'node:readline';
 import {encode, digest} from '../task-store/store.mjs';
 import {MAX_FILE} from './policy.mjs';
@@ -8,6 +9,7 @@ const reply = (q, result) => send({jsonrpc:'2.0',id:q.id,result});
 const hash = value => digest(encode(value));
 async function prompt(q) {
   const text=q.params.prompt[0].text; let out;
+  if(process.env.MARSHAL_TEST_PROMPT_LOG) fs.writeFileSync(path.join(process.env.MARSHAL_TEST_PROMPT_LOG,digest(Buffer.from(text)).slice(7)+'.txt'),text,{flag:'wx',mode:0o600});
   if (text.includes('\n完整冻结输入：')) {
     const input=JSON.parse(text.split('\n完整冻结输入：').at(-1)), s=input.snapshot;
     if (input.profile==='task-independent-review/v1') {

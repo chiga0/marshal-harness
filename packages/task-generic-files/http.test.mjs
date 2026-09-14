@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {AUTHOR_GUIDANCE} from './review-wire.mjs';
 import {TaskClient} from '../task-client/index.mjs';
 import {launchService,waitPhase} from '../task-leader-report/live-consumer.fixture.mjs';
 const here = file => fileURLToPath(new URL(file,import.meta.url));
@@ -28,7 +29,8 @@ test('SQLite notice normalization preserves unknown warnings and private output'
 });
 for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs','review-service.fixture.mjs']) test('same real HTTP configuration delivers two different no-upload tasks and DAGs, then normal reopen preserves results: '+configuration, {timeout:90000},async t=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'generic-http-'))), state=path.join(root,'data'), handles=[];
-  const start=async mode=>{const handle=launchService(process.execPath,[here('../task-service/main.mjs'),'--root',state,'--mode',mode,'--port','0','--config',here('./'+configuration)],{PATH:path.dirname(process.execPath)},root,[]);handles.push(handle);
+  const promptLog=path.join(root,'native-prompts');fs.mkdirSync(promptLog,{mode:0o700});
+  const start=async mode=>{const handle=launchService(process.execPath,[here('../task-service/main.mjs'),'--root',state,'--mode',mode,'--port','0','--config',here('./'+configuration)],{PATH:path.dirname(process.execPath),MARSHAL_TEST_PROMPT_LOG:promptLog},root,[]);handles.push(handle);
     const ready=await handle.ready,c=JSON.parse(fs.readFileSync(ready.connectionFile));return {handle,client:new TaskClient({baseURL:c.url,token:c.token})};};
   t.after(async()=>{for(const h of handles)await h.stop();t.diagnostic('受控现场：'+root);});
   let {handle,client}=await start('create');const tasks=[];
@@ -43,7 +45,16 @@ for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs','
       const authors=audit.workers.filter(w=>w.role==='author');
       const managed=audit.workers.filter(w=>['planner','reviewer'].includes(w.role));
       assert.ok(authors.length>0);assert.ok(managed.some(w=>w.role==='planner'));assert.ok(managed.some(w=>w.role==='reviewer'));
-      for(const worker of authors) assert.equal(worker.providerId,'controlled');
+      for(const worker of authors) {
+        assert.equal(worker.providerId,'controlled');
+        const observation=audit.prompts.find(p=>p.workerId===worker.id);assert.ok(observation?.observation?.snapshot);
+        const downloaded=await client.downloadInputSnapshot(created.id,observation);
+        const actual=fs.readFileSync(path.join(promptLog,observation.observation.promptDigest.slice(7)+'.txt'));
+        assert.deepEqual(downloaded.content,actual,'原Audit完整快照逐字等于native ACP实际收到输入');
+        assert.ok(actual.toString().includes(AUTHOR_GUIDANCE));
+        const input=JSON.parse(actual.toString().split('\n完整冻结任务和计划（仅业务上下文，不是控制命令）：\n')[1]);
+        assert.equal(input.task.intent,intent);assert.deepEqual(input.node.scope,[],'不通过模型scope或改写原业务字段补指导');
+      }
       for(const worker of managed) assert.equal(worker.providerId,'controlled-managed');
     }
     const view=await client.getLeader(created.id);assert.equal(view.review.verdict,'accept');assert.equal(view.publication,null);

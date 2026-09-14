@@ -1,3 +1,4 @@
+import {registerFileAuthorInstructions} from '../task-business/index.mjs';
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {createLeaderPort, createReviewPort, parseManagedOutput, renderLeaderPrompt} from '../task-application/application.mjs';
@@ -83,6 +84,9 @@ export function renderReviewProposalPrompt(input) {
     '\n完整冻结输入：' + JSON.stringify(input);
 }
 
+export const CREATIVE_SCOPE = '允许完成用户要求的创作、文案和方案建议；不得把未提供事项写成已确定事实、既有服务或强制条件。不要把事实来源约束改写成禁止全部合理建议的新范围；保留用户原任务与已批准scope，不静默修改；若存在冲突应明确指出，不自行豁免。';
+export const AUTHOR_GUIDANCE = FACT_GROUNDING + INTERACTION_GROUNDING + DATA_ORIGIN + CREATIVE_SCOPE;
+
 export function createGenericFilesReviewWireConfig(options) {
   options = {...options, provider: withPermissionDiagnostics(options.provider)};
   const config = createGenericFilesConfig(options), originalLeader = config.leader;
@@ -91,11 +95,17 @@ export function createGenericFilesReviewWireConfig(options) {
     check(managedProvider.id !== options.provider.id && typeof managedProvider.start === 'function', 'invalid_generic_provider');
     config.providers.set(managedProvider.id, managedProvider);
   }
-  const code = digest(encode(['review-wire.mjs', 'qwen-review-service-config.mjs', 'qwen-file-tools.mjs', 'short-wire.mjs', '../task-application/leader-ports.mjs']
+  const code = digest(encode(['../task-business/index.mjs', 'review-wire.mjs', 'qwen-review-service-config.mjs', 'qwen-file-tools.mjs', 'short-wire.mjs', '../task-application/leader-ports.mjs']
     .map(name => ({name, digest: digest(fs.readFileSync(fileURLToPath(new URL(name, import.meta.url))))}))));
+  const originalBusinessFactory = config.businessFactory;
+  config.businessFactory = context => {
+    const business = originalBusinessFactory(context);
+    registerFileAuthorInstructions(business, {profile: 'file-author-instructions/v1', text: AUTHOR_GUIDANCE});
+    return business;
+  };
   const observability = {profile: 'task-observation/v1', retainPrompts: true};
   const reviewPolicy = {id: 'generic-files-bound-review', version: '1',
-    description: RULE + ' 原通用策略：' + config.review.policyDigest + ' 显式Review wire：' + REVIEW_WIRE_PROFILE + ' 观测策略：' + JSON.stringify(observability) + ' 源码摘要：' + code};
+    description: RULE + ' 原通用策略：' + config.review.policyDigest + ' 显式Review wire：' + REVIEW_WIRE_PROFILE + ' 观测策略：' + JSON.stringify(observability) + ' 固定作者指导：' + AUTHOR_GUIDANCE + ' 源码摘要：' + code};
   config.review = createReviewPort({id: reviewPolicy.id, providerId: managedProvider.id, policy: reviewPolicy,
     prepare: ({input}) => ({prompt: RULE + '\n' + renderReviewProposalPrompt(input)}), parseReport: parseReviewProposal});
   config.leader = createLeaderPort({id: 'generic-files-bound-leader', providerId: managedProvider.id,
@@ -104,7 +114,7 @@ export function createGenericFilesReviewWireConfig(options) {
       review: {providerId: managedProvider.id, policyDigest: digest(encode(reviewPolicy))}, publication: null},
     prepare: async ({ticket, input, prepared}, context) => {
       await originalLeader.prepare(ticket, prepared, context);
-      return {prompt: RULE + '\n' + GUIDANCE + '\n' + '本通用文件配置的DAG节点role只允许author或verifier。所有写成果的执行者（包括整合作者）role必须为author，整合节点id可以叫integrator但role不能为integrator。独立Review是Core受管阶段，不设reviewer节点；唯一verifier是汇合终点且不写成果。' + '\n' + FACT_GROUNDING + INTERACTION_GROUNDING + DATA_ORIGIN + '在计划的作者scope和acceptance中明确事实来源与建议边界；完整方案应内部自洽、依赖可行、可验收，原要求中的风险须对应可执行验收与回退；完整保留用户原要求，不以自己补充的计划内容证明新事实。' + '\n' + (options.managedProvider ? '执行作者的providerId使用null（默认文件Provider）或' + options.provider.id + '；' + managedProvider.id + '仅供受管Leader/Review，不能用于写成果的作者。\n' : '') + renderGenericLeaderPrompt(input)};
+      return {prompt: RULE + '\n' + GUIDANCE + '\n' + '本通用文件配置的DAG节点role只允许author或verifier。所有写成果的执行者（包括整合作者）role必须为author，整合节点id可以叫integrator但role不能为integrator。独立Review是Core受管阶段，不设reviewer节点；唯一verifier是汇合终点且不写成果。' + '\n' + FACT_GROUNDING + INTERACTION_GROUNDING + DATA_ORIGIN + CREATIVE_SCOPE + '在计划的作者scope和acceptance中明确事实来源与建议边界；完整方案应内部自洽、依赖可行、可验收，原要求中的风险须对应可执行验收与回退；完整保留用户原要求，不以自己补充的计划内容证明新事实。' + '\n' + (options.managedProvider ? '执行作者的providerId使用null（默认文件Provider）或' + options.provider.id + '；' + managedProvider.id + '仅供受管Leader/Review，不能用于写成果的作者。\n' : '') + renderGenericLeaderPrompt(input)};
     }, parseDecision: parseLeaderProposal});
   config.observability = observability;
   return config;
