@@ -86,3 +86,16 @@ describe('Worker 抽屉焦点与层叠（UI-09）', () => {
     expect(document.activeElement).toBe(cancelButton);
   });
 });
+
+
+it('已完成Verifier保留原计划目标，但不把自由文本目标作为完成能力标题',()=>{
+  const plan=makePlan();const goal='逐项验证全部业务操作与外部保存效果';
+  plan.nodes=[{id:'check',role:'verifier',goal,scope:[],providerId:null}];
+  const {transport}=makeFakeTransport();
+  wrap(<WorkerDrawer taskRevision={7} worker={makeWorker({id:'check-worker',nodeId:'check',role:'verifier',status:'completed',attempt:8})} plan={plan} transport={transport} onClose={()=>{}} onChanged={()=>{}}/>);
+  expect(screen.getByRole('heading',{level:2})).toHaveTextContent('配置检查 · 执行 8');
+  expect(screen.getByRole('heading',{level:2})).not.toHaveTextContent(goal);
+  const details=screen.getByTestId('worker-plan-goal');expect(details).not.toHaveAttribute('open');
+  fireEvent.click(within(details).getByText('计划目标（非已验证范围）'));
+  expect(details).toHaveTextContent(goal);expect(details).toHaveTextContent('执行完成不证明这些要求均已检查');
+});

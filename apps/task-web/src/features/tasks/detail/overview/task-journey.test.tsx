@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {MemoryRouter} from 'react-router-dom';
 import {render,screen} from '@testing-library/react';
-import {TaskJourney,workerTitle,currentStage,taskFocus} from './task-journey';
+import {TaskJourney,TeamSummary,workerTitle,currentStage,taskFocus} from './task-journey';
 import {makeTask,makeLeader,makeWorker} from '../testing/fixtures';
 
 describe('任务阶段以当前可行动事实表达',()=>{
@@ -62,4 +62,17 @@ describe('任务阶段以当前可行动事实表达',()=>{
     expect(taskFocus(task,{...leader,taskRevision:9,taskId:'other-task'})).not.toContain('发布');
   });
 
+});
+
+
+describe('执行记录不把计划目标冒充实际检查',()=>{
+  it('Verifier只以配置检查和执行序号命名',()=>{expect(workerTitle(makeWorker({role:'verifier',attempt:8}))).toBe('配置检查 · 执行 8');});
+  it('当前活动优先，其后失败记录优于成功记录，同组最近执行先展示',()=>{
+    const workers=[...Array.from({length:7},(_,i)=>makeWorker({id:`old-${i}`,status:'completed',attempt:i+1})),makeWorker({id:'failed-new',status:'failed',attempt:9}),makeWorker({id:'failed-old',status:'failed',attempt:8}),makeWorker({id:'active',status:'running',attempt:10})];
+    render(<MemoryRouter><TeamSummary task={makeTask({status:'completed'})} plan={null} workers={workers}/></MemoryRouter>);
+    const links=screen.getAllByRole('link').filter(link=>link.getAttribute('href')?.includes('/team/'));
+    expect(links.slice(0,3).map(link=>link.getAttribute('href')?.split('/').at(-1))).toEqual(['active','failed-new','failed-old']);
+    expect(links[1]).toHaveTextContent('该次执行失败');
+    expect(screen.queryByText(/当前阻塞/)).not.toBeInTheDocument();
+  });
 });

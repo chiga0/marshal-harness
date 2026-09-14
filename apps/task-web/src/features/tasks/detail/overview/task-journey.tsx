@@ -78,6 +78,7 @@ export function taskFocus(task: TaskRecord, leader: LeaderRecord | null) {
   );
 }
 export function workerTitle(worker: WorkerRecord, plan?: PlanRecord | null) {
+  if(worker.role === 'verifier') return `配置检查 · 执行 ${worker.attempt}`;
   if(worker.role === 'planner') return `${worker.nodeId.startsWith('managed-leader-') ? 'Leader 决策' : '规划决策'} · 执行 ${worker.attempt}`;
   return (
     plan?.nodes.find(
@@ -186,8 +187,8 @@ export function TeamSummary({
         ? 1
         : w.status === 'queued'
           ? 2
-          : 3;
-  const sorted = [...(workers ?? [])].sort((a, b) => order(a) - order(b));
+          : w.status === 'failed' ? 3 : 4;
+  const sorted = [...(workers ?? [])].sort((a, b) => order(a) - order(b) || b.attempt - a.attempt);
   return (
     <section aria-label="团队速览" className="team-summary">
       <div className="mb-4 flex items-center justify-between">
@@ -224,7 +225,7 @@ export function TeamSummary({
                     {w.providerId} · 执行序号 {w.attempt}
                   </p>
                   <p className="mt-1 text-xs text-text-secondary">
-                    {workerStatusLabel(w.status)}
+                    {w.status === 'failed' ? '该次执行失败' : workerStatusLabel(w.status)}
                   </p>
                 </div>
               </Link>

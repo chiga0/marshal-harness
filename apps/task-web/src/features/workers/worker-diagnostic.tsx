@@ -1,6 +1,10 @@
 import type {ExecutionDiagnostic, WorkerRecord} from '@/lib/transport/types';
-const stages: Record<ExecutionDiagnostic['stage'], string> = {preparing:'准备工作输入',starting:'启动 Agent',provider:'Agent 执行',permission:'工具授权检查',collecting:'收集交付成果',cleanup:'清理执行环境'};
+const stages: Record<ExecutionDiagnostic['stage'], string> = {preparing:'准备工作输入',starting:'启动 Agent',provider:'Agent 执行',permission:'工具授权检查',collecting:'收集交付成果',cleanup:'清理执行环境',protocol:'受管结果协议解析'};
 const reasons: Record<string,string> = {
+  invalid_json:'返回文本不是合法 JSON',
+  invalid_leader_result:'受管执行结果不符合要求',
+  invalid_leader_decision:'Leader 提案不符合合同',
+  invalid_review_report:'独立评审报告不符合合同',
   task_files_missing_output: '缺少约定的输出文件',
   task_files_input_changed: '输入文件内容已改变',
   task_files_identity_changed: '文件身份或属性已改变',

@@ -108,7 +108,13 @@ export function WorkerDrawer({
           </Badge>
         </div>
 
-        {taskTitle(workerTitle(worker, plan)) !== workerTitle(worker, plan) ? (
+        {worker.role === 'verifier' ? (
+          <details className="workspace-disclosure" data-testid="worker-plan-goal">
+            <summary>计划目标（非已验证范围）</summary>
+            <p className="whitespace-pre-wrap break-words text-sm">{plan?.nodes.find(node => node.id === worker.nodeId && node.role === worker.role)?.goal ?? '计划目标未加载'}</p>
+            <p className="mt-2 text-xs text-text-secondary">这是计划对该节点的要求；执行完成不证明这些要求均已检查，实际覆盖以配置及绑定证据为准。</p>
+          </details>
+        ) : taskTitle(workerTitle(worker, plan)) !== workerTitle(worker, plan) ? (
           <details className="workspace-disclosure">
             <summary>完整工作目标</summary>
             <p className="whitespace-pre-wrap break-words text-sm">{workerTitle(worker, plan)}</p>
