@@ -101,7 +101,7 @@ try {
     const task=await api('/v1/tasks/'+taskId);stages.add(task.status);
     if(task.status!==lastStatus) {lastStatus=task.status;await snapshot('state-'+lastStatus);}
     if(Date.now()-lastLog>30000) {lastLog=Date.now();console.log(JSON.stringify({caseId,taskId,status:task.status,elapsedMs:Date.now()-Date.parse(evidence.startedAt)}));}
-    if(['failed','intervention','expired','cancelled'].includes(task.status)) {evidence.task=task;throw new Error('真实任务未交付:'+task.status+':'+JSON.stringify(task.failure??task.outcome??null));}
+    if(['failed','intervention','expired','cancelled'].includes(task.status)) {evidence.task=task;throw new Error('真实任务未交付:'+task.status+':'+JSON.stringify(task.code??task.failure??task.outcome??null));}
     if(task.status==='completed') {evidence.task=task;break;}
     if(task.status==='awaiting-answer') {
       assert.ok(spec.answer,'该完整需求不应出现未约定的必要问答');

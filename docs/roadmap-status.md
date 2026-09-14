@@ -4,6 +4,8 @@
 
 ## 当前唯一状态与关键路径（2026-09-14）
 
+**执行透明度与从零业务验收进行中**：本批工作台/成员输入/公开活动与新安装配置已形成统一候选，尚未发布。首项真实 S01 流程完成但独立业务正文因无依据的设施/服务承诺被拒收，正在修复并复验；不改变既有发行完成事实，也不关闭 UI-1。范围和最终证据统一维护在[验收记录](ui-1/experience-e2e-2026-09-14.md)与[审计报告](audit-report.md)。
+
 **通用接入修正已合入、RC.2 已在 GitHub 预发布**：按 [ADR0100](adr/0100-generic-team-default-and-agent-entry.md) 完成实际 Qwen 可执行入口、默认通用文件团队、显式 launcher 升级及 generic 配置选择；[PR #307](https://github.com/chiga0/marshal-harness/pull/307) 产品候选为 `2fde5038`，[PR #308](https://github.com/chiga0/marshal-harness/pull/308) 发行 pins 已合入。真实 Qwen 修后152.7秒、9 Attempts、零 retry/rework完成双作者→独立检查→文件交付→conclude；首轮重复 deliver 失败与安全取消保留。最终 CI 原包接纳及 RC.1 私有 HOME 升级、serve/status/UI 就绪已通过。RC.2 于2026-09-14T05:59:08Z完成验签与 GitHub public prerelease、非 latest；OSS 镜像、公开安装及其 RC.1 升级/serve/status/UI 启动核验已通过（无 Task、模型调用0）；准确身份与范围见 [RC.2 记录](v1.1.0-rc.2-release-dossier-2026-09-14.md)，不表示 RC.1 已含修复。真实 ETL 的发布/补数/生产结果核验仍未接通；2026-09-14 DataAgent 初次查询遇 `500130 / SystemError`、未提交 Prompt，后续用户恢复实例后只读工具说明查询已完成。发布/补数据去重机制仍未确认，工作空间记忆与目标不一致；未执行 ETL，不将说明调研记为实际业务验收。
 
 **Chrome 优先 UI 已预发布**：[v1.1.0-rc.1](https://github.com/chiga0/marshal-harness/releases/tag/v1.1.0-rc.1) 于2026-09-14T01:27:51Z公开，复用 source `67317d7b` 原 CI 包，维护者签名、GitHub/OSS分发与公开安装核验完成。public prerelease 非 latest，`v1.0.2` 保持 stable，UI-1 不关闭。9月13日 Chrome 原包真实隐藏轮询已限定通过；实际 Safari 完成受控团队交付及本机后验，浏览器下载待许可。真人可用性仍 NOT_RUN，完整 UI 三线仍未全部通过；按用户授权先预发布再实机测试。身份、专用安装器、分发回执和后续任务见 [预发布记录](v1.1.0-rc.1-release-dossier-2026-09-14.md)。
