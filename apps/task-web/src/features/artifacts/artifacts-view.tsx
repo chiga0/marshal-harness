@@ -1,3 +1,4 @@
+import {configuredCheckLabel, VerificationScope} from '../tasks/detail/shared/verification-scope';
 // 成果（P09）：Task.artifactIds → 服务端产物元数据清单（候选/最终/证据/输入分组，逐项可用性如实，E15 事实层）；
 // 独立验收来自 audit.acceptance，集中评审来自 leader.review；发布/后验来自 leader.publication/postverify；
 // 下载经 getArtifactContent 拉流 + 本机 SHA-256 复验（E17），任何不一致拒绝保存；下载不等于发布（E16）。
@@ -9,7 +10,7 @@ import {Card} from '@/components/ui/card';
 import {ApiError} from '@/lib/transport/types';
 import type {ArtifactKind, ArtifactRecord, LeaderActionStatus, LeaderRecord, LeaderReview, TaskAuditRecord, TaskRecord, Transport} from '@/lib/transport/types';
 import {ErrorNotice} from '../tasks/detail/shared/error-notice';
-import {acceptanceStatusLabel, formatBytes} from '../tasks/detail/shared/format';
+import {formatBytes} from '../tasks/detail/shared/format';
 import {StatusBadge, toneForAcceptanceStatus} from '../tasks/detail/shared/status-badge';
 import {downloadArtifact, DownloadRejection} from './downloader';
 import {DeliveryFilesView} from './delivery-files-view';
@@ -186,7 +187,7 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
       </Card>
 
       <Card aria-label="验收读数" className="space-y-2" data-testid="verification-readout">
-        <h2 className="text-base font-semibold leading-6">独立验收/集中评审读数</h2>
+        <h2 className="text-base font-semibold leading-6">业务评审与配置检查</h2>
         {leader === null ? (
           <p className="text-sm text-text-secondary" data-testid="verification-unavailable">
             Leader 投影不可用，集中评审读数暂不可用。
@@ -196,7 +197,7 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
             暂无集中评审读数（评审未完成或该服务未提供）。
           </p>
         ) : (
-          <div className="space-y-1" data-testid="review-verdict">
+          <div className="space-y-1" data-testid="review-verdict"><h3 className="text-sm font-medium">独立 Agent 业务评审</h3>
             <StatusBadge
               machine={leader.review.verdict}
               label={REVIEW_VERDICT_LABELS[leader.review.verdict]}
@@ -210,12 +211,12 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
           </div>
         )}
         <div className="space-y-1 border-t border-border pt-2" data-testid="acceptance-readout">
-          <h3 className="text-sm font-medium">独立验收（task.audit.acceptance）</h3>
+          <h3 className="text-sm font-medium">配置检查结果</h3>
           {acceptance === null ? (
             <p className="text-sm text-text-secondary" data-testid="acceptance-unloaded">验收读数未加载或 audit 投影不可用；不能以评审结果代替验收。</p>
           ) : (
             <>
-              <StatusBadge machine={acceptance.status} label={acceptanceStatusLabel(acceptance.status)} tone={toneForAcceptanceStatus(acceptance.status)} />
+              <StatusBadge machine={acceptance.status} label={configuredCheckLabel(acceptance.status)} tone={toneForAcceptanceStatus(acceptance.status)} /><VerificationScope />
               <details className="text-xs text-text-secondary"><summary className="min-h-11 cursor-pointer py-3">查看校验引用</summary><dl className="grid grid-cols-1 gap-y-1 text-sm leading-[22px]">
                 <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">验收摘要</dt><dd className="break-all">{acceptance.digest !== null ? <code className="text-xs">{acceptance.digest}</code> : '暂无摘要'}</dd></div>
                 <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">验收证据</dt><dd className="break-all">{acceptance.evidenceIds.length > 0 ? `${acceptance.evidenceIds.length} 条（${acceptance.evidenceIds.join('，')}）` : '暂无数据'}</dd></div>
@@ -223,7 +224,7 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
             </>
           )}
         </div>
-        <p className="text-xs text-text-secondary">评审通过不等于验收通过；只有独立验收 acceptance=passed 才是验收通过。执行结束不代表验收通过。</p>
+        <p className="text-xs text-text-secondary">Agent 评审接受不代表所有业务操作已实际验证。配置检查只覆盖其策略范围，执行结束不代表逐项业务验证通过。</p>
       </Card>
 
       <Card aria-label="发布与后验" className="space-y-2" data-testid="publications-card">

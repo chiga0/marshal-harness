@@ -16,8 +16,9 @@ describe('计划业务内容与审计原文分层', () => {
     expect(screen.getByText('时长预算')).toBeVisible();
     expect(screen.getByText('双地区对账报告')).toBeVisible();
     expect(screen.getByText('必须独立校验全部流水')).toBeVisible();
+    expect(screen.getByTestId('plan-requirements-scope')).toHaveTextContent('不是已执行的检查清单');
     expect(screen.getByText('使用用户明确选择的时间范围')).toBeVisible();
-    expect(within(screen.getByRole('region', {name: '验收口径'})).queryByText(machine)).not.toBeInTheDocument();
+    expect(within(screen.getByRole('region', {name: '计划验收要求'})).queryByText(machine)).not.toBeInTheDocument();
     const details = screen.getByTestId('plan-technical-details');
     const raw = details.querySelector('pre')!;
     expect(raw.textContent).toBe(machine);

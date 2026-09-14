@@ -78,8 +78,8 @@ export function PlanCard({task, plan, transport, onViewLatest}: PlanCardProps) {
         <section aria-label="预期交付" className="space-y-1 text-sm leading-[22px]"><h3 className="font-medium">预期交付</h3><ul className="list-disc space-y-1 pl-5">{plan.deliverables.map((value, index) => <li key={index} className="whitespace-pre-wrap break-words">{value}</li>)}</ul></section>
       ) : null}
       {plan.acceptance.length > 0 ? (
-        <section aria-label="验收口径" className="space-y-1 text-sm leading-[22px]">
-          <h3 className="font-medium">验收口径</h3>
+        <section aria-label="计划验收要求" className="space-y-1 text-sm leading-[22px]">
+          <h3 className="font-medium">计划验收要求</h3><p className="text-xs text-text-secondary" data-testid="plan-requirements-scope">以下是待满足的要求，不是已执行的检查清单。节点目标与范围也不代表检查器已经具备相应能力。</p>
           {readableAcceptance.length ? <ul className="list-disc space-y-1 pl-5">{readableAcceptance.map((value, index) => <li key={index} className="whitespace-pre-wrap break-words">{value}</li>)}</ul> : <p className="text-text-secondary">验收要求以结构化规则提供，请在批准前核对下方完整原文。</p>}
           {structuredAcceptance.length > 0 ? <p className="text-xs text-text-secondary">另有 {structuredAcceptance.length} 条结构化验收规则，批准前请核对下方原文。</p> : null}
         </section>

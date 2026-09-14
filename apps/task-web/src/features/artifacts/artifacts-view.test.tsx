@@ -108,7 +108,7 @@ describe('成果页（P09 / E15–E19）', () => {
     renderView({task: makeTask({status: 'failed', code: 'worker_failed'}), artifacts: []});
     expect(screen.getByTestId('delivery-empty')).toHaveTextContent('任务失败，无交付成果');
     expect(screen.getByTestId('final-delivery')).toHaveTextContent('worker_failed');
-    expect(screen.getByText(/执行结束不代表验收通过/)).toBeInTheDocument();
+    expect(screen.getByText(/执行结束不代表逐项业务验证通过/)).toBeInTheDocument();
     expect(screen.queryByTestId('download-button')).toBeNull();
   });
 
@@ -179,6 +179,8 @@ describe('成果页（P09 / E15–E19）', () => {
     expect(within(acceptance).getByTestId('machine-state')).toHaveTextContent(status);
     expect(acceptance).toHaveTextContent('sha256:acceptance-only');
     expect(acceptance).toHaveTextContent('acceptance-evidence');
+    expect(acceptance).toHaveTextContent('逐项业务验证覆盖：未确认');
+    expect(acceptance).not.toHaveTextContent('页面未测');
     expect(screen.getByTestId('verification-unavailable')).toBeInTheDocument();
   });
 

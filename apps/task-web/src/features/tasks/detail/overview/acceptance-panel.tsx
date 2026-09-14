@@ -3,9 +3,10 @@
 // - 独立验收事实只来自 GET /v1/tasks/{taskId}/audit 的 acceptance（passed 才是验收通过）；
 // - 发布/后验来自 Leader 动作投影；无发布动作不等于无文件交付；执行结束或评审通过都不能推导验收通过。
 
+import {configuredCheckLabel, VerificationScope} from '../shared/verification-scope';
 import {Card} from '@/components/ui/card';
 import type {LeaderRecord, TaskAuditRecord} from '@/lib/transport/types';
-import {acceptanceLabel, acceptanceStatusLabel, leaderActionStatusLabel} from '../shared/format';
+import {acceptanceLabel, leaderActionStatusLabel} from '../shared/format';
 import {StatusBadge, toneForAcceptance, toneForAcceptanceStatus, toneForLeaderAction} from '../shared/status-badge';
 
 export interface AcceptancePanelProps {
@@ -20,11 +21,11 @@ export function AcceptancePanel({leader, audit}: AcceptancePanelProps) {
   const postverify = leader?.postverify ?? null;
   const acceptance = audit?.acceptance ?? null;
   return (
-    <Card aria-label="独立验收" className="space-y-2" data-testid="acceptance-panel">
-      <h2 className="text-base font-semibold leading-6">评审 / 验收 / 交付</h2>
+    <Card aria-label="评审与配置检查" className="space-y-2" data-testid="acceptance-panel">
+      <h2 className="text-base font-semibold leading-6">业务评审 / 配置检查 / 交付</h2>
 
       <div className="space-y-1" data-testid="review-readout">
-        <span className="text-xs font-medium text-text-secondary">集中评审</span>
+        <span className="text-xs font-medium text-text-secondary">独立 Agent 业务评审</span>
         {leader === null ? (
           <p className="text-sm text-text-secondary" data-testid="acceptance-unavailable">Leader 投影不可用，无法确认评审状态。</p>
         ) : review === null ? (
@@ -42,12 +43,13 @@ export function AcceptancePanel({leader, audit}: AcceptancePanelProps) {
       </div>
 
       <div className="space-y-1 border-t border-border pt-2" data-testid="acceptance-readout">
-        <span className="text-xs font-medium text-text-secondary">独立验收</span>
+        <span className="text-xs font-medium text-text-secondary">配置检查结果</span>
         {acceptance === null ? (
           <p className="text-sm text-text-secondary" data-testid="acceptance-unloaded">验收读数未加载或 audit 投影不可用；不能以评审结果代替验收。</p>
         ) : (
           <>
-            <StatusBadge machine={acceptance.status} label={acceptanceStatusLabel(acceptance.status)} tone={toneForAcceptanceStatus(acceptance.status)} />
+            <StatusBadge machine={acceptance.status} label={configuredCheckLabel(acceptance.status)} tone={toneForAcceptanceStatus(acceptance.status)} />
+            <VerificationScope />
             <details className="text-xs text-text-secondary"><summary className="cursor-pointer py-2">查看证据标识</summary><dl className="grid grid-cols-1 gap-y-1 text-sm leading-[22px]">
               <div className="flex gap-2">
                 <dt className="shrink-0 text-text-secondary">验收摘要</dt>
@@ -87,7 +89,7 @@ export function AcceptancePanel({leader, audit}: AcceptancePanelProps) {
       </div>
 
       <p className="text-xs text-text-secondary" data-testid="acceptance-note">
-        评审判断需求符合性；独立验收检查实际成果。两项结果分别列出。
+        Agent 评审是独立业务判断；配置检查按已配置策略执行。计划要求、评审接受或任务结束均不证明逐项业务已经实际验证。
       </p>
     </Card>
   );
