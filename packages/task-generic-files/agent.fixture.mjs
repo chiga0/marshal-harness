@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
 import {encode, digest} from '../task-store/store.mjs';
+import {MAX_FILE} from './policy.mjs';
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const reply = (q, result) => send({jsonrpc:'2.0',id:q.id,result});
 const hash = value => digest(encode(value));
@@ -27,6 +28,7 @@ async function prompt(q) {
     }
   } else {
     const input=JSON.parse(text.slice(text.indexOf('{"task":')));
+    if (!input.plan.acceptance.some(item => item.includes(`${MAX_FILE} UTF-8 字节`))) throw Error('author byte limit missing');
     fs.writeFileSync('result.md',input.task.intent+':'+input.node.id,{flag:'wx',mode:0o600}); out={summary:'候选已写，非权威验收'};
   }
   send({jsonrpc:'2.0',method:'session/update',params:{sessionId:q.params.sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify(out)}}}});
