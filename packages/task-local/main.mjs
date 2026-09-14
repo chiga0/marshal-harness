@@ -11,7 +11,7 @@ import {installCommand} from './install-command.mjs';
 const fail = code => { throw new Error(code); };
 const codes = new Set(['invalid_arguments', 'unsafe_settings', 'installation_missing_or_ambiguous',
   'configuration_required', 'connection_unavailable', 'service_start_failed', 'settings_missing', 'command_install_conflict',
-  'agent_unavailable', 'running_configuration_conflict', 'service_not_ready', 'connection_uncertain']);
+  'agent_unavailable', 'qwen_configuration_required', 'running_configuration_conflict', 'service_not_ready', 'connection_uncertain']);
 const optionFields = {'--config': 'config', '--connection-file': 'connectionFile', '--data-dir': 'dataDir',
   '--ui': 'ui', '--port': 'port', '--agent-executable': 'agentExecutable', '--install-root': 'installRoot'};
 function executable(value) {
@@ -115,7 +115,7 @@ export async function run(argv, {home = os.homedir(), output = value => console.
   if (command === '--help') {
     output({commands: ['init', 'status', 'serve'], options: ['--install-root', '--config', '--connection-file', '--settings-dir',
       '--data-dir', '--port', '--ui', '--no-ui', '--agent-executable', '--generic', '--replace-launcher'],
-      note: 'init 检测并记录；serve 优先复用既有配置，无配置时使用本机 Qwen 通用文件团队；不自动授权外部业务发布。'}); return;
+      note: 'init 检测并记录；serve 优先复用既有配置，新安装默认本机 Qwen 文件团队（保留已交接输入）；其他 Agent 使用 --config 显式配置；不自动授权外部业务发布。'}); return;
   }
   if (!['init', 'status', 'serve'].includes(command)) fail('invalid_arguments');
   for (let i = 1; i < argv.length; i += 2) {
@@ -161,9 +161,10 @@ export async function run(argv, {home = os.homedir(), output = value => console.
   settings.installRoot = installation(selectedRoot);
   for (const [option, field] of Object.entries(optionFields)) if (option in options) settings[field] = options[option];
   if (options['--no-ui']) delete settings.ui;
-  if (options['--config']) delete settings.generic;
+  if (options['--config']) {delete settings.generic; delete settings.genericProfile;}
   if (options['--generic']) {
-    delete settings.config; settings.generic = true;
+    if (previous.generic !== true) {delete settings.config; settings.genericProfile = 2;}
+    settings.generic = true;
     if (previous.generic !== true && !options['--data-dir']) delete settings.dataDir;
     // A connection to the previous business profile must not shortcut the new launch.
     delete settings.connectionFile; delete settings.address;
@@ -192,15 +193,27 @@ export async function run(argv, {home = os.homedir(), output = value => console.
     if (command === 'status') fail('connection_unavailable');
   }
   if (!settings.config || settings.generic === true) {
-    settings.config = path.join(settings.installRoot, 'packages/task-generic-files/service-config.mjs');
+    // Existing generic settings without a marker retain their original profile.
+    // A new install uses a distinct composition and default root, never migrates a Store.
+    if (settings.genericProfile === undefined && settings.generic !== true) settings.genericProfile = 2;
+    if (settings.genericProfile !== undefined && settings.genericProfile !== 2) fail('unsafe_settings');
+    const modern = settings.genericProfile === 2;
+    settings.config ??= path.join(settings.installRoot, modern
+      ? 'packages/task-generic-files/qwen-review-service-config.mjs'
+      : 'packages/task-generic-files/service-config.mjs');
     settings.generic = true;
-    const selected = settings.agentExecutable ?? (await discoverAgents()).find(agent => agent.id === 'qwen')?.resolvedPath;
+    const selected = settings.agentExecutable ?? (await discoverAgents()).find(agent => agent.id === 'qwen')?.executable;
     if (!selected) fail('agent_unavailable');
-    settings.agentExecutable = executable(selected);
+    const resolved = executable(selected);
+    // This is a Qwen-specific launch contract, not brand detection or a sandbox.
+    // Custom wrappers/other ACP agents must select their explicit deployment config.
+    if (modern && !['qwen', 'qwen-code'].includes(path.basename(selected)) &&
+      !resolved.includes('/@qwen-code/qwen-code/')) fail('qwen_configuration_required');
+    settings.agentExecutable = modern ? absolute(selected) : resolved;
     if (!settings.dataDir) {
       const parent = path.join(fs.realpathSync(home), '.marshal-node');
       privateDir(parent);
-      settings.dataDir = path.join(parent, 'generic-team');
+      settings.dataDir = path.join(parent, modern ? 'generic-team-v2' : 'generic-team');
     }
   }
   // Configuration remains trusted local deployment code; detection is not an adapter/permission policy.

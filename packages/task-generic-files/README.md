@@ -26,10 +26,19 @@ DataAgent 的 MCP/CLI、SQL 发布及补数另有工具归属和外部效果接�
 
 已有 `extra_scope_unresolved` 记录不能通过更换配置、清空数据库、修改资格位或凭 PID 消失结算。该配置属于新执行的预防措施，不是旧任务恢复接口。完整恢复机制尚缺，不得声称已经修复。
 
-2026-09-14 实机发现 Qwen 的 `--core-tools` 仅限制其 core 集合，不限制额外注入的系统工具；旧配置仍暴露 `record_artifact`、`get_goal` 等。两个显式 Qwen 配置共用 `qwen-file-tools.mjs`，补齐系统工具的原生拒绝列表。当前本机 Qwen 无模型 ACP 初始化验证：旧配置注册 19 项，新配置只注册 6 个文件工具。此结果不保证未来版本或任意扩展的工具全集；升级需重新核对实际注册集合，未知执行仍按原 Core 阻断。不修改原生登录、不清除旧任务的范围记录。
+2026-09-14 实机发现 Qwen 的 `--core-tools` 仅限制其 core 集合，不限制额外注入的系统工具；旧配置仍暴露 `record_artifact`、`get_goal` 等。Qwen 文件配置共用 `qwen-file-tools.mjs`，补齐系统工具的原生拒绝列表。当前本机 Qwen 无模型 ACP 初始化验证：旧配置注册 19 项，新配置只注册 6 个文件工具。此结果不保证未来版本或任意扩展的工具全集；升级需重新核对实际注册集合，未知执行仍按原 Core 阻断。不修改原生登录、不清除旧任务的范围记录。
 
 ## 显式 Leader 短协议配置
 
-按 ADR0101，可对新空数据根显式选择 `qwen-short-service-config.mjs`；原 `service-config.mjs`、`qwen-service-config.mjs` 和默认入口不切换。该配置保留上述 Qwen 文件工具边界，仍需 `MARSHAL_AGENT_EXECUTABLE`，不配置外部发布。
+按 ADR0101，可对新空数据根显式选择 `qwen-short-service-config.mjs`；原 `service-config.mjs`、`qwen-service-config.mjs` 保持原解释；新安装默认选择见下节。该配置保留上述 Qwen 文件工具边界，仍需 `MARSHAL_AGENT_EXECUTABLE`，不配置外部发布。
 
 Leader 模型只返回 `generic-files-leader-proposal/v1` 的 `profile/summary/actions`，受信端口从此次原 ticket 绑定运输身份；动作与证据摘要不纠错，旧协议错误身份不接纳。Core 记录的是绑定后的决定，不是模型逐字输出。产品不保证保存全部原始输出；实机验收需分别保存原始输出与映射结果的私有证据，未保存时不能反推。独立 Review 仍用原协议。新配置 ID 与源码摘要冻结，旧根拒绝配置漂移，不迁移或复活失败任务。
+
+
+## 新安装默认：Leader 与 Review 短协议
+
+[ADR0102](../../docs/adr/0102-generic-review-wire-and-new-install-default.md) 的 `qwen-review-service-config.mjs` 是新安装的 Qwen 默认文件团队。Leader 保持 ADR0101 的短建议；Review 仅返回 `generic-files-review-proposal/v1` 的 `profile/verdict/summary/findings`。受信 mapper 从本次原 ticket 绑定 inputDigest 和 selectionDigest，业务判断原样交给原严格 Port 校验；旧格式、夹带摘要、错误字段或不完整 cleanup 均不修补。独立审查仍读取完整冻结输入及候选。
+
+新配置 ID 和策略摘要与旧组合不同，`publication:null`。配置显式启用 `observability={profile:'task-observation/v1',retainPrompts:true}`，披露限于实际可取得、策略允许的交接输入；不记录隐藏推理，缺失或旧执行内容不能反推。
+
+新本地启动设置使用 `genericProfile:2` 和 `generic-team-v2` 默认根。既有 generic 设置／根不自动升级；显式选择旧配置仍可用。试用新版用新的 settings 和数据根，不能把旧失败结果重新解释成成功。默认只面向 Qwen；其他 ACP Agent 继续显式部署自己的配置。

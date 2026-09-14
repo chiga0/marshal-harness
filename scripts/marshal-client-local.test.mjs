@@ -138,7 +138,7 @@ test('damaged recorded connection cannot authorize replacing settings or launche
   assert.deepEqual(fs.readFileSync(file), before);
 });
 
-test('generic default selects exact agent and private root, forwards UI port and preserves API connection', {timeout: 10000}, async t => {
+for (const legacy of [false, true]) test('generic default selects exact agent and private root, forwards UI port and preserves API connection; legacy='+legacy, {timeout: 10000}, async t => {
   const home = fixture(t), capture = path.join(home, 'launch.json');
   const connectionFile = path.join(home, 'live.json');
   const installed = fakeInstall(home, `
@@ -157,7 +157,7 @@ test('generic default selects exact agent and private root, forwards UI port and
     process.on('SIGTERM',()=>{server.closeAllConnections();server.close();});
   `);
   fs.mkdirSync(path.join(installed, 'packages/task-generic-files'));
-  const config = path.join(installed, 'packages/task-generic-files/service-config.mjs');
+  const config = path.join(installed, legacy ? 'packages/task-generic-files/service-config.mjs' : 'packages/task-generic-files/qwen-review-service-config.mjs');
   fs.writeFileSync(config, 'export default {};');
   const ui = path.join(home, 'ui'); fs.mkdirSync(ui);
   const bin = path.join(home, 'bin'); fs.mkdirSync(bin);
@@ -165,6 +165,10 @@ test('generic default selects exact agent and private root, forwards UI port and
   const originalPath = process.env.PATH;
   process.env.PATH = bin;
   t.after(() => {if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;});
+  if (legacy) {
+    fs.mkdirSync(path.join(home,'.marshal-client'), {mode:0o700});
+    fs.writeFileSync(path.join(home,'.marshal-client/local.json'),JSON.stringify({version:1,generic:true,config}),{mode:0o600});
+  }
   let connected = false;
   await run(['serve', '--install-root', installed, '--ui', ui, '--port', '34567'], {
     home, output(value) {
@@ -173,7 +177,8 @@ test('generic default selects exact agent and private root, forwards UI port and
       const settings = JSON.parse(fs.readFileSync(path.join(home, '.marshal-client/local.json')));
       assert.equal(settings.connectionFile, connectionFile);
       assert.equal(settings.config, config); assert.equal(settings.generic, true);
-      assert.equal(settings.dataDir, path.join(home, '.marshal-node/generic-team'));
+      assert.equal(settings.genericProfile, legacy ? undefined : 2);
+      assert.equal(settings.dataDir, path.join(home, legacy ? '.marshal-node/generic-team' : '.marshal-node/generic-team-v2'));
       assert.notEqual(JSON.parse(fs.readFileSync(connectionFile)).url, settings.address);
       process.emit('SIGTERM');
     },
@@ -181,7 +186,7 @@ test('generic default selects exact agent and private root, forwards UI port and
   assert.equal(connected, true);
   const actual = JSON.parse(fs.readFileSync(capture));
   assert.equal(actual.agent, fs.realpathSync(process.execPath));
-  assert.deepEqual(actual.argv, ['--config', config, '--data-dir', path.join(home, '.marshal-node/generic-team'), '--port', '34567', '--ui', ui]);
+  assert.deepEqual(actual.argv, ['--config', config, '--data-dir', path.join(home, legacy ? '.marshal-node/generic-team' : '.marshal-node/generic-team-v2'), '--port', '34567', '--ui', ui]);
   assert.equal(fs.statSync(path.join(home, '.marshal-node')).mode & 0o777, 0o700);
 });
 
@@ -286,3 +291,16 @@ test('startup timeout kills only own unresponsive service and preserves old conn
   await assert.rejects(run(['serve'], {home, startupTimeoutMs: 500, stopTimeoutMs: 100, output() {assert.fail('must not report connected');}}), /service_start_failed/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, '.marshal-client/local.json'))).connectionFile, oldConnection);
 });
+
+ test('new default refuses an arbitrary ACP executable; explicit configs remain available', async t => {
+  const home=fixture(t);
+  await assert.rejects(run(['serve','--install-root',root,'--agent-executable',process.execPath],{home,output(){}}), /qwen_configuration_required/);
+ });
+ test('explicit generic does not upgrade existing settings or reuse another business root', async t => {
+  const home=fixture(t), dir=path.join(home,'.marshal-client'), config=path.join(root,'packages/task-generic-files/service-config.mjs');
+  fs.mkdirSync(dir,{mode:0o700});
+  fs.writeFileSync(path.join(dir,'local.json'),JSON.stringify({version:1,installRoot:root,generic:true,config,dataDir:path.join(home,'legacy-data')}),{mode:0o600});
+  await run(['init','--generic'],{home,output(){}});
+  const settings=JSON.parse(fs.readFileSync(path.join(dir,'local.json')));
+  assert.equal(settings.config,config);assert.equal(settings.genericProfile,undefined);assert.equal(settings.dataDir,path.join(home,'legacy-data'));
+ });

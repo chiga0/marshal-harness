@@ -26,7 +26,7 @@ test('SQLite notice normalization preserves unknown warnings and private output'
   for(const notice of [defensive.replace('fixed-SQL','unknown'),defensive.replace('MARSHAL_SQLITE_DEFENSIVE_UNAVAILABLE','OTHER'),experimental.replace('SQLite','Other'), 'PRIVATE '+defensive])
     assert.equal(withoutSQLiteWarnings(notice+error),notice+error);
 });
-for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs']) test('same real HTTP configuration delivers two different no-upload tasks and DAGs, then normal reopen preserves results: '+configuration, {timeout:90000},async t=>{
+for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs','review-service.fixture.mjs']) test('same real HTTP configuration delivers two different no-upload tasks and DAGs, then normal reopen preserves results: '+configuration, {timeout:90000},async t=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'generic-http-'))), state=path.join(root,'data'), handles=[];
   const start=async mode=>{const handle=launchService(process.execPath,[here('../task-service/main.mjs'),'--root',state,'--mode',mode,'--port','0','--config',here('./'+configuration)],{PATH:path.dirname(process.execPath)},root,[]);handles.push(handle);
     const ready=await handle.ready,c=JSON.parse(fs.readFileSync(ready.connectionFile));return {handle,client:new TaskClient({baseURL:c.url,token:c.token})};};
@@ -53,7 +53,7 @@ for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs'])
   await client.request('task.cancel',{path:{taskId:cancelTask.id},idempotencyKey:'cancel-once',body:{expectedRevision:awaiting.revision}});
   await waitPhase(()=>client.getTask(cancelTask.id),'cancelled',Date.now()+15000);
   await handle.stop();
-  if(configuration==='short-service.fixture.mjs') {
+  if(configuration!=='service.fixture.mjs') {
     const wrong=spawnSync(process.execPath,[here('../task-service/main.mjs'),'--root',state,'--mode','open','--port','0','--config',here('./service.fixture.mjs')],{env:{PATH:path.dirname(process.execPath)},cwd:root,encoding:'utf8',timeout:10000,maxBuffer:8192});
     assert.equal(wrong.error,undefined);assert.equal(wrong.status,1);assert.equal(wrong.signal,null);assert.equal(wrong.stdout,'');
     assert.equal(withoutSQLiteWarnings(wrong.stderr),'{"code":"service_start_unavailable"}\n');

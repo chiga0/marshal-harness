@@ -14,6 +14,10 @@ async function prompt(q) {
       const files=input.materials.filter(x=>x.nodeId);
       if (!files.length || !files.every(x=>x.content === s.task.input.intent + ':' + x.nodeId)) throw Error('bad candidate');
       out={profile:input.profile,inputDigest:input.inputDigest,selectionDigest:input.selectionDigest,verdict:'accept',summary:'独立核对原目标和每份实际候选',findings:[]};
+      if (process.argv.includes('review-wire')) {
+        if (!text.includes('返回顶层必须且只能是profile、verdict、summary、findings四个字段')) throw Error('review prompt missing');
+        out={profile:'generic-files-review-proposal/v1',verdict:out.verdict,summary:out.summary,findings:out.findings};
+      }
     } else {
       const review=s.evidence.find(x=>x.kind==='review'), verified=s.evidence.find(x=>x.kind==='verification'); let action;
       if (!s.plan) {

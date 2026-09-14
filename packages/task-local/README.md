@@ -1,9 +1,9 @@
 # 本地产品命令
 
-本包属于 Marshal 产品，不依赖 Skill。目标用户入口为并列的 `marshal init`、`marshal serve`、`marshal status`。当前源码可用 `bash scripts/marshal.sh <命令>`；发行包中等价入口是 `node <安装根>/packages/task-local/main.mjs <命令>`。旧 Go 的 `marshal` 命令不覆盖，本变更尚未发布到 v1.0.1。
+本包属于 Marshal 产品，不依赖 Skill。目标用户入口为并列的 `marshal init`、`marshal serve`、`marshal status`。当前源码可用 `bash scripts/marshal.sh <命令>`；发行包中等价入口是 `node <安装根>/packages/task-local/main.mjs <命令>`。同名其他程序不会被静默覆盖；具体发行能力以支持矩阵为准。
 
 - `init`：从自身安装位置确定发行根，在 PATH 中有界查找 Qwen、Pi、OpenCode，记录入口及解析路径，并在 `~/.local/bin/marshal` 安装固定 Node 文本启动器。重复执行复用相同启动器；同名其他程序、被修改的启动器或其他版本的入口不覆盖，返回 `launcher.state=conflict`。不修改 shell 启动文件，PATH 未包含 `~/.local/bin` 时可用完整命令路径。只检测 Agent 文件，不启动 Agent、不读取凭据、不进行模型调用。
-- `serve`：先验证保存的连接，成功即复用；显式参数要求改变正在运行的配置时返回 `running_configuration_conflict`，不把旧服务冒充新配置。否则以前台 Node 子进程调用服务入口。显式 `--config /absolute/config.mjs` 和已记录配置优先；没有配置时使用发行包内通用文件团队，选择保存的 Qwen 入口或当前 PATH 首个 Qwen，也可用 `--agent-executable /absolute/qwen` 指定。入口存在不等于已登录或业务能力可用，模型鉴权仍由 Agent 自身管理。
+- `serve`：先验证保存的连接，成功即复用；显式参数要求改变正在运行的配置时返回 `running_configuration_conflict`，不把旧服务冒充新配置。否则以前台 Node 子进程调用服务入口。显式 `--config /absolute/config.mjs` 和已记录配置优先；新安装没有配置时使用发行包内 Qwen 专用文件团队，选择保存的 Qwen 入口或当前 PATH 首个 Qwen，也可用 `--agent-executable /absolute/qwen` 指定。入口存在不等于已登录或业务能力可用，模型鉴权仍由 Agent 自身管理。
 - `status`：使用原 SDK 对当前记录执行带认证的 `ready.get`，不输出 token。
 
 `init` 未给 `--install-root` 时取当前命令自身安装根。升级不会静默覆盖旧命令：停止旧服务后，从新安装包执行 `node /absolute/new/packages/task-local/main.mjs init --replace-launcher`。显式替换仅接受与原设置中安装根、记录 Node 路径及完整生成格式一致的旧 launcher，采用临时文件同步和 inode 复查后原子替换；修改过的命令、链接或未知身份一律保留并报冲突。历史设置没有 Node 记录时仅接受当前 Node 的完整旧格式，不能猜测旧执行路径。普通冲突保留旧设置；活跃旧连接阻止配置或 launcher 升级，不自动停止旧服务。
@@ -25,7 +25,11 @@ bash scripts/marshal.sh status
 
 ## 当前限制
 
-默认通用团队数据使用 `~/.marshal-node/generic-team`，不接管旧 `~/.marshal-node/task-service`；`--data-dir` 可指定独立私有目录，原 Store 继续决定创建/打开及兼容性，不清空或迁移旧数据。重复启动保留记录的配置和数据目录。
+新安装默认使用 `qwen-review-service-config.mjs`、`genericProfile:2` 设置与 `~/.marshal-node/generic-team-v2` 数据目录；已有 generic 设置没有新标记时保持原配置与 `~/.marshal-node/generic-team` 默认目录，不接管旧 `~/.marshal-node/task-service`；`--data-dir` 可指定独立私有目录，原 Store 继续决定创建/打开及兼容性，不清空或迁移旧数据。重复启动保留记录的配置和数据目录。
+
+已有 generic 设置再次 `--generic` 不升级其配置。要试用新版且保留旧数据，使用新 `--settings-dir` 和新不存在的 `--data-dir`；新根采用新版配置，不修改旧任务或配置摘要。新默认只接受名为 `qwen`/`qwen-code` 的入口或官方 Qwen 包内入口，其他 Agent 或自定义包装器使用显式 `--config`，不套用 Qwen 参数；路径约定不是品牌认证。
+
+新配置保留实际交接输入并按观测合同披露，旧配置不自动启用。
 
 已有业务配置时，停止服务后用 `marshal serve --generic` 明确选择内置文件团队（与 `--config` 互斥）；旧配置文件和业务数据不删除，旧 dataDir 不带入默认通用根，除非本次显式提供 `--data-dir`。如需保留两套启动设置并存，使用不同 `--settings-dir`；该选项不提供同时写同一数据目录的许可。
 
