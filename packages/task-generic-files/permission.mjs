@@ -23,20 +23,24 @@ export function filePermission(ticket, cwd, request) {
   if (!relative) return deny();
   // No unknown arguments or implicit commands. Other adapters require their own normalizer.
   const keys = Object.keys(raw);
+  let createByEdit = false;
   if (call.kind === 'read') {
     if (!keys.every(k => ['path', 'offset', 'limit'].includes(k)) || !['offset', 'limit'].every(k => raw[k] === undefined || Number.isSafeInteger(raw[k]) && raw[k] >= (k === 'offset' ? 0 : 1) && raw[k] <= 10000)) return deny();
   } else {
     const bounded = value => typeof value === 'string' && value.isWellFormed() && !value.includes('\0') && Buffer.byteLength(value) <= MAX_FILE;
     const write = keys.length === 2 && keys.includes('content') && bounded(raw.content);
     const edit = keys.every(k => ['path', 'old_string', 'new_string', 'replace_all'].includes(k)) &&
-      bounded(raw.old_string) && raw.old_string.length > 0 && bounded(raw.new_string) &&
+      bounded(raw.old_string) && bounded(raw.new_string) &&
       (raw.replace_all === undefined || typeof raw.replace_all === 'boolean');
     if (!write && !edit) return deny();
+    // Qwen uses an empty old_string to create a file, not to overwrite one.
+    createByEdit = edit && raw.old_string === '';
+    if (createByEdit && (relative !== 'result.md' || raw.new_string.length === 0)) return deny();
   }
   try {
     if (fs.realpathSync(cwd) !== cwd) return deny();
     const filename = path.join(cwd, relative);
-    try {const stat = fs.lstatSync(filename); if (!stat.isFile() || stat.nlink !== 1 || fs.realpathSync(filename) !== filename) return deny();}
+    try {const stat = fs.lstatSync(filename); if (createByEdit || !stat.isFile() || stat.nlink !== 1 || fs.realpathSync(filename) !== filename) return deny();}
     catch (error) {if (error.code !== 'ENOENT' || call.kind !== 'edit' || relative !== 'result.md') return deny();}
   } catch {return deny();}
   const options = request.options.filter(x => x?.kind === 'allow_once');
