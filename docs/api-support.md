@@ -1,6 +1,6 @@
 # 当前 API 支持与证据矩阵
 
-更新：2026-09-15；当前实现核对基线 `d14a660e74195fea4b67235f52c80f15fc49a085`；本批测试与真实模型结论见[验收记录](ui-1/experience-e2e-2026-09-14.md)，不将历史证据重绑到新候选。[标准API](standard-api.md)给出契约，[OpenAPI](../packages/task-api/openapi.json)为唯一机器定义，操作和Schema数量由[HTTP参考](api/http-reference.md)生成；[Roadmap](roadmap-status.md#业务交付当前表)保持最新完成状态和精确证据权威。[旧25操作矩阵](node-api-support-matrix.md)是9月9日历史快照，不再用其未完成项代表今天。
+更新：2026-09-15；当前实现核对基线 `a0854099b9e245e51cb0d66a5b058452eeeef692`；本批测试与真实模型结论见[验收记录](ui-1/experience-e2e-2026-09-14.md)，不将历史证据重绑到新候选。[标准API](standard-api.md)给出契约，[OpenAPI](../packages/task-api/openapi.json)为唯一机器定义，操作和Schema数量由[HTTP参考](api/http-reference.md)生成；[Roadmap](roadmap-status.md#业务交付当前表)保持最新完成状态和精确证据权威。[旧25操作矩阵](node-api-support-matrix.md)是9月9日历史快照，不再用其未完成项代表今天。
 
 当前stable为v1.0.2，包含其声明的可信配置服务，不含UI和默认通用团队；v1.1.0-rc.2已公开预发布，含默认通用文件团队和可执行ACP入口。RC.2 source为`2fde5038`，安装及模型证据见[发行记录](v1.1.0-rc.2-release-dossier-2026-09-14.md)。新源码不自动进入旧资产，表内能力按所启用配置判断，不能把所有profile能力相加视为一个默认配置。
 
