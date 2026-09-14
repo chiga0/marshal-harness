@@ -47,6 +47,7 @@ export const SOURCE_FILES = Object.freeze([
   'packages/task-generic-files/layout.mjs',
   'packages/task-generic-files/permission.mjs',
   'packages/task-generic-files/policy.mjs',
+  'packages/task-generic-files/qwen-file-tools.mjs',
   'packages/task-generic-files/qwen-service-config.mjs',
   'packages/task-generic-files/qwen-short-service-config.mjs',
   'packages/task-generic-files/service-config.mjs',

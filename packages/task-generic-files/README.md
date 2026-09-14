@@ -26,6 +26,8 @@ DataAgent 的 MCP/CLI、SQL 发布及补数另有工具归属和外部效果接�
 
 已有 `extra_scope_unresolved` 记录不能通过更换配置、清空数据库、修改资格位或凭 PID 消失结算。该配置属于新执行的预防措施，不是旧任务恢复接口。完整恢复机制尚缺，不得声称已经修复。
 
+2026-09-14 实机发现 Qwen 的 `--core-tools` 仅限制其 core 集合，不限制额外注入的系统工具；旧配置仍暴露 `record_artifact`、`get_goal` 等。两个显式 Qwen 配置共用 `qwen-file-tools.mjs`，补齐系统工具的原生拒绝列表。当前本机 Qwen 无模型 ACP 初始化验证：旧配置注册 19 项，新配置只注册 6 个文件工具。此结果不保证未来版本或任意扩展的工具全集；升级需重新核对实际注册集合，未知执行仍按原 Core 阻断。不修改原生登录、不清除旧任务的范围记录。
+
 ## 显式 Leader 短协议配置
 
 按 ADR0101，可对新空数据根显式选择 `qwen-short-service-config.mjs`；原 `service-config.mjs`、`qwen-service-config.mjs` 和默认入口不切换。该配置保留上述 Qwen 文件工具边界，仍需 `MARSHAL_AGENT_EXECUTABLE`，不配置外部发布。
