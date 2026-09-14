@@ -12,14 +12,6 @@ on:
       - '.github/workflows/pages.yml'
   push:
     branches: [main]
-    paths:
-      - 'docs/**'
-      - 'packages/task-api/**'
-      - 'mkdocs.yml'
-      - 'requirements-docs.txt'
-      - 'scripts/prepare-docs.py'
-      - 'scripts/check-docs-site.py'
-      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
