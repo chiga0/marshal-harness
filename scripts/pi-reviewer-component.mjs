@@ -56,18 +56,18 @@ export async function run(options) {
  const results=[];save('admission.json',{candidate:admission.sourceHead,manifest:options.manifest,suiteDigest:hash(suiteBytes),args:PI_ARGS,provider:'pai-eas',model:'DeepSeek/deepseek-v4-pro',thinking:'inherited native setting, no override',boundary:'显式Pi Reviewer能力测量，原tags-v2；不是Core全链。offline只限制启动网络操作，不禁止模型网络。'});
  for(const item of suite.cases) {
   const cwd=fs.realpathSync(fs.mkdtempSync('/private/tmp/pi-review-run-')),ticket={executionType:'review',providerId:provider.id,taskId:'component-'+randomUUID(),workerId:'component-'+randomUUID(),deadline:Date.now()+180000,input:{review:structuredClone(item.input)}};
-  const prepared=await config.review.prepare(ticket,{cwd},{}),events=[];let handle,completion,rawCompletion,parsedReport=null,problem=null;
+  const prepared=await config.review.prepare(ticket,{cwd},{}),events=[];let handle,completion,rawCompletion,parsedReport=null,problem=null,extraBehavior=false;
   fs.writeFileSync(path.join(output,item.id+'.prompt.txt'),prepared.prompt,{mode:0o600,flag:'wx'});
   const startedAt=new Date().toISOString();
   try {
    const observed={...provider,start(input){const native=provider.start(input);return {started:native.started,stop:(...args)=>native.stop(...args),completion:Promise.resolve(native.completion).then(raw=>{rawCompletion=raw;return raw;})};}};
-   handle=config.review.start({ticket,provider:observed,prepared:{...prepared,observability:true,onPermission:async()=>({outcome:{outcome:'cancelled'}})},onProgress:event=>{if(events.length<256)events.push({phase:event.phase,activity:event.activity,tool:event.tool??null,model:event.model??null,usage:event.usage??null,diagnostic:event.diagnostic??null});}});
+   handle=config.review.start({ticket,provider:observed,prepared:{...prepared,observability:true,onPermission:async()=>({outcome:{outcome:'cancelled'}})},onProgress:event=>{if(['retrying','compacting'].includes(event.activity)||event.tool)extraBehavior=true;if(events.length<256)events.push({phase:event.phase,activity:event.activity,tool:event.tool??null,model:event.model??null,usage:event.usage??null,diagnostic:event.diagnostic??null});}});
    completion=await handle.completion;parsedReport=receipt(config.review,ticket,completion).value;
   }catch(error){problem={name:error.name,code:error.code??'component_failed'};}
   finally{if(handle&&!completion)try{await handle.stop();completion=await handle.completion;}catch{problem??={code:'component_cleanup_unconfirmed'};}}
-  const result={id:item.id,expected:item.expected,verdict:parsedReport?.verdict??null,result:!problem&&completion?.status==='completed'&&item.expected.includes(parsedReport?.verdict)?'PASS':'FAIL',candidate:admission.sourceHead,startedAt,elapsedMs:Date.now()-Date.parse(startedAt),cwd,promptBytes:Buffer.byteLength(prepared.prompt),promptDigest:hash(prepared.prompt),parsedReport,problem,events,rawCompletion:rawCompletion?{status:rawCompletion.status,stopReason:rawCompletion.stopReason,outputText:rawCompletion.outputText,cleanup:rawCompletion.cleanup,usage:rawCompletion.usage}:null,completion:completion?{status:completion.status,cleanup:completion.cleanup}:null};
+  const result={id:item.id,expected:item.expected,verdict:parsedReport?.verdict??null,result:!extraBehavior&&!problem&&completion?.status==='completed'&&item.expected.includes(parsedReport?.verdict)?'PASS':'FAIL',candidate:admission.sourceHead,startedAt,elapsedMs:Date.now()-Date.parse(startedAt),cwd,promptBytes:Buffer.byteLength(prepared.prompt),promptDigest:hash(prepared.prompt),parsedReport,problem,extraBehavior,nativeRetryBoundary:'仅对公开活动判定；未观察到不等于已禁止网络内部重试',events,rawCompletion:rawCompletion?{status:rawCompletion.status,stopReason:rawCompletion.stopReason,outputText:rawCompletion.outputText,cleanup:rawCompletion.cleanup,usage:rawCompletion.usage}:null,completion:completion?{status:completion.status,cleanup:completion.cleanup}:null};
   save(item.id+'.result.json',result);results.push(result);console.log(JSON.stringify({id:result.id,result:result.result,verdict:result.verdict,elapsedMs:result.elapsedMs}));
-  if(completion?.cleanup?.cleaned!==true)break;
+  if(extraBehavior||completion?.cleanup?.cleaned!==true)break;
  }
  const summary={candidate:admission.sourceHead,results:results.map(({events,rawCompletion,...rest})=>rest)};save('results.json',summary);if(results.length!==2||results.some(r=>r.result!=='PASS'))process.exitCode=1;return {candidate:admission.sourceHead,results:results.map(({id,result})=>({id,result}))};
 }
