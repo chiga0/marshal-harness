@@ -94,7 +94,9 @@ export interface WorkerAudit {
   waitingSource: 'unavailable';
 }
 
+export interface LastResponseUsage {inputTokens: number; outputTokens: number; totalTokens: number; source: 'qwen-acp-meta'; scope: 'last-response'; complete: false; zeroMayBeDefault: true}
 export interface ObservationFrame {
+  lastResponseUsage?: LastResponseUsage;
   profile: 'task-observation/v1';
   activity: 'starting' | 'waiting' | 'thinking' | 'output' | 'tool' | 'retrying' | 'compacting' | 'stopping' | 'terminal' | 'unknown';
   observedAt: string;

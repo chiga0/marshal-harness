@@ -152,9 +152,16 @@ export function WorkerObservationView({worker}: {worker: WorkerRecord}) {
           className="text-xs text-text-secondary"
           data-testid="observation-usage-unavailable"
         >
-          Token 用量未报告，不按零计。
+          累计 Token 用量未报告，不按零计。
         </p>
       )}
+      {observation.lastResponseUsage ? (
+        <section className="space-y-2 text-xs text-text-secondary" aria-label="最近一次响应用量" data-testid="last-response-usage">
+          <h4 className="font-medium text-text-primary">最近一次响应 Token（非累计）</h4>
+          <p>输入 {observation.lastResponseUsage.inputTokens.toLocaleString()} · 输出 {observation.lastResponseUsage.outputTokens.toLocaleString()} · 合计 {observation.lastResponseUsage.totalTokens.toLocaleString()}</p>
+          <p>Qwen 提供方最近一次报告；零值可能由提供方默认，完整性未确认。不计入成员或任务累计用量。</p>
+        </section>
+      ) : null}
       <details className="workspace-disclosure">
         <summary>公开活动历史（{observation.history.length} 条）</summary>
         <ol

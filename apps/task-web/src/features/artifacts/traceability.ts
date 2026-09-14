@@ -12,7 +12,7 @@ const {Acceptance, Artifact, Audit, AuditDecision, AuditDisclosurePolicy, Conten
   LeaderAuthorization, LeaderRequest, LeaderReview, LeaderView, Progress, Prompt, Rates, RepairAudit, Revision, Usage, Worker, WorkerAudit} = contract.components.schemas;
 const schemas: Record<string, Schema> = {Acceptance, Artifact, Audit, AuditDecision, AuditDisclosurePolicy, ContentRejection, Digest, Id, InputObservation,
   LeaderAuthorization, LeaderRequest, LeaderReview, LeaderView, Progress, Prompt, Rates, RepairAudit, Revision, Usage, Worker, WorkerAudit};
-for (const key of ['ObservationFrame', 'WorkerObservation']) {
+for (const key of ['ObservationFrame', 'WorkerObservation', 'LastResponseUsage']) {
   const schema = (contract.components.schemas as Record<string, Schema>)[key];
   if (schema) schemas[key] = schema;
 }

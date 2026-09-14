@@ -2,9 +2,18 @@ import {describe,it,expect} from 'vitest';
 import {render,screen} from '@testing-library/react';
 import type {WorkerObservation} from '@/lib/transport/types';
 import {makeWorker} from '../tasks/detail/testing/fixtures';
-import {observationLabel,WorkerObservationView} from './worker-observation';
+import {observationLabel,WorkerObservationView,workerTokenSummary} from './worker-observation';
 const observation = ():WorkerObservation=>({profile:'task-observation/v1',activity:'tool',observedAt:new Date().toISOString(),sequence:2,tool:{id:'read-1',kind:'read',status:'completed'},model:{id:'test-model',source:'provider-reported'},usage:{inputTokens:10,outputTokens:2,totalTokens:12,source:'provider-reported',complete:false},publicText:'',history:[],historyTruncated:false});
 describe('有来源的执行观察',()=>{
+  it('Qwen最近响应独立展示，零值不承诺完整且不进入累计',()=>{
+    const worker=makeWorker({observation:{...observation(),usage:null,lastResponseUsage:{inputTokens:0,outputTokens:12,totalTokens:12,source:'qwen-acp-meta',scope:'last-response',complete:false,zeroMayBeDefault:true}}});
+    render(<WorkerObservationView worker={worker} />);
+    expect(screen.getByTestId('last-response-usage')).toHaveTextContent('最近一次响应 Token（非累计）');
+    expect(screen.getByTestId('last-response-usage')).toHaveTextContent('零值可能由提供方默认');
+    expect(screen.getByTestId('observation-usage-unavailable')).toBeInTheDocument();
+    expect(workerTokenSummary(worker)).toBeNull();
+  });
+
   it('工具结束不能继续称为正在调用；终态覆盖旧活动',()=>{
     const w=makeWorker({observation:observation()});
     expect(observationLabel(w)).toBe('工具调用已结束');
