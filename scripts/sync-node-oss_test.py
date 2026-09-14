@@ -163,8 +163,8 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(syncer.Rejected):
             syncer.installer_constants(text.encode())
         pins = syncer.installer_constants(text.encode(), 'preview')
-        self.assertEqual(pins['VERSION'], 'v1.1.0-rc.1')
-        self.assertEqual(pins['SOURCE'], '67317d7b8d08c59b82d7fffc4ad934666c8e3ca8')
+        self.assertEqual(pins['VERSION'], 'v1.1.0-rc.2')
+        self.assertEqual(pins['SOURCE'], '2fde5038c7238894aefd11e802cbe9b8d16f07c6')
         namespace = {}
         exec(text.split("<<'PY'\n", 1)[1].split('try:\n    args', 1)[0], namespace)
         with patch('subprocess.run') as call, patch('builtins.print'):
