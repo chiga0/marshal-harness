@@ -12,10 +12,10 @@ export async function configuration({installed,manifest,executable,sdkEntry}) {
  const load=file=>import(pathToFileURL(path.join(installed,file)).href);
  const {createPiProvider}=await load('packages/agent-provider-pi/index.mjs');
  const {createGenericFilesReviewWireConfig}=await load('packages/task-generic-files/review-wire.mjs');
- const {receipt}=await load('packages/task-application/leader-ports.mjs');
+ const {receipt,safeManagedDiagnostic}=await load('packages/task-application/leader-ports.mjs');
  const env={};for(const key of ['HOME','PATH','LANG','LC_ALL','LC_CTYPE','TMPDIR'])if(typeof process.env[key]==='string')env[key]=process.env[key];env.PI_TELEMETRY='0';
  const provider=createPiProvider({id:'pi-review-component',executable,args:[...PI_ARGS],env,bridge:{sdkEntry}});
- return {admission,provider,config:createGenericFilesReviewWireConfig({provider}),receipt,env,load};
+ return {admission,provider,config:createGenericFilesReviewWireConfig({provider}),receipt,safeManagedDiagnostic,env,load};
 }
 export async function prepare(options) {
  const {installed,executable,sdkEntry,suite,output}=options;assert.ok(path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{recursive:true,mode:0o700});
@@ -48,7 +48,7 @@ if(process.argv[1]&&pathToFileURL(path.resolve(process.argv[1])).href===import.m
 // 只有独立审查后显式调用 run 才请求模型；每个固定样本一次，无重试。
 export async function run(options) {
  const {output}=options;assert.ok(path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{recursive:true,mode:0o700});
- const {admission,config,receipt}=await configuration(options),provider=config.providers.get(config.review.providerId);
+ const {admission,config,receipt,safeManagedDiagnostic}=await configuration(options),provider=config.providers.get(config.review.providerId);
  assert.equal(provider.id,'pi-review-component');
  const hash=value=>'sha256:'+createHash('sha256').update(value).digest('hex');
  const suiteBytes=fs.readFileSync(options.suite),suite=JSON.parse(suiteBytes);assert.equal(hash(suiteBytes),'sha256:36a9071dfd3bdbbf01ad679ad0b90305de84cc8f385b8b1549647914df753dd5');assert.equal(suite.profile,'reviewer-component-suite/v1');assert.deepEqual(suite.cases.map(c=>c.id),['C01-tags-negative','C01-tags-positive']);
@@ -65,9 +65,15 @@ export async function run(options) {
    completion=await handle.completion;parsedReport=receipt(config.review,ticket,completion).value;
   }catch(error){problem={name:error.name,code:error.code??'component_failed'};}
   finally{if(handle&&!completion)try{await handle.stop();completion=await handle.completion;}catch{problem??={code:'component_cleanup_unconfirmed'};}}
-  const result={id:item.id,expected:item.expected,verdict:parsedReport?.verdict??null,result:!extraBehavior&&!problem&&completion?.status==='completed'&&item.expected.includes(parsedReport?.verdict)?'PASS':'FAIL',candidate:admission.sourceHead,startedAt,elapsedMs:Date.now()-Date.parse(startedAt),cwd,promptBytes:Buffer.byteLength(prepared.prompt),promptDigest:hash(prepared.prompt),parsedReport,problem,extraBehavior,nativeRetryBoundary:'仅对公开活动判定；未观察到不等于已禁止网络内部重试',events,rawCompletion:rawCompletion?{status:rawCompletion.status,stopReason:rawCompletion.stopReason,outputText:rawCompletion.outputText,cleanup:rawCompletion.cleanup,usage:rawCompletion.usage}:null,completion:completion?{status:completion.status,cleanup:completion.cleanup}:null};
+  const result={id:item.id,expected:item.expected,verdict:parsedReport?.verdict??null,result:!extraBehavior&&!problem&&completion?.status==='completed'&&item.expected.includes(parsedReport?.verdict)?'PASS':'FAIL',candidate:admission.sourceHead,startedAt,elapsedMs:Date.now()-Date.parse(startedAt),cwd,promptBytes:Buffer.byteLength(prepared.prompt),promptDigest:hash(prepared.prompt),parsedReport,problem,extraBehavior,nativeRetryBoundary:'仅对公开活动判定；未观察到不等于已禁止网络内部重试',events,rawCompletion:rawCompletion?{status:rawCompletion.status,stopReason:rawCompletion.stopReason,reason:completionReason(rawCompletion,ticket,safeManagedDiagnostic),outputText:rawCompletion.outputText,cleanup:rawCompletion.cleanup,usage:rawCompletion.usage}:null,completion:completion?{status:completion.status,cleanup:completion.cleanup}:null};
   save(item.id+'.result.json',result);results.push(result);console.log(JSON.stringify({id:result.id,result:result.result,verdict:result.verdict,elapsedMs:result.elapsedMs}));
   if(extraBehavior||completion?.cleanup?.cleaned!==true)break;
  }
  const summary={candidate:admission.sourceHead,results:results.map(({events,rawCompletion,...rest})=>rest)};save('results.json',summary);if(results.length!==2||results.some(r=>r.result!=='PASS'))process.exitCode=1;return {candidate:admission.sourceHead,results:results.map(({id,result})=>({id,result}))};
+}
+
+// 原安装包允许列表以外的Provider正文不得进入诊断码。
+export function completionReason(raw,ticket,sanitize) {
+ const report=sanitize({code:'managed_provider_failure',authority:false,taskId:ticket.taskId,workerId:ticket.workerId,providerId:ticket.providerId,executionType:ticket.executionType,status:raw.status,stopReason:raw.stopReason,reason:raw.reason,stage:'provider-result',parseCode:null});
+ return report?.reason??null;
 }
