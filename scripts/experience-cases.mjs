@@ -38,10 +38,12 @@ export function validateDelivery(id, delivery) {
     assert.ok(!/(?:同时|并且|且|，|。|\n|^)\s*允许写入/.test(text),'与只读决定冲突');
   } else if(id==='C01') {
     const value=JSON.parse(text);
+    assert.deepEqual(Object.keys(value).sort(),['requirements','design','acceptance','rollback','sources'].sort());
     assert.deepEqual([...value.requirements].sort(),['离线可用','仅本地存储','禁止外部发布'].sort());
     assert.deepEqual([...value.sources].sort(),['requirements.txt','constraints.txt','risks.txt'].sort());
     assert.ok(typeof value.design==='string'&&value.design.length>30);
     assert.ok(Array.isArray(value.acceptance)&&value.acceptance.length>=3);
+    assert.ok(value.acceptance.every(item=>typeof item==='string'&&item.trim().length>0));
     assert.ok(typeof value.rollback==='string'&&value.rollback.length>15);
     assert.match(JSON.stringify(value),/幂等|重复/);
   } else if(id==='S02') {

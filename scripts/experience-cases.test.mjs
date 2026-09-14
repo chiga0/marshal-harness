@@ -16,3 +16,11 @@ test('说明文档不能只因含关键字通过，必须有三步骤及两注�
   assert.throws(()=>validateDelivery('S01',wrap(text.replace('3. 参与交流','参与交流'))));
   assert.throws(()=>validateDelivery('S01',wrap(text.replace('- 爱护图书',''))));
 });
+test('复杂方案拒绝漏资料、空验收与额外顶层替代方案；只读决定不能同时允许写入',()=>{
+  const value={requirements:['离线可用','仅本地存储','禁止外部发布'],design:'本地笔记建立可重建索引，所有查询离线完成，幂等导入保护原文件，重复输入不会产生重复记录。',acceptance:['断网后检索成功','重复导入结果一致','原笔记保持不变'],rollback:'关闭新索引并恢复备份，独立读取原文件核对内容及数量。',sources:['requirements.txt','constraints.txt','risks.txt']};
+  assert.doesNotThrow(()=>validateDelivery('C01',wrap(JSON.stringify(value))));
+  for(const mutate of [v=>{v.sources.pop();},v=>{v.acceptance[1]='';},v=>{v.alternative='允许外部发布';}]) {const bad=structuredClone(value);mutate(bad);assert.throws(()=>validateDelivery('C01',wrap(JSON.stringify(bad))));}
+  const decision='10月20日上线，仅只读，禁止写入。迁移：备份、只读验证、回退检查。';
+  assert.doesNotThrow(()=>validateDelivery('M02',wrap(decision)));
+  assert.throws(()=>validateDelivery('M02',wrap(decision+'\n允许写入。')));
+});
