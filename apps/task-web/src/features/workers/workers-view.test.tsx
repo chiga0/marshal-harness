@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import {MemoryRouter, Route, Routes} from 'react-router-dom';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import {ApiError, type Transport} from '@/lib/transport/types';
-import {WorkersView} from './workers-view';
+import {WorkersView, progressText} from './workers-view';
 import {callsOf, makeFakeTransport, makeTask, makeWorker, TASK_ID, WORKER_ID} from '../tasks/detail/testing/fixtures';
 
 function renderView(workers = [makeWorker()], overrides: Partial<Transport> = {}) {
@@ -24,12 +24,17 @@ function renderView(workers = [makeWorker()], overrides: Partial<Transport> = {}
 }
 
 describe('团队视图（P08 / E23）', () => {
+  it('未知机器码不充当业务活动，明确自然文本原样保留', () => {
+    expect(progressText(makeWorker({progress:{summary:'future.secret_state',source:'agent',tool:null}}))).toBe('尚未收到具体活动摘要');
+    expect(progressText(makeWorker({progress:{summary:'正在读取需求文档',source:'agent',tool:null}}))).toBe('正在读取需求文档');
+  });
   it.each(['completed', 'failed', 'cancelled'] as const)('%s 的 agent.running 是历史观察而非当前进展', status => {
     renderView([makeWorker({status, phase: 'terminal', progress: {summary: 'agent.running', source: 'agent', tool: null}})]);
     expect(screen.getByRole('list', {name: '执行成员工作包'})).toBeInTheDocument();
     const row = screen.getByTestId('worker-row');
     expect(row).toHaveTextContent('执行已结束；以下为历史观察');
-    expect(within(row).getByText('agent.running')).toHaveAttribute('title', 'agent.running');
+    expect(within(row).getByTestId('worker-progress-summary')).toHaveTextContent('已收到 Agent 运行观察');
+    expect(within(row).getByText('agent.running').closest('details')).not.toHaveAttribute('open');
   });
 
   it('路由抽屉关闭后保留原列表DOM，焦点返回同一明细入口', async () => {

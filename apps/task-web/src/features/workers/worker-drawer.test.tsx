@@ -5,13 +5,25 @@ import {fireEvent, render, screen, within} from '@testing-library/react';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import type {ReactNode} from 'react';
 import {WorkerDrawer} from './worker-drawer';
-import {makeFakeTransport, makeWorker} from '../tasks/detail/testing/fixtures';
+import {makeFakeTransport, makeWorker, makePlan} from '../tasks/detail/testing/fixtures';
 
 function wrap(node: ReactNode, client = new QueryClient({defaultOptions: {queries: {retry: false}, mutations: {retry: 0}}})) {
   return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
 }
 
 describe('Worker 抽屉焦点与层叠（UI-09）', () => {
+  it('长工作目标保留全文并收敛标题，关闭保持不可收缩单行', () => {
+    const {transport} = makeFakeTransport();
+    const goal = '交付可验收页面。' + '完整约束与验证要求'.repeat(30);
+    const plan = makePlan();
+    plan.nodes = plan.nodes.map((node, index) => index === 0 ? {...node, goal} : node);
+    const worker = makeWorker({nodeId: plan.nodes[0]!.id});
+    wrap(<WorkerDrawer taskRevision={7} worker={worker} plan={plan} transport={transport} onClose={() => {}} onChanged={() => {}} />);
+    expect(screen.getByRole('heading', {level:2})).toHaveTextContent('交付可验收页面。');
+    expect(screen.getByText(goal).closest('details')).not.toHaveAttribute('open');
+    expect(screen.getByRole('button', {name:'关闭'})).toHaveClass('shrink-0', 'whitespace-nowrap');
+  });
+
   it.each(['completed', 'failed', 'cancelled'] as const)('%s 保留原始进展与来源并明确它是历史观察', status => {
     const {transport} = makeFakeTransport();
     wrap(<WorkerDrawer taskRevision={7} worker={makeWorker({status, phase: 'terminal', progress: {summary: 'agent.running', source: 'agent', tool: 'read:completed'}})} transport={transport} onClose={() => {}} onChanged={() => {}} />);

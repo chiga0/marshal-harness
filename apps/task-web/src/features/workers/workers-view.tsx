@@ -24,6 +24,15 @@ import {observationLabel, workerTokenSummary} from './worker-observation';
 import {workerTitle} from '../tasks/detail/overview/task-journey';
 import {WorkerDrawer} from './worker-drawer';
 
+/** 原始进展码只是历史观察；具体活动只采用服务端明确提供的公开摘要。 */
+export function progressText(worker: WorkerRecord): string {
+  if (worker.observation?.publicText) return worker.observation.publicText;
+  const summary = worker.progress?.summary;
+  if (summary === 'agent.running') return '已收到 Agent 运行观察，尚无具体活动摘要';
+  if (!summary || /^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$/.test(summary)) return '尚未收到具体活动摘要';
+  return summary;
+}
+
 /** UI-05：Worker 列表分页状态（服务端默认页 50）；nextCursor 非空表示还有更多。 */
 export interface WorkersPagination {
   nextCursor: string | null;
@@ -186,9 +195,9 @@ function WorkersList({
                     ) : null}
                     <p
                       className="line-clamp-2"
-                      title={worker.progress?.summary ?? ''}
+                      data-testid="worker-progress-summary"
                     >
-                      {worker.progress?.summary ?? '尚未收到具体活动'}
+                      {progressText(worker)}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-secondary">
@@ -204,8 +213,9 @@ function WorkersList({
                     className="text-xs text-text-secondary"
                     onClick={(event) => event.stopPropagation()}
                   >
-                    <summary className="cursor-pointer">节点标识</summary>
+                    <summary className="cursor-pointer">技术详情</summary>
                     <code>{worker.nodeId}</code>
+                    {worker.progress ? <p>原始进展：<code>{worker.progress.summary}</code></p> : null}
                   </details>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">

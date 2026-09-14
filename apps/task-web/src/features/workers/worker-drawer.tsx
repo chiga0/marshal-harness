@@ -14,6 +14,7 @@ import type {
   TaskAuditRecord,
 } from '@/lib/transport/types';
 import {
+  taskTitle,
   formatDateTime,
   formatDuration,
   workerPhaseLabel,
@@ -73,17 +74,18 @@ export function WorkerDrawer({
         data-testid="worker-drawer"
       >
         <div className="flex items-start justify-between gap-2">
-          <div>
+          <div className="min-w-0 flex-1">
             <p className="mb-1 text-xs text-text-secondary">
               执行成员 · {worker.providerId}
             </p>
-            <h2 className="text-xl font-semibold leading-7">
-              {workerTitle(worker, plan)}
+            <h2 className="break-words text-xl font-semibold leading-7">
+              {taskTitle(workerTitle(worker, plan))}
             </h2>
           </div>
           <Button
             variant="ghost"
             size="sm"
+            className="min-h-11 shrink-0 whitespace-nowrap"
             onClick={onClose}
             data-drawer-initial
           >
@@ -105,6 +107,12 @@ export function WorkerDrawer({
           </Badge>
         </div>
 
+        {taskTitle(workerTitle(worker, plan)) !== workerTitle(worker, plan) ? (
+          <details className="workspace-disclosure">
+            <summary>完整工作目标</summary>
+            <p className="whitespace-pre-wrap break-words text-sm">{workerTitle(worker, plan)}</p>
+          </details>
+        ) : null}
         <WorkerObservationView worker={worker} />
         <WorkerPrompt
           worker={worker}
