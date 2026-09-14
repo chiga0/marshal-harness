@@ -1,11 +1,12 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {cleanup, render, screen} from '@testing-library/react';
+import {act, cleanup, render, screen} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type {Transport} from '@/lib/transport/types';
 import {sha256Hex} from './downloader';
 import {readDeliveryFiles, validSaveName} from './delivery-files';
 import {DeliveryFilesView} from './delivery-files-view';
-import {makeArtifact} from '../tasks/detail/testing/fixtures';
+import {makeArtifact, makeTask} from '../tasks/detail/testing/fixtures';
+import {ArtifactsView} from './artifacts-view';
 
 async function fixture(change?: (bundle: any) => void) {
   const content = '<!doctype html><html><body>真实文件</body></html>';
@@ -70,5 +71,28 @@ describe('通用文件包提取（原包与逐文件双重核验）', () => {
     expect(blobs[0]!.type).toBe('application/octet-stream');
     expect(`sha256:${await sha256Hex(blobs[0]!)}`).toBe(f.bundle.files[0]!.digest);
     expect(screen.queryByText('真实文件')).toBeNull();
+  });
+  it.each(['digest', 'id', 'unavailable', 'metadata_failure'])('当前产物变为%s立即清除旧文件', async change => {
+    const f = await fixture();
+    const artifact = makeArtifact({id: f.spec.artifactId, kind: 'delivery', status: 'ready', name: f.spec.fileName, bytes: f.spec.expectedBytes, digest: f.spec.expectedDigest});
+    const view = (a: typeof artifact | null) => <ArtifactsView task={makeTask()} leader={null} audit={null} transport={f.transport} artifacts={a ? [{status: 'ok', artifact: a}] : [{status: 'failed', id: artifact.id, error: new Error('not_available')}]} />;
+    const {rerender} = render(view(artifact));
+    await userEvent.click(screen.getByRole('button', {name: '查看包内文件'}));
+    await screen.findByLabelText('另存文件名');
+    rerender(view(change === 'metadata_failure' ? null : {...artifact, ...(change === 'id' ? {id: 'different'} : change === 'digest' ? {digest: `sha256:${'1'.repeat(64)}`} : {status: 'unavailable' as const})}));
+    expect(screen.queryByRole('button', {name: '下载此文件'})).toBeNull();
+    expect(screen.queryByLabelText('另存文件名')).toBeNull();
+  });
+  it('迟到原包响应不能复活已不可用的下载', async () => {
+    const f = await fixture(); let finish!: (value: Blob) => void;
+    const transport = {getArtifactContent: () => new Promise<Blob>(resolve => {finish = resolve;})} as unknown as Transport;
+    const artifact = makeArtifact({id: f.spec.artifactId, kind: 'delivery', status: 'ready', name: f.spec.fileName, bytes: f.spec.expectedBytes, digest: f.spec.expectedDigest});
+    const view = (status: 'ready' | 'unavailable') => <ArtifactsView task={makeTask()} leader={null} audit={null} transport={transport} artifacts={[{status: 'ok', artifact: {...artifact, status}}]} />;
+    const {rerender} = render(view('ready'));
+    await userEvent.click(screen.getByRole('button', {name: '查看包内文件'}));
+    rerender(view('unavailable'));
+    await act(async () => {finish(f.blob); await new Promise(resolve => setTimeout(resolve, 20));});
+    expect(screen.queryByRole('button', {name: '下载此文件'})).toBeNull();
+    expect(screen.queryByLabelText('另存文件名')).toBeNull();
   });
 });
