@@ -4,7 +4,7 @@
 
 ## 当前唯一状态与关键路径（2026-09-14）
 
-**通用接入修正进行中**：按 [ADR0100](adr/0100-generic-team-default-and-agent-entry.md) 修复 DataWorks Qwen `bin/qwen` 被 npm 布局限制拒绝、无配置 `serve` 不可运行及限定汇总示例替代通用入口的问题。目标为同一默认配置处理不同意图/动态分工的小型文件成果，独立 Review 与真实文件核验；旧示例仅保留为显式配置。代码候选与新发行分别验收，不表示 rc.1 已含修复。真实 ETL 的发布/补数/生产结果核验仍未接通；2026-09-14 通过 DataAgent CLI 只读查询工具说明时，实例启动返回 `500130 / SystemError`，`disposition=not_started`，未提交业务 Prompt、未执行 ETL；不盲重试。
+**通用接入修正进行中**：按 [ADR0100](adr/0100-generic-team-default-and-agent-entry.md) 修复 DataWorks Qwen `bin/qwen` 被 npm 布局限制拒绝、无配置 `serve` 不可运行及限定汇总示例替代通用入口的问题。目标为同一默认配置处理不同意图/动态分工的小型文件成果，独立 Review 与真实文件核验；旧示例仅保留为显式配置。代码候选与新发行分别验收，不表示 rc.1 已含修复。真实 ETL 的发布/补数/生产结果核验仍未接通；2026-09-14 DataAgent 初次查询遇 `500130 / SystemError`、未提交 Prompt，后续用户恢复实例后只读工具说明查询已完成。发布/补数据去重机制仍未确认，工作空间记忆与目标不一致；未执行 ETL，不将说明调研记为实际业务验收。
 
 **Chrome 优先 UI 已预发布**：[v1.1.0-rc.1](https://github.com/chiga0/marshal-harness/releases/tag/v1.1.0-rc.1) 于2026-09-14T01:27:51Z公开，复用 source `67317d7b` 原 CI 包，维护者签名、GitHub/OSS分发与公开安装核验完成。public prerelease 非 latest，`v1.0.2` 保持 stable，UI-1 不关闭。9月13日 Chrome 原包真实隐藏轮询已限定通过；实际 Safari 完成受控团队交付及本机后验，浏览器下载待许可。真人可用性仍 NOT_RUN，完整 UI 三线仍未全部通过；按用户授权先预发布再实机测试。身份、专用安装器、分发回执和后续任务见 [预发布记录](v1.1.0-rc.1-release-dossier-2026-09-14.md)。
 
