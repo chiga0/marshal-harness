@@ -1,5 +1,6 @@
 import path from 'node:path';
-import {normalizedDiagnostic} from '../agent-observation/normalization.mjs';
+import {TaskBusinessError} from '../task-business/index.mjs';
+import {normalizedDiagnostic, FILE_COLLECTION_CAUSES, BUSINESS_COLLECTION_CAUSES} from '../agent-observation/normalization.mjs';
 import {setImmediate as yieldTurn} from 'node:timers/promises';
 
 const PORTS = ['scan', 'reconcile', 'poll', 'settleControl', 'expandDispatch', 'nextWork', 'mayStart', 'started', 'progress', 'fail', 'finish'];
@@ -156,8 +157,12 @@ export class TaskExecutionCoordinator {
     if (stage === 'deadline') stage = entry.stage;
     const phase = stage === 'collecting' ? 'collecting' : ['preparing','prepared'].includes(stage) ? 'preparing' :
       stage === 'provider-cleanup' || stage === 'provider-stop' ? 'cleanup' : ['starting','started'].includes(stage) ? 'starting' : 'provider';
-    const code = error?.code === 'supervisor_deadline' ? 'deadline_exceeded' :
+    let code = error?.code === 'supervisor_deadline' ? 'deadline_exceeded' :
       {preparing:'preparation_failed',starting:'provider_start_failed',collecting:'collection_failed',provider:'provider_failed',cleanup:'cleanup_unconfirmed'}[phase];
+    if (phase === 'collecting' && error instanceof TaskBusinessError) {
+      if (BUSINESS_COLLECTION_CAUSES.includes(error.code)) code = error.code;
+      else if (error.code === 'business_collect_failed' && FILE_COLLECTION_CAUSES.includes(error.causeCode)) code = error.causeCode;
+    }
     try {
       this.#call('progress', entry.ticket, ++entry.sequence, {summary:'execution.diagnostic',tool:null,source:'execution',
         observation:{...(entry.lastObservation ?? {activity:'unknown',tool:null,model:null,usage:null}),publicText:'',diagnostic:{stage:phase,code,source:'controller'}}});

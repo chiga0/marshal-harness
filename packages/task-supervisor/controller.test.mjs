@@ -7,6 +7,7 @@ import {setImmediate as turn} from 'node:timers/promises';
 import {Store, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
 import {TaskApplication, createRuntimeQuestionPort, createVerificationPort} from '../task-application/application.mjs';
 import {TaskSupervisor} from './controller.mjs';
+import {TaskBusinessError} from '../task-business/index.mjs';
 import {ArtifactDepot} from '../task-artifacts/depot.mjs';
 import {createExecutionCustody} from '../agent-runtime/custody.mjs';
 
@@ -506,4 +507,18 @@ test('rejected original started promise diagnoses starting without inventing sta
   const worker=(await f.app.dispatch({operation:'task.workers',taskId:task.id},context)).items[0];
   assert.equal(worker.startedAt,null);assert.deepEqual(worker.observation.diagnostic,{stage:'starting',code:'provider_start_failed',source:'controller'});
   assert.doesNotMatch(JSON.stringify(worker),/PRIVATE/);
+});
+
+
+test('collection diagnostics accept typed allowlisted causes but ignore forged errors and unknown codes',async t=>{
+  for(const variant of ['missing','binding','forged','unknown'])await t.test(variant,async t=>{
+    const f=fixture(t,{observability:true}),task=await f.create();
+    const failure=variant==='forged'?{code:'business_collect_failed',causeCode:'task_files_missing_output'}:
+      Object.assign(new TaskBusinessError(variant==='binding'?'business_execution_mismatch':'business_collect_failed'),{causeCode:variant==='unknown'?'PRIVATE/path':'task_files_missing_output'});
+    const controller=f.makeController({collect(){throw failure;}});await controller.start();await until(()=>f.provider.records.length===1);f.provider.records[0].finish();
+    await until(async()=>{await controller.tick();return (await f.get(task.id)).status==='failed';});
+    const worker=(await f.app.dispatch({operation:'task.workers',taskId:task.id},context)).items[0];
+    assert.equal(worker.observation.diagnostic.code,variant==='missing'?'task_files_missing_output':variant==='binding'?'business_execution_mismatch':'collection_failed');
+    assert.doesNotMatch(JSON.stringify(worker),/PRIVATE/);
+  });
 });

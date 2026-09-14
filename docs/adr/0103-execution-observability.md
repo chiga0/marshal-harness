@@ -58,3 +58,6 @@ Provider 事件归一化；小输出/连续输出/工具结束后输出；陈旧
 显式观察新增可选 `diagnostic:{stage,code,source}`，只接受闭合允许列表。Controller 在原失败 fence 前沿原 Worker progress 写入 preparing/starting/provider/collecting/cleanup 阶段及固定错误码，不保存原异常、路径、文件正文；诊断落盘失败不替代或绕过原故障 fence。Provider 的权限回调确实返回 cancelled 或选择 reject_once/reject_always 时，才记录 permission 阶段；默认无策略的明确拒绝同样记录。受信新配置可以在原 outcome 旁返回 `diagnosticCode` 的允许列表分类，Provider 仅在实际拒绝时采纳且不转发给 ACP。未知分类退为 permission_denied，工具 failed 本身不能推断权限拒绝。
 
 诊断仅解释一个已观察事件，不决定权限、失败权威、重试或清理结论。最新诊断和有界历史遵守原字段缺省及配置身份；取消、stopping、unknown、终态、旧 ticket/generation 的晚诊断不能覆盖现态。准备失败可在 queued Worker 留存，不因此伪造 Provider started。无诊断时缺省，不能把缺省解释为未发生失败。客户端须包含新增 ExecutionDiagnostic 引用类型。控制器错误码为 preparation_failed、provider_start_failed、provider_failed、collection_failed、cleanup_unconfirmed、deadline_exceeded；权限码为 permission_denied、permission_shape_denied、permission_kind_denied、permission_path_denied。
+
+
+collecting 诊断允许进一步区分文件采集的固定细因。只有实际 collectFiles 调用抛出的 TaskFilesError 实例且 code 位于内置允许列表时，Business 才在原 business_collect_failed 异常上附 causeCode；不复制原 message、path 或 cause 对象，不改变原异常 code、失败分类或采集门禁。Controller 仅在 collecting、原 TaskBusinessError 实例且原 code 匹配时接纳固定细因；普通对象伪造 code/causeCode 不获细分类。另保留四个原 Business 固定错误码以区分清理证明、执行身份、布局绑定、最终报告限制。未识别原因仍为 collection_failed，不能猜测。

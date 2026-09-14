@@ -58,3 +58,11 @@ test('diagnostic projection is closed and cannot smuggle raw details or an inven
     assert.equal(Object.hasOwn(normalizedObservation({activity:'tool',diagnostic:bad},1,'2026-09-14T01:00:00Z'),'diagnostic'),false);
   }
 });
+
+test('collecting fixed diagnostic causes close the normalized and HTTP schema contracts',async()=>{
+  const {FILE_COLLECTION_CAUSES,BUSINESS_COLLECTION_CAUSES}=await import('../agent-observation/normalization.mjs');
+  for(const code of [...FILE_COLLECTION_CAUSES,...BUSINESS_COLLECTION_CAUSES]){
+    const frame=normalizedObservation({activity:'terminal',diagnostic:{stage:'collecting',code,source:'controller'}},1,'2026-09-14T01:00:00Z');
+    assert.equal(frame.diagnostic.code,code);assert.equal(validate(frame,'ObservationFrame'),true);
+  }
+});

@@ -1,7 +1,8 @@
-import {createExecutionDirectory, collect as collectFiles} from '../task-files/index.mjs';
+import {createExecutionDirectory, collect as collectFiles, TaskFilesError} from '../task-files/index.mjs';
 import {encode, digest} from '../task-store/store.mjs';
 import {parseJson} from '../task-api/http-boundary.mjs';
 import fs from 'node:fs';
+import {FILE_COLLECTION_CAUSES} from '../agent-observation/normalization.mjs';
 import path from 'node:path';
 
 const PROFILE = 'task-file-business/v1';
@@ -285,7 +286,13 @@ export function createFileBusiness({parent, depot, layoutFor, approvedLayout, ob
       check(!entry.released, 'business_stopped');
       const plan = ticket.planDigest === null ? proposal(result.outputText) : null;
       check(text(result.outputText, MAX_REPORT), 'business_report_limit');
-      const manifest = collectFiles(entry.files, {allowedPaths: entry.layout.allowedPaths});
+      let manifest;
+      try {manifest = collectFiles(entry.files, {allowedPaths: entry.layout.allowedPaths});}
+      catch (error) {
+        const wrapped = new TaskBusinessError('business_collect_failed');
+        if (error instanceof TaskFilesError && FILE_COLLECTION_CAUSES.includes(error.code)) wrapped.causeCode = error.code;
+        throw wrapped;
+      }
       active(ticket, context);
       const candidate = frozen({profile: PROFILE, taskId: ticket.taskId, nodeId: ticket.nodeId, workerId: ticket.workerId,
         planDigest: ticket.planDigest, reservationDigest: ticket.reservationDigest, layoutDigest: fileLayoutDigest(entry.layout),

@@ -236,3 +236,28 @@ test('unsafe explicit output paths never enter a prompt or create an execution d
     assert.deepEqual(fs.readdirSync(f.parent), []);
   }
 });
+
+test('actual missing output and altered input keep original collect failure code with bounded verified cause',async t=>{
+  for(const mode of ['missing','changed'])await t.test(mode,async t=>{
+    const f=fixture(t),artifact={id:'input-one',kind:'input',taskId:null,status:'ready',...f.depot.put(Buffer.from('original'))};
+    const work=ticket({inputArtifacts:[artifact]}),ctx=context(work);
+    f.layout('author',{inputs:[{path:'inputs/source.txt',source:{kind:'input',id:artifact.id}}],allowedPaths:['out.txt']});
+    const prepared=await f.business.prepare(work,ctx);
+    if(mode==='changed'){
+      fs.writeFileSync(path.join(prepared.cwd,'out.txt'),'candidate');
+      const input=path.join(prepared.cwd,'inputs/source.txt');fs.chmodSync(input,0o600);fs.writeFileSync(input,'modified');fs.chmodSync(input,0o400);
+    }
+    await assert.rejects(f.business.collect(work,result(),ctx),error=>{
+      assert.ok(error instanceof TaskBusinessError);assert.equal(error.code,'business_collect_failed');
+      assert.equal(error.causeCode,mode==='missing'?'task_files_missing_output':'task_files_identity_changed');
+      assert.equal(error.message,'business_collect_failed');assert.equal(error.cause,undefined);assert.equal(error.path,undefined);return true;
+    });
+  });
+});
+
+test('foreign callback error cannot forge a TaskFiles cause',async t=>{
+  let forged=false;
+  const f=fixture(t,{approvedLayout:()=>{if(forged)throw {code:'task_files_missing_output',causeCode:'task_files_missing_output',message:'PRIVATE/path'};return {nodeId:'author',planDigest,layoutDigest:fileLayoutDigest({inputs:[],allowedPaths:['out.txt']})};}});
+  f.layout('author',{inputs:[],allowedPaths:['out.txt']});const work=ticket(),ctx=context(work);const prepared=await f.business.prepare(work,ctx);fs.writeFileSync(path.join(prepared.cwd,'out.txt'),'candidate');forged=true;
+  await assert.rejects(f.business.collect(work,result(),ctx),error=>{assert.equal(error.code,'business_collect_failed');assert.equal(error.causeCode,undefined);assert.equal(error.message,'business_collect_failed');return true;});
+});
