@@ -75,4 +75,3 @@ export function fixture(t, options = {}) {
 }
 
 export {proposal, hash};
-
