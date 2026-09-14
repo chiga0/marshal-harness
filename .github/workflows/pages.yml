@@ -69,4 +69,4 @@ jobs:
             echo "Newer main exists; skip this documentation deployment."
           fi
       - if: steps.freshness.outputs.current == 'true'
-        run: mkdocs gh-deploy --no-rebuild --strict --force
+        run: ghp-import -n -p -f .marshal/docs-site
