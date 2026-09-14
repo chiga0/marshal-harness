@@ -95,7 +95,9 @@ export interface WorkerAudit {
 }
 
 export interface LastResponseUsage {inputTokens: number; outputTokens: number; totalTokens: number; source: 'qwen-acp-meta'; scope: 'last-response'; complete: false; zeroMayBeDefault: true}
+export interface ExecutionDiagnostic {stage: 'preparing'|'starting'|'provider'|'permission'|'collecting'|'cleanup'; code: 'preparation_failed'|'provider_start_failed'|'provider_failed'|'collection_failed'|'cleanup_unconfirmed'|'deadline_exceeded'|'permission_denied'|'permission_shape_denied'|'permission_kind_denied'|'permission_path_denied'; source: 'controller'|'provider-permission'}
 export interface ObservationFrame {
+  diagnostic?: ExecutionDiagnostic;
   lastResponseUsage?: LastResponseUsage;
   profile: 'task-observation/v1';
   activity: 'starting' | 'waiting' | 'thinking' | 'output' | 'tool' | 'retrying' | 'compacting' | 'stopping' | 'terminal' | 'unknown';

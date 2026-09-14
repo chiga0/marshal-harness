@@ -74,6 +74,7 @@ export function taskFocus(task: TaskRecord, leader: LeaderRecord | null) {
   );
 }
 export function workerTitle(worker: WorkerRecord, plan?: PlanRecord | null) {
+  if(worker.role === 'planner') return `${worker.nodeId.startsWith('managed-leader-') ? 'Leader 决策' : '规划决策'} · 执行 ${worker.attempt}`;
   return (
     plan?.nodes.find(
       (node) => node.id === worker.nodeId && node.role === worker.role,
@@ -122,6 +123,7 @@ export function TaskJourney({
           <div>
             <p className="text-xs text-text-secondary">当前进展</p>
             <p className="font-medium">{taskFocus(task, leader)}</p>
+            {task.status === 'completed' ? <Link className="mt-2 inline-flex min-h-11 items-center rounded-lg bg-accent px-4 text-sm font-medium text-white" data-testid="completed-view-delivery" to={`/tasks/${encodeURIComponent(task.id)}/artifacts`}>查看成果</Link> : null}
           </div>
         </div>
         <div className="flex flex-wrap gap-5 text-xs text-text-secondary">
@@ -129,7 +131,7 @@ export function TaskJourney({
             <Users size={14} aria-hidden />
             {workers === null
               ? '团队暂不可用'
-              : `已加载成员：运行 ${count(['running'])} · 排队 ${count(['queued'])} · 待答 ${count(['awaiting-answer'])} · 待确认停止 ${count(['stopping', 'unknown'])}`}
+              : `已加载执行：运行 ${count(['running'])} · 排队 ${count(['queued'])} · 待答 ${count(['awaiting-answer'])} · 待确认停止 ${count(['stopping', 'unknown'])}`}
           </span>
           <span className="inline-flex items-center gap-1.5">
             <Timer size={14} aria-hidden />
@@ -178,12 +180,12 @@ export function TeamSummary({
   return (
     <section aria-label="团队速览" className="team-summary">
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-sm font-semibold">执行团队（已加载 {workers?.length ?? 0} 项）</h2>
+        <h2 className="text-sm font-semibold">执行记录（已加载 {workers?.length ?? 0} 次执行）</h2>
         <Link
           className="text-xs text-accent"
           to={`/tasks/${encodeURIComponent(task.id)}/team`}
         >
-          全部成员 ↗
+          全部执行 ↗
         </Link>
       </div>
       {workers === null ? (

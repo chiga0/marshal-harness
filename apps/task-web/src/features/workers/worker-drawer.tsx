@@ -22,6 +22,7 @@ import {
   workerStatusLabel,
 } from '../tasks/detail/shared/format';
 import {StatusBadge, toneForWorker} from '../tasks/detail/shared/status-badge';
+import {WorkerDiagnostic} from './worker-diagnostic';
 import {WorkerObservationView} from './worker-observation';
 import {WorkerPrompt} from './worker-prompt';
 import {workerTitle} from '../tasks/detail/overview/task-journey';
@@ -113,6 +114,7 @@ export function WorkerDrawer({
             <p className="whitespace-pre-wrap break-words text-sm">{workerTitle(worker, plan)}</p>
           </details>
         ) : null}
+        <WorkerDiagnostic worker={worker} />
         <WorkerObservationView worker={worker} />
         <WorkerPrompt
           worker={worker}

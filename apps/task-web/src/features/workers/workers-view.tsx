@@ -26,7 +26,12 @@ import {WorkerDrawer} from './worker-drawer';
 
 /** 原始进展码只是历史观察；具体活动只采用服务端明确提供的公开摘要。 */
 export function progressText(worker: WorkerRecord): string {
-  if (worker.observation?.publicText) return worker.observation.publicText;
+  if (worker.observation?.publicText) {
+    const text = worker.observation.publicText.trim();
+    // 公共片段可能在服务端字节边界截断；不要求完整 JSON 才收起工程输出。
+    if (/^(?:```(?:json)?\s*)?(?:\{\s*(?:"|})|\[\s*(?:\{|"|\d|-|true|false|null|]))/.test(text)) return '已记录结构化输出，展开活动历史查看';
+    return worker.observation.publicText;
+  }
   const summary = worker.progress?.summary;
   if (summary === 'agent.running') return '已收到 Agent 运行观察，尚无具体活动摘要';
   if (!summary || /^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$/.test(summary)) return '尚未收到具体活动摘要';
@@ -144,7 +149,7 @@ function WorkersList({
     <div className="space-y-3" data-testid="workers-view">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-base font-semibold leading-6">
-          团队（已加载 {workers.length} 个 Worker
+          执行记录（已加载 {workers.length} 次执行
           {pagination?.nextCursor ? '，服务端还有更多' : ''}）
         </h2>
       </div>

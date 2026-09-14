@@ -1,3 +1,4 @@
+import {diagnosticReason} from './worker-diagnostic';
 import type {ObservationFrame, WorkerRecord} from '@/lib/transport/types';
 import {
   formatDateTime,
@@ -164,6 +165,9 @@ export function WorkerObservationView({worker}: {worker: WorkerRecord}) {
       ) : null}
       <details className="workspace-disclosure">
         <summary>公开活动历史（{observation.history.length} 条）</summary>
+        {observation.publicText && !observation.history.some(frame => frame.publicText === observation.publicText) ? (
+          <p className="whitespace-pre-wrap break-words text-sm text-text-secondary" data-testid="latest-public-output">{observation.publicText}</p>
+        ) : null}
         <ol
           className="space-y-0 border-l border-border pl-4"
           aria-label="最近活动时间线"
@@ -185,6 +189,7 @@ export function WorkerObservationView({worker}: {worker: WorkerRecord}) {
                   {TOOL_STATUS[frame.tool.status]}
                 </p>
               ) : null}
+              {frame.diagnostic ? <p className="text-xs text-text-secondary">保留诊断：{diagnosticReason(frame.diagnostic)}（{frame.diagnostic.source === 'controller' ? '执行控制器' : '工具授权检查'}）；本帧时间不代表诊断首次发生时间。</p> : null}
               {frame.publicText ? (
                 <p className="whitespace-pre-wrap break-words text-sm text-text-secondary">
                   {frame.publicText}

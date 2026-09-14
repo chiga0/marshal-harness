@@ -5,6 +5,14 @@ import {makeWorker} from '../tasks/detail/testing/fixtures';
 import {observationLabel,WorkerObservationView,workerTokenSummary} from './worker-observation';
 const observation = ():WorkerObservation=>({profile:'task-observation/v1',activity:'tool',observedAt:new Date().toISOString(),sequence:2,tool:{id:'read-1',kind:'read',status:'completed'},model:{id:'test-model',source:'provider-reported'},usage:{inputTokens:10,outputTokens:2,totalTokens:12,source:'provider-reported',complete:false},publicText:'',history:[],historyTruncated:false});
 describe('有来源的执行观察',()=>{
+  it('列表折叠的公开结构化片段在无历史快照时仍可展开取得',()=>{
+    const publicText='{"status":"completed","artifact":';
+    render(<WorkerObservationView worker={makeWorker({observation:{...observation(),publicText,history:[]}})}/>);
+    const output=screen.getByTestId('latest-public-output');
+    expect(output).toHaveTextContent(publicText);
+    expect(output.closest('details')).not.toHaveAttribute('open');
+  });
+
   it('Qwen最近响应独立展示，零值不承诺完整且不进入累计',()=>{
     const worker=makeWorker({observation:{...observation(),usage:null,lastResponseUsage:{inputTokens:0,outputTokens:12,totalTokens:12,source:'qwen-acp-meta',scope:'last-response',complete:false,zeroMayBeDefault:true}}});
     render(<WorkerObservationView worker={worker} />);

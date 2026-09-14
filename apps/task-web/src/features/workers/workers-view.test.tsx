@@ -24,6 +24,12 @@ function renderView(workers = [makeWorker()], overrides: Partial<Transport> = {}
 }
 
 describe('团队视图（P08 / E23）', () => {
+  it('结构化或截断公开输出不默认铺进成员列表，自然语言原样展示', () => {
+    const worker=makeWorker({observation:{profile:'task-observation/v1',activity:'output',observedAt:new Date().toISOString(),sequence:1,tool:null,model:null,usage:null,publicText:'{"status":"completed","artifact":',history:[],historyTruncated:false}});
+    expect(progressText(worker)).toBe('已记录结构化输出，展开活动历史查看');
+    worker.observation!.publicText='已读取需求，准备独立检查';
+    expect(progressText(worker)).toBe('已读取需求，准备独立检查');
+  });
   it('未知机器码不充当业务活动，明确自然文本原样保留', () => {
     expect(progressText(makeWorker({progress:{summary:'future.secret_state',source:'agent',tool:null}}))).toBe('尚未收到具体活动摘要');
     expect(progressText(makeWorker({progress:{summary:'正在读取需求文档',source:'agent',tool:null}}))).toBe('正在读取需求文档');
@@ -162,7 +168,7 @@ describe('分页（UI-05）', () => {
     renderPaginated(workers, {nextCursor: 'cursor-2', loadingMore: false, onLoadMore});
 
     // 不把首批数量当总量：如实标注还有更多
-    expect(screen.getByText(/已加载 51 个 Worker，服务端还有更多/)).toBeInTheDocument();
+    expect(screen.getByText(/已加载 51 次执行，服务端还有更多/)).toBeInTheDocument();
     const rows = screen.getAllByTestId('worker-row');
     expect(rows).toHaveLength(51);
 
@@ -184,6 +190,6 @@ describe('分页（UI-05）', () => {
   it('无更多页：不提供加载更多', () => {
     renderPaginated([makeWorker()], {nextCursor: null, loadingMore: false, onLoadMore: () => {}});
     expect(screen.queryByTestId('workers-load-more')).toBeNull();
-    expect(screen.getByText(/已加载 1 个 Worker/)).toBeInTheDocument();
+    expect(screen.getByText(/已加载 1 次执行/)).toBeInTheDocument();
   });
 });

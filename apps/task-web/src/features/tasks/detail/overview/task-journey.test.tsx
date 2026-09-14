@@ -1,8 +1,17 @@
 import {describe,it,expect} from 'vitest';
-import {currentStage,taskFocus} from './task-journey';
-import {makeTask,makeLeader} from '../testing/fixtures';
+import {MemoryRouter} from 'react-router-dom';
+import {render,screen} from '@testing-library/react';
+import {TaskJourney,workerTitle,currentStage,taskFocus} from './task-journey';
+import {makeTask,makeLeader,makeWorker} from '../testing/fixtures';
 
 describe('任务阶段以当前可行动事实表达',()=>{
+  it('同一Leader多次记录按执行序号呈现，完成后可直接看成果',()=>{
+    expect(workerTitle(makeWorker({role:'planner',nodeId:'managed-leader-example',attempt:10}))).toBe('Leader 决策 · 执行 10');
+    const task=makeTask({status:'completed'});
+    render(<MemoryRouter><TaskJourney task={task} leader={null} workers={[]} audit={null}/></MemoryRouter>);
+    expect(screen.getByTestId('completed-view-delivery')).toHaveAttribute('href',`/tasks/${task.id}/artifacts`);
+  });
+
   it('待批准优先于 Leader intake，不能显示仍在接收需求',()=>{
     const task=makeTask({status:'awaiting-approval',phase:'planning'});
     const leader=makeLeader({stage:'intake',taskRevision:task.revision});
