@@ -3,14 +3,14 @@ import {render,screen} from '@testing-library/react';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {LeaderDecision,readLeaderDecision,leaderActionLabel} from './leader-decision';
 import {sha256Hex} from '../../../artifacts/downloader';
-import {makeArtifact,makeFakeTransport,makeLeader,TASK_ID} from '../testing/fixtures';
+import {correctionFixture,makeArtifact,makeFakeTransport,makeLeader,TASK_ID} from '../testing/fixtures';
 const digest=async (text:string)=>'sha256:'+await sha256Hex(new Blob([text]));
 async function fixture() {
   // UTF-16排序的固定对象，故意与传输JSON键顺序不同。
   const canonical='{"actions":[{"kind":"review","type":"work"}],"callId":"call-one","inputDigest":"sha256:'+'a'.repeat(64)+'","profile":"task-managed-leader/v1","summary":"对两份成果做独立检查"}';
   const report=JSON.parse(canonical),text=JSON.stringify({report:{summary:report.summary,...report}});
   const artifact=makeArtifact({id:'decision-evidence',taskId:TASK_ID,kind:'evidence',mediaType:'application/json',bytes:new TextEncoder().encode(text).length,digest:await digest(text)});
-  const leader=makeLeader({lastDecision:{digest:await digest(canonical),callId:'call-one',evidenceId:artifact.id}});
+  const leader=makeLeader({protocolCorrection:correctionFixture,lastDecision:{digest:await digest(canonical),callId:'call-one',evidenceId:artifact.id}});
   const getArtifactContent=vi.fn(async()=>new Blob([text]));
   const {transport}=makeFakeTransport({getArtifact:async()=>artifact,getArtifactContent});
   return {leader,transport,artifact,getArtifactContent};

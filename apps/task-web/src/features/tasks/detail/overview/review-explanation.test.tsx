@@ -4,14 +4,14 @@ import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {ReviewExplanation,readReviewExplanation} from './review-explanation';
 import {canonical} from './leader-decision';
 import {sha256Hex} from '../../../artifacts/downloader';
-import {makeArtifact,makeFakeTransport,makeLeader,TASK_ID} from '../testing/fixtures';
+import {correctionFixture,makeArtifact,makeFakeTransport,makeLeader,TASK_ID} from '../testing/fixtures';
 const hash=async(value:unknown)=>'sha256:'+await sha256Hex(new Blob([typeof value==='string'?value:canonical(value)]));
 async function fixture(change:Record<string,unknown>={}) {
   const report={profile:'task-independent-review/v1',inputDigest:'sha256:'+'a'.repeat(64),selectionDigest:'sha256:'+'b'.repeat(64),verdict:'rework',summary:'恢复路径缺少正文来源，需要补全。',findings:[{id:'finding-one',nodeIds:['author'],requirement:'索引损坏后应可重建',observation:'只记录路径和哈希，无法恢复全文。',requestedChange:'明确只读原文件或内容副本的数据来源。'}],...change};
   const raw=JSON.stringify({profile:'task-independent-review/v1',ticketDigest:'sha256:'+'c'.repeat(64),report});
   const artifact=makeArtifact({id:'review-evidence',taskId:TASK_ID,kind:'evidence',status:'ready',mediaType:'application/json',bytes:new TextEncoder().encode(raw).length,digest:await hash(raw)});
   const decision={verdict:'rework' as const,selectionDigest:'sha256:'+'b'.repeat(64),policyDigest:'sha256:'+'d'.repeat(64),workerId:'worker-review',evidenceIds:[artifact.id]};
-  const leader=makeLeader({review:{...decision,digest:await hash(decision)}});
+  const leader=makeLeader({protocolCorrection:correctionFixture,review:{...decision,digest:await hash(decision)}});
   const content=vi.fn(async()=>new Blob([raw]));
   const {transport}=makeFakeTransport({getArtifact:async()=>artifact,getArtifactContent:content});
   return {leader,transport,content,artifact,report};
