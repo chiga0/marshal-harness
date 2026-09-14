@@ -37,6 +37,8 @@ const api=async route=>{
   assert.ok(response.ok,`只读API ${route} HTTP ${response.status}`);return response.json();
 };
 async function snapshot(name) {
+  const visible=await page.evaluate(()=>({route:location.pathname+location.hash,taskStatus:document.querySelector('[data-testid="task-detail"] [data-testid="machine-state"]')?.textContent??null,tab:document.querySelector('nav[aria-label="详情子视图"] [aria-current="page"]')?.textContent??null}));
+  (evidence.screenshots??=[]).push({name,...visible,capturedAt:new Date().toISOString()});
   await page.screenshot({path:path.join(output,name+'.png'),fullPage:true});
 }
 async function checkNoOverflow(name) {
@@ -47,7 +49,7 @@ async function connect() {
   await page.goto(address+'/ui/');
   await page.getByLabel('Bearer token',{exact:true}).fill(token);
   await page.getByRole('button',{name:'连接',exact:true}).click();
-  await page.getByRole('link',{name:'新建任务',exact:true}).waitFor();
+  await page.getByRole('link',{name:'新建任务',exact:true}).first().waitFor();
 }
 try {
   persist();
@@ -84,7 +86,7 @@ try {
   page=await context.newPage();page.setDefaultTimeout(20000);
   const browserErrors=[];page.on('pageerror',error=>browserErrors.push(String(error.message).slice(0,300)));
   await connect();await snapshot('01-workbench-empty');
-  await page.getByRole('link',{name:'新建任务',exact:true}).click();
+  await page.getByRole('link',{name:'新建任务',exact:true}).first().click();
   await page.locator('#task-intent').fill(spec.intent);
   if(spec.files) await page.locator('#task-files').setInputFiles(spec.files.map(file=>({name:file.name,mimeType:'text/plain',buffer:Buffer.from(file.content)})));
   await snapshot('02-composer');
@@ -127,6 +129,7 @@ try {
   assert.equal(evidence.task?.status,'completed','任务整体超时');
   evidence.stages=[...stages];evidence.approvals=approvals;evidence.answers=answers;
   if(caseId==='M02')assert.ok(answers>0,'没有澄清冲突');
+  await page.waitForFunction(()=>document.querySelector('[data-testid="task-detail"] [data-testid="machine-state"]')?.textContent==='completed',undefined,{timeout:15000});
   const audit=await api('/v1/tasks/'+taskId+'/audit'),leader=await api('/v1/tasks/'+taskId+'/leader');
   assert.equal(leader.review?.verdict,'accept');
   assert.equal(audit.acceptance?.status,'passed','独立验收必须通过');
@@ -169,7 +172,9 @@ try {
     evidence.overlapBoundary='started-to-settlement仅说明已准入执行区间交叠，包含cleanup，不单独证明模型计算同时发生';
     assert.ok(evidence.admittedExecutionOverlap,'没有已准入执行区间交叠');
   }
-  await page.locator('nav[aria-label="详情子视图"] a').first().click();await snapshot('04-completed-overview');
+  await page.locator('nav[aria-label="详情子视图"] a').first().click();
+  await page.waitForFunction(()=>document.querySelector('nav[aria-label="详情子视图"] [aria-current="page"]')?.textContent==='概览');
+  await page.getByTestId('task-journey').waitFor();await snapshot('04-completed-overview');
   for(const colorScheme of ['light','dark']) {
     await page.emulateMedia({colorScheme});
     for(const width of [1440,1024,375]) {await page.setViewportSize({width,height:1000});await checkNoOverflow('任务'+colorScheme+width);await snapshot('overview-'+colorScheme+'-'+width);}
