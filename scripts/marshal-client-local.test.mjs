@@ -106,6 +106,38 @@ test('live 503 readiness blocks launch, reconfiguration and launcher replacement
   assert.equal(healthCalls, 5);
 });
 
+for (const failure of ['unauthorized', 'timeout']) test(`recorded ${failure} service preserves settings and launcher without spawning`, {timeout: 20000}, async t => {
+  const home = fixture(t), token = 'local-uncertain-fixture-secret-token-001';
+  let handler, broken = false;
+  const server = createServer((req, res) => {if (broken && failure === 'timeout') return; handler(req, res);});
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => {server.closeAllConnections(); server.close();});
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const makeHandler = secret => createTaskApiHandler({token: secret, expectedHost: new URL(url).host,
+    application: async () => {if (broken) throw new TaskApiError('unauthorized'); return contract.components.schemas.Readiness.examples[0];}});
+  handler = makeHandler(token);
+  const connection = path.join(home, 'connection.json');
+  fs.writeFileSync(connection, JSON.stringify({url, token}), {mode: 0o600});
+  await run(['init', '--install-root', root, '--connection-file', connection], {home, output() {}});
+  const file = path.join(home, '.marshal-client/local.json'), launcher = path.join(home, '.local/bin/marshal');
+  const before = fs.readFileSync(file), command = fs.readFileSync(launcher);
+  broken = true; handler = makeHandler('a-different-valid-fixture-secret-token');
+  for (const args of [['serve', '--generic'], ['init', '--replace-launcher']]) {
+    await assert.rejects(run(args, {home, output() {assert.fail('must not launch or replace');}}), /connection_uncertain/);
+    assert.deepEqual(fs.readFileSync(file), before); assert.deepEqual(fs.readFileSync(launcher), command);
+    assert.equal(fs.existsSync(path.join(home, '.marshal-node')), false);
+  }
+});
+
+test('damaged recorded connection cannot authorize replacing settings or launcher', async t => {
+  const home = fixture(t); await run(['init', '--install-root', root], {home, output() {}});
+  const file = path.join(home, '.marshal-client/local.json'), settings = JSON.parse(fs.readFileSync(file));
+  const connection = path.join(home, 'missing.json'); settings.connectionFile = connection;
+  fs.writeFileSync(file, JSON.stringify(settings), {mode: 0o600}); const before = fs.readFileSync(file);
+  await assert.rejects(run(['init', '--replace-launcher'], {home, output() {assert.fail();}}));
+  assert.deepEqual(fs.readFileSync(file), before);
+});
+
 test('generic default selects exact agent and private root, forwards UI port and preserves API connection', {timeout: 10000}, async t => {
   const home = fixture(t), capture = path.join(home, 'launch.json');
   const connectionFile = path.join(home, 'live.json');
@@ -234,12 +266,22 @@ test('serve owns startup, checks real HTTP before persisting connection, and for
     process.emit('SIGTERM');
   }});
   assert.equal(connected, true);
+  // Normal exit leaves a real connection record. Its refused listener permits
+  // a new child; the service remains responsible for its own Store lock.
+  connected = false;
+  await run(['serve'], {home, output(value) {
+    assert.equal(value.state, 'connected'); connected = true; process.emit('SIGTERM');
+  }});
+  assert.equal(connected, true);
 });
 test('startup timeout kills only own unresponsive service and preserves old connection record', {timeout: 10000}, async t => {
   const home = fixture(t), config = path.join(home, 'config.mjs');
   fs.writeFileSync(config, '{}');
   const installed = fakeInstall(home, `process.on('SIGTERM',()=>{});setInterval(()=>{},1000);`);
   const oldConnection = path.join(home, 'old.json');
+  const closed = createServer(); closed.listen(0, '127.0.0.1'); await once(closed, 'listening');
+  const closedURL = `http://127.0.0.1:${closed.address().port}`; await new Promise(resolve => closed.close(resolve));
+  fs.writeFileSync(oldConnection, JSON.stringify({url: closedURL, token: 'closed-local-fixture-secret-token-001'}), {mode: 0o600});
   await run(['init', '--install-root', installed, '--config', config, '--connection-file', oldConnection], {home, output() {}});
   await assert.rejects(run(['serve'], {home, startupTimeoutMs: 500, stopTimeoutMs: 100, output() {assert.fail('must not report connected');}}), /service_start_failed/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, '.marshal-client/local.json'))).connectionFile, oldConnection);

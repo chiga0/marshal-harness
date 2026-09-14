@@ -4,13 +4,14 @@ import path from 'node:path';
 import {pathToFileURL, fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
+import {createConnection} from 'node:net';
 import {discoverAgents} from './discovery.mjs';
 import {installCommand} from './install-command.mjs';
 
 const fail = code => { throw new Error(code); };
 const codes = new Set(['invalid_arguments', 'unsafe_settings', 'installation_missing_or_ambiguous',
   'configuration_required', 'connection_unavailable', 'service_start_failed', 'settings_missing', 'command_install_conflict',
-  'agent_unavailable', 'running_configuration_conflict', 'service_not_ready']);
+  'agent_unavailable', 'running_configuration_conflict', 'service_not_ready', 'connection_uncertain']);
 const optionFields = {'--config': 'config', '--connection-file': 'connectionFile', '--data-dir': 'dataDir',
   '--ui': 'ui', '--port': 'port', '--agent-executable': 'agentExecutable', '--install-root': 'installRoot'};
 function executable(value) {
@@ -67,6 +68,21 @@ function installation(root) {
   }
   return root;
 }
+// A refused loopback listener permits retrying the original Store lock, not a
+// claim that every previous process exited. Never probe arbitrary hostnames.
+async function listenerRefused(value) {
+  if (typeof value !== 'string' || !/^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})\/?$/.test(value)) return false;
+  const port = Number(new URL(value).port);
+  if (!port || port > 65535) return false;
+  return new Promise(resolve => {
+    let settled = false;
+    const socket = createConnection({host: '127.0.0.1', port});
+    const finish = refused => {if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); resolve(refused);};
+    const timer = setTimeout(() => finish(false), 1000);
+    socket.once('connect', () => finish(false));
+    socket.once('error', error => finish(error.code === 'ECONNREFUSED'));
+  });
+}
 async function connect(settings) {
   if (!settings.connectionFile) fail('connection_unavailable');
   const {TaskClient} = await import(pathToFileURL(path.join(installation(settings.installRoot), 'packages/task-client/index.mjs')));
@@ -76,11 +92,15 @@ async function connect(settings) {
   catch (readyError) {
     // Readiness is not liveness: an authenticated service may still own data
     // and executions while rejecting work. Never start a replacement then.
-    let live = false;
+    let live = false, healthFailure;
     try {await client.request('health.get', {timeoutMs: 2000}); live = true;}
-    catch (healthError) {live = readyError.status === 503 || healthError.status === 503;}
+    catch (healthError) {healthFailure = healthError; live = readyError.status === 503 || healthError.status === 503;}
     if (live) fail('service_not_ready');
-    throw readyError;
+    // HTTP responses, timeout and invalid data do not prove a stopped owner.
+    // Only two transport failures plus an explicitly refused listener qualify.
+    if (readyError.code === 'client_transport_error' && healthFailure?.code === 'client_transport_error' &&
+      await listenerRefused(connection.url)) fail('connection_unavailable');
+    fail('connection_uncertain');
   }
   return client;
 }
@@ -125,7 +145,7 @@ export async function run(argv, {home = os.homedir(), output = value => console.
   const selectedRoot = options['--install-root'] ?? (command === 'init' ? ownRoot : settings.installRoot ?? ownRoot);
   if (['serve', 'init'].includes(command) && previous.connectionFile) {
     let live = false; try {await connect(previous); live = true;} catch (error) {
-      if (error.message === 'service_not_ready') throw error;
+      if (error.message !== 'connection_unavailable') throw error;
     }
     if (live) {
       const changed = options['--replace-launcher'] || selectedRoot !== previous.installRoot ||
@@ -159,7 +179,7 @@ export async function run(argv, {home = os.homedir(), output = value => console.
     else if (!fs.existsSync(file)) save(file, settings);
     if (launcher.state === 'conflict' && options['--replace-launcher']) fail('command_install_conflict');
     let connected = false; try {await connect(settings); connected = true;} catch (error) {
-      if (error.message === 'service_not_ready') throw error;
+      if (error.message !== 'connection_unavailable') throw error;
     }
     output({state: connected ? 'connected' : 'initialized', installRoot: settings.installRoot,
       agents: settings.agents, launcher, settingsFile: file, serviceConfigured: Boolean(settings.config),
@@ -168,7 +188,7 @@ export async function run(argv, {home = os.homedir(), output = value => console.
   }
   try {await connect(settings); output({state: 'connected', settingsFile: file,
     ...(settings.address ? {address: settings.address} : {}), ...(settings.ui && settings.address ? {uiUrl: settings.address + '/ui/'} : {})}); return;} catch (error) {
-    if (error.message === 'service_not_ready') throw error;
+    if (error.message !== 'connection_unavailable') throw error;
     if (command === 'status') fail('connection_unavailable');
   }
   if (!settings.config || settings.generic === true) {
