@@ -1,6 +1,6 @@
 # 当前 API 支持与证据矩阵
 
-更新：2026-09-14；当前实现核对基线 `e3e8ff1753957703f1817f80f2956435652f0115`；本批测试与真实模型结论见[验收记录](ui-1/experience-e2e-2026-09-14.md)，不将历史证据重绑到新候选。[标准API](standard-api.md)给出契约，[OpenAPI](../packages/task-api/openapi.json)为唯一机器定义，操作和Schema数量由[HTTP参考](api/http-reference.md)生成；[Roadmap](roadmap-status.md#业务交付当前表)保持最新完成状态和精确证据权威。[旧25操作矩阵](node-api-support-matrix.md)是9月9日历史快照，不再用其未完成项代表今天。
+更新：2026-09-15；当前实现核对基线 `d14a660e74195fea4b67235f52c80f15fc49a085`；本批测试与真实模型结论见[验收记录](ui-1/experience-e2e-2026-09-14.md)，不将历史证据重绑到新候选。[标准API](standard-api.md)给出契约，[OpenAPI](../packages/task-api/openapi.json)为唯一机器定义，操作和Schema数量由[HTTP参考](api/http-reference.md)生成；[Roadmap](roadmap-status.md#业务交付当前表)保持最新完成状态和精确证据权威。[旧25操作矩阵](node-api-support-matrix.md)是9月9日历史快照，不再用其未完成项代表今天。
 
 当前stable为v1.0.2，包含其声明的可信配置服务，不含UI和默认通用团队；v1.1.0-rc.2已公开预发布，含默认通用文件团队和可执行ACP入口。RC.2 source为`2fde5038`，安装及模型证据见[发行记录](v1.1.0-rc.2-release-dossier-2026-09-14.md)。新源码不自动进入旧资产，表内能力按所启用配置判断，不能把所有profile能力相加视为一个默认配置。
 
@@ -11,6 +11,8 @@
 - 修正：原HTTP repair需受信repair配置、原客观负Decision；Leader自治修正按其原批准策略，不能互换。
 - 发布：配置固定本机报告目标、原授权和独立后验；不支持通用生产ETL。
 - 观察：[ADR0103](adr/0103-execution-observability.md) 显式启用实际输入、公开活动、模型和用量。关闭配置/旧记录不因此自动补全；新源码未自动进入旧发行包。
+- 格式纠错：[ADR0104](adr/0104-bounded-leader-protocol-correction.md) 在新 Qwen 配置显式启用；Task 级最多一次，`LeaderView.protocolCorrection` 为条件性只读投影，无通用重试 API。旧配置保持关闭；语法纠错不包含业务拒收、权限失败或模型空输出。
+- Qwen 工具目录：新配置将同一原生 Agent 分为作者 Provider 与受管编排/评审 Provider，后者排除内置文件工具。当前 Qwen 0.23.2 的原生注册表已核对；不代表任意扩展工具、未来版本或操作系统沙箱的隔离证明。
 - “已接线”说明实际Application分支存在；“条件”说明缺配置返回明确错误。每行列相关测试文件用于定位现有检查，真实证据归于下方来源，不把测试文件存在记成本次通过。
 
 ## 27项支持
