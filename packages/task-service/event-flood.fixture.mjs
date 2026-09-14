@@ -15,8 +15,11 @@ if (process.argv.includes('--agent')) {
     else if (message.method === 'session/prompt') {
       const update = value => send({jsonrpc: '2.0', method: 'session/update', params: {sessionId: 'flood-session', update: value}});
       if (process.env.FLOOD_CASE === 'updates') {
-        // 未归一化 thought 仍计入原 Provider 的4096条预算，不持久化正文。
-        for (let index = 0; index < 4100; index++) update({sessionUpdate: 'agent_thought_chunk', content: {type: 'text', text: 'private-flood-canary'}});
+        // 空 thought 仍计入原 Provider 的4096条非文本更新预算。
+        for (let index = 0; index < 4100; index++) update({sessionUpdate: 'agent_thought_chunk', content: {type: 'text', text: ''}});
+      } else if (process.env.FLOOD_CASE === 'text-bytes') {
+        // 少于4096条、单帧小于1MiB，非空 thought 正文自身超过8MiB；不进入输出预算或持久化正文。
+        for (let index = 0; index < 1025; index++) update({sessionUpdate: 'agent_thought_chunk', content: {type: 'text', text: 'private-flood-canary' + 'x'.repeat(8192)}});
       } else if (process.env.FLOOD_CASE === 'frame') process.stdout.write('private-flood-canary' + 'x'.repeat(1024 * 1024));
       else update({sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: 'private-flood-canary' + 'x'.repeat(65536)}});
       // 预算越界后的正常终态不能挽救原失败，也不能变成有效成果。
@@ -33,11 +36,11 @@ if (process.argv.includes('--agent')) {
     const fd = fs.openSync(journal, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
     try {fs.writeFileSync(fd, JSON.stringify(value) + '\n'); fs.fsyncSync(fd);} finally {fs.closeSync(fd);}
   };
-  const providers = Object.fromEntries(['updates', 'output', 'frame'].map(mode => [mode, createAcpProvider({id: original.id,
+  const providers = Object.fromEntries(['updates', 'text-bytes', 'output', 'frame'].map(mode => [mode, createAcpProvider({id: original.id,
     executable: process.execPath, args: [fileURLToPath(import.meta.url), '--agent'], env: {FLOOD_CASE: mode}, custodyProfile: original.custodyProfile})]));
   configuration = {...base, providers: new Map([[original.id, {...original, start(input) {
     const ticket = tickets.get(input.cwd);
-    const mode = ['updates', 'output', 'frame'].find(value => ticket?.input.task.intent === 'flood ' + value);
+    const mode = ['updates', 'text-bytes', 'output', 'frame'].find(value => ticket?.input.task.intent === 'flood ' + value);
     if (!mode || ticket.role !== 'author' || ticket.nodeId !== 'east') return original.start(input);
     const handle = providers[mode].start(input), identity = {taskId: ticket.taskId, workerId: ticket.workerId, mode};
     return {...handle, started: handle.started.then(started => {record({type: 'started', ...identity, started}); return started;}),
