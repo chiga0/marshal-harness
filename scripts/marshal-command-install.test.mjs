@@ -41,4 +41,23 @@ test('upgrade does not silently replace command pointing at another installation
   fs.writeFileSync(path.join(other, 'packages/task-local/main.mjs'), '');
   assert.throws(() => installCommand({...options, installRoot: other}), /command_install_conflict/);
   assert.deepEqual(fs.readFileSync(first.commandPath), bytes);
+  const replacement = installCommand({...options, installRoot: other, replace: true, previousInstallRoot: options.installRoot});
+  assert.equal(replacement.replaced, true);
+  assert.match(fs.readFileSync(first.commandPath, 'utf8'), /other\/packages\/task-local/);
+});
+
+test('explicit replacement rejects wrong prior identity, modified bytes and links', t => {
+  const options = setup(t), {commandPath} = installCommand(options);
+  const other = path.join(options.home, 'other');
+  fs.mkdirSync(path.join(other, 'packages/task-local'), {recursive: true});
+  fs.writeFileSync(path.join(other, 'packages/task-local/main.mjs'), '');
+  const before = fs.readFileSync(commandPath);
+  const upgrade = {...options, installRoot: other, replace: true, previousInstallRoot: options.installRoot};
+  assert.throws(() => installCommand({...upgrade, previousInstallRoot: other}), /command_install_conflict/);
+  fs.appendFileSync(commandPath, '# modified\n');
+  assert.throws(() => installCommand(upgrade), /command_install_conflict/);
+  assert.deepEqual(fs.readFileSync(commandPath), Buffer.concat([before, Buffer.from('# modified\n')]));
+  fs.unlinkSync(commandPath); fs.symlinkSync(path.join(options.home, 'missing'), commandPath);
+  assert.throws(() => installCommand(upgrade));
+  assert.equal(fs.lstatSync(commandPath).isSymbolicLink(), true);
 });

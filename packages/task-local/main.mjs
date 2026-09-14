@@ -85,17 +85,19 @@ export async function run(argv, {home = os.homedir(), output = value => console.
   const command = argv[0] ?? '--help', options = {};
   if (command === '--help') {
     output({commands: ['init', 'status', 'serve'], options: ['--install-root', '--config', '--connection-file', '--settings-dir',
-      '--data-dir', '--port', '--ui', '--no-ui', '--agent-executable'],
+      '--data-dir', '--port', '--ui', '--no-ui', '--agent-executable', '--generic', '--replace-launcher'],
       note: 'init 检测并记录；serve 优先复用既有配置，无配置时使用本机 Qwen 通用文件团队；不自动授权外部业务发布。'}); return;
   }
   if (!['init', 'status', 'serve'].includes(command)) fail('invalid_arguments');
   for (let i = 1; i < argv.length; i += 2) {
     const key = argv[i];
-    if (key === '--no-ui') {
-      if (key in options || '--ui' in options) fail('invalid_arguments');
+    if (['--no-ui', '--generic', '--replace-launcher'].includes(key)) {
+      if (key in options || key === '--no-ui' && '--ui' in options || key === '--generic' && '--config' in options ||
+        key === '--replace-launcher' && command !== 'init') fail('invalid_arguments');
       options[key] = true; i--; continue;
     }
     if (key === '--ui' && '--no-ui' in options) fail('invalid_arguments');
+    if (key === '--config' && '--generic' in options) fail('invalid_arguments');
     if (![...Object.keys(optionFields), '--settings-dir'].includes(key) || key in options || !argv[i+1]) fail('invalid_arguments');
     if (key === '--port') {
       if (!/^(0|[1-9][0-9]{0,4})$/.test(argv[i+1]) || Number(argv[i+1]) > 65535) fail('invalid_arguments');
@@ -110,10 +112,13 @@ export async function run(argv, {home = os.homedir(), output = value => console.
   // A live recorded service is not silently repurposed by a new launch request.
   // Check the original connection before applying any requested overrides.
   const previous = {...settings};
+  const ownRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const selectedRoot = options['--install-root'] ?? (command === 'init' ? ownRoot : settings.installRoot ?? ownRoot);
   if (['serve', 'init'].includes(command) && previous.connectionFile) {
     let live = false; try {await connect(previous); live = true;} catch {}
     if (live) {
-      const changed = options['--no-ui'] && previous.ui !== undefined ||
+      const changed = options['--replace-launcher'] || selectedRoot !== previous.installRoot ||
+        options['--generic'] && previous.generic !== true || options['--no-ui'] && previous.ui !== undefined ||
         Object.entries(optionFields).some(([option, field]) => option in options && options[option] !== previous[field]);
       if (changed) fail('running_configuration_conflict');
       if (command === 'serve') {
@@ -122,16 +127,26 @@ export async function run(argv, {home = os.homedir(), output = value => console.
       }
     }
   }
-  settings.installRoot = installation(options['--install-root'] ?? settings.installRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'));
+  settings.installRoot = installation(selectedRoot);
   for (const [option, field] of Object.entries(optionFields)) if (option in options) settings[field] = options[option];
   if (options['--no-ui']) delete settings.ui;
   if (options['--config']) delete settings.generic;
+  if (options['--generic']) {
+    delete settings.config; settings.generic = true;
+    if (previous.generic !== true && !options['--data-dir']) delete settings.dataDir;
+    // A connection to the previous business profile must not shortcut the new launch.
+    delete settings.connectionFile; delete settings.address;
+  }
   if (command === 'init') {
     settings.agents = await discoverAgents();
-    save(file, settings);
     let launcher;
-    try {launcher = {...installCommand({installRoot: settings.installRoot, home: fs.realpathSync(home)}), state: 'installed'};}
+    try {launcher = {...installCommand({installRoot: settings.installRoot, home: fs.realpathSync(home),
+      replace: Boolean(options['--replace-launcher']), previousInstallRoot: previous.installRoot,
+      previousNodePath: previous.launcherNodePath ?? process.execPath}), state: 'installed'};}
     catch {launcher = {state: 'conflict', code: 'command_install_conflict'};}
+    if (launcher.state === 'installed') {settings.launcherNodePath = process.execPath; save(file, settings);}
+    else if (!fs.existsSync(file)) save(file, settings);
+    if (launcher.state === 'conflict' && options['--replace-launcher']) fail('command_install_conflict');
     let connected = false; try {await connect(settings); connected = true;} catch {}
     output({state: connected ? 'connected' : 'initialized', installRoot: settings.installRoot,
       agents: settings.agents, launcher, settingsFile: file, serviceConfigured: Boolean(settings.config),

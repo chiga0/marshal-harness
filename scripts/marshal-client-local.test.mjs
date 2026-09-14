@@ -74,11 +74,12 @@ test('live service cannot be reported as a newly requested configuration', async
   fs.writeFileSync(connection, JSON.stringify({url, token}), {mode: 0o600});
   await run(['init', '--install-root', root, '--connection-file', connection], {home, output() {}});
   const file = path.join(home, '.marshal-client/local.json'), before = fs.readFileSync(file);
-  for (const args of [['--config', path.join(home, 'different.mjs')], ['--ui', path.join(home, 'ui')], ['--port', '34567']]) {
+  for (const args of [['--config', path.join(home, 'different.mjs')], ['--ui', path.join(home, 'ui')], ['--port', '34567'], ['--generic']]) {
     await assert.rejects(run(['serve', ...args], {home, output() {assert.fail('no false connection');}}), /running_configuration_conflict/);
     await assert.rejects(run(['init', ...args], {home, output() {assert.fail('no live reconfiguration');}}), /running_configuration_conflict/);
     assert.deepEqual(fs.readFileSync(file), before);
   }
+  await assert.rejects(run(['init', '--replace-launcher'], {home, output() {}}), /running_configuration_conflict/);
 });
 
 test('generic default selects exact agent and private root, forwards UI port and preserves API connection', {timeout: 10000}, async t => {
@@ -142,6 +143,37 @@ test('no-ui is mutually exclusive and removes only the recorded UI option', asyn
   await run(['init', '--no-ui'], {home, output() {}});
   const settings = JSON.parse(fs.readFileSync(path.join(home, '.marshal-client/local.json')));
   assert.equal(settings.ui, undefined); assert.equal(settings.dataDir, data);
+});
+
+test('explicit generic selection preserves old files but does not adopt old business data root', async t => {
+  const home = fixture(t), config = path.join(home, 'business.mjs'), data = path.join(home, 'business-data');
+  fs.writeFileSync(config, 'export default {};'); fs.mkdirSync(data);
+  await run(['init', '--install-root', root, '--config', config, '--data-dir', data], {home, output() {}});
+  await run(['init', '--generic'], {home, output() {}});
+  const settings = JSON.parse(fs.readFileSync(path.join(home, '.marshal-client/local.json')));
+  assert.equal(settings.generic, true); assert.equal(settings.config, undefined); assert.equal(settings.dataDir, undefined);
+  assert.equal(fs.readFileSync(config, 'utf8'), 'export default {};'); assert.equal(fs.statSync(data).isDirectory(), true);
+  for (const args of [['--generic', '--config', config], ['--config', config, '--generic']])
+    await assert.rejects(run(['init', ...args], {home}), /invalid_arguments/);
+});
+
+test('upgrade init preserves old settings on launcher conflict and replaces only explicitly', async t => {
+  const home = fixture(t), config = path.join(home, 'business.mjs'); fs.writeFileSync(config, 'export default {};');
+  const old = fakeInstall(home, '');
+  fs.mkdirSync(path.join(old, 'packages/task-local'));
+  fs.writeFileSync(path.join(old, 'packages/task-local/main.mjs'), '');
+  await run(['init', '--install-root', old, '--config', config], {home, output() {}});
+  const settingsFile = path.join(home, '.marshal-client/local.json'), before = fs.readFileSync(settingsFile);
+  const launcher = path.join(home, '.local/bin/marshal'), launcherBefore = fs.readFileSync(launcher);
+  const output = [];
+  await run(['init'], {home, output: x => output.push(x)});
+  assert.equal(output[0].launcher.state, 'conflict');
+  assert.deepEqual(fs.readFileSync(settingsFile), before); assert.deepEqual(fs.readFileSync(launcher), launcherBefore);
+  await run(['init', '--replace-launcher'], {home, output: x => output.push(x)});
+  assert.equal(output[1].launcher.replaced, true);
+  const settings = JSON.parse(fs.readFileSync(settingsFile));
+  assert.equal(settings.installRoot, root); assert.equal(settings.config, config);
+  assert.notDeepEqual(fs.readFileSync(launcher), launcherBefore);
 });
 
 function fakeInstall(home, program) {
