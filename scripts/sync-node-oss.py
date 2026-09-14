@@ -38,7 +38,7 @@ def installer_constants(data, channel='stable'):
                     values[target.id] = ast.literal_eval(node.value)
     require(set(values) == wanted and all(isinstance(v, str) for v in values.values()), 'invalid_installer_constants')
     require(channel in ('stable', 'preview'), 'invalid_channel')
-    require(values['VERSION'] in (('v1.1.0-rc.1',) if channel == 'preview' else ('v1.0.1', 'v1.0.2')), 'unsupported_release')
+    require(values['VERSION'] in (('v1.1.0-rc.1', 'v1.1.0-rc.2') if channel == 'preview' else ('v1.0.1', 'v1.0.2')), 'unsupported_release')
     require(re.fullmatch(r'[a-f0-9]{40}', values['SOURCE']), 'invalid_source')
     require(re.fullmatch(r'[a-zA-Z0-9_.-]+\.zip', values['ZIP']), 'invalid_archive_name')
     return values
@@ -130,7 +130,7 @@ def sync(bucket, prefix, version, assets, sdk, channel='stable'):
     # OSS 在曾启用版本控制的 bucket 上可能忽略 forbid-overwrite。
     require(bucket.get_bucket_versioning().status in (None, ''), 'bucket_versioning_must_be_unconfigured')
     require(channel in ('stable', 'preview'), 'invalid_channel')
-    require(version in (('v1.1.0-rc.1',) if channel == 'preview' else ('v1.0.1', 'v1.0.2')), 'unsupported_release')
+    require(version in (('v1.1.0-rc.1', 'v1.1.0-rc.2') if channel == 'preview' else ('v1.0.1', 'v1.0.2')), 'unsupported_release')
     installer_name = 'install-node-preview.sh' if channel == 'preview' else 'install-node.sh'
     keys = {name: prefix + '/' + version + '/' + name for name in assets}
     # 先检查整个集合，再进行任何写入；安装器始终最后发布。
