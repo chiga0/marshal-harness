@@ -30,12 +30,20 @@ export function parseSha256(digest: string): string | null {
 }
 
 export async function sha256Hex(blob: Blob): Promise<string> {
-  // jsdom 的 Blob 无 arrayBuffer；走 Response/FileReader 两条兼容路径的浏览器 Web Crypto 复验
-  const buffer = typeof blob.arrayBuffer === 'function'
-    ? await blob.arrayBuffer()
-    : await new Response(blob).arrayBuffer();
+  const buffer = await blobBytes(blob);
   const hash = await globalThis.crypto.subtle.digest('SHA-256', buffer);
   return [...new Uint8Array(hash)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export async function blobBytes(blob: Blob): Promise<ArrayBuffer> {
+  if (typeof blob.arrayBuffer === 'function') return blob.arrayBuffer();
+  // Response 在跨实现 Blob（如 jsdom）上可能把对象字符串化，不可据此验签。
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('blob_read_failed'));
+    reader.onload = () => reader.result instanceof ArrayBuffer ? resolve(reader.result) : reject(new Error('blob_read_failed'));
+    reader.readAsArrayBuffer(blob);
+  });
 }
 
 export interface DownloadSpec {
@@ -54,6 +62,14 @@ export interface DownloadResult {
 
 /** 拉取 → 复验（大小 + sha256）→ 触发浏览器保存。任何不一致都拒绝保存。 */
 export async function downloadArtifact(transport: Transport, spec: DownloadSpec): Promise<DownloadResult> {
+  const {blob, digestHex} = await fetchVerifiedArtifact(transport, spec);
+  const name = sanitizeFileName(spec.fileName);
+  saveBlob(blob, name);
+  return {savedName: name, bytes: blob.size, digestHex};
+}
+
+/** 同一读取/复验通道供原包保存与包内文件检查使用；本函数不触发下载。 */
+export async function fetchVerifiedArtifact(transport: Transport, spec: DownloadSpec): Promise<{blob: Blob; digestHex: string}> {
   if (spec.artifactId.trim() === '') {
     throw new DownloadRejection('empty_ref', '缺少产物 ID，已拒绝。');
   }
@@ -75,9 +91,7 @@ export async function downloadArtifact(transport: Transport, spec: DownloadSpec)
   if (digestHex !== expected) {
     throw new DownloadRejection('digest_mismatch', '下载内容摘要与交付摘要不一致，已拒绝保存（可能是错误或假冒成果）。');
   }
-  const name = sanitizeFileName(spec.fileName);
-  saveBlob(blob, name);
-  return {savedName: name, bytes: blob.size, digestHex};
+  return {blob, digestHex};
 }
 
 /** 浏览器落盘：objectURL + a[download]；失败由调用方展示。 */

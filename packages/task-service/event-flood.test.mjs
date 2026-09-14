@@ -16,7 +16,7 @@ async function until(fn, label, ms = 30000) {
   for (;;) {const result = await fn(); if (result) return result;
     assert.ok(Date.now() < end, label); await pause(20);}
 }
-test('real ACP update/output/frame floods fail boundedly without leaking raw content or blocking subsequent HTTP team delivery', {timeout: 90000}, async t => {
+test('real ACP update/text-byte/output/frame floods fail boundedly without leaking raw content or blocking subsequent HTTP team delivery', {timeout: 90000}, async t => {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-event-flood-'))), root = path.join(parent, 'data');
   const child = spawn(process.execPath, [here('./main.mjs'), '--root', root, '--mode', 'create', '--config', here('./event-flood.fixture.mjs')],
     {cwd: parent, env: {MARSHAL_EVENT_FLOOD_FIXTURE: '1', MARSHAL_SOAK_FIXTURE: '1'}, stdio: ['ignore', 'pipe', 'pipe']});
@@ -61,7 +61,7 @@ test('real ACP update/output/frame floods fail boundedly without leaking raw con
     assert.ok(workers.every(worker => ['completed', 'failed', 'cancelled'].includes(worker.status)));
     const original = {created, body, approval, receipt, terminal, workers, audit, key}; originals.push(original); return original;
   }
-  for (const mode of ['updates', 'output', 'frame']) {
+  for (const mode of ['updates', 'text-bytes', 'output', 'frame']) {
     const bad = await run('flood ' + mode, mode, 'failed');
     assert.deepEqual(bad.terminal.artifactIds, []); assert.equal(bad.workers.some(worker => worker.role === 'verifier'), false);
     assert.ok(bad.audit.attempts <= 3); assert.deepEqual({...bad.audit.acceptance}, {status: 'pending', evidenceIds: [], digest: null});
@@ -69,7 +69,7 @@ test('real ACP update/output/frame floods fail boundedly without leaking raw con
     assert.equal(JSON.stringify(response).includes('private-flood-canary'), false);
     assert.ok(response.items.length < 100, 'discarded flood must not amplify authority ledger');
   }
-  const healthy = await run('healthy after three protocol failures', 'healthy', 'completed');
+  const healthy = await run('healthy after four protocol failures', 'healthy', 'completed');
   assert.equal(healthy.audit.attempts, 4); assert.equal(healthy.audit.acceptance.status, 'passed');
   const downloads = await Promise.all(healthy.terminal.artifactIds.map(id => client.downloadArtifact(id)));
   const delivery = downloads.find(value => value.artifact.kind === 'delivery'); assert.ok(delivery);
@@ -83,17 +83,17 @@ test('real ACP update/output/frame floods fail boundedly without leaking raw con
   assert.deepEqual(await stop(), {code: 0, signal: null});
   assert.deepEqual(JSON.parse(stdout.trim().split('\n').at(-1)), {state: 'closed', clean: true, code: null});
   const observations = fs.readFileSync(path.join(parent, 'flood-observations.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-  for (const mode of ['updates', 'output', 'frame']) {
+  for (const mode of ['updates', 'text-bytes', 'output', 'frame']) {
     const start = observations.find(row => row.mode === mode && row.type === 'started');
     const end = observations.find(row => row.mode === mode && row.type === 'completion');
     assert.ok(start?.started?.executionId); assert.equal(end.status, 'failed');
-    assert.equal(end.reason, {updates: 'provider_progress_limit', output: 'provider_output_limit', frame: 'acp_frame_limit'}[mode]);
+    assert.equal(end.reason, {updates: 'provider_progress_limit', 'text-bytes': 'provider_progress_limit', output: 'provider_output_limit', frame: 'acp_frame_limit'}[mode]);
     assert.equal(end.cleanup.cleaned, true); assert.deepEqual(end.cleanup.started, start.started);
     assert.equal(end.outputBytes, 0); assert.equal(end.usage.source, 'unavailable');
   }
   const snapshot = durable(root, () => assert.equal(closed, true));
-  assert.equal(snapshot.projections.filter(row => row.kind === 'task').length, 4);
-  t.diagnostic(JSON.stringify({badTasks: 3, successfulTasks: 1, maxObservationMs: Math.ceil(Math.max(...latency)), samples: latency.length,
+  assert.equal(snapshot.projections.filter(row => row.kind === 'task').length, 5);
+  t.diagnostic(JSON.stringify({badTasks: 4, successfulTasks: 1, maxObservationMs: Math.ceil(Math.max(...latency)), samples: latency.length,
     scope: 'bounded real protocol flood and subsequent delivery; no concurrent-good-task survival, model, production SLO or disk-full proof'}));
   complete = true;
 });

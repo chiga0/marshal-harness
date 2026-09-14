@@ -1,8 +1,9 @@
 import {checkedGraph} from '../task-application/graph.mjs';
+import {MAX_FILE} from './policy.mjs';
 
 const identifier = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
 const check = value => {if (!value) throw new Error('generic_files_plan_unsupported');};
-const description = '通用文件成果布局：输入按摘要引用，每个作者独立输出 result.md；仅冻结材料与交付位置，不代表业务验收通过，不授权外部写入或发布。';
+const description = `通用文件成果布局：输入按摘要引用，每个作者独立输出 result.md；每份文件必须是非空 UTF-8 文本，最多 ${MAX_FILE} UTF-8 字节（不是字符数）。result.md 是受控暂存路径，内容仍须符合原需求的文件格式；用户要求完整源文件时写入原始源码，不包裹 Markdown 代码围栏。不满足大小约束时不得声称完成或另写未授权文件。仅冻结材料与交付位置，不代表业务验收通过，不授权外部写入或发布。`;
 
 /** Pure preparation for the existing trusted verification bindPlan port.
  * Not registered in serve: independent business acceptance still needs an

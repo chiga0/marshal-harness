@@ -46,6 +46,33 @@ test('permission derives dynamic node file scope, denies inputs writes and arbit
   assert.equal(ask('edit',{path:'result.md',text:'answer',content:'answer'}).outcome,'cancelled');
   for (const [kind,raw] of [['edit',{path:'inputs/source',content:'bad'}],['execute',{path:'result.md',content:'x'}],['edit',{path:'../result.md',content:'x'}],['edit',{path:'result.md',content:'x',command:'oops'}]]) assert.equal(ask(kind,raw).outcome,'cancelled');
 });
+test('Qwen empty-old-string create is confined to absent bounded result file', t => {
+  const root = fixture(t), output = path.join(root, 'result.md');
+  const ticket = {role:'author', input:{fileLayout:{inputs:[],allowedPaths:['result.md','other.md']}}};
+  const ask = (rawInput, role = 'author') => filePermission({...ticket, role}, root, {
+    toolCall:{kind:'edit',rawInput},options:[{kind:'allow_once',optionId:'yes'}],
+  }).outcome;
+  const create = {file_path:'result.md',old_string:'',new_string:'<!doctype html><title>Todo</title>'};
+  assert.equal(ask(create).optionId, 'yes');
+  assert.equal(ask({...create,file_path:output,replace_all:false}).optionId, 'yes');
+  assert.equal(ask({...create,new_string:'x'.repeat(8192)}).optionId, 'yes');
+  for (const raw of [
+    {...create,new_string:''}, {...create,new_string:'x'.repeat(8193)},
+    {...create,new_string:'中'.repeat(2731)}, {...create,new_string:'bad\0'},
+    {...create,new_string:'\ud800'}, {...create,replace_all:'yes'},
+    {...create,command:'anything'}, {...create,file_path:'../result.md'},
+    {...create,file_path:'other.md'}, {...create,path:'result.md'},
+  ]) assert.equal(ask(raw).outcome, 'cancelled');
+  assert.equal(ask(create, 'reviewer').outcome, 'cancelled');
+  fs.writeFileSync(output, 'keep');
+  assert.equal(ask(create).outcome, 'cancelled');
+  assert.equal(fs.readFileSync(output, 'utf8'), 'keep');
+  fs.unlinkSync(output); fs.mkdirSync(output);
+  assert.equal(ask(create).outcome, 'cancelled');
+  fs.rmdirSync(output); fs.writeFileSync(path.join(root, 'outside'), 'keep');
+  fs.symlinkSync(path.join(root, 'outside'), output);
+  assert.equal(ask(create).outcome, 'cancelled');
+});
 test('expected files are bound to exact final candidate refs, not author report', () => {
   const ref={path:'result.md',bytes:2,digest:digest(Buffer.from('ok'))};
   const ticket={input:{verification:{binding:{deliveries:[{nodeId:'research',path:'result.md',targetPath:'results/research.md'}]},manifests:[{nodeId:'research',manifest:{files:[ref]}}]}}};
