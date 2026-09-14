@@ -5,7 +5,7 @@ import {DatabaseSync} from 'node:sqlite';import assert from 'node:assert/strict'
 import {verify} from '../packages/task-distribution/index.mjs';
 import {makePairs,digest} from './reviewer-component-cases.mjs';
 const [mode,...args]=process.argv.slice(2),options={};
-for(let i=0;i<args.length;i+=2){assert.ok(['--source','--suite','--output','--installed','--manifest','--agent'].includes(args[i]));assert.ok(args[i+1]);options[args[i]]=args[i+1];}
+for(let i=0;i<args.length;i+=2){assert.ok(['--source','--suite','--output','--installed','--manifest','--agent','--model'].includes(args[i]));assert.ok(args[i+1]);options[args[i]]=args[i+1];}
 assert.ok(['prepare','run'].includes(mode));const out=options['--output'];assert.ok(out&&path.isAbsolute(out)&&!fs.existsSync(out));fs.mkdirSync(out,{recursive:true,mode:0o700});
 const save=(file,value)=>fs.writeFileSync(path.join(out,file),JSON.stringify(value,null,2)+'\n',{mode:0o600,flag:'wx'});
 if(mode==='prepare') {
@@ -27,13 +27,21 @@ if(mode==='prepare') {
 } else {
  const admission=verify({root:options['--installed'],manifestDigest:options['--manifest']});
  assert.ok(path.isAbsolute(options['--agent']));process.env.MARSHAL_AGENT_EXECUTABLE=options['--agent'];
- const {default:config}=await import(pathToFileURL(path.join(options['--installed'],'packages/task-generic-files/qwen-review-service-config.mjs')).href);
+ const {default:installedConfig,QWEN_MANAGED_ARGS}=await import(pathToFileURL(path.join(options['--installed'],'packages/task-generic-files/qwen-review-service-config.mjs')).href);
+ let config=installedConfig;const requestedModel=options['--model']??null;
+ if(requestedModel!==null){
+  assert.equal(requestedModel,'qwen3.8-max','本轮仅授权已配置模型');
+  const {createAcpProvider}=await import(pathToFileURL(path.join(options['--installed'],'packages/agent-provider-acp/index.mjs')).href);
+  const {createGenericFilesReviewWireConfig}=await import(pathToFileURL(path.join(options['--installed'],'packages/task-generic-files/review-wire.mjs')).href);
+  const env={};for(const key of ['HOME','PATH','LANG','LC_ALL','LC_CTYPE','TMPDIR'])if(typeof process.env[key]==='string')env[key]=process.env[key];
+  config=createGenericFilesReviewWireConfig({provider:installedConfig.providers.get('qwen-acp'),managedProvider:createAcpProvider({id:'qwen-managed-acp',usageExtension:'qwen-transcript/v1',executable:options['--agent'],env,args:[...QWEN_MANAGED_ARGS,'--model',requestedModel]})});
+ }
  const {receipt}=await import(pathToFileURL(path.join(options['--installed'],'packages/task-application/leader-ports.mjs')).href);
  const provider=config.providers.get(config.review.providerId);assert.equal(provider.id,'qwen-managed-acp');
  const suiteBytes=fs.readFileSync(options['--suite']),suite=JSON.parse(suiteBytes);assert.equal(suite.profile,'reviewer-component-suite/v1');
- const results=[];save('admission.json',{candidate:admission.sourceHead,manifest:options['--manifest'],suiteDigest:digest(suiteBytes),boundary:suite.boundary});
+ const results=[];save('admission.json',{candidate:admission.sourceHead,manifest:options['--manifest'],suiteDigest:digest(suiteBytes),boundary:suite.boundary,requestedModel,configuration:requestedModel?'explicit-component-model-override-not-installed-default':'installed-default',managedArgs:requestedModel?[...QWEN_MANAGED_ARGS,'--model',requestedModel]:QWEN_MANAGED_ARGS});
  for(const example of suite.cases) {
-  assert.match(example.id,/^(S02|C01)-(negative|positive)$/);const caseOutput=path.join(out,example.id);fs.mkdirSync(caseOutput,{mode:0o700});const cwd=fs.mkdtempSync(path.join(out,'runtime-'));fs.chmodSync(cwd,0o700);
+  assert.match(example.id,/^(S02|C01|C01-tags)-(negative|positive)$/);const caseOutput=path.join(out,example.id);fs.mkdirSync(caseOutput,{mode:0o700});const cwd=fs.mkdtempSync(path.join(out,'runtime-'));fs.chmodSync(cwd,0o700);
   const input=structuredClone(example.input),ticket={executionType:'review',providerId:provider.id,taskId:'component-'+randomUUID(),workerId:'component-'+randomUUID(),input:{review:input}};
   const prepared=await config.review.prepare(ticket,{cwd},{});fs.writeFileSync(path.join(caseOutput,'prompt.txt'),prepared.prompt,{mode:0o600,flag:'wx'});
   const startedAt=new Date().toISOString(),deadline=Date.now()+180000;let handle,completion,rawCompletion,parsedReport=null,problem=null;const activity=[];
@@ -46,7 +54,7 @@ if(mode==='prepare') {
   }catch(error){problem={code:error.code??'component_provider_failed',name:error.name};}
   finally{if(handle&&!completion)try{await handle.stop();completion=await handle.completion;}catch{problem??={code:'component_cleanup_unconfirmed'};}}
   const verdict=parsedReport?.verdict??null,parseError=completion?.status==='completed'?null:'invalid_review_receipt';
-  const record={id:example.id,expected:example.expected,candidate:admission.sourceHead,componentResult:!problem&&!parseError&&example.expected.includes(verdict)?'PASS':'FAIL',verdict,parseError,problem,startedAt,finishedAt:new Date().toISOString(),elapsedMs:Date.now()-Date.parse(startedAt),promptDigest:digest(prepared.prompt),promptBytes:Buffer.byteLength(prepared.prompt),runtime:cwd,parsedReport,rawCompletion:rawCompletion?{status:rawCompletion.status,stopReason:rawCompletion.stopReason,cleanup:rawCompletion.cleanup,outputText:rawCompletion.outputText}:null,completion:completion?{status:completion.status,stopReason:completion.stopReason,cleanup:completion.cleanup,outputText:completion.outputText}:null,activity};
+  const record={id:example.id,requestedModel,reportedModels:[...new Set(activity.map(a=>a.model?.id).filter(Boolean))],expected:example.expected,candidate:admission.sourceHead,componentResult:!problem&&!parseError&&example.expected.includes(verdict)?'PASS':'FAIL',verdict,parseError,problem,startedAt,finishedAt:new Date().toISOString(),elapsedMs:Date.now()-Date.parse(startedAt),promptDigest:digest(prepared.prompt),promptBytes:Buffer.byteLength(prepared.prompt),runtime:cwd,parsedReport,rawCompletion:rawCompletion?{status:rawCompletion.status,stopReason:rawCompletion.stopReason,cleanup:rawCompletion.cleanup,outputText:rawCompletion.outputText}:null,completion:completion?{status:completion.status,stopReason:completion.stopReason,cleanup:completion.cleanup,outputText:completion.outputText}:null,activity};
   fs.writeFileSync(path.join(caseOutput,'result.json'),JSON.stringify(record,null,2)+'\n',{mode:0o600,flag:'wx'});results.push(record);console.log(JSON.stringify({id:record.id,result:record.componentResult,verdict,elapsedMs:record.elapsedMs}));
   if(completion?.cleanup?.cleaned!==true){process.exitCode=1;break;}
  }
