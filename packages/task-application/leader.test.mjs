@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fixture,proposal,hash} from './leader-fixture.mjs';
-export {fixture,proposal,hash} from './leader-fixture.mjs';
+import {fixture,proposal,hash} from './leader.fixture.mjs';
+export {fixture,proposal,hash} from './leader.fixture.mjs';
 
 for (const observed of [false, true]) test('v7 real SQLite: necessary reply → plan approval → two authors → independent Review → stage verification → deliver/conclude → cold exact bytes; observation=' + observed, async t => {
   const f = fixture(t, observed ? {observability: {profile: 'task-observation/v1', retainPrompts:true}} : {}), task = await f.call({operation: 'task.create', key: 'create', body: {intent: '交付两区域结果，但区域待用户明确',

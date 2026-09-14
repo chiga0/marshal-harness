@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fixture,proposal} from './leader-fixture.mjs';
+import {fixture,proposal} from './leader.fixture.mjs';
 import {startLeaderWithJsonCorrection,leaderJsonFailure,prepareLeaderWithJsonCorrection} from './leader-protocol-correction.mjs';
 import {validate} from '../task-api/contract.mjs';
 const malformed='{"profile":"task-managed-leader/v1","actions":[}';

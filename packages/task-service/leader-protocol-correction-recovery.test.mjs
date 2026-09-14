@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fixture} from '../task-application/leader-fixture.mjs';
+import {fixture} from '../task-application/leader.fixture.mjs';
 import {bound} from './leader-recovery-core.test.mjs';
 
 for(const started of [false,true])test('format successor with signed original cleanup recovers only through original recovery; started='+started,{timeout:20000},async t=>{
