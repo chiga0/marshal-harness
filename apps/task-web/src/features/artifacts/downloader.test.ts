@@ -23,6 +23,9 @@ async function digestOf(content: string): Promise<string> {
 }
 
 describe('下载保护（E16/E17 本机落盘与防假冒）', () => {
+  it('真实内容使用标准SHA256，不将Blob对象字符串化', async () => {
+    expect(await sha256Hex(new Blob(['abc']))).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+  });
   it('sanitizeFileName 去掉目录穿越与危险字符', () => {
     expect(sanitizeFileName('../../etc/passwd')).toBe('passwd');
     expect(sanitizeFileName('a/b/c.txt')).toBe('c.txt');

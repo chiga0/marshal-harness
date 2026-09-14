@@ -3,6 +3,7 @@ import {launchAcp, RuntimeError} from '../agent-runtime/index.mjs';
 import {AcpError} from '../agent-acp/client.mjs';
 
 export const MAX_OUTPUT_TEXT_BYTES = 64 * 1024;
+export const MAX_TEXT_UPDATE_BYTES = 8 * 1024 * 1024;
 const MAX_UPDATES = 4096, CALLBACK_WAIT_MS = 1000;
 const text = (value, max) => typeof value === 'string' && value.isWellFormed() && !value.includes('\0') && Buffer.byteLength(value) <= max;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -52,6 +53,7 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       !text(prompt, 256 * 1024) || !prompt.trim() || onProgress !== undefined && typeof onProgress !== 'function' ||
       onPermission !== undefined && typeof onPermission !== 'function') throw error('provider_invalid_input');
     let runtime, sessionId = null, stopping = false, settled = false, outputText = '', outputBytes = 0, updates = 0, updateFailure;
+    let textUpdateBytes = 0, reportedOutputBytes = -1024;
     const toolCalls = new Map();
     function toolState(id) {
       if (!text(id, 128) || !id) throw error('provider_invalid_progress');
@@ -72,13 +74,25 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
     }
     async function update(event) {
       if (stopping || settled) return;
-      if (++updates > MAX_UPDATES) throw error('provider_progress_limit');
       const item = event.update;
+      const textual = ['agent_message_chunk', 'agent_thought_chunk'].includes(item.sessionUpdate) &&
+        object(item.content) && item.content.type === 'text' && typeof item.content.text === 'string' && item.content.text.length > 0;
+      if (textual) {
+        // Count the whole update, including metadata. Empty chunks still consume
+        // the control-event budget. Thinking
+        // remains private; neither fragmentation nor silence grants an unbounded stream.
+        textUpdateBytes += Buffer.byteLength(JSON.stringify(item));
+        if (textUpdateBytes > MAX_TEXT_UPDATE_BYTES) throw error('provider_progress_limit');
+      } else if (++updates > MAX_UPDATES) throw error('provider_progress_limit');
       progress = {...progress, observedAt: new Date().toISOString()};
       if (item.sessionUpdate === 'agent_message_chunk') {
         if (!object(item.content) || item.content.type !== 'text') return;
         if (!text(item.content.text, MAX_OUTPUT_TEXT_BYTES) || outputBytes + Buffer.byteLength(item.content.text) > MAX_OUTPUT_TEXT_BYTES) throw error('provider_output_limit');
         outputText += item.content.text; outputBytes += Buffer.byteLength(item.content.text);
+        // Core progress is a bounded observation, not a per-token event sink.
+        // Tool observations below are never coalesced; outputText stays exact.
+        if (outputBytes - reportedOutputBytes < 1024) return;
+        reportedOutputBytes = outputBytes;
       } else if (['tool_call', 'tool_call_update'].includes(item.sessionUpdate)) {
         const call = toolState(item.toolCallId);
         const prior = progress.tool?.id === item.toolCallId ? progress.tool : null;

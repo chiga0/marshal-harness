@@ -15,6 +15,18 @@ for await (const chunk of process.stdin) {
     } else if (message.method === 'session/new') respond(message, {sessionId: 'session-fixture'});
     else if (message.method === 'session/prompt') {
       pending = message;
+      if (mode.startsWith('budget-')) {
+        for (let i = 0; i < (mode === 'budget-thought-overflow' ? 129 : 4097); i++) {
+          if (mode === 'budget-mixed') update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'x'}});
+          if (mode === 'budget-tool' || mode === 'budget-mixed') update({sessionUpdate:'tool_call_update',toolCallId:'repeated',kind:'read',status:'in_progress'});
+          else if (mode === 'budget-unknown') update({sessionUpdate:'future_update'});
+          else update({sessionUpdate:mode.includes('thought')?'agent_thought_chunk':'agent_message_chunk',content:{type:'text',text:
+            mode === 'budget-thought-overflow' ? 'x'.repeat(65536) : mode === 'budget-empty' ? '' : 'x'}});
+          if (i % 32 === 0) await new Promise(resolve => setImmediate(resolve));
+        }
+        if (mode.includes('thought')) update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'public'}});
+        respond(message, {stopReason:'end_turn'}); continue;
+      }
       if (mode.startsWith('failed-only-')) {
         update({sessionUpdate: 'tool_call_update', toolCallId: 'tool-one', kind: mode.slice('failed-only-'.length), status: 'failed'});
         update({sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: 'failed fixture tool'}});

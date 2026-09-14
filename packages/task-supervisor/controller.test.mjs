@@ -12,8 +12,8 @@ import {createExecutionCustody} from '../agent-runtime/custody.mjs';
 
 const context = {principal: 'local-operator'};
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return {promise, resolve}; };
-async function until(predicate) {
-  const deadline = Date.now() + 3000;
+async function until(predicate, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
   while (!await predicate()) { assert.ok(Date.now() < deadline, 'bounded deterministic observation timed out'); await turn(); }
 }
 const plan = () => ({summary: '两作者并行，直接依赖汇合',
@@ -255,11 +255,13 @@ test('target cancel COMMIT before original ACK timer fires does not stop sibling
   const question = await (async () => {let q; await until(async () => {q = (await f.app.dispatch({operation: 'task.questions', taskId: task.id}, context)).items[0]; return q;}); return q;})();
   await f.app.dispatch({operation: 'task.answer', taskId: task.id, questionId: question.id, key: 'answer', body: {
     expectedRevision: (await f.get(task.id)).revision, questionRevision: 1, questionDigest: question.questionDigest, answer: 'north'}}, context);
-  f.advance(4900); await supervisor.tick(); await waiting;
+  await supervisor.tick(); await waiting;
   const stop = await f.app.dispatch({operation: 'worker.cancel', workerId: a.data.workerId, key: 'cancel-after-dispatch',
     body: {expectedRevision: (await f.get(task.id)).revision}}, context);
-  // No tick, no external callback injection: the original short ACK timer fires.
-  await until(() => a.stopCount === 1); assert.equal(b.stopCount, 0);
+  // No tick or fake clock jump: wait for the original <=5s ACK timer. A 4900ms
+  // jump leaves only 100ms minus real fixture work before reconcile expires the
+  // question, accidentally testing pre-dispatch timeout instead of target stop.
+  await until(() => a.stopCount === 1, 8000); assert.equal(b.stopCount, 0);
   await until(async () => (await f.app.dispatch({operation: 'operation.get', operationId: stop.id}, context)).status === 'succeeded');
   assert.equal((await f.get(task.id)).status, 'running'); assert.equal(f.capacity().length, 1); assert.equal(supervisor.snapshot().failure, null);
   assert.deepEqual(f.errors, []);

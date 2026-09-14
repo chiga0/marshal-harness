@@ -150,7 +150,7 @@ test('reason whitelist covers every compile-time constant the providers can sett
   for (const code of ['custody_unavailable', 'custody_invalid_permit', 'custody_launch_denied', 'custody_client_invalid',
     'custody_launch_failed', 'custody_prepare_failed', 'custody_invalid_descriptor', 'custody_ack_conflict']) assert.ok(listed.has(code), code);
   // Protocol/event type names and the dynamic reason prefix are not error codes.
-  const ignore = new Set(['agent_start', 'agent_end', 'agent_settled', 'agent_message_chunk', 'agent_exit', 'cleanup_error', 'pi_agent_']);
+  const ignore = new Set(['agent_start', 'agent_end', 'agent_settled', 'agent_message_chunk', 'agent_thought_chunk', 'agent_exit', 'cleanup_error', 'pi_agent_']);
   // Recursive walk: nested production directories must not be silently skipped;
   // only test and fixture trees are excluded.
   const walk = directory => fs.readdirSync(directory, {withFileTypes: true}).flatMap(entry => {

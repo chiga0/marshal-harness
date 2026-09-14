@@ -52,16 +52,43 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
     .sort((a, b) => (a.deadlineAt ? Date.parse(a.deadlineAt) : Infinity) - (b.deadlineAt ? Date.parse(b.deadlineAt) : Infinity));
   const planNeedsApproval = plan !== null && task.allowedActions.includes('approve');
   const waitingCount = attentionQuestions.length + (awaitingRequest && !replyAccepted ? 1 : 0) + (planNeedsApproval ? 1 : 0);
+  const intervention = task.status === 'intervention' || task.code === 'cleanup_unconfirmed';
+  const unresolvedWorkers = (workers ?? []).filter(worker => ['unknown', 'stopping'].includes(worker.status));
 
   return (
     <div className="space-y-4" data-testid="overview-view">
+      {intervention ? (
+        <Card role="alert" aria-label="系统执行异常" className="space-y-3 border-danger" data-testid="intervention-notice">
+          <h2 className="text-base font-semibold text-danger">系统执行异常，需要排查</h2>
+          <p className="text-sm">此执行异常不等同于待答问题；请分别核对下方请求，不能将没有待答事项理解为运行正常。</p>
+          <p className="text-sm [overflow-wrap:anywhere]">原因：{task.code === 'cleanup_unconfirmed'
+            ? '尚未确认所属执行已安全清理，任务不能继续。'
+            : '服务报告任务需要干预，具体执行原因请结合团队与活动记录核对。'}
+            {task.code ? <>（<code>{task.code}</code>）</> : '（服务未提供原因码）'}</p>
+          <p className="text-sm text-text-secondary">当前界面没有安全恢复此异常的操作。请保留现场并联系运行环境维护者排查；不要重复创建同一任务、强制清除状态或把重新启动当作恢复成功。</p>
+          {workers === null ? <p className="text-sm text-text-secondary">团队数据未加载，暂时无法确认受影响的 Worker。</p>
+            : unresolvedWorkers.length ? (
+              <ul className="space-y-1 text-sm" aria-label="清理状态待确认的 Worker">
+                {unresolvedWorkers.map(worker => <li key={worker.id} className="[overflow-wrap:anywhere]">
+                  <Link className="text-accent underline focus-visible:outline focus-visible:outline-2" to={`/tasks/${encodeURIComponent(task.id)}/team/${encodeURIComponent(worker.id)}`}>
+                    {worker.nodeId} · {worker.id}
+                  </Link>（{worker.status}）
+                </li>)}
+              </ul>
+            ) : <p className="text-sm text-text-secondary">当前已加载团队中没有 unknown/stopping Worker；不能据此认定清理已完成。</p>}
+          <div className="flex flex-wrap gap-4 text-sm">
+            <Link className="text-accent underline" to={`/tasks/${encodeURIComponent(task.id)}/team`}>查看团队与 Worker</Link>
+            <Link className="text-accent underline" to={`/tasks/${encodeURIComponent(task.id)}/activity`}>查看活动与异常证据</Link>
+          </div>
+        </Card>
+      ) : null}
       <section aria-label="需要处理" className="space-y-2">
         <h2 className="text-sm font-medium text-text-secondary">
           需要你的处理（{waitingCount} 项）
         </h2>
         {waitingCount === 0 ? (
           <p className="rounded-md border border-border bg-surface p-3 text-sm text-text-secondary" data-testid="waiting-empty">
-            {replyAccepted ? '你的本次答复已受理，正在等待 Leader 更新；无需重复答复。' : '当前没有等待你处理的事项。'}
+            {intervention ? '当前没有待答或待批准事项，但系统执行异常尚未解决；请查看上方异常说明。' : replyAccepted ? '你的本次答复已受理，正在等待 Leader 更新；无需重复答复。' : '当前没有等待你处理的事项。'}
             {questions === null ? '（问题投影未加载，无法确认是否有待答问题。）' : ''}
             {leader === null ? '（Leader 投影不可用，无法确认是否有 Leader 待处理请求。）' : ''}
           </p>

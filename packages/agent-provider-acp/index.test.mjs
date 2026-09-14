@@ -39,6 +39,38 @@ test('one Worker exposes handle immediately then initializes, runs, normalizes a
   assert.equal(handle.snapshot().phase, 'terminal'); assert.equal(await handle.stop(), result);
 });
 
+test('fragmented text and private thinking use byte budgets without flooding Core progress', {timeout:30000}, async t => {
+  for (const mode of ['budget-message','budget-thought']) {
+    const events=[];
+    const handle=provider(mode).start(input(t,{onProgress:event=>events.push(event)})); t.after(()=>handle.stop());
+    const result=await handle.completion; cleaned(result);
+    assert.equal(result.status,'completed');
+    assert.equal(result.outputText,mode==='budget-message'?'x'.repeat(4097):'public');
+    assert.ok(events.length < 20, `bounded public progress: ${events.length}`);
+    assert.ok(events.every(event=>!JSON.stringify(event).includes('xxxx')));
+  }
+});
+
+test('thought byte overflow and empty, unknown, repeated-tool floods stay bounded', {timeout:60000}, async t => {
+  for (const mode of ['budget-thought-overflow','budget-empty','budget-unknown','budget-tool']) {
+    const handle=provider(mode).start(input(t)); t.after(()=>handle.stop());
+    const result=await handle.completion; cleaned(result);
+    assert.equal(result.status,'failed',mode);
+    assert.equal(result.reason,'provider_progress_limit',mode);
+  }
+});
+
+test('mixed tool/text still fails closed when consumer progress budget is exhausted', {timeout:15000}, async t => {
+  let count=0, tools=0;
+  const handle=provider('budget-mixed').start(input(t,{onProgress:event=>{
+    if (++count > 4096) throw Error('consumer progress exhausted');
+    if(event.tool) tools++;
+  }})); t.after(()=>handle.stop());
+  const result=await handle.completion; cleaned(result);
+  assert.equal(result.status,'failed'); assert.equal(result.reason,'provider_progress_failed');
+  assert.equal(count,4097); assert.ok(tools>4000);
+});
+
 test('stop is available before bootstrap and during initialize without waiting for model', {timeout: 15000}, async t => {
   for (const immediate of [true, false]) {
     let initialized; const reached = new Promise(resolve => { initialized = resolve; });
