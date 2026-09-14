@@ -39,7 +39,7 @@ const api=async route=>{
 async function snapshot(name) {
   const visible=await page.evaluate(()=>({route:location.pathname+location.hash,taskStatus:document.querySelector('[data-testid="task-detail"] [data-testid="machine-state"]')?.textContent??null,tab:document.querySelector('nav[aria-label="详情子视图"] [aria-current="page"]')?.textContent??null}));
   (evidence.screenshots??=[]).push({name,...visible,capturedAt:new Date().toISOString()});
-  await page.screenshot({path:path.join(output,name+'.png'),fullPage:true});
+  await page.screenshot({path:path.join(output,name+'.png'),fullPage:true,animations:'disabled'});
 }
 async function checkNoOverflow(name) {
   const bounds=await page.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth}));
@@ -95,7 +95,7 @@ try {
   const response=await createdResponse;assert.equal(response.status(),201);const created=await response.json();taskId=created.id;evidence.taskId=taskId;
   await page.getByRole('link',{name:'查看任务详情',exact:true}).click();
   evidence.steps.push('页面填写需求/上传附件/创建任务');persist();
-  let lastStatus='',lastLog=0,approvals=0,answers=0,seenRunning=false;
+  let lastStatus='',lastLog=0,approvals=0,answers=0,seenRunning=false,liveCaptureAttempted=false;
   const stages=new Set(),observations=[];
   while(Date.now()<controllerDeadline) {
     const task=await api('/v1/tasks/'+taskId);stages.add(task.status);
@@ -124,6 +124,19 @@ try {
     }
     const workers=await api('/v1/tasks/'+taskId+'/workers');
     for(const worker of workers.items) if(worker.observation) observations.push({workerId:worker.id,observation:worker.observation});
+    const liveAuthor=workers.items.find(worker=>worker.role==='author'&&worker.status==='running'&&worker.observation);
+    if(liveAuthor&&!liveCaptureAttempted) {
+      liveCaptureAttempted=true;
+      await page.locator('nav[aria-label="详情子视图"] a[href$="/team"]').click();
+      await page.locator(`[data-worker-id="${liveAuthor.id}"]`).getByRole('link',{name:'明细',exact:true}).click();
+      const drawer=page.getByTestId('worker-drawer');await drawer.waitFor();
+      await drawer.getByTestId('worker-observation').waitFor();
+      evidence.liveMemberCapture={workerId:liveAuthor.id,apiStatus:liveAuthor.status,apiActivity:liveAuthor.observation.activity,
+        visibleStatus:await drawer.getByTestId('machine-state').first().textContent(),capturedAt:new Date().toISOString()};
+      await snapshot('live-author');await page.keyboard.press('Escape');await drawer.waitFor({state:'hidden'});
+      await page.locator('nav[aria-label="详情子视图"] a').first().click();
+      await page.waitForFunction(()=>document.querySelector('nav[aria-label="详情子视图"] [aria-current="page"]')?.textContent==='概览');
+    }
     await sleep(1000);
   }
   assert.equal(evidence.task?.status,'completed','任务整体超时');
