@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createReviewPort, parseManagedOutput, renderReviewPrompt} from '../task-application/application.mjs';
-import {receipt} from '../task-application/leader-ports.mjs';
+import {receipt, configuration} from '../task-application/leader-ports.mjs';
 import {parseReviewProposal, renderReviewProposalPrompt, createGenericFilesReviewWireConfig, REVIEW_WIRE_PROFILE} from './review-wire.mjs';
 import {createGenericFilesShortWireConfig} from './short-wire.mjs';
 const hash='sha256:'+'a'.repeat(64), selectionHash='sha256:'+'b'.repeat(64);
@@ -56,4 +56,40 @@ test('new configuration freezes a distinct policy and explicit prompt retention 
   assert.notEqual(old.leader.policyDigest,modern.leader.policyDigest);
   assert.equal(modern.review.policyDigest,createGenericFilesReviewWireConfig({provider}).review.policyDigest);
   assert.deepEqual(modern.observability,{profile:'task-observation/v1',retainPrompts:true});assert.equal(old.observability,undefined);assert.equal(modern.publication,null);
+});
+
+test('独立 managed Provider 仅绑定 Leader/Review，作者默认仍为文件 Provider',async()=>{
+  const provider={id:'files',start(){throw Error('author must not start here');}};
+  let calls=0;
+  const managedProvider={id:'managed',start(){calls++;const started={executionId:'managed-execution',startedAt:new Date().toISOString()};return {
+    started:Promise.resolve(started),stop(){},completion:Promise.resolve({providerId:'managed',status:'completed',stopReason:'end_turn',outputText:JSON.stringify(wire),cleanup:{started,cleaned:true}})};}};
+  const config=createGenericFilesReviewWireConfig({provider,managedProvider});
+  assert.deepEqual([...config.providers.keys()],['files','managed']);
+  assert.equal(config.providers.get('managed'),managedProvider);
+  assert.equal(config.leader.providerId,'managed');assert.equal(config.review.providerId,'managed');
+  assert.equal(configuration(config.leader,'leader').policy.review.providerId,'managed');
+  const bound={...ticket,providerId:'managed'};
+  const result=await config.review.start({ticket:bound,provider:config.providers.get('managed'),prepared:{prompt:'complete review input'}}).completion;
+  assert.equal(receipt(config.review,bound,result).value.verdict,'accept');assert.equal(calls,1);
+  assert.throws(()=>config.review.start({ticket:bound,provider:config.providers.get('files'),prepared:{}}));
+  assert.throws(()=>createGenericFilesReviewWireConfig({provider,managedProvider:{...managedProvider,id:'files'}}));
+  const legacy=createGenericFilesReviewWireConfig({provider});
+  assert.deepEqual([...legacy.providers.keys()],['files']);assert.equal(legacy.leader.providerId,'files');
+});
+
+test('Qwen 新组合让 managed 原生目录排除全部文件工具，旧作者参数原样保留',async()=>{
+  const {QWEN_FILE_ARGS,QWEN_FILE_TOOLS,QWEN_EXCLUDED_TOOLS}=await import('./qwen-file-tools.mjs');
+  const saved=process.env.MARSHAL_AGENT_EXECUTABLE;
+  try {
+    process.env.MARSHAL_AGENT_EXECUTABLE='/unused/qwen';
+    const {default:config,QWEN_MANAGED_ARGS}=await import('./qwen-review-service-config.mjs');
+    assert.deepEqual([...config.providers.keys()],['qwen-acp','qwen-managed-acp']);
+    assert.equal(config.leader.providerId,'qwen-managed-acp');assert.equal(config.review.providerId,'qwen-managed-acp');
+    const deny=QWEN_MANAGED_ARGS[QWEN_MANAGED_ARGS.indexOf('--exclude-tools')+1].split(',');
+    assert.deepEqual(deny,[...QWEN_EXCLUDED_TOOLS,...QWEN_FILE_TOOLS]);
+    assert.equal(QWEN_MANAGED_ARGS[QWEN_MANAGED_ARGS.indexOf('--core-tools')+1],QWEN_FILE_TOOLS.join(','));
+    assert.equal(QWEN_MANAGED_ARGS[QWEN_MANAGED_ARGS.indexOf('--approval-mode')+1],'default');
+    assert.ok(Object.isFrozen(QWEN_MANAGED_ARGS));
+    assert.equal(QWEN_FILE_ARGS[QWEN_FILE_ARGS.indexOf('--exclude-tools')+1],QWEN_EXCLUDED_TOOLS.join(','));
+  } finally {if(saved===undefined)delete process.env.MARSHAL_AGENT_EXECUTABLE;else process.env.MARSHAL_AGENT_EXECUTABLE=saved;}
 });

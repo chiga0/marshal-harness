@@ -38,6 +38,14 @@ for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs','
     const plan=await client.request('task.plan',{path:{taskId:created.id}});
     await client.approveTask(created.id,{expectedRevision:pending.revision,planRevision:plan.revision,planDigest:plan.digest},'approve-'+tasks.length);
     const done=await waitPhase(()=>client.getTask(created.id),'completed',deadline);
+    if(configuration==='review-service.fixture.mjs') {
+      const audit=await client.request('task.audit',{path:{taskId:created.id}});
+      const authors=audit.workers.filter(w=>w.role==='author');
+      const managed=audit.workers.filter(w=>['planner','reviewer'].includes(w.role));
+      assert.ok(authors.length>0);assert.ok(managed.some(w=>w.role==='planner'));assert.ok(managed.some(w=>w.role==='reviewer'));
+      for(const worker of authors) assert.equal(worker.providerId,'controlled');
+      for(const worker of managed) assert.equal(worker.providerId,'controlled-managed');
+    }
     const view=await client.getLeader(created.id);assert.equal(view.review.verdict,'accept');assert.equal(view.publication,null);
     const artifacts=await Promise.all(done.artifactIds.map(artifactId=>client.request('artifact.get',{path:{artifactId}})));
     const downloaded=await client.downloadArtifact(artifacts.find(x=>x.kind==='delivery').id);
