@@ -75,13 +75,15 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
     '--config', path.join(f.target, 'packages/task-leader-report/service-config.mjs')], {cwd: f.root, env: {}, timeout: 10000, encoding: 'utf8'});
   assert.equal(leader.status, 1); assert.equal(leader.stdout, ''); assert.equal(withoutSQLiteImportWarning(leader.stderr), '{"code":"service_start_unavailable"}\n');
   assert.equal(fs.existsSync(path.join(f.root, 'unconfigured-leader')), false);
-  const genericRoot = path.join(f.root, 'unconfigured-generic');
+  for (const configuration of ['service-config.mjs', 'qwen-service-config.mjs']) {
+  const genericRoot = path.join(f.root, 'unconfigured-' + configuration);
   const generic = spawnSync(process.execPath, [path.join(f.target, report.entrypoint), '--root', genericRoot,
-    '--config', path.join(f.target, 'packages/task-generic-files/service-config.mjs')],
+    '--config', path.join(f.target, 'packages/task-generic-files', configuration)],
   {cwd: f.root, env: {}, timeout: 10000, encoding: 'utf8'});
   assert.equal(generic.status, 1); assert.equal(generic.stdout, '');
   assert.equal(withoutSQLiteImportWarning(generic.stderr), '{"code":"service_start_unavailable"}\n');
   assert.equal(fs.existsSync(genericRoot), false);
+  }
   const genericChecker = spawnSync(process.execPath, [path.join(f.target, 'packages/task-generic-files/checker.mjs')],
     {cwd: f.root, env: {}, input: '{}\n', timeout: 10000, encoding: 'utf8'});
   assert.equal(genericChecker.status, 1); assert.equal(genericChecker.stdout, '');
