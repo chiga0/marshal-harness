@@ -7,9 +7,9 @@ import {fileURLToPath} from 'node:url';
 import {TaskClient} from '../task-client/index.mjs';
 import {launchService,waitPhase} from '../task-leader-report/live-consumer.fixture.mjs';
 const here = file => fileURLToPath(new URL(file,import.meta.url));
-test('same real HTTP configuration delivers two different no-upload tasks and DAGs, then normal reopen preserves results', {timeout:90000},async t=>{
+for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs']) test('same real HTTP configuration delivers two different no-upload tasks and DAGs, then normal reopen preserves results: '+configuration, {timeout:90000},async t=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'generic-http-'))), state=path.join(root,'data'), handles=[];
-  const start=async mode=>{const handle=launchService(process.execPath,[here('../task-service/main.mjs'),'--root',state,'--mode',mode,'--port','0','--config',here('./service.fixture.mjs')],{PATH:path.dirname(process.execPath)},root,[]);handles.push(handle);
+  const start=async mode=>{const handle=launchService(process.execPath,[here('../task-service/main.mjs'),'--root',state,'--mode',mode,'--port','0','--config',here('./'+configuration)],{PATH:path.dirname(process.execPath)},root,[]);handles.push(handle);
     const ready=await handle.ready,c=JSON.parse(fs.readFileSync(ready.connectionFile));return {handle,client:new TaskClient({baseURL:c.url,token:c.token})};};
   t.after(async()=>{for(const h of handles)await h.stop();t.diagnostic('受控现场：'+root);});
   let {handle,client}=await start('create');const tasks=[];
@@ -33,6 +33,11 @@ test('same real HTTP configuration delivers two different no-upload tasks and DA
   const awaiting=await waitPhase(()=>client.getTask(cancelTask.id),'awaiting-approval',Date.now()+15000);
   await client.request('task.cancel',{path:{taskId:cancelTask.id},idempotencyKey:'cancel-once',body:{expectedRevision:awaiting.revision}});
   await waitPhase(()=>client.getTask(cancelTask.id),'cancelled',Date.now()+15000);
-  await handle.stop();({handle,client}=await start('open'));
+  await handle.stop();
+  if(configuration==='short-service.fixture.mjs') {
+    const wrong=launchService(process.execPath,[here('../task-service/main.mjs'),'--root',state,'--mode','open','--port','0','--config',here('./service.fixture.mjs')],{PATH:path.dirname(process.execPath)},root,[]);
+    handles.push(wrong);await assert.rejects(wrong.ready);assert.equal((await wrong.stop()).code,1);
+  }
+  ({handle,client}=await start('open'));
   for(const task of tasks){const actual=await client.getTask(task.id);assert.equal(actual.status,'completed');assert.equal(actual.revision,task.revision);}
 });

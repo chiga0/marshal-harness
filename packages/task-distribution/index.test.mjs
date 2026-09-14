@@ -53,7 +53,7 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
   // explicit local settings. They remain packaged and are exercised below,
   // rather than being treated as side-effect-free library imports.
   const entrypoints = new Set(['packages/task-service/main.mjs', 'packages/agent-runtime/guard.mjs', 'packages/agent-runtime/custody-process.mjs',
-    'packages/task-generic-files/checker.mjs', 'packages/task-generic-files/service-config.mjs', 'packages/task-generic-files/qwen-service-config.mjs',
+    'packages/task-generic-files/checker.mjs', 'packages/task-generic-files/service-config.mjs', 'packages/task-generic-files/qwen-service-config.mjs', 'packages/task-generic-files/qwen-short-service-config.mjs',
     'packages/task-regional-window/checker.mjs', 'packages/task-regional-window/service-config.mjs',
     'packages/task-publication-report/runner.mjs', 'packages/task-leader-report/service-config.mjs']);
   const imports = SOURCE_FILES.filter(file => file.endsWith('.mjs') && !entrypoints.has(file));
@@ -75,7 +75,7 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
     '--config', path.join(f.target, 'packages/task-leader-report/service-config.mjs')], {cwd: f.root, env: {}, timeout: 10000, encoding: 'utf8'});
   assert.equal(leader.status, 1); assert.equal(leader.stdout, ''); assert.equal(withoutSQLiteImportWarning(leader.stderr), '{"code":"service_start_unavailable"}\n');
   assert.equal(fs.existsSync(path.join(f.root, 'unconfigured-leader')), false);
-  for (const configuration of ['service-config.mjs', 'qwen-service-config.mjs']) {
+  for (const configuration of ['service-config.mjs', 'qwen-service-config.mjs', 'qwen-short-service-config.mjs']) {
   const genericRoot = path.join(f.root, 'unconfigured-' + configuration);
   const generic = spawnSync(process.execPath, [path.join(f.target, report.entrypoint), '--root', genericRoot,
     '--config', path.join(f.target, 'packages/task-generic-files', configuration)],

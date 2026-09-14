@@ -25,3 +25,9 @@ DataAgent 的 MCP/CLI、SQL 发布及补数另有工具归属和外部效果接�
 通过已有 `--config /absolute/install/packages/task-generic-files/qwen-service-config.mjs` 显式选择，仍需设置 `MARSHAL_AGENT_EXECUTABLE`。不改用户 settings，不复制登录文件，不提供运行生成代码或 ETL 的权限。此配置不覆盖任意原生 hooks/动态工具，不是 OS 沙箱，也不赋予跨代清理资格；未知 scope 仍然阻断。
 
 已有 `extra_scope_unresolved` 记录不能通过更换配置、清空数据库、修改资格位或凭 PID 消失结算。该配置属于新执行的预防措施，不是旧任务恢复接口。完整恢复机制尚缺，不得声称已经修复。
+
+## 显式 Leader 短协议配置
+
+按 ADR0101，可对新空数据根显式选择 `qwen-short-service-config.mjs`；原 `service-config.mjs`、`qwen-service-config.mjs` 和默认入口不切换。该配置保留上述 Qwen 文件工具边界，仍需 `MARSHAL_AGENT_EXECUTABLE`，不配置外部发布。
+
+Leader 模型只返回 `generic-files-leader-proposal/v1` 的 `profile/summary/actions`，受信端口从此次原 ticket 绑定运输身份；动作与证据摘要不纠错，旧协议错误身份不接纳。Core 记录的是绑定后的决定，不是模型逐字输出。产品不保证保存全部原始输出；实机验收需分别保存原始输出与映射结果的私有证据，未保存时不能反推。独立 Review 仍用原协议。新配置 ID 与源码摘要冻结，旧根拒绝配置漂移，不迁移或复活失败任务。
