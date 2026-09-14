@@ -7,8 +7,10 @@ import sys
 import tempfile
 
 
-def prepare(tag, parent):
-    installer = pathlib.Path(__file__).with_name('install-node.sh')
+def prepare(tag, parent, channel='stable'):
+    if channel not in ('stable', 'preview'):
+        raise ValueError('未知分发通道')
+    installer = pathlib.Path(__file__).with_name('install-node-preview.sh' if channel == 'preview' else 'install-node.sh')
     program = installer.read_text().split("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
     pins = {}
     for node in ast.parse(program).body:
@@ -21,8 +23,8 @@ def prepare(tag, parent):
     release = json.loads(subprocess.check_output([
         'gh', 'release', 'view', tag, '--repo', 'chiga0/marshal-harness',
         '--json', 'tagName,isDraft,isPrerelease'], timeout=30))
-    if release != {'tagName': tag, 'isDraft': False, 'isPrerelease': False}:
-        raise ValueError('必须是已经公开的 stable Release')
+    if release != {'tagName': tag, 'isDraft': False, 'isPrerelease': channel == 'preview'}:
+        raise ValueError('Release 必须已公开且与显式通道匹配')
     stage = pathlib.Path(tempfile.mkdtemp(prefix='marshal-oss-', dir=parent))
     base = 'https://github.com/chiga0/marshal-harness/releases/download/' + tag + '/'
     files = [(name, base + name) for name in
@@ -35,13 +37,13 @@ def prepare(tag, parent):
                         '--connect-timeout', '15', '--max-time', '120', '--retry', '2',
                         '--retry-all-errors', '--max-filesize', '16777216',
                         '--output', str(stage / name), url], check=True, timeout=400)
-    (stage / 'install-node.sh').write_bytes(installer.read_bytes())
+    (stage / installer.name).write_bytes(installer.read_bytes())
     return stage
 
 
 if __name__ == '__main__':
     try:
-        stage = prepare(sys.argv[1], sys.argv[2])
+        stage = prepare(sys.argv[1], sys.argv[2], sys.argv[4] if len(sys.argv) == 5 else 'stable')
         # This file is consumed by the workflow, not shell-evaluated.
         pathlib.Path(sys.argv[3]).write_text(str(stage))
     except Exception:

@@ -25,7 +25,7 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def installer_constants(data):
+def installer_constants(data, channel='stable'):
     # 只解析受信安装器内嵌 Python AST，绝不执行安装器或其表达式。
     source = data.decode().split("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
     wanted = {'VERSION', 'SOURCE', 'ZIP', 'ZIP_SHA', 'MANIFEST_SHA', 'HELPER_SHA', 'PUBLIC_KEY'}
@@ -37,16 +37,17 @@ def installer_constants(data):
                     require(target.id not in values, 'duplicate_installer_constant')
                     values[target.id] = ast.literal_eval(node.value)
     require(set(values) == wanted and all(isinstance(v, str) for v in values.values()), 'invalid_installer_constants')
-    require(values['VERSION'] in ('v1.0.1', 'v1.0.2'), 'unsupported_release')
+    require(channel in ('stable', 'preview'), 'invalid_channel')
+    require(values['VERSION'] in (('v1.1.0-rc.1',) if channel == 'preview' else ('v1.0.1', 'v1.0.2')), 'unsupported_release')
     require(re.fullmatch(r'[a-f0-9]{40}', values['SOURCE']), 'invalid_source')
     require(re.fullmatch(r'[a-zA-Z0-9_.-]+\.zip', values['ZIP']), 'invalid_archive_name')
     return values
 
 
-def validate_stage(stage, installer):
+def validate_stage(stage, installer, channel='stable'):
     trusted = installer.read_bytes()
-    constants = installer_constants(trusted)
-    names = [constants['ZIP'], 'SHA256SUMS', 'SHA256SUMS.minisig', 'manifest.json', 'distribution.mjs', 'install-node.sh']
+    constants = installer_constants(trusted, channel)
+    names = [constants['ZIP'], 'SHA256SUMS', 'SHA256SUMS.minisig', 'manifest.json', 'distribution.mjs', installer.name]
     limits = [16 * 1024 * 1024, 65536, 4096, 65536, 65536, 65536]
     assets = {}
     for name, limit in zip(names, limits):
@@ -56,7 +57,7 @@ def validate_stage(stage, installer):
             data = stream.read(limit + 1)
         require(0 < len(data) <= limit, 'invalid_stage_size')
         assets[name] = data
-    require(assets['install-node.sh'] == trusted, 'installer_mismatch')
+    require(assets[installer.name] == trusted, 'installer_mismatch')
     checks = {}
     for line in assets['SHA256SUMS'].decode().splitlines():
         if line.startswith('#') or not line.strip():
@@ -125,14 +126,16 @@ def same_object(bucket, key, data, sdk):
     return True
 
 
-def sync(bucket, prefix, version, assets, sdk):
+def sync(bucket, prefix, version, assets, sdk, channel='stable'):
     # OSS 在曾启用版本控制的 bucket 上可能忽略 forbid-overwrite。
     require(bucket.get_bucket_versioning().status in (None, ''), 'bucket_versioning_must_be_unconfigured')
-    require(version in ('v1.0.1', 'v1.0.2'), 'unsupported_release')
+    require(channel in ('stable', 'preview'), 'invalid_channel')
+    require(version in (('v1.1.0-rc.1',) if channel == 'preview' else ('v1.0.1', 'v1.0.2')), 'unsupported_release')
+    installer_name = 'install-node-preview.sh' if channel == 'preview' else 'install-node.sh'
     keys = {name: prefix + '/' + version + '/' + name for name in assets}
     # 先检查整个集合，再进行任何写入；安装器始终最后发布。
     existing = {name: same_object(bucket, keys[name], data, sdk) for name, data in assets.items()}
-    order = [name for name in assets if name != 'install-node.sh'] + ['install-node.sh']
+    order = [name for name in assets if name != installer_name] + [installer_name]
     for name in order:
         data = assets[name]
         if not existing[name]:
@@ -148,12 +151,13 @@ def sync(bucket, prefix, version, assets, sdk):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stage', type=Path, required=True)
+    parser.add_argument('--channel', choices=('stable', 'preview'), default='stable')
     args = parser.parse_args()
     try:
         config = destination(os.environ)
-        version, assets = validate_stage(args.stage, Path(__file__).with_name('install-node.sh'))
+        version, assets = validate_stage(args.stage, Path(__file__).with_name('install-node-preview.sh' if args.channel == 'preview' else 'install-node.sh'), args.channel)
         import oss2
-        sync(create_bucket(os.environ, config), config[3], version, assets, oss2)
+        sync(create_bucket(os.environ, config), config[3], version, assets, oss2, args.channel)
     except Exception:
         # SDK 错误可能包含签名 URL、请求头或服务端内容，不能回显原始异常。
         print('OSS 镜像失败；未授权覆盖。请检查固定发行资产、OSS 配置、权限和网络。', file=sys.stderr)

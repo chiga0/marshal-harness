@@ -55,6 +55,17 @@ class Bucket:
 
 
 class SyncTests(unittest.TestCase):
+    def test_preview_explicit_channel_only_and_separate_installer(self):
+        assets = dict(self.assets)
+        assets['install-node-preview.sh'] = assets.pop('install-node.sh')
+        with self.assertRaises(syncer.Rejected):
+            syncer.sync(self.bucket, 'marshal/node', 'v1.1.0-rc.1', assets, SDK)
+        self.assertEqual(self.bucket.writes, [])
+        syncer.sync(self.bucket, 'marshal/node', 'v1.1.0-rc.1', assets, SDK, 'preview')
+        self.assertEqual(self.bucket.writes[-1], 'marshal/node/v1.1.0-rc.1/install-node-preview.sh')
+        with self.assertRaises(syncer.Rejected):
+            syncer.sync(self.bucket, 'marshal/node', 'v1.0.2', self.assets, SDK, 'preview')
+
     def setUp(self):
         self.bucket = Bucket()
         self.assets = {name: name.encode() for name in ('a.zip', 'SHA256SUMS', 'SHA256SUMS.minisig', 'manifest.json', 'distribution.mjs', 'install-node.sh')}
@@ -122,6 +133,31 @@ class SyncTests(unittest.TestCase):
 
 
 class ValidationTests(unittest.TestCase):
+    def test_preview_pins_and_no_automatic_init(self):
+        text = Path(__file__).with_name('install-node-preview.sh').read_text()
+        with self.assertRaises(syncer.Rejected):
+            syncer.installer_constants(text.encode())
+        pins = syncer.installer_constants(text.encode(), 'preview')
+        self.assertEqual(pins['VERSION'], 'v1.1.0-rc.1')
+        self.assertEqual(pins['SOURCE'], '67317d7b8d08c59b82d7fffc4ad934666c8e3ca8')
+        namespace = {}
+        exec(text.split("<<'PY'\n", 1)[1].split('try:\n    args', 1)[0], namespace)
+        with patch('subprocess.run') as call, patch('builtins.print'):
+            self.assertFalse(namespace['initialize_local'](Path('/unused'), {'files': []}, '/test/node'))
+            call.assert_not_called()
+
+    def test_preview_verifier_is_identical_to_stable(self):
+        import ast
+        def operations(name):
+            program = Path(__file__).with_name(name).read_text().split("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+            tree = ast.parse(program)
+            # Only immutable release pins and opt-out of automatic init differ.
+            tree.body = [node for node in tree.body
+                         if not isinstance(node, ast.Assign)
+                         and not (isinstance(node, ast.FunctionDef) and node.name == 'initialize_local')]
+            return ast.dump(tree, include_attributes=False)
+        self.assertEqual(operations('install-node.sh'), operations('install-node-preview.sh'))
+
     def test_sdk_v4_session_disables_redirects_and_environment_proxy(self):
         import oss2
         import requests
