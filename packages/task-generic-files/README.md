@@ -17,3 +17,11 @@
 - 受控 HTTP 测试覆盖同配置两种意图、动态节点/依赖、无输入、独立 Review、校验、下载和正常重开；不等于真实模型验证。
 
 DataAgent 的 MCP/CLI、SQL 发布及补数另有工具归属和外部效果接缝；当前 ACP 的 `acp_tool_scope_unproven` 不会被本包移除。默认只交付成果，不授权外部写。验收语义如需改变，须先明确对应 ADR，再接入默认运行时；本次布局准备不改变既有验收或终态。
+
+## Qwen 文件交付专项配置（显式选择）
+
+`qwen-service-config.mjs` 是 Qwen 专用配置，不替换通用 ACP 工厂，不适用于其他品牌。它使用原生 `--approval-mode default`、文件工具允许列表与 shell/网络/MCP 等工具拒绝列表；拒绝列表旨在避免原生自动批准绕过 Marshal 的权限回调。仅设置 `default` 并不足以覆盖用户原生 allow 规则。CLI 不支持这些参数时应报错，不能静默退回无限制启动。
+
+通过已有 `--config /absolute/install/packages/task-generic-files/qwen-service-config.mjs` 显式选择，仍需设置 `MARSHAL_AGENT_EXECUTABLE`。不改用户 settings，不复制登录文件，不提供运行生成代码或 ETL 的权限。此配置不覆盖任意原生 hooks/动态工具，不是 OS 沙箱，也不赋予跨代清理资格；未知 scope 仍然阻断。
+
+已有 `extra_scope_unresolved` 记录不能通过更换配置、清空数据库、修改资格位或凭 PID 消失结算。该配置属于新执行的预防措施，不是旧任务恢复接口。完整恢复机制尚缺，不得声称已经修复。

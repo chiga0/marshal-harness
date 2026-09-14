@@ -53,7 +53,7 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
   // explicit local settings. They remain packaged and are exercised below,
   // rather than being treated as side-effect-free library imports.
   const entrypoints = new Set(['packages/task-service/main.mjs', 'packages/agent-runtime/guard.mjs', 'packages/agent-runtime/custody-process.mjs',
-    'packages/task-generic-files/checker.mjs', 'packages/task-generic-files/service-config.mjs',
+    'packages/task-generic-files/checker.mjs', 'packages/task-generic-files/service-config.mjs', 'packages/task-generic-files/qwen-service-config.mjs',
     'packages/task-regional-window/checker.mjs', 'packages/task-regional-window/service-config.mjs',
     'packages/task-publication-report/runner.mjs', 'packages/task-leader-report/service-config.mjs']);
   const imports = SOURCE_FILES.filter(file => file.endsWith('.mjs') && !entrypoints.has(file));
