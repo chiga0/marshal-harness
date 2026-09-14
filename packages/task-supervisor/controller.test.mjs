@@ -475,6 +475,7 @@ test('explicit controller diagnostics distinguish prepare, provider and collecti
     if(stage!=='prepare'){await until(()=>f.provider.records.length===1);f.provider.records[0].finish(stage==='provider'?{status:'failed',stopReason:'refusal'}:{});}
     await until(async()=>{await controller.tick();return (await f.get(task.id)).status==='failed';});
     const workers=await f.app.dispatch({operation:'task.workers',taskId:task.id},context);
+    if(stage==='prepare') assert.equal(workers.items[0].startedAt,null);
     const diagnostic=workers.items[0].observation.diagnostic;
     assert.deepEqual(diagnostic,{stage:stage==='prepare'?'preparing':stage==='collect'?'collecting':'provider',code:stage==='prepare'?'preparation_failed':stage==='collect'?'collection_failed':'provider_failed',source:'controller'});
     assert.doesNotMatch(JSON.stringify(workers),/PRIVATE|secret\/file/);
@@ -482,4 +483,27 @@ test('explicit controller diagnostics distinguish prepare, provider and collecti
     await controller.close(); f.reopen();
     assert.deepEqual((await f.app.dispatch({operation:'task.workers',taskId:task.id},context)).items[0].observation.diagnostic,diagnostic);
   });
+});
+
+
+test('deadline during pending preparation keeps preparing diagnostic and no start time',async t=>{
+  const f=fixture(t,{observability:true}),task=await f.create();let called=false,clockCalls=0;
+  // Isolate the Coordinator deadline from Application task expiry: its first
+  // clock read schedules an earlier execution timeout; original Core rules stay unchanged.
+  const controller=f.makeController({clock:()=>Date.now()+(clockCalls++===0?29900:0),prepare:()=>{called=true;return new Promise(()=>{});}});
+  await controller.start();await until(()=>called);await until(async()=>{await controller.tick();return (await f.get(task.id)).status==='failed';});
+  const worker=(await f.app.dispatch({operation:'task.workers',taskId:task.id},context)).items[0];
+  assert.equal(worker.startedAt,null);assert.equal(f.provider.records.length,0);
+  assert.deepEqual(worker.observation.diagnostic,{stage:'preparing',code:'deadline_exceeded',source:'controller'});
+});
+
+test('rejected original started promise diagnoses starting without inventing start time',async t=>{
+  const f=fixture(t,{observability:true}),task=await f.create();
+  const provider={id:'fixture',start(){const result={providerId:'fixture',status:'failed',stopReason:null,cleanup:{started:null,cleaned:true,scope:'none-start',reason:'fixture-bootstrap-failed'}};
+    return {started:Promise.reject(new Error('PRIVATE start failure')),completion:Promise.resolve(result),stop:async()=>result};}};
+  const controller=f.makeController({providers:new Map([[provider.id,provider]])});
+  await controller.start();await until(async()=>{await controller.tick();return (await f.get(task.id)).status==='failed';});
+  const worker=(await f.app.dispatch({operation:'task.workers',taskId:task.id},context)).items[0];
+  assert.equal(worker.startedAt,null);assert.deepEqual(worker.observation.diagnostic,{stage:'starting',code:'provider_start_failed',source:'controller'});
+  assert.doesNotMatch(JSON.stringify(worker),/PRIVATE/);
 });

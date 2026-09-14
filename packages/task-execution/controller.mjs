@@ -153,8 +153,9 @@ export class TaskExecutionCoordinator {
   }
   #diagnose(entry, stage, error) {
     if (!this.#observability || entry.stopping || entry.finalized || entry.sequence >= 4096) return;
+    if (stage === 'deadline') stage = entry.stage;
     const phase = stage === 'collecting' ? 'collecting' : ['preparing','prepared'].includes(stage) ? 'preparing' :
-      stage === 'provider-cleanup' || stage === 'provider-stop' ? 'cleanup' : stage === 'starting' ? 'starting' : 'provider';
+      stage === 'provider-cleanup' || stage === 'provider-stop' ? 'cleanup' : ['starting','started'].includes(stage) ? 'starting' : 'provider';
     const code = error?.code === 'supervisor_deadline' ? 'deadline_exceeded' :
       {preparing:'preparation_failed',starting:'provider_start_failed',collecting:'collection_failed',provider:'provider_failed',cleanup:'cleanup_unconfirmed'}[phase];
     try {
