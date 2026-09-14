@@ -118,6 +118,30 @@ for (const wrong of [false, true]) test('execution-failure repair copies origina
   assert.equal((await f.decision(ticket, actions)).status, wrong ? 'failed' : 'completed');
   assert.equal(!!f.read(tx => f.app.get(tx, task.id)).activeRepair, !wrong);
 });
+for (const retryable of [false, undefined, true]) test('execution failure repair references require explicit retryability without erasing original evidence: ' + retryable, () => {
+  const failure = {kind: 'execution-failure', digest: hash('failure'), nodeId: 'author-design', cleanup: {cleaned: true}};
+  if (retryable !== undefined) failure.retryable = retryable;
+  const input = {callId: 'call-original', inputDigest: hash('input'), snapshot: {evidence: [failure]}};
+  const {references, examples, prompt} = rendered({input: {leader: input}});
+  assert.equal(references.repairBases.length, retryable === true ? 1 : 0);
+  assert.equal(typeof examples.repair, retryable === true ? 'object' : 'string');
+  assert.deepEqual(JSON.parse(prompt.split('\n完整冻结输入：')[1]).snapshot.evidence, [failure]);
+  assert.ok(prompt.includes('retryable=false或缺失时不得repair'));
+  assert.ok(prompt.includes('cleanup.cleaned=true也不能把不可重试失败变成可修'));
+});
+test('repair guidance waits for a real active sibling through unchanged Core', async t => {
+  const {f, task, east} = await authors(t);
+  const started = {executionId: 'failed-original', startedAt: new Date().toISOString()}; f.app.execution.started(east, started);
+  f.app.execution.finish(east, {status: 'failed', reason: 'agent_max_tokens', stopReason: 'max_tokens', cleanup: {started, cleaned: true, scope: 'controlled-fixture'}});
+  const ticket = f.take('leader'), {examples, prompt} = rendered(ticket);
+  assert.equal(examples.repair.actions[0].basis.kind, 'execution-failure');
+  assert.ok(prompt.includes('只要兄弟执行仍活跃就不得repair'));
+  assert.ok(prompt.includes('没有真实待答、待批准或在途工作时不得假装wait'));
+  const action = {...examples.conclude.actions[0], outcome: 'wait', summary: '等待仍在途的兄弟执行完成'};
+  assert.equal((await f.decision(ticket, [action])).status, 'completed');
+  assert.equal((await f.get(task.id)).status, 'running');
+  assert.equal(!!f.read(tx => f.app.get(tx, task.id)).activeRepair, false);
+});
 test('correct rendered reference does not authorize a stale frozen readSet after another branch completes', async t => {
   const {f, task, east, west} = await authors(t);
   const started = {executionId: 'failed-original', startedAt: new Date().toISOString()}; f.app.execution.started(east, started);

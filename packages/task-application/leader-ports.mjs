@@ -289,7 +289,8 @@ export function renderLeaderPrompt(input) {
     planNodeIds: (plan?.nodes ?? []).map(item => item.id), verifierNodeIds: (plan?.nodes ?? []).filter(item => item.role === 'verifier').map(item => item.id),
     repairBases: evidence.flatMap(item => {
       const kind = item.kind === 'review' ? 'review' : item.kind === 'verification' ? 'content-rejection' : item.kind;
-      return ['review', 'content-rejection', 'execution-failure'].includes(kind) && sha(item.digest) ?
+      return ['review', 'content-rejection', 'execution-failure'].includes(kind) && sha(item.digest) &&
+        (kind !== 'execution-failure' || item.retryable === true) ?
         [{source: 'snapshot.evidence[].digest', kind, digest: item.digest, nodeId: item.nodeId ?? null}] : [];
     }),
     deliveries: (input.materials ?? []).filter(item => item.kind === 'delivery' && item.status === 'ready').map(item => ({artifactId: item.id, digest: item.digest})),
@@ -329,6 +330,8 @@ export function renderLeaderPrompt(input) {
     '所有work.selectionDigest直接复制snapshot.readSet中kind=selected的digest，不计算selection的hash，不用某个Worker resultDigest代替；' +
     'review的nodeIds须包含全部选果节点，verify只包含原verifier节点，execute只可请求原计划pending节点。依赖已就绪的原批准调度不需重复决定。' +
     'repair只从snapshot.evidence复制对应kind/digest，必须确为rework意见、独立内容拒收或可修普通执行失败，选受影响原节点且不越policy；有摘要不等于获准修正。' +
+    'execution-failure必须显式retryable=true才可作为repair依据；retryable=false或缺失时不得repair，cleanup.cleaned=true也不能把不可重试失败变成可修。完整冻结输入仍保留这些失败供判断，不是隐藏或忽略失败。' +
+    '即使有可修依据，只要兄弟执行仍活跃就不得repair；确有在途工作时使用conclude且outcome=wait，不能因为一条失败就抢先修正。没有真实待答、待批准或在途工作时不得假装wait；无法合法继续时使用conclude且outcome=failed说明原因。' +
     'deliver.artifactId只复制materials中ready delivery的id，acceptanceDigest/reviewDigest分别复制readSet的acceptance/review，不能用制品内容digest替代验收决定。' +
     'conclude.basisDigests只取当前review/acceptance以及snapshot.history各项digest，不取readSet.history聚合digest，也不把publication/postverify聚合digest混入；' +
     'succeeded仍须Core确认完整交付、所需授权及后验，阶段通过不等于完成；wait仅在确有原待答/待批准/在途工作时使用。' +
