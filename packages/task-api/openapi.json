@@ -2513,6 +2513,165 @@
         },
         "description": "有来源的独立意见引用，不由 HTTP 认定其资格，也不代替客观验收。"
       },
+      "LeaderProtocolFailure": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "stage": {
+            "const": "wire-json"
+          },
+          "code": {
+            "const": "invalid_json"
+          },
+          "outputDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "outputBytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65536
+          },
+          "workerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "callId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "ticketDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "cleanupDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "stage",
+          "code",
+          "outputDigest",
+          "outputBytes",
+          "workerId",
+          "callId",
+          "ticketDigest",
+          "cleanupDigest",
+          "at"
+        ],
+        "examples": [
+          {
+            "stage": "wire-json",
+            "code": "invalid_json",
+            "outputDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "outputBytes": 48,
+            "workerId": "worker-original",
+            "callId": "call-original",
+            "ticketDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "cleanupDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "at": "2026-09-14T00:00:00Z"
+          }
+        ]
+      },
+      "LeaderProtocolCorrection": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "const": "leader-json-correction/v1"
+          },
+          "used": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "max": {
+            "const": 1
+          },
+          "reason": {
+            "enum": [
+              "wire-json",
+              null
+            ]
+          },
+          "original": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LeaderProtocolFailure"
+              }
+            ]
+          },
+          "successorWorkerId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "successorCallId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          }
+        },
+        "required": [
+          "profile",
+          "used",
+          "max",
+          "reason",
+          "original",
+          "successorWorkerId",
+          "successorCallId"
+        ],
+        "examples": [
+          {
+            "profile": "leader-json-correction/v1",
+            "used": 0,
+            "max": 1,
+            "reason": null,
+            "original": null,
+            "successorWorkerId": null,
+            "successorCallId": null
+          },
+          {
+            "profile": "leader-json-correction/v1",
+            "used": 1,
+            "max": 1,
+            "reason": "wire-json",
+            "original": {
+              "stage": "wire-json",
+              "code": "invalid_json",
+              "outputDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "outputBytes": 48,
+              "workerId": "worker-original",
+              "callId": "call-original",
+              "ticketDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "cleanupDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "at": "2026-09-14T00:00:00Z"
+            },
+            "successorWorkerId": "worker-successor",
+            "successorCallId": "call-successor"
+          }
+        ]
+      },
       "LeaderView": {
         "type": "object",
         "additionalProperties": false,
@@ -2531,6 +2690,9 @@
           "summaryArtifactId"
         ],
         "properties": {
+          "protocolCorrection": {
+            "$ref": "#/components/schemas/LeaderProtocolCorrection"
+          },
           "taskId": {
             "$ref": "#/components/schemas/Id"
           },

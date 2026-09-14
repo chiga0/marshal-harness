@@ -1,3 +1,4 @@
+import {leaderJsonCorrectionPolicy, leaderJsonFailure} from './leader-protocol-correction.mjs';
 import {LEADER_FORMAT, encode, digest} from '../task-store/store.mjs';
 import {clone, nextRevision, publicTask, terminal, reject, isText} from './model.mjs';
 import {affectedNodes} from './graph.mjs';
@@ -19,7 +20,7 @@ export function leaderConfiguration(leader, review, publication = null, verifica
     config.policy.publication.targetId === publication.id && config.policy.publication.policyDigest === publication.policyDigest &&
     ['start', 'lookup', 'assertDisjoint'].every(name => typeof publication[name] === 'function') &&
     typeof publication.postverify?.start === 'function' && hasPublicationExpected(verification), 'invalid_leader_config');
-  return {leader: config, review: independent, publication: publication ? {policy: config.policy.publication,
+  return {...(leaderJsonCorrectionPolicy(leader)?{protocolCorrection:leaderJsonCorrectionPolicy(leader)}:{}),leader: config, review: independent, publication: publication ? {policy: config.policy.publication,
     configuration: clone(publication.configuration), configurationDigest: publication.configurationDigest} : null};
 }
 
@@ -39,12 +40,13 @@ export class TaskLeader {
     if (!this.port) return;
     check(record.limits.maxWorkers >= 3 && record.limits.maxAttempts >= (this.publication ? 10 : 8) &&
       this.config.leader.policy.maxCalls >= 5, 'unsupported_task');
-    record.leader = {profile: LEADER_PROFILE, policyDigest: this.port.policyDigest, stage: 'intake', calls: 0, repairRounds: 0,
+    record.leader = {...(this.config.protocolCorrection?{protocolCorrection:{identity:clone(this.config.protocolCorrection),used:0,original:null,successorObligationId:null,successorWorkerId:null,successorCallId:null}}:{}),profile: LEADER_PROFILE, policyDigest: this.port.policyDigest, stage: 'intake', calls: 0, repairRounds: 0,
       activeCallId: null, obligationId: null, cursor: 0, requestIds: [], history: [], lastDecision: null, review: null,
       publication: null, postverify: null, delivery: null, summaryArtifactId: null};
   }
   configured(task) {
-    check(this.port && task.leader?.profile === LEADER_PROFILE && task.leader.policyDigest === this.port.policyDigest, 'unsupported_task');
+    check(this.port && task.leader?.profile === LEADER_PROFILE && task.leader.policyDigest === this.port.policyDigest &&
+      hash(task.leader.protocolCorrection?.identity??null)===hash(this.config.protocolCorrection??null), 'unsupported_task');
   }
   recoveryAllowed(task, record, count = 0, lookupStatus = null) {
     if (!task.leader || ended.has(task.task.status) || task.cancelIntent || task.failureCode || task.workerCancelled || record?.stopIntent ||
@@ -430,7 +432,7 @@ export class TaskLeader {
     check(evidence.length <= 64);
     return {profile: LEADER_PROFILE, taskId: task.task.id, callId, obligationId: obligation.id,
       generation: this.app.owner.generation.toString(), cursor: task.leader.cursor,
-      snapshot: {task: {input: clone(task.input), inputArtifacts: clone(task.inputArtifacts), deadlineAt: task.task.deadlineAt,
+      snapshot: {...(task.leader.protocolCorrection?{protocolCorrection:clone(task.leader.protocolCorrection)}:{}),task: {input: clone(task.input), inputArtifacts: clone(task.inputArtifacts), deadlineAt: task.task.deadlineAt,
         remainingAttempts: (task.plan?.budget ?? task.limits).maxAttempts - task.attempts, limits: clone(task.plan?.budget ?? task.limits), usage: null},
       plan: clone(task.plan), policy: clone(this.config.leader.policy), selection: task.plan ? this.selection(tx, task) : [],
       interactions: {replies: replies.answers, requests: requests.map(({replyRef, ...value}) => value),
@@ -533,6 +535,7 @@ export class TaskLeader {
         value.status = 'claimed'; value.readSetDigest = hash(original.input.snapshot.readSet); value.workerId = ticket.workerId;
         tx.putProjection('interaction', value.id, row.revision, source, encode(value));
         task.leader.activeCallId = expanded.callId; task.leader.activeWorkerId = ticket.workerId; task.leader.calls++;
+        if(task.leader.protocolCorrection?.successorObligationId===value.id){task.leader.protocolCorrection.successorWorkerId=ticket.workerId;task.leader.protocolCorrection.successorCallId=expanded.callId;}
       } else {
         const row = tx.projection('attempt', original.action.id), action = decode(row);
         action.status = 'running'; action.workerId = ticket.workerId;
@@ -675,6 +678,7 @@ export class TaskLeader {
     if (['publication', 'postverify'].includes(ticket.executionType)) return this.finishEffect(ticket, result);
     const port = ticket.executionType === 'leader' ? this.port : this.review;
     const data = result?.receipt ? receipt(port, ticket, result) : null;
+    const protocolFailure = data && ticket.executionType==='leader' && this.config.protocolCorrection ? leaderJsonFailure(port,ticket,result) : null;
     // Byte durability precedes the final transaction; cancelled, stale and
     // unknown attempts cannot create ready refs. A rollback leaves only bytes.
     const eligible = this.app.transaction(false, tx => {
@@ -696,7 +700,7 @@ export class TaskLeader {
       const readSet = ticket.input.leader?.snapshot.readSet ?? ticket.input.review?.snapshot.readSet;
       const current = readSet && hash(readSet) === hash(this.semantic(tx, task));
       let accepted = clean && !cancelled && data?.value && staged.length === 1 && current;
-      let stale = ticket.executionType === 'leader' && clean && !cancelled && !current, successorSources = [];
+      let stale = ticket.executionType === 'leader' && clean && !cancelled && !current, successorSources = [], correctProtocol = false;
       const at = new Date(this.app.now()).toISOString();
       let commitActions = () => {}, rejected = data?.reason ?? 'leader_result_rejected';
       const artifact = accepted ? {id: this.app.newId('artifact'), taskId: task.task.id, name: staged[0].name, kind: 'evidence', status: 'ready',
@@ -713,6 +717,12 @@ export class TaskLeader {
           try {commitActions = this.actions(tx, proposed, ticket, data.value, artifact); Object.assign(task, proposed);}
           catch (error) {accepted = false; rejected = error?.code ?? rejected;}
         }
+        if(protocolFailure){
+          record.protocolFailure={...protocolFailure,workerId:ticket.workerId,callId:ticket.input.leader.callId,ticketDigest:hash(ticket),cleanupDigest:hash(cleanup),at};
+          correctProtocol=clean&&!cancelled&&!stale&&current&&record.worker.status==='running'&&task.leader.protocolCorrection.used===0&&
+            !ticket.input.leader.snapshot.protocolCorrection?.used&&this.recoveryAllowed(task,record);
+          if(correctProtocol){task.leader.protocolCorrection.used=1;task.leader.protocolCorrection.original=clone(record.protocolFailure);}
+        }
         task.leader.activeCallId = null; task.leader.activeWorkerId = null; task.leader.obligationId = null;
       } else if (accepted) {
         check(ticket.input.review.selectionDigest === this.selectionDigest(tx, task), 'invalid_leader_receipt');
@@ -724,16 +734,16 @@ export class TaskLeader {
       record.cleanup = clone(cleanup); record.worker.status = !clean ? 'unknown' : cancelled ? 'cancelled' : accepted ? 'completed' : 'failed';
       record.worker.finishedAt = at; record.worker.phase = 'terminal';
       if (!clean) {task.task.status = 'intervention'; task.task.code = 'cleanup_unconfirmed';}
-      else if (!cancelled && !accepted && !stale) {task.task.status = 'cancelling'; task.failureCode = rejected;}
+      else if (!cancelled && !accepted && !stale && !correctProtocol) {task.task.status = 'cancelling'; task.failureCode = rejected;}
       if (accepted && ticket.executionType === 'leader') {
         const digest = hash(data.value); task.leader.lastDecision = {digest, callId: data.value.callId, evidenceId: artifact.id};
         task.leader.history.push({digest, callId: data.value.callId, evidenceId: artifact.id}); check(task.leader.history.length <= 32);
       }
-      const follow = stale || accepted && (ticket.executionType === 'review' || task.leader.stage === 'finalizing');
-      if (follow) this.prepareObligation(task);
+      const follow = correctProtocol || stale || accepted && (ticket.executionType === 'review' || task.leader.stage === 'finalizing');
+      if (follow) {this.prepareObligation(task);if(correctProtocol)task.leader.protocolCorrection.successorObligationId=task.leader.obligationId;}
       task.task.revision = nextRevision(task.task.revision);
       const source = this.app.save(tx, task, accepted ? ticket.executionType === 'leader' ? 'leader.decision.accepted' : 'leader.action.settled' :
-        'leader.decision.rejected', {workerId: ticket.workerId, status: record.worker.status, reason: accepted ? null : rejected});
+        'leader.decision.rejected', {workerId: ticket.workerId, status: record.worker.status, reason: accepted ? null : rejected,...(record.protocolFailure?{protocolFailure:record.protocolFailure,protocolCorrectionScheduled:correctProtocol}:{})});
       if (ticket.executionType === 'leader') {
         const obligationRow = tx.projection('interaction', ticket.input.leader.obligationId), obligation = decode(obligationRow);
         obligation.status = accepted ? 'consumed' : 'closed'; tx.putProjection('interaction', obligation.id, obligationRow.revision, source, encode(obligation));
@@ -752,7 +762,7 @@ export class TaskLeader {
         const capacity = this.app.execution.capacity(tx); capacity.value.active = capacity.value.active.filter(value => value.workerId !== ticket.workerId);
         this.app.execution.putCapacity(tx, capacity.row, capacity.value);
       }
-      if (follow) this.obligation(tx, task, source, stale ? 'semantic-successor' : ticket.executionType === 'review' ? 'review-finished' : 'delivery-ready', [], successorSources);
+      if (follow) this.obligation(tx, task, source, correctProtocol ? 'protocol-format-correction' : stale ? 'semantic-successor' : ticket.executionType === 'review' ? 'review-finished' : 'delivery-ready', [], successorSources);
       return clone(record.worker);
     });
   }
@@ -865,7 +875,7 @@ export class TaskLeader {
     // Preserve the exact native outcome internally; the public operation-like
     // projection uses the already frozen LeaderView status vocabulary.
     const effect = value => value ? {...clone(value), status: ['created', 'matched', 'passed'].includes(value.status) ? 'succeeded' : value.status} : null;
-    return {taskId: task.task.id, taskRevision: task.task.revision, profile: LEADER_PROFILE, stage: task.leader.stage,
+    return {...(task.leader.protocolCorrection?{protocolCorrection:{profile:'leader-json-correction/v1',used:task.leader.protocolCorrection.used,max:1,reason:task.leader.protocolCorrection.used?'wire-json':null,original:clone(task.leader.protocolCorrection.original),successorWorkerId:task.leader.protocolCorrection.successorWorkerId,successorCallId:task.leader.protocolCorrection.successorCallId}}:{}),taskId: task.task.id, taskRevision: task.task.revision, profile: LEADER_PROFILE, stage: task.leader.stage,
       policyDigest: task.leader.policyDigest, activeWorkerId: task.leader.activeWorkerId ?? null,
       pendingRequest: pending ? Object.fromEntries(['id', 'kind', 'requestDigest', 'subject', 'nodeIds', 'prompt', 'options', 'authorization', 'deadlineAt', 'status', 'replyDigest'].map(key => [key, pending[key]])) : null,
       lastDecision: clone(task.leader.lastDecision), review: clone(task.leader.review), publication: effect(task.leader.publication),

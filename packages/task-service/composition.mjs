@@ -1,3 +1,4 @@
+import {startLeaderWithJsonCorrection,prepareLeaderWithJsonCorrection} from '../task-application/leader-protocol-correction.mjs';
 import {observationConfiguration} from '../task-application/observation.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -380,14 +381,14 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     const managed = leader ? {
       prepare: async (ticket, wait) => {
         const prepared = await business.prepareManaged(ticket, wait);
-        if (ticket.executionType === 'leader') return leader.prepare(ticket, prepared, wait);
+        if (ticket.executionType === 'leader') return prepareLeaderWithJsonCorrection(leader,ticket,prepared,wait);
         if (ticket.executionType === 'review') return review.prepare(ticket, prepared, wait);
         return prepared;
       },
       validate: ticket => business.validateManaged(ticket),
       provider: ticket => application.leader.effects[ticket.executionType] ?? available.get(ticket.providerId),
-      start: options => (application.leader.effects[options.ticket.executionType] ?? (options.ticket.executionType === 'leader' ? leader : review))
-        .start({...options, ...(observationConfig ? {prepared: {...options.prepared, observability: true}} : {}), provider: available.get(options.ticket.providerId), onDiagnostic: managedDiagnostic}),
+      start: options => startLeaderWithJsonCorrection(application.leader.effects[options.ticket.executionType] ?? (options.ticket.executionType === 'leader' ? leader : review),
+        {...options, ...(observationConfig ? {prepared: {...options.prepared, observability: true}} : {}), provider: available.get(options.ticket.providerId), onDiagnostic: managedDiagnostic}),
     } : null;
     const Coordinator = leader ? TaskExecutionCoordinator : TaskSupervisor;
     supervisor = new Coordinator({...supervisorOptions, execution: application.execution, providers: available, managed, observability: observationConfig !== null,

@@ -32,6 +32,7 @@ export const SOURCE_FILES = Object.freeze([
   'packages/task-application/graph.mjs',
   'packages/task-application/input-audit.mjs',
   'packages/task-application/leader-ports.mjs',
+  'packages/task-application/leader-protocol-correction.mjs',
   'packages/task-application/leader.mjs',
   'packages/task-application/model.mjs',
   'packages/task-application/observation.mjs',
