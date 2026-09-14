@@ -1,5 +1,7 @@
 # 正式 Node 服务组合根
 
+当前使用入口：[标准API](../../docs/standard-api.md)、[逐接口支持与版本](../../docs/api-support.md)、[扩展契约](../../docs/extension-contracts.md)。本页保留各内部服务profile的实现细节；完整Leader与声明恢复/发行已由后继证据验收，当前状态统一见[Roadmap](../../docs/roadmap-status.md#业务交付当前表)。v1.0.2稳定包仍需可信配置；v1.1.0-rc.2的公开launcher无配置时使用默认通用文件团队，底层startTaskService仍接收受信显式装配。
+
 后继源码运行环境按 [ADR0097](../../docs/adr/0097-node-capability-based-runtime-admission.md) 接受 Node22及以上，并检查必需SQLite能力；CI验证具体版本，不把大版本准入当作所有未来版本的稳定性证明。下文固定24.15.0的实证及已签名v1.0.0包保留原范围，兼容源码需要新发行包，不能只修改旧安装器来启用。
 
 ## v7 受管 Leader：可运行检查点，尚非完整出口
@@ -14,7 +16,7 @@
 node --test --test-concurrency=1 packages/task-service/leader.test.mjs
 ```
 
-当前冻结只交付可独立复跑的集成检查点：v7 的在途 SIGKILL 恢复、混合未决义务、独立意见触发 repair、运行中 Worker 问答的交叉故障矩阵尚未验收；不得将旧格式通过或这里的正常 cold open 替代这些门禁，也不得据此宣称 B2-L 完成、真实模型或 production。首次 HTTP 夹具错误使用了非合同 Context/Requirements，客户端在发送前拒绝、零 Worker；已改用原 Schema 的 `context.text` 与 `requirements.deliverables/acceptance`，未放宽接口。
+本节是早期可独立复跑的集成检查点：此处normal cold open夹具本身不证明在途SIGKILL、混合未决义务、repair与问答交叉故障。后继声明支持面的恢复与真实模型验收已经记录在Roadmap，不再把当时缺项列为当前B2-L待办；任意新配置仍须按其能力独立验证。首次 HTTP 夹具错误使用了非合同 Context/Requirements，客户端在发送前拒绝、零 Worker；已改用原 Schema 的 `context.text` 与 `requirements.deliverables/acceptance`，未放宽接口。
 
 可选 `publication` 使用原本地报告端口；受信 `createVerificationPort({..., publicationExpected({ticket})})` 从冻结原输入/回答生成完整后验期望，禁止从 Leader 的 pass 字段生成。原始 `created/matched/passed` 事实保留，公开 LeaderView 映射为 `succeeded`。本检查点的发布端口由配置拥有者在 `shutdown().shutdownClean === true` 后 `close()`；冷开必须重新构造同目标身份/配置的端口，不复用失效 FD。
 
@@ -37,7 +39,7 @@ node packages/task-service/main.mjs \
 
 省略 `--mode` 等同 `--mode auto`：根不存在才 `create`，已经存在则只 `open`。旧 `--root ... --mode create|open` 保持可用；`create` 永不覆盖已有根，`open` 永不创建缺失目录。已存在空根、部分初始化、损坏/未知格式、符号链接、非所属或宽权限目录均拒绝，不 chmod、不重新初始化、不从旧 Go/实验根导入。并发 owner 仍由原 SQLite 独占锁拒绝，不删锁或抢占。自动模式不根据失败原因再次切换模式，不重试。
 
-端口默认 `0`，仅监听 `127.0.0.1`，可显式 `--port`。启动输出仍只有 profile、监听地址和受保护连接文件位置，token 由原 composition 每次自动生成且不回显。`--config` 始终必需：不猜 Provider、模型、登录或默认成功业务，缺少有效配置仍返回原 `service_start_unavailable`。薄启动入口只负责路径/模式，不拥有 Task 真值或恢复权限。
+端口默认 `0`，仅监听 `127.0.0.1`，可显式 `--port`。启动输出仍只有 profile、监听地址和受保护连接文件位置，token 由原 composition 每次自动生成且不回显。底层服务入口使用显式可信`--config`，缺少有效配置返回原`service_start_unavailable`；RC.2公开`marshal serve` launcher可选择随包通用配置和已发现/指定Agent，并不绕过底层配置验证。旧已记录配置不静默替换，升级选择见ADR0100及安装说明。薄启动入口只负责路径/模式，不拥有 Task 真值或恢复权限。
 
 配置模块是受信任部署代码，不是 HTTP 插件或用户提示词。它应默认导出：
 
@@ -186,7 +188,7 @@ export default {
 - `shutdownClean` 只说明本控制器当前持有执行已清理并写回，不证明旧 generation 的未知执行已恢复。缺 cleanup 时为 false，持久 intervention 保留。
 - **关闭在途服务不是暂停/无损续跑**：原 Supervisor 会停止当前 Worker，Application 按真实事实失败/取消收口。已终态 Task 和原幂等回执可冷重开；崩溃后的未知执行保留 intervention，只有上述 v2 原证据满足时才做 cleanup-only 收口，不按裸 PID 杀进程、不重派、不复用目录。
 
-四项运行观察通过明确 composition dispatch 处理；其余操作原样交给注入了 depot/verification/可选 clarification 的 `TaskApplication`。已接线的输入上传、manifest 与 bytes 下载使用真实 SQLite/depot；有限问答已接线，未安装/不匹配模板的原 Task 返回零问题，回答未知问题为 not_found。尚未接线的单 Worker 取消仍返回 unsupported，不冒充 24 个接口全部可用。finalization、验收绑定、最终交付制品与 Task completed 只由同一 Application/Store 实现，不放在此入口；没有 verification 的直接回调配置也不自动获得业务完成能力。
+四项运行观察通过明确 composition dispatch 处理；其余操作原样交给注入了 depot/verification/可选 clarification 的 `TaskApplication`。已接线的输入上传、manifest 与 bytes 下载使用真实 SQLite/depot；有限问答已接线，未安装/不匹配模板的原 Task 返回零问题，回答未知问题为 not_found。单Worker取消在v6/v7已接线，旧格式仍返回unsupported；接口与所需配置逐项见当前27操作支持矩阵。finalization、验收绑定、最终交付制品与 Task completed 只由同一 Application/Store 实现，不放在此入口；没有 verification 的直接回调配置也不自动获得业务完成能力。
 
 ## 验证
 

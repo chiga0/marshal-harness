@@ -1,5 +1,7 @@
 # Node 团队 HTTP 历史实验契约
 
+当前接入请直接阅读[标准 API 与完整交付契约](standard-api.md)、[当前逐接口支持矩阵](api-support.md)与[跨边界扩展契约](extension-contracts.md)。本文九操作内容只用于历史追溯，路径/状态不得混入当前27操作服务。
+
 > 本文仅保存 ADR0087 固定样例的历史实验契约，不用于当前服务接入。当前 Node Task-first 的唯一机器合同为 [`packages/task-api/openapi.json`](../packages/task-api/openapi.json)，使用语义见[当前接口说明](../packages/task-api/README.md)与[当前客户端](../packages/task-client/README.md)；操作与 Schema 数量以机器合同为准，实现覆盖与稳定状态见[当前检查点](node-task-service-status-2026-09-08.md)。正式消费者不得混用下述9操作实验协议，当前候选也不因本文而获得 API-STABLE 声明。
 
 ## 范围和真值
