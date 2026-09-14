@@ -36,7 +36,7 @@
 
 交付 HTML 为 5722 字节，SHA-256 `32ad66f98034ac33f17d4e6a901aef40a19fc9756dbca679322df2cb04f4c8ea`。独立 Chromium 实际完成新增、编辑保存/取消、删除、完成/清除及刷新持久化等 9 项检查，无页面错误、无外网请求；原始文件字节未修改。375px 无整页横向溢出。保留 P2：完成切换使用不可键盘聚焦的 span、窄屏添加按钮文字换行；不把业务功能通过写成全部无障碍或视觉质量通过。
 
-正常停止再 open：revision 41 不变、Attempts 8→8、8 个 Worker ID 与交付摘要不变，下载原制品一致；只证明终态正常重开，不证明活跃崩溃恢复。重新打开的真实 UI 概览、成果、团队均显示完成，无人工干预误报。当前封装路径仍为 `results/author.md`，Web 主下载仍为 JSON 容器；浏览器测试使用消费者提取的原始 HTML 字节，不声称已提供一键 HTML 下载。
+正常停止再 open：revision 41 不变、Attempts 8→8、8 个 Worker ID 与交付摘要不变，下载原制品一致；只证明终态正常重开，不证明活跃崩溃恢复。重新打开的真实 UI 概览、成果、团队均显示完成，无人工干预误报。该轮封装路径仍为 `results/author.md`，Web 主下载为 JSON 容器；此轮 HTML 功能测试使用消费者提取的原始字节。后继 Web 逐文件导出见下节，不混淆两轮候选。
 
 本机私有证据根：`/Users/gawain/.marshal-qwen-html-integrated-Ow7cUd`（result.json、reopen-result.json、delivery.json、delivered.html）；仓库忽略目录 `.marshal/qwen-raw-audit-f1b274b8/final-independent-audit.json` 与 `.marshal/todo-html-browser-20260914/`（functional-result.json、marshal-ui-result.json、截图）。不提交原始运行数据；远端读者不能假定这些本机路径可访问。原验收脚本的 functionalHtmlAcceptance=not_run 保留，后续浏览器证据独立记录，避免把后验冒充运行时自动核验。
 
@@ -45,5 +45,15 @@
 | 功能与可靠性 | 本次范围 PASS；完整发行待验 | 既有定向测试、显式短 wire 正负例及 HTTP 两意图/取消/重开通过；原需求真实交付、正常重开和 HTML CRUD 通过。默认 init 未切换、旧异常未恢复、活跃崩溃与同包发行未覆盖 |
 | 视觉与交互 | PARTIAL | [原异常页面验收](2026-09-14-intervention-browser.md)及完成 Task 概览/成果/团队实测通过；HTML 桌面/375px已验，保留键盘完成控件 P2；原生缩放及完整主题矩阵待验 |
 | 产品可用性 | NOT_RUN | 用户报告的误导已转为回归用例；尚无修复后无指导真实用户结果，不以子 Agent 代码审查替代 |
+
+### 后继逐文件下载与 Node 22 兼容回归
+
+`dd2235f3` 增加成果包逐文件导出，`0de81b3f` 补父制品身份变化/不可用/迟到响应失效测试。原包下载保留；仅解释已验证的通用文件包，外层制品与逐文件均校验字节/摘要，拒绝非法路径/保存名，不预览或执行 HTML。默认保留 `author.md`，用户可显式另存为 `todo.html`；只改变本地文件名，不改内容或原证据。独立 reviewer 对作者候选 `2de0c242`（含 `dc935685`）验证 89 项通过，无 P0/P1。
+
+真实已完成 Task 使用更新后的 UI，键盘展开包、核对原始路径、拒绝 `../unsafe`、显式另存 `todo.html` 后成功下载；5722 字节及上述原始 SHA-256 完全一致。375px 文档宽度为 375，无页错误/外网请求，未启动模型或修改 Task。静态 JS 为 `index-CRUEcRa-.js`，543332 字节，SHA-256 `9eb0b10f8fbb87e4e628d64c58f2ca0b4fee48453b22d22fa935ca52e8925d58`。本机证据位于 `.marshal/ui-delivery-files-browser-20260914/`；这是实际下载增量验收，不代替真人无指导测试或原生缩放。
+
+前轮完整 CI 的 Node 24 两 OS 通过，Node 22 两 OS 各一项失败：配置漂移负例遗漏本仓库固定 SQLite defensive 能力警告。`53237433` 仅精确归一该固定警告，保留未知输出、错误正文、退出码/标准输出及资源边界断言；维护者独立使用本机 Node 22.22.1 验证 HTTP 3/3 通过。后继完整 CI 另行判断，不能用该定向结果宣称全量通过。
+
+维护者独立执行当前集成 UI 全量测试：537/537 与 browser-fault-guards 4/4 通过；类型检查及构建通过。这仅覆盖 UI 自动化范围，不代表全后端 CI、所有浏览器或真人可用性通过。
 
 独立审查覆盖本批集成 diff，无新增 P0/P1；不代表完整 UI 或完整产品已通过验收。保留旧 Task 的异常证据，未清库、未发布新版本、未把候选源代码测试冒充同包发行测试。
