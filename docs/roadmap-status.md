@@ -4,7 +4,7 @@
 
 ## 当前唯一状态与关键路径（2026-09-14）
 
-**执行透明度与从零业务验收进行中**：后继 `a0854099` 已修收尾JSON有界纠错覆盖、真实协议诊断和检查范围透传，工程及受控浏览器/同包消费已验证；真实业务复验仍在执行。C01用户创造数据回退误收仍开放：新默认Reviewer正反组件1/2通过，另一个显式模型组件0/2通过，不能以换模型或提示强化宣称解决。尚未发布本批，不改变既有发行完成事实，也不关闭 UI-1。范围和最终证据统一维护在[验收记录](ui-1/experience-e2e-2026-09-14.md)与[审计报告](audit-report.md)。
+**执行透明度与从零业务验收进行中**：后继 `a0854099` 已修收尾JSON有界纠错覆盖、真实协议诊断和检查范围透传，工程及受控浏览器/同包消费已验证；真实S01/S02流程完成但独立业务失败，分别为批准范围不一致和虚构服务事实；已定位作者指导漏传，修复与复验进行中。C01用户创造数据回退误收仍开放：新默认Reviewer正反组件1/2通过，另一个显式模型组件0/2通过，不能以换模型或提示强化宣称解决。尚未发布本批，不改变既有发行完成事实，也不关闭 UI-1。范围和最终证据统一维护在[验收记录](ui-1/experience-e2e-2026-09-14.md)与[审计报告](audit-report.md)。
 
 **通用接入修正已合入、RC.2 已在 GitHub 预发布**：按 [ADR0100](adr/0100-generic-team-default-and-agent-entry.md) 完成实际 Qwen 可执行入口、默认通用文件团队、显式 launcher 升级及 generic 配置选择；[PR #307](https://github.com/chiga0/marshal-harness/pull/307) 产品候选为 `2fde5038`，[PR #308](https://github.com/chiga0/marshal-harness/pull/308) 发行 pins 已合入。真实 Qwen 修后152.7秒、9 Attempts、零 retry/rework完成双作者→独立检查→文件交付→conclude；首轮重复 deliver 失败与安全取消保留。最终 CI 原包接纳及 RC.1 私有 HOME 升级、serve/status/UI 就绪已通过。RC.2 于2026-09-14T05:59:08Z完成验签与 GitHub public prerelease、非 latest；OSS 镜像、公开安装及其 RC.1 升级/serve/status/UI 启动核验已通过（无 Task、模型调用0）；准确身份与范围见 [RC.2 记录](v1.1.0-rc.2-release-dossier-2026-09-14.md)，不表示 RC.1 已含修复。真实 ETL 的发布/补数/生产结果核验仍未接通；2026-09-14 DataAgent 初次查询遇 `500130 / SystemError`、未提交 Prompt，后续用户恢复实例后只读工具说明查询已完成。发布/补数据去重机制仍未确认，工作空间记忆与目标不一致；未执行 ETL，不将说明调研记为实际业务验收。
 
