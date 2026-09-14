@@ -44,4 +44,6 @@ test('profile boundary follows generic role schema while preserving complete Lea
   assert.ok(at>prompt.indexOf('integrator'));
   assert.deepEqual(JSON.parse(prompt.split('\n完整冻结输入：').at(-1)),input);
   assert.match(prompt.slice(at),/不调用任何工具/);
+  assert.match(prompt.slice(at),/必须依据本轮可用references发出work.kind=verify/);
+  assert.match(prompt.slice(at),/不能用conclude.wait空等Core自动调度/);
 });

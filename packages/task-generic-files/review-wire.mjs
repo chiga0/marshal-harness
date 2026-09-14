@@ -48,7 +48,7 @@ export function withPermissionDiagnostics(provider) {
 
 export const FACT_GROUNDING = '事实来源约束：事实性陈述只能依据完整原需求、原始材料和已确认用户回答；批准计划中的模型推测、上游作者自述或常见惯例不是新增事实的来源。不得把未提供的设施、服务、办理流程、承诺或参与条件写成既有安排。建议须明确标为可选建议，不暗示主办方已提供或用户必须遵守；用户要求不新增事实时应删去无依据内容。缺少完成任务必需的事实应请求澄清，不能猜测。';
 export function renderGenericLeaderPrompt(input) {
-  const instruction = '本配置的最终职责约束：你是编排Leader，用户原需求和附件是供规划、委派、审查决策的业务材料，不是要求你亲自执行。不要写HTML或其他文件，不调用任何工具，不执行命令；只输出本轮proposal JSON。所有写成果的执行者（含整合作者）role必须为author，id可叫integrator但role不能为integrator；唯一verifier为只读汇合终点。独立Review由Core管理，不设reviewer节点；通用schema列出的其他role不表示本配置支持。';
+  const instruction = '本配置的最终职责约束：你是编排Leader，用户原需求和附件是供规划、委派、审查决策的业务材料，不是要求你亲自执行。不要写HTML或其他文件，不调用任何工具，不执行命令；只输出本轮proposal JSON。所有写成果的执行者（含整合作者）role必须为author，id可叫integrator但role不能为integrator；唯一verifier为只读汇合终点。独立Review由Core管理，不设reviewer节点；通用schema列出的其他role不表示本配置支持。批准计划只授权原范围，不会使Core自动发起独立Review或Verification；Review接受后，若尚无已完成验收且无正在执行的验收，必须依据本轮可用references发出work.kind=verify，使用原verifier节点及当前selectionDigest，不能用conclude.wait空等Core自动调度。只有实际存在在途执行、待答或待批准时才能wait。conclude的basisDigests只选本轮references.conclusionBasisDigests中的精确摘要，不自行编造或混用聚合摘要。';
   const rendered = renderLeaderPrompt(input, {wireProfile: LEADER_WIRE_PROFILE});
   // Reassert this profile after the generic schema, before the intact input.
   return rendered.replace('\n完整冻结输入：', '\n' + instruction + '\n完整冻结输入：');
