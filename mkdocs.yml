@@ -1,38 +1,10 @@
-site_name: Marshal Harness
-site_description: 面向 Agent 软件工程的长寿命确定性 Control Plane / Durable deterministic control plane for agentic software engineering
+site_name: Marshal
+site_description: 可自托管的 Agent Team 服务：从需求、独立验收到受控交付
 site_url: https://chiga0.github.io/marshal-harness/
 repo_url: https://github.com/chiga0/marshal-harness
-edit_uri: edit/main/docs/
-docs_dir: docs
-exclude_docs: |
-  adr/*.md
-  en/*.md
-  en/adr/*.md
-  research/*.md
-  reviews/*.md
-  archive.md
-  architecture.md
-  artifact-and-publishing.md
-  audit-report.md
-  production-agent-team-architecture-audit.md
-  compatibility-matrix.md
-  development.md
-  environment-baseline.md
-  failure-and-recovery.md
-  implementation-plan.md
-  lead-agent-surfaces.md
-  milestone-*.md
-  operator-runbook.md
-  reference.md
-  roadmap-status.md
-  runtime-architecture.md
-  security-model.md
-  task-contract.md
-  task-lifecycle.md
-  verification-and-review.md
-  vision-and-scope.md
-  worker-adapters.md
-  worker-adapter-spike.md
+edit_uri: ''
+docs_dir: .marshal/docs-source
+site_dir: .marshal/docs-site
 theme:
   name: material
   language: zh
@@ -54,17 +26,7 @@ theme:
     - content.code.copy
 plugins:
   - search:
-      lang:
-        - en
-        - zh
-extra:
-  alternate:
-    - name: 中文
-      link: https://chiga0.github.io/marshal-harness/
-      lang: zh
-    - name: English
-      link: https://chiga0.github.io/marshal-harness/en/
-      lang: en
+      lang: [en, zh]
 markdown_extensions:
   - toc:
       permalink: true
@@ -75,15 +37,27 @@ markdown_extensions:
           format: !!python/name:pymdownx.superfences.fence_code_format
   - admonition
 nav:
-  - 开始:
+  - 产品:
       - 首页: index.md
-      - 快速开始（Node 主线）: getting-started.md
-      - 下载部署（Node 一键安装）: node-install.md
-  - 历史资料（Go 时代，已退出产品运行依赖）:
-      - 当前可用能力（历史摘要）: current-status.md
-      - Marshal 是什么: concepts.md
-      - 工作原理: how-it-works.md
-      - 安装、升级与回滚: install-and-upgrade.md
-      - 日常使用: usage.md
-      - 在 Codex 中使用: marshal-skill.md
-      - 安全与隐私: security.md
+      - 愿景与适用范围: vision-and-scope.md
+  - 使用:
+      - 快速开始: getting-started.md
+      - 下载与安装: node-install.md
+      - 版本与接口支持: api-support.md
+  - 架构与设计:
+      - 目标架构与取舍: agent-team-service-architecture.md
+      - 任务生命周期: task-lifecycle.md
+      - Leader 与独立验收: node-leader-execution-design.md
+      - 安全与信任边界: security-model.md
+  - 标准 API 与扩展:
+      - 契约总览: standard-api.md
+      - HTTP 操作与 Schema: api/http-reference.md
+      - Agent、环境与业务扩展: extension-contracts.md
+      - Leader 机器契约: node-leader-execution-contract.md
+  - 路线与进展:
+      - 实施 Milestone: agent-team-service-milestones.md
+      - 实际进展: roadmap-status.md
+      - 设计决策与历史: design-contract-map.md
+  - 文档维护:
+      - 维护与发布: documentation-guide.md
+      - 构建来源: build-info.md

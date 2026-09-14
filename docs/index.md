@@ -1,46 +1,35 @@
-# Marshal Harness
+# Marshal
 
-**让 Agent 可以长期、可靠地完成软件工程任务。**
+**让 Agent Team 持续、可靠地交付真实业务成果。**
 
-Marshal 是一个可自托管的任务控制系统。它持续接收新的开发任务，把复杂需求拆成有限、可检查的执行步骤，安排不同 Agent 和执行环境完成工作，并保留恢复、验证与审计所需的信息。
+Marshal 是本机优先、可自托管的 Agent Team 服务。你给出需求、上下文和验收期望，确认必要的方案；系统组织 Agent 工作、独立检查成果，在授权范围内交付，并保留可追溯的决定和结果。
 
-[![CI](https://github.com/chiga0/marshal-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/chiga0/marshal-harness/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/chiga0/marshal-harness/blob/main/LICENSE)
+[开始第一个任务](getting-started.md) · [了解产品目标](vision-and-scope.md) · [阅读架构](agent-team-service-architecture.md) · [接入 API](standard-api.md)
 
-> 当前版本已经可以在本地完成 Coding Agent 的执行、独立验证、审查和 Draft PR 发布。常驻云端服务、远程 Sandbox 和跨任务 Goal 编排正在建设中。详见[当前可用能力](current-status.md)。
+## 从执行走到交付
 
-## 为什么需要 Marshal
+一次 Agent 调用结束，只说明执行停止。Marshal 将需求、计划、执行、独立审查、验收、交付及必要后验连成同一个 Task。失败、取消和未知外部结果也有明确记录，不依赖聊天中的一句“完成”。
 
-直接运行 Coding Agent，通常很难稳定回答这些问题：
+Leader 理解业务目标并提出有限行动，Core 执行授权与预算约束，执行面操作所属工作负载，存储面保存权威事实。一个 Worker 足够时直接完成，有明确协作收益时才组织并行团队。
 
-- Agent 修改的是不是正确的代码和版本？
-- 它声称运行过的测试是否真的通过？
-- 任务中断后应该从哪里恢复？
-- 哪个 Agent 可以执行代码，哪个组件可以发布变更？
-- 几天后还能否知道当时为什么接受或拒绝了结果？
+## 是否适合你
 
-Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自己证明自己。
-
-## 你能得到什么
-
-- **持续运行**：Runtime 可以长期在线，任务本身保持短小、有界，失败后可以恢复或重新执行。
-- **结果可信**：实现完成后由独立步骤重新检查代码、测试和交付物。
-- **权限隔离**：执行代码的 Agent 默认拿不到发布凭据；发布需要单独授权。
-- **环境可替换**：本地进程、容器、云端 Sandbox 都可以作为执行环境，不把系统绑定到单一供应商。
-- **过程可追溯**：成功、失败和中断都会留下结果与原因，便于复盘和审计。
-- **适合复杂任务**：长期目标由多个有限任务逐步推进，而不是依赖一个永不退出的 Agent 会话。
-
-## 从这里开始
-
-| 你想了解什么 | 推荐阅读 |
+| 你的需求 | Marshal 的作用 |
 | --- | --- |
-| Marshal 适不适合我 | [Marshal 是什么](concepts.md) |
-| 今天已经能做什么 | [当前可用能力](current-status.md) |
-| 马上在本地试用 | [快速开始](getting-started.md) |
-| 日常执行和排错 | [日常使用](usage.md) |
-| 系统大体怎样工作 | [工作原理](how-it-works.md) |
-| 安全边界和数据处理 | [安全与隐私](security.md) |
+| 希望通过浏览器、API 或 Agent 客户端委派任务 | 提供统一 Task 入口和可观察的交付过程 |
+| 工作有明确输入、成果与验收方式 | 将要求对应到执行和独立证据 |
+| 协作过程可能中断或返工 | 保留决定、成果和失败；在已证明安全的范围内恢复 |
+| 希望更换 Agent 或接入业务系统 | 通过扩展契约适配，不让客户端绑定执行品牌 |
 
-## 当前边界
+支持范围取决于版本和已配置能力，见[版本支持](api-support.md)。文件生成不等于生产操作；例如 SQL 文本交付不能代替发布、补数或真实结果核验。
 
-Marshal 不会让模型本身变得更聪明，也不是用于运行恶意代码的安全沙箱。当前版本仍以本地单用户使用为主；尚未交付的能力会明确标注，不会当作现成功能宣传。
+Marshal 不保证任意业务判断正确，不承诺团队必然比单 Agent 更快，也不是组织管理或 Skill 市场。可信单用户环境中的职责分离不等于宿主机或凭据强隔离；具体限制见[安全模型](security-model.md)。
+
+## 文档如何阅读
+
+- **产品与架构**解释最终设计、工作原理和取舍，不记录施工进度。
+- **标准 API 与扩展**定义客户端及组件间协作的语义，HTTP 机器定义可直接下载。
+- **使用与版本支持**说明某个版本如何安装、运行以及有哪些限制。
+- **路线与进展**分别维护实施出口和实际完成证据；设计存在不等于版本已经实现。
+
+[Milestone](agent-team-service-milestones.md) · [实际进展](roadmap-status.md) · [设计决策地图](design-contract-map.md)
