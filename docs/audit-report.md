@@ -8,6 +8,8 @@
 
 DataAgent 只读能力调研于本轮遇实例启动 `500130`，`retryable=false`、`next_action=null`；支持定位码 `707b3a36a2defecb`，未提交 Prompt。该外部阻塞不停止本地通用修复，也不以重发请求制造进展。
 
+后续用户恢复实例后，CLI 只读能力查询已 `completed`：云端 Agent 根据已安装 Skill 返回开发、发布、补数据和结果查询入口。此为工具说明调研，不是实际操作验收。发布/补数据/SQL 的服务端重复提交去重未确认；同名 `ensure` 可能更新既有资源，不能用于“不覆盖同名资源”的预检替代；补数据 DAG 创建与生产完成必须分开。云端记忆工作空间与用户目标不一致，后续须显式核对，不采用默认记忆。尚未执行业务 SQL、发布或补数据。
+
 ## 2026-09-11：UI 外层仍存活、内部服务已失败（OPEN）
 
 真实 UI 验收服务在完成团队交付后的只读检查中返回 `503 application_unavailable`。主侧核对原所属 PID 69841 仍存活且没有子进程，但其 TCP 监听仅剩 UI 外层 63819；浏览器仍可加载 `index-CpLIqAu5.js`。不以静态页可达或 PID 存活宣称服务正常。保留现场后，对该自有 PID 发送 SIGTERM，原执行会话返回 `{"state":"closed","clean":true,"code":"service_supervisor_failed"}`，退出码 1；未修改数据根、未重启或重复业务发布。
