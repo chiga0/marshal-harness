@@ -8,6 +8,8 @@
 
 ## 2026-09-14：执行透明度与从零业务验收（OPEN，统一候选验收中）
 
+2026-09-15 追加：`S01-5bb31cbd-2` 的自然 Review→业务 repair→Review accept→配置检查→交付链已发生，但最后 Leader 的 summary 引号未转义，原严格 JSON 拒绝，Task **FAIL**。原公开输出非空，最新诊断清空片段及 HTTP 历史裁剪不能解释成模型未输出。按 ADR0104 补有界、语言无关的漏转义引号分类，仍不修补 JSON、不接受动作；同时从原 Port 固定 parse 诊断准确显示 protocol 阶段，消除笼统 provider_failed 误导。真实样本及混合硬错误、原失败/一次预算/迟到/关闭配置均须独立验证；新候选尚需实机复验，不修改该历史失败结论。
+
 本批按 [ADR0102](adr/0102-generic-review-wire-and-new-install-default.md) 补新安装 Review 封套和明确默认接入，按 [ADR0103](adr/0103-execution-observability.md) 补显式输入留存、Provider 活动/模型/用量及原根冻结策略。观察只解释执行，不能作为独立业务通过证据；原 never-permitted 证明不放宽，留存输入与 startProtocol 的不支持组合在构造/claim 前拒绝。工作台、阶段、成员与成果按整体到详细呈现，保留原机器身份和审计路径。目标与冻结案例见[从零验收](ui-1/experience-e2e-2026-09-14.md)。
 
 候选 `08bfe11b` 的真实 Qwen S01 已从全新安装、浏览器创建/批准到下载完成，原 Review 与字节验收通过；独立业务正文审查发现无输入依据的签到设施与材料发放承诺，**业务验收失败**。保留原需求、批准 scope、输出、Review accept 与成本，不能把端到端流程 PASS 等同业务 PASS。后续修复通用事实来源/建议区分与 Review 约束后，用同一冻结意图重新验收。真实 Provider 报告模型 `Kimi-K3(openai)`，Token 未报告，不能按零计。旧截图部分早于页面轮询/路由收敛，已标证据缺口并修正测试同步，不以截图文件名证明画面状态。

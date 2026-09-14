@@ -18,13 +18,24 @@ export const leaderJsonCorrectionPolicy = port => registrations.get(port) ?? nul
 function syntaxFailure(raw) {
   if (typeof raw !== 'string' || !raw.isWellFormed() || (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufeff]/.test(raw)) || Buffer.byteLength(raw)>65536) return false;
   const text=raw.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g,''); if (!text.startsWith('{')) return false;
-  const scopes=[];let at=0,closed=false;
+  const scopes=[];let at=0,closed=false,valueString=false,quoteGap=false;
   while(at<text.length){
     const char=text[at];
     if(/[ \t\r\n]/.test(char)){at++;continue;}
     // Extra closing punctuation may itself be the syntax defect. Any new
     // value/token after a closed root is an envelope violation, never stripped.
     if(closed && char!=='}' && char!==']')return false;
+    // A missing escape can leave a bounded word between two complete JSON
+    // string tokens. Recognize the lexical defect without repairing either
+    // string. The whole remainder is still scanned for hard violations.
+    if(valueString && char!=='"') {
+      const gap=text.slice(at).match(/^[\p{L}\p{M}][\p{L}\p{M} ]{0,127}(?=")/u)?.[0];
+      if(gap) {
+        if(/(?:^| )(?:NaN|Infinity)(?: |$)/i.test(gap))return false;
+        at+=gap.length;valueString=false;quoteGap=true;continue;
+      }
+    }
+    if(char!=='"')valueString=false;
     if(char==='{'||char==='['){scopes.push({kind:char,keys:new Set()});if(scopes.length>32)return false;at++;continue;}
     if(char==='}'||char===']'){const scope=scopes.pop();if(scopes.length===0||scope?.kind!==(char==='}'?'{':'['))closed=true;at++;continue;}
     if(char==='"'){
@@ -34,6 +45,11 @@ function syntaxFailure(raw) {
       let value;try{value=JSON.parse(text.slice(begin,at));}catch{return false;}
       if(!value.isWellFormed())return false;
       const rest=text.slice(at).replace(/^[ \t\r\n]+/,'');
+      if(quoteGap&&rest.startsWith(':'))return false;
+      let previous=begin-1;while(previous>=0&&/[ \t\r\n]/.test(text[previous]))previous--;
+      valueString=!rest.startsWith(':')&&(quoteGap||text[previous]===':'||
+        scopes.at(-1)?.kind==='['&&['[',','].includes(text[previous]));
+      quoteGap=false;
       if(rest.startsWith(':')){const scope=scopes.at(-1);if(!scope||scope.kind!=='{'||scope.keys.has(value))return false;scope.keys.add(value);}
       continue;
     }

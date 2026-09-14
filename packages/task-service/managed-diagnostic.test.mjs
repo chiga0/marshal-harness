@@ -47,7 +47,7 @@ test('parse rejection reaches the original CLI stderr only as a bounded base64 c
     '补充说明 '.repeat(300) + 'SECRET_TAIL_MARKER';
   const child = spawn(process.execPath, [baseline ? path.join(baseline, 'packages/task-service/main.mjs') : here('./main.mjs'), '--root', path.join(root, 'data'), '--mode', 'create', '--port', '0',
     '--config', here('./managed-diagnostic.fixture.mjs')], {cwd: root, env: {PATH: path.dirname(process.execPath), MARSHAL_LEADER_RECOVERY_FIXTURE: '1',
-      MARSHAL_DIAGNOSTIC_PARSE_OUTPUT: payload,
+      MARSHAL_DIAGNOSTIC_PARSE_OUTPUT: payload, MARSHAL_DIAGNOSTIC_OBSERVATION: '1',
       ...(baseline ? {MARSHAL_DIAGNOSTIC_BASE_CONFIG: path.join(baseline, 'packages/task-service/leader-recovery.fixture.mjs')} : {})}, stdio: ['ignore', 'pipe', 'pipe']});
   let output = '', errors = '', closed = false;
   const evidence = {diagnostics: []}, consume = diagnosticCollector(evidence.diagnostics);
@@ -61,6 +61,8 @@ test('parse rejection reaches the original CLI stderr only as a bounded base64 c
   const task = await client.createTask({intent: '仅验证原解析拒绝诊断', context: {text: '{"east":10,"west":20}'},
     requirements: {deliverables: ['原两报告'], acceptance: ['原流水准确']}}, 'diagnostic-parse-task');
   await until(async () => (await client.getTask(task.id)).status === 'failed');
+  const audit = await client.request('task.audit',{path:{taskId:task.id}});
+  assert.deepEqual({...audit.workers[0].observation.diagnostic},{stage:'protocol',code:'invalid_json',source:'controller'});
   child.kill('SIGTERM'); assert.deepEqual(await exit, {code: 0, signal: null});
   const lines = errors.split('\n').filter(line => line.startsWith('{')).map(JSON.parse);
   const failures = lines.filter(item => item.code === 'managed_provider_failure');

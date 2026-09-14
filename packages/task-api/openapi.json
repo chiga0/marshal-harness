@@ -4432,6 +4432,7 @@
               "preparing",
               "starting",
               "provider",
+              "protocol",
               "permission",
               "collecting",
               "cleanup"
@@ -4442,6 +4443,10 @@
               "preparation_failed",
               "provider_start_failed",
               "provider_failed",
+              "invalid_json",
+              "invalid_leader_result",
+              "invalid_leader_decision",
+              "invalid_review_report",
               "collection_failed",
             "task_files_missing_output",
             "task_files_input_changed",

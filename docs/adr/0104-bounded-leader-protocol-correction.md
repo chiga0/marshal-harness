@@ -79,6 +79,14 @@ HTTP `LeaderView.protocolCorrection` 为可选闭合字段：profile、used（0/
 
 ## 必须独立验证的退出用例
 
+### 2026-09-15：漏转义引号的有界词法覆盖与诚实诊断
+
+真实 `S01-5bb31cbd-2` 最后一次 Leader 的公开输出摘要为 `sha256:9d33a259b024bfebecd828de7048e0e92ce0d67680b3892935dd01bce2753688`。它在 summary 内直接写入未转义的标题双引号，原严格解析在字符 137 拒绝；并非空输出或 Core 行动拒绝。旧保守分类器拒绝字符串外的中文词，所以 used 保持 0，Task 仍失败。
+
+本次在原显式配置内扩展明确词法形态：两个完整、各自合法的 JSON 字符串 token 之间，允许最多 128 个 Unicode 字母、组合标记与普通空格作为漏转义引号的语法候选，不按语言特判；前一 token 必须为值，后一 token 不得是键。`NaN`、`Infinity`、数字、其他标点、超限或不明确形态仍拒绝。全文继续扫描重复键（含转义键）、深度、非有限数字、非法编码/转义与尾随数据；仍以原解析拒绝和原生语法异常为必要条件。不拼接字符串、不补引号、不读取或执行看似正确的动作；这不宣称任意 JSON 错误均可纠错。持久格式、一次预算与全部恢复/当前性门禁不变，分类源码更新进入原冻结身份。
+
+观察层另接原 Port 已有的固定 `stage=parse` 诊断：Controller 只接收本次原受管回调、匹配 Task/Worker/Provider/执行类型且 `status=completed` 的允许码，在原 failed receipt 结算时显示 `ExecutionDiagnostic.stage=protocol`，code 为 `invalid_json`、`invalid_leader_result`、`invalid_leader_decision` 或 `invalid_review_report`，source 仍为 `controller`。它不赋予纠错资格，也不改变失败 Outcome；普通 Provider progress 不能伪造 controller 来源，停止/终态/迟到回调被忽略。旧关闭观察配置保持字段缺省。完整公开输出片段仍只记录一次，最终诊断不会把旧正文重抄为新输出；详情历史按既有边界读取，投影裁剪不表示模型没有输出。
+
 - JSON 括号错误 → 原失败 Outcome 留存 → 恰一个新 Worker → 合法提案 → 原计划批准流程；原 Attempt 和 call各增加一次，无隐式批准。
 - 第二次 JSON 错误 → 终态失败；无第三次模型请求。关闭/旧配置第一次错误仍原样失败。
 - 合法 JSON 的错误 shape、错误摘要、未授权 action、业务验收失败、发布拒绝均不触发格式纠错。

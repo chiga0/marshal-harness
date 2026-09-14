@@ -239,6 +239,10 @@ test('diagnostic HTTP reading accepts explicit fixed facts and rejects private f
   const worker={...example('Worker'),observation:{...frame,history:[frame],historyTruncated:false}};
   const {client}=await loopback(t,async()=>worker);
   assert.deepEqual({...((await client.request('worker.get',{path:{workerId:worker.id}})).observation.diagnostic)},diagnostic);
+  for(const code of ['invalid_json','invalid_leader_result','invalid_leader_decision','invalid_review_report']) {
+    worker.observation.diagnostic={stage:'protocol',code,source:'controller'};
+    assert.deepEqual({...((await client.request('worker.get',{path:{workerId:worker.id}})).observation.diagnostic)},worker.observation.diagnostic);
+  }
   for(const bad of [{...diagnostic,code:'PRIVATE'},{...diagnostic,details:'PRIVATE'},{...diagnostic,source:'agent-guessed'}]){
     const invalid=new TaskClient({baseURL:'http://127.0.0.1:39999',token,fetch:async()=>new Response(JSON.stringify({...worker,observation:{...worker.observation,diagnostic:bad}}),{status:200,headers:{'Content-Type':'application/json'}})});
     await assert.rejects(invalid.request('worker.get',{path:{workerId:worker.id}}),{code:'client_invalid_response'});

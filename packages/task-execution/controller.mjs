@@ -155,10 +155,11 @@ export class TaskExecutionCoordinator {
   #diagnose(entry, stage, error) {
     if (!this.#observability || entry.stopping || entry.finalized || entry.sequence >= 4096) return;
     if (stage === 'deadline') stage = entry.stage;
-    const phase = stage === 'collecting' ? 'collecting' : ['preparing','prepared'].includes(stage) ? 'preparing' :
+    const protocol = stage === 'provider' && !error ? entry.protocolDiagnostic : null;
+    const phase = protocol ? 'protocol' : stage === 'collecting' ? 'collecting' : ['preparing','prepared'].includes(stage) ? 'preparing' :
       stage === 'provider-cleanup' || stage === 'provider-stop' ? 'cleanup' : ['starting','started'].includes(stage) ? 'starting' : 'provider';
-    let code = error?.code === 'supervisor_deadline' ? 'deadline_exceeded' :
-      {preparing:'preparation_failed',starting:'provider_start_failed',collecting:'collection_failed',provider:'provider_failed',cleanup:'cleanup_unconfirmed'}[phase];
+    let code = protocol?.code ?? (error?.code === 'supervisor_deadline' ? 'deadline_exceeded' :
+      {preparing:'preparation_failed',starting:'provider_start_failed',collecting:'collection_failed',provider:'provider_failed',cleanup:'cleanup_unconfirmed'}[phase]);
     if (phase === 'collecting' && error instanceof TaskBusinessError) {
       if (BUSINESS_COLLECTION_CAUSES.includes(error.code)) code = error.code;
       else if (error.code === 'business_collect_failed' && FILE_COLLECTION_CAUSES.includes(error.causeCode)) code = error.causeCode;
@@ -262,7 +263,7 @@ export class TaskExecutionCoordinator {
       }
       // Copy only the normalized projection, never arbitrary provider fields.
       progress = {summary: 'agent.' + update.phase, tool, source: 'agent', ...(this.#observability ? {observation: {
-        ...(normalizedDiagnostic(update.diagnostic) ? {diagnostic: normalizedDiagnostic(update.diagnostic)} : {}),
+        ...(update.diagnostic?.source === 'provider-permission' && normalizedDiagnostic(update.diagnostic) ? {diagnostic: normalizedDiagnostic(update.diagnostic)} : {}),
         publicText: text(update.publicText, 65536) ? update.publicText : '',
         ...(update.lastResponseUsage ? {lastResponseUsage: {inputTokens: update.lastResponseUsage.inputTokens, outputTokens: update.lastResponseUsage.outputTokens, totalTokens: update.lastResponseUsage.totalTokens, source: update.lastResponseUsage.source, scope: update.lastResponseUsage.scope, complete: update.lastResponseUsage.complete, zeroMayBeDefault: update.lastResponseUsage.zeroMayBeDefault}} : {}),
         activity: update.activity ?? ({starting: 'starting', initializing: 'starting', session: 'starting', running: 'waiting', stopping: 'stopping', terminal: 'terminal'}[update.phase]),
@@ -367,7 +368,17 @@ export class TaskExecutionCoordinator {
         ask: (request, context) => this.#question(entry, request, context),
         acknowledge: (questionId, receipt) => this.#answerAck(entry, questionId, receipt),
       } : undefined;
-      entry.handle = typed ? this.#managed.start({ticket: entry.ticket, prepared, executionContext, observability: this.#observability, onProgress: update => this.#progress(entry, update)}) :
+      entry.handle = typed ? this.#managed.start({ticket: entry.ticket, prepared, executionContext, observability: this.#observability, onProgress: update => this.#progress(entry, update),
+        onDiagnostic: report => {
+          // Only the trusted managed Port receives this callback; raw Provider
+          // progress and public diagnostic objects cannot supply it. It changes
+          // observation only, never the original receipt or failure authority.
+          if (!this.#observability || entry.stopping || entry.finalized || !entry.acceptStarted ||
+              report?.code !== 'managed_provider_failure' || report.authority !== false || report.stage !== 'parse' || report.status !== 'completed' ||
+              report.taskId !== entry.ticket.taskId || report.workerId !== entry.ticket.workerId || report.providerId !== entry.ticket.providerId || report.executionType !== entry.ticket.executionType) return;
+          const diagnostic = normalizedDiagnostic({stage:'protocol',code:report.parseCode,source:'controller'});
+          if (diagnostic) entry.protocolDiagnostic = diagnostic;
+        }}) :
         verifying ? provider.start({ticket: entry.ticket, prepared, executionContext}) :
         provider.start({...prepared, deadline: entry.ticket.deadline, executionContext, questionContext, observability: this.#observability, onProgress: update => this.#progress(entry, update)});
       requireValue(object(entry.handle) && typeof entry.handle.stop === 'function' &&

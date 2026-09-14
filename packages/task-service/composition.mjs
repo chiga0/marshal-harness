@@ -388,7 +388,11 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       validate: ticket => business.validateManaged(ticket),
       provider: ticket => application.leader.effects[ticket.executionType] ?? available.get(ticket.providerId),
       start: options => startLeaderWithJsonCorrection(application.leader.effects[options.ticket.executionType] ?? (options.ticket.executionType === 'leader' ? leader : review),
-        {...options, ...(observationConfig ? {prepared: {...options.prepared, observability: true}} : {}), provider: available.get(options.ticket.providerId), onDiagnostic: managedDiagnostic}),
+        {...options, ...(observationConfig ? {prepared: {...options.prepared, observability: true}} : {}), provider: available.get(options.ticket.providerId), onDiagnostic: value => {
+          const report = safeManagedDiagnostic(value);
+          if (report && observationConfig) options.onDiagnostic?.(report);
+          managedDiagnostic(value);
+        }}),
     } : null;
     const Coordinator = leader ? TaskExecutionCoordinator : TaskSupervisor;
     supervisor = new Coordinator({...supervisorOptions, execution: application.execution, providers: available, managed, observability: observationConfig !== null,
