@@ -43,7 +43,7 @@ export function fixture(t, options = {}) {
   const execution = {maxWorkers: 3, providerIds: ['fixture'], defaultProvider: 'fixture'};
   let app;
   t.after(() => {store.close(); depot.close(); fs.rmSync(parent, {recursive: true, force: true});});
-  app = new TaskApplication({store, owner, execution, leader, review, verification, depot, publication: options.publication ?? null});
+  app = new TaskApplication({store, owner, execution, leader, review, verification, depot, observability: options.observability ?? null, publication: options.publication ?? null});
   const f = {get app() {return app;}, provider, parent, results: new Map(), call: request => app.dispatch(request, context),
     read: callback => app.transaction(false, callback),
     get: taskId => f.call({operation: 'task.get', taskId}),
@@ -52,7 +52,9 @@ export function fixture(t, options = {}) {
       assert.ok(command, action + ':' + nodeId); return app.execution.nextWork(command.id, command.revision);},
     async decision(ticket, actions) {response = {profile: 'task-managed-leader/v1', callId: ticket.input.leader.callId,
       inputDigest: ticket.input.leader.inputDigest, summary: '只依据原证据推进', actions}; return f.run(ticket, leader);},
-    async run(ticket, port) {const handle = port.start({ticket, provider, prepared: {cwd: parent, prompt: '受控模型夹具'}});
+    async run(ticket, port) {
+      if (options.observability) {app.execution.observeInput(ticket, 'prepared', '受控模型夹具 password=fixture-secret'); app.execution.observeInput(ticket, 'handed-off');}
+      const handle = port.start({ticket, provider, prepared: {cwd: parent, prompt: '受控模型夹具'}});
       app.execution.started(ticket, await handle.started); const result = await handle.completion; f.results.set(ticket.workerId, result); return app.execution.finish(ticket, result);},
     author(ticket, started = {executionId: 'author-' + ticket.workerId, startedAt: new Date().toISOString()}) {app.execution.started(ticket, started);
       const file = {path: ticket.nodeId + '.json', ...depot.put(encode({value: ticket.nodeId === 'east' ? 10 : 20}))};
@@ -65,14 +67,14 @@ export function fixture(t, options = {}) {
     async verify(ticket) {const handle = verification.start({ticket, prepared: {cwd: parent, prompt: '固定受控检查器'}});
       app.execution.started(ticket, await handle.started); return app.execution.finish(ticket, await handle.completion);},
     reopen() {store.close(); store = Store.openExisting(root, {format: LEADER_FORMAT}); owner = store.claimOwner(owner.generation, 'cold', Date.now() + 3600000);
-      app = new TaskApplication({store, owner, execution, leader, review, verification, depot, publication: options.publication ?? null});},
+      app = new TaskApplication({store, owner, execution, leader, review, verification, depot, observability: options.observability ?? null, publication: options.publication ?? null});},
   }; return f;
 }
 
 export {proposal, hash};
 
-test('v7 real SQLite: necessary reply → plan approval → two authors → independent Review → stage verification → deliver/conclude → cold exact bytes', async t => {
-  const f = fixture(t), task = await f.call({operation: 'task.create', key: 'create', body: {intent: '交付两区域结果，但区域待用户明确',
+for (const observed of [false, true]) test('v7 real SQLite: necessary reply → plan approval → two authors → independent Review → stage verification → deliver/conclude → cold exact bytes; observation=' + observed, async t => {
+  const f = fixture(t, observed ? {observability: {profile: 'task-observation/v1', retainPrompts:true}} : {}), task = await f.call({operation: 'task.create', key: 'create', body: {intent: '交付两区域结果，但区域待用户明确',
     limits: {timeoutMs: 60000, maxAttempts: 17, maxWorkers: 3}}});
   let ticket = f.take('leader'); assert.ok(ticket);
   const originalDeadline = ticket.deadline;

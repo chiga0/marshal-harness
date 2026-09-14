@@ -1,3 +1,4 @@
+import {boundedPublicText, tokenUsage} from '../agent-observation/normalization.mjs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomBytes, createHash} from 'node:crypto';
@@ -43,7 +44,7 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
       Object.keys(custodyProfile).sort().join(',') !== 'eligible,id,scope' || !id(custodyProfile.id) ||
       custodyProfile.scope !== 'inherited-process-group' || typeof custodyProfile.eligible !== 'boolean')) throw fault('pi_invalid_configuration');
   if (Buffer.byteLength(JSON.stringify(config)) > 100 * 1024) throw fault('pi_invalid_configuration');
-  function start({cwd, deadline, prompt, onProgress, onPermission, executionContext, questionContext} = {}) {
+  function start({cwd, deadline, prompt, onProgress, onPermission, executionContext, questionContext, observability = false} = {}) {
     if (!text(cwd, 8192) || !path.isAbsolute(cwd) || !Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline - Date.now() > 86400000 ||
       !text(prompt, 256 * 1024) || !prompt.trim() || onProgress !== undefined && typeof onProgress !== 'function') throw fault('pi_invalid_input');
     if (onPermission !== undefined && typeof onPermission !== 'function') throw fault('pi_invalid_input');
@@ -64,14 +65,48 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
     const ready = new Promise(resolve => { resolveReady = resolve; });
     let resolveStarted; const started = new Promise(resolve => { resolveStarted = resolve; });
     const observation = new AbortController();
-    let progress = {phase: 'starting', observedAt: new Date().toISOString(), tool: null};
+    let progress = {phase: 'starting', observedAt: new Date().toISOString(), tool: null, ...(observability ? {activity: 'starting', model: null, usage: null, publicText: ''} : {})};
+    const usageByMessage = new Map(); let usageIncomplete = false;
     const snapshot = () => structuredClone(progress);
     async function publish(phase) {
       progress = {...progress, phase, observedAt: new Date().toISOString()};
-      try { await bounded(onProgress, snapshot(), observation.signal); }
+      try { await bounded(onProgress, snapshot(), observation.signal);
+      if (observability) progress.publicText = ''; }
       catch (error) { callbackFailure = error; throw error; }
     }
     async function event(message) {
+      if (observability && !stopping && !settled) {
+        const update = message.assistantMessageEvent;
+        if (message.type === 'message_update' && ['text_delta', 'thinking_delta'].includes(update?.type)) {
+          const activity = update.type === 'text_delta' ? 'output' : 'thinking';
+          if (progress.activity !== activity) {progress = {...progress, activity, tool: null, publicText: ''}; await publish('running');}
+        }
+        if (message.type === 'message_end' && message.message?.role === 'assistant') {
+          const item = message.message;
+          if (text(item.model, 256) && item.model) progress.model = {id: item.model, source: 'provider-reported'};
+          const reported = tokenUsage(item.usage, ['input', 'output', 'totalTokens']);
+          if (reported && Number.isSafeInteger(item.timestamp) && item.timestamp > 0) {
+            const fingerprint = createHash('sha256').update(JSON.stringify({model: item.model, usage: item.usage,
+              text: Array.isArray(item.content) ? item.content.filter(block => block?.type === 'text') : []})).digest('hex');
+            const prior = usageByMessage.get(item.timestamp);
+            if (prior && prior.fingerprint !== fingerprint) usageIncomplete = true;
+            else usageByMessage.set(item.timestamp, {fingerprint, reported});
+          } else usageIncomplete = true;
+          const values = [...usageByMessage.values()].map(value => value.reported);
+          if (values.length) {
+            const totals = ['inputTokens', 'outputTokens', 'totalTokens'].map(key => values.reduce((sum, value) => sum + value[key], 0));
+            if (totals.every(Number.isSafeInteger)) progress.usage = {inputTokens: totals[0], outputTokens: totals[1], totalTokens: totals[2], source: 'provider-reported', complete: false};
+            else {usageIncomplete = true; progress.usage = null;}
+          }
+          const output = Array.isArray(item.content) ? item.content.filter(block => block?.type === 'text' && text(block.text, 65536)).map(block => block.text).join('') : '';
+          progress = {...progress, activity: 'output', tool: null, publicText: Buffer.byteLength(output) <= 65536 ? boundedPublicText(output) : ''};
+          await publish('running');
+        } else if (message.type === 'agent_settled' && progress.usage) {
+          progress.usage = {...progress.usage, complete: !usageIncomplete}; progress.publicText = ''; await publish('running');
+        } else if (['auto_retry_start', 'compaction_start', 'auto_compaction_start'].includes(message.type)) {
+          progress = {...progress, activity: message.type === 'auto_retry_start' ? 'retrying' : 'compacting', tool: null, publicText: ''};
+        } else if (message.type === 'agent_start') progress = {...progress, activity: 'waiting', tool: null, publicText: ''};
+      }
       if (message.type.startsWith('tool_execution_')) {
         if (!text(message.toolCallId, 128) || !message.toolCallId || !text(message.toolName, 128)) {
           unproven(); throw fault('pi_invalid_progress');
@@ -104,7 +139,7 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
         if (message.type === 'tool_execution_end' && typeof message.isError !== 'boolean') throw fault('pi_invalid_progress');
         }
         if (stopping || settled) return;
-        progress = {...progress, tool: {id: message.toolCallId, kind: TOOL_KINDS[message.toolName] ?? 'other',
+        progress = {...progress, ...(observability ? {activity: 'tool', publicText: ''} : {}), tool: {id: message.toolCallId, kind: TOOL_KINDS[message.toolName] ?? 'other',
           status: message.type === 'tool_execution_end' ? message.isError ? 'failed' : 'completed' : 'in_progress'}};
         await publish('running');
       } else if (!stopping && !settled && ['agent_start', 'auto_retry_start', 'compaction_start', 'auto_compaction_start'].includes(message.type)) await publish('running');
@@ -211,6 +246,7 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
         const state = await runtime.client.getState();
         if (state.isStreaming || state.isCompacting || state.pendingMessageCount !== 0 || state.messageCount !== 0) throw fault('pi_session_not_fresh');
         sessionId = state.sessionId; if (stopping) throw fault('pi_provider_stopped');
+        if (observability) progress.activity = 'waiting';
         await publish('running'); prompting = true;
         const remaining = deadline - Date.now(); if (remaining <= 0) throw fault('pi_provider_deadline');
         const terminal = await runtime.client.prompt(prompt, {timeoutMs: remaining});

@@ -20,12 +20,12 @@ const requireValue = value => { if (!value) throw new SupervisorError('superviso
 
 /** Same Application authority; only live handles, timers and observation queues here. */
 export class TaskExecutionCoordinator {
-  #execution; #providers; #prepare; #collect; #release; #verification; #custody; #onError; #clock; #options; #managed;
+  #execution; #providers; #prepare; #collect; #release; #verification; #custody; #onError; #clock; #options; #managed; #observability;
   #owned = new Map(); #works = new Set(); #timer; #tick; #close;
   #running = false; #closing = false; #closed = false; #failure = null;
   #diagnostics = []; #notificationFailures = 0; #rejected = new Set(); #rejectedOverflow = false;
   #scanCursor = ''; #pollCursor = '';
-  constructor({execution, providers, prepare, collect, release = () => {}, verification = null, custody = null, managed = null, onError = () => {}, clock = Date.now,
+  constructor({execution, providers, prepare, collect, release = () => {}, verification = null, custody = null, managed = null, observability = false, onError = () => {}, clock = Date.now,
     intervalMs = 100, prepareMs = 30000, collectMs = 30000, pageSize = 25, maxPagesPerTick = 100} = {}) {
     requireValue(execution && PORTS.every(name => typeof execution[name] === 'function') && providers instanceof Map &&
       typeof prepare === 'function' && typeof collect === 'function' && typeof release === 'function' &&
@@ -38,6 +38,8 @@ export class TaskExecutionCoordinator {
     this.#execution = execution; this.#providers = new Map(providers); this.#prepare = prepare; this.#collect = collect;
     requireValue(!execution.startProtocol || custody !== null);
     this.#verification = verification; this.#release = release; this.#custody = custody;
+    requireValue(typeof observability === 'boolean');
+    this.#observability = observability;
     this.#managed = managed;
     this.#onError = onError; this.#clock = clock; this.#options = {intervalMs, prepareMs, collectMs, pageSize, maxPagesPerTick};
   }
@@ -240,7 +242,13 @@ export class TaskExecutionCoordinator {
         tool = update.tool.kind + ':' + update.tool.status;
       }
       // Copy only the normalized projection, never arbitrary provider fields.
-      progress = {summary: 'agent.' + update.phase, tool, source: 'agent'};
+      progress = {summary: 'agent.' + update.phase, tool, source: 'agent', ...(this.#observability ? {observation: {
+        publicText: text(update.publicText, 65536) ? update.publicText : '',
+        activity: update.activity ?? ({starting: 'starting', initializing: 'starting', session: 'starting', running: 'waiting', stopping: 'stopping', terminal: 'terminal'}[update.phase]),
+        tool: update.tool === null ? null : {id: update.tool.id, kind: update.tool.kind, status: update.tool.status},
+        model: update.model ? {id: update.model.id, source: update.model.source} : null,
+        usage: update.usage ? {inputTokens: update.usage.inputTokens, outputTokens: update.usage.outputTokens,
+          totalTokens: update.usage.totalTokens, source: update.usage.source, complete: update.usage.complete} : null}} : {})};
       sequence = ++entry.sequence; entry.pendingProgress++;
     } catch (error) {
       this.#failEntry(entry, 'progress', error);
@@ -337,9 +345,9 @@ export class TaskExecutionCoordinator {
         ask: (request, context) => this.#question(entry, request, context),
         acknowledge: (questionId, receipt) => this.#answerAck(entry, questionId, receipt),
       } : undefined;
-      entry.handle = typed ? this.#managed.start({ticket: entry.ticket, prepared, executionContext, onProgress: update => this.#progress(entry, update)}) :
+      entry.handle = typed ? this.#managed.start({ticket: entry.ticket, prepared, executionContext, observability: this.#observability, onProgress: update => this.#progress(entry, update)}) :
         verifying ? provider.start({ticket: entry.ticket, prepared, executionContext}) :
-        provider.start({...prepared, deadline: entry.ticket.deadline, executionContext, questionContext, onProgress: update => this.#progress(entry, update)});
+        provider.start({...prepared, deadline: entry.ticket.deadline, executionContext, questionContext, observability: this.#observability, onProgress: update => this.#progress(entry, update)});
       requireValue(object(entry.handle) && typeof entry.handle.stop === 'function' &&
         typeof entry.handle.started?.then === 'function' && typeof entry.handle.completion?.then === 'function');
       // This records only handoff to the original Provider, not protocol delivery

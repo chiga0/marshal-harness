@@ -55,3 +55,5 @@ reply 为互斥闭集 `{expectedRevision,requestDigest,answer}` 或 `{expectedRe
 请求最多 256 KiB（input 为 384 KiB 的 base64 包络），响应/制品最多 8 MiB，body 深度最多 32；Task intent 8 KiB、context text 32 KiB。用户请求 limits 不是授权扩大服务限额：Application 必须比较实际 profile 上限。HTTP 等待默认 10 秒、最多 30 秒，不刷新 Task 原期限。请求体未结束时超时/断线会移除读取监听器并关闭该连接；可写错误响应先发出再回收连接，不继续解析剩余请求体，也不转化为 Task cancel。没有流式下载、SSE、HTTP multipart 或任意执行/发布端点。
 
 最短验证命令：`node --test --test-concurrency=1 packages/task-api/*.test.mjs packages/task-client/*.test.mjs`。27 个操作的合同（含局部修正、Leader 子资源）和运行问答测试使用 Request/Response 流替身、独立内存 Application fixture，以及真实 loopback HTTP；覆盖两族答复、oneOf 精确互斥、4096 字节边界、请求/回执串绑、授权正文替换、64 KiB view、有限选项、错误、丢回复与显式同 key 重放。标准 Draft 2020-12 metaschema/示例另用真实 Ajv 2020 校验器验证。无 DB/模型；不能替代实际 SQLite、同执行投递/ACK、恢复或独立业务验收。
+
+显式 `task-observation/v1` 服务组合新增可选 `Worker.observation` / `Event.observation`，规范类型为 `WorkerObservation` / `ObservationFrame`。`Audit.measurement.usageSource` 可为 `provider-observation`，用量仍使用原 `Usage` 结构，覆盖不足不能表述为全量。旧关闭配置不产生新字段；读取新开启配置需使用包含此合同的新客户端，不能要求旧闭合Schema客户端自动接受额外字段。prompt快照继续通过原Audit与artifact下载合同提供。

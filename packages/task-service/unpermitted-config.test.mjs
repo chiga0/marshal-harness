@@ -46,6 +46,10 @@ test('v5 original narrow factory identity, arbitrary callbacks and wrappers reje
       {code: 'service_unsupported_preparation'});
     assert.equal(fs.existsSync(root), false);
   }
+  for (const workerCancellation of [undefined, {profile:'task-worker-cancellation/v1'}]) {
+    await assert.rejects(startTaskService({root, mode:'create', providers, custody, unpermitted, workerCancellation, businessFactory:factory, observability:{profile:'task-observation/v1',retainPrompts:true}}), {code:'service_unsupported_preparation'});
+    assert.equal(fs.existsSync(root),false);
+  }
   // Exact object AND actual original prepare identity, not copied properties.
   const business = factory({executionParent: parent, depot: {get() {}, put() {}}, approvedLayout() {}, observeExecution() {}});
   try {
@@ -55,9 +59,9 @@ test('v5 original narrow factory identity, arbitrary callbacks and wrappers reje
     assert.throws(() => {business.prepare = () => {};}, TypeError);
   } finally {business.close();}
 });
-test('v5 actual service opens original format; unsupported disclosure rejects before generation claim', async t => {
+for (const observed of [false, true]) test('v5 actual service opens original format; unsupported disclosure rejects before generation claim: ' + observed, async t => {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-v5-open-'))), root = path.join(parent, 'data');
-  const config = {root, providers, custody, unpermitted, businessFactory: createStagingOnlyBusinessFactory()};
+  const config = {root, providers, custody, unpermitted, businessFactory: createStagingOnlyBusinessFactory(), ...(observed ? {observability:{profile:'task-observation/v1',retainPrompts:false}} : {})};
   let service; t.after(async () => {await service?.shutdown(); fs.rmSync(parent, {recursive: true, force: true});});
   service = await startTaskService({...config, mode: 'create'}); assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'profile.json'))).layout, 5);
   assert.equal((await service.shutdown()).shutdownClean, true);

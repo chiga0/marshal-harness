@@ -185,3 +185,15 @@ test('invalid HTTP-style launch choices fail before execution; missing executabl
   const result = await handle.completion;
   assert.equal(result.status, 'failed'); assert.equal(result.cleanup.cleaned, true); assert.equal(await handle.started, null);
 });
+
+
+test('opt-in typed activity keeps hidden thought private and waits for whole output before redacted snippet', {timeout:15000}, async t => {
+  const events = [], handle = provider('observed').start(input(t, {observability: true, onProgress: event => events.push(event)}));
+  t.after(() => handle.stop()); const result = await handle.completion; cleaned(result); assert.equal(result.status, 'completed');
+  assert.ok(events.some(event => event.activity === 'output')); assert.ok(events.some(event => event.activity === 'thinking'));
+  assert.ok(events.filter(event => event.publicText).length === 1);
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE_|fixture-secret|Bearer fixture-/);
+  const final = events.at(-1); assert.match(final.publicText, /已隐藏/); assert.match(final.publicText, /公开输出/);
+  assert.deepEqual(final.model, {id: 'fixture-model', source: 'provider-reported'});
+  assert.deepEqual(final.usage, {inputTokens:20, outputTokens:4, totalTokens:24, source:'provider-reported', complete:true});
+});

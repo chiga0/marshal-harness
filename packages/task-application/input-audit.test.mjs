@@ -9,12 +9,12 @@ import {TaskApplication, createAuditDisclosure} from './application.mjs';
 import {validAuditResponse} from '../task-api/contract.mjs';
 
 const context = {principal: 'local-operator'};
-function fixture(t, {disclosure = null, depotEnabled = true} = {}) {
+function fixture(t, {disclosure = null, depotEnabled = true, observability = null} = {}) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-input-observation-')));
   const state = path.join(parent, 'state'), objects = path.join(parent, 'objects');
   let now = 1800000000000, store = Store.create(state, {clock: () => now});
   let owner = store.claimOwner(0, 'fixture', now + 3600000), depot = depotEnabled ? ArtifactDepot.create(objects) : null;
-  const config = () => ({store, owner, depot, clock: () => now, auditDisclosure: disclosure,
+  const config = () => ({store, owner, depot, clock: () => now, auditDisclosure: disclosure, observability,
     execution: {maxWorkers: 2, providerIds: ['fixture'], defaultProvider: 'fixture'}});
   let app = new TaskApplication(config());
   t.after(() => {store.close(); depot?.close(); fs.rmSync(parent, {recursive: true, force: true});});
@@ -115,5 +115,27 @@ test('API audit binding rejects wrong task/worker, fabricated observation stage 
     value => value.prompts[0].observation.snapshot.taskId = 'other', value => value.prompts[0].observation.snapshot.name = 'other.input.txt',
     value => value.prompts[0].source = 'submitted-redacted', value => value.prompts[0].observation.policy = null]) {
     const changed = structuredClone(original); mutate(changed); assert.equal(validAuditResponse(changed, task.id), false);
+  }
+});
+
+
+test('built-in explicit observation retains redacted actual input; depot failure cannot grant start or fabricate evidence', async t => {
+  for (const depotEnabled of [true, false]) {
+    const f = fixture(t, {depotEnabled, observability: {profile: 'task-observation/v1', retainPrompts: true}}), {task, ticket} = await f.reserve();
+    const raw = '公开需求\nAuthorization: Bearer fixture-secret-value\npassword="another-fixture"';
+    const mayStart = f.app.execution.mayStart(ticket);
+    f.app.execution.observeInput(ticket, 'prepared', raw);
+    const audit = await f.audit(task.id), prompt = audit.prompts[0];
+    assert.equal(validAuditResponse(audit, task.id), true);
+    assert.equal(prompt.observation.coverage, depotEnabled ? 'policy-redacted' : 'unavailable');
+    assert.doesNotMatch(JSON.stringify(audit), /fixture-secret-value|another-fixture/);
+    assert.equal(prompt.observation.stage, 'prepared');
+    assert.equal(f.app.execution.mayStart(ticket), mayStart);
+    if (depotEnabled) {
+      assert.match(prompt.text, /公开需求/); assert.match(prompt.text, /已隐藏/);
+      assert.equal(prompt.observation.promptDigest, digest(Buffer.from(raw)));
+      f.app.execution.observeInput(ticket, 'handed-off');
+      const handed = await f.audit(task.id); f.reopen(); assert.deepEqual(await f.audit(task.id), handed);
+    }
   }
 });

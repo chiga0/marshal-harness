@@ -79,3 +79,22 @@ test('bad input fails before launch, missing program retains original failure cl
   const stuck = provider('normal').start(input(t, {onProgress: () => new Promise(() => {})})); t.after(() => stuck.stop());
   const result = await stuck.completion; cleaned(result); assert.equal(result.reason, 'pi_progress_timeout');
 });
+
+test('opt-in typed Pi observations retain only public complete text and explicit model/token readings', {timeout:15000}, async t => {
+  const events = [], handle = provider('observed').start(input(t, {observability: true, onProgress: event => events.push(event)}));
+  t.after(() => handle.stop()); const result = await handle.completion; cleaned(result); assert.equal(result.status, 'completed');
+  assert.ok(events.some(event => event.activity === 'thinking')); assert.ok(events.some(event => event.activity === 'output'));
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE_|fixture-secret/);
+  const final = events.at(-1); const output = events.find(event => event.publicText); assert.match(output.publicText, /公开输出/); assert.match(output.publicText, /已隐藏/);
+  assert.equal(events.filter(event => event.publicText).length,1);
+  assert.deepEqual(final.model, {id: 'fixture-model', source: 'provider-reported'});
+  assert.deepEqual(final.usage, {inputTokens:20, outputTokens:4, totalTokens:24, source:'provider-reported', complete:true});
+});
+
+test('reported usage deduplicates a message, adds distinct messages, and never calls collision/overflow complete', {timeout:20000}, async t => {
+  for (const [mode,tokens,complete] of [['observed-duplicate',24,true],['observed-sum',48,true],['observed-collision',24,false],['observed-overflow',null,null]]) {
+    const events = [], handle = provider(mode).start(input(t,{observability:true,onProgress:event=>events.push(event)}));
+    t.after(()=>handle.stop()); const result = await handle.completion; cleaned(result); assert.equal(result.status,'completed');
+    const value = events.at(-1).usage; assert.equal(value?.totalTokens ?? null,tokens,mode); assert.equal(value?.complete ?? null,complete,mode);
+  }
+});

@@ -1,3 +1,4 @@
+import {boundedPublicText, tokenUsage} from '../agent-observation/normalization.mjs';
 import path from 'node:path';
 import {launchAcp, RuntimeError} from '../agent-runtime/index.mjs';
 import {AcpError} from '../agent-acp/client.mjs';
@@ -48,7 +49,7 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(custodyProfile.id) || custodyProfile.scope !== 'inherited-process-group' ||
       typeof custodyProfile.eligible !== 'boolean')) throw error('provider_invalid_configuration');
   if (Buffer.byteLength(JSON.stringify(config)) > 100 * 1024) throw error('provider_invalid_configuration');
-  function start({cwd, deadline, prompt, onProgress, onPermission, executionContext} = {}) {
+  function start({cwd, deadline, prompt, onProgress, onPermission, executionContext, observability = false} = {}) {
     if (!text(cwd, 8192) || !path.isAbsolute(cwd) || !Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline - Date.now() > 86400000 ||
       !text(prompt, 256 * 1024) || !prompt.trim() || onProgress !== undefined && typeof onProgress !== 'function' ||
       onPermission !== undefined && typeof onPermission !== 'function') throw error('provider_invalid_input');
@@ -66,10 +67,10 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
     }
     let resolveStarted; const started = new Promise(resolve => { resolveStarted = resolve; });
     const observation = new AbortController();
-    let progress = {phase: 'starting', observedAt: new Date().toISOString(), tool: null};
+    let progress = {phase: 'starting', observedAt: new Date().toISOString(), tool: null, ...(observability ? {activity: 'starting', model: null, usage: null, publicText: ''} : {})};
     const snapshot = () => structuredClone(progress);
     async function phase(value) {
-      progress = {...progress, phase: value, observedAt: new Date().toISOString()};
+      progress = {...progress, phase: value, observedAt: new Date().toISOString(), ...(observability ? {publicText: '', activity: value === 'running' ? 'waiting' : ['stopping', 'terminal'].includes(value) ? value : 'starting'} : {})};
       await bounded(onProgress, snapshot(), observation.signal);
     }
     async function update(event) {
@@ -91,8 +92,13 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
         outputText += item.content.text; outputBytes += Buffer.byteLength(item.content.text);
         // Core progress is a bounded observation, not a per-token event sink.
         // Tool observations below are never coalesced; outputText stays exact.
-        if (outputBytes - reportedOutputBytes < 1024) return;
+        const changed = observability && progress.activity !== 'output';
+        if (observability) progress = {...progress, activity: 'output', tool: null};
+        if (!changed && outputBytes - reportedOutputBytes < 1024) return;
         reportedOutputBytes = outputBytes;
+      } else if (item.sessionUpdate === 'agent_thought_chunk' && observability) {
+        if (progress.activity === 'thinking') return;
+        progress = {...progress, activity: 'thinking', tool: null};
       } else if (['tool_call', 'tool_call_update'].includes(item.sessionUpdate)) {
         const call = toolState(item.toolCallId);
         const prior = progress.tool?.id === item.toolCallId ? progress.tool : null;
@@ -113,7 +119,7 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
           executionContext.extraScope('acp_tool_scope_unproven');
         if (['in_progress', 'completed'].includes(status)) { call.started = true; call.denied = false; }
         if (['completed', 'failed'].includes(status)) { call.terminal = true; call.denied = false; }
-        progress = {...progress, tool: {id: item.toolCallId, kind, status}};
+        progress = {...progress, tool: {id: item.toolCallId, kind, status}, ...(observability ? {activity: 'tool'} : {})};
       } else {
         // Thinking, raw tool inputs/outputs, _meta and provider-specific usage
         // are not normalized public progress or billable token evidence.
@@ -156,13 +162,19 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
         await runtime.client.initialize();
         if (stopping) throw error('provider_stopped');
         await phase('session');
-        sessionId = (await runtime.client.newSession({cwd})).sessionId;
+        const session = await runtime.client.newSession({cwd}); sessionId = session.sessionId;
+        if (observability && text(session.models?.currentModelId, 256) && session.models.currentModelId) progress.model = {id: session.models.currentModelId, source: 'provider-reported'};
         if (stopping) throw error('provider_stopped');
         await phase('running');
         const remaining = deadline - Date.now();
         if (remaining <= 0) throw error('provider_deadline');
         const terminal = await runtime.client.prompt(sessionId, [{type: 'text', text: prompt}], {timeoutMs: remaining});
         stopReason = terminal.stopReason;
+        if (observability) {
+          progress = {...progress, activity: 'output', tool: null, publicText: boundedPublicText(outputText),
+            usage: tokenUsage(terminal.usage, ['inputTokens', 'outputTokens', 'totalTokens'], true)};
+          await bounded(onProgress, snapshot(), observation.signal);
+        }
         if (Date.now() >= deadline) throw error('provider_deadline');
         status = stopReason === 'end_turn' ? 'completed' : stopReason === 'cancelled' ? 'cancelled' : 'failed';
         reason = 'agent_' + stopReason;

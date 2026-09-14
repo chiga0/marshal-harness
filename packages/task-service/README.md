@@ -203,3 +203,13 @@ node --test --test-concurrency=1 packages/task-service/launch.test.mjs
 简启动专用测试使用独立固定 Node CLI 和仅子进程可见的临时 HOME，验证首次自动创建、SIGTERM、第二进程打开同一 SQLite、原回执/输入字节与新 token，以及并发 owner/坏根/路径拒绝和旧显式参数。它不改真实 HOME、不调用模型；正常重开不是活跃模型 crash 恢复。
 
 业务组合测试另外使用真实 FileBusiness 与原 Core verification capability，从纯 HTTP 计划批准到完整制品下载，覆盖验收中取消的迟到结果 fence，以及失败后及时释放 FD。模型和 checker 的进程完成/cleanup 明确为受控夹具，不能用该测试代替实机原生工具或独立外部命令验收。
+
+### 显式执行观察
+
+新组合可传 `observability: {profile: 'task-observation/v1', retainPrompts: true}`。该配置及内置策略源码摘要写入原 `profile.json`，同根开关/策略变化在 claim 前拒绝；旧组合不启用时响应形状不变。配置不接受脱敏回调，也不解除 v7/unpermitted 对任意 `auditDisclosure` 的禁止。输入仅保存 Marshal 实际投递文本的内置脱敏版本，不能代表 Agent 私有系统提示或完整模型上下文。
+
+启用后 Worker 提供当前活动、模型来源、用量及有界历史；Events 可带对应单帧。历史最多64条且不超过16KiB，截断明确标识；Audit汇总不复制历史，详情通过Worker读取。公开输出仅在完整消息后脱敏、最多512字节；隐藏推理正文与原始工具输入输出不记录。实时活动信号不证明模型仍在运行，终态保留历史但结束当前活动。
+
+任务用量按 `agent/leader/review` 已预留成员的最新读数汇总，独立 `verification/publication/postverify` 不计入模型分母。`coverage` 是有完整读数的模型成员占比；有部分读数时总Token也是部分量，缺失不按零认作完整。Pi按完整消息身份去重，碰撞不声称完整，安全整数溢出读数不可用。ACP只接受明确的Token计数，不把上下文 `used/size` 当累计Token。费用未采集，始终保持不可用。
+
+当前输入留存不支持与ADR0092 `unpermitted` / `startProtocol` 组合；两层构造均早拒，不能把已留正文记录追认成原metadata-only无许可证明。关闭输入留存的typed观察不影响原恢复资格。

@@ -1,3 +1,4 @@
+import {observationConfiguration, observedUsage} from './observation.mjs';
 import {randomUUID} from 'node:crypto';
 import {encode, digest, makeEvent, UNPERMITTED_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
 import {TaskError, reject, limits, freezePlan, publicTask, nextRevision, terminal, isText, clone} from './model.mjs';
@@ -34,9 +35,11 @@ const idOK = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,
  */
 export class TaskApplication {
   constructor({store, owner, clock = Date.now, makeId = prefix => prefix + '-' + randomUUID(),
-    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null, runtimeQuestions = null, repair = null, auditDisclosure = null, leader = null, review = null, publication = null}) {
+    defaultLimits = {timeoutMs: 300000, maxAttempts: 16, maxWorkers: 2}, execution = {}, depot = null, verification = null, clarification = null, runtimeQuestions = null, repair = null, auditDisclosure = null, observability = null, leader = null, review = null, publication = null}) {
     this.store = store; this.owner = owner; this.clock = clock; this.makeId = makeId;
     if (([UNPERMITTED_FORMAT, LEADER_FORMAT].includes(store.info?.().format) || execution.startProtocol != null) && auditDisclosure !== null) reject('unsupported_task', 422);
+    try {this.observability = observationConfiguration(observability);} catch {reject('unsupported_task', 422);}
+    if (this.observability?.retainPrompts && (store.info?.().format === UNPERMITTED_FORMAT || execution.startProtocol != null || auditDisclosure !== null)) reject('unsupported_task', 422);
     this.defaultLimits = limits(defaultLimits);
     this.execution = new TaskExecution(this, execution);
     this.workerCancellation = new TaskWorkerCancellation(this);
@@ -45,7 +48,7 @@ export class TaskApplication {
     this.clarification = new TaskClarification(this, clarification);
     this.runtimeQuestions = new TaskRuntimeQuestions(this, runtimeQuestions);
     this.repair = new TaskRepair(this, repair);
-    this.inputAudit = new TaskInputAudit(this, auditDisclosure);
+    this.inputAudit = new TaskInputAudit(this, auditDisclosure, this.observability);
     this.leader = new TaskLeader(this, leader, review, publication);
     this.dispatch = this.dispatch.bind(this);
   }
@@ -326,20 +329,21 @@ export class TaskApplication {
       const items = entries.map(entry => {
         const envelope = JSON.parse(entry.bytes.toString('utf8')), event = envelope.payload;
         return {id: 'event-' + envelope.sequence, taskId: task.id, sequence: integer(entry.sequence),
-          type: event.type, at: event.at, workerId: event.workerId ?? null, summary: event.type, source: 'application'};
+          type: event.type, at: event.at, workerId: event.workerId ?? null, summary: event.type, source: 'application', ...(event.observation ? {observation: clone(event.observation)} : {})};
       });
       return {taskId: task.id, items, nextCursor: entries.length === limit ? entries.at(-1).sequence.toString() : null};
     }
     if (request.operation === 'task.audit') {
       const records = this.execution.workers(tx, record).map(({record}) => record);
+      const usage = this.observability ? observedUsage(records) : unavailableUsage();
       return {taskId: task.id,
       elapsedMs: Math.max(0, (terminal.has(task.status) ? Date.parse(task.updatedAt) : this.now()) - Date.parse(task.createdAt)),
       attempts: record.attempts, retryCount: record.retryCount, reworkCount: record.reworkCount,
       // Final verification is not an independently observed first code review.
       firstReview: {passed: 0, total: 0, pending: 0},
       acceptance: clone(record.acceptance ?? {status: 'pending', evidenceIds: [], digest: null}),
-      usage: unavailableUsage(), workers: this.inputAudit.workers(records), prompts: this.inputAudit.prompts(records),
-      measurement: {elapsedSource: 'task-lifecycle', firstReviewSource: 'unavailable', usageSource: 'unavailable'}, ...this.repair.audit(tx, record)};
+      usage, workers: this.inputAudit.workers(records), prompts: this.inputAudit.prompts(records),
+      measurement: {elapsedSource: 'task-lifecycle', firstReviewSource: 'unavailable', usageSource: usage.source === 'reported' ? 'provider-observation' : 'unavailable'}, ...this.repair.audit(tx, record)};
     }
     // Never implement the remaining surface with fabricated success/empty
     // records. Execution, interactions and artifacts must bind actual facts.
