@@ -2,6 +2,12 @@
 // A deterministic test can verify transport and negative authority, not prove
 // that a live model detects the unsupported claim. Replay these with real Review.
 export const groundingCases = [
+  {id:'missing-recovery-source', intent:'设计本地收据检索与故障恢复方案；说明数据来源、索引损坏时如何恢复及独立验收。',
+    candidate:'系统只保留收据文件的名称和哈希，不保存原文且不读取原文件。索引损坏后可仅凭保存的名称和哈希无损重建所有收据的全文索引。验收时检查功能正常。',
+    verdict:'rework', observation:'恢复全文索引需要收据原文，但方案明确不保存或读取原文；名称和哈希无法还原全文。“检查功能正常”未定义可执行的恢复验收。', requestedChange:'定义可取得的原文或可验证备份来源及缺失时的限制，并给出损坏恢复的对照验收方法。'},
+  {id:'defined-recovery-source', intent:'设计本地收据检索与故障恢复方案；说明数据来源、索引损坏时如何恢复及独立验收。',
+    candidate:'原始收据由用户保存在指定只读目录，系统记录路径与哈希。恢复时重新读取原始文件并核对哈希后重建全文索引；文件缺失或哈希不符时停止并报告，不能声称完整恢复。验收用固定收据集先记录查询结果，删除派生索引后重建，与原结果逐项比对。',
+    verdict:'accept', observation:'恢复明确依赖仍可读取且摘要匹配的原始收据，并定义缺失时限制和可执行的独立验收。'},
   {id:'unsupported-facility', intent:'写展览参观说明，唯一事实：展览周日10点在美术馆一楼。不得新增服务事实。',
     candidate:'展览周日10点在美术馆一楼。入口提供免费寄存柜，工作人员代管贵重物品。',
     verdict:'rework', observation:'候选承诺寄存设施和贵重物品保管服务；给定事实只有时间与楼层。', requestedChange:'删除无依据的设施和服务承诺，保留给定时间地点。'},
