@@ -80,6 +80,8 @@ export interface TaskNewComposerProps {
 
 export function TaskNewComposer({api}: TaskNewComposerProps) {
   const [intent, setIntent] = useLogicalActionMemory(['task.create', 'intent'], () => '');
+  const [contextText, setContextText] = useLogicalActionMemory(['task.create', 'contextText'], () => '');
+  const [contextMode, setContextMode] = useLogicalActionMemory<'text' | 'json'>(['task.create', 'contextMode'], () => 'text');
   const [contextRaw, setContextRaw] = useLogicalActionMemory(['task.create', 'context'], () => '');
   const [files, setFiles] = useLogicalActionMemory<ComposerFile[]>(['task.create', 'files'], () => []);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -134,6 +136,8 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
   const resetForAnother = () => {
     setIntent('');
     setContextRaw('');
+    setContextText('');
+    setContextMode('text');
     setFiles([]);
     setFieldErrors({});
     setCreatedTaskId(null);
@@ -148,7 +152,7 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
     const errors: FieldErrors = {};
     const intentError = validateIntentText(intent);
     if (intentError) errors.intent = intentError;
-    const parsed = parseContextJson(contextRaw);
+    const parsed = parseContextJson(contextMode === 'json' ? contextRaw : JSON.stringify(contextText ? {text: contextText} : {}));
     if (!parsed.ok) errors.context = parsed.error;
     const filesError = validateSelectedFiles(files);
     if (filesError) errors.files = filesError;
@@ -179,10 +183,10 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
 
   if (createdTaskId !== null) {
     return (
-      <section aria-label="新建任务" className="flex min-w-0 flex-col gap-4 p-6">
+      <section aria-label="新建任务" className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-6 p-4 sm:p-8 lg:py-12">
         <h1 className="text-[22px] font-semibold leading-[30px]">新建任务</h1>
-        <Alert variant="success" role="status" title="任务已创建，服务端返回受理回执">
-          <span className="break-all">任务 ID：{createdTaskId}</span>。回执以服务端记录为准；本页没有自动触发后续动作。
+        <Alert variant="success" role="status" title="任务已创建">
+          <p>前往任务工作台，查看团队计划和执行进展。</p><details className="mt-2 text-xs"><summary className="cursor-pointer">创建回执</summary><span className="break-all">任务 ID：{createdTaskId}</span></details>
           <div className="mt-3 flex flex-wrap gap-2">
             <Link
               to={'/tasks/' + encodeURIComponent(createdTaskId)}
@@ -196,15 +200,12 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
             </Link>
           </div>
         </Alert>
-        <p className="text-xs leading-[18px] text-text-secondary">
-          提示：如之后发现列表中没有该任务，说明受理记录与查询不一致，请以服务端原始返回与回执为准核对。
-        </p>
       </section>
     );
   }
 
   return (
-    <section aria-label="新建任务" className="flex min-w-0 flex-col gap-4 p-6">
+    <section aria-label="新建任务" className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-6 p-4 sm:p-8 lg:py-12">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-[22px] font-semibold leading-[30px]">新建任务</h1>
         <Link to="/" className="text-sm leading-[22px] text-accent underline-offset-4 hover:underline">返回任务列表</Link>
@@ -258,35 +259,15 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
           </Card>
 
           <Card>
-            <Label
-              htmlFor="task-context"
-              hint={'可选。JSON 对象，仅支持 {"text": string, "inputRefs": [id…]}；context.text 上限 ' + TASK_CONTEXT_TEXT_MAX_BYTES + ' 字节。留空则不携带 context。'}
-            >
-              附加上下文（JSON）
-            </Label>
-            <Textarea
-              id="task-context"
-              rows={4}
-              value={contextRaw}
-              onChange={event => {
-                setContextRaw(event.target.value);
-                setFieldErrors(previous => ({...previous, context: undefined}));
-              }}
-              placeholder='{"text": "补充说明"}'
-              spellCheck={false}
-              className="font-mono"
-              aria-invalid={fieldErrors.context !== undefined}
-              aria-describedby={fieldErrors.context !== undefined ? 'task-context-error' : undefined}
-            />
-            {fieldErrors.context !== undefined ? (
-              <p id="task-context-error" role="alert" className="mt-1 text-sm leading-[22px] text-danger">{fieldErrors.context}</p>
-            ) : null}
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-medium">补充背景</span><div className="flex gap-1" role="group" aria-label="上下文输入方式"><Button size="sm" variant={contextMode === 'text' ? 'secondary' : 'ghost'} aria-pressed={contextMode === 'text'} onClick={() => setContextMode('text')}>文本</Button><Button size="sm" variant={contextMode === 'json' ? 'secondary' : 'ghost'} aria-pressed={contextMode === 'json'} onClick={() => setContextMode('json')}>高级 JSON</Button></div></div>
+            {contextMode === 'text' ? <><Label htmlFor="task-context-text" hint={`可选，最多 ${TASK_CONTEXT_TEXT_MAX_BYTES} 字节。`}>附加上下文</Label><Textarea id="task-context-text" rows={4} value={contextText} onChange={event => {setContextText(event.target.value); setFieldErrors(previous => ({...previous,context:undefined}));}} placeholder="补充数据口径、参考资料、限制条件或验收要求…" aria-invalid={fieldErrors.context !== undefined} aria-describedby={fieldErrors.context ? 'task-context-error' : undefined} /></> : <><Label htmlFor="task-context" hint='仅支持 text 与 inputRefs。切换方式保留两份草稿，仅提交当前方式。'>附加上下文（JSON）</Label><Textarea id="task-context" rows={4} value={contextRaw} onChange={event => {setContextRaw(event.target.value); setFieldErrors(previous => ({...previous,context:undefined}));}} placeholder='{"text": "补充说明"}' spellCheck={false} className="font-mono" aria-invalid={fieldErrors.context !== undefined} aria-describedby={fieldErrors.context ? 'task-context-error' : undefined} /></>}
+            {fieldErrors.context !== undefined ? <p id="task-context-error" role="alert" className="mt-1 text-sm text-danger">{fieldErrors.context}</p> : null}
           </Card>
 
           <Card>
             <Label
               htmlFor="task-files"
-              hint={'可选。每个附件解码后 ≤ ' + formatBytes(TASK_INPUT_MAX_BYTES) + '，最多 ' + TASK_INPUT_MAX_COUNT + ' 个引用；提交时先按 input_create 上传，再以 inputRefs 引用。'}
+              hint={'可选。每个附件解码后 ≤ ' + formatBytes(TASK_INPUT_MAX_BYTES) + '，最多 ' + TASK_INPUT_MAX_COUNT + ' 个附件与已有输入引用。'}
             >
               附件输入
             </Label>
@@ -329,7 +310,7 @@ export function TaskNewComposer({api}: TaskNewComposerProps) {
                 : '创建任务'}
             </Button>
             <p className="text-xs leading-[18px] text-text-secondary">
-              提交即发送一次创建请求；不自动重试、不乐观显示成功。如上次操作中断，请先在任务列表核对回执再继续。
+              团队会先整理执行计划；需要确认时会在任务中提醒你。
             </p>
           </div>
         </fieldset>

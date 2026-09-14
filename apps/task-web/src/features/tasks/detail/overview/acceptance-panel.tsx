@@ -24,7 +24,7 @@ export function AcceptancePanel({leader, audit}: AcceptancePanelProps) {
       <h2 className="text-base font-semibold leading-6">评审 / 验收 / 交付</h2>
 
       <div className="space-y-1" data-testid="review-readout">
-        <span className="text-xs font-medium text-text-secondary">集中评审（leader.review）</span>
+        <span className="text-xs font-medium text-text-secondary">集中评审</span>
         {leader === null ? (
           <p className="text-sm text-text-secondary" data-testid="acceptance-unavailable">Leader 投影不可用，无法确认评审状态。</p>
         ) : review === null ? (
@@ -32,23 +32,23 @@ export function AcceptancePanel({leader, audit}: AcceptancePanelProps) {
         ) : (
           <>
             <StatusBadge machine={review.verdict} label={acceptanceLabel(review.verdict)} tone={toneForAcceptance(review.verdict)} />
-            <dl className="grid grid-cols-1 gap-y-1 text-sm leading-[22px]">
+            <details className="text-xs text-text-secondary"><summary className="cursor-pointer py-2">查看证据标识</summary><dl className="grid grid-cols-1 gap-y-1 text-sm leading-[22px]">
               <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">评审摘要</dt><dd className="break-all"><code className="text-xs">{review.digest}</code></dd></div>
               <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">评审 Worker</dt><dd><code className="text-xs">{review.workerId}</code></dd></div>
               <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">证据</dt><dd>{review.evidenceIds.length > 0 ? `${review.evidenceIds.length} 条（${review.evidenceIds.join('，')}）` : '暂无数据'}</dd></div>
-            </dl>
+            </dl></details>
           </>
         )}
       </div>
 
       <div className="space-y-1 border-t border-border pt-2" data-testid="acceptance-readout">
-        <span className="text-xs font-medium text-text-secondary">独立验收（task.audit.acceptance）</span>
+        <span className="text-xs font-medium text-text-secondary">独立验收</span>
         {acceptance === null ? (
           <p className="text-sm text-text-secondary" data-testid="acceptance-unloaded">验收读数未加载或 audit 投影不可用；不能以评审结果代替验收。</p>
         ) : (
           <>
             <StatusBadge machine={acceptance.status} label={acceptanceStatusLabel(acceptance.status)} tone={toneForAcceptanceStatus(acceptance.status)} />
-            <dl className="grid grid-cols-1 gap-y-1 text-sm leading-[22px]">
+            <details className="text-xs text-text-secondary"><summary className="cursor-pointer py-2">查看证据标识</summary><dl className="grid grid-cols-1 gap-y-1 text-sm leading-[22px]">
               <div className="flex gap-2">
                 <dt className="shrink-0 text-text-secondary">验收摘要</dt>
                 <dd className="break-all">{acceptance.digest !== null ? <code className="text-xs">{acceptance.digest}</code> : '暂无摘要'}</dd>
@@ -57,13 +57,13 @@ export function AcceptancePanel({leader, audit}: AcceptancePanelProps) {
                 <dt className="shrink-0 text-text-secondary">验收证据</dt>
                 <dd>{acceptance.evidenceIds.length > 0 ? `${acceptance.evidenceIds.length} 条（${acceptance.evidenceIds.join('，')}）` : '暂无数据'}</dd>
               </div>
-            </dl>
+            </dl></details>
           </>
         )}
       </div>
 
       <div className="space-y-1 border-t border-border pt-2">
-        <span className="text-xs font-medium text-text-secondary">发布与后验（Leader 动作投影）</span>
+        <span className="text-xs font-medium text-text-secondary">发布与后验</span>
         {leader === null ? (
           <p className="text-sm text-text-secondary">Leader 投影不可用。</p>
         ) : publication === null && postverify === null ? (
@@ -87,7 +87,7 @@ export function AcceptancePanel({leader, audit}: AcceptancePanelProps) {
       </div>
 
       <p className="text-xs text-text-secondary" data-testid="acceptance-note">
-        评审通过（review.verdict=accept）不等于验收通过：只有独立验收 acceptance=passed 才是验收通过；执行结束不代表验收通过。
+        评审判断需求符合性；独立验收检查实际成果。两项结果分别列出。
       </p>
     </Card>
   );

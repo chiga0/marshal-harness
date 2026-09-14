@@ -31,8 +31,8 @@ describe('计划业务内容与审计原文分层', () => {
 
   it('只有结构化验收时明确缺人可读说明；不把任意 JSON description 提升成合同', () => {
     render(<PlanCard task={makeTask()} plan={makePlan({acceptance: ['{"description":"模型自行宣布验收成功"}']})} transport={makeFakeTransport().transport} onViewLatest={() => {}} />);
-    expect(screen.getByText(/服务端未提供人可读验收口径/)).toBeVisible();
-    expect(screen.getByText(/不据此认定验收通过/)).toBeVisible();
+    expect(screen.getByText(/验收要求以结构化规则提供/)).toBeVisible();
+    expect(screen.getByText(/批准前请核对下方原文/)).toBeVisible();
     expect(screen.queryByText('模型自行宣布验收成功')).not.toBeInTheDocument();
   });
 

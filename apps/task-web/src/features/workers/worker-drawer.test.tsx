@@ -15,7 +15,7 @@ describe('Worker 抽屉焦点与层叠（UI-09）', () => {
   it.each(['completed', 'failed', 'cancelled'] as const)('%s 保留原始进展与来源并明确它是历史观察', status => {
     const {transport} = makeFakeTransport();
     wrap(<WorkerDrawer taskRevision={7} worker={makeWorker({status, phase: 'terminal', progress: {summary: 'agent.running', source: 'agent', tool: 'read:completed'}})} transport={transport} onClose={() => {}} onChanged={() => {}} />);
-    const observation = screen.getByRole('region', {name: '最后收到的进展'});
+    const observation = screen.getByRole('region', {name: '最后收到的进展', hidden:true});
     expect(observation).toHaveTextContent('执行已结束；以下为历史观察，不代表当前仍在运行。');
     expect(within(observation).getByText('agent.running')).toBeInTheDocument();
     expect(within(observation).getByText('agent')).toBeInTheDocument();

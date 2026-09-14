@@ -12,6 +12,10 @@ const {Acceptance, Artifact, Audit, AuditDecision, AuditDisclosurePolicy, Conten
   LeaderAuthorization, LeaderRequest, LeaderReview, LeaderView, Progress, Prompt, Rates, RepairAudit, Revision, Usage, Worker, WorkerAudit} = contract.components.schemas;
 const schemas: Record<string, Schema> = {Acceptance, Artifact, Audit, AuditDecision, AuditDisclosurePolicy, ContentRejection, Digest, Id, InputObservation,
   LeaderAuthorization, LeaderRequest, LeaderReview, LeaderView, Progress, Prompt, Rates, RepairAudit, Revision, Usage, Worker, WorkerAudit};
+for (const key of ['ObservationFrame', 'WorkerObservation']) {
+  const schema = (contract.components.schemas as Record<string, Schema>)[key];
+  if (schema) schemas[key] = schema;
+}
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const bytes = (text: string) => new TextEncoder().encode(text).length;
 const wellFormed = (text: string) => !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(text);
@@ -49,7 +53,7 @@ export function matchesContract(value: unknown, schema: Schema | string, depth =
   return true;
 }
 
-interface Prompt {workerId: string; text: string; source: string; contextRefs: string[]; observation?: {
+export interface Prompt {workerId: string; text: string; source: string; contextRefs: string[]; observation?: {
   stage: string; coverage: string; promptDigest: string | null; promptBytes: number | null; preparedAt: string | null;
   handedOffAt: string | null; policy: unknown; snapshot: ArtifactRecord | null; previewTruncated: boolean;
 }}
@@ -87,4 +91,10 @@ export function observedInputIds(value: unknown, taskId: string): string[] | nul
 export function checkArtifact(value: ArtifactRecord, id: string, taskId: string | null, input = false): ArtifactRecord {
   if (!matchesContract(value, 'Artifact') || value.id !== id || value.taskId !== taskId || input && value.kind !== 'input') throw failure();
   return value;
+}
+
+export function observedPrompt(value: unknown, taskId: string, workerId: string): Prompt | null {
+  if (value === null || value === undefined) return null;
+  observedInputIds(value, taskId);
+  return (value as Audit).prompts.find(prompt => prompt.workerId === workerId) ?? null;
 }

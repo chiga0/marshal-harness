@@ -113,10 +113,10 @@ export function GraphView({graph, plan, workers}: {graph: GraphRecord; plan: Pla
           })}
         </svg>
         {positions.map(({node, x, y}) => <button key={node.id} type="button" aria-pressed={selected === node.id} onClick={() => setSelected(node.id)} aria-label={`查看节点 ${node.id}，${ROLE[node.role]}，${STATUS[node.status]}`} style={{left: x, top: y, width: 240, height: 128}} className="absolute flex flex-col gap-1 overflow-hidden rounded-md border border-border bg-surface p-3 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent aria-pressed:border-accent">
-          <span className="w-full truncate font-medium">{node.id} · {ROLE[node.role]}</span>
+          <span className="w-full truncate font-medium">{goalFor(node.id,node.role) ?? ROLE[node.role]}</span>
           <StatusBadge machine={node.status} label={STATUS[node.status]} tone={tone(node.status)} />
           <span className="line-clamp-2 text-xs text-text-secondary">{goalFor(node.id, node.role) ?? '目标暂不可用'}</span>
-          <span className="text-xs text-text-secondary">{node.workerIds.length} 个 Worker 引用</span>
+          <span className="text-xs text-text-secondary">{ROLE[node.role]} · {node.workerIds.length} 次执行</span>
         </button>)}
       </div>
     </div> : <ul className="space-y-2" aria-label="任务节点列表">

@@ -57,7 +57,7 @@ function DisconnectButton({className}: {className?: string}) {
   const {disconnect} = useConnection();
   return (
     <Button variant="ghost" size="sm" onClick={disconnect} className={cn('justify-start text-text-secondary', className)}>
-      断开清理（token 不入存）
+      断开连接
     </Button>
   );
 }
@@ -126,7 +126,7 @@ export function ShellLayout({children, rightPanel}: {children: ReactNode; rightP
 
       <div className="flex min-h-0 flex-1">
         {!compact ? (
-          <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-surface" aria-label="一级导航">
+          <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-app-bg" aria-label="一级导航">
             <div className="px-4 py-4">
               <div className="mb-6"><Brand /></div>
               <Link to="/tasks/new" className="mb-6 flex min-h-11 items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"><Plus aria-hidden className="h-4 w-4" />新建任务</Link>

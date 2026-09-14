@@ -88,7 +88,7 @@ function TaskRow({task, mode}: {task: TaskRecord; mode: ViewMode}) {
             期限 {formatDateTime(task.deadlineAt)}
           </span>
         ) : null}
-        <span className="w-full min-w-0 [overflow-wrap:anywhere] text-xs leading-[18px] text-text-secondary">ID：{task.id}</span>
+        <details className="text-xs text-text-secondary"><summary className="cursor-pointer">任务标识</summary><code className="break-all [overflow-wrap:anywhere]">ID：{task.id}</code></details>
       </div>
     </li>
   );
@@ -152,7 +152,7 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
   if (isError && !data && isUnauthorizedError(error)) {
     return (
       <section aria-label="任务列表" className="flex flex-col gap-4 p-6">
-        <h1 className="text-[22px] font-semibold leading-[30px]">任务</h1>
+        <h1 className="text-[28px] font-semibold leading-[36px] tracking-tight">任务</h1>
         <Alert variant="danger" title="凭据已失效（401）">
           查询层已清理内存 token。请重新连接后继续；未决请求不会被自动重放。
           <div className="mt-3">
@@ -164,10 +164,10 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
   }
 
   return (
-    <section aria-label="任务列表" className="flex min-w-0 flex-col gap-4 p-4 sm:p-6">
+    <section aria-label="任务列表" className="mx-auto flex w-full max-w-[1440px] min-w-0 flex-col gap-6 p-4 sm:p-6 lg:p-10">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-[22px] font-semibold leading-[30px]">任务</h1>
+          <h1 className="text-[28px] font-semibold leading-[36px] tracking-tight">任务</h1>
           {!empty ? <p className="mt-1 text-sm text-text-secondary">跟进执行，处理等待，查看交付。</p> : null}
         </div>
         <div className="flex items-center gap-2">
@@ -185,6 +185,7 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
         </div>
       </div>
 
+      {!empty && data ? <div className="workspace-metrics" aria-label="已加载任务概况"><div><span>需要处理</span><strong>{pendingCount}</strong></div><div><span>正在推进</span><strong>{items.filter(t => ['running','planning','queued'].includes(t.status)).length}</strong></div><div><span>已完成</span><strong>{items.filter(t => t.status === 'completed').length}</strong></div><div><span>失败或需干预</span><strong>{items.filter(t => ['failed','intervention'].includes(t.status)).length}</strong></div><p>仅统计已加载的 {items.length} 项</p></div> : null}
       {!empty ? <div className="flex flex-wrap items-end gap-2">
         <div className="min-w-0 basis-56 flex-1">
           <Label htmlFor="task-filter-text">筛选已加载任务</Label>
@@ -266,7 +267,7 @@ export function TaskListView({transport, onReconnect}: TaskListViewProps) {
       {empty ? (
         <div data-testid="task-empty" className="mx-auto flex min-h-72 w-full max-w-lg flex-col items-center justify-center px-4 py-8 text-center sm:py-12">
           <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-lg bg-surface-muted text-text-secondary"><ClipboardList aria-hidden className="h-7 w-7" /></div>
-          <h2 className="text-[22px] font-semibold leading-[30px] text-text-primary">还没有任务。</h2>
+          <h2 className="text-[28px] font-semibold leading-[36px] tracking-tight text-text-primary">还没有任务。</h2>
           <p className="mt-2 max-w-xs [overflow-wrap:anywhere] text-sm leading-[22px] text-text-secondary">从一个明确的需求开始。执行进展、待处理问题和交付成果，都会汇集在这里。</p>
           <div className="mt-6">
             <Link

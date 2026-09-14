@@ -94,6 +94,18 @@ export interface WorkerAudit {
   waitingSource: 'unavailable';
 }
 
+export interface ObservationFrame {
+  profile: 'task-observation/v1';
+  activity: 'starting' | 'waiting' | 'thinking' | 'output' | 'tool' | 'retrying' | 'compacting' | 'stopping' | 'terminal' | 'unknown';
+  observedAt: string;
+  sequence: number;
+  tool: {id: string; kind: 'read' | 'edit' | 'delete' | 'move' | 'search' | 'execute' | 'think' | 'fetch' | 'other'; status: 'pending' | 'in_progress' | 'completed' | 'failed'} | null;
+  model: {id: string; source: 'provider-reported'} | null;
+  usage: {inputTokens: number | null; outputTokens: number | null; totalTokens: number | null; source: 'provider-reported'; complete: boolean} | null;
+  publicText: string;
+}
+export interface WorkerObservation extends ObservationFrame {history: ObservationFrame[]; historyTruncated: boolean}
+
 export interface WorkerRecord {
   id: WorkerId;
   taskId: TaskId;
@@ -109,6 +121,7 @@ export interface WorkerRecord {
   progress: Progress | null;
   usage: Usage;
   audit?: WorkerAudit;
+  observation?: WorkerObservation;
 }
 
 export interface WorkersResponse {
@@ -533,6 +546,7 @@ export interface AcceptanceRecord {
 
 export interface TaskAuditRecord {
   taskId: TaskId;
+  usage?: Usage;
   acceptance: AcceptanceRecord;
 }
 

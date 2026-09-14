@@ -1,5 +1,5 @@
 // UI-04：评审（leader.review）、独立验收（audit.acceptance）、交付、后验分开呈现；
-// acceptance=passed 才是验收通过，评审 accept 不等于验收通过，不以 review 推导验收。
+// 独立验收检查实际成果，评审 accept 不等于验收通过，不以 review 推导验收。
 import {describe, expect, it} from 'vitest';
 import {render, screen} from '@testing-library/react';
 import type {AcceptanceStatus} from '@/lib/transport/types';
@@ -34,7 +34,7 @@ describe('独立验收面板（UI-04）', () => {
     renderPanel('failed');
     expect(screen.getByTestId('review-readout')).toHaveTextContent('评审通过');
     expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('验收未通过');
-    expect(screen.getByTestId('acceptance-note')).toHaveTextContent('acceptance=passed 才是验收通过');
+    expect(screen.getByTestId('acceptance-note')).toHaveTextContent('独立验收检查实际成果');
   });
 
   it('Review accept + acceptance passed：验收摘要与证据数量可见', () => {
@@ -52,7 +52,7 @@ describe('独立验收面板（UI-04）', () => {
 
   it('无 publication/postverify 不推导未交付：文件交付引导至成果页', () => {
     renderPanel('passed');
-    expect(screen.getByText('发布与后验（Leader 动作投影）')).toBeInTheDocument();
+    expect(screen.getByText('发布与后验')).toBeInTheDocument();
     expect(screen.getByText('无发布/后验动作；文件交付请查看成果页')).toBeInTheDocument();
     expect(screen.queryByText('暂无交付/后验动作。')).not.toBeInTheDocument();
     expect(screen.queryByTestId('publication-readout')).not.toBeInTheDocument();

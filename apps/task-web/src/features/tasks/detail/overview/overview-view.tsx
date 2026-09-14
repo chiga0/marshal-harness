@@ -3,6 +3,8 @@
 
 import {Link} from 'react-router-dom';
 import type {ReactNode} from 'react';
+import {LeaderDecision} from './leader-decision';
+import {TaskJourney, TeamSummary} from './task-journey';
 import {Card} from '@/components/ui/card';
 import type {
   LeaderRecord,
@@ -56,7 +58,9 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
   const unresolvedWorkers = (workers ?? []).filter(worker => ['unknown', 'stopping'].includes(worker.status));
 
   return (
-    <div className="space-y-4" data-testid="overview-view">
+    <div className="space-y-6" data-testid="overview-view">
+      <TaskJourney task={task} leader={leader} workers={workers} audit={audit} />
+      <div className="task-workspace"><div className="min-w-0 space-y-6">
       {intervention ? (
         <Card role="alert" aria-label="系统执行异常" className="space-y-3 border-danger" data-testid="intervention-notice">
           <h2 className="text-base font-semibold text-danger">系统执行异常，需要排查</h2>
@@ -126,16 +130,17 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
         </section>
       </section>
 
-      <QuestionHistory taskId={task.id} questions={questions} />
 
-      <section aria-label="当前进展" className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <LeaderProjection leader={leader} workers={workers ?? []} />
-        <AcceptancePanel leader={leader} audit={audit} />
+
+      <section aria-label="当前进展" className="space-y-6">
+        <LeaderDecision leader={leader} transport={transport} />
+        <details className="workspace-disclosure"><summary>团队协调与审计信息</summary><LeaderProjection leader={leader} workers={workers ?? []} /></details>
+
       </section>
 
-      {graph}
+      {graph ? <details className="workspace-disclosure"><summary>工作依赖与执行路径</summary><div className="pt-4">{graph}</div></details> : null}
 
-      <section aria-label="原需求">
+      <details className="workspace-disclosure" aria-label="原需求"><summary>需求与任务信息</summary>
         <Card className="space-y-2">
           <h2 className="text-base font-semibold leading-6">原需求</h2>
           <p className="whitespace-pre-wrap text-sm leading-[22px]" data-testid="task-intent">{task.intent}</p>
@@ -149,7 +154,7 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
             <p className="text-sm text-danger">失败代码：<code>{task.code}</code></p>
           ) : null}
         </Card>
-      </section>
+      </details>
 
       <section aria-label="成果摘要">
         <Card className="space-y-2" data-testid="delivery-summary">
@@ -167,7 +172,9 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
         </Card>
       </section>
 
+      <details className="workspace-disclosure"><summary>已处理的问题与答复</summary><QuestionHistory taskId={task.id} questions={questions} /></details>
       <TaskControls task={task} transport={transport} onChanged={onChanged} />
+      </div><aside className="min-w-0 space-y-6 border-border xl:border-l xl:pl-6"><TeamSummary task={task} plan={plan} workers={workers} /><AcceptancePanel leader={leader} audit={audit} /></aside></div>
     </div>
   );
 }

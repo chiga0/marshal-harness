@@ -80,8 +80,8 @@ export function PlanCard({task, plan, transport, onViewLatest}: PlanCardProps) {
       {plan.acceptance.length > 0 ? (
         <section aria-label="验收口径" className="space-y-1 text-sm leading-[22px]">
           <h3 className="font-medium">验收口径</h3>
-          {readableAcceptance.length ? <ul className="list-disc space-y-1 pl-5">{readableAcceptance.map((value, index) => <li key={index} className="whitespace-pre-wrap break-words">{value}</li>)}</ul> : <p className="text-text-secondary">服务端未提供人可读验收口径，请展开技术与审计详情核对结构化原文。</p>}
-          {structuredAcceptance.length > 0 ? <p className="text-xs text-text-secondary">另有 {structuredAcceptance.length} 条结构化验收原文，完整保留在下方技术与审计详情中；批准前请一并展开核对。界面不解释这些 JSON 的业务含义，也不据此认定验收通过。</p> : null}
+          {readableAcceptance.length ? <ul className="list-disc space-y-1 pl-5">{readableAcceptance.map((value, index) => <li key={index} className="whitespace-pre-wrap break-words">{value}</li>)}</ul> : <p className="text-text-secondary">验收要求以结构化规则提供，请在批准前核对下方完整原文。</p>}
+          {structuredAcceptance.length > 0 ? <p className="text-xs text-text-secondary">另有 {structuredAcceptance.length} 条结构化验收规则，批准前请核对下方原文。</p> : null}
         </section>
       ) : null}
       {plan.assumptions.length > 0 ? (
@@ -89,7 +89,7 @@ export function PlanCard({task, plan, transport, onViewLatest}: PlanCardProps) {
       ) : null}
       {plan.interaction ? <p className="text-xs text-text-secondary">问答数量上限：{plan.interaction.maxQuestions} 问</p> : null}
 
-      <details className="rounded border border-border p-3 text-xs" data-testid="plan-technical-details">
+      <details open={canApprove && structuredAcceptance.length > 0} className="rounded border border-border p-3 text-xs" data-testid="plan-technical-details">
         <summary className="min-h-11 cursor-pointer py-3 font-medium text-text-secondary focus-visible:outline focus-visible:outline-2">计划技术与审计详情{structuredAcceptance.length ? `（含 ${structuredAcceptance.length} 条结构化验收原文）` : ''}</summary>
         <div className="space-y-3 break-words">
           <p>计划摘要：<code className="break-all" data-testid="plan-digest">{plan.digest}</code></p>

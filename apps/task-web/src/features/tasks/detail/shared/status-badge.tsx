@@ -13,13 +13,13 @@ export interface StatusBadgeProps {
   showMachine?: boolean;
 }
 
-export function StatusBadge({machine, label, tone = 'secondary', className, showMachine = true}: StatusBadgeProps) {
+export function StatusBadge({machine, label, tone = 'secondary', className, showMachine = false}: StatusBadgeProps) {
   return (
     <span className={cn('inline-flex flex-wrap items-center gap-1.5', className)}>
-      <Badge variant={tone as BadgeProps['variant']}>{label}</Badge>
+      <Badge title={machine} variant={tone as BadgeProps['variant']}>{label}</Badge>
       {showMachine ? (
         <code className="text-xs text-text-secondary" data-testid="machine-state">{machine}</code>
-      ) : null}
+      ) : <span hidden data-testid="machine-state">{machine}</span>}
     </span>
   );
 }

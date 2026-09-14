@@ -26,7 +26,7 @@ function renderView(workers = [makeWorker()], overrides: Partial<Transport> = {}
 describe('团队视图（P08 / E23）', () => {
   it.each(['completed', 'failed', 'cancelled'] as const)('%s 的 agent.running 是历史观察而非当前进展', status => {
     renderView([makeWorker({status, phase: 'terminal', progress: {summary: 'agent.running', source: 'agent', tool: null}})]);
-    expect(screen.getByRole('columnheader', {name: '最后收到的进展'})).toBeInTheDocument();
+    expect(screen.getByRole('list', {name: '执行成员工作包'})).toBeInTheDocument();
     const row = screen.getByTestId('worker-row');
     expect(row).toHaveTextContent('执行已结束；以下为历史观察');
     expect(within(row).getByText('agent.running')).toHaveAttribute('title', 'agent.running');
@@ -74,7 +74,7 @@ describe('团队视图（P08 / E23）', () => {
   it('点击行打开抽屉明细：用量不可用如实显示，审计字段如实空态', async () => {
     renderView();
     const user = userEvent.setup();
-    await user.click(screen.getByText('east'));
+    await user.click(screen.getByRole('link', {name: '明细'}));
     const drawer = await screen.findByTestId('worker-drawer');
     expect(within(drawer).getByTestId('usage-unavailable')).toHaveTextContent('不可用');
     expect(within(drawer).getByText('pi')).toBeInTheDocument();
@@ -86,7 +86,7 @@ describe('团队视图（P08 / E23）', () => {
   it('单 Worker 取消走 cancelWorker（workerId + 任务 revision + 幂等键），与取消任务严格分开', async () => {
     const {calls} = renderView();
     const user = userEvent.setup();
-    await user.click(screen.getByText('east'));
+    await user.click(screen.getByRole('link', {name: '明细'}));
     const drawer = await screen.findByTestId('worker-drawer');
     await user.click(within(drawer).getByTestId('cancel-worker-open'));
     const dialog = await screen.findByRole('dialog', {name: /取消 Worker/});
@@ -111,7 +111,7 @@ describe('团队视图（P08 / E23）', () => {
       }) as Transport['cancelWorker'],
     });
     const user = userEvent.setup();
-    await user.click(screen.getByText('east'));
+    await user.click(screen.getByRole('link', {name: '明细'}));
     const drawer = await screen.findByTestId('worker-drawer');
     await user.click(within(drawer).getByTestId('cancel-worker-open'));
     const dialog = await screen.findByRole('dialog', {name: /取消 Worker/});
@@ -124,7 +124,7 @@ describe('团队视图（P08 / E23）', () => {
   it('终态 Worker 不再提供取消入口', async () => {
     renderView([makeWorker({status: 'completed', finishedAt: '2026-09-10T02:00:00.000Z'})]);
     const user = userEvent.setup();
-    await user.click(screen.getByText('east'));
+    await user.click(screen.getByRole('link', {name: '明细'}));
     const drawer = await screen.findByTestId('worker-drawer');
     expect(within(drawer).getByText(/已到达终态/)).toBeInTheDocument();
     expect(within(drawer).queryByTestId('cancel-worker-open')).toBeNull();

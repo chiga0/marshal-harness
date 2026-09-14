@@ -58,11 +58,36 @@ beforeEach(() => {
 });
 
 describe('TaskNewComposer 客户端校验', () => {
+  it('默认文本上下文按原文进入context.text，不要求用户编写JSON', async () => {
+    const user = userEvent.setup(), api = makeApi();
+    renderComposer(api);
+    expect(screen.queryByLabelText('附加上下文（JSON）')).toBeNull();
+    await user.type(screen.getByLabelText(/需求内容/), '生成报告');
+    fireEvent.change(screen.getByLabelText('附加上下文'), {target:{value:'请保留 {业务原文} 与换行\n不要改变口径'}});
+    await user.click(screen.getByRole('button', {name:'创建任务'}));
+    await waitFor(() => expect(api.createTask).toHaveBeenCalledTimes(1));
+    expect(api.createTask.mock.calls[0]?.[0].context).toEqual({text:'请保留 {业务原文} 与换行\n不要改变口径'});
+  });
+  it('切换高级方式保留各自草稿，只提交选中方式', async () => {
+    const user=userEvent.setup(),api=makeApi();
+    renderComposer(api);
+    fireEvent.change(screen.getByLabelText('附加上下文'), {target:{value:'自然文本'}});
+    await user.click(screen.getByRole('button',{name:'高级 JSON'}));
+    fireEvent.change(screen.getByLabelText('附加上下文（JSON）'), {target:{value:'{"text":"高级输入"}'}});
+    await user.click(screen.getByRole('button',{name:'文本'}));
+    expect(screen.getByLabelText('附加上下文')).toHaveValue('自然文本');
+    await user.type(screen.getByLabelText(/需求内容/),'输出文本');
+    await user.click(screen.getByRole('button',{name:'创建任务'}));
+    await waitFor(()=>expect(api.createTask).toHaveBeenCalledTimes(1));
+    expect(api.createTask.mock.calls[0]?.[0].context).toEqual({text:'自然文本'});
+  });
+
   it.each([0, 1])('合计33引用（含%i附件）提交前拒绝且可修改至合法32项', async fileCount => {
     const user = userEvent.setup();
     const api = makeApi();
     renderComposer(api);
     const intent = screen.getByLabelText(/需求内容/);
+    await user.click(screen.getByRole('button', {name: '高级 JSON'}));
     const context = screen.getByLabelText(/附加上下文/);
     await user.type(intent, '保留的需求');
     const refs = Array.from({length: 33 - fileCount}, (_, index) => 'input-' + index);
@@ -82,7 +107,7 @@ describe('TaskNewComposer 客户端校验', () => {
     expect((globalThis as {__idemKeyState?: {seq: number}}).__idemKeyState?.seq).toBe(keysBeforeSubmit);
     fireEvent.change(context, {target: {value: JSON.stringify({text: '保留的上下文', inputRefs: refs.slice(1)})}});
     await user.click(screen.getByRole('button', {name: '创建任务'}));
-    await screen.findByText('任务已创建，服务端返回受理回执');
+    await screen.findByText('任务已创建');
     expect(api.createInput).toHaveBeenCalledTimes(fileCount);
     expect(api.createTask).toHaveBeenCalledTimes(1);
     expect(api.createTask.mock.calls[0]![0].context?.inputRefs).toHaveLength(32);
@@ -162,6 +187,7 @@ describe('TaskNewComposer 客户端校验', () => {
     renderComposer(api);
     await user.type(screen.getByLabelText(/需求内容/), '生成对账报告');
     // user.type 会把 { / [ 解释为控制符，JSON 文本用 paste 输入
+    if (!screen.queryByLabelText('附加上下文（JSON）')) await user.click(screen.getByRole('button', {name: '高级 JSON'}));
     await user.click(screen.getByLabelText(/附加上下文/));
     await user.paste('{not json');
     await user.click(screen.getByRole('button', {name: '创建任务'}));
@@ -169,6 +195,7 @@ describe('TaskNewComposer 客户端校验', () => {
     expect(api.createTask).not.toHaveBeenCalled();
 
     await user.clear(screen.getByLabelText(/附加上下文/));
+    if (!screen.queryByLabelText('附加上下文（JSON）')) await user.click(screen.getByRole('button', {name: '高级 JSON'}));
     await user.click(screen.getByLabelText(/附加上下文/));
     await user.paste('["x"]');
     await user.click(screen.getByRole('button', {name: '创建任务'}));
@@ -238,7 +265,7 @@ describe('TaskNewComposer 提交流程', () => {
 
     releaseCreate({id: 'task-9'});
     const receipt = await screen.findByRole('status');
-    expect(receipt).toHaveTextContent('任务已创建，服务端返回受理回执');
+    expect(receipt).toHaveTextContent('任务已创建');
     expect(receipt).toHaveTextContent('任务 ID：task-9');
     expect(screen.getByRole('link', {name: '查看任务详情'})).toHaveAttribute('href', '/tasks/task-9');
   });
