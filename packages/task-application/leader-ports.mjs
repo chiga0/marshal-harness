@@ -305,7 +305,7 @@ export function renderLeaderPrompt(input) {
     work: references.selectedNodeIds.length && sha(references.selectionDigest) ? example({type: 'work', kind: 'review', nodeIds: references.selectedNodeIds, selectionDigest: references.selectionDigest}) : missing,
     repair: references.repairBases.length ? example({type: 'repair', nodeIds: references.repairBases[0].nodeId ? [references.repairBases[0].nodeId] : references.selectedNodeIds,
       basis: {kind: references.repairBases[0].kind, digest: references.repairBases[0].digest}, feedback: '依据原负面证据说明精确修正要求'}) : missing,
-    deliver: !deliveryReady && references.deliveries.length && sha(references.acceptanceDigest) && sha(references.reviewDigest) ? example({type: 'deliver',
+    deliver: deliveryReady ? '已完成交付，不重复deliver；根据冻结证据选择conclude。' : references.deliveries.length && sha(references.acceptanceDigest) && sha(references.reviewDigest) ? example({type: 'deliver',
       artifactId: references.deliveries[0].artifactId, acceptanceDigest: references.acceptanceDigest, reviewDigest: references.reviewDigest}) : missing,
     conclude: example({type: 'conclude', outcome: 'succeeded', summary: '依据已完成的交付及后验说明整体结果', basisDigests: references.conclusionBasisDigests}),
   };
