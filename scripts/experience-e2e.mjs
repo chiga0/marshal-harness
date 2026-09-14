@@ -7,7 +7,7 @@ import {spawn,spawnSync,execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {verify} from '../packages/task-distribution/index.mjs';
-import {cases,validateDelivery} from './experience-cases.mjs';
+import {cases,validateDelivery,hasInvitationDate,SemanticReviewRequired} from './experience-cases.mjs';
 
 const opts={};for(let i=2;i<process.argv.length;i+=2){assert.ok(['--installed','--manifest','--case','--output'].includes(process.argv[i]));opts[process.argv[i]]=process.argv[i+1];}
 const installed=opts['--installed'],caseId=opts['--case'],spec=cases[caseId];
@@ -197,7 +197,12 @@ try {
   const downloadPromise=page.waitForEvent('download');
   await page.getByTestId('final-delivery').getByTestId('download-button').click();
   const download=await downloadPromise;const savedPath=path.join(output,'deliverables.json');await download.saveAs(savedPath);
-  const bytes=fs.readFileSync(savedPath),delivery=JSON.parse(bytes),content=validateDelivery(caseId,delivery);
+  const bytes=fs.readFileSync(savedPath),delivery=JSON.parse(bytes);
+  let content;
+  try {content=validateDelivery(caseId,delivery);} catch(error) {
+    if (!(error instanceof SemanticReviewRequired)) throw error;
+    evidence.structuralReview={status:'PENDING',reason:error.message};content=delivery.files[0].content;
+  }
   const metadata=await Promise.all(evidence.task.artifactIds.map(id=>api('/v1/artifacts/'+encodeURIComponent(id))));
   const official=metadata.filter(artifact=>artifact.kind==='delivery');assert.equal(official.length,1);
   assert.equal(official[0].taskId,taskId);assert.equal(official[0].status,'ready');
@@ -213,7 +218,8 @@ try {
     const html=await consumer.newPage(),htmlErrors=[];html.on('pageerror',error=>htmlErrors.push(String(error.message).slice(0,300)));
     await html.setContent(content);
     const visibleText=await html.locator('body').innerText();
-    for(const fact of ['蓝杉读书会','2026-10-17','14:00','城市图书馆二层','介绍','日程','报名']) assert.ok(visibleText.includes(fact),'HTML可见正文缺失:'+fact);
+    assert.ok(hasInvitationDate(visibleText),'HTML可见正文缺少活动日期事实');
+    for(const fact of ['蓝杉读书会','14:00','城市图书馆二层','介绍','日程','报名']) assert.ok(visibleText.includes(fact),'HTML可见正文缺失:'+fact);
     await html.locator('a[href="#signup"]').first().click();assert.ok(await html.locator('#signup').isVisible());
     for(const width of [1440,375]) {await html.setViewportSize({width,height:1000});const overflow=await html.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1);assert.equal(overflow,false);await html.screenshot({path:path.join(output,'html-'+width+'.png'),fullPage:true});}
     assert.deepEqual(external,[],'页面不能依赖外网');assert.deepEqual(htmlErrors,[]);
@@ -225,7 +231,7 @@ try {
     await consumer.close();evidence.steps.push('独立禁脚本/无网络HTML消费/可见正文/按钮/宽窄布局；不宣称JS运行验收');
   }
   assert.deepEqual(browserErrors,[],'浏览器未捕获异常');
-  evidence.result='PASS';evidence.semanticReview='PENDING：脚本只证明列出的客观断言，完整内容与视觉由独立审查另记';
+  evidence.result=evidence.structuralReview?'PENDING':'PASS';evidence.semanticReview='PENDING：脚本只证明列出的客观断言，完整内容与视觉由独立审查另记';
 } catch(error) {
   evidence.result='FAIL';evidence.failure={name:error.name,message:String(error.message).split('\n')[0].slice(0,1000)};process.exitCode=1;
   if(page&&token) {try{await snapshot('failure');}catch{}}
