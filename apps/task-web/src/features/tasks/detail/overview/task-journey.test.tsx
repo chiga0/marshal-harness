@@ -5,6 +5,15 @@ import {TaskJourney,workerTitle,currentStage,taskFocus} from './task-journey';
 import {makeTask,makeLeader,makeWorker} from '../testing/fixtures';
 
 describe('任务阶段以当前可行动事实表达',()=>{
+  it('无计划的Leader合同拒绝直接说明原因，不虚构过去失败阶段',()=>{
+    const task=makeTask({status:'failed',phase:'terminal',plan:null,code:'invalid_leader_decision'});
+    render(<MemoryRouter><TaskJourney task={task} leader={null} workers={[]} audit={null}/></MemoryRouter>);
+    expect(screen.getByTestId('task-failure-explanation')).toHaveTextContent('Leader 提交的决定未通过合同校验');
+    expect(screen.getByTestId('task-failure-explanation')).toHaveTextContent('尚未产生可用的执行计划');
+    expect(screen.getByText('invalid_leader_decision').closest('details')).not.toHaveAttribute('open');
+    expect(currentStage(task,null)).toBeNull();
+  });
+
   it('同一Leader多次记录按执行序号呈现，完成后可直接看成果',()=>{
     expect(workerTitle(makeWorker({role:'planner',nodeId:'managed-leader-example',attempt:10}))).toBe('Leader 决策 · 执行 10');
     const task=makeTask({status:'completed'});

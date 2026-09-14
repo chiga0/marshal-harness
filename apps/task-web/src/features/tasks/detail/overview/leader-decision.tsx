@@ -25,7 +25,7 @@ export function leaderActionLabel(action: Record<string, unknown>): string {
   if (action.type === 'work') return ({execute:'安排成员执行',review:'组织独立评审',verify:'安排独立验收'} as Record<string,string>)[String(action.kind)] ?? '安排团队工作';
   return actionLabels[String(action.type)] ?? '已记录团队行动';
 }
-function canonical(value: unknown, depth = 0): string {
+export function canonical(value: unknown, depth = 0): string {
   if (depth > 64) throw new Error('decision_depth');
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value))
