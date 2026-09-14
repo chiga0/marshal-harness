@@ -17,12 +17,29 @@ async function fixture(change:Record<string,unknown>={}) {
   return {leader,transport,content,artifact,report};
 }
 describe('当前独立评审理由',()=>{
-  it('展示精确原summary和发现，原文及技术ID折叠',async()=>{
+  it('短原文直接显示，修改建议默认展开，技术ID折叠',async()=>{
     const f=await fixture();
     render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><ReviewExplanation leader={f.leader} transport={f.transport}/></QueryClientProvider>);
     expect(await screen.findByTestId('review-summary')).toHaveTextContent(f.report.summary);
-    expect(screen.getByText('只记录路径和哈希，无法恢复全文。').closest('details')).not.toHaveAttribute('open');
+    expect(screen.getByText('只记录路径和哈希，无法恢复全文。').closest('details')).toHaveAttribute('open');
     expect(within(screen.getByTestId('review-explanation')).getByText(/评审记录：/).closest('details')).not.toHaveAttribute('open');
+  });
+  it('长自然原文仅展示有界节选，完整原文闭合保存',async()=>{
+    const f=await fixture({summary:'已经逐条核对原材料及候选内容。'.repeat(30)});
+    render(<QueryClientProvider client={new QueryClient()}><ReviewExplanation leader={f.leader} transport={f.transport}/></QueryClientProvider>);
+    const preview=await screen.findByTestId('review-summary');
+    expect(preview.textContent!.length).toBeLessThan(175);
+    expect(preview).toHaveTextContent('原文节选');
+    expect(screen.getByTestId('review-full-summary')).not.toHaveAttribute('open');
+    expect(screen.getByTestId('review-full-summary')).toHaveTextContent(f.report.summary);
+  });
+  it('带技术hash原文只提供展开入口，需修改行动仍默认可读',async()=>{
+    const f=await fixture({summary:'已核对 digest sha256:'+'a'.repeat(64)+'，'+'逐项说明。'.repeat(80)});
+    render(<QueryClientProvider client={new QueryClient()}><ReviewExplanation leader={f.leader} transport={f.transport}/></QueryClientProvider>);
+    expect(await screen.findByTestId('review-verdict')).toHaveTextContent('需要修改 · 1 项评审发现');
+    expect(screen.queryByTestId('review-summary')).not.toBeInTheDocument();
+    expect(screen.getByTestId('review-full-summary')).not.toHaveAttribute('open');
+    expect(screen.getByText('明确只读原文件或内容副本的数据来源。').closest('details')).toHaveAttribute('open');
   });
   it('摘要不匹配在读取正文之前拒绝',async()=>{const f=await fixture();f.leader.review!.digest='sha256:'+'0'.repeat(64);await expect(readReviewExplanation(f.leader,f.transport)).rejects.toThrow('review_digest');expect(f.content).not.toHaveBeenCalled();});
   it('跨任务制品在读取正文之前拒绝',async()=>{const f=await fixture();f.transport.getArtifact=async()=>({...f.artifact,taskId:'another-task'});await expect(readReviewExplanation(f.leader,f.transport)).rejects.toThrow();expect(f.content).not.toHaveBeenCalled();});
