@@ -36,6 +36,7 @@
 | [ADR0102](adr/0102-generic-review-wire-and-new-install-default.md) | 新安装的通用文件配置分别映射 Leader/Review 运输封套，保留原完整输入与独立验收 | 旧设置不静默切换；配置语义与当前安装路径分开；新配置不扩展外部执行权限 |
 | [ADR0103](adr/0103-execution-observability.md) | 显式受信策略留存 Marshal 实际输入与 Provider 公开活动、模型、用量 | 观察不构成权威结果；缺失不估算，隐藏推理不留存；输入留存与 startProtocol 组合不支持，旧关闭配置保持原形状 |
 | [ADR0104](adr/0104-bounded-leader-protocol-correction.md) | 显式配置下，Leader 至多一次严格 JSON 格式重提，原失败与后继执行分别持久化 | 原预算、期限、清理和当前性不放宽；不自动改写输出，不纠正业务、权限或动作拒绝；旧配置缺省关闭 |
+| [ADR0105](adr/0105-fixed-author-instructions.md) | 新通用文件配置在原业务对象准备前一次性登记固定作者指导，原 Audit 与 Provider 使用同一输入 | 旧未登记提示逐字不变；不开放 staging 或权限；不依赖 Leader 转述，不保证模型服从或业务正确 |
 
 其他精确接缝仍以对应 ADR 原文为准，不因本表未逐一列出而失效。继承旧机器语义的版本必须保留其行为与回执；提出替代不能靠重写说明文档完成。
 
