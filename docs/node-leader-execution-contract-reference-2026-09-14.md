@@ -1,7 +1,12 @@
+# 历史参考：node-leader-execution-contract（2026-09-14 文档收敛前）
+
+> 本页保存基线 `12db5f908e1a15331e4edb06e9db3cd8c8c16d80` 的原文。下文的“当前”、实现缺口及阶段状态均属于原记录，不是当前支持声明或重新打开的待办；现行设计见 [node-leader-execution-contract](node-leader-execution-contract.md)，实际进展见 [Roadmap](roadmap-status.md#业务交付当前表)。原 ADR 的接受事实不因归档撤回。
+
+---
+
 # Node 受管 Leader：最小执行机器合同
 
-
-本页是[ADR0095](adr/0095-node-managed-leader-contract.md)接纳的受管Leader机器合同，与[ADR0094](adr/0094-trusted-single-user-role-team.md)、[ADR0100](adr/0100-generic-team-default-and-agent-entry.md)共同规定闭集动作、持久解释和权限边界。目标行为见[机制设计](node-leader-execution-design.md)，HTTP以[OpenAPI](../packages/task-api/openapi.json)为准。实际版本和验证范围只见[Roadmap](roadmap-status.md#业务交付当前表)，本页不以合同存在推断支持。只保留一个Application/Store，不建立第二scheduler或权限平台。
+状态：随 [ADR0095](adr/0095-node-managed-leader-contract.md) 独立审查接纳，**Accepted / Core 已部分集成**。`2b203cb2` 检查点已有受控业务链与安装消费，完整真实模型以及 §5 的有限 successor、发布 lookup 恢复尚未完成；当前事实以 [Roadmap](roadmap-status.md#业务交付当前表) 为准，不把单项失败收口当作本合同全部恢复通过。行为依据仍是已接受的 [ADR0094](adr/0094-trusted-single-user-role-team.md) 与 [机制设计](node-leader-execution-design.md)。原设计基线保留：文档工作树锁定 `f27784dd`，取消接缝最初参考 `acbcfee9`，修复 `070086e9` 当时已进入 `3f359fd0`；当时状态为“未实施”，下文函数名用于规定新增/调整接缝，而非逐项实现证明。只选一个实现方案，不建立第二 scheduler、权限平台或 Workflow 编辑器。
 
 ## 1. 根配置、版本与固定边界
 
@@ -10,7 +15,7 @@
 - 启用 profile：`task-managed-leader/v1`；根格式：`marshal-node-task-sqlite/v7-managed-leader`；service layout：7。只有新空根可选，不自动修改 v1–v6 或复活旧 Task。旧 reader 在 claim 前拒绝 v7；新 reader 按原根合同读旧格式，不给它们注入 Leader。
 - v7 具备 v6 目标 Worker 取消、原 custody、问题与同计划 repair 能力；never-permitted **仍由每张 ticket 的原 `startProtocol`、真实 FileBusiness/prepare/Depot 私有资格决定**，不能由 v7 或 Leader 自报。普通 Git/有外部准备效果的执行仍保留原 unknown 边界。
 - 本版输入审计默认 metadata-only；若同时选择 staging-only，启动前继续拒绝任意 `auditDisclosure` 回调。Leader/Review 的准备资格必须单独证明：固定程序只读同库/Depot、纯内存组装有界 prompt；不能把任意业务回调放到许可前后就宣称无副作用。
-- `policy` 必需字段为 `{profile, maxCalls, maxActions, maxRequests, repair, review, publication}`。`profile` 为上述常量；`maxCalls` 为 1–32、`maxActions` 为 1–4、`maxRequests` 为 1–16。`repair={nodeIds,maxRounds}`：最多64个唯一节点，轮数0–3。[ADR0100](adr/0100-generic-team-default-and-agent-entry.md)另允许显式`scope:'plan-authors'`且`nodeIds:[]`；计划冻结时派生全部author范围，运行时重查原批准计划，最多一轮。省略scope保持原静态ID语义。`review={providerId,policyDigest}`。`publication` 为 `null` 或 `{targetId,policyDigest}`。运行时权威额度仍是 Task 原 limits；这些只是更小上限，不能增加费用、并发或 deadline。
+- `policy` 必需字段为 `{profile, maxCalls, maxActions, maxRequests, repair, review, publication}`。`profile` 为上述常量；`maxCalls` 为 1–32、`maxActions` 为 1–4、`maxRequests` 为 1–16。`repair={nodeIds,maxRounds}`：最多 64 个唯一节点，轮数 0–3。`review={providerId,policyDigest}`。`publication` 为 `null` 或 `{targetId,policyDigest}`。运行时权威额度仍是 Task 原 limits；这些只是更小上限，不能增加费用、并发或 deadline。
 - `policyDigest=hash(encode(policy))` 使用原 Store 的规范化 JSON 和 `sha256:` 摘要。原 Plan 结构不增字段；Core 在 `acceptance` 中追加唯一确定性 JSON 条款 `{profile,policyDigest,repair,review,publication,completion:'leader-delivery'}` 并纳入 planDigest，不能依赖模型复述。受信布局、验收标准、允许 Provider、原预算与目标共同构成批准边界。
 
 代表性计划保留当前 DAG：两个互补作者和一个独立 verifier sink；独立语义 Review 与反复 Leader 是附属受管执行，不伪装成需要交付文件的 DAG 作者。旧 `verification.bind` 的单一 sink 不废除；新 Core 在首次 verifier 前增加“当前全选果 Review 已接纳”的阶段门槛。批准后的普通依赖由 Core 调度，不逐节点唤起 Leader。
@@ -38,8 +43,6 @@
 
 `LeaderDecision={profile,callId,inputDigest,summary,actions}`：profile 常量，summary 最多 4096 bytes，actions 1–policy.maxActions 项。`actionId` **由 Core** 以 `(callId,decisionDigest,index)` 派生，不接受模型提供 key。模型只回显原 call/input 绑定；完整原输出经父进程解析、原 cleanup 与 currentness 检查后才可接纳。
 
-**显式通用文件wire绑定**：[ADR0101](adr/0101-generic-leader-model-wire-binding.md)为显式新数据根的`qwen-short-service-config.mjs`规定闭集`{profile:'generic-files-leader-proposal/v1',summary,actions}`；受信同步mapper从此次原ticket补齐Core封套。原profile及错误绑定严格拒绝，不做格式探测、纠错或默认切换；动作与证据摘要原值不变，Core持久化和HTTP合同不变。映射后决定不是模型原始bytes；原始输出未耐久保存时如实说明。默认初始化及旧根不切换，其他配置仍按原完整封套合同执行。
-
 ### 2.2 六类闭集 action
 
 | `type` 与字段 | Core 的有限语义 |
@@ -65,7 +68,7 @@
 - `content-rejection`：原可信 verifier 的精确负报告及必需断言，沿 ADR0091；仍重读 Depot bytes/原 Decision/选果。
 - `execution-failure`：仅 Core 已确认原 cleanup、当前节点的普通非结构性执行失败；原未知、权限失败、用户 worker.cancel/Task cancel 不能被当作可重试失败。此来源最多一次替代 Attempt，不隐式换 Provider；重试费用计原预算。
 
-三者均以原 planDigest、当前输入/ACK、精确负事实和剩余预算重查，修正 closure 的陈旧 Review/验收失效，无关选果仅在依赖未变时保留；下一 Reviewer 与 verifier 消费最终组合。旧 HTTP repair 仍只接受原显式用户合同。缺 business 消费能力启动前拒绝，不能先耗 Attempt 再丢 feedback；本版选原 FileBusiness，Git/custom只有证明同样输入与反馈消费能力才能启用本Leader profile。
+三者均以原 planDigest、当前输入/ACK、精确负事实和剩余预算重查，修正 closure 的陈旧 Review/验收失效，无关选果仅在依赖未变时保留；下一 Reviewer 与 verifier 消费最终组合。旧 HTTP repair 仍只接受原显式用户合同。缺 business 消费能力启动前拒绝，不能先耗 Attempt 再丢 feedback；本版选原 FileBusiness，Git/custom 未实现该消费前不得启用本 Leader profile。
 
 Leader 的 ask 是已结束语义调用留下的 Task 义务；答案由下一次原义务调用读取，不伪造原 Worker 的 delivery ACK。原 Pi `marshal_ask_user` 和 ACP 权限路径照旧：原 Worker 业务问题继续精确 worker/question/dispatch/ACK，权限不能通过本回复放行。普通用户答案只能填原缺项；答案改变批准范围/权限时 Core 封闭相关后继并要求新的精确批准，不能追认旧验收。原期限不延长。
 
@@ -137,7 +140,7 @@ publication adapter 提供 `start({ticket,prepared,executionContext}) -> {starte
 
 postverify 是独立固定 command，不由作者/Leader 传程序，仍用原 `createVerificationPort` 私有结果接纳模式。输入 `{publicationReceiptDigest,targetId,name,artifactDigest,bytes,policyDigest}` 和原批准的业务期望/必要答案引用；实际向固定只读 HTTP 目标 GET，禁止 redirect，正文 ≤1 MiB、同绝对期限，重算摘要/长度并运行每项必需业务断言。输出沿原 `{type:'verification',status,cleanup,evidence,delivery}`，失败可省 delivery；通过时复用原已验收报告 bytes，不能产一个不同的“发布版”。
 
-Core 单独保存后验结果与原 publication receipt，结束仍需当前 Leader 总结；下载仍是原 delivery Artifact，不悄悄改成远端 URL。后验失败/未知保留已发布事实，不能把它记为未发布或 overall success。默认 publication=null 的流程不假造后验，通过原交付即可进入总结义务。Marshal tag/release/签名/分发与此端口无关，受保护软件发行门禁不变。
+Core 单独保存后验结果与原 publication receipt，结束仍需当前 Leader 总结；下载仍是原 delivery Artifact，不悄悄改成远端 URL。后验失败/未知保留已发布事实，不能把它记为未发布或 overall success。默认 publication=null 的流程不假造后验，通过原交付即可进入总结义务。Marshal tag/release/签名/分发与此端口无关，B3 gate 不变。
 
 ## 7. 公开可见性与回复合同
 
@@ -166,28 +169,28 @@ Task 状态仍旧枚举：待业务答复用 awaiting-answer，待精确发布�
 
 接纳顺序：原认证后精确 replay 优先；新命令才查 Task revision、requestDigest、未答/未闭、原期限/取消、来源/当前选果。失败使用已有 invalid_request/400、revision_conflict或state_conflict/409、not_found/404、application_unavailable/503；不新增错误枚举。回复提交后丢 202 不再派第二个动作，查询/精确 replay 可恢复；新 key 重答拒绝。普通回答绝不授予工具或发布权限，原 Worker question/ACK 继续旧两个 response 分支、原 202 字节不变。
 
-这些端点的字段与OpenAPI、DI handler、真实HTTP、TaskClient绑定/错路由负例共同维护。旧 response 原样回归足以，不再建全局 version/profile 握手。v7 显式 root 配置是内部持久解释，`task-managed-leader/v1` 是单一行为标识，不是每次请求第三套版本协商。
+这些端点的字段必须在实现提交中同步 OpenAPI、DI handler、真实 HTTP、TaskClient 绑定/错路由负例；本稿没有实际改 schema。旧 response 原样回归足以，不再建全局 version/profile 握手。v7 显式 root 配置是内部持久解释，`task-managed-leader/v1` 是单一行为标识，不是每次请求第三套版本协商。
 
-## 8. 模块责任与扩展
+## 8. 现有文件与新增接缝
 
-| 模块 | 合同责任 |
+| 文件/方法 | 一个纵切内的实际修改 |
 | --- | --- |
-| `task-application` | Task命令、原预算、Leader义务/动作与原事务；独立Review/验证、repair及终态适用性 |
-| `task-core` / `task-supervisor` / `task-execution` | 批准内调度与硬规则、只读聚合通知、原handle操作分别承担，不复制任务权威 |
-| `task-store` / 制品存储 | 显式格式与owner、原子事实/outbox、精确bytes和摘要引用 |
-| `task-service`组合 | 受信Provider、Leader、业务、检查及发布能力注入，建根/开根前核对身份策略 |
-| Agent/业务/验证/发布端口 | 实际输入、反馈、执行、证据与外部观察；不得弃反馈或读取陈旧可变目录取代精确成果 |
-| HTTP / TaskClient | 两个Leader子资源及原严格兼容，不要求私有DB补步骤 |
-
-模块名称不授予权限。端口实际接口及替换义务见[扩展合同](extension-contracts.md)，客户端链路见[标准API](standard-api.md)。生产模块必须进入发行闭包，测试夹具不成为业务依赖。
+| [application.mjs](../packages/task-application/application.mjs) `create/freezePlan/mutate/dispatch/query` | v7 初始 Leader 义务、可信 approval 条款、原批准及新子资源/回复；旧路径按格式原样 |
+| [execution.mjs](../packages/task-application/execution.mjs) `nextWork/finish/reconcile/expandDispatch` | 原 ticket/预算上增加内部类型、决策 headroom、阶段验收、有限失败待决和当前代安全 successor；真实结果不经观察采样 |
+| 新 `task-application/leader.mjs` | `snapshot/acceptDecision/consumeAction/reply/view/recover`；同原 transaction 与 Store，不导入 Provider 品牌、持有进程或建立新 scheduler |
+| [verification.mjs](../packages/task-application/verification.mjs)、[repair.mjs](../packages/task-application/repair.mjs) | 独立 Review 受信封装、当前选果/原 ACK 重查、同计划内部 repair provenance、候选验收与后验区分；不放宽旧 WeakMap/负报告门禁 |
+| [controller.mjs](../packages/task-supervisor/controller.mjs) | 现混合 loop 保留为兼容组合入口：许可/已批准调度/硬规则委托 Core，原 handle 持有及 start/stop/collect 委托 Execution coordinator；Supervisor observer 只聚合观测/通知，不持有可变命令端口或执行 handle，不业务重试改计划/判成功。不要求四个服务或全仓重命名 |
+| [业务适配](../packages/task-business/index.mjs)、[命令适配](../packages/task-verification-command/index.mjs)、新增 `packages/task-publication-report/` | 精确输入、集中 Review/原负反馈进入实际 prompt，固定发布/后验命令与私有 receipt；命令端口显式接纳 postverify 内部类型，不把现仅 verification 的校验当已支持；不得弃反馈或使用可变目录取上游 |
+| [store.mjs](../packages/task-store/store.mjs)、[composition.mjs](../packages/task-service/composition.mjs) | v7/layout7 claim 前校验、可信 DI/原准备资格、恢复准入；复用原 outbox kind/source/预算，不涨全局事务上限 |
+| [HTTP](../packages/task-api/http-handler.mjs)、[OpenAPI](../packages/task-api/openapi.json)、[客户端](../packages/task-client/index.mjs)、发行清单 | 两个真实新端点/绑定，旧 bytes 回归；所有新增生产模块进入原 same-bytes 清单，不把 live fixtures 包成生产依赖 |
 
 ## 9. 不能由本合同推导的能力
 
 角色独立不是 OS/凭据隔离；同 UID 可达风险仍按0094公开。没有任意动态角色/目标、Workflow 平台、后台模型无限会话、跨系统 exactly-once、旧根迁移或任意副作用自动恢复。原 Pi/ACP 权限回调、原生工具 scopeUnknown、未知 cleanup/usage、Secrets 不落日志、只读验收与受保护软件发行不削减。Model 文本不能注入发布实现或覆盖 Core 硬规则。
 
-## 10. 六类合同验收
+## 10. 完整实施顺序与六类验收
 
-以下用例检验同一HTTP/Application/SQLite和实际发行组合的行为。真实模型业务、确定性反例及恢复故障分别计证；不得只以DTO、一次Planner或局部组件测试替代完整合同。
+先冻结并实现 v7/闭集/原事务 + typed Leader 接纳，再在同纵切接原 Provider/Review/repair/发布后验和 HTTP 观察/回复；不把 DTO 或一次 Planner 当 B2-L 完成。可并行的无冲突 scope 为：单一作者拥有 Application/Store/Supervisor/composition；第二作者只做受信本地报告端口/固定 checker；第三作者只写新独立 HTTP 故障 fixtures。API/schema/client 需消费同一冻结 shape 后由一作者一次接齐，不让多个 writer 修改共享事务文件。
 
 1. **真实代表链**：用户缺项→Leader ask/显式回复→计划一次批准→两个互补作者→独立 Review→真实意见局部修正保留另一成果→独立 verifier→精确发布 allow→真实本机目标 GET 后验→Leader conclude；HTTP/原 Artifact/原 receipts 可独立追溯。首轮正确记 firstpass，不污染成果或无限重跑凑 repair。
 2. **当前性与活性**：两个作者同时等待/长 Reviewer 占槽，Leader 在原 3 槽/预算内有界运行；2 槽付费前拒绝；洪泛/heartbeat 不多唤起；无关进度不废弃决定，相关候选/授权/答案变化拒绝；菱形继承引用去重，旧 ACK 不跨节点/代复用。
@@ -196,4 +199,4 @@ Task 状态仍旧枚举：待业务答复用 awaiting-answer，待精确发布�
 5. **COMMIT/外部窗口恢复**：Leader reservation/许可/输出未提交、决定提交后动作未派、发布创建后回执未提交、postverify 后总结前逐点 SIGKILL；原 custody/never-permitted 合法结清或明确 unknown。预算/原决定/无关成果不丢、无重复整队/覆盖发布；同名异 bytes/错误 origin/lookup 不可用不成功，丢 reply 202 精确恢复。
 6. **兼容与下一任务**：旧 v1–v6 根/终态/严格 TaskClient/旧两个 AnswerReceipt/repair/WorkerOperation bytes 不变；旧 reader claim 前拒 v7；新合法收口容量归零、冷开可查原效果且下一 Task 可交付；正常停服备份沿原完整快照，不宣称防分叉。
 
-验证沿固定Core/真实SQLite、受管CLI/HTTP、实际Provider和同版本安装消费串联；对应候选、范围与未完成项在Roadmap及证据记录中维护，不在此复制完成状态。原阶段实施计划见[历史参考](node-leader-execution-contract-reference-2026-09-14.md)。
+固定 Node 确定性 Core/真实 SQLite→原受管 CLI/HTTP→原 Provider 显式单次实机，按风险递进；安装包同源码执行/同版本恢复最后验证。当前仅合同已接纳，无新模型、生产或 stable 实证。

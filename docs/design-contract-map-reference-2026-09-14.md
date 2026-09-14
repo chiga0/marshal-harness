@@ -1,0 +1,65 @@
+# 历史参考：design-contract-map（2026-09-14 文档收敛前）
+
+> 本页保存基线 `12db5f908e1a15331e4edb06e9db3cd8c8c16d80` 的原文。下文的“当前”、实现缺口及阶段状态均属于原记录，不是当前支持声明或重新打开的待办；现行设计见 [design-contract-map](design-contract-map.md)，实际进展见 [Roadmap](roadmap-status.md#业务交付当前表)。原 ADR 的接受事实不因归档撤回。
+
+---
+
+# 当前设计与历史合同适用性
+
+更新：2026-09-09。目标是少流程、少返工，不再让旧产品形状变成新团队交付的前置。
+
+## 三个不同结论
+
+[ADR0094](adr/0094-trusted-single-user-role-team.md) 已按用户本轮范围要求接受：Node `trusted-single-user` 以 Leader＋开发/Reviewer/验收职责及 Core 授权分离组织交付，精确取代0085 §3/0088 §3在此 profile 中把 ambient Publisher 凭据可达作为支持阻断的要求，强 OS/凭据隔离后置加固。默认不发布、作者不自证、明确高风险授权、幂等/恢复与秘密保护仍保留；旧 Go/hardened 合同不变。B2 新增一个授权业务发布及后验闭环，不豁免 B3 的 Marshal 软件发行。仅目标/排期变化，没有 HTTP/角色枚举/持久格式变更或迁移，不撤回 API-STABLE；未来机器语义变化须显式兼容，不把本次设计当已实现。
+
+0094同时精确调整0085 §6/0088 §2在新Leader目标profile的职责分配：Supervisor观察聚合通知，Leader业务判断，Core校验/硬规则/已批准调度，Execution所属handle操作；原loop渐进委托而非四服务。对0091 §1/§3新增批准自治内的内部局部调整来源，旧HTTP显式repair与负Decision规则不变，不伪造用户命令。全程[受管Leader](node-leader-execution-design.md)为B2-L/DESIGN，当前Planner、reviewer标签、唯一verifier后completed均不足；新阶段/整体结束/决定动作事实须显式兼容后启用，旧completed不复活。
+
+2026-09-08 Node-only 正式实现的取代范围集中在 [ADR 0088](adr/0088-node-task-service-production-projection.md)：保留 0085 产品/安全语义，替换其 Go/RB1 专属物理投影；0087 仍只是实验。后文“B1 原 Store”“Task 映射 Go Goal”和原生资产 signing 均按 profile/资产类型理解，不自动约束新 Node 包必须执行 Go，也不自动放宽安全或发布合同。ADR 状态以该文件为准，代码完成仍以 Roadmap 为准。
+
+[ADR 0089](adr/0089-node-execution-custody-and-cleanup-recovery.md) 补 Node 执行托管与跨代 **cleanup-only** 收口；状态以 ADR 原文为准，未实测前不启用、不把旧 generation 的业务结果变成可接纳。它不改变旧 Go 恢复合同，不把 Linux 平台建设前置到 Mac 服务单进程崩溃恢复。
+
+[ADR 0090](adr/0090-node-runtime-business-questions.md) 已由维护者独立审查接纳，允许实施原 Worker 的运行中业务问答、一次答案投递/消费和最终验收引用；它不修改 0086 的批准前 preview/回答语义，也不把业务回答当工具授权。新持久事实须在明确的新格式启用，旧根不隐式迁移；合同接受与运行时实现/实机验证分开，当前尚不宣布该增强可用。
+
+[ADR 0091](adr/0091-node-same-plan-local-repair.md) 已接受同计划局部修正合同：真实父验证内容拒收、用户显式选择修正根、Core 计算完整影响闭包、保留无关精确成果并重新独立验收；原预算/期限不刷新，结构失败不可借此重试。它仅授权 Node 新 v4-repair 格式的后继实施，不追认旧失败、不迁移旧根，不表示 `task.repair` 已可调用。
+
+| 问题 | 唯一入口 | 含义 |
+| --- | --- | --- |
+| 要实现什么 | [Task-first 架构](agent-team-service-architecture.md)、[Milestone](agent-team-service-milestones.md) | B1 先团队 PoC，B2 本地 API 可用，B3 正式支持；无 Workspace 产品实体 |
+| 哪个合同可启用 | [ADR 0085](adr/0085-agent-team-service-contract-and-storage.md) §1 | 2026-09-08 已 Accepted，允许按明确范围实施；新 profile 仍须对应验证，旧 profile 仍守原规则 |
+| 什么真的完成 | [Roadmap](roadmap-status.md#业务交付当前表) | 历史证据/候选/实机/发布分别计，不因文档更新提升成熟度 |
+
+用户已明确要求按 Task-first 简化修改设计；它不等于旧 Run/activation 被重新授权。设计审计、ADR 接纳、代码合入、runtime enable 和正式 release 不互相代替。相关取代集中在同一 0085，不每个字段再写 ADR。
+
+## 删除前置，保留必要语义
+
+| 删除或后置的形状 | 仍要保留 | 落点 |
+| --- | --- | --- |
+| Workspace ID/API/注册/切换，或改名 Project | 内部数据根排他、任务/执行 ID、输入/成果归属 | 0085 §2–§3 |
+| operator-local 安装收据、显式 init、账号/组织/RBAC | 合法固定安装、OS 安全、本地自动 token、空根安全建立、旧/坏数据不覆盖 | 0085 §1/§3；正式管理能力后置 |
+| 全面 SQLite/旧库迁移后才团队 | B1 原唯一 Store，B2 SQLite；任何时刻每根一个权威 backend | 0085 §4；U1 独立升级 |
+| 固定品牌/版本/文本 envelope/强制 ACP | 受信注入 Adapter、实际执行/输入和终态、能力符合、独立验收 | 0058/0063/0075/0084→0085 §2 |
+| 旧 AF_UNIX 客户端持 RB1 证明，child CLI/多 server | HTTP/CLI 共用应用层，服务端当前事实重验 | 0062/0066/0076→0085 §3 |
+| 双账本物理 proof/锁序/AST 是永久形状 | 先 intent、唯一 producer/current owner/CAS、迟到拒绝、无双写 | B1 保留旧实现，B2 依 0065/0066/0067→0085 §4 换接缝 |
+| 所有任务必须 Git 或 Core 注册资源 | Task context、受管目录单写；Git 特化 base/worktree，零 Git 独立目录 | 0066/0069/0080→0085 §2/§5 |
+| 完整规划/所有 Provider/全恢复先行 | 一次有限确认、两个真实作者、独立整体验收、最小事实/止损 | B1；增强体验 B2；正式矩阵 B3 |
+| 当前可信单用户必须先证明 OS/凭据强隔离、先建任意角色/Workflow 平台 | 职责/权威分离、原生登录不扩权、独立证据、受控业务发布与真实回执；剩余同 UID 风险明示 | 0094；强隔离后继，旧 hardened 不变；重复成功后再模板化 |
+
+原 ADR 0052 的旧 Go 正式门禁不删；Node 软件签名/公证按0088发行资产类别适用，Linux/stable仍在B3。当前性、未知归属、历史 byte/replay 不变，发布职责边界按0094与旧profile分别解释。普通 local profile 不继承 hardened/managed 保证。B1 重启只保证能查事实并不乱重派时，就不能宣称透明恢复。
+
+## 文档和实现如何收敛
+
+- 当前架构/runtime/implementation、README、愿景、Roadmap 目标列同步新顺序；历史参考文档与原事实不重写。
+- B1 先补实际业务接线：当前 Store 不形成新的并行 Task 真值，HTTP 不绑定磁盘布局。B2 SQLite 替换复用相同应用与验收，不重新造一套 API。
+- 回归保留独立验收、路径/secret、重复/迟到、结果取消竞争和恢复行为；旧函数名/文件数测试仅留旧 profile，不以删除行为测试换绿。
+- 新空数据根与旧迁移分开；旧非终态先合法收口、只读历史导入，旧 writer 未证明禁止不接管。不得清空/重签/复用未知占用目录。
+- 接口依赖反转不要求一个 Port 一个生命周期/微服务；已有 state reducer、process mechanics、制品与业务 oracle 优先复用。
+
+B1 团队 PoC→B2 本地 API/核心 API-STABLE→B3 正式支持。UI 在核心接口稳定后开发，三品牌全部增强/U1/完整 B3 故障不作为 UI 或首演示前置。旧 Marshal skill 不读取、不执行、不作为运行/研发/验收条件；Agent 自带 Skill 保留，术语统一“审计”。
+
+## 本轮范围
+
+只调整方案、Milestone、合同草案、当前入口与审计。没有启动/取消 Worker、修改产品运行时、迁移 .marshal、接纳旧权限或发布正式资产；历史失败不删除。本轮文档保存与后续 Git 同步不等于产品已交付。
+
+### 治理文件同步边界
+
+2026-09-07 目标导航同步曾按当时授权保留全部不变量原文，相关拦截与结果作为历史保留。本次2026-09-09按用户明确范围要求，以新增Accepted0094精确解释Node可信单用户的职责分权与OS隔离差别，同步AGENTS对应条款；不借文档冲突豁免单写、独立验证、默认发布拒绝或旧Go/hardened门禁。设计接受、代码启用、运行证明与软件发行分别判断。
