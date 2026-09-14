@@ -100,6 +100,9 @@ test('original frozen selected/review/acceptance/delivery/history refs traverse 
   assert.equal((await parseExample(ticket, value.examples.deliver)).status, 'completed');
   assert.equal((await f.decision(ticket, value.examples.deliver.actions)).status, 'completed');
   ticket = f.take('leader'); value = rendered(ticket);
+  assert.ok(ticket.input.leader.snapshot.obligation.some(item => item.reason === 'delivery-ready'));
+  assert.equal(typeof value.examples.deliver, 'string');
+  assert.ok(value.prompt.includes('当前是最终总结，不是再次交付'));
   assert.ok(!value.examples.conclude.actions[0].basisDigests.includes(ticket.input.leader.snapshot.readSet.find(item => item.kind === 'history').digest));
   assert.equal((await f.decision(ticket, value.examples.conclude.actions)).status, 'completed');
   assert.equal((await f.get(task.id)).status, 'completed');
