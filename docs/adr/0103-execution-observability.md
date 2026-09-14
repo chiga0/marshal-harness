@@ -51,3 +51,10 @@ Provider 事件归一化；小输出/连续输出/工具结束后输出；陈旧
 显式 `createAcpProvider({usageExtension:'qwen-transcript/v1'})` 可读取Qwen公开的 `agent_message_chunk._meta.usage`，并仅在执行观察已开启时提供可选 `lastResponseUsage`。该字段固定为 inputTokens/outputTokens/totalTokens 非负安全整数、`source:'qwen-acp-meta'`、`scope:'last-response'`、`complete:false`、`zeroMayBeDefault:true`。它是最近收到的单次响应报告，不是Worker/Task累计，不进入原Usage总量或coverage。缺字段、负数、小数、溢出和嵌套子Agent标记均不接纳；重复报告只覆盖，不相加。
 
 本地Qwen 0.23.2公开实现把缺失原始计数补零，且该事件没有稳定响应ID，因此即使三个字段均存在，也不能声称完整账单或已知零用量。`usage_update.used/size`仍仅表示上下文容量，不使用。空文本的usage事件保持原活动，不伪造模型输出；隐藏推理正文、其他_meta字段不保存。扩展开关连同Provider标识写入原服务profile，切换同根语义在claim前拒绝。旧ACP和未启用配置不受影响。
+
+
+### 受控失败诊断
+
+显式观察新增可选 `diagnostic:{stage,code,source}`，只接受闭合允许列表。Controller 在原失败 fence 前沿原 Worker progress 写入 preparing/starting/provider/collecting/cleanup 阶段及固定错误码，不保存原异常、路径、文件正文；诊断落盘失败不替代或绕过原故障 fence。Provider 的权限回调确实返回 cancelled 或选择 reject_once/reject_always 时，才记录 permission 阶段；默认无策略的明确拒绝同样记录。受信新配置可以在原 outcome 旁返回 `diagnosticCode` 的允许列表分类，Provider 仅在实际拒绝时采纳且不转发给 ACP。未知分类退为 permission_denied，工具 failed 本身不能推断权限拒绝。
+
+诊断仅解释一个已观察事件，不决定权限、失败权威、重试或清理结论。最新诊断和有界历史遵守原字段缺省及配置身份；取消、stopping、unknown、终态、旧 ticket/generation 的晚诊断不能覆盖现态。准备失败可在 queued Worker 留存，不因此伪造 Provider started。无诊断时缺省，不能把缺省解释为未发生失败。客户端须包含新增 ExecutionDiagnostic 引用类型。控制器错误码为 preparation_failed、provider_start_failed、provider_failed、collection_failed、cleanup_unconfirmed、deadline_exceeded；权限码为 permission_denied、permission_shape_denied、permission_kind_denied、permission_path_denied。

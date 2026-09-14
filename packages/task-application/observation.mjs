@@ -1,4 +1,4 @@
-import {boundedPublicText} from '../agent-observation/normalization.mjs';
+import {boundedPublicText, normalizedDiagnostic} from '../agent-observation/normalization.mjs';
 import fs from 'node:fs';
 import {createHash} from 'node:crypto';
 
@@ -21,7 +21,8 @@ export function normalizedObservation(value, sequence, observedAt) {
   const lastResponseUsage = closed(response, ['inputTokens', 'outputTokens', 'totalTokens', 'source', 'scope', 'complete', 'zeroMayBeDefault']) &&
     [response.inputTokens, response.outputTokens, response.totalTokens].every(number => Number.isSafeInteger(number) && number >= 0) &&
     response.source === 'qwen-acp-meta' && response.scope === 'last-response' && response.complete === false && response.zeroMayBeDefault === true ? response : null;
-  return structuredClone({...(lastResponseUsage ? {lastResponseUsage} : {}), profile: 'task-observation/v1', activity: value.activity, observedAt, sequence, tool, model, usage, publicText: typeof value.publicText === 'string' && value.publicText.isWellFormed() && !value.publicText.includes('\0') && Buffer.byteLength(value.publicText) <= 65536 ? boundedPublicText(value.publicText) : ''});
+  const diagnostic = normalizedDiagnostic(value.diagnostic);
+  return structuredClone({...(diagnostic ? {diagnostic} : {}), ...(lastResponseUsage ? {lastResponseUsage} : {}), profile: 'task-observation/v1', activity: value.activity, observedAt, sequence, tool, model, usage, publicText: typeof value.publicText === 'string' && value.publicText.isWellFormed() && !value.publicText.includes('\0') && Buffer.byteLength(value.publicText) <= 65536 ? boundedPublicText(value.publicText) : ''});
 }
 export function settleObservation(worker) {
   if (!worker.observation) return;

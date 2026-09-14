@@ -220,3 +220,17 @@ test('Qwen extension rejects malformed and nested readings, preserves ambiguous 
   }
   assert.throws(()=>createAcpProvider({id:'fixture',executable:process.execPath,usageExtension:'invented'}),{code:'provider_invalid_configuration'});
 });
+
+test('permission diagnostic requires actual denial, strips metadata from ACP and never persists raw reason', {timeout:20000}, async t => {
+  for (const variant of ['default','classified','unknown','allow','disabled']) {
+    const updates=[];
+    const handle=provider('permission').start(input(t,{observability:variant!=='disabled',onProgress:value=>updates.push(value),
+      ...(variant==='default'?{}:{onPermission:request=>({outcome:variant==='allow'?{outcome:'selected',optionId:request.options.find(x=>x.kind==='allow_once').optionId}:{outcome:'cancelled'},diagnosticCode:variant==='unknown'?'PRIVATE /secret/path':'permission_shape_denied'})})}));
+    const result=await handle.completion; cleaned(result);
+    const diagnoses=updates.filter(x=>x.diagnostic).map(x=>x.diagnostic);
+    if(['allow','disabled'].includes(variant))assert.equal(diagnoses.length,0);
+    else {assert.ok(diagnoses.length>0);assert.equal(diagnoses.at(-1).code,variant==='classified'?'permission_shape_denied':'permission_denied');}
+    assert.doesNotMatch(JSON.stringify(updates),/PRIVATE|diagnosticCode|secret\/path/);
+    assert.equal(Object.hasOwn(JSON.parse(result.outputText),'diagnosticCode'),false);
+  }
+});

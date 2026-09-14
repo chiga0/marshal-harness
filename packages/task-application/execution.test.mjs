@@ -312,3 +312,19 @@ test('default configuration does not expose typed metadata even when provider of
   const events = await f.app.dispatch({operation: 'task.events', taskId: task.id}, context);
   assert.equal(events.items.some(event => Object.hasOwn(event, 'observation')), false);
 });
+
+test('diagnostic survives terminal and cold reopen but cancelled and unknown workers reject late diagnostic', async t => {
+  for(const state of ['terminal','cancelled','unknown']) await t.test(state,async t=>{
+    const f=fixture(t,2,{profile:'task-observation/v1',retainPrompts:false}),task=await f.create(),command=f.commands()[0];
+    const ticket=f.execution.nextWork(command.id,command.revision);f.execution.started(ticket,started(ticket));
+    const progress={summary:'execution.diagnostic',source:'execution',tool:null,observation:{activity:'waiting',diagnostic:{stage:'permission',code:'permission_denied',source:'provider-permission'}}};
+    assert.equal(f.execution.progress(ticket,1,progress),true);
+    if(state==='terminal') f.execution.finish(ticket,result(ticket,{plan:plan()}));
+    else if(state==='unknown') f.execution.finish(ticket,result(ticket,{status:'unknown',cleanup:{started:started(ticket),cleaned:false,scope:'unconfirmed',reason:'cleanup_unconfirmed'}}));
+    else await f.app.dispatch({operation:'task.cancel',taskId:task.id,key:'cancel-diagnostic',body:{expectedRevision:(await f.get(task.id)).revision}},context);
+    const before=await f.app.dispatch({operation:'worker.get',workerId:ticket.workerId},context);
+    assert.equal(f.execution.progress(ticket,2,{...progress,observation:{...progress.observation,diagnostic:{stage:'collecting',code:'collection_failed',source:'controller'}}}),false);
+    assert.deepEqual(await f.app.dispatch({operation:'worker.get',workerId:ticket.workerId},context),before);
+    f.reopen(); assert.deepEqual((await f.app.dispatch({operation:'worker.get',workerId:ticket.workerId},context)).observation.diagnostic,progress.observation.diagnostic);
+  });
+});

@@ -42,3 +42,12 @@ export function tokenUsage(value, fields, complete = false) {
   if (!values.every(number => Number.isSafeInteger(number) && number >= 0)) return null;
   return {inputTokens: values[0], outputTokens: values[1], totalTokens: values[2], source: 'provider-reported', complete};
 }
+
+// Closed diagnostic codes describe observations, never authorization or retry policy.
+export function normalizedDiagnostic(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'code,source,stage') return null;
+  const codes = value.source === 'provider-permission' && value.stage === 'permission' ?
+    ['permission_denied','permission_shape_denied','permission_kind_denied','permission_path_denied'] : value.source === 'controller' ?
+    ({preparing:['preparation_failed','deadline_exceeded'],starting:['provider_start_failed','deadline_exceeded'],provider:['provider_failed','deadline_exceeded'],collecting:['collection_failed','deadline_exceeded'],cleanup:['cleanup_unconfirmed','deadline_exceeded']}[value.stage] ?? []) : [];
+  return codes.includes(value.code) ? {stage:value.stage,code:value.code,source:value.source} : null;
+}

@@ -358,7 +358,8 @@ export class TaskExecution {
     return this.app.transaction(true, tx => {
       const {row, record, task} = this.ticket(tx, ticket);
       if (!this.app.repair.current(task, ticket) || !Number.isSafeInteger(sequence) || sequence <= record.progressSequence || !live(record.worker) ||
-          record.stopIntent || task.task.status === 'cancelling' || terminal.has(task.task.status)) return false;
+          record.stopIntent || task.task.status === 'cancelling' || terminal.has(task.task.status) ||
+          this.app.observability && progress?.observation?.diagnostic && ['stopping','unknown'].includes(record.worker.status)) return false;
       if (!progress || !isText(progress.summary, 2048) || progress.tool !== null && !isText(progress.tool, 256) ||
           !['agent', 'execution'].includes(progress.source)) reject('invalid_request', 400);
       record.progressSequence = sequence;

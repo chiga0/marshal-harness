@@ -1,4 +1,4 @@
-import {boundedPublicText, tokenUsage} from '../agent-observation/normalization.mjs';
+import {boundedPublicText, tokenUsage, normalizedDiagnostic} from '../agent-observation/normalization.mjs';
 import path from 'node:path';
 import {launchAcp, RuntimeError} from '../agent-runtime/index.mjs';
 import {AcpError} from '../agent-acp/client.mjs';
@@ -143,7 +143,7 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       await bounded(onProgress, snapshot(), observation.signal);
     }
     async function permission(params, context) {
-      if (stopping || settled || !onPermission || Date.now() >= deadline) return {outcome: {outcome: 'cancelled'}};
+      if (stopping || settled || !onPermission && !observability || Date.now() >= deadline) return {outcome: {outcome: 'cancelled'}};
       const toolCall = {};
       for (const key of ['toolCallId', 'title', 'kind', 'status', 'rawInput']) if (Object.hasOwn(params.toolCall, key)) toolCall[key] = structuredClone(params.toolCall[key]);
       const call = toolState(toolCall.toolCallId);
@@ -154,7 +154,7 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       if (toolCall.kind !== undefined) call.kind = toolCall.kind;
       // This callback is trusted policy, not the progress/UI channel. It needs
       // actual tool input to authorize the bound request. Never forward _meta.
-      const response = await onPermission({sessionId: params.sessionId, toolCall, options: structuredClone(params.options)}, context);
+      const response = onPermission ? await onPermission({sessionId: params.sessionId, toolCall, options: structuredClone(params.options)}, context) : {outcome:{outcome:'cancelled'}};
       if (stopping || settled || context.signal.aborted || Date.now() >= deadline) return {outcome: {outcome: 'cancelled'}};
       const selection = response?.outcome?.outcome === 'selected' ? params.options.find(option => option.optionId === response.outcome.optionId) : null;
       // Refusal creates no execution obligation. The synchronous durable fence
@@ -163,6 +163,12 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
           !['read', 'edit', 'delete', 'move', 'search', 'think'].includes(toolCall.kind))
         executionContext.extraScope('acp_tool_scope_unproven');
       call.denied = ['reject_once', 'reject_always'].includes(selection?.kind) && !call.started && !call.terminal && !call.reused;
+      if (observability && (response?.outcome?.outcome === 'cancelled' || ['reject_once','reject_always'].includes(selection?.kind))) {
+        const classified = normalizedDiagnostic({stage:'permission',source:'provider-permission',code:response.diagnosticCode});
+        progress = {...progress,publicText:'',diagnostic:classified ?? {stage:'permission',source:'provider-permission',code:'permission_denied'}};
+        await bounded(onProgress,snapshot(),observation.signal);
+      }
+      if (object(response) && Object.hasOwn(response,'diagnosticCode')) {const {diagnosticCode, ...original} = response; return original;}
       return response;
     }
     const completion = (async () => {

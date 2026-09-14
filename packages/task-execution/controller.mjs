@@ -1,4 +1,5 @@
 import path from 'node:path';
+import {normalizedDiagnostic} from '../agent-observation/normalization.mjs';
 import {setImmediate as yieldTurn} from 'node:timers/promises';
 
 const PORTS = ['scan', 'reconcile', 'poll', 'settleControl', 'expandDispatch', 'nextWork', 'mayStart', 'started', 'progress', 'fail', 'finish'];
@@ -150,10 +151,22 @@ export class TaskExecutionCoordinator {
     try { Promise.resolve(this.#onError({...report})).catch(() => { this.#notificationFailures++; }); }
     catch { this.#notificationFailures++; }
   }
+  #diagnose(entry, stage, error) {
+    if (!this.#observability || entry.stopping || entry.finalized || entry.sequence >= 4096) return;
+    const phase = stage === 'collecting' ? 'collecting' : ['preparing','prepared'].includes(stage) ? 'preparing' :
+      stage === 'provider-cleanup' || stage === 'provider-stop' ? 'cleanup' : stage === 'starting' ? 'starting' : 'provider';
+    const code = error?.code === 'supervisor_deadline' ? 'deadline_exceeded' :
+      {preparing:'preparation_failed',starting:'provider_start_failed',collecting:'collection_failed',provider:'provider_failed',cleanup:'cleanup_unconfirmed'}[phase];
+    try {
+      this.#call('progress', entry.ticket, ++entry.sequence, {summary:'execution.diagnostic',tool:null,source:'execution',
+        observation:{...(entry.lastObservation ?? {activity:'unknown',tool:null,model:null,usage:null}),publicText:'',diagnostic:{stage:phase,code,source:'controller'}}});
+    } catch { /* Diagnostic storage cannot replace the original failure fence. */ }
+  }
   #failEntry(entry, stage, error) {
     if (!entry.failure) {
       // This is a synchronous same-owner transaction, before any stop callback
       // can run or delayed cleanup can leave a downstream admission window.
+      this.#diagnose(entry, stage, error);
       let fence;
       try { fence = this.#call('fail', entry.ticket, 'worker_failed', ['provider-stop', 'provider-cleanup', 'provider-completion'].includes(stage)); }
       catch (error) { this.#fault('failure-fence', entry, error); return; }
@@ -243,6 +256,7 @@ export class TaskExecutionCoordinator {
       }
       // Copy only the normalized projection, never arbitrary provider fields.
       progress = {summary: 'agent.' + update.phase, tool, source: 'agent', ...(this.#observability ? {observation: {
+        ...(normalizedDiagnostic(update.diagnostic) ? {diagnostic: normalizedDiagnostic(update.diagnostic)} : {}),
         publicText: text(update.publicText, 65536) ? update.publicText : '',
         ...(update.lastResponseUsage ? {lastResponseUsage: {inputTokens: update.lastResponseUsage.inputTokens, outputTokens: update.lastResponseUsage.outputTokens, totalTokens: update.lastResponseUsage.totalTokens, source: update.lastResponseUsage.source, scope: update.lastResponseUsage.scope, complete: update.lastResponseUsage.complete, zeroMayBeDefault: update.lastResponseUsage.zeroMayBeDefault}} : {}),
         activity: update.activity ?? ({starting: 'starting', initializing: 'starting', session: 'starting', running: 'waiting', stopping: 'stopping', terminal: 'terminal'}[update.phase]),
@@ -250,6 +264,7 @@ export class TaskExecutionCoordinator {
         model: update.model ? {id: update.model.id, source: update.model.source} : null,
         usage: update.usage ? {inputTokens: update.usage.inputTokens, outputTokens: update.usage.outputTokens,
           totalTokens: update.usage.totalTokens, source: update.usage.source, complete: update.usage.complete} : null}} : {})};
+      if (progress.observation) entry.lastObservation = progress.observation;
       sequence = ++entry.sequence; entry.pendingProgress++;
     } catch (error) {
       this.#failEntry(entry, 'progress', error);
@@ -360,6 +375,7 @@ export class TaskExecutionCoordinator {
       Promise.resolve(entry.handle.started).then(fact => this.#bindStarted(entry, fact))
         .catch(error => { this.#failEntry(entry, 'started', error); entry.startedGate.resolve(); });
       if (entry.stopping) this.#stop(entry);
+      if (this.#observability) entry.stage = 'provider';
       result = await entry.completion;
       if (!entry.startFact && result?.cleanup?.started) this.#bindStarted(entry, result.cleanup.started);
       entry.acceptStarted = false; entry.startedGate.resolve();
@@ -367,6 +383,7 @@ export class TaskExecutionCoordinator {
       requireValue(object(result) && (typed ? result.type === entry.ticket.executionType && ['completed', 'failed', 'unknown'].includes(result.status) :
         verifying ? result.type === 'verification' && ['passed', 'failed'].includes(result.status) :
         result.providerId === entry.ticket.providerId && ['completed', 'failed', 'cancelled', 'unknown'].includes(result.status)));
+      if (!entry.stopping && ['failed','unknown'].includes(result.status)) this.#diagnose(entry,'provider',null);
       if (typed && result.cleanup?.cleaned === true && !entry.stopping) this.#managed.validate(entry.ticket);
       if (!typed && !verifying && !entry.stopping && !this.#failure && result.status === 'completed' && result.stopReason === 'end_turn' && result.cleanup?.cleaned === true) {
         entry.stage = 'collecting';

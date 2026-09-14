@@ -232,3 +232,15 @@ test('Worker HTTP projection accepts optional Qwen last-response reading and rej
   const invalid = new TaskClient({baseURL:'http://127.0.0.1:39999',token,fetch:async()=>new Response(JSON.stringify({...worker,observation:{...worker.observation,lastResponseUsage:{...reading,complete:true}}}),{status:200,headers:{'Content-Type':'application/json'}})});
   await assert.rejects(invalid.request('worker.get',{path:{workerId:worker.id}}),{code:'client_invalid_response'});
 });
+
+test('diagnostic HTTP reading accepts explicit fixed facts and rejects private fields',async t=>{
+  const diagnostic={stage:'collecting',code:'collection_failed',source:'controller'};
+  const frame={profile:'task-observation/v1',activity:'terminal',observedAt:at,sequence:1,tool:null,model:null,usage:null,publicText:'',diagnostic};
+  const worker={...example('Worker'),observation:{...frame,history:[frame],historyTruncated:false}};
+  const {client}=await loopback(t,async()=>worker);
+  assert.deepEqual({...((await client.request('worker.get',{path:{workerId:worker.id}})).observation.diagnostic)},diagnostic);
+  for(const bad of [{...diagnostic,code:'PRIVATE'},{...diagnostic,details:'PRIVATE'},{...diagnostic,source:'agent-guessed'}]){
+    const invalid=new TaskClient({baseURL:'http://127.0.0.1:39999',token,fetch:async()=>new Response(JSON.stringify({...worker,observation:{...worker.observation,diagnostic:bad}}),{status:200,headers:{'Content-Type':'application/json'}})});
+    await assert.rejects(invalid.request('worker.get',{path:{workerId:worker.id}}),{code:'client_invalid_response'});
+  }
+});

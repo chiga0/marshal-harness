@@ -65,14 +65,14 @@ function fixture(t, options = {}) {
   let ids = 0, offset = 0;
   const clock = () => Date.now() + offset, makeId = prefix => prefix + '-' + String(++ids).padStart(6, '0');
   const depot = questions ? ArtifactDepot.create(path.join(parent, 'objects')) : null;
-  let app = new TaskApplication({store, owner, execution, clock, makeId, runtimeQuestions: questions, verification, depot});
+  let app = new TaskApplication({store, owner, execution, clock, makeId, runtimeQuestions: questions, verification, depot, observability:options.observability ? {profile:'task-observation/v1',retainPrompts:false} : null});
   const provider = new FakeProvider(), errors = [], controllers = [];
   const makeController = extra => {
     const supervisor = new TaskSupervisor({execution: app.execution, providers: new Map([[provider.id, provider]]),
       prepare: ticket => ({cwd: parent, prompt: JSON.stringify({workerId: ticket.workerId, role: ticket.role, nodeId: ticket.nodeId})}),
       collect: ticket => ticket.role === 'planner' ? {plan: proposal} : {result: {nodeId: ticket.nodeId, candidate: true}},
       verification,
-      onError: error => errors.push(error), clock, ...extra});
+      onError: error => errors.push(error), clock, observability:options.observability === true, ...extra});
     controllers.push(supervisor); return supervisor;
   };
   t.after(async () => {
@@ -99,7 +99,7 @@ function fixture(t, options = {}) {
     capacity() {return store.read(owner, tx => app.execution.capacity(tx).value.active);},
     reopen() {
       store.close(); store = Store.openExisting(root, storeOptions); owner = store.claimOwner(owner.generation, 'reopened-supervisor', Date.now() + 3600000);
-      app = new TaskApplication({store, owner, execution, clock, makeId, runtimeQuestions: questions, verification, depot});
+      app = new TaskApplication({store, owner, execution, clock, makeId, runtimeQuestions: questions, verification, depot, observability:options.observability ? {profile:'task-observation/v1',retainPrompts:false} : null});
     }};
 }
 async function approved(f, supervisor) {
@@ -464,4 +464,22 @@ test('self-driven timer makes progress without an external watchdog, then closes
   const report = await supervisor.close(); assert.equal(report.clean, true);
   assert.equal(f.provider.records.slice(1).every(record => record.stopCount === 1), true);
   assert.equal(f.capacity().length, 0); assert.deepEqual(f.errors, []);
+});
+
+test('explicit controller diagnostics distinguish prepare, provider and collection without exposing original errors', async t => {
+  for (const stage of ['prepare','collect','provider']) await t.test(stage, async t => {
+    const f=fixture(t,{observability:true}); const task=await f.create();
+    const controller=f.makeController({...(stage==='prepare'?{prepare(){throw new Error('PRIVATE /secret/file body');}}:{}),
+      ...(stage==='collect'?{collect(){throw Object.assign(new Error('PRIVATE /secret/file body'),{code:'PRIVATE_CODE'});}}:{})});
+    await controller.start();
+    if(stage!=='prepare'){await until(()=>f.provider.records.length===1);f.provider.records[0].finish(stage==='provider'?{status:'failed',stopReason:'refusal'}:{});}
+    await until(async()=>{await controller.tick();return (await f.get(task.id)).status==='failed';});
+    const workers=await f.app.dispatch({operation:'task.workers',taskId:task.id},context);
+    const diagnostic=workers.items[0].observation.diagnostic;
+    assert.deepEqual(diagnostic,{stage:stage==='prepare'?'preparing':stage==='collect'?'collecting':'provider',code:stage==='prepare'?'preparation_failed':stage==='collect'?'collection_failed':'provider_failed',source:'controller'});
+    assert.doesNotMatch(JSON.stringify(workers),/PRIVATE|secret\/file/);
+    assert.equal(workers.items[0].observation.activity,'terminal');
+    await controller.close(); f.reopen();
+    assert.deepEqual((await f.app.dispatch({operation:'task.workers',taskId:task.id},context)).items[0].observation.diagnostic,diagnostic);
+  });
 });

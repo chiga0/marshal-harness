@@ -4261,10 +4261,52 @@
           "zeroMayBeDefault"
         ]
       },
+      "ExecutionDiagnostic": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "stage": {
+            "enum": [
+              "preparing",
+              "starting",
+              "provider",
+              "permission",
+              "collecting",
+              "cleanup"
+            ]
+          },
+          "code": {
+            "enum": [
+              "preparation_failed",
+              "provider_start_failed",
+              "provider_failed",
+              "collection_failed",
+              "cleanup_unconfirmed",
+              "deadline_exceeded",
+              "permission_denied",
+              "permission_shape_denied",
+              "permission_kind_denied",
+              "permission_path_denied"
+            ]
+          },
+          "source": {
+            "enum": [
+              "controller",
+              "provider-permission"
+            ]
+          }
+        },
+        "required": [
+          "stage",
+          "code",
+          "source"
+        ]
+      },
       "ObservationFrame": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "diagnostic": {"$ref": "#/components/schemas/ExecutionDiagnostic"},
           "lastResponseUsage": {"$ref": "#/components/schemas/LastResponseUsage"},
           "profile": {
             "const": "task-observation/v1"
@@ -4452,6 +4494,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "diagnostic": {"$ref": "#/components/schemas/ExecutionDiagnostic"},
           "lastResponseUsage": {"$ref": "#/components/schemas/LastResponseUsage"},
           "profile": {
             "const": "task-observation/v1"

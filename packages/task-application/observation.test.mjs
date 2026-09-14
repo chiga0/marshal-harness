@@ -49,3 +49,12 @@ test('Qwen last-response observation is bounded, closed and excluded from aggreg
     assert.equal(validate({...frame,lastResponseUsage:bad},'ObservationFrame'),false);
   }
 });
+
+test('diagnostic projection is closed and cannot smuggle raw details or an invented authority', () => {
+  const diagnostic={stage:'permission',code:'permission_shape_denied',source:'provider-permission'};
+  const frame=normalizedObservation({activity:'tool',diagnostic},1,'2026-09-14T01:00:00Z');
+  assert.deepEqual(frame.diagnostic,diagnostic);assert.equal(validate(frame,'ObservationFrame'),true);
+  for(const bad of [{...diagnostic,code:'PRIVATE'},{...diagnostic,path:'/private'},{...diagnostic,stage:'cleanup'},{...diagnostic,source:'guessed'}]) {
+    assert.equal(Object.hasOwn(normalizedObservation({activity:'tool',diagnostic:bad},1,'2026-09-14T01:00:00Z'),'diagnostic'),false);
+  }
+});
