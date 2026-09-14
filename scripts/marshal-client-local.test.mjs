@@ -76,6 +76,7 @@ test('live service cannot be reported as a newly requested configuration', async
   const file = path.join(home, '.marshal-client/local.json'), before = fs.readFileSync(file);
   for (const args of [['--config', path.join(home, 'different.mjs')], ['--ui', path.join(home, 'ui')], ['--port', '34567']]) {
     await assert.rejects(run(['serve', ...args], {home, output() {assert.fail('no false connection');}}), /running_configuration_conflict/);
+    await assert.rejects(run(['init', ...args], {home, output() {assert.fail('no live reconfiguration');}}), /running_configuration_conflict/);
     assert.deepEqual(fs.readFileSync(file), before);
   }
 });

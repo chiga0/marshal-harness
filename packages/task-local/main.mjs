@@ -110,14 +110,16 @@ export async function run(argv, {home = os.homedir(), output = value => console.
   // A live recorded service is not silently repurposed by a new launch request.
   // Check the original connection before applying any requested overrides.
   const previous = {...settings};
-  if (command === 'serve' && previous.connectionFile) {
+  if (['serve', 'init'].includes(command) && previous.connectionFile) {
     let live = false; try {await connect(previous); live = true;} catch {}
     if (live) {
       const changed = options['--no-ui'] && previous.ui !== undefined ||
         Object.entries(optionFields).some(([option, field]) => option in options && options[option] !== previous[field]);
       if (changed) fail('running_configuration_conflict');
-      output({state: 'connected', settingsFile: file, ...(previous.address ? {address: previous.address} : {}),
-        ...(previous.ui && previous.address ? {uiUrl: previous.address + '/ui/'} : {})}); return;
+      if (command === 'serve') {
+        output({state: 'connected', settingsFile: file, ...(previous.address ? {address: previous.address} : {}),
+          ...(previous.ui && previous.address ? {uiUrl: previous.address + '/ui/'} : {})}); return;
+      }
     }
   }
   settings.installRoot = installation(options['--install-root'] ?? settings.installRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'));
