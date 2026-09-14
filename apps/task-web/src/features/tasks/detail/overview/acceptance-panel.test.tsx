@@ -50,6 +50,25 @@ describe('独立验收面板（UI-04）', () => {
     expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('验收状态未知');
   });
 
+  it('无 publication/postverify 不推导未交付：文件交付引导至成果页', () => {
+    renderPanel('passed');
+    expect(screen.getByText('发布与后验（Leader 动作投影）')).toBeInTheDocument();
+    expect(screen.getByText('无发布/后验动作；文件交付请查看成果页')).toBeInTheDocument();
+    expect(screen.queryByText('暂无交付/后验动作。')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('publication-readout')).not.toBeInTheDocument();
+    expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('验收通过');
+  });
+
+  it('publication 动作仅标为发布，不冒充一般文件交付', () => {
+    render(<AcceptancePanel leader={makeLeader({publication: {
+      actionId: 'action-publication', status: 'succeeded',
+      authorizationDigest: `sha256:${'a'.repeat(64)}`, receiptArtifactId: 'receipt-publication',
+    }})} audit={null} />);
+    expect(screen.getByTestId('publication-readout')).toHaveTextContent('发布');
+    expect(screen.getByTestId('publication-readout')).not.toHaveTextContent('交付发布');
+    expect(screen.queryByText('无发布/后验动作；文件交付请查看成果页')).not.toBeInTheDocument();
+  });
+
   it('audit 未加载：不以评审结果代替验收', () => {
     render(<AcceptancePanel leader={makeLeader({review: ACCEPT_REVIEW})} audit={null} />);
     expect(screen.getByTestId('review-readout')).toHaveTextContent('评审通过');

@@ -55,6 +55,22 @@ class Bucket:
 
 
 class SyncTests(unittest.TestCase):
+    def test_rc2_does_not_overwrite_rc1_and_stable_channel_rejects_both(self):
+        assets = dict(self.assets)
+        assets['install-node-preview.sh'] = assets.pop('install-node.sh')
+        for version in ('v1.1.0-rc.1', 'v1.1.0-rc.2'):
+            with self.assertRaises(syncer.Rejected):
+                syncer.sync(self.bucket, 'marshal/node', version, assets, SDK)
+            syncer.sync(self.bucket, 'marshal/node', version, assets, SDK, 'preview')
+        self.assertEqual(len(self.bucket.writes), 12)
+        before = dict(self.bucket.objects)
+        syncer.sync(self.bucket, 'marshal/node', 'v1.1.0-rc.2', assets, SDK, 'preview')
+        self.assertEqual(self.bucket.objects, before)
+        self.assertEqual(len(self.bucket.writes), 12)
+        for version in ('v1.1.0-rc.3', 'v1.1.0', 'latest'):
+            with self.assertRaises(syncer.Rejected):
+                syncer.sync(self.bucket, 'marshal/node', version, assets, SDK, 'preview')
+
     def test_preview_explicit_channel_only_and_separate_installer(self):
         assets = dict(self.assets)
         assets['install-node-preview.sh'] = assets.pop('install-node.sh')
@@ -133,6 +149,15 @@ class SyncTests(unittest.TestCase):
 
 
 class ValidationTests(unittest.TestCase):
+    def test_rc2_installer_version_requires_explicit_preview_channel(self):
+        original = Path(__file__).with_name('install-node-preview.sh').read_text()
+        current = syncer.installer_constants(original.encode(), 'preview')['VERSION']
+        for version in ('v1.1.0-rc.1', 'v1.1.0-rc.2'):
+            candidate = original.replace('VERSION = ' + repr(current), 'VERSION = ' + repr(version)).encode()
+            self.assertEqual(syncer.installer_constants(candidate, 'preview')['VERSION'], version)
+            with self.assertRaises(syncer.Rejected):
+                syncer.installer_constants(candidate, 'stable')
+
     def test_preview_pins_and_no_automatic_init(self):
         text = Path(__file__).with_name('install-node-preview.sh').read_text()
         with self.assertRaises(syncer.Rejected):

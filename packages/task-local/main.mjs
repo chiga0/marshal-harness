@@ -4,12 +4,33 @@ import path from 'node:path';
 import {pathToFileURL, fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
+import {createConnection} from 'node:net';
 import {discoverAgents} from './discovery.mjs';
 import {installCommand} from './install-command.mjs';
 
 const fail = code => { throw new Error(code); };
 const codes = new Set(['invalid_arguments', 'unsafe_settings', 'installation_missing_or_ambiguous',
-  'configuration_required', 'connection_unavailable', 'service_start_failed', 'settings_missing', 'command_install_conflict']);
+  'configuration_required', 'connection_unavailable', 'service_start_failed', 'settings_missing', 'command_install_conflict',
+  'agent_unavailable', 'running_configuration_conflict', 'service_not_ready', 'connection_uncertain']);
+const optionFields = {'--config': 'config', '--connection-file': 'connectionFile', '--data-dir': 'dataDir',
+  '--ui': 'ui', '--port': 'port', '--agent-executable': 'agentExecutable', '--install-root': 'installRoot'};
+function executable(value) {
+  try {
+    const resolved = fs.realpathSync(absolute(value)), stat = fs.statSync(resolved);
+    if (!stat.isFile() || !(stat.mode & 0o111)) fail('agent_unavailable');
+    fs.accessSync(resolved, fs.constants.X_OK);
+    return resolved;
+  } catch {fail('agent_unavailable');}
+}
+function serviceAddress(value) {
+  if (typeof value !== 'string') return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port || url.username || url.password ||
+      url.search || url.hash || url.pathname !== '/') fail('service_start_failed');
+    return url.origin;
+  } catch {fail('service_start_failed');}
+}
 function absolute(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value) || /[\x00-\x1f\x7f]/.test(value)) fail('invalid_arguments');
   return path.resolve(value);
@@ -47,12 +68,40 @@ function installation(root) {
   }
   return root;
 }
+// A refused loopback listener permits retrying the original Store lock, not a
+// claim that every previous process exited. Never probe arbitrary hostnames.
+async function listenerRefused(value) {
+  if (typeof value !== 'string' || !/^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})\/?$/.test(value)) return false;
+  const port = Number(new URL(value).port);
+  if (!port || port > 65535) return false;
+  return new Promise(resolve => {
+    let settled = false;
+    const socket = createConnection({host: '127.0.0.1', port});
+    const finish = refused => {if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); resolve(refused);};
+    const timer = setTimeout(() => finish(false), 1000);
+    socket.once('connect', () => finish(false));
+    socket.once('error', error => finish(error.code === 'ECONNREFUSED'));
+  });
+}
 async function connect(settings) {
   if (!settings.connectionFile) fail('connection_unavailable');
   const {TaskClient} = await import(pathToFileURL(path.join(installation(settings.installRoot), 'packages/task-client/index.mjs')));
   const connection = readPrivate(absolute(settings.connectionFile));
   const client = new TaskClient({baseURL: connection.url, token: connection.token});
-  await client.request('ready.get', {timeoutMs: 2000});
+  try {await client.request('ready.get', {timeoutMs: 2000});}
+  catch (readyError) {
+    // Readiness is not liveness: an authenticated service may still own data
+    // and executions while rejecting work. Never start a replacement then.
+    let live = false, healthFailure;
+    try {await client.request('health.get', {timeoutMs: 2000}); live = true;}
+    catch (healthError) {healthFailure = healthError; live = readyError.status === 503 || healthError.status === 503;}
+    if (live) fail('service_not_ready');
+    // HTTP responses, timeout and invalid data do not prove a stopped owner.
+    // Only two transport failures plus an explicitly refused listener qualify.
+    if (readyError.code === 'client_transport_error' && healthFailure?.code === 'client_transport_error' &&
+      await listenerRefused(connection.url)) fail('connection_unavailable');
+    fail('connection_uncertain');
+  }
   return client;
 }
 export async function connectLocal({settingsDir = path.join(fs.realpathSync(os.homedir()), '.marshal-client')} = {}) {
@@ -64,45 +113,107 @@ export async function connectLocal({settingsDir = path.join(fs.realpathSync(os.h
 export async function run(argv, {home = os.homedir(), output = value => console.log(JSON.stringify(value)), startupTimeoutMs = 30000, stopTimeoutMs = 5000} = {}) {
   const command = argv[0] ?? '--help', options = {};
   if (command === '--help') {
-    output({commands: ['init', 'status', 'serve'], options: ['--install-root', '--config', '--connection-file', '--settings-dir'],
-      note: 'init 检测并记录；serve 复用连接或以前台进程运行现有受信服务配置，不自动授权业务。'}); return;
+    output({commands: ['init', 'status', 'serve'], options: ['--install-root', '--config', '--connection-file', '--settings-dir',
+      '--data-dir', '--port', '--ui', '--no-ui', '--agent-executable', '--generic', '--replace-launcher'],
+      note: 'init 检测并记录；serve 优先复用既有配置，无配置时使用本机 Qwen 通用文件团队；不自动授权外部业务发布。'}); return;
   }
   if (!['init', 'status', 'serve'].includes(command)) fail('invalid_arguments');
   for (let i = 1; i < argv.length; i += 2) {
     const key = argv[i];
-    if (!['--install-root', '--config', '--connection-file', '--settings-dir'].includes(key) || key in options || !argv[i+1]) fail('invalid_arguments');
-    options[key] = absolute(argv[i+1]);
+    if (['--no-ui', '--generic', '--replace-launcher'].includes(key)) {
+      if (key in options || key === '--no-ui' && '--ui' in options || key === '--generic' && '--config' in options ||
+        key === '--replace-launcher' && command !== 'init') fail('invalid_arguments');
+      options[key] = true; i--; continue;
+    }
+    if (key === '--ui' && '--no-ui' in options) fail('invalid_arguments');
+    if (key === '--config' && '--generic' in options) fail('invalid_arguments');
+    if (![...Object.keys(optionFields), '--settings-dir'].includes(key) || key in options || !argv[i+1]) fail('invalid_arguments');
+    if (key === '--port') {
+      if (!/^(0|[1-9][0-9]{0,4})$/.test(argv[i+1]) || Number(argv[i+1]) > 65535) fail('invalid_arguments');
+      options[key] = Number(argv[i+1]);
+    } else options[key] = absolute(argv[i+1]);
   }
   const dir = options['--settings-dir'] ?? path.join(fs.realpathSync(home), '.marshal-client');
   privateDir(dir);
   const file = path.join(dir, 'local.json');
   let settings = fs.existsSync(file) ? readPrivate(file) : {version: 1};
   if (!settings || settings.version !== 1) fail('unsafe_settings');
-  settings.installRoot = installation(options['--install-root'] ?? settings.installRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'));
-  if (options['--config']) settings.config = options['--config'];
-  if (options['--connection-file']) settings.connectionFile = options['--connection-file'];
+  // A live recorded service is not silently repurposed by a new launch request.
+  // Check the original connection before applying any requested overrides.
+  const previous = {...settings};
+  const ownRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const selectedRoot = options['--install-root'] ?? (command === 'init' ? ownRoot : settings.installRoot ?? ownRoot);
+  if (['serve', 'init'].includes(command) && previous.connectionFile) {
+    let live = false; try {await connect(previous); live = true;} catch (error) {
+      if (error.message !== 'connection_unavailable') throw error;
+    }
+    if (live) {
+      const changed = options['--replace-launcher'] || selectedRoot !== previous.installRoot ||
+        options['--generic'] && previous.generic !== true || options['--no-ui'] && previous.ui !== undefined ||
+        Object.entries(optionFields).some(([option, field]) => option in options && options[option] !== previous[field]);
+      if (changed) fail('running_configuration_conflict');
+      if (command === 'serve') {
+        output({state: 'connected', settingsFile: file, ...(previous.address ? {address: previous.address} : {}),
+          ...(previous.ui && previous.address ? {uiUrl: previous.address + '/ui/'} : {})}); return;
+      }
+    }
+  }
+  settings.installRoot = installation(selectedRoot);
+  for (const [option, field] of Object.entries(optionFields)) if (option in options) settings[field] = options[option];
+  if (options['--no-ui']) delete settings.ui;
+  if (options['--config']) delete settings.generic;
+  if (options['--generic']) {
+    delete settings.config; settings.generic = true;
+    if (previous.generic !== true && !options['--data-dir']) delete settings.dataDir;
+    // A connection to the previous business profile must not shortcut the new launch.
+    delete settings.connectionFile; delete settings.address;
+  }
   if (command === 'init') {
     settings.agents = await discoverAgents();
-    save(file, settings);
     let launcher;
-    try {launcher = {...installCommand({installRoot: settings.installRoot, home: fs.realpathSync(home)}), state: 'installed'};}
+    try {launcher = {...installCommand({installRoot: settings.installRoot, home: fs.realpathSync(home),
+      replace: Boolean(options['--replace-launcher']), previousInstallRoot: previous.installRoot,
+      previousNodePath: previous.launcherNodePath ?? process.execPath}), state: 'installed'};}
     catch {launcher = {state: 'conflict', code: 'command_install_conflict'};}
-    let connected = false; try {await connect(settings); connected = true;} catch {}
+    if (launcher.state === 'installed') {settings.launcherNodePath = process.execPath; save(file, settings);}
+    else if (!fs.existsSync(file)) save(file, settings);
+    if (launcher.state === 'conflict' && options['--replace-launcher']) fail('command_install_conflict');
+    let connected = false; try {await connect(settings); connected = true;} catch (error) {
+      if (error.message !== 'connection_unavailable') throw error;
+    }
     output({state: connected ? 'connected' : 'initialized', installRoot: settings.installRoot,
       agents: settings.agents, launcher, settingsFile: file, serviceConfigured: Boolean(settings.config),
-      next: connected ? null : settings.config ? 'serve' : 'configuration_required'});
+      next: connected ? null : 'serve'});
     return;
   }
-  try {await connect(settings); output({state: 'connected', settingsFile: file}); return;} catch {
+  try {await connect(settings); output({state: 'connected', settingsFile: file,
+    ...(settings.address ? {address: settings.address} : {}), ...(settings.ui && settings.address ? {uiUrl: settings.address + '/ui/'} : {})}); return;} catch (error) {
+    if (error.message !== 'connection_unavailable') throw error;
     if (command === 'status') fail('connection_unavailable');
   }
-  if (!settings.config) fail('configuration_required');
+  if (!settings.config || settings.generic === true) {
+    settings.config = path.join(settings.installRoot, 'packages/task-generic-files/service-config.mjs');
+    settings.generic = true;
+    const selected = settings.agentExecutable ?? (await discoverAgents()).find(agent => agent.id === 'qwen')?.resolvedPath;
+    if (!selected) fail('agent_unavailable');
+    settings.agentExecutable = executable(selected);
+    if (!settings.dataDir) {
+      const parent = path.join(fs.realpathSync(home), '.marshal-node');
+      privateDir(parent);
+      settings.dataDir = path.join(parent, 'generic-team');
+    }
+  }
   // Configuration remains trusted local deployment code; detection is not an adapter/permission policy.
   const c = fs.lstatSync(settings.config);
   if (!c.isFile() || c.uid !== process.getuid() || (c.mode & 0o022)) fail('unsafe_settings');
   save(file, settings);
-  const child = spawn(process.execPath, [path.join(settings.installRoot, 'packages/task-service/main.mjs'), '--config', settings.config],
-    {stdio: ['ignore', 'pipe', 'pipe']});
+  const childArgs = [path.join(settings.installRoot, 'packages/task-service/main.mjs'), '--config', settings.config];
+  for (const [option, field] of [['--data-dir', 'dataDir'], ['--port', 'port'], ['--ui', 'ui']]) {
+    if (settings[field] !== undefined) childArgs.push(option, String(settings[field]));
+  }
+  const env = {...process.env};
+  if (settings.agentExecutable) env.MARSHAL_AGENT_EXECUTABLE = executable(settings.agentExecutable);
+  const child = spawn(process.execPath, childArgs, {env, stdio: ['ignore', 'pipe', 'pipe']});
   let pending = '', admitted = false, failed = false, stopping = false, killTimer, probing = false;
   let probe = Promise.resolve();
   const stop = () => {
@@ -125,10 +236,15 @@ export async function run(argv, {home = os.homedir(), output = value => console.
     probe = (async () => {try {
       const record = JSON.parse(pending.slice(0, newline));
       const candidate = {...settings, connectionFile: absolute(record.connectionFile)};
+      delete candidate.address;
+      const address = serviceAddress(record.address);
+      if (address) candidate.address = address;
+      if (settings.ui && !address) fail('service_start_failed');
       await connect(candidate);
       if (failed || stopping || child.exitCode !== null || child.signalCode !== null) return;
       save(file, candidate); admitted = true; clearTimeout(timer);
-      output({state: 'connected', settingsFile: file, connectionFile: candidate.connectionFile});
+      output({state: 'connected', settingsFile: file, connectionFile: candidate.connectionFile,
+        ...(address ? {address} : {}), ...(settings.ui ? {uiUrl: address + '/ui/'} : {})});
     } catch {terminate();}})();
   });
   process.on('SIGINT', stop); process.on('SIGTERM', stop);

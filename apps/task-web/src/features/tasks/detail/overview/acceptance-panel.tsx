@@ -1,7 +1,7 @@
 // 评审、独立验收、交付、后验四者分开呈现（UI-04）：
 // - 集中评审事实只来自 leader.review（verdict=accept 是评审通过）；
 // - 独立验收事实只来自 GET /v1/tasks/{taskId}/audit 的 acceptance（passed 才是验收通过）；
-// - 交付/后验来自 Leader 动作投影；执行结束或评审通过都不能推导验收通过。
+// - 发布/后验来自 Leader 动作投影；无发布动作不等于无文件交付；执行结束或评审通过都不能推导验收通过。
 
 import {Card} from '@/components/ui/card';
 import type {LeaderRecord, TaskAuditRecord} from '@/lib/transport/types';
@@ -63,16 +63,16 @@ export function AcceptancePanel({leader, audit}: AcceptancePanelProps) {
       </div>
 
       <div className="space-y-1 border-t border-border pt-2">
-        <span className="text-xs font-medium text-text-secondary">交付与后验（Leader 动作投影）</span>
+        <span className="text-xs font-medium text-text-secondary">发布与后验（Leader 动作投影）</span>
         {leader === null ? (
           <p className="text-sm text-text-secondary">Leader 投影不可用。</p>
         ) : publication === null && postverify === null ? (
-          <p className="text-sm text-text-secondary">暂无交付/后验动作。</p>
+          <p className="text-sm text-text-secondary">无发布/后验动作；文件交付请查看成果页</p>
         ) : (
           <div className="space-y-1">
             {publication ? (
               <div className="flex flex-wrap items-center gap-2 text-sm leading-[22px]" data-testid="publication-readout">
-                <span className="text-text-secondary">交付发布</span>
+                <span className="text-text-secondary">发布</span>
                 <StatusBadge machine={publication.status} label={leaderActionStatusLabel(publication.status)} tone={toneForLeaderAction(publication.status)} />
               </div>
             ) : null}

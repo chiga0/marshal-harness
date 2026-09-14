@@ -11,6 +11,17 @@ export class AcpProviderError extends Error {
   constructor(code) { super(code); this.name = 'AcpProviderError'; this.code = code; }
 }
 const error = code => new AcpProviderError(code);
+
+/** Direct installed CLI entry; no npm layout, version probe or ambient login copy.
+ * Availability is established by the ordinary-user runtime and ACP handshake,
+ * not by this factory. Custom argv compositions retain createAcpProvider.
+ */
+export function createExecutableAcpProvider(options = {}) {
+  if (!object(options) || Object.keys(options).some(key => !['id', 'executable', 'env', 'custodyProfile'].includes(key)))
+    throw error('provider_invalid_configuration');
+  return createAcpProvider({...options, args: ['--acp']});
+}
+
 function bounded(callback, value, signal) {
   if (!callback) return Promise.resolve();
   return new Promise((resolve, reject) => {

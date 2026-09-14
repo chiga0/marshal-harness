@@ -114,7 +114,10 @@ const integer = (value, min, max) => Number.isSafeInteger(value) && value >= min
 export function leaderPolicy(policy) {
   check(closed(policy, ['profile', 'maxCalls', 'maxActions', 'maxRequests', 'repair', 'review', 'publication']) &&
     policy.profile === LEADER_PROFILE && integer(policy.maxCalls, 1, 32) && integer(policy.maxActions, 1, 4) &&
-    integer(policy.maxRequests, 1, 16) && closed(policy.repair, ['nodeIds', 'maxRounds']) &&
+    integer(policy.maxRequests, 1, 16) &&
+    (closed(policy.repair, ['nodeIds', 'maxRounds']) ||
+      closed(policy.repair, ['nodeIds', 'maxRounds', 'scope']) && policy.repair.scope === 'plan-authors' &&
+      Array.isArray(policy.repair.nodeIds) && policy.repair.nodeIds.length === 0) &&
     distinct(policy.repair.nodeIds, 64) && integer(policy.repair.maxRounds, 0, 3) &&
     closed(policy.review, ['providerId', 'policyDigest']) && id(policy.review.providerId) && sha(policy.review.policyDigest) &&
     (policy.publication === null || closed(policy.publication, ['targetId', 'policyDigest']) &&
@@ -275,6 +278,7 @@ export function renderLeaderPrompt(input) {
   // digest, infer authorization or repair/normalize a returned model action.
   const snapshot = input.snapshot ?? {}, read = kind => snapshot.readSet?.find(item => item.kind === kind)?.digest ?? null;
   const selection = snapshot.selection ?? [], evidence = snapshot.evidence ?? [], plan = snapshot.plan;
+  const deliveryReady = (snapshot.obligation ?? []).some(item => item.reason === 'delivery-ready');
   const references = {
     askSubjects: [{source: 'snapshot.readSet[input].digest', digest: read('input')},
       {source: 'snapshot.readSet[plan].digest', digest: read('plan')},
@@ -301,11 +305,12 @@ export function renderLeaderPrompt(input) {
     work: references.selectedNodeIds.length && sha(references.selectionDigest) ? example({type: 'work', kind: 'review', nodeIds: references.selectedNodeIds, selectionDigest: references.selectionDigest}) : missing,
     repair: references.repairBases.length ? example({type: 'repair', nodeIds: references.repairBases[0].nodeId ? [references.repairBases[0].nodeId] : references.selectedNodeIds,
       basis: {kind: references.repairBases[0].kind, digest: references.repairBases[0].digest}, feedback: '依据原负面证据说明精确修正要求'}) : missing,
-    deliver: references.deliveries.length && sha(references.acceptanceDigest) && sha(references.reviewDigest) ? example({type: 'deliver',
+    deliver: deliveryReady ? '已完成交付，不重复deliver；根据冻结证据选择conclude。' : references.deliveries.length && sha(references.acceptanceDigest) && sha(references.reviewDigest) ? example({type: 'deliver',
       artifactId: references.deliveries[0].artifactId, acceptanceDigest: references.acceptanceDigest, reviewDigest: references.reviewDigest}) : missing,
     conclude: example({type: 'conclude', outcome: 'succeeded', summary: '依据已完成的交付及后验说明整体结果', basisDigests: references.conclusionBasisDigests}),
   };
   return '你是受管 Leader，只决定原任务的业务推进，不能启动进程、写文件、批准计划或提升权限。只返回一个 JSON 对象，无 Markdown。' +
+    (deliveryReady ? '当前冻结obligation包含delivery-ready：交付动作已落实，当前是最终总结，不是再次交付。核对独立审查、验收及配置要求的后验后，使用conclude.succeeded总结；若证据有实际矛盾则说明失败，不重复deliver。Core仍独立校验全部完成条件。' : '') +
     '返回顶层必须且只能是profile、callId、inputDigest、summary、actions五个字段；动作类型放在actions数组元素的type字段。' +
     '下面的示例名称只是说明标题，不是JSON字段；只返回所选示例的对象本身，不得用ask/plan/work/repair/deliver/conclude作外层包装键，也不得返回示例目录。' +
     '回显 profile/callId/inputDigest，summary≤4096 UTF-8 bytes，actions 为1至 snapshot.policy.maxActions项。下列每项是单独的返回示例，绝不能合并为六动作决定。' +
