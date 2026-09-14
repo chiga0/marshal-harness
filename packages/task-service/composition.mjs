@@ -107,6 +107,13 @@ export async function startTaskService({root, mode, providers, prepare, collect,
   try {observationConfig = observationConfiguration(observability);} catch {requireValue(false);}
   requireValue(!observationConfig?.retainPrompts || unpermitted === undefined && auditDisclosure == null, 'service_unsupported_preparation');
   const available = new Map(providers);
+  if (observationConfig) {
+    const providerExtensions = [...available].filter(([, provider]) => provider?.usageExtension !== undefined).map(([providerId, provider]) => {
+      requireValue(provider.usageExtension === 'qwen-transcript/v1');
+      return {providerId, usageExtension: provider.usageExtension};
+    }).sort((a, b) => a.providerId.localeCompare(b.providerId));
+    if (providerExtensions.length) observationConfig = {...observationConfig, providerExtensions};
+  }
   const leaderConfig = leader === undefined ? null : leaderConfiguration(leader, review, publication ?? null, verification ?? null);
   requireValue(leaderConfig ? custody !== undefined && businessFactory !== undefined && clarification === undefined && auditDisclosure === undefined &&
     (applicationOptions.execution?.maxWorkers ?? 2) >= 3 && (applicationOptions.defaultLimits?.maxWorkers ?? 2) >= 3 :

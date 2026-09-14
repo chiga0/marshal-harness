@@ -4219,10 +4219,53 @@
           "source"
         ]
       },
+      "LastResponseUsage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "inputTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "outputTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "totalTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "source": {
+            "const": "qwen-acp-meta"
+          },
+          "scope": {
+            "const": "last-response"
+          },
+          "complete": {
+            "const": false
+          },
+          "zeroMayBeDefault": {
+            "const": true
+          }
+        },
+        "required": [
+          "inputTokens",
+          "outputTokens",
+          "totalTokens",
+          "source",
+          "scope",
+          "complete",
+          "zeroMayBeDefault"
+        ]
+      },
       "ObservationFrame": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "lastResponseUsage": {"$ref": "#/components/schemas/LastResponseUsage"},
           "profile": {
             "const": "task-observation/v1"
           },
@@ -4409,6 +4452,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "lastResponseUsage": {"$ref": "#/components/schemas/LastResponseUsage"},
           "profile": {
             "const": "task-observation/v1"
           },

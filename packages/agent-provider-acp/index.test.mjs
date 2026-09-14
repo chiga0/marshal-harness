@@ -197,3 +197,26 @@ test('opt-in typed activity keeps hidden thought private and waits for whole out
   assert.deepEqual(final.model, {id: 'fixture-model', source: 'provider-reported'});
   assert.deepEqual(final.usage, {inputTokens:20, outputTokens:4, totalTokens:24, source:'provider-reported', complete:true});
 });
+
+test('explicit Qwen transcript extension reports only latest response and never converts metadata into output or cumulative usage', {timeout:15000}, async t => {
+  const events = [], p = createAcpProvider({id:'fixture',executable:process.execPath,args:[fixture,'qwen-usage'],usageExtension:'qwen-transcript/v1'});
+  const handle = p.start(input(t,{observability:true,onProgress:event=>events.push(event)})); t.after(()=>handle.stop());
+  const result = await handle.completion; cleaned(result); assert.equal(result.status,'completed');
+  const first = events.find(event=>event.lastResponseUsage);
+  assert.equal(first.activity,'tool'); assert.equal(first.publicText,'');
+  const last = events.at(-1).lastResponseUsage;
+  assert.deepEqual(last,{inputTokens:30,outputTokens:6,totalTokens:36,source:'qwen-acp-meta',scope:'last-response',complete:false,zeroMayBeDefault:true});
+  assert.ok(events.every(event=>event.usage === null)); assert.equal(result.usage.source,'unavailable');
+  assert.doesNotMatch(JSON.stringify(events),/PRIVATE_|_meta|parentToolCallId/);
+});
+
+test('Qwen extension rejects malformed and nested readings, preserves ambiguous zero and leaves generic ACP unchanged', {timeout:30000}, async t => {
+  for (const mode of ['qwen-usage-negative','qwen-usage-fraction','qwen-usage-overflow','qwen-usage-missing','qwen-usage-subagent','qwen-usage-zero','qwen-usage']) {
+    const events=[], p=createAcpProvider({id:'fixture',executable:process.execPath,args:[fixture,mode],...(mode === 'qwen-usage' ? {} : {usageExtension:'qwen-transcript/v1'})});
+    const handle=p.start(input(t,{observability:true,onProgress:event=>events.push(event)}));t.after(()=>handle.stop());const result=await handle.completion;cleaned(result);
+    assert.equal(result.status,'completed');
+    if(mode === 'qwen-usage-zero') {assert.equal(events.at(-1).lastResponseUsage.totalTokens,0);assert.equal(events.at(-1).lastResponseUsage.complete,false);assert.equal(events.at(-1).lastResponseUsage.zeroMayBeDefault,true);}
+    else assert.ok(events.every(event=>!Object.hasOwn(event,'lastResponseUsage')),mode);
+  }
+  assert.throws(()=>createAcpProvider({id:'fixture',executable:process.execPath,usageExtension:'invented'}),{code:'provider_invalid_configuration'});
+});

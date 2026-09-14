@@ -218,3 +218,17 @@ test('audit client binds snapshot to original worker/task and exact audit manife
     assert.equal(calls.length, 3);
   }
 });
+
+
+test('Worker HTTP projection accepts optional Qwen last-response reading and rejects invented cumulative authority', async t => {
+  const reading = {inputTokens:10,outputTokens:2,totalTokens:12,source:'qwen-acp-meta',scope:'last-response',complete:false,zeroMayBeDefault:true};
+  const frame = {profile:'task-observation/v1',activity:'terminal',observedAt:at,sequence:1,tool:null,model:null,usage:null,publicText:'',lastResponseUsage:reading};
+  let worker = {...example('Worker'),observation:{...frame,history:[frame],historyTruncated:false}};
+  const {client} = await loopback(t, async () => worker);
+  assert.deepEqual({...((await client.request('worker.get',{path:{workerId:worker.id}})).observation.lastResponseUsage)},reading);
+  delete worker.observation.lastResponseUsage;
+  worker.observation.history=[];
+  assert.equal(Object.hasOwn((await client.request('worker.get',{path:{workerId:worker.id}})).observation,'lastResponseUsage'),false);
+  const invalid = new TaskClient({baseURL:'http://127.0.0.1:39999',token,fetch:async()=>new Response(JSON.stringify({...worker,observation:{...worker.observation,lastResponseUsage:{...reading,complete:true}}}),{status:200,headers:{'Content-Type':'application/json'}})});
+  await assert.rejects(invalid.request('worker.get',{path:{workerId:worker.id}}),{code:'client_invalid_response'});
+});

@@ -40,10 +40,11 @@ function bounded(callback, value, signal) {
 }
 
 /** Trusted composition only; no brand switch, ambient env copy or Task authority. */
-export function createAcpProvider({id, executable, args = [], env = {}, custodyProfile} = {}) {
+export function createAcpProvider({id, executable, args = [], env = {}, custodyProfile, usageExtension} = {}) {
   if (!text(id, 128) || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id) || !text(executable, 8192) || !path.isAbsolute(executable) ||
     !Array.isArray(args) || args.length > 128 || args.some(value => !text(value, 32768)) || !object(env) || Object.keys(env).length > 128 ||
     Object.entries(env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || !text(value, 65536))) throw error('provider_invalid_configuration');
+  if (usageExtension !== undefined && usageExtension !== 'qwen-transcript/v1') throw error('provider_invalid_configuration');
   const config = structuredClone({executable, args, env});
   if (custodyProfile !== undefined && (!object(custodyProfile) || Object.keys(custodyProfile).sort().join(',') !== 'eligible,id,scope' ||
       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(custodyProfile.id) || custodyProfile.scope !== 'inherited-process-group' ||
@@ -88,6 +89,20 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       progress = {...progress, observedAt: new Date().toISOString()};
       if (item.sessionUpdate === 'agent_message_chunk') {
         if (!object(item.content) || item.content.type !== 'text') return;
+        let reportedResponse = null;
+        if (observability && usageExtension === 'qwen-transcript/v1' && object(item._meta) &&
+            !Object.hasOwn(item._meta, 'parentToolCallId') && !Object.hasOwn(item._meta, 'subagentType')) {
+          const reading = tokenUsage(item._meta.usage, ['inputTokens', 'outputTokens', 'totalTokens']);
+          if (reading) reportedResponse = {inputTokens: reading.inputTokens, outputTokens: reading.outputTokens,
+            totalTokens: reading.totalTokens, source: 'qwen-acp-meta', scope: 'last-response', complete: false, zeroMayBeDefault: true};
+        }
+        if (reportedResponse) progress = {...progress, lastResponseUsage: reportedResponse};
+        if (observability && item.content.text === '') {
+          // Empty Qwen transcript usage is metadata, not visible model output.
+          // Keep the last observed activity and do not replay a text snippet.
+          if (reportedResponse) {progress.publicText = ''; await bounded(onProgress, snapshot(), observation.signal);}
+          return;
+        }
         if (!text(item.content.text, MAX_OUTPUT_TEXT_BYTES) || outputBytes + Buffer.byteLength(item.content.text) > MAX_OUTPUT_TEXT_BYTES) throw error('provider_output_limit');
         outputText += item.content.text; outputBytes += Buffer.byteLength(item.content.text);
         // Core progress is a bounded observation, not a per-token event sink.
@@ -207,5 +222,6 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
     return Object.freeze({started, completion, stop, snapshot});
   }
   return Object.freeze({id, profile: 'ordinary-user', start,
+    ...(usageExtension ? {usageExtension} : {}),
     ...(custodyProfile === undefined ? {} : {custodyProfile: Object.freeze(structuredClone(custodyProfile))})});
 }

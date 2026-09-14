@@ -23,3 +23,19 @@ test('explicit observation identity freezes policy source and rejects changed ro
   }
   const reopened = await startTaskService({...config, mode:'open', observability: enabled}); await reopened.shutdown();
 });
+
+
+test('explicit provider usage extension is frozen before owner claim and identical configuration reopens', async t => {
+  const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-response-config-'))), root = path.join(parent,'data');
+  t.after(() => fs.rmSync(parent,{recursive:true,force:true}));
+  const provider = {id:'fixture',usageExtension:'qwen-transcript/v1',start(){throw Error('must not start');}};
+  const config = {root,providers:new Map([[provider.id,provider]]),observability:enabled,prepare:async()=>({prompt:'public'}),collect:async()=>({})};
+  const first = await startTaskService({...config,mode:'create'}); await first.shutdown();
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root,'profile.json'))).observability.providerExtensions,[{providerId:'fixture',usageExtension:'qwen-transcript/v1'}]);
+  let store = Store.openExisting(path.join(root,'store')); const generation = store.info().generation; store.close();
+  for (const usageExtension of [undefined,'invented']) {
+    await assert.rejects(startTaskService({...config,mode:'open',providers:new Map([['fixture',{...provider,usageExtension}]])}));
+    store = Store.openExisting(path.join(root,'store')); assert.equal(store.info().generation,generation); store.close();
+  }
+  const second = await startTaskService({...config,mode:'open'}); await second.shutdown();
+});

@@ -30,6 +30,6 @@ Prompt 最多 256 KiB，`outputText` 仅累计 `agent_message_chunk` 的文本�
 
 权限默认拒绝。显式 `onPermission(request,{signal})` 是可信授权策略通道，不是公开进度：保留实际 session ID、toolCallId、tool 输入与选项，去掉 `_meta`；回调可返回原 ACP `{outcome:{outcome:'selected',optionId}}` 或 cancelled。AgentClient 校验原选项、当前 session、有效回合并在取消/结束时撤销未决权限。允许原生工具不等于自动允许请求，真实用户澄清由上层 Task questions/answers 接线。
 
-usage 当前 `{tokens:null,cost:null,currency:null,source:'unavailable',coverage:0}`。没有把 `usage_update.used`（上下文占用）当成本轮计费 token，也不从 `_meta` 猜测账单。后续只有明确定义的供应商账单字段才能增加准确映射。
+usage 当前 `{tokens:null,cost:null,currency:null,source:'unavailable',coverage:0}`。没有把 `usage_update.used`（上下文占用）当成本轮计费 token，也不从 `_meta` 猜测账单。可信 composition 可显式设置 `usageExtension: "qwen-transcript/v1"`，且本次执行启用 `observability` 时，接纳 Qwen 主会话公开 `_meta.usage` 为 `lastResponseUsage`。这仅是最近一次响应的 Provider 报告值：没有稳定消息 ID，重复通知只覆盖，不累计；桥接可能把缺失值补为 0，因此固定 `complete:false`、`zeroMayBeDefault:true`。它不计入 Worker/Task 累计、coverage 或账单；子 Agent metadata 不接纳。空文本 metadata 只更新读数，保持活动状态。服务根冻结此显式扩展的配置身份。
 
 验证：`node --test packages/agent-provider-acp/index.test.mjs`，使用 checked-in Node ACP fixture 与原 Runtime/guard 的真实进程，不访问网络或模型。覆盖立即取消、初始化/运行取消、默认和显式权限、文本上限、工具进度、回合拒绝、期限、阻塞回调与真实 cleanup；不代替正式平台/Provider 或业务实机验收。

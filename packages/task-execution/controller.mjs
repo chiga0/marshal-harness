@@ -244,6 +244,7 @@ export class TaskExecutionCoordinator {
       // Copy only the normalized projection, never arbitrary provider fields.
       progress = {summary: 'agent.' + update.phase, tool, source: 'agent', ...(this.#observability ? {observation: {
         publicText: text(update.publicText, 65536) ? update.publicText : '',
+        ...(update.lastResponseUsage ? {lastResponseUsage: {inputTokens: update.lastResponseUsage.inputTokens, outputTokens: update.lastResponseUsage.outputTokens, totalTokens: update.lastResponseUsage.totalTokens, source: update.lastResponseUsage.source, scope: update.lastResponseUsage.scope, complete: update.lastResponseUsage.complete, zeroMayBeDefault: update.lastResponseUsage.zeroMayBeDefault}} : {}),
         activity: update.activity ?? ({starting: 'starting', initializing: 'starting', session: 'starting', running: 'waiting', stopping: 'stopping', terminal: 'terminal'}[update.phase]),
         tool: update.tool === null ? null : {id: update.tool.id, kind: update.tool.kind, status: update.tool.status},
         model: update.model ? {id: update.model.id, source: update.model.source} : null,

@@ -17,7 +17,11 @@ export function normalizedObservation(value, sequence, observedAt) {
   if (model !== null && (!closed(model, ['id', 'source']) || !text(model.id) || model.source !== 'provider-reported')) return null;
   if (usage !== null && (!closed(usage, ['inputTokens', 'outputTokens', 'totalTokens', 'source', 'complete']) ||
     ![usage.inputTokens, usage.outputTokens, usage.totalTokens].every(count) || usage.source !== 'provider-reported' || typeof usage.complete !== 'boolean')) return null;
-  return structuredClone({profile: 'task-observation/v1', activity: value.activity, observedAt, sequence, tool, model, usage, publicText: typeof value.publicText === 'string' && value.publicText.isWellFormed() && !value.publicText.includes('\0') && Buffer.byteLength(value.publicText) <= 65536 ? boundedPublicText(value.publicText) : ''});
+  const response = value.lastResponseUsage;
+  const lastResponseUsage = closed(response, ['inputTokens', 'outputTokens', 'totalTokens', 'source', 'scope', 'complete', 'zeroMayBeDefault']) &&
+    [response.inputTokens, response.outputTokens, response.totalTokens].every(number => Number.isSafeInteger(number) && number >= 0) &&
+    response.source === 'qwen-acp-meta' && response.scope === 'last-response' && response.complete === false && response.zeroMayBeDefault === true ? response : null;
+  return structuredClone({...(lastResponseUsage ? {lastResponseUsage} : {}), profile: 'task-observation/v1', activity: value.activity, observedAt, sequence, tool, model, usage, publicText: typeof value.publicText === 'string' && value.publicText.isWellFormed() && !value.publicText.includes('\0') && Buffer.byteLength(value.publicText) <= 65536 ? boundedPublicText(value.publicText) : ''});
 }
 export function settleObservation(worker) {
   if (!worker.observation) return;

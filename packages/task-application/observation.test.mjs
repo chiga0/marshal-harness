@@ -33,3 +33,19 @@ test('task usage sums latest provider snapshots once, declares eligible-worker c
   assert.equal(observedUsage([record('agent',null)]).tokens,null);
   assert.equal(observedUsage([record('agent',Number.MAX_SAFE_INTEGER),record('agent',1)]).source,'unavailable');
 });
+
+
+test('Qwen last-response observation is bounded, closed and excluded from aggregate accounting', () => {
+  const reading = {inputTokens:10,outputTokens:2,totalTokens:12,source:'qwen-acp-meta',scope:'last-response',complete:false,zeroMayBeDefault:true};
+  const frame = normalizedObservation({activity:'waiting',lastResponseUsage:reading},1,'2026-09-14T01:00:00Z');
+  assert.deepEqual(frame.lastResponseUsage,reading);
+  assert.equal(validate(frame,'ObservationFrame'),true);
+  assert.equal(validate({...frame,history:[frame],historyTruncated:false},'WorkerObservation'),true);
+  assert.deepEqual(observedUsage([{ticket:{executionType:'agent'},worker:{observation:frame}}]),
+    {tokens:null,cost:null,currency:null,source:'unavailable',coverage:0});
+  for (const changed of [{totalTokens:-1},{inputTokens:1.5},{outputTokens:Number.MAX_SAFE_INTEGER+1},{complete:true},{zeroMayBeDefault:false},{source:'guessed'},{scope:'task'},{raw:'PRIVATE'}]) {
+    const bad = {...reading,...changed};
+    assert.equal(Object.hasOwn(normalizedObservation({activity:'waiting',lastResponseUsage:bad},1,'2026-09-14T01:00:00Z'),'lastResponseUsage'),false);
+    assert.equal(validate({...frame,lastResponseUsage:bad},'ObservationFrame'),false);
+  }
+});

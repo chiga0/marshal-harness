@@ -45,3 +45,9 @@ Provider 事件归一化；小输出/连续输出/工具结束后输出；陈旧
 ## 原无许可恢复边界保持
 
 实施核验证明 ADR0092 的 unpermittedProof 明确只承认 metadata-only。当前不扩展该证明：`retainPrompts:true` 与 `unpermitted` / `execution.startProtocol` 组合在 Service claim 前及直接 Application 构造时拒绝；v5和v6可选协议均适用。`retainPrompts:false` 仍可观察公开活动元数据。新generic-v2使用普通v7 custody，不授予never-permitted例外；没有原许可事实但也无独立证明的执行继续unknown。旧原票据、cleanup规则及所有否决事实保持不变。
+
+## Qwen 单次响应报告扩展
+
+显式 `createAcpProvider({usageExtension:'qwen-transcript/v1'})` 可读取Qwen公开的 `agent_message_chunk._meta.usage`，并仅在执行观察已开启时提供可选 `lastResponseUsage`。该字段固定为 inputTokens/outputTokens/totalTokens 非负安全整数、`source:'qwen-acp-meta'`、`scope:'last-response'`、`complete:false`、`zeroMayBeDefault:true`。它是最近收到的单次响应报告，不是Worker/Task累计，不进入原Usage总量或coverage。缺字段、负数、小数、溢出和嵌套子Agent标记均不接纳；重复报告只覆盖，不相加。
+
+本地Qwen 0.23.2公开实现把缺失原始计数补零，且该事件没有稳定响应ID，因此即使三个字段均存在，也不能声称完整账单或已知零用量。`usage_update.used/size`仍仅表示上下文容量，不使用。空文本的usage事件保持原活动，不伪造模型输出；隐藏推理正文、其他_meta字段不保存。扩展开关连同Provider标识写入原服务profile，切换同根语义在claim前拒绝。旧ACP和未启用配置不受影响。

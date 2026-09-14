@@ -282,10 +282,13 @@ test('opt-in observations bind worker sequence, bound history, survive reopen an
   const ticket = f.execution.nextWork(command.id, command.revision); f.execution.started(ticket, started(ticket));
   const progress = index => ({summary: 'agent.running', tool: null, source: 'agent', observation: {activity: 'output', tool: null,
     model: {id: 'fixture-model', source: 'provider-reported'}, usage: {inputTokens: 10, outputTokens: 5, totalTokens: 15, source: 'provider-reported', complete: true},
+    lastResponseUsage: {inputTokens:index,outputTokens:1,totalTokens:index+1,source:'qwen-acp-meta',scope:'last-response',complete:false,zeroMayBeDefault:true},
     publicText: 'Authorization: Bearer fixture-secret\n' + '公开'.repeat(index)}});
   for (let i = 1; i <= 70; i++) {f.advance(1); assert.equal(f.execution.progress(ticket, i, progress(i)), true);}
   const query = () => f.app.dispatch({operation: 'worker.get', workerId: ticket.workerId}, context);
   let worker = await query(); assert.equal(validate(worker, 'Worker'), true);
+  assert.equal(worker.observation.lastResponseUsage.totalTokens,71);
+  assert.equal(worker.observation.history.at(-1).lastResponseUsage.totalTokens,71);
   assert.equal(worker.observation.sequence, 70); assert.equal(worker.observation.historyTruncated, true);
   assert.ok(worker.observation.history.length <= 64); assert.ok(Buffer.byteLength(JSON.stringify(worker.observation.history)) <= 16384);
   assert.doesNotMatch(JSON.stringify(worker), /fixture-secret/); assert.equal(worker.observation.usage.totalTokens, 15);
