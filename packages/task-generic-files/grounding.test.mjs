@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {receipt} from '../task-application/leader-ports.mjs';
-import {createGenericFilesReviewWireConfig, FACT_GROUNDING} from './review-wire.mjs';
+import {createGenericFilesReviewWireConfig, renderGenericLeaderPrompt, FACT_GROUNDING} from './review-wire.mjs';
 import {bindGenericFilesPlan} from './layout.mjs';
 import {groundingCases} from './grounding.fixture.mjs';
 const hash='sha256:'+'a'.repeat(64);
@@ -35,4 +35,13 @@ test('integration is an author dependency role, never a widened generic layout c
   assert.deepEqual(bound.deliveries,[{nodeId:'integrator',path:'result.md',targetPath:'results/integrator.md'}]);
   assert.deepEqual(new Set(bound.layouts.find(x=>x.nodeId==='integrator').inputs.map(x=>x.source.nodeId)),new Set(['requirements','risks']));
   assert.deepEqual(bound.layouts.find(x=>x.nodeId==='verifier').allowedPaths,[]);
+});
+
+test('profile boundary follows generic role schema while preserving complete Leader business input',()=>{
+  const input={profile:'task-managed-leader/v1',snapshot:{task:{input:{intent:'交付HTML文件'}},policy:{maxActions:1}}};
+  const prompt=renderGenericLeaderPrompt(input),marker='本配置的最终职责约束：';
+  const at=prompt.lastIndexOf(marker);assert.ok(at>0);
+  assert.ok(at>prompt.indexOf('integrator'));
+  assert.deepEqual(JSON.parse(prompt.split('\n完整冻结输入：').at(-1)),input);
+  assert.match(prompt.slice(at),/不调用任何工具/);
 });

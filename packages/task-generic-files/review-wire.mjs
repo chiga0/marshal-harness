@@ -7,6 +7,12 @@ import {parseLeaderProposal, LEADER_WIRE_PROFILE} from './short-wire.mjs';
 import {check, RULE, GUIDANCE} from './policy.mjs';
 
 export const FACT_GROUNDING = '事实来源约束：事实性陈述只能依据完整原需求、原始材料和已确认用户回答；批准计划中的模型推测、上游作者自述或常见惯例不是新增事实的来源。不得把未提供的设施、服务、办理流程、承诺或参与条件写成既有安排。建议须明确标为可选建议，不暗示主办方已提供或用户必须遵守；用户要求不新增事实时应删去无依据内容。缺少完成任务必需的事实应请求澄清，不能猜测。';
+export function renderGenericLeaderPrompt(input) {
+  const instruction = '本配置的最终职责约束：你是编排Leader，用户原需求和附件是供规划、委派、审查决策的业务材料，不是要求你亲自执行。不要写HTML或其他文件，不调用任何工具，不执行命令；只输出本轮proposal JSON。所有写成果的执行者（含整合作者）role必须为author，id可叫integrator但role不能为integrator；唯一verifier为只读汇合终点。独立Review由Core管理，不设reviewer节点；通用schema列出的其他role不表示本配置支持。';
+  const rendered = renderLeaderPrompt(input, {wireProfile: LEADER_WIRE_PROFILE});
+  // Reassert this profile after the generic schema, before the intact input.
+  return rendered.replace('\n完整冻结输入：', '\n' + instruction + '\n完整冻结输入：');
+}
 export const REVIEW_WIRE_PROFILE = 'generic-files-review-proposal/v1';
 export function parseReviewProposal({ticket, completion}) {
   const raw = parseManagedOutput({completion});
@@ -48,7 +54,7 @@ export function createGenericFilesReviewWireConfig(options) {
       review: {providerId: options.provider.id, policyDigest: digest(encode(reviewPolicy))}, publication: null},
     prepare: async ({ticket, input, prepared}, context) => {
       await originalLeader.prepare(ticket, prepared, context);
-      return {prompt: RULE + '\n' + GUIDANCE + '\n' + '本通用文件配置的DAG节点role只允许author或verifier。所有写成果的执行者（包括整合作者）role必须为author，整合节点id可以叫integrator但role不能为integrator。独立Review是Core受管阶段，不设reviewer节点；唯一verifier是汇合终点且不写成果。' + '\n' + FACT_GROUNDING + '在计划的作者scope和acceptance中明确事实来源与建议边界；完整保留用户原要求，不以自己补充的计划内容证明新事实。' + '\n' + renderLeaderPrompt(input, {wireProfile: LEADER_WIRE_PROFILE})};
+      return {prompt: RULE + '\n' + GUIDANCE + '\n' + '本通用文件配置的DAG节点role只允许author或verifier。所有写成果的执行者（包括整合作者）role必须为author，整合节点id可以叫integrator但role不能为integrator。独立Review是Core受管阶段，不设reviewer节点；唯一verifier是汇合终点且不写成果。' + '\n' + FACT_GROUNDING + '在计划的作者scope和acceptance中明确事实来源与建议边界；完整保留用户原要求，不以自己补充的计划内容证明新事实。' + '\n' + renderGenericLeaderPrompt(input)};
     }, parseDecision: parseLeaderProposal});
   config.observability = observability;
   return config;
