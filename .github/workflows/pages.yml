@@ -25,6 +25,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: documentation-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -56,4 +60,21 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements-docs.txt
       - run: python scripts/prepare-docs.py
-      - run: mkdocs gh-deploy --strict --force
+      - uses: actions/download-artifact@v4
+        with:
+          name: documentation-site
+          path: .marshal/docs-site
+      - run: python scripts/check-docs-site.py
+      - name: Refuse stale main deployment
+        id: freshness
+        shell: bash
+        run: |
+          current="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$current" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "Newer main exists; skip this documentation deployment."
+          fi
+      - if: steps.freshness.outputs.current == 'true'
+        run: mkdocs gh-deploy --no-rebuild --strict --force
