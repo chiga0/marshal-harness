@@ -44,9 +44,11 @@ describe('任务详情装配（四个子视图 + 数据装载）', () => {
     fakeTransport = fake.transport;
     const user = userEvent.setup();
     renderAt(`/tasks/${TASK_ID}/team`);
-    const heading = await screen.findByRole('heading', {name: intent});
+    const heading = await screen.findByTestId('task-heading');
+    await waitFor(() => expect(heading.textContent).not.toBe('任务详情'));
     expect(heading).toHaveClass('line-clamp-2', 'break-words');
-    expect(heading.textContent).toBe(intent);
+    expect(Array.from(heading.textContent!).length).toBeLessThanOrEqual(49);
+    expect(intent.startsWith(heading.textContent!.replace(/…$/, ''))).toBe(true);
     const disclosure = screen.getByTestId('header-original-intent');
     expect(disclosure).not.toHaveAttribute('open');
     await user.click(screen.getByText('查看完整原需求'));

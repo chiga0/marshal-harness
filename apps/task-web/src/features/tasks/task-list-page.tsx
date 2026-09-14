@@ -15,6 +15,7 @@ import {Input} from '../../components/ui/input';
 import {Label} from '../../components/ui/label';
 import {Select} from '../../components/ui/select';
 import {Skeleton} from '../../components/ui/skeleton';
+import {taskTitle} from './detail/shared/format';
 import {formatDateTime, isAwaitingStatus, statusMeta} from './format';
 
 export const TASK_LIST_PAGE_SIZE = 24;
@@ -71,7 +72,7 @@ function TaskRow({task, mode}: {task: TaskRecord; mode: ViewMode}) {
           to={'/tasks/' + encodeURIComponent(task.id)}
           className="line-clamp-3 min-w-0 [overflow-wrap:anywhere] text-sm font-medium leading-[22px] text-text-primary underline-offset-4 hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
-          {task.intent}
+          <span title={task.intent}>{taskTitle(task.intent)}</span>
         </Link>
         <span className="text-xs leading-[18px] text-text-secondary" title={task.updatedAt}>
           更新于 {formatDateTime(task.updatedAt)}

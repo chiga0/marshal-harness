@@ -74,3 +74,7 @@ pre {
   .worker-list-row { grid-template-columns:28px minmax(0,1fr); padding:16px; gap:10px; }
   .worker-list-row > :last-child { grid-column:2; }
 }
+
+.artifact-file-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:20px; padding:18px 0; align-items:start; }
+[data-testid="artifact-inventory"], [data-testid="observed-inputs"], [data-testid="verification-readout"], [data-testid="publications-card"] { border:0; border-top:1px solid var(--border); border-radius:0; background:transparent; padding:24px 0 0; }
+@media(max-width:640px) { .artifact-file-row { grid-template-columns:minmax(0,1fr); gap:8px; } }

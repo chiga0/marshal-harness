@@ -18,7 +18,7 @@ import {taskKeys} from './query-keys';
 import {preferFreshTask, questionNeedsAttention} from './shared/derive';
 import {useLeaderReplyReceipt} from './shared/leader-reply-receipt';
 import {ErrorNotice} from './shared/error-notice';
-import {formatRelative, taskStatusLabel} from './shared/format';
+import {formatRelative, taskStatusLabel, taskTitle} from './shared/format';
 import {StatusBadge, toneForTask} from './shared/status-badge';
 import {WorkersView} from '../../workers/workers-view';
 import {ArtifactsView} from '../../artifacts/artifacts-view';
@@ -152,7 +152,7 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
             <Link to="/" className="text-sm text-accent underline-offset-4 hover:underline">← 任务列表</Link>
             <details className="text-xs text-text-secondary"><summary className="cursor-pointer">任务标识</summary><code className="break-all">{taskId}</code></details>
           </div>
-          <h1 className="mt-1 line-clamp-2 break-words text-[24px] font-semibold leading-[34px] tracking-tight" data-testid="task-heading">{task ? task.intent : '任务详情'}</h1>
+          <h1 className="mt-1 line-clamp-2 break-words text-[24px] font-semibold leading-[34px] tracking-tight" data-testid="task-heading">{task ? taskTitle(task.intent) : '任务详情'}</h1>
           {task ? (
             <details key={taskId} className="mt-1 text-sm" data-testid="header-original-intent">
               <summary className="w-fit cursor-pointer rounded text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">查看完整原需求</summary>

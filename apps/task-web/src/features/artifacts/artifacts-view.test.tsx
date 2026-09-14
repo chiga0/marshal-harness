@@ -229,3 +229,17 @@ describe('夹具与样本一致性', () => {
     expect(makeArtifact().taskId).toBe(TASK_ID);
   });
 });
+
+describe('成果默认呈现与技术详情',()=>{
+  it('默认突出文件与下载，摘要保留在可展开详情',async()=>{
+    const user=userEvent.setup();
+    const artifact=makeArtifact({id:'file-detail',kind:'candidate',name:'报告.md',digest:DIGEST});
+    renderView({artifacts:[ok(artifact)]});
+    const row=screen.getByTestId('artifact-row');
+    expect(within(row).getByTestId('download-button')).toBeVisible();
+    expect(within(row).getByText(DIGEST)).not.toBeVisible();
+    await user.click(within(row).getByText('文件技术详情'));
+    expect(within(row).getByText(DIGEST)).toBeVisible();
+    expect(row.tagName).toBe('LI');
+  });
+});
