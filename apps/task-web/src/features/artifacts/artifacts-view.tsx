@@ -12,6 +12,7 @@ import {ErrorNotice} from '../tasks/detail/shared/error-notice';
 import {acceptanceStatusLabel, formatBytes} from '../tasks/detail/shared/format';
 import {StatusBadge, toneForAcceptanceStatus} from '../tasks/detail/shared/status-badge';
 import {downloadArtifact, DownloadRejection} from './downloader';
+import {DeliveryFilesView} from './delivery-files-view';
 import type {ArtifactEntry} from './use-task-artifacts';
 import type {useObservedInputs} from './use-observed-inputs';
 
@@ -102,6 +103,7 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
             ) : (
               <ArtifactDownload artifact={delivery} transport={transport} />
             )}
+            {delivery.status === 'ready' ? <DeliveryFilesView key={`${delivery.id}:${delivery.digest}:${delivery.bytes}`} artifact={delivery} transport={transport} /> : null}
             {task.status === 'failed' ? (
               <p className="text-sm text-danger">任务最终状态为失败：以上仅是服务端记录的交付成果，不表示整体成功。</p>
             ) : null}
