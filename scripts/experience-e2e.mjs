@@ -218,6 +218,10 @@ try {
     for(const width of [1440,375]) {await html.setViewportSize({width,height:1000});const overflow=await html.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1);assert.equal(overflow,false);await html.screenshot({path:path.join(output,'html-'+width+'.png'),fullPage:true});}
     assert.deepEqual(external,[],'页面不能依赖外网');assert.deepEqual(htmlErrors,[]);
     assert.equal(await html.locator('script').count(),0,'此冻结邀请页无需脚本');
+    const activeAttributes=await html.locator('*').evaluateAll(elements=>elements.flatMap(element=>[...element.attributes]
+      .filter(attr=>/^on/i.test(attr.name)||/^(?:href|src|action|formaction|xlink:href)$/i.test(attr.name)&&/^\s*javascript:/i.test(attr.value))
+      .map(attr=>({tag:element.tagName,name:attr.name}))));
+    assert.deepEqual(activeAttributes,[],'邀请页不得携带内联脚本入口');
     await consumer.close();evidence.steps.push('独立禁脚本/无网络HTML消费/可见正文/按钮/宽窄布局；不宣称JS运行验收');
   }
   assert.deepEqual(browserErrors,[],'浏览器未捕获异常');

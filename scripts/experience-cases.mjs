@@ -47,6 +47,7 @@ export function validateDelivery(id, delivery) {
     assert.ok(typeof value.rollback==='string'&&value.rollback.length>15);
     assert.match(JSON.stringify(value),/幂等|重复/);
   } else if(id==='S02') {
+    assert.ok(Buffer.byteLength(text,'utf8')<=7000,'邀请页超过冻结7000字节上限');
     assert.match(text,/<!doctype html|<html/i);
     for(const fact of ['蓝杉读书会','2026-10-17','14:00','城市图书馆二层']) assert.ok(text.includes(fact),'缺少页面事实:'+fact);
   }

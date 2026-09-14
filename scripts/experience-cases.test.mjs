@@ -24,3 +24,11 @@ test('复杂方案拒绝漏资料、空验收与额外顶层替代方案；只�
   assert.doesNotThrow(()=>validateDelivery('M02',wrap(decision)));
   assert.throws(()=>validateDelivery('M02',wrap(decision+'\n允许写入。')));
 });
+
+test('HTML字节限制按UTF-8而非字符数验收',()=>{
+  const base='<!doctype html><html>蓝杉读书会 2026-10-17 14:00 城市图书馆二层</html>';
+  const exact=base+' '.repeat(7000-Buffer.byteLength(base));
+  assert.doesNotThrow(()=>validateDelivery('S02',wrap(exact)));
+  assert.throws(()=>validateDelivery('S02',wrap(exact+' ')));
+  assert.throws(()=>validateDelivery('S02',wrap(base+'蓝'.repeat(2400))));
+});
