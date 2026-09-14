@@ -1,11 +1,11 @@
 import {describe,it,expect,vi} from 'vitest';
-import {readLeaderDecision} from './leader-decision';
+import {readLeaderDecision,leaderActionLabel} from './leader-decision';
 import {sha256Hex} from '../../../artifacts/downloader';
 import {makeArtifact,makeFakeTransport,makeLeader,TASK_ID} from '../testing/fixtures';
 const digest=async (text:string)=>'sha256:'+await sha256Hex(new Blob([text]));
 async function fixture() {
   // UTF-16排序的固定对象，故意与传输JSON键顺序不同。
-  const canonical='{"actions":[{"type":"review"}],"callId":"call-one","inputDigest":"sha256:'+'a'.repeat(64)+'","profile":"task-managed-leader/v1","summary":"对两份成果做独立检查"}';
+  const canonical='{"actions":[{"kind":"review","type":"work"}],"callId":"call-one","inputDigest":"sha256:'+'a'.repeat(64)+'","profile":"task-managed-leader/v1","summary":"对两份成果做独立检查"}';
   const report=JSON.parse(canonical),text=JSON.stringify({report:{summary:report.summary,...report}});
   const artifact=makeArtifact({id:'decision-evidence',taskId:TASK_ID,kind:'evidence',mediaType:'application/json',bytes:new TextEncoder().encode(text).length,digest:await digest(text)});
   const leader=makeLeader({lastDecision:{digest:await digest(canonical),callId:'call-one',evidenceId:artifact.id}});
@@ -14,9 +14,13 @@ async function fixture() {
   return {leader,transport,artifact,getArtifactContent};
 }
 describe('可读Leader决定绑定',()=>{
+  it.each([['execute','安排成员执行'],['review','组织独立评审'],['verify','安排独立验收']])('真实work.%s呈现动作含义但不假称已执行', (kind,label)=>{
+    expect(leaderActionLabel({type:'work',kind})).toBe(label);
+  });
+
   it('只呈现精确当前决定的业务summary和动作',async()=>{
     const {leader,transport}=await fixture();
-    expect(await readLeaderDecision(leader,transport)).toEqual({summary:'对两份成果做独立检查',actions:[{type:'review'}]});
+    expect(await readLeaderDecision(leader,transport)).toEqual({summary:'对两份成果做独立检查',actions:[{kind:'review',type:'work'}]});
   });
   it('制品归属错误时不读取正文',async()=>{
     const f=await fixture();

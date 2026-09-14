@@ -20,6 +20,10 @@ const actionLabels: Record<string, string> = {
   publish: '执行获准发布',
   postverify: '核验发布结果',
 };
+export function leaderActionLabel(action: Record<string, unknown>): string {
+  if (action.type === 'work') return ({execute:'安排成员执行',review:'组织独立评审',verify:'安排独立验收'} as Record<string,string>)[String(action.kind)] ?? '安排团队工作';
+  return actionLabels[String(action.type)] ?? '已记录团队行动';
+}
 function canonical(value: unknown, depth = 0): string {
   if (depth > 64) throw new Error('decision_depth');
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -124,7 +128,7 @@ export function LeaderDecision({
                 key={i}
                 className="rounded-full bg-surface-muted px-3 py-1 text-xs"
               >
-                {actionLabels[String(action.type)] ?? '已记录团队行动'}
+                {leaderActionLabel(action)}
               </span>
             ))}
           </div>

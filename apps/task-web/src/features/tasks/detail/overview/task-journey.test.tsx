@@ -21,4 +21,27 @@ describe('任务阶段以当前可行动事实表达',()=>{
   it('暂停保留明确调度边界，而不是暗示进程已经停止',()=>{
     expect(taskFocus(makeTask({status:'paused'}),null)).toBe('任务已暂停，不再安排新的执行');
   });
+  it('发布授权定位交付而不是计划批准',()=>{
+    const task=makeTask({status:'awaiting-confirmation',phase:'delivery'});
+    const leader=makeLeader({stage:'delivery',taskRevision:task.revision});
+    leader.pendingRequest={...leader.pendingRequest!,kind:'publication',status:'pending'};
+    expect(currentStage(task,leader)).toBe(5);
+    expect(taskFocus(task,leader)).toBe('等待你决定是否允许本次发布');
+  });
+  it('普通业务确认保留执行阶段，不伪称计划已准备',()=>{
+    const task=makeTask({status:'awaiting-confirmation',phase:'execution'});
+    const leader=makeLeader({stage:'work',taskRevision:task.revision});
+    leader.pendingRequest={...leader.pendingRequest!,kind:'business',status:'pending'};
+    expect(currentStage(task,leader)).toBe(2);
+    expect(taskFocus(task,leader)).toBe('有业务事项等待你确认');
+  });
+  it('陈旧或其他Task发布请求不能被当作本次授权',()=>{
+    const task=makeTask({status:'awaiting-confirmation',phase:'execution',revision:9});
+    const leader=makeLeader({stage:'delivery',taskRevision:8});
+    leader.pendingRequest={...leader.pendingRequest!,kind:'publication',status:'pending'};
+    expect(currentStage(task,leader)).toBe(2);
+    expect(taskFocus(task,leader)).not.toContain('发布');
+    expect(taskFocus(task,{...leader,taskRevision:9,taskId:'other-task'})).not.toContain('发布');
+  });
+
 });

@@ -22,14 +22,14 @@ export function currentStage(
   leader: LeaderRecord | null,
 ): number | null {
   if (task.phase === 'terminal') return null;
-  if (
-    ['planning', 'awaiting-confirmation', 'awaiting-approval'].includes(
-      task.status,
-    )
-  )
-    return 1;
+  const currentLeader = leader?.taskId === task.id && leader.taskRevision === task.revision ? leader : null;
+  if (task.status === 'awaiting-confirmation') {
+    if (currentLeader?.pendingRequest?.status === 'pending' && currentLeader.pendingRequest.kind === 'publication') return 5;
+    return ({intake:0,planning:1,execution:2,verification:4,delivery:5} as Record<string,number>)[task.phase] ?? null;
+  }
+  if (['planning', 'awaiting-approval'].includes(task.status)) return 1;
   if (task.status === 'draft') return 0;
-  if (leader?.taskRevision === task.revision) {
+  if (leader?.taskId === task.id && leader.taskRevision === task.revision) {
     if (leader.stage === 'review') return 3;
     if (leader.stage === 'verification') return 4;
     if (leader.stage === 'delivery' || leader.stage === 'finalizing') return 5;
@@ -47,10 +47,15 @@ export function currentStage(
   );
 }
 export function taskFocus(task: TaskRecord, leader: LeaderRecord | null) {
+  if (task.status === 'awaiting-confirmation') {
+    const request = leader?.taskId === task.id && leader.taskRevision === task.revision ? leader.pendingRequest : null;
+    if (request?.status === 'pending' && request.kind === 'publication') return '等待你决定是否允许本次发布';
+    if (request?.status === 'pending' && request.kind === 'business') return '有业务事项等待你确认';
+    return task.phase === 'planning' ? '计划已准备，等待你确认' : '等待你的确认，请核对下方请求';
+  }
   const labels: Partial<Record<TaskRecord['status'], string>> = {
     draft: '需求已保存，等待整理计划',
     planning: '正在整理需求与执行计划',
-    'awaiting-confirmation': '计划已准备，等待你确认',
     'awaiting-approval': '计划已准备，等待你确认开始',
     'awaiting-answer': '有问题等待你的答复',
     paused: '任务已暂停，不再安排新的执行',
@@ -63,7 +68,7 @@ export function taskFocus(task: TaskRecord, leader: LeaderRecord | null) {
   };
   return (
     labels[task.status] ??
-    (leader && leader.taskRevision === task.revision
+    (leader && leader.taskId === task.id && leader.taskRevision === task.revision
       ? leaderStageLabel(leader.stage)
       : taskStatusLabel(task.status))
   );
@@ -124,7 +129,7 @@ export function TaskJourney({
             <Users size={14} aria-hidden />
             {workers === null
               ? '团队暂不可用'
-              : `运行 ${count(['running'])} · 排队 ${count(['queued'])} · 待答 ${count(['awaiting-answer'])} · 待确认停止 ${count(['stopping', 'unknown'])}`}
+              : `已加载成员：运行 ${count(['running'])} · 排队 ${count(['queued'])} · 待答 ${count(['awaiting-answer'])} · 待确认停止 ${count(['stopping', 'unknown'])}`}
           </span>
           <span className="inline-flex items-center gap-1.5">
             <Timer size={14} aria-hidden />
@@ -173,7 +178,7 @@ export function TeamSummary({
   return (
     <section aria-label="团队速览" className="team-summary">
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-sm font-semibold">执行团队</h2>
+        <h2 className="text-sm font-semibold">执行团队（已加载 {workers?.length ?? 0} 项）</h2>
         <Link
           className="text-xs text-accent"
           to={`/tasks/${encodeURIComponent(task.id)}/team`}
