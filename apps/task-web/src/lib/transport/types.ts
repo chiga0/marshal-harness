@@ -431,7 +431,29 @@ export interface LeaderPostverify {
 
 export type LeaderStage = 'intake' | 'work' | 'review' | 'verification' | 'delivery' | 'finalizing' | 'terminal';
 
+export interface LeaderProtocolFailure {
+  stage: 'wire-json';
+  code: 'invalid_json';
+  outputDigest: Sha256;
+  outputBytes: number;
+  workerId: WorkerId;
+  callId: string;
+  ticketDigest: Sha256;
+  cleanupDigest: Sha256;
+  at: string;
+}
+export interface LeaderProtocolCorrection {
+  profile: 'leader-json-correction/v1';
+  used: 0 | 1;
+  max: 1;
+  reason: 'wire-json' | null;
+  original: LeaderProtocolFailure | null;
+  successorWorkerId: WorkerId | null;
+  successorCallId: string | null;
+}
+
 export interface LeaderRecord {
+  protocolCorrection?: LeaderProtocolCorrection;
   taskId: TaskId;
   taskRevision: Revision;
   profile: 'task-managed-leader/v1';

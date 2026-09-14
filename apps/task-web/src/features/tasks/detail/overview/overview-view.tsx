@@ -3,6 +3,7 @@
 
 import {Link} from 'react-router-dom';
 import type {ReactNode} from 'react';
+import {LeaderCorrection} from './leader-correction';
 import {ReviewExplanation} from './review-explanation';
 import {LeaderDecision} from './leader-decision';
 import {TaskJourney, TeamSummary} from './task-journey';
@@ -134,6 +135,7 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
 
 
       <section aria-label="当前进展" className="space-y-6">
+        <LeaderCorrection task={task} leader={leader} workers={workers} />
         <LeaderDecision leader={leader} transport={transport} /><ReviewExplanation leader={leader} transport={transport} />
         <details className="workspace-disclosure"><summary>团队协调与审计信息</summary><LeaderProjection leader={leader} workers={workers ?? []} /></details>
 
