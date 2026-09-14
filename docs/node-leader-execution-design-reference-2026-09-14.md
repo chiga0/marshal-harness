@@ -1,9 +1,16 @@
+# 历史参考：node-leader-execution-design（2026-09-14 文档收敛前）
+
+> 本页保存基线 `12db5f908e1a15331e4edb06e9db3cd8c8c16d80` 的原文。下文的“当前”、实现缺口及阶段状态均属于原记录，不是当前支持声明或重新打开的待办；现行设计见 [node-leader-execution-design](node-leader-execution-design.md)，实际进展见 [Roadmap](roadmap-status.md#业务交付当前表)。原 ADR 的接受事实不因归档撤回。
+
+---
+
 # Node 受管 Leader：完整任务闭环的最小执行机制
 
+状态：`DESIGN`，依据已接受的 [ADR0094](adr/0094-trusted-single-user-role-team.md) 与用户对全程 Leader、四责边界的明确要求。代码核对基线为 `31afe269`；当前一次性 Planner、Supervisor、Reviewer 标签均不代表本机制已经实现。本文冻结行为和职责，不分配新 API 字段、角色枚举、存储格式号或迁移工具。
 
-本文定义受管 Leader 的目标行为与设计理由，依据已接受的 [ADR0094](adr/0094-trusted-single-user-role-team.md)和[ADR0095](adr/0095-node-managed-leader-contract.md)。具体字段、v7格式、Task子资源与可执行动作以[机器合同](node-leader-execution-contract.md)和[标准API](standard-api.md)为准；实际进展只见[Roadmap](roadmap-status.md#业务交付当前表)。本页不另造角色、状态机或协议。
+2026-09-09 业务交付审计补充（文档基线 `3f359fd0`）：**让 Leader 对业务目标负责，让 Agent 发挥专业能力，让 Core 保证执行边界与事实可靠，让最终交付接受独立且贴近真实需求的检查。** 本次细化0094已有需求、验收与自治边界，保留B2-L和原支持范围；不是新增运行许可、已实现声明或第二套状态机。
 
-**Leader 对业务目标负责，Agent 发挥专业能力，Core 保证执行边界与事实可靠，最终交付接受独立且贴近真实需求的检查。** “有界自治”不授予任意换Provider、批准后改DAG或提高原预算的能力；覆盖说明复用原需求、acceptance、Review报告与总结制品。
+后继 [ADR0095](adr/0095-node-managed-leader-contract.md)及[机器合同](node-leader-execution-contract.md)已在主线 `5ac6d33d` 接纳：本页为行为目标，具体字段、v7 格式、两个 Task 子资源与可执行动作以机器合同为准，不重新冻结一套协议。下文“已支持替换/调整”不授予 v7 任意换 Provider、批准后改 DAG 或提高原预算的能力；覆盖说明复用原需求/acceptance、Review 报告与总结制品，不新增闭集字段。
 
 ## 1. 一个任务权威，四种职责
 
@@ -14,13 +21,13 @@
 | Core | 唯一 Application/Store 权威：接纳事实、批准与决策；检查权限/预算/依赖/当前证据；调度已批准 DAG；执行取消、硬期限及 owner fence 等确定规则 | 用业务猜测替代 Leader，接纳作者自证，借恢复重置预算或重派整队 |
 | Execution | 经 Core 许可实际 start/stop/collect 原所属 handle，提供可验证的进程/输出/cleanup 观察 | 从磁盘 PID 构造停止权、把进程结束当业务通过、替 Core 写第二套真值 |
 
-这不是四个微服务，也不是第二 scheduler/Store。受管loop按上述接口委托Core/Execution；类名或组合入口不改变责任归属。独立 Reviewer 与验收执行提供证据；Leader 读取并判断业务意义，Core 检查其来源、绑定和当前性，三者不能互相代签。
+这不是四个微服务，也不是第二 scheduler/Store。当前 `TaskSupervisor` 混合观察、循环调度、调用原 handle 和失败广播；目标是在原受管 loop 中渐进委托 Core/Execution 接口，不要求全仓改历史名称。独立 Reviewer 与验收执行提供证据；Leader 读取并判断业务意义，Core 检查其来源、绑定和当前性，三者不能互相代签。
 
 必需 result/cleanup/receipt 通过原受控结果接口直接交 Core 接纳，不以 Supervisor 的有界聚合/采样通知为唯一传输通道；通知失败不能丢弃业务事实或把它当未发生。
 
 用户 cancel、已冻结硬期限/预算规则、owner 失去导致的停止新派发及所属执行停止、已退出事实记录立即按 Core 规则处理，不等待 LLM。已有批准 DAG 的依赖就绪由 Core 直接派发，普通节点无需再询问 Leader。停下之后是否修正/换方案才需要 Leader；未知 cleanup 不因其建议而释放容量。
 
-失去 owner 或 Store 写失败时，Execution 仍按预批准安全规则停止其原 live handles，但不得补写虚假的停止成功/cleanup。普通内容问题或已清理的执行失败应保留 Leader 的业务决策窗口，不能将“一次clean失败即全队cancelling”作为受管Leader通用策略；相关危险后继先由 Core 硬门禁封闭，无关安全分支可继续，不能为了等 Leader 放行不满足依赖的工作。
+失去 owner 或 Store 写失败时，Execution 仍按预批准安全规则停止其原 live handles，但不得补写虚假的停止成功/cleanup。普通内容问题或已清理的执行失败应保留 Leader 的业务决策窗口，不沿用当前 `finish` 的“一次 clean 失败即全队 cancelling”作为新 profile 通用策略；相关危险后继先由 Core 硬门禁封闭，无关安全分支可继续，不能为了等 Leader 放行不满足依赖的工作。
 
 ## 2. 何时唤起，读什么
 
@@ -47,7 +54,7 @@ Leader 是可重复唤起的受管语义执行，进程无需常驻，会话/聊
 - **确认后的交付约定**：说明预期成果、必需业务要求、约束、非目标、关键假设、验收方式及交付/后验范围。只追问影响结果、权限、成本或风险的歧义，可逆小选择记录假设，不逐项制造审批。
 - **实现计划**：分工、依赖和执行策略服务于交付约定；在已批准自治范围内调整实现，不等于可以改变目标或删掉必需验收。
 
-Leader 在派发前建立有界的需求覆盖说明：每条必需要求对应负责节点、预期成果与检查方式；整体结束时对应精确成果、实际证据和未完成项。一个检查可以覆盖多条要求，不按要求数制造节点。覆盖说明沿现有计划/制品/审计接缝承载，具体机器表示沿机器合同，不增加独立需求管理API。
+Leader 在派发前建立有界的需求覆盖说明：每条必需要求对应负责节点、预期成果与检查方式；整体结束时对应精确成果、实际证据和未完成项。一个检查可以覆盖多条要求，不按要求数制造节点。覆盖说明沿现有计划/制品/审计接缝承载，具体机器表示随B2-L整链接线冻结，不先增加新API。
 
 覆盖检查融入已有计划确认和独立 Review，不新增逐要求审批或固定额外 LLM 轮次；客观结构/契约检查由程序完成。简单任务用简短交付约定即可，只有影响结果的遗漏或歧义才阻断执行。
 
@@ -80,7 +87,7 @@ Core 只检查已确认要求的记录完整性、适用性和当前证据，不
 
 自治额度在原批准时有明确边界，不能解释成“Leader 认为合理即允许”。Worker 替换/重试仍用原预算，必须先满足原清理与依赖规则；无关成果只有其输入、合同与证据仍有效时才保留。越过原目标、增加成本上限或高风险副作用要新明确确认，不能用普通业务答案绕过。
 
-以下是Leader机制的默认决策规则，不扩大HTTP或Provider能力：
+以下是新Leader机制的默认决策规则，不扩大现HTTP或Provider能力：
 
 | 情况 | 处理方式 |
 | --- | --- |
@@ -91,11 +98,11 @@ Core 只检查已确认要求的记录完整性、适用性和当前证据，不
 
 返工针对已确认要求和集中阻塞意见；建议性润色不自动成为新必做范围。不把修正机会用来不断加验收标准；已满足全部必需要求时进入交付，不无限打磨。语义意见冲突由Leader依据原要求和证据整理，必需独立检查的失败不能被它覆盖，无法解开的业务取舍再请求用户。
 
-[ADR0091](adr/0091-node-same-plan-local-repair.md) 的 `task.repair` 保留显式用户请求及独立验收的精确内容拒收语义；[ADR0095](adr/0095-node-managed-leader-contract.md)为受管Leader定义批准自治范围内、绑定独立Review或原失败事实的内部修正来源。两者严格区分，语义Reviewer意见不能伪造成旧接口要求的内容拒收。复用原 selected-results/closure 算法和当前性检查，不冒用操作者 key，不自签负 Decision，不把任意意见硬塞入旧 repair 协议。批准后拓扑/目标变化若超出现有合同，先形成精确变更确认；该合同不提供任意动态工作流。
+现有 [ADR0091](adr/0091-node-same-plan-local-repair.md) 的 `task.repair` 只接受显式用户请求及独立验收的精确内容拒收；当前 Leader 没有内部调用权限，语义 Reviewer 意见也不能伪造成该拒收。新机制须在同一版本化实现中接入两种可区分来源：保留原 HTTP repair 回执/规则；新增批准自治范围内、绑定独立 Review 或原内容失败证据的内部修正请求。复用原 selected-results/closure 算法和当前性检查，不冒用操作者 key，不自签负 Decision，不把任意意见硬塞入旧 repair 协议。批准后拓扑/目标变化若超出现有合同，先形成精确变更确认；本轮不做任意动态工作流。
 
 ## 4. 决定、执行结果与恢复
 
-所有事实进入唯一SQLite。显式格式与旧reader拒绝/旧根处理按机器合同，不回填旧记录。最小耐久含义是：业务唤起义务与消费位置、Leader 调用及原输入/预算绑定、接纳的决定及有限动作、各动作的原执行义务和结果引用。它们不是用户需管理的新资源，也不保存隐藏推理链。
+所有新事实仍进唯一 SQLite。实现前一次明确新格式与旧 reader 拒绝/旧根处理，不回填旧记录。最小耐久含义是：业务唤起义务与消费位置、Leader 调用及原输入/预算绑定、接纳的决定及有限动作、各动作的原执行义务和结果引用。它们不是用户需管理的新资源，也不保存隐藏推理链。
 
 1. 在短事务中选定义务、冻结输入引用、预留原任务额度和唯一 Leader Attempt；事务外通过原 Provider/Execution 运行。未知是否已调用仍保留成本，不造“免费重试”。
 2. Leader 输出经结构/数量/大小限制和相关当前性检查后，**决定、消费该义务、动作及 outbox 同事务提交**。拒绝的输出保留原因；没有 committed 决定不能执行建议。
@@ -107,31 +114,50 @@ Core 只检查已确认要求的记录完整性、适用性和当前证据，不
 
 ## 5. 整体结束与公开接口接缝
 
-受管Leader profile把候选验收作为阶段事实：还须接纳Leader对目标的汇总，并完成该Task明确要求的授权交付/后验，无待决影响成功的义务，Core才提交整体`completed`。无发布授权的任务仍只交付成果；已授权发布但后验失败/unknown保留原发布回执和真实非全成功结果。Leader总结不是新的验收证明。
+现实现把唯一 verifier sink 的通过直接写为 Task `completed`。**新的完整 Leader profile 必须显式 opt-in，并延迟整体 terminalization**：候选验收通过只是一个阶段；还须接纳 Leader 对目标的汇总，并完成该 Task 明确要求的授权交付/后验，无待决影响成功的义务，Core 才能提交整体成功。无发布授权的任务仍只交付成果；已授权发布但后验失败/unknown必须保留原发布回执和真实非全成功结果。Leader 总结本身不是新的验收证明。
 
 整体汇总逐项对应已确认必需要求、精确交付物和独立证据；阶段验收、授权交付、发布后结果和整体结论分别可见。漏项、明确失败和必需人工验收未完成不因日志活跃或测试总数全绿消失。新支持面的公开查询应能解释“正在等谁、Leader为何采取该行动、哪些要求未完成、外部效果是否已发生”，不依赖私有SQLite或原始终端记录。
 
-旧Task的`completed`、原bytes与回执不改、不复活。新行为通过显式持久格式启用，不能靠配置重新解释v5/v6终态。公开接口以[OpenAPI](../packages/task-api/openapi.json)为唯一机器合同；Leader状态和确认使用`task.leader`与`task.leader.reply`，原Worker问题/ACK及旧answer/repair保留原语义。普通答案不授予发布权限，GET不执行副作用，断线后查原请求/动作或精确重放。
+旧 Task 的 `completed` 与原字节/回执不改、不复活。当前唯一 verifier sink、`proposePlan` 仅批准前和失败收口规则不能靠配置绕过；新流程必须一次冻结 profile/持久解释及旧 reader 拒绝，再接入阶段验收与整体结束，不能把当前 v5/v6 名称直接重新解释。
 
-协议演进同时核验Schema、handler、客户端、示例及严格旧响应/回执兼容。历史API-STABLE只证明原范围，不自动授予后继支持面，也不因新增行为撤销旧证据。全部操作的调用关系见[标准API](standard-api.md)。
+公开接口继续以 [正式 OpenAPI](../packages/task-api/openapi.json) 为唯一机器合同。现有 Task/plan/questions/answer/approve/repair/cancel/operations/audit/events/artifact 查询是可复用的接缝，Leader 不另建 HTTP 控制 API 或用户可 PATCH 的状态。运行中题目当前只绑定非 planner 的既有 Worker，不能冒称已支持 Leader 确认/授权。所需的确认、授权、决定及动作状态可见性须随实现与 handler/客户端/示例一起明确；本稿不先造 JSON 字段，也不能把普通答案当发布授权。
 
-## 6. 设计取舍与扩展接缝
+本次文档无 breaking change、无迁移，已有 API-STABLE 证据保留。未来新状态/枚举/终态含义/副作用事实可能影响严格客户端与旧 reader，必须明确新 API/profile/格式兼容和不支持升级范围，验证旧响应/幂等 bytes 不变；不承诺整个未来实现天然向后兼容。查询只读，断线后重查原 Operation/动作，不隐式 approve/repair/publish。
 
-反复受管调用代替常驻自由运行Leader，使模型上下文可以更新、崩溃后可由事实重建；代价是需要有界快照、精确输入和调用预算。义务聚合与相关readSet防止heartbeat触发付费，以及无关分支进展造成决定反复失效。容量预留保证业务决策不会被全部等待作者堵死，同时不额外增加全局额度。
+原API-STABLE只证明原已核验范围。正式发布候选必须再核验包含Leader行为的OpenAPI、handler、客户端、示例和支持矩阵：新决定/授权/阶段与整体完成可观察，旧响应和幂等回执回归通过。不撤销历史检查点，也不把它直接继承为新支持面已通过。
 
-Core接纳有限动作而不解释任意控制代码，使计划自治与权限边界可独立检查；代价是未列入能力集合的操作不能只靠用户一句同意执行。同计划局部修正保留有效成果，避免失败后整队重跑；批准后任意拓扑变化则超出该机器合同。
+## 6. 当前真实接缝与缺口
 
-执行、独立Review/Verification和发布均通过[扩展合同](extension-contracts.md)的受信端口，复用原预算与唯一Store。Provider替换不改变作者独立性、输入绑定或副作用对账要求。目录、业务工具或远程环境不同，应由对应端口明确能力，不在Leader提示中假装补齐。
+| 当前文件/方法 | 可复用内容 | 本纵切确实新增或需调整 |
+| --- | --- | --- |
+| [application.mjs](../packages/task-application/application.mjs) `create/proposePlan/freezePlan/mutate` | Task 输入、批准、短事务、原幂等/Operation | 反复 Leader 义务/决定接纳；当前 `proposePlan` 只允许未批准任务，不是运行中重规划入口 |
+| [execution.mjs](../packages/task-application/execution.mjs) `nextWork/finish/reconcile` | Attempt、预算、依赖、当前 ticket、停止/结果 | Planner 成功一次性进入 awaiting-approval；Verifier 成功直接 completed，均需新 profile 内的阶段性处理 |
+| [controller.mjs](../packages/task-supervisor/controller.mjs) `#cycle/#failEntry/#stop` | 原观察循环、异步执行与所属 handle | 当前循环混合调度/停止、失败广播；逐步委托 Core 硬规则和 Execution 操作，新增聚合通知，不加监督 LLM 或另一个 scheduler |
+| [verification.mjs](../packages/task-application/verification.mjs) `bind/recheck/stage` | 私有可信验收端口、精确全候选/结果与 Depot | 当前唯一 verifier sink；新增精确 Review 消费、阶段验收与发布后证据，Reviewer role 现仅普通 Agent 标签，未有发布批准机制 |
+| [repair.mjs](../packages/task-application/repair.mjs) 与 [runtime-questions.mjs](../packages/task-application/runtime-questions.mjs) | 原选果/closure、反馈、答案/ACK、原代拒绝 | Leader 授权内局部决定入口与集中意见来源、Leader 澄清/授权处理；不放松旧显式 repair 或原 ACK |
+| [composition.mjs](../packages/task-service/composition.mjs)、[业务适配](../packages/task-business/index.mjs)、[Store](../packages/task-store/store.mjs) | 唯一组合/SQLite/Depot、可信业务 policy、原生 Provider 与 custody | 注入 Leader 输入/输出契约和有限发布/查询/后验适配；当前没有通用受控业务发布实现 |
+| [HTTP handler](../packages/task-api/http-handler.mjs) 与 [客户端](../packages/task-client/index.mjs) | 有界认证/请求、原 CAS/回执绑定/下载 | 新行为可观察性与严格兼容测试，不能靠私有 SQL 或 UI 补步骤假称公开闭环 |
 
-## 7. 完整闭环验收
+## 7. 统一实施顺序与正式发布前验收
 
-验收证明真实代表性Leader闭环：需求→必要确认→两个互补Worker→独立Review→需要时局部修正并保留无关成果→独立整体验收→明确授权的有限目标交付→独立后验→Leader汇总及Core整体结束。正常任务可以首轮通过，不以出现返工作为每条成功任务的前提；修正能力仍须实证，但不能反复付费等模型犯错。证据分为三类：
+仍按一个B2-L完整纵切交付，不按字段拆微功能或重新建设平台。先一次对齐最小行动、交付约定/语义快照、原预算、决定/outbox/结果与兼容边界；随后按下列可运行检查点持续集成，不等全部完成才第一次实测：
+
+| 检查点（不是新增Milestone/强制PR） | 同一HTTP/Application/SQLite链上的可运行结果 |
+| --- | --- |
+| 需求与首次执行 | Leader提出交付约定/覆盖说明，用户必要确认后沿原调度执行；生产工作包完整，原取消/预算和持久决定可验证 |
+| 结果驱动协调 | 原Worker结果触发Leader，集中独立Review和局部修正保留无关成果；普通失败不无条件全队cancel，决策在原容量内可运行 |
+| 授权交付与整体结束 | 只接一个有界可观察目标，独立后验与逐项业务汇总完成，未授权或unknown不虚假成功 |
+| 最终支持面 | 每步已有的故障/兼容测试在同一发行候选整体验证，真实Provider、独立客户端和声明平台消费同一实现 |
+
+每个检查点同步相应Fake/结构负例、原API回归和有界真实验证；未实现能力保持显式不支持，不用人工SQL或独立演示脚本补齐来冒充。先前B1/B2资产复用，历史证据不改绑，新候选补受影响回归，B3可靠性/软件发行准备可以并行；最终同资产验收仍须等待完整候选。
+
+正式发布前证明真实代表性Leader闭环：需求→必要确认→两个互补Worker→独立Review→需要时局部修正并保留无关成果→独立整体验收→明确授权的有限目标交付→独立后验→Leader汇总及Core整体结束。正常任务可以首轮通过，不以出现返工作为每条成功任务的前提；修正能力仍须实证，但不能反复付费等模型犯错。证据分为三类：
 
 - **正常真实任务**：按真实需求完成交付，记录实际首轮质量，不人为加入拒收。
 - **明确标注的缺陷修复实机**：可使用执行前已存在、可复现业务缺陷的真实输入项目；由独立检查定位，再由真实Agent完成局部修复及重新验收。若需证明一次交付后的repair，必须实际存在当前独立拒收及对应修正链；只修改输入项目不算已验证该接缝。不得要求作者故意犯错、篡改候选或伪造Decision，测试安排与自然出现的失败分开记。
 - **确定性故障/反例**：可明确注入失败、迟到、取消、崩溃及缺陷候选以验证机制，标注夹具来源，不冒充真实模型业务通过。
 
-三个类别分别报告，不用正常任务首通替代repair，也不用修复案例宣称自然任务首轮成功。有限案例仍未走到真实局部修正时保持该出口未通过，不无限换任务/重试。历史单项证据不替代完整闭环或不同业务族的验收。
+三个类别分别报告，不用正常任务首通替代repair，也不用修复案例宣称自然任务首轮成功。有限案例仍未走到真实局部修正时保持该出口未通过，不无限换任务/重试。该机制仍DESIGN，B1原实证不代表本机制通过。
 
 同一候选至少包含六类组合验收：
 
@@ -142,6 +168,4 @@ Core接纳有限动作而不解释任意控制代码，使计划自治与权限�
 5. 崩溃/丢 ACK：Leader reservation、决定 COMMIT 前后、动作启动/回执提交及发布后验窗口重开；原决定/预算/无关成果不丢、不重规划整队；外部 unknown 只 reconcile，不能宣称无条件 exactly-once。
 6. 兼容与后继：旧根/旧 completed/原幂等回执语义不变，不支持格式在 claim 前拒绝；新 profile 合法收口后下一 Task 可运行，未知义务不虚释容量。
 
-只选一个受控业务发布目标，不要求所有生产 SQL/云写入/动态角色；发布软件自身仍走受保护资产门禁。成功流程重复后才抽成 Workflow Template，不以编辑器、市场、身份/角色管理或新Skill平台作为本机制前置。角色职责分离不等于 OS/凭据隔离，旧 non-production 证据不改标。
-
-原实现接缝盘点与阶段排期保存在[历史参考](node-leader-execution-design-reference-2026-09-14.md)，不作为当前待办。
+只选一个受控业务发布目标，不要求所有生产 SQL/云写入/动态角色；发布软件自身仍走 B3 受保护资产门禁。成功流程重复后才抽成 Workflow Template，首发不建编辑器、市场、身份/角色管理或新 Skill 平台。角色职责分离不等于 OS/凭据隔离，旧 non-production 证据不改标。

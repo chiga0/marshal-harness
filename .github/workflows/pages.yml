@@ -1,25 +1,72 @@
 name: pages
 
 on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'packages/task-api/**'
+      - 'mkdocs.yml'
+      - 'requirements-docs.txt'
+      - 'scripts/prepare-docs.py'
+      - 'scripts/check-docs-site.py'
+      - '.github/workflows/pages.yml'
   push:
     branches: [main]
-    paths:
-      - "docs/**"
-      - "mkdocs.yml"
-      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: documentation-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - run: pip install mkdocs-material
-      - run: mkdocs gh-deploy --force
+          python-version: '3.12'
+      - run: pip install -r requirements-docs.txt
+      - run: python scripts/prepare-docs.py
+      - run: mkdocs build --strict
+      - run: python scripts/check-docs-site.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: documentation-site
+          path: .marshal/docs-site
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-docs.txt
+      - run: python scripts/prepare-docs.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: documentation-site
+          path: .marshal/docs-site
+      - run: python scripts/check-docs-site.py
+      - name: Refuse stale main deployment
+        id: freshness
+        shell: bash
+        run: |
+          current="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$current" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "Newer main exists; skip this documentation deployment."
+          fi
+      - if: steps.freshness.outputs.current == 'true'
+        run: mkdocs gh-deploy --no-rebuild --strict --force

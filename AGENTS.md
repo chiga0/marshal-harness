@@ -38,7 +38,7 @@ Go 历史线（I186/RC1/M0–M13、ADR0001–0079 的实现载体）已于 2026-
 1. `README.md`
 2. `docs/vision-and-scope.md`
 3. `docs/design-contract-map.md`（先区分目标、合同状态、旧 profile 与实际成熟度）
-4. `docs/agent-team-service-architecture.md`（Task-first 与 API-first 目标）；`packages/task-api/openapi.json` 与 `docs/node-api-contract.md`（HTTP 合同唯一权威）
+4. `docs/agent-team-service-architecture.md`（Task-first 与 API-first 目标）；`docs/standard-api.md` 与 `docs/extension-contracts.md`（标准协作契约）；`packages/task-api/openapi.json`（HTTP 机器合同唯一权威，`docs/node-api-contract.md` 为历史实验）
 5. `docs/agent-team-service-milestones.md`、`docs/roadmap-status.md` 当前表（目标出口与实机完成状态分开）
 6. `docs/task-lifecycle.md`、`docs/security-model.md`
 7. [ADR 0099](docs/adr/0099-go-legacy-line-retirement-and-removal.md)（Go 历史线已于 2026-09-10 退役移除；旧 `docs/architecture.md`、`docs/implementation-plan.md`、`docs/runtime-architecture.md` 为历史资料）与命中接缝的原 ADR；`*-reference-*` 只用于历史追溯，不形成第二套强制排期

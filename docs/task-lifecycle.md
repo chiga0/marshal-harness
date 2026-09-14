@@ -1,195 +1,88 @@
-# 任务生命周期
+# Task 生命周期与业务完成
 
-当前 Task-first 目标见已接受的 [ADR0085](adr/0085-agent-team-service-contract-and-storage.md)、[ADR0088](adr/0088-node-task-service-production-projection.md)与[服务架构](agent-team-service-architecture.md)：旧Go公开Task复用Goal，Node使用唯一Application/SQLite，没有Workspace实体。下面表格是既有Run/旧工程Task合同，不复制第二套Task状态机。[ADR0094](adr/0094-trusted-single-user-role-team.md)与[Leader机制](node-leader-execution-design.md)接受全程受管业务调用，当前DESIGN，不新增本次状态/角色/持久字段。
+本文以 Node [OpenAPI](../packages/task-api/openapi.json) 的状态名解释完整生命周期，不再以退役 Go Run 的大写状态作为公开 Task 合同。精确请求字段见[标准 API](standard-api.md)，Leader 内部动作与事务见[机器合同](node-leader-execution-contract.md)。版本支持和进展只见[Roadmap](roadmap-status.md#业务交付当前表)。
 
-新profile显式启用后，需求/回答、批次完成失败求助、集中Review、交付/后验进入durable业务义务；Leader读快照提出有限行动，Core同事务接纳决定/动作，Execution锁外执行，Supervisor只观察聚合通知。已批准依赖直接调度；cancel/硬期限/预算/owner规则不等LLM。普通内容/可恢复执行失败封闭受影响后继、保留合法无关分支交Leader；未知清理/权限等硬故障不放松。Store失败仍可按预批准规则停原handles，不能伪造清理事实。
+## 对象与权威
 
-新的整体成功须候选独立验收、Leader汇总及Task所要求授权交付/后验均满足；不沿用现verifier通过即completed，不在旧completed后偷偷追加发布或复活。重开优先原committed决定/action/outbox，未提交调用只按原义务/预算有界重试；外部unknown只对账，不声称跨系统exactly-once。具体格式/接口兼容实施时一次冻结，旧字节/回执不变。节点待答不隐式全局暂停，显式pause/cancel优先，旧Run合同保持。
+Task 是稳定的用户需求及其有界交付过程，包含计划、问题、Worker、执行尝试、证据和成果。一个 Task 可以有多次 Leader 调用、多个专业 Worker 及局部修正，不等于一次模型调用。Worker 表示可观察执行，Attempt 记录具体尝试与预算；Operation 是已接纳控制命令的异步进展，不能与任务成功混为一谈。
 
-## 目的
+唯一 Application/Core 根据当前事实与守卫接纳转换，同事务记录事件、投影、回执和必要 outbox。模型文字、客户端本地状态、执行日志或下载按钮都不能直接把任务写为完成。
 
-生命周期是 Planning、Worker 执行、Verification、Review、Publishing 和 Recovery 之间的持久化契约。自然语言消息不能改变状态；只有通过守卫的应用命令才能追加转换事件并原子更新状态快照。
+## 公开 Task 状态
 
-## 身份
-
-- **Task**：由 `taskId` 标识的稳定工程意图。
-- **Run**：使用同一冻结规范与锁定基线的一次执行，由 `runId` 标识。
-- **Attempt**：Run 内的一次 Worker 调用，由 `attemptId` 标识。
-- **Review Round**：针对一个 evidenceDigest 的一次决策。
-
-Retry 表示基础设施或 Provider 执行失败，因此创建新 Attempt。Rework 表示代码或语义未通过门禁，同样创建新 Attempt。二者都不得修改冻结的 TaskSpec。
-
-## 状态
-
-| 状态 | 含义 | 持久化前置条件 |
+| `status` | 用户含义 | 判断与操作边界 |
 | --- | --- | --- |
-| `CREATED` | Task 身份已创建 | 初始元数据 |
-| `PLANNED` | TaskSpec 草案已存在 | 草案通过 Schema |
-| `READY` | 输入已冻结，可以执行 | base SHA、spec/policy digest、CapabilitySnapshot、worktree Lease |
-| `RUNNING` | 一个 Worker Attempt 持有 worktree | Attempt Record 与有效 Lease |
-| `RETRY_PENDING` | Attempt 因可重试运行问题失败 | 失败分类与保存的 worktree 快照 |
-| `VERIFYING` | Marshal 正在观察 Worker 结果 | 已完成 Attempt 与 snapshot 身份 |
-| `REVIEW_PENDING` | 完整 ReviewPacket 等待语义判断 | VerificationReport 与 ArtifactManifest |
-| `REWORK_REQUESTED` | 下一 Attempt 已有明确阻塞反馈 | ReviewDecision 或强制门禁失败，且预算尚存 |
-| `PUBLISHING` | 已接受证据正在 commit 和发布 | 与当前 evidenceDigest 匹配的 Accept 决策 |
-| `PUBLISHED` | PR/MR 已创建或更新 | 远程 Publication Record |
-| `CI_PENDING` | 必需远程检查尚未结束 | 已发布变更与检查集合 |
-| `ACCEPTED` | 所有必需门禁与语义 Review 通过 | 最终决策及所需发布/CI 证据 |
-| `REJECTED` | 工作不合适且不再继续 | Reject 决策或 Rework 预算耗尽 |
-| `BLOCKED` | 需要外部输入或能力 | 具体 Blocker Record |
-| `ABORTED` | 授权操作者停止 Run（保留状态） | Abort 原因与保存的证据；v1 实现以 `BLOCKED` + `terminalReason=aborted-by-operator` 表达（ADR 0012） |
-| `NO_CHANGE` | Review 确认无需仓库变更 | No-change 决策与诊断证据 |
+| `draft` | 需求已记录，尚未进入后续处理 | 已持久输入不是执行许可 |
+| `planning` | 正在整理需求和计划 | 规划也受原预算、期限和取消约束 |
+| `awaiting-answer` | 有需要回答的业务问题 | Leader请求与原Worker问题按各自端点答复；普通答案不授发布权 |
+| `awaiting-confirmation` | 等待具体确认，例如精确业务发布授权 | 展示原完整请求，不能只用模型摘要替代目标和范围 |
+| `awaiting-approval` | 计划预览等待批准 | 必须批准当前revision和精确计划；批准内才可派发 |
+| `queued` | 已具备对应执行条件，等待可用容量 | 入队不表示已启动；仍查取消、期限和依赖 |
+| `running` | 任务执行、检查、交付或总结义务在推进 | Worker结束或单项验收通过不必然整体完成 |
+| `paused` | 已暂停新派发 | 不表示正在运行的进程或外部作业已停止 |
+| `cancelling` | 取消已接纳，所属执行和义务仍在收口 | 停止未知不能写成清理完成，不释放为可复用目录 |
+| `completed` | 该行为合同要求的全部交付条件成立 | 受管Leader任务包含独立验收、必要交付/后验及整体总结 |
+| `failed` | 无法在原合同和额度内完成 | 保留失败证据及已发生效果，不伪造成功成果 |
+| `cancelled` | 任务已按取消语义收口 | 不撤回已发生发布，不隐式继续执行 |
+| `intervention` | 执行归属、恢复或外部效果需要处置 | 以公开原因和允许动作判断；不得把所有此类情况当作可自动重试 |
 
-`ACCEPTED`、`REJECTED`、`BLOCKED`、`ABORTED`、`NO_CHANGE` 是 Run 终态。解决 Blocker 或改变终态决策必须创建关联到旧 Run 的新 Run。
+`phase` 独立表达业务阶段：`intake`、`planning`、`execution`、`verification`、`delivery`、`terminal`。状态与阶段不是可自由组合的两套状态机；以服务器返回和 `allowedActions` 为准。`intervention` 也不表示统一的“业务终态”：是否仍存在待结执行/效果及允许恢复动作由该格式与原事实决定。
 
-终态不可复活存在唯一命名例外（[ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) typed reconciliation）：发布后误入 `BLOCKED` 的 Run，在 PR 已被合并且 merged head 的 required checks 全绿时，可经 `marshal task reconcile` 以不可变 `SCMMergeReceipt` + append-only `PublicationReconcileRecord` + current-ledger recheck 共同门禁，安全迁移 `BLOCKED → ACCEPTED`（事件 `publication.reconciled`，actor `system/marshal-reconciliation`）。该例外仅限 accept-after-merge：不开放其他终态、其他状态组合或其他 reconcile 类型，不绕过 required checks 与 ReviewDecision，也不改写既有 PublicationRecord 或 ReviewDecision。若原 block 原因为 `ci-deadline-exceeded`、`ci-completed-at-missing`、`ci-completed-at-exceeds-deadline` 或 `ci-completed-at-inconsistent`，还必须先持久化 fresh identity-bound RemoteCheckRecord，并以全部 required checks 的可信 `completedAt` 证明及时完成；非 CI 时间原因的历史 block 保持 ADR 0026 兼容语义。
+Worker 的状态为 `queued/running/awaiting-answer/stopping/completed/failed/cancelled/unknown`；Operation 为 `accepted/running/succeeded/failed/unknown`。Worker `completed` 只说明该执行的受管结果，Operation `succeeded` 只说明该控制操作的结果，都不替代 Task 的业务完成判断。
 
-人工等待不改变本表。旧 ADR 0019 全局暂停路径保留；当前服务目标由 [ADR 0085 §5](adr/0085-agent-team-service-contract-and-storage.md#5-节点交互生命周期与取消)新增持久 UserInteraction：节点待答只阻塞相关依赖，显式 Goal `PAUSED`/cancel 始终优先停止全图新派发。Run 不新增无界 `WAITING_HUMAN_APPROVAL`；活动执行只在原 deadline 内有界等答，超期按合法终态收口，再由批准范围的新 Run 继续，不能因回答复活终态。该扩展仍为 Proposed，旧运行时不提前改变语义；精确取代见[合同适用性](design-contract-map.md)。
+## 正常链与独立验收
 
-## 转换表
+```mermaid
+flowchart LR
+  A[需求与必要澄清] --> B[精确计划批准]
+  B --> C[依赖与预算内执行]
+  C --> D[独立Review与整体验证]
+  D -->|有依据且允许修正| C
+  D --> E[已验收成果交付]
+  E -->|有外部操作要求| F[精确授权 / 回执 / 独立后验]
+  E --> G[整体总结与Core完成]
+  F --> G
+```
 
-| From | To | 守卫条件 |
-| --- | --- | --- |
-| `CREATED` | `PLANNED` | TaskSpec 草案有效 |
-| `PLANNED` | `READY` | 基线可解析、策略允许、Adapter Probe 通过、状态已冻结 |
-| `READY` | `RUNNING` | 获得 Writer Lease 且 Attempt 预算尚存 |
-| `RUNNING` | `VERIFYING` | Worker 协议完成，进程结果与文件系统快照已记录 |
-| `RUNNING` | `RETRY_PENDING` | 失败可重试且预算尚存 |
-| `RUNNING` | `BLOCKED` | 能力、认证或输入缺失，或失败不可安全重试 |
-| `RETRY_PENDING` | `RUNNING` | Backoff 结束或操作者显式重试，分配新 Attempt ID |
-| `VERIFYING` | `REVIEW_PENDING` | VerificationReport 与 Manifest 完整，即使强制门禁失败 |
-| `REVIEW_PENDING` | `REWORK_REQUESTED` | Verdict 为 rework 且预算尚存 |
-| `REVIEW_PENDING` | `REJECTED` | Verdict 为 reject 或返工预算耗尽 |
-| `REVIEW_PENDING` | `BLOCKED` | Verdict 需要外部信息或权限 |
-| `REVIEW_PENDING` | `NO_CHANGE` | Verdict 为 no_change 且 TaskSpec 允许 |
-| `REVIEW_PENDING` | `PUBLISHING` | Verdict 为 accept、强制门禁通过且要求发布 |
-| `REVIEW_PENDING` | `ACCEPTED` | Verdict 为 accept、强制门禁通过且无需发布 |
-| `REWORK_REQUESTED` | `RUNNING` | 新 Attempt 获得阻塞问题与 Lease |
-| `PUBLISHING` | `PUBLISHED` | 幂等发布成功 |
-| `PUBLISHING` | `BLOCKED` | 凭据、授权或远程策略失败且不可重试 |
-| `PUBLISHED` | `CI_PENDING` | TaskSpec 要求远程检查 |
-| `PUBLISHED` | `ACCEPTED` | 无需远程检查 |
-| `CI_PENDING` | `ACCEPTED` | 当前发布 head SHA 的必需检查全部通过，且每项可信 `completedAt` 位于 `publishedAt − 300s` 至冻结 `ciDeadline + 300s` 区间 |
-| `CI_PENDING` | `REWORK_REQUESTED` | 检查失败、预算尚存且可通过代码修复 |
-| `CI_PENDING` | `BLOCKED` | 失败来自外部或需要维护者操作 |
-| `RETRY_PENDING` | `BLOCKED` | 显式 abort（`run.aborted`，ADR 0012）：human actor、LeaseHeld、写终态 Outcome；v1 不启用 `ABORTED` 状态 |
-| `BLOCKED` | `ACCEPTED` | ADR 0026 typed reconciliation（`publication.reconciled`，唯一终态例外）：仅 accept-after-merge；Run Lease、`ReconcileAuthorized`（SCMMergeReceipt、PublicationReconcileRecord 与 current-ledger recheck 全部校验通过）、EvidenceCurrent、PublicationCurrent、DecisionCurrent；merged head 的 required checks 全绿由新物化的 RemoteCheckRecord 证明；旧 BLOCKED Outcome 只归档不删除 |
+图表示业务顺序，节点不是额外 wire 状态。无发布要求的任务只交付成果；有发布要求的任务不得绕过授权和后验。语义 Review 检查需求遗漏、业务口径和成果符合性；可信 Verification 运行独立断言并核对精确成果。作者自报测试通过不够，单项结构正确也不等于全部业务要求成立。
 
-意外进程退出不会自动创造转换。Recovery 必须先比较 Journal、Snapshot、Process Lease 与 worktree 状态，再选择合法转换。
+原始需求、确认交付约定和实现计划分别保留。工作包把相关原文、接口约定、上游成果、允许范围与验收要求真实交给执行者；不能只保留在Leader聊天记忆。结束时逐项对应必需要求、成果、独立证据和未完成项，未解决的重要争议不能被总结成成功。
 
-### ADR 0033 目标同状态事件（Proposed，非当前行为）
+## 交互、自治与修正
 
-[ADR 0033](adr/0033-journal-bound-merge-authority-and-delivery.md) 提议登记六个封闭的 `CI_PENDING → CI_PENDING` 事件：
+批准前问题影响计划预览，答案与新预览、revision及幂等回执绑定。运行中Worker问题还绑定原执行和答案ACK；接纳答案、投递答案与模型已消费不是同一事实。Leader请求是独立的持久业务义务，按其请求摘要回复，不伪造Worker ACK或复用旧问题接口。
 
-| 事件 | actor | 目标语义 |
-| --- | --- | --- |
-| `publication.merge-authority-prepared` | `system/marshal-core` | 原子绑定 prepared intent、current authorization 与冻结 admission digests |
-| `publication.merge-authority-revoked` | `system/marshal-core` | 追加授权 successor，不删除历史 |
-| `publication.merge-delivery-pending` | `system/marshal-core` | Core 在 mutation 前原子消费 durable delivery budget 并形成 anchor |
-| `publication.merge-mutation-fence-consumed` | `system/marshal-core` | Core 追加 journal-bound `MergeDeliveryAnchor(status=mutation-fence-consumed)`；durable journal+snapshot barrier 完成后才可 handoff |
-| `publication.merge-delivery-observed` | `system/marshal-core` | Core 校验 typed Publisher observation 后追加；unknown/lag 保持 pending unresolved |
-| `publication.merge-delivery-resolved` | `system/marshal-core` | Core 只在 Inspect/Reconcile 得到确定 outcome 后追加，不覆盖 pending |
+局部待答只阻塞相关依赖，不能自动暂停合法无关分支。显式pause/cancel优先；暂停期间合法回复可保存，但不能借回复启动新执行。等待不延长原deadline。
 
-这些事件不是通用 same-state 入口。same-state allowlist 与 producer-authority 表必须逐项登记上述六个 event type，actor 只能是 `system/marshal-core`；Publisher/SCMMerger 只提供 typed observation 与 provenance，不能追加 authority event、消费预算/fence 或裁决 resolved。ADR 未接受且 reducer/closed Schema/producer-authority/replay/crash-hydration negative fixtures 未实现前，当前转换表不增加它们；不得从 projection 或 sidecar 反向推进生命周期。
+批准内实现细节和受支持局部修正可由Leader决定，Core重查实际能力、独立依据、影响闭包、当前成果和原额度。用户显式HTTP repair保留其原合同，内部Leader修正保存自己的来源，不冒用用户命令或自签负Decision。改变目标、成果、必需验收、预算或外部权限先形成精确确认；用户同意也不能创造驱动尚不具备的能力。
 
-目标 mutation 路径必须在 pending snapshot 后、Provider handoff 前**同时**完成 mutation-adjacent journal/current/expiry recheck **AND** single-use fence；二者不可替代。fence consumption 是带 canonical replay identity、journal/ledger sequence 与 anchor lineage 的 Core-only authority fact；journal commit 和包含该 fence sequence 的同步 snapshot 均 durable 后才可 handoff。authorization revoke、其它改变 current authority 的 append、fence consumption 与 fence→Provider handoff 共享同一 serializable ordering：revoke/authority append 先线性化则零 mutation；handoff 先线性化则该次 mutation 已先获授权，后到 revoke 只阻止后续 mutation，结果继续由既有 pending 对账。replay/hydration 看见已消费 fence 时只能 Inspect/Reconcile，不得再次 handoff。
+修正使受影响结果及其后继证据失效；无关成果仅在原输入、依赖与要求仍有效时保留。每次尝试均保留真实成本，不能换Task或清记录来规避原限制。正常任务可以首轮成功，不要求人为制造返工。
 
-pending 的 `reconcileDeadline` 到期仍为 unknown/lag 时，Core 以 actor `system/marshal-core` 追加 `publication.blocked`，固定 `terminalReason=merge-delivery-reconcile-deadline-exceeded`，并原子写入绑定 intent、authorization、pending、全部 observation、deadline 与 budget 的 `BLOCKED` Outcome。deadline 后匹配的 late receipt 只能复用 ADR 0026 唯一 `BLOCKED → ACCEPTED` 例外：在同一 authority-store transaction 中原子关闭 pending、追加 receipt/reconcile、`publication.reconciled` 与 `ACCEPTED` Outcome，并归档旧 `BLOCKED` Outcome；任一 binding 不符或事务中断都保持原 `BLOCKED`/pending，且不得称恢复完成。
+## 副作用与整体结束
 
-## 强制不变量
+外部操作的计划批准与最终精确授权分开。受信组合固定目标能力，Core依据当前Task、计划、成果、Review、验收、目标和期限构造授权正文；普通业务回答、Skill、原生登录或role不构成授权。默认只交付Artifact，不默认生产执行、发布或merge。
 
-### 冻结执行输入
+副作用发生前提交原动作身份和耐久意图，执行后提交实际回执。结果未知时查询原目标与操作身份，匹配可结清，冲突或不可查明确保留；不能仅因进程停止就证明未发生，也不能因内容存在倒填“本次成功创建”。具体适配只能在其合同证明安全的情况下继续原动作。
 
-进入 `READY` 时冻结：
+独立后验读取真实目标，检查摘要/回执和必要业务断言。已发布但后验失败保留发布事实，不能变回“未发布”，也不能整体成功。补偿是额外权限问题，不能因取消自动执行删除、回滚或反向写。
 
-- 规范化 TaskSpec 与 digest；
-- 解析后的 base SHA；
-- 有效配置和 PolicySnapshot；
-- Adapter 可执行路径与 CapabilitySnapshot；
-- 必需验收命令和交付物。
+受管Leader profile 的 `completed` 要求当前候选及独立证据适用、原交付义务满足、所需后验通过、无影响成功的未知执行/效果，并接纳当前Leader整体总结。总结不是新的验收证据。旧行为格式的终态解释、原回执和bytes保持原合同，不因读到新版本而复活旧Task。
 
-修改任何冻结项都会创建新 Run。Review 反馈只描述旧契约未满足的部分，不会修改规范。
+## 取消、故障与恢复
 
-### 证据绑定
+用户取消、硬期限、预算和owner规则立即由Core处理，不等待模型。Execution仅停止原所属handle；无owner或Store写失败时仍可依预批准规则停止已持有的原handle，但不能补写虚假cleanup。疑似stuck只是观察，不是任意kill权限。
 
-VerificationReport 绑定 `runId`、`specDigest`、`baseSha` 和真实 snapshot/diff digest。ReviewDecision 绑定 ReviewPacket、VerificationReport 与 ArtifactManifest digest。Publisher 拒绝引用陈旧证据的决策。
+恢复先核对原owner、输入、预算、执行归属和待结效果。已提交Leader决定恢复原action/outbox，不能重新询问后启动另一套工作；未提交调用只在原格式允许、安全清理和剩余额度成立时产生有限successor。旧代输出不得直接改绑为新结果，未知清理不派替身，不借恢复提高预算。
 
-### 单一写入者
+外部操作与本地数据库不存在通用原子提交。发生“目标已改、回执未提交”时只能保留原意图并对账；不能盲重发或更换幂等身份。取消或期限后只按合同结清原执行/效果，不启动新业务、Leader或成功后验来追认旧任务。
 
-Worker Attempt、Verifier 或 Publisher 在同一时间只能有一个持有 worktree Write Lease。可能生成文件的验证命令也必须持 Lease，并在执行后重新检查 dirty tree。
+`completed/failed/cancelled` 不因回答、resume或换owner重新执行。需要后继工作时显式关联原任务和成果，保留原失败、授权与成本；未知原义务不能靠新任务绕开。各持久格式的具体恢复资格见[Leader机器合同](node-leader-execution-contract.md)及相关ADR，而不是从“本地”“远程”或Agent品牌推断。
 
-### 禁止静默豁免
+## 客户端必须保留的事实
 
-存在失败强制门禁时，`accept` 不得进入发布。若仓库策略允许，维护者可以创建带版本的 Waiver Decision，明确 gate、原因、批准者、有效期或范围与 evidenceDigest；自然语言评论不能充当豁免。
+- 控制请求使用原幂等身份和精确revision；丢响应先查询或精确重放，不能自动刷新版本并重复批准。
+- GET无副作用；根据允许动作和明确原因展示下一步，不把所有409/unknown都变成“重试”。
+- 事件cursor及gap遵循合同，重新查询不丢原回执和历史；进度刷新不能承担唯一结果传输。
+- 显示成果、独立依据、失败和未完成项；未知用量不填零，下载成功不改写任务或发布状态。
 
-## Retry 与 Rework 预算
-
-- `maxAttempts`：Worker 总调用次数。
-- `maxOperationalRetries`：Provider、协议或进程失败的重试次数。
-- `maxReworkRounds`：Verification 或 Review 导致的实现循环次数。
-- `runTimeoutSeconds`：Run 总 wall time。
-- `ciObserveTimeoutSeconds`：可选的 CI 观察阶段预算；声明时从 `publishedAt` 起算并在 publish 时冻结为 PublicationRecord `ciDeadline`，缺失时严格回退 `CreatedAt + runTimeoutSeconds`。
-- `attemptTimeoutSeconds`：单次 Worker 调用时间。
-
-以最先耗尽的预算为准。无法满足代码契约时进入 `REJECTED`；外部容量或授权阻止正常尝试时进入 `BLOCKED`。
-
-## 空变更与 No-change
-
-真实 diff 为空时，即使 Worker 声称仓库原本正确，也不能视为成功 Coding Change。
-
-- `allowNoChange=false`：空 diff 是验证失败。
-- `allowNoChange=true`：主 Agent 只有在存在说明无需变更的诊断交付物时才能给出 `no_change`。
-- `NO_CHANGE` 默认不创建 PR/MR。
-
-## 发布后的 CI
-
-CI 结果必须绑定精确的 published head SHA。旧 commit 的绿色检查不能满足门禁。Rework 更新 branch 后，旧检查失效，生命周期重新经过 Verification、Review、Publishing 与 `CI_PENDING`。
-
-当前 CI 时间裁决遵循 [ADR 0028](adr/0028-ci-deadline-phased-observation.md) 的“先观察、后裁决”：无论本地 `now` 是否已达到冻结 `ciDeadline`，Core 都先调用 observer，并在 Schema 与 `(taskId, runId, repositoryId, requestId, headSha)` identity 通过后持久化 RemoteCheckRecord。远端仍为 `pending` 且 `now ≥ ciDeadline` 时以 `ci-deadline-exceeded` 进入 `BLOCKED`；远端为 `pass` 时 required check 集合必须精确相等、无重复、每项 `completedAt` 非零，并满足 `publishedAt − 300s ≤ completedAt ≤ ciDeadline + 300s`。缺失、超上界与低于下界分别以 `ci-completed-at-missing`、`ci-completed-at-exceeds-deadline`、`ci-completed-at-inconsistent` fail closed。本地 `observedAt` 不替代或修改 provider 完成时间裁决。
-
-controlled merge 使用同一套时间证明，并在任何 `SCMMerger` 调用前完成 fresh observation、内容寻址留证与裁决；deadline 后观察到 provider 已及时完成仍可继续，pending 到期或证明不完整时不得触发 ready/merge mutation。四种 CI 时间原因导致的 `BLOCKED` 在 reconcile 时都必须重新取得并先持久化 fresh timely proof；失败保持 `BLOCKED`，不写 receipt、reconcile event 或新 Outcome。
-
-当前实现（current behavior）：`CI_PENDING` 的失败观察只把 `headSha` 写入 `publication.checks-failed` 事件并进入 `REWORK_REQUESTED`，下一 Attempt 得不到任何 review findings；`REWORK_REQUESTED` 的 CI origin 没有 ReviewPacket/ReviewDecision 入口。目标契约（target contract）见下节（[ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)，Proposed，未实现）。
-
-## ADR 0030 目标契约：CI 失败证据与 rework 注入（Proposed，非当前行为）
-
-本节描述 [ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)（草案已提出，状态：提议（Proposed），待接受）给出的目标转换与 counter 语义，仅供实施与审计引用；在 ADR 0030 被接受并实现合入前，它们不构成当前行为，上方状态表与转换表保持当前行为不变。
-
-### 目标转换（相对当前转换表的增量）
-
-| From | To | 事件与守卫条件 |
-| --- | --- | --- |
-| `CI_PENDING` | `REWORK_REQUESTED` | `publication.checks-failed`（target shape）：失败观察的 RemoteCheckRecord 与一等不可变 `CIFailureEvidence` 已内容寻址持久化，payload 携带 `headSha`、`remoteCheckRecordDigest`、`ciFailureEvidenceDigest`；双预算守卫（`ReworkRoundsUsed < maxReworkRounds` 且 `AttemptsUsed < maxAttempts`）通过 |
-| `CI_PENDING` | `REJECTED` | `publication.checks-rework-budget-exhausted`（新增，actor 固定 `publisher/marshal-github-publisher`）：任一预算守卫耗尽；封闭 `terminalReason`：`ci-rework-attempt-budget-exhausted`（attempt 耗尽优先）或 `ci-rework-round-budget-exhausted`；必须写 Outcome/result.md 并绑定 PublicationRecord、RemoteCheckRecord、CIFailureEvidence 摘要 |
-| `REWORK_REQUESTED` | `REWORK_REQUESTED` | `review.rework`（originKind=`ci-checks-failed`，唯一命名自环例外）：actor 固定 `system/marshal-review`，消费唯一未消费的 target shape checks-failed origin，绑定 round-bound ReviewDecision；不触碰任何 counter |
-| `CI_PENDING` | `BLOCKED` | 证据接纳拒绝（身份字段不匹配、重复 check identity、required fail 集合为空）：复用既有 `publication.blocked` typed failure（actor `publisher/marshal-github-publisher`，`error` 原因码 `ci-evidence-admission-rejected`——ADR 0028 封闭原因码集合经 ADR 0030 提议的后续扩展），不触碰任何 counter；不产生内容寻址证据 |
-
-`review.rework` 的两类 origin：既有 `REVIEW_PENDING → REWORK_REQUESTED` 为 normal-review origin，语义逐字不变；新增 `REWORK_REQUESTED → REWORK_REQUESTED` 只允许 `ci-checks-failed` origin。除该命名例外与既有 `reconciliation.snapshot-repaired` 审计事件外，不开放任何通用 same-state transition。
-
-### 目标 counter 语义（相对当前 reducer 的差异）
-
-| 事件 | AttemptsUsed | OperationalRetriesUsed | ReworkRoundsUsed | ReviewRound |
-| --- | --- | --- | --- | --- |
-| `publication.checks-failed`（target shape） | — | — | +1（仅一次） | +1（原子预留一个新的 CI reviewRound） |
-| `review.rework`（originKind=ci-checks-failed 自环） | — | — | — | — |
-| `publication.checks-rework-budget-exhausted` | — | — | — | — |
-| 其余事件 | 当前语义不变（`worker.started` +AttemptsUsed；RETRY_PENDING +OperationalRetriesUsed；`verification.completed` +ReviewRound；normal `review.rework` +ReworkRoundsUsed） | | | |
-
-切换前的 legacy `publication.checks-failed`（payload 仅 `headSha`）在 replay 中保持历史 counter 语义（+ReworkRoundsUsed，不预留 ReviewRound），保证历史 journal 与其快照一致；legacy origin 是 replay-only 的，不进入目标消费路径。接纳拒绝的 `publication.blocked` 与既有语义一样不触碰任何 counter。
-
-### 目标消费与拒绝规则
-
-- CI review（`marshal task review`）接纳集合扩展为 `REVIEW_PENDING`（既有）与 `REWORK_REQUESTED` 且存在唯一未消费 target shape CI origin（新增）；CI 入口生成现有 ReviewPacket 的 typed CI 扩展（不伪造新的 Verification），只导入 `verdict=rework` 且每项 `requiredOutcome` 非空的 blockingFindings 的 ReviewDecision；
-- `task run` 对尚无唯一匹配自环的 CI origin 在 Probe/Attempt 创建/任何副作用之前拒绝，不注入空 findings；
-- 自环成功后，新 rework Attempt 沿相邻 journal lineage 加载预留 reviewRound 的 Decision，把 `blockingFindings` 的 `id`、`severity`、`description`、`requiredOutcome` 精确投影到 `WorkerRequest.reviewFindings` 与 worker prompt；同一 origin 的 operational retry 解析同一 Decision 并得到字节等价 findings；
-- 一个 checks-failed origin 与一次成功注入一对一：一个 origin 最多对应一个成功注入；导入唯一键 `(runId, originEventId, originSequence)` 先经只读解析裁决 replay/conflict，仅 fresh origin 才准备记录与追加事件；同 key 同 `decisionDigest` 的 lost-response 重放幂等返回既有结果（零追加），同 key 不同 digest 固定 conflict 零副作用；自环成功绑定 Decision 后不再次递增任何 counter。
-
-完整字段表、digest 公式、事务/崩溃窗口与测试矩阵见 [ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)；恢复矩阵见[故障与恢复](failure-and-recovery.md)的对应目标节。
-
-## 清理
-
-Cleanup 不是状态转换，也不能销毁 Outcome Bundle。
-
-- Accepted worktree 可在发布记录和 patch digest 持久化后删除。
-- Rejected、Blocked 或 Aborted 的 dirty worktree 保留到显式归档或清理。
-- 清理前必须重新检查 diff；存在新未归档文件时默认拒绝。
+历史Go Run大写状态、CI/SCM特殊reconcile与旧TaskSpec约束保存在[历史参考](task-lifecycle-reference-2026-09-14.md)和原ADR中，不构成Node公开状态或自动merge权限。

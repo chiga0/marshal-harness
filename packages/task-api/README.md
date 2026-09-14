@@ -1,4 +1,6 @@
-# Task Service HTTP 实现候选
+# Task Service HTTP 接口实现
+
+当前完整调用链见[标准API](../../docs/standard-api.md)，27操作/66Schema的实际配置、版本与证据见[当前支持矩阵](../../docs/api-support.md)，内部适配见[扩展契约](../../docs/extension-contracts.md)。产品已发行和历史接口检查点分别记录，以下0.1.0-candidate是机器合同标识，不表示今日尚无stable资产。
 
 此包实现 ADR0085/0088 的 Node profile HTTP 适配层。2026-09-09 已通过当前契约与同包客户端的 **API-STABLE 核心接口检查点**；这不是正式 v1、stable 资产或生产完成声明，[四项出口及精确证据](../../docs/node-task-service-status-2026-09-08.md)分别记录。它不导入实验 Store/Supervisor、固定订单业务或具体 Agent，不启动 socket、模型、进程或数据库。旧九操作实验协议保持独立。
 
@@ -18,7 +20,7 @@ await application(request, {principal: 'local-operator', requestId, signal});
 
 - `task.create` 接收 intent、可选 context/requirements/更低 limits，201 返回 Task；零问题任务通过应用规划 outbox 异步完成。显式有限模板缺少声明输入时，Application 原子返回 `awaiting-answer` 与已冻结完整预览，不产生 Planner 义务。HTTP 不调用模型等计划。
 - `task.plan` 返回原计划；`task.approve` 请求绑定 expectedRevision、planRevision、planDigest。批准/取消/暂停/继续或 Worker cancel 返回原 Operation，HTTP 为 202，即使原幂等操作已完成也不增加副作用。
-- `worker.cancel` 仍复用 `ControlTask`，expectedRevision 比较目标所属 Task，不是 Worker Attempt。仅 v6 opt-in 服务启用，旧格式仍返回501。`Operation` 闭集 oneOf 只为 kind=worker.cancel 必需 workerId；其他 kind 不允许附带它，旧示例与字节保留。handler 与 client 都复核路由目标，202 不宣称清理或整个 Task 取消。
+- `worker.cancel` 仍复用 `ControlTask`，expectedRevision 比较目标所属 Task，不是 Worker Attempt。v6与v7服务根支持，旧格式仍返回501。`Operation` 闭集 oneOf 只为 kind=worker.cancel 必需 workerId；其他 kind 不允许附带它，旧示例与字节保留。handler 与 client 都复核路由目标，202 不宣称清理或整个 Task 取消。
 - `task.questions` 返回原批及 `taskRevision/previewRevision/previewDigest/confirmBefore/preview`；旧零问题 Task 为 `items:[]` 且 preview 为 null。ADR0086 的 `task.answer` 保留原四字段 `expectedRevision/previewDigest/questionRevision/answer` 和原 `AnswerReceipt`/202：历史 `task/preview/operation/acceptedRevision/acceptedPreviewDigest` 与单独 `currentTask/replayed` 明确区分。HTTP 再核对路由 Task/question 及接受 revision/preview 关联；其他操作/旧 receipt 算法不改。
 - `awaiting-confirmation` 仅供 ADR0086 新问答事实的全部问题答完后使用，旧零问题仍为 `awaiting-approval`。两者只表达待确认，不批准、不执行；UI 应按 `allowedActions` 展示显式动作，不能按字符串自动批准。
 - `task.list/get/graph/workers/questions/audit/events`、`worker.get`、`operation.get`、`provider.list`、`supervisor.get` 返回 schema 对应投影。列表一页最多 100，默认 50，cursor 是应用提供的 opaque ID，不能作为路径或版本权威。
@@ -42,7 +44,7 @@ await application(request, {principal: 'local-operator', requestId, signal});
 
 ## 错误、安全与限制
 
-ADR0095 新增 `task.leader`（GET `/v1/tasks/{taskId}/leader`）与 `task.leader.reply`（POST `/v1/tasks/{taskId}/leader/requests/{requestId}/reply`）的严格边界。view 最多 64 KiB，完整展示原请求/发布授权正文，重算其 Task 绑定摘要；新 API 不改变原 Task/Worker/Operation/Answer/Repair 字段或角色，不要求 profile header。未启用的应用仍返回501；这些 DI 测试不证明 v7 Core/Store/Leader 或真实发布已经接线。
+ADR0095 新增 `task.leader`（GET `/v1/tasks/{taskId}/leader`）与 `task.leader.reply`（POST `/v1/tasks/{taskId}/leader/requests/{requestId}/reply`）的严格边界。view 最多 64 KiB，完整展示原请求/发布授权正文，重算其 Task 绑定摘要；新 API 不改变原 Task/Worker/Operation/Answer/Repair 字段或角色，不要求 profile header。未启用的应用仍返回501；这些 DI 测试本身不证明实际执行；当前v7 Core/Store/Leader及有限本机报告发布已接线，其真实业务与恢复证据见当前支持矩阵，不以早期DI检查点替代。
 
 reply 为互斥闭集 `{expectedRevision,requestDigest,answer}` 或 `{expectedRevision,requestDigest,decision:'allow'|'deny'}`，必须原 key。202 `LeaderReplyReceipt` 绑定原 Task、路由 requestId、摘要、answer/decision 和 `acceptedRevision=expectedRevision+1`；不携带旧 Operation，不宣称 Worker ACK 或发布已成功。精确 replay/CAS、原请求有效性、授权与取消优先仍只由 Core 判断。`replyDigest=hash(encode({taskId,requestId,requestDigest,answer|decision}))`，不含 key/CAS；HTTP/Client 的摘要检查不是新的权限来源。
 
