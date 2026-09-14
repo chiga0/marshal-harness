@@ -49,10 +49,10 @@ test('recorded connection supports env-free status and client; no server/agent s
   assert.ok(!JSON.stringify(output).includes(token));
   assert.ok(!fs.readFileSync(path.join(home, '.marshal-client/local.json'), 'utf8').includes(token));
 });
-test('missing business config is explicit; unsafe settings rejected; own install root needs no search', async t => {
+test('missing selected agent is explicit; unsafe settings rejected; own install root needs no search', async t => {
   const home = fixture(t);
   await run(['init', '--install-root', root], {home, output() {}});
-  await assert.rejects(run(['serve'], {home}), /configuration_required/);
+  await assert.rejects(run(['serve', '--agent-executable', path.join(home, 'missing-qwen')], {home}), /agent_unavailable/);
   const file = path.join(home, '.marshal-client/local.json');
   fs.chmodSync(file, 0o644);
   await assert.rejects(run(['status'], {home}), /unsafe_settings/);
@@ -60,6 +60,87 @@ test('missing business config is explicit; unsafe settings rejected; own install
   const output = [];
   await run(['init'], {home: otherHome, output: x => output.push(x)});
   assert.equal(output[0].installRoot, root);
+});
+
+test('live service cannot be reported as a newly requested configuration', async t => {
+  const home = fixture(t), token = 'local-bootstrap-fixture-secret-token-001';
+  let handler;
+  const server = createServer((req, res) => handler(req, res));
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => {server.closeAllConnections(); server.close();});
+  const url = `http://127.0.0.1:${server.address().port}`;
+  handler = createTaskApiHandler({token, expectedHost: new URL(url).host, application: async () => contract.components.schemas.Readiness.examples[0]});
+  const connection = path.join(home, 'connection.json');
+  fs.writeFileSync(connection, JSON.stringify({url, token}), {mode: 0o600});
+  await run(['init', '--install-root', root, '--connection-file', connection], {home, output() {}});
+  const file = path.join(home, '.marshal-client/local.json'), before = fs.readFileSync(file);
+  for (const args of [['--config', path.join(home, 'different.mjs')], ['--ui', path.join(home, 'ui')], ['--port', '34567']]) {
+    await assert.rejects(run(['serve', ...args], {home, output() {assert.fail('no false connection');}}), /running_configuration_conflict/);
+    assert.deepEqual(fs.readFileSync(file), before);
+  }
+});
+
+test('generic default selects exact agent and private root, forwards UI port and preserves API connection', {timeout: 10000}, async t => {
+  const home = fixture(t), capture = path.join(home, 'launch.json');
+  const connectionFile = path.join(home, 'live.json');
+  const installed = fakeInstall(home, `
+    import fs from 'node:fs'; import {createServer} from 'node:http';
+    import {createTaskApiHandler} from '../task-api/http-handler.mjs';
+    import {contract} from '../task-api/contract.mjs';
+    fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify({argv:process.argv.slice(2),agent:process.env.MARSHAL_AGENT_EXECUTABLE}));
+    const token='fixture-generic-service-token-001';let handler;
+    const server=createServer((req,res)=>handler(req,res));
+    server.listen(0,'127.0.0.1',()=>{
+      const url='http://127.0.0.1:'+server.address().port;
+      handler=createTaskApiHandler({token,expectedHost:new URL(url).host,application:async()=>contract.components.schemas.Readiness.examples[0]});
+      fs.writeFileSync(${JSON.stringify(connectionFile)},JSON.stringify({url,token}),{mode:0o600});
+      console.log(JSON.stringify({connectionFile:${JSON.stringify(connectionFile)},address:'http://127.0.0.1:34567'}));
+    });
+    process.on('SIGTERM',()=>{server.closeAllConnections();server.close();});
+  `);
+  fs.mkdirSync(path.join(installed, 'packages/task-generic-files'));
+  const config = path.join(installed, 'packages/task-generic-files/service-config.mjs');
+  fs.writeFileSync(config, 'export default {};');
+  const ui = path.join(home, 'ui'); fs.mkdirSync(ui);
+  const bin = path.join(home, 'bin'); fs.mkdirSync(bin);
+  fs.symlinkSync(process.execPath, path.join(bin, 'qwen'));
+  const originalPath = process.env.PATH;
+  process.env.PATH = bin;
+  t.after(() => {if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;});
+  let connected = false;
+  await run(['serve', '--install-root', installed, '--ui', ui, '--port', '34567'], {
+    home, output(value) {
+      connected = true;
+      assert.equal(value.uiUrl, 'http://127.0.0.1:34567/ui/');
+      const settings = JSON.parse(fs.readFileSync(path.join(home, '.marshal-client/local.json')));
+      assert.equal(settings.connectionFile, connectionFile);
+      assert.equal(settings.config, config); assert.equal(settings.generic, true);
+      assert.equal(settings.dataDir, path.join(home, '.marshal-node/generic-team'));
+      assert.notEqual(JSON.parse(fs.readFileSync(connectionFile)).url, settings.address);
+      process.emit('SIGTERM');
+    },
+  });
+  assert.equal(connected, true);
+  const actual = JSON.parse(fs.readFileSync(capture));
+  assert.equal(actual.agent, fs.realpathSync(process.execPath));
+  assert.deepEqual(actual.argv, ['--config', config, '--data-dir', path.join(home, '.marshal-node/generic-team'), '--port', '34567', '--ui', ui]);
+  assert.equal(fs.statSync(path.join(home, '.marshal-node')).mode & 0o777, 0o700);
+});
+
+test('port options reject malformed and out-of-range values without launch', async t => {
+  const home = fixture(t);
+  for (const value of ['-1', '65536', '01', 'nan']) await assert.rejects(run(['serve', '--port', value], {home}), /invalid_arguments/);
+});
+
+test('no-ui is mutually exclusive and removes only the recorded UI option', async t => {
+  const home = fixture(t), ui = path.join(home, 'ui'), data = path.join(home, 'data');
+  for (const args of [['--no-ui', '--ui', ui], ['--ui', ui, '--no-ui'], ['--no-ui', '--no-ui']]) {
+    await assert.rejects(run(['init', ...args], {home}), /invalid_arguments/);
+  }
+  await run(['init', '--install-root', root, '--ui', ui, '--data-dir', data], {home, output() {}});
+  await run(['init', '--no-ui'], {home, output() {}});
+  const settings = JSON.parse(fs.readFileSync(path.join(home, '.marshal-client/local.json')));
+  assert.equal(settings.ui, undefined); assert.equal(settings.dataDir, data);
 });
 
 function fakeInstall(home, program) {
@@ -88,7 +169,8 @@ test('serve owns startup, checks real HTTP before persisting connection, and for
     process.on('SIGTERM',()=>{server.closeAllConnections();server.close();});
   `);
   let connected = false;
-  await run(['serve', '--install-root', installed, '--config', config], {home, output(value) {
+  await run(['init', '--install-root', installed, '--config', config], {home, output() {}});
+  await run(['serve'], {home, output(value) {
     assert.equal(value.state, 'connected'); connected = true;
     const settings = JSON.parse(fs.readFileSync(path.join(home, '.marshal-client/local.json')));
     assert.equal(settings.connectionFile, path.join(home, 'live.json'));
