@@ -60,7 +60,7 @@ export function OverviewView({task, plan, questions, workers, leader, audit, tra
       {intervention ? (
         <Card role="alert" aria-label="系统执行异常" className="space-y-3 border-danger" data-testid="intervention-notice">
           <h2 className="text-base font-semibold text-danger">系统执行异常，需要排查</h2>
-          <p className="text-sm">这不是等待你回答问题；任务已受阻，不能将没有待答事项理解为运行正常。</p>
+          <p className="text-sm">此执行异常不等同于待答问题；请分别核对下方请求，不能将没有待答事项理解为运行正常。</p>
           <p className="text-sm [overflow-wrap:anywhere]">原因：{task.code === 'cleanup_unconfirmed'
             ? '尚未确认所属执行已安全清理，任务不能继续。'
             : '服务报告任务需要干预，具体执行原因请结合团队与活动记录核对。'}

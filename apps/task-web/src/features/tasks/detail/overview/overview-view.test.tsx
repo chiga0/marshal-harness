@@ -23,7 +23,7 @@ describe('概览（P04/P05）：等待、进展、验收、计划', () => {
       leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />);
     const notice = screen.getByRole('alert', {name: '系统执行异常'});
     expect(screen.getByTestId('overview-view').firstElementChild).toBe(notice);
-    expect(notice).toHaveTextContent('这不是等待你回答问题');
+    expect(notice).toHaveTextContent('此执行异常不等同于待答问题');
     expect(notice).toHaveTextContent('cleanup_unconfirmed');
     expect(notice).toHaveTextContent('当前界面没有安全恢复此异常的操作');
     expect(within(notice).getByRole('link', {name: /worker-unknown/})).toHaveAttribute('href', '/tasks/task-1/team/worker-unknown');
@@ -45,6 +45,16 @@ describe('概览（P04/P05）：等待、进展、验收、计划', () => {
     wrap(<OverviewView task={makeTask()} plan={null} questions={makeQuestions()} workers={[]}
       leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />);
     expect(screen.queryByTestId('intervention-notice')).toBeNull();
+  });
+  it('intervention并存真实待答投影时分别显示，不将请求误报为不存在', () => {
+    const {transport} = makeFakeTransport();
+    wrap(<OverviewView task={makeTask({status: 'intervention', allowedActions: []})}
+      plan={null} questions={makeQuestions({items: [makePreapprovalQuestion()]})} workers={[]}
+      leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />);
+    expect(screen.getByTestId('intervention-notice')).toHaveTextContent('请分别核对下方请求');
+    expect(screen.getByText('需要你的处理（1 项）')).toBeVisible();
+    expect(screen.queryByTestId('waiting-empty')).toBeNull();
+    expect(screen.getAllByTestId('question-card')).toHaveLength(1);
   });
   it('批准权限消失后保留同一计划 DOM，仅折叠详情', () => {
     const {transport} = makeFakeTransport();
