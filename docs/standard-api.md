@@ -1,6 +1,6 @@
 # 标准 API 与完整交付契约
 
-更新：2026-09-14。本文说明当前接受范围内客户端到团队交付的完整契约，依据 ADR0085、0088、0090–0095、0100；不改变 HTTP 字段、状态、权限或持久格式。请求、响应、枚举、上限和错误的唯一机器定义是 [OpenAPI](../packages/task-api/openapi.json)，当前为 **27 个操作、66 个 Schema**。实际版本、配置及验证覆盖见[支持矩阵](api-support.md)，内部和外部适配义务见[扩展契约](extension-contracts.md)。“标准”表示有明确可检查的边界，不表示全部未来能力或所有部署已稳定。
+更新：2026-09-14。本文说明当前接受范围内客户端到团队交付的完整契约，依据 ADR0085、0088、0090–0095、0100、0102、0103；本文不另造 HTTP 状态、权限或持久格式。请求、响应、枚举、上限和错误的唯一机器定义是 [OpenAPI](../packages/task-api/openapi.json)，操作与Schema索引由[HTTP参考](api/http-reference.md)自动生成。实际版本、配置及验证覆盖见[支持矩阵](api-support.md)，内部和外部适配义务见[扩展契约](extension-contracts.md)。“标准”表示有明确可检查的边界，不表示全部未来能力或所有部署已稳定。
 
 ## 服务对象与完整调用链
 
@@ -89,6 +89,8 @@ pause只停止新工作准入，已启动Agent和原绝对期限继续；cancel�
 
 ## 版本与扩展
 
-HTTP `/v1`、OpenAPI `info.version`、SQLite layout、模型wire profile、产品发行版本是不同身份。当前 `0.1.0-candidate` 是机器文件的真实标识；历史25操作/58Schema API-STABLE检查点保留原证据，后继27/66及新配置按支持矩阵说明，不推导所有未来字段稳定。
+HTTP `/v1`、OpenAPI `info.version`、SQLite layout、模型wire profile、产品发行版本是不同身份。当前 `0.1.0-candidate` 是机器文件的真实标识；历史25操作/58Schema API-STABLE检查点保留原证据，后继观察字段及新配置按支持矩阵说明，不推导所有未来字段稳定。
 
 扩展先区分：仅实现已定义可信Port、增加新能力配置、改变公共wire、改变持久/权限语义。前两者也需明确配置身份与兼容验证；后两者必须先按仓库ADR规则冻结差量。不新增万能扩展object，不静默接受未知字段。旧客户端不具备Leader交互能力时应明确提示升级，不能以旧读取成功冒充完整操控。ADR0101已接受的显式模型建议映射不改变HTTP；其配置启用、原始模型输出证据和发行状态独立记录。
+
+执行观察的用量分为累计与最近响应：`observation.usage` 只承载有明确来源的累计读数，缺失和不完整由coverage表达；显式Qwen扩展的 `lastResponseUsage` 只表示最近收到的一条响应报告，不相加、不进入Task累计，`complete=false`且零值可能是提供方默认。开关进入原服务根冻结身份，不能在旧根静默切换；字段细则见唯一OpenAPI与[ADR0103](adr/0103-execution-observability.md)。

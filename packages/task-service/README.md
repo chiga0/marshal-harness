@@ -213,3 +213,5 @@ node --test --test-concurrency=1 packages/task-service/launch.test.mjs
 任务用量按 `agent/leader/review` 已预留成员的最新读数汇总，独立 `verification/publication/postverify` 不计入模型分母。`coverage` 是有完整读数的模型成员占比；有部分读数时总Token也是部分量，缺失不按零认作完整。Pi按完整消息身份去重，碰撞不声称完整，安全整数溢出读数不可用。ACP只接受明确的Token计数，不把上下文 `used/size` 当累计Token。费用未采集，始终保持不可用。
 
 当前输入留存不支持与ADR0092 `unpermitted` / `startProtocol` 组合；两层构造均早拒，不能把已留正文记录追认成原metadata-only无许可证明。关闭输入留存的typed观察不影响原恢复资格。
+
+显式Qwen `usageExtension:'qwen-transcript/v1'` 的 `lastResponseUsage` 是最近一条响应读数，完整性未确认、零值可能为桥接默认；不累计，不进入Task总量或coverage。扩展开关绑定服务根身份；未启用保持旧响应。

@@ -57,3 +57,5 @@ reply 为互斥闭集 `{expectedRevision,requestDigest,answer}` 或 `{expectedRe
 最短验证命令：`node --test --test-concurrency=1 packages/task-api/*.test.mjs packages/task-client/*.test.mjs`。27 个操作的合同（含局部修正、Leader 子资源）和运行问答测试使用 Request/Response 流替身、独立内存 Application fixture，以及真实 loopback HTTP；覆盖两族答复、oneOf 精确互斥、4096 字节边界、请求/回执串绑、授权正文替换、64 KiB view、有限选项、错误、丢回复与显式同 key 重放。标准 Draft 2020-12 metaschema/示例另用真实 Ajv 2020 校验器验证。无 DB/模型；不能替代实际 SQLite、同执行投递/ACK、恢复或独立业务验收。
 
 显式 `task-observation/v1` 服务组合新增可选 `Worker.observation` / `Event.observation`，规范类型为 `WorkerObservation` / `ObservationFrame`。`Audit.measurement.usageSource` 可为 `provider-observation`，用量仍使用原 `Usage` 结构，覆盖不足不能表述为全量。旧关闭配置不产生新字段；读取新开启配置需使用包含此合同的新客户端，不能要求旧闭合Schema客户端自动接受额外字段。prompt快照继续通过原Audit与artifact下载合同提供。
+
+显式Qwen `usageExtension:'qwen-transcript/v1'` 的 `lastResponseUsage` 是最近一条响应读数，完整性未确认、零值可能为桥接默认；不累计，不进入Task总量或coverage。扩展开关绑定服务根身份；未启用保持旧响应。
