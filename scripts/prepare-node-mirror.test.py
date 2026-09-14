@@ -16,21 +16,21 @@ class PreparationTests(unittest.TestCase):
     def test_preview_requires_explicit_matching_channel(self):
         with patch('subprocess.check_output') as call:
             with self.assertRaises(ValueError):
-                module.prepare('v1.1.0-rc.1', '/unused')
+                module.prepare('v1.1.0-rc.2', '/unused')
             call.assert_not_called()
         for draft, preview in ((True, True), (False, False)):
-            metadata = ('{"tagName":"v1.1.0-rc.1","isDraft":%s,"isPrerelease":%s}' %
+            metadata = ('{"tagName":"v1.1.0-rc.2","isDraft":%s,"isPrerelease":%s}' %
                         (str(draft).lower(), str(preview).lower())).encode()
             with patch('subprocess.check_output', return_value=metadata), patch('subprocess.run') as call:
                 with self.assertRaises(ValueError):
-                    module.prepare('v1.1.0-rc.1', '/unused', 'preview')
+                    module.prepare('v1.1.0-rc.2', '/unused', 'preview')
                 call.assert_not_called()
 
     def test_preview_copies_only_preview_installer(self):
         with tempfile.TemporaryDirectory() as parent, \
-             patch('subprocess.check_output', return_value=b'{"tagName":"v1.1.0-rc.1","isDraft":false,"isPrerelease":true}'), \
+             patch('subprocess.check_output', return_value=b'{"tagName":"v1.1.0-rc.2","isDraft":false,"isPrerelease":true}'), \
              patch('subprocess.run') as call:
-            stage = module.prepare('v1.1.0-rc.1', parent, 'preview')
+            stage = module.prepare('v1.1.0-rc.2', parent, 'preview')
             self.assertEqual(call.call_count, 5)
             self.assertFalse((stage / 'install-node.sh').exists())
             self.assertEqual((stage / 'install-node-preview.sh').read_bytes(),
