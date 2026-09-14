@@ -79,12 +79,19 @@ test('独立 managed Provider 仅绑定 Leader/Review，作者默认仍为文件
 
 test('Qwen 新组合让 managed 原生目录排除全部文件工具，旧作者参数原样保留',async()=>{
   const {QWEN_FILE_ARGS,QWEN_FILE_TOOLS,QWEN_EXCLUDED_TOOLS}=await import('./qwen-file-tools.mjs');
+  const {leaderJsonCorrectionPolicy}=await import('../task-application/leader-protocol-correction.mjs');
   const saved=process.env.MARSHAL_AGENT_EXECUTABLE;
   try {
     process.env.MARSHAL_AGENT_EXECUTABLE='/unused/qwen';
     const {default:config,QWEN_MANAGED_ARGS}=await import('./qwen-review-service-config.mjs');
     assert.deepEqual([...config.providers.keys()],['qwen-acp','qwen-managed-acp']);
     assert.equal(config.leader.providerId,'qwen-managed-acp');assert.equal(config.review.providerId,'qwen-managed-acp');
+    assert.equal(leaderJsonCorrectionPolicy(config.leader)?.profile,'leader-json-correction/v1');
+    assert.equal(leaderJsonCorrectionPolicy(config.leader)?.maxPerTask,1);
+    assert.equal(leaderJsonCorrectionPolicy(config.review),null);
+    const provider={id:'plain',start(){throw Error('no model');}};
+    assert.equal(leaderJsonCorrectionPolicy(createGenericFilesReviewWireConfig({provider}).leader),null);
+    assert.equal(leaderJsonCorrectionPolicy(createGenericFilesShortWireConfig({provider}).leader),null);
     const deny=QWEN_MANAGED_ARGS[QWEN_MANAGED_ARGS.indexOf('--exclude-tools')+1].split(',');
     assert.deepEqual(deny,[...QWEN_EXCLUDED_TOOLS,...QWEN_FILE_TOOLS]);
     assert.equal(QWEN_MANAGED_ARGS[QWEN_MANAGED_ARGS.indexOf('--core-tools')+1],QWEN_FILE_TOOLS.join(','));
