@@ -48,7 +48,7 @@ export function createGenericFilesReviewWireConfig(options) {
       review: {providerId: options.provider.id, policyDigest: digest(encode(reviewPolicy))}, publication: null},
     prepare: async ({ticket, input, prepared}, context) => {
       await originalLeader.prepare(ticket, prepared, context);
-      return {prompt: RULE + '\n' + GUIDANCE + '\n' + FACT_GROUNDING + '在计划的作者scope和acceptance中明确事实来源与建议边界；完整保留用户原要求，不以自己补充的计划内容证明新事实。' + '\n' + renderLeaderPrompt(input, {wireProfile: LEADER_WIRE_PROFILE})};
+      return {prompt: RULE + '\n' + GUIDANCE + '\n' + '本通用文件配置的DAG节点role只允许author或verifier。所有写成果的执行者（包括整合作者）role必须为author，整合节点id可以叫integrator但role不能为integrator。独立Review是Core受管阶段，不设reviewer节点；唯一verifier是汇合终点且不写成果。' + '\n' + FACT_GROUNDING + '在计划的作者scope和acceptance中明确事实来源与建议边界；完整保留用户原要求，不以自己补充的计划内容证明新事实。' + '\n' + renderLeaderPrompt(input, {wireProfile: LEADER_WIRE_PROFILE})};
     }, parseDecision: parseLeaderProposal});
   config.observability = observability;
   return config;
