@@ -21,6 +21,7 @@ const actionLabels: Record<string, string> = {
   postverify: '核验发布结果',
 };
 export function leaderActionLabel(action: Record<string, unknown>): string {
+  if (action.type === 'conclude') return ({succeeded:'建议完成交付收尾',failed:'建议结束本次未完成的交付',wait:'等待后续执行结果'} as Record<string,string>)[String(action.outcome)] ?? '建议结束任务';
   if (action.type === 'work') return ({execute:'安排成员执行',review:'组织独立评审',verify:'安排独立验收'} as Record<string,string>)[String(action.kind)] ?? '安排团队工作';
   return actionLabels[String(action.type)] ?? '已记录团队行动';
 }
@@ -119,10 +120,8 @@ export function LeaderDecision({
       <h2 className="text-base font-semibold">团队当前策略</h2>
       {query.data ? (
         <>
-          <p className="whitespace-pre-wrap break-words text-sm leading-6">
-            {query.data.summary}
-          </p>
-          <div className="flex flex-wrap gap-2">
+          <p className="text-xs text-text-secondary">最近记录的行动安排</p>
+          <div className="flex flex-wrap gap-2" data-testid="leader-action-summary">
             {query.data.actions.map((action, i) => (
               <span
                 key={i}
@@ -132,9 +131,12 @@ export function LeaderDecision({
               </span>
             ))}
           </div>
-          <p className="text-xs text-text-secondary">
-            来自已记录的 Leader 决定；行动建议不等于执行或验收已完成。
-          </p>
+          {query.data.actions.length === 0 ? <p className="text-sm text-text-secondary">本次未提出新的团队行动。</p> : null}
+          <details className="workspace-disclosure">
+            <summary>查看原始决策说明</summary>
+            <p className="whitespace-pre-wrap break-words text-sm leading-6">{query.data.summary}</p>
+            <p className="mt-2 text-xs text-text-secondary">来自已记录的 Leader 决定；行动建议不等于执行或验收已完成。</p>
+          </details>
         </>
       ) : (
         <p className="text-sm text-text-secondary">

@@ -1,5 +1,7 @@
 import {describe,it,expect,vi} from 'vitest';
-import {readLeaderDecision,leaderActionLabel} from './leader-decision';
+import {render,screen} from '@testing-library/react';
+import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+import {LeaderDecision,readLeaderDecision,leaderActionLabel} from './leader-decision';
 import {sha256Hex} from '../../../artifacts/downloader';
 import {makeArtifact,makeFakeTransport,makeLeader,TASK_ID} from '../testing/fixtures';
 const digest=async (text:string)=>'sha256:'+await sha256Hex(new Blob([text]));
@@ -14,6 +16,14 @@ async function fixture() {
   return {leader,transport,artifact,getArtifactContent};
 }
 describe('可读Leader决定绑定',()=>{
+  it('默认只显示有依据的行动，原始说明渐进披露且不宣称收尾已执行',async()=>{
+    const {leader,transport}=await fixture();
+    render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><LeaderDecision leader={leader} transport={transport}/></QueryClientProvider>);
+    expect(await screen.findByTestId('leader-action-summary')).toHaveTextContent('组织独立评审');
+    expect(screen.getByText('对两份成果做独立检查').closest('details')).not.toHaveAttribute('open');
+    expect(leaderActionLabel({type:'conclude',outcome:'succeeded'})).toBe('建议完成交付收尾');
+  });
+
   it.each([['execute','安排成员执行'],['review','组织独立评审'],['verify','安排独立验收']])('真实work.%s呈现动作含义但不假称已执行', (kind,label)=>{
     expect(leaderActionLabel({type:'work',kind})).toBe(label);
   });
