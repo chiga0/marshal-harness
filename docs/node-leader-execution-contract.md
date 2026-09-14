@@ -37,7 +37,7 @@
 
 `LeaderDecision={profile,callId,inputDigest,summary,actions}`：profile 常量，summary 最多 4096 bytes，actions 1–policy.maxActions 项。`actionId` **由 Core** 以 `(callId,decisionDigest,index)` 派生，不接受模型提供 key。模型只回显原 call/input 绑定；完整原输出经父进程解析、原 cleanup 与 currentness 检查后才可接纳。
 
-**拟议的显式通用文件 wire 例外（未启用）**：[ADR0101](adr/0101-generic-leader-model-wire-binding.md) 提议让新配置的模型只返回闭集 `{profile:'generic-files-leader-proposal/v1',summary,actions}`，受信同步 mapper 从此次原 ticket 补齐上段 Core 封套。原 profile 及错误绑定仍严格拒绝，不进行格式探测、纠错或默认切换；动作与证据摘要原值不变，Core 持久化和 HTTP 合同不变。映射后决定不是模型原始 bytes；原始输出未耐久保存时须如实说明。该例外须独立接纳及实现验证后才适用于显式新配置，其他配置仍按上段执行。
+**显式通用文件 wire 例外**：[ADR0101](adr/0101-generic-leader-model-wire-binding.md) 已接纳；`qwen-short-service-config.mjs` 仅用于显式新数据根，让模型返回闭集 `{profile:'generic-files-leader-proposal/v1',summary,actions}`，受信同步 mapper 从此次原 ticket 补齐上段 Core 封套。原 profile 及错误绑定仍严格拒绝，不进行格式探测、纠错或默认切换；动作与证据摘要原值不变，Core 持久化和 HTTP 合同不变。映射后决定不是模型原始 bytes；原始输出未耐久保存时须如实说明。受控正负例及一条真实文件交付已验证，见[验收记录](ui-1/2026-09-14-intervention-fix.md)。默认初始化及旧根不切换，其他配置仍按上段执行。
 
 ### 2.2 六类闭集 action
 

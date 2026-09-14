@@ -26,14 +26,24 @@
 
 `9348f569` 的原需求实机 Task `task-95f4216b-bfee-4da0-a957-2e6a967c18df` 在 322.223 秒、3 Attempts 后失败；没有 `provider_progress_limit`，但未到独立 Review 或交付。实际作者 `write_file` 内容为 16067 UTF-8 字节，超过 8192 上限；实际冻结计划／作者输入未说明该限制，工具正确拒绝。`4eb635e7` 将限制及原始源码格式通过 layout→plan.acceptance→真实作者 prompt 传入，HTTP／layout 5 项通过且独立审查无 P0/P1；不提高大小或路径权限。
 
-该轮 Leader 的失败结论依据合法（匹配 `snapshot.history` 单项摘要），但 `callId` 与原 ticket 不同，端口正确拒收。已独立审阅接纳 [ADR0101](../adr/0101-generic-leader-model-wire-binding.md)，仅允许显式新配置由原受信执行绑定运输身份，不纠正动作／依据、不重新接纳旧结果；实现及真实验证仍待完成。
+该轮 Leader 的失败结论依据合法（匹配 `snapshot.history` 单项摘要），但 `callId` 与原 ticket 不同，端口正确拒收。已独立审阅接纳 [ADR0101](../adr/0101-generic-leader-model-wire-binding.md)，仅允许显式新配置由原受信执行绑定运输身份，不纠正动作／依据、不重新接纳旧结果；后继实现及实机证据见下节。
 
-仍需真实独立审查、客观文件核验及最终交付。文件交付配置不证明 HTML 的浏览器行为；下载成果后的新增／修改／删除与视觉检查必须另外进行。当前封装交付路径仍为 `results/<node>.md`，不能声称已原生提供 `.html` 下载命名。
+### 候选 ff468dfb：原需求真实交付与独立后验
+
+完整 sourceHead 为 `ff468dfb387d5ca1e65bd327af86184384ebcf42`。显式 `qwen-short-service-config.mjs` 在新根运行 Qwen 0.23.2；原始用户意图不改写，冻结计划一名作者、独立 Review 和固定文件核验。Task `task-f1b274b8-e80a-4479-9e4d-8e5da6db3a6f` 为 `completed`，耗时 303608ms；8 Attempts（包括五次 Leader 调用、作者、Reviewer、固定 verifier），retry=0、rework=0。独立 Review 为 accept，文件验收 passed，无外部发布。
+
+独立终态审计核对 8 个执行全部完成，8 条 custody observation 均为 clean、原进程组范围，activeWorkers=0；完整 94 条公开事件未含 extra_scope。5/5 Qwen 持久化 assistant 非 thought 原文与 Core 的 summary/actions 一致，原文无运输身份字段，各冻结输入绑定匹配。这不是独立 ACP wire 字节捕获，也未另行密码学复验 custody 签名；不扩大证据等级。
+
+交付 HTML 为 5722 字节，SHA-256 `32ad66f98034ac33f17d4e6a901aef40a19fc9756dbca679322df2cb04f4c8ea`。独立 Chromium 实际完成新增、编辑保存/取消、删除、完成/清除及刷新持久化等 9 项检查，无页面错误、无外网请求；原始文件字节未修改。375px 无整页横向溢出。保留 P2：完成切换使用不可键盘聚焦的 span、窄屏添加按钮文字换行；不把业务功能通过写成全部无障碍或视觉质量通过。
+
+正常停止再 open：revision 41 不变、Attempts 8→8、8 个 Worker ID 与交付摘要不变，下载原制品一致；只证明终态正常重开，不证明活跃崩溃恢复。重新打开的真实 UI 概览、成果、团队均显示完成，无人工干预误报。当前封装路径仍为 `results/author.md`，Web 主下载仍为 JSON 容器；浏览器测试使用消费者提取的原始 HTML 字节，不声称已提供一键 HTML 下载。
+
+本机私有证据根：`/Users/gawain/.marshal-qwen-html-integrated-Ow7cUd`（result.json、reopen-result.json、delivery.json、delivered.html）；仓库忽略目录 `.marshal/qwen-raw-audit-f1b274b8/final-independent-audit.json` 与 `.marshal/todo-html-browser-20260914/`（functional-result.json、marshal-ui-result.json、截图）。不提交原始运行数据；远端读者不能假定这些本机路径可访问。原验收脚本的 functionalHtmlAcceptance=not_run 保留，后续浏览器证据独立记录，避免把后验冒充运行时自动核验。
 
 | 验收线 | 当前状态 | 证据／缺口 |
 | --- | --- | --- |
-| 功能与可靠性 | PARTIAL | Leader 提示／原 SQLite 准入 22 项、文件权限组合 5 项、清理恢复 4 项、发行组件 11 项、UI 概览 17 项通过；UI 类型检查／构建及通用受控 HTTP 交付与重新打开测试通过。真实 Todo 在规划阶段失败，完整交付及浏览器功能未通过 |
-| 视觉与交互 | NOT_RUN | 已更新本地 54390 页面资源；服务重启后 token 失效，需以新连接恢复后检查真实告警、跳转、键盘和缩放 |
+| 功能与可靠性 | 本次范围 PASS；完整发行待验 | 既有定向测试、显式短 wire 正负例及 HTTP 两意图/取消/重开通过；原需求真实交付、正常重开和 HTML CRUD 通过。默认 init 未切换、旧异常未恢复、活跃崩溃与同包发行未覆盖 |
+| 视觉与交互 | PARTIAL | [原异常页面验收](2026-09-14-intervention-browser.md)及完成 Task 概览/成果/团队实测通过；HTML 桌面/375px已验，保留键盘完成控件 P2；原生缩放及完整主题矩阵待验 |
 | 产品可用性 | NOT_RUN | 用户报告的误导已转为回归用例；尚无修复后无指导真实用户结果，不以子 Agent 代码审查替代 |
 
 独立审查覆盖本批集成 diff，无新增 P0/P1；不代表完整 UI 或完整产品已通过验收。保留旧 Task 的异常证据，未清库、未发布新版本、未把候选源代码测试冒充同包发行测试。
