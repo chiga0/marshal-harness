@@ -10,6 +10,7 @@ import {verify} from '../packages/task-distribution/index.mjs';
 import {cases,validateDelivery,hasInvitationDate,SemanticReviewRequired} from './experience-cases.mjs';
 import {captureFailureProjections} from './experience-failure-evidence.mjs';
 import {staticInvitationControls} from './experience-static-invitation.mjs';
+import {captureScreenshot} from './experience-screenshot.mjs';
 
 const opts={};for(let i=2;i<process.argv.length;i+=2){assert.ok(['--installed','--manifest','--case','--output'].includes(process.argv[i]));opts[process.argv[i]]=process.argv[i+1];}
 const installed=opts['--installed'],caseId=opts['--case'],spec=cases[caseId];
@@ -24,6 +25,8 @@ const settings=path.join(privateHome,'.marshal-client');
 const sha=bytes=>'sha256:'+createHash('sha256').update(bytes).digest('hex');
 const evidence={caseId,candidate:admission.sourceHead,manifestDigest:opts['--manifest'],runtime,
   scriptDigest:sha(fs.readFileSync(fileURLToPath(import.meta.url))),caseDigest:sha(Buffer.from(JSON.stringify(spec))),
+  supportingScriptDigests:Object.fromEntries(['experience-cases.mjs','experience-failure-evidence.mjs','experience-static-invitation.mjs','experience-screenshot.mjs']
+    .map(name=>[name,sha(fs.readFileSync(new URL(name,import.meta.url)))])),
   boundary:'真实模型、独立安装包、真实浏览器；非真人可用性',startedAt:new Date().toISOString(),steps:[],result:'RUNNING'};
 const persist=()=>fs.writeFileSync(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2)+'\n',{mode:0o600});
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -38,10 +41,11 @@ const api=async route=>{
   const response=await fetch(address+route,{headers:{Authorization:'Bearer '+token,Origin:address},signal:AbortSignal.timeout(12000)});
   assert.ok(response.ok,`只读API ${route} HTTP ${response.status}`);return response.json();
 };
-async function snapshot(name) {
-  const visible=await page.evaluate(()=>({route:location.pathname+location.hash,taskStatus:document.querySelector('[data-testid="task-detail"] [data-testid="machine-state"]')?.textContent??null,tab:document.querySelector('nav[aria-label="详情子视图"] [aria-current="page"]')?.textContent??null}));
-  (evidence.screenshots??=[]).push({name,...visible,capturedAt:new Date().toISOString()});
-  await page.screenshot({path:path.join(output,name+'.png'),fullPage:true,animations:'disabled'});
+async function snapshot(name,expectedStatus=null) {
+  const terminal=['completed','failed','intervention','expired','cancelled'].includes(expectedStatus);
+  const result=await captureScreenshot(page,{name,file:path.join(output,name+'.png'),expectedStatus,
+    timeout:terminal?15000:1000});
+  (evidence.screenshots??=[]).push(result);return result;
 }
 async function checkNoOverflow(name) {
   const bounds=await page.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth}));
@@ -101,7 +105,7 @@ try {
   const stages=new Set(),observations=[];
   while(Date.now()<controllerDeadline) {
     const task=await api('/v1/tasks/'+taskId);stages.add(task.status);
-    if(task.status!==lastStatus) {lastStatus=task.status;await snapshot('state-'+lastStatus);}
+    if(task.status!==lastStatus) {lastStatus=task.status;await snapshot('state-'+lastStatus,lastStatus);}
     if(Date.now()-lastLog>30000) {lastLog=Date.now();console.log(JSON.stringify({caseId,taskId,status:task.status,elapsedMs:Date.now()-Date.parse(evidence.startedAt)}));}
     if(['failed','intervention','expired','cancelled'].includes(task.status)) {evidence.task=task;throw new Error('真实任务未交付:'+task.status+':'+JSON.stringify(task.code??task.failure??task.outcome??null));}
     if(task.status==='completed') {evidence.task=task;break;}
@@ -241,7 +245,13 @@ try {
   evidence.result='FAIL';evidence.failure={name:error.name,message:String(error.message).split('\n')[0].slice(0,1000)};process.exitCode=1;
   evidence.failureProjections=await captureFailureProjections({taskId,api:address&&token?api:undefined});
   persist();
-  if(page&&token) {try{await snapshot('failure');}catch{}}
+  if(page&&token) {
+    try {
+      const current=taskId?await api('/v1/tasks/'+taskId):null;
+      evidence.failureTask=current;
+      await snapshot('failure',current?.status??null);
+    }catch{evidence.failureScreenshot='unavailable';}
+  }
 } finally {
   try{if(browser)await bounded(browser.close(),10000,'浏览器清理超时');}catch{evidence.browserCleanup='failed';evidence.result='FAIL';process.exitCode=1;}
   if(child&&!exit) {
