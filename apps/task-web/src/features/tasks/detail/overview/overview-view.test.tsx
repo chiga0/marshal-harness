@@ -16,6 +16,36 @@ function wrap(node: ReactNode) {
 }
 
 describe('概览（P04/P05）：等待、进展、验收、计划', () => {
+  it('intervention顶部显示执行异常与真实Worker入口，不伪造恢复按钮或无待办正常', () => {
+    const {transport} = makeFakeTransport();
+    wrap(<OverviewView task={makeTask({id: 'task-1', status: 'intervention', code: 'cleanup_unconfirmed', allowedActions: []})}
+      plan={null} questions={makeQuestions()} workers={[makeWorker({id: 'worker-unknown', nodeId: 'server', status: 'unknown'})]}
+      leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />);
+    const notice = screen.getByRole('alert', {name: '系统执行异常'});
+    expect(screen.getByTestId('overview-view').firstElementChild).toBe(notice);
+    expect(notice).toHaveTextContent('这不是等待你回答问题');
+    expect(notice).toHaveTextContent('cleanup_unconfirmed');
+    expect(notice).toHaveTextContent('当前界面没有安全恢复此异常的操作');
+    expect(within(notice).getByRole('link', {name: /worker-unknown/})).toHaveAttribute('href', '/tasks/task-1/team/worker-unknown');
+    expect(within(notice).queryByRole('button')).toBeNull();
+    expect(screen.queryByText('当前没有等待你处理的事项。')).toBeNull();
+    expect(screen.getByTestId('waiting-empty')).toHaveTextContent('系统执行异常尚未解决');
+  });
+  it.each([null, []])('异常团队缺失或空集不冒称已清理：%s', workers => {
+    const {transport} = makeFakeTransport();
+    wrap(<OverviewView task={makeTask({id: 'task-1', status: 'intervention', allowedActions: []})}
+      plan={null} questions={makeQuestions()} workers={workers} leader={null} audit={null} transport={transport} onChanged={() => {}} />);
+    const notice = screen.getByTestId('intervention-notice');
+    expect(notice).toHaveTextContent('服务未提供原因码');
+    expect(notice).toHaveTextContent(workers === null ? '团队数据未加载' : '不能据此认定清理已完成');
+    expect(within(notice).getByRole('link', {name: '查看团队与 Worker'})).toHaveAttribute('href', '/tasks/task-1/team');
+  });
+  it('正常任务不显示干预告警', () => {
+    const {transport} = makeFakeTransport();
+    wrap(<OverviewView task={makeTask()} plan={null} questions={makeQuestions()} workers={[]}
+      leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />);
+    expect(screen.queryByTestId('intervention-notice')).toBeNull();
+  });
   it('批准权限消失后保留同一计划 DOM，仅折叠详情', () => {
     const {transport} = makeFakeTransport();
     const client = new QueryClient();
