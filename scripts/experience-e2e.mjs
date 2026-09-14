@@ -8,6 +8,7 @@ import {createHash} from 'node:crypto';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {verify} from '../packages/task-distribution/index.mjs';
 import {cases,validateDelivery,hasInvitationDate,SemanticReviewRequired} from './experience-cases.mjs';
+import {captureFailureProjections} from './experience-failure-evidence.mjs';
 
 const opts={};for(let i=2;i<process.argv.length;i+=2){assert.ok(['--installed','--manifest','--case','--output'].includes(process.argv[i]));opts[process.argv[i]]=process.argv[i+1];}
 const installed=opts['--installed'],caseId=opts['--case'],spec=cases[caseId];
@@ -234,6 +235,8 @@ try {
   evidence.result=evidence.structuralReview?'PENDING':'PASS';evidence.semanticReview='PENDING：脚本只证明列出的客观断言，完整内容与视觉由独立审查另记';
 } catch(error) {
   evidence.result='FAIL';evidence.failure={name:error.name,message:String(error.message).split('\n')[0].slice(0,1000)};process.exitCode=1;
+  evidence.failureProjections=await captureFailureProjections({taskId,api:address&&token?api:undefined});
+  persist();
   if(page&&token) {try{await snapshot('failure');}catch{}}
 } finally {
   try{if(browser)await bounded(browser.close(),10000,'浏览器清理超时');}catch{evidence.browserCleanup='failed';evidence.result='FAIL';process.exitCode=1;}
