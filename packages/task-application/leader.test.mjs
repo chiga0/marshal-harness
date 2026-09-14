@@ -20,7 +20,7 @@ export function fixture(t, options = {}) {
   const depot = ArtifactDepot.create(path.join(parent, 'objects'));
   let store = Store.create(root, {format: LEADER_FORMAT}), owner = store.claimOwner(0, 'test', Date.now() + 3600000), serial = 0;
   const reviewPolicy = {id: 'review', version: '1', description: '只读完整选果'}, policy = {profile: 'task-managed-leader/v1', maxCalls: 9,
-    maxActions: 4, maxRequests: 3, repair: {nodeIds: ['east', 'west'], maxRounds: 1},
+    maxActions: 4, maxRequests: 3, repair: options.leaderRepair ?? {nodeIds: ['east', 'west'], maxRounds: 1},
     review: {providerId: 'fixture', policyDigest: hash(reviewPolicy)}, publication: options.publication ? {targetId: options.publication.id, policyDigest: options.publication.policyDigest} : null};
   const leader = createLeaderPort({id: 'leader', providerId: 'fixture', policy,
     prepare: ({input}) => ({prompt: renderLeaderPrompt(input)}), parseDecision: parseManagedOutput});

@@ -114,7 +114,10 @@ const integer = (value, min, max) => Number.isSafeInteger(value) && value >= min
 export function leaderPolicy(policy) {
   check(closed(policy, ['profile', 'maxCalls', 'maxActions', 'maxRequests', 'repair', 'review', 'publication']) &&
     policy.profile === LEADER_PROFILE && integer(policy.maxCalls, 1, 32) && integer(policy.maxActions, 1, 4) &&
-    integer(policy.maxRequests, 1, 16) && closed(policy.repair, ['nodeIds', 'maxRounds']) &&
+    integer(policy.maxRequests, 1, 16) &&
+    (closed(policy.repair, ['nodeIds', 'maxRounds']) ||
+      closed(policy.repair, ['nodeIds', 'maxRounds', 'scope']) && policy.repair.scope === 'plan-authors' &&
+      Array.isArray(policy.repair.nodeIds) && policy.repair.nodeIds.length === 0) &&
     distinct(policy.repair.nodeIds, 64) && integer(policy.repair.maxRounds, 0, 3) &&
     closed(policy.review, ['providerId', 'policyDigest']) && id(policy.review.providerId) && sha(policy.review.policyDigest) &&
     (policy.publication === null || closed(policy.publication, ['targetId', 'policyDigest']) &&

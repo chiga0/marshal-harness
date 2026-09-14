@@ -9,6 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {startTaskService} from '../task-service/composition.mjs';
 import {createLeaderPort, createReviewPort, createVerificationPort, parseManagedOutput} from './application.mjs';
+import {leaderPolicy} from './leader-ports.mjs';
 
 // This suite uses real SQLite/Depot and explicitly controlled Provider facts.
 // It is not an OS cleanup/publication test; the HTTP tests cover original guard.
@@ -35,6 +36,31 @@ async function setup(t, options) {
   const east = f.take('execute', 'east'), west = f.take('execute', 'west');
   return {f, task, east, west};
 }
+test('plan-derived repair is explicit, displays frozen authors and cannot repair verifier or unknown node', async t => {
+  const config = {scope: 'plan-authors', nodeIds: [], maxRounds: 1};
+  for (const target of ['east', 'verify', 'foreign']) await t.test(target, async t => {
+    const {f, task, east, west} = await setup(t, {leaderRepair: config});
+    const plan = await f.call({operation: 'task.plan', taskId: task.id});
+    const term = plan.acceptance.map(text => {try {return JSON.parse(text);} catch {return null;}})
+      .find(value => value?.profile === 'task-managed-leader/v1');
+    assert.deepEqual(term.repair, {...config, nodeIds: ['east', 'west']});
+    f.author(west); failAuthor(f, east, start(f, east));
+    const leader = f.take('leader');
+    const basis = leader.input.leader.snapshot.evidence.find(value => value.kind === 'execution-failure');
+    const result = await f.decision(leader, [{type: 'repair', nodeIds: [target],
+      basis: {kind: 'execution-failure', digest: basis.digest}, feedback: '修复当前失败作者，保留其余结果'}]);
+    assert.equal(result.status, target === 'east' ? 'completed' : 'failed');
+    if (target === 'east') assert.ok(f.take('execute', 'east'));
+  });
+});
+test('plan-derived policy rejects ambiguous scope; legacy static policy stays byte-identical', () => {
+  const policy = {profile: 'task-managed-leader/v1', maxCalls: 9, maxActions: 1, maxRequests: 3,
+    repair: {nodeIds: ['east'], maxRounds: 1}, review: {providerId: 'fixture', policyDigest: hash('review')}, publication: null};
+  assert.deepEqual(leaderPolicy(policy), policy);
+  for (const repair of [{scope: 'all', nodeIds: [], maxRounds: 1},
+    {scope: 'plan-authors', nodeIds: ['east'], maxRounds: 1}, {scope: null, nodeIds: [], maxRounds: 1}])
+    assert.throws(() => leaderPolicy({...policy, repair}), {code: 'invalid_leader_config'});
+});
 for (const stale of [false, true]) test('Leader wait and claimed obligation preserve subsequent facts; stale=' + stale, async t => {
   const {f, task, east, west} = await setup(t), westStarted = start(f, west);
   failAuthor(f, east, start(f, east));

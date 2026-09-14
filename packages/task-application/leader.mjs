@@ -349,7 +349,10 @@ export class TaskLeader {
     const policy = this.config.leader.policy;
     check(plan.budget.maxWorkers >= 3 && policy.repair.nodeIds.every(id => plan.nodes.some(node => node.id === id && node.role === 'author')),
       'unsupported_task');
-    const term = {profile: LEADER_PROFILE, policyDigest: this.port.policyDigest, repair: policy.repair, review: policy.review,
+    const repair = policy.repair.scope === 'plan-authors'
+      ? {...policy.repair, nodeIds: plan.nodes.filter(node => node.role === 'author').map(node => node.id).sort()}
+      : policy.repair;
+    const term = {profile: LEADER_PROFILE, policyDigest: this.port.policyDigest, repair, review: policy.review,
       publication: policy.publication, completion: 'leader-delivery'};
     check(plan.acceptance.length < 32); plan.acceptance.push(JSON.stringify(term));
     task.selectedResults ??= Object.fromEntries(plan.nodes.filter(node => node.id !== task.verification.nodeId).map(node => [node.id, null]));
@@ -589,7 +592,9 @@ export class TaskLeader {
         } else check(action.nodeIds.every(id => task.nodes.find(node => node.id === id)?.status === 'pending'), 'invalid_leader_decision');
       } else if (action.type === 'repair') {
         check(task.approved?.planDigest === task.plan?.digest && !pending && !task.cancelIntent && !task.workerCancelled &&
-          task.leader.repairRounds < policy.repair.maxRounds && action.nodeIds.every(id => policy.repair.nodeIds.includes(id)), 'invalid_leader_decision');
+          task.leader.repairRounds < policy.repair.maxRounds && action.nodeIds.every(id => policy.repair.scope === 'plan-authors'
+            ? task.plan.nodes.some(node => node.id === id && node.role === 'author')
+            : policy.repair.nodeIds.includes(id)), 'invalid_leader_decision');
         const workers = this.app.execution.workers(tx, task);
         check(workers.every(({record}) => record.worker.id === ticket.workerId || !live(record)), 'invalid_leader_decision');
         let basisArtifact;
