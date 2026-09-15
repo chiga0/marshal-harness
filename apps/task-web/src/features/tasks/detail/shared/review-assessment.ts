@@ -10,6 +10,7 @@ export const closed=(v:unknown,keys:string[]):v is Record<string,unknown>=>!!v&&
 const requireValid=(v:unknown):void=>{if(!v)throw new Error('review_assessment_binding');};
 const text=(v:unknown,max:number)=>typeof v==='string'&&v.length>0&&!v.includes('\0')&&new TextDecoder().decode(new TextEncoder().encode(v))===v&&new TextEncoder().encode(v).length<=max;
 const digest=(v:unknown)=>typeof v==='string'&&/^sha256:[a-f0-9]{64}$/.test(v);
+const EMPTY_DIGEST='sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 const identifier=(v:unknown)=>typeof v==='string'&&/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(v);
 export const reviewHash=async(v:unknown)=>'sha256:'+await sha256Hex(new Blob([canonical(v)]));
 const criterionKeys=['id','index','requirementDigest','method','allowNotApplicable','policyId'];
@@ -63,7 +64,7 @@ export async function validateAssessment(value:unknown,report:BoundReport,plan:P
   if(['pass','not-applicable'].includes(check.assessment))requireValid(check.evidence.length>0);
   if(check.assessment==='pass'&&['effects','recovery'].includes(criterion!.policyId??''))requireValid(check.counterexample!==null);
   if(check.counterexample!==null)requireValid(closed(check.counterexample,['initial','operation','failure','result','recovery'])&&Object.values(check.counterexample).every(v=>text(v,768)));
-  for(const ref of check.evidence){requireValid(closed(ref,['sourceId','quote'])&&sourceIds.has(ref.sourceId)&&text(ref.quote,512));cited.add(ref.sourceId);}
+  for(const ref of check.evidence){requireValid(closed(ref,['sourceId','quote'])&&sourceIds.has(ref.sourceId)&&(text(ref.quote,512)||ref.quote===''&&data.sources.find(s=>s.id===ref.sourceId)!.digest===EMPTY_DIGEST));cited.add(ref.sourceId);}
   const negative=['fail','unknown'].includes(check.assessment);requireValid(!negative||check.findingIds.length===1);requireValid(report.verdict!=='accept'||!negative);
   for(const id of check.findingIds){requireValid(identifier(id)&&report.findings.some(f=>f.id===id&&f.requirement===criterion!.requirement));linked.add(id);}
  }

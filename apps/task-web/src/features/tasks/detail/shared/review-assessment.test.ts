@@ -17,6 +17,16 @@ describe('逐项评审证据边界',()=>{
   if(kind==='unicode')a.checks[0]!.reason='\ud800';
   await expect(validateAssessment(a,f.report,f.plan)).rejects.toThrow();
  });
+ it('空引文只绑定原0字节摘要，空白引文合法但不能丢失来源覆盖',async()=>{
+  const f=await assessmentFixture();
+  f.assessment.checks.forEach(c=>c.evidence[0]!.quote='');
+  await expect(validateAssessment(f.assessment,f.report,f.plan)).rejects.toThrow();
+  f.assessment.sources[0]!.digest='sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+  await expect(validateAssessment(f.assessment,f.report,f.plan)).resolves.toBeDefined();
+  f.assessment.sources[0]!.digest='sha256:'+'c'.repeat(64);
+  f.assessment.checks.forEach(c=>c.evidence[0]!.quote=' \n\t');
+  await expect(validateAssessment(f.assessment,f.report,f.plan)).resolves.toBeDefined();
+ });
  it('unknown可绑定真实finding而非被改写为accept',async()=>{const f=await assessmentFixture();const c=f.assessment.criteria[0]!;f.report.verdict='rework';f.report.findings=[{id:'finding',nodeIds:['author'],requirement:c.requirement,observation:'依据未提供',requestedChange:'澄清所需事实'}];f.assessment.checks[0]!.assessment='unknown';f.assessment.checks[0]!.findingIds=['finding'];f.assessment.reportDigest=await reviewHash(f.report);await expect(validateAssessment(f.assessment,f.report,f.plan)).resolves.toBeDefined();});
  it('完整digest不能用短ID碰撞替代，未知目录不能按旧版降级',async()=>{const f=await assessmentFixture();f.plan.acceptance[0]='改变原要求';await expect(readPlanCriteria(f.plan)).rejects.toThrow();f.plan.acceptance[5]=JSON.stringify({profile:'task-review-criteria/v99',items:[]});await expect(readPlanCriteria(f.plan)).rejects.toThrow();});
 });
