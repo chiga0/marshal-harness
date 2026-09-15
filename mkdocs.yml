@@ -61,4 +61,5 @@ nav:
   - 文档维护:
       - 维护与发布: documentation-guide.md
       - 测试与验收: testing/business-postconditions.md
+      - ADR0107 合同候选冻结测试: testing/acceptance-contract-freeze.md
       - 构建来源: build-info.md
