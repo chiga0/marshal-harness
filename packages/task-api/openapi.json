@@ -6750,7 +6750,7 @@
           "report",
           "assessment"
         ],
-        "description": "既有 readArtifact 返回的评审证据字节解码格式，最大 131072 UTF-8 字节；无新增写 API。原六字段 report 保留，assessment 与同次 receipt/input/selection/plan/report 精确绑定；旧 v1 可读但不具有逐项覆盖声明。公开元数据校验不能重新签发 receipt，也不证明实际业务或真人验收通过。",
+        "description": "既有 artifact.get / artifact.content 返回的评审证据字节解码格式，最大 131072 UTF-8 字节；无新增写 API。原六字段 report 保留，assessment 与同次 receipt/input/selection/plan/report 精确绑定；旧 v1 可读但不具有逐项覆盖声明。公开元数据校验不能重新签发 receipt，也不证明实际业务或真人验收通过。",
         "examples": [
           {
             "profile": "task-independent-review/v2",

@@ -221,13 +221,14 @@ try {
   assert.equal(await reviewArea.getByTestId('review-assessment-item').count(),assessment.criteria.length);
   assert.ok((await reviewArea.innerText()).includes('文本评审'));
   for(const item of assessment.criteria) {
-    const row=reviewArea.getByTestId('review-assessment-item').filter({has:page.locator('summary').filter({hasText:`${item.index+1}. ${item.requirement}`})});
+    const row=reviewArea.locator(`[data-criterion-id="${item.id}"]`);
     assert.equal(await row.count(),1);
     const check=assessment.checks.find(c=>c.itemId===item.id);
     const label={pass:'文本评审通过',fail:'文本评审未通过',unknown:'依据未确认','not-applicable':'不适用'}[check.assessment];
     assert.ok((await row.locator(':scope > summary').innerText()).includes(label));
     if(await row.getAttribute('open')===null)await row.locator(':scope > summary').click();
-    assert.equal(await row.locator('p.whitespace-pre-wrap').first().textContent(),check.reason);
+    assert.equal(await row.getByTestId('review-criterion-requirement').textContent(),item.requirement);
+    assert.equal(await row.getByTestId('review-criterion-reason').textContent(),check.reason);
   }
   evidence.steps.push('批准前逐项原文与最终v2绑定证据/UI逐项状态核对');
   await snapshot('04-completed-overview');
