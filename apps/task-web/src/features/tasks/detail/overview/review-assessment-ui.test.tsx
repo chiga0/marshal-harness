@@ -6,7 +6,8 @@ import {PlanCard} from './plan-card';
 import {assessmentFixture} from '../shared/review-assessment.fixture';
 import {reviewHash} from '../shared/review-assessment';
 import {makeArtifact,makeFakeTransport,makeLeader,makeTask,TASK_ID} from '../testing/fixtures';
-import {sha256Hex} from '../../../artifacts/downloader';
+import {matchesContract,contractSchemaNames} from '../../../artifacts/traceability';
+import {sha256Hex,blobBytes} from '../../../artifacts/downloader';
 async function fixture(change?:(f:Awaited<ReturnType<typeof assessmentFixture>>)=>void){
  const f=await assessmentFixture();change?.(f);
  const raw=JSON.stringify({profile:'task-independent-review/v2',ticketDigest:'sha256:'+'c'.repeat(64),report:f.report,assessment:f.assessment});
@@ -43,4 +44,11 @@ it.each(['empty','whitespace'])('实际v2空来源提示 %s，保留引用而非
  render(<QueryClientProvider client={new QueryClient()}><ReviewExplanation leader={f.leader} transport={f.transport}/></QueryClientProvider>);
  await screen.findByTestId('review-assessment');
  expect(screen.getAllByText(mode==='empty'?'原材料为空（0字节）':'引用内容仅含空白字符',{exact:true})).toHaveLength(5);
+});
+
+it('实际OpenAPI v2外层及依赖进入受信白名单，并由真实reader使用',async()=>{
+ const f=await fixture();expect(contractSchemaNames).toEqual(expect.arrayContaining(['ReviewCriteriaItem','ReviewEvidenceSource','ReviewAssessmentCheck','ReviewAssessment','ReviewEvidenceEnvelope']));
+ const blob=await f.transport.getArtifactContent('review-evidence');const envelope=JSON.parse(new TextDecoder().decode(await blobBytes(blob as Blob)));expect(matchesContract(envelope,'ReviewEvidenceEnvelope')).toBe(true);
+ await expect(readReviewExplanation(f.leader,f.transport)).resolves.toHaveProperty('assessment');
+ envelope.assessment.sources[0].kind='invented';expect(matchesContract(envelope,'ReviewEvidenceEnvelope')).toBe(false);
 });
