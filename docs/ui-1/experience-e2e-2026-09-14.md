@@ -269,3 +269,5 @@ C01原负例159447ms返回15839字节，原receipt、目录、引用、逐项结
 | 视觉与用户可用性 | 真实浏览器与目标用户两条独立证据 | 后继UI提交 `c7be717c` 已修TaskJourney“验收/任务完成”的过宽文案为“检查/流程完成”；定向组件通过不升级同包业务或真人状态，真人仍NOT_RUN |
 
 以上是针对已发现缺口的后继退出条件，不声称新增执行证据类型、Review纠错或验收路由已经实现。其持久合同和生命周期改变需按仓库规则先完成对应ADR与独立审查。当前不通过、不放行发布。
+
+离线逐项 oracle 已在 `1ef325d3`/`ddc3c9b8` 加入并通过 7 项测试。它固定四份输入摘要，先检查报告六字段、profile、inputDigest、selectionDigest、finding 结构及原来源绑定，再比较分项期望；不会构造 ticket/receipt，也不会授予 Core 权威。只读消费四份既有结果得到：S02-negative 命中过程证据缺失误判；S02-positive 为 `NOT_EVALUABLE`（操作项缺少结构化反例）；C01-negative 命中 recovery、scope 与 aggregate 误收；C01-positive 命中 effects 错误豁免、缺反例、scope 与 aggregate 误收。输出状态 `ITEM_EXPECTATIONS_FAILED`/`NOT_EVALUABLE` 只表示后继验收条件未满足，`semanticReview` 仍为 `REQUIRED`，不把 oracle 标签当业务正确性。
