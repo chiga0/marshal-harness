@@ -1,4 +1,6 @@
 import {registerLeaderJsonCorrection,startLeaderWithJsonCorrection} from './leader-protocol-correction.mjs';
+import {registerReviewAssessments,startReviewWithAssessments} from './review-assessment.mjs';
+import {parseAssessmentProposal} from './review-assessment-contract.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,7 +28,9 @@ export function fixture(t, options = {}) {
     prepare: ({input}) => ({prompt: options.preparePrompt ?? renderLeaderPrompt(input)}), parseDecision: parseManagedOutput});
   if(options.protocolCorrection)registerLeaderJsonCorrection(leader,{profile:'leader-json-correction/v1',maxPerTask:1});
   const review = createReviewPort({id: 'review', providerId: 'fixture', policy: reviewPolicy,
-    prepare: ({input}) => ({prompt: renderReviewPrompt(input)}), parseReport: parseManagedOutput});
+    prepare: ({input}) => ({prompt: renderReviewPrompt(input)}),
+    parseReport: options.reviewParser ?? (options.reviewAssessments ? args => parseAssessmentProposal(args).report : parseManagedOutput)});
+  if(options.reviewAssessments)registerReviewAssessments(review,{profile:'task-review-assessment/v1'});
   let response;
   // These are explicitly controlled Provider/cleanup facts, never an OS crash,
   // model, ACP transport or production business proof. SQLite/Depot are real.
@@ -54,10 +58,10 @@ export function fixture(t, options = {}) {
     async decision(ticket, actions) {response = {profile: 'task-managed-leader/v1', callId: ticket.input.leader.callId,
       inputDigest: ticket.input.leader.inputDigest, summary: '只依据原证据推进', actions}; return f.run(ticket, leader);},
     async rawDecision(ticket,text){response=text;return f.run(ticket,leader);},
-    leaderPort:leader,
+    leaderPort:leader, reviewPort:review, closeStore:()=>store.close(),
     async run(ticket, port) {
       if (options.observability) {app.execution.observeInput(ticket, 'prepared', '受控模型夹具 password=fixture-secret'); app.execution.observeInput(ticket, 'handed-off');}
-      const handle = startLeaderWithJsonCorrection(port,{ticket, provider, prepared: {cwd: parent, prompt: '受控模型夹具'}});
+      const handle = (ticket.executionType==='review' ? startReviewWithAssessments : startLeaderWithJsonCorrection)(port,{ticket, provider, prepared: {cwd: parent, prompt: '受控模型夹具'}});
       app.execution.started(ticket, await handle.started); const result = await handle.completion; f.results.set(ticket.workerId, result); return app.execution.finish(ticket, result);},
     author(ticket, started = {executionId: 'author-' + ticket.workerId, startedAt: new Date().toISOString()}) {app.execution.started(ticket, started);
       const file = {path: ticket.nodeId + '.json', ...depot.put(encode({value: ticket.nodeId === 'east' ? 10 : 20}))};
@@ -67,6 +71,7 @@ export function fixture(t, options = {}) {
         files: [file], inputDigest: fileDigest([]), manifestDigest: fileDigest([file])}});},
     async review(ticket, extra = {}) {response = {profile: 'task-independent-review/v1', inputDigest: ticket.input.review.inputDigest,
       selectionDigest: ticket.input.review.selectionDigest, verdict: 'accept', summary: '独立审阅两原分支', findings: [], ...extra}; return f.run(ticket, review);},
+    async rawReview(ticket,value){response=value;return f.run(ticket,review);},
     async verify(ticket) {const handle = verification.start({ticket, prepared: {cwd: parent, prompt: '固定受控检查器'}});
       app.execution.started(ticket, await handle.started); return app.execution.finish(ticket, await handle.completion);},
     reopen() {store.close(); store = Store.openExisting(root, {format: LEADER_FORMAT}); owner = store.claimOwner(owner.generation, 'cold', Date.now() + 3600000);

@@ -1,4 +1,5 @@
 import {leaderJsonCorrectionPolicy, leaderJsonFailure} from './leader-protocol-correction.mjs';
+import {reviewAssessmentPolicy, reviewAssessmentEvidence} from './review-assessment.mjs';
 import {LEADER_FORMAT, encode, digest} from '../task-store/store.mjs';
 import {clone, nextRevision, publicTask, terminal, reject, isText} from './model.mjs';
 import {affectedNodes} from './graph.mjs';
@@ -20,7 +21,8 @@ export function leaderConfiguration(leader, review, publication = null, verifica
     config.policy.publication.targetId === publication.id && config.policy.publication.policyDigest === publication.policyDigest &&
     ['start', 'lookup', 'assertDisjoint'].every(name => typeof publication[name] === 'function') &&
     typeof publication.postverify?.start === 'function' && hasPublicationExpected(verification), 'invalid_leader_config');
-  return {...(leaderJsonCorrectionPolicy(leader)?{protocolCorrection:leaderJsonCorrectionPolicy(leader)}:{}),leader: config, review: independent, publication: publication ? {policy: config.policy.publication,
+  return {...(reviewAssessmentPolicy(review) ? {reviewAssessments: reviewAssessmentPolicy(review)} : {}),
+    ...(leaderJsonCorrectionPolicy(leader)?{protocolCorrection:leaderJsonCorrectionPolicy(leader)}:{}),leader: config, review: independent, publication: publication ? {policy: config.policy.publication,
     configuration: clone(publication.configuration), configurationDigest: publication.configurationDigest} : null};
 }
 
@@ -40,12 +42,14 @@ export class TaskLeader {
     if (!this.port) return;
     check(record.limits.maxWorkers >= 3 && record.limits.maxAttempts >= (this.publication ? 10 : 8) &&
       this.config.leader.policy.maxCalls >= 5, 'unsupported_task');
-    record.leader = {...(this.config.protocolCorrection?{protocolCorrection:{identity:clone(this.config.protocolCorrection),used:0,original:null,successorObligationId:null,successorWorkerId:null,successorCallId:null}}:{}),profile: LEADER_PROFILE, policyDigest: this.port.policyDigest, stage: 'intake', calls: 0, repairRounds: 0,
+    record.leader = {...(this.config.reviewAssessments ? {reviewAssessmentIdentity: clone(this.config.reviewAssessments)} : {}),
+      ...(this.config.protocolCorrection?{protocolCorrection:{identity:clone(this.config.protocolCorrection),used:0,original:null,successorObligationId:null,successorWorkerId:null,successorCallId:null}}:{}),profile: LEADER_PROFILE, policyDigest: this.port.policyDigest, stage: 'intake', calls: 0, repairRounds: 0,
       activeCallId: null, obligationId: null, cursor: 0, requestIds: [], history: [], lastDecision: null, review: null,
       publication: null, postverify: null, delivery: null, summaryArtifactId: null};
   }
   configured(task) {
     check(this.port && task.leader?.profile === LEADER_PROFILE && task.leader.policyDigest === this.port.policyDigest &&
+      hash(task.leader.reviewAssessmentIdentity ?? null) === hash(this.config.reviewAssessments ?? null) &&
       hash(task.leader.protocolCorrection?.identity??null)===hash(this.config.protocolCorrection??null), 'unsupported_task');
   }
   recoveryAllowed(task, record, count = 0, lookupStatus = null) {
@@ -678,17 +682,25 @@ export class TaskLeader {
     if (['publication', 'postverify'].includes(ticket.executionType)) return this.finishEffect(ticket, result);
     const port = ticket.executionType === 'leader' ? this.port : this.review;
     const data = result?.receipt ? receipt(port, ticket, result) : null;
+    const assessmentRequired = ticket.executionType === 'review' && !!this.config.reviewAssessments;
+    const assessment = assessmentRequired && data?.value ? reviewAssessmentEvidence(port, ticket, result) : null;
+    const envelope = data?.value ? {profile: assessmentRequired ? 'task-independent-review/v2' :
+      ticket.executionType === 'leader' ? LEADER_PROFILE : REVIEW_PROFILE, ticketDigest: hash(ticket), report: data.value,
+      ...(assessmentRequired && assessment ? {assessment} : {})} : null;
+    const evidenceBytes = envelope ? encode(envelope) : null;
+    const assessmentReady = !assessmentRequired || assessment !== null && evidenceBytes.length <= 131072;
     const protocolFailure = data && ticket.executionType==='leader' && this.config.protocolCorrection ? leaderJsonFailure(port,ticket,result) : null;
     // Byte durability precedes the final transaction; cancelled, stale and
     // unknown attempts cannot create ready refs. A rollback leaves only bytes.
     const eligible = this.app.transaction(false, tx => {
       const {record, task} = this.app.execution.ticket(tx, ticket);
+      check(hash(task.leader.reviewAssessmentIdentity ?? null) === hash(this.config.reviewAssessments ?? null), 'unsupported_task');
       return live(record) && !record.stopIntent && !task.cancelIntent && !terminal.has(task.task.status) &&
-        task.task.status !== 'cancelling' && this.app.now() < ticket.deadline && data?.value && data.cleanup?.cleaned &&
+        task.task.status !== 'cancelling' && this.app.now() < ticket.deadline && assessmentReady && data?.value && data.cleanup?.cleaned &&
         data.cleanup.started?.executionId === record.executionId && data.cleanup.started?.startedAt === record.worker.startedAt;
     });
     const staged = eligible ? this.app.artifacts.stageOutputs([['evidence', {name: ticket.executionType + '-decision.json', mediaType: 'application/json',
-      content: encode({profile: ticket.executionType === 'leader' ? LEADER_PROFILE : REVIEW_PROFILE, ticketDigest: hash(ticket), report: data.value})}]]) : [];
+      content: evidenceBytes}]]) : [];
     return this.app.transaction(true, tx => {
       const {row, record, task} = this.app.execution.ticket(tx, ticket);
       if (!live(record)) return clone(record.worker);
@@ -699,10 +711,10 @@ export class TaskLeader {
       const cancelled = !!record.stopIntent || !!task.cancelIntent || task.task.status === 'cancelling' || terminal.has(task.task.status) || this.app.now() >= ticket.deadline;
       const readSet = ticket.input.leader?.snapshot.readSet ?? ticket.input.review?.snapshot.readSet;
       const current = readSet && hash(readSet) === hash(this.semantic(tx, task));
-      let accepted = clean && !cancelled && data?.value && staged.length === 1 && current;
+      let accepted = clean && !cancelled && assessmentReady && data?.value && staged.length === 1 && current;
       let stale = ticket.executionType === 'leader' && clean && !cancelled && !current, successorSources = [], correctProtocol = false;
       const at = new Date(this.app.now()).toISOString();
-      let commitActions = () => {}, rejected = data?.reason ?? 'leader_result_rejected';
+      let commitActions = () => {}, rejected = data?.value && assessmentRequired && !assessmentReady ? 'invalid_review_report' : data?.reason ?? 'leader_result_rejected';
       const artifact = accepted ? {id: this.app.newId('artifact'), taskId: task.task.id, name: staged[0].name, kind: 'evidence', status: 'ready',
         mediaType: staged[0].mediaType, ...staged[0].ref, createdAt: at} : null;
       if (accepted) staged[0].artifact = artifact;

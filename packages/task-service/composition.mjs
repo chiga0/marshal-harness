@@ -1,4 +1,5 @@
 import {startLeaderWithJsonCorrection,prepareLeaderWithJsonCorrection} from '../task-application/leader-protocol-correction.mjs';
+import {startReviewWithAssessments} from '../task-application/review-assessment.mjs';
 import {observationConfiguration} from '../task-application/observation.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -387,7 +388,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       },
       validate: ticket => business.validateManaged(ticket),
       provider: ticket => application.leader.effects[ticket.executionType] ?? available.get(ticket.providerId),
-      start: options => startLeaderWithJsonCorrection(application.leader.effects[options.ticket.executionType] ?? (options.ticket.executionType === 'leader' ? leader : review),
+      start: options => (options.ticket.executionType === 'review' ? startReviewWithAssessments : startLeaderWithJsonCorrection)(application.leader.effects[options.ticket.executionType] ?? (options.ticket.executionType === 'leader' ? leader : review),
         {...options, ...(observationConfig ? {prepared: {...options.prepared, observability: true}} : {}), provider: available.get(options.ticket.providerId), onDiagnostic: value => {
           const report = safeManagedDiagnostic(value);
           if (report && observationConfig) options.onDiagnostic?.(report);
