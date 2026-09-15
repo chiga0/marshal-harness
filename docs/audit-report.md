@@ -2344,3 +2344,9 @@ RC1 completion 复审发现：`result-admitted` 已提交后，terminalization �
 [ADR0104](adr/0104-bounded-leader-protocol-correction.md) 接受显式新 profile 的 Task 级唯一一次格式纠错：原失败 Outcome、调用计数和权限不变，只对同次原不透明 receipt 绑定、无已知工具/权限事件、原清理确认且当前性/预算满足的 JSON 语法错误产生一个 durable obligation。重复键、编码/深度/数字/后缀等混合错误保守排除，Core 动作拒绝不重试。旧 leader-ports 原字节保持；新策略及源码身份在同根 owner claim 前冻结。
 
 实现验收记录受控 SQLite、finish 前/事务内/提交后/claim/start 五处真实 SIGKILL、原签名清理后的恢复、实际 prepare/Audit/Provider prompt 一致、闭合 API/客户端和同根变更拒绝。新模块加入发行库存；独立实现审查及集成候选的 HTTP/浏览器、真实模型结果仍须单独记录，不将代码合入解释为完整业务或用户体验验收通过。
+
+## 2026-09-15：业务后验与证据边界复核
+
+`verifyOrders`、`verifyGuide` 与 `verifyRecoveryModel` 已作为离线、`authority:false` 的确定性实验集成，覆盖 M01 精算、有限批准文案和显式四步恢复模型；13 项测试通过，但未接入 Core，也不能替代真实 Verification、语义审查或真实文件系统后验。`scripts/review-item-oracle.mjs` 已对冻结输入、报告身份和条目期望做严格校验，20 项相关测试通过；S02/C01 延长窗口的真实模型结果仍保留为失败或不可判定证据。
+
+ADR0107 当前为 Draft 候选（`ac5ef704`），经独立复核未发现 P0/P1，明确按责任、时点、候选和 repair 身份闭合 `acceptanceEvidence`，并将确定性退出、独立语义退出和真实业务验收分开。它尚未接受、未实现、未授权新增 API 或模型调用；实施前仍需冻结 profile/outer/OpenAPI，并补齐 `not-applicable` 的受信映射规则。

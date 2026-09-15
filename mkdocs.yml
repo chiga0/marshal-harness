@@ -60,4 +60,5 @@ nav:
       - 设计决策与历史: design-contract-map.md
   - 文档维护:
       - 维护与发布: documentation-guide.md
+      - 测试与验收: testing/business-postconditions.md
       - 构建来源: build-info.md
