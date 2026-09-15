@@ -79,3 +79,34 @@ describe('执行记录不把计划目标冒充实际检查',()=>{
     expect(screen.queryByText(/当前阻塞/)).not.toBeInTheDocument();
   });
 });
+
+describe('概览直接呈现需要关注的执行成员',()=>{
+  it('没有运行、等待或问题成员时不增加成员关注区',()=>{
+    render(<MemoryRouter><TaskJourney task={makeTask({status:'completed'})} leader={null} workers={[makeWorker({status:'completed'})]} audit={null}/></MemoryRouter>);
+    expect(screen.queryByTestId('task-journey-focus')).not.toBeInTheDocument();
+  });
+
+  it('运行成员直接显示成员标识、节点、公开活动和下一步',()=>{
+    const worker=makeWorker({id:'worker-running',nodeId:'sales-east',providerId:'qwen-code',status:'running',progress:{summary:'正在整理订单',tool:'read:completed',source:'agent'}});
+    render(<MemoryRouter><TaskJourney task={makeTask()} leader={null} workers={[worker]} audit={null}/></MemoryRouter>);
+    const focus=screen.getByTestId('task-journey-focus');
+    expect(focus).toHaveTextContent('执行 · worker-running');
+    expect(focus).toHaveTextContent('节点：sales-east');
+    expect(focus).toHaveTextContent('最近公开活动：正在整理订单 · 最近工具 read:completed');
+    expect(focus).toHaveTextContent('继续观察');
+    expect(screen.getByRole('link',{name:/worker-running/})).toHaveAttribute('href','/tasks/task-test-0001/team/worker-running');
+  });
+
+  it('等待成员和诊断成员分别显示等待动作与已报告问题',()=>{
+    const waiting=makeWorker({id:'worker-waiting',nodeId:'needs-answer',status:'awaiting-answer',progress:null});
+    const blocked=makeWorker({id:'worker-blocked',nodeId:'protected-output',status:'unknown',observation:{profile:'task-observation/v1',activity:'unknown',observedAt:'2026-09-15T00:00:00Z',sequence:3,tool:null,model:null,usage:null,publicText:'执行状态暂不可确认',history:[],historyTruncated:false,diagnostic:{stage:'permission',code:'permission_path_denied',source:'provider-permission'}}});
+    render(<MemoryRouter><TaskJourney task={makeTask()} leader={null} workers={[waiting,blocked]} audit={null}/></MemoryRouter>);
+    const cards=screen.getAllByTestId('task-journey-worker');
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toHaveTextContent('worker-blocked');
+    expect(cards[0]).toHaveTextContent('阻塞/问题：请求访问的路径未获授权');
+    expect(cards[0]).toHaveTextContent('核对该诊断对应的活动与执行记录');
+    expect(cards[1]).toHaveTextContent('worker-waiting');
+    expect(cards[1]).toHaveTextContent('核对任务中的待答问题并提交答复');
+  });
+});
