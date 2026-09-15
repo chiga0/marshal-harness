@@ -1,4 +1,4 @@
-// ADR0102 Phase A typecheck 门禁:tsc 全量运行,与 toolchain/typecheck-baseline.json 的
+// Typecheck 基线门禁（Phase A，随 2026-09 TS 迁移引入）:tsc 全量运行,与 toolchain/typecheck-baseline.json 的
 // 每文件错误数基线比较——任何文件错误数上升或出现基线外新错误文件即失败;只降不升。
 // 收紧方式:修复错误后执行 `node scripts/typecheck-gate.ts --update` 重新生成基线并提交。
 import {spawnSync} from 'node:child_process';
@@ -43,7 +43,7 @@ const baselineTotal = Object.values(baseline).reduce((a, b) => a + b, 0);
 if (regressions.length > 0) {
   console.error(`typecheck gate failed: ${regressions.length} file(s) regressed (baseline ${baselineTotal}, current ${currentTotal})`);
   for (const line of regressions) console.error('  ' + line);
-  console.error('修复错误或确认无回归后以 --update 下调基线;上调基线须在 PR 中说明并引用 ADR0102。');
+  console.error('修复错误或确认无回归后以 --update 下调基线;上调基线须在 PR 中说明理由。');
   process.exit(1);
 }
 

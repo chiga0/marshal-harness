@@ -21,7 +21,7 @@ function setup(t) {
     fs.writeFileSync(path.join(root,'manifest.json'),manifest,{mode:0o600});return {root,sourceHead,manifestDigest:digest(manifest)};
   }
   // Schema/transport fixtures only: never execute these empty runtime files.
-  // ADR0102:旧包保持 v1.0.2 的 .mjs 布局,新包为迁移后的 .ts 布局。
+  // TS 迁移边界：旧包保持 v1.0.2 的 .mjs 布局，新包为迁移后的 .ts 布局。
   return {parent,oldPackage:install('old',LEGACY_SOURCE,legacy,'packages/task-service/main.mjs'),newPackage:install('new','a'.repeat(40),[...SOURCE_FILES,'apps/task-web/dist/index.html'],'packages/task-service/main.ts'),
     runDir:path.join(parent,'run'),assetKind:'fixed-assets',oldValidator:helper};
 }
