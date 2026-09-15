@@ -8,6 +8,7 @@ import {createHash} from 'node:crypto';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {verify} from '../packages/task-distribution/index.mjs';
 import {cases,validateDelivery,hasInvitationDate,SemanticReviewRequired} from './experience-cases.mjs';
+import {readBoundReview,pendingAnswerGap,finalReviewer} from './experience-review-evidence.mjs';
 import {captureFailureProjections} from './experience-failure-evidence.mjs';
 import {staticInvitationControls} from './experience-static-invitation.mjs';
 import {captureScreenshot} from './experience-screenshot.mjs';
@@ -16,6 +17,7 @@ const opts={};for(let i=2;i<process.argv.length;i+=2){assert.ok(['--installed','
 const installed=opts['--installed'],caseId=opts['--case'],spec=cases[caseId];
 assert.ok(installed&&path.isAbsolute(installed)&&spec&&opts['--manifest']);
 const admission=verify({root:installed,manifestDigest:opts['--manifest']});
+const {reviewCriteria,validateStoredReviewAssessment}=await import(pathToFileURL(path.join(installed,'packages/task-application/review-assessment-contract.mjs')).href);
 const root=path.resolve(fileURLToPath(new URL('..',import.meta.url)));
 const output=opts['--output']??path.join(root,'.marshal','evidence',`experience-${caseId}-${Date.now()}`);
 assert.ok(!fs.existsSync(output),'新证据目录，不覆盖失败');fs.mkdirSync(output,{recursive:true,mode:0o700});
@@ -25,7 +27,7 @@ const settings=path.join(privateHome,'.marshal-client');
 const sha=bytes=>'sha256:'+createHash('sha256').update(bytes).digest('hex');
 const evidence={caseId,candidate:admission.sourceHead,manifestDigest:opts['--manifest'],runtime,
   scriptDigest:sha(fs.readFileSync(fileURLToPath(import.meta.url))),caseDigest:sha(Buffer.from(JSON.stringify(spec))),
-  supportingScriptDigests:Object.fromEntries(['experience-cases.mjs','experience-failure-evidence.mjs','experience-static-invitation.mjs','experience-screenshot.mjs']
+  supportingScriptDigests:Object.fromEntries(['experience-cases.mjs','experience-failure-evidence.mjs','experience-review-evidence.mjs','experience-static-invitation.mjs','experience-screenshot.mjs']
     .map(name=>[name,sha(fs.readFileSync(new URL(name,import.meta.url)))])),
   boundary:'真实模型、独立安装包、真实浏览器；非真人可用性',startedAt:new Date().toISOString(),steps:[],result:'RUNNING'};
 const persist=()=>fs.writeFileSync(path.join(output,'evidence.json'),JSON.stringify(evidence,null,2)+'\n',{mode:0o600});
@@ -41,6 +43,11 @@ const api=async route=>{
   const response=await fetch(address+route,{headers:{Authorization:'Bearer '+token,Origin:address},signal:AbortSignal.timeout(12000)});
   assert.ok(response.ok,`只读API ${route} HTTP ${response.status}`);return response.json();
 };
+const readContent=async id=>{
+  const response=await fetch(address+'/v1/artifacts/'+encodeURIComponent(id)+'/content',{headers:{Authorization:'Bearer '+token,Origin:address},signal:AbortSignal.timeout(12000)});
+  assert.ok(response.ok);return Buffer.from(await response.arrayBuffer());
+};
+const readReview=leader=>readBoundReview({taskId,leader,api,readContent,validateStored:validateStoredReviewAssessment});
 async function snapshot(name,expectedStatus=null) {
   const terminal=['completed','failed','intervention','expired','cancelled'].includes(expectedStatus);
   const result=await captureScreenshot(page,{name,file:path.join(output,name+'.png'),expectedStatus,
@@ -110,7 +117,11 @@ try {
     if(['failed','intervention','expired','cancelled'].includes(task.status)) {evidence.task=task;throw new Error('真实任务未交付:'+task.status+':'+JSON.stringify(task.code??task.failure??task.outcome??null));}
     if(task.status==='completed') {evidence.task=task;break;}
     if(task.status==='awaiting-answer') {
-      assert.ok(spec.answer,'该完整需求不应出现未约定的必要问答');
+      if (!spec.answer) {
+        const leader=await api('/v1/tasks/'+taskId+'/leader');
+        evidence.task=task;evidence.answerGap=pendingAnswerGap(task,leader);
+        const error=new Error('冻结用例没有此澄清请求的用户答复');error.code='case_answer_unavailable';throw error;
+      }
       assert.ok(answers<3,'问答未收敛');
       await page.getByLabel('答复内容',{exact:true}).fill(spec.answer);
       await page.getByTestId('leader-answer-open').click();
@@ -122,9 +133,17 @@ try {
       if(!(await page.getByTestId('plan-approve-open').isVisible())) {
         for(const summary of await page.locator('summary').all()) if(/计划/.test(await summary.innerText())) await summary.click();
       }
+      const planBeforeApproval=await api('/v1/tasks/'+taskId+'/plan');
+      const criteria=reviewCriteria(planBeforeApproval);assert.ok(criteria.length>0);
+      const visibleCriteria=page.getByTestId('plan-review-criteria');await visibleCriteria.waitFor();
+      for(const item of criteria) await visibleCriteria.getByText(`${item.index+1}. ${item.requirement}`,{exact:true}).waitFor();
+      assert.deepEqual(await visibleCriteria.locator('li').allTextContents(),criteria.map(item=>`${item.index+1}. ${item.requirement}`));
+      await snapshot('plan-before-approval-'+approvals);
+      (evidence.approvedCriteria??=[]).push({planDigest:planBeforeApproval.digest,criteria,visibleBeforeApproval:true});
       await page.getByTestId('plan-approve-open').click();
       await page.getByRole('dialog').getByRole('button',{name:'批准执行',exact:true}).click();approvals++;
       evidence.plan=await api('/v1/tasks/'+taskId+'/plan');
+      assert.equal(evidence.plan.digest,planBeforeApproval.digest,'批准前后计划不得换稿');
     } else if(task.status==='running'&&!seenRunning) {
       seenRunning=true;await snapshot('03-running-overview');
     }
@@ -152,6 +171,9 @@ try {
   const audit=await api('/v1/tasks/'+taskId+'/audit'),leader=await api('/v1/tasks/'+taskId+'/leader');
   assert.equal(leader.review?.verdict,'accept');
   assert.equal(audit.acceptance?.status,'passed','独立验收必须通过');
+  evidence.reviewEvidence=await readReview(leader);
+  assert.equal(evidence.reviewEvidence.envelope.assessment.planDigest,evidence.plan.digest);
+  fs.writeFileSync(path.join(output,'review-evidence.json'),evidence.reviewEvidence.content,{mode:0o600,flag:'wx'});
   evidence.review=leader.review;evidence.acceptance=audit.acceptance;evidence.usage=audit.usage;
   evidence.workers=audit.workers;evidence.promptCoverage=audit.prompts.map(p=>({workerId:p.workerId,stage:p.observation.stage,coverage:p.observation.coverage,promptBytes:p.observation.promptBytes}));
   assert.ok(audit.workers.some(worker=>worker.observation),'默认配置必须提供真实活动观察');
@@ -161,7 +183,7 @@ try {
   evidence.observationSamples=observations.slice(-100);
   await page.locator('nav[aria-label="详情子视图"] a[href$="/team"]').click();
   for(const role of ['author','reviewer']) {
-    const worker=audit.workers.find(worker=>worker.role===role);assert.ok(worker,'缺少独立成员:'+role);
+    const worker=role==='reviewer'?finalReviewer(audit.workers,leader):audit.workers.find(worker=>worker.role===role);assert.ok(worker,'缺少独立成员:'+role);
     await page.locator(`[data-worker-id="${worker.id}"]`).getByRole('link',{name:'明细',exact:true}).click();
     const drawer=page.getByTestId('worker-drawer');await drawer.waitFor();
     await drawer.getByTestId('worker-observation').waitFor();
@@ -193,7 +215,22 @@ try {
   }
   await page.locator('nav[aria-label="详情子视图"] a').first().click();
   await page.waitForFunction(()=>document.querySelector('nav[aria-label="详情子视图"] [aria-current="page"]')?.textContent==='概览');
-  await page.getByTestId('task-journey').waitFor();await snapshot('04-completed-overview');
+  await page.getByTestId('task-journey').waitFor();
+  const assessment=evidence.reviewEvidence.envelope.assessment;
+  const reviewArea=page.getByTestId('review-assessment');await reviewArea.waitFor();
+  assert.equal(await reviewArea.getByTestId('review-assessment-item').count(),assessment.criteria.length);
+  assert.ok((await reviewArea.innerText()).includes('文本评审'));
+  for(const item of assessment.criteria) {
+    const row=reviewArea.getByTestId('review-assessment-item').filter({has:page.locator('summary').filter({hasText:`${item.index+1}. ${item.requirement}`})});
+    assert.equal(await row.count(),1);
+    const check=assessment.checks.find(c=>c.itemId===item.id);
+    const label={pass:'文本评审通过',fail:'文本评审未通过',unknown:'依据未确认','not-applicable':'不适用'}[check.assessment];
+    assert.ok((await row.locator(':scope > summary').innerText()).includes(label));
+    if(await row.getAttribute('open')===null)await row.locator(':scope > summary').click();
+    assert.equal(await row.locator('p.whitespace-pre-wrap').first().textContent(),check.reason);
+  }
+  evidence.steps.push('批准前逐项原文与最终v2绑定证据/UI逐项状态核对');
+  await snapshot('04-completed-overview');
   for(const colorScheme of ['light','dark']) {
     await page.emulateMedia({colorScheme});
     for(const width of [1440,1024,375]) {await page.setViewportSize({width,height:1000});await checkNoOverflow('任务'+colorScheme+width);await snapshot('overview-'+colorScheme+'-'+width);}
@@ -242,13 +279,14 @@ try {
   assert.deepEqual(browserErrors,[],'浏览器未捕获异常');
   evidence.result=evidence.structuralReview?'PENDING':'PASS';evidence.semanticReview='PENDING：脚本只证明列出的客观断言，完整内容与视觉由独立审查另记';
 } catch(error) {
-  evidence.result='FAIL';evidence.failure={name:error.name,message:String(error.message).split('\n')[0].slice(0,1000)};process.exitCode=1;
-  evidence.failureProjections=await captureFailureProjections({taskId,api:address&&token?api:undefined});
+  evidence.result=error.code==='case_answer_unavailable'&&evidence.answerGap?'BLOCKED':'FAIL';evidence.failure={name:error.name,message:String(error.message).split('\n')[0].slice(0,1000)};process.exitCode=1;
+  evidence.failureProjections=await captureFailureProjections({taskId,api:address&&token?api:undefined,readReview:address&&token?readReview:undefined});
   persist();
   if(page&&token) {
     try {
       const current=taskId?await api('/v1/tasks/'+taskId):null;
       evidence.failureTask=current;
+      if(evidence.result==='BLOCKED'&&current?.status!=='awaiting-answer') {evidence.result='FAIL';evidence.answerGap.followupStatus=current?.status??'unknown';}
       await snapshot('failure',current?.status??null);
     }catch{evidence.failureScreenshot='unavailable';}
   }

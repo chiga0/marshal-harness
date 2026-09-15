@@ -35,3 +35,13 @@ test('创建任务或连接前失败不发请求',async()=>{
   assert.equal((await captureFailureProjections({taskId:'task-1'})).status,'skipped');
   assert.equal(calls,0);
 });
+
+test('只沿当前绑定Review读取正文，读取失败保留原投影并不吞原失败',async()=>{
+ const leader={taskId:'task-one',review:{evidenceIds:['artifact-1']}};
+ let seen;const base={taskId:'task-one',api:async route=>route.endsWith('/leader')?leader:{workers:[]}};
+ const result=await captureFailureProjections({...base,readReview:async value=>{seen=value;return {envelope:{profile:'task-independent-review/v2'}};}});
+ assert.equal(seen,leader);assert.equal(result.reviewEvidence.status,'captured');
+ const failed=await captureFailureProjections({...base,readReview:async()=>{throw new Error('private credential');}});
+ assert.deepEqual(failed.reviewEvidence,{status:'failed',code:'bound_review_read_failed'});assert.equal(failed.leader.status,'captured');assert.doesNotMatch(JSON.stringify(failed),/credential/);
+ const absent=await captureFailureProjections({...base,api:async()=>({review:null}),readReview:async()=>assert.fail('无绑定不得猜artifact')});assert.equal(absent.reviewEvidence.status,'absent');
+});
