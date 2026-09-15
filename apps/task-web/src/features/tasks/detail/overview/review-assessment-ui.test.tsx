@@ -39,7 +39,7 @@ it('坏目录不冒已校验政策、不能批准；原始技术正文仍可读'
 });
 
 it.each(['empty','whitespace'])('实际v2空来源提示 %s，保留引用而非显示不存在正文',async(mode)=>{
- const f=await fixture(f=>{f.assessment.sources[0]!.digest=mode==='empty'?'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855':'sha256:'+'c'.repeat(64);f.assessment.checks.forEach(c=>c.evidence[0]!.quote=mode==='empty'?'':' \n\t');});
+ const f=await fixture(f=>{f.assessment.sources[2]!.digest=mode==='empty'?'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855':'sha256:'+'c'.repeat(64);f.assessment.checks.forEach(c=>c.evidence[0]!.quote=mode==='empty'?'':' \n\t');});
  render(<QueryClientProvider client={new QueryClient()}><ReviewExplanation leader={f.leader} transport={f.transport}/></QueryClientProvider>);
  await screen.findByTestId('review-assessment');
  expect(screen.getAllByText(mode==='empty'?'原材料为空（0字节）':'引用内容仅含空白字符',{exact:true})).toHaveLength(5);
