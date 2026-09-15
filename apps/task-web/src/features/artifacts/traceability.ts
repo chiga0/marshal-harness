@@ -1,7 +1,7 @@
 // 只读消费现行 OpenAPI；不增加端点、权限、持久状态或任意文件路径。
 import contract from '../../../../../packages/task-api/openapi.json';
 import {ApiError} from '@/lib/transport/types';
-import type {ArtifactRecord} from '@/lib/transport/types';
+import type {ArtifactRecord, AuditPrompt, TaskAuditRecord} from '@/lib/transport/types';
 
 type Schema = {[$key: string]: unknown; $ref?: string; type?: string | string[]; const?: unknown; enum?: unknown[];
   anyOf?: Schema[]; oneOf?: Schema[]; required?: string[]; properties?: Record<string, Schema>; additionalProperties?: boolean;
@@ -54,17 +54,19 @@ export function matchesContract(value: unknown, schema: Schema | string, depth =
   return true;
 }
 
-export interface Prompt {workerId: string; text: string; source: string; contextRefs: string[]; observation?: {
-  stage: string; coverage: string; promptDigest: string | null; promptBytes: number | null; preparedAt: string | null;
-  handedOffAt: string | null; policy: unknown; snapshot: ArtifactRecord | null; previewTruncated: boolean;
-}}
-interface Audit {taskId: string; workers: {id: string; taskId: string}[]; prompts: Prompt[]}
 const failure = () => new ApiError(502, 'artifact_reference_mismatch', '成果关联未通过当前 Task 合同校验，已拒绝读取', null);
+const auditFailure = () => new ApiError(502, 'invalid_audit_response', '审计响应不符合 OpenAPI 合同，已拒绝展示不可信投影', null);
+
+/** GET /audit 的唯一运行时入口：完整校验权威 OpenAPI Audit 并绑定请求 Task。 */
+export function parseAudit(value: unknown, taskId: string): TaskAuditRecord {
+  if (!matchesContract(value, 'Audit') || !object(value) || value.taskId !== taskId) throw auditFailure();
+  return value as unknown as TaskAuditRecord;
+}
 
 export function observedInputIds(value: unknown, taskId: string): string[] | null {
   if (value === null || value === undefined) return null;
   if (!matchesContract(value, 'Audit')) throw failure();
-  const audit = value as Audit;
+  const audit = value as TaskAuditRecord;
   if (audit.taskId !== taskId || new Set(audit.workers.map(w => w.id)).size !== audit.workers.length ||
     audit.workers.some(w => w.taskId !== taskId) || new Set(audit.prompts.map(p => p.workerId)).size !== audit.prompts.length) throw failure();
   for (const p of audit.prompts) {
@@ -94,8 +96,8 @@ export function checkArtifact(value: ArtifactRecord, id: string, taskId: string 
   return value;
 }
 
-export function observedPrompt(value: unknown, taskId: string, workerId: string): Prompt | null {
+export function observedPrompt(value: unknown, taskId: string, workerId: string): AuditPrompt | null {
   if (value === null || value === undefined) return null;
   observedInputIds(value, taskId);
-  return (value as Audit).prompts.find(prompt => prompt.workerId === workerId) ?? null;
+  return (value as TaskAuditRecord).prompts.find(prompt => prompt.workerId === workerId) ?? null;
 }

@@ -534,6 +534,92 @@ export interface ArtifactRecord {
   createdAt: string;
 }
 
+// ---- 审计（GET /v1/tasks/{taskId}/audit；完整 Audit 合同）----
+
+export interface AuditMeasurement {
+  elapsedSource: 'task-lifecycle';
+  firstReviewSource: 'unavailable';
+  usageSource: 'unavailable';
+}
+
+export interface ContentRejection {
+  policyDigest: Sha256;
+  failedAssertions: string[];
+  reportDigest: Sha256;
+}
+
+export interface AuditDecision {
+  id: string;
+  digest: Sha256;
+  status: 'accepted' | 'rejected';
+  workerId: WorkerId;
+  planDigest: Sha256;
+  artifacts: ArtifactRecord[];
+  contentRejection: ContentRejection | null;
+}
+
+export interface RepairAudit {
+  repairId: string;
+  decisionDigest: Sha256;
+  nodeIds: NodeId[];
+  affectedNodes: NodeId[];
+  operationId: string;
+}
+
+export interface AuditRates {
+  passed: number;
+  total: number;
+  pending: number;
+}
+
+export interface AuditDisclosurePolicy {
+  id: string;
+  version: string;
+}
+
+export interface InputObservation {
+  stage: 'prepared' | 'handed-off' | 'unavailable';
+  promptDigest: Sha256 | null;
+  promptBytes: number | null;
+  inputDigest: Sha256;
+  reservationDigest: Sha256;
+  preparedAt: string | null;
+  handedOffAt: string | null;
+  coverage: 'metadata-only' | 'policy-redacted' | 'unavailable';
+  policy: AuditDisclosurePolicy | null;
+  snapshot: ArtifactRecord | null;
+  previewTruncated: boolean;
+}
+
+export interface AuditPrompt {
+  workerId: WorkerId;
+  text: string;
+  contextRefs: string[];
+  source: 'submitted-redacted' | 'prepared-redacted' | 'handed-off-redacted' | 'unavailable';
+  observation?: InputObservation;
+}
+
+/**
+ * GET /audit 返回的是 OpenAPI 的完整 Audit，而不是只含 acceptance 的子对象。
+ * 页面可以只读取 acceptance，但 transport 必须保留并校验其余事实，避免把服务端
+ * 的 workers/prompts/decision/measurement 投影静默丢掉。
+ */
+export interface TaskAuditRecord {
+  measurement?: AuditMeasurement;
+  decision?: AuditDecision | null;
+  repairs?: RepairAudit[];
+  taskId: TaskId;
+  elapsedMs: number | null;
+  attempts: number;
+  retryCount: number;
+  reworkCount: number;
+  firstReview: AuditRates;
+  acceptance: AcceptanceRecord;
+  usage: Usage;
+  workers: WorkerRecord[];
+  prompts: AuditPrompt[];
+}
+
 // ---- 创建任务（POST /v1/tasks；body = CreateTask）与输入（POST /v1/inputs；body = CreateInput）----
 
 export interface Context {
@@ -560,7 +646,7 @@ export interface CreateInputBody {
   contentBase64: string;
 }
 
-// ---- 验收（GET /v1/tasks/{taskId}/audit 的 acceptance 子投影；UI 只消费 acceptance，不消费的不建模）----
+// ---- 验收（TaskAuditRecord.acceptance）----
 
 export type AcceptanceStatus = 'pending' | 'passed' | 'failed' | 'unknown';
 
@@ -568,12 +654,6 @@ export interface AcceptanceRecord {
   status: AcceptanceStatus;
   evidenceIds: string[];
   digest: Sha256 | null;
-}
-
-export interface TaskAuditRecord {
-  taskId: TaskId;
-  usage?: Usage;
-  acceptance: AcceptanceRecord;
 }
 
 // ---- 错误合同 ----

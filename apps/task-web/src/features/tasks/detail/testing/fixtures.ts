@@ -53,7 +53,15 @@ export function makeLeader(overrides: Partial<LeaderRecord> = {}): LeaderRecord 
 export function makeAudit(overrides: Partial<TaskAuditRecord> = {}): TaskAuditRecord {
   return {
     taskId: TASK_ID,
+    elapsedMs: null,
+    attempts: 0,
+    retryCount: 0,
+    reworkCount: 0,
+    firstReview: {passed: 0, total: 0, pending: 0},
     acceptance: {status: 'pending', evidenceIds: [], digest: null},
+    usage: {tokens: null, cost: null, currency: null, source: 'unavailable', coverage: 0},
+    workers: [],
+    prompts: [],
     ...overrides,
   };
 }
