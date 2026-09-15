@@ -1,6 +1,6 @@
 # 当前 API 支持与证据矩阵
 
-更新：2026-09-14；只读核对基线 `12db5f908e1a15331e4edb06e9db3cd8c8c16d80`，未重新执行模型或全部测试。[标准API](standard-api.md)给出契约，[OpenAPI](../packages/task-api/openapi.json)为27操作/66Schema唯一机器定义；[Roadmap](roadmap-status.md#业务交付当前表)保持最新完成状态和精确证据权威。[旧25操作矩阵](node-api-support-matrix.md)是9月9日历史快照，不再用其未完成项代表今天。
+更新：2026-09-15；只读核对基线 `12db5f908e1a15331e4edb06e9db3cd8c8c16d80`；增量：事件流 SSE(task.events.stream)已接线并有单元+服务级测试,未重新执行模型或全部历史测试。[标准API](standard-api.md)给出契约，[OpenAPI](../packages/task-api/openapi.json)为28操作/67Schema唯一机器定义(27项 single-shot + 1项 SSE 传输面,openAPI 版本自 66Schema 起计);[Roadmap](roadmap-status.md#业务交付当前表)保持最新完成状态和精确证据权威。[旧25操作矩阵](node-api-support-matrix.md)是9月9日历史快照，不再用其未完成项代表今天。
 
 当前stable为v1.0.2，包含其声明的可信配置服务，不含UI和默认通用团队；v1.1.0-rc.2已公开预发布，含默认通用文件团队和可执行ACP入口。RC.2 source为`2fde5038`，安装及模型证据见[发行记录](v1.1.0-rc.2-release-dossier-2026-09-14.md)。新源码不自动进入旧资产，表内能力按所启用配置判断，不能把所有profile能力相加视为一个默认配置。
 
@@ -12,7 +12,7 @@
 - 发布：配置固定本机报告目标、原授权和独立后验；不支持通用生产ETL。
 - “已接线”说明实际Application分支存在；“条件”说明缺配置返回明确错误。每行列相关测试文件用于定位现有检查，真实证据归于下方来源，不把测试文件存在记成本次通过。
 
-## 27项支持
+## 28项支持
 
 | 操作 | 实现与启用条件 | 验证入口与限制 |
 | --- | --- | --- |
@@ -40,7 +40,8 @@
 | artifact.get | 已接线，原manifest/Depot | [制品测试](../packages/task-application/artifacts.test.mjs)；损坏ready对象明确失败 |
 | artifact.content | 已接线，摘要长度重验 | [独立客户端](../packages/task-client/index.test.mjs)；≤8MiB，不是任意文件下载 |
 | task.audit | 已接线，已有原证据 | [输入审计](../packages/task-service/input-audit.test.mjs)；token/cost/首审计量仍unavailable |
-| task.events | 已接线，sequence分页 | [服务行为](../packages/task-service/api-stable-behavior.test.mjs)；轮询，无SSE/完整transcript |
+| task.events | 已接线，sequence分页 | [服务行为](../packages/task-service/api-stable-behavior.test.mjs)；轮询同一权威序列,完整transcript仍不承诺 |
+| task.events.stream | 已接线,SSE 推送同一权威序列 | [单元](../packages/task-api/events-stream.test.ts)、[服务级](../packages/task-service/events-stream.test.ts)；Last-Event-ID 续传,断档须以轮询重对齐,凭据仅 Authorization 头,不平行推断 |
 | provider.list | 已接线，冻结Provider facts | [composition测试](../packages/task-service/composition.test.mjs)；默认unknown/空能力，不能当登录成功 |
 | supervisor.get | 已接线，有界容量观察 | [服务行为](../packages/task-service/api-stable-behavior.test.mjs)；扫描超界unavailable，不虚报全量 |
 
