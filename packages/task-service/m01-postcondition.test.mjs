@@ -120,6 +120,11 @@ test('M01真实HTTP/SQLite链路把冻结输入接到独立订单后验并下载
   const task = await client.getTask(taskId);
   assert.equal(task.status, 'completed'); assert.equal(task.artifactIds.length, 2);
   const artifacts = await Promise.all(task.artifactIds.map(id => client.downloadArtifact(id)));
+  const evidence = artifacts.find(item => item.artifact.kind === 'evidence');
+  assert.ok(evidence); assert.equal(evidence.artifact.name, 'm01-postcondition.json');
+  const report = JSON.parse(evidence.content.toString());
+  assert.equal(report.profile, 'business-postcondition-experiment/v1');
+  assert.equal(report.status, 'pass'); assert.equal(report.code, 'exact_order_total'); assert.equal(report.authority, false);
   const delivery = artifacts.find(item => item.artifact.kind === 'delivery');
   assert.deepEqual(JSON.parse(delivery.content.toString()), expected); assert.equal(f.verifierStarts, 1);
   const audit = await client.request('task.audit', {path: {taskId}});
