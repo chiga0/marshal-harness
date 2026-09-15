@@ -1,6 +1,6 @@
 # Task Service HTTP 接口实现
 
-当前完整调用链见[标准API](../../docs/standard-api.md)，27操作/66Schema的实际配置、版本与证据见[当前支持矩阵](../../docs/api-support.md)，内部适配见[扩展契约](../../docs/extension-contracts.md)。产品已发行和历史接口检查点分别记录，以下0.1.0-candidate是机器合同标识，不表示今日尚无stable资产。
+当前完整调用链见[标准API](../../docs/standard-api.md)，当前 27 个 operation / 77 个 schema 的实际配置、版本与证据见[当前支持矩阵](../../docs/api-support.md)，内部适配见[扩展契约](../../docs/extension-contracts.md)。产品已发行和历史接口检查点分别记录，以下 0.1.0-candidate 是机器合同标识，不表示今日尚无 stable 资产。
 
 此包实现 ADR0085/0088 的 Node profile HTTP 适配层。2026-09-09 已通过当前契约与同包客户端的 **API-STABLE 核心接口检查点**；这不是正式 v1、stable 资产或生产完成声明，[四项出口及精确证据](../../docs/node-task-service-status-2026-09-08.md)分别记录。它不导入实验 Store/Supervisor、固定订单业务或具体 Agent，不启动 socket、模型、进程或数据库。旧九操作实验协议保持独立。
 
