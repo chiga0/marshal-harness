@@ -2352,3 +2352,5 @@ RC1 completion 复审发现：`result-admitted` 已提交后，terminalization �
 ADR0107 当前为 Draft 候选（`a61d5aa2`），经独立复核未发现设计方向上的 P0/P1，明确按责任、时点、候选和 repair 身份闭合 `acceptanceEvidence`，并将确定性退出、独立语义退出和真实业务验收分开。它尚未接受、未实现、未授权新增 API 或模型调用；实施前仍有七项 P1 接缝必须冻结：两个 profile 闭集、摘要域与测试向量、capabilityDigest、可定位 Artifact、Attempt 持久来源、Audit/UI 精确投影及旧客户端兼容。未完成前不得把草案视为可实施合同。
 
 Attempt 身份只读审计确认当前 Node 没有独立持久 `attemptId`：命令的 `attempt_id` 通常为空，实际 Worker 记录位于 `attempt` projection，预留事务同时保存 `workerId`、`commandId`、`generation`、`reservationDigest` 与 `worker.reserved` 事件。扩展契约已改用可验证的复合 `attemptRef`，不生成虚构 UUID；该引用仍需在 ADR0107 实施前冻结并纳入后续 API/Schema 设计。
+
+当前 PR 的 GitGuardian 检查仍失败，incident `37263555` 指向历史 commit `08bfe11b6a239aea6f002b7cde8b922e0b2a8c52` 中的合成 Bearer fixture（`packages/agent-observation/normalization.test.mjs`）。当前文件已使用非敏感 fixture，第一方 Secret scan 通过；GitGuardian 扫描 PR 历史仍会命中旧提交。该项在仓库外需要安全审查处置，不能通过关闭检查、添加绕过规则或改写共享历史解决，故当前合并门禁保持阻塞。
