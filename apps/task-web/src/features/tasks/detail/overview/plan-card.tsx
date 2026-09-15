@@ -2,7 +2,7 @@
 //（expectedRevision=任务 revision + planRevision=计划 revision + planDigest=计划摘要 + 幂等键）。
 // 409/冲突保留已查看快照并指引查看新内容，不自动替换摘要再提交；仅 allowedActions 含 approve 时提供批准入口。
 
-import {useState} from 'react';
+import {useEffect,useState} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
@@ -10,6 +10,7 @@ import {ConfirmDialog} from '@/components/ui/dialog';
 import type {PlanRecord, Revision, TaskRecord, Transport} from '@/lib/transport/types';
 import {ApiError} from '@/lib/transport/types';
 import {taskKeys} from '../query-keys';
+import {hasReviewCriteria,readPlanCriteria,type Criterion} from '../shared/review-assessment';
 import {ErrorNotice} from '../shared/error-notice';
 import {OperationReceipt} from '../shared/operation-receipt';
 import {useLogicalAction} from '../shared/logical-action';
@@ -39,6 +40,10 @@ function isStructuredCriterion(value: string): boolean {
 
 export function PlanCard({task, plan, transport, onViewLatest}: PlanCardProps) {
   const [confirming, setConfirming] = useState<ApproveTarget | null>(null);
+  const hasCriteria=hasReviewCriteria(plan);
+  const [criteriaState,setCriteriaState]=useState<{plan:PlanRecord;data:Criterion[]|null;isError:boolean}|null>(null);
+  useEffect(()=>{let active=true;if(hasCriteria)void readPlanCriteria(plan).then(data=>{if(active)setCriteriaState({plan,data,isError:false});},()=>{if(active)setCriteriaState({plan,data:null,isError:true});});return()=>{active=false;};},[plan,hasCriteria]);
+  const criteriaQuery=criteriaState?.plan===plan ? criteriaState : {data:null,isError:false};
   const canApprove = task.allowedActions.includes('approve');
   const readableAcceptance = plan.acceptance.filter(value => !isStructuredCriterion(value));
   const structuredAcceptance = plan.acceptance.filter(isStructuredCriterion);
@@ -80,7 +85,10 @@ export function PlanCard({task, plan, transport, onViewLatest}: PlanCardProps) {
       {plan.acceptance.length > 0 ? (
         <section aria-label="计划验收要求" className="space-y-1 text-sm leading-[22px]">
           <h3 className="font-medium">计划验收要求</h3><p className="text-xs text-text-secondary" data-testid="plan-requirements-scope">以下是待满足的要求，不是已执行的检查清单。节点目标与范围也不代表检查器已经具备相应能力。</p>
-          {readableAcceptance.length ? <ul className="list-disc space-y-1 pl-5">{readableAcceptance.map((value, index) => <li key={index} className="whitespace-pre-wrap break-words">{value}</li>)}</ul> : <p className="text-text-secondary">验收要求以结构化规则提供，请在批准前核对下方完整原文。</p>}
+          {hasCriteria ? <div data-testid="plan-review-criteria" className="space-y-3">
+            <p className="text-xs text-text-secondary">待执行的文本评审要求。批准条目不等于实际操作已经验证。</p>
+            {criteriaQuery.data ? [null,'policy'].map(group=><div key={group??'business'}><h4 className="font-medium">{group===null?'业务验收条目':'配置固定政策'}</h4><ol className="mt-1 space-y-1">{criteriaQuery.data!.filter(item=>(item.policyId===null)===(group===null)).map(item=><li key={item.id} className="whitespace-pre-wrap break-words">{item.index+1}. {item.requirement}</li>)}</ol></div>) : <p role={criteriaQuery.isError?'alert':undefined}>{criteriaQuery.isError?'验收目录校验未通过，暂不能批准；请查看原计划或刷新。':'正在核验验收条目…'}</p>}
+          </div> : readableAcceptance.length ? <ul className="list-disc space-y-1 pl-5">{readableAcceptance.map((value, index) => <li key={index} className="whitespace-pre-wrap break-words">{value}</li>)}</ul> : <p className="text-text-secondary">验收要求以结构化规则提供，请在批准前核对下方完整原文。</p>}
           {structuredAcceptance.length > 0 ? <p className="text-xs text-text-secondary">另有 {structuredAcceptance.length} 条结构化验收规则，批准前请核对下方原文。</p> : null}
         </section>
       ) : null}
@@ -107,6 +115,7 @@ export function PlanCard({task, plan, transport, onViewLatest}: PlanCardProps) {
           <div>
             <Button
               variant="default"
+              disabled={hasCriteria && !criteriaQuery.data}
               onClick={() => setConfirming({expectedRevision: task.revision, planRevision: plan.revision, planDigest: plan.digest})}
               data-testid="plan-approve-open"
             >

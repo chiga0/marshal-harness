@@ -1,0 +1,22 @@
+import {describe,it,expect} from 'vitest';
+import {makePlan} from '../testing/fixtures';
+import {readPlanCriteria,validateAssessment,reviewHash} from './review-assessment';
+import {assessmentFixture} from './review-assessment.fixture';
+describe('逐项评审证据边界',()=>{
+ it('合法方案文本通过与实测覆盖分离，目录按原文校验',async()=>{const f=await assessmentFixture();expect(await readPlanCriteria(f.plan)).toEqual(f.assessment.criteria);expect(await validateAssessment(f.assessment,f.report,f.plan)).toEqual(f.assessment);});
+ it('v1无目录不猜测覆盖',async()=>expect(await readPlanCriteria(makePlan({acceptance:['普通要求']}))).toBeNull());
+ it.each(['missing','duplicate','foreign','report','plan','quote','unknown-accept','mandatory-na','false-method','counterexample','candidate-unread','unicode'])('拒绝 %s',async(kind)=>{
+  const f=await assessmentFixture();const a=f.assessment;
+  if(kind==='missing')a.checks.pop();if(kind==='duplicate')a.checks[1]=a.checks[0]!;
+  if(kind==='foreign')a.checks[0]!.itemId='foreign';if(kind==='report')a.reportDigest='sha256:'+'0'.repeat(64);
+  if(kind==='plan')a.planDigest='sha256:'+'0'.repeat(64);if(kind==='quote')a.checks[0]!.evidence[0]!.sourceId='foreign';
+  if(kind==='unknown-accept')a.checks[0]!.assessment='unknown';if(kind==='mandatory-na')a.checks[0]!.assessment='not-applicable';
+  if(kind==='false-method')a.checks[0]!.method='browser' as 'text-review';
+  if(kind==='counterexample')a.checks[4]!.assessment='pass';
+  if(kind==='candidate-unread')a.sources.push({...a.sources[0]!,id:'source-1'});
+  if(kind==='unicode')a.checks[0]!.reason='\ud800';
+  await expect(validateAssessment(a,f.report,f.plan)).rejects.toThrow();
+ });
+ it('unknown可绑定真实finding而非被改写为accept',async()=>{const f=await assessmentFixture();const c=f.assessment.criteria[0]!;f.report.verdict='rework';f.report.findings=[{id:'finding',nodeIds:['author'],requirement:c.requirement,observation:'依据未提供',requestedChange:'澄清所需事实'}];f.assessment.checks[0]!.assessment='unknown';f.assessment.checks[0]!.findingIds=['finding'];f.assessment.reportDigest=await reviewHash(f.report);await expect(validateAssessment(f.assessment,f.report,f.plan)).resolves.toBeDefined();});
+ it('完整digest不能用短ID碰撞替代，未知目录不能按旧版降级',async()=>{const f=await assessmentFixture();f.plan.acceptance[0]='改变原要求';await expect(readPlanCriteria(f.plan)).rejects.toThrow();f.plan.acceptance[5]=JSON.stringify({profile:'task-review-criteria/v99',items:[]});await expect(readPlanCriteria(f.plan)).rejects.toThrow();});
+});
