@@ -9,3 +9,8 @@
 web/node_modules/
 .github/actions/live-review/node_modules/
 *.tsbuildinfo
+
+# ADR0102: root dev toolchain
+/node_modules/
+/.cov-raw/
+/.cov-artifacts/

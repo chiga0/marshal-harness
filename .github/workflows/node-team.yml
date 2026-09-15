@@ -6,6 +6,12 @@ on:
       - 'experiments/node-team/**'
       - 'packages/**'
       - 'apps/task-web/**'
+      - 'scripts/**'
+      - 'toolchain/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'eslint.config.js'
       - '.github/workflows/node-team.yml'
   push:
     branches: [main]
@@ -13,6 +19,12 @@ on:
       - 'experiments/node-team/**'
       - 'packages/**'
       - 'apps/task-web/**'
+      - 'scripts/**'
+      - 'toolchain/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'eslint.config.js'
       - '.github/workflows/node-team.yml'
   workflow_dispatch:
 
@@ -24,6 +36,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  toolchain:
+    name: lint + typecheck gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+
+      - name: Install pinned dev toolchain
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Typecheck baseline gate (ratchet down only)
+        run: node scripts/typecheck-gate.ts
+
   regression:
     name: Node team (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
@@ -51,13 +88,52 @@ jobs:
       - name: Run formal Node packages and deterministic HTTP team regression
         run: >-
           node --test --test-concurrency=1
-          packages/*/*.test.mjs
-          experiments/node-team/providers.test.mjs
-          experiments/node-team/business.test.mjs
-          experiments/node-team/runtime.test.mjs
-          experiments/node-team/http-handler.test.mjs
-          experiments/node-team/http.test.mjs
-          experiments/node-team/openapi.test.mjs
+          packages/*/*.test.ts
+          experiments/node-team/providers.test.ts
+          experiments/node-team/business.test.ts
+          experiments/node-team/runtime.test.ts
+          experiments/node-team/http-handler.test.ts
+          experiments/node-team/http.test.ts
+          experiments/node-team/openapi.test.ts
+
+  coverage:
+    name: line coverage gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+
+      # SIGKILL custody fixture 会截断继承 NODE_V8_COVERAGE 的子进程写入，
+      # 内置 --experimental-test-coverage 遇截断即放弃全部报告;故解耦为原始采集 +
+      # scripts/coverage-gate.ts 受控合并(剔损计数披露、叶子区间、covered 行/非空行)。
+      # 基线 toolchain/coverage-baseline.json 只升不降。
+      - name: Collect raw V8 coverage
+        run: >-
+          NODE_V8_COVERAGE=.cov-raw
+          node --test --test-concurrency=1
+          packages/*/*.test.ts
+          experiments/node-team/providers.test.ts
+          experiments/node-team/business.test.ts
+          experiments/node-team/runtime.test.ts
+          experiments/node-team/http-handler.test.ts
+          experiments/node-team/http.test.ts
+          experiments/node-team/openapi.test.ts
+          scripts/marshal-client-skill.test.ts
+          scripts/marshal-client-local.test.ts
+          scripts/marshal-client-discovery.test.ts
+          scripts/marshal-command-install.test.ts
+
+      - name: Coverage gate (ratchet up only)
+        run: node scripts/coverage-gate.ts
 
   # UI-11：UI-only 改动也必须触发 typecheck/build/test（含 e2e 同源验收），干净 checkout 证明 dist 可由源码构建。
   ui:
@@ -95,7 +171,7 @@ jobs:
 
   package:
     name: Freeze one Node candidate
-    needs: [regression, ui]
+    needs: [toolchain, regression, ui, coverage]
     runs-on: ubuntu-latest
     timeout-minutes: 8
     outputs:
@@ -130,7 +206,7 @@ jobs:
           test "$(node --version)" = v24.15.0
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           candidate_parent="$(mktemp -d "$RUNNER_TEMP/marshal-node-candidate.XXXXXX")"
-          node packages/task-distribution/main.mjs pack \
+          node packages/task-distribution/main.ts pack \
             --source "$GITHUB_WORKSPACE" --source-head "$GITHUB_SHA" \
             --target "$candidate_parent/package" > "$candidate_parent/report.json"
           test -f "$candidate_parent/package/apps/task-web/dist/index.html"
@@ -194,7 +270,7 @@ jobs:
           test "$(node --version)" = "v${{ matrix.node }}"
           test "$(git rev-parse HEAD)" = "$MARSHAL_CANDIDATE_SOURCE"
           install_parent="$(mktemp -d "$RUNNER_TEMP/marshal-node-installed.XXXXXX")"
-          node packages/task-distribution/main.mjs restore-carrier \
+          node packages/task-distribution/main.ts restore-carrier \
             --carrier "$RUNNER_TEMP/node-candidate-carrier" --target "$install_parent/package" \
             --manifest-digest "$MARSHAL_CANDIDATE_MANIFEST" --source-head "$MARSHAL_CANDIDATE_SOURCE"
           # UI-11：安装树必须携带 UI 入口（同源 /ui/ 的静态资产字节经 manifest 摘要校验后落盘）
@@ -205,7 +281,7 @@ jobs:
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           node --test --test-concurrency=1 --test-reporter=tap \
-            packages/task-distribution/candidate-consumer.mjs | tee "$RUNNER_TEMP/node-candidate-consumer.tap"
+            packages/task-distribution/candidate-consumer.ts | tee "$RUNNER_TEMP/node-candidate-consumer.tap"
           node --input-type=module - "$RUNNER_TEMP/node-candidate-consumer.tap" <<'NODE'
           import fs from 'node:fs';
           const text = fs.readFileSync(process.argv[2], 'utf8');
@@ -220,10 +296,10 @@ jobs:
         shell: /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
           node --test --test-concurrency=1 --test-reporter=tap \
-            packages/task-distribution/v7-candidate-consumer.mjs | tee "$RUNNER_TEMP/node-v7-consumer.tap"
+            packages/task-distribution/v7-candidate-consumer.ts | tee "$RUNNER_TEMP/node-v7-consumer.tap"
           node --input-type=module - "$RUNNER_TEMP/node-v7-consumer.tap" "$RUNNER_TEMP/node-v7-consumer-result.json" <<'NODE'
           import fs from 'node:fs';
-          import {candidateInputs, v7ResultFromTap} from './packages/task-distribution/v7-installed.fixture.mjs';
+          import {candidateInputs, v7ResultFromTap} from './packages/task-distribution/v7-installed.fixture.ts';
           const [input, output] = process.argv.slice(2);
           if (fs.statSync(input).size > 128 * 1024) throw Error('v7_consumer_output_limit');
           const result = v7ResultFromTap(fs.readFileSync(input, 'utf8'), candidateInputs(process.env));

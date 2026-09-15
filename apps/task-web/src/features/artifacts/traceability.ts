@@ -18,7 +18,7 @@ const wellFormed = (text: string) => !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\
 const keys = new Set(['$ref', 'type', 'const', 'enum', 'required', 'properties', 'additionalProperties', 'items', 'minItems', 'maxItems',
   'minimum', 'maximum', 'minLength', 'maxLength', 'pattern', 'format', 'anyOf', 'oneOf', 'description', 'examples', 'x-maxUtf8Bytes', 'x-wellFormedUnicode']);
 
-// 与既有 task-api/contract.mjs 相同的有界合同子集，浏览器用 TextEncoder 而非 Buffer。
+// 与既有 task-api/contract.ts 相同的有界合同子集，浏览器用 TextEncoder 而非 Buffer。
 // 直接消费权威 Schema，未知关键字拒绝；不维护第二份审计/制品格式。
 export function matchesContract(value: unknown, schema: Schema | string, depth = 0): boolean {
   const s = typeof schema === 'string' ? schemas[schema] : schema;

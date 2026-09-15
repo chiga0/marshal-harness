@@ -247,7 +247,7 @@ export interface OperationRecord {
 
 export function parseOperation(raw: unknown): OperationRecord {
   const op = raw as Partial<OperationRecord> | null;
-  // 与 task-api/contract.mjs 的 Id、Revision、date-time 和 code 规则相同；
+  // 与 task-api/contract.ts 的 Id、Revision、date-time 和 code 规则相同；
   // 不用 Date.parse 单独接受非合同日期，也不默许额外字段。
   const required = ['id', 'taskId', 'kind', 'status', 'taskRevision', 'createdAt', 'updatedAt'];
   const allowed = [...required, 'workerId', 'code'];
