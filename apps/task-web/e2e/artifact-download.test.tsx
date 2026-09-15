@@ -17,8 +17,8 @@ import {makeTask} from '../src/features/tasks/detail/testing/fixtures';
 
 // 原Node handler必须由Node加载，不能让jsdom的URL转换改写其磁盘OpenAPI路径。
 const nativeRequire = createRequire(`${process.cwd()}/e2e/artifact-download.test.tsx`);
-const {createTaskApiHandler} = nativeRequire('../../../packages/task-api/http-handler.mjs');
-const {TaskApiError} = nativeRequire('../../../packages/task-api/contract.mjs');
+const {createTaskApiHandler} = nativeRequire('../../../packages/task-api/http-handler.ts');
+const {TaskApiError} = nativeRequire('../../../packages/task-api/contract.ts');
 
 const token = 'fixture-only-artifact-http-not-real-secret';
 const taskId = 'task-expected', artifactId = 'artifact-fixture';
