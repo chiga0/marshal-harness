@@ -2054,6 +2054,60 @@
         }
       }
     },
+    "/v1/tasks/{taskId}/events:stream": {
+      "get": {
+        "operationId": "task_events_stream",
+        "x-application-operation": "task.events.stream",
+        "x-success-status": 200,
+        "x-stream-transport": "sse",
+        "description": "SSE 推送任务事件,帧数据与 task.events 分页项同构(id=sequence,event=type,data=Event JSON);Last-Event-ID 续传;同一权威,无平行推断;凭据只在 Authorization 头,不接受 URL/Cookie。",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "schema": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,15}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE 流(text/event-stream);帧形如 `id: {sequence}\\nevent: {type}\\ndata: {Event JSON}`",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/v1/agent-providers": {
       "get": {
         "operationId": "provider_list",

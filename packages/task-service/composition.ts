@@ -16,7 +16,9 @@ import {leaderConfiguration} from '../task-application/leader.ts';
 import {safeManagedDiagnostic, safeRejectedOutputDiagnostic} from '../task-application/leader-ports.ts';
 import {safeServiceDiagnostic} from './service-diagnostic.ts';
 import {createTaskApiHandler} from '../task-api/http-handler.ts';
-import {PROFILE, TaskApiError, validate} from '../task-api/contract.ts';
+import {createTaskEventsStreamHandler, createTaskEventHub} from '../task-api/events-stream.ts';
+import {sendJson} from '../task-api/http-boundary.ts';
+import {PROFILE, TaskApiError, validate, errorPayload} from '../task-api/contract.ts';
 
 const format = (custody, questions, repair, unpermitted, workerCancellation, leader = null) => Buffer.from(JSON.stringify({profile: PROFILE,
   layout: leader ? 7 : workerCancellation ? 6 : unpermitted ? 5 : repair ? 4 : questions ? 3 : custody ? 2 : 1, ...(leader ? {leader} : {})}) + '\n');
@@ -128,6 +130,8 @@ export async function startTaskService({root, mode, providers, prepare, collect,
   requireValue(Array.isArray(execution.providerIds) && execution.providerIds.length === available.size && execution.providerIds.every(id => available.has(id)));
   let files, store, depot, application, supervisor, business, custodian, server, renewal, closing, address, connectionFile;
   let state = 'starting', failure = null, shutdownClean = null, renewing = false;
+  // SSE 事件枢纽:与 state/closing 同寿命;服务关闭时随 drain 一并中止长连接。
+  const eventsHub = createTaskEventHub();
   const instanceId = 'service-' + randomUUID(), token = randomBytes(32).toString('hex');
   const diagnostic = value => { try { Promise.resolve(onDiagnostic(typeof value === 'string' ? {code: value} :
     safeServiceDiagnostic(value) ?? {code: value.code})).catch(() => {}); } catch {} };
@@ -149,18 +153,18 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     failure ??= code; state = 'failed'; diagnostic(code);
     if (supervisor) void shutdown().catch(() => {});
   };
-  function renew() {
+  async function renew() {
     if (renewing || !application || state === 'closed' || failure) return;
     renewing = true;
     try {
       files.check();
       // The returned expiresAt is part of owner identity; update both in one turn.
-      application.owner = store.renewOwner(application.owner, Date.now() + leaseMs);
+      application.owner = await store.renewOwner(application.owner, Date.now() + leaseMs);
       if (supervisor.snapshot().failure) fail('service_supervisor_failed');
     } catch { fail('service_owner_unavailable'); }
     finally { renewing = false; }
   }
-  function observation() {
+  async function observation() {
     files.check();
     let queuedTasks = 0, blockedTasks = 0, activeWorkers, recovery = false;
     // Bound complete scans. If larger than the admitted observation budget,
@@ -168,7 +172,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     for (const kind of ['task', 'commands']) {
       let cursor = '', complete = false;
       for (let page = 0; page < 100; page++) {
-        const rows = application.transaction(false, tx => kind === 'task' ? tx.projections('task', cursor, 25) : tx.commands(cursor, 25));
+        const rows = await application.transaction(false, tx => kind === 'task' ? tx.projections('task', cursor, 25) : tx.commands(cursor, 25));
         for (const row of rows) {
           if (kind === 'task') {
             const task = JSON.parse(row.bytes.toString('utf8')).task;
@@ -180,7 +184,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
             // the strength of a Task fence. PENDING has not been reserved; once
             // fenced and proven unrelated to any Worker it cannot block ready
             // forever. This is observation only, not refund/replay/settlement.
-            const fencedWithoutExecution = row.status === 'pending' && application.transaction(false, tx => {
+            const fencedWithoutExecution = row.status === 'pending' && await application.transaction(false, tx => {
               const current = tx.command(row.id);
               if (!current || current.status !== 'pending' || current.revision !== row.revision ||
                   current.generation !== row.generation || current.attemptId !== '') return false;
@@ -196,7 +200,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       }
       if (!complete) throw new TaskApiError('application_unavailable');
     }
-    activeWorkers = application.transaction(false, tx => application.execution.capacity(tx).value.active.length);
+    activeWorkers = await application.transaction(false, tx => application.execution.capacity(tx).value.active.length);
     const runtime = supervisor.snapshot();
     const ready = state === 'running' && !failure && !runtime.failure && runtime.state === 'running' && !recovery;
     return {ready, status: state === 'stopping' || state === 'closed' ? 'stopping' : recovery || failure || runtime.failure ? 'intervention' : activeWorkers ? 'busy' : 'ready',
@@ -205,10 +209,10 @@ export async function startTaskService({root, mode, providers, prepare, collect,
   async function dispatch(request, context) {
     if (request.operation === 'health.get') return {status: 'ok', profile: PROFILE};
     if (request.operation === 'ready.get') {
-      if (!observation().ready) throw new TaskApiError('not_ready');
+      if (!(await observation()).ready) throw new TaskApiError('not_ready');
       return {ready: true, profile: PROFILE};
     }
-    if (request.operation === 'supervisor.get') { const {ready, ...result} = observation(); return result; }
+    if (request.operation === 'supervisor.get') { const {ready, ...result} = await observation(); return result; }
     if (request.operation === 'provider.list') {
       const {cursor = '', limit = 50} = request.page ?? {};
       const selected = frozenFacts.filter(fact => fact.id > (cursor ?? '')).slice(0, limit);
@@ -220,13 +224,13 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     if (context?.principal !== 'local-operator') throw new TaskApiError('forbidden');
     if (context.signal?.aborted) throw new TaskApiError('request_timeout');
     if (request.key !== undefined) {
-      const previous = application.replay(request);
+      const previous = await application.replay(request);
       if (previous) return previous;
     }
     if (state !== 'running' || failure) throw new TaskApiError('not_ready');
     // Recovery diagnostics and cancellation remain available, but no new work
     // may be admitted through HTTP while prior effects are unresolved.
-    if (['task.create', 'task.approve', 'task.resume', 'input.create', 'task.answer', 'task.repair'].includes(request.operation) && !observation().ready)
+    if (['task.create', 'task.approve', 'task.resume', 'input.create', 'task.answer', 'task.repair'].includes(request.operation) && !(await observation()).ready)
       throw new TaskApiError('not_ready');
     return application.dispatch(request, context);
   }
@@ -237,6 +241,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       let drain = Promise.resolve(), drainTimer;
       if (server?.listening) {
         drain = new Promise(resolve => server.close(() => resolve()));
+        eventsHub.abortAll();
         server.closeIdleConnections();
         drainTimer = setTimeout(() => server.closeAllConnections(), requestTimeoutMs + 100);
       }
@@ -301,7 +306,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       // snapshot; no wall clock, PID existence or file absence substitutes it.
       const pending = []; let after = '', complete = false;
       for (let page = 0; page < 100; page++) {
-        const value = TaskCleanup.inspectBeforeClaim(store, after); pending.push(...value.items);
+        const value = await TaskCleanup.inspectBeforeClaim(store, after); pending.push(...value.items);
         if (value.nextCursor === null) { complete = true; break; } after = value.nextCursor;
       }
       requireValue(complete, 'service_custody_scan_limit');
@@ -316,18 +321,18 @@ export async function startTaskService({root, mode, providers, prepare, collect,
         await wait(25);
       }
     }
-    const owner = store.claimOwner(store.info().generation, instanceId, Date.now() + leaseMs);
+    const owner = await store.claimOwner(store.info().generation, instanceId, Date.now() + leaseMs);
     application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification, clarification, runtimeQuestions, repair, auditDisclosure,
       leader: leader ?? null, review: review ?? null, publication: publication ?? null});
     if (custody) {
       let after = '', complete = false;
       for (let page = 0; page < 100; page++) {
-        const value = application.execution.pendingCleanup(after);
+        const value = await application.execution.pendingCleanup(after);
         for (const entry of value.items) {
           const observation = custodian.read(entry.descriptor);
           if (!observation) continue;
           try {
-            const result = application.execution.reconcileCleanup(entry.workerId, observation);
+            const result = await application.execution.reconcileCleanup(entry.workerId, observation);
             custodian.acknowledge(entry.descriptor, result.observationDigest);
           } catch (error) { if (error.code !== 'recovery_required') throw error; diagnostic('service_custody_unresolved'); }
         }
@@ -338,9 +343,9 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     if ((unpermitted || workerCancellation || leader) && mode === 'open') {
       let after = '', complete = false;
       for (let page = 0; page < 100; page++) {
-        const value = application.execution.pendingUnpermitted(after);
+        const value = await application.execution.pendingUnpermitted(after);
         for (const workerId of value.items) {
-          try { application.execution.settleUnpermitted(workerId); }
+          try { await application.execution.settleUnpermitted(workerId); }
           catch (error) { if (error.code !== 'recovery_required') throw error; diagnostic('service_custody_unresolved'); }
         }
         if (value.nextCursor === null) { complete = true; break; } after = value.nextCursor;
@@ -351,8 +356,8 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       let after = '';
       for (let page = 0; ; page++) {
         requireValue(page < 100, 'service_custody_scan_limit');
-        const tasks = application.execution.scan(after);
-        for (const taskId of tasks.items) application.leader.recover(taskId);
+        const tasks = await application.execution.scan(after);
+        for (const taskId of tasks.items) await application.leader.recover(taskId);
         if (tasks.nextCursor === null) break; after = tasks.nextCursor;
       }
     }
@@ -360,8 +365,8 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       let after = '';
       for (let page = 0; ; page++) {
         requireValue(page < 100, 'service_custody_scan_limit');
-        const tasks = application.execution.scan(after);
-        for (const taskId of tasks.items) application.execution.reconcile(taskId);
+        const tasks = await application.execution.scan(after);
+        for (const taskId of tasks.items) await application.execution.reconcile(taskId);
         if (tasks.nextCursor === null) break; after = tasks.nextCursor;
       }
     }
@@ -384,10 +389,17 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       prepare: (ticket, wait) => prepare(ticket, {...wait, ...context}),
       collect: (ticket, result, wait) => collect(ticket, result, {...wait, ...context}),
       onError: report => { diagnostic(report); if (report.code === 'supervisor_failed') fail('service_supervisor_failed'); }});
-    let handler;
+    let handler, streamHandler;
     server = http.createServer((request, response) => {
-      if (!handler) { response.writeHead(503, {'Connection': 'close'}); response.end(); return; }
-      void handler(request, response);
+      if (!handler) { response.writeHead(503, {Connection: 'close'}); response.end(); return; }
+      const sendStreamError = error => {
+        const failure = errorPayload(error, randomUUID());
+        if (!response.destroyed && !response.headersSent) sendJson(response, failure.status, failure.body, failure.body?.requestId ?? randomUUID());
+      };
+      if (streamHandler) void streamHandler(request, response)
+        .then(handled => { if (!handled) void handler(request, response); })
+        .catch(sendStreamError);
+      else void handler(request, response);
     });
     server.requestTimeout = requestTimeoutMs + 1000; server.headersTimeout = requestTimeoutMs;
     server.keepAliveTimeout = 1000; server.maxRequestsPerSocket = 100;
@@ -397,6 +409,8 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     });
     address = `http://127.0.0.1:${server.address().port}`;
     handler = createTaskApiHandler({application: dispatch, token, expectedHost: address.slice('http://'.length), requestTimeoutMs});
+    streamHandler = createTaskEventsStreamHandler({application: dispatch, token, expectedHost: address.slice('http://'.length), hub: eventsHub});
+    application.onEvent = taskId => eventsHub.notify(taskId);
     server.on('error', () => fail('service_http_unavailable'));
     renewal = setInterval(renew, renewIntervalMs);
     supervisor.start(); state = 'running';

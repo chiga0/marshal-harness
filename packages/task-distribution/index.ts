@@ -20,6 +20,7 @@ export const SOURCE_FILES = Object.freeze([
   'packages/agent-runtime/index.ts',
   'packages/agent-runtime/protocol.ts',
   'packages/task-api/contract.ts',
+  'packages/task-api/events-stream.ts',
   'packages/task-api/http-boundary.ts',
   'packages/task-api/http-handler.ts',
   'packages/task-api/openapi.json',

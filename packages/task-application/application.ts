@@ -48,6 +48,9 @@ export class TaskApplication {
     this.inputAudit = new TaskInputAudit(this, auditDisclosure);
     this.leader = new TaskLeader(this, leader, review, publication);
     this.dispatch = this.dispatch.bind(this);
+    // Optional notification hint fired after each durable event append. Advisory
+    // only (SSE wake-up); never load-bearing for correctness or ordering.
+    this.onEvent = null;
   }
   now() {
     const value = this.clock();
@@ -59,12 +62,12 @@ export class TaskApplication {
     if (!idOK(value)) reject('application_unavailable', 503);
     return value;
   }
-  transaction(write, callback) {
+  async transaction(write, callback) {
     // Store deliberately sanitizes callback exceptions. Retain only our own
     // closed domain errors, after Store has rolled back the whole transaction.
     let domainError;
     try {
-      return this.store[write ? 'write' : 'read'](this.owner, tx => {
+      return await this.store[write ? 'write' : 'read'](this.owner, tx => {
         try { return callback(tx); }
         catch (error) { if (error instanceof TaskError) domainError = error; throw error; }
       });
@@ -94,6 +97,8 @@ export class TaskApplication {
     const event = makeEvent(task.id, head.sequence + 1n, {type, at, taskRevision: task.revision, ...detail});
     const source = {stream: task.id, ...tx.append(task.id, head, [event])};
     tx.putProjection('task', task.id, task.revision - 1, source, encode(record));
+    const onEvent = this.onEvent;
+    if (onEvent !== null) { try { onEvent(task.id); } catch {} }
     return source;
   }
   operation(tx, task, source, kind, status, id = this.newId('operation'), workerId = null) {
@@ -134,7 +139,7 @@ export class TaskApplication {
     catch (error) { if (error.code === 'conflict') reject('idempotency_conflict', 409); throw error; }
     return previous ? parse(previous) : null;
   }
-  replay(request) { return this.transaction(false, tx => {
+  async replay(request) { return await this.transaction(false, tx => {
     if (request.operation === 'worker.cancel') {
       if (!this.workerCancellation.enabled) return null;
       request = this.workerCancellation.request(tx, request);
@@ -144,9 +149,9 @@ export class TaskApplication {
       previous && request.operation === 'task.repair' ? this.repair.replay(tx, previous) :
       previous && request.operation === 'task.leader.reply' ? {...previous, replayed: true} : previous;
   }); }
-  mutate(request, callback) {
+  async mutate(request, callback) {
     const {key, requestDigest} = this.receiptKey(request);
-    return this.transaction(true, tx => {
+    return await this.transaction(true, tx => {
       const previous = this.receipt(tx, request);
       if (previous) return request.operation === 'task.repair' ? this.repair.replay(tx, previous) :
         request.operation === 'task.leader.reply' ? {...previous, replayed: true} : previous;
@@ -166,7 +171,7 @@ export class TaskApplication {
     if (request.operation === 'task.answer') return (Object.hasOwn(request.body ?? {}, 'questionDigest') ? this.runtimeQuestions : this.clarification).answer(request, context);
     if (['task.approve', 'task.cancel', 'task.pause', 'task.resume'].includes(request.operation)) return this.control(request);
     if (request.operation === 'worker.cancel') return this.workerCancellation.cancel(request);
-    return this.transaction(false, tx => this.query(tx, request));
+    return await this.transaction(false, tx => this.query(tx, request));
   }
   newTaskRecord(body, budget, inputArtifacts) {
     const now = this.now(), at = new Date(now).toISOString(), taskId = this.newId('task');
@@ -180,9 +185,9 @@ export class TaskApplication {
     const body = request.body;
     if (!body || !isText(body.intent) || Object.keys(body).some(key => !['intent', 'context', 'requirements', 'limits'].includes(key))) reject('invalid_request', 400);
     const budget = limits(body.limits ?? this.defaultLimits);
-    const previous = this.replay(request);
+    const previous = await this.replay(request);
     if (previous) return previous;
-    const inputArtifacts = this.artifacts.inputs(body.context?.inputRefs);
+    const inputArtifacts = await this.artifacts.inputs(body.context?.inputRefs);
     const prepared = await this.clarification.prepare(body, budget, inputArtifacts, context);
     return this.mutate(request, tx => {
       this.artifacts.recheck(tx, inputArtifacts);
@@ -205,8 +210,8 @@ export class TaskApplication {
       return {source, result: publicTask(record, this.now())};
     });
   }
-  proposePlan(taskId, expectedRevision, proposal) {
-    return this.transaction(true, tx => {
+  async proposePlan(taskId, expectedRevision, proposal) {
+    return await this.transaction(true, tx => {
       const record = this.get(tx, taskId);
       if (record.clarification) reject('state_conflict', 409);
       if (record.task.revision !== expectedRevision) reject('revision_conflict', 409);

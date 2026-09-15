@@ -168,6 +168,69 @@ export class TaskClient {
   replyLeader(taskId, requestId, body, idempotencyKey, options = {}) {
     return this.request('task.leader.reply', {...options, path: {taskId, requestId}, body, idempotencyKey});
   }
+  /**
+   * 流式订阅任务事件(SSE)。与 request('task.events') 同一权威:每个产出项与轮询
+   * 接口 items 的元素同构;id 字段是事件 sequence 的十进制串。断线后可携带最后
+   * 见到的 sequence 再次调用本方法续传(Last-Event-ID)。
+   * - 与 request() 不同:无内置超时,生命周期由 options.signal(必需,给中止路径一个权威出口)管理。
+   * - 非 200 响应按既有错误面抛出 TaskClientError(code, {status});不会对凭据做 URL 内联。
+   */
+  async *streamTaskEvents(taskId, options = {}) {
+    if (!validate(taskId, 'Id')) throw fail('client_invalid_request');
+    const {after, signal} = options;
+    if (after !== undefined && !/^[1-9][0-9]{0,15}$/.test(String(after))) throw fail('client_invalid_request');
+    if (!(signal instanceof AbortSignal)) throw fail('client_invalid_request');
+    const headers = {Accept: 'text/event-stream', Host: this.#host, 'Accept-Encoding': 'identity',
+      Authorization: 'Bearer ' + this.#token, ...(after !== undefined ? {'Last-Event-ID': String(after)} : {})};
+    const response = await this.#fetch(this.#base + `/v1/tasks/${taskId}/events:stream`,
+      {method: 'GET', headers, signal, redirect: 'manual', credentials: 'omit', cache: 'no-store'});
+    if (!response || response.redirected || response.status < 100) throw fail('client_transport_error');
+    if (response.status !== 200) {
+      let code = 'client_transport_error';
+      try {
+        const bytes = await readBounded(response, signal);
+        const value = parseJson(bytes);
+        if (typeof value?.code === 'string') code = value.code;
+      } catch {}
+      throw new TaskClientError(code, {status: response.status});
+    }
+    if (!/^text\/event-stream/i.test(response.headers.get('content-type') ?? '') || !response.body?.getReader) throw fail('client_invalid_response');
+    const reader = response.body.getReader();
+    const cancel = () => { void reader.cancel().catch(() => {}); };
+    signal.addEventListener('abort', cancel, {once: true});
+    let buffer = '';
+    try {
+      for (;;) {
+        if (signal.aborted) throw fail('client_aborted');
+        let chunk;
+        try { chunk = await reader.read(); }
+        catch (error) { throw signal.aborted ? fail('client_aborted') : fail('client_transport_error'); }
+        const {done, value} = chunk;
+        if (done) return;
+        if (!(value instanceof Uint8Array)) throw fail('client_invalid_response');
+        buffer += new TextDecoder().decode(value, {stream: true});
+        let cut;
+        while ((cut = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, cut); buffer = buffer.slice(cut + 2);
+          if (block.startsWith(':')) continue;
+          const frame = {};
+          for (const line of block.split('\n')) {
+            const colon = line.indexOf(':');
+            if (colon < 0) continue;
+            frame[line.slice(0, colon)] = line.slice(colon + 1).replace(/^ /, '');
+          }
+          if (frame.event === undefined || !/^[0-9]+$/.test(frame.id ?? '') || typeof frame.data !== 'string') throw fail('client_invalid_response');
+          let data;
+          try { data = JSON.parse(frame.data); } catch { throw fail('client_invalid_response'); }
+          if (data?.taskId !== taskId) throw fail('client_invalid_response');
+          yield {id: frame.id, event: frame.event, data};
+        }
+      }
+    } finally {
+      signal.removeEventListener('abort', cancel);
+      cancel(); reader.releaseLock();
+    }
+  }
   async downloadInputSnapshot(taskId, prompt, options = {}) {
     const snapshot = prompt?.observation?.snapshot;
     if (!validate(taskId, 'Id') || !validate(prompt, 'Prompt') || !snapshot || snapshot.taskId !== taskId ||

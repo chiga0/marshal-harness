@@ -154,9 +154,10 @@ function pathFor(entry) {
 test('single contract resolves refs, validates complete independent fixtures and closed schemas', () => {
   assert.equal(contract.openapi, '3.1.0');
   assert.equal(contract.jsonSchemaDialect, 'https://json-schema.org/draft/2020-12/schema');
-  assert.equal(operations.length, 27);
+  assert.equal(operations.length, 28);
   assert.equal(new Set(operations.map(o => o.operation)).size, operations.length);
-  for (const entry of operations) if (entry.operation !== 'artifact.content')
+  for (const entry of operations) if (entry.operation !== 'artifact.content' && entry.operation !== 'task.events.stream')
+    // task.events.stream 以 SSE 帧承载逐事件流,不以单一整体 schema 作响应,示例要求不适用。
     assert.ok(contract.components.schemas[entry.response].examples?.length, entry.operation + ' response example required by TaskClient');
   function walk(value) { if (!value || typeof value !== 'object') return; if (value.$ref) resolve(value.$ref); for (const v of Object.values(value)) walk(v); }
   walk(contract);
@@ -177,8 +178,10 @@ test('single contract resolves refs, validates complete independent fixtures and
   }
 });
 
-test('all 27 operations dispatch to the same injected port with validated shape and identifiers', async () => {
-  for (const entry of operations) {
+test('all 27 single-shot operations dispatch to the same injected port with validated shape and identifiers', async () => {
+  // task.events.stream 由组合层 SSE 路由接管,不在本 single-shot 分发面;
+  // 且经本面 dispatch 不得被伪造成普通 JSON 响应(下文有 501 作证)。
+  for (const entry of operations.filter(value => value.operation !== 'task.events.stream')) {
     let received, context;
     const app = async (value, ctx) => {
       received = value; context = ctx;
@@ -200,6 +203,9 @@ test('all 27 operations dispatch to the same injected port with validated shape 
       assert.deepEqual(result.bytes, content); assert.equal(result.headers['Content-Type'], 'application/octet-stream');
     }
   }
+  // 流面经 single-shot dispatch 必然 501:没有任何 JSON 响应可冒充事件流。
+  const streamFakeResult = await request(async () => { throw new TaskApiError('unsupported_operation'); }, 'GET', '/v1/tasks/aaa/events:stream');
+  assert.equal(streamFakeResult.status, 501);
 });
 
 test('repair closed request and original acceptance bindings cannot be refreshed by the HTTP adapter', async () => {
