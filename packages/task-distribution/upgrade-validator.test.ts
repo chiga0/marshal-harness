@@ -5,23 +5,24 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
-import {SOURCE_FILES, verify} from './index.mjs';
-import {LEGACY_SOURCE, LEGACY_HELPER_SHA, verifyLegacyPackage} from './upgrade-validator.fixture.mjs';
-import {validatePair} from './upgrade-consumer.fixture.mjs';
+import {SOURCE_FILES, verify} from './index.ts';
+import {LEGACY_SOURCE, LEGACY_HELPER_SHA, verifyLegacyPackage} from './upgrade-validator.fixture.ts';
+import {validatePair} from './upgrade-consumer.fixture.ts';
 const helper = fileURLToPath(new URL('./v102-validator.fixture.txt', import.meta.url));
 const digest = b => 'sha256:' + createHash('sha256').update(b).digest('hex');
 function setup(t) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'upgrade-validator-')));
   t.after(() => fs.rmSync(parent, {recursive:true, force:true}));
   const legacy = [...fs.readFileSync(helper,'utf8').match(/SOURCE_FILES = Object.freeze\(\[([\s\S]*?)\]\)/)[1].matchAll(/'([^']+)'/g)].map(m=>m[1]);
-  function install(name, sourceHead, paths) {
+  function install(name, sourceHead, paths, entrypoint) {
     const root=path.join(parent,name);fs.mkdirSync(root,{mode:0o700});
     const files=paths.map(p=>{fs.mkdirSync(path.dirname(path.join(root,p)),{recursive:true,mode:0o700});fs.writeFileSync(path.join(root,p),'',{mode:0o600});return {path:p,digest:digest(''),bytes:0};});
-    const manifest=Buffer.from(JSON.stringify({format:'marshal-node-script-package/v1',sourceHead,node:'24.15.0',platforms:['darwin-arm64','linux-x64'],entrypoint:'packages/task-service/main.mjs',files},null,2)+'\n');
+    const manifest=Buffer.from(JSON.stringify({format:'marshal-node-script-package/v1',sourceHead,node:'24.15.0',platforms:['darwin-arm64','linux-x64'],entrypoint,files},null,2)+'\n');
     fs.writeFileSync(path.join(root,'manifest.json'),manifest,{mode:0o600});return {root,sourceHead,manifestDigest:digest(manifest)};
   }
   // Schema/transport fixtures only: never execute these empty runtime files.
-  return {parent,oldPackage:install('old',LEGACY_SOURCE,legacy),newPackage:install('new','a'.repeat(40),[...SOURCE_FILES,'apps/task-web/dist/index.html']),
+  // ADR0102:旧包保持 v1.0.2 的 .mjs 布局,新包为迁移后的 .ts 布局。
+  return {parent,oldPackage:install('old',LEGACY_SOURCE,legacy,'packages/task-service/main.mjs'),newPackage:install('new','a'.repeat(40),[...SOURCE_FILES,'apps/task-web/dist/index.html'],'packages/task-service/main.ts'),
     runDir:path.join(parent,'run'),assetKind:'fixed-assets',oldValidator:helper};
 }
 test('only pinned v1.0.2 helper verifies its old inventory; current verifier remains strict', t=>{
@@ -33,14 +34,14 @@ test('only pinned v1.0.2 helper verifies its old inventory; current verifier rem
   assert.throws(()=>validatePair({...o,oldPackage:{...o.oldPackage,sourceHead:'b'.repeat(40)}}),/unsupported_legacy_source/);
 });
 test('helper unknown bytes, sizes, links and package embedding fail before code execution', t=>{
-  const o=setup(t), custom=path.join(o.parent,'untrusted.mjs'), marker=path.join(o.parent,'executed');
+  const o=setup(t), custom=path.join(o.parent,'untrusted.ts'), marker=path.join(o.parent,'executed');
   fs.writeFileSync(custom,(`import fs from 'node:fs';fs.writeFileSync(${JSON.stringify(marker)},'bad');`).padEnd(18240,' '));
   assert.throws(()=>validatePair({...o,oldValidator:custom}),/legacy_helper_digest_mismatch/);assert.equal(fs.existsSync(marker),false);
   fs.writeFileSync(custom,'short');assert.throws(()=>validatePair({...o,oldValidator:custom}),/invalid_legacy_helper_file/);
   const link=path.join(o.parent,'link');fs.symlinkSync(helper,link);assert.throws(()=>validatePair({...o,oldValidator:link}),/linked_legacy_helper/);
   assert.throws(()=>validatePair({...o,oldValidator:o.parent}),/invalid_legacy_helper_file/);
-  const embedded=path.join(o.oldPackage.root,'helper.mjs');fs.copyFileSync(helper,embedded);assert.throws(()=>validatePair({...o,oldValidator:embedded}),/package_embedded_validator/);
-  const newEmbedded=path.join(o.newPackage.root,'helper.mjs');fs.copyFileSync(helper,newEmbedded);assert.throws(()=>validatePair({...o,oldValidator:newEmbedded}),/package_embedded_validator/);
+  const embedded=path.join(o.oldPackage.root,'helper.ts');fs.copyFileSync(helper,embedded);assert.throws(()=>validatePair({...o,oldValidator:embedded}),/package_embedded_validator/);
+  const newEmbedded=path.join(o.newPackage.root,'helper.ts');fs.copyFileSync(helper,newEmbedded);assert.throws(()=>validatePair({...o,oldValidator:newEmbedded}),/package_embedded_validator/);
 });
 test('pinned legacy verifier rejects wrong manifest, extra/missing/symlink/drifted package files', t=>{
   const o=setup(t), roots=[o.oldPackage.root,o.newPackage.root], run=()=>verifyLegacyPackage(o.oldPackage,helper,roots);
@@ -54,8 +55,8 @@ test('pinned legacy verifier rejects wrong manifest, extra/missing/symlink/drift
 test('legacy selection does not weaken current package or common profile checks', t=>{
   const o=setup(t);
   assert.throws(()=>validatePair({...o,newPackage:{...o.newPackage,manifestDigest:'sha256:'+'0'.repeat(64)}}),{code:'manifest_digest_mismatch'});
-  const filename=path.join(o.newPackage.root,'packages/task-regional-window/policy.mjs');fs.writeFileSync(filename,'changed',{mode:0o600});
-  const m=JSON.parse(fs.readFileSync(path.join(o.newPackage.root,'manifest.json'))), entry=m.files.find(f=>f.path==='packages/task-regional-window/policy.mjs');
+  const filename=path.join(o.newPackage.root,'packages/task-regional-window/policy.ts');fs.writeFileSync(filename,'changed',{mode:0o600});
+  const m=JSON.parse(fs.readFileSync(path.join(o.newPackage.root,'manifest.json'))), entry=m.files.find(f=>f.path==='packages/task-regional-window/policy.ts');
   entry.bytes=7;entry.digest=digest('changed');const raw=JSON.stringify(m,null,2)+'\n';fs.writeFileSync(path.join(o.newPackage.root,'manifest.json'),raw,{mode:0o600});
   assert.throws(()=>validatePair({...o,newPackage:{...o.newPackage,manifestDigest:digest(raw)}}),/regional_config_identity_changed/);
   assert.equal(fs.existsSync(o.runDir),false);

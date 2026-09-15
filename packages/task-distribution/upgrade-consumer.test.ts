@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execFileSync, spawnSync} from 'node:child_process';
-import {SOURCE_FILES, pack} from './index.mjs';
-import {runUpgrade, validatePair, readPages, compareAnswerReplay} from './upgrade-consumer.fixture.mjs';
+import {SOURCE_FILES, pack} from './index.ts';
+import {runUpgrade, validatePair, readPages, compareAnswerReplay} from './upgrade-consumer.fixture.ts';
 
 const repository = fs.realpathSync(fileURLToPath(new URL('../..', import.meta.url)));
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], {encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe']}).trim();
@@ -26,7 +26,7 @@ function fixture(t) {
   fs.writeFileSync(path.join(source, 'apps/task-web/dist/index.html'), '<!doctype html><p>controlled fixture UI, not release UI</p>');
   fs.writeFileSync(path.join(source, 'apps/task-web/dist/assets/app.js'), 'export const controlledFixture = true;');
   const newRoot = path.join(parent, 'new-ui'), next = pack({sourceRoot: source, sourceHead, target: newRoot});
-  fs.appendFileSync(path.join(source, 'packages/task-regional-window/policy.mjs'), '\n// controlled incompatible config identity\n');
+  fs.appendFileSync(path.join(source, 'packages/task-regional-window/policy.ts'), '\n// controlled incompatible config identity\n');
   git(source, 'add', 'packages');
   git(source, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'controlled changed business identity');
   const otherHead = git(source, 'rev-parse', 'HEAD'), otherRoot = path.join(parent, 'changed-business');
@@ -36,12 +36,12 @@ function fixture(t) {
     differentBusiness: {root: otherRoot, sourceHead: otherHead, manifestDigest: other.manifestDigest}};
 }
 test('explicit dual-package entry rejects absent pins; consumer never packs or imports source Core', () => {
-  const entry = fileURLToPath(new URL('./upgrade-consumer.mjs', import.meta.url));
+  const entry = fileURLToPath(new URL('./upgrade-consumer.ts', import.meta.url));
   const result = spawnSync(process.execPath, [entry], {env: {}, encoding: 'utf8', timeout: 5000});
   assert.notEqual(result.status, 0); assert.equal(result.stdout, '');
-  const helper = fs.readFileSync(new URL('./upgrade-consumer.fixture.mjs', import.meta.url), 'utf8');
+  const helper = fs.readFileSync(new URL('./upgrade-consumer.fixture.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(helper, /\bpack\s*\(|\bexecFileSync\b|startTaskService|from ['"]\.\.\/task-(?:application|service|client|store)/);
-  assert.match(helper, /path\.join\(pkg\.root, 'packages\/task-regional-window\/service-config\.mjs'\)/);
+  assert.match(helper, /path\.join\(pkg\.root, 'packages\/task-regional-window\/service-config' \+ eraExt\)/);
   assert.ok(!SOURCE_FILES.some(name => name.includes('upgrade-consumer')));
 });
 test('complete pagination has exact task binding and rejects cursor loops, duplicates and foreign pages', async () => {

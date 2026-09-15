@@ -1644,7 +1644,7 @@
           },
           "file": {
             "type": "string",
-            "pattern": "^[a-z][a-z0-9_-]*\\.mjs$"
+            "pattern": "^[a-z][a-z0-9_-]*\\.ts$"
           },
           "prompt": {
             "type": "string",
@@ -1868,8 +1868,8 @@
         "properties": {
           "name": {
             "enum": [
-              "normalize.mjs",
-              "report.mjs"
+              "normalize.ts",
+              "report.ts"
             ]
           },
           "content": {
@@ -1922,12 +1922,12 @@
             "taskId": "task-example",
             "files": [
               {
-                "name": "normalize.mjs",
+                "name": "normalize.ts",
                 "content": "export function normalize(rows) { return rows; }",
                 "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
               },
               {
-                "name": "report.mjs",
+                "name": "report.ts",
                 "content": "export function report(rows) { return rows; }",
                 "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
               }
@@ -2053,13 +2053,13 @@
                 {
                   "id": "normalize",
                   "role": "author",
-                  "file": "normalize.mjs",
+                  "file": "normalize.ts",
                   "prompt": "冻结的规范化接口与反例；示例省略业务正文。"
                 },
                 {
                   "id": "report",
                   "role": "author",
-                  "file": "report.mjs",
+                  "file": "report.ts",
                   "prompt": "冻结的汇总接口与反例；示例省略业务正文。"
                 }
               ],
@@ -2129,13 +2129,13 @@
                     {
                       "id": "normalize",
                       "role": "author",
-                      "file": "normalize.mjs",
+                      "file": "normalize.ts",
                       "prompt": "冻结的规范化接口与反例；示例省略业务正文。"
                     },
                     {
                       "id": "report",
                       "role": "author",
-                      "file": "report.mjs",
+                      "file": "report.ts",
                       "prompt": "冻结的汇总接口与反例；示例省略业务正文。"
                     }
                   ],
@@ -2388,13 +2388,13 @@
                 {
                   "id": "normalize",
                   "role": "author",
-                  "file": "normalize.mjs",
+                  "file": "normalize.ts",
                   "prompt": "冻结的规范化接口与反例；示例省略业务正文。"
                 },
                 {
                   "id": "report",
                   "role": "author",
-                  "file": "report.mjs",
+                  "file": "report.ts",
                   "prompt": "冻结的汇总接口与反例；示例省略业务正文。"
                 }
               ],
