@@ -2349,7 +2349,7 @@ RC1 completion 复审发现：`result-admitted` 已提交后，terminalization �
 
 `verifyOrders`、`verifyGuide` 与 `verifyRecoveryModel` 已作为离线、`authority:false` 的确定性实验集成，覆盖 M01 精算、有限批准文案和显式四步恢复模型；13 项测试通过，但未接入 Core，也不能替代真实 Verification、语义审查或真实文件系统后验。`scripts/review-item-oracle.mjs` 已对冻结输入、报告身份和条目期望做严格校验，20 项相关测试通过；S02/C01 延长窗口的真实模型结果仍保留为失败或不可判定证据。
 
-ADR0107 当前为 Draft 候选（`a61d5aa2`），经独立复核未发现设计方向上的 P0/P1，明确按责任、时点、候选和 repair 身份闭合 `acceptanceEvidence`，并将确定性退出、独立语义退出和真实业务验收分开。它尚未接受、未实现、未授权新增 API 或模型调用；实施前仍有七项 P1 接缝必须冻结：两个 profile 闭集、摘要域与测试向量、capabilityDigest、可定位 Artifact、Attempt 持久来源、Audit/UI 精确投影及旧客户端兼容。未完成前不得把草案视为可实施合同。
+ADR0107 当前为 Draft 候选（最终文档对齐提交 `91e53a0d`，基线实现仍未接入），经独立复核未发现设计方向上的 P0/P1，明确按责任、时点、候选和 repair 身份闭合 `acceptanceEvidence`，并将确定性退出、独立语义退出和真实业务验收分开。后续修订已统一 Store canonical digest、Task 级证据绑定、可定位 `sourceArtifact:{id,digest}` 及基于耐久事实的复合 `attemptRef`；它尚未接受、未实现、未授权新增 API 或模型调用。实施前仍有七项 P1 接缝必须冻结：两个 profile 闭集、摘要域与测试向量、capabilityDigest、可定位 Artifact、Attempt 持久来源、Audit/UI 精确投影及旧客户端兼容。未完成前不得把草案视为可实施合同。
 
 Attempt 身份只读审计确认当前 Node 没有独立持久 `attemptId`：命令的 `attempt_id` 通常为空，实际 Worker 记录位于 `attempt` projection，预留事务同时保存 `workerId`、`commandId`、`generation`、`reservationDigest` 与 `worker.reserved` 事件。扩展契约已改用可验证的复合 `attemptRef`，不生成虚构 UUID；该引用仍需在 ADR0107 实施前冻结并纳入后续 API/Schema 设计。
 
