@@ -40,6 +40,20 @@ export function compareItemExpectations(caseId,report,assessment) {
   checks.push({name:'aggregate-not-accept',actual:report.verdict,expected:['rework','reject'],matched:['rework','reject'].includes(report.verdict)});
   return checks;
 }
+/** Validates saved report bytes only; does not create a ticket or opaque receipt. */
+export function validateOracleReport(report,input) {
+  const closed=(v,keys)=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&Reflect.ownKeys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
+  const text=(v,max)=>typeof v==='string'&&v.isWellFormed()&&v.trim().length>0&&!v.includes('\0')&&Buffer.byteLength(v)<=max;
+  const id=v=>typeof v==='string'&&/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(v);
+  const check=ok=>{if(!ok)throw new Error('invalid_oracle_report');};
+  check(closed(report,['profile','inputDigest','selectionDigest','verdict','summary','findings'])&&
+    report.profile==='task-independent-review/v1'&&report.inputDigest===input.inputDigest&&
+    report.selectionDigest===input.selectionDigest&&['accept','rework','reject'].includes(report.verdict)&&
+    text(report.summary,4096)&&Array.isArray(report.findings)&&report.findings.length<=16);
+  check(report.findings.every(f=>closed(f,['id','nodeIds','requirement','observation','requestedChange'])&&id(f.id)&&
+    Array.isArray(f.nodeIds)&&f.nodeIds.length>0&&f.nodeIds.length<=64&&f.nodeIds.every(id)&&new Set(f.nodeIds).size===f.nodeIds.length&&
+    ['requirement','observation','requestedChange'].every(k=>text(f[k],2048)))&&new Set(report.findings.map(f=>f.id)).size===report.findings.length);
+}
 export function evaluateItemOracle(caseId,result,input) {
   const base={profile:'review-item-oracle/v1',caseId,originalExpected:result?.expected??null,
     boundary:'后继离线分项oracle；不改原suite，不证明语义正确、Core权威或整链完成',semanticReview:'REQUIRED'};
@@ -49,7 +63,7 @@ export function evaluateItemOracle(caseId,result,input) {
     return {...base,status:'INVALID_INPUT',reason:'frozen_input_mismatch'};
   if(!result?.valid||!result.report||!result.assessment)
     return {...base,status:'NOT_EVALUABLE',reason:result?.problem??'no_valid_report'};
-  try {validateReviewAssessment(result.assessment,result.report,input);}
+  try {validateOracleReport(result.report,input);validateReviewAssessment(result.assessment,result.report,input);}
   catch {return {...base,status:'INVALID_REPORT',reason:'source_bound_contract_rejected'};}
   const checks=compareItemExpectations(caseId,result.report,result.assessment);
   return {...base,inputDigest,status:checks.every(check=>check.matched)?'ITEM_EXPECTATIONS_MET':'ITEM_EXPECTATIONS_FAILED',checks};

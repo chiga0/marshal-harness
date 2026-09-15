@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {compareItemExpectations,evaluateItemOracle} from './review-item-oracle.mjs';
+import {compareItemExpectations,evaluateItemOracle,validateOracleReport} from './review-item-oracle.mjs';
 const counter={initial:'初态',operation:'动作',failure:'中断',result:'后态',recovery:'来源'};
 function minimal(kind,overrides={}) {
  const criteria=[{id:'process',policyId:null,requirement:'制作过程未运行或部署该页面，交付后交由独立消费者检查'},...['scope','facts','effects','recovery'].map(id=>({id,policyId:id}))];
@@ -34,4 +34,18 @@ test('原expected标签不授予结果资格；未知和漂移输入拒绝',()=>
  assert.equal(evaluateItemOracle('S02-positive',{valid:true,expected:['accept']},{inputDigest:'invented'}).status,'INVALID_INPUT');
  assert.equal(evaluateItemOracle('unknown',{},{}).reason,'unknown_oracle_case');
  assert.throws(()=>compareItemExpectations('unknown',{},{}));
+});
+
+test('报告六字段/profile/输入/选果绑定闭合，不用伪ticket重建回执',()=>{
+ const input={inputDigest:'sha256:'+'a'.repeat(64),selectionDigest:'sha256:'+'b'.repeat(64)};
+ const report={profile:'task-independent-review/v1',...input,verdict:'accept',summary:'原报告摘要',findings:[]};
+ validateOracleReport(report,input);
+ for(const patch of [{profile:'unknown'},{inputDigest:'sha256:'+'c'.repeat(64)},{selectionDigest:'sha256:'+'d'.repeat(64)},{extra:true},{summary:' '},{verdict:'unknown'}])
+   assert.throws(()=>validateOracleReport({...report,...patch},input));
+ const missing={...report};delete missing.summary;assert.throws(()=>validateOracleReport(missing,input));
+ const finding={id:'f',nodeIds:['author'],requirement:'要求',observation:'发现',requestedChange:'修改'};
+ validateOracleReport({...report,verdict:'rework',findings:[finding]},input);
+ for(const bad of [{...finding,extra:true},{...finding,nodeIds:[]},{...finding,observation:' '},{...finding,nodeIds:['author','author']}])
+   assert.throws(()=>validateOracleReport({...report,findings:[bad]},input));
+ assert.throws(()=>validateOracleReport({...report,findings:[finding,finding]},input));
 });
