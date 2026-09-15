@@ -1,9 +1,9 @@
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomBytes, createHash} from 'node:crypto';
-import {launchProtocol, RuntimeError} from '../agent-runtime/index.mjs';
-import {PiRpcClient, PiRpcError} from '../agent-pi-rpc/client.mjs';
-import {BRIDGE_PROFILE, BRIDGE_ENV, BRIDGE_TITLE, TOOL_KINDS, QUESTION_TOOL, QUESTION_PROFILE} from './bridge-contract.mjs';
+import {launchProtocol, RuntimeError} from '../agent-runtime/index.ts';
+import {PiRpcClient, PiRpcError} from '../agent-pi-rpc/client.ts';
+import {BRIDGE_PROFILE, BRIDGE_ENV, BRIDGE_TITLE, TOOL_KINDS, QUESTION_TOOL, QUESTION_PROFILE} from './bridge-contract.ts';
 
 const text = (value, max) => typeof value === 'string' && value.isWellFormed() && !value.includes('\0') && Buffer.byteLength(value) <= max;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -188,11 +188,11 @@ export function createPiProvider({id: providerId, executable, args = [], env = {
       call.authorized = selected; return {handled: true, confirmed: selected};
     }
     const completion = (async () => {
-      let status = 'failed', reason = 'pi_provider_failed', stopReason = null, outputText = '', originalCleanup = null;
+      let status = 'failed', reason, stopReason = null, outputText = '', originalCleanup = null;
       try {
         const launch = structuredClone(config);
         if (bridgeConfig) {
-          launch.args.push('--extension', fileURLToPath(new URL('./native-bridge.mjs', import.meta.url)));
+          launch.args.push('--extension', fileURLToPath(new URL('./native-bridge.ts', import.meta.url)));
           launch.env[BRIDGE_ENV] = JSON.stringify({profile: BRIDGE_PROFILE, ...bridgeConfig, nonce, cwd, deadline,
             ...(questionConfig ? {runtimeQuestions: questionConfig} : {})});
         }

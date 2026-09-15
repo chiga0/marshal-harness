@@ -1,6 +1,6 @@
 import path from 'node:path';
-import {launchAcp, RuntimeError} from '../agent-runtime/index.mjs';
-import {AcpError} from '../agent-acp/client.mjs';
+import {launchAcp, RuntimeError} from '../agent-runtime/index.ts';
+import {AcpError} from '../agent-acp/client.ts';
 
 export const MAX_OUTPUT_TEXT_BYTES = 64 * 1024;
 export const MAX_TEXT_UPDATE_BYTES = 8 * 1024 * 1024;
@@ -145,7 +145,7 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       return response;
     }
     const completion = (async () => {
-      let status = 'failed', reason = 'provider_failed', stopReason = null, cleanup = null;
+      let status = 'failed', reason, stopReason = null, cleanup = null;
       try {
         runtime = await launchAcp({...config, cwd, deadline, onUpdate: async event => {
           try { await update(event); } catch (failure) { updateFailure = failure; throw failure; }

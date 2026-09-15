@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 import {execFileSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
-import {encode, digest} from '../task-store/store.mjs';
+import {encode, digest} from '../task-store/store.ts';
 
 const git = (cwd, args) => execFileSync('/usr/bin/git', ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false',
   '-c', 'core.fsmonitor=false', '-c', 'core.attributesFile=/dev/null', '-c', 'credential.helper=', '-c', 'protocol.allow=never', ...args],
@@ -26,7 +26,7 @@ for await (const line of createInterface({input: process.stdin})) {
     assert.deepEqual(request.input.repositories.map(value => value.nodeId), ['library', 'client']);
     const locations = {}, kept = [], patches = []; let checks = 0;
     for (const item of request.input.repositories) {
-      const name = item.nodeId === 'library' ? 'net.mjs' : 'invoice.mjs';
+      const name = item.nodeId === 'library' ? 'net.ts' : 'invoice.ts';
       const content = consuming ? request.input.delivery.files.find(value => value.repositoryId === item.repositoryId) : null;
       const patch = consuming ? Buffer.from(content.patch) : fs.readFileSync(item.nodeId + '.patch');
       const context = consuming ? content.context : JSON.parse(fs.readFileSync(item.nodeId + '-context.json', 'utf8'));
@@ -53,8 +53,8 @@ for await (const line of createInterface({input: process.stdin})) {
       kept.push({nodeId: item.nodeId, digest: digest(before)}); patches.push({nodeId: item.nodeId, digest: digest(patch)}); locations[item.nodeId] = cwd;
     }
     stage = 'combination';
-    const {net} = await import(pathToFileURL(path.join(locations.library, 'net.mjs')));
-    const {invoice} = await import(pathToFileURL(path.join(locations.client, 'invoice.mjs')));
+    const {net} = await import(pathToFileURL(path.join(locations.library, 'net.ts')));
+    const {invoice} = await import(pathToFileURL(path.join(locations.client, 'invoice.ts')));
     const actual = invoice([{sku: 'desk', cents: 1000, discount: 100}, {sku: 'lamp', cents: 500, discount: 50}], net);
     assert.deepEqual(invoice([], net), {lines: [], total: 0});
     assert.deepEqual(invoice([{sku: ' x ', cents: 7, discount: 7}], net), {lines: [{sku: ' x ', amount: 0}], total: 0});
@@ -63,6 +63,7 @@ for await (const line of createInterface({input: process.stdin})) {
     for (const args of [[-1, 0], [1, -1], [1, 2], [Number.MAX_SAFE_INTEGER + 1, 0], [1, 0.5], ['1', 0], [1, NaN]]) {
       assert.throws(() => net(...args)); negativeChecks++;
     }
+    // eslint-disable-next-line no-sparse-arrays -- 故意使用稀疏数组负例
     for (const rows of [null, [,], [null], [{sku: ' ', cents: 1, discount: 0}],
       [{sku: 'x', cents: Number.MAX_SAFE_INTEGER, discount: 0}, {sku: 'y', cents: 1, discount: 0}]]) {
       assert.throws(() => invoice(rows, net)); negativeChecks++;

@@ -2,21 +2,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import {randomBytes, randomUUID} from 'node:crypto';
-import {Store, sqliteRuntimeCapabilities, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
-import {isStagingOnlyBusiness, isManagedFileBusiness, START_PROTOCOL} from '../task-business/index.mjs';
-import {TaskCleanup} from '../task-application/cleanup.mjs';
-import {createExecutionCustody} from '../agent-runtime/custody.mjs';
-import {CUSTODY_PROFILE, verifyObservation} from '../agent-runtime/custody-contract.mjs';
+import {Store, sqliteRuntimeCapabilities, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.ts';
+import {isStagingOnlyBusiness, isManagedFileBusiness, START_PROTOCOL} from '../task-business/index.ts';
+import {TaskCleanup} from '../task-application/cleanup.ts';
+import {createExecutionCustody} from '../agent-runtime/custody.ts';
+import {CUSTODY_PROFILE, verifyObservation} from '../agent-runtime/custody-contract.ts';
 import {setTimeout as wait} from 'node:timers/promises';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {TaskApplication} from '../task-application/application.mjs';
-import {TaskSupervisor} from '../task-supervisor/controller.mjs';
-import {TaskExecutionCoordinator} from '../task-execution/controller.mjs';
-import {leaderConfiguration} from '../task-application/leader.mjs';
-import {safeManagedDiagnostic, safeRejectedOutputDiagnostic} from '../task-application/leader-ports.mjs';
-import {safeServiceDiagnostic} from './service-diagnostic.mjs';
-import {createTaskApiHandler} from '../task-api/http-handler.mjs';
-import {PROFILE, TaskApiError, validate} from '../task-api/contract.mjs';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {TaskApplication} from '../task-application/application.ts';
+import {TaskSupervisor} from '../task-supervisor/controller.ts';
+import {TaskExecutionCoordinator} from '../task-execution/controller.ts';
+import {leaderConfiguration} from '../task-application/leader.ts';
+import {safeManagedDiagnostic, safeRejectedOutputDiagnostic} from '../task-application/leader-ports.ts';
+import {safeServiceDiagnostic} from './service-diagnostic.ts';
+import {createTaskApiHandler} from '../task-api/http-handler.ts';
+import {PROFILE, TaskApiError, validate} from '../task-api/contract.ts';
 
 const format = (custody, questions, repair, unpermitted, workerCancellation, leader = null) => Buffer.from(JSON.stringify({profile: PROFILE,
   layout: leader ? 7 : workerCancellation ? 6 : unpermitted ? 5 : repair ? 4 : questions ? 3 : custody ? 2 : 1, ...(leader ? {leader} : {})}) + '\n');
@@ -162,7 +162,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
   }
   function observation() {
     files.check();
-    let queuedTasks = 0, blockedTasks = 0, activeWorkers = 0, recovery = false;
+    let queuedTasks = 0, blockedTasks = 0, activeWorkers, recovery = false;
     // Bound complete scans. If larger than the admitted observation budget,
     // return unavailable rather than publish fabricated/truncated counters.
     for (const kind of ['task', 'commands']) {

@@ -1,21 +1,21 @@
 import {randomUUID} from 'node:crypto';
-import {encode, digest, makeEvent, UNPERMITTED_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
-import {TaskError, reject, limits, freezePlan, publicTask, nextRevision, terminal, isText, clone} from './model.mjs';
-import {TaskExecution} from './execution.mjs';
-import {TaskWorkerCancellation} from './worker-cancellation.mjs';
-import {TaskArtifacts} from './artifacts.mjs';
-import {TaskVerification} from './verification.mjs';
-import {TaskClarification} from './clarification.mjs';
-import {TaskRuntimeQuestions} from './runtime-questions.mjs';
-import {TaskRepair} from './repair.mjs';
-import {TaskInputAudit} from './input-audit.mjs';
-import {TaskLeader} from './leader.mjs';
-export {createLeaderPort, createReviewPort, renderLeaderPrompt, renderReviewPrompt, parseManagedOutput} from './leader-ports.mjs';
-export {createVerificationPort} from './verification.mjs';
-export {createClarificationPort} from './clarification.mjs';
-export {createRuntimeQuestionPort} from './runtime-questions.mjs';
-export {createRepairPort} from './repair.mjs';
-export {createAuditDisclosure} from './input-audit.mjs';
+import {encode, digest, makeEvent, UNPERMITTED_FORMAT, LEADER_FORMAT} from '../task-store/store.ts';
+import {TaskError, reject, limits, freezePlan, publicTask, nextRevision, terminal, isText, clone} from './model.ts';
+import {TaskExecution} from './execution.ts';
+import {TaskWorkerCancellation} from './worker-cancellation.ts';
+import {TaskArtifacts} from './artifacts.ts';
+import {TaskVerification} from './verification.ts';
+import {TaskClarification} from './clarification.ts';
+import {TaskRuntimeQuestions} from './runtime-questions.ts';
+import {TaskRepair} from './repair.ts';
+import {TaskInputAudit} from './input-audit.ts';
+import {TaskLeader} from './leader.ts';
+export {createLeaderPort, createReviewPort, renderLeaderPrompt, renderReviewPrompt, parseManagedOutput} from './leader-ports.ts';
+export {createVerificationPort} from './verification.ts';
+export {createClarificationPort} from './clarification.ts';
+export {createRuntimeQuestionPort} from './runtime-questions.ts';
+export {createRepairPort} from './repair.ts';
+export {createAuditDisclosure} from './input-audit.ts';
 
 const hash = value => digest(encode(value));
 const parse = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
@@ -251,7 +251,7 @@ export class TaskApplication {
       if (!body || task.revision !== body.expectedRevision) reject('revision_conflict', 409);
       if (terminal.has(task.status) || task.status === 'cancelling') reject('state_conflict', 409);
       const original = task.status;
-      let status = 'succeeded', action;
+      let status, action;
       if (request.operation === 'task.approve') {
         this.clarification.approve(tx, record);
         if (original !== (record.clarification ? 'awaiting-confirmation' : 'awaiting-approval') || !record.plan || body.planRevision !== record.plan.revision ||

@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import fs from 'node:fs';
-import {parseOptions, expectedReport, waitPhase, checkAuthorization, sameJSON, checkPlan} from './live-consumer.fixture.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {TaskClient} from '../task-client/index.mjs';
+import {parseOptions, expectedReport, waitPhase, checkAuthorization, sameJSON, checkPlan} from './live-consumer.fixture.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {TaskClient} from '../task-client/index.ts';
 const args = ['--package', '/package', '--manifest-digest', 'sha256:' + 'a'.repeat(64), '--source-head', 'b'.repeat(40),
   '--node', '/node', '--pi-entry', '/pi/dist/bundle/cli.js', '--pi-sdk', '/pi/dist/index.js', '--run-dir', '/private/new', '--execute-real', '--allow-local-publication'];
 test('explicit finite arguments; neither execution nor publication is implicit', () => {
@@ -44,9 +44,9 @@ test('publication authorization is exact and acceptance/expiry bound', () => {
   assert.throws(() => checkAuthorization(authorization, {...context, leader: {review: {verdict: 'reject'}}}));
 });
 test('consumer does not import source Core, call pack, or use fixture configuration', () => {
-  const source = fs.readFileSync(new URL('./live-consumer.fixture.mjs', import.meta.url), 'utf8');
-  assert.doesNotMatch(source, /\bpack\s*\(|startTaskService|\.fixture\.mjs|import\(['"]\.\.\/task-(?:application|service|store)/);
-  assert.match(source, /packages\/task-leader-report\/service-config\.mjs/);
+  const source = fs.readFileSync(new URL('./live-consumer.fixture.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /\bpack\s*\(|startTaskService|\.fixture\.ts|import\(['"]\.\.\/task-(?:application|service|store)/);
+  assert.match(source, /packages\/task-leader-report\/service-config\.ts/);
 });
 const http = value => parseJson(Buffer.from(JSON.stringify(value)));
 test('original HTTP nested records compare by JSON value, preserving fields and arrays', () => {
@@ -55,6 +55,7 @@ test('original HTTP nested records compare by JSON value, preserving fields and 
   sameJSON(http(value), {ok: true, nested: {list: [{answer: 'x'}, null, 3]}});
   for (const changed of [{...value, extra: 1}, {...value, ok: 'true'}, {nested: {list: [null, {answer: 'x'}, 3]}, ok: true}, {ok: true}])
     assert.throws(() => sameJSON(http(value), changed), /evidence_mismatch/);
+  // eslint-disable-next-line no-sparse-arrays -- 故意使用稀疏数组负例
   for (const invalid of [undefined, NaN, Infinity, new Date(), {x: undefined}, [,], Object.assign([], {extra: 1}), {toJSON() {return value;}}])
     assert.throws(() => sameJSON(invalid, invalid), /comparison_not_json/);
 });

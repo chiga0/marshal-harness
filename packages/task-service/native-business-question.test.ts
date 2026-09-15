@@ -5,18 +5,18 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {startTaskService} from './composition.mjs';
-import {createPiProvider} from '../agent-provider-pi/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createVerificationPort, createRuntimeQuestionPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {digest, encode} from '../task-store/store.mjs';
+import {startTaskService} from './composition.ts';
+import {createPiProvider} from '../agent-provider-pi/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createVerificationPort, createRuntimeQuestionPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {digest, encode} from '../task-store/store.ts';
 
 const here = name => fileURLToPath(new URL(name, import.meta.url));
-const peer = here('../agent-provider-pi/bridge-agent.fixture.mjs');
-const sdkEntry = process.env.MARSHAL_PI_TEST_SDK ?? here('../agent-provider-pi/fixtures/sdk/index.mjs');
-const checkerPath = here('./native-business-question-checker.fixture.mjs');
+const peer = here('../agent-provider-pi/bridge-agent.fixture.ts');
+const sdkEntry = process.env.MARSHAL_PI_TEST_SDK ?? here('../agent-provider-pi/fixtures/sdk/index.ts');
+const checkerPath = here('./native-business-question-checker.fixture.ts');
 const policy = {id: 'business-answer', version: '1', description: '固定独立检查器同时核验原业务答案和两个完整文件；确定性测试。'};
 async function until(fn, accept, limit = 15000) {const deadline = Date.now() + limit;
   for (;;) {const value = await fn(); if (accept(value)) return value;
@@ -73,7 +73,7 @@ test('real HTTP/SQLite/Pi native tools/owned custody/independent command deliver
   try {done = await until(() => client.getTask(task.id), value => ['completed', 'failed', 'intervention'].includes(value.status));}
   catch (error) {throw new Error(JSON.stringify({message: error.message,
     workers: await client.request('task.workers', {path: {taskId: task.id}}),
-    supervisor: await client.request('supervisor.get'), questions: (await client.request('task.questions', {path: {taskId: task.id}})).items.map(({id, status, deliveryStatus}) => ({id, status, deliveryStatus}))}));}
+    supervisor: await client.request('supervisor.get'), questions: (await client.request('task.questions', {path: {taskId: task.id}})).items.map(({id, status, deliveryStatus}) => ({id, status, deliveryStatus}))}), {cause: error});}
   assert.equal(done.status, 'completed');
   assert.equal((await client.request('operation.get', {path: {operationId: receipt.operation.id}})).status, 'succeeded');
   const files = await Promise.all(done.artifactIds.map(id => client.downloadArtifact(id))), delivery = files.find(file => file.artifact.kind === 'delivery');

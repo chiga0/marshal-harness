@@ -5,8 +5,8 @@ import {pathToFileURL, fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {createConnection} from 'node:net';
-import {discoverAgents} from './discovery.mjs';
-import {installCommand} from './install-command.mjs';
+import {discoverAgents} from './discovery.ts';
+import {installCommand} from './install-command.ts';
 
 const fail = code => { throw new Error(code); };
 const codes = new Set(['invalid_arguments', 'unsafe_settings', 'installation_missing_or_ambiguous',
@@ -62,7 +62,7 @@ function installation(root) {
     const s = fs.lstatSync(name);
     if (!s.isDirectory() || s.uid !== process.getuid() || (s.mode & 0o022)) fail('unsafe_settings');
   }
-  for (const name of ['packages/task-client/index.mjs', 'packages/task-service/main.mjs']) {
+  for (const name of ['packages/task-client/index.ts', 'packages/task-service/main.ts']) {
     const s = fs.lstatSync(path.join(root, name));
     if (!s.isFile() || s.uid !== process.getuid() || (s.mode & 0o022)) fail('unsafe_settings');
   }
@@ -85,14 +85,14 @@ async function listenerRefused(value) {
 }
 async function connect(settings) {
   if (!settings.connectionFile) fail('connection_unavailable');
-  const {TaskClient} = await import(pathToFileURL(path.join(installation(settings.installRoot), 'packages/task-client/index.mjs')));
+  const {TaskClient} = await import(pathToFileURL(path.join(installation(settings.installRoot), 'packages/task-client/index.ts')));
   const connection = readPrivate(absolute(settings.connectionFile));
   const client = new TaskClient({baseURL: connection.url, token: connection.token});
   try {await client.request('ready.get', {timeoutMs: 2000});}
   catch (readyError) {
     // Readiness is not liveness: an authenticated service may still own data
     // and executions while rejecting work. Never start a replacement then.
-    let live = false, healthFailure;
+    let live, healthFailure;
     try {await client.request('health.get', {timeoutMs: 2000}); live = true;}
     catch (healthError) {healthFailure = healthError; live = readyError.status === 503 || healthError.status === 503;}
     if (live) fail('service_not_ready');
@@ -192,7 +192,7 @@ export async function run(argv, {home = os.homedir(), output = value => console.
     if (command === 'status') fail('connection_unavailable');
   }
   if (!settings.config || settings.generic === true) {
-    settings.config = path.join(settings.installRoot, 'packages/task-generic-files/service-config.mjs');
+    settings.config = path.join(settings.installRoot, 'packages/task-generic-files/service-config.ts');
     settings.generic = true;
     const selected = settings.agentExecutable ?? (await discoverAgents()).find(agent => agent.id === 'qwen')?.resolvedPath;
     if (!selected) fail('agent_unavailable');
@@ -207,7 +207,7 @@ export async function run(argv, {home = os.homedir(), output = value => console.
   const c = fs.lstatSync(settings.config);
   if (!c.isFile() || c.uid !== process.getuid() || (c.mode & 0o022)) fail('unsafe_settings');
   save(file, settings);
-  const childArgs = [path.join(settings.installRoot, 'packages/task-service/main.mjs'), '--config', settings.config];
+  const childArgs = [path.join(settings.installRoot, 'packages/task-service/main.ts'), '--config', settings.config];
   for (const [option, field] of [['--data-dir', 'dataDir'], ['--port', 'port'], ['--ui', 'ui']]) {
     if (settings[field] !== undefined) childArgs.push(option, String(settings[field]));
   }

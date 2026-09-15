@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
-import {createLeaderPort, parseManagedOutput, receipt, safeManagedDiagnostic, safeRejectedOutputDiagnostic} from './leader-ports.mjs';
-import {diagnosticCollector} from '../task-leader-report/live-consumer.fixture.mjs';
+import {createLeaderPort, parseManagedOutput, receipt, safeManagedDiagnostic, safeRejectedOutputDiagnostic} from './leader-ports.ts';
+import {diagnosticCollector} from '../task-leader-report/live-consumer.fixture.ts';
 const hashBytes = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 const digest = 'sha256:' + 'a'.repeat(64);
 const ticket = {executionType: 'leader', providerId: 'pi', taskId: 'task-one', workerId: 'worker-one', deadline: Date.now() + 10000,
@@ -141,10 +141,10 @@ test('consumer collector retains bounded rejected-output records under separate 
 test('reason whitelist covers every compile-time constant the providers can settle with', () => {
   const here = file => fileURLToPath(new URL(file, import.meta.url)), read = file => fs.readFileSync(file, 'utf8');
   const extract = (file, pattern) => [...pattern.exec(read(file))[1].matchAll(/'([A-Za-z_0-9]+)'/g)].map(match => match[1]);
-  const authority = extract(here('./leader-ports.mjs'), /reason: \[([\s\S]*?)\],\n  stage/);
+  const authority = extract(here('./leader-ports.ts'), /reason: \[([\s\S]*?)\],\n {2}stage/);
   for (const [file, pattern] of [
-    ['../task-leader-report/live-consumer.fixture.mjs', /reason: \[([\s\S]*?)\],\n    stage/],
-    ['../task-leader-live/driver.fixture.mjs', /const reasons = \[([\s\S]*?)\];/]])
+    ['../task-leader-report/live-consumer.fixture.ts', /reason: \[([\s\S]*?)\],\n {4}stage/],
+    ['../task-leader-live/driver.fixture.ts', /const reasons = \[([\s\S]*?)\];/]])
     assert.deepEqual(extract(here(file), pattern), authority, file);
   const listed = new Set(authority);
   for (const code of ['custody_unavailable', 'custody_invalid_permit', 'custody_launch_denied', 'custody_client_invalid',
@@ -156,7 +156,7 @@ test('reason whitelist covers every compile-time constant the providers can sett
   const walk = directory => fs.readdirSync(directory, {withFileTypes: true}).flatMap(entry => {
     const file = path.join(directory, entry.name);
     if (entry.isDirectory()) return entry.name === 'fixtures' ? [] : walk(file);
-    return entry.name.endsWith('.mjs') && !entry.name.includes('test') && !entry.name.includes('fixture') ? [file] : [];
+    return entry.name.endsWith('.ts') && !entry.name.includes('test') && !entry.name.includes('fixture') ? [file] : [];
   });
   const candidates = new Set();
   for (const directory of ['../agent-acp', '../agent-pi-rpc', '../agent-provider-acp', '../agent-provider-pi', '../agent-runtime'])

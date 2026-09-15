@@ -4,7 +4,7 @@ import { mkdtemp, chmod, writeFile, readFile, realpath, rm } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const FILE_NAMES = ['normalize.mjs', 'report.mjs'];
+const FILE_NAMES = ['normalize.ts', 'report.ts'];
 const MAX_FILE = 64 * 1024;
 const MAX_VERIFY_OUTPUT = 8192;
 const VERIFY_DEADLINE_MS = 3000;
@@ -27,9 +27,9 @@ export function plan(intent) {
     version: 'node-orders-v2', intent, timeoutMs: 300000,
     nodes: [
       {
-        id: 'normalize', role: 'author', file: 'normalize.mjs',
+        id: 'normalize', role: 'author', file: 'normalize.ts',
         prompt: `${common}
-你的唯一产出文件 name 为 "normalize.mjs"，导出 export function normalize(rows)。
+你的唯一产出文件 name 为 "normalize.ts"，导出 export function normalize(rows)。
 rows 是订单数组；每项必须是非 null 对象，sku 是非空/非全空白字符串，quantity 是正 safe integer，priceCents 是非负 safe integer。
 保留输入顺序，输出每项仅 {sku,quantity,priceCents}，丢弃额外字段；不合并、不按 SKU 排序。非法输入（含非数组、空项、缺字段、NaN/Infinity、乘法溢出）必须 throw。
 例：[{sku:"B",quantity:2,priceCents:150,note:"x"},{sku:"A",quantity:1,priceCents:0}] → [{sku:"B",quantity:2,priceCents:150},{sku:"A",quantity:1,priceCents:0}]；[] → []。
@@ -37,9 +37,9 @@ rows 是订单数组；每项必须是非 null 对象，sku 是非空/非全空�
 后继接口 report(normalized) 会消费你的输出，按 SKU 汇总；你不实现该后继函数。`,
       },
       {
-        id: 'report', role: 'author', file: 'report.mjs',
+        id: 'report', role: 'author', file: 'report.ts',
         prompt: `${common}
-你的唯一产出文件 name 为 "report.mjs"，导出 export function report(normalized)。
+你的唯一产出文件 name 为 "report.ts"，导出 export function report(normalized)。
 输入是规范化订单数组，每项 {sku,quantity,priceCents}；仍须拒绝非数组、非法项/字段、NaN/Infinity 和任何溢出。
 按完全相同 sku 汇总，返回每项仅 {sku,quantity,totalCents}，quantity 为数量总和，totalCents 为 quantity*priceCents 总和。
 按 JavaScript 字符串 < / > 的字典序排序（UTF-16 code unit order），不能使用地区 localeCompare。
@@ -116,21 +116,26 @@ export async function verifyFiles(files, { signal } = {}) {
     const { content } = files.find((file) => file.name === name);
     return { name, content, sha256: createHash('sha256').update(content, 'utf8').digest('hex') };
   });
-  let directory;
+  let directory, cleanupFailed = false, outcome;
   try {
-    const runner = await readFile(new URL('./verify-runner.mjs', import.meta.url), 'utf8');
-    if (Buffer.byteLength(runner) > 64 * 1024) return failed('verification_unavailable');
-    directory = await mkdtemp(join(await realpath(tmpdir()), 'marshal-node-verify-'));
-    await chmod(directory, 0o700);
-    for (const file of snapshot) await writeFile(join(directory, file.name), file.content, { flag: 'wx', mode: 0o600 });
-    if (signal?.aborted) return failed('verification_aborted');
-    const result = await runVerifier(directory, runner, signal);
-    return result.passed ? { ...result, files: snapshot } : result;
-  } catch { return failed('verification_unavailable'); }
+    const runner = await readFile(new URL('./verify-runner.ts', import.meta.url), 'utf8');
+    if (Buffer.byteLength(runner) > 64 * 1024) outcome = failed('verification_unavailable');
+    else {
+      directory = await mkdtemp(join(await realpath(tmpdir()), 'marshal-node-verify-'));
+      await chmod(directory, 0o700);
+      for (const file of snapshot) await writeFile(join(directory, file.name), file.content, { flag: 'wx', mode: 0o600 });
+      if (signal?.aborted) outcome = failed('verification_aborted');
+      else {
+        const result = await runVerifier(directory, runner, signal);
+        outcome = result.passed ? { ...result, files: snapshot } : result;
+      }
+    }
+  } catch { outcome = failed('verification_unavailable'); }
   finally {
     if (directory) {
       try { await rm(directory, { recursive: true, force: true }); }
-      catch { return failed('verification_cleanup_failed'); }
+      catch { cleanupFailed = true; }
     }
   }
+  return cleanupFailed ? failed('verification_cleanup_failed') : outcome;
 }
