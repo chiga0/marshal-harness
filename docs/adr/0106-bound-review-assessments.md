@@ -82,7 +82,7 @@ assessment闭合包含`profile/inputDigest/selectionDigest/planDigest/reportDige
 
 v2外层闭合为`{profile:"task-independent-review/v2",ticketDigest,report,assessment}`。完整外层最多131072 UTF-8字节，并继续保留原后继Leader完整输入196608字节上限；超限不截断、不退回只有v1。界面验证闭合结构、摘要和原report关联；未知或损坏v2不能按v1降级显示通过。完整引用可按来源类别和名称展开，技术ID进入详情。
 
-原单次Provider completion仅由受信适配器捕获；原Port验证完成并通过`receipt(port,ticket,result)`后，才把与同次原report摘要一致的附加数据绑定到原result私有身份。Core需要该能力时，缺失、外来、复制或不一致均不能接受原总体accept。新证据不从诊断事件或公开JSON恢复私有资格。
+原单次Provider completion仅由受信适配器捕获；原Port验证完成并通过`receipt(port,ticket,result)`后，才把与同次原report摘要一致的附加数据绑定到原 opaque receipt 私有身份；原 ExecutionController 可构造新 outcome 容器，但必须携带同一原 receipt，且通过原 Port 对 type/status/cleanup/ticket 的完整核验。Core需要该能力时，缺失、外来、序列化或复制出来的 receipt、以及不一致容器均不能接受原总体accept。新证据不从诊断事件或公开JSON恢复私有资格。
 
 崩溃矩阵必须覆盖：原receipt产生后但提交前、Artifact staging后、事务提交但响应丢失。提交前冷开不能恢复内存资格或制造接受；提交后读取原完整v2证据，不重调模型或重复返工。固定注册/目录/mapper/持久化代码与文字身份变化必须在owner claim前拒绝旧根，不靠marker改写升级。
 
@@ -93,3 +93,5 @@ unknown应区分缺候选规则和缺用户事实：前者可进入原repair，�
 repair后必须用新selection和新原输入重新生成全部checks，不从旧候选复制通过资格。组件验收须覆盖合法方案正例、真实引用却不支持结论、必需项冒充不适用、unknown+accept、未实测冒称执行、冷恢复和批准前政策可见性；不得只围绕固定案例的关键词写规则。
 
 空来源边界：原材料允许零字节和纯空白，仍精确核对 bytes/digest。quote 允许原样空白；仅当来源摘要等于零字节内容的 SHA-256 时才允许空字符串 quote，明确表示该来源为空，不代表存在正文。空候选仍必须有对应 sourceId 的证据覆盖；界面须显示“原材料为空（0 字节）”或可见空白说明，不能伪造引文或跳过来源。该例外仅用于引用，reason 等解释仍必须非空。
+
+执行接线复核：原 ExecutionController 会创建 outcome 容器而保留原 receipt，因此不得用外层 result 对象地址保存附加资格。受信 WeakMap 的键为原 opaque receipt；每次读取先运行原 receipt 验证并检查 Port/ticket/report 绑定。持有原 receipt 的原控制器传递不算新建权威，浅复制容器不应被误拒；伪造或复制 receipt、篡改状态/清理事实仍拒绝。必须以完整 HTTP→ExecutionController→Core→v2 制品链回归，单独调用 Core.finish 不足以证明接线成立。

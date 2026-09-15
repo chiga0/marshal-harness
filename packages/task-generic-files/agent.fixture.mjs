@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createInterface} from 'node:readline';
 import {encode, digest} from '../task-store/store.mjs';
+import {reviewCriteria,reviewSources} from '../task-application/review-assessment-contract.mjs';
 import {MAX_FILE} from './policy.mjs';
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const reply = (q, result) => send({jsonrpc:'2.0',id:q.id,result});
@@ -16,6 +17,12 @@ async function prompt(q) {
       const files=input.materials.filter(x=>x.nodeId);
       if (!files.length || !files.every(x=>x.content === s.task.input.intent + ':' + x.nodeId)) throw Error('bad candidate');
       out={profile:input.profile,inputDigest:input.inputDigest,selectionDigest:input.selectionDigest,verdict:'accept',summary:'独立核对原目标和每份实际候选',findings:[]};
+      if(process.argv.includes('assessment-wire')) {
+        const criteria=reviewCriteria(s.plan),{sources,texts}=reviewSources(input);
+        out={profile:'task-review-assessment-proposal/v1',verdict:'accept',summary:'受控逐项文本检查',findings:[],checks:criteria.map((c,index)=>({
+          itemId:c.id,assessment:c.allowNotApplicable?'not-applicable':'pass',method:'text-review',reason:'实际夹具原文字节与要求一致，不含操作或数据恢复。',
+          evidence:(index===0?sources.filter(source=>source.kind==='candidate'):[sources[0]]).map(source=>({sourceId:source.id,quote:Array.from(texts.get(source.id)).slice(0,64).join('')})),counterexample:null,findingIds:[]}))};
+      }
       if (process.argv.includes('review-wire')) {
         if (!text.includes('返回顶层必须且只能是profile、verdict、summary、findings四个字段')) throw Error('review prompt missing');
         out={profile:'generic-files-review-proposal/v1',verdict:out.verdict,summary:out.summary,findings:out.findings};

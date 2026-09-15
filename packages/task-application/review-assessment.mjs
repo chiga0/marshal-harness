@@ -22,7 +22,7 @@ export function registerReviewAssessments(port, options) {
 export const reviewAssessmentsEnabled = port => registrations.has(port);
 export const reviewAssessmentPolicy = port => registrations.get(port) ?? null;
 
-/** Observe one original completion, without replacing its value or receipt. */
+/** Observe one original completion; bind its opaque receipt across the original controller outcome container. */
 export function startReviewWithAssessments(port, options) {
   if (!registrations.has(port) || options.ticket.executionType !== 'review') return port.start(options);
   const ticket = structuredClone(options.ticket), binding = hash(ticket), native = options.provider;
@@ -46,7 +46,7 @@ export function startReviewWithAssessments(port, options) {
           const parsed = parseAssessmentProposal({ticket, completion: captured});
           if (hash(parsed.report) === hash(data.value)) {
             const assessment = validateReviewAssessment(parsed.assessment, data.value, ticket.input.review);
-            evidence.set(result, {port, binding, reportDigest: hash(data.value), assessment: structuredClone(assessment)});
+            evidence.set(result.receipt, {port, binding, reportDigest: hash(data.value), assessment: structuredClone(assessment)});
           }
         } catch { /* Core requires this capability; absence never downgrades to v1. */ }
       }
@@ -56,7 +56,7 @@ export function startReviewWithAssessments(port, options) {
 
 export function reviewAssessmentEvidence(port, ticket, result) {
   if (!registrations.has(port)) return null;
-  const data = receipt(port, ticket, result), stored = evidence.get(result);
+  const data = receipt(port, ticket, result), stored = evidence.get(result.receipt);
   return stored?.port === port && stored.binding === hash(ticket) && data.value && stored.reportDigest === hash(data.value)
     ? structuredClone(stored.assessment) : null;
 }

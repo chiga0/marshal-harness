@@ -8,6 +8,8 @@
 
 ## 2026-09-15：逐项业务验收约定与评审证据（OPEN，实施复验中）
 
+统一包 `d42eb0be` 的实际 HTTP 检查发现执行接线 P1：Controller 创建新 outcome 容器但转发原 receipt，附加证据错误绑定旧 result 对象，导致合法 Review 被拒。两次受控失败保留。后继改为原 opaque receipt 的私有绑定，原 Port 对 type/status/cleanup/ticket 的校验与 Controller 均不变；独立 35 项及经过真实 Controller 的 HTTP 双任务/冷开回归通过，新包浏览器复验仍需完成。此前直接 Core.finish 的成功不能替代这条接线证明。
+
 依据 [ADR0106](adr/0106-bound-review-assessments.md)，将批准前可读验收条目、原材料引用和逐项状态接入原 Review receipt 与同一事务。确定性结构约束只能防缺项、错绑定及伪引用，不能代替模型语义能力和业务结果实测。独立审查已发现并修复空文件无法形成负评审的边界；UI 与后端状态/finding 规则及固定政策正文一致性继续交叉复核。原 S02/C01 失败证据不变，四组最小正反候选已经独立从原 Audit 重建核对；新增合同的真实模型组件与统一候选 E2E 尚待完成，因此本问题不关闭，真人产品可用性仍待验。
 
 ## 2026-09-14：执行透明度与从零业务验收（OPEN，统一候选验收中）

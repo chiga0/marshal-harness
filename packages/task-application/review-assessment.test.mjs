@@ -12,14 +12,15 @@ async function evidence(f,id){const decision=(await view(f,id)).review;
   const result=await f.call({operation:'artifact.content',artifactId:decision.evidenceIds[0]});
   return JSON.parse(Buffer.from(result.content).toString());}
 
-test('one original Provider completion and receipt bind a v2 Artifact; returned copies cannot mint or change assessment authority',async t=>{
+test('one original Provider completion and receipt bind a v2 Artifact; the original receipt survives the controller outcome container without minting new authority',async t=>{
   const f=await assessmentFixture(t),ticket=f.reviewTicket,native=await produceReview(f,ticket,assessmentProposal(ticket));
   assert.equal(native.calls,1);assert.equal(native.actualPrompt,'原始评审输入，逐字保持');
   await native.handle.stop();assert.equal(native.stops,1);
   assert.equal(receipt(f.reviewPort,ticket,native.result).value.verdict,'accept');
   const sidecar=reviewAssessmentEvidence(f.reviewPort,ticket,native.result);assert.ok(sidecar);
   sidecar.checks[0].reason='mutated';assert.notEqual(reviewAssessmentEvidence(f.reviewPort,ticket,native.result).checks[0].reason,'mutated');
-  assert.equal(reviewAssessmentEvidence(f.reviewPort,ticket,{...native.result}),null);
+  assert.deepEqual(reviewAssessmentEvidence(f.reviewPort,ticket,{...native.result}),reviewAssessmentEvidence(f.reviewPort,ticket,native.result));
+  for(const altered of [{...native.result,receipt:structuredClone(native.result.receipt)},{...native.result,status:'failed'},{...native.result,cleanup:{...native.result.cleanup,cleaned:false}}])assert.throws(()=>reviewAssessmentEvidence(f.reviewPort,ticket,altered));
   assert.throws(()=>reviewAssessmentEvidence(f.reviewPort,{...ticket,workerId:'foreign'},native.result));
   assert.throws(()=>reviewAssessmentEvidence(f.reviewPort,ticket,{...native.result,receipt:{}}));
   assert.equal(f.app.execution.finish(ticket,native.result).status,'completed');
@@ -44,16 +45,12 @@ test('registration requires the original Review port, closed fixed options and e
 });
 
 test('missing private capture never downgrades a valid original receipt to v1 acceptance',async t=>{
-  for(const copy of [false,true])await t.test(copy?'copied-result':'bypassed-adapter',async t=>{
-    const f=await assessmentFixture(t),ticket=f.reviewTicket;
-    const native=await produceReview(f,ticket,assessmentProposal(ticket),{bypass:!copy});
-    assert.equal(receipt(f.reviewPort,ticket,native.result).value.verdict,'accept');
-    const result=copy?{...native.result}:native.result;
-    assert.equal(f.app.execution.finish(ticket,result).status,'failed');
-    assert.equal((await view(f,f.taskId)).review,null);
-    assert.equal(f.read(tx=>f.app.get(tx,f.taskId)).failureCode,'invalid_review_report');
-    assert.equal(native.calls,1);
-  });
+  const f=await assessmentFixture(t),ticket=f.reviewTicket;
+  const native=await produceReview(f,ticket,assessmentProposal(ticket),{bypass:true});
+  assert.equal(receipt(f.reviewPort,ticket,native.result).value.verdict,'accept');
+  assert.equal(f.app.execution.finish(ticket,{...native.result}).status,'failed');
+  assert.equal((await view(f,f.taskId)).review,null);
+  assert.equal(f.read(tx=>f.app.get(tx,f.taskId)).failureCode,'invalid_review_report');assert.equal(native.calls,1);
 });
 
 test('a mapper returning a different valid original report cannot attach captured checks to it',async t=>{

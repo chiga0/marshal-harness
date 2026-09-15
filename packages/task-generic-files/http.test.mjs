@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {reviewCriteria,validateStoredReviewAssessment} from '../task-application/review-assessment-contract.mjs';
 import {AUTHOR_GUIDANCE} from './review-wire.mjs';
 import {TaskClient} from '../task-client/index.mjs';
 import {launchService,waitPhase} from '../task-leader-report/live-consumer.fixture.mjs';
@@ -27,7 +28,7 @@ test('SQLite notice normalization preserves unknown warnings and private output'
   for(const notice of [defensive.replace('fixed-SQL','unknown'),defensive.replace('MARSHAL_SQLITE_DEFENSIVE_UNAVAILABLE','OTHER'),experimental.replace('SQLite','Other'), 'PRIVATE '+defensive])
     assert.equal(withoutSQLiteWarnings(notice+error),notice+error);
 });
-for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs','review-service.fixture.mjs']) test('same real HTTP configuration delivers two different no-upload tasks and DAGs, then normal reopen preserves results: '+configuration, {timeout:90000},async t=>{
+for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs','review-service.fixture.mjs','assessment-service.fixture.mjs']) test('same real HTTP configuration delivers two different no-upload tasks and DAGs, then normal reopen preserves results: '+configuration, {timeout:90000},async t=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'generic-http-'))), state=path.join(root,'data'), handles=[];
   const promptLog=path.join(root,'native-prompts');fs.mkdirSync(promptLog,{mode:0o700});
   const start=async mode=>{const handle=launchService(process.execPath,[here('../task-service/main.mjs'),'--root',state,'--mode',mode,'--port','0','--config',here('./'+configuration)],{PATH:path.dirname(process.execPath),MARSHAL_TEST_PROMPT_LOG:promptLog},root,[]);handles.push(handle);
@@ -38,9 +39,10 @@ for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs','
     const created=await client.createTask({intent},'create-'+tasks.length), deadline=Date.now()+35000;
     const pending=await waitPhase(()=>client.getTask(created.id),'awaiting-approval',deadline);
     const plan=await client.request('task.plan',{path:{taskId:created.id}});
+    if(configuration==='assessment-service.fixture.mjs')assert.equal(reviewCriteria(plan).length,5);
     await client.approveTask(created.id,{expectedRevision:pending.revision,planRevision:plan.revision,planDigest:plan.digest},'approve-'+tasks.length);
     const done=await waitPhase(()=>client.getTask(created.id),'completed',deadline);
-    if(configuration==='review-service.fixture.mjs') {
+    if(['review-service.fixture.mjs','assessment-service.fixture.mjs'].includes(configuration)) {
       const audit=await client.request('task.audit',{path:{taskId:created.id}});
       const authors=audit.workers.filter(w=>w.role==='author');
       const managed=audit.workers.filter(w=>['planner','reviewer'].includes(w.role));
@@ -58,6 +60,14 @@ for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs','
       for(const worker of managed) assert.equal(worker.providerId,'controlled-managed');
     }
     const view=await client.getLeader(created.id);assert.equal(view.review.verdict,'accept');assert.equal(view.publication,null);
+    if(configuration==='assessment-service.fixture.mjs'){
+      assert.equal(view.review.evidenceIds.length,1);
+      const raw=await client.downloadArtifact(view.review.evidenceIds[0]);
+      const envelope=validateStoredReviewAssessment(JSON.parse(raw.content));
+      assert.equal(envelope.assessment.planDigest,plan.digest);assert.equal(envelope.assessment.checks.length,5);
+      assert.equal(envelope.report.verdict,'accept');
+    }
+
     const artifacts=await Promise.all(done.artifactIds.map(artifactId=>client.request('artifact.get',{path:{artifactId}})));
     const downloaded=await client.downloadArtifact(artifacts.find(x=>x.kind==='delivery').id);
     const report=JSON.parse(downloaded.content);
