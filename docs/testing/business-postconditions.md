@@ -38,14 +38,20 @@ M01 可优先作为新显式业务 profile 的确定性内容检查。S01 若继
 
 该切片不修改 OpenAPI、SQLite 合同或现有 `acceptanceEvidence` 设计，不表示 ADR0107 已 Accepted，也不表示 `verifyOrders` 已成为通用业务插件 API。它证明当前受信装配可以把一个固定 M01 后验接入现有 VerificationPort；正式业务支持仍需单独冻结 profile、能力源码摘要、证据结构、旧客户端行为及真实恢复/发布边界。错误候选路径只保存独立失败证据，不保存 delivery。
 
-## S01 受控 HTTP 垂直切片
-
-`packages/task-service/s01-postcondition.test.mjs` 提供 S01 的同形受控切片。它把明确选择的 `finite-guide/v1` contract 作为唯一输入 Artifact，经 `task.create → Planner → task.plan → task.approve → Worker → VerificationPort → Decision/Artifact` 完成一条成功链和三条业务拒绝链。作者只在受控目录写入 `guide.md`，不提交“验收通过”的报告。
-
-独立验证器从 `ticket.input.inputArtifacts` 指向的 Depot 原始 bytes 读取并解析 guide contract，再从自己的受控验证目录读取作者候选，调用 `verifyGuide` 逐行核对标题、时间、地点、三条步骤和两条注意事项。正确文案会保存 `authority:false` 的实验报告和单一 delivery；同时增加设施与费用、时间漂移、地点漂移的候选，分别验证超出有限语言和已知事实冲突不能产生 delivery。验证器不读取作者复制的输入，也不使用作者的自然语言总结作为事实来源。
-
-这仍是测试配置中的受信端口和有限业务实验，不把有限模板设为通用 S01 默认，不修改 OpenAPI、SQLite 合同或 ADR0107 状态，也不把 `verifyGuide` 的实验报告直接当成产品权限或终态 `acceptanceEvidence`。自由文案需求仍需独立语义审查；有限模板只有在用户明确批准该 contract 时才有本切片覆盖的确定性保证。
-
 ## 复验
 
-运行 `node --test scripts/business-postconditions.test.mjs` 检查离线规则，再运行 `node --test --test-concurrency=1 packages/task-service/m01-postcondition.test.mjs packages/task-service/s01-postcondition.test.mjs` 检查 M01 与 S01 受控 HTTP 垂直切片。两者都属于受控 fixture，没有真实模型或真实外部业务效果证据；UI 三线不适用的范围仅限这些测试，不能据此更新产品体验为通过。
+运行 `node --test scripts/business-postconditions.test.mjs` 检查离线规则，再运行 `node --test --test-concurrency=1 packages/task-service/m01-postcondition.test.mjs` 检查受控 HTTP 垂直切片。两者都属于受控 fixture，没有真实模型或真实外部业务效果证据；UI 三线不适用的范围仅限这些测试，不能据此更新产品体验为通过。
+
+## C01 真实文件系统恢复受控切片
+
+`packages/task-service/c01-recovery.test.mjs` 是当前 C01 的受控纵切测试。它另外启动真实 Node 子进程，在独立临时目录对冻结的 `notes.json` 执行四个有界步骤：创建待完成清单、写临时索引、以不可覆盖的 hard-link 替换索引、创建完成标记。测试在步骤开始前以及每个步骤完成后让子进程退出，再以新进程重启；重启沿已有文件事实继续，重复运行在完整状态上返回 `skipped`。每个场景由独立 `verifyRecoveryState` 重新读取原始输入和状态文件，检查摘要、完整行集合、完成标记和临时文件清理，不读取作者报告。
+
+同一测试还覆盖 `record-exists` 对未完成记录的拒绝、完成记录的稳定重放和冲突索引的 fail-closed（原索引字节保持不变）。另有一条真实 `TaskApplication`、SQLite、HTTP、`createFileBusiness` 和 `createVerificationPort` 链路：验证器通过 Depot 读取原始输入、读取受控候选，成功时产生独立 evidence 与 delivery，业务错误只产生 evidence；服务重启后可重新读取同一完成结果。
+
+这组测试证明的是受控 fixture 内的真实文件写入、子进程退出和独立读取。它没有把文件恢复器接入产品 Core，也没有把旧 generation 的未决 Worker 自动接管。当前生命周期在服务进程于 Worker 已启动后崩溃时会保留 `intervention` 和未决容量，禁止自动重派；这是安全边界，不是 C01 生产恢复已完成。若要把 C01 纳入产品能力，仍需先冻结 ADR0107 所要求的业务 profile、Attempt/Reservation 来源、恢复 intent/result 事务、来源 Artifact 与证据索引、独立 verifier 身份及旧客户端行为，再做正式 Core/HTTP 接线和冷故障验收。
+
+复验：
+
+```sh
+node --test --test-concurrency=1 packages/task-service/c01-recovery.test.mjs
+```
