@@ -34,7 +34,7 @@ MAX_FILE = 2 << 20
 MAX_TOTAL = 16 << 20
 MAX_MANIFEST = 65536
 MAX_OUTPUT = 256 << 10
-# 与受信 packages/task-distribution/index.mjs 的 inspect 静态资产规则一致。
+# 与受信 packages/task-distribution/index.ts 的 inspect 静态资产规则一致。
 # Python仅约束ZIP传输；落盘后仍必须通过原Node restore/verify，不执行下载代码。
 UI_ROOT = "apps/task-web/dist/"
 UI_MAX_FILES = 512
@@ -54,11 +54,11 @@ JOBS = frozenset({"Freeze one Node candidate"} | {
     for version in ("22.22.1", "24.15.0")
 })
 VALIDATORS = (
-    "packages/task-store/runtime.mjs",
-    "packages/task-distribution/index.mjs", "packages/task-distribution/main.mjs",
-    "packages/task-distribution/candidate-consumer.mjs", "packages/task-distribution/installed-team.fixture.mjs",
-    "packages/task-distribution/team-service.fixture.mjs", "packages/task-team-integration/agent.fixture.mjs",
-    "packages/task-team-integration/scenario.fixture.mjs",
+    "packages/task-store/runtime.ts",
+    "packages/task-distribution/index.ts", "packages/task-distribution/main.ts",
+    "packages/task-distribution/candidate-consumer.ts", "packages/task-distribution/installed-team.fixture.ts",
+    "packages/task-distribution/team-service.fixture.ts", "packages/task-team-integration/agent.fixture.ts",
+    "packages/task-team-integration/scenario.fixture.ts",
 )
 SAFE_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR")
 
@@ -269,7 +269,7 @@ def trusted_source(root, source_head, node):
     for name in VALIDATORS:
         need(read_regular(os.path.join(root, name), MAX_FILE) == command(["git", "-C", root, "show", source_head + ":" + name], maximum=MAX_FILE),
              "validator_source_drift")
-    bridge = str(Path(__file__).with_name("node-candidate-consume.mjs"))
+    bridge = str(Path(__file__).with_name("node-candidate-consume.ts"))
     inventory = parse(command([node, bridge, "inventory", root]))
     files = inventory.get("files")
     need(inventory.get("node") == NODE_VERSION and type(files) is list and 1 <= len(files) <= 128 and
@@ -332,7 +332,7 @@ def validate_archive(raw, expected, files, *, require_ui=False):
         need(type(entry) is dict and list(entry) == ["path", "digest", "bytes"] and entry["path"] == name and
              type(entry["bytes"]) is int and entry["bytes"] == len(contents[name]) and entry["digest"] == sha(contents[name]), "manifest_file_mismatch")
     canonical = {"format": "marshal-node-script-package/v1", "sourceHead": expected["sourceHead"], "node": NODE_VERSION,
-                 "platforms": ["darwin-arm64", "linux-x64"], "entrypoint": "packages/task-service/main.mjs", "files": entries}
+                 "platforms": ["darwin-arm64", "linux-x64"], "entrypoint": "packages/task-service/main.ts", "files": entries}
     need((json.dumps(canonical, ensure_ascii=False, indent=2) + "\n").encode() == contents["manifest.json"], "invalid_manifest")
     need(sum(len(contents[name]) for name in all_files) <= MAX_TOTAL, "package_size_limit")
     return contents
@@ -444,7 +444,7 @@ def admit(expected, *, api, source, node, target, archive=None):
             output.write(destination, value)
         output.sync()
         trusted_source(source, expected["sourceHead"], node)
-        restored = parse(command([node, os.path.join(source, "packages/task-distribution/main.mjs"), "restore-carrier",
+        restored = parse(command([node, os.path.join(source, "packages/task-distribution/main.ts"), "restore-carrier",
             "--carrier", carrier, "--target", installed, "--manifest-digest", expected["manifestDigest"], "--source-head", expected["sourceHead"]]))
         need(restored.get("sourceHead") == expected["sourceHead"] and restored.get("manifestDigest") == expected["manifestDigest"] and
              restored.get("files") == len(contents) - 1, "restore_binding_mismatch")
@@ -454,7 +454,7 @@ def admit(expected, *, api, source, node, target, archive=None):
             "MARSHAL_CANDIDATE_ROOT": installed, "MARSHAL_CANDIDATE_MANIFEST": expected["manifestDigest"],
             "MARSHAL_CANDIDATE_SOURCE": expected["sourceHead"], "MARSHAL_CANDIDATE_ARTIFACT_ID": str(expected["artifactId"])}
         try:
-            tap = command([node, "--test", "--test-concurrency=1", "--test-reporter=tap", os.path.join(source, "packages/task-distribution/candidate-consumer.mjs")],
+            tap = command([node, "--test", "--test-concurrency=1", "--test-reporter=tap", os.path.join(source, "packages/task-distribution/candidate-consumer.ts")],
                           env=environment, cwd=target, timeout=120, maximum=MAX_OUTPUT, owned_group=True)
         except CandidateError as error:
             output.write(os.path.join(target, "consumer.tap"), getattr(error, "output", b""))
@@ -466,7 +466,7 @@ def admit(expected, *, api, source, node, target, archive=None):
         summaries = consumer_result(tap, expected, runtime_version)
         need(github_snapshot(api, expected) == before, "github_observation_drift")
         trusted_source(source, expected["sourceHead"], node)
-        final = parse(command([node, os.path.join(source, "packages/task-distribution/main.mjs"), "verify", "--root", installed,
+        final = parse(command([node, os.path.join(source, "packages/task-distribution/main.ts"), "verify", "--root", installed,
                               "--manifest-digest", expected["manifestDigest"]]))
         need(final == restored, "installed_bytes_drift")
         result = {"proofScope": "same-artifact-candidate-consumption-not-release-approval", "candidateVerified": True,

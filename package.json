@@ -1,0 +1,24 @@
+{
+  "name": "marshal-node-toolchain",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Marshal Node 主线开发期工具链(TypeScript type-stripping / lint / typecheck / coverage)。运行时零依赖;本文件不进发行包。",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "node --test --test-concurrency=1",
+    "coverage": "node --test --test-concurrency=1 --experimental-test-coverage"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.5.1",
+    "eslint": "10.10.0",
+    "globals": "17.12.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.70.0"
+  }
+}
