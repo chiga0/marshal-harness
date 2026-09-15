@@ -9,12 +9,15 @@ import type {
 } from '@/lib/transport/types';
 import {
   formatDuration,
+  formatRelative,
   leaderStageLabel,
   taskStatusLabel,
   workerRoleLabel,
   workerStatusLabel,
 } from '../shared/format';
 import {useNow} from '../shared/use-now';
+import {diagnosticReason} from '../../../workers/worker-diagnostic';
+import {observationLabel} from '../../../workers/worker-observation';
 const stages = ['需求', '计划', '执行', '评审', '检查', '交付'];
 /** 仅定位当前已观察阶段，不将前序阶段画成通过。 */
 export function currentStage(
@@ -86,6 +89,77 @@ export function workerTitle(worker: WorkerRecord, plan?: PlanRecord | null) {
     )?.goal || `${workerRoleLabel(worker.role)}工作`
   );
 }
+const FOCUS_WORKER_STATUSES: WorkerRecord['status'][] = ['running', 'queued', 'awaiting-answer', 'stopping', 'unknown', 'failed'];
+
+/** 概览只展示服务已投影的可读观察，不从状态推断模型或业务结果。 */
+export function workerPublicActivity(worker: WorkerRecord): string {
+  const text = worker.observation?.publicText.trim();
+  if (text) return text;
+  if (worker.observation) return observationLabel(worker);
+  if (worker.progress?.summary) {
+    return worker.progress.tool ? `${worker.progress.summary} · 最近工具 ${worker.progress.tool}` : worker.progress.summary;
+  }
+  return '暂无公开活动';
+}
+
+export function workerNextStep(worker: WorkerRecord): string {
+  if (worker.observation?.diagnostic) return '核对该诊断对应的活动与执行记录，再决定是否需要处理。';
+  switch (worker.status) {
+    case 'running': return '继续观察；若长时间没有新观察，打开成员详情核对。';
+    case 'queued': return '等待调度；可打开成员详情核对执行序号。';
+    case 'awaiting-answer': return '核对任务中的待答问题并提交答复。';
+    case 'stopping':
+    case 'unknown': return '保留现场，核对停止或清理证据。';
+    case 'failed': return '查看失败诊断与活动证据，确认后续处理。';
+    default: return '打开成员详情核对执行记录。';
+  }
+}
+
+function focusWorkerPriority(worker: WorkerRecord): number {
+  if (worker.observation?.diagnostic) return 0;
+  return ({running: 1, 'awaiting-answer': 2, stopping: 3, unknown: 3, queued: 4, failed: 5} as Record<string, number>)[worker.status] ?? 9;
+}
+
+function JourneyWorkerFocus({task, workers}: {task: TaskRecord; workers: WorkerRecord[] | null}) {
+  const focused = [...(workers ?? [])]
+    .filter(worker => FOCUS_WORKER_STATUSES.includes(worker.status) || worker.observation?.diagnostic !== undefined)
+    .sort((a, b) => focusWorkerPriority(a) - focusWorkerPriority(b) || b.attempt - a.attempt)
+    .slice(0, 4);
+  if (!focused.length) return null;
+  return (
+    <section aria-label="当前执行成员" className="mt-5 border-t border-border pt-4" data-testid="task-journey-focus">
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold">当前执行成员</h2>
+        <Link className="text-xs text-accent underline-offset-4 hover:underline" to={`/tasks/${encodeURIComponent(task.id)}/team`}>查看全部成员</Link>
+      </div>
+      <ul className="grid gap-3 md:grid-cols-2">
+        {focused.map(worker => {
+          const observation = worker.observation;
+          const diagnostic = observation?.diagnostic;
+          return (
+            <li key={worker.id} className="rounded-lg border border-border bg-surface-muted/30 p-3" data-testid="task-journey-worker">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <Link className="font-semibold text-accent underline-offset-4 hover:underline" to={`/tasks/${encodeURIComponent(task.id)}/team/${encodeURIComponent(worker.id)}`}>
+                  {workerRoleLabel(worker.role)} · {worker.id}
+                </Link>
+                <span className="rounded-full border border-border px-2 py-0.5 text-text-secondary">{workerStatusLabel(worker.status)}</span>
+              </div>
+              <p className="mt-1 text-xs text-text-secondary">节点：<code>{worker.nodeId}</code> · {worker.providerId} · 执行 {worker.attempt}</p>
+              <p className="mt-2 text-sm leading-5"><span className="text-text-secondary">最近公开活动：</span>{workerPublicActivity(worker)}</p>
+              {observation?.observedAt ? <p className="mt-1 text-xs text-text-secondary">观察于 {formatRelative(observation.observedAt)}</p> : null}
+              {diagnostic ? <p className="mt-2 text-sm text-danger"><span className="font-medium">{['stopping', 'unknown'].includes(worker.status) ? '当前阻塞/问题' : '已报告问题'}：</span>{diagnosticReason(diagnostic)}</p> : null}
+              <p className="mt-2 text-xs text-text-secondary"><span className="font-medium text-text-primary">下一步：</span>{workerNextStep(worker)}</p>
+            </li>
+          );
+        })}
+      </ul>
+      {(workers ?? []).filter(worker => FOCUS_WORKER_STATUSES.includes(worker.status) || worker.observation?.diagnostic !== undefined).length > focused.length ? (
+        <p className="mt-2 text-xs text-text-secondary">其余当前成员见团队页；概览仅保留最需要关注的 4 个成员。</p>
+      ) : null}
+    </section>
+  );
+}
+
 export function TaskJourney({
   task,
   leader,
@@ -155,6 +229,7 @@ export function TaskJourney({
           </span>
         </div>
       </div>
+      <JourneyWorkerFocus task={task} workers={workers} />
       <p className="mt-3 text-xs text-text-secondary" data-testid="task-usage">
         {audit?.usage &&
         audit.usage.source !== 'unavailable' &&
