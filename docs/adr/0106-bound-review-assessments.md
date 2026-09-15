@@ -68,7 +68,7 @@ Core沿用原finish的清理、deadline、当前性与取消检查，在同一�
 
 受信来源目录由本次原Review输入产生，不能由模型提供：原`task.input`为`task-input`，批准计划为`approved-plan`，已确认的`interactions.replies`分别为`confirmed-answer`；完整materials按原inputArtifacts身份区分`input-artifact`，按原selection的worker/node身份区分`candidate`，其余只标为`context`。不得把pending请求、原计划或作者内容归类为用户确认事实。结构化来源文本使用确定性`encode`后的UTF-8，文件来源使用原content字节；都核验原材料长度与摘要，先保持合法Unicode及无NUL。
 
-存储的来源项仅含`id/kind/label/digest/locator`：id按固定输入顺序生成`source-<index>`，digest绑定精确引用文本，label为有界可读名称，locator明确本次输入路径或materials索引。正文不重复存入附加证据。最多128项来源，label最多1024字节，locator最多1024字节；不接受模型追加、重命名或重分类。引用对象仅含`sourceId/quote`，quote为非空、无NUL的合法Unicode、最多512 UTF-8字节，须在指定来源原文中逐字存在，不先规范化替换。存在但不支持结论的引用仍是语义缺陷，必须纳入正反评测。
+存储的来源项仅含`id/kind/label/digest/locator`：id按固定输入顺序生成`source-<index>`，digest绑定精确引用文本，label为有界可读名称，locator明确本次输入路径或materials索引。正文不重复存入附加证据。最多128项来源，label最多1024字节，locator最多1024字节；不接受模型追加、重命名或重分类。引用对象仅含`sourceId/quote`，quote为无NUL的合法Unicode、最多512 UTF-8字节；除下述零字节来源例外外不得为空，须在指定来源原文中逐字存在，不先规范化替换。存在但不支持结论的引用仍是语义缺陷，必须纳入正反评测。
 
 每个check闭合包含`itemId/assessment/method/reason/evidence/counterexample/findingIds`。reason非空、最多1024 UTF-8字节；evidence最多16条引用。pass至少有一条真实引用，not-applicable仅对允许项成立且有引用与理由。整个检查集合必须覆盖每份原selection候选文件，不能完全忽略某个最终分支。引用存在不代表引用支持推论。
 
@@ -91,3 +91,5 @@ v2外层闭合为`{profile:"task-independent-review/v2",ticketDigest,report,asse
 unknown应区分缺候选规则和缺用户事实：前者可进入原repair，后者通过既有Leader问答澄清，不能要求作者编造渠道。允许待确认占位的展示任务，可在保持原目标且清楚标示时通过；必须提供真实报名或外部效果的任务则不能用占位通过。预算不足、仍缺依据或未获授权时保留原失败/待处理，不提额、不另建Task抹去失败。
 
 repair后必须用新selection和新原输入重新生成全部checks，不从旧候选复制通过资格。组件验收须覆盖合法方案正例、真实引用却不支持结论、必需项冒充不适用、unknown+accept、未实测冒称执行、冷恢复和批准前政策可见性；不得只围绕固定案例的关键词写规则。
+
+空来源边界：原材料允许零字节和纯空白，仍精确核对 bytes/digest。quote 允许原样空白；仅当来源摘要等于零字节内容的 SHA-256 时才允许空字符串 quote，明确表示该来源为空，不代表存在正文。空候选仍必须有对应 sourceId 的证据覆盖；界面须显示“原材料为空（0 字节）”或可见空白说明，不能伪造引文或跳过来源。该例外仅用于引用，reason 等解释仍必须非空。
