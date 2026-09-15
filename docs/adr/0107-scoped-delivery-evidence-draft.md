@@ -50,6 +50,8 @@ Review的aggregate只总结分配给它的文本检查，不能签发整个Task�
 
 以下字段仅是待审设计，不是现有OpenAPI声明。实施前必须冻结闭合Schema、限额和反例；HTTP机器权威仍只有原OpenAPI。
 
+本候选统一区分两类摘要：结构化值的摘要是`digest(encode(value))`，其中`encode`只能使用当前Store的规范编码；制品内容的摘要是`digest(exactBytes)`。因此`requirementDigest`应定义为原`Plan.acceptance[index]`字符串的结构化值摘要，而不是对展示文本或原始UTF-8字符直接另算一套未命名算法；若未来必须证明原始文本字节，应新增明确命名的字段和摘要域。`contractDigest`、`capabilityDigest`、`planDigest`、`candidateDigest`和`selectionDigest`均须在各自定义的完整输入对象上使用前述结构化值摘要，不能混用`JSON.stringify`或字段拼接。
+
 1. Plan增加可选、仅新profile必需的 `acceptanceContract`，包含profile、原要求映射及检查列表。每项含稳定ID、原文引用与摘要、method、时点、能力身份/有界参数、允许不适用的条件。完整覆盖必需要求，最多16检查项；一项要求可对应多个检查，超限明确拒绝，不截断。该对象参与原planDigest、批准页面及原CAS。
 2. 新评审范围必须显式声明 `scope=text-review` 和契约摘要；原六字段report继续由原Port验证，独立附属证据保存范围。因为0106是全部条目text-review，必须新显式profile/新outer版本，不能在旧v2上偷偷重新解释scope。确切版本号和字段需实施前独立冻结，旧客户端不得把新范围显示为全部验收通过。
 3. 复用原Artifact保存契约及受信结果；Task内部增加有界 `acceptanceEvidence` 索引，字段与失效规则见下节。证据接纳与原Worker结算同事务，Core从原事实计算交付门禁，不创建第二状态真值。
@@ -60,21 +62,52 @@ Review的aggregate只总结分配给它的文本检查，不能签发整个Task�
 
 ## 证据索引的闭合形状与有效性
 
-候选索引外层闭合为 `{profile,contractDigest,entries}`，profile拟为`task-acceptance-evidence/v1`，entries最多16项且checkId唯一。每条闭合为：
+候选索引外层闭合为 `{profile,taskId,contractDigest,entries}`，profile拟为`task-acceptance-evidence/v1`，entries最多16项且checkId唯一。`taskId`必须与当前 Task 相同，所有`attemptRef.taskId`、来源 Artifact 的`taskId`和外部动作的授权归属也必须逐项匹配。证据摘要的输入范围固定为`{profile,taskId,contractDigest,entries}`，不包含`evidenceDigest`自身；不能把脱离 Task 上下文的相同合同或相同摘要当作本 Task 的证据。每条闭合为：
 
 ```text
 {contractDigest, checkId, method, capabilityId, capabilityDigest,
- owner:{kind,workerId,attemptId,generation}, planDigest, repairId,
+ owner:{kind,workerId,attemptRef,generation}, planDigest, repairId,
  candidateDigest, selectionDigest, externalAction, receiptDigest,
- sourceArtifactDigest, applicability, result}
+ sourceArtifact, applicability, result}
 ```
+
+其中 `sourceArtifact` 不是单独的摘要字符串，而是可在当前 Task 的受信 Artifact manifest 中定位的闭合引用：
+
+```json
+{
+  "id": "artifact-...",
+  "digest": "sha256:..."
+}
+```
+
+实施 Schema 不得同时引入 `sourceArtifactDigest` 这一平行字段；若需要多来源，必须由受信生产者先生成一个有界清单 Artifact，再由该对象逐项列出来源 `id`、`digest`、`taskId`、`kind`、`status`、`mediaType` 和 `bytes`，而不是让调用者提交一组摘要自行取得资格。
+
+`attemptRef` 采用当前 Node 已有耐久事实的复合引用，不能写成尚未存在的独立 `attemptId`：
+
+```json
+{
+  "profile": "task-attempt-ref/v1",
+  "taskId": "task-...",
+  "workerId": "worker-...",
+  "commandId": "command-...",
+  "generation": "1",
+  "reservationDigest": "sha256:...",
+  "reservationEvent": {
+    "stream": "task-...",
+    "sequence": "12",
+    "digest": "sha256:..."
+  }
+}
+```
+
+`workerId`、`commandId`、`generation`、`reservationDigest` 和 `reservationEvent` 必须共同从原 `worker.reserved` 事务、ticket/command 与当前 `attempt` projection 重算并核对；任何一项不匹配都拒绝接纳。`reservationEvent` 不是展示信息，它把复合引用锚定到 Store 的耐久因果来源。当前 Node 的 `outbox.attempt_id` 通常为空，不得拿它补齐 `attemptRef`；`Worker.worker.attempt` 只可作为展示用的本地序号，不能作为唯一身份。`kind=core` 的过程事实可使用 `workerId=null`，但仍须引用产生该事实的原事务事件和 command，不能凭空构造 Worker Attempt。
 
 - 摘要均为完整SHA-256，checkId来自原批准目录，method为本文三种之一；capabilityId为启动前登记的固定ID，capabilityDigest绑定配置及实现。Core原事实生产者也使用固定能力身份，不由Provider填入。result仅为`pass/fail/unknown`；未执行或未到期表示条目尚无证据，不能用null结果冒充通过。不适用按下述applicability分支保留，不能由空索引推断。
 - applicability仅为`applicable/not-applicable`。普通检查为applicable并保留原pass/fail/unknown；not-applicable仅可映射为result=pass，表示“原契约允许的不适用条件已由受信接纳确认”，不是业务操作已执行。接纳必须同时核对原check允许NA、该项明确的不适用条件、原来源报告的NA判断/理由/引用与当前候选；缺任一项拒绝此分支，不能将未知自动改成NA。源Artifact必须保留原NA字段、理由及条件依据，索引由该来源派生；普通pass且无原NA来源不得标not-applicable。Core计为满足时仍保留applicability，API/UI须展示“不适用（条件及来源）”而非“检查执行通过”。若该条件只能由语义Reviewer判断，其来源仍标text-review；受信接纳校验身份与契约条件覆盖，不宣称程序证明自然语言判断正确，独立语义验收继续检查错误豁免。
-- owner闭合为`kind/workerId/attemptId/generation`。kind=`worker`时三身份都来自本次原执行且非空；kind=`core`仅用于不启动Worker的原事务事实，workerId/attemptId均为null，generation来自原接纳事务。不能虚构Worker给Core事实背书，也不能拿作者身份签独立检查。
+- owner闭合为`kind/workerId/attemptRef/generation`。kind=`worker`时`workerId`与`attemptRef.workerId`必须相同，且复合引用的所有字段都来自本次原执行；kind=`core`仅用于不启动Worker的原事务事实，`workerId=null`，`attemptRef`仍须引用产生该事实的原 command/事务事件，generation来自原接纳事务。不能虚构Worker给Core事实背书，也不能拿作者身份签独立检查。
 - planDigest绑定批准计划，repairId为原当前repair身份或确实无repair时null。selectionDigest绑定完整冻结选果；candidateDigest绑定按确定性顺序编码的候选文件清单（节点、路径、文件摘要、字节数），不是模型自报正文hash。任何一项不得用随机值补齐。
 - externalAction为null或闭合`{actionId,authorizationDigest,targetDigest}`，只引用原已批准动作，不授新权；receiptDigest为原回执的公开规范化引用摘要或null，不能据此重建opaque receipt。外部效果必需externalAction与原可信回执，普通Verification必需原回执；Core原事实允许receiptDigest=null，但sourceArtifactDigest必须指向受信事务导出的证据。
-- sourceArtifactDigest绑定同Task、ready状态、精确字节的原证据Artifact；需要多来源时由受信生产者生成有界证据清单Artifact，逐项校验来源ID/摘要/字节/Task身份。文本证据关联原Review envelope；Core事实包含原事件序号与覆盖范围；公开日志或仅相同摘要的普通上传不能获得生产者身份。
+- sourceArtifact绑定同Task、ready状态、精确字节的原证据Artifact，并同时校验其`id`、`digest`、`kind`、`mediaType`和`bytes`；需要多来源时由受信生产者生成有界证据清单Artifact，逐项校验来源ID/摘要/字节/Task身份。文本证据关联原Review envelope；Core事实包含原事件序号与覆盖范围；公开日志或仅相同摘要的普通上传不能获得生产者身份。
 - 索引每条最多2048 UTF-8字节，完整索引最多32768字节；基础ID使用现有ID语法及128字节限额，generation沿原十进制非负整数表示。来源正文沿原Artifact限额，整体Review输入仍遵守原限额；超限失败不截断。实施Schema必须固定nullable分支和result所需证据，不允许未知字段。
 
 当前可消费证据必须同时满足契约、计划、检查、能力、候选、选果和repair身份匹配。新计划/目录/能力改变不能重用；任何选果、文件字节或repair改变，首版保守使该索引整体失效，要求新证据，不从旧pass挑选拼接。即使旧文件未改，也不自动跨repair复用。原记录保留供审计，失效不改写成从未发生。
@@ -126,7 +159,7 @@ unknown必须说明缺的是候选规则、用户事实、执行证据还是不�
 1. **两个新增协议名称及闭集**：冻结Plan验收契约的profile字面值，以及新Review范围/outer的profile字面值与版本；分别列出所有必需/可选/nullable字段、枚举、限额、未知profile拒绝规则及旧版本对应关系。目前不能把示意`scope=text-review`塞入旧v2，或把索引拟名当这两个协议均已确定。
 2. **摘要算法及域**：逐一冻结contractDigest、planDigest的包含关系、candidateDigest清单排序/字段、selectionDigest复用原算法的条件及结果Artifact的字节摘要。使用原确定性encode与完整SHA-256时仍须给出精确输入对象、版本域、数组顺序、空值语义和测试向量；不得混用JSON.stringify、展示文本、短ID或文件拼接哈希。批准请求中contractDigest如何参与原planDigest/CAS须有正负例。
 3. **capabilityDigest组成**：列出每种能力的固定ID/版本、实现与受信接线源码摘要、参数Schema、允许资源/权限边界、执行上限、证据输出Schema与配置值如何共同纳入确定性摘要；依赖源码与参数顺序明确。不能只哈希显示名称，不能让模型或调用者给出自称可信的digest。配置改变的同根拒绝与旧记录读取边界一起冻结。
-4. **证据Artifact必须可定位**：sourceArtifactDigest单独不足以定位或证明归属。实施Schema必须增加/明确原Artifact ID引用（拟sourceArtifactId）及其与sourceArtifactDigest、Task、kind、ready状态、mediaType、bytes的联合验证。只有原受信提交路径建立的引用可接纳，不能通过同digest的任意上传复造资格。多源清单也必须保存各源Artifact ID及摘要，并拒绝跨Task/未提交/被替换来源。
+4. **证据Artifact必须可定位**：单独的Artifact摘要不足以定位或证明归属。实施Schema必须明确`sourceArtifact.id`与`sourceArtifact.digest`，并将其与Task、kind、ready状态、mediaType、bytes联合验证。只有原受信提交路径建立的引用可接纳，不能通过同digest的任意上传复造资格。多源清单也必须保存各源Artifact ID及摘要，并拒绝跨Task/未提交/被替换来源；不得再引入与`sourceArtifact`并列的`sourceArtifactDigest`字段。
 5. **Attempt持久身份来源**：当前示意owner.attemptId尚未证明有独立持久ID，不得生成UUID补位。实施前盘点原Worker.attempt序号、workerId、commandId与原reservation/执行记录，选择经验证可唯一定位的持久引用；若原系统没有独立attemptId，则修订示意字段为显式复合attemptRef并冻结唯一性/代际语义，而非宣称字段已存在。Core类型的null分支同样不可虚构Worker，需引用原事务事件。
 6. **Audit与UI精确投影**：冻结Audit.acceptanceEvidence是否为新增可选字段、完整Schema/分页或有界上限、契约和Artifact读取路径、失效/未到期/unknown/NA呈现。服务端权威来源必须唯一，不能由UI根据文本猜满足；损坏新版本不得降级为旧“通过”。逐一列出OpenAPI、Transport、Reader、Plan批准和UI受影响字段及测试，不能仅写“沿原API展示”。
 7. **旧客户端兼容**：冻结能力协商或可判定的版本拒绝方式、原批准端点在新profile必需contractDigest的Schema、旧请求明确错误与新客户端读旧记录的行为。不得对旧客户端隐藏新必需条件仍批准，也不将旧根强制升级；对旧profile是否完全无字段变化必须用实际字节/Schema回归确认。
