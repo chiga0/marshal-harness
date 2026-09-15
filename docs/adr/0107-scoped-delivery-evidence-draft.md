@@ -119,6 +119,20 @@ unknown必须说明缺的是候选规则、用户事实、执行证据还是不�
 
 确定性退出单独要求：Schema/摘要/回执/事务/预算下限/取消/恢复用例与M01精算反例通过；这些不需要模型，也不证明Reviewer推论正确。独立语义退出单独要求：冻结原S01/S02事实与创作、C01失败窗口和适用性正反例逐项审查，不只比较verdict或关键词；原input/候选不变、失败保留，有限模型结果不外推真实FS。两类均满足后才进入真实从零业务路径，真实业务仍单独验收。每条结果分别计协议、分项标签、独立语义、真实业务，不以一种替另一种。独立审查必须证明源码未新增Core旁路或权限，再准入任何真实模型实验。
 
+## 实施前必须冻结的P1接缝
+
+本节是阻止实施准入的明确清单，不是已经存在的字段或已接受Schema。上述示意对象须按此清单完成独立复核后才能编码；仅文档中出现名称不能授予能力。
+
+1. **两个新增协议名称及闭集**：冻结Plan验收契约的profile字面值，以及新Review范围/outer的profile字面值与版本；分别列出所有必需/可选/nullable字段、枚举、限额、未知profile拒绝规则及旧版本对应关系。目前不能把示意`scope=text-review`塞入旧v2，或把索引拟名当这两个协议均已确定。
+2. **摘要算法及域**：逐一冻结contractDigest、planDigest的包含关系、candidateDigest清单排序/字段、selectionDigest复用原算法的条件及结果Artifact的字节摘要。使用原确定性encode与完整SHA-256时仍须给出精确输入对象、版本域、数组顺序、空值语义和测试向量；不得混用JSON.stringify、展示文本、短ID或文件拼接哈希。批准请求中contractDigest如何参与原planDigest/CAS须有正负例。
+3. **capabilityDigest组成**：列出每种能力的固定ID/版本、实现与受信接线源码摘要、参数Schema、允许资源/权限边界、执行上限、证据输出Schema与配置值如何共同纳入确定性摘要；依赖源码与参数顺序明确。不能只哈希显示名称，不能让模型或调用者给出自称可信的digest。配置改变的同根拒绝与旧记录读取边界一起冻结。
+4. **证据Artifact必须可定位**：sourceArtifactDigest单独不足以定位或证明归属。实施Schema必须增加/明确原Artifact ID引用（拟sourceArtifactId）及其与sourceArtifactDigest、Task、kind、ready状态、mediaType、bytes的联合验证。只有原受信提交路径建立的引用可接纳，不能通过同digest的任意上传复造资格。多源清单也必须保存各源Artifact ID及摘要，并拒绝跨Task/未提交/被替换来源。
+5. **Attempt持久身份来源**：当前示意owner.attemptId尚未证明有独立持久ID，不得生成UUID补位。实施前盘点原Worker.attempt序号、workerId、commandId与原reservation/执行记录，选择经验证可唯一定位的持久引用；若原系统没有独立attemptId，则修订示意字段为显式复合attemptRef并冻结唯一性/代际语义，而非宣称字段已存在。Core类型的null分支同样不可虚构Worker，需引用原事务事件。
+6. **Audit与UI精确投影**：冻结Audit.acceptanceEvidence是否为新增可选字段、完整Schema/分页或有界上限、契约和Artifact读取路径、失效/未到期/unknown/NA呈现。服务端权威来源必须唯一，不能由UI根据文本猜满足；损坏新版本不得降级为旧“通过”。逐一列出OpenAPI、Transport、Reader、Plan批准和UI受影响字段及测试，不能仅写“沿原API展示”。
+7. **旧客户端兼容**：冻结能力协商或可判定的版本拒绝方式、原批准端点在新profile必需contractDigest的Schema、旧请求明确错误与新客户端读旧记录的行为。不得对旧客户端隐藏新必需条件仍批准，也不将旧根强制升级；对旧profile是否完全无字段变化必须用实际字节/Schema回归确认。
+
+退出证据至少包括机器Schema示例和拒绝变异、摘要测试向量、原持久Attempt来源的代码定位、HTTP完整读取/批准/证据消费与旧客户端拒绝测试方案。任何一项未完成，ADR保持Draft，不能将本候选视为可直接实现的封闭合同。
+
 ## 不做事项及接受前问题
 
 不新增工作流/验证器管理平台、动态脚本市场、任意执行入口、模型投票层、第二SQLite或新Task状态机。不引入OS沙箱宣传、不恢复旧Marshal skill、不把更多Agent或更多报告当可靠性证明。不要求方案任务先实现软件，也不删除用户过程要求让oracle变绿。
