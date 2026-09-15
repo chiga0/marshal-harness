@@ -15,7 +15,7 @@ import {
   workerStatusLabel,
 } from '../shared/format';
 import {useNow} from '../shared/use-now';
-const stages = ['需求', '计划', '执行', '评审', '验收', '交付'];
+const stages = ['需求', '计划', '执行', '评审', '检查', '交付'];
 /** 仅定位当前已观察阶段，不将前序阶段画成通过。 */
 export function currentStage(
   task: TaskRecord,
@@ -66,7 +66,7 @@ export function taskFocus(task: TaskRecord, leader: LeaderRecord | null) {
     cancelling: '正在取消任务并确认执行停止',
     intervention: '执行遇到异常，需要排查',
     queued: '计划已批准，等待调度',
-    completed: '任务已完成，查看成果与验收结果',
+    completed: '流程已完成，查看成果与检查依据',
     failed: '任务未完成，请查看失败原因',
     cancelled: '任务已取消',
   };

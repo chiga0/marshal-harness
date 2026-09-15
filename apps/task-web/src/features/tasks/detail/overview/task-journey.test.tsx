@@ -18,6 +18,9 @@ describe('任务阶段以当前可行动事实表达',()=>{
     expect(workerTitle(makeWorker({role:'planner',nodeId:'managed-leader-example',attempt:10}))).toBe('Leader 决策 · 执行 10');
     const task=makeTask({status:'completed'});
     render(<MemoryRouter><TaskJourney task={task} leader={null} workers={[]} audit={null}/></MemoryRouter>);
+    expect(screen.getByText('流程已完成，查看成果与检查依据')).toBeInTheDocument();
+    expect(screen.getByRole('list',{name:'任务阶段'})).toHaveTextContent('检查');
+    expect(screen.getByRole('list',{name:'任务阶段'})).not.toHaveTextContent('验收');
     expect(screen.getByTestId('completed-view-delivery')).toHaveAttribute('href',`/tasks/${task.id}/artifacts`);
   });
 
