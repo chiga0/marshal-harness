@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {renderHook, render, screen, within, waitFor, act} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-// @ts-expect-error Vitest 在 Node 执行；浏览器 tsconfig 不安装 Node 类型，原生 Blob 只用于测试真实字节。
+// 原生 node:buffer Blob 只用于测试真实字节;jsdom Blob 传给 Node Response 不能验证同长篡改。
 import {Blob as NodeBlob} from 'node:buffer';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import type {ReactNode} from 'react';
