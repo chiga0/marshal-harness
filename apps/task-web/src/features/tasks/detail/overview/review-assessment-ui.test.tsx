@@ -52,3 +52,20 @@ it('实际OpenAPI v2外层及依赖进入受信白名单，并由真实reader使
  await expect(readReviewExplanation(f.leader,f.transport)).resolves.toHaveProperty('assessment');
  envelope.assessment.sources[0].kind='invented';expect(matchesContract(envelope,'ReviewEvidenceEnvelope')).toBe(false);
 });
+
+it('固定政策短题保留完整要求与稳定ID，业务原文和负项行动仍可见',async()=>{
+ const f=await fixture();f.assessment.checks[1]!.assessment='unknown';
+ const {ReviewAssessmentView}=await import('../shared/review-assessment-view');
+ render(<ReviewAssessmentView assessment={f.assessment}/>);
+ const items=screen.getAllByTestId('review-assessment-item');
+ const titles=['范围与交付边界','事实与创作边界','操作效果与反馈','数据变化与恢复'];
+ items.forEach((item,index)=>{
+  expect(item).toHaveAttribute('data-criterion-id',f.assessment.criteria[index]!.id);
+  const summary=item.querySelector('summary')!;
+  expect(summary).toHaveTextContent(index===0?f.assessment.criteria[0]!.requirement:titles[index-1]!);
+  if(index>0)expect(summary).not.toHaveTextContent(f.assessment.criteria[index]!.requirement);
+  expect(item.querySelector('[data-testid="review-criterion-requirement"]')).toHaveTextContent(f.assessment.criteria[index]!.requirement);
+  expect(item.querySelector('[data-testid="review-criterion-reason"]')).toHaveTextContent(f.assessment.checks[index]!.reason);
+ });
+ expect(items[1]).toHaveAttribute('open');expect(items[0]).not.toHaveAttribute('open');
+});
