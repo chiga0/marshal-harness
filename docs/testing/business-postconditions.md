@@ -42,6 +42,12 @@ M01 可优先作为新显式业务 profile 的确定性内容检查。S01 若继
 
 运行 `node --test scripts/business-postconditions.test.mjs` 检查离线规则，再运行 `node --test --test-concurrency=1 packages/task-service/m01-postcondition.test.mjs` 检查受控 HTTP 垂直切片。两者都属于受控 fixture，没有真实模型或真实外部业务效果证据；UI 三线不适用的范围仅限这些测试，不能据此更新产品体验为通过。
 
+## S01 受控 HTTP 垂直切片
+
+`packages/task-service/s01-postcondition.test.mjs` 在同一受控装配中验证有限 `finite-guide/v1` profile：真实启动 `TaskApplication`、SQLite、HTTP、`ArtifactDepot`、`createFileBusiness` 和 `createVerificationPort`，从冻结的原始 guide contract 读取事实，再独立检查候选 `guide.md`。正确候选产生 evidence 与 delivery；额外设施/费用、时间事实漂移和地点事实漂移分别落为 `not-verified` 或 `fail`，失败路径不产生 delivery。测试还检查 `task.audit` 的后验状态和验证器只运行一次。
+
+这只是用户明确选择的有限表达 fixture，不证明任意自然语言 S01 需求已完成，也不证明真实模型、真实外部效果或目标用户可用性。运行 `node --test --test-concurrency=1 packages/task-service/s01-postcondition.test.mjs` 复验；该证据与 M01/C01 一样不能将 `authority:false` 实验升级为通用业务授权。
+
 ## C01 真实文件系统恢复受控切片
 
 `packages/task-service/c01-recovery.test.mjs` 是当前 C01 的受控纵切测试。它另外启动真实 Node 子进程，在独立临时目录对冻结的 `notes.json` 执行四个有界步骤：创建待完成清单、写临时索引、以不可覆盖的 hard-link 替换索引、创建完成标记。测试在步骤开始前以及每个步骤完成后让子进程退出，再以新进程重启；重启沿已有文件事实继续，重复运行在完整状态上返回 `skipped`。每个场景由独立 `verifyRecoveryState` 重新读取原始输入和状态文件，检查摘要、完整行集合、完成标记和临时文件清理，不读取作者报告。
