@@ -106,7 +106,7 @@ Review的aggregate只总结分配给它的文本检查，不能签发整个Task�
 - applicability仅为`applicable/not-applicable`。普通检查为applicable并保留原pass/fail/unknown；not-applicable仅可映射为result=pass，表示“原契约允许的不适用条件已由受信接纳确认”，不是业务操作已执行。接纳必须同时核对原check允许NA、该项明确的不适用条件、原来源报告的NA判断/理由/引用与当前候选；缺任一项拒绝此分支，不能将未知自动改成NA。源Artifact必须保留原NA字段、理由及条件依据，索引由该来源派生；普通pass且无原NA来源不得标not-applicable。Core计为满足时仍保留applicability，API/UI须展示“不适用（条件及来源）”而非“检查执行通过”。若该条件只能由语义Reviewer判断，其来源仍标text-review；受信接纳校验身份与契约条件覆盖，不宣称程序证明自然语言判断正确，独立语义验收继续检查错误豁免。
 - owner闭合为`kind/workerId/attemptRef/generation`。kind=`worker`时`workerId`与`attemptRef.workerId`必须相同，且复合引用的所有字段都来自本次原执行；kind=`core`仅用于不启动Worker的原事务事实，`workerId=null`，`attemptRef`仍须引用产生该事实的原 command/事务事件，generation来自原接纳事务。不能虚构Worker给Core事实背书，也不能拿作者身份签独立检查。
 - planDigest绑定批准计划，repairId为原当前repair身份或确实无repair时null。selectionDigest绑定完整冻结选果；candidateDigest绑定按确定性顺序编码的候选文件清单（节点、路径、文件摘要、字节数），不是模型自报正文hash。任何一项不得用随机值补齐。
-- externalAction为null或闭合`{actionId,authorizationDigest,targetDigest}`，只引用原已批准动作，不授新权；receiptDigest为原回执的公开规范化引用摘要或null，不能据此重建opaque receipt。外部效果必需externalAction与原可信回执，普通Verification必需原回执；Core原事实允许receiptDigest=null，但sourceArtifactDigest必须指向受信事务导出的证据。
+- externalAction为null或闭合`{actionId,authorizationDigest,targetDigest}`，只引用原已批准动作，不授新权；receiptDigest为原回执的公开规范化引用摘要或null，不能据此重建opaque receipt。外部效果必需externalAction与原可信回执，普通Verification必需原回执；Core原事实允许receiptDigest=null，但sourceArtifact必须指向受信事务导出的证据。
 - sourceArtifact绑定同Task、ready状态、精确字节的原证据Artifact，并同时校验其`id`、`digest`、`kind`、`mediaType`和`bytes`；需要多来源时由受信生产者生成有界证据清单Artifact，逐项校验来源ID/摘要/字节/Task身份。文本证据关联原Review envelope；Core事实包含原事件序号与覆盖范围；公开日志或仅相同摘要的普通上传不能获得生产者身份。
 - 索引每条最多2048 UTF-8字节，完整索引最多32768字节；基础ID使用现有ID语法及128字节限额，generation沿原十进制非负整数表示。来源正文沿原Artifact限额，整体Review输入仍遵守原限额；超限失败不截断。实施Schema必须固定nullable分支和result所需证据，不允许未知字段。
 
