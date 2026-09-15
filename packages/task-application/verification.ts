@@ -193,11 +193,11 @@ export class TaskVerification {
         this.app.runtimeQuestions.refs(tx, task), ticket.input.interactionRefs), 'candidate_manifest_conflict');
     return manifest;
   }
-  stage(ticket, result) {
+  async stage(ticket, result) {
     const data = this.receipt(ticket, result);
     // Recheck before I/O as well as at the final transaction; never use new-owner
     // or cancelled evidence to create ready metadata. Orphan bytes are harmless.
-    const eligible = this.app.transaction(false, tx => {
+    const eligible = await this.app.transaction(false, tx => {
       const {record, task} = this.app.execution.ticket(tx, ticket);
       if (record.worker.status === 'completed' || !this.app.repair.current(task, ticket)) return false;
       if (task.task.status === 'cancelling' || ['failed', 'cancelled', 'intervention'].includes(task.task.status) || this.app.now() >= ticket.deadline) return false;
@@ -230,6 +230,6 @@ export class TaskVerification {
     // Never fabricate missing evidence, or admit a failed checker's delivery.
     const outputs = data.status === 'passed' ? [['evidence', data.evidence], ['delivery', data.delivery]] :
       data.evidence == null ? [] : [['evidence', data.evidence]];
-    return {data, staged: this.app.artifacts.stageOutputs(outputs)};
+    return {data, staged: await this.app.artifacts.stageOutputs(outputs)};
   }
 }

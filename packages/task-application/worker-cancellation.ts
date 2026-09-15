@@ -26,7 +26,7 @@ export class TaskWorkerCancellation {
   async cancel(request) {
     if (!this.enabled) reject('unsupported_operation', 501);
     this.shape(request);
-    return this.app.transaction(true, tx => {
+    return await this.app.transaction(true, tx => {
       request = this.request(tx, request);
       const previous = this.app.receipt(tx, request); if (previous) return clone(previous);
       const {row, record} = this.app.execution.worker(tx, request.workerId), task = this.app.get(tx, request.taskId), ticket = record.ticket;

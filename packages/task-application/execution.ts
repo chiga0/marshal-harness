@@ -58,15 +58,15 @@ export class TaskExecution {
     const source = {stream, ...tx.append(stream, head, [event])};
     tx.putProjection('budget', stream, row ? row.revision : 0n, source, encode(value));
   }
-  poll(after = '', limit = 50) {
-    return this.app.transaction(false, tx => {
+  async poll(after = '', limit = 50) {
+    return await this.app.transaction(false, tx => {
       const page = tx.commands(after, limit);
       return {items: page.filter(command => command.status === 'pending'),
         nextCursor: page.length === limit ? page.at(-1).id : null};
     });
   }
-  scan(after = '', limit = 25) {
-    return this.app.transaction(false, tx => {
+  async scan(after = '', limit = 25) {
+    return await this.app.transaction(false, tx => {
       const page = tx.projections('task', after, limit);
       return {items: page.map(decode).filter(record => !['completed', 'failed', 'cancelled'].includes(record.task.status))
         .map(record => record.task.id), nextCursor: page.length === limit ? page.at(-1).id : null};
@@ -74,8 +74,8 @@ export class TaskExecution {
   }
   // A generation change never proves old processes stopped. Only current
   // in-memory handles can act on the returned IDs; no persisted PID is used.
-  reconcile(taskId) {
-    return this.app.transaction(true, tx => {
+  async reconcile(taskId) {
+    return await this.app.transaction(true, tx => {
       const task = this.app.get(tx, taskId), workers = this.workers(tx, task);
       if (this.app.repair.recoverUnstarted(tx, task)) return {taskId, status: task.task.status, stopWorkerIds: []};
       const before = hash(task), active = workers.filter(({record}) => live(record.worker));
@@ -115,8 +115,8 @@ export class TaskExecution {
   }
   // Control receipt bytes stay immutable; querying the Operation returns its
   // reconciled observation. Pause fences new dispatch, not existing workers.
-  settleControl(commandId, expectedRevision) {
-    return this.app.transaction(true, tx => {
+  async settleControl(commandId, expectedRevision) {
+    return await this.app.transaction(true, tx => {
       const command = tx.command(commandId);
       if (!command || command.status !== 'pending' || command.revision !== BigInt(expectedRevision)) return false;
       const payload = decode({bytes: command.payload}), task = this.app.get(tx, command.taskId);
@@ -155,9 +155,9 @@ export class TaskExecution {
   }
   // A known local Worker failure fences the entire Task BEFORE external stop or
   // cleanup can finish. It is not a cleanup, refund, new attempt or acceptance.
-  fail(ticket, reasonCode, cleanupUnknown = false) {
+  async fail(ticket, reasonCode, cleanupUnknown = false) {
     if (reasonCode !== 'worker_failed' || typeof cleanupUnknown !== 'boolean') reject('invalid_request', 400);
-    return this.app.transaction(true, tx => {
+    return await this.app.transaction(true, tx => {
       const {row, record, task} = this.ticket(tx, ticket);
       // A target stop that already COMMITted wins against its own pending
       // question/progress/collect callbacks. It is not a sibling failure. A
@@ -189,12 +189,12 @@ export class TaskExecution {
   }
   // null means a current dependency/capacity/fence prevents launch. A ticket is
   // returned exactly once: reservation + command UNKNOWN commit before spawn.
-  nextWork(commandId, expectedRevision) {
+  async nextWork(commandId, expectedRevision) {
     if (this.app.leader?.port) {
-      const typed = this.app.transaction(false, tx => {const command = tx.command(commandId); return command ? decode({bytes: command.payload}).action : null;});
+      const typed = await this.app.transaction(false, tx => {const command = tx.command(commandId); return command ? decode({bytes: command.payload}).action : null;});
       if (['leader', 'review', 'publication', 'postverify'].includes(typed)) return this.app.leader.nextWork(commandId, expectedRevision);
     }
-    return this.app.transaction(true, tx => {
+    return await this.app.transaction(true, tx => {
       const command = tx.command(commandId);
       if (!command || command.revision !== BigInt(expectedRevision) || command.status !== 'pending' ||
           command.generation !== this.app.owner.generation) return null;
@@ -310,15 +310,15 @@ export class TaskExecution {
       this.putCapacity(tx, capacity.row, capacity.value);
       return clone(ticket);
   }
-  mayStart(ticket) {
-    return this.app.transaction(false, tx => {
+  async mayStart(ticket) {
+    return await this.app.transaction(false, tx => {
       const {record, task} = this.ticket(tx, ticket);
       return this.app.repair.current(task, ticket) && record.worker.status === 'queued' && !terminal.has(task.task.status) &&
         !record.stopIntent && !['cancelling', 'paused'].includes(task.task.status) && this.app.now() < ticket.deadline;
     });
   }
-  approvedLayout(ticket) {
-    return this.app.transaction(false, tx => {
+  async approvedLayout(ticket) {
+    return await this.app.transaction(false, tx => {
       const {task} = this.ticket(tx, ticket);
       if (!task.approved || task.approved.planDigest !== ticket.planDigest || !task.verification) reject('unsupported_task', 422);
       const layout = this.app.verification.resolve(task, ticket.nodeId, ticket.input.upstream);
@@ -326,15 +326,15 @@ export class TaskExecution {
       return {planDigest: ticket.planDigest, nodeId: ticket.nodeId, layoutDigest: hash({profile: 'task-file-business/v1', ...layout})};
     });
   }
-  observeExecution(ticket) {
-    return this.app.transaction(false, tx => {
+  async observeExecution(ticket) {
+    return await this.app.transaction(false, tx => {
       const {record} = this.ticket(tx, ticket);
       if (!record.executionId || !record.worker.startedAt) reject('state_conflict', 409);
       return {executionId: record.executionId, startedAt: record.worker.startedAt};
     });
   }
-  started(ticket, started) {
-    return this.app.transaction(true, tx => {
+  async started(ticket, started) {
+    return await this.app.transaction(true, tx => {
       const {row, record, task} = this.ticket(tx, ticket);
       if (!started || !isText(started.executionId, 128) || !Number.isFinite(Date.parse(started.startedAt))) reject('invalid_request', 400);
       if (record.custody && record.custody.descriptor.executionId !== started.executionId) reject('recovery_required', 409);
@@ -352,8 +352,8 @@ export class TaskExecution {
       return {stop};
     });
   }
-  progress(ticket, sequence, progress) {
-    return this.app.transaction(true, tx => {
+  async progress(ticket, sequence, progress) {
+    return await this.app.transaction(true, tx => {
       const {row, record, task} = this.ticket(tx, ticket);
       if (!this.app.repair.current(task, ticket) || !Number.isSafeInteger(sequence) || sequence <= record.progressSequence || !live(record.worker) ||
           record.stopIntent || task.task.status === 'cancelling' || terminal.has(task.task.status)) return false;
@@ -369,13 +369,13 @@ export class TaskExecution {
       this.putWorker(tx, row, record, source); return true;
     });
   }
-  finish(ticket, result) {
+  async finish(ticket, result) {
     if (['leader', 'review', 'publication', 'postverify'].includes(ticket.executionType)) return this.app.leader.finish(ticket, result);
     const verification = ticket.executionType === 'verification';
     // No files, checker, promises or depot writes inside the Store callback.
     const verified = verification && result?.type === 'verification' && (result.status === 'passed' || result.receipt !== undefined) ?
-      this.app.verification.stage(ticket, result) : null;
-    return this.app.transaction(true, tx => {
+      await this.app.verification.stage(ticket, result) : null;
+    return await this.app.transaction(true, tx => {
       const {row, record, task} = this.ticket(tx, ticket);
       if (!live(record.worker)) return clone(record.worker);
       const completion = result?.cleanup;
@@ -493,8 +493,8 @@ export class TaskExecution {
       return clone(record.worker);
     });
   }
-  expandDispatch(commandId, expectedRevision) {
-    return this.app.transaction(true, tx => {
+  async expandDispatch(commandId, expectedRevision) {
+    return await this.app.transaction(true, tx => {
       const command = tx.command(commandId);
       if (!command || command.status !== 'pending' || command.revision !== BigInt(expectedRevision) ||
           command.generation !== this.app.owner.generation) return false;

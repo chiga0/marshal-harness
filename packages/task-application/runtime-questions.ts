@@ -71,13 +71,13 @@ export class TaskRuntimeQuestions {
       fact.inputDigest !== ticket.inputDigest || fact.planDigest !== ticket.planDigest || fact.taskId !== ticket.taskId || fact.workerId !== ticket.workerId)) reject('recovery_required', 409);
     return {...current, question, fact};
   }
-  register(ticket, request) {
+  async register(ticket, request) {
     if (!closed(request, ['sessionId', 'nativeRequestId', 'toolCallId', 'questionNonce', 'kind', 'prompt', 'options']) ||
       !isText(request.sessionId, 256) || !isText(request.nativeRequestId, 256) || !isText(request.toolCallId, 128) || !/^[a-f0-9]{64}$/.test(request.questionNonce ?? '') ||
       !['input', 'select'].includes(request.kind) || !isText(request.prompt, 2048) || !Array.isArray(request.options) ||
       request.kind === 'input' && request.options.length !== 0 || request.kind === 'select' && (request.options.length < 1 || request.options.length > 16) ||
       request.options.some(value => !isText(value, 4096)) || new Set(request.options).size !== request.options.length) reject('invalid_request', 400);
-    return this.app.transaction(true, tx => {
+    return await this.app.transaction(true, tx => {
       const {row, record, task} = this.current(tx, ticket, null, {allowPaused: true}), state = task.runtimeQuestions;
       const previous = state.questions.find(q => q.workerId === ticket.workerId && this.fact(tx, q).nativeRequestId === request.nativeRequestId);
       if (previous) {
@@ -105,9 +105,9 @@ export class TaskRuntimeQuestions {
       return {questionId, questionDigest: q.questionDigest, deadlineAt};
     });
   }
-  answer(request) {
-    this.shape(request); const previous = this.app.replay(request); if (previous) return previous;
-    return this.app.transaction(true, tx => {
+  async answer(request) {
+    this.shape(request); const previous = await this.app.replay(request); if (previous) return previous;
+    return await this.app.transaction(true, tx => {
       const prior = this.app.receipt(tx, request); if (prior) return this.app.clarification.replay(tx, prior);
       const task = this.app.get(tx, request.taskId), q = task.runtimeQuestions?.questions.find(q => q.id === request.questionId);
       if (!q) reject('not_found', 404);
@@ -132,8 +132,8 @@ export class TaskRuntimeQuestions {
       const {key, requestDigest} = this.app.receiptKey(request); tx.putReceipt(key, requestDigest, source, encode(result)); return clone(result);
     });
   }
-  dispatch(ticket, questionId) {
-    return this.app.transaction(true, tx => {
+  async dispatch(ticket, questionId) {
+    return await this.app.transaction(true, tx => {
       const {task, question: q, fact} = this.current(tx, ticket, questionId, {allowPaused: true});
       if (this.app.now() >= Date.parse(q.deadlineAt)) reject('question_expired', 410);
       if (q.deliveryStatus === null || task.task.status === 'paused') return null;
@@ -152,8 +152,8 @@ export class TaskRuntimeQuestions {
         answer: answer.answer, deadlineAt: q.deadlineAt};
     });
   }
-  acknowledge(ticket, questionId, receipt) {
-    return this.app.transaction(true, tx => {
+  async acknowledge(ticket, questionId, receipt) {
+    return await this.app.transaction(true, tx => {
       const {row, record, task, question: q} = this.current(tx, ticket, questionId, {allowPaused: true});
       if (!closed(receipt, ['questionDigest', 'answerDigest', 'deliveryNonce']) || receipt.questionDigest !== q.questionDigest ||
         receipt.answerDigest !== q.answerDigest || this.app.now() >= Date.parse(q.deadlineAt)) reject('state_conflict', 409);

@@ -156,8 +156,8 @@ export class TaskClarification {
   replay(tx, previous) {return {...clone(previous), replayed: true, currentTask: publicTask(this.app.get(tx, previous.taskId), this.app.now())};}
   async answer(request, context) {
     this.shape(request);
-    const previous = this.app.replay(request); if (previous) return previous;
-    const {record, question} = this.app.transaction(false, tx => this.guard(tx, request)), originalRecordDigest = hash(record);
+    const previous = await this.app.replay(request); if (previous) return previous;
+    const {record, question} = await this.app.transaction(false, tx => this.guard(tx, request)), originalRecordDigest = hash(record);
     const config = this.configuration(record), validator = config.slots.find(slot => slot.id === question.slotId);
     check(validator && sync(() => validator.validate(request.body.answer)) === true);
     const oldDigest = record.clarification.previewDigest;
@@ -171,7 +171,7 @@ export class TaskClarification {
     question.answerFactDigest = hash(answer);
     record.task.revision = nextRevision(record.task.revision);
     record.task.status = preview.missingSlots.length ? 'awaiting-answer' : 'awaiting-confirmation';
-    return this.app.transaction(true, tx => {
+    return await this.app.transaction(true, tx => {
       const prior = this.app.receipt(tx, request); if (prior) return this.replay(tx, prior);
       const latest = this.guard(tx, request);
       if (hash(latest.record) !== originalRecordDigest) reject('recovery_required', 409);

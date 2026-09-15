@@ -31,12 +31,12 @@ export class TaskArtifacts {
       if (digest(encode(this.metadata(tx, ref.id))) !== digest(encode(ref))) reject('application_unavailable', 503);
     }
   }
-  inputs(ids) {
+  async inputs(ids) {
     if (ids === undefined) return [];
     if (!Array.isArray(ids) || ids.length > 32 || ids.some(id => !idOK(id)) || new Set(ids).size !== ids.length) reject('invalid_request', 400);
     if (!ids.length) return [];
     this.requireDepot();
-    const refs = this.app.transaction(false, tx => ids.map(id => {
+    const refs = await this.app.transaction(false, tx => ids.map(id => {
       const ref = this.metadata(tx, id);
       if (ref.kind !== 'input' || ref.taskId !== null || ref.status !== 'ready') reject('artifact_not_ready', 409);
       return ref;
@@ -46,14 +46,14 @@ export class TaskArtifacts {
   }
   // Bytes precede the final acceptance transaction. A rollback can leave only
   // unreferenced depot objects, never an externally ready delivery manifest.
-  stageOutputs(outputs) {
+  async stageOutputs(outputs) {
     this.requireDepot();
-    return outputs.map(([kind, output]) => {
+    return Promise.all(outputs.map(async ([kind, output]) => {
       if (!output || !isText(output.name, 255) || typeof output.mediaType !== 'string' || output.mediaType.length > 128 ||
           !/^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(output.mediaType) ||
           !(output.content instanceof Uint8Array) || output.content.byteLength > 8388608) reject('invalid_verification_result', 422);
       const content = Buffer.from(output.content), ref = {digest: digest(content), bytes: content.length}, id = indexId(ref.digest);
-      const known = this.app.transaction(false, tx => parse(tx.projection('artifact', id)));
+      const known = await this.app.transaction(false, tx => parse(tx.projection('artifact', id)));
       if (known) {
         if (known.type !== 'blob' || known.digest !== ref.digest || known.bytes !== ref.bytes) reject('application_unavailable', 503);
         this.bytes(ref);
@@ -62,7 +62,7 @@ export class TaskArtifacts {
         if (stored?.digest !== ref.digest || stored?.bytes !== ref.bytes) reject('application_unavailable', 503);
       }
       return {id, known, kind, name: output.name, mediaType: output.mediaType, ref};
-    });
+    }));
   }
   commitOutputs(tx, taskId, staged, source) {
     return staged.map(item => {
@@ -78,19 +78,19 @@ export class TaskArtifacts {
       return artifact;
     });
   }
-  dispatch(request) {
+  async dispatch(request) {
     this.requireDepot();
     if (request.operation === 'input.create') return this.upload(request);
-    const artifact = this.app.transaction(false, tx => this.metadata(tx, request.artifactId));
+    const artifact = await this.app.transaction(false, tx => this.metadata(tx, request.artifactId));
     if (artifact.status !== 'ready') {
       if (request.operation === 'artifact.content') reject('artifact_not_ready', 409);
       return clone(artifact);
     }
     const content = this.bytes(artifact);
-    this.app.transaction(false, tx => this.recheck(tx, [artifact]));
+    await this.app.transaction(false, tx => this.recheck(tx, [artifact]));
     return request.operation === 'artifact.content' ? {artifact: clone(artifact), content} : clone(artifact);
   }
-  upload(request) {
+  async upload(request) {
     const body = request.body;
     if (!body || typeof body !== 'object' || Array.isArray(body) ||
         Object.keys(body).some(key => !['name', 'mediaType', 'contentBase64'].includes(key)) ||
@@ -102,10 +102,10 @@ export class TaskArtifacts {
     if (content.length > 262144 || content.toString('base64') !== body.contentBase64) reject('invalid_request', 400);
     // Original receipt is historical, not a new claim that missing bytes were
     // repaired. GET always checks current bytes before returning ready.
-    const previous = this.app.replay(request);
+    const previous = await this.app.replay(request);
     if (previous) return previous;
     const ref = {digest: digest(content), bytes: content.length}, id = indexId(ref.digest);
-    const known = this.app.transaction(false, tx => parse(tx.projection('artifact', id)));
+    const known = await this.app.transaction(false, tx => parse(tx.projection('artifact', id)));
     if (known) {
       if (known.type !== 'blob' || known.digest !== ref.digest || known.bytes !== ref.bytes) reject('application_unavailable', 503);
       this.bytes(ref); // A committed-but-missing object must never be re-put.

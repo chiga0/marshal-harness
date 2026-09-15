@@ -34,9 +34,9 @@ export class TaskCleanup {
     this.supported = [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(this.app.store.info?.().format);
   }
   enabled() { return this.supported; }
-  static inspectBeforeClaim(store, after = '', limit = 25) {
+  static async inspectBeforeClaim(store, after = '', limit = 25) {
     const unpermitted = [UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(store.info().format);
-    return store.inspectRecovery(tx => {
+    return await store.inspectRecovery(tx => {
       const rows = tx.projections('attempt', after, limit), items = [];
       for (const row of rows) {
         const record = decode(row);
@@ -67,9 +67,9 @@ export class TaskCleanup {
       commandId: ticket.commandId, reservationDigest: ticket.reservationDigest, inputDigest: ticket.inputDigest,
       planDigest: ticket.planDigest, deadline: ticket.deadline, ownerExpiresAt, executionProfile: profile(executionProfile)};
   }
-  bind(ticket, descriptor, executionProfile) {
+  async bind(ticket, descriptor, executionProfile) {
     check(this.enabled());
-    return this.app.transaction(true, tx => {
+    return await this.app.transaction(true, tx => {
       const {row, record, task} = this.execution.ticket(tx, ticket), binding = this.binding(ticket, executionProfile, descriptor?.binding?.ownerExpiresAt);
       check(keys(descriptor, ['profile', 'custodyId', 'executionId', 'publicKey', 'binding', 'bindingDigest']) && descriptor.profile === PROFILE &&
         id(descriptor.custodyId) && id(descriptor.executionId) && same(descriptor.binding, binding) && descriptor.bindingDigest === hash(binding) &&
@@ -89,9 +89,9 @@ export class TaskCleanup {
       return clone(descriptor);
     });
   }
-  extraScope(ticket, code) {
+  async extraScope(ticket, code) {
     check(this.enabled() && typeof code === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(code));
-    return this.app.transaction(true, tx => {
+    return await this.app.transaction(true, tx => {
       const {row, record, task} = this.execution.ticket(tx, ticket);
       check(record.custody && live(record) && !record.custody.settledDigest);
       if (record.custody.extraScopes.includes(code)) return;
@@ -102,9 +102,9 @@ export class TaskCleanup {
       this.execution.putWorker(tx, row, record, source);
     });
   }
-  pending(after = '', limit = 25) {
+  async pending(after = '', limit = 25) {
     check(this.enabled());
-    return this.app.transaction(false, tx => {
+    return await this.app.transaction(false, tx => {
       const rows = tx.projections('attempt', after, limit);
       return {items: rows.map(decode).filter(record => record?.ticket && record.custody &&
           record.ticket.generation !== this.app.owner.generation.toString() && (live(record) || record.custody.settledDigest))
@@ -112,9 +112,9 @@ export class TaskCleanup {
       nextCursor: rows.length === limit ? rows.at(-1).id : null};
     });
   }
-  pendingUnpermitted(after = '', limit = 25) {
+  async pendingUnpermitted(after = '', limit = 25) {
     check(this.unpermitted);
-    return this.app.transaction(false, tx => {
+    return await this.app.transaction(false, tx => {
       const rows = tx.projections('attempt', after, limit);
       return {items: rows.map(decode).filter(record => record?.ticket && !record.custody &&
         record.ticket.generation !== this.app.owner.generation.toString() && (live(record) || record.unpermittedSettlement))
@@ -260,9 +260,9 @@ export class TaskCleanup {
       tx.putProjection('operation', operationId, row.revision, source, encode(operation));
     }
   }
-  settleUnpermitted(workerId) {
+  async settleUnpermitted(workerId) {
     check(this.unpermitted);
-    return this.app.transaction(true, tx => {
+    return await this.app.transaction(true, tx => {
       const {row, record} = this.execution.worker(tx, workerId), task = this.app.get(tx, record.ticket.taskId);
       const {facts, command, reserved} = this.unpermittedProof(tx, record, task), ticket = record.ticket;
       const settlements = facts.events.filter(event => JSON.parse(event.bytes).payload.type === 'worker.unpermitted-settled');
@@ -316,9 +316,9 @@ export class TaskCleanup {
       return clone(settlement);
     });
   }
-  settle(workerId, observation) {
+  async settle(workerId, observation) {
     check(this.enabled());
-    return this.app.transaction(true, tx => {
+    return await this.app.transaction(true, tx => {
       const {row, record} = this.execution.worker(tx, workerId), task = this.app.get(tx, record.ticket.taskId), custody = record.custody;
       check(custody && record.ticket.generation !== this.app.owner.generation.toString());
       const d = custody.descriptor, key = receiptKey(workerId);

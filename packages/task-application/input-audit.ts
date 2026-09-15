@@ -28,12 +28,12 @@ export class TaskInputAudit {
     if (disclosure !== null && !policies.has(disclosure)) reject('unsupported_task', 422);
     this.app = app; this.disclosure = disclosure;
   }
-  observe(ticket, stage, prompt) {
+  async observe(ticket, stage, prompt) {
     check(['prepared', 'handed-off'].includes(stage));
     if (stage === 'handed-off') return this.handoff(ticket);
     check(validText(prompt) && prompt.trim());
     const promptBytes = Buffer.byteLength(prompt), promptDigest = digest(Buffer.from(prompt));
-    const original = this.app.transaction(false, tx => {
+    const original = await this.app.transaction(false, tx => {
       const {record} = this.app.execution.ticket(tx, ticket);
       if (record.inputObservation) {
         check(record.inputObservation.promptDigest === promptDigest && record.inputObservation.promptBytes === promptBytes);
@@ -51,12 +51,12 @@ export class TaskInputAudit {
           nodeId: ticket.nodeId, role: ticket.role, inputDigest: ticket.inputDigest, promptDigest}));
         if (value && typeof value.then === 'function') {void Promise.resolve(value).catch(() => {});}
         else if (typeof value === 'string' && validText(value)) {
-          staged = this.app.artifacts.stageOutputs([['evidence', {name: ticket.workerId + '.input.txt', mediaType: 'text/plain', content: Buffer.from(value)}]])[0];
+          staged = (await this.app.artifacts.stageOutputs([['evidence', {name: ticket.workerId + '.input.txt', mediaType: 'text/plain', content: Buffer.from(value)}]]))[0];
           text = preview(value); coverage = 'policy-redacted';
         }
       } catch { /* Declined/missing bytes is audit unavailability, not Task failure. */ }
     }
-    return this.app.transaction(true, tx => {
+    return await this.app.transaction(true, tx => {
       const {row, record} = this.app.execution.ticket(tx, ticket);
       if (record.inputObservation) {
         check(record.inputObservation.promptDigest === promptDigest && record.inputObservation.promptBytes === promptBytes); return true;
@@ -74,8 +74,8 @@ export class TaskInputAudit {
       this.app.execution.putWorker(tx, row, record, source); return true;
     });
   }
-  handoff(ticket) {
-    return this.app.transaction(true, tx => {
+  async handoff(ticket) {
+    return await this.app.transaction(true, tx => {
       const {row, record} = this.app.execution.ticket(tx, ticket), observation = record.inputObservation;
       if (!observation) return false;
       this.checked(record);

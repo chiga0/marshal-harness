@@ -136,15 +136,15 @@ export class TaskRepair {
       isText(b.feedback, 4096), 'invalid_request', 400);
   }
   replay(tx, previous) {return {...clone(previous), currentTask: this.view(tx, this.app.get(tx, previous.taskId)), replayed: true};}
-  repair(request) {
-    this.shape(request); const previous = this.app.replay(request); if (previous) return previous;
+  async repair(request) {
+    this.shape(request); const previous = await this.app.replay(request); if (previous) return previous;
     const inspect = tx => {
       const task = this.app.get(tx, request.taskId), b = request.body;
       check(task.task.revision === b.expectedRevision, 'revision_conflict');
       check(task.plan?.digest === b.planDigest && task.decision?.digest === b.decisionDigest, 'plan_conflict');
       return {task, ...this.eligible(tx, task, b.nodeIds)};
     };
-    const original = this.app.transaction(false, inspect);
+    const original = await this.app.transaction(false, inspect);
     // The old original evidence is an immutable diagnostic input, never a new
     // success assertion. Missing committed bytes cannot be silently recreated.
     const bytes = this.app.artifacts.bytes(original.evidence);
