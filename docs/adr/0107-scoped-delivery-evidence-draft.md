@@ -66,10 +66,11 @@ Review的aggregate只总结分配给它的文本检查，不能签发整个Task�
 {contractDigest, checkId, method, capabilityId, capabilityDigest,
  owner:{kind,workerId,attemptId,generation}, planDigest, repairId,
  candidateDigest, selectionDigest, externalAction, receiptDigest,
- sourceArtifactDigest, result}
+ sourceArtifactDigest, applicability, result}
 ```
 
-- 摘要均为完整SHA-256，checkId来自原批准目录，method为本文三种之一；capabilityId为启动前登记的固定ID，capabilityDigest绑定配置及实现。Core原事实生产者也使用固定能力身份，不由Provider填入。result仅为`pass/fail/unknown`；未执行或未到期表示条目尚无证据，不能用null结果冒充通过。不适用须在原契约明确允许并由相应判断证据记录，不能由空索引推断。
+- 摘要均为完整SHA-256，checkId来自原批准目录，method为本文三种之一；capabilityId为启动前登记的固定ID，capabilityDigest绑定配置及实现。Core原事实生产者也使用固定能力身份，不由Provider填入。result仅为`pass/fail/unknown`；未执行或未到期表示条目尚无证据，不能用null结果冒充通过。不适用按下述applicability分支保留，不能由空索引推断。
+- applicability仅为`applicable/not-applicable`。普通检查为applicable并保留原pass/fail/unknown；not-applicable仅可映射为result=pass，表示“原契约允许的不适用条件已由受信接纳确认”，不是业务操作已执行。接纳必须同时核对原check允许NA、该项明确的不适用条件、原来源报告的NA判断/理由/引用与当前候选；缺任一项拒绝此分支，不能将未知自动改成NA。源Artifact必须保留原NA字段、理由及条件依据，索引由该来源派生；普通pass且无原NA来源不得标not-applicable。Core计为满足时仍保留applicability，API/UI须展示“不适用（条件及来源）”而非“检查执行通过”。若该条件只能由语义Reviewer判断，其来源仍标text-review；受信接纳校验身份与契约条件覆盖，不宣称程序证明自然语言判断正确，独立语义验收继续检查错误豁免。
 - owner闭合为`kind/workerId/attemptId/generation`。kind=`worker`时三身份都来自本次原执行且非空；kind=`core`仅用于不启动Worker的原事务事实，workerId/attemptId均为null，generation来自原接纳事务。不能虚构Worker给Core事实背书，也不能拿作者身份签独立检查。
 - planDigest绑定批准计划，repairId为原当前repair身份或确实无repair时null。selectionDigest绑定完整冻结选果；candidateDigest绑定按确定性顺序编码的候选文件清单（节点、路径、文件摘要、字节数），不是模型自报正文hash。任何一项不得用随机值补齐。
 - externalAction为null或闭合`{actionId,authorizationDigest,targetDigest}`，只引用原已批准动作，不授新权；receiptDigest为原回执的公开规范化引用摘要或null，不能据此重建opaque receipt。外部效果必需externalAction与原可信回执，普通Verification必需原回执；Core原事实允许receiptDigest=null，但sourceArtifactDigest必须指向受信事务导出的证据。
