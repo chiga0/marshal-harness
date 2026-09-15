@@ -2347,7 +2347,7 @@ RC1 completion 复审发现：`result-admitted` 已提交后，terminalization �
 
 ## 2026-09-15：业务后验与证据边界复核
 
-`verifyOrders`、`verifyGuide` 与 `verifyRecoveryModel` 已作为离线、`authority:false` 的确定性实验集成，覆盖 M01 精算、有限批准文案和显式四步恢复模型；13 项测试通过，但未接入 Core，也不能替代真实 Verification、语义审查或真实文件系统后验。`scripts/review-item-oracle.mjs` 已对冻结输入、报告身份和条目期望做严格校验，20 项相关测试通过；ADR0107 合同冻结离线测试 8/8 通过，现已通过真实 `TaskApplication`/`TaskExecution.reserve()` 生成输入和 reservation 事实，并保护 Store 摘要、Task/Attempt/Artifact 绑定但不接入生产；S02/C01 延长窗口的真实模型结果仍保留为失败或不可判定证据。
+`verifyOrders`、`verifyGuide` 与 `verifyRecoveryModel` 已作为离线、`authority:false` 的确定性实验集成，覆盖 M01 精算、有限批准文案和显式四步恢复模型；13 项测试通过。离线 helper 本身不接入 Core，也不能替代真实 Verification、语义审查或真实文件系统后验。新增的 `packages/task-service/m01-postcondition.test.mjs` 则在**仅测试配置**中用真实 `TaskApplication`、SQLite、HTTP、Depot、FileBusiness 和现有 `createVerificationPort` 跑通 M01 成功及错误候选两条链路；验证器从原输入 Artifact 的 Depot bytes 重算，再读取受控候选，错误路径只保存独立失败证据而不保存 delivery。这证明现有受信装配的接缝可运行，不表示 `verifyOrders` 已成为通用业务插件、`acceptanceEvidence` 已实现或 ADR0107 已 Accepted。`scripts/review-item-oracle.mjs` 已对冻结输入、报告身份和条目期望做严格校验，20 项相关测试通过；ADR0107 合同冻结离线测试 8/8 通过，现已通过真实 `TaskApplication`/`TaskExecution.reserve()` 生成输入和 reservation 事实，并保护 Store 摘要、Task/Attempt/Artifact 绑定但不接入生产；S02/C01 延长窗口的真实模型结果仍保留为失败或不可判定证据。
 
 ADR0107 当前为 Draft 候选（以 PR #315 当前 head 为准，基线实现仍未接入），经独立复核未发现设计方向上的 P0/P1，明确按责任、时点、候选和 repair 身份闭合 `acceptanceEvidence`，并将确定性退出、独立语义退出和真实业务验收分开。后续修订已统一 Store canonical digest、Task 级证据绑定、可定位 `sourceArtifact:{id,digest}` 及基于耐久事实的复合 `attemptRef`；它尚未接受、未实现、未授权新增 API 或模型调用。实施前仍有七项 P1 接缝必须冻结：两个 profile 闭集、摘要域与测试向量、capabilityDigest、可定位 Artifact、Attempt 持久来源、Audit/UI 精确投影及旧客户端兼容。未完成前不得把草案视为可实施合同。
 

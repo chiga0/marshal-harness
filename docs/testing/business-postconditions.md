@@ -30,6 +30,14 @@ C01 夹具不是从原文本自动推断出的实现。正模型依次记录待�
 
 M01 可优先作为新显式业务 profile 的确定性内容检查。S01 若继续允许自由文案，有限模板只能作为用户明确选择的模式；C01 若交付仍是自然语言方案，必须先解决模型与方案对应的审查，才能把模型运行结果用于业务判断。即使将来模型对应已通过，也仍需对真实实现做独立崩溃恢复测试。
 
+## M01 受控 HTTP 垂直切片
+
+`packages/task-service/m01-postcondition.test.mjs` 提供一个仅测试配置的 M01 垂直切片。它真实启动 `TaskApplication`、SQLite、HTTP、`ArtifactDepot` 和 `createFileBusiness`，经 `task.create → Planner → task.plan → task.approve → Worker → VerificationPort → Decision/Artifact` 完成成功与业务错误两条路径。
+
+作者夹具只生成结构合法的 `orders-summary.json`；独立验证器从 `ticket.input.inputArtifacts` 指向的 Depot 原始 bytes 读取 `orders.json`，从受控验证目录读取作者候选，再调用 `verifyOrders` 重新计算。因此验证器没有把作者复制的输入或作者报告作为原始事实，也没有把 `verifyOrders` 返回的 `authority:false` 实验结果直接当作可序列化权限声明。只有测试配置中受信的 `createVerificationPort` 才将其映射到现有 Core Verification receipt，以检查当前接缝的实际生命周期和交付结果。
+
+该切片不修改 OpenAPI、SQLite 合同或现有 `acceptanceEvidence` 设计，不表示 ADR0107 已 Accepted，也不表示 `verifyOrders` 已成为通用业务插件 API。它证明当前受信装配可以把一个固定 M01 后验接入现有 VerificationPort；正式业务支持仍需单独冻结 profile、能力源码摘要、证据结构、旧客户端行为及真实恢复/发布边界。错误候选路径只保存独立失败证据，不保存 delivery。
+
 ## 复验
 
-运行 `node --test scripts/business-postconditions.test.mjs`。当前 13 项测试覆盖原 M01 材料、三类正负输入、有限语言的未知出口与 C01 的 15 个故障恢复场景。运行结果属于受控 fixture；没有真实模型或新服务 E2E。未接生产，故不产生界面变更；UI 三线不适用的范围仅限本实验，不能据此更新产品体验为通过。
+运行 `node --test scripts/business-postconditions.test.mjs` 检查离线规则，再运行 `node --test --test-concurrency=1 packages/task-service/m01-postcondition.test.mjs` 检查受控 HTTP 垂直切片。两者都属于受控 fixture，没有真实模型或真实外部业务效果证据；UI 三线不适用的范围仅限这些测试，不能据此更新产品体验为通过。
