@@ -8,7 +8,9 @@
 
 ## 2026-09-15：逐项业务验收约定与评审证据（OPEN，实施复验中）
 
-统一包 `d42eb0be` 的实际 HTTP 检查发现执行接线 P1：Controller 创建新 outcome 容器但转发原 receipt，附加证据错误绑定旧 result 对象，导致合法 Review 被拒。两次受控失败保留。后继改为原 opaque receipt 的私有绑定，原 Port 对 type/status/cleanup/ticket 的校验与 Controller 均不变；独立 35 项及经过真实 Controller 的 HTTP 双任务/冷开回归通过，新包浏览器复验仍需完成。此前直接 Core.finish 的成功不能替代这条接线证明。
+新增真实模型证据仍不支持关闭：修后42ce同包四个正反例均在180秒内无正文，组件0/4；相同默认模型短请求22秒成功，单条S02负例延长窗口373.3秒返回合法rework。当前明确存在长评审延迟与完整正反例未验问题，不能把期限清理原因写成模型故障根因，也不以单条诊断成功覆盖原超时。实际服务和视觉通过范围、候选身份及后续结果见[逐项验收记录](ui-1/experience-e2e-2026-09-14.md#批准前约定与逐项评审的后继候选)。
+
+统一包 `d42eb0be` 的实际 HTTP 检查发现执行接线 P1：Controller 创建新 outcome 容器但转发原 receipt，附加证据错误绑定旧 result 对象，导致合法 Review 被拒。两次受控失败保留。后继改为原 opaque receipt 的私有绑定，原 Port 对 type/status/cleanup/ticket 的校验与 Controller 均不变；独立 35 项及经过真实 Controller 的 HTTP 双任务/冷开回归通过，修后与最新 `4f68bd27` 同包浏览器复验均通过有限受控范围。此前直接 Core.finish 的成功不能替代这条接线证明。
 
 依据 [ADR0106](adr/0106-bound-review-assessments.md)，将批准前可读验收条目、原材料引用和逐项状态接入原 Review receipt 与同一事务。确定性结构约束只能防缺项、错绑定及伪引用，不能代替模型语义能力和业务结果实测。独立审查已发现并修复空文件无法形成负评审的边界；UI 与后端状态/finding 规则及固定政策正文一致性继续交叉复核。原 S02/C01 失败证据不变，四组最小正反候选已经独立从原 Audit 重建核对；新增合同的真实模型组件与统一候选 E2E 尚待完成，因此本问题不关闭，真人产品可用性仍待验。
 

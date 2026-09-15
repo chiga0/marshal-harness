@@ -35,9 +35,13 @@ DataAgent 的 MCP/CLI、SQL 发布及补数另有工具归属和外部效果接�
 Leader 模型只返回 `generic-files-leader-proposal/v1` 的 `profile/summary/actions`，受信端口从此次原 ticket 绑定运输身份；动作与证据摘要不纠错，旧协议错误身份不接纳。Core 记录的是绑定后的决定，不是模型逐字输出。产品不保证保存全部原始输出；实机验收需分别保存原始输出与映射结果的私有证据，未保存时不能反推。独立 Review 仍用原协议。新配置 ID 与源码摘要冻结，旧根拒绝配置漂移，不迁移或复活失败任务。
 
 
-## 新安装默认：Leader 与 Review 短协议
+## 新安装默认：批准前约定与逐项评审
 
-[ADR0102](../../docs/adr/0102-generic-review-wire-and-new-install-default.md) 的 `qwen-review-service-config.mjs` 是新安装的 Qwen 默认文件团队。Leader 保持 ADR0101 的短建议；Review 仅返回 `generic-files-review-proposal/v1` 的 `profile/verdict/summary/findings`。受信 mapper 从本次原 ticket 绑定 inputDigest 和 selectionDigest，业务判断原样交给原严格 Port 校验；旧格式、夹带摘要、错误字段或不完整 cleanup 均不修补。独立审查仍读取完整冻结输入及候选。
+`qwen-review-service-config.mjs` 是新安装的 Qwen 默认文件团队。在 ADR0102 的独立短协议基础上，按 [ADR0106](../../docs/adr/0106-bound-review-assessments.md) 显式启用 `assessmentContract:'task-review-assessment/v1'`。Leader 仍返回短建议；受信 mapper 在计划批准前保留最多 12 条原业务要求并追加四项可读政策和原文摘要目录，不能向已批准计划补写要求。
+
+Review 返回 `task-review-assessment-proposal/v1` 的 `profile/verdict/summary/findings/checks`，逐项说明文本判断、来源引用与必要反例。原 Port 校验六字段 report 并生成原回执，受信接线只在同次真实结果上绑定 assessment；Core 原子保存 v2 证据与决定。缺项、错引用、必需项不适用、缺少附加证据均拒收；结构有效不证明业务推理正确。页面分别展示业务验收约定、文本判断与文件配置检查。
+
+直接调用 `createGenericFilesReviewWireConfig({provider})` 未显式启用时保留四字段 `generic-files-review-proposal/v1`，旧 v1 证据继续只读展示；不会被补造逐项覆盖。已登记根的源码与策略身份保持冻结，新源码不能静默接管旧根。默认 Qwen 配置的升级试用须使用新设置和空数据根。
 
 新配置 ID 和策略摘要与旧组合不同，`publication:null`。配置显式启用 `observability={profile:'task-observation/v1',retainPrompts:true}`，披露限于实际可取得、策略允许的交接输入；不记录隐藏推理，缺失或旧执行内容不能反推。
 
