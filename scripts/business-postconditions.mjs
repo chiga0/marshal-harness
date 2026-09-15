@@ -1,7 +1,8 @@
 // 纯离线后验实验：不登记产品 Verifier、不生成 Core 权威。
 import {createHash} from 'node:crypto';
 import {parseJson} from '../packages/task-api/http-boundary.mjs';
-const hash=value=>'sha256:'+createHash('sha256').update(typeof value==='string'?value:JSON.stringify(value)).digest('hex');
+// 不支持或循环输入没有可复核序列化值，不伪造摘要，也不阻断未知结果。
+const hash=value=>{try {const bytes=typeof value==='string'?value:JSON.stringify(value);return typeof bytes==='string'?'sha256:'+createHash('sha256').update(bytes).digest('hex'):null;}catch{return null;}};
 const closed=(value,keys)=>value!==null&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const text=value=>typeof value==='string'&&value.isWellFormed()&&!value.includes('\0');
@@ -66,8 +67,8 @@ function importOnce(model,state,source,crashAfter=-1) {
 }
 /** 有界、原子步骤模型。崩溃发生于每个步骤边界；非文件系统断电模拟。 */
 export function verifyRecoveryModel(model,source) {
-  if(!validModel(model)||!Array.isArray(source)||source.length<1||source.length>8||new Set(source.map(row=>row.id)).size!==source.length||
-    !source.every(row=>closed(row,['id','body','tags'])&&text(row.id)&&text(row.body)&&Array.isArray(row.tags)&&row.tags.length<=8&&row.tags.every(text)))
+  if(!validModel(model)||!Array.isArray(source)||source.length<1||source.length>8||
+    !source.every(row=>closed(row,['id','body','tags'])&&text(row.id)&&text(row.body)&&Array.isArray(row.tags)&&row.tags.length<=8&&row.tags.every(text))||new Set(source.map(row=>row.id)).size!==source.length)
     return evidence('recovery-model',source,model,'not-verified','unsupported_recovery_model');
   const original=JSON.stringify(source),scenarios=[];
   for(const initial of ['empty','existing','corrupt-index'])for(let crash=0;crash<=4;crash++) {

@@ -65,3 +65,10 @@ test('C01 natural-language claims, missing model, arbitrary callbacks and unsupp
   for(const model of ['先记录后建索引，重跑等价',{},null,{...fixtures.recoveryPositive,repair:()=>true}])assert.equal(verifyRecoveryModel(model,fixtures.notes).status,'not-verified');
   assert.equal(verifyRecoveryModel(fixtures.recoveryPositive,[...fixtures.notes,fixtures.notes[0]]).status,'not-verified');
 });
+
+test('unsupported undefined and null-row inputs return not-verified without inventing an input digest',()=>{
+  const orders=verifyOrders(undefined,JSON.stringify(expected));assert.equal(orders.status,'not-verified');assert.equal(orders.inputDigest,null);
+  const guideResult=verifyGuide(undefined,guide());assert.equal(guideResult.status,'not-verified');assert.equal(guideResult.inputDigest,null);
+  const recovery=verifyRecoveryModel(fixtures.recoveryPositive,[null]);assert.equal(recovery.status,'not-verified');
+  const cycle={};cycle.self=cycle;assert.equal(verifyGuide(cycle,guide()).inputDigest,null);
+});
