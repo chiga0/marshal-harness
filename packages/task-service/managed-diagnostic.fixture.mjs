@@ -9,4 +9,4 @@ const providers = new Map([...base.providers].map(([id, native]) => [id, {...nat
     {...raw, status: 'completed', stopReason: 'end_turn', reason: null, outputText: parseOutput, extra: 'PRIVATE_EXTRA_MUST_NOT_ESCAPE'} :
     {...raw, status: 'failed', stopReason: 'error', reason: 'pi_agent_error', outputText: 'PRIVATE_OUTPUT_MUST_NOT_ESCAPE', extra: 'PRIVATE_EXTRA_MUST_NOT_ESCAPE'})};
 }}]));
-export default {...base, providers};
+export default {...base, providers, ...(process.env.MARSHAL_DIAGNOSTIC_OBSERVATION === '1' ? {observability:{profile:'task-observation/v1',retainPrompts:false}} : {})};

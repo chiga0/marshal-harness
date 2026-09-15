@@ -94,6 +94,22 @@ export interface WorkerAudit {
   waitingSource: 'unavailable';
 }
 
+export interface LastResponseUsage {inputTokens: number; outputTokens: number; totalTokens: number; source: 'qwen-acp-meta'; scope: 'last-response'; complete: false; zeroMayBeDefault: true}
+export interface ExecutionDiagnostic {stage: 'preparing'|'starting'|'provider'|'permission'|'collecting'|'cleanup'|'protocol'; code: 'invalid_json'|'invalid_leader_result'|'invalid_leader_decision'|'invalid_review_report'| 'preparation_failed'|'provider_start_failed'|'provider_failed'|'collection_failed'|'cleanup_unconfirmed'|'deadline_exceeded'|'permission_denied'|'permission_shape_denied'|'permission_kind_denied'|'permission_path_denied'|'task_files_missing_output'|'task_files_input_changed'|'task_files_identity_changed'|'task_files_changed'|'task_files_unallowed_output'|'task_files_depot_integrity'|'task_files_limit'|'task_files_unavailable'|'business_cleanup_required'|'business_execution_mismatch'|'business_unapproved_layout'|'business_report_limit'; source: 'controller'|'provider-permission'}
+export interface ObservationFrame {
+  diagnostic?: ExecutionDiagnostic;
+  lastResponseUsage?: LastResponseUsage;
+  profile: 'task-observation/v1';
+  activity: 'starting' | 'waiting' | 'thinking' | 'output' | 'tool' | 'retrying' | 'compacting' | 'stopping' | 'terminal' | 'unknown';
+  observedAt: string;
+  sequence: number;
+  tool: {id: string; kind: 'read' | 'edit' | 'delete' | 'move' | 'search' | 'execute' | 'think' | 'fetch' | 'other'; status: 'pending' | 'in_progress' | 'completed' | 'failed'} | null;
+  model: {id: string; source: 'provider-reported'} | null;
+  usage: {inputTokens: number | null; outputTokens: number | null; totalTokens: number | null; source: 'provider-reported'; complete: boolean} | null;
+  publicText: string;
+}
+export interface WorkerObservation extends ObservationFrame {history: ObservationFrame[]; historyTruncated: boolean}
+
 export interface WorkerRecord {
   id: WorkerId;
   taskId: TaskId;
@@ -109,6 +125,7 @@ export interface WorkerRecord {
   progress: Progress | null;
   usage: Usage;
   audit?: WorkerAudit;
+  observation?: WorkerObservation;
 }
 
 export interface WorkersResponse {
@@ -414,7 +431,29 @@ export interface LeaderPostverify {
 
 export type LeaderStage = 'intake' | 'work' | 'review' | 'verification' | 'delivery' | 'finalizing' | 'terminal';
 
+export interface LeaderProtocolFailure {
+  stage: 'wire-json';
+  code: 'invalid_json';
+  outputDigest: Sha256;
+  outputBytes: number;
+  workerId: WorkerId;
+  callId: string;
+  ticketDigest: Sha256;
+  cleanupDigest: Sha256;
+  at: string;
+}
+export interface LeaderProtocolCorrection {
+  profile: 'leader-json-correction/v1';
+  used: 0 | 1;
+  max: 1;
+  reason: 'wire-json' | null;
+  original: LeaderProtocolFailure | null;
+  successorWorkerId: WorkerId | null;
+  successorCallId: string | null;
+}
+
 export interface LeaderRecord {
+  protocolCorrection?: LeaderProtocolCorrection;
   taskId: TaskId;
   taskRevision: Revision;
   profile: 'task-managed-leader/v1';
@@ -495,6 +534,92 @@ export interface ArtifactRecord {
   createdAt: string;
 }
 
+// ---- 审计（GET /v1/tasks/{taskId}/audit；完整 Audit 合同）----
+
+export interface AuditMeasurement {
+  elapsedSource: 'task-lifecycle';
+  firstReviewSource: 'unavailable';
+  usageSource: 'unavailable';
+}
+
+export interface ContentRejection {
+  policyDigest: Sha256;
+  failedAssertions: string[];
+  reportDigest: Sha256;
+}
+
+export interface AuditDecision {
+  id: string;
+  digest: Sha256;
+  status: 'accepted' | 'rejected';
+  workerId: WorkerId;
+  planDigest: Sha256;
+  artifacts: ArtifactRecord[];
+  contentRejection: ContentRejection | null;
+}
+
+export interface RepairAudit {
+  repairId: string;
+  decisionDigest: Sha256;
+  nodeIds: NodeId[];
+  affectedNodes: NodeId[];
+  operationId: string;
+}
+
+export interface AuditRates {
+  passed: number;
+  total: number;
+  pending: number;
+}
+
+export interface AuditDisclosurePolicy {
+  id: string;
+  version: string;
+}
+
+export interface InputObservation {
+  stage: 'prepared' | 'handed-off' | 'unavailable';
+  promptDigest: Sha256 | null;
+  promptBytes: number | null;
+  inputDigest: Sha256;
+  reservationDigest: Sha256;
+  preparedAt: string | null;
+  handedOffAt: string | null;
+  coverage: 'metadata-only' | 'policy-redacted' | 'unavailable';
+  policy: AuditDisclosurePolicy | null;
+  snapshot: ArtifactRecord | null;
+  previewTruncated: boolean;
+}
+
+export interface AuditPrompt {
+  workerId: WorkerId;
+  text: string;
+  contextRefs: string[];
+  source: 'submitted-redacted' | 'prepared-redacted' | 'handed-off-redacted' | 'unavailable';
+  observation?: InputObservation;
+}
+
+/**
+ * GET /audit 返回的是 OpenAPI 的完整 Audit，而不是只含 acceptance 的子对象。
+ * 页面可以只读取 acceptance，但 transport 必须保留并校验其余事实，避免把服务端
+ * 的 workers/prompts/decision/measurement 投影静默丢掉。
+ */
+export interface TaskAuditRecord {
+  measurement?: AuditMeasurement;
+  decision?: AuditDecision | null;
+  repairs?: RepairAudit[];
+  taskId: TaskId;
+  elapsedMs: number | null;
+  attempts: number;
+  retryCount: number;
+  reworkCount: number;
+  firstReview: AuditRates;
+  acceptance: AcceptanceRecord;
+  usage: Usage;
+  workers: WorkerRecord[];
+  prompts: AuditPrompt[];
+}
+
 // ---- 创建任务（POST /v1/tasks；body = CreateTask）与输入（POST /v1/inputs；body = CreateInput）----
 
 export interface Context {
@@ -521,7 +646,7 @@ export interface CreateInputBody {
   contentBase64: string;
 }
 
-// ---- 验收（GET /v1/tasks/{taskId}/audit 的 acceptance 子投影；UI 只消费 acceptance，不消费的不建模）----
+// ---- 验收（TaskAuditRecord.acceptance）----
 
 export type AcceptanceStatus = 'pending' | 'passed' | 'failed' | 'unknown';
 
@@ -529,11 +654,6 @@ export interface AcceptanceRecord {
   status: AcceptanceStatus;
   evidenceIds: string[];
   digest: Sha256 | null;
-}
-
-export interface TaskAuditRecord {
-  taskId: TaskId;
-  acceptance: AcceptanceRecord;
 }
 
 // ---- 错误合同 ----

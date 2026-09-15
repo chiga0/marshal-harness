@@ -1,6 +1,6 @@
 # Task Service HTTP 接口实现
 
-当前完整调用链见[标准API](../../docs/standard-api.md)，27操作/66Schema的实际配置、版本与证据见[当前支持矩阵](../../docs/api-support.md)，内部适配见[扩展契约](../../docs/extension-contracts.md)。产品已发行和历史接口检查点分别记录，以下0.1.0-candidate是机器合同标识，不表示今日尚无stable资产。
+当前完整调用链见[标准API](../../docs/standard-api.md)，当前 27 个 operation / 77 个 schema 的实际配置、版本与证据见[当前支持矩阵](../../docs/api-support.md)，内部适配见[扩展契约](../../docs/extension-contracts.md)。产品已发行和历史接口检查点分别记录，以下 0.1.0-candidate 是机器合同标识，不表示今日尚无 stable 资产。
 
 此包实现 ADR0085/0088 的 Node profile HTTP 适配层。2026-09-09 已通过当前契约与同包客户端的 **API-STABLE 核心接口检查点**；这不是正式 v1、stable 资产或生产完成声明，[四项出口及精确证据](../../docs/node-task-service-status-2026-09-08.md)分别记录。它不导入实验 Store/Supervisor、固定订单业务或具体 Agent，不启动 socket、模型、进程或数据库。旧九操作实验协议保持独立。
 
@@ -55,3 +55,7 @@ reply 为互斥闭集 `{expectedRevision,requestDigest,answer}` 或 `{expectedRe
 请求最多 256 KiB（input 为 384 KiB 的 base64 包络），响应/制品最多 8 MiB，body 深度最多 32；Task intent 8 KiB、context text 32 KiB。用户请求 limits 不是授权扩大服务限额：Application 必须比较实际 profile 上限。HTTP 等待默认 10 秒、最多 30 秒，不刷新 Task 原期限。请求体未结束时超时/断线会移除读取监听器并关闭该连接；可写错误响应先发出再回收连接，不继续解析剩余请求体，也不转化为 Task cancel。没有流式下载、SSE、HTTP multipart 或任意执行/发布端点。
 
 最短验证命令：`node --test --test-concurrency=1 packages/task-api/*.test.mjs packages/task-client/*.test.mjs`。27 个操作的合同（含局部修正、Leader 子资源）和运行问答测试使用 Request/Response 流替身、独立内存 Application fixture，以及真实 loopback HTTP；覆盖两族答复、oneOf 精确互斥、4096 字节边界、请求/回执串绑、授权正文替换、64 KiB view、有限选项、错误、丢回复与显式同 key 重放。标准 Draft 2020-12 metaschema/示例另用真实 Ajv 2020 校验器验证。无 DB/模型；不能替代实际 SQLite、同执行投递/ACK、恢复或独立业务验收。
+
+显式 `task-observation/v1` 服务组合新增可选 `Worker.observation` / `Event.observation`，规范类型为 `WorkerObservation` / `ObservationFrame`。`Audit.measurement.usageSource` 可为 `provider-observation`，用量仍使用原 `Usage` 结构，覆盖不足不能表述为全量。旧关闭配置不产生新字段；读取新开启配置需使用包含此合同的新客户端，不能要求旧闭合Schema客户端自动接受额外字段。prompt快照继续通过原Audit与artifact下载合同提供。
+
+显式Qwen `usageExtension:'qwen-transcript/v1'` 的 `lastResponseUsage` 是最近一条响应读数，完整性未确认、零值可能为桥接默认；不累计，不进入Task总量或coverage。扩展开关绑定服务根身份；未启用保持旧响应。

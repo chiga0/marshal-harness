@@ -12,7 +12,7 @@ for await (const chunk of process.stdin) {
     if (message.method === 'initialize') {
       if (mode === 'hang-init') continue;
       respond(message, {protocolVersion: 1, agentCapabilities: {loadSession: false}});
-    } else if (message.method === 'session/new') respond(message, {sessionId: 'session-fixture'});
+    } else if (message.method === 'session/new') respond(message, {sessionId: 'session-fixture', ...(mode === 'observed' ? {models: {currentModelId: 'fixture-model'}} : {})});
     else if (message.method === 'session/prompt') {
       pending = message;
       if (mode.startsWith('budget-')) {
@@ -39,6 +39,25 @@ for await (const chunk of process.stdin) {
           toolCall: {toolCallId: 'tool-one', title: 'Read approved fixture', kind: mode.startsWith('permission-execute') ? 'execute' : 'read', rawInput: {path: 'fixture.txt'}, _meta: {private: 'PRIVATE_META'}},
           options: [{optionId: 'once', name: 'Allow once', kind: 'allow_once'}, {optionId: 'deny', name: 'Deny', kind: 'reject_once'}]}});
         continue;
+      }
+      if (mode.startsWith('qwen-usage')) {
+        update({sessionUpdate:'tool_call',toolCallId:'reading',kind:'read',status:'in_progress'});
+        const sample = {inputTokens:10,outputTokens:2,totalTokens:12};
+        const variants = {'qwen-usage-negative':{...sample,inputTokens:-1},'qwen-usage-fraction':{...sample,outputTokens:0.5},
+          'qwen-usage-overflow':{...sample,totalTokens:Number.MAX_SAFE_INTEGER+1},'qwen-usage-missing':{inputTokens:10,totalTokens:12}};
+        const samples = mode === 'qwen-usage' ? [sample,sample,{inputTokens:30,outputTokens:6,totalTokens:36}] :
+          [variants[mode] ?? (mode === 'qwen-usage-zero' ? {inputTokens:0,outputTokens:0,totalTokens:0} : sample)];
+        for (const usage of samples) update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:''},
+          _meta:{usage,secret:'PRIVATE_META',...(mode === 'qwen-usage-subagent' ? {parentToolCallId:'nested',subagentType:'child'} : {})}});
+        update({sessionUpdate:'tool_call_update',toolCallId:'reading',status:'completed'});
+        update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'public output'}});
+        respond(message,{stopReason:'end_turn'}); continue;
+      }
+      if (mode === 'observed') {
+        update({sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: 'Authorization: Bearer fixture-'}});
+        update({sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: 'secret-value\n公开输出'}});
+        update({sessionUpdate: 'agent_thought_chunk', content: {type: 'text', text: 'PRIVATE_THOUGHT'}});
+        respond(message, {stopReason: 'end_turn', usage: {inputTokens: 20, outputTokens: 4, totalTokens: 24}}); continue;
       }
       update({sessionUpdate: 'tool_call', toolCallId: 'tool-one', kind: 'read', status: 'in_progress', rawInput: {secret: 'PRIVATE_INPUT'}, _meta: {private: 'PRIVATE_META'}});
       update({sessionUpdate: 'agent_thought_chunk', content: {type: 'text', text: 'PRIVATE_THOUGHT'}});

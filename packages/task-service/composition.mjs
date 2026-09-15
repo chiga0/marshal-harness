@@ -1,3 +1,6 @@
+import {startLeaderWithJsonCorrection,prepareLeaderWithJsonCorrection} from '../task-application/leader-protocol-correction.mjs';
+import {startReviewWithAssessments} from '../task-application/review-assessment.mjs';
+import {observationConfiguration} from '../task-application/observation.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
@@ -18,8 +21,8 @@ import {safeServiceDiagnostic} from './service-diagnostic.mjs';
 import {createTaskApiHandler} from '../task-api/http-handler.mjs';
 import {PROFILE, TaskApiError, validate} from '../task-api/contract.mjs';
 
-const format = (custody, questions, repair, unpermitted, workerCancellation, leader = null) => Buffer.from(JSON.stringify({profile: PROFILE,
-  layout: leader ? 7 : workerCancellation ? 6 : unpermitted ? 5 : repair ? 4 : questions ? 3 : custody ? 2 : 1, ...(leader ? {leader} : {})}) + '\n');
+const format = (custody, questions, repair, unpermitted, workerCancellation, leader = null, observability = null) => Buffer.from(JSON.stringify({profile: PROFILE,
+  layout: leader ? 7 : workerCancellation ? 6 : unpermitted ? 5 : repair ? 4 : questions ? 3 : custody ? 2 : 1, ...(leader ? {leader} : {}), ...(observability ? {observability} : {})}) + '\n');
 const NOFOLLOW = fs.constants.O_NOFOLLOW;
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -35,9 +38,9 @@ function regular(stat) {
 }
 class ServiceRoot {
   fds = []; directories = new Map();
-  constructor(root, mode, custody, questions, repair, unpermitted, workerCancellation, leader) {
+  constructor(root, mode, custody, questions, repair, unpermitted, workerCancellation, leader, observability) {
     this.root = root; this.parent = path.dirname(root);
-    this.format = format(custody, questions, repair, unpermitted, workerCancellation, leader);
+    this.format = format(custody, questions, repair, unpermitted, workerCancellation, leader, observability);
     try {
       requireValue(fs.realpathSync(this.parent) === this.parent, 'service_root_unavailable');
       this.hold(this.parent); // Explicit private parent, no recursive mkdir/adoption.
@@ -85,7 +88,7 @@ class ServiceRoot {
 }
 
 /** Composition only: no Task reducer, second ledger, model defaults or publication. */
-export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, custody, runtimeQuestions, repair, unpermitted, workerCancellation, auditDisclosure, leader, review, publication, dispose = () => {},
+export async function startTaskService({root, mode, providers, prepare, collect, release, businessFactory, verification, clarification, custody, runtimeQuestions, repair, unpermitted, workerCancellation, auditDisclosure, observability, leader, review, publication, dispose = () => {},
   providerFacts, applicationOptions = {}, port = 0, leaseMs = 60000, renewIntervalMs = 10000,
   requestTimeoutMs = 10000, supervisorOptions = {}, onDiagnostic = () => {}} = {}) {
   requireValue(typeof root === 'string' && path.isAbsolute(root) && path.normalize(root) === root && root !== path.parse(root).root &&
@@ -102,7 +105,17 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     Number.isSafeInteger(port) && port >= 0 && port <= 65535 && Number.isSafeInteger(leaseMs) && leaseMs >= 200 && leaseMs <= 300000 &&
     Number.isSafeInteger(renewIntervalMs) && renewIntervalMs >= 10 && renewIntervalMs * 2 < leaseMs &&
     Number.isSafeInteger(requestTimeoutMs) && requestTimeoutMs >= 10 && requestTimeoutMs <= 30000);
+  let observationConfig;
+  try {observationConfig = observationConfiguration(observability);} catch {requireValue(false);}
+  requireValue(!observationConfig?.retainPrompts || unpermitted === undefined && auditDisclosure == null, 'service_unsupported_preparation');
   const available = new Map(providers);
+  if (observationConfig) {
+    const providerExtensions = [...available].filter(([, provider]) => provider?.usageExtension !== undefined).map(([providerId, provider]) => {
+      requireValue(provider.usageExtension === 'qwen-transcript/v1');
+      return {providerId, usageExtension: provider.usageExtension};
+    }).sort((a, b) => a.providerId.localeCompare(b.providerId));
+    if (providerExtensions.length) observationConfig = {...observationConfig, providerExtensions};
+  }
   const leaderConfig = leader === undefined ? null : leaderConfiguration(leader, review, publication ?? null, verification ?? null);
   requireValue(leaderConfig ? custody !== undefined && businessFactory !== undefined && clarification === undefined && auditDisclosure === undefined &&
     (applicationOptions.execution?.maxWorkers ?? 2) >= 3 && (applicationOptions.defaultLimits?.maxWorkers ?? 2) >= 3 :
@@ -263,7 +276,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
   }
   try {
     sqliteRuntimeCapabilities();
-    files = new ServiceRoot(root, mode, !!custody, !!runtimeQuestions, !!repair, !!unpermitted, !!workerCancellation, leaderConfig);
+    files = new ServiceRoot(root, mode, !!custody, !!runtimeQuestions, !!repair, !!unpermitted, !!workerCancellation, leaderConfig, observationConfig);
     const storeOptions = leader ? {format: LEADER_FORMAT} : workerCancellation ? {format: WORKER_CANCELLATION_FORMAT} : unpermitted ? {format: UNPERMITTED_FORMAT} : repair ? {format: REPAIR_FORMAT} : runtimeQuestions ? {format: INTERACTION_FORMAT} : custody ? {format: CUSTODY_FORMAT} : {};
     store = mode === 'create' ? Store.create(path.join(root, 'store'), storeOptions) : Store.openExisting(path.join(root, 'store'), storeOptions);
     depot = mode === 'create' ? ArtifactDepot.create(path.join(root, 'artifacts')) : ArtifactDepot.openExisting(path.join(root, 'artifacts'));
@@ -317,7 +330,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
       }
     }
     const owner = store.claimOwner(store.info().generation, instanceId, Date.now() + leaseMs);
-    application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification, clarification, runtimeQuestions, repair, auditDisclosure,
+    application = new TaskApplication({...applicationOptions, execution, store, owner, depot, verification, clarification, runtimeQuestions, repair, auditDisclosure, observability,
       leader: leader ?? null, review: review ?? null, publication: publication ?? null});
     if (custody) {
       let after = '', complete = false;
@@ -369,17 +382,21 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     const managed = leader ? {
       prepare: async (ticket, wait) => {
         const prepared = await business.prepareManaged(ticket, wait);
-        if (ticket.executionType === 'leader') return leader.prepare(ticket, prepared, wait);
+        if (ticket.executionType === 'leader') return prepareLeaderWithJsonCorrection(leader,ticket,prepared,wait);
         if (ticket.executionType === 'review') return review.prepare(ticket, prepared, wait);
         return prepared;
       },
       validate: ticket => business.validateManaged(ticket),
       provider: ticket => application.leader.effects[ticket.executionType] ?? available.get(ticket.providerId),
-      start: options => (application.leader.effects[options.ticket.executionType] ?? (options.ticket.executionType === 'leader' ? leader : review))
-        .start({...options, provider: available.get(options.ticket.providerId), onDiagnostic: managedDiagnostic}),
+      start: options => (options.ticket.executionType === 'review' ? startReviewWithAssessments : startLeaderWithJsonCorrection)(application.leader.effects[options.ticket.executionType] ?? (options.ticket.executionType === 'leader' ? leader : review),
+        {...options, ...(observationConfig ? {prepared: {...options.prepared, observability: true}} : {}), provider: available.get(options.ticket.providerId), onDiagnostic: value => {
+          const report = safeManagedDiagnostic(value);
+          if (report && observationConfig) options.onDiagnostic?.(report);
+          managedDiagnostic(value);
+        }}),
     } : null;
     const Coordinator = leader ? TaskExecutionCoordinator : TaskSupervisor;
-    supervisor = new Coordinator({...supervisorOptions, execution: application.execution, providers: available, managed,
+    supervisor = new Coordinator({...supervisorOptions, execution: application.execution, providers: available, managed, observability: observationConfig !== null,
       verification, release, custody: custodian ?? null,
       prepare: (ticket, wait) => prepare(ticket, {...wait, ...context}),
       collect: (ticket, result, wait) => collect(ticket, result, {...wait, ...context}),

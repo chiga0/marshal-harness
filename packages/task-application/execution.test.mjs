@@ -8,12 +8,12 @@ import {Store} from '../task-store/store.mjs';
 import {validate} from '../task-api/contract.mjs';
 
 const context = {principal: 'local-operator'}, now = 1800000000000;
-function fixture(t, maxWorkers = 2) {
+function fixture(t, maxWorkers = 2, observability = null) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-execution-test-'))), root = path.join(parent, 'state');
   let instant = now; const clock = () => instant;
   let store = Store.create(root, {clock}), owner = store.claimOwner(0, 'server', now + 3600000);
   const execution = {maxWorkers, providerIds: ['fixture'], defaultProvider: 'fixture'};
-  let app = new TaskApplication({store, owner, clock, execution});
+  let app = new TaskApplication({store, owner, clock, execution, observability});
   t.after(() => { store.close(); fs.rmSync(parent, {recursive: true, force: true}); });
   return {get app() {return app;}, get execution() {return app.execution;},
     create(key = 'create', limit = 8) {return app.dispatch({operation: 'task.create', key, body: {intent: '并行交付文档及数据处理程序',
@@ -23,7 +23,7 @@ function fixture(t, maxWorkers = 2) {
     capacity() {return store.read(owner, tx => app.execution.capacity(tx).value.active);},
     advance(ms) {instant += ms;},
     reopen() {store.close(); store = Store.openExisting(root, {clock}); owner = store.claimOwner(owner.generation, 'next', now + 3600000);
-      app = new TaskApplication({store, owner, clock, execution});}};
+      app = new TaskApplication({store, owner, clock, execution, observability});}};
 }
 const plan = () => ({summary: '并行执行再独立检查', nodes: ['first', 'second', 'review'].map(id => ({id,
   role: id === 'review' ? 'reviewer' : 'author', goal: '完成' + id, scope: [id], providerId: null})),
@@ -274,4 +274,57 @@ test('64 legal large-goal nodes finish without historical ticket amplification o
   assert.equal(f.capacity().length, 0);
   const workers = await f.app.dispatch({operation: 'task.workers', taskId: task.id, page: {limit: 100}}, context);
   assert.equal(workers.items.length, 64); assert.equal(validate(workers, 'Workers'), true);
+});
+
+
+test('opt-in observations bind worker sequence, bound history, survive reopen and cannot overwrite terminal', async t => {
+  const f = fixture(t, 2, {profile: 'task-observation/v1', retainPrompts: false}), task = await f.create(), command = f.commands()[0];
+  const ticket = f.execution.nextWork(command.id, command.revision); f.execution.started(ticket, started(ticket));
+  const progress = index => ({summary: 'agent.running', tool: null, source: 'agent', observation: {activity: 'output', tool: null,
+    model: {id: 'fixture-model', source: 'provider-reported'}, usage: {inputTokens: 10, outputTokens: 5, totalTokens: 15, source: 'provider-reported', complete: true},
+    lastResponseUsage: {inputTokens:index,outputTokens:1,totalTokens:index+1,source:'qwen-acp-meta',scope:'last-response',complete:false,zeroMayBeDefault:true},
+    publicText: 'Authorization: Bearer fixture-secret\n' + '公开'.repeat(index)}});
+  for (let i = 1; i <= 70; i++) {f.advance(1); assert.equal(f.execution.progress(ticket, i, progress(i)), true);}
+  const query = () => f.app.dispatch({operation: 'worker.get', workerId: ticket.workerId}, context);
+  let worker = await query(); assert.equal(validate(worker, 'Worker'), true);
+  assert.equal(worker.observation.lastResponseUsage.totalTokens,71);
+  assert.equal(worker.observation.history.at(-1).lastResponseUsage.totalTokens,71);
+  assert.equal(worker.observation.sequence, 70); assert.equal(worker.observation.historyTruncated, true);
+  assert.ok(worker.observation.history.length <= 64); assert.ok(Buffer.byteLength(JSON.stringify(worker.observation.history)) <= 16384);
+  assert.doesNotMatch(JSON.stringify(worker), /fixture-secret/); assert.equal(worker.observation.usage.totalTokens, 15);
+  assert.equal(f.execution.progress(ticket, 69, progress(1)), false); assert.deepEqual(await query(), worker);
+  const audit = await f.app.dispatch({operation: 'task.audit', taskId: task.id}, context);
+  assert.deepEqual(audit.workers[0].observation.history, []); assert.equal(audit.workers[0].observation.historyTruncated, true);
+  const events = await f.app.dispatch({operation: 'task.events', taskId: task.id, page: {limit: 100}}, context);
+  assert.ok(events.items.some(event => event.observation?.activity === 'output'));
+  assert.ok(events.items.every(event => validate(event, 'Event')));
+  f.execution.finish(ticket, result(ticket, {plan: plan()})); worker = await query(); assert.equal(worker.observation.activity, 'terminal');
+  assert.equal(f.execution.progress(ticket, 71, progress(1)), false); assert.deepEqual(await query(), worker);
+  f.reopen(); assert.deepEqual(await query(), worker);
+});
+
+test('default configuration does not expose typed metadata even when provider offers it', async t => {
+  const f = fixture(t), task = await f.create(), command = f.commands()[0], ticket = f.execution.nextWork(command.id, command.revision);
+  f.execution.started(ticket, started(ticket));
+  f.execution.progress(ticket, 1, {summary: 'agent.running', tool: null, source: 'agent', observation: {activity: 'output', publicText: 'private'}});
+  const worker = await f.app.dispatch({operation: 'worker.get', workerId: ticket.workerId}, context);
+  assert.equal(Object.hasOwn(worker, 'observation'), false);
+  const events = await f.app.dispatch({operation: 'task.events', taskId: task.id}, context);
+  assert.equal(events.items.some(event => Object.hasOwn(event, 'observation')), false);
+});
+
+test('diagnostic survives terminal and cold reopen but cancelled and unknown workers reject late diagnostic', async t => {
+  for(const state of ['terminal','cancelled','unknown']) await t.test(state,async t=>{
+    const f=fixture(t,2,{profile:'task-observation/v1',retainPrompts:false}),task=await f.create(),command=f.commands()[0];
+    const ticket=f.execution.nextWork(command.id,command.revision);f.execution.started(ticket,started(ticket));
+    const progress={summary:'execution.diagnostic',source:'execution',tool:null,observation:{activity:'waiting',diagnostic:{stage:'permission',code:'permission_denied',source:'provider-permission'}}};
+    assert.equal(f.execution.progress(ticket,1,progress),true);
+    if(state==='terminal') f.execution.finish(ticket,result(ticket,{plan:plan()}));
+    else if(state==='unknown') f.execution.finish(ticket,result(ticket,{status:'unknown',cleanup:{started:started(ticket),cleaned:false,scope:'unconfirmed',reason:'cleanup_unconfirmed'}}));
+    else await f.app.dispatch({operation:'task.cancel',taskId:task.id,key:'cancel-diagnostic',body:{expectedRevision:(await f.get(task.id)).revision}},context);
+    const before=await f.app.dispatch({operation:'worker.get',workerId:ticket.workerId},context);
+    assert.equal(f.execution.progress(ticket,2,{...progress,observation:{...progress.observation,diagnostic:{stage:'collecting',code:'collection_failed',source:'controller'}}}),false);
+    assert.deepEqual(await f.app.dispatch({operation:'worker.get',workerId:ticket.workerId},context),before);
+    f.reopen(); assert.deepEqual((await f.app.dispatch({operation:'worker.get',workerId:ticket.workerId},context)).observation.diagnostic,progress.observation.diagnostic);
+  });
 });

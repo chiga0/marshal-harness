@@ -1,6 +1,7 @@
 // Token 只存放在内存（service/transport 模块层单例）——URL、Web Storage、IndexedDB、日志、构建产物均不存放。
 // 断开/刷新清除；连接只指向当前 origin，不接收任意远程 baseURL。
 import {ApiError, parseGraph, parseOperation} from './types';
+import {parseAudit} from '@/features/artifacts/traceability';
 import type {
   Transport, TasksResponse, TaskRecord, WorkersResponse, PlanRecord,
   LeaderRecord, TaskAuditRecord, Events, QuestionsResponse, ArtifactRecord, OperationRecord,
@@ -165,7 +166,9 @@ export function createTransport(config: TransportConfig): Transport {
     resumeTask: (taskId, body) => operationWrite(`/v1/tasks/${encodeURIComponent(taskId)}/resume`, body, taskId, 'task.resume'),
     cancelWorker: (workerId, body) => operationWrite(`/v1/workers/${encodeURIComponent(workerId)}/cancel`, body, null, 'worker.cancel', workerId),
     getLeader: (taskId, options = {}) => json<LeaderRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/leader`, readInit(options.signal)),
-    getAudit: (taskId, options = {}) => json<TaskAuditRecord>(`/v1/tasks/${encodeURIComponent(taskId)}/audit`, readInit(options.signal)),
+    getAudit: async (taskId, options = {}) => parseAudit(
+      await json<unknown>(`/v1/tasks/${encodeURIComponent(taskId)}/audit`, readInit(options.signal)), taskId,
+    ),
     leaderReply: (taskId, requestId, body) => json(`/v1/tasks/${encodeURIComponent(taskId)}/leader/requests/${encodeURIComponent(requestId)}/reply`, withKey(body).init),
     repair: (taskId, body) => operationWrite(`/v1/tasks/${encodeURIComponent(taskId)}/repair`, body, taskId, 'task.repair'),
     getEvents: (taskId, options = {}) => {

@@ -2513,6 +2513,165 @@
         },
         "description": "有来源的独立意见引用，不由 HTTP 认定其资格，也不代替客观验收。"
       },
+      "LeaderProtocolFailure": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "stage": {
+            "const": "wire-json"
+          },
+          "code": {
+            "const": "invalid_json"
+          },
+          "outputDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "outputBytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65536
+          },
+          "workerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "callId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "ticketDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "cleanupDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "stage",
+          "code",
+          "outputDigest",
+          "outputBytes",
+          "workerId",
+          "callId",
+          "ticketDigest",
+          "cleanupDigest",
+          "at"
+        ],
+        "examples": [
+          {
+            "stage": "wire-json",
+            "code": "invalid_json",
+            "outputDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "outputBytes": 48,
+            "workerId": "worker-original",
+            "callId": "call-original",
+            "ticketDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "cleanupDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "at": "2026-09-14T00:00:00Z"
+          }
+        ]
+      },
+      "LeaderProtocolCorrection": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "const": "leader-json-correction/v1"
+          },
+          "used": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "max": {
+            "const": 1
+          },
+          "reason": {
+            "enum": [
+              "wire-json",
+              null
+            ]
+          },
+          "original": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LeaderProtocolFailure"
+              }
+            ]
+          },
+          "successorWorkerId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "successorCallId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          }
+        },
+        "required": [
+          "profile",
+          "used",
+          "max",
+          "reason",
+          "original",
+          "successorWorkerId",
+          "successorCallId"
+        ],
+        "examples": [
+          {
+            "profile": "leader-json-correction/v1",
+            "used": 0,
+            "max": 1,
+            "reason": null,
+            "original": null,
+            "successorWorkerId": null,
+            "successorCallId": null
+          },
+          {
+            "profile": "leader-json-correction/v1",
+            "used": 1,
+            "max": 1,
+            "reason": "wire-json",
+            "original": {
+              "stage": "wire-json",
+              "code": "invalid_json",
+              "outputDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "outputBytes": 48,
+              "workerId": "worker-original",
+              "callId": "call-original",
+              "ticketDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "cleanupDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "at": "2026-09-14T00:00:00Z"
+            },
+            "successorWorkerId": "worker-successor",
+            "successorCallId": "call-successor"
+          }
+        ]
+      },
       "LeaderView": {
         "type": "object",
         "additionalProperties": false,
@@ -2531,6 +2690,9 @@
           "summaryArtifactId"
         ],
         "properties": {
+          "protocolCorrection": {
+            "$ref": "#/components/schemas/LeaderProtocolCorrection"
+          },
           "taskId": {
             "$ref": "#/components/schemas/Id"
           },
@@ -4219,10 +4381,499 @@
           "source"
         ]
       },
+      "LastResponseUsage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "inputTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "outputTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "totalTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "source": {
+            "const": "qwen-acp-meta"
+          },
+          "scope": {
+            "const": "last-response"
+          },
+          "complete": {
+            "const": false
+          },
+          "zeroMayBeDefault": {
+            "const": true
+          }
+        },
+        "required": [
+          "inputTokens",
+          "outputTokens",
+          "totalTokens",
+          "source",
+          "scope",
+          "complete",
+          "zeroMayBeDefault"
+        ]
+      },
+      "ExecutionDiagnostic": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "stage": {
+            "enum": [
+              "preparing",
+              "starting",
+              "provider",
+              "protocol",
+              "permission",
+              "collecting",
+              "cleanup"
+            ]
+          },
+          "code": {
+            "enum": [
+              "preparation_failed",
+              "provider_start_failed",
+              "provider_failed",
+              "invalid_json",
+              "invalid_leader_result",
+              "invalid_leader_decision",
+              "invalid_review_report",
+              "collection_failed",
+            "task_files_missing_output",
+            "task_files_input_changed",
+            "task_files_identity_changed",
+            "task_files_changed",
+            "task_files_unallowed_output",
+            "task_files_depot_integrity",
+            "task_files_limit",
+            "task_files_unavailable",
+            "business_cleanup_required",
+            "business_execution_mismatch",
+            "business_unapproved_layout",
+            "business_report_limit",
+              "cleanup_unconfirmed",
+              "deadline_exceeded",
+              "permission_denied",
+              "permission_shape_denied",
+              "permission_kind_denied",
+              "permission_path_denied"
+            ]
+          },
+          "source": {
+            "enum": [
+              "controller",
+              "provider-permission"
+            ]
+          }
+        },
+        "required": [
+          "stage",
+          "code",
+          "source"
+        ]
+      },
+      "ObservationFrame": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "diagnostic": {"$ref": "#/components/schemas/ExecutionDiagnostic"},
+          "lastResponseUsage": {"$ref": "#/components/schemas/LastResponseUsage"},
+          "profile": {
+            "const": "task-observation/v1"
+          },
+          "activity": {
+            "enum": [
+              "starting",
+              "waiting",
+              "thinking",
+              "output",
+              "tool",
+              "retrying",
+              "compacting",
+              "stopping",
+              "terminal",
+              "unknown"
+            ]
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "x-maxUtf8Bytes": 256,
+                    "x-wellFormedUnicode": true,
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "kind": {
+                    "enum": [
+                      "read",
+                      "edit",
+                      "delete",
+                      "move",
+                      "search",
+                      "execute",
+                      "think",
+                      "fetch",
+                      "other"
+                    ]
+                  },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "in_progress",
+                      "completed",
+                      "failed"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind",
+                  "status"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "x-maxUtf8Bytes": 256,
+                    "x-wellFormedUnicode": true,
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "source": {
+                    "const": "provider-reported"
+                  }
+                },
+                "required": [
+                  "id",
+                  "source"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "inputTokens": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "outputTokens": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "totalTokens": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "source": {
+                    "const": "provider-reported"
+                  },
+                  "complete": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "inputTokens",
+                  "outputTokens",
+                  "totalTokens",
+                  "source",
+                  "complete"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publicText": {
+            "type": "string",
+            "maxLength": 512,
+            "x-maxUtf8Bytes": 512,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*$"
+          }
+        },
+        "required": [
+          "profile",
+          "activity",
+          "observedAt",
+          "sequence",
+          "tool",
+          "model",
+          "usage",
+          "publicText"
+        ]
+      },
+      "WorkerObservation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "diagnostic": {"$ref": "#/components/schemas/ExecutionDiagnostic"},
+          "lastResponseUsage": {"$ref": "#/components/schemas/LastResponseUsage"},
+          "profile": {
+            "const": "task-observation/v1"
+          },
+          "activity": {
+            "enum": [
+              "starting",
+              "waiting",
+              "thinking",
+              "output",
+              "tool",
+              "retrying",
+              "compacting",
+              "stopping",
+              "terminal",
+              "unknown"
+            ]
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "x-maxUtf8Bytes": 256,
+                    "x-wellFormedUnicode": true,
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "kind": {
+                    "enum": [
+                      "read",
+                      "edit",
+                      "delete",
+                      "move",
+                      "search",
+                      "execute",
+                      "think",
+                      "fetch",
+                      "other"
+                    ]
+                  },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "in_progress",
+                      "completed",
+                      "failed"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind",
+                  "status"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "x-maxUtf8Bytes": 256,
+                    "x-wellFormedUnicode": true,
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "source": {
+                    "const": "provider-reported"
+                  }
+                },
+                "required": [
+                  "id",
+                  "source"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "inputTokens": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "outputTokens": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "totalTokens": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "source": {
+                    "const": "provider-reported"
+                  },
+                  "complete": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "inputTokens",
+                  "outputTokens",
+                  "totalTokens",
+                  "source",
+                  "complete"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publicText": {
+            "type": "string",
+            "maxLength": 512,
+            "x-maxUtf8Bytes": 512,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "history": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/ObservationFrame"
+            }
+          },
+          "historyTruncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "profile",
+          "activity",
+          "observedAt",
+          "sequence",
+          "tool",
+          "model",
+          "usage",
+          "publicText",
+          "history",
+          "historyTruncated"
+        ]
+      },
       "Worker": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "observation": {"$ref": "#/components/schemas/WorkerObservation"},
           "audit": {"$ref": "#/components/schemas/WorkerAudit"},
           "id": {
             "$ref": "#/components/schemas/Id"
@@ -4837,7 +5488,7 @@
         "additionalProperties": false,
         "properties": {
           "measurement": {"type": "object", "additionalProperties": false,
-            "properties": {"elapsedSource": {"const": "task-lifecycle"}, "firstReviewSource": {"const": "unavailable"}, "usageSource": {"const": "unavailable"}},
+            "properties": {"elapsedSource": {"const": "task-lifecycle"}, "firstReviewSource": {"const": "unavailable"}, "usageSource": {"enum": ["unavailable", "provider-observation"]}},
             "required": ["elapsedSource", "firstReviewSource", "usageSource"]},
           "decision": {"anyOf": [{"$ref": "#/components/schemas/AuditDecision"}, {"type": "null"}]},
           "repairs": {"type": "array", "items": {"$ref": "#/components/schemas/RepairAudit"}, "maxItems": 100},
@@ -4940,6 +5591,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "observation": {"$ref": "#/components/schemas/ObservationFrame"},
           "id": {
             "$ref": "#/components/schemas/Id"
           },
@@ -5521,6 +6173,746 @@
               }
             ],
             "nextCursor": null
+          }
+        ]
+      },
+      "ReviewCriteriaItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^criterion-[0-9]+-[a-f0-9]{16}$"
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          },
+          "requirement": {
+            "type": "string",
+            "minLength": 1,
+            "x-maxUtf8Bytes": 2048,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "requirementDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "method": {
+            "const": "text-review"
+          },
+          "allowNotApplicable": {
+            "type": "boolean"
+          },
+          "policyId": {
+            "enum": [
+              null,
+              "scope",
+              "facts",
+              "effects",
+              "recovery"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "index",
+          "requirement",
+          "requirementDigest",
+          "method",
+          "allowNotApplicable",
+          "policyId"
+        ],
+        "examples": [
+          {
+            "id": "criterion-0-ec389028757cb2a5",
+            "index": 0,
+            "requirementDigest": "sha256:ec389028757cb2a57a404c22a1a8ea09390b570146d21f593958dfc3fd9b4fb7",
+            "method": "text-review",
+            "allowNotApplicable": false,
+            "policyId": null,
+            "requirement": "提供读书会说明"
+          }
+        ]
+      },
+      "ReviewEvidenceSource": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^source-[0-9]+$"
+          },
+          "kind": {
+            "enum": [
+              "task-input",
+              "approved-plan",
+              "confirmed-answer",
+              "input-artifact",
+              "candidate",
+              "context"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "x-maxUtf8Bytes": 1024,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "digest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "locator": {
+            "type": "string",
+            "minLength": 1,
+            "x-maxUtf8Bytes": 1024,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*$"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "digest",
+          "locator"
+        ],
+        "examples": [
+          {
+            "id": "source-0",
+            "kind": "task-input",
+            "label": "原始需求与上下文",
+            "digest": "sha256:79aaa594b8b8e5a4c10f118827b70c20ec795e84178246001200c66ced4aa995",
+            "locator": "snapshot.task.input"
+          }
+        ]
+      },
+      "ReviewAssessmentCheck": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "pattern": "^criterion-[0-9]+-[a-f0-9]{16}$"
+          },
+          "assessment": {
+            "enum": [
+              "pass",
+              "fail",
+              "unknown",
+              "not-applicable"
+            ]
+          },
+          "method": {
+            "const": "text-review"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "x-maxUtf8Bytes": 1024,
+            "x-wellFormedUnicode": true,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sourceId": {
+                  "type": "string",
+                  "pattern": "^source-[0-9]+$"
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 0,
+                  "x-maxUtf8Bytes": 512,
+                  "x-wellFormedUnicode": true,
+                  "pattern": "^[^\\u0000]*$"
+                }
+              },
+              "required": [
+                "sourceId",
+                "quote"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 16
+          },
+          "counterexample": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "initial": {
+                    "type": "string",
+                    "minLength": 1,
+                    "x-maxUtf8Bytes": 768,
+                    "x-wellFormedUnicode": true,
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "operation": {
+                    "type": "string",
+                    "minLength": 1,
+                    "x-maxUtf8Bytes": 768,
+                    "x-wellFormedUnicode": true,
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "failure": {
+                    "type": "string",
+                    "minLength": 1,
+                    "x-maxUtf8Bytes": 768,
+                    "x-wellFormedUnicode": true,
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "result": {
+                    "type": "string",
+                    "minLength": 1,
+                    "x-maxUtf8Bytes": 768,
+                    "x-wellFormedUnicode": true,
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "recovery": {
+                    "type": "string",
+                    "minLength": 1,
+                    "x-maxUtf8Bytes": 768,
+                    "x-wellFormedUnicode": true,
+                    "pattern": "^[^\\u0000]*$"
+                  }
+                },
+                "required": [
+                  "initial",
+                  "operation",
+                  "failure",
+                  "result",
+                  "recovery"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "findingIds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "minItems": 0,
+            "maxItems": 1
+          }
+        },
+        "required": [
+          "itemId",
+          "assessment",
+          "method",
+          "reason",
+          "evidence",
+          "counterexample",
+          "findingIds"
+        ],
+        "description": "逐项文本判断。仅效果与恢复政策允许有依据的不适用；通过与不适用至少一条引用，失败与未知恰好关联一个原要求 finding。效果/恢复通过须状态推演。空 quote 仅用于摘要绑定的零字节来源；其余引文须逐字匹配原文。跨字段语义由受信 Core 校验，Schema 不代表模型结论正确。",
+        "examples": [
+          {
+            "itemId": "criterion-0-ec389028757cb2a5",
+            "assessment": "pass",
+            "method": "text-review",
+            "reason": "本示例为文字说明，不包含操作或数据恢复承诺。",
+            "evidence": [
+              {
+                "sourceId": "source-2",
+                "quote": "读书会说明。"
+              }
+            ],
+            "counterexample": null,
+            "findingIds": []
+          }
+        ]
+      },
+      "ReviewAssessment": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "const": "task-review-assessment/v1"
+          },
+          "inputDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "selectionDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "planDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "reportDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "criteriaDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "criteria": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewCriteriaItem"
+            },
+            "minItems": 4,
+            "maxItems": 16
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewEvidenceSource"
+            },
+            "minItems": 2,
+            "maxItems": 128
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewAssessmentCheck"
+            },
+            "minItems": 4,
+            "maxItems": 16
+          }
+        },
+        "required": [
+          "profile",
+          "inputDigest",
+          "selectionDigest",
+          "planDigest",
+          "reportDigest",
+          "criteriaDigest",
+          "criteria",
+          "sources",
+          "checks"
+        ],
+        "examples": [
+          {
+            "checks": [
+              {
+                "assessment": "pass",
+                "counterexample": null,
+                "evidence": [
+                  {
+                    "quote": "读书会说明。",
+                    "sourceId": "source-2"
+                  }
+                ],
+                "findingIds": [],
+                "itemId": "criterion-0-ec389028757cb2a5",
+                "method": "text-review",
+                "reason": "本示例为文字说明，不包含操作或数据恢复承诺。"
+              },
+              {
+                "assessment": "pass",
+                "counterexample": null,
+                "evidence": [
+                  {
+                    "quote": "读书会说明。",
+                    "sourceId": "source-2"
+                  }
+                ],
+                "findingIds": [],
+                "itemId": "criterion-1-cb600720b29fd466",
+                "method": "text-review",
+                "reason": "本示例为文字说明，不包含操作或数据恢复承诺。"
+              },
+              {
+                "assessment": "pass",
+                "counterexample": null,
+                "evidence": [
+                  {
+                    "quote": "读书会说明。",
+                    "sourceId": "source-2"
+                  }
+                ],
+                "findingIds": [],
+                "itemId": "criterion-2-f5958d3d0b6200d5",
+                "method": "text-review",
+                "reason": "本示例为文字说明，不包含操作或数据恢复承诺。"
+              },
+              {
+                "assessment": "not-applicable",
+                "counterexample": null,
+                "evidence": [
+                  {
+                    "quote": "读书会说明。",
+                    "sourceId": "source-2"
+                  }
+                ],
+                "findingIds": [],
+                "itemId": "criterion-3-ce91e209ad61197e",
+                "method": "text-review",
+                "reason": "本示例为文字说明，不包含操作或数据恢复承诺。"
+              },
+              {
+                "assessment": "not-applicable",
+                "counterexample": null,
+                "evidence": [
+                  {
+                    "quote": "读书会说明。",
+                    "sourceId": "source-2"
+                  }
+                ],
+                "findingIds": [],
+                "itemId": "criterion-4-37bb31ebc1ea83f3",
+                "method": "text-review",
+                "reason": "本示例为文字说明，不包含操作或数据恢复承诺。"
+              }
+            ],
+            "criteria": [
+              {
+                "allowNotApplicable": false,
+                "id": "criterion-0-ec389028757cb2a5",
+                "index": 0,
+                "method": "text-review",
+                "policyId": null,
+                "requirement": "提供读书会说明",
+                "requirementDigest": "sha256:ec389028757cb2a57a404c22a1a8ea09390b570146d21f593958dfc3fd9b4fb7"
+              },
+              {
+                "allowNotApplicable": false,
+                "id": "criterion-1-cb600720b29fd466",
+                "index": 1,
+                "method": "text-review",
+                "policyId": "scope",
+                "requirement": "满足原需求和批准范围中的全部必需要求，不擅自增加禁令、降低目标或豁免缺项。交付物是方案时，文本评审检查设计与依据是否闭合，不表示本轮已实现软件或实测运行效果。",
+                "requirementDigest": "sha256:cb600720b29fd4661e47638b7a500cf1aee03cfa7cfb7e34225a4081884497d9"
+              },
+              {
+                "allowNotApplicable": false,
+                "id": "criterion-2-f5958d3d0b6200d5",
+                "index": 2,
+                "method": "text-review",
+                "policyId": "facts",
+                "requirement": "允许用户要求的创作、文案和拟议方案。已确定的事实只能来自原需求、原材料或用户已确认回答；计划和作者自述不是新增事实来源。未确认的日程、服务、参与方式须在相关内容处明确为拟议或待确认，不冒充既定安排。需要真实渠道才能完成的任务应澄清；允许展示待确认信息时不要求作者编造答案。",
+                "requirementDigest": "sha256:f5958d3d0b6200d5847d70822d0f26266d8d145037dd58260c7d89e6942ee9f3"
+              },
+              {
+                "allowNotApplicable": true,
+                "id": "criterion-3-ce91e209ad61197e",
+                "index": 3,
+                "method": "text-review",
+                "policyId": "effects",
+                "requirement": "涉及按钮、链接、表单或其他操作承诺时，核对声明的完成路径、反馈与实现或方案依据。文本评审不能冒充真实浏览器或外部操作实测；演示、占位和真实能力必须清楚区分。没有相关操作要求才可说明不适用。",
+                "requirementDigest": "sha256:ce91e209ad61197e76f036b6aed7204a1abe51af93bcdba21d88aba14c385c54"
+              },
+              {
+                "allowNotApplicable": true,
+                "id": "criterion-4-37bb31ebc1ea83f3",
+                "index": 4,
+                "method": "text-review",
+                "policyId": "recovery",
+                "requirement": "涉及数据变化、幂等或恢复时，区分权威来源与派生数据，并推演初态、动作、关键中途失败、重跑后态和恢复依据。不能替候选补出提交标记、事务、前值或续建规则；方案须有闭合分支而非只声称可恢复。没有相关要求或承诺才可说明不适用。",
+                "requirementDigest": "sha256:37bb31ebc1ea83f3573d96e26a52fe320f60fe8c6c3d8f58e7fd7c2041cebfc9"
+              }
+            ],
+            "criteriaDigest": "sha256:2055651d7f84025bfff06f0d43d1795e617d07972163cfc6796d5a93ba27fe28",
+            "inputDigest": "sha256:75a1755c2fe96320df736e9037e3f4706570c72ab1479eb0ebf0eddbdb5288c3",
+            "planDigest": "sha256:a6b0a9d6099d60f53cdd2677ac3364b46894d55cd43e8daa54658d654a48faca",
+            "profile": "task-review-assessment/v1",
+            "reportDigest": "sha256:c0617f21f82fb5c9226f3fae67a2f3b74026398a3deb4ce5d7b46a31f3e691a1",
+            "selectionDigest": "sha256:a55facc508cd0cb00816ce6a72df373d3ee67d56ea00546a06e60818cf3bc3b8",
+            "sources": [
+              {
+                "digest": "sha256:79aaa594b8b8e5a4c10f118827b70c20ec795e84178246001200c66ced4aa995",
+                "id": "source-0",
+                "kind": "task-input",
+                "label": "原始需求与上下文",
+                "locator": "snapshot.task.input"
+              },
+              {
+                "digest": "sha256:cc85af3b6018015c4c426104e1f636965b4e6d9ac551b99619142f754da3e0b6",
+                "id": "source-1",
+                "kind": "approved-plan",
+                "label": "批准计划（不是新增事实来源）",
+                "locator": "snapshot.plan"
+              },
+              {
+                "digest": "sha256:430cd247a0251e3a067d73a3a255e6a3113054d3ffe959c13d6bc44174bc4ccc",
+                "id": "source-2",
+                "kind": "candidate",
+                "label": "author / result.txt",
+                "locator": "materials[0].content"
+              }
+            ]
+          }
+        ]
+      },
+      "ReviewEvidenceEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "const": "task-independent-review/v2"
+          },
+          "ticketDigest": {
+            "$ref": "#/components/schemas/Digest"
+          },
+          "report": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "profile": {
+                "const": "task-independent-review/v1"
+              },
+              "inputDigest": {
+                "$ref": "#/components/schemas/Digest"
+              },
+              "selectionDigest": {
+                "$ref": "#/components/schemas/Digest"
+              },
+              "verdict": {
+                "enum": [
+                  "accept",
+                  "rework",
+                  "reject"
+                ]
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1,
+                "x-maxUtf8Bytes": 4096,
+                "x-wellFormedUnicode": true,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "findings": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "$ref": "#/components/schemas/Id"
+                    },
+                    "nodeIds": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Id"
+                      },
+                      "minItems": 1,
+                      "maxItems": 64
+                    },
+                    "requirement": {
+                      "type": "string",
+                      "minLength": 1,
+                      "x-maxUtf8Bytes": 2048,
+                      "x-wellFormedUnicode": true,
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    "observation": {
+                      "type": "string",
+                      "minLength": 1,
+                      "x-maxUtf8Bytes": 2048,
+                      "x-wellFormedUnicode": true,
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    "requestedChange": {
+                      "type": "string",
+                      "minLength": 1,
+                      "x-maxUtf8Bytes": 2048,
+                      "x-wellFormedUnicode": true,
+                      "pattern": "^[^\\u0000]*$"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "nodeIds",
+                    "requirement",
+                    "observation",
+                    "requestedChange"
+                  ]
+                },
+                "minItems": 0,
+                "maxItems": 16
+              }
+            },
+            "required": [
+              "profile",
+              "inputDigest",
+              "selectionDigest",
+              "verdict",
+              "summary",
+              "findings"
+            ]
+          },
+          "assessment": {
+            "$ref": "#/components/schemas/ReviewAssessment"
+          }
+        },
+        "required": [
+          "profile",
+          "ticketDigest",
+          "report",
+          "assessment"
+        ],
+        "description": "既有 artifact.get / artifact.content 返回的评审证据字节解码格式，最大 131072 UTF-8 字节；无新增写 API。原六字段 report 保留，assessment 与同次 receipt/input/selection/plan/report 精确绑定；旧 v1 可读但不具有逐项覆盖声明。公开元数据校验不能重新签发 receipt，也不证明实际业务或真人验收通过。",
+        "examples": [
+          {
+            "profile": "task-independent-review/v2",
+            "ticketDigest": "sha256:653ee06c755ea8d95132a249c8c045ea84d401094729cccbea6a73e16b7de1da",
+            "assessment": {
+              "checks": [
+                {
+                  "assessment": "pass",
+                  "counterexample": null,
+                  "evidence": [
+                    {
+                      "quote": "读书会说明。",
+                      "sourceId": "source-2"
+                    }
+                  ],
+                  "findingIds": [],
+                  "itemId": "criterion-0-ec389028757cb2a5",
+                  "method": "text-review",
+                  "reason": "本示例为文字说明，不包含操作或数据恢复承诺。"
+                },
+                {
+                  "assessment": "pass",
+                  "counterexample": null,
+                  "evidence": [
+                    {
+                      "quote": "读书会说明。",
+                      "sourceId": "source-2"
+                    }
+                  ],
+                  "findingIds": [],
+                  "itemId": "criterion-1-cb600720b29fd466",
+                  "method": "text-review",
+                  "reason": "本示例为文字说明，不包含操作或数据恢复承诺。"
+                },
+                {
+                  "assessment": "pass",
+                  "counterexample": null,
+                  "evidence": [
+                    {
+                      "quote": "读书会说明。",
+                      "sourceId": "source-2"
+                    }
+                  ],
+                  "findingIds": [],
+                  "itemId": "criterion-2-f5958d3d0b6200d5",
+                  "method": "text-review",
+                  "reason": "本示例为文字说明，不包含操作或数据恢复承诺。"
+                },
+                {
+                  "assessment": "not-applicable",
+                  "counterexample": null,
+                  "evidence": [
+                    {
+                      "quote": "读书会说明。",
+                      "sourceId": "source-2"
+                    }
+                  ],
+                  "findingIds": [],
+                  "itemId": "criterion-3-ce91e209ad61197e",
+                  "method": "text-review",
+                  "reason": "本示例为文字说明，不包含操作或数据恢复承诺。"
+                },
+                {
+                  "assessment": "not-applicable",
+                  "counterexample": null,
+                  "evidence": [
+                    {
+                      "quote": "读书会说明。",
+                      "sourceId": "source-2"
+                    }
+                  ],
+                  "findingIds": [],
+                  "itemId": "criterion-4-37bb31ebc1ea83f3",
+                  "method": "text-review",
+                  "reason": "本示例为文字说明，不包含操作或数据恢复承诺。"
+                }
+              ],
+              "criteria": [
+                {
+                  "allowNotApplicable": false,
+                  "id": "criterion-0-ec389028757cb2a5",
+                  "index": 0,
+                  "method": "text-review",
+                  "policyId": null,
+                  "requirement": "提供读书会说明",
+                  "requirementDigest": "sha256:ec389028757cb2a57a404c22a1a8ea09390b570146d21f593958dfc3fd9b4fb7"
+                },
+                {
+                  "allowNotApplicable": false,
+                  "id": "criterion-1-cb600720b29fd466",
+                  "index": 1,
+                  "method": "text-review",
+                  "policyId": "scope",
+                  "requirement": "满足原需求和批准范围中的全部必需要求，不擅自增加禁令、降低目标或豁免缺项。交付物是方案时，文本评审检查设计与依据是否闭合，不表示本轮已实现软件或实测运行效果。",
+                  "requirementDigest": "sha256:cb600720b29fd4661e47638b7a500cf1aee03cfa7cfb7e34225a4081884497d9"
+                },
+                {
+                  "allowNotApplicable": false,
+                  "id": "criterion-2-f5958d3d0b6200d5",
+                  "index": 2,
+                  "method": "text-review",
+                  "policyId": "facts",
+                  "requirement": "允许用户要求的创作、文案和拟议方案。已确定的事实只能来自原需求、原材料或用户已确认回答；计划和作者自述不是新增事实来源。未确认的日程、服务、参与方式须在相关内容处明确为拟议或待确认，不冒充既定安排。需要真实渠道才能完成的任务应澄清；允许展示待确认信息时不要求作者编造答案。",
+                  "requirementDigest": "sha256:f5958d3d0b6200d5847d70822d0f26266d8d145037dd58260c7d89e6942ee9f3"
+                },
+                {
+                  "allowNotApplicable": true,
+                  "id": "criterion-3-ce91e209ad61197e",
+                  "index": 3,
+                  "method": "text-review",
+                  "policyId": "effects",
+                  "requirement": "涉及按钮、链接、表单或其他操作承诺时，核对声明的完成路径、反馈与实现或方案依据。文本评审不能冒充真实浏览器或外部操作实测；演示、占位和真实能力必须清楚区分。没有相关操作要求才可说明不适用。",
+                  "requirementDigest": "sha256:ce91e209ad61197e76f036b6aed7204a1abe51af93bcdba21d88aba14c385c54"
+                },
+                {
+                  "allowNotApplicable": true,
+                  "id": "criterion-4-37bb31ebc1ea83f3",
+                  "index": 4,
+                  "method": "text-review",
+                  "policyId": "recovery",
+                  "requirement": "涉及数据变化、幂等或恢复时，区分权威来源与派生数据，并推演初态、动作、关键中途失败、重跑后态和恢复依据。不能替候选补出提交标记、事务、前值或续建规则；方案须有闭合分支而非只声称可恢复。没有相关要求或承诺才可说明不适用。",
+                  "requirementDigest": "sha256:37bb31ebc1ea83f3573d96e26a52fe320f60fe8c6c3d8f58e7fd7c2041cebfc9"
+                }
+              ],
+              "criteriaDigest": "sha256:2055651d7f84025bfff06f0d43d1795e617d07972163cfc6796d5a93ba27fe28",
+              "inputDigest": "sha256:75a1755c2fe96320df736e9037e3f4706570c72ab1479eb0ebf0eddbdb5288c3",
+              "planDigest": "sha256:a6b0a9d6099d60f53cdd2677ac3364b46894d55cd43e8daa54658d654a48faca",
+              "profile": "task-review-assessment/v1",
+              "reportDigest": "sha256:c0617f21f82fb5c9226f3fae67a2f3b74026398a3deb4ce5d7b46a31f3e691a1",
+              "selectionDigest": "sha256:a55facc508cd0cb00816ce6a72df373d3ee67d56ea00546a06e60818cf3bc3b8",
+              "sources": [
+                {
+                  "digest": "sha256:79aaa594b8b8e5a4c10f118827b70c20ec795e84178246001200c66ced4aa995",
+                  "id": "source-0",
+                  "kind": "task-input",
+                  "label": "原始需求与上下文",
+                  "locator": "snapshot.task.input"
+                },
+                {
+                  "digest": "sha256:cc85af3b6018015c4c426104e1f636965b4e6d9ac551b99619142f754da3e0b6",
+                  "id": "source-1",
+                  "kind": "approved-plan",
+                  "label": "批准计划（不是新增事实来源）",
+                  "locator": "snapshot.plan"
+                },
+                {
+                  "digest": "sha256:430cd247a0251e3a067d73a3a255e6a3113054d3ffe959c13d6bc44174bc4ccc",
+                  "id": "source-2",
+                  "kind": "candidate",
+                  "label": "author / result.txt",
+                  "locator": "materials[0].content"
+                }
+              ]
+            },
+            "report": {
+              "findings": [],
+              "inputDigest": "sha256:75a1755c2fe96320df736e9037e3f4706570c72ab1479eb0ebf0eddbdb5288c3",
+              "profile": "task-independent-review/v1",
+              "selectionDigest": "sha256:a55facc508cd0cb00816ce6a72df373d3ee67d56ea00546a06e60818cf3bc3b8",
+              "summary": "受控格式示例，仅说明文本判断结构，非真实业务验收。",
+              "verdict": "accept"
+            }
           }
         ]
       }

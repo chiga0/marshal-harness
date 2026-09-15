@@ -31,12 +31,12 @@ function DeliveryFileRow({file}: {file: DeliveryFile}) {
   const valid = validSaveName(name);
   return <div className="min-w-0 space-y-2 rounded-md border border-border p-3">
     <p className="break-all text-sm">原始路径：<code>{file.path}</code> · {file.bytes} 字节</p>
-    <p className="break-all text-xs text-text-secondary">SHA-256：<code>{file.digest}</code></p>
-    <label className="block space-y-1 text-sm">另存文件名
+    <details className="text-xs text-text-secondary"><summary className="cursor-pointer py-2">校验摘要</summary><code className="break-all">{file.digest}</code></details>
+    <details className="text-sm"><summary className="min-h-11 cursor-pointer py-3">更改保存文件名</summary><label className="block space-y-1 text-sm">另存文件名
       <input className="block w-full rounded-md border border-border bg-surface px-3 py-2" value={name}
         aria-invalid={!valid} onChange={event => {setName(event.target.value); setSaved(false);}} />
     </label>
-    <p className="text-xs text-text-secondary">默认保留原名。可自行指定扩展名（如 todo.html）；仅更改本地保存名，不修改原始字节。打开下载文件前请自行检查其内容。</p>
+    <p className="text-xs text-text-secondary">默认保留原名。可自行指定扩展名（如 todo.html）；仅更改本地保存名，不修改原始字节。打开下载文件前请自行检查其内容。</p></details>
     {!valid && <p role="alert" className="text-xs text-danger">请输入普通文件名；不允许目录、控制字符或系统保留名。</p>}
     <Button size="sm" disabled={!valid} onClick={() => {
       try {saveBlob(new Blob([new TextEncoder().encode(file.content)], {type: 'application/octet-stream'}), name); setSaved(true); setFailed(false);}

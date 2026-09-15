@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {fixture,proposal,hash} from './leader.fixture.mjs';
+import {publicOutput} from './leader-quotes.fixture.mjs';
+
+test('真实S01同预算：12 attempts/7 calls/一次业务rework后的finalizing仅再用一次调用完成',async t=>{
+ const f=fixture(t,{protocolCorrection:true,maxCalls:16,verificationCheck:ticket=>assert.equal(ticket.input.verification.manifests.length,1),leaderRepair:{nodeIds:['east'],maxRounds:1},binding:()=>({nodeId:'verify',description:'原单作者检查',layouts:[{nodeId:'east',inputs:[],allowedPaths:['east.json']},{nodeId:'verify',inputs:[{path:'east.json',source:{kind:'upstream',nodeId:'east',path:'east.json'}}],allowedPaths:[]}],deliveries:[{nodeId:'east',path:'east.json',targetPath:'east.json'}]})});
+ const task=await f.call({operation:'task.create',key:'create',body:{intent:'单作者交付',limits:{timeoutMs:900000,maxAttempts:32,maxWorkers:3}}});
+ await f.decision(f.take('leader'),[{type:'plan',proposal:{...proposal,nodes:proposal.nodes.filter(n=>n.id!=='west'),edges:[{from:'east',to:'verify'}]}}]);
+ const plan=await f.call({operation:'task.plan',taskId:task.id});await f.call({operation:'task.approve',key:'approve',taskId:task.id,body:{expectedRevision:(await f.get(task.id)).revision,planDigest:plan.digest,planRevision:plan.revision}});
+ const dispatch=f.read(tx=>tx.commands().find(c=>JSON.parse(c.payload).action==='dispatch'));f.app.execution.expandDispatch(dispatch.id,dispatch.revision);
+ f.author(f.take('execute','east'));
+ let leader=f.take('leader');await f.decision(leader,[{type:'work',kind:'review',nodeIds:['east'],selectionDigest:hash(leader.input.leader.snapshot.selection)}]);
+ await f.review(f.take('review'),{verdict:'rework',findings:[{id:'facts',nodeIds:['east'],requirement:'原事实',observation:'新增事实',requestedChange:'删除新增事实'}]});
+ let view=await f.call({operation:'task.leader',taskId:task.id});await f.decision(f.take('leader'),[{type:'repair',nodeIds:['east'],basis:{kind:'review',digest:view.review.digest},feedback:'修复原事实'}]);
+ f.author(f.take('execute','east'));
+ leader=f.take('leader');await f.decision(leader,[{type:'work',kind:'review',nodeIds:['east'],selectionDigest:hash(leader.input.leader.snapshot.selection)}]);await f.review(f.take('review'));
+ leader=f.take('leader');await f.decision(leader,[{type:'work',kind:'verify',nodeIds:['verify'],selectionDigest:hash(leader.input.leader.snapshot.selection)}]);await f.verify(f.take('execute','verify'));
+ const record=()=>f.read(tx=>f.app.get(tx,task.id));let value=record();const delivery=f.read(tx=>value.task.artifactIds.map(id=>f.app.artifacts.metadata(tx,id)).find(x=>x.kind==='delivery'));
+ await f.decision(f.take('leader'),[{type:'deliver',artifactId:delivery.id,acceptanceDigest:value.acceptance.digest,reviewDigest:value.leader.review.digest}]);
+ const failed=f.take('leader');value=record();assert.equal(value.leader.stage,'finalizing');assert.equal(value.attempts,12);assert.equal(value.leader.calls,7);assert.equal(value.reworkCount,1);
+ assert.equal(f.app.leader.recoveryAllowed(value,null),true);
+ const insufficient=structuredClone(value);insufficient.plan.budget.maxAttempts=12;assert.equal(f.app.leader.recoveryAllowed(insufficient,null),false);
+ const noCalls=structuredClone(value);noCalls.leader.calls=16;assert.equal(f.app.leader.recoveryAllowed(noCalls,null),false);
+ await f.rawDecision(failed,publicOutput);view=await f.call({operation:'task.leader',taskId:task.id});assert.equal(view.protocolCorrection.used,1);assert.equal((await f.get(task.id)).status,'running');
+ const successor=f.take('leader');assert.equal(successor.deadline,failed.deadline);value=record();assert.equal(value.attempts,13);assert.equal(value.leader.calls,8);assert.equal(value.reworkCount,1);
+ await f.decision(successor,[{type:'conclude',outcome:'succeeded',summary:'原交付已完成',basisDigests:[value.acceptance.digest,value.leader.review.digest]}]);assert.equal((await f.get(task.id)).status,'completed');
+ assert.equal(f.read(tx=>f.app.execution.worker(tx,failed.workerId).record.worker.status),'failed');
+ const before=await f.get(task.id);f.reopen();assert.deepEqual(await f.get(task.id),before);
+});

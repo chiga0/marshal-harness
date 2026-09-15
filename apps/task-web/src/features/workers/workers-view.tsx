@@ -3,13 +3,40 @@
 // 「最近观察」是服务端最近一次看到该 Worker 状态的时间，不代表模型仍在持续工作。
 
 import {Link, Route, Routes, useNavigate, useParams} from 'react-router-dom';
-import {Badge} from '@/components/ui/badge';
 import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
-import type {TaskRecord, Transport, Usage, WorkerRecord} from '@/lib/transport/types';
-import {formatDateTime, formatRelative, workerPhaseLabel, workerRoleLabel, workerStatusLabel} from '../tasks/detail/shared/format';
+import type {
+  TaskRecord,
+  TaskAuditRecord,
+  PlanRecord,
+  Transport,
+  Usage,
+  WorkerRecord,
+} from '@/lib/transport/types';
+import {
+  formatDateTime,
+  formatRelative,
+  workerPhaseLabel,
+  workerRoleLabel,
+} from '../tasks/detail/shared/format';
 import {StatusBadge, toneForWorker} from '../tasks/detail/shared/status-badge';
+import {observationLabel, workerTokenSummary} from './worker-observation';
+import {workerTitle} from '../tasks/detail/overview/task-journey';
 import {WorkerDrawer} from './worker-drawer';
+
+/** 原始进展码只是历史观察；具体活动只采用服务端明确提供的公开摘要。 */
+export function progressText(worker: WorkerRecord): string {
+  if (worker.observation?.publicText) {
+    const text = worker.observation.publicText.trim();
+    // 公共片段可能在服务端字节边界截断；不要求完整 JSON 才收起工程输出。
+    if (/^(?:```(?:json)?\s*)?(?:\{\s*(?:"|})|\[\s*(?:\{|"|\d|-|true|false|null|]))/.test(text)) return '已记录结构化输出，展开活动历史查看';
+    return worker.observation.publicText;
+  }
+  const summary = worker.progress?.summary;
+  if (summary === 'agent.running') return '已收到 Agent 运行观察，尚无具体活动摘要';
+  if (!summary || /^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$/.test(summary)) return '尚未收到具体活动摘要';
+  return summary;
+}
 
 /** UI-05：Worker 列表分页状态（服务端默认页 50）；nextCursor 非空表示还有更多。 */
 export interface WorkersPagination {
@@ -21,6 +48,8 @@ export interface WorkersPagination {
 export interface WorkersViewProps {
   task: TaskRecord;
   workers: WorkerRecord[] | null;
+  plan?: PlanRecord | null | undefined;
+  audit?: TaskAuditRecord | null | undefined;
   /** 未提供时按单页数据展示（测试/旧调用面）。 */
   pagination?: WorkersPagination;
   transport: Transport;
@@ -32,14 +61,42 @@ export function usageSummary(usage: Usage): string {
   if (usage.source === 'unavailable') return '不可用';
   const parts: string[] = [];
   if (usage.tokens !== null) parts.push(`${usage.tokens} token`);
-  if (usage.cost !== null) parts.push(usage.currency !== null ? `${usage.cost} ${usage.currency}` : String(usage.cost));
-  return parts.length > 0 ? `${parts.join(' / ')}（来源：${usage.source}）` : `暂无数值（来源：${usage.source}）`;
+  if (usage.cost !== null)
+    parts.push(
+      usage.currency !== null
+        ? `${usage.cost} ${usage.currency}`
+        : String(usage.cost),
+    );
+  return parts.length > 0
+    ? `${parts.join(' / ')}（来源：${usage.source}）`
+    : `暂无数值（来源：${usage.source}）`;
 }
 
-export function WorkersView({task, workers, pagination, transport, onChanged}: WorkersViewProps) {
+export function WorkersView({
+  task,
+  workers,
+  plan,
+  audit,
+  pagination,
+  transport,
+  onChanged,
+}: WorkersViewProps) {
   return (
     <Routes>
-      <Route path=":workerId?" element={<WorkersListWithDrawer task={task} workers={workers} pagination={pagination} transport={transport} onChanged={onChanged} />} />
+      <Route
+        path=":workerId?"
+        element={
+          <WorkersListWithDrawer
+            task={task}
+            workers={workers}
+            plan={plan}
+            audit={audit}
+            pagination={pagination}
+            transport={transport}
+            onChanged={onChanged}
+          />
+        }
+      />
     </Routes>
   );
 }
@@ -52,22 +109,38 @@ function WorkersListWithDrawer(props: Omit<WorkersListProps, 'drawerId'>) {
 interface WorkersListProps {
   task: TaskRecord;
   workers: WorkerRecord[] | null;
+  plan?: PlanRecord | null | undefined;
+  audit?: TaskAuditRecord | null | undefined;
   pagination?: WorkersPagination | undefined;
   transport: Transport;
   onChanged: () => void;
   drawerId: string | null;
 }
 
-function WorkersList({task, workers, pagination, transport, onChanged, drawerId}: WorkersListProps) {
+function WorkersList({
+  task,
+  workers,
+  plan,
+  audit,
+  pagination,
+  transport,
+  onChanged,
+  drawerId,
+}: WorkersListProps) {
   const navigate = useNavigate();
   const base = `/tasks/${encodeURIComponent(task.id)}/team`;
-  const openWorker = drawerId !== null ? (workers ?? []).find(worker => worker.id === drawerId) ?? null : null;
+  const openWorker =
+    drawerId !== null
+      ? ((workers ?? []).find((worker) => worker.id === drawerId) ?? null)
+      : null;
 
   if (workers === null) {
     return (
       <Card className="space-y-2">
         <h2 className="text-base font-semibold leading-6">团队</h2>
-        <p className="text-sm text-text-secondary">Worker 列表加载失败或未加载；请刷新重试。</p>
+        <p className="text-sm text-text-secondary">
+          Worker 列表加载失败或未加载；请刷新重试。
+        </p>
       </Card>
     );
   }
@@ -76,74 +149,156 @@ function WorkersList({task, workers, pagination, transport, onChanged, drawerId}
     <div className="space-y-3" data-testid="workers-view">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-base font-semibold leading-6">
-          团队（已加载 {workers.length} 个 Worker{pagination?.nextCursor ? '，服务端还有更多' : ''}）
+          执行记录（已加载 {workers.length} 次执行
+          {pagination?.nextCursor ? '，服务端还有更多' : ''}）
         </h2>
       </div>
       {workers.length === 0 ? (
-        <Card><p className="text-sm text-text-secondary">暂无 Worker（尚未调度或该服务未提供）。</p></Card>
+        <Card>
+          <p className="text-sm text-text-secondary">
+            暂无 Worker（尚未调度或该服务未提供）。
+          </p>
+        </Card>
       ) : (
-        <div className="overflow-x-auto rounded-md border border-border">
-          <table className="w-full min-w-[720px] text-sm leading-[22px]">
-            <thead className="bg-surface-muted/60 text-left text-xs text-text-secondary">
-              <tr>
-                <th className="px-3 py-2 font-medium">节点</th>
-                <th className="px-3 py-2 font-medium">角色</th>
-                <th className="px-3 py-2 font-medium">状态</th>
-                <th className="px-3 py-2 font-medium">阶段</th>
-                <th className="px-3 py-2 font-medium">尝试</th>
-                <th className="px-3 py-2 font-medium">最近观察</th>
-                <th className="px-3 py-2 font-medium">最后收到的进展</th>
-                <th className="px-3 py-2 font-medium">用量</th>
-                <th className="px-3 py-2 font-medium">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {workers.map(worker => (
-                <tr
-                  key={worker.id}
-                  className="cursor-pointer border-t border-border hover:bg-surface-muted/40"
-                  onClick={() => navigate(`${base}/${encodeURIComponent(worker.id)}`)}
-                  data-testid="worker-row"
-                  data-worker-id={worker.id}
-                >
-                  <td className="px-3 py-2"><code className="text-xs">{worker.nodeId}</code></td>
-                  <td className="px-3 py-2"><Badge variant="secondary">{workerRoleLabel(worker.role)}</Badge></td>
-                  <td className="px-3 py-2"><StatusBadge machine={worker.status} label={workerStatusLabel(worker.status)} tone={toneForWorker(worker.status)} showMachine={false} /></td>
-                  <td className="px-3 py-2 text-text-secondary">{workerPhaseLabel(worker.phase)}</td>
-                  <td className="px-3 py-2 text-text-secondary">{worker.attempt}</td>
-                  <td className="px-3 py-2 text-text-secondary" title={formatDateTime(worker.lastObservedAt)}>{formatRelative(worker.lastObservedAt)}</td>
-                  <td className="max-w-[220px] px-3 py-2 text-text-secondary">
-                    {['completed', 'failed', 'cancelled'].includes(worker.status) ? <p className="text-xs">执行已结束；以下为历史观察</p> : null}
-                    <p className="truncate" title={worker.progress?.summary ?? ''}>{worker.progress ? worker.progress.summary : '暂无数据'}</p>
-                  </td>
-                  <td className="max-w-[180px] truncate px-3 py-2 text-text-secondary" data-testid="worker-usage-cell">{usageSummary(worker.usage)}</td>
-                  <td className="px-3 py-2" onClick={event => event.stopPropagation()}>
-                    <Link className="text-xs text-accent underline-offset-4 hover:underline" to={`${base}/${encodeURIComponent(worker.id)}`}>明细</Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ul className="worker-list" aria-label="执行成员工作包">
+          {workers.map((worker) => (
+            <li
+              key={worker.id}
+              data-testid="worker-row"
+              data-worker-id={worker.id}
+            >
+              <div
+                className="worker-list-row"
+                onClick={() =>
+                  navigate(`${base}/${encodeURIComponent(worker.id)}`)
+                }
+              >
+                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-surface-muted text-sm font-semibold text-text-secondary">
+                  {workerRoleLabel(worker.role).slice(0, 1)}
+                </span>
+                <div className="min-w-0 space-y-2">
+                  <Link
+                    className="line-clamp-2 text-sm font-semibold hover:text-accent"
+                    to={`${base}/${encodeURIComponent(worker.id)}`}
+                  >
+                    {workerTitle(worker, plan)}
+                  </Link>
+                  <p className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+                    <span>{worker.providerId}</span>
+                    <span>·</span>
+                    <span>
+                      {workerRoleLabel(worker.role)} ·{' '}
+                      {workerPhaseLabel(worker.phase)} · 执行序号{' '}
+                      {worker.attempt}
+                    </span>
+                  </p>
+                  <div className="text-sm text-text-secondary">
+                    {['completed', 'failed', 'cancelled'].includes(
+                      worker.status,
+                    ) ? (
+                      <p className="text-xs">执行已结束；以下为历史观察</p>
+                    ) : null}
+                    <p
+                      className="line-clamp-2"
+                      data-testid="worker-progress-summary"
+                    >
+                      {progressText(worker)}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-secondary">
+                    <span title={formatDateTime(worker.lastObservedAt)}>
+                      最后观察 {formatRelative(worker.lastObservedAt)}
+                    </span>
+                    <span data-testid="worker-usage-cell">
+                      用量{' '}
+                      {workerTokenSummary(worker) ?? usageSummary(worker.usage)}
+                    </span>
+                  </div>
+                  <details
+                    className="text-xs text-text-secondary"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <summary className="cursor-pointer">技术详情</summary>
+                    <code>{worker.nodeId}</code>
+                    {worker.progress ? <p>原始进展：<code>{worker.progress.summary}</code></p> : null}
+                  </details>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <StatusBadge
+                    machine={worker.status}
+                    label={observationLabel(worker)}
+                    tone={toneForWorker(worker.status)}
+                    showMachine={false}
+                  />
+                  <Link
+                    onClick={(event) => event.stopPropagation()}
+                    className="inline-flex min-h-11 items-center text-xs text-accent"
+                    to={`${base}/${encodeURIComponent(worker.id)}`}
+                  >
+                    明细
+                  </Link>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
       )}
       <p className="text-xs text-text-secondary">
-        「最近观察」是服务端最近一次看到该 Worker 状态的时间，不代表模型仍在持续工作；不展示进度百分比。
+        「最近观察」是服务端最近一次看到该 Worker
+        状态的时间，不代表模型仍在持续工作；不展示进度百分比。
       </p>
       {pagination?.nextCursor ? (
-        <div className="flex items-center gap-2" data-testid="workers-load-more">
-          <Button size="sm" variant="outline" onClick={pagination.onLoadMore} loading={pagination.loadingMore} disabled={pagination.loadingMore}>
+        <div
+          className="flex items-center gap-2"
+          data-testid="workers-load-more"
+        >
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={pagination.onLoadMore}
+            loading={pagination.loadingMore}
+            disabled={pagination.loadingMore}
+          >
             加载更多 Worker
           </Button>
-          <span className="text-xs text-text-secondary">当前显示前 {workers.length} 条；服务端按页返回（默认每页 50 条）。</span>
+          <span className="text-xs text-text-secondary">
+            当前显示前 {workers.length} 条；服务端按页返回（默认每页 50 条）。
+          </span>
         </div>
       ) : null}
       {openWorker ? (
-        <WorkerDrawer taskRevision={task.revision} worker={openWorker} transport={transport} onClose={() => navigate(base)} onChanged={onChanged} />
-      ) : drawerId !== null ? <Card className="space-y-2" role="status">
-        <h3 className="break-all font-medium">成员 {drawerId} 的详情尚不可用</h3>
-        <p className="text-sm text-text-secondary">{pagination?.nextCursor ? '该成员不在已加载的分页中，请加载更多成员后查看。' : '当前列表没有该成员；请刷新核对，不能据此判断它已完成或已删除。'}</p>
-        <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={onChanged}>刷新团队</Button><Link to={base} className="inline-flex min-h-11 items-center text-accent underline">返回团队列表</Link></div>
-      </Card> : null}
+        <WorkerDrawer
+          taskRevision={task.revision}
+          worker={openWorker}
+          plan={plan}
+          audit={audit}
+          transport={transport}
+          onClose={() => navigate(base)}
+          onChanged={onChanged}
+        />
+      ) : drawerId !== null ? (
+        <Card className="space-y-2" role="status">
+          <h3 className="break-all font-medium">
+            成员 {drawerId} 的详情尚不可用
+          </h3>
+          <p className="text-sm text-text-secondary">
+            {pagination?.nextCursor
+              ? '该成员不在已加载的分页中，请加载更多成员后查看。'
+              : '当前列表没有该成员；请刷新核对，不能据此判断它已完成或已删除。'}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={onChanged}>
+              刷新团队
+            </Button>
+            <Link
+              to={base}
+              className="inline-flex min-h-11 items-center text-accent underline"
+            >
+              返回团队列表
+            </Link>
+          </div>
+        </Card>
+      ) : null}
     </div>
   );
 }

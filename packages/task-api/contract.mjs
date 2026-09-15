@@ -146,6 +146,9 @@ export function validLeaderView(value, taskId) {
   if (!validate(value, 'LeaderView') || value.taskId !== taskId ||
       Buffer.byteLength(JSON.stringify(value)) > MAX_LEADER_VIEW_BYTES ||
       value.review && new Set(value.review.evidenceIds).size !== value.review.evidenceIds.length) return false;
+  const correction=value.protocolCorrection;
+  if(correction && (correction.used===0 ? correction.reason!==null||correction.original!==null||correction.successorWorkerId!==null||correction.successorCallId!==null :
+    correction.reason!=='wire-json'||correction.original===null||(correction.successorWorkerId===null)!==(correction.successorCallId===null)||correction.successorWorkerId===correction.original.workerId||correction.successorCallId===correction.original.callId))return false;
   const question = value.pendingRequest;
   if (question === null) return true;
   if (new Set(question.nodeIds).size !== question.nodeIds.length ||

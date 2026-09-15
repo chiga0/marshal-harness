@@ -23,7 +23,7 @@ test('files-only Qwen denies synthetic tools outside its core allowlist', () => 
   assert.ok(Object.isFrozen(QWEN_FILE_ARGS));
 });
 
-test('both explicit Qwen profiles consume the packaged common native tool policy', () => {
+test('all Qwen file profiles consume the packaged common native tool policy', () => {
   for (const file of ['qwen-service-config.mjs', 'qwen-short-service-config.mjs']) {
     const source = fs.readFileSync(new URL(file, import.meta.url), 'utf8');
     assert.match(source, /import \{QWEN_FILE_ARGS\} from '\.\/qwen-file-tools\.mjs'/);

@@ -183,3 +183,10 @@ test('more than 100 legitimate progress events cannot hide original bound permit
   f.reopen(false, store => assert.deepEqual(TaskCleanup.inspectBeforeClaim(store).items, []));
   f.app.execution.reconcileCleanup(ticket.workerId, observation); assert.deepEqual(f.snapshot(task.id), final);
 });
+
+
+test('built-in prompt retention cannot bypass original metadata-only never-permitted preparation', async t => {
+  const f = fixture(t);
+  for (const retainPrompts of [true]) assert.throws(() => new TaskApplication({store:f.store, owner:f.app.owner,
+    execution:f.execution, observability:{profile:'task-observation/v1',retainPrompts}}),{code:'unsupported_task'});
+});

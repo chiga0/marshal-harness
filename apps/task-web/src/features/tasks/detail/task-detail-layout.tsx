@@ -18,7 +18,7 @@ import {taskKeys} from './query-keys';
 import {preferFreshTask, questionNeedsAttention} from './shared/derive';
 import {useLeaderReplyReceipt} from './shared/leader-reply-receipt';
 import {ErrorNotice} from './shared/error-notice';
-import {formatRelative, taskStatusLabel} from './shared/format';
+import {formatRelative, taskStatusLabel, taskTitle} from './shared/format';
 import {StatusBadge, toneForTask} from './shared/status-badge';
 import {WorkersView} from '../../workers/workers-view';
 import {ArtifactsView} from '../../artifacts/artifacts-view';
@@ -134,7 +134,7 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
   };
 
   const workers = workersQuery.data ? workerItems : (workersQuery.isError ? null : []);
-  const plan = planQuery.data ?? null;
+  const plan = planQuery.data?.taskId === taskId && planQuery.data.revision === task?.plan?.revision ? planQuery.data : null;
   const questions = questionsQuery.data ?? null;
   const leader = leaderQuery.data ?? null;
   const audit = auditQuery.isError ? null : auditQuery.data ?? null;
@@ -145,14 +145,14 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
     && leaderReplyAccepted && questions !== null && !questions.items.some(questionNeedsAttention);
 
   return (
-    <section aria-label="任务详情" className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6" data-testid="task-detail">
+    <section aria-label="任务详情" className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4 sm:p-6 lg:p-8" data-testid="task-detail">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <Link to="/" className="text-sm text-accent underline-offset-4 hover:underline">← 任务列表</Link>
-            <code className="text-xs text-text-secondary">{taskId}</code>
+            <details className="text-xs text-text-secondary"><summary className="cursor-pointer">任务标识</summary><code className="break-all">{taskId}</code></details>
           </div>
-          <h1 className="mt-1 line-clamp-2 break-words text-[22px] font-semibold leading-[30px]" data-testid="task-heading">{task ? task.intent : '任务详情'}</h1>
+          <h1 className="mt-1 line-clamp-2 break-words text-[24px] font-semibold leading-[34px] tracking-tight" data-testid="task-heading">{task ? taskTitle(task.intent) : '任务详情'}</h1>
           {task ? (
             <details key={taskId} className="mt-1 text-sm" data-testid="header-original-intent">
               <summary className="w-fit cursor-pointer rounded text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">查看完整原需求</summary>
@@ -163,7 +163,7 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
             <div className="mt-1 flex flex-wrap items-center gap-3">
               <StatusBadge machine={task.status} label={waitingForLeader ? '答复已受理，等待 Leader 更新' : taskStatusLabel(task.status)} tone={toneForTask(task.status)} />
               <span className="text-xs text-text-secondary">最近状态变化：{formatRelative(task.updatedAt)}</span>
-              <span className="text-xs text-text-secondary">轮询节奏：{intervalMs === null ? '已停止（页面隐藏）' : `${Math.round(intervalMs / 1000)} 秒`}</span>
+              <span className="text-xs text-text-secondary" title={intervalMs === null ? '页面隐藏时暂停刷新' : `每 ${Math.round(intervalMs / 1000)} 秒读取一次状态`}>自动更新</span>
             </div>
           ) : null}
         </div>
@@ -202,7 +202,7 @@ function TaskDetailLoaded({taskId, transport}: {taskId: string; transport: Trans
           <Routes>
             <Route index element={<OverviewView task={task} plan={plan} questions={questions} workers={workers} leader={leader} audit={audit} transport={transport} onChanged={onChanged} graph={<TaskGraph taskId={taskId} plan={plan} workers={workers} transport={transport} />} />} />
             <Route path="graph" element={<TaskGraph taskId={taskId} plan={plan} workers={workers} transport={transport} />} />
-            <Route path="team/*" element={<WorkersView task={task} workers={workers} pagination={workersPagination} transport={transport} onChanged={onChanged} />} />
+            <Route path="team/*" element={<WorkersView task={task} workers={workers} plan={plan} audit={audit} pagination={workersPagination} transport={transport} onChanged={onChanged} />} />
             <Route path="artifacts" element={<ArtifactsView task={task} leader={leader} audit={audit} artifacts={artifacts} observedInputs={observedInputs} transport={transport} />} />
             <Route path="activity" element={<ActivityView taskId={taskId} transport={transport} />} />
             <Route path="*" element={<OverviewView task={task} plan={plan} questions={questions} workers={workers} leader={leader} audit={audit} transport={transport} onChanged={onChanged} />} />

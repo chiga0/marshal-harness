@@ -1,3 +1,4 @@
+import {boundedPublicText, tokenUsage, normalizedDiagnostic} from '../agent-observation/normalization.mjs';
 import path from 'node:path';
 import {launchAcp, RuntimeError} from '../agent-runtime/index.mjs';
 import {AcpError} from '../agent-acp/client.mjs';
@@ -39,16 +40,17 @@ function bounded(callback, value, signal) {
 }
 
 /** Trusted composition only; no brand switch, ambient env copy or Task authority. */
-export function createAcpProvider({id, executable, args = [], env = {}, custodyProfile} = {}) {
+export function createAcpProvider({id, executable, args = [], env = {}, custodyProfile, usageExtension} = {}) {
   if (!text(id, 128) || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id) || !text(executable, 8192) || !path.isAbsolute(executable) ||
     !Array.isArray(args) || args.length > 128 || args.some(value => !text(value, 32768)) || !object(env) || Object.keys(env).length > 128 ||
     Object.entries(env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || !text(value, 65536))) throw error('provider_invalid_configuration');
+  if (usageExtension !== undefined && usageExtension !== 'qwen-transcript/v1') throw error('provider_invalid_configuration');
   const config = structuredClone({executable, args, env});
   if (custodyProfile !== undefined && (!object(custodyProfile) || Object.keys(custodyProfile).sort().join(',') !== 'eligible,id,scope' ||
       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(custodyProfile.id) || custodyProfile.scope !== 'inherited-process-group' ||
       typeof custodyProfile.eligible !== 'boolean')) throw error('provider_invalid_configuration');
   if (Buffer.byteLength(JSON.stringify(config)) > 100 * 1024) throw error('provider_invalid_configuration');
-  function start({cwd, deadline, prompt, onProgress, onPermission, executionContext} = {}) {
+  function start({cwd, deadline, prompt, onProgress, onPermission, executionContext, observability = false} = {}) {
     if (!text(cwd, 8192) || !path.isAbsolute(cwd) || !Number.isSafeInteger(deadline) || deadline <= Date.now() || deadline - Date.now() > 86400000 ||
       !text(prompt, 256 * 1024) || !prompt.trim() || onProgress !== undefined && typeof onProgress !== 'function' ||
       onPermission !== undefined && typeof onPermission !== 'function') throw error('provider_invalid_input');
@@ -66,10 +68,10 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
     }
     let resolveStarted; const started = new Promise(resolve => { resolveStarted = resolve; });
     const observation = new AbortController();
-    let progress = {phase: 'starting', observedAt: new Date().toISOString(), tool: null};
+    let progress = {phase: 'starting', observedAt: new Date().toISOString(), tool: null, ...(observability ? {activity: 'starting', model: null, usage: null, publicText: ''} : {})};
     const snapshot = () => structuredClone(progress);
     async function phase(value) {
-      progress = {...progress, phase: value, observedAt: new Date().toISOString()};
+      progress = {...progress, phase: value, observedAt: new Date().toISOString(), ...(observability ? {publicText: '', activity: value === 'running' ? 'waiting' : ['stopping', 'terminal'].includes(value) ? value : 'starting'} : {})};
       await bounded(onProgress, snapshot(), observation.signal);
     }
     async function update(event) {
@@ -87,12 +89,31 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       progress = {...progress, observedAt: new Date().toISOString()};
       if (item.sessionUpdate === 'agent_message_chunk') {
         if (!object(item.content) || item.content.type !== 'text') return;
+        let reportedResponse = null;
+        if (observability && usageExtension === 'qwen-transcript/v1' && object(item._meta) &&
+            !Object.hasOwn(item._meta, 'parentToolCallId') && !Object.hasOwn(item._meta, 'subagentType')) {
+          const reading = tokenUsage(item._meta.usage, ['inputTokens', 'outputTokens', 'totalTokens']);
+          if (reading) reportedResponse = {inputTokens: reading.inputTokens, outputTokens: reading.outputTokens,
+            totalTokens: reading.totalTokens, source: 'qwen-acp-meta', scope: 'last-response', complete: false, zeroMayBeDefault: true};
+        }
+        if (reportedResponse) progress = {...progress, lastResponseUsage: reportedResponse};
+        if (observability && item.content.text === '') {
+          // Empty Qwen transcript usage is metadata, not visible model output.
+          // Keep the last observed activity and do not replay a text snippet.
+          if (reportedResponse) {progress.publicText = ''; await bounded(onProgress, snapshot(), observation.signal);}
+          return;
+        }
         if (!text(item.content.text, MAX_OUTPUT_TEXT_BYTES) || outputBytes + Buffer.byteLength(item.content.text) > MAX_OUTPUT_TEXT_BYTES) throw error('provider_output_limit');
         outputText += item.content.text; outputBytes += Buffer.byteLength(item.content.text);
         // Core progress is a bounded observation, not a per-token event sink.
         // Tool observations below are never coalesced; outputText stays exact.
-        if (outputBytes - reportedOutputBytes < 1024) return;
+        const changed = observability && progress.activity !== 'output';
+        if (observability) progress = {...progress, activity: 'output', tool: null};
+        if (!changed && outputBytes - reportedOutputBytes < 1024) return;
         reportedOutputBytes = outputBytes;
+      } else if (item.sessionUpdate === 'agent_thought_chunk' && observability) {
+        if (progress.activity === 'thinking') return;
+        progress = {...progress, activity: 'thinking', tool: null};
       } else if (['tool_call', 'tool_call_update'].includes(item.sessionUpdate)) {
         const call = toolState(item.toolCallId);
         const prior = progress.tool?.id === item.toolCallId ? progress.tool : null;
@@ -113,7 +134,7 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
           executionContext.extraScope('acp_tool_scope_unproven');
         if (['in_progress', 'completed'].includes(status)) { call.started = true; call.denied = false; }
         if (['completed', 'failed'].includes(status)) { call.terminal = true; call.denied = false; }
-        progress = {...progress, tool: {id: item.toolCallId, kind, status}};
+        progress = {...progress, tool: {id: item.toolCallId, kind, status}, ...(observability ? {activity: 'tool'} : {})};
       } else {
         // Thinking, raw tool inputs/outputs, _meta and provider-specific usage
         // are not normalized public progress or billable token evidence.
@@ -122,7 +143,7 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       await bounded(onProgress, snapshot(), observation.signal);
     }
     async function permission(params, context) {
-      if (stopping || settled || !onPermission || Date.now() >= deadline) return {outcome: {outcome: 'cancelled'}};
+      if (stopping || settled || !onPermission && !observability || Date.now() >= deadline) return {outcome: {outcome: 'cancelled'}};
       const toolCall = {};
       for (const key of ['toolCallId', 'title', 'kind', 'status', 'rawInput']) if (Object.hasOwn(params.toolCall, key)) toolCall[key] = structuredClone(params.toolCall[key]);
       const call = toolState(toolCall.toolCallId);
@@ -133,7 +154,7 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
       if (toolCall.kind !== undefined) call.kind = toolCall.kind;
       // This callback is trusted policy, not the progress/UI channel. It needs
       // actual tool input to authorize the bound request. Never forward _meta.
-      const response = await onPermission({sessionId: params.sessionId, toolCall, options: structuredClone(params.options)}, context);
+      const response = onPermission ? await onPermission({sessionId: params.sessionId, toolCall, options: structuredClone(params.options)}, context) : {outcome:{outcome:'cancelled'}};
       if (stopping || settled || context.signal.aborted || Date.now() >= deadline) return {outcome: {outcome: 'cancelled'}};
       const selection = response?.outcome?.outcome === 'selected' ? params.options.find(option => option.optionId === response.outcome.optionId) : null;
       // Refusal creates no execution obligation. The synchronous durable fence
@@ -142,6 +163,12 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
           !['read', 'edit', 'delete', 'move', 'search', 'think'].includes(toolCall.kind))
         executionContext.extraScope('acp_tool_scope_unproven');
       call.denied = ['reject_once', 'reject_always'].includes(selection?.kind) && !call.started && !call.terminal && !call.reused;
+      if (observability && (response?.outcome?.outcome === 'cancelled' || ['reject_once','reject_always'].includes(selection?.kind))) {
+        const classified = normalizedDiagnostic({stage:'permission',source:'provider-permission',code:response.diagnosticCode});
+        progress = {...progress,publicText:'',diagnostic:classified ?? {stage:'permission',source:'provider-permission',code:'permission_denied'}};
+        await bounded(onProgress,snapshot(),observation.signal);
+      }
+      if (object(response) && Object.hasOwn(response,'diagnosticCode')) {const {diagnosticCode, ...original} = response; return original;}
       return response;
     }
     const completion = (async () => {
@@ -156,13 +183,19 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
         await runtime.client.initialize();
         if (stopping) throw error('provider_stopped');
         await phase('session');
-        sessionId = (await runtime.client.newSession({cwd})).sessionId;
+        const session = await runtime.client.newSession({cwd}); sessionId = session.sessionId;
+        if (observability && text(session.models?.currentModelId, 256) && session.models.currentModelId) progress.model = {id: session.models.currentModelId, source: 'provider-reported'};
         if (stopping) throw error('provider_stopped');
         await phase('running');
         const remaining = deadline - Date.now();
         if (remaining <= 0) throw error('provider_deadline');
         const terminal = await runtime.client.prompt(sessionId, [{type: 'text', text: prompt}], {timeoutMs: remaining});
         stopReason = terminal.stopReason;
+        if (observability) {
+          progress = {...progress, activity: 'output', tool: null, publicText: boundedPublicText(outputText),
+            usage: tokenUsage(terminal.usage, ['inputTokens', 'outputTokens', 'totalTokens'], true)};
+          await bounded(onProgress, snapshot(), observation.signal);
+        }
         if (Date.now() >= deadline) throw error('provider_deadline');
         status = stopReason === 'end_turn' ? 'completed' : stopReason === 'cancelled' ? 'cancelled' : 'failed';
         reason = 'agent_' + stopReason;
@@ -195,5 +228,6 @@ export function createAcpProvider({id, executable, args = [], env = {}, custodyP
     return Object.freeze({started, completion, stop, snapshot});
   }
   return Object.freeze({id, profile: 'ordinary-user', start,
+    ...(usageExtension ? {usageExtension} : {}),
     ...(custodyProfile === undefined ? {} : {custodyProfile: Object.freeze(structuredClone(custodyProfile))})});
 }

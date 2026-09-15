@@ -63,6 +63,7 @@ describe('通用文件包提取（原包与逐文件双重核验）', () => {
     await user.click(screen.getByRole('button', {name: '查看包内文件'}));
     const input = await screen.findByLabelText('另存文件名');
     expect(input).toHaveValue('author.md');
+    await user.click(screen.getByText('更改保存文件名'));
     await user.clear(input); await user.type(input, '../bad');
     expect(screen.getByRole('button', {name: '下载此文件'})).toBeDisabled();
     await user.clear(input); await user.type(input, 'todo.html');

@@ -7,12 +7,12 @@ import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import type {ReactNode} from 'react';
 import contract from '../../../../../packages/task-api/openapi.json';
 import {ApiError} from '@/lib/transport/types';
-import {observedInputIds, checkArtifact, matchesContract} from './traceability';
+import {contractSchemaNames, observedInputIds, checkArtifact, matchesContract} from './traceability';
 import {useObservedInputs} from './use-observed-inputs';
 import {useTaskArtifacts} from './use-task-artifacts';
 import {ArtifactsView} from './artifacts-view';
 import {sha256Hex} from './downloader';
-import {makeArtifact, makeAudit, makeFakeTransport, makeLeader, makeTask, makeWorker, TASK_ID} from '../tasks/detail/testing/fixtures';
+import {correctionFixture, makeArtifact, makeAudit, makeFakeTransport, makeLeader, makeTask, makeWorker, TASK_ID} from '../tasks/detail/testing/fixtures';
 
 const input = (id = 'input-one') => makeArtifact({id, taskId: null, kind: 'input', name: 'sales.json'});
 function audit(ids = ['input-one']) {
@@ -65,7 +65,7 @@ describe('精确审计输入关联与合同', () => {
 
 describe('隔离读取与回执来源', () => {
   it.each([{id: 'wrong'}, {taskId: 'wrong'}, {taskId: null}, {kind: 'input'}])('发布回执同样拒绝错归属/类型 %j', async change => {
-    const leader = makeLeader({publication: {actionId: 'action-p', status: 'succeeded', authorizationDigest: 'sha256:' + 'a'.repeat(64), receiptArtifactId: 'receipt'}});
+    const leader = makeLeader({protocolCorrection:correctionFixture, publication: {actionId: 'action-p', status: 'succeeded', authorizationDigest: 'sha256:' + 'a'.repeat(64), receiptArtifactId: 'receipt'}});
     const {transport, calls} = makeFakeTransport({getArtifact: async () => makeArtifact({id: 'receipt', kind: 'evidence', ...change} as Parameters<typeof makeArtifact>[0])});
     const h = harness(); const view = renderHook(() => useTaskArtifacts({taskId: TASK_ID, artifactIds: [], leader, transport, refetchInterval: false}), {wrapper: h.wrapper});
     await waitFor(() => expect(view.result.current.isError).toBe(true));
@@ -121,7 +121,7 @@ describe('隔离读取与回执来源', () => {
     view.unmount(); h.client.clear();
   });
   it('Leader回执去重、同Task校验与来源并存，串LeaderTask不发请求', async () => {
-    const leader = makeLeader({publication: {actionId: 'action-p', status: 'succeeded', authorizationDigest: 'sha256:' + 'a'.repeat(64), receiptArtifactId: 'receipt'},
+    const leader = makeLeader({protocolCorrection:correctionFixture, publication: {actionId: 'action-p', status: 'succeeded', authorizationDigest: 'sha256:' + 'a'.repeat(64), receiptArtifactId: 'receipt'},
       postverify: {actionId: 'action-v', status: 'succeeded', evidenceArtifactId: 'receipt'}});
     const {transport, calls} = makeFakeTransport({getArtifact: async id => makeArtifact({id, kind: 'evidence'})});
     const h = harness(); const view = renderHook(({value}) => useTaskArtifacts({taskId: TASK_ID, artifactIds: ['receipt'], leader: value, transport, refetchInterval: false}), {wrapper: h.wrapper, initialProps: {value: leader}});
@@ -170,5 +170,23 @@ describe('观测输入实际下载入口', () => {
       }
     }
     view.unmount(); h.client.clear();
+  });
+});
+
+
+describe('受信Schema依赖闭包',()=>{
+  it('所有已选择Schema的可达引用均在明确白名单中，不接受任意新合同',()=>{
+    const selected=new Set(contractSchemaNames);
+    const walk=(value:unknown):void=>{
+      if(!value||typeof value!=='object')return;
+      if(Array.isArray(value)){value.forEach(walk);return;}
+      const record=value as Record<string,unknown>;
+      if(typeof record.$ref==='string'){expect(record.$ref.startsWith('#/components/schemas/')).toBe(true);expect(selected.has(record.$ref.slice('#/components/schemas/'.length)),record.$ref).toBe(true);}
+      Object.values(record).forEach(walk);
+    };
+    for(const name of selected)walk((contract.components.schemas as Record<string,unknown>)[name]);
+    expect(matchesContract({},'InventedContract')).toBe(false);
+    expect(matchesContract(makeLeader({protocolCorrection:correctionFixture}),'LeaderView')).toBe(true);
+    expect(matchesContract(makeLeader({protocolCorrection:{...correctionFixture,used:2} as never}),'LeaderView')).toBe(false);
   });
 });

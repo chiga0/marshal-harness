@@ -159,3 +159,10 @@ export const LEADER_STAGE_LABELS: Record<string, string> = {
   'terminal': '终态',
 };
 export const leaderStageLabel = pairs(LEADER_STAGE_LABELS);
+
+/** 仅截取用户原文首句，不生成或改写标题；完整需求由独立入口保留。 */
+export function taskTitle(intent: string, limit=48): string {
+  const first=intent.trim().split(/(?<=[。！？!?])|\r?\n/u)[0]?.trim() || intent.trim();
+  const chars=Array.from(first);
+  return chars.length>limit ? chars.slice(0,limit).join('')+'…' : first;
+}

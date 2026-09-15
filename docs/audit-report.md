@@ -6,7 +6,45 @@
 
 # 设计审计报告
 
-## 2026-09-14：Leader 模型运输身份复制失败（显式新配置已修复，默认接入未切换）
+## 2026-09-15：真实浏览器代理走查（UI 三线仍未闭合）
+
+在候选 `b26991ac` 上用真实 Chrome 浏览器连接本机 `main.mjs --ui`，完成空态连接、新建任务、任务详情、运行中的 Worker、活动/任务图、Worker 明细、Escape 关闭、刷新重连、窄屏截图和 Tab 焦点顺序。功能与可靠性在受控 fixture 范围通过；视觉与交互为 `PARTIAL`，未覆盖深色主题、200% 缩放、长列表和真实交付态。页面真实显示“未留存可展示的提示词正文”、Token 未报告、任务图暂无冻结计划，代理走查也发现窄屏标题截断和较大留白。按 UI 验收规范，Agent 走查不能代替目标用户或代表，产品可用性仍为 `NOT_RUN`；具体步骤和缺口见[本次记录](ui-1/acceptance-run-2026-09-15.md)。
+
+## 2026-09-15：逐项业务验收约定与评审证据（OPEN，实施复验中）
+
+**新增P1仍开放**：长窗口C01负例在原合法receipt/结构下误收，自行补出候选缺失的索引续建分支；S02修正材料漏必需counterexample被拒。原正例oracle还混同内容修正与过程已证明，后继必须先区分责任和时点，不能以计划、自述、缺日志或未来检查证明执行合规。原冻结suite与失败保留，新的分项期望、可信执行证据边界和原预算内整链门禁见[后继退出条件](ui-1/experience-e2e-2026-09-14.md#延长窗口揭示的合同语义与用例范围缺口)。格式修复不能关闭语义误收。
+
+新增真实模型证据仍不支持关闭：修后42ce同包四个正反例均在180秒内无正文，组件0/4；相同默认模型短请求22秒成功，单条S02负例延长窗口373.3秒返回合法rework。当前明确存在长评审延迟与完整正反例未验问题，不能把期限清理原因写成模型故障根因，也不以单条诊断成功覆盖原超时。实际服务和视觉通过范围、候选身份及后续结果见[逐项验收记录](ui-1/experience-e2e-2026-09-14.md#批准前约定与逐项评审的后继候选)。
+
+统一包 `d42eb0be` 的实际 HTTP 检查发现执行接线 P1：Controller 创建新 outcome 容器但转发原 receipt，附加证据错误绑定旧 result 对象，导致合法 Review 被拒。两次受控失败保留。后继改为原 opaque receipt 的私有绑定，原 Port 对 type/status/cleanup/ticket 的校验与 Controller 均不变；独立 35 项及经过真实 Controller 的 HTTP 双任务/冷开回归通过，修后与最新 `4f68bd27` 同包浏览器复验均通过有限受控范围。此前直接 Core.finish 的成功不能替代这条接线证明。
+
+依据 [ADR0106](adr/0106-bound-review-assessments.md)，将批准前可读验收条目、原材料引用和逐项状态接入原 Review receipt 与同一事务。确定性结构约束只能防缺项、错绑定及伪引用，不能代替模型语义能力和业务结果实测。独立审查已发现并修复空文件无法形成负评审的边界；UI 与后端状态/finding 规则及固定政策正文一致性继续交叉复核。原 S02/C01 失败证据不变，四组最小正反候选已经独立从原 Audit 重建核对；新增合同的真实模型组件与统一候选 E2E 尚待完成，因此本问题不关闭，真人产品可用性仍待验。
+
+## 2026-09-14：执行透明度与从零业务验收（OPEN，统一候选验收中）
+
+2026-09-15后继实测：`1eccece1` 已在真实作者Audit中确认固定指导送达；S01一轮有限通过，S02仍虚构已确认日程和当天到场方式而被Review接受。C01的标签问题本次被真实Review发现并有效修正，但承诺两步导入任一步失败重跑等价而未定义清单/索引提交与跳过规则，完整方案仍拒收；这是设计缺口，不冒称已执行软件或已发生数据损失。接线缺失已经修复，语义服从与独立评审能力缺口仍开放；不继续无修正重跑、不把配置检查当事实验证。评审长原文另由UI候选 `2846a631` 按需展开，保留完整原报告和可见的修改行动，不能以界面改善关闭业务问题。详见[本轮结果](ui-1/experience-e2e-2026-09-14.md#固定作者指导的实施与首轮复验)。
+
+2026-09-15设计接缝：[ADR0105](adr/0105-fixed-author-instructions.md) 已接受一次性固定作者指导。原业务对象、prepare及权限身份保持；外来/包装/staging/重复/关闭/已尝试准备对象拒绝登记，闭合参数只复制有界字符串。新配置冻结实际指导和注册源码指纹，旧未登记提示逐字不变，旧根不静默切换。实施候选 `1eccece1` 已打包，针对回归通过；独立审查及真实业务验收分别收口，不能以输入接通证明内容正确。
+
+2026-09-15追加实测：`a0854099` 的 S01、S02 自动流程均完成，但独立业务验收失败：前者批准计划额外禁止建议、执行与Review却采用较宽口径；后者虚构免费/名额/登记渠道/短信确认。原作者输入未直接包含事实、操作效果、数据来源指导，依赖 Leader 转述，是独立于 Reviewer 能力的接线缺口。正修复一次性固定作者指导并验证原 Audit 与实际输入；不以接线成功关闭业务失败。Pi 对同组标签恢复正反组件1/2，负例没有合法报告且原始失败原因未知，不将清理原因冒充故障原因，也不据此改默认模型。精确证据见[复验记录](ui-1/experience-e2e-2026-09-14.md#a0854099-简单链路复验与作者交接缺口)。
+
+2026-09-15当前后继：`a0854099` 的协议纠错/真实诊断、Verifier范围与失败可见性已进入集成验证；默认Reviewer对标签恢复正反例仅1/2通过，另一个显式已配置模型因报告格式两例均不合约且负例仍有错误意见。上下文完整、来源指导已经送达；将其作为未解决的业务语义能力缺口，不能继续以提示修改或换模型次数作为进展。原错误输出、正例和组件结果完整保留，任何后继须先证明能区分这些材料，不能将流程completed等同于业务正确。详见[后继结果](ui-1/experience-e2e-2026-09-14.md#后继协议界面与评审组件结果)。
+
+
+2026-09-15 追加：`S01-5bb31cbd-2` 的自然 Review→业务 repair→Review accept→配置检查→交付链已发生，但最后 Leader 的 summary 引号未转义，原严格 JSON 拒绝，Task **FAIL**。原公开输出非空，最新诊断清空片段及 HTTP 历史裁剪不能解释成模型未输出。按 ADR0104 补有界、语言无关的漏转义引号分类，仍不修补 JSON、不接受动作；同时从原 Port 固定 parse 诊断准确显示 protocol 阶段，消除笼统 provider_failed 误导。真实样本及混合硬错误、原失败/一次预算/迟到/关闭配置均须独立验证；新候选尚需实机复验，不修改该历史失败结论。
+
+本批按 [ADR0102](adr/0102-generic-review-wire-and-new-install-default.md) 补新安装 Review 封套和明确默认接入，按 [ADR0103](adr/0103-execution-observability.md) 补显式输入留存、Provider 活动/模型/用量及原根冻结策略。观察只解释执行，不能作为独立业务通过证据；原 never-permitted 证明不放宽，留存输入与 startProtocol 的不支持组合在构造/claim 前拒绝。工作台、阶段、成员与成果按整体到详细呈现，保留原机器身份和审计路径。目标与冻结案例见[从零验收](ui-1/experience-e2e-2026-09-14.md)。
+
+候选 `08bfe11b` 的真实 Qwen S01 已从全新安装、浏览器创建/批准到下载完成，原 Review 与字节验收通过；独立业务正文审查发现无输入依据的签到设施与材料发放承诺，**业务验收失败**。保留原需求、批准 scope、输出、Review accept 与成本，不能把端到端流程 PASS 等同业务 PASS。后续修复通用事实来源/建议区分与 Review 约束后，用同一冻结意图重新验收。真实 Provider 报告模型 `Kimi-K3(openai)`，Token 未报告，不能按零计。旧截图部分早于页面轮询/路由收敛，已标证据缺口并修正测试同步，不以截图文件名证明画面状态。
+
+本批尚未完整通过全部案例，未发布，UI 真人可用性未执行；独立代码/受控测试结论不替代三线验收。
+
+2026-09-15补充：`d14a660e` 跨平台工程CI/同包消费已通过，真实S01和M01各两次独立正文通过；S02仍误接受无实际提交路径的表单，C01仍误接受覆盖后缺少前值却声称无损回退。两项均为流程完成而独立业务失败，原证据保留。实际固定检查仅 `exact-files`，并未执行计划里的所有自由文本验收要求；界面需透传“配置检查/Agent业务判断/实际效果证据”的区别。后继先用原失败与修正正例评测Review，再恢复整链复验，不以提示词加强或测试数量替代语义正确性。
+
+2026-09-15后继：`5bb31cbd` 工程CI13项、同包消费7项、Reviewer正反组件4项通过后，真实M01两次通过。S01第二次在完成真实内容返工与交付后，最终Leader JSON未转义引号导致失败；原始公开文本仍在，粗粒度Provider错误不应冒充根因，保守分类 used=0 的漏覆盖待修。C01再次语义拒收：工具内用户自建标签只存本地权威表，却被称为派生并删除，原笔记不能恢复该信息；Review完整收到材料，仍自行推断豁免。两个问题均开放，先修复和建立新正反例，不能以旧组件通过、更多提示词或重跑偶然成功关闭。精确候选及失败见[整链结果](ui-1/experience-e2e-2026-09-14.md#候选-5bb31cbd-的整链结果与新增缺陷)。
+
+
+## 2026-09-14：Leader 模型运输身份复制失败（ADR0101 历史检查点，当时默认未切换）
 
 通用文件实机出现动作形状合法但 `callId` 不匹配，原端口拒绝结果；不删除失败，不把重新拼接旧结果当作恢复。[ADR0101](adr/0101-generic-leader-model-wire-binding.md) 已独立接纳并实现，将模型建议与受信运输封套分开，仅用于显式新配置：保留 Core 动作／证据／当前性门禁，旧 profile 错误绑定继续拒绝。候选 `ff468dfb` 用原始 TODO HTML 需求完成真实 Qwen 团队交付（303608ms、8 Attempts、零 retry/rework），正常重开未新增执行。独立浏览器验证与原始输出核查另见[验收记录](ui-1/2026-09-14-intervention-fix.md)。不修改默认、权限、数据库或 HTTP；不证明旧异常任务恢复、默认安装接入、活跃崩溃恢复或完整产品验收。原始模型文本与映射后的决定分开保存/比较，不能把映射决定冒称逐字模型证据。
 
@@ -2303,3 +2341,22 @@ RC1 completion 复审发现：`result-admitted` 已提交后，terminalization �
 ## 2026-09-11：Go 历史线退役移除（GO-LEGACY-REMOVAL）
 
 按维护者指示（2026-09-10，开发阶段快速迭代授权）新增 [ADR 0099](adr/0099-go-legacy-line-retirement-and-removal.md) 并执行一次性移除：`cmd/`、`internal/`、`schemas/`、`web/`、`sdk/`、`go.mod`/`go.sum`/`Makefile` 及 7 个 Go 专属 workflow（ci/release/rc1-canary/m10-bridge-smoke/m13-e2e-dogfood/fixed-server-t1-canary/team-progress-regression）、`.github/actions/live-review/` 与 Go 专用 scripts。移除前独立盘点核实 Node 侧对 Go 资产零引用；`ci.yml` 内 secret scan 提取为独立 workflow `secret-scan.yml`，门禁能力不降级；`CODEOWNERS` 信任边界收敛为 `docs/adr/` 与 `packages/task-api/`（openapi 合同目录）；`.gitleaks.toml` 的 `*_test.go` allowlist 因历史扫描需要保留。历史字节与 `v1.0.0-rc1`（tag `e99326f`→`c1407bd`）经 git 历史完整追溯；不涉及 Node 合同、SQLite 布局、发行 manifest 白名单或 ADR0096/0097 签名与运行时身份。遗留：分支保护若将旧 `ci.yml` job 列为 required check，需仓库管理员在 GitHub 设置中同步移除（仓库外操作）。
+
+
+## 2026-09-15：Leader 有界 JSON 纠错（LEADER-JSON-CORRECTION）
+
+[ADR0104](adr/0104-bounded-leader-protocol-correction.md) 接受显式新 profile 的 Task 级唯一一次格式纠错：原失败 Outcome、调用计数和权限不变，只对同次原不透明 receipt 绑定、无已知工具/权限事件、原清理确认且当前性/预算满足的 JSON 语法错误产生一个 durable obligation。重复键、编码/深度/数字/后缀等混合错误保守排除，Core 动作拒绝不重试。旧 leader-ports 原字节保持；新策略及源码身份在同根 owner claim 前冻结。
+
+实现验收记录受控 SQLite、finish 前/事务内/提交后/claim/start 五处真实 SIGKILL、原签名清理后的恢复、实际 prepare/Audit/Provider prompt 一致、闭合 API/客户端和同根变更拒绝。新模块加入发行库存；独立实现审查及集成候选的 HTTP/浏览器、真实模型结果仍须单独记录，不将代码合入解释为完整业务或用户体验验收通过。
+
+## 2026-09-15：业务后验与证据边界复核
+
+`verifyOrders`、`verifyGuide` 与 `verifyRecoveryModel` 已作为离线、`authority:false` 的确定性实验集成，覆盖 M01 精算、有限批准文案和显式四步恢复模型；13 项测试通过。离线 helper 本身不接入 Core，也不能替代真实 Verification、语义审查或真实文件系统后验。新增的 `packages/task-service/m01-postcondition.test.mjs` 则在**仅测试配置**中用真实 `TaskApplication`、SQLite、HTTP、Depot、FileBusiness 和现有 `createVerificationPort` 跑通 M01 成功及错误候选两条链路；验证器从原输入 Artifact 的 Depot bytes 重算，再读取受控候选，错误路径只保存独立失败证据而不保存 delivery。这证明现有受信装配的接缝可运行，不表示 `verifyOrders` 已成为通用业务插件、`acceptanceEvidence` 已实现或 ADR0107 已 Accepted。`scripts/review-item-oracle.mjs` 已对冻结输入、报告身份和条目期望做严格校验，20 项相关测试通过；ADR0107 合同冻结离线测试 8/8 通过，现已通过真实 `TaskApplication`/`TaskExecution.reserve()` 生成输入和 reservation 事实，并保护 Store 摘要、Task/Attempt/Artifact 绑定但不接入生产；S02/C01 延长窗口的真实模型结果仍保留为失败或不可判定证据。
+
+当前候选又增加了两条受控业务纵切：S01 的 `finite-guide/v1` 经真实 TaskApplication/SQLite/HTTP/Depot/FileBusiness/VerificationPort 对正确文案及额外事实、时间/地点漂移分别验收，C01 则在真实 Node 子进程中覆盖四步文件导入的每个崩溃边界、重启、重复执行、未完成记录拒绝和冲突索引 fail-closed，并另行经过同一受信 HTTP/SQLite/VerificationPort 装配。两者均由独立 verifier 从冻结输入和候选状态重建证据，错误路径不生成 delivery；C01 明确不接入生产 Core，也不自动接管旧 generation Worker。它们证明的是受控 fixture 的接缝和文件事实，不能替代真实模型 S01/C01、任意自然语言语义、冷故障生产恢复或 UI 三线验收。
+
+ADR0107 当前为 Draft 候选（以 PR #315 当前 head 为准，基线实现仍未接入），经独立复核未发现设计方向上的 P0/P1，明确按责任、时点、候选和 repair 身份闭合 `acceptanceEvidence`，并将确定性退出、独立语义退出和真实业务验收分开。后续修订已统一 Store canonical digest、Task 级证据绑定、可定位 `sourceArtifact:{id,digest}` 及基于耐久事实的复合 `attemptRef`；它尚未接受、未实现、未授权新增 API 或模型调用。实施前仍有七项 P1 接缝必须冻结：两个 profile 闭集、摘要域与测试向量、capabilityDigest、可定位 Artifact、Attempt 持久来源、Audit/UI 精确投影及旧客户端兼容。未完成前不得把草案视为可实施合同。
+
+Attempt 身份只读审计确认当前 Node 没有独立持久 `attemptId`：命令的 `attempt_id` 通常为空，实际 Worker 记录位于 `attempt` projection，预留事务同时保存 `workerId`、`commandId`、`generation`、`reservationDigest` 与 `worker.reserved` 事件。扩展契约已改用可验证的复合 `attemptRef`，不生成虚构 UUID；该引用仍需在 ADR0107 实施前冻结并纳入后续 API/Schema 设计。
+
+当前 PR 的 GitGuardian 检查仍失败，incident `37263555` 指向历史 commit `08bfe11b6a239aea6f002b7cde8b922e0b2a8c52` 中的合成 Bearer fixture（`packages/agent-observation/normalization.test.mjs`）。当前文件已使用非敏感 fixture，第一方 Secret scan 通过；GitGuardian 扫描 PR 历史仍会命中旧提交。该项在仓库外需要安全审查处置，不能通过关闭检查、添加绕过规则或改写共享历史解决，故当前合并门禁保持阻塞。

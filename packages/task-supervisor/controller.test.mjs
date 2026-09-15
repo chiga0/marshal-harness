@@ -7,6 +7,7 @@ import {setImmediate as turn} from 'node:timers/promises';
 import {Store, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
 import {TaskApplication, createRuntimeQuestionPort, createVerificationPort} from '../task-application/application.mjs';
 import {TaskSupervisor} from './controller.mjs';
+import {TaskBusinessError} from '../task-business/index.mjs';
 import {ArtifactDepot} from '../task-artifacts/depot.mjs';
 import {createExecutionCustody} from '../agent-runtime/custody.mjs';
 
@@ -65,14 +66,14 @@ function fixture(t, options = {}) {
   let ids = 0, offset = 0;
   const clock = () => Date.now() + offset, makeId = prefix => prefix + '-' + String(++ids).padStart(6, '0');
   const depot = questions ? ArtifactDepot.create(path.join(parent, 'objects')) : null;
-  let app = new TaskApplication({store, owner, execution, clock, makeId, runtimeQuestions: questions, verification, depot});
+  let app = new TaskApplication({store, owner, execution, clock, makeId, runtimeQuestions: questions, verification, depot, observability:options.observability ? {profile:'task-observation/v1',retainPrompts:false} : null});
   const provider = new FakeProvider(), errors = [], controllers = [];
   const makeController = extra => {
     const supervisor = new TaskSupervisor({execution: app.execution, providers: new Map([[provider.id, provider]]),
       prepare: ticket => ({cwd: parent, prompt: JSON.stringify({workerId: ticket.workerId, role: ticket.role, nodeId: ticket.nodeId})}),
       collect: ticket => ticket.role === 'planner' ? {plan: proposal} : {result: {nodeId: ticket.nodeId, candidate: true}},
       verification,
-      onError: error => errors.push(error), clock, ...extra});
+      onError: error => errors.push(error), clock, observability:options.observability === true, ...extra});
     controllers.push(supervisor); return supervisor;
   };
   t.after(async () => {
@@ -99,7 +100,7 @@ function fixture(t, options = {}) {
     capacity() {return store.read(owner, tx => app.execution.capacity(tx).value.active);},
     reopen() {
       store.close(); store = Store.openExisting(root, storeOptions); owner = store.claimOwner(owner.generation, 'reopened-supervisor', Date.now() + 3600000);
-      app = new TaskApplication({store, owner, execution, clock, makeId, runtimeQuestions: questions, verification, depot});
+      app = new TaskApplication({store, owner, execution, clock, makeId, runtimeQuestions: questions, verification, depot, observability:options.observability ? {profile:'task-observation/v1',retainPrompts:false} : null});
     }};
 }
 async function approved(f, supervisor) {
@@ -464,4 +465,60 @@ test('self-driven timer makes progress without an external watchdog, then closes
   const report = await supervisor.close(); assert.equal(report.clean, true);
   assert.equal(f.provider.records.slice(1).every(record => record.stopCount === 1), true);
   assert.equal(f.capacity().length, 0); assert.deepEqual(f.errors, []);
+});
+
+test('explicit controller diagnostics distinguish prepare, provider and collection without exposing original errors', async t => {
+  for (const stage of ['prepare','collect','provider']) await t.test(stage, async t => {
+    const f=fixture(t,{observability:true}); const task=await f.create();
+    const controller=f.makeController({...(stage==='prepare'?{prepare(){throw new Error('PRIVATE /secret/file body');}}:{}),
+      ...(stage==='collect'?{collect(){throw Object.assign(new Error('PRIVATE /secret/file body'),{code:'PRIVATE_CODE'});}}:{})});
+    await controller.start();
+    if(stage!=='prepare'){await until(()=>f.provider.records.length===1);f.provider.records[0].finish(stage==='provider'?{status:'failed',stopReason:'refusal'}:{});}
+    await until(async()=>{await controller.tick();return (await f.get(task.id)).status==='failed';});
+    const workers=await f.app.dispatch({operation:'task.workers',taskId:task.id},context);
+    if(stage==='prepare') assert.equal(workers.items[0].startedAt,null);
+    const diagnostic=workers.items[0].observation.diagnostic;
+    assert.deepEqual(diagnostic,{stage:stage==='prepare'?'preparing':stage==='collect'?'collecting':'provider',code:stage==='prepare'?'preparation_failed':stage==='collect'?'collection_failed':'provider_failed',source:'controller'});
+    assert.doesNotMatch(JSON.stringify(workers),/PRIVATE|secret\/file/);
+    assert.equal(workers.items[0].observation.activity,'terminal');
+    await controller.close(); f.reopen();
+    assert.deepEqual((await f.app.dispatch({operation:'task.workers',taskId:task.id},context)).items[0].observation.diagnostic,diagnostic);
+  });
+});
+
+
+test('deadline during pending preparation keeps preparing diagnostic and no start time',async t=>{
+  const f=fixture(t,{observability:true}),task=await f.create();let called=false,clockCalls=0;
+  // Isolate the Coordinator deadline from Application task expiry: its first
+  // clock read schedules an earlier execution timeout; original Core rules stay unchanged.
+  const controller=f.makeController({clock:()=>Date.now()+(clockCalls++===0?29900:0),prepare:()=>{called=true;return new Promise(()=>{});}});
+  await controller.start();await until(()=>called);await until(async()=>{await controller.tick();return (await f.get(task.id)).status==='failed';});
+  const worker=(await f.app.dispatch({operation:'task.workers',taskId:task.id},context)).items[0];
+  assert.equal(worker.startedAt,null);assert.equal(f.provider.records.length,0);
+  assert.deepEqual(worker.observation.diagnostic,{stage:'preparing',code:'deadline_exceeded',source:'controller'});
+});
+
+test('rejected original started promise diagnoses starting without inventing start time',async t=>{
+  const f=fixture(t,{observability:true}),task=await f.create();
+  const provider={id:'fixture',start(){const result={providerId:'fixture',status:'failed',stopReason:null,cleanup:{started:null,cleaned:true,scope:'none-start',reason:'fixture-bootstrap-failed'}};
+    return {started:Promise.reject(new Error('PRIVATE start failure')),completion:Promise.resolve(result),stop:async()=>result};}};
+  const controller=f.makeController({providers:new Map([[provider.id,provider]])});
+  await controller.start();await until(async()=>{await controller.tick();return (await f.get(task.id)).status==='failed';});
+  const worker=(await f.app.dispatch({operation:'task.workers',taskId:task.id},context)).items[0];
+  assert.equal(worker.startedAt,null);assert.deepEqual(worker.observation.diagnostic,{stage:'starting',code:'provider_start_failed',source:'controller'});
+  assert.doesNotMatch(JSON.stringify(worker),/PRIVATE/);
+});
+
+
+test('collection diagnostics accept typed allowlisted causes but ignore forged errors and unknown codes',async t=>{
+  for(const variant of ['missing','binding','forged','unknown'])await t.test(variant,async t=>{
+    const f=fixture(t,{observability:true}),task=await f.create();
+    const failure=variant==='forged'?{code:'business_collect_failed',causeCode:'task_files_missing_output'}:
+      Object.assign(new TaskBusinessError(variant==='binding'?'business_execution_mismatch':'business_collect_failed'),{causeCode:variant==='unknown'?'PRIVATE/path':'task_files_missing_output'});
+    const controller=f.makeController({collect(){throw failure;}});await controller.start();await until(()=>f.provider.records.length===1);f.provider.records[0].finish();
+    await until(async()=>{await controller.tick();return (await f.get(task.id)).status==='failed';});
+    const worker=(await f.app.dispatch({operation:'task.workers',taskId:task.id},context)).items[0];
+    assert.equal(worker.observation.diagnostic.code,variant==='missing'?'task_files_missing_output':variant==='binding'?'business_execution_mismatch':'collection_failed');
+    assert.doesNotMatch(JSON.stringify(worker),/PRIVATE/);
+  });
 });

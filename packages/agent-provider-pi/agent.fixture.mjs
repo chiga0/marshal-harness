@@ -6,9 +6,15 @@ let buffer = '', active = false, cleared = false;
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const reply = (request, data) => send({type: 'response', id: request.id, command: request.type, success: true, ...(data ? {data} : {})});
 const message = (text = 'public output', stopReason = 'stop') => ({type: 'message_end', message: {role: 'assistant', stopReason,
+  ...(mode.startsWith('observed') ? {timestamp: 1800000000000, model: 'fixture-model', usage: {input: 20, output: 4, totalTokens: 24}} : {}),
   content: [{type: 'thinking', thinking: 'PRIVATE_THINKING'}, {type: 'text', text}]}});
 function finish(stopReason = 'stop') {
-  send(message(mode === 'overflow' ? 'x'.repeat(65537) : 'public output', stopReason));
+  const last = message(mode === 'overflow' ? 'x'.repeat(65537) : mode.startsWith('observed') ? 'password=fixture-secret\n公开输出' : 'public output', stopReason);
+  if (mode === 'observed-duplicate') send(last);
+  if (mode === 'observed-collision') send({...last,message:{...last.message,content:[{type:'text',text:'另一条消息'}]}});
+  if (mode === 'observed-sum') send({...last,message:{...last.message,timestamp:last.message.timestamp-1}});
+  if (mode === 'observed-overflow') send({...last,message:{...last.message,timestamp:last.message.timestamp-1,usage:{input:Number.MAX_SAFE_INTEGER,output:0,totalTokens:Number.MAX_SAFE_INTEGER}}});
+  send(last);
   send({type: 'agent_end', messages: [], willRetry: false});
   if (mode !== 'no-settled') { send({type: 'agent_settled'}); active = false; }
 }
@@ -28,6 +34,7 @@ function handle(request) {
       setTimeout(() => { send({type: 'auto_retry_start', attempt: 1, errorMessage: 'PRIVATE_RETRY'});
         send({type: 'agent_start'}); finish(); }, 40); return;
     }
+    if (mode.startsWith('observed')) {send({type: 'message_update', assistantMessageEvent: {type: 'thinking_delta', delta: 'PRIVATE_THINKING'}}); send({type: 'message_update', assistantMessageEvent: {type: 'text_delta', delta: 'password=fixture-secret'}});}
     send({type: 'tool_execution_start', toolCallId: 'read-one', toolName: 'read', args: {path: 'PRIVATE_INPUT'}});
     send({type: 'tool_execution_end', toolCallId: 'read-one', toolName: 'read', isError: false, result: {private: 'PRIVATE_OUTPUT'}});
     finish(mode === 'error' ? 'error' : mode === 'length' ? 'length' : 'stop'); return;

@@ -53,7 +53,7 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
   // explicit local settings. They remain packaged and are exercised below,
   // rather than being treated as side-effect-free library imports.
   const entrypoints = new Set(['packages/task-service/main.mjs', 'packages/agent-runtime/guard.mjs', 'packages/agent-runtime/custody-process.mjs',
-    'packages/task-generic-files/checker.mjs', 'packages/task-generic-files/service-config.mjs', 'packages/task-generic-files/qwen-service-config.mjs', 'packages/task-generic-files/qwen-short-service-config.mjs',
+    'packages/task-generic-files/checker.mjs', 'packages/task-generic-files/service-config.mjs', 'packages/task-generic-files/qwen-service-config.mjs', 'packages/task-generic-files/qwen-short-service-config.mjs', 'packages/task-generic-files/qwen-review-service-config.mjs',
     'packages/task-regional-window/checker.mjs', 'packages/task-regional-window/service-config.mjs',
     'packages/task-publication-report/runner.mjs', 'packages/task-leader-report/service-config.mjs']);
   const imports = SOURCE_FILES.filter(file => file.endsWith('.mjs') && !entrypoints.has(file));
@@ -75,7 +75,7 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
     '--config', path.join(f.target, 'packages/task-leader-report/service-config.mjs')], {cwd: f.root, env: {}, timeout: 10000, encoding: 'utf8'});
   assert.equal(leader.status, 1); assert.equal(leader.stdout, ''); assert.equal(withoutSQLiteImportWarning(leader.stderr), '{"code":"service_start_unavailable"}\n');
   assert.equal(fs.existsSync(path.join(f.root, 'unconfigured-leader')), false);
-  for (const configuration of ['service-config.mjs', 'qwen-service-config.mjs', 'qwen-short-service-config.mjs']) {
+  for (const configuration of ['service-config.mjs', 'qwen-service-config.mjs', 'qwen-short-service-config.mjs', 'qwen-review-service-config.mjs']) {
   const genericRoot = path.join(f.root, 'unconfigured-' + configuration);
   const generic = spawnSync(process.execPath, [path.join(f.target, report.entrypoint), '--root', genericRoot,
     '--config', path.join(f.target, 'packages/task-generic-files', configuration)],
@@ -231,4 +231,9 @@ test('write durability failure preserves partial target and does not claim succe
   assert.ok(fs.existsSync(path.join(f.target, SOURCE_FILES[0])));
   assert.ok(!fs.existsSync(path.join(f.target, 'manifest.json')));
   assert.throws(f.create, /package_io_failed/);
+});
+
+test('observation runtime and reliable profile are included in the exact distribution inventory',()=>{
+  for(const file of ['packages/agent-observation/normalization.mjs','packages/task-application/observation.mjs','packages/task-generic-files/review-wire.mjs','packages/task-generic-files/qwen-review-service-config.mjs']) assert.ok(SOURCE_FILES.includes(file));
+  assert.deepEqual([...SOURCE_FILES].sort(),SOURCE_FILES);
 });

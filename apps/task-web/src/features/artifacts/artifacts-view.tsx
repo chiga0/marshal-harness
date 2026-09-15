@@ -1,3 +1,4 @@
+import {configuredCheckLabel, VerificationScope} from '../tasks/detail/shared/verification-scope';
 // 成果（P09）：Task.artifactIds → 服务端产物元数据清单（候选/最终/证据/输入分组，逐项可用性如实，E15 事实层）；
 // 独立验收来自 audit.acceptance，集中评审来自 leader.review；发布/后验来自 leader.publication/postverify；
 // 下载经 getArtifactContent 拉流 + 本机 SHA-256 复验（E17），任何不一致拒绝保存；下载不等于发布（E16）。
@@ -9,7 +10,7 @@ import {Card} from '@/components/ui/card';
 import {ApiError} from '@/lib/transport/types';
 import type {ArtifactKind, ArtifactRecord, LeaderActionStatus, LeaderRecord, LeaderReview, TaskAuditRecord, TaskRecord, Transport} from '@/lib/transport/types';
 import {ErrorNotice} from '../tasks/detail/shared/error-notice';
-import {acceptanceStatusLabel, formatBytes} from '../tasks/detail/shared/format';
+import {formatBytes} from '../tasks/detail/shared/format';
 import {StatusBadge, toneForAcceptanceStatus} from '../tasks/detail/shared/status-badge';
 import {downloadArtifact, DownloadRejection} from './downloader';
 import {DeliveryFilesView} from './delivery-files-view';
@@ -85,7 +86,7 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
   const delivery = okArtifacts.find(artifact => artifact.kind === 'delivery') ?? null;
 
   return (
-    <div className="space-y-4" data-testid="artifacts-view">
+    <div className="space-y-8" data-testid="artifacts-view">
       <Card aria-label="最终交付" className="space-y-2" data-testid="final-delivery">
         <h2 className="text-base font-semibold leading-6">最终交付成果</h2>
         {delivery ? (
@@ -116,9 +117,9 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
             {task.code ? <p className="text-sm text-danger">失败代码：<code>{task.code}</code></p> : null}
           </div>
         )}
-        <p className="text-xs text-text-secondary">
+        <details className="text-xs text-text-secondary"><summary className="min-h-11 cursor-pointer py-3">下载与文件限制</summary><p>
           单个成果内容的服务端合同上限为 8388608 字节（8 MiB）；下载只是保存到本机浏览器目录，下载不等于发布。
-        </p>
+        </p></details>
       </Card>
 
       <Card aria-label="产物清单" className="space-y-3" data-testid="artifact-inventory">
@@ -154,26 +155,9 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
               {rows.length === 0 ? (
                 <p className="text-xs text-text-secondary" data-testid={`artifact-group-empty-${kind}`}>暂无{ARTIFACT_KIND_LABELS[kind]}。</p>
               ) : (
-                <div className="overflow-x-auto rounded-md border border-border">
-                  <table className="w-full min-w-[720px] text-sm leading-[22px]">
-                    <thead className="bg-surface-muted/60 text-left text-xs text-text-secondary">
-                      <tr>
-                        <th className="px-3 py-2 font-medium">文件名</th>
-                        <th className="px-3 py-2 font-medium">mediaType</th>
-                        <th className="px-3 py-2 font-medium">大小</th>
-                        <th className="px-3 py-2 font-medium">摘要</th>
-                        <th className="px-3 py-2 font-medium">状态</th>
-                        <th className="px-3 py-2 font-medium">操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map(artifact => (
-                        <ArtifactRow key={artifact.id} artifact={artifact} transport={transport}
-                          sources={entries.find(entry => entry.status === 'ok' && entry.artifact.id === artifact.id)?.sources ?? []} />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <ul className="divide-y divide-border" aria-label={`${ARTIFACT_KIND_LABELS[kind]}文件列表`}>
+                  {rows.map(artifact => <ArtifactRow key={artifact.id} artifact={artifact} transport={transport} sources={entries.find(entry => entry.status === 'ok' && entry.artifact.id === artifact.id)?.sources ?? []} />)}
+                </ul>
               )}
             </section>
           );
@@ -182,7 +166,7 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
 
       <Card aria-label="执行审计观测输入" className="space-y-3" data-testid="observed-inputs">
         <h2 className="text-base font-semibold leading-6">执行审计观测到的输入</h2>
-        <p className="text-xs text-text-secondary">仅列出当前 Task 执行审计明确关联的输入；不是完整原始输入清单，也不证明 Agent 或模型已消费。输入按合同归属本地操作者（taskId=null），不冒充 Task 产物。</p>
+        <details className="text-xs text-text-secondary"><summary className="cursor-pointer">输入来源说明</summary><p>仅列出当前 Task 执行审计明确关联的输入；不是完整原始输入清单，也不证明 Agent 或模型已消费。输入按合同归属本地操作者（taskId=null），不冒充 Task 产物。</p></details>
         {observedInputs?.referenceError ? <ErrorNotice error={observedInputs.referenceError} title="输入关联校验失败" /> : null}
         {!observedInputs || observedInputs.total === null || observedInputs.total === 0 ? (
           <p className="text-sm text-text-secondary" data-testid="input-association-unavailable">输入关联未提供或尚无观测；不能据此认定没有输入。</p>
@@ -192,12 +176,9 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
           {observedInputs.entries?.filter(entry => entry.status === 'failed').map(entry => entry.status === 'failed' ? (
             <p key={entry.id} role="alert" className="break-all text-sm text-danger">输入 {entry.id} 不可用：{describeLoadError(entry.error)}</p>
           ) : null)}
-          <div className="overflow-x-auto rounded-md border border-border">
-            <table className="w-full min-w-[720px] text-sm leading-[22px]">
-              <thead><tr>{['文件名 / 来源', 'mediaType', '大小', '摘要', '状态', '操作'].map(label => <th key={label} className="px-3 py-2 text-left font-medium">{label}</th>)}</tr></thead>
-              <tbody>{observedInputs.entries?.map(entry => entry.status === 'ok' ? <ArtifactRow key={entry.artifact.id} artifact={entry.artifact} transport={transport} sources={entry.sources ?? []} readyOnly /> : null)}</tbody>
-            </table>
-          </div>
+          <ul className="divide-y divide-border" aria-label="观测输入文件列表">
+            {observedInputs.entries?.map(entry => entry.status === 'ok' ? <ArtifactRow key={entry.artifact.id} artifact={entry.artifact} transport={transport} sources={entry.sources ?? []} readyOnly /> : null)}
+          </ul>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="sm" onClick={() => void observedInputs.query.refetch()} disabled={observedInputs.query.isFetching}>刷新输入元数据</Button>
             {observedInputs.loaded < observedInputs.total ? <Button variant="outline" size="sm" onClick={observedInputs.loadMore}>加载更多观测输入</Button> : null}
@@ -206,7 +187,7 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
       </Card>
 
       <Card aria-label="验收读数" className="space-y-2" data-testid="verification-readout">
-        <h2 className="text-base font-semibold leading-6">独立验收/集中评审读数</h2>
+        <h2 className="text-base font-semibold leading-6">业务评审与配置检查</h2>
         {leader === null ? (
           <p className="text-sm text-text-secondary" data-testid="verification-unavailable">
             Leader 投影不可用，集中评审读数暂不可用。
@@ -216,34 +197,34 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
             暂无集中评审读数（评审未完成或该服务未提供）。
           </p>
         ) : (
-          <div className="space-y-1" data-testid="review-verdict">
+          <div className="space-y-1" data-testid="review-verdict"><h3 className="text-sm font-medium">独立 Agent 业务评审</h3>
             <StatusBadge
               machine={leader.review.verdict}
               label={REVIEW_VERDICT_LABELS[leader.review.verdict]}
               tone={leader.review.verdict === 'accept' ? 'success' : leader.review.verdict === 'reject' ? 'danger' : 'warning'}
             />
-            <dl className="grid grid-cols-1 gap-y-1 text-sm leading-[22px]">
+            <details className="text-xs text-text-secondary"><summary className="min-h-11 cursor-pointer py-3">查看校验引用</summary><dl className="grid grid-cols-1 gap-y-1 text-sm leading-[22px]">
               <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">评审摘要</dt><dd className="break-all"><code className="text-xs">{leader.review.digest}</code></dd></div>
               <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">评审 Worker</dt><dd className="break-all"><code className="text-xs">{leader.review.workerId}</code></dd></div>
               <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">证据</dt><dd>{leader.review.evidenceIds.length > 0 ? `${leader.review.evidenceIds.length} 条（${leader.review.evidenceIds.join('，')}）` : '暂无数据'}</dd></div>
-            </dl>
+            </dl></details>
           </div>
         )}
         <div className="space-y-1 border-t border-border pt-2" data-testid="acceptance-readout">
-          <h3 className="text-sm font-medium">独立验收（task.audit.acceptance）</h3>
+          <h3 className="text-sm font-medium">配置检查结果</h3>
           {acceptance === null ? (
             <p className="text-sm text-text-secondary" data-testid="acceptance-unloaded">验收读数未加载或 audit 投影不可用；不能以评审结果代替验收。</p>
           ) : (
             <>
-              <StatusBadge machine={acceptance.status} label={acceptanceStatusLabel(acceptance.status)} tone={toneForAcceptanceStatus(acceptance.status)} />
-              <dl className="grid grid-cols-1 gap-y-1 text-sm leading-[22px]">
+              <StatusBadge machine={acceptance.status} label={configuredCheckLabel(acceptance.status)} tone={toneForAcceptanceStatus(acceptance.status)} /><VerificationScope />
+              <details className="text-xs text-text-secondary"><summary className="min-h-11 cursor-pointer py-3">查看校验引用</summary><dl className="grid grid-cols-1 gap-y-1 text-sm leading-[22px]">
                 <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">验收摘要</dt><dd className="break-all">{acceptance.digest !== null ? <code className="text-xs">{acceptance.digest}</code> : '暂无摘要'}</dd></div>
                 <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">验收证据</dt><dd className="break-all">{acceptance.evidenceIds.length > 0 ? `${acceptance.evidenceIds.length} 条（${acceptance.evidenceIds.join('，')}）` : '暂无数据'}</dd></div>
-              </dl>
+              </dl></details>
             </>
           )}
         </div>
-        <p className="text-xs text-text-secondary">评审通过不等于验收通过；只有独立验收 acceptance=passed 才是验收通过。执行结束不代表验收通过。</p>
+        <p className="text-xs text-text-secondary">Agent 评审接受不代表所有业务操作已实际验证。配置检查只覆盖其策略范围，执行结束不代表逐项业务验证通过。</p>
       </Card>
 
       <Card aria-label="发布与后验" className="space-y-2" data-testid="publications-card">
@@ -266,11 +247,11 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
                     label={ACTION_STATUS_LABELS[leader.publication.status]}
                     tone={actionStatusTone(leader.publication.status)}
                   />
-                  <span className="text-xs text-text-secondary">actionId：<code>{leader.publication.actionId}</code></span>
+                  <details className="text-xs text-text-secondary"><summary className="cursor-pointer">操作标识</summary><code>{leader.publication.actionId}</code></details>
                 </div>
-                <p className="text-xs text-text-secondary">
+                <details className="text-xs text-text-secondary"><summary className="cursor-pointer py-2">回执标识</summary><p>
                   回执成果：{leader.publication.receiptArtifactId ? <code className="break-all">{leader.publication.receiptArtifactId}</code> : '暂无数据'}
-                </p>
+                </p></details>
               </div>
             ) : null}
             {leader.postverify !== null ? (
@@ -282,11 +263,11 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
                     label={ACTION_STATUS_LABELS[leader.postverify.status]}
                     tone={actionStatusTone(leader.postverify.status)}
                   />
-                  <span className="text-xs text-text-secondary">actionId：<code>{leader.postverify.actionId}</code></span>
+                  <details className="text-xs text-text-secondary"><summary className="cursor-pointer">操作标识</summary><code>{leader.postverify.actionId}</code></details>
                 </div>
-                <p className="text-xs text-text-secondary">
+                <details className="text-xs text-text-secondary"><summary className="cursor-pointer py-2">后验证据标识</summary><p>
                   后验证据成果：{leader.postverify.evidenceArtifactId ? <code className="break-all">{leader.postverify.evidenceArtifactId}</code> : '暂无数据'}
-                </p>
+                </p></details>
               </div>
             ) : null}
           </>
@@ -303,45 +284,17 @@ export function ArtifactsView({task, leader, audit, artifacts, observedInputs, t
   );
 }
 
-function ArtifactFacts({artifact}: {artifact: ArtifactRecord}) {
-  return (
-    <dl className="grid grid-cols-1 gap-y-1 text-sm leading-[22px]">
-      <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">文件名</dt><dd className="break-all"><code className="text-xs">{artifact.name}</code></dd></div>
-      <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">mediaType</dt><dd><code className="text-xs">{artifact.mediaType}</code></dd></div>
-      <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">大小</dt><dd>{formatBytes(artifact.bytes)}</dd></div>
-      <div className="flex gap-2"><dt className="shrink-0 text-text-secondary">摘要</dt><dd className="break-all"><code className="text-xs">{artifact.digest}</code></dd></div>
-      <div className="flex items-center gap-2">
-        <dt className="shrink-0 text-text-secondary">状态</dt>
-        <dd>
-          <StatusBadge machine={artifact.status} label={ARTIFACT_STATUS_LABELS[artifact.status]} tone={artifactStatusTone(artifact.status)} />
-          {artifact.kind === 'delivery' ? <Badge variant="secondary" className="ml-1">{ARTIFACT_KIND_LABELS[artifact.kind]}</Badge> : null}
-        </dd>
-      </div>
-    </dl>
-  );
+function ArtifactMetadata({artifact}: {artifact:ArtifactRecord}) {
+  return <details className="text-xs text-text-secondary" data-testid="artifact-technical"><summary className="inline-flex min-h-11 cursor-pointer items-center">文件技术详情</summary><dl className="space-y-2 break-all"><div><dt>文件标识</dt><dd><code>{artifact.id}</code></dd></div><div><dt>mediaType</dt><dd><code>{artifact.mediaType}</code></dd></div><div><dt>摘要</dt><dd><code>{artifact.digest}</code></dd></div></dl></details>;
 }
-
+function ArtifactFacts({artifact}: {artifact: ArtifactRecord}) {
+  return <div className="space-y-2"><h3 className="break-words text-lg font-medium">{artifact.name}</h3><div className="flex flex-wrap items-center gap-3 text-sm"><span className="text-text-secondary">{formatBytes(artifact.bytes)}</span><StatusBadge machine={artifact.status} label={ARTIFACT_STATUS_LABELS[artifact.status]} tone={artifactStatusTone(artifact.status)} />{artifact.kind === 'delivery' ? <Badge variant="secondary">{ARTIFACT_KIND_LABELS[artifact.kind]}</Badge> : null}</div><ArtifactMetadata artifact={artifact} /></div>;
+}
 function ArtifactRow({artifact, transport, sources = [], readyOnly = false}: {artifact: ArtifactRecord; transport: Transport; sources?: string[]; readyOnly?: boolean}) {
-  return (
-    <tr className="border-t border-border" data-testid="artifact-row" data-artifact-id={artifact.id}>
-      <td className="min-w-40 break-all px-3 py-2"><code className="text-xs">{artifact.name}</code>{sources.map(source => <p key={source} className="text-xs text-text-secondary">来源：{source}</p>)}</td>
-      <td className="px-3 py-2"><code className="text-xs">{artifact.mediaType}</code></td>
-      <td className="whitespace-nowrap px-3 py-2">{formatBytes(artifact.bytes)}</td>
-      <td className="min-w-40 max-w-[220px] break-all px-3 py-2"><code className="text-xs">{artifact.digest}</code></td>
-      <td className="whitespace-nowrap px-3 py-2">
-        <StatusBadge machine={artifact.status} label={ARTIFACT_STATUS_LABELS[artifact.status]} tone={artifactStatusTone(artifact.status)} showMachine={false} />
-      </td>
-      <td className="px-3 py-2">
-        <div className="w-56">
-        {artifact.status === 'unavailable' || readyOnly && artifact.status !== 'ready' ? (
-          <span className="text-xs text-text-secondary">{artifact.status === 'unavailable' ? '内容不可用，不提供下载' : '内容未就绪，不提供下载'}</span>
-        ) : (
-          <ArtifactDownload artifact={artifact} transport={transport} />
-        )}
-        </div>
-      </td>
-    </tr>
-  );
+  return <li className="artifact-file-row" data-testid="artifact-row" data-artifact-id={artifact.id}>
+    <div className="min-w-0"><h4 className="break-words text-sm font-medium">{artifact.name}</h4><div className="mt-2 flex flex-wrap items-center gap-3"><span className="text-xs text-text-secondary">{formatBytes(artifact.bytes)}</span><StatusBadge machine={artifact.status} label={ARTIFACT_STATUS_LABELS[artifact.status]} tone={artifactStatusTone(artifact.status)} showMachine={false} /></div>{sources.map(source=><p key={source} className="mt-1 text-xs text-text-secondary">来源：{source}</p>)}<ArtifactMetadata artifact={artifact}/></div>
+    <div className="min-w-0 sm:w-52">{artifact.status === 'unavailable' || readyOnly && artifact.status !== 'ready' ? <p className="text-xs text-text-secondary">{artifact.status === 'unavailable' ? '内容不可用，不提供下载' : '内容未就绪，不提供下载'}</p> : <ArtifactDownload artifact={artifact} transport={transport}/>}</div>
+  </li>;
 }
 
 function ArtifactDownload({artifact, transport}: {artifact: ArtifactRecord; transport: Transport}) {

@@ -135,10 +135,11 @@ describe('TaskListView', () => {
     const user = userEvent.setup();
     const intent = '连续长内容'.repeat(60), id = 'task-' + 'x'.repeat(180), code = 'failure_' + 'y'.repeat(180);
     renderList(transportWith(async () => ({items: [makeTask({id, intent, status: 'failed', code})], nextCursor: null})));
-    await screen.findByText(intent);
+    await screen.findByTitle(intent);
     for (const name of ['列表', '卡片']) {
       await user.click(screen.getByRole('button', {name}));
-      const row = rowOf(intent);
+      const row = screen.getByTitle(intent).closest('li')!;
+      expect(screen.getByTitle(intent).textContent!.length).toBeLessThanOrEqual(49);
       expect(row).toHaveClass('min-w-0');
       expect(within(row).getByRole('link')).toHaveClass('[overflow-wrap:anywhere]');
       expect(within(row).getByRole('link')).toHaveAttribute('href', '/tasks/' + id);

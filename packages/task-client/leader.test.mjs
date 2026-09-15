@@ -85,3 +85,14 @@ test('Leader client preserves HTTP unsupported and timeout facts without follow-
   await assert.rejects(slow.getLeader(taskId, {timeoutMs: 20}), {code: 'client_timeout'});
   assert.equal(signal.aborted, true); assert.equal(calls, 2);
 });
+
+test('optional correction view is closed and paired, and old missing shape remains valid',async()=>{
+ const original={stage:'wire-json',code:'invalid_json',outputDigest:'sha256:'+'a'.repeat(64),outputBytes:48,workerId:'worker-old',callId:'call-old',ticketDigest:'sha256:'+'b'.repeat(64),cleanupDigest:'sha256:'+'c'.repeat(64),at:'2026-09-14T00:00:00Z'};
+ const correction={profile:'leader-json-correction/v1',used:1,max:1,reason:'wire-json',original,successorWorkerId:null,successorCallId:null};
+ for(const current of [undefined,{profile:correction.profile,used:0,max:1,reason:null,original:null,successorWorkerId:null,successorCallId:null},correction,{...correction,successorWorkerId:'worker-new',successorCallId:'call-new'}]){
+  const value=example('LeaderView');if(current)value.protocolCorrection=current;assert.deepEqual(structuredClone(await peer(async()=>response(value)).getLeader(taskId)),value);
+ }
+ for(const mutate of [v=>v.used=2,v=>v.max=2,v=>v.reason='permission',v=>v.original.stage='business',v=>v.original.raw='private',v=>v.original.outputBytes=-1,v=>v.original.workerId='../foreign',v=>v.used=0,v=>v.successorWorkerId='worker-new',v=>{v.successorWorkerId='worker-old';v.successorCallId='call-new';}]){
+  const value=example('LeaderView');value.protocolCorrection=structuredClone(correction);mutate(value.protocolCorrection);await assert.rejects(peer(async()=>response(value)).getLeader(taskId),{code:'client_invalid_response'});
+ }
+});

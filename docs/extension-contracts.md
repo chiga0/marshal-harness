@@ -1,6 +1,6 @@
 # 控制、执行、业务与存储扩展契约
 
-更新：2026-09-14。本文把已接受架构中的跨边界义务对应到当前Node接缝。它不是动态插件SDK，不新增可import接口、HTTP字段、持久格式或权限。公共请求见[标准API](standard-api.md)，部署可用性见[支持矩阵](api-support.md)。第三方扩展是部署者审核并固定的可信代码；对象字段相似不等于通过Core私有能力、工厂身份及配置摘要准入。
+更新：2026-09-15。本文把已接受架构中的跨边界义务对应到当前Node接缝。它不是动态插件SDK，不新增可import接口、HTTP字段、持久格式或权限。公共请求见[标准API](standard-api.md)，部署可用性见[支持矩阵](api-support.md)。第三方扩展是部署者审核并固定的可信代码；对象字段相似不等于通过Core私有能力、工厂身份及配置摘要准入。
 
 ## 目标Port的共同语义Schema
 
@@ -10,7 +10,7 @@
 
 | 语义对象 | 必需内容与约束 |
 | --- | --- |
-| Binding | authorityId（当前映射storeId）、taskId、commandId、attemptId、executionId、ownerGeneration、inputDigest、configurationDigest、deadline；authorityId标识唯一权威服务根，不能由目录名或相同配置摘要推断；全部绑定原动作，generation用于拒绝过期owner接纳结果，executionId用于关联本次执行请求及其实际所属执行，不是宿主PID；若环境在启动后分配实际ID，Adapter必须保存与原请求身份的一一映射，启动前不能伪造已启动事实 |
+| Binding | authorityId（当前映射storeId）、taskId、commandId、attemptRef、executionId、ownerGeneration、inputDigest、configurationDigest、deadline；`attemptRef`必须引用可验证的持久事实（当前Node由`workerId`、`commandId`、`generation`、`reservationDigest`及`worker.reserved`事件引用组成），不能凭空生成`attemptId`；authorityId标识唯一权威服务根，不能由目录名或相同配置摘要推断；全部绑定原动作，generation用于拒绝过期owner接纳结果，executionId用于关联本次执行请求及其实际所属执行，不是宿主PID；若环境在启动后分配实际ID，Adapter必须保存与原请求身份的一一映射，启动前不能伪造已启动事实 |
 | WorkBinding | 在Binding外包含planDigest、candidateDigest（还没有候选时null）、authorizationDigest（不需额外授权时null）；具体角色所需内容不能null |
 | FrozenInput | 原需求与已确认约定、输入manifest、必要上游候选、问答引用及其摘要；bytes或读取能力来自可信准备，不能用模型自述“已读”代替 |
 | Manifest | artifact身份、task归属、mediaType、bytes长度、contentDigest与可读取内容引用；位置不是授权，下载后按长度/摘要复验 |

@@ -1,3 +1,4 @@
+import {normalizedObservation, settleObservation} from './observation.mjs';
 import {encode, digest, makeEvent, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
 import {clone, reject, terminal, nextRevision, isText} from './model.mjs';
 import {TaskCleanup} from './cleanup.mjs';
@@ -45,6 +46,7 @@ export class TaskExecution {
   }
   workers(tx, task) { return (task.workerIds ?? []).map(id => this.worker(tx, id)); }
   putWorker(tx, row, record, source) {
+    settleObservation(record.worker);
     tx.putProjection('attempt', record.worker.id, row ? row.revision : 0n, source, encode(record));
   }
   capacity(tx) {
@@ -356,15 +358,25 @@ export class TaskExecution {
     return this.app.transaction(true, tx => {
       const {row, record, task} = this.ticket(tx, ticket);
       if (!this.app.repair.current(task, ticket) || !Number.isSafeInteger(sequence) || sequence <= record.progressSequence || !live(record.worker) ||
-          record.stopIntent || task.task.status === 'cancelling' || terminal.has(task.task.status)) return false;
+          record.stopIntent || task.task.status === 'cancelling' || terminal.has(task.task.status) ||
+          this.app.observability && progress?.observation?.diagnostic && ['stopping','unknown'].includes(record.worker.status)) return false;
       if (!progress || !isText(progress.summary, 2048) || progress.tool !== null && !isText(progress.tool, 256) ||
           !['agent', 'execution'].includes(progress.source)) reject('invalid_request', 400);
       record.progressSequence = sequence;
       record.worker.progress = {summary: progress.summary, tool: progress.tool, source: progress.source};
       record.worker.lastObservedAt = new Date(this.app.now()).toISOString();
+      const observation = this.app.observability ? normalizedObservation(progress.observation, sequence, record.worker.lastObservedAt) : null;
+      if (observation) {
+        const old = record.worker.observation, history = [...(old?.history ?? []), observation];
+        let historyTruncated = old?.historyTruncated === true;
+        while (history.length > 64 || Buffer.byteLength(JSON.stringify(history)) > 16384) {history.shift(); historyTruncated = true;}
+        record.worker.observation = {...observation, history, historyTruncated};
+        if (Number.isSafeInteger(observation.usage?.totalTokens)) record.worker.usage = {tokens: observation.usage.totalTokens, cost: null, currency: null, source: 'reported', coverage: observation.usage.complete ? 1 : 0};
+        else record.worker.usage = usage();
+      }
       const stream = task.task.id, head = tx.head(stream);
       const event = makeEvent(stream, head.sequence + 1n, {type: 'worker.progress', at: record.worker.lastObservedAt,
-        taskRevision: task.task.revision, workerId: ticket.workerId, progressSequence: sequence});
+        taskRevision: task.task.revision, workerId: ticket.workerId, progressSequence: sequence, ...(observation ? {observation} : {})});
       const source = {stream, ...tx.append(stream, head, [event])};
       this.putWorker(tx, row, record, source); return true;
     });

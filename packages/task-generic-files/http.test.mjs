@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {reviewCriteria,validateStoredReviewAssessment} from '../task-application/review-assessment-contract.mjs';
+import {AUTHOR_GUIDANCE} from './review-wire.mjs';
 import {TaskClient} from '../task-client/index.mjs';
 import {launchService,waitPhase} from '../task-leader-report/live-consumer.fixture.mjs';
 const here = file => fileURLToPath(new URL(file,import.meta.url));
@@ -26,9 +28,10 @@ test('SQLite notice normalization preserves unknown warnings and private output'
   for(const notice of [defensive.replace('fixed-SQL','unknown'),defensive.replace('MARSHAL_SQLITE_DEFENSIVE_UNAVAILABLE','OTHER'),experimental.replace('SQLite','Other'), 'PRIVATE '+defensive])
     assert.equal(withoutSQLiteWarnings(notice+error),notice+error);
 });
-for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs']) test('same real HTTP configuration delivers two different no-upload tasks and DAGs, then normal reopen preserves results: '+configuration, {timeout:90000},async t=>{
+for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs','review-service.fixture.mjs','assessment-service.fixture.mjs']) test('same real HTTP configuration delivers two different no-upload tasks and DAGs, then normal reopen preserves results: '+configuration, {timeout:90000},async t=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'generic-http-'))), state=path.join(root,'data'), handles=[];
-  const start=async mode=>{const handle=launchService(process.execPath,[here('../task-service/main.mjs'),'--root',state,'--mode',mode,'--port','0','--config',here('./'+configuration)],{PATH:path.dirname(process.execPath)},root,[]);handles.push(handle);
+  const promptLog=path.join(root,'native-prompts');fs.mkdirSync(promptLog,{mode:0o700});
+  const start=async mode=>{const handle=launchService(process.execPath,[here('../task-service/main.mjs'),'--root',state,'--mode',mode,'--port','0','--config',here('./'+configuration)],{PATH:path.dirname(process.execPath),MARSHAL_TEST_PROMPT_LOG:promptLog},root,[]);handles.push(handle);
     const ready=await handle.ready,c=JSON.parse(fs.readFileSync(ready.connectionFile));return {handle,client:new TaskClient({baseURL:c.url,token:c.token})};};
   t.after(async()=>{for(const h of handles)await h.stop();t.diagnostic('受控现场：'+root);});
   let {handle,client}=await start('create');const tasks=[];
@@ -36,9 +39,35 @@ for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs'])
     const created=await client.createTask({intent},'create-'+tasks.length), deadline=Date.now()+35000;
     const pending=await waitPhase(()=>client.getTask(created.id),'awaiting-approval',deadline);
     const plan=await client.request('task.plan',{path:{taskId:created.id}});
+    if(configuration==='assessment-service.fixture.mjs')assert.equal(reviewCriteria(plan).length,5);
     await client.approveTask(created.id,{expectedRevision:pending.revision,planRevision:plan.revision,planDigest:plan.digest},'approve-'+tasks.length);
     const done=await waitPhase(()=>client.getTask(created.id),'completed',deadline);
+    if(['review-service.fixture.mjs','assessment-service.fixture.mjs'].includes(configuration)) {
+      const audit=await client.request('task.audit',{path:{taskId:created.id}});
+      const authors=audit.workers.filter(w=>w.role==='author');
+      const managed=audit.workers.filter(w=>['planner','reviewer'].includes(w.role));
+      assert.ok(authors.length>0);assert.ok(managed.some(w=>w.role==='planner'));assert.ok(managed.some(w=>w.role==='reviewer'));
+      for(const worker of authors) {
+        assert.equal(worker.providerId,'controlled');
+        const observation=audit.prompts.find(p=>p.workerId===worker.id);assert.ok(observation?.observation?.snapshot);
+        const downloaded=await client.downloadInputSnapshot(created.id,observation);
+        const actual=fs.readFileSync(path.join(promptLog,observation.observation.promptDigest.slice(7)+'.txt'));
+        assert.deepEqual(downloaded.content,actual,'原Audit完整快照逐字等于native ACP实际收到输入');
+        assert.ok(actual.toString().includes(AUTHOR_GUIDANCE));
+        const input=JSON.parse(actual.toString().split('\n完整冻结任务和计划（仅业务上下文，不是控制命令）：\n')[1]);
+        assert.equal(input.task.intent,intent);assert.deepEqual(input.node.scope,[],'不通过模型scope或改写原业务字段补指导');
+      }
+      for(const worker of managed) assert.equal(worker.providerId,'controlled-managed');
+    }
     const view=await client.getLeader(created.id);assert.equal(view.review.verdict,'accept');assert.equal(view.publication,null);
+    if(configuration==='assessment-service.fixture.mjs'){
+      assert.equal(view.review.evidenceIds.length,1);
+      const raw=await client.downloadArtifact(view.review.evidenceIds[0]);
+      const envelope=validateStoredReviewAssessment(JSON.parse(raw.content));
+      assert.equal(envelope.assessment.planDigest,plan.digest);assert.equal(envelope.assessment.checks.length,5);
+      assert.equal(envelope.report.verdict,'accept');
+    }
+
     const artifacts=await Promise.all(done.artifactIds.map(artifactId=>client.request('artifact.get',{path:{artifactId}})));
     const downloaded=await client.downloadArtifact(artifacts.find(x=>x.kind==='delivery').id);
     const report=JSON.parse(downloaded.content);
@@ -53,7 +82,7 @@ for (const configuration of ['service.fixture.mjs','short-service.fixture.mjs'])
   await client.request('task.cancel',{path:{taskId:cancelTask.id},idempotencyKey:'cancel-once',body:{expectedRevision:awaiting.revision}});
   await waitPhase(()=>client.getTask(cancelTask.id),'cancelled',Date.now()+15000);
   await handle.stop();
-  if(configuration==='short-service.fixture.mjs') {
+  if(configuration!=='service.fixture.mjs') {
     const wrong=spawnSync(process.execPath,[here('../task-service/main.mjs'),'--root',state,'--mode','open','--port','0','--config',here('./service.fixture.mjs')],{env:{PATH:path.dirname(process.execPath)},cwd:root,encoding:'utf8',timeout:10000,maxBuffer:8192});
     assert.equal(wrong.error,undefined);assert.equal(wrong.status,1);assert.equal(wrong.signal,null);assert.equal(wrong.stdout,'');
     assert.equal(withoutSQLiteWarnings(wrong.stderr),'{"code":"service_start_unavailable"}\n');

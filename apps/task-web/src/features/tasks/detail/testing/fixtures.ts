@@ -53,7 +53,15 @@ export function makeLeader(overrides: Partial<LeaderRecord> = {}): LeaderRecord 
 export function makeAudit(overrides: Partial<TaskAuditRecord> = {}): TaskAuditRecord {
   return {
     taskId: TASK_ID,
+    elapsedMs: null,
+    attempts: 0,
+    retryCount: 0,
+    reworkCount: 0,
+    firstReview: {passed: 0, total: 0, pending: 0},
     acceptance: {status: 'pending', evidenceIds: [], digest: null},
+    usage: {tokens: null, cost: null, currency: null, source: 'unavailable', coverage: 0},
+    workers: [],
+    prompts: [],
     ...overrides,
   };
 }
@@ -110,3 +118,8 @@ export function makeFakeTransport(overrides: Partial<Transport> = {}): {transpor
 export function callsOf(calls: TransportCalls, method: string): TransportCalls {
   return calls.filter(call => call.method === method);
 }
+
+// 新可选纠错字段的实际闭集形状，供跨正文/制品路径回归。
+export const correctionFixture = {profile:'leader-json-correction/v1',used:1,max:1,reason:'wire-json',
+  original:{stage:'wire-json',code:'invalid_json',outputDigest:'sha256:'+'a'.repeat(64),outputBytes:40,workerId:'original-worker',callId:'original-call',ticketDigest:'sha256:'+'b'.repeat(64),cleanupDigest:'sha256:'+'c'.repeat(64),at:'2026-09-15T00:00:00Z'},
+  successorWorkerId:'next-worker',successorCallId:'next-call'} as const;

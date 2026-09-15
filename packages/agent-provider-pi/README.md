@@ -27,7 +27,7 @@ const result = await handle.completion;
 
 同步返回 `started/completion/stop/snapshot`；`get_state→prompt→agent_settled` 与原 Runtime 实际清理共同形成结果。prompt ack/agent_end 可能仍有重试，不作为终态；`stopReason:stop` 才映射 `end_turn`。原生自动重试仍受原期限约束；不会给 Core 新增 Attempt 或重置预算。Agent 终态不是 Decision；业务仍独立验收。usage 不猜测计费。
 
-公开进度只有 phase、观察时间、工具 id/kind/status，不带参数/结果、thinking、session 文件、配置或原始错误。未接 Task question writer 时原生用户问题明确失败，不把工具权限当用户业务答案。
+关闭显式观察时公开进度仍只有 phase、观察时间、工具 id/kind/status。启用 `observability:true` 后可报告明确的thinking活动标签、模型、脱敏有界公开输出和有效累计Token；不保存隐藏推理正文、原工具参数/结果、session文件、配置或原始错误。未接 Task question writer 时原生用户问题明确失败，不把工具权限当用户业务答案。
 
 ADR0090 通过原批准 ticket 的 `questionContext` 显式启用 `marshal_ask_user`：工具真实注册并进入原 definition/ready 范围，不作为 unknown custom 旁路；其他原 active tools 保持。仅 `input/select` 收取业务值，随后用独立类型的内部 ACK confirm，让 Core 先耐久确认消费再把答案交还模型。ACK 不授予工具权限或 Decision。确认等待仍最多 10 秒；仅业务对话可等原策略的有界时长，且受原 Worker deadline、停止信号和单次投递约束。没有策略或精确消费绑定时不自动答复、不新建会话/Attempt。
 

@@ -1,5 +1,5 @@
 // UI-04：评审（leader.review）、独立验收（audit.acceptance）、交付、后验分开呈现；
-// acceptance=passed 才是验收通过，评审 accept 不等于验收通过，不以 review 推导验收。
+// 独立验收检查实际成果，评审 accept 不等于验收通过，不以 review 推导验收。
 import {describe, expect, it} from 'vitest';
 import {render, screen} from '@testing-library/react';
 import type {AcceptanceStatus} from '@/lib/transport/types';
@@ -25,38 +25,41 @@ describe('独立验收面板（UI-04）', () => {
   it('Review accept + acceptance pending：评审通过与验收待定分开显示', () => {
     renderPanel('pending');
     expect(screen.getByTestId('review-readout')).toHaveTextContent('评审通过');
-    expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('验收待定');
+    expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('配置检查待完成');
     // 从不把 Review accept 显示成验收通过
-    expect(screen.getByTestId('acceptance-readout')).not.toHaveTextContent('验收通过');
+    expect(screen.getByTestId('acceptance-readout')).not.toHaveTextContent('配置检查通过');
   });
 
   it('Review accept + acceptance failed：评审通过但验收未通过', () => {
     renderPanel('failed');
     expect(screen.getByTestId('review-readout')).toHaveTextContent('评审通过');
-    expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('验收未通过');
-    expect(screen.getByTestId('acceptance-note')).toHaveTextContent('acceptance=passed 才是验收通过');
+    expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('配置检查失败');
+    expect(screen.getByTestId('acceptance-note')).toHaveTextContent('计划要求、评审接受或任务结束均不证明逐项业务已经实际验证');
   });
 
   it('Review accept + acceptance passed：验收摘要与证据数量可见', () => {
     renderPanel('passed');
     const readout = screen.getByTestId('acceptance-readout');
-    expect(readout).toHaveTextContent('验收通过');
+    expect(readout).toHaveTextContent('配置检查通过');
+    expect(readout).toHaveTextContent('逐项业务验证覆盖：未确认');
+    expect(readout).not.toHaveTextContent('文件完整性检查通过');
+    expect(readout).not.toHaveTextContent('页面未测');
     expect(readout).toHaveTextContent('sha256:99999999');
     expect(readout).toHaveTextContent('1 条');
   });
 
   it('Review accept + acceptance unknown：如实显示验收状态未知', () => {
     renderPanel('unknown');
-    expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('验收状态未知');
+    expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('配置检查结果未知');
   });
 
   it('无 publication/postverify 不推导未交付：文件交付引导至成果页', () => {
     renderPanel('passed');
-    expect(screen.getByText('发布与后验（Leader 动作投影）')).toBeInTheDocument();
+    expect(screen.getByText('发布与后验')).toBeInTheDocument();
     expect(screen.getByText('无发布/后验动作；文件交付请查看成果页')).toBeInTheDocument();
     expect(screen.queryByText('暂无交付/后验动作。')).not.toBeInTheDocument();
     expect(screen.queryByTestId('publication-readout')).not.toBeInTheDocument();
-    expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('验收通过');
+    expect(screen.getByTestId('acceptance-readout')).toHaveTextContent('配置检查通过');
   });
 
   it('publication 动作仅标为发布，不冒充一般文件交付', () => {

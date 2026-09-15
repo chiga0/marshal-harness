@@ -1,6 +1,6 @@
 # 标准 API 与完整交付契约
 
-更新：2026-09-14。本文说明当前接受范围内客户端到团队交付的完整契约，依据 ADR0085、0088、0090–0095、0100；不改变 HTTP 字段、状态、权限或持久格式。请求、响应、枚举、上限和错误的唯一机器定义是 [OpenAPI](../packages/task-api/openapi.json)，当前为 **27 个操作、66 个 Schema**。实际版本、配置及验证覆盖见[支持矩阵](api-support.md)，内部和外部适配义务见[扩展契约](extension-contracts.md)。“标准”表示有明确可检查的边界，不表示全部未来能力或所有部署已稳定。
+更新：2026-09-14。本文说明当前接受范围内客户端到团队交付的完整契约，依据 ADR0085、0088、0090–0095、0100、0102–0104；本文不另造 HTTP 状态、权限或持久格式。请求、响应、枚举、上限和错误的唯一机器定义是 [OpenAPI](../packages/task-api/openapi.json)，操作与Schema索引由[HTTP参考](api/http-reference.md)自动生成。实际版本、配置及验证覆盖见[支持矩阵](api-support.md)，内部和外部适配义务见[扩展契约](extension-contracts.md)。“标准”表示有明确可检查的边界，不表示全部未来能力或所有部署已稳定。
 
 ## 服务对象与完整调用链
 
@@ -69,6 +69,8 @@ sequenceDiagram
 
 ## 需求、确认与验收
 
+本节描述的是当前已实现 API 能表达的验收语义。当前机器合同中的 `Plan.acceptance` 仍是可读字符串数组，`task.audit.acceptance` 仍是现有状态、证据 ID 与摘要投影；ADR0107 所候选的逐项 `acceptanceEvidence`、责任方、检查方法、来源 Artifact、Attempt 引用及业务后验字段尚未进入 OpenAPI，也尚未被 Core 接受。阅读本页时应将“终态设计候选”与“当前可调用合同”分开，不能把设计描述当成已发布能力。
+
 CreateTask.requirements.deliverables/acceptance 表达用户成果和验收期望，不能上传任意 checker。Leader 读取原需求、输入、答案和已有证据，形成工作包及验收约定；可信业务/验证配置检查可表达性，把布局、依赖、范围和验证策略绑定进计划。确认按精确计划版本与摘要进行。必要歧义在执行前提出，不能执行后把“格式正确”重新解释为“满足业务”。
 
 有两条不同的问答通道：原 questions/answers 支持批准前 preview 和已启用的原 Worker 业务投递；Leader requests/reply 表示向受管 Leader 提供耐久答案或精确发布授权。客户端按原请求族响应，不能互换摘要。Leader答复没有旧Worker ACK语义，业务答案不能代替工具授权，202也不说明模型已经消费。
@@ -89,6 +91,21 @@ pause只停止新工作准入，已启动Agent和原绝对期限继续；cancel�
 
 ## 版本与扩展
 
-HTTP `/v1`、OpenAPI `info.version`、SQLite layout、模型wire profile、产品发行版本是不同身份。当前 `0.1.0-candidate` 是机器文件的真实标识；历史25操作/58Schema API-STABLE检查点保留原证据，后继27/66及新配置按支持矩阵说明，不推导所有未来字段稳定。
+HTTP `/v1`、OpenAPI `info.version`、SQLite layout、模型wire profile、产品发行版本是不同身份。当前 `0.1.0-candidate` 是机器文件的真实标识；历史25操作/58Schema API-STABLE检查点保留原证据，后继观察字段及新配置按支持矩阵说明，不推导所有未来字段稳定。
 
 扩展先区分：仅实现已定义可信Port、增加新能力配置、改变公共wire、改变持久/权限语义。前两者也需明确配置身份与兼容验证；后两者必须先按仓库ADR规则冻结差量。不新增万能扩展object，不静默接受未知字段。旧客户端不具备Leader交互能力时应明确提示升级，不能以旧读取成功冒充完整操控。ADR0101已接受的显式模型建议映射不改变HTTP；其配置启用、原始模型输出证据和发行状态独立记录。
+
+执行观察的用量分为累计与最近响应：`observation.usage` 只承载有明确来源的累计读数，缺失和不完整由coverage表达；显式Qwen扩展的 `lastResponseUsage` 只表示最近收到的一条响应报告，不相加、不进入Task累计，`complete=false`且零值可能是提供方默认。开关进入原服务根冻结身份，不能在旧根静默切换；字段细则见唯一OpenAPI与[ADR0103](adr/0103-execution-observability.md)。
+
+
+## 显式 Leader 协议格式纠错
+
+[ADR0104](adr/0104-bounded-leader-protocol-correction.md) 的新可信配置可登记 Task 级至多一次 JSON 语法纠错。它不是公共重试命令，不自动修正 JSON 或业务动作，不放宽计划确认、清理、当前性、预算、期限与验收。原失败 Worker 与 Outcome 保留，后继采用新的 Call/Worker/Attempt；合法 JSON 的形状或动作拒绝、工具/权限违例、空文本、混合编码/重复键/限制错误均不产生格式纠错。
+
+仅登记的 Task 在 `LeaderView` 返回可选 `protocolCorrection`：`used/max`、固定原因、原失败引用及已保留的后继 Worker/Call ID。缺省配置保持字段缺失；新客户端同时支持两种形状。`used=1` 只证明预算已消费，不证明模型正在运行，必须关联真实 Worker 状态；未保留后继时两个 ID 同为 null。原调用的错误正文和工具参数不进入该字段，公开文本仍遵循原观测留存策略。全部闭合字段与关联约束见 OpenAPI，后继同样可能失败，不承诺自动完成。
+
+## 逐项业务评审证据
+
+批准前的 Plan.acceptance 保留原业务条目与可读固定政策，受信目录为每项绑定原文摘要和检查方式。通过 `artifact.get` 与 `artifact.content` 读取的 `task-independent-review/v2` 证据由 OpenAPI 的 `ReviewEvidenceEnvelope`、`ReviewAssessment`、`ReviewCriteriaItem`、`ReviewEvidenceSource` 和 `ReviewAssessmentCheck` 定义：原六字段 report 不变，新增 assessment 精确绑定同次输入、选果、计划、报告与目录。最多 16 项文本检查；缺项、重复、伪造引用和把必需项标为不适用均拒收。零字节来源可用绑定空内容摘要的空引用，仍须覆盖。
+
+该格式通过既有制品读取链提供，没有新增提交评审的 HTTP 权限。`pass` 是指定 `text-review` 方法的判断，不代表浏览器、外部系统或真人验收通过；方法的证据边界必须向用户展示。旧 v1 只展示原报告，不补造逐项状态；未知或损坏 v2 不降级为旧报告通过。完整规则和兼容范围见 [ADR0106](adr/0106-bound-review-assessments.md)。

@@ -16,8 +16,9 @@ describe('计划业务内容与审计原文分层', () => {
     expect(screen.getByText('时长预算')).toBeVisible();
     expect(screen.getByText('双地区对账报告')).toBeVisible();
     expect(screen.getByText('必须独立校验全部流水')).toBeVisible();
+    expect(screen.getByTestId('plan-requirements-scope')).toHaveTextContent('不是已执行的检查清单');
     expect(screen.getByText('使用用户明确选择的时间范围')).toBeVisible();
-    expect(within(screen.getByRole('region', {name: '验收口径'})).queryByText(machine)).not.toBeInTheDocument();
+    expect(within(screen.getByRole('region', {name: '计划验收要求'})).queryByText(machine)).not.toBeInTheDocument();
     const details = screen.getByTestId('plan-technical-details');
     const raw = details.querySelector('pre')!;
     expect(raw.textContent).toBe(machine);
@@ -31,8 +32,8 @@ describe('计划业务内容与审计原文分层', () => {
 
   it('只有结构化验收时明确缺人可读说明；不把任意 JSON description 提升成合同', () => {
     render(<PlanCard task={makeTask()} plan={makePlan({acceptance: ['{"description":"模型自行宣布验收成功"}']})} transport={makeFakeTransport().transport} onViewLatest={() => {}} />);
-    expect(screen.getByText(/服务端未提供人可读验收口径/)).toBeVisible();
-    expect(screen.getByText(/不据此认定验收通过/)).toBeVisible();
+    expect(screen.getByText(/验收要求以结构化规则提供/)).toBeVisible();
+    expect(screen.getByText(/批准前请核对下方原文/)).toBeVisible();
     expect(screen.queryByText('模型自行宣布验收成功')).not.toBeInTheDocument();
   });
 

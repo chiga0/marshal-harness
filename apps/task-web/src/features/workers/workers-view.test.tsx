@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import {MemoryRouter, Route, Routes} from 'react-router-dom';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import {ApiError, type Transport} from '@/lib/transport/types';
-import {WorkersView} from './workers-view';
+import {WorkersView, progressText} from './workers-view';
 import {callsOf, makeFakeTransport, makeTask, makeWorker, TASK_ID, WORKER_ID} from '../tasks/detail/testing/fixtures';
 
 function renderView(workers = [makeWorker()], overrides: Partial<Transport> = {}) {
@@ -24,12 +24,23 @@ function renderView(workers = [makeWorker()], overrides: Partial<Transport> = {}
 }
 
 describe('团队视图（P08 / E23）', () => {
+  it('结构化或截断公开输出不默认铺进成员列表，自然语言原样展示', () => {
+    const worker=makeWorker({observation:{profile:'task-observation/v1',activity:'output',observedAt:new Date().toISOString(),sequence:1,tool:null,model:null,usage:null,publicText:'{"status":"completed","artifact":',history:[],historyTruncated:false}});
+    expect(progressText(worker)).toBe('已记录结构化输出，展开活动历史查看');
+    worker.observation!.publicText='已读取需求，准备独立检查';
+    expect(progressText(worker)).toBe('已读取需求，准备独立检查');
+  });
+  it('未知机器码不充当业务活动，明确自然文本原样保留', () => {
+    expect(progressText(makeWorker({progress:{summary:'future.secret_state',source:'agent',tool:null}}))).toBe('尚未收到具体活动摘要');
+    expect(progressText(makeWorker({progress:{summary:'正在读取需求文档',source:'agent',tool:null}}))).toBe('正在读取需求文档');
+  });
   it.each(['completed', 'failed', 'cancelled'] as const)('%s 的 agent.running 是历史观察而非当前进展', status => {
     renderView([makeWorker({status, phase: 'terminal', progress: {summary: 'agent.running', source: 'agent', tool: null}})]);
-    expect(screen.getByRole('columnheader', {name: '最后收到的进展'})).toBeInTheDocument();
+    expect(screen.getByRole('list', {name: '执行成员工作包'})).toBeInTheDocument();
     const row = screen.getByTestId('worker-row');
     expect(row).toHaveTextContent('执行已结束；以下为历史观察');
-    expect(within(row).getByText('agent.running')).toHaveAttribute('title', 'agent.running');
+    expect(within(row).getByTestId('worker-progress-summary')).toHaveTextContent('已收到 Agent 运行观察');
+    expect(within(row).getByText('agent.running').closest('details')).not.toHaveAttribute('open');
   });
 
   it('路由抽屉关闭后保留原列表DOM，焦点返回同一明细入口', async () => {
@@ -74,7 +85,7 @@ describe('团队视图（P08 / E23）', () => {
   it('点击行打开抽屉明细：用量不可用如实显示，审计字段如实空态', async () => {
     renderView();
     const user = userEvent.setup();
-    await user.click(screen.getByText('east'));
+    await user.click(screen.getByRole('link', {name: '明细'}));
     const drawer = await screen.findByTestId('worker-drawer');
     expect(within(drawer).getByTestId('usage-unavailable')).toHaveTextContent('不可用');
     expect(within(drawer).getByText('pi')).toBeInTheDocument();
@@ -86,7 +97,7 @@ describe('团队视图（P08 / E23）', () => {
   it('单 Worker 取消走 cancelWorker（workerId + 任务 revision + 幂等键），与取消任务严格分开', async () => {
     const {calls} = renderView();
     const user = userEvent.setup();
-    await user.click(screen.getByText('east'));
+    await user.click(screen.getByRole('link', {name: '明细'}));
     const drawer = await screen.findByTestId('worker-drawer');
     await user.click(within(drawer).getByTestId('cancel-worker-open'));
     const dialog = await screen.findByRole('dialog', {name: /取消 Worker/});
@@ -111,7 +122,7 @@ describe('团队视图（P08 / E23）', () => {
       }) as Transport['cancelWorker'],
     });
     const user = userEvent.setup();
-    await user.click(screen.getByText('east'));
+    await user.click(screen.getByRole('link', {name: '明细'}));
     const drawer = await screen.findByTestId('worker-drawer');
     await user.click(within(drawer).getByTestId('cancel-worker-open'));
     const dialog = await screen.findByRole('dialog', {name: /取消 Worker/});
@@ -124,7 +135,7 @@ describe('团队视图（P08 / E23）', () => {
   it('终态 Worker 不再提供取消入口', async () => {
     renderView([makeWorker({status: 'completed', finishedAt: '2026-09-10T02:00:00.000Z'})]);
     const user = userEvent.setup();
-    await user.click(screen.getByText('east'));
+    await user.click(screen.getByRole('link', {name: '明细'}));
     const drawer = await screen.findByTestId('worker-drawer');
     expect(within(drawer).getByText(/已到达终态/)).toBeInTheDocument();
     expect(within(drawer).queryByTestId('cancel-worker-open')).toBeNull();
@@ -157,7 +168,7 @@ describe('分页（UI-05）', () => {
     renderPaginated(workers, {nextCursor: 'cursor-2', loadingMore: false, onLoadMore});
 
     // 不把首批数量当总量：如实标注还有更多
-    expect(screen.getByText(/已加载 51 个 Worker，服务端还有更多/)).toBeInTheDocument();
+    expect(screen.getByText(/已加载 51 次执行，服务端还有更多/)).toBeInTheDocument();
     const rows = screen.getAllByTestId('worker-row');
     expect(rows).toHaveLength(51);
 
@@ -179,6 +190,6 @@ describe('分页（UI-05）', () => {
   it('无更多页：不提供加载更多', () => {
     renderPaginated([makeWorker()], {nextCursor: null, loadingMore: false, onLoadMore: () => {}});
     expect(screen.queryByTestId('workers-load-more')).toBeNull();
-    expect(screen.getByText(/已加载 1 个 Worker/)).toBeInTheDocument();
+    expect(screen.getByText(/已加载 1 次执行/)).toBeInTheDocument();
   });
 });

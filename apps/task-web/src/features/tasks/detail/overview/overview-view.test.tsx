@@ -22,7 +22,8 @@ describe('概览（P04/P05）：等待、进展、验收、计划', () => {
       plan={null} questions={makeQuestions()} workers={[makeWorker({id: 'worker-unknown', nodeId: 'server', status: 'unknown'})]}
       leader={makeLeader()} audit={null} transport={transport} onChanged={() => {}} />);
     const notice = screen.getByRole('alert', {name: '系统执行异常'});
-    expect(screen.getByTestId('overview-view').firstElementChild).toBe(notice);
+    expect(screen.getByTestId('overview-view')).toContainElement(notice);
+    expect(notice.compareDocumentPosition(screen.getByRole('region', {name: '需要处理'})) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(notice).toHaveTextContent('此执行异常不等同于待答问题');
     expect(notice).toHaveTextContent('cleanup_unconfirmed');
     expect(notice).toHaveTextContent('当前界面没有安全恢复此异常的操作');

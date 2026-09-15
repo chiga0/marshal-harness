@@ -62,11 +62,11 @@ const application = new TaskApplication({store, owner, clarification});
 
 `task.audit` 按原 Worker 列出 `prompts`，区分 `observation.stage=prepared/handed-off/unavailable`。`prepared` 表示 Supervisor 收到实际准备结果；`handed-off` 仅表示把同一输入交给 Provider 并取得有效原句柄，**不证明 Agent 协议、模型已消费或隐藏上下文已完整记录**。这里只观察初始 prepared 输入；后续业务答案仍由原 question/dispatch/ACK 事实描述，不把它们冒充已包含在初始快照。没有历史观察的 Worker、非 Agent 的独立 command checker 均明确 unavailable，不在重开时倒填。原 ticket 的 `inputDigest/reservationDigest`、原输入制品引用、时间和观察到的 prompt 摘要用于定位，不成为启动、候选或 Decision 的新权限。
 
-默认 `auditDisclosure=null`，仅保存观察元数据/摘要，正文和快照不可用。它不扫描用户凭据，也不以正则脱敏作为保存机密原文的许可。受信部署可显式注入 `createAuditDisclosure({id,version,redact})`，同一对象透传 `startTaskService({auditDisclosure,...})`；`redact(prompt,identity)` 仅同步返回已明确允许披露的脱敏字符串，返回 null、抛错、Promise 或超界均不保存正文。策略不是恶意代码沙箱，也不保证 secret-free；策略实现由部署者审查，HTTP/Worker 不能安装策略。必须先执行策略再写 Depot，未经披露的原文不进入新增事件、投影、日志或 Depot。
+旧关闭观察配置默认 `auditDisclosure=null`，仅保存观察元数据/摘要，正文和快照不可用。显式 `observability={profile:"task-observation/v1",retainPrompts:true}` 按冻结的内置脱敏策略留存 Marshal 实际输入；不包含 Agent 自有系统提示或隐藏推理。该模式禁止再混用自定义 `auditDisclosure`，v7和unpermitted同样不能注入旧任意回调；retainPrompts与startProtocol组合在构造/claim前拒绝，原恢复证明不放宽。它不扫描用户凭据，也不以正则脱敏作为保存机密原文的许可。仅支持旧披露接口的适用配置可显式注入 `createAuditDisclosure({id,version,redact})`，同一对象透传 `startTaskService({auditDisclosure,...})`；`redact(prompt,identity)` 仅同步返回已明确允许披露的脱敏字符串，返回 null、抛错、Promise 或超界均不保存正文。策略不是恶意代码沙箱，也不保证 secret-free；策略实现由部署者审查，HTTP/Worker 不能安装策略。必须先执行策略再写 Depot，未经披露的原文不进入新增事件、投影、日志或 Depot。
 
 公开查询最多展示 2 KiB UTF-8 完整字符预览，`previewTruncated` 明示截断；原快照最多 256 KiB，精确制品引用绑定 Task/Worker，经原授权 `artifact.content` 下载并重验摘要。`TaskClient.getAudit()` 与 `downloadInputSnapshot(taskId,prompt)` 复用原认证和单次有界 GET，额外核对最初审计清单，不批准、不重试、不修改 CAS。审计快照不混入 Task 的最终 `artifactIds` 或独立 Decision。内容不可用不制造 Task 失败；观察写入失败留下有界诊断，原 owner/期限/取消/cleanup 门禁仍照常执行。
 
-Worker 的 `audit.elapsedMs` 是原 `startedAt→finishedAt` 结案耗时，包含可能的清理与等待，不是纯模型耗时；`repairId` 关联实际修正 Attempt。缺少独立等待测量时 `waitingMs=null`；`measurement.firstReviewSource/usageSource=unavailable` 保留 0/0 review 的未知语义，token/cost 仍为 null，不能算作零费用或完美准确率。上述均为同库可选观察字段，不更改旧格式、原控制回执或业务状态；旧 reader 不因此取得新的执行能力。
+Worker 的 `audit.elapsedMs` 是原 `startedAt→finishedAt` 结案耗时，包含可能的清理与等待，不是纯模型耗时；`repairId` 关联实际修正 Attempt。缺少独立等待测量时 `waitingMs=null`；首审来源未知时仍保留 0/0 review 的未知语义。关闭观察或缺少有效读数时 `usageSource=unavailable`、Token为null；显式观察取得Provider累计读数后按已完整报告的模型成员比例给出coverage，费用仍未知。`lastResponseUsage` 是显式Qwen扩展的最近响应报告（非累计、完整性未确认、零值可能为提供方默认），不进入Task总量。未知不能算作零费用或完美准确率。上述均为同库可选观察字段，不更改旧格式、原控制回执或业务状态；旧 reader 不因此取得新的执行能力。
 
 `input-audit.test.mjs` 覆盖实际 SQLite/Depot 默认保密、同步披露、长 Unicode 输入、回滚、错误/陈旧票据、冷读和已提交缺失 bytes 不修补；`task-service/input-audit.test.mjs` 经真实 HTTP/FileBusiness/Supervisor、显式无模型作者夹具和原受管 Node checker 验证下载/独立验收/取消/冷重开。该测试不是实际模型消费、全部故障矩阵或 API-STABLE 发布证据。
 

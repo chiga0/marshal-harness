@@ -1,14 +1,41 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {ApiError} from './types';
+import type {TaskAuditRecord} from './types';
 import {clearToken, createTransport, installToken} from './client';
 
 function mockResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {status, headers: {'Content-Type': 'application/json'}});
 }
 const operation = (kind: string) => ({id: 'op-1', taskId: 'task-x', kind, status: 'accepted', taskRevision: 4, createdAt: '2026-09-11T00:00:00Z', updatedAt: '2026-09-11T00:00:00Z'});
+const audit = (taskId = 'task-x'): TaskAuditRecord => ({
+  taskId, elapsedMs: null, attempts: 0, retryCount: 0, reworkCount: 0,
+  firstReview: {passed: 0, total: 0, pending: 0},
+  acceptance: {status: 'pending', evidenceIds: [], digest: null},
+  usage: {tokens: null, cost: null, currency: null, source: 'unavailable', coverage: 0},
+  workers: [], prompts: [],
+});
 
 describe('transport', () => {
   afterEach(() => clearToken());
+  it('audit 读取完整 OpenAPI Audit，并绑定请求 Task', async () => {
+    installToken('t-123');
+    const response = audit();
+    const spy = vi.fn(async (..._args: Parameters<typeof fetch>) => mockResponse(200, response));
+    const transport = createTransport({token: 't-123', fetchLike: spy as unknown as typeof fetch});
+    await expect(transport.getAudit('task-x')).resolves.toEqual(response);
+    expect(spy.mock.calls[0]?.[0]).toBe('/v1/tasks/task-x/audit');
+  });
+  it('audit 拒绝串 Task、缺字段和未知字段，避免把错误投影交给页面', async () => {
+    installToken('t-123');
+    let response: unknown = audit('task-other');
+    const spy = vi.fn(async (..._args: Parameters<typeof fetch>) => mockResponse(200, response));
+    const transport = createTransport({token: 't-123', fetchLike: spy as unknown as typeof fetch});
+    await expect(transport.getAudit('task-x')).rejects.toMatchObject({code: 'invalid_audit_response'});
+    response = {...audit(), prompts: undefined};
+    await expect(transport.getAudit('task-x')).rejects.toMatchObject({code: 'invalid_audit_response'});
+    response = {...audit(), unexpected: true};
+    await expect(transport.getAudit('task-x')).rejects.toMatchObject({code: 'invalid_audit_response'});
+  });
   it('成果元数据绑定原ID与期望Task，错绑时拒绝且不请求内容', async () => {
     installToken('t-123');
     let response = {id: 'artifact-one', taskId: 'task-one'};

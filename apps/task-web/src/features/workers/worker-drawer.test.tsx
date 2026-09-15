@@ -5,17 +5,29 @@ import {fireEvent, render, screen, within} from '@testing-library/react';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import type {ReactNode} from 'react';
 import {WorkerDrawer} from './worker-drawer';
-import {makeFakeTransport, makeWorker} from '../tasks/detail/testing/fixtures';
+import {makeFakeTransport, makeWorker, makePlan} from '../tasks/detail/testing/fixtures';
 
 function wrap(node: ReactNode, client = new QueryClient({defaultOptions: {queries: {retry: false}, mutations: {retry: 0}}})) {
   return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
 }
 
 describe('Worker 抽屉焦点与层叠（UI-09）', () => {
+  it('长工作目标保留全文并收敛标题，关闭保持不可收缩单行', () => {
+    const {transport} = makeFakeTransport();
+    const goal = '交付可验收页面。' + '完整约束与验证要求'.repeat(30);
+    const plan = makePlan();
+    plan.nodes = plan.nodes.map((node, index) => index === 0 ? {...node, goal} : node);
+    const worker = makeWorker({nodeId: plan.nodes[0]!.id});
+    wrap(<WorkerDrawer taskRevision={7} worker={worker} plan={plan} transport={transport} onClose={() => {}} onChanged={() => {}} />);
+    expect(screen.getByRole('heading', {level:2})).toHaveTextContent('交付可验收页面。');
+    expect(screen.getByText(goal).closest('details')).not.toHaveAttribute('open');
+    expect(screen.getByRole('button', {name:'关闭'})).toHaveClass('shrink-0', 'whitespace-nowrap');
+  });
+
   it.each(['completed', 'failed', 'cancelled'] as const)('%s 保留原始进展与来源并明确它是历史观察', status => {
     const {transport} = makeFakeTransport();
     wrap(<WorkerDrawer taskRevision={7} worker={makeWorker({status, phase: 'terminal', progress: {summary: 'agent.running', source: 'agent', tool: 'read:completed'}})} transport={transport} onClose={() => {}} onChanged={() => {}} />);
-    const observation = screen.getByRole('region', {name: '最后收到的进展'});
+    const observation = screen.getByRole('region', {name: '最后收到的进展', hidden:true});
     expect(observation).toHaveTextContent('执行已结束；以下为历史观察，不代表当前仍在运行。');
     expect(within(observation).getByText('agent.running')).toBeInTheDocument();
     expect(within(observation).getByText('agent')).toBeInTheDocument();
@@ -73,4 +85,17 @@ describe('Worker 抽屉焦点与层叠（UI-09）', () => {
     rerender(node(() => {}));
     expect(document.activeElement).toBe(cancelButton);
   });
+});
+
+
+it('已完成Verifier保留原计划目标，但不把自由文本目标作为完成能力标题',()=>{
+  const plan=makePlan();const goal='逐项验证全部业务操作与外部保存效果';
+  plan.nodes=[{id:'check',role:'verifier',goal,scope:[],providerId:null}];
+  const {transport}=makeFakeTransport();
+  wrap(<WorkerDrawer taskRevision={7} worker={makeWorker({id:'check-worker',nodeId:'check',role:'verifier',status:'completed',attempt:8})} plan={plan} transport={transport} onClose={()=>{}} onChanged={()=>{}}/>);
+  expect(screen.getByRole('heading',{level:2})).toHaveTextContent('配置检查 · 执行 8');
+  expect(screen.getByRole('heading',{level:2})).not.toHaveTextContent(goal);
+  const details=screen.getByTestId('worker-plan-goal');expect(details).not.toHaveAttribute('open');
+  fireEvent.click(within(details).getByText('计划目标（非已验证范围）'));
+  expect(details).toHaveTextContent(goal);expect(details).toHaveTextContent('执行完成不证明这些要求均已检查');
 });
