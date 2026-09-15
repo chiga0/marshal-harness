@@ -38,6 +38,14 @@ M01 可优先作为新显式业务 profile 的确定性内容检查。S01 若继
 
 该切片不修改 OpenAPI、SQLite 合同或现有 `acceptanceEvidence` 设计，不表示 ADR0107 已 Accepted，也不表示 `verifyOrders` 已成为通用业务插件 API。它证明当前受信装配可以把一个固定 M01 后验接入现有 VerificationPort；正式业务支持仍需单独冻结 profile、能力源码摘要、证据结构、旧客户端行为及真实恢复/发布边界。错误候选路径只保存独立失败证据，不保存 delivery。
 
+## S01 受控 HTTP 垂直切片
+
+`packages/task-service/s01-postcondition.test.mjs` 提供 S01 的同形受控切片。它把明确选择的 `finite-guide/v1` contract 作为唯一输入 Artifact，经 `task.create → Planner → task.plan → task.approve → Worker → VerificationPort → Decision/Artifact` 完成一条成功链和三条业务拒绝链。作者只在受控目录写入 `guide.md`，不提交“验收通过”的报告。
+
+独立验证器从 `ticket.input.inputArtifacts` 指向的 Depot 原始 bytes 读取并解析 guide contract，再从自己的受控验证目录读取作者候选，调用 `verifyGuide` 逐行核对标题、时间、地点、三条步骤和两条注意事项。正确文案会保存 `authority:false` 的实验报告和单一 delivery；同时增加设施与费用、时间漂移、地点漂移的候选，分别验证超出有限语言和已知事实冲突不能产生 delivery。验证器不读取作者复制的输入，也不使用作者的自然语言总结作为事实来源。
+
+这仍是测试配置中的受信端口和有限业务实验，不把有限模板设为通用 S01 默认，不修改 OpenAPI、SQLite 合同或 ADR0107 状态，也不把 `verifyGuide` 的实验报告直接当成产品权限或终态 `acceptanceEvidence`。自由文案需求仍需独立语义审查；有限模板只有在用户明确批准该 contract 时才有本切片覆盖的确定性保证。
+
 ## 复验
 
-运行 `node --test scripts/business-postconditions.test.mjs` 检查离线规则，再运行 `node --test --test-concurrency=1 packages/task-service/m01-postcondition.test.mjs` 检查受控 HTTP 垂直切片。两者都属于受控 fixture，没有真实模型或真实外部业务效果证据；UI 三线不适用的范围仅限这些测试，不能据此更新产品体验为通过。
+运行 `node --test scripts/business-postconditions.test.mjs` 检查离线规则，再运行 `node --test --test-concurrency=1 packages/task-service/m01-postcondition.test.mjs packages/task-service/s01-postcondition.test.mjs` 检查 M01 与 S01 受控 HTTP 垂直切片。两者都属于受控 fixture，没有真实模型或真实外部业务效果证据；UI 三线不适用的范围仅限这些测试，不能据此更新产品体验为通过。
