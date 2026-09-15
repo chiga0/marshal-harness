@@ -101,3 +101,9 @@ HTTP `/v1`、OpenAPI `info.version`、SQLite layout、模型wire profile、产�
 [ADR0104](adr/0104-bounded-leader-protocol-correction.md) 的新可信配置可登记 Task 级至多一次 JSON 语法纠错。它不是公共重试命令，不自动修正 JSON 或业务动作，不放宽计划确认、清理、当前性、预算、期限与验收。原失败 Worker 与 Outcome 保留，后继采用新的 Call/Worker/Attempt；合法 JSON 的形状或动作拒绝、工具/权限违例、空文本、混合编码/重复键/限制错误均不产生格式纠错。
 
 仅登记的 Task 在 `LeaderView` 返回可选 `protocolCorrection`：`used/max`、固定原因、原失败引用及已保留的后继 Worker/Call ID。缺省配置保持字段缺失；新客户端同时支持两种形状。`used=1` 只证明预算已消费，不证明模型正在运行，必须关联真实 Worker 状态；未保留后继时两个 ID 同为 null。原调用的错误正文和工具参数不进入该字段，公开文本仍遵循原观测留存策略。全部闭合字段与关联约束见 OpenAPI，后继同样可能失败，不承诺自动完成。
+
+## 逐项业务评审证据
+
+批准前的 Plan.acceptance 保留原业务条目与可读固定政策，受信目录为每项绑定原文摘要和检查方式。`readArtifact` 读取的 `task-independent-review/v2` 证据由 OpenAPI 的 `ReviewEvidenceEnvelope`、`ReviewAssessment`、`ReviewCriteriaItem`、`ReviewEvidenceSource` 和 `ReviewAssessmentCheck` 定义：原六字段 report 不变，新增 assessment 精确绑定同次输入、选果、计划、报告与目录。最多 16 项文本检查；缺项、重复、伪造引用和把必需项标为不适用均拒收。零字节来源可用绑定空内容摘要的空引用，仍须覆盖。
+
+该格式通过既有制品读取链提供，没有新增提交评审的 HTTP 权限。`pass` 是指定 `text-review` 方法的判断，不代表浏览器、外部系统或真人验收通过；方法的证据边界必须向用户展示。旧 v1 只展示原报告，不补造逐项状态；未知或损坏 v2 不降级为旧报告通过。完整规则和兼容范围见 [ADR0106](adr/0106-bound-review-assessments.md)。

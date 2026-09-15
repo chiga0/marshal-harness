@@ -13,7 +13,7 @@ export const QWEN_MANAGED_ARGS = Object.freeze([
   '--acp', '--approval-mode', 'default', '--core-tools', QWEN_FILE_TOOLS.join(','),
   '--exclude-tools', [...QWEN_EXCLUDED_TOOLS, ...QWEN_FILE_TOOLS].join(','),
 ]);
-const config = createGenericFilesReviewWireConfig({provider: createAcpProvider({id: 'qwen-acp', usageExtension: 'qwen-transcript/v1',
+const config = createGenericFilesReviewWireConfig({assessmentContract: 'task-review-assessment/v1', provider: createAcpProvider({id: 'qwen-acp', usageExtension: 'qwen-transcript/v1',
   executable: process.env.MARSHAL_AGENT_EXECUTABLE, env, args: QWEN_FILE_ARGS}),
   managedProvider: createAcpProvider({id: 'qwen-managed-acp', usageExtension: 'qwen-transcript/v1',
     executable: process.env.MARSHAL_AGENT_EXECUTABLE, env, args: QWEN_MANAGED_ARGS})});

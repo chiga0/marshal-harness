@@ -1,3 +1,5 @@
+import {registerReviewAssessments} from '../task-application/review-assessment.mjs';
+import {withReviewCriteria, reviewCriteria, reviewSources, parseAssessmentProposal, REVIEW_ASSESSMENT_PROFILE, REVIEW_ASSESSMENT_PROPOSAL_PROFILE, REVIEW_POLICIES} from '../task-application/review-assessment-contract.mjs';
 import {registerFileAuthorInstructions} from '../task-business/index.mjs';
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
@@ -87,7 +89,33 @@ export function renderReviewProposalPrompt(input) {
 export const CREATIVE_SCOPE = '允许完成用户要求的创作、文案和方案建议；不得把未提供事项写成已确定事实、既有服务或强制条件。不要把事实来源约束改写成禁止全部合理建议的新范围；保留用户原任务与已批准scope，不静默修改；若存在冲突应明确指出，不自行豁免。';
 export const AUTHOR_GUIDANCE = FACT_GROUNDING + INTERACTION_GROUNDING + DATA_ORIGIN + CREATIVE_SCOPE;
 
+export function parseAssessmentLeaderProposal(args) {
+  const value=parseLeaderProposal(args);
+  check(Array.isArray(value.actions),'invalid_leader_decision');
+  return {...value,actions:value.actions.map(action=>action?.type==='plan'?{...action,proposal:withReviewCriteria(action.proposal)}:action)};
+}
+
+export function renderAssessmentReviewPrompt(input) {
+  const criteria=reviewCriteria(input.snapshot.plan),{sources}=reviewSources(input);
+  return '独立只读逐项文本评审。只审查完整冻结输入，不修改文件或启动工具。批准范围中的原业务条目与固定政策均须逐项检查。' +
+    '本轮仅text-review：交付方案时检查设计是否闭合，不要求执行尚未实现的软件，也不把推演描述成真实运行。缺少原用户事实应指出澄清需要；候选遗漏设计分支应返工，不能替作者补全。' +
+    '只返回严格JSON对象，无前后文/BOM/重复键/注释，整个返回最多65536 UTF-8字节。顶层仅profile、verdict、summary、findings、checks。' +
+    'profile为task-review-assessment-proposal/v1；verdict为accept/rework/reject。summary非空最多4096 UTF-8字节。' +
+    'checks必须恰好覆盖下列每个criterion.id且不重复。每项仅itemId、assessment、method、reason、evidence、counterexample、findingIds。method固定text-review。' +
+    'assessment为pass/fail/unknown/not-applicable。原业务条目及scope/facts不得不适用；只有effects/recovery可按原文证明不适用。reason非空最多1024 UTF-8字节。' +
+    'evidence最多16个{sourceId,quote}，quote是该来源精确原文的子串（最多512 UTF-8字节，不改写）。结构化来源引用按下列规范JSON转义后的文字，materials引用content原文。pass及not-applicable至少一条引用，全部candidate来源都须至少被一项引用。' +
+    '零字节来源可用空quote，只有其摘要精确为SHA-256(empty)才有效；纯空白来源可引用原空白。空文件不能靠无法引用而跳过。计划及作者自述不是已确认事实来源；真实引用存在不等于支持结论。' +
+    'counterexample为null或{initial,operation,failure,result,recovery}，每段非空最多768 UTF-8字节。effects/recovery判pass必须给出候选依据支持的状态推演；不适用必须为null。' +
+    'findings最多16项，每项仅id、nodeIds、requirement、observation、requestedChange。id为1至128位[A-Za-z0-9][A-Za-z0-9_-]*且唯一，nodeIds为1至64个唯一原selection.nodeId，后三段非空最多2048 UTF-8字节。' +
+    'fail/unknown每项findingIds必须恰好一个独有finding.id，其requirement逐字等于该criterion.requirement；其他项findingIds为空。不得有未关联finding。accept仅允许pass或获准不适用且findings为空；未知关键项不能accept，不为凑反例制造缺陷。' +
+    '所有字符串为合法Unicode且无NUL。下列目录为受信输入，不自行生成或改变ID/摘要。' +
+    '\n验收目录：'+JSON.stringify(criteria)+'\n来源目录：'+JSON.stringify(sources)+
+    '\n完整冻结输入：'+encode(input).toString();
+}
+
 export function createGenericFilesReviewWireConfig(options) {
+  check(options.assessmentContract===undefined||options.assessmentContract===REVIEW_ASSESSMENT_PROFILE,'invalid_generic_provider');
+  const assessed=options.assessmentContract===REVIEW_ASSESSMENT_PROFILE;
   options = {...options, provider: withPermissionDiagnostics(options.provider)};
   const config = createGenericFilesConfig(options), originalLeader = config.leader;
   const managedProvider = options.managedProvider ?? options.provider;
@@ -95,7 +123,7 @@ export function createGenericFilesReviewWireConfig(options) {
     check(managedProvider.id !== options.provider.id && typeof managedProvider.start === 'function', 'invalid_generic_provider');
     config.providers.set(managedProvider.id, managedProvider);
   }
-  const code = digest(encode(['../task-business/index.mjs', 'review-wire.mjs', 'qwen-review-service-config.mjs', 'qwen-file-tools.mjs', 'short-wire.mjs', '../task-application/leader-ports.mjs']
+  const code = digest(encode(['../task-business/index.mjs', 'review-wire.mjs', 'qwen-review-service-config.mjs', 'qwen-file-tools.mjs', 'short-wire.mjs', '../task-application/leader-ports.mjs', '../task-application/review-assessment-contract.mjs', '../task-application/review-assessment.mjs', '../task-application/leader.mjs', '../task-service/composition.mjs']
     .map(name => ({name, digest: digest(fs.readFileSync(fileURLToPath(new URL(name, import.meta.url))))}))));
   const originalBusinessFactory = config.businessFactory;
   config.businessFactory = context => {
@@ -105,17 +133,18 @@ export function createGenericFilesReviewWireConfig(options) {
   };
   const observability = {profile: 'task-observation/v1', retainPrompts: true};
   const reviewPolicy = {id: 'generic-files-bound-review', version: '1',
-    description: RULE + ' 原通用策略：' + config.review.policyDigest + ' 显式Review wire：' + REVIEW_WIRE_PROFILE + ' 观测策略：' + JSON.stringify(observability) + ' 固定作者指导：' + AUTHOR_GUIDANCE + ' 源码摘要：' + code};
+    description: RULE + ' 原通用策略：' + config.review.policyDigest + ' 显式Review wire：' + (assessed?REVIEW_ASSESSMENT_PROPOSAL_PROFILE:REVIEW_WIRE_PROFILE) + ' 观测策略：' + JSON.stringify(observability) + ' 固定作者指导：' + AUTHOR_GUIDANCE + ' 源码摘要：' + code};
   config.review = createReviewPort({id: reviewPolicy.id, providerId: managedProvider.id, policy: reviewPolicy,
-    prepare: ({input}) => ({prompt: RULE + '\n' + renderReviewProposalPrompt(input)}), parseReport: parseReviewProposal});
+    prepare: ({input}) => ({prompt: RULE + '\n' + (assessed?renderAssessmentReviewPrompt(input):renderReviewProposalPrompt(input))}), parseReport: assessed?args=>parseAssessmentProposal(args).report:parseReviewProposal});
+  if(assessed)registerReviewAssessments(config.review,{profile:REVIEW_ASSESSMENT_PROFILE});
   config.leader = createLeaderPort({id: 'generic-files-bound-leader', providerId: managedProvider.id,
     policy: {profile: 'task-managed-leader/v1', maxCalls: 16, maxActions: 1, maxRequests: 4,
       repair: {scope: 'plan-authors', nodeIds: [], maxRounds: 1},
       review: {providerId: managedProvider.id, policyDigest: digest(encode(reviewPolicy))}, publication: null},
     prepare: async ({ticket, input, prepared}, context) => {
       await originalLeader.prepare(ticket, prepared, context);
-      return {prompt: RULE + '\n' + GUIDANCE + '\n' + '本通用文件配置的DAG节点role只允许author或verifier。所有写成果的执行者（包括整合作者）role必须为author，整合节点id可以叫integrator但role不能为integrator。独立Review是Core受管阶段，不设reviewer节点；唯一verifier是汇合终点且不写成果。' + '\n' + FACT_GROUNDING + INTERACTION_GROUNDING + DATA_ORIGIN + CREATIVE_SCOPE + '在计划的作者scope和acceptance中明确事实来源与建议边界；完整方案应内部自洽、依赖可行、可验收，原要求中的风险须对应可执行验收与回退；完整保留用户原要求，不以自己补充的计划内容证明新事实。' + '\n' + (options.managedProvider ? '执行作者的providerId使用null（默认文件Provider）或' + options.provider.id + '；' + managedProvider.id + '仅供受管Leader/Review，不能用于写成果的作者。\n' : '') + renderGenericLeaderPrompt(input)};
-    }, parseDecision: parseLeaderProposal});
+      return {prompt: RULE + '\n' + GUIDANCE + '\n' + '本通用文件配置的DAG节点role只允许author或verifier。所有写成果的执行者（包括整合作者）role必须为author，整合节点id可以叫integrator但role不能为integrator。独立Review是Core受管阶段，不设reviewer节点；唯一verifier是汇合终点且不写成果。' + '\n' + FACT_GROUNDING + INTERACTION_GROUNDING + DATA_ORIGIN + CREATIVE_SCOPE + '在计划的作者scope和acceptance中明确事实来源与建议边界；完整方案应内部自洽、依赖可行、可验收，原要求中的风险须对应可执行验收与回退；完整保留用户原要求，不以自己补充的计划内容证明新事实。' + '\n' + (options.managedProvider ? '执行作者的providerId使用null（默认文件Provider）或' + options.provider.id + '；' + managedProvider.id + '仅供受管Leader/Review，不能用于写成果的作者。\n' : '') + (assessed?'批准前验收约定：plan.proposal.acceptance只输出原业务验收条目，最多12项、每项最多2048 UTF-8字节；受信配置会在批准前追加以下固定政策及索引目录，不要自行生成目录或重复政策。政策为：'+JSON.stringify(REVIEW_POLICIES.map(p=>p.text))+'\n':'') + renderGenericLeaderPrompt(input)};
+    }, parseDecision: assessed?parseAssessmentLeaderProposal:parseLeaderProposal});
   config.observability = observability;
   return config;
 }

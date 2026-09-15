@@ -7,7 +7,7 @@ test('仅作者指导文本或注册源码指纹变化，同new profile开根在
  const provider={id:'fixture',custodyProfile:{id:'fixture-inherited-v1',scope:'inherited-process-group',eligible:true},start(){throw Error('no model');}};
  const config=()=>({...createGenericFilesReviewWireConfig({provider}),root});const first=config();
  const description=configuration(first.review,'review').policy.description;assert.ok(description.includes(AUTHOR_GUIDANCE));
- const files=['../task-business/index.mjs','review-wire.mjs','qwen-review-service-config.mjs','qwen-file-tools.mjs','short-wire.mjs','../task-application/leader-ports.mjs'];
+ const files=['../task-business/index.mjs','review-wire.mjs','qwen-review-service-config.mjs','qwen-file-tools.mjs','short-wire.mjs','../task-application/leader-ports.mjs','../task-application/review-assessment-contract.mjs','../task-application/review-assessment.mjs','../task-application/leader.mjs','../task-service/composition.mjs'];
  const code=digest(encode(files.map(name=>({name,digest:digest(fs.readFileSync(new URL(name,import.meta.url)))}))));assert.ok(description.endsWith(code),'实际注册实现源码必须纳入新策略指纹');
  let service=await startTaskService({...first,mode:'create'});await service.shutdown();const marker=fs.readFileSync(path.join(root,'profile.json'));
  const generation=()=>{const s=Store.openExisting(path.join(root,'store'),{format:LEADER_FORMAT});try{return s.info().generation;}finally{s.close();}};const before=generation();
