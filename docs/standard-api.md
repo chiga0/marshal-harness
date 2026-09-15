@@ -69,6 +69,8 @@ sequenceDiagram
 
 ## 需求、确认与验收
 
+本节描述的是当前已实现 API 能表达的验收语义。当前机器合同中的 `Plan.acceptance` 仍是可读字符串数组，`task.audit.acceptance` 仍是现有状态、证据 ID 与摘要投影；ADR0107 所候选的逐项 `acceptanceEvidence`、责任方、检查方法、来源 Artifact、Attempt 引用及业务后验字段尚未进入 OpenAPI，也尚未被 Core 接受。阅读本页时应将“终态设计候选”与“当前可调用合同”分开，不能把设计描述当成已发布能力。
+
 CreateTask.requirements.deliverables/acceptance 表达用户成果和验收期望，不能上传任意 checker。Leader 读取原需求、输入、答案和已有证据，形成工作包及验收约定；可信业务/验证配置检查可表达性，把布局、依赖、范围和验证策略绑定进计划。确认按精确计划版本与摘要进行。必要歧义在执行前提出，不能执行后把“格式正确”重新解释为“满足业务”。
 
 有两条不同的问答通道：原 questions/answers 支持批准前 preview 和已启用的原 Worker 业务投递；Leader requests/reply 表示向受管 Leader 提供耐久答案或精确发布授权。客户端按原请求族响应，不能互换摘要。Leader答复没有旧Worker ACK语义，业务答案不能代替工具授权，202也不说明模型已经消费。
