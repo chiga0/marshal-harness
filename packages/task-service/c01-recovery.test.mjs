@@ -11,7 +11,7 @@ import {createFileBusiness} from '../task-business/index.mjs';
 import {TaskClient} from '../task-client/index.mjs';
 import {encode} from '../task-store/store.mjs';
 import {startTaskService} from './composition.mjs';
-import {PROFILE, STEPS, runImport, verifyRecoveryState, expectedFiles} from './c01-recovery.mjs';
+import {PROFILE, STEPS, runImport, verifyRecoveryState, expectedFiles} from './c01-recovery.fixture.mjs';
 
 const workerFixture = fileURLToPath(new URL('./c01-recovery-worker.fixture.mjs', import.meta.url));
 const rows = [

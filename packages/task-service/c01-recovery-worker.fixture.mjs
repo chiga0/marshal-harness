@@ -1,7 +1,7 @@
 // Test-only subprocess used to create a genuine process crash boundary.
 import fs from 'node:fs';
 import process from 'node:process';
-import {runImport, C01Crash, C01RecoveryError} from './c01-recovery.mjs';
+import {runImport, C01Crash, C01RecoveryError} from './c01-recovery.fixture.mjs';
 
 const arg = name => { const at = process.argv.indexOf(name); return at >= 0 ? process.argv[at + 1] : null; };
 const root = arg('--root'), sourcePath = arg('--source'), crashAfter = Number(arg('--crash-after') ?? '-1'), skipMode = arg('--skip-mode') ?? 'complete-and-consistent';
