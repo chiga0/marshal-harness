@@ -1,0 +1,24 @@
+{
+  "guide": {
+    "profile": "finite-guide/v1",
+    "title": "蓝杉读书会",
+    "schedule": "每周六14:00",
+    "location": "城市图书馆二层",
+    "steps": ["查看活动时间：每周六14:00。", "查看活动地点：城市图书馆二层。", "按以上时间和地点参与蓝杉读书会。"],
+    "notes": ["以上时间与地点为已提供信息。", "其他安排尚未提供，请勿据此推断。"]
+  },
+  "recoveryPositive": {
+    "profile": "finite-import-recovery/v1",
+    "skip": "complete-and-consistent",
+    "steps": ["record-pending", "build-temporary", "replace-index", "mark-complete"]
+  },
+  "recoveryNegative": {
+    "profile": "finite-import-recovery/v1",
+    "skip": "record-exists",
+    "steps": ["record-pending", "build-temporary", "replace-index", "mark-complete"]
+  },
+  "notes": [
+    {"id": "A.md", "body": "离线检索唯一词甲", "tags": ["阅读", "A"]},
+    {"id": "B.md", "body": "离线检索唯一词乙", "tags": ["阅读", "B"]}
+  ]
+}
