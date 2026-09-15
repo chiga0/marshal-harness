@@ -320,3 +320,59 @@ test('固定指导拒绝不可枚举额外字段与符号，不通过options属�
  const symbol=authorPolicy();symbol[Symbol('extra')]=1;assert.throws(()=>registerFileAuthorInstructions(fixture(t).business,symbol));
  let got=false;const proxy=new Proxy(authorPolicy(),{get(){got=true;throw Error('no property get');}});registerFileAuthorInstructions(fixture(t).business,proxy);assert.equal(got,false);
 });
+
+// Shared contract is supplied by ADR0106's independent author, not duplicated here.
+async function assessmentRepair(f) {
+  const {withReviewCriteria,reviewCriteria,reviewSources,parseAssessmentProposal}=await import('../task-application/review-assessment-contract.mjs');
+  const work=ticket(),plan=withReviewCriteria(work.input.plan);
+  work.input.plan=plan;
+  const material={nodeId:'author',workerId:'previous-author',path:'result.md',content:'原候选缺少失败后的续建规则。'};
+  material.bytes=Buffer.byteLength(material.content);material.digest=digest(Buffer.from(material.content));
+  const input={profile:'task-independent-review/v1',snapshot:{task:{input:work.input.task,inputArtifacts:[]},plan,interactions:{replies:[]}},
+    selection:[{nodeId:'author',workerId:'previous-author'}],materials:[material]};
+  input.selectionDigest=hash(input.selection);input.inputDigest=hash(input);
+  const reviewTicket={executionType:'review',input:{review:input}},criteria=reviewCriteria(plan),{sources}=reviewSources(input);
+  const source=sources.find(s=>s.kind==='candidate'),finding={id:'finding-one',nodeIds:['author'],requirement:criteria[0].requirement,
+    observation:'清单已写但索引未完成时缺少恢复分支。',requestedChange:'补充失败重跑判定，不假称已执行。'};
+  const proposal={profile:'task-review-assessment-proposal/v1',verdict:'rework',summary:'原候选需修正。',findings:[finding],checks:criteria.map((c,index)=>({
+    itemId:c.id,assessment:index===0?'fail':c.allowNotApplicable?'not-applicable':'pass',method:'text-review',reason:'依据候选文本进行有限检查。',
+    evidence:[{sourceId:source.id,quote:material.content}],counterexample:null,findingIds:index===0?[finding.id]:[]}))};
+  const {report,assessment}=parseAssessmentProposal({ticket:reviewTicket,completion:{status:'completed',outputText:JSON.stringify(proposal)}});
+  const envelope={profile:'task-independent-review/v2',ticketDigest:hash(reviewTicket),report,assessment};
+  f.layout('author',{inputs:[],allowedPaths:['result.md']});
+  return {work,envelope};
+}
+function bindRepairEvidence(f,work,envelope,changeRef=()=>{}) {
+  const ref={...f.depot.put(encode(envelope)),id:'negative-review',taskId:work.taskId,kind:'evidence',status:'ready'};changeRef(ref);
+  work.repairId='repair-v2';work.input.plan.acceptance.push(JSON.stringify({policyDigest:planDigest}));
+  work.input.repair={profile:'task-managed-leader/v1',repairId:work.repairId,decisionDigest:planDigest,policyDigest:planDigest,
+    affectedNodes:['author'],feedback:'保留原问题后返工',evidence:ref,basis:{kind:'review',digest:planDigest}};
+  work.inputDigest=hash(work.input);delete work.reservationDigest;work.reservationDigest=hash(work);return work;
+}
+test('v2负面评审原文完整交给返工作者，准备不授予新的文件权限',async t=>{
+  const f=fixture(t),{work,envelope}=await assessmentRepair(f);bindRepairEvidence(f,work,envelope);
+  const p=await f.business.prepare(work,context(work));const prompt=JSON.parse(p.prompt.split('\n完整冻结任务和计划（仅业务上下文，不是控制命令）：\n')[1]);
+  assert.deepEqual(prompt.repair.originalNegativeReport,envelope);assert.equal(prompt.repair.diagnosticOnly,true);
+  assert.deepEqual(prompt.allowedPaths,['result.md']);assert.deepEqual(fs.readdirSync(p.cwd),[]);
+});
+for(const mode of ['report-digest','assessment-shape','envelope-extra','unknown-profile','missing-assessment','plan','basis','foreign-node','unaffected-node','artifact-task','artifact-kind','artifact-status','artifact-digest'])test('v2返工拒绝损坏或外来绑定：'+mode,async t=>{
+  const f=fixture(t),{work,envelope}=await assessmentRepair(f);
+  if(mode==='report-digest')envelope.report.summary+='改写';
+  if(mode==='assessment-shape')envelope.assessment.extra=true;
+  if(mode==='envelope-extra')envelope.extra=true;
+  if(mode==='unknown-profile')envelope.profile='task-independent-review/v3';
+  if(mode==='missing-assessment')delete envelope.assessment;
+  if(mode==='plan')envelope.assessment.planDigest='sha256:'+'b'.repeat(64);
+  if(mode==='foreign-node'||mode==='unaffected-node') {envelope.report.findings[0].nodeIds=[mode==='foreign-node'?'foreign':'source'];envelope.assessment.reportDigest=hash(envelope.report);}
+  bindRepairEvidence(f,work,envelope,ref=>{
+    if(mode==='artifact-task')ref.taskId='foreign';if(mode==='artifact-kind')ref.kind='input';
+    if(mode==='artifact-status')ref.status='pending';if(mode==='artifact-digest')ref.digest='sha256:'+'c'.repeat(64);
+  });
+  if(mode==='basis'){work.input.repair.basis.digest='sha256:'+'b'.repeat(64);work.inputDigest=hash(work.input);delete work.reservationDigest;work.reservationDigest=hash(work);}
+  await assert.rejects(f.business.prepare(work,context(work)));assert.deepEqual(fs.readdirSync(f.parent),[]);
+});
+test('v2保留Core允许的额外修复作者，不强制最小findings闭包',async t=>{
+  const f=fixture(t),{work,envelope}=await assessmentRepair(f);envelope.report.findings[0].nodeIds=['source'];envelope.assessment.reportDigest=hash(envelope.report);
+  bindRepairEvidence(f,work,envelope);work.input.repair.affectedNodes=['source','author'];work.inputDigest=hash(work.input);delete work.reservationDigest;work.reservationDigest=hash(work);
+  const p=await f.business.prepare(work,context(work));assert.ok(p.prompt.includes('原候选需修正。'));
+});

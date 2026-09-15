@@ -4,6 +4,7 @@ import {parseJson} from '../task-api/http-boundary.mjs';
 import fs from 'node:fs';
 import {FILE_COLLECTION_CAUSES} from '../agent-observation/normalization.mjs';
 import path from 'node:path';
+import {validateStoredReviewAssessment} from '../task-application/review-assessment-contract.mjs';
 
 const PROFILE = 'task-file-business/v1';
 const MAX_PROMPT = 256 * 1024, MAX_REPORT = 64 * 1024;
@@ -244,7 +245,21 @@ export function createFileBusiness({parent, depot, layoutFor, approvedLayout, ob
         const bytes = depot.get({digest: ref.digest, bytes: ref.bytes});
         check(bytes instanceof Uint8Array && bytes.byteLength === ref.bytes && digest(bytes) === ref.digest, 'business_invalid_reference');
         const report = parseJson(bytes);
-        check(managed && ticket.input.repair.basis?.kind === 'review' ? report.profile === 'task-independent-review/v1' &&
+        if (managed && ticket.input.repair.basis?.kind === 'review' && report.profile === 'task-independent-review/v2') {
+          // Revalidate the stored envelope, not the unavailable original Review
+          // input. Artifact authority still comes from Core's frozen repair fact.
+          try { validateStoredReviewAssessment(report); }
+          catch { throw new TaskBusinessError('business_invalid_reference'); }
+          const repair = ticket.input.repair, planNodes = new Set(ticket.input.plan.nodes.map(node => node.id));
+          check(report.assessment.planDigest === ticket.planDigest && hash(repair.basis.digest) &&
+            repair.basis.digest === repair.decisionDigest &&
+            repair.affectedNodes.every(nodeId => planNodes.has(nodeId)) &&
+            report.report.verdict === 'rework' && report.report.findings.length > 0 &&
+            report.report.findings.every(finding => finding.nodeIds.every(nodeId =>
+              planNodes.has(nodeId) && repair.affectedNodes.includes(nodeId))), 'business_invalid_reference');
+        }
+        check(managed && ticket.input.repair.basis?.kind === 'review' ?
+          (report.profile === 'task-independent-review/v1' || report.profile === 'task-independent-review/v2') &&
           report.report?.verdict === 'rework' && report.report.findings.some(finding => finding.nodeIds.some(nodeId => ticket.input.repair.affectedNodes.includes(nodeId))) :
           managed && ticket.input.repair.basis?.kind === 'execution-failure' ? report.profile === 'task-managed-leader/v1' :
           report.profile === 'task-verification-command/v1' && hash(report.reportDigest) && typeof report.originalReport === 'string' &&
