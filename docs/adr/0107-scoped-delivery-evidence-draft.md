@@ -1,7 +1,7 @@
 # ADR 0107 候选：按责任和时点接纳交付证据
 
 - 状态：Draft，仅供独立审查；未接受、未实现，不授权部署或新增模型调用。
-- 日期：2026-09-16
+- 日期：2026-09-15
 - 基线：`c3e9357de7343c23898abc488d8e8f7b23ee6f41`
 - 关联：[ADR0094](0094-trusted-single-user-role-team.md)、[ADR0103](0103-execution-observability.md)、[ADR0104](0104-bounded-leader-protocol-correction.md)、[ADR0106](0106-bound-review-assessments.md)
 
