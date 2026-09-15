@@ -39,10 +39,10 @@ function remember(result) {
 }
 function barrier(value) {armed = false; record({type: 'barrier', point: scenario, ...value});
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000); process.exit(79);}
-Store.prototype.write = function(owner, callback) {
-  if (!armed) {const result = write.call(this, owner, callback); remember(result); return result;}
+Store.prototype.write = async function(owner, callback) {
+  if (!armed) {const result = await write.call(this, owner, callback); remember(result); return result;}
   let target;
-  const value = write.call(this, owner, tx => {
+  const value = await write.call(this, owner, tx => {
     const result = callback(tx);
     if (armed && result?.operation?.kind === 'task.repair' && result.replayed === false) {
       const row = tx.projection('task', result.taskId), task = parse(row);

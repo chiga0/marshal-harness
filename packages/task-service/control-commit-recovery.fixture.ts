@@ -25,10 +25,10 @@ function barrier(value) {
   process.exit(79);
 }
 const write = Store.prototype.write;
-Store.prototype.write = function(owner, callback) {
+Store.prototype.write = async function(owner, callback) {
   if (!armed || typeof callback !== 'function' || callback.constructor.name === 'AsyncFunction') return write.call(this, owner, callback);
   let target;
-  const result = write.call(this, owner, tx => {
+  const result = await write.call(this, owner, tx => {
     const value = callback(tx);
     const reserved = point.startsWith('reservation-') && value?.role === 'author' && value?.reservationDigest && value?.input;
     const bound = point.startsWith('binding-') && value?.profile === 'node-execution-custody/v1' && value.binding?.planDigest;

@@ -8,8 +8,8 @@ import {createAcpProvider} from '../agent-provider-acp/index.ts';
 import {createStagingOnlyBusinessFactory} from '../task-business/index.ts';
 const original = (await import('./control-commit-recovery.fixture.ts')).default;
 const tickets = new Map(), write = Store.prototype.write;
-Store.prototype.write = function(owner, callback) {
-  const result = write.call(this, owner, callback);
+Store.prototype.write = async function(owner, callback) {
+  const result = await write.call(this, owner, callback);
   if (result?.workerId && result.reservationDigest && result.input) tickets.set(result.workerId, result);
   return result;
 };

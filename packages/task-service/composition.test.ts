@@ -225,10 +225,10 @@ test('root identity drift drops readiness and closes without deleting evidence',
 test('cold prior execution remains intervention, never starts a replacement or claims ready', async t => {
   const f = fixture(t), initial = await f.start(); await initial.shutdown();
   const store = Store.openExisting(path.join(f.root, 'store'));
-  const owner = store.claimOwner(store.info().generation, 'fixture-prior-owner', Date.now() + 10000);
+  const owner = await store.claimOwner(store.info().generation, 'fixture-prior-owner', Date.now() + 10000);
   const app = new TaskApplication({store, owner, execution: {maxWorkers: 2, providerIds: ['fixture'], defaultProvider: 'fixture'}});
   const task = await app.dispatch({operation: 'task.create', key: 'crashed-create', body: {intent: 'uncertain previous start'}}, context);
-  const command = app.execution.poll().items[0], ticket = app.execution.nextWork(command.id, command.revision);
+  const command = (await app.execution.poll()).items[0], ticket = (await app.execution.nextWork(command.id, command.revision));
   assert.ok(ticket); store.close(); // Controlled crash-shaped reservation, not a real process crash.
   const reopened = await f.start({mode: 'open'}), client = f.client(reopened);
   assert.equal((await client.getTask(task.id)).status, 'intervention');
@@ -241,10 +241,10 @@ test('cold prior execution remains intervention, never starts a replacement or c
 test('old unreserved pending task can be cancelled after reopen without permanently blocking readiness', async t => {
   const f = fixture(t), initial = await f.start(); await initial.shutdown();
   const store = Store.openExisting(path.join(f.root, 'store'));
-  const owner = store.claimOwner(store.info().generation, 'fixture-before-reservation', Date.now() + 10000);
+  const owner = await store.claimOwner(store.info().generation, 'fixture-before-reservation', Date.now() + 10000);
   const app = new TaskApplication({store, owner, execution: {maxWorkers: 2, providerIds: ['fixture'], defaultProvider: 'fixture'}});
   const task = await app.dispatch({operation: 'task.create', key: 'pending-create', body: {intent: 'not reserved'}}, context);
-  const command = app.execution.poll().items[0];
+  const command = (await app.execution.poll()).items[0];
   assert.equal(command.status, 'pending');
   assert.equal((await app.dispatch({operation: 'task.workers', taskId: task.id}, context)).items.length, 0);
   store.close();
@@ -267,22 +267,22 @@ test('recovery preserves create/approve/input receipts and conflicts before new-
   const input = await first.request('input.create', {body: inputBody, idempotencyKey: 'preserved-input'});
   await initial.shutdown();
   let store = Store.openExisting(path.join(f.root, 'store'));
-  let owner = store.claimOwner(store.info().generation, 'fixture-receipt-owner', Date.now() + 10000);
+  let owner = await store.claimOwner(store.info().generation, 'fixture-receipt-owner', Date.now() + 10000);
   const app = new TaskApplication({store, owner, execution: {maxWorkers: 2, providerIds: ['fixture'], defaultProvider: 'fixture'}});
   const body = {intent: 'approved task before restart'};
   const task = await app.dispatch({operation: 'task.create', key: 'preserved-create', body}, context);
-  const proposed = app.proposePlan(task.id, task.revision, plan);
+  const proposed = (await app.proposePlan(task.id, task.revision, plan));
   const latest = await app.dispatch({operation: 'task.get', taskId: task.id}, context);
   const approveBody = {expectedRevision: latest.revision, planRevision: proposed.revision, planDigest: proposed.digest};
   const approved = await app.dispatch({operation: 'task.approve', taskId: task.id, key: 'preserved-approve', body: approveBody}, context);
   const unknown = await app.dispatch({operation: 'task.create', key: 'unknown-start', body: {intent: 'unknown execution'}}, context);
-  const command = app.execution.poll().items.find(command => command.taskId === unknown.id);
-  const ticket = app.execution.nextWork(command.id, command.revision); assert.ok(ticket);
-  const authority = () => store.read(owner, tx => ({
+  const command = (await app.execution.poll()).items.find(command => command.taskId === unknown.id);
+  const ticket = (await app.execution.nextWork(command.id, command.revision)); assert.ok(ticket);
+  const authority = async () => await store.read(owner, tx => ({
     commands: tx.commands('', 100).map(({id, revision, status}) => ({id, revision, status})),
     capacity: JSON.parse(tx.projection('budget', 'service-capacity').bytes.toString('utf8')),
   }));
-  const before = authority(); store.close();
+  const before = (await authority()); store.close();
   const reopened = await f.start({mode: 'open'}), client = f.client(reopened);
   await assert.rejects(client.request('ready.get'), {code: 'not_ready'});
   assert.deepEqual({...await client.createTask(body, 'preserved-create')}, task);
@@ -298,8 +298,8 @@ test('recovery preserves create/approve/input receipts and conflicts before new-
   assert.equal((await client.request('task.audit', {path: {taskId: unknown.id}})).attempts, 1);
   await reopened.shutdown();
   store = Store.openExisting(path.join(f.root, 'store'));
-  owner = store.claimOwner(store.info().generation, 'fixture-inspection', Date.now() + 10000);
-  try {assert.deepEqual(authority(), before);} finally {store.close();}
+  owner = await store.claimOwner(store.info().generation, 'fixture-inspection', Date.now() + 10000);
+  try {assert.deepEqual((await authority()), before);} finally {store.close();}
 });
 
 test('missing cleanup is retained as intervention and shutdown cannot report clean', async t => {

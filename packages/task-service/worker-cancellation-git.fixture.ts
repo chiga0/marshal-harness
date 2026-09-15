@@ -33,9 +33,9 @@ const native = createAcpProvider({id: 'git-fixture-acp', executable: process.exe
 const verification = createVerificationPort({id: 'unbound-must-not-verify', policy, bindPlan,
   start() {throw Error('unbound Task must not reach verifier');}});
 const original = Store.prototype.write; let armed = mode === 'create';
-Store.prototype.write = function(owner, callback) {
+Store.prototype.write = async function(owner, callback) {
   let stop = false;
-  const result = original.call(this, owner, tx => {
+  const result = await original.call(this, owner, tx => {
     const append = tx.append.bind(tx); tx.append = (stream, expected, events) => {
       if (events.some(event => JSON.parse(event.bytes).payload.type === 'worker.cancel-requested')) stop = true;
       return append(stream, expected, events);

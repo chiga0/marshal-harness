@@ -49,10 +49,10 @@ class FakeProvider {
     }};
   }
 }
-function fixture(t, options = {}) {
+async function fixture(t, options = {}) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-supervisor-test-'))), root = path.join(parent, 'state');
   const storeOptions = options.targetCancellation ? {format: WORKER_CANCELLATION_FORMAT} : {};
-  let store = Store.create(root, storeOptions), owner = store.claimOwner(0, 'supervisor-test', Date.now() + 3600000);
+  let store = Store.create(root, storeOptions), owner = await store.claimOwner(0, 'supervisor-test', Date.now() + 3600000);
   const execution = {maxWorkers: options.maxWorkers ?? 2, providerIds: ['fixture'], defaultProvider: 'fixture'};
   const questions = options.questions ? createRuntimeQuestionPort({policy: {id: 'test-input', version: '1', description: '原问题'},
     nodeIds: ['first'], maxQuestions: 1, maxWaitMs: 5000, applies: () => true, validateQuestion: () => true, validateAnswer: () => true}) : undefined;
@@ -97,8 +97,8 @@ function fixture(t, options = {}) {
       return this.control('task.approve', taskId, {planRevision: task.plan.revision, planDigest: task.plan.digest});
     },
     capacity() {return store.read(owner, tx => app.execution.capacity(tx).value.active);},
-    reopen() {
-      store.close(); store = Store.openExisting(root, storeOptions); owner = store.claimOwner(owner.generation, 'reopened-supervisor', Date.now() + 3600000);
+    async reopen() {
+      store.close(); store = Store.openExisting(root, storeOptions); owner = await store.claimOwner(owner.generation, 'reopened-supervisor', Date.now() + 3600000);
       app = new TaskApplication({store, owner, execution, clock, makeId, runtimeQuestions: questions, verification, depot});
     }};
 }
@@ -110,7 +110,7 @@ async function approved(f, supervisor) {
 }
 
 test('optional input audit failure does not authorize, block or retry the original execution', async t => {
-  const f = fixture(t), observations = [];
+  const f = await fixture(t), observations = [];
   const execution = new Proxy(f.app.execution, {get(target, name) {
     if (name === 'observeInput') return (ticket, stage) => {observations.push({workerId: ticket.workerId, stage}); throw Error('private-audit-store-failure');};
     const value = target[name]; return typeof value === 'function' ? value.bind(target) : value;
@@ -121,16 +121,16 @@ test('optional input audit failure does not authorize, block or retry the origin
   assert.deepEqual(observations.map(item => item.stage), ['prepared', 'handed-off']);
   assert.equal(new Set(observations.map(item => item.workerId)).size, 1); assert.equal(f.provider.records.length, 1);
   const audit = await f.app.dispatch({operation: 'task.audit', taskId: task.id}, context);
-  assert.equal(audit.attempts, 1); assert.equal(audit.prompts[0].observation.stage, 'unavailable'); assert.equal(f.capacity().length, 0);
+  assert.equal(audit.attempts, 1); assert.equal(audit.prompts[0].observation.stage, 'unavailable'); assert.equal((await f.capacity()).length, 0);
   assert.equal(f.errors.filter(error => error.code === 'worker_input_audit_unavailable').length, 2);
   assert.equal(JSON.stringify(f.errors).includes('private-audit-store-failure'), false);
 });
 
 test('real SQLite/Application: two Workers overlap, fan-in waits and repeated poll never redispatches', async t => {
-  const f = fixture(t); let filteredPages = 0;
+  const f = await fixture(t); let filteredPages = 0;
   const execution = new Proxy(f.app.execution, {get(target, name) {
-    if (name === 'poll') return (...args) => {
-      const page = target.poll(...args); if (page.items.length === 0 && page.nextCursor) filteredPages++; return page;
+    if (name === 'poll') return async (...args) => {
+      const page = await target.poll(...args); if (page.items.length === 0 && page.nextCursor) filteredPages++; return page;
     };
     const value = target[name]; return typeof value === 'function' ? value.bind(target) : value;
   }});
@@ -143,7 +143,7 @@ test('real SQLite/Application: two Workers overlap, fan-in waits and repeated po
   await until(async () => { await supervisor.tick(); return f.provider.records.length === 3; });
   const authors = f.provider.records.slice(1);
   assert.deepEqual(authors.map(record => record.data.nodeId).sort(), ['first', 'second']);
-  assert.equal(f.capacity().length, 2);
+  assert.equal((await f.capacity()).length, 2);
   for (let n = 0; n < 3; n++) {
     const first = supervisor.tick(), duplicate = supervisor.tick(); assert.equal(first, duplicate); await first;
   }
@@ -151,14 +151,14 @@ test('real SQLite/Application: two Workers overlap, fan-in waits and repeated po
   const query = await f.app.dispatch({operation: 'task.workers', taskId: task.id}, context);
   assert.equal(query.items.filter(worker => worker.status === 'running').length, 2);
   await authors[0].progress(); authors[0].finish();
-  await until(() => f.capacity().length === 1); await supervisor.tick(); assert.equal(f.provider.records.length, 3);
-  authors[1].finish(); await until(() => f.capacity().length === 0);
+  await until(async () => (await f.capacity()).length === 1); await supervisor.tick(); assert.equal(f.provider.records.length, 3);
+  authors[1].finish(); await until(async () => (await f.capacity()).length === 0);
   await until(async () => { await supervisor.tick(); return f.provider.records.length === 4; });
   const reviewer = f.provider.records[3]; assert.equal(reviewer.data.nodeId, 'review');
   const reviewTicket = tickets.find(ticket => ticket.nodeId === 'review');
   assert.deepEqual(reviewTicket.input.upstream.map(item => item.result.nodeId).sort(), ['first', 'second']);
   assert.equal(Object.isFrozen(reviewTicket), true); assert.equal(Object.isFrozen(reviewTicket.input), true);
-  reviewer.finish(); await until(() => f.capacity().length === 0);
+  reviewer.finish(); await until(async () => (await f.capacity()).length === 0);
   assert.equal((await f.get(task.id)).status, 'running', 'rounds/candidates do not fabricate Task completed');
   assert.equal((await f.app.dispatch({operation: 'task.audit', taskId: task.id}, context)).attempts, 4);
   assert.equal((await f.app.dispatch({operation: 'operation.get', operationId: operation.id}, context)).status, 'succeeded');
@@ -167,14 +167,14 @@ test('real SQLite/Application: two Workers overlap, fan-in waits and repeated po
 });
 
 test('cancel during preparation records explicit none-start cleanup, no spawn, and closes original Operation', async t => {
-  const f = fixture(t), preparation = deferred(); let called = false;
+  const f = await fixture(t), preparation = deferred(); let called = false;
   const supervisor = f.makeController({prepare: (ticket, {signal}) => { called = true; assert.equal(signal.aborted, false); return preparation.promise; }});
   const task = await f.create(); await supervisor.tick(); await until(() => called);
   const operation = await f.control('task.cancel', task.id); await supervisor.tick();
-  await until(() => f.capacity().length === 0); await supervisor.tick();
+  await until(async () => (await f.capacity()).length === 0); await supervisor.tick();
   assert.equal(f.provider.records.length, 0); assert.equal((await f.get(task.id)).status, 'cancelled');
   const worker = (await f.app.dispatch({operation: 'task.workers', taskId: task.id}, context)).items[0];
-  const stored = f.read(tx => JSON.parse(tx.projection('attempt', worker.id).bytes));
+  const stored = (await f.read(tx => JSON.parse(tx.projection('attempt', worker.id).bytes)));
   assert.equal(stored.cleanup.scope, 'none-start'); assert.equal(stored.cleanup.started, null); assert.equal(stored.cleanup.cleaned, true);
   assert.equal((await f.app.dispatch({operation: 'operation.get', operationId: operation.id}, context)).status, 'succeeded');
   preparation.resolve({cwd: f.parent, prompt: 'late preparation'}); await turn();
@@ -182,27 +182,27 @@ test('cancel during preparation records explicit none-start cleanup, no spawn, a
 });
 
 test('cancel during Provider bootstrap retains handle until original cleanup; close does not pretend to finish', async t => {
-  const f = fixture(t); f.provider.autoStarted = false; f.provider.autoStop = false;
+  const f = await fixture(t); f.provider.autoStarted = false; f.provider.autoStop = false;
   const supervisor = f.makeController(), task = await f.create(); await supervisor.tick();
   await until(() => f.provider.records.length === 1);
   const record = f.provider.records[0]; await f.control('task.cancel', task.id); await supervisor.tick();
-  assert.equal(record.stopCount, 1); assert.equal(f.capacity().length, 1);
+  assert.equal(record.stopCount, 1); assert.equal((await f.capacity()).length, 1);
   let closed = false; const close = supervisor.close().then(value => { closed = true; return value; });
   await turn(); assert.equal(closed, false);
   record.announce(); await turn(); assert.equal(record.stopCount, 1);
   record.finish(); const result = await close;
-  assert.equal(result.clean, true); assert.equal(f.capacity().length, 0);
+  assert.equal(result.clean, true); assert.equal((await f.capacity()).length, 0);
   assert.equal((await f.get(task.id)).status, 'cancelled'); assert.equal((await f.get(task.id)).plan, null);
 });
 
 for (const stage of ['prepare', 'bootstrap', 'late-progress', 'late-collect', 'stop-unknown']) test('target cancellation ' + stage + ' keeps original ownership and does not broadcast known cancellation', async t => {
-  const f = fixture(t, {targetCancellation: true}), preparation = deferred(), collection = deferred();
+  const f = await fixture(t, {targetCancellation: true}), preparation = deferred(), collection = deferred();
   const supervisor = f.makeController({prepare: ticket => stage === 'prepare' && ticket.nodeId === 'first' ? preparation.promise :
     {cwd: f.parent, prompt: JSON.stringify({workerId: ticket.workerId, nodeId: ticket.nodeId, role: ticket.role})},
     collect: ticket => ticket.role === 'planner' ? {plan: plan()} : stage === 'late-collect' && ticket.nodeId === 'first' ? collection.promise : {result: {candidate: true}}});
   const {task} = await approved(f, supervisor);
   if (stage === 'bootstrap') f.provider.autoStarted = false;
-  await until(async () => {await supervisor.tick(); return f.capacity().length === 2 && f.provider.records.length === (stage === 'prepare' ? 2 : 3);});
+  await until(async () => {await supervisor.tick(); return (await f.capacity()).length === 2 && f.provider.records.length === (stage === 'prepare' ? 2 : 3);});
   const visible = (await f.app.dispatch({operation: 'task.workers', taskId: task.id}, context)).items;
   const target = visible.find(w => w.nodeId === 'first'), sibling = f.provider.records.find(r => r.data.nodeId === 'second');
   const original = f.provider.records.find(r => r.data.nodeId === 'first');
@@ -219,18 +219,18 @@ for (const stage of ['prepare', 'bootstrap', 'late-progress', 'late-collect', 's
     if (stage === 'late-collect') collection.resolve({result: {late: true}});
     if (stage === 'bootstrap') {original.announce(); sibling.announce();}
     await until(async () => (await f.app.dispatch({operation: 'operation.get', operationId: stop.id}, context)).status === 'succeeded');
-    assert.equal(f.capacity().length, 1); assert.equal(sibling.stopCount, 0); sibling.finish();
-    await until(() => f.capacity().length === 0); assert.equal((await f.get(task.id)).code, 'worker_cancelled');
+    assert.equal((await f.capacity()).length, 1); assert.equal(sibling.stopCount, 0); sibling.finish();
+    await until(async () => (await f.capacity()).length === 0); assert.equal((await f.get(task.id)).code, 'worker_cancelled');
     assert.equal(f.provider.records.some(r => r.data.nodeId === 'review'), false); assert.deepEqual(f.errors, []);
   } else {
     assert.ok(sibling.stopCount > 0); original.announce(); original.finish({cleanup: null}); sibling.announce(); sibling.finish();
     await until(async () => (await f.app.dispatch({operation: 'operation.get', operationId: stop.id}, context)).status === 'unknown');
-    assert.ok(f.capacity().some(value => value.workerId === target.id)); assert.equal((await f.get(task.id)).status, 'intervention');
+    assert.ok((await f.capacity()).some(value => value.workerId === target.id)); assert.equal((await f.get(task.id)).status, 'intervention');
   }
 });
 
 test('target cancel while original custodian preparation awaits cannot bind or launch a delayed observer', {timeout: 15000}, async t => {
-  const f = fixture(t, {targetCancellation: true}), gate = deferred(), directory = path.join(f.parent, 'custody'); fs.mkdirSync(directory, {mode: 0o700});
+  const f = await fixture(t, {targetCancellation: true}), gate = deferred(), directory = path.join(f.parent, 'custody'); fs.mkdirSync(directory, {mode: 0o700});
   const manager = createExecutionCustody({root: directory}); t.after(() => manager.close()); let original;
   f.provider.custodyProfile = {id: 'original-fixture', scope: 'inherited-process-group', eligible: true};
   const supervisor = f.makeController({custody: {...manager, async prepare(binding) {
@@ -239,15 +239,15 @@ test('target cancel while original custodian preparation awaits cannot bind or l
   const worker = (await f.app.dispatch({operation: 'task.workers', taskId: task.id}, context)).items[0];
   const stop = await f.app.dispatch({operation: 'worker.cancel', workerId: worker.id, key: 'pending-bind',
     body: {expectedRevision: (await f.get(task.id)).revision}}, context);
-  gate.resolve(); await turn(); await supervisor.tick(); await until(() => f.capacity().length === 0);
+  gate.resolve(); await turn(); await supervisor.tick(); await until(async () => (await f.capacity()).length === 0);
   assert.equal(f.provider.records.length, 0); assert.equal((await f.get(task.id)).code, 'worker_cancelled');
   assert.equal((await f.app.dispatch({operation: 'operation.get', operationId: stop.id}, context)).status, 'succeeded');
-  assert.equal(f.read(tx => tx.eventsWithField(task.id, 'workerId', worker.id, 100, ['worker.custody-permitted']).length), 0);
+  assert.equal((await f.read(tx => tx.eventsWithField(task.id, 'workerId', worker.id, 100, ['worker.custody-permitted']).length)), 0);
   assert.equal(manager.read(original.descriptor).payload.permitReceived, false); assert.deepEqual(f.errors, []);
 });
 
 test('target cancel COMMIT before original ACK timer fires does not stop sibling before the next tick', async t => {
-  const f = fixture(t, {targetCancellation: true, questions: true}), supervisor = f.makeController(), {task} = await approved(f, supervisor);
+  const f = await fixture(t, {targetCancellation: true, questions: true}), supervisor = f.makeController(), {task} = await approved(f, supervisor);
   await until(async () => {await supervisor.tick(); return f.provider.records.length === 3;});
   const a = f.provider.records.find(row => row.data.nodeId === 'first'), b = f.provider.records.find(row => row.data.nodeId === 'second');
   const waiting = a.options.questionContext.ask({sessionId: 'session', nativeRequestId: 'question-request', toolCallId: 'tool', questionNonce: 'a'.repeat(64),
@@ -263,35 +263,35 @@ test('target cancel COMMIT before original ACK timer fires does not stop sibling
   // question, accidentally testing pre-dispatch timeout instead of target stop.
   await until(() => a.stopCount === 1, 8000); assert.equal(b.stopCount, 0);
   await until(async () => (await f.app.dispatch({operation: 'operation.get', operationId: stop.id}, context)).status === 'succeeded');
-  assert.equal((await f.get(task.id)).status, 'running'); assert.equal(f.capacity().length, 1); assert.equal(supervisor.snapshot().failure, null);
+  assert.equal((await f.get(task.id)).status, 'running'); assert.equal((await f.capacity()).length, 1); assert.equal(supervisor.snapshot().failure, null);
   assert.deepEqual(f.errors, []);
 });
 
 test('cold owner unresolved obligations never synthesize handles, free capacity or launch again', async t => {
-  const f = fixture(t, {maxWorkers: 1}), task = await f.create();
-  const command = f.app.execution.poll().items[0];
-  const ticket = f.app.execution.nextWork(command.id, command.revision); assert.ok(ticket);
-  f.reopen(); const supervisor = f.makeController();
+  const f = await fixture(t, {maxWorkers: 1}), task = await f.create();
+  const command = (await f.app.execution.poll()).items[0];
+  const ticket = await f.app.execution.nextWork(command.id, command.revision); assert.ok(ticket);
+  (await f.reopen()); const supervisor = f.makeController();
   for (let n = 0; n < 3; n++) await supervisor.tick();
-  assert.equal((await f.get(task.id)).status, 'intervention'); assert.equal(f.capacity().length, 1);
+  assert.equal((await f.get(task.id)).status, 'intervention'); assert.equal((await f.capacity()).length, 1);
   assert.equal(f.provider.records.length, 0);
   await f.create('second'); await supervisor.tick(); assert.equal(f.provider.records.length, 0);
   assert.deepEqual(f.errors, []);
 });
 
 test('missing cleanup is unknown, not clean none-start or a retryable launch', async t => {
-  const f = fixture(t), supervisor = f.makeController(), task = await f.create(); await supervisor.tick();
+  const f = await fixture(t), supervisor = f.makeController(), task = await f.create(); await supervisor.tick();
   await until(() => f.provider.records.length === 1);
   f.provider.records[0].finish({cleanup: null});
   await until(async () => (await f.get(task.id)).status === 'intervention');
   for (let n = 0; n < 3; n++) await supervisor.tick();
-  assert.equal(f.provider.records.length, 1); assert.equal(f.capacity().length, 1);
+  assert.equal(f.provider.records.length, 1); assert.equal((await f.capacity()).length, 1);
   assert.equal((await supervisor.close()).clean, false);
   assert.equal(supervisor.snapshot().owned[0].stage, 'unknown');
 });
 
 test('progress waits for started and callback failure stops once, retaining original cleanup', async t => {
-  const f = fixture(t); f.provider.autoStarted = false;
+  const f = await fixture(t); f.provider.autoStarted = false;
   let progressCalls = 0;
   const execution = new Proxy(f.app.execution, {get(target, name) {
     if (name === 'progress') return () => { progressCalls++; throw new Error('private callback body'); };
@@ -301,14 +301,14 @@ test('progress waits for started and callback failure stops once, retaining orig
   await until(() => f.provider.records.length === 1);
   const record = f.provider.records[0], progress = record.progress(); const rejected = assert.rejects(progress);
   await turn(); assert.equal(progressCalls, 0);
-  record.announce(); await rejected; await until(() => f.capacity().length === 0);
+  record.announce(); await rejected; await until(async () => (await f.capacity()).length === 0);
   assert.equal(record.stopCount, 1); assert.equal(progressCalls, 1); assert.equal(f.errors.length, 1);
   assert.deepEqual(Object.keys(f.errors[0]).sort(), ['code', 'port', 'stage', 'taskId', 'workerId']);
   assert.equal(f.errors[0].port, 'progress');
   assert.equal(JSON.stringify(f.errors[0]).includes('private callback body'), false);
   assert.equal(f.errors[0].stage, 'progress');
   const worker = (await f.app.dispatch({operation: 'task.workers', taskId: task.id}, context)).items[0];
-  const stored = f.read(tx => JSON.parse(tx.projection('attempt', worker.id).bytes));
+  const stored = (await f.read(tx => JSON.parse(tx.projection('attempt', worker.id).bytes)));
   assert.equal(stored.cleanup.started.executionId, record.fact.executionId);
   assert.equal(stored.cleanup.scope, 'controlled-fixture'); assert.equal(stored.worker.status, 'failed');
   await supervisor.tick(); assert.equal(f.provider.records.length, 1); assert.equal(f.errors.length, 1);
@@ -316,10 +316,10 @@ test('progress waits for started and callback failure stops once, retaining orig
 
 test('preparation and collection are bounded; expired callbacks cannot later admit a result', async t => {
   for (const phase of ['prepare', 'collect']) await t.test(phase, async t => {
-    const f = fixture(t), blocked = deferred(), extra = {[phase]: () => blocked.promise, [phase + 'Ms']: 20};
+    const f = await fixture(t), blocked = deferred(), extra = {[phase]: () => blocked.promise, [phase + 'Ms']: 20};
     const supervisor = f.makeController(extra), task = await f.create(); await supervisor.tick();
     if (phase === 'collect') { await until(() => f.provider.records.length === 1); f.provider.records[0].finish(); }
-    await until(() => f.errors.length === 1); await until(() => f.capacity().length === 0);
+    await until(() => f.errors.length === 1); await until(async () => (await f.capacity()).length === 0);
     assert.equal(supervisor.snapshot().failure, null, 'a Worker failure is not a service failure');
     assert.equal(f.errors.length, 1); assert.equal(f.provider.records.length, phase === 'prepare' ? 0 : 1);
     blocked.resolve(phase === 'prepare' ? {cwd: f.parent, prompt: 'late'} : {plan: plan()}); await turn();
@@ -330,7 +330,7 @@ test('preparation and collection are bounded; expired callbacks cannot later adm
 
 test('one Task prepare/collect/provider failure cannot stop another Task or close service admission', async t => {
   for (const failure of ['prepare-timeout', 'collect-exception', 'malformed-progress', 'foreign-cleanup', 'provider-failed']) await t.test(failure, async t => {
-    const f = fixture(t), bad = await f.create('bad'), good = await f.create('good');
+    const f = await fixture(t), bad = await f.create('bad'), good = await f.create('good');
     const supervisor = f.makeController({prepareMs: 20, prepare: ticket => {
       if (ticket.taskId === bad.id && failure === 'prepare-timeout') return new Promise(() => {});
       return {cwd: f.parent, prompt: JSON.stringify({workerId: ticket.workerId, role: ticket.role, nodeId: ticket.nodeId, taskId: ticket.taskId})};
@@ -348,7 +348,7 @@ test('one Task prepare/collect/provider failure cannot stop another Task or clos
       .finish({status: 'failed', stopReason: 'max_tokens'});
     await until(() => f.errors.length === 1);
     const unknown = failure === 'foreign-cleanup';
-    await until(async () => unknown ? (await f.get(bad.id)).status === 'intervention' : f.capacity().length === 1);
+    await until(async () => unknown ? (await f.get(bad.id)).status === 'intervention' : (await f.capacity()).length === 1);
     await supervisor.tick();
     const survivor = f.provider.records.find(record => record.data.taskId === good.id);
     assert.equal(survivor.stopCount, 0); assert.equal(supervisor.snapshot().failure, null);
@@ -361,7 +361,7 @@ test('one Task prepare/collect/provider failure cannot stop another Task or clos
 });
 
 test('failure is durable before stop; delayed cleanup cannot admit same-Task downstream while another Task progresses', async t => {
-  const f = fixture(t, {maxWorkers: 3});
+  const f = await fixture(t, {maxWorkers: 3});
   const supervisor = f.makeController({collect: ticket => {
     if (ticket.role !== 'planner') return {result: {nodeId: ticket.nodeId}};
     // The downstream depends ONLY on good; waiting for bad's own result cannot
@@ -381,24 +381,26 @@ test('failure is durable before stop; delayed cleanup cannot admit same-Task dow
   const stopObservations = [];
   f.provider.onStop = record => {
     if (record === survivor) assert.fail('unrelated Task must not be stopped');
-    const stored = f.read(tx => JSON.parse(tx.projection('task', task.id).bytes));
-    stopObservations.push(stored.task.status);
-    assert.equal(stored.task.status, 'cancelling', 'stop callback must see already committed fence');
-    assert.equal(stored.failureCode, 'worker_failed');
+    stopObservations.push((async () => {
+      const stored = (await f.read(tx => JSON.parse(tx.projection('task', task.id).bytes)));
+      assert.equal(stored.task.status, 'cancelling', 'stop callback must see already committed fence');
+      assert.equal(stored.failureCode, 'worker_failed');
+      return stored.task.status;
+    })());
   };
   await assert.rejects(bad.options.onProgress({phase: 'invalid', tool: null}));
-  assert.deepEqual(stopObservations, ['cancelling', 'cancelling']);
+  assert.deepEqual(await Promise.all(stopObservations), ['cancelling', 'cancelling']);
   assert.equal(bad.stopCount, 1); assert.equal(good.stopCount, 1); assert.equal(survivor.stopCount, 0);
-  assert.equal(f.capacity().length, 3, 'failure fence is not a cleanup or refund');
+  assert.equal((await f.capacity()).length, 3, 'failure fence is not a cleanup or refund');
   // A sibling's late successful completion cannot reopen eligibility.
-  good.finish(); await until(() => f.capacity().length === 2);
+  good.finish(); await until(async () => (await f.capacity()).length === 2);
   for (let n = 0; n < 3; n++) await supervisor.tick();
   assert.equal(f.provider.records.some(record => record.data.nodeId === 'review'), false);
   assert.equal((await f.app.dispatch({operation: 'task.audit', taskId: task.id}, context)).attempts, attempts);
   assert.equal((await f.get(task.id)).status, 'cancelling');
   survivor.finish(); await until(async () => (await f.get(unrelated.id)).status === 'awaiting-approval');
-  assert.equal(supervisor.snapshot().failure, null); assert.equal(f.capacity().length, 1);
-  bad.finish(); await until(() => f.capacity().length === 0); await supervisor.tick();
+  assert.equal(supervisor.snapshot().failure, null); assert.equal((await f.capacity()).length, 1);
+  bad.finish(); await until(async () => (await f.capacity()).length === 0); await supervisor.tick();
   assert.equal((await f.get(task.id)).status, 'failed');
   const workers = (await f.app.dispatch({operation: 'task.workers', taskId: task.id}, context)).items;
   assert.equal(workers.find(worker => worker.id === bad.data.workerId).status, 'failed');
@@ -407,47 +409,47 @@ test('failure is durable before stop; delayed cleanup cannot admit same-Task dow
 });
 
 test('cancel during collection discards a late candidate but preserves original cleanup', async t => {
-  const f = fixture(t), collection = deferred(); let signal;
+  const f = await fixture(t), collection = deferred(); let signal;
   const supervisor = f.makeController({collect: (_ticket, _result, context) => { signal = context.signal; return collection.promise; }});
   const task = await f.create(); await supervisor.tick(); await until(() => f.provider.records.length === 1);
   const record = f.provider.records[0]; record.finish(); await until(() => signal);
   await f.control('task.cancel', task.id); await supervisor.tick();
-  await until(() => f.capacity().length === 0); assert.equal(signal.aborted, true);
+  await until(async () => (await f.capacity()).length === 0); assert.equal(signal.aborted, true);
   collection.resolve({plan: plan()}); await turn(); await supervisor.tick();
   assert.equal((await f.get(task.id)).status, 'cancelled'); assert.equal((await f.get(task.id)).plan, null);
   assert.equal(record.stopCount, 1); assert.deepEqual(f.errors, []);
 });
 
 test('original Task deadline is reconciled before fresh dispatch and stops only owned handles', async t => {
-  const f = fixture(t), supervisor = f.makeController(), task = await f.create(); await supervisor.tick();
+  const f = await fixture(t), supervisor = f.makeController(), task = await f.create(); await supervisor.tick();
   await until(() => f.provider.records.length === 1);
   const originalDeadline = f.provider.records[0].options.deadline;
   assert.equal(originalDeadline, Date.parse(task.deadlineAt));
-  f.advance(30001); await supervisor.tick(); await until(() => f.capacity().length === 0); await supervisor.tick();
+  f.advance(30001); await supervisor.tick(); await until(async () => (await f.capacity()).length === 0); await supervisor.tick();
   assert.equal(f.provider.records[0].stopCount, 1); assert.equal(f.provider.records.length, 1);
   assert.equal((await f.get(task.id)).status, 'failed'); assert.equal((await f.get(task.id)).code, 'task_deadline');
 });
 
 test('progress queue is bounded before started and notifies one failure without losing cleanup', async t => {
-  const f = fixture(t); f.provider.autoStarted = false;
+  const f = await fixture(t); f.provider.autoStarted = false;
   const supervisor = f.makeController(); await f.create(); await supervisor.tick();
   await until(() => f.provider.records.length === 1);
   const record = f.provider.records[0], observations = Array.from({length: 129}, () => record.progress());
   const results = await Promise.allSettled(observations);
   assert.equal(results.filter(result => result.status === 'rejected').length, 1);
-  await until(() => f.capacity().length === 0);
+  await until(async () => (await f.capacity()).length === 0);
   assert.equal(record.stopCount, 1); assert.equal(f.errors.length, 1); assert.equal(f.errors[0].stage, 'progress');
 });
 
 test('paused reserved preparation waits without killing live work or consuming a replacement attempt', async t => {
-  const f = fixture(t), gate = deferred();
+  const f = await fixture(t), gate = deferred();
   const supervisor = f.makeController({prepare: ticket => ticket.role === 'planner'
     ? {cwd: f.parent, prompt: JSON.stringify({workerId: ticket.workerId, role: ticket.role, nodeId: ticket.nodeId})}
     : gate.promise.then(() => ({cwd: f.parent, prompt: JSON.stringify({workerId: ticket.workerId, role: ticket.role, nodeId: ticket.nodeId})}))});
   const {task} = await approved(f, supervisor);
-  await until(async () => { await supervisor.tick(); return f.capacity().length === 2; });
+  await until(async () => { await supervisor.tick(); return (await f.capacity()).length === 2; });
   await f.control('task.pause', task.id); gate.resolve(); await turn(); await supervisor.tick();
-  assert.equal(f.provider.records.length, 1); assert.equal(f.capacity().length, 2);
+  assert.equal(f.provider.records.length, 1); assert.equal((await f.capacity()).length, 2);
   assert.equal((await f.get(task.id)).status, 'paused');
   await f.control('task.resume', task.id); await supervisor.tick();
   await until(() => f.provider.records.length === 3);
@@ -456,12 +458,12 @@ test('paused reserved preparation waits without killing live work or consuming a
 });
 
 test('self-driven timer makes progress without an external watchdog, then closes all owned cleanup', async t => {
-  const f = fixture(t), supervisor = f.makeController({intervalMs: 5});
+  const f = await fixture(t), supervisor = f.makeController({intervalMs: 5});
   const task = await f.create(); supervisor.start();
   await until(() => f.provider.records.length === 1);
   f.provider.records[0].finish(); await until(async () => (await f.get(task.id)).status === 'awaiting-approval');
   await f.approve(task.id); await until(() => f.provider.records.length === 3);
   const report = await supervisor.close(); assert.equal(report.clean, true);
   assert.equal(f.provider.records.slice(1).every(record => record.stopCount === 1), true);
-  assert.equal(f.capacity().length, 0); assert.deepEqual(f.errors, []);
+  assert.equal((await f.capacity()).length, 0); assert.deepEqual(f.errors, []);
 });

@@ -20,7 +20,7 @@ const v5 = process.env.MARSHAL_QUESTION_V5 === '1';
 const targetCancellation = scenario.startsWith('worker-'), pair = scenario === 'worker-pair';
 if (v5) {
   const write = Store.prototype.write;
-  Store.prototype.write = function(owner, callback) {const result = write.call(this, owner, callback);
+  Store.prototype.write = async function(owner, callback) {const result = await write.call(this, owner, callback);
     if (result?.reservationDigest && result.input) tickets.set(path.join(root, 'executions', result.workerId), result);
     return result;};
 }

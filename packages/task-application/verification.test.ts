@@ -26,10 +26,10 @@ const fact = ticket => ({executionId: 'fixture-' + ticket.workerId, startedAt: n
 
 // Real Store + depot. Only the explicitly labelled checker/cleanup is a controlled
 // fixture; these tests do not claim a live model, real subprocess or business oracle.
-function fixture(t, options = {}) {
+async function fixture(t, options = {}) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-verification-')));
   const root = path.join(parent, 'state'), objects = path.join(parent, 'objects');
-  let store = Store.create(root), depot = ArtifactDepot.create(objects), owner = store.claimOwner(0, 'fixture', Date.now() + 3600000);
+  let store = Store.create(root), depot = ArtifactDepot.create(objects), owner = await store.claimOwner(0, 'fixture', Date.now() + 3600000);
   let failSQL = false, advance = 0, calls = [];
   const clock = () => Date.now() + advance;
   const port = createVerificationPort({id: 'trusted-checker', policy: {id: 'fixture-policy', version: '1', description: '真实策略须独立执行固定断言；本测试用受控检查器。'},
@@ -54,20 +54,20 @@ function fixture(t, options = {}) {
       const task = await f.call({operation: 'task.create', key, body: {intent: '交付所有要求，不能只返回末 patch', limits: {timeoutMs: 60000, maxAttempts: 8, maxWorkers: 2}}});
       let plan;
       if (options.planner) {
-        const command = f.commands().find(item => item.taskId === task.id && JSON.parse(item.payload).action === 'plan');
-        const ticket = app.execution.nextWork(command.id, command.revision), started = fact(ticket);
-        app.execution.started(ticket, started);
-        app.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', cleanup: {started, cleaned: true}, plan: proposal()});
+        const command = (await f.commands()).find(item => item.taskId === task.id && JSON.parse(item.payload).action === 'plan');
+        const ticket = (await app.execution.nextWork(command.id, command.revision)), started = fact(ticket);
+        (await app.execution.started(ticket, started));
+        (await app.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', cleanup: {started, cleaned: true}, plan: proposal()}));
         plan = await f.call({operation: 'task.plan', taskId: task.id});
-      } else plan = app.proposePlan(task.id, task.revision, proposal());
+      } else plan = await app.proposePlan(task.id, task.revision, proposal());
       const current = await f.get(task.id);
       const operation = await f.call({operation: 'task.approve', taskId: task.id, key: 'approve', body: {expectedRevision: current.revision,
         planRevision: plan.revision, planDigest: plan.digest}});
-      const dispatch = f.commands().find(item => item.taskId === task.id && JSON.parse(item.payload).action === 'dispatch');
-      app.execution.expandDispatch(dispatch.id, dispatch.revision); return {taskId: task.id, plan, operation};
+      const dispatch = (await f.commands()).find(item => item.taskId === task.id && JSON.parse(item.payload).action === 'dispatch');
+      (await app.execution.expandDispatch(dispatch.id, dispatch.revision)); return {taskId: task.id, plan, operation};
     },
-    take(nodeId, taskId) {const command = f.commands().find(item => JSON.parse(item.payload).nodeId === nodeId && (!taskId || item.taskId === taskId));
-      return app.execution.nextWork(command.id, command.revision);},
+    async take(nodeId, taskId) {const command = (await f.commands()).find(item => JSON.parse(item.payload).nodeId === nodeId && (!taskId || item.taskId === taskId));
+      return (await app.execution.nextWork(command.id, command.revision));},
     candidate(ticket) {
       const file = {path: ticket.nodeId + '.txt', ...depot.put(Buffer.from(ticket.nodeId + ' bytes'))};
       return {profile: 'task-file-business/v1', taskId: ticket.taskId, nodeId: ticket.nodeId, workerId: ticket.workerId,
@@ -75,143 +75,143 @@ function fixture(t, options = {}) {
         layoutDigest: hash({profile: 'task-file-business/v1', ...ticket.input.fileLayout}), files: [file],
         inputDigest: fileDigest([]), manifestDigest: fileDigest([file]), report: '作者报告不是验收'};
     },
-    finishAuthor(ticket, change = {}) {const started = fact(ticket); app.execution.started(ticket, started);
-      return app.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', cleanup: {started, cleaned: true}, result: {...f.candidate(ticket), ...change}});},
-    async ready() {const planned = await f.plan(), code = f.take('code'), docs = f.take('docs');
-      assert.equal(f.take('verify'), null); f.finishAuthor(code); assert.equal(f.take('verify'), null); f.finishAuthor(docs);
-      return {...planned, code, docs, ticket: f.take('verify')};},
-    start(ticket) {const handle = port.start({ticket, prepared: {cwd: parent, prompt: 'trusted fixture'}}), item = calls.at(-1);
-      app.execution.started(ticket, item.started); return {handle, item};},
-    async receipt(ticket, overrides = {}) {const {handle, item} = f.start(ticket);
+    async finishAuthor(ticket, change = {}) {const started = fact(ticket); (await app.execution.started(ticket, started));
+      return (await app.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', cleanup: {started, cleaned: true}, result: {...f.candidate(ticket), ...change}}));},
+    async ready() {const planned = await f.plan(), code = (await f.take('code')), docs = (await f.take('docs'));
+      assert.equal((await f.take('verify')), null); (await f.finishAuthor(code)); assert.equal((await f.take('verify')), null); (await f.finishAuthor(docs));
+      return {...planned, code, docs, ticket: (await f.take('verify'))};},
+    async start(ticket) {const handle = port.start({ticket, prepared: {cwd: parent, prompt: 'trusted fixture'}}), item = calls.at(-1);
+      (await app.execution.started(ticket, item.started)); return {handle, item};},
+    async receipt(ticket, overrides = {}) {const {handle, item} = (await f.start(ticket));
       item.completion.resolve({type: 'verification', status: 'passed', cleanup: {started: item.started, cleaned: true, scope: 'controlled-fixture'},
         evidence: {name: 'verification.json', mediaType: 'application/json', content: Buffer.from('{"fixture":true}')},
         delivery: {name: 'full.bundle', mediaType: 'application/octet-stream', content: Buffer.from('code bytes\ndocs bytes')}, ...overrides});
       return handle.completion;},
-    changeWorker(ticket, edit) {app.transaction(true, tx => {const {row, record, task} = app.execution.ticket(tx, ticket);
-      edit(record); task.task.revision++; const source = app.save(tx, task, 'fixture.worker-drift'); app.execution.putWorker(tx, row, record, source);});},
-    reopen(verification = port) {store.close(); depot.close(); store = Store.openExisting(root); depot = ArtifactDepot.openExisting(objects);
-      owner = store.claimOwner(owner.generation, 'reopened', Date.now() + 3600000);
+    async changeWorker(ticket, edit) {(await app.transaction(true, tx => {const {row, record, task} = app.execution.ticket(tx, ticket);
+      edit(record); task.task.revision++; const source = app.save(tx, task, 'fixture.worker-drift'); app.execution.putWorker(tx, row, record, source);}));},
+    async reopen(verification = port) {store.close(); depot.close(); store = Store.openExisting(root); depot = ArtifactDepot.openExisting(objects);
+      owner = await store.claimOwner(owner.generation, 'reopened', Date.now() + 3600000);
       app = new TaskApplication({store: wrapper, owner, depot, execution, verification, clock});}
   }; return f;
 }
 
 test('approved policy/layout + both branches bind one trusted reservation, Decision/artifacts/completed commit and cold replay', async t => {
-  const f = fixture(t), {taskId, plan, operation, code, ticket} = await f.ready();
+  const f = await fixture(t), {taskId, plan, operation, code, ticket} = await f.ready();
   assert.equal(validate(plan, 'Plan'), true); assert.ok(plan.acceptance.some(text => text.includes('fixture-policy')));
   assert.ok(plan.acceptance.some(text => text.includes('docs.txt'))); assert.ok(plan.acceptance.includes('原始业务约束不变'));
   assert.equal(ticket.executionType, 'verification'); assert.equal(ticket.input.verification.manifests.length, 2);
   assert.equal(ticket.input.fileLayout.inputs[0].source.workerId, code.workerId);
-  assert.equal(f.execution.approvedLayout(ticket).layoutDigest, hash({profile: 'task-file-business/v1', ...ticket.input.fileLayout}));
-  const result = await f.receipt(ticket); assert.deepEqual(f.execution.observeExecution(ticket), result.cleanup.started);
-  assert.equal(f.execution.finish(ticket, result).status, 'completed'); assert.equal(f.capacity().length, 0);
+  assert.equal((await f.execution.approvedLayout(ticket)).layoutDigest, hash({profile: 'task-file-business/v1', ...ticket.input.fileLayout}));
+  const result = await f.receipt(ticket); assert.deepEqual((await f.execution.observeExecution(ticket)), result.cleanup.started);
+  assert.equal((await f.execution.finish(ticket, result)).status, 'completed'); assert.equal((await f.capacity()).length, 0);
   const task = await f.get(taskId), audit = await f.call({operation: 'task.audit', taskId});
   assert.equal(task.status, 'completed'); assert.equal(task.artifactIds.length, 2); assert.equal(audit.acceptance.status, 'passed');
   assert.deepEqual(audit.firstReview, {passed: 0, total: 0, pending: 0}, 'final verification is not first code review evidence');
   assert.equal(validate(audit, 'Audit'), true); assert.equal((await f.call({operation: 'operation.get', operationId: operation.id})).status, 'succeeded');
   const artifacts = await Promise.all(task.artifactIds.map(artifactId => f.call({operation: 'artifact.content', artifactId})));
   assert.equal(artifacts.find(item => item.artifact.kind === 'delivery').content.toString(), 'code bytes\ndocs bytes');
-  const before = f.read(tx => tx.head(taskId)); f.execution.finish(ticket, result); assert.deepEqual(f.read(tx => tx.head(taskId)), before);
-  f.reopen(null); assert.deepEqual(await f.get(taskId), task); // Durable facts query without any fresh checker capability.
+  const before = (await f.read(tx => tx.head(taskId))); (await f.execution.finish(ticket, result)); assert.deepEqual((await f.read(tx => tx.head(taskId))), before);
+  (await f.reopen(null)); assert.deepEqual(await f.get(taskId), task); // Durable facts query without any fresh checker capability.
   for (const artifact of artifacts) assert.deepEqual(await f.call({operation: 'artifact.content', artifactId: artifact.artifact.id}), artifact);
   assert.deepEqual((await f.call({operation: 'task.audit', taskId})).acceptance, audit.acceptance);
 });
 
 test('role/provider/pass, cloned receipt and different ticket cannot self-accept or publish', async t => {
-  const f = fixture(t), {taskId, ticket} = await f.ready(), result = await f.receipt(ticket), before = f.read(tx => tx.head(taskId));
+  const f = await fixture(t), {taskId, ticket} = await f.ready(), result = await f.receipt(ticket), before = (await f.read(tx => tx.head(taskId)));
   for (const forged of [{...result, receipt: {}}, structuredClone(result), {...result, cleanup: {...result.cleanup, cleaned: false}}])
-    assert.throws(() => f.execution.finish(ticket, forged), error => error.code === 'invalid_verification_receipt');
-  assert.throws(() => f.execution.finish({...ticket, reservationDigest: 'sha256:' + '0'.repeat(64)}, result));
-  assert.deepEqual(f.read(tx => tx.head(taskId)), before); assert.equal(f.read(tx => tx.projections('artifact')).length, 0);
-  f.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', result: {pass: true, reviewer: 'system'}, cleanup: result.cleanup});
-  assert.notEqual((await f.get(taskId)).status, 'completed'); assert.equal(f.capacity().length, 0);
+    await assert.rejects(f.execution.finish(ticket, forged), error => error.code === 'invalid_verification_receipt');
+  await assert.rejects(f.execution.finish({...ticket, reservationDigest: 'sha256:' + '0'.repeat(64)}, result));
+  assert.deepEqual((await f.read(tx => tx.head(taskId))), before); assert.equal((await f.read(tx => tx.projections('artifact'))).length, 0);
+  (await f.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', result: {pass: true, reviewer: 'system'}, cleanup: result.cleanup}));
+  assert.notEqual((await f.get(taskId)).status, 'completed'); assert.equal((await f.capacity()).length, 0);
 });
 
 test('cancel during verifier fences immediately, keeps capacity until ORIGINAL cleanup, never accepts late pass', async t => {
-  const f = fixture(t), {taskId, ticket} = await f.ready(), {handle, item} = f.start(ticket);
-  const operation = await f.cancel(taskId); assert.equal(f.capacity().length, 1); assert.equal((await f.get(taskId)).status, 'cancelling');
+  const f = await fixture(t), {taskId, ticket} = await f.ready(), {handle, item} = (await f.start(ticket));
+  const operation = await f.cancel(taskId); assert.equal((await f.capacity()).length, 1); assert.equal((await f.get(taskId)).status, 'cancelling');
   assert.equal((await f.call({operation: 'operation.get', operationId: operation.id})).status, 'accepted');
   item.completion.resolve({type: 'verification', status: 'passed', cleanup: {started: item.started, cleaned: true}, evidence: null, delivery: null});
-  assert.equal(f.execution.finish(ticket, await handle.completion).status, 'cancelled'); f.execution.reconcile(taskId);
-  assert.equal(f.capacity().length, 0); assert.equal((await f.get(taskId)).status, 'cancelled');
-  assert.equal(f.read(tx => tx.projections('artifact')).length, 0);
+  assert.equal((await f.execution.finish(ticket, await handle.completion)).status, 'cancelled'); (await f.execution.reconcile(taskId));
+  assert.equal((await f.capacity()).length, 0); assert.equal((await f.get(taskId)).status, 'cancelled');
+  assert.equal((await f.read(tx => tx.projections('artifact'))).length, 0);
 });
 
 test('unknown cleanup and old owner retain capacity; no recovery redispatch or new-generation receipt', async t => {
-  const f = fixture(t), {taskId, ticket} = await f.ready(), {handle, item} = f.start(ticket);
+  const f = await fixture(t), {taskId, ticket} = await f.ready(), {handle, item} = (await f.start(ticket));
   item.completion.resolve({type: 'verification', status: 'passed', cleanup: {started: item.started, cleaned: false}});
   const result = await handle.completion;
-  assert.equal(f.execution.finish(ticket, result).status, 'unknown'); assert.equal((await f.get(taskId)).status, 'intervention');
-  f.reopen(); assert.throws(() => f.execution.finish(ticket, result), error => error.code === 'recovery_required');
-  assert.equal(f.capacity().length, 1); assert.equal(f.execution.reconcile(taskId).status, 'intervention');
-  assert.equal(f.take('verify'), null);
+  assert.equal((await f.execution.finish(ticket, result)).status, 'unknown'); assert.equal((await f.get(taskId)).status, 'intervention');
+  await f.reopen(); await assert.rejects(f.execution.finish(ticket, result), error => error.code === 'recovery_required');
+  assert.equal((await f.capacity()).length, 1); assert.equal((await f.execution.reconcile(taskId)).status, 'intervention');
+  assert.equal((await f.take('verify')), null);
 });
 
 test('candidate source drift fails before any artifact/Decision commit', async t => {
-  const f = fixture(t), {taskId, code, ticket} = await f.ready(), result = await f.receipt(ticket);
-  f.changeWorker(code, record => {record.candidate.files[0].digest = 'sha256:' + 'b'.repeat(64);});
-  assert.throws(() => f.execution.finish(ticket, result), error => error.code === 'candidate_manifest_conflict');
-  assert.equal((await f.get(taskId)).status, 'running'); assert.equal(f.capacity().length, 1);
-  assert.equal(f.read(tx => tx.projections('artifact')).length, 0);
+  const f = await fixture(t), {taskId, code, ticket} = await f.ready(), result = await f.receipt(ticket);
+  (await f.changeWorker(code, record => {record.candidate.files[0].digest = 'sha256:' + 'b'.repeat(64);}));
+  await assert.rejects(f.execution.finish(ticket, result), error => error.code === 'candidate_manifest_conflict');
+  assert.equal((await f.get(taskId)).status, 'running'); assert.equal((await f.capacity()).length, 1);
+  assert.equal((await f.read(tx => tx.projections('artifact'))).length, 0);
 });
 
 test('missing source bytes or expired original deadline cannot publish a final delivery', async t => {
   for (const scenario of ['missing', 'deadline']) await t.test(scenario, async t => {
-    const f = fixture(t), {taskId, ticket} = await f.ready(), result = await f.receipt(ticket);
+    const f = await fixture(t), {taskId, ticket} = await f.ready(), result = await f.receipt(ticket);
     if (scenario === 'missing') {
       const file = ticket.input.verification.manifests[0].manifest.files[0];
       const object = fs.readdirSync(f.objects).find(name => name.includes(file.digest.slice(7)));
       assert.ok(object); fs.unlinkSync(path.join(f.objects, object));
-      assert.throws(() => f.execution.finish(ticket, result), error => error.code === 'application_unavailable');
+      await assert.rejects(f.execution.finish(ticket, result), error => error.code === 'application_unavailable');
     } else {
-      f.advance(60001); assert.equal(f.execution.finish(ticket, result).status, 'failed');
+      f.advance(60001); assert.equal((await f.execution.finish(ticket, result)).status, 'failed');
     }
-    assert.notEqual((await f.get(taskId)).status, 'completed'); assert.equal(f.read(tx => tx.projections('artifact')).length, 0);
+    assert.notEqual((await f.get(taskId)).status, 'completed'); assert.equal((await f.read(tx => tx.projections('artifact'))).length, 0);
   });
 });
 
 test('SQL failure after durable bytes rolls back Decision/artifacts/capacity; exact original receipt can commit once', async t => {
-  const f = fixture(t), {taskId, ticket} = await f.ready(), result = await f.receipt(ticket), head = f.read(tx => tx.head(taskId));
-  f.setSQLFailure(true); assert.throws(() => f.execution.finish(ticket, result), error => error.code === 'application_unavailable');
-  assert.deepEqual(f.read(tx => tx.head(taskId)), head); assert.equal(f.read(tx => tx.projections('artifact')).length, 0);
-  assert.equal(f.capacity().length, 1); assert.equal((await f.get(taskId)).status, 'running');
+  const f = await fixture(t), {taskId, ticket} = await f.ready(), result = await f.receipt(ticket), head = (await f.read(tx => tx.head(taskId)));
+  f.setSQLFailure(true); await assert.rejects(f.execution.finish(ticket, result), error => error.code === 'application_unavailable');
+  assert.deepEqual((await f.read(tx => tx.head(taskId))), head); assert.equal((await f.read(tx => tx.projections('artifact'))).length, 0);
+  assert.equal((await f.capacity()).length, 1); assert.equal((await f.get(taskId)).status, 'running');
   const orphan = Buffer.from('code bytes\ndocs bytes');
   assert.deepEqual(f.depot.get({digest: digest(orphan), bytes: orphan.length}), orphan, 'durable orphan is not a published artifact');
-  f.setSQLFailure(false); f.execution.finish(ticket, result); assert.equal((await f.get(taskId)).status, 'completed');
+  f.setSQLFailure(false); (await f.execution.finish(ticket, result)); assert.equal((await f.get(taskId)).status, 'completed');
 });
 
 test('unsupported layout/omitted branch never shrinks proposal into an approvable plan', async t => {
-  const f = fixture(t, {bindPlan() {const result = binding(); result.deliveries.pop(); return result;}});
+  const f = await fixture(t, {bindPlan() {const result = binding(); result.deliveries.pop(); return result;}});
   const task = await f.call({operation: 'task.create', key: 'create', body: {intent: '保留两分支'}});
-  assert.throws(() => f.app.proposePlan(task.id, task.revision, proposal()), error => error.code === 'unsupported_task');
+  await assert.rejects(f.app.proposePlan(task.id, task.revision, proposal()), error => error.code === 'unsupported_task');
   assert.equal((await f.get(task.id)).plan, null); assert.equal((await f.get(task.id)).revision, 1);
 });
 
 test('actual FileBusiness candidate producer, original observed execution and resolved approved inputs feed final verification', async t => {
-  const f = fixture(t), {taskId} = await f.plan(), executionParent = path.join(f.parent, 'executions');
+  const f = await fixture(t), {taskId} = await f.plan(), executionParent = path.join(f.parent, 'executions');
   fs.mkdirSync(executionParent, {mode: 0o700});
   const business = createFileBusiness({parent: executionParent, depot: f.depot, layoutFor: ticket => ticket.input.fileLayout,
-    approvedLayout: ticket => f.execution.approvedLayout(ticket), observeExecution: ticket => f.execution.observeExecution(ticket)});
+    approvedLayout: async ticket => (await f.execution.approvedLayout(ticket)), observeExecution: async ticket => (await f.execution.observeExecution(ticket))});
   t.after(() => business.close());
   for (const nodeId of ['code', 'docs']) {
-    const ticket = f.take(nodeId), context = {signal: new AbortController().signal, deadline: ticket.deadline};
-    const prepared = await business.prepare(ticket, context), started = fact(ticket); f.execution.started(ticket, started);
+    const ticket = (await f.take(nodeId)), context = {signal: new AbortController().signal, deadline: ticket.deadline};
+    const prepared = await business.prepare(ticket, context), started = fact(ticket); (await f.execution.started(ticket, started));
     // Simulated author file activity; all collection, source identity, Depot and
     // Core admission below are the actual production producers/consumers.
     fs.writeFileSync(path.join(prepared.cwd, nodeId + '.txt'), nodeId + ' actual files', {mode: 0o600});
     const result = {providerId: 'agent', status: 'completed', stopReason: 'end_turn', outputText: '真实采集夹具，非业务验收',
       cleanup: {started, cleaned: true, scope: 'controlled-fixture'}};
     const collected = await business.collect(ticket, result, context);
-    assert.equal(f.execution.finish(ticket, {...result, ...collected}).status, 'completed');
+    assert.equal((await f.execution.finish(ticket, {...result, ...collected})).status, 'completed');
   }
-  const ticket = f.take('verify'), prepared = await business.prepare(ticket, {signal: new AbortController().signal, deadline: ticket.deadline});
+  const ticket = (await f.take('verify')), prepared = await business.prepare(ticket, {signal: new AbortController().signal, deadline: ticket.deadline});
   assert.equal(fs.readFileSync(path.join(prepared.cwd, 'code.txt'), 'utf8'), 'code actual files');
   assert.equal(fs.readFileSync(path.join(prepared.cwd, 'docs.txt'), 'utf8'), 'docs actual files');
-  const result = await f.receipt(ticket); f.execution.finish(ticket, result); business.release(ticket); business.release(ticket);
+  const result = await f.receipt(ticket); (await f.execution.finish(ticket, result)); business.release(ticket); business.release(ticket);
   assert.equal((await f.get(taskId)).status, 'completed');
 });
 
 test('Supervisor owns verifier in SAME lane, skips agent collect, preserves receipt identity and always releases FD hook', async t => {
-  const f = fixture(t), {taskId} = await f.plan(), released = [], errors = [], authors = [];
+  const f = await fixture(t), {taskId} = await f.plan(), released = [], errors = [], authors = [];
   const supervisor = new TaskSupervisor({execution: f.execution, verification: f.port,
     providers: new Map([['agent', {id: 'agent', start(options) {
       const ticket = JSON.parse(options.prompt), started = fact(ticket); authors.push(ticket);
@@ -222,61 +222,61 @@ test('Supervisor owns verifier in SAME lane, skips agent collect, preserves rece
     release: ticket => released.push(ticket.workerId), onError: error => errors.push(error), intervalMs: 5});
   t.after(() => supervisor.close()); supervisor.start();
   const until = async predicate => {const deadline = Date.now() + 3000; while (!await predicate()) {assert.ok(Date.now() < deadline); await turn();}};
-  await until(() => f.calls.length === 1); assert.equal(authors.length, 2); assert.equal(f.capacity().length, 1);
+  await until(() => f.calls.length === 1); assert.equal(authors.length, 2); assert.equal((await f.capacity()).length, 1);
   const item = f.calls[0]; item.completion.resolve({type: 'verification', status: 'passed', cleanup: {started: item.started, cleaned: true},
     evidence: {name: 'evidence.json', mediaType: 'application/json', content: Buffer.from('{}')},
     delivery: {name: 'delivery.bin', mediaType: 'application/octet-stream', content: Buffer.from('complete controlled bundle')}});
   await until(async () => (await f.get(taskId)).status === 'completed'); await supervisor.close();
-  assert.equal(released.length, 3); assert.equal(f.capacity().length, 0); assert.deepEqual(errors, []);
+  assert.equal(released.length, 3); assert.equal((await f.capacity()).length, 0); assert.deepEqual(errors, []);
 });
 
 test('Supervisor cancellation during verifier bootstrap stops original handle and waits for original cleanup before FD release', async t => {
   const start = deferred(), completion = deferred(), released = []; let captured, stopped = 0;
-  const f = fixture(t, {start({ticket}) {
+  const f = await fixture(t, {start({ticket}) {
     captured = ticket; return {started: start.promise, completion: completion.promise, stop() {stopped++; return completion.promise;}};
-  }}), {taskId} = await f.plan(); f.finishAuthor(f.take('code')); f.finishAuthor(f.take('docs'));
+  }}), {taskId} = await f.plan(); (await f.finishAuthor((await f.take('code')))); (await f.finishAuthor((await f.take('docs'))));
   const supervisor = new TaskSupervisor({execution: f.execution, verification: f.port, providers: new Map(),
     prepare: () => ({cwd: f.parent, prompt: 'only trusted checker'}), collect() {assert.fail('verifier must not collect as Agent');},
     release: ticket => released.push(ticket.workerId), intervalMs: 5});
   const until = async predicate => {const deadline = Date.now() + 3000; while (!await predicate()) {assert.ok(Date.now() < deadline); await turn();}};
   supervisor.start(); await until(() => captured); await f.cancel(taskId); await supervisor.tick();
-  assert.ok(stopped > 0); assert.equal(f.capacity().length, 1); assert.deepEqual(released, []);
+  assert.ok(stopped > 0); assert.equal((await f.capacity()).length, 1); assert.deepEqual(released, []);
   let closed = false; const closing = supervisor.close().then(value => {closed = true; return value;});
   await turn(); assert.equal(closed, false); const started = fact(captured); start.resolve(started);
   completion.resolve({type: 'verification', status: 'failed', cleanup: {started, cleaned: true}, evidence: null, delivery: null});
-  assert.equal((await closing).clean, true); assert.equal(f.capacity().length, 0); assert.equal(released.length, 1);
-  assert.equal((await f.get(taskId)).status, 'cancelled'); assert.equal(f.read(tx => tx.projections('artifact')).length, 0);
+  assert.equal((await closing).clean, true); assert.equal((await f.capacity()).length, 0); assert.equal(released.length, 1);
+  assert.equal((await f.get(taskId)).status, 'cancelled'); assert.equal((await f.read(tx => tx.projections('artifact'))).length, 0);
   assert.equal((await f.call({operation: 'task.audit', taskId})).acceptance.status, 'pending');
 });
 
 test('normal Planner chain persists trusted negative verification and only existing evidence through cold reopen', async t => {
   for (const evidencePresent of [true, false]) await t.test(evidencePresent ? 'existing-evidence' : 'no-evidence', async t => {
-    const f = fixture(t, {planner: true}), {taskId, ticket} = await f.ready();
+    const f = await fixture(t, {planner: true}), {taskId, ticket} = await f.ready();
     const result = await f.receipt(ticket, {status: 'failed', reason: 'verification_assertion_failed',
       evidence: evidencePresent ? {name: 'negative.json', mediaType: 'application/json', content: Buffer.from('{"actual":false}')} : null,
       delivery: {name: 'ignored-delivery', mediaType: 'not-valid', content: Buffer.from('never publish failed bundle')}});
-    const before = f.read(tx => tx.head(taskId));
+    const before = (await f.read(tx => tx.head(taskId)));
     for (const forged of [{...result, receipt: {}}, structuredClone(result), {...result, status: 'passed'}])
-      assert.throws(() => f.execution.finish(ticket, forged), error => error.code === 'invalid_verification_receipt');
-    assert.deepEqual(f.read(tx => tx.head(taskId)), before);
+      await assert.rejects(f.execution.finish(ticket, forged), error => error.code === 'invalid_verification_receipt');
+    assert.deepEqual((await f.read(tx => tx.head(taskId))), before);
     if (evidencePresent) {
-      f.setSQLFailure(true); assert.throws(() => f.execution.finish(ticket, result), error => error.code === 'application_unavailable');
-      assert.deepEqual(f.read(tx => tx.head(taskId)), before); assert.equal(f.read(tx => tx.projections('artifact')).length, 0);
+      f.setSQLFailure(true); await assert.rejects(f.execution.finish(ticket, result), error => error.code === 'application_unavailable');
+      assert.deepEqual((await f.read(tx => tx.head(taskId))), before); assert.equal((await f.read(tx => tx.projections('artifact'))).length, 0);
       assert.equal((await f.call({operation: 'task.audit', taskId})).acceptance.status, 'pending'); f.setSQLFailure(false);
     }
-    assert.equal(f.execution.finish(ticket, result).status, 'failed'); f.execution.reconcile(taskId);
+    assert.equal((await f.execution.finish(ticket, result)).status, 'failed'); (await f.execution.reconcile(taskId));
     const task = await f.get(taskId), audit = await f.call({operation: 'task.audit', taskId});
     assert.equal(task.status, 'failed'); assert.equal(audit.attempts, 4); assert.equal(audit.acceptance.status, 'failed');
     assert.deepEqual(audit.firstReview, {passed: 0, total: 0, pending: 0}); assert.equal(validate(audit, 'Audit'), true);
     assert.equal(audit.acceptance.evidenceIds.length, evidencePresent ? 1 : 0); assert.deepEqual(task.artifactIds, audit.acceptance.evidenceIds);
-    const record = JSON.parse(f.read(tx => tx.projection('task', taskId)).bytes);
-    const decision = JSON.parse(f.read(tx => tx.projection('attempt', record.decision.id)).bytes);
+    const record = JSON.parse((await f.read(tx => tx.projection('task', taskId))).bytes);
+    const decision = JSON.parse((await f.read(tx => tx.projection('attempt', record.decision.id))).bytes);
     assert.equal(decision.status, 'rejected'); assert.equal(decision.reasonCode, 'verification_assertion_failed');
     assert.equal(decision.reservationDigest, ticket.reservationDigest); assert.equal(decision.cleanupDigest, hash(result.cleanup));
     assert.equal(hash(decision), audit.acceptance.digest); assert.ok(decision.artifacts.every(item => item.kind === 'evidence'));
     const outputs = await Promise.all(task.artifactIds.map(artifactId => f.call({operation: 'artifact.content', artifactId})));
-    const head = f.read(tx => tx.head(taskId)); f.execution.finish(ticket, result); assert.deepEqual(f.read(tx => tx.head(taskId)), head);
-    f.reopen(null); assert.deepEqual((await f.call({operation: 'task.audit', taskId})).acceptance, audit.acceptance);
+    const head = (await f.read(tx => tx.head(taskId))); (await f.execution.finish(ticket, result)); assert.deepEqual((await f.read(tx => tx.head(taskId))), head);
+    (await f.reopen(null)); assert.deepEqual((await f.call({operation: 'task.audit', taskId})).acceptance, audit.acceptance);
     assert.deepEqual((await f.call({operation: 'task.audit', taskId})).firstReview, audit.firstReview);
     for (const output of outputs) assert.deepEqual(await f.call({operation: 'artifact.content', artifactId: output.artifact.id}), output);
   });
@@ -284,25 +284,25 @@ test('normal Planner chain persists trusted negative verification and only exist
 
 test('negative checker receipt cannot misclassify prior cancel, deadline, unknown cleanup or old owner as acceptance failure', async t => {
   for (const scenario of ['cancel', 'deadline', 'unknown', 'old-owner']) await t.test(scenario, async t => {
-    const f = fixture(t, {planner: true}), {taskId, ticket} = await f.ready(), {handle, item} = f.start(ticket);
+    const f = await fixture(t, {planner: true}), {taskId, ticket} = await f.ready(), {handle, item} = (await f.start(ticket));
     item.completion.resolve({type: 'verification', status: 'failed', reason: 'verification_failed',
       cleanup: {started: item.started, cleaned: scenario !== 'unknown'},
       evidence: {name: 'not-acceptance.json', mediaType: 'application/json', content: Buffer.from('{}')}, delivery: null});
     const result = await handle.completion;
     if (scenario === 'cancel') await f.cancel(taskId);
     if (scenario === 'deadline') f.advance(60001);
-    if (scenario === 'old-owner') {f.reopen(); assert.throws(() => f.execution.finish(ticket, result), error => error.code === 'recovery_required');}
-    else f.execution.finish(ticket, result);
+    if (scenario === 'old-owner') {await f.reopen(); await assert.rejects(f.execution.finish(ticket, result), error => error.code === 'recovery_required');}
+    else (await f.execution.finish(ticket, result));
     const audit = await f.call({operation: 'task.audit', taskId});
     assert.equal(audit.acceptance.status, 'pending'); assert.deepEqual(audit.firstReview, {passed: 0, total: 0, pending: 0});
-    assert.equal(f.read(tx => tx.projections('artifact')).length, 0);
-    assert.equal(f.capacity().length, ['unknown', 'old-owner'].includes(scenario) ? 1 : 0);
+    assert.equal((await f.read(tx => tx.projections('artifact'))).length, 0);
+    assert.equal((await f.capacity()).length, ['unknown', 'old-owner'].includes(scenario) ? 1 : 0);
   });
 });
 
 test('original managed-command spawn failure closes only its no-start attempt while another Task continues', {timeout: 10000}, async t => {
   let failedTaskId, originalCleanup;
-  const f = fixture(t, {start({ticket, prepared}) {
+  const f = await fixture(t, {start({ticket, prepared}) {
     if (ticket.taskId === failedTaskId) {
       // Real checked-in Node guard and launchCommand producer. The deliberately
       // missing executable cannot start a checker; no synthetic cleanup receipt.
@@ -323,7 +323,7 @@ test('original managed-command spawn failure closes only its no-start attempt wh
     return {started: Promise.resolve(started), completion, stop: () => completion};
   }});
   failedTaskId = (await f.plan('spawn-failure')).taskId; const goodTaskId = (await f.plan('healthy-peer')).taskId;
-  for (const taskId of [failedTaskId, goodTaskId]) for (const nodeId of ['code', 'docs']) f.finishAuthor(f.take(nodeId, taskId));
+  for (const taskId of [failedTaskId, goodTaskId]) for (const nodeId of ['code', 'docs']) (await f.finishAuthor((await f.take(nodeId, taskId))));
   const errors = [], released = [];
   const supervisor = new TaskSupervisor({execution: f.execution, verification: f.port, providers: new Map(), intervalMs: 5,
     prepare: () => ({cwd: f.parent, prompt: 'trusted checker only'}), collect() {assert.fail('verification must not use Agent collect');},
@@ -335,26 +335,26 @@ test('original managed-command spawn failure closes only its no-start attempt wh
   }
   assert.equal(originalCleanup.started, null); assert.equal(originalCleanup.cleaned, true);
   assert.equal(originalCleanup.reason, 'spawn_failed'); assert.equal(originalCleanup.guardExit.signal, 'SIGKILL');
-  assert.equal(supervisor.snapshot().failure, null); assert.equal(f.capacity().length, 0);
+  assert.equal(supervisor.snapshot().failure, null); assert.equal((await f.capacity()).length, 0);
   const failedAudit = await f.call({operation: 'task.audit', taskId: failedTaskId});
   assert.equal(failedAudit.acceptance.status, 'pending'); assert.deepEqual(failedAudit.firstReview, {passed: 0, total: 0, pending: 0});
   assert.deepEqual((await f.get(failedTaskId)).artifactIds, []);
   assert.equal((await f.call({operation: 'task.audit', taskId: goodTaskId})).acceptance.status, 'passed');
   const failedWorker = failedAudit.workers.find(worker => worker.role === 'verifier');
-  const record = f.read(tx => f.execution.worker(tx, failedWorker.id).record);
+  const record = (await f.read(tx => f.execution.worker(tx, failedWorker.id).record));
   assert.equal(record.executionId, null); assert.deepEqual(record.cleanup, originalCleanup);
   assert.equal(errors.length, 1); assert.equal(errors[0].taskId, failedTaskId); assert.equal(errors[0].code, 'worker_failed');
   assert.equal((await supervisor.close()).clean, true); assert.equal(released.length, 2);
 });
 
 test('no-start exception cannot admit passed, foreign cleanup or a missing started field', async t => {
-  const f = fixture(t), {ticket} = await f.ready();
+  const f = await fixture(t), {ticket} = await f.ready();
   for (const [status, started] of [['passed', null], ['failed', {executionId: 'foreign', startedAt: new Date().toISOString()}], ['failed', undefined]]) {
     const handle = f.port.start({ticket, prepared: {cwd: f.parent, prompt: 'fixture'}}), item = f.calls.at(-1);
     const cleanup = started === undefined ? {cleaned: true} : {started, cleaned: true};
     item.completion.resolve({type: 'verification', status, cleanup, evidence: null, delivery: null});
     const result = await handle.completion;
-    assert.throws(() => f.execution.finish(ticket, result), error => error.code === 'invalid_verification_receipt');
+    await assert.rejects(f.execution.finish(ticket, result), error => error.code === 'invalid_verification_receipt');
   }
-  assert.equal(f.capacity().length, 1);
+  assert.equal((await f.capacity()).length, 1);
 });

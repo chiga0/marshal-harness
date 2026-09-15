@@ -13,7 +13,7 @@ const token = 'public-fixture-only-http-application-test-token';
 async function fixture(t) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-http-sqlite-')));
   const root = path.join(parent, 'state');
-  let store = Store.create(root), owner = store.claimOwner(0, 'http-server-1', Date.now() + 3600000);
+  let store = Store.create(root), owner = await store.claimOwner(0, 'http-server-1', Date.now() + 3600000);
   let app = new TaskApplication({store, owner}), server, base;
   async function openHttp() {
     let handler;
@@ -37,10 +37,10 @@ async function fixture(t) {
         ...(body !== undefined ? {body: JSON.stringify(body)} : {}), signal: AbortSignal.timeout(5000)});
       return {status: response.status, body: await response.json()};
     },
-    countCommands() { return store.read(owner, tx => tx.commands()).length; },
+    async countCommands() { return (await store.read(owner, tx => tx.commands())).length; },
     async restart() {
       await closeHttp(); store.close(); store = Store.openExisting(root);
-      owner = store.claimOwner(owner.generation, 'http-server-2', Date.now() + 3600000);
+      owner = await store.claimOwner(owner.generation, 'http-server-2', Date.now() + 3600000);
       app = new TaskApplication({store, owner}); await openHttp();
     }};
 }
@@ -57,7 +57,7 @@ test('real HTTP + real SQLite: confirmation, original Operation, DAG/events and 
   const created = await f.request('/v1/tasks', input, 'create');
   assert.equal(created.status, 201); assert.equal(created.body.status, 'draft');
   const id = created.body.id, taskPath = '/v1/tasks/' + id;
-  const plan = f.app.proposePlan(id, 1, proposal);
+  const plan = await f.app.proposePlan(id, 1, proposal);
   const fetchedPlan = await f.request(taskPath + '/plan');
   assert.equal(fetchedPlan.status, 200); assert.deepEqual(fetchedPlan.body, plan);
   const approval = {expectedRevision: 2, planRevision: plan.revision, planDigest: plan.digest};
@@ -74,14 +74,14 @@ test('real HTTP + real SQLite: confirmation, original Operation, DAG/events and 
   assert.equal(audit.status, 200); assert.equal(audit.body.usage.tokens, null);
   await f.restart();
   assert.deepEqual(await f.request(taskPath + '/plan/approve', approval, 'approve'), approved);
-  assert.equal(f.countCommands(), 2);
+  assert.equal((await f.countCommands()), 2);
   const cancelled = await f.request(taskPath + '/cancel', {expectedRevision: 3}, 'cancel');
   assert.equal(cancelled.status, 202); assert.equal(cancelled.body.status, 'accepted');
   await f.restart();
   assert.deepEqual(await f.request(taskPath + '/cancel', {expectedRevision: 3}, 'cancel'), cancelled);
   const current = await f.request(taskPath);
   assert.equal(current.status, 200); assert.equal(current.body.status, 'cancelling');
-  assert.equal(f.countCommands(), 3);
+  assert.equal((await f.countCommands()), 3);
   assert.equal((await f.request('/v1/tasks')).body.items.length, 1);
 });
 
@@ -90,14 +90,14 @@ test('concurrent HTTP receipt replays create one Task; stale control races canno
   const replies = await Promise.all(Array.from({length: 12}, () => f.request('/v1/tasks', input, 'concurrent-create')));
   assert.ok(replies.every(reply => reply.status === 201));
   assert.ok(replies.every(reply => reply.body.id === replies[0].body.id));
-  assert.equal(f.countCommands(), 1);
+  assert.equal((await f.countCommands()), 1);
   const id = replies[0].body.id, taskPath = '/v1/tasks/' + id;
-  const plan = f.app.proposePlan(id, 1, proposal);
+  const plan = await f.app.proposePlan(id, 1, proposal);
   const approval = {expectedRevision: 2, planRevision: plan.revision, planDigest: plan.digest};
   const raced = await Promise.all(['a', 'b'].map(key => f.request(taskPath + '/plan/approve', approval, key)));
   assert.deepEqual(raced.map(result => result.status).sort(), [202, 409]);
   assert.equal(raced.find(result => result.status === 409).body.code, 'revision_conflict');
-  assert.equal(f.countCommands(), 2);
+  assert.equal((await f.countCommands()), 2);
 });
 
 test('real domain failures keep specified HTTP status instead of becoming storage 503', {timeout: 10000}, async t => {
@@ -112,5 +112,5 @@ test('real domain failures keep specified HTTP status instead of becoming storag
   assert.equal(questions.status, 200); assert.deepEqual(questions.body.items, []); assert.equal(questions.body.preview, null);
   const notImplemented = await f.request('/v1/workers/missing/cancel', {expectedRevision: 1}, 'worker-cancel');
   assert.equal(notImplemented.status, 501); assert.equal(notImplemented.body.code, 'unsupported_operation');
-  assert.equal(f.countCommands(), 1);
+  assert.equal((await f.countCommands()), 1);
 });

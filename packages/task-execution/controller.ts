@@ -41,11 +41,10 @@ export class TaskExecutionCoordinator {
     this.#managed = managed;
     this.#onError = onError; this.#clock = clock; this.#options = {intervalMs, prepareMs, collectMs, pageSize, maxPagesPerTick};
   }
-  #call(name, ...args) {
+  async #call(name, ...args) {
+    // The Store seam is async; port errors retain their closed mapping here.
     try {
-      const result = this.#execution[name](...args);
-      requireValue(!result || typeof result.then !== 'function'); // SQL callbacks remain synchronous.
-      return result;
+      return await this.#execution[name](...args);
     } catch (error) {
       if (name === 'nextWork' && ['unsupported_task', 'capacity_exceeded'].includes(error?.code)) throw new WorkRejected(error.code);
       if (['registerQuestion', 'dispatchAnswer', 'acknowledgeAnswer'].includes(name) &&
@@ -82,10 +81,10 @@ export class TaskExecutionCoordinator {
     const {pageSize, maxPagesPerTick} = this.#options;
     // Stop observations get a complete bounded turn before new admission.
     for (let pages = 0; pages < maxPagesPerTick; pages++) {
-      const page = this.#call('scan', this.#scanCursor, pageSize);
+      const page = await this.#call('scan', this.#scanCursor, pageSize);
       this.#page(page, this.#scanCursor);
       for (const taskId of page.items) {
-        const state = this.#call('reconcile', taskId);
+        const state = await this.#call('reconcile', taskId);
         for (const workerId of state.stopWorkerIds) {
           const entry = this.#owned.get(workerId);
           if (entry) this.#stop(entry); // Never construct a handle from a stored PID.
@@ -97,14 +96,14 @@ export class TaskExecutionCoordinator {
     }
     for (const entry of this.#owned.values()) entry.wake.resolve();
     for (let pages = 0; pages < maxPagesPerTick; pages++) {
-      const page = this.#call('poll', this.#pollCursor, pageSize);
+      const page = await this.#call('poll', this.#pollCursor, pageSize);
       this.#page(page, this.#pollCursor);
       for (const command of page.items) {
-        if (this.#call('settleControl', command.id, command.revision)) continue;
+        if (await this.#call('settleControl', command.id, command.revision)) continue;
         if (!admit || this.#closing || this.#failure) continue;
-        if (this.#call('expandDispatch', command.id, command.revision)) continue;
+        if (await this.#call('expandDispatch', command.id, command.revision)) continue;
         let ticket;
-        try { ticket = this.#call('nextWork', command.id, command.revision); }
+        try { ticket = await this.#call('nextWork', command.id, command.revision); }
         catch (error) {
           if (!(error instanceof WorkRejected)) throw error;
           // No ticket means no authority to invent a Worker/cleanup. Preserve the
@@ -148,34 +147,35 @@ export class TaskExecutionCoordinator {
     try { Promise.resolve(this.#onError({...report})).catch(() => { this.#notificationFailures++; }); }
     catch { this.#notificationFailures++; }
   }
-  #failEntry(entry, stage, error) {
+  async #failEntry(entry, stage, error) {
     if (!entry.failure) {
-      // This is a synchronous same-owner transaction, before any stop callback
-      // can run or delayed cleanup can leave a downstream admission window.
+      // The failure fence commits before any stop callback can run or delayed
+      // cleanup can leave a downstream admission window. Claim the entry before
+      // the async fence so concurrent triggers cannot double-notify.
+      entry.failure = true;
       let fence;
-      try { fence = this.#call('fail', entry.ticket, 'worker_failed', ['provider-stop', 'provider-cleanup', 'provider-completion'].includes(stage)); }
+      try { fence = await this.#call('fail', entry.ticket, 'worker_failed', ['provider-stop', 'provider-cleanup', 'provider-completion'].includes(stage)); }
       catch (error) { this.#fault('failure-fence', entry, error); return; }
       if (fence?.targeted === true) {this.#stop(entry); return;}
       if (error instanceof ExecutionPortError) {this.#fault(stage, entry, error); return;}
-      entry.failure = true;
       this.#notify({code: 'worker_failed', stage, taskId: entry.ticket.taskId, workerId: entry.ticket.workerId});
     }
     for (const owned of this.#owned.values()) if (owned.ticket.taskId === entry.ticket.taskId) this.#stop(owned);
   }
-  #deadline(entry) {
+  async #deadline(entry) {
     // Prefer the original Task deadline's durable reason where it has expired;
     // a shorter execution deadline still needs a Worker failure admission fence.
-    try { this.#call('reconcile', entry.ticket.taskId); }
+    try { await this.#call('reconcile', entry.ticket.taskId); }
     catch (error) { this.#fault('deadline-reconcile', entry, error); return; }
-    this.#failEntry(entry, 'deadline', new SupervisorError('supervisor_deadline'));
+    await this.#failEntry(entry, 'deadline', new SupervisorError('supervisor_deadline'));
   }
   #stop(entry) {
     clearTimeout(entry.answerTimer);
     entry.stopping = true; entry.abort.abort(); entry.wake.resolve();
     if (entry.handle && !entry.stopSent) {
       entry.stopSent = true;
-      try { Promise.resolve(entry.handle.stop()).catch(error => this.#failEntry(entry, 'provider-stop', error)); }
-      catch (error) { this.#failEntry(entry, 'provider-stop', error); }
+      try { Promise.resolve(entry.handle.stop()).catch(error => this.#failEntry(entry, 'provider-stop', error).catch(() => {})); }
+      catch (error) { void this.#failEntry(entry, 'provider-stop', error).catch(() => {}); }
     }
     if (entry.custody) void entry.custody.stop();
   }
@@ -186,7 +186,7 @@ export class TaskExecutionCoordinator {
       handle: null, invoked: false, startFact: null, acceptStarted: true, progress: Promise.resolve(), sequence: 0, pendingProgress: 0,
       stopping: false, stopSent: false, clean: false, finalized: false, answerAcknowledged: new Set()};
     this.#owned.set(ticket.workerId, entry);
-    const timer = setTimeout(() => this.#deadline(entry), Math.max(1, ticket.deadline - this.#clock()));
+    const timer = setTimeout(() => { void this.#deadline(entry).catch(() => {}); }, Math.max(1, ticket.deadline - this.#clock()));
     const work = this.#run(entry).catch(error => this.#fault(entry.stage, entry, error)).finally(() => {
       try {
         const released = this.#release(entry.ticket);
@@ -206,11 +206,11 @@ export class TaskExecutionCoordinator {
       let timer;
       const finish = (error, value) => { clearTimeout(timer); signal.removeEventListener('abort', abort); error ? reject(error) : resolve(value); };
       const abort = () => finish(new SupervisorError('supervisor_stopped'));
-      if (signal.aborted || remaining <= 0) { if (remaining <= 0 && !signal.aborted) this.#deadline(entry); abort(); return; }
+      if (signal.aborted || remaining <= 0) { if (remaining <= 0 && !signal.aborted) void this.#deadline(entry).catch(() => {}); abort(); return; }
       signal.addEventListener('abort', abort, {once: true});
       timer = setTimeout(() => {
         const error = new SupervisorError('supervisor_callback_timeout');
-        finish(error); this.#failEntry(entry, entry.stage, error);
+        finish(error); void this.#failEntry(entry, entry.stage, error).catch(() => {});
       }, remaining);
       Promise.resolve().then(() => {
         if (signal.aborted) throw new SupervisorError('supervisor_stopped');
@@ -218,12 +218,12 @@ export class TaskExecutionCoordinator {
       }).then(value => finish(null, value), error => finish(error));
     });
   }
-  #bindStarted(entry, fact) {
+  async #bindStarted(entry, fact) {
     if (!entry.acceptStarted || fact === null) { entry.startedGate.resolve(); return; }
     requireValue(object(fact) && text(fact.executionId, 128) && fact.executionId.length > 0 && Number.isFinite(Date.parse(fact.startedAt)));
     if (entry.startFact) requireValue(entry.startFact.executionId === fact.executionId);
     else {
-      const observation = this.#call('started', entry.ticket, fact);
+      const observation = await this.#call('started', entry.ticket, fact);
       entry.startFact = structuredClone(fact); entry.stage = 'running';
       if (observation.stop) this.#stop(entry);
     }
@@ -243,26 +243,28 @@ export class TaskExecutionCoordinator {
       progress = {summary: 'agent.' + update.phase, tool, source: 'agent'};
       sequence = ++entry.sequence; entry.pendingProgress++;
     } catch (error) {
-      this.#failEntry(entry, 'progress', error);
-      const rejected = Promise.reject(error); void rejected.catch(() => {}); return rejected;
+      // The advertised rejection surfaces only after the fence/stop chain has
+      // settled, preserving the pre-async observable order.
+      const rejected = this.#failEntry(entry, 'progress', error).then(() => Promise.reject(error), () => Promise.reject(error));
+      void rejected.catch(() => {}); return rejected;
     }
     const observed = entry.progress.then(async () => {
       await entry.startedGate.promise;
       if (entry.stopping || entry.finalized || !entry.startFact) return false;
-      return this.#call('progress', entry.ticket, sequence, progress);
+      return await this.#call('progress', entry.ticket, sequence, progress);
     });
-    entry.progress = observed.catch(error => { this.#failEntry(entry, 'progress', error); return false; }).finally(() => { entry.pendingProgress--; });
+    entry.progress = observed.catch(async error => { await this.#failEntry(entry, 'progress', error).catch(() => {}); return false; }).finally(() => { entry.pendingProgress--; });
     return observed;
   }
   async #question(entry, request, context) {
     await entry.startedGate.promise;
     if (!entry.startFact || entry.stopping || context?.signal?.aborted) throw new SupervisorError('supervisor_stopped');
-    const question = this.#call('registerQuestion', entry.ticket, request);
+    const question = await this.#call('registerQuestion', entry.ticket, request);
     entry.question = question;
     const waitMs = Math.min(120000, Date.parse(question.deadlineAt) - this.#clock());
     const delivery = await this.#bounded(entry, waitMs, async () => {
       while (!entry.stopping && !context?.signal?.aborted) {
-        const value = this.#call('dispatchAnswer', entry.ticket, question.questionId);
+        const value = await this.#call('dispatchAnswer', entry.ticket, question.questionId);
         if (value) return value;
         entry.wake = deferred(); await entry.wake.promise;
       }
@@ -270,25 +272,23 @@ export class TaskExecutionCoordinator {
     });
     // Original SDK response has no ACK. A bounded second bridge roundtrip must
     // commit before the native tool exposes the business answer to its model.
-    entry.answerTimer = setTimeout(() => this.#failEntry(entry, 'answer-ack', new SupervisorError('supervisor_answer_ack_timeout')),
+    entry.answerTimer = setTimeout(() => { void this.#failEntry(entry, 'answer-ack', new SupervisorError('supervisor_answer_ack_timeout')).catch(() => {}); },
       Math.max(1, Math.min(5000, Date.parse(question.deadlineAt) - this.#clock())));
     return delivery;
   }
-  #answerAck(entry, questionId, receipt) {
+  async #answerAck(entry, questionId, receipt) {
     if (entry.stopping || entry.finalized || entry.question?.questionId !== questionId && !entry.answerAcknowledged.has(questionId)) throw new SupervisorError('supervisor_stopped');
-    const result = this.#call('acknowledgeAnswer', entry.ticket, questionId, receipt);
+    const result = await this.#call('acknowledgeAnswer', entry.ticket, questionId, receipt);
     entry.answerAcknowledged.add(questionId);
     if (entry.question?.questionId === questionId) {clearTimeout(entry.answerTimer); entry.question = null;}
     return result;
   }
-  #observeInput(entry, stage, prompt) {
+  async #observeInput(entry, stage, prompt) {
     // Optional telemetry cannot grant or revoke launch/cleanup/verification.
     // Current-owner failures still face the original mayStart/finish gates.
     if (typeof this.#execution.observeInput !== 'function') return;
-    try {
-      const result = this.#execution.observeInput(entry.ticket, stage, prompt);
-      if (result && typeof result.then === 'function') {void Promise.resolve(result).catch(() => {}); throw new Error();}
-    } catch {this.#notify({code: 'worker_input_audit_unavailable', stage, taskId: entry.ticket.taskId, workerId: entry.ticket.workerId});}
+    try { await this.#execution.observeInput(entry.ticket, stage, prompt); }
+    catch {this.#notify({code: 'worker_input_audit_unavailable', stage, taskId: entry.ticket.taskId, workerId: entry.ticket.workerId});}
   }
   async #run(entry) {
     let result, collected = {}, failure = false;
@@ -300,9 +300,9 @@ export class TaskExecutionCoordinator {
         text(prepared.cwd, 8192) && path.isAbsolute(prepared.cwd) && text(prepared.prompt, 256 * 1024) && prepared.prompt.trim() &&
         (prepared.onPermission === undefined || typeof prepared.onPermission === 'function'));
       entry.stage = 'prepared';
-      if (entry.ticket.executionType !== 'verification') this.#observeInput(entry, 'prepared', prepared.prompt);
+      if (entry.ticket.executionType !== 'verification') await this.#observeInput(entry, 'prepared', prepared.prompt);
       while (!entry.stopping && !this.#closing && !this.#failure) {
-        if (this.#call('mayStart', entry.ticket)) break;
+        if (await this.#call('mayStart', entry.ticket)) break;
         // A pause is an admission fence, not an execution failure or new attempt.
         entry.wake = deferred(); await entry.wake.promise;
       }
@@ -313,24 +313,24 @@ export class TaskExecutionCoordinator {
       let executionContext;
       if (this.#custody) {
         const profile = provider.custodyProfile ?? {id: 'unproven-provider-v1', scope: 'inherited-process-group', eligible: false};
-        const binding = this.#call('custodyBinding', entry.ticket, profile);
+        const binding = await this.#call('custodyBinding', entry.ticket, profile);
         // This prepare creates an observer, never an Agent. Its original handle
         // is retained even if the Task is stopped while creation is in flight.
         entry.custody = await this.#custody.prepare(binding);
         // The original target stop/pause may commit while observer preparation
         // is pending. Reuse the admission wait, never reinterpret a failed bind
         // (wrong owner/descriptor) as an ordinary cancellation.
-        while (!entry.stopping && !this.#closing && !this.#failure && !this.#call('mayStart', entry.ticket)) {
+        while (!entry.stopping && !this.#closing && !this.#failure && !await this.#call('mayStart', entry.ticket)) {
           entry.wake = deferred(); await entry.wake.promise;
         }
         if (entry.stopping || this.#closing || this.#failure) throw new SupervisorError('supervisor_stopped');
-        this.#call('bindCustody', entry.ticket, entry.custody.descriptor, profile);
+        await this.#call('bindCustody', entry.ticket, entry.custody.descriptor, profile);
         entry.custody.permit();
         executionContext = Object.freeze({launch: entry.custody.launch, stop: entry.custody.stop,
           extraScope: code => this.#call('recordExtraScope', entry.ticket, code)});
       }
       // No await between final current-ledger check and synchronous start.
-      if (!this.#call('mayStart', entry.ticket)) throw new SupervisorError('supervisor_stopped');
+      if (!await this.#call('mayStart', entry.ticket)) throw new SupervisorError('supervisor_stopped');
       entry.invoked = true; entry.stage = 'starting';
       const questionContext = entry.ticket.input.runtimeQuestions?.enabled ? {
         configuration: entry.ticket.input.runtimeQuestions,
@@ -344,15 +344,15 @@ export class TaskExecutionCoordinator {
         typeof entry.handle.started?.then === 'function' && typeof entry.handle.completion?.then === 'function');
       // This records only handoff to the original Provider, not protocol delivery
       // or model consumption. A crash in this gap leaves the weaker prepared fact.
-      if (!verifying) this.#observeInput(entry, 'handed-off');
+      if (!verifying) await this.#observeInput(entry, 'handed-off');
       const completion = Promise.resolve(entry.handle.completion);
       // Retain the ORIGINAL completion even when progress/start observations fail.
-      entry.completion = completion.catch(error => { this.#failEntry(entry, 'provider-completion', error); return null; });
+      entry.completion = completion.catch(async error => { await this.#failEntry(entry, 'provider-completion', error).catch(() => {}); return null; });
       Promise.resolve(entry.handle.started).then(fact => this.#bindStarted(entry, fact))
-        .catch(error => { this.#failEntry(entry, 'started', error); entry.startedGate.resolve(); });
+        .catch(async error => { await this.#failEntry(entry, 'started', error).catch(() => {}); entry.startedGate.resolve(); });
       if (entry.stopping) this.#stop(entry);
       result = await entry.completion;
-      if (!entry.startFact && result?.cleanup?.started) this.#bindStarted(entry, result.cleanup.started);
+      if (!entry.startFact && result?.cleanup?.started) await this.#bindStarted(entry, result.cleanup.started);
       entry.acceptStarted = false; entry.startedGate.resolve();
       await entry.progress;
       requireValue(object(result) && (typed ? result.type === entry.ticket.executionType && ['completed', 'failed', 'unknown'].includes(result.status) :
@@ -367,12 +367,12 @@ export class TaskExecutionCoordinator {
       }
     } catch (error) {
       failure = true;
-      if (error?.code !== 'supervisor_stopped') this.#failEntry(entry, entry.stage, error);
+      if (error?.code !== 'supervisor_stopped') await this.#failEntry(entry, entry.stage, error);
       this.#stop(entry);
       if (entry.custody && !entry.invoked) await entry.custody.stop();
       if (entry.completion) result = await entry.completion;
       if (!entry.startFact && result?.cleanup?.started) {
-        try { this.#bindStarted(entry, result.cleanup.started); } catch (error) { this.#failEntry(entry, 'started', error); }
+        try { await this.#bindStarted(entry, result.cleanup.started); } catch (error) { await this.#failEntry(entry, 'started', error); }
       }
       entry.acceptStarted = false; entry.startedGate.resolve(); await entry.progress;
     }
@@ -404,7 +404,7 @@ export class TaskExecutionCoordinator {
         outcome.stopRequested = !!(failure || entry.failure || entry.stopping || this.#failure);
       } else if (!failure && !entry.failure && !entry.stopping && !this.#failure) outcome.receipt = result?.receipt;
     }
-    const worker = this.#call('finish', entry.ticket, outcome);
+    const worker = await this.#call('finish', entry.ticket, outcome);
     entry.clean = cleanup.cleaned === true && worker.status !== 'unknown'; entry.finalized = true;
     entry.stage = worker.status === 'unknown' ? 'unknown' : 'terminal';
     if (['failed', 'unknown'].includes(worker.status) && !entry.failure && !entry.stopping && !this.#failure) {

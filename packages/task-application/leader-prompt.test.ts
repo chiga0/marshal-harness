@@ -19,9 +19,9 @@ function rendered(ticket) {
   return {references, examples, prompt};
 }
 async function initial(t) {
-  const f = fixture(t), task = await f.call({operation: 'task.create', key: 'create', body: {intent: '交付两地区，区域需明确',
+  const f = await fixture(t), task = await f.call({operation: 'task.create', key: 'create', body: {intent: '交付两地区，区域需明确',
     limits: {timeoutMs: 120000, maxAttempts: 17, maxWorkers: 3}}});
-  return {f, task, ticket: f.take('leader')};
+  return {f, task, ticket: (await f.take('leader'))};
 }
 async function authors(t) {
   const {f, task, ticket} = await initial(t);
@@ -29,7 +29,7 @@ async function authors(t) {
   const pending = (await f.call({operation: 'task.leader', taskId: task.id})).pendingRequest;
   await f.call({operation: 'task.leader.reply', taskId: task.id, requestId: pending.id, key: 'answer',
     body: {expectedRevision: (await f.get(task.id)).revision, requestDigest: pending.requestDigest, answer: 'north'}});
-  const planning = f.take('leader'), example = rendered(planning).examples.plan;
+  const planning = (await f.take('leader')), example = rendered(planning).examples.plan;
   // Business fields are supplied from the original test requirement, not by a
   // digest substitution or by treating the renderer's generic Plan as authority.
   example.actions[0].proposal = proposal;
@@ -37,9 +37,9 @@ async function authors(t) {
   const plan = await f.call({operation: 'task.plan', taskId: task.id});
   await f.call({operation: 'task.approve', taskId: task.id, key: 'approve', body: {expectedRevision: (await f.get(task.id)).revision,
     planRevision: plan.revision, planDigest: plan.digest}});
-  const command = f.read(tx => tx.commands().find(row => JSON.parse(row.payload).action === 'dispatch'));
-  f.app.execution.expandDispatch(command.id, command.revision);
-  return {f, task, east: f.take('execute', 'east'), west: f.take('execute', 'west')};
+  const command = (await f.read(tx => tx.commands().find(row => JSON.parse(row.payload).action === 'dispatch')));
+  (await f.app.execution.expandDispatch(command.id, command.revision));
+  return {f, task, east: (await f.take('execute', 'east')), west: (await f.take('execute', 'west'))};
 }
 async function parseExample(ticket, value, maxActions = 1, diagnostics = []) {
   const port = createLeaderPort({id: 'renderer-test', providerId: ticket.providerId, policy: {...ticket.input.leader.snapshot.policy, maxActions},
@@ -70,20 +70,20 @@ test('valid-SHA wrong ask subject remains rejected by original transactional adm
   const {f, task, ticket} = await initial(t), actions = rendered(ticket).examples.ask.actions;
   actions[0].subject = ticket.input.leader.inputDigest;
   assert.equal((await f.decision(ticket, actions)).status, 'failed');
-  assert.equal(f.read(tx => f.app.get(tx, task.id)).failureCode, 'invalid_leader_decision');
+  assert.equal((await f.read(tx => f.app.get(tx, task.id))).failureCode, 'invalid_leader_decision');
   assert.equal((await f.call({operation: 'task.leader', taskId: task.id})).pendingRequest, null);
 });
 test('original frozen selected/review/acceptance/delivery/history refs traverse original gates without model hashing', async t => {
-  const {f, task, east, west} = await authors(t); f.author(east); f.author(west);
-  let ticket = f.take('leader'), value = rendered(ticket);
+  const {f, task, east, west} = await authors(t); (await f.author(east)); (await f.author(west));
+  let ticket = (await f.take('leader')), value = rendered(ticket);
   assert.equal(value.examples.work.actions[0].selectionDigest, ticket.input.leader.snapshot.readSet.find(item => item.kind === 'selected').digest);
   assert.equal((await f.decision(ticket, value.examples.work.actions)).status, 'completed');
-  assert.equal((await f.review(f.take('review'))).status, 'completed');
-  ticket = f.take('leader'); value = rendered(ticket);
+  assert.equal((await f.review((await f.take('review')))).status, 'completed');
+  ticket = (await f.take('leader')); value = rendered(ticket);
   const verification = {...value.examples.work.actions[0], kind: 'verify', nodeIds: value.references.verifierNodeIds};
   assert.equal((await f.decision(ticket, [verification])).status, 'completed');
-  assert.equal((await f.verify(f.take('execute', 'verify'))).status, 'completed');
-  ticket = f.take('leader'); value = rendered(ticket);
+  assert.equal((await f.verify((await f.take('execute', 'verify')))).status, 'completed');
+  ticket = (await f.take('leader')); value = rendered(ticket);
   const delivery = ticket.input.leader.materials.find(item => item.kind === 'delivery');
   assert.equal(value.examples.deliver.actions[0].artifactId, delivery.id);
   assert.notEqual(value.examples.deliver.actions[0].acceptanceDigest, delivery.digest);
@@ -99,7 +99,7 @@ test('original frozen selected/review/acceptance/delivery/history refs traverse 
   assert.equal(failure.stage, 'parse'); assert.equal(failure.parseCode, 'invalid_leader_decision');
   assert.equal((await parseExample(ticket, value.examples.deliver)).status, 'completed');
   assert.equal((await f.decision(ticket, value.examples.deliver.actions)).status, 'completed');
-  ticket = f.take('leader'); value = rendered(ticket);
+  ticket = (await f.take('leader')); value = rendered(ticket);
   assert.ok(ticket.input.leader.snapshot.obligation.some(item => item.reason === 'delivery-ready'));
   assert.equal(typeof value.examples.deliver, 'string');
   assert.ok(value.prompt.includes('当前是最终总结，不是再次交付'));
@@ -108,15 +108,15 @@ test('original frozen selected/review/acceptance/delivery/history refs traverse 
   assert.equal((await f.get(task.id)).status, 'completed');
 });
 for (const wrong of [false, true]) test('execution-failure repair copies original evidence and wrong digest is refused: wrong=' + wrong, async t => {
-  const {f, task, east, west} = await authors(t); f.author(west);
-  const started = {executionId: 'failed-original', startedAt: new Date().toISOString()}; f.app.execution.started(east, started);
-  f.app.execution.finish(east, {status: 'failed', reason: 'agent_max_tokens', stopReason: 'max_tokens', cleanup: {started, cleaned: true, scope: 'controlled-fixture'}});
-  const ticket = f.take('leader'), actions = rendered(ticket).examples.repair.actions;
+  const {f, task, east, west} = await authors(t); (await f.author(west));
+  const started = {executionId: 'failed-original', startedAt: new Date().toISOString()}; (await f.app.execution.started(east, started));
+  (await f.app.execution.finish(east, {status: 'failed', reason: 'agent_max_tokens', stopReason: 'max_tokens', cleanup: {started, cleaned: true, scope: 'controlled-fixture'}}));
+  const ticket = (await f.take('leader')), actions = rendered(ticket).examples.repair.actions;
   assert.equal(actions[0].basis.kind, 'execution-failure');
   assert.equal(actions[0].basis.digest, ticket.input.leader.snapshot.evidence.find(item => item.kind === 'execution-failure').digest);
   if (wrong) actions[0].basis.digest = hash('foreign');
   assert.equal((await f.decision(ticket, actions)).status, wrong ? 'failed' : 'completed');
-  assert.equal(!!f.read(tx => f.app.get(tx, task.id)).activeRepair, !wrong);
+  assert.equal(!!(await f.read(tx => f.app.get(tx, task.id))).activeRepair, !wrong);
 });
 for (const retryable of [false, undefined, true]) test('execution failure repair references require explicit retryability without erasing original evidence: ' + retryable, () => {
   const failure = {kind: 'execution-failure', digest: hash('failure'), nodeId: 'author-design', cleanup: {cleaned: true}};
@@ -131,29 +131,29 @@ for (const retryable of [false, undefined, true]) test('execution failure repair
 });
 test('repair guidance waits for a real active sibling through unchanged Core', async t => {
   const {f, task, east} = await authors(t);
-  const started = {executionId: 'failed-original', startedAt: new Date().toISOString()}; f.app.execution.started(east, started);
-  f.app.execution.finish(east, {status: 'failed', reason: 'agent_max_tokens', stopReason: 'max_tokens', cleanup: {started, cleaned: true, scope: 'controlled-fixture'}});
-  const ticket = f.take('leader'), {examples, prompt} = rendered(ticket);
+  const started = {executionId: 'failed-original', startedAt: new Date().toISOString()}; (await f.app.execution.started(east, started));
+  (await f.app.execution.finish(east, {status: 'failed', reason: 'agent_max_tokens', stopReason: 'max_tokens', cleanup: {started, cleaned: true, scope: 'controlled-fixture'}}));
+  const ticket = (await f.take('leader')), {examples, prompt} = rendered(ticket);
   assert.equal(examples.repair.actions[0].basis.kind, 'execution-failure');
   assert.ok(prompt.includes('只要兄弟执行仍活跃就不得repair'));
   assert.ok(prompt.includes('没有真实待答、待批准或在途工作时不得假装wait'));
   const action = {...examples.conclude.actions[0], outcome: 'wait', summary: '等待仍在途的兄弟执行完成'};
   assert.equal((await f.decision(ticket, [action])).status, 'completed');
   assert.equal((await f.get(task.id)).status, 'running');
-  assert.equal(!!f.read(tx => f.app.get(tx, task.id)).activeRepair, false);
+  assert.equal(!!(await f.read(tx => f.app.get(tx, task.id))).activeRepair, false);
 });
 test('correct rendered reference does not authorize a stale frozen readSet after another branch completes', async t => {
   const {f, task, east, west} = await authors(t);
-  const started = {executionId: 'failed-original', startedAt: new Date().toISOString()}; f.app.execution.started(east, started);
-  f.app.execution.finish(east, {status: 'failed', reason: 'agent_max_tokens', stopReason: 'max_tokens', cleanup: {started, cleaned: true, scope: 'controlled-fixture'}});
-  const ticket = f.take('leader'), actions = rendered(ticket).examples.ask.actions;
+  const started = {executionId: 'failed-original', startedAt: new Date().toISOString()}; (await f.app.execution.started(east, started));
+  (await f.app.execution.finish(east, {status: 'failed', reason: 'agent_max_tokens', stopReason: 'max_tokens', cleanup: {started, cleaned: true, scope: 'controlled-fixture'}}));
+  const ticket = (await f.take('leader')), actions = rendered(ticket).examples.ask.actions;
   const originalQuestion = (await f.call({operation: 'task.leader', taskId: task.id})).pendingRequest;
-  assert.equal(originalQuestion.status, 'replied'); f.author(west);
+  assert.equal(originalQuestion.status, 'replied'); (await f.author(west));
   assert.equal((await f.decision(ticket, actions)).status, 'failed');
   assert.equal((await f.get(task.id)).status, 'running');
   assert.deepEqual((await f.call({operation: 'task.leader', taskId: task.id})).pendingRequest, originalQuestion);
-  assert.equal(f.read(tx => f.app.get(tx, task.id)).leader.requestIds.length, 1);
-  assert.ok(f.take('leader')); // Original Core creates the bounded successor, not the renderer.
+  assert.equal((await f.read(tx => f.app.get(tx, task.id))).leader.requestIds.length, 1);
+  assert.ok((await f.take('leader'))); // Original Core creates the bounded successor, not the renderer.
 });
 test('review/content-rejection and conclusion mappings copy producer fields, never aggregate hashes or invented digests', () => {
   const review = hash('review'), acceptance = hash('acceptance'), selected = hash('selected'), history = hash('history'), inputDigest = hash('expanded');
@@ -181,7 +181,7 @@ for (const valid of [false, true]) test('observed string-options rejection shape
   const result = await f.decision(ticket, value.actions), view = await f.call({operation: 'task.leader', taskId: task.id});
   assert.equal(result.status, valid ? 'completed' : 'failed');
   if (valid) assert.deepEqual(view.pendingRequest.options, sample);
-  else {assert.equal(view.pendingRequest, null); assert.equal(f.read(tx => f.app.get(tx, task.id)).failureCode, 'invalid_leader_decision');}
+  else {assert.equal(view.pendingRequest, null); assert.equal((await f.read(tx => f.app.get(tx, task.id))).failureCode, 'invalid_leader_decision');}
 });
 test('nonempty option objects obey original closed shape, UTF-8 bounds and uniqueness without normalization', async t => {
   const {ticket} = await initial(t), value = rendered(ticket).examples.ask;
@@ -217,9 +217,9 @@ test('all action array and enum guidance matches original parser; strings/object
   assert.throws(() => parseManagedOutput({completion: {outputText: '\uFEFF' + JSON.stringify(value)}}));
 });
 test('nonempty Review findings are explicitly described and retain exact original report parser limits', async t => {
-  const {f, east, west} = await authors(t); f.author(east); f.author(west);
-  const leader = f.take('leader'); await f.decision(leader, rendered(leader).examples.work.actions);
-  const ticket = f.take('review'), input = ticket.input.review, prompt = renderReviewPrompt(input);
+  const {f, east, west} = await authors(t); (await f.author(east)); (await f.author(west));
+  const leader = (await f.take('leader')); await f.decision(leader, rendered(leader).examples.work.actions);
+  const ticket = (await f.take('review')), input = ticket.input.review, prompt = renderReviewPrompt(input);
   for (const text of ['首字符为{、末字符为}', '无Markdown/代码围栏/前后任何解释或标题', '无重复键、无注释或尾逗号']) assert.ok(prompt.includes(text));
   const finding = JSON.parse(prompt.split('非空元素形状是')[1].split('。')[0]); finding.nodeIds = [input.selection[0].nodeId];
   assert.deepEqual(Object.keys(finding), ['id', 'nodeIds', 'requirement', 'observation', 'requestedChange']);
@@ -253,7 +253,7 @@ test('documented Plan arrays, roles, DAG, verifier sink and v7 budget are still 
     v => {v.budget = {timeoutMs: 60000, maxAttempts: 3, maxWorkers: 3};}]) {
     const {f, task, ticket} = await initial(t), value = structuredClone(proposal); mutate(value);
     assert.equal((await f.decision(ticket, [{type: 'plan', proposal: value}])).status, 'failed');
-    assert.equal(f.read(tx => f.app.get(tx, task.id)).plan, null);
+    assert.equal((await f.read(tx => f.app.get(tx, task.id))).plan, null);
   }
 });
 
@@ -265,13 +265,13 @@ for (const maxAttempts of [undefined, 8, 10, 12]) test('original publication Pla
   const publication = {id: 'reports', policyDigest: hash({id: 'test-publication'}), configuration: {profile: 'controlled-plan-admission'},
     configurationDigest: hash({profile: 'controlled-plan-admission'}), start: unexpected, lookup: unexpected, assertDisjoint: unexpected,
     postverify: {id: 'reports-postverify', start: unexpected}};
-  const f = fixture(t, {publication, publicationExpected: () => ({original: 'expected'})}), limits = {timeoutMs: 600000, maxAttempts: 17, maxWorkers: 3};
+  const f = await fixture(t, {publication, publicationExpected: () => ({original: 'expected'})}), limits = {timeoutMs: 600000, maxAttempts: 17, maxWorkers: 3};
   const task = await f.call({operation: 'task.create', key: 'budget-create', body: {intent: '完整交付两个地区并明确授权发布；地区尚需答复', limits}});
-  const intake = f.take('leader'); await f.decision(intake, rendered(intake).examples.ask.actions);
+  const intake = (await f.take('leader')); await f.decision(intake, rendered(intake).examples.ask.actions);
   const question = (await f.call({operation: 'task.leader', taskId: task.id})).pendingRequest;
   await f.call({operation: 'task.leader.reply', taskId: task.id, requestId: question.id, key: 'budget-answer',
     body: {expectedRevision: (await f.get(task.id)).revision, requestDigest: question.requestDigest, answer: 'north'}});
-  const ticket = f.take('leader'), before = f.read(tx => f.app.get(tx, task.id)), {prompt, examples} = rendered(ticket);
+  const ticket = (await f.take('leader')), before = (await f.read(tx => f.app.get(tx, task.id))), {prompt, examples} = rendered(ticket);
   assert.equal(before.attempts, 2); assert.equal(before.leader.calls, 2); assert.equal(proposal.nodes.length, 3);
   assert.deepEqual(ticket.input.leader.snapshot.task.limits, limits); assert.equal(Object.hasOwn(examples.plan.actions[0].proposal, 'budget'), false);
   for (const text of ['省略整个proposal.budget', '沿用snapshot.task.limits', '不要为省token', 'maxAttempts是整个Task累计执行上限', '用户明确要求合法缩减时仍可提供budget'])
@@ -280,9 +280,9 @@ for (const maxAttempts of [undefined, 8, 10, 12]) test('original publication Pla
   if (maxAttempts !== undefined) candidate.budget = {...limits, maxAttempts};
   const original = structuredClone(candidate), result = await f.decision(ticket, [{type: 'plan', proposal: candidate}]);
   assert.deepEqual(candidate, original); // Guidance/parser never rewrites the returned model budget.
-  const after = f.read(tx => f.app.get(tx, task.id));
+  const after = (await f.read(tx => f.app.get(tx, task.id)));
   assert.equal(after.attempts, 2); assert.deepEqual(after.limits, limits); assert.equal(after.approved, null);
-  assert.equal(f.read(tx => f.app.execution.capacity(tx).value.active.length), 0);
+  assert.equal((await f.read(tx => f.app.execution.capacity(tx).value.active.length)), 0);
   // Original Core minimum: 3 nodes + 2 consumed + 5 following managed calls /
   // checks + 2 publication/postverify =12. Keep8/10 rejected;12 is legal reduction.
   if (maxAttempts === 8 || maxAttempts === 10) {

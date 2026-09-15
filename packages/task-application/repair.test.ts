@@ -25,11 +25,11 @@ const bindPlan = () => ({nodeId: 'verify', description: '内容错误可修，�
     inputs: ['code', 'docs'].map(nodeId => ({path: nodeId + '.txt', source: {kind: 'upstream', nodeId, path: nodeId + '.txt'}}))}),
   deliveries: ['code', 'docs'].map(nodeId => ({nodeId, path: nodeId + '.txt', targetPath: nodeId + '.txt'}))});
 
-function fixture(t) {
+async function fixture(t) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-repair-test-')));
   const root = path.join(parent, 'store'), artifactRoot = path.join(parent, 'objects'), executionRoot = path.join(parent, 'executions');
   fs.mkdirSync(executionRoot, {mode: 0o700});
-  let store = Store.create(root, {format: REPAIR_FORMAT}), owner = store.claimOwner(0, 'fixture', Date.now() + 3600000);
+  let store = Store.create(root, {format: REPAIR_FORMAT}), owner = await store.claimOwner(0, 'fixture', Date.now() + 3600000);
   const depot = ArtifactDepot.create(artifactRoot); let failSQL = false, advance = 0;
   const wrapper = {info: () => store.info(), read: (...args) => store.read(...args), write: (owner, fn) => store.write(owner, tx => {
     const value = fn(tx); if (failSQL) throw Error('fixture-rollback'); return value;
@@ -51,57 +51,57 @@ function fixture(t) {
     call: request => app.dispatch(request, context), get: taskId => app.dispatch({operation: 'task.get', taskId}, context),
     commands: taskId => app.transaction(false, tx => taskId ? tx.taskCommands(taskId) : tx.commands()), head: taskId => app.transaction(false, tx => tx.head(taskId)),
     setSQLFailure(value) {failSQL = value;}, advance(ms) {advance += ms;},
-    take(nodeId) {const c = f.commands().find(c => c.status === 'pending' && JSON.parse(c.payload).nodeId === nodeId); assert.ok(c); return app.execution.nextWork(c.id, c.revision);},
+    async take(nodeId) {const c = (await f.commands()).find(c => c.status === 'pending' && JSON.parse(c.payload).nodeId === nodeId); assert.ok(c); return (await app.execution.nextWork(c.id, c.revision));},
     async setup() {
       const task = await f.call({operation: 'task.create', key: 'create', body: {intent: '完整任务：仅修错误分支', limits: {timeoutMs: 60000, maxAttempts: 6, maxWorkers: 2}}});
-      const c = f.commands().find(c => JSON.parse(c.payload).action === 'plan'), ticket = app.execution.nextWork(c.id, c.revision);
+      const c = (await f.commands()).find(c => JSON.parse(c.payload).action === 'plan'), ticket = (await app.execution.nextWork(c.id, c.revision));
       assert.equal(ticket.repairId, null);
-      const started = {executionId: 'fixture-planner', startedAt: new Date().toISOString()}; app.execution.started(ticket, started);
-      app.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', cleanup: {started, cleaned: true}, plan: proposal});
+      const started = {executionId: 'fixture-planner', startedAt: new Date().toISOString()}; (await app.execution.started(ticket, started));
+      (await app.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', cleanup: {started, cleaned: true}, plan: proposal}));
       const current = await f.get(task.id), plan = await f.call({operation: 'task.plan', taskId: task.id});
       await f.call({operation: 'task.approve', taskId: task.id, key: 'approve', body: {expectedRevision: current.revision, planRevision: plan.revision, planDigest: plan.digest}});
-      const dispatch = f.commands().find(c => JSON.parse(c.payload).action === 'dispatch'); app.execution.expandDispatch(dispatch.id, dispatch.revision);
+      const dispatch = (await f.commands()).find(c => JSON.parse(c.payload).action === 'dispatch'); (await app.execution.expandDispatch(dispatch.id, dispatch.revision));
       return {taskId: task.id, plan};
     },
     async author(ticket, content) {
       const ctx = {signal: new AbortController().signal, deadline: ticket.deadline}, prepared = await business.prepare(ticket, ctx);
-      const started = {executionId: 'fixture-' + ticket.workerId, startedAt: new Date().toISOString()}; app.execution.started(ticket, started);
+      const started = {executionId: 'fixture-' + ticket.workerId, startedAt: new Date().toISOString()}; (await app.execution.started(ticket, started));
       fs.writeFileSync(path.join(prepared.cwd, ticket.nodeId + '.txt'), content, {mode: 0o600});
       const result = {providerId: ticket.providerId, status: 'completed', stopReason: 'end_turn', outputText: 'fixture simulated author', cleanup: {started, cleaned: true}};
       const collected = await business.collect(ticket, result, ctx);
-      app.execution.finish(ticket, {...result, ...collected}); return prepared;
+      (await app.execution.finish(ticket, {...result, ...collected})); return prepared;
     },
     async verify() {
-      const ticket = f.take('verify'), prepared = await business.prepare(ticket, {signal: new AbortController().signal, deadline: ticket.deadline});
+      const ticket = (await f.take('verify')), prepared = await business.prepare(ticket, {signal: new AbortController().signal, deadline: ticket.deadline});
       const handle = verification.start({ticket, prepared}); t.after(() => handle.stop());
-      app.execution.started(ticket, await handle.started); const result = await handle.completion;
-      app.execution.finish(ticket, result); business.release(ticket); app.execution.reconcile(ticket.taskId);
-      for (const c of f.commands().filter(c => c.status === 'pending')) app.execution.settleControl(c.id, c.revision);
+      (await app.execution.started(ticket, await handle.started)); const result = await handle.completion;
+      (await app.execution.finish(ticket, result)); business.release(ticket); (await app.execution.reconcile(ticket.taskId));
+      for (const c of (await f.commands()).filter(c => c.status === 'pending')) (await app.execution.settleControl(c.id, c.revision));
       return {ticket, result};
     },
-    async rejected() {const ready = await f.setup(), code = f.take('code'), docs = f.take('docs');
+    async rejected() {const ready = await f.setup(), code = (await f.take('code')), docs = (await f.take('docs'));
       await f.author(code, 'wrong'); await f.author(docs, 'retained'); await f.verify();
       const task = await f.get(ready.taskId), audit = await f.call({operation: 'task.audit', taskId: ready.taskId});
       assert.equal(task.status, 'failed'); assert.ok(audit.decision.contentRejection); assert.deepEqual(task.allowedActions, ['repair']);
       return {...ready, code, docs, task, audit};},
     request(value) {return {operation: 'task.repair', taskId: value.taskId, key: 'repair', body: {expectedRevision: value.task.revision,
       planDigest: value.plan.digest, decisionDigest: value.audit.decision.digest, nodeIds: ['code'], feedback: '按原业务断言修正为正确结果'}};},
-    reopen() {store.close();
+    async reopen() {store.close();
       for (const options of [{}, {format: CUSTODY_FORMAT}, {format: INTERACTION_FORMAT}]) assert.throws(() => Store.openExisting(root, options));
       store = Store.openExisting(root, {format: REPAIR_FORMAT}); assert.equal(store.info().generation, owner.generation);
-      owner = store.claimOwner(store.info().generation, 'reopened', Date.now() + 3600000);
+      owner = await store.claimOwner(store.info().generation, 'reopened', Date.now() + 3600000);
       app = new TaskApplication({...config, owner});}
   }; return f;
 }
 
 test('real negative command report -> same-plan repair -> retained source + new files -> accepted delivery and cold receipt', {timeout: 20000}, async t => {
-  const f = fixture(t), original = await f.rejected(), request = f.request(original), before = f.head(original.taskId);
+  const f = await fixture(t), original = await f.rejected(), request = f.request(original), before = (await f.head(original.taskId));
   const receipt = await f.call(request); assert.equal(receipt.operation.status, 'accepted'); assert.equal(receipt.acceptedRevision, original.task.revision + 1);
   assert.deepEqual(receipt.affectedNodes, ['code', 'verify']);
   assert.equal((await f.get(original.taskId)).deadlineAt, original.task.deadlineAt);
-  const after = f.head(original.taskId), replay = await f.call(request); assert.equal(replay.replayed, true); assert.deepEqual(after, f.head(original.taskId));
+  const after = (await f.head(original.taskId)), replay = await f.call(request); assert.equal(replay.replayed, true); assert.deepEqual(after, (await f.head(original.taskId)));
   assert.notDeepEqual(before, after);
-  const code = f.take('code'); assert.equal(code.repairId, receipt.repairId); assert.equal(code.input.repair.evidence.id, original.audit.acceptance.evidenceIds[0]);
+  const code = (await f.take('code')); assert.equal(code.repairId, receipt.repairId); assert.equal(code.input.repair.evidence.id, original.audit.acceptance.evidenceIds[0]);
   const prepared = await f.author(code, 'correct'); assert.ok(prepared.prompt.includes(request.body.feedback)); assert.ok(prepared.prompt.includes('originalNegativeReport'));
   const {ticket} = await f.verify(); assert.equal(ticket.input.verification.manifests.find(m => m.nodeId === 'docs').workerId, original.docs.workerId);
   const task = await f.get(original.taskId), audit = await f.call({operation: 'task.audit', taskId: task.id});
@@ -110,25 +110,25 @@ test('real negative command report -> same-plan repair -> retained source + new 
   assert.equal(audit.decision.contentRejection, null); assert.equal(audit.workers.filter(w => w.nodeId === 'docs').length, 1);
   const artifactId = audit.decision.artifacts.find(a => a.kind === 'delivery').id;
   assert.equal((await f.call({operation: 'artifact.content', artifactId})).content.toString(), 'correctretained');
-  f.reopen(); assert.deepEqual(await f.get(task.id), task); assert.equal((await f.call(request)).replayed, true);
+  await f.reopen(); assert.deepEqual(await f.get(task.id), task); assert.equal((await f.call(request)).replayed, true);
   assert.equal((await f.call({operation: 'artifact.content', artifactId})).content.toString(), 'correctretained');
 });
 
 test('repair exact CAS/key, budget, unknown roots and SQL rollback never mutate old facts or reserve budget', {timeout: 20000}, async t => {
-  const f = fixture(t), original = await f.rejected(), request = f.request(original), before = f.head(original.taskId);
+  const f = await fixture(t), original = await f.rejected(), request = f.request(original), before = (await f.head(original.taskId));
   for (const body of [{...request.body, expectedRevision: 1}, {...request.body, nodeIds: ['verify']}, {...request.body, nodeIds: ['code','docs']},
     {...request.body, feedback: '\0'}, {...request.body, decisionDigest: 'sha256:' + 'f'.repeat(64)}]) await assert.rejects(f.call({...request, body}));
-  assert.deepEqual(before, f.head(original.taskId));
-  f.setSQLFailure(true); await assert.rejects(f.call(request)); f.setSQLFailure(false); assert.deepEqual(before, f.head(original.taskId));
+  assert.deepEqual(before, (await f.head(original.taskId)));
+  f.setSQLFailure(true); await assert.rejects(f.call(request)); f.setSQLFailure(false); assert.deepEqual(before, (await f.head(original.taskId)));
   const receipt = await f.call(request); await assert.rejects(f.call({...request, body: {...request.body, feedback: 'different'}}), {code: 'idempotency_conflict'});
   assert.equal((await f.call({operation: 'task.audit', taskId: original.taskId})).attempts, 4);
-  f.reopen(); assert.equal(f.app.execution.reconcile(original.taskId).status, 'failed');
+  await f.reopen(); assert.equal((await f.app.execution.reconcile(original.taskId)).status, 'failed');
   assert.equal((await f.call({operation: 'operation.get', operationId: receipt.operation.id})).status, 'failed');
-  assert.equal(f.commands().some(c => c.status !== 'observed'), false); assert.equal((await f.call(request)).replayed, true);
+  assert.equal((await f.commands()).some(c => c.status !== 'observed'), false); assert.equal((await f.call(request)).replayed, true);
 });
 
 test('actual HTTP null-prototype repair body and TaskClient original receipt identity traverse same Application', {timeout: 20000}, async t => {
-  const f = fixture(t), original = await f.rejected(); let handler;
+  const f = await fixture(t), original = await f.rejected(); let handler;
   const server = createServer((req, res) => void handler(req, res)); t.after(() => {server.closeAllConnections(); server.close();});
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const host = '127.0.0.1:' + server.address().port, token = 'fixture-repair-token-not-a-production-secret';
@@ -162,12 +162,12 @@ test('repair startup rejects missing or drifting trusted bindings before any Tas
   for (const [name, verification] of cases) {
     const store = Store.create(path.join(parent, name), {format: REPAIR_FORMAT});
     try {
-      const owner = store.claimOwner(0, 'fixture', Date.now() + 60000), before = store.info();
+      const owner = await store.claimOwner(0, 'fixture', Date.now() + 60000), before = store.info();
       let configured;
       assert.throws(() => {configured = verification(); return new TaskApplication({store, owner, repair, verification: configured});},
         error => ['unsupported_task', 'invalid_verification_config'].includes(error.code), name);
       assert.deepEqual(store.info(), before);
-      store.read(owner, tx => {assert.deepEqual(tx.projections('task'), []); assert.deepEqual(tx.projections('attempt'), []);
+      await store.read(owner, tx => {assert.deepEqual(tx.projections('task'), []); assert.deepEqual(tx.projections('attempt'), []);
         assert.deepEqual(tx.projections('budget'), []); assert.deepEqual(tx.commands(), []);});
       if (configured !== undefined) {
         const serviceRoot = path.join(parent, name + '-service'); let businessCalls = 0;
@@ -178,8 +178,8 @@ test('repair startup rejects missing or drifting trusted bindings before any Tas
         assert.equal(businessCalls, 0);
         const persisted = Store.openExisting(path.join(serviceRoot, 'store'), {format: REPAIR_FORMAT});
         try {
-          const recovered = persisted.claimOwner(persisted.info().generation, 'inspection', Date.now() + 60000);
-          persisted.read(recovered, tx => {assert.deepEqual(tx.projections('task'), []); assert.deepEqual(tx.projections('attempt'), []);
+          const recovered = await persisted.claimOwner(persisted.info().generation, 'inspection', Date.now() + 60000);
+          await persisted.read(recovered, tx => {assert.deepEqual(tx.projections('task'), []); assert.deepEqual(tx.projections('attempt'), []);
             assert.deepEqual(tx.projections('budget'), []); assert.deepEqual(tx.commands(), []);});
         } finally {persisted.close();}
       }
@@ -188,37 +188,37 @@ test('repair startup rejects missing or drifting trusted bindings before any Tas
   for (const format of [FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT]) {
     const store = Store.create(path.join(parent, format.split('/').at(-1)), {format});
     try {
-      const owner = store.claimOwner(0, 'fixture', Date.now() + 60000), config = {store, owner, repair, verification: port(binding)};
+      const owner = await store.claimOwner(0, 'fixture', Date.now() + 60000), config = {store, owner, repair, verification: port(binding)};
       if (format === REPAIR_FORMAT) assert.doesNotThrow(() => new TaskApplication(config));
       else assert.throws(() => new TaskApplication(config), {code: 'unsupported_task'});
       // The unconfigured legacy profile still starts, with no new capability.
       assert.doesNotThrow(() => new TaskApplication({...config, repair: null}));
-      store.read(owner, tx => {assert.deepEqual(tx.projections('task'), []); assert.deepEqual(tx.projections('attempt'), []); assert.deepEqual(tx.commands(), []);});
+      await store.read(owner, tx => {assert.deepEqual(tx.projections('task'), []); assert.deepEqual(tx.projections('attempt'), []); assert.deepEqual(tx.commands(), []);});
     } finally {store.close();}
   }
   assert.deepEqual(launches, []);
 });
 
 test('over 90 unrelated settled SQLite Tasks do not change the target repair query or acceptance', {timeout: 20000}, async t => {
-  const f = fixture(t), original = await f.rejected(), before = f.head(original.taskId), originalCommands = f.commands(original.taskId);
+  const f = await fixture(t), original = await f.rejected(), before = (await f.head(original.taskId)), originalCommands = (await f.commands(original.taskId));
   const histories = [];
   for (let n = 0; n < 91; n++) {
     const task = await f.call({operation: 'task.create', key: 'unrelated-' + n, body: {intent: '独立历史任务，不启动模型'}});
     await f.call({operation: 'task.cancel', taskId: task.id, key: 'cancel-' + n, body: {expectedRevision: task.revision}});
-    f.app.execution.reconcile(task.id);
-    for (const command of f.commands(task.id)) assert.equal(f.app.execution.settleControl(command.id, command.revision), true);
-    const commands = f.commands(task.id); assert.equal(commands.length, 2); assert.ok(commands.every(command => command.status === 'observed'));
+    (await f.app.execution.reconcile(task.id));
+    for (const command of (await f.commands(task.id))) assert.equal((await f.app.execution.settleControl(command.id, command.revision)), true);
+    const commands = (await f.commands(task.id)); assert.equal(commands.length, 2); assert.ok(commands.every(command => command.status === 'observed'));
     assert.equal((await f.get(task.id)).status, 'cancelled'); histories.push(task.id);
   }
   assert.equal(histories.length * 2 + originalCommands.length, 187);
-  assert.deepEqual(f.head(original.taskId), before); assert.deepEqual(f.commands(original.taskId), originalCommands);
+  assert.deepEqual((await f.head(original.taskId)), before); assert.deepEqual((await f.commands(original.taskId)), originalCommands);
   assert.deepEqual(await f.get(original.taskId), original.task);
   const receipt = await f.call(f.request(original)); assert.equal(receipt.operation.status, 'accepted');
   assert.deepEqual(receipt.affectedNodes, ['code', 'verify']);
   assert.equal((await f.call({operation: 'task.audit', taskId: original.taskId})).attempts, 4);
-  f.reopen();
-  assert.equal(f.app.execution.reconcile(original.taskId).status, 'failed');
+  await f.reopen();
+  assert.equal((await f.app.execution.reconcile(original.taskId)).status, 'failed');
   assert.equal((await f.call({operation: 'operation.get', operationId: receipt.operation.id})).status, 'failed');
-  assert.ok(f.commands(original.taskId).every(command => command.status === 'observed'));
+  assert.ok((await f.commands(original.taskId)).every(command => command.status === 'observed'));
   assert.equal((await f.call(f.request(original))).replayed, true);
 });

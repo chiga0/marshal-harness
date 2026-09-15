@@ -33,11 +33,11 @@ function barrier(observation) {
   process.exit(79);
 }
 const write = Store.prototype.write;
-Store.prototype.write = function(owner, callback) {
+Store.prototype.write = async function(owner, callback) {
   if (!armed || typeof callback !== 'function' || callback.constructor.name === 'AsyncFunction')
     return write.call(this, owner, callback);
   let target;
-  const value = write.call(this, owner, tx => {
+  const value = await write.call(this, owner, tx => {
     const result = callback(tx); // Every original mutation/check runs unchanged.
     const creating = point.startsWith('create-') && result?.intent === intent && result.status === 'draft' && result.revision === 1;
     const finishing = point.startsWith('result-') && result?.role === 'verifier' && result.status === 'completed';

@@ -18,9 +18,9 @@ export function configuration(root, {unpermitted = false} = {}) {
     try {fs.writeFileSync(fd, JSON.stringify(value) + '\n'); fs.fsyncSync(fd);} finally {fs.closeSync(fd);}};
   const tickets = new Map(), original = Store.prototype.write, cut = process.env.WORKER_CANCEL_CUT ?? 'none'; let cutOnce = false;
   const barrier = value => {journal({type: 'barrier', cut, value}); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000); throw Error('fixture barrier missed');};
-  Store.prototype.write = function(owner, callback) {
+  Store.prototype.write = async function(owner, callback) {
     let selected = false;
-    const value = original.call(this, owner, tx => {
+    const value = await original.call(this, owner, tx => {
       const append = tx.append.bind(tx); tx.append = (stream, expected, events) => {
         if (events.some(event => {const payload = JSON.parse(event.bytes).payload;
           return cut.startsWith('stop-') && payload.type === 'worker.cancel-requested' ||

@@ -200,21 +200,21 @@ test('altered ticket, unknown artifacts, input drift and excess/missing outputs 
 test('real Application reservation -> business planner -> original Core awaits explicit approval', async t => {
   const f = fixture(t), store = Store.create(path.join(f.parent, '../state'));
   t.after(() => store.close());
-  const owner = store.claimOwner(0, 'server', Date.now() + 300000);
+  const owner = await store.claimOwner(0, 'server', Date.now() + 300000);
   const app = new TaskApplication({store, owner, execution: {providerIds: ['agent'], defaultProvider: 'agent'}});
   const created = await app.dispatch({operation: 'task.create', key: 'create', body: {intent: '开发任意文件交付'}}, {principal: 'local-operator'});
-  const command = app.execution.poll().items[0], work = app.execution.nextWork(command.id, command.revision), ctx = context(work);
+  const command = (await app.execution.poll()).items[0], work = await app.execution.nextWork(command.id, command.revision), ctx = context(work);
   f.layout('planning', {inputs: [], allowedPaths: []});
-  await f.business.prepare(work, ctx); app.execution.started(work, started);
+  await f.business.prepare(work, ctx); await app.execution.started(work, started);
   const plan = {summary: '可审查方案', nodes: [{id: 'author', role: 'author', goal: '交付说明', scope: [], providerId: 'agent'}],
     edges: [], budget: {timeoutMs: 300000, maxWorkers: 1, maxAttempts: 4}, deliverables: ['说明文档'], acceptance: ['内容准确']};
   const outcome = result({outputText: JSON.stringify(plan)});
   const collected = await f.business.collect(work, outcome, ctx);
-  app.execution.finish(work, {...outcome, ...collected});
+  await app.execution.finish(work, {...outcome, ...collected});
   const observed = await app.dispatch({operation: 'task.get', taskId: created.id}, {principal: 'local-operator'});
   assert.equal(observed.status, 'awaiting-approval');
   assert.deepEqual(observed.allowedActions, ['approve', 'cancel']);
-  assert.equal(app.execution.poll().items.length, 0);
+  assert.equal((await app.execution.poll()).items.length, 0);
 });
 
 test('approval drift after preparation rejects before any candidate blob is persisted', async t => {
