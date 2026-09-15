@@ -86,24 +86,42 @@ export function validateAttemptRef(tx, attemptRef, {taskId, inputBytesById = new
     record.inputRef && id(record.inputRef), 'attempt_projection_mismatch');
 
   const input = decodeProjection(tx, 'attempt', record.inputRef);
-  check(input.row.source.stream === taskId, 'attempt_input_source_mismatch');
-  // Node's input snapshot does not contain a self-referential inputDigest;
-  // the ticket stores digest(encode(input)) beside the snapshot projection.
-  check(input.value.taskId === taskId && canonicalDigest(input.value) === record.ticket.inputDigest,
-    'attempt_input_mismatch');
+  check(input.row.source.stream === taskId && input.row.source.stream === workerRow.source.stream &&
+    input.row.source.sequence === workerRow.source.sequence && input.row.source.digest === workerRow.source.digest,
+  'attempt_input_source_mismatch');
+  // TaskExecution.reserve stores the real input as {task,inputArtifacts,node,
+  // plan,upstream,...}; taskId is carried by the ticket, not duplicated at the
+  // input root. Keep this check broad enough for managed Leader inputs while
+  // still rejecting a non-TaskExecution-shaped snapshot.
+  check(object(input.value) && object(input.value.task) && Array.isArray(input.value.inputArtifacts) &&
+    object(input.value.node) && Array.isArray(input.value.upstream) &&
+    canonicalDigest(input.value) === record.ticket.inputDigest, 'attempt_input_mismatch');
   if (inputBytesById.has(record.inputRef)) {
     const bytes = inputBytesById.get(record.inputRef);
     check(bytes instanceof Uint8Array && bytesDigest(bytes) === record.ticket.inputDigest,
       'attempt_input_bytes_mismatch');
   }
 
+  // The current outbox has no independent durable attemptId; commandId is one
+  // part of the composite identity and must resolve to the same Task/generation.
+  const command = tx.command(attemptRef.commandId);
+  check(command && command.taskId === taskId && command.generation === BigInt(attemptRef.generation) &&
+    command.source.stream === taskId, 'attempt_command_mismatch');
+
   const reserved = tx.eventsWithField(taskId, 'workerId', attemptRef.workerId, 2, ['worker.reserved']);
   check(reserved.length === 1, 'reservation_event_count');
   const event = reserved[0], payload = JSON.parse(event.bytes.toString('utf8')).payload;
-  check(payload?.type === 'worker.reserved' && payload.workerId === attemptRef.workerId &&
+  check(event.generation === BigInt(attemptRef.generation) && payload?.type === 'worker.reserved' && payload.workerId === attemptRef.workerId &&
     payload.reservationDigest === attemptRef.reservationDigest &&
     String(event.sequence) === attemptRef.reservationEvent.sequence &&
     event.digest === attemptRef.reservationEvent.digest, 'reservation_event_mismatch');
+
+  // Rebuild the exact ticket shape used by TaskExecution.reserve. Merely
+  // changing the projection and reservation event together must not create a
+  // second valid identity.
+  const {reservationDigest: _reservationDigest, ...frozenTicket} = record.ticket;
+  check(canonicalDigest({...frozenTicket, input: input.value}) === attemptRef.reservationDigest,
+    'reservation_digest_mismatch');
   return {worker: record, input: input.value, reservationEvent: event};
 }
 
@@ -143,10 +161,13 @@ export function validateAcceptanceEvidence(tx, evidence, context = {}) {
   check(new Set(checkIds).size === checkIds.length && evidence.entries.length === checkIds.length &&
     evidence.entries.every(entry => checkIds.includes(entry.checkId)), 'acceptance_check_catalog_mismatch');
   const {value: task} = decodeProjection(tx, 'task', taskId);
-  check(task.taskId === taskId && task.contractDigest === contractDigest && task.planDigest === planDigest &&
-    task.candidateDigest === candidateDigest && task.selectionDigest === selectionDigest &&
-    Array.isArray(task.checkIds) && task.checkIds.length === checkIds.length &&
-    task.checkIds.every(checkId => checkIds.includes(checkId)), 'acceptance_task_binding_mismatch');
+  // Current TaskApplication has no acceptanceContract/evidence index yet. The
+  // offline candidate can therefore prove only the durable Task identity and
+  // the approved plan digest here; contract/candidate/selection values remain
+  // explicit test context until the runtime contract is implemented.
+  check((task.task?.id ?? task.taskId) === taskId &&
+    (task.plan?.digest ?? task.task?.plan?.digest) === planDigest,
+  'acceptance_task_binding_mismatch');
 
   const seen = new Set();
   for (const entry of evidence.entries) {
