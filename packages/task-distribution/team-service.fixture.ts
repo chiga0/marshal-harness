@@ -5,11 +5,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {createInterface} from 'node:readline';
-import {policy, bindPlan} from '../task-team-integration/scenario.fixture.mjs';
+import {policy, bindPlan} from '../task-team-integration/scenario.fixture.ts';
 
 let configuration;
 if (process.env.MARSHAL_PACKAGE_CHECKER === '1') {
-  const {encode} = await import(pathToFileURL(path.join(process.env.MARSHAL_PACKAGE_ROOT, 'packages/task-store/store.mjs')).href);
+  const {encode} = await import(pathToFileURL(path.join(process.env.MARSHAL_PACKAGE_ROOT, 'packages/task-store/store.ts')).href);
   for await (const line of createInterface({input: process.stdin})) {
     const request = JSON.parse(line);
     const actual = ['east', 'west'].map(region => JSON.parse(fs.readFileSync(region + '.json', 'utf8')));
@@ -22,18 +22,18 @@ if (process.env.MARSHAL_PACKAGE_CHECKER === '1') {
   const root = process.env.MARSHAL_PACKAGE_ROOT, journal = process.env.MARSHAL_PACKAGE_JOURNAL;
   assert.ok(path.isAbsolute(root ?? '') && fs.realpathSync(root) === root && path.isAbsolute(journal ?? ''));
   const load = relative => import(pathToFileURL(path.join(root, relative)).href);
-  const {encode, digest} = await load('packages/task-store/store.mjs');
-  const {createAcpProvider} = await load('packages/agent-provider-acp/index.mjs');
-  const {createFileBusiness} = await load('packages/task-business/index.mjs');
-  const {createVerificationPort} = await load('packages/task-application/application.mjs');
-  const {createVerificationCommand} = await load('packages/task-verification-command/index.mjs');
+  const {encode, digest} = await load('packages/task-store/store.ts');
+  const {createAcpProvider} = await load('packages/agent-provider-acp/index.ts');
+  const {createFileBusiness} = await load('packages/task-business/index.ts');
+  const {createVerificationPort} = await load('packages/task-application/application.ts');
+  const {createVerificationCommand} = await load('packages/task-verification-command/index.ts');
   const record = value => {
     const fd = fs.openSync(journal, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
     try {fs.writeFileSync(fd, JSON.stringify(value) + '\n'); fs.fsyncSync(fd);} finally {fs.closeSync(fd);}
   };
   const custody = process.env.MARSHAL_PACKAGE_CUSTODY === '1';
   const native = createAcpProvider({id: 'package-fixture-acp', executable: process.execPath,
-    args: [fileURLToPath(new URL('../task-team-integration/agent.fixture.mjs', import.meta.url))], env: {TEAM_FIXTURE_MODE: 'good'},
+    args: [fileURLToPath(new URL('../task-team-integration/agent.fixture.ts', import.meta.url))], env: {TEAM_FIXTURE_MODE: 'good'},
     ...(custody ? {custodyProfile: {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true}} : {})});
   function observe(handle, role) {
     return {...handle, started: handle.started.then(value => {record({type: 'started', role, value}); return value;}),

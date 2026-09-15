@@ -4,14 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Store, REPAIR_FORMAT, encode, digest} from '../task-store/store.mjs';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {TaskApplication, createRepairPort, createRuntimeQuestionPort, createVerificationPort} from './application.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
+import {Store, REPAIR_FORMAT, encode, digest} from '../task-store/store.ts';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {TaskApplication, createRepairPort, createRuntimeQuestionPort, createVerificationPort} from './application.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
 
 const context = {principal: 'local-operator'}, hash = value => digest(encode(value));
-const checkerPath = fileURLToPath(new URL('./repair-checker.fixture.mjs', import.meta.url));
+const checkerPath = fileURLToPath(new URL('./repair-checker.fixture.ts', import.meta.url));
 const proposal = {summary: '修正代码并保留已答复的文档分支',
   nodes: ['code', 'docs', 'verify'].map(id => ({id, role: id === 'verify' ? 'verifier' : 'author',
     goal: '完成 ' + id, scope: [id], providerId: null})),

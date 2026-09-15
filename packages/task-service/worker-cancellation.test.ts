@@ -7,10 +7,10 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode} from '../task-store/store.mjs';
-import {data, expected} from './worker-cancellation.fixture.mjs';
-const cli = fileURLToPath(new URL('./main.mjs', import.meta.url)), config = fileURLToPath(new URL('./worker-cancellation.fixture.mjs', import.meta.url));
+import {TaskClient} from '../task-client/index.ts';
+import {encode} from '../task-store/store.ts';
+import {data, expected} from './worker-cancellation.fixture.ts';
+const cli = fileURLToPath(new URL('./main.ts', import.meta.url)), config = fileURLToPath(new URL('./worker-cancellation.fixture.ts', import.meta.url));
 const equal = (a, b) => assert.deepEqual(encode(a), encode(b));
 async function until(fn, ms = 16000) {const deadline = Date.now() + ms; for (;;) {const value = await fn(); if (value) return value;
   assert.ok(Date.now() < deadline, 'bounded worker cancellation observation'); await pause(10);}}
@@ -102,7 +102,7 @@ for (const role of ['planner', 'verifier']) test('real target ' + role + ' canno
   await service.stop('SIGTERM'); f.complete();
 });
 test('v6 Git prepared but unbound crash keeps target UNKNOWN even after switching to staging-only configuration', {timeout: 60000}, async t => {
-  const f = await fixture(t), options = {config: fileURLToPath(new URL('./worker-cancellation-git.fixture.mjs', import.meta.url)), env: {WORKER_GIT_FIXTURE: '1'}};
+  const f = await fixture(t), options = {config: fileURLToPath(new URL('./worker-cancellation-git.fixture.ts', import.meta.url)), env: {WORKER_GIT_FIXTURE: '1'}};
   const first = await f.launch('create', 'none', options), client = first.client;
   const description = fs.readFileSync(path.join(f.parent, 'git-input.json'), 'utf8');
   const task = await client.createTask({intent: '原 Git 两库候选，不授权任何无许可准备', context: {text: description},

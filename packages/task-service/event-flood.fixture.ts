@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createInterface} from 'node:readline';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
 
 let configuration;
 if (process.argv.includes('--agent')) {
@@ -28,7 +28,7 @@ if (process.argv.includes('--agent')) {
   }
 } else {
   if (process.env.MARSHAL_EVENT_FLOOD_FIXTURE !== '1') throw Error('test-only configuration');
-  const base = (await import('./soak.fixture.mjs')).default;
+  const base = (await import('./soak.fixture.ts')).default;
   const original = base.providers.get('fixture-acp'), tickets = new Map();
   const root = process.argv[process.argv.indexOf('--root') + 1];
   const journal = path.join(path.dirname(root), 'flood-observations.jsonl');

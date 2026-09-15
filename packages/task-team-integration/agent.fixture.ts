@@ -1,7 +1,7 @@
 // Deterministic ACP process fixture, NOT a real model and never production registration.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {proposal} from './scenario.fixture.mjs';
+import {proposal} from './scenario.fixture.ts';
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const respond = (message, result) => send({jsonrpc: '2.0', id: message.id, result});
 for await (const line of createInterface({input: process.stdin})) {

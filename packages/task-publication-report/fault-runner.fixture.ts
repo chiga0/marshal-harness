@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-import {run} from './command.mjs';
-import {json} from './io.mjs';
+import {run} from './command.ts';
+import {json} from './io.ts';
 // Test-only interception of the ORIGINAL call, scoped to this owned child.
 const point = process.argv[2], unlink = fs.unlinkSync, sync = fs.fsyncSync;
 fs.unlinkSync = filename => {

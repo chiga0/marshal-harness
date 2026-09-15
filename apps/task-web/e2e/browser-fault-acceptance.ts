@@ -6,8 +6,8 @@ import os from 'node:os';
 import {pathToFileURL} from 'node:url';
 import {createHash, randomUUID} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {WORKTREE, ensureDist, spawnService, FIXTURE_LEADER} from './helpers.mjs';
-import {bounded, readJSON, until, assertReplay, finish} from './browser-fault-guards.mjs';
+import {WORKTREE, ensureDist, spawnService, FIXTURE_LEADER} from './helpers.ts';
+import {bounded, readJSON, until, assertReplay, finish} from './browser-fault-guards.ts';
 
 const modulePath = process.env.PLAYWRIGHT_MODULE;
 assert.ok(modulePath && path.isAbsolute(modulePath), '提供已安装 Playwright 的绝对 PLAYWRIGHT_MODULE');
@@ -22,7 +22,7 @@ const runtime = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ui-fault-
 const hash = value => createHash('sha256').update(value).digest('hex');
 const evidence = {head: execFileSync('git', ['rev-parse', 'HEAD'], {cwd: WORKTREE, encoding: 'utf8'}).trim(), engine,
   nodeVersion: process.version, scriptSha256: hash(fs.readFileSync(new URL(import.meta.url))),
-  guardsSha256: hash(fs.readFileSync(new URL('./browser-fault-guards.mjs', import.meta.url))),
+  guardsSha256: hash(fs.readFileSync(new URL('./browser-fault-guards.ts', import.meta.url))),
   boundary: '真实浏览器 + HTTP/SQLite + 既有受控 ACP，无真实模型、无业务发布、非目标用户可用性验收', checks: []};
 let service, browser, page;
 try {

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {cliShutdown} from './cli-shutdown.mjs';
-import {safeServiceDiagnostic, terminalServiceDiagnostic} from './service-diagnostic.mjs';
-import {TaskExecutionCoordinator} from '../task-execution/controller.mjs';
+import {cliShutdown} from './cli-shutdown.ts';
+import {safeServiceDiagnostic, terminalServiceDiagnostic} from './service-diagnostic.ts';
+import {TaskExecutionCoordinator} from '../task-execution/controller.ts';
 
 test('startup failure waits for acquired edge; signal and failure share one obligation', async () => {
   let resources = {}, edges = 0, services = 0, emitted = 0;

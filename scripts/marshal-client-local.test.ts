@@ -6,9 +6,9 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
-import {run, connectLocal} from '../packages/task-local/main.mjs';
-import {contract, TaskApiError} from '../packages/task-api/contract.mjs';
-import {createTaskApiHandler} from '../packages/task-api/http-handler.mjs';
+import {run, connectLocal} from '../packages/task-local/main.ts';
+import {contract, TaskApiError} from '../packages/task-api/contract.ts';
+import {createTaskApiHandler} from '../packages/task-api/http-handler.ts';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 function fixture(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-client-local-')));
@@ -17,7 +17,7 @@ function fixture(t) {
 }
 test('init records discovered paths; repeat preserves explicit deployment configuration', async t => {
   const home = fixture(t), output = [];
-  const config = path.join(home, 'config.mjs');
+  const config = path.join(home, 'config.ts');
   fs.writeFileSync(config, 'export default {};');
   await run(['init', '--install-root', root, '--config', config], {home, output: x => output.push(x)});
   await run(['init'], {home, output: x => output.push(x)});
@@ -74,7 +74,7 @@ test('live service cannot be reported as a newly requested configuration', async
   fs.writeFileSync(connection, JSON.stringify({url, token}), {mode: 0o600});
   await run(['init', '--install-root', root, '--connection-file', connection], {home, output() {}});
   const file = path.join(home, '.marshal-client/local.json'), before = fs.readFileSync(file);
-  for (const args of [['--config', path.join(home, 'different.mjs')], ['--ui', path.join(home, 'ui')], ['--port', '34567'], ['--generic']]) {
+  for (const args of [['--config', path.join(home, 'different.ts')], ['--ui', path.join(home, 'ui')], ['--port', '34567'], ['--generic']]) {
     await assert.rejects(run(['serve', ...args], {home, output() {assert.fail('no false connection');}}), /running_configuration_conflict/);
     await assert.rejects(run(['init', ...args], {home, output() {assert.fail('no live reconfiguration');}}), /running_configuration_conflict/);
     assert.deepEqual(fs.readFileSync(file), before);
@@ -99,7 +99,7 @@ test('live 503 readiness blocks launch, reconfiguration and launcher replacement
   await run(['init', '--install-root', root, '--connection-file', connection], {home, output() {}});
   const settings = path.join(home, '.marshal-client/local.json'), launcher = path.join(home, '.local/bin/marshal');
   const before = fs.readFileSync(settings), beforeLauncher = fs.readFileSync(launcher); ready = false;
-  for (const args of [['serve'], ['status'], ['serve', '--generic'], ['init', '--replace-launcher'], ['init', '--config', path.join(home, 'other.mjs')]]) {
+  for (const args of [['serve'], ['status'], ['serve', '--generic'], ['init', '--replace-launcher'], ['init', '--config', path.join(home, 'other.ts')]]) {
     await assert.rejects(run(args, {home, output() {assert.fail('not connected');}}), /service_not_ready/);
     assert.deepEqual(fs.readFileSync(settings), before); assert.deepEqual(fs.readFileSync(launcher), beforeLauncher);
   }
@@ -143,8 +143,8 @@ test('generic default selects exact agent and private root, forwards UI port and
   const connectionFile = path.join(home, 'live.json');
   const installed = fakeInstall(home, `
     import fs from 'node:fs'; import {createServer} from 'node:http';
-    import {createTaskApiHandler} from '../task-api/http-handler.mjs';
-    import {contract} from '../task-api/contract.mjs';
+    import {createTaskApiHandler} from '../task-api/http-handler.ts';
+    import {contract} from '../task-api/contract.ts';
     fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify({argv:process.argv.slice(2),agent:process.env.MARSHAL_AGENT_EXECUTABLE}));
     const token='fixture-generic-service-token-001';let handler;
     const server=createServer((req,res)=>handler(req,res));
@@ -157,7 +157,7 @@ test('generic default selects exact agent and private root, forwards UI port and
     process.on('SIGTERM',()=>{server.closeAllConnections();server.close();});
   `);
   fs.mkdirSync(path.join(installed, 'packages/task-generic-files'));
-  const config = path.join(installed, 'packages/task-generic-files/service-config.mjs');
+  const config = path.join(installed, 'packages/task-generic-files/service-config.ts');
   fs.writeFileSync(config, 'export default {};');
   const ui = path.join(home, 'ui'); fs.mkdirSync(ui);
   const bin = path.join(home, 'bin'); fs.mkdirSync(bin);
@@ -202,7 +202,7 @@ test('no-ui is mutually exclusive and removes only the recorded UI option', asyn
 });
 
 test('explicit generic selection preserves old files but does not adopt old business data root', async t => {
-  const home = fixture(t), config = path.join(home, 'business.mjs'), data = path.join(home, 'business-data');
+  const home = fixture(t), config = path.join(home, 'business.ts'), data = path.join(home, 'business-data');
   fs.writeFileSync(config, 'export default {};'); fs.mkdirSync(data);
   await run(['init', '--install-root', root, '--config', config, '--data-dir', data], {home, output() {}});
   await run(['init', '--generic'], {home, output() {}});
@@ -214,10 +214,10 @@ test('explicit generic selection preserves old files but does not adopt old busi
 });
 
 test('upgrade init preserves old settings on launcher conflict and replaces only explicitly', async t => {
-  const home = fixture(t), config = path.join(home, 'business.mjs'); fs.writeFileSync(config, 'export default {};');
+  const home = fixture(t), config = path.join(home, 'business.ts'); fs.writeFileSync(config, 'export default {};');
   const old = fakeInstall(home, '');
   fs.mkdirSync(path.join(old, 'packages/task-local'));
-  fs.writeFileSync(path.join(old, 'packages/task-local/main.mjs'), '');
+  fs.writeFileSync(path.join(old, 'packages/task-local/main.ts'), '');
   await run(['init', '--install-root', old, '--config', config], {home, output() {}});
   const settingsFile = path.join(home, '.marshal-client/local.json'), before = fs.readFileSync(settingsFile);
   const launcher = path.join(home, '.local/bin/marshal'), launcherBefore = fs.readFileSync(launcher);
@@ -236,16 +236,16 @@ function fakeInstall(home, program) {
   const installed = path.join(home, 'installed');
   fs.mkdirSync(path.join(installed, 'packages/task-service'), {recursive: true, mode: 0o700});
   for (const pkg of ['task-client', 'task-api']) fs.cpSync(path.join(root, 'packages', pkg), path.join(installed, 'packages', pkg), {recursive: true});
-  fs.writeFileSync(path.join(installed, 'packages/task-service/main.mjs'), program);
+  fs.writeFileSync(path.join(installed, 'packages/task-service/main.ts'), program);
   return installed;
 }
 test('serve owns startup, checks real HTTP before persisting connection, and forwards shutdown', {timeout: 10000}, async t => {
-  const home = fixture(t), config = path.join(home, 'config.mjs');
+  const home = fixture(t), config = path.join(home, 'config.ts');
   fs.writeFileSync(config, JSON.stringify({connectionFile: path.join(home, 'live.json')}));
   const installed = fakeInstall(home, `
     import fs from 'node:fs'; import {createServer} from 'node:http';
-    import {createTaskApiHandler} from '../task-api/http-handler.mjs';
-    import {contract} from '../task-api/contract.mjs';
+    import {createTaskApiHandler} from '../task-api/http-handler.ts';
+    import {contract} from '../task-api/contract.ts';
     const {connectionFile} = JSON.parse(fs.readFileSync(process.argv[3]));
     const token = 'fixture-managed-start-token-private-001'; let handler;
     const server = createServer((req,res) => handler(req,res));
@@ -275,7 +275,7 @@ test('serve owns startup, checks real HTTP before persisting connection, and for
   assert.equal(connected, true);
 });
 test('startup timeout kills only own unresponsive service and preserves old connection record', {timeout: 10000}, async t => {
-  const home = fixture(t), config = path.join(home, 'config.mjs');
+  const home = fixture(t), config = path.join(home, 'config.ts');
   fs.writeFileSync(config, '{}');
   const installed = fakeInstall(home, `process.on('SIGTERM',()=>{});setInterval(()=>{},1000);`);
   const oldConnection = path.join(home, 'old.json');

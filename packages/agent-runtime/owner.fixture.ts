@@ -1,7 +1,7 @@
 // Checked-in owner used only to prove inherited-IPC crash cleanup.
 import { fileURLToPath } from 'node:url';
-import { launchAcp } from './index.mjs';
-const agent = fileURLToPath(new URL('./fake-agent.fixture.mjs', import.meta.url));
+import { launchAcp } from './index.ts';
+const agent = fileURLToPath(new URL('./fake-agent.fixture.ts', import.meta.url));
 if (!process.send || process.env.AGENT_RUNTIME_OWNER_FIXTURE !== '1') process.exit(2);
 const runtime = await launchAcp({ executable: process.execPath, args: [agent], cwd: process.cwd(),
   deadline: Date.now() + 15000, onUpdate: event => {

@@ -2,7 +2,7 @@
 // one bounded LF frame; the managed command intentionally keeps stdin open.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {encode, digest} from '../task-store/store.mjs';
+import {encode, digest} from '../task-store/store.ts';
 for await (const line of createInterface({input: process.stdin})) {
   if (Buffer.byteLength(line) > 262144) throw Error('frame_limit');
   const request = JSON.parse(line), {sales, source} = request.input;

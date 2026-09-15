@@ -4,13 +4,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Store, encode, digest} from '../task-store/store.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createFileBusiness, createStagingOnlyBusinessFactory} from '../task-business/index.mjs';
-import {createVerificationPort, createRepairPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {policy, bindPlan, proposal} from '../task-team-integration/scenario.fixture.mjs';
-import {data} from '../task-qwen-live/driver.fixture.mjs';
+import {Store, encode, digest} from '../task-store/store.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createFileBusiness, createStagingOnlyBusinessFactory} from '../task-business/index.ts';
+import {createVerificationPort, createRepairPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {policy, bindPlan, proposal} from '../task-team-integration/scenario.fixture.ts';
+import {data} from '../task-qwen-live/driver.fixture.ts';
 
 const root = process.argv[process.argv.indexOf('--root') + 1], scenario = process.env.MARSHAL_REPAIR_SCENARIO;
 if (process.env.MARSHAL_REPAIR_FIXTURE !== '1' || !path.isAbsolute(root ?? '') ||
@@ -69,9 +69,9 @@ function observed(handle, ticket) {
 }
 const custodyProfile = {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true};
 const planner = createAcpProvider({id: 'repair-planner', executable: process.execPath,
-  args: [here('./runtime-question-recovery.worker.fixture.mjs'), 'planner'], custodyProfile});
+  args: [here('./runtime-question-recovery.worker.fixture.ts'), 'planner'], custodyProfile});
 const agent = mode => createAcpProvider({id: 'repair-author', executable: process.execPath,
-  args: [here('../task-team-integration/agent.fixture.mjs')], env: {TEAM_FIXTURE_MODE: mode}, custodyProfile});
+  args: [here('../task-team-integration/agent.fixture.ts')], env: {TEAM_FIXTURE_MODE: mode}, custodyProfile});
 const good = agent('good'), wrong = agent('corrupt'), hanging = agent('hang');
 const author = {id: good.id, custodyProfile: good.custodyProfile, start(input) {
   const ticket = tickets.get(input.cwd); assert.ok(ticket);
@@ -84,7 +84,7 @@ const planning = {id: planner.id, custodyProfile: planner.custodyProfile, start(
   return observed(planner.start(v5 ? {...input, prompt: input.prompt + '\nFIXTURE_PLAN=' + JSON.stringify(declared)} : input), ticket);
 }};
 const declared = proposal(); for (const node of declared.nodes) if (node.role === 'author') node.providerId = author.id;
-const checkerPath = here('./same-plan-repair-checker.fixture.mjs');
+const checkerPath = here('./same-plan-repair-checker.fixture.ts');
 const command = createVerificationCommand({executable: process.execPath, checkerPath,
   checkerDigest: digest(fs.readFileSync(checkerPath)), policyDigest: digest(encode(policy)),
   env: {MARSHAL_REPAIR_CHECKER_MODE: scenario}, repair: {policyDigest: repair.policyDigest, assertions: ['west-content']},

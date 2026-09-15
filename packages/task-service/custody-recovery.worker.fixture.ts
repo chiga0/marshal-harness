@@ -6,5 +6,5 @@ if (process.env.MARSHAL_CUSTODY_CHECKER_HOLD === '1') {
   // fallback cannot yield a valid verification frame or pretend acceptance.
   setTimeout(() => process.exit(78), 45000);
 } else {
-  await import('../task-team-integration/checker.fixture.mjs');
+  await import('../task-team-integration/checker.fixture.ts');
 }

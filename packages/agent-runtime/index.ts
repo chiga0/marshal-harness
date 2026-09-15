@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { AcpClient } from '../agent-acp/client.mjs';
-import { PROTOCOL, DEFAULT_LIMITS, BOOT_WAIT_MS, CLEANUP_WAIT_MS, validateOptions } from './protocol.mjs';
+import { AcpClient } from '../agent-acp/client.ts';
+import { PROTOCOL, DEFAULT_LIMITS, BOOT_WAIT_MS, CLEANUP_WAIT_MS, validateOptions } from './protocol.ts';
 
-const GUARD = fileURLToPath(new URL('./guard.mjs', import.meta.url));
+const GUARD = fileURLToPath(new URL('./guard.ts', import.meta.url));
 const REASONS = new Set(['owner_stop', 'deadline', 'agent_exit', 'spawn_failed', 'input_limit', 'output_limit',
   'stderr_limit', 'parent_disconnected', 'parent_input_closed', 'parent_stream_error', 'stream_error',
   'bootstrap_timeout', 'invalid_launch', 'invalid_control', 'external_stop']);

@@ -1,7 +1,7 @@
 // Independent fixed checker observes original files; no author/verifier boolean.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {encode} from '../task-store/store.mjs';
+import {encode} from '../task-store/store.ts';
 for await (const line of createInterface({input: process.stdin})) {
   const request = JSON.parse(line);
   const actual = ['east', 'west'].map(id => JSON.parse(fs.readFileSync(id + '.json', 'utf8')));

@@ -5,14 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {fileURLToPath} from 'node:url';
-import {parseOptions, runLive} from './driver.fixture.mjs';
-import {cancelPiWorker, retainedResult, readRetainedResult, workerCancellation} from './worker-cancel.fixture.mjs';
-import {trackExecution} from '../task-qwen-live/driver.fixture.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {createPiProvider} from '../agent-provider-pi/index.mjs';
-import {launchProtocol} from '../agent-runtime/index.mjs';
-import {filePermission} from '../task-pi-live/driver.fixture.mjs';
-import {data, questionPolicyDigest} from './scenario.fixture.mjs';
+import {parseOptions, runLive} from './driver.fixture.ts';
+import {cancelPiWorker, retainedResult, readRetainedResult, workerCancellation} from './worker-cancel.fixture.ts';
+import {trackExecution} from '../task-qwen-live/driver.fixture.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {createPiProvider} from '../agent-provider-pi/index.ts';
+import {launchProtocol} from '../agent-runtime/index.ts';
+import {filePermission} from '../task-pi-live/driver.fixture.ts';
+import {data, questionPolicyDigest} from './scenario.fixture.ts';
 
 const args = ['--execute-real', '--run-dir', '/private/tmp/pi-worker-cancel-new', '--node', '/installed/node',
   '--pi-entry', '/installed/pi/dist/bundle/cli.js', '--pi-sdk', '/installed/pi/dist/index.js'];
@@ -165,8 +165,8 @@ test('checked-in Pi peer really writes west through the original bridge and stop
   let complete = false, releaseWest, questionEntered;
   const gate = new Promise(resolve => {releaseWest = resolve;}), asked = new Promise(resolve => {questionEntered = resolve;});
   const here = name => fileURLToPath(new URL(name, import.meta.url));
-  const provider = createPiProvider({id: 'pi-fixture', executable: process.execPath, args: [here('./worker-cancel-peer.fixture.mjs')],
-    bridge: {sdkEntry: here('../agent-provider-pi/fixtures/sdk/index.mjs')}});
+  const provider = createPiProvider({id: 'pi-fixture', executable: process.execPath, args: [here('./worker-cancel-peer.fixture.ts')],
+    bridge: {sdkEntry: here('../agent-provider-pi/fixtures/sdk/index.ts')}});
   t.after(async () => {
     releaseWest(); for (const handle of handles) assert.equal((await handle.stop()).cleanup?.cleaned, true);
     if (complete) fs.rmSync(root, {recursive: true, force: true}); else t.diagnostic('Preserved private fixture: ' + root);

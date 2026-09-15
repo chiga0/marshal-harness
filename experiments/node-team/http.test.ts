@@ -8,8 +8,8 @@ import {fileURLToPath} from 'node:url';
 import {once} from 'node:events';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const main = join(here, 'main.mjs');
-const fixture = join(here, 'fixtures/pi.mjs');
+const main = join(here, 'main.ts');
+const fixture = join(here, 'fixtures/pi.ts');
 
 async function start(dataDir, config) {
   const child = spawn(process.execPath, [main, '--data-dir', dataDir, '--config', config], {
@@ -108,7 +108,7 @@ test('pure HTTP team delivery, idempotency, active frontend restart and owned ca
   assert.equal(finished.status, 'completed', JSON.stringify(finished));
   const delivery = await request(server, `/v1/tasks/${draft.id}/delivery`);
   assert.equal(delivery.status, 200);
-  assert.deepEqual(delivery.body.files.map(f => f.name).sort(), ['normalize.mjs', 'report.mjs']);
+  assert.deepEqual(delivery.body.files.map(f => f.name).sort(), ['normalize.ts', 'report.ts']);
   assert.ok(delivery.body.checks > 0);
   assert.ok(delivery.body.files.every(f => /^[a-f0-9]{64}$/.test(f.sha256)));
   const tooLate = await request(server, `/v1/tasks/${draft.id}/cancel`, 'POST', {expectedRevision: finished.revision}, 'late-cancel');

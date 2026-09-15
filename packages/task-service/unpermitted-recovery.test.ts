@@ -7,11 +7,11 @@ import {spawn} from 'node:child_process';
 import {setTimeout as pause} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode} from '../task-store/store.mjs';
-import {verifyObservation, custodyDigest} from '../agent-runtime/custody-contract.mjs';
+import {TaskClient} from '../task-client/index.ts';
+import {encode} from '../task-store/store.ts';
+import {verifyObservation, custodyDigest} from '../agent-runtime/custody-contract.ts';
 
-const cli = fileURLToPath(new URL('./main.mjs', import.meta.url)), config = fileURLToPath(new URL('./unpermitted-recovery.fixture.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('./main.ts', import.meta.url)), config = fileURLToPath(new URL('./unpermitted-recovery.fixture.ts', import.meta.url));
 const data = {rows: [{region: 'east', status: 'paid', cents: 1275}, {region: 'west', status: 'paid', cents: 800},
   {region: 'east', status: 'cancelled', cents: 9000}, {region: 'west', status: 'paid', cents: -250},
   {region: 'east', status: 'paid', cents: 0}, {region: 'west', status: 'cancelled', cents: 100}]};
@@ -38,7 +38,7 @@ async function fixture(t, point, extension = null) {
   t.after(async () => {for (const child of f.children) await child.stop('SIGKILL');
     if (f.complete) fs.rmSync(parent, {recursive: true, force: true}); else t.diagnostic('Preserved v5 failure: ' + parent);});
   f.launch = async (mode, fault = 'none') => {
-    const file = extension ? fileURLToPath(new URL('./unpermitted-extensions.fixture.mjs', import.meta.url)) : config;
+    const file = extension ? fileURLToPath(new URL('./unpermitted-extensions.fixture.ts', import.meta.url)) : config;
     const child = spawn(process.execPath, [cli, '--root', f.root, '--mode', mode, '--config', file], {cwd: parent,
       env: extension ? {MARSHAL_V5_EXTENSION: extension, MARSHAL_REPAIR_V5_CUT: fault === 'cut' ? '1' : '0'} :
         {MARSHAL_CONTROL_COMMIT_FIXTURE: '1', MARSHAL_CONTROL_COMMIT_POINT: fault, MARSHAL_CONTROL_COMMIT_CAPACITY: point.startsWith('cancel-') ? '2' : '1'}, stdio: ['ignore', 'pipe', 'pipe']});

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { TextDecoder } from 'node:util';
-import { MAX_STDOUT_BYTES, MAX_STDERR_BYTES } from './limits.mjs';
+import { MAX_STDOUT_BYTES, MAX_STDERR_BYTES } from './limits.ts';
 
 // Spawned detached by the supervisor. This Node process remains the living
 // session/group leader after its Agent exits. Only authenticated inherited IPC

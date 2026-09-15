@@ -2,7 +2,7 @@
 // Both consume the ORIGINAL parent's input, never the HTTP test's answer closure.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {encode, digest} from '../task-store/store.mjs';
+import {encode, digest} from '../task-store/store.ts';
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 for await (const line of createInterface({input: process.stdin})) {
   const request = JSON.parse(line);

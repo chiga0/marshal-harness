@@ -5,7 +5,7 @@ import path from 'node:path';
 import {setTimeout as pause} from 'node:timers/promises';
 import {createInterface} from 'node:readline';
 import {execFileSync} from 'node:child_process';
-import {proposal} from './scenario.fixture.mjs';
+import {proposal} from './scenario.fixture.ts';
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const reply = (message, result) => send({jsonrpc: '2.0', id: message.id, result});
 const source = {

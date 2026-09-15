@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {fixture, manifest, copyOffline, durable, completeTeam, events, upload} from './backup-restore.fixture.mjs';
+import {fixture, manifest, copyOffline, durable, completeTeam, events, upload} from './backup-restore.fixture.ts';
 
 async function originalFacts(client, original, history) {
   const taskId = original.created.id;

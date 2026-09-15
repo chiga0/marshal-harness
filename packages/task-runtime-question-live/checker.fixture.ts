@@ -1,9 +1,9 @@
 // Versioned independent checker; parses data only, never executes author output.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {encode} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {verifyBusiness} from './scenario.fixture.mjs';
+import {encode} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {verifyBusiness} from './scenario.fixture.ts';
 const read = name => {const stat = fs.lstatSync(name); if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw Error('input_boundary');
   return fs.readFileSync(name, 'utf8');};
 try {

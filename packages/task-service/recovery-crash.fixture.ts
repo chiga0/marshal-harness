@@ -3,8 +3,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
 
 const root = process.argv[process.argv.indexOf('--root') + 1];
 if (!root || !path.isAbsolute(root) || process.env.MARSHAL_SERVICE_CRASH_FIXTURE !== '1') throw Error('test-only configuration');
@@ -14,7 +14,7 @@ function record(value) {
   try { fs.writeFileSync(fd, JSON.stringify(value) + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
 const native = createAcpProvider({id: 'crash-fixture', executable: process.execPath,
-  args: [fileURLToPath(new URL('./recovery-worker.fixture.mjs', import.meta.url))], env: {}});
+  args: [fileURLToPath(new URL('./recovery-worker.fixture.ts', import.meta.url))], env: {}});
 const provider = {id: native.id, start(input) {
   const ticket = prepared.get(input.cwd); if (!ticket) throw Error('fixture missing prepared ticket');
   const handle = native.start(input);

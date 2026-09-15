@@ -1,5 +1,5 @@
-import {createExecutableAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createGenericFilesConfig} from './index.mjs';
+import {createExecutableAcpProvider} from '../agent-provider-acp/index.ts';
+import {createGenericFilesConfig} from './index.ts';
 // Native Agent owns credentials. Do not copy arbitrary environment/secrets.
 const env = {};
 for (const key of ['HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR']) {

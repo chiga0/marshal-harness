@@ -29,12 +29,12 @@ const report = `export function report(rows) {
   return [...groups.values()].sort((a,b) => a.sku < b.sku ? -1 : a.sku > b.sku ? 1 : 0);
 }`;
 // The frozen prompt names exactly one output file; role instruction is last.
-const name = prompt.includes('normalize.mjs') && !prompt.includes('report.mjs')
-  ? 'normalize.mjs' : /(?:name|file|产出|实现).*normalize\.mjs/.test(prompt)
-    ? 'normalize.mjs' : 'report.mjs';
+const name = prompt.includes('normalize.ts') && !prompt.includes('report.ts')
+  ? 'normalize.ts' : /(?:name|file|产出|实现).*normalize\.ts/.test(prompt)
+    ? 'normalize.ts' : 'report.ts';
 console.log(JSON.stringify({type: 'session', id: 'fixture-session'}));
 await new Promise(resolve => setTimeout(resolve, prompt.includes('fixture-slow') ? 15000 : 300));
-const content = name === 'normalize.mjs' ? normalize : report;
+const content = name === 'normalize.ts' ? normalize : report;
 const message = {
   role: 'assistant', stopReason: 'stop',
   content: [{type: 'text', text: JSON.stringify({name, content})}],

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {ArtifactDepot, ArtifactDepotError, MAX_ARTIFACT_BYTES} from './depot.mjs';
+import {ArtifactDepot, ArtifactDepotError, MAX_ARTIFACT_BYTES} from './depot.ts';
 
 function fixture(t) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-artifact-test-')));

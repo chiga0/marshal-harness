@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { Transform } from 'node:stream';
-import { PROTOCOL, BUFFER_BYTES, BOOT_WAIT_MS, CLEANUP_GRACE_MS, executionId, validateOptions } from './protocol.mjs';
+import { PROTOCOL, BUFFER_BYTES, BOOT_WAIT_MS, CLEANUP_GRACE_MS, executionId, validateOptions } from './protocol.ts';
 
 // This checked-in Node program is launched detached by launchAcp. It stays the
 // live group leader until it signals its OWN group. No replayed PID is accepted.

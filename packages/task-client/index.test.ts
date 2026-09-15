@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
 import {createHash} from 'node:crypto';
-import {TaskClient} from './index.mjs';
-import {createTaskApiHandler} from '../task-api/http-handler.mjs';
-import {contract, operations, resolve, TaskApiError} from '../task-api/contract.mjs';
+import {TaskClient} from './index.ts';
+import {createTaskApiHandler} from '../task-api/http-handler.ts';
+import {contract, operations, resolve, TaskApiError} from '../task-api/contract.ts';
 
 const token = 'fixture-local-token-never-forward-secret-001';
 const at = '2026-09-08T00:00:00.000Z';

@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {Store, encode, digest} from '../task-store/store.mjs';
-import {TaskApplication} from '../task-application/application.mjs';
-import {freezePlan} from '../task-application/model.mjs';
-import {createFileBusiness, fileLayoutDigest, TaskBusinessError} from './index.mjs';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {Store, encode, digest} from '../task-store/store.ts';
+import {TaskApplication} from '../task-application/application.ts';
+import {freezePlan} from '../task-application/model.ts';
+import {createFileBusiness, fileLayoutDigest, TaskBusinessError} from './index.ts';
 
 const hash = value => digest(encode(value));
 const frozenCopy = value => JSON.parse(encode(value).toString());

@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
-import {TaskClient} from './index.mjs';
-import {contract, leaderReplyDigest} from '../task-api/contract.mjs';
-import {createTaskApiHandler} from '../task-api/http-handler.mjs';
+import {TaskClient} from './index.ts';
+import {contract, leaderReplyDigest} from '../task-api/contract.ts';
+import {createTaskApiHandler} from '../task-api/http-handler.ts';
 
 const token = 'leader-client-fixture-local-token-0000001';
 const taskId = 'task-example', requestId = 'request-example';

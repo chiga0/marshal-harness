@@ -5,11 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
-import {Store} from '../task-store/store.mjs';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {TaskApplication} from './application.mjs';
-import {createTaskApiHandler} from '../task-api/http-handler.mjs';
-import {TaskClient} from '../task-client/index.mjs';
+import {Store} from '../task-store/store.ts';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {TaskApplication} from './application.ts';
+import {createTaskApiHandler} from '../task-api/http-handler.ts';
+import {TaskClient} from '../task-client/index.ts';
 
 const context = {principal: 'local-operator'};
 const fail = (code, status) => error => error.code === code && error.status === status;

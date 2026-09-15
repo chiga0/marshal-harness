@@ -9,15 +9,15 @@ import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
-import {TaskClient} from '../task-client/index.mjs';
-import {validate} from '../task-api/contract.mjs';
-import {encode} from '../task-store/store.mjs';
+import {TaskClient} from '../task-client/index.ts';
+import {validate} from '../task-api/contract.ts';
+import {encode} from '../task-store/store.ts';
 
-const cli = fileURLToPath(new URL('./main.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('./main.ts', import.meta.url));
 // The existing versioned fixture preserves the real CLI, custody, ACP guard,
 // FileBusiness, SQLite and independent command verifier. Healthy intents do
 // not enable any of its crash/hold branches; no model process is involved.
-const config = fileURLToPath(new URL('./custody-recovery.fixture.mjs', import.meta.url));
+const config = fileURLToPath(new URL('./custody-recovery.fixture.ts', import.meta.url));
 export const data = {rows: [
   {region: 'east', status: 'paid', cents: 1275}, {region: 'west', status: 'paid', cents: 800},
   {region: 'east', status: 'cancelled', cents: 9000}, {region: 'west', status: 'paid', cents: -250},

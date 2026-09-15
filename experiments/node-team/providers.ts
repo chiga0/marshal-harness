@@ -1,10 +1,10 @@
 import { isAbsolute, dirname } from 'node:path';
 import { TextDecoder } from 'node:util';
-import { MAX_STDOUT_BYTES } from './limits.mjs';
+import { MAX_STDOUT_BYTES } from './limits.ts';
 
 const MAX_STDOUT = MAX_STDOUT_BYTES;
 const MAX_FILE = 64 * 1024;
-const NAMES = new Set(['normalize.mjs', 'report.mjs']);
+const NAMES = new Set(['normalize.ts', 'report.ts']);
 const ENV_NAMES = ['HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR'];
 const QWEN_PREFIX = 'Decode the following JSON string as the task instructions. Perform that task and return only its requested JSON candidate.\n';
 

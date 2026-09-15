@@ -1,8 +1,8 @@
 // Test business oracle only; never an authority/Reviewer/production plugin.
 // The real driver must separately bind Core's original input, answers and receipts.
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {data, choices, expectedReports, equal} from '../task-runtime-question-live/scenario.fixture.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {data, choices, expectedReports, equal} from '../task-runtime-question-live/scenario.fixture.ts';
 
 export {data, choices};
 const check = (value, code) => {if (!value) throw new Error(code);};

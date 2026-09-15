@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {verify} from '../task-distribution/index.mjs';
+import {verify} from '../task-distribution/index.ts';
 
 const hash = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 const same = (a, b) => assert.deepEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)));
@@ -104,13 +104,13 @@ export async function run(options) {
   process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt);
   try {
     const load = file => import(pathToFileURL(path.join(o.package, 'packages', file)).href);
-    const [{TaskClient}, {intake, answer, complete}] = await Promise.all([load('task-client/index.mjs'), load('task-regional-window/driver.mjs')]);
+    const [{TaskClient}, {intake, answer, complete}] = await Promise.all([load('task-client/index.ts'), load('task-regional-window/driver.ts')]);
     const env = {PATH: path.dirname(o.node) + ':/usr/bin:/bin:/usr/sbin:/sbin', HOME: process.env.HOME, MARSHAL_QWEN_ENTRY: o['qwen-entry']};
     for (const key of ['LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR']) if (process.env[key]) env[key] = process.env[key];
     async function start(mode) {
       assert.equal(interrupted, false); same(verify({root: o.package, manifestDigest: o['manifest-digest']}), manifest);
       const handle = launch(o.node, [path.join(o.package, manifest.entrypoint), '--root', state, '--mode', mode, '--port', '0',
-        '--config', path.join(o.package, 'packages/task-regional-window/service-config.mjs')], env, root);
+        '--config', path.join(o.package, 'packages/task-regional-window/service-config.ts')], env, root);
       handles.push(handle); const ready = await handle.ready;
       assert.ok(ready.connectionFile.startsWith(state + path.sep) && fs.realpathSync(ready.connectionFile) === ready.connectionFile);
       assert.equal(fs.statSync(ready.connectionFile).mode & 0o777, 0o600);

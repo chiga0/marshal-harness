@@ -1,23 +1,23 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 // Explicit real-model acceptance tool. Not distributed and never run by default CI.
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {startTaskService} from '../task-service/composition.mjs';
-import {createPiProvider} from '../agent-provider-pi/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {parseOptions as parsePiOptions, filePermission} from '../task-pi-live/driver.fixture.mjs';
-import {executionFact, assertTeam, trackExecution, cancelActiveTeam, DriverError} from '../task-qwen-live/driver.fixture.mjs';
-import {data, choices, policy, questionPolicyDigest, questions, taskBody, bindPlan, expectedReports, answerFromRefs, consumeDelivery, equal, verificationRequest} from './scenario.fixture.mjs';
-import {cancelPiWorker, workerCancellation, readRetainedResult} from './worker-cancel.fixture.mjs';
+import {startTaskService} from '../task-service/composition.ts';
+import {createPiProvider} from '../agent-provider-pi/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {parseOptions as parsePiOptions, filePermission} from '../task-pi-live/driver.fixture.ts';
+import {executionFact, assertTeam, trackExecution, cancelActiveTeam, DriverError} from '../task-qwen-live/driver.fixture.ts';
+import {data, choices, policy, questionPolicyDigest, questions, taskBody, bindPlan, expectedReports, answerFromRefs, consumeDelivery, equal, verificationRequest} from './scenario.fixture.ts';
+import {cancelPiWorker, workerCancellation, readRetainedResult} from './worker-cancel.fixture.ts';
 
-const checkerPath = fileURLToPath(new URL('./checker.fixture.mjs', import.meta.url));
+const checkerPath = fileURLToPath(new URL('./checker.fixture.ts', import.meta.url));
 const text = value => typeof value === 'string' && value.isWellFormed() && !value.includes('\0');
 export class LiveError extends Error {constructor(code) {super(code); this.code = code;}}
 const check = (value, code) => {if (!value) throw new LiveError(code);};

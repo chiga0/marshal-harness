@@ -1,6 +1,6 @@
-import {encode, digest, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
-import {affectedNodes} from './graph.mjs';
-import {clone, isText, nextRevision, publicTask, reject, terminal} from './model.mjs';
+import {encode, digest, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.ts';
+import {affectedNodes} from './graph.ts';
+import {clone, isText, nextRevision, publicTask, reject, terminal} from './model.ts';
 
 const PROFILE = 'task-local-repair/v1', ports = new WeakMap();
 const hash = value => digest(encode(value));

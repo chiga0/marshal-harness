@@ -1,6 +1,6 @@
-import {encode, digest} from '../task-store/store.mjs';
-import {checkedGraph} from './graph.mjs';
-import {clone, isText, reject} from './model.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {checkedGraph} from './graph.ts';
+import {clone, isText, reject} from './model.ts';
 
 const ports = new WeakMap(), receipts = new WeakMap();
 const hash = value => digest(encode(value));

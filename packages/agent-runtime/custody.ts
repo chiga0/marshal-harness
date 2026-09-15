@@ -1,11 +1,11 @@
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {AcpClient} from '../agent-acp/client.mjs';
-import {BOOT_WAIT_MS, CLEANUP_WAIT_MS} from './protocol.mjs';
-import {CUSTODY_PROFILE, custodyDigest, validBinding, validDescriptor, verifyObservation} from './custody-contract.mjs';
-import {CustodyFiles} from './custody-files.mjs';
+import {AcpClient} from '../agent-acp/client.ts';
+import {BOOT_WAIT_MS, CLEANUP_WAIT_MS} from './protocol.ts';
+import {CUSTODY_PROFILE, custodyDigest, validBinding, validDescriptor, verifyObservation} from './custody-contract.ts';
+import {CustodyFiles} from './custody-files.ts';
 
-const ENTRY = fileURLToPath(new URL('./custody-process.mjs', import.meta.url));
+const ENTRY = fileURLToPath(new URL('./custody-process.ts', import.meta.url));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return {promise, resolve}; };
 const fail = (code, completion) => Object.assign(new Error(code), {code, completion});
 

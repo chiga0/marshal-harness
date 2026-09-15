@@ -1,5 +1,5 @@
 // 显式双包消费者；从不回退打包当前源码，不进入默认自动test glob。
-import {runUpgrade} from './upgrade-consumer.fixture.mjs';
+import {runUpgrade} from './upgrade-consumer.fixture.ts';
 const names = ['old-package', 'old-source', 'old-manifest', 'new-package', 'new-source', 'new-manifest', 'run-dir', 'asset-kind'];
 const options = {};
 try {

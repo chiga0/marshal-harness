@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {Store, encode, digest} from '../task-store/store.mjs';
+import {Store, encode, digest} from '../task-store/store.ts';
 
 const root = process.argv[process.argv.indexOf('--root') + 1];
 const point = process.env.MARSHAL_CONTROL_COMMIT_POINT;
@@ -73,7 +73,7 @@ Store.prototype.write = function(owner, callback) {
 // Only the interrupted team's authors hang; the next Task uses the same oracle
 // and completes normally. These are owned Node fixtures, never model calls.
 process.env.MARSHAL_CUSTODY_FIXTURE = '1'; process.env.MARSHAL_CUSTODY_SCENARIO = 'authors';
-const {default: original} = await import('./custody-recovery.fixture.mjs');
+const {default: original} = await import('./custody-recovery.fixture.ts');
 const maxWorkers = process.env.MARSHAL_CONTROL_COMMIT_CAPACITY;
 if (!['1', '2'].includes(maxWorkers)) throw Error('test-only capacity');
 export default {...original, applicationOptions: {execution: {maxWorkers: Number(maxWorkers)}}};

@@ -7,8 +7,8 @@ import {fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {createServer} from 'node:http';
-import {contract, validate} from '../packages/task-api/contract.mjs';
-import {createTaskApiHandler} from '../packages/task-api/http-handler.mjs';
+import {contract, validate} from '../packages/task-api/contract.ts';
+import {createTaskApiHandler} from '../packages/task-api/http-handler.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const skill = fs.readFileSync(path.join(root, 'skills/marshal-client/SKILL.md'), 'utf8');

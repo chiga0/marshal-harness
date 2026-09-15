@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
-import {TaskClient} from './index.mjs';
-import {contract} from '../task-api/contract.mjs';
-import {createTaskApiHandler} from '../task-api/http-handler.mjs';
+import {TaskClient} from './index.ts';
+import {contract} from '../task-api/contract.ts';
+import {createTaskApiHandler} from '../task-api/http-handler.ts';
 
 const example = name => structuredClone(contract.components.schemas[name].examples[0]);
 const token = 'runtime-client-fixture-local-token-000001';

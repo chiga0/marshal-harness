@@ -4,12 +4,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createLeaderPort, createReviewPort, createVerificationPort, renderLeaderPrompt, renderReviewPrompt, parseManagedOutput} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {createLocalReportPublication} from '../task-publication-report/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createLeaderPort, createReviewPort, createVerificationPort, renderLeaderPrompt, renderReviewPrompt, parseManagedOutput} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {createLocalReportPublication} from '../task-publication-report/index.ts';
+import {encode, digest} from '../task-store/store.ts';
 const root = process.argv[process.argv.indexOf('--root') + 1];
 assert.equal(process.env.MARSHAL_LEADER_RECOVERY_FIXTURE, '1'); assert.ok(path.isAbsolute(root ?? ''));
 const here = name => fileURLToPath(new URL(name, import.meta.url)), hash = value => digest(encode(value));
@@ -47,7 +47,7 @@ const review = createReviewPort({id: 'review', providerId: 'test-agent', policy:
   prepare: ({ticket, input, prepared}) => {tickets.set(prepared.cwd, ticket); return {prompt: renderReviewPrompt(input)};}});
 const native = file => createAcpProvider({id: 'test-agent', executable: process.execPath, args: [here(file)], env: {},
   custodyProfile: {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true}});
-const good = native('./leader-agent.fixture.mjs'), held = native('./leader-recovery-agent.fixture.mjs');
+const good = native('./leader-agent.fixture.ts'), held = native('./leader-recovery-agent.fixture.ts');
 const provider = {id: good.id, custodyProfile: good.custodyProfile, start(input) {
   const ticket = tickets.get(input.cwd), hold = ticket?.executionType === 'leader' && ticket.planDigest !== null &&
     (ticket.input.task.intent === 'leader recovery interrupted' || ticket.input.task.intent === 'leader recovery resumable' &&
@@ -60,7 +60,7 @@ const provider = {id: good.id, custodyProfile: good.custodyProfile, start(input)
   return {...handle, started: handle.started.then(value => {record({type: 'started', ...identity, started: value}); return value;}),
     completion: handle.completion.then(value => {record({type: 'completion', ...identity, status: value.status, cleanup: value.cleanup}); return value;})};
 }};
-const verifyPolicy = {id: 'two-requirements', version: '1', description: '固定检查器按原需求和原答复独立核对'}, checkerPath = here('./leader-checker.fixture.mjs');
+const verifyPolicy = {id: 'two-requirements', version: '1', description: '固定检查器按原需求和原答复独立核对'}, checkerPath = here('./leader-checker.fixture.ts');
 const command = createVerificationCommand({executable: process.execPath, checkerPath, checkerDigest: digest(fs.readFileSync(checkerPath)), policyDigest: hash(verifyPolicy),
   assertions: [{name: 'both-original-requirements', validate: (actual, {ticket}) => hash(actual) === hash(['east', 'west'].map(nodeId => ({
     nodeId, region: ticket.input.leaderReplies[0].answer, value: JSON.parse(ticket.input.task.context.text)[nodeId]})))}],

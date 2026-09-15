@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough, Writable } from 'node:stream';
-import { AcpClient } from './client.mjs';
+import { AcpClient } from './client.ts';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const promptBlocks = [{ type: 'text', text: 'fixture only' }];

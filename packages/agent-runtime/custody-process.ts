@@ -1,8 +1,8 @@
 import {generateKeyPairSync, randomUUID, sign} from 'node:crypto';
-import {launchCustodyStreams} from './index.mjs';
-import {BOOT_WAIT_MS, CLEANUP_WAIT_MS} from './protocol.mjs';
-import {CUSTODY_PROFILE, canonical, custodyDigest, validBinding} from './custody-contract.mjs';
-import {CustodyFiles} from './custody-files.mjs';
+import {launchCustodyStreams} from './index.ts';
+import {BOOT_WAIT_MS, CLEANUP_WAIT_MS} from './protocol.ts';
+import {CUSTODY_PROFILE, canonical, custodyDigest, validBinding} from './custody-contract.ts';
+import {CustodyFiles} from './custody-files.ts';
 
 // No model protocol, Store, credentials, permission policy or result acceptance.
 // This process retains the ORIGINAL guard handle after its service IPC dies.

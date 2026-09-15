@@ -4,11 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {setImmediate as turn} from 'node:timers/promises';
-import {Store, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
-import {TaskApplication, createRuntimeQuestionPort, createVerificationPort} from '../task-application/application.mjs';
-import {TaskSupervisor} from './controller.mjs';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {createExecutionCustody} from '../agent-runtime/custody.mjs';
+import {Store, WORKER_CANCELLATION_FORMAT} from '../task-store/store.ts';
+import {TaskApplication, createRuntimeQuestionPort, createVerificationPort} from '../task-application/application.ts';
+import {TaskSupervisor} from './controller.ts';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {createExecutionCustody} from '../agent-runtime/custody.ts';
 
 const context = {principal: 'local-operator'};
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return {promise, resolve}; };

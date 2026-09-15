@@ -3,14 +3,14 @@ import path from 'node:path';
 import http from 'node:http';
 import {randomUUID} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
-import {startTaskService} from './composition.mjs';
-import {parseLaunchArguments, prepareLaunch} from './launch.mjs';
-import {safeManagedDiagnostic, safeRejectedOutputDiagnostic} from '../task-application/leader-ports.mjs';
-import {sqliteRuntimeCapabilities} from '../task-store/store.mjs';
-import {TaskApiError, errorPayload} from '../task-api/contract.mjs';
-import {headerCount} from '../task-api/http-boundary.mjs';
-import {cliShutdown} from './cli-shutdown.mjs';
-import {safeServiceDiagnostic, terminalServiceDiagnostic} from './service-diagnostic.mjs';
+import {startTaskService} from './composition.ts';
+import {parseLaunchArguments, prepareLaunch} from './launch.ts';
+import {safeManagedDiagnostic, safeRejectedOutputDiagnostic} from '../task-application/leader-ports.ts';
+import {sqliteRuntimeCapabilities} from '../task-store/store.ts';
+import {TaskApiError, errorPayload} from '../task-api/contract.ts';
+import {headerCount} from '../task-api/http-boundary.ts';
+import {cliShutdown} from './cli-shutdown.ts';
+import {safeServiceDiagnostic, terminalServiceDiagnostic} from './service-diagnostic.ts';
 
 // 可选本机浏览器 UI（ADR0098）。默认不启用；启用后本入口在 127.0.0.1 上多监听
 // 一个唯一公开端口，同时承担 /ui/ 冻结静态清单与精确 Origin 边界，其余请求
@@ -34,7 +34,7 @@ class UiBoundaryError extends Error {
   constructor(code) { super(code); this.name = 'UiBoundaryError'; this.code = code; }
 }
 
-// Mirrors launch.mjs path hygiene; the build directory stays trusted release
+// Mirrors launch.ts path hygiene; the build directory stays trusted release
 // input, never an HTTP-provided path. Same-UID content trust is accepted, but
 // symlinks, non-regular entries and foreign ownership are refused before start.
 function uiDirectory(buildDir) {
@@ -201,7 +201,7 @@ async function main(argv) {
   const uiOption = takeUiOption(argv);
   const args = parseLaunchArguments(uiOption.argv);
   if (args.help) {
-    process.stdout.write('固定 Node 服务：--config /absolute/trusted/config.mjs [--data-dir /absolute/private/data] [--mode auto|create|open] [--port 0] [--ui /absolute/trusted/ui-dist]\n' +
+    process.stdout.write('固定 Node 服务：--config /absolute/trusted/config.ts [--data-dir /absolute/private/data] [--mode auto|create|open] [--port 0] [--ui /absolute/trusted/ui-dist]\n' +
       '默认数据目录 HOME/.marshal-node/task-service；不存在才创建，已有根只按原格式打开。--root 保留为 --data-dir 的互斥旧别名。\n' +
       '--ui 为可选本机同源浏览器 UI（默认不启用）：静态目录只读托管于 /ui/，浏览器与 API 共用本启动输出的 127.0.0.1 端口；未启用时不托管 UI。\n');
     return;

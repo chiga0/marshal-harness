@@ -1,4 +1,4 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,7 +7,7 @@ import path from 'node:path';
 import {execFileSync, spawn} from 'node:child_process';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {pack, verify, SOURCE_FILES} from '../task-distribution/index.mjs';
+import {pack, verify, SOURCE_FILES} from '../task-distribution/index.ts';
 const repository = fileURLToPath(new URL('../..', import.meta.url)), here = file => fileURLToPath(new URL(file, import.meta.url));
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], {encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe']}).trim();
 async function until(read, predicate, label, ms = 60000) {
@@ -24,7 +24,7 @@ test('installed production report configuration: same config, two original HTTP 
   const originalPackage = verify({root: installed, manifestDigest: packed.manifestDigest}); assert.equal(originalPackage.sourceHead, sourceHead);
   const load = file => import(pathToFileURL(path.join(installed, 'packages', file)).href);
   const [{TaskClient}, {encode, digest}, {taskBody, PROFILE}, {startReportServer}, {nameFor}] = await Promise.all([
-    load('task-client/index.mjs'), load('task-store/store.mjs'), load('task-leader-report/policy.mjs'), load('task-leader-report/report-server.mjs'), load('task-publication-report/index.mjs')]);
+    load('task-client/index.ts'), load('task-store/store.ts'), load('task-leader-report/policy.ts'), load('task-leader-report/report-server.ts'), load('task-publication-report/index.ts')]);
   const same = (a, b) => assert.deepEqual(encode(a), encode(b));
   const reportRoot = path.join(root, 'reports'), barrier = path.join(root, 'barrier'), journal = path.join(root, 'journal.jsonl'), state = path.join(root, 'state');
   for (const folder of [reportRoot, barrier]) fs.mkdirSync(folder, {mode: 0o700});
@@ -39,7 +39,7 @@ test('installed production report configuration: same config, two original HTTP 
   async function launch(mode) {
     same(verify({root: installed, manifestDigest: packed.manifestDigest}), originalPackage);
     const child = spawn(process.execPath, [path.join(installed, originalPackage.entrypoint), '--root', state, '--mode', mode,
-      '--config', here('./service.fixture.mjs'), '--port', '0'], {cwd: root, env, stdio: ['ignore', 'pipe', 'pipe']});
+      '--config', here('./service.fixture.ts'), '--port', '0'], {cwd: root, env, stdio: ['ignore', 'pipe', 'pipe']});
     let output = '', stderrBytes = 0, stopping, closed = false, resolveReady, rejectReady;
     const ready = new Promise((resolve, reject) => {resolveReady = resolve; rejectReady = reject;}), number = ++launchNumber;
     const exit = new Promise(resolve => {child.once('error', error => rejectReady(new Error('spawn: ' + error.code)));

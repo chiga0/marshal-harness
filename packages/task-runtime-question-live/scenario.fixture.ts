@@ -1,8 +1,8 @@
 // Explicit test business only. The operator's selected answer never enters Task input.
-import {data} from '../task-qwen-live/driver.fixture.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {createRuntimeQuestionPort} from '../task-application/application.mjs';
+import {data} from '../task-qwen-live/driver.fixture.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {createRuntimeQuestionPort} from '../task-application/application.ts';
 export {data};
 export const equal = (a, b) => {try {return encode(a).equals(encode(b));} catch {return false;}};
 export const choices = Object.freeze(['paid', 'cancelled']);

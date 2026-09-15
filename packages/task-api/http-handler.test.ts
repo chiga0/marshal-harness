@@ -6,9 +6,9 @@ import {createServer} from 'node:http';
 import {connect} from 'node:net';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {createTaskApiHandler} from './http-handler.mjs';
-import {contract, operations, validate, resolve, leaderRequestDigest, leaderReplyDigest, TaskApiError} from './contract.mjs';
-import {parseJson} from './http-boundary.mjs';
+import {createTaskApiHandler} from './http-handler.ts';
+import {contract, operations, validate, resolve, leaderRequestDigest, leaderReplyDigest, TaskApiError} from './contract.ts';
+import {parseJson} from './http-boundary.ts';
 
 const token = 'fixture-only-local-access-token-not-a-secret';
 const host = '127.0.0.1:39877';
@@ -171,7 +171,7 @@ test('single contract resolves refs, validates complete independent fixtures and
   assert.equal(validate({intent: '中'.repeat(2731)}, 'CreateTask'), false);
   assert.equal(validate({...inputs.ApproveTask, expectedRevision: Number.MAX_SAFE_INTEGER + 1}, 'ApproveTask'), false);
   assert.throws(() => validate('x', {type: 'string', minUnknown: 4}), /unsupported-schema/);
-  for (const file of ['contract.mjs', 'http-handler.mjs', 'http-boundary.mjs']) {
+  for (const file of ['contract.ts', 'http-handler.ts', 'http-boundary.ts']) {
     const text = readFileSync(new URL(file, import.meta.url), 'utf8');
     assert.doesNotMatch(text, /from\s+['"][^'"]*(?:experiments|supervisor|providers|sqlite|child_process)/);
   }

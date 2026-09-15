@@ -1,5 +1,5 @@
-import {encode, digest, makeEvent} from '../task-store/store.mjs';
-import {reject, isText, clone} from './model.mjs';
+import {encode, digest, makeEvent} from '../task-store/store.ts';
+import {reject, isText, clone} from './model.ts';
 
 const parse = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
 const idOK = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);

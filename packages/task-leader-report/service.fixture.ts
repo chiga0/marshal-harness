@@ -4,16 +4,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
-import {verify} from '../task-distribution/index.mjs';
+import {verify} from '../task-distribution/index.ts';
 const installed = process.env.MARSHAL_REPORT_TEST_INSTALLED;
 const manifest = verify({root: installed, manifestDigest: process.env.MARSHAL_REPORT_TEST_MANIFEST});
 assert.equal(manifest.sourceHead, process.env.MARSHAL_REPORT_TEST_SOURCE);
 const load = file => import(pathToFileURL(path.join(installed, 'packages', file)).href);
-const [{createAcpProvider}, {createLeaderReportConfig}] = await Promise.all([load('agent-provider-acp/index.mjs'), load('task-leader-report/index.mjs')]);
+const [{createAcpProvider}, {createLeaderReportConfig}] = await Promise.all([load('agent-provider-acp/index.ts'), load('task-leader-report/index.ts')]);
 const journal = process.env.MARSHAL_REPORT_TEST_JOURNAL;
 const record = value => {const fd = fs.openSync(journal, fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
   try {assert.ok(fs.fstatSync(fd).size < 1024 * 1024); fs.writeFileSync(fd, JSON.stringify(value) + '\n'); fs.fsyncSync(fd);} finally {fs.closeSync(fd);}};
-const native = createAcpProvider({id: 'controlled-fixture', executable: process.execPath, args: [fileURLToPath(new URL('./agent.fixture.mjs', import.meta.url))],
+const native = createAcpProvider({id: 'controlled-fixture', executable: process.execPath, args: [fileURLToPath(new URL('./agent.fixture.ts', import.meta.url))],
   env: {MARSHAL_REPORT_TEST_BARRIER: process.env.MARSHAL_REPORT_TEST_BARRIER}, custodyProfile: {id: 'report-fixture-v1', scope: 'inherited-process-group', eligible: true}});
 const provider = {...native, start(input) {
   // ACP intentionally drops all external _meta. This test-only transport mapper

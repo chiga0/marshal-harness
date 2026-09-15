@@ -2,7 +2,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import {assertReplay, finish, readJSON, until} from './browser-fault-guards.mjs';
+import {assertReplay, finish, readJSON, until} from './browser-fault-guards.ts';
 
 test('批准/取消拒绝双缺失/空 ID 与非 202，Leader reply 不要求 Operation ID', () => {
   const receipt = {status: 202, body: '{}', key: 'original'};

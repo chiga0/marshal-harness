@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {allocateWorktree, privateDirectory, gitPath, check, GitBusinessError, MAX_BYTES} from './git.mjs';
+import {createFileBusiness} from '../task-business/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {allocateWorktree, privateDirectory, gitPath, check, GitBusinessError, MAX_BYTES} from './git.ts';
 
 export {GitBusinessError};
 export const PATCH = 'changes.patch', CONTEXT = 'git-context.json';

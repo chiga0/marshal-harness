@@ -1,6 +1,6 @@
 import {randomBytes} from 'node:crypto';
-import {encode, digest, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
-import {clone, isText, nextRevision, publicTask, reject, terminal} from './model.mjs';
+import {encode, digest, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.ts';
+import {clone, isText, nextRevision, publicTask, reject, terminal} from './model.ts';
 
 const PROFILE = 'task-runtime-question/v1', ports = new WeakMap(), hash = value => digest(encode(value));
 const decode = row => row ? JSON.parse(row.bytes.toString('utf8')) : null;

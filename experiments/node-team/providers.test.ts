@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { makeCommand, parseCandidate } from './providers.mjs';
-import { MAX_STDOUT_BYTES } from './limits.mjs';
-import { Supervisor } from './supervisor.mjs';
-import { artifactHash, digest } from './store.mjs';
+import { makeCommand, parseCandidate } from './providers.ts';
+import { MAX_STDOUT_BYTES } from './limits.ts';
+import { Supervisor } from './supervisor.ts';
+import { artifactHash, digest } from './store.ts';
 
-const config = { provider: 'pi', executable: '/operator/agent-entry.mjs' };
-const node = { id: 'normalize', role: 'author', file: 'normalize.mjs' };
+const config = { provider: 'pi', executable: '/operator/agent-entry.ts' };
+const node = { id: 'normalize', role: 'author', file: 'normalize.ts' };
 const candidate = { name: node.file, content: 'export function normalize(rows) { return rows; }\n' };
 const message = (value = candidate, stopReason = 'stop') => ({
   role: 'assistant', stopReason, content: [{ type: 'text', text: JSON.stringify(value) }],
@@ -31,7 +31,7 @@ test('provider config, unsupported adapter and node paths fail closed', () => {
   for (const bad of [{ ...config, provider: 'opencode' }, { ...config, executable: 'pi' }, { ...config, token: 'fixture' }]) {
     assert.throws(() => makeCommand(bad, node, 'prompt'), /provider_config_invalid/);
   }
-  assert.throws(() => makeCommand(config, { file: '../normalize.mjs' }, 'prompt'));
+  assert.throws(() => makeCommand(config, { file: '../normalize.ts' }, 'prompt'));
   assert.throws(() => makeCommand(config, node, 'x'.repeat(33 * 1024)));
 });
 
@@ -165,7 +165,7 @@ test('Qwen final result cannot replace the candidate or excuse incomplete/duplic
 });
 
 test('Qwen candidate has the same exact assigned-file and 64 KiB constraints as Pi', () => {
-  for (const bad of [{ ...candidate, name: 'report.mjs' }, { ...candidate, name: '../normalize.mjs' },
+  for (const bad of [{ ...candidate, name: 'report.ts' }, { ...candidate, name: '../normalize.ts' },
     { ...candidate, files: [] }, [candidate], { ...candidate, content: 'x'.repeat(65537) },
     { ...candidate, content: '\ud800' }, { ...candidate, content: '' }, { ...candidate, content: '\0' }]) {
     assert.throws(() => parseQwen(qwenEvents(bad)), /candidate_invalid/);
@@ -182,7 +182,7 @@ async function fixtureOwner(t, ports) {
   return { owner, directory };
 }
 const fixturePlan = intent => ({ version: 'provider-unit-fixture/v1', intent, timeoutMs: 300000,
-  nodes: ['normalize', 'report'].map(id => ({ id, role: 'author', file: id + '.mjs', prompt: '/fixture @private ' + id })) });
+  nodes: ['normalize', 'report'].map(id => ({ id, role: 'author', file: id + '.ts', prompt: '/fixture @private ' + id })) });
 async function approvedFixture(owner, key) {
   const task = await owner.command('create', undefined, { intent: 'fixture only' }, key);
   await owner.command('approve', task.id, { expectedRevision: task.revision, previewDigest: task.previewDigest }, key + '-approve');
@@ -201,7 +201,7 @@ test('generic guard receives exact encoded stdin while original approved plan su
     let input = ''; for await (const chunk of process.stdin) input += chunk;
     if (input.includes('@') || input.startsWith('/')) process.exit(7);
     const original = JSON.parse(input.slice(input.indexOf('\\n') + 1));
-    const name = original.endsWith('normalize') ? 'normalize.mjs' : 'report.mjs';
+    const name = original.endsWith('normalize') ? 'normalize.ts' : 'report.ts';
     const events = (${qwenEvents.toString()})({ name, content: JSON.stringify({ input, original }) });
     for (const event of events) process.stdout.write(JSON.stringify(event) + '\\n');
   `;
@@ -294,7 +294,7 @@ test('bounded native progress amplification is separate from final candidate lim
 });
 
 test('only assigned filename and bounded exact candidate fields are accepted', () => {
-  for (const bad of [{ ...candidate, name: 'report.mjs' }, { ...candidate, name: '../normalize.mjs' },
+  for (const bad of [{ ...candidate, name: 'report.ts' }, { ...candidate, name: '../normalize.ts' },
     { ...candidate, files: [] }, [candidate], { ...candidate, content: 'x'.repeat(65537) },
     { ...candidate, content: '\ud800' }, { ...candidate, content: '' }, { ...candidate, content: '\0' }]) {
     assert.throws(() => parseCandidate(config, node, stream(ended(bad), { type: 'agent_end', messages: [message(bad)] })), /candidate_invalid/);

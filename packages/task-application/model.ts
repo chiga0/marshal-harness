@@ -1,4 +1,4 @@
-import {checkedGraph} from './graph.mjs';
+import {checkedGraph} from './graph.ts';
 
 export class TaskError extends Error {
   constructor(code, status = 409) { super(code); this.code = code; this.status = status; }

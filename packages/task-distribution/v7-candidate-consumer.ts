@@ -1,9 +1,9 @@
-// Explicit invocation only; not a default *.test.mjs and never a pack fallback.
+// Explicit invocation only; not a default *.test.ts and never a pack fallback.
 // MARSHAL_CANDIDATE_ROOT/MANIFEST/SOURCE are independent required pins.
-// Fixed Node --test --test-concurrency=1 packages/task-distribution/v7-candidate-consumer.mjs
+// Fixed Node --test --test-concurrency=1 packages/task-distribution/v7-candidate-consumer.ts
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {candidateInputs, exerciseInstalledV7} from './v7-installed.fixture.mjs';
+import {candidateInputs, exerciseInstalledV7} from './v7-installed.fixture.ts';
 const inputs = candidateInputs(process.env);
 test('wrong manifest/source pins reject before importing package or starting service', async t => {
   await assert.rejects(exerciseInstalledV7(t, {...inputs, manifestDigest: 'sha256:' + '0'.repeat(64)}), /manifest_digest_mismatch/);

@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {verify} from '../task-distribution/index.mjs';
+import {verify} from '../task-distribution/index.ts';
 
 const check = (ok, code) => {if (!ok) throw new Error(code);};
 // HTTP JSON has null-prototype records. Compare JSON values, not prototypes;
@@ -353,7 +353,7 @@ export async function run(options) {
   process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt);
   try {
     const load = file => import(pathToFileURL(path.join(o.package, 'packages', file)).href);
-    const [{TaskClient}, {taskBody}, {startReportServer}] = await Promise.all([load('task-client/index.mjs'), load('task-leader-report/policy.mjs'), load('task-leader-report/report-server.mjs')]);
+    const [{TaskClient}, {taskBody}, {startReportServer}] = await Promise.all([load('task-client/index.ts'), load('task-leader-report/policy.ts'), load('task-leader-report/report-server.ts')]);
     fs.mkdirSync(reportRoot, {mode: 0o700}); reader = await startReportServer({root: reportRoot, port: 0});
     const env = {PATH: path.dirname(o.node) + ':' + (process.env.PATH ?? '/usr/bin:/bin'), HOME: process.env.HOME,
       MARSHAL_PI_ENTRY: o['pi-entry'], MARSHAL_PI_SDK: o['pi-sdk'], MARSHAL_REPORT_ROOT: reportRoot, MARSHAL_REPORT_URL: reader.url};
@@ -362,7 +362,7 @@ export async function run(options) {
       check(!interrupted, 'interrupted');
       same(verify({root: o.package, manifestDigest: o['manifest-digest']}), manifest);
       const handle = launchService(o.node, [path.join(o.package, manifest.entrypoint), '--root', state, '--mode', mode,
-        '--port', '0', '--config', path.join(o.package, 'packages/task-leader-report/service-config.mjs')], env, root, evidence.diagnostics);
+        '--port', '0', '--config', path.join(o.package, 'packages/task-leader-report/service-config.ts')], env, root, evidence.diagnostics);
       handles.push(handle); const ready = await handle.ready;
       check((fs.statSync(ready.connectionFile).mode & 0o777) === 0o600, 'connection_mode');
       const connection = JSON.parse(fs.readFileSync(ready.connectionFile));

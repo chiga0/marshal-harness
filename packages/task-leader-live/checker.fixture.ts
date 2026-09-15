@@ -2,10 +2,10 @@
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {verifyRegions, data} from './scenario.fixture.mjs';
-import {businessReply, check, equal} from './proof.fixture.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {verifyRegions, data} from './scenario.fixture.ts';
+import {businessReply, check, equal} from './proof.fixture.ts';
 
 export function checkRequest(request, read) {
   const input = request.input, bytes = encode(data), reply = businessReply(input.taskId, input);

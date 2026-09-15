@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {TaskApplication} from './application.mjs';
-import {Store, FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, encode} from '../task-store/store.mjs';
-import {validate} from '../task-api/contract.mjs';
-import {createExecutionCustody} from '../agent-runtime/custody.mjs';
+import {TaskApplication} from './application.ts';
+import {Store, FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, encode} from '../task-store/store.ts';
+import {validate} from '../task-api/contract.ts';
+import {createExecutionCustody} from '../agent-runtime/custody.ts';
 const context = {principal: 'local-operator'}, protocol = {profile: 'node-unpermitted-reservation/v1', preparation: 'file-staging-only/v1'};
 const plan = {summary: '两分支保留原依赖', nodes: ['a', 'b', 'check'].map(id => ({id, role: id === 'check' ? 'reviewer' : 'author', goal: id, scope: [], providerId: null})),
   edges: [{from: 'a', to: 'check'}, {from: 'b', to: 'check'}], deliverables: ['原共同成果'], acceptance: ['独立检查'], assumptions: []};

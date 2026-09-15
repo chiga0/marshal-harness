@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fixture, proposal, hash} from './leader.test.mjs';
-import {createLeaderPort, createReviewPort, parseManagedOutput, renderLeaderPrompt, renderReviewPrompt} from './application.mjs';
+import {fixture, proposal, hash} from './leader.test.ts';
+import {createLeaderPort, createReviewPort, parseManagedOutput, renderLeaderPrompt, renderReviewPrompt} from './application.ts';
 
 // The original fixture uses real SQLite/Depot and explicit fake Provider facts.
 // These tests prove renderer/parse/admission compatibility, not model/OS behavior.

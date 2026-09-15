@@ -7,12 +7,12 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {data as sales} from '../task-qwen-live/driver.fixture.mjs';
+import {TaskClient} from '../task-client/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {data as sales} from '../task-qwen-live/driver.fixture.ts';
 
-const cli = fileURLToPath(new URL('./main.mjs', import.meta.url));
-const config = fileURLToPath(new URL('./same-plan-repair.fixture.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('./main.ts', import.meta.url));
+const config = fileURLToPath(new URL('./same-plan-repair.fixture.ts', import.meta.url));
 const feedback = '修正 west 金额，不改变 east 或原规则';
 async function until(read, ms = 20000) {
   const end = Date.now() + ms;

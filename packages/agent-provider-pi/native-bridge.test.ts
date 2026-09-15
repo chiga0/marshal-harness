@@ -4,20 +4,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createPiProvider} from './index.mjs';
-import {installNativeBridge} from './native-bridge.mjs';
-import {BRIDGE_PROFILE, BRIDGE_TITLE} from './bridge-contract.mjs';
-import * as sdk from './fixtures/sdk/index.mjs';
+import {createPiProvider} from './index.ts';
+import {installNativeBridge} from './native-bridge.ts';
+import {BRIDGE_PROFILE, BRIDGE_TITLE} from './bridge-contract.ts';
+import * as sdk from './fixtures/sdk/index.ts';
 import * as shell from './fixtures/sdk/utils/shell.js';
-import {createFileBusiness, fileLayoutDigest} from '../task-business/index.mjs';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {digest, encode} from '../task-store/store.mjs';
-import {launchProtocol} from '../agent-runtime/index.mjs';
+import {createFileBusiness, fileLayoutDigest} from '../task-business/index.ts';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {digest, encode} from '../task-store/store.ts';
+import {launchProtocol} from '../agent-runtime/index.ts';
 
-const fixture = fileURLToPath(new URL('./bridge-agent.fixture.mjs', import.meta.url));
+const fixture = fileURLToPath(new URL('./bridge-agent.fixture.ts', import.meta.url));
 // Opt-in repeat with an installed native SDK exercises the same extension and
 // original tools WITHOUT starting Pi, reading login or making a model request.
-const sdkEntry = process.env.MARSHAL_PI_TEST_SDK ?? fileURLToPath(new URL('./fixtures/sdk/index.mjs', import.meta.url));
+const sdkEntry = process.env.MARSHAL_PI_TEST_SDK ?? fileURLToPath(new URL('./fixtures/sdk/index.ts', import.meta.url));
 const provider = mode => createPiProvider({id: 'pi-native', executable: process.execPath, args: [fixture, mode], bridge: {sdkEntry}});
 const allow = request => ({outcome: {outcome: 'selected', optionId: request.options.find(option => option.kind === 'allow_once').optionId}});
 function directory(t) {
@@ -219,7 +219,7 @@ test('truncated assistant evidence binds every native unexecuted call, not error
 // truncated-call producer and before-execute cancellation, not hand-built ends.
 if (process.env.MARSHAL_PI_TEST_SDK) test('installed native agent-core rejects invalid/truncated/cancelled calls before execution; replacement remains unknown', {timeout: 25000}, async t => {
   const coreEntry = path.resolve(path.dirname(sdkEntry), '../node_modules/@earendil-works/pi-agent-core/dist/agent-loop.js');
-  const peer = fileURLToPath(new URL('./native-core.fixture.mjs', import.meta.url));
+  const peer = fileURLToPath(new URL('./native-core.fixture.ts', import.meta.url));
   for (const mode of ['invalid-arguments', 'truncated', 'cancel-before-execute', 'bypass-error']) {
     let permissions = 0;
     const input = options(t, {onPermission: request => { permissions++; return allow(request); }});

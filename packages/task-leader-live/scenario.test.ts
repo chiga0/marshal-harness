@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {encode, digest} from '../task-store/store.mjs';
-import {data, taskBody, reportFor, verifyRegions, consumeDelivery, bindPlan} from './scenario.fixture.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {data, taskBody, reportFor, verifyRegions, consumeDelivery, bindPlan} from './scenario.fixture.ts';
 
 const input = () => ({sales: encode(data), answer: 'paid', files: reportFor('paid').reports.map(report =>
   ({path: report.region + '.json', content: encode(report)}))});

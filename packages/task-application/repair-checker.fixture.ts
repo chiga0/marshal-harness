@@ -1,6 +1,6 @@
 // Test-only independent Node checker: authors write plain data, never code.
 import {readFileSync} from 'node:fs';
-import {encode} from '../task-store/store.mjs';
+import {encode} from '../task-store/store.ts';
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => {

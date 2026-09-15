@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {setup, bound} from './leader-recovery-core.test.mjs';
-import {fixture, proposal, hash} from '../task-application/leader.test.mjs';
+import {setup, bound} from './leader-recovery-core.test.ts';
+import {fixture, proposal, hash} from '../task-application/leader.test.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {createLocalReportPublication} from '../task-publication-report/index.mjs';
-import {createExecutionCustody} from '../agent-runtime/custody.mjs';
-import {encode} from '../task-store/store.mjs';
+import {createLocalReportPublication} from '../task-publication-report/index.ts';
+import {createExecutionCustody} from '../agent-runtime/custody.ts';
+import {encode} from '../task-store/store.ts';
 const current = (f, task) => f.read(tx => f.app.get(tx, task.id));
 async function finish(f, task, ticket, type, beforeConclude = false) {
   if (type === 'review') await f.review(ticket);

@@ -8,11 +8,11 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {custodyDigest, verifyObservation} from '../agent-runtime/custody-contract.mjs';
-const cli = fileURLToPath(new URL('./main.mjs', import.meta.url));
-const config = fileURLToPath(new URL('./leader-recovery.fixture.mjs', import.meta.url));
+import {TaskClient} from '../task-client/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {custodyDigest, verifyObservation} from '../agent-runtime/custody-contract.ts';
+const cli = fileURLToPath(new URL('./main.ts', import.meta.url));
+const config = fileURLToPath(new URL('./leader-recovery.fixture.ts', import.meta.url));
 async function until(read, label, ms = 20000) {
   const end = Date.now() + ms;
   for (;;) {const value = await read(); if (value) return value; assert.ok(Date.now() < end, 'bounded observation: ' + label); await pause(20);}

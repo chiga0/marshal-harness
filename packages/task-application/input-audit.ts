@@ -1,5 +1,5 @@
-import {digest, makeEvent} from '../task-store/store.mjs';
-import {clone, isText, reject} from './model.mjs';
+import {digest, makeEvent} from '../task-store/store.ts';
+import {clone, isText, reject} from './model.ts';
 
 const policies = new WeakMap(), PROFILE = 'task-input-observation/v1';
 const MAX_PROMPT = 256 * 1024, PREVIEW_BYTES = 2048;

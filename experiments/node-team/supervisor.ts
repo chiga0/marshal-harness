@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { Store, FORMAT, Fault, fail, digest, artifactHash, nativeEnvironment, id, text, closedObject, privateRoot, readPrivate, sameSecret } from './store.mjs';
+import { Store, FORMAT, Fault, fail, digest, artifactHash, nativeEnvironment, id, text, closedObject, privateRoot, readPrivate, sameSecret } from './store.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'intervention']);
@@ -29,7 +29,7 @@ function checkedPlan(plan, intent) {
   if (!closedObject(plan, ['version', 'intent', 'nodes', 'timeoutMs']) || !text(plan.version, 128) || plan.intent !== intent || plan.timeoutMs !== 300000 || !Array.isArray(plan.nodes) || plan.nodes.length !== 2) fail('invalid-plan', 400);
   const ids = new Set(), files = new Set();
   for (const node of plan.nodes) {
-    if (!closedObject(node, ['id', 'role', 'file', 'prompt']) || !id(node.id) || ids.has(node.id) || !text(node.role, 64) || !/^[a-z][a-z0-9_-]*\.mjs$/.test(node.file) || files.has(node.file) || !text(node.prompt, 65536)) fail('invalid-plan', 400);
+    if (!closedObject(node, ['id', 'role', 'file', 'prompt']) || !id(node.id) || ids.has(node.id) || !text(node.role, 64) || !/^[a-z][a-z0-9_-]*\.ts$/.test(node.file) || files.has(node.file) || !text(node.prompt, 65536)) fail('invalid-plan', 400);
     ids.add(node.id); files.add(node.file);
   }
   return jsonCopy(plan);
@@ -132,7 +132,7 @@ export class Supervisor {
       const cwd = path.join(output, worker.id); await fs.mkdir(cwd, { mode: 0o700 });
       const command = checkedCommand(this.ports.makeCommand(this.config, node, node.prompt));
       await this.change(state => { const t = state.tasks.find(t => t.id === taskId), w = t.workers.find(w => w.id === worker.id); t.status = 'running'; w.status = 'launching'; w.cleaned = false; });
-      const guard = spawn(process.execPath, [path.join(HERE, 'guard.mjs')], { detached: true, env: nativeEnvironment(), stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+      const guard = spawn(process.execPath, [path.join(HERE, 'guard.ts')], { detached: true, env: nativeEnvironment(), stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
       let resolveExit; const exited = new Promise(resolve => { resolveExit = resolve; });
       const entry = { guard, taskId, workerId: worker.id, node, command, cwd, exited, resolveExit, cleaning: false, cleanupNonce: null, cleanupAck: false, terminal: null };
       this.guards.set(worker.id, entry);
@@ -281,8 +281,8 @@ export async function runSupervisor(directory, config, sourceDigest, configDiges
   const metadata = { format: FORMAT, instance: crypto.randomUUID(), token: crypto.randomBytes(32).toString('hex'), socket, sourceDigest, configDigest };
   const held = await fs.open(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600).catch(() => fail('supervisor-lock-exists', 503));
   await held.writeFile(JSON.stringify(metadata)); await held.sync(); await held.close();
-  const { plan, verifyFiles } = await import('./business.mjs');
-  const { makeCommand, parseCandidate } = await import('./providers.mjs');
+  const { plan, verifyFiles } = await import('./business.ts');
+  const { makeCommand, parseCandidate } = await import('./providers.ts');
   const supervisor = await Supervisor.open(directory, config, { plan, verifyFiles, makeCommand, parseCandidate });
   const server = http.createServer(async (req, res) => {
     try {

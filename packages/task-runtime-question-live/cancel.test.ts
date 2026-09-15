@@ -5,17 +5,17 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {parseOptions, cancelPiActiveTeam, runLive} from './driver.fixture.mjs';
-import {trackExecution, cancelledExecutionFact} from '../task-qwen-live/driver.fixture.mjs';
-import {startTaskService} from '../task-service/composition.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createPiProvider} from '../agent-provider-pi/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {data, questions, questionPolicyDigest, policy, bindPlan} from './scenario.fixture.mjs';
+import {parseOptions, cancelPiActiveTeam, runLive} from './driver.fixture.ts';
+import {trackExecution, cancelledExecutionFact} from '../task-qwen-live/driver.fixture.ts';
+import {startTaskService} from '../task-service/composition.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createPiProvider} from '../agent-provider-pi/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {data, questions, questionPolicyDigest, policy, bindPlan} from './scenario.fixture.ts';
 
 const args = ['--execute-real', '--run-dir', '/private/tmp/pi-cancel-new', '--node', '/installed/node',
   '--pi-entry', '/installed/pi/dist/bundle/cli.js', '--pi-sdk', '/installed/pi/dist/index.js'];
@@ -103,16 +103,16 @@ test('actual Pi native bridge and custody/layout3 HTTP cancel original authors, 
   let verifierStarts = 0, complete = false;
   const custodyProfile = {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true};
   const nativePlanner = createAcpProvider({id: 'planner-fixture', executable: process.execPath,
-    args: [here('../task-service/runtime-question-recovery.worker.fixture.mjs'), 'planner'], custodyProfile});
+    args: [here('../task-service/runtime-question-recovery.worker.fixture.ts'), 'planner'], custodyProfile});
   const nativePi = createPiProvider({id: 'pi-fixture', executable: process.execPath,
-    args: [here('../agent-provider-pi/bridge-agent.fixture.mjs'), 'write'], bridge: {sdkEntry: here('../agent-provider-pi/fixtures/sdk/index.mjs')}, custodyProfile});
+    args: [here('../agent-provider-pi/bridge-agent.fixture.ts'), 'write'], bridge: {sdkEntry: here('../agent-provider-pi/fixtures/sdk/index.ts')}, custodyProfile});
   const observe = native => ({...native, start(input) {const ticket = tickets.get(input.cwd); assert.ok(ticket);
     const handle = native.start(input); observations.push(trackExecution({taskId: ticket.taskId, workerId: ticket.workerId, nodeId: ticket.nodeId, role: ticket.role}, handle)); return handle;}});
   const planner = observe(nativePlanner), pi = observe(nativePi);
   const proposal = {summary: 'Test-only cancellation fixture', nodes: ['east', 'west', 'verify'].map(id => ({id,
     role: id === 'verify' ? 'verifier' : 'author', providerId: id === 'verify' ? null : pi.id, goal: 'Test ' + id, scope: [id]})),
     edges: [{from: 'east', to: 'verify'}, {from: 'west', to: 'verify'}], deliverables: ['east.json', 'west.json'], acceptance: [policy.description], assumptions: []};
-  const checkerPath = here('./checker.fixture.mjs'), command = createVerificationCommand({executable: process.execPath,
+  const checkerPath = here('./checker.fixture.ts'), command = createVerificationCommand({executable: process.execPath,
     checkerPath, checkerDigest: digest(fs.readFileSync(checkerPath)), policyDigest: digest(encode(policy)),
     assertions: [{name: 'answered-regions', validate: () => false}], delivery() {throw Error('never accepted');}});
   const startChecker = input => {verifierStarts++; return command.start(input);};

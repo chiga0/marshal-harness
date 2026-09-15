@@ -1,5 +1,5 @@
 // Fixed, non-Agent fixture. It only operates on the private test-created root.
-import { Store, encode, digest, makeEvent } from '../store.mjs';
+import { Store, encode, digest, makeEvent } from '../store.ts';
 
 const [mode, root] = process.argv.slice(2);
 try {

@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Supervisor } from './supervisor.mjs';
-import { Store, artifactHash, sameSecret, nativeEnvironment, atomicPrivate } from './store.mjs';
+import { Supervisor } from './supervisor.ts';
+import { Store, artifactHash, sameSecret, nativeEnvironment, atomicPrivate } from './store.ts';
 
-const fixture = fileURLToPath(new URL('./runtime-fixture.test.mjs', import.meta.url));
+const fixture = fileURLToPath(new URL('./runtime-fixture.test.ts', import.meta.url));
 const tempParent = process.platform === 'darwin' ? '/private/tmp' : '/tmp';
 async function root(t) {
   const directory = await fs.mkdtemp(path.join(tempParent, 'node-team-unit-'));
@@ -15,7 +15,7 @@ async function root(t) {
 }
 function ports(mode = 'normal', verifyFiles = async files => ({ passed: true, checks: 3, files: files.map(file => ({ ...file, sha256: artifactHash(file.content) })) })) {
   return {
-    plan(intent) { return { version: 'test-only/v1', intent, timeoutMs: 300000, nodes: ['normalize', 'report'].map(id => ({ id, role: 'author', file: id + '.mjs', prompt: JSON.stringify({ mode, name: id + '.mjs' }) })) }; },
+    plan(intent) { return { version: 'test-only/v1', intent, timeoutMs: 300000, nodes: ['normalize', 'report'].map(id => ({ id, role: 'author', file: id + '.ts', prompt: JSON.stringify({ mode, name: id + '.ts' }) })) }; },
     makeCommand() { return { command: process.execPath, args: [fixture], env: { NODE_TEAM_RUNTIME_FIXTURE: '1' } }; },
     parseCandidate(_config, _node, stdout) { return JSON.parse(stdout); }, verifyFiles,
   };

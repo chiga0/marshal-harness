@@ -7,11 +7,11 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
-import {TaskClient} from '../task-client/index.mjs';
-import {custodyDigest, verifyObservation} from '../agent-runtime/custody-contract.mjs';
+import {TaskClient} from '../task-client/index.ts';
+import {custodyDigest, verifyObservation} from '../agent-runtime/custody-contract.ts';
 
-const cli = fileURLToPath(new URL('./main.mjs', import.meta.url));
-const config = fileURLToPath(new URL('./runtime-question-recovery.fixture.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('./main.ts', import.meta.url));
+const config = fileURLToPath(new URL('./runtime-question-recovery.fixture.ts', import.meta.url));
 async function until(observe, ms = 15000) {
   const end = Date.now() + ms;
   for (;;) {const value = await observe(); if (value) return value;

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {supportsNode, requireNodeRuntime, inspectSQLiteRuntime} from './runtime.mjs';
-import {withoutSQLiteRuntimeNotices} from './runtime-notices.fixture.mjs';
+import {supportsNode, requireNodeRuntime, inspectSQLiteRuntime} from './runtime.ts';
+import {withoutSQLiteRuntimeNotices} from './runtime-notices.fixture.ts';
 
 test('runtime notice filtering in tests preserves unrelated diagnostic or private text', () => {
   const notice = '(node:123) [MARSHAL_SQLITE_DEFENSIVE_UNAVAILABLE] Warning: SQLite defensive mode unavailable; trusted-single-user fixed-SQL Store only\n';

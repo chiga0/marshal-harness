@@ -6,12 +6,12 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
-import {TaskClient} from '../task-client/index.mjs';
-import {until} from './backup-restore.fixture.mjs';
+import {TaskClient} from '../task-client/index.ts';
+import {until} from './backup-restore.fixture.ts';
 
 export const fileLimit = 65536;
 const python = '/usr/bin/python3'; // Installed system interpreter, no shell/PATH lookup.
-const cli = fileURLToPath(new URL('./main.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('./main.ts', import.meta.url));
 const configurationPath = fileURLToPath(import.meta.url);
 // Only the new child (then exec'd into the original CLI) and its descendants
 // inherit this limit. Parent, host disks, existing processes and user data do not.
@@ -64,7 +64,7 @@ if (process.env.MARSHAL_STORAGE_LIMIT_OBSERVE === '1') {
       };
     }
   }
-  configuration = (await import('./custody-recovery.fixture.mjs')).default;
+  configuration = (await import('./custody-recovery.fixture.ts')).default;
 }
 export default configuration;
 

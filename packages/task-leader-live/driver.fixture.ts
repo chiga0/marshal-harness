@@ -1,19 +1,19 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 // Manual opt-in only: real Pi, original Core and explicit local report target.
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {parseOptions as parsePiOptions, filePermission} from '../task-pi-live/driver.fixture.mjs';
-import {trackExecution} from '../task-qwen-live/driver.fixture.mjs';
-import {data, choices, policy, taskBody, bindPlan, reportFor, consumeDelivery} from './scenario.fixture.mjs';
-import {LiveError, check, equal, businessReply, verificationRequest, validatePlan, replyOnce, assertReplyReplay, verifyAcceptance, authorizeReport, authorOverlap} from './proof.fixture.mjs';
-import {startReportServer, consumePublished} from './report-server.fixture.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {parseOptions as parsePiOptions, filePermission} from '../task-pi-live/driver.fixture.ts';
+import {trackExecution} from '../task-qwen-live/driver.fixture.ts';
+import {data, choices, policy, taskBody, bindPlan, reportFor, consumeDelivery} from './scenario.fixture.ts';
+import {LiveError, check, equal, businessReply, verificationRequest, validatePlan, replyOnce, assertReplyReplay, verifyAcceptance, authorizeReport, authorOverlap} from './proof.fixture.ts';
+import {startReportServer, consumePublished} from './report-server.fixture.ts';
 
-const checkerPath = fileURLToPath(new URL('./checker.fixture.mjs', import.meta.url));
+const checkerPath = fileURLToPath(new URL('./checker.fixture.ts', import.meta.url));
 export const reviewPolicy = Object.freeze({id: 'regional-requirements-review', version: '1',
   description: '独立检查原需求、完整原销售数据、用户真实回复与两份地区报告；检查零额计数、负数净额及逐项需求覆盖。不要求无意义润色，首轮正确即接受。'});
 export const publicationPolicy = Object.freeze({profile: 'task-local-json-report/v1', id: 'regional-report', version: '1'});
@@ -190,8 +190,8 @@ export async function runLive(options) {
     // These imports deliberately require the real integrated candidate. Importing
     // this driver or running its pure tests never starts a service/model.
     const [{startTaskService}, {createPiProvider}, {createFileBusiness}, core, {createVerificationCommand}, pub] = await Promise.all([
-      import('../task-service/composition.mjs'), import('../agent-provider-pi/index.mjs'), import('../task-business/index.mjs'),
-      import('../task-application/application.mjs'), import('../task-verification-command/index.mjs'), import('../task-publication-report/index.mjs')]);
+      import('../task-service/composition.ts'), import('../agent-provider-pi/index.ts'), import('../task-business/index.ts'),
+      import('../task-application/application.ts'), import('../task-verification-command/index.ts'), import('../task-publication-report/index.ts')]);
     check(['createLeaderPort', 'createReviewPort', 'renderLeaderPrompt', 'renderReviewPrompt', 'parseManagedOutput'].every(name =>
       typeof core[name] === 'function'), 'managed_core_unavailable');
     const root = path.join(options.runDir, 'data'), reportRoot = path.join(options.runDir, 'reports');

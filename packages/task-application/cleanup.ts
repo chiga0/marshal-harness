@@ -1,6 +1,6 @@
 import {createPublicKey, verify} from 'node:crypto';
-import {encode, digest, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
-import {clone, reject, nextRevision} from './model.mjs';
+import {encode, digest, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.ts';
+import {clone, reject, nextRevision} from './model.ts';
 
 const PROFILE = 'node-execution-custody/v1', hash = value => digest(encode(value));
 const decode = row => row ? JSON.parse(row.bytes.toString()) : null;

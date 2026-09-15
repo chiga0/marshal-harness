@@ -1,6 +1,6 @@
 import {spawn} from 'node:child_process';
 import path from 'node:path';
-import {text, object} from './bridge-contract.mjs';
+import {text, object} from './bridge-contract.ts';
 
 /** Pi's native tool keeps parsing, session env and output formatting. Only its
  * operations backend changes: the shell inherits the Runtime guard's live

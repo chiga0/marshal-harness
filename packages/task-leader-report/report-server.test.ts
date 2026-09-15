@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import {startReportServer} from './report-server.mjs';
+import {startReportServer} from './report-server.ts';
 test('finite report reader denies non-GET/foreign origin/path/link/oversize and replaced root; normal bytes are exact', async t => {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-report-reader-'))), root = path.join(parent, 'reports');
   fs.mkdirSync(root, {mode: 0o700}); let reader;

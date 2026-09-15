@@ -1,5 +1,5 @@
-import {checkedGraph} from '../task-application/graph.mjs';
-import {MAX_FILE} from './policy.mjs';
+import {checkedGraph} from '../task-application/graph.ts';
+import {MAX_FILE} from './policy.ts';
 
 const identifier = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
 const check = value => {if (!value) throw new Error('generic_files_plan_unsupported');};

@@ -8,4 +8,4 @@ if (mode === 'repair') {
 } else {
   process.env.MARSHAL_QUESTION_FIXTURE = '1'; process.env.MARSHAL_QUESTION_SCENARIO = 'positive'; process.env.MARSHAL_QUESTION_V5 = '1';
 }
-export default (await import(mode === 'repair' ? './same-plan-repair.fixture.mjs' : './runtime-question-recovery.fixture.mjs')).default;
+export default (await import(mode === 'repair' ? './same-plan-repair.fixture.ts' : './runtime-question-recovery.fixture.ts')).default;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {candidateInputs, v7ResultFromTap} from './v7-installed.fixture.mjs';
+import {candidateInputs, v7ResultFromTap} from './v7-installed.fixture.ts';
 const valid = {MARSHAL_CANDIDATE_ROOT: '/private/explicit-package', MARSHAL_CANDIDATE_SOURCE: 'a'.repeat(40),
   MARSHAL_CANDIDATE_MANIFEST: 'sha256:' + 'b'.repeat(64)};
 test('v7 consumer requires all independent pins, no implicit source or pack fallback', () => {

@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {operations, validate, validAnswerResponse, validQuestionItems, validRepairResponse, validAuditResponse,
-  validLeaderView, validLeaderReplyResponse, MAX_LEADER_VIEW_BYTES, TaskApiError} from '../task-api/contract.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
+  validLeaderView, validLeaderReplyResponse, MAX_LEADER_VIEW_BYTES, TaskApiError} from '../task-api/contract.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);

@@ -6,7 +6,7 @@ import {fileURLToPath, pathToFileURL} from 'node:url';
 import {spawn} from 'node:child_process';
 import {setTimeout as pause} from 'node:timers/promises';
 import {createHash} from 'node:crypto';
-import {verify} from './index.mjs';
+import {verify} from './index.ts';
 
 const hash = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 async function until(observe, predicate, milliseconds = 15000) {
@@ -29,8 +29,8 @@ export async function exerciseInstalledTeam(t, {installed, manifestDigest, sourc
   const report = verify({root: installed, manifestDigest});
   assert.equal(report.sourceHead, sourceHead);
   // The client also comes from the package. There are no source Core imports.
-  const {TaskClient} = await import(pathToFileURL(path.join(installed, 'packages/task-client/index.mjs')).href);
-  const config = fileURLToPath(new URL('./team-service.fixture.mjs', import.meta.url));
+  const {TaskClient} = await import(pathToFileURL(path.join(installed, 'packages/task-client/index.ts')).href);
+  const config = fileURLToPath(new URL('./team-service.fixture.ts', import.meta.url));
   const observations = () => fs.existsSync(journal) ? fs.readFileSync(journal, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
   async function launch(mode) {
     const child = spawn(process.execPath, [path.join(installed, report.entrypoint), '--root', state, '--mode', mode, '--config', config, '--port', '0'],

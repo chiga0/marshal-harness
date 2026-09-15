@@ -1,7 +1,7 @@
 // Independent, fixed Node checker. No model or worker-reported verdict is used.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {encode, digest} from '../task-store/store.mjs';
+import {encode, digest} from '../task-store/store.ts';
 // Original command transport keeps stdin open; one bounded LF frame, not EOF.
 for await (const input of createInterface({input: process.stdin})) {
 if (Buffer.byteLength(input) > 262144) throw Error('bounded');

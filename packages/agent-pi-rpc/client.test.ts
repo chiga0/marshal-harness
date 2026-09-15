@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PassThrough} from 'node:stream';
 import {setImmediate as tick} from 'node:timers/promises';
-import {PiRpcClient} from './client.mjs';
+import {PiRpcClient} from './client.ts';
 
 function fixture(t, options = {}) {
   const readable = new PassThrough(), writable = new PassThrough(), writes = [];

@@ -6,7 +6,7 @@ import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {execFileSync, spawnSync, spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {pack, verify, SOURCE_FILES, NODE_VERSION} from './index.mjs';
+import {pack, verify, SOURCE_FILES, NODE_VERSION} from './index.ts';
 
 const repository = fs.realpathSync(fileURLToPath(new URL('../..', import.meta.url)));
 const git = (root, ...args) => execFileSync('git', ['-C', root, ...args], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}).trim();
@@ -52,11 +52,11 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
   // Commands consume stdin; deployment configurations intentionally require
   // explicit local settings. They remain packaged and are exercised below,
   // rather than being treated as side-effect-free library imports.
-  const entrypoints = new Set(['packages/task-service/main.mjs', 'packages/agent-runtime/guard.mjs', 'packages/agent-runtime/custody-process.mjs',
-    'packages/task-generic-files/checker.mjs', 'packages/task-generic-files/service-config.mjs', 'packages/task-generic-files/qwen-service-config.mjs', 'packages/task-generic-files/qwen-short-service-config.mjs',
-    'packages/task-regional-window/checker.mjs', 'packages/task-regional-window/service-config.mjs',
-    'packages/task-publication-report/runner.mjs', 'packages/task-leader-report/service-config.mjs']);
-  const imports = SOURCE_FILES.filter(file => file.endsWith('.mjs') && !entrypoints.has(file));
+  const entrypoints = new Set(['packages/task-service/main.ts', 'packages/agent-runtime/guard.ts', 'packages/agent-runtime/custody-process.ts',
+    'packages/task-generic-files/checker.ts', 'packages/task-generic-files/service-config.ts', 'packages/task-generic-files/qwen-service-config.ts', 'packages/task-generic-files/qwen-short-service-config.ts',
+    'packages/task-regional-window/checker.ts', 'packages/task-regional-window/service-config.ts',
+    'packages/task-publication-report/runner.ts', 'packages/task-leader-report/service-config.ts']);
+  const imports = SOURCE_FILES.filter(file => file.endsWith('.ts') && !entrypoints.has(file));
   const script = imports.map(file => `await import(${JSON.stringify(pathToFileURL(path.join(f.target, file)).href)});`).join('\n');
   const loaded = spawnSync(process.execPath, ['--input-type=module', '-e', script], {cwd: f.root, timeout: 10000, encoding: 'utf8'});
   assert.equal(loaded.status, 0, loaded.stderr);
@@ -65,17 +65,17 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
   assert.equal(cli.status, 1); assert.match(cli.stderr, /service_start_unavailable/);
   const state = path.join(f.root, 'unconfigured-window');
   const unconfigured = spawnSync(process.execPath, [path.join(f.target, report.entrypoint), '--root', state,
-    '--mode', 'create', '--config', path.join(f.target, 'packages/task-regional-window/service-config.mjs')],
+    '--mode', 'create', '--config', path.join(f.target, 'packages/task-regional-window/service-config.ts')],
   {cwd: f.root, env: {}, timeout: 10000, encoding: 'utf8'});
   assert.equal(unconfigured.status, 1);
   assert.equal(unconfigured.stdout, '');
   assert.equal(withoutSQLiteImportWarning(unconfigured.stderr), '{"code":"service_start_unavailable"}\n');
   assert.equal(fs.existsSync(state), false); // No configuration fallback or partial service.
   const leader = spawnSync(process.execPath, [path.join(f.target, report.entrypoint), '--root', path.join(f.root, 'unconfigured-leader'),
-    '--config', path.join(f.target, 'packages/task-leader-report/service-config.mjs')], {cwd: f.root, env: {}, timeout: 10000, encoding: 'utf8'});
+    '--config', path.join(f.target, 'packages/task-leader-report/service-config.ts')], {cwd: f.root, env: {}, timeout: 10000, encoding: 'utf8'});
   assert.equal(leader.status, 1); assert.equal(leader.stdout, ''); assert.equal(withoutSQLiteImportWarning(leader.stderr), '{"code":"service_start_unavailable"}\n');
   assert.equal(fs.existsSync(path.join(f.root, 'unconfigured-leader')), false);
-  for (const configuration of ['service-config.mjs', 'qwen-service-config.mjs', 'qwen-short-service-config.mjs']) {
+  for (const configuration of ['service-config.ts', 'qwen-service-config.ts', 'qwen-short-service-config.ts']) {
   const genericRoot = path.join(f.root, 'unconfigured-' + configuration);
   const generic = spawnSync(process.execPath, [path.join(f.target, report.entrypoint), '--root', genericRoot,
     '--config', path.join(f.target, 'packages/task-generic-files', configuration)],
@@ -84,16 +84,16 @@ test('reproducible same bytes, explicit complete runtime inventory, private fres
   assert.equal(withoutSQLiteImportWarning(generic.stderr), '{"code":"service_start_unavailable"}\n');
   assert.equal(fs.existsSync(genericRoot), false);
   }
-  const genericChecker = spawnSync(process.execPath, [path.join(f.target, 'packages/task-generic-files/checker.mjs')],
+  const genericChecker = spawnSync(process.execPath, [path.join(f.target, 'packages/task-generic-files/checker.ts')],
     {cwd: f.root, env: {}, input: '{}\n', timeout: 10000, encoding: 'utf8'});
   assert.equal(genericChecker.status, 1); assert.equal(genericChecker.stdout, '');
   assert.equal(withoutSQLiteImportWarning(genericChecker.stderr), '');
-  const checker = spawnSync(process.execPath, [path.join(f.target, 'packages/task-regional-window/checker.mjs')],
+  const checker = spawnSync(process.execPath, [path.join(f.target, 'packages/task-regional-window/checker.ts')],
     {cwd: f.root, env: {}, input: '{}\n', timeout: 10000, encoding: 'utf8'});
   assert.equal(checker.status, 1);
   assert.equal(checker.stdout, ''); // Invalid input cannot create a successful verification frame.
   assert.equal(withoutSQLiteImportWarning(checker.stderr), '');
-  const publisher = spawnSync(process.execPath, [path.join(f.target, 'packages/task-publication-report/runner.mjs')],
+  const publisher = spawnSync(process.execPath, [path.join(f.target, 'packages/task-publication-report/runner.ts')],
     {cwd: f.root, env: {}, input: '{}\n', timeout: 10000, encoding: 'utf8'});
   assert.equal(publisher.status, 1);
   assert.equal(publisher.stdout, ''); // Packaged child rejects missing authority; no side effect or secret output.
@@ -109,8 +109,8 @@ test('never overwrite an existing destination and reject source-relative targets
 test('verified installed package serves HTTP and reopens SQLite in a fresh CLI process without model calls', async t => {
   const f = fixture(t), packed = f.create();
   const report = verify({root: f.target, manifestDigest: packed.manifestDigest});
-  const {TaskClient} = await import(pathToFileURL(path.join(f.target, 'packages/task-client/index.mjs')).href);
-  const config = path.join(repository, 'packages/task-service/service.fixture.mjs');
+  const {TaskClient} = await import(pathToFileURL(path.join(f.target, 'packages/task-client/index.ts')).href);
+  const config = path.join(repository, 'packages/task-service/service.fixture.ts');
   const state = path.join(f.root, 'state');
   async function launch(mode) {
     const child = spawn(process.execPath, [path.join(f.target, report.entrypoint), '--root', state, '--mode', mode,
@@ -162,7 +162,7 @@ test('wrong commit, current source drift and omitted newly committed runtime dep
   fs.appendFileSync(path.join(f.source, SOURCE_FILES[0]), '\n// drift\n');
   assert.throws(f.create, /source_drift/); assert.ok(!fs.existsSync(f.target));
   fs.copyFileSync(path.join(repository, SOURCE_FILES[0]), path.join(f.source, SOURCE_FILES[0]));
-  fs.writeFileSync(path.join(f.source, 'packages/task-application/new-runtime.mjs'), 'export const added = true;\n');
+  fs.writeFileSync(path.join(f.source, 'packages/task-application/new-runtime.ts'), 'export const added = true;\n');
   git(f.source, 'add', 'packages');
   git(f.source, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'new runtime');
   assert.throws(() => pack({sourceRoot: f.source, target: f.target, sourceHead: git(f.source, 'rev-parse', 'HEAD')}), /source_inventory_changed/);
@@ -206,7 +206,7 @@ test('symlink and hardlink source/output boundaries are rejected without followi
 });
 test('CLI prints only safe summary or stable error code, never injected path text', t => {
   const f = fixture(t), result = f.create();
-  const cli = fileURLToPath(new URL('./main.mjs', import.meta.url));
+  const cli = fileURLToPath(new URL('./main.ts', import.meta.url));
   const ok = spawnSync(process.execPath, [cli, 'verify', '--root', f.target, '--manifest-digest', result.manifestDigest], {encoding: 'utf8', timeout: 10000});
   assert.equal(ok.status, 0); assert.equal(JSON.parse(ok.stdout).sourceHead, f.sourceHead);
   const bad = spawnSync(process.execPath, [cli, 'verify', '--root', '/do-not-echo-secret', '--manifest-digest', result.manifestDigest], {encoding: 'utf8', timeout: 10000});

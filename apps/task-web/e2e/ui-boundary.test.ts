@@ -1,15 +1,15 @@
 // @vitest-environment node
 // UI-1 浏览器接入边界（ADR0098）：唯一公开 127.0.0.1 端口上的精确 Host/Origin、
 // /ui/ 冻结清单静态、同源 API 中继、API-only 兼容反例与启动期静态目录门禁。
-// 覆盖验收 E26/E27/E29/E32 的服务侧断言；均以真实 main.mjs 子进程为对象。
+// 覆盖验收 E26/E27/E29/E32 的服务侧断言；均以真实 main.ts 子进程为对象。
 import {afterAll, beforeAll, describe, expect, test} from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
-import {TaskClient} from '../../../packages/task-client/index.mjs';
-import {withoutSQLiteRuntimeNotices} from '../../../packages/task-store/runtime-notices.fixture.mjs';
-import {CLI, DIST, FIXTURE_MINIMAL, ensureDist, rawRequest, spawnService, tempParent} from './helpers.mjs';
+import {TaskClient} from '../../../packages/task-client/index.ts';
+import {withoutSQLiteRuntimeNotices} from '../../../packages/task-store/runtime-notices.fixture.ts';
+import {CLI, DIST, FIXTURE_MINIMAL, ensureDist, rawRequest, spawnService, tempParent} from './helpers.ts';
 
 const CSP_SELF = "'self'";
 function expectApiCsp(headers) {
@@ -79,8 +79,8 @@ describe('ui-boundary: real --ui edge over a managed fixture service', () => {
 
   test('E32 反向: 遍历/未知/查询串/动态方法一律 404/405,不回显宿主路径', async () => {
     const cases = [
-      ['/ui/%2e%2e/%2e%2e/packages/task-api/contract.mjs', 404],
-      ['/ui/..%2f..%2fpackages/task-api/contract.mjs', 404],
+      ['/ui/%2e%2e/%2e%2e/packages/task-api/contract.ts', 404],
+      ['/ui/..%2f..%2fpackages/task-api/contract.ts', 404],
       ['/ui/../secret', 404],
       ['/ui/%2E%2E%2F', 404],
       ['/ui/assets/../index.html', 404],

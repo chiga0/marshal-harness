@@ -1,7 +1,7 @@
 // Explicit zero-model failure injection after the original ACP process cleanup.
 // MARSHAL_DIAGNOSTIC_PARSE_OUTPUT switches injection to a completed end_turn
 // whose unparseable text exercises the bounded rejected-output retention seam.
-const {default: base} = await import(process.env.MARSHAL_DIAGNOSTIC_BASE_CONFIG ?? new URL('./leader-recovery.fixture.mjs', import.meta.url));
+const {default: base} = await import(process.env.MARSHAL_DIAGNOSTIC_BASE_CONFIG ?? new URL('./leader-recovery.fixture.ts', import.meta.url));
 const parseOutput = process.env.MARSHAL_DIAGNOSTIC_PARSE_OUTPUT;
 const providers = new Map([...base.providers].map(([id, native]) => [id, {...native, start(input) {
   const handle = native.start(input);

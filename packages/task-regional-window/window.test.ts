@@ -7,14 +7,14 @@ import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {startTaskService} from '../task-service/composition.mjs';
-import {encode} from '../task-store/store.mjs';
-import {createRegionalWindowConfig, filePermission} from './index.mjs';
-import {date, range, finalValues, rowsFrom, expected, taskBody, proposal} from './policy.mjs';
-import {intake, answer, complete, parseOptions} from './driver.mjs';
-import {consumeDelivery} from './consumer.mjs';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {startTaskService} from '../task-service/composition.ts';
+import {encode} from '../task-store/store.ts';
+import {createRegionalWindowConfig, filePermission} from './index.ts';
+import {date, range, finalValues, rowsFrom, expected, taskBody, proposal} from './policy.ts';
+import {intake, answer, complete, parseOptions} from './driver.ts';
+import {consumeDelivery} from './consumer.ts';
 
 const values = {startDate: '2026-09-01', endDate: '2026-09-02'};
 const bytes = encode({rows: [
@@ -34,7 +34,7 @@ async function fixture(t, mode = 'good') {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-window-'))), root = path.join(parent, 'data');
   const executions = [], byCwd = new Map(), services = [];
   const native = createAcpProvider({id: 'window-fixture-acp', executable: process.execPath,
-    args: [fileURLToPath(new URL('./agent.fixture.mjs', import.meta.url))], env: {WINDOW_FIXTURE: mode}});
+    args: [fileURLToPath(new URL('./agent.fixture.ts', import.meta.url))], env: {WINDOW_FIXTURE: mode}});
   const provider = {id: native.id, start(input) {
     const prompt = mode === 'omit-planner-declaration' ? input.prompt.replace(/^REGIONAL_WINDOW_FIXED_PROPOSAL_V1\n[^\n]+\nREGIONAL_WINDOW_FIXED_PROPOSAL_END\n/m, '') : input.prompt;
     const handle = native.start({...input, prompt}); executions.push({ticket: byCwd.get(input.cwd), prompt, handle}); return handle;
@@ -124,7 +124,7 @@ test('offered permissions never grant shell, another branch output or input muta
 test('actual CLI separates answers and exact final approval; wrong digest never starts an author', {timeout: 30000}, async t => {
   const f = await fixture(t), inputFile = path.join(f.parent, 'sales.json'), sessionFile = path.join(f.parent, 'session.json'), outputFile = path.join(f.parent, 'delivery.json');
   fs.writeFileSync(inputFile, bytes, {mode: 0o600});
-  const driver = fileURLToPath(new URL('./driver.mjs', import.meta.url));
+  const driver = fileURLToPath(new URL('./driver.ts', import.meta.url));
   const call = async (action, args) => JSON.parse((await promisify(execFile)(process.execPath, [driver, action, '--connection', f.service.connectionFile,
     '--session', sessionFile, ...args], {timeout: 15000, maxBuffer: 1024 * 1024})).stdout);
   const created = await call('intake', ['--input', inputFile, '--key', 'cli-window']);

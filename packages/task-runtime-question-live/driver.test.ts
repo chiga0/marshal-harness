@@ -5,10 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {parseOptions, validatePlan, answerOnce, runLive} from './driver.fixture.mjs';
-import {data, choices, policy, questionPolicyDigest, questions, taskBody, bindPlan, expectedReports, validQuestion, answerFromRefs, verifyBusiness, consumeDelivery, verificationRequest} from './scenario.fixture.mjs';
-import {TaskVerification, createVerificationPort} from '../task-application/verification.mjs';
-import {encode, digest} from '../task-store/store.mjs';
+import {parseOptions, validatePlan, answerOnce, runLive} from './driver.fixture.ts';
+import {data, choices, policy, questionPolicyDigest, questions, taskBody, bindPlan, expectedReports, validQuestion, answerFromRefs, verifyBusiness, consumeDelivery, verificationRequest} from './scenario.fixture.ts';
+import {TaskVerification, createVerificationPort} from '../task-application/verification.ts';
+import {encode, digest} from '../task-store/store.ts';
 const hash = value => digest(encode(value));
 const args = ['--execute-real', '--answer', 'paid', '--run-dir', '/private/tmp/live-new', '--node', '/installed/node',
   '--pi-entry', '/installed/pi/dist/bundle/cli.js', '--pi-sdk', '/installed/pi/dist/index.js'];
@@ -108,7 +108,7 @@ test('actual fixed Node checker preserves binding and rejects changed author byt
   const p = proof('cancelled'), request = {profile: 'task-verification-command/v1', nonce: 'original-nonce', binding: {planDigest: p.planDigest},
     input: {interactionRefs: p.refs, verification: p.verification, sales: data, source: p.source}};
   fs.writeFileSync(path.join(cwd, 'sales.json'), encode(data)); for (const file of files('cancelled')) fs.writeFileSync(path.join(cwd, file.path), file.content);
-  const checker = fileURLToPath(new URL('./checker.fixture.mjs', import.meta.url));
+  const checker = fileURLToPath(new URL('./checker.fixture.ts', import.meta.url));
   const run = () => spawnSync(process.execPath, [checker], {cwd, env: {}, input: encode(request).toString() + '\n', encoding: 'utf8', timeout: 5000, maxBuffer: 262144});
   const positive = run(); assert.equal(positive.status, 0, positive.stderr); const report = JSON.parse(positive.stdout);
   assert.equal(report.nonce, request.nonce); assert.deepEqual(report.binding, request.binding); assert.equal(report.assertions[0].actual.answer, 'cancelled');

@@ -4,9 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createPiProvider} from './index.mjs';
+import {createPiProvider} from './index.ts';
 
-const agent = fileURLToPath(new URL('./agent.fixture.mjs', import.meta.url));
+const agent = fileURLToPath(new URL('./agent.fixture.ts', import.meta.url));
 function input(t, extra = {}) {
   const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pi-provider-test-')));
   t.after(() => fs.rmSync(cwd, {recursive: true, force: true})); return {cwd, deadline: Date.now() + 10000, prompt: 'approved fixture work', ...extra};

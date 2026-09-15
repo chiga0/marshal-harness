@@ -1,4 +1,4 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 // Explicit operator acceptance tool, not production inventory/default business.
 // Real execution requires --execute-real and a clean exact source checkout.
 import fs from 'node:fs';
@@ -6,20 +6,20 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as pause} from 'node:timers/promises';
-import {startTaskService} from '../task-service/composition.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {createPiProvider} from '../agent-provider-pi/index.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {launchCommand} from '../agent-runtime/index.mjs';
-import {createGitBusiness, gitDescription, PATCH} from '../task-git-business/index.mjs';
-import {runGit} from '../task-git-business/git.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {LIMITS, NODES, MARKER, END, policy, proposal, taskBody, bindPlan, validatePlan, filePermission, check, equal, LiveError} from './business.fixture.mjs';
+import {startTaskService} from '../task-service/composition.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {createPiProvider} from '../agent-provider-pi/index.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {launchCommand} from '../agent-runtime/index.ts';
+import {createGitBusiness, gitDescription, PATCH} from '../task-git-business/index.ts';
+import {runGit} from '../task-git-business/git.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {LIMITS, NODES, MARKER, END, policy, proposal, taskBody, bindPlan, validatePlan, filePermission, check, equal, LiveError} from './business.fixture.ts';
 
 const here = name => fileURLToPath(new URL(name, import.meta.url));
-const SOURCE = fs.realpathSync(here('../..')), CHECKER = here('./checker.fixture.mjs');
+const SOURCE = fs.realpathSync(here('../..')), CHECKER = here('./checker.fixture.ts');
 const GIT = '/usr/bin/git';
 const git = async (cwd, args, extra) => (await runGit(GIT, cwd, args, extra)).toString();
 const text = value => typeof value === 'string' && value.isWellFormed() && !value.includes('\0');
@@ -72,7 +72,7 @@ async function native(options) {
 async function repositories(root) {
   const parent = path.join(root, 'repositories'); fs.mkdirSync(parent, {mode: 0o700});
   const roots = {}, nodes = [], untouched = {};
-  for (const [nodeId, filename, declaration] of [['library', 'net.mjs', 'net(cents,discount)'], ['client', 'invoice.mjs', 'invoice(rows,net)']]) {
+  for (const [nodeId, filename, declaration] of [['library', 'net.ts', 'net(cents,discount)'], ['client', 'invoice.ts', 'invoice(rows,net)']]) {
     const cwd = path.join(parent, nodeId); fs.mkdirSync(cwd, {mode: 0o700}); roots[nodeId] = cwd;
     await git(cwd, ['init', '-b', 'main']);
     fs.writeFileSync(path.join(cwd, filename), `export function ${declaration} { throw Error('not implemented'); }\n`, {flag: 'wx', mode: 0o644});
@@ -110,7 +110,7 @@ async function run(runDir, node, configuration, signal) {
     proofScope: 'operator observation, not a signed Core receipt or hostile-code isolation proof', passed: false,
     production: false, publisherSeparationProven: false, recoveryClaim: 'graceful-same-version-only',
     startedAt: new Date().toISOString(), nodeVersion: process.versions.node, versions: configuration.versions, entries: configuration.entries,
-    driverDigest: digest(fs.readFileSync(here('./driver.fixture.mjs'))), businessDigest: digest(fs.readFileSync(here('./business.fixture.mjs'))),
+    driverDigest: digest(fs.readFileSync(here('./driver.fixture.ts'))), businessDigest: digest(fs.readFileSync(here('./business.fixture.ts'))),
     checkerDigest: digest(fs.readFileSync(CHECKER)), permissions: {pi: {allowed: 0, denied: 0}, qwen: {allowed: 0, denied: 0}}, executions: []};
   let service, consumer, stage = 'repository-init', refs = [], verifierStarts = 0, deadline, interrupted = false;
   const observations = [], verifiers = [], identities = new Map(), byWorker = new Map();
@@ -249,7 +249,7 @@ export async function runLive(options) {return run(options.runDir, options.node,
  * implementations still own both protocol clients, native bridge and guards. */
 export async function runFixture({runDir, scenario = 'good', signal} = {}) {
   check(['good', 'wrong', 'bad-plan'].includes(scenario), 'invalid_fixture');
-  const peer = here('./agent.fixture.mjs'), sdkEntry = here('../agent-provider-pi/fixtures/sdk/index.mjs');
+  const peer = here('./agent.fixture.ts'), sdkEntry = here('../agent-provider-pi/fixtures/sdk/index.ts');
   return run(runDir, process.execPath, {mode: 'deterministic-fixture', sourceHead: (await git(SOURCE, ['rev-parse', 'HEAD'])).trim(),
     versions: {pi: 'fixture-not-Pi', qwen: 'fixture-not-Qwen'}, entries: {peer: digest(fs.readFileSync(peer)), sdk: digest(fs.readFileSync(sdkEntry))},
     providers: [createPiProvider({id: 'pi-rpc', executable: process.execPath, args: [peer, 'pi'], env: {GIT_MIXED_FIXTURE: scenario}, bridge: {sdkEntry}}),

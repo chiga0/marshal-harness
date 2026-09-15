@@ -1,8 +1,8 @@
 // Test-only consumer checks; these never mint Core authority or receipts.
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {leaderReplyDigest, validLeaderView, validLeaderReplyResponse} from '../task-api/contract.mjs';
-import {data, choices, policy, bindPlan, reportFor, consumeDelivery} from './scenario.fixture.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {leaderReplyDigest, validLeaderView, validLeaderReplyResponse} from '../task-api/contract.ts';
+import {data, choices, policy, bindPlan, reportFor, consumeDelivery} from './scenario.fixture.ts';
 
 export const equal = (a, b) => {try {return encode(a).equals(encode(b));} catch {return false;}};
 export class LiveError extends Error {constructor(code) {super(code); this.code = code;}}

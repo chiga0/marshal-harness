@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createInterface} from 'node:readline';
 import {setTimeout as pause} from 'node:timers/promises';
-import {proposal} from '../task-team-integration/scenario.fixture.mjs';
+import {proposal} from '../task-team-integration/scenario.fixture.ts';
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const respond = (message, result) => send({jsonrpc: '2.0', id: message.id, result});
 async function prompt(message) {

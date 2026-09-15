@@ -5,13 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {trackExecution, cancelActiveTeam, cancelledExecutionFact} from './driver.fixture.mjs';
-import {startTaskService} from '../task-service/composition.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {policy, bindPlan} from '../task-team-integration/scenario.fixture.mjs';
+import {trackExecution, cancelActiveTeam, cancelledExecutionFact} from './driver.fixture.ts';
+import {startTaskService} from '../task-service/composition.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {policy, bindPlan} from '../task-team-integration/scenario.fixture.ts';
 
 async function controlled() {
   let cancelled = false, calls = 0, verifierStarts = 0;
@@ -104,7 +104,7 @@ test('actual HTTP/SQLite/ACP fixture cancels original authors and reopens withou
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qwen-cancel-fixture-'))), observations = [], byCwd = new Map(), services = [];
   let verifierStarts = 0;
   const native = createAcpProvider({id: 'fixture-acp', executable: process.execPath,
-    args: [fileURLToPath(new URL('../task-team-integration/agent.fixture.mjs', import.meta.url))], env: {TEAM_FIXTURE_MODE: 'hang'}});
+    args: [fileURLToPath(new URL('../task-team-integration/agent.fixture.ts', import.meta.url))], env: {TEAM_FIXTURE_MODE: 'hang'}});
   const provider = {id: native.id, start(input) { const handle = native.start(input); observations.push(trackExecution(byCwd.get(input.cwd), handle)); return handle; }};
   const config = {root: path.join(parent, 'data'), providers: new Map([[provider.id, provider]]), supervisorOptions: {intervalMs: 10},
     verification: createVerificationPort({id: 'fixture-verifier-never-starts', policy, bindPlan,

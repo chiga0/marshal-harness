@@ -2,8 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {createInterface} from 'node:readline';
-import {encode, digest} from '../task-store/store.mjs';
-import {check, utf8} from './policy.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {check, utf8} from './policy.ts';
 try {
   for await (const line of createInterface({input: process.stdin})) {
     check(Buffer.byteLength(line) <= 262144);

@@ -1,7 +1,7 @@
 // @vitest-environment node
 // 与现有OpenAPI验证器逐例交叉核对，不在UI引入第二套更严格的合同。
 import {expect, test} from 'vitest';
-import {validate} from '../../../packages/task-api/contract.mjs';
+import {validate} from '../../../packages/task-api/contract.ts';
 import {parseOperation} from '../src/lib/transport/types';
 
 const original = {id: 'op-1', taskId: 'task-1', kind: 'task.cancel', status: 'succeeded', taskRevision: 1,

@@ -4,12 +4,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {encode, digest} from '../task-store/store.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {policy, bindPlan} from '../task-team-integration/scenario.fixture.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {policy, bindPlan} from '../task-team-integration/scenario.fixture.ts';
 
 const root = process.argv[process.argv.indexOf('--root') + 1], scenario = process.env.MARSHAL_CUSTODY_SCENARIO;
 if (process.env.MARSHAL_CUSTODY_FIXTURE !== '1' || !path.isAbsolute(root ?? '') ||
@@ -43,7 +43,7 @@ function observed(handle, ticket, kind) {
   }};
 }
 const native = mode => createAcpProvider({id: 'fixture-acp', executable: process.execPath,
-  args: [here('../task-team-integration/agent.fixture.mjs')], env: {TEAM_FIXTURE_MODE: mode},
+  args: [here('../task-team-integration/agent.fixture.ts')], env: {TEAM_FIXTURE_MODE: mode},
   custodyProfile: {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true}});
 const good = native('good'), held = native('hang');
 const provider = {id: good.id, custodyProfile: good.custodyProfile, start(input) {
@@ -53,7 +53,7 @@ const provider = {id: good.id, custodyProfile: good.custodyProfile, start(input)
 }};
 // Independent expected values do not import the ACP fixture's calculation.
 const expected = [{region: 'east', count: 2, netCents: 1275}, {region: 'west', count: 2, netCents: 550}];
-const checkerPath = here('./custody-recovery.worker.fixture.mjs');
+const checkerPath = here('./custody-recovery.worker.fixture.ts');
 function checker(hold) {
   return createVerificationCommand({executable: process.execPath, checkerPath, checkerDigest: digest(fs.readFileSync(checkerPath)),
     policyDigest: digest(encode(policy)), env: hold ? {MARSHAL_CUSTODY_CHECKER_HOLD: '1'} : {},

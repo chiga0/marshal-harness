@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {parseOptions, filePermission, expectedRegions, runLive} from './driver.fixture.mjs';
-import {taskBody, validatePlan, consumeDelivery, data} from '../task-qwen-live/driver.fixture.mjs';
-import {policy, proposal, bindPlan} from '../task-team-integration/scenario.fixture.mjs';
-import {TaskVerification, createVerificationPort} from '../task-application/verification.mjs';
-import {encode} from '../task-store/store.mjs';
+import {parseOptions, filePermission, expectedRegions, runLive} from './driver.fixture.ts';
+import {taskBody, validatePlan, consumeDelivery, data} from '../task-qwen-live/driver.fixture.ts';
+import {policy, proposal, bindPlan} from '../task-team-integration/scenario.fixture.ts';
+import {TaskVerification, createVerificationPort} from '../task-application/verification.ts';
+import {encode} from '../task-store/store.ts';
 
 const argumentsList = ['--execute-real', '--run-dir', '/private/tmp/pi-new', '--node', '/installed/node',
   '--pi-entry', '/installed/pi/dist/bundle/cli.js', '--pi-sdk', '/installed/pi/dist/index.js'];

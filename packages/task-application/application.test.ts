@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {Store} from '../task-store/store.mjs';
-import {TaskApplication} from './application.mjs';
-import {validate} from '../task-api/contract.mjs';
+import {Store} from '../task-store/store.ts';
+import {TaskApplication} from './application.ts';
+import {validate} from '../task-api/contract.ts';
 
 const NOW = 1800000000000;
 const context = {principal: 'local-operator'};

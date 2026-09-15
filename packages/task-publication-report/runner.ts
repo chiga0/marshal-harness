@@ -1,6 +1,6 @@
-import {encode} from '../task-store/store.mjs';
-import {json, check} from './io.mjs';
-import {run} from './command.mjs';
+import {encode} from '../task-store/store.ts';
+import {json, check} from './io.ts';
+import {run} from './command.ts';
 
 let size = 0, parts = [], processing = false;
 const deadline = setTimeout(() => process.exit(1), 10000);

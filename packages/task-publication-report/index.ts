@@ -2,13 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
-import {launchCommand} from '../agent-runtime/index.mjs';
-import {encode} from '../task-store/store.mjs';
+import {launchCommand} from '../agent-runtime/index.ts';
+import {encode} from '../task-store/store.ts';
 import {PROFILE, INPUT_NAME, HeldRoot, readHeld, observe, binding, nameFor, json, hash, isDigest, id, text, closed, check, time,
-  canonicalPath, baseURL, evidence} from './io.mjs';
+  canonicalPath, baseURL, evidence} from './io.ts';
 
 export {nameFor, INPUT_NAME, PROFILE};
-const RUNNER = fileURLToPath(new URL('./runner.mjs', import.meta.url));
+const RUNNER = fileURLToPath(new URL('./runner.ts', import.meta.url));
 const CUSTODY = Object.freeze({id: 'managed-local-report-v1', scope: 'inherited-process-group', eligible: true});
 const hashValue = value => hash(encode(value));
 function deferred() {let resolve; const promise = new Promise(r => {resolve = r;}); return {promise, resolve};}

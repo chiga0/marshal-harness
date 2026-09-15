@@ -7,12 +7,12 @@ import {join, dirname, isAbsolute} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {once} from 'node:events';
 import {createHash} from 'node:crypto';
-import {verifyFiles} from './business.mjs';
-import {sourceDigest} from './main.mjs';
+import {verifyFiles} from './business.ts';
+import {sourceDigest} from './main.ts';
 
 const provider = process.env.MARSHAL_NODE_LIVE_QWEN ? 'qwen' : 'pi';
 const executable = process.env.MARSHAL_NODE_LIVE_QWEN || process.env.MARSHAL_NODE_LIVE_PI;
-const main = join(dirname(fileURLToPath(import.meta.url)), 'main.mjs');
+const main = join(dirname(fileURLToPath(import.meta.url)), 'main.ts');
 
 test(`real local ${provider} pair: collection, frontend restart and cancellation without native Marshal`, {
   skip: !executable, timeout: 390000,
@@ -122,7 +122,7 @@ test(`real local ${provider} pair: collection, frontend restart and cancellation
     Math.max(...completedWorkers.map(w => Date.parse(w.startedAt)));
   assert.ok(overlapMs > 0, 'real worker execution intervals must overlap');
   const delivery = await api(`/v1/tasks/${first.draft.id}/delivery`);
-  assert.deepEqual(delivery.files.map(f => f.name).sort(), ['normalize.mjs', 'report.mjs']);
+  assert.deepEqual(delivery.files.map(f => f.name).sort(), ['normalize.ts', 'report.ts']);
   assert.ok(delivery.checks > 0);
   for (const file of delivery.files) assert.equal(createHash('sha256').update(file.content).digest('hex'), file.sha256);
   const consumed = await verifyFiles(delivery.files.map(({name, content}) => ({name, content})));

@@ -1,7 +1,7 @@
-// Deterministic ACP peer, never selected by production service-config.mjs.
+// Deterministic ACP peer, never selected by production service-config.ts.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {finalValues} from './policy.mjs';
+import {finalValues} from './policy.ts';
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const respond = (message, result) => send({jsonrpc: '2.0', id: message.id, result});
 for await (const line of createInterface({input: process.stdin})) {

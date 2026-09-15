@@ -1,7 +1,7 @@
 // Explicit files-only Qwen composition. Neither default nor OS containment.
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createGenericFilesShortWireConfig} from './short-wire.mjs';
-import {QWEN_FILE_ARGS} from './qwen-file-tools.mjs';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createGenericFilesShortWireConfig} from './short-wire.ts';
+import {QWEN_FILE_ARGS} from './qwen-file-tools.ts';
 const env = {};
 for (const key of ['HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR']) {
   if (typeof process.env[key] === 'string') env[key] = process.env[key];

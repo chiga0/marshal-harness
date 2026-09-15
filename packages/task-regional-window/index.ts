@@ -1,17 +1,17 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createClarificationPort, createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {PROFILE, TEMPLATE, policy, proposal, initialValues, finalValues, range, date, sourceBytes, sourceRef, expected, equal, check, fields, regions} from './policy.mjs';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createClarificationPort, createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {PROFILE, TEMPLATE, policy, proposal, initialValues, finalValues, range, date, sourceBytes, sourceRef, expected, equal, check, fields, regions} from './policy.ts';
 
 const here = name => fileURLToPath(new URL(name, import.meta.url));
-const checkerPath = here('./checker.mjs');
+const checkerPath = here('./checker.ts');
 const deny = () => ({outcome: {outcome: 'cancelled'}});
 /** One-time offered file permissions only; not an OS/hostile same-UID sandbox. */
 export function filePermission(ticket, cwd, request) {
@@ -38,7 +38,7 @@ export function filePermission(ticket, cwd, request) {
  * Agent; no fixture/default provider, caller-selected executable or SQL reducer. */
 export function createRegionalWindowConfig({provider, executable = process.execPath, onExecution = () => {}, onPermission = () => {}}) {
   check(provider?.id && typeof provider.start === 'function' && path.isAbsolute(executable));
-  const code = digest(encode(['policy.mjs', 'index.mjs', 'checker.mjs'].map(name => ({name, digest: digest(fs.readFileSync(here('./' + name)))}))));
+  const code = digest(encode(['policy.ts', 'index.ts', 'checker.ts'].map(name => ({name, digest: digest(fs.readFileSync(here('./' + name)))}))));
   const identity = id => ({id, version: '1', digest: code});
   const trustedPolicy = {...policy, description: policy.description + ' 受信配置/规则/checker源码摘要：' + code};
   const clarification = createClarificationPort({template: identity(TEMPLATE), applies(input) {initialValues(input); return true;},

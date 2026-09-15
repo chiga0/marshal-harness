@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {setImmediate as turn} from 'node:timers/promises';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {startTaskService} from './composition.mjs';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {startTaskService} from './composition.ts';
 
 const deferred = () => {let resolve; const promise = new Promise(done => {resolve = done;}); return {promise, resolve};};
 async function until(predicate) {

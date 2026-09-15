@@ -1,5 +1,5 @@
 import {timingSafeEqual} from 'node:crypto';
-import {TaskApiError, validate} from './contract.mjs';
+import {TaskApiError, validate} from './contract.ts';
 
 // Ported from the independently tested Node experiment's pure HTTP boundary;
 // deliberately no experimental Store/Supervisor or fixed business imports.

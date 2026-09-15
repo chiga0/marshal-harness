@@ -1,6 +1,6 @@
 // Compatibility export for v1–v6 callers. Runtime handle ownership lives in
 // Execution; the v7 observer below accepts no execution/command capability.
-export {TaskExecutionCoordinator as TaskSupervisor} from '../task-execution/controller.mjs';
+export {TaskExecutionCoordinator as TaskSupervisor} from '../task-execution/controller.ts';
 
 export class TaskObserver {
   #observe;

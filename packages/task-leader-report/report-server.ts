@@ -1,9 +1,9 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import {fileURLToPath} from 'node:url';
-import {check} from './policy.mjs';
+import {check} from './policy.ts';
 /** Read-only, finite local business target; no UI, mutation or authority API.
  * The same UID can read these reports. Do not bind externally or use for secrets. */
 export async function startReportServer({root, port}) {

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
-import { createTaskHandler } from './http-handler.mjs';
-import { FORMAT, Fault } from './store.mjs';
+import { createTaskHandler } from './http-handler.ts';
+import { FORMAT, Fault } from './store.ts';
 
 const token = 'test-only-connection-token';
 const expectedHost = '127.0.0.1:32123';

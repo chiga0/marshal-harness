@@ -4,11 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {generateKeyPairSync} from 'node:crypto';
-import {Store, FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, encode, digest, makeEvent} from '../task-store/store.mjs';
-import {TaskApplication, createAuditDisclosure} from './application.mjs';
-import {TaskCleanup} from './cleanup.mjs';
-import {createExecutionCustody} from '../agent-runtime/custody.mjs';
-import {launchCommand} from '../agent-runtime/index.mjs';
+import {Store, FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, encode, digest, makeEvent} from '../task-store/store.ts';
+import {TaskApplication, createAuditDisclosure} from './application.ts';
+import {TaskCleanup} from './cleanup.ts';
+import {createExecutionCustody} from '../agent-runtime/custody.ts';
+import {launchCommand} from '../agent-runtime/index.ts';
 import {fileURLToPath} from 'node:url';
 
 const context = {principal: 'local-operator'}, protocol = {profile: 'node-unpermitted-reservation/v1', preparation: 'file-staging-only/v1'};
@@ -170,7 +170,7 @@ test('more than 100 legitimate progress events cannot hide original bound permit
   const handle = await manager.prepare(f.app.execution.custodyBinding(ticket, profile));
   f.app.execution.bindCustody(ticket, handle.descriptor, profile); handle.permit();
   const runtime = await launchCommand({executable: process.execPath,
-    args: [fileURLToPath(new URL('../agent-runtime/command.fixture.mjs', import.meta.url)), 'sum'], cwd: path.dirname(f.root),
+    args: [fileURLToPath(new URL('../agent-runtime/command.fixture.ts', import.meta.url)), 'sum'], cwd: path.dirname(f.root),
     env: {}, deadline: ticket.deadline, input: Buffer.from('{"nonce":"progress","values":[5]}\n'), executionContext: {launch: handle.launch}});
   f.app.execution.started(ticket, runtime.started);
   for (let sequence = 1; sequence <= 105; sequence++) assert.equal(f.app.execution.progress(ticket, sequence, {summary: '原协议进度', tool: null, source: 'execution'}), true);

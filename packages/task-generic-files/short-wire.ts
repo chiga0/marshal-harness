@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
-import {createLeaderPort, createReviewPort, parseManagedOutput, renderLeaderPrompt, renderReviewPrompt} from '../task-application/application.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {createGenericFilesConfig} from './index.mjs';
-import {check, RULE, GUIDANCE} from './policy.mjs';
+import {createLeaderPort, createReviewPort, parseManagedOutput, renderLeaderPrompt, renderReviewPrompt} from '../task-application/application.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {createGenericFilesConfig} from './index.ts';
+import {check, RULE, GUIDANCE} from './policy.ts';
 
 export const LEADER_WIRE_PROFILE = 'generic-files-leader-proposal/v1';
 // Parse original bytes before inspecting the closed wire shape. Never repair an
@@ -20,7 +20,7 @@ export function parseLeaderProposal({ticket, completion}) {
 
 export function createGenericFilesShortWireConfig(options) {
   const config = createGenericFilesConfig(options), originalLeader = config.leader;
-  const code = digest(encode(['short-wire.mjs', 'qwen-short-service-config.mjs', '../task-application/leader-ports.mjs']
+  const code = digest(encode(['short-wire.ts', 'qwen-short-service-config.ts', '../task-application/leader-ports.ts']
     .map(name => ({name, digest: digest(fs.readFileSync(fileURLToPath(new URL(name, import.meta.url))))}))));
   const reviewPolicy = {id: 'generic-files-short-review', version: '1',
     description: RULE + ' 原通用策略：' + config.review.policyDigest + ' 显式模型wire：' + LEADER_WIRE_PROFILE + ' 源码摘要：' + code};

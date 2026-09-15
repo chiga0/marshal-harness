@@ -4,11 +4,11 @@ import { spawn, ChildProcess } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { launchAcp } from './index.mjs';
-import { CLEANUP_WAIT_MS } from './protocol.mjs';
+import { launchAcp } from './index.ts';
+import { CLEANUP_WAIT_MS } from './protocol.ts';
 
-const AGENT = fileURLToPath(new URL('./fake-agent.fixture.mjs', import.meta.url));
-const OWNER = fileURLToPath(new URL('./owner.fixture.mjs', import.meta.url));
+const AGENT = fileURLToPath(new URL('./fake-agent.fixture.ts', import.meta.url));
+const OWNER = fileURLToPath(new URL('./owner.fixture.ts', import.meta.url));
 const posix = ['darwin', 'linux'].includes(process.platform);
 const blocks = text => [{ type: 'text', text }];
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));

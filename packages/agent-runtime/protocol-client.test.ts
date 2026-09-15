@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {launchProtocol} from './index.mjs';
-import {PiRpcClient} from '../agent-pi-rpc/client.mjs';
+import {launchProtocol} from './index.ts';
+import {PiRpcClient} from '../agent-pi-rpc/client.ts';
 
-const fixture = fileURLToPath(new URL('../agent-provider-pi/agent.fixture.mjs', import.meta.url));
+const fixture = fileURLToPath(new URL('../agent-provider-pi/agent.fixture.ts', import.meta.url));
 function options(t) {
   const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'protocol-runtime-test-')));
   t.after(() => fs.rmSync(cwd, {recursive: true, force: true})); return {cwd, executable: process.execPath, args: [fixture], deadline: Date.now() + 10000};

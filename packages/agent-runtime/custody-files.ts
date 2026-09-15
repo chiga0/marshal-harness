@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {canonical, MAX_OBSERVATION} from './custody-contract.mjs';
+import {canonical, MAX_OBSERVATION} from './custody-contract.ts';
 
 const fail = () => { throw new Error('custody_storage_unavailable'); };
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode;

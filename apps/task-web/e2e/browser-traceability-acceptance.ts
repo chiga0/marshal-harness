@@ -7,9 +7,9 @@ import http from 'node:http';
 import {pathToFileURL} from 'node:url';
 import {createHash, randomUUID} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {TaskClient} from '../../../packages/task-client/index.mjs';
-import {WORKTREE, FIXTURE_LEADER, spawnService} from './helpers.mjs';
-import {until, finish} from './browser-fault-guards.mjs';
+import {TaskClient} from '../../../packages/task-client/index.ts';
+import {WORKTREE, FIXTURE_LEADER, spawnService} from './helpers.ts';
+import {until, finish} from './browser-fault-guards.ts';
 
 assert.ok(path.isAbsolute(process.env.PLAYWRIGHT_MODULE ?? ''), '需要显式 Playwright 模块路径');
 const {chromium, webkit} = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);

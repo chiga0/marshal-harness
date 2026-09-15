@@ -4,19 +4,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
-import {Store, FORMAT, REPAIR_FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, encode, digest} from '../task-store/store.mjs';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {TaskApplication, createRepairPort, createVerificationPort} from './application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {createTaskApiHandler} from '../task-api/http-handler.mjs';
-import {startTaskService} from '../task-service/composition.mjs';
+import {Store, FORMAT, REPAIR_FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, encode, digest} from '../task-store/store.ts';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {TaskApplication, createRepairPort, createVerificationPort} from './application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {createTaskApiHandler} from '../task-api/http-handler.ts';
+import {startTaskService} from '../task-service/composition.ts';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
 
 const context = {principal: 'local-operator'}, hash = value => digest(encode(value));
-const checkerPath = fileURLToPath(new URL('./repair-checker.fixture.mjs', import.meta.url));
+const checkerPath = fileURLToPath(new URL('./repair-checker.fixture.ts', import.meta.url));
 const proposal = {summary: '两分支与独立验收', nodes: ['code', 'docs', 'verify'].map(id => ({id,
   role: id === 'verify' ? 'verifier' : 'author', goal: '完成 ' + id, scope: [id], providerId: null})),
 edges: [{from: 'code', to: 'verify'}, {from: 'docs', to: 'verify'}], deliverables: ['全部输出'], acceptance: ['内容与结构都正确'], assumptions: []};

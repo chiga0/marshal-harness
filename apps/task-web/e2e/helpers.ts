@@ -1,4 +1,4 @@
-// UI-1 e2e 共享夹具：真实 main.mjs 子进程 + 无 URL 归一化的 raw HTTP。
+// UI-1 e2e 共享夹具：真实 main.ts 子进程 + 无 URL 归一化的 raw HTTP。
 // 无模型、无浏览器驱动；服务只从真实 stdout 公告地址与私有连接文件取得事实。
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,10 +8,10 @@ import {spawn, spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
 export const WORKTREE = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '../../..');
-export const CLI = path.join(WORKTREE, 'packages/task-service/main.mjs');
+export const CLI = path.join(WORKTREE, 'packages/task-service/main.ts');
 export const DIST = path.join(WORKTREE, 'apps/task-web/dist');
-export const FIXTURE_MINIMAL = path.join(WORKTREE, 'packages/task-service/service.fixture.mjs');
-export const FIXTURE_LEADER = path.join(WORKTREE, 'packages/task-service/leader-recovery.fixture.mjs');
+export const FIXTURE_MINIMAL = path.join(WORKTREE, 'packages/task-service/service.fixture.ts');
+export const FIXTURE_LEADER = path.join(WORKTREE, 'packages/task-service/leader-recovery.fixture.ts');
 
 export function ensureDist() {
   if (fs.existsSync(path.join(DIST, 'index.html'))) return;

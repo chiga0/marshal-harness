@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import {check} from './proof.fixture.mjs';
+import {check} from './proof.fixture.ts';
 
 export async function startReportServer(root) {
   const stat = fs.lstatSync(root);

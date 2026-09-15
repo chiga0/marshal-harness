@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {performance} from 'node:perf_hooks';
-import {fixture, until, expected} from './api-stable-behavior.fixture.mjs';
+import {fixture, until, expected} from './api-stable-behavior.fixture.ts';
 
 // Deliberately seconds, not a sub-millisecond microbenchmark: allow ordinary
 // CI scheduling and SQLite fsync, yet assert successful FULL responses below

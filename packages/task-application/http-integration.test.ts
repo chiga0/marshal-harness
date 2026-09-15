@@ -5,9 +5,9 @@ import {once} from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {Store} from '../task-store/store.mjs';
-import {createTaskApiHandler} from '../task-api/http-handler.mjs';
-import {TaskApplication} from './application.mjs';
+import {Store} from '../task-store/store.ts';
+import {createTaskApiHandler} from '../task-api/http-handler.ts';
+import {TaskApplication} from './application.ts';
 
 const token = 'public-fixture-only-http-application-test-token';
 async function fixture(t) {

@@ -1,5 +1,5 @@
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
 
 export const PROFILE = 'regional-paid-window/v1', TEMPLATE = 'regional-paid-window';
 export const INTENT = '按日期区间汇总东、西两个地区的已付款流水';

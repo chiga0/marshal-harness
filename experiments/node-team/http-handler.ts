@@ -1,4 +1,4 @@
-import { FORMAT, Fault, fail, id, sameSecret } from './store.mjs';
+import { FORMAT, Fault, fail, id, sameSecret } from './store.ts';
 
 // A thin transport adapter. The injected Application operation owns body
 // semantics, revision CAS, idempotent replay and every Task lifecycle change.

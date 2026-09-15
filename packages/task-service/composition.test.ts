@@ -6,10 +6,10 @@ import path from 'node:path';
 import {setImmediate as turn} from 'node:timers/promises';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {Store, encode, digest} from '../task-store/store.mjs';
-import {TaskApplication, createClarificationPort} from '../task-application/application.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {startTaskService} from './composition.mjs';
+import {Store, encode, digest} from '../task-store/store.ts';
+import {TaskApplication, createClarificationPort} from '../task-application/application.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {startTaskService} from './composition.ts';
 
 const context = {principal: 'local-operator'};
 const defer = () => {let resolve; const promise = new Promise(done => {resolve = done;}); return {promise, resolve};};
@@ -315,8 +315,8 @@ test('missing cleanup is retained as intervention and shutdown cannot report cle
 });
 
 test('checked-in Node CLI starts one HTTP service, prints no token and closes on its SIGTERM', async t => {
-  const f = fixture(t), entry = fileURLToPath(new URL('./main.mjs', import.meta.url));
-  const config = fileURLToPath(new URL('./service.fixture.mjs', import.meta.url));
+  const f = fixture(t), entry = fileURLToPath(new URL('./main.ts', import.meta.url));
+  const config = fileURLToPath(new URL('./service.fixture.ts', import.meta.url));
   const child = spawn(process.execPath, [entry, '--root', f.root, '--mode', 'create', '--config', config], {stdio: ['ignore', 'pipe', 'pipe']});
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => {stdout += chunk; if (stdout.length > 8192) child.kill('SIGTERM');});

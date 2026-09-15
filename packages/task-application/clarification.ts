@@ -1,5 +1,5 @@
-import {encode, digest} from '../task-store/store.mjs';
-import {clone, isText, nextRevision, publicTask, reject, terminal} from './model.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {clone, isText, nextRevision, publicTask, reject, terminal} from './model.ts';
 
 const PROFILE = 'task-clarification/v1', ports = new WeakMap();
 const hash = value => digest(encode(value)), decode = row => row ? JSON.parse(row.bytes.toString('utf8')) : null;

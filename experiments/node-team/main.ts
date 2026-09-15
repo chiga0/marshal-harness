@@ -4,12 +4,12 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { FORMAT, Fault, fail, digest, nativeEnvironment, closedObject, privateRoot, readPrivate, atomicPrivate, id } from './store.mjs';
-import { createTaskHandler } from './http-handler.mjs';
+import { FORMAT, Fault, fail, digest, nativeEnvironment, closedObject, privateRoot, readPrivate, atomicPrivate, id } from './store.ts';
+import { createTaskHandler } from './http-handler.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export async function sourceDigest() {
-  const files = (await fs.readdir(HERE)).filter(name => name.endsWith('.mjs') && !name.includes('test')).sort();
+  const files = (await fs.readdir(HERE)).filter(name => name.endsWith('.ts') && !name.includes('test')).sort();
   const chunks = [];
   for (const name of files) { chunks.push(name + '\0'); chunks.push(await fs.readFile(path.join(HERE, name))); }
   return digest(Buffer.concat(chunks.map(v => Buffer.isBuffer(v) ? v : Buffer.from(v))));
@@ -56,7 +56,7 @@ export async function connectSupervisor(directory, config) {
   const source = await sourceDigest(), configHash = digest(config);
   try { return await checkMetadata(await metadataFromRoot(directory), source, configHash); }
   catch (err) { if (err.code !== 'ENOENT') throw err instanceof Fault ? err : new Fault('supervisor-needs-intervention', 503); }
-  const child = fork(path.join(HERE, 'supervisor.mjs'), [], { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: nativeEnvironment() });
+  const child = fork(path.join(HERE, 'supervisor.ts'), [], { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: nativeEnvironment() });
   const ready = new Promise(resolve => {
     const timer = setTimeout(() => resolve(false), 8000);
     const finish = value => { clearTimeout(timer); resolve(value); };

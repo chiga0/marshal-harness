@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {fixture, proposal, hash} from '../task-application/leader.test.mjs';
-import {encode} from '../task-store/store.mjs';
-import {createExecutionCustody} from '../agent-runtime/custody.mjs';
-import {launchCommand} from '../agent-runtime/index.mjs';
-import {verifyObservation} from '../agent-runtime/custody-contract.mjs';
+import {fixture, proposal, hash} from '../task-application/leader.test.ts';
+import {encode} from '../task-store/store.ts';
+import {createExecutionCustody} from '../agent-runtime/custody.ts';
+import {launchCommand} from '../agent-runtime/index.ts';
+import {verifyObservation} from '../agent-runtime/custody-contract.ts';
 
 // Core decisions use the existing controlled Provider fixture. Only the
 // interrupted execution's cleanup below comes from the real custodian/guard.
@@ -57,7 +57,7 @@ export async function bound(f, ticket, start) {
     const handle = await manager.prepare(f.app.execution.custodyBinding(ticket, profile)); f.app.execution.bindCustody(ticket, handle.descriptor, profile);
     if (start) {
       handle.permit(); const runtime = await launchCommand({executable: process.execPath,
-        args: [fileURLToPath(new URL('../agent-runtime/command.fixture.mjs', import.meta.url)), 'sum'], cwd: f.parent, env: {}, deadline: ticket.deadline,
+        args: [fileURLToPath(new URL('../agent-runtime/command.fixture.ts', import.meta.url)), 'sum'], cwd: f.parent, env: {}, deadline: ticket.deadline,
         input: Buffer.from('{"nonce":"original","values":[5]}\n'), executionContext: {launch: handle.launch}});
       f.app.execution.started(ticket, runtime.started); assert.equal((await runtime.completion).cleanup.cleaned, true);
     } else await handle.stop();

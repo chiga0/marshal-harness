@@ -7,14 +7,14 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 import {performance} from 'node:perf_hooks';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {policy, bindPlan} from '../task-team-integration/scenario.fixture.mjs';
-import {startTaskService} from './composition.mjs';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {policy, bindPlan} from '../task-team-integration/scenario.fixture.ts';
+import {startTaskService} from './composition.ts';
 
 const here = value => fileURLToPath(new URL(value, import.meta.url));
 export const data = {rows: [{region: 'east', status: 'paid', cents: 1275}, {region: 'west', status: 'paid', cents: 800},
@@ -31,7 +31,7 @@ export async function fixture(t) {
   const prepared = new Map(), executions = [], transports = [];
   let service, client, connection, completed = false;
   const provider = mode => createAcpProvider({id: 'fixture-acp', executable: process.execPath,
-    args: [here('../task-team-integration/agent.fixture.mjs')], env: {TEAM_FIXTURE_MODE: mode}});
+    args: [here('../task-team-integration/agent.fixture.ts')], env: {TEAM_FIXTURE_MODE: mode}});
   const good = provider('good'), held = provider('hang');
   function observe(handle, ticket, kind) {
     const record = {ticket, kind, started: null, completion: null}; executions.push(record);
@@ -42,7 +42,7 @@ export async function fixture(t) {
     const ticket = prepared.get(input.cwd); assert.ok(ticket);
     return observe((ticket.input.task.intent === 'api authors held' ? held : good).start(input), ticket, 'agent');
   }};
-  const checkerPath = here('./custody-recovery.worker.fixture.mjs');
+  const checkerPath = here('./custody-recovery.worker.fixture.ts');
   const checker = hold => createVerificationCommand({executable: process.execPath, checkerPath, checkerDigest: digest(fs.readFileSync(checkerPath)),
     policyDigest: digest(encode(policy)), env: hold ? {MARSHAL_CUSTODY_CHECKER_HOLD: '1'} : {},
     assertions: [{name: 'regions', validate: actual => {try {assert.deepEqual(actual, expected); return true;} catch {return false;}}}],

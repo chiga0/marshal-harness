@@ -1,4 +1,4 @@
-// Fixed oracle, run from stdin by business.mjs under Node permissions. Candidate
+// Fixed oracle, run from stdin by business.ts under Node permissions. Candidate
 // modules are trusted experiment code, not an adversarial security boundary.
 import { readFileSync, lstatSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
@@ -36,7 +36,7 @@ try {
       process.permission.has('child') || process.permission.has('addons')) throw new Error('permission_missing');
   execute('const __oracleStringify = JSON.stringify; delete globalThis.console;');
   const modules = {};
-  for (const name of ['normalize.mjs', 'report.mjs']) {
+  for (const name of ['normalize.ts', 'report.ts']) {
     const path = join(directory, name);
     const stat = lstatSync(path);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > 64 * 1024) throw new Error('candidate_invalid');
@@ -51,7 +51,7 @@ try {
     await module.evaluate({ timeout });
     modules[name] = module;
   }
-  for (const [name, exported] of [['normalize.mjs', 'normalize'], ['report.mjs', 'report']]) {
+  for (const [name, exported] of [['normalize.ts', 'normalize'], ['report.ts', 'report']]) {
     const module = modules[name];
     check(typeof module.namespace[exported] === 'function');
     Object.defineProperty(context, `__${exported}`, { value: module.namespace[exported], writable: false, configurable: false });

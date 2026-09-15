@@ -5,8 +5,8 @@ import {tmpdir} from 'node:os';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
-import {serve, metadataFromRoot, rpc} from './main.mjs';
-import {artifactHash, digest} from './store.mjs';
+import {serve, metadataFromRoot, rpc} from './main.ts';
+import {artifactHash, digest} from './store.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const api = JSON.parse(await readFile(join(here, 'openapi.json'), 'utf8'));
@@ -123,7 +123,7 @@ test('contract negative matrix rejects forged fields, types, byte limits and dig
   const delivery = clone('Delivery');
   assert.throws(() => check('Delivery', {...delivery, files: []}));
   assert.throws(() => check('File', {...delivery.files[0], sha256: 'sha256:' + 'a'.repeat(64)}));
-  assert.throws(() => check('File', {...delivery.files[0], name: '../escape.mjs'}));
+  assert.throws(() => check('File', {...delivery.files[0], name: '../escape.ts'}));
   assert.throws(() => check('Error', {error: 'new-undocumented-error'}));
   assert.throws(() => check('Error', {error: 'unauthorized', token: 'not-a-real-secret'}));
 });
@@ -134,7 +134,7 @@ test('actual Node HTTP fixture responses conform through approval, delivery, rep
   const root = await mkdtemp(join(process.platform === 'darwin' ? '/private/tmp' : tmpdir(), 'napi-'));
   await chmod(root, 0o700);
   const directory = join(root, 'state');
-  const fixture = join(here, 'fixtures/pi.mjs');
+  const fixture = join(here, 'fixtures/pi.ts');
   const front = await serve(directory, {provider: 'pi', executable: fixture});
   t.after(async () => {
     await front.close();
@@ -188,7 +188,7 @@ test('actual Node HTTP fixture responses conform through approval, delivery, rep
   assert.equal((await request('/v1/tasks', '/v1/tasks', 'POST', {intent}, 'create')).value.status, 'completed');
   assert.equal((await request('/v1/tasks/{id}/approve', base + '/approve', 'POST', approval, 'approve')).value.revision, completed.revision);
   const delivery = (await request('/v1/tasks/{id}/delivery', base + '/delivery')).value;
-  assert.deepEqual(delivery.files.map(f => f.name).sort(), ['normalize.mjs', 'report.mjs']);
+  assert.deepEqual(delivery.files.map(f => f.name).sort(), ['normalize.ts', 'report.ts']);
   for (const file of delivery.files) assert.equal(file.sha256, artifactHash(file.content));
   assert.equal((await request('/v1/tasks/{id}/audit', base + '/audit')).value.acceptance.checks, delivery.checks);
   await request('/v1/tasks/{id}/workers', base + '/workers');

@@ -4,14 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {installCommand} from '../packages/task-local/install-command.mjs';
+import {installCommand} from '../packages/task-local/install-command.ts';
 
 function setup(t) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-launcher-')));
   t.after(() => fs.rmSync(home, {recursive: true, force: true}));
   const installRoot = path.join(home, "version with ' quote");
   fs.mkdirSync(path.join(installRoot, 'packages/task-local'), {recursive: true});
-  fs.writeFileSync(path.join(installRoot, 'packages/task-local/main.mjs'), 'console.log(JSON.stringify(process.argv.slice(2)))');
+  fs.writeFileSync(path.join(installRoot, 'packages/task-local/main.ts'), 'console.log(JSON.stringify(process.argv.slice(2)))');
   return {home, installRoot};
 }
 test('installed command quotes Node/entry paths, forwards arguments and is repeatable', t => {
@@ -38,7 +38,7 @@ test('upgrade does not silently replace command pointing at another installation
   const bytes = fs.readFileSync(first.commandPath);
   const other = path.join(options.home, 'other');
   fs.mkdirSync(path.join(other, 'packages/task-local'), {recursive: true});
-  fs.writeFileSync(path.join(other, 'packages/task-local/main.mjs'), '');
+  fs.writeFileSync(path.join(other, 'packages/task-local/main.ts'), '');
   assert.throws(() => installCommand({...options, installRoot: other}), /command_install_conflict/);
   assert.deepEqual(fs.readFileSync(first.commandPath), bytes);
   const replacement = installCommand({...options, installRoot: other, replace: true, previousInstallRoot: options.installRoot});
@@ -50,7 +50,7 @@ test('explicit replacement rejects wrong prior identity, modified bytes and link
   const options = setup(t), {commandPath} = installCommand(options);
   const other = path.join(options.home, 'other');
   fs.mkdirSync(path.join(other, 'packages/task-local'), {recursive: true});
-  fs.writeFileSync(path.join(other, 'packages/task-local/main.mjs'), '');
+  fs.writeFileSync(path.join(other, 'packages/task-local/main.ts'), '');
   const before = fs.readFileSync(commandPath);
   const upgrade = {...options, installRoot: other, replace: true, previousInstallRoot: options.installRoot};
   assert.throws(() => installCommand({...upgrade, previousInstallRoot: other}), /command_install_conflict/);

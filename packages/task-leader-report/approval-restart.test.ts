@@ -4,16 +4,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {TaskClient} from '../task-client/index.mjs';
-import {gracefulApprovalRestart, launchService, waitPhase} from './live-consumer.fixture.mjs';
+import {TaskClient} from '../task-client/index.ts';
+import {gracefulApprovalRestart, launchService, waitPhase} from './live-consumer.fixture.ts';
 const here = file => fileURLToPath(new URL(file, import.meta.url));
 test('original controlled CLI crosses graceful approval restart then approves the original Task exactly once', {timeout: 60000}, async t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-approval-restart-'))), state = path.join(root, 'data');
   const handles = [], modes = [], diagnostics = [], snapshots = {};
   async function start(mode) {
     modes.push(mode);
-    const handle = launchService(process.execPath, [here('../task-service/main.mjs'), '--root', state, '--mode', mode, '--port', '0',
-      '--config', here('../task-service/leader-recovery.fixture.mjs')],
+    const handle = launchService(process.execPath, [here('../task-service/main.ts'), '--root', state, '--mode', mode, '--port', '0',
+      '--config', here('../task-service/leader-recovery.fixture.ts')],
     {PATH: path.dirname(process.execPath), MARSHAL_LEADER_RECOVERY_FIXTURE: '1'}, root, diagnostics);
     handles.push(handle); const ready = await handle.ready, connection = JSON.parse(fs.readFileSync(ready.connectionFile));
     return {handle, client: new TaskClient({baseURL: connection.url, token: connection.token})};

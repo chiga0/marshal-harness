@@ -3,10 +3,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Store} from '../task-store/store.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createStagingOnlyBusinessFactory} from '../task-business/index.mjs';
-const original = (await import('./control-commit-recovery.fixture.mjs')).default;
+import {Store} from '../task-store/store.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createStagingOnlyBusinessFactory} from '../task-business/index.ts';
+const original = (await import('./control-commit-recovery.fixture.ts')).default;
 const tickets = new Map(), write = Store.prototype.write;
 Store.prototype.write = function(owner, callback) {
   const result = write.call(this, owner, callback);
@@ -19,10 +19,10 @@ function record(value) {
   try {fs.writeFileSync(fd, JSON.stringify(value) + '\n'); fs.fsyncSync(fd);} finally {fs.closeSync(fd);}
 }
 const native = createAcpProvider({id: 'fixture-acp', executable: process.execPath,
-  args: [fileURLToPath(new URL('../task-team-integration/agent.fixture.mjs', import.meta.url))], env: {TEAM_FIXTURE_MODE: 'good'},
+  args: [fileURLToPath(new URL('../task-team-integration/agent.fixture.ts', import.meta.url))], env: {TEAM_FIXTURE_MODE: 'good'},
   custodyProfile: {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true}});
 const held = createAcpProvider({id: native.id, executable: process.execPath,
-  args: [fileURLToPath(new URL('../task-team-integration/agent.fixture.mjs', import.meta.url))], env: {TEAM_FIXTURE_MODE: 'hang'}, custodyProfile: native.custodyProfile});
+  args: [fileURLToPath(new URL('../task-team-integration/agent.fixture.ts', import.meta.url))], env: {TEAM_FIXTURE_MODE: 'hang'}, custodyProfile: native.custodyProfile});
 const provider = {id: native.id, custodyProfile: native.custodyProfile, start(input) {
   const ticket = tickets.get(path.basename(input.cwd)); if (!ticket) throw Error('missing original ticket');
   const hold = process.env.MARSHAL_CONTROL_COMMIT_POINT.startsWith('cancel-') && ticket.role === 'author' && ticket.input.task.intent === 'custody interrupted authors';

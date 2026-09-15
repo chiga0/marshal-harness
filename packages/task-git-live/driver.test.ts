@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {runFixture, runLive, parseOptions, overlap} from './driver.fixture.mjs';
-import {filePermission, proposal, bindPlan, taskBody, LIMITS} from './business.fixture.mjs';
+import {runFixture, runLive, parseOptions, overlap} from './driver.fixture.ts';
+import {filePermission, proposal, bindPlan, taskBody, LIMITS} from './business.fixture.ts';
 
 function directory(t) {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-git-mixed-selftest-')));
@@ -54,27 +54,27 @@ test('planner cannot silently turn a mixed approved business into two Pi authors
 });
 test('native one-time permissions bind brand, worker cwd and existing file; shell/extra fields/escape/links cannot pass', t => {
   const {parent} = directory(t), cwd = path.join(parent, 'worktree'); fs.mkdirSync(cwd);
-  const target = path.join(cwd, 'net.mjs'); fs.writeFileSync(target, 'base');
+  const target = path.join(cwd, 'net.ts'); fs.writeFileSync(target, 'base');
   const identity = {cwd, nodeId: 'library', role: 'author', providerId: 'pi-rpc'};
   const pi = (toolName, rawInput, kind = toolName === 'read' ? 'read' : 'edit') => ({toolCall: {kind, _meta: {provider: 'pi', toolName}, rawInput},
     options: [{optionId: 'allow-once', kind: 'allow_once'}]});
   const allowed = request => filePermission(identity, request).outcome.outcome === 'selected';
-  assert.equal(allowed(pi('read', {path: 'net.mjs'})), true);
+  assert.equal(allowed(pi('read', {path: 'net.ts'})), true);
   assert.equal(allowed(pi('write', {path: target, content: 'new'})), true);
-  assert.equal(allowed(pi('edit', {path: 'net.mjs', edits: [{oldText: 'old', newText: 'new'}]})), true);
+  assert.equal(allowed(pi('edit', {path: 'net.ts', edits: [{oldText: 'old', newText: 'new'}]})), true);
   for (const request of [pi('bash', {command: 'git push'}, 'execute'), pi('read', {path: '.git'}),
-    pi('write', {path: '../net.mjs', content: 'x'}), pi('write', {path: 'invoice.mjs', content: 'x'}),
-    pi('write', {path: 'net.mjs', content: 'x', arbitrary: true}), pi('write', {path: 'net.mjs', content: 'x'.repeat(65537)}),
-    pi('read', {path: 'net.mjs', offset: 0}), pi('read', {file_path: 'net.mjs'})]) assert.equal(allowed(request), false);
-  assert.equal(filePermission({...identity, role: 'planner'}, pi('read', {path: 'net.mjs'})).outcome.outcome, 'cancelled');
-  const duplicate = pi('read', {path: 'net.mjs'}); duplicate.options.push({...duplicate.options[0]}); assert.equal(allowed(duplicate), false);
-  fs.unlinkSync(target); fs.symlinkSync(path.join(parent, 'outside'), target); assert.equal(allowed(pi('write', {path: 'net.mjs', content: 'x'})), false);
+    pi('write', {path: '../net.ts', content: 'x'}), pi('write', {path: 'invoice.ts', content: 'x'}),
+    pi('write', {path: 'net.ts', content: 'x', arbitrary: true}), pi('write', {path: 'net.ts', content: 'x'.repeat(65537)}),
+    pi('read', {path: 'net.ts', offset: 0}), pi('read', {file_path: 'net.ts'})]) assert.equal(allowed(request), false);
+  assert.equal(filePermission({...identity, role: 'planner'}, pi('read', {path: 'net.ts'})).outcome.outcome, 'cancelled');
+  const duplicate = pi('read', {path: 'net.ts'}); duplicate.options.push({...duplicate.options[0]}); assert.equal(allowed(duplicate), false);
+  fs.unlinkSync(target); fs.symlinkSync(path.join(parent, 'outside'), target); assert.equal(allowed(pi('write', {path: 'net.ts', content: 'x'})), false);
   fs.unlinkSync(target); fs.writeFileSync(path.join(parent, 'outside'), 'outside'); fs.linkSync(path.join(parent, 'outside'), target);
-  assert.equal(allowed(pi('write', {path: 'net.mjs', content: 'x'})), false);
-  fs.writeFileSync(path.join(cwd, 'invoice.mjs'), 'base');
-  const qwen = {toolCall: {kind: 'edit', rawInput: {file_path: 'invoice.mjs', content: 'new'}}, options: [{optionId: 'proceed_once', kind: 'allow_once'}]};
+  assert.equal(allowed(pi('write', {path: 'net.ts', content: 'x'})), false);
+  fs.writeFileSync(path.join(cwd, 'invoice.ts'), 'base');
+  const qwen = {toolCall: {kind: 'edit', rawInput: {file_path: 'invoice.ts', content: 'new'}}, options: [{optionId: 'proceed_once', kind: 'allow_once'}]};
   assert.equal(filePermission({cwd, role: 'author', nodeId: 'client', providerId: 'qwen-acp'}, qwen).outcome.outcome, 'selected');
-  qwen.toolCall.rawInput.path = 'invoice.mjs';
+  qwen.toolCall.rawInput.path = 'invoice.ts';
   assert.equal(filePermission({cwd, role: 'author', nodeId: 'client', providerId: 'qwen-acp'}, qwen).outcome.outcome, 'cancelled');
   const shell = {toolCall: {kind: 'execute', rawInput: {command: 'never execute'}}, options: [
     {optionId: 'proceed_once', kind: 'allow_once'}, {optionId: 'cancel', kind: 'reject_once'}]};
@@ -83,7 +83,7 @@ test('native one-time permissions bind brand, worker cwd and existing file; shel
 });
 test('fixed plan bounds and strict Git Context stay original public API data, not hidden repo/schema or oracle answers', () => {
   const description = {profile: 'task-git-input/v1', nodes: ['library', 'client'].map((nodeId, i) =>
-    ({nodeId, repositoryId: nodeId, base: String(i + 1).repeat(40), writePaths: [i ? 'invoice.mjs' : 'net.mjs']}))};
+    ({nodeId, repositoryId: nodeId, base: String(i + 1).repeat(40), writePaths: [i ? 'invoice.ts' : 'net.ts']}))};
   const body = taskBody(description); assert.deepEqual(body.limits, LIMITS); assert.deepEqual(Object.keys(body.context), ['text']);
   assert.deepEqual(JSON.parse(body.context.text), description);
   const binding = bindPlan({taskInput: body, proposal: proposal()});

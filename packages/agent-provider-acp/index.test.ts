@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createAcpProvider, MAX_OUTPUT_TEXT_BYTES} from './index.mjs';
-import {launchAcp} from '../agent-runtime/index.mjs';
+import {createAcpProvider, MAX_OUTPUT_TEXT_BYTES} from './index.ts';
+import {launchAcp} from '../agent-runtime/index.ts';
 
-const fixture = fileURLToPath(new URL('./agent.fixture.mjs', import.meta.url));
+const fixture = fileURLToPath(new URL('./agent.fixture.ts', import.meta.url));
 const provider = mode => createAcpProvider({id: 'fixture', executable: process.execPath, args: [fixture, mode]});
 function input(t, extra = {}) {
   const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'acp-provider-test-')));

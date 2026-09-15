@@ -1,17 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createLeaderPort, createReviewPort, createVerificationPort, renderLeaderPrompt, renderReviewPrompt, parseManagedOutput} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {bindGenericFilesPlan} from './layout.mjs';
-import {check, utf8, expectedFiles, equal, RULE, GUIDANCE, MAX_INPUT} from './policy.mjs';
-import {filePermission} from './permission.mjs';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createLeaderPort, createReviewPort, createVerificationPort, renderLeaderPrompt, renderReviewPrompt, parseManagedOutput} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {bindGenericFilesPlan} from './layout.ts';
+import {check, utf8, expectedFiles, equal, RULE, GUIDANCE, MAX_INPUT} from './policy.ts';
+import {filePermission} from './permission.ts';
 const here = name => fileURLToPath(new URL(name, import.meta.url));
 export function createGenericFilesConfig({provider, executable = process.execPath}) {
   check(provider?.id && typeof provider.start === 'function' && path.isAbsolute(executable) && fs.realpathSync(executable) === fs.realpathSync(process.execPath));
-  const code = digest(encode(['index.mjs', 'policy.mjs', 'layout.mjs', 'checker.mjs', 'permission.mjs'].map(name => ({name, digest: digest(fs.readFileSync(here(name)))}))));
+  const code = digest(encode(['index.ts', 'policy.ts', 'layout.ts', 'checker.ts', 'permission.ts'].map(name => ({name, digest: digest(fs.readFileSync(here(name)))}))));
   const policy = {id: 'generic-files-check', version: '1', description: RULE + ' 源码摘要：' + code};
   const reviewPolicy = {id: 'generic-files-review', version: '1', description: RULE + ' 独立阅读原始需求、输入与完整候选；不足集中反馈，不因润色制造返工。' + code};
   let depot;
@@ -19,7 +19,7 @@ export function createGenericFilesConfig({provider, executable = process.execPat
     check(depot && refs.reduce((n, r) => n + r.bytes, 0) <= MAX_INPUT, 'generic_files_input_limit');
     for (const ref of refs) {const bytes = depot.get({digest: ref.digest, bytes: ref.bytes}); check(bytes.length === ref.bytes && digest(bytes) === ref.digest); utf8(bytes, MAX_INPUT);}
   };
-  const command = createVerificationCommand({executable, checkerPath: here('checker.mjs'), checkerDigest: digest(fs.readFileSync(here('checker.mjs'))), policyDigest: digest(encode(policy)),
+  const command = createVerificationCommand({executable, checkerPath: here('checker.ts'), checkerDigest: digest(fs.readFileSync(here('checker.ts'))), policyDigest: digest(encode(policy)),
     request: ({ticket}) => ({files: expectedFiles(ticket), ...(ticket.input.leaderReplyRefs ? {leaderReplyRefs: ticket.input.leaderReplyRefs, leaderReplies: ticket.input.leaderReplies} : {}),
       ...(ticket.input.interactionRefs ? {interactionRefs: ticket.input.interactionRefs} : {})}),
     assertions: [{name: 'exact-files', validate: (actual, {ticket}) => equal(actual, expectedFiles(ticket))}],

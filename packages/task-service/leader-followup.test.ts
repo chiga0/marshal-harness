@@ -5,13 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {startTaskService} from './composition.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {createLeaderPort, createReviewPort, createVerificationPort, renderLeaderPrompt, renderReviewPrompt, parseManagedOutput} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
+import {startTaskService} from './composition.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {createLeaderPort, createReviewPort, createVerificationPort, renderLeaderPrompt, renderReviewPrompt, parseManagedOutput} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {encode, digest} from '../task-store/store.ts';
 const hash = value => digest(encode(value)), here = value => fileURLToPath(new URL(value, import.meta.url));
 async function until(read, predicate, label) {const deadline = Date.now() + 45000; for (;;) {const value = await read();
   if (predicate(value)) return value; assert.ok(Date.now() < deadline, label + ': ' + JSON.stringify(value)); await pause(20);}}
@@ -34,7 +34,7 @@ async function fixture(t, mode) {
     prepare: ({input}) => ({prompt: renderLeaderPrompt(input)})});
   const review = createReviewPort({id: 'review', providerId: 'test-agent', policy: reviewPolicy, parseReport: parseManagedOutput,
     prepare: ({input}) => ({prompt: renderReviewPrompt(input)})});
-  const native = createAcpProvider({id: 'test-agent', executable: process.execPath, args: [here('./leader-followup.fixture.mjs'), mode], env: {},
+  const native = createAcpProvider({id: 'test-agent', executable: process.execPath, args: [here('./leader-followup.fixture.ts'), mode], env: {},
     custodyProfile: {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true}});
   const provider = {...native, custodyProfile: native.custodyProfile, start(options) {
     const managed = options.prompt.includes('\n完整冻结输入：'), input = managed ? JSON.parse(options.prompt.split('\n完整冻结输入：').at(-1)) :
@@ -44,7 +44,7 @@ async function fixture(t, mode) {
     return {stop: (...args) => handle.stop(...args), started: handle.started.then(value => {item.started = value; return value;}),
       completion: handle.completion.then(value => {item.result = value; return value;})};
   }};
-  const verifyPolicy = {id: 'two-requirements', version: '1', description: '独立比较本Task原业务值及用户回复'}, checkerPath = here('./leader-checker.fixture.mjs');
+  const verifyPolicy = {id: 'two-requirements', version: '1', description: '独立比较本Task原业务值及用户回复'}, checkerPath = here('./leader-checker.fixture.ts');
   const command = createVerificationCommand({executable: process.execPath, checkerPath, checkerDigest: digest(fs.readFileSync(checkerPath)), policyDigest: hash(verifyPolicy),
     assertions: [{name: 'both-original-requirements', validate: (actual, {ticket}) => hash(actual) === hash(expected(ticket))}],
     delivery: ({prepared}) => ({name: 'report.json', mediaType: 'application/json', content: encode(['east', 'west'].map(id => JSON.parse(fs.readFileSync(path.join(prepared.cwd, id + '.json')))))})});

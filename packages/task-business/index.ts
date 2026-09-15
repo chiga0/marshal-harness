@@ -1,6 +1,6 @@
-import {createExecutionDirectory, collect as collectFiles} from '../task-files/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
+import {createExecutionDirectory, collect as collectFiles} from '../task-files/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 

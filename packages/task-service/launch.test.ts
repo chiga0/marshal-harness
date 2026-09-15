@@ -7,12 +7,12 @@ import {spawn, spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
-import {withoutSQLiteRuntimeNotices} from '../task-store/runtime-notices.fixture.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {parseLaunchArguments, prepareLaunch} from './launch.mjs';
+import {withoutSQLiteRuntimeNotices} from '../task-store/runtime-notices.fixture.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {parseLaunchArguments, prepareLaunch} from './launch.ts';
 
-const cli = fileURLToPath(new URL('./main.mjs', import.meta.url));
-const config = fileURLToPath(new URL('./service.fixture.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('./main.ts', import.meta.url));
+const config = fileURLToPath(new URL('./service.fixture.ts', import.meta.url));
 const base = ['--config', config];
 const errorCode = code => error => error.code === code;
 async function until(read, timeoutMs = 15000) {
@@ -60,8 +60,8 @@ function rejectCLI(f, args) {
 for (const raceSignal of [false, true]) test('UI CLI exits on internal root identity failure; signal race=' + raceSignal, {timeout: 25000}, async t => {
   const f = fixture(t), ui = path.join(f.directory, 'ui');
   fs.mkdirSync(ui); fs.writeFileSync(path.join(ui, 'index.html'), '<!doctype html><title>controlled fixture</title>');
-  const raceConfig = path.join(f.directory, 'race-config.mjs');
-  fs.writeFileSync(raceConfig, `import config from ${JSON.stringify(new URL('./service.fixture.mjs', import.meta.url).href)};
+  const raceConfig = path.join(f.directory, 'race-config.ts');
+  fs.writeFileSync(raceConfig, `import config from ${JSON.stringify(new URL('./service.fixture.ts', import.meta.url).href)};
     export default {...config, onDiagnostic(report) {
       if (${raceSignal} && ['service_owner_unavailable','service_supervisor_failed'].includes(report.code)) process.kill(process.pid, 'SIGTERM');
     }};`);
@@ -105,7 +105,7 @@ test('closed launch parsing keeps explicit legacy options, adds mutually exclusi
   for (const args of [[], [...base, '--root', '/one', '--data-dir', '/two'], [...base, '--mode', 'reset'], [...base, '--data-dir', '.'],
     [...base, '--data-dir', '/'], [...base, '--data-dir', '/private/../data'], [...base, '--data-dir', '/private/x\0y'],
     [...base, '--port', '65536'], [...base, '--port', '01'], [...base, '--config', config], [...base, '--init', 'true'],
-    ['--config', 'relative.mjs'], [...base, '--mode']]) assert.throws(() => parseLaunchArguments(args, {home}));
+    ['--config', 'relative.ts'], [...base, '--mode']]) assert.throws(() => parseLaunchArguments(args, {home}));
 });
 test('default root: real first CLI, owned private data, original input/Task receipts, SIGTERM and second CLI exact cold facts', {timeout: 30000}, async t => {
   const f = fixture(t); fs.chmodSync(f.home, 0o755); // HOME is an owned non-writable-by-others anchor, not our private Store.
@@ -259,7 +259,7 @@ test('held parent replacement is rejected before handoff and closed targets cann
 test('CLI errors keep the old safe envelope and do not create a default root without explicit trusted config', t => {
   const f = fixture(t);
   for (const args of [[], ['--root', '/secret-do-not-echo'], [...base, '--data-dir', '/secret-do-not-echo', '--root', '/other'],
-    ['--config', '/secret-do-not-echo/missing.mjs'], [...base, '--port', '65536']]) rejectCLI(f, args);
+    ['--config', '/secret-do-not-echo/missing.ts'], [...base, '--port', '65536']]) rejectCLI(f, args);
   assert.deepEqual(fs.readdirSync(f.home), []);
   const help = f.run(['--help']); assert.equal(help.status, 0); assert.match(help.stdout, /HOME\/\.marshal-node\/task-service/); assert.equal(withoutSQLiteRuntimeNotices(help.stderr), ''); f.complete = true;
 });

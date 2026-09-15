@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
-import {verify} from './index.mjs';
+import {verify} from './index.ts';
 assert.equal(process.env.MARSHAL_INSTALLED_V7, '1');
 assert.ok(Number(process.versions.node.split('.')[0]) >= 22);
 const installed = process.env.MARSHAL_CANDIDATE_ROOT, sourceHead = process.env.MARSHAL_CANDIDATE_SOURCE;
@@ -12,8 +12,8 @@ const report = verify({root: installed, manifestDigest: process.env.MARSHAL_CAND
 assert.equal(report.sourceHead, sourceHead);
 const load = relative => import(pathToFileURL(path.join(installed, relative)).href), here = relative => fileURLToPath(new URL(relative, import.meta.url));
 const [{encode, digest}, {createAcpProvider}, {createFileBusiness}, core, {createVerificationCommand}, {createLocalReportPublication}] = await Promise.all([
-  load('packages/task-store/store.mjs'), load('packages/agent-provider-acp/index.mjs'), load('packages/task-business/index.mjs'),
-  load('packages/task-application/application.mjs'), load('packages/task-verification-command/index.mjs'), load('packages/task-publication-report/index.mjs')]);
+  load('packages/task-store/store.ts'), load('packages/agent-provider-acp/index.ts'), load('packages/task-business/index.ts'),
+  load('packages/task-application/application.ts'), load('packages/task-verification-command/index.ts'), load('packages/task-publication-report/index.ts')]);
 const hash = value => digest(encode(value)), journal = process.env.MARSHAL_V7_JOURNAL, byCwd = new Map();
 assert.ok(path.isAbsolute(journal));
 const record = value => {
@@ -27,7 +27,7 @@ function observed(ticket, handle) {
     completion: handle.completion.then(value => {record({type: 'finished', ...identity(ticket), status: value.status,
       reason: value.reason ?? null, cleanup: value.cleanup}); return value;})};
 }
-const native = createAcpProvider({id: 'test-agent', executable: process.execPath, args: [here('./v7-agent.fixture.mjs')],
+const native = createAcpProvider({id: 'test-agent', executable: process.execPath, args: [here('./v7-agent.fixture.ts')],
   env: {MARSHAL_V7_BARRIER: process.env.MARSHAL_V7_BARRIER}, custodyProfile: {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true}});
 const provider = {...native, start(input) {
   const ticket = byCwd.get(input.cwd); assert.ok(ticket);
@@ -61,7 +61,7 @@ const bindPlan = () => ({nodeId: 'verify', description: '原地区和两个不�
   layouts: ['east', 'west'].map(nodeId => ({nodeId, inputs: [], allowedPaths: [nodeId + '.json']})).concat({nodeId: 'verify', allowedPaths: [],
     inputs: ['east', 'west'].map(nodeId => ({path: nodeId + '.json', source: {kind: 'upstream', nodeId, path: nodeId + '.json'}}))}),
   deliveries: ['east', 'west'].map(nodeId => ({nodeId, path: nodeId + '.json', targetPath: nodeId + '.json'}))});
-const checkerPath = here('./v7-checker.fixture.mjs');
+const checkerPath = here('./v7-checker.fixture.ts');
 const command = createVerificationCommand({executable: process.execPath, checkerPath, checkerDigest: digest(fs.readFileSync(checkerPath)), policyDigest: hash(verifyPolicy),
   assertions: [{name: 'both-original-requirements', validate: (actual, {ticket}) => hash(actual) === hash(expected(ticket))}],
   delivery: ({prepared}) => ({name: 'report.json', mediaType: 'application/json', content: encode(['east', 'west'].map(id => JSON.parse(fs.readFileSync(path.join(prepared.cwd, id + '.json')))))})});

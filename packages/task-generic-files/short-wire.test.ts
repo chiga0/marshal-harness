@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLeaderPort, parseManagedOutput, renderLeaderPrompt} from '../task-application/application.mjs';
-import {receipt} from '../task-application/leader-ports.mjs';
-import {parseLeaderProposal, createGenericFilesShortWireConfig, LEADER_WIRE_PROFILE} from './short-wire.mjs';
-import {createGenericFilesConfig} from './index.mjs';
+import {createLeaderPort, parseManagedOutput, renderLeaderPrompt} from '../task-application/application.ts';
+import {receipt} from '../task-application/leader-ports.ts';
+import {parseLeaderProposal, createGenericFilesShortWireConfig, LEADER_WIRE_PROFILE} from './short-wire.ts';
+import {createGenericFilesConfig} from './index.ts';
 const hash='sha256:'+'a'.repeat(64);
 const policy={profile:'task-managed-leader/v1',maxCalls:3,maxActions:1,maxRequests:1,
   repair:{nodeIds:[],maxRounds:0},review:{providerId:'controlled',policyDigest:hash},publication:null};

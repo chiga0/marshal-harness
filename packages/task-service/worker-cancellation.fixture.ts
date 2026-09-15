@@ -2,12 +2,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Store, encode, digest} from '../task-store/store.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {createFileBusiness, createStagingOnlyBusinessFactory} from '../task-business/index.mjs';
-import {policy, bindPlan} from '../task-team-integration/scenario.fixture.mjs';
+import {Store, encode, digest} from '../task-store/store.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {createFileBusiness, createStagingOnlyBusinessFactory} from '../task-business/index.ts';
+import {policy, bindPlan} from '../task-team-integration/scenario.fixture.ts';
 const here = value => fileURLToPath(new URL(value, import.meta.url));
 export const data = {rows: [{region: 'east', status: 'paid', cents: 100}, {region: 'west', status: 'paid', cents: 75}]};
 export const expected = [{region: 'east', count: 1, netCents: 100}, {region: 'west', count: 1, netCents: 75}];
@@ -38,13 +38,13 @@ export function configuration(root, {unpermitted = false} = {}) {
   function observe(handle, ticket) {return {...handle, stop() {journal({type: 'stop', workerId: ticket.workerId}); return handle.stop();},
     started: handle.started.then(value => {journal({type: 'started', taskId: ticket.taskId, workerId: ticket.workerId, nodeId: ticket.nodeId, role: ticket.role, started: value}); return value;}),
     completion: handle.completion.then(value => {journal({type: 'completion', taskId: ticket.taskId, workerId: ticket.workerId, cleanup: value.cleanup, status: value.status}); return value;})};}
-  const native = createAcpProvider({id: 'fixture-acp', executable: process.execPath, args: [here('./worker-cancellation-agent.fixture.mjs')],
+  const native = createAcpProvider({id: 'fixture-acp', executable: process.execPath, args: [here('./worker-cancellation-agent.fixture.ts')],
     env: {WORKER_RELEASE_PARENT: releaseParent}, custodyProfile: {id: 'worker-cancel-fixture-v1', scope: 'inherited-process-group', eligible: true}});
   const agent = {id: native.id, custodyProfile: native.custodyProfile, start(input) {
     const ticket = tickets.get(path.basename(input.cwd)); if (!ticket) throw Error('original ticket missing');
     return observe(native.start(input), ticket);
   }};
-  const checkerPath = here('./custody-recovery.worker.fixture.mjs');
+  const checkerPath = here('./custody-recovery.worker.fixture.ts');
   const command = hold => createVerificationCommand({executable: process.execPath, checkerPath, checkerDigest: digest(fs.readFileSync(checkerPath)),
     policyDigest: digest(encode(policy)), env: hold ? {MARSHAL_CUSTODY_CHECKER_HOLD: '1'} : {},
     assertions: [{name: 'regions', validate: actual => digest(encode(actual)) === digest(encode(expected))}],

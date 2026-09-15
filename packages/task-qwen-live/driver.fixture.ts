@@ -1,20 +1,20 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 // Explicit, test-only real-model driver. Never a default service configuration.
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {startTaskService} from '../task-service/composition.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {policy, bindPlan} from '../task-team-integration/scenario.fixture.mjs';
+import {startTaskService} from '../task-service/composition.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {policy, bindPlan} from '../task-team-integration/scenario.fixture.ts';
 
-const checkerPath = fileURLToPath(new URL('../task-team-integration/checker.fixture.mjs', import.meta.url));
+const checkerPath = fileURLToPath(new URL('../task-team-integration/checker.fixture.ts', import.meta.url));
 const deny = () => ({outcome: {outcome: 'cancelled'}});
 // HTTP parseJson returns null-prototype objects. Compare complete canonical
 // data, not JS prototypes or only a status field.

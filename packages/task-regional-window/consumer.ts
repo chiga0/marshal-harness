@@ -1,6 +1,6 @@
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {digest} from '../task-store/store.mjs';
-import {fields, check, range, rowsFrom, equal, PROFILE} from './policy.mjs';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {digest} from '../task-store/store.ts';
+import {fields, check, range, rowsFrom, equal, PROFILE} from './policy.ts';
 
 // Separate download-consumer computation, not the checker's pass field or the
 // parent's expected() function. The operator supplies ORIGINAL uploaded bytes

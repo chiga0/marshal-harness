@@ -5,9 +5,9 @@
 // dataset grows to ordinary business volume with a deterministic spread; the
 // rules stay byte-identical and nothing is planted — full correctness remains
 // the expected outcome, while ordinary arithmetic drift becomes observable.
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {createRepairPort} from '../task-application/application.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {createRepairPort} from '../task-application/application.ts';
 
 export const equal = (a, b) => {try {return encode(a).equals(encode(b));} catch {return false;}};
 export const regions = Object.freeze(['east', 'west']);

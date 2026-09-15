@@ -4,11 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createPiProvider} from './index.mjs';
-import {launchProtocol} from '../agent-runtime/index.mjs';
+import {createPiProvider} from './index.ts';
+import {launchProtocol} from '../agent-runtime/index.ts';
 
-const fixture = fileURLToPath(new URL('./bridge-agent.fixture.mjs', import.meta.url));
-const sdkEntry = process.env.MARSHAL_PI_TEST_SDK ?? fileURLToPath(new URL('./fixtures/sdk/index.mjs', import.meta.url));
+const fixture = fileURLToPath(new URL('./bridge-agent.fixture.ts', import.meta.url));
+const sdkEntry = process.env.MARSHAL_PI_TEST_SDK ?? fileURLToPath(new URL('./fixtures/sdk/index.ts', import.meta.url));
 const config = {profile: 'task-runtime-question/v1', policyDigest: 'sha256:' + 'a'.repeat(64), maxWaitMs: 3000};
 function setup(t, mode, overrides = {}) {
   const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-pi-question-')));

@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {Store, FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT} from '../task-store/store.mjs';
-import {createStagingOnlyBusinessFactory, isStagingOnlyBusiness} from '../task-business/index.mjs';
-import {createAuditDisclosure} from '../task-application/application.mjs';
-import {startTaskService} from './composition.mjs';
+import {Store, FORMAT, CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT} from '../task-store/store.ts';
+import {createStagingOnlyBusinessFactory, isStagingOnlyBusiness} from '../task-business/index.ts';
+import {createAuditDisclosure} from '../task-application/application.ts';
+import {startTaskService} from './composition.ts';
 
 const custody = {profile: 'node-execution-custody/v1'}, unpermitted = {profile: 'node-unpermitted-reservation/v1'};
 const providers = new Map([['fixture', {id: 'fixture', start() {throw Error('no task in configuration tests');}}]]);

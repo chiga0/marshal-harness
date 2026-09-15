@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {MAX_FILE} from './policy.mjs';
+import {MAX_FILE} from './policy.ts';
 const deny = () => ({outcome: {outcome: 'cancelled'}});
 // Permissions are native command admission, not an OS sandbox.
 export function filePermission(ticket, cwd, request) {

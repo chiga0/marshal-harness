@@ -1,4 +1,4 @@
-import {pack, verify, restoreCarrier, DistributionError} from './index.mjs';
+import {pack, verify, restoreCarrier, DistributionError} from './index.ts';
 
 try {
   const [command, ...argv] = process.argv.slice(2);

@@ -1,12 +1,12 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
-import {fixture, durable, completeTeam, events, upload} from './backup-restore.fixture.mjs';
-import {launchFull} from './storage-full.fixture.mjs';
-import {encode, digest} from '../task-store/store.mjs';
+import {fixture, durable, completeTeam, events, upload} from './backup-restore.fixture.ts';
+import {launchFull} from './storage-full.fixture.ts';
+import {encode, digest} from '../task-store/store.ts';
 
 const tables = ['events', 'heads', 'projections', 'receipts', 'outbox'];
 const value = row => JSON.parse(Buffer.from(row.bytes, 'hex'));

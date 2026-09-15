@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { getEventListeners } from 'node:events';
-import { plan, verifyFiles } from './business.mjs';
+import { plan, verifyFiles } from './business.ts';
 
 // Deterministic code fixtures, not real Provider output or team-run evidence.
 const validate = `function validate(rows) {
@@ -30,7 +30,7 @@ export function report(rows) {
   return [...groups.values()].sort((a,b) => a.sku < b.sku ? -1 : a.sku > b.sku ? 1 : 0);
 }`;
 const files = (first = normalize, second = report) => [
-  { name: 'normalize.mjs', content: first }, { name: 'report.mjs', content: second },
+  { name: 'normalize.ts', content: first }, { name: 'report.ts', content: second },
 ];
 
 test('plan freezes two complementary authors and bounded pure-module contracts', () => {
@@ -63,8 +63,8 @@ test('fixed oracle verifies composition, negatives and exact SHA-256 content', a
 });
 
 test('candidate allowlist rejects traversal, duplicate, extra and oversized files before execution', async () => {
-  for (const value of [null, [], files().slice(0, 1), [...files(), {name:'extra.mjs',content:'x'}],
-    [{name:'../normalize.mjs',content:normalize},files()[1]], [files()[0],files()[0]],
+  for (const value of [null, [], files().slice(0, 1), [...files(), {name:'extra.ts',content:'x'}],
+    [{name:'../normalize.ts',content:normalize},files()[1]], [files()[0],files()[0]],
     files('x'.repeat(65537)), files('\ud800'), files('\0'), [{...files()[0],sha256:'claimed'},files()[1]]]) {
     assert.deepEqual(await verifyFiles(value), { passed: false, checks: 0, files: [], reason: 'candidate_files_invalid' });
   }

@@ -5,10 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {digest} from '../task-store/store.mjs';
-import {utf8, expectedFiles} from './policy.mjs';
-import {filePermission} from './permission.mjs';
-const checker = fileURLToPath(new URL('./checker.mjs', import.meta.url));
+import {digest} from '../task-store/store.ts';
+import {utf8, expectedFiles} from './policy.ts';
+import {filePermission} from './permission.ts';
+const checker = fileURLToPath(new URL('./checker.ts', import.meta.url));
 function fixture(t) {const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'generic-check-'))); t.after(() => fs.rmSync(root, {recursive: true, force: true})); fs.mkdirSync(path.join(root, 'results')); return root;}
 test('data checker reads exact actual UTF8 file and rejects changed bytes, missing and binary content', t => {
   const root = fixture(t), content = Buffer.from('真实交付'), file = path.join(root, 'results', 'analysis.md');

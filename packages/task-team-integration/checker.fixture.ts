@@ -1,7 +1,7 @@
 // Trusted independent data checker. It never imports/evaluates author code.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {encode} from '../task-store/store.mjs';
+import {encode} from '../task-store/store.ts';
 for await (const line of createInterface({input: process.stdin})) {
   const request = JSON.parse(line);
   const actual = ['east', 'west'].map(region => JSON.parse(fs.readFileSync(region + '.json', 'utf8')));

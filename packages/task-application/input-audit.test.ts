@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {Store, digest} from '../task-store/store.mjs';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {TaskApplication, createAuditDisclosure} from './application.mjs';
-import {validAuditResponse} from '../task-api/contract.mjs';
+import {Store, digest} from '../task-store/store.ts';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {TaskApplication, createAuditDisclosure} from './application.ts';
+import {validAuditResponse} from '../task-api/contract.ts';
 
 const context = {principal: 'local-operator'};
 function fixture(t, {disclosure = null, depotEnabled = true} = {}) {

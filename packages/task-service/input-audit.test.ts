@@ -5,14 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
-import {digest, encode} from '../task-store/store.mjs';
-import {createAuditDisclosure, createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {startTaskService} from './composition.mjs';
+import {digest, encode} from '../task-store/store.ts';
+import {createAuditDisclosure, createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {startTaskService} from './composition.ts';
 
-const checkerPath = fileURLToPath(new URL('../task-application/repair-checker.fixture.mjs', import.meta.url));
+const checkerPath = fileURLToPath(new URL('../task-application/repair-checker.fixture.ts', import.meta.url));
 const deferred = () => {let resolve; const promise = new Promise(done => {resolve = done;}); return {promise, resolve};};
 async function until(predicate) {
   const deadline = Date.now() + 10000;

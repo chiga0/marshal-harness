@@ -4,14 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {encode, digest} from '../task-store/store.mjs';
-import {TaskVerification, createVerificationPort} from '../task-application/verification.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {parseOptions, validatePlan, classify, repairRequest, repairOnce, validateDeliveryProof, runLive} from './driver.fixture.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {TaskVerification, createVerificationPort} from '../task-application/verification.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {parseOptions, validatePlan, classify, repairRequest, repairOnce, validateDeliveryProof, runLive} from './driver.fixture.ts';
 import {data, regions, policy, repairPolicyDigest, contentAssertions, proposal, taskBody, bindPlan, originalInput,
-  expectedReports, reportShape, consumeDelivery, equal} from './scenario.fixture.mjs';
+  expectedReports, reportShape, consumeDelivery, equal} from './scenario.fixture.ts';
 
 const sha = value => 'sha256:' + value.repeat(64);
 const initialArgs = ['--execute-real', '--phase', 'initial', '--run-dir', '/private/tmp/repair-new', '--node', '/installed/node',
@@ -126,7 +126,7 @@ test('final original evidence binds the exact approved plan/checker and independ
   }
 });
 test('actual original managed checker classifies genuine fixture content false only; these are no-model counterexamples, not live repair evidence', {timeout: 25000}, async t => {
-  const checkerPath = fileURLToPath(new URL('./checker.fixture.mjs', import.meta.url)), policyDigest = digest(encode(policy));
+  const checkerPath = fileURLToPath(new URL('./checker.fixture.ts', import.meta.url)), policyDigest = digest(encode(policy));
   for (const mode of ['correct', 'wrong-content', 'wrong-shape', 'bad-json']) {
     const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-repair-oracle-')));
     const reports = expectedReports(); if (mode === 'wrong-content') reports[1].netCents++;

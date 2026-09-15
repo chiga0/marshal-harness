@@ -6,8 +6,8 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
-import {TaskClient} from '../task-client/index.mjs';
-import {until} from './backup-restore.fixture.mjs';
+import {TaskClient} from '../task-client/index.ts';
+import {until} from './backup-restore.fixture.ts';
 
 let configuration;
 if (process.env.MARSHAL_SQLITE_FULL_FIXTURE === '1') {
@@ -51,13 +51,13 @@ if (process.env.MARSHAL_SQLITE_FULL_FIXTURE === '1') {
       try {return original.apply(this, args);} catch (error) {observe(method, error); throw error;}
     };
   }
-  configuration = (await import('./custody-recovery.fixture.mjs')).default;
+  configuration = (await import('./custody-recovery.fixture.ts')).default;
 }
 export default configuration;
 
 export async function launchFull(f, root) {
   f.offline(root);
-  const child = spawn(process.execPath, [fileURLToPath(new URL('./main.mjs', import.meta.url)),
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./main.ts', import.meta.url)),
     '--root', root, '--mode', 'open', '--config', fileURLToPath(import.meta.url)], {cwd: f.parent,
     env: {MARSHAL_CUSTODY_FIXTURE: '1', MARSHAL_CUSTODY_SCENARIO: 'authors', MARSHAL_SQLITE_FULL_FIXTURE: '1'},
     stdio: ['ignore', 'pipe', 'pipe', 'pipe']});

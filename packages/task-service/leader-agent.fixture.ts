@@ -2,7 +2,7 @@
 // no model, provider credentials, private receipt or direct Store access.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {encode, digest} from '../task-store/store.mjs';
+import {encode, digest} from '../task-store/store.ts';
 const hash = value => digest(encode(value)), send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const response = (request, result) => send({jsonrpc: '2.0', id: request.id, result});
 function proposal(input) {

@@ -1,8 +1,8 @@
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {randomBytes, createHash} from 'node:crypto';
-import {BRIDGE_PROFILE, BRIDGE_ENV, BRIDGE_TITLE, TOOL_FACTORIES, QUESTION_TOOL, QUESTION_PROFILE, text, object} from './bridge-contract.mjs';
-import {createInheritedShellOperations} from './shell-operations.mjs';
+import {BRIDGE_PROFILE, BRIDGE_ENV, BRIDGE_TITLE, TOOL_FACTORIES, QUESTION_TOOL, QUESTION_PROFILE, text, object} from './bridge-contract.ts';
+import {createInheritedShellOperations} from './shell-operations.ts';
 
 /** A checked-in, explicitly selected Pi extension, loaded by native Pi itself.
  * Native SDK definitions retain schemas, prompts, file operations and results;

@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {TaskApplication} from './application.mjs';
-import {Store} from '../task-store/store.mjs';
-import {validate} from '../task-api/contract.mjs';
+import {TaskApplication} from './application.ts';
+import {Store} from '../task-store/store.ts';
+import {validate} from '../task-api/contract.ts';
 
 const context = {principal: 'local-operator'}, now = 1800000000000;
 function fixture(t, maxWorkers = 2) {

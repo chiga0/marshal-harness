@@ -1,4 +1,4 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 // Explicit full HTTP/v6 fixture. Run after integrating the frozen Core v6 source.
 // Not a model test or fallback implementation for worker.cancel's production API.
 import assert from 'node:assert/strict';
@@ -7,18 +7,18 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {startTaskService} from '../task-service/composition.mjs';
-import {createPiProvider} from '../agent-provider-pi/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {trackExecution} from '../task-qwen-live/driver.fixture.mjs';
-import {filePermission} from '../task-pi-live/driver.fixture.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {data, questions, questionPolicyDigest, policy, bindPlan, equal, taskBody} from './scenario.fixture.mjs';
-import {validatePlan} from './driver.fixture.mjs';
-import {cancelPiWorker, workerCancellation, readRetainedResult} from './worker-cancel.fixture.mjs';
+import {startTaskService} from '../task-service/composition.ts';
+import {createPiProvider} from '../agent-provider-pi/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {trackExecution} from '../task-qwen-live/driver.fixture.ts';
+import {filePermission} from '../task-pi-live/driver.fixture.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {data, questions, questionPolicyDigest, policy, bindPlan, equal, taskBody} from './scenario.fixture.ts';
+import {validatePlan} from './driver.fixture.ts';
+import {cancelPiWorker, workerCancellation, readRetainedResult} from './worker-cancel.fixture.ts';
 
 export async function runWorkerCancelFixture() {
   assert.ok(supportsNode());
@@ -29,13 +29,13 @@ export async function runWorkerCancelFixture() {
   const proposal = {summary: '无模型单 Worker 取消夹具', nodes: ['east', 'west', 'verify'].map(id => ({id,
     role: id === 'verify' ? 'verifier' : 'author', providerId: null, goal: '完成' + id, scope: [id]})),
     edges: [{from: 'east', to: 'verify'}, {from: 'west', to: 'verify'}], deliverables: ['east.json', 'west.json'], acceptance: [policy.description], assumptions: []};
-  const native = createPiProvider({id: 'pi-fixture', executable: process.execPath, args: [here('./worker-cancel-peer.fixture.mjs')],
-    bridge: {sdkEntry: here('../agent-provider-pi/fixtures/sdk/index.mjs')},
+  const native = createPiProvider({id: 'pi-fixture', executable: process.execPath, args: [here('./worker-cancel-peer.fixture.ts')],
+    bridge: {sdkEntry: here('../agent-provider-pi/fixtures/sdk/index.ts')},
     custodyProfile: {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true}});
   const provider = {...native, start(input) {const ticket = tickets.get(input.cwd); assert.ok(ticket);
     const handle = native.start(input); observed.push(trackExecution({taskId: ticket.taskId, workerId: ticket.workerId,
       nodeId: ticket.nodeId, role: ticket.role}, handle)); return handle;}};
-  const checkerPath = here('./checker.fixture.mjs'), command = createVerificationCommand({executable: process.execPath,
+  const checkerPath = here('./checker.fixture.ts'), command = createVerificationCommand({executable: process.execPath,
     checkerPath, checkerDigest: digest(fs.readFileSync(checkerPath)), policyDigest: digest(encode(policy)),
     assertions: [{name: 'answered-regions', validate: () => false}], delivery() {throw Error('never accepted');}});
   const startChecker = input => {verifierStarts++; return command.start(input);};

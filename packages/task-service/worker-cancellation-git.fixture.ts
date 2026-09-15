@@ -3,13 +3,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Store, encode} from '../task-store/store.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createStagingOnlyBusinessFactory} from '../task-business/index.mjs';
-import {createGitBusiness} from '../task-git-business/index.mjs';
-import {runGit} from '../task-git-business/git.mjs';
-import {policy, bindPlan} from '../task-git-business/scenario.fixture.mjs';
+import {Store, encode} from '../task-store/store.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createStagingOnlyBusinessFactory} from '../task-business/index.ts';
+import {createGitBusiness} from '../task-git-business/index.ts';
+import {runGit} from '../task-git-business/git.ts';
+import {policy, bindPlan} from '../task-git-business/scenario.fixture.ts';
 const root = process.argv[process.argv.indexOf('--root') + 1], mode = process.argv[process.argv.indexOf('--mode') + 1];
 if (process.env.WORKER_GIT_FIXTURE !== '1' || !path.isAbsolute(root ?? '')) throw Error('test-only configuration');
 const parent = path.dirname(root), metadataPath = path.join(parent, 'git-input.json'), journal = path.join(parent, 'worker-observations.jsonl');
@@ -18,7 +18,7 @@ const record = value => {const fd = fs.openSync(journal, fs.constants.O_CREAT | 
 const run = (cwd, args) => runGit('/usr/bin/git', cwd, args);
 if (mode === 'create') {
   const nodes = [];
-  for (const [nodeId, filename] of [['library', 'net.mjs'], ['client', 'invoice.mjs']]) {
+  for (const [nodeId, filename] of [['library', 'net.ts'], ['client', 'invoice.ts']]) {
     const repository = path.join(parent, nodeId); fs.mkdirSync(repository, {mode: 0o700});
     await run(repository, ['init', '-b', 'main']); fs.writeFileSync(path.join(repository, filename), 'export const original = true;\n');
     await run(repository, ['add', '--', filename]);
@@ -28,7 +28,7 @@ if (mode === 'create') {
   fs.writeFileSync(metadataPath, encode({profile: 'task-git-input/v1', nodes}), {flag: 'wx', mode: 0o600});
 }
 const native = createAcpProvider({id: 'git-fixture-acp', executable: process.execPath,
-  args: [fileURLToPath(new URL('../task-git-business/agent.fixture.mjs', import.meta.url))],
+  args: [fileURLToPath(new URL('../task-git-business/agent.fixture.ts', import.meta.url))],
   custodyProfile: {id: 'git-fixture-inherited', scope: 'inherited-process-group', eligible: true}});
 const verification = createVerificationPort({id: 'unbound-must-not-verify', policy, bindPlan,
   start() {throw Error('unbound Task must not reach verifier');}});

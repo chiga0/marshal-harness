@@ -1,8 +1,8 @@
 import path from 'node:path';
 import {constants, openSync, closeSync, fstatSync, readSync, realpathSync} from 'node:fs';
 import {randomUUID} from 'node:crypto';
-import {launchCommand} from '../agent-runtime/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
+import {launchCommand} from '../agent-runtime/index.ts';
+import {encode, digest} from '../task-store/store.ts';
 
 const PROFILE = 'task-verification-command/v1';
 const MAX_FRAME = 256 * 1024, MAX_DELIVERY = 8 * 1024 * 1024;

@@ -1,9 +1,9 @@
 // Trusted data-only checker. Never import or evaluate any author-produced code.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {rowsFrom, range} from './policy.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {rowsFrom, range} from './policy.ts';
 const fail = () => {throw Error('window_check_failed');};
 try {
   for await (const line of createInterface({input: process.stdin})) {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { Store, StoreError, FORMAT, LIMITS, encode, digest, makeEvent } from './store.mjs';
+import { Store, StoreError, FORMAT, LIMITS, encode, digest, makeEvent } from './store.ts';
 
 const NOW = 1_800_000_000_000;
 const code = expected => error => error instanceof StoreError && error.code === expected;
@@ -181,7 +181,7 @@ test('core: codec closes malformed bytes, duplicate keys and unsafe integers', (
 
 function child(mode, root) {
   return new Promise((resolve, reject) => {
-    const processHandle = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/process.mjs', import.meta.url)), mode, root], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const processHandle = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/process.ts', import.meta.url)), mode, root], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
     let reply, expired = false;
     const timer = setTimeout(() => { expired = true; processHandle.kill('SIGKILL'); }, 5000);
     processHandle.on('message', value => { reply = value; });

@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {TaskApplication, createRuntimeQuestionPort, createVerificationPort} from './application.mjs';
-import {Store, INTERACTION_FORMAT, CUSTODY_FORMAT, digest, encode} from '../task-store/store.mjs';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
+import {TaskApplication, createRuntimeQuestionPort, createVerificationPort} from './application.ts';
+import {Store, INTERACTION_FORMAT, CUSTODY_FORMAT, digest, encode} from '../task-store/store.ts';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {createFileBusiness} from '../task-business/index.ts';
 
 const context = {principal: 'local-operator'}, hash = value => digest(encode(value));
 const proposal = {summary: '业务输入明确后并行产出和独立验收', nodes: ['code', 'docs', 'verify'].map(id => ({id,

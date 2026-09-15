@@ -9,7 +9,7 @@ import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {verify} from './index.mjs';
+import {verify} from './index.ts';
 const hash = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 const here = relative => fileURLToPath(new URL(relative, import.meta.url));
 const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -102,8 +102,8 @@ export async function exerciseInstalledV7(t, options) {
   // All bytes and the caller's independent source pin precede any package import.
   const originalPackage = verify({root: installed, manifestDigest}); assert.equal(originalPackage.sourceHead, sourceHead);
   const load = relative => import(pathToFileURL(path.join(installed, relative)).href);
-  const [{TaskClient}, {encode}, {nameFor}] = await Promise.all([load('packages/task-client/index.mjs'),
-    load('packages/task-store/store.mjs'), load('packages/task-publication-report/index.mjs')]);
+  const [{TaskClient}, {encode}, {nameFor}] = await Promise.all([load('packages/task-client/index.ts'),
+    load('packages/task-store/store.ts'), load('packages/task-publication-report/index.ts')]);
   const same = (actual, expected) => assert.deepEqual(encode(actual), encode(expected)), hashValue = value => hash(encode(value));
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-installed-v7-'))), state = path.join(parent, 'state');
   const reportRoot = path.join(parent, 'reports'), barrier = path.join(parent, 'barrier'), journal = path.join(parent, 'observations.jsonl');
@@ -122,7 +122,7 @@ export async function exerciseInstalledV7(t, options) {
   async function launch(mode) {
     assert.deepEqual(verify({root: installed, manifestDigest}), originalPackage);
     const child = spawn(process.execPath, [path.join(installed, originalPackage.entrypoint), '--root', state, '--mode', mode,
-      '--config', here('./v7-service.fixture.mjs'), '--port', '0'], {cwd: parent, env: {
+      '--config', here('./v7-service.fixture.ts'), '--port', '0'], {cwd: parent, env: {
       MARSHAL_INSTALLED_V7: '1', MARSHAL_CANDIDATE_ROOT: installed, MARSHAL_CANDIDATE_SOURCE: sourceHead,
       MARSHAL_CANDIDATE_MANIFEST: manifestDigest, MARSHAL_V7_JOURNAL: journal, MARSHAL_V7_BARRIER: barrier,
       MARSHAL_V7_REPORT_ROOT: reportRoot, MARSHAL_V7_REPORT_URL: reader.url}, stdio: ['ignore', 'pipe', 'pipe']});

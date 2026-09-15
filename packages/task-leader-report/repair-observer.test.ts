@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {repairObserver} from './live-consumer.fixture.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
+import {repairObserver} from './live-consumer.fixture.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
 const hash = value => digest(encode(value)), taskId = 'task-one', task = {id: taskId, revision: 3};
 const inputDigest = 'sha256:' + 'a'.repeat(64), selectionBefore = 'sha256:' + 'b'.repeat(64), selectionAfter = 'sha256:' + 'c'.repeat(64);
 const worker = {id: 'worker-east-original', nodeId: 'east', role: 'author', attempt: 1, status: 'completed'};

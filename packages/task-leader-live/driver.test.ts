@@ -5,20 +5,20 @@ import os from 'node:os';
 import path from 'node:path';
 import {Readable} from 'node:stream';
 import {fileURLToPath} from 'node:url';
-import {encode, digest} from '../task-store/store.mjs';
-import {contract, leaderRequestDigest, leaderReplyDigest} from '../task-api/contract.mjs';
-import {parseOptions, runLive, workPackage, reviewPolicy, liveApplicationOptions, managedPrompt, createObservedBusiness, saveFailureDiagnostics} from './driver.fixture.mjs';
-import {trackExecution} from '../task-qwen-live/driver.fixture.mjs';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {createFileBusiness, isManagedFileBusiness, fileLayoutDigest} from '../task-business/index.mjs';
-import {filePermission} from '../task-pi-live/driver.fixture.mjs';
-import {createLeaderPort, createReviewPort, createVerificationPort, parseManagedOutput, renderLeaderPrompt, renderReviewPrompt} from '../task-application/application.mjs';
-import {startTaskService} from '../task-service/composition.mjs';
-import {data, choices, policy, taskBody, bindPlan, reportFor} from './scenario.fixture.mjs';
-import {equal, businessReply, verificationRequest, validatePlan, replyOnce, assertReplyReplay, verifyAcceptance, authorizeReport, authorOverlap} from './proof.fixture.mjs';
-import {checkRequest, main as checkerMain} from './checker.fixture.mjs';
-import {startReportServer, consumePublished} from './report-server.fixture.mjs';
-import {launchCommand} from '../agent-runtime/index.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {contract, leaderRequestDigest, leaderReplyDigest} from '../task-api/contract.ts';
+import {parseOptions, runLive, workPackage, reviewPolicy, liveApplicationOptions, managedPrompt, createObservedBusiness, saveFailureDiagnostics} from './driver.fixture.ts';
+import {trackExecution} from '../task-qwen-live/driver.fixture.ts';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {createFileBusiness, isManagedFileBusiness, fileLayoutDigest} from '../task-business/index.ts';
+import {filePermission} from '../task-pi-live/driver.fixture.ts';
+import {createLeaderPort, createReviewPort, createVerificationPort, parseManagedOutput, renderLeaderPrompt, renderReviewPrompt} from '../task-application/application.ts';
+import {startTaskService} from '../task-service/composition.ts';
+import {data, choices, policy, taskBody, bindPlan, reportFor} from './scenario.fixture.ts';
+import {equal, businessReply, verificationRequest, validatePlan, replyOnce, assertReplyReplay, verifyAcceptance, authorizeReport, authorOverlap} from './proof.fixture.ts';
+import {checkRequest, main as checkerMain} from './checker.fixture.ts';
+import {startReportServer, consumePublished} from './report-server.fixture.ts';
+import {launchCommand} from '../agent-runtime/index.ts';
 
 const hash = value => digest(encode(value)), sha = 'sha256:' + 'a'.repeat(64), taskId = 'task-example';
 const fresh = name => structuredClone(contract.components.schemas[name].examples[0]);
@@ -299,7 +299,7 @@ test('fixed Node checker reads real bounded files and rejects plausible wrong to
     // Original runtime retains stdin for ownership/liveness: EOF is not the
     // command frame delimiter. Exercise the real guard, not stdin.end().
     const runtime = await launchCommand({executable: process.execPath,
-      args: [fileURLToPath(new URL('./checker.fixture.mjs', import.meta.url))], cwd: root,
+      args: [fileURLToPath(new URL('./checker.fixture.ts', import.meta.url))], cwd: root,
       deadline: Date.now() + 5000, input: Buffer.concat([encode(frame), Buffer.from('\n')])});
     t.after(() => runtime.stop());
     const result = await runtime.completion;

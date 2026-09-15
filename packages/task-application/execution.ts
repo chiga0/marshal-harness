@@ -1,6 +1,6 @@
-import {encode, digest, makeEvent, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.mjs';
-import {clone, reject, terminal, nextRevision, isText} from './model.mjs';
-import {TaskCleanup} from './cleanup.mjs';
+import {encode, digest, makeEvent, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT} from '../task-store/store.ts';
+import {clone, reject, terminal, nextRevision, isText} from './model.ts';
+import {TaskCleanup} from './cleanup.ts';
 
 const decode = entry => entry ? JSON.parse(entry.bytes.toString('utf8')) : null;
 const hash = value => digest(encode(value));

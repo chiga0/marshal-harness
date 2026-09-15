@@ -1,9 +1,9 @@
 // One explicit Git/Pi+Qwen acceptance business. Not a production default.
 import fs from 'node:fs';
 import path from 'node:path';
-import {encode} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {gitDescription, PATCH, CONTEXT} from '../task-git-business/index.mjs';
+import {encode} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {gitDescription, PATCH, CONTEXT} from '../task-git-business/index.ts';
 
 export const LIMITS = Object.freeze({timeoutMs: 600000, maxAttempts: 4, maxWorkers: 2});
 export const NODES = Object.freeze(['library', 'client']);
@@ -24,10 +24,10 @@ export const policy = Object.freeze({id: 'git-mixed-invoice-acceptance', version
   description: '两原仓库锁定 base；只交付真实 patch，独立同 base 应用并检查 net/invoice 组合、非法输入和无关文件。'});
 export function proposal() {
   return {summary: 'Pi 与 Qwen 分别实现两个仓库的折扣 API 和发票 API，独立应用 patch 验收', nodes: [
-    {id: 'library', role: 'author', providerId: 'pi-rpc', scope: ['net.mjs'], goal:
-      '修改已有 net.mjs，导出 function net(cents,discount)。两参数必须是非负 safe integer，discount<=cents，否则 throw；返回 cents-discount。只使用原生 read/write/edit 文件工具，不 shell/commit/push。'},
-    {id: 'client', role: 'author', providerId: 'qwen-acp', scope: ['invoice.mjs'], goal:
-      '修改已有 invoice.mjs，导出 function invoice(rows,net)。rows 必须是数组，每项非空对象且 sku 是 trim 后非空 string（返回时原样保留，不 trim）；稀疏数组 hole 必须 throw，不得 map/forEach 跳过。逐项调用传入的 net(row.cents,row.discount)，由 net 校验金额参数；amount 必须是非负 safe integer，累加 total 也必须 safe integer。返回 {lines:[{sku,amount}],total}，保持原次序，空数组为 lines:[]/total:0；非法 throw。不 import 另一仓库，net 由独立消费者传入。只使用原生 read/write/edit 文件工具，不 shell/commit/push。'},
+    {id: 'library', role: 'author', providerId: 'pi-rpc', scope: ['net.ts'], goal:
+      '修改已有 net.ts，导出 function net(cents,discount)。两参数必须是非负 safe integer，discount<=cents，否则 throw；返回 cents-discount。只使用原生 read/write/edit 文件工具，不 shell/commit/push。'},
+    {id: 'client', role: 'author', providerId: 'qwen-acp', scope: ['invoice.ts'], goal:
+      '修改已有 invoice.ts，导出 function invoice(rows,net)。rows 必须是数组，每项非空对象且 sku 是 trim 后非空 string（返回时原样保留，不 trim）；稀疏数组 hole 必须 throw，不得 map/forEach 跳过。逐项调用传入的 net(row.cents,row.discount)，由 net 校验金额参数；amount 必须是非负 safe integer，累加 total 也必须 safe integer。返回 {lines:[{sku,amount}],total}，保持原次序，空数组为 lines:[]/total:0；非法 throw。不 import 另一仓库，net 由独立消费者传入。只使用原生 read/write/edit 文件工具，不 shell/commit/push。'},
     {id: 'verify', role: 'verifier', providerId: null, scope: [], goal: '由预配置独立 checker 在另一组同 base worktree 应用真实 patch，验证组合、负例和无关文件。'},
   ], edges: [{from: 'library', to: 'verify'}, {from: 'client', to: 'verify'}],
   deliverables: ['两个精确 base 的 patch 和上下文，供独立下载消费'],
@@ -69,7 +69,7 @@ export function validatePlan(task, plan, body) {
 export function filePermission(identity, request) {
   const reject = () => denied(request);
   const {cwd, role, nodeId, providerId} = identity ?? {};
-  const filename = nodeId === 'library' ? 'net.mjs' : nodeId === 'client' ? 'invoice.mjs' : null;
+  const filename = nodeId === 'library' ? 'net.ts' : nodeId === 'client' ? 'invoice.ts' : null;
   if (role !== 'author' || !filename || !path.isAbsolute(cwd ?? '') ||
       providerId !== (nodeId === 'library' ? 'pi-rpc' : 'qwen-acp') || !Array.isArray(request?.options)) return reject();
   const call = request.toolCall, input = call?.rawInput; let target, valid = false;

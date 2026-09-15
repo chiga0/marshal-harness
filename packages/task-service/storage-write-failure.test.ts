@@ -1,11 +1,11 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {fixture, durable, completeTeam, events, upload} from './backup-restore.fixture.mjs';
-import {fileLimit, launchLimited} from './storage-write-failure.fixture.mjs';
-import {encode, digest} from '../task-store/store.mjs';
+import {fixture, durable, completeTeam, events, upload} from './backup-restore.fixture.ts';
+import {fileLimit, launchLimited} from './storage-write-failure.fixture.ts';
+import {encode, digest} from '../task-store/store.ts';
 
 const value = row => JSON.parse(Buffer.from(row.bytes, 'hex'));
 const sameRef = (row, receipt) => row.source_stream === receipt.source_stream && row.source_sequence === receipt.source_sequence && row.source_digest === receipt.source_digest;

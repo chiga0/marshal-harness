@@ -5,10 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
-import {Store, encode, digest} from '../task-store/store.mjs';
-import {TaskApplication, createClarificationPort} from './application.mjs';
-import {createTaskApiHandler} from '../task-api/http-handler.mjs';
-import {contract, validate} from '../task-api/contract.mjs';
+import {Store, encode, digest} from '../task-store/store.ts';
+import {TaskApplication, createClarificationPort} from './application.ts';
+import {createTaskApiHandler} from '../task-api/http-handler.ts';
+import {contract, validate} from '../task-api/contract.ts';
 
 const principal = {principal: 'local-operator'}, hash = value => digest(encode(value));
 const deferred = () => {let resolve; const promise = new Promise(done => {resolve = done;}); return {promise, resolve};};

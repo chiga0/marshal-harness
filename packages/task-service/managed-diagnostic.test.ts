@@ -7,16 +7,16 @@ import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {TaskClient} from '../task-client/index.mjs';
-import {diagnosticCollector} from '../task-leader-report/live-consumer.fixture.mjs';
+import {TaskClient} from '../task-client/index.ts';
+import {diagnosticCollector} from '../task-leader-report/live-consumer.fixture.ts';
 const here = file => fileURLToPath(new URL(file, import.meta.url));
 const digest = bytes => 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 test('original CLI exposes only closed managed failure diagnostics to its consumer', {timeout: 40000}, async t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-managed-diagnostic-')));
   const baseline = process.env.MARSHAL_DIAGNOSTIC_BASELINE;
-  const child = spawn(process.execPath, [baseline ? path.join(baseline, 'packages/task-service/main.mjs') : here('./main.mjs'), '--root', path.join(root, 'data'), '--mode', 'create', '--port', '0',
-    '--config', here('./managed-diagnostic.fixture.mjs')], {cwd: root, env: {PATH: path.dirname(process.execPath), MARSHAL_LEADER_RECOVERY_FIXTURE: '1',
-      ...(baseline ? {MARSHAL_DIAGNOSTIC_BASE_CONFIG: path.join(baseline, 'packages/task-service/leader-recovery.fixture.mjs')} : {})}, stdio: ['ignore', 'pipe', 'pipe']});
+  const child = spawn(process.execPath, [baseline ? path.join(baseline, 'packages/task-service/main.ts') : here('./main.ts'), '--root', path.join(root, 'data'), '--mode', 'create', '--port', '0',
+    '--config', here('./managed-diagnostic.fixture.ts')], {cwd: root, env: {PATH: path.dirname(process.execPath), MARSHAL_LEADER_RECOVERY_FIXTURE: '1',
+      ...(baseline ? {MARSHAL_DIAGNOSTIC_BASE_CONFIG: path.join(baseline, 'packages/task-service/leader-recovery.fixture.ts')} : {})}, stdio: ['ignore', 'pipe', 'pipe']});
   let output = '', errors = '', closed = false;
   const evidence = {diagnostics: []}, consume = diagnosticCollector(evidence.diagnostics);
   child.stdout.on('data', value => {output += value;}); child.stderr.on('data', value => {errors += value; consume(value);});
@@ -45,10 +45,10 @@ test('parse rejection reaches the original CLI stderr only as a bounded base64 c
   // Unparseable prose with private markers; >2048 bytes exercises truncation.
   const payload = '独立意见：原选果满足要求 SECRET_PARSE_MARKER\n```json\n{"verdict":"accept"}\n```\n' +
     '补充说明 '.repeat(300) + 'SECRET_TAIL_MARKER';
-  const child = spawn(process.execPath, [baseline ? path.join(baseline, 'packages/task-service/main.mjs') : here('./main.mjs'), '--root', path.join(root, 'data'), '--mode', 'create', '--port', '0',
-    '--config', here('./managed-diagnostic.fixture.mjs')], {cwd: root, env: {PATH: path.dirname(process.execPath), MARSHAL_LEADER_RECOVERY_FIXTURE: '1',
+  const child = spawn(process.execPath, [baseline ? path.join(baseline, 'packages/task-service/main.ts') : here('./main.ts'), '--root', path.join(root, 'data'), '--mode', 'create', '--port', '0',
+    '--config', here('./managed-diagnostic.fixture.ts')], {cwd: root, env: {PATH: path.dirname(process.execPath), MARSHAL_LEADER_RECOVERY_FIXTURE: '1',
       MARSHAL_DIAGNOSTIC_PARSE_OUTPUT: payload,
-      ...(baseline ? {MARSHAL_DIAGNOSTIC_BASE_CONFIG: path.join(baseline, 'packages/task-service/leader-recovery.fixture.mjs')} : {})}, stdio: ['ignore', 'pipe', 'pipe']});
+      ...(baseline ? {MARSHAL_DIAGNOSTIC_BASE_CONFIG: path.join(baseline, 'packages/task-service/leader-recovery.fixture.ts')} : {})}, stdio: ['ignore', 'pipe', 'pipe']});
   let output = '', errors = '', closed = false;
   const evidence = {diagnostics: []}, consume = diagnosticCollector(evidence.diagnostics);
   child.stdout.on('data', value => {output += value;}); child.stderr.on('data', value => {errors += value; consume(value);});

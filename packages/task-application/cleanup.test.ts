@@ -4,12 +4,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
-import {Store, CUSTODY_FORMAT, encode} from '../task-store/store.mjs';
-import {TaskApplication} from './application.mjs';
-import {TaskCleanup} from './cleanup.mjs';
-import {createExecutionCustody} from '../agent-runtime/custody.mjs';
-import {launchCommand} from '../agent-runtime/index.mjs';
-import {validate} from '../task-api/contract.mjs';
+import {Store, CUSTODY_FORMAT, encode} from '../task-store/store.ts';
+import {TaskApplication} from './application.ts';
+import {TaskCleanup} from './cleanup.ts';
+import {createExecutionCustody} from '../agent-runtime/custody.ts';
+import {launchCommand} from '../agent-runtime/index.ts';
+import {validate} from '../task-api/contract.ts';
 
 const context = {principal: 'local-operator'};
 const profile = {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true};
@@ -26,7 +26,7 @@ async function fixture(t) {
   const handle = await manager.prepare(app.execution.custodyBinding(ticket, profile));
   app.execution.bindCustody(ticket, handle.descriptor, profile); handle.permit();
   const runtime = await launchCommand({executable: process.execPath,
-    args: [fileURLToPath(new URL('../agent-runtime/command.fixture.mjs', import.meta.url)), 'sum'], cwd: parent,
+    args: [fileURLToPath(new URL('../agent-runtime/command.fixture.ts', import.meta.url)), 'sum'], cwd: parent,
     env: {}, deadline: ticket.deadline, input: Buffer.from('{"nonce":"original","values":[5]}\n'), executionContext: {launch: handle.launch}});
   app.execution.started(ticket, runtime.started);
   const result = await runtime.completion; assert.equal(result.cleanup.cleaned, true);

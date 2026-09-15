@@ -5,17 +5,17 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {startTaskService} from '../task-service/composition.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {policy, bindPlan} from './scenario.fixture.mjs';
+import {startTaskService} from '../task-service/composition.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {policy, bindPlan} from './scenario.fixture.ts';
 
 const here = name => fileURLToPath(new URL(name, import.meta.url));
-const checkerPath = here('./checker.fixture.mjs');
+const checkerPath = here('./checker.fixture.ts');
 const data = {rows: [
   {region: 'east', status: 'paid', cents: 1275}, {region: 'west', status: 'paid', cents: 800},
   {region: 'east', status: 'cancelled', cents: 9000}, {region: 'west', status: 'paid', cents: -250},
@@ -31,7 +31,7 @@ async function until(observe, predicate, ms = 15000) {
 async function fixture(t, mode = 'good') {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-team-http-'))), root = path.join(parent, 'data');
   const observed = [], services = [];
-  const native = createAcpProvider({id: 'fixture-acp', executable: process.execPath, args: [here('./agent.fixture.mjs')], env: {TEAM_FIXTURE_MODE: mode}});
+  const native = createAcpProvider({id: 'fixture-acp', executable: process.execPath, args: [here('./agent.fixture.ts')], env: {TEAM_FIXTURE_MODE: mode}});
   const provider = {id: native.id, start(input) {const handle = native.start(input); observed.push(handle); return handle;}};
   let verifierStarts = 0;
   const command = createVerificationCommand({executable: process.execPath, checkerPath, checkerDigest: digest(fs.readFileSync(checkerPath)),

@@ -1,25 +1,25 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 // Explicit ordinary-user real-model acceptance tool, never a CI model job or
 // production entry point. Two invocations, no invented error or automatic retry.
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {startTaskService} from '../task-service/composition.mjs';
-import {createPiProvider} from '../agent-provider-pi/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {parseOptions as piOptions, filePermission} from '../task-pi-live/driver.fixture.mjs';
-import {executionFact, assertTeam} from '../task-qwen-live/driver.fixture.mjs';
+import {startTaskService} from '../task-service/composition.ts';
+import {createPiProvider} from '../agent-provider-pi/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {parseOptions as piOptions, filePermission} from '../task-pi-live/driver.fixture.ts';
+import {executionFact, assertTeam} from '../task-qwen-live/driver.fixture.ts';
 import {data, regions, policy, repairPort, repairPolicyDigest, proposal, taskBody, bindPlan, originalInput,
-  expectedReports, reportShape, consumeDelivery, equal, contentAssertions} from './scenario.fixture.mjs';
+  expectedReports, reportShape, consumeDelivery, equal, contentAssertions} from './scenario.fixture.ts';
 
 const here = name => fileURLToPath(new URL(name, import.meta.url));
-const checkerPath = here('./checker.fixture.mjs');
+const checkerPath = here('./checker.fixture.ts');
 const text = value => typeof value === 'string' && value.isWellFormed() && !value.includes('\0');
 const sha = value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
 const check = (value, code) => {if (!value) throw new LiveError(code);};
@@ -121,7 +121,7 @@ function nativeIdentity(options) {
   check(metadata.name === '@earendil-works/pi-coding-agent' && text(metadata.version), 'pi_entry_identity');
   return {nodeVersion: process.versions.node, piVersion: metadata.version,
     piEntryDigest: digest(read(options.piEntry, 33554432)), sdkEntryDigest: digest(read(options.sdkEntry, 33554432)),
-    checkerDigest: digest(read(checkerPath)), toolDigest: digest(encode(['driver.fixture.mjs', 'scenario.fixture.mjs', 'checker.fixture.mjs'].map(name => digest(read(here('./' + name))))))};
+    checkerDigest: digest(read(checkerPath)), toolDigest: digest(encode(['driver.fixture.ts', 'scenario.fixture.ts', 'checker.fixture.ts'].map(name => digest(read(here('./' + name))))))};
 }
 /** Only explicit invocation starts models. A first-pass result is not repair evidence. */
 export async function runLive(options) {

@@ -6,9 +6,9 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {TaskClient} from '../task-client/index.mjs';
-import {data, expected, durable} from './backup-restore.fixture.mjs';
-import {encode} from '../task-store/store.mjs';
+import {TaskClient} from '../task-client/index.ts';
+import {data, expected, durable} from './backup-restore.fixture.ts';
+import {encode} from '../task-store/store.ts';
 
 const here = name => fileURLToPath(new URL(name, import.meta.url));
 async function until(fn, label, ms = 30000) {
@@ -18,7 +18,7 @@ async function until(fn, label, ms = 30000) {
 }
 test('real ACP update/text-byte/output/frame floods fail boundedly without leaking raw content or blocking subsequent HTTP team delivery', {timeout: 90000}, async t => {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-event-flood-'))), root = path.join(parent, 'data');
-  const child = spawn(process.execPath, [here('./main.mjs'), '--root', root, '--mode', 'create', '--config', here('./event-flood.fixture.mjs')],
+  const child = spawn(process.execPath, [here('./main.ts'), '--root', root, '--mode', 'create', '--config', here('./event-flood.fixture.ts')],
     {cwd: parent, env: {MARSHAL_EVENT_FLOOD_FIXTURE: '1', MARSHAL_SOAK_FIXTURE: '1'}, stdio: ['ignore', 'pipe', 'pipe']});
   let stdout = '', stderr = '', closed = false, overflow = false, complete = false, token;
   const done = new Promise(resolve => {child.once('error', () => {closed = true; resolve({code: null, signal: 'spawn-error'});});

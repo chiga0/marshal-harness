@@ -1,4 +1,4 @@
-import {encode, digest} from '../task-store/store.mjs';
+import {encode, digest} from '../task-store/store.ts';
 export const MAX_FILE = 8192;
 export const MAX_INPUT = 32768;
 export const RULE = '小型 UTF-8 文件交付：独立 Agent 审查是否满足原需求；固定程序只核验实际文件、编码、摘要及完整交付，不证明任意业务事实。不执行候选代码，不授权外部写入、SQL发布或补数。';

@@ -1,20 +1,20 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 // Explicit, test-only Pi HTTP team driver; never included in default release.
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {startTaskService} from '../task-service/composition.mjs';
-import {createPiProvider} from '../agent-provider-pi/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {policy, bindPlan} from '../task-team-integration/scenario.fixture.mjs';
-import {data, taskBody, validatePlan, consumeDelivery, executionFact, assertTeam} from '../task-qwen-live/driver.fixture.mjs';
+import {startTaskService} from '../task-service/composition.ts';
+import {createPiProvider} from '../agent-provider-pi/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {policy, bindPlan} from '../task-team-integration/scenario.fixture.ts';
+import {data, taskBody, validatePlan, consumeDelivery, executionFact, assertTeam} from '../task-qwen-live/driver.fixture.ts';
 
-const checkerPath = fileURLToPath(new URL('../task-team-integration/checker.fixture.mjs', import.meta.url));
+const checkerPath = fileURLToPath(new URL('../task-team-integration/checker.fixture.ts', import.meta.url));
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = value => typeof value === 'string' && value.isWellFormed() && !value.includes('\0');
 const keys = (value, required, optional = []) => object(value) && required.every(key => Object.hasOwn(value, key)) &&

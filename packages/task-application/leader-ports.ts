@@ -1,6 +1,6 @@
-import {encode, digest} from '../task-store/store.mjs';
-import {clone, isText, reject} from './model.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {clone, isText, reject} from './model.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
 
 export const LEADER_PROFILE = 'task-managed-leader/v1';
 export const REVIEW_PROFILE = 'task-independent-review/v1';

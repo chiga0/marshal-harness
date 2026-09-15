@@ -1,18 +1,18 @@
 import test from 'node:test';
-import {withoutSQLiteRuntimeNotices} from '../task-store/runtime-notices.fixture.mjs';
+import {withoutSQLiteRuntimeNotices} from '../task-store/runtime-notices.fixture.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {encode, digest} from '../task-store/store.mjs';
-import {leaderReplyDigest} from '../task-api/contract.mjs';
-import {isManagedFileBusiness} from '../task-business/index.mjs';
-import {TaskVerification} from '../task-application/verification.mjs';
-import {createLeaderReportConfig, createPiLeaderReportConfig} from './index.mjs';
-import {PROFILE, GUIDANCE, taskBody, finalWindow, originalReport, verificationRequest, expected, initial} from './policy.mjs';
-import {filePermission} from './permission.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {leaderReplyDigest} from '../task-api/contract.ts';
+import {isManagedFileBusiness} from '../task-business/index.ts';
+import {TaskVerification} from '../task-application/verification.ts';
+import {createLeaderReportConfig, createPiLeaderReportConfig} from './index.ts';
+import {PROFILE, GUIDANCE, taskBody, finalWindow, originalReport, verificationRequest, expected, initial} from './policy.ts';
+import {filePermission} from './permission.ts';
 const bytes = encode({rows: [{date: '2026-09-01', region: 'east', status: 'paid', cents: 100}, {date: '2026-09-02', region: 'east', status: 'paid', cents: -20},
   {date: '2026-09-02', region: 'east', status: 'paid', cents: 0}, {date: '2026-09-02', region: 'west', status: 'cancelled', cents: 999},
   {date: '2026-09-02', region: 'west', status: 'paid', cents: 50}]});
@@ -98,7 +98,7 @@ test('configuration keeps original managed FileBusiness, exact target identity a
 });
 test('packaged independent checker recomputes original arbitrary rows; valid JSON with wrong total is not accepted', t => {
   const root = fixture(t), window = {startDate: '2026-09-02', endDate: '2026-09-02'}, reports = expected(bytes, window);
-  const checker = fileURLToPath(new URL('../task-regional-window/checker.mjs', import.meta.url));
+  const checker = fileURLToPath(new URL('../task-regional-window/checker.ts', import.meta.url));
   const run = () => spawnSync(process.execPath, [checker], {cwd: root, env: {}, timeout: 5000, encoding: 'utf8', input: JSON.stringify({profile: 'test-frame', nonce: 'test-nonce', binding: {},
     input: {...window, sourceDigest: digest(bytes), sourceBase64: bytes.toString('base64')}}) + '\n'});
   for (const report of reports) fs.writeFileSync(path.join(root, report.region + '.json'), JSON.stringify(report), {mode: 0o600});

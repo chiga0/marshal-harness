@@ -31,6 +31,15 @@ def prepare(tag, parent, channel='stable'):
              ('SHA256SUMS', 'SHA256SUMS.minisig', pins['ZIP'], 'manifest.json')]
     files.append(('distribution.mjs', 'https://raw.githubusercontent.com/chiga0/marshal-harness/'
                   + pins['SOURCE'] + '/packages/task-distribution/index.mjs'))
+    # ADR0102：SOURCE 为迁移后提交时源文件为 index.ts；按时代双探，
+    # 资产名沿用实际扩展，避免把含类型语法的文件以 .mjs 名义执行。
+    probe = ('https://raw.githubusercontent.com/chiga0/marshal-harness/'
+             + pins['SOURCE'] + '/packages/task-distribution/index.ts')
+    if subprocess.run(['curl', '-q', '-fsSIL', '--proto', '=https', '--proto-redir', '=https',
+                       '--connect-timeout', '15', '--max-time', '60', probe],
+                      check=False, capture_output=True).returncode == 0:
+        files = [entry for entry in files if entry[0] != 'distribution.mjs']
+        files.append(('distribution.ts', probe))
     for name, url in files:
         print('下载 ' + name, flush=True)
         subprocess.run(['curl', '-q', '-fsSL', '--proto', '=https', '--proto-redir', '=https',

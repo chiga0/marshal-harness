@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
-import {parseOptions, observe, activeAuthors, checkDelivery, run} from './installed-consumer.fixture.mjs';
-import {SOURCE_FILES} from '../task-distribution/index.mjs';
+import {parseOptions, observe, activeAuthors, checkDelivery, run} from './installed-consumer.fixture.ts';
+import {SOURCE_FILES} from '../task-distribution/index.ts';
 const pins = {package: process.env.MARSHAL_QWEN_TEST_PACKAGE, 'source-head': process.env.MARSHAL_QWEN_TEST_SOURCE,
   'manifest-digest': process.env.MARSHAL_QWEN_TEST_MANIFEST};
 const args = ['--package', '/package', '--source-head', 'a'.repeat(40), '--manifest-digest', 'sha256:' + 'b'.repeat(64),
@@ -38,9 +38,9 @@ test('independent original-row oracle rejects wrong totals, extra fields, window
     assert.throws(() => checkDelivery(Buffer.from(JSON.stringify(changed)), bytes, dates));
 });
 test('external consumer and tests are absent from runtime; only installed business/client imports', () => {
-  const source = fs.readFileSync(new URL('./installed-consumer.fixture.mjs', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('./installed-consumer.fixture.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /\bpack\s*\(|startTaskService|from ['"]\.\.\/task-(?:application|service|client|store)|from ['"]\.\/driver/);
-  assert.match(source, /packages\/task-regional-window\/service-config\.mjs/);
+  assert.match(source, /packages\/task-regional-window\/service-config\.ts/);
   assert.ok(!SOURCE_FILES.some(file => /installed-consumer/.test(file)));
 });
 
@@ -77,7 +77,7 @@ for (const scenario of ['delivery', 'cancel', 'wrong']) test('original installed
     fs.chmodSync(parent, 0o700);
     const qwen = path.join(parent, 'qwen'); fs.mkdirSync(qwen, {mode: 0o700});
     fs.writeFileSync(path.join(qwen, 'package.json'), JSON.stringify({name: '@qwen-code/qwen-code', version: '0.0.0-controlled-test', type: 'module'}), {mode: 0o600});
-    const policy = pathToFileURL(path.join(pins.package, 'packages/task-regional-window/policy.mjs')).href;
+    const policy = pathToFileURL(path.join(pins.package, 'packages/task-regional-window/policy.ts')).href;
     fs.writeFileSync(path.join(qwen, 'cli-entry.js'), 'import {finalValues} from ' + JSON.stringify(policy) + ';\n' + peer, {mode: 0o600});
     fs.writeFileSync(path.join(qwen, 'mode'), scenario, {mode: 0o600});
     t.diagnostic('受控 ACP 现场（保留，不是实机模型）：' + parent);

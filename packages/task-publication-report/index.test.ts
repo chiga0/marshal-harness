@@ -6,10 +6,10 @@ import path from 'node:path';
 import http from 'node:http';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
-import {launchCommand} from '../agent-runtime/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {createLocalReportPublication, PROFILE, INPUT_NAME, nameFor} from './index.mjs';
-import {HeldRoot, readHeld, json} from './io.mjs';
+import {launchCommand} from '../agent-runtime/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {createLocalReportPublication, PROFILE, INPUT_NAME, nameFor} from './index.ts';
+import {HeldRoot, readHeld, json} from './io.ts';
 
 const sha = value => digest(encode(value));
 const stamp = 'sha256:' + 'a'.repeat(64);
@@ -101,7 +101,7 @@ for (const point of ['before-unlink', 'after-unlink', 'unlink-error', 'directory
   const input = readHeld(path.join(f.cwd, INPUT_NAME), {deadline, oneLink: true});
   const request = {operation: 'publish', nonce: randomUUID(), binding: f.binding, root: f.root, rootIdentity: directory.descriptor(),
     inputIdentity: input.descriptor, deadline}; input.close(); directory.close();
-  const runtime = await launchCommand({executable: process.execPath, args: [fileURLToPath(new URL('./fault-runner.fixture.mjs', import.meta.url)), point],
+  const runtime = await launchCommand({executable: process.execPath, args: [fileURLToPath(new URL('./fault-runner.fixture.ts', import.meta.url)), point],
     cwd: f.cwd, env: {}, deadline, input: Buffer.concat([encode(request), Buffer.from('\n')])});
   t.after(() => runtime.stop());
   if (point === 'stop-before-unlink') {

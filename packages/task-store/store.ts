@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { DatabaseSync } from 'node:sqlite';
-import {requireNodeRuntime, inspectSQLiteRuntime} from './runtime.mjs';
+import {requireNodeRuntime, inspectSQLiteRuntime} from './runtime.ts';
 
 let runtimeCapabilities;
 export function sqliteRuntimeCapabilities() {

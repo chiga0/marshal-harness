@@ -1,6 +1,6 @@
 // Deterministic Agent process used only by runtime tests; no model or network.
 import { spawn } from 'node:child_process';
-import { MAX_STDOUT_BYTES } from './limits.mjs';
+import { MAX_STDOUT_BYTES } from './limits.ts';
 if (process.env.NODE_TEAM_RUNTIME_FIXTURE === '1') {
   let input = '';
   for await (const chunk of process.stdin) input += chunk;
@@ -14,6 +14,6 @@ if (process.env.NODE_TEAM_RUNTIME_FIXTURE === '1') {
     setInterval(() => {}, 1000);
   } else {
     await new Promise(resolve => setTimeout(resolve, 150));
-    process.stdout.write(JSON.stringify({ name: task.name, content: task.name === 'normalize.mjs' ? 'export const normalize = () => [];' : 'export const summarize = () => ({});' }));
+    process.stdout.write(JSON.stringify({ name: task.name, content: task.name === 'normalize.ts' ? 'export const normalize = () => [];' : 'export const summarize = () => ({});' }));
   }
 }

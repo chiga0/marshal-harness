@@ -1,7 +1,7 @@
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {leaderReplyDigest} from '../task-api/contract.mjs';
-import {check, fields, equal, range, expected, sourceBytes, sourceRef, regions} from '../task-regional-window/policy.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {leaderReplyDigest} from '../task-api/contract.ts';
+import {check, fields, equal, range, expected, sourceBytes, sourceRef, regions} from '../task-regional-window/policy.ts';
 export {check, fields, equal, range, expected, sourceBytes, sourceRef, regions};
 export const PROFILE = 'leader-regional-window/v1';
 export const RULE = '以原 sales.json 为唯一流水来源。日期为 2000–2099 年 YYYY-MM-DD UTC 日历日，起止均包含且最多366日；只计 paid，排除 cancelled；整数 cents，保留负数退款与零额笔数。分别由 east、west 两个并行 author 节点写 east.json、west.json，每份恰有 region,startDate,endDate,count,netCents 五字段；唯一 verify 节点依赖两个作者，使用受信独立 checker，不让作者自签验收。最终由独立 Review、checker 和用户对精确报告/目标的一次显式 allow 决定本地报告交付；禁止作者自行发布、执行代码或访问其它文件。';

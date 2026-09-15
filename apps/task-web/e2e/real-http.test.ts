@@ -1,5 +1,5 @@
 // @vitest-environment node
-// UI-1 最小真实往返（E01 服务侧）+ 正常重启重连（E22 服务侧）：真实 main.mjs
+// UI-1 最小真实往返（E01 服务侧）+ 正常重启重连（E22 服务侧）：真实 main.ts
 // --ui 子进程 + 仓库既有零模型受管 fixture（leader-recovery：fake ACP，无真实
 // 模型/凭据），经浏览器级 fetch 与 TaskClient 验证任务创建、t/leader 查询、
 // 重查一致性与冷重开事实可重查。不通过开发者预览 Vite proxy 达成验收。
@@ -8,8 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as pause} from 'node:timers/promises';
-import {TaskClient} from '../../../packages/task-client/index.mjs';
-import {DIST, FIXTURE_LEADER, ensureDist, spawnService, tempParent} from './helpers.mjs';
+import {TaskClient} from '../../../packages/task-client/index.ts';
+import {DIST, FIXTURE_LEADER, ensureDist, spawnService, tempParent} from './helpers.ts';
 import {createTransport, installToken, clearToken} from '../src/lib/transport/client';
 import {parseOperation} from '../src/lib/transport/types';
 

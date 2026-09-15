@@ -2,11 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {PROFILE, taskBody, finalValues, range, rowsFrom, equal, check, fields} from './policy.mjs';
-import {consumeDelivery} from './consumer.mjs';
+import {TaskClient} from '../task-client/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {PROFILE, taskBody, finalValues, range, rowsFrom, equal, check, fields} from './policy.ts';
+import {consumeDelivery} from './consumer.ts';
 
 const id = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value);
 const boundary = plan => {const {revision, digest, ...value} = plan; return value;};

@@ -1,9 +1,9 @@
-import {LEADER_FORMAT, encode, digest} from '../task-store/store.mjs';
-import {clone, nextRevision, publicTask, terminal, reject, isText} from './model.mjs';
-import {affectedNodes} from './graph.mjs';
-import {LEADER_PROFILE, REVIEW_PROFILE, configuration, receipt, hash, sha, id, closed, check, createEffectPort} from './leader-ports.mjs';
-import {nameFor} from '../task-publication-report/index.mjs';
-import {hasPublicationExpected} from './verification.mjs';
+import {LEADER_FORMAT, encode, digest} from '../task-store/store.ts';
+import {clone, nextRevision, publicTask, terminal, reject, isText} from './model.ts';
+import {affectedNodes} from './graph.ts';
+import {LEADER_PROFILE, REVIEW_PROFILE, configuration, receipt, hash, sha, id, closed, check, createEffectPort} from './leader-ports.ts';
+import {nameFor} from '../task-publication-report/index.ts';
+import {hasPublicationExpected} from './verification.ts';
 
 const decode = row => row ? JSON.parse(row.bytes.toString()) : null;
 const live = record => ['queued', 'running', 'awaiting-answer', 'stopping', 'unknown'].includes(record.worker.status);

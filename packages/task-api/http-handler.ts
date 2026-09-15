@@ -1,7 +1,7 @@
 import {randomUUID, createHash} from 'node:crypto';
 import {operations, validate, validAnswerResponse, validQuestionItems, validRepairResponse, validAuditResponse,
-  validLeaderView, validLeaderReplyResponse, MAX_LEADER_VIEW_BYTES, TaskApiError, errorPayload} from './contract.mjs';
-import {protect, mutationHeaders, readJson, sendJson, closeIncompleteRequest} from './http-boundary.mjs';
+  validLeaderView, validLeaderReplyResponse, MAX_LEADER_VIEW_BYTES, TaskApiError, errorPayload} from './contract.ts';
+import {protect, mutationHeaders, readJson, sendJson, closeIncompleteRequest} from './http-boundary.ts';
 
 const MAX_RESPONSE = 8 * 1024 * 1024;
 function route(method, url) {

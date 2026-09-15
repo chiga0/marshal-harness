@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {digest, encode} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
+import {digest, encode} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
 
 export const PROFILE = 'task-local-json-report/v1';
 export const MAX_REPORT = 1024 * 1024;

@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
-import {contract, validate, validAnswerResponse, TaskApiError} from './contract.mjs';
-import {createTaskApiHandler} from './http-handler.mjs';
-import {TaskClient} from '../task-client/index.mjs';
+import {contract, validate, validAnswerResponse, TaskApiError} from './contract.ts';
+import {createTaskApiHandler} from './http-handler.ts';
+import {TaskClient} from '../task-client/index.ts';
 
 // Contract-only DI fixtures, not question registration/dispatch/ACK authority.
 const token = 'runtime-question-contract-fixture-token-00001';

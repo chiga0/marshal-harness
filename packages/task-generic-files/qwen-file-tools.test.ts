@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {QWEN_FILE_ARGS, QWEN_FILE_TOOLS, QWEN_EXCLUDED_TOOLS} from './qwen-file-tools.mjs';
-import {SOURCE_FILES} from '../task-distribution/index.mjs';
+import {QWEN_FILE_ARGS, QWEN_FILE_TOOLS, QWEN_EXCLUDED_TOOLS} from './qwen-file-tools.ts';
+import {SOURCE_FILES} from '../task-distribution/index.ts';
 
 test('files-only Qwen denies synthetic tools outside its core allowlist', () => {
   // The observed incident called record_artifact and then get_goal despite
@@ -24,11 +24,11 @@ test('files-only Qwen denies synthetic tools outside its core allowlist', () => 
 });
 
 test('both explicit Qwen profiles consume the packaged common native tool policy', () => {
-  for (const file of ['qwen-service-config.mjs', 'qwen-short-service-config.mjs']) {
+  for (const file of ['qwen-service-config.ts', 'qwen-short-service-config.ts']) {
     const source = fs.readFileSync(new URL(file, import.meta.url), 'utf8');
-    assert.match(source, /import \{QWEN_FILE_ARGS\} from '\.\/qwen-file-tools\.mjs'/);
+    assert.match(source, /import \{QWEN_FILE_ARGS\} from '\.\/qwen-file-tools\.ts'/);
     assert.match(source, /args: QWEN_FILE_ARGS/);
     assert.doesNotMatch(source, /--exclude-tools|--core-tools/);
   }
-  assert.ok(SOURCE_FILES.includes('packages/task-generic-files/qwen-file-tools.mjs'));
+  assert.ok(SOURCE_FILES.includes('packages/task-generic-files/qwen-file-tools.ts'));
 });

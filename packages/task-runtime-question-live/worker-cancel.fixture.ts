@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {setTimeout as pause} from 'node:timers/promises';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {executionFact, cancelledExecutionFact, assertTeam, DriverError} from '../task-qwen-live/driver.fixture.mjs';
-import {equal} from './scenario.fixture.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {executionFact, cancelledExecutionFact, assertTeam, DriverError} from '../task-qwen-live/driver.fixture.ts';
+import {equal} from './scenario.fixture.ts';
 
 const check = (value, code) => {if (!value) throw new DriverError(code);};
 const sha = value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);

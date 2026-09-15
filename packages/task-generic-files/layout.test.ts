@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {bindGenericFilesPlan} from './layout.mjs';
-import {TaskVerification, createVerificationPort} from '../task-application/verification.mjs';
+import {bindGenericFilesPlan} from './layout.ts';
+import {TaskVerification, createVerificationPort} from '../task-application/verification.ts';
 
 const plan = (authors, edges = authors.map(from => ({from, to: 'verify'}))) => ({
   nodes: [...authors.map(id => ({id, role: 'author', providerId: null})), {id: 'verify', role: 'verifier', providerId: null}],

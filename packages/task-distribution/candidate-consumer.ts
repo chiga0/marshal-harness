@@ -1,8 +1,8 @@
 // Explicit CI/local candidate entry, deliberately NOT part of the default
-// *.test.mjs glob. Missing candidate inputs fail; there is no pack fallback.
+// *.test.ts glob. Missing candidate inputs fail; there is no pack fallback.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {exerciseInstalledTeam} from './installed-team.fixture.mjs';
+import {exerciseInstalledTeam} from './installed-team.fixture.ts';
 
 const installed = process.env.MARSHAL_CANDIDATE_ROOT;
 const manifestDigest = process.env.MARSHAL_CANDIDATE_MANIFEST;

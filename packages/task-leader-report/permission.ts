@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {fields, regions} from './policy.mjs';
+import {fields, regions} from './policy.ts';
 const text = value => typeof value === 'string' && value.isWellFormed() && !value.includes('\0');
 const deny = () => ({outcome: {outcome: 'cancelled'}});
 /** Pi native arguments only. These are command permissions, not an OS sandbox. */

@@ -4,12 +4,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Store, encode, digest} from '../task-store/store.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createPiProvider} from '../agent-provider-pi/index.mjs';
-import {createFileBusiness, createStagingOnlyBusinessFactory} from '../task-business/index.mjs';
-import {createVerificationPort, createRuntimeQuestionPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
+import {Store, encode, digest} from '../task-store/store.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createPiProvider} from '../agent-provider-pi/index.ts';
+import {createFileBusiness, createStagingOnlyBusinessFactory} from '../task-business/index.ts';
+import {createVerificationPort, createRuntimeQuestionPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
 
 const root = process.argv[process.argv.indexOf('--root') + 1], scenario = process.env.MARSHAL_QUESTION_SCENARIO;
 if (process.env.MARSHAL_QUESTION_FIXTURE !== '1' || !path.isAbsolute(root ?? '') ||
@@ -52,10 +52,10 @@ function observed(handle, ticket) {
   return {...handle, started, completion};
 }
 const planner = createAcpProvider({id: 'question-planner-fixture', executable: process.execPath,
-  args: [here('./runtime-question-recovery.worker.fixture.mjs'), 'planner'],
+  args: [here('./runtime-question-recovery.worker.fixture.ts'), 'planner'],
   custodyProfile: {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true}});
 const pi = mode => createPiProvider({id: 'pi-question-fixture', executable: process.execPath,
-  args: [here('../agent-provider-pi/bridge-agent.fixture.mjs'), mode], bridge: {sdkEntry: here('../agent-provider-pi/fixtures/sdk/index.mjs')},
+  args: [here('../agent-provider-pi/bridge-agent.fixture.ts'), mode], bridge: {sdkEntry: here('../agent-provider-pi/fixtures/sdk/index.ts')},
   custodyProfile: {id: 'fixture-inherited-v1', scope: 'inherited-process-group', eligible: true}});
 const native = pi('business-select'), missing = pi('business-ack-missing'), west = pi('write');
 const provider = {id: native.id, custodyProfile: native.custodyProfile, runtimeQuestions: native.runtimeQuestions, start(input) {
@@ -79,7 +79,7 @@ const plannerProvider = {id: planner.id, custodyProfile: planner.custodyProfile,
   const ticket = tickets.get(input.cwd); assert.ok(ticket);
   return observed(planner.start(v5 ? {...input, prompt: input.prompt + '\nFIXTURE_PLAN=' + JSON.stringify(proposal)} : input), ticket);
 }};
-const checkerPath = here('./runtime-question-recovery.worker.fixture.mjs');
+const checkerPath = here('./runtime-question-recovery.worker.fixture.ts');
 const command = createVerificationCommand({executable: process.execPath, checkerPath, checkerDigest: digest(fs.readFileSync(checkerPath)),
   policyDigest: digest(encode(policy)), assertions: [{name: 'answer-bound-files', validate(actual, {ticket}) {
     const refs = ticket.input.interactionRefs;

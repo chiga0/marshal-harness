@@ -4,12 +4,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Store, encode, digest} from '../task-store/store.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {policy, bindPlan} from '../task-team-integration/scenario.fixture.mjs';
+import {Store, encode, digest} from '../task-store/store.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {policy, bindPlan} from '../task-team-integration/scenario.fixture.ts';
 
 const root = process.argv[process.argv.indexOf('--root') + 1];
 const point = process.env.MARSHAL_SERVICE_COMMIT_POINT;
@@ -90,7 +90,7 @@ function observed(handle, ticket, kind) {
   return {...handle, started, completion};
 }
 const native = createAcpProvider({id: 'fixture-acp', executable: process.execPath,
-  args: [here('../task-team-integration/agent.fixture.mjs')], env: {TEAM_FIXTURE_MODE: 'good'}});
+  args: [here('../task-team-integration/agent.fixture.ts')], env: {TEAM_FIXTURE_MODE: 'good'}});
 const provider = {id: native.id, start(input) {
   const ticket = prepared.get(input.cwd); assert.ok(ticket);
   return observed(native.start(input), ticket, 'agent');
@@ -98,7 +98,7 @@ const provider = {id: native.id, start(input) {
 // Same checked-in independent checker and deliberately separate expected totals
 // as the complete team test; never import the Agent's calculation as an oracle.
 const expected = [{region: 'east', count: 2, netCents: 1275}, {region: 'west', count: 2, netCents: 550}];
-const checkerPath = here('../task-team-integration/checker.fixture.mjs');
+const checkerPath = here('../task-team-integration/checker.fixture.ts');
 const command = createVerificationCommand({executable: process.execPath, checkerPath, checkerDigest: digest(fs.readFileSync(checkerPath)),
   policyDigest: digest(encode(policy)), assertions: [{name: 'regions', validate: actual => {
     try { assert.deepEqual(actual, expected); return true; } catch { return false; }

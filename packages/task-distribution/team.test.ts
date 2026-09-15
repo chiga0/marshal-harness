@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execFileSync} from 'node:child_process';
-import {pack, SOURCE_FILES} from './index.mjs';
-import {exerciseInstalledTeam} from './installed-team.fixture.mjs';
+import {pack, SOURCE_FILES} from './index.ts';
+import {exerciseInstalledTeam} from './installed-team.fixture.ts';
 
 const repository = fileURLToPath(new URL('../..', import.meta.url));
 const git = (root, ...args) => execFileSync('git', ['-C', root, ...args], {encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe']}).trim();

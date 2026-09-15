@@ -1,6 +1,6 @@
-import {WORKER_CANCELLATION_FORMAT, LEADER_FORMAT, encode, digest} from '../task-store/store.mjs';
-import {affectedNodes} from './graph.mjs';
-import {clone, nextRevision, reject, terminal} from './model.mjs';
+import {WORKER_CANCELLATION_FORMAT, LEADER_FORMAT, encode, digest} from '../task-store/store.ts';
+import {affectedNodes} from './graph.ts';
+import {clone, nextRevision, reject, terminal} from './model.ts';
 
 const PROFILE = 'task-worker-cancellation/v1', hash = value => digest(encode(value));
 const same = (a, b) => hash(a) === hash(b), decode = row => row ? JSON.parse(row.bytes) : null;

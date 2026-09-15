@@ -6,18 +6,18 @@ import os from 'node:os';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
-import {startTaskService} from '../task-service/composition.mjs';
-import {createAcpProvider} from '../agent-provider-acp/index.mjs';
-import {createVerificationPort} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {allocateWorktree, runGit} from './git.mjs';
-import {createGitBusiness, gitDescription, PATCH, CONTEXT} from './index.mjs';
-import {policy, bindPlan} from './scenario.fixture.mjs';
+import {startTaskService} from '../task-service/composition.ts';
+import {createAcpProvider} from '../agent-provider-acp/index.ts';
+import {createVerificationPort} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {TaskClient} from '../task-client/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {allocateWorktree, runGit} from './git.ts';
+import {createGitBusiness, gitDescription, PATCH, CONTEXT} from './index.ts';
+import {policy, bindPlan} from './scenario.fixture.ts';
 
 const GIT = '/usr/bin/git', here = name => fileURLToPath(new URL(name, import.meta.url));
-const checker = here('./checker.fixture.mjs');
+const checker = here('./checker.fixture.ts');
 const expected = {lines: [{sku: 'desk', amount: 900}, {sku: 'lamp', amount: 450}], total: 1350};
 const equal = (actual, value) => assert.equal(digest(encode(actual)), digest(encode(value)));
 const git = async (cwd, args, extra) => (await runGit(GIT, cwd, args, extra)).toString();
@@ -31,8 +31,8 @@ async function repositories(t) {
   // Test-owned repositories only. Never remove or modify a user's checkout.
   t.after(async () => {for (const close of beforeRemove) await close(); fs.rmSync(parent, {recursive: true, force: true});});
   const roots = {}, nodes = [];
-  for (const [nodeId, filename, content] of [['library', 'net.mjs', 'export function net(cents, discount) { return cents; }\n'],
-    ['client', 'invoice.mjs', 'export function invoice(rows, net) { return {lines: [], total: 0}; }\n']]) {
+  for (const [nodeId, filename, content] of [['library', 'net.ts', 'export function net(cents, discount) { return cents; }\n'],
+    ['client', 'invoice.ts', 'export function invoice(rows, net) { return {lines: [], total: 0}; }\n']]) {
     const root = path.join(parent, nodeId); fs.mkdirSync(root, {mode: 0o700}); roots[nodeId] = root;
     await git(root, ['init', '-b', 'main']);
     fs.writeFileSync(path.join(root, filename), content, {mode: 0o644});
@@ -50,7 +50,7 @@ async function fixture(t, mode = 'good') {
   const handles = [], services = [], executions = []; let verifierStarts = 0, verificationActual = null, verificationOutcome = null;
   const targetCancellation = mode === 'worker-cancel', releaseParent = path.join(repos.parent, 'release');
   if (targetCancellation) fs.mkdirSync(releaseParent, {mode: 0o700});
-  const native = createAcpProvider({id: 'git-fixture-acp', executable: process.execPath, args: [here('./agent.fixture.mjs')],
+  const native = createAcpProvider({id: 'git-fixture-acp', executable: process.execPath, args: [here('./agent.fixture.ts')],
     env: {GIT_BUSINESS_FIXTURE_MODE: mode, ...(targetCancellation ? {GIT_RELEASE_PARENT: releaseParent} : {})},
     custodyProfile: {id: 'git-inherited-fixture', scope: 'inherited-process-group', eligible: true}});
   const stops = [];
@@ -149,8 +149,8 @@ test('actual HTTP two-repository Git worktrees produce patches, independent appl
     await git(cwd, ['apply', '--check', '--', patchFile]); await git(cwd, ['apply', '--index', '--', patchFile]);
     assert.equal(fs.readFileSync(path.join(cwd, 'untouched.txt'), 'utf8'), item.repositoryId + ' original unrelated content\n'); consumers[item.repositoryId] = cwd;
   }
-  const {net} = await import(pathToFileURL(path.join(consumers.library, 'net.mjs')));
-  const {invoice} = await import(pathToFileURL(path.join(consumers.client, 'invoice.mjs')));
+  const {net} = await import(pathToFileURL(path.join(consumers.library, 'net.ts')));
+  const {invoice} = await import(pathToFileURL(path.join(consumers.client, 'invoice.ts')));
   equal(invoice([{sku: 'desk', cents: 1000, discount: 100}, {sku: 'lamp', cents: 500, discount: 50}], net), expected);
   await unchangedSources(f);
   await f.service.shutdown(); const opened = await f.start('open');
@@ -204,7 +204,7 @@ test('Git original owned Worker.cancel preserves unrelated worktree/patch withou
   finally {db.close();}
   assert.equal(original.ticket.startProtocol, undefined); assert.equal(original.cleanup.cleaned, true); assert.ok(original.resultRef);
   const retainedCwd = f.executions.find(cwd => path.basename(cwd) === b.id);
-  assert.match(await git(retainedCwd, ['diff', '--', 'invoice.mjs']), /return \{lines, total\}/);
+  assert.match(await git(retainedCwd, ['diff', '--', 'invoice.ts']), /return \{lines, total\}/);
   const reopened = await f.start('open'); equal(await reopened.client.cancelWorker(a.id, body, 'git-target'), stop);
   equal(await reopened.client.getTask(task.id), final); assert.equal(f.handles.length, 3); assert.equal(f.verifierStarts, 0); await unchangedSources(f);
 });
@@ -234,7 +234,7 @@ test('allocation rejects prior paths, changed HEAD, untracked/link/out-of-scope 
     const worktree = await allocateWorktree({...options, workerId: 'worker-' + mode}); f.beforeRemove.push(() => worktree.close());
     if (mode === 'extra') fs.writeFileSync(path.join(worktree.cwd, 'untouched.txt'), 'bad');
     if (mode === 'untracked') fs.writeFileSync(path.join(worktree.cwd, 'extra.txt'), 'bad');
-    if (mode === 'symlink') {fs.unlinkSync(path.join(worktree.cwd, 'net.mjs')); fs.symlinkSync(path.join(f.roots.library, 'net.mjs'), path.join(worktree.cwd, 'net.mjs'));}
+    if (mode === 'symlink') {fs.unlinkSync(path.join(worktree.cwd, 'net.ts')); fs.symlinkSync(path.join(f.roots.library, 'net.ts'), path.join(worktree.cwd, 'net.ts'));}
     if (mode === 'head') {
       await git(worktree.cwd, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '--no-gpg-sign', '-m', 'unapproved commit']);
     }
@@ -244,7 +244,7 @@ test('allocation rejects prior paths, changed HEAD, untracked/link/out-of-scope 
 });
 
 test('business context is explicit bounded data and cannot smuggle root/argv or traversal', () => {
-  const value = {profile: 'task-git-input/v1', nodes: [{nodeId: 'a', repositoryId: 'r', base: 'a'.repeat(40), writePaths: ['src/a.mjs']}]};
+  const value = {profile: 'task-git-input/v1', nodes: [{nodeId: 'a', repositoryId: 'r', base: 'a'.repeat(40), writePaths: ['src/a.ts']}]};
   equal(gitDescription(JSON.stringify(value)), value);
   for (const modified of [{...value, root: '/private'}, {...value, nodes: [{...value.nodes[0], base: 'main'}]},
     {...value, nodes: [{...value.nodes[0], writePaths: ['../x']}]}, {...value, nodes: [{...value.nodes[0], root: '/private'}]}])

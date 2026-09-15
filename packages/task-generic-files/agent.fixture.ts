@@ -1,8 +1,8 @@
 // Deterministic test-only ACP peer; never shipped as a production Agent.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {encode, digest} from '../task-store/store.mjs';
-import {MAX_FILE} from './policy.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {MAX_FILE} from './policy.ts';
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const reply = (q, result) => send({jsonrpc:'2.0',id:q.id,result});
 const hash = value => digest(encode(value));

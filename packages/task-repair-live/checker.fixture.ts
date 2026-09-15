@@ -1,8 +1,8 @@
 // Independent command reads data, never imports or executes author output.
 import fs from 'node:fs';
 import {createInterface} from 'node:readline';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
 try {
   for await (const line of createInterface({input: process.stdin})) {
     if (Buffer.byteLength(line) > 262144) throw Error('input_limit');

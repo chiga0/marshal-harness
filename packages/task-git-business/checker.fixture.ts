@@ -8,7 +8,7 @@ import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
-import {encode} from '../task-store/store.mjs';
+import {encode} from '../task-store/store.ts';
 const digest = value => 'sha256:' + createHash('sha256').update(value).digest('hex');
 const git = (cwd, args) => execFileSync('/usr/bin/git', ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false',
   '-c', 'core.fsmonitor=false', '-c', 'credential.helper=', '-c', 'protocol.allow=never', ...args],
@@ -37,8 +37,8 @@ for await (const line of createInterface({input: process.stdin})) {
       assert.deepEqual(fs.readFileSync(path.join(cwd, 'untouched.txt')), before);
       kept.push({nodeId: item.nodeId, digest: digest(before)}); patches.push({nodeId: item.nodeId, digest: digest(patch)}); locations[item.nodeId] = cwd;
     }
-    stage = 'combination'; const {net} = await import(pathToFileURL(path.join(locations.library, 'net.mjs')));
-    const {invoice} = await import(pathToFileURL(path.join(locations.client, 'invoice.mjs')));
+    stage = 'combination'; const {net} = await import(pathToFileURL(path.join(locations.library, 'net.ts')));
+    const {invoice} = await import(pathToFileURL(path.join(locations.client, 'invoice.ts')));
     const actual = invoice([{sku: 'desk', cents: 1000, discount: 100}, {sku: 'lamp', cents: 500, discount: 50}], net);
     stage = 'negative'; let negatives = 0;
     for (const args of [[-1, 0], [1, 2], [Number.MAX_SAFE_INTEGER + 1, 0], [1, 0.5]]) {assert.throws(() => net(...args)); negatives++;}

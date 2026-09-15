@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {checkedGraph, affectedNodes} from './graph.mjs';
-import {freezePlan, actions, nextRevision} from './model.mjs';
+import {checkedGraph, affectedNodes} from './graph.ts';
+import {freezePlan, actions, nextRevision} from './model.ts';
 
 const nodes = ['api', 'client', 'integration'].map(id => ({id, role: 'author', goal: 'Implement ' + id, scope: [id], providerId: null}));
 const edges = [{from: 'api', to: 'integration'}, {from: 'client', to: 'integration'}];

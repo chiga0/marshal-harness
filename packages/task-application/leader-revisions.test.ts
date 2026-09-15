@@ -1,15 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {setImmediate as turn} from 'node:timers/promises';
-import {fixture, proposal, hash} from './leader.test.mjs';
-import {encode} from '../task-store/store.mjs';
-import {TaskExecutionCoordinator} from '../task-execution/controller.mjs';
+import {fixture, proposal, hash} from './leader.test.ts';
+import {encode} from '../task-store/store.ts';
+import {TaskExecutionCoordinator} from '../task-execution/controller.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {startTaskService} from '../task-service/composition.mjs';
-import {createLeaderPort, createReviewPort, createVerificationPort, parseManagedOutput} from './application.mjs';
-import {leaderPolicy} from './leader-ports.mjs';
+import {startTaskService} from '../task-service/composition.ts';
+import {createLeaderPort, createReviewPort, createVerificationPort, parseManagedOutput} from './application.ts';
+import {leaderPolicy} from './leader-ports.ts';
 
 // This suite uses real SQLite/Depot and explicitly controlled Provider facts.
 // It is not an OS cleanup/publication test; the HTTP tests cover original guard.

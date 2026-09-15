@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import {encode} from '../task-store/store.mjs';
-import {PROFILE, INPUT_NAME, MAX_REPORT, HeldRoot, readHeld, observe, binding, json, hash, check, time, same, baseURL, closed, isDigest} from './io.mjs';
+import {encode} from '../task-store/store.ts';
+import {PROFILE, INPUT_NAME, MAX_REPORT, HeldRoot, readHeld, observe, binding, json, hash, check, time, same, baseURL, closed, isDigest} from './io.ts';
 
 // Fixed implementation. No caller-selected code/argv, shell, credentials or redirection.
 export async function run(request) {

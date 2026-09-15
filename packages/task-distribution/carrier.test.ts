@@ -6,10 +6,10 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execFileSync, spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {pack, verify, restoreCarrier, SOURCE_FILES} from './index.mjs';
+import {pack, verify, restoreCarrier, SOURCE_FILES} from './index.ts';
 
 const repository = fs.realpathSync(fileURLToPath(new URL('../..', import.meta.url)));
-const cli = fileURLToPath(new URL('./main.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('./main.ts', import.meta.url));
 const sha = value => 'sha256:' + createHash('sha256').update(value).digest('hex');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], {encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe']}).trim();
 function fixture(t) {
@@ -68,7 +68,7 @@ test('missing or mismatched external pins/source identities fail before target c
   for (const change of [{manifestDigest: undefined}, {manifestDigest: 'sha256:' + '0'.repeat(64)},
     {sourceHead: '0'.repeat(40)}, {sourceHead: undefined}]) untouched(f, () => restoreCarrier({...f.options, ...change}));
   const manifestFile = path.join(f.carrier, 'manifest.json'), bytes = fs.readFileSync(manifestFile);
-  const value = JSON.parse(bytes); value.files[0].path = '../escape.mjs';
+  const value = JSON.parse(bytes); value.files[0].path = '../escape.ts';
   const malicious = Buffer.from(JSON.stringify(value, null, 2) + '\n'); fs.writeFileSync(manifestFile, malicious);
   untouched(f, f.restore); // The original external pin cannot be replaced by a carrier claim.
   untouched(f, () => restoreCarrier({...f.options, manifestDigest: sha(malicious)})); // Even an explicit pin cannot broaden the source inventory.
@@ -149,9 +149,9 @@ test('held installation parent replacement is detected before returning a usable
 });
 
 test('explicit candidate consumer rejects absent inputs rather than packing its checkout', () => {
-  const entry = fileURLToPath(new URL('./candidate-consumer.mjs', import.meta.url));
+  const entry = fileURLToPath(new URL('./candidate-consumer.ts', import.meta.url));
   const result = spawnSync(process.execPath, [entry], {env: {}, encoding: 'utf8', timeout: 10000});
   assert.notEqual(result.status, 0); assert.doesNotMatch(result.stdout, /"originalExecutions"/);
-  const consumer = fs.readFileSync(entry, 'utf8') + fs.readFileSync(fileURLToPath(new URL('./installed-team.fixture.mjs', import.meta.url)), 'utf8');
+  const consumer = fs.readFileSync(entry, 'utf8') + fs.readFileSync(fileURLToPath(new URL('./installed-team.fixture.ts', import.meta.url)), 'utf8');
   assert.doesNotMatch(consumer, /\bpack\s*\(|\bexecFileSync\b|\bgit\s*\(/);
 });

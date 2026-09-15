@@ -5,9 +5,9 @@ import path from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
-import {createExecutionCustody} from './custody.mjs';
-import {custodyDigest, verifyObservation} from './custody-contract.mjs';
-import {launchCommand} from './index.mjs';
+import {createExecutionCustody} from './custody.ts';
+import {custodyDigest, verifyObservation} from './custody-contract.ts';
+import {launchCommand} from './index.ts';
 
 async function fixture(t) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), 'marshal-custody-unit-')));
@@ -35,7 +35,7 @@ test('prepared custodian never launches before permit and seals a signed no-star
 test('command uses original custodian with exact stdout, durable signed cleanup and no duplicate launch', {timeout: 15000}, async t => {
   const {root, manager, binding} = await fixture(t), handle = await manager.prepare(binding); handle.permit();
   const runtime = await launchCommand({executable: process.execPath,
-    args: [fileURLToPath(new URL('./command.fixture.mjs', import.meta.url)), 'sum'], cwd: root, env: {}, deadline: binding.deadline,
+    args: [fileURLToPath(new URL('./command.fixture.ts', import.meta.url)), 'sum'], cwd: root, env: {}, deadline: binding.deadline,
     input: Buffer.from('{"nonce":"custody-exact","values":[3,8]}\n'), executionContext: {launch: handle.launch}});
   const result = await runtime.completion;
   assert.equal(result.cleanup.cleaned, true); assert.equal(result.outputComplete, true);
@@ -51,7 +51,7 @@ test('near-limit command bytes drain over both pipes before the independent IPC 
   const {root, manager, binding} = await fixture(t), handle = await manager.prepare(binding); handle.permit();
   const expected = Buffer.from(JSON.stringify({nonce: 'drain', sum: 0, leaked: false, payload: 'y'.repeat(240000)}) + '\n');
   const runtime = await launchCommand({executable: process.execPath,
-    args: [fileURLToPath(new URL('./command.fixture.mjs', import.meta.url)), 'large'], cwd: root, env: {}, deadline: binding.deadline,
+    args: [fileURLToPath(new URL('./command.fixture.ts', import.meta.url)), 'large'], cwd: root, env: {}, deadline: binding.deadline,
     input: Buffer.from('{"nonce":"drain","values":[],"size":240000}\n'), limits: {outputBytes: 262144},
     executionContext: {launch: handle.launch}});
   const result = await runtime.completion;

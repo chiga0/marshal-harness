@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {createExecutionDirectory, collect, TaskFilesError, MAX_BYTES} from './index.mjs';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {createExecutionDirectory, collect, TaskFilesError, MAX_BYTES} from './index.ts';
 
 function setup(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-task-files-')));

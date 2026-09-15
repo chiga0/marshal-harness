@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {createExecutableAcpProvider} from './index.mjs';
-import {launchAcp} from '../agent-runtime/index.mjs';
+import {createExecutableAcpProvider} from './index.ts';
+import {launchAcp} from '../agent-runtime/index.ts';
 
 function setup(t, mode = 'normal') {
   const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'executable-acp-')));
@@ -16,7 +16,7 @@ function setup(t, mode = 'normal') {
   fs.writeFileSync(executable, '#!' + process.execPath + '\n' +
     "if (JSON.stringify(process.argv.slice(2)) !== '[\"--acp\"]') process.exit(91);\n" +
     'process.argv[2] = ' + JSON.stringify(mode) + ';\n' +
-    'await import(' + JSON.stringify(new URL('./agent.fixture.mjs', import.meta.url).href) + ');\n', {mode: 0o700});
+    'await import(' + JSON.stringify(new URL('./agent.fixture.ts', import.meta.url).href) + ');\n', {mode: 0o700});
   return {cwd, executable};
 }
 const input = cwd => ({cwd, deadline: Date.now() + 10000, prompt: 'Perform the approved fixture work'});

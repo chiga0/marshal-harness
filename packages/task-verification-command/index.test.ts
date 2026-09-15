@@ -5,10 +5,10 @@ import {fileURLToPath} from 'node:url';
 import {tmpdir} from 'node:os';
 import {mkdtemp, writeFile, rm, readFile, realpath} from 'node:fs/promises';
 import {readFileSync} from 'node:fs';
-import {createVerificationCommand} from './index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
+import {createVerificationCommand} from './index.ts';
+import {encode, digest} from '../task-store/store.ts';
 
-const checkerPath = fileURLToPath(new URL('./checker.fixture.mjs', import.meta.url));
+const checkerPath = fileURLToPath(new URL('./checker.fixture.ts', import.meta.url));
 const checkerDigest = digest(readFileSync(checkerPath));
 const policyDigest = digest(Buffer.from('fixture-sum-policy/v1'));
 const planDigest = digest(Buffer.from('approved-fixture-plan'));
@@ -164,14 +164,14 @@ test('no ambient environment is inherited; fixed env copied and config shape rej
   const handle = fixture.adapter.start({ticket: ticket(), prepared: fixture.prepared}); t.after(() => handle.stop());
   assert.equal((await handle.completion).status, 'passed');
   assert.throws(() => createVerificationCommand({...fixture.config, assertions: []}), /verification_config_invalid/);
-  assert.throws(() => createVerificationCommand({...fixture.config, checkerPath: 'checker.mjs'}), /verification_config_invalid/);
+  assert.throws(() => createVerificationCommand({...fixture.config, checkerPath: 'checker.ts'}), /verification_config_invalid/);
   assert.throws(() => createVerificationCommand({...fixture.config, env: {TOKEN: '\0'}}), /verification_config_invalid/);
   assert.throws(() => createVerificationCommand({...fixture.config, assertions: [fixture.config.assertions[0], fixture.config.assertions[0]]}), /verification_config_invalid/);
 });
 
 test('checker inside candidate and failed executable never yield a passed result or fake cleanup', {timeout: 10000}, async t => {
   const fixture = await setup(t);
-  const copy = path.join(fixture.cwd, 'checker.mjs');
+  const copy = path.join(fixture.cwd, 'checker.ts');
   await writeFile(copy, readFileSync(checkerPath), {mode: 0o600});
   const local = createVerificationCommand({...fixture.config, checkerPath: copy});
   const rejected = await local.start({ticket: ticket(), prepared: fixture.prepared}).completion;
@@ -193,7 +193,7 @@ test('original guard without cleanup receipt remains unconfirmed, never accepted
 test('checker source drift during held execution invalidates otherwise good assertions', {timeout: 10000}, async t => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'marshal-verifier-source-')));
   t.after(() => rm(root, {recursive: true, force: true}));
-  const copy = path.join(root, 'checker.mjs'), source = readFileSync(checkerPath);
+  const copy = path.join(root, 'checker.ts'), source = readFileSync(checkerPath);
   await writeFile(copy, source, {mode: 0o600});
   const fixture = await setup(t, 'delay', {checkerPath: copy});
   const handle = fixture.adapter.start({ticket: ticket(), prepared: fixture.prepared}); t.after(() => handle.stop());

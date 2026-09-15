@@ -7,12 +7,12 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as pause} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
-import {TaskClient} from '../task-client/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {custodyDigest, verifyObservation} from '../agent-runtime/custody-contract.mjs';
+import {TaskClient} from '../task-client/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {custodyDigest, verifyObservation} from '../agent-runtime/custody-contract.ts';
 
-const cli = fileURLToPath(new URL('./main.mjs', import.meta.url));
-const config = fileURLToPath(new URL('./control-commit-recovery.fixture.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('./main.ts', import.meta.url));
+const config = fileURLToPath(new URL('./control-commit-recovery.fixture.ts', import.meta.url));
 const data = {rows: [
   {region: 'east', status: 'paid', cents: 1275}, {region: 'west', status: 'paid', cents: 800},
   {region: 'east', status: 'cancelled', cents: 9000}, {region: 'west', status: 'paid', cents: -250},

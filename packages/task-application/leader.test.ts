@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {Store, LEADER_FORMAT, encode, digest} from '../task-store/store.mjs';
-import {ArtifactDepot} from '../task-artifacts/depot.mjs';
-import {TaskApplication, createLeaderPort, createReviewPort, createVerificationPort, parseManagedOutput, renderLeaderPrompt, renderReviewPrompt} from './application.mjs';
+import {Store, LEADER_FORMAT, encode, digest} from '../task-store/store.ts';
+import {ArtifactDepot} from '../task-artifacts/depot.ts';
+import {TaskApplication, createLeaderPort, createReviewPort, createVerificationPort, parseManagedOutput, renderLeaderPrompt, renderReviewPrompt} from './application.ts';
 
 const context = {principal: 'local-operator'}, hash = value => digest(encode(value));
 const fileDigest = files => digest(Buffer.from(JSON.stringify(files)));

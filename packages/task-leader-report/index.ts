@@ -1,25 +1,25 @@
-import {supportsNode} from '../task-store/runtime.mjs';
+import {supportsNode} from '../task-store/runtime.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createPiProvider} from '../agent-provider-pi/index.mjs';
-import {createFileBusiness} from '../task-business/index.mjs';
-import {createLeaderPort, createReviewPort, createVerificationPort, renderLeaderPrompt, renderReviewPrompt, parseManagedOutput} from '../task-application/application.mjs';
-import {createVerificationCommand} from '../task-verification-command/index.mjs';
-import {createLocalReportPublication} from '../task-publication-report/index.mjs';
-import {encode, digest} from '../task-store/store.mjs';
-import {parseJson} from '../task-api/http-boundary.mjs';
-import {check, equal, regions, RULE, GUIDANCE, initial, finalWindow, originalReport, verificationRequest, sourceBytes, sourceRef} from './policy.mjs';
-import {filePermission} from './permission.mjs';
-export {taskBody} from './policy.mjs';
+import {createPiProvider} from '../agent-provider-pi/index.ts';
+import {createFileBusiness} from '../task-business/index.ts';
+import {createLeaderPort, createReviewPort, createVerificationPort, renderLeaderPrompt, renderReviewPrompt, parseManagedOutput} from '../task-application/application.ts';
+import {createVerificationCommand} from '../task-verification-command/index.ts';
+import {createLocalReportPublication} from '../task-publication-report/index.ts';
+import {encode, digest} from '../task-store/store.ts';
+import {parseJson} from '../task-api/http-boundary.ts';
+import {check, equal, regions, RULE, GUIDANCE, initial, finalWindow, originalReport, verificationRequest, sourceBytes, sourceRef} from './policy.ts';
+import {filePermission} from './permission.ts';
+export {taskBody} from './policy.ts';
 const here = file => fileURLToPath(new URL(file, import.meta.url));
-const checkerPath = here('../task-regional-window/checker.mjs');
+const checkerPath = here('../task-regional-window/checker.ts');
 /** Trusted deployment DI, not HTTP input. Returning the original FileBusiness
  * object preserves its private managed identity; no prepare wrapper/claim. */
 export function createLeaderReportConfig({provider, reportRoot, readBaseURL, executable = process.execPath}) {
   check(supportsNode() && path.isAbsolute(executable) && fs.realpathSync(executable) === fs.realpathSync(process.execPath) &&
     provider?.id && typeof provider.start === 'function', 'report_configuration');
-  const code = digest(encode(['./policy.mjs', './permission.mjs', './index.mjs', '../task-regional-window/policy.mjs', '../task-regional-window/checker.mjs']
+  const code = digest(encode(['./policy.ts', './permission.ts', './index.ts', '../task-regional-window/policy.ts', '../task-regional-window/checker.ts']
     .map(file => ({file, digest: digest(fs.readFileSync(here(file)))}))));
   const policy = {id: 'leader-window-checker', version: '1', description: RULE + ' 配置及独立数据规则源码：' + code};
   const reviewPolicy = {id: 'leader-window-review', version: '1', description: RULE + ' 独立消费原流水、原日期或原回答与完整两份候选；不为润色制造 rework。 ' + code};

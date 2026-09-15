@@ -4,9 +4,9 @@ import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {launchCommand} from './index.mjs';
+import {launchCommand} from './index.ts';
 
-const fixture = fileURLToPath(new URL('./command.fixture.mjs', import.meta.url));
+const fixture = fileURLToPath(new URL('./command.fixture.ts', import.meta.url));
 async function options(t, mode) {
   const cwd = await mkdtemp(path.join(tmpdir(), 'marshal-command-test-'));
   t.after(() => rm(cwd, {recursive: true, force: true}));

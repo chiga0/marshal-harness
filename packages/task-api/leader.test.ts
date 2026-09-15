@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import {createServer, request as httpRequest} from 'node:http';
 import {once} from 'node:events';
 import {createHash} from 'node:crypto';
-import {contract, validate, validLeaderView, validLeaderReplyResponse, leaderRequestDigest, leaderReplyDigest, TaskApiError} from './contract.mjs';
-import {createTaskApiHandler} from './http-handler.mjs';
-import {TaskClient} from '../task-client/index.mjs';
+import {contract, validate, validLeaderView, validLeaderReplyResponse, leaderRequestDigest, leaderReplyDigest, TaskApiError} from './contract.ts';
+import {createTaskApiHandler} from './http-handler.ts';
+import {TaskClient} from '../task-client/index.ts';
 
 // DI / transport proof only: no SQLite, real Leader, authorization or publication.
 const token = 'leader-boundary-fixture-local-token-00001';

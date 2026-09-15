@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {parseOptions, taskBody, validatePlan, filePermission, consumeDelivery, executionFact, assertTeam, data} from './driver.fixture.mjs';
-import {proposal, policy, bindPlan} from '../task-team-integration/scenario.fixture.mjs';
-import {TaskVerification, createVerificationPort} from '../task-application/verification.mjs';
-import {encode} from '../task-store/store.mjs';
+import {parseOptions, taskBody, validatePlan, filePermission, consumeDelivery, executionFact, assertTeam, data} from './driver.fixture.ts';
+import {proposal, policy, bindPlan} from '../task-team-integration/scenario.fixture.ts';
+import {TaskVerification, createVerificationPort} from '../task-application/verification.ts';
+import {encode} from '../task-store/store.ts';
 
 const options = ['--execute-real', '--run-dir', '/private/tmp/qwen-private-new', '--node', '/installed/node', '--qwen-entry', '/installed/cli-entry.js'];
 test('real execution is explicit; arguments cannot select a model, fallback, existing state mode or arbitrary argv', () => {
