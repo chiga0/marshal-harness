@@ -214,9 +214,22 @@ const EXPECTED_SCHEMA = [...SCHEMA.matchAll(/CREATE (TABLE|TRIGGER) (\w+)[^\n]*/
 
 export class Store {
   #db; #files; #active = null; #closed = false; #transaction = false; #currentTx = null; #clock; #monotonic;
+  #chain = Promise.resolve(); #insideTxCallback = false;
   constructor(token, db, files, options) {
     check(token === INTERNAL); this.#db = db; this.#files = files;
     this.#clock = options.clock ?? Date.now; this.#monotonic = options.monotonic ?? (() => performance.now());
+  }
+  // Async 缝线的有序互斥。旧同步世界由事件循环阻塞天然串行化生命周期操作;
+  // 公开方法 async 化之后,无关调用方(HTTP 分发、Supervisor 周期、owner 续约)会
+  // 真正交错,因此所有生命周期操作经 FIFO 队列串行,恢复旧的单写者顺序。真正
+  // 的冲突只剩事务回调内部的同步嵌套调用,继续 fail closed 并毒化当前事务。
+  #guardReentry() {
+    if (this.#insideTxCallback) { this.#currentTx?.poison('nested-transaction'); fail('nested-transaction'); }
+  }
+  #exclusive(fn) {
+    const result = this.#chain.then(() => fn());
+    this.#chain = result.catch(() => {});
+    return result;
   }
   static create(root, options = {}) { return Store.#open(root, options, true); }
   static openExisting(root, options = {}) { return Store.#open(root, options, false); }
@@ -261,7 +274,7 @@ export class Store {
   }
   #enter() {
     check(!this.#closed, 'closed');
-    if (this.#transaction) { this.#currentTx?.poison('nested-transaction'); fail('nested-transaction'); }
+    check(!this.#transaction, 'nested-transaction');
     try { this.#files.check(); } catch (error) { throw normalize(error); }
   }
   #metadata() { return this.#db.prepare('SELECT * FROM metadata WHERE singleton=1').get(); }
@@ -272,7 +285,11 @@ export class Store {
   // Narrow startup inspection while THIS connection holds the physical writer
   // lock but before a new logical owner exists. Only the v2 recovery consumer
   // uses this read-only snapshot; no Task mutation or owner token is returned.
-  inspectRecovery(callback) {
+  async inspectRecovery(callback) {
+    this.#guardReentry(); check(!this.#closed, 'closed');
+    return this.#exclusive(() => this.#inspectRecovery(callback));
+  }
+  #inspectRecovery(callback) {
     this.#enter(); let tx;
     try {
       check(this.#active === null && [CUSTODY_FORMAT, INTERACTION_FORMAT, REPAIR_FORMAT, UNPERMITTED_FORMAT, WORKER_CANCELLATION_FORMAT, LEADER_FORMAT].includes(this.#metadata().format) && typeof callback === 'function', 'owner');
@@ -291,8 +308,17 @@ export class Store {
     const row = this.#metadata(), now = this.#clock();
     check(owner.storeId === row.store_id && owner.generation === row.generation && owner.generation === this.#active.generation && owner.instanceId === row.instance_id && owner.instanceId === this.#active.instanceId && owner.expiresAt === Number(row.expires_at) && owner.expiresAt === this.#active.expiresAt && owner.expiresAt > now, 'owner');
   }
-  claimOwner(expectedGeneration, instanceId, expiresAt) { return this.#changeOwner(expectedGeneration, instanceId, expiresAt, null); }
-  renewOwner(owner, expiresAt) { return this.#changeOwner(owner?.generation, owner?.instanceId, expiresAt, owner); }
+  // Public lifecycle operations are async seam methods: transaction bodies stay
+  // strictly synchronous (SQLite DatabaseSync cannot await mid-transaction),
+  // and every lifecycle operation serializes through the store's FIFO queue.
+  async claimOwner(expectedGeneration, instanceId, expiresAt) {
+    this.#guardReentry(); check(!this.#closed, 'closed');
+    return this.#exclusive(() => this.#changeOwner(expectedGeneration, instanceId, expiresAt, null));
+  }
+  async renewOwner(owner, expiresAt) {
+    this.#guardReentry(); check(!this.#closed, 'closed');
+    return this.#exclusive(() => this.#changeOwner(owner?.generation, owner?.instanceId, expiresAt, owner));
+  }
   #changeOwner(expected, instanceId, expiresAt, previous) {
     this.#enter();
     try {
@@ -312,18 +338,26 @@ export class Store {
     } finally { this.#transaction = false; }
   }
   #rollback() { try { if (this.#db.isTransaction) this.#db.exec('ROLLBACK'); } catch { this.#closed = true; try { this.#db.close(); } finally { this.#files.close(); } } }
-  read(owner, callback) { return this.#run(owner, callback, false); }
-  write(owner, callback) { return this.#run(owner, callback, true); }
+  async read(owner, callback) {
+    check(typeof callback === 'function'); this.#guardReentry(); check(!this.#closed, 'closed');
+    return this.#exclusive(() => this.#run(owner, callback, false));
+  }
+  async write(owner, callback) {
+    check(typeof callback === 'function'); this.#guardReentry(); check(!this.#closed, 'closed');
+    return this.#exclusive(() => this.#run(owner, callback, true));
+  }
   #run(owner, callback, write) {
     this.#enter();
     let tx;
     try {
-      check(typeof callback === 'function');
       check(Object.prototype.toString.call(callback) !== '[object AsyncFunction]', 'async-transaction');
       const until = this.#monotonic() + LIMITS.transactionMs;
       this.#transaction = true; this.#db.exec(write ? 'BEGIN IMMEDIATE' : 'BEGIN'); this.#owner(owner);
       tx = new Transaction(this.#db, this.#active, write, () => check(this.#monotonic() <= until, 'deadline')); this.#currentTx = tx;
-      const value = callback(tx);
+      let value;
+      this.#insideTxCallback = true;
+      try { value = callback(tx); }
+      finally { this.#insideTxCallback = false; }
       if (value !== null && (typeof value === 'object' || typeof value === 'function') && typeof value.then === 'function') {
         Promise.resolve(value).catch(() => {}); fail('async-transaction');
       }

@@ -6,8 +6,8 @@ try {
   const store = Store.openExisting(root);
   if (mode === 'probe') { store.close(); process.send?.({ code: 'opened' }); process.disconnect?.(); }
   else if (mode === 'before-commit' || mode === 'after-commit') {
-    const owner = store.claimOwner(store.info().generation, 'fixture-process', Date.now() + 60000);
-    store.write(owner, tx => {
+    const owner = await store.claimOwner(store.info().generation, 'fixture-process', Date.now() + 60000);
+    await store.write(owner, tx => {
       const event = makeEvent('task-1', 1, { fixtureOnly: true });
       const source = { stream: 'task-1', sequence: event.sequence, digest: event.digest };
       tx.append('task-1', { sequence: 0n, digest: '' }, [event]);
