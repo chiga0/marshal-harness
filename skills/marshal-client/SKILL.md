@@ -11,11 +11,11 @@ description: 通过已有 Marshal Node HTTP 服务提交和跟踪团队任务、
 
 ## 连接与实际能力
 
-新版发行若包含 `packages/task-local/main.ts`（TS 迁移前的旧发行为 `main.mjs`），优先调用产品的 `init`、`serve`、`status`，不在 Skill 中实现探测或进程管理。`init` 自动识别自身安装根和本机 Agent 路径；`serve` 保存本次启动连接，后续通过产品导出的 `connectLocal()` 获取 TaskClient。服务配置首次提供后复用。这些命令属于后继源码，v1.0.1 不包含它们；旧发行使用下述兼容方式，不伪造新命令可用。没有受信业务配置时，不把检测到的 Agent 当成已启用的通用执行服务。
+新版发行若包含 `packages/task-local/main.ts`（ADR0102 前的旧发行为 `main.mjs`），优先调用产品的 `init`、`serve`、`status`，不在 Skill 中实现探测或进程管理。`init` 自动识别自身安装根和本机 Agent 路径；`serve` 保存本次启动连接，后续通过产品导出的 `connectLocal()` 获取 TaskClient。服务配置首次提供后复用。这些命令属于后继源码，v1.0.1 不包含它们；旧发行使用下述兼容方式，不伪造新命令可用。没有受信业务配置时，不把检测到的 Agent 当成已启用的通用执行服务。
 
 需要已安装的 Marshal Node（建议 v1.0.1+）、Node22+、已配置并运行的服务。连接初始化只做一次，复用以下两项：
 
-- `MARSHAL_INSTALL_ROOT`：可信发行安装根，含 `packages/task-client/index.ts`（TS 迁移前的旧发行为 `index.mjs`，下面代码按存在性探测两者）。
+- `MARSHAL_INSTALL_ROOT`：可信发行安装根，含 `packages/task-client/index.ts`（ADR0102 前的旧发行为 `index.mjs`，下面代码按存在性探测两者）。
 - `MARSHAL_CONNECTION_FILE`：本次服务启动输出的 `connectionFile` 路径，内容为连接信息；仅在客户端进程内读取，不打印、不放进 Task prompt、Worker 环境或聊天记录。
 
 **环境变量是可选的传参方式，不是准入条件。** 用户已在对话中提供安装位置，或安装器/启动器已返回可信路径时，直接通过下面的位置参数使用，不再要求用户 export。不要因环境变量为空而忽略已有信息。连接文件属于一个 Marshal 服务，不是每个业务系统或每个 Worker 都要配置；多个任务复用同一服务。它保存地址和认证信息，不是 Agent 登录配置。

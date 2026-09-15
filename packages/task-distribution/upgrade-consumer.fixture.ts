@@ -39,7 +39,7 @@ export function validatePair({oldPackage, newPackage, runDir, assetKind, oldVali
   const oldFiles = oldManifest.files, newFiles = newManifest.files;
   assert.equal(oldFiles.some(file => file.path.startsWith('apps/task-web/dist/')), false, 'old_api_only_required');
   assert.ok(newFiles.some(file => file.path === 'apps/task-web/dist/index.html'), 'new_ui_required');
-  // TS 迁移边界：v1.0.2 旧包为 .mjs 布局，迁移后为 .ts；时代后缀由各包自身已验证
+  // ADR0102 边界:v1.0.2 旧包为 .mjs 布局,迁移后为 .ts;时代后缀由各包自身已验证
   // manifest 的 entrypoint 推导,配置身份按内容摘要跨重命名比较,路径不按字面相同。
   const eraOf = manifest => String(manifest.entrypoint ?? '').endsWith('.mjs') ? '.mjs' : '.ts';
   const business = ['index', 'policy', 'checker', 'service-config'];
@@ -136,7 +136,7 @@ export async function runUpgrade(options) {
   async function start(pkg, mode, ui) {
     assert.equal(interrupted, false);
     validatePackage(pkg, pkg === oldPackage ? options.oldValidator ?? null : null, [oldPackage.root, newPackage.root]);
-    // TS 迁移边界：入口与内部文件时代后缀以各自已验证 manifest 的 entrypoint 推导，
+    // ADR0102 边界:入口与内部文件时代后缀以各自已验证 manifest 的 entrypoint 推导,
     // 不对旧包假定 .ts、不对新包假定 .mjs。
     const pkgManifest = JSON.parse(fs.readFileSync(path.join(pkg.root, 'manifest.json'), 'utf8'));
     const eraExt = String(pkgManifest.entrypoint ?? '').endsWith('.mjs') ? '.mjs' : '.ts';

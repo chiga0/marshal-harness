@@ -31,7 +31,7 @@ def prepare(tag, parent, channel='stable'):
              ('SHA256SUMS', 'SHA256SUMS.minisig', pins['ZIP'], 'manifest.json')]
     files.append(('distribution.mjs', 'https://raw.githubusercontent.com/chiga0/marshal-harness/'
                   + pins['SOURCE'] + '/packages/task-distribution/index.mjs'))
-    # 时代适配：SOURCE 为 TS 迁移后提交时源文件为 index.ts；按时代双探，
+    # ADR0102：SOURCE 为迁移后提交时源文件为 index.ts；按时代双探，
     # 资产名沿用实际扩展，避免把含类型语法的文件以 .mjs 名义执行。
     probe = ('https://raw.githubusercontent.com/chiga0/marshal-harness/'
              + pins['SOURCE'] + '/packages/task-distribution/index.ts')

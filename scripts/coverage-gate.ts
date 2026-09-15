@@ -1,4 +1,4 @@
-// 覆盖率门禁（随 2026-09 TS 迁移引入）:NODE_V8_COVERAGE 原始目录 → 剔损(SIGKILL 子进程截断)→
+// ADR0102 覆盖率门禁:NODE_V8_COVERAGE 原始目录 → 剔损(SIGKILL 子进程截断)→
 // 合并(同字节区间计数相加)→ 行覆盖率(covered 行/非空行)→ 与 toolchain/coverage-baseline.json
 // 比较,只能升不能降。noh 内置 --experimental-test-coverage 在含 SIGKILL fixture 的套件下
 // 会因截断 JSON 中止全部报告,故解耦为"原始采集 + 受控合并"。
@@ -75,7 +75,7 @@ if (process.argv.includes('--update')) {
 const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
 console.log(`coverage: ${lines}% lines (baseline ${baseline.lines}%, files=${perFile.length}, corruptSkipped=${corrupt}/${files})`);
 if (lines < baseline.lines) {
-  console.error('coverage gate failed: 覆盖率低于基线;确认无回归后以 --update 更新,下调须在 PR 中说明理由。');
+  console.error('coverage gate failed: 覆盖率低于基线;确认无回归后以 --update 更新,下调须在 PR 中说明并引用 ADR0102。');
   process.exit(1);
 }
 console.log('coverage gate passed' + (lines > baseline.lines ? ' (improved — run with --update to ratchet up)' : ''));

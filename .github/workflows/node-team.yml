@@ -37,7 +37,7 @@ concurrency:
 
 jobs:
   toolchain:
-    name: lint + typecheck gate
+    name: lint + typecheck gate (ADR0102)
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -97,7 +97,7 @@ jobs:
           experiments/node-team/openapi.test.ts
 
   coverage:
-    name: line coverage gate
+    name: line coverage gate (ADR0102)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -112,7 +112,7 @@ jobs:
           node-version: '24.15.0'
           package-manager-cache: false
 
-      # SIGKILL custody fixture 会截断继承 NODE_V8_COVERAGE 的子进程写入，
+      # ADR0102:SIGKILL custody fixture 会截断继承 NODE_V8_COVERAGE 的子进程写入,
       # 内置 --experimental-test-coverage 遇截断即放弃全部报告;故解耦为原始采集 +
       # scripts/coverage-gate.ts 受控合并(剔损计数披露、叶子区间、covered 行/非空行)。
       # 基线 toolchain/coverage-baseline.json 只升不降。
