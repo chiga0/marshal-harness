@@ -16,33 +16,33 @@
 
 | 操作 | 实现与启用条件 | 验证入口与限制 |
 | --- | --- | --- |
-| health.get | 已接线，所有服务 | [composition测试](../packages/task-service/composition.test.mjs)；只说明HTTP存活 |
-| ready.get | 已接线，owner及原恢复义务满足 | [custody恢复](../packages/task-service/custody-recovery.test.mjs)；不探测模型登录 |
-| input.create | 已接线，Depot | [制品测试](../packages/task-application/artifacts.test.mjs)；原bytes≤256KiB |
-| task.create | 已接线，可信业务与预算 | [HTTP/SQLite](../packages/task-application/http-integration.test.mjs)；通用文件真实Qwen见RC.2 |
-| task.list | 已接线，原库分页 | [Application测试](../packages/task-application/application.test.mjs)；无全文检索/跨用户目录 |
-| task.get | 已接线，真实投影 | [Leader团队](../packages/task-service/leader.test.mjs)；按allowedActions操作 |
-| task.plan | 已接线，计划形成后 | [HTTP/SQLite](../packages/task-application/http-integration.test.mjs)；GET不生成计划 |
-| task.approve | 已接线，精确计划版本/摘要 | [HTTP/SQLite](../packages/task-application/http-integration.test.mjs)；202不是交付 |
-| task.graph | 已接线，计划形成后 | [Application测试](../packages/task-application/application.test.mjs)；只读DAG |
-| task.workers | 已接线，原Worker分页 | [执行测试](../packages/task-application/execution.test.mjs)；包含受管语义执行，usage可未知 |
-| worker.get | 已接线，所属执行投影 | [执行测试](../packages/task-application/execution.test.mjs)；不提供任意进程管理 |
-| worker.cancel | 条件：v6或v7根；旧格式501 | [取消测试](../packages/task-application/worker-cancellation.test.mjs)；单目标停止与Task停止分开 |
-| task.questions | 已接线，历史问题可读 | [澄清](../packages/task-application/clarification.test.mjs)、[运行问题](../packages/task-application/runtime-questions.test.mjs)；空列表不证明写入能力 |
-| task.answer | 条件：对应澄清或运行问答Port | [运行问答恢复](../packages/task-service/runtime-question-recovery.test.mjs)；原receipt与实际ACK分开 |
-| task.leader | 条件：v7 Leader配置 | [Leader测试](../packages/task-application/leader.test.mjs)；默认通用启用，旧profile501 |
-| task.leader.reply | 条件：v7原有效请求与摘要 | [Leader测试](../packages/task-application/leader.test.mjs)；answer和allow/deny互斥，不模拟Worker ACK |
-| operation.get | 已接线，原持久Operation | [执行测试](../packages/task-application/execution.test.mjs)；操作完成不等于业务完成 |
-| task.cancel | 已接线，原状态允许 | [控制提交恢复](../packages/task-service/control-commit-recovery.test.mjs)；未知cleanup不成功 |
-| task.pause | 已接线，只停止新准入 | [执行测试](../packages/task-application/execution.test.mjs)；不暂停现有进程/期限，未据此单列全配置真实模型证明 |
-| task.resume | 已接线，合法paused及原期限 | [执行测试](../packages/task-application/execution.test.mjs)；不是原会话crash attach |
-| task.repair | 条件：显式repair配置、客观负Decision | [同计划修正](../packages/task-service/same-plan-repair.test.mjs)；真实fog4见Roadmap，不外推默认Leader自治接口 |
-| artifact.get | 已接线，原manifest/Depot | [制品测试](../packages/task-application/artifacts.test.mjs)；损坏ready对象明确失败 |
-| artifact.content | 已接线，摘要长度重验 | [独立客户端](../packages/task-client/index.test.mjs)；≤8MiB，不是任意文件下载 |
-| task.audit | 已接线，已有原证据 | [输入审计](../packages/task-service/input-audit.test.mjs)；token/cost/首审计量仍unavailable |
-| task.events | 已接线，sequence分页 | [服务行为](../packages/task-service/api-stable-behavior.test.mjs)；轮询，无SSE/完整transcript |
-| provider.list | 已接线，冻结Provider facts | [composition测试](../packages/task-service/composition.test.mjs)；默认unknown/空能力，不能当登录成功 |
-| supervisor.get | 已接线，有界容量观察 | [服务行为](../packages/task-service/api-stable-behavior.test.mjs)；扫描超界unavailable，不虚报全量 |
+| health.get | 已接线，所有服务 | [composition测试](../packages/task-service/composition.test.ts)；只说明HTTP存活 |
+| ready.get | 已接线，owner及原恢复义务满足 | [custody恢复](../packages/task-service/custody-recovery.test.ts)；不探测模型登录 |
+| input.create | 已接线，Depot | [制品测试](../packages/task-application/artifacts.test.ts)；原bytes≤256KiB |
+| task.create | 已接线，可信业务与预算 | [HTTP/SQLite](../packages/task-application/http-integration.test.ts)；通用文件真实Qwen见RC.2 |
+| task.list | 已接线，原库分页 | [Application测试](../packages/task-application/application.test.ts)；无全文检索/跨用户目录 |
+| task.get | 已接线，真实投影 | [Leader团队](../packages/task-service/leader.test.ts)；按allowedActions操作 |
+| task.plan | 已接线，计划形成后 | [HTTP/SQLite](../packages/task-application/http-integration.test.ts)；GET不生成计划 |
+| task.approve | 已接线，精确计划版本/摘要 | [HTTP/SQLite](../packages/task-application/http-integration.test.ts)；202不是交付 |
+| task.graph | 已接线，计划形成后 | [Application测试](../packages/task-application/application.test.ts)；只读DAG |
+| task.workers | 已接线，原Worker分页 | [执行测试](../packages/task-application/execution.test.ts)；包含受管语义执行，usage可未知 |
+| worker.get | 已接线，所属执行投影 | [执行测试](../packages/task-application/execution.test.ts)；不提供任意进程管理 |
+| worker.cancel | 条件：v6或v7根；旧格式501 | [取消测试](../packages/task-application/worker-cancellation.test.ts)；单目标停止与Task停止分开 |
+| task.questions | 已接线，历史问题可读 | [澄清](../packages/task-application/clarification.test.ts)、[运行问题](../packages/task-application/runtime-questions.test.ts)；空列表不证明写入能力 |
+| task.answer | 条件：对应澄清或运行问答Port | [运行问答恢复](../packages/task-service/runtime-question-recovery.test.ts)；原receipt与实际ACK分开 |
+| task.leader | 条件：v7 Leader配置 | [Leader测试](../packages/task-application/leader.test.ts)；默认通用启用，旧profile501 |
+| task.leader.reply | 条件：v7原有效请求与摘要 | [Leader测试](../packages/task-application/leader.test.ts)；answer和allow/deny互斥，不模拟Worker ACK |
+| operation.get | 已接线，原持久Operation | [执行测试](../packages/task-application/execution.test.ts)；操作完成不等于业务完成 |
+| task.cancel | 已接线，原状态允许 | [控制提交恢复](../packages/task-service/control-commit-recovery.test.ts)；未知cleanup不成功 |
+| task.pause | 已接线，只停止新准入 | [执行测试](../packages/task-application/execution.test.ts)；不暂停现有进程/期限，未据此单列全配置真实模型证明 |
+| task.resume | 已接线，合法paused及原期限 | [执行测试](../packages/task-application/execution.test.ts)；不是原会话crash attach |
+| task.repair | 条件：显式repair配置、客观负Decision | [同计划修正](../packages/task-service/same-plan-repair.test.ts)；真实fog4见Roadmap，不外推默认Leader自治接口 |
+| artifact.get | 已接线，原manifest/Depot | [制品测试](../packages/task-application/artifacts.test.ts)；损坏ready对象明确失败 |
+| artifact.content | 已接线，摘要长度重验 | [独立客户端](../packages/task-client/index.test.ts)；≤8MiB，不是任意文件下载 |
+| task.audit | 已接线，已有原证据 | [输入审计](../packages/task-service/input-audit.test.ts)；token/cost/首审计量仍unavailable |
+| task.events | 已接线，sequence分页 | [服务行为](../packages/task-service/api-stable-behavior.test.ts)；轮询，无SSE/完整transcript |
+| provider.list | 已接线，冻结Provider facts | [composition测试](../packages/task-service/composition.test.ts)；默认unknown/空能力，不能当登录成功 |
+| supervisor.get | 已接线，有界容量观察 | [服务行为](../packages/task-service/api-stable-behavior.test.ts)；扫描超界unavailable，不虚报全量 |
 
 ## 已有整链证据与未覆盖范围
 
