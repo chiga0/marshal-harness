@@ -77,6 +77,7 @@ export class TaskApplication {
     } catch (error) {
       if (domainError) throw domainError;
       if (error.code === 'owner') reject('recovery_required', 409);
+      if (process.env.PROBE_TX) console.error('[TX]', error.code, error.message?.slice(0,80));
       reject('application_unavailable', 503);
     }
   }

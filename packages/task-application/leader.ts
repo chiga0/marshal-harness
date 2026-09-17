@@ -483,7 +483,7 @@ export class TaskLeader {
         artifact: ['publication', 'postverify'].includes(payload.action) ? this.app.artifacts.metadata(tx, task.leader.delivery.artifactId) : null};
     });
     if (!original) return null;
-    const expanded = this.expand(original.input);
+    const expanded = await this.expand(original.input);
     let expected;
     if (original.payload.action === 'publication') expected = this.app.verification.expectedPublication({taskId: original.task.task.id,
       planDigest: original.task.plan.digest, input: {task: original.task.input, plan: original.task.plan, inputArtifacts: original.task.inputArtifacts,
