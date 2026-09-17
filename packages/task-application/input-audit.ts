@@ -1,3 +1,5 @@
+import {OBSERVATION_POLICY} from './observation.ts';
+import {redactObservedText} from '../agent-observation/normalization.ts';
 import {digest, makeEvent} from '../task-store/store.ts';
 import {clone, isText, reject} from './model.ts';
 
@@ -24,9 +26,9 @@ export function createAuditDisclosure({id, version, redact} = {}) {
 // selection or Verification. Older records are queried as unavailable; opening
 // a root does not backfill observations or rewrite any original input/receipt.
 export class TaskInputAudit {
-  constructor(app, disclosure = null) {
+  constructor(app, disclosure = null, observability = null) {
     if (disclosure !== null && !policies.has(disclosure)) reject('unsupported_task', 422);
-    this.app = app; this.disclosure = disclosure;
+    this.app = app; this.disclosure = disclosure; this.builtin = observability?.retainPrompts === true;
   }
   async observe(ticket, stage, prompt) {
     check(['prepared', 'handed-off'].includes(stage));
@@ -42,16 +44,16 @@ export class TaskInputAudit {
       check(record.worker.status === 'queued' && record.executionId === null); return false;
     });
     if (original) return true;
-    let staged = null, text = '', coverage = this.disclosure ? 'unavailable' : 'metadata-only';
-    if (this.disclosure) {
+    let staged = null, text = '', coverage = this.disclosure || this.builtin ? 'unavailable' : 'metadata-only';
+    if (this.disclosure || this.builtin) {
       try {
         // No raw bytes are sent to Depot, an event, a projection or diagnostics.
         // The callback is trusted synchronous deployment code, not a sandbox.
-        const value = policies.get(this.disclosure)(prompt, Object.freeze({taskId: ticket.taskId, workerId: ticket.workerId,
+        const value = this.builtin ? redactObservedText(prompt) : policies.get(this.disclosure)(prompt, Object.freeze({taskId: ticket.taskId, workerId: ticket.workerId,
           nodeId: ticket.nodeId, role: ticket.role, inputDigest: ticket.inputDigest, promptDigest}));
         if (value && typeof value.then === 'function') {void Promise.resolve(value).catch(() => {});}
         else if (typeof value === 'string' && validText(value)) {
-          staged = (await this.app.artifacts.stageOutputs([['evidence', {name: ticket.workerId + '.input.txt', mediaType: 'text/plain', content: Buffer.from(value)}]]))[0];
+          staged = this.app.artifacts.stageOutputs([['evidence', {name: ticket.workerId + '.input.txt', mediaType: 'text/plain', content: Buffer.from(value)}]])[0];
           text = preview(value); coverage = 'policy-redacted';
         }
       } catch { /* Declined/missing bytes is audit unavailability, not Task failure. */ }
@@ -68,7 +70,7 @@ export class TaskInputAudit {
       const snapshot = staged ? this.app.artifacts.commitOutputs(tx, ticket.taskId, [staged], source)[0] : null;
       record.inputObservation = {profile: PROFILE, taskId: ticket.taskId, workerId: ticket.workerId,
         reservationDigest: ticket.reservationDigest, inputDigest: ticket.inputDigest, promptDigest, promptBytes,
-        preparedAt: at, handedOffAt: null, coverage, policy: this.disclosure ? clone(this.disclosure) : null,
+        preparedAt: at, handedOffAt: null, coverage, policy: this.builtin ? {id: OBSERVATION_POLICY.id, version: OBSERVATION_POLICY.version} : this.disclosure ? clone(this.disclosure) : null,
         text, previewTruncated: snapshot !== null && Buffer.byteLength(text) < snapshot.bytes, snapshot,
         contextRefs: (ticket.input.inputArtifacts ?? []).map(ref => ref.id)};
       this.app.execution.putWorker(tx, row, record, source); return true;
@@ -121,7 +123,10 @@ export class TaskInputAudit {
   workers(records) {
     return records.map(record => {
       const started = Date.parse(record.worker.startedAt), finished = Date.parse(record.worker.finishedAt);
-      return {...clone(record.worker), audit: {repairId: record.ticket.repairId ?? null,
+      const worker = clone(record.worker);
+      // Audit is a 256-Worker aggregate; full history lives on Worker detail/list.
+      if (worker.observation) worker.observation = {...worker.observation, history: [], historyTruncated: worker.observation.historyTruncated || worker.observation.history.length > 0};
+      return {...worker, audit: {repairId: record.ticket.repairId ?? null,
         elapsedMs: Number.isFinite(started) && Number.isFinite(finished) && finished >= started ? finished - started : null,
         elapsedSource: 'started-to-settlement', waitingMs: null, waitingSource: 'unavailable'}};
     });
