@@ -97,10 +97,10 @@ def zip_bytes(contents, *, additions=(), mode=stat.S_IFREG | 0o644, modes=None, 
 
 
 def package_fixture():
-    files = ["packages/example/index.mjs"]
+    files = ["packages/example/index.ts"]
     contents = {files[0]: b"export const value = 1;\n"}
     manifest = {"format": "marshal-node-script-package/v1", "sourceHead": HEAD, "node": "24.15.0",
-                "platforms": ["darwin-arm64", "linux-x64"], "entrypoint": "packages/task-service/main.mjs",
+                "platforms": ["darwin-arm64", "linux-x64"], "entrypoint": "packages/task-service/main.ts",
                 "files": [{"path": name, "digest": candidate.sha(value), "bytes": len(value)} for name, value in contents.items()]}
     contents["manifest.json"] = (json.dumps(manifest, indent=2) + "\n").encode()
     return files, contents
@@ -281,14 +281,14 @@ class ArchiveTest(unittest.TestCase):
             with self.assertRaises(candidate.CandidateError): self.validate(zip_bytes(self.contents) + suffix)
 
     def test_exact_names_nul_case_alias_and_broken_crc_rejected(self):
-        for wrong in ("PACKAGES/example/index.mjs", "/packages/example/index.mjs", "packages\\example\\index.mjs"):
+        for wrong in ("PACKAGES/example/index.ts", "/packages/example/index.ts", "packages\\example\\index.ts"):
             contents = {wrong: self.contents[self.files[0]], "manifest.json": self.contents["manifest.json"]}
             with self.assertRaises(candidate.CandidateError): self.validate(zip_bytes(contents))
         raw = bytearray(zip_bytes(self.contents))
         pos = raw.index(self.contents[self.files[0]])
         raw[pos] ^= 1
         with self.assertRaises(candidate.CandidateError): self.validate(bytes(raw))
-        raw = zip_bytes(self.contents).replace(b"packages/example/index.mjs", b"packages\x00example/index.mjs")
+        raw = zip_bytes(self.contents).replace(b"packages/example/index.ts", b"packages\x00example/index.ts")
         with self.assertRaises(candidate.CandidateError): self.validate(raw)
 
     def test_size_limits_and_manifest_file_drift(self):
@@ -329,7 +329,7 @@ class UiArchiveTest(unittest.TestCase):
         self.assertEqual(self.validate(), self.contents)
 
     def test_ui_allowlist_stays_aligned_with_trusted_node_distribution(self):
-        source = (ROOT / "packages/task-distribution/index.mjs").read_text()
+        source = (ROOT / "packages/task-distribution/index.ts").read_text()
         self.assertEqual(candidate.UI_ROOT, re.search(r"const UI_STATIC_ROOT = '([^']+)';", source)[1] + "/")
         self.assertEqual(candidate.UI_MAX_FILES, int(re.search(r"const UI_MAX_FILES = (\d+);", source)[1]))
         extensions = ast.literal_eval(re.search(r"const UI_EXTENSIONS = new Set\((\[[^\n]+\])\);", source)[1])
@@ -338,7 +338,7 @@ class UiArchiveTest(unittest.TestCase):
 
     def test_outside_root_traversal_unknown_extension_and_wide_name_rejected(self):
         for name in ("apps/task-web/private.js", "apps/task-web/dist/../outside.js", "apps/task-web/dist/.hidden.js",
-                     "apps/task-web/dist/a\\b.js", "apps/task-web/dist/tool.mjs", "apps/task-web/dist/secret.pem",
+                     "apps/task-web/dist/a\\b.js", "apps/task-web/dist/tool.ts", "apps/task-web/dist/secret.pem",
                      "apps/task-web/dist/" + "a" * 129 + ".js", "/apps/task-web/dist/absolute.js"):
             with self.subTest(name=name):
                 contents = dict(self.contents, **{name: b"untrusted"})
@@ -453,7 +453,7 @@ class FilesAndConsumerTest(unittest.TestCase):
         passed = False
         try:
             head = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
-            result = json.loads(subprocess.check_output([NODE, str(ROOT / "packages/task-distribution/main.mjs"), "pack", "--source", str(ROOT),
+            result = json.loads(subprocess.check_output([NODE, str(ROOT / "packages/task-distribution/main.ts"), "pack", "--source", str(ROOT),
                 "--source-head", head, "--target", str(parent / "original")]))
             names = [item["path"] for item in json.loads((parent / "original/manifest.json").read_text())["files"]]
             contents = {name: (parent / "original" / name).read_bytes() for name in names}

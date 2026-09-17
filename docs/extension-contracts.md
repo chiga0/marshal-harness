@@ -86,15 +86,15 @@ Publication输入必须包含WorkBinding、目标身份、操作类型/范围、
 
 | 边界 | 当前实现入口 | 输入、输出与权限归属 |
 | --- | --- | --- |
-| 客户端→应用 | [HTTP handler](../packages/task-api/http-handler.mjs)、[Service dispatch](../packages/task-service/composition.mjs) | 校验后的operation/路由ID/key/body/page及独立请求context→原投影或回执；Core独占业务准入 |
-| Core→Leader/Review | [createLeaderPort/createReviewPort](../packages/task-application/leader-ports.mjs) | 冻结ticket/input及准备上下文→受管执行与有限建议/独立意见；只有私有绑定receipt可进入原接纳路径 |
-| Core→Execution | [TaskExecutionCoordinator](../packages/task-execution/controller.mjs) | 原outbox/ticket/许可→prepare/start/collect/release及原结果；不建立第二预算/调度真值 |
-| Execution→Agent | [ACP Provider](../packages/agent-provider-acp/index.mjs)、[Pi Provider](../packages/agent-provider-pi/index.mjs) | 原cwd/prompt/deadline、许可回调与执行上下文→started/completion/stop及可选观察 |
+| 客户端→应用 | [HTTP handler](../packages/task-api/http-handler.ts)、[Service dispatch](../packages/task-service/composition.ts) | 校验后的operation/路由ID/key/body/page及独立请求context→原投影或回执；Core独占业务准入 |
+| Core→Leader/Review | [createLeaderPort/createReviewPort](../packages/task-application/leader-ports.ts) | 冻结ticket/input及准备上下文→受管执行与有限建议/独立意见；只有私有绑定receipt可进入原接纳路径 |
+| Core→Execution | [TaskExecutionCoordinator](../packages/task-execution/controller.ts) | 原outbox/ticket/许可→prepare/start/collect/release及原结果；不建立第二预算/调度真值 |
+| Execution→Agent | [ACP Provider](../packages/agent-provider-acp/index.ts)、[Pi Provider](../packages/agent-provider-pi/index.ts) | 原cwd/prompt/deadline、许可回调与执行上下文→started/completion/stop及可选观察 |
 | Execution→环境 | [agent-runtime](../packages/agent-runtime/README.md) | 受信可执行文件/环境/期限→所属运行身份、退出和cleanup；当前本机guard，不能声称恶意沙箱 |
-| Execution→业务 | [createFileBusiness](../packages/task-business/index.mjs) | 冻结输入、上游manifest、布局与原执行→准备目录和候选字节；不自签通过 |
-| Core→验证 | [createVerificationPort](../packages/task-application/verification.mjs)、[独立命令](../packages/task-verification-command/README.md) | 原需求/计划/精确候选/政策→独立断言、证据、交付bytes；Core签发权威接纳 |
+| Execution→业务 | [createFileBusiness](../packages/task-business/index.ts) | 冻结输入、上游manifest、布局与原执行→准备目录和候选字节；不自签通过 |
+| Core→验证 | [createVerificationPort](../packages/task-application/verification.ts)、[独立命令](../packages/task-verification-command/README.md) | 原需求/计划/精确候选/政策→独立断言、证据、交付bytes；Core签发权威接纳 |
 | Core→交付/后验 | [本机报告端口](../packages/task-publication-report/README.md) | 已验收成果、原目标与精确授权→执行回执/lookup/独立实际结果 |
-| Core→Store/Depot | [SQLite Store](../packages/task-store/README.md)、[制品实现](../packages/task-application/artifacts.mjs) | owner绑定短事务/原bytes→原子事件、projection、receipt、outbox及不可混淆制品引用 |
+| Core→Store/Depot | [SQLite Store](../packages/task-store/README.md)、[制品实现](../packages/task-application/artifacts.ts) | owner绑定短事务/原bytes→原子事件、projection、receipt、outbox及不可混淆制品引用 |
 
 ## Agent与执行环境
 
