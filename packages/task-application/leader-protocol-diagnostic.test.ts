@@ -30,7 +30,7 @@ test('原Port解析诊断只改变显示，关闭/外来/迟到事件不伪造�
       assert.deepEqual(worker.observation.diagnostic,{stage:protocol?'protocol':'provider',code:mode==='json'?'invalid_json':mode==='shape'?'invalid_leader_decision':'provider_failed',source:'controller'});
       assert.ok(worker.observation.history.some(frame=>frame.publicText==='完整公开片段'));
       assert.equal(worker.observation.history.some(frame=>frame.publicText==='完整公开片段'&&frame.diagnostic?.stage==='protocol'),false);
-      if(mode==='late'){const before=structuredClone(worker);callback(observed);assert.deepEqual(get(),before);}
+      if(mode==='late'){const before=structuredClone(worker);callback(observed);assert.deepEqual(await get(),before);}
     }
     assert.equal((await f.call({operation:'task.leader',taskId:task.id})).protocolCorrection,undefined);
   });

@@ -1,5 +1,5 @@
 import {fixture} from './leader.fixture.ts';
-const phase=process.argv[2],f=fixture({after(){}},{protocolCorrection:true});
+const phase=process.argv[2],f=await fixture({after(){}},{protocolCorrection:true});
 const task=await f.call({operation:'task.create',key:'create',body:{intent:'纠错崩溃恢复',limits:{timeoutMs:120000,maxAttempts:20,maxWorkers:3}}});
 const first=await f.take('leader');
 await new Promise(resolve=>process.send({parent:f.parent,taskId:task.id,first},resolve));

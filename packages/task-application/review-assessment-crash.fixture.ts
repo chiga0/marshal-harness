@@ -8,7 +8,7 @@ const crash=()=>process.kill(process.pid,'SIGKILL');
 if(phase==='before-finish')crash();
 if(phase==='after-staging'){
   const original=f.app.artifacts.stageOutputs.bind(f.app.artifacts);
-  f.app.artifacts.stageOutputs=(...args)=>{const staged=original(...args);fs.writeFileSync(path.join(f.parent,'staging-evidence.json'),JSON.stringify(staged));crash();};
+  f.app.artifacts.stageOutputs=async(...args)=>{const staged=await original(...args);fs.writeFileSync(path.join(f.parent,'staging-evidence.json'),JSON.stringify(staged));crash();};
 }
 if(phase==='inside-transaction'){
   const transaction=f.app.transaction.bind(f.app);

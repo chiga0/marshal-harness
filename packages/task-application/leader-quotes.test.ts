@@ -10,7 +10,7 @@ test('真实漏转义引号与多语言同形缺陷仅消费一次原纠错预�
     const f=await fixture(t,{protocolCorrection:true});const task=await f.call({operation:'task.create',key:'create',body:{intent:'原目标',limits:{timeoutMs:60000,maxAttempts:20,maxWorkers:3}}});
     const first=await f.take('leader');await f.rawDecision(first,text);
     const view=await f.call({operation:'task.leader',taskId:task.id});assert.equal(view.protocolCorrection.used,1);assert.equal(view.protocolCorrection.original.workerId,first.workerId);
-    assert.equal(await f.read(tx=>f.app.execution.worker(tx,first.workerId).record).worker.status,'failed');
+    assert.equal((await f.read(tx=>f.app.execution.worker(tx,first.workerId).record)).worker.status,'failed');
     const next=await f.take('leader');await f.rawDecision(next,text);assert.equal((await f.call({operation:'task.leader',taskId:task.id})).protocolCorrection.used,1);
     assert.equal(await f.read(tx=>tx.commands().filter(c=>c.status==='pending'&&JSON.parse(c.payload).action==='leader').length),0);
   });

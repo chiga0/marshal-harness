@@ -109,8 +109,8 @@ test('real SIGKILL before/inside/after finish commit and after claim/start never
   const committed=!['before-finish','inside-commit'].includes(phase);
   assert.equal(value.protocolCorrection.used,committed?1:0);
   assert.equal(record.attempts,state.second?2:1);
-  if(!committed){assert.equal(value.protocolCorrection.original,null);assert.equal(await f.read(tx=>f.app.execution.worker(tx,state.first.workerId).record).protocolFailure,undefined);}
-  else assert.equal(await f.read(tx=>f.app.execution.worker(tx,state.first.workerId).record).worker.status,'failed');
+  if(!committed){assert.equal(value.protocolCorrection.original,null);assert.equal((await f.read(tx=>f.app.execution.worker(tx,state.first.workerId).record)).protocolFailure,undefined);}
+  else assert.equal((await f.read(tx=>f.app.execution.worker(tx,state.first.workerId).record)).worker.status,'failed');
   if(phase==='after-commit'){
    await f.app.leader.recover(state.taskId);const next=await f.take('leader');assert.notEqual(next.workerId,state.first.workerId);assert.equal(next.deadline,state.first.deadline);
    await f.decision(next,[{type:'plan',proposal}]);assert.equal((await f.get(state.taskId)).status,'awaiting-approval');

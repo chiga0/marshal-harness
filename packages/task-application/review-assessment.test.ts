@@ -23,7 +23,7 @@ test('one original Provider completion and receipt bind a v2 Artifact; the origi
   for(const altered of [{...native.result,receipt:structuredClone(native.result.receipt)},{...native.result,status:'failed'},{...native.result,cleanup:{...native.result.cleanup,cleaned:false}}])assert.throws(()=>reviewAssessmentEvidence(f.reviewPort,ticket,altered));
   assert.throws(()=>reviewAssessmentEvidence(f.reviewPort,{...ticket,workerId:'foreign'},native.result));
   assert.throws(()=>reviewAssessmentEvidence(f.reviewPort,ticket,{...native.result,receipt:{}}));
-  assert.equal(await f.app.execution.finish(ticket,native.result).status,'completed');
+  assert.equal((await f.app.execution.finish(ticket,native.result)).status,'completed');
   const stored=await evidence(f,f.taskId);assert.equal(stored.profile,'task-independent-review/v2');
   assert.equal(stored.report.profile,'task-independent-review/v1');assert.equal(stored.ticketDigest,hash(ticket));
   assert.equal(stored.assessment.reportDigest,hash(stored.report));assert.deepEqual(stored.assessment,reviewAssessmentEvidence(f.reviewPort,ticket,native.result));
@@ -48,9 +48,9 @@ test('missing private capture never downgrades a valid original receipt to v1 ac
   const f=await assessmentFixture(t),ticket=f.reviewTicket;
   const native=await produceReview(f,ticket,assessmentProposal(ticket),{bypass:true});
   assert.equal(receipt(f.reviewPort,ticket,native.result).value.verdict,'accept');
-  assert.equal(await f.app.execution.finish(ticket,{...native.result}).status,'failed');
+  assert.equal((await f.app.execution.finish(ticket,{...native.result})).status,'failed');
   assert.equal((await view(f,f.taskId)).review,null);
-  assert.equal(await f.read(tx=>f.app.get(tx,f.taskId)).failureCode,'invalid_review_report');assert.equal(native.calls,1);
+  assert.equal((await f.read(tx=>f.app.get(tx,f.taskId))).failureCode,'invalid_review_report');assert.equal(native.calls,1);
 });
 
 test('a mapper returning a different valid original report cannot attach captured checks to it',async t=>{
@@ -58,7 +58,7 @@ test('a mapper returning a different valid original report cannot attach capture
   const ticket=f.reviewTicket,native=await produceReview(f,ticket,assessmentProposal(ticket));
   assert.equal(receipt(f.reviewPort,ticket,native.result).value.summary,'不同原报告');
   assert.equal(reviewAssessmentEvidence(f.reviewPort,ticket,native.result),null);
-  assert.equal(await f.app.execution.finish(ticket,native.result).status,'failed');assert.equal((await view(f,f.taskId)).review,null);
+  assert.equal((await f.app.execution.finish(ticket,native.result)).status,'failed');assert.equal((await view(f,f.taskId)).review,null);
 });
 
 test('Depot staging failure publishes no partial assessment and retrying finish uses the original Provider result once',async t=>{
@@ -67,7 +67,7 @@ test('Depot staging failure publishes no partial assessment and retrying finish 
   f.app.artifacts.stageOutputs=()=>{throw new Error('controlled_depot_failure');};
   await assert.rejects(async()=>await f.app.execution.finish(ticket,native.result),/controlled_depot_failure/);
   assert.deepEqual(await f.read(tx=>tx.head(f.taskId)),before);assert.equal((await view(f,f.taskId)).review,null);
-  f.app.artifacts.stageOutputs=stage;assert.equal(await f.app.execution.finish(ticket,native.result).status,'completed');assert.equal(native.calls,1);
+  f.app.artifacts.stageOutputs=stage;assert.equal((await f.app.execution.finish(ticket,native.result)).status,'completed');assert.equal(native.calls,1);
 });
 
 test('invalid checks, failed/cancelled Provider and unconfirmed cleanup cannot create a v2 acceptance',async t=>{
@@ -79,7 +79,7 @@ test('invalid checks, failed/cancelled Provider and unconfirmed cleanup cannot c
     const native=await produceReview(f,ticket,raw,{...(['failed','cancelled'].includes(mode)?{status:mode}:{}),...(mode==='unknown-cleanup'?{cleaned:false}:{})});
     assert.equal(reviewAssessmentEvidence(f.reviewPort,ticket,native.result),null);
     await f.app.execution.finish(ticket,native.result);assert.equal((await view(f,f.taskId)).review,null);assert.equal(native.calls,1);
-    if(['failed','cancelled'].includes(mode))assert.equal(await f.read(tx=>f.app.get(tx,f.taskId)).failureCode,'leader_result_rejected');
+    if(['failed','cancelled'].includes(mode))assert.equal((await f.read(tx=>f.app.get(tx,f.taskId))).failureCode,'leader_result_rejected');
   });
 });
 
@@ -114,19 +114,19 @@ test('original rework evidence selects affected nodes, then a fresh selection re
 test('direct Application reopen rejects an immutable assessment identity toggle without rewriting the task',async t=>{
   for(const enabled of [false,true])await t.test(String(enabled),async t=>{
     const original=await assessmentFixture(t,{reviewAssessments:enabled}),id=original.taskId;
-    const before=original.read(tx=>tx.head(id));
+    const before=await original.read(tx=>tx.head(id));
     const opposite=createReviewPort({...configuration(original.reviewPort,'review'),prepare:()=>({prompt:'original'}),parseReport:parseManagedOutput});
     if(!enabled)registerReviewAssessments(opposite,{profile:'task-review-assessment/v1'});
     const sameOwner=new TaskApplication({store:original.app.store,owner:original.app.owner,
       execution:{maxWorkers:3,providerIds:['fixture'],defaultProvider:'fixture'},depot:original.app.artifacts.depot,
       leader:original.leaderPort,review:opposite,verification:original.app.verification.port});
-    assert.throws(()=>sameOwner.execution.finish(original.reviewTicket,{cleanup:{cleaned:false,started:null}}),error=>error.code==='unsupported_task');
+    await assert.rejects(async()=>sameOwner.execution.finish(original.reviewTicket,{cleanup:{cleaned:false,started:null}}),error=>error.code==='unsupported_task');
     original.closeStore();
     const opened=await fixture(t,{existingParent:original.parent,reviewAssessments:!enabled,maxCalls:16,verificationCheck(){}});
     await assert.rejects(view(opened,id),error=>error.code==='unsupported_task');
     // The old-generation ticket hits the original recovery fence even earlier.
-    assert.throws(()=>opened.app.execution.finish(original.reviewTicket,{cleanup:{cleaned:false,started:null}}),error=>error.code==='recovery_required');
-    assert.deepEqual(opened.read(tx=>tx.head(id)),before);
+    await assert.rejects(async()=>opened.app.execution.finish(original.reviewTicket,{cleanup:{cleaned:false,started:null}}),error=>error.code==='recovery_required');
+    assert.deepEqual(await opened.read(tx=>tx.head(id)),before);
   });
 });
 
