@@ -53,7 +53,7 @@ export class TaskInputAudit {
           nodeId: ticket.nodeId, role: ticket.role, inputDigest: ticket.inputDigest, promptDigest}));
         if (value && typeof value.then === 'function') {void Promise.resolve(value).catch(() => {});}
         else if (typeof value === 'string' && validText(value)) {
-          staged = this.app.artifacts.stageOutputs([['evidence', {name: ticket.workerId + '.input.txt', mediaType: 'text/plain', content: Buffer.from(value)}]])[0];
+          staged = (await this.app.artifacts.stageOutputs([['evidence', {name: ticket.workerId + '.input.txt', mediaType: 'text/plain', content: Buffer.from(value)}]]))[0];
           text = preview(value); coverage = 'policy-redacted';
         }
       } catch { /* Declined/missing bytes is audit unavailability, not Task failure. */ }

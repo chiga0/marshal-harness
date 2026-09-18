@@ -65,7 +65,7 @@ test('Depot staging failure publishes no partial assessment and retrying finish 
   const f=await assessmentFixture(t),ticket=f.reviewTicket,native=await produceReview(f,ticket,assessmentProposal(ticket));
   const stage=f.app.artifacts.stageOutputs.bind(f.app.artifacts),before=await f.read(tx=>tx.head(f.taskId));
   f.app.artifacts.stageOutputs=()=>{throw new Error('controlled_depot_failure');};
-  assert.throws(()=>await f.app.execution.finish(ticket,native.result),/controlled_depot_failure/);
+  await assert.rejects(async()=>await f.app.execution.finish(ticket,native.result),/controlled_depot_failure/);
   assert.deepEqual(await f.read(tx=>tx.head(f.taskId)),before);assert.equal((await view(f,f.taskId)).review,null);
   f.app.artifacts.stageOutputs=stage;assert.equal(await f.app.execution.finish(ticket,native.result).status,'completed');assert.equal(native.calls,1);
 });
@@ -137,7 +137,7 @@ test('bound v2 Review continues through the original verification, delivery and 
   assert.equal((await f.decision(ticket,[{type:'work',kind:'verify',nodeIds:['verify'],selectionDigest:review.selectionDigest}])).status,'completed');
   assert.equal((await f.verify(await f.take('execute','verify'))).status,'completed');
   const audit=await f.call({operation:'task.audit',taskId:f.taskId}),current=await f.get(f.taskId);
-  const artifact=await f.read(tx=>current.artifactIds.map(id=>await f.app.artifacts.metadata(tx,id)).find(row=>row.kind==='delivery'));
+  const artifact=await f.read(tx=>current.artifactIds.map(id=>f.app.artifacts.metadata(tx,id)).find(row=>row.kind==='delivery'));
   assert.equal((await f.decision(await f.take('leader'),[{type:'deliver',artifactId:artifact.id,acceptanceDigest:audit.acceptance.digest,reviewDigest:review.digest}])).status,'completed');
   assert.equal((await f.decision(await f.take('leader'),[{type:'conclude',outcome:'succeeded',summary:'原独立检查完成',basisDigests:[audit.acceptance.digest,review.digest]}])).status,'completed');
   assert.equal((await f.get(f.taskId)).status,'completed');const before=await f.read(tx=>tx.head(f.taskId));
