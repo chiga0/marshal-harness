@@ -52,28 +52,28 @@ export async function fixture(t, options = {}) {
   const f = {get app() {return app;}, provider, parent, results: new Map(), call: request => app.dispatch(request, context),
     read: async callback => await app.transaction(false, callback),
     get: taskId => f.call({operation: 'task.get', taskId}),
-    async take(action, nodeId) {const command = (await f.read(tx => tx.commands().find(command => command.status === 'pending' &&
-      JSON.parse(command.payload).action === action && (nodeId === undefined || JSON.parse(command.payload).nodeId === nodeId))));
-      assert.ok(command, action + ':' + nodeId); return (await app.execution.nextWork(command.id, command.revision));},
+    take(action, nodeId) {const command = f.read(tx => tx.commands().find(command => command.status === 'pending' &&
+      JSON.parse(command.payload).action === action && (nodeId === undefined || JSON.parse(command.payload).nodeId === nodeId)));
+      assert.ok(command, action + ':' + nodeId); return app.execution.nextWork(command.id, command.revision);},
     async decision(ticket, actions) {response = {profile: 'task-managed-leader/v1', callId: ticket.input.leader.callId,
       inputDigest: ticket.input.leader.inputDigest, summary: '只依据原证据推进', actions}; return f.run(ticket, leader);},
     async rawDecision(ticket,text){response=text;return f.run(ticket,leader);},
-    leaderPort:leader, reviewPort:review, closeStore:async()=>{await store.drained;store.close()},
+    leaderPort:leader, reviewPort:review, closeStore:()=>store.close(),
     async run(ticket, port) {
-      if (options.observability) {(await app.execution.observeInput(ticket, 'prepared', '受控模型夹具 password=fixture-secret')); (await app.execution.observeInput(ticket, 'handed-off'));}
+      if (options.observability) {app.execution.observeInput(ticket, 'prepared', '受控模型夹具 password=fixture-secret'); app.execution.observeInput(ticket, 'handed-off');}
       const handle = (ticket.executionType==='review' ? startReviewWithAssessments : startLeaderWithJsonCorrection)(port,{ticket, provider, prepared: {cwd: parent, prompt: '受控模型夹具'}});
-      (await app.execution.started(ticket, await handle.started)); const result = await handle.completion; f.results.set(ticket.workerId, result); return (await app.execution.finish(ticket, result));},
-    async author(ticket, started = {executionId: 'author-' + ticket.workerId, startedAt: new Date().toISOString()}) {(await app.execution.started(ticket, started));
+      app.execution.started(ticket, await handle.started); const result = await handle.completion; f.results.set(ticket.workerId, result); return app.execution.finish(ticket, result);},
+    author(ticket, started = {executionId: 'author-' + ticket.workerId, startedAt: new Date().toISOString()}) {app.execution.started(ticket, started);
       const file = {path: ticket.nodeId + '.json', ...depot.put(encode({value: ticket.nodeId === 'east' ? 10 : 20}))};
-      return (await app.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', cleanup: {started, cleaned: true}, result: {
+      return app.execution.finish(ticket, {status: 'completed', stopReason: 'end_turn', cleanup: {started, cleaned: true}, result: {
         profile: 'task-file-business/v1', taskId: ticket.taskId, nodeId: ticket.nodeId, workerId: ticket.workerId,
         planDigest: ticket.planDigest, reservationDigest: ticket.reservationDigest, layoutDigest: hash({profile: 'task-file-business/v1', ...ticket.input.fileLayout}),
-        files: [file], inputDigest: fileDigest([]), manifestDigest: fileDigest([file])}}));},
+        files: [file], inputDigest: fileDigest([]), manifestDigest: fileDigest([file])}});},
     async review(ticket, extra = {}) {response = {profile: 'task-independent-review/v1', inputDigest: ticket.input.review.inputDigest,
       selectionDigest: ticket.input.review.selectionDigest, verdict: 'accept', summary: '独立审阅两原分支', findings: [], ...extra}; return f.run(ticket, review);},
     async rawReview(ticket,value){response=value;return f.run(ticket,review);},
     async verify(ticket) {const handle = verification.start({ticket, prepared: {cwd: parent, prompt: '固定受控检查器'}});
-      (await app.execution.started(ticket, await handle.started)); return (await app.execution.finish(ticket, await handle.completion));},
+      app.execution.started(ticket, await handle.started); return app.execution.finish(ticket, await handle.completion);},
     async reopen() {await store.drained; store.close(); store = Store.openExisting(root, {format: LEADER_FORMAT}); owner = await store.claimOwner(owner.generation, 'cold', Date.now() + 3600000);
       app = new TaskApplication({store, owner, execution, leader, review, verification, depot, observability: options.observability ?? null, publication: options.publication ?? null});},
   }; return f;
