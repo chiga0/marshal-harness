@@ -130,13 +130,13 @@ Core 只检查已确认要求的记录完整性、适用性和当前证据，不
 
 | 当前文件/方法 | 可复用内容 | 本纵切确实新增或需调整 |
 | --- | --- | --- |
-| [application.mjs](../packages/task-application/application.mjs) `create/proposePlan/freezePlan/mutate` | Task 输入、批准、短事务、原幂等/Operation | 反复 Leader 义务/决定接纳；当前 `proposePlan` 只允许未批准任务，不是运行中重规划入口 |
-| [execution.mjs](../packages/task-application/execution.mjs) `nextWork/finish/reconcile` | Attempt、预算、依赖、当前 ticket、停止/结果 | Planner 成功一次性进入 awaiting-approval；Verifier 成功直接 completed，均需新 profile 内的阶段性处理 |
-| [controller.mjs](../packages/task-supervisor/controller.mjs) `#cycle/#failEntry/#stop` | 原观察循环、异步执行与所属 handle | 当前循环混合调度/停止、失败广播；逐步委托 Core 硬规则和 Execution 操作，新增聚合通知，不加监督 LLM 或另一个 scheduler |
-| [verification.mjs](../packages/task-application/verification.mjs) `bind/recheck/stage` | 私有可信验收端口、精确全候选/结果与 Depot | 当前唯一 verifier sink；新增精确 Review 消费、阶段验收与发布后证据，Reviewer role 现仅普通 Agent 标签，未有发布批准机制 |
-| [repair.mjs](../packages/task-application/repair.mjs) 与 [runtime-questions.mjs](../packages/task-application/runtime-questions.mjs) | 原选果/closure、反馈、答案/ACK、原代拒绝 | Leader 授权内局部决定入口与集中意见来源、Leader 澄清/授权处理；不放松旧显式 repair 或原 ACK |
-| [composition.mjs](../packages/task-service/composition.mjs)、[业务适配](../packages/task-business/index.mjs)、[Store](../packages/task-store/store.mjs) | 唯一组合/SQLite/Depot、可信业务 policy、原生 Provider 与 custody | 注入 Leader 输入/输出契约和有限发布/查询/后验适配；当前没有通用受控业务发布实现 |
-| [HTTP handler](../packages/task-api/http-handler.mjs) 与 [客户端](../packages/task-client/index.mjs) | 有界认证/请求、原 CAS/回执绑定/下载 | 新行为可观察性与严格兼容测试，不能靠私有 SQL 或 UI 补步骤假称公开闭环 |
+| [application.mjs](../packages/task-application/application.ts) `create/proposePlan/freezePlan/mutate` | Task 输入、批准、短事务、原幂等/Operation | 反复 Leader 义务/决定接纳；当前 `proposePlan` 只允许未批准任务，不是运行中重规划入口 |
+| [execution.mjs](../packages/task-application/execution.ts) `nextWork/finish/reconcile` | Attempt、预算、依赖、当前 ticket、停止/结果 | Planner 成功一次性进入 awaiting-approval；Verifier 成功直接 completed，均需新 profile 内的阶段性处理 |
+| [controller.mjs](../packages/task-supervisor/controller.ts) `#cycle/#failEntry/#stop` | 原观察循环、异步执行与所属 handle | 当前循环混合调度/停止、失败广播；逐步委托 Core 硬规则和 Execution 操作，新增聚合通知，不加监督 LLM 或另一个 scheduler |
+| [verification.mjs](../packages/task-application/verification.ts) `bind/recheck/stage` | 私有可信验收端口、精确全候选/结果与 Depot | 当前唯一 verifier sink；新增精确 Review 消费、阶段验收与发布后证据，Reviewer role 现仅普通 Agent 标签，未有发布批准机制 |
+| [repair.mjs](../packages/task-application/repair.ts) 与 [runtime-questions.mjs](../packages/task-application/runtime-questions.ts) | 原选果/closure、反馈、答案/ACK、原代拒绝 | Leader 授权内局部决定入口与集中意见来源、Leader 澄清/授权处理；不放松旧显式 repair 或原 ACK |
+| [composition.mjs](../packages/task-service/composition.ts)、[业务适配](../packages/task-business/index.ts)、[Store](../packages/task-store/store.ts) | 唯一组合/SQLite/Depot、可信业务 policy、原生 Provider 与 custody | 注入 Leader 输入/输出契约和有限发布/查询/后验适配；当前没有通用受控业务发布实现 |
+| [HTTP handler](../packages/task-api/http-handler.ts) 与 [客户端](../packages/task-client/index.ts) | 有界认证/请求、原 CAS/回执绑定/下载 | 新行为可观察性与严格兼容测试，不能靠私有 SQL 或 UI 补步骤假称公开闭环 |
 
 ## 7. 统一实施顺序与正式发布前验收
 

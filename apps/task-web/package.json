@@ -9,7 +9,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc -b",
     "test": "vitest run && npm run test:browser-guards",
-    "test:browser-guards": "node --test e2e/browser-fault-guards.checks.mjs",
+    "test:browser-guards": "node --test e2e/browser-fault-guards.checks.ts",
     "test:watch": "vitest"
   },
   "dependencies": {

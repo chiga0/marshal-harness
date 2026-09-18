@@ -29,14 +29,27 @@ def prepare(tag, parent, channel='stable'):
     base = 'https://github.com/chiga0/marshal-harness/releases/download/' + tag + '/'
     files = [(name, base + name) for name in
              ('SHA256SUMS', 'SHA256SUMS.minisig', pins['ZIP'], 'manifest.json')]
-    files.append(('distribution.mjs', 'https://raw.githubusercontent.com/chiga0/marshal-harness/'
-                  + pins['SOURCE'] + '/packages/task-distribution/index.mjs'))
+    # 时代适配：发布 manifest.json 是唯一事实源——entrypoint 后缀决定 helper 时代(.mjs/.ts),
+    # 与镜像候选包同源可读;读取不可用时(离线/测试环境)按历史(.mjs)处理。
     for name, url in files:
         print('下载 ' + name, flush=True)
         subprocess.run(['curl', '-q', '-fsSL', '--proto', '=https', '--proto-redir', '=https',
                         '--connect-timeout', '15', '--max-time', '120', '--retry', '2',
                         '--retry-all-errors', '--max-filesize', '16777216',
                         '--output', str(stage / name), url], check=True, timeout=400)
+    try:
+        entrypoint = json.loads((stage / 'manifest.json').read_text()).get('entrypoint', '')
+    except (OSError, ValueError):
+        entrypoint = ''
+    helper_ext = 'ts' if entrypoint.endswith('.ts') else 'mjs'
+    helper_name = 'distribution.' + helper_ext
+    helper_url = ('https://raw.githubusercontent.com/chiga0/marshal-harness/'
+                  + pins['SOURCE'] + '/packages/task-distribution/index.' + helper_ext)
+    print('下载 ' + helper_name, flush=True)
+    subprocess.run(['curl', '-q', '-fsSL', '--proto', '=https', '--proto-redir', '=https',
+                    '--connect-timeout', '15', '--max-time', '120', '--retry', '2',
+                    '--retry-all-errors', '--max-filesize', '16777216',
+                    '--output', str(stage / helper_name), helper_url], check=True, timeout=400)
     (stage / installer.name).write_bytes(installer.read_bytes())
     return stage
 

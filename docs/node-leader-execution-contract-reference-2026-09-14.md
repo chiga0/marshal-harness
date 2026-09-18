@@ -144,7 +144,7 @@ Core 单独保存后验结果与原 publication receipt，结束仍需当前 Lea
 
 ## 7. 公开可见性与回复合同
 
-实际 [OpenAPI](../packages/task-api/openapi.json) 的 Task/Plan/Worker/Audit/Operation 是闭集，[TaskClient](../packages/task-client/index.mjs) 对响应逐项校验。因此本版不在旧响应塞新字段/role/Operation kind，也不要求新 header。新公开能力只用两个 Task 子资源操作，常规认证、Host/Origin、body cap、私有 token、错误/status 与原 HTTP 边界复用；不开放 typed actions 写接口。
+实际 [OpenAPI](../packages/task-api/openapi.json) 的 Task/Plan/Worker/Audit/Operation 是闭集，[TaskClient](../packages/task-client/index.ts) 对响应逐项校验。因此本版不在旧响应塞新字段/role/Operation kind，也不要求新 header。新公开能力只用两个 Task 子资源操作，常规认证、Host/Origin、body cap、私有 token、错误/status 与原 HTTP 边界复用；不开放 typed actions 写接口。
 
 ### 7.1 `task.leader`：GET `/v1/tasks/{taskId}/leader`
 
@@ -175,14 +175,14 @@ Task 状态仍旧枚举：待业务答复用 awaiting-answer，待精确发布�
 
 | 文件/方法 | 一个纵切内的实际修改 |
 | --- | --- |
-| [application.mjs](../packages/task-application/application.mjs) `create/freezePlan/mutate/dispatch/query` | v7 初始 Leader 义务、可信 approval 条款、原批准及新子资源/回复；旧路径按格式原样 |
-| [execution.mjs](../packages/task-application/execution.mjs) `nextWork/finish/reconcile/expandDispatch` | 原 ticket/预算上增加内部类型、决策 headroom、阶段验收、有限失败待决和当前代安全 successor；真实结果不经观察采样 |
+| [application.mjs](../packages/task-application/application.ts) `create/freezePlan/mutate/dispatch/query` | v7 初始 Leader 义务、可信 approval 条款、原批准及新子资源/回复；旧路径按格式原样 |
+| [execution.mjs](../packages/task-application/execution.ts) `nextWork/finish/reconcile/expandDispatch` | 原 ticket/预算上增加内部类型、决策 headroom、阶段验收、有限失败待决和当前代安全 successor；真实结果不经观察采样 |
 | 新 `task-application/leader.mjs` | `snapshot/acceptDecision/consumeAction/reply/view/recover`；同原 transaction 与 Store，不导入 Provider 品牌、持有进程或建立新 scheduler |
-| [verification.mjs](../packages/task-application/verification.mjs)、[repair.mjs](../packages/task-application/repair.mjs) | 独立 Review 受信封装、当前选果/原 ACK 重查、同计划内部 repair provenance、候选验收与后验区分；不放宽旧 WeakMap/负报告门禁 |
-| [controller.mjs](../packages/task-supervisor/controller.mjs) | 现混合 loop 保留为兼容组合入口：许可/已批准调度/硬规则委托 Core，原 handle 持有及 start/stop/collect 委托 Execution coordinator；Supervisor observer 只聚合观测/通知，不持有可变命令端口或执行 handle，不业务重试改计划/判成功。不要求四个服务或全仓重命名 |
-| [业务适配](../packages/task-business/index.mjs)、[命令适配](../packages/task-verification-command/index.mjs)、新增 `packages/task-publication-report/` | 精确输入、集中 Review/原负反馈进入实际 prompt，固定发布/后验命令与私有 receipt；命令端口显式接纳 postverify 内部类型，不把现仅 verification 的校验当已支持；不得弃反馈或使用可变目录取上游 |
-| [store.mjs](../packages/task-store/store.mjs)、[composition.mjs](../packages/task-service/composition.mjs) | v7/layout7 claim 前校验、可信 DI/原准备资格、恢复准入；复用原 outbox kind/source/预算，不涨全局事务上限 |
-| [HTTP](../packages/task-api/http-handler.mjs)、[OpenAPI](../packages/task-api/openapi.json)、[客户端](../packages/task-client/index.mjs)、发行清单 | 两个真实新端点/绑定，旧 bytes 回归；所有新增生产模块进入原 same-bytes 清单，不把 live fixtures 包成生产依赖 |
+| [verification.mjs](../packages/task-application/verification.ts)、[repair.mjs](../packages/task-application/repair.ts) | 独立 Review 受信封装、当前选果/原 ACK 重查、同计划内部 repair provenance、候选验收与后验区分；不放宽旧 WeakMap/负报告门禁 |
+| [controller.mjs](../packages/task-supervisor/controller.ts) | 现混合 loop 保留为兼容组合入口：许可/已批准调度/硬规则委托 Core，原 handle 持有及 start/stop/collect 委托 Execution coordinator；Supervisor observer 只聚合观测/通知，不持有可变命令端口或执行 handle，不业务重试改计划/判成功。不要求四个服务或全仓重命名 |
+| [业务适配](../packages/task-business/index.ts)、[命令适配](../packages/task-verification-command/index.ts)、新增 `packages/task-publication-report/` | 精确输入、集中 Review/原负反馈进入实际 prompt，固定发布/后验命令与私有 receipt；命令端口显式接纳 postverify 内部类型，不把现仅 verification 的校验当已支持；不得弃反馈或使用可变目录取上游 |
+| [store.mjs](../packages/task-store/store.ts)、[composition.mjs](../packages/task-service/composition.ts) | v7/layout7 claim 前校验、可信 DI/原准备资格、恢复准入；复用原 outbox kind/source/预算，不涨全局事务上限 |
+| [HTTP](../packages/task-api/http-handler.ts)、[OpenAPI](../packages/task-api/openapi.json)、[客户端](../packages/task-client/index.ts)、发行清单 | 两个真实新端点/绑定，旧 bytes 回归；所有新增生产模块进入原 same-bytes 清单，不把 live fixtures 包成生产依赖 |
 
 ## 9. 不能由本合同推导的能力
 

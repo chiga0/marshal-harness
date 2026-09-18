@@ -141,7 +141,7 @@ Core 单独保存后验结果与原 publication receipt，结束仍需当前 Lea
 
 ## 7. 公开可见性与回复合同
 
-实际 [OpenAPI](../packages/task-api/openapi.json) 的 Task/Plan/Worker/Audit/Operation 是闭集，[TaskClient](../packages/task-client/index.mjs) 对响应逐项校验。因此本版不在旧响应塞新字段/role/Operation kind，也不要求新 header。新公开能力只用两个 Task 子资源操作，常规认证、Host/Origin、body cap、私有 token、错误/status 与原 HTTP 边界复用；不开放 typed actions 写接口。
+实际 [OpenAPI](../packages/task-api/openapi.json) 的 Task/Plan/Worker/Audit/Operation 是闭集，[TaskClient](../packages/task-client/index.ts) 对响应逐项校验。因此本版不在旧响应塞新字段/role/Operation kind，也不要求新 header。新公开能力只用两个 Task 子资源操作，常规认证、Host/Origin、body cap、私有 token、错误/status 与原 HTTP 边界复用；不开放 typed actions 写接口。
 
 ### 7.1 `task.leader`：GET `/v1/tasks/{taskId}/leader`
 
