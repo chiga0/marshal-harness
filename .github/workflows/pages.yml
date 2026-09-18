@@ -34,7 +34,7 @@ jobs:
       - run: python scripts/prepare-docs.py
       - run: mkdocs build --strict
       - run: python scripts/check-docs-site.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: documentation-site
           path: .marshal/docs-site
