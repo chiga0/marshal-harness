@@ -33,7 +33,7 @@ function fixture(t, bytes = Buffer.from('{"count":2,"netCents":550}\n')) {
   const binding = {actionId: 'action-one', targetId: port.id, name: authorization.name, artifactDigest: digest(bytes), bytes: bytes.length,
     authorizationDigest: sha(authorization)};
   const makeTicket = () => reserve({publication: {binding, authorization}});
-  t.after(() => {port.close(); fs.rmSync(base, {recursive: true, force: true});});
+  t.after(async () => {await port.drained; port.close(); fs.rmSync(base, {recursive: true, force: true});});
   return {base, root, cwd, bytes, port, binding, authorization, makeTicket, prepared: {cwd, prompt: '原Core授权测试输入，不代表真实用户批准'}};
 }
 async function started(f, port = f.port, ticket = f.makeTicket(), context) {

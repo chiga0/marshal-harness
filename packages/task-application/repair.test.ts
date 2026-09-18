@@ -46,7 +46,7 @@ async function fixture(t) {
   let app = new TaskApplication({...config, owner});
   const business = createFileBusiness({parent: executionRoot, depot, layoutFor: ticket => ticket.input.fileLayout,
     approvedLayout: ticket => app.execution.approvedLayout(ticket), observeExecution: ticket => app.execution.observeExecution(ticket)});
-  t.after(() => {business.close(); depot.close(); store.close(); fs.rmSync(parent, {recursive: true, force: true});});
+  t.after(async () => {await business.drained; business.close(); depot.close(); store.close(); fs.rmSync(parent, {recursive: true, force: true});});
   const f = {parent, root, repair, get app() {return app;}, get store() {return store;}, get owner() {return owner;},
     call: request => app.dispatch(request, context), get: taskId => app.dispatch({operation: 'task.get', taskId}, context),
     commands: taskId => app.transaction(false, tx => taskId ? tx.taskCommands(taskId) : tx.commands()), head: taskId => app.transaction(false, tx => tx.head(taskId)),
@@ -86,7 +86,7 @@ async function fixture(t) {
       return {...ready, code, docs, task, audit};},
     request(value) {return {operation: 'task.repair', taskId: value.taskId, key: 'repair', body: {expectedRevision: value.task.revision,
       planDigest: value.plan.digest, decisionDigest: value.audit.decision.digest, nodeIds: ['code'], feedback: '按原业务断言修正为正确结果'}};},
-    async reopen() {store.close();
+    async reopen() {await store.drained; store.close();
       for (const options of [{}, {format: CUSTODY_FORMAT}, {format: INTERACTION_FORMAT}]) assert.throws(() => Store.openExisting(root, options));
       store = Store.openExisting(root, {format: REPAIR_FORMAT}); assert.equal(store.info().generation, owner.generation);
       owner = await store.claimOwner(store.info().generation, 'reopened', Date.now() + 3600000);

@@ -221,13 +221,19 @@ export class Store {
     check(token === INTERNAL); this.#db = db; this.#files = files;
     this.#clock = options.clock ?? Date.now; this.#monotonic = options.monotonic ?? (() => performance.now());
   }
-  // Async 缝线的有序互斥。旧同步世界由事件循环阻塞天然串行化生命周期操作;
-  // 公开方法 async 化之后,无关调用方(HTTP 分发、Supervisor 周期、owner 续约)会
-  // 真正交错,因此所有生命周期操作经 FIFO 队列串行,恢复旧的单写者顺序。真正
-  // 的冲突只剩事务回调内部的同步嵌套调用,继续 fail closed 并毒化当前事务。
+  // Async 缝线的有序互斥。DatabaseSync 同步执行,但 async 包装器创建微任务边界,
+  // 允许 Supervisor tick 在 leader 的 read-modify-write 之间插入。FIFO 队列恢复
+  // 原子性;drained getter 让测试 fixture 在 close 前排空队列。
+  #chain = Promise.resolve();
   #guardReentry() {
     if (this.#insideTxCallback) { this.#currentTx?.poison('nested-transaction'); fail('nested-transaction'); }
   }
+  #exclusive(fn) {
+    const result = this.#chain.then(() => fn());
+    this.#chain = result.catch(() => {});
+    return result;
+  }
+  get drained() { return this.#chain; }
   static create(root, options = {}) { return Store.#open(root, options, true); }
   static openExisting(root, options = {}) { return Store.#open(root, options, false); }
   static #open(root, options, create) {
@@ -284,7 +290,7 @@ export class Store {
   // uses this read-only snapshot; no Task mutation or owner token is returned.
   async inspectRecovery(callback) {
     this.#guardReentry(); check(!this.#closed, 'closed');
-    return this.#inspectRecovery(callback);
+    return this.#exclusive(() => this.#inspectRecovery(callback));
   }
   #inspectRecovery(callback) {
     this.#enter(); let tx;
@@ -306,9 +312,11 @@ export class Store {
   // callers must NOT treat this as a mutation path.
   async headsList() {
     this.#guardReentry(); check(!this.#closed, 'closed');
-    this.#enter();
-    return this.#db.prepare('SELECT stream, sequence, digest FROM heads ORDER BY stream').all()
-      .map(row => Object.freeze({stream: row.stream, sequence: row.sequence, digest: row.digest}));
+    return this.#exclusive(() => {
+      this.#enter();
+      return this.#db.prepare('SELECT stream, sequence, digest FROM heads ORDER BY stream').all()
+        .map(row => Object.freeze({stream: row.stream, sequence: row.sequence, digest: row.digest}));
+    });
   }
 
   #owner(owner) {
@@ -321,11 +329,11 @@ export class Store {
   // and every lifecycle operation serializes through the store's FIFO queue.
   async claimOwner(expectedGeneration, instanceId, expiresAt) {
     this.#guardReentry(); check(!this.#closed, 'closed');
-    return this.#changeOwner(expectedGeneration, instanceId, expiresAt, null);
+    return this.#exclusive(() => this.#changeOwner(expectedGeneration, instanceId, expiresAt, null));
   }
   async renewOwner(owner, expiresAt) {
     this.#guardReentry(); check(!this.#closed, 'closed');
-    return this.#changeOwner(owner?.generation, owner?.instanceId, expiresAt, owner);
+    return this.#exclusive(() => this.#changeOwner(owner?.generation, owner?.instanceId, expiresAt, owner));
   }
   #changeOwner(expected, instanceId, expiresAt, previous) {
     this.#enter();
@@ -348,11 +356,11 @@ export class Store {
   #rollback() { try { if (this.#db.isTransaction) this.#db.exec('ROLLBACK'); } catch { this.#closed = true; try { this.#db.close(); } finally { this.#files.close(); } } }
   async read(owner, callback) {
     check(typeof callback === 'function'); this.#guardReentry(); check(!this.#closed, 'closed');
-    return this.#run(owner, callback, false);
+    return this.#exclusive(() => this.#run(owner, callback, false));
   }
   async write(owner, callback) {
     check(typeof callback === 'function'); this.#guardReentry(); check(!this.#closed, 'closed');
-    return this.#run(owner, callback, true);
+    return this.#exclusive(() => this.#run(owner, callback, true));
   }
   #run(owner, callback, write) {
     this.#enter();

@@ -1,11 +1,11 @@
-import {leaderJsonCorrectionPolicy, leaderJsonFailure} from './leader-protocol-correction.ts';
-import {reviewAssessmentPolicy, reviewAssessmentEvidence} from './review-assessment.ts';
-import {LEADER_FORMAT, encode, digest} from '../task-store/store.ts';
-import {clone, nextRevision, publicTask, terminal, reject, isText} from './model.ts';
-import {affectedNodes} from './graph.ts';
-import {LEADER_PROFILE, REVIEW_PROFILE, configuration, receipt, hash, sha, id, closed, check, createEffectPort} from './leader-ports.ts';
-import {nameFor} from '../task-publication-report/index.ts';
-import {hasPublicationExpected} from './verification.ts';
+import {leaderJsonCorrectionPolicy, leaderJsonFailure} from './leader-protocol-correction.mjs';
+import {reviewAssessmentPolicy, reviewAssessmentEvidence} from './review-assessment.mjs';
+import {LEADER_FORMAT, encode, digest} from '../task-store/store.mjs';
+import {clone, nextRevision, publicTask, terminal, reject, isText} from './model.mjs';
+import {affectedNodes} from './graph.mjs';
+import {LEADER_PROFILE, REVIEW_PROFILE, configuration, receipt, hash, sha, id, closed, check, createEffectPort} from './leader-ports.mjs';
+import {nameFor} from '../task-publication-report/index.mjs';
+import {hasPublicationExpected} from './verification.mjs';
 
 const decode = row => row ? JSON.parse(row.bytes.toString()) : null;
 const live = record => ['queued', 'running', 'awaiting-answer', 'stopping', 'unknown'].includes(record.worker.status);
@@ -106,9 +106,9 @@ export class TaskLeader {
       status: 'pending', sourceGeneration: record.ticket.generation};
     return true;
   }
-  async recover(taskId) {
+  recover(taskId) {
     if (!this.port) return;
-    const pending = await this.app.transaction(false, tx => {
+    const pending = this.app.transaction(false, tx => {
       const task = this.app.get(tx, taskId); if (!task.leader || ended.has(task.task.status)) return [];
       const workers = this.app.execution.workers(tx, task);
       if (workers.some(({record}) => live(record) && record.ticket.generation !== this.app.owner.generation.toString())) return [];
@@ -119,8 +119,8 @@ export class TaskLeader {
     this.recoverPublicationAction(taskId);
     this.recoverUnreserved(taskId);
   }
-  async recoverExecution(taskId, entry) {
-    const original = await this.app.transaction(false, tx => {
+  recoverExecution(taskId, entry) {
+    const original = this.app.transaction(false, tx => {
       const {record} = this.app.execution.worker(tx, entry.workerId), task = this.app.get(tx, taskId);
       check(hash(record.recovery) === hash(entry.recovery) && record.cleanup?.cleaned && record.custody?.settledDigest === entry.recovery.observationDigest,
         'recovery_required');
@@ -131,7 +131,7 @@ export class TaskLeader {
     const lookup = entry.recovery.type === 'publication' ? this.effects.publication.lookup(original.ticket, {deadline: this.app.now() + 1000}) : null;
     const data = lookup ? receipt(this.effects.publication, original.ticket, lookup) : null;
     const staged = data ? this.app.artifacts.stageOutputs([['evidence', data.value.evidence]]) : [];
-    await this.app.transaction(true, tx => {
+    this.app.transaction(true, tx => {
       const {row, record} = this.app.execution.worker(tx, entry.workerId), task = this.app.get(tx, taskId), recovery = record.recovery;
       if (ended.has(task.task.status) || hash(recovery) !== hash(entry.recovery)) return;
       check(record.cleanup?.cleaned && record.custody?.settledDigest === recovery.observationDigest &&
@@ -233,15 +233,15 @@ export class TaskLeader {
       subject: {profile: 'publication-action-lookup', taskId: task.task.id, commandId: command.id,
         generation: command.generation.toString(), actionDigest: hash(action), binding: clone(action.binding), authorization: clone(authorization)}};
   }
-  async recoverPublicationAction(taskId) {
+  recoverPublicationAction(taskId) {
     if (!this.publication) return;
-    const original = await this.app.transaction(false, tx => this.unreservedPublication(tx, this.app.get(tx, taskId)));
+    const original = this.app.transaction(false, tx => this.unreservedPublication(tx, this.app.get(tx, taskId)));
     if (!original) return;
     const lookup = this.effects.publication.lookup(original.subject, {deadline: this.app.now() + 1000});
     const data = receipt(this.effects.publication, original.subject, lookup);
     const expected = data.status === 'matched' ? this.app.verification.expectedPublication(original.expectedInput) : null;
     const staged = this.app.artifacts.stageOutputs([['evidence', data.value.evidence]]);
-    await this.app.transaction(true, tx => {
+    this.app.transaction(true, tx => {
       const task = this.app.get(tx, taskId), current = this.unreservedPublication(tx, task);
       if (!current) return;
       check(hash(current.subject) === hash(original.subject), 'recovery_required');
@@ -282,8 +282,8 @@ export class TaskLeader {
       this.settleRecoveryControl(tx, task, source);
     });
   }
-  async recoverUnreserved(taskId) {
-    await this.app.transaction(true, tx => {
+  recoverUnreserved(taskId) {
+    this.app.transaction(true, tx => {
       const task = this.app.get(tx, taskId); if (!task.leader || ended.has(task.task.status)) return;
       const workers = this.app.execution.workers(tx, task);
       if (workers.some(({record}) => live(record) && record.ticket.generation !== this.app.owner.generation.toString()) ||
@@ -445,7 +445,7 @@ export class TaskLeader {
       materials: [...selected.flatMap(({record}) => record.candidate.files.map(file => ({workerId: record.worker.id, nodeId: record.worker.nodeId, ...file}))),
         ...task.task.artifactIds.map(id => this.app.artifacts.metadata(tx, id))]};
   }
-  async expand(input) {
+  expand(input) {
     let total = encode(input).length;
     const materials = [...(input.materials ?? []), ...input.snapshot.task.inputArtifacts.map(ref => ({inputId: ref.id, ...ref}))].map(ref => {
       total += ref.bytes; check(total <= 196608, 'unsupported_task');
@@ -454,14 +454,14 @@ export class TaskLeader {
     });
     for (const evidence of input.snapshot.evidence) for (const id of evidence.evidenceIds ?? []) {
       if (materials.some(ref => ref.id === id)) continue;
-      const ref = await this.app.transaction(false, tx => this.app.artifacts.metadata(tx, id));
+      const ref = this.app.transaction(false, tx => this.app.artifacts.metadata(tx, id));
       check(ref?.taskId === input.taskId, 'candidate_manifest_conflict'); total += ref.bytes; check(total <= 196608);
       materials.push({...ref, content: new TextDecoder('utf-8', {fatal: true}).decode(this.app.artifacts.bytes(ref))});
     }
     const value = {...input, materials}; check(encode(value).length <= 196608); return {...value, inputDigest: hash(value)};
   }
-  async nextWork(commandId, expectedRevision) {
-    const original = await this.app.transaction(false, tx => {
+  nextWork(commandId, expectedRevision) {
+    const original = this.app.transaction(false, tx => {
       const command = tx.command(commandId);
       if (!command || command.status !== 'pending' || command.revision !== BigInt(expectedRevision) || command.generation !== this.app.owner.generation) return null;
       const payload = decode({bytes: command.payload});
@@ -473,24 +473,24 @@ export class TaskLeader {
         if (obligation?.status !== 'pending' || task.leader.activeCallId) return null;
         check(task.leader.calls < this.config.leader.policy.maxCalls, 'capacity_exceeded');
         const callId = this.app.newId('call');
-        return {command, task, payload, input: this.snapshot(tx, task, obligation, callId), refs: this.app.runtimeQuestions.refs(tx, {task})};
+        return {command, task, payload, input: this.snapshot(tx, task, obligation, callId)};
       }
       const action = decode(tx.projection('attempt', payload.actionId));
       if (action?.status !== 'pending') return null;
       const obligation = {id: action.id, sources: [{reason: payload.action, nodeIds: action.payload.nodeIds ?? []}]};
-      return {command, task, payload, action, input: this.snapshot(tx, task, obligation, action.id), refs: this.app.runtimeQuestions.refs(tx, {task}),
+      return {command, task, payload, action, input: this.snapshot(tx, task, obligation, action.id),
         expected: payload.action === 'postverify' ? decode(tx.projection('attempt', action.payload.publicationActionId))?.expected : null,
         artifact: ['publication', 'postverify'].includes(payload.action) ? this.app.artifacts.metadata(tx, task.leader.delivery.artifactId) : null};
     });
     if (!original) return null;
-    const expanded = await this.expand(original.input);
+    const expanded = this.expand(original.input);
     let expected;
     if (original.payload.action === 'publication') expected = this.app.verification.expectedPublication({taskId: original.task.task.id,
       planDigest: original.task.plan.digest, input: {task: original.task.input, plan: original.task.plan, inputArtifacts: original.task.inputArtifacts,
         leaderReplies: expanded.snapshot.interactions.replies, leaderReplyRefs: expanded.snapshot.interactions.replies.map(({answer, ...ref}) => ref),
-        interactionRefs: original.refs}});
+        interactionRefs: this.app.transaction(false, tx => this.app.runtimeQuestions.refs(tx, original.task))}});
     else if (original.payload.action === 'postverify') {expected = original.expected; check(expected !== undefined, 'candidate_manifest_conflict');}
-    return await this.app.transaction(true, tx => {
+    return this.app.transaction(true, tx => {
       const command = tx.command(commandId), task = this.app.get(tx, original.task.task.id);
       if (command.status !== 'pending' || command.revision !== BigInt(expectedRevision) || command.generation !== this.app.owner.generation ||
           terminal.has(task.task.status) || ['cancelling', 'paused'].includes(task.task.status) || this.app.now() >= Date.parse(task.task.deadlineAt)) return null;
@@ -678,7 +678,7 @@ export class TaskLeader {
     }
     return source => {for (const write of writes) write(source); for (const action of actionRecords) tx.putProjection('attempt', action.id, 0, source, encode(action));};
   }
-  async finish(ticket, result) {
+  finish(ticket, result) {
     if (['publication', 'postverify'].includes(ticket.executionType)) return this.finishEffect(ticket, result);
     const port = ticket.executionType === 'leader' ? this.port : this.review;
     const data = result?.receipt ? receipt(port, ticket, result) : null;
@@ -692,7 +692,7 @@ export class TaskLeader {
     const protocolFailure = data && ticket.executionType==='leader' && this.config.protocolCorrection ? leaderJsonFailure(port,ticket,result) : null;
     // Byte durability precedes the final transaction; cancelled, stale and
     // unknown attempts cannot create ready refs. A rollback leaves only bytes.
-    const eligible = await this.app.transaction(false, tx => {
+    const eligible = this.app.transaction(false, tx => {
       const {record, task} = this.app.execution.ticket(tx, ticket);
       check(hash(task.leader.reviewAssessmentIdentity ?? null) === hash(this.config.reviewAssessments ?? null), 'unsupported_task');
       return live(record) && !record.stopIntent && !task.cancelIntent && !terminal.has(task.task.status) &&
@@ -701,7 +701,7 @@ export class TaskLeader {
     });
     const staged = eligible ? this.app.artifacts.stageOutputs([['evidence', {name: ticket.executionType + '-decision.json', mediaType: 'application/json',
       content: evidenceBytes}]]) : [];
-    return await this.app.transaction(true, tx => {
+    return this.app.transaction(true, tx => {
       const {row, record, task} = this.app.execution.ticket(tx, ticket);
       if (!live(record)) return clone(record.worker);
       const cleanup = result?.cleanup;
@@ -778,9 +778,9 @@ export class TaskLeader {
       return clone(record.worker);
     });
   }
-  async finishEffect(ticket, result) {
+  finishEffect(ticket, result) {
     const data = result?.receipt ? receipt(this.effects[ticket.executionType], ticket, result) : null;
-    const eligible = await this.app.transaction(false, tx => {
+    const eligible = this.app.transaction(false, tx => {
       const {record, task} = this.app.execution.ticket(tx, ticket);
       return live(record) && data?.cleanup && (data.cleanup.started === null && record.executionId === null ||
         data.cleanup.started?.executionId === record.executionId && data.cleanup.started?.startedAt === record.worker.startedAt);
@@ -790,7 +790,7 @@ export class TaskLeader {
       check(data.value.delivery?.content instanceof Uint8Array && digest(data.value.delivery.content) === ticket.input.publicationArtifact.digest &&
         data.value.delivery.content.length === ticket.input.publicationArtifact.bytes, 'invalid_leader_receipt');
     }
-    return await this.app.transaction(true, tx => {
+    return this.app.transaction(true, tx => {
       const {row, record, task} = this.app.execution.ticket(tx, ticket);
       if (!live(record)) return clone(record.worker);
       const cleanup = result?.cleanup;

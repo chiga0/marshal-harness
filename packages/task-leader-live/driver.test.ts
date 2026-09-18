@@ -223,7 +223,7 @@ test('observed FileBusiness retains original private identity, real allocation a
   const business = createObservedBusiness(createFileBusiness, {executionParent, depot,
     approvedLayout: ticket => ({planDigest: ticket.planDigest, nodeId: ticket.nodeId, layoutDigest: fileLayoutDigest(layout)}),
     observeExecution: () => started}, {capture, authorize: (ticket, request) => filePermission(byWorker.get(ticket.workerId), request)});
-  t.after(() => {business.close(); depot.close(); fs.rmSync(parent, {recursive: true});});
+  t.after(async () => {await business.drained; business.close(); depot.close(); fs.rmSync(parent, {recursive: true});});
   assert.equal(isManagedFileBusiness(business), true); assert.equal(isManagedFileBusiness({...business}), false);
   const {plan, body} = planCase(), originalInput = ticket().input;
   const seal = ({reservationDigest: _previous, ...value}) => {

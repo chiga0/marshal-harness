@@ -43,7 +43,7 @@ async function fixture(t, options = {}) {
   }};
   const execution = {maxWorkers: 2, providerIds: ['agent'], defaultProvider: 'agent'};
   let app = new TaskApplication({store: wrapper, owner, depot, execution, verification: port, clock});
-  t.after(() => {store.close(); depot.close(); fs.rmSync(parent, {recursive: true, force: true});});
+  t.after(async () => {await store.drained; store.close(); depot.close(); fs.rmSync(parent, {recursive: true, force: true});});
   const f = {parent, objects, port, calls, get app() {return app;}, get depot() {return depot;}, get execution() {return app.execution;},
     call: request => app.dispatch(request, context), read: callback => store.read(owner, callback),
     get: taskId => app.dispatch({operation: 'task.get', taskId}, context),
@@ -89,7 +89,7 @@ async function fixture(t, options = {}) {
       return handle.completion;},
     async changeWorker(ticket, edit) {(await app.transaction(true, tx => {const {row, record, task} = app.execution.ticket(tx, ticket);
       edit(record); task.task.revision++; const source = app.save(tx, task, 'fixture.worker-drift'); app.execution.putWorker(tx, row, record, source);}));},
-    async reopen(verification = port) {store.close(); depot.close(); store = Store.openExisting(root); depot = ArtifactDepot.openExisting(objects);
+    async reopen(verification = port) {await store.drained; store.close(); depot.close(); store = Store.openExisting(root); depot = ArtifactDepot.openExisting(objects);
       owner = await store.claimOwner(owner.generation, 'reopened', Date.now() + 3600000);
       app = new TaskApplication({store: wrapper, owner, depot, execution, verification, clock});}
   }; return f;

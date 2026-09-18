@@ -15,13 +15,13 @@ async function fixture(t, qualified = false, format = WORKER_CANCELLATION_FORMAT
   let now = Date.now(), store = Store.create(root, {format, clock: () => now}), owner = await store.claimOwner(0, 'owner', now + 60000);
   const execution = {providerIds: ['fixture'], defaultProvider: 'fixture', ...(qualified ? {startProtocol: protocol} : {})};
   let app = new TaskApplication({store, owner, execution, clock: () => now});
-  t.after(() => {store.close(); fs.rmSync(parent, {recursive: true, force: true});});
+  t.after(async () => {await store.drained; store.close(); fs.rmSync(parent, {recursive: true, force: true});});
   const f = {get app() {return app;}, get store() {return store;}, root,
     query(operation, extra = {}) {return app.dispatch({operation, ...extra}, context);},
     commands() {return app.transaction(false, tx => tx.commands());},
     snapshot(taskId) {return app.transaction(false, tx => ({task: app.get(tx, taskId), workers: app.execution.workers(tx, app.get(tx, taskId)).map(x => x.record),
       capacity: app.execution.capacity(tx).value, events: tx.events(taskId), commands: tx.commands()}));},
-    async reopen(qualification = qualified) {store.close(); store = Store.openExisting(root, {format, clock: () => now}); owner = await store.claimOwner(owner.generation, 'next', now + 60000);
+    async reopen(qualification = qualified) {await store.drained; store.close(); store = Store.openExisting(root, {format, clock: () => now}); owner = await store.claimOwner(owner.generation, 'next', now + 60000);
       app = new TaskApplication({store, owner, clock: () => now, execution: {...execution, startProtocol: qualification ? protocol : null}});},
     advance(ms) {now += ms;},
     async create(key = 'new') {return f.query('task.create', {key, body: {intent: '只取消一个 Worker', limits: {timeoutMs: 45000, maxAttempts: 6, maxWorkers: 2}}});},

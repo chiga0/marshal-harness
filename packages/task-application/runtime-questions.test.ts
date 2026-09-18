@@ -42,9 +42,9 @@ async function fixture(t, {consumer = true, validator = () => true, proposalValu
   const config = {store: wrapper, owner, depot, verification, runtimeQuestions, clock: () => now,
     execution: {maxWorkers: 2, providerIds: ['pi'], defaultProvider: 'pi', questionProviderIds: ['pi']}};
   let app = new TaskApplication(config);
-  t.after(() => {store.close(); depot.close(); fs.rmSync(parent, {recursive: true, force: true});});
+  t.after(async () => {await store.drained; store.close(); depot.close(); fs.rmSync(parent, {recursive: true, force: true});});
   const f = {get app() {return app;}, get execution() {return app.execution;}, runtimeQuestions, verification, root,
-    closeStore: () => store.close(),
+    closeStore: async () => {await store.drained; store.close()},
     call: request => app.dispatch(request, context), read: fn => store.read(owner, fn), now: () => now,
     advance: ms => {now += ms;}, failSQL: value => {failSQL = value;},
     get: taskId => app.dispatch({operation: 'task.get', taskId}, context),
@@ -72,7 +72,7 @@ async function fixture(t, {consumer = true, validator = () => true, proposalValu
       cleanup: {started: cleanFact(ticket), cleaned: true}, result: f.candidate(ticket)});},
     async answer(taskId, q, extra = {}) {return {operation: 'task.answer', taskId, questionId: q.questionId, key: 'answer',
       body: {expectedRevision: (await f.get(taskId)).revision, questionDigest: q.questionDigest, questionRevision: 1, answer: 'north', ...extra}};},
-    async reopen() {store.close(); store = Store.openExisting(root, {format: INTERACTION_FORMAT, clock: () => now});
+    async reopen() {await store.drained; store.close(); store = Store.openExisting(root, {format: INTERACTION_FORMAT, clock: () => now});
       owner = await store.claimOwner(owner.generation, 'second', now + 3600000); app = new TaskApplication({...config, owner});},
   }; return f;
 }

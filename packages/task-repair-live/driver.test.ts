@@ -50,7 +50,7 @@ test('the original FileBusiness planner prompt actually carries the complete enf
   fs.mkdirSync(parent, {mode: 0o700}); const depot = ArtifactDepot.create(path.join(root, 'depot'));
   const business = createFileBusiness({parent, depot, layoutFor: () => ({inputs: [], allowedPaths: []}),
     approvedLayout() {throw Error('unapproved planner must not request author authority');}, observeExecution() {throw Error('no process started');}});
-  t.after(() => {business.close(); depot.close(); fs.rmSync(root, {recursive: true, force: true});});
+  t.after(async () => {await business.drained; business.close(); depot.close(); fs.rmSync(root, {recursive: true, force: true});});
   const input = {task: taskBody('input-original', 900000), plan: null, node: {id: 'planning', role: 'planner'}, upstream: [],
     inputArtifacts: [{id: 'input-original', kind: 'input', taskId: null, status: 'ready', ...depot.put(encode(data))}]};
   const frozen = {workerId: 'worker-planning', taskId: 'task-original', nodeId: 'planning', role: 'planner', providerId: 'pi', commandId: 'command-original',

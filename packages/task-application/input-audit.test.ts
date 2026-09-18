@@ -17,7 +17,7 @@ async function fixture(t, {disclosure = null, depotEnabled = true} = {}) {
   const config = () => ({store, owner, depot, clock: () => now, auditDisclosure: disclosure,
     execution: {maxWorkers: 2, providerIds: ['fixture'], defaultProvider: 'fixture'}});
   let app = new TaskApplication(config());
-  t.after(() => {store.close(); depot?.close(); fs.rmSync(parent, {recursive: true, force: true});});
+  t.after(async () => {await store.drained; store.close(); depot?.close(); fs.rmSync(parent, {recursive: true, force: true});});
   const f = {parent, state, objects, get app() {return app;}, get depot() {return depot;}, get store() {return store;},
     call: req => app.dispatch(req, context), read: fn => store.read(owner, fn), advance(ms) {now += ms;},
     async reserve(inputRefs = []) {

@@ -42,7 +42,7 @@ export async function fixture(t, options = {}) {
         delivery: {name: 'delivery.json', mediaType: 'application/json', content: encode({east: 10, west: 20, region: 'north'})}})};}});
   const execution = {maxWorkers: 3, providerIds: ['fixture'], defaultProvider: 'fixture'};
   let app;
-  t.after(() => {store.close(); depot.close(); fs.rmSync(parent, {recursive: true, force: true});});
+  t.after(async () => {await store.drained; store.close(); depot.close(); fs.rmSync(parent, {recursive: true, force: true});});
   app = new TaskApplication({store, owner, execution, leader, review, verification, depot, publication: options.publication ?? null});
   const f = {get app() {return app;}, provider, parent, results: new Map(), call: request => app.dispatch(request, context),
     read: callback => app.transaction(false, callback),
@@ -64,7 +64,7 @@ export async function fixture(t, options = {}) {
       selectionDigest: ticket.input.review.selectionDigest, verdict: 'accept', summary: '独立审阅两原分支', findings: []}; return f.run(ticket, review);},
     async verify(ticket) {const handle = verification.start({ticket, prepared: {cwd: parent, prompt: '固定受控检查器'}});
       (await app.execution.started(ticket, await handle.started)); return (await app.execution.finish(ticket, await handle.completion));},
-    async reopen() {store.close(); store = Store.openExisting(root, {format: LEADER_FORMAT}); owner = await store.claimOwner(owner.generation, 'cold', Date.now() + 3600000);
+    async reopen() {await store.drained; store.close(); store = Store.openExisting(root, {format: LEADER_FORMAT}); owner = await store.claimOwner(owner.generation, 'cold', Date.now() + 3600000);
       app = new TaskApplication({store, owner, execution, leader, review, verification, depot, publication: options.publication ?? null});},
   }; return f;
 }

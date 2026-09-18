@@ -177,7 +177,7 @@ test('actual local publication created before SQL receipt: exact lookup preserve
   fs.mkdirSync(root, {mode: 0o700});
   const native = createLocalReportPublication({id: 'reports', root, readBaseURL: 'http://127.0.0.1:49152/', policy: {profile: 'task-local-json-report/v1', id: 'policy', version: '1'}});
   let starts = 0; const port = {...native, start(options) {starts++; return native.start(options);}};
-  t.after(() => {native.close(); fs.rmSync(parent, {recursive: true, force: true});});
+  t.after(async () => {await native.drained; native.close(); fs.rmSync(parent, {recursive: true, force: true});});
   const {f, task, ticket} = await setup(t, 'publication', {publication: port, publicationExpected: () => ({east: 10, west: 20, region: 'north'})});
   native.assertDisjoint([f.parent, path.join(f.parent, 'store'), path.join(f.parent, 'objects'), path.join(f.parent, 'execution')]);
   const cwd = path.join(f.parent, 'publication-original'); fs.mkdirSync(cwd, {mode: 0o700});

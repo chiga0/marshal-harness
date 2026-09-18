@@ -22,7 +22,7 @@ async function fixture(t, maxWorkers = 2) {
     async get(id) {return app.dispatch({operation: 'task.get', taskId: id}, context);},
     capacity() {return store.read(owner, tx => app.execution.capacity(tx).value.active);},
     advance(ms) {instant += ms;},
-    async reopen() {store.close(); store = Store.openExisting(root, {clock}); owner = await store.claimOwner(owner.generation, 'next', now + 3600000);
+    async reopen() {await store.drained; store.close(); store = Store.openExisting(root, {clock}); owner = await store.claimOwner(owner.generation, 'next', now + 3600000);
       app = new TaskApplication({store, owner, clock, execution});}};
 }
 const plan = () => ({summary: '并行执行再独立检查', nodes: ['first', 'second', 'review'].map(id => ({id,

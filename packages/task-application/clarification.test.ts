@@ -35,7 +35,7 @@ async function fixture(t, options = {}) {
     const result = callback(tx); if (fault) throw Error('controlled transaction failure'); return result;
   });}};
   let app = new TaskApplication({store: storePort, owner, clarification: port, clock: () => Date.now() + offset});
-  t.after(() => {store.close(); fs.rmSync(parent, {recursive: true, force: true});});
+  t.after(async () => {await store.drained; store.close(); fs.rmSync(parent, {recursive: true, force: true});});
   return {parent, root, hooks, port, get app() {return app;}, get store() {return store;},
     call: request => app.dispatch(request, principal), read: callback => store.read(owner, callback),
     fault(value) {fault = value;}, advance(value) {offset += value;},
@@ -43,7 +43,7 @@ async function fixture(t, options = {}) {
     questions(taskId) {return app.dispatch({operation: 'task.questions', taskId}, principal);},
     answer(taskId, questionId, body, key = 'answer') {return app.dispatch({operation: 'task.answer', taskId, questionId, body, key}, principal);},
     get(taskId) {return app.dispatch({operation: 'task.get', taskId}, principal);},
-    async reopen(clarification = port) {store.close(); store = Store.openExisting(root); owner = await store.claimOwner(owner.generation, 'questions-reopen', Date.now() + 3600000);
+    async reopen(clarification = port) {await store.drained; store.close(); store = Store.openExisting(root); owner = await store.claimOwner(owner.generation, 'questions-reopen', Date.now() + 3600000);
       app = new TaskApplication({store: storePort, owner, clarification, clock: () => Date.now() + offset});},
   };
 }
