@@ -9,7 +9,7 @@ test('原Port解析诊断只改变显示，关闭/外来/迟到事件不伪造�
     const enabled=mode!=='disabled',f=await fixture(t,{observability:enabled?{profile:'task-observation/v1',retainPrompts:false}:null});
     const task=await f.call({operation:'task.create',key:'create',body:{intent:'原目标',limits:{timeoutMs:60000,maxAttempts:20,maxWorkers:3}}});
     let observed,callback,ticket;
-    const provider={id:'fixture',start(options){const fact={executionId:'fixed-provider',startedAt:new Date().toISOString()};
+    const provider={id:'fixture',start(options){console.log('[PROVIDER_START]', 'onProgress:', typeof options?.onProgress, 'onDiagnostic:', typeof options?.onDiagnostic);const fact={executionId:'fixed-provider',startedAt:new Date().toISOString()};
       const completion=(async()=>{await options.onProgress?.({phase:'running',tool:null,activity:'output',publicText:'完整公开片段',diagnostic:{stage:'protocol',code:'invalid_json',source:'controller'}});
         return {providerId:'fixture',status:mode==='provider'?'failed':'completed',stopReason:'end_turn',outputText:mode==='shape'?'{}':'{"s":}',cleanup:{started:fact,cleaned:true,scope:'controlled-fixture'}};})();
       return {started:Promise.resolve(fact),completion,stop:()=>completion};}};
@@ -21,9 +21,9 @@ test('原Port解析诊断只改变显示，关闭/外来/迟到事件不伪造�
           if(mode==='foreign')callback({...report,workerId:'foreign'});else if(mode!=='late')callback(report);}});
       }}});
     t.after(()=>coordinator.close());
-    for(let i=0;i<500;i++){await coordinator.tick();await turn();if(ticket&&!coordinator.snapshot().owned.length)break;}
+    for(let i=0;i<500;i++){await coordinator.tick();await turn();if(ticket&&!coordinator.snapshot().owned.length)break;} await new Promise(r=>setImmediate(r)); await new Promise(r=>setImmediate(r));
     assert.ok(ticket);assert.equal(coordinator.snapshot().owned.length,0);
-    const get=async()=>await f.read(tx=>f.app.execution.worker(tx,ticket.workerId).record.worker);const worker=get();assert.equal(worker.status,'failed');
+    const get=async()=>await f.read(tx=>f.app.execution.worker(tx,ticket.workerId).record.worker);const worker=await get();assert.equal(worker.status,'failed');
     if(!enabled)assert.equal(Object.hasOwn(worker,'observation'),false);
     else {
       const protocol=['json','shape'].includes(mode);

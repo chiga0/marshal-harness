@@ -58,7 +58,7 @@ export class TaskInputAudit {
         }
       } catch { /* Declined/missing bytes is audit unavailability, not Task failure. */ }
     }
-    return await this.app.transaction(true, tx => {
+    return this.app.transaction(true, tx => {
       const {row, record} = this.app.execution.ticket(tx, ticket);
       if (record.inputObservation) {
         check(record.inputObservation.promptDigest === promptDigest && record.inputObservation.promptBytes === promptBytes); return true;
@@ -76,8 +76,8 @@ export class TaskInputAudit {
       this.app.execution.putWorker(tx, row, record, source); return true;
     });
   }
-  async handoff(ticket) {
-    return await this.app.transaction(true, tx => {
+  handoff(ticket) {
+    return this.app.transaction(true, tx => {
       const {row, record} = this.app.execution.ticket(tx, ticket), observation = record.inputObservation;
       if (!observation) return false;
       this.checked(record);

@@ -130,7 +130,7 @@ export class TaskLeader {
     });
     const lookup = entry.recovery.type === 'publication' ? this.effects.publication.lookup(original.ticket, {deadline: this.app.now() + 1000}) : null;
     const data = lookup ? receipt(this.effects.publication, original.ticket, lookup) : null;
-    const staged = data ? this.app.artifacts.stageOutputs([['evidence', data.value.evidence]]) : [];
+    const staged = data ? await this.app.artifacts.stageOutputs([['evidence', data.value.evidence]]) : [];
     await this.app.transaction(true, tx => {
       const {row, record} = this.app.execution.worker(tx, entry.workerId), task = this.app.get(tx, taskId), recovery = record.recovery;
       if (ended.has(task.task.status) || hash(recovery) !== hash(entry.recovery)) return;
@@ -240,7 +240,7 @@ export class TaskLeader {
     const lookup = this.effects.publication.lookup(original.subject, {deadline: this.app.now() + 1000});
     const data = receipt(this.effects.publication, original.subject, lookup);
     const expected = data.status === 'matched' ? this.app.verification.expectedPublication(original.expectedInput) : null;
-    const staged = this.app.artifacts.stageOutputs([['evidence', data.value.evidence]]);
+    const staged = await this.app.artifacts.stageOutputs([['evidence', data.value.evidence]]);
     await this.app.transaction(true, tx => {
       const task = this.app.get(tx, taskId), current = this.unreservedPublication(tx, task);
       if (!current) return;
@@ -699,7 +699,7 @@ export class TaskLeader {
         task.task.status !== 'cancelling' && this.app.now() < ticket.deadline && assessmentReady && data?.value && data.cleanup?.cleaned &&
         data.cleanup.started?.executionId === record.executionId && data.cleanup.started?.startedAt === record.worker.startedAt;
     });
-    const staged = eligible ? this.app.artifacts.stageOutputs([['evidence', {name: ticket.executionType + '-decision.json', mediaType: 'application/json',
+    const staged = eligible ? await this.app.artifacts.stageOutputs([['evidence', {name: ticket.executionType + '-decision.json', mediaType: 'application/json',
       content: evidenceBytes}]]) : [];
     return await this.app.transaction(true, tx => {
       const {row, record, task} = this.app.execution.ticket(tx, ticket);
@@ -785,7 +785,7 @@ export class TaskLeader {
       return live(record) && data?.cleanup && (data.cleanup.started === null && record.executionId === null ||
         data.cleanup.started?.executionId === record.executionId && data.cleanup.started?.startedAt === record.worker.startedAt);
     });
-    const staged = eligible && data.value.evidence ? this.app.artifacts.stageOutputs([['evidence', data.value.evidence]]) : [];
+    const staged = eligible && data.value.evidence ? await this.app.artifacts.stageOutputs([['evidence', data.value.evidence]]) : [];
     if (eligible && ticket.executionType === 'postverify' && data.status === 'completed') {
       check(data.value.delivery?.content instanceof Uint8Array && digest(data.value.delivery.content) === ticket.input.publicationArtifact.digest &&
         data.value.delivery.content.length === ticket.input.publicationArtifact.bytes, 'invalid_leader_receipt');

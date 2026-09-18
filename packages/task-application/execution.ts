@@ -365,7 +365,9 @@ export class TaskExecution {
       record.progressSequence = sequence;
       record.worker.progress = {summary: progress.summary, tool: progress.tool, source: progress.source};
       record.worker.lastObservedAt = new Date(this.app.now()).toISOString();
+      if (process.env.PROBE_OBS) console.log('[PROGRESS]', 'observability:', !!this.app.observability, 'progress.observation:', JSON.stringify(progress?.observation)?.slice(0,60), 'sequence:', sequence);
       const observation = this.app.observability ? normalizedObservation(progress.observation, sequence, record.worker.lastObservedAt) : null;
+      if (process.env.PROBE_OBS) console.log('[NORMALIZED]', 'result:', observation ? 'OK' : 'NULL', 'input.activity:', progress.observation?.activity, 'input.hasDiagnostic:', !!progress.observation?.diagnostic);
       if (observation) {
         const old = record.worker.observation, history = [...(old?.history ?? []), observation];
         let historyTruncated = old?.historyTruncated === true;
@@ -386,7 +388,7 @@ export class TaskExecution {
     const verification = ticket.executionType === 'verification';
     // No files, checker, promises or depot writes inside the Store callback.
     const verified = verification && result?.type === 'verification' && (result.status === 'passed' || result.receipt !== undefined) ?
-      this.app.verification.stage(ticket, result) : null;
+      await this.app.verification.stage(ticket, result) : null;
     return await this.app.transaction(true, tx => {
       const {row, record, task} = this.ticket(tx, ticket);
       if (!live(record.worker)) return clone(record.worker);

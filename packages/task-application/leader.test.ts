@@ -76,8 +76,14 @@ test('v7 real SQLite: necessary reply → plan approval → two authors → inde
     limits: {timeoutMs: 60000, maxAttempts: 17, maxWorkers: 3}}});
   let ticket = (await f.take('leader')); assert.ok(ticket);
   const originalDeadline = ticket.deadline;
-  assert.equal((await f.decision(ticket, [{type: 'ask', kind: 'business', prompt: '请指定业务区域', options: [],
-    subject: (await f.read(tx => f.app.get(tx, task.id))).inputDigest, nodeIds: []}])).status, 'completed');
+  try {
+  const askResult = await f.decision(ticket, [{type: 'ask', kind: 'business', prompt: '请指定业务区域', options: [],
+    subject: (await f.read(tx => f.app.get(tx, task.id))).inputDigest, nodeIds: []}]);
+  console.log('V7_ASK_RESULT:', askResult?.status ?? 'undefined');
+  assert.equal(askResult?.status, 'completed');
+} catch(e) { console.log('V7_ASK_ERROR:', e.message?.slice(0,100), 'actual:', e.actual, 'expected:', e.expected);
+  const __e = await f.call({operation:'task.events',taskId:task.id}); for (const __x of __e.items) console.log('  EVT:', __x.type, (__x.summary ?? '').slice(0,60));
+  throw e; }
   let current = await f.get(task.id), view = await f.call({operation: 'task.leader', taskId: task.id});
   assert.equal(current.status, 'awaiting-answer'); assert.deepEqual(current.allowedActions, ['cancel']);
   const request = {operation: 'task.leader.reply', taskId: task.id, requestId: view.pendingRequest.id, key: 'answer',

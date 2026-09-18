@@ -1,4 +1,6 @@
 import path from 'node:path';
+import {TaskBusinessError} from '../task-business/index.ts';
+import {normalizedDiagnostic, FILE_COLLECTION_CAUSES, BUSINESS_COLLECTION_CAUSES} from '../agent-observation/normalization.ts';
 import {setImmediate as yieldTurn} from 'node:timers/promises';
 
 const PORTS = ['scan', 'reconcile', 'poll', 'settleControl', 'expandDispatch', 'nextWork', 'mayStart', 'started', 'progress', 'fail', 'finish'];
@@ -20,12 +22,12 @@ const requireValue = value => { if (!value) throw new SupervisorError('superviso
 
 /** Same Application authority; only live handles, timers and observation queues here. */
 export class TaskExecutionCoordinator {
-  #execution; #providers; #prepare; #collect; #release; #verification; #custody; #onError; #clock; #options; #managed;
+  #execution; #providers; #prepare; #collect; #release; #verification; #custody; #onError; #clock; #options; #managed; #observability;
   #owned = new Map(); #works = new Set(); #timer; #tick; #close;
   #running = false; #closing = false; #closed = false; #failure = null;
   #diagnostics = []; #notificationFailures = 0; #rejected = new Set(); #rejectedOverflow = false;
   #scanCursor = ''; #pollCursor = '';
-  constructor({execution, providers, prepare, collect, release = () => {}, verification = null, custody = null, managed = null, onError = () => {}, clock = Date.now,
+  constructor({execution, providers, prepare, collect, release = () => {}, verification = null, custody = null, managed = null, observability = false, onError = () => {}, clock = Date.now,
     intervalMs = 100, prepareMs = 30000, collectMs = 30000, pageSize = 25, maxPagesPerTick = 100} = {}) {
     requireValue(execution && PORTS.every(name => typeof execution[name] === 'function') && providers instanceof Map &&
       typeof prepare === 'function' && typeof collect === 'function' && typeof release === 'function' &&
@@ -39,6 +41,7 @@ export class TaskExecutionCoordinator {
     requireValue(!execution.startProtocol || custody !== null);
     this.#verification = verification; this.#release = release; this.#custody = custody;
     this.#managed = managed;
+    this.#observability = observability; requireValue(typeof observability === 'boolean');
     this.#onError = onError; this.#clock = clock; this.#options = {intervalMs, prepareMs, collectMs, pageSize, maxPagesPerTick};
   }
   async #call(name, ...args) {
@@ -72,16 +75,18 @@ export class TaskExecutionCoordinator {
   }
   tick() {
     if (this.#tick) return this.#tick;
-    if (this.#closing || this.#closed || this.#failure) return Promise.resolve(this.snapshot());
+    if (this.#closing || this.#closed || this.#failure) { if (process.env.PROBE_OBS) console.log('[TICK_SKIP]', 'closing:', this.#closing, 'closed:', this.#closed, 'failure:', this.#failure?.message?.slice(0,60)); return Promise.resolve(this.snapshot()); }
     this.#tick = this.#cycle(true).catch(error => this.#fault('reconcile-or-dispatch', undefined, error))
       .then(() => this.snapshot()).finally(() => { this.#tick = undefined; });
     return this.#tick;
   }
   async #cycle(admit) {
+    console.log("[CYCLE_FORCE]"); if (process.env.PROBE_OBS) console.log('[CYCLE]', 'admit:', admit);
     const {pageSize, maxPagesPerTick} = this.#options;
     // Stop observations get a complete bounded turn before new admission.
     for (let pages = 0; pages < maxPagesPerTick; pages++) {
       const page = await this.#call('scan', this.#scanCursor, pageSize);
+      if (process.env.PROBE_OBS) console.log('[SCAN]', 'items:', page.items.length);
       this.#page(page, this.#scanCursor);
       for (const taskId of page.items) {
         const state = await this.#call('reconcile', taskId);
@@ -146,6 +151,23 @@ export class TaskExecutionCoordinator {
     this.#diagnostics.push({...report}); if (this.#diagnostics.length > 32) this.#diagnostics.shift();
     try { Promise.resolve(this.#onError({...report})).catch(() => { this.#notificationFailures++; }); }
     catch { this.#notificationFailures++; }
+  }
+  #diagnose(entry, stage, error) {
+    if (!this.#observability || entry.stopping || entry.finalized || entry.sequence >= 4096) return;
+    if (stage === 'deadline') stage = entry.stage;
+    const protocol = stage === 'provider' && !error ? entry.protocolDiagnostic : null;
+    const phase = protocol ? 'protocol' : stage === 'collecting' ? 'collecting' : ['preparing','prepared'].includes(stage) ? 'preparing' :
+      stage === 'provider-cleanup' || stage === 'provider-stop' ? 'cleanup' : ['starting','started'].includes(stage) ? 'starting' : 'provider';
+    let code = protocol?.code ?? (error?.code === 'supervisor_deadline' ? 'deadline_exceeded' :
+      {preparing:'preparation_failed',starting:'provider_start_failed',collecting:'collection_failed',provider:'provider_failed',cleanup:'cleanup_unconfirmed'}[phase]);
+    if (phase === 'collecting' && error instanceof TaskBusinessError) {
+      if (BUSINESS_COLLECTION_CAUSES.includes(error.code)) code = error.code;
+      else if (error.code === 'business_collect_failed' && FILE_COLLECTION_CAUSES.includes(error.causeCode)) code = error.causeCode;
+    }
+    try {
+      this.#call('progress', entry.ticket, ++entry.sequence, {summary:'execution.diagnostic',tool:null,source:'execution',
+        observation:{...(entry.lastObservation ?? {activity:'unknown',tool:null,model:null,usage:null}),publicText:'',diagnostic:{stage:phase,code,source:'controller'}}});
+    } catch { /* Diagnostic storage cannot replace the original failure fence. */ }
   }
   async #failEntry(entry, stage, error) {
     if (!entry.failure) {
@@ -230,6 +252,7 @@ export class TaskExecutionCoordinator {
     entry.startedGate.resolve();
   }
   #progress(entry, update) {
+    if (process.env.PROBE_OBS) console.log('[CTRL_PROGRESS]', 'entry:', !!entry, 'update:', JSON.stringify(update)?.slice(0,60));
     if (entry.stopping || entry.finalized) return Promise.resolve(false);
     let progress, sequence;
     try {
@@ -240,7 +263,16 @@ export class TaskExecutionCoordinator {
         tool = update.tool.kind + ':' + update.tool.status;
       }
       // Copy only the normalized projection, never arbitrary provider fields.
-      progress = {summary: 'agent.' + update.phase, tool, source: 'agent'};
+      progress = {summary: 'agent.' + update.phase, tool, source: 'agent', ...(this.#observability ? {observation: {
+        ...(update.diagnostic?.source === 'provider-permission' && normalizedDiagnostic(update.diagnostic) ? {diagnostic: normalizedDiagnostic(update.diagnostic)} : {}),
+        publicText: text(update.publicText, 65536) ? update.publicText : '',
+        ...(update.lastResponseUsage ? {lastResponseUsage: {inputTokens: update.lastResponseUsage.inputTokens, outputTokens: update.lastResponseUsage.outputTokens, totalTokens: update.lastResponseUsage.totalTokens, source: update.lastResponseUsage.source, scope: update.lastResponseUsage.scope, complete: update.lastResponseUsage.complete, zeroMayBeDefault: update.lastResponseUsage.zeroMayBeDefault}} : {}),
+        activity: update.activity ?? ({starting: 'starting', initializing: 'starting', session: 'starting', running: 'waiting', stopping: 'stopping', terminal: 'terminal'}[update.phase]),
+        tool: update.tool === null ? null : {id: update.tool.id, kind: update.tool.kind, status: update.tool.status},
+        model: update.model ? {id: update.model.id, source: update.model.source} : null,
+        usage: update.usage ? {inputTokens: update.usage.inputTokens, outputTokens: update.usage.outputTokens,
+          totalTokens: update.usage.totalTokens, source: update.usage.source, complete: update.usage.complete} : null}} : {})};
+      if (progress.observation) entry.lastObservation = progress.observation;
       sequence = ++entry.sequence; entry.pendingProgress++;
     } catch (error) {
       // The advertised rejection surfaces only after the fence/stop chain has
@@ -337,9 +369,17 @@ export class TaskExecutionCoordinator {
         ask: (request, context) => this.#question(entry, request, context),
         acknowledge: (questionId, receipt) => this.#answerAck(entry, questionId, receipt),
       } : undefined;
-      entry.handle = typed ? this.#managed.start({ticket: entry.ticket, prepared, executionContext, onProgress: update => this.#progress(entry, update)}) :
+      if (process.env.PROBE_OBS) console.log('[DISPATCH]', 'typed:', typed, 'ticket:', !!entry.ticket);
+      entry.handle = typed ? this.#managed.start({ticket: entry.ticket, prepared, executionContext, observability: this.#observability, onProgress: update => this.#progress(entry, update),
+        onDiagnostic: report => {
+          if (!this.#observability || entry.stopping || entry.finalized || !entry.acceptStarted ||
+              report?.code !== 'managed_provider_failure' || report.authority !== false || report.stage !== 'parse' || report.status !== 'completed' ||
+              report.taskId !== entry.ticket.taskId || report.workerId !== entry.ticket.workerId || report.providerId !== entry.ticket.providerId || report.executionType !== entry.ticket.executionType) return;
+          const diagnostic = normalizedDiagnostic({stage:'protocol',code:report.parseCode,source:'controller'});
+          if (diagnostic) entry.protocolDiagnostic = diagnostic;
+        }}) :
         verifying ? provider.start({ticket: entry.ticket, prepared, executionContext}) :
-        provider.start({...prepared, deadline: entry.ticket.deadline, executionContext, questionContext, onProgress: update => this.#progress(entry, update)});
+        provider.start({...prepared, deadline: entry.ticket.deadline, executionContext, questionContext, observability: this.#observability, onProgress: update => this.#progress(entry, update)});
       requireValue(object(entry.handle) && typeof entry.handle.stop === 'function' &&
         typeof entry.handle.started?.then === 'function' && typeof entry.handle.completion?.then === 'function');
       // This records only handoff to the original Provider, not protocol delivery
@@ -358,6 +398,7 @@ export class TaskExecutionCoordinator {
       requireValue(object(result) && (typed ? result.type === entry.ticket.executionType && ['completed', 'failed', 'unknown'].includes(result.status) :
         verifying ? result.type === 'verification' && ['passed', 'failed'].includes(result.status) :
         result.providerId === entry.ticket.providerId && ['completed', 'failed', 'cancelled', 'unknown'].includes(result.status)));
+      if (!entry.stopping && ['failed','unknown'].includes(result.status)) this.#diagnose(entry,'provider',null);
       if (typed && result.cleanup?.cleaned === true && !entry.stopping) this.#managed.validate(entry.ticket);
       if (!typed && !verifying && !entry.stopping && !this.#failure && result.status === 'completed' && result.stopReason === 'end_turn' && result.cleanup?.cleaned === true) {
         entry.stage = 'collecting';

@@ -187,7 +187,7 @@ test('question proof, validator, same-key shape and cold generation all remain f
 
 test('missing final consumer rejects proposal and old v1/v2 readers reject new root before claim', async t => {
   const f = await fixture(t, {consumer: false}); await assert.rejects(f.start(), error => error.code === 'unsupported_task');
-  f.closeStore(); // Isolate format rejection from the live connection lock.
+  await f.closeStore(); // Isolate format rejection from the live connection lock.
   assert.throws(() => Store.openExisting(f.root), error => error.code === 'unavailable');
   assert.throws(() => Store.openExisting(f.root, {format: CUSTODY_FORMAT}), error => error.code === 'unavailable');
 });
