@@ -1,0 +1,2201 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="可自托管的 Agent Team 服务：从需求、独立验收到受控交付">
+      
+      
+      
+        <link rel="canonical" href="https://chiga0.github.io/marshal-harness/roadmap-status/">
+      
+      
+        <link rel="prev" href="../agent-team-service-milestones/">
+      
+      
+        <link rel="next" href="../design-contract-map/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>实际进展 - Marshal</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#roadmap" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href=".." title="Marshal" class="md-header__button md-logo" aria-label="Marshal" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Marshal
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              实际进展
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换暗色"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换暗色" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换亮色"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换亮色" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Marshal" class="md-nav__button md-logo" aria-label="Marshal" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Marshal
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    产品
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            产品
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    首页
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vision-and-scope/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    愿景与适用范围
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    使用
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            使用
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    快速开始
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    下载与安装
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    版本与接口支持
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    架构与设计
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            架构与设计
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agent-team-service-architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    目标架构与取舍
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../task-lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    任务生命周期
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-leader-execution-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Leader 与独立验收
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    安全与信任边界
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    标准 API 与扩展
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            标准 API 与扩展
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../standard-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    契约总览
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/http-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    HTTP 操作与 Schema
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extension-contracts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Agent、环境与业务扩展
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-leader-execution-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Leader 机器契约
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    路线与进展
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            路线与进展
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agent-team-service-milestones/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    实施 Milestone
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    实际进展
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    实际进展
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-15" class="md-nav__link">
+    <span class="md-ellipsis">
+      当前唯一状态与关键路径（2026-09-15）
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="当前唯一状态与关键路径（2026-09-15）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1923" class="md-nav__link">
+    <span class="md-ellipsis">
+      19:23 及更早检查点（历史，不覆盖当前表）
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      本轮早期集成记录（历史，不覆盖上表）
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#node" class="md-nav__link">
+    <span class="md-ellipsis">
+      历史 Node 集成检查点（不覆盖上表）
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      以下为较早本地集成检查点（不覆盖上表）
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-08" class="md-nav__link">
+    <span class="md-ellipsis">
+      2026-09-08 早期集成记录（历史，不覆盖当前表）
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      历史过程记录（不作为当前待办）
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="历史过程记录（不作为当前待办）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#2026-09-06" class="md-nav__link">
+    <span class="md-ellipsis">
+      2026-09-06 早期检查点（历史）
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2026-09-06_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      2026-09-06 业务交付状态表（历史）
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      合入前过程记录（历史采样，不是当前状态）
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      历史实施检查点（不覆盖上方当前表）
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#checkpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      历史 checkpoint 与技术证据映射
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#v10" class="md-nav__link">
+    <span class="md-ellipsis">
+      v1.0 生产纵切
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#component-checkpoint-2026-08-27" class="md-nav__link">
+    <span class="md-ellipsis">
+      快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#qodercodex-production-authority" class="md-nav__link">
+    <span class="md-ellipsis">
+      Qoder/Codex production authority 共同阻塞
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mac-first-adapter-2026-08-24" class="md-nav__link">
+    <span class="md-ellipsis">
+      Mac-first Adapter 阶段性证据（2026-08-24）
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#issue-25-issue-30" class="md-nav__link">
+    <span class="md-ellipsis">
+      已知阻塞与进展：Issue #25 已关闭，Issue #30 部分满足
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="已知阻塞与进展：Issue #25 已关闭，Issue #30 部分满足">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#milestone" class="md-nav__link">
+    <span class="md-ellipsis">
+      Milestone 状态取值定义
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../design-contract-map/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    设计决策与历史
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    文档维护
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            文档维护
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../documentation-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    维护与发布
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../testing/business-postconditions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    测试与验收
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../testing/acceptance-contract-freeze/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    ADR0107 合同候选冻结测试
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-info/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    构建来源
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-15" class="md-nav__link">
+    <span class="md-ellipsis">
+      当前唯一状态与关键路径（2026-09-15）
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="当前唯一状态与关键路径（2026-09-15）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1923" class="md-nav__link">
+    <span class="md-ellipsis">
+      19:23 及更早检查点（历史，不覆盖当前表）
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      本轮早期集成记录（历史，不覆盖上表）
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#node" class="md-nav__link">
+    <span class="md-ellipsis">
+      历史 Node 集成检查点（不覆盖上表）
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      以下为较早本地集成检查点（不覆盖上表）
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-08" class="md-nav__link">
+    <span class="md-ellipsis">
+      2026-09-08 早期集成记录（历史，不覆盖当前表）
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      历史过程记录（不作为当前待办）
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="历史过程记录（不作为当前待办）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#2026-09-06" class="md-nav__link">
+    <span class="md-ellipsis">
+      2026-09-06 早期检查点（历史）
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2026-09-06_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      2026-09-06 业务交付状态表（历史）
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      合入前过程记录（历史采样，不是当前状态）
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      历史实施检查点（不覆盖上方当前表）
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#checkpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      历史 checkpoint 与技术证据映射
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#v10" class="md-nav__link">
+    <span class="md-ellipsis">
+      v1.0 生产纵切
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#component-checkpoint-2026-08-27" class="md-nav__link">
+    <span class="md-ellipsis">
+      快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#qodercodex-production-authority" class="md-nav__link">
+    <span class="md-ellipsis">
+      Qoder/Codex production authority 共同阻塞
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mac-first-adapter-2026-08-24" class="md-nav__link">
+    <span class="md-ellipsis">
+      Mac-first Adapter 阶段性证据（2026-08-24）
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#issue-25-issue-30" class="md-nav__link">
+    <span class="md-ellipsis">
+      已知阻塞与进展：Issue #25 已关闭，Issue #30 部分满足
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="已知阻塞与进展：Issue #25 已关闭，Issue #30 部分满足">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#milestone" class="md-nav__link">
+    <span class="md-ellipsis">
+      Milestone 状态取值定义
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="roadmap">Roadmap 状态<a class="headerlink" href="#roadmap" title="Permanent link">&para;</a></h1>
+<p><a id="业务交付当前表"></a></p>
+<h2 id="2026-09-15">当前唯一状态与关键路径（2026-09-15）<a class="headerlink" href="#2026-09-15" title="Permanent link">&para;</a></h2>
+<p><strong>2026-09-15 逐项业务验收仍未整体通过</strong>：后继 <code>4f68bd27</code> 已将批准前约定、逐项文本证据、原 receipt/事务绑定、返工消费及 UI 连通并打包。实际 HTTP 暴露的附加证据接线 P1 已修复；最新同包的实际服务、375/1440 浏览器与坏响应拒绝复验通过。原 S02/C01 失败及最小正例已独立冻结：<code>42ce94f3</code> 四例模型组件均在180秒超时、零正文，语义无法验收；同配置短请求约22秒成功，单次600秒窗口的 S02 负例在373.3秒返回合法返工，后续S02修正材料因遗漏结构化字段拒收，C01原负例虽合法却被业务误收；最后C01修正材料合法返回且恢复项有依据，但操作效果被不充分地豁免；四条延长诊断均已结束，整体仍不通过。独立审查还发现原“正例整体accept”忽略过程证据缺失，后继须先分清内容、过程与后验责任。原超时记录不改写，也不能将单条正确判定当从零 E2E 通过。真人可用性仍 NOT_RUN，本批不发布。身份、范围与缺口见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/ui-1/experience-e2e-2026-09-14.md#批准前约定与逐项评审的后继候选">后继候选</a>。</p>
+<p><strong>2026-09-15 确定性后验实验已集成</strong>：<code>fb1f21a1</code>/<code>c13a878d</code> 加入离线 <code>verifyOrders</code>、<code>verifyGuide</code> 与 <code>verifyRecoveryModel</code>，13 项测试通过。它们分别验证冻结订单的整数结果、有限批准文案模板和显式四步恢复模型；所有结果标记 <code>authority:false</code>，不接入 Core、不改变权限/预算/状态机，也不代替真实业务后验。详细适用范围见<a href="../testing/business-postconditions/">确定性业务后验实验</a>。</p>
+<p><strong>执行透明度与从零业务验收进行中</strong>：<code>1eccece1</code> 已直接接通固定作者指导，独立回归/HTTP/同包消费通过；真实S01一轮有限通过，S02仍将未提供的日程与直接到场方式写成既定事实，原Review误收；C01真实返工修复标签问题后，仍缺导入两步失败后的提交/跳过规则。固定作者指导漏传已排除，业务语义缺口继续开放，不以换模型或重跑偶然成功关闭。UI后继 <code>2846a631</code> 收敛长评审原文与技术标识的概览展示，集成UI612项及4浏览器护栏通过，实际服务有限补验通过（原已完成Task、零模型，非空评审行动项HTTP未覆盖）。尚未发布本批，不改变既有发行完成事实，也不关闭UI-1；当前真实用户验收未执行。范围与失败证据统一见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/ui-1/experience-e2e-2026-09-14.md">验收记录</a>与<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-report.md">审计报告</a>。</p>
+<p><strong>通用接入修正已合入、RC.2 已在 GitHub 预发布</strong>：按 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0100-generic-team-default-and-agent-entry.md">ADR0100</a> 完成实际 Qwen 可执行入口、默认通用文件团队、显式 launcher 升级及 generic 配置选择；<a href="https://github.com/chiga0/marshal-harness/pull/307">PR #307</a> 产品候选为 <code>2fde5038</code>，<a href="https://github.com/chiga0/marshal-harness/pull/308">PR #308</a> 发行 pins 已合入。真实 Qwen 修后152.7秒、9 Attempts、零 retry/rework完成双作者→独立检查→文件交付→conclude；首轮重复 deliver 失败与安全取消保留。最终 CI 原包接纳及 RC.1 私有 HOME 升级、serve/status/UI 就绪已通过。RC.2 于2026-09-14T05:59:08Z完成验签与 GitHub public prerelease、非 latest；OSS 镜像、公开安装及其 RC.1 升级/serve/status/UI 启动核验已通过（无 Task、模型调用0）；准确身份与范围见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/v1.1.0-rc.2-release-dossier-2026-09-14.md">RC.2 记录</a>，不表示 RC.1 已含修复。真实 ETL 的发布/补数/生产结果核验仍未接通；2026-09-14 DataAgent 初次查询遇 <code>500130 / SystemError</code>、未提交 Prompt，后续用户恢复实例后只读工具说明查询已完成。发布/补数据去重机制仍未确认，工作空间记忆与目标不一致；未执行 ETL，不将说明调研记为实际业务验收。</p>
+<p><strong>Chrome 优先 UI 已预发布</strong>：<a href="https://github.com/chiga0/marshal-harness/releases/tag/v1.1.0-rc.1">v1.1.0-rc.1</a> 于2026-09-14T01:27:51Z公开，复用 source <code>67317d7b</code> 原 CI 包，维护者签名、GitHub/OSS分发与公开安装核验完成。public prerelease 非 latest，<code>v1.0.2</code> 保持 stable，UI-1 不关闭。9月13日 Chrome 原包真实隐藏轮询已限定通过；实际 Safari 完成受控团队交付及本机后验，浏览器下载待许可。真人可用性仍 NOT_RUN，完整 UI 三线仍未全部通过；按用户授权先预发布再实机测试。身份、专用安装器、分发回执和后续任务见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/v1.1.0-rc.1-release-dossier-2026-09-14.md">预发布记录</a>。</p>
+<p><strong>最新主线</strong>：PR #307 产品 source <code>2fde5038c7238894aefd11e802cbe9b8d16f07c6</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34806468018">CI 34806468018</a> 13/13成功；PR #308 合并主线 <code>4a86a5e9</code> 仅锁定该原包发行 pins。RC.2 原 ZIP、manifest、helper 已独立核对，Decision 的签名批准已由维护者落实，RC.2 tag <code>4a2c2ed3</code> 指向该产品 source，GitHub 8项资产已公开；OSS run34811596878成功，公开安装包升级、自动连接、ready/UI200及正常停服通过；这不是公开安装后新一次真实模型验证。历史 PR #297 的 <code>67317d7b</code> 原包已作为 RC.1 签名预发布，以下历史证据不改：<code>61a0048e</code> 原包接纳、同根升级/回退及 E12 控制补验完成；后继PR #298文档主线 <code>b999607b</code> 未改变产品。673原CI包接纳与限定同根升级/回退于9月11日通过；9月13日本机临时原件不可获取，从同CI资产恢复原包并重新消费2/2 PASS，未伪造旧证据或声称重跑升级。</p>
+<p><strong>当前 UI 验收</strong>：功能与可靠性 PARTIAL、视觉交互 PARTIAL、真实目标用户 NOT_RUN。延迟ACK、Git patch 独立消费、8 MiB边界、E09/E12原控制回执、E13/E14限定反例及经典选项键盘已有证据，不重新排为完全未测。<code>c14df00e</code> 构建的长标题六组（1440/375/200%各浅深）、独立列表/卡片四组及完整200%视口四图已限定通过；源码构建不冒充新main原包，单Task不证明跨另Task原文隔离。103Task缓存＋500事件的新进度显示≤3秒及真实尾页复读去重已限定通过，低样本、混合构建不外推全部性能或通用SLO。9月13日原包 Chrome 隐藏退避与实际 Safari 受控交付的新证据见上文；Safari 下载、真实目标用户仍待完成；本次限定预发布签名分发已完成。所有原失败、工具/脚本限制和各项范围见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/ui-1/release-validation-2026-09-11.md#当前结论">验收记录当前结论</a>。以下已发布API的B1–B3状态不被UI待验撤销。</p>
+<p><strong>本地接入补丁 v1.0.2 已发布</strong>：source <code>f9a93cd6</code>，完整 Node 矩阵和常规 CI 通过，Node22/24 原包恢复及独立审查通过；维护者签名后已发布 GitHub，并完成 OSS 同字节镜像与公开下载验签。新增安装后初始化、固定 Node 文本命令及连接复用；首次服务仍需可信配置，不包含 UI 构建产物，不代表 DataAgent ETL/发布/补数已验证。详情见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/v1.0.2-release-dossier-2026-09-10.md">v1.0.2 发行记录</a>及<a href="../node-install/">安装说明</a>。</p>
+<p><strong>Node22兼容补丁 v1.0.1 已发布</strong>：source <code>b90d7e72</code>，四组 Node22.22.1/24.15.0 × Linux/macOS 回归及四组同包消费通过；维护者签名、公钥验签及原始CI字节核对通过。Node22.22.1 已从公开发行下载安装成功，不自动启动服务或配置 Agent。详情见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/v1.0.1-release-dossier-2026-09-10.md">发行记录</a>和<a href="../node-install/">一键安装</a>。旧 v1.0.0 不被重写，本轮不冒充新的模型或 ETL 实机验收。</p>
+<p>本段与下表是当前状态；之后的“早期集成记录/历史过程记录”保留原 SHA、失败成本和当时结论，不再作为待办。最终目标仍是 B1 真实团队交付→B2 日常 API 可用→API-STABLE→B3 正式可靠发布，不以新增协议或 PR 数量替代用户出口。</p>
+<p><strong>2026-09-10 正式发行记录（B3 收口）</strong>：<code>v1.0.0</code> 首个受保护 stable 已发布，页面 <a href="https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0">marshal v1.0.0</a>、annotated tag object <code>b9b7c6b7e6a398c0915bb38476cc5920d2c713d7</code> → sourceHead <code>fc2cdc9298c3e1aaf47615373bb24e6d80e4c719</code>（<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md">ADR 0068</a> 类同的 annotated-first 认证方式）。资产 6 项：候选 ZIP、<code>manifest.json</code>、签名清单 <code>SHA256SUMS</code>、签名 <code>SHA256SUMS.minisig</code>、公钥原文、dossier；按 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0096-node-stable-asset-signing-minisign.md">ADR 0096</a> 由维护者 minisign 签名（trusted comment <code>timestamp:1789017236</code>，<code>shasum -a 256 -c</code> 通过、<code>minisign -V</code> 通过）。同日由维护者按其既定授权在仓库 rules 页删去 ruleset <code>block-v1-tags-until-rc1-evidence</code>（远端 rules 当前仅保留默认分支保护），该防护的删除属维护者受控动作，不在本表记录为能力扩展。过夜 soak 终态：<code>04:14:33Z</code> 起于 Linux 实机，08:41Z 由维护者按需求停止（未达 12h 上限），<strong>共 769 波全部 exit 0、零失败、零 capacity leak</strong>、约 4h26m，日志 SHA-256=<code>06bafc97fc29d2883468771cd304a58b7a743aa9e5e25945fa1a78c113b25c07</code>；与早前 200/200 首组同属长运行样本口径，不约多日生产稳定结论。本线随后经你的 PR #280/#281/#282 接续演进为官方走向（安装器、Node 22+、v1.0.1），本行结束设备安装主线不跟踪其并承担。</p>
+<p><strong>2026-09-10 主线检查点：B2-L 剩余出口闭合、Linux 实机验收通过、same-bytes 候选材料就绪</strong>。四个修复全部经独立 review 无 P0/P1、<code>--no-ff</code> 合入并推送，远端 main 同 SHA：<code>f05bd316</code>（parse 拒绝时保留有界 base64 原始输出诊断 + Review 提示格式收紧，CI run 34374934057 五 job）、<code>6f2d7f97</code>（受管诊断 reason 枚举扩展为 171 项白名单并加机器守卫防漂移，CI run 34381876994）、<code>b5aa5261</code>（Pi RPC 事件闭集扩展 <code>bash_execution_update/entry_appended/thinking_level_changed/session_info_changed</code>，修复 pi 0.84.4 SDK 漂移导致的 review 阶段 <code>pi_unexpected_event</code>，CI run 34386217286）、<code>fc2cdc92</code>（修复场景数据扩至普通业务量 168 行且规则逐字节不变，CI run 34425993716 五 job 全绿）。</p>
+<p><strong>真实模型失败证据链（修复效果）</strong>：<code>b5aa5261</code> 首次真实 Pi 双 Task 整轮 <code>passed=true</code>（各 12 Attempts、零 rework/retry/诊断、审批前正常重启通过）；<code>fc2cdc92</code> 最终候选再次整轮 <code>passed=true</code>（两 Task 各 12 Attempts、零 rework/retry、诊断空、重启通过）。早前三轮失败全部保留原证据：<code>f05bd316</code> 轮 review provider-result、reason 为 null（诊断枚举缺口）；<code>6f2d7f97</code> 轮命名 <code>pi_unexpected_event</code>；<code>fc2cdc92</code> 首轮 <code>fc2cdc92.final/pi-live</code> 失败但新增了被拒绝输出的 base64 保留并可解密（Leader 决策一旦引用摘录性依据即按 <code>invalid_leader_decision</code> 正当拒收，重跑通过，非系统性缺陷）。真实 Qwen 布局 1 同一安装根 <code>fc2cdc92</code> 复验通过：<code>task-52ad5eb4</code>、38.249 秒、3 Attempts 零 retry/rework、east 3 笔/75、west 1 笔/50、cold replay 一致。</p>
+<p><strong>真实局部修正（fog4）</strong>：初始 west 分支真实内容断言拒收（模型真实失误，注入为零）→ 唯一分支精确反馈 → 显式 repair 修复执行完成：最终交付 west <code>46/-1237</code> 修正为独立重算值，east <code>71/3515</code> 原样保留（制品 digest <code>sha256:bd6baaa608b986f0471a1e4aeeaea81c881d53f65257226d7607d95276866c36</code> 不变），repair <code>repair-8a35e70f-916d-4469-acf5-8b9b06a1c3b3</code> accepted、acceptance passed、<code>modelErrorInjected=false</code>、冷开零重复启动；独立重算与 SQLite integrity 核验通过，61 事件流 tail digest=<code>sha256:eeb3db673b5d7a5214a0c3d2cf700d338e9462ac76e37f36e3fb27e985ed266c</code>；fog1 因修复请求错过截止的历史失败原样保留。</p>
+<p><strong>声明支持面故障恢复（Done#3）</strong>：main <code>b5aa5261</code> 上 16 个声明面套件 <strong>99/99 通过</strong>（storage-full 的 SQLite 页数上限 FULL、storage-write-failure、backup-restore、服务与应用两层 worker-cancellation、recovery-commit/crash、custody、control-commit、leader-recovery（+core）、runtime-question-recovery、managed-diagnostic、installed recovery、git-live SIGKILL 冷回放）；此前并发扰动引起的瞬时失败已逐项隔离复跑证明，历史运行原始证据均未改写。</p>
+<p><strong>Linux 实机验收（Done#4）</strong>：固定 Node 24.15.0（fnm，用户级），fc2cdc92 codeload 包两端 SHA-256 一致=<code>d90bbd94144c05d426f5af469c56db138e99d14e87c099b5cb7a4539c5748dc7</code>；完整回归 715 通过 + 4 平台条件跳过 + <strong>仅 12 个把 <code>/usr/bin/git</code> 写死在 fixture 的用例</strong>因该主机无 <code>/usr/bin/git</code> 且 sudo 不可得而失败——该 12 例由每次 <code>ubuntu-latest</code> CI（当前 run 34425993716 ubuntu job）承接同一字节集。<strong>Linux 本机 pack manifest 与 Mac/CI 完全一致</strong>（<code>sha256:828b3ada02fd7a4f857ad527a13ac31664ed56a8d01a9bc5996170c96fa4955d</code>，60 文件/896368 bytes），restore-carrier 通过；零模型安装后生产报告配置完整生命周期（同配置双输入/自有团队/显式发布/真实 GET/冷回放）14.7 秒通过；<strong>200 波重复 soak 系列已在 Linux 实机完成：200/200 exit 0、零失败、零 capacity leak</strong>（每波 12 HTTP 团队含隔离拒收/取消，约 80 分钟，日志 SHA-256=<code>385cff19eeaea47bdf8ec55abb61102e9a005f97e07384381ce8b42daf4bf35d</code>）；这是当下时刻的长运行样本，多日连续运行仍属 B3 期量，不夸大外推。部署机已知边界：<code>/usr/bin/git</code> 假设不通用（要求配置既有 git 路径）；对该机 <code>/usr/bin/scp</code> 出口 137 曾现、改走拉回式获取，不作为产品验收项。</p>
+<p><strong>same-bytes stable 候选材料（Done#4 尾部）</strong>：候选源 <code>fc2cdc9298c3e1aaf47615373bb24e6d80e4c719</code>，CI artifact <code>10132869579</code>（run 34425993716），运输 ZIP SHA-256=<code>d46277e0c00acb4c78ae6200cebb48ae74dab52af8d1bc4a192937408ef5a766</code>，包 manifest=<code>sha256:828b3ada02fd7a4f857ad527a13ac31664ed56a8d01a9bc5996170c96fa4955d</code>（60 文件/896368B），<strong>Mac、CI（ubuntu/macOS）、Alinux 实机三处字节等价已由 manifest 一致证明</strong>；受保护发行（tag/发布）未执行——本轮 Goal 明确不执行真实发布动作；企业签名/notarized 仍属 B3 线外既有事项，不据本轮声称就绪。</p>
+<p><strong>最新候选与安装检查点</strong>：源 <code>623692475c166289043f4bbb4d26cc91eb508a21</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34356644704">Node run 34356644704</a> 五个 job 全部通过，包含双平台回归、单次打包与双平台同包消费。原 artifact <code>10106433664</code> 已下载接纳，运输 ZIP SHA-256=<code>66baa4d56a86cd1de868109559577d412c06590c0256bb01fab28f06e1939384</code>，包 manifest=<code>sha256:fb02d33c96948102b2af1c1d8e7daa87848f620458d8abde858ea6f2336f48c1</code>；二者不是同一摘要。原安装根 <code>/private/tmp/marshal-candidate-62369247.XVvFtS/admitted/installed</code> 未重建替换。此前两次 CI 中止已由实际超时 annotation 确认为 job 的 10 分钟总限额，修复源 <code>f8fe8bc7</code> 已合入 <code>62369247</code>，仅调为 15 分钟，不放宽各单测限制；候选通过不授予 stable 发布权限。</p>
+<p><strong>同一原包的真实 Qwen 问答交付</strong>：Qwen 0.23.0/固定 Node 24.15.0 一次交付通过，Task <code>task-1bd40ba0-2f05-46aa-9e6f-7fc3f6060171</code>，28.545 秒、3 Attempts、<code>retry=0/rework=0</code>，独立验收及下载后原流水消费均通过。477B 交付摘要=<code>sha256:a3034d43c83e5613b5035f5b2cfea4917c5d5215c6f38817570a4791cfbbce2e</code>，east 为 3 笔/75 cents，west 为 1 笔/50 cents。原证据 <code>/private/tmp/marshal-candidate-62369247.XVvFtS/qwen-live/evidence.json</code>，SHA-256=<code>a013b7220f2f196507a5fdfb7ca2decd7ed2ab05f4b9cf5e8935e979cdaccb79</code>；维护者独立核对 773 条事件及 SQLite 完整性/外键/事件摘要通过，核对前后库摘要不变。原 CLI 正常冷开、原请求回执/Task/audit/workers/交付重放通过，两次 clean exit 0。该配置仅 layout 1，不是 v7 Leader、授权发布后验、真实局部修正或故障恢复；HTTP 作者时间不冒充原进程交叠，用量未知。新原包 Pi 整轮结论见下一段，不能用首个 Task 成功关闭 B2-L。</p>
+<p><strong>同一原包的真实 Pi 结果</strong>：整轮 <code>passed=false</code>。首 Task <code>task-d1602777-0f0b-4d31-81ca-c9731a0cd7d4</code> 完整交付，12 Attempts、零 retry/rework，Review accept、验收 passed、发布 created、后验 passed；379B 原制品、下载与发布文件一致，摘要 <code>sha256:dd037c827fd8b95eed250a8908a1117aae6d52e24279d8bc05c68742dfb6ed4c</code>。审批前正常停开保持原 Task/Plan/Leader/Workers及答复回执，Attempts 2→2；不是活跃故障恢复。第二 Task <code>task-c621d011-d86d-443d-9791-869a7c8f7ab6</code> 在第6次 Attempt 后 failed，原库 code=<code>invalid_review_report</code>；对应 Reviewer 正常 completed/end_turn，非权威诊断为 parse/invalid_json。失败原输出未保存，只能确认 JSON 解析拒绝，不能猜具体文本原因。全部18次执行 cleanup 已确认；独立核验241条事件摘要及 SQLite 完整性/外键通过、核验前后库摘要不变。原证据 <code>/private/tmp/marshal-candidate-62369247.XVvFtS/pi-live/evidence.json</code>，SHA-256=<code>c00b32b60ee3fe61a1d9b0c25a7b6e7e09042fdd7fc419a85d25b7f8798f2e0f</code>。未重跑整队；真实局部修正、完整安装整轮通过及 B3 尚未完成。</p>
+<p><strong>此前安装失败与已修接缝（历史检查点）</strong>：安装消费者首轮在 <code>evidence_mismatch</code> 失败，已确认是消费者对 JSON 值的 prototype 比较缺陷，修复源 <code>253ab696</code> 已合入 <code>44cd0397</code>，不改业务验收标准。第二轮仍失败：<code>task-0-awaiting-approval</code> 观察到 <code>unexpected_terminal</code>，产品原因码为 <code>leader_result_rejected</code>；第二次 Leader 的原输出未保存，不能倒推精确拒绝原因。当时未进行第三次模型盲重试。诊断源 <code>cdf1913c</code> 最终独立 14/14（2.223 秒）、无 P0/P1，已合入 <code>d9d6867aabaf46372bfcedd629167af6ce0996c1</code>。SQLite FULL 源 <code>4a141846</code> 经维护者全 diff 独立审阅及与原 EFBIG 测试组合 2/2（23.407 秒），已合入 <code>4633aecc7500bf1c367865aa2a73f67b4276f28d</code>；两批 diff/secret/merge-tree 检查通过，已正常推送并核对远端 main 同 SHA，该批次 <code>pendingRemoteSync=false</code>。FULL 实际观察 <code>errcode=13/pages=38</code>，一项上传完整回滚、零重复启动、后继团队 4 次执行；这是数据库页数上限，不是 OS ENOSPC。诊断与无模型恢复测试通过不代表新安装实机通过。</p>
+<p><strong>既有双需求真实交付证据（不替代安装实测）</strong>：固定 Node 24.15.0/Pi 0.84.4，同一配置的两个不同需求均完成真实 Leader 全程交付，整轮 217.58 秒，<code>passed=true/fullDelivery=true</code>。冻结源 <code>529136d3</code> 与主线合并 <code>501d6d70</code> 的 Git tree 相同（<code>f703fedebad2a7421b16f620368cf4eb74e2806a</code>）；证据 <code>/private/tmp/marshal-leader-pi-budget.IJKDQw/run/evidence.json</code>。Task <code>task-28b4f501-ae25-4830-afb9-a48474cd8b41</code> 与 <code>task-33c49346-aaeb-4ee9-8aba-d6d19a74f463</code> 各 12 Attempts、6 次 Leader，双作者交叠分别 18299/10603ms；独立 Review/Verification、原明确授权发布及后验、132B/137B 两份不同报告的实际消费均通过。两项正常冷开原交付/Leader/收据相同、重复启动 0；均为 <code>rework=0/firstpass=true</code>，<code>usage=null</code> 仍为未知，不证明真实局部修正，正常实机结果不外推故障恢复。独立核对原 SQLite 完整性、外键及 300 条事件摘要均通过，核对前后库摘要未变；第二项回答 <code>cancelled</code> 是业务筛选条件，不是产品 Task 取消。</p>
+<p>恢复源 <code>32bd5558</code> 的无计划恢复漏计发布执行 P1 经独立复审关闭，已合入 <code>c735654f</code>；已有原 CLI SIGKILL/SQLite 与受控 Agent 的恢复证据，仍须按声明范围完成完整验收，不新增所有恢复必须调用真实模型的门禁。非 fixture 的完整 Leader 部署配置源 <code>2dde183f</code> 经独立审查无 P0/P1，已合入主线 <code>9a014b7858b5ae0f3dd9c120941761945646caa0</code>。维护者在该主线运行安装/单元/reader 六项，6/6 通过（33.529 秒），<code>modelCalls=0</code>。安装测试自身将临时源 <code>5b0db4e</code> 打包消费，并非把 <code>9a014b78</code> 作为包 source；不混同上述实机冻结源、测试入口与包来源，也不将无模型安装检查提升为正式安装后的真实 Pi 验收。</p>
+<p><strong>正式发行前的历史未闭问题（已被上文 2026-09-10 收口记录和下表覆盖）</strong>：当时仍缺正式安装后的真实 Pi 全程验收、真实局部修正及保留无关成果、完整故障恢复及 B3 发行证据，B2-L 当时为 <code>IN_PROGRESS</code>。这些不是当前重新打开的待办；失败和成本保留，不重做 B1、不改变 API-STABLE 原范围，也不把业务交付当 Marshal 软件正式发行。</p>
+<table>
+<thead>
+<tr>
+<th>Milestone</th>
+<th>当前状态</th>
+<th>尚缺用户出口</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B1 真实团队交付</td>
+<td><code>PASSED</code>（可信单用户本机 PoC）</td>
+<td>原七条件独立复核通过；旧 non-production 不改，不外推全程 Leader、生产或 stable</td>
+</tr>
+<tr>
+<td>B2 日常本地 API</td>
+<td><code>PASSED</code></td>
+<td>安装后真实 Qwen（第二次 fc2cdc92 38.249 秒复验）与真实 Pi 双 Task 整轮两次通过、审批前正常重启通过、问答/审计/单 Worker 取消与声明面故障恢复/局部修正证据齐备；用量缺失项如实留空不外推</td>
+</tr>
+<tr>
+<td>B2-L 全程受管 Leader</td>
+<td><code>PASSED</code></td>
+<td>安装后真实 Pi 双 Task 整轮两次 passed=true（12 Attempts×2 零 rework/retry，审批前重启通过）；真实局部修正 fog4 保留无关成果通过；诊断与 RPC 闭集缺陷链全部经独立 review 修复合入；B2 出口证据随本表 2026-09-10 检查点记录</td>
+</tr>
+<tr>
+<td>API-STABLE 核心接口检查点</td>
+<td><code>PASSED</code>（保留原范围）</td>
+<td>原 25 操作/58 Schema/同包客户端与四出口通过；不自动覆盖新增 Leader 支持面，不等于正式发行或任意版本兼容</td>
+</tr>
+<tr>
+<td>B3 正式可靠发布</td>
+<td><code>PASSED</code></td>
+<td><code>v1.0.0</code> 已发布（annotated tag、GitHub Release、ADR 0096 minisign 签名三级互证全绿、安装恢复公式自述）；ENOSPC 按既有 EFBIG 证据边界归档、Mach-O/notarized 不适用、usage=null 与 <code>trueProcessOverlapProven=false</code> 如实留空</td>
+</tr>
+<tr>
+<td>UI-1 完整界面交付</td>
+<td><code>IN_PROGRESS</code>；Chrome 优先 <code>v1.1.0-rc.1</code> 已预发布</td>
+<td>签名、GitHub/OSS分发及公开原包安装核验通过；Chrome 隐藏退避限定通过，Safari 受控交付及本机后验通过、浏览器下载待许可；真人 NOT_RUN。继续发布后实机测试，不关闭完整三线，不重开 API B1–B3，stable 仍 v1.0.2</td>
+</tr>
+</tbody>
+</table>
+<h3 id="1923">19:23 及更早检查点（历史，不覆盖当前表）<a class="headerlink" href="#1923" title="Permanent link">&para;</a></h3>
+<p><strong>19:23 最新实机出口（覆盖下述较早检查点的待办口径）</strong>：主线 <code>1921f8a5e448d6914cfa7259c210ce203b80ae59</code> 已正常推送，包含已独立审查的提示合同 <code>7b5cc408</code> 与 checker LF 读帧修复 <code>e00e9446</code>。原实机冻结源 <code>765b89e9d6d57accccae6567e3247862759d28b5</code> 与该主线树一致。固定 Node 24.15.0/Pi 0.84.4 下，Task <code>task-aa7d4dae-6338-480a-a70a-cf69634bcff9</code> 首次完整真实交付通过：12 Attempts、6 次 Leader、两作者交叠 14246ms、独立 Review/Verification、原明确授权发布与后验、132B 报告实际消费，正常冷开原交付/Leader/收据相同、重复启动 0；rework=0、firstpass=true，usage=null 仍表示未知。原制品/消费摘要同为 <code>sha256:11c023b25a749fab1487bab6c4db92a376cbad179d7c1f3075c213a113e9b9df</code>。</p>
+<p>同配置第二个不同回答的 Task 在 <code>leader-1-approval</code> 失败，原输出已保存；因此整轮 <code>passed=false/fullDelivery=false</code>，不能以第一项成功关闭双需求覆盖或 B2-L。原 SQLite 已确认：模型将预算17自行缩为8，而计划最低需要12，Core在用户审批前以 <code>capacity_exceeded</code> 拒绝；不降低门禁或改写原回答。证据 <code>/private/tmp/marshal-leader-pi-frame.ALy8wR/run/evidence.json</code>，不改写前序失败成本。此前 <code>marshal-leader-pi-contract.cFe1Fy</code> 越过 intake/双作者/Review 后因 checker 等待 EOF 卡住，维护者经原 HTTP 取消止损，非自然通过；修前原 guard 回归失败，修后完整 15/15、独立 2/2 通过，Runtime 协议未改。完整恢复源 <code>5d2dd3c0</code> 的最终原 CLI/HTTP 三项 3/3（50.204 秒）通过，但独立审查发现无计划恢复漏计发布两次执行的 P1，待同轮修复/复审，尚未合入；部署配置仍在实现。以下 SHA/CI 均保留各自历史范围。</p>
+<p><strong>历史代码与证据</strong>：Core 最终审查源 <code>40468f343ba53d71b9f2418cf1d970e2ccfa360b</code>，<code>localMergeSha</code>、main 与 origin/main 均为 <code>2b203cb2f3b08933736dcf0f48774a9d491d4092</code>，已正常推送，<code>pendingRemoteSync=false</code>。原四项 P1 及 Review→verify 闭包问题经聚合修正、独立复审关闭；最终独立分类/生命周期回归 17/17，集成 HTTP/SQLite 17/17 含完整局部修正通过，独立同包安装与驱动 18/18 通过。本地所测包包含 55 文件、821293 bytes，manifest=<code>sha256:f7eea46b38042b87f8b1d4bfa5d3320a33bbf5e26480949d564ee07ff881d9e9</code>。这些证据使用受控 peer、modelCalls=0；证明 Core 与安装消费检查点，不等于真实模型或完整故障恢复通过。</p>
+<p><strong>同源 CI</strong>：<a href="https://github.com/chiga0/marshal-harness/actions/runs/34340458961">Node run 34340458961</a> 的 head 为上述 <code>2b203cb2</code>、attempt 1，五个 job 已 <code>completed/success</code>：macOS 回归 <code>102429772105</code>、Ubuntu 回归 <code>102429772367</code>、单次打包 <code>102432181259</code>、macOS 同包消费 <code>102432264130</code>、Ubuntu 同包消费 <code>102432264176</code>。原 candidate artifact=<code>10099801881</code>，运输归档 840828 bytes、digest=<code>sha256:7c828c5add75b429163bcf105193942efb6182cb1b210f456854afa694223179</code>。维护者独立下载两平台原 JSON，确认都消费这个 artifact 和源 <code>2b203cb2</code> 的 55 文件包，manifest=<code>sha256:6409fe2ac6629b5c003e34d14ec2b12c8273b5ec64286ddd97b6b34b6add0541</code>；它与上面的本地 <code>40468f</code> 包 manifest 分属不同源，运输摘要也不代替 manifest。每平台同配置两个 Task 各 12 Attempts（6 Leader、2作者及 Review/Verifier/Publication/Postverify），交付两份不同 93B 报告；modelCalls=0，正常冷开重复启动/发布均为 0。原 JSON 保留于 <code>/private/tmp/marshal-v7-ci-evidence.KAONbJ</code>；不把无模型 CI 或正常冷开当真实模型、冷故障或 production 证据。</p>
+<p><strong>19:02 已合入检查点</strong>：冷结算修复源 <code>936139387300c78c9645992bb3cb65dd4eb17865</code> 经独立 44/44 回归及原 HTTP 故障验证通过，<code>localMergeSha=c65193bf253f6e677fdad427666fe67671472735</code>；它关闭 managed 附属节点被误当 DAG 节点、结算事务回滚的 P1，只证明诚实结算，不等于同 Task 完整续接。提示绑定与私有失败诊断源 <code>c52f9c8916543b64d1ab6ddb377687a4fa3c5216</code> 经独立审查、维护者完整 22/22 通过后，合入 <code>37d2559dc67d08191f5710b4a736b080cf1d28e9</code>；已正常推送并核对远端同 SHA，<code>pendingRemoteSync=false</code>。上述开头 <code>2b203cb2</code> 包/CI 是前一检查点，不外推此后变更；<code>37d2559d</code> 的 Node run <code>34342752062</code> 与 CI <code>34342752002</code> 在本次查询时仍运行。</p>
+<p><strong>后继 CI 查询</strong>：<code>37d2559d</code> 的 Node run <code>34342752062</code> 五项全部成功，包含 Darwin/Linux 回归、单次打包和双平台同包消费；普通 CI <code>34342752002</code> 的 secret scan 与两种 Linux candidate conformance 已通过，双平台 Quality 仍运行。此处未重新下载本次 candidate，不借用上一候选摘要，不声称全 CI 或实机模型通过。</p>
+<p><strong>历史时点未闭问题</strong>：两次真实 Pi 0.84.4 均停在 intake；首次 <code>/private/tmp/marshal-leader-pi.kkYHsH/run/evidence.json</code> 未保留原输出，不能倒推精确原因。后继 <code>/private/tmp/marshal-leader-pi-bindings.9rxRcF/run/evidence.json</code> 已保留私有原输出：<code>ask.options</code> 返回字符串数组，而原解析器要求 <code>{value,label}</code>；原 port 无模型回放拒绝，仅在内存转换该字段即接纳，原 DB/WAL/SHM 摘要不变。提示仅展示空数组，正在聚合修正，不放宽解析器、不原样付费重试。同 Task successor、发布精确 lookup 与后验恢复仍在实现；在途候选的两项原 HTTP 测试通过（31.049 秒）不替代冻结源独立审查。另缺随产品包交付的非 fixture 完整 v7 部署配置，测试驱动不等于开箱即用服务。最短后继是关闭接入与恢复阻断、补齐部署入口，再做真实完整业务验收；不重新做 B1、不重置历史成本。</p>
+<h3 id="_1">本轮早期集成记录（历史，不覆盖上表）<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h3>
+<p><strong>2026-09-09 18:14 后继验收</strong>：独立安装消费者源 <code>1657f6cc0299f5bfe863765b7899e5ea9655a905</code> 六文件经维护者审查无 P0/P1；独立 4/4（29.934 秒）消费原 <code>da2e9bd2</code> 的 55 文件包，manifest=<code>sha256:2d71de964b15b8be000a1b6022feb4ae8dbfbd26990b24a52d06a0b382401e56</code>。同配置两 Task 各 12 Attempts，均含 6 Leader、2作者及独立 Review/Verifier/Publication/Postverify；原作者进程交叠399/404ms、两份不同93B成果经过授权发布与真实GET后验，冷开原回执/事件/成果不变、零重复启动或发布。此为Darwin ordinary-user受控ACP，modelCalls=0；不覆盖异常恢复、真实模型或release。已合整合分支 <code>9fa5cd12</code>，不是 main 合并。原状态/修正/SQLite兼容独立84/84（15.745秒）通过仍只证明基线范围。</p>
+<p>真实 Pi 驱动后继源 <code>8eec88e5</code> 经独立14/14（1.198秒），修正复制FileBusiness对象丢私有身份与服务默认2槽不符合原Task3槽的启动问题；保留原factory对象及原预算，增加真实目录/权限/采集与零Task的服务create/open前置检查，不降低Core门禁、不消耗模型。Pi CLI 当前实际版本0.84.4，固定Node可执行；完整模型任务尚未运行。Core聚合修复与双平台同包消费者接线在途，main仍为3beafe17；不将新候选标记可发布。</p>
+<p><strong>2026-09-09 18:03 检查点</strong>：main/origin/main 为 <code>3beafe17c1874c42d0fed8e25a3f0c9a811c9bc0</code>，已推送的 API、有限报告端口和实机驱动批次 <code>pendingRemoteSync=false</code>；该 SHA 的 Node team CI <code>34336243004</code> 五项通过，资产 <code>10098074531</code> 不含后继 v7 Core。后继整合 <code>da2e9bd2719929e94c25fbed553d0a1819b0e9ad</code> 保持候选，未合 main：API/客户端/驱动 57/57、真实 HTTP/SQLite/所属进程正向 2/2（46.249 秒）通过；发行清单 55 文件、独立安装冷导入通过，不等于安装后 v7 执行通过。以上使用受控 ACP，不是新真实模型验收。</p>
+<p>Core 冻结源 <code>236ce0173dc797daa753e734ee9d31083078d5d3</code> 首审确认四个 P1：等待/陈旧 Leader 的业务义务续接、取消后的原发布收据保留、发布后验能力前置、结构失败不可自动重试。现交同一作者聚合修正，未放行。后继测试源 <code>0e9886bc</code> 在维护者普通权限运行：HTTP 双作者取消 1/1（3.616 秒）通过，独立 Review→仅 east 修正→第二次 Review 接纳已走到原 verify，但 verify 失败导致 Task failed，完整修正用例未通过；原状态与失败成本保留，不能据局部成功关闭 B2-L。当前同时推进独立安装包 v7 消费；B2-L 整链仍 DESIGN，B2/B3 不升级。<a href="../agent-team-service-milestones/#当前持续实施-goal">当前实施 Goal</a>取代 ECS-first 的执行前置，不重置历史成本。</p>
+<p><strong>2026-09-09 17:24 增量</strong>：Leader API 源 <code>b3910e95a3dcd038d1b2c9ae7b4a19551724d771</code> 经独立审查无 P0/P1、API/客户端 45/45 与发行包回归 20/20 后，已合入并正常推送 <code>07e3afc29ed992f17dba857c7c16e4419f43766f</code>；该批次远端同 SHA，<code>pendingRemoteSync=false</code>。新增两项 Leader 子资源，机器合同当前共 27 操作/66 Schema，Ajv2020 的 45 示例通过；原 58 Schema 和 24 路径对象（25 操作）逐对象保持不变。新增接口尚不等于 v7 Core 已接线，既有 API-STABLE 结论仍限原 25 操作。有限本机报告端口源 <code>47f10417e93ca4bbfc8d3bcdc178a1636cf0b831</code> 已独立通过 11/11（含真实 HTTP GET 后验与五个所属子进程故障窗口），当前只证明端口，不证明 Task 原授权、完整 Leader 或正式发布。Core 与真实 Leader 驱动仍在实施；B2-L 的整链成熟度保持 DESIGN，不因并行组件通过升级。</p>
+<p><strong>2026-09-09 16:57 后继</strong>：上一代码/证据批次已正常推送并核对 main/origin/main=<code>3f359fd0fd88987b8ea2f3d3fbb36058834b003b</code>，该批次 <code>pendingRemoteSync=false</code>，覆盖下段记录时的未推送状态。<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0095-node-managed-leader-contract.md">ADR0095</a>/<a href="../node-leader-execution-contract/">Leader 机器合同</a>已独立审查接纳，按 Core、API/客户端、本机报告端口三个无冲突范围实施；B2-L 仍 DESIGN，未因合同接纳升级。</p>
+<p><strong>当前研发同步</strong>：单Worker取消Core=<code>070086e9</code>、整合/实机source=<code>190171e0</code>已本地合入main <code>25ff8315cbf63e907aaaa47f869d76d592c89acc</code>，记录时<code>pendingRemoteSync=true</code>待正常推送。新v6显式profile已支持原HTTP取消，旧格式仍501；一次聚合P1修复经原reviewer独立43/43通过，整合API/客户端/发行包/driver56/56、真实CLI repair/取消15/15与58Schema/35示例通过。真实Pi一次45.843秒仅停止east，west原550候选保留，冷开原回执/零替身，不是独立Task交付。存储有界写失败测试已随f27784dd推送。最近已记录的双平台完整CI仍为旧1a9dc3c/run34323362296，不能替代本源；<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">精确证据与失败范围</a>。</p>
+<p><strong>当前目标/profile</strong>：<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0094-trusted-single-user-role-team.md">ADR0094</a>及<a href="../node-leader-execution-design/">受管Leader机制</a>按用户本轮要求设计Accepted，机制为<code>DESIGN</code>未实现：Supervisor观察聚合、Leader业务判断、Core校验/硬规则和已批准调度、Execution原handle操作，现混合实现尚待接线。全程Leader/集中Review/局部调整保留成果/授权交付后验单列B2-L正式发布前出口，不以Planner或下载替代。强OS/凭据隔离后置，独立证据/授权/恢复与B3软件发行不变；文档不改HTTP/枚举/格式或数据，不撤回API-STABLE，未来新终态/副作用需显式兼容，旧non-production不重标。</p>
+<p><strong>B1 独立结论（2026-09-09）</strong>：维护者按七条件复核原实物后记<code>PASSED</code>，仅<code>trusted-single-user</code>本机PoC。原真实Pi <code>69cface</code> Task <code>task-70cb4ab2…</code>29.624秒、作者交叠10189ms；原独立Decision <code>decision-5b561070…</code>绑定计划<code>2ea310…</code>，338B下载<code>584a06…</code>重新独立消费仍2 reports。相同生产代码<code>37df</code>取消Task <code>task-d2a44c9b…</code>13.046秒，owned停止/零verifier与替身/冷开原回执。两个原SQLite的完整性、外键、source-event哈希检查通过，复核前后库SHA不变。当前<code>31afe269</code>生产等价源独立团队3/3通过10.140948375秒，含组件各自合法而组合wrong-total拒收/无delivery及重复approve/cancel/冷开零重派，原driver23/23通过。此为独立复核旧模型实物和无模型组合，不是今天重跑模型，不含v6/Leader/B3，usage仍null；原完整记录见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">状态证据</a>。不是仅因放宽隔离而自动通过。</p>
+<p><strong>2026-09-09 13:25 CST 当前出口</strong>：API-STABLE 核心接口检查点通过，范围仅当前 Node profile 的25操作/58 Schema与同包客户端，不授予正式 v1/生产/全平台支持。已审源码 <code>5657a7d</code> 正常合并推送至 <code>94795f37e37863d0fddb003874b6fac5f7f8a082</code>，远端一致、<code>pendingRemoteSync=false</code>。同 Pi/custody 配置的真实取消一次13.046秒通过；原20项定向与三波14Task/55执行的独立隔离测试通过。旧 main <code>9700ade</code> 双平台CI全绿，新提交CI另记，不冒充本源通过。<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">完整四项证据、失败成本与下一步</a>。</p>
+<p><strong>恢复与平台范围</strong>：0092 新 v5 仅对已冻结资格的可信 staging-only 文件准备，结清 reservation-after/binding-before 两个无许可窗口；六个原 CLI/SQLite COMMIT 故障窗口后均验证新团队下载与再次冷开，无旧任务重派。旧根、Git/custom prepare 未绑定义务不被追认，原 unknown 仍保留。事件洪泛的独立1/1证明有界失败、原cleanup及随后新团队可用，不证明洪泛期间并行健康、SLO或磁盘满。已有旧8f97安装消费和失败成本保留，不再用它替代新v5；<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">当前实施检查点</a>区分平台/模型/故障范围，正式发布仍未完成。</p>
+<h3 id="node">历史 Node 集成检查点（不覆盖上表）<a class="headerlink" href="#node" title="Permanent link">&para;</a></h3>
+<p><strong>2026-09-09 12:59 CST 已合入并推送</strong>：规划提示合同修正source=<code>42426a2</code>，localMergeSha=<code>69cfacee2fbea366174744167d5a2c3a3dfeee89</code>，远端一致、<code>pendingRemoteSync=false</code>。原reviewer复审与独立24项通过；当前候选真实Pi HTTP运行问答→双作者交付→独立验收/下载→正常重开29.624秒通过、交叠10.189秒、零重复派发。前一候选一次真实规划失败保留：未说明scope类型导致对象/数组不匹配；补提示而非放宽Core。上一源0f86804 Ubuntu/macOS各510项全过，API响应上界和事件续读测试已合入，不再待开发。当前补同候选失败控制/接口证据与完整快照新目录恢复；仍非生产发布，<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">精确证据及剩余边界</a>。</p>
+<p><strong>2026-09-09 12:39 CST 已合入并推送</strong>：输入审计/简启动source=<code>fe04a8a</code>，localMergeSha=<code>ee3932ffc135f89ce0395f159696f93c6684da1d</code>，远端一致、<code>pendingRemoteSync=false</code>。独立最终29/29通过，58Schema/34示例/25操作通过；简启动一次P1聚合修正后复审关闭。下一项为API-STABLE响应上界及事件续读。香港runner/固定Node可执行，SCP137后未收到安装包、不记部署成功。B1/B2/API-STABLE/B3不升级，<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">精确证据与边界</a>。</p>
+<p><strong>2026-09-09 12:20 CST 已合入并推送</strong>：sourceHead=<code>8f8ff8dfe57852e6b383fbd2bb7c70fb75a1d552</code>，localMergeSha=<code>85fc62a3338fc15c408e941e16a7c882b0be4a6d</code>，远端 main 已核对一致、<code>pendingRemoteSync=false</code>；精确 source 的 Ubuntu/macOS Node team CI 均通过。运行中问答和局部修正进入主线；实际输入审计、简启动仍在途，OpenAPI仍为candidate，B1/B2/API-STABLE/B3不升级。<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">验证范围及未完成项</a>。以下未合 main 记录是历史时点。</p>
+<p><strong>2026-09-09 12:04 CST 增量</strong>：已审局部修正及证据正常推送至功能分支 <code>d650238</code>，不是main合并；原两P1聚合关闭，最终定向80/80通过。真实Pi首轮交付26.288秒、双作者交叠11.788秒，下载7单/1850 cents和正常重开通过，无实际repair、不造错寻找失败。局部修正实现/确定性证据前进，真实模型修正仍未证明；实际prompt/context审计和简启动开始并行实施。下表状态不升级，<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">精确证据与边界</a>。</p>
+<p><strong>2026-09-09 10:23 CST</strong>：真实 Pi＋Qwen 双仓库 patch 团队一次通过，56.914秒、作者真实重叠11.631秒、4 Attempts、独立验收与下载消费23检查/12负例通过、正常重开零再启动。source=<code>76f9c36</code> 已合并并推送 <code>7294878e68c59a592b4c8cd1236da34bad038fe2</code>，pendingRemoteSync=false；新增API/驱动独立组合48/48通过。只关闭固定业务混合交付子条件，不把 Qwen 零权限回调或普通宿主执行当分权证明；运行问答合同已接线，Core实际投递/ACK、局部修正和正式 profile 仍在途。<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">精确证据与边界</a>。</p>
+<p><strong>2026-09-09 10:12 CST 已合并并推送</strong>：sourceHead=<code>db57d45c7b8a951eb3adddafd2f649ad165cd068</code>，localMergeSha=<code>0057dd1b7c5b259f238600bacbc3abb346d770ca</code>；正常推送后远端 main 已核对为同一 SHA，产品 <code>pendingRemoteSync=false</code>。最终完整 Node 组合 <strong>418/418 PASS、319.688秒、零失败/取消/跳过</strong>，运行前后冻结树不变且 clean；日志 SHA-256=<code>47b7d7ceb5c01fa5611ab93e2fc5f3c08ea4c51d8672de6f3a8204aaecd7d63f</code>。 限定执行托管/cleanup-only 恢复、安装包 v1/v2 团队闭环及 Git 双仓库 patch 业务插件已进入主线，均经独立审查。此前 <code>d6833d5</code> 的409项中1项 Pi legacy 回归保留为失败记录，由 <code>ed8df71</code> 最小修复并通过最终全套，不放宽 v2 未知 scope 门禁。后继三个并行方向为运行中业务问答、其 API/schema/客户端、Git/Pi＋Qwen 混合实机驱动；<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0090-node-runtime-business-questions.md">ADR 0090</a> 已接纳但不等于运行时已完成。B1/B2/API-STABLE/B3 不升级，<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">精确范围与剩余出口</a>。</p>
+<p>以下时间检查点为历史事实，不覆盖上述同步状态。</p>
+<p><strong>22:50 CST 当前代码</strong>：Runtime source=<code>c1dd3c</code> 已正常合入并推送 <code>e491339d5e5eb90d52248b9a3f644aad3beab0c5</code>，产品 pendingRemoteSync=false。独立20/20测试与审查通过，关闭所测原继承组清理假阳性；完整组合另行验证。ADR 0089 已接纳，尚待执行托管与跨代清理的实际整链实现，不关闭 B2 或正式发布。<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">当前精确证据</a>。</p>
+<p><strong>22:42 CST 提交边界已同步</strong>：localMergeSha/main/origin/main=<code>32b353f2460415fc0b92e3ad784d02ddd1e45f35</code>，source=<code>2f6c28f</code>，正常推送已核对、pendingRemoteSync=false。新增原 CLI/HTTP 的 create/result COMMIT 前后四项真实 crash 用例，独立与原 crash/team 组合9/9通过、24.514秒、无P0/P1。未改变生产恢复行为；下一步 Runtime 清理假阳性修复和 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0089-node-execution-custody-and-cleanup-recovery.md">ADR 0089 cleanup-only 恢复</a>，详见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">检查点</a>。</p>
+<p><strong>22:22 CST 当前同步与下一步</strong>：localMergeSha/main/origin/main=<code>8d48d9452485f6c753cd074587b2307e683e3129</code>已实际正常推送，产品pendingRemoteSync=false；集成source=<code>ce2879f</code>。Qwen日期问答、Pi真实团队候选和crash首批已合入；整合<code>c576772</code>完整384/384通过，最终仅新增crash测试的<code>ce2879f</code>定向2/2通过，分次范围不合并计数。当前主线转入B2跨代清理收口与create/result故障组合；B1权限分离仍未证，API-STABLE/B3未完成。ECS原scp被SIGKILL且未上传，部署未通过。开发阶段已按用户常驻授权直接review后merge/push，v1正式发布后恢复PR；以下旧阻塞/未推送记录不覆盖本段。<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">精确证据</a>。</p>
+<p>Pi候选完整回归后续确认：<code>74a239e</code>独立一次 <strong>374/374 PASS、182.405秒、exit0、零跳过</strong>，HEAD及工作区保持clean；不把它与regional候选347项拼成一个组合，不改变未合main/未发布的状态。</p>
+<p><strong>22:07 CST Pi实机增量</strong>：独立候选<code>74a239e</code>真实Pi0.84.4 HTTP团队一次通过，37.064秒、双作者交叠9.403秒、工具许可5/拒绝1、独立验收及下载4笔/1825 cents、正常实例重开零重复。尚未合main/推送，完整组合回归中。Qwen与Pi均已有明确范围的真实团队成功，但权限分离、活跃执行崩溃收口、局部修正及正式同资产部署仍未完成。B1/B2继续IN_PROGRESS，开始补真实进程crash组合测试，详见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">精确证据</a>。</p>
+<p>授权后更新：用户已明确批准研发整合和限定ECS上传；Pi独立分支正常获批完成整合、回归中，root的regional研发merge仍被AGENTS作用域解释阻止。ECS已建专用目录但scp异常exit137，复核无归档/state、未启动服务，终止原因未知，未重传。以下“等待授权”保留审批前时点，当前待规则澄清及传输根因诊断，不是用户未授权。</p>
+<p><strong>22:00 CST 当前增量</strong>：候选<code>538c534</code>真实Qwen必要日期问答团队一次通过，21.440秒、双作者交叠14.828秒、独立下载验收5笔/1550 cents，正常服务实例重开无重复；完整Node组合347/347通过。Pi原P1关闭，但正式模型团队尚未执行。main/origin/main仍为已推送<code>61a19e9</code>，候选pendingRemoteSync=true、尚无localMergeSha。研发合并及香港源码包上传分别被安全审批拒绝，等待明确授权，未绕过；香港固定Node安装不等于服务部署完成。B1/B2继续IN_PROGRESS，权限分离、局部修正、完整恢复、第二真实Adapter和正式部署/发行仍待完成。下列检查点保留历史范围，精确事实见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">当前记录</a>。</p>
+<p><strong>21:21 CST 当前增量</strong>：main/origin/main=<code>6a2df5ef4c3fc2952a0975cc34d5d0008bcc9b3f</code>，产品代码已正常推送、pendingRemoteSync=false。批准前问题/答案/新预览/精确确认已贯通 HTTP→SQLite；完整 Node 组合337/337通过，41 schemas/25示例独立核验，25文件目录包已打包核验。一次消费者示例遗漏 P1 已聚合修复并由同 reviewer 关闭，不记首审全绿。真实日期区间问答业务与 Pi 正式原生工具适配并行；尚未形成新模型验收。B1 七项功能条件已有有界证据，明确尚缺适用 profile 的 Worker/Publisher 权限分离证明；不把 B2/B3 全矩阵加成 B1 前置。香港专用账号 SSH 本次被公钥鉴权拒绝，未执行远端检查。精确 source/merge、包摘要与验证范围见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">当前检查点</a>。下列时间记录保留历史范围，不覆盖本段。</p>
+<p><strong>21:02 CST增量</strong>：<code>0a1deed</code> 真实Qwen启动阶段HTTP取消一次通过，两个原作者清理、Task/Operation收口、零verifier/交付及正常服务实例重开回执保持已验证；未声称模型生成/工具中取消。安装目录包另已通过本机独立CLI进程create→正常退出→open的零模型smoke，并固化10/10回归。最新合入source/merge、范围和本地同步状态见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">当前检查点</a>。B2问答候选在独立审查，Pi RPC候选继续处理原生权限/工具清理接缝；B1/B2未整体关闭。</p>
+<p><strong>20:16 CST新增真实团队证据</strong>：正式源码 <code>42f95658071e9ce03d38d8926b376b26c82ffd50</code> 已推送；纯HTTP真实Qwen 0.22.3完成planner→一次批准→双作者（重叠16.799秒）→独立验收→下载消费→正常重启原回执/成果不变，总计32.620秒。本次无自动重试，交付为两地区报告、4笔/1825 cents，精确Task/摘要见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">实机检查点</a>。这是正式同链的Mac ordinary-user dogfood成功，不是仅实验或进程夹具；仍不证明Worker/Publisher分权、真实运行中取消、崩溃恢复或stable，B1/B2继续IN_PROGRESS。下面82b64cf是此次运行代码基线，不覆盖本段新增实机事实。</p>
+<p>当前代码集成基线 main/origin/main=<code>82b64cfa8d0daef0c188f0e296299b6e3aedcc48</code>，已实际推送，以上代码 pendingRemoteSync=false。正式HTTP→SQLite→Supervisor→双作者→独立验收/Decision→交付下载及取消/正常重启已有真实Node进程夹具证明；不是模型团队通过。维护者在文件树相同的source <code>3383e0e</code> 完成307/307组合测试；<a href="https://github.com/chiga0/marshal-harness/actions/runs/34223961302">远端 Node team CI</a>通过，通用CI最近查询仍运行中。目录发行包24文件已核验，不代表部署或stable。真实Qwen原生工具单会话证据保留，当前正在准备正式同链团队实机验收，B2问答并行开发；API-STABLE和正式发行尚未完成。精确source/merge、Core两轮P1修正及旧失败记录见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-task-service-status-2026-09-08.md">当前实施检查点</a>。</p>
+<h3 id="_2">以下为较早本地集成检查点（不覆盖上表）<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h3>
+<p><strong>最新正式路线</strong>：<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0088-node-task-service-production-projection.md">ADR 0088</a> 明确 Node-only 产品投影；不继续以固定无工具样例作为开发主线。Qwen 实验在 <code>81a83e6</code> 上确定性组合 46/46 通过，但真实双作者的业务验收失败；后继独立真实 ACP initialize 成功（协议 1、qwen-code、loadSession=true、exit 0、stderr 0），尚不证明工具/交互/恢复。已审实验与目标纠偏 sourceHead=<code>c8923cebe6124abb4e4a296ac1717ed0529d3387</code>，localMergeSha=<code>97c4558</code>；Git 空锁经两次无持有者核对后保留改名备份，再完成合并。最新 fetch 确认 origin/main 仍为 <code>ba2196b</code>，pendingRemoteSync=true。正式 ACP/Application/SQLite 接线继续推进，B1/B2/B3 不升级。以下较早的“Qwen 未新增证据/下一步决定 Node”等语句保留检查点上下文，以本段为准。</p>
+<p><strong>API/DI 并行检查点</strong>：产品能力设计已有 ADR0085，但不能把旧 <code>/v1alpha1</code> OpenAPI 当作当前 Task-first 稳定协议。Node 实际接口候选见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-api-contract.md">API 契约与差距</a>及 <code>experiments/node-team/openapi.json</code>，覆盖 8 个路径、9 个操作；它只描述 ADR0087 实验，尚非 <code>API-STABLE</code>。HTTP 已抽为注入 Application 的薄适配器，sourceHead=<code>fb08495</code>，localMergeSha=<code>64c28cb5986c0ec424fc0f3aefd7d1565ba3e6c8</code>；维护者独立审查及 34/34 Node 组合回归通过。Schema/负例与真实无模型 HTTP 响应验证、DI 单测、第二 Provider 接入分别在独立工作树推进，不等待真实模型才写接口或测试。Qwen 接入仍在实施，未新增该 Adapter 的实机通过证据。</p>
+<p>本地 main 已通过 <code>428acb36a2af69bff0b1f94d6f77ada078a8321c</code> 集成此前开发栈，并继续合入上述 DI；远端 main 最近核对仍为 <code>ba2196b</code>，本地增量 <code>pendingRemoteSync=true</code>。以下各 PR 的远端功能分支记录是各自历史同步事实，不表示本地仍未集成，也不表示远端 main 已更新。</p>
+<p>Schema source=<code>960292a</code> 的 18 个 component 已经 Draft 2020-12 metaschema 独立校验；与 DI 合并后六个 Node 测试文件 <strong>37/37 通过，26.69 秒</strong>，包含真实 HTTP 的契约响应、重放、取消和交付（Agent 为确定性替身）。同组新增测试已加入后续集中 CI 清单，本轮没有发新 PR、触发远端 CI 或调用真实模型；这关闭确定性接口接缝，不关闭真实第二 Provider/生产发布。</p>
+<p>2026-09-08 用户明确调整：快速推进期间不再逐切片创建 PR 或等待 CI/E2E；独立本地 review 无阻断后直接合并，继续下一项开发，集中补跑验证。保留单写者、精确 source、未验证项和发布前实际验收，不把本地 merge 当成正式 release。已有远端 CI 可异步完成，不反向阻塞后继开发。</p>
+<p>Node 与 SQLite 已在本地候选 <code>5b50439f79fe55082785b60cea11f09c99c94166</code> 集成；SQLite 修复 source=<code>f51ff9a744a84da0e73d6dd358aa1f8110dd5bd2</code> 经维护者独立代码 review，无生产期限或行为变更，新的动态 race 待集中验证。Node source=<code>0e1250c</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34203735967">Node team 34203735967</a> 在 Ubuntu/macOS 均通过确定性回归，本机同组 23/23 通过；不调用真实模型或 Marshal 原生文件。后续直接基于集成代码推进，不继续维护平行功能岛。</p>
+<p>当前待补验证：SQLite 新边界/事务回滚的 race、合并候选的全仓回归与真实第二 Provider、完整 supervisor/主机中断恢复；B1/B2/B3 不因本次合并自动升级。香港执行机专用 <code>marshal-runner</code>（uid 1000）本轮 SSH 只读核对存在，随后两次连接出现 <code>Bad file descriptor</code>，未改宿主策略或循环重试；旧执行机文档的“缺专用用户”不适用于香港此账号，本轮未取得新的远端测试通过证据。</p>
+<ul>
+<li>
+<p><strong>Node-only 可行性实验已通过</strong>：<code>c88410b</code> 在本机 Node 24.15.0 / Pi 0.84.4 经纯 HTTP 完成真实双 Pi（重叠 13.106 秒）、69 项独立验收、下载后 69 项消费、活跃前端重启及另一真实任务取消/重启保留，全程不调用 Marshal 原生文件；本次约 40.62 秒。前两次真实失败分别为原生事件流预算不足、角色提示未各自完整列明数值范围，均保留并修正，不倒填首轮通过。见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0087-node-local-team-feasibility-probe.md">ADR 0087</a> 与<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/node-team-feasibility-2026-09-08.md">实机记录</a>。该独立 profile 不修改旧 <code>.marshal</code>，不自动授予 Go B1/B2 或 production；下一决策是正式 Node profile 边界，而非继续等待本机原生执行才允许做实验。</p>
+</li>
+<li>
+<p>远端 main 最近核对 <code>ba2196b</code>；PR #275 已在完整 CI 全绿后合入功能分支 <code>feat/team-resident-progress</code>，merge=<code>a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1</code>，pendingRemoteSync=false，<strong>不是 main 合并</strong>。Task HTTP、独立客观 Decision、完整制品链已有原 Store/Verifier 的确定性组合证据，尚无该完整团队的真实下载消费。</p>
+</li>
+<li>PR #276 的 <code>272aa4c</code> 在 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34195113168">CI 34195113168</a> 六项通过、macOS quality 失败：输出超限负例的 150ms 预算先触发解释器启动超时。后继 <code>a97b0f8</code> 只分离负例预算，超时负例仍 150ms，输出/JSON 负例沿用原默认 30 秒；运行时代码和错误断言不变。独立审查 P0/P1=0，37 项回归及 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34198059195">CI 34198059195</a> 全部检查通过，2026-09-08 08:07 UTC 已远端合入 <code>feat/team-resident-progress</code>：sourceHead=<code>a97b0f88413f177d2cf5a5cf09dacf91d2916fe9</code>，remoteMergeSha=<code>0cc5881e35fe86887cc9b98d7871f7cf8d556440</code>，pendingRemoteSync=false；不是 main 合并。此前 context 夹具和本次失败成本都保留。</li>
+<li><strong>Pi/Qwen 本地可用配置已由用户确认</strong>。Mac 当前实机阻碍是固定 Marshal 二进制启动被 AMFI 拒绝，不是未配置 Agent 或待补额度；不得通过随机换路径、重签或跳过安全策略假报运行。下一条 B1 证据必须来自合法固定候选的真实 Task HTTP 双 Worker→自主验收/集成→下载消费，并验证所属进程重叠、取消/cleanup 及重启。</li>
+<li>B2-A 问答在接受的 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0086-task-preapproval-questions-and-preview-revisions.md">ADR 0086</a> 下接通候选代码；<code>4e8925d</code> 的三组真实 Session/HTTP 冷恢复及 resultingress/taskhttp 问答 race 通过。独立审查发现 sealed server 漏转发接口，<code>75af587</code> 已修复并复审 P0/P1=0。最终 sourceHead=<code>18b7c785b22b7c66642856442a58efb091b4c21e</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34198304816">CI 34198304816</a> 包括 Darwin 在内全部检查通过，PR #278 于 2026-09-08 08:11 UTC 远端合入 <code>feat/task-cancel-integration</code>，remoteMergeSha=<code>f17cb1093e5a11260d880be0d642e4e60bd87a07</code>，pendingRemoteSync=false；尚未进入 main，也未通过此次合并进入 <code>feat/team-resident-progress</code>。只处理批准前问题，生产 <code>order-quote/v1</code> 保持零问题；不冒充零 Git 业务或运行中交互。客户端 <code>91ee1935</code> 已整合，11 项问答及原 37+12 项客户端回归通过。</li>
+<li>SQLite 候选已推送 PR #277：原子后端和目录恢复修正经独立审查无剩余 P0/P1，最终 Linux 测试包 <code>9b8148d</code> 在香港 ECS 专用用户 22 组通过、2.136 秒、非 race。但 <code>4dc849b</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34198134136">CI 34198134136</a> 两平台 quality 均在 <code>TestRecordTransactionAndPageBounds</code> 失败：期望 <code>ErrLimit</code>，实际分别得到 compare-and-append conflict / context deadline exceeded；不得用此前非 race 结果放行或原样重跑。该夹具在 5 秒事务内构造大型规范化记录，需先隔离测试构造成本与事务限制验证，不能放宽生产期限。当前仅 COMPONENT，未接入生产 Session、不双写旧 RB1，不关闭 B2；旧 19 组证据保留不替代新快照。</li>
+<li>流水并行保持 CI(N)/问答实现(N+1)/SQLite 独立准备与审查；共享事务一个作者。后继机器门禁前移到真实 producer/consumer，历史失败、CI、人工等待不删分母。目前没有重复业务配对实验，不能宣称相对强 Lead＋SubAgents 的效率优势。</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Milestone</th>
+<th>当前状态</th>
+<th>当前尚缺的用户出口</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B1 真实团队 PoC</td>
+<td><code>IN_PROGRESS</code></td>
+<td>同一合法固定候选的真实 HTTP 双 Worker 重叠、自主接纳/集成、下载消费、取消与重启证据</td>
+</tr>
+<tr>
+<td>B2 本地 API 可用</td>
+<td><code>IN_PROGRESS</code></td>
+<td>实际业务关键问答/运行中控制、简启动、SQLite 单写真值、零 Git/多仓库、通用制品、局部修正/恢复与第二真实 Provider</td>
+</tr>
+<tr>
+<td>B3 正式可靠发布</td>
+<td><code>PLANNED</code></td>
+<td>B2 同链故障/长时运行、受支持平台实机、签名/公证和受保护 same-bytes stable release</td>
+</tr>
+</tbody>
+</table>
+<h2 id="2026-09-08">2026-09-08 早期集成记录（历史，不覆盖当前表）<a class="headerlink" href="#2026-09-08" title="Permanent link">&para;</a></h2>
+<p>本节保存当时的集成与失败记录；其中“当前”“下一步”“在途”不覆盖顶部唯一状态，也不构成重复实施已接线功能的理由。产品要求见<a href="../agent-team-service-architecture/">服务架构</a>、<a href="../agent-team-service-milestones/">实施 Milestone</a>、<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0085-agent-team-service-contract-and-storage.md">ADR 0085</a>与<a href="../design-contract-map/">合同适用性</a>；原候选证据不转移为后继 release 资格。</p>
+<ul>
+<li>main 最近核对为 <code>ba2196bea33e6f007809f75f9671928c892bfa11</code>；远端集成分支 <code>feat/team-resident-progress</code> 为 <code>a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1</code>（PR #275 全部检查通过后合并）。取消组合在独立 <code>feat/task-cancel-integration</code> 验证。早期 B2/设计分支、旧 CI 与 canary 只保留精确证据，不能挪给新候选；分支合并不等于 main 合并或 stable。</li>
+<li>798ea39 的精确 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34095940005">CI 34095940005</a> 五项全绿；先前 34094155668 的结果计数阻断由 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0084-pi-typed-terminal-result-framing.md">ADR 0084</a> 候选修正。后继 max 实机 34097645547、一次显式 flash 替代 34098369837 均未完成团队；后者 service 通过真实 Collect/Verify 的 33 项检查并形成 ReviewPacket，client 在模型终态失败。没有本轮独立 Decision/ACCEPTED、第三节点或 GoalOutcome。停止模型轮换，后继聚合终态分类与任务上下文/输出收敛，不删失败分母。演示范围和实际证据见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/poc-agent-team-delivery.md">PoC 交付页</a>。</li>
+<li>最终目标不改为“完成更多协议/PR”：交付 fixed server 的完整业务任务与受限团队，并用至少三个代表任务族的重复配对实验，与相同冻结契约、oracle、模型、工具及资源的强 Lead＋SubAgents 比较。源代码返工、失败 CI、失败 Attempt、人工等待全部计入；目前没有效率优势证据。</li>
+<li>最新实施候选 <code>dd8e8ec</code> 的完整 CI <code>34156121695</code> 五项与 Darwin 定向 <code>34155305960</code> 的 36 项通过；真实团队 <code>34157213736</code> 证明已收集结果→Stop→Close 收口、零重复 Collect 及 cleanup released。但 client 的 Provider <code>length</code> 仍触发团队 halt，service 虽已接纳结果进入 VERIFYING，没有 ReviewPacket/Decision/集成/下载。当前补驱动的跨节点失败观测与超时诊断，不自动解除 halt，不原样付费重跑。<code>a5418f4</code> 的历史单节点 Verify pass 不替代本候选团队出口；B1/B2/B3 状态不升级，详细证据见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-report.md">审计报告</a>。</li>
+<li>用户已创建以 B1→B2→API-STABLE→B3 正式部署为出口的持续 Goal。<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/remote-linux-validation.md">Linux 远端验证执行机</a>已安装并校验 Go 1.26.6，实际开始执行旧远端基线 <code>68e5c8b</code> 的测试；它不替代 Darwin 测试或授予 Linux server production 能力。系统绝对路径 Python 不兼容导致 CLI renderer 基线失败，保留失败，不通过改 PATH/跳过后假报全绿。</li>
+<li>2026-09-08 Task HTTP sourceHead=<code>8543878cc9cc9b095e94c06c0cc41987611149f2</code> 的<a href="https://github.com/chiga0/marshal-harness/actions/runs/34184969456">完整 CI 34184969456</a>五项全部通过，包含 Ubuntu/macOS quality。<a href="https://github.com/chiga0/marshal-harness/pull/271">PR #271</a> 已远端合入 <code>feat/team-resident-progress</code>，remoteMergeSha=<code>be03e7015be12636b7f2af5aca644039b3558492</code>，tree 与 source 相同；该 PR pendingRemoteSync=false，<strong>不是 main 合并</strong>。草稿/确认/查询、原 writer lane、CLI 封闭参数及 revision 400/409 已接线。首次 CI 发现的跨层依赖已通过组合根 DI 修正，未扩大白名单。ECS 四包定向 race、Mac held Session 冷重放另有通过证据；本机固定测试受安全检查终止的历史保留，Darwin CI 通过不表示本机策略解除。内网机器不接 GitHub CI，额度不足期间不发起真实 Agent 重试。</li>
+<li>下载客户端与纯 HTTP 团队 driver 已分别通过 PR #272/#273 全部 CI 并远端合入 <code>feat/team-resident-progress</code>，最新 remoteMergeSha=<code>aef06e587e70ddd259644f557e8caff1297b8723</code>；两 PR pendingRemoteSync=false，main 不变。取消客户端 <code>ec44741</code> 与只读重叠观测 <code>cdc9b54</code> 已独立审查，组合候选 <code>175cca43cd3d1ac5abb54c5e56c245b5116a76e5</code> 的 37+12+20 项无模型测试通过，PR #274/CI <code>34189439463</code> 在途；已推送但尚未远端合并。</li>
+<li>自动客观独立 Decision/完整制品候选 sourceHead=<code>aa4a82da4a24c8c7e62434752d4d1d7d2f72d398</code> 经同一 reviewer 聚合修复/复审，原 Verifier 固有安全 gate 不匹配 P1 已关闭。主 Agent 在精确 linker sourceHead、固定二进制及包目录独立执行真实三节点 Verifier→原 Packet/Importer→接纳上游/集成→BuildTaskDelivery→同 RB1→下载→冷恢复，15.80 秒通过，树漂移零追加、重复生成零追加和存储 blob 损坏拒绝也通过；准备/启动/收集及 Worker 输入仍为确定性夹具，无模型。localMergeSha=<code>ed34ed9b03fa25ca3eb120b46158f654f83255b7</code>；组合后继 <code>4564dfe49d916d89291fa99e3c490b21c8b19df4</code> 已补 CLI tool allowlist 实际接线并独立审查，五组定向测试通过（HTTP held-owner 冷重放、完整交付链、新 Task 批准、旧 Team 不继承、ZIP 边界），其中交付链 14.95 秒。当前 pendingRemoteSync=true，精确组合完整 CI 待提交；这些证据不替代真实 HTTP 双 Worker 重叠及业务交付。</li>
+<li>Task cancel 后端在独立工作树实现同 RB1 stop/disposition、原进程取消/cleanup、冷启动与提交竞争，不因客户端完成而声明能力可用。早期测试夹具曾依次暴露必需 mediaType、固定根初始化顺序及 transcript-meta 缺失；已补完整生产形状，保留成本。固定 review.test exit 137 与 ECS SSH 连接失败未计通过，未绕过宿主限制；可执行的生产链测试已完成上述复跑。没有新真实团队交付、取消完成或正式发布证据。</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Milestone</th>
+<th>当前状态</th>
+<th>已有证据 / 实现</th>
+<th>尚待退出条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B1 真实团队交付 PoC（原 B1 单任务为内部步骤，原 B2 团队最小闭环前移）</td>
+<td><code>IN_PROGRESS</code></td>
+<td>main 正常业务独立 ACCEPTED；已整合的 <code>4ace42c</code> 停止候选在 34067556449 证明长 Verify 期间另一 Run 的 deadline、查询与 Collect 可前进；34082574786 两个真实 Pi 节点到 REVIEW_PENDING，未完成团队交付</td>
+<td>复用现有合法安装/Store：Task HTTP→计划批准→两个真实 Worker 并行→自主 Collect/Verify/Decision/集成→下载消费；取消/失败有事实，正常重启可查询。不以 Workspace、安装管理或全面迁库为前置</td>
+</tr>
+<tr>
+<td>B2 本地 API 可用版</td>
+<td><code>IN_PROGRESS</code></td>
+<td>候选已接独立 Decision、上游组合、第三节点及 completed GoalOutcome 查询，完整实机未过；原 B2 实现与失败证据保留，不因重排改成完成</td>
+<td>简启动、SQLite、零 Git/多仓库、持久 AskUser/答案/确认/验收、详情/审计、同版本恢复与局部 rework/reuse；第二真实 Provider 验证解耦。第三品牌可单列待支持，不阻塞核心 API-STABLE</td>
+</tr>
+<tr>
+<td>B3 长期运行与正式支持</td>
+<td><code>PLANNED</code></td>
+<td>历史故障/恢复组件与 RC1 prerelease 证据保留，不升级成熟度</td>
+<td>B2 同路径故障矩阵、长历史/升级恢复、managed signing/notarization、Linux server 实机、受保护 same-bytes stable release</td>
+</tr>
+</tbody>
+</table>
+<p>本轮流水状态：PR #274 sourceHead=<code>175cca43cd3d1ac5abb54c5e56c245b5116a76e5</code>，remoteMergeSha=<code>019cc08228126a6304725f5a36990b8981c42567</code>，tree 一致，pendingRemoteSync=false。PR #275 sourceHead=<code>5c13033e3610371e538e3a067266a83c8287d308</code> 已推送，CI <code>34190493630</code> 在途，尚未合并；此前段落的“待提交”已由此记录取代。取消 sourceHead=<code>a59a1382989235ef9888ad2436ebe8f9f269b5f0</code> 的本地组合 merge=<code>66cf5d10d0b51121cf43aed31536d13a5eea36a6</code>，接线 <code>767aaee</code>、测试资源修正 <code>eea6e01</code> 均尚未推送。精确 <code>eea6e01</code> 的 draft/approved/READY 冷恢复、缺 cleanup 不假结案、原完整交付链（14.73 秒）通过；reservation 两个夹具因创建目录改变 held root 身份失败，整组测试仍为失败。独立审查发现取消误触发全局调度停止、坏 Task 饿死取消队列及 endpoint 测试借用泄漏，共三项 P1，后者已修，前两项聚合修正中。实时原始 facts 提取与取消/交付组合回归在独立 worktree 并行；不让 CI 等待占住开发槽。</p>
+<p>后继验证（取代上段对应在途状态）：PR #275 sourceHead=<code>5c13033e3610371e538e3a067266a83c8287d308</code> 的 CI <code>34190493630</code> 全绿，remoteMergeSha=<code>a2f41c97c95a5dafb9b84c44a2a0c79fbb60f1b1</code>，tree 一致，pendingRemoteSync=false。取消组合代码 <code>c7ffc519f4bcee0da1e4e1ddff2bb77210468eb2</code> 已关闭首轮调度问题及复审发现的终态冻结来源错误；同 reviewer 复审包含合法状态夹具修正 <code>f1474f47</code>，无剩余代码 P0/P1。Mac 通过取消 HTTP/冷恢复/公平调度、两类 Outcome 前停止及 Outcome 先赢竞争、原完整交付链；终态六状态来源和事件形状属组件验证，不是实机 cleanup。Linux <code>d9cdfa8</code> 的 application/taskhttp/productionruntime race 与 resultingress 取消定向 race 通过，后者整包超时保留；<code>c7ffc51</code> 的新 ECS 执行连接失败未启动，不能挪用旧 SHA 结果。实时原始记录 collector <code>8683c94</code> 已独立审查，18 项新测试两套 Python 与原 20 项回归通过，并接入既有 CI target。取消组合尚待完整 CI 与真实 Worker 验收。</p>
+<p>下一步顺序：提交取消/交付/实时观测的组合 CI，同时准备同一固定候选的实机验收。模型配置与额度可用后，执行真实 HTTP 双 Worker 订单团队并下载消费、观测所属进程重叠及完整 Task→CancelRun→cleanup→disposition、重启；不把无模型 fixture 当业务完成。B2 关键问答的可复用接缝已预设计，不提前修改当前共享事务；SQLite、零 Git/多仓库、简启动、问答和第二 Adapter 在 B2。U1 旧历史导入不阻新任务，B3 保留正式故障/平台/发布门禁。没有 Workspace/安装身份平台/三品牌矩阵前置，也不绕过旧 activation 或伪造 Git。结构性失败无事实变化不重复付费，历史失败分母不清零。尚未完成团队交付或正式发布。</p>
+<p>并发边界：B1 先两个 scope 互斥的作者，验收/集成也计容量；现有候选仍只证明两个派发接缝，不把新方案写成已完成实机。开发可并行主应用闭环、业务 oracle/API 客户端、当前阻断的 Adapter；共享事务一个 owner，每个作者独立 worktree，不用旧 Marshal skill。UI 只在核心 API-STABLE 后启动。更多并发须依赖、目录、内存/CPU、Provider 与验收队列均允许；不是所有槽满才叫有效率。</p>
+<p>本轮设计纠偏：按用户明确指示删除首版 Workspace 实体/API/注册，将账号/安装身份管理、全面迁库和全 Provider 矩阵移出 B1；旧 B1 单任务是新 B1 团队 PoC 的内部步骤，原状态、SHA/CI 与失败事实全部保留。ADR0085 已于 2026-09-08 接受，当前导航据正文同步，不另行扩大权限。AGENTS.md 的 universal 不变量/门禁保留；设计调整不代表产品出口、远端合并或正式发布完成。</p>
+<h2 id="_3">历史过程记录（不作为当前待办）<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<p>2026-09-07 团队终态纵切候选：新增同 RB1 的 completed outcome，current owner 与三 Run lease 内复查原独立接纳/上游/集成 base；resident 自动一次收口、重放不增加 Attempt。已接原 <code>team-reconcile</code> 查询、固定客户端独立账本 readback、客户端只读等待，最终 summary 只有看到该事实才置业务 accepted。Outcome 的 budgetDigest 是原 reservation snapshot，实测仅 Attempt 数，token/compute 未测不写零。已添加 store 正常/冷恢复/幂等/拒绝、session 未就绪/越权、HTTP 只读绑定与客户端等待回归；本地编译、vet/staticcheck/架构及脚本回归通过，真实 Go 动态与三节点实机仍待候选 CI/验证，不能把候选实现记为 B2 完成。<code>55a435e</code> 的 CI 34089521238 最终四项通过，macOS 超过 20 分钟上限被取消；质量作业改为 30 分钟且保留全部检查。局部 replan/reuse、失败 Goal Outcome、计量与配对收益仍开放。</p>
+<p>2026-09-07 当前关键路径修正：在新 Worker 派发前发现参考集成模板的正常成功路径矛盾——允许 <code>no_change</code>，却未声明其必需诊断交付物。新 proposal 明确交付绑定最终代码摘要、接口与 HTTP 示例的 <code>quote_delivery.json</code>；代码正确时不造无意义修改，固定 oracle 仍执行原真实 HTTP 验收，清单不充当通过证据。本地 5 项输入/20 项 oracle 回归通过（包括真实 loopback、代码不变交付、摘要漂移、重复字段、FIFO 与伪造通过拒绝），没有新增付费 Attempt。当前集成创建/同宿主评审候选 <code>55a435e</code> 的完整 CI 仍待终结；GoalOutcome 耐久收口、局部 replan/reuse 和真实第三节点仍未完成，B2 不升级。下一步是把三节点结果耐久聚合并读取，再执行同路径真实验证；不得把本次模板修正或清单当作 GoalOutcome。</p>
+<p>2026-09-07 当前增量：<code>047b170</code> CI 34087532524 五项已全绿；<code>10a5edf</code> CI 34088862794 在两平台前置回归发现集成克隆未先 JCS 规范化，合法输入被拒绝，现已补齐且保留失败成本。继续接通第三节点客户端 Collect/Verify/独立评审载体，共用原等待预算，不重跑整个团队；本地 12+44+17 项客户端/载体测试通过，Go 修复动态结果待后继精确 CI。B1/B2 IN_PROGRESS、B3 PLANNED；没有新真实 integration、GoalOutcome、main merge 或 stable，也没有效率优于基线的证据。</p>
+<p>2026-09-07 集成创建接线候选：实现两个 ACCEPTED 上游→原 integrate 调度→精确 Git 组合→仅变 base 的完整 Task→原 Prepare→同 RB1 创建冻结→原物化/首次 Start。新创建域绑定两个原 creation/Run/Attempt/authority head/candidate/patch/Decision/packet/Outcome，冻结和 Start 均重查；不增加预算或刷新已有创建。尚无真实 integration Run/最终 GoalOutcome，当前仍 B2 IN_PROGRESS。<code>047b170</code> 的 Git/review/团队前置动态回归已通过，完整 CI 当时仍在运行；本接线的新动态结果待提交后 CI。</p>
+<p>2026-09-07 后续校正：接纳读取改为实际 Core producer 的同 round 归档 Decision/packet；已保留两轮 CI 失败的根因与成本。集成 base 的精确 patch 组合已编写，使用私有 index 生成确定性 commit，不触碰用户 HEAD/index 或工作分支。仍未接通 durable integration creation/Start 和 GoalOutcome，B2 继续 IN_PROGRESS；未新增 Worker 或整队重跑，未宣称效率获益。后继回归增加 gitworktree 并聚合全部目标包失败。</p>
+<p>2026-09-07 集成准备候选：新增 current-owner/双 Run lease 的已接纳输入读取，复用原 Decision 校验与 Outcome producer，绑定精确 candidate/patch，不消费可变分支或仅凭 ACCEPTED 快照标签。已完成 Darwin/Linux 编译检查、vet/staticcheck；Go 动态测试待候选 CI，不把 <code>-exec /usr/bin/true</code> 计为测试通过。该读取尚未接入 resident 的集成创建，局部 replan、集成 Task/派生 base 耐久冻结、最终 GoalOutcome 仍开放；B2 不升级，本轮不再派整队重跑。</p>
+<p>2026-09-07 后继实现：按 ADR 0082 扩展同宿主团队评审载体，两个 implement 的审查包全部关闭后才 ready，各自接收独立 Decision；先到先处理，共用有界等待，拒绝不丢弃另一节点成果，不启动新 Attempt。已通过 9 项团队驱动、44 项生命周期驱动、13 项载体测试及原脚本回归；新候选仍待精确 CI/实机，不倒填 34082574786 的 Decision。当前 Goal 保持业务交付及对照收益口径，不重建 Goal 清零失败成本；暂不再派整个团队，先闭环局部 replan/reuse 和集成。B1/B2 IN_PROGRESS、B3 PLANNED，无新 main merge/stable。</p>
+<p>2026-09-07 实质进展与限制：<code>7a4f7d0</code> CI 34081513199 五项通过，真实团队 34082574786 成功完成两个节点各一次 Attempt、Collect/Verify 和 REVIEW_PENDING；66 条 RB1 记录及审查包绑定已核对。但独立审查以真实 HTTP 反例确认客户端 P1/P2，尚无 Decision/ACCEPTED、integration、Goal Outcome 或效率优势。已补齐原契约的 oracle 盲区与提示澄清，不修改旧 Run、不重跑已完成服务；下一关键路径为正式接纳/聚合客户端修正、局部 replan/reuse 和成果集成。详见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-b2-first-team-2026-09-07.md">业务审查</a>。</p>
+<p>2026-09-07 验证纠偏：<code>5ca49bc</code> 的 CI 34080540487 前置团队回归通过，但 macOS/Linux quality 均在新 CLI 跨链测试中发现手写 environment-binding 版本错误；该测试此前未包含在前置步骤。现改用正式类型/版本常量及逐节点 Task/Policy Schema 诊断，并前移整个 CLI 包的 race 回归，同步 CI 精确内容契约。实机未派发，不把前置绿灯冒充完整链路通过；此第二次夹具来源返工计入成本。B1/B2 IN_PROGRESS、B3 PLANNED，仍须新 head CI→真实双节点→独立验收与集成交付。</p>
+<p>2026-09-07 验证更新：提示/准入修复 <code>283b19b</code> 的 CI 34080167668 被前置团队回归拦截，原因是旧 store/session 夹具使用不符合既有 Schema 的字符串 context。已统一修正数组形状及对应反例，不修改生产门禁；没有派发该候选实机。B1/B2/B3 状态不变，下一动作仍是新 head 动态验证。</p>
+<p>2026-09-07 最新：<code>b8dbf3c</code> 精确 CI 34078286247 五项通过；团队实机 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34079333520">34079333520</a> 完成批准、两个 Run 创建及一个节点启动，但第二节点在 launch 文本检查失败后耐久停派，最终客户端查询超时，整次失败。26 条 RB1 记录逐条摘要与顺序检查通过，含 2 个 reservation/open、1 个 process-started、1 个 team-plan-halted；没有团队 ACCEPTED/集成。已修候选中的 typed Task context 丢失、完整 Pi 提示传递，并将实际 launch builder 全节点预检移到批准前；HTTP 路由使用完整 URL，保留原路径检查。后继动态 CI/实机尚待完成，失败后的查询超时仍未证明关闭。B1/B2 IN_PROGRESS、B3 PLANNED；无新增 main merge/stable 或效率优势证明。</p>
+<p>2026-09-07 最新：<code>a481f0e</code> 精确 CI 34076598876 五项通过，但首次团队实机 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34077560755">34077560755</a> 在顶层 CLI 的 <code>self-local-command-denied</code> 短路，未创建 Run/Attempt。已定位 handler 与 closed activation/classifier 接线遗漏，后继同批补 Schema、权限及真实入口回归，不原样重试。B1/B2 IN_PROGRESS、B3 PLANNED，无新增 main merge/stable。当前目标保持 B1→B2→B3 及至少三个任务族的强 Lead＋SubAgents 配对验证；收益尚未证明。以下“尚未执行/在途”为历史时点。</p>
+<p>2026-09-07 团队验证入口：在 <code>4867ff7</code> 上接入 <code>order-quote-team</code> hosted 场景：一次团队批准→resident 自动物化/启动两个实现节点→既有 Collect/Verify/ReviewPacket；不逐个外部 Start，不提前创建 integration。新客户端与既有脚本回归通过，真实团队执行、进程重叠证据、独立接纳及集成交付仍待完成。<code>4867ff7</code> 的跨语言输入回归已在 macOS/Linux CI 通过，记录时全量质量作业仍在途；新入口仍需自己的精确 CI。B1/B2 仍 IN_PROGRESS、B3 PLANNED，无新 main merge/stable。</p>
+<p>2026-09-07 当前：B1 <code>4ace42c</code> 精确 CI 与真实 Pi 跨 Run 验证 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34067556449">34067556449</a> 通过；同一 server 内约 104 秒 Verify 期间，另一 Run 在原 deadline 后约 5.53 秒到 BLOCKED，15 次 Inspect 和 stopped Collect 均完成。只关闭该候选组合子条件，无新 ACCEPTED/main merge/stable。B2 <code>00c8351</code> 的调度组合 CI 34067600918 已五项通过，同时正常整合上述 B1 修复，避免旧依赖进入下一次真实团队实验；合并 head 仍需自己的精确验证。B1/B2 仍 IN_PROGRESS，B3 PLANNED；以下为历史检查点。</p>
+<p>2026-09-07 最新：创建恢复 2486b1c、首次 plan gate fc5d479、批准后冷续行 aa230da 的精确 CI 均已五项通过。耐久停派 1f61c2c 已推送；后继将其与 fixed server 初始调度、实际 Start 共用路径接通，自动 busy 上限 2，合法 Verify lease 仅使本轮不派发。代码已编写、本地编译/静态检查通过，halt/调度组合动态 CI 和真实并行仍待验证；自动 Collect、独立接纳、集成、Goal Outcome/暂停/replan 未完成。B1 的 4ace42c PR CI 与精确分支 CI 34066636760 均已五项通过；一次带新诊断的真实 Pi 组合验证 34067556449 已派发，旧实机失败未关闭。B1/B2 仍 IN_PROGRESS、B3 PLANNED，无新 main merge/stable 发布。下方保留历史检查点。</p>
+<p>2026-09-07 最新检查点：B1 <code>80084bb</code> 的 CI 五项通过，但实机 34059061091 在 peer Collect 的 <code>pi-result-final-content-shape</code> 失败，尚未进入跨 Run 组合验收，禁止原样重试。B2 <code>928b8ab</code> 的 CI 34062410465 已通过 Linux quality、双架构 conformance 和 secret scan，记录时 macOS quality 在途；后继正接通原冻结输入的无 Probe planning 重建，尚未完成部分 Run 补齐和真实团队。Goal 保持 B1→B2→B3 与至少三个业务族的强 Lead＋SubAgents 重复配对收益验证。main 仍 ba2196b、两候选均未合并；下方旧“当前/在途”段落是历史检查点，不代表最新状态。</p>
+<p>2026-09-07 当前：<code>d0be824</code> 的精确 CI 34054261338 与 PR CI 均通过；单次跨 Run 实机 34055217240 已在同一 owner、无重启条件下完成 peer Collect 到 VERIFYING，并启动第二个 Run，但整体因客户端响应失败而结束。已确认 15 秒固定响应读取窗口与 100 秒 Verify 不兼容，另有 1 秒 half-close 等待与身份复查预算冲突；后继候选集中修正传输阶段预算、补实际认证客户端回归和缺失的阶段诊断。<strong>B1 仍 IN_PROGRESS，main 仍 ba2196b；PR #268 为 Draft，无停止候选合并、无 stable 发布。</strong> 后续历史段落中的“在途”不代表作业仍活跃。</p>
+<p>2026-09-07 最新：<code>0130465</code> 的 CI 五项全绿，真实 Pi 中断恢复 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34050602081">34050602081</a> 通过。已证明 stop barrier 落盘后、Run 仍 RUNNING 时中断 server，原 Attempt/stop intent 在同身份后继恢复为 BLOCKED，并通过原 Collect 请求冷恢复；一 Attempt、零 retry/rework，包含恢复的终态延迟为原 deadline 后 4.334296 秒。仅关闭该进程中断边界，不代表完整故障矩阵。长 Verify 让出全局写锁的后继 <code>74e8619</code> 已推送，CI 34050715623 在途，跨 Run 实机尚待验证。<strong>B1 IN_PROGRESS，B2/B3 不升级；main 仍 ba2196b，停止候选未合并、无 stable 发布。</strong> 下列段落保留为历史检查点。</p>
+<p>2026-09-07 当前候选：<code>c61998515512f064fc4b113c229295e5df28e185</code> 的 CI 34047040755 五项全绿；真实 Pi 的 Attempt-timeout 34047844723 和 Run-first 34048091298 均通过终态查询、stopped Collect、同 bytes server3 冷恢复。稳定投影容器修复首次在两类预算顺序的完整查询路径得到实机正向证据；两次各一 Attempt、零 Cancel/retry/rework，不删除此前失败分母。<strong>B1 IN_PROGRESS：尚缺停止中途故障矩阵、长写事务响应上界与最终组合验收；B2/B3 不升级。候选未合并 main，无 stable 发布。</strong> 证据范围见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-report.md#2026-09-07稳定容器修复后的两类自动超时和冷恢复通过">审计报告</a>。以下是历史检查点。</p>
+<p>2026-09-06 16:19 UTC：诊断候选 <code>88f9edd</code> 的 CI 34043986843 全绿，但 Attempt-timeout 34044944162 在第 17 次 Inspect 的客户端 authority 打开阶段失败，未进入 HTTP；RB1 到 worktree release receipt，尚无 stopped Run 终态/Collect/server3。本轮新增公开客户端目录观察切换的确定性回归，冻结同类实机重试，先定位并修复完整接缝。<strong>B1 仍 IN_PROGRESS，B2/B3 未升级；停止候选未合入 main、无 stable 发布。</strong> 前文在途 CI/待派发语句为历史时点，不代表当前仍运行。</p>
+<p>2026-09-06 15:19 UTC：<code>49f745d</code> 的 Run-first 实机 34041702160 通过，已独立核对原始预算来源和 server3 同字节/原请求/原 deadline 冷恢复；新增关闭一个候选子条件。Attempt-timeout 34041730043 虽已停止到 BLOCKED，但一次 Inspect 出现 <code>transport-failure</code>，未进入 Collect/冷恢复，整次失败并保留证据，不原样重跑。B1 当前关键阻塞是停止期间查询的完整并发路径，另有中途故障、长事务响应上界和最终组合验收；B2/B3 状态不变。后继 Outcome/归档候选 <code>97e448a</code> 已推送，CI 34041798874 在途。main 未合并停止候选、未发布 stable。</p>
+<p>2026-09-06 15:15 UTC：<code>49f745d</code> 的 CI 34040876557 五项全绿；已通过精确候选 gate 派发 Run-first/冷恢复 34041702160，以及 Attempt-timeout/冷恢复 34041730043，后者按同 source 并发组排队，不是失联重试。后继 <code>3c5e734</code> 补停止 Outcome 部分落盘/冲突/冷 lease 重放组件回归，<code>7229b30</code> 修复 canary 未归档原始 Outcome 的清单缺口；本地静态与脚本检查通过，后继动态证据尚待新 source CI。上述实机未完成，B1 仍 IN_PROGRESS，B2/B3 不升级，未合并停止候选或发布 stable。</p>
+<p>2026-09-06 14:45 UTC：候选 <code>dd8178f</code> 的五项 CI 与自动超时实机 34040069400 通过，原始 60 秒 Attempt deadline 未因 server 重启延长；零 Cancel，停止原因与原始预算来源已独立核对。显式取消/冷恢复和 main 正常业务 ACCEPTED 证据继续保留。B1 尚缺 Run budget 先到期、超时后冷恢复、中途故障与长事务响应上界，仍 IN_PROGRESS；以下为历史检查点，当前汇总以下表为准。</p>
+<h3 id="2026-09-06">2026-09-06 早期检查点（历史）<a class="headerlink" href="#2026-09-06" title="Permanent link">&para;</a></h3>
+<p>2026-09-06 10:23 UTC：PR #264 的 source <code>2244092</code> 经 CI 34026422197 五项及全部 PR 附加检查通过，已远端合并为 <code>5bdec88d7161771caa2a556c70bbdef576375ff9</code>，pendingRemoteSync=false。main CI 34027276856 在途，尚未派新 canary。停止候选 <code>213e271</code> 已推送，CI 34027223715 独立在途；本次同步主线修复到停止开发分支，不将其放行。
+2026-09-06 当前增量：停止分支 <code>20a9999</code> 的 CI 34026216770 五项全绿，覆盖 preparation 前与 launch 前 READY 原始预算检查。最新未发布候选新增 fixed CLI cancel、明确非成功的 stopped Collect 输出与显式 <code>order-quote-cancel</code> canary 驱动；23 项 Python 测试通过，但尚未实机派发。stop 端到端故障矩阵、release/receipt 衔接和截止延迟仍未关闭，不合并放行。主线实机仍是 <code>4f7311b</code> 到 VERIFYING，PR #264 待 macOS 检查；B1 IN_PROGRESS，B2/B3 PLANNED。下方为此前检查点。</p>
+<p>2026-09-06 最新状态：main <code>4f7311b</code> 的 CI 全绿，唯一 canary 34024740089 已到 <code>VERIFYING/cleanup-released</code>，尚无 Verify/ReviewPacket/ACCEPTED。receipt 阻塞修复见 PR #264，其精确 source CI 独立推进，不原样重跑旧 canary。停止分支 <code>a04d76c</code> 的 CI 34025131805 五项全绿；最新候选补 preparation 前与 launch 前的 READY 原始预算检查，需新 source 动态证据。stop 端到端故障矩阵、release/receipt 衔接和截止延迟仍未关闭，不合并放行。B1 IN_PROGRESS，B2/B3 PLANNED；以下为历史检查点。</p>
+<p>2026-09-06 停止纵切后续候选：已补 <code>run-stopped</code> 的 Core→fixed HTTP→客户端返回以及原 Collect 请求的终态重放，避免完成取消/超时后仍显示 live pending。只在 stop/cleanup/Outcome 验证后返回；部分结果仍 pending。当前仍在隔离开发分支，尚缺 resident timer、READY 到期准入和全链路 fault matrix；B1 未完成、B2/B3 未升级。主线与最新实机事实见下段；新候选动态证据独立记录，不借用旧 CI。</p>
+<p>2026-09-06 09:15 UTC 当前增量：PR #263 已在全部 source 检查通过后远端合并，main 为 <code>4f7311b08bf59f6fad31aaae6661fc253ab0b0b4</code>，该 PR 的 pendingRemoteSync=false。main CI 34023916927 在途，尚无新 canary/ACCEPTED。取消分支 macOS CI 的 session 借用关闭死锁已定位并修复测试；继续实现原始业务 deadline 的原子接纳检查与既有 stop 恢复，尚缺 timer/READY 到期准入及完整故障证据，不可合并放行。B1 IN_PROGRESS，B2/B3 PLANNED。以下保留前一检查点，不覆盖本段最新事实。</p>
+<p>2026-09-06 最新实机结果：main <code>5945b68</code> 的 CI 34008933865 五项全绿；单次 canary 34009508838 已越过历史消息解析并提取最终 assistant 文本，但以 <code>pi-result-final-object-trailing/authority-conflict</code> 停止，尚无 Verify/ReviewPacket/ACCEPTED。本候选将机器输出约束明确前移到 Pi prompt，禁止代码围栏/尾随报告，解析器门禁不变；不原样重试、不宣称格式问题已实机解决。取消纵切候选 <code>feat/b1-stop-lifecycle@f41b3aa</code> 已推送并运行独立 CI，仍不允许合并放行。B1 为 IN_PROGRESS，B2/B3 仍 PLANNED，详见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-report.md">审计记录</a>。
+2026-09-06 最新实机结果：main <code>4f7311b</code> 的 CI 34023916927 五项全绿；单次 canary 34024740089 已完成真实 Pi 结果接纳与 cleanup-released，并到 <code>VERIFYING</code>，随后 fixed delivery receipt 提交失败。候选修复 release 投影交换后 root mutation observation 未衔接的问题，不放宽门禁；尚无 Verify/ReviewPacket/ACCEPTED，不原样重试。取消/业务超时另在 <code>feat/b1-stop-lifecycle@a04d76c</code> 运行独立 CI，未放行。B1 为 IN_PROGRESS，B2/B3 仍 PLANNED，详见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-report.md">审计记录</a>。
+2026-09-06 11:35 UTC：同一 fixed server 的真实 Pi 订单报价链已到 <strong>ACCEPTED</strong>。单次 canary 34030199172 成功：一次 Attempt、零 operational retry、零 rework，经过 Start 丢响应/重启/rebind/replay、Collect、业务 Verify、独立 Decision 和终态查询。B1 的正常业务交付子条件已关闭；取消/业务超时及恢复尚未通过，B1 仍 IN_PROGRESS，B2/B3 仍 PLANNED。详见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-report.md#2026-09-06fixed-server-真实业务首次独立-accepted">本次验收证据</a>。</p>
+<p>更新时间：2026-09-06（ADR 0080 三面分离与业务交付路线；不升级历史成熟度）</p>
+<h3 id="2026-09-06_1">2026-09-06 业务交付状态表（历史）<a class="headerlink" href="#2026-09-06_1" title="Permanent link">&para;</a></h3>
+<p>远端 main 为 <code>ba2196bea33e6f007809f75f9671928c892bfa11</code>（含 #266 的正常业务证据文档）。停止候选最新已验证代码 <code>d0be824</code> 的精确 CI/PR CI 全绿；其 34055217240 实机证明初始同 owner Collect 已越过 34052534488 的故障，但暴露后续传输阶段预算错配，未证明跨 Run 组合完成。最近完整成功的中断恢复属于前驱 <code>0130465</code>。后继修正及回归仍在同一 Draft PR #268，尚未合入 main，不存在 localMergeSha 或 remote merge；分支已推送不等于 main 已启用取消。</p>
+<p>当前实机验证的 main 基线为 <code>c93e31bde15d9dbcd3487dfc1db323eafc4127e1</code>（<a href="https://github.com/chiga0/marshal-harness/pull/265">PR #265</a>，sourceHead <code>e805129fd8b684824f25c6dffbfb9267642bdf65</code>），远端已合并，pendingRemoteSync=false。main CI 34029534577 五项全绿后，仅派发一次 <a href="https://github.com/chiga0/marshal-harness/actions/runs/34030199172">34030199172</a>，全部成功。Run <code>fixed-server-t1-34030199172</code> 的第 6 条 event 为 <code>review.accept</code>，快照 <code>ACCEPTED/sequence=6</code>。此前 34027927457 的不合法 Pi content 失败仍保留，分类修复不是放宽解析或保证模型永不违约；本次通过不能删除失败分母。</p>
+<p>独立 Decision 载体默认关闭、仅显式 <code>live-review=true</code> 启用。本次 reviewer 检查完整候选/冻结 Task/验证报告并复算证据摘要，复跑 28 项 oracle 与额外 500 组确定性业务断言；<a href="https://github.com/chiga0/marshal-harness/issues/186#issuecomment-5558942471">原始 Decision</a> 由同一 server 接纳，不是 Worker 自评或人工改 Run。Task publication=none，因此业务候选没有发布或合并；这仍是可信仓库、Darwin ordinary-user 的合成参考场景，不等同外部业务仓库、team 或正式生产支持。</p>
+<table>
+<thead>
+<tr>
+<th>Milestone</th>
+<th>状态</th>
+<th>当前事实</th>
+<th>未关闭的退出条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B1 完整单任务服务</td>
+<td><code>IN_PROGRESS</code></td>
+<td>main 正常业务独立 ACCEPTED；候选取消、两种 deadline 与 barrier 中断恢复通过；4ace42c 精确 CI 及同 server 长 Verify/并行停止/查询/Collect 34067556449 通过</td>
+<td>最终审查/候选主线合入与组合确认；旧 peer Collect 失败仍计入分母；完整 B2 同路径故障矩阵在 B3</td>
+</tr>
+<tr>
+<td>B2 受限 Agent Team</td>
+<td><code>IN_PROGRESS</code>（未完成集成交付）</td>
+<td>7a4f7d0 精确 CI 与 34082574786 双节点实机通过：server 自动物化/Start、外部客户端 Collect/Verify→REVIEW_PENDING；独立审查确认客户端 P1/P2并补 oracle 盲区</td>
+<td>正式 Decision/客户端聚合修正与服务成果复用、进程重叠证据、server 自动 Collect/Verify、成果集成、Goal Outcome/有界 replan/暂停及恢复；尚无对照收益</td>
+</tr>
+<tr>
+<td>B3 长期运行与正式支持</td>
+<td><code>PLANNED</code></td>
+<td>历史 I186 组件证据保留，不升级</td>
+<td>B2 同路径故障/历史规模/升级恢复、#212 managed signing/notarization、Linux server 实机、受保护 same-bytes stable release</td>
+</tr>
+</tbody>
+</table>
+<p><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0081-fixed-server-stop-intent-and-outcome.md">ADR 0081</a> 仍为 Proposed，main 尚未开启 cancel/timeout。下一步验证长 Verify 期间无关 Run 的 deadline 能继续推进，完成停止纵切的组合验收与独立审查，随后进入 B2；不重跑已通过的旧 source，不扩大 Provider 或另起 controller。完整失败样本及证据边界见审计记录。本机 fixed binary 退出 137/缺 Developer ID 身份是独立平台问题，不混为 CI canary 原因。</p>
+<p>旧现场 33968513566 的 Run 为 <code>READY/sequence=2</code> 且漏收 RB1；#258 已修复诊断和收集路径。新现场 33971611314 的 artifact 9971098258 提供 17 条 RB1 fact：启动链已推进，随后 adoption 错把生产 namespace 限为 <code>control</code> 与 <code>existing-worktree-bindings</code>。候选改为冻结已存在的五类 composition store descriptor/name/object，保留未知插入、对象替换及 control ABA 拒绝；同步将公开装配测试的 ingress 放回真实 runtime 布局。增设先上传的小型诊断 artifact，避免以后等待整包 candidate 下载才定位失败；原完整 evidence 包继续保留。</p>
+<h3 id="_4">合入前过程记录（历史采样，不是当前状态）<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h3>
+<p>以下保留原始失败、修复和 CI 采样；其中“当前候选”“尚未派发”“正在运行”、旧基线及旧 milestone 表均指记录当时，当前结论仅以上表为准。</p>
+<p><code>6e62c8e</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33966029736">CI 33966029736</a> 与 PR #257 的 <code>034a0f7</code> <a href="https://github.com/chiga0/marshal-harness/actions/runs/33966320451">CI 33966320451</a> 均已五项全绿，包含 launcher v2、Terminate fixture 修复及 typed live-pending 的动态/质量回归。当前评审输入打包增量仅有本地定向证据，不借用前一 head 绿色，仍须新 head CI。下方运行中记录为历史采样。</p>
+<p>当前候选为 <a href="https://github.com/chiga0/marshal-harness/pull/257">PR #257</a>，仍待完整 CI 和独立评审。业务 canary 实机前发现 artifact 未包含 packet 引用的实际评审文件，当前在已有 T2 driver/上传目录补有界只读 <code>review-inputs.tar</code>，9 个定向测试通过；不增加另一个 controller、不重跑 Worker、不宣称可导入 authority。真实业务到独立 ACCEPTED 仍是下一条集成证据，B1/B2/B3 状态不变。</p>
+<p><code>6e62c8e</code> 已修复下述 CI 契约遗漏并推送，本地 committed-fixture 正反例和提交后 fixed checker 均通过，CI 33966029736 已越过原失败步骤。实机调度仍要求候选评审合入后的同 head main push CI；分支手动 CI 不满足这个现有 gate。驱动另修正 Python/Go 的 canonical deadline 小数尾零不一致，7 个定向测试通过。尚未派实机 Pi、没有 Decision/ACCEPTED，不借此更新 milestone 成熟度。</p>
+<p>最新 CI：<code>8c37fff</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33965649054">33965649054</a> 失败，四个 job 同因新增 T2 测试步骤未同步封闭工作流契约而停止，secret scan 通过。当前修复契约及固定文件绑定，补本地 committed-fixture 正反例和常规 T2 测试入口；新 head 的完整 CI 与真实 Pi 业务 canary 待执行。B1 仍 <code>IN_PROGRESS</code>，B2/B3 仍 <code>PLANNED</code>。下方“等待新 head”均为对应提交当时状态，不代表当前仍运行。</p>
+<p>当前候选新增可直接运行的 T2 业务验收路径：手动 fixed-server canary 的 <code>scenario=order-quote</code> 复用同一 fixed binary/Pi/启动重启，随后自动 Collect→Verify→ReviewPacket；只有已认证 <code>attempt-still-running</code> 按冻结请求有界等待，其他失败停止自动重试。不生成 Decision、不声明 ACCEPTED。本地 6 个驱动回归与原 T1 shell 回归通过，真实业务 canary 尚未运行。<code>c9b2d11</code> 的 CI 33964259197 已结束：四项通过，macOS 因 Terminate 夹具使用错误 cleanup append operation 失败；当前改为 Reconcile 并保留错误权限零写入反例，等待新 head CI。B1 状态不变，下方运行中状态为先前检查时记录。</p>
+<p>最新检查：<code>cb615e7</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33963625091">CI 33963625091</a> 已五项全绿；<code>c9b2d11</code> 的 Terminate/legacy recovery 增量已推送，正在单独运行 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33964259197">CI 33964259197</a>，不能混用两者证据。固定工作区首次构建 <code>bin/marshal</code> 后，bootstrap 命令组返回 137 且没有版本/activation 输出；磁盘 codesign verify 通过，身份为 linker ad-hoc、<code>Identifier=a.out</code>、无 Team ID，本机可用 codesigning identity 数为 0。尚无日志证明具体终止来源，未重签、绕过保护、反复执行或启动 Pi。该固定路径候选仍不能计为实机可用。</p>
+<p>取消入口的合同缺口收敛至 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0081-fixed-server-stop-intent-and-outcome.md">ADR 0081 提案</a>：当前 Port 无 cancel、Run reducer 不接受 RUNNING 的 <code>run.aborted</code>，内部两小时 lease expiry 不能冒充业务 wall-timeout。先明确 stop intent/barrier 原子性、Outcome 和已确认 deadline，再完整接线；不使用旧 server 或 HTTP context cancellation 绕过。B1 仍 IN_PROGRESS，B2/B3 不变。</p>
+<p>当前取消链路接线候选：<code>TerminatePreparedExecution</code> 已沿现有 owner/RB1 guard 接入 v2 Attach prepared continuation，要求 terminalization barrier 已耐久，不能从 context cancellation 直接推导发信号权限。与 Inspect 共用 exact intent/receipt 恢复；已提交结果先认证 post-checkpoint，已有成功终态重复调用不再执行或追加。新增连续 bootstrap→running→owner rebind→Terminate 丢回复→receipt 恢复→cleanup 冷重放测试及真实 Unix socket/Fake mechanics 的 Terminate continuation 测试。本地 compile-only/静态检查不等于动态通过；尚未把服务端 cancel/timeout 调度器接入该入口。共同生产目录入口同时拒绝 legacy generation，覆盖无需 socket 的 Close receipt 恢复写旁路。前一提交 <code>cb615e7</code> 的 CI 33963625091 与本候选分别计证，B1 仍未关闭。</p>
+<p>最新验证纠偏：终态候选 <code>c921e1b</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33955604098">CI 33955604098</a> 已结束，Ubuntu quality、Linux 双架构 conformance、secret scan 通过，macOS quality 失败。两处失败的夹具分别把 Inspect 的不存在事实写成 <code>ProcessTerminated</code>、把 Close 返回原因写成通用测试值而非 <code>mechanics-closed</code>；当前修正夹具并保留生产校验，增加固定阶段诊断，等待新 head 动态回归。新 fixed entry 同时退役 v1 Start/Reconnect/Attach 与旧 child 启动分支，在启动副作用前拒绝 legacy bootstrap；v1 解码/历史组件测试仍保留。此候选未部署，取消/超时、完整 legacy mutation 排查与真实 Pi 独立 ACCEPTED 仍是 B1 阻塞，不能把源码接线当成生产完成。下方 CI“仍在运行”为提交当时的历史状态。</p>
+<p>2026-09-05 新任务启动候选：原 <code>reconcilePreparedExecutionLocked</code> 调用链中的 bootstrap、started、Bind/Spawn/Resume producer 已改为完整 v2；不增加第二 coordinator 或环境 selector，仍依赖相同 owner/Run/RB1 guard、source precheck 与 sealed resume proof。新启动前扫描当前耐久投影，存在未释放或 pending 的 v1 Supervisor 时拒绝启动，不 adopt 或改写历史。连续耐久测试的 Spawn/Resume 已改为调用实际命令 producer，并在假 transport 内检查 exact intent 已落盘；本地 compile-only、vet/staticcheck、format 与 architecture 检查通过。该候选尚未安装/启用，终态候选 <code>c921e1b</code> 的 CI 33955604098 仍在运行；v1 mutation 入口退役、取消/超时生产链及 fixed server 实机矩阵仍开放，不能宣称 rollout/B1 已完成。</p>
+<p>2026-09-05 当前终态接线候选：v2 <code>InspectPreparedExecution</code> 在既有 owner/RB1 guard 内记录 exact intent，经 Attach 收取或认证已提交 receipt；v2 Close 必须同时取得 exact receipt 与独立内核 Supervisor absence，EOF 或磁盘 receipt 单独不能授权关闭。已提交但尚未证明退出的 Close 不重复发送；最终 <code>SupervisorClosed → CleanupCompleted → CleanupReleased</code> 沿原业务账本接纳完整 v2 身份，保持 v1 历史兼容。连续 RB1 测试从 bootstrap/start/rebind/Collect 延伸到该终态和冷重放，另覆盖 absence 漂移、伪造 checkpoint 与破损 journal 不修复；显式假 peer/内核观察不是真实 Pi。候选本地 compile-only、format、architecture、双平台 vet/staticcheck 通过，动态 CI 待提交后验证。下一步为 Terminate/恢复调用链检查、完整 selector 与固定 server 真实 Pi 独立 ACCEPTED；B1 仍未关闭。</p>
+<p>验证更新：Collect 候选 <code>40bea7e</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33950856231">CI 33950856231</a> 已五项全绿，包括 macOS/Ubuntu quality、Linux 双架构 conformance 与 secret scan；覆盖其祖先 pending-bind 修复，但不覆盖上方终态候选。下面保留各次提交时的原始状态。</p>
+<p>2026-09-05 最新 Collect 接线候选：生产 <code>CollectPreparedExecution</code> 按完整 Supervisor generation 进入 v2 分支；原 owner/RB1 锁内持久化 exact intent、借用 Attach 收取结果并接纳 outcome。pending receipt 先认证 post-checkpoint；输出读取失败后复用已耐久 receipt，仅重读 held 输出，不再执行 Collect。新增固定 Core/held v2 journal/transcript reader，绑定 receipt、manifest、长度和内容摘要，不把 v2 转成 v1。连续 RB1 测试已延伸到 Collect 丢回复、receipt 恢复、读取失败重读和结果 fact 引用；仍使用显式假 peer，不是真实 Pi 验收。</p>
+<p>验证纠偏：<code>71d53c2</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33950429378">CI 33950429378</a> 双平台 quality 在 <code>format-check</code> 失败，未运行动态测试；原因是非 Darwin stub 未 gofmt，现已修正并补跑仓库统一 <code>make format-check</code>。Linux 双架构 conformance 与 secret scan 通过不代表 quality 通过。本候选仍待新 head CI；下一关键路径是终态 Inspect/Close/absence、selector 与固定 server 真实 Pi 独立 ACCEPTED，B1 状态不变。</p>
+<p>2026-09-05 当前增量：接通同 owner 的 v2 pending-bind 恢复。held journal 只读分类为未执行、intent-only 或 exact receipt；未执行保留原 deadline/request 才能在认证 Attach 内发送，已提交 receipt 必须先认证其 post-checkpoint 才能进入 RB1，不能重做 bind。跨 owner pending、部分尾部或身份漂移继续 intervention。补充只读文件边界、零重放、连续 RB1 丢响应/伪造 peer/receipt 恢复和冷重放测试。本地仅 compile-only 与静态检查；本增量动态 CI 待验证。客户端 <code>408f02f</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33949630841">CI 33949630841</a> 已五项全绿，不代替本增量测试。<strong>下一关键路径：Collect/terminal producer、完整 selector 与固定 server 真实 Pi 到独立 ACCEPTED；B1 仍未关闭，B2/B3 尚未完成。</strong>下面保留先前 checkpoint。</p>
+<p>2026-09-05 最新 Core 候选：<code>RebindOwnerSuccessorForAttachedRecovery</code> 按耐久 Supervisor generation 选择 v2 transport；无 pending 时在原 owner/ledger 锁内完成 owner-successor→只读 Attach→v2 intent fsync→同连接 bind→v2 outcome，并保留幂等短路。rebind validator、recovery fact revision 和 held session-directory lookup 不再误读 v1 字段。连续 RB1 测试从已有真实账本 bootstrap/start/resume 延伸至 rebind、冷重放及丢回复 pending 保留，peer 仍为替身。本地 compile-only/vet/staticcheck/架构检查通过；动态 CI 待 exact head。<strong>v2 pending receipt 分类恢复、Collect/terminal producer 和最终 selector/canary 尚未接完，不能将本候选称为重启闭环或生产可用。</strong>B1 保持 IN_PROGRESS。</p>
+<p>2026-09-05 最新客户端候选：新增 <code>WithAttachedV2</code>，以完整 v2 authority 调用 held-owner verifier，借用原 Unix socket 完成 observation→单次 prepared continuation→EOF。禁止重复/跨 goroutine/回调外消费，拒绝错误 successor、错误 method 和取消请求；持久化命令可能已执行但丢回复时保持 intervention，不声称无副作用。新增真实 socket 的客户端与服务端互通测试；Darwin/Linux 本地只做 compile-only、vet/staticcheck/架构检查。当前生产 selector 未切换；<strong>后继必须接通 ResultIngress 的 v2 rebind/collect/terminal producer，并以固定 server 的真实 Pi 独立验收到 ACCEPTED；B1 仍为 IN_PROGRESS。</strong>以下是先前 checkpoint，不表示当前可生产使用。</p>
+<p>2026-09-05 后续接线候选：v2 Attach 服务端现在接受同一认证连接上的至多一个 <code>bind-authority/Inspect/Collect/Close</code>，不进入通用命令循环。检查点在命令锁内再次核对；bind 只允许精确 owner-bound successor，旧 checkpoint、错误 successor、Spawn/Resume 和跨代请求在 journal intent 前拒绝。已提交命令的丢响应仍由既有 exact receipt recovery 处理，不重用已消费的 Attach。Close 即使丢响应也退出服务循环。新增 portable 生命周期/拒绝矩阵与同一 Unix socket bind 测试；本地仅 compile-only、vet/staticcheck 与架构检查，不冒充动态测试。<strong>callback-scoped 客户端与 Core producer 接线仍待完成，生产 selector 保持未切换，B1 未关闭。</strong>下段为上一 checkpoint 的历史记录。</p>
+<p>2026-09-05 候选增量：<code>a5a261e</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33947799422">CI 33947799422</a> 五项全绿，验证 v2 bootstrap→started→bind/spawn→ProcessStarted→resume→cold replay 与 F_GETPATH 修正回归。继续 S3 接线时发现 generic <code>ReconnectV2</code> 会推进内存 owner/head，不能替代 ADR 0067 保留的只读 Attach；本轮在 ADR 0079 补足 v2 Attach 编码，新增显式 v2 authority/observation、只读服务端入口和 Unix socket 零副作用测试。尚未接通 callback-scoped prepared continuation，入口不放行任何 command，生产 selector 未切换。本轮动态证据待新 head CI；后继是 borrowed Attach→已耐久 bind/collect/terminal 命令以及固定 bytes 真实 Pi 独立验收，B1 仍为 IN_PROGRESS。</p>
+<p>以下表格是早期 checkpoint，<strong>不是当前状态</strong>；唯一当前汇总为上方<a href="#业务交付当前表">业务交付当前表</a>。保留历史以追踪判断变化。目标/验收见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/agent-team-delivery-plan.md">业务交付计划</a>，范围变化见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0080-three-plane-business-delivery-roadmap.md">ADR 0080</a>。</p>
+<table>
+<thead>
+<tr>
+<th>Milestone</th>
+<th>状态</th>
+<th>已有事实</th>
+<th>未关闭的退出条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B1 完整单任务服务</td>
+<td><code>IN_PROGRESS</code></td>
+<td>main <code>c93e31b</code> 的真实 Pi 订单报价已独立 ACCEPTED（34030199172）；候选显式取消/冷恢复通过；最新 <code>c619985</code> 的两类自动超时、终态查询/Collect、冷恢复通过</td>
+<td>停止中途故障矩阵；长写事务下查询/停止响应上界；独立审查与最终版本正常业务/停止组合验收、主线合入。候选子条件通过不等于 B1 完成</td>
+</tr>
+<tr>
+<td>B2 受限 Agent Team</td>
+<td><code>PLANNED</code></td>
+<td>ADR 0019 已有计划接纳组件，ADR 0080 已确认受限产品目标</td>
+<td>approved plan 耐久物化/调度、两个到三个独立实现任务、集成候选业务验收、局部 replan、暂停恢复；不能以子 Run 全绿替代</td>
+</tr>
+<tr>
+<td>B3 长期运行与正式支持</td>
+<td><code>PLANNED</code></td>
+<td>I186-R2–R6 组件和历史测试可复用</td>
+<td>B2 同路径故障与长历史测试、升级/恢复、#212 signing/notarization、Linux server 实机 gate、受保护 stable release</td>
+</tr>
+</tbody>
+</table>
+<p>2026-09-07 核对远端 <code>main@ba2196bea33e6f007809f75f9671928c892bfa11</code>，包含 #266 的正常业务证据；正常业务实机 source 为 <code>c93e31b</code>。停止候选 <code>c619985</code> 已推送 <code>feat/b1-stop-lifecycle</code>，没有 localMergeSha 或远端 merge，不得把其能力说成 main 已启用。两类超时均使用其同一 candidate binary SHA-256 <code>a55e680713258f357c3846473ba2f1ed53a685764f5d8a52cda5858545883aa3</code>；历史 source 的成功不替代最终组合验收。</p>
+<h3 id="_5">历史实施检查点（不覆盖上方当前表）<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h3>
+<p>本轮不改变 Run/Goal 持久化、授权或生产 selector。最先执行参考 oracle 正反例，再沿 B1 的 fixed server 路径收集真实业务证据；不新起另一套 controller。I186-R0 PASSED、R1 IN_PROGRESS/INTEGRATED、R2–R6 IN_PROGRESS/COMPONENT 保持。</p>
+<p>B1 候选实现同时把 <code>Status</code> 与长 mutation mutex 解耦，使用单独 lifetime 读写锁保护 session 关闭，并保留实时 owner 复核。新增 mutation-held、Close 并发和无效 receiver 测试；这不解锁其它 mutation，也不保证底层存储无等待。定向动态/race 与健康 session 实机延迟证据仍须 CI/后继 canary，不提前标记 B1 完成。</p>
+<p>本轮本地验证：订单报价 oracle 的 5 个测试通过（含 28 条业务用例、典型错误实现、生成验收命令实执行与 oracle 摘要漂移）；T1 shell 回归与 9 个 evidence 回归通过；Darwin/Linux 定向 vet、staticcheck、architecture check 与 Darwin CLI test compile-only 通过。另新增 Go 合同测试，直接验证 marker/order-quote renderer 的真实 Task 输出；它与 Status 动态/race 测试交由 CI 执行。现有固定二进制在新工作区报告 <code>self-local-profile-mismatch</code>，没有绕过或冒用历史身份；本轮未启动实机 Worker，也未签发 Decision/发布。</p>
+<p>当前在途为同一 <code>feat/launcher-v2-production</code> 分支上的 S3 连贯实现，不按内部文件拆 PR：已编写 v2 journal writer、command session 与 live-session reconnect 分类，复用代际无关命令语义，保留 v2 exact decode/digest/receipt。未有 intent 才允许一次恢复执行；pending intent 保留 intervention；committed receipt 原样返回。新增连续两次 Core restart/丢握手、过期 receipt replay、不同 digest 冲突、伪造 A0/peer/旧代拒绝测试；重连仅复制 checkpoint 与目标 receipt，避免每次扫描全部历史。</p>
+<p>候选 <code>485c606</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33939567946">CI 33939567946</a> 暴露合法 journal 字符串中途截断被拒绝；根因是共用 parser 未接纳 Go <code>io.ErrUnexpectedEOF</code>。本轮修复并增加逐字节截断与损坏输入回归，完整非法记录仍在修复前拒绝且不修改文件。候选未全绿，不重跑同一失败 head、不合并、不升级 B1。修正及 reconnect 动态测试须由后继 exact-head CI 验证；transport、Core v2 subprojection、零 active/pending v1 admission 与实机链仍未完成，生产 selector 保持 v1。</p>
+<p>后继 <code>b0780bd</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33940177093">CI 33940177093</a> 已通过 Ubuntu quality、Linux 双架构与 secret scan，记录时 macOS quality 仍在运行。本轮进一步把 exact v2 bootstrap 接入已有 inherited server 入口，使用 v2 journal leaf、v2 mechanics、v2 handshake/command/reconnect；共用 held file/directory/socket 检查显式选择代际，不翻译 v2 为 v1。新增 Unix socket 全生命周期/receipt 恢复与混代 journal、输出篡改回归，bootstrap 读取也增加有界等待及 context 取消。v2 闭合握手合同没有 rejected 变体，因此错误/busy 连接只关闭，不生成非法 v2 或 v1 响应。此候选仍未完成 Core 的 v2 producer/subprojection、Attach 与 rollout admission，尚无真实 Pi 业务链证据，不能生产切换或升级 B1。</p>
+<p><code>b0780bd</code> 的上述 CI 后续已全部通过。server 候选 <code>5e1519a</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33940718334">CI 33940718334</a> 通过 Ubuntu、Linux 双架构与 secret scan，macOS 完整生命周期测试在 Close 处超时，整轮为失败。本轮新增 <code>StartV2</code> 与 <code>ClientV2</code>：固定同一 Marshal image、empty env、inherited FD；准备/重建证据绑定完整 generation、两个 genesis、control directory 与命令前后 anchor，响应丢失或篡改保留 pending 并停止连接内重试。新测试通过客户端 API 连接同一 inherited server 的完整 bind→spawn→resume→inspect→collect→close 路径，但 mechanics 明确为 Fake，不冒充实机。已修正上轮 wire 测试 Close 输入遗漏的两项必需终结事实摘要，没有放宽关闭校验；同时修正 rejected receipt 不应消费外部 authority head 的 journal/client 一致性问题，并增加拒绝后继续执行的回归。当前本地验证为 compile-only/vet/staticcheck/architecture，动态结果待后继 CI；ResultIngress/ProductionRuntime v2 事实接线、client reconnect/Attach、rollout admission 和真实 Pi 仍开放。</p>
+<p>客户端候选 <code>1057418</code> 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33941565125">CI 33941565125</a> 已通过 Linux 双架构和 secret scan，记录时 macOS/Ubuntu quality 正在运行，不记为通过。本轮继续同一 S3 分支：新增 <code>ReconnectV2</code>，从 held v2 nonce/journal/socket 和当前 fixed Core 构造请求，连接前后校验文件边界及精确 journal 位置；恢复返回完整 generation、原始命令 A0、新 owner anchor、pending 和 typed replayed outcome。连续丢失两次恢复握手时 A0 不变，已提交 receipt 不重做；intent-only 的客户端锁定，不准继续发命令。测试新增三种 journal 分类、过期 receipt、已提交 bind 的旧/新 authority 分离、伪造恢复和 Unix wire 恢复后 successor resume；本地 compile-only、Darwin/Linux vet、staticcheck/architecture 通过，动态证据待新候选 CI。剩余主阻塞是 ResultIngress/ProductionRuntime 的完整 v2 subprojection 与调用链、Attach、rollout admission 和同一 fixed bytes 的真实 Pi 业务验收，B1 不升级。</p>
+<p><code>1057418</code> 的上述 CI 已最终全绿（含 macOS/Ubuntu quality），确认该 head 的 Close fixture 修正与 prepared client 回归通过；不延伸为后继 <code>aa0dd00</code> 恢复客户端的动态证据。本轮开始接入 ResultIngress：<code>NewSupervisorBootstrapPreparedV2</code> 直接从 exact v2 请求产生无原始 nonce 的完整代际投影，并进入现有 <code>appendPreparedAttemptTransitionLocked</code>/owner/Run/current-head/CAS 与冷重放路径；外层 <code>attempt-authority</code> 不改名、不新建账本。新增 fresh Attempt 上 v2 bootstrap append/reopen、重算摘要的错误 current head 写前拒绝、逐字段缺失/混代拒绝与旧 v1 原字节/摘要不变测试。当前本地 compile-only/vet/staticcheck/architecture 已通过，后继动态 CI 待执行；started、command intent/outcome、Attach 和业务结果链仍须完成后才能切换生产入口。</p>
+<p>本轮进一步把 exact v2 <code>process-supervisor-started</code> 接入原有 Attempt transition、owner/current-ledger 校验和冷重放：started 的显式 <code>v2</code> subprojection 保留完整握手与 anchor，禁止与 legacy handshake 同时出现，并重算唯一初始 journal record digest。新 started 向当前 projection 传递完整 generation/control-directory mechanics anchor，跨 v1/v2 历史仍执行 session/process/directory/socket ABA 检查；旧 command/reconnect 消费者明确拒绝 v2 anchor，不能默默丢字段后当 v1 使用。已补 bootstrap→started 的 fresh Attempt 耐久链、冷重放、伪造初始 head、自洽但错误 bootstrap 引用/Core 冒充 Supervisor 的写前拒绝测试。本地 compile-only/vet/staticcheck/architecture 通过；<code>cfa0e1b</code> 的 CI 33942406526 记录时 Linux 双架构/secret scan 通过，macOS/Ubuntu quality 仍运行，新 started 动态验证待后继 CI。command intent/outcome、Attach/terminal/collect 和生产 cutover 仍开放，B1 不升级。</p>
+<p>后继进展：<code>2d45f5f</code> 已推送 started 接线。CI 33942406526 已结束：Linux 双架构、Ubuntu quality、secret scan 通过，macOS 在新增重连测试的 socket address 准备阶段失败；Fake 目录位于 <code>/private/tmp</code>，却调用要求 cwd 内相对地址的生产 helper，尚未发生 reconnect 握手。候选改用该 Fake harness 已持有的短绝对 socket 地址，保留生产路径边界，不改变全局 cwd。当前继续接入 v2 command intent：原 RB1 recovery 子链按 exact v2 revision 写入完整准备证据摘要、generation 与 A0；fresh Attempt 的 bootstrap→started→bind intent→cold replay 可恢复同一准备证据并要求 exact payload 重建，错误 started 引用及混代 recovery header 写前拒绝。该新增链已完成本地 compile-only、vet/staticcheck 与 architecture 检查，动态回归待新 CI；outcome、Attach/terminal/collect 与实机生产切换仍未完成，B1 保持 <code>IN_PROGRESS</code>。</p>
+<h2 id="checkpoint">历史 checkpoint 与技术证据映射<a class="headerlink" href="#checkpoint" title="Permanent link">&para;</a></h2>
+<p>本 Roadmap 交付<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/architecture.md">整体架构</a>定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。</p>
+<blockquote>
+<p><strong>2026-09-04 fixed server T1 integration closure</strong>：PR <a href="https://github.com/chiga0/marshal-harness/pull/252">#252</a> 已合入 <code>main@b39c346</code>，该 head 的 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33850189142">required CI</a> 全绿；随后 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33851302323">run 33851302323</a> 从同一 head build-once 固定 <code>bin/marshal</code>，用真实 Pi <code>0.84.4</code> 完成 authenticated server start 到 <code>RUNNING</code>、response-loss、受控 server crash、strict-successor recovery-before-ready 与 same-key exact receipt replay。artifact <code>9928466621</code> 绑定 candidate SHA-256 <code>sha256:180364721455b23f18aa4e72a4e2059683fb772eb39bb95b0e00f107cb35c4c5</code>、CDHash <code>f940ce13b175951b27105356958bf31c64bd62d7</code>、owner epochs <code>[1,2]</code>；<code>spawn=1</code>、<code>resume=1</code>、<code>bind-authority=2</code>、pending/receipt 各一、<code>cliFallback=false</code>。因此 ADR 0076 的 fixed transport/T1 capability 升级为 <code>INTEGRATED</code>；ADR 0062 full lifecycle、I186-R2–R6 与 stable 成熟度不升级。下一相邻纵切是让 collect/verify/review/Decision 通过同一 resident Port 到 <code>ACCEPTED</code> 的 T2，不能回退到另一个 CLI writer。</p>
+<p><strong>2026-09-04 exact-head CLI closure</strong>：<code>main@c2198e3</code> 的 build-from-head 固定 candidate 已在 <a href="https://github.com/chiga0/marshal-harness/actions/runs/33788766642">run 33788766642</a> 用真实 Pi <code>0.84.4</code> 单 Attempt 穿过 existing-worktree path-B、sealed start、terminal collect 与 Verification到 <code>REVIEW_PENDING</code>；独立 reviewer <code>P0=0/P1=0</code> 后，<a href="https://github.com/chiga0/marshal-harness/actions/runs/33790168049">finalize 33790168049</a> 持久到 <code>ACCEPTED</code>，carrier checker 通过，artifact <code>9907034593</code> 的 zip digest 为 <code>sha256:e212f4e817fdc774828a7eaffa6b584eeeb5b243af98e486289e2c94362143b7</code>。该 marker canary 满足 #226 的 PR #228 关闭合同，#226 已关闭；它不满足 ADR 0075 对 #224/#225 的 <code>m13-e2e-dogfood</code> 复杂任务、default umask、“散文 + 单 JSON”与时间/token 指标要求，因此 #224/#225 继续开放。该 CLI 证据本身不是 fixed server T1/T2、managed signing/notarization、Linux stable 或 <code>RELEASED</code> 证据；fixed server T1 已由上方后继 canary 关闭，当前下一纵切是 T2 与 recovery/fault matrix。</p>
+<p><strong>2026-09-03 fixed server S3 candidate</strong>：<code>main@0a0c73e</code> 已包含 S2 authenticated AF_UNIX endpoint；当前相邻切片只增加 <code>Status</code>/<code>StartRun</code>/<code>InspectRun</code> 的 bounded HTTP adapter，并把 authenticated request binding 精确传给 S1 immutable delivery。<code>StartRun</code> 固定执行 <code>pending → current RB1 reconcile → 至多一次 Port handoff → current RB1 reconcile → receipt-ref → response</code>；只有 exact receipt 与 current projection 同时匹配才报告 success，错误/断连后的未知结果保持 pending，receipt replay 不产生第二次 mutation。canonical JSON、closed headers/operations、独立 header/body/application/write deadline、1 MiB request/response、32 inflight/32 queue 和 disconnect cancellation 已进入组件测试。生产路径不创建匿名 Mach-O；S3 仍为 <code>COMPONENT</code>，S4 resident <code>marshal control-plane serve</code> + 真实 Pi restart canary 与 T2 <code>ACCEPTED</code> 仍是升级门禁。</p>
+<p><strong>2026-09-03 fixed server S2 candidate</strong>：PR <a href="https://github.com/chiga0/marshal-harness/pull/230">#230</a> 的实现 sourceHead <code>7ee24cc</code> 已建立 canonical <code>.marshal/runtime-v1/control</code> 下 owner-epoch scoped AF_UNIX socket/token、held descriptor/current-name recheck、peer/current-owner/fixed-binary联合身份验证、单次nonce+HMAC握手，以及16 KiB/5s/64连接硬边界。client只接受current <code>FixedEndpointAuthority</code>并在握手前后重验owner；生产路径不生成随机Mach-O、不使用<code>/tmp</code>/TCP/cwd切换，也不允许调用者覆盖locator。S2仍为<code>COMPONENT</code>：S3 bounded request+delivery、S4 resident <code>marshal control-plane serve</code>、真实Pi restart/response-loss与T2 <code>ACCEPTED</code>尚未完成。当时 #226 降为CLI-only并行债务、不再串行阻塞fixed server；它现已由 2026-09-04 exact-head checkpoint 关闭。server不得回退到CLI mutation writer。</p>
+<p><strong>2026-09-03 fixed server S1.3 candidate</strong>：S1 durable delivery 已形成可跨 cold owner successor 重证的 <code>pending → current RB1 read-only reconcile → receipt-ref</code>。稳定 authority-root identity 排除 append 引起的 mutation timestamp，但仍绑定 canonical repository、held object、closed name、owner/mode/type；current physical owner 必须从同一 RB1 证明旧 pending 的 exact owner fact/acquisition 到当前 epoch 的连续无分叉 lineage，并重新核对 request/intent/root，伪造 fact/acquisition/epoch 固定 fail closed。代码 sourceHead <code>62c1aed</code> 的本地双平台 compile-only、vet、staticcheck 与 diff-check 已绿，最终分支仍以 required CI 全绿为合入条件。S1 关闭后立即进入 S2 endpoint auth → S3 bounded HTTP → S4 resident integration；AF_UNIX、用户入口与真实 Pi canary 尚未完成，能力保持 <code>COMPONENT</code>。</p>
+<p><strong>2026-09-01 stable server cutover checkpoint</strong>：独立 <code>cmd/marshal-server</code> 已按 ADR 0062 删除 child <code>marshal task run</code>、<code>--marshal-executable</code>、Provider registration 写入口和 Worker selector 初始化，并在读取 mutation body 或写入幂等账本前统一 fail closed；查询与事件投影保留为非生产兼容面。该 checkpoint 只关闭第二 authority root 的旧实现风险，不等于 fixed server 已完成：<code>marshal control-plane serve</code>、in-process <code>PublicApplicationPort</code>、authenticated loopback owner/session 与 restart/response-loss recovery 仍是下一相邻 stable 切片，R2–R6 状态不升级。</p>
+<p><strong>2026-09-01 Run start Port cutover checkpoint</strong>：<code>internal/server</code> 已删除生产形状中的 <code>RunExecutor func</code>，Run start 现在只通过注入的 <code>PublicApplicationPort.InspectRun → PrepareRunStart → StartPreparedRun</code>，transport pending intent 绑定 exact sequence/authority head 以及 prepared Attempt/<code>preparationDigest</code>，receipt 只携带 path-free current-ledger <code>RunProjection</code>；正常 start 返回 <code>RUNNING</code>，结果收集、Verification 与 Decision 不再混入该端点。response-loss replay 的定向测试证明不重复 Prepare/Start，且拒绝把其它 Attempt 认领为本 intent 的结果。该 checkpoint 仍是 <code>COMPONENT</code>：server 其余 mutation 尚未迁移到 Port，owner-scoped multi-Run <code>ProductionRuntime</code> session、fixed CLI server mode、authenticated AF_UNIX 与真实 restart canary 仍未完成。</p>
+<p><strong>2026-09-01 owner-scoped multi-Run session checkpoint</strong>：<code>internal/productionruntime</code> 已把 repository-wide owner/ResultIngress 生命周期与 Run-scoped lease/runtime 生命周期拆开。<code>RepositorySession</code> 一次取得并 claim exact durable owner，多个 Run runtime 在同一 owner epoch 下顺序或并发借用；Run 关闭只释放自身 lease/borrow，Session 关闭等待借用归还后才关闭 ingress 并释放 owner。测试覆盖连续两个 Run runtime、第二 Session 竞争、关闭屏障、关闭后拒绝与 successor epoch。该变化不新增 authority/persistence/lifecycle 合同，仍是 ADR 0062/0066 的 <code>COMPONENT</code> 实现；Run resolver/application multiplexer、fixed <code>marshal control-plane serve</code>、authenticated AF_UNIX 与 restart canary 仍是升级 <code>INTEGRATED</code> 的必要条件。</p>
+<p><strong>2026-09-01 session-backed application checkpoint</strong>：fixed CLI 的一次性 production assembly 已收敛为 <code>sealedRepositoryApplication</code>：repository-wide owner/ingress/Provider/dispatch/held StateRoot 只打开一次，每个 application operation 通过 descriptor-bound Run resolver 组合短寿命 Runtime；进程启动先枚举 durable Run 并对全部 <code>RUNNING</code> Run完成既有 attach/rebind，成功后才报告 application <code>ready</code>。<code>task run</code> 与后续 fixed server 因而共享同一个 <code>PublicApplicationPort</code> adapter。同步新增 fixed composition exact namespace 注入，机械拒绝 compatibility server 的 <code>repo:&lt;root&gt;</code> 与 production <code>&lt;root&gt;</code> 混证据。该 checkpoint 仍为 <code>COMPONENT</code>：<code>marshal control-plane serve</code>、authenticated descriptor-relative AF_UNIX、peer/owner handshake、delivery ledger 与 restart/response-loss canary 尚未完成。</p>
+<p><strong>2026-09-01 RC1 publication checkpoint</strong>：<a href="https://github.com/chiga0/marshal-harness/releases/tag/v1.0.0-rc1"><code>v1.0.0-rc1</code></a> 已按 ADR 0068 发布。annotated tag object <code>e99326f</code> 精确指向 <code>c1407bd</code>，candidate SHA-256 为 <code>f9ed7fa59d05f5e71fef7164b8015240497e1d18e25ef1d3f8e199c1378a3774</code>。真实 Pi <code>0.84.4</code> canary/finalize runs <code>33504020360</code>/<code>33504247271</code> 已到达 <code>ACCEPTED</code> 并生成 current receipt/carrier；exact-head CI run <code>33502847249</code> 三项 required jobs 全绿；release run <code>33506656403</code> 只消费同一 carrier 并创建 prerelease。外部下载与临时安装后的二进制 bytes 仍与 canary 相同。该 checkpoint 关闭 ADR 0068 的 local-dogfood prerelease distribution exit，但 ADR 0068 明确不授予 ADR 0052 的 <code>RELEASED</code>、production、managed、notarized、hardened、server、Linux 或 stable authority；R2–R5 保持 <code>COMPONENT</code>，R6 更新为 <code>IN_PROGRESS/COMPONENT</code>。</p>
+<p><strong>2026-09-01 activation V2 checkpoint</strong>：<code>main@4fa1343</code> 的 required CI 已全绿；RC1 run phase <code>33477653933</code> 已用 same-bytes candidate 到达 <code>REVIEW_PENDING</code>，但 finalize <code>33477984364</code> 在另一台 GitHub macOS runner 上因 V1 activation/identity subject 绑定临时 <code>device/inode</code> 而正确 fail closed。维护者接受 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0073-dogfood-activation-v2-host-portability.md">ADR 0073</a>，本切片同步升级 activation→observation→attempt/applicability→verification→review 的 V2 lineage，保留每台宿主 current-path fd object 的 device/inode/ABA 强校验，并删除 finalize 以相同 <code>activationId</code> 重签发 activation 的 workaround。该 checkpoint 只关闭跨 runner 证据模型缺口；必须在 exact-head required CI 全绿后从新的 run phase 重跑 V2 canary，并由 finalize 达到 <code>ACCEPTED</code>、产出 receipt/carrier，才可进入 RC1 publication workflow 收口。R1–R6 成熟度暂不升级。</p>
+<p><strong>2026-09-01 sealed-migration skip 标记 checkpoint</strong>：ADR 0068 zero-selector cutover 已落地（<code>b1e274f</code>）——<code>MARSHAL_WORKER_EXECUTOR</code>/<code>MARSHAL_EMBEDDED_SANDBOX</code>/<code>MARSHAL_PRODUCTION_GATE</code> 三个 env selector 及其 direct <code>Adapter.Run</code> fallback 从 production 链移除，<code>FROZEN_SELECTOR_DEBT</code> 归零为零容忍扫描；compat 生命周期套件（qwen fallback、ThroughVerify、autoflow）退役，dogfood 套件转真实 Pi + sealed fail-closed。同期发现 main 测试套件自 sealed Run-start 门禁落地起即红（被 lint 失败掩盖）：旧 fixture 直写 <code>READY→RUNNING</code>，被 <code>runstore.Append</code> 门禁与 <code>WriteSnapshot</code>↔journal 等价验证双层 fail-closed 拒绝，唯一合法产生路径是 darwin real composition + 真实 Pi 0.84.4。迁移路线已由维护者确定为 <strong>darwin 组合驱动 + 双端 skip</strong>：gate 命中的 184 项测试统一以 <code>sealedMigrationSkip</code>（per-package helper，含 1f520c8 半落地的 darwin production admission 执法）显式标记并保持可见，连同 processsupervisor <code>/private/tmp</code> 环境修复与 qoder checker darwin-identity 平台门禁。darwin real-composition 驱动是恢复这些套件为真实通过的下一个纵切前置；skip 只标记债务，不授予任何运行时路径豁免，R2–R6 状态不变。</p>
+<p><strong>2026-08-31 fixed CLI <code>ACCEPTED</code> checkpoint</strong>：<code>main@3819462</code> 的同一 Darwin arm64 candidate bytes 已通过真实 Pi canary <code>RC1-PI-20260831-3819462</code>，由独立 Verification 与独立 ReviewDecision 进入 <code>ACCEPTED</code>；Decision digest 为 <code>sha256:5d50b624e41419ef32a1d7251481d5843ab001d3affe0ef6c8a6aad5465df5e9</code>。该结果证明 fixed CLI 的主生命周期可达，但不升级 R2–R6，也不授权 tag：exact-head CI 仍有 architecture red；ADR 0068 要求 production environment selector/direct fallback 为零；release workflow 仍缺 pre-tag immutable candidate、current-authority receipt producer/admission、RC1 单资产 tag 校验与 no-rebuild prerelease consumption。当前最短路径只处理这三项并在新 final bytes 上重跑 same-bytes canary，禁止回到横向组件扩张。</p>
+<p><strong>历史 checkpoint（2026-08-28）</strong>：<code>main@44ee8c9</code> 已合入 durable server run controller；<code>main@d4b9647</code> 已收紧受支持的 production selector；<code>main@912f659</code> 已合入 ResultIngress admission→worker-result→Run journal crash-atomic 持久化/恢复。前置 Pi <code>0.84.3</code> canary 绑定 <code>sourceHead=d4b9647</code>，单 Attempt 通过 9 项 Gate 到 ReviewPacket/<code>REVIEW_PENDING</code>，但在该时点尚未导入独立 ReviewDecision、未进入 <code>ACCEPTED</code>。本段只保留当时证据，不覆盖上方 2026-09-01 当前状态。</p>
+<p><strong>2026-08-28 Darwin 进程生命周期合同 checkpoint</strong>：<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0056-darwin-process-observation-and-attempt-terminalization.md">ADR 0056</a> 已于 <code>main@ecee8d4</code> 接受，冻结 Core-owned launch coordinator、admission/terminalization authority CAS、立即终止 dispatch eligibility、独立 <code>cleanup-completed</code> 与 cleanup binding release，以及 cooperative/non-detaching process-group 控制边界。实现与 production 接线仍开放，因此本 checkpoint 不升级 R3–R5。</p>
+<p><strong>2026-08-29 Run-start proof 纠偏</strong>：<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0065-sealed-run-start-proof-and-one-way-composition.md">ADR 0065</a> 已接受，基于 <code>main@40fa493</code> 冻结 ResultIngress 的 owner/Attempt/generation 重验与 runstore 的 Run lease/head/state CAS 绝对分离，并以 shared-guard proof 和精确 composition AST gate 衔接。接受只冻结合同，S1/S2 尚未实现，不升级 R2–R5；旧实现候选不构成当前进展。</p>
+<p><strong>2026-08-29 S2 production factory 合同</strong>：<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0066-production-composition-owner-acquisition.md">ADR 0066</a> 已接受。当前没有 fixed <code>./bin/marshal</code> production factory，<code>Runtime.Status</code> 仍为 <code>production-composition-incomplete</code>，owner lock 存在“acquisition 先于锁、successor acquisition 又必须锁内产生”的构造环，任意 <code>MARSHAL_STATE_DIR</code> 还允许同 repository 两锁两 ledger。接受合同只纠正 S2 为 scope-only lock → one-shot provisional <code>AcquireOwner</code> → exact replay 后 current verifier、canonical repository <code>.marshal</code>、唯一 Darwin arm64 factory/controller composition，以及 fixed <code>cmd/marshal</code> 本地 CLI mutation/inspect 只持有 <code>PublicApplicationPort</code>；<code>marshal control-plane serve</code> 后移为 S2 之后、release 之前的独立 ADR 0062 transport slice。接受不表示实现完成，不改变 R2–R6 状态或 ADR 0062 信任模型。</p>
+<p><strong>历史 Mac-first 合同接受（2026-08-29）</strong>：<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md">ADR 0067</a> 与 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md">ADR 0068</a> 已接受；提案 sourceHead 分别为 <code>1e05fb831c04a1c87e7f4ecdc677c97beb9d88e6</code>、<code>9cfa1b65275d2e23f18b958a05d027adec6af8fd</code>，唯一独立 reviewer 均确认 <code>P0=0</code>、<code>P1=0</code>。旧候选<code>a6a0d63</code>/<code>506a647</code>/<code>6298eae</code>继续冻结、不直接合入；当时冻结的S1′→S2′→Attach/rebind→terminalization→fixed CLI真实Pi+独立Decision <code>ACCEPTED</code>→same-bytes RC1顺序已由上方发布 checkpoint 完成，fixed server、managed signing/notarization与Linux stable仍为后继。</p>
+<p><strong>2026-08-29 producer P0 合同</strong>：<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0069-attempt-reservation-and-existing-worktree-allocation.md">ADR 0069</a>已在定向修订 sourceHead <code>e2af179</code> 经独立 reviewer <code>APPROVE</code>（<code>P0=0/P1=0</code>）后由维护者接受。<code>attempt-reserved</code>只是RB1 creation-once reservation；dispatch lookup-before-claim、full Attempt与<code>attempt-opened</code>随后产生，sealed Run successor才写Attempt/计budget。Existing-worktree Bind/Receipt/Release的唯一authority同样是RB1；固定sidecar仅为可重建projection，锁序owner→Run→RB1→projection，release绑定current terminalization/cleanup/process-terminal链。ResultIngress pathname reopen和<code>OpenOwner</code>后才可<code>ObserveCurrentCore</code>仍是ADR0066实施P0。接受只冻结合同，实现尚未完成，不升级阶段。</p>
+<p><strong>2026-08-30 implementation checkpoint</strong>：RB1-authoritative existing-worktree Bind/Receipt/Release 与 descriptor-bound recovery projection 已于 <code>main@259edd3</code> 实现；Linux staticcheck U1000 的跨平台 build-graph 修复已于 <code>main@60291e8</code> 推送，ResultIngress 缺失 verifier/stale-owner 顺序修复已于 <code>main@04c8fa9</code> 推送。该 exact-head CI 的 secret scan 已通过，Ubuntu/macOS quality 仍在运行，整体尚未宣称全绿。RC1 build-once distribution contract（<code>main@2d7da6a</code>）、installer exact opt-in/fail-closed guard（<code>main@e6a78a3</code>）以及 immutable carrier checker/receipt Schema/hostile matrix（<code>main@66523d9</code>）均已实现并独立审查。这些都是 component/admission 资产：真实 RC1 canary 在 <code>task plan</code> 阶段确定性暴露 CLI production selector 未装配 per-Attempt <code>ExactProcessRuntime</code>/<code>ExactAllocationRuntime</code>（<code>launch identity unavailable</code>）；完整 S1′（S1′-A reservation/full Attempt + S1′-B held descriptor/prepared proof/sealed successor，含 item 5 borrow seam/门禁）尚未进入 <code>main</code>，<code>3abed5a</code> 仍只是未合入候选；S2′、Attach/rebind、terminalization、最终 fixed-bin Pi→独立 Decision→<code>ACCEPTED</code>、真实 same-bytes canary/carrier、tag、GitHub prerelease 与 release asset 仍未完成，因此 R2–R6 状态不变。</p>
+<p><strong>2026-08-30 producer seam checkpoint</strong>：<code>main@a6482db</code> 合入了 ResultIngress 当前账本重解析的 <code>PrepareMacRunStart</code>/<code>CommitMacRunStart</code> seam，并删除了未接线且违反 architecture gate 的 <code>productionruntime</code> factory。定向测试、architecture check 与 vet 通过；该 seam 只投影并提交已存在的 durable PreparedExecution，不产生 owner/allocation/launch/process facts，因此不升级 R2–R5。全包 ResultIngress Darwin owner-lock fixture 仍有既有失败，fixed CLI 真实生产接线、Pi→独立 Decision→<code>ACCEPTED</code> 与 RC1 发布仍未完成。</p>
+<p><strong>2026-08-30 RunStore descriptor checkpoint</strong>：<code>main@46e0054</code> 以 <code>--no-ff</code> 合入 <code>ac5fd20</code>，新增 <code>NewFromStateRootDescriptor</code>/<code>NewAt</code>，使 existing-only RunStore acquisition 可以沿 held StateRoot descriptor 打开 <code>runs/&lt;runID&gt;</code>，并保留 Lease 的描述符，降低 StateRoot pathname TOCTOU/ABA 风险。随后 <code>main@109f35d</code> 对 descriptor-bound Store 的 pathname API 增加 fail-closed 哨兵根路径、禁止误用 <code>Acquire</code>，并以 Store mutex 保护 descriptor close/acquisition。两次切片均通过 <code>go test -race ./internal/runstore</code>、<code>go vet ./internal/runstore</code> 与 <code>git diff --check</code>；ResultIngress/Execution/App 的既有 sealed Run-start fixture 仍失败，故仅为 component 补强，不升级 R2–R5，也不代表 production composition 已接通。第二次切片按维护者指示未等待独立 reviewer，需在后续 production 接线前补充审计。</p>
+</blockquote>
+<p>补充：<code>ceb8b39</code> 修复 runstore canonical journal 写入，<code>822dcd3</code> 对齐 sealed Run-start 测试 fixture，<code>a7e9f93</code> 增加带 authoritative time 与 lease expiry/ack-deadline 校验的 <code>CurrentByAttempt</code> dispatch lookup。上述提交均已同步 <code>origin/main</code>，只补强组件门禁，不改变 R2–R5 的 <code>COMPONENT</code> 状态。</p>
+<blockquote>
+<p><strong>2026-08-31 Pi-first Darwin checkpoint</strong>：候选分支 <code>feat/pi-first-architecture-fix@d630aa2</code>（基于 <code>5b95ed1</code>）已用固定 Node/Pi bundle 和空环境通过真实 <code>TestSealedChainReachesRunningWithRealPi</code>。该候选修复 live allocation 重封装、空环境 spawn payload、Darwin 工作目录 <code>NOTE_ATTRIB</code> 误报、普通 Go 进程 FD3/4 误判，并移除临时调试输出；证明 sealed launch chain 可达；尚未接入最终 fixed <code>./bin/marshal</code> 的完整 Run→worker.completed→独立 Decision→<code>ACCEPTED</code>，不升级 <code>I186-R2–R5</code>，不宣称 RC1/stable。<code>go vet</code>、architecture-check、diff-check 通过；<code>staticcheck</code> 未安装，productionruntime 的 3 个既有 owner-lock fixture 失败及严格 CLI E2E 的 <code>worker.completed</code> 接线仍待单独收敛。Codex 本轮未启用。</p>
+<p><strong>2026-08-31 固定 CLI 复测</strong>：候选分支在 <code>5b95ed1</code> 之后修复了 Darwin 普通进程 FD3/4 误判 inherited child 的问题，并删除了临时调试输出；严格 fixed <code>./bin/marshal</code> E2E 已通过 <code>plan→approve→run.start-outcome</code>，但 <code>worker.completed</code> 尚未出现。原因已收敛为 sealed READY 分支当前只启动 Run-start/supervisor，尚未把带真实 WorkerRequest 的 Pi 执行、结果接纳和独立 Verification 接入同一次 <code>task run</code>。该候选仍不升级 <code>I186-R2–R5</code>，不宣称 RC1/stable；Codex 未启用。</p>
+</blockquote>
+<h2 id="v10">v1.0 生产纵切<a class="headerlink" href="#v10" title="Permanent link">&para;</a></h2>
+<p>Milestone 状态与能力成熟度是两个维度：</p>
+<table>
+<thead>
+<tr>
+<th>成熟度</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DESIGN</code></td>
+<td>ADR、Schema 或合同存在，尚无实现。</td>
+</tr>
+<tr>
+<td><code>COMPONENT</code></td>
+<td>Package、类型与测试存在，但真实 composition root 不可达。</td>
+</tr>
+<tr>
+<td><code>INTEGRATED</code></td>
+<td>fixed <code>cmd/marshal</code> 的 CLI mutation 或 <code>marshal control-plane serve</code> 经唯一 production factory/<code>PublicApplicationPort</code> 可达，真实 Agent 与结果 bytes 穿过该路径；独立 <code>cmd/marshal-server</code> 不计。</td>
+</tr>
+<tr>
+<td><code>RELEASED</code></td>
+<td>集成路径通过 v1.0 release gate 并进入受支持产物。</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>状态</th>
+<th>成熟度</th>
+<th>当前结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>I186-R0</code></td>
+<td><code>PASSED</code></td>
+<td><code>DESIGN</code></td>
+<td>rebaseline、ADR 与 baseline evidence 已完成。</td>
+</tr>
+<tr>
+<td><code>I186-R1</code></td>
+<td><code>IN_PROGRESS</code></td>
+<td><code>INTEGRATED</code></td>
+<td>final candidate <code>c1407bd</code> 的真实 Pi 已由 fixed CLI 在 Local allocation 中执行，并把真实 result bytes 送入 ResultIngress。</td>
+</tr>
+<tr>
+<td><code>I186-R2</code></td>
+<td><code>IN_PROGRESS</code></td>
+<td><code>COMPONENT</code></td>
+<td>final candidate 的真实 fixed-CLI 纵切已穿过 reservation/full Attempt、sealed successor、current ResultIngress，并在 fresh process 中重读为 <code>ACCEPTED</code>。完整 crash/response-loss/ABA/forgery/replay 负向矩阵仍未关闭，因此不升级。</td>
+</tr>
+<tr>
+<td><code>I186-R3</code></td>
+<td><code>IN_PROGRESS</code></td>
+<td><code>COMPONENT</code></td>
+<td>RB1-authoritative existing-worktree、PreparedExecution、exact resume、fixed Supervisor、Attach/rebind 与 terminalization 已由 final candidate 真实穿过；production environment selector/direct <code>Adapter.Run</code> fallback 已归零。source/cwd/process/binding drift 的 stable 矩阵仍开放；ordinary-user 不得描述为 hardened。</td>
+</tr>
+<tr>
+<td><code>I186-R4</code></td>
+<td><code>IN_PROGRESS</code></td>
+<td><code>COMPONENT</code></td>
+<td>success path 的 authority CAS、terminalization 与 fresh-process reread已由 final candidate 证明。退出前仍须覆盖 kill/restart/cancel/timeout/response-loss/retry、重复 start、未知或复用 PID 的唯一可回放结论；fixed server 为当前 stable 后继。</td>
+</tr>
+<tr>
+<td><code>I186-R5</code></td>
+<td><code>IN_PROGRESS</code></td>
+<td><code>COMPONENT</code></td>
+<td>final candidate 的 fixed-bin real-Pi canary 已由独立 Verification/ReviewDecision 进入 <code>ACCEPTED</code>，同一 receipt/carrier 已用于发布；旧 production bypass 已归零。完整 recovery/cutover fault matrix 未关闭，因此不升级。</td>
+</tr>
+<tr>
+<td><code>I186-R6</code></td>
+<td><code>IN_PROGRESS</code></td>
+<td><code>COMPONENT</code></td>
+<td>ADR 0068 local-dogfood prerelease exit 已关闭：same-bytes candidate、receipt/carrier、required CI、annotated tag、GitHub prerelease、外部下载与安装验证均完成。ADR 0052 的 stable server、Issue #212 managed signing/notarization、Linux gate、完整 conformance 与 <code>RELEASED</code> 成熟度仍开放。</td>
+</tr>
+</tbody>
+</table>
+<p>v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。</p>
+<p>上述 RC1 最短路径已形成历史发布证据；当前顺序由页首 B1→B2→B3 表定义。component checker 或历史 canary 不等于当前 final bytes publication authority，不能提前升级阶段。</p>
+<h2 id="component-checkpoint-2026-08-27">快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）<a class="headerlink" href="#component-checkpoint-2026-08-27" title="Permanent link">&para;</a></h2>
+<blockquote>
+<p>以下记录为 Lead 快速收敛治理（单 Lead + 多 Sub-Agent、停用独立 reviewer 轮转、Lead 直并，仅保留防错误发布/数据破坏/trust-boundary ADR 硬约束）下的交付证据。状态判定一率以 ADR 0052 的生产可达性口径为准：这些资产记为 component checkpoint，不另行宣称阶段 DONE。</p>
+</blockquote>
+<ul>
+<li>R3-D/E/F 快速收敛交付：R3-D <code>ec13ee7</code>（internal/revokedrain 撤销分级处置）+ <code>0a9b3b6</code>（internal/attemptgate per-Attempt 双 binding recheck + 证据边界负测）、R3-E <code>c47b4c2</code>（internal/locationattest claim/fact 分型）、R3-F <code>d89c65e</code>（internal/failureclass 失败分类 authority），<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0049-location-attestation-and-failure-classification-authority.md">ADR 0049</a> 冻结 E/F 合同并修订 ADR 0043 §5；Exit Gate 证据对照与 finding 关闭见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-report.md">audit-report.md</a>；R3-D1/D1b 历史 Marshal Run 的 REJECTED 记录保留，其中 D1b 实现经修复公式后采用。Issue #209 与 PR #211 已闭环；Issue #210/#212 转入 dogfood 沉淀。R0 产物见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/research/i186-r0-baseline-report.md">i186-r0-baseline-report.md</a>；Pre-R4 contract gate 四项（hot-path authority、JIT admission、protocol migration、Candidate identity）在 R4 启动实现前随 R4 首批切片补齐。</li>
+<li>R4 快速收敛交付：Pre-R4 四项合同（hotpath <code>f65cfaf</code>、jitgate+candidateid <code>c4c8b69</code>、protocolrev <code>ab7b263</code>）+ 单一恢复模型（recovery <code>34f70d3</code>，故障矩阵八类唯一幂等结论 + explain 等价 API），<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0053-pre-r4-contract-gates-and-single-recovery-model.md">ADR 0053</a>（原编号 0050）冻结全部合同并修订 ADR 0044 冷热路径条款；证据与 finding 关闭见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-report.md">audit-report.md</a>。</li>
+<li>R5 快速收敛交付：cutovereq/effectsink（<code>b3e193d</code>）+ worker executor seam 与 sandboxbridge 生产接线（<code>ab93174</code>）+ golden 判定 harness 与 rollback 演练（<code>6285a15</code>）+ <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0054-cutover-equivalence-and-effect-sink-fencing.md">ADR 0054</a>（<code>6144f24</code>，原编号 0051）+ 默认翻向与 fencing 修复（<code>20c5609</code>）；Exit Gate 对照与范围标注见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-report.md">audit-report.md</a>。</li>
+<li>R6 快速收敛交付：perfbench 基线（<code>1f81286</code>）+ soak harness 与 recovery 两缺口修复（<code>0208964</code>）+ bridged 孤儿 allocation 对账（<code>97147a1</code>）+ 路径级 accelerated soak（<code>dc6d7ed</code>）+ 真实 Pi canary（<code>run-i186-r6-canary</code>，9 Gate 独立验证通过）；Exit Gate 对照与 honest gaps 见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-report.md">audit-report.md</a>。</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Milestone</th>
+<th>状态</th>
+<th>证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0：Toolchain 与 Contract</td>
+<td><code>PASSED</code></td>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/milestone-0-report.md">验收报告</a></td>
+</tr>
+<tr>
+<td>1：State Machine 与 Run Store</td>
+<td><code>PASSED</code></td>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/milestone-1-report.md">验收报告</a></td>
+</tr>
+<tr>
+<td>2：Git Worktree 与独立 Verification</td>
+<td><code>PASSED</code></td>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/milestone-2-report.md">验收报告</a></td>
+</tr>
+<tr>
+<td>3：Review 与 Rework Loop</td>
+<td><code>PASSED</code></td>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/milestone-3-report.md">验收报告</a></td>
+</tr>
+<tr>
+<td>4：首个真实 Worker Adapter</td>
+<td><code>PASSED</code></td>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/milestone-4-report.md">验收报告</a>；GitHub Actions <code>30879438415</code></td>
+</tr>
+<tr>
+<td>5：GitHub Draft Publisher</td>
+<td><code>PASSED</code></td>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/milestone-5-report.md">验收报告</a>；主分支 CI <code>30889069165</code>；<a href="https://github.com/chiga0/marshal-harness/pull/1">真实 Draft PR #1</a> 与 PR CI <code>30889190854</code></td>
+</tr>
+<tr>
+<td>6：其余 Adapter 与 Recovery 加固</td>
+<td><code>PASSED</code></td>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/milestone-6-report.md">验收报告</a>；真实受监督 cmux Pilot 通过；Full MVP E2E Run <code>m6-mvp-e2e-r3-20260805</code> <code>ACCEPTED</code>，<a href="https://github.com/chiga0/marshal-harness/pull/2">Draft PR #2</a> 与 PR CI <code>30974239712</code> 全绿</td>
+</tr>
+</tbody>
+</table>
+<p>embedded/local 先行实现的 Local MVP 定义达成：标记 <code>USABLE</code>。</p>
+<h2 id="qodercodex-production-authority">Qoder/Codex production authority 共同阻塞<a class="headerlink" href="#qodercodex-production-authority" title="Permanent link">&para;</a></h2>
+<p><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0038-agent-production-authority-provider.md">ADR 0038</a> 已于 2026-08-18 接受：它为 ADR 0034/0037 已冻结但尚未由真实宿主提供的外部 authority 层冻结共享 <code>AgentProductionAuthorityProvider</code> Port，包括独立在线 verifier、OS isolation/audit receipt、host attestation、monotonic fence、held-fd identity、原子 authority bundle、stopped-child launch receipt/workload barrier，以及 rotation/revocation/crash reconcile。接受只允许进入实现，不表示 Qoder/Codex 或任何当前宿主已 <code>supported</code>。</p>
+<p>接受本 ADR 不改变 Roadmap 状态，也不表示 Qoder 或 Codex 已可生产调度。Linux 只有在对应 profile 的平台机制、真实 credentialed probe 与独立 conformance 全部通过后才是候选；Darwin 的 Qoder/Codex profile 在等价强制机制与后续合同通过前保持 <code>unsupported</code>。关闭条件见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-report.md">设计审计报告</a>中的 <code>AGENT-AUTHORITY-*</code> open findings。</p>
+<h2 id="mac-first-adapter-2026-08-24">Mac-first Adapter 阶段性证据（2026-08-24）<a class="headerlink" href="#mac-first-adapter-2026-08-24" title="Permanent link">&para;</a></h2>
+<p>本节只记录当前宿主的 ordinary-user 证据，不改变 M6 已通过结论，也不把 M10–M13 或 v1.0 标记为完成。Qoder 与 Qwen 两行证据分别绑定 commit <code>9410e75</code>（fix(adapter/qoder)：未知 system 帧从 fail-closed 改为非语义忽略，adapterVersion bump 到 <code>0.1.7</code>，conformanceEventContract 保持 <code>v7</code>）与 commit <code>2c67e7e</code>（feat(adapter/qwen)：版本策略从精确锁改为 semver 范围 <code>&gt;=0.21.5 &lt;0.22.0</code>，<code>0.21.15</code> 现在 supported）。ADPT-03 行绑定 commit <code>b35d374</code>（fix(adapter/qoder)：argv 预授权 <code>--allowed-tools Bash</code>，版本下限 <code>1.1.23→1.1.27</code>，adapterVersion <code>0.1.7→0.1.8</code>，transport digest 不 bump）。</p>
+<table>
+<thead>
+<tr>
+<th>Adapter</th>
+<th>当前事实</th>
+<th>结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qoder CLI <code>1.1.27</code></td>
+<td><code>marshal doctor</code> 在 macOS ordinary-user profile 下报告 <code>configured=true</code>、<code>registered=true</code>、<code>compatibility=supported</code>、<code>adapterVersion=0.1.7</code>；conformanceEventContract 保持 <code>v7</code>；固定 executable <code>/Users/gawain/.qoder/bin/qodercli/qodercli-1.1.27</code>，digest <code>sha256:fd36420ae0e740f7f3fb7f62e9df23aa70df400aad55fc7e7e48e0edc0ce8e2</code>。</td>
+<td>该证据身份已被 ADPT-03（adapterVersion <code>0.1.8</code>）替代失效，仅作历史记录；不得复用为新派发证据。</td>
+</tr>
+<tr>
+<td>Qoder CLI <code>1.1.28</code>（ADPT-03）</td>
+<td>2026-08-24：adapter <code>0.1.8</code>（argv 含 <code>--allowed-tools Bash</code>、版本下限 <code>1.1.27</code>）以显式 <code>MARSHAL_QODER_PATH</code> 指向 qodercli <code>1.1.28</code>（digest <code>sha256:14b5aa00198986c2299084e5d87479d648db47fc4b85aaecb572e1cff3a1c4aa</code>）、<code>MARSHAL_QODER_MODE=ordinary-user</code>，<code>marshal doctor</code> 报告 <code>configured=true</code>、<code>registered=true</code>、<code>compatibility=supported</code>、<code>authorityMode=ordinary-user</code>，并通过了 Run <code>run-m10-wire-02-r2</code> planning selection 的真实 version/capability probe（CapabilitySnapshot digest <code>sha256:52c5c45b16e8e6bcc390772e869de9ede48d9ea5cd6469e86b2632fffe68fba9</code>）。</td>
+<td>已完成晋升阶梯“真实只读 live probe”级证据并进入首个低风险写任务；仍需 fresh live Worker smoke、transcript attestation 与独立只读 conformance，未宣称 production authority。</td>
+</tr>
+<tr>
+<td>Codex <code>0.145.0</code></td>
+<td><code>mac-codex-ordinary-smoke-r19-20260821</code> 与 <code>mac-codex-ordinary-smoke-r20-20260821</code> 各由唯一独立 reviewer 审查并进入 <code>ACCEPTED</code>；路径 <code>/opt/homebrew/Caskroom/codex/0.145.0/codex-aarch64-apple-darwin</code>，digest <code>sha256:1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590</code>。</td>
+<td>Mac ordinary-user 运行证据已收敛；两个 smoke 仅为诊断任务，不产生产品代码 diff、发布或合并。</td>
+</tr>
+<tr>
+<td>Qwen Code <code>0.21.15</code></td>
+<td><code>marshal doctor</code> 报告 <code>configured=true</code>、<code>registered=true</code>、<code>compatibility=supported</code>、<code>adapterVersion=0.1.0</code>、<code>binaryVersion=0.21.15</code>；当时版本策略为 semver 范围 <code>&gt;=0.21.5 &lt;0.22.0</code>。</td>
+<td>原范围准入证据已闭环，可调度普通 Worker；0.22 边界现由下一行候选替代验证，二者都不升级为 hardened authority。</td>
+</tr>
+<tr>
+<td>Qwen Code <code>0.22.0</code>（2026-08-28 候选）</td>
+<td>macOS ordinary-user workspace live adapter 已通过，输出与 workspace 写入受有界协议校验。</td>
+<td>可作为 ordinary workspace 兼容 Worker；不是 <code>LaunchCapable</code>，不得用于 production profile 或 hardened authority，也不改变 R1–R6 状态。</td>
+</tr>
+</tbody>
+</table>
+<p>当前阶段的非阻断问题是两个 Codex smoke TaskSpec 文案仍引用 <code>r15</code> 路径，且 Markdown 产物声明为 <code>application/json</code>；后续 successor 应一次性修正文案，不为此逐项轮转 rework。普通用户模式不等于 hardened authority、APAP、sandbox 或 Linux authority。</p>
+<h2 id="issue-25-issue-30">已知阻塞与进展：Issue #25 已关闭，Issue #30 部分满足<a class="headerlink" href="#issue-25-issue-30" title="Permanent link">&para;</a></h2>
+<p>公开 <a href="https://github.com/chiga0/marshal-harness/issues/25">Issue #25</a> 与 <a href="https://github.com/chiga0/marshal-harness/pull/24">PR #24</a> 暴露的「全部 required checks 成功且 PR 已合并后，<code>marshal task accept</code> 把 Run 永久置为 terminal <code>BLOCKED</code>」<strong>已修复并关闭</strong>（typed reconciliation 实现已合入：<a href="https://github.com/chiga0/marshal-harness/pull/106">PR #106</a>，<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0026-scm-merge-receipt-and-publication-reconcile.md">ADR 0026</a>）：</p>
+<ul>
+<li>活路径：<code>marshal task accept</code> 内联识别已合并且 required checks 全绿的 PR，采集不可变 <code>SCMMergeReceipt</code> 后经现行 checks-passed 路径进入 <code>ACCEPTED</code>；未合并 PR 仍走原 checks 观察流程；</li>
+<li>补偿路径：<code>marshal task reconcile</code> 按 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0026-scm-merge-receipt-and-publication-reconcile.md">ADR 0026</a> 冻结顺序，以 <code>SCMMergeReceipt</code> + append-only <code>PublicationReconcileRecord</code> + current-ledger recheck 共同门禁，把发布后的 terminal <code>BLOCKED</code> 安全迁移 <code>ACCEPTED</code>（<code>publication.reconciled</code> 事件是唯一命名终态例外，仅限 accept-after-merge），是发布合并后 Run 的权威恢复路径；全程 append-only、幂等、fail closed，不绕过 required checks 与 ReviewDecision，merge-never 不变；误入 terminal <code>BLOCKED</code> 的历史 Run 现可经 <code>marshal task reconcile</code> 对账恢复；</li>
+<li>正式操作顺序与补偿命令见 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/operator-runbook.md">Operator Runbook §7</a>，旧临时护栏已由 typed reconciliation 取代并废止；审计 finding <code>PUBLICATION-MERGED-HEAD-RECONCILE-P1</code> 随实现合入关闭（P1 → <code>CLOSED</code>），见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/audit-report.md">设计审计报告</a>。ADR 0026 接受只冻结契约（PR #49），不升级 M8–M13 实现状态；本修复是 Local MVP 发布流程的实现层关闭，不改变 M0–M6 已通过状态与 Local MVP <code>USABLE</code> 结论。</li>
+</ul>
+<p>公开 <a href="https://github.com/chiga0/marshal-harness/issues/30">Issue #30</a>（CI deadline 观察语义）保持 <code>OPEN</code>，但已接受的 <a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0028-ci-deadline-phased-observation.md">ADR 0028</a> 契约现已实现：TaskSpec 可用 <code>ciObserveTimeoutSeconds</code> 分离 CI 观察预算，publish 把 <code>ciDeadline</code> 冻结进 PublicationRecord digest；<code>marshal task accept</code> 与 controlled merge 均先观察并持久化 identity-bound RemoteCheckRecord，再以 provider <code>completedAt</code>、<code>publishedAt − 300s</code> 下界和 <code>ciDeadline + 300s</code> 上界裁决。deadline 后的及时完成证明仍可通过，pending 到期与缺失、迟到或不一致时间事实按封闭原因码 fail closed；四种 CI 时间原因导致的历史 <code>BLOCKED</code> 只有在 typed reconciliation 取得 fresh timely proof 后才可恢复。Issue 的远端关闭与补充回归证据仍独立跟踪，不影响上述当前实现语义。</p>
+<p>M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal orchestration）。<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md">ADR 0019</a> 是 M7 通过后的已接受设计增补：它不回滚 M7，也不提前完成 M8–M13；确定性 Supervisor、Typed Execution、通用副作用对账/补偿与 Goal admission 均仍待实现。</p>
+<h3 id="milestone">Milestone 状态取值定义<a class="headerlink" href="#milestone" title="Permanent link">&para;</a></h3>
+<p>本文档全部 Milestone 状态只允许以下三种取值，其他文档引用 Milestone 状态时必须与本定义一致：</p>
+<table>
+<thead>
+<tr>
+<th>状态</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PLANNED</code></td>
+<td>范围未冻结或未开始实施。ADR 接受、设计冻结与契约冻结<strong>都不改变</strong>该状态。</td>
+</tr>
+<tr>
+<td><code>IN_PROGRESS</code></td>
+<td>范围已冻结且已有 gate 落地 main，但该 Milestone 的退出门禁未通过。<strong>不表示实现或 conformance 完成</strong>，也不表示已落地的 gate 已接入执行路径。</td>
+</tr>
+<tr>
+<td><code>PASSED</code></td>
+<td>已通过该 Milestone 的退出门禁（实现、测试、独立审计、远端 CI 全绿）。对 M7 这类设计/契约阶段 Milestone，<code>PASSED</code> 只表示设计与契约阶段通过。</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Milestone</th>
+<th>状态</th>
+<th>证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>7：架构与契约</td>
+<td><code>PASSED</code>（2026-08-11，只表示设计与契约阶段通过）</td>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0016-durable-runtime-and-sandbox-provider.md">ADR 0016</a> 已接受；<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0017-provider-neutral-sandbox-contract.md">ADR 0017</a> 已接受（2026-08-10，接受只关闭设计歧义）；<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0018-control-plane-and-provider-ports.md">ADR 0018</a> 已接受（2026-08-11，接受只冻结设计）；<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/runtime-architecture.md">Runtime 架构</a> 同步；Marshal Run <code>m7-control-provider-boundary-adr-r15-20260811</code> 完成 M7 最终架构稿并 <code>ACCEPTED</code>（reviewRound=2，32/32 required Gates 通过，独立审查无 P0/P1）；<a href="https://github.com/chiga0/marshal-harness/pull/13">Draft PR #13</a> 通过 Quality (ubuntu-latest)、Quality (macos-latest)、Secret scan 与 GitGuardian 检查（GitHub Actions CI run <code>31449333738</code>），2026-08-11 由维护者手工合入 main（merge commit <code>4b2f3248f24ec2a67642ec77822fe6bb59730df7</code>）</td>
+</tr>
+<tr>
+<td>8：Sandbox SPI/Fake/Local conformance + embedded/local 纵切</td>
+<td><code>PASSED</code>（2026-08-13，退出门禁通过）</td>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/milestone-8-report.md">验收报告</a>；六个硬门禁 gate 全部合入 main 且各 PR 远端 CI 全绿：gate-1（authority 双键空间 AuthorityNamespaceId/SecurityDomainId + SideEffect authority-record Schema，PR #42）、gate-2（ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence Schema + attestation 全链绑定，PR #45）、gate-3（legacy fail-closed mapper，PR #48）、gate-4（durable ProviderRegistration store + restart recovery，R2 lineage <code>m8-durable-registration-store-r2-20260812b</code>，PR #57）、gate-5（snapshot/evidence validation，PR #47）、gate-6（enable DispatchLease match，PR #60）；embedded 纵切：internal/sandbox SPI 类型 + Fake Provider + conformance 套件（PR #75）、Local SandboxRunner 宿主进程执行 + lease 绑定 + receipt observation（PR #80）、typed cross-domain edge 记录类型 + fixture 矩阵残留（PR #61）。各 gate 尚未整体接入最终 Runtime 执行路径；同期合入基础设施修复见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/milestone-8-report.md">验收报告</a>。见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/implementation-plan.md">实施计划</a></td>
+</tr>
+<tr>
+<td>9：marshal-server、Public API 与 Durable Runtime</td>
+<td><code>PASSED</code>（2026-08-14，设计与契约+本 milestone 交付门禁通过）</td>
+<td>七交付全部合入 main 且各 PR 远端 CI 全绿：a lease 持久账本与 crash recovery（PR #104）、b typed edge 运行时接线（PR #107）、c1 当时以 <code>marshal-server</code> 命名的常驻入口 + Public API（PR #111）、c2 SSE 只读投影（PR #115）、c3 远程注册 + TLS 基线（PR #116）、e DurableExecutionEngine seam（PR #119）、d Push/Pull 双拓扑 transport + outcome/invariant equivalence conformance（PR #120）；该 executable 拓扑已由 ADR 0062 取代，现行 production server 只能是 fixed <code>marshal control-plane serve</code>。任务拆分见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/m9-vertical-to-server-design.md">M9 任务拆分设计</a>。不表示现行 server transport 已实现，不表示 M10–M13 实现状态变化或 conformance 终态；见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/implementation-plan.md">实施计划</a></td>
+</tr>
+<tr>
+<td>10：Cloudflare Provider（remote transport）</td>
+<td><code>PLANNED</code>（1.x 候选）</td>
+<td>不阻塞 v1.0；已合入代码保留为 fixture，R6 后按真实远程需求重排。</td>
+</tr>
+<tr>
+<td>11：生产级存储、多节点 HA 与身份分离</td>
+<td><code>PLANNED</code>（1.x 候选）</td>
+<td>不阻塞 v1.0；v1.0 使用单节点 durable file ledger，HA 与多用户在 R6 后重排。</td>
+</tr>
+<tr>
+<td>12：Provider SDK/协议、多语言 SDK 与长稳平台扩展</td>
+<td><code>PLANNED</code>（1.x 候选）</td>
+<td>v1.0 只保留跨平台安装与 release conformance；完整 SDK/生态矩阵在 R6 后重排。</td>
+</tr>
+<tr>
+<td>13：Goal orchestration</td>
+<td><code>PLANNED</code>（1.x 候选）</td>
+<td>不阻塞 v1.0；复杂 Goal DAG、动态重规划与累计预算在稳定 Runtime 发布后评估。</td>
+</tr>
+</tbody>
+</table>
+<p><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0026-scm-merge-receipt-and-publication-reconcile.md">ADR 0026</a>（已接受，2026-08-12；维护者合入 PR #49）冻结已合并 PR 的权威 reconcile 契约（<code>SCMMergeReceipt</code> 与 <code>PublicationReconcileRecord</code>）；accept-after-merge typed reconciliation 实现（accept 内联 MERGED 识别 + <code>marshal task reconcile</code> 补偿命令 + lifecycle 唯一终态例外）已于 2026-08-13 合入，关闭 Issue #25 与审计 finding <code>PUBLICATION-MERGED-HEAD-RECONCILE-P1</code>；该实现是 Local MVP 发布流程修复，不升级 M8–M13 实现状态。</p>
+<p><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0017-provider-neutral-sandbox-contract.md">ADR 0017</a>（已接受，2026-08-10；全部 P1 经 Round 2 独立验证与 ReviewDecision accept 后由维护者接受）基于首次 Sandbox SPI dogfood 的 reject 证据冻结 provider-neutral Sandbox 安全契约，并修订 M8–M13 分工：</p>
+<ul>
+<li>二维权限/隔离模型 <code>AccessMode × AssuranceLevel</code>（含旧 <code>executionProfile</code> 兼容映射、拒绝/降级规则与持久记录迁移）；</li>
+<li><code>hardened</code> 必须绑定密封 <code>ConformanceEvidence</code>，证据拓扑冻结：probe 定义/challenge/nonce、artifact digest、调度、out-of-band 观察、裁决与签发由 Control Plane 与独立 Conformance Verifier 控制，probe workload 作为敌对测试负载运行在被测 Provider 创建、身份精确绑定的 target allocation 内，Provider 的 completed/receipt 只是输入、不能自签通过；Local 普通宿主进程永不 hardened，Cloudflare 无豁免；</li>
+<li>Stage 内容寻址（inline 小对象/ArtifactStore locator、大小上限、消费前后重算 sha256、禁止回显声明 digest）；</li>
+<li>workloadRole 与认证 principal 拆分：Sandbox workloadRole 封闭枚举仅 <code>worker</code>/<code>verifier</code>，control-plane/publisher/operator/API caller 是不同语义 Port 上受 AuthZ 约束的 principal，Publisher 永不成为 Sandbox workload；完整身份 fencing（task/run/attempt/workloadRole/allocation/generation/fencingToken 元组，远程请求另绑定 principal/portKind/providerType/audience/scope——该 universal 身份口径已被 ADR 0018 §3 按 Port 分流取代；普通 replay 先过当前 lease fencing；Restore lost-response reconciliation 独立路径）；</li>
+<li>无双写 Restore（默认 replacement allocation，控制面 CAS 激活新 generation）；</li>
+<li>DispatchLease 唯一状态机：Push/Pull 只冻结 outcome/invariant equivalence（唯一 claim、eligibility、fencing、deadline/expiry/cancel/reconcile/generation bump 与晚到隔离不变量），允许拓扑特定（topology-specific）的 offer/poll/claim/ack transition 与 timing——ADR 0017 §7 的逐步 wire 等价措辞已被 ADR 0018 §16 取代，conformance 比较 normalized business trace 与业务不变量，不比较逐步 wire trace；M9 交付两拓扑 outcome/invariant equivalence conformance 与故障注入口径；</li>
+<li>DurableExecutionEngine 唯一 Port 名：Temporal/Local Engine 仅是 backend，Attempt 创建/retry 预算/rework/终态裁决只在 Core，delivery/activity retry 不创建 Attempt、不消费业务预算；</li>
+<li>M9 wire contract 首版冻结：versioned HTTP/JSON + OpenAPI（Task create/get/cancel、Run approval/status、events/evidence），SSE <code>eventId</code>/cursor 断线续传 + 轮询 fallback，WebSocket/gRPC 推迟；Provider remote transport 同为 versioned HTTP/JSON（Push 调 Provider endpoint，Pull outbound-only）；M9 提供最小 scope-bound 可撤销注册身份，M11 扩展生产远程入口与多用户 AuthN/AuthZ，M12 基于该 wire contract 交付多语言 SDK 与部署文档；版本化 Provider Protocol 认证注册与观测边界；C/S + Control Plane/Execution Plane 分离并保留 embedded/local 模式；CLI/Web/GitHub App/CI 均为 Public API client，embedded CLI 经 in-process adapter 调同一 Public application Port、不直写 store；</li>
+<li>分工修订：<strong>M8 的纵切是 embedded/local 纵切</strong>；M9 当时以 <code>marshal-server</code> 命名的常驻入口与 Push/Pull Public API 资产保留为历史交付，其 executable 拓扑已由 ADR 0062 取代；M10 接 Cloudflare remote transport；M11 HA/AuthN/AuthZ；M12 多语言 SDK、部署文档与多拓扑 conformance；M13 实现 Goal API/控制器。</li>
+</ul>
+<p><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0018-control-plane-and-provider-ports.md">ADR 0018</a>（已接受，2026-08-11；本任务全部 Gate、独立 ReviewDecision accept 且无 P0/P1（含 Round 4 独立评审八项 P1、Round 5 复核四项残留与 Round 6 复核两项残留——Control Plane authority namespace 与 Provider actor 域分离、typed cross-domain edge——、Round 7 复核三项残留与 Round 8 复核一项残留——typed edge 跨域例外与适用范围——、Round 9 复核两项残留——跨域 fail closed 表述精确化、非 edge Port 与同域不自动授权——全部关闭）后由维护者接受）冻结 Marshal C/S Control Plane、按信任域分隔的 Provider Port、耐久注册/能力快照与在途 lease 撤销，澄清/部分取代 ADR 0017 §4/§6/§7/§8/§10/§12：</p>
+<ul>
+<li>C/S 终态：Marshal Control Plane 运行于 fixed <code>marshal control-plane serve</code>，Execution Plane 分离可远程；Core 是唯一业务权威；Provider 与 DurableExecutionEngine backend 只提供输入/传输，不能宣布 approved、ReviewDecision 或 safe-to-publish；</li>
+<li>六类 Provider（Agent、Sandbox、Verification workload executor、SCM/Publisher transport、Artifact、Secret）至少分三个信任域（trust domain）：低权限 Execution、独立高权限 Publication（Publisher 永不成为 Sandbox workload）、Data/Capability；域之间不共享 credential、AuthZ、审计或 conformance profile；六类 Provider 彼此是不同 Port、不同 protocol family，不共享 conformance suite；</li>
+<li>Provider 不必远程：对每个具体 Port/protocol family，embedded/in-process、Push HTTP、Pull outbound runner 才是该族的 transport adapter，运行该族统一的 conformance suite；</li>
+<li>身份按 Port 冻结、不设 universal envelope：required/forbidden 矩阵覆盖 public-api、provider-registration/control、dispatch-bound Sandbox/Agent/Verification、publication、artifact、secret；public-api 禁止 providerType 并拒绝 workload lease（workloadRole/allocationId/generation/fencingToken/DispatchLease）；provider-registration/control 同样拒绝 workload lease；只有 dispatch-bound Port 绑定完整 lease 身份；publication 绑定 SideEffectIntent/ReviewDecision/evidence digest；artifact/secret 绑定 scoped handle/content digest/scope/expiry；fencingToken 是非凭据 stale-write guard，credential 不入业务 JSON/事件/日志/digest；</li>
+<li>append-only event ledger 是唯一权威，snapshot/queue/SSE/registry/索引是可重建投影；SSE cursor 过期、gap 或压缩返回可判定 resync；DurableExecutionEngine 是 Core 的内部 Port；</li>
+<li>Runtime 持久化 ProviderRegistration 与不可变 ProviderCapabilitySnapshot；ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence 也是 authority ledger 事实，由 authorityNamespaceId 拥有、只允许 Core 写入，仅携带 actor securityDomainId、provenance 与 eligibility；registrationId 幂等身份 canonical 绑定 <code>(securityDomainId, principal, providerType, providerName, providerVersion, protocolVersion, scope)</code>（securityDomainId 为所携带的 actor 身份）与 <code>idempotencyKey</code>/<code>requestDigest</code>，仅 actor 域与全部字段相同才归并；同 key 不同 digest conflict；跨 scope/protocol conflict 或新 registrationId，不改旧记录；revoked/expired 不因普通 replay 复活；create/status/revoke/expire 与 capture/supersede 都是 authority ledger 事实，三类 expiry 独立；禁止 memory-only registration；legacy v1alpha1 CapabilitySnapshot 字节/digest 不变，只经显式版本化 fail-closed mapper 转换并记录 sourceCapabilitySnapshotDigest，不得默认补 scope/evidence；</li>
+<li>DispatchLease 只消费持久 ProviderCapabilitySnapshot，双绑定权威侧 authorityNamespaceId 与 actor 侧 securityDomainId，并绑定 registrationId、claim 时 active status/version、providerCapabilitySnapshotDigest 与 conformanceEvidenceDigests 封闭集合；lease 引用/digest 永不改写只供审计；每次 heartbeat、结果/副作用接纳与恢复 reconcile 按当前 ledger 重判资格（eligible）；registration revoke/expire/incompatible、snapshot expire/supersede、evidence revoke/expire 使 active lease（在途 lease）立即失去资格（cancel/expiry + generation bump/fencing，Allocation/Attempt 终止对账，晚到结果隔离）；继续执行只能新 Attempt + 新 lease 重新 match；</li>
+<li>M8 实施顺序硬门禁：negative fixtures/event contract → ProviderRegistration/ProviderCapabilitySnapshot Schema → legacy mapper → durable embedded registration + ledger recovery → snapshot/evidence validation → 最后 enable DispatchLease match；前置缺失 claim/match fail closed；fixture 覆盖跨 scope/protocol、same key/different digest、revoked replay、restart/rebuild、substitution、各类 claim 后失效的 Push/Pull，以及 typed cross-domain edge：伪造签发者（issuer）或冒用签发身份、错 authority scope、错 source/target（issuer/sourceActor/targetActor 与 edge 类型不符或 target substitution）、错 operation、错 attempt/allocation、已过期、已撤销、digest 替换的 edge 必须拒绝；绕过 current-ledger recheck 使用派生 token/handle、转授或扩权尝试、跨 Port token/schema 复用的请求必须失败；携带 raw handle/credential 或跨域复用 raw credential/ConformanceEvidence 的跨域请求必须失败；Provider actor 未经对应 typed edge 授权或绑定不精确匹配的跨域访问必须失败；Public API/SSE 客户端与 Core 内部权威对象引用不持有 Provider typed edge 的合法访问 fixture 必须通过；合法三条 typed cross-domain edge 可恢复且幂等，fixture 明确区分三类合法 positive 与无 edge、错 edge、错绑定 negative；provider-registration/control 经 transport identity、该 Port AuthN/AuthZ、scope/protocol validation 与 registration protocol 校验、由 Core 将获准事实写入 authority ledger 的合法请求必须通过，跨 Port 复用 transport identity/token 或以 securityDomainId 相同为由跳过 principal/registrationId/providerInstanceId/scope/attempt/allocation/operation 门禁的同域 bearer 化请求必须失败；Public API 幂等身份、SSE cursor 与 Artifact/Evidence/Checkpoint/Candidate 对象 key 使用 authorityNamespaceId，将其归属 actor securityDomainId 的 fixture 必须失败；</li>
+<li>M9 当时冻结以 <code>marshal-server</code> 命名的 Public API/Sandbox dispatch Push-Pull、远程注册、SSE 与 DurableExecutionEngine 合同；现行 production executable 拓扑由 ADR 0062 的 fixed <code>marshal control-plane serve</code> 取代；M12 扩展其余 Provider wire/SDK；HTTP/JSON+OpenAPI 首发，WebSocket/gRPC 推迟；</li>
+<li>securityDomainId 复合安全域键空间现在冻结（ADR 0018 §10）：复合三元组 <code>(tenantNamespace, trustDomainKind, isolationDomainId)</code>——tenantNamespace 单租户部署可固定 <code>default</code>（tenant 只能作为该组成参与授权），trustDomainKind 封闭枚举 execution|publication|data-capability，isolationDomainId 标识同 kind 内隔离边界；不得使用全系统单一 default 同时宣称隔离 Execution/Publication/Data-Capability；actor 侧 securityDomainId 进入 registration/snapshot/evidence 携带项、lease/allocation actor 绑定、artifact/secret scoped handle、cache key 等引用字段的持久键空间（只用于 actor 身份、provenance 与授权判定），submission/run lifecycle、DispatchLease/Allocation、ReviewDecision、Outcome、SideEffectIntent/Receipt reconcile、Evidence graph、typed edge、SSE cursor/sequence、idempotency/replay 权威键、outbox、audit 与事件账本归权威侧 authorityNamespaceId 拥有；未经三条 Core-only typed edge 中对应 active edge 授权或绑定不精确匹配的跨域引用与跨 trustDomainKind 引用 fail closed（三条 typed edge 是默认拒绝规则的唯一 allowlist 例外）；不得等 M11 再迁移持久主键；</li>
+<li>Control Plane 权威与 Provider actor 分离（ADR 0018 §10）：authorityNamespaceId=(tenantNamespace, controlPlaneId, authorityScopeId) 拥有全部 Control Plane 权威对象——Project/Goal、TaskSubmission、Task/Run/Attempt lifecycle、DispatchLease/Allocation、ReviewDecision、Outcome、SideEffectIntent/Receipt reconcile、Evidence graph、typed edge、事件账本、发布决定、idempotency/outbox/audit 记录与 SSE 权威序列——只允许 Core 写入；controlPlaneId 是 HA/灾备中保持稳定的逻辑权威身份，不是进程实例；securityDomainId=(tenantNamespace, trustDomainKind, isolationDomainId) 只标识 Provider actor；authorityNamespaceId 不是 Provider 的 trustDomainKind 维度，Provider 不得写入或宣称权威对象；</li>
+<li>Core-only typed cross-domain edge（ADR 0018 §3）：三条 Core-only typed edge——DispatchResultCapability、MaterialAccessGrant、PublicationAuthorization——是 Provider actor 跨 trust domain 访问默认拒绝（default deny）规则的唯一 allowlist 例外，其余 Provider actor 跨 trust domain 访问默认拒绝；</li>
+<li>Core 是唯一签发者、唯一撤销者与唯一重新授权者，每条 edge 的 issuer 为 Core（issuer 不等于业务流的 sourceActor：DispatchResultCapability 的 sourceActor=Execution workload、targetAudience=Core result-ingress；MaterialAccessGrant 的 sourceActor=Data/Capability Provider、targetActor=Execution workload；PublicationAuthorization 的 issuer/sourceAuthority=Core、targetActor=Publication Provider）；</li>
+<li>每条 edge 是由 authorityNamespaceId 拥有的 authority-scope-bound 权威记录，冻结 issuer/source/target/operation/expiry/digest/revocation/replay/current-ledger recheck 七项生命周期要素与各自专属绑定，授权不可转授、不可扩权，每次使用必须按当前 authority ledger 复核；</li>
+<li>edge 只承载 scoped handle、digest 引用与授权引用，不承载 raw credential/raw secret handle，不替代 ConformanceEvidence；</li>
+<li>edge 派生的 token/handle 只是指向 edge 权威记录的单向引用，派生 token/handle 不得成为第二权威；</li>
+<li>Public API/SSE 是 Client 到 Control Plane 的入口，使用各自的 AuthN/AuthZ、scope 约束与 re-AuthZ，不需要 Provider typed edge；Core 内部权威对象引用（ledger 事件间引用、cursor、证据关系、outbox/ledger 引用）保留在 authority ledger，不需要 Provider typed edge；</li>
+<li>Provider actor 跨 trustDomainKind 访问必须持有 active typed edge，并精确匹配该 edge 绑定的 source/target securityDomainId 与全部对象、operation、时效绑定，未经对应 edge 授权或任一绑定不符一律 fail closed 并写入审计；</li>
+<li>provider-registration/control 与 public-api 不持有三类业务 typed edge，经 transport identity、该 Port 的 AuthN/AuthZ、scope/protocol validation 与 registration protocol 校验，由 Core 将获准事实写入 authority ledger；</li>
+<li>securityDomainId 相同只是 actor provenance/partition 条件，不构成授权、不构成同域 bearer grant，同域请求仍须逐项匹配具体 Port 的 principal/registrationId/providerInstanceId/scope/attempt/allocation/generation/operation 门禁；</li>
+<li>Provider attestation 全链绑定（ADR 0018 §11）：ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence/lease claim 全链绑定 securityDomainId、稳定 providerInstanceId、effective configDigest 与签发/验证 trust root（含 key id/rotation）；任一变化产生新 immutable 快照/证据并触发 eligibility 重判；相同软件版本换实例/配置/签发密钥不得复用 hardened evidence；Worker/Verifier 必须不同 principal 与不同 allocation；高保证策略可要求 provider/host/failure-domain diversity；</li>
+<li>远程 transport 安全基线（ADR 0018 §12）：任何非 loopback/in-process transport 自首次 enable 起强制 TLS；workload-to-workload 优先 mTLS 或等价不可转移 workload identity；双向校验 server/provider 身份与 audience/scope；短期 credential rotation/revocation 与 replay protection；M9/M10/M12 首次 enable 即生效，M11 只扩展 HA/多节点/多用户授权策略，不补首次安全基线；</li>
+<li>原子 fencing 写入汇（ADR 0018 §13）：ledger sink 同事务 atomic compare-and-append/transaction，ledger transition、当前 lease generation 与 Evidence/Artifact 引用同原子校验；Artifact/Evidence/Checkpoint/Candidate bytes 的接纳关系归 authority ledger，使用 authorityNamespaceId+run+attempt+allocation+generation scoped immutable key 与 digest-verified put-if-absent（actor securityDomainId 只作为 provenance 记录）；陈旧/冲突 bytes 只进 quarantine namespace，永不覆盖或进入当前 evidence graph；M8/M9 补 lost-response、concurrent-write、old-generation overwrite fixture；</li>
+<li>SSE 恢复与再授权（ADR 0018 §14）：cursor 身份 authorityNamespaceId+scope+ledgerSequence（权威账本的权威侧身份），订阅方另绑定自身 securityDomainId 完成授权判定，scope 内单调 sequence，at-least-once + eventId/sequence 去重，expiry/gap/compaction 返回 deterministic resync 起点与 snapshot digest，heartbeat 与有界 backpressure，周期性 re-Authorization 与敏感变更即时 re-Authorization；SSE 是只读投影，不承载 ACK、lease heartbeat 或 command；参数值留 M9 Schema 冻结；</li>
+<li>DurableExecutionEngine 单一权威 seam（ADR 0018 §15）：同事务 outbox 或 ledger-derived Core command journal 二选一；commandId 从权威事实稳定派生；backend 只消费/回报，workflow/activity state 不是业务权威；M9 backend profile 与升级 fixture 覆盖 workflow versioning/build ID、Continue-As-New、payload 外置/上限、activity heartbeat/cancel/retry；</li>
+<li>按 Port 的 versioned protocol family（ADR 0018 §16）：每个具体 Port 独立 audience、AuthZ scope、request/response schema、error/idempotency/revocation 与 conformance profile；只共享 transport、JCS 与最小 base auth primitives；禁止跨 Port token/schema/operation；六类 Provider 分属不同 protocol family，不共享 conformance suite；embedded/Push/Pull 只是同一 Port 内的 adapter，运行该族统一的 conformance suite；</li>
+<li>Push/Pull 只冻结 outcome/invariant equivalence（唯一 claim、eligibility、fencing、deadline、无双活、晚到隔离），允许拓扑特定（topology-specific）的 offer/poll/claim/ack transition 与 timing，conformance 比较 normalized business trace 与业务不变量，不比较逐步 wire trace（ADR 0018 §16）；</li>
+<li>不兼容与撤销分级处置（ADR 0018 §6/§7）：security-critical revoke（credential compromise、protocol violation）立即 cancel + generation bump + kill，不留 drain 窗口；planned/ordinary incompatible upgrade 使用新 registration/新 snapshot，旧实例 stop-new + bounded drain，drain deadline 到期再 fence；事件机器可读原因码与审计记录分开；普通升级不得复活旧注册或改写旧 lease digest。</li>
+</ul>
+<p>ADR 0017 中以下历史 universal 口径就地标注<strong>已被 ADR 0018 取代</strong>，不再作为实施依据：所有远程副作用统一绑定完整 Task/Run/Attempt/allocation/lease 身份（现仅 dispatch-bound Port）；所有 Attempt/Artifact 接纳统一 fencing（现按 Port 分流）；所有远程请求统一额外绑定 providerType（现 public-api 禁止 providerType）；六类 Provider 注册产生 legacy CapabilitySnapshot（现为 ProviderRegistration + 不可变 ProviderCapabilitySnapshot，legacy 快照仅经 fail-closed mapper 转换）。</p>
+<p>实现状态不因文档冻结或 ADR 接受而提前升级：ADR 0017 的接受只关闭设计歧义、ADR 0018 的接受只冻结设计，均只冻结设计不升级 M8–M13 实现/conformance 状态；上表各 Milestone 状态为：M7 于 2026-08-11 通过退出门禁后更新为已通过（只表示设计与契约阶段通过，不表示后续实现或 conformance 完成），M8 按修订后的契约（含 ADR 0018 §7 顺序硬门禁）以新任务启动，六个硬门禁 gate 全部合入 main 且各 PR 远端 CI 全绿后于 2026-08-13 通过退出门禁，更新为 <code>PASSED</code>（各 gate 尚未整体接入最终 Runtime 执行路径），M9 七交付（a lease 持久账本 PR #104、b typed edge 运行时接线 PR #107、c1 当时以 <code>marshal-server</code> 命名的常驻入口 + Public API PR #111、c2 SSE 只读投影 PR #115、c3 远程注册 + TLS 基线 PR #116、e DurableExecutionEngine seam PR #119、d Push/Pull 双拓扑 transport + conformance PR #120）全部合入 main 且各 PR 远端 CI 全绿后于 2026-08-14 通过退出门禁；该历史 executable 拓扑现已由 ADR 0062 的 fixed <code>marshal control-plane serve</code> 取代。M9 <code>PASSED</code> 只表示当时设计与契约+本 milestone 交付门禁通过，不表示现行 server transport、M10–M13 或 conformance 终态完成；M10–M13 保持 <code>PLANNED</code>。首次 Sandbox SPI dogfood Run 的既有实现成果按<strong>未接纳探索证据</strong>对待，不计为 M8 实现进度。</p>
+<p>ADR 0033（Proposed）只冻结受控 merge 的 journal-bound authority/delivery 目标与负向恢复矩阵。提出、接受、Schema 落盘或任一前置实现切片合入都不构成受控 merge supported 声明，也不改变 M10 在途及 M11–M13 <code>PLANNED</code> 状态；A–D 全部实现、独立审计 P0/P1 清零且 required CI/secret scan 与恢复 conformance 全绿后，最多登记显式 opt-in 的 <code>local-nonproduction</code> 受限 profile。production supported 仍须等待 M11 external rollback witness、跨节点 fenced lease 与协调回滚恢复演练通过。</p>
+<p>每个 Milestone 都执行范围冻结、实现、单元/集成/E2E 测试、独立审计、提交推送和远端 CI 绿色验收。任何 P0/P1 审计问题或 CI 失败都会阻止进入下一阶段。M7–M13 还要求每个 Milestone 先通过 Local MVP 全量回归。M7 只冻结 Project/Goal 的存在性、authority ownership 与多 Run 原则；M13 才实现 ADR 0019 的完整 Goal 控制器，M7–M12 完成声明不涵盖复杂需求目标。</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.sections", "navigation.top", "search.suggest", "content.code.copy"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+    
+  </body>
+</html>

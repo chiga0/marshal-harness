@@ -1,0 +1,1402 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="可自托管的 Agent Team 服务：从需求、独立验收到受控交付">
+      
+      
+      
+        <link rel="canonical" href="https://chiga0.github.io/marshal-harness/design-contract-map/">
+      
+      
+        <link rel="prev" href="../roadmap-status/">
+      
+      
+        <link rel="next" href="../documentation-guide/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>设计决策与历史 - Marshal</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#_1" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href=".." title="Marshal" class="md-header__button md-logo" aria-label="Marshal" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Marshal
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              设计决策与历史
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换暗色"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换暗色" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换亮色"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换亮色" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Marshal" class="md-nav__button md-logo" aria-label="Marshal" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Marshal
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    产品
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            产品
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    首页
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vision-and-scope/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    愿景与适用范围
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    使用
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            使用
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    快速开始
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    下载与安装
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    版本与接口支持
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    架构与设计
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            架构与设计
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agent-team-service-architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    目标架构与取舍
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../task-lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    任务生命周期
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-leader-execution-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Leader 与独立验收
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    安全与信任边界
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    标准 API 与扩展
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            标准 API 与扩展
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../standard-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    契约总览
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/http-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    HTTP 操作与 Schema
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extension-contracts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Agent、环境与业务扩展
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../node-leader-execution-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Leader 机器契约
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    路线与进展
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            路线与进展
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agent-team-service-milestones/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    实施 Milestone
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../roadmap-status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    实际进展
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    设计决策与历史
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    设计决策与历史
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      权威分工
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#node" class="md-nav__link">
+    <span class="md-ellipsis">
+      当前 Node 决策链
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      需要保留的边界
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      文档与协议演进
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    文档维护
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            文档维护
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../documentation-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    维护与发布
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../testing/business-postconditions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    测试与验收
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../testing/acceptance-contract-freeze/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    ADR0107 合同候选冻结测试
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-info/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    构建来源
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      权威分工
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#node" class="md-nav__link">
+    <span class="md-ellipsis">
+      当前 Node 决策链
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      需要保留的边界
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      文档与协议演进
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="_1">设计与合同适用性<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h1>
+<p>本页回答“以什么定义目标、什么约束机器行为、什么证明已经可用”。不在这里复制当前发布进度；唯一事实入口是 <a href="../roadmap-status/#业务交付当前表">Roadmap 当前表</a>。历史接受事实不因文档归档撤回，当前 Node 设计也不隐式继承已退役 Go 的运行能力。</p>
+<h2 id="_2">权威分工<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>权威入口</th>
+<th>边界</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>产品最终要解决什么</td>
+<td><a href="../vision-and-scope/">愿景与范围</a></td>
+<td>用户、适用条件、长期目标与非目标</td>
+</tr>
+<tr>
+<td>系统如何完整工作</td>
+<td><a href="../agent-team-service-architecture/">服务架构</a>、<a href="../task-lifecycle/">生命周期</a></td>
+<td>三面职责、需求到业务交付、失败和恢复；不是完成状态</td>
+</tr>
+<tr>
+<td>HTTP 的精确请求响应</td>
+<td><a href="../api/openapi.json">OpenAPI</a>、<a href="../standard-api/">标准 API</a></td>
+<td>OpenAPI 是唯一机器 Schema；说明文档不创造额外字段</td>
+</tr>
+<tr>
+<td>内部 Leader 的机器语义</td>
+<td><a href="../node-leader-execution-contract/">Leader 合同</a></td>
+<td>闭集 action、输入/决定绑定、事务、授权及恢复</td>
+</tr>
+<tr>
+<td>能力如何扩展</td>
+<td><a href="../extension-contracts/">扩展合同</a></td>
+<td>受信 DI 与接口义务，不等于动态插件或远端能力已经启用</td>
+</tr>
+<tr>
+<td>谁能执行什么</td>
+<td><a href="../security-model/">安全模型</a>及相应 ADR</td>
+<td>职责、权限、事实权威和实际隔离分别判断</td>
+</tr>
+<tr>
+<td>如何验收、什么完成</td>
+<td><a href="../agent-team-service-milestones/">Milestone</a>、<a href="../roadmap-status/#业务交付当前表">Roadmap</a>、<a href="../api-support/">接口支持矩阵</a></td>
+<td>出口、版本/profile、实机证据、发行状态分别记录</td>
+</tr>
+</tbody>
+</table>
+<p>设计接受、代码存在、配置启用、独立验证、实机业务完成和软件发行是不同结论。任何一项不能自动代替其余项；<code>API-STABLE</code> 只覆盖其证据明确列出的操作与 Schema，不代表终态全部扩展永远冻结。</p>
+<h2 id="node">当前 Node 决策链<a class="headerlink" href="#node" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>决策</th>
+<th>对现行设计的约束</th>
+<th>与历史合同的关系</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0080-three-plane-business-delivery-roadmap.md">ADR0080</a></td>
+<td>三面分离，业务交付优先</td>
+<td>不把通用复杂编排、HA或多租户作为受限团队前置</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0085-agent-team-service-contract-and-storage.md">ADR0085</a></td>
+<td>Task-first、API-first，无 Workspace/Project 注册；独立验证、交互及持久职责</td>
+<td>产品合同保留；其 Go/RB1 物理投影由0088取代</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0086-task-preapproval-questions-and-preview-revisions.md">ADR0086</a></td>
+<td>批准前问答、精确 preview/revision 与幂等</td>
+<td>不把旧批准请求解释为运行中授权</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0088-node-task-service-production-projection.md">ADR0088</a></td>
+<td>Node 唯一 Application/SQLite、发行资产按类别处理</td>
+<td>0087为实验；不运行或导入旧Go权威根</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0089-node-execution-custody-and-cleanup-recovery.md">ADR0089</a></td>
+<td>所属执行托管、跨代清理证明及恢复准入</td>
+<td>不将旧输出变成新代可接纳成果；后继Leader恢复按0095显式定义</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0090-node-runtime-business-questions.md">ADR0090</a></td>
+<td>原Worker问答、答案投递与ACK、验收引用</td>
+<td>业务回答不是工具授权或Leader发布确认</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0091-node-same-plan-local-repair.md">ADR0091</a></td>
+<td>同计划内容拒收、影响闭包、保留无关成果和原预算</td>
+<td>旧HTTP repair保留；内部Leader来源由0094/0095限定</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0094-trusted-single-user-role-team.md">ADR0094</a></td>
+<td>可信单用户角色职责；Leader业务判断、Supervisor观察、Core硬规则、Execution操作handle</td>
+<td>精确调整0085/0088强凭据隔离前置；不撤销独立证据、默认拒绝发布、秘密保护</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0095-node-managed-leader-contract.md">ADR0095</a></td>
+<td>显式v7、受管Leader闭集决定、独立Review、授权交付/后验及恢复</td>
+<td>不重解释v1–v6、旧completed和回执；不另建状态机</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0096-node-stable-asset-signing-minisign.md">ADR0096</a></td>
+<td>Node发行资产签名及同字节证据</td>
+<td>软件发行与Task业务发布不共用授权</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0099-go-legacy-line-retirement-and-removal.md">ADR0099</a></td>
+<td>Go线退役，代码及证据在git历史追溯</td>
+<td>不要求main并存旧实现，也不删除旧ADR接受事实</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0100-generic-team-default-and-agent-entry.md">ADR0100</a></td>
+<td>默认通用文件团队、受信可执行Agent入口、显式配置/启动器升级</td>
+<td>专用业务样例不限制所有任务；普通文件验收不证明真实ETL完成</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0101-generic-leader-model-wire-binding.md">ADR0101</a></td>
+<td>显式通用文件模型proposal由受信ticket mapper补齐控制封套</td>
+<td>不默认切换旧配置，不改变Core持久化或HTTP，不把映射bytes称为原始模型输出</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0102-generic-review-wire-and-new-install-default.md">ADR0102</a></td>
+<td>新安装的通用文件配置分别映射 Leader/Review 运输封套，保留原完整输入与独立验收</td>
+<td>旧设置不静默切换；配置语义与当前安装路径分开；新配置不扩展外部执行权限</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0103-execution-observability.md">ADR0103</a></td>
+<td>显式受信策略留存 Marshal 实际输入与 Provider 公开活动、模型、用量</td>
+<td>观察不构成权威结果；缺失不估算，隐藏推理不留存；输入留存与 startProtocol 组合不支持，旧关闭配置保持原形状</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0104-bounded-leader-protocol-correction.md">ADR0104</a></td>
+<td>显式配置下，Leader 至多一次严格 JSON 格式重提，原失败与后继执行分别持久化</td>
+<td>原预算、期限、清理和当前性不放宽；不自动改写输出，不纠正业务、权限或动作拒绝；旧配置缺省关闭</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0105-fixed-author-instructions.md">ADR0105</a></td>
+<td>新通用文件配置在原业务对象准备前一次性登记固定作者指导，原 Audit 与 Provider 使用同一输入</td>
+<td>旧未登记提示逐字不变；不开放 staging 或权限；不依赖 Leader 转述，不保证模型服从或业务正确</td>
+</tr>
+<tr>
+<td><a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/adr/0106-bound-review-assessments.md">ADR0106</a></td>
+<td>批准前业务验收目录、逐项来源与状态、原 receipt 绑定的评审证据 v2</td>
+<td>旧 v1 可读但不补造覆盖；不新增 HTTP 写入口，不以文本评审冒充实际效果验收</td>
+</tr>
+</tbody>
+</table>
+<p>其他精确接缝仍以对应 ADR 原文为准，不因本表未逐一列出而失效。继承旧机器语义的版本必须保留其行为与回执；提出替代不能靠重写说明文档完成。</p>
+<h2 id="_3">需要保留的边界<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<ul>
+<li>每个服务数据根一个权威 owner；事件、投影、回执、预算和 outbox 在唯一应用事务中接纳。</li>
+<li>每个执行目录一个写入者；Git写节点锁定base并使用独立worktree，非Git任务不伪造仓库或commit。</li>
+<li>作者不提供自身唯一权威验收；ReviewDecision绑定精确输入、候选和证据，变化后重查适用性。</li>
+<li>默认无业务发布授权；角色和原生登录不扩权，普通答案不替代精确目标确认。</li>
+<li>未知执行或外部效果不盲重发、不虚释容量、不靠新Task清零预算；失败保留真实Outcome。</li>
+<li>普通同UID进程不是恶意代码沙箱；现行可信单用户职责分离不宣称强凭据隔离。</li>
+<li>旧根不隐式迁移、覆盖或重签；旧终态不复活，不支持格式在接管前拒绝。</li>
+</ul>
+<p>这些不变量约束扩展实现，不能为了适配新Agent、简化客户端或通过演示而放宽。</p>
+<h2 id="_4">文档与协议演进<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
+<p>变更信任边界、持久化契约、生命周期或发布权限，必须新增或替代 ADR，再同步相应机器合同、实现与兼容验收。仅澄清已接受决定、移动历史叙述、删除过期进度不构成新协议。OpenAPI变更要同时验证Schema、示例、客户端和请求回执兼容。</p>
+<p>当前说明只写稳定目标与适用边界；版本状态进入Roadmap/支持矩阵，失败和签名证据保留原来源。历史参考显式标记时间，不在“当前基线”标题下混用旧Go状态或旧部署命令。归档前的本页见<a href="https://github.com/chiga0/marshal-harness/blob/bf96d2c4256aa96984d9d9354436acf8a35d9448/docs/design-contract-map-reference-2026-09-14.md">历史参考</a>。</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.sections", "navigation.top", "search.suggest", "content.code.copy"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+    
+  </body>
+</html>
