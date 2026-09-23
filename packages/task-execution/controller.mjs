@@ -12,28 +12,42 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 const text = (value, max) => typeof value === 'string' && value.isWellFormed() && !value.includes('\0') && Buffer.byteLength(value) <= max;
 const freeze = value => { if (object(value) || Array.isArray(value)) { for (const item of Object.values(value)) freeze(item); Object.freeze(value); } return value; };
 class SupervisorError extends Error {
-  constructor(code) { super(code); this.code = code; }
+  constructor(code, options) { super(code, options); this.code = code; }
 }
 class ExecutionPortError extends SupervisorError {
-  constructor(method) { super('supervisor_execution_unavailable'); this.method = method; }
+  constructor(method, cause) { super('supervisor_execution_unavailable', cause !== undefined ? {cause} : undefined); this.method = method; }
 }
 class WorkRejected extends SupervisorError {}
 const requireValue = value => { if (!value) throw new SupervisorError('supervisor_invalid_port'); };
+// Post-mortem anchor only: this payload never enters the notification/API channel (which stays redacted);
+// the composition-level recorder persists it to a 0600 file under the private data root.
+const faultText = (value, max) => {
+  if (typeof value !== 'string' || value.includes('\0')) return null;
+  const bounded = value.length > max ? value.slice(0, max) : value;
+  return bounded.isWellFormed() ? bounded : null;
+};
+const faultError = (error, depth = 3) => {
+  if (depth <= 0) return null;
+  if (!(error instanceof Error)) return error === undefined || error === null ? null
+    : {name: 'NonError', message: faultText(String(error), 4096), stack: null};
+  return {name: faultText(error.name, 256) ?? 'Error', message: faultText(String(error.message), 4096), stack: faultText(error.stack, 16384),
+    ...(error.cause !== undefined ? {cause: faultError(error.cause, depth - 1)} : {})};
+};
 
 /** Same Application authority; only live handles, timers and observation queues here. */
 export class TaskExecutionCoordinator {
-  #execution; #providers; #prepare; #collect; #release; #verification; #custody; #onError; #clock; #options; #managed; #observability;
+  #execution; #providers; #prepare; #collect; #release; #verification; #custody; #onError; #clock; #options; #managed; #observability; #recordFault;
   #owned = new Map(); #works = new Set(); #timer; #tick; #close;
   #running = false; #closing = false; #closed = false; #failure = null;
   #diagnostics = []; #notificationFailures = 0; #rejected = new Set(); #rejectedOverflow = false;
   #scanCursor = ''; #pollCursor = '';
-  constructor({execution, providers, prepare, collect, release = () => {}, verification = null, custody = null, managed = null, observability = false, onError = () => {}, clock = Date.now,
+  constructor({execution, providers, prepare, collect, release = () => {}, verification = null, custody = null, managed = null, observability = false, onError = () => {}, clock = Date.now, recordFault = null,
     intervalMs = 100, prepareMs = 30000, collectMs = 30000, pageSize = 25, maxPagesPerTick = 100} = {}) {
     requireValue(execution && PORTS.every(name => typeof execution[name] === 'function') && providers instanceof Map &&
       typeof prepare === 'function' && typeof collect === 'function' && typeof release === 'function' &&
       (verification === null || typeof verification.start === 'function') && (custody === null || typeof custody.prepare === 'function' &&
         ['custodyBinding', 'bindCustody', 'recordExtraScope'].every(key => typeof execution[key] === 'function')) &&
-      typeof onError === 'function' && typeof clock === 'function');
+      typeof onError === 'function' && typeof clock === 'function' && (recordFault === null || typeof recordFault === 'function'));
     for (const [id, provider] of providers) requireValue(typeof id === 'string' && provider?.id === id && typeof provider.start === 'function');
     for (const [value, max] of [[intervalMs, 30000], [prepareMs, 30000], [collectMs, 30000], [pageSize, 100], [maxPagesPerTick, 100]])
       requireValue(Number.isSafeInteger(value) && value >= 1 && value <= max);
@@ -43,6 +57,7 @@ export class TaskExecutionCoordinator {
     requireValue(typeof observability === 'boolean');
     this.#observability = observability;
     this.#managed = managed;
+    this.#recordFault = recordFault;
     this.#onError = onError; this.#clock = clock; this.#options = {intervalMs, prepareMs, collectMs, pageSize, maxPagesPerTick};
   }
   #call(name, ...args) {
@@ -54,7 +69,7 @@ export class TaskExecutionCoordinator {
       if (name === 'nextWork' && ['unsupported_task', 'capacity_exceeded'].includes(error?.code)) throw new WorkRejected(error.code);
       if (['registerQuestion', 'dispatchAnswer', 'acknowledgeAnswer'].includes(name) &&
         ['unsupported_task', 'invalid_request', 'state_conflict', 'question_expired', 'not_found'].includes(error?.code)) throw new WorkRejected(error.code);
-      throw new ExecutionPortError(name);
+      throw new ExecutionPortError(name, error); // 保留 cause：崩溃锚点（recordFault）需要原始异常，通知面仍只取 code/method。
     }
   }
   snapshot() {
@@ -141,6 +156,7 @@ export class TaskExecutionCoordinator {
         ...(error instanceof ExecutionPortError ? {port: error.method} : {}),
         ...(entry ? {taskId: entry.ticket.taskId, workerId: entry.ticket.workerId} : {})};
       this.#running = false; clearTimeout(this.#timer); this.#timer = undefined;
+      try { this.#recordFault?.({...this.#failure, at: this.#clock(), error: faultError(error)}); } catch {}
       for (const owned of this.#owned.values()) this.#stop(owned);
       this.#notify(this.#failure);
     }

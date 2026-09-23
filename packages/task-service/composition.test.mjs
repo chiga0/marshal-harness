@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {Store, encode, digest} from '../task-store/store.mjs';
 import {TaskApplication, createClarificationPort} from '../task-application/application.mjs';
 import {TaskClient} from '../task-client/index.mjs';
-import {startTaskService} from './composition.mjs';
+import {startTaskService, writeSupervisorFaultFile} from './composition.mjs';
 
 const context = {principal: 'local-operator'};
 const defer = () => {let resolve; const promise = new Promise(done => {resolve = done;}); return {promise, resolve};};
@@ -331,4 +331,20 @@ test('checked-in Node CLI starts one HTTP service, prints no token and closes on
   assert.deepEqual(await done, {code: 0, signal: null});
   assert.equal((stdout + stderr).includes(connection.token), false);
   assert.equal(JSON.parse(stdout.trim().split('\n').at(-1)).clean, true);
+});
+
+test('writeSupervisorFaultFile persists a 0600 crash anchor inside executions and overwrites per process', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'marshal-fault-file-'));
+  try {
+    fs.mkdirSync(path.join(root, 'executions'), {mode: 0o700});
+    const fault = {code: 'supervisor_failed', stage: 'reconcile-or-dispatch', port: 'scan', at: 1234,
+      error: {name: 'Error', message: 'secret-token-and-path', stack: 'Error: secret-token-and-path\n    at scan'}};
+    writeSupervisorFaultFile(root, fault);
+    const file = path.join(root, 'executions', 'supervisor-fault.json');
+    const stat = fs.statSync(file);
+    assert.equal((stat.mode & 0o7777), 0o600);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), fault);
+    writeSupervisorFaultFile(root, {...fault, at: 5678}); // 同进程二次写：覆盖而非 O_EXCL 失败
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).at, 5678);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });

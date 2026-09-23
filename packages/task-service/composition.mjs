@@ -30,6 +30,16 @@ const requireValue = (value, code = 'service_invalid_configuration') => { if (!v
 export class TaskServiceError extends Error {
   constructor(code) { super(code); this.name = 'TaskServiceError'; this.code = code; }
 }
+/** Post-mortem crash anchor for global supervisor faults: 0600 file inside the held private data root.
+ * Deliberately outside the redacted notification/API channel — raw stack survives only on local disk. */
+export function writeSupervisorFaultFile(root, fault) {
+  const bytes = Buffer.from(JSON.stringify(fault) + '\n');
+  const fd = fs.openSync(path.join(root, 'executions', 'supervisor-fault.json'), fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | NOFOLLOW, 0o600);
+  try {
+    const stat = fs.fstatSync(fd); requireValue(stat.isFile() && stat.nlink === 1 && stat.uid === process.getuid() && (stat.mode & 0o7777) === 0o600, 'service_root_unavailable');
+    fs.writeFileSync(fd, bytes); fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
+}
 function directory(stat) {
   requireValue(stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o7777) === 0o700, 'service_root_unavailable');
 }
@@ -398,6 +408,7 @@ export async function startTaskService({root, mode, providers, prepare, collect,
     const Coordinator = leader ? TaskExecutionCoordinator : TaskSupervisor;
     supervisor = new Coordinator({...supervisorOptions, execution: application.execution, providers: available, managed, observability: observationConfig !== null,
       verification, release, custody: custodian ?? null,
+      recordFault: fault => { try { writeSupervisorFaultFile(root, fault); } catch {} },
       prepare: (ticket, wait) => prepare(ticket, {...wait, ...context}),
       collect: (ticket, result, wait) => collect(ticket, result, {...wait, ...context}),
       onError: report => { diagnostic(report); if (report.code === 'supervisor_failed') fail('service_supervisor_failed'); }});

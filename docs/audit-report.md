@@ -2360,3 +2360,7 @@ ADR0107 当前为 Draft 候选（以 PR #315 当前 head 为准，基线实现�
 Attempt 身份只读审计确认当前 Node 没有独立持久 `attemptId`：命令的 `attempt_id` 通常为空，实际 Worker 记录位于 `attempt` projection，预留事务同时保存 `workerId`、`commandId`、`generation`、`reservationDigest` 与 `worker.reserved` 事件。扩展契约已改用可验证的复合 `attemptRef`，不生成虚构 UUID；该引用仍需在 ADR0107 实施前冻结并纳入后续 API/Schema 设计。
 
 当前 PR 的 GitGuardian 检查仍失败，incident `37263555` 指向历史 commit `08bfe11b6a239aea6f002b7cde8b922e0b2a8c52` 中的合成 Bearer fixture（`packages/agent-observation/normalization.test.mjs`）。当前文件已使用非敏感 fixture，第一方 Secret scan 通过；GitGuardian 扫描 PR 历史仍会命中旧提交。该项在仓库外需要安全审查处置，不能通过关闭检查、添加绕过规则或改写共享历史解决，故当前合并门禁保持阻塞。
+
+## 2026-09-23：Supervisor 全局故障崩溃锚点（SUPERVISOR-FAULT-ANCHOR）
+
+2026-09-22 本机验收实例空闲运行 13.5h 后在 `reconcile-or-dispatch`（port=scan）崩溃；按既有设计全局 supervisor 故障仅输出脱敏三键、原始异常被丢弃且不落盘，死后不可追因（现场复核：租约 4844 次续约全程健康、零业务事件，崩溃与任务数据无关，疑与 macOS 睡眠唤醒相关但不可确证）。本次修复补死后取证能力而不放宽任何既有脱敏合同：`TaskExecutionCoordinator` 新增可选 `recordFault`（仅首次全局故障恰好一次触发，载荷含 stage/port/error.name/message/stack 及深度 3 的 cause 链，超界截断）；composition 将其落为数据根下 `executions/supervisor-fault.json`（0600、O_NOFOLLOW、同进程覆盖写，不入 stdout/API 通知面）；`#call` 包装端口异常时附带 `cause` 保留原始异常（通知面仍只取 code/method）。`controller.test.mjs`（此前为孤儿空文件，本次补为正式单测）+ `composition.test.mjs` 增补 4 项断言：锚点恰好一次、通知面零泄漏、recorder 抛错被吞、文件 0600 且可覆盖。不改变信任边界、持久化契约或生命周期；crash 文件属本地运维取证面。
