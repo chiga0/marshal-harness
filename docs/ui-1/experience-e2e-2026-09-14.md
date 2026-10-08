@@ -271,3 +271,26 @@ C01原负例159447ms返回15839字节，原receipt、目录、引用、逐项结
 以上是针对已发现缺口的后继退出条件，不声称新增执行证据类型、Review纠错或验收路由已经实现。其持久合同和生命周期改变需按仓库规则先完成对应ADR与独立审查。当前不通过、不放行发布。
 
 离线逐项 oracle 已在 `1ef325d3`/`ddc3c9b8` 加入并通过 7 项测试。它固定四份输入摘要，先检查报告六字段、profile、inputDigest、selectionDigest、finding 结构及原来源绑定，再比较分项期望；不会构造 ticket/receipt，也不会授予 Core 权威。只读消费四份既有结果得到：S02-negative 命中过程证据缺失误判；S02-positive 为 `NOT_EVALUABLE`（操作项缺少结构化反例）；C01-negative 命中 recovery、scope 与 aggregate 误收；C01-positive 命中 effects 错误豁免、缺反例、scope 与 aggregate 误收。输出状态 `ITEM_EXPECTATIONS_FAILED`/`NOT_EVALUABLE` 只表示后继验收条件未满足，`semanticReview` 仍为 `REQUIRED`，不把 oracle 标签当业务正确性。
+
+### 2026-10-08 换模型后的四例组件重跑
+
+用户将 Qwen CLI 全局默认模型由 `Kimi-K3` 切换后，按原 180 秒窗口对同四例各重跑一次：同冻结 suite（`sha256:94b9fc42656d67430ebafad80b52ee5ad692e25f1be3e3625a34980d2d854510`）、同 `42ce94f3` 安装包（manifest `sha256:e9c1db46f83f636b2d72893736645dfd18d1b652f35d754af47ad8f8c57a7f3a`）、同 runner 脚本（`sha256:352b52abda7468bf5f54997a43aaac9343bc70fc371ea796d3882bee24f0188f`）、各一例、无隐式重试；Node 24.15.0 不变，Qwen CLI 同入口路径由 0.23.2 升至 0.25.0，不修改产品配置，模型取 CLI 全局默认。证据 `.marshal/tasks/review-assessment-component-20261008/.marshal/assessment-42ce94f3-2/`（admission `sha256:185da5fbc778ee878dd8679f4e96102fe022d8566d80d035d0d9920b4d99663e`、results `sha256:aa219eace1fb6b53afa40c229bdb539344962a3e2f4d29550d1529bd9c8ef1e5`）。
+
+**混跑披露**：运行进行中全局默认再次被切换（`settings.json` 14:29:37 写入为 `GLM-5.3`），CLI 按 agent 进程启动时配置取模型，故前三例观测 `GLM-5.3-Flash(openai)`、第四例观测 `GLM-5.3(openai)`；四例不是同一模型配置，不做同配置四例断言。
+
+| 用例 | 观测模型 | 用时 | 结果 |
+| --- | --- | --- | --- |
+| S02-negative | GLM-5.3-Flash | 130.8秒 | FAIL：真实返回 10053 字节，verdict=accept 语义误收（日程与到场仍判为允许创作，criterion-9 pass）；effects 项 criterion-10 pass 而 counterexample=null，原 Port 按合同正确拒收（`invalid_review_report`），与冻结「S02修正材料」先例同因 |
+| S02-positive | GLM-5.3-Flash | 114.5秒 | PASS：合法 accept 回执，criterion-10 给足五字段结构化反例；但 criterion-7 仍以「未见违反记录」判 pass，冻结 oracle 修正（无可信执行事实应 unknown）不满足，不构成完整语义正确 |
+| C01-negative | GLM-5.3-Flash | 167.8秒 | FAIL：合法回执、verdict=accept 业务误收；criterion-8 理由明确写出「未替其补出提交标记、事务或前值规则」仍接受，冻结反例（清单有A、索引无A→重跑跳过→A仍不可检索）在该模型下依旧成立 |
+| C01-positive | GLM-5.3 | 180.3秒 | FAIL：`component_deadline`、公开正文 0 字节（空串 digest `e3b0c442…`）、清理确认；180 秒零正文的接口失败形态在该模型下复现 |
+
+结论限定：GLM-5.3-Flash 下三例全部在窗口内真实返回（114–168秒），原四例 180 秒零正文接口失败在其下未复现；GLM-5.3 单例复现同型超时，模型间延迟差异显著。语义层 S02/C01 负例识别缺口继续开放：S02 负例误收、C01 负例误收在 GLM-5.3-Flash 下与 Kimi-K3 冻结记录同型，换模型不关闭语义缺口；组件 1/4 PASS 不改变整体不通过判定。本节为组件合成输入（NEW_SYNTHETIC_COMPONENT_INPUT），非原 Task 批准；原 42ce94f3 四例冻结失败与四条延长窗口诊断原样保留，本重跑不覆盖不改写。runner 按设计 exit 1（非全过）。
+
+#### C01-positive 锁定 GLM-5.3 单例诊断（2026-10-08）
+
+四例重跑为混跑批次，第四例（C01-positive）的归因不干净。经明确批准追加一次**单独标注的诊断 run**（非组件验收轮、非隐式重试）：仅测 C01-positive，全程锁定全局默认 `GLM-5.3`。诊断 driver（`.marshal/tasks/review-assessment-component-20261008/diagnostic-c01-positive-locked.mjs`，本地运行态不入 Git）直接 import 冻结 runner 的未修改导出 `syntheticInput`/`evaluate`（runner 脚本 sha256 复核仍为 `352b52abda7468bf5f54997a43aaac9343bc70fc371ea796d3882bee24f0188f`，与 -2 轮相同），冻结 suite/manifest 摘要同前；启动前断言全局默认必须是 `GLM-5.3`（非则拒绝启动），admission/results 各存跑前/跑后 settings 快照（`modelLock.stable: true`，运行期间全局默认未变）。同 180 秒窗口、同 `qwen-managed-acp`、同 Node 24.15.0。证据目录 `.marshal/tasks/review-assessment-component-20261008/.marshal/diagnostic-c01pos-locked-glm53-1/`。
+
+结果：FAIL，`component_deadline`，用时 180.3 秒（elapsedMs 180304，与 -2 轮混跑第四例**逐毫秒相同**——两次均由窗口计时器终止而非模型返回）；activity 终态 `thinking`、无工具观察，公开正文 0 字节（空串 digest `e3b0c442…`）；观测模型 `GLM-5.3(openai)`；promptDigest `sha256:dd7d6894…`（39291 字节）与 -2 轮同例一致（合成输入确定性复现）；cleanup 确认、无额外行为、provider 启动 1 次。
+
+归因结论：GLM-5.3 在 C01-positive 上的 180 秒零正文超时为**同输入同模型可复现（2/2）**，混跑混杂不构成该例的替代解释；同例在 GLM-5.3-Flash 下 114.5 秒真实返回，接口层模型间差异显著这一判定不变。语义层结论不变：S02/C01 负例误收缺口继续开放，换模型不关闭语义缺口。本诊断不替代也不改写 assessment-42ce94f3-2 及更早冻结证据。
