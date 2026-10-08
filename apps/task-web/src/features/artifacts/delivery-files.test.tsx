@@ -3,7 +3,7 @@ import {act, cleanup, render, screen} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type {Transport} from '@/lib/transport/types';
 import {sha256Hex} from './downloader';
-import {readDeliveryFiles, validSaveName} from './delivery-files';
+import {readDeliveryFiles, validSaveName, looksLikeHtml} from './delivery-files';
 import {DeliveryFilesView} from './delivery-files-view';
 import {makeArtifact, makeTask} from '../tasks/detail/testing/fixtures';
 import {ArtifactsView} from './artifacts-view';
@@ -72,6 +72,59 @@ describe('通用文件包提取（原包与逐文件双重核验）', () => {
     expect(blobs[0]!.type).toBe('application/octet-stream');
     expect(`sha256:${await sha256Hex(blobs[0]!)}`).toBe(f.bundle.files[0]!.digest);
     expect(screen.queryByText('真实文件')).toBeNull();
+    expect(document.querySelector('iframe')).toBeNull();
+  });
+  it('HTML 文件显式点击预览后进入隔离沙箱 iframe，未点前不渲染', async () => {
+    const f = await fixture();
+    render(<DeliveryFilesView artifact={makeArtifact({id: f.spec.artifactId, name: f.spec.fileName, bytes: f.spec.expectedBytes, digest: f.spec.expectedDigest})} transport={f.transport} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', {name: '查看包内文件'}));
+    await screen.findByLabelText('另存文件名');
+    expect(screen.getByText(/沙箱静态预览：脚本不执行/)).toBeInTheDocument();
+    expect(document.querySelector('iframe')).toBeNull();
+    await user.click(screen.getByRole('button', {name: '预览此文件'}));
+    const frame = document.querySelector('iframe');
+    expect(frame).not.toBeNull();
+    expect(frame!.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(frame!.getAttribute('allow-same-origin')).toBeNull();
+    expect(frame!.getAttribute('srcdoc')).toBe(f.bundle.files[0]!.content);
+    expect(screen.queryByText('真实文件')).toBeNull();
+    await user.click(screen.getByRole('button', {name: '收起预览'}));
+    expect(document.querySelector('iframe')).toBeNull();
+  });
+  it('混合包按行判定预览资格：仅 HTML 内容行有预览入口', async () => {
+    const markdown = '# 说明\n这是普通 markdown';
+    const markdownDigest = `sha256:${await sha256Hex(new Blob([markdown]))}`;
+    const f = await fixture(bundle => {
+      bundle.files.push({path: 'results/notes.md', content: markdown,
+        bytes: new TextEncoder().encode(markdown).length, digest: markdownDigest});
+    });
+    render(<DeliveryFilesView artifact={makeArtifact({id: f.spec.artifactId, name: f.spec.fileName, bytes: f.spec.expectedBytes, digest: f.spec.expectedDigest})} transport={f.transport} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', {name: '查看包内文件'}));
+    const htmlRow = screen.getByText('results/author.md').closest('div')!;
+    const mdRow = screen.getByText('results/notes.md').closest('div')!;
+    expect(htmlRow.querySelector('button')).not.toBeNull();
+    expect(Array.from(htmlRow.querySelectorAll('button')).some(b => b.textContent === '预览此文件')).toBe(true);
+    expect(Array.from(mdRow.querySelectorAll('button')).some(b => b.textContent === '预览此文件')).toBe(false);
+    expect(document.querySelector('iframe')).toBeNull();
+  });
+  it('非 HTML 内容不提供预览入口', async () => {
+    const markdown = '# 标题\n正文文本';
+    const digest = `sha256:${await sha256Hex(new Blob([markdown]))}`;
+    const f = await fixture(bundle => {bundle.files[0].content = markdown; bundle.files[0].bytes = new TextEncoder().encode(markdown).length; bundle.files[0].digest = digest;});
+    render(<DeliveryFilesView artifact={makeArtifact({id: f.spec.artifactId, name: f.spec.fileName, bytes: f.spec.expectedBytes, digest: f.spec.expectedDigest})} transport={f.transport} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', {name: '查看包内文件'}));
+    await screen.findByLabelText('另存文件名');
+    expect(screen.queryByRole('button', {name: '预览此文件'})).toBeNull();
+    expect(document.querySelector('iframe')).toBeNull();
+  });
+  it.each(['<!doctype html><html><body>', '<!DOCTYPE HTML>', '<html lang="zh">', '\n<html>'])('HTML 嗅探通过%j', content => {
+    expect(looksLikeHtml(content)).toBe(true);
+  });
+  it.each(['# markdown', '<htmlfoo>', 'plain text', ''])('HTML 嗅探拒绝%j', content => {
+    expect(looksLikeHtml(content)).toBe(false);
   });
   it.each(['digest', 'id', 'unavailable', 'metadata_failure'])('当前产物变为%s立即清除旧文件', async change => {
     const f = await fixture();

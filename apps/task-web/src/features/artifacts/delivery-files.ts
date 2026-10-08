@@ -42,3 +42,9 @@ export function validSaveName(name: string): boolean {
     !/[\x00-\x1f\x7f<>:"/\\|?*]/.test(name) && !name.startsWith('.') && !name.endsWith('.') &&
     new TextDecoder().decode(new TextEncoder().encode(name)) === name;
 }
+
+/** 预览资格只做文档级嗅探：整份 HTML 文档才提供沙箱预览入口；该判断不改核验结果、不改扩展名。 */
+export function looksLikeHtml(content: string): boolean {
+  const head = content.trimStart().slice(0, 64).toLowerCase();
+  return /^<!doctype\s+html/.test(head) || /^<html[\s>]/.test(head);
+}
